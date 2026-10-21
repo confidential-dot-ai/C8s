@@ -1706,7 +1706,7 @@ func canStillRead(ctx context.Context, name, logical string) error {
 // --- The secret client ---
 
 func (w *world) readSecretFile(p *pod, logical string) ([]byte, error) {
-	out, err := w.be.call("pod_file", p.namespace, p.name, firstContainer, secretClientDir+"/"+secretFile(logical))
+	out, err := w.be.call("pod_file", p.namespace, p.name, p.first, secretClientDir+"/"+secretFile(logical))
 	if err != nil {
 		return nil, err
 	}
@@ -1783,7 +1783,7 @@ func outputOnMemory(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
-	out, err := w.be.call("pod_fstype", p.namespace, p.name, firstContainer, secretClientDir)
+	out, err := w.be.call("pod_fstype", p.namespace, p.name, p.first, secretClientDir)
 	if err != nil {
 		return err
 	}

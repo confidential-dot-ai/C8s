@@ -165,10 +165,10 @@ attest_direct() { return "$UNSUPPORTED"; }
 # The lane pins the node's own measurement, so its evidence satisfies them.
 mesh_pins_satisfied() { echo yes; }
 
-# No address outside the cluster answers for the lane, and a pod that is not
-# injected has no socket to the attestation service.
+# No address outside the cluster answers for the lane. A mesh-dialer pod
+# reaches the attestation service over the socket a requester does.
 external_endpoint() { return "$UNSUPPORTED"; }
-attestation_endpoint() { return "$UNSUPPORTED"; }
+attestation_endpoint() { local socket; socket="$(attestation_socket)" && echo "unix://$socket"; }
 
 # The node's local attestation service, over the socket the plugin binds into
 # the requester (the webhook rebases a unix:// attestation-api URL under
@@ -365,9 +365,6 @@ agent_exec() { local ns="$1" pod="$2" container="$3"; shift 3; agent_run "$ns" "
 
 # The kept scraper runs the agent (manifest_filter).
 mesh_scrape() { agent_exec "$MESH_SCRAPER_NS" "$MESH_SCRAPER" "" "$@"; }
-
-# The dialer is copied into the pod, which the agent cannot stand in for.
-dialer_bin() { return "$UNSUPPORTED"; }
 
 pod_sandbox_id() { return "$UNSUPPORTED"; }
 

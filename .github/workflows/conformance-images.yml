@@ -1,8 +1,8 @@
 name: Conformance images
 
 # The conformance suite's images (test/conformance/images): model-server with
-# the reporter as its sleep, and tenant-app with the programs the steps run in
-# a tenant pod. Dispatched by hand when one of them or its base changes; the
+# the reporter as its sleep, tenant-app with the programs the steps run in a
+# tenant pod, and mesh-dialer with the mesh peer. Dispatched by hand when one of them or its base changes; the
 # backends' CONFORMANCE_IMAGES pin the digests the summary prints.
 on:
   workflow_dispatch:
@@ -23,6 +23,9 @@ jobs:
           - image: tenant-app
             context: test/conformance/images/tenant-app
             file: test/conformance/images/tenant-app/Dockerfile
+          - image: mesh-dialer
+            context: .
+            file: test/conformance/images/mesh-dialer/Dockerfile
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
