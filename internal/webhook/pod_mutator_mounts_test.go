@@ -118,7 +118,7 @@ func sidecarEnv(t *testing.T, pod *corev1.Pod, c corev1.Container, imageEnv map[
 
 // observedSidecarMounts classifies an injected sidecar's mounts the way the
 // node does: the webhook's volumes and the pod's discovery volume are memory
-// emptyDirs, the reload-watch volume is a Secret, and on a node with the
+// emptyDirs, and on a node with the
 // inventory the NRI plugin adds its socket directory read-only, which it
 // observes as a platform mount.
 func observedSidecarMounts(t *testing.T, pod *corev1.Pod, c corev1.Container, inventory bool) []allowlist.ObservedMount {
@@ -146,7 +146,7 @@ func observedSidecarMounts(t *testing.T, pod *corev1.Pod, c corev1.Container, in
 }
 
 // Every sidecar this webhook injects, with every combination of the optional
-// discovery, reload-watch and inventory socket mounts, must be admitted by the
+// discovery and inventory socket mounts, must be admitted by the
 // chart's operator entry with the environment it launches with, refused with
 // a loader variable added, and still dropped from workload matching. The
 // chart pins the sidecars' mount tables exactly and matches their env by
@@ -157,15 +157,13 @@ func TestChartSeedAdmitsInjectedSidecars(t *testing.T) {
 	index := seed.BuildIndex()
 	imageEnv := chartImageEnv(t)
 	for _, tc := range []struct {
-		name                         string
-		discovery, reload, inventory bool
+		name                 string
+		discovery, inventory bool
 	}{
 		{name: "plain"},
 		{name: "discovery", discovery: true},
-		{name: "reload watch", reload: true},
-		{name: "discovery and reload watch", discovery: true, reload: true},
 		{name: "inventory", inventory: true},
-		{name: "everything", discovery: true, reload: true, inventory: true},
+		{name: "everything", discovery: true, inventory: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pod := podWithApp()
@@ -180,11 +178,6 @@ func TestChartSeedAdmitsInjectedSidecars(t *testing.T) {
 				pod.Annotations[AnnotationDiscoveryOut] = discoveryMountPath + "/discovery.json"
 				pod.Annotations[AnnotationDiscoveryCDSCertURL] = "/.well-known/cds-cert.pem"
 				pod.Annotations[AnnotationDiscoveryPublicTLSMode] = "cds"
-			}
-			if tc.reload {
-				pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{Name: "public-tls", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: "public-tls"}}})
-				pod.Annotations[AnnotationReloadWatchVolume] = "public-tls"
-				pod.Annotations[AnnotationReloadWatchPaths] = reloadWatchMountPath + "/tls.crt"
 			}
 			inj, err := parseAnnotations(pod, "default")
 			if err != nil {
@@ -264,35 +257,28 @@ func TestChartSeedRefusesHostSocketMount(t *testing.T) {
 	}
 }
 
-// A discovery or reload-watch volume the sidecar's mount rules cannot admit is
-// refused at admission rather than by the node at container creation. A
-// disk-backed emptyDir and a ConfigMap pass: encrypted scratch admits them.
+// A discovery volume the sidecar's mount rules cannot admit is refused at
+// admission rather than by the node at container creation. A disk-backed
+// emptyDir passes: encrypted scratch admits it.
 func TestRejectUnpinnableSidecarVolumes(t *testing.T) {
 	memory := corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{Medium: corev1.StorageMediumMemory}}
 	secret := corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: "public-tls"}}
 	hostPath := corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: "/srv/tls"}}
-	pvc := corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "tls"}}
 	for _, tc := range []struct {
-		name              string
-		discovery, reload *corev1.VolumeSource
-		wantRefused       bool
+		name        string
+		discovery   *corev1.VolumeSource
+		wantRefused bool
 	}{
 		{name: "memory discovery", discovery: &memory},
 		{name: "disk discovery", discovery: &corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 		{name: "secret discovery", discovery: &secret, wantRefused: true},
 		{name: "hostPath discovery", discovery: &hostPath, wantRefused: true},
-		{name: "secret reload watch", reload: &secret},
-		{name: "configMap reload watch", reload: &corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{}}},
-		{name: "projected reload watch", reload: &corev1.VolumeSource{Projected: &corev1.ProjectedVolumeSource{}}},
-		{name: "emptyDir reload watch", reload: &memory, wantRefused: true},
-		{name: "hostPath reload watch", reload: &hostPath, wantRefused: true},
-		{name: "PVC reload watch", reload: &pvc, wantRefused: true},
 		{name: "undeclared discovery volume", wantRefused: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pod := podWithApp()
 			pod.Annotations = map[string]string{AnnotationWorkload: "api"}
-			if tc.discovery != nil || tc.reload == nil {
+			{
 				pod.Annotations[AnnotationDiscoveryVolume] = "discovery"
 				pod.Annotations[AnnotationDiscoveryOut] = discoveryMountPath + "/discovery.json"
 				pod.Annotations[AnnotationDiscoveryCDSCertURL] = "/.well-known/cds-cert.pem"
@@ -300,11 +286,6 @@ func TestRejectUnpinnableSidecarVolumes(t *testing.T) {
 			}
 			if tc.discovery != nil {
 				pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{Name: "discovery", VolumeSource: *tc.discovery})
-			}
-			if tc.reload != nil {
-				pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{Name: "watched", VolumeSource: *tc.reload})
-				pod.Annotations[AnnotationReloadWatchVolume] = "watched"
-				pod.Annotations[AnnotationReloadWatchPaths] = reloadWatchMountPath + "/tls.crt"
 			}
 			inj, err := parseAnnotations(pod, "default")
 			if err != nil {

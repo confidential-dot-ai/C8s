@@ -28,17 +28,17 @@ const identityPolicyFile = "../../testdata/node-identities.json"
 // A node whose policy is a document hands those identities on whole, through
 // the same render path its independent pins take.
 func TestPrepareCDSPinsRendersTheConfiguredDocument(t *testing.T) {
-	dir := t.TempDir()
+	renderInTempDir(t)
 	p := testPlugin(t, &config{
 		Platform:       "tdx",
-		WorkloadClaims: workloadClaimsConfig{SocketDir: dir},
+		WorkloadClaims: workloadClaimsConfig{SocketDir: t.TempDir()},
 		Allowlist:      allowlistConfig{Pull: pullConfig{CDSMeasurementsConfig: identityPolicyFile}},
 	})
 
 	if err := p.prepareCDSPins(); err != nil {
 		t.Fatalf("prepareCDSPins: %v", err)
 	}
-	if want := filepath.Join(dir, renderedCDSPinsName); p.cdsPins != want {
+	if want := filepath.Join(enforcerRuntimeDir, renderedCDSPinsName); p.cdsPins != want {
 		t.Fatalf("pins path = %q, want %q", p.cdsPins, want)
 	}
 	configured, err := refvalues.Load(identityPolicyFile)
@@ -59,6 +59,7 @@ func TestPrepareCDSPinsRendersTheConfiguredDocument(t *testing.T) {
 // only root can read them (internal/cmds/launchconfig), and the injected
 // clients run as the credentials UID.
 func TestPrepareCDSPinsStagesACopyEveryClientCanRead(t *testing.T) {
+	renderInTempDir(t)
 	document, err := os.ReadFile(identityPolicyFile)
 	if err != nil {
 		t.Fatal(err)
@@ -104,6 +105,7 @@ func TestPrepareCDSPinsRefusesAnotherPlatformsDocument(t *testing.T) {
 // client. It must load back through the loader the clients use.
 func TestPrepareCDSPinsRendersIndependentPins(t *testing.T) {
 	dir := t.TempDir()
+	renderInTempDir(t)
 	p := testPlugin(t, &config{
 		Platform:       "sev-snp",
 		WorkloadClaims: workloadClaimsConfig{SocketDir: dir},
@@ -113,7 +115,7 @@ func TestPrepareCDSPinsRendersIndependentPins(t *testing.T) {
 	if err := p.prepareCDSPins(); err != nil {
 		t.Fatalf("prepareCDSPins: %v", err)
 	}
-	if want := filepath.Join(dir, renderedCDSPinsName); p.cdsPins != want {
+	if want := filepath.Join(enforcerRuntimeDir, renderedCDSPinsName); p.cdsPins != want {
 		t.Fatalf("pins path = %q, want %q", p.cdsPins, want)
 	}
 	set, err := refvalues.Load(p.cdsPins)
@@ -193,6 +195,7 @@ func TestConfigRefusesCompetingPolicySources(t *testing.T) {
 // compiled path, read-only, and nothing to any other container.
 func TestSidecarAdjustmentMountsTheNodePolicy(t *testing.T) {
 	dir := t.TempDir()
+	renderInTempDir(t)
 	p := testPlugin(t, &config{
 		Platform:       "sev-snp",
 		WorkloadClaims: workloadClaimsConfig{SocketDir: dir},
@@ -216,7 +219,7 @@ func TestSidecarAdjustmentMountsTheNodePolicy(t *testing.T) {
 		if mount == nil {
 			t.Fatalf("%s has no CDS policy mount: %+v", name, adjust.GetMounts())
 		}
-		if mount.GetSource() != filepath.Join(dir, renderedCDSPinsName) {
+		if mount.GetSource() != filepath.Join(enforcerRuntimeDir, renderedCDSPinsName) {
 			t.Errorf("%s policy source = %q, want the node's own file", name, mount.GetSource())
 		}
 		if !slices.Contains(mount.GetOptions(), "ro") {

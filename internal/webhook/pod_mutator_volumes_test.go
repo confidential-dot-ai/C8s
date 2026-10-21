@@ -263,8 +263,6 @@ func TestVolumeDirMustBePinnable(t *testing.T) {
 		{"/run/c8s/volumes", true},
 		{"/mnt/c8s-data-models", true},
 		{"/mnt/c8s-data/../etc", true},
-		{"/mnt/c8s-data/c8s-reload-watch", true},
-		{"/mnt/c8s-data/c8s-reload-watch/models", true},
 	} {
 		inj := &injection{WorkloadID: "api", Volumes: volumesSpec{
 			Specs: []string{"weights=/tenant-a/volumes/weights"},

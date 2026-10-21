@@ -661,7 +661,8 @@ true
 
 {{/*
 c8s-cert native sidecar (restartPolicy: Always): obtains the leaf on startup
-and renews it on a ticker, SIGHUP-ing nginx after each renewal. Caller nindents into the Pod spec's initContainers
+and renews it on a ticker. nginx's own entrypoint reloads on the renewal, so
+this sidecar signals nothing. Caller nindents into the Pod spec's initContainers
 list.
 */}}
 {{- define "router.getCertContainers" -}}
@@ -703,8 +704,6 @@ list.
 {{- end -}}
 {{- if eq (include "router.publicTLSMode" .) "webpki" -}}
 {{- $mounts = append $mounts (printf "- name: public-tls\n  mountPath: %s\n  readOnly: true" .Values.router.publicTLS.mountPath) -}}
-{{- $extraArgs = append $extraArgs (printf "--reload-watch=%s" (include "router.publicCertPath" .)) -}}
-{{- $extraArgs = append $extraArgs (printf "--reload-watch=%s" (include "router.publicKeyPath" .)) -}}
 {{- end -}}
 {{- include "c8s.getCertContainers" (dict
   "root" .
@@ -719,7 +718,6 @@ list.
   "runAsUser" .Values.router.nginx.runAsUser
   "runAsGroup" .Values.router.nginx.runAsGroup
   "runAsNonRoot" .Values.router.nginx.runAsNonRoot
-  "reloadNginx" "true"
   "extraArgs" $extraArgs
   "extraMounts" (join "\n" $mounts)
 ) -}}
@@ -816,4 +814,25 @@ proxy_set_header Host $host;
 proxy_set_header X-Real-IP $remote_addr;
 proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 proxy_set_header X-Forwarded-Proto $scheme;
+
+
+{{- end -}}
+
+{{/*
+router.filesNginxLoads — every file an nginx directive loads: the leaf and key
+get-cert publishes, the mesh CA it proxies upstream with, and the public
+certificate and key of whichever TLS mode serves the front door. One
+space-separated list, read by reload.sh.
+*/}}
+{{- define "router.filesNginxLoads" -}}
+{{- $paths := list (printf "%s/cert.pem" .Values.router.tlsMountPath) (printf "%s/key.pem" .Values.router.tlsMountPath) (printf "%s/ca.pem" .Values.router.tlsMountPath) -}}
+{{- if eq (include "router.publicTLSMode" .) "webpki" -}}
+{{- $paths = append $paths (include "router.publicCertPath" .) -}}
+{{- $paths = append $paths (include "router.publicKeyPath" .) -}}
+{{- end -}}
+{{- if eq (include "router.publicTLSMode" .) "acme" -}}
+{{- $paths = append $paths (include "router.publicCertPath" .) -}}
+{{- $paths = append $paths (include "router.publicKeyPath" .) -}}
+{{- end -}}
+{{ join " " $paths }}
 {{- end -}}

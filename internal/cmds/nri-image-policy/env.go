@@ -22,8 +22,9 @@ func (p *plugin) ValidateContainerAdjustment(ctx context.Context, req *api.Valid
 	}
 	ctr, env := adjustedLaunchContainer(req)
 	mounts := adjustedMounts(req, ctr, nodeMounts{
-		socketDir: p.cfg.WorkloadClaims.SocketDir,
-		cdsPins:   p.cdsPins,
+		socketDir:  p.cfg.WorkloadClaims.SocketDir,
+		cdsPins:    p.cdsPins,
+		cdsAddress: p.cdsAddress,
 	})
 	// The gate runs ahead of the admission check and independently of
 	// policy.mode: a protected pod's container runs only once it is verified.
