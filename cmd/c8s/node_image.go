@@ -182,7 +182,7 @@ func renderNodeImage(ctx context.Context, cfg nodeImageRenderConfig) error {
 	if err != nil {
 		return fmt.Errorf("render node integration with helm: %w: %s", err, stderr.String())
 	}
-	artifacts, err := collectNodeImageArtifacts(rendered)
+	artifacts, err := collectNodeImageArtifacts(rendered, cfg.componentDigests())
 	if err != nil {
 		return err
 	}
@@ -249,7 +249,9 @@ var routerNginxFiles = []string{"nginx.conf", "tls-cds.conf", "tls-acme.conf"}
 // collectNodeImageArtifacts retains complete chart resources and copies the seed
 // for host NRI bootstrap. Every workload image must be pinned and present in the
 // seed; the same inventory drives image preloading into the measured rootfs.
-func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
+// collectNodeImageArtifacts splits the render; components are the digests of
+// the images this build produces (DaemonSets name them node-locally).
+func collectNodeImageArtifacts(rendered []byte, components map[string]bool) (*nodeImageArtifacts, error) {
 	namespace, err := yaml.Marshal(corev1.Namespace{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Namespace"},
 		ObjectMeta: metav1.ObjectMeta{
@@ -265,7 +267,7 @@ func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
 	if err != nil {
 		return nil, fmt.Errorf("encode node namespace: %w", err)
 	}
-	var artifacts nodeImageArtifacts
+	artifacts := nodeImageArtifacts{localNames: map[string]string{}}
 	var manifests bytes.Buffer
 	manifests.Write(namespace)
 	decoder := k8syaml.NewYAMLOrJSONDecoder(bytes.NewReader(rendered), 4096)
@@ -324,6 +326,11 @@ func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
 					return nil, err
 				}
 				cdsNode = append(cdsNode, containers...)
+				// Every node must run the components its own measured
+				// image carries, not the server image's.
+				if err := localizeDaemonSet(&object, components, artifacts.localNames); err != nil {
+					return nil, fmt.Errorf("node-image workload %s: %w", key, err)
+				}
 			}
 		case "ConfigMap":
 			if err := collectConfigMapArtifact(object, key, name, &artifacts); err != nil {
@@ -390,9 +397,6 @@ func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
 	artifacts.integration = manifests.Bytes()
 	artifacts.cdsSingleton, artifacts.cdsHA = singleton.Bytes(), ha.Bytes()
 	if seen["DaemonSet/c8s-cds-ha"] {
-		if artifacts.cdsHA, artifacts.localNames, err = nodeLocalCDS(artifacts.cdsHA, cdsNode); err != nil {
-			return nil, err
-		}
 		floor, err := buildCDSFloor(seed, cdsNode)
 		if err != nil {
 			return nil, err
@@ -890,40 +894,67 @@ func collectConfigMapArtifact(object unstructured.Unstructured, key, name string
 	return nil
 }
 
-// nodeLocalTag names a baked image on the node that baked it. The HA CDS
-// DaemonSet is one object, applied by the server from the server's image,
-// but every cds node must run the CDS its own measured image carries: a CDS
-// rollout launches cds nodes on a new image while the others keep the old
-// one. So the DaemonSet names the CDS image by this node-local tag, which
-// each image's airgap import gives its own baked CDS image, and the node's
-// NRI floor still pins the exact digest (buildCDSFloor), so nothing but the
-// measured image's CDS can run under the name.
+// nodeLocalTag names a baked image on the node that baked it. A DaemonSet is
+// one object, applied by the server from the server's image, but every node
+// must run the components its own measured image carries: a rollout launches
+// nodes on a new image while others keep the old one, and pullPolicy Never
+// can only run what the node imported. So DaemonSet containers name the
+// build's own component images by this node-local tag, which each image's
+// airgap import also gives them (local-names.txt). Admission still pins
+// exact digests: the bootstrap seed and the cds floor are derived before
+// the rewrite, and NRI resolves the tag to the node's own digest.
 const nodeLocalTag = "c8s-node"
 
-// nodeLocalCDS rewrites the HA DaemonSet's CDS image references to the
-// node-local tag and returns the names the airgap import must add.
-func nodeLocalCDS(ha []byte, containers []cdsFloorContainer) ([]byte, map[string]string, error) {
-	names := map[string]string{}
-	for _, fc := range containers {
-		if fc.key != "DaemonSet/c8s-cds-ha" {
+// componentDigests are the digests of the images this build produces (the
+// c8s operator image, CDS, armTLS mesh): the ones that differ per build.
+func (cfg nodeImageRenderConfig) componentDigests() map[string]bool {
+	out := map[string]bool{}
+	for _, d := range []string{cfg.imageDigest, cfg.cdsImageDigest, cfg.armtlsMeshImageDigest} {
+		if d != "" {
+			out[d] = true
+		}
+	}
+	return out
+}
+
+// localizeDaemonSet rewrites the DaemonSet's component image references to
+// their node-local names and records them in names.
+func localizeDaemonSet(object *unstructured.Unstructured, components map[string]bool, names map[string]string) error {
+	for _, field := range []string{"initContainers", "containers"} {
+		list, found, err := unstructured.NestedSlice(object.Object, "spec", "template", "spec", field)
+		if err != nil || !found {
+			if err != nil {
+				return err
+			}
 			continue
 		}
-		ref, err := reference.ParseDockerRef(fc.container.Image)
-		if err != nil {
-			return nil, nil, err
+		for i, item := range list {
+			c, ok := item.(map[string]any)
+			if !ok {
+				return fmt.Errorf("%s[%d] is not an object", field, i)
+			}
+			image, _ := c["image"].(string)
+			ref, err := reference.ParseDockerRef(image)
+			if err != nil {
+				return err
+			}
+			pinned, ok := ref.(reference.Canonical)
+			if !ok || !components[pinned.Digest().String()] {
+				continue
+			}
+			local := reference.TrimNamed(ref).Name() + ":" + nodeLocalTag
+			if prev, dup := names[image]; dup && prev != local {
+				return fmt.Errorf("image %s has two local names", image)
+			}
+			names[image] = local
+			c["image"] = local
+			list[i] = c
 		}
-		local := reference.TrimNamed(ref).Name() + ":" + nodeLocalTag
-		old := []byte("image: " + fc.container.Image + "\n")
-		if !bytes.Contains(ha, old) {
-			return nil, nil, fmt.Errorf("HA CDS manifest does not name %s", fc.container.Image)
+		if err := unstructured.SetNestedSlice(object.Object, list, "spec", "template", "spec", field); err != nil {
+			return err
 		}
-		ha = bytes.ReplaceAll(ha, old, []byte("image: "+local+"\n"))
-		names[fc.container.Image] = local
 	}
-	if len(names) == 0 {
-		return nil, nil, errors.New("HA CDS manifest has no CDS container")
-	}
-	return ha, names, nil
+	return nil
 }
 
 func localNamesFile(names map[string]string) []byte {
