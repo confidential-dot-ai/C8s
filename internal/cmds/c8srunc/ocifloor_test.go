@@ -324,13 +324,13 @@ func TestFloorLeavesARoleNoCapabilities(t *testing.T) {
 // Trusted policy names the namespaces that host no member pods, and the pod's
 // own sandbox container is the runtime's: both keep what they are given.
 func TestFloorLeavesExemptContainersUntouched(t *testing.T) {
-	canal := workloadBundle()
-	canal.Annotations[annotationSandboxNamespace] = "kube-system"
-	canal.Process.User = specs.User{}
-	canal.Process.Terminal = true
-	canal.Process.NoNewPrivileges = false
-	canal.Process.Capabilities.Effective = append(canal.Process.Capabilities.Effective, "CAP_NET_ADMIN", "CAP_SYS_ADMIN")
-	if err := requireFloor(canal, "ctr", nil, testFloor()); err != nil {
+	cilium := workloadBundle()
+	cilium.Annotations[annotationSandboxNamespace] = "kube-system"
+	cilium.Process.User = specs.User{}
+	cilium.Process.Terminal = true
+	cilium.Process.NoNewPrivileges = false
+	cilium.Process.Capabilities.Effective = append(cilium.Process.Capabilities.Effective, "CAP_NET_ADMIN", "CAP_SYS_ADMIN")
+	if err := requireFloor(cilium, "ctr", nil, testFloor()); err != nil {
 		t.Fatalf("an exempt namespace's container was refused: %v", err)
 	}
 

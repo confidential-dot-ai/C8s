@@ -151,7 +151,7 @@ role starts. The local attester must precede this gate because launch
 verification uses it. The host attester listens on `127.0.0.1:8400`;
 pods access its Unix socket in the admission-inventory directory. CDS uses
 its Kubernetes Service and server NodePort `30808`; agents join RKE2 at
-`9345`; the router exposes the server's port `443`. Canal's flannel VXLAN
+`9345`; the router exposes the server's port `443`. Cilium's VXLAN
 runs on UDP `8473`, not the kernel default `8472`: a nested guest's outer
 host often runs its own VXLAN on `8472` and drops the inner overlay. Open
 UDP `8473` between nodes in any firewall or security group.
@@ -338,10 +338,7 @@ endpoint therefore remains closed until `psa-ready.sh` sees both policies,
 both credential bindings, and proves, through server-side dry-runs as a synthetic non-granter,
 that a restricted namespace is admitted and a privileged one is denied by
 `confos-psa-level`. No externally released operator credential can enter the
-first-boot reconciliation window. The same gate waits until the live
-FelixConfigurations make Canal append its iptables hooks rather than insert
-them at a chain head, which Felix only learns after the chart installs its
-CRDs.
+first-boot reconciliation window.
 
 The floor also covers namespaces hosting confidential workloads. In bare-metal mode,
 `nri-image-policy` mounts the inventory socket directory read-only into credential
@@ -533,7 +530,7 @@ manual and PR gate builds cannot invoke the exact-image acceptance path.
 `kernel/c8s.config` sets `CONFIG_MODULES=y`, which the confos base kernel
 compiles out. It is on for exactly two out-of-tree modules, `nvidia.ko` and
 `nvidia-uvm.ko` (see [MODULE-SIGNING.md](MODULE-SIGNING.md)); every symbol
-kubelet, containerd and Canal need is `=y`, so nothing modprobes at runtime.
+kubelet, containerd and Cilium need is `=y`, so nothing modprobes at runtime.
 
 Because the key exists on this kernel, the runtime lock has to be set here:
 confos's `99-kspp-hardening.conf` omits `kernel.modules_disabled` on the
