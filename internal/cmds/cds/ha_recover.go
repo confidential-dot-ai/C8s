@@ -28,6 +28,7 @@ func newHARecoverCmd() *cobra.Command {
 		conn               cdsconn.Options
 		backupFile         string
 		recoveryKey        string
+		recoveryShares     []string
 		decreeKey          string
 		clusterID          string
 		node               string
@@ -65,9 +66,9 @@ func newHARecoverCmd() *cobra.Command {
 			if m.Epoch < minEpoch || (m.Epoch == minEpoch && m.Index < minIndex) {
 				return fmt.Errorf("backup (epoch %d, index %d) is older than --min-epoch %d --min-index %d: refusing to roll the cluster back", m.Epoch, m.Index, minEpoch, minIndex)
 			}
-			rk, err := loadECPrivateKey(recoveryKey)
+			rk, err := loadRecoveryKey(recoveryKey, recoveryShares)
 			if err != nil {
-				return fmt.Errorf("--recovery-key: %w", err)
+				return fmt.Errorf("recovery key: %w", err)
 			}
 			snap, err := cdsha.OpenBackup(rk, b)
 			if err != nil {
@@ -113,6 +114,7 @@ func newHARecoverCmd() *cobra.Command {
 	f := cmd.Flags()
 	f.StringVar(&backupFile, "backup-file", "", "JSON list of the backup ConfigMaps (kubectl get configmaps -l "+cdsha.LabelBackup+"=<cluster> -o json)")
 	f.StringVar(&recoveryKey, "recovery-key", "", "PEM EC private key the backups are sealed to (bundle recovery.key)")
+	f.StringArrayVar(&recoveryShares, "recovery-key-share", nil, "a custodian's share of the recovery key (c8s cds ha recovery-key split); repeat for at least the threshold. Excludes --recovery-key")
 	f.StringVar(&decreeKey, "decree-key", "", "PEM EC private key that signs decrees (bundle decree.key)")
 	f.StringVar(&clusterID, "cluster-id", "", "cluster to restore")
 	f.StringVar(&node, "bootstrap-node", "", "node whose fresh replica starts the restored cluster")
