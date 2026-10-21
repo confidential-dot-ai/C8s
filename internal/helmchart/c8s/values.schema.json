@@ -70,6 +70,22 @@
           }
         },
         "operatorKeys": {},
+        "ha": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {},
+            "replicas": {},
+            "peerPort": {},
+            "decreeNamespace": {},
+            "goMemLimit": {},
+            "storeSizeLimit": {},
+            "resources": {}
+          }
+        },
         "persistence": {
           "type": [
             "object",

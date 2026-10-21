@@ -13,7 +13,7 @@ import (
 // operator-side bundle generator and the guest-side stage.
 func NewCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "launch-config", Short: "Create, extend and stage a measured node's signed launch configuration"}
-	cmd.AddCommand(newBundleCmd(), newAddAgentCmd(), newStageCmd())
+	cmd.AddCommand(newBundleCmd(), newAddAgentCmd(), newAddCDSNodeCmd(), newStageCmd())
 	return cmd
 }
 
@@ -49,8 +49,14 @@ HOST_DATA to SHA-256 of that node's pubkey file. See docs/operator.md,
 			for _, name := range opts.Agents {
 				fmt.Fprintf(cmd.OutOrStdout(), ", %s", filepath.Join(opts.Dir, name))
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), " (private keys: %s, %s)\n",
-				filepath.Join(opts.Dir, serverKeyFile), filepath.Join(opts.Dir, agentKeyFile))
+			for _, name := range opts.CDSNodes {
+				fmt.Fprintf(cmd.OutOrStdout(), ", %s", filepath.Join(opts.Dir, name))
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), " (private keys: %s, %s", filepath.Join(opts.Dir, serverKeyFile), filepath.Join(opts.Dir, agentKeyFile))
+			if len(opts.CDSNodes) > 0 {
+				fmt.Fprintf(cmd.OutOrStdout(), ", %s, %s", filepath.Join(opts.Dir, cdsKeyFile), filepath.Join(opts.Dir, decreeKeyFile))
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), ")")
 			return nil
 		},
 	}
@@ -62,6 +68,7 @@ HOST_DATA to SHA-256 of that node's pubkey file. See docs/operator.md,
 	f.StringVar(&opts.ServerName, "server-name", "", "server node name (default <cluster-id>-server)")
 	f.StringVar(&opts.ServerAddress, "server-address", "", "server IPv4 address every node can reach; required with agents, otherwise the server autodetects it")
 	f.StringArrayVar(&opts.Agents, "agent", nil, "agent node name; repeatable")
+	f.StringArrayVar(&opts.CDSNodes, "cds-node", nil, "cds-role node name for a highly available CDS; repeatable, at least two. Generates cds.key (their launch key) and decree.key (signs HA decrees)")
 	f.StringVar(&opts.TLSSAN, "tls-san", "", "DNS name for the front-door certificate (default c8s.local)")
 	f.StringVar(&opts.WorkloadsPath, "workloads", "", "optional c8s.allowlist/v1 JSON file applied as the initial workload allowlist")
 	f.StringArrayVar(&opts.Router.Hostnames, "router-hostname", nil, "public DNS name the router serves with an ACME certificate; repeatable")
@@ -125,4 +132,33 @@ func newStageCmd() *cobra.Command {
 		_ = stage.MarkFlagRequired(name)
 	}
 	return stage
+}
+
+func newAddCDSNodeCmd() *cobra.Command {
+	var dir, name, serverAddress string
+	cmd := &cobra.Command{
+		Use:   "add-cds-node",
+		Short: "Add a signed cds-role document to an existing launch bundle",
+		Long: `Derive a cds-role launch.yaml from the bundle's server document, sign it
+with the bundle's cds key and write <bundle>/<name>. The bundle must have
+been created with --cds-node. Use it to add a replica or to replace one: a
+rebooted node cannot rejoin RKE2 under its old name.`,
+		Args:         cobra.NoArgs,
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := AddCDSNode(dir, name, serverAddress); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "wrote %s\n", filepath.Join(dir, name))
+			return nil
+		},
+	}
+	f := cmd.Flags()
+	f.StringVar(&dir, "bundle", "", "bundle directory created by 'launch-config new --cds-node'")
+	f.StringVar(&name, "name", "", "cds node name, an RFC1123 label")
+	f.StringVar(&serverAddress, "server-address", "", "server IPv4 address (default: the server document's)")
+	for _, flag := range []string{"bundle", "name"} {
+		_ = cmd.MarkFlagRequired(flag)
+	}
+	return cmd
 }

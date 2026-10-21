@@ -1,0 +1,128 @@
+{{- if and .Values.node.baked .Values.cds.ha.enabled }}
+{{/* HA CDS: one replica per cds-role node. The baked image carries both this
+     DaemonSet and the singleton Deployment; the signed launch document decides which
+     one runs (cds-role nodes exist only when it declares cdsHA, and the
+     singleton yields when it does). */}}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "c8s.cdsName" . }}-ha
+  namespace: {{ .Release.Namespace }}
+  labels:
+{{ include "c8s.commonLabels" . | indent 4 }}
+    app.kubernetes.io/component: cds
+spec:
+  # One replica per cds-role node: replicas come and go with the nodes. A
+  # replica is Ready only once it has joined the Raft group and serves, so
+  # a rolling update (one node at a time) never takes a second voter away
+  # before the replaced one is back: two at once would cost the majority.
+  minReadySeconds: 5
+  updateStrategy:
+    rollingUpdate: {maxUnavailable: 1}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: c8s-operator
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: cds
+      c8s.confidential.ai/cds-ha: "true"
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: c8s-operator
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: cds
+        c8s.confidential.ai/cds-ha: "true"
+      annotations:
+        confidential.ai/trust-root-mode: "inMemory"
+    spec:
+{{- include "c8s.cdsPodSpec" (merge (dict "ha" true) .) | nindent 6 }}
+---
+# The CDS ingress policy admits only the API port. Replicas also need the
+# peer port, from each other only: no other pod or host reaches it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "c8s.cdsName" . }}-ha-peers
+  namespace: {{ .Release.Namespace }}
+  labels:
+{{ include "c8s.commonLabels" . | indent 4 }}
+    app.kubernetes.io/component: cds
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: cds
+      c8s.confidential.ai/cds-ha: "true"
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: cds
+              c8s.confidential.ai/cds-ha: "true"
+      ports:
+        - port: {{ .Values.cds.ha.peerPort }}
+          protocol: TCP
+---
+# Peer discovery: every replica, Ready or not.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "c8s.cdsName" . }}-peers
+  namespace: {{ .Release.Namespace }}
+  labels:
+{{ include "c8s.commonLabels" . | indent 4 }}
+    app.kubernetes.io/component: cds
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app.kubernetes.io/name: c8s-operator
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: cds
+    c8s.confidential.ai/cds-ha: "true"
+  ports:
+    - name: peer
+      port: {{ .Values.cds.ha.peerPort }}
+---
+# Decrees: operators write them here (the baked operator credential may
+# write any non-privileged namespace); CDS reads them and records status, and
+# the leader stores sealed backups here for `c8s cds ha recover`.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.cds.ha.decreeNamespace }}
+  labels:
+{{ include "c8s.commonLabels" . | indent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "c8s.cdsName" . }}-decrees
+  namespace: {{ .Values.cds.ha.decreeNamespace }}
+  labels:
+{{ include "c8s.commonLabels" . | indent 4 }}
+    app.kubernetes.io/component: cds
+rules:
+  # Decrees (read, status update) and the sealed state backups, which only
+  # the operator's offline recovery key opens.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "c8s.cdsName" . }}-decrees
+  namespace: {{ .Values.cds.ha.decreeNamespace }}
+  labels:
+{{ include "c8s.commonLabels" . | indent 4 }}
+    app.kubernetes.io/component: cds
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "c8s.cdsName" . }}-decrees
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "c8s.cdsName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
