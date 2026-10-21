@@ -134,6 +134,29 @@ func TestValidatorRefusesAProbeTargetThePodDoesNotProbe(t *testing.T) {
 	denies(t, v, forged, "env")
 }
 
+// A probe moved back onto the application port after injection would probe
+// the port the mesh listener answers in plaintext, so the pod is refused.
+func TestValidatorRefusesAProbeRestoredAfterInjection(t *testing.T) {
+	m, v := meshHandlers(t, meshConfig())
+	injected := defaulted(admit(t, m, podWithProbedApp(), "tenant"))
+	for name, tc := range map[string]struct {
+		probe func(*corev1.Container) *corev1.Probe
+		path  string
+	}{
+		"readiness": {func(c *corev1.Container) *corev1.Probe { return c.ReadinessProbe }, "/healthz"},
+		"liveness":  {func(c *corev1.Container) *corev1.Probe { return c.LivenessProbe }, "/livez"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			restored := injected.DeepCopy()
+			get := tc.probe(appContainerNamed(t, restored, "app")).HTTPGet
+			get.Port = intstr.FromInt32(8080)
+			get.Path = tc.path
+
+			denies(t, v, restored, name+"Probe")
+		})
+	}
+}
+
 // A member pod carrying a probe the endpoint cannot forward is refused: its
 // probe would otherwise never pass once the ruleset is installed.
 func TestInjectionRefusesAnUnforwardableProbe(t *testing.T) {
