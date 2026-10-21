@@ -255,7 +255,7 @@ kubeconfig() { echo "$KUBECONFIG"; }
 # programs the steps run in it, for every backend; a backend adds its own.
 CONFORMANCE_REPO=ghcr.io/confidential-dot-ai/c8s-conformance-
 declare -A CONFORMANCE_IMAGES=(
-    [tenant-app]=sha256:b50aaeeaf2658e2905db146a56a6f48156af0ac2a8a6fa8e395b14ad0f3a4328
+    [tenant-app]=sha256:78bda430629e5c127cc9589533fa7a343ac389f1998da576769fbe00f679e316
 )
 image_ref() {
     [ -z "${CONFORMANCE_IMAGES[$1]:-}" ] || { echo "$CONFORMANCE_REPO$1@${CONFORMANCE_IMAGES[$1]}"; return; }
