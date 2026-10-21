@@ -211,7 +211,33 @@ func NewBundle(opts BundleOptions) (err error) {
 // AddCDSNode is AddAgent for the cds role: the document is signed with the
 // bundle's cds key, which only cds-role documents accept.
 func AddCDSNode(dir, name, serverAddress string) error {
-	return addJoiningNode(dir, name, serverAddress, CDS, cdsKeyFile, nil)
+	return AddNode(dir, CDS, JoinOptions{Name: name, ServerAddress: serverAddress})
+}
+
+// JoinOptions describe a node added to a bundle.
+type JoinOptions struct {
+	Name          string
+	ServerAddress string
+	// Image, if set, is booted instead of the server's (a rollout).
+	Image *Image
+	// PinFloor, on an HA cluster, is the lowest CDS pin decree base epoch the
+	// node accepts (cdsHA.pinFloor): set it to the base epoch of the decree in
+	// force (GET /ha/pins), so the control plane cannot feed the new node an
+	// older, still-signed decree.
+	PinFloor uint64
+}
+
+// AddNode adds a signed agent or cds document to the bundle.
+func AddNode(dir string, role Role, o JoinOptions) error {
+	keyFile := agentKeyFile
+	switch role {
+	case Agent:
+	case CDS:
+		keyFile = cdsKeyFile
+	default:
+		return fmt.Errorf("cannot add a %s node to a bundle", role)
+	}
+	return addJoiningNode(dir, role, keyFile, o)
 }
 
 // AddCDSNodeOnImage is AddCDSNode for a node that boots image instead of
@@ -219,12 +245,12 @@ func AddCDSNode(dir, name, serverAddress string) error {
 // the images it already accepts) as peer images, so the new node trusts the
 // nodes not yet rolled.
 func AddCDSNodeOnImage(dir, name, serverAddress string, image Image) error {
-	return addJoiningNode(dir, name, serverAddress, CDS, cdsKeyFile, &image)
+	return AddNode(dir, CDS, JoinOptions{Name: name, ServerAddress: serverAddress, Image: &image})
 }
 
 // AddAgentOnImage is AddCDSNodeOnImage for an agent.
 func AddAgentOnImage(dir, name, serverAddress string, image Image) error {
-	return addJoiningNode(dir, name, serverAddress, Agent, agentKeyFile, &image)
+	return AddNode(dir, Agent, JoinOptions{Name: name, ServerAddress: serverAddress, Image: &image})
 }
 
 // AddAgent derives an agent document from the bundle's server document
@@ -234,10 +260,11 @@ func AddAgentOnImage(dir, name, serverAddress string, image Image) error {
 // on a bundle created earlier, so a cluster can grow without regenerating or
 // re-signing anything the server already booted with.
 func AddAgent(dir, name, serverAddress string) error {
-	return addJoiningNode(dir, name, serverAddress, Agent, agentKeyFile, nil)
+	return AddNode(dir, Agent, JoinOptions{Name: name, ServerAddress: serverAddress})
 }
 
-func addJoiningNode(dir, name, serverAddress string, role Role, keyFile string, image *Image) (err error) {
+func addJoiningNode(dir string, role Role, keyFile string, o JoinOptions) (err error) {
+	name, serverAddress, image := o.Name, o.ServerAddress, o.Image
 	if !dnsLabel(name) {
 		return fmt.Errorf("%s name %q must be an RFC1123 label", role, name)
 	}
@@ -289,6 +316,14 @@ func addJoiningNode(dir, name, serverAddress string, role Role, keyFile string, 
 				agent.PeerImages = append(agent.PeerImages, img)
 			}
 		}
+	}
+	if o.PinFloor > 0 {
+		if server.CDSHA == nil {
+			return errors.New("a pin floor applies to a cluster with an HA CDS (cdsHA)")
+		}
+		ha := *server.CDSHA
+		ha.PinFloor = o.PinFloor
+		agent.CDSHA = &ha
 	}
 	return writeSignedDocument(filepath.Join(dir, name), agent, key, pub)
 }

@@ -39,6 +39,11 @@ const (
 	OpConsumeToken   Op = "consume_token"
 	OpReplaceRoutes  Op = "replace_routes"
 	OpStartJournal   Op = "start_journal"
+	// OpPruneHistory keeps the newest Keep entries of the history. A
+	// replica of a release without it would answer an error and keep its
+	// history, so the leader proposes it only in a format every member reads
+	// (cdsha.Format 2).
+	OpPruneHistory Op = "prune_history"
 )
 
 // Command is one replicated mutation. Everything a replica needs to apply it
@@ -54,6 +59,7 @@ type Command struct {
 	Token     string                           `json:"token,omitempty"`
 	Routes    *routes.Envelope                 `json:"routes,omitempty"`
 	IfMatch   string                           `json:"if_match,omitempty"`
+	Keep      int                              `json:"keep,omitempty"`
 }
 
 // Result is what applying a command returned. Err keeps the sentinel a
@@ -134,6 +140,11 @@ func (s *Store) Apply(cmd Command) Result {
 		return resultErr(s.replaceRoutes(*cmd.Routes, cmd.IfMatch))
 	case OpStartJournal:
 		return resultErr(s.startJournal())
+	case OpPruneHistory:
+		dropped, err := s.pruneHistory(cmd.Keep)
+		r := resultErr(err)
+		r.Retired = dropped
+		return r
 	}
 	return resultErr(fmt.Errorf("unknown allowlist command %q", cmd.Op))
 }

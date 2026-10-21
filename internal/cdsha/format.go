@@ -16,7 +16,13 @@ import (
 //     cannot join;
 //   - a replica that meets an entry or a snapshot newer than it reads stops
 //     serving: skipping an entry would silently diverge from the group.
-const Format uint32 = 1
+const Format uint32 = 2
+
+// Format history:
+//   1: the original encoding.
+//   2: snapshots carry the decree record (FSM.Decrees), and decrees append
+//      to it. A group at format 1 keeps no record, so replicas of format 1
+//      and 2 agree on the state while they run together.
 
 // ErrNewerFormat is a log entry or snapshot this replica cannot read.
 var ErrNewerFormat = errors.New("cds-ha: log entry or snapshot in a newer format than this replica reads")

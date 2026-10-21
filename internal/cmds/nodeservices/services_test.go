@@ -563,7 +563,7 @@ func TestPrepareHACluster(t *testing.T) {
 		d := document(t, role)
 		d.ClusterID = "cdsha"
 		d.CDSOperatorPublicKeys = []string{string(pins.Images[1].Anchor)}
-		d.CDSHA = &launchconfig.CDSHA{DecreeKey: string(pins.Images[1].Anchor), Replicas: 3}
+		d.CDSHA = &launchconfig.CDSHA{DecreeKey: string(pins.Images[1].Anchor), Replicas: 3, PinFloor: 5}
 		d.Image.Measurement = strings.Repeat("11", 48)
 		d.Image.RTMRs = map[int]string{1: strings.Repeat("22", 48), 2: strings.Repeat("33", 48)}
 		return d
@@ -587,7 +587,7 @@ func TestPrepareHACluster(t *testing.T) {
 		// CDS clients learn how to follow the operator's pin decrees.
 		var info cmdsutil.CDSDecreesInfo
 		raw, err := os.ReadFile(filepath.Join(root, PublicDir, CDSDecreesFile))
-		if err != nil || json.Unmarshal(raw, &info) != nil || info.ClusterID != "cdsha" || info.DecreeKey != string(pins.Images[1].Anchor) {
+		if err != nil || json.Unmarshal(raw, &info) != nil || info.ClusterID != "cdsha" || info.DecreeKey != string(pins.Images[1].Anchor) || info.PinFloor != 5 {
 			t.Fatalf("cds-decrees.json: %s %v", raw, err)
 		}
 		policy, err := os.ReadFile(filepath.Join(root, "/etc/nri/conf.d/image-policy.yaml"))

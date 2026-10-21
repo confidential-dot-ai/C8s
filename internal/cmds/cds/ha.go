@@ -223,26 +223,27 @@ func newHANode(cfg config, st haStores) (*cdsha.Node, error) {
 	}
 	decrees := cdsha.KubeDecrees{Client: kube, Namespace: h.decreeNS, ClusterID: h.clusterID}
 	return cdsha.NewNode(cdsha.Config{
-		ClusterID:      h.clusterID,
-		NodeName:       h.nodeName,
-		Bind:           net.JoinHostPort(cfg.host, strconv.Itoa(h.port)),
-		Advertise:      net.JoinHostPort(podIP, strconv.Itoa(h.port)),
-		Attestor:       att,
-		BakedPins:      h.pins,
-		OperatorPubKey: opKey,
-		Seats:          h.seats,
-		MaxNonVoters:   h.maxNonVoters,
-		Peers:          peers,
-		Decrees:        decrees,
-		RecoveryKey:    recovery,
-		Backups:        decrees,
-		Timing:         h.timing,
-		CACommonName:   cfg.caCommonName,
-		CAValidity:     cfg.caCertValidity,
-		Allowlist:      st.allowlist,
-		Secrets:        st.secrets,
-		Ledger:         st.ledger,
-		Logger:         slog.Default(),
+		ClusterID:       h.clusterID,
+		NodeName:        h.nodeName,
+		Bind:            net.JoinHostPort(cfg.host, strconv.Itoa(h.port)),
+		Advertise:       net.JoinHostPort(podIP, strconv.Itoa(h.port)),
+		Attestor:        att,
+		BakedPins:       h.pins,
+		OperatorPubKey:  opKey,
+		Seats:           h.seats,
+		MaxNonVoters:    h.maxNonVoters,
+		Peers:           peers,
+		Decrees:         decrees,
+		RecoveryKey:     recovery,
+		Backups:         decrees,
+		Timing:          h.timing,
+		CACommonName:    cfg.caCommonName,
+		CAValidity:      cfg.caCertValidity,
+		Allowlist:       st.allowlist,
+		Secrets:         st.secrets,
+		Ledger:          st.ledger,
+		Logger:          slog.Default(),
+		HistoryVersions: cfg.allowlistHistoryVersions,
 	})
 }
 
@@ -401,6 +402,16 @@ func haPins(node *cdsha.Node) http.HandlerFunc {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(sd)
+	}
+}
+
+// haDecrees serves the record of applied decrees: every operator decision
+// as the operator signed it, read over the attested channel from a serving
+// replica (the decree objects in Kubernetes are only the host's word).
+func haDecrees(node *cdsha.Node) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(node.Decrees())
 	}
 }
 

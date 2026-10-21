@@ -491,3 +491,38 @@ func TestPeerImagesValidation(t *testing.T) {
 		t.Fatal("a missing image manifest accepted")
 	}
 }
+
+// add-cds-node/add-agent --pin-floor record the floor in the new node's
+// signed document; a cluster without HA CDS refuses one.
+func TestAddNodeWithAPinFloor(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "bundle")
+	if err := runBundleCmd(t, "new", "--out", dir, "--cluster-id", "demo", "--image-manifest", writeManifest(t, "tdx"),
+		"--server-address", "10.0.0.10", "--cds-node", "demo-cds-1", "--cds-node", "demo-cds-2"); err != nil {
+		t.Fatal(err)
+	}
+	for _, cmd := range []string{"add-cds-node", "add-agent"} {
+		name := cmd + "-x"
+		if err := runBundleCmd(t, cmd, "--bundle", dir, "--name", name, "--pin-floor", "7"); err != nil {
+			t.Fatal(err)
+		}
+		doc, _ := readBundleDocument(t, dir, name)
+		if doc.CDSHA == nil || doc.CDSHA.PinFloor != 7 {
+			t.Fatalf("%s: %+v", cmd, doc.CDSHA)
+		}
+		stageBundleNode(t, dir, name)
+	}
+	server, _ := readBundleDocument(t, dir, serverDir)
+	if server.CDSHA.PinFloor != 0 {
+		t.Fatal("the floor leaked into the server document")
+	}
+	plain := filepath.Join(t.TempDir(), "plain")
+	if err := runBundleCmd(t, "new", "--out", plain, "--cluster-id", "demo", "--image-manifest", writeManifest(t, "tdx"), "--server-address", "10.0.0.10"); err != nil {
+		t.Fatal(err)
+	}
+	if err := runBundleCmd(t, "add-agent", "--bundle", plain, "--name", "a", "--pin-floor", "3"); err == nil {
+		t.Fatal("a pin floor on a cluster without HA CDS accepted")
+	}
+	if err := AddNode(dir, Server, JoinOptions{Name: "s2"}); err == nil {
+		t.Fatal("added a server")
+	}
+}
