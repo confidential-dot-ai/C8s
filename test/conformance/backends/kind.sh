@@ -255,34 +255,15 @@ attest_direct() {
 }
 
 # The mock issues a version-2 SNP report over any report data, with an
-# all-zero launch measurement (the pin the CDS was installed with) and no
-# signature anyone checks. Evidence for another launch digest is the same
-# report with those bytes set; the mock's verifier reads the digest from the
-# report it is shown.
+# all-zero launch measurement (the pin the CDS was installed with), and
+# reports every signature valid; its verifier reads the launch digest from
+# the report it is shown. Its evidence verifies nowhere but at the mock, so no
+# verifier on this host can act as a relying party.
 evidence() {
-    python3 - "$(mock_attestation_url)" "$3" "${4:-}" <<'PYEOF'
-import base64, json, sys, urllib.request
-url, report_data, digest = sys.argv[1:4]
-if not digest:
-    body = json.dumps({"report_data": base64.b64encode(bytes.fromhex(report_data)).decode()}).encode()
-    req = urllib.request.Request(url + "/attest", body, {"Content-Type": "application/json"})
-    sys.stdout.write(urllib.request.urlopen(req, timeout=20).read().decode())
-    sys.exit()
-report = bytearray(1184)
-report[0] = 0x02    # report version 2
-report[0x0A] = 0x03 # SMT-allowed policy
-rd = bytes.fromhex(report_data)
-report[0x50:0x50 + len(rd)] = rd
-d = bytes.fromhex(digest)
-report[0x90:0x90 + len(d)] = d
-print(json.dumps({"platform": "snp", "evidence": {"attestation_report": base64.b64encode(bytes(report)).decode()}}))
-PYEOF
+    jq -n --arg rd "$3" '{report_data: $rd}' |
+        curl -sf --max-time 20 -H 'Content-Type: application/json' --data-binary @- "$(mock_attestation_url)/attest"
 }
-
-# The mock reports every signature valid, so nothing here is unsigned; and
-# its evidence verifies nowhere but at the mock, so no verifier on this host
-# can act as a relying party.
-evidence_unsigned() { return "$UNSUPPORTED"; }
+evidence_signed() { echo no; }
 relying_party() { return "$UNSUPPORTED"; }
 
 pod_uid() { kubectl -n "$1" get pod "$2" -o jsonpath='{.metadata.uid}'; }

@@ -116,15 +116,15 @@
 #   cds_pod_url                      the CDS address a pod's requester dials
 #   cds_arg <flag>                   the value of --<flag>= the CDS runs with,
 #                                    empty when it is not set
-#   evidence <ns> <pod> <report-data-hex> [launch-digest-hex]
+#   evidence <ns> <pod> <report-data-base64>
 #                                    evidence from the local attestation
 #                                    service of the pod's node over the report
 #                                    data, as the {platform, evidence} envelope
-#                                    the CDS takes; with a launch digest,
-#                                    evidence reporting that digest instead of
-#                                    the node's
-#   evidence_unsigned <ns> <pod> <report-data-hex>
-#                                    evidence whose signature does not verify
+#                                    the CDS takes
+#   evidence_signed                  yes/no: the CDS checks the evidence's
+#                                    signature, so editing it breaks the
+#                                    evidence (yes) or makes evidence for
+#                                    another launch digest (no)
 #   pod_exec                         how steps run a command in a pod: kubectl
 #                                    (exec), or agent (agent_run)
 #   agent_run <ns> <pod> <container> <script>
@@ -165,8 +165,9 @@
 #   mesh_cert_mode <node>            cds or self-signed: the certificate the
 #                                    node's mesh proxy presents (both roles
 #                                    switch together)
-#   mesh_chain_ready <node>          wait until the mesh proxy's verify set
-#                                    holds the mesh CA
+#   mesh_arg <flag>                  the mesh proxy's value for --<flag>,
+#                                    empty when unset
+#   mesh_proxy_log <node>            the mesh proxy's log, with timestamps
 #   mesh_pins_satisfied <node>       yes/no: the node's evidence satisfies
 #                                    the pins its mesh proxy verifies with
 #   mesh_platform                    the evidence family the mesh produces,
@@ -906,57 +907,7 @@ mesh_cert_mode() {
     if [ "$v" -ge 1 ]; then echo cds; else echo self-signed; fi
 }
 
-# The verify set fills on the first CA refresh after the proxy switched to
-# its CDS leaf, and a failed refresh keeps the set it had. Success is logged
-# at debug level only, so the observation is the latest refresh tick (one
-# poll interval apart from "CA bundle refresh enabled") with no failure
-# logged after it; when it failed, the next tick decides.
-mesh_chain_ready() {
-    local pod interval started verdict wait tries=0
-    pod="$(mesh_pod_on "$1")"
-    [ -n "$pod" ] || { echo "backend: no mesh pod on $1" >&2; return 1; }
-    [ "$(mesh_cert_mode "$1")" = cds ] || { echo "backend: the mesh proxy on $1 presents no CDS leaf" >&2; return 1; }
-    interval="$(mesh_arg ca-poll-interval)"
-    started="$(kubectl -n "$NS" get pod "$pod" -o jsonpath='{.status.containerStatuses[?(@.name=="armtls-mesh")].state.running.startedAt}')"
-    while :; do
-        read -r verdict wait < <(kubectl -n "$NS" logs "$pod" -c armtls-mesh --timestamps 2>/dev/null |
-            python3 -c "$MESH_REFRESH_PY" "${interval:-5m}" "$started")
-        case "$verdict" in
-            ok) return 0 ;;
-            failed) [ "$tries" -lt 1 ] || { echo "backend: the mesh proxy on $1 failed its last CA refresh" >&2; return 1; } ;;
-        esac
-        tries=$((tries + 1))
-        sleep "$wait"
-    done
-}
-
-# stdin: the proxy's log with timestamps; argv: the poll interval and the
-# container's start. Prints ok, failed or wait, then the seconds until the
-# next tick has had time to be logged.
-MESH_REFRESH_PY='
-import datetime, re, sys
-def ts(s):
-    s = re.sub(r"\.\d+", "", s.rstrip("Z"))
-    return datetime.datetime.strptime(s, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=datetime.timezone.utc).timestamp()
-units = {"h": 3600, "m": 60, "s": 1}
-interval = sum(int(n) * units[u] for n, u in re.findall(r"(\d+)([hms])", sys.argv[1]))
-anchor, failures = ts(sys.argv[2]), []
-for line in sys.stdin:
-    stamp, _, msg = line.partition(" ")
-    if "CA bundle refresh enabled" in msg:
-        anchor, failures = ts(stamp), []
-    elif "CA bundle refresh failed" in msg:
-        failures.append(ts(stamp))
-margin = 35  # a refresh is logged within --cds-op-timeout (30s) of its tick
-now = datetime.datetime.now(datetime.timezone.utc).timestamp()
-ticks = int((now - anchor - margin) // interval)
-nxt = anchor + (ticks + 1) * interval + margin
-if ticks < 1:
-    print("wait", max(1, int(nxt - now)))
-else:
-    last = anchor + ticks * interval
-    print("failed" if any(f >= last - 1 for f in failures) else "ok", max(1, int(nxt - now)))
-'
+mesh_proxy_log() { kubectl -n "$NS" logs "$(mesh_pod_on "$1")" -c armtls-mesh --timestamps; }
 
 mesh_platform() {
     local p

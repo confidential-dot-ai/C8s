@@ -704,8 +704,53 @@ func verifySetHoldsCA(ctx context.Context, node string) error {
 	if err != nil {
 		return err
 	}
-	_, err = w.be.call("mesh_chain_ready", k8sNode)
-	return err
+	mode, err := w.be.call("mesh_cert_mode", k8sNode)
+	if err != nil {
+		return err
+	}
+	if mode != "cds" {
+		return fmt.Errorf("the mesh proxy on %s presents no CDS leaf", k8sNode)
+	}
+	interval, err := w.meshDuration("ca-poll-interval", 5*time.Minute)
+	if err != nil {
+		return err
+	}
+	// A refresh is logged within --cds-op-timeout of its tick.
+	timeout, err := w.meshDuration("cds-op-timeout", 30*time.Second)
+	if err != nil {
+		return err
+	}
+	// A failure seen on the first look is waited out: the next tick decides.
+	for first := true; ; first = false {
+		log, err := w.be.call("mesh_proxy_log", k8sNode)
+		if err != nil {
+			return err
+		}
+		verdict, wait, err := caRefreshVerdict(log, interval, timeout+5*time.Second, time.Now())
+		switch {
+		case err != nil:
+			return err
+		case verdict == refreshOK:
+			return nil
+		case verdict == refreshFailed && !first:
+			return fmt.Errorf("the mesh proxy on %s failed its last CA refresh", k8sNode)
+		}
+		time.Sleep(wait)
+	}
+}
+
+// meshDuration is a duration flag of the mesh proxy, or its default when the
+// install leaves it unset.
+func (w *world) meshDuration(flag string, def time.Duration) (time.Duration, error) {
+	v, err := w.be.call("mesh_arg", flag)
+	if err != nil || v == "" {
+		return def, err
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return 0, fmt.Errorf("the mesh proxy's --%s %q: %w", flag, v, err)
+	}
+	return d, nil
 }
 
 // attestationUnreachable stops the node's local attestation service, as the
