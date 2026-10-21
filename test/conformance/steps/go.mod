@@ -1,6 +1,6 @@
 module github.com/confidential-dot-ai/c8s/test/conformance/steps
 
-go 1.27.0
+go 1.27.3
 
 require (
 	github.com/confidential-dot-ai/attestation-go v0.8.1
