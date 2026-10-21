@@ -24,6 +24,9 @@ import (
 type CDSDecreesInfo struct {
 	ClusterID string `json:"cluster_id"`
 	DecreeKey string `json:"decree_key"` // PEM public key
+	// PinFloor is the lowest decree base epoch the node accepts (from its
+	// launch document): an older decree the operator also signed is refused.
+	PinFloor uint64 `json:"pin_floor,omitempty"`
 }
 
 // LoadCDSDecreesInfo reads the node's decree info; ok is false when the
@@ -71,7 +74,7 @@ func CDSDecreeSource(info CDSDecreesInfo, bootstrap refvalues.ReferenceValues, c
 		return nil, err
 	}
 	return cdspins.New(cdspins.Config{ClusterID: info.ClusterID, DecreeKey: der, Bootstrap: bootstrap,
-		Fetch: cdspins.HTTPFetch(strings.TrimRight(cdsURL, "/")), StateFile: state})
+		Fetch: cdspins.HTTPFetch(strings.TrimRight(cdsURL, "/")), StateFile: state, MinEpoch: info.PinFloor})
 }
 
 // NodePins is a credential client's CDS pin set read from the policy the

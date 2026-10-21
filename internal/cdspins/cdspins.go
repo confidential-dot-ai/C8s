@@ -39,6 +39,9 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cdsha"
 )
 
+// ErrBelowFloor refuses a decree older than the node's launch-time floor.
+var ErrBelowFloor = errors.New("cdspins: pin decree older than this node's floor")
+
 // Fetcher returns the replicas' current pin decree, or nil when the pin set
 // still is the bootstrap one.
 type Fetcher func(ctx context.Context) (*cdsha.SignedDecree, error)
@@ -56,6 +59,10 @@ type Config struct {
 	PolicyFile string
 	// MinInterval spaces fetches; a burst of misses fetches once.
 	MinInterval time.Duration
+	// MinEpoch is the lowest decree base epoch taken (the launch document's
+	// pin floor): a node launched after a decree never takes an older one,
+	// though it holds no state yet that would refuse the replay.
+	MinEpoch uint64
 }
 
 // Source is a client's current CDS pin set.
@@ -89,7 +96,9 @@ func New(cfg Config) (*Source, error) {
 			if err := json.Unmarshal(data, &sd); err != nil {
 				return nil, fmt.Errorf("cdspins: state: %w", err)
 			}
-			if _, err := s.take(&sd); err != nil {
+			// A stored decree below a newer launch document's floor is
+			// simply outdated: start from the bootstrap set.
+			if _, err := s.take(&sd); err != nil && !errors.Is(err, ErrBelowFloor) {
 				return nil, fmt.Errorf("cdspins: state: %w", err)
 			}
 		}
@@ -144,6 +153,9 @@ func (s *Source) Refresh(ctx context.Context) (bool, error) {
 func (s *Source) take(sd *cdsha.SignedDecree) (bool, error) {
 	if err := cdsha.VerifyPinDecree(*sd, s.cfg.ClusterID, s.cfg.DecreeKey); err != nil {
 		return false, err
+	}
+	if sd.Decree.BaseEpoch < s.cfg.MinEpoch {
+		return false, fmt.Errorf("%w: base epoch %d, this node's floor is %d", ErrBelowFloor, sd.Decree.BaseEpoch, s.cfg.MinEpoch)
 	}
 	pol, err := Policy(s.cfg.Bootstrap, sd.Decree.Images)
 	if err != nil {

@@ -369,3 +369,36 @@ func TestPersistAndFetchFailures(t *testing.T) {
 		t.Fatal("a failed fetch changed the pins")
 	}
 }
+
+// A node launched after a decree carries its base epoch as a floor: an older
+// decree the operator also signed, replayed by the control plane, is refused
+// although the node has no state of its own yet.
+func TestPinFloorRefusesOlderDecrees(t *testing.T) {
+	k, pub := key(t)
+	srv := &served{sd: pinDecree(t, k, cluster, 3, img(1), img(5))}
+	src, err := New(Config{ClusterID: cluster, DecreeKey: pub, Bootstrap: bootstrap(), Fetch: srv.fetch, MinInterval: time.Nanosecond, MinEpoch: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := src.Refresh(t.Context()); changed || !errors.Is(err, ErrBelowFloor) {
+		t.Fatalf("replayed older decree: %v %v", changed, err)
+	}
+	srv.sd = pinDecree(t, k, cluster, 4, img(5))
+	if changed, err := src.Refresh(t.Context()); !changed || err != nil {
+		t.Fatalf("decree at the floor: %v %v", changed, err)
+	}
+	// A state file from before a relaunch with a higher floor is ignored,
+	// not fatal.
+	state := filepath.Join(t.TempDir(), "state.json")
+	old, _ := json.Marshal(pinDecree(t, k, cluster, 3, img(1)))
+	if err := os.WriteFile(state, old, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := New(Config{ClusterID: cluster, DecreeKey: pub, Bootstrap: bootstrap(), Fetch: srv.fetch, StateFile: state, MinEpoch: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := fresh.Epoch(); ok {
+		t.Fatal("a state decree below the floor was taken")
+	}
+}

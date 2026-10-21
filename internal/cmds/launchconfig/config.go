@@ -179,6 +179,10 @@ type CDSHA struct {
 	// offline: with it, the operator can restore a cluster that lost every
 	// replica, mesh CA and secrets included.
 	RecoveryKey string `yaml:"recoveryKey,omitempty" json:"recovery_key,omitempty"`
+	// PinFloor is the lowest CDS pin decree base epoch this node accepts. A
+	// node launched while a later decree is in force carries it, so the
+	// control plane cannot feed it an older decree the operator also signed.
+	PinFloor uint64 `yaml:"pinFloor,omitempty" json:"pin_floor,omitempty"`
 }
 
 // Router selects the router's public hostnames. All fields are optional;
