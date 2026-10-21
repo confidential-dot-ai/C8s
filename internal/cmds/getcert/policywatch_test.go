@@ -81,30 +81,69 @@ func stampedLeaf(t *testing.T, version, body string) *x509.Certificate {
 	return &x509.Certificate{NotAfter: time.Now().Add(time.Hour), Extensions: []pkix.Extension{ext}}
 }
 
-// stubIssueUnderCurrentPolicy makes every renewal return a leaf stamped with
-// the policy the fake CDS serves at that moment.
-func stubIssueUnderCurrentPolicy(t *testing.T, cds *fakeAllowlist) func() []time.Time {
+// issueStamped mints the generation CDS returns under one policy snapshot.
+func issueStamped(ca *testCA, creds *credentials, version, body string, ttl time.Duration) (*generation, error) {
+	digest := sha256.Sum256([]byte(body))
+	ext, err := armtls.MarshalMatchedWorkloadExtension(&armtls.MatchedWorkload{
+		Name:             "router",
+		AllowlistVersion: version,
+		AllowlistDigest:  digest[:],
+	})
+	if err != nil {
+		return nil, err
+	}
+	key, keyPEM, err := generateKey()
+	if err != nil {
+		return nil, err
+	}
+	chain, err := ca.issue(&key.PublicKey, creds.instanceID, ttl, ext)
+	if err != nil {
+		return nil, err
+	}
+	return issuedGeneration(chain, key, keyPEM)
+}
+
+// policyCredentials publishes a generation whose leaf carries the stamp CDS
+// issued under the given policy snapshot.
+func policyCredentials(t *testing.T, ca *testCA, version, body string) *credentials {
 	t.Helper()
-	return stubObtainCert(t, func(int) (*x509.Certificate, error) {
+	creds := &credentials{
+		volume:     testVolume(t),
+		instanceID: testInstanceID,
+	}
+	g, err := issueStamped(ca, creds, version, body, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := creds.publish(g, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	return creds
+}
+
+// stubIssueUnderCurrentPolicy makes every renewal publish a leaf stamped with
+// the policy the fake CDS serves at that moment.
+func stubIssueUnderCurrentPolicy(t *testing.T, ca *testCA, cds *fakeAllowlist) func() []time.Time {
+	t.Helper()
+	return stubObtainCertMinting(t, func(creds *credentials, _ int) (*generation, error) {
 		version, body := cds.snapshot()
-		return stampedLeaf(t, version, body), nil
+		return issueStamped(ca, creds, version, body, time.Hour)
 	})
 }
 
-func policyWatchConfig() config {
-	cfg := unreachableRenewalConfig()
-	cfg.WorkloadClaims = true
+func policyWatchConfig(t *testing.T) config {
+	cfg := unreachableRenewalConfig(t)
 	cfg.UnnamedRenewInterval = 0
 	cfg.CAWatchInterval = 10 * time.Millisecond
 	cfg.ReloadNginx = false
 	return cfg
 }
 
-func startRenewLoop(t *testing.T, cfg config, url string, leaf *x509.Certificate) {
+func startRenewLoop(t *testing.T, cfg config, url string, creds *credentials) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
-	go func() { done <- renewLoop(ctx, cfg, plaintextCDSClient(url), plaintextPolicyClient(url), leaf, true) }()
+	go func() { done <- renewLoop(ctx, cfg, plaintextCDSClient(url), plaintextPolicyClient(url), creds) }()
 	t.Cleanup(func() {
 		cancel()
 		select {
@@ -152,9 +191,10 @@ func TestRenewLoopRenewsWhenAllowlistPolicyChanges(t *testing.T) {
 	cds := &fakeAllowlist{}
 	cds.set(4, policyTwoWorkloads)
 	url := cds.serve(t)
-	attempts := stubIssueUnderCurrentPolicy(t, cds)
+	ca := newTestCA(t)
+	attempts := stubIssueUnderCurrentPolicy(t, ca, cds)
 
-	startRenewLoop(t, policyWatchConfig(), url, stampedLeaf(t, "4", policyTwoWorkloads))
+	startRenewLoop(t, policyWatchConfig(t), url, policyCredentials(t, ca, "4", policyTwoWorkloads))
 
 	cds.waitForRequests(t, 3)
 	if got := len(attempts()); got != 0 {
@@ -195,11 +235,12 @@ func TestRenewLoopWatchesCAAndPolicyOnOneTick(t *testing.T) {
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	attempts := stubIssueUnderCurrentPolicy(t, cds)
+	signer := newTestCA(t)
+	attempts := stubIssueUnderCurrentPolicy(t, signer, cds)
 
-	cfg := policyWatchConfig()
-	cfg.CAOutPath = caPath
-	startRenewLoop(t, cfg, srv.URL, stampedLeaf(t, "4", policyTwoWorkloads))
+	cfg := policyWatchConfig(t)
+	cfg.CAPath = caPath
+	startRenewLoop(t, cfg, srv.URL, policyCredentials(t, signer, "4", policyTwoWorkloads))
 
 	cds.waitForRequests(t, 3)
 	if got := len(attempts()); got != 0 {
@@ -219,9 +260,10 @@ func TestRenewLoopFollowsServedVersionWithStampedBytes(t *testing.T) {
 	cds := &fakeAllowlist{}
 	cds.set(4, policyTwoWorkloads)
 	url := cds.serve(t)
-	attempts := stubIssueUnderCurrentPolicy(t, cds)
+	ca := newTestCA(t)
+	attempts := stubIssueUnderCurrentPolicy(t, ca, cds)
 
-	startRenewLoop(t, policyWatchConfig(), url, stampedLeaf(t, "4", policyTwoWorkloads))
+	startRenewLoop(t, policyWatchConfig(t), url, policyCredentials(t, ca, "4", policyTwoWorkloads))
 	cds.waitForRequests(t, 1)
 
 	cds.set(5, policyTwoWorkloads)
@@ -239,11 +281,11 @@ func TestRenewLoopFollowsServedVersionWithStampedBytes(t *testing.T) {
 // stubIssueCountingPolls is stubIssueUnderCurrentPolicy that also records how
 // many /allowlist requests the fake had served when each renewal started.
 // fail reports whether renewal n fails.
-func stubIssueCountingPolls(t *testing.T, cds *fakeAllowlist, fail func(n int) bool) (func() []time.Time, func() []int64) {
+func stubIssueCountingPolls(t *testing.T, ca *testCA, cds *fakeAllowlist, fail func(n int) bool) (func() []time.Time, func() []int64) {
 	t.Helper()
 	var mu sync.Mutex
 	var polls []int64
-	attempts := stubObtainCert(t, func(n int) (*x509.Certificate, error) {
+	attempts := stubObtainCertMinting(t, func(creds *credentials, n int) (*generation, error) {
 		mu.Lock()
 		polls = append(polls, cds.requests.Load())
 		mu.Unlock()
@@ -251,7 +293,7 @@ func stubIssueCountingPolls(t *testing.T, cds *fakeAllowlist, fail func(n int) b
 			return nil, errors.New("stubbed renewal failure")
 		}
 		version, body := cds.snapshot()
-		return stampedLeaf(t, version, body), nil
+		return issueStamped(ca, creds, version, body, time.Hour)
 	})
 	return attempts, func() []int64 {
 		mu.Lock()
@@ -271,10 +313,11 @@ func TestRenewLoopDebouncesPolicyRenewal(t *testing.T) {
 	cds := &fakeAllowlist{}
 	cds.set(5, policyRouterOnly)
 	url := cds.serve(t)
-	attempts, polls := stubIssueCountingPolls(t, cds, func(int) bool { return false })
+	ca := newTestCA(t)
+	attempts, polls := stubIssueCountingPolls(t, ca, cds, func(int) bool { return false })
 
 	start := time.Now()
-	startRenewLoop(t, policyWatchConfig(), url, stampedLeaf(t, "4", policyTwoWorkloads))
+	startRenewLoop(t, policyWatchConfig(t), url, policyCredentials(t, ca, "4", policyTwoWorkloads))
 
 	at := waitForAttempts(t, attempts, 1)
 	if gap := at[0].Sub(start); gap < pending || gap > pending+time.Second {
@@ -299,9 +342,10 @@ func TestRenewLoopPolicyWatchHoldsOffDuringRetry(t *testing.T) {
 	cds := &fakeAllowlist{}
 	cds.set(5, policyRouterOnly)
 	url := cds.serve(t)
-	attempts, polls := stubIssueCountingPolls(t, cds, func(n int) bool { return n == 1 })
+	ca := newTestCA(t)
+	attempts, polls := stubIssueCountingPolls(t, ca, cds, func(n int) bool { return n == 1 })
 
-	startRenewLoop(t, policyWatchConfig(), url, stampedLeaf(t, "4", policyTwoWorkloads))
+	startRenewLoop(t, policyWatchConfig(t), url, policyCredentials(t, ca, "4", policyTwoWorkloads))
 
 	at := waitForAttempts(t, attempts, 2)
 	if gap := at[1].Sub(at[0]); gap < renewalRetryBase || gap > renewalRetryBase+time.Second {
@@ -321,12 +365,12 @@ func TestRenewLoopPolicyWatchIgnoresUnnamedLeaf(t *testing.T) {
 	cds := &fakeAllowlist{}
 	cds.set(5, policyRouterOnly)
 	url := cds.serve(t)
-	unnamed := func() *x509.Certificate { return &x509.Certificate{NotAfter: time.Now().Add(time.Hour)} }
-	attempts := stubObtainCert(t, func(int) (*x509.Certificate, error) { return unnamed(), nil })
+	ca := newTestCA(t)
+	attempts := stubObtainCert(t, ca, func(int) (time.Duration, error) { return time.Hour, nil })
 
-	cfg := policyWatchConfig()
+	cfg := policyWatchConfig(t)
 	cfg.RenewInterval = 100 * time.Millisecond
-	startRenewLoop(t, cfg, url, unnamed())
+	startRenewLoop(t, cfg, url, publishedCredentials(t, ca, time.Hour))
 
 	waitForAttempts(t, attempts, 1)
 	if got := cds.requests.Load(); got != 0 {
@@ -341,11 +385,12 @@ func TestRenewLoopPolicyWatchRenewsUnexpectedWorkload(t *testing.T) {
 	cds := &fakeAllowlist{}
 	cds.set(4, policyTwoWorkloads)
 	url := cds.serve(t)
-	attempts := stubIssueUnderCurrentPolicy(t, cds)
+	ca := newTestCA(t)
+	attempts := stubIssueUnderCurrentPolicy(t, ca, cds)
 
-	cfg := policyWatchConfig()
+	cfg := policyWatchConfig(t)
 	cfg.ExpectedWorkload = "worker"
-	startRenewLoop(t, cfg, url, stampedLeaf(t, "4", policyTwoWorkloads))
+	startRenewLoop(t, cfg, url, policyCredentials(t, ca, "4", policyTwoWorkloads))
 
 	cds.waitForTicks(t, 2)
 	if got := len(attempts()); got != 0 {
@@ -489,7 +534,6 @@ func TestCDSWatchInterval(t *testing.T) {
 		AttestationApiURL: "http://localhost:8400",
 		SAN:               "router.example.com",
 		RenewInterval:     time.Hour,
-		WorkloadClaims:    true,
 	}
 	tests := []struct {
 		name    string
@@ -498,12 +542,9 @@ func TestCDSWatchInterval(t *testing.T) {
 		want    time.Duration
 		wantErr error
 	}{
-		{name: "default with claims", mutate: func(*config) {}, want: time.Minute},
-		{name: "default with ca-out", mutate: func(c *config) { c.WorkloadClaims, c.CAOutPath = false, "/tls/ca.pem" }, want: time.Minute},
-		{name: "default with nothing to watch", mutate: func(c *config) { c.WorkloadClaims = false }, want: 0},
+		{name: "default with a renewal loop", mutate: func(*config) {}, want: time.Minute},
 		{name: "default without renew interval", mutate: func(c *config) { c.RenewInterval = 0 }, want: 0},
 		{name: "explicitly disabled", args: []string{"--ca-watch-interval=0"}, mutate: func(*config) {}, want: 0},
-		{name: "explicit with nothing to watch", args: []string{"--ca-watch-interval=30s"}, mutate: func(c *config) { c.WorkloadClaims = false }, want: 30 * time.Second, wantErr: errInvalidCAWatchInterval},
 		{name: "explicit without renew interval", args: []string{"--ca-watch-interval=30s"}, mutate: func(c *config) { c.RenewInterval = 0 }, want: 30 * time.Second, wantErr: errInvalidCAWatchInterval},
 		{name: "one second", args: []string{"--ca-watch-interval=1s"}, mutate: func(*config) {}, want: time.Second},
 		{name: "negative", args: []string{"--ca-watch-interval=-1m"}, mutate: func(*config) {}, want: -time.Minute, wantErr: errInvalidCAWatchInterval},
