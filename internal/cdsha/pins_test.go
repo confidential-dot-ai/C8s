@@ -62,7 +62,7 @@ func TestDecreeImagePinIsTheReplicaMeasurement(t *testing.T) {
 		t.Fatalf("pin %q, replica reports %q", pin, want)
 	}
 	bad := img
-	bad.RTMR1 = strings.ToUpper(bad.RTMR1)
+	bad.RTMR1 = strings.Repeat("AB", 48)
 	if _, err := bad.Pin(); err == nil {
 		t.Fatal("uppercase register accepted")
 	}
