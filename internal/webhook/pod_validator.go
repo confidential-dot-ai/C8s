@@ -114,7 +114,33 @@ func validateFinalSpec(pod *corev1.Pod, namespace string, cfg Config) error {
 	if err := matchesInjectedContainers(injected.Spec.InitContainers, pod.Spec.InitContainers); err != nil {
 		return err
 	}
+	if err := matchesWorkloadProbes(injected, pod); err != nil {
+		return err
+	}
 	return matchesWorkloadMounts(injected.Spec.Containers, pod.Spec.Containers)
+}
+
+// matchesWorkloadProbes requires each workload probe to be the one the injector
+// rendered: a probe moved back onto an application port is a plaintext request
+// into the port the mesh listener answers.
+func matchesWorkloadProbes(want, got *corev1.Pod) error {
+	wantContainers, gotContainers := workloadProbeContainers(want), workloadProbeContainers(got)
+	if len(wantContainers) != len(gotContainers) {
+		return fmt.Errorf("%w: workload containers changed", errUninjectedPod)
+	}
+	for i, w := range wantContainers {
+		g := gotContainers[i]
+		for _, check := range []func() error{
+			func() error { return matchesField(w.Name, "startupProbe", w.StartupProbe, g.StartupProbe) },
+			func() error { return matchesField(w.Name, "readinessProbe", w.ReadinessProbe, g.ReadinessProbe) },
+			func() error { return matchesField(w.Name, "livenessProbe", w.LivenessProbe, g.LivenessProbe) },
+		} {
+			if err := check(); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // matchesInjectedContainers requires the pod's init containers to be the
