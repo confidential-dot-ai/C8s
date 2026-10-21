@@ -18,9 +18,9 @@ import (
 // requireNetNS fails rather than skips when C8S_REQUIRE_NFT is set, which is
 // how CI runs these tests: a namespace it cannot create must not leave the
 // enforcer's install and verify paths silently untested. Verification walks
-// BPF link ids, which needs CAP_BPF in the initial user namespace, so uid 0 in
-// a user namespace of its own is not enough — the enforcer runs as the node's
-// own root.
+// BPF link ids and queries interface hooks, which need CAP_BPF and
+// CAP_NET_ADMIN in the initial user namespace, so uid 0 in a user namespace
+// of its own is not enough — the enforcer runs as the node's own root.
 func requireNetNS(t *testing.T) {
 	t.Helper()
 	if os.Geteuid() == 0 && inInitialUserNamespace() {

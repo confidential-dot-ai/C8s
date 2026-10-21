@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"strings"
 	"testing"
+	"unsafe"
 
 	"github.com/google/nftables"
 	"github.com/google/nftables/expr"
@@ -16,9 +17,14 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// bpfLinkTypeCgroup is a link type that carries no pod packets, from
-// include/uapi/linux/bpf.h.
-const bpfLinkTypeCgroup = 3
+// The link types the tests describe, from include/uapi/linux/bpf.h: a tcx or
+// netkit description carries an interface index of its own namespace, and a
+// cgroup link carries no pod packets.
+const (
+	bpfLinkTypeCgroup = 3
+	bpfLinkTypeTCX    = 11
+	bpfLinkTypeNetkit = 13
+)
 
 // noBPFLinks replaces the enumeration for every namespace test: listing link
 // IDs needs CAP_BPF in the initial user namespace, and what the host happens
@@ -30,11 +36,35 @@ func noBPFLinks(t *testing.T) {
 	t.Cleanup(func() { enumerateBPFLinks = previous })
 }
 
+// noHookPrograms replaces the hook query for the same reason: BPF_PROG_QUERY
+// needs CAP_NET_ADMIN in the initial user namespace.
+func noHookPrograms(t *testing.T) {
+	t.Helper()
+	previous := queryHookPrograms
+	queryHookPrograms = noPrograms
+	t.Cleanup(func() { queryHookPrograms = previous })
+}
+
+// requireBPFQuery skips when the kernel refuses a hook query, for the shells
+// that hold no CAP_NET_ADMIN in the initial user namespace (an unshare-only
+// one does not; sudo does).
+func requireBPFQuery(t *testing.T) {
+	t.Helper()
+	lo, err := netlink.LinkByName("lo")
+	if err != nil {
+		t.Skipf("no loopback to probe with: %v", err)
+	}
+	if _, err := liveHookPrograms(uint32(lo.Attrs().Index), bpfTcxIngress); errors.Is(err, unix.EPERM) {
+		t.Skip("needs CAP_NET_ADMIN in the initial user namespace: run under sudo")
+	}
+}
+
 // The enforcer installs the ruleset into a pod's namespace and then verifies
 // the live one against the same policy; the kernel must echo back exactly what
 // was built, or every pod would be refused.
 func TestVerifyAcceptsAFreshlyInstalledRulesetInTheNamespace(t *testing.T) {
 	noBPFLinks(t)
+	noHookPrograms(t)
 	podNetNS(t, func(netnsPath string) error {
 		if err := Install(netnsPath, testPolicy()); err != nil {
 			return err
@@ -127,6 +157,7 @@ func TestVerifyRejectsTamperingInTheNamespace(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			noBPFLinks(t)
+			noHookPrograms(t)
 			podNetNS(t, func(netnsPath string) error {
 				if err := Install(netnsPath, testPolicy()); err != nil {
 					return err
@@ -170,6 +201,7 @@ func TestVerifyRejectsAnotherPolicysRulesetInTheNamespace(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			noBPFLinks(t)
+			noHookPrograms(t)
 			installed := testPolicy()
 			test.installed(&installed)
 			podNetNS(t, func(netnsPath string) error {
@@ -185,46 +217,36 @@ func TestVerifyRejectsAnotherPolicysRulesetInTheNamespace(t *testing.T) {
 	}
 }
 
-// A BPF link attached where it sees the pod's packets is a refusal.
+// A BPF attachment that reaches the pod's packets is a refusal, and one
+// another namespace holds is none: a host-side link's description can match a
+// pod interface's index only by accident, and the hook query, resolved in the
+// pod's namespace, is what decides the pod's interfaces.
 func TestVerifyRejectsPacketBPFLinksInTheNamespace(t *testing.T) {
 	tests := []struct {
 		name     string
-		link     func(*testing.T, podNetwork) bpfLink
-		mismatch bool
+		links    func(*testing.T, podNetwork) []bpfLink
+		programs func(uint32, uint32) (int, error)
+		refusal  string
 	}{
-		{"tcx on a pod interface", func(t *testing.T, pod podNetwork) bpfLink {
-			return bpfLink{
-				linkType: bpfLinkTypeTCX,
-				target:   anInterface(t, pod),
-			}
-		}, true},
-		{"netkit on a pod interface", func(t *testing.T, pod podNetwork) bpfLink {
-			return bpfLink{
-				linkType: bpfLinkTypeNetkit,
-				target:   anInterface(t, pod),
-			}
-		}, true},
-		{"netns on the pod namespace", func(_ *testing.T, pod podNetwork) bpfLink {
-			return bpfLink{
-				linkType: bpfLinkTypeNetNS,
-				target:   uint32(pod.inode),
-			}
-		}, true},
-		{"netfilter anywhere", func(*testing.T, podNetwork) bpfLink {
-			return bpfLink{linkType: bpfLinkTypeNetfilter}
-		}, true},
-		{"tcx on another namespace's interface", func(t *testing.T, pod podNetwork) bpfLink {
-			return bpfLink{
-				linkType: bpfLinkTypeTCX,
-				target:   noInterface(pod),
-			}
-		}, false},
-		{"a link type that carries no packets", func(t *testing.T, pod podNetwork) bpfLink {
-			return bpfLink{
-				linkType: bpfLinkTypeCgroup,
-				target:   anInterface(t, pod),
-			}
-		}, false},
+		{"a tcx program on a pod interface", noLinksFor, programsOnHook(bpfTcxIngress), "tcx ingress BPF program on link"},
+		{"a netkit program on a pod interface", noLinksFor, programsOnHook(bpfNetkitPrimary), "netkit primary BPF program on link"},
+		{"a netns link on the pod namespace", func(_ *testing.T, pod podNetwork) []bpfLink {
+			return []bpfLink{{linkType: bpfLinkTypeNetNS, target: uint32(pod.inode)}}
+		}, noPrograms, "netns BPF link on this namespace"},
+		{"a netfilter link anywhere", func(*testing.T, podNetwork) []bpfLink {
+			return []bpfLink{{linkType: bpfLinkTypeNetfilter}}
+		}, noPrograms, "netfilter BPF link on this node"},
+		{"a host-side tcx link whose index matches a pod interface", func(t *testing.T, pod podNetwork) []bpfLink {
+			return []bpfLink{{linkType: bpfLinkTypeTCX, target: anInterface(t, pod)}}
+		}, noPrograms, ""},
+		{"a host-side netkit link whose index matches a pod interface", func(t *testing.T, pod podNetwork) []bpfLink {
+			return []bpfLink{{linkType: bpfLinkTypeNetkit, target: anInterface(t, pod)}}
+		}, noPrograms, ""},
+		{"a link type that carries no packets", func(t *testing.T, pod podNetwork) []bpfLink {
+			return []bpfLink{{linkType: bpfLinkTypeCgroup, target: anInterface(t, pod)}}
+		}, noPrograms, ""},
+		{"a netkit hook of another device type", noLinksFor, hookError(bpfNetkitPrimary, unix.ENXIO), ""},
+		{"a netkit hook on a kernel without netkit", noLinksFor, hookError(bpfNetkitPeer, unix.EINVAL), ""},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -240,22 +262,30 @@ func TestVerifyRejectsPacketBPFLinksInTheNamespace(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				links := []bpfLink{test.link(t, pod)}
-				previous := enumerateBPFLinks
-				enumerateBPFLinks = func() ([]bpfLink, error) { return links, nil }
-				defer func() { enumerateBPFLinks = previous }()
-				err = Verify(netnsPath, testPolicy())
-				if !test.mismatch {
-					if err != nil {
-						t.Errorf("verify = %v, want no error", err)
-					}
-					return nil
-				}
-				requireMismatch(t, err, "BPF link")
+				bpfLinks(t, func() ([]bpfLink, error) { return test.links(t, pod), nil })
+				hookPrograms(t, test.programs)
+				requireRefusal(t, Verify(netnsPath, testPolicy()), test.refusal)
 				return nil
 			})
 		})
 	}
+}
+
+// A hook query the kernel refuses leaves the pod unverified, which is a
+// failure, not a mismatch.
+func TestVerifyFailsWhenHookQueryIsRefusedInTheNamespace(t *testing.T) {
+	podNetNS(t, func(netnsPath string) error {
+		if err := Install(netnsPath, testPolicy()); err != nil {
+			return err
+		}
+		noBPFLinks(t)
+		hookPrograms(t, hookError(bpfTcxIngress, unix.EPERM))
+		err := Verify(netnsPath, testPolicy())
+		if err == nil || errors.Is(err, ErrMismatch) {
+			t.Errorf("verify = %v, want a failure that is no mismatch", err)
+		}
+		return nil
+	})
 }
 
 // An enumeration the kernel refuses leaves the pod unverified, which is a
@@ -276,6 +306,178 @@ func TestVerifyFailsWhenBPFLinksCannotBeReadInTheNamespace(t *testing.T) {
 	})
 }
 
+// The live hook query answers in the attached namespace: a fresh namespace
+// has no programs on its loopback's tcx hooks, and the loopback's netkit
+// hooks report only that they do not exist.
+func TestHookQueryReportsNoProgramsInTheNamespace(t *testing.T) {
+	requireBPFQuery(t)
+	podNetNS(t, func(string) error {
+		lo, err := netlink.LinkByName("lo")
+		if err != nil {
+			return err
+		}
+		index := uint32(lo.Attrs().Index)
+		for _, hook := range []uint32{bpfTcxIngress, bpfTcxEgress} {
+			programs, err := liveHookPrograms(index, hook)
+			if err != nil {
+				return fmt.Errorf("query a tcx hook of loopback: %w", err)
+			}
+			if programs != 0 {
+				return fmt.Errorf("a fresh namespace holds %d tcx programs on loopback", programs)
+			}
+		}
+		for _, hook := range []uint32{bpfNetkitPrimary, bpfNetkitPeer} {
+			if _, err := liveHookPrograms(index, hook); !errors.Is(err, unix.ENXIO) && !errors.Is(err, unix.EINVAL) {
+				return fmt.Errorf("query a netkit hook of loopback = %v, want ENXIO or EINVAL", err)
+			}
+		}
+		return nil
+	})
+}
+
+// An attached program is counted: the query reads the count the kernel writes
+// back, so a refusal cannot rest on a zero every attr buffer happens to hold.
+func TestHookQueryCountsAnAttachedProgramInTheNamespace(t *testing.T) {
+	probe, err := loadPassProgram()
+	if errors.Is(err, unix.EPERM) {
+		t.Skip("loading a BPF program needs CAP_BPF in the initial user namespace")
+	}
+	if err != nil {
+		t.Fatalf("load a pass program: %v", err)
+	}
+	unix.Close(probe)
+	podNetNS(t, func(netnsPath string) error {
+		if err := Install(netnsPath, testPolicy()); err != nil {
+			return err
+		}
+		noBPFLinks(t)
+		iface, err := addDummy("hook0")
+		if err != nil {
+			return err
+		}
+		index := uint32(iface.Attrs().Index)
+		program, err := loadPassProgram()
+		if err != nil {
+			return err
+		}
+		defer unix.Close(program)
+		link, err := attachTCX(uint32(program), index, bpfTcxIngress)
+		if err != nil {
+			return fmt.Errorf("attach a tcx program: %w", err)
+		}
+		defer unix.Close(link)
+		programs, err := liveHookPrograms(index, bpfTcxIngress)
+		if err != nil {
+			return err
+		}
+		if programs != 1 {
+			return fmt.Errorf("query = %d programs, want the one attached", programs)
+		}
+		requireMismatch(t, Verify(netnsPath, testPolicy()), "tcx ingress BPF program on link hook0")
+		return nil
+	})
+}
+
+// An interface the query names can be gone: the kernel's ENODEV leaves the
+// pod unverified rather than read as no programs.
+func TestHookQueryFailsOnAVanishedInterfaceInTheNamespace(t *testing.T) {
+	requireBPFQuery(t)
+	podNetNS(t, func(string) error {
+		iface, err := addDummy("gone0")
+		if err != nil {
+			return err
+		}
+		index := uint32(iface.Attrs().Index)
+		if err := netlink.LinkDel(iface); err != nil {
+			return fmt.Errorf("delete dummy: %w", err)
+		}
+		if _, err := liveHookPrograms(index, bpfTcxIngress); !errors.Is(err, unix.ENODEV) {
+			return fmt.Errorf("query a deleted interface = %v, want ENODEV", err)
+		}
+		return nil
+	})
+}
+
+// The bpf commands, program type, opcodes and tcx verdict the attach test
+// needs, from bpf.h and bpf_common.h.
+const (
+	bpfProgLoad   = 5
+	bpfLinkCreate = 28
+
+	bpfProgTypeSchedCLS = 3
+	tcxPass             = 0
+
+	bpfMov64Imm = 0xb7
+	bpfExit     = 0x95
+)
+
+// bpfInsn is one eBPF instruction as the verifier reads it.
+type bpfInsn struct {
+	code uint8
+	regs uint8
+	off  int16
+	imm  int32
+}
+
+// bpfProgLoadAttr is the head of BPF_PROG_LOAD's attribute: the program type,
+// and the instructions and license the verifier reads.
+type bpfProgLoadAttr struct {
+	progType uint32
+	insnCnt  uint32
+	insns    unsafe.Pointer
+	license  unsafe.Pointer
+}
+
+// bpfLinkCreateAttr is the head of BPF_LINK_CREATE's attribute: the program,
+// the interface and the hook it is linked to.
+type bpfLinkCreateAttr struct {
+	program    uint32
+	ifindex    uint32
+	attachType uint32
+	flags      uint32
+}
+
+// loadPassProgram loads a two-instruction SCHED_CLS program that passes every
+// packet: r0 is the return the kernel reads.
+func loadPassProgram() (int, error) {
+	program := []bpfInsn{
+		{code: bpfMov64Imm, imm: tcxPass},
+		{code: bpfExit},
+	}
+	license := []byte("GPL\x00")
+	load := bpfProgLoadAttr{
+		progType: bpfProgTypeSchedCLS,
+		insnCnt:  uint32(len(program)),
+		insns:    unsafe.Pointer(&program[0]),
+		license:  unsafe.Pointer(&license[0]),
+	}
+	return bpfCall(bpfProgLoad, unsafe.Pointer(&load), unsafe.Sizeof(load))
+}
+
+// attachTCX links a loaded program to one tcx hook of the interface.
+func attachTCX(program, ifindex, attachType uint32) (int, error) {
+	link := bpfLinkCreateAttr{
+		program:    program,
+		ifindex:    ifindex,
+		attachType: attachType,
+	}
+	return bpfCall(bpfLinkCreate, unsafe.Pointer(&link), unsafe.Sizeof(link))
+}
+
+// addDummy adds a dummy interface to the attached namespace.
+func addDummy(name string) (*netlink.Dummy, error) {
+	attrs := netlink.NewLinkAttrs()
+	attrs.Name = name
+	dummy := &netlink.Dummy{LinkAttrs: attrs}
+	if err := netlink.LinkAdd(dummy); err != nil {
+		return nil, fmt.Errorf("add dummy %s: %w", name, err)
+	}
+	return dummy, nil
+}
+
+// noLinksFor describes no links, whatever the pod holds.
+func noLinksFor(*testing.T, podNetwork) []bpfLink { return nil }
+
 func anInterface(t *testing.T, pod podNetwork) uint32 {
 	t.Helper()
 	for index := range pod.interfaces {
@@ -283,16 +485,6 @@ func anInterface(t *testing.T, pod podNetwork) uint32 {
 	}
 	t.Fatal("the pod namespace has no interface to attach to")
 	return 0
-}
-
-func noInterface(pod podNetwork) uint32 {
-	index := uint32(1)
-	for {
-		if _, used := pod.interfaces[index]; !used {
-			return index
-		}
-		index++
-	}
 }
 
 // requireMismatch requires a mismatch whose detail contains want.
