@@ -12,6 +12,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
@@ -416,6 +417,27 @@ func TestPrepareHACluster(t *testing.T) {
 		}
 		if _, err := os.Stat(filepath.Join(manifests, "c8s-cds-ha.yaml.skip")); err == nil {
 			t.Fatal("HA server skips the HA CDS")
+		}
+		// CDS clients learn how to follow the operator's pin decrees.
+		var info cmdsutil.CDSPinsInfo
+		raw, err := os.ReadFile(filepath.Join(root, PublicDir, CDSPinsFile))
+		if err != nil || json.Unmarshal(raw, &info) != nil || info.ClusterID != "cdsha" || info.DecreeKey != string(pins.Images[1].Anchor) {
+			t.Fatalf("cds-pins.json: %s %v", raw, err)
+		}
+		policy, err := os.ReadFile(filepath.Join(root, "/etc/nri/conf.d/image-policy.yaml"))
+		if err != nil || !bytes.Contains(policy, []byte("cds_pins_file: "+PublicDir+"/"+CDSPinsFile)) {
+			t.Fatalf("NRI pull does not follow pin decrees:\n%s", policy)
+		}
+		// Without HA the file goes.
+		noHA := haDoc(launchconfig.Server)
+		noHA.CDSHA, noHA.CDSOperatorPublicKeys = nil, nil
+		root1 := haRoot(t, 1)
+		writeInput(t, root1, PublicDir+"/"+CDSPinsFile, raw)
+		if err := Prepare(root1, noHA); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(filepath.Join(root1, PublicDir, CDSPinsFile)); !os.IsNotExist(err) {
+			t.Fatal("a cluster without HA CDS kept cds-pins.json")
 		}
 	})
 	t.Run("cds", func(t *testing.T) {

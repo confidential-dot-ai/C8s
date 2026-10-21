@@ -2,9 +2,11 @@ package armtls
 
 import (
 	"context"
+	"crypto/x509"
 	"fmt"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 )
@@ -29,19 +31,31 @@ func NewRefreshingHTTPClient(src PinSource, attestationApiURL string) (*http.Cli
 	if attestationApiURL == "" {
 		return nil, fmt.Errorf("armtls client config: attestation-api URL is required")
 	}
-	t := &refreshingTransport{src: src, build: func(rv refvalues.ReferenceValues) (*http.Transport, error) {
-		tlsCfg, _, err := NewClientTLSConfig(&ClientConfig{Policy: Pins(rv.Policy()).VerifyPolicy(attestationApiURL)})
+	t, err := NewRefreshingTransport(src, func(p Pins) (*http.Transport, error) {
+		tlsCfg, _, err := NewClientTLSConfig(&ClientConfig{Policy: p.VerifyPolicy(attestationApiURL)})
 		if err != nil {
 			return nil, fmt.Errorf("armtls client config: %w", err)
 		}
 		return HTTPClient(tlsCfg).Transport.(*http.Transport), nil
-	}}
-	if _, err := t.transport(); err != nil {
+	})
+	if err != nil {
 		return nil, err
 	}
 	hc := HTTPClient(nil)
 	hc.Transport = t
 	return hc, nil
+}
+
+// NewRefreshingTransport rebuilds the transport with build whenever src's
+// pins change, and retries a failed request once when a refresh changed
+// them. build makes the TLS client for one pin set (a client certificate,
+// timeouts).
+func NewRefreshingTransport(src PinSource, build func(Pins) (*http.Transport, error)) (http.RoundTripper, error) {
+	t := &refreshingTransport{src: src, build: func(rv refvalues.ReferenceValues) (*http.Transport, error) { return build(Pins(rv.Policy())) }}
+	if _, err := t.transport(); err != nil {
+		return nil, err
+	}
+	return t, nil
 }
 
 type refreshingTransport struct {
@@ -95,4 +109,37 @@ func (t *refreshingTransport) RoundTrip(req *http.Request) (*http.Response, erro
 		return nil, err
 	}
 	return tr.RoundTrip(retry)
+}
+
+// RefreshingPeerVerifier is a VerifyPeerCertificate for a server that pins
+// its clients (verifyPeerCallback over src): a client that fails the pins
+// makes it look for newer ones, and the same handshake is checked again
+// against them. Install it on a config from NewServerTLSConfig with a
+// ClientPolicy and no CA.
+func RefreshingPeerVerifier(src PinSource, attestationApiURL string) func([][]byte, [][]*x509.Certificate) error {
+	var (
+		mu     sync.Mutex
+		gen    uint64
+		verify func([][]byte, [][]*x509.Certificate) error
+	)
+	current := func() func([][]byte, [][]*x509.Certificate) error {
+		mu.Lock()
+		defer mu.Unlock()
+		if g := src.Generation(); verify == nil || g != gen {
+			verify, gen = verifyPeerCallback(Pins(src.Current().Policy()).VerifyPolicy(attestationApiURL)), g
+		}
+		return verify
+	}
+	return func(raw [][]byte, chains [][]*x509.Certificate) error {
+		err := current()(raw, chains)
+		if err == nil {
+			return nil
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if changed, _ := src.Refresh(ctx); !changed {
+			return err
+		}
+		return current()(raw, chains)
+	}
 }

@@ -202,6 +202,10 @@ type Config struct {
 
 	// CDSMeasurementsConfigJSON retains the complete identity policy for injected clients.
 	CDSMeasurementsConfigJSON string
+	// CDSPinsArgs, with CDSMeasurementsConfigJSON, make injected clients
+	// follow the operator's signed CDS pin decrees (--cds-cluster-id,
+	// --cds-decree-key), so pods keep reaching CDS across an image rollout.
+	CDSPinsArgs []string
 
 	// CertFSGroup is applied to the pod when it does not already specify
 	// fsGroup. A negative value disables fsGroup mutation.
@@ -1613,7 +1617,7 @@ func containerMount(c *corev1.Container, name string) *corev1.VolumeMount {
 // their corresponding flags.
 func cdsPinArgs(cfg Config, certificate bool) []string {
 	if cfg.CDSMeasurementsConfigJSON != "" {
-		return []string{"--image-policy-json=" + cfg.CDSMeasurementsConfigJSON}
+		return append([]string{"--image-policy-json=" + cfg.CDSMeasurementsConfigJSON}, cfg.CDSPinsArgs...)
 	}
 	var args []string
 	if certificate {

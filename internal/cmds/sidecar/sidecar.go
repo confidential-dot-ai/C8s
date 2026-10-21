@@ -32,6 +32,8 @@ type Config struct {
 	RTMRs                  []string
 	MeasurementsConfig     string
 	MeasurementsConfigJSON string
+	// CDSPins follows the operator's signed CDS pin decrees.
+	CDSPins cmdsutil.CDSPinsFlags
 
 	CertPath string
 	KeyPath  string
@@ -57,6 +59,7 @@ func (c Config) Endpoint() string {
 // affected flag's Usage via f.Lookup after this call.
 func BindFlags(f *pflag.FlagSet, cfg *Config) {
 	cmdsutil.BindImagePolicyFlags(f, &cfg.MeasurementsConfig, &cfg.MeasurementsConfigJSON, "", "pins the CDS endpoint; excludes --measurements and --rtmrs")
+	cmdsutil.BindCDSPinsFlags(f, &cfg.CDSPins)
 	f.StringVar(&cfg.CDSURL, "cds-url", "", "https base URL of CDS")
 	f.StringVar(&cfg.AttestationApiURL, "attestation-api-url", "", "local attestation-api used to verify CDS's armTLS certificate")
 	f.StringSliceVar(&cfg.Measurements, "measurements", nil, "SHA-384 hex launch measurement(s) CDS must present (repeatable; empty pins none, UNSAFE)")

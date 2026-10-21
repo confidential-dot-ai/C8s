@@ -67,6 +67,8 @@ type Options struct {
 
 	// CDSMeasurementsConfigJSON retains the complete identity policy for injected clients.
 	CDSMeasurementsConfigJSON string
+	// CDSPinsArgs make injected clients follow signed CDS pin decrees.
+	CDSPinsArgs []string
 
 	// WebhookConfigName is the MutatingWebhookConfiguration to patch.
 	WebhookConfigName string
@@ -279,6 +281,7 @@ func setupManager(ctx context.Context, mgr manager.Manager, dc serverResourcesFo
 			CDSMeasurements:           opts.CDSMeasurements,
 			CDSRTMRs:                  opts.CDSRTMRs,
 			CDSMeasurementsConfigJSON: opts.CDSMeasurementsConfigJSON,
+			CDSPinsArgs:               opts.CDSPinsArgs,
 			CertFSGroup:               new(opts.CertFSGroup),
 			CertRenewInterval:         opts.CertRenewInterval,
 			GetCertRunAsUser:          new(opts.GetCertRunAsUser),
