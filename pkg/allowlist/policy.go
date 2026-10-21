@@ -140,6 +140,30 @@ func equalStrings(a, b []string) bool {
 	return true
 }
 
+// RoleOf reports the platform role this policy binds to an observed
+// container. A role rides on the whole verified identity, and two
+// declarations naming different roles for one launch bind none.
+func (i *Index) RoleOf(r RunningContainer) string {
+	if i == nil {
+		return ""
+	}
+	d, err := types.ParseDigest(r.Digest)
+	if err != nil {
+		return ""
+	}
+	r.Digest = d.String()
+	var roles []string
+	for _, c := range i.byDigest[r.Digest] {
+		if c.Role != "" && c.admits(r) && !slices.Contains(roles, c.Role) {
+			roles = append(roles, c.Role)
+		}
+	}
+	if len(roles) != 1 {
+		return ""
+	}
+	return roles[0]
+}
+
 // AdmitsProcess is the preliminary NRI create-time check. It deliberately checks
 // only digest/argv; a successful result MUST be followed by AdmitsContainer on
 // the finalized OCI spec before start, and must never authorize secret release.
