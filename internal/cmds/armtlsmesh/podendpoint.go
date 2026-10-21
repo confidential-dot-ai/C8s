@@ -29,10 +29,11 @@ import (
 
 const (
 	// podDialTimeout bounds one dial, handshake included.
-	podDialTimeout    = 10 * time.Second
-	podDrainTimeout   = 30 * time.Second
-	podKeepAlive      = 30 * time.Second
-	podMaxConnections = 1024
+	podDialTimeout       = 10 * time.Second
+	podDrainTimeout      = 30 * time.Second
+	podKeepAlive         = 30 * time.Second
+	podMaxConnections    = 1024
+	probeShutdownTimeout = 5 * time.Second
 )
 
 // The ports the endpoint binds: the two the pod's ruleset redirects to, plus
@@ -53,12 +54,13 @@ type podEndpointConfig struct {
 	probes []string
 }
 
-func newPodEndpointCommand() *cobra.Command {
+func newArmtlsMeshCommand() *cobra.Command {
 	var cfg podEndpointConfig
 	cmd := &cobra.Command{
-		Use:   "pod-endpoint",
+		Use:   "armtls-mesh",
 		Short: "Carry one pod's captured TCP over armTLS",
-		Long: `pod-endpoint is the mesh endpoint of a single member pod. It dials each
+		Args:  cobra.NoArgs,
+		Long: `armtls-mesh is the mesh endpoint of a single member pod. It dials each
 captured outbound connection to its original destination over armTLS with the
 pod's published credentials, and delivers each inbound armTLS connection to the
 original destination on one of the pod's own addresses.
@@ -124,7 +126,7 @@ func newPodEndpoint(c *podEndpointConfig, logger *slog.Logger) (*podEndpoint, er
 		own:         own,
 		origDst:     defaultOrigDstFunc,
 		logger:      logger,
-		bufPool:     newBufPool(0),
+		bufPool:     newBufPool(),
 		probes:      probes,
 		probeClient: newProbeClient(),
 	}, nil
@@ -165,7 +167,7 @@ type podEndpoint struct {
 	own         podAddresses
 	origDst     origDstFunc
 	logger      *slog.Logger
-	bufPool     *sync.Pool
+	bufPool     *bufPool
 	probes      probeTargets
 	probeClient *http.Client
 	// initialized is set once the endpoint runs on its bound listeners.
@@ -224,7 +226,7 @@ func (e *podEndpoint) serve(ctx context.Context, listeners podListeners) error {
 	runners := []func() error{
 		func() error { return e.accept(ctx, listeners.outbound, e.handleOutbound) },
 		func() error { return e.accept(ctx, listeners.inbound, e.handleInbound) },
-		func() error { return serveHTTP(ctx, e.probeServer(), listeners.probes) },
+		func() error { return e.serveProbes(ctx, listeners.probes) },
 	}
 	stopped := make(chan error, len(runners))
 	for _, run := range runners {
@@ -552,6 +554,22 @@ func (e *podEndpoint) forwardProbe(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	w.WriteHeader(http.StatusServiceUnavailable)
+}
+
+// serveProbes serves the probe listener until ctx is cancelled, then lets the
+// probe requests in flight finish.
+func (e *podEndpoint) serveProbes(ctx context.Context, ln net.Listener) error {
+	srv := e.probeServer()
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), probeShutdownTimeout)
+		defer cancel()
+		_ = srv.Shutdown(shutdownCtx)
+	}()
+	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	return nil
 }
 
 // handleStartup reports that the endpoint runs on its listeners. It needs no

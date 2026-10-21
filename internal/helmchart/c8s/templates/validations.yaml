@@ -26,7 +26,7 @@
 {{- end -}}
 {{- if hasKey (default dict $router.nginx) "resolver" -}}{{- $removedRouterKeys = append $removedRouterKeys "router.nginx.resolver" -}}{{- end -}}
 {{- if $removedRouterKeys -}}
-{{- fail (printf "VALIDATION_ERROR kind=removed_router_routes: the router no longer reads backends from Helm values (%s): it routes only by the operator-signed route manifest on CDS. Write the routes with `c8s routes add --host <host> --path / --address <host:port> --workload <allowlist name>` (or `c8s routes put <file>`), move router.upstream.readTimeout to router.routing.readTimeout, and drop these keys. Backends must serve TLS; see docs/operator.md, \"Route manifest\"." (join ", " $removedRouterKeys)) -}}
+{{- fail (printf "VALIDATION_ERROR kind=removed_router_routes: the router no longer reads backends from Helm values (%s): it routes only by the operator-signed route manifest on CDS. Write the routes with `c8s routes add --host <host> --path / --address <host:port> --workload <allowlist name>` (or `c8s routes put <file>`), move router.upstream.readTimeout to router.routing.readTimeout, and drop these keys. A workload backend is reached over the mesh; see docs/operator.md, \"Route manifest\"." (join ", " $removedRouterKeys)) -}}
 {{- end -}}
 {{- if and $router.enabled (dig "routePublication" "enabled" false $router) (not $router.attest.enabled) -}}
 {{- fail "VALIDATION_ERROR kind=router_route_publication: router.routePublication.enabled requires router.attest.enabled: cds-attest serves the route publication beside the attestation endpoints whose evidence binds its route digest. Set router.attest.enabled: true, or set router.routePublication.enabled: false." -}}
@@ -191,7 +191,7 @@
 {{- /*
   The mirror of require_host_image_policy for evidence: off bare-metal mode,
   the host attestation-api DaemonSet is the only evidence source for
-  get-cert, armtls-mesh, and CDS. Disabling it there renders a cluster whose
+  get-cert, the mesh endpoint, and CDS. Disabling it there renders a cluster whose
   attestation consumers all point at a socket nothing serves.
 */ -}}
 {{- if and (not .Values.attestationApi.enabled) (ne .Values.attestationApi.cvmMode "bare-metal") -}}

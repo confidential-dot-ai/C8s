@@ -77,9 +77,9 @@ mode sets), where the node image's containerd drop-in fixes it at `2s`.
 | VWC `pod-validator` | Cluster resource, tracked by the release |
 | CDS (verify + mesh CA + leaf signing) | Ordinary pod inside the node CVM |
 | attestation API | Baked service in `bare-metal` mode; chart DaemonSet in `gke`/`aks` |
-| armtls-mesh | Node DaemonSet |
+| mesh endpoint | Injected into every covered pod |
 | nri-image-policy | Node process launched by containerd; baked binary in `bare-metal` mode |
-| Platform injection (all covered pods with per-pod mesh; `confidential.ai/cw` pods with node mesh) | Webhook at admission time |
+| platform-container injection (every covered pod) | Webhook at admission time |
 | router | Ordinary pod inside the node CVM |
 
 ---
@@ -95,8 +95,8 @@ any other pod on it can reach.
 ```
  HOST (trusted in this mode)
  ┌─────────┐ ┌────────┐ ┌────────────┐ ┌───────────────────┐
- │operator │ │  CDS   │ │armtls-mesh  │ │attestation-service│
- │+webhook │ │ (runc) │ │nri-img-pol │ │   (host DaemonSet) │
+ │operator │ │  CDS   │ │nri-img-pol │ │attestation-service│
+ │+webhooks│ │ (runc) │ │  (plugin)  │ │   (host DaemonSet) │
  └─────────┘ └────────┘ └────────────┘ └───────────────────┘
 ```
 
@@ -138,7 +138,7 @@ Key properties (see `templates/webhook.yaml`, `controller/runner.go`):
   rejected and retried, never admitted as an unmutated runc pod.
 - The **chart's own components are exempt** via the MWC's namespaceSelector,
   which excludes the release namespace (plus `kube-system`, `kube-public`,
-  `kube-node-lease`, and `webhook.extraExcluded`), so the operator can always
+  `kube-node-lease`, `local-path-storage`, and `webhook.extraExcluded`), so the operator can always
   boot to patch the caBundle — no deadlock.
 - The operator reports **Ready only once its webhook TLS listener accepts
   connections** (`/readyz` dials it), so it never becomes a Service endpoint
@@ -214,7 +214,7 @@ downstream containers wait for it before launching.
 
 **Excluded namespaces** in the MWC's namespaceSelector are the release
 namespace (operator, CDS, and other platform components), `kube-system`,
-`kube-public`, `kube-node-lease`, and `webhook.extraExcluded`.
+`kube-public`, `kube-node-lease`, `local-path-storage`, and `webhook.extraExcluded`.
 The separate `deny-host-namespaces` policy rejects host namespaces outside
 trusted platform namespaces.
 

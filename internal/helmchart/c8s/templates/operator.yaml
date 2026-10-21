@@ -21,6 +21,7 @@ containers:
       - --leader-election-namespace={{ .Release.Namespace }}
       - --status-mirror-enabled={{ .Values.statusMirror.enabled }}
       - --get-cert-image={{ include "c8s.image" . }}
+      - --mesh-image={{ include "c8s-common.image" .Values.armtlsMesh.image }}
       - --webhook-config-name={{ include "c8s.fullname" . }}-pod-injector
       - --webhook-service-name={{ include "c8s.operatorName" . }}
       - --webhook-service-namespace={{ .Release.Namespace }}
@@ -28,17 +29,8 @@ containers:
       {{- range .Values.webhook.extraExcluded }}
       - --exclude-namespaces={{ . }}
       {{- end }}
-      {{- if and .Values.armtlsMesh.enabled .Values.armtlsMesh.egressCompanionPolicy.enabled }}
-      - --mesh-outbound-port={{ include "c8s.int" .Values.armtlsMesh.ports.outbound }}
-      {{- range .Values.armtlsMesh.iptablesSync.excludeSourceNamespaces }}
-      - --mesh-exclude-source-namespaces={{ . }}
-      {{- end }}
-      {{- end }}
       - --cert-fs-group={{ include "c8s.int" .Values.webhook.certVolume.fsGroup }}
       - --get-cert-renew-interval={{ .Values.webhook.getCert.renewInterval }}
-      - --get-cert-run-as-user={{ include "c8s.int" .Values.webhook.getCert.runAsUser }}
-      - --get-cert-run-as-group={{ include "c8s.int" .Values.webhook.getCert.runAsGroup }}
-      - --get-cert-run-as-non-root={{ .Values.webhook.getCert.runAsNonRoot }}
 
       {{- /* Workload-digest claims (docs/armtls.md): get-cert
              redeems a sandbox token from the node's inventory over a
@@ -84,13 +76,11 @@ containers:
       # every component volume (see cds.yaml).
       - name: tmp
         mountPath: /tmp
-      {{- include "c8s.nodeConfigMount" . | nindent 6 }}
 volumes:
   - name: tmp
     emptyDir:
       medium: Memory
       sizeLimit: 16Mi
-  {{- include "c8s.nodeConfigVolume" . | nindent 2 }}
 {{- end -}}
 
 apiVersion: apps/v1

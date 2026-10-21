@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"slices"
 	"strings"
 
 	"github.com/confidential-dot-ai/c8s/internal/httputil"
@@ -47,20 +46,10 @@ const InjectedBinary = "/c8s"
 
 // InjectedModes are the c8s subcommands the admission webhook injects the C8s
 // image with: get-cert for the cert sidecar, probe-file for the cert-wait gate,
-// get-secret for the secret fetcher, and get-volume for the volume fetcher. A
-// container is dropped from workload matching only if it runs InjectedBinary
-// in one of these modes, on an injected digest; see WorkloadContainers.
-//
-// The same image in any other mode — cds-attest, allowlist-proxy, or anything
-// a pod author adds — is a declared container that the workload entry must
-// admit.
-//
-// A pod author can also add the image in one of these modes, with arguments of
-// their own. That container is dropped too: the inventory reports no container
-// name, and matching keys on nothing the host writes. It is dropped only while
-// its open-args entry admits it whole and its mounts confine it to the node
-// (AdmitsInjected), so whatever it fetches or writes cannot reach any location
-// the host reads.
+// get-secret for the secret fetcher, and get-volume for the volume fetcher.
+// The chart pins each injected shape to one of these invocations; the drop set
+// workload matching runs on comes from the role the reporting node binds
+// (WorkloadContainers).
 var InjectedModes = []string{"get-cert", "get-secret", "get-volume", "probe-file"}
 
 // RateKey charges a request to the sandbox its client certificate names, so a
@@ -345,7 +334,7 @@ func (h Handler) authorize(ctx context.Context, r *http.Request, nonce []byte) (
 	if err != nil {
 		return grant{}, fmt.Errorf("load allowlist: %w", err)
 	}
-	containers, err := h.workloadContainers(ctx, al, host, sandboxID)
+	containers, err := h.workloadContainers(ctx, host, sandboxID)
 	if err != nil {
 		return grant{}, deny("%v", err)
 	}
@@ -438,9 +427,9 @@ func (h Handler) verifyToken(ctx context.Context, token *workloadclaims.SignedSa
 }
 
 // workloadContainers asks the bound inventory what the sandbox has run and
-// removes the platform's own injected containers, so a workload entry never has
-// to enumerate C8s's sidecars.
-func (h Handler) workloadContainers(ctx context.Context, al *pkgallowlist.Allowlist, host, sandboxID string) ([]pkgallowlist.RunningContainer, error) {
+// removes the platform's own containers, so a workload entry never has to
+// enumerate C8s's own.
+func (h Handler) workloadContainers(ctx context.Context, host, sandboxID string) ([]pkgallowlist.RunningContainer, error) {
 	resp, err := h.Inventory.FetchSandbox(ctx, host, sandboxID)
 	if err != nil {
 		return nil, fmt.Errorf("resolve sandbox containers: %w", err)
@@ -449,7 +438,7 @@ func (h Handler) workloadContainers(ctx context.Context, al *pkgallowlist.Allowl
 	if err != nil {
 		return nil, err
 	}
-	out := WorkloadContainers(al, reported)
+	out := WorkloadContainers(reported)
 	if len(out) == 0 {
 		return nil, fmt.Errorf("sandbox %s reports no workload containers", sandboxID)
 	}
@@ -457,39 +446,23 @@ func (h Handler) workloadContainers(ctx context.Context, al *pkgallowlist.Allowl
 }
 
 // WorkloadContainers converts an inventory's reported container set to the
-// candidate set workload matching runs on, dropping the platform's own injected
-// containers so a workload entry never has to enumerate C8s's sidecars. It is a
-// pure function of the allowlist and the report — the one drop-set
-// implementation shared by secrets release, the release diagnostic, and CDS
-// certificate issuance. pkg/allowlist stays ignorant of injection by design
-// (its doc: "the caller converts").
-func WorkloadContainers(al *pkgallowlist.Allowlist, reported []workloadclaims.SandboxContainer) []pkgallowlist.RunningContainer {
+// candidate set workload matching runs on, dropping every container the
+// reporting node's measured base binds a platform role to, so a workload entry
+// never has to enumerate C8s's own containers. It is a pure function of the
+// report — the one drop-set implementation shared by secrets release, the
+// release diagnostic, and CDS certificate issuance. pkg/allowlist stays
+// ignorant of injection by design (its doc: "the caller converts").
+//
+// The role is the enforcer's reading of its own boot config, which the digests
+// channel carries from an attested inventory (docs/secrets.md).
+func WorkloadContainers(reported []workloadclaims.SandboxContainer) []pkgallowlist.RunningContainer {
 	out := make([]pkgallowlist.RunningContainer, 0, len(reported))
 	for _, c := range reported {
-		if isInjected(al, c) {
+		if c.Role != "" {
 			continue
 		}
 		r := pkgallowlist.RunningContainer{Digest: c.Digest, Argv: c.Argv, Env: c.Env, Mounts: c.Mounts}
 		out = append(out, r)
 	}
 	return out
-}
-
-// isInjected reports whether a reported container is one C8s injected: its
-// argv is the C8s binary in one of the modes the webhook injects, and one
-// open-args container of some entry admits it whole, mounts and environment
-// included, with every mount confined to the node (AdmitsInjected). An image
-// admitted with open args but running a shell is not injected. Nor is the C8s
-// image in a mode the webhook never injects: that container is declared,
-// however it is invoked. Nor is an injected mode with a mount the host can
-// read, or one its open-args entry does not list: dropping it would exempt
-// from matching the one container able to fetch for the pod (docs/secrets.md).
-func isInjected(al *pkgallowlist.Allowlist, c workloadclaims.SandboxContainer) bool {
-	if len(c.Argv) < 2 || c.Argv[0] != InjectedBinary {
-		return false
-	}
-	if !slices.Contains(InjectedModes, c.Argv[1]) {
-		return false
-	}
-	return al.AdmitsInjected(pkgallowlist.RunningContainer{Digest: c.Digest, Argv: c.Argv, Env: c.Env, Mounts: c.Mounts})
 }

@@ -256,20 +256,17 @@ func LoadMeasurements(values []string, path string) ([][]byte, error) {
 }
 
 // BindImagePolicyFlags registers canonical JSON sources. A nil inline pointer
-// exposes only file input; prefix is "cds-" for the mesh's independent CDS policy.
-// Only one source may be used.
-func BindImagePolicyFlags(fs *pflag.FlagSet, file, inline *string, prefix, purpose string) {
+// exposes only file input. Only one source may be used.
+func BindImagePolicyFlags(fs *pflag.FlagSet, file, inline *string, purpose string) {
 	selected := ""
 	bind := func(target *string, name, usage string) {
 		fs.Var(&policySourceFlag{target: target, selected: &selected, name: name}, name, usage)
 	}
-	fileName := prefix + "image-policy-file"
-	jsonName := prefix + "image-policy-json"
 	*file = ""
-	bind(file, fileName, "path to a complete JSON image policy (image, RTMR and launch-key pins); "+purpose)
+	bind(file, "image-policy-file", "path to a complete JSON image policy (image, RTMR and launch-key pins); "+purpose)
 	if inline != nil {
 		*inline = ""
-		bind(inline, jsonName, "inline complete JSON image policy, in the same format as --"+fileName+"; "+purpose)
+		bind(inline, "image-policy-json", "inline complete JSON image policy, in the same format as --image-policy-file; "+purpose)
 	}
 }
 

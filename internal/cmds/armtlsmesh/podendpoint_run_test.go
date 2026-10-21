@@ -40,7 +40,7 @@ func expectProbe(t *testing.T, port int, path string) {
 // The command refuses to start without the three credential paths it reads,
 // and runs the endpoint on the ones it is given.
 func TestPodEndpointCommandFlags(t *testing.T) {
-	cmd := newPodEndpointCommand()
+	cmd := newArmtlsMeshCommand()
 	for _, flag := range []string{"cert-path", "key-path", "ca-path"} {
 		if cmd.Flags().Lookup(flag) == nil {
 			t.Fatalf("--%s is not a flag of the command", flag)
@@ -60,7 +60,7 @@ func TestPodEndpointCommandFlags(t *testing.T) {
 	}
 
 	volume := testVolume(t)
-	wired := newPodEndpointCommand()
+	wired := newArmtlsMeshCommand()
 	wired.SetArgs([]string{
 		"--cert-path", volume.dir + "/" + volume.chainName,
 		"--key-path", "/run/elsewhere/tls.key",

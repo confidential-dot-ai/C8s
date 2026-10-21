@@ -18,7 +18,7 @@ import (
 
 const testMeshImage = "ghcr.io/confidential-dot-ai/armtls-mesh:test"
 
-// meshConfig is an operator configured for the per-pod mesh.
+// meshConfig is the operator's configuration as the chart renders it.
 func meshConfig() Config {
 	cfg := secretsConfig()
 	cfg.MeshImage = testMeshImage
@@ -130,7 +130,6 @@ func TestMeshContainerShape(t *testing.T) {
 		t.Fatalf("mesh restartPolicy = %v, want Always (native sidecar)", mesh.RestartPolicy)
 	}
 	for _, want := range []string{
-		"pod-endpoint",
 		"--cert-path=/etc/c8s/certs/tls.crt",
 		"--key-path=/etc/c8s/certs/tls.key",
 		"--ca-path=/etc/c8s/certs/ca.crt",
@@ -221,34 +220,6 @@ func TestMeshInjectionAdmitsSANWithoutWorkloadAnnotation(t *testing.T) {
 		if strings.HasPrefix(arg, "--san") {
 			t.Fatalf("c8s-cert requests %q for a pod that never opted in", arg)
 		}
-	}
-}
-
-// While the node DaemonSet is the mesh, an unannotated pod is untouched and an
-// annotated one keeps the shipped shape: no endpoint, and the workload reads
-// the leaf itself.
-func TestNodeMeshLaneKeepsOptInInjection(t *testing.T) {
-	cfg := secretsConfig().withDefaults()
-	cfg.WorkloadClaimsHostDir = "/run/nri-image-policy"
-	m, _ := meshHandlers(t, cfg)
-	plain := podWithApp()
-	raw, err := json.Marshal(plain)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp := m.Handle(context.Background(), podRequest("tenant", raw, ""))
-	if len(resp.Patches) != 0 {
-		t.Fatalf("unannotated pod injected under the node mesh: %v", resp.Patches)
-	}
-
-	annotated := podWithApp()
-	annotated.Annotations = map[string]string{AnnotationWorkload: "api"}
-	mutated := admit(t, m, annotated, "tenant")
-	if containerNamed(mutated, reservedMeshContainerName) != nil {
-		t.Fatal("node-mesh lane injected a pod mesh endpoint")
-	}
-	if containerMount(&mutated.Spec.Containers[0], CertVolumeName) == nil {
-		t.Fatal("node-mesh lane dropped the workload's credential mount")
 	}
 }
 

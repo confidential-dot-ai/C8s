@@ -118,7 +118,7 @@ func routerEntryName(t *testing.T, seed *pkgallowlist.Allowlist) string {
 }
 
 func match(seed *pkgallowlist.Allowlist, reported []workloadclaims.SandboxContainer) (string, error) {
-	name, _, err := seed.MatchWorkload(secrets.WorkloadContainers(seed, reported))
+	name, _, err := seed.MatchWorkload(secrets.WorkloadContainers(reported))
 	return name, err
 }
 
@@ -136,7 +136,7 @@ func assertRouterMatches(t *testing.T, out string) {
 	reported := running(t, seed, renderedDeployment(t, out, "c8s-router").Spec.Template.Spec)
 	got, err := match(seed, reported)
 	if err != nil || got != routerEntry {
-		diff := seed.Workloads[routerEntry].Diff(secrets.WorkloadContainers(seed, reported))
+		diff := seed.Workloads[routerEntry].Diff(secrets.WorkloadContainers(reported))
 		t.Errorf("MatchWorkload(router) = %q, %v, want %q; foreign %+v, missing %+v", got, err, routerEntry, diff.Foreign, diff.MissingMains)
 	}
 }
@@ -567,41 +567,8 @@ func TestChartCDSAttestMeasuredPoliciesFile(t *testing.T) {
 	}
 }
 
-// The mesh reads the journal from the runtime directory it mounts for the
-// attestation-api socket, wherever cds-attest does.
-func TestChartMeshMeasuredPoliciesFile(t *testing.T) {
-	const dir = "/run/custom-nri"
-	for _, tc := range []struct {
-		name     string
-		args     []string
-		wantFlag bool
-	}{
-		{name: "no attestation-api", args: []string{"--set", "attestationApi.enabled=false"}},
-		{name: "attestation-api", args: []string{"--set", "attestationApi.enabled=true"}, wantFlag: true},
-		{name: "baked", args: bakedArgs, wantFlag: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			out, err := helmTemplate(t, append(slices.Clone(tc.args), "--set-string", "nriImagePolicy.hostPaths.runtimeDir="+dir)...)
-			if err != nil {
-				t.Fatalf("helm template: %v\n%s", err, out)
-			}
-			mesh := renderedDaemonSetContainer(t, out, "c8s-armtls-mesh", "armtls-mesh")
-			flag := "--measured-policies-file=" + dir + "/measured-policies"
-			if got := slices.Contains(mesh.Args, flag); got != tc.wantFlag {
-				t.Fatalf("armtls-mesh carries %s: %v, want %v\nargs: %v", flag, got, tc.wantFlag, mesh.Args)
-			}
-			mounted := slices.ContainsFunc(mesh.VolumeMounts, func(m corev1.VolumeMount) bool {
-				return m.MountPath == dir && m.ReadOnly
-			})
-			if tc.wantFlag && !mounted {
-				t.Errorf("armtls-mesh reads the journal without mounting %s read-only: %+v", dir, mesh.VolumeMounts)
-			}
-		})
-	}
-}
-
 // CDS reads the journal from the runtime directory it mounts for the
-// attestation-api socket, wherever the mesh does.
+// attestation-api socket.
 func TestChartCDSMeasuredPoliciesFile(t *testing.T) {
 	const dir = "/run/custom-nri"
 	for _, tc := range []struct {

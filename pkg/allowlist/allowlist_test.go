@@ -143,35 +143,6 @@ func TestParseJSON_RejectsBadDigest(t *testing.T) {
 	}
 }
 
-func TestAdmitsAnyArgs(t *testing.T) {
-	al := mustParse(t, `{"schema":"c8s.allowlist/v1","workloads":{
-		"open":{"containers":[{"digest":"`+digestA+`","command":{"policy":"any"},"args":{"policy":"any"}}]},
-		"component":{"containers":[{"digest":"`+digestB+`","command":{"policy":"exact","argv":["/c8s"]},"args":{"policy":"any"}}]},
-		"pinned":{"containers":[
-			{"digest":"`+digestC+`","command":{"policy":"exact","argv":["/app"]},"args":{"policy":"deny"}},
-			{"digest":"`+digestC+`","command":{"policy":"any"},"args":{"policy":"exact","argv":["x"]}}]}}}`)
-	for name, tc := range map[string]struct {
-		digest string
-		argv   []string
-		want   bool
-	}{
-		"any/any admits any command":          {digestA, []string{"/bin/sh", "-c", "id"}, true},
-		"pinned executable, open args":        {digestB, []string{"/c8s", "get-cert", "--san=x"}, true},
-		"pinned executable, other executable": {digestB, []string{"/bin/sh", "-c", "id"}, false},
-		"exact args are not open":             {digestC, []string{"/app"}, false},
-		"command any with exact args":         {digestC, []string{"x"}, false},
-		"unlisted digest":                     {"sha256:" + strings.Repeat("d", 64), []string{"/c8s"}, false},
-		"canonical digest comparison":         {digestA[:7] + strings.ToUpper(digestA[7:]), []string{"/x"}, true},
-		"malformed digest":                    {"not-a-digest", []string{"/x"}, false},
-	} {
-		t.Run(name, func(t *testing.T) {
-			if got := al.AdmitsAnyArgs(tc.digest, tc.argv); got != tc.want {
-				t.Fatalf("AdmitsAnyArgs(%s, %q) = %v, want %v", tc.digest, tc.argv, got, tc.want)
-			}
-		})
-	}
-}
-
 func TestParseJSON_AbsentPolicyDefaultsToDeny(t *testing.T) {
 	al := mustParse(t, `{"schema":"c8s.allowlist/v1","workloads":{"w":{"containers":[{"digest":"`+digestA+`"}]}}}`)
 	c := al.Workloads["w"].Containers[0]

@@ -27,8 +27,6 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 )
 
-var procRoot = "/proc"
-
 const letsEncryptDirectoryURL = "https://acme-v02.api.letsencrypt.org/directory"
 
 type config struct {
@@ -39,7 +37,6 @@ type config struct {
 	httpPort      int
 	readyPort     int
 	certDir       string
-	reloadNginx   bool
 	logLevel      string
 
 	// Launch-driven inputs (node image): each file overrides its flag.
@@ -92,7 +89,6 @@ leaf exists.`,
 	f.IntVar(&cfg.httpPort, "http-port", 8080, "loopback port of nginx's :80 server, probed round-trip before each order so no validation is sent at a listener that is still starting")
 	f.IntVar(&cfg.readyPort, "ready-port", 0, "port serving GET /healthz, and GET /readyz, 200 once cert.pem and key.pem exist (0 disables it). nginx's startup probe uses it: a locked node image denies exec probes")
 	f.StringVar(&cfg.certDir, "cert-dir", "/etc/c8s-acme-tls", "directory for cert.pem, key.pem, and the ACME account key")
-	f.BoolVar(&cfg.reloadNginx, "reload-nginx", false, "SIGHUP nginx after a certificate install; the router's own entrypoint reloads it instead")
 	f.StringVar(&cfg.logLevel, "log-level", "info", "log level: debug, info, warn, error")
 	f.StringVar(&cfg.domainsFile, "domains-file", "", "file with one domain per line, read at start instead of --domains; empty file means no ACME (see --standby-cert-dir)")
 	f.StringVar(&cfg.emailFile, "acme-email-file", "", "file holding --acme-email; an empty file keeps the flag value")
@@ -225,21 +221,13 @@ func runWith(cfg config, probe *http.Client) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	reload := func() {
-		if !cfg.reloadNginx {
-			return
-		}
-		if err := cmdsutil.ReloadNginx(procRoot, logger); err != nil {
-			logger.Error("nginx reload failed", "error", err)
-		}
-	}
 	if standby {
 		return runStandby(ctx, cfg, logger)
 	}
 	if err := validateConfig(&cfg); err != nil {
 		return err
 	}
-	mgr := newManager(cfg.directoryURL, cfg.email, cfg.certDir, cfg.domains, logger, reload)
+	mgr := newManager(cfg.directoryURL, cfg.email, cfg.certDir, cfg.domains, logger)
 	mgr.httpPort = cfg.httpPort
 	if probe == nil {
 		probe = publicProbeClient()

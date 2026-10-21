@@ -36,12 +36,6 @@ rules:
     # The operator provisions one headless Service per annotated workload in
     # the workload's namespace.
     verbs: [get, list, watch, create, update, delete]
-  - apiGroups: [networking.k8s.io]
-    resources: [networkpolicies]
-    # The mesh-egress reconciler watches every NetworkPolicy and keeps a
-    # companion beside each one that isolates egress in an intercepted
-    # namespace (armtlsMesh.egressCompanionPolicy).
-    verbs: [get, list, watch, create, update, delete]
   - apiGroups: [""]
     resources: [events]
     # The controller-runtime manager's event recorder (leader election,

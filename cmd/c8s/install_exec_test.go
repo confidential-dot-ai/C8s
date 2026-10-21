@@ -583,9 +583,7 @@ func TestAppendResolvedWorkloadImageArgsExec(t *testing.T) {
 			"--set-string", p + "containers[0].command.policy=any",
 			"--set-string", p + "containers[0].args.policy=any",
 			"--set-string", p + "containers[0].env.policy=any",
-			"--set-string", p + "containers[0].mounts.policy=exact",
-			"--set-string", p + "containers[0].mounts.rules[0].destination=/etc/c8s/certs",
-			"--set-string", p + "containers[0].mounts.rules[0].kind=emptyDir",
+			"--set-string", p + "containers[0].mounts.policy=deny",
 		})
 		mustContainLine(t, f.calls(t), "crane digest ghcr.io/acme/vllm:v1")
 	})

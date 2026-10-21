@@ -65,6 +65,62 @@ func TestValidatorJudgesStoredPodOnUpdate(t *testing.T) {
 	denies(t, v, stored, "image")
 }
 
+// A pod's workload identity is fixed when it is admitted: an UPDATE that
+// renames it, or renames the SAN its credential clients hold, is refused even
+// though the spec is untouched.
+func TestValidatorRejectsAnIdentityChangeOnUpdate(t *testing.T) {
+	m, v := meshHandlers(t, meshConfig())
+	for _, annotation := range []string{AnnotationWorkload, AnnotationSAN} {
+		t.Run(annotation, func(t *testing.T) {
+			pod := podWithApp()
+			pod.Annotations = map[string]string{AnnotationWorkload: "api", AnnotationSAN: "api.tenant.svc"}
+			stored := defaulted(admit(t, m, pod, "tenant"))
+			renamed := stored.DeepCopy()
+			renamed.Annotations[annotation] = "other"
+			if annotation == AnnotationWorkload {
+				// Consistent with the label the injector stamps, so the
+				// identity rule is what refuses it.
+				renamed.Labels[LabelWorkload] = "other"
+			}
+
+			oldRaw, err := json.Marshal(stored)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := json.Marshal(renamed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp := v.Handle(context.Background(), podUpdateRequest("tenant", oldRaw, raw))
+			if resp.Allowed {
+				t.Fatalf("validator admitted a renamed %s", annotation)
+			}
+			if !strings.Contains(resp.Result.Message, "fixed when it is admitted") {
+				t.Fatalf("denial message = %+v, want the fixed-identity rule", resp.Result)
+			}
+		})
+	}
+
+	// An unchanged identity with an unchanged spec is still the metadata write
+	// the stored-pod rule admits.
+	pod := podWithApp()
+	pod.Annotations = map[string]string{AnnotationWorkload: "api"}
+	stored := defaulted(admit(t, m, pod, "tenant"))
+	relabelled := stored.DeepCopy()
+	relabelled.Labels["unrelated"] = "value"
+	oldRaw, err := json.Marshal(stored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(relabelled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp := v.Handle(context.Background(), podUpdateRequest("tenant", oldRaw, raw)); !resp.Allowed {
+		t.Fatalf("validator denied a metadata-only update: %+v", resp.Result)
+	}
+}
+
 // defaulted applies the API-server defaults a stored pod carries but an
 // admission patch does not, so an UPDATE case is judged on a realistic object.
 func defaulted(pod *corev1.Pod) *corev1.Pod {

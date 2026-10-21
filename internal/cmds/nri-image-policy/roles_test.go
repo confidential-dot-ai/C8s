@@ -191,6 +191,16 @@ func TestMeshPolicyValidation(t *testing.T) {
 			wants: "binds no reserved uid to the mesh role",
 		},
 		{
+			// Without a trusted resolver address the pod ruleset has no name
+			// resolution to admit, so the node refuses to start.
+			name: "no trusted resolver",
+			mesh: func(m *meshPolicy) {
+				m.Resolver = netip.Addr{}
+			},
+			tcb:   true,
+			wants: "mesh.resolver needs the address of the trusted resolver",
+		},
+		{
 			// The install lane: the chart renders both the base and the mesh
 			// policy, so holding it to the baked lane's enforcement would only
 			// refuse a test cluster the same admin configured.
@@ -397,6 +407,11 @@ func TestRequireRoleIdentity(t *testing.T) {
 		{name: "role on its own uid", role: testCertRole, user: &api.User{Uid: testCertUID, Gid: testCertUID}},
 		{name: "role on another uid", role: testCertRole, user: &api.User{Uid: testWorkloadUID}, refused: true},
 		{name: "workload on its own uid", user: &api.User{Uid: testWorkloadUID, Gid: testWorkloadUID}},
+		{
+			name:    "workload on root uid",
+			user:    &api.User{},
+			refused: true,
+		},
 		{name: "workload on a reserved uid", user: &api.User{Uid: testMeshUID}, refused: true},
 		{name: "workload on a reserved gid", user: &api.User{Uid: testWorkloadUID, Gid: testMeshUID}, refused: true},
 		{

@@ -54,15 +54,22 @@ func (v *podValidator) Handle(ctx context.Context, req admission.Request) admiss
 		l.Info("denying pod", "reason", err.Error())
 		return admission.Errored(http.StatusBadRequest, err)
 	}
-	if !v.cfg.inScope(pod) {
+	if !v.cfg.injectionEnabled() {
 		return admission.Allowed("outside the injector's scope")
 	}
-	if req.Operation == admissionv1.Update {
-		metadataOnly, err := v.isMetadataOnlyUpdate(req, pod)
-		if err != nil {
+	if req.Operation == admissionv1.Update && len(req.OldObject.Raw) > 0 {
+		old := &corev1.Pod{}
+		if err := v.decoder.DecodeRaw(req.OldObject, old); err != nil {
 			return admission.Errored(http.StatusBadRequest, err)
 		}
-		if metadataOnly {
+		if err := rejectIdentityChange(old, pod); err != nil {
+			l.Info("denying pod", "reason", err.Error())
+			return admission.Errored(http.StatusBadRequest, err)
+		}
+		// The shape is re-derived from live configuration, so an operator
+		// image bump must not deny every metadata write on the pods admitted
+		// before it; a spec change, like every CREATE, is judged in full.
+		if reflect.DeepEqual(old.Spec, pod.Spec) {
 			return admission.Allowed("pod spec unchanged")
 		}
 	}
@@ -73,19 +80,18 @@ func (v *podValidator) Handle(ctx context.Context, req admission.Request) admiss
 	return admission.Allowed("pod carries the injected c8s shape")
 }
 
-// isMetadataOnlyUpdate reports whether this update leaves the pod spec as
-// admitted. The shape is re-derived from live configuration, so an operator
-// image bump must not deny every metadata write on the pods admitted before
-// it; a spec change, like every CREATE, is judged in full.
-func (v *podValidator) isMetadataOnlyUpdate(req admission.Request, pod *corev1.Pod) (bool, error) {
-	if len(req.OldObject.Raw) == 0 {
-		return false, nil
+// rejectIdentityChange refuses an update that renames the workload or its SAN.
+// The pod's running credential clients hold the name it was admitted with, and
+// its spec does not change with the annotation, so a rename would leave the
+// pod serving one identity and claiming another.
+func rejectIdentityChange(old, pod *corev1.Pod) error {
+	for _, name := range []string{AnnotationWorkload, AnnotationSAN} {
+		if old.Annotations[name] != pod.Annotations[name] {
+			return fmt.Errorf("%s changes from %q to %q: a pod's workload identity is fixed when it is admitted",
+				name, old.Annotations[name], pod.Annotations[name])
+		}
 	}
-	old := &corev1.Pod{}
-	if err := v.decoder.DecodeRaw(req.OldObject, old); err != nil {
-		return false, err
-	}
-	return reflect.DeepEqual(old.Spec, pod.Spec), nil
+	return nil
 }
 
 // validateFinalSpec rebuilds the injected shape from the pod's own request and

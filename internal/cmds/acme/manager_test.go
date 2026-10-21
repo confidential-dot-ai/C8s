@@ -21,9 +21,9 @@ var testDomains = []string{"lb.example.com", "infer.lb.example.com"}
 
 // newTestManager wires a manager to a fake directory whose http-01
 // validation hits the manager's own challenge handler.
-func newTestManager(t *testing.T, ca *testCA, domains []string, onInstall func()) *manager {
+func newTestManager(t *testing.T, ca *testCA, domains []string) *manager {
 	t.Helper()
-	mgr := newManager("", "ops@example.com", t.TempDir(), domains, slog.Default(), onInstall)
+	mgr := newManager("", "ops@example.com", t.TempDir(), domains, slog.Default())
 	challengeSrv := httptest.NewServer(mgr.handler())
 	t.Cleanup(challengeSrv.Close)
 	// The front-door probe hits the challenge listener directly.
@@ -49,16 +49,12 @@ func serverPort(t *testing.T, rawURL string) int {
 
 func TestIssueHTTP01MultiSAN(t *testing.T) {
 	ca := newTestCA(t)
-	installs := 0
-	mgr := newTestManager(t, ca, testDomains, func() { installs++ })
+	mgr := newTestManager(t, ca, testDomains)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	mgr.ensure(ctx)
 
-	if installs != 1 {
-		t.Fatalf("onInstall calls = %d, want 1", installs)
-	}
 	if mgr.needsIssue() {
 		t.Fatal("no serviceable certificate after issuance")
 	}
@@ -104,7 +100,7 @@ func TestIssueHTTP01MultiSAN(t *testing.T) {
 
 func TestNeedsIssueAtTwoThirdsLifetime(t *testing.T) {
 	ca := newTestCA(t)
-	mgr := newManager("", "", t.TempDir(), testDomains, slog.Default(), nil)
+	mgr := newManager("", "", t.TempDir(), testDomains, slog.Default())
 
 	// A cert 3/4 through its lifetime must renew; install one backdated.
 	key, chain := backdatedCert(t, ca, testDomains, -9*time.Hour, 3*time.Hour)
@@ -127,7 +123,7 @@ func TestNeedsIssueOnDomainSetChange(t *testing.T) {
 		{"stale extra domain", testDomains, []string{"lb.example.com"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			mgr := newManager("", "", t.TempDir(), tc.configured, slog.Default(), nil)
+			mgr := newManager("", "", t.TempDir(), tc.configured, slog.Default())
 			key, chain := backdatedCert(t, ca, tc.certNames, -time.Hour, 24*time.Hour)
 			writeCertPair(t, mgr, key, chain)
 			if !mgr.needsIssue() {
@@ -142,7 +138,7 @@ func TestNeedsIssueOnDomainSetChange(t *testing.T) {
 // real certificate is installed.
 func TestBootstrapWritesSelfSignedPlaceholder(t *testing.T) {
 	ca := newTestCA(t)
-	mgr := newManager("", "", t.TempDir(), testDomains, slog.Default(), nil)
+	mgr := newManager("", "", t.TempDir(), testDomains, slog.Default())
 	if err := mgr.bootstrap(); err != nil {
 		t.Fatal(err)
 	}
@@ -185,8 +181,7 @@ func TestBootstrapWritesSelfSignedPlaceholder(t *testing.T) {
 
 func TestRunLoopIssuesAndStops(t *testing.T) {
 	ca := newTestCA(t)
-	installed := make(chan struct{}, 4)
-	mgr := newTestManager(t, ca, testDomains, func() { installed <- struct{}{} })
+	mgr := newTestManager(t, ca, testDomains)
 	mgr.recheck = 10 * time.Millisecond
 	mgr.retry = 10 * time.Millisecond
 
@@ -194,10 +189,18 @@ func TestRunLoopIssuesAndStops(t *testing.T) {
 	done := make(chan struct{})
 	go func() { mgr.run(ctx); close(done) }()
 
-	select {
-	case <-installed:
-	case <-time.After(30 * time.Second):
-		t.Fatal("run never issued the certificate")
+	// Poll the published files alone: the manager's own fields belong to run
+	// while it is running.
+	deadline := time.Now().Add(30 * time.Second)
+	for issued := false; !issued; {
+		leaf, err := mgr.diskLeaf()
+		issued = err == nil && !bytes.Equal(leaf.RawIssuer, leaf.RawSubject)
+		if !issued && time.Now().After(deadline) {
+			t.Fatal("run never issued the certificate")
+		}
+		if !issued {
+			time.Sleep(10 * time.Millisecond)
+		}
 	}
 	cancel()
 	select {
@@ -208,7 +211,7 @@ func TestRunLoopIssuesAndStops(t *testing.T) {
 }
 
 func TestHandlerRejectsUnknownPaths(t *testing.T) {
-	mgr := newManager("", "", t.TempDir(), testDomains, slog.Default(), nil)
+	mgr := newManager("", "", t.TempDir(), testDomains, slog.Default())
 	mgr.tokens["known"] = "known.auth"
 	h := mgr.handler()
 	for path, want := range map[string]int{
@@ -226,7 +229,7 @@ func TestHandlerRejectsUnknownPaths(t *testing.T) {
 }
 
 func TestAccountKey(t *testing.T) {
-	mgr := newManager("", "", t.TempDir(), testDomains, slog.Default(), nil)
+	mgr := newManager("", "", t.TempDir(), testDomains, slog.Default())
 	key, err := mgr.accountKey()
 	if err != nil {
 		t.Fatal(err)
@@ -270,7 +273,7 @@ func TestAccountKeyStoreErrors(t *testing.T) {
 	if err := os.Mkdir(ro, 0o555); err != nil {
 		t.Fatal(err)
 	}
-	mgr := newManager("", "", filepath.Join(ro, "acme"), testDomains, slog.Default(), nil)
+	mgr := newManager("", "", filepath.Join(ro, "acme"), testDomains, slog.Default())
 	if _, err := mgr.accountKey(); err == nil {
 		t.Fatal("account key created under an un-creatable dir")
 	}
@@ -283,30 +286,37 @@ func TestAccountKeyStoreErrors(t *testing.T) {
 }
 
 func TestClientRegistrationFailure(t *testing.T) {
-	mgr := newManager("http://127.0.0.1:1/dir", "ops@example.com", t.TempDir(), testDomains, slog.Default(), nil)
+	mgr := newManager("http://127.0.0.1:1/dir", "ops@example.com", t.TempDir(), testDomains, slog.Default())
 	if _, err := mgr.acmeClient(context.Background()); err == nil {
 		t.Fatal("acmeClient succeeded against an unreachable directory")
 	}
 }
 
+// A fresh certificate is left alone: the second ensure must not re-issue, so
+// the leaf on disk keeps the serial the first one installed.
 func TestEnsureSkipsFreshCert(t *testing.T) {
 	ca := newTestCA(t)
-	installs := 0
-	mgr := newTestManager(t, ca, testDomains, func() { installs++ })
+	mgr := newTestManager(t, ca, testDomains)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	mgr.ensure(ctx)
+	first, err := mgr.diskLeaf()
+	if err != nil {
+		t.Fatal(err)
+	}
 	mgr.ensure(ctx)
-	if installs != 1 {
-		t.Fatalf("onInstall calls = %d, want exactly one issuance", installs)
+	second, err := mgr.diskLeaf()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.SerialNumber.Cmp(second.SerialNumber) != 0 {
+		t.Fatalf("certificate re-issued: serial %v then %v", first.SerialNumber, second.SerialNumber)
 	}
 }
 
 func TestEnsureLogsIssuanceFailure(t *testing.T) {
-	mgr := newManager("http://127.0.0.1:1/dir", "", t.TempDir(), testDomains, slog.Default(), func() {
-		t.Fatal("onInstall fired for a failed issuance")
-	})
+	mgr := newManager("http://127.0.0.1:1/dir", "", t.TempDir(), testDomains, slog.Default())
 	mgr.ensure(context.Background())
 	if !mgr.needsIssue() {
 		t.Fatal("certificate exists after failed issuance")
@@ -315,7 +325,7 @@ func TestEnsureLogsIssuanceFailure(t *testing.T) {
 
 func TestNeedsIssueRequiresKeyBesideCert(t *testing.T) {
 	ca := newTestCA(t)
-	mgr := newManager("", "", t.TempDir(), testDomains, slog.Default(), nil)
+	mgr := newManager("", "", t.TempDir(), testDomains, slog.Default())
 	_, chain := backdatedCert(t, ca, testDomains, -time.Hour, 24*time.Hour)
 	if err := os.WriteFile(mgr.certPath(), chain, 0o644); err != nil {
 		t.Fatal(err)
@@ -326,7 +336,7 @@ func TestNeedsIssueRequiresKeyBesideCert(t *testing.T) {
 }
 
 // Directory-side failures at each RFC 8555 step fail the issuance closed:
-// no cert lands and onInstall never fires.
+// no cert lands.
 func TestEnsureFailsClosedOnDirectoryErrors(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -338,9 +348,7 @@ func TestEnsureFailsClosedOnDirectoryErrors(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ca := newTestCA(t)
-			mgr := newManager("", "", t.TempDir(), testDomains, slog.Default(), func() {
-				t.Fatal("onInstall fired for a failed issuance")
-			})
+			mgr := newManager("", "", t.TempDir(), testDomains, slog.Default())
 			challengeSrv := httptest.NewServer(mgr.handler())
 			t.Cleanup(challengeSrv.Close)
 			f := newFakeACME(t, ca, challengeSrv.URL)
@@ -366,7 +374,7 @@ func TestRunLoopRetriesAfterFailure(t *testing.T) {
 		http.Error(w, "boom", http.StatusInternalServerError)
 	}))
 	t.Cleanup(srv.Close)
-	mgr := newManager(srv.URL+"/dir", "", t.TempDir(), testDomains, slog.Default(), nil)
+	mgr := newManager(srv.URL+"/dir", "", t.TempDir(), testDomains, slog.Default())
 	mgr.recheck = time.Hour
 	mgr.retry = 10 * time.Millisecond
 
@@ -392,7 +400,7 @@ func TestRunLoopRetriesAfterFailure(t *testing.T) {
 // unreachable) fails Accept, not the whole process.
 func TestEnsureFailsWhenChallengeUnreachable(t *testing.T) {
 	ca := newTestCA(t)
-	mgr := newManager("", "", t.TempDir(), testDomains, slog.Default(), nil)
+	mgr := newManager("", "", t.TempDir(), testDomains, slog.Default())
 	// No challenge listener: the fake CA's validation fetch fails.
 	f := newFakeACME(t, ca, "http://127.0.0.1:1")
 	mgr.directoryURL = f.directoryURL()
@@ -408,9 +416,7 @@ func TestEnsureFailsWhenChallengeUnreachable(t *testing.T) {
 // A cert-dir that turns read-only fails the key install closed.
 func TestIssueFailsOnReadOnlyCertDir(t *testing.T) {
 	ca := newTestCA(t)
-	mgr := newTestManager(t, ca, testDomains, func() {
-		t.Fatal("onInstall fired for a failed install")
-	})
+	mgr := newTestManager(t, ca, testDomains)
 	if _, err := mgr.accountKey(); err != nil {
 		t.Fatal(err)
 	}
@@ -432,7 +438,7 @@ func TestBootstrapFailsOnUncreatableDir(t *testing.T) {
 	if err := os.Mkdir(ro, 0o555); err != nil {
 		t.Fatal(err)
 	}
-	mgr := newManager("", "", filepath.Join(ro, "tls"), testDomains, slog.Default(), nil)
+	mgr := newManager("", "", filepath.Join(ro, "tls"), testDomains, slog.Default())
 	if err := mgr.bootstrap(); err == nil {
 		t.Fatal("bootstrap wrote under an un-creatable dir")
 	}
@@ -440,7 +446,7 @@ func TestBootstrapFailsOnUncreatableDir(t *testing.T) {
 
 func TestFulfillAuthorizationSkipsValidAuthz(t *testing.T) {
 	ca := newTestCA(t)
-	mgr := newManager("", "", t.TempDir(), []string{"lb.example.com"}, slog.Default(), nil)
+	mgr := newManager("", "", t.TempDir(), []string{"lb.example.com"}, slog.Default())
 	challengeSrv := httptest.NewServer(mgr.handler())
 	t.Cleanup(challengeSrv.Close)
 	f := newFakeACME(t, ca, challengeSrv.URL)
@@ -478,7 +484,7 @@ func writeCertPair(t *testing.T, mgr *manager, keyPEM, chainPEM []byte) {
 // failed validation per SAN on every fresh pod.
 func TestIssueWaitsForFrontDoor(t *testing.T) {
 	ca := newTestCA(t)
-	mgr := newManager("", "ops@example.com", t.TempDir(), testDomains, slog.Default(), nil)
+	mgr := newManager("", "ops@example.com", t.TempDir(), testDomains, slog.Default())
 
 	// Stub nginx: refuses the challenge path until "up" flips, like a
 	// container still waiting on its startup gate.
@@ -538,8 +544,7 @@ func testPublicProbeClient(t *testing.T, base string) *http.Client {
 // When production later reaches this router, the certificate gains that name.
 func TestIndependentHostnameIssuanceAndExpansion(t *testing.T) {
 	ca := newTestCA(t)
-	installs := 0
-	mgr := newTestManager(t, ca, testDomains, func() { installs++ })
+	mgr := newTestManager(t, ca, testDomains)
 	var productionReady atomic.Bool
 	front := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Host == testDomains[0] && !productionReady.Load() {
@@ -559,20 +564,18 @@ func TestIndependentHostnameIssuanceAndExpansion(t *testing.T) {
 	if !slices.Equal(leaf.DNSNames, testDomains[1:]) {
 		t.Fatalf("candidate SANs = %v", leaf.DNSNames)
 	}
-	if installs != 1 {
-		t.Fatalf("installs = %d", installs)
-	}
 	before, _ := os.ReadFile(mgr.certPath())
 	mgr.ensure(ctx)
 	after, _ := os.ReadFile(mgr.certPath())
-	if installs != 1 || !bytes.Equal(before, after) {
+	if !bytes.Equal(before, after) {
 		t.Fatal("issued again without a change")
 	}
 	// A due candidate certificate renews without production validation.
 	key, chain := backdatedCert(t, ca, testDomains[1:], -9*time.Hour, 3*time.Hour)
 	writeCertPair(t, mgr, key, chain)
 	mgr.ensure(ctx)
-	if installs != 2 {
+	renewed, _ := os.ReadFile(mgr.certPath())
+	if bytes.Equal(renewed, chain) {
 		t.Fatal("candidate certificate did not renew")
 	}
 	productionReady.Store(true)
@@ -581,15 +584,16 @@ func TestIndependentHostnameIssuanceAndExpansion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !sameDomainSet(leaf.DNSNames, testDomains) || installs != 3 {
-		t.Fatalf("expanded SANs = %v, installs = %d", leaf.DNSNames, installs)
+	if !sameDomainSet(leaf.DNSNames, testDomains) {
+		t.Fatalf("expanded SANs = %v", leaf.DNSNames)
 	}
 	// A due certificate keeps a name the probe misses until 5/6 of its lifetime.
 	productionReady.Store(false)
 	key, chain = backdatedCert(t, ca, testDomains, -9*time.Hour, 3*time.Hour)
 	writeCertPair(t, mgr, key, chain)
 	mgr.ensure(ctx)
-	if installs != 3 {
+	kept, _ := os.ReadFile(mgr.certPath())
+	if !bytes.Equal(kept, chain) {
 		t.Fatal("renewal dropped a name the certificate still covers")
 	}
 	key, chain = backdatedCert(t, ca, testDomains, -11*time.Hour, time.Hour)
@@ -599,8 +603,8 @@ func TestIndependentHostnameIssuanceAndExpansion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(leaf.DNSNames, testDomains[1:]) || installs != 4 {
-		t.Fatalf("shrunk SANs = %v, installs = %d", leaf.DNSNames, installs)
+	if !slices.Equal(leaf.DNSNames, testDomains[1:]) {
+		t.Fatalf("shrunk SANs = %v", leaf.DNSNames)
 	}
 	if len(mgr.tokens) != 0 {
 		t.Fatal("probe tokens remain")
@@ -611,8 +615,7 @@ func TestPublicProbeRejectsOtherResponses(t *testing.T) {
 	for _, mode := range []string{"not found", "wrong body", "redirect"} {
 		t.Run(mode, func(t *testing.T) {
 			ca := newTestCA(t)
-			installs := 0
-			mgr := newTestManager(t, ca, testDomains, func() { installs++ })
+			mgr := newTestManager(t, ca, testDomains)
 			key, chain := backdatedCert(t, ca, testDomains[1:], -time.Hour, 24*time.Hour)
 			writeCertPair(t, mgr, key, chain)
 			front := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -633,7 +636,7 @@ func TestPublicProbeRejectsOtherResponses(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if installs != 0 || !bytes.Equal(after, chain) {
+			if !bytes.Equal(after, chain) {
 				t.Fatal("unreachable names changed the certificate")
 			}
 			if len(mgr.tokens) != 0 {

@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"crypto/x509/pkix"
 	"errors"
 	"io"
 	"net"
@@ -42,7 +43,7 @@ func startTestEndpoint(t *testing.T, volume credentialVolume, own podAddresses, 
 		own:     own,
 		origDst: func(net.Conn) (string, error) { return captured, nil },
 		logger:  discardLogger(),
-		bufPool: newBufPool(0),
+		bufPool: newBufPool(),
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	listeners, err := e.bind(ctx, 0, 0, 0)
@@ -156,6 +157,29 @@ func TestInboundDeliversAnAuthenticatedPeer(t *testing.T) {
 	}
 	if got := conn.ConnectionState().NegotiatedProtocol; got != armtls.MeshALPN {
 		t.Fatalf("negotiated %q, want %q", got, armtls.MeshALPN)
+	}
+}
+
+// The chain is what authenticates a mesh peer, so a leaf CDS issued is
+// delivered whatever its copied armTLS extension holds: absent (every other
+// case here) or malformed. Nothing on this path reads it.
+func TestInboundDeliversAPeerWhoseARMTLSExtensionIsMalformed(t *testing.T) {
+	ca := newMeshCA(t, time.Hour)
+	volume := testVolume(t)
+	publishSet(t, volume, ca.issue(t, leafSpec{}))
+	app := startEchoServer(t, nil)
+	_, listeners := startTestEndpoint(t, volume, testPodAddress, app.addr())
+	_, peerTLS := ca.meshConfigsFor(t, leafSpec{
+		armtlsExt: &pkix.Extension{Id: armtls.OIDARMTLSAttestation, Value: []byte{0x30, 0x03, 0x02, 0x01}},
+	})
+
+	conn, err := tls.Dial("tcp", listeners.inbound.Addr().String(), peerTLS)
+	if err != nil {
+		t.Fatalf("mesh peer handshake: %v", err)
+	}
+	defer conn.Close()
+	if got := roundTrip(t, conn, "ping"); got != "ping" {
+		t.Fatalf("relayed %q, want %q", got, "ping")
 	}
 }
 
