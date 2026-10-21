@@ -52,6 +52,7 @@ func TestReinjectSweepDeletesOnlyOwnedUninjectedWorkloadPods(t *testing.T) {
 		// Kept: excluded namespace (webhook never injects there).
 		pod("in-release", "c8s-system", "ReplicaSet", cw),
 		pod("in-kube", "kube-system", "ReplicaSet", cw),
+		pod("in-provisioner", "local-path-storage", "ReplicaSet", cw),
 		pod("in-extra", "skip-me", "ReplicaSet", cw),
 	}
 
@@ -72,7 +73,7 @@ func TestReinjectSweepDeletesOnlyOwnedUninjectedWorkloadPods(t *testing.T) {
 	}
 	sort.Strings(got)
 
-	want := []string{"bare", "in-extra", "in-kube", "in-release", "injected", "no-cw"}
+	want := []string{"bare", "in-extra", "in-kube", "in-provisioner", "in-release", "injected", "no-cw"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("surviving pods = %v, want %v", got, want)
 	}
@@ -150,7 +151,7 @@ func TestReinjectSweepReportsCounts(t *testing.T) {
 func TestExcludedNamespaceSetManyExtras(t *testing.T) {
 	got := excludedNamespaceSet("rel", []string{"a", "b", "c", "d", "e", " f ", ""})
 	want := map[string]struct{}{
-		"rel": {}, "kube-system": {}, "kube-public": {}, "kube-node-lease": {},
+		"rel": {}, "kube-system": {}, "kube-public": {}, "kube-node-lease": {}, "local-path-storage": {},
 		"a": {}, "b": {}, "c": {}, "d": {}, "e": {}, "f": {},
 	}
 	if !maps.Equal(got, want) {

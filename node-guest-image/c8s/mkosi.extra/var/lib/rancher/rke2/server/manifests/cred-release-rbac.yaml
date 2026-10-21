@@ -72,7 +72,7 @@ rules:
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete", "deletecollection"]
   # Read-only views of the control plane and the guards themselves. CRDs are
   # baked at image build and deleting one cascade-deletes every object of
-  # that kind (HelmCharts, Calico policies, ConfidentialWorkloads). No
+  # that kind (HelmCharts, Cilium policies, ConfidentialWorkloads). No
   # nodes/proxy, nodes/log, pods/proxy or services/proxy; no exec, attach,
   # port-forward or ephemeral containers; no serviceaccounts/token; no
   # impersonation; no CSR approval; no podsecurityexemptions grant.

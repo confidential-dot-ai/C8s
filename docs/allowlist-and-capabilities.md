@@ -35,6 +35,25 @@ distinguishes either shape from any other entry: it is matched, stamped and
 diffed like the rest, and the same digest may also appear elsewhere under a
 narrower policy — see [union semantics](#a-digest-may-run-many-ways).
 
+### Platform roles (`role`)
+
+A container of the NRI plugin's measured base allowlist may carry `role` —
+`mesh`, `credentials`, `router` or `acme` — which the enforcer grants to a
+container whose verified identity matches that declaration. The field is
+YAML-only, so no served document can claim a role.
+
+One rule separates the two kinds of entry: a role entry pins the subcommand it
+grants the role for, and the arguments and mounts that subcommand is fixed
+with; an entry holding no role pins nothing. So a role is granted per
+component, not per image, and the same image's other subcommands hold none.
+
+The node's `mesh` policy binds each role to its reserved UID and the
+destinations it dials; the router, which answers external traffic, is bound
+instead to the namespace whose pods serve its ports and the ports it answers
+on there, and `acme`, which proves control of the public names, to the ports a
+pod of that namespace may reach outside the mesh in the clear. See
+`docs/armtls.md`.
+
 ### Document shape
 
 ```json
@@ -552,7 +571,7 @@ surfaces names only the violated rules, which are the pod's own spec.
 
 ### What the node TCB is, and who may declare it
 
-Some containers must hold host privilege — the RKE2 static pods, Canal,
+Some containers must hold host privilege — the RKE2 static pods, Cilium,
 C8s's own node-level components. They are the node's trusted computing base,
 and the exemption belongs to whoever measured them.
 
@@ -576,9 +595,11 @@ hooks, CDI devices, sysctls, net devices and the seccomp policy. It does **not**
 carry the fields containerd also generates: Linux capabilities, the `privileged`
 flag itself, `no_new_privs`, masked and readonly paths, the AppArmor profile,
 and a read-only root. So this policy *infers* privilege from the cgroup
-namespace and writable `sysfs`, and cannot see a capability set at all — a pod
-adding `CAP_SYS_ADMIN` without any other privilege passes. Closing that needs
-the enforcement point to read `config.json` directly, not the NRI view.
+namespace and writable `sysfs`, and sees no capability set at all. The
+measured runtime wrapper reads the bundle's `config.json` instead and refuses
+the create for a container of a member pod that holds more than the floor
+(`docs/node-exec-mode.md`); outside a mesh policy, a pod adding
+`CAP_SYS_ADMIN` without any other privilege still passes here.
 
 Two more limits: the host user namespace is the Kubernetes default, so its
 absence is no evidence and `hostUsers: false` is not required; and a cgroup v1
@@ -656,8 +677,7 @@ Two independent points enforce, at different strengths:
    high-water `(digest, argv)` inventory uniquely matches one workload entry,
    the leaf is stamped with that entry's name and the snapshot's version and
    canonical digest (OID `…1.5`, `docs/armtls.md` "Matched workload"), which is
-   what `c8s verify --workload/--allowlist` and
-   `armtls.VerifyPolicy.WorkloadName` enforce against the mesh-CA chain.
+   what `c8s verify --workload/--allowlist` enforces against the mesh-CA chain.
 
 ### What each layer can and cannot promise
 

@@ -22,6 +22,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/crane"
 	"github.com/confidential-dot-ai/c8s/internal/webhook"
 	pkgroutes "github.com/confidential-dot-ai/c8s/pkg/routes"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 const testDigest = "sha256:abababababababababababababababababababababababababababababababab"
@@ -583,9 +584,7 @@ func TestAppendResolvedWorkloadImageArgsExec(t *testing.T) {
 			"--set-string", p + "containers[0].command.policy=any",
 			"--set-string", p + "containers[0].args.policy=any",
 			"--set-string", p + "containers[0].env.policy=any",
-			"--set-string", p + "containers[0].mounts.policy=exact",
-			"--set-string", p + "containers[0].mounts.rules[0].destination=/etc/c8s/certs",
-			"--set-string", p + "containers[0].mounts.rules[0].kind=emptyDir",
+			"--set-string", p + "containers[0].mounts.policy=deny",
 		})
 		mustContainLine(t, f.calls(t), "crane digest ghcr.io/acme/vllm:v1")
 	})
@@ -1005,8 +1004,10 @@ func TestInstallAdoptsWorkloadAfterHelm(t *testing.T) {
 		t.Fatalf("Parse(--routes-out) = %v", err)
 	}
 	want := []pkgroutes.Route{{Path: "/", Match: pkgroutes.MatchPrefix, Backend: pkgroutes.Backend{Address: "c8s-infer.ws.svc.cluster.local:8000", Workload: "infer"}}}
-	if routes := m.Hosts["c8s-router.c8s-system.svc"].Routes; m.Revision < 1e9 || len(m.Hosts) != 1 || !reflect.DeepEqual(routes, want) {
-		t.Errorf("--routes-out = revision %d, hosts %v, want a Unix-time revision routing c8s-router.c8s-system.svc / to %+v", m.Revision, m.Hosts, want[0])
+	// The host is the router's own SAN, which names the namespace it serves.
+	host := "c8s-router." + workloadclaims.RouterNamespace + ".svc"
+	if routes := m.Hosts[host].Routes; m.Revision < 1e9 || len(m.Hosts) != 1 || !reflect.DeepEqual(routes, want) {
+		t.Errorf("--routes-out = revision %d, hosts %v, want a Unix-time revision routing %s / to %+v", m.Revision, m.Hosts, host, want[0])
 	}
 }
 

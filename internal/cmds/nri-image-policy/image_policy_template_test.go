@@ -1,21 +1,39 @@
 package nriimagepolicy
 
 import (
+	"bytes"
+	"errors"
+	"io"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 // The node image's baked boot config is the plugin's other config schema
 // consumer: mkosi.sync renders image-policy.yaml.in by placeholder
 // substitution, so nothing type-checks it against this package's config
-// struct. Load the rendered form here so a drift fails in `go test`, not at
+// struct. Parse the rendered form here so a drift fails in `go test`, not at
 // node boot.
 const nodeImagePolicyTemplate = "../../../node-guest-image/c8s/image-policy.yaml.in"
+
+// The platform images mkosi.sync substitutes, as this test's stand-ins.
+const (
+	meshImageRepo       = "ghcr.io/confidential-dot-ai/armtls-mesh"
+	meshImageDigest     = "sha256:" + "11111111111111111111111111111111111111111111111111111111111111ab"
+	operatorImageRepo   = "ghcr.io/confidential-dot-ai/c8s-operator"
+	operatorImageDigest = "sha256:" + "22222222222222222222222222222222222222222222222222222222222222cd"
+	routerImageRepo     = "docker.io/nginxinc/nginx-unprivileged"
+	routerImageDigest   = "sha256:" + "33333333333333333333333333333333333333333333333333333333333333ef"
+)
 
 func renderNodeImagePolicy(t *testing.T) string {
 	t.Helper()
@@ -23,26 +41,36 @@ func renderNodeImagePolicy(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("read node-image policy template: %v", err)
 	}
-	out := strings.ReplaceAll(string(body), "@PLATFORM@", "snp")
+	out := string(body)
+	for placeholder, value := range map[string]string{
+		"@PLATFORM@":        "snp",
+		"@MESH_REPO@":       meshImageRepo,
+		"@MESH_DIGEST@":     meshImageDigest,
+		"@OPERATOR_REPO@":   operatorImageRepo,
+		"@OPERATOR_DIGEST@": operatorImageDigest,
+		"@ROUTER_REPO@":     routerImageRepo,
+		"@ROUTER_DIGEST@":   routerImageDigest,
+	} {
+		out = strings.ReplaceAll(out, placeholder, value)
+	}
 	if ph := regexp.MustCompile(`@[A-Z_]+@`).FindString(out); ph != "" {
 		t.Fatalf("unsubstituted placeholder %s left in rendered template", ph)
 	}
 	return out
 }
 
-func TestNodeImageBootConfig_LoadsAndAdmitsSystemImages(t *testing.T) {
+func TestNodeImageBootConfig_ParsesAndAdmitsSystemImages(t *testing.T) {
 	rendered := renderNodeImagePolicy(t)
-	if strings.Contains(rendered, "exempt_namespaces") {
-		t.Fatal("exempt_namespaces must not return: admission keys on the base allowlist alone")
+	// policy.exempt_namespaces, not mesh.exempt_namespaces: image admission
+	// keys on the base allowlist alone, while the mesh policy names the
+	// namespaces that host no member pods.
+	if strings.Contains(rendered, "exempt_snapshot_path") {
+		t.Fatal("policy.exempt_namespaces must not return: admission keys on the base allowlist alone")
 	}
 
-	path := filepath.Join(t.TempDir(), "image-policy.yaml")
-	if err := os.WriteFile(path, []byte(rendered), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := loadConfig(path)
+	cfg, err := parseConfig([]byte(rendered))
 	if err != nil {
-		t.Fatalf("the rendered node-image boot config does not load: %v", err)
+		t.Fatalf("the rendered node-image boot config does not parse: %v", err)
 	}
 
 	// The baked config is the only place the boot gate is armed, and
@@ -61,24 +89,33 @@ func TestNodeImageBootConfig_LoadsAndAdmitsSystemImages(t *testing.T) {
 	// instead of at node boot. The local-path helper's busybox is NOT here:
 	// systemfloor drops it (-exclude-ref) and the chart seeds it argv-pinned.
 	systemImages := map[string]string{
-		"sha256:8026310fc44d985bf7c02434ad11d5f826a1aa1567606eea121b24ba9b3b0590": "docker.io/rancher/hardened-addon-resizer:1.8.23-build20260819",
-		"sha256:9ad5a45ef284f2632590750a21deedab9f38d0d9cd8cc555b776a6a68e6d973b": "docker.io/rancher/hardened-calico:v3.32.1-build20260827",
-		"sha256:c9b9b027e4d2cf1731311f9714f4aa633d37d7b0a72c9d3e6fc7a0594350d27c": "docker.io/rancher/hardened-cluster-autoscaler:v1.10.3-build20260819",
-		"sha256:e9435ef6526a98e8d01d98a85d23770859ca49028ebd282912ae5e76f92c0166": "docker.io/rancher/hardened-coredns:v1.14.7-build20260819",
-		"sha256:54a53cb983d47579a8e7cdcd9ae38bc58ff85c28c63fd26de02ce332d5f988ee": "docker.io/rancher/hardened-dns-node-cache:1.26.8-build20260819",
-		"sha256:4f7ffbb3399c9f8137f5d0dd3ca0eddc7909e5d0155b35f1b0449baf96d61bfa": "docker.io/rancher/hardened-etcd:v3.6.14-k3s1-build20260819",
-		"sha256:89d695035932b7b2dc482e8837f83237d80ada7d019a877cdcb379403e32f590": "docker.io/rancher/hardened-flannel:v0.28.9-build20260819",
-		"sha256:4935e86e846d75591113f64ad4e0402718a1eda08f6900a9325d54f1df64945c": "docker.io/rancher/hardened-k8s-metrics-server:v0.9.0-build20260819",
-		"sha256:c8e5263407ac439de1dcdde98c7623efb9e17050715a80259d8bd5e81b5a9289": "docker.io/rancher/hardened-kubernetes:v1.36.4-rke2r1-build20260821",
-		"sha256:8d5872d767f93393273cb1ecad81e4bc08af65311d206bc31ee8f48bc58e51c4": "docker.io/rancher/hardened-snapshot-controller:v8.6.0-build20260819",
-		"sha256:dff360a22c8a28c2af3e78b2b4cf09a6c8edc199e27eb9f7c417bfc1ac41078e": "docker.io/rancher/hardened-traefik:v3.7.11-build20260819",
-		"sha256:ba922718d919920b6b6168e3f55f8effa85032a38bf44d8cc5f4df79a2fe405d": "docker.io/rancher/klipper-helm:v0.13.3-build20260820",
-		"sha256:910944bb0bd94f060a82a56ca1ea1c577d3e49b3473a093a47a985f32e92d94a": "docker.io/rancher/klipper-lb:v0.4.17",
-		"sha256:f548e0e8e3dc1896ca956272154dde3314e8cc4fde0a57577ee9fa1c63f5baf4": "docker.io/rancher/mirrored-pause:3.10.2",
-		"sha256:95a33533d97b10502be19e4f3e60e7ce9c30f4879084709af96259a01253f044": "docker.io/rancher/rke2-cloud-provider:v1.36.4-0.20260817193921-a2fc9574e060-build20260820",
-		"sha256:7956a28b1ebd803f58341ba88fed4c8bc878ec13226c2e55959ba5a88c21341e": "docker.io/rancher/rke2-runtime:v1.36.4-rke2r1",
-		"sha256:25cc340fe6fd53c101e16fc452f503e7a92c219c64a80ed5381784b522dbbf77": "nvcr.io/nvidia/k8s-device-plugin:v0.19.3@sha256:25cc340fe6fd53c101e16fc452f503e7a92c219c64a80ed5381784b522dbbf77",
+		"sha256:0d26512c90d935db3180f47a7a716e3dfac0847ec29076fb5487e535125a86a8": "docker.io/rancher/hardened-cni-plugins:v1.9.1-build20260717",
+		"sha256:10b602130d98d8de3c40213f938430a962b14ccf4b405cdbcb2af62ba52dd0e6": "docker.io/rancher/mirrored-cilium-operator-azure:v1.19.6",
+		"sha256:134ab48d00e67bed72fa43e0492adf2f0c78383e21da7ee1aeb5b7aa8ef2e7ee": "docker.io/rancher/mirrored-cilium-cilium:v1.19.6",
+		"sha256:1d3cd7f07e11e451683002b925a25ccba74d9aed2fc2e454a7173d260a2d11bd": "docker.io/rancher/mirrored-cilium-hubble-relay:v1.19.6",
 		"sha256:1eba82e9c386038b4af6d69cca7519fac738c28c42735ed48ce70c882ad0d80f": "rancher/local-path-provisioner:v0.0.36@sha256:1eba82e9c386038b4af6d69cca7519fac738c28c42735ed48ce70c882ad0d80f",
+		"sha256:25cc340fe6fd53c101e16fc452f503e7a92c219c64a80ed5381784b522dbbf77": "nvcr.io/nvidia/k8s-device-plugin:v0.19.3@sha256:25cc340fe6fd53c101e16fc452f503e7a92c219c64a80ed5381784b522dbbf77",
+		"sha256:26446592541d6e37333850b37bd59cccec69f6f2f02fd50a8588d3f1a136717f": "docker.io/rancher/mirrored-cilium-hubble-ui-backend:v0.13.5",
+		"sha256:2f28e344b83ac28bf9a561b666dd3e935c7238d8d4be4d2c840053e178718945": "docker.io/rancher/mirrored-cilium-operator-aws:v1.19.6",
+		"sha256:30df3131622e08f3051b171af68cd7997609aa19f7bd692b70b5b6bd6fcd659e": "docker.io/rancher/mirrored-cilium-certgen:v0.4.6",
+		"sha256:4935e86e846d75591113f64ad4e0402718a1eda08f6900a9325d54f1df64945c": "docker.io/rancher/hardened-k8s-metrics-server:v0.9.0-build20260819",
+		"sha256:4f7ffbb3399c9f8137f5d0dd3ca0eddc7909e5d0155b35f1b0449baf96d61bfa": "docker.io/rancher/hardened-etcd:v3.6.14-k3s1-build20260819",
+		"sha256:54a53cb983d47579a8e7cdcd9ae38bc58ff85c28c63fd26de02ce332d5f988ee": "docker.io/rancher/hardened-dns-node-cache:1.26.8-build20260819",
+		"sha256:59ab31ea62509b1596e1dfd436e781f5e7549a15aea82aab05e29657ac099f43": "docker.io/rancher/mirrored-cilium-clustermesh-apiserver:v1.19.6",
+		"sha256:5f804f48df0c42c66aeff3252f36277ecbfd4e968bf3ec81b0717323355e7add": "docker.io/rancher/mirrored-cilium-cilium-envoy:v1.36.9-1782267392-edeb3f2af56c37c407efa1f63f0b32f595399bbc",
+		"sha256:7956a28b1ebd803f58341ba88fed4c8bc878ec13226c2e55959ba5a88c21341e": "docker.io/rancher/rke2-runtime:v1.36.4-rke2r1",
+		"sha256:8026310fc44d985bf7c02434ad11d5f826a1aa1567606eea121b24ba9b3b0590": "docker.io/rancher/hardened-addon-resizer:1.8.23-build20260819",
+		"sha256:8d5872d767f93393273cb1ecad81e4bc08af65311d206bc31ee8f48bc58e51c4": "docker.io/rancher/hardened-snapshot-controller:v8.6.0-build20260819",
+		"sha256:910944bb0bd94f060a82a56ca1ea1c577d3e49b3473a093a47a985f32e92d94a": "docker.io/rancher/klipper-lb:v0.4.17",
+		"sha256:95a33533d97b10502be19e4f3e60e7ce9c30f4879084709af96259a01253f044": "docker.io/rancher/rke2-cloud-provider:v1.36.4-0.20260817193921-a2fc9574e060-build20260820",
+		"sha256:9906c0b60c9d65c467ccc541154728ad00886a3f8012fe7b53e88404f06babaa": "docker.io/rancher/mirrored-cilium-hubble-ui:v0.13.5",
+		"sha256:aadc3b1a2b8b682f5b4f7b01e182eeeac16f1177af0561b07825abab1d654b2b": "docker.io/rancher/mirrored-cilium-operator-generic:v1.19.6",
+		"sha256:ba922718d919920b6b6168e3f55f8effa85032a38bf44d8cc5f4df79a2fe405d": "docker.io/rancher/klipper-helm:v0.13.3-build20260820",
+		"sha256:c8e5263407ac439de1dcdde98c7623efb9e17050715a80259d8bd5e81b5a9289": "docker.io/rancher/hardened-kubernetes:v1.36.4-rke2r1-build20260821",
+		"sha256:c9b9b027e4d2cf1731311f9714f4aa633d37d7b0a72c9d3e6fc7a0594350d27c": "docker.io/rancher/hardened-cluster-autoscaler:v1.10.3-build20260819",
+		"sha256:dff360a22c8a28c2af3e78b2b4cf09a6c8edc199e27eb9f7c417bfc1ac41078e": "docker.io/rancher/hardened-traefik:v3.7.11-build20260819",
+		"sha256:e9435ef6526a98e8d01d98a85d23770859ca49028ebd282912ae5e76f92c0166": "docker.io/rancher/hardened-coredns:v1.14.7-build20260819",
+		"sha256:f548e0e8e3dc1896ca956272154dde3314e8cc4fde0a57577ee9fa1c63f5baf4": "docker.io/rancher/mirrored-pause:3.10.2",
 	}
 	// The base allowlist carries one any-argv entry per admitted image;
 	// index it by digest for the lookups below.
@@ -94,12 +131,54 @@ func TestNodeImageBootConfig_LoadsAndAdmitsSystemImages(t *testing.T) {
 		}
 	}
 
-	// The template contains the generated system set. Boot preparation adds
-	// the separately rendered chart component seed before containerd starts.
-	// The exact count catches an entry a regen adds or drops.
-	if want := len(systemImages); len(cfg.Allowlist.Base.Workloads) != want {
-		t.Errorf("baked base allowlist has %d entries, want %d (%d system images)",
-			len(cfg.Allowlist.Base.Workloads), want, len(systemImages))
+	// Every entry is either one of the generated system images or one of the
+	// role entries, so an entry a regen adds or drops fails here. Boot
+	// preparation adds the separately rendered chart component seed before
+	// containerd starts.
+	entries := roleEntries()
+	for name, w := range cfg.Allowlist.Base.Workloads {
+		if _, holdsRole := entries[name]; holdsRole {
+			continue
+		}
+		for _, d := range w.Digests() {
+			if _, generated := systemImages[d.String()]; !generated {
+				t.Errorf("base entry %q is neither a generated system image nor a role entry", name)
+			}
+		}
+	}
+
+	// A platform role is granted from the node's own measured base, where one
+	// entry per role-holding component pins the argv that component is
+	// launched with. That the pins are the injector's own is held in
+	// internal/webhook (TestMeasuredBaseAdmitsTheInjectedArgv); here the
+	// pinned launch must resolve to exactly one role, which RoleOf reports
+	// only while no second entry claims the same launch for another role.
+	roles := newPolicyStore(cfg.Allowlist.Base)
+	for name, want := range entries {
+		entry, ok := cfg.Allowlist.Base.Workloads[name]
+		if !ok {
+			t.Errorf("the baked base carries no %q entry, so that component holds no role", name)
+			continue
+		}
+		if got := roles.base.RoleOf(entryLaunch(entry)); got != want {
+			t.Errorf("the base grants the %q launch the role %q, want %q", name, got, want)
+		}
+	}
+
+	// Only a pinned launch holds a role: the endpoint's entrypoint without the
+	// arguments it is pinned with, the other image's subcommand, and a pinned
+	// launch carrying a pod-chosen credential path all hold none.
+	for _, launch := range []launchEvidence{
+		{meshImageDigest, []string{"/app/c8s", "armtls-mesh"}},
+		{meshImageDigest, []string{"/app/c8s", "armtls-mesh", "--cert-path=/pod/tls.crt"}},
+		{meshImageDigest, []string{"/c8s", "get-cert"}},
+		{operatorImageDigest, []string{"/c8s", "operator"}},
+		{operatorImageDigest, []string{"/c8s", "cds"}},
+		{operatorImageDigest, []string{"/c8s", "probe-file", "--wait", "--timeout=3m0s", "/pod/tls.crt"}},
+	} {
+		if got := roles.base.RoleOf(launch.container()); got != "" {
+			t.Errorf("%s running %v took the %q role, want none", launch.digest, launch.argv, got)
+		}
 	}
 	for digest := range baseEntries {
 		if strings.Contains(baseEntries[digest], "busybox") {
@@ -107,13 +186,385 @@ func TestNodeImageBootConfig_LoadsAndAdmitsSystemImages(t *testing.T) {
 		}
 	}
 
-	// System images must remain admitted with their host mounts at final admission.
-	store := newPolicyStore(cfg.Allowlist.Base)
-	for d := range baseEntries {
-		if !store.baseAdmits(allowlist.RunningContainer{Digest: d, Mounts: []allowlist.ObservedMount{
-			{Destination: "/host", Class: allowlist.MountHost, Storage: allowlist.MountUnknown},
-		}}, launchFinal) {
-			t.Errorf("base entry %q is not admitted by digest alone", d)
+	// The measured mesh policy is what lets a baked node host member pods.
+	// The capture ports and the mesh identity are shared with the injector, so
+	// a drift here would seal pods against their own endpoint.
+	mesh := cfg.Mesh
+	if mesh == nil {
+		t.Fatal("the baked config carries no mesh policy, so the node hosts no member pods")
+	}
+	if !cfg.requiresTrustedMeshEnforcement() {
+		t.Error("the baked config does not require trusted mesh enforcement; its members would rest on policy the cluster admin writes")
+	}
+	for _, ns := range []string{"kube-system", "c8s-system"} {
+		if !slices.Contains(mesh.ExemptNamespaces, ns) {
+			t.Errorf("mesh.exempt_namespaces = %v, want %s exempt: it runs the node's own components", mesh.ExemptNamespaces, ns)
 		}
+	}
+	if got, want := mesh.Resolver.String(), "10.53.0.10"; got != want {
+		t.Errorf("mesh.resolver = %s, want the baked cluster-dns %s", got, want)
+	}
+	wantCapture := capturePorts{
+		Outbound: uint16(workloadclaims.MeshOutboundPort),
+		Inbound:  uint16(workloadclaims.MeshInboundPort),
+		Health:   uint16(workloadclaims.MeshHealthPort),
+	}
+	if mesh.Capture != wantCapture {
+		t.Errorf("mesh.capture = %+v, want the ports the injected endpoint binds %+v", mesh.Capture, wantCapture)
+	}
+	bound, ok := mesh.role(meshRole)
+	if !ok || bound.UID != workloadclaims.MeshUID {
+		t.Errorf("mesh role = %+v, want the reserved uid %d", bound, workloadclaims.MeshUID)
+	}
+
+	// The acme role's egress exception excludes the cluster's own ranges, so
+	// the measured policy carries them.
+	wantRanges := []string{"10.52.0.0/16", "10.53.0.0/16"}
+	if got := prefixStrings(mesh.ClusterRanges); !slices.Equal(got, wantRanges) {
+		t.Errorf("mesh.cluster_ranges = %v, want the baked cluster-cidr and service-cidr %v", got, wantRanges)
+	}
+
+	// Every base entry must still admit the launch it describes at final
+	// admission: a system image with its host mounts, a role entry with the
+	// argv and mounts it pins.
+	store := newPolicyStore(cfg.Allowlist.Base)
+	for name, w := range cfg.Allowlist.Base.Workloads {
+		if !store.baseAdmits(entryLaunch(w), launchFinal) {
+			t.Errorf("base entry %q does not admit the launch it describes", name)
+		}
+	}
+}
+
+// A baked node takes its front-door mode from the launch file, so the base
+// pins the one shape that chart renders: the credentials it serves, the
+// sidecar's leaf and key, its measured configuration directory and its
+// scratch. The enforcer resolves the role from the entry that admits the
+// launch, so that shape must hold the router role on its own.
+func TestNodeImageBaseGrantsTheFrontDoorShape(t *testing.T) {
+	cfg, err := parseConfig([]byte(renderNodeImagePolicy(t)))
+	if err != nil {
+		t.Fatalf("the rendered node-image boot config does not parse: %v", err)
+	}
+	entry, ok := cfg.Allowlist.Base.Workloads["c8s-router-nginx"]
+	if !ok {
+		t.Fatal("the baked base carries no front-door entry")
+	}
+	if len(entry.Containers) != 1 {
+		t.Fatalf("the front door is pinned by %d entries, want the one shape a baked node renders", len(entry.Containers))
+	}
+	roles := newPolicyStore(cfg.Allowlist.Base)
+	for _, container := range entry.Containers {
+		launch := allowlist.RunningContainer{
+			Digest: container.Digest.String(),
+			Argv:   slices.Clone(container.Command.Argv),
+			Mounts: entryMounts(container.Mounts),
+		}
+		if got := roles.base.RoleOf(launch); got != routerRole {
+			t.Errorf("a front door mounting %v holds the role %q, want %q", mountDestinations(container.Mounts), got, routerRole)
+		}
+	}
+}
+
+// Every emptyDir rule of a role entry names the pod volume behind it, so two
+// destinations of one container cannot be fed from each other's volume.
+func TestNodeImageBaseBindsEveryRoleVolume(t *testing.T) {
+	cfg, err := parseConfig([]byte(renderNodeImagePolicy(t)))
+	if err != nil {
+		t.Fatalf("the rendered node-image boot config does not parse: %v", err)
+	}
+	for name := range roleEntries() {
+		entry, ok := cfg.Allowlist.Base.Workloads[name]
+		if !ok {
+			continue
+		}
+		for _, container := range entry.Containers {
+			for _, rule := range container.Mounts.Rules {
+				if rule.Kind != allowlist.MountEmptyDir {
+					continue
+				}
+				if rule.Source == "" {
+					t.Errorf("%s pins %s without naming its volume", name, rule.Destination)
+				}
+			}
+		}
+	}
+}
+
+// The front door's key directory may not be bound at the attestation
+// sidecar's chain destination: that swap would hand the serving key to the
+// pod's route authority.
+func TestNodeImageBaseRefusesASwappedVolume(t *testing.T) {
+	cfg, err := parseConfig([]byte(renderNodeImagePolicy(t)))
+	if err != nil {
+		t.Fatalf("the rendered node-image boot config does not parse: %v", err)
+	}
+	entry, ok := cfg.Allowlist.Base.Workloads["c8s-router-upstream"]
+	if !ok {
+		t.Fatal("the baked base carries no attestation sidecar entry")
+	}
+	store := newPolicyStore(cfg.Allowlist.Base)
+	for _, container := range entry.Containers {
+		launch := allowlist.RunningContainer{
+			Digest: container.Digest.String(),
+			Argv:   append(slices.Clone(container.Command.Argv), "--front-door-mode=acme"),
+			Mounts: entryMounts(container.Mounts),
+		}
+		if !store.baseAdmits(launch, launchFinal) {
+			t.Fatalf("the entry does not admit the launch it describes: %v", mountDestinations(container.Mounts))
+		}
+		swapped := slices.Clone(launch.Mounts)
+		for i := range swapped {
+			if swapped[i].Destination == "/etc/c8s-acme-tls" {
+				swapped[i].Source = podVolumeSource("acme-key")
+				swapped[i].Volume = "acme-key"
+			}
+		}
+		if slices.Equal(swapped, launch.Mounts) {
+			continue
+		}
+		launch.Mounts = swapped
+		if store.baseAdmits(launch, launchFinal) {
+			t.Error("the attestation sidecar was admitted with the key volume bound at its chain destination")
+		}
+	}
+}
+
+// A control plane that adds a credential-role container mounting the front
+// door's key directory to the router pod composes a second reader of the
+// serving key. The base grants that launch no declaration that pins its
+// mounts, and a role container of the router's namespace runs only under one
+// (requireRoleOnlyPod).
+func TestNodeImageBaseRefusesAComposedKeyReader(t *testing.T) {
+	cfg, err := parseConfig([]byte(renderNodeImagePolicy(t)))
+	if err != nil {
+		t.Fatalf("the rendered node-image boot config does not parse: %v", err)
+	}
+	entry, ok := cfg.Allowlist.Base.Workloads["c8s-get-cert"]
+	if !ok {
+		t.Fatal("the baked base carries no certificate-sidecar entry")
+	}
+	i := slices.IndexFunc(entry.Containers, func(c allowlist.Container) bool {
+		return c.Mounts.Policy == allowlist.PolicyExact
+	})
+	if i < 0 {
+		t.Fatal("the baked base pins no mount set for the router pod's certificate sidecar")
+	}
+	declared := entry.Containers[i]
+	store := newPolicyStore(cfg.Allowlist.Base)
+	launch := allowlist.RunningContainer{
+		Digest: declared.Digest.String(),
+		Argv:   append(slices.Clone(declared.Command.Argv), "--san=c8s-router.c8s-router.svc"),
+		Mounts: entryMounts(declared.Mounts),
+	}
+	if !store.base.BindsRoleMounts(launch, CredentialRole) {
+		t.Fatalf("the entry does not admit the launch it describes: %v", mountDestinations(declared.Mounts))
+	}
+	launch.Mounts = append(launch.Mounts, allowlist.ObservedMount{
+		Destination: "/etc/c8s-acme-key",
+		Source:      podVolumeSource("acme-key"),
+		Volume:      "acme-key",
+		Class:       allowlist.MountEmptyDir,
+		Storage:     allowlist.MountMemory,
+	})
+	if store.base.BindsRoleMounts(launch, CredentialRole) {
+		t.Error("a credential client was pinned-mount admitted while mounting the front door's serving key")
+	}
+}
+
+// mountDestinations names the mount set an entry pins, for a failure message.
+func mountDestinations(p allowlist.MountPolicy) []string {
+	destinations := make([]string, 0, len(p.Rules))
+	for _, rule := range p.Rules {
+		destinations = append(destinations, rule.Destination)
+	}
+	return destinations
+}
+
+// roleEntries is the role each base entry grants the component it pins.
+func roleEntries() map[string]string {
+	return map[string]string{
+		"c8s-mesh-endpoint":   meshRole,
+		"c8s-get-cert":        CredentialRole,
+		"c8s-probe-file":      CredentialRole,
+		"c8s-get-secret":      CredentialRole,
+		"c8s-get-volume":      CredentialRole,
+		"c8s-allowlist-proxy": CredentialRole,
+		"c8s-router-nginx":    routerRole,
+		"c8s-acme":            acmeRole,
+		"c8s-router-upstream": upstreamRole,
+	}
+}
+
+// launchEvidence is the launch evidence the enforcer resolves a role from: the
+// bytes and the argv they ran with.
+type launchEvidence struct {
+	digest string
+	argv   []string
+}
+
+// container carries the mounts the injected containers receive, so the argv is
+// the only reason a role is refused.
+func (l launchEvidence) container() allowlist.RunningContainer {
+	return allowlist.RunningContainer{
+		Digest: l.digest,
+		Argv:   l.argv,
+		Mounts: []allowlist.ObservedMount{{
+			Destination: "/etc/c8s/certs",
+			Source:      podVolumeSource("c8s-certs"),
+			Volume:      "c8s-certs",
+			Class:       allowlist.MountEmptyDir,
+			Storage:     allowlist.MountMemory,
+		}},
+	}
+}
+
+// entryLaunch is the launch an entry describes: the argv it pins, and the
+// mounts it pins where it pins any.
+func entryLaunch(w allowlist.Workload) allowlist.RunningContainer {
+	c := w.Containers[0]
+	return allowlist.RunningContainer{
+		Digest: c.Digest.String(),
+		Argv:   append(slices.Clone(c.Command.Argv), c.Args.Argv...),
+		Mounts: entryMounts(c.Mounts),
+	}
+}
+
+// entryMounts is mount evidence the policy admits: the mounts it pins, or a
+// host mount where it pins none.
+func entryMounts(p allowlist.MountPolicy) []allowlist.ObservedMount {
+	if p.Policy != allowlist.PolicyExact {
+		return []allowlist.ObservedMount{{
+			Destination: "/host",
+			Class:       allowlist.MountHost,
+			Storage:     allowlist.MountUnknown,
+		}}
+	}
+	mounts := make([]allowlist.ObservedMount, 0, len(p.Rules))
+	for _, rule := range p.Rules {
+		mounts = append(mounts, ruleMount(rule))
+	}
+	return mounts
+}
+
+// ruleMount is the mount evidence a rule describes, as the node reports it: a
+// kubelet volume's source ends in the pod volume's name, and a host mount
+// carries the digest of its source path.
+func ruleMount(rule allowlist.MountRule) allowlist.ObservedMount {
+	if rule.Kind == allowlist.MountHost {
+		digest, err := allowlist.HostSourceDigest(rule.Source)
+		if err != nil {
+			digest = ""
+		}
+		return allowlist.ObservedMount{
+			Destination:      rule.Destination,
+			Source:           rule.Source,
+			Class:            rule.Kind,
+			Storage:          allowlist.MountUnknown,
+			HostSourceDigest: digest,
+			ReadOnly:         rule.ReadOnly,
+		}
+	}
+	return allowlist.ObservedMount{
+		Destination: rule.Destination,
+		Source:      podVolumeSource(rule.Source),
+		Volume:      rule.Source,
+		Class:       rule.Kind,
+		Storage:     allowlist.MountMemory,
+	}
+}
+
+// podVolumeSource is the host source the kubelet gives a pod volume, which is
+// what binds a mount to the volume behind it.
+func podVolumeSource(volume string) string {
+	return "/var/lib/kubelet/pods/5a1d-pod/volumes/kubernetes.io~empty-dir/" + volume
+}
+
+// prefixStrings renders the ranges as the config writes them.
+func prefixStrings(ranges []netip.Prefix) []string {
+	out := make([]string, 0, len(ranges))
+	for _, in := range ranges {
+		out = append(out, in.String())
+	}
+	return out
+}
+
+// bakedAddonManifests is where RKE2 applies the node image's own addons at
+// boot.
+const bakedAddonManifests = "../../../node-guest-image/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests"
+
+// podKinds are the baked manifest kinds that run a pod.
+var podKinds = []string{"Pod", "Deployment", "DaemonSet", "StatefulSet", "Job"}
+
+// The baked addons run before any C8s install, so their pods carry no mesh
+// endpoint: a pod ruleset would send their traffic to a listener that does not
+// exist, and the privilege floor would refuse the root helper pods one of them
+// creates. Every namespace they run a pod in keeps the node's own rules.
+func TestNodeImageBootConfig_ExemptsTheBakedAddonNamespaces(t *testing.T) {
+	rendered := renderNodeImagePolicy(t)
+	cfg, err := parseConfig([]byte(rendered))
+	if err != nil {
+		t.Fatalf("the rendered node-image boot config does not parse: %v", err)
+	}
+	if cfg.Mesh == nil {
+		t.Fatal("the baked config carries no mesh policy, so the node hosts no member pods")
+	}
+	for _, namespace := range bakedAddonNamespaces(t) {
+		if !slices.Contains(cfg.Mesh.ExemptNamespaces, namespace) {
+			t.Errorf("mesh.exempt_namespaces = %v, want %s exempt: the baked addon it holds runs no mesh endpoint",
+				cfg.Mesh.ExemptNamespaces, namespace)
+		}
+	}
+}
+
+// bakedAddonNamespaces are the namespaces the baked manifests run a pod in.
+func bakedAddonNamespaces(t *testing.T) []string {
+	t.Helper()
+	entries, err := os.ReadDir(bakedAddonManifests)
+	if err != nil {
+		t.Fatalf("read the baked manifests: %v", err)
+	}
+	var namespaces []string
+	for _, entry := range entries {
+		body, err := os.ReadFile(filepath.Join(bakedAddonManifests, entry.Name()))
+		if err != nil {
+			t.Fatalf("read %s: %v", entry.Name(), err)
+		}
+		for _, doc := range manifestDocs(t, entry.Name(), body) {
+			if !slices.Contains(podKinds, doc.Kind) || doc.Metadata.Namespace == "" {
+				continue
+			}
+			if !slices.Contains(namespaces, doc.Metadata.Namespace) {
+				namespaces = append(namespaces, doc.Metadata.Namespace)
+			}
+		}
+	}
+	if len(namespaces) == 0 {
+		t.Fatalf("no manifest under %s runs a pod in a namespace", bakedAddonManifests)
+	}
+	return namespaces
+}
+
+// manifestDoc is as much of a baked document as the namespaces above need.
+type manifestDoc struct {
+	Kind     string `yaml:"kind"`
+	Metadata struct {
+		Namespace string `yaml:"namespace"`
+	} `yaml:"metadata"`
+}
+
+func manifestDocs(t *testing.T, name string, body []byte) []manifestDoc {
+	t.Helper()
+	var docs []manifestDoc
+	decoder := yaml.NewDecoder(bytes.NewReader(body))
+	for {
+		var doc manifestDoc
+		err := decoder.Decode(&doc)
+		if errors.Is(err, io.EOF) {
+			return docs
+		}
+		if err != nil {
+			t.Fatalf("parse %s: %v", name, err)
+		}
+		docs = append(docs, doc)
 	}
 }

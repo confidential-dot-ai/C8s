@@ -12,14 +12,16 @@ CLUSTER="${C8S_IT_CLUSTER:-c8s-it}"
 NODE_IMAGE="${C8S_IT_NODE_IMAGE:-kindest/node:v1.34.11@sha256:44e222ee2132dab25ff87301682f89eb82c7880ea3a1bf543bfe9708fd08d67d}"
 IMAGE_TAG=it
 NS=c8s-system
+# The namespace whose pods serve the router's own ports. A fixed name: the
+# measured mesh policy carries it (internal/helmchart.RouterNamespace).
+ROUTER_NS=c8s-router
 CDS_LOCAL_PORT=18443
-ROUTER_LOCAL_PORT=18444
 ADOPTED_LOCAL_PORT=18445
 # The router's default router.san, which `c8s install --upstream` makes the
 # route manifest's host.
-ROUTER_HOST="c8s-router.c8s-system.svc"
+ROUTER_HOST="c8s-router.$ROUTER_NS.svc"
 # The mock attestation-api's synthetic launch digest (all zero). Pinned into
-# cds.measurements / armtlsMesh.measurements so every armTLS hop is verified
+# cds.measurements so every armTLS hop is verified
 # against it, exactly as a pinned production measurement.
 MOCK_MEASUREMENT="000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
 # Its Deployment (manifests/mock-attestation.yaml) and the node address every
@@ -40,6 +42,13 @@ pod_fixture() {
     python3 "$CLUSTER_HARNESS_DIR/pod-fixture.py" "$mode" "$name" "$ns" "$CURL_IMAGE" -- "$@"
 }
 
+# front_door_pod <name> <namespace> <ca-configmap> <url>: a curl Pod that
+# verifies the front door against the mesh CA in that ConfigMap.
+front_door_pod() {
+    python3 "$CLUSTER_HARNESS_DIR/pod-fixture.py" front-door "$1" "$2" "$CURL_IMAGE" \
+        --ca-configmap "$3" -- curl -sS --cacert /ca/ca.pem "$4"
+}
+
 NODE="${NODE:-}"  # kind node container name, resolved after cluster creation
 NODE_IP="${NODE_IP:-}"
 
@@ -48,35 +57,19 @@ log() { echo ""; echo "=== $* ==="; }
 diagnostics() {
     echo "--- cluster state (diagnostics) ---"
     kubectl get pods -A -o wide 2>&1 || true
+    kubectl get events -A --sort-by=.lastTimestamp 2>&1 | tail -40 || true
+    kubectl -n "$ROUTER_NS" describe pods 2>&1 | tail -60 || true
+    kubectl -n "$ROUTER_NS" get pods -o json 2>&1 || true
+    kubectl -n "$ROUTER_NS" logs deploy/c8s-router -c cds-attest --tail=40 2>&1 || true
     kubectl -n "$NS" logs deploy/c8s-cds --tail=40 2>&1 || true
     kubectl -n "$NS" logs deploy/c8s-operator --tail=40 2>&1 || true
     kubectl -n "$NS" logs ds/c8s-nri-image-policy-worker -c install --tail=80 2>&1 || true
     if [ -n "$NODE" ]; then
         node_exec journalctl -u containerd --no-pager -n 100 2>&1 || true
+        node_exec cat /etc/nri/conf.d/image-policy.yaml 2>&1 || true
+        node_exec sh -c 'for id in $(crictl ps --name cds-attest -q); do crictl inspect "$id"; done' 2>&1 || true
+        node_exec sh -c 'for p in /var/lib/kubelet/pods/*/volumes/*/*; do stat -f -c "%T %n" "$p"; done' 2>&1 || true
     fi
-    mesh_diagnostics
-}
-
-# The mesh assertions are counter and membership claims, and neither survives
-# into the log otherwise: a failed one leaves no way to tell a stale ipset from
-# a rule that never fired from a workload reached in plaintext.
-mesh_pod() { kubectl -n "$NS" get pod -l app=c8s-armtls-mesh -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true; }
-
-mesh_diagnostics() {
-    local pod
-    pod="$(mesh_pod)"
-    [ -n "$pod" ] || return 0
-    echo "--- armtls-mesh counters ---"
-    kubectl -n "$NS" exec "$pod" -c iptables-sync -- \
-        sh -c 'cat /tmp/armtls-iptables-metrics.json' 2>&1 || true
-    echo "--- cw guard chains and ipsets ---"
-    for chain in ARMTLS-MESH-CW ARMTLS-MESH-CW-EGRESS; do
-        kubectl -n "$NS" exec "$pod" -c iptables-sync -- iptables -L "$chain" -n -v -x 2>&1 || true
-    done
-    kubectl -n "$NS" exec "$pod" -c iptables-sync -- iptables -L FORWARD -n --line-numbers 2>&1 | head -12 || true
-    for set in ARMTLS-MESH-CW-PODS ARMTLS-MESH-PODS ARMTLS-MESH-LOCAL-PODS; do
-        kubectl -n "$NS" exec "$pod" -c iptables-sync -- ipset list "$set" 2>&1 | head -20 || true
-    done
 }
 
 fail() {
@@ -125,55 +118,6 @@ cds_pf_stop() {
     pid="$(cat "$WORKDIR/cds-pf.pid" 2>/dev/null || true)"
     [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
     rm -f "$WORKDIR/cds-pf.pid"
-}
-
-# --- Router front door helpers ---
-
-router_healthy() { curl -sSk -o /dev/null "https://127.0.0.1:$ROUTER_LOCAL_PORT/healthz" 2>/dev/null; }
-
-# router_pf_start opens the port-forward to the router Service, or reuses the
-# one this WORKDIR opened.
-router_pf_start() {
-    local pid
-    pid="$(cat "$WORKDIR/router-pf.pid" 2>/dev/null || true)"
-    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && router_healthy && return 0
-    kubectl -n "$NS" port-forward svc/c8s-router "$ROUTER_LOCAL_PORT:443" >/dev/null 2>&1 &
-    echo "$!" > "$WORKDIR/router-pf.pid"
-    for _ in $(seq 1 30); do
-        router_healthy && return 0
-        sleep 1
-    done
-    fail "router port-forward never came up"
-}
-
-router_pf_stop() {
-    local pid
-    pid="$(cat "$WORKDIR/router-pf.pid" 2>/dev/null || true)"
-    [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
-    rm -f "$WORKDIR/router-pf.pid"
-}
-
-# router_get <host> <path> <out-file> -> http code; a request through the
-# router front door for <host>, which nginx hands the routing listener as Host.
-# The path goes out as given (--path-as-is), empty segments included.
-router_get() {
-    router_pf_start
-    curl -sSk --path-as-is -o "$3" -w '%{http_code}' \
-        --resolve "$1:$ROUTER_LOCAL_PORT:127.0.0.1" "https://$1:$ROUTER_LOCAL_PORT$2" || true
-}
-
-# await_route <host> <path> <code> [<body substring>]: the router polls the
-# route manifest, so a write takes a poll interval to apply.
-await_route() {
-    local code
-    for _ in $(seq 1 30); do
-        code="$(router_get "$1" "$2" "$WORKDIR/route-body")"
-        if [ "$code" = "$3" ] && { [ -z "${4:-}" ] || grep -q "$4" "$WORKDIR/route-body"; }; then
-            return 0
-        fi
-        sleep 2
-    done
-    fail "GET https://$1$2 through the router: want HTTP $3${4:+ with \"$4\"}, got $code: $(head -c 300 "$WORKDIR/route-body")"
 }
 
 # any_workload <digest> <image>: print a workload entry that admits the digest
@@ -243,41 +187,4 @@ run_pod() {
     done
     kubectl logs "$name" -n "$ns" 2>/dev/null || true
     kubectl delete pod "$name" -n "$ns" --ignore-not-found >/dev/null 2>&1 || true
-}
-
-# mesh_metric <pattern>: sum the matching series of the node's armtls-mesh
-# /metrics (hostNetwork). A missing series reads as 0.
-mesh_metric() {
-    run_pod default it-mesh-metrics "curl -sf --max-time 10 http://$NODE_IP:15021/metrics" \
-        | awk -v pat="$1" '$0 ~ pat {sum += $NF} END {print sum+0}'
-}
-
-# await_metric_above <pattern> <baseline> <what>
-await_metric_above() {
-    local pattern="$1" baseline="$2" what="$3" v
-    for _ in $(seq 1 18); do
-        v="$(mesh_metric "$pattern")"
-        [ "${v:-0}" -gt "$baseline" ] && return 0
-        sleep 5
-    done
-    fail "$what: no increase above baseline $baseline within 90s"
-}
-
-# await_ipset <set> <ip>: the mesh syncs pod IPs into its ipsets on a ~30s
-# tick; dialing before the client pod lands in ARMTLS-MESH-LOCAL-PODS bypasses
-# interception entirely, so gate every mesh assertion on membership. The kind
-# node has no ipset CLI; the mesh's iptables-sync container does and shares
-# the node's network namespace.
-MESH_POD=""
-await_ipset() {
-    local set="$1" ip="$2"
-    if [ -z "$MESH_POD" ]; then
-        MESH_POD="$(mesh_pod)"
-        [ -n "$MESH_POD" ] || fail "armtls-mesh pod not found"
-    fi
-    for _ in $(seq 1 18); do
-        kubectl -n "$NS" exec "$MESH_POD" -c iptables-sync -- ipset test "$set" "$ip" 2>/dev/null && return 0
-        sleep 5
-    done
-    fail "$ip never appeared in ipset $set"
 }

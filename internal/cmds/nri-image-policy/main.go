@@ -81,7 +81,7 @@ func Run(args []string) error {
 		return runPluginReady(args[1:])
 	}
 	fs := flag.NewFlagSet("nri-image-policy", flag.ContinueOnError)
-	configPath := fs.String("config", defaultConfigPath, "path to config file")
+	configPath := fs.String("config", DefaultConfigPath, "path to config file")
 	healthAddr := fs.String("health-addr", ":8080", "health check listen address")
 	readTimeout := fs.Duration("read-timeout", 5*time.Second, "HTTP server read timeout")
 	writeTimeout := fs.Duration("write-timeout", 10*time.Second, "HTTP server write timeout")
@@ -123,7 +123,7 @@ func Run(args []string) error {
 	var wlClient allowlistclient.Client
 	if cfg.PullEnabled() {
 		logger.Info("initializing allowlist client", "url", cfg.Allowlist.Pull.URL)
-		httpClient, err := allowlistPullHTTPClient(cfg.Allowlist.Pull)
+		httpClient, err := allowlistPullHTTPClient(cfg.Allowlist.Pull, cfg.NormalizedPlatform())
 		if err != nil {
 			return fmt.Errorf("create allowlist client: %w", err)
 		}
@@ -135,6 +135,15 @@ func Run(args []string) error {
 	if err != nil {
 		return fmt.Errorf("create plugin: %w", err)
 	}
+	// Before the plugin serves a single container creation: a pod admitted
+	// without this mount would read no pins at all.
+	if err := plugin.prepareCDSPins(); err != nil {
+		return fmt.Errorf("prepare the CDS pins handed to injected clients: %w", err)
+	}
+	if err := plugin.prepareCDSAddress(); err != nil {
+		return fmt.Errorf("prepare the CDS address handed to injected clients: %w", err)
+	}
+	logger.Info("CDS policy for injected clients", "pins", plugin.cdsPins, "address", plugin.cdsAddress)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -180,7 +189,7 @@ func Run(args []string) error {
 
 	if plugin.inventory != nil {
 		socketPath := filepath.Join(cfg.WorkloadClaims.SocketDir, workloadclaims.SocketName)
-		if err := startAdmissionInventory(ctx, logger, cfg, plugin.inventory, socketPath); err != nil {
+		if err := startAdmissionInventory(ctx, logger, cfg, plugin, socketPath); err != nil {
 			return fmt.Errorf("start admission inventory: %w", err)
 		}
 	}
@@ -255,33 +264,20 @@ func Run(args []string) error {
 // allowlistPullHTTPClient builds the armTLS client for the CDS pull. The pull
 // URL is always https (enforced by config.Validate), so this always verifies
 // the CDS attestation handshake.
-func allowlistPullHTTPClient(cfg pullConfig) (*http.Client, error) {
-	pins, err := cfg.cdsPins()
+func allowlistPullHTTPClient(cfg pullConfig, platform string) (*http.Client, error) {
+	set, err := cfg.policySet(platform)
 	if err != nil {
 		return nil, err
 	}
-	if len(pins.Measurements) == 0 && len(pins.Images) == 0 {
+	if set.Empty() {
 		slog.Warn("allowlist.pull.cds_measurements not set; nri-image-policy accepts any armTLS-attested CDS measurement")
 	}
-	client, err := armtls.NewVerifyingHTTPClient(pins, cfg.AttestationApiURL)
+	client, err := armtls.NewVerifyingHTTPClient(armtls.Pins(set.Policy()), cfg.AttestationApiURL)
 	if err != nil {
 		return nil, fmt.Errorf("CDS armTLS client: %w", err)
 	}
 	client.Timeout = cfg.Timeout
 	return client, nil
-}
-
-// cdsPins is shared by outbound pulls and the CDS-only inventory endpoint.
-func (cfg pullConfig) cdsPins() (armtls.Pins, error) {
-	if err := cfg.validatePolicyInputs(); err != nil {
-		return armtls.Pins{}, err
-	}
-	policy, err := (cmdsutil.ImagePolicySource{File: cfg.CDSMeasurementsConfig}).Load(
-		cmdsutil.MeasurementPins{Measurements: cfg.CDSMeasurements, Registers: cfg.CDSRTMRs, Prefix: "cds-"})
-	if err != nil {
-		return armtls.Pins{}, fmt.Errorf("allowlist.pull: %w", err)
-	}
-	return armtls.Pins(policy), nil
 }
 
 type pullArgs struct {
@@ -784,17 +780,10 @@ func sandboxTokenSigner(cfg *config, logger *slog.Logger) (*workloadclaims.Sandb
 // usually wrong here — the chart points the plugin at the CDS NodePort on
 // loopback, whose route source is loopback.
 func digestsAdvertiseHost(cfg *config) (string, error) {
-	// Config first, then the node-ip file (publishNodeIP, or
-	// nri-node-ip.service on the node image), then the environment. None of
-	// these needs to be trustworthy: a
-	// wrong host makes CDS fetch a key the token signature fails under, so it
-	// can only fail closed, never redirect.
-	host := cfg.WorkloadClaims.AdvertiseHost
-	if host == "" {
-		if b, err := os.ReadFile(filepath.Join(cfg.WorkloadClaims.SocketDir, NodeIPFile)); err == nil {
-			host = strings.TrimSpace(string(b))
-		}
-	}
+	// This node's configured address, then the environment. None of these
+	// needs to be trustworthy: a wrong host makes CDS fetch a key the token
+	// signature fails under, so it can only fail closed, never redirect.
+	host := nodeConfiguredHost(cfg)
 	if host == "" {
 		host = strings.TrimSpace(os.Getenv("C8S_SANDBOX_DIGESTS_ADVERTISE_HOST"))
 	}
@@ -807,12 +796,12 @@ func digestsAdvertiseHost(cfg *config) (string, error) {
 
 // startSandboxDigests serves the CDS-facing digests endpoint over
 // mutually-attested armTLS (docs/armtls.md, "Sandbox identity").
-func startSandboxDigests(ctx context.Context, logger *slog.Logger, cfg *config, inventory *admissionInventory, signer *workloadclaims.SandboxTokenSigner) error {
-	pins, err := cfg.Allowlist.Pull.cdsPins()
+func startSandboxDigests(ctx context.Context, logger *slog.Logger, cfg *config, resolver workloadclaims.SandboxResolver, signer *workloadclaims.SandboxTokenSigner) error {
+	set, err := cfg.Allowlist.Pull.policySet(cfg.NormalizedPlatform())
 	if err != nil {
 		return err
 	}
-	if len(pins.Measurements) == 0 && len(pins.Images) == 0 {
+	if set.Empty() {
 		logger.Warn("allowlist.pull.cds_measurements not set: the sandbox-digests endpoint answers ANY armTLS-attested caller, so any TEE on the network can read what this node runs. UNSAFE outside development.")
 	}
 	attestationApiURL := cfg.Allowlist.Pull.AttestationApiURL
@@ -822,17 +811,17 @@ func startSandboxDigests(ctx context.Context, logger *slog.Logger, cfg *config, 
 	}
 	// The attest func is platform-agnostic despite its name (see its doc
 	// comment); the platform string is the only thing that follows the hardware.
-	return workloadclaims.StartDigestsEndpoint(ctx, logger, inventory, signer.PublicKeyDER(),
+	return workloadclaims.StartDigestsEndpoint(ctx, logger, resolver, signer.PublicKeyDER(),
 		cfg.NormalizedPlatform(),
 		attestclient.MakeSNPARMTLSAttestFunc(attestclient.NewClient(""), attestationApiURL),
-		attestationApiURL, pins, journal)
+		attestationApiURL, armtls.Pins(set.Policy()), journal)
 }
 
 // startAdmissionInventory serves the node-CVM token socket (docs/armtls.md).
 // Without pull config there is no CDS in the picture at all, so tokens are
 // disabled and get-cert issues without a sandbox ID. Otherwise the signer
 // initializes in the background and the socket answers 503 until it does.
-func startAdmissionInventory(ctx context.Context, logger *slog.Logger, cfg *config, inventory *admissionInventory, socketPath string) error {
+func startAdmissionInventory(ctx context.Context, logger *slog.Logger, cfg *config, resolver workloadclaims.SandboxResolver, socketPath string) error {
 	l, err := workloadclaims.ListenUnix(socketPath, workloadclaims.InventorySocketGID)
 	if err != nil {
 		return err
@@ -845,13 +834,13 @@ func startAdmissionInventory(ctx context.Context, logger *slog.Logger, cfg *conf
 	}
 	if !cfg.PullEnabled() {
 		logger.Warn("admission inventory has no CDS pull config; sandbox tokens disabled")
-		go func() { serve(workloadclaims.ServeTokens(ctx, l, inventory, nil)) }()
+		go func() { serve(workloadclaims.ServeTokens(ctx, l, resolver, nil)) }()
 		return nil
 	}
 	var signer atomic.Pointer[workloadclaims.SandboxTokenSigner]
-	go func() { serve(workloadclaims.ServePendingTokens(ctx, l, inventory, &signer)) }()
+	go func() { serve(workloadclaims.ServePendingTokens(ctx, l, resolver, &signer)) }()
 	go initSandboxTokens(ctx, logger, cfg, &signer, func(s *workloadclaims.SandboxTokenSigner) error {
-		return startSandboxDigests(ctx, logger, cfg, inventory, s)
+		return startSandboxDigests(ctx, logger, cfg, resolver, s)
 	})
 	return nil
 }

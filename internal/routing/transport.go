@@ -2,6 +2,7 @@ package routing
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
@@ -30,6 +31,21 @@ type TransportConfig struct {
 	// ClientCertificate supplies the router's CDS-issued mesh leaf, presented
 	// to every backend (B4).
 	ClientCertificate func(*tls.CertificateRequestInfo) (*tls.Certificate, error)
+}
+
+// routerLeaf hands the router's own member credential to a mesh handshake.
+// Renewal is get-cert's: ClientCert follows the files it publishes, and a
+// configuration built from this carries one connection.
+type routerLeaf struct {
+	get func(*tls.CertificateRequestInfo) (*tls.Certificate, error)
+}
+
+func (l routerLeaf) Provision(context.Context) (*tls.Certificate, time.Duration, error) {
+	cert, err := l.get(nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	return cert, 0, nil
 }
 
 // Transports caches one HTTP transport per backend, so connections are pooled
@@ -87,60 +103,102 @@ func backendKey(b routes.Backend) string {
 }
 
 func (t *Transports) build(b routes.Backend) *http.Transport {
-	tlsCfg := &tls.Config{
-		MinVersion:           tls.VersionTLS12,
-		NextProtos:           []string{"http/1.1"},
-		GetClientCertificate: t.cfg.ClientCertificate, // B4
-		// No ClientSessionCache: a resumed session skips
-		// VerifyPeerCertificate, and B1 lives there.
+	dialer := &net.Dialer{
+		Timeout:   dialTimeout,
+		KeepAlive: 30 * time.Second,
 	}
-	if b.Workload != "" {
-		host, _, _ := net.SplitHostPort(b.Address)
-		// SNI only. The name is never verified: address, DNS and the Service
-		// behind it are not identity (B2).
-		tlsCfg.ServerName = host
-		tlsCfg.MinVersion = tls.VersionTLS13 // armTLS
-		tlsCfg.InsecureSkipVerify = true
-		tlsCfg.VerifyPeerCertificate = t.verifyWorkload(b.Workload)
-	} else {
-		// B3. A fresh pool, never nil: a nil RootCAs means the system roots.
-		pool := x509.NewCertPool()
-		for _, c := range b.Anchors() {
-			pool.AddCert(c)
-		}
-		tlsCfg.RootCAs = pool
-		tlsCfg.ServerName = b.ServerName
-		tlsCfg.VerifyConnection = t.refuseMeshAnchor
-	}
-	return &http.Transport{
-		DialContext:         (&net.Dialer{Timeout: dialTimeout, KeepAlive: 30 * time.Second}).DialContext,
-		TLSClientConfig:     tlsCfg,
+	transport := &http.Transport{
+		DialContext:         dialer.DialContext,
 		TLSHandshakeTimeout: handshakeTimeout,
 		IdleConnTimeout:     idleConnTimeout,
 		MaxIdleConnsPerHost: 32,
 		// No ResponseHeaderTimeout: a non-streaming LLM response sends its
 		// headers only when generation ends. The proxy bounds the request.
 	}
+	if b.Workload != "" {
+		transport.DialTLSContext = t.dialWorkload(b.Workload, dialer)
+		return transport
+	}
+	// A fresh pool, never nil: a nil RootCAs means the system roots.
+	pool := x509.NewCertPool()
+	for _, c := range b.Anchors() {
+		pool.AddCert(c)
+	}
+	transport.TLSClientConfig = &tls.Config{
+		MinVersion:           tls.VersionTLS12,
+		NextProtos:           []string{"http/1.1"},
+		GetClientCertificate: t.cfg.ClientCertificate,
+		RootCAs:              pool,
+		ServerName:           b.ServerName,
+		VerifyConnection:     t.refuseMeshAnchor,
+		// No ClientSessionCache: a resumed session skips verification.
+	}
+	return transport
 }
 
-// verifyWorkload authenticates a workload backend (B1): the chain to a
-// current mesh CA with no evidence fallback (armTLS V5, V8), then the
-// CA-vouched matched workload name, which must be present and equal.
-func (t *Transports) verifyWorkload(workload string) func([][]byte, [][]*x509.Certificate) error {
-	return func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
-		cas, err := t.cfg.MeshCAs()
+// dialWorkload reaches a workload backend as a mesh client of the member
+// behind it: the mesh profile's chain path authenticates the peer against the
+// published mesh CA, and the route's workload name is required of it before
+// any request is written. The pod's ruleset leaves this identity's
+// connections into the cluster uncaptured, so this handshake is the one that
+// crosses the pod boundary.
+func (t *Transports) dialWorkload(workload string, dialer *net.Dialer) func(context.Context, string, string) (net.Conn, error) {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		// Per connection: the credential and the CA both follow what get-cert
+		// publishes, and a backend is dialled far less often than it is used.
+		cfg, err := t.meshClientConfig(workload)
 		if err != nil {
-			return fmt.Errorf("routing: mesh CA bundle: %w", err)
+			return nil, err
 		}
-		pool := x509.NewCertPool()
-		for _, c := range cas {
-			pool.AddCert(c)
-		}
-		leaf, err := armtls.VerifyChain(rawCerts, pool, time.Now())
+		conn, err := dialer.DialContext(ctx, network, addr)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		return armtls.CheckWorkloadPin(leaf, workload)
+		handshake, cancel := context.WithTimeout(ctx, handshakeTimeout)
+		defer cancel()
+		mesh := tls.Client(conn, cfg)
+		if err := mesh.HandshakeContext(handshake); err != nil {
+			conn.Close()
+			return nil, err
+		}
+		return mesh, nil
+	}
+}
+
+// meshClientConfig is the armTLS mesh client configuration for one workload
+// backend, built on the credential set published now.
+func (t *Transports) meshClientConfig(workload string) (*tls.Config, error) {
+	cas, err := t.cfg.MeshCAs()
+	if err != nil {
+		return nil, fmt.Errorf("routing: mesh CA bundle: %w", err)
+	}
+	// CDS publishes the one mesh CA its members are verified against.
+	if len(cas) != 1 {
+		return nil, fmt.Errorf("routing: mesh CA bundle holds %d certificates, want one", len(cas))
+	}
+	cfg, _, err := armtls.NewMeshClientTLSConfig(&armtls.MeshConfig{
+		CertProvider: routerLeaf{get: t.cfg.ClientCertificate},
+		MeshCA:       cas[0],
+		AcceptPeer:   acceptWorkload(workload),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("routing: mesh client for workload %q: %w", workload, err)
+	}
+	return cfg, nil
+}
+
+// acceptWorkload fails the handshake unless the peer the chain path
+// authenticated is the workload the signed route names. A leaf CDS stamped no
+// workload on names none, and is refused with the rest.
+func acceptWorkload(workload string) func(armtls.Peer) error {
+	return func(peer armtls.Peer) error {
+		if peer.WorkloadName == "" {
+			return fmt.Errorf("routing: backend leaf names no workload, and this route names %q", workload)
+		}
+		if peer.WorkloadName != workload {
+			return fmt.Errorf("routing: backend leaf names workload %q, and this route names %q", peer.WorkloadName, workload)
+		}
+		return nil
 	}
 }
 

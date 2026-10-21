@@ -281,16 +281,16 @@ func printResult(w io.Writer, cfg createConfig, path string, size uint64, v Veri
 
 	fmt.Fprintf(w, "\nAllowlist mount policy for every container in the entry (a grant requires exact):\n")
 	fmt.Fprintf(w, "  \"mounts\": %s\n", grantMounts(cfg.name))
-	fmt.Fprintf(w, "\nThe webhook mounts the cert volume and this volume, under %s, into every\ncontainer. Add one data rule per further volume, and {\"destination\": \"/run/c8s/secrets\",\n\"kind\": \"emptyDir\"} if the pod also requests secrets. docs/volumes.md — \"The mount\npolicy\" — has the details.\n", DefaultDir)
+	fmt.Fprintf(w, "\nThe webhook mounts this volume, under %s, into every container. Add one data\nrule per further volume, and {\"destination\": \"/run/c8s/secrets\",\n\"kind\": \"emptyDir\"} if the pod also requests secrets. docs/volumes.md — \"The mount\npolicy\" — has the details.\n", DefaultDir)
 }
 
 // grantMounts is the exact mounts policy admitting what the webhook injects
-// into a workload container consuming volume name from DefaultDir.
+// into a workload container consuming volume name from DefaultDir. The
+// credential volume reaches the platform containers alone, so no rule names it.
 func grantMounts(name string) string {
 	raw, err := json.Marshal(pkgallowlist.MountPolicy{
 		Policy: pkgallowlist.PolicyExact,
 		Rules: []pkgallowlist.MountRule{
-			{Destination: "/etc/c8s/certs", Kind: pkgallowlist.MountEmptyDir},
 			{Destination: path.Join(DefaultDir, name), Kind: pkgallowlist.MountData},
 		},
 	})

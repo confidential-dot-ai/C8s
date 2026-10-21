@@ -151,7 +151,7 @@ role starts. The local attester must precede this gate because launch
 verification uses it. The host attester listens on `127.0.0.1:8400`;
 pods access its Unix socket in the admission-inventory directory. CDS uses
 its Kubernetes Service and server NodePort `30808`; agents join RKE2 at
-`9345`; the router exposes the server's port `443`. Canal's flannel VXLAN
+`9345`; the router exposes the server's port `443`. Cilium's VXLAN
 runs on UDP `8473`, not the kernel default `8472`: a nested guest's outer
 host often runs its own VXLAN on `8472` and drops the inner overlay. Open
 UDP `8473` between nodes in any firewall or security group.
@@ -313,8 +313,9 @@ operator's `c8s-node-operator` ClusterRole (`cred-release-rbac.yaml`) has
 no admission or cluster-scoped RBAC writes, and the `confos-operator-scope`
 policy (`operator-scope-policy.yaml`) denies them in admission for every
 `c8s:` group regardless of RBAC, together with every write in the
-privileged namespaces (`kube-system`, `local-path-storage` and the baked
-operator's `c8s-system`) and the kubelet-proxy subresources. The
+privileged namespaces (`kube-system`, `local-path-storage`, the baked
+operator's `c8s-system` and the router role's `c8s-router`) and the
+kubelet-proxy subresources. The
 `psa-ready.sh` gate proves that deny path before cred-release serves.
 
 `kubectl exec`, `attach`, `port-forward` and ephemeral containers are closed
@@ -337,9 +338,7 @@ endpoint therefore remains closed until `psa-ready.sh` sees both policies,
 both credential bindings, and proves, through server-side dry-runs as a synthetic non-granter,
 that a restricted namespace is admitted and a privileged one is denied by
 `confos-psa-level`. No externally released operator credential can enter the
-first-boot reconciliation window. The same gate waits until the live
-FelixConfigurations make Canal append its iptables hooks behind armtls-mesh's
-cw guard, which Felix only learns after the chart installs its CRDs.
+first-boot reconciliation window.
 
 The floor also covers namespaces hosting confidential workloads. In bare-metal mode,
 `nri-image-policy` mounts the inventory socket directory read-only into credential
@@ -531,7 +530,7 @@ manual and PR gate builds cannot invoke the exact-image acceptance path.
 `kernel/c8s.config` sets `CONFIG_MODULES=y`, which the confos base kernel
 compiles out. It is on for exactly two out-of-tree modules, `nvidia.ko` and
 `nvidia-uvm.ko` (see [MODULE-SIGNING.md](MODULE-SIGNING.md)); every symbol
-kubelet, containerd and Canal need is `=y`, so nothing modprobes at runtime.
+kubelet, containerd and Cilium need is `=y`, so nothing modprobes at runtime.
 
 Because the key exists on this kernel, the runtime lock has to be set here:
 confos's `99-kspp-hardening.conf` omits `kernel.modules_disabled` on the
@@ -643,7 +642,7 @@ Inspect the core workloads with the attested kubeconfig:
 
 ```sh
 kubectl -n c8s-system get pods -o wide
-kubectl -n c8s-system describe deployment/c8s-router
+kubectl -n c8s-router describe deployment/c8s-router
 ```
 
 `kubectl logs` works on every image. The locked image denies `kubectl exec`,

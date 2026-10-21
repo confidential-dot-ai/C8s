@@ -64,8 +64,15 @@ reporter as its `sleep`: it sleeps as asked and, while it does, prints each
 file of the certificate volume but the key, and of the secret client's output
 directory, as `c8s-report file <path> <base64>` when it appears or changes,
 and that directory's filesystem type, as `c8s-report fstype <dir> <type>`.
+The tenant-app image ([`images/tenant-app`](images/tenant-app)) is Alpine's
+python with the programs the steps run in a tenant pod on its `PATH`: the
+hello API, the echo API a workload backend serves, and a UDP listener and
+sender. The steps run them by name and pass no program as a string, so a
+backend that can put no file in a pod runs them too.
 [`conformance-images.yml`](../../.github/workflows/conformance-images.yml)
-builds it on dispatch, and a backend pins its digest.
+builds the suite's images on dispatch; `CONFORMANCE_IMAGES` in
+[`common.sh`](backends/common.sh) pins those every backend uses, and a
+backend adds its own.
 
 ## Running
 
@@ -122,8 +129,10 @@ requester the steps drive themselves, a pod that relays HTTP from inside the
 cluster so the CDS sees the pod's own source address, and that can reach the
 node's sandbox inventory and local attestation service over the socket
 directory the admission plugin binds into it. The backend also fetches
-evidence over chosen report data (and, where the attestation is mocked, over
-a chosen launch digest), reads the CDS's flags, restarts it with IP SAN
+evidence over chosen report data, and says whether the CDS checks its
+signature: the steps edit its launch measurement into evidence that does not
+verify, or, where the attestation is mocked, into evidence for another
+launch digest. It reads the CDS's flags, restarts it with IP SAN
 binding or an inventory address range changed, names a pod's runtime sandbox,
 and runs the operator's verifier as a relying party on a saved leaf.
 
@@ -149,9 +158,11 @@ pod it renders may ping: the pod carries the `net.ipv4.ping_group_range`
 sysctl, and the tenant image's ping (Alpine's) uses an ICMP datagram socket
 under it, which the library busybox image's does not. A peer that connects to the inbound
 proxy itself, presenting a certificate the scenario shaped, is
-[`tools/armtls-dial`](tools/armtls-dial/README.md), which the backend builds
-for the node's architecture and the steps copy into a pod of the logical
-image `mesh-dialer`.
+[`tools/armtls-dial`](tools/armtls-dial/README.md), on `PATH` in the suite's
+`mesh-dialer` image ([`images/mesh-dialer`](images/mesh-dialer/Dockerfile)),
+whose one container is named and marked as a requester's so that the peer can
+reach the node's attestation service where the backend has one
+(`attestation_endpoint`).
 
 For scenarios about secret release, the backend sends one request to the CDS
 as the scenario shaped it (`cds_request`: a method, a route, a body, an
@@ -166,22 +177,36 @@ ID that a secrets scenario (one tagged `@area:secrets`) deploys renews its
 leaf every two hours rather than the ten seconds an issuance scenario's pod
 does, so the leaf it obtained stays the one it holds.
 
+Route manifest scenarios write `PUT /routes` through `cds_request`, with an
+`If-Match` header where the scenario names a route digest, and reach the
+router through `router_request` with a `Host` header. Their hosts are logical:
+`app` is a name under the scenario's namespace. A manifest the router is to
+apply also routes a probe host named for its revision to a closed address
+backend, and the steps wait until the probe answers 502, which no earlier
+manifest gives it. The CDS removes no manifest, so after the scenario the
+steps write the one stored before it again, or an empty one, under a later
+revision. A workload backend is a pod of `tenant-app` running
+[`c8s-echo-api`](images/tenant-app/c8s-echo-api) over TLS under the leaf it holds, read again
+for each connection: it answers every request with the request target and
+headers it received.
+
 [`backends/common.sh`](backends/common.sh) states the interface: every
-function, its arguments, what it prints, and the exit status that means "this
-environment cannot express that", which the steps turn into a skip. It also
+function, its arguments, what it prints, and when it answers *unsupported*:
+exit status 77 (`UNSUPPORTED`), meaning "this environment cannot express
+that", which the steps turn into a skip, never a pass. It also
 implements the functions that are the same everywhere. A backend sources it,
 sets `PLATFORM`, defines what differs, and ends with `dispatch "$@"`, which
 rejects unknown names.
 
 | Backend | Environment | Requires |
 |---|---|---|
-| [`kind.sh`](backends/kind.sh) | the kept kind cluster of [`test/integration/cluster/run.sh`](../integration/cluster/run.sh) (`C8S_IT_KEEP=1 C8S_IT_SETUP_ONLY=1`); mocked attestation, node shell via `docker exec`; the mock signs nothing and verifies only at the mock, so `evidence_unsigned` and `relying_party` answer 77; the CDS reads its seed ConfigMap once, as on any chart-managed install, so `seed_add` answers 77 | `C8S_IT_WORKDIR`; `go` for `dialer_bin` |
-| [`metal.sh`](backends/metal.sh) | the attested node image a metal lane booted (`snp-metal-e2e`, `tdx-metal-e2e`), from its `extra-suite` hook; what it cannot reach answers 77 ([below](#the-metal-backend)) | `KUBECONFIG`, `C8S_ALLOWLIST_URL`, `C8S_OPERATOR_KEY`, the `c8s` CLI on `PATH`; `go` for the write-token functions, `crane` for `image_entrypoint` and `image_env` |
+| [`kind.sh`](backends/kind.sh) | the kept kind cluster of [`test/integration/cluster/run.sh`](../integration/cluster/run.sh) (`C8S_IT_KEEP=1 C8S_IT_SETUP_ONLY=1`); mocked attestation, node shell via `docker exec`; the mock signs nothing and verifies only at the mock, so `evidence_signed` answers no and `relying_party` unsupported; the CDS reads its seed ConfigMap once, as on any chart-managed install, so `seed_add` answers unsupported | `C8S_IT_WORKDIR` |
+| [`metal.sh`](backends/metal.sh) | the attested node image a metal lane booted (`snp-metal-e2e`, `tdx-metal-e2e`), from its `extra-suite` hook; what it cannot reach answers unsupported ([below](#the-metal-backend)) | `KUBECONFIG`, `C8S_ALLOWLIST_URL`, `C8S_OPERATOR_KEY`, the `c8s` CLI on `PATH`; `go` for the write-token functions, `crane` for `image_entrypoint` and `image_env` |
 
 The backends source the kind harness's `lib.sh`, render pods with
 `pod-fixture.py`, and name components (the NRI DaemonSet, its socket) that
-change with c8s. The tools under [`tools/`](tools) are built by the backends,
-copied into pods by the steps, and may import c8s packages: they stand in for
+change with c8s. The tools under [`tools/`](tools) are built into the suite's
+images or by the backends, and may import c8s packages: they stand in for
 peers the cluster does not have, not for the steps' judgement. A change to any of those updates the backend in
 the same PR.
 `shellcheck` runs over them and `run.sh` in the node-guest-image lint workflow.
@@ -189,12 +214,15 @@ the same PR.
 ### The metal backend
 
 On a metal lane the harness host has no node shell and no TEE, the
-operator's credential may neither exec, port-forward nor write in the c8s
-namespace, and the node image holds the seed and the router's configuration.
+operator's credential may neither exec, port-forward, write Node objects nor
+write in the privileged namespaces (kube-system, local-path-storage, c8s-system),
+the only ones admitting host-network and root pods, and the node image holds
+the seed and the router's configuration.
 A function the backend cannot answer some other way under those limits
-exits 77, which the steps report as a skip, so the scenarios that need it are
+answers unsupported, which the steps report as a skip, so the scenarios that need it are
 reported as not run on metal, never as passed; the skipped step carries a
-`skip-reason` attachment naming the function. Pod exec is closed too, so `pod_exec` answers agent: a pod the
+`skip-reason` attachment naming the function, as does a step that skips
+for a precondition the environment lacks. Pod exec is closed too, so `pod_exec` answers agent: a pod the
 steps mark `c8s-conformance/harness-argv`, because they chose its first
 container's argv, runs an agent there in place of that argv, and `agent_exec`
 reaches it. Pods whose argv a scenario pins are read from a reporter image's

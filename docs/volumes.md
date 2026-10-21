@@ -359,12 +359,12 @@ grant says nothing about whether a workload may see the plaintext.
 Every container in the entry also needs a `mounts` policy admitting what the
 webhook injects, exactly as in
 [`secrets.md`](secrets.md#the-mount-policy). A grant requires `exact` (or
-`deny`), so for a volume consumer the rules name the cert volume plus each
-opened volume at `<volume-dir>/<NAME>`, which classes as a `data` mount:
+`deny`), so for a volume consumer the rules name each opened volume at
+`<volume-dir>/<NAME>`, which classes as a `data` mount. The credential volume
+is mounted into the injected containers alone, so no rule names it:
 
 ```json
 "mounts": {"policy": "exact", "rules": [
-  {"destination": "/etc/c8s/certs", "kind": "emptyDir"},
   {"destination": "/mnt/c8s-data/c8s-volumes/weights", "kind": "data"}
 ]}
 ```

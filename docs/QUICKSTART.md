@@ -48,9 +48,9 @@ openssl ec -in operator.key -pubout -out operator-pub.pem
 
 The router routes only by an operator-signed route manifest on CDS, and answers
 503 until one is stored. `--upstream` (with the port on its `--workload-ref`)
-writes one that routes `/` to the adopted workload, which must serve TLS on
-that port with its injected certificate (`/etc/c8s/certs/tls.crt` and
-`tls.key`). Without `--operator-key`, install writes it to `routes.json` and
+writes one that routes `/` to the adopted workload on that port. The pod's
+injected endpoint holds the mesh leaf the router verifies, so the workload
+itself listens in the clear. Without `--operator-key`, install writes it to `routes.json` and
 prints the `c8s routes add` commands that store the route. Details:
 [Route manifest](operator.md#route-manifest).
 
@@ -175,7 +175,8 @@ metadata:
 ```
 
 The webhook injects `c8s get-cert` as an init container and renewal sidecar.
-They write `tls.crt` and `tls.key` into `/etc/c8s/certs`.
+They write `tls.crt` and `tls.key` into the pod's `c8s-certs` volume, which
+the mesh endpoint reads at `/etc/c8s/certs`.
 
 See:
 

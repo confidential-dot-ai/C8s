@@ -1,0 +1,20 @@
+{{- if .Values.router.enabled }}
+{{- /*
+The namespace whose pods serve the router's own ports. The mesh policy names
+it (nri-image-policy-install-script.tpl, and measured on a baked node), so the
+chart that deploys the router owns the namespace too.
+
+Labelled privileged: the router pod mounts the node's inventory and
+attestation-API sockets, which the Restricted profile denies. The release
+namespace carries the same labels (c8s install, applyNamespace).
+*/ -}}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ include "c8s.routerMeshNamespace" . }}
+  labels:
+    {{- include "router.labels" . | nindent 4 }}
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/warn: privileged
+    pod-security.kubernetes.io/audit: privileged
+{{- end }}

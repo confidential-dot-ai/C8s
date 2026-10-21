@@ -48,14 +48,15 @@ func fullWiringOptions(t *testing.T) Options {
 	t.Helper()
 	stubWebhookCertDir(t)
 	fc := fake.NewClientBuilder().WithScheme(scheme).
-		WithObjects(mutatingWebhookConfig("c8s-mutating")).Build()
+		WithObjects(mutatingWebhookConfig("c8s-mutating"), validatingWebhookConfig("c8s-mutating")).Build()
 	stubDirectClient(t, fc, nil)
 	return Options{
-		GetCertImage:       "ghcr.io/c8s/c8s:latest",
-		CDSURL:             "https://cds.c8s-system.svc",
-		WebhookConfigName:  "c8s-mutating",
-		WebhookServiceName: "c8s-webhook",
-		LeaderElectionNS:   "c8s-system",
+		GetCertImage:          "ghcr.io/c8s/c8s:latest",
+		MeshImage:             "ghcr.io/c8s/armtls-mesh:latest",
+		WebhookConfigName:     "c8s-mutating",
+		WorkloadClaimsHostDir: "/run/nri-image-policy",
+		WebhookServiceName:    "c8s-webhook",
+		LeaderElectionNS:      "c8s-system",
 	}
 }
 

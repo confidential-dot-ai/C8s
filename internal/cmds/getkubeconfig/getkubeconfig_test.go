@@ -4,34 +4,12 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/sha512"
 	"crypto/x509"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/pem"
 	"strings"
 	"testing"
 )
-
-// TestPolicyForSeedMatchesGuestConvention checks the gate accepts the same
-// bare-seed value the guest measures at launch:
-// RTMR[3] = SHA384(0x00*48 || SHA384(pubkey)), derived here by hand rather
-// than through the library the gate itself uses.
-func TestPolicyForSeedMatchesGuestConvention(t *testing.T) {
-	pub := []byte("-----BEGIN PUBLIC KEY-----\nMFk...\n-----END PUBLIC KEY-----\n")
-	exp, err := policyFor(writeTestManifest(t, tdxManifest()), pub, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	keyDigest := sha512.Sum384(pub)
-	want := sha512.Sum384(append(make([]byte, 48), keyDigest[:]...))
-	res := verifiedResultFor(exp)
-	res.Claims.PlatformData["rtmr_3"] = hex.EncodeToString(want[:])
-	if err := exp.checkIdentity(res); err != nil {
-		t.Errorf("a node reporting the hand-derived seed RTMR[3] %x was refused: %v", want, err)
-	}
-}
 
 // TestPublicKeyPEMFromPrivateMatchesMarshal confirms deriving the pubkey from a
 // private key yields the PKIX PEM the launcher put on the opkeydata disk (the

@@ -293,6 +293,9 @@ workload_claims:
   # Components read node-ip as their attestation-api host, so the plugin
   # writes it from the host's view; this pod's environment is not pinned.
   publish_node_ip: true
+  # An injected credential client dials CDS at this node's own address and this
+  # port, and its pod ruleset admits exactly that endpoint.
+  cds_node_port: {{ required "cds.service.nodePort is required with nriImagePolicy.enabled=true: an injected credential client dials CDS at its own node's address and that port" $root.Values.cds.service.nodePort }}
 allowlist:
   pull:
     url: {{ include "c8s.nriCDSURL" $root | quote }}
@@ -345,4 +348,47 @@ policy:
 {{- end }}
 logging:
   level: {{ $root.Values.nriImagePolicy.logLevel | quote }}
+{{- if not $root.Values.node.baked }}
+{{/* The mesh policy of an install: the same shape the node image measures
+     (node-guest-image/c8s/image-policy.yaml.in), rendered from chart values
+     because nothing here is measured. The enforcer accepts it only on this
+     lane, which is for test clusters (decision 5). */}}
+{{- if not $root.Values.nriImagePolicy.mesh.resolver }}
+{{- fail "nriImagePolicy.mesh.resolver is required with a mesh policy: a member pod resolves names through this address and no other" }}
+{{- end }}
+{{- if and $root.Values.router.enabled (not $root.Values.nriImagePolicy.mesh.clusterRanges) }}
+{{- fail "nriImagePolicy.mesh.clusterRanges is required with the router: its egress exception must exclude this cluster's pod and Service ranges, or its dial to a member would leave the pod in the clear" }}
+{{- end }}
+mesh:
+  exempt_namespaces:
+    - {{ $root.Release.Namespace | quote }}
+    - "kube-system"
+    - "local-path-storage"
+  resolver: {{ $root.Values.nriImagePolicy.mesh.resolver | quote }}
+{{- if $root.Values.nriImagePolicy.mesh.clusterRanges }}
+{{/* This cluster's pod and Service ranges. The acme role of the router's
+     namespace is the one identity whose sockets leave the cluster in the
+     clear, and its exception excludes these ranges: a dial to a member rides
+     the mesh. */}}
+  cluster_ranges:
+{{- range $root.Values.nriImagePolicy.mesh.clusterRanges }}
+    - {{ . | quote }}
+{{- end }}
+{{- end }}
+  capture:
+    outbound: {{ include "c8s.meshOutboundPort" $root }}
+    inbound: {{ include "c8s.meshInboundPort" $root }}
+    health: {{ include "c8s.meshHealthPort" $root }}
+{{- if not (include "c8s.attestationApiSocketPresent" $root) }}
+{{/* Where no node-local socket serves the attestation-api, the injected
+     credential clients verify CDS evidence over this port on their node's own
+     address (c8s.attestationApiURL), so their ruleset admits it. */}}
+  credential_attestation_port: {{ $root.Values.attestationApi.port }}
+{{- end }}
+  roles:
+    - name: mesh
+      uid: {{ include "c8s.meshUID" $root }}
+{{/* The credential role is bound by the plugin, to this node's own address and
+     the CDS node port above: only the node knows its address. */}}
+{{- end }}
 {{- end }}

@@ -60,11 +60,10 @@ workload-agnostic: anything that runs on Kubernetes can run confidentially.
   CDS accepted and the pod's sandbox ID, so a relying party can ask *which*
   workload is behind a key, not just whether it is a genuine TEE.
 
-- **armTLS mesh.** A transparent L4 proxy wraps traffic between workloads in
-  attestation-rooted mutual TLS. Bootstrap peers verify embedded evidence;
-  CDS-issued certificates use mesh-CA chain verification. Final-hop plaintext
-  confinement depends on [local-route validation](cmd/armtls-mesh/DESIGN.md#local-cidr-discovery);
-  its HostIP fallback trusts Kubernetes placement metadata.
+- **armTLS mesh.** Every covered pod runs an injected endpoint that wraps its
+  traffic in attestation-rooted mutual TLS against the CDS mesh CA. The node
+  enforcer installs that pod's packet rules before any of its containers runs,
+  so plaintext stays inside the pod ([`cmd/armtls-mesh/README.md`](cmd/armtls-mesh/README.md)).
 
 - **Node-as-CVM.** Run the whole node as one confidential VM. Supported modes
   are `bare-metal`, `gke`, and `aks`. See [Architecture](#architecture).
@@ -181,9 +180,10 @@ kubectl label node <cds-node> role=cds
 openssl ecparam -name prime256v1 -genkey -noout -out operator.key
 openssl ec -in operator.key -pubout -out operator.pub
 
-# Install the platform (node-as-CVM) and route the bundled router to your
-# workload, which serves TLS on 8443 with its injected certificate; install
-# prints the `c8s routes add` commands that store the route
+# Install the platform (node-as-CVM) and route the bundled router to the port
+# your workload listens on; its injected endpoint holds the mesh leaf the
+# router verifies; install prints the `c8s routes add` commands that store the
+# route
 c8s install --cvm-mode=bare-metal --hardware-platform=sev-snp --namespace c8s-system \
   --operator-keys operator.pub \
   --workload-ref vllm=vllm/deployment/serving:8443 \
@@ -216,8 +216,8 @@ The annotation value (`api` here) is a workload id you choose; the
 certificate SAN and the `c8s-<id>` headless Service are derived from it.
 
 The webhook injects `c8s get-cert` as a native sidecar, which fetches an
-attestation-bound certificate from CDS and renews it. Certificates land in
-`/etc/c8s/certs`.
+attestation-bound certificate from CDS and renews it. Certificates land in the
+pod's `c8s-certs` volume, which the mesh endpoint reads at `/etc/c8s/certs`.
 
 ### Production notes
 
@@ -484,11 +484,10 @@ than let you discover them:
   from the operator's escrow file. Rotation, versioning and delete are absent
   — a replaced value is gone, and pods keep what they read at startup.
 
-- **Mesh peers are verified by CA chain, not per-peer measurement.** Leaves
-  carry the evidence CDS verified at issuance, and `VerifyPolicy` has a
-  `RequireCAEvidence` mode that re-checks it — measurement included — on every
-  connection, but no shipped profile enables it. There are no SPIFFE-style URI
-  SANs, and per-workload peer policy is not enforced.
+- **Mesh peers are verified by CA chain, not per-peer measurement.** A
+  chain-path peer proved its measurement to CDS at issuance only; nothing
+  re-checks it per connection. There are no SPIFFE-style URI SANs, and
+  per-workload peer policy is not enforced.
 
 - **A workload's sandbox identity is CA-vouched, not hardware-bound.** The
   sandbox ID in a leaf is signed in by the mesh CA on the word of an on-node

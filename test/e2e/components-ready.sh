@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Live-cluster check that the C8s control plane converged: pods in c8s-system
-# are Running with every container Ready.
+# Live-cluster check that the C8s control plane converged: the pods of the
+# release namespace and of the router's are Running with every container Ready.
 #
 # With no arguments every pod must be ready. Name-prefix arguments narrow it to
 # those components, for installs that deliberately leave others out.
@@ -10,21 +10,26 @@ set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 
 ns=c8s-system
+# The pods that serve the router's own ports run in the namespace the mesh
+# policy names.
+router_ns=c8s-router
 
 if [ "${C8S_NODE_IMAGE:-}" = 1 ]; then
   : "${C8S_MEASUREMENTS_CONFIG:?node-image checks require the full server policy}"
   : "${C8S_ALLOWLIST_URL:?node-image checks require the measured CDS front door}"
-  workloads=(deployment/c8s-operator deployment/c8s-cds deployment/c8s-router daemonset/c8s-armtls-mesh)
+  workloads=(deployment/c8s-operator deployment/c8s-cds)
   # The authenticated credential listener can become available before RKE2
   # has applied the complete AddOn. Require every core workload to exist.
   kubectl -n "$ns" wait --for=create "${workloads[@]}" --timeout=8m
+  kubectl -n "$router_ns" wait --for=create deployment/c8s-router --timeout=8m
   for workload in "${workloads[@]}"; do
     kubectl -n "$ns" rollout status "$workload" --timeout=8m
   done
+  kubectl -n "$router_ns" rollout status deployment/c8s-router --timeout=8m
   # Public policies are host-staged, not stored in Kubernetes. Check that
   # every consumer uses its required read-only file. The external armTLS
   # request below verifies the actual endpoint against the signed policy.
-  kubectl -n "$ns" get "${workloads[@]}" -o json | jq -e '
+  kubectl get deployments -A -l app.kubernetes.io/instance=c8s -o json | jq -e '
     def policy($workload; $container; $flag):
       any(.items[];
         .metadata.name == $workload and
@@ -36,12 +41,9 @@ if [ "${C8S_NODE_IMAGE:-}" = 1 ]; then
             .name == $container and ((.args // []) | index($flag)) != null and
             any(.volumeMounts[]?;
               .name == "node-config" and .mountPath == "/run/c8s-node" and .readOnly == true))));
-    policy("c8s-operator"; "operator"; "--image-policy-file=/run/c8s-node/cds.json") and
     policy("c8s-cds"; "cds"; "--image-policy-file=/run/c8s-node/peers.json") and
     policy("c8s-router"; "c8s-cert"; "--image-policy-file=/run/c8s-node/cds.json") and
     policy("c8s-router"; "allowlist-proxy"; "--image-policy-file=/run/c8s-node/cds.json") and
-    policy("c8s-armtls-mesh"; "armtls-mesh"; "--image-policy-file=/run/c8s-node/peers.json") and
-    policy("c8s-armtls-mesh"; "armtls-mesh"; "--cds-image-policy-file=/run/c8s-node/cds.json") and
     all(.items[].spec.template.spec.volumes[]?;
       ((.hostPath.path // "") | startswith("/run/confos")) | not)
   ' >/dev/null || fail "baked workloads lost their required public identity policies or mount private launch data"
@@ -66,7 +68,9 @@ count_notready() {
 converged=""
 backoff=0
 for _ in $(seq 1 40); do
-  listing=$(kubectl -n "$ns" get pods --no-headers 2>/dev/null | select_pods "$@" || true)
+  listing=$( { kubectl -n "$ns" get pods --no-headers
+               kubectl -n "$router_ns" get pods --no-headers
+             } 2>/dev/null | select_pods "$@" || true)
   total=$(printf '%s\n' "$listing" | awk 'NF' | wc -l)
   n=$(printf '%s\n' "$listing" | count_notready)
   if [ "$total" -gt 0 ] && [ "$n" -eq 0 ]; then converged=1; break; fi

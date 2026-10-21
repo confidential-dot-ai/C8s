@@ -27,6 +27,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/helmchart"
 	"github.com/confidential-dot-ai/c8s/internal/webhook"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 var errTestResolve = errors.New("simulated resolve failure")
@@ -374,7 +375,8 @@ func TestValidateWorkloadAdoptionFlags(t *testing.T) {
 	}{
 		{name: "no ref is valid", wait: false},
 		{name: "adopt in a separate namespace is valid", releaseNS: "c8s-system", refs: []string{"router=workloads/deployment/vllm"}, wait: true},
-		{name: "ref rejects release namespace", releaseNS: "c8s-system", refs: []string{"router=c8s-system/deployment/vllm"}, wait: true, wantErr: []string{"--workload-ref", "release namespace", "excluded"}},
+		{name: "ref rejects release namespace", releaseNS: "c8s-system", refs: []string{"router=c8s-system/deployment/vllm"}, wait: true, wantErr: []string{"--workload-ref", "c8s-system", "excluded"}},
+		{name: "ref rejects the router namespace", releaseNS: "c8s-system", refs: []string{"router=c8s-router/deployment/vllm"}, wait: true, wantErr: []string{"--workload-ref", workloadclaims.RouterNamespace, "excluded"}},
 		{name: "ref requires wait", releaseNS: "c8s-system", refs: []string{"router=workloads/deployment/vllm"}, wait: false, wantErr: []string{"--workload-ref", "--wait=true"}},
 	}
 	for _, tt := range tests {
@@ -628,13 +630,17 @@ func TestBuildWorkloadImageArgsWritesOneEntryPerWorkload(t *testing.T) {
 	}
 	container := func(field string, i int, digest, ref string, mounts ...string) []string {
 		p := fmt.Sprintf("nriImagePolicy.bootstrapAllowlist.workloads.infer.%s[%d].", field, i)
+		policy := "exact"
+		if len(mounts) == 0 {
+			policy = "deny"
+		}
 		args := []string{
 			"--set-string", p + "digest=" + digest,
 			"--set-string", p + "image=" + ref,
 			"--set-string", p + "command.policy=any",
 			"--set-string", p + "args.policy=any",
 			"--set-string", p + "env.policy=any",
-			"--set-string", p + "mounts.policy=exact",
+			"--set-string", p + "mounts.policy=" + policy,
 		}
 		for i, m := range mounts {
 			r := fmt.Sprintf("%smounts.rules[%d].", p, i)
@@ -643,9 +649,9 @@ func TestBuildWorkloadImageArgsWritesOneEntryPerWorkload(t *testing.T) {
 		return args
 	}
 	want := []string{"upgrade", "--set-string", "nriImagePolicy.bootstrapAllowlist.workloads.infer.label=ws/deployment/vllm"}
-	want = append(want, container("containers", 0, dB, "ghcr.io/acme/router@"+dB, "/etc/c8s/certs")...)
-	want = append(want, container("containers", 1, dA, "ghcr.io/acme/engine@"+dA, "/etc/c8s/certs", "/scratch")...)
-	want = append(want, container("initContainers", 0, dC, "docker.io/library/busybox@"+dC, "/etc/c8s/certs")...)
+	want = append(want, container("containers", 0, dB, "ghcr.io/acme/router@"+dB)...)
+	want = append(want, container("containers", 1, dA, "ghcr.io/acme/engine@"+dA, "/scratch")...)
+	want = append(want, container("initContainers", 0, dC, "docker.io/library/busybox@"+dC)...)
 	assertArgsEqual(t, got, want)
 	if slices.ContainsFunc(got, func(a string) bool { return strings.HasSuffix(a, "mounts.policy=any") }) {
 		t.Fatal("an adopted workload's entry admits any mount")
@@ -669,8 +675,8 @@ func TestBuildWorkloadImageArgsWritesOneEntryPerWorkload(t *testing.T) {
 	if i < 0 {
 		t.Fatalf("parsed entry %+v lacks the engine image", w)
 	}
-	if m := w.Containers[i].Mounts; m.Policy != pkgallowlist.PolicyExact || len(m.Rules) != 2 {
-		t.Fatalf("engine mounts = %+v, want exact /etc/c8s/certs and /scratch", m)
+	if m := w.Containers[i].Mounts; m.Policy != pkgallowlist.PolicyExact || len(m.Rules) != 1 {
+		t.Fatalf("engine mounts = %+v, want exact /scratch", m)
 	}
 	e := entries["infer"]
 	if got, want := normalized(t, e.workload), normalized(t, *w); got != want {
@@ -709,7 +715,7 @@ func TestBuildWorkloadImageArgsKeepsRoles(t *testing.T) {
 		t.Fatalf("buildWorkloadImageArgs() = %v, want an entry", err)
 	}
 	e := entries["web"]
-	if len(e.workload.Containers) != 1 || len(e.workload.InitContainers) != 2 || len(e.workload.InitContainers[0].Mounts.Rules) != 2 {
+	if len(e.workload.Containers) != 1 || len(e.workload.InitContainers) != 2 || len(e.workload.InitContainers[0].Mounts.Rules) != 1 {
 		t.Fatalf("entry = %+v, want main busybox, init busybox with /scratch, init proxy", e.workload)
 	}
 	if len(e.pod) != 2 || e.pod[1].Digest != "sha256:"+strings.Repeat("e", 64) {
@@ -791,30 +797,6 @@ func TestBuildWorkloadImageArgsUnmodelledMountsOffUpstream(t *testing.T) {
 	}
 }
 
-// TestInjectedMountRulesCertDir: the cert dir annotation becomes a clean
-// mount destination, and a relative one is refused.
-func TestInjectedMountRulesCertDir(t *testing.T) {
-	for _, tc := range []struct {
-		dir, want, wantErr string
-	}{
-		{dir: "/etc/certs/./x/", want: "/etc/certs/x"},
-		{dir: "certs", wantErr: webhook.AnnotationCertDir},
-	} {
-		tmpl := templateRunning("busybox@sha256:" + strings.Repeat("c", 64))
-		tmpl.Annotations = map[string]string{webhook.AnnotationCertDir: tc.dir}
-		got, err := injectedMountRules(tmpl, tmpl.Spec.Containers[0])
-		if tc.wantErr != "" {
-			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-				t.Errorf("injectedMountRules(cert dir %q) = %v, %v, want an error naming %s", tc.dir, got, err, tc.wantErr)
-			}
-			continue
-		}
-		if err != nil || !slices.Equal(got, []string{tc.want}) {
-			t.Errorf("injectedMountRules(cert dir %q) = %v, %v, want [%s]", tc.dir, got, err, tc.want)
-		}
-	}
-}
-
 // TestAdoptMeFixtureGetsAnEntry: the kind harness's adopted workload is one
 // install can write an entry for, so the fixture does not depend on the
 // any-mounts floor to be admitted and named.
@@ -844,8 +826,10 @@ func TestAdoptMeFixtureGetsAnEntry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildWorkloadImageArgs(adopt-me) = %v", err)
 	}
-	if !slices.Contains(got, "nriImagePolicy.bootstrapAllowlist.workloads.web.containers[0].mounts.rules[0].destination=/etc/c8s/certs") || slices.Contains(got, "nriImagePolicy.bootstrapAllowlist.workloads.web.containers[0].mounts.rules[1].destination") {
-		t.Fatalf("adopt-me entry = %v, want exactly the injected cert mount", got)
+	if !slices.Contains(got, "nriImagePolicy.bootstrapAllowlist.workloads.web.containers[0].mounts.policy=deny") || slices.ContainsFunc(got, func(arg string) bool {
+		return strings.Contains(arg, "mounts.rules[")
+	}) {
+		t.Fatalf("adopt-me entry = %v, want empty mounts", got)
 	}
 	// The NRI plugin's tests match this entry against the mounts it observes
 	// on the injected container.
@@ -1304,13 +1288,10 @@ func TestAppendCvmModeInstallArgsSetsAttestationApiValue(t *testing.T) {
 			"--set", "attestationApi.teeDevices.tpm=" + tpm,
 		}
 		// Any TDX shape — native (/dev/tdx-guest) or Azure vTPM (az-tdx) —
-		// propagates the CPU TEE to the components that name their armTLS
-		// platform, or CDS parses the TDX quote as an SNP report.
+		// propagates the CPU TEE to CDS, which names its armTLS platform, or
+		// CDS parses the TDX quote as an SNP report.
 		if platform == "tdx" {
-			out = append(out,
-				"--set-string", "cds.armtlsPlatform=tdx",
-				"--set-string", "armtlsMesh.platform=tdx",
-			)
+			out = append(out, "--set-string", "cds.armtlsPlatform=tdx")
 		}
 		// The attest sidecar's platform names the evidence shape the sidecar
 		// requests from the attestation-api: az-snp/az-tdx under aks (Azure
@@ -1338,7 +1319,6 @@ func TestAppendCvmModeInstallArgsSetsAttestationApiValue(t *testing.T) {
 		// node: the node image bakes attestation-api + nri-image-policy, so the
 		// attestation-api copy is skipped and the NRI installer switches to its
 		// baked form — the only path that reaches the baked plugin's CDS pins.
-		// armtlsMesh is not baked, stays on.
 		if mode == "bare-metal" {
 			out = append(out,
 				"--set", "attestationApi.enabled=false",
@@ -1395,18 +1375,16 @@ func TestAppendCvmModeInstallArgsMeasurements(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	for _, want := range []string{
-		"cds.measurements[0]=" + m0, "armtlsMesh.measurements[0]=" + m0,
-		"cds.measurements[1]=" + m1, "armtlsMesh.measurements[1]=" + m1,
+		"cds.measurements[0]=" + m0,
+		"cds.measurements[1]=" + m1,
 	} {
 		if !slices.Contains(got, want) {
 			t.Errorf("args missing %q; got %v", want, got)
 		}
 	}
 	// The blank must not produce an empty index-2 pin.
-	for _, bad := range []string{"cds.measurements[2]=", "armtlsMesh.measurements[2]="} {
-		if slices.Contains(got, bad) {
-			t.Errorf("blank entry leaked an empty pin %q; got %v", bad, got)
-		}
+	if bad := "cds.measurements[2]="; slices.Contains(got, bad) {
+		t.Errorf("blank entry leaked an empty pin %q; got %v", bad, got)
 	}
 }
 
@@ -1439,7 +1417,6 @@ func TestAppendCvmModeInstallArgsAcceptsAksWithTdx(t *testing.T) {
 		"attestationApi.teeDevices.tpm=true",
 		"attestationApi.teeDevices.tdxGuest=false",
 		"cds.armtlsPlatform=tdx",
-		"armtlsMesh.platform=tdx",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("aks+tdx args missing %q; got %v", want, got)
@@ -2266,8 +2243,8 @@ func TestAppendCvmModeInstallArgsRTMRs(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	for _, want := range []string{
-		"cds.rtmrs[0]=1=" + r1, "armtlsMesh.rtmrs[0]=1=" + r1,
-		"cds.rtmrs[1]=2=" + r2, "armtlsMesh.rtmrs[1]=2=" + r2,
+		"cds.rtmrs[0]=1=" + r1,
+		"cds.rtmrs[1]=2=" + r2,
 	} {
 		if !slices.Contains(got, want) {
 			t.Errorf("args missing %q; got %v", want, got)

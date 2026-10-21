@@ -68,6 +68,7 @@ func unpulledPlugin(cfg *config) *plugin {
 		audit:      audit.NewLogger(),
 		logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 		containerd: &fakeContainerd{},
+		mesh:       newMeshGate(nil, discardLogger()),
 	}
 	p.boot = newBootGate(cfg, p.logger)
 	return p

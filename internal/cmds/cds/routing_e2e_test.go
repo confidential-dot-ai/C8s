@@ -21,6 +21,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/routing"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
@@ -140,6 +141,9 @@ func newE2ERouter(t *testing.T, stub *mockapi.Stub, cdsURL string, pin []byte, m
 	}
 }
 
+// e2eSandboxID is the workload instance a member leaf names.
+const e2eSandboxID = "8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a0e8d9f"
+
 func e2eNamedLeaf(t *testing.T, ca *issuer.CA, workload string) tls.Certificate {
 	t.Helper()
 	csrPEM, key := generateCSR(t)
@@ -148,7 +152,7 @@ func e2eNamedLeaf(t *testing.T, ca *issuer.CA, workload string) tls.Certificate 
 	if err != nil {
 		t.Fatal(err)
 	}
-	certPEM, _, err := ca.SignCSR(issuer.SignCSRParams{CSR: csr, TTL: 30 * time.Minute, MatchedWorkload: &armtls.MatchedWorkload{
+	certPEM, _, err := ca.SignCSR(issuer.SignCSRParams{CSR: csr, TTL: 30 * time.Minute, SandboxID: e2eSandboxID, MatchedWorkload: &armtls.MatchedWorkload{
 		Name: workload, AllowlistVersion: "1", AllowlistDigest: bytes.Repeat([]byte{0x42}, 32),
 	}})
 	if err != nil {
@@ -183,7 +187,9 @@ func TestRoutesEndToEnd(t *testing.T) {
 	web := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, "web saw "+r.RequestURI)
 	}))
-	web.TLS = &tls.Config{Certificates: []tls.Certificate{e2eNamedLeaf(t, mesh, "web")}, ClientAuth: tls.RequireAnyClientCert}
+	// A member backend serves the mesh profile: its endpoint holds its leaf,
+	// answers the mesh protocol and carries plain HTTP inside it.
+	testutil.ServeMeshBackend(web, e2eNamedLeaf(t, mesh, "web"))
 	web.StartTLS()
 	t.Cleanup(web.Close)
 	manifest := func(revision int) []byte {

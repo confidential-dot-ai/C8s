@@ -25,7 +25,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -52,21 +51,18 @@ type config struct {
 	MeasurementsConfig     string
 	MeasurementsConfigJSON string
 	AttestationApiURL      string
-	OutPath                string
-	CAOutPath              string
+	CertPath               string
+	CAPath                 string
 	KeyPath                string
-	KeyOutPath             string
 	SAN                    string
 	SANFile                string
+	NoSAN                  bool
 	Verbose                bool
 	RenewInterval          time.Duration
 	RenewJitterPercent     int
 	InitialRetryTimeout    time.Duration
 	InitialRetryInterval   time.Duration
-	ReloadNginx            bool
 	ContinueOnInitialError bool
-	ReloadWatchPaths       []string
-	ReloadWatchInterval    time.Duration
 	CAWatchInterval        time.Duration
 	DiscoveryOutPath       string
 	DiscoveryCDSCertURL    string
@@ -78,29 +74,32 @@ type config struct {
 	// Public hostnames can differ from the CDS mesh certificate SAN.
 	DiscoveryPublicTLSHostnamesFile string
 	DiscoveryPublicTLSHostname      string
-	WorkloadClaims                  bool
 	WorkloadClaimsTimeout           time.Duration
+	NoWorkloadClaims                bool
 	UnnamedRenewInterval            time.Duration
 	ExpectedWorkload                string
 	MeasuredPoliciesFile            string
 }
 
-// inventoryEndpoint returns the compiled admission-inventory endpoint. It is a
-// package variable only so tests can point it at a temporary Unix socket; the
-// production value is always workloadclaims.InventoryEndpoint (a baked path
-// the control plane cannot redirect).
-var inventoryEndpoint = workloadclaims.InventoryEndpoint
+// nodeInventory is the local inventory get-cert redeems its workload identity
+// assertion at: the compiled socket endpoint and the mount that carries it. It
+// is a package variable only so tests can point it at a temporary socket; the
+// production endpoint is a baked path the control plane cannot redirect.
+var nodeInventory = inventory{
+	endpoint:     workloadclaims.InventoryEndpoint,
+	requireMount: workloadclaims.RequireSidecarSocketDir,
+}
 
-// procRoot is the procfs mount used to find nginx; tests substitute a fake tree.
-var procRoot = "/proc"
+type inventory struct {
+	endpoint     func() string
+	requireMount func() error
+}
 
 var (
 	errInvalidDiscoveryPublicTLSMode             = errors.New("invalid discovery public TLS mode")
 	errInvalidCAWatchInterval                    = errors.New("invalid CA watch interval")
-	errInvalidReloadWatchInterval                = errors.New("invalid reload watch interval")
 	errInvalidUnnamedRenewInterval               = errors.New("invalid unnamed renew interval")
 	errInvalidRenewJitterPercent                 = errors.New("invalid renew jitter percent")
-	errReloadWatchRequiresRenewInterval          = errors.New("reload watch requires renew interval")
 	errContinueOnInitialErrorRequiresRenewalLoop = errors.New("continue on initial error requires renewal loop")
 	errExpectedWorkloadRequiresClaimsLoop        = errors.New("expected workload requires workload claims and a renewal loop")
 )
@@ -116,14 +115,18 @@ func NewCmd() *cobra.Command {
 		Long: `get-cert requests a TLS certificate from the Certificate Distribution Service (CDS)
 by proving it is running in a Trusted Execution Environment (TEE).
 
-It generates an ECDSA P-256 key pair (or loads the key passed with --key),
-creates a CSR with the specified SAN (Subject Alternative Name), and uses
-the CDS attestation flow to obtain a signed certificate. The P-384 keypair
-used elsewhere in c8s is limited to mesh CA rotation; get-cert leaf keys stay
-P-256 by default.
+It generates an ECDSA P-256 key pair in memory for every certificate it
+requests, creates a CSR with the selected SAN (Subject Alternative Name), and
+uses the CDS attestation flow to obtain a signed certificate. The P-384 keypair used elsewhere in c8s is limited
+to mesh CA rotation; get-cert leaf keys stay P-256.
 
-This tool is designed to run as a Kubernetes init container or renewal sidecar
-alongside a workload that uses the obtained certificate.`,
+The leaf, key and CA are validated and stored as one generation on the pod's
+private credential volume. Resolve current once, then read all three files
+from that directory for a consistent generation. The stable --cert-path,
+--key-path and --ca-path files are replaced independently during renewal.
+
+This tool is designed to run as a native sidecar alongside the credential
+consumers that read that volume.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			setupLogging(cfg.Verbose)
 			applyCDSWatchDefault(&cfg, cmd.Flags())
@@ -133,44 +136,42 @@ alongside a workload that uses the obtained certificate.`,
 	}
 
 	flags := cmd.Flags()
-	cmdsutil.BindImagePolicyFlags(flags, &cfg.MeasurementsConfig, &cfg.MeasurementsConfigJSON, "", "pins the CDS endpoint; excludes --cds-measurements and --cds-rtmrs")
-	flags.StringVar(&cfg.CDSURL, "cds-url", "", "URL of the CDS service (e.g. https://cds:8443)")
+	cmdsutil.BindImagePolicyFlags(flags, &cfg.MeasurementsConfig, &cfg.MeasurementsConfigJSON, "pins the CDS endpoint; excludes --cds-measurements and --cds-rtmrs")
+	flags.StringVar(&cfg.CDSURL, "cds-url", "", "URL of the CDS service (e.g. https://cds:8443); refused in an injected sidecar, which dials the endpoint the node mounts")
 	flags.StringVar(&cfg.CDSMeasurements, "cds-measurements", "", "comma-separated SHA-384 hex launch measurements for CDS armTLS verification (empty = accept any attested CDS)")
 	flags.StringVar(&cfg.CDSRTMRs, "cds-rtmrs", "", "comma-separated TDX RTMR pins <index>=<sha384-hex> CDS's armTLS cert must additionally satisfy; ignored when CDS presents SNP evidence (empty = launch-digest pinning only)")
 	flags.StringVar(&cfg.AttestationApiURL, "attestation-api-url", "", "URL of the node-local attestation-api (http://localhost:8400, or unix:// plus the on-node socket path the chart wires)"+cmdsutil.NodeAddressHelp)
-	flags.StringVarP(&cfg.OutPath, "out", "o", "", "Path to write the signed certificate chain PEM (prints to stdout if omitted)")
-	flags.StringVar(&cfg.CAOutPath, "ca-out", "", "Path to write just the mesh CA bundle PEM (the issuer certs trailing the leaf in the CDS chain), e.g. for nginx to serve at a discovery endpoint without a separate ConfigMap")
-	flags.StringVar(&cfg.KeyPath, "key", "", "Path to a PEM private key to use for the CSR (generates an ephemeral key if omitted)")
-	flags.StringVar(&cfg.KeyOutPath, "key-out", "", "Path to write the private key PEM with mode 0600 (0640 in shared setgid directories; key reused on restart); must be on a memory-backed filesystem")
+	flags.StringVar(&cfg.CertPath, "cert-path", "", "Path where the certificate chain PEM of the published generation is read")
+	flags.StringVar(&cfg.CAPath, "ca-path", "", "Path where the mesh CA PEM of the published generation is read; must be in the --cert-path directory")
+	flags.StringVar(&cfg.KeyPath, "key-path", "", "Path where the private key PEM of the published generation is read, mode 0600 (0640 in shared setgid directories); must be in the --cert-path directory, on a memory-backed filesystem")
 	flags.StringVar(&cfg.SAN, "san", "", "Subject Alternative Name for the certificate (IP address or hostname)")
-	flags.StringVar(&cfg.SANFile, "san-file", "", "Path to a file containing the certificate SAN; mutually exclusive with --san")
+	flags.StringVar(&cfg.SANFile, "san-file", "", "Path to a file containing the certificate SAN")
+	flags.BoolVar(&cfg.NoSAN, "no-san", false, "Request a certificate with no SAN, for a pod without confidential.ai/cw; CDS takes the subject from the verified workload identity instead")
 	flags.BoolVarP(&cfg.Verbose, "verbose", "v", false, "Enable debug logging")
 	flags.DurationVar(&cfg.RenewInterval, "renew-interval", 0, "Re-obtain the certificate at this interval (0 = run once and exit)")
 	flags.IntVar(&cfg.RenewJitterPercent, "renew-jitter-percent", defaultRenewJitterPercent, "Shorten each renewal delay by a random fraction of itself, up to this percent, so certificates issued together do not refresh in lockstep (0 = no jitter)")
 	flags.DurationVar(&cfg.InitialRetryTimeout, "initial-retry-timeout", 2*time.Minute, "Retry the first certificate request in-process for up to this long before failing, so a transient CDS/mesh outage during a roll does not crash the init container into kubelet backoff (0 = try once)")
 	flags.DurationVar(&cfg.InitialRetryInterval, "initial-retry-interval", 2*time.Second, "Delay between in-process retries of the first certificate request")
-	flags.BoolVar(&cfg.ReloadNginx, "reload-nginx", true, "SIGHUP nginx after certificate renewal or watched file changes")
 	flags.BoolVar(&cfg.ContinueOnInitialError, "continue-on-initial-error", false, "In renewal mode, keep running when the first certificate request fails, retrying on a capped backoff until a certificate is issued")
-	flags.StringArrayVar(&cfg.ReloadWatchPaths, "reload-watch", nil, "File path to poll for changes and reload nginx when it changes (repeatable)")
-	flags.DurationVar(&cfg.ReloadWatchInterval, "reload-watch-interval", time.Minute, "Poll interval for --reload-watch paths")
-	flags.DurationVar(&cfg.CAWatchInterval, "ca-watch-interval", defaultCDSWatchInterval, "Poll CDS at this interval and renew when the installed certificate falls behind it. With --ca-out, renew immediately when that bundle no longer contains the mesh CA CDS holds, which a CDS restart regenerates in-memory. With --workload-claims, renew after a random delay of up to half the interval when the allowlist policy CDS serves no longer matches the snapshot stamped in the leaf, which strict clients reject. The default applies only with --renew-interval and --ca-out or --workload-claims; otherwise the watch is off (0 = disabled, otherwise minimum 1s)")
+	flags.DurationVar(&cfg.CAWatchInterval, "ca-watch-interval", defaultCDSWatchInterval, "Poll CDS at this interval and renew when the published certificate falls behind it. Renew immediately when CDS serves a renewed certificate under the pod's bound CA key. A replacement CA key requires pod recreation. With a workload identity assertion, renew after a random delay of up to half the interval when the allowlist policy CDS serves no longer matches the snapshot stamped in the leaf, which strict clients reject. The default applies only with --renew-interval; otherwise the watch is off (0 = disabled, otherwise minimum 1s)")
 	flags.StringVar(&cfg.DiscoveryOutPath, "discovery-out", "", "Path to write JSON discovery metadata for the issued certificate and attestation evidence")
 	flags.StringVar(&cfg.DiscoveryCDSCertURL, "discovery-cds-cert-url", "", "Public URL path where the CDS certificate PEM is served")
 	flags.StringVar(&cfg.DiscoveryMeshCAURL, "discovery-mesh-ca-url", "", "Public URL path where the mesh CA PEM is served")
 	flags.StringVar(&cfg.DiscoveryPublicTLSMode, "discovery-public-tls-mode", "cds", "Public TLS mode to report in discovery metadata (cds, webpki, or acme)")
 	flags.StringVar(&cfg.DiscoveryPublicTLSModeFile, "discovery-public-tls-mode-file", "", "File holding the public TLS mode to report in discovery metadata, read at start; replaces --discovery-public-tls-mode")
 	flags.StringVar(&cfg.DiscoveryPublicTLSHostnamesFile, "discovery-public-tls-hostnames-file", "", "File holding launch-selected public hostnames; report the first name in discovery without changing the CDS certificate SAN")
-	flags.BoolVar(&cfg.WorkloadClaims, "workload-claims", false, "Request an inventory-signed sandbox token, which CDS verifies and stamps into the issued leaf, from the local inventory at get-cert's compiled Unix socket path — nri-image-policy on node-CVM (docs/armtls.md). The path is baked in, not supplied, so the control plane cannot redirect the request; fail-closed if the inventory is unreachable")
 	flags.DurationVar(&cfg.WorkloadClaimsTimeout, "workload-claims-timeout", 5*time.Second, "Timeout for the admission inventory request")
-	flags.DurationVar(&cfg.UnnamedRenewInterval, "unnamed-renew-interval", 30*time.Second, "With --workload-claims and --renew-interval, renew while the installed leaf carries no matched-workload stamp at most this far apart (plus jitter), starting at 2s and doubling, so a pod picks up its name at the first post-completion renewal instead of waiting a full interval; settles to --renew-interval once named, and backs off toward it for a pod that stays unnamed. Poll timing never changes the match decision. 0 disables the fast poll")
-	flags.StringVar(&cfg.ExpectedWorkload, "expected-workload", "", "The allowlist entry this pod should be stamped with; requires --workload-claims and --renew-interval. A leaf stamped with any other name stays on the --unnamed-renew-interval fast poll, logged once per name, instead of settling. Issuance never fails on a mismatch (empty = any stamp settles)")
+	flags.BoolVar(&cfg.NoWorkloadClaims, "no-workload-claims", false, "Request certificates without a workload identity assertion, for a pod whose node runs no admission inventory. The leaf then carries no workload instance, so nothing binds it to this pod's sandbox; injected workloads never set it")
+	flags.DurationVar(&cfg.UnnamedRenewInterval, "unnamed-renew-interval", 30*time.Second, "With --renew-interval, renew while the published leaf carries no matched-workload stamp at most this far apart (plus jitter), starting at 2s and doubling, so a pod picks up its name at the first post-completion renewal instead of waiting a full interval; settles to --renew-interval once named, and backs off toward it for a pod that stays unnamed. Poll timing never changes the match decision. 0 disables the fast poll")
+	flags.StringVar(&cfg.ExpectedWorkload, "expected-workload", "", "The allowlist entry this pod should be stamped with; requires --renew-interval and a workload identity assertion. A leaf stamped with any other name stays on the --unnamed-renew-interval fast poll, logged once per name, instead of settling. Issuance never fails on a mismatch (empty = any stamp settles)")
 
 	flags.StringVar(&cfg.MeasuredPoliciesFile, "measured-policies-file", workloadclaims.MeasuredPoliciesJournal, "The node's journal of allowlist policies extended into TDX RTMR[3], as mounted into this sidecar; a TDX CSR and attest request list it. Empty lists none")
 
-	_ = cmd.MarkFlagRequired("cds-url")
-	_ = cmd.MarkFlagRequired("attestation-api-url")
-	cmd.MarkFlagsOneRequired("san", "san-file")
-	cmd.MarkFlagsMutuallyExclusive("san", "san-file")
+	for _, name := range []string{"attestation-api-url", "cert-path", "key-path", "ca-path"} {
+		_ = cmd.MarkFlagRequired(name)
+	}
+	cmd.MarkFlagsOneRequired("san", "san-file", "no-san")
+	cmd.MarkFlagsMutuallyExclusive("san", "san-file", "no-san")
 
 	return cmd
 }
@@ -222,11 +223,16 @@ func cdsHTTPClient(cfg config) (*http.Client, error) {
 }
 
 func cdsPins(cfg config) (armtls.Pins, error) {
-	policy, err := (cmdsutil.ImagePolicySource{File: cfg.MeasurementsConfig, JSON: cfg.MeasurementsConfigJSON}).Load(
+	policy, fromNode, err := cmdsutil.ResolveCDSPins(workloadclaims.CDSPinsPath,
+		cmdsutil.ImagePolicySource{
+			File: cfg.MeasurementsConfig,
+			JSON: cfg.MeasurementsConfigJSON,
+		},
 		cmdsutil.MeasurementPinsFromStrings(cfg.CDSMeasurements, cfg.CDSRTMRs, "cds-"))
 	if err != nil {
 		return armtls.Pins{}, err
 	}
+	slog.Info("CDS pins resolved", "from_node", fromNode)
 	cmdsutil.WarnIfCDSUnpinned(len(policy.Measurements)+len(policy.Images), "--cds-measurements not set; get-cert accepts any armTLS-attested CDS measurement")
 	return armtls.Pins(policy), nil
 }
@@ -235,7 +241,7 @@ func cdsPins(cfg config) (armtls.Pins, error) {
 var obtainCertFn = obtainCert
 
 func run(cfg config) error {
-	san, err := resolveSAN(cfg.SAN, cfg.SANFile)
+	san, err := resolveSAN(cfg)
 	if err != nil {
 		return err
 	}
@@ -246,7 +252,17 @@ func run(cfg config) error {
 	if err := resolveDiscoveryPublicTLSHostname(&cfg); err != nil {
 		return err
 	}
-	slog.Info("starting get-cert", "san", cfg.SAN)
+	endpoint, fromNode, err := cmdsutil.ResolveCDSEndpoint(workloadclaims.CDSAddressPath, cfg.CDSURL)
+	if err != nil {
+		return err
+	}
+	if fromNode {
+		cfg.CDSURL = cmdsutil.CDSURL(endpoint)
+	}
+	if cfg.CDSURL == "" {
+		return errors.New("--cds-url is required: no node hands this client a CDS endpoint")
+	}
+	slog.Info("starting get-cert", "san", cfg.SAN, "cds_url", cfg.CDSURL, "cds_from_node", fromNode)
 
 	rawAttestationURL := cfg.AttestationApiURL
 	attestationURL, err := cmdsutil.ExpandHostIP(rawAttestationURL)
@@ -257,23 +273,21 @@ func run(cfg config) error {
 	if err := validateConfig(cfg); err != nil {
 		return err
 	}
-	// Fail fast, never retry: a missing socket directory means the mount was
-	// not injected at container creation and no in-process wait can produce
-	// it, while the retry loop below would idle forever behind
-	// --continue-on-initial-error (see workloadclaims.RequireSidecarSocketDir).
-	if cfg.WorkloadClaims {
-		if err := workloadclaims.RequireSidecarSocketDir(); err != nil {
-			return err
-		}
-	}
-
-	if err := validateOutputPaths(cfg.OutPath, cfg.KeyOutPath, cfg.DiscoveryOutPath); err != nil {
+	volume, err := credentialVolumeFor(cfg.CertPath, cfg.KeyPath, cfg.CAPath)
+	if err != nil {
 		return err
 	}
-	if err := requireKeyOutRAMBacked(cfg.KeyOutPath); err != nil {
+	// One directory holds the whole generation, so one writability check and
+	// one memory-backing check cover it.
+	if err := validateOutputPaths(cfg.CertPath, cfg.DiscoveryOutPath); err != nil {
 		return err
 	}
-	slog.Debug("output paths validated")
+	// The key is published in this directory, so it must never reach
+	// persistent storage.
+	if err := cmdsutil.RequireRAMBackedDir("--key-path", volume.dir); err != nil {
+		return err
+	}
+	slog.Debug("credential volume validated")
 
 	client, policyClient, err := newCDSClient(cfg)
 	if err != nil {
@@ -284,37 +298,109 @@ func run(cfg config) error {
 	defer stop()
 	ctx = cmdsutil.WatchNodeIP(ctx, rawAttestationURL, attestationURL)
 
-	haveCert := true
-	leaf, err := obtainCertWithRetry(ctx, cfg, client)
+	creds, err := resumeCredentials(ctx, cfg, volume)
 	if err != nil {
+		// Nothing resumed means nothing was revalidated, so whatever the volume
+		// still points at is unvalidated: withdraw it before exiting, or a
+		// crashlooping sidecar would leave it readable.
+		return errors.Join(err, withdrawGeneration(volume))
+	}
+
+	if err := obtainCertWithRetry(ctx, cfg, client, creds); err != nil {
 		if cfg.RenewInterval <= 0 || !cfg.ContinueOnInitialError {
 			return cmdsutil.NodeIPChanged(ctx, err)
 		}
-		haveCert = false
 		slog.Error("initial certificate request failed, will keep retrying", "error", err)
 	} else if cfg.RenewInterval <= 0 {
 		return nil
 	}
-	return cmdsutil.NodeIPChanged(ctx, renewLoop(ctx, cfg, client, policyClient, leaf, haveCert))
+	return cmdsutil.NodeIPChanged(ctx, renewLoop(ctx, cfg, client, policyClient, creds))
+}
+
+// resumeCredentials is the pod's state before anything is requested: the
+// workload instance its node inventory asserts, and the generation and issuer
+// its volume already holds. Both must hold for a request to be made at all.
+func resumeCredentials(ctx context.Context, cfg config, volume credentialVolume) (*credentials, error) {
+	instanceID, err := workloadInstance(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	creds, err := loadCredentials(volume, instanceID)
+	if err != nil {
+		return nil, err
+	}
+	if err := creds.adoptStoredGeneration(time.Now()); err != nil {
+		return nil, err
+	}
+	return creds, nil
+}
+
+// workloadInstance is the instance this pod's credentials are bound to: the one
+// its node inventory asserts, or none under --no-workload-claims, where the
+// leaf must carry none either (requireInstanceID holds either way).
+func workloadInstance(ctx context.Context, cfg config) (string, error) {
+	if cfg.NoWorkloadClaims {
+		slog.Warn("requesting certificates with no workload identity assertion (--no-workload-claims)")
+		return "", nil
+	}
+	// Fail fast, never retry: a missing socket directory means the mount was
+	// not injected at container creation and no in-process wait can produce
+	// it, while the retry loop would idle forever behind
+	// --continue-on-initial-error (see workloadclaims.RequireSidecarSocketDir).
+	if err := nodeInventory.requireMount(); err != nil {
+		return "", err
+	}
+	instanceID, err := assertedInstanceID(ctx, cfg)
+	if err != nil {
+		return "", err
+	}
+	slog.Info("workload instance asserted", "instance_id", instanceID)
+	return instanceID, nil
+}
+
+// assertedInstanceID is the workload instance the node inventory names for this
+// pod, which every leaf get-cert publishes must carry. Without an assertion
+// get-cert has no identity to check a certificate against, so it requests
+// nothing.
+func assertedInstanceID(ctx context.Context, cfg config) (string, error) {
+	// This token is read locally and never submitted, so it carries a nonce
+	// and a key of its own: bound to a key nobody keeps, it cannot be spent as
+	// an issuance token by anything that sees it.
+	probe, _, err := generateKey()
+	if err != nil {
+		return "", err
+	}
+	var nonce [32]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return "", fmt.Errorf("generate inventory nonce: %w", err)
+	}
+	token, err := workloadclaims.FetchSandboxToken(ctx, nodeInventory.endpoint(), cfg.WorkloadClaimsTimeout, &probe.PublicKey, nonce[:])
+	if err != nil {
+		return "", fmt.Errorf("assert workload instance: %w", err)
+	}
+	instanceID, err := workloadclaims.UnverifiedSandboxIDFromToken(token.Token)
+	if err != nil {
+		return "", err
+	}
+	if err := armtls.ValidateSandboxID(instanceID); err != nil {
+		return "", err
+	}
+	return instanceID, nil
 }
 
 // renewLoop is get-cert's daemon mode: renew with graceful shutdown, on a
-// resettable timer paced off the installed leaf's own expiry as well as
-// --renew-interval, and — while the installed leaf is unnamed and
-// --workload-claims is on — off the fast unnamed interval, so the pod's first
-// post-completion renewal picks up its matched-workload stamp promptly.
-// Each --ca-watch-interval tick polls CDS: with --ca-out it renews immediately
-// when the served CA bundle no longer contains the CA CDS holds, so a CDS
-// restart (which regenerates the mesh CA in-memory) does not leave the
-// discovery endpoints serving a dead CA until the next scheduled renewal; with
-// --workload-claims it renews, after a jitter, when the allowlist policy no
-// longer matches the installed leaf's matched-workload stamp.
+// resettable timer paced off the published generation's own expiry as well as
+// --renew-interval, and — while the published leaf is unnamed — off the fast
+// unnamed interval, so the pod's first post-completion renewal picks up its
+// matched-workload stamp promptly.
+// Each --ca-watch-interval tick polls CDS for a renewed CA certificate under
+// the pod's bound key, or an allowlist policy differing from the leaf's stamp.
 //
-// Until the first certificate lands the cadence is the initial-retry backoff
-// instead: c8s-cert-wait holds the workload on that certificate
-// (docs/getcert-workload-binding.md), so waiting out a renewal interval to
-// re-ask would strand it for that long.
-func renewLoop(ctx context.Context, cfg config, client attestclient.Client, policyClient allowlistclient.Client, leaf *x509.Certificate, haveCert bool) error {
+// Until the first generation is published the cadence is the initial-retry
+// backoff instead: the credential-wait gate holds the workload on that
+// generation (docs/getcert-workload-binding.md), so waiting out a renewal
+// interval to re-ask would strand it for that long.
+func renewLoop(ctx context.Context, cfg config, client attestclient.Client, policyClient allowlistclient.Client, creds *credentials) error {
 	initialBackoff := backoff.NewExponentialBackOff()
 	initialBackoff.MaxInterval = maxInitialRetryInterval
 	if cfg.InitialRetryInterval > 0 {
@@ -325,12 +411,12 @@ func renewLoop(ctx context.Context, cfg config, client attestclient.Client, poli
 	// only pace the timer.
 	var unnamedRuns, failures int
 	warned := map[string]bool{}
-	warnUnexpectedWorkload(cfg, leaf, warned)
-	next := renewalInterval(cfg, leaf, unnamedRuns)
-	if !haveCert {
+	warnUnexpectedWorkload(cfg, publishedLeaf(creds.current), warned)
+	next := renewalInterval(cfg, creds.current, unnamedRuns)
+	if creds.current == nil {
 		next = initialBackoff.NextBackOff()
 	}
-	slog.Info("entering renewal loop", "interval", cfg.RenewInterval, "next", next, "have_cert", haveCert)
+	slog.Info("entering renewal loop", "interval", cfg.RenewInterval, "next", next, "published", creds.current != nil)
 	renewTimer := time.NewTimer(next)
 	defer renewTimer.Stop()
 	// renewDue lets the policy watch clamp its jitter to the scheduled renewal.
@@ -344,67 +430,67 @@ func renewLoop(ctx context.Context, cfg config, client attestclient.Client, poli
 	// policyVersion is the If-None-Match version: the stamp's, advanced to any
 	// served version whose bytes still match it, so a no-op allowlist write
 	// costs one 200 rather than one per tick until the next re-issue.
-	policyVersion := stampedPolicyVersion(leaf)
-
-	var watchC <-chan time.Time
-	var watchTicker *time.Ticker
-	var watchState map[string]fileSnapshot
-	if cfg.ReloadNginx && len(cfg.ReloadWatchPaths) > 0 {
-		var err error
-		watchState, err = snapshotReloadWatchPaths(cfg.ReloadWatchPaths)
-		if err != nil {
-			return err
-		}
-		watchTicker = time.NewTicker(cfg.ReloadWatchInterval)
-		defer watchTicker.Stop()
-		watchC = watchTicker.C
-		slog.Info("watching files for nginx reload", "paths", cfg.ReloadWatchPaths, "interval", cfg.ReloadWatchInterval)
-	}
+	policyVersion := stampedPolicyVersion(publishedLeaf(creds.current))
 
 	var cdsWatchC <-chan time.Time
 	if cfg.CAWatchInterval > 0 {
 		cdsTicker := time.NewTicker(cfg.CAWatchInterval)
 		defer cdsTicker.Stop()
 		cdsWatchC = cdsTicker.C
-		slog.Info("watching cds for changes", "interval", cfg.CAWatchInterval, "ca_path", cfg.CAOutPath, "policy", cfg.WorkloadClaims)
+		slog.Info("watching cds for changes", "interval", cfg.CAWatchInterval, "ca_path", cfg.CAPath, "policy", !cfg.NoWorkloadClaims)
 	}
 
+	var operationCtx context.Context
+	var cancelOperation context.CancelFunc
+	defer func() {
+		if cancelOperation != nil {
+			cancelOperation()
+		}
+	}()
 	for {
+		if err := creds.withdrawUnusable(time.Now()); err != nil {
+			return err
+		}
+		if cancelOperation != nil {
+			cancelOperation()
+		}
+		operationCtx, cancelOperation = generationValidityContext(ctx, creds.current)
 		select {
-		case <-ctx.Done():
-			slog.Info("shutting down cert renewer")
-			return nil
+		case <-operationCtx.Done():
+			if ctx.Err() != nil {
+				slog.Info("shutting down cert renewer")
+				return nil
+			}
+			continue
 		case <-cdsWatchC:
-			// While no certificate is installed the initial-retry backoff is
-			// already re-asking as fast as allowed.
-			if !haveCert {
+			// While nothing is published the initial-retry backoff is already
+			// re-asking as fast as allowed.
+			if creds.current == nil {
 				continue
 			}
-			if cfg.CAOutPath != "" {
-				stale, err := servedCAStale(ctx, client, cfg.CAOutPath)
-				// On error, fall through: it may be local (an unreadable
-				// --ca-out), which must not mute the policy check.
-				if err != nil {
-					slog.Warn("mesh CA check failed", "error", err)
-				} else if stale {
-					slog.Info("cds holds a mesh CA the served bundle is missing, renewing now")
-					resetRenewal(0)
-					continue
-				}
+			stale, err := servedCAStale(operationCtx, client, cfg.CAPath, creds.issuer)
+			// On error, fall through: it may be local (an unreadable
+			// --ca-path), which must not mute the policy check.
+			if err != nil {
+				slog.Warn("mesh CA check failed", "error", err)
+			} else if stale {
+				slog.Info("cds renewed the bound mesh CA certificate, renewing now")
+				resetRenewal(0)
+				continue
 			}
 			// A pending retry already re-issues, and an unparsed or unnamed
 			// leaf has no stamp to compare: the unnamed fast poll covers it.
 			// A leaf naming another entry than --expected-workload is still
 			// checked: the fast poll may be off or backed off.
 			// The policy check resumes once a renewal succeeds and failures is 0.
-			if !cfg.WorkloadClaims || leaf == nil || failures > 0 || policyRenewPending {
+			if cfg.NoWorkloadClaims || failures > 0 || policyRenewPending {
 				continue
 			}
-			stamp, err := armtls.MatchedWorkloadFromCert(leaf)
+			stamp, err := armtls.MatchedWorkloadFromCert(creds.current.Leaf)
 			if err != nil || stamp == nil {
 				continue
 			}
-			served, stale, err := stampedPolicyStale(ctx, policyClient, policyVersion, stamp.AllowlistDigest)
+			served, stale, err := stampedPolicyStale(operationCtx, policyClient, policyVersion, stamp.AllowlistDigest)
 			if err != nil {
 				slog.Warn("allowlist policy check failed", "error", err)
 				continue
@@ -423,63 +509,40 @@ func renewLoop(ctx context.Context, cfg config, client attestclient.Client, poli
 			resetRenewal(delay)
 		case <-renewTimer.C:
 			policyRenewPending = false
-			renewed, err := obtainCertFn(ctx, cfg, client)
-			if err != nil && !haveCert {
+			published := creds.current != nil
+			err := obtainCertFn(operationCtx, cfg, client, creds)
+			if err != nil && !published {
 				retry := initialBackoff.NextBackOff()
-				slog.Error("certificate request failed, still no certificate", "error", err, "retry_in", retry)
+				slog.Error("certificate request failed, still nothing published", "error", err, "retry_in", retry)
 				resetRenewal(retry)
 				continue
 			}
 			if err != nil {
-				// A short backoff, not a full interval: the timer is paced so
-				// it fires around half the installed leaf's remaining
-				// lifetime, so by the time a renewal fails the leaf is already
-				// close to expiry. Sleeping out --renew-interval here would
-				// leave the workload serving a dead certificate.
-				failures++
-				if shouldRestartAfterRenewalFailures(leaf, failures) {
-					// The installed leaf is dead and renewal from this process
-					// keeps failing, so retrying in-process serves an expired
-					// certificate indefinitely. Exit instead: as a native
-					// sidecar (restartPolicy: Always) the container restarts
-					// with fresh client state and re-runs the full issuance.
-					return fmt.Errorf("installed certificate expired at %s and %d consecutive renewals failed (last: %w); exiting for a clean restart", leaf.NotAfter.Format(time.RFC3339), failures, err)
+				// A failed renewal retains the published generation only while
+				// it still validates; once it does not, it is withdrawn and
+				// consumers fail closed rather than serve it.
+				if withdrawErr := creds.withdrawUnusable(time.Now()); withdrawErr != nil {
+					return withdrawErr
 				}
-				retry := renewalRetryInterval(cfg, leaf, failures)
-				slog.Error("certificate renewal failed, retrying", "error", err, "retry_in", retry, "failures", failures)
+				// A short backoff, not a full interval: the timer is paced so
+				// it fires around half the published generation's remaining
+				// lifetime, so by the time a renewal fails the generation is
+				// already close to expiry.
+				failures++
+				retry := renewalRetryInterval(cfg, creds.current, failures)
+				slog.Error("certificate renewal failed, retrying", "error", err, "retry_in", retry, "failures", failures, "published", creds.current != nil)
 				resetRenewal(retry)
 				continue
 			}
-			haveCert = true
 			failures = 0
-			leaf = renewed
-			warnUnexpectedWorkload(cfg, leaf, warned)
-			policyVersion = stampedPolicyVersion(leaf)
-			if isNamedLeaf(cfg, leaf) {
+			warnUnexpectedWorkload(cfg, publishedLeaf(creds.current), warned)
+			policyVersion = stampedPolicyVersion(publishedLeaf(creds.current))
+			if isNamedLeaf(cfg, creds.current) {
 				unnamedRuns = 0
 			} else {
 				unnamedRuns++
 			}
-			if cfg.ReloadNginx {
-				if err := cmdsutil.ReloadNginx(procRoot, slog.Default()); err != nil {
-					slog.Warn("certificate renewed but nginx reload failed", "error", err)
-				}
-			}
-			resetRenewal(renewalInterval(cfg, leaf, unnamedRuns))
-		case <-watchC:
-			changed, nextState, err := reloadWatchChanged(watchState, cfg.ReloadWatchPaths)
-			if err != nil {
-				slog.Warn("reload watch check failed", "error", err)
-				continue
-			}
-			watchState = nextState
-			if !changed {
-				continue
-			}
-			slog.Info("watched file changed, reloading nginx")
-			if err := cmdsutil.ReloadNginx(procRoot, slog.Default()); err != nil {
-				slog.Warn("watched file changed but nginx reload failed", "error", err)
-			}
+			resetRenewal(renewalInterval(cfg, creds.current, unnamedRuns))
 		}
 	}
 }
@@ -493,13 +556,6 @@ const (
 	// maxInitialRetryInterval caps the backoff between attempts at the first
 	// certificate.
 	maxInitialRetryInterval = time.Minute
-
-	// expiredExitFailures is how many consecutive renewal failures the loop
-	// tolerates once the installed leaf has expired before exiting for a clean
-	// sidecar restart. Small, because every request in a renewal attempt is
-	// individually timed out — a failing attempt resolves in seconds — and an
-	// expired leaf means clients are already failing closed against this pod.
-	expiredExitFailures = 3
 
 	// unnamedBackoffAfter is how many consecutive unnamed renewals run at the
 	// fast poll before it doubles toward --renew-interval. A pod can be
@@ -525,25 +581,27 @@ var renewalRetryBase = 15 * time.Second
 
 // renewalInterval picks the next renewal delay.
 //
-// The ceiling is whichever comes first: --renew-interval, or half the installed
-// leaf's remaining lifetime. That second bound is what keeps a leaf from
-// expiring exactly as its renewal fires: CDS caps a named leaf at
-// issuer.MaxNamedLeafTTL and nothing backdates NotBefore, so pacing on the flag
-// alone — which the chart sets to the same value — would reset the timer after
-// issuance, drift later every cycle, and leave a single failed renewal serving a
-// dead leaf for a full interval.
+// The ceiling is whichever comes first: --renew-interval, or half the published
+// generation's remaining lifetime — its leaf's or its CA's, whichever
+// expires first, so a CA renewed under the pod's bound key is picked up before
+// the previous CA certificate expires. That second bound is also what
+// keeps a leaf from expiring exactly as its renewal fires: CDS caps a named
+// leaf at issuer.MaxNamedLeafTTL and nothing backdates NotBefore, so pacing on
+// the flag alone — which the chart sets to the same value — would reset the
+// timer after issuance, drift later every cycle, and leave a single failed
+// renewal on a dead generation for a full interval.
 //
-// Under that ceiling a workload-claims leaf carrying no matched-workload stamp
-// fast-polls from unnamedFirstPoll up to --unnamed-renew-interval, so a pod picks up its name at the
-// first post-completion renewal. unnamedRuns is the number of consecutive
+// Under that ceiling a leaf carrying no matched-workload stamp fast-polls from
+// unnamedFirstPoll up to --unnamed-renew-interval, so a pod picks up its name at
+// the first post-completion renewal. unnamedRuns is the number of consecutive
 // renewals that came back unnamed; see unnamedBackoffAfter.
 //
 // An unparseable or unknown leaf counts as unnamed — polling fast on damage is
 // harmless, serving stale identity is not.
-func renewalInterval(cfg config, leaf *x509.Certificate, unnamedRuns int) time.Duration {
+func renewalInterval(cfg config, g *generation, unnamedRuns int) time.Duration {
 	delay := cfg.RenewInterval
-	if leaf != nil && !leaf.NotAfter.IsZero() {
-		if half := time.Until(leaf.NotAfter) / 2; half < delay {
+	if expiry := generationExpiry(g); !expiry.IsZero() {
+		if half := time.Until(expiry) / 2; half < delay {
 			delay = half
 		}
 	}
@@ -557,18 +615,18 @@ func renewalInterval(cfg config, leaf *x509.Certificate, unnamedRuns int) time.D
 		delay = min(minRenewalDelay, cfg.RenewInterval)
 	}
 	// The unnamed poll is under the floor at first; its own backoff bounds it.
-	if fast := unnamedPollInterval(cfg, leaf, unnamedRuns); fast > 0 && fast < delay {
+	if fast := unnamedPollInterval(cfg, g, unnamedRuns); fast > 0 && fast < delay {
 		delay = fast
 	}
 	return delay
 }
 
-// unnamedPollInterval returns the fast-poll delay for an unnamed
-// workload-claims leaf, or 0 when the fast poll does not apply. Jitter is added
-// here and clamped by the caller, so it can never push a delay past
-// --renew-interval or past the installed leaf's remaining lifetime.
-func unnamedPollInterval(cfg config, leaf *x509.Certificate, unnamedRuns int) time.Duration {
-	if !cfg.WorkloadClaims || cfg.UnnamedRenewInterval <= 0 || isNamedLeaf(cfg, leaf) {
+// unnamedPollInterval returns the fast-poll delay for an unnamed leaf, or 0
+// when the fast poll does not apply. Jitter is added here and clamped by the
+// caller, so it can never push a delay past --renew-interval or past the
+// published generation's remaining lifetime.
+func unnamedPollInterval(cfg config, g *generation, unnamedRuns int) time.Duration {
+	if cfg.UnnamedRenewInterval <= 0 || isNamedLeaf(cfg, g) {
 		return 0
 	}
 	// Start at unnamedFirstPoll and double per unnamed renewal up to the flag:
@@ -597,13 +655,13 @@ func unnamedPollInterval(cfg config, leaf *x509.Certificate, unnamedRuns int) ti
 
 // renewalRetryInterval is the delay after a failed renewal: exponential from
 // renewalRetryBase so a CDS outage is not hammered, but never slower than the
-// ordinary pacing, which is itself bounded by the installed leaf's remaining
-// lifetime.
-func renewalRetryInterval(cfg config, leaf *x509.Certificate, failures int) time.Duration {
-	// A wrong-name leaf still serves; back off like a named one, not at the
-	// fast poll, so a CDS outage is not retried every few seconds.
+// ordinary pacing, which is itself bounded by the published generation's
+// remaining lifetime.
+func renewalRetryInterval(cfg config, g *generation, failures int) time.Duration {
+	// A wrong-name generation still serves; back off like a named one, not at
+	// the fast poll, so a CDS outage is not retried every few seconds.
 	cfg.ExpectedWorkload = ""
-	ceiling := renewalInterval(cfg, leaf, 0)
+	ceiling := renewalInterval(cfg, g, 0)
 	delay := renewalRetryBase
 	for i := 1; i < failures && delay < ceiling; i++ {
 		delay *= 2
@@ -611,17 +669,22 @@ func renewalRetryInterval(cfg config, leaf *x509.Certificate, failures int) time
 	return min(delay, ceiling)
 }
 
-func shouldRestartAfterRenewalFailures(leaf *x509.Certificate, failures int) bool {
-	return leaf != nil && failures >= expiredExitFailures && time.Now().After(leaf.NotAfter)
+// publishedLeaf is the certificate of the published generation, or nil when
+// nothing is published.
+func publishedLeaf(g *generation) *x509.Certificate {
+	if g == nil {
+		return nil
+	}
+	return g.Leaf
 }
 
-// isNamedLeaf reports whether the installed leaf carries a valid
-// matched-workload stamp naming --expected-workload, or any name when that
-// is unset. A nil, unparseable, or unstamped leaf is not named. A pod stamped
+// isNamedLeaf reports whether the published leaf carries a valid
+// matched-workload stamp naming --expected-workload, or any name when that is
+// unset. An absent, unparseable or unstamped leaf is not named. A pod stamped
 // while its sandbox is still starting can match a subset entry, so a wrong
 // name keeps polling rather than settling on it.
-func isNamedLeaf(cfg config, leaf *x509.Certificate) bool {
-	name := stampedWorkload(leaf)
+func isNamedLeaf(cfg config, g *generation) bool {
+	name := stampedWorkload(publishedLeaf(g))
 	return name != "" && (cfg.ExpectedWorkload == "" || name == cfg.ExpectedWorkload)
 }
 
@@ -643,7 +706,7 @@ func stampedWorkload(leaf *x509.Certificate) string {
 // the expected workload.
 func warnUnexpectedWorkload(cfg config, leaf *x509.Certificate, warned map[string]bool) {
 	name := stampedWorkload(leaf)
-	if !cfg.WorkloadClaims || cfg.ExpectedWorkload == "" || name == "" {
+	if cfg.NoWorkloadClaims || cfg.ExpectedWorkload == "" || name == "" {
 		return
 	}
 	if name == cfg.ExpectedWorkload {
@@ -658,20 +721,32 @@ func warnUnexpectedWorkload(cfg config, leaf *x509.Certificate, warned map[strin
 	slog.Warn("certificate stamped with an unexpected workload; renewing until it names the expected one", "stamped_workload", name, "expected_workload", cfg.ExpectedWorkload)
 }
 
+func generationValidityContext(ctx context.Context, g *generation) (context.Context, context.CancelFunc) {
+	if g != nil {
+		return context.WithDeadline(ctx, generationExpiry(g))
+	}
+	return context.WithCancel(ctx)
+}
+
 // obtainCertWithRetry runs the first certificate request, retrying in-process
 // on a fixed cadence until it succeeds, InitialRetryTimeout elapses, or the
 // context is cancelled. During a full-stack roll CDS and the mesh are briefly
 // unavailable; retrying here keeps a transient failure from exiting the init
 // container into kubelet's minutes-long CrashLoopBackOff. It still fails closed:
-// once the deadline passes the last error is returned and the pod does not
-// start without a real mesh cert.
-func obtainCertWithRetry(ctx context.Context, cfg config, client attestclient.Client) (*x509.Certificate, error) {
+// once the deadline passes the last error is returned and the pod publishes
+// nothing.
+func obtainCertWithRetry(ctx context.Context, cfg config, client attestclient.Client, creds *credentials) (err error) {
+	ctx, cancel := generationValidityContext(ctx, creds.current)
+	defer cancel()
+	defer func() {
+		err = errors.Join(err, creds.withdrawUnusable(time.Now()))
+	}()
 	if cfg.InitialRetryTimeout <= 0 {
-		return obtainCertFn(ctx, cfg, client)
+		return obtainCertFn(ctx, cfg, client, creds)
 	}
 	bo := backoff.NewConstantBackOff(cfg.InitialRetryInterval)
-	return backoff.Retry(ctx, func() (*x509.Certificate, error) {
-		return obtainCertFn(ctx, cfg, client)
+	_, err = backoff.Retry(ctx, func() (struct{}, error) {
+		return struct{}{}, obtainCertFn(ctx, cfg, client, creds)
 	},
 		backoff.WithBackOff(bo),
 		backoff.WithMaxElapsedTime(cfg.InitialRetryTimeout),
@@ -679,15 +754,20 @@ func obtainCertWithRetry(ctx context.Context, cfg config, client attestclient.Cl
 			slog.Warn("certificate request failed, retrying", "retry_in", d, "error", err)
 		}),
 	)
+	return err
 }
 
-// obtainCert requests, writes, and returns the issued leaf. A leaf that cannot
-// be parsed back is returned as nil without failing the renewal — the outputs
-// are already written, and the caller only reads the leaf for poll pacing.
-func obtainCert(ctx context.Context, cfg config, client attestclient.Client) (*x509.Certificate, error) {
-	privateKey, keyPEM, err := loadOrGenerateKey(cfg)
+// obtainCert requests one certificate on a key of its own and publishes both as
+// one generation. The response is validated first, so a response that does not
+// match that key, the pod's instance or its bound CA key leaves the previous
+// generation in place.
+func obtainCert(ctx context.Context, cfg config, client attestclient.Client, creds *credentials) error {
+	// One request, one key: the sandbox token, the evidence and the CSR below
+	// all bind to this key, and it is published only with the certificate
+	// issued for it.
+	key, keyPEM, err := generateKey()
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	// Fetch the CDS challenge up front so one single-use nonce binds both the
@@ -695,47 +775,55 @@ func obtainCert(ctx context.Context, cfg config, client attestclient.Client) (*x
 	// (docs/armtls.md, "Sandbox identity").
 	challenge, err := client.AuthenticateContext(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("authenticate: %w", err)
+		return fmt.Errorf("authenticate: %w", err)
 	}
 	nonce, err := base64.StdEncoding.DecodeString(challenge.Challenge)
 	if err != nil {
-		return nil, fmt.Errorf("invalid challenge from cds: %w", err)
+		return fmt.Errorf("invalid challenge from cds: %w", err)
 	}
 
-	sandboxToken, err := fetchSandboxToken(ctx, cfg, &privateKey.PublicKey, nonce)
-	if err != nil {
-		return nil, err
+	var sandboxToken json.RawMessage
+	if !cfg.NoWorkloadClaims {
+		asserted := ""
+		sandboxToken, asserted, err = fetchSandboxToken(ctx, cfg, &key.PublicKey, nonce)
+		if err != nil {
+			return err
+		}
+		// The assertion this request carries must name the instance the pod was
+		// resumed under: one issuance, one workload instance, start to finish.
+		if asserted != creds.instanceID {
+			return fmt.Errorf("the inventory now asserts workload instance %q, not %q", asserted, creds.instanceID)
+		}
 	}
 
 	// Always embed a nonce-free armTLS .1.1 extension so a downstream armtls-mode
 	// verifier (secret-inventory --peer-verify=armtls) can re-verify the leaf —
 	// the same nonce-free embed the mesh client uses (docs/armtls.md).
-	ext, err := client.AttestationExtension(ctx, cfg.AttestationApiURL, &privateKey.PublicKey)
+	ext, err := client.AttestationExtension(ctx, cfg.AttestationApiURL, &key.PublicKey)
 	if err != nil {
-		return nil, fmt.Errorf("build armTLS attestation extension: %w", err)
+		return fmt.Errorf("build armTLS attestation extension: %w", err)
 	}
 
-	csrPEM, err := createCSR(privateKey, cfg.SAN, ext)
+	csrPEM, err := createCSR(key, cfg.SAN, ext)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	slog.Info("requesting certificate from cds", "cds_url", cfg.CDSURL, "san", cfg.SAN, "sandbox_token", len(sandboxToken) > 0)
+	slog.Info("requesting certificate from cds", "cds_url", cfg.CDSURL, "san", cfg.SAN, "instance_id", creds.instanceID)
 	result, err := client.ObtainCertificateWithSandboxContext(ctx, cfg.AttestationApiURL, string(csrPEM), challenge.Challenge, sandboxToken)
 	if err != nil {
-		return nil, fmt.Errorf("attestation failed: %w", err)
+		return fmt.Errorf("attestation failed: %w", err)
 	}
 	slog.Info("certificate obtained")
 
-	if err := writeOutputs(cfg, keyPEM, result); err != nil {
-		return nil, err
-	}
-	leaf, err := certutil.ParseCertificatePEM([]byte(result.Certificate))
+	generation, err := issuedGeneration(result.Certificate, key, keyPEM)
 	if err != nil {
-		slog.Warn("issued certificate could not be parsed back; treating it as unnamed", "error", err)
-		return nil, nil
+		return err
 	}
-	return leaf, nil
+	if err := creds.publish(generation, time.Now()); err != nil {
+		return err
+	}
+	return writeDiscoveryDocument(cfg, result)
 }
 
 // fetchSandboxToken redeems this pod's kernel peer credentials at the
@@ -748,34 +836,30 @@ func obtainCert(ctx context.Context, cfg config, client attestclient.Client) (*x
 // resolves at first issuance — the sidecar's own container is already tracked
 // — where a self-reported image set would still be empty.
 //
-// Without --workload-claims it returns nil. With it, an inventory that does not
-// serve the route issues without a sandbox ID; any other failure is
-// fail-closed, so issuance aborts rather than silently dropping the binding.
-func fetchSandboxToken(ctx context.Context, cfg config, pub crypto.PublicKey, nonce []byte) (json.RawMessage, error) {
-	if !cfg.WorkloadClaims {
-		return nil, nil
+// Every failure is fail-closed, an inventory that does not serve the route
+// included: a certificate issued without the assertion would carry no instance
+// for the pod to check it against.
+func fetchSandboxToken(ctx context.Context, cfg config, pub crypto.PublicKey, nonce []byte) (json.RawMessage, string, error) {
+	token, err := workloadclaims.FetchSandboxToken(ctx, nodeInventory.endpoint(), cfg.WorkloadClaimsTimeout, pub, nonce)
+	if err != nil {
+		return nil, "", fmt.Errorf("fetch sandbox token: %w", err)
 	}
-	endpoint := inventoryEndpoint()
-	token, err := workloadclaims.FetchSandboxToken(ctx, endpoint, cfg.WorkloadClaimsTimeout, pub, nonce)
-	switch {
-	case errors.Is(err, workloadclaims.ErrSandboxUnsupported):
-		slog.Info("inventory does not serve the sandbox route; issuing without a sandbox ID")
-		return nil, nil
-	case err != nil:
-		return nil, fmt.Errorf("fetch sandbox token: %w", err)
+	asserted, err := workloadclaims.UnverifiedSandboxIDFromToken(token.Token)
+	if err != nil {
+		return nil, "", err
 	}
 	raw, err := json.Marshal(token)
 	if err != nil {
-		return nil, fmt.Errorf("marshal sandbox token: %w", err)
+		return nil, "", fmt.Errorf("marshal sandbox token: %w", err)
 	}
-	return raw, nil
+	return raw, asserted, nil
 }
 
 // applyCDSWatchDefault turns off the implicit --ca-watch-interval default when
-// there is no renewal loop or nothing to watch; a value set in flags is left
-// for validateConfig to judge.
+// there is no renewal loop; a value set in flags is left for validateConfig to
+// judge.
 func applyCDSWatchDefault(cfg *config, flags *pflag.FlagSet) {
-	if !flags.Changed("ca-watch-interval") && (cfg.RenewInterval <= 0 || (cfg.CAOutPath == "" && !cfg.WorkloadClaims)) {
+	if !flags.Changed("ca-watch-interval") && cfg.RenewInterval <= 0 {
 		cfg.CAWatchInterval = 0
 	}
 }
@@ -788,8 +872,13 @@ func validateConfig(cfg config) error {
 	if err := cmdsutil.ValidateAttestationAPIURL("--attestation-api-url", cfg.AttestationApiURL); err != nil {
 		return err
 	}
-	if err := validateSAN(cfg.SAN); err != nil {
-		return fmt.Errorf("--san: %w", err)
+	if err := cmdsutil.RequireNodeVerifier(workloadclaims.CDSPinsPath, workloadclaims.AttestationAPISocket, cfg.AttestationApiURL); err != nil {
+		return err
+	}
+	if cfg.SAN != "" {
+		if err := validateSAN(cfg.SAN); err != nil {
+			return fmt.Errorf("--san: %w", err)
+		}
 	}
 	if cfg.DiscoveryOutPath != "" {
 		switch discoveryPublicTLSMode(cfg.DiscoveryPublicTLSMode) {
@@ -798,23 +887,12 @@ func validateConfig(cfg config) error {
 			return fmt.Errorf("%w: --discovery-public-tls-mode must be 'cds', 'webpki', or 'acme', got %q", errInvalidDiscoveryPublicTLSMode, cfg.DiscoveryPublicTLSMode)
 		}
 	}
-	if len(cfg.ReloadWatchPaths) > 0 {
-		if cfg.ReloadWatchInterval <= 0 {
-			return fmt.Errorf("%w: --reload-watch-interval must be greater than 0 when --reload-watch is set", errInvalidReloadWatchInterval)
-		}
-		if cfg.RenewInterval <= 0 {
-			return fmt.Errorf("%w: --renew-interval must be greater than 0 when --reload-watch is set", errReloadWatchRequiresRenewInterval)
-		}
-	}
 	// Each tick is a CDS round-trip, so a sub-second watch is never what an
 	// operator means; 0 is the documented "disabled".
 	if cfg.CAWatchInterval != 0 && cfg.CAWatchInterval < time.Second {
 		return fmt.Errorf("%w: --ca-watch-interval must be 0 (disabled) or at least 1s, got %v", errInvalidCAWatchInterval, cfg.CAWatchInterval)
 	}
 	if cfg.CAWatchInterval > 0 {
-		if cfg.CAOutPath == "" && !cfg.WorkloadClaims {
-			return fmt.Errorf("%w: --ca-watch-interval requires --ca-out or --workload-claims, the state it compares against CDS", errInvalidCAWatchInterval)
-		}
 		if cfg.RenewInterval <= 0 {
 			return fmt.Errorf("%w: --ca-watch-interval requires --renew-interval, the loop that re-issues on a change", errInvalidCAWatchInterval)
 		}
@@ -830,8 +908,8 @@ func validateConfig(cfg config) error {
 	if cfg.ContinueOnInitialError && cfg.RenewInterval <= 0 {
 		return fmt.Errorf("%w: --continue-on-initial-error requires --renew-interval", errContinueOnInitialErrorRequiresRenewalLoop)
 	}
-	if cfg.ExpectedWorkload != "" && (!cfg.WorkloadClaims || cfg.RenewInterval <= 0) {
-		return fmt.Errorf("%w: --expected-workload requires --workload-claims and --renew-interval", errExpectedWorkloadRequiresClaimsLoop)
+	if cfg.ExpectedWorkload != "" && (cfg.NoWorkloadClaims || cfg.RenewInterval <= 0) {
+		return fmt.Errorf("%w: --expected-workload requires a workload identity assertion and --renew-interval", errExpectedWorkloadRequiresClaimsLoop)
 	}
 	return nil
 }
@@ -856,14 +934,23 @@ func resolveDiscoveryPublicTLSMode(cfg *config) error {
 }
 
 // resolveSAN loads the configured identity once, before network or output work.
-func resolveSAN(san, path string) (string, error) {
-	if path != "" {
-		if san != "" {
-			return "", fmt.Errorf("--san and --san-file are mutually exclusive")
-		}
+// --no-san is the pod that asks for none, and CDS then takes the subject from
+// the verified workload identity assertion instead.
+func resolveSAN(cfg config) (string, error) {
+	switch {
+	case cfg.NoSAN && (cfg.SAN != "" || cfg.SANFile != ""):
+		return "", fmt.Errorf("--no-san cannot be combined with --san or --san-file")
+	case cfg.NoSAN:
+		return "", nil
+	case cfg.SAN != "" && cfg.SANFile != "":
+		return "", fmt.Errorf("--san and --san-file are mutually exclusive")
+	case cfg.SAN == "" && cfg.SANFile == "":
+		return "", fmt.Errorf("one of --san, --san-file or --no-san is required")
+	}
+	san := cfg.SAN
+	if cfg.SANFile != "" {
 		var err error
-		san, err = cmdsutil.ReadSANFile("--san-file", path)
-		if err != nil {
+		if san, err = cmdsutil.ReadSANFile("--san-file", cfg.SANFile); err != nil {
 			return "", err
 		}
 	}
@@ -896,16 +983,6 @@ func isIPSAN(san string) bool {
 	return net.ParseIP(san) != nil
 }
 
-// requireKeyOutRAMBacked enforces that --key-out sits on tmpfs/ramfs: the
-// private key must never reach persistent storage, which the host reads at
-// will. The cert and CA outputs are public and stay unconstrained.
-func requireKeyOutRAMBacked(keyOutPath string) error {
-	if keyOutPath == "" {
-		return nil
-	}
-	return cmdsutil.RequireRAMBackedDir("--key-out", filepath.Dir(keyOutPath))
-}
-
 // validateOutputPaths checks that output file locations are writable before
 // doing any expensive work (key generation, attestation). This prevents
 // requesting certificates that can't be saved.
@@ -934,46 +1011,9 @@ func validateOutputPaths(paths ...string) error {
 	return nil
 }
 
-// loadOrGenerateKey resolves the workload's private key.
-//
-//   - --key <path>  : load (path must exist).
-//   - --key-out <path> : reuse if a key already exists at <path>, else
-//     generate one. The reuse case keeps the same keypair across container
-//     restarts inside a pod — a fresh key would invalidate every cert CDS
-//     has previously issued for it.
-//   - neither      : generate an ephemeral key (lost on exit).
-func loadOrGenerateKey(cfg config) (*ecdsa.PrivateKey, []byte, error) {
-	if cfg.KeyPath != "" {
-		slog.Debug("loading existing private key", "path", cfg.KeyPath)
-		return loadKey(cfg.KeyPath)
-	}
-	if cfg.KeyOutPath != "" {
-		switch info, err := os.Stat(cfg.KeyOutPath); {
-		case err == nil && !info.IsDir() && info.Size() > 0:
-			slog.Debug("reusing existing private key from --key-out path", "path", cfg.KeyOutPath)
-			return loadKey(cfg.KeyOutPath)
-		case err != nil && !errors.Is(err, os.ErrNotExist):
-			return nil, nil, fmt.Errorf("stat %s: %w", cfg.KeyOutPath, err)
-		}
-		// Fall through: generate and let writeOutputs persist it.
-	}
-	slog.Debug("generating ephemeral P-256 key pair")
-	return generateKey()
-}
-
-func loadKey(path string) (*ecdsa.PrivateKey, []byte, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to read key at %s: %w", path, err)
-	}
-	key, err := certutil.ParseECPrivateKey(data)
-	if err != nil {
-		return nil, nil, fmt.Errorf("invalid key at %s: %w", path, err)
-	}
-	slog.Debug("private key loaded", "curve", key.Curve.Params().Name)
-	return key, data, nil
-}
-
+// generateKey mints the key of one certificate request: every renewal asks for
+// a certificate on a key of its own, so a disclosed key is useless past the
+// generation it was published in.
 func generateKey() (*ecdsa.PrivateKey, []byte, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -983,7 +1023,7 @@ func generateKey() (*ecdsa.PrivateKey, []byte, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to marshal key: %w", err)
 	}
-	slog.Debug("ephemeral P-256 key generated")
+	slog.Debug("P-256 key generated")
 	return key, keyPEM, nil
 }
 
@@ -996,10 +1036,13 @@ func createCSR(key *ecdsa.PrivateKey, san string, extraExts ...pkix.Extension) (
 		ExtraExtensions: extraExts,
 	}
 
-	if isIPSAN(san) {
+	switch {
+	case san == "":
+		slog.Debug("CSR will carry no SAN")
+	case isIPSAN(san):
 		template.IPAddresses = []net.IP{net.ParseIP(san)}
 		slog.Debug("CSR will include IP SAN", "ip", san)
-	} else {
+	default:
 		template.DNSNames = []string{san}
 		slog.Debug("CSR will include DNS SAN", "hostname", san)
 	}
@@ -1045,35 +1088,32 @@ func caBundleFromChain(chainPEM []byte) ([]byte, error) {
 	return out, nil
 }
 
-// servedCAStale reports whether the bundle written at caOutPath is missing a
-// certificate CDS currently serves at /ca. The fetch rides the same
-// armTLS-verified client the issuance flow uses, so the refresh trusts CDS for
-// exactly the reason the initial fetch did. A stale bundle means every client
-// following the documented recovery recipe — re-fetch the mesh CA from the
-// discovery endpoint — pins a CA nothing signs with anymore.
-func servedCAStale(ctx context.Context, client attestclient.Client, caOutPath string) (bool, error) {
+// servedCAStale detects a renewed CA certificate under the pod's bound issuer key.
+func servedCAStale(ctx context.Context, client attestclient.Client, caPath string, bound issuerKeyID) (bool, error) {
 	currentPEM, err := client.MeshCA(ctx)
 	if err != nil {
 		return false, fmt.Errorf("fetch current mesh CA from cds: %w", err)
 	}
-	current, err := certutil.ParsePEMCertificates(currentPEM)
+	current, err := soleCA(currentPEM)
 	if err != nil {
-		return false, fmt.Errorf("parse mesh CA from cds: %w", err)
+		return false, fmt.Errorf("mesh CA from cds: %w", err)
 	}
-	servedPEM, err := os.ReadFile(caOutPath)
+	issuer, err := issuerKeyIDOf(current)
+	if err != nil {
+		return false, err
+	}
+	if issuer != bound {
+		return false, nil
+	}
+	servedPEM, err := os.ReadFile(caPath)
 	if err != nil {
 		return false, fmt.Errorf("read served mesh CA: %w", err)
 	}
-	served, err := certutil.ParsePEMCertificates(servedPEM)
+	served, err := soleCA(servedPEM)
 	if err != nil {
-		return false, fmt.Errorf("parse served mesh CA: %w", err)
+		return false, fmt.Errorf("published mesh CA: %w", err)
 	}
-	for _, cur := range current {
-		if !slices.ContainsFunc(served, cur.Equal) {
-			return true, nil
-		}
-	}
-	return false, nil
+	return !served.Equal(current), nil
 }
 
 // stampedPolicyStale reports whether the allowlist CDS serves differs from the
@@ -1135,60 +1175,26 @@ func privateKeyMode(path string) (os.FileMode, error) {
 	return 0600, nil
 }
 
-// writeOutputs writes the certificate, key, and optional discovery metadata.
-func writeOutputs(cfg config, keyPEM []byte, result attestclient.CertificateResult) error {
-	if cfg.KeyOutPath != "" {
-		mode, err := privateKeyMode(cfg.KeyOutPath)
-		if err != nil {
-			return fmt.Errorf("determine key permissions for %s: %w", cfg.KeyOutPath, err)
-		}
-		if err := fileutil.WriteAtomic(cfg.KeyOutPath, keyPEM, mode); err != nil {
-			return fmt.Errorf("failed to write key to %s: %w", cfg.KeyOutPath, err)
-		}
-		slog.Info("private key written", "path", cfg.KeyOutPath)
-	} else if cfg.KeyPath == "" {
-		slog.Warn("ephemeral key used but --key-out not set, private key will be lost")
+// writeDiscoveryDocument writes the public metadata that names the published
+// certificate. It is not part of the generation: no consumer authenticates
+// anything with it.
+func writeDiscoveryDocument(cfg config, result attestclient.CertificateResult) error {
+	if cfg.DiscoveryOutPath == "" {
+		return nil
 	}
-
-	// The CA bundle lands before the cert: the cert file is the readiness
-	// sentinel c8s-cert-wait probes, so consumers gated on it (the injected
-	// secrets agent) must find the CA already on disk.
-	if cfg.CAOutPath != "" {
-		caPEM, err := caBundleFromChain([]byte(result.Certificate))
-		if err != nil {
-			return fmt.Errorf("extract mesh CA bundle: %w", err)
-		}
-		if err := fileutil.WriteAtomic(cfg.CAOutPath, caPEM, 0644); err != nil {
-			return fmt.Errorf("failed to write mesh CA to %s: %w", cfg.CAOutPath, err)
-		}
-		slog.Info("mesh CA bundle written", "path", cfg.CAOutPath)
+	doc, err := buildDiscoveryDocument(cfg, result)
+	if err != nil {
+		return err
 	}
-
-	if cfg.OutPath != "" {
-		if err := fileutil.WriteAtomic(cfg.OutPath, []byte(result.Certificate), 0644); err != nil {
-			return fmt.Errorf("failed to write cert to %s: %w", cfg.OutPath, err)
-		}
-		slog.Info("certificate written", "path", cfg.OutPath)
-	} else {
-		fmt.Print(result.Certificate)
+	data, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal discovery metadata: %w", err)
 	}
-
-	if cfg.DiscoveryOutPath != "" {
-		doc, err := buildDiscoveryDocument(cfg, result)
-		if err != nil {
-			return err
-		}
-		data, err := json.MarshalIndent(doc, "", "  ")
-		if err != nil {
-			return fmt.Errorf("marshal discovery metadata: %w", err)
-		}
-		data = append(data, '\n')
-		if err := fileutil.WriteAtomic(cfg.DiscoveryOutPath, data, 0644); err != nil {
-			return fmt.Errorf("failed to write discovery metadata to %s: %w", cfg.DiscoveryOutPath, err)
-		}
-		slog.Info("discovery metadata written", "path", cfg.DiscoveryOutPath)
+	data = append(data, '\n')
+	if err := fileutil.WriteAtomic(cfg.DiscoveryOutPath, data, 0644); err != nil {
+		return fmt.Errorf("failed to write discovery metadata to %s: %w", cfg.DiscoveryOutPath, err)
 	}
-
+	slog.Info("discovery metadata written", "path", cfg.DiscoveryOutPath)
 	return nil
 }
 
@@ -1262,46 +1268,4 @@ func discoveryPublicTLSMode(mode string) string {
 		return "cds"
 	}
 	return mode
-}
-
-type fileSnapshot struct {
-	size    int64
-	modTime time.Time
-	sha256  [sha256.Size]byte
-}
-
-func snapshotReloadWatchPaths(paths []string) (map[string]fileSnapshot, error) {
-	snapshots := make(map[string]fileSnapshot, len(paths))
-	for _, path := range paths {
-		info, err := os.Stat(path)
-		if err != nil {
-			return nil, fmt.Errorf("stat reload watch path %s: %w", path, err)
-		}
-		if info.IsDir() {
-			return nil, fmt.Errorf("reload watch path %s is a directory", path)
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return nil, fmt.Errorf("read reload watch path %s: %w", path, err)
-		}
-		snapshots[path] = fileSnapshot{
-			size:    info.Size(),
-			modTime: info.ModTime(),
-			sha256:  sha256.Sum256(data),
-		}
-	}
-	return snapshots, nil
-}
-
-func reloadWatchChanged(previous map[string]fileSnapshot, paths []string) (bool, map[string]fileSnapshot, error) {
-	next, err := snapshotReloadWatchPaths(paths)
-	if err != nil {
-		return false, nil, err
-	}
-	for _, path := range paths {
-		if previous[path] != next[path] {
-			return true, next, nil
-		}
-	}
-	return false, next, nil
 }

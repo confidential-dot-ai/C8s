@@ -40,20 +40,24 @@ const (
 	accountKeyFile  = "account.key"
 	certFile        = "cert.pem"
 	keyFile         = "key.pem"
+	// keyMode is group-readable because the front door that serves this key
+	// runs as another identity; the volume's group is the pod's own.
+	keyMode = 0o640
 )
 
 // manager issues and renews one certificate for the configured domains whose
-// public HTTP challenge paths reach this router. Account key and issued key/cert live under --cert-dir only.
+// public HTTP challenge paths reach this router. The issued chain lives in one
+// directory and the serving key with the account key in another, and only the
+// front door mounts both.
 type manager struct {
 	directoryURL string
 	// directoryClient dials the ACME CA; nil uses the system roots.
 	directoryClient *http.Client
 	email           string
-	dir             string // --cert-dir
+	certDir         string
+	keyDir          string
 	domains         []string
 	log             *slog.Logger
-	// onInstall fires after a certificate lands on disk (nginx reload).
-	onInstall func()
 	// httpPort is nginx's :80 server on pod loopback, probed before any CA
 	// contact so a validation is never sent at a listener that is still
 	// starting. 0 (tests without a front door) skips the probe; the CLI
@@ -73,22 +77,36 @@ type manager struct {
 	tokens map[string]string // challenge token -> key authorization
 }
 
-func newManager(directoryURL, email, certDir string, domains []string, log *slog.Logger, onInstall func()) *manager {
+func newManager(directoryURL, email, certDir, keyDir string, domains []string, log *slog.Logger) *manager {
 	return &manager{
 		directoryURL: directoryURL,
 		email:        email,
-		dir:          certDir,
+		certDir:      certDir,
+		keyDir:       keyDir,
 		domains:      domains,
 		log:          log,
-		onInstall:    onInstall,
 		recheck:      recheckInterval,
 		retry:        retryInterval,
 		tokens:       make(map[string]string),
 	}
 }
 
-func (m *manager) certPath() string { return filepath.Join(m.dir, certFile) }
-func (m *manager) keyPath() string  { return filepath.Join(m.dir, keyFile) }
+func (m *manager) certPath() string {
+	return filepath.Join(m.certDir, certFile)
+}
+
+func (m *manager) keyPath() string {
+	return filepath.Join(m.keyDir, keyFile)
+}
+
+// ensureDirs creates both directories the issued credential is split across.
+// The pod's read-only root filesystem refuses one it did not mount.
+func (m *manager) ensureDirs() error {
+	if err := os.MkdirAll(m.certDir, 0o700); err != nil {
+		return err
+	}
+	return os.MkdirAll(m.keyDir, 0o700)
+}
 
 // handler answers HTTP-01 challenges (nginx's :80 server proxies the
 // challenge path here).
@@ -194,10 +212,10 @@ func (m *manager) bootstrap() error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(m.dir, 0o700); err != nil {
+	if err := m.ensureDirs(); err != nil {
 		return err
 	}
-	if err := fileutil.WriteAtomic(m.keyPath(), keyPEM, 0o600); err != nil {
+	if err := fileutil.WriteAtomic(m.keyPath(), keyPEM, keyMode); err != nil {
 		return fmt.Errorf("write bootstrap key: %w", err)
 	}
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
@@ -235,9 +253,6 @@ func (m *manager) ensure(ctx context.Context) {
 		return
 	}
 	m.log.Info("certificate issued", "domains", domains)
-	if m.onInstall != nil {
-		m.onInstall()
-	}
 }
 
 // acmeClient lazily initializes the ACME account: key from disk or freshly
@@ -265,7 +280,7 @@ func (m *manager) acmeClient(ctx context.Context) (*acme.Client, error) {
 }
 
 func (m *manager) accountKey() (*ecdsa.PrivateKey, error) {
-	path := filepath.Join(m.dir, accountKeyFile)
+	path := filepath.Join(m.keyDir, accountKeyFile)
 	if data, err := os.ReadFile(path); err == nil {
 		key, err := certutil.ParseECPrivateKey(data)
 		if err != nil {
@@ -283,7 +298,7 @@ func (m *manager) accountKey() (*ecdsa.PrivateKey, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(m.dir, 0o700); err != nil {
+	if err := m.ensureDirs(); err != nil {
 		return nil, err
 	}
 	if err := fileutil.WriteAtomic(path, keyPEM, 0o600); err != nil {
@@ -331,7 +346,7 @@ func (m *manager) frontDoorReady(ctx context.Context) error {
 }
 
 // issue runs the RFC 8555 HTTP-01 flow for the configured domain set and
-// installs key + full chain under --cert-dir.
+// installs the key in keyDir and the full chain in certDir.
 func (m *manager) issue(ctx context.Context) error { return m.issueDomains(ctx, m.domains) }
 
 func (m *manager) issueDomains(ctx context.Context, domains []string) error {
@@ -378,12 +393,12 @@ func (m *manager) issueDomains(ctx context.Context, domains []string) error {
 		return err
 	}
 
-	if err := os.MkdirAll(m.dir, 0o700); err != nil {
+	if err := m.ensureDirs(); err != nil {
 		return err
 	}
 	// Key before cert: nginx is reloaded on the cert file, so a visible cert
 	// must always have its key beside it.
-	if err := fileutil.WriteAtomic(m.keyPath(), keyPEM, 0o600); err != nil {
+	if err := fileutil.WriteAtomic(m.keyPath(), keyPEM, keyMode); err != nil {
 		return fmt.Errorf("write key: %w", err)
 	}
 	if err := fileutil.WriteAtomic(m.certPath(), chainPEM, 0o644); err != nil {

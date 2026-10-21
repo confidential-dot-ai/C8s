@@ -30,6 +30,7 @@ func newTestPlugin(cfg *config) *plugin {
 		audit:      audit.NewLogger(),
 		logger:     slog.Default(),
 		containerd: &fakeContainerd{},
+		mesh:       newMeshGate(nil, slog.Default()),
 	}
 }
 
@@ -303,6 +304,7 @@ func TestCreateContainer_Ready_PassesThrough(t *testing.T) {
 		logger:     slog.Default(),
 		policy:     newPolicyStore(nil),
 		containerd: &fakeContainerd{},
+		mesh:       newMeshGate(nil, discardLogger()),
 	}
 	p.SetReady()
 
@@ -709,6 +711,7 @@ func newCachedPlugin(cfg *config, wl *allowlist.Allowlist) (*plugin, *policyStor
 		audit:      audit.NewLogger(),
 		logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 		containerd: &fakeContainerd{},
+		mesh:       newMeshGate(nil, discardLogger()),
 	}
 	return p, store
 }
@@ -1279,6 +1282,7 @@ func basePlugin(t *testing.T) *plugin {
 		audit:      audit.NewLogger(),
 		logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 		containerd: &fakeContainerd{},
+		mesh:       newMeshGate(nil, discardLogger()),
 	}
 	p.inventory = newAdmissionInventory("/proc")
 	return p
@@ -1414,10 +1418,12 @@ func TestCheckContainer_NamespaceNeverRescues(t *testing.T) {
 	}
 }
 
-// Pre-Ready the admission decision resolves a tag against the base allowlist, but the
-// inventory record keeps the inline-only contract: no digest is committed
-// without one riding the reference, and the sandbox answer stays closed.
-func TestCreateContainer_NotReady_ResolvesForAdmission_RecordsInlineOnly(t *testing.T) {
+// Pre-Ready the admission decision resolves a tag against the base allowlist,
+// and the inventory record carries that resolved digest. An unresolved record
+// closes the sandbox's answer for the sandbox's life, and the pods that start
+// in this window are the ones a fresh install brings up alongside CDS: they
+// must still be able to prove what they run.
+func TestCreateContainer_NotReady_RecordsTheResolvedDigest(t *testing.T) {
 	p := basePlugin(t) // not ready
 	var resolved []string
 	p.containerd = &fakeContainerd{resolve: func(_ context.Context, ref string) (string, error) {
@@ -1431,18 +1437,22 @@ func TestCreateContainer_NotReady_ResolvesForAdmission_RecordsInlineOnly(t *test
 	if _, _, err := createAndStart(p, context.Background(), pod, ctr); err != nil {
 		t.Fatalf("a tag resolving to the base allowlist should be admitted: %v", err)
 	}
-	if len(resolved) != 3 {
+	if len(resolved) == 0 {
 		t.Fatalf("admission did not resolve the tag: %v", resolved)
 	}
 	rec, ok := p.inventory.containers[ctr.Id]
 	if !ok {
 		t.Fatalf("bootstrap container not recorded: %v", p.inventory.containers)
 	}
-	if rec.digest != "" {
-		t.Fatalf("the bootstrap path resolved a digest, got %q", rec.digest)
+	if rec.digest != pushDigestA {
+		t.Fatalf("the bootstrap path recorded the digest %q, want the resolved %q", rec.digest, pushDigestA)
 	}
-	if _, _, _, err := p.inventory.DigestsForSandbox(pod.Id); err == nil {
-		t.Fatal("an unresolved digest must fail the sandbox answer closed")
+	digests, _, _, err := p.inventory.DigestsForSandbox(pod.Id)
+	if err != nil {
+		t.Fatalf("the sandbox answer must hold: %v", err)
+	}
+	if !slices.Equal(digests, []string{pushDigestA}) {
+		t.Fatalf("sandbox digests = %v, want the resolved %q", digests, pushDigestA)
 	}
 }
 

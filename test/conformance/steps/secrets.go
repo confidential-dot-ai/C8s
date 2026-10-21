@@ -434,10 +434,11 @@ func (w *world) cdsRequest(method, route string, body []byte, auth, cert, key st
 }
 
 // httpRequest sends one request through a backend function that takes
-// cds_request's arguments (cds_request, router_request).
-func (w *world) httpRequest(fn, method, route string, body []byte, auth, cert, key string) (*answer, error) {
+// cds_request's arguments (cds_request, router_request), each header as
+// "Name: value".
+func (w *world) httpRequest(fn, method, route string, body []byte, auth, cert, key string, headers ...string) (*answer, error) {
 	send := func(bodyFile string) (string, error) {
-		return w.be.call(fn, method, route, bodyFile, auth, cert, key)
+		return w.be.call(fn, append([]string{method, route, bodyFile, auth, cert, key}, headers...)...)
 	}
 	var out string
 	var err error
@@ -755,7 +756,7 @@ func mountsDiskVolume(ctx context.Context) error {
 		return err
 	}
 	if answer == "yes" {
-		return godog.ErrSkip
+		return skipf("disk-backed emptyDirs are encrypted here (scratch_encrypted)")
 	}
 	p.opts = append(p.opts, "--disk-volume", "/scratch")
 	return nil
@@ -1314,7 +1315,7 @@ func selfSignedRequester(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
-	value, err := asn1.MarshalWithParams(id, "ia5")
+	value, err := asn1.MarshalWithParams(id, "utf8")
 	if err != nil {
 		return err
 	}
@@ -1705,7 +1706,7 @@ func canStillRead(ctx context.Context, name, logical string) error {
 // --- The secret client ---
 
 func (w *world) readSecretFile(p *pod, logical string) ([]byte, error) {
-	out, err := w.be.call("pod_file", p.namespace, p.name, firstContainer, secretClientDir+"/"+secretFile(logical))
+	out, err := w.be.call("pod_file", p.namespace, p.name, p.first, secretClientDir+"/"+secretFile(logical))
 	if err != nil {
 		return nil, err
 	}
@@ -1782,7 +1783,7 @@ func outputOnMemory(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
-	out, err := w.be.call("pod_fstype", p.namespace, p.name, firstContainer, secretClientDir)
+	out, err := w.be.call("pod_fstype", p.namespace, p.name, p.first, secretClientDir)
 	if err != nil {
 		return err
 	}

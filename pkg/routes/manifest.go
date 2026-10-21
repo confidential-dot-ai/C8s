@@ -338,8 +338,14 @@ func checkAddress(addr string) error {
 	if err != nil {
 		return errors.New("must be host:port")
 	}
-	if net.ParseIP(host) == nil && !validDNSName(host, false) {
+	ip := net.ParseIP(host)
+	if ip == nil && !validDNSName(host, false) {
 		return fmt.Errorf("host %q is neither an IP address nor a DNS name", host)
+	}
+	// SplitHostPort strips brackets from any host; D7 allows them only
+	// around IPv6.
+	if bracketed := strings.HasPrefix(addr, "["); bracketed != (ip != nil && strings.Contains(host, ":")) {
+		return fmt.Errorf("host %q: brackets must enclose an IPv6 address, and only one", host)
 	}
 	if n, err := strconv.ParseUint(port, 10, 16); err != nil || n == 0 || port[0] == '0' {
 		return fmt.Errorf("port %q is not a decimal integer from 1 to 65535", port)

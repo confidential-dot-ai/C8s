@@ -33,6 +33,7 @@ type world struct {
 	mesh     meshState
 	secrets  secretsState
 	router   routerState
+	routes   routesState
 	// undo is what the scenario changed in the cluster beyond the node and
 	// the allowlist, put back last in, first out before those are restored.
 	undo []func() error
@@ -70,15 +71,14 @@ type pod struct {
 	// How the mesh sentences shape the pod: the ports its hello APIs and
 	// datagram listener use, pod_manifest options, its namespace (the
 	// scenario's unless a sentence moves it), the certificate a dialer in it
-	// presents, whether the dialer is in it yet, and its addresses once
-	// running.
+	// presents, the first container's name, and its addresses once running.
 	hello     []int
 	datagram  int
 	listener  string // the container whose log shows the datagrams received
 	opts      []string
 	namespace string
 	cert      *peerCert
-	dialer    bool     // the mesh peer has been copied into the pod
+	first     string   // the first container's name
 	verifyCDS []string // how the pod's certificate container verifies the CDS, as probe flags
 	addrs     []string
 	// What the secrets sentences add: the secret client's NAME=path specs,
@@ -165,6 +165,8 @@ func initializeScenario(be backend) func(*godog.ScenarioContext) {
 		registerMesh(sc)
 		registerSecrets(sc)
 		registerRouter(sc)
+		registerRoutes(sc)
+		registerRouteBackends(sc)
 	}
 }
 
@@ -199,7 +201,7 @@ func (w *world) runUndo() error {
 // reference; it becomes the last pod. A scenario that says nothing about the
 // argv gets one that keeps the container alive.
 func (w *world) describe(name string, refs ...string) *pod {
-	p := &pod{name: name, namespace: w.namespace}
+	p := &pod{name: name, namespace: w.namespace, first: firstContainer}
 	for _, ref := range refs {
 		p.containers = append(p.containers, &container{ref: ref, command: []string{"sleep", "3600"}})
 	}

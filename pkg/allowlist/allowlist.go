@@ -68,9 +68,14 @@ type Workload struct {
 }
 
 // Container binds a digest to the process policy permitted for it.
+//
+// Role names the platform role an enforcer grants to these bytes under this
+// policy. It is YAML-only: a document on the wire carries no role, so a role
+// comes from a measured boot config and nothing a CDS serves can claim one.
 type Container struct {
 	Digest  types.Digest `json:"digest" yaml:"digest"`
 	Image   string       `json:"image,omitempty" yaml:"image,omitempty"`
+	Role    string       `json:"-" yaml:"role,omitempty"`
 	Command ArgvPolicy   `json:"command" yaml:"command"`
 	Args    ArgvPolicy   `json:"args" yaml:"args"`
 	Mounts  MountPolicy  `json:"mounts" yaml:"mounts,omitempty"`
@@ -184,10 +189,39 @@ func parseJSON(data []byte, strict bool) (*Allowlist, error) {
 	if err := dec.Decode(&a); err != nil {
 		return nil, fmt.Errorf("decode allowlist: %w", err)
 	}
+	if err := a.refuseVolumeBindings(); err != nil {
+		return nil, err
+	}
 	if err := a.normalize(strict); err != nil {
 		return nil, err
 	}
 	return &a, nil
+}
+
+// refuseVolumeBindings refuses a document that names a pod volume on an
+// emptyDir or data rule. The binding belongs to a measured boot config, which
+// is YAML: nothing that arrives as JSON names a volume, so a served or
+// authored document carrying one is refused rather than read as a narrower
+// policy than the format defines.
+func (a *Allowlist) refuseVolumeBindings() error {
+	for name, w := range a.Workloads {
+		if err := w.refuseVolumeBindings(); err != nil {
+			return fmt.Errorf("workload %q: %w", name, err)
+		}
+	}
+	return nil
+}
+
+func (w Workload) refuseVolumeBindings() error {
+	for _, c := range w.containers() {
+		for _, rule := range c.Mounts.Rules {
+			if rule.Source == "" || !rule.bindsVolume() {
+				continue
+			}
+			return fmt.Errorf("mount kind %q at %s names a volume, which only a measured base binds", rule.Kind, rule.Destination)
+		}
+	}
+	return nil
 }
 
 // Normalize validates and canonicalizes a document decoded outside ParseJSON
@@ -208,6 +242,9 @@ func ParseWorkloadJSON(data []byte) (*Workload, error) {
 	var w Workload
 	if err := dec.Decode(&w); err != nil {
 		return nil, fmt.Errorf("decode workload: %w", err)
+	}
+	if err := w.refuseVolumeBindings(); err != nil {
+		return nil, fmt.Errorf("entry: %w", err)
 	}
 	if err := normalizeContainers("entry", "initContainers", w.InitContainers); err != nil {
 		return nil, err
@@ -325,48 +362,6 @@ func (w Workload) HostIndependent() bool {
 // containers is the init containers followed by the main containers.
 func (w Workload) containers() []Container {
 	return slices.Concat(w.InitContainers, w.Containers)
-}
-
-// AdmitsAnyArgs reports whether some entry admits the digest running argv's
-// command under an unconstrained args policy: the entry pins the executable,
-// and the arguments are the pod's to choose. It ignores mounts and
-// environment; a complete injected-container decision uses AdmitsInjected.
-func (a *Allowlist) AdmitsAnyArgs(digest string, argv []string) bool {
-	d, err := types.ParseDigest(digest)
-	if err != nil {
-		return false
-	}
-	for _, w := range a.Workloads {
-		for _, c := range w.containers() {
-			if c.Digest != d || c.Args.Policy != PolicyAny {
-				continue
-			}
-			if _, ok := c.Command.matchCommand(argv); ok {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// AdmitsInjected reports whether one open-args container of some entry admits
-// the complete observed container, mounts and environment included, under that
-// container's own policies, and every mount it holds is confined to the node.
-// Requiring the same container keeps the open arguments paired with the mount
-// table they were seeded with. The injected-container drop set
-// (internal/secrets) keys on it. Unavailable mount evidence is never admitted.
-func (a *Allowlist) AdmitsInjected(r RunningContainer) bool {
-	if r.Mounts == nil || slices.ContainsFunc(r.Mounts, func(m ObservedMount) bool { return !m.confined() }) {
-		return false
-	}
-	for _, w := range a.Workloads {
-		for _, c := range w.containers() {
-			if c.Args.Policy == PolicyAny && c.admits(r) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // DigestEntry is the entry that admits an image under any command line: one
