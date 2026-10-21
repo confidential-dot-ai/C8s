@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 var bareMetalHostAPI = []string{
@@ -52,6 +54,14 @@ func hasEnv(c corev1.Container, name string) bool {
 	return slices.ContainsFunc(c.Env, func(e corev1.EnvVar) bool { return e.Name == name })
 }
 
+// namesTheNodeVerifier reports a container that reaches the node's own
+// attestation-api over the socket the enforcer mounts for it: a credentials
+// role takes that verifier and no node address at all
+// (router.credentialsVerifierURL).
+func namesTheNodeVerifier(rc renderedContainer) bool {
+	return rc.url == "unix://"+workloadclaims.AttestationAPISocket
+}
+
 // Under a fail-closed policy on bare-metal, every component reads the node
 // address from the node-ip file through a pinned read-only host path, never
 // from HOST_IP. The operator keeps $(HOST_IP): it hands the URL to injected
@@ -74,6 +84,9 @@ func assertNodeIPFile(t *testing.T, args []string) {
 		t.Fatalf("helm template %v: %v\n%s", args, err, out)
 	}
 	for name, rc := range attestationURLs(t, out) {
+		if namesTheNodeVerifier(rc) {
+			continue
+		}
 		if strings.HasPrefix(name, "c8s-operator/") {
 			if rc.url != "http://$$(HOST_IP):8400" {
 				t.Errorf("%s --attestation-api-url = %q, want the $(HOST_IP) form for injected sidecars", name, rc.url)
@@ -108,6 +121,9 @@ func TestChartBareMetalAuditKeepsHostIP(t *testing.T) {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
 	for name, rc := range attestationURLs(t, out) {
+		if namesTheNodeVerifier(rc) {
+			continue
+		}
 		if rc.url != "http://$$(HOST_IP):8400" {
 			t.Errorf("%s --attestation-api-url = %q, want http://$$(HOST_IP):8400", name, rc.url)
 		}

@@ -85,6 +85,7 @@ func captureOutbound(p Policy) chain {
 	}
 	resolverTCP := fmt.Sprintf("resolver-%s-tcp", p.Resolver)
 	rules = append(rules, rule{resolverTCP, withVerdict(matchResolver(p.Resolver, unix.IPPROTO_TCP), expr.VerdictReturn)})
+	rules = append(rules, serverServiceRules(p, expr.VerdictReturn)...)
 	rules = append(rules, serverClusterCaptureRules(p)...)
 	rules = append(rules, serverEgressRules(p, expr.VerdictReturn)...)
 	rules = append(rules, rule{"redirect-to-outbound-listener", redirectTCP(p.Capture.Outbound)})
@@ -123,6 +124,7 @@ func filterOutput(p Policy) chain {
 	for _, role := range p.Roles {
 		rules = append(rules, roleDestinationRules(role)...)
 	}
+	rules = append(rules, serverServiceRules(p, expr.VerdictAccept)...)
 	rules = append(rules, serverClusterDropRules(p)...)
 	rules = append(rules, serverEgressRules(p, expr.VerdictAccept)...)
 	return denyChain("filter-output", *nftables.ChainHookOutput, rules)
@@ -211,6 +213,19 @@ func serverClusterMatch(p Policy, port uint16, in netip.Prefix) []expr.Any {
 
 func serverClusterRuleName(port uint16, in netip.Prefix) string {
 	return fmt.Sprintf("server-egress-%d-in-cluster-%s", port, in)
+}
+
+// serverServiceRules match the server role's own traffic to one service
+// address and port. They precede the capture, so that destination is the one
+// the role reaches itself; everything else it dials is redirected.
+func serverServiceRules(p Policy, kind expr.VerdictKind) []rule {
+	rules := make([]rule, 0, len(p.Server.Services))
+	for _, dst := range p.Server.Services {
+		exprs := slices.Concat(matchSocketUID(p.Server.UID), matchDestination(dst.Addr), matchTCPPort(dst.Port))
+		name := fmt.Sprintf("server-service-%s-%d", dst.Addr, dst.Port)
+		rules = append(rules, rule{name, withVerdict(exprs, kind)})
+	}
+	return rules
 }
 
 // serverEgressRules match the egress identity's traffic to its egress ports

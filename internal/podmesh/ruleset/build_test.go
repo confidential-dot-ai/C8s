@@ -41,8 +41,9 @@ func testPolicy() Policy {
 }
 
 // serverPolicy is the same policy for a pod that serves a platform role's own
-// ports: the router answers external listeners, and a second identity of that
-// pod reaches the egress port outside the cluster.
+// ports: the router answers external listeners, reaches its node's CDS itself,
+// and a second identity of that pod reaches the egress port outside the
+// cluster.
 func serverPolicy() Policy {
 	policy := testPolicy()
 	policy.Server = ServerRole{
@@ -52,6 +53,7 @@ func serverPolicy() Policy {
 			UID:   1340,
 			Ports: []uint16{443},
 		},
+		Services: []Destination{{netip.MustParseAddr("10.43.0.2"), 8443}},
 		ClusterRanges: []netip.Prefix{
 			netip.MustParsePrefix("10.52.0.0/16"),
 			netip.MustParsePrefix("10.53.0.0/16"),
@@ -123,11 +125,13 @@ func TestServerRoleAddsOnlyItsOwnRules(t *testing.T) {
 	want := []string{
 		"meta l4proto tcp th dport 8443 return # server-listener-8443",
 		"meta l4proto tcp th dport 8080 return # server-listener-8080",
+		"skuid 1339 meta nfproto ipv4 ip daddr 10.43.0.2 meta l4proto tcp th dport 8443 return # server-service-10.43.0.2-8443",
 		"skuid 1340 meta nfproto ipv4 ip daddr 10.52.0.0 & 255.255.0.0 meta l4proto tcp th dport 443 redirect to :15001 # server-egress-443-in-cluster-10.52.0.0/16",
 		"skuid 1340 meta nfproto ipv4 ip daddr 10.53.0.0 & 255.255.0.0 meta l4proto tcp th dport 443 redirect to :15001 # server-egress-443-in-cluster-10.53.0.0/16",
 		"skuid 1340 meta l4proto tcp th dport 443 return # server-egress-443",
 		"meta l4proto tcp th dport 8443 accept # server-listener-8443",
 		"meta l4proto tcp th dport 8080 accept # server-listener-8080",
+		"skuid 1339 meta nfproto ipv4 ip daddr 10.43.0.2 meta l4proto tcp th dport 8443 accept # server-service-10.43.0.2-8443",
 		"skuid 1340 meta nfproto ipv4 ip daddr 10.52.0.0 & 255.255.0.0 meta l4proto tcp th dport 443 drop # server-egress-443-in-cluster-10.52.0.0/16",
 		"skuid 1340 meta nfproto ipv4 ip daddr 10.53.0.0 & 255.255.0.0 meta l4proto tcp th dport 443 drop # server-egress-443-in-cluster-10.53.0.0/16",
 		"skuid 1340 meta l4proto tcp th dport 443 accept # server-egress-443",
@@ -135,6 +139,51 @@ func TestServerRoleAddsOnlyItsOwnRules(t *testing.T) {
 	if !slices.Equal(added, want) {
 		t.Fatalf("the server role adds\n%s\nwant\n%s", strings.Join(added, "\n"), strings.Join(want, "\n"))
 	}
+	// No other identity in the pod holds them: every added rule naming a uid
+	// names the server role's own or its egress identity's, and the listener
+	// rules name none, because an inbound accept cannot match a socket uid.
+	for _, rule := range added {
+		if strings.Contains(rule, "skuid") && !strings.Contains(rule, "skuid 1339") && !strings.Contains(rule, "skuid 1340") {
+			t.Errorf("a rule of the server role binds another identity: %s", rule)
+		}
+	}
+}
+
+// The router role fetches the signed route manifest from its own node's CDS,
+// so that one destination is returned before the capture and accepted on the
+// way out. Everything else it dials is captured: no other rule of either
+// chain names its identity.
+func TestServerRoleReachesOnlyItsOwnService(t *testing.T) {
+	policy := serverPolicy()
+	service := policy.Server.Services[0]
+	match := fmt.Sprintf("skuid %d meta nfproto ipv4 ip daddr %s meta l4proto tcp th dport %d",
+		policy.Server.UID, service.Addr, service.Port)
+
+	capture := renderedRules(captureOutbound(policy).rules)
+	uncaptured := slices.Index(capture, match+" return")
+	redirect := slices.Index(capture, fmt.Sprintf("meta l4proto tcp redirect to :%d", policy.Capture.Outbound))
+	if uncaptured < 0 || redirect < 0 || uncaptured > redirect {
+		t.Fatalf("the service is not returned before the capture:\n%s", strings.Join(capture, "\n"))
+	}
+
+	output := renderedRules(filterOutput(policy).rules)
+	if !slices.Contains(output, match+" accept") {
+		t.Fatalf("the service never leaves the pod:\n%s", strings.Join(output, "\n"))
+	}
+	for _, rule := range slices.Concat(capture, output) {
+		if strings.HasPrefix(rule, fmt.Sprintf("skuid %d ", policy.Server.UID)) && !strings.HasPrefix(rule, match) {
+			t.Errorf("the server role reaches more than its service: %s", rule)
+		}
+	}
+}
+
+// renderedRules are the rules of one chain as nft prints them.
+func renderedRules(rules []rule) []string {
+	out := make([]string, 0, len(rules))
+	for _, r := range rules {
+		out = append(out, nftRule(r.exprs))
+	}
+	return out
 }
 
 // addedRules are the rules the second ruleset carries and the first does not,

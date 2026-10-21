@@ -30,6 +30,7 @@ import (
 	pkgroutes "github.com/confidential-dot-ai/c8s/pkg/routes"
 	"github.com/confidential-dot-ai/c8s/pkg/routesclient"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 func TestRouteHosts(t *testing.T) {
@@ -40,8 +41,10 @@ func TestRouteHosts(t *testing.T) {
 		wantHosts   []string
 		wantSkipped []string
 	}{
-		{"default san", map[string]any{}, "c8s", []string{"c8s-router.c8s-system.svc"}, nil},
-		{"default san, long release", map[string]any{}, strings.Repeat("r", 60), []string{strings.Repeat("r", 60) + "-ro.c8s-system.svc"}, nil},
+		// The default is the router's own namespace, not the release's: the
+		// router refuses a manifest naming a host it does not serve.
+		{"default san", map[string]any{}, "c8s", []string{"c8s-router." + workloadclaims.RouterNamespace + ".svc"}, nil},
+		{"default san, long release", map[string]any{}, strings.Repeat("r", 60), []string{strings.Repeat("r", 60) + "-ro." + workloadclaims.RouterNamespace + ".svc"}, nil},
 		{"san list", map[string]any{"router": map[string]any{"san": []any{"App.Example.", "*.example.com", "192.0.2.1", "app.example."}}}, "c8s",
 			[]string{"app.example"}, []string{"*.example.com", "192.0.2.1"}},
 		{"numeric final label", map[string]any{"router": map[string]any{"san": []any{"app.example", "host.123", "host.0x1f"}}}, "c8s",
@@ -49,7 +52,7 @@ func TestRouteHosts(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			hosts, skipped := routeHosts(tc.values, tc.release, "c8s-system")
+			hosts, skipped := routeHosts(tc.values, tc.release)
 			if !reflect.DeepEqual(hosts, tc.wantHosts) || !reflect.DeepEqual(skipped, tc.wantSkipped) {
 				t.Fatalf("routeHosts() = %v, %v, want %v, %v", hosts, skipped, tc.wantHosts, tc.wantSkipped)
 			}

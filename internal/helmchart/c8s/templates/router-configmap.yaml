@@ -11,7 +11,7 @@
 {{- $publicTLSMode := include "router.publicTLSMode" . -}}
 {{- $launchDriven := eq (include "router.launchDriven" .) "true" -}}
 {{- $acmeSidecar := eq (include "router.acmeSidecar" .) "true" -}}
-{{- $defaultMeshCAPath := printf "%s/ca.pem" .Values.router.tlsMountPath -}}
+{{- $defaultMeshCAPath := include "c8s.caFile" . -}}
 {{- $routingPort := include "router.routingPort" . -}}
 {{- $readTimeout := toString .Values.router.routing.readTimeout -}}
 {{- if or (not (regexMatch `^[0-9]+(ms|s|m|h)$` $readTimeout)) (regexMatch `^0+(ms|s|m|h)$` $readTimeout) -}}
@@ -67,7 +67,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: {{ include "router.fullname" . }}-nginx
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ include "c8s.routerMeshNamespace" . }}
   labels:
     {{- include "router.labels" . | nindent 4 }}
 data:
@@ -262,7 +262,7 @@ data:
                 access_log off;
                 default_type application/x-pem-file;
                 add_header Cache-Control "no-store" always;
-                alias {{ .Values.router.tlsMountPath }}/cert.pem;
+                alias {{ include "c8s.certFile" . }};
             }
 
             {{- if .Values.router.meshCA.expose }}
@@ -418,8 +418,8 @@ data:
     }
   {{- if $launchDriven }}
   tls-cds.conf: |-
-    ssl_certificate     {{ .Values.router.tlsMountPath }}/cert.pem;
-    ssl_certificate_key {{ .Values.router.tlsMountPath }}/key.pem;
+    ssl_certificate     {{ include "c8s.certFile" . }};
+    ssl_certificate_key {{ include "c8s.keyFile" . }};
   tls-acme.conf: |-
     ssl_certificate     {{ include "router.acmeCertDir" . }}/cert.pem;
     ssl_certificate_key {{ include "router.acmeCertDir" . }}/key.pem;

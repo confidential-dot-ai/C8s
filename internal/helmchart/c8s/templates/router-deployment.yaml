@@ -15,7 +15,17 @@ nodeSelector:
 {{- end }}
 
 {{- include "c8s.imagePullSecrets" (dict "root" $ "local" .Values.router.imagePullSecrets) | nindent 0 }}
+{{- /* Every container of this pod holds a platform role the measured base
+       grants it, and runs as that role's reserved identity: c8s.meshUID for
+       the endpoint, c8s.credentialsUID for get-cert, the probe-file gate and
+       the allowlist proxy, c8s.routerUID for nginx and cds-attest,
+       c8s.acmeUID for acme — the one identity of this pod the node lets out
+       of the cluster in the clear. The volume group (c8s.certFsGroup) is what
+       lets a role read what another role wrote. */}}
 initContainers:
+  {{- /* The endpoint leads: the enforcer gates the rest of the pod on its
+         start, and every other container's traffic is captured into it. */}}
+  {{- include "c8s.meshEndpointContainer" . | nindent 2 }}
   {{- include "router.getCertContainers" . | nindent 2 }}
   {{- if $acmeSidecar }}
   # Native sidecar (restartPolicy: Always): issues one multi-SAN ACME
@@ -49,15 +59,14 @@ initContainers:
         mountPath: {{ include "router.acmeCertDir" . }}
       {{- if $launchDriven }}
       - name: tls-certs
-        mountPath: {{ .Values.router.tlsMountPath }}
+        mountPath: {{ include "c8s.certDir" . }}
         readOnly: true
       {{- include "c8s.nodeConfigMount" . | trim | nindent 6 }}
       {{- end }}
     securityContext:
       {{- include "c8s.getCertSecurityContext" (dict
-        "runAsUser" .Values.router.nginx.runAsUser
-        "runAsGroup" .Values.router.nginx.runAsGroup
-        "runAsNonRoot" .Values.router.nginx.runAsNonRoot
+        "runAsUser" (include "c8s.acmeUID" .)
+        "runAsGroup" (include "c8s.acmeUID" .)
       ) | nindent 6 }}
   {{- end }}
 containers:
@@ -66,10 +75,11 @@ containers:
     imagePullPolicy: {{ .Values.router.nginx.image.pullPolicy }}
     {{- /* nginx runs as the child of reload.sh, which reloads it when a file
            an nginx directive loads changes (router-configmap.yaml). The
-           allowlist pins this argv exactly, so nothing a pod adds (-g
-           load_module, another -c) runs under the nginx entry. */}}
-    command: ["/bin/sh"]
-    args:
+           allowlist pins this argv exactly and admits no argument beside it,
+           so nothing a pod adds (-g load_module, another -c) runs under the
+           nginx entry. */}}
+    command:
+      - /bin/sh
       - {{ include "router.configDir" . }}/reload.sh
     ports:
       - name: https
@@ -91,9 +101,9 @@ containers:
     securityContext:
       allowPrivilegeEscalation: false
       readOnlyRootFilesystem: true
-      runAsNonRoot: {{ .Values.router.nginx.runAsNonRoot }}
-      runAsUser: {{ include "c8s.int" .Values.router.nginx.runAsUser }}
-      runAsGroup: {{ include "c8s.int" .Values.router.nginx.runAsGroup }}
+      runAsNonRoot: true
+      runAsUser: {{ include "c8s.routerUID" . }}
+      runAsGroup: {{ include "c8s.routerUID" . }}
       capabilities:
         drop:
           - ALL
@@ -115,7 +125,7 @@ containers:
 
     volumeMounts:
       - name: tls-certs
-        mountPath: {{ .Values.router.tlsMountPath }}
+        mountPath: {{ include "c8s.certDir" . }}
         readOnly: true
       {{- if eq $publicTLSMode "webpki" }}
       - name: public-tls
@@ -195,7 +205,7 @@ containers:
     {{- end }}
     volumeMounts:
       - name: tls-certs
-        mountPath: {{ .Values.router.tlsMountPath }}
+        mountPath: {{ include "c8s.certDir" . }}
         readOnly: true
       {{- include "c8s.attestationApiSocketMount" . | nindent 6 }}
       {{- include "c8s.nodeConfigMount" . | nindent 6 }}
@@ -225,6 +235,8 @@ containers:
       allowPrivilegeEscalation: false
       readOnlyRootFilesystem: true
       runAsNonRoot: true
+      runAsUser: {{ include "c8s.routerUID" . }}
+      runAsGroup: {{ include "c8s.routerUID" . }}
       capabilities:
         drop:
           - ALL
@@ -248,20 +260,25 @@ containers:
     env:
       {{- . | nindent 6 }}
     {{- end }}
-    {{- if or (include "c8s.attestationApiSocketPresent" .) (include "c8s.attestationApiNodeIPFile" .) .Values.cds.measurementsConfig }}
+    {{- if or (eq (include "router.mountInventorySocket" .) "true") (include "c8s.attestationApiSocketPresent" .) (include "c8s.attestationApiNodeIPFile" .) }}
     volumeMounts:
-      {{- include "c8s.attestationApiSocketMount" . | nindent 6 }}
-      {{- include "c8s.nodeConfigMount" . | nindent 6 }}
-      {{- if .Values.cds.measurementsConfig }}
-      - name: measurements-config
-        mountPath: /mnt/c8s-data/measurements
+      {{- if eq (include "router.mountInventorySocket" .) "true" }}
+      # The inventory socket directory at the compiled path get-cert mounts it
+      # on, so this sidecar names the node's own verifier.
+      - name: workload-claims
+        mountPath: /run/c8s/workload-claims
         readOnly: true
+      {{- else }}
+      {{- include "c8s.attestationApiSocketMount" . | nindent 6 }}
       {{- end }}
     {{- end }}
     securityContext:
       allowPrivilegeEscalation: false
       readOnlyRootFilesystem: true
       runAsNonRoot: true
+      {{- /* It dials CDS, so it holds the credentials role. */}}
+      runAsUser: {{ include "c8s.credentialsUID" . }}
+      runAsGroup: {{ include "c8s.credentialsUID" . }}
       capabilities:
         drop:
           - ALL
@@ -358,15 +375,12 @@ volumes:
   {{- /* Shares the admission inventory's socket directory — see c8s.attestationApiSocket. */}}
   {{- include "c8s.attestationApiSocketVolume" . | nindent 2 }}
 securityContext:
-  runAsNonRoot: {{ .Values.router.nginx.runAsNonRoot }}
-  fsGroup: {{ include "c8s.int" .Values.router.nginx.runAsGroup }}
+  runAsNonRoot: true
+  fsGroup: {{ include "c8s.certFsGroup" . }}
   {{- if or (eq (include "router.mountInventorySocket" .) "true") (include "c8s.attestationApiSocketPresent" .) }}
   # workloadclaims.InventorySocketGID: the inventory and attest-proxy
   # chgrp their sockets to this group so the non-root get-cert sidecar
-  # (on the nginx uid) can connect. get-cert must stay on the nginx uid —
-  # it SIGHUPs nginx on renewal, and a different uid gets "operation not
-  # permitted", after which nginx serves a stale leaf that every
-  # exact-DER client correctly refuses.
+  # can connect.
   supplementalGroups: [65532]
   {{- end }}
   seccompProfile:
@@ -395,7 +409,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ include "router.fullname" . }}
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ include "c8s.routerMeshNamespace" . }}
   labels:
     {{- include "router.labels" . | nindent 4 }}
 spec:

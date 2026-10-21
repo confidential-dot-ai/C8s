@@ -56,7 +56,7 @@ type routingConfig struct {
 }
 
 func bindRoutingFlags(f *pflag.FlagSet, cfg *routingConfig) {
-	f.StringVar(&cfg.cdsURL, "cds-url", "", "REQUIRED: CDS base URL (https, armTLS-verified) to poll the signed route manifest from")
+	f.StringVar(&cfg.cdsURL, "cds-url", "", "CDS base URL (https, armTLS-verified) to poll the signed route manifest from; required unless this node's enforcer mounts the endpoint")
 	f.StringSliceVar(&cfg.cdsMeasurements, "cds-measurements", nil, "allowed CDS SHA-384 launch measurement(s), repeatable/comma-separated; empty accepts any attested CDS (unsafe)")
 	f.StringSliceVar(&cfg.cdsRTMRs, "cds-rtmrs", nil, "TDX RTMR pin(s) <index>=<sha384-hex> CDS must additionally satisfy, repeatable/comma-separated")
 	cmdsutil.BindImagePolicyFlags(f, &cfg.imagePolicyFile, nil, "pins the CDS endpoint; excludes --cds-measurements and --cds-rtmrs")
@@ -82,7 +82,7 @@ func checkRoutingFlags(cfg config) error {
 		return errors.New("--measured-policies-file requires --attest-endpoints=true: only the attestation bundles carry the list")
 	}
 	if r.cdsURL == "" {
-		return errors.New("--cds-url is required: the router routes only by the route manifest it polls from CDS")
+		return errors.New("--cds-url is required: no node hands this router a CDS endpoint, and it routes only by the route manifest it polls from one")
 	}
 	if cfg.attestOff && r.port == 0 {
 		return errors.New("--attest-endpoints=false requires --routing-port: without it the process serves nothing")

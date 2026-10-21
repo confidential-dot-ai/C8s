@@ -93,7 +93,7 @@ leaf exists.`,
 	f.StringVar(&cfg.domainsFile, "domains-file", "", "file with one domain per line, read at start instead of --domains; empty file means no ACME (see --standby-cert-dir)")
 	f.StringVar(&cfg.emailFile, "acme-email-file", "", "file holding --acme-email; an empty file keeps the flag value")
 	f.StringVar(&cfg.directoryURLFile, "acme-directory-url-file", "", "file holding --acme-directory-url; an empty file keeps the flag value")
-	f.StringVar(&cfg.standbyCertDir, "standby-cert-dir", "", "with an empty --domains-file, do no ACME: report ready once this directory holds the cert.pem and key.pem nginx serves instead")
+	f.StringVar(&cfg.standbyCertDir, "standby-cert-dir", "", "with an empty --domains-file, do no ACME: report ready once this directory holds the tls.crt and tls.key nginx serves instead")
 
 	return cmd
 }
@@ -128,6 +128,13 @@ func loadFiles(cfg *config) (standby bool, err error) {
 	return true, nil
 }
 
+// The member credential volume's file names, which the injector fixes
+// (internal/webhook/pod_mutator.go). The standby leaf is that pair.
+const (
+	standbyCertFile = "tls.crt"
+	standbyKeyFile  = "tls.key"
+)
+
 // runStandby is the sidecar with no ACME domain. nginx serves the certificate
 // in --standby-cert-dir (the mesh leaf), so this process only answers the
 // readiness probe that gates nginx's start, then waits for shutdown.
@@ -137,7 +144,7 @@ func runStandby(ctx context.Context, cfg config, logger *slog.Logger) error {
 	}
 	if cfg.readyPort != 0 {
 		addr := net.JoinHostPort("", strconv.Itoa(cfg.readyPort))
-		ready := readyHandler(filepath.Join(cfg.standbyCertDir, certFile), filepath.Join(cfg.standbyCertDir, keyFile))
+		ready := readyHandler(filepath.Join(cfg.standbyCertDir, standbyCertFile), filepath.Join(cfg.standbyCertDir, standbyKeyFile))
 		if _, err := cmdsutil.ServeInBackground(ctx, addr, ready, logger); err != nil {
 			return fmt.Errorf("--ready-port: %w", err)
 		}

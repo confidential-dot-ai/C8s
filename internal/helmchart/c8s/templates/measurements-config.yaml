@@ -1,11 +1,13 @@
 {{- /*
 The measurements config: the VM images this cluster runs, each pinned as a
-whole image. Shared by every component that verifies one — cds and the
-router's allowlist-proxy — so it lives in its own ConfigMap rather than beside
-a single component's own material.
+whole image. CDS verifies one against it, so it lives in its own ConfigMap
+rather than beside a single component's own material.
 
 Public policy, not secret: these are the digests a verifier compares evidence
 against.
+
+The router reads it from its own namespace, which a projected volume cannot
+leave, so the same document is rendered there too.
 */ -}}
 {{- $cds := .Values.cds.measurementsConfig | default "" }}
 {{- if $cds }}
@@ -22,4 +24,16 @@ metadata:
 data:
   cds.json: {{ $cds | quote }}
 ---
+{{- if .Values.router.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "c8s.fullname" . }}-measurements
+  namespace: {{ include "c8s.routerMeshNamespace" . }}
+  labels:
+{{ include "c8s.commonLabels" . | indent 4 }}
+data:
+  cds.json: {{ $cds | quote }}
+---
+{{- end }}
 {{- end }}

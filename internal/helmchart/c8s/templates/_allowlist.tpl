@@ -505,7 +505,7 @@
        so the seed this same shape set feeds cannot claim one. */ -}}
 {{- $tagged := list -}}
 {{- range $c := (get $entry "containers") -}}
-{{- with include "c8s.platformRole" (dict "root" $ "argv" (get (get $c "command") "argv")) -}}
+{{- with include "c8s.platformRole" (dict "root" $ "argv" (concat (get (get $c "command") "argv" | default list) (get (get $c "args") "argv" | default list))) -}}
 {{- $c = merge (dict "role" .) $c -}}
 {{- end -}}
 {{- $tagged = append $tagged $c -}}
@@ -571,11 +571,35 @@
      the same images. Takes root and argv. */ -}}
 {{- define "c8s.platformRole" -}}
 {{- $argv := .argv -}}
-{{- if and (ge (len $argv) 2) (eq (first $argv) "/c8s") (has (index $argv 1) (list "get-cert" "probe-file" "get-secret" "get-volume")) -}}
+{{- $root := .root -}}
+{{- if and (ge (len $argv) 2) (eq (first $argv) "/c8s") -}}
+{{- $mode := index $argv 1 -}}
+{{- if has $mode (list "get-cert" "probe-file" "get-secret" "get-volume" "allowlist-proxy") -}}
 credentials
-{{- else if and $argv (eq ($argv | toJson) (include "c8s.meshEntrypoint" .root)) -}}
-mesh
+{{- else if eq $mode "cds-attest" -}}
+router
+{{- else if eq $mode "acme" -}}
+acme
 {{- end -}}
+{{- else if include "c8s.argvHasPrefix" (dict "argv" $argv "prefix" (include "c8s.meshEntrypoint" $root | fromJsonArray)) -}}
+mesh
+{{- else if include "c8s.argvHasPrefix" (dict "argv" $argv "prefix" (include "c8s.routerNginxArgv" $root | fromJsonArray)) -}}
+router
+{{- end -}}
+{{- end -}}
+
+{{/* "true" when argv starts with a non-empty prefix, else "". */ -}}
+{{- define "c8s.argvHasPrefix" -}}
+{{- $prefix := .prefix -}}
+{{- if and $prefix (ge (len .argv) (len $prefix)) (eq (slice .argv 0 (len $prefix) | toJson) ($prefix | toJson)) -}}
+true
+{{- end -}}
+{{- end -}}
+
+{{/* The front door's argv as JSON: the shell reading the reload script out of
+     the configuration directory it mounts (router-deployment.yaml). */ -}}
+{{- define "c8s.routerNginxArgv" -}}
+{{- list "/bin/sh" (printf "%s/reload.sh" (include "router.configDir" .)) | toJson -}}
 {{- end -}}
 
 {{/* The mesh image's entrypoint as JSON, or "null" where no mesh digest
@@ -597,23 +621,27 @@ null
      (c8s.baseWorkloads) instead. Takes the chart context. */ -}}
 {{- define "c8s.roleFloorWorkloads" -}}
 {{- $root := . -}}
-{{- $shaped := include "c8s.componentShapes" $root | fromJson -}}
+{{- $shaped := include "c8s.generatedShapes" $root | fromJson -}}
 {{- $entries := dict -}}
 {{- range $digest, $entry := (include "c8s.openArgsEntries" $root | fromJson) -}}
 {{- if not (hasKey $shaped $digest) -}}
 {{- $image := get $entry "image" -}}
 {{- $repository := include "c8s.imageRepository" $image -}}
 {{- $argvs := list -}}
-{{- if eq $repository $root.Values.armtlsMesh.image.repository -}}
+{{- if eq $repository (include "c8s.imageRepository" $root.Values.armtlsMesh.image.repository) -}}
 {{- $argvs = list (dict "role" "mesh" "argv" (list "/app/c8s" "armtls-mesh")) -}}
-{{- else if eq $repository $root.Values.image.repository -}}
-{{- range $mode := list "get-cert" "probe-file" "get-secret" "get-volume" -}}
+{{- else if eq $repository (include "c8s.imageRepository" $root.Values.image.repository) -}}
+{{- range $mode := list "get-cert" "probe-file" "get-secret" "get-volume" "allowlist-proxy" -}}
 {{- $argvs = append $argvs (dict "role" "credentials" "argv" (list "/c8s" $mode)) -}}
 {{- end -}}
+{{- $argvs = append $argvs (dict "role" "router" "argv" (list "/c8s" "cds-attest")) -}}
+{{- $argvs = append $argvs (dict "role" "acme" "argv" (list "/c8s" "acme")) -}}
+{{- else if eq $repository (include "c8s.imageRepository" $root.Values.router.nginx.image.repository) -}}
+{{- $argvs = list (dict "role" "router" "argv" (include "c8s.routerNginxArgv" $root | fromJsonArray)) -}}
 {{- end -}}
 {{- range $a := $argvs -}}
 {{- $containers := list (dict "digest" $digest "image" $image "role" (get $a "role") "command" (dict "policy" "exact" "argv" (get $a "argv")) "args" (dict "policy" "any") "mounts" (dict "policy" "any")) -}}
-{{- $name := printf "c8s-role-%s-%s" (last (get $a "argv")) (trimPrefix "sha256:" $digest | lower | trunc 12) -}}
+{{- $name := printf "c8s-role-%s-%s" (last (get $a "argv") | base) (trimPrefix "sha256:" $digest | lower | trunc 12) -}}
 {{- $_ := set $entries $name (dict "label" $image "initContainers" list "containers" $containers) -}}
 {{- end -}}
 {{- end -}}
@@ -621,10 +649,15 @@ null
 {{ $entries | toJson }}
 {{- end -}}
 
-{{/* The repository of an image reference, without its tag or digest. */ -}}
+{{/* The repository an image reference names, as one canonical string: no tag,
+     no digest, and Docker Hub's implicit registry and library namespace left
+     off, so a reference naming them explicitly and a component value that
+     omits them compare equal. */ -}}
 {{- define "c8s.imageRepository" -}}
 {{- $path := . | splitList "@" | first | splitList "/" -}}
-{{- append (initial $path) (last $path | splitList ":" | first) | join "/" -}}
+{{- $repository := append (initial $path) (last $path | splitList ":" | first) | join "/" -}}
+{{- $repository = regexReplaceAll "^(index\\.)?docker\\.io/" $repository "" -}}
+{{- regexReplaceAll "^library/" $repository "" -}}
 {{- end -}}
 
 {{- define "c8s.digestWorkloadName" -}}
@@ -784,6 +817,17 @@ null
 {{- range $init := list true false -}}
 {{- range $c := ternary (default list $spec.initContainers) (default list $spec.containers) $init -}}
 {{- $shapes := include "c8s.podShapes" (dict "name" "router" "spec" (dict "volumes" $volumes "containers" (list $c)) "pins" $pins "envs" $envs "refs" $refs) | fromJsonArray -}}
+{{- /* The platform clients of every member pod are dropped before matching
+       (internal/secrets.WorkloadContainers), so the entry declares the
+       containers this pod runs for its own purpose. */ -}}
+{{- $declared := list -}}
+{{- range $shape := $shapes -}}
+{{- $role := include "c8s.platformRole" (dict "root" $ "argv" (concat (get (get $shape "command") "argv" | default list) (get (get $shape "args") "argv" | default list))) -}}
+{{- if not (has $role (list "mesh" "credentials")) -}}
+{{- $declared = append $declared $shape -}}
+{{- end -}}
+{{- end -}}
+{{- $shapes = $declared -}}
 {{- if $init -}}
 {{- $inits = concat $inits $shapes -}}
 {{- else -}}

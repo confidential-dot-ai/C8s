@@ -447,17 +447,6 @@ func (p *plugin) recordForInventory(ctx context.Context, pod *api.PodSandbox, ct
 	}))
 }
 
-// recordUncheckedForInventory records the digest inlined in the reference
-// without resolving; the pre-Ready hook must answer inside NRI's
-// plugin_request_timeout, so recording adds no containerd round-trip.
-func (p *plugin) recordUncheckedForInventory(pod *api.PodSandbox, ctr *api.Container, imageRef string) {
-	p.recordDigest(ctr, extractDigest(imageRef), observedMounts(pod, ctr, nodeMounts{
-		socketDir:  p.cfg.WorkloadClaims.SocketDir,
-		cdsPins:    p.cdsPins,
-		cdsAddress: p.cdsAddress,
-	}))
-}
-
 // recordDigest is the only inventory.record call site. ctr.Args is the
 // effective OCI process.args, the same value the checks read, and the role is
 // the one the measured base binds to that whole launch.
@@ -1120,7 +1109,11 @@ func (p *plugin) CreateContainer(ctx context.Context, pod *api.PodSandbox, ctr *
 		}
 		return nil, nil, p.denyContainerCreation(pod.GetId(), ctr.GetName(), fmt.Errorf("%s", reason))
 	}
-	return p.sidecarAdjustment(pod, ctr), nil, nil
+	adjustment, err := p.credentialMounts(ctx, pod, ctr)
+	if err != nil && p.cfg.Policy.Mode != ModeAudit {
+		return nil, nil, err
+	}
+	return adjustment, nil, nil
 }
 
 // StartContainer runs before task.Start/execve. Its environment is the final
@@ -1134,7 +1127,15 @@ func (p *plugin) StartContainer(ctx context.Context, pod *api.PodSandbox, ctr *a
 		if err := p.admitWhileInitializing(ctx, cfg, pod, ctr, imageRef); err != nil {
 			return err
 		}
-		p.recordUncheckedForInventory(pod, ctr, imageRef)
+		// INVARIANT: the gate holds a member pod whether or not the first
+		// pull has settled, so the start that opens it is recorded on both
+		// paths. A role comes from the base alone, which is loaded at boot.
+		// The record resolves the digest here too: an unresolved one closes
+		// the sandbox's inventory answer for its life (internal/admissionhistory),
+		// and the pod that starts in this window is the one a fresh install
+		// brings up with CDS.
+		p.noteMeshStarted(ctx, pod, ctr, imageRef)
+		p.recordForInventory(ctx, pod, ctr, imageRef)
 		return nil
 	}
 	verdict, reason := p.checkContainer(ctx, cfg, pod, ctr, imageRef)
@@ -1182,8 +1183,8 @@ func (p *plugin) observedLaunch(ctx context.Context, ctr *api.Container, imageRe
 	}
 }
 
-// sidecarAdjustment bind-mounts what the node hands a webhook-injected
-// credential sidecar, read-only: the inventory's socket directory at
+// credentialMounts bind-mounts what the node hands a credential client,
+// read-only: the inventory's socket directory at
 // workloadclaims.SidecarSocketDir into the socket consumers
 // (workloadclaims.IsSocketConsumer) of an injected pod, the node's CDS
 // attestation policy at workloadclaims.CDSPinsPath, and the CDS endpoint it
@@ -1194,17 +1195,19 @@ func (p *plugin) observedLaunch(ctx context.Context, ctr *api.Container, imageRe
 //
 // The two policy mounts are what make the CDS a client reaches trusted: it
 // reads compiled paths, so a pod cannot name another source and the control
-// plane cannot pass one as an argument.
-//
-// The annotation+name gate scopes the mounts; it is NOT a security boundary.
-// Both are tenant-forgeable, so every socket in the directory must stay safe
-// against any on-node caller (peer-credential binding, RO mount).
-func (p *plugin) sidecarAdjustment(pod *api.PodSandbox, ctr *api.Container) *api.ContainerAdjustment {
-	if pod.GetAnnotations()[workloadclaims.AnnotationInjected] != "true" {
-		return nil
+// plane cannot pass one as an argument. A container running as the credentials
+// identity that this node's measured base grants no such role is refused.
+func (p *plugin) credentialMounts(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) (*api.ContainerAdjustment, error) {
+	if fetchesRouteManifest(pod, ctr) {
+		return p.routerCDSMount(), nil
 	}
-	if !workloadclaims.IsSocketConsumer(ctr.GetName()) {
-		return nil
+	injected := injectedCredentialSidecar(pod, ctr)
+	if !holdsCredentialsIdentity(ctr) && !injected {
+		return nil, nil
+	}
+	if holdsCredentialsIdentity(ctr) && p.measuredRole(ctx, ctr) != CredentialRole {
+		return nil, fmt.Errorf("container %q runs as the credentials identity (uid %d) but this node's measured base grants it no %s role, so it would reach CDS unpinned",
+			ctr.GetName(), workloadclaims.CredentialsUID, CredentialRole)
 	}
 	var mounts []*api.Mount
 	if servesInventory := p.inventory != nil; servesInventory {
@@ -1217,9 +1220,72 @@ func (p *plugin) sidecarAdjustment(pod *api.PodSandbox, ctr *api.Container) *api
 		mounts = append(mounts, readOnlyBind(p.cdsAddress, workloadclaims.CDSAddressPath))
 	}
 	if len(mounts) == 0 {
+		return nil, nil
+	}
+	return &api.ContainerAdjustment{Mounts: mounts}, nil
+}
+
+// holdsCredentialsIdentity reports whether this container runs as the identity
+// the pod ruleset admits the node's CDS for. The grant itself is the measured
+// role.
+func holdsCredentialsIdentity(ctr *api.Container) bool {
+	return ctr.GetUser().GetUid() == workloadclaims.CredentialsUID
+}
+
+// fetchesRouteManifest reports whether this container is the one the router's
+// route manifest comes through: its attest sidecar, on the router identity
+// that pod's ruleset admits the node's CDS for (meshgate_linux.go). The pod is
+// the chart's own in a namespace the enforcer compiles in, and the measured
+// base binds every container of it to a role, so the name holds no privilege
+// of its own.
+func fetchesRouteManifest(pod *api.PodSandbox, ctr *api.Container) bool {
+	return pod.GetNamespace() == routerNamespace &&
+		ctr.GetName() == workloadclaims.AttestContainerName &&
+		ctr.GetUser().GetUid() == workloadclaims.RouterUID
+}
+
+// routerCDSMount is the CDS endpoint alone: the router polls the signed route
+// manifest from the one CDS its node admits, and takes its pins from the
+// measured base the chart renders rather than from a node document.
+func (p *plugin) routerCDSMount() *api.ContainerAdjustment {
+	if p.cdsAddress == "" {
 		return nil
 	}
-	return &api.ContainerAdjustment{Mounts: mounts}
+	return &api.ContainerAdjustment{
+		Mounts: []*api.Mount{readOnlyBind(p.cdsAddress, workloadclaims.CDSAddressPath)},
+	}
+}
+
+// injectedCredentialSidecar reports the webhook's own shape: a reserved
+// sidecar name on a pod the injector annotated. Both are tenant-forgeable, so
+// every socket in the directory stays safe against any on-node caller through
+// peer-credential binding and a read-only mount.
+func injectedCredentialSidecar(pod *api.PodSandbox, ctr *api.Container) bool {
+	return pod.GetAnnotations()[workloadclaims.AnnotationInjected] == "true" &&
+		workloadclaims.IsSocketConsumer(ctr.GetName())
+}
+
+// measuredRole is the role the node's measured base grants this launch, from
+// the evidence the runtime reports at CreateContainer: digest, argv,
+// environment and the mounts requested so far. StartContainer re-reads the
+// same fields from the final spec.
+func (p *plugin) measuredRole(ctx context.Context, ctr *api.Container) string {
+	imageRef := ctr.GetAnnotations()[annotationImageName]
+	return p.roleOf(p.observedLaunch(ctx, ctr, imageRef, containerEnv(ctr), createTimeMounts(ctr)))
+}
+
+// createTimeMounts classifies the mounts the container is being created with.
+// Source-bound evidence needs the sandbox the mount belongs to, which only the
+// final spec carries, so a create-time mount is host-backed unless the final
+// check says otherwise.
+func createTimeMounts(ctr *api.Container) []allowlist.ObservedMount {
+	mounts := make([]allowlist.ObservedMount, 0, len(ctr.GetMounts()))
+	for _, m := range ctr.GetMounts() {
+		if carriesHostBytes(m) {
+			mounts = append(mounts, observeHostMount(m))
+		}
+	}
+	return mounts
 }
 
 func readOnlyBind(source, destination string) *api.Mount {

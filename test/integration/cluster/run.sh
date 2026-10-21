@@ -42,7 +42,6 @@ mkdir -p "$WORKDIR"
 
 cleanup() {
     cds_pf_stop
-    router_pf_stop
     if [ "${C8S_IT_KEEP:-}" = 1 ]; then
         echo "kept: kind cluster $CLUSTER, state in $WORKDIR"
         return
@@ -190,7 +189,11 @@ log "Rendering the NRI installer and its argv-pinned seed entry"
 # seed entry injected into the floor: two renders could drift their flags,
 # and the plugin's enforce-existing check would kill the install init
 # container over an argv mismatch. The mesh resolver is kind's cluster DNS,
-# the one address a member pod's ruleset admits on the resolver port.
+# the one address a member pod's ruleset admits on the resolver port, and the
+# cluster ranges are kind's defaults, which keep the router's egress exception
+# off every in-cluster destination. The router is on in this render: the mesh
+# policy it carries is what grants the role of the pods in the router's
+# namespace, which the install below creates.
 helm template c8s internal/helmchart/c8s -n "$NS" \
     --kube-version "$KUBE_VERSION" \
     --set-string image.tag="$IMAGE_TAG" \
@@ -201,10 +204,11 @@ helm template c8s internal/helmchart/c8s -n "$NS" \
     --set-string nriImagePolicy.image.digest="$NRI_STORE_DIGEST" \
     --set-string cds.image.digest="$CDS_STORE_DIGEST" \
     --set-string "cds.measurements[0]=$MOCK_MEASUREMENT" \
-    --set router.enabled=false \
     --set volumed.enabled=false \
     --set-string armtlsMesh.image.tag="$IMAGE_TAG" \
     --set-string nriImagePolicy.mesh.resolver=10.96.0.10 \
+    --set-string "nriImagePolicy.mesh.clusterRanges[0]=10.244.0.0/16" \
+    --set-string "nriImagePolicy.mesh.clusterRanges[1]=10.96.0.0/16" \
     -f "$WORKDIR/values.yaml" > "$WORKDIR/nri-render.yaml" \
     || fail "could not render the NRI installer chart documents"
 python3 - "$WORKDIR/nri-render.yaml" "$WORKDIR/values.yaml" "$WORKDIR/nri-installer.yaml" <<'PYEOF'
@@ -251,6 +255,41 @@ node_exec sh -c "install -d -m 0711 /run/nri-image-policy \
     && chmod 0644 /run/nri-image-policy/node-ip" \
     || fail "could not publish the node-ip file"
 
+# --- NRI image-policy plugin ---
+
+log "Installing the NRI image-policy plugin"
+# Under --cvm-mode=bare-metal the chart renders the installer only in its baked
+# pins-patching form, and the install below leaves even that off (values.yaml):
+# the kind node bakes no plugin for it to pin. The harness renders the full
+# installer from the chart source (above) and applies it out-of-band — same
+# installer, same containerd patch, same plugin.
+#
+# Before the install, as a baked node has it: a member pod's credential
+# clients read the CDS endpoint the enforcer mounts and name no other, so the
+# router's own get-cert reaches no CDS on a node that carries no plugin yet.
+# The installer is namespaced, and the install's privileged namespace is the
+# same object applied twice.
+kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f -
+kubectl label namespace "$NS" --overwrite \
+    pod-security.kubernetes.io/enforce=privileged \
+    pod-security.kubernetes.io/warn=privileged \
+    pod-security.kubernetes.io/audit=privileged
+kubectl apply -f "$WORKDIR/nri-installer.yaml"
+# The installer patches the node's containerd config and restarts it, and the
+# plugin comes up with the restarted runtime, which is the datapath the install
+# below needs. Its own install container is admitted argv-pinned, an entry only
+# the seed CDS serves carries, so the container the restart interrupted is
+# denied until the install lands: the DaemonSet goes Ready after it, not here.
+for _ in $(seq 1 180); do
+    node_exec test -S /run/nri-image-policy/health.sock && break
+    sleep 1
+done
+node_exec test -S /run/nri-image-policy/health.sock \
+    || fail "NRI plugin never answered its health socket on the node"
+node_exec test -S /run/nri-image-policy/workload-claims.sock \
+    || fail "admission inventory socket missing on the node"
+pass "NRI plugin registered with containerd and serves the admission inventory"
+
 log "c8s install"
 ./build/c8s install --namespace "$NS" --cvm-mode=bare-metal --hardware-platform=sev-snp \
     --single-node --resolve-digests=false --image-tag="$IMAGE_TAG" \
@@ -258,22 +297,12 @@ log "c8s install"
     --measurements "$MOCK_MEASUREMENT" \
     -f "$WORKDIR/values.yaml" --wait || fail "c8s install failed"
 
-# --- NRI image-policy plugin ---
-
-log "Installing the NRI image-policy plugin"
-# Under --cvm-mode=bare-metal the chart renders the installer only in its baked
-# pins-patching form, and the install above leaves even that off (values.yaml):
-# the kind node bakes no plugin for it to pin. The harness renders the full
-# installer from the chart source (above, before c8s install) and applies it
-# out-of-band — same installer, same containerd patch, same plugin.
-kubectl apply -f "$WORKDIR/nri-installer.yaml"
-# The installer patches the node's containerd config and restarts it; the
-# DaemonSet reports Ready once the plugin answers its health socket.
+# CDS now serves the installer's pinned entry. A fresh pod retries the denied
+# install container at once, rather than on kubelet's crash backoff.
+kubectl -n "$NS" delete pod -l app.kubernetes.io/component=nri-installer-worker
 kubectl -n "$NS" rollout status ds/c8s-nri-image-policy-worker --timeout=300s \
     || fail "NRI plugin did not become healthy"
-node_exec test -S /run/nri-image-policy/workload-claims.sock \
-    || fail "admission inventory socket missing on the node"
-pass "NRI plugin registered with containerd and serves the admission inventory"
+pass "NRI installer DaemonSet Ready on the served allowlist"
 
 kind get kubeconfig --name "$CLUSTER" > "$WORKDIR/kubeconfig"
 cat > "$WORKDIR/env" <<EOF
@@ -291,10 +320,14 @@ fi
 # --- Tests ---
 
 log "Control plane"
-for deploy in c8s-operator c8s-cds c8s-router; do
+for deploy in c8s-operator c8s-cds; do
     kubectl -n "$NS" wait --for=condition=Available "deploy/$deploy" --timeout=180s \
         || fail "$deploy not Available"
 done
+# The router serves ports of its own, so it runs in the namespace the mesh
+# policy names.
+kubectl -n "$ROUTER_NS" wait --for=condition=Available deploy/c8s-router --timeout=180s \
+    || fail "c8s-router not Available"
 pass "operator, CDS and router all Ready after c8s install"
 
 kubectl get crd confidentialworkloads.confidential.ai >/dev/null || fail "ConfidentialWorkload CRD missing"
@@ -335,8 +368,11 @@ fi
 pass "signed allowlist write + delete round-trip through CDS"
 
 log "Route API"
-# Until CDS stores a manifest the router routes nothing, and says so (A2).
-code="$(router_get "$ROUTER_HOST" / "$WORKDIR/route-body")"
+# Until CDS stores a manifest the router routes nothing, and says so. Dialed at
+# the node's published 443: the router pod's own ruleset drops a namespace
+# entrant, so no port-forward reaches it.
+code="$(curl -sSk -o /dev/null -w '%{http_code}' --max-time 10 \
+    --resolve "$ROUTER_HOST:443:$NODE_IP" "https://$ROUTER_HOST/" || true)"
 [ "$code" = "503" ] || fail "front door before any route manifest: want HTTP 503, got $code"
 pass "front door answers 503 before a route manifest is stored"
 
@@ -578,8 +614,9 @@ kubectl -n kube-system delete configmap it-mesh-ca --ignore-not-found >/dev/null
 kubectl -n kube-system create configmap it-mesh-ca --from-file=ca.pem="$WORKDIR/cds-mesh-ca.pem"
 publication() {
     kubectl -n kube-system delete pod it-routes-pub --ignore-not-found >/dev/null 2>&1 || true
-    pod_fixture front-door it-routes-pub kube-system sh -c \
-        "curl -sS --cacert /ca/ca.pem -D /tmp/h -o /tmp/b -w '%{http_code}\n' https://c8s-router.$NS.svc/.well-known/c8s/routes; grep -i '^cache-control:' /tmp/h | tr -d '\r'; echo; base64 -w0 /tmp/b" \
+    python3 "$CLUSTER_HARNESS_DIR/pod-fixture.py" front-door it-routes-pub kube-system "$CURL_IMAGE" \
+        --ca-configmap it-mesh-ca -- sh -c \
+        "curl -sS --cacert /ca/ca.pem -D /tmp/h -o /tmp/b -w '%{http_code}\n' https://c8s-router.$ROUTER_NS.svc/.well-known/c8s/routes; grep -i '^cache-control:' /tmp/h | tr -d '\r'; echo; base64 -w0 /tmp/b" \
         | kubectl apply -f - >/dev/null
     kubectl -n kube-system wait --for=jsonpath='{.status.phase}'=Succeeded pod/it-routes-pub --timeout=120s >/dev/null \
         || fail "route publication request failed"
@@ -591,6 +628,28 @@ code="$(publication)"
 [ "$code" = "404" ] || fail "route publication off: want HTTP 404, got $code"
 pass "route publication off by default: /.well-known/c8s/routes is 404"
 
+log "router front door"
+# The front-door client verifies the router against the mesh CA, read from
+# CDS: the router's pod is a mesh member, and a member admits no exec. Over
+# plain curl like every other CDS read here — in-process verification cannot
+# pass this lane's synthetic evidence (see the header).
+cds_pf_start
+curl -sSk "https://127.0.0.1:$CDS_LOCAL_PORT/ca" > "$WORKDIR/mesh-ca.pem" \
+    || fail "could not read the mesh CA from CDS"
+grep -q "BEGIN CERTIFICATE" "$WORKDIR/mesh-ca.pem" || fail "the mesh CA read from CDS is not a certificate"
+kubectl -n kube-system delete configmap it-mesh-ca --ignore-not-found >/dev/null
+kubectl -n kube-system create configmap it-mesh-ca --from-file=ca.pem="$WORKDIR/mesh-ca.pem"
+# The front door answers plain TLS, so its client must not be a member: a
+# member's dial is captured into armTLS, which nginx does not speak. An exempt
+# namespace is the in-cluster stand-in for the external clients it serves.
+front_door_pod it-curl-healthz kube-system it-mesh-ca "https://c8s-router.$ROUTER_NS.svc/healthz" \
+    > "$WORKDIR/curl-healthz.yaml"
+kubectl apply -f "$WORKDIR/curl-healthz.yaml"
+kubectl -n kube-system wait --for=jsonpath='{.status.phase}'=Succeeded pod/it-curl-healthz --timeout=120s \
+    || fail "front-door healthz request failed"
+[ "$(kubectl -n kube-system logs it-curl-healthz)" = "ok" ] || fail "front-door /healthz did not return ok"
+pass "router front door serves HTTPS verified against the CDS mesh CA"
+
 log "Workload adoption"
 kubectl apply -f test/integration/cluster/manifests/adopt-me.yaml
 kubectl -n adopted wait --for=condition=Available deploy/web --timeout=120s \
@@ -599,14 +658,12 @@ kubectl -n adopted wait --for=condition=Available deploy/web --timeout=120s \
 # manifest; the harness stores it with optoken below, since `c8s routes
 # put` verifies CDS in-process and cannot pass synthetic evidence. An ambient
 # C8S_OPERATOR_KEY would make install sign and store it instead.
-# This install also turns route publication on, for the check after the
-# router applies revision 2.
 printf 'router:\n  routePublication:\n    enabled: true\n' > "$WORKDIR/values-publish.yaml"
 C8S_OPERATOR_KEY='' ./build/c8s install --namespace "$NS" --cvm-mode=bare-metal --hardware-platform=sev-snp \
     --single-node --resolve-digests=false --image-tag="$IMAGE_TAG" \
     --operator-keys "$WORKDIR/operator-pub.pem" \
     --measurements "$MOCK_MEASUREMENT" \
-    --workload-ref web=adopted/deployment/web:8443 --upstream web \
+    --workload-ref web=adopted/deployment/web:8080 --upstream web \
     --routes-out "$WORKDIR/routes-install.json" \
     -f "$WORKDIR/values.yaml" -f "$WORKDIR/values-publish.yaml" --wait || fail "c8s install --workload-ref failed"
 TMPL_ANNOTATION="$(kubectl -n adopted get deploy web -o jsonpath='{.spec.template.metadata.annotations.confidential\.ai/cw}')"

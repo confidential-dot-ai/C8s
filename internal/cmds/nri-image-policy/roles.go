@@ -19,11 +19,11 @@ import (
 const (
 	// meshRole is the pod's own endpoint, whose start opens the gate for the
 	// rest of the pod.
-	meshRole = "mesh"
+	meshRole = workloadclaims.MeshRole
 	// CredentialRole is the role of the injected credential clients. A node's
 	// boot preparation binds it to that cluster's CDS address, so the name is
 	// shared rather than written twice.
-	CredentialRole = "credentials"
+	CredentialRole = workloadclaims.CredentialsRole
 	// routerRole answers the cluster's external traffic on ports of its own,
 	// in the router's namespace.
 	routerRole = "router"
@@ -42,11 +42,13 @@ const routerNamespace = workloadclaims.RouterNamespace
 // forwards is captured wherever its name resolves.
 //
 // INVARIANT: routerListeners are the container ports the chart's router pod
-// binds (router.nginx.httpsPort and the HTTP-01 port), and acmeEgressPorts are
-// the ports public certificate issuance uses.
+// binds (router.nginx.httpsPort, the HTTP-01 port and the acme sidecar's
+// readiness port), and acmeEgressPorts are the ports public certificate
+// issuance uses: the directory the sidecar orders from, and the plain HTTP
+// port each public name is checked on before validation.
 var (
-	routerListeners = []uint16{8443, 8080}
-	acmeEgressPorts = []uint16{443}
+	routerListeners = []uint16{8443, 8080, 8403}
+	acmeEgressPorts = []uint16{443, 80}
 )
 
 // meshPolicy is the trusted mesh policy: the pod ruleset's inputs and the

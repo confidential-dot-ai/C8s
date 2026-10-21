@@ -447,18 +447,21 @@ func (h Handler) workloadContainers(ctx context.Context, host, sandboxID string)
 
 // WorkloadContainers converts an inventory's reported container set to the
 // candidate set workload matching runs on, dropping every container the
-// reporting node's measured base binds a platform role to, so a workload entry
-// never has to enumerate C8s's own containers. It is a pure function of the
-// report — the one drop-set implementation shared by secrets release, the
-// release diagnostic, and CDS certificate issuance. pkg/allowlist stays
-// ignorant of injection by design (its doc: "the caller converts").
+// reporting node's measured base binds a platform client role to
+// (workloadclaims.MeshRole, workloadclaims.CredentialsRole), so a workload
+// entry never has to enumerate the containers C8s adds to every member pod. A
+// role a pod runs for a purpose of its own, like the router's, stays and is
+// declared. It is a pure function of the report — the one drop-set
+// implementation shared by secrets release, the release diagnostic, and CDS
+// certificate issuance. pkg/allowlist stays ignorant of injection by design
+// (its doc: "the caller converts").
 //
 // The role is the enforcer's reading of its own boot config, which the digests
 // channel carries from an attested inventory (docs/secrets.md).
 func WorkloadContainers(reported []workloadclaims.SandboxContainer) []pkgallowlist.RunningContainer {
 	out := make([]pkgallowlist.RunningContainer, 0, len(reported))
 	for _, c := range reported {
-		if c.Role != "" {
+		if c.Role == workloadclaims.MeshRole || c.Role == workloadclaims.CredentialsRole {
 			continue
 		}
 		r := pkgallowlist.RunningContainer{Digest: c.Digest, Argv: c.Argv, Env: c.Env, Mounts: c.Mounts}

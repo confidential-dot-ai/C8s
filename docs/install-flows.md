@@ -80,7 +80,7 @@ mode sets), where the node image's containerd drop-in fixes it at `2s`.
 | mesh endpoint | Injected into every covered pod |
 | nri-image-policy | Node process launched by containerd; baked binary in `bare-metal` mode |
 | platform-container injection (every covered pod) | Webhook at admission time |
-| router | Ordinary pod inside the node CVM |
+| router | Ordinary pod inside the node CVM, in the `c8s-router` namespace |
 
 ---
 
@@ -137,9 +137,10 @@ Key properties (see `templates/webhook.yaml`, `controller/runner.go`):
   operator hasn't patched the caBundle yet *fails closed* — pod creation is
   rejected and retried, never admitted as an unmutated runc pod.
 - The **chart's own components are exempt** via the MWC's namespaceSelector,
-  which excludes the release namespace (plus `kube-system`, `kube-public`,
-  `kube-node-lease`, `local-path-storage`, and `webhook.extraExcluded`), so the operator can always
-  boot to patch the caBundle — no deadlock.
+  which excludes the release namespace and the router role's (plus
+  `kube-system`, `kube-public`, `kube-node-lease`, `local-path-storage`, and
+  `webhook.extraExcluded`), so the operator can always boot to patch the
+  caBundle — no deadlock.
 - The operator reports **Ready only once its webhook TLS listener accepts
   connections** (`/readyz` dials it), so it never becomes a Service endpoint
   that refuses admission calls.
@@ -213,8 +214,10 @@ renews it on a ticker, plus a `c8s-cert-wait` run-once init container
 downstream containers wait for it before launching.
 
 **Excluded namespaces** in the MWC's namespaceSelector are the release
-namespace (operator, CDS, and other platform components), `kube-system`,
-`kube-public`, `kube-node-lease`, `local-path-storage`, and `webhook.extraExcluded`.
+namespace (operator, CDS, and other platform components), `c8s-router` (the
+namespace the mesh policy names for the router role, whose pods hold
+chart-rendered platform-role containers), `kube-system`, `kube-public`,
+`kube-node-lease`, `local-path-storage`, and `webhook.extraExcluded`.
 The separate `deny-host-namespaces` policy rejects host namespaces outside
 trusted platform namespaces.
 

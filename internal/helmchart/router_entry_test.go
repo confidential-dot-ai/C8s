@@ -75,6 +75,9 @@ func running(t *testing.T, seed *pkgallowlist.Allowlist, pod corev1.PodSpec) []w
 			Argv:   runtimeArgv(c, nil),
 			Mounts: observedMounts(t, pod, c),
 			Env:    launchEnv(t, pod, c, imageEnv),
+			// The role the node's base grants this launch, which is what the
+			// drop set reads (routerPodRoles).
+			Role: routerPodRoles[c.Name],
 		})
 	}
 	return out
@@ -153,8 +156,11 @@ func TestChartBakedRouterMatchesSeededEntry(t *testing.T) {
 	seed := renderedSeed(t, out)
 	routerEntry := routerEntryName(t, seed)
 	entry := seed.Workloads[routerEntry]
-	if len(entry.Containers) != 3 {
-		t.Errorf("entry mains = %+v, want nginx, cds-attest and allowlist-proxy", entry.Containers)
+	// The allowlist proxy holds the credentials role, so the drop set removes
+	// it before matching and the entry declares it no more than the mesh
+	// endpoint or the credential sidecars.
+	if len(entry.Containers) != 2 {
+		t.Errorf("entry mains = %+v, want nginx and cds-attest", entry.Containers)
 	}
 	var inits []string
 	for _, c := range entry.InitContainers {
@@ -166,7 +172,7 @@ func TestChartBakedRouterMatchesSeededEntry(t *testing.T) {
 		}
 	}
 	slices.Sort(inits)
-	if want := []string{"acme", "get-cert", "probe-file"}; !slices.Equal(inits, want) {
+	if want := []string{"acme"}; !slices.Equal(inits, want) {
 		t.Errorf("entry init modes = %v, want %v", inits, want)
 	}
 
@@ -185,14 +191,6 @@ func TestChartBakedRouterMatchesSeededEntry(t *testing.T) {
 					}
 				}
 				return cs
-			},
-		},
-		{
-			name: "no allowlist-proxy",
-			mutate: func(cs []workloadclaims.SandboxContainer) []workloadclaims.SandboxContainer {
-				return slices.DeleteFunc(cs, func(c workloadclaims.SandboxContainer) bool {
-					return len(c.Argv) > 1 && c.Argv[1] == "allowlist-proxy"
-				})
 			},
 		},
 		{
@@ -223,19 +221,20 @@ func TestChartBakedRouterMatchesSeededEntry(t *testing.T) {
 			},
 		},
 		{
-			name: "allowlist-proxy socket from another host source",
+			name: "nginx configuration from another host source",
 			mutate: func(cs []workloadclaims.SandboxContainer) []workloadclaims.SandboxContainer {
 				other, err := pkgallowlist.HostSourceDigest("/var/run/nri-image-policy")
 				if err != nil {
 					t.Fatal(err)
 				}
 				for i, c := range cs {
-					if len(c.Argv) > 1 && c.Argv[1] == "allowlist-proxy" {
-						cs[i].Mounts = slices.Clone(c.Mounts)
-						for j, m := range cs[i].Mounts {
-							if m.Class == pkgallowlist.MountHost {
-								cs[i].Mounts[j].HostSourceDigest = other
-							}
+					if c.Digest == c8sDigest {
+						continue
+					}
+					cs[i].Mounts = slices.Clone(c.Mounts)
+					for j, m := range cs[i].Mounts {
+						if m.Class == pkgallowlist.MountHost {
+							cs[i].Mounts[j].HostSourceDigest = other
 						}
 					}
 				}
@@ -347,12 +346,10 @@ func TestChartRouterExpectedWorkloadDefault(t *testing.T) {
 			if got != want || (tc.want == defaultGate && want == "") {
 				t.Fatalf("--expected-workload = %q, want %q", got, want)
 			}
-			// get-cert holds out for the seeded entry whenever claims are wired, gate or not.
+			// get-cert holds out for the seeded entry on a baked node and
+			// wherever the gate names one.
 			cert, _ := findContainer(renderedDeploymentInitContainers(t, out, "c8s-router"), "c8s-cert")
-			wantCert := ""
-			if !slices.Contains(cert.Args, "--no-workload-claims") {
-				wantCert = routerEntryName(t, renderedSeed(t, out))
-			}
+			wantCert := want
 			if got := expectedWorkloadArg(cert); got != wantCert {
 				t.Errorf("c8s-cert --expected-workload = %q, want %q", got, wantCert)
 			}

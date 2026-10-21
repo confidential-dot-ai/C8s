@@ -12,12 +12,14 @@ CLUSTER="${C8S_IT_CLUSTER:-c8s-it}"
 NODE_IMAGE="${C8S_IT_NODE_IMAGE:-kindest/node:v1.34.11@sha256:44e222ee2132dab25ff87301682f89eb82c7880ea3a1bf543bfe9708fd08d67d}"
 IMAGE_TAG=it
 NS=c8s-system
+# The namespace whose pods serve the router's own ports. A fixed name: the
+# measured mesh policy carries it (internal/helmchart.RouterNamespace).
+ROUTER_NS=c8s-router
 CDS_LOCAL_PORT=18443
-ROUTER_LOCAL_PORT=18444
 ADOPTED_LOCAL_PORT=18445
 # The router's default router.san, which `c8s install --upstream` makes the
 # route manifest's host.
-ROUTER_HOST="c8s-router.c8s-system.svc"
+ROUTER_HOST="c8s-router.$ROUTER_NS.svc"
 # The mock attestation-api's synthetic launch digest (all zero). Pinned into
 # cds.measurements so every armTLS hop is verified
 # against it, exactly as a pinned production measurement.
@@ -40,6 +42,13 @@ pod_fixture() {
     python3 "$CLUSTER_HARNESS_DIR/pod-fixture.py" "$mode" "$name" "$ns" "$CURL_IMAGE" -- "$@"
 }
 
+# front_door_pod <name> <namespace> <ca-configmap> <url>: a curl Pod that
+# verifies the front door against the mesh CA in that ConfigMap.
+front_door_pod() {
+    python3 "$CLUSTER_HARNESS_DIR/pod-fixture.py" front-door "$1" "$2" "$CURL_IMAGE" \
+        --ca-configmap "$3" -- curl -sS --cacert /ca/ca.pem "$4"
+}
+
 NODE="${NODE:-}"  # kind node container name, resolved after cluster creation
 NODE_IP="${NODE_IP:-}"
 
@@ -48,11 +57,18 @@ log() { echo ""; echo "=== $* ==="; }
 diagnostics() {
     echo "--- cluster state (diagnostics) ---"
     kubectl get pods -A -o wide 2>&1 || true
+    kubectl get events -A --sort-by=.lastTimestamp 2>&1 | tail -40 || true
+    kubectl -n "$ROUTER_NS" describe pods 2>&1 | tail -60 || true
+    kubectl -n "$ROUTER_NS" get pods -o json 2>&1 || true
+    kubectl -n "$ROUTER_NS" logs deploy/c8s-router -c cds-attest --tail=40 2>&1 || true
     kubectl -n "$NS" logs deploy/c8s-cds --tail=40 2>&1 || true
     kubectl -n "$NS" logs deploy/c8s-operator --tail=40 2>&1 || true
     kubectl -n "$NS" logs ds/c8s-nri-image-policy-worker -c install --tail=80 2>&1 || true
     if [ -n "$NODE" ]; then
         node_exec journalctl -u containerd --no-pager -n 100 2>&1 || true
+        node_exec cat /etc/nri/conf.d/image-policy.yaml 2>&1 || true
+        node_exec sh -c 'for id in $(crictl ps --name cds-attest -q); do crictl inspect "$id"; done' 2>&1 || true
+        node_exec sh -c 'for p in /var/lib/kubelet/pods/*/volumes/*/*; do stat -f -c "%T %n" "$p"; done' 2>&1 || true
     fi
 }
 
@@ -102,55 +118,6 @@ cds_pf_stop() {
     pid="$(cat "$WORKDIR/cds-pf.pid" 2>/dev/null || true)"
     [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
     rm -f "$WORKDIR/cds-pf.pid"
-}
-
-# --- Router front door helpers ---
-
-router_healthy() { curl -sSk -o /dev/null "https://127.0.0.1:$ROUTER_LOCAL_PORT/healthz" 2>/dev/null; }
-
-# router_pf_start opens the port-forward to the router Service, or reuses the
-# one this WORKDIR opened.
-router_pf_start() {
-    local pid
-    pid="$(cat "$WORKDIR/router-pf.pid" 2>/dev/null || true)"
-    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && router_healthy && return 0
-    kubectl -n "$NS" port-forward svc/c8s-router "$ROUTER_LOCAL_PORT:443" >/dev/null 2>&1 &
-    echo "$!" > "$WORKDIR/router-pf.pid"
-    for _ in $(seq 1 30); do
-        router_healthy && return 0
-        sleep 1
-    done
-    fail "router port-forward never came up"
-}
-
-router_pf_stop() {
-    local pid
-    pid="$(cat "$WORKDIR/router-pf.pid" 2>/dev/null || true)"
-    [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
-    rm -f "$WORKDIR/router-pf.pid"
-}
-
-# router_get <host> <path> <out-file> -> http code; a request through the
-# router front door for <host>, which nginx hands the routing listener as Host.
-# The path goes out as given (--path-as-is), empty segments included.
-router_get() {
-    router_pf_start
-    curl -sSk --path-as-is -o "$3" -w '%{http_code}' \
-        --resolve "$1:$ROUTER_LOCAL_PORT:127.0.0.1" "https://$1:$ROUTER_LOCAL_PORT$2" || true
-}
-
-# await_route <host> <path> <code> [<body substring>]: the router polls the
-# route manifest, so a write takes a poll interval to apply.
-await_route() {
-    local code
-    for _ in $(seq 1 30); do
-        code="$(router_get "$1" "$2" "$WORKDIR/route-body")"
-        if [ "$code" = "$3" ] && { [ -z "${4:-}" ] || grep -q "$4" "$WORKDIR/route-body"; }; then
-            return 0
-        fi
-        sleep 2
-    done
-    fail "GET https://$1$2 through the router: want HTTP $3${4:+ with \"$4\"}, got $code: $(head -c 300 "$WORKDIR/route-body")"
 }
 
 # any_workload <digest> <image>: print a workload entry that admits the digest

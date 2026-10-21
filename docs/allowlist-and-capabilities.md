@@ -37,14 +37,20 @@ narrower policy — see [union semantics](#a-digest-may-run-many-ways).
 
 ### Platform roles (`role`)
 
-A container of the NRI plugin's base allowlist may carry `role` —
-`mesh`, `get-cert`, `get-secret`, `get-volume`, `router` or `acme` — which the
-enforcer grants to a container whose verified identity matches that
-declaration. The field is YAML-only, so no served document can claim a role.
+A container of the NRI plugin's measured base allowlist may carry `role` —
+`mesh`, `credentials`, `router` or `acme` — which the enforcer grants to a
+container whose verified identity matches that declaration. The field is
+YAML-only, so no served document can claim a role.
+
+One rule separates the two kinds of entry: a role entry pins the subcommand it
+grants the role for, and the arguments and mounts that subcommand is fixed
+with; an entry holding no role pins nothing. So a role is granted per
+component, not per image, and the same image's other subcommands hold none.
+
 The node's `mesh` policy binds each role to its reserved UID and the
 destinations it dials; the router, which answers external traffic, is bound
-instead to the namespace whose pods serve its ports and the ports it answers on
-there, and `acme`, which proves control of the public names, to the one port a
+instead to the namespace whose pods serve its ports and the ports it answers
+on there, and `acme`, which proves control of the public names, to the ports a
 pod of that namespace may reach outside the mesh in the clear. See
 `docs/armtls.md`.
 
