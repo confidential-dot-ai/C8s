@@ -73,7 +73,7 @@ external_endpoint() {
     local addr
     if ! docker inspect "$EXTERNAL_HELLO" >/dev/null 2>&1; then
         docker run -d --name "$EXTERNAL_HELLO" --network kind "$(image_ref tenant-app)" \
-            sh -c 'mkdir -p /www && echo hello > /www/index.html && exec python3 -m http.server -b :: -d /www 8080' >/dev/null || return 1
+            c8s-hello-api 8080 hello >/dev/null || return 1
         # python takes a moment to listen, unlike the httpd it replaced.
         local i
         for i in $(seq 30); do

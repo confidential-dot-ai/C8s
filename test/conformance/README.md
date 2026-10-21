@@ -66,11 +66,13 @@ directory, as `c8s-report file <path> <base64>` when it appears or changes,
 and that directory's filesystem type, as `c8s-report fstype <dir> <type>`.
 The tenant-app image ([`images/tenant-app`](images/tenant-app)) is Alpine's
 python with the programs the steps run in a tenant pod on its `PATH`: the
-echo API a workload backend serves, and a UDP listener and sender. The steps
-run them by name and pass no program as a string, so a backend that can put
-no file in a pod runs them too.
+hello API, the echo API a workload backend serves, and a UDP listener and
+sender. The steps run them by name and pass no program as a string, so a
+backend that can put no file in a pod runs them too.
 [`conformance-images.yml`](../../.github/workflows/conformance-images.yml)
-builds both on dispatch, and the backends pin their digests.
+builds the suite's images on dispatch; `CONFORMANCE_IMAGES` in
+[`common.sh`](backends/common.sh) pins those every backend uses, and a
+backend adds its own.
 
 ## Running
 
