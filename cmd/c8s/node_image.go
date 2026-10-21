@@ -200,6 +200,7 @@ func renderNodeImage(ctx context.Context, cfg nodeImageRenderConfig) error {
 		{"cds-floor.json", artifacts.cdsFloor},
 		{"c8s-cds-singleton.yaml", artifacts.cdsSingleton},
 		{"c8s-cds-ha.yaml", artifacts.cdsHA},
+		{"local-names.txt", localNamesFile(artifacts.localNames)},
 	}
 	for _, name := range routerNginxFiles {
 		files = append(files, artifact{filepath.Join("router-nginx", name), []byte(artifacts.routerNginx[name])})
@@ -224,6 +225,9 @@ type nodeImageArtifacts struct {
 	seed         []byte
 	images       []string
 	routerNginx  map[string]string
+	// localNames maps a baked image to the node-local name it is also
+	// imported under ("<ref> <name>" lines in local-names.txt).
+	localNames map[string]string
 	// cdsFloor is the NRI floor a cds-role node admits instead of the seed:
 	// the HA CDS container pinned exactly, plus the DaemonSets every node runs.
 	// Empty when the chart renders no HA CDS.
@@ -386,6 +390,9 @@ func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
 	artifacts.integration = manifests.Bytes()
 	artifacts.cdsSingleton, artifacts.cdsHA = singleton.Bytes(), ha.Bytes()
 	if seen["DaemonSet/c8s-cds-ha"] {
+		if artifacts.cdsHA, artifacts.localNames, err = nodeLocalCDS(artifacts.cdsHA, cdsNode); err != nil {
+			return nil, err
+		}
 		floor, err := buildCDSFloor(seed, cdsNode)
 		if err != nil {
 			return nil, err
@@ -881,4 +888,48 @@ func collectConfigMapArtifact(object unstructured.Unstructured, key, name string
 	}
 	artifacts.routerNginx = cm.Data
 	return nil
+}
+
+// nodeLocalTag names a baked image on the node that baked it. The HA CDS
+// DaemonSet is one object, applied by the server from the server's image,
+// but every cds node must run the CDS its own measured image carries: a CDS
+// rollout launches cds nodes on a new image while the others keep the old
+// one. So the DaemonSet names the CDS image by this node-local tag, which
+// each image's airgap import gives its own baked CDS image, and the node's
+// NRI floor still pins the exact digest (buildCDSFloor), so nothing but the
+// measured image's CDS can run under the name.
+const nodeLocalTag = "c8s-node"
+
+// nodeLocalCDS rewrites the HA DaemonSet's CDS image references to the
+// node-local tag and returns the names the airgap import must add.
+func nodeLocalCDS(ha []byte, containers []cdsFloorContainer) ([]byte, map[string]string, error) {
+	names := map[string]string{}
+	for _, fc := range containers {
+		if fc.key != "DaemonSet/c8s-cds-ha" {
+			continue
+		}
+		ref, err := reference.ParseDockerRef(fc.container.Image)
+		if err != nil {
+			return nil, nil, err
+		}
+		local := reference.TrimNamed(ref).Name() + ":" + nodeLocalTag
+		old := []byte("image: " + fc.container.Image + "\n")
+		if !bytes.Contains(ha, old) {
+			return nil, nil, fmt.Errorf("HA CDS manifest does not name %s", fc.container.Image)
+		}
+		ha = bytes.ReplaceAll(ha, old, []byte("image: "+local+"\n"))
+		names[fc.container.Image] = local
+	}
+	if len(names) == 0 {
+		return nil, nil, errors.New("HA CDS manifest has no CDS container")
+	}
+	return ha, names, nil
+}
+
+func localNamesFile(names map[string]string) []byte {
+	var b strings.Builder
+	for _, ref := range slices.Sorted(maps.Keys(names)) {
+		fmt.Fprintf(&b, "%s %s\n", ref, names[ref])
+	}
+	return []byte(b.String())
 }
