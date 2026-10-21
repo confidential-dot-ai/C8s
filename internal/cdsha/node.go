@@ -147,6 +147,8 @@ type Node struct {
 	addedAt  map[raft.ServerID]time.Time // leader: when this leader added a member (handleJoin)
 	reads    map[raft.ServerID]uint32    // leader: the newest format each member reads
 
+	joinRefusedAt map[string]time.Time // peer + reason -> last logged
+
 	backupAt    time.Time // leader: last backup attempt
 	backupIndex uint64    // leader: applied index of the last stored backup
 	recovery    *ecdsa.PublicKey
@@ -504,7 +506,7 @@ func (n *Node) joinOrBootstrap(ctx context.Context) {
 			n.lastLoner.Store(time.Now().UnixMilli())
 		}
 		if err != nil || resp.Err != "" {
-			n.log.Debug("join refused", "peer", p, "err", errors.Join(err, errorsOrNil(resp.Err)))
+			n.joinRefused(p, errors.Join(err, errorsOrNil(resp.Err)))
 		}
 	}
 	if anyMember {
@@ -516,6 +518,26 @@ func (n *Node) joinOrBootstrap(ctx context.Context) {
 	if g, ok := n.pendingGenesis(ctx); ok {
 		n.bootstrap(ctx, g)
 	}
+}
+
+// joinRefused logs why a peer would not add this replica, at Info once a
+// minute per peer and reason: a replica that can never join (a release too
+// old for the cluster's format, an image not pinned) must say so.
+func (n *Node) joinRefused(peer string, err error) {
+	key := peer + " " + err.Error()
+	now := time.Now()
+	n.mu.Lock()
+	if n.joinRefusedAt == nil {
+		n.joinRefusedAt = map[string]time.Time{}
+	}
+	last, seen := n.joinRefusedAt[key]
+	if seen && now.Sub(last) < time.Minute {
+		n.mu.Unlock()
+		return
+	}
+	n.joinRefusedAt[key] = now
+	n.mu.Unlock()
+	n.log.Info("join refused", "peer", peer, "err", err)
 }
 
 // rejoin asks reachable replicas to add this member, as a joiner would; a
