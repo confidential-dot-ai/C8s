@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -329,5 +330,42 @@ func TestNewAndPolicyErrors(t *testing.T) {
 		if os.Geteuid() != 0 {
 			t.Fatalf("unwritable policy file: %v %v", changed, err)
 		}
+	}
+}
+
+func TestPersistAndFetchFailures(t *testing.T) {
+	k, pub := key(t)
+	dir := t.TempDir()
+	file := filepath.Join(dir, "file")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	srv := &served{sd: pinDecree(t, k, cluster, 4, img(5))}
+	for name, cfg := range map[string]Config{
+		"policy file": {PolicyFile: filepath.Join(file, "cds.json")},
+		"state file":  {StateFile: filepath.Join(file, "state.json")},
+	} {
+		cfg.ClusterID, cfg.DecreeKey, cfg.Bootstrap, cfg.Fetch, cfg.MinInterval = cluster, pub, bootstrap(), srv.fetch, time.Nanosecond
+		src, err := New(cfg)
+		if err != nil {
+			if name == "state file" {
+				continue // reading under a regular file fails at start, which is also fail-closed
+			}
+			t.Fatal(err)
+		}
+		if changed, err := src.Refresh(t.Context()); changed || err == nil {
+			t.Fatalf("%s: a decree that could not be persisted was taken", name)
+		}
+		if _, ok := src.Epoch(); ok {
+			t.Fatalf("%s: epoch moved", name)
+		}
+	}
+	failing, err := New(Config{ClusterID: cluster, DecreeKey: pub, Bootstrap: bootstrap(), MinInterval: time.Nanosecond,
+		Fetch: func(context.Context) (*cdsha.SignedDecree, error) { return nil, errors.New("down") }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := failing.Refresh(t.Context()); changed || err == nil {
+		t.Fatal("a failed fetch changed the pins")
 	}
 }
