@@ -422,6 +422,10 @@ nginx :80 server, and the cert-path helpers below.
 {{- define "router.acmeCertDir" -}}/etc/c8s-acme-tls{{- end -}}
 {{- define "router.acmeChallengePort" -}}8402{{- end -}}
 {{- define "router.acmeHTTPPort" -}}8080{{- end -}}
+
+{{/* The serving key and the ACME account key, which the front door alone
+     mounts: every other reader of this credential takes the chain above. */}}
+{{- define "router.acmeKeyDir" -}}/etc/c8s-acme-key{{- end -}}
 {{- define "router.acmeReadyPort" -}}8403{{- end -}}
 
 {{/*
@@ -445,7 +449,7 @@ the member credential volume (cds).
 {{- if eq $mode "webpki" -}}
 {{- printf "%s/%s" .Values.router.publicTLS.mountPath .Values.router.publicTLS.keyKey -}}
 {{- else if eq $mode "acme" -}}
-{{- printf "%s/key.pem" (include "router.acmeCertDir" .) -}}
+{{- printf "%s/key.pem" (include "router.acmeKeyDir" .) -}}
 {{- else -}}
 {{- include "c8s.keyFile" . -}}
 {{- end -}}
@@ -599,7 +603,6 @@ router.cdsAttestArgs takes (dict "root" $ "expectedWorkload" <name>).
 {{- end -}}
 {{- $args = append $args (printf "--challenge-port=%s" (include "router.acmeChallengePort" .)) -}}
 {{- $args = append $args (printf "--http-port=%s" (include "router.acmeHTTPPort" .)) -}}
-{{- $args = append $args (printf "--cert-dir=%s" (include "router.acmeCertDir" .)) -}}
 {{- $args = append $args (printf "--ready-port=%s" (include "router.acmeReadyPort" .)) -}}
 {{- $args | toJson -}}
 {{- end -}}

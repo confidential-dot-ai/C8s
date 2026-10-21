@@ -167,6 +167,8 @@ type plugin struct {
 	ready      atomic.Bool
 	containerd containerdOps
 
+	mountStorage mountStorageInspector
+
 	// exempt admits an exempt namespace's containers by the digest set captured
 	// running in it, not by the namespace name. nil ⇔ not opted in
 	// (policy.exempt_namespaces empty) or not yet captured. See exempt.go.
@@ -440,11 +442,7 @@ func (p *plugin) recordForInventory(ctx context.Context, pod *api.PodSandbox, ct
 			p.logger.Error("cannot resolve the image digest of a running container; the sandbox inventory will refuse to answer for this pod", "image", imageRef, "error", err)
 		}
 	}
-	p.recordDigest(ctr, digest, observedMounts(pod, ctr, nodeMounts{
-		socketDir:  p.cfg.WorkloadClaims.SocketDir,
-		cdsPins:    p.cdsPins,
-		cdsAddress: p.cdsAddress,
-	}))
+	p.recordDigest(ctr, digest, p.observedMounts(pod, ctr))
 }
 
 // recordDigest is the only inventory.record call site. ctr.Args is the
@@ -465,11 +463,15 @@ func (p *plugin) recordDigest(ctr *api.Container, digest string, mounts []allowl
 	p.inventory.recordObserved(ctr.GetId(), ctr.GetPodSandboxId(), ctr.GetName(), digest, role, ctr.GetArgs(), env, mounts)
 }
 
-func observedMounts(pod *api.PodSandbox, ctr *api.Container, own nodeMounts) []allowlist.ObservedMount {
+func (p *plugin) observedMounts(pod *api.PodSandbox, ctr *api.Container) []allowlist.ObservedMount {
 	if pod == nil {
 		return nil
 	}
-	return newMountObserver(nil, own).Observe(pod, ctr)
+	return newMountObserver(p.mountStorage, nodeMounts{
+		socketDir:  p.cfg.WorkloadClaims.SocketDir,
+		cdsPins:    p.cdsPins,
+		cdsAddress: p.cdsAddress,
+	}).Observe(pod, ctr)
 }
 
 // resolveDigest returns the canonical store digest for imageRef using the same
@@ -683,11 +685,7 @@ func (p *plugin) checkContainer(ctx context.Context, cfg *config, pod *api.PodSa
 func (p *plugin) checkContainerPhase(ctx context.Context, cfg *config, pod *api.PodSandbox, ctr *api.Container, imageRef string, phase launchPhase) (imageVerdict, string) {
 	var mounts []allowlist.ObservedMount
 	if phase == launchFinal {
-		mounts = newMountObserver(nil, nodeMounts{
-			socketDir:  cfg.WorkloadClaims.SocketDir,
-			cdsPins:    p.cdsPins,
-			cdsAddress: p.cdsAddress,
-		}).Observe(pod, ctr)
+		mounts = p.observedMounts(pod, ctr)
 	}
 	verdict, reason := p.checkContainerObserved(ctx, cfg, pod, ctr, imageRef, phase, containerEnv(ctr), mounts)
 	if verdict == verdictDeny || phase != launchFinal || !cfg.sandboxObserved() {
@@ -1153,11 +1151,7 @@ func (p *plugin) noteMeshStarted(ctx context.Context, pod *api.PodSandbox, ctr *
 	if !p.mesh.hosts(pod) {
 		return
 	}
-	launch := p.observedLaunch(ctx, ctr, imageRef, containerEnv(ctr), observedMounts(pod, ctr, nodeMounts{
-		socketDir:  p.cfg.WorkloadClaims.SocketDir,
-		cdsPins:    p.cdsPins,
-		cdsAddress: p.cdsAddress,
-	}))
+	launch := p.observedLaunch(ctx, ctr, imageRef, containerEnv(ctr), p.observedMounts(pod, ctr))
 	if p.roleOf(launch) == meshRole {
 		p.mesh.noteMeshStarted(pod.GetId())
 	}
@@ -1171,6 +1165,16 @@ func (p *plugin) roleOf(launch allowlist.RunningContainer) string {
 		return ""
 	}
 	return p.policy.base.RoleOf(launch)
+}
+
+// bindsRoleMounts reports whether the declaration granting this launch its
+// role pins the mount set too. Like the role, it comes from the measured base
+// alone.
+func (p *plugin) bindsRoleMounts(launch allowlist.RunningContainer, role string) bool {
+	if p.policy == nil {
+		return false
+	}
+	return p.policy.base.BindsRoleMounts(launch, role)
 }
 
 // observedLaunch is the container as a role lookup reads it.
@@ -1205,7 +1209,7 @@ func (p *plugin) credentialMounts(ctx context.Context, pod *api.PodSandbox, ctr 
 	if !holdsCredentialsIdentity(ctr) && !injected {
 		return nil, nil
 	}
-	if holdsCredentialsIdentity(ctr) && p.measuredRole(ctx, ctr) != CredentialRole {
+	if holdsCredentialsIdentity(ctr) && p.measuredRole(ctx, pod, ctr) != CredentialRole {
 		return nil, fmt.Errorf("container %q runs as the credentials identity (uid %d) but this node's measured base grants it no %s role, so it would reach CDS unpinned",
 			ctr.GetName(), workloadclaims.CredentialsUID, CredentialRole)
 	}
@@ -1267,25 +1271,12 @@ func injectedCredentialSidecar(pod *api.PodSandbox, ctr *api.Container) bool {
 
 // measuredRole is the role the node's measured base grants this launch, from
 // the evidence the runtime reports at CreateContainer: digest, argv,
-// environment and the mounts requested so far. StartContainer re-reads the
-// same fields from the final spec.
-func (p *plugin) measuredRole(ctx context.Context, ctr *api.Container) string {
+// environment and the mounts requested so far, classified as the final check
+// classifies them, so a declaration that pins a mount set is matched here too.
+// StartContainer re-reads the same fields from the final spec.
+func (p *plugin) measuredRole(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) string {
 	imageRef := ctr.GetAnnotations()[annotationImageName]
-	return p.roleOf(p.observedLaunch(ctx, ctr, imageRef, containerEnv(ctr), createTimeMounts(ctr)))
-}
-
-// createTimeMounts classifies the mounts the container is being created with.
-// Source-bound evidence needs the sandbox the mount belongs to, which only the
-// final spec carries, so a create-time mount is host-backed unless the final
-// check says otherwise.
-func createTimeMounts(ctr *api.Container) []allowlist.ObservedMount {
-	mounts := make([]allowlist.ObservedMount, 0, len(ctr.GetMounts()))
-	for _, m := range ctr.GetMounts() {
-		if carriesHostBytes(m) {
-			mounts = append(mounts, observeHostMount(m))
-		}
-	}
-	return mounts
+	return p.roleOf(p.observedLaunch(ctx, ctr, imageRef, containerEnv(ctr), p.observedMounts(pod, ctr)))
 }
 
 func readOnlyBind(source, destination string) *api.Mount {

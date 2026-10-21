@@ -184,6 +184,9 @@ with open(sys.argv[2], "w") as f:
 print(f"floor: {len(workloads)} any-argv entries")
 PYEOF
 
+openssl ecparam -genkey -name prime256v1 -noout -out "$WORKDIR/operator.key" 2>/dev/null
+openssl ec -in "$WORKDIR/operator.key" -pubout -out "$WORKDIR/operator-pub.pem" 2>/dev/null
+
 log "Rendering the NRI installer and its argv-pinned seed entry"
 # One render feeds both the out-of-band installer DaemonSet and the pinned
 # seed entry injected into the floor: two renders could drift their flags,
@@ -193,7 +196,9 @@ log "Rendering the NRI installer and its argv-pinned seed entry"
 # cluster ranges are kind's defaults, which keep the router's egress exception
 # off every in-cluster destination. The router is on in this render: the mesh
 # policy it carries is what grants the role of the pods in the router's
-# namespace, which the install below creates.
+# namespace, which the install below creates. The base it carries pins each of
+# that pod's containers to its own mount set, so every value the install below
+# adds to those mounts — the operator keys cds-attest reads — belongs here too.
 helm template c8s internal/helmchart/c8s -n "$NS" \
     --kube-version "$KUBE_VERSION" \
     --set-string image.tag="$IMAGE_TAG" \
@@ -204,6 +209,7 @@ helm template c8s internal/helmchart/c8s -n "$NS" \
     --set-string nriImagePolicy.image.digest="$NRI_STORE_DIGEST" \
     --set-string cds.image.digest="$CDS_STORE_DIGEST" \
     --set-string "cds.measurements[0]=$MOCK_MEASUREMENT" \
+    --set-file cds.operatorKeys="$WORKDIR/operator-pub.pem" \
     --set volumed.enabled=false \
     --set-string armtlsMesh.image.tag="$IMAGE_TAG" \
     --set-string nriImagePolicy.mesh.resolver=10.96.0.10 \
@@ -241,9 +247,6 @@ done < "$WORKDIR/floor.tsv"
 log "Deploying the mock attestation-api"
 kubectl apply -f test/integration/cluster/manifests/mock-attestation.yaml
 kubectl -n "$MOCK_ATTESTATION_NS" rollout status "deploy/$MOCK_ATTESTATION_NAME" --timeout=120s
-
-openssl ecparam -genkey -name prime256v1 -noout -out "$WORKDIR/operator.key" 2>/dev/null
-openssl ec -in "$WORKDIR/operator.key" -pubout -out "$WORKDIR/operator-pub.pem" 2>/dev/null
 
 # The node image's nri-node-ip.service publishes the node address before any
 # component starts; kind has no such unit. Bare-metal components under a

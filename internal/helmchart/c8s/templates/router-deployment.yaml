@@ -57,8 +57,12 @@ initContainers:
     volumeMounts:
       - name: acme-tls
         mountPath: {{ include "router.acmeCertDir" . }}
+      {{- /* The serving key and the ACME account state, apart from the chain
+             so a reader of the chain never holds the key. */}}
+      - name: acme-key
+        mountPath: {{ include "router.acmeKeyDir" . }}
       {{- if $launchDriven }}
-      - name: tls-certs
+      - name: c8s-certs
         mountPath: {{ include "c8s.certDir" . }}
         readOnly: true
       {{- include "c8s.nodeConfigMount" . | trim | nindent 6 }}
@@ -124,7 +128,7 @@ containers:
       periodSeconds: 30
 
     volumeMounts:
-      - name: tls-certs
+      - name: c8s-certs
         mountPath: {{ include "c8s.certDir" . }}
         readOnly: true
       {{- if eq $publicTLSMode "webpki" }}
@@ -135,6 +139,10 @@ containers:
       {{- if $acmeSidecar }}
       - name: acme-tls
         mountPath: {{ include "router.acmeCertDir" . }}
+        readOnly: true
+      {{- /* The front door is the only other container that mounts the key. */}}
+      - name: acme-key
+        mountPath: {{ include "router.acmeKeyDir" . }}
         readOnly: true
       {{- end }}
       {{- if .Values.router.discovery.enabled }}
@@ -204,7 +212,7 @@ containers:
       periodSeconds: 10
     {{- end }}
     volumeMounts:
-      - name: tls-certs
+      - name: c8s-certs
         mountPath: {{ include "c8s.certDir" . }}
         readOnly: true
       {{- include "c8s.attestationApiSocketMount" . | nindent 6 }}
@@ -289,7 +297,7 @@ containers:
   {{- end }}
 volumes:
   {{- include "c8s.nodeConfigVolume" . | nindent 2 }}
-  - name: tls-certs
+  - name: c8s-certs
     emptyDir:
       medium: Memory
       sizeLimit: 1Mi
@@ -322,6 +330,12 @@ volumes:
   # lost on pod recreation, so the sidecar re-issues (LE duplicate-cert
   # limits apply; use the staging directoryURL for tests).
   - name: acme-tls
+    emptyDir:
+      medium: Memory
+      sizeLimit: 1Mi
+  # The serving key and the ACME account key, which the sidecar writes and
+  # the front door alone mounts.
+  - name: acme-key
     emptyDir:
       medium: Memory
       sizeLimit: 1Mi

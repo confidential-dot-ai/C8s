@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 	admissionregv1 "k8s.io/api/admissionregistration/v1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -27,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	sigsyaml "sigs.k8s.io/yaml"
 
+	acmecmd "github.com/confidential-dot-ai/c8s/internal/cmds/acme"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
@@ -447,6 +449,24 @@ func routerGetCertContainer(t *testing.T, manifest, name string) corev1.Containe
 		t.Fatalf("router init container %q missing; have %v", name, containerNames(init))
 	}
 	return c
+}
+
+// assertAcmeArgsParse fails unless the sidecar's own command accepts the
+// rendered argv: an unknown flag crash-loops the container, and the front
+// door never starts. The sidecar fixes the credential's two directories
+// itself (internal/cmds/acme), so the chart names neither.
+func assertAcmeArgsParse(t *testing.T, args []string) {
+	t.Helper()
+	cmd := acmecmd.NewCmd()
+	cmd.RunE = func(*cobra.Command, []string) error {
+		return nil
+	}
+	cmd.SetArgs(args[1:])
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	if err := cmd.Execute(); err != nil {
+		t.Errorf("the acme sidecar refuses its rendered args %v: %v", args, err)
+	}
 }
 
 // assertContainerArgs fails unless every wanted arg is present on the container.
@@ -1580,8 +1600,8 @@ func TestChartRendersRouterPublicTLSAndDiscovery(t *testing.T) {
 	cfg.assertNoDirectivePrefix(t, "proxy_ssl_")
 
 	spec := renderedDeployment(t, out, "c8s-router").Spec.Template.Spec
-	if _, ok := podVolume(spec, "tls-certs"); !ok {
-		t.Fatalf("router missing tls-certs volume; volumes=%v", spec.Volumes)
+	if _, ok := podVolume(spec, "c8s-certs"); !ok {
+		t.Fatalf("router missing c8s-certs volume; volumes=%v", spec.Volumes)
 	}
 	pub, ok := podVolume(spec, "public-tls")
 	if !ok || pub.Secret == nil || pub.Secret.SecretName != "router-public-tls" {
@@ -1745,8 +1765,8 @@ func TestChartRouterACMEMode(t *testing.T) {
 		"--acme-email=ops@example.com",
 		"--acme-directory-url=https://acme-staging-v02.api.letsencrypt.org/directory",
 		"--challenge-port=8402",
-		"--cert-dir=/etc/c8s-acme-tls",
 	)
+	assertAcmeArgsParse(t, acme.Args)
 	if acme.RestartPolicy == nil || *acme.RestartPolicy != corev1.ContainerRestartPolicyAlways {
 		t.Fatalf("acme must be a native sidecar (restartPolicy Always), got %v", acme.RestartPolicy)
 	}
@@ -1756,19 +1776,39 @@ func TestChartRouterACMEMode(t *testing.T) {
 	if got := acme.SecurityContext.RunAsUser; got == nil || *got != int64(workloadclaims.AcmeUID) {
 		t.Fatalf("acme runAsUser = %v, want the acme role's uid %d", got, workloadclaims.AcmeUID)
 	}
-	if m, ok := containerVolumeMount(acme, "acme-tls"); !ok || m.MountPath != "/etc/c8s-acme-tls" || m.ReadOnly {
-		t.Fatalf("acme must mount acme-tls read-write at /etc/c8s-acme-tls, got (%+v, %v)", m, ok)
+	for _, want := range []struct {
+		volume string
+		path   string
+	}{
+		{
+			volume: "acme-tls",
+			path:   "/etc/c8s-acme-tls",
+		},
+		{
+			volume: "acme-key",
+			path:   "/etc/c8s-acme-key",
+		},
+	} {
+		if m, ok := containerVolumeMount(acme, want.volume); !ok || m.MountPath != want.path || m.ReadOnly {
+			t.Fatalf("acme must mount %s read-write at %s, got (%+v, %v)", want.volume, want.path, m, ok)
+		}
 	}
 
 	spec := renderedDeployment(t, out, "c8s-router").Spec.Template.Spec
-	vol, ok := podVolume(spec, "acme-tls")
-	if !ok || vol.EmptyDir == nil || vol.EmptyDir.Medium != corev1.StorageMediumMemory {
-		t.Fatalf("acme-tls must be a Memory-medium emptyDir, got %+v", vol)
+	for _, name := range []string{"acme-tls", "acme-key"} {
+		vol, ok := podVolume(spec, name)
+		if !ok || vol.EmptyDir == nil || vol.EmptyDir.Medium != corev1.StorageMediumMemory {
+			t.Fatalf("%s must be a Memory-medium emptyDir, got %+v", name, vol)
+		}
 	}
 
+	// The front door serves the pair, so it is the one container holding
+	// both; everything else that reads this credential takes the chain only.
 	nginx := renderedDeploymentContainer(t, out, "c8s-router", "nginx")
-	if m, ok := containerVolumeMount(nginx, "acme-tls"); !ok || !m.ReadOnly {
-		t.Fatalf("nginx must mount acme-tls read-only, got (%+v, %v)", m, ok)
+	for _, name := range []string{"acme-tls", "acme-key"} {
+		if m, ok := containerVolumeMount(nginx, name); !ok || !m.ReadOnly {
+			t.Fatalf("nginx must mount %s read-only, got (%+v, %v)", name, m, ok)
+		}
 	}
 
 	// The identity that leaves the cluster in the clear is the sidecar that
@@ -1790,6 +1830,11 @@ func TestChartRouterACMEMode(t *testing.T) {
 	if m, ok := containerVolumeMount(attest, "acme-tls"); !ok || !m.ReadOnly {
 		t.Fatalf("cds-attest must mount acme-tls read-only, got (%+v, %v)", m, ok)
 	}
+	// It binds the leaf the front door presents; the key is not its to read,
+	// and it runs as the same identity, so only the mount keeps it out.
+	if m, ok := containerVolumeMount(attest, "acme-key"); ok {
+		t.Fatalf("cds-attest mounts the front door's serving key at %s", m.MountPath)
+	}
 
 	cert := routerGetCertContainer(t, out, "c8s-cert")
 	assertContainerArgs(t, cert, "--discovery-public-tls-mode=acme")
@@ -1805,7 +1850,7 @@ func TestChartRouterACMEMode(t *testing.T) {
 		t.Fatalf("nginx config has %d server blocks, want the :443 and :80 pair", len(cfg.servers))
 	}
 	cfg.servers[0].assertDirective(t, "ssl_certificate", "/etc/c8s-acme-tls/cert.pem")
-	cfg.servers[0].assertDirective(t, "ssl_certificate_key", "/etc/c8s-acme-tls/key.pem")
+	cfg.servers[0].assertDirective(t, "ssl_certificate_key", "/etc/c8s-acme-key/key.pem")
 	cfg.servers[1].assertDirective(t, "listen", "8080")
 	cfg.location(t, "prefix", "/.well-known/acme-challenge/").
 		assertDirective(t, "proxy_pass", "http://127.0.0.1:8402")
@@ -3077,7 +3122,7 @@ func TestRouterDiscoveryRequiresAdvertisedMeshCA(t *testing.T) {
 
 // TestRouterGetCertWritesMeshCABundle pins the mechanism that replaced the
 // c8s-cds-mesh-ca ConfigMap mount: the c8s-cert sidecar writes the mesh CA
-// bundle to /etc/c8s/certs/ca.crt (the tls-certs volume that already holds the leaf).
+// bundle to /etc/c8s/certs/ca.crt (the c8s-certs volume that already holds the leaf).
 func TestRouterGetCertWritesMeshCABundle(t *testing.T) {
 	t.Parallel()
 	out, err := helmTemplateRouter(t)
@@ -6484,6 +6529,11 @@ func measuredBaseAllowlist(t *testing.T, digests map[string]string) *pkgallowlis
 		t.Fatalf("parse the measured base: %v", err)
 	}
 	return &doc.Allowlist.Base
+}
+
+// podVolumeSource is the host source the kubelet gives a pod volume.
+func podVolumeSource(volume string) string {
+	return "/var/lib/kubelet/pods/5a1d-pod/volumes/kubernetes.io~empty-dir/" + volume
 }
 
 func digestOf(image string) string {

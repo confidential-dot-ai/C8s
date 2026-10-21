@@ -16,7 +16,7 @@ fixed: `c8s.certDir`, `c8s.certFile`, `c8s.keyFile` and `c8s.caFile` in [_helper
 the endpoint and the pod's get-cert containers use. A pod reading or publishing
 elsewhere takes no role, and the enforcer refuses it.
 
-The helper takes the chart root. The pod must declare the `tls-certs` volume
+The helper takes the chart root. The pod must declare the `c8s-certs` volume
 the endpoint mounts, and the endpoint must come first in `initContainers`: the
 enforcer gates the rest of the pod on its start.
 

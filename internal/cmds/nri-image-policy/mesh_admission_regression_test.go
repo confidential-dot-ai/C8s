@@ -45,6 +45,9 @@ func TestMeshGateRequiresNonrootContainers(t *testing.T) {
 				ctr := &api.Container{
 					Name: ctrCase.name,
 					User: user,
+					Linux: &api.LinuxContainer{
+						Namespaces: []*api.LinuxNamespace{{Type: pidNamespace}},
+					},
 				}
 				_, _, err := gate.admissible(pod, ctr, gatedContainer{role: ctrCase.role})
 				if (err != nil) != (user.GetUid() == 0) {
