@@ -4,11 +4,14 @@ import (
 	"crypto/ecdsa"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/sha512"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -37,7 +40,15 @@ const (
 	// commits the snapshot whose SHA-256 the decree names. Like Genesis it
 	// applies only to a replica that holds no cluster.
 	Restore DecreeKind = "Restore"
+	// SetVoters changes the number of voter seats (Voters, odd). The leader
+	// promotes healthy non-voters into new seats, or demotes voters, one
+	// at a time, so the group keeps its majority throughout.
+	SetVoters DecreeKind = "SetVoters"
 )
+
+// MaxVoters bounds the voter seats: each voter adds a round trip to every
+// commit.
+const MaxVoters = 9
 
 // Decree is an operator intent (D1). It never names a target epoch (D4).
 type Decree struct {
@@ -53,6 +64,47 @@ type Decree struct {
 	BootstrapNode string `json:"bootstrap_node,omitempty"`
 	// SnapshotSHA256 names the backup a Restore decree restores (hex).
 	SnapshotSHA256 string `json:"snapshot_sha256,omitempty"`
+	// Voters is the voter seat count a SetVoters decree sets.
+	Voters int `json:"voters,omitempty"`
+	// Images are the launch identities behind Measurements, for clients
+	// outside the group (node agents, pods) that pin CDS by its full launch
+	// identity rather than by a replica pin. When set, Measurements must be
+	// exactly their replica pins, so one signed decree tells replicas and
+	// nodes the same thing. Nodes fetch it from any replica (GET /ha/pins).
+	Images []DecreeImage `json:"images,omitempty"`
+}
+
+// DecreeImage is one TDX launch identity: MRTD and RTMR[1..2], lowercase hex.
+type DecreeImage struct {
+	MRTD  string `json:"mrtd"`
+	RTMR1 string `json:"rtmr1"`
+	RTMR2 string `json:"rtmr2"`
+}
+
+// Pin is the replica pin of the image, as a TDX replica reports its own
+// (NodeAttestor, ImagePin): "mrtd:rtmr1:rtmr2".
+func (i DecreeImage) Pin() (string, error) {
+	rtmrs := map[int]string{1: i.RTMR1, 2: i.RTMR2}
+	for _, v := range []string{i.MRTD, i.RTMR1, i.RTMR2} {
+		b, err := hex.DecodeString(v)
+		if err != nil || len(b) != sha512.Size384 || v != strings.ToLower(v) {
+			return "", fmt.Errorf("image register %q is not 48 bytes of lowercase hex", v)
+		}
+	}
+	return ImagePin("tdx", i.MRTD, rtmrs)
+}
+
+// imagePins are the replica pins of images, canonical.
+func imagePins(images []DecreeImage) ([]string, error) {
+	pins := make([]string, 0, len(images))
+	for _, i := range images {
+		p, err := i.Pin()
+		if err != nil {
+			return nil, err
+		}
+		pins = append(pins, p)
+	}
+	return normalizePins(pins), nil
 }
 
 // SignedDecree carries the operator's ECDSA signature over the decree.
@@ -150,12 +202,46 @@ func verifyDecree(sd SignedDecree, tail Core) error {
 		return errors.New("only Genesis, Recover and Restore decrees name a node")
 	case d.Kind == Recover && (len(tail.RootCert) == 0 || len(d.Measurements) != 0):
 		return errors.New("a Recover decree applies to a cluster with a key, and carries no measurements")
-	case d.Kind != UpdateMeasurements && d.Kind != RotateKey && d.Kind != Genesis && d.Kind != Recover && d.Kind != Restore:
+	case d.Kind != UpdateMeasurements && d.Kind != RotateKey && d.Kind != Genesis && d.Kind != Recover && d.Kind != Restore && d.Kind != SetVoters:
 		return fmt.Errorf("unknown kind %q", d.Kind)
+	case (d.Kind == SetVoters) != (d.Voters != 0):
+		return errors.New("a SetVoters decree, and only one, names a voter count")
+	case d.Kind == SetVoters && (d.Voters < 1 || d.Voters > MaxVoters || d.Voters%2 == 0):
+		return fmt.Errorf("voters must be odd, between 1 and %d", MaxVoters)
+	case d.Kind == SetVoters && (len(d.Measurements) != 0 || len(tail.RootCert) == 0):
+		return errors.New("a SetVoters decree applies to a cluster with a key, and carries no measurements")
 	case !slices.Equal(d.Measurements, normalizePins(d.Measurements)):
 		return errors.New("measurements not in canonical form")
+	case len(d.Images) > 0 && d.Kind != UpdateMeasurements && d.Kind != RotateKey:
+		return errors.New("only UpdateMeasurements and RotateKey decrees carry images")
+	}
+	if len(d.Images) > 0 {
+		pins, err := imagePins(d.Images)
+		if err != nil {
+			return err
+		}
+		if !slices.Equal(pins, d.Measurements) {
+			return errors.New("measurements are not exactly the pins of the decree's images")
+		}
 	}
 	return nil
+}
+
+// VerifyPinDecree is what a client outside the group checks before it pins
+// CDS to a decree's images: the operator's signature with the decree key
+// from its launch document, the cluster, and that the decree sets images.
+// Expiry does not apply: a decree expires as a request to the replicas, and
+// the pin set it made stays in force until a later decree replaces it.
+func VerifyPinDecree(sd SignedDecree, clusterID string, decreeKey []byte) error {
+	d := sd.Decree
+	switch {
+	case d.ClusterID != clusterID:
+		return fmt.Errorf("pin decree for cluster %q", d.ClusterID)
+	case len(d.Images) == 0 || (d.Kind != UpdateMeasurements && d.Kind != RotateKey):
+		return errors.New("not a pin decree: no images")
+	}
+	tail := Core{ClusterID: clusterID, OperatorPubKey: decreeKey, Epoch: d.BaseEpoch}
+	return verifyDecree(sd, tail)
 }
 
 // normalizePins sorts and de-duplicates a pin list.

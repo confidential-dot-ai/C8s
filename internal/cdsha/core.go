@@ -25,6 +25,14 @@ type Core struct {
 	// issued before it are refused: no replica can know whether they were
 	// spent in an earlier life of the cluster.
 	GenesisAtMS int64 `json:"genesis_at_ms,omitempty"`
+	// Format is the encoding every replica writes (see Format). 0 is 1.
+	Format uint32 `json:"format,omitempty"`
+	// Seats is the voter seat count set by a SetVoters decree; 0 keeps the
+	// launch configuration's.
+	Seats int `json:"seats,omitempty"`
+	// PinsDecree is the signed decree that set Measurements, when it named
+	// their images: what clients outside the group pin CDS to (/ha/pins).
+	PinsDecree *SignedDecree `json:"pins_decree,omitempty"`
 }
 
 // Joined reports whether the cluster has a mesh CA (Genesis applied).

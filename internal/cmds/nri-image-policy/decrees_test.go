@@ -1,0 +1,127 @@
+package nriimagepolicy
+
+import (
+	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"encoding/json"
+	"encoding/pem"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
+	"syscall"
+	"testing"
+	"time"
+
+	"github.com/confidential-dot-ai/attestation-go/refvalues"
+	"github.com/confidential-dot-ai/c8s/internal/cdsha"
+	"github.com/confidential-dot-ai/c8s/internal/cdspins"
+)
+
+func decreeKey(t *testing.T) (*ecdsa.PrivateKey, string) {
+	t.Helper()
+	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, _ := x509.MarshalPKIXPublicKey(&k.PublicKey)
+	return k, string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))
+}
+
+func testImage(c string) cdsha.DecreeImage {
+	return cdsha.DecreeImage{MRTD: strings.Repeat(c, 96), RTMR1: strings.Repeat(c, 96), RTMR2: strings.Repeat(c, 96)}
+}
+
+// The plugin follows a signed decree for its own CDS clients and rewrites the
+// policy it mounts into credential clients in place, so running pods (whose
+// bind mount pins the file's inode) see the new pins too.
+func TestFollowedDecreesRewriteTheMountedPolicyInPlace(t *testing.T) {
+	k, pub := decreeKey(t)
+	dir := t.TempDir()
+	info, _ := json.Marshal(map[string]string{"cluster_id": "c1", "decree_key": pub})
+	decreesFile := filepath.Join(dir, "cds-decrees.json")
+	if err := os.WriteFile(decreesFile, info, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := pullConfig{URL: "https://cds:30808", AttestationApiURL: "http://127.0.0.1:1", CDSMeasurementsConfig: "../../testdata/node-identities.json"}
+	if src, err := cfg.cdsDecrees("tdx", slog.Default()); src != nil || err != nil {
+		t.Fatalf("off: %v %v", src, err)
+	}
+	cfg.CDSDecreesFile = decreesFile
+	src, err := cfg.cdsDecrees("tdx", slog.Default())
+	if err != nil || src == nil {
+		t.Fatalf("on: %v %v", src, err)
+	}
+	launch, _ := cfg.policySet("tdx")
+	cfg.decrees = src
+	if set, _ := cfg.pinsSet("tdx"); len(set.Images) != len(launch.Images) {
+		t.Fatal("before any decree the set is the launch document's")
+	}
+
+	img := testImage("e")
+	pin, _ := img.Pin()
+	sd, err := cdsha.SignDecree(cdsha.Decree{ClusterID: "c1", IntentID: "i", BaseEpoch: 3, Kind: cdsha.UpdateMeasurements,
+		Measurements: []string{pin}, Images: []cdsha.DecreeImage{img}, ExpiresAt: time.Now().Add(time.Hour)}, k)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, _ := pem.Decode([]byte(pub))
+	src.Source, err = cdspins.New(cdspins.Config{ClusterID: "c1", DecreeKey: der.Bytes, Bootstrap: launch, MinInterval: time.Nanosecond,
+		Fetch: func(context.Context) (*cdsha.SignedDecree, error) { return &sd, nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mounted := filepath.Join(dir, "cds-pins.json")
+	doc, _ := refvalues.Format(launch)
+	if err := os.WriteFile(mounted, doc, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var before syscall.Stat_t
+	_ = syscall.Stat(mounted, &before)
+	src.onChange = func(set refvalues.ReferenceValues) error {
+		d, err := refvalues.Format(set)
+		if err != nil {
+			return err
+		}
+		return rewriteInPlace(mounted, d)
+	}
+	if changed, err := src.Refresh(t.Context()); !changed || err != nil {
+		t.Fatalf("decree not taken: %v %v", changed, err)
+	}
+	var after syscall.Stat_t
+	_ = syscall.Stat(mounted, &after)
+	if before.Ino != after.Ino {
+		t.Fatal("the mounted policy was replaced, not rewritten: running pods keep the old inode")
+	}
+	got, err := refvalues.Load(mounted)
+	if err != nil || len(got.Images) == 0 || got.Images[0].Registers[1] == nil {
+		t.Fatalf("mounted policy: %v", err)
+	}
+	for _, p := range got.Images {
+		if p.Name == "" || len(p.Digest) == 0 {
+			t.Fatal("empty pin")
+		}
+	}
+	if set, _ := cfg.pinsSet("tdx"); len(set.Images) != len(got.Images) {
+		t.Fatal("the plugin's own set does not follow the decree")
+	}
+	if hc, err := allowlistPullHTTPClient(cfg, "tdx"); err != nil || hc == nil {
+		t.Fatalf("pull client: %v", err)
+	}
+	// Polling stops with its context.
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	followDecrees(ctx, src, time.Millisecond)
+	followDecrees(ctx, nil, time.Millisecond)
+
+	cfg.CDSMeasurementsConfig = ""
+	if _, err := cfg.cdsDecrees("tdx", slog.Default()); err == nil {
+		t.Fatal("decrees without a CDS policy accepted")
+	}
+	if err := rewriteInPlace(filepath.Join(dir, "absent"), nil); err == nil {
+		t.Fatal("rewriting an absent file succeeded")
+	}
+}

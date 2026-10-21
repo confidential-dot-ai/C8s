@@ -56,6 +56,9 @@ var (
 type cds struct {
 	url  string
 	pins remote.Policy
+	// fromNode: the pins are the node's mounted policy, which follows the
+	// operator's CDS pin decrees.
+	fromNode bool
 }
 
 // NewCmd returns the internal allowlist-proxy subcommand used by the router
@@ -160,6 +163,14 @@ func newHandler(cfg config, logger *slog.Logger) (http.Handler, error) {
 		logger.Warn("no CDS measurements pinned; accepting any armTLS-attested CDS (unsafe outside development)")
 	}
 	httpClient, err := armtls.NewVerifyingHTTPClient(armtls.Pins(resolved.pins), cfg.attestationAPIURL)
+	if resolved.fromNode {
+		// The node's policy follows the operator's CDS pin decrees; re-read
+		// it on a pin miss.
+		var node *cmdsutil.NodePins
+		if node, err = cmdsutil.NewNodePins(nodePinsPath); err == nil {
+			httpClient, err = armtls.NewRefreshingHTTPClient(node, cfg.attestationAPIURL)
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("CDS armTLS client: %w", err)
 	}
@@ -203,8 +214,9 @@ func (cfg config) resolveCDS() (cds, error) {
 	}
 	if endpointFromNode {
 		return cds{
-			url:  cmdsutil.CDSURL(endpoint),
-			pins: pins,
+			url:      cmdsutil.CDSURL(endpoint),
+			pins:     pins,
+			fromNode: true,
 		}, nil
 	}
 	if cfg.cdsURL == "" {

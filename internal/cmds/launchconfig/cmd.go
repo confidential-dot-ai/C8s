@@ -64,6 +64,7 @@ HOST_DATA to SHA-256 of that node's pubkey file. See docs/operator.md,
 	f.StringVar(&opts.Dir, "out", "", "bundle directory to create (must not exist)")
 	f.StringVar(&opts.ClusterID, "cluster-id", "", "cluster name, an RFC1123 label")
 	f.StringVar(&opts.ManifestPath, "image-manifest", "", "manifest.json published with the exact node image to boot")
+	f.StringArrayVar(&opts.PeerImageManifests, "peer-image-manifest", nil, "manifest.json of another image every node accepts for its peers and CDS (a planned rollout); repeatable")
 	f.IntVar(&opts.VCPUs, "vcpus", 0, "SNP only: the VM's vCPU count, selecting its launch digest from the manifest")
 	f.StringVar(&opts.ServerName, "server-name", "", "server node name (default <cluster-id>-server)")
 	f.StringVar(&opts.ServerAddress, "server-address", "", "server IPv4 address every node can reach; required with agents, otherwise the server autodetects it")
@@ -81,7 +82,7 @@ HOST_DATA to SHA-256 of that node's pubkey file. See docs/operator.md,
 }
 
 func newAddAgentCmd() *cobra.Command {
-	var dir, name, serverAddress string
+	var dir, name, serverAddress, manifest string
 	cmd := &cobra.Command{
 		Use:   "add-agent",
 		Short: "Add a signed agent document to an existing launch bundle",
@@ -92,7 +93,16 @@ already booted with changes.`,
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if err := AddAgent(dir, name, serverAddress); err != nil {
+			var err error
+			if manifest != "" {
+				var image Image
+				if image, err = imageFromManifest(manifest, 0); err == nil {
+					err = AddAgentOnImage(dir, name, serverAddress, image)
+				}
+			} else {
+				err = AddAgent(dir, name, serverAddress)
+			}
+			if err != nil {
 				return err
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "wrote %s\n", filepath.Join(dir, name))
@@ -103,6 +113,7 @@ already booted with changes.`,
 	f.StringVar(&dir, "bundle", "", "bundle directory created by 'launch-config new'")
 	f.StringVar(&name, "name", "", "agent node name, an RFC1123 label")
 	f.StringVar(&serverAddress, "server-address", "", "server IPv4 address (default: the server document's, which must then be explicit)")
+	f.StringVar(&manifest, "image-manifest", "", "boot this image instead of the server's (a rollout): the build's manifest.json. The document still accepts the server's image for its peers")
 	for _, flag := range []string{"bundle", "name"} {
 		_ = cmd.MarkFlagRequired(flag)
 	}
@@ -135,7 +146,7 @@ func newStageCmd() *cobra.Command {
 }
 
 func newAddCDSNodeCmd() *cobra.Command {
-	var dir, name, serverAddress string
+	var dir, name, serverAddress, manifest string
 	cmd := &cobra.Command{
 		Use:   "add-cds-node",
 		Short: "Add a signed cds-role document to an existing launch bundle",
@@ -146,7 +157,16 @@ rebooted node cannot rejoin RKE2 under its old name.`,
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if err := AddCDSNode(dir, name, serverAddress); err != nil {
+			var err error
+			if manifest != "" {
+				var image Image
+				if image, err = imageFromManifest(manifest, 0); err == nil {
+					err = AddCDSNodeOnImage(dir, name, serverAddress, image)
+				}
+			} else {
+				err = AddCDSNode(dir, name, serverAddress)
+			}
+			if err != nil {
 				return err
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "wrote %s\n", filepath.Join(dir, name))
@@ -157,6 +177,7 @@ rebooted node cannot rejoin RKE2 under its old name.`,
 	f.StringVar(&dir, "bundle", "", "bundle directory created by 'launch-config new --cds-node'")
 	f.StringVar(&name, "name", "", "cds node name, an RFC1123 label")
 	f.StringVar(&serverAddress, "server-address", "", "server IPv4 address (default: the server document's)")
+	f.StringVar(&manifest, "image-manifest", "", "boot this image instead of the server's (a CDS rollout): the build's manifest.json. The document still accepts the server's image for its peers; follow with a signed pin decree for the new image")
 	for _, flag := range []string{"bundle", "name"} {
 		_ = cmd.MarkFlagRequired(flag)
 	}
