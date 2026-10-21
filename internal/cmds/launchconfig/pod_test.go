@@ -127,6 +127,9 @@ func TestValidatePodRole(t *testing.T) {
 		{"bare digest image", func(d *Document) {
 			d.Pod.Manifest = strings.Replace(testPodManifest(""), `"image":"busybox@sha256:`+strings.Repeat("a", 64)+`"`, `"image":"sha256:`+strings.Repeat("a", 64)+`"`, 1)
 		}, "pin the image by digest"},
+		{"sha512 digest", func(d *Document) {
+			d.Pod.Manifest = strings.Replace(testPodManifest(""), "sha256:"+strings.Repeat("a", 64), "sha512:"+strings.Repeat("a", 128), 1)
+		}, "not sha256"},
 		{"short digest", func(d *Document) {
 			d.Pod.Manifest = strings.Replace(testPodManifest(""), strings.Repeat("a", 64), strings.Repeat("a", 63), 1)
 		}, "image"},
