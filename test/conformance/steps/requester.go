@@ -376,36 +376,40 @@ func csrBadSignature(ctx context.Context, name string) error {
 }
 
 // evidenceOver asks the node's local attestation service for evidence over
-// report data, as the envelope the CDS takes. Unsigned evidence is real
-// evidence edited here, so only where the backend's evidence is signed.
+// report data, as the envelope the CDS takes. The other two modes edit its
+// launch measurement: where the CDS checks the evidence's signature, so that
+// it no longer verifies; where it does not (a mock), to another digest.
 func (w *world) evidenceOver(r *requester, reportData []byte, mode evidenceMode) (json.RawMessage, error) {
-	args := []string{r.pod.namespace, r.pod.name, base64.StdEncoding.EncodeToString(reportData)}
+	var edit func([]byte)
 	switch mode {
 	case evidenceNoSignature:
-		if _, err := w.be.call("evidence_signed"); err != nil {
+		edit = func(m []byte) { m[0] ^= 0xFF }
+	case evidenceForeignDigest:
+		edit = func(m []byte) { copy(m, bytes.Repeat([]byte{0xaa}, len(m))) }
+	}
+	if edit != nil {
+		signed, err := w.be.call("evidence_signed")
+		if err != nil {
 			return nil, err
 		}
-	case evidenceForeignDigest:
-		args = append(args, strings.Repeat("aa", 48))
+		switch {
+		case mode == evidenceNoSignature && signed != "yes":
+			return nil, skipf("the CDS checks no signature on this backend's evidence")
+		case mode == evidenceForeignDigest && signed == "yes":
+			return nil, skipf("signed evidence for another launch digest needs a second TEE")
+		}
 	}
-	out, err := w.be.call("evidence", args...)
+	out, err := w.be.call("evidence", r.pod.namespace, r.pod.name, base64.StdEncoding.EncodeToString(reportData))
 	if err != nil {
 		return nil, err
 	}
 	if !json.Valid([]byte(out)) {
 		return nil, fmt.Errorf("the evidence is not JSON: %q", out)
 	}
-	if mode != evidenceNoSignature {
+	if edit == nil {
 		return json.RawMessage(out), nil
 	}
-	edited, ok, err := unsignedEvidence([]byte(out))
-	if err != nil {
-		return nil, fmt.Errorf("the evidence: %w", err)
-	}
-	if !ok {
-		return nil, skipf("the evidence holds no SNP report or v4/v5 TDX quote to edit")
-	}
-	return edited, nil
+	return withMeasurement([]byte(out), edit)
 }
 
 // otherPodAddress is the address of a pod that is not the requester and not

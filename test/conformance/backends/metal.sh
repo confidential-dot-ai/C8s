@@ -192,7 +192,6 @@ attestation_socket() {
 }
 
 evidence() {
-    [ -z "${4:-}" ] || return "$UNSUPPORTED"
     local socket body out
     socket="$(attestation_socket)" || return
     body="$(mktemp)"

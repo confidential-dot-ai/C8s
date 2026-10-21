@@ -4,54 +4,87 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"testing"
+
+	"github.com/confidential-dot-ai/attestation-go/attestation/snp"
+	"github.com/confidential-dot-ai/attestation-go/attestation/tdx"
+	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
+	"github.com/cucumber/godog"
+	"github.com/google/go-tdx-guest/testing/testdata"
 )
 
-func TestUnsignedEvidenceEditsTheLaunchMeasurement(t *testing.T) {
-	quote := func(version byte) []byte { q := make([]byte, 700); q[0] = version; return q }
+func envelopeOf(t *testing.T, platform teetypes.PlatformType, evidence any) []byte {
+	t.Helper()
+	ev, err := json.Marshal(evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, err := json.Marshal(teetypes.AttestationEvidence{Platform: platform, Evidence: ev})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return env
+}
+
+// The edit changes the launch measurement and nothing else: the rest of the
+// report or quote survives the round trip through its ABI byte for byte.
+func TestWithMeasurementEditsOnlyTheMeasurement(t *testing.T) {
+	mock := make([]byte, snp.ReportSize) // as the kind mock issues it
+	mock[0], mock[0x0A] = 0x02, 0x03
 	for _, tc := range []struct {
-		name, key string
-		blob      []byte
-		offset    int
+		name     string
+		platform teetypes.PlatformType
+		raw      []byte
+		offset   int
+		evidence func(b64 string) any
+		read     func(t *testing.T, ev json.RawMessage) string
 	}{
-		{"snp", "attestation_report", make([]byte, 1184), 0x90},
-		{"tdx v4", "quote", quote(4), 184},
-		{"tdx v5", "quote", quote(5), 190},
+		{"snp", teetypes.PlatformSNP, mock, 0x90,
+			func(b string) any { return snp.SnpEvidence{AttestationReport: b} },
+			func(t *testing.T, ev json.RawMessage) string {
+				var e snp.SnpEvidence
+				if err := json.Unmarshal(ev, &e); err != nil {
+					t.Fatal(err)
+				}
+				return e.AttestationReport
+			}},
+		{"tdx v4", teetypes.PlatformTDX, testdata.RawQuote, 48 + 136, tdxEvidence, tdxQuote},
+		{"tdx v5", teetypes.PlatformTDX, testdata.RawQuoteV5, 48 + 6 + 136, tdxEvidence, tdxQuote},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			env := fmt.Sprintf(`{"platform":"x","evidence":{%q:%q,"other":1}}`, tc.key, base64.StdEncoding.EncodeToString(tc.blob))
-			out, ok, err := unsignedEvidence([]byte(env))
-			if err != nil || !ok {
-				t.Fatalf("unsignedEvidence: ok=%v err=%v", ok, err)
+			env := envelopeOf(t, tc.platform, tc.evidence(base64.StdEncoding.EncodeToString(tc.raw)))
+			out, err := withMeasurement(env, func(m []byte) { m[0] ^= 0xFF })
+			if err != nil {
+				t.Fatal(err)
 			}
-			var got struct {
-				Platform string         `json:"platform"`
-				Evidence map[string]any `json:"evidence"`
-			}
+			var got teetypes.AttestationEvidence
 			if err := json.Unmarshal(out, &got); err != nil {
 				t.Fatal(err)
 			}
-			blob, _ := base64.StdEncoding.DecodeString(got.Evidence[tc.key].(string))
-			want := bytes.Clone(tc.blob)
+			edited, _ := base64.StdEncoding.DecodeString(tc.read(t, got.Evidence))
+			want := bytes.Clone(tc.raw)
 			want[tc.offset] ^= 0xFF
-			if !bytes.Equal(blob, want) {
-				t.Errorf("the edited %s differs from the original at other than byte %d", tc.key, tc.offset)
-			}
-			if got.Platform != "x" || got.Evidence["other"] != float64(1) {
-				t.Errorf("the rest of the envelope changed: %s", out)
+			if got.Platform != tc.platform || !bytes.Equal(edited, want) {
+				t.Errorf("the edit changed other than byte %d of the %s evidence", tc.offset, tc.name)
 			}
 		})
 	}
 }
 
-func TestUnsignedEvidenceLeavesOtherShapes(t *testing.T) {
-	for _, env := range []string{
-		`{"evidence":{"quote":"` + base64.StdEncoding.EncodeToString([]byte{3, 0, 0}) + `"}}`,
-		`{"evidence":{"token":"abc"}}`,
-	} {
-		if _, ok, err := unsignedEvidence([]byte(env)); ok || err != nil {
-			t.Errorf("%s: ok=%v err=%v, want neither", env, ok, err)
-		}
+func tdxEvidence(b string) any { return tdx.TdxEvidence{Quote: b} }
+
+func tdxQuote(t *testing.T, ev json.RawMessage) string {
+	var e tdx.TdxEvidence
+	if err := json.Unmarshal(ev, &e); err != nil {
+		t.Fatal(err)
+	}
+	return e.Quote
+}
+
+func TestWithMeasurementSkipsOtherPlatforms(t *testing.T) {
+	env := envelopeOf(t, teetypes.PlatformType("azure-snp"), map[string]string{"hcl_report": "AA=="})
+	if _, err := withMeasurement(env, func([]byte) {}); !errors.Is(err, godog.ErrSkip) {
+		t.Errorf("got %v, want a skip", err)
 	}
 }

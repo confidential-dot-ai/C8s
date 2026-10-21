@@ -255,35 +255,15 @@ attest_direct() {
 }
 
 # The mock issues a version-2 SNP report over any report data, with an
-# all-zero launch measurement (the pin the CDS was installed with) and no
-# signature anyone checks. Evidence for another launch digest is the same
-# report with those bytes set; the mock's verifier reads the digest from the
-# report it is shown.
+# all-zero launch measurement (the pin the CDS was installed with), and
+# reports every signature valid; its verifier reads the launch digest from
+# the report it is shown. Its evidence verifies nowhere but at the mock, so no
+# verifier on this host can act as a relying party.
 evidence() {
-    local url rd_len
-    url="$(mock_attestation_url)"
-    if [ -z "${4:-}" ]; then
-        jq -n --arg rd "$3" '{report_data: $rd}' |
-            curl -sf --max-time 20 -H 'Content-Type: application/json' --data-binary @- "$url/attest"
-        return
-    fi
-    rd_len="$(base64 -d <<<"$3" | wc -c)"
-    jq -cn --arg r "$({
-        printf '\x02'                              # report version 2
-        head -c 9 /dev/zero
-        printf '\x03'                              # SMT-allowed policy, at 0x0A
-        head -c $((0x50 - 0x0B)) /dev/zero
-        base64 -d <<<"$3"                          # report data, at 0x50
-        head -c $((0x90 - 0x50 - rd_len)) /dev/zero
-        printf '%b' "$(sed 's/../\\x&/g' <<<"$4")" # launch digest, at 0x90
-        head -c $((1184 - 0x90 - ${#4} / 2)) /dev/zero
-    } | base64 | tr -d '\n')" '{platform: "snp", evidence: {attestation_report: $r}}'
+    jq -n --arg rd "$3" '{report_data: $rd}' |
+        curl -sf --max-time 20 -H 'Content-Type: application/json' --data-binary @- "$(mock_attestation_url)/attest"
 }
-
-# The mock reports every signature valid, so nothing here is unsigned; and
-# its evidence verifies nowhere but at the mock, so no verifier on this host
-# can act as a relying party.
-evidence_signed() { return "$UNSUPPORTED"; }
+evidence_signed() { echo no; }
 relying_party() { return "$UNSUPPORTED"; }
 
 pod_uid() { kubectl -n "$1" get pod "$2" -o jsonpath='{.metadata.uid}'; }

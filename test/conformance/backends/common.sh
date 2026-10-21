@@ -116,16 +116,15 @@
 #   cds_pod_url                      the CDS address a pod's requester dials
 #   cds_arg <flag>                   the value of --<flag>= the CDS runs with,
 #                                    empty when it is not set
-#   evidence <ns> <pod> <report-data-base64> [launch-digest-hex]
+#   evidence <ns> <pod> <report-data-base64>
 #                                    evidence from the local attestation
 #                                    service of the pod's node over the report
 #                                    data, as the {platform, evidence} envelope
-#                                    the CDS takes; with a launch digest,
-#                                    evidence reporting that digest instead of
-#                                    the node's
-#   evidence_signed                  yes: the CDS checks the evidence's
-#                                    signature, so the steps' edit of it is
-#                                    evidence that does not verify
+#                                    the CDS takes
+#   evidence_signed                  yes/no: the CDS checks the evidence's
+#                                    signature, so editing it breaks the
+#                                    evidence (yes) or makes evidence for
+#                                    another launch digest (no)
 #   pod_exec                         how steps run a command in a pod: kubectl
 #                                    (exec), or agent (agent_run)
 #   agent_run <ns> <pod> <container> <script>
@@ -166,9 +165,9 @@
 #   mesh_cert_mode <node>            cds or self-signed: the certificate the
 #                                    node's mesh proxy presents (both roles
 #                                    switch together)
-#   mesh_ca_log <node>               "<poll interval> <proxy start>", then
-#                                    the mesh proxy's log with timestamps;
-#                                    fails while it presents no CDS leaf
+#   mesh_arg <flag>                  the mesh proxy's value for --<flag>,
+#                                    empty when unset
+#   mesh_proxy_log <node>            the mesh proxy's log, with timestamps
 #   mesh_pins_satisfied <node>       yes/no: the node's evidence satisfies
 #                                    the pins its mesh proxy verifies with
 #   mesh_platform                    the evidence family the mesh produces,
@@ -908,16 +907,7 @@ mesh_cert_mode() {
     if [ "$v" -ge 1 ]; then echo cds; else echo self-signed; fi
 }
 
-# The poll interval and the proxy container's start, then the proxy's log
-# with timestamps, for the steps to find its last CA refresh in.
-mesh_ca_log() {
-    local pod
-    pod="$(mesh_pod_on "$1")"
-    [ -n "$pod" ] || { echo "backend: no mesh pod on $1" >&2; return 1; }
-    [ "$(mesh_cert_mode "$1")" = cds ] || { echo "backend: the mesh proxy on $1 presents no CDS leaf" >&2; return 1; }
-    echo "$(mesh_arg ca-poll-interval | grep . || echo 5m) $(kubectl -n "$NS" get pod "$pod" -o jsonpath='{.status.containerStatuses[?(@.name=="armtls-mesh")].state.running.startedAt}')"
-    kubectl -n "$NS" logs "$pod" -c armtls-mesh --timestamps 2>/dev/null
-}
+mesh_proxy_log() { kubectl -n "$NS" logs "$(mesh_pod_on "$1")" -c armtls-mesh --timestamps; }
 
 mesh_platform() {
     local p

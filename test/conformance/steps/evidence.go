@@ -2,66 +2,81 @@ package steps
 
 import (
 	"encoding/base64"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
+
+	"github.com/confidential-dot-ai/attestation-go/attestation/snp"
+	"github.com/confidential-dot-ai/attestation-go/attestation/tdx"
+	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
+	sevabi "github.com/google/go-sev-guest/abi"
+	tdxabi "github.com/google/go-tdx-guest/abi"
+	tdxpb "github.com/google/go-tdx-guest/proto/tdx"
 )
 
-// Where the launch measurement sits in the signed report body: an SNP
-// report's MEASUREMENT, and a TDX quote's MRTD after the quote header (and,
-// in a v5 quote, the body descriptor).
-const (
-	snpMeasurementOffset   = 0x90
-	tdxHeaderLen           = 48
-	tdxV5BodyDescriptorLen = 6
-	tdxMRTDOffset          = 136
-)
-
-// unsignedEvidence is the {platform, evidence} envelope with one byte of its
-// launch measurement changed, so its signature no longer verifies; false for
-// a shape it does not edit.
-func unsignedEvidence(envelope []byte) ([]byte, bool, error) {
-	var env map[string]json.RawMessage
-	var ev map[string]any
+// withMeasurement is the {platform, evidence} envelope with edit applied to
+// its launch measurement: an SEV-SNP report's MEASUREMENT or a TDX quote's
+// MRTD, the rest of the report or quote as it was.
+func withMeasurement(envelope []byte, edit func(measurement []byte)) ([]byte, error) {
+	var env teetypes.AttestationEvidence
 	if err := json.Unmarshal(envelope, &env); err != nil {
-		return nil, false, err
+		return nil, err
 	}
-	if err := json.Unmarshal(env["evidence"], &ev); err != nil {
-		return nil, false, fmt.Errorf("the envelope's evidence: %w", err)
+	var err error
+	switch env.Platform.Family() {
+	case teetypes.FamilySNP:
+		var ev snp.SnpEvidence
+		if err := json.Unmarshal(env.Evidence, &ev); err != nil {
+			return nil, fmt.Errorf("the SEV-SNP evidence: %w", err)
+		}
+		if ev.AttestationReport, err = editBase64(ev.AttestationReport, func(raw []byte) ([]byte, error) {
+			report, err := sevabi.ReportToProto(raw)
+			if err != nil {
+				return nil, err
+			}
+			edit(report.Measurement)
+			out, err := sevabi.ReportToAbiBytes(report)
+			return append(out, raw[len(out):]...), err
+		}); err != nil {
+			return nil, fmt.Errorf("the SEV-SNP report: %w", err)
+		}
+		env.Evidence, err = json.Marshal(ev)
+	case teetypes.FamilyTDX:
+		var ev tdx.TdxEvidence
+		if err := json.Unmarshal(env.Evidence, &ev); err != nil {
+			return nil, fmt.Errorf("the TDX evidence: %w", err)
+		}
+		if ev.Quote, err = editBase64(ev.Quote, func(raw []byte) ([]byte, error) {
+			quote, err := tdxabi.QuoteToProto(raw)
+			if err != nil {
+				return nil, err
+			}
+			switch q := quote.(type) {
+			case *tdxpb.QuoteV4:
+				edit(q.GetTdQuoteBody().GetMrTd())
+			case *tdxpb.QuoteV5:
+				edit(q.GetTdQuoteBodyDescriptor().GetTdQuoteBodyV5().GetMrTd())
+			default:
+				return nil, fmt.Errorf("a %T, whose MRTD this suite does not edit", quote)
+			}
+			return tdxabi.QuoteToAbiBytes(quote)
+		}); err != nil {
+			return nil, fmt.Errorf("the TDX quote: %w", err)
+		}
+		env.Evidence, err = json.Marshal(ev)
+	default:
+		return nil, skipf("the %s evidence carries a launch measurement this suite does not edit", env.Platform)
 	}
-	key, offset := "attestation_report", snpMeasurementOffset
-	if _, ok := ev[key]; !ok {
-		key = "quote"
-	}
-	s, ok := ev[key].(string)
-	if !ok {
-		return nil, false, nil
-	}
-	blob, err := base64.StdEncoding.DecodeString(s)
 	if err != nil {
-		return nil, false, fmt.Errorf("the evidence's %s: %w", key, err)
+		return nil, err
 	}
-	if key == "quote" {
-		if len(blob) < 2 {
-			return nil, false, nil
-		}
-		switch binary.LittleEndian.Uint16(blob) {
-		case 4:
-			offset = tdxHeaderLen + tdxMRTDOffset
-		case 5:
-			offset = tdxHeaderLen + tdxV5BodyDescriptorLen + tdxMRTDOffset
-		default:
-			return nil, false, nil
-		}
+	return json.Marshal(env)
+}
+
+func editBase64(s string, edit func([]byte) ([]byte, error)) (string, error) {
+	raw, err := base64.StdEncoding.DecodeString(s)
+	if err != nil {
+		return "", err
 	}
-	if offset >= len(blob) {
-		return nil, false, nil
-	}
-	blob[offset] ^= 0xFF
-	ev[key] = base64.StdEncoding.EncodeToString(blob)
-	if env["evidence"], err = json.Marshal(ev); err != nil {
-		return nil, false, err
-	}
-	out, err := json.Marshal(env)
-	return out, true, err
+	out, err := edit(raw)
+	return base64.StdEncoding.EncodeToString(out), err
 }

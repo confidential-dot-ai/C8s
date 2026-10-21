@@ -122,8 +122,10 @@ requester the steps drive themselves, a pod that relays HTTP from inside the
 cluster so the CDS sees the pod's own source address, and that can reach the
 node's sandbox inventory and local attestation service over the socket
 directory the admission plugin binds into it. The backend also fetches
-evidence over chosen report data (and, where the attestation is mocked, over
-a chosen launch digest), reads the CDS's flags, restarts it with IP SAN
+evidence over chosen report data, and says whether the CDS checks its
+signature: the steps edit its launch measurement into evidence that does not
+verify, or, where the attestation is mocked, into evidence for another
+launch digest. It reads the CDS's flags, restarts it with IP SAN
 binding or an inventory address range changed, names a pod's runtime sandbox,
 and runs the operator's verifier as a relying party on a saved leaf.
 
@@ -189,7 +191,7 @@ rejects unknown names.
 
 | Backend | Environment | Requires |
 |---|---|---|
-| [`kind.sh`](backends/kind.sh) | the kept kind cluster of [`test/integration/cluster/run.sh`](../integration/cluster/run.sh) (`C8S_IT_KEEP=1 C8S_IT_SETUP_ONLY=1`); mocked attestation, node shell via `docker exec`; the mock signs nothing and verifies only at the mock, so `evidence_signed` and `relying_party` answer unsupported; the CDS reads its seed ConfigMap once, as on any chart-managed install, so `seed_add` answers unsupported | `C8S_IT_WORKDIR`; `go` for `dialer_bin` |
+| [`kind.sh`](backends/kind.sh) | the kept kind cluster of [`test/integration/cluster/run.sh`](../integration/cluster/run.sh) (`C8S_IT_KEEP=1 C8S_IT_SETUP_ONLY=1`); mocked attestation, node shell via `docker exec`; the mock signs nothing and verifies only at the mock, so `evidence_signed` answers no and `relying_party` unsupported; the CDS reads its seed ConfigMap once, as on any chart-managed install, so `seed_add` answers unsupported | `C8S_IT_WORKDIR`; `go` for `dialer_bin` |
 | [`metal.sh`](backends/metal.sh) | the attested node image a metal lane booted (`snp-metal-e2e`, `tdx-metal-e2e`), from its `extra-suite` hook; what it cannot reach answers unsupported ([below](#the-metal-backend)) | `KUBECONFIG`, `C8S_ALLOWLIST_URL`, `C8S_OPERATOR_KEY`, the `c8s` CLI on `PATH`; `go` for the write-token functions, `crane` for `image_entrypoint` and `image_env` |
 
 The backends source the kind harness's `lib.sh`, render pods with
