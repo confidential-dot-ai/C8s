@@ -20,10 +20,6 @@ type PodSpec struct {
 	Manifest  string `yaml:"manifest" json:"manifest"`
 }
 
-// podStatusPort is where podcvm-status serves attested pod status. A hostPort
-// on it would capture that traffic before it reaches the VM.
-const podStatusPort = 8443
-
 // validate is defence in depth: NRI's sandbox policy is the enforcement
 // point. It refuses what the pod role can never need, so a bad document
 // fails at signing time instead of at container start.
@@ -61,11 +57,8 @@ func (p *PodSpec) validate() error {
 			return fmt.Errorf("pod.manifest container %q image %q: %w", c.Name, c.Image, err)
 		}
 		for _, port := range c.Ports {
-			if port.HostIP != "" {
-				return fmt.Errorf("pod.manifest container %q must not set a hostIP", c.Name)
-			}
-			if port.HostPort == podStatusPort {
-				return fmt.Errorf("pod.manifest container %q must not use hostPort %d, which serves pod status", c.Name, podStatusPort)
+			if port.HostPort != 0 || port.HostIP != "" {
+				return fmt.Errorf("pod.manifest container %q must not use a hostPort or hostIP", c.Name)
 			}
 		}
 		if sc := c.SecurityContext; sc != nil && sc.Privileged != nil && *sc.Privileged {
