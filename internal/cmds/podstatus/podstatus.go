@@ -130,7 +130,7 @@ func (h Handler) servePod(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
-	writeJSON(w, pod)
+	writeJSON(w, ProjectPod(pod))
 }
 
 // serveMeasurements reads the journal as the serving cert does, so both list
