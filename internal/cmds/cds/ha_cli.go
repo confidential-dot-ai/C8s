@@ -20,12 +20,13 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/confidential-dot-ai/c8s/internal/cdsha"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsconn"
 )
 
 // newHACmd groups the operator side of HA CDS.
 func newHACmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "ha", Short: "Operate a highly available CDS"}
-	cmd.AddCommand(newHADecreeCmd(), newHAStatusCmd(), newHARecoverCmd())
+	cmd.AddCommand(newHADecreeCmd(), newHAStatusCmd(), newHARecoverCmd(), newHADecreesCmd())
 	return cmd
 }
 
@@ -241,5 +242,101 @@ func setDecreeImages(d *cdsha.Decree, specs []string) error {
 		}
 	}
 	d.Measurements = pins
+	return nil
+}
+
+// newHADecreesCmd prints the replicas' record of applied decrees, read over
+// armTLS from a CDS the caller pins: the operator's decisions as the cluster
+// applied them, signatures included, for audit.
+func newHADecreesCmd() *cobra.Command {
+	var (
+		conn    cdsconn.Options
+		asJSON  bool
+		decrKey string
+	)
+	cmd := &cobra.Command{
+		Use:   "decrees",
+		Short: "Print the decrees the cluster applied (GET /ha/decrees, over armTLS)",
+		Long: "Reads the record of applied decrees from a serving replica over armTLS, so the record is\n" +
+			"the replicas' agreed state, not the decree objects in Kubernetes (which the host controls).\n" +
+			"With --decree-public-key each record's operator signature is checked.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			hc, err := conn.HTTPClient(cmd.Context())
+			if err != nil {
+				return err
+			}
+			req, err := http.NewRequestWithContext(cmd.Context(), http.MethodGet, strings.TrimRight(conn.URL, "/")+"/ha/decrees", nil)
+			if err != nil {
+				return err
+			}
+			resp, err := hc.Do(req)
+			if err != nil {
+				return err
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				return fmt.Errorf("GET /ha/decrees: %s", resp.Status)
+			}
+			var records []cdsha.DecreeRecord
+			if err := json.NewDecoder(io.LimitReader(resp.Body, 16<<20)).Decode(&records); err != nil {
+				return fmt.Errorf("GET /ha/decrees: %w", err)
+			}
+			return printDecrees(cmd.OutOrStdout(), records, decrKey, asJSON)
+		},
+	}
+	cdsconn.BindFlags(cmd.Flags(), &conn)
+	cmd.Flags().BoolVar(&asJSON, "json", false, "print the records as JSON")
+	cmd.Flags().StringVar(&decrKey, "decree-public-key", "", "PEM public key the decrees must be signed with (bundle cdsHA.decreeKey); checks every record")
+	return cmd
+}
+
+func printDecrees(w io.Writer, records []cdsha.DecreeRecord, keyPath string, asJSON bool) error {
+	var pub []byte
+	if keyPath != "" {
+		data, err := os.ReadFile(keyPath)
+		if err != nil {
+			return err
+		}
+		b, _ := pem.Decode(data)
+		if b == nil || b.Type != "PUBLIC KEY" {
+			return errors.New("--decree-public-key: want a PEM PUBLIC KEY")
+		}
+		pub = b.Bytes
+	}
+	bad := 0
+	for _, r := range records {
+		if pub != nil {
+			if err := cdsha.VerifyDecreeSignature(r.Decree, pub); err != nil {
+				bad++
+				fmt.Fprintf(w, "UNVERIFIED epoch=%d intent=%s: %v\n", r.Epoch, r.Decree.Decree.IntentID, err)
+			}
+		}
+	}
+	if asJSON {
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(records); err != nil {
+			return err
+		}
+	} else {
+		for _, r := range records {
+			d := r.Decree.Decree
+			fmt.Fprintf(w, "epoch=%-4d %s %-18s intent=%s base=%d", r.Epoch, time.UnixMilli(r.AtMS).UTC().Format(time.RFC3339), d.Kind, d.IntentID, d.BaseEpoch)
+			if len(d.Images) > 0 {
+				fmt.Fprintf(w, " images=%d", len(d.Images))
+			}
+			if d.Voters > 0 {
+				fmt.Fprintf(w, " voters=%d", d.Voters)
+			}
+			if d.BootstrapNode != "" {
+				fmt.Fprintf(w, " node=%s", d.BootstrapNode)
+			}
+			fmt.Fprintln(w)
+		}
+	}
+	if bad > 0 {
+		return fmt.Errorf("%d of %d records do not carry a valid operator signature", bad, len(records))
+	}
 	return nil
 }
