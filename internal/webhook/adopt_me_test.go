@@ -34,18 +34,18 @@ func TestAdoptMeInjection(t *testing.T) {
 		AnnotationGetCertRunAsUser:  "101",
 		AnnotationGetCertRunAsGroup: "101",
 	}
-	inj, err := parseAnnotations(pod)
+	inj, err := parseAnnotations(pod, "default")
 	if err != nil || inj == nil {
 		t.Fatalf("parseAnnotations(adopt-me) = %+v, %v", inj, err)
 	}
 	mutatePod(pod, inj, Config{})
 
 	app := pod.Spec.Containers[0]
-	if len(app.VolumeMounts) != 1 || app.VolumeMounts[0].Name != DefaultCertVolumeName || app.VolumeMounts[0].MountPath != CertDir || app.VolumeMounts[0].SubPath != "" {
-		t.Fatalf("injected app mounts = %+v, want only %s at %s", app.VolumeMounts, DefaultCertVolumeName, CertDir)
+	if len(app.VolumeMounts) != 1 || app.VolumeMounts[0].Name != CertVolumeName || app.VolumeMounts[0].MountPath != CertDir || app.VolumeMounts[0].SubPath != "" {
+		t.Fatalf("injected app mounts = %+v, want only %s at %s", app.VolumeMounts, CertVolumeName, CertDir)
 	}
 	for _, v := range pod.Spec.Volumes {
-		if v.Name == DefaultCertVolumeName && (v.EmptyDir == nil || v.EmptyDir.Medium != corev1.StorageMediumMemory) {
+		if v.Name == CertVolumeName && (v.EmptyDir == nil || v.EmptyDir.Medium != corev1.StorageMediumMemory) {
 			t.Fatalf("cert volume = %+v, want a memory-backed emptyDir", v)
 		}
 	}

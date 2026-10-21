@@ -267,7 +267,7 @@ func TestForwardedProbeTriesSecondaryAddressesWithinOneTimeout(t *testing.T) {
 		if result.Code != http.StatusAccepted || result.Body.Len() != 0 || calls != 2 {
 			t.Fatalf("fallback status=%d body=%q calls=%d", result.Code, result.Body.String(), calls)
 		}
-		if elapsed := time.Since(started); elapsed != probeTimeout/2 {
+		if elapsed := time.Since(started); elapsed != workloadclaims.MeshProbeTimeout/2 {
 			t.Fatalf("fallback took %v, want half of the shared timeout", elapsed)
 		}
 	})

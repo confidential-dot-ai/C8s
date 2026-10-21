@@ -4,7 +4,6 @@ package main
 
 import (
 	"bytes"
-	"cmp"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -2152,12 +2151,8 @@ func injectedMountRules(template corev1.PodTemplateSpec, c corev1.Container) ([]
 			return nil, fmt.Errorf("it requests %s, whose injected mounts install does not model", a)
 		}
 	}
-	certVolume := cmp.Or(template.Annotations[webhook.AnnotationCertVolume], webhook.DefaultCertVolumeName)
-	certDir := cmp.Or(template.Annotations[webhook.AnnotationCertDir], webhook.CertDir)
-	if !path.IsAbs(certDir) {
-		return nil, fmt.Errorf("annotation %s is %q; set it to an absolute path", webhook.AnnotationCertDir, certDir)
-	}
-	certDir = path.Clean(certDir)
+	certVolume := webhook.CertVolumeName
+	certDir := webhook.CertDir
 	volumes := map[string]corev1.Volume{}
 	for _, v := range template.Spec.Volumes {
 		volumes[v.Name] = v

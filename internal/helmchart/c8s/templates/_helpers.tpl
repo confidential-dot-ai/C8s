@@ -52,3 +52,15 @@ app.kubernetes.io/managed-by: Helm
     - {{ . }}
     {{- end }}
 {{- end }}
+
+{{/* AKS's admissions enforcer honors this opt-out; explicit annotations win. */}}
+{{- define "c8s.webhookAnnotations" -}}
+{{- $annotations := deepCopy (.Values.webhook.annotations | default dict) -}}
+{{- if and (eq (.Values.attestationApi.cvmMode | default "bare-metal") "aks") (not (hasKey $annotations "admissions.enforcer/disabled")) -}}
+{{- $_ := set $annotations "admissions.enforcer/disabled" "true" -}}
+{{- end -}}
+{{- with $annotations }}
+annotations:
+  {{- toYaml . | nindent 2 }}
+{{- end -}}
+{{- end -}}

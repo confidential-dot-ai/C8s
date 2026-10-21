@@ -295,9 +295,10 @@ pass "operator, CDS, router and armtls-mesh all Ready after c8s install"
 
 kubectl get crd confidentialworkloads.confidential.ai >/dev/null || fail "ConfidentialWorkload CRD missing"
 kubectl get mutatingwebhookconfiguration c8s-pod-injector >/dev/null || fail "pod-injector webhook config missing"
+kubectl get validatingwebhookconfiguration c8s-pod-validator >/dev/null || fail "pod-validator webhook config missing"
 kubectl get validatingadmissionpolicy c8s-cw-label-integrity >/dev/null || fail "cw-label policy missing"
 kubectl get validatingadmissionpolicy c8s-deny-host-namespaces >/dev/null || fail "host-namespace policy missing"
-pass "CRD, mutating webhook, and both ValidatingAdmissionPolicies installed"
+pass "CRD, both webhooks, and both ValidatingAdmissionPolicies installed"
 
 log "Allowlist API"
 # Unsigned and wrongly-signed writes are refused; a write signed by the
@@ -397,6 +398,24 @@ case "$LABELS" in
     *) fail "webhook did not stamp the cw label (labels: $LABELS)" ;;
 esac
 pass "webhook injected c8s-cert + c8s-cert-wait and stamped confidential.ai/cw=vllm"
+
+kubectl -n demo get pod "$POD" -o json | python3 -c '
+import json, sys
+spec = json.load(sys.stdin)["spec"]
+token_volumes = {
+    v["name"] for v in spec["volumes"]
+    if any("serviceAccountToken" in source for source in v.get("projected", {}).get("sources", []))
+}
+containers = spec.get("initContainers", []) + spec["containers"]
+platform_names = {"c8s-cert", "c8s-cert-wait"}
+assert platform_names.issubset({c["name"] for c in containers}), "missing injected containers"
+app = next(c for c in spec["containers"] if c["name"] == "app")
+assert token_volumes.intersection(m["name"] for m in app.get("volumeMounts", [])), "app lost its API token"
+for c in containers:
+    if c["name"] in platform_names:
+        assert token_volumes.isdisjoint(m["name"] for m in c.get("volumeMounts", [])), c["name"] + " mounts an API token"
+'
+pass "service-account token remains on the application and is absent from injected sidecars"
 
 # The operator provisions the workload's headless Service.
 for _ in $(seq 1 30); do
@@ -864,10 +883,13 @@ fi
 if kubectl get mutatingwebhookconfiguration c8s-pod-injector >/dev/null 2>&1; then
     fail "mutating webhook config left behind after uninstall"
 fi
+if kubectl get validatingwebhookconfiguration c8s-pod-validator >/dev/null 2>&1; then
+    fail "pod-validator webhook config left behind after uninstall"
+fi
 if kubectl get validatingadmissionpolicy c8s-deny-host-namespaces >/dev/null 2>&1; then
     fail "ValidatingAdmissionPolicies left behind after uninstall"
 fi
-pass "uninstall removes the release, webhook, and admission policies"
+pass "uninstall removes the release, both webhooks, and the admission policies"
 
 echo ""
 echo "=== All $CHECKS cluster integration checks passed ==="
