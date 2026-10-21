@@ -139,6 +139,9 @@ func TestValidatePodRole(t *testing.T) {
 		{"host port", func(d *Document) {
 			d.Pod.Manifest = strings.Replace(testPodManifest(""), `"name":"app","image"`, `"name":"app","ports":[{"containerPort":80,"hostPort":80}],"image"`, 1)
 		}, "hostPort"},
+		{"host ip", func(d *Document) {
+			d.Pod.Manifest = strings.Replace(testPodManifest(""), `"name":"app","image"`, `"name":"app","ports":[{"containerPort":80,"hostIP":"127.0.0.1"}],"image"`, 1)
+		}, "hostIP"},
 		{"privileged", func(d *Document) {
 			d.Pod.Manifest = strings.Replace(testPodManifest(""), `"name":"app","image"`, `"name":"app","securityContext":{"privileged":true},"image"`, 1)
 		}, "privileged"},
