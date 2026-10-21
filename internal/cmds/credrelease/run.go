@@ -46,6 +46,8 @@ func newServer(addr string, handler http.Handler, tlsCfg *tls.Config) *http.Serv
 type Config struct {
 	// ListenAddr is the HTTPS bind address (e.g. ":8443").
 	ListenAddr string
+	// listener, when set, is served instead of binding ListenAddr.
+	listener net.Listener
 	// AttestationAPIURL is the local attestation-api base URL (the same
 	// loopback service the rest of the stack uses). It provides the armTLS
 	// serving quote, fresh bootstrap evidence, and the verified self-report
@@ -161,9 +163,12 @@ func Run(ctx context.Context, cfg Config) error {
 
 	// Bind explicitly so the accepted sockets can be capped: every connection
 	// costs an armTLS handshake before the operator token is ever checked.
-	ln, err := net.Listen("tcp", cfg.ListenAddr)
-	if err != nil {
-		return fmt.Errorf("listen %s: %w", cfg.ListenAddr, err)
+	ln := cfg.listener
+	if ln == nil {
+		ln, err = net.Listen("tcp", cfg.ListenAddr)
+		if err != nil {
+			return fmt.Errorf("listen %s: %w", cfg.ListenAddr, err)
+		}
 	}
 
 	errCh := make(chan error, 1)

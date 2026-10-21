@@ -436,10 +436,19 @@ func TestTunnelBudgetNeedsSession(t *testing.T) {
 			if status, err := bufio.NewReader(conn).ReadString('\n'); err != nil || !strings.Contains(status, tc.want) {
 				t.Fatalf("stalled tunnel upload = %q, %v, want%s", status, err, tc.want)
 			}
-			resp := postSealedTunnel(t, rs.ts.URL, channel, sessionID, types.TunnelRequest{Method: "GET", Path: "/", Headers: []types.HeaderField{{Name: "Host", Value: "app.example"}}})
-			resp.Body.Close()
-			if resp.StatusCode != http.StatusOK {
-				t.Fatalf("tunnel beside a stalled refused upload = %d, want %d", resp.StatusCode, http.StatusOK)
+			// The previous subtest's request releases its budget after its
+			// response is on the wire; the stalled upload stays open throughout.
+			deadline := time.Now().Add(2 * time.Second)
+			for {
+				resp := postSealedTunnel(t, rs.ts.URL, channel, sessionID, types.TunnelRequest{Method: "GET", Path: "/", Headers: []types.HeaderField{{Name: "Host", Value: "app.example"}}})
+				resp.Body.Close()
+				if resp.StatusCode == http.StatusOK {
+					break
+				}
+				if resp.StatusCode != http.StatusServiceUnavailable || time.Now().After(deadline) {
+					t.Fatalf("tunnel beside a stalled refused upload = %d, want %d", resp.StatusCode, http.StatusOK)
+				}
+				time.Sleep(10 * time.Millisecond)
 			}
 		})
 	}
