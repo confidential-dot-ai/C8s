@@ -112,6 +112,7 @@ type proxyConfig struct {
 	measurementsConfig        string
 	cdsMeasurementsConfig     string
 	cdsPins                   refvalues.ReferenceValues
+	cdsPinDecrees             cmdsutil.CDSPinsFlags
 	certTTL                   time.Duration
 	rotationTimeout           time.Duration
 	certMode                  string
@@ -159,6 +160,8 @@ func bindProxyFlags(fs *pflag.FlagSet, c *proxyConfig) {
 	fs.StringVar(&c.rtmrs, "rtmrs", "", "comma-separated TDX RTMR pins <index>=<sha384-hex> mesh peers must satisfy (RTMR[1] guest kernel, RTMR[2] cmdline with the dm-verity root hash). SNP peers are unaffected. Empty = no RTMR pinning: on TDX --measurements then pins TDVF firmware only, UNSAFE")
 	cmdsutil.BindImagePolicyFlags(fs, &c.measurementsConfig, nil, "", "pins mesh peers; also pins CDS unless --cds-image-policy-file is set; excludes --measurements and --rtmrs")
 	cmdsutil.BindImagePolicyFlags(fs, &c.cdsMeasurementsConfig, nil, "cds-", "pins CDS independently of mesh peers; excludes --cds-measurements and --cds-rtmrs")
+	cmdsutil.BindCDSPinsFlags(fs, &c.cdsPinDecrees)
+	fs.StringVar(&c.cdsPinDecrees.StateFile, "cds-pins-state", "", "file keeping the newest signed CDS pin decree across restarts")
 	fs.DurationVar(&c.certTTL, "cert-ttl", 24*time.Hour, "armTLS certificate lifetime (rotates at 50%)")
 	fs.DurationVar(&c.rotationTimeout, "rotation-timeout", 30*time.Second, "max time for background certificate rotation")
 	fs.StringVar(&c.certMode, "cert-mode", "self-signed", "certificate mode: self-signed (default), cds (boots self-signed, upgrades to CDS-issued in background)")
@@ -322,6 +325,19 @@ func runProxy(ctx context.Context, c *proxyConfig) error {
 		CDSMeasurements:   cdsMeasurements,
 		CDSRTMRs:          cdsRTMRs,
 		CDSImages:         c.cdsPins.Images,
+	}
+	if _, on, err := c.cdsPinDecrees.Info(); err != nil {
+		return err
+	} else if on {
+		if c.cdsPins.Empty() {
+			return fmt.Errorf("--cds-pins-file/--cds-cluster-id need --cds-image-policy-file: decrees change the images, the launch anchors stay")
+		}
+		src, err := c.cdsPinDecrees.Source(c.cdsPins, c.cdsURL)
+		if err != nil {
+			return fmt.Errorf("CDS pin decrees: %w", err)
+		}
+		cdsCfg.PinSource = src
+		logger.Info("following signed CDS pin decrees", "cds_url", c.cdsURL)
 	}
 	if err := runtime.run(ctx, hostMesh{c: c, resolver: resolver, cds: cdsCfg}); err != nil {
 		return cmdsutil.NodeIPChanged(ctx, fmt.Errorf("proxy: %w", err))

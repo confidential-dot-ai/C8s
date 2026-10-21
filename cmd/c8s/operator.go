@@ -27,6 +27,12 @@ by this command.`,
 		if err != nil {
 			return err
 		}
+		var pinsArgs []string
+		if info, on, err := cdsPinDecrees.Info(); err != nil {
+			return err
+		} else if on && policyJSON != "" {
+			pinsArgs = info.Args()
+		}
 		return controller.Run(cmd.Context(), controller.Options{
 			MetricsAddr:                 metricsAddr,
 			HealthAddr:                  healthAddr,
@@ -40,6 +46,7 @@ by this command.`,
 			CDSMeasurements:             cdsMeasurements,
 			CDSRTMRs:                    cdsRTMRs,
 			CDSMeasurementsConfigJSON:   policyJSON,
+			CDSPinsArgs:                 pinsArgs,
 			ExcludeNamespaces:           excludeNamespaces,
 			WebhookConfigName:           webhookConfigName,
 			WebhookServiceName:          webhookServiceName,
@@ -81,6 +88,7 @@ var (
 	workloadClaimsHostDir       string
 	meshOutboundPort            int32
 	meshExcludeSourceNamespaces []string
+	cdsPinDecrees               cmdsutil.CDSPinsFlags
 )
 
 func init() {
@@ -109,6 +117,7 @@ func init() {
 	// default; the chart passes both from one value.
 	operatorCmd.Flags().StringSliceVar(&meshExcludeSourceNamespaces, "mesh-exclude-source-namespaces", []string{"kube-system"}, "namespaces the node mesh does not intercept (mirrors armtls-mesh --exclude-source-namespaces); they get no companion policies")
 	operatorCmd.Flags().StringVar(&workloadClaimsHostDir, "workload-claims-host-dir", "", "host directory holding the nri-image-policy inventory socket (node-CVM); when set, NRI mounts it into c8s-cert and the webhook injects --workload-claims so get-cert redeems a sandbox token (docs/armtls.md)")
+	cmdsutil.BindCDSPinsFlags(operatorCmd.Flags(), &cdsPinDecrees)
 	rootCmd.AddCommand(operatorCmd)
 }
 

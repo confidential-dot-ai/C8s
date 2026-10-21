@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
@@ -54,17 +55,51 @@ func NewClient(cfg Config, pins armtls.Pins) (*http.Client, crypto.PublicKey, er
 	if err != nil {
 		return nil, nil, err
 	}
-	tlsCfg, _, err := armtls.NewClientTLSConfig(&armtls.ClientConfig{
-		Policy:       pins.VerifyPolicy(cfg.AttestationApiURL),
-		CertProvider: provider,
-	})
-	if err != nil {
-		return nil, nil, fmt.Errorf("build CDS client: %w", err)
+	build := func(p armtls.Pins) (*http.Transport, error) {
+		tlsCfg, _, err := armtls.NewClientTLSConfig(&armtls.ClientConfig{
+			Policy:       p.VerifyPolicy(cfg.AttestationApiURL),
+			CertProvider: provider,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("build CDS client: %w", err)
+		}
+		return &http.Transport{TLSClientConfig: tlsCfg}, nil
 	}
-	return &http.Client{
-		Timeout:   cfg.RequestTimeout,
-		Transport: &http.Transport{TLSClientConfig: tlsCfg},
-	}, pub, nil
+	src, err := cfg.pinSource()
+	if err != nil {
+		return nil, nil, err
+	}
+	var rt http.RoundTripper
+	if src != nil {
+		rt, err = armtls.NewRefreshingTransport(src, build)
+	} else {
+		rt, err = build(pins)
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	return &http.Client{Timeout: cfg.RequestTimeout, Transport: rt}, pub, nil
+}
+
+// pinSource follows signed CDS pin decrees from the complete image policy,
+// or is nil when --cds-pins-* are unset.
+func (c Config) pinSource() (armtls.PinSource, error) {
+	if _, on, err := c.CDSPins.Info(); err != nil || !on {
+		return nil, err
+	}
+	src := cmdsutil.ImagePolicySource{File: c.MeasurementsConfig, JSON: c.MeasurementsConfigJSON}
+	if !src.IsSet() {
+		return nil, fmt.Errorf("--cds-cluster-id/--cds-decree-key need the CDS image policy (--image-policy-file or --image-policy-json)")
+	}
+	bootstrap, err := src.LoadValues(cmdsutil.MeasurementPins{Measurements: c.Measurements, Registers: c.RTMRs})
+	if err != nil {
+		return nil, err
+	}
+	s, err := c.CDSPins.Source(bootstrap, c.CDSURL)
+	if err != nil {
+		return nil, fmt.Errorf("CDS pin decrees: %w", err)
+	}
+	return s, nil
 }
 
 // Do performs one store request: a fresh challenge, a sandbox token redeemed

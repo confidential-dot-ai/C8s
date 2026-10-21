@@ -52,3 +52,25 @@ func TestEveryInjectedFetcherRetainsCompleteCDSPolicy(t *testing.T) {
 		})
 	}
 }
+
+// On an HA cluster every injected CDS client also gets what it needs to
+// follow the operator's signed CDS pin decrees.
+func TestInjectedFetchersFollowCDSPinDecrees(t *testing.T) {
+	doc, err := os.ReadFile("../../internal/testdata/node-identities.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := secretsConfig()
+	cfg.CDSMeasurementsConfigJSON = string(doc)
+	cfg.CDSPinsArgs = []string{"--cds-cluster-id=c1", "--cds-decree-key=KEY"}
+	inj := &injection{}
+	for name, container := range map[string]corev1.Container{
+		"certificate": certContainer(inj, cfg),
+		"secret":      secretContainer(inj, cfg),
+		"volume":      volumeContainer(inj, cfg),
+	} {
+		if !slices.Contains(container.Args, "--cds-cluster-id=c1") || !slices.Contains(container.Args, "--cds-decree-key=KEY") {
+			t.Fatalf("%s: %v", name, container.Args)
+		}
+	}
+}

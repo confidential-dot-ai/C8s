@@ -46,6 +46,9 @@ import (
 
 // config holds all CLI configuration for get-cert.
 type config struct {
+	// CDSPins follows the operator's signed CDS pin decrees across a CDS
+	// image rollout (needs --image-policy-file/--image-policy-json).
+	CDSPins                cmdsutil.CDSPinsFlags
 	CDSURL                 string
 	CDSMeasurements        string
 	CDSRTMRs               string
@@ -133,6 +136,7 @@ alongside a workload that uses the obtained certificate.`,
 
 	flags := cmd.Flags()
 	cmdsutil.BindImagePolicyFlags(flags, &cfg.MeasurementsConfig, &cfg.MeasurementsConfigJSON, "", "pins the CDS endpoint; excludes --cds-measurements and --cds-rtmrs")
+	cmdsutil.BindCDSPinsFlags(flags, &cfg.CDSPins)
 	flags.StringVar(&cfg.CDSURL, "cds-url", "", "URL of the CDS service (e.g. https://cds:8443)")
 	flags.StringVar(&cfg.CDSMeasurements, "cds-measurements", "", "comma-separated SHA-384 hex launch measurements for CDS armTLS verification (empty = accept any attested CDS)")
 	flags.StringVar(&cfg.CDSRTMRs, "cds-rtmrs", "", "comma-separated TDX RTMR pins <index>=<sha384-hex> CDS's armTLS cert must additionally satisfy; ignored when CDS presents SNP evidence (empty = launch-digest pinning only)")
@@ -205,6 +209,16 @@ func cdsHTTPClient(cfg config) (*http.Client, error) {
 		return nil, fmt.Errorf("--cds-url must use https (armTLS); got scheme %q", parsed.Scheme)
 	}
 
+	if src, err := cdsPinSource(cfg); err != nil || src != nil {
+		if err != nil {
+			return nil, err
+		}
+		client, err := armtls.NewRefreshingHTTPClient(src, cfg.AttestationApiURL)
+		if err != nil {
+			return nil, fmt.Errorf("cds armTLS client: %w", err)
+		}
+		return client, nil
+	}
 	pins, err := cdsPins(cfg)
 	if err != nil {
 		return nil, err
@@ -214,6 +228,27 @@ func cdsHTTPClient(cfg config) (*http.Client, error) {
 		return nil, fmt.Errorf("cds armTLS client: %w", err)
 	}
 	return client, nil
+}
+
+// cdsPinSource follows signed pin decrees from the complete image policy, or
+// is nil when --cds-pins-* are unset.
+func cdsPinSource(cfg config) (armtls.PinSource, error) {
+	if _, on, err := cfg.CDSPins.Info(); err != nil || !on {
+		return nil, err
+	}
+	src := cmdsutil.ImagePolicySource{File: cfg.MeasurementsConfig, JSON: cfg.MeasurementsConfigJSON}
+	if !src.IsSet() {
+		return nil, fmt.Errorf("--cds-cluster-id/--cds-decree-key need the CDS image policy (--image-policy-file or --image-policy-json)")
+	}
+	bootstrap, err := src.LoadValues(cmdsutil.MeasurementPinsFromStrings(cfg.CDSMeasurements, cfg.CDSRTMRs, "cds-"))
+	if err != nil {
+		return nil, err
+	}
+	s, err := cfg.CDSPins.Source(bootstrap, cfg.CDSURL)
+	if err != nil {
+		return nil, fmt.Errorf("CDS pin decrees: %w", err)
+	}
+	return s, nil
 }
 
 func cdsPins(cfg config) (armtls.Pins, error) {

@@ -94,6 +94,11 @@ func Run(args []string) error {
 		return fmt.Errorf("log level: %w", err)
 	}
 	slog.SetDefault(logger)
+	if cfg.PullEnabled() {
+		if cfg.Allowlist.Pull.pinSource, err = cfg.Allowlist.Pull.cdsPinSource(); err != nil {
+			return fmt.Errorf("CDS pin decrees: %w", err)
+		}
+	}
 
 	logger.Info("starting nri-image-policy",
 		"version", version.Version,
@@ -253,11 +258,35 @@ func allowlistPullHTTPClient(cfg pullConfig) (*http.Client, error) {
 		slog.Warn("allowlist.pull.cds_measurements not set; nri-image-policy accepts any armTLS-attested CDS measurement")
 	}
 	client, err := armtls.NewVerifyingHTTPClient(pins, cfg.AttestationApiURL)
+	if cfg.pinSource != nil {
+		client, err = armtls.NewRefreshingHTTPClient(cfg.pinSource, cfg.AttestationApiURL)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("CDS armTLS client: %w", err)
 	}
 	client.Timeout = cfg.Timeout
 	return client, nil
+}
+
+// cdsPinSource follows the operator's signed CDS pin decrees from the
+// complete CDS policy, or is nil when cds_pins_file is unset or names no
+// file (a cluster without HA CDS).
+func (cfg pullConfig) cdsPinSource() (armtls.PinSource, error) {
+	if cfg.CDSPinsFile == "" {
+		return nil, nil
+	}
+	if cfg.CDSMeasurementsConfig == "" {
+		return nil, fmt.Errorf("allowlist.pull.cds_pins_file needs cds_measurements_config")
+	}
+	bootstrap, err := (cmdsutil.ImagePolicySource{File: cfg.CDSMeasurementsConfig}).LoadValues(cmdsutil.MeasurementPins{})
+	if err != nil {
+		return nil, err
+	}
+	src, err := cmdsutil.CDSPinsFlags{File: cfg.CDSPinsFile, StateFile: cfg.CDSPinsState}.Source(bootstrap, cfg.URL)
+	if err != nil || src == nil {
+		return nil, err
+	}
+	return src, nil
 }
 
 // cdsPins is shared by outbound pulls and the CDS-only inventory endpoint.
@@ -714,10 +743,10 @@ func startSandboxDigests(ctx context.Context, logger *slog.Logger, cfg *config, 
 	attestationApiURL := cfg.Allowlist.Pull.AttestationApiURL
 	// The attest func is platform-agnostic despite its name (see its doc
 	// comment); the platform string is the only thing that follows the hardware.
-	return workloadclaims.StartDigestsEndpoint(ctx, logger, inventory, signer.PublicKeyDER(),
+	return workloadclaims.StartDigestsEndpointFollowing(ctx, logger, inventory, signer.PublicKeyDER(),
 		cfg.NormalizedPlatform(),
 		attestclient.MakeSNPARMTLSAttestFunc(attestclient.NewClient(""), attestationApiURL),
-		attestationApiURL, pins)
+		attestationApiURL, pins, cfg.Allowlist.Pull.pinSource)
 }
 
 // startAdmissionInventory serves the node-CVM token socket (docs/armtls.md).
