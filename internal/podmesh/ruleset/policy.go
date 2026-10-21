@@ -43,20 +43,25 @@ type Policy struct {
 }
 
 // ServerRole is the platform role a pod serves external traffic for: the ports
-// it answers on itself, and the one port one identity of that pod may reach
-// outside the cluster. An inbound accept cannot name a socket UID, so the
-// listeners belong to the ruleset of that pod and to no other.
+// it answers on itself, the one port one identity of that pod may reach
+// outside the cluster, and the identity that reaches the cluster itself. An
+// inbound accept cannot name a socket UID, so the listeners belong to the
+// ruleset of that pod and to no other.
 type ServerRole struct {
-	UID       uint32
 	Listeners []uint16
 	Egress    ServerEgress
-	// Services are the destinations this role itself reaches in the clear,
-	// each one address and port: its own node's CDS, which it fetches the
-	// signed route manifest from. Everything else it dials is captured.
+	// Upstream is the identity of the pod's route authority: it holds the
+	// signed route manifest and dials the member each route names as a mesh
+	// client, so its connections to ClusterRanges are left to it rather than
+	// captured, and it is the one identity here that reaches Services.
+	Upstream uint32
+	// Services are the destinations the upstream identity reaches in the
+	// clear, each one address and port: its own node's CDS, which it fetches
+	// the signed route manifest from.
 	Services []Destination
 	// ClusterRanges are this cluster's pod and Service ranges: the egress
-	// exception excludes them, so a connection to a member is captured and
-	// rides the mesh like any other.
+	// exception excludes them, and the upstream identity reaches them
+	// uncaptured.
 	ClusterRanges []netip.Prefix
 }
 
@@ -127,15 +132,18 @@ func (s ServerRole) validate() error {
 	if !s.serves() {
 		return nil
 	}
+	if s.Upstream == 0 {
+		return fmt.Errorf("%w: server role has no upstream identity, so its uncaptured cluster rules would match root", ErrPolicy)
+	}
 	if len(s.Egress.Ports) > 0 && len(s.ClusterRanges) == 0 {
-		return fmt.Errorf("%w: server role UID %d has egress ports and no cluster ranges to exclude from them", ErrPolicy, s.UID)
+		return fmt.Errorf("%w: server role UID %d has egress ports and no cluster ranges to exclude from them", ErrPolicy, s.Egress.UID)
 	}
 	for _, dst := range s.Services {
 		if err := validRemoteAddress(dst.Addr); err != nil {
 			return err
 		}
 		if dst.Port == 0 {
-			return fmt.Errorf("%w: server role UID %d service %s has no port", ErrPolicy, s.UID, dst.Addr)
+			return fmt.Errorf("%w: upstream identity %d service %s has no port", ErrPolicy, s.Upstream, dst.Addr)
 		}
 	}
 	for _, in := range s.ClusterRanges {

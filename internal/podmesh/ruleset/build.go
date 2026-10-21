@@ -86,6 +86,7 @@ func captureOutbound(p Policy) chain {
 	resolverTCP := fmt.Sprintf("resolver-%s-tcp", p.Resolver)
 	rules = append(rules, rule{resolverTCP, withVerdict(matchResolver(p.Resolver, unix.IPPROTO_TCP), expr.VerdictReturn)})
 	rules = append(rules, serverServiceRules(p, expr.VerdictReturn)...)
+	rules = append(rules, serverUpstreamRules(p, expr.VerdictReturn)...)
 	rules = append(rules, serverClusterCaptureRules(p)...)
 	rules = append(rules, serverEgressRules(p, expr.VerdictReturn)...)
 	rules = append(rules, rule{"redirect-to-outbound-listener", redirectTCP(p.Capture.Outbound)})
@@ -125,6 +126,7 @@ func filterOutput(p Policy) chain {
 		rules = append(rules, roleDestinationRules(role)...)
 	}
 	rules = append(rules, serverServiceRules(p, expr.VerdictAccept)...)
+	rules = append(rules, serverUpstreamRules(p, expr.VerdictAccept)...)
 	rules = append(rules, serverClusterDropRules(p)...)
 	rules = append(rules, serverEgressRules(p, expr.VerdictAccept)...)
 	return denyChain("filter-output", *nftables.ChainHookOutput, rules)
@@ -215,14 +217,30 @@ func serverClusterRuleName(port uint16, in netip.Prefix) string {
 	return fmt.Sprintf("server-egress-%d-in-cluster-%s", port, in)
 }
 
-// serverServiceRules match the server role's own traffic to one service
+// serverServiceRules match the upstream identity's traffic to one service
 // address and port. They precede the capture, so that destination is the one
-// the role reaches itself; everything else it dials is redirected.
+// it reaches itself; everything else outside the cluster it dials is
+// redirected.
 func serverServiceRules(p Policy, kind expr.VerdictKind) []rule {
 	rules := make([]rule, 0, len(p.Server.Services))
 	for _, dst := range p.Server.Services {
-		exprs := slices.Concat(matchSocketUID(p.Server.UID), matchDestination(dst.Addr), matchTCPPort(dst.Port))
+		exprs := slices.Concat(matchSocketUID(p.Server.Upstream), matchDestination(dst.Addr), matchTCPPort(dst.Port))
 		name := fmt.Sprintf("server-service-%s-%d", dst.Addr, dst.Port)
+		rules = append(rules, rule{name, withVerdict(exprs, kind)})
+	}
+	return rules
+}
+
+// serverUpstreamRules match the upstream identity's traffic to this cluster,
+// which it carries itself: it dials the member a signed route names as a mesh
+// client and refuses a peer whose leaf names another workload. No other
+// identity of the pod matches them, so every other container's connection to
+// a member is captured.
+func serverUpstreamRules(p Policy, kind expr.VerdictKind) []rule {
+	rules := make([]rule, 0, len(p.Server.ClusterRanges))
+	for _, in := range p.Server.ClusterRanges {
+		exprs := slices.Concat(matchSocketUID(p.Server.Upstream), matchDestinationRange(in), matchProtocol(unix.IPPROTO_TCP))
+		name := fmt.Sprintf("server-upstream-in-cluster-%s", in)
 		rules = append(rules, rule{name, withVerdict(exprs, kind)})
 	}
 	return rules

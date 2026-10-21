@@ -325,9 +325,10 @@ allowlist:
       # The router's own containers. The chart renders its pod itself, and
       # every pod of the router namespace holds platform-role containers
       # only, so each of them takes a role from here. The router
-      # role serves the front door's ports; the acme role is the one that
-      # reaches outside the cluster in the clear; the credentials role
-      # reaches the node's CDS.
+      # role serves the front door's ports; the upstream role reaches the
+      # cluster's members, as the mesh client of the workload each route
+      # names; the acme role is the one that reaches outside the cluster in
+      # the clear; the credentials role reaches the node's CDS.
       c8s-router-nginx:
         label: "nginx reload"
         containers:
@@ -401,15 +402,17 @@ allowlist:
                   kind: "host"
                   source: "/run/c8s-node"
                   readOnly: true
-      # It binds the leaf the front door presents, so it mounts the chain and
-      # never the key beside it: it runs as the router identity too, and the
-      # mount set is the only thing that separates them.
-      c8s-cds-attest:
+      # The pod's route authority: it holds the signed route manifest and
+      # dials the member each route names as a mesh client, so it runs as the
+      # upstream identity, the one this pod's ruleset leaves uncaptured into
+      # the cluster. It binds the leaf the front door presents, so it mounts
+      # the chain and never the key beside it.
+      c8s-router-upstream:
         label: "c8s cds-attest"
         containers:
           - digest: "@OPERATOR_DIGEST@"
             image: "@OPERATOR_REPO@@@OPERATOR_DIGEST@"
-            role: "router"
+            role: "upstream"
             command: {policy: exact, argv: ["/c8s", "cds-attest"]}
             # Per cluster: the upstream it fronts and the leaf it binds.
             args: {policy: any}
@@ -431,7 +434,7 @@ allowlist:
           # front door serves.
           - digest: "@OPERATOR_DIGEST@"
             image: "@OPERATOR_REPO@@@OPERATOR_DIGEST@"
-            role: "router"
+            role: "upstream"
             command: {policy: exact, argv: ["/c8s", "cds-attest"]}
             args: {policy: any}
             mounts:
@@ -454,7 +457,7 @@ allowlist:
           # The acme front door's attestation sidecar reads that leaf as well.
           - digest: "@OPERATOR_DIGEST@"
             image: "@OPERATOR_REPO@@@OPERATOR_DIGEST@"
-            role: "router"
+            role: "upstream"
             command: {policy: exact, argv: ["/c8s", "cds-attest"]}
             args: {policy: any}
             mounts:

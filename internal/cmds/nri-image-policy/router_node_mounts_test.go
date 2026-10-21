@@ -22,7 +22,7 @@ func TestChartRouterNodeMountAdmission(t *testing.T) {
 	}{
 		{
 			name: workloadclaims.AttestContainerName,
-			role: routerRole,
+			role: upstreamRole,
 		},
 		{
 			name: "allowlist-proxy",
@@ -120,8 +120,8 @@ func TestRouterNodeMountEligibilityDoesNotAuthorizeLaunch(t *testing.T) {
 	}{
 		{
 			name:     workloadclaims.AttestContainerName,
-			workload: "c8s-cds-attest",
-			uid:      workloadclaims.RouterUID,
+			workload: "c8s-router-upstream",
+			uid:      workloadclaims.UpstreamUID,
 		},
 		{
 			name:     "allowlist-proxy",

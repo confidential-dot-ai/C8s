@@ -161,6 +161,14 @@ func TestMeshPolicyValidation(t *testing.T) {
 			wants: "is a compiled role of the router's namespace",
 		},
 		{
+			name: "a dialing role named for routing",
+			mesh: func(m *meshPolicy) {
+				m.Roles[1].Name = upstreamRole
+			},
+			tcb:   true,
+			wants: "is a compiled role of the router's namespace",
+		},
+		{
 			name: "a dialing role named for egress",
 			mesh: func(m *meshPolicy) {
 				m.Roles[1].Name = acmeRole
@@ -301,7 +309,7 @@ mesh:
     - name: mesh
       uid: 1337
     - name: get-cert
-      uid: 1341
+      uid: 1342
       destinations: ["` + destination + `"]
 `)
 	}

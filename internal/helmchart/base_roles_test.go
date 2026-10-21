@@ -135,7 +135,7 @@ var routerPodRoles = map[string]string{
 	"c8s-cert-wait":   "credentials",
 	"allowlist-proxy": "credentials",
 	"nginx":           "router",
-	"cds-attest":      "router",
+	"cds-attest":      "upstream",
 	"acme":            "acme",
 }
 

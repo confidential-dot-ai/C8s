@@ -41,18 +41,18 @@ func testPolicy() Policy {
 }
 
 // serverPolicy is the same policy for a pod that serves a platform role's own
-// ports: the router answers external listeners, reaches its node's CDS itself,
-// and a second identity of that pod reaches the egress port outside the
-// cluster.
+// ports: the router answers external listeners, its upstream identity reaches
+// its node's CDS and the cluster itself, and a third identity of that pod
+// reaches the egress port outside the cluster.
 func serverPolicy() Policy {
 	policy := testPolicy()
 	policy.Server = ServerRole{
-		UID:       1339,
 		Listeners: []uint16{8443, 8080},
 		Egress: ServerEgress{
 			UID:   1340,
 			Ports: []uint16{443},
 		},
+		Upstream: 1341,
 		Services: []Destination{{netip.MustParseAddr("10.43.0.2"), 8443}},
 		ClusterRanges: []netip.Prefix{
 			netip.MustParsePrefix("10.52.0.0/16"),
@@ -117,21 +117,26 @@ func TestFilterOutputReservesTheMeshListeners(t *testing.T) {
 
 // A pod serving a role's own ports carries the member ruleset and exactly the
 // rules of that role: its listeners, the capture of the egress port inside the
-// cluster, and that port outside it for the egress identity alone. The
-// identity that answers and forwards holds no rule that leaves the cluster,
-// so a forwarded request is captured wherever its name resolves.
+// cluster, that port outside it for the egress identity alone, and the
+// cluster itself for the upstream identity alone. The identity that answers and
+// forwards holds no rule of either kind, so its traffic rides the mesh
+// wherever a name resolves.
 func TestServerRoleAddsOnlyItsOwnRules(t *testing.T) {
 	added := addedRules(renderRuleset(build(testPolicy())), renderRuleset(build(serverPolicy())))
 	want := []string{
 		"meta l4proto tcp th dport 8443 return # server-listener-8443",
 		"meta l4proto tcp th dport 8080 return # server-listener-8080",
-		"skuid 1339 meta nfproto ipv4 ip daddr 10.43.0.2 meta l4proto tcp th dport 8443 return # server-service-10.43.0.2-8443",
+		"skuid 1341 meta nfproto ipv4 ip daddr 10.43.0.2 meta l4proto tcp th dport 8443 return # server-service-10.43.0.2-8443",
+		"skuid 1341 meta nfproto ipv4 ip daddr 10.52.0.0 & 255.255.0.0 meta l4proto tcp return # server-upstream-in-cluster-10.52.0.0/16",
+		"skuid 1341 meta nfproto ipv4 ip daddr 10.53.0.0 & 255.255.0.0 meta l4proto tcp return # server-upstream-in-cluster-10.53.0.0/16",
 		"skuid 1340 meta nfproto ipv4 ip daddr 10.52.0.0 & 255.255.0.0 meta l4proto tcp th dport 443 redirect to :15001 # server-egress-443-in-cluster-10.52.0.0/16",
 		"skuid 1340 meta nfproto ipv4 ip daddr 10.53.0.0 & 255.255.0.0 meta l4proto tcp th dport 443 redirect to :15001 # server-egress-443-in-cluster-10.53.0.0/16",
 		"skuid 1340 meta l4proto tcp th dport 443 return # server-egress-443",
 		"meta l4proto tcp th dport 8443 accept # server-listener-8443",
 		"meta l4proto tcp th dport 8080 accept # server-listener-8080",
-		"skuid 1339 meta nfproto ipv4 ip daddr 10.43.0.2 meta l4proto tcp th dport 8443 accept # server-service-10.43.0.2-8443",
+		"skuid 1341 meta nfproto ipv4 ip daddr 10.43.0.2 meta l4proto tcp th dport 8443 accept # server-service-10.43.0.2-8443",
+		"skuid 1341 meta nfproto ipv4 ip daddr 10.52.0.0 & 255.255.0.0 meta l4proto tcp accept # server-upstream-in-cluster-10.52.0.0/16",
+		"skuid 1341 meta nfproto ipv4 ip daddr 10.53.0.0 & 255.255.0.0 meta l4proto tcp accept # server-upstream-in-cluster-10.53.0.0/16",
 		"skuid 1340 meta nfproto ipv4 ip daddr 10.52.0.0 & 255.255.0.0 meta l4proto tcp th dport 443 drop # server-egress-443-in-cluster-10.52.0.0/16",
 		"skuid 1340 meta nfproto ipv4 ip daddr 10.53.0.0 & 255.255.0.0 meta l4proto tcp th dport 443 drop # server-egress-443-in-cluster-10.53.0.0/16",
 		"skuid 1340 meta l4proto tcp th dport 443 accept # server-egress-443",
@@ -140,24 +145,29 @@ func TestServerRoleAddsOnlyItsOwnRules(t *testing.T) {
 		t.Fatalf("the server role adds\n%s\nwant\n%s", strings.Join(added, "\n"), strings.Join(want, "\n"))
 	}
 	// No other identity in the pod holds them: every added rule naming a uid
-	// names the server role's own or its egress identity's, and the listener
-	// rules name none, because an inbound accept cannot match a socket uid.
+	// names the routing or the egress identity, and the listener rules name
+	// none, because an inbound accept cannot match a socket uid.
 	for _, rule := range added {
-		if strings.Contains(rule, "skuid") && !strings.Contains(rule, "skuid 1339") && !strings.Contains(rule, "skuid 1340") {
+		if strings.Contains(rule, "skuid") && !strings.Contains(rule, "skuid 1340") && !strings.Contains(rule, "skuid 1341") {
 			t.Errorf("a rule of the server role binds another identity: %s", rule)
 		}
 	}
 }
 
-// The router role fetches the signed route manifest from its own node's CDS,
-// so that one destination is returned before the capture and accepted on the
-// way out. Everything else it dials is captured: no other rule of either
-// chain names its identity.
-func TestServerRoleReachesOnlyItsOwnService(t *testing.T) {
+// The upstream identity fetches the signed route manifest from its own node's
+// CDS, so that one destination is returned before the capture and accepted on
+// the way out, and it reaches the cluster's members itself. Everything else
+// it dials is captured: no other rule of either chain names its identity.
+func TestServerRoutingIdentityReachesItsServiceAndTheCluster(t *testing.T) {
 	policy := serverPolicy()
 	service := policy.Server.Services[0]
 	match := fmt.Sprintf("skuid %d meta nfproto ipv4 ip daddr %s meta l4proto tcp th dport %d",
-		policy.Server.UID, service.Addr, service.Port)
+		policy.Server.Upstream, service.Addr, service.Port)
+	var inCluster []string
+	for _, in := range policy.Server.ClusterRanges {
+		inCluster = append(inCluster, fmt.Sprintf("skuid %d meta nfproto ipv4 ip daddr %s & 255.255.0.0 meta l4proto tcp",
+			policy.Server.Upstream, in.Addr()))
+	}
 
 	capture := renderedRules(captureOutbound(policy).rules)
 	uncaptured := slices.Index(capture, match+" return")
@@ -165,15 +175,39 @@ func TestServerRoleReachesOnlyItsOwnService(t *testing.T) {
 	if uncaptured < 0 || redirect < 0 || uncaptured > redirect {
 		t.Fatalf("the service is not returned before the capture:\n%s", strings.Join(capture, "\n"))
 	}
-
 	output := renderedRules(filterOutput(policy).rules)
 	if !slices.Contains(output, match+" accept") {
 		t.Fatalf("the service never leaves the pod:\n%s", strings.Join(output, "\n"))
 	}
-	for _, rule := range slices.Concat(capture, output) {
-		if strings.HasPrefix(rule, fmt.Sprintf("skuid %d ", policy.Server.UID)) && !strings.HasPrefix(rule, match) {
-			t.Errorf("the server role reaches more than its service: %s", rule)
+	for _, member := range inCluster {
+		at := slices.Index(capture, member+" return")
+		if at < 0 || at > redirect {
+			t.Fatalf("%q is not returned before the capture:\n%s", member, strings.Join(capture, "\n"))
 		}
+		if !slices.Contains(output, member+" accept") {
+			t.Fatalf("%q never leaves the pod:\n%s", member, strings.Join(output, "\n"))
+		}
+	}
+	for _, rule := range slices.Concat(capture, output) {
+		if !strings.HasPrefix(rule, fmt.Sprintf("skuid %d ", policy.Server.Upstream)) {
+			continue
+		}
+		reaches := slices.ContainsFunc(append(inCluster, match), func(allowed string) bool {
+			return strings.HasPrefix(rule, allowed)
+		})
+		if !reaches {
+			t.Errorf("the upstream identity reaches more than its service and the cluster: %s", rule)
+		}
+	}
+}
+
+// A server role with no upstream identity would match root on the rules that
+// leave the cluster to it, so no ruleset is built from one.
+func TestServerRoleWithoutARoutingIdentityIsRefused(t *testing.T) {
+	policy := serverPolicy()
+	policy.Server.Upstream = 0
+	if err := policy.validate(); !errors.Is(err, ErrPolicy) {
+		t.Fatalf("error = %v, want ErrPolicy", err)
 	}
 }
 

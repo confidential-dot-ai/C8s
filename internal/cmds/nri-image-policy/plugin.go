@@ -1237,7 +1237,7 @@ func holdsCredentialsIdentity(ctr *api.Container) bool {
 }
 
 // fetchesRouteManifest reports whether this container is the one the router's
-// route manifest comes through: its attest sidecar, on the router identity
+// route manifest comes through: its attest sidecar, on the upstream identity
 // that pod's ruleset admits the node's CDS for (meshgate_linux.go). The pod is
 // the chart's own in a namespace the enforcer compiles in, and the measured
 // base binds every container of it to a role, so the name holds no privilege
@@ -1245,7 +1245,7 @@ func holdsCredentialsIdentity(ctr *api.Container) bool {
 func fetchesRouteManifest(pod *api.PodSandbox, ctr *api.Container) bool {
 	return pod.GetNamespace() == routerNamespace &&
 		ctr.GetName() == workloadclaims.AttestContainerName &&
-		ctr.GetUser().GetUid() == workloadclaims.RouterUID
+		ctr.GetUser().GetUid() == workloadclaims.UpstreamUID
 }
 
 // routerCDSMount is the CDS endpoint alone: the router polls the signed route

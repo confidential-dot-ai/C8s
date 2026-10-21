@@ -627,13 +627,14 @@ follows these rules:
   route, gets 404. The router's own paths (`/allowlist`, `/.well-known/c8s/`,
   `/.well-known/acme-challenge/`, the discovery and certificate paths,
   `/readyz`, `/healthz`) are never routed by the manifest.
-- A workload backend (`workload`) is reached over the mesh: the pod's own
-  endpoint presents a certificate chaining to the mesh CA whose matched
-  workload name equals `workload`, and forwards to the port the route names.
-  An address backend (`serverName`, `ca`) must present a certificate for
-  `serverName` under `ca`, which must not hold the mesh CA. The router
-  presents its mesh certificate to every backend. A failed handshake gets 502;
-  no backend is reached in plaintext.
+- A workload backend (`workload`) is reached as a mesh client of the member
+  behind it: `cds-attest` presents the router's mesh certificate and requires
+  a peer certificate chaining to the mesh CA whose matched workload name
+  equals `workload`. A failed handshake gets 502; no backend is reached in
+  plaintext.
+- The router serves cluster workloads only: it refuses a polled manifest that
+  names an address backend (`serverName`, `ca`), keeps the applied one, and
+  logs `the router serves cluster workloads only` with the host and path.
 - `router.routing.readTimeout` bounds nginx's wait between reads, and
   `router.routing.backendTimeout` (default 1h) how long a routed request, or
   a WebSocket, may go with no data moving; a tunnelled request gets that long

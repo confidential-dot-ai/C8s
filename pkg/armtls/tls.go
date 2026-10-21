@@ -824,9 +824,29 @@ type MeshConfig struct {
 	// MeshCA is the mesh CA a peer's leaf must chain to. Required.
 	MeshCA *x509.Certificate
 
+	// AcceptPeer, when set, decides the peer the chain path authenticated,
+	// in both roles. It runs after that verification and before any
+	// application byte moves; an error fails the handshake.
+	AcceptPeer func(Peer) error
+
 	// Logger, when set, receives structured log messages for certificate
 	// provisioning, rotation, and errors.
 	Logger Logger
+}
+
+// Peer is the mesh identity of an authenticated peer: what the chain path
+// read off a leaf it verified against the mesh CA. Every field is CA-vouched,
+// so an AcceptPeer may authorize by it.
+type Peer struct {
+	// SandboxID is the workload instance the leaf names, never empty.
+	SandboxID string
+	// WorkloadName is the allowlist entry the leaf's attested container set
+	// matched at issuance, empty where CDS stamped none.
+	WorkloadName string
+	// Purpose is the TLS purpose the peer's role required of it:
+	// serverAuth for the peer a mesh client reached, clientAuth for the peer
+	// a mesh server accepted.
+	Purpose x509.ExtKeyUsage
 }
 
 // NewMeshServerTLSConfig creates the mesh endpoint's server configuration: it
@@ -867,7 +887,7 @@ func newCertificateIdentityVerifiedTLSConfig(cfg *MeshConfig, peerPurpose x509.E
 		MinVersion:            tls.VersionTLS13,
 		NextProtos:            []string{MeshALPN},
 		InsecureSkipVerify:    true,
-		VerifyPeerCertificate: chainVerifyPeerCallback(cfg.MeshCA, peerPurpose),
+		VerifyPeerCertificate: chainVerifyPeerCallback(cfg.MeshCA, peerPurpose, cfg.AcceptPeer),
 		VerifyConnection:      requireMeshALPN,
 	}
 	refuseResumption(tlsCfg)
@@ -880,10 +900,11 @@ func newCertificateIdentityVerifiedTLSConfig(cfg *MeshConfig, peerPurpose x509.E
 
 // chainVerifyPeerCallback returns a VerifyPeerCertificate function that
 // authenticates a mesh peer by its CDS-issued chain and the workload instance
-// it names. A leaf that does not chain is rejected, never retried against its
+// it names, then hands the identity it read to acceptPeer where the endpoint
+// set one. A leaf that does not chain is rejected, never retried against its
 // embedded evidence, so a self-signed peer and a peer from another mesh CA
 // both fail.
-func chainVerifyPeerCallback(meshCA *x509.Certificate, peerPurpose x509.ExtKeyUsage) func([][]byte, [][]*x509.Certificate) error {
+func chainVerifyPeerCallback(meshCA *x509.Certificate, peerPurpose x509.ExtKeyUsage, acceptPeer func(Peer) error) func([][]byte, [][]*x509.Certificate) error {
 	roots := x509.NewCertPool()
 	roots.AddCert(meshCA)
 	return func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
@@ -916,7 +937,21 @@ func chainVerifyPeerCallback(meshCA *x509.Certificate, peerPurpose x509.ExtKeyUs
 		if sandboxID == "" {
 			return fmt.Errorf("armtls: mesh peer leaf carries no sandbox-ID extension")
 		}
-		return nil
+		if acceptPeer == nil {
+			return nil
+		}
+		matched, err := MatchedWorkloadFromCert(leaf)
+		if err != nil {
+			return fmt.Errorf("armtls: mesh peer matched workload: %w", err)
+		}
+		peer := Peer{
+			SandboxID: sandboxID,
+			Purpose:   peerPurpose,
+		}
+		if matched != nil {
+			peer.WorkloadName = matched.Name
+		}
+		return acceptPeer(peer)
 	}
 }
 

@@ -308,8 +308,19 @@ the **chain path alone** (`NewMeshServerTLSConfig`, `NewMeshClientTLSConfig`,
 A failed chain is never retried against the leaf's embedded evidence, so a
 self-signed peer and a peer from another mesh CA both fail.
 
+Either role may also set `AcceptPeer`, which runs on the identity the chain
+path read — the sandbox ID, the CA-vouched matched workload name and the
+purpose required — once that verification passed and before any application
+byte moves. An error there fails the handshake. The router's routing sidecar
+sets it: the backend of a route must be the workload the signed manifest
+names, and a leaf CDS stamped no workload on names none.
+
 This profile authenticates member-to-member traffic only: a credential client
-reaches CDS on the evidence path, and the router is itself a member.
+reaches CDS on the evidence path, and the router is itself a member. Its
+routing sidecar speaks the profile itself, rather than through its pod's
+endpoint, because it is the one holding the signed route manifest the peer
+must satisfy; the pod ruleset leaves that identity's connections into the
+cluster uncaptured and captures every other container's.
 
 Both roles require the ALPN protocol `c8s-mesh/1` and refuse a connection that
 negotiates anything else, so no application byte moves on a peer that does not

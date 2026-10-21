@@ -23,7 +23,7 @@ var peerAddresses = []string{resolver + "/24", service + "/24", unapproved + "/2
 // peerServices are the ports the peer accepts on, so traffic the ruleset
 // admits completes instead of waiting.
 var peerServices = []string{address(service, servicePort), address(resolver, 53), address(unapproved, 8080),
-	address(unapproved, 53), address(unapproved, serverEgressPort), address(service, serverEgressPort)}
+	address(unapproved, 53), address(unapproved, serverEgressPort), address(service, serverEgressPort), address(service, plaintextPort)}
 
 // peerNamespace is the node side of the pod's veth: the resolver, the
 // credential service and the addresses outside trusted policy all live here,
