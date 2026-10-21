@@ -522,14 +522,14 @@ if ! grep -qE '^address: 127[.]0[.]0[.]1$' "$ngi/c8s/mkosi.extra/usr/lib/c8s/pod
   echo "::error::the pod-role kubelet must listen on loopback only; pod-status is its external reader"
   exit 1
 fi
-for service in podcvm-containerd podcvm-kubelet podcvm-status podcvm-egress-guard; do
+for service in podcvm-containerd podcvm-kubelet podcvm-status; do
   if ! grep -qxF "ConditionPathExists=/run/confos/role-pod" "$units/$service.service" \
      || ! grep -qxF "enable $service.service" "$preset"; then
     echo "::error::$service.service must be enabled and gate on the authenticated pod verdict"
     exit 1
   fi
 done
-for service in apparmor-enforce c8s-modules-latch nri-node-ip scratch-enforce gpu-cc-enforce podcvm-egress-guard; do
+for service in apparmor-enforce c8s-modules-latch nri-node-ip scratch-enforce gpu-cc-enforce; do
   if ! grep -qE '^RequiredBy=.*podcvm-containerd[.]service' "$units/$service.service"; then
     echo "::error::$service.service must be RequiredBy podcvm-containerd.service"
     exit 1

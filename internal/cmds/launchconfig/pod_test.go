@@ -136,11 +136,11 @@ func TestValidatePodRole(t *testing.T) {
 		{"host path", func(d *Document) {
 			d.Pod.Manifest = testPodManifest(`,"volumes":[{"name":"h","hostPath":{"path":"/"}}]`)
 		}, "only emptyDir"},
-		{"pod-status host port", func(d *Document) {
-			d.Pod.Manifest = strings.Replace(testPodManifest(""), `"name":"app","image"`, `"name":"app","ports":[{"containerPort":80,"hostPort":8443}],"image"`, 1)
-		}, "hostPort 8443"},
+		{"host port", func(d *Document) {
+			d.Pod.Manifest = strings.Replace(testPodManifest(""), `"name":"app","image"`, `"name":"app","ports":[{"containerPort":80,"hostPort":80}],"image"`, 1)
+		}, "hostPort"},
 		{"host ip", func(d *Document) {
-			d.Pod.Manifest = strings.Replace(testPodManifest(""), `"name":"app","image"`, `"name":"app","ports":[{"containerPort":80,"hostPort":80,"hostIP":"127.0.0.1"}],"image"`, 1)
+			d.Pod.Manifest = strings.Replace(testPodManifest(""), `"name":"app","image"`, `"name":"app","ports":[{"containerPort":80,"hostIP":"127.0.0.1"}],"image"`, 1)
 		}, "hostIP"},
 		{"privileged", func(d *Document) {
 			d.Pod.Manifest = strings.Replace(testPodManifest(""), `"name":"app","image"`, `"name":"app","securityContext":{"privileged":true},"image"`, 1)
@@ -165,18 +165,6 @@ func TestValidatePodRole(t *testing.T) {
 	data, _ := yaml.Marshal(doc)
 	if _, err := Parse(data); err == nil || !strings.Contains(err.Error(), "requires role pod") {
 		t.Fatalf("server with pod section: %v", err)
-	}
-}
-
-func TestValidatePodPublishesHostPort(t *testing.T) {
-	doc, _, _ := testPodDocument(t, "snp")
-	doc.Pod.Manifest = strings.Replace(testPodManifest(""), `"name":"app","image"`, `"name":"app","ports":[{"containerPort":8000,"hostPort":443}],"image"`, 1)
-	data, err := yaml.Marshal(doc)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Parse(data); err != nil {
-		t.Fatal(err)
 	}
 }
 

@@ -17,8 +17,6 @@ enable rke2-agent.service
 enable podcvm-containerd.service
 enable podcvm-kubelet.service
 enable podcvm-status.service
-# Lets the pod answer on its published ports without opening connections out.
-enable podcvm-egress-guard.service
 enable systemd-timesyncd.service
 # Makes time-sync.target block until the clock is actually synchronised.
 # gpu-cc-enforce no longer orders after it; it waits for NTPSynchronized
