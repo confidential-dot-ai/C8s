@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Answers GET / on the port with the body and a newline (steps/mesh.go,
 # helloServer; backends/kind.sh, external_endpoint). Binds both families where
-# the pod has an IPv6 stack, IPv4 alone otherwise, as c8s-udp-listen does.
+# the pod has an IPv6 stack, IPv4 alone otherwise.
 # Usage: c8s-hello-api <port> <body>
 import http.server, os, socket, sys
 

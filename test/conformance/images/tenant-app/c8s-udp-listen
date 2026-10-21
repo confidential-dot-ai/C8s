@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 # Receives UDP on the port and prints each datagram on its own line
-# (steps/mesh.go, datagramListener). Binds both families where the pod has an
-# IPv6 stack (the kernel lists its addresses in /proc/net/if_inet6), IPv4
-# alone otherwise.
+# (steps/mesh.go, datagramListener). Binds each of the pod's own addresses,
+# those its hostname resolves to (kubelet writes the pod IPs to /etc/hosts),
+# where datagrams to the pod arrive: the mesh redirects no UDP.
 # Usage: c8s-udp-listen <port>
-import os, socket, sys
-family = socket.AF_INET6 if os.path.exists("/proc/net/if_inet6") else socket.AF_INET
-s = socket.socket(family, socket.SOCK_DGRAM)
-s.bind(("", int(sys.argv[1])))
+import selectors, socket, sys
+port = int(sys.argv[1])
+sel = selectors.DefaultSelector()
+for family, _, _, _, addr in set(socket.getaddrinfo(socket.gethostname(), port, type=socket.SOCK_DGRAM)):
+    s = socket.socket(family, socket.SOCK_DGRAM)
+    s.bind(addr)
+    sel.register(s, selectors.EVENT_READ)
 while True:
-    print(s.recvfrom(65535)[0].decode(errors="replace"), flush=True)
+    for key, _ in sel.select():
+        print(key.fileobj.recvfrom(65535)[0].decode(errors="replace"), flush=True)
