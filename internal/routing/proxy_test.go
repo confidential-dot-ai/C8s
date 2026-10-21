@@ -558,11 +558,12 @@ func TestListenerUpgradeIsIdle(t *testing.T) {
 	var quiet time.Time
 	for i := 0; time.Since(start) < 4*timeout; i++ {
 		time.Sleep(timeout / 5)
+		// The proxy's last activity is its echo, after this write.
+		quiet = time.Now()
 		fmt.Fprintf(conn, "ping %d\n", i)
 		if line, err := br.ReadString('\n'); err != nil || line != fmt.Sprintf("ping %d\n", i) {
 			t.Fatalf("echo %d after %v = %q, %v, want it echoed", i, time.Since(start), line, err)
 		}
-		quiet = time.Now()
 	}
 	if err := conn.SetReadDeadline(time.Now().Add(10 * timeout)); err != nil {
 		t.Fatal(err)

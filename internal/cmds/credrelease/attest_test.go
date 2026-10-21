@@ -215,9 +215,8 @@ func TestRunServesAuthenticatedBootstrap(t *testing.T) {
 				t.Fatal(err)
 			}
 			addr := ln.Addr().String()
-			_ = ln.Close()
 			cfg := Config{
-				ListenAddr: addr, AttestationAPIURL: stub.URL(), Platform: string(platform),
+				ListenAddr: addr, listener: ln, AttestationAPIURL: stub.URL(), Platform: string(platform),
 				ClientCACert: clientCert, ClientCAKey: clientKey, ServerCACert: serverCert,
 				CertTTL: defaultCertTTL, CertOrg: defaultCertOrg, CertCN: defaultCertCN,
 				LogCertTTL: defaultLogCertTTL, LogCertOrg: defaultLogCertOrg, LogCertCN: defaultLogCertCN,
