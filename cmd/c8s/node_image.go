@@ -186,7 +186,7 @@ func renderNodeImage(ctx context.Context, cfg nodeImageRenderConfig) error {
 	if err != nil {
 		return fmt.Errorf("render node integration with helm: %w: %s", err, stderr.String())
 	}
-	artifacts, err := collectNodeImageArtifacts(rendered)
+	artifacts, err := collectNodeImageArtifacts(rendered, cfg.componentDigests())
 	if err != nil {
 		return err
 	}
@@ -205,6 +205,7 @@ func renderNodeImage(ctx context.Context, cfg nodeImageRenderConfig) error {
 		{"cds-floor.json", artifacts.cdsFloor},
 		{"c8s-cds-singleton.yaml", artifacts.cdsSingleton},
 		{"c8s-cds-ha.yaml", artifacts.cdsHA},
+		{"local-names.txt", localNamesFile(artifacts.localNames)},
 	}
 	for _, name := range routerNginxFiles {
 		files = append(files, artifact{filepath.Join("router-nginx", name), []byte(artifacts.routerNginx[name])})
@@ -233,6 +234,9 @@ type nodeImageArtifacts struct {
 	// routerImage is the front door's own image, which the measured base
 	// pins for the router role. Only the chart carries that digest.
 	routerImage string
+	// localNames maps a baked image to the node-local name it is also
+	// imported under ("<ref> <name>" lines in local-names.txt).
+	localNames map[string]string
 	// cdsFloor is the NRI floor a cds-role node admits instead of the seed:
 	// the HA CDS container pinned exactly, plus the DaemonSets every node runs.
 	// Empty when the chart renders no HA CDS.
@@ -254,7 +258,9 @@ var routerNginxFiles = []string{"nginx.conf", "reload.sh", "tls-cds.conf", "tls-
 // collectNodeImageArtifacts retains complete chart resources and copies the seed
 // for host NRI bootstrap. Every workload image must be pinned and present in the
 // seed; the same inventory drives image preloading into the measured rootfs.
-func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
+// collectNodeImageArtifacts splits the render; components are the digests of
+// the images this build produces (DaemonSets name them node-locally).
+func collectNodeImageArtifacts(rendered []byte, components map[string]bool) (*nodeImageArtifacts, error) {
 	namespace, err := yaml.Marshal(corev1.Namespace{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Namespace"},
 		ObjectMeta: metav1.ObjectMeta{
@@ -270,7 +276,7 @@ func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
 	if err != nil {
 		return nil, fmt.Errorf("encode node namespace: %w", err)
 	}
-	var artifacts nodeImageArtifacts
+	artifacts := nodeImageArtifacts{localNames: map[string]string{}}
 	var manifests bytes.Buffer
 	manifests.Write(namespace)
 	decoder := k8syaml.NewYAMLOrJSONDecoder(bytes.NewReader(rendered), 4096)
@@ -337,6 +343,11 @@ func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
 					return nil, err
 				}
 				cdsNode = append(cdsNode, containers...)
+				// Every node must run the components its own measured
+				// image carries, not the server image's.
+				if err := localizeDaemonSet(&object, components, artifacts.localNames); err != nil {
+					return nil, fmt.Errorf("node-image workload %s: %w", key, err)
+				}
 			}
 		case "ConfigMap":
 			if err := collectConfigMapArtifact(object, key, name, &artifacts); err != nil {
@@ -1004,4 +1015,75 @@ func collectConfigMapArtifact(object unstructured.Unstructured, key, name string
 	}
 	artifacts.routerNginx = cm.Data
 	return nil
+}
+
+// nodeLocalTag names a baked image on the node that baked it. A DaemonSet is
+// one object, applied by the server from the server's image, but every node
+// must run the components its own measured image carries: a rollout launches
+// nodes on a new image while others keep the old one, and pullPolicy Never
+// can only run what the node imported. So DaemonSet containers name the
+// build's own component images by this node-local tag, which each image's
+// airgap import also gives them (local-names.txt). Admission still pins
+// exact digests: the bootstrap seed and the cds floor are derived before
+// the rewrite, and NRI resolves the tag to the node's own digest.
+const nodeLocalTag = "c8s-node"
+
+// componentDigests are the digests of the images this build produces (the
+// c8s operator image, CDS, armTLS mesh): the ones that differ per build.
+func (cfg nodeImageRenderConfig) componentDigests() map[string]bool {
+	out := map[string]bool{}
+	for _, d := range []string{cfg.imageDigest, cfg.cdsImageDigest, cfg.armtlsMeshImageDigest} {
+		if d != "" {
+			out[d] = true
+		}
+	}
+	return out
+}
+
+// localizeDaemonSet rewrites the DaemonSet's component image references to
+// their node-local names and records them in names.
+func localizeDaemonSet(object *unstructured.Unstructured, components map[string]bool, names map[string]string) error {
+	for _, field := range []string{"initContainers", "containers"} {
+		list, found, err := unstructured.NestedSlice(object.Object, "spec", "template", "spec", field)
+		if err != nil || !found {
+			if err != nil {
+				return err
+			}
+			continue
+		}
+		for i, item := range list {
+			c, ok := item.(map[string]any)
+			if !ok {
+				return fmt.Errorf("%s[%d] is not an object", field, i)
+			}
+			image, _ := c["image"].(string)
+			ref, err := reference.ParseDockerRef(image)
+			if err != nil {
+				return err
+			}
+			pinned, ok := ref.(reference.Canonical)
+			if !ok || !components[pinned.Digest().String()] {
+				continue
+			}
+			local := reference.TrimNamed(ref).Name() + ":" + nodeLocalTag
+			if prev, dup := names[image]; dup && prev != local {
+				return fmt.Errorf("image %s has two local names", image)
+			}
+			names[image] = local
+			c["image"] = local
+			list[i] = c
+		}
+		if err := unstructured.SetNestedSlice(object.Object, list, "spec", "template", "spec", field); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func localNamesFile(names map[string]string) []byte {
+	var b strings.Builder
+	for _, ref := range slices.Sorted(maps.Keys(names)) {
+		fmt.Fprintf(&b, "%s %s\n", ref, names[ref])
+	}
+	return []byte(b.String())
 }

@@ -12,6 +12,7 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
@@ -31,10 +32,11 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 	outputs := make(map[string][]byte)
 	for _, name := range []string{"peers.json", "cds.json"} {
 		// cds.json pins exactly the server, plus one entry per cds launch key
-		// when the cluster runs an HA CDS; peers.json pins every role.
+		// when the cluster runs an HA CDS, each on every accepted image;
+		// peers.json pins every role.
 		want := 0
 		if name == "cds.json" {
-			want = 1 + len(d.CDSOperatorPublicKeys)
+			want = (1 + len(d.CDSOperatorPublicKeys)) * (1 + len(d.PeerImages))
 		}
 		data, err := readPolicy(path(launchDir+name), d.Image.Platform, want)
 		if err != nil {
@@ -65,6 +67,13 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 	outputs[CDSModeFile] = []byte(CDSModeSingleton + "\n")
 	if d.CDSHA != nil {
 		outputs[CDSModeFile] = []byte(CDSModeHA + "\n")
+		// What the node's enforcer needs to follow the operator's signed
+		// CDS pin decrees across a CDS image rollout. Public.
+		info, err := json.Marshal(cmdsutil.CDSDecreesInfo{ClusterID: d.ClusterID, DecreeKey: d.CDSHA.DecreeKey})
+		if err != nil {
+			return err
+		}
+		outputs[CDSDecreesFile] = info
 	}
 	if d.Role == launchconfig.CDS {
 		cds, err := cdsOutputs(d, bakedData)
@@ -120,6 +129,10 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 	} else {
 		pull["url"] = d.CDSURL()
 		pull["cds_measurements_config"] = launchDir + "cds.json"
+		if d.CDSHA != nil {
+			pull["cds_decrees_file"] = PublicDir + "/" + CDSDecreesFile
+			pull["cds_decrees_state"] = "/run/nri-image-policy/cds-decree-state.json"
+		}
 		delete(pull, "cds_measurements")
 		delete(pull, "cds_rtmrs")
 		// A node carrying no mesh policy hosts no member pods, so there is no
@@ -159,6 +172,11 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 	}
 	if d.Role != launchconfig.CDS {
 		if err := os.Remove(filepath.Join(publicPath, cdsHAFile)); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	if d.CDSHA == nil {
+		if err := os.Remove(filepath.Join(publicPath, CDSDecreesFile)); err != nil && !os.IsNotExist(err) {
 			return err
 		}
 	}

@@ -37,7 +37,10 @@ const (
 
 // Entry is one Raft log entry. Exactly one payload is set.
 type Entry struct {
-	Kind      EntryKind              `json:"kind"`
+	Kind EntryKind `json:"kind"`
+	// Format is the oldest format that can apply the entry (0 is 1).
+	Format    uint32                 `json:"format,omitempty"`
+	SetFormat uint32                 `json:"set_format,omitempty"` // KindFormat
 	Allowlist *allowlist.Command     `json:"allowlist,omitempty"`
 	Secret    *secrets.Command       `json:"secret,omitempty"`
 	Binding   *sandboxledger.Command `json:"binding,omitempty"`
@@ -83,12 +86,24 @@ type FSM struct {
 	ledger    *sandboxledger.Ledger
 
 	applied atomic.Uint64
+	// readable is the newest format this replica reads; stuck is set once it
+	// met an entry it could not apply, and keeps it from serving.
+	readable uint32
+	stuck    atomic.Pointer[string]
 }
 
 // NewFSM builds the state machine over the replica's local stores. pre is
 // the pre-Genesis state from the replica's launch configuration.
 func NewFSM(pre Core, al *allowlist.Store, sec *secrets.MemoryStore, led *sandboxledger.Ledger) *FSM {
-	return &FSM{core: pre, allowlist: al, secrets: sec, ledger: led}
+	return &FSM{core: pre, allowlist: al, secrets: sec, ledger: led, readable: Format}
+}
+
+// Stuck is why this replica stopped applying the log, or "".
+func (f *FSM) Stuck() string {
+	if p := f.stuck.Load(); p != nil {
+		return *p
+	}
+	return ""
 }
 
 // Core returns a copy of the agreed cluster state.
@@ -116,13 +131,38 @@ func (f *FSM) Apply(l *raft.Log) any {
 	}
 	var e Entry
 	if err := json.Unmarshal(l.Data, &e); err != nil {
-		return fmt.Errorf("decode log entry %d: %w", l.Index, err)
+		return f.stop(fmt.Errorf("decode log entry %d: %w", l.Index, err))
 	}
-	return f.apply(e)
+	if formatOr1(e.Format) > f.readable {
+		return f.stop(fmt.Errorf("%w: entry %d needs format %d, this replica reads up to %d", ErrNewerFormat, l.Index, e.Format, f.readable))
+	}
+	res := f.apply(e)
+	if err, ok := res.(error); ok && errors.Is(err, errMalformed) {
+		return f.stop(fmt.Errorf("log entry %d: %w", l.Index, err))
+	}
+	return res
+}
+
+// errMalformed is an entry this replica does not understand.
+var errMalformed = errors.New("malformed log entry")
+
+// stop records that this replica can no longer follow the log. Raft treats
+// Apply's result as the entry's answer and moves on, so a replica that
+// skipped an entry would serve state the rest of the group does not have.
+// It stops serving instead, and is replaced by one that reads the log.
+func (f *FSM) stop(err error) error {
+	msg := err.Error()
+	f.stuck.CompareAndSwap(nil, &msg)
+	return err
 }
 
 func (f *FSM) apply(e Entry) any {
 	switch {
+	case e.Kind == KindFormat && e.SetFormat != 0:
+		if err := f.applyFormat(e.SetFormat); err != nil {
+			return f.stop(err)
+		}
+		return nil
 	case e.Kind == KindAllowlist && e.Allowlist != nil:
 		return f.allowlist.Apply(*e.Allowlist)
 	case e.Kind == KindSecret && e.Secret != nil:
@@ -134,7 +174,7 @@ func (f *FSM) apply(e Entry) any {
 	case e.Kind == KindRestore && e.Restore != nil:
 		return f.applyRestore(*e.Restore)
 	}
-	return fmt.Errorf("malformed log entry of kind %q", e.Kind)
+	return fmt.Errorf("%w of kind %q", errMalformed, e.Kind)
 }
 
 func (f *FSM) applyDecree(de DecreeEntry) DecreeResult {
@@ -165,7 +205,7 @@ func (f *FSM) applyRestore(re RestoreEntry) DecreeResult {
 	if SnapshotSHA256(re.Snapshot) != re.Decree.Decree.SnapshotSHA256 {
 		return fail(errors.New("snapshot differs from the one the decree names"))
 	}
-	sn, err := decodeSnapshot(bytes.NewReader(re.Snapshot))
+	sn, err := decodeSnapshot(bytes.NewReader(re.Snapshot), f.readable)
 	if err != nil {
 		return fail(err)
 	}
@@ -208,9 +248,18 @@ func nextCore(cur Core, de DecreeEntry) (Core, *issuer.CA, error) {
 		}
 		next.Measurements = pins
 		next.GenesisAtMS = de.AtMS
+	case SetVoters:
+		next.Seats = d.Voters
 	case UpdateMeasurements, RotateKey:
 		if len(d.Measurements) > 0 {
 			next.Measurements = slices.Clone(d.Measurements)
+			// A set without images leaves clients outside the group on
+			// the last one they were told; they cannot pin a bare hash.
+			next.PinsDecree = nil
+			if len(d.Images) > 0 {
+				sd := de.Decree
+				next.PinsDecree = &sd
+			}
 		}
 	}
 	next.Epoch++
@@ -222,7 +271,9 @@ func nextCore(cur Core, de DecreeEntry) (Core, *issuer.CA, error) {
 type snapshot struct {
 	// Index is the log index the snapshot was taken at (0 in snapshots and
 	// backups from before it was recorded).
-	Index     uint64                  `json:"index,omitempty"`
+	Index uint64 `json:"index,omitempty"`
+	// Format is the encoding of the snapshot (0 is 1).
+	Format    uint32                  `json:"format,omitempty"`
 	Core      Core                    `json:"core"`
 	Key       []byte                  `json:"key,omitempty"`
 	Allowlist allowlist.Snapshot      `json:"allowlist"`
@@ -246,6 +297,7 @@ var _ raft.ConfigurationStore = (*FSM)(nil)
 func (f *FSM) Snapshot() (raft.FSMSnapshot, error) {
 	f.mu.RLock()
 	sn := snapshot{Index: f.applied.Load(), Core: f.core.clone()}
+	sn.Format = sn.Core.format() // what every member reads, not what this one could write
 	if f.ca != nil {
 		key, err := x509.MarshalPKCS8PrivateKey(f.ca.Key)
 		if err != nil {
@@ -266,7 +318,7 @@ func (f *FSM) Snapshot() (raft.FSMSnapshot, error) {
 // Restore implements raft.FSM: a joining replica takes the leader's state.
 func (f *FSM) Restore(rc io.ReadCloser) error {
 	defer rc.Close()
-	sn, err := decodeSnapshot(rc)
+	sn, err := decodeSnapshot(rc, f.readable)
 	if err != nil {
 		return err
 	}
@@ -318,7 +370,16 @@ func encodeSnapshot(w io.Writer, sn snapshot) error {
 	return zw.Close()
 }
 
-func decodeSnapshot(r io.Reader) (snapshot, error) {
+func decodeSnapshot(r io.Reader, readable uint32) (snapshot, error) {
+	sn, err := decodeSnapshotAny(r)
+	if err == nil && (formatOr1(sn.Format) > readable || sn.Core.format() > readable) {
+		return snapshot{}, fmt.Errorf("%w: snapshot format %d, cluster format %d, this replica reads up to %d",
+			ErrNewerFormat, formatOr1(sn.Format), sn.Core.format(), readable)
+	}
+	return sn, err
+}
+
+func decodeSnapshotAny(r io.Reader) (snapshot, error) {
 	var sn snapshot
 	br := bufio.NewReader(r)
 	if magic, _ := br.Peek(2); len(magic) < 2 || magic[0] != 0x1f || magic[1] != 0x8b {

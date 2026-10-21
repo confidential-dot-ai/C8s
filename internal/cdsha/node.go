@@ -107,6 +107,10 @@ type Config struct {
 	Secrets   *secrets.MemoryStore
 	Ledger    *sandboxledger.Ledger
 	Logger    *slog.Logger
+
+	// Format overrides the newest encoding format this replica reads (0:
+	// the package's Format). Tests use it to run an older release.
+	Format uint32
 }
 
 // Node is one CDS replica.
@@ -141,6 +145,9 @@ type Node struct {
 	failing  map[raft.ServerID]time.Time // leader: when a member's heartbeats started failing
 	joinedAt map[raft.ServerID]time.Time // leader: when a member was added
 	addedAt  map[raft.ServerID]time.Time // leader: when this leader added a member (handleJoin)
+	reads    map[raft.ServerID]uint32    // leader: the newest format each member reads
+
+	joinRefusedAt map[string]time.Time // peer + reason -> last logged
 
 	backupAt    time.Time // leader: last backup attempt
 	backupIndex uint64    // leader: applied index of the last stored backup
@@ -164,8 +171,14 @@ type Status struct {
 	AppliedIndex  uint64   `json:"applied_index"`
 	LastContactMS int64    `json:"last_contact_ms,omitempty"`
 	// SeatsFilled (leader only): every voter seat is held by a member whose
-	// heartbeats succeed.
+	// heartbeats succeed. Seats is the voter seat count in force.
 	SeatsFilled bool `json:"seats_filled,omitempty"`
+	Seats       int  `json:"seats,omitempty"`
+	// Format is the cluster's agreed encoding format; Reads the newest this
+	// replica reads. Stuck says why it stopped following the log.
+	Format uint32 `json:"format,omitempty"`
+	Reads  uint32 `json:"reads,omitempty"`
+	Stuck  string `json:"stuck,omitempty"`
 }
 
 // NewNode prepares a replica. Every start is a new Raft member: the log
@@ -213,6 +226,7 @@ func NewNode(cfg Config) (*Node, error) {
 		failing:     map[raft.ServerID]time.Time{},
 		joinedAt:    map[raft.ServerID]time.Time{},
 		addedAt:     map[raft.ServerID]time.Time{},
+		reads:       map[raft.ServerID]uint32{},
 	}
 	if len(cfg.RecoveryKey) > 0 {
 		k, err := x509.ParsePKIXPublicKey(cfg.RecoveryKey)
@@ -223,6 +237,9 @@ func NewNode(cfg Config) (*Node, error) {
 		n.recovery = pub
 	}
 	n.fsm = NewFSM(PreGenesis(cfg.ClusterID, cfg.OperatorPubKey), cfg.Allowlist, cfg.Secrets, cfg.Ledger)
+	if cfg.Format != 0 {
+		n.fsm.readable = cfg.Format
+	}
 	n.lastMember.Store(time.Now().UnixMilli())
 	if n.certs, err = newCertHolder(func() (tls.Certificate, error) { return newPeerCert(cfg.ClusterID, cfg.Attestor) }); err != nil {
 		return nil, err
@@ -490,7 +507,7 @@ func (n *Node) joinOrBootstrap(ctx context.Context) {
 			n.lastLoner.Store(time.Now().UnixMilli())
 		}
 		if err != nil || resp.Err != "" {
-			n.log.Debug("join refused", "peer", p, "err", errors.Join(err, errorsOrNil(resp.Err)))
+			n.joinRefused(p, errors.Join(err, errorsOrNil(resp.Err)))
 		}
 	}
 	if anyMember {
@@ -502,6 +519,26 @@ func (n *Node) joinOrBootstrap(ctx context.Context) {
 	if g, ok := n.pendingGenesis(ctx); ok {
 		n.bootstrap(ctx, g)
 	}
+}
+
+// joinRefused logs why a peer would not add this replica, at Info once a
+// minute per peer and reason: a replica that can never join (a release too
+// old for the cluster's format, an image not pinned) must say so.
+func (n *Node) joinRefused(peer string, err error) {
+	key := peer + " " + err.Error()
+	now := time.Now()
+	n.mu.Lock()
+	if n.joinRefusedAt == nil {
+		n.joinRefusedAt = map[string]time.Time{}
+	}
+	last, seen := n.joinRefusedAt[key]
+	if seen && now.Sub(last) < time.Minute {
+		n.mu.Unlock()
+		return
+	}
+	n.joinRefusedAt[key] = now
+	n.mu.Unlock()
+	n.log.Info("join refused", "peer", peer, "err", err)
 }
 
 // rejoin asks reachable replicas to add this member, as a joiner would; a
@@ -525,7 +562,7 @@ func errorsOrNil(s string) error {
 // askJoin asks peer p to add this replica, following one redirect to the
 // leader.
 func (n *Node) askJoin(p string) (controlResponse, error) {
-	req := controlRequest{Op: ctlJoin, ID: string(n.id), Address: string(n.raftAddress())}
+	req := controlRequest{Op: ctlJoin, ID: string(n.id), Address: string(n.raftAddress()), Reads: n.fsm.readable}
 	resp, err := n.call(p, 5*time.Second, req)
 	if err != nil || resp.Leader == "" || resp.Leader == p || resp.Leader == n.cfg.Advertise {
 		return resp, err
@@ -614,7 +651,7 @@ func (n *Node) maybeBackup(ctx context.Context) {
 	if err != nil {
 		return
 	}
-	sn, err := decodeSnapshot(bytes.NewReader(body))
+	sn, err := decodeSnapshot(bytes.NewReader(body), n.fsm.readable)
 	if err != nil {
 		n.log.Warn("backup: decode snapshot", "err", err)
 		return
@@ -763,6 +800,10 @@ func (n *Node) handleJoin(req controlRequest) controlResponse {
 	if nodeOf(id) == "" || hostport == "" || addrID != req.ID {
 		return controlResponse{Member: true, Err: "bad join request"}
 	}
+	if reads, agreed := formatOr1(req.Reads), n.fsm.Core().format(); reads < agreed {
+		// It could not apply the log it would receive.
+		return controlResponse{Member: true, Err: fmt.Sprintf("replica reads format %d, the cluster writes %d", reads, agreed)}
+	}
 	f := n.r().GetConfiguration()
 	if err := f.Error(); err != nil {
 		return controlResponse{Member: true, Err: err.Error()}
@@ -794,6 +835,7 @@ func (n *Node) handleJoin(req controlRequest) controlResponse {
 	n.mu.Lock()
 	n.joinedAt[id] = time.Now()
 	n.addedAt[id] = n.joinedAt[id]
+	n.reads[id] = formatOr1(req.Reads)
 	delete(n.failing, id) // failures of an earlier membership (see noteFailure)
 	n.mu.Unlock()
 	n.log.Info("replica joined as non-voter", "id", id, "address", req.Address)
@@ -933,7 +975,7 @@ func (n *Node) reconcile() {
 	}
 	var promote []raft.Server
 	for _, s := range servers {
-		if voters+len(promote) >= n.cfg.Seats {
+		if voters+len(promote) >= n.seats() {
 			break
 		}
 		if s.Suffrage == raft.Voter || slices.Contains(remove, s.ID) || voterNodes[nodeOf(s.ID)] || !healthy(s.ID) {
@@ -952,6 +994,7 @@ func (n *Node) reconcile() {
 		delete(n.failing, id)
 		delete(n.joinedAt, id)
 		delete(n.addedAt, id)
+		delete(n.reads, id)
 		n.mu.Unlock()
 		n.log.Info("member removed", "id", id)
 	}
@@ -962,6 +1005,96 @@ func (n *Node) reconcile() {
 		}
 		n.log.Info("member promoted to voter", "id", s.ID)
 	}
+	if len(remove) == 0 && len(promote) == 0 {
+		n.demoteExtraVoter(servers)
+	}
+	if len(remove) == 0 {
+		n.raiseFormat(servers)
+	}
+}
+
+// demoteExtraVoter (leader) demotes one voter when there are more voters than
+// seats: a failing one first, never itself. One per pass, so the group never
+// loses more than one vote at a time.
+func (n *Node) demoteExtraVoter(servers []raft.Server) {
+	var voters []raft.ServerID
+	for _, s := range servers {
+		if s.Suffrage == raft.Voter {
+			voters = append(voters, s.ID)
+		}
+	}
+	if len(voters) <= n.seats() {
+		return
+	}
+	n.mu.Lock()
+	var pick raft.ServerID
+	for _, id := range voters {
+		if id == n.id {
+			continue
+		}
+		if _, bad := n.failing[id]; bad || pick == "" {
+			pick = id
+			if bad {
+				break
+			}
+		}
+	}
+	n.mu.Unlock()
+	if pick == "" {
+		return
+	}
+	if err := n.r().DemoteVoter(pick, 0, n.cfg.Timing.Apply).Error(); err != nil {
+		n.log.Warn("demote voter", "id", pick, "err", err)
+		return
+	}
+	n.log.Info("voter demoted: more voters than seats", "id", pick, "seats", n.seats())
+}
+
+// raiseFormat (leader): once every voter seat is filled and every member
+// reads a newer format than the agreed one, the cluster agrees on it, so the
+// new encoding is only written after the last old replica left. Waiting for
+// the seats keeps a group that shrank to new replicas (an old one crashed
+// mid-rollout) from locking the old release out before the operator chose to
+// move on. A member that joined under an earlier leader is asked what it
+// reads; one that does not answer holds the format.
+func (n *Node) raiseFormat(servers []raft.Server) {
+	agreed := n.fsm.Core().format()
+	low := n.fsm.readable
+	if low <= agreed || !n.seatsFilled() {
+		return
+	}
+	for _, s := range servers {
+		if s.ID == n.id {
+			continue
+		}
+		n.mu.Lock()
+		v, ok := n.reads[s.ID]
+		n.mu.Unlock()
+		if !ok {
+			hp, _ := splitRaftAddr(string(s.Address))
+			resp, err := n.call(hp, time.Second, controlRequest{Op: ctlStatus})
+			if err != nil || resp.Status == nil || resp.Status.ID != string(s.ID) {
+				return
+			}
+			v = formatOr1(resp.Status.Reads)
+			n.mu.Lock()
+			n.reads[s.ID] = v
+			n.mu.Unlock()
+		}
+		low = min(low, v)
+	}
+	if low <= agreed {
+		return
+	}
+	raw, err := json.Marshal(Entry{Kind: KindFormat, SetFormat: low})
+	if err != nil {
+		return
+	}
+	if _, _, err := n.applyLocal(raw); err != nil {
+		n.log.Warn("raise cluster format", "to", low, "err", err)
+		return
+	}
+	n.log.Info("cluster format raised: every member reads it", "from", agreed, "to", low)
 }
 
 // applyDecrees applies pending operator decrees (leader only).
@@ -1217,7 +1350,7 @@ func (n *Node) Serving() bool {
 	if !core.Joined() || !core.Pins(n.measurement) || n.r() == nil {
 		return false
 	}
-	if n.jumpAt.Load() != 0 {
+	if n.jumpAt.Load() != 0 || n.fsm.Stuck() != "" {
 		return false
 	}
 	if n.r().State() == raft.Leader {
@@ -1241,11 +1374,16 @@ func (n *Node) CA() (*issuer.CA, error) {
 // Core is the agreed cluster state.
 func (n *Node) Core() Core { return n.fsm.Core() }
 
+// PinsDecree is the signed decree behind the current pin set, or nil when
+// the pins came from Genesis or from a decree without images.
+func (n *Node) PinsDecree() *SignedDecree { return n.fsm.Core().PinsDecree }
+
 // Status is this replica's view of the cluster.
 func (n *Node) Status() Status {
 	core := n.fsm.Core()
 	st := Status{ClusterID: n.cfg.ClusterID, NodeName: n.cfg.NodeName, ID: string(n.id), Joined: core.Joined(),
-		Epoch: core.Epoch, Measurement: n.measurement, AppliedIndex: n.fsm.AppliedIndex()}
+		Epoch: core.Epoch, Measurement: n.measurement, AppliedIndex: n.fsm.AppliedIndex(),
+		Format: core.format(), Reads: n.fsm.readable, Stuck: n.fsm.Stuck(), Seats: n.seats()}
 	if core.Joined() {
 		sum := sha256.Sum256(core.RootCert)
 		st.CAFingerprint = hex.EncodeToString(sum[:])
@@ -1294,7 +1432,16 @@ func (n *Node) seatsFilled() bool {
 		}
 		voters++
 	}
-	return voters >= n.cfg.Seats
+	return voters >= n.seats()
+}
+
+// seats is the voter seat count: the agreed one once a SetVoters decree
+// set it, the launch configuration's before.
+func (n *Node) seats() int {
+	if s := n.fsm.Core().Seats; s > 0 {
+		return s
+	}
+	return n.cfg.Seats
 }
 
 // isVoter reports whether this member holds a voter seat.

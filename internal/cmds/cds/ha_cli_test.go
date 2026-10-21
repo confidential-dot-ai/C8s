@@ -265,6 +265,12 @@ func TestHAHandlersBeforeJoin(t *testing.T) {
 	if err := json.NewDecoder(w.Body).Decode(&st); err != nil || st.Serving || st.Joined {
 		t.Fatalf("status %+v: %v", st, err)
 	}
+	// No pin decree yet: clients keep their launch-document pins.
+	pw := httptest.NewRecorder()
+	haPins(node)(pw, httptest.NewRequest(http.MethodGet, "/ha/pins", nil))
+	if pw.Code != http.StatusNotFound {
+		t.Fatalf("/ha/pins before any pin decree: %d", pw.Code)
+	}
 	ok := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	gated := haGate(node.Serving, ok)
 	for path, want := range map[string]int{"/attest": 503, "/secrets/x": 503, "/allowlist": 503, "/ca": 503, "/healthz": 200, "/ha/status": 200, "/metrics": 200} {
@@ -476,5 +482,37 @@ func TestHARecoveryKeyAndSeatsWiring(t *testing.T) {
 	staticPeers.ha.advertiseIP, staticPeers.ha.peersDNS, staticPeers.ha.peers = "127.0.0.1", "", []string{"127.0.0.2:1"}
 	if _, err := newHANode(staticPeers, st); err != nil {
 		t.Fatalf("static peers: %v", err)
+	}
+}
+
+func TestSetDecreeImages(t *testing.T) {
+	h := func(c string) string { return strings.Repeat(c, 96) }
+	spec := h("a") + ":" + h("b") + ":" + h("c")
+	pin := spec
+	d := cdsha.Decree{Kind: cdsha.UpdateMeasurements}
+	if err := setDecreeImages(&d, nil); err != nil || d.Images != nil {
+		t.Fatal("no --image changed the decree")
+	}
+	if err := setDecreeImages(&d, []string{strings.ToUpper(spec), spec}); err != nil || len(d.Images) != 2 || len(d.Measurements) != 1 || d.Measurements[0] != pin {
+		t.Fatalf("images %+v measurements %v: %v", d.Images, d.Measurements, err)
+	}
+	d = cdsha.Decree{Kind: cdsha.UpdateMeasurements, Measurements: []string{pin}}
+	if err := setDecreeImages(&d, []string{spec}); err != nil {
+		t.Fatalf("matching --measurements refused: %v", err)
+	}
+	for name, c := range map[string]struct {
+		kind  cdsha.DecreeKind
+		specs []string
+		meas  []string
+	}{
+		"genesis":        {cdsha.Genesis, []string{spec}, nil},
+		"two parts":      {cdsha.UpdateMeasurements, []string{h("a") + ":" + h("b")}, nil},
+		"short register": {cdsha.UpdateMeasurements, []string{"aa:bb:cc"}, nil},
+		"other pins":     {cdsha.UpdateMeasurements, []string{spec}, []string{"x"}},
+	} {
+		d := cdsha.Decree{Kind: c.kind, Measurements: c.meas}
+		if err := setDecreeImages(&d, c.specs); err == nil {
+			t.Fatalf("%s accepted", name)
+		}
 	}
 }

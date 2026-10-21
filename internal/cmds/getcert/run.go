@@ -216,6 +216,14 @@ func cdsHTTPClient(cfg config) (*http.Client, error) {
 		return nil, err
 	}
 	client, err := armtls.NewVerifyingHTTPClient(pins, cfg.AttestationApiURL)
+	if mounted, merr := cmdsutil.NodeMountsPins(workloadclaims.CDSPinsPath); merr == nil && mounted {
+		// The node's policy follows the operator's CDS pin decrees; re-read
+		// it on a pin miss, so renewals continue across a CDS image rollout.
+		var node *cmdsutil.NodePins
+		if node, err = cmdsutil.NewNodePins(workloadclaims.CDSPinsPath); err == nil {
+			client, err = armtls.NewRefreshingHTTPClient(node, cfg.AttestationApiURL)
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("cds armTLS client: %w", err)
 	}
