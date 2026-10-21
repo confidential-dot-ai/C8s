@@ -12,7 +12,6 @@ import (
 	"crypto/x509/pkix"
 	"encoding/asn1"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -377,26 +376,36 @@ func csrBadSignature(ctx context.Context, name string) error {
 }
 
 // evidenceOver asks the node's local attestation service for evidence over
-// report data, as the envelope the CDS takes.
+// report data, as the envelope the CDS takes. Unsigned evidence is real
+// evidence edited here, so only where the backend's evidence is signed.
 func (w *world) evidenceOver(r *requester, reportData []byte, mode evidenceMode) (json.RawMessage, error) {
-	rd := hex.EncodeToString(reportData)
-	var out string
-	var err error
+	args := []string{r.pod.namespace, r.pod.name, base64.StdEncoding.EncodeToString(reportData)}
 	switch mode {
 	case evidenceNoSignature:
-		out, err = w.be.call("evidence_unsigned", r.pod.namespace, r.pod.name, rd)
+		if _, err := w.be.call("evidence_signed"); err != nil {
+			return nil, err
+		}
 	case evidenceForeignDigest:
-		out, err = w.be.call("evidence", r.pod.namespace, r.pod.name, rd, strings.Repeat("aa", 48))
-	default:
-		out, err = w.be.call("evidence", r.pod.namespace, r.pod.name, rd)
+		args = append(args, strings.Repeat("aa", 48))
 	}
+	out, err := w.be.call("evidence", args...)
 	if err != nil {
 		return nil, err
 	}
 	if !json.Valid([]byte(out)) {
 		return nil, fmt.Errorf("the evidence is not JSON: %q", out)
 	}
-	return json.RawMessage(out), nil
+	if mode != evidenceNoSignature {
+		return json.RawMessage(out), nil
+	}
+	edited, ok, err := unsignedEvidence([]byte(out))
+	if err != nil {
+		return nil, fmt.Errorf("the evidence: %w", err)
+	}
+	if !ok {
+		return nil, skipf("the evidence holds no SNP report or v4/v5 TDX quote to edit")
+	}
+	return edited, nil
 }
 
 // otherPodAddress is the address of a pod that is not the requester and not

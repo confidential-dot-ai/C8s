@@ -704,8 +704,23 @@ func verifySetHoldsCA(ctx context.Context, node string) error {
 	if err != nil {
 		return err
 	}
-	_, err = w.be.call("mesh_chain_ready", k8sNode)
-	return err
+	// A failure seen on the first look is waited out: the next tick decides.
+	for tries := 0; ; tries++ {
+		out, err := w.be.call("mesh_ca_log", k8sNode)
+		if err != nil {
+			return err
+		}
+		verdict, wait, err := caRefreshVerdict(out, time.Now())
+		switch {
+		case err != nil:
+			return err
+		case verdict == refreshOK:
+			return nil
+		case verdict == refreshFailed && tries > 0:
+			return fmt.Errorf("the mesh proxy on %s failed its last CA refresh", k8sNode)
+		}
+		time.Sleep(wait)
+	}
 }
 
 // attestationUnreachable stops the node's local attestation service, as the
