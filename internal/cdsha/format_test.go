@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
+	"net"
 	"testing"
 	"time"
 
@@ -136,5 +138,41 @@ func TestFormatRisesOnlyWhenEveryMemberReadsIt(t *testing.T) {
 	}
 	if st := l.node.Status(); len(st.Voters)+len(st.NonVoters) != 3 {
 		t.Fatalf("membership changed: %+v", st)
+	}
+}
+
+// An entry that does not decode stops the replica too.
+func TestFSMStopsOnUndecodableEntry(t *testing.T) {
+	_, opPub := operatorKey(t)
+	al, sec, led := testStores(t)
+	f := NewFSM(PreGenesis(testCluster, opPub), al, sec, led)
+	if _, ok := f.Apply(&raft.Log{Index: 1, Type: raft.LogCommand, Data: []byte("{")}).(error); !ok || f.Stuck() == "" {
+		t.Fatal("undecodable entry did not stop the replica")
+	}
+	// Non-command entries (configuration, barriers) are not the FSM's.
+	g := NewFSM(PreGenesis(testCluster, opPub), al, sec, led)
+	if res := g.Apply(&raft.Log{Index: 2, Type: raft.LogConfiguration}); res != nil || g.Stuck() != "" || g.AppliedIndex() != 2 {
+		t.Fatalf("configuration entry: %v %q", res, g.Stuck())
+	}
+}
+
+// Refusals are logged once a minute per peer and reason, not per attempt.
+func TestRefusalLoggingIsRateLimited(t *testing.T) {
+	m := &mux{}
+	addr := &net.TCPAddr{IP: net.IPv4(10, 0, 0, 1), Port: 9443}
+	for range 3 {
+		m.refused(addr, "handshake", errors.New("x"))
+	}
+	m.refused(addr, "peer identity", errors.New("y"))
+	if len(m.refusedAt) != 2 {
+		t.Fatalf("logged keys %v", m.refusedAt)
+	}
+	n := &Node{log: slog.Default()}
+	for range 3 {
+		n.joinRefused("10.0.0.2:9443", errors.New("replica reads format 1, the cluster writes 2"))
+	}
+	n.joinRefused("10.0.0.2:9443", errors.New("no leader"))
+	if len(n.joinRefusedAt) != 2 {
+		t.Fatalf("join refusals logged %v", n.joinRefusedAt)
 	}
 }
