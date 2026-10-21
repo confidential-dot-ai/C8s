@@ -29,10 +29,11 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 	outputs := make(map[string][]byte)
 	for _, name := range []string{"peers.json", "cds.json"} {
 		// cds.json pins exactly the server, plus one entry per cds launch key
-		// when the cluster runs an HA CDS; peers.json pins every role.
+		// when the cluster runs an HA CDS, each on every accepted image;
+		// peers.json pins every role.
 		want := 0
 		if name == "cds.json" {
-			want = 1 + len(d.CDSOperatorPublicKeys)
+			want = (1 + len(d.CDSOperatorPublicKeys)) * (1 + len(d.PeerImages))
 		}
 		data, err := readPolicy(path(launchDir+name), d.Image.Platform, want)
 		if err != nil {
