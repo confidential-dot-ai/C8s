@@ -1,6 +1,7 @@
 package cdsha
 
 import (
+	"crypto/ecdsa"
 	"strings"
 	"testing"
 	"time"
@@ -65,5 +66,42 @@ func TestDecreeImagePinIsTheReplicaMeasurement(t *testing.T) {
 	bad.RTMR1 = strings.Repeat("AB", 48)
 	if _, err := bad.Pin(); err == nil {
 		t.Fatal("uppercase register accepted")
+	}
+}
+
+func TestVerifyPinDecree(t *testing.T) {
+	k, pub := operatorKey(t)
+	other, _ := operatorKey(t)
+	a, b := testImage(1), testImage(5)
+	pinA, _ := a.Pin()
+	pinB, _ := b.Pin()
+	sign := func(key *ecdsa.PrivateKey, d Decree) SignedDecree {
+		t.Helper()
+		d.IntentID, d.ExpiresAt = "i", time.Now().Add(-time.Hour) // expired: clients ignore expiry
+		sd, err := SignDecree(d, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return sd
+	}
+	good := sign(k, Decree{ClusterID: testCluster, BaseEpoch: 4, Kind: UpdateMeasurements, Measurements: []string{pinA, pinB}, Images: []DecreeImage{a, b}})
+	if err := VerifyPinDecree(good, testCluster, pub); err != nil {
+		t.Fatal(err)
+	}
+	for name, sd := range map[string]SignedDecree{
+		"other cluster":   good,
+		"other key":       sign(other, good.Decree),
+		"no images":       sign(k, Decree{ClusterID: testCluster, BaseEpoch: 4, Kind: UpdateMeasurements, Measurements: []string{pinA}}),
+		"genesis":         sign(k, Decree{ClusterID: testCluster, Kind: Genesis, BootstrapNode: "n0", Images: []DecreeImage{a}}),
+		"pins not images": sign(k, Decree{ClusterID: testCluster, BaseEpoch: 4, Kind: UpdateMeasurements, Measurements: []string{pinA}, Images: []DecreeImage{b}}),
+		"bad image":       sign(k, Decree{ClusterID: testCluster, BaseEpoch: 4, Kind: UpdateMeasurements, Measurements: []string{"x"}, Images: []DecreeImage{{MRTD: "zz"}}}),
+	} {
+		cluster := testCluster
+		if name == "other cluster" {
+			cluster = "elsewhere"
+		}
+		if err := VerifyPinDecree(sd, cluster, pub); err == nil {
+			t.Fatalf("%s: accepted", name)
+		}
 	}
 }

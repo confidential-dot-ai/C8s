@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -78,5 +79,57 @@ func TestRefreshingTransportRetriesOnceWithNewPins(t *testing.T) {
 	resp.Body.Close()
 	if src.refreshes.Load() != before {
 		t.Fatal("refreshed although the pins matched")
+	}
+}
+
+func TestNewRefreshingHTTPClient(t *testing.T) {
+	src := &fakePins{cur: "old"}
+	if _, err := NewRefreshingHTTPClient(src, ""); err == nil {
+		t.Fatal("no attestation-api URL accepted")
+	}
+	hc, err := NewRefreshingHTTPClient(src, "http://127.0.0.1:1")
+	if err != nil || hc.Transport == nil || hc.Timeout == 0 {
+		t.Fatalf("client: %v", err)
+	}
+}
+
+// A server pinning its clients through a PinSource re-checks a refused
+// handshake once against newer pins, and only when they changed.
+func TestRefreshingPeerVerifier(t *testing.T) {
+	src := &fakePins{cur: "old"}
+	verify := RefreshingPeerVerifier(src, "http://127.0.0.1:1")
+	if err := verify(nil, nil); err == nil {
+		t.Fatal("a handshake without a certificate passed")
+	}
+	if src.refreshes.Load() != 1 {
+		t.Fatalf("refreshes %d, want 1", src.refreshes.Load())
+	}
+	src.next = "new"
+	if err := verify(nil, nil); err == nil {
+		t.Fatal("still no certificate after new pins")
+	}
+	if src.refreshes.Load() != 2 || src.cur != "new" {
+		t.Fatalf("refreshes %d cur %q", src.refreshes.Load(), src.cur)
+	}
+}
+
+func TestRefreshingTransportBuildError(t *testing.T) {
+	src := &fakePins{cur: "old"}
+	if _, err := NewRefreshingTransport(src, func(Pins) (*http.Transport, error) { return nil, errors.New("boom") }); err == nil {
+		t.Fatal("build error swallowed")
+	}
+	// A body that cannot be replayed is not retried, even with new pins.
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer srv.Close()
+	tr, err := NewRefreshingTransport(src, func(Pins) (*http.Transport, error) {
+		return &http.Transport{TLSClientConfig: &tls.Config{RootCAs: x509.NewCertPool(), MinVersion: tls.VersionTLS12}}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	src.next = "new"
+	req, _ := http.NewRequest(http.MethodPost, srv.URL, io.NopCloser(strings.NewReader("x")))
+	if _, err := tr.RoundTrip(req); err == nil {
+		t.Fatal("an unverifiable server was accepted")
 	}
 }
