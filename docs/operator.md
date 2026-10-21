@@ -847,7 +847,7 @@ The chart sets these flags from `router.routing` and the CDS pins.
 |---|---|---|
 | `--cds-url` | none | CDS origin to poll. Required, with `--attestation-api-url` and the three `--mesh-identity-*` files. |
 | `--cds-measurements`, `--cds-rtmrs`, `--image-policy-file` | none | CDS pins. Without `--cds-measurements` or `--image-policy-file`, `cds-attest` logs a warning and accepts any armTLS-attested CDS. Unsafe outside development: any TEE on the pod network can pose as CDS and serve the manifest. |
-| `--operator-keys-file` | `/run/c8s-node/operator-pubkey` | PEM operator public keys a manifest must verify under. |
+| `--operator-keys-file` | none | PEM operator public keys a manifest must verify under, when the launch configuration carries none. |
 | `--allow-unpinned-cds` | `false` | Development only. Route with no CDS pin and the operator keys from that CDS. Without it, `cds-attest` refuses to start in that case. |
 | `--routes-poll-interval` | `30s` | Time between polls. Keep it under half of `maxAgeSeconds`. |
 | `--routing-port` | `0` | Port of the loopback routing listener. `0` disables it. |
@@ -859,17 +859,21 @@ The chart sets these flags from `router.routing` and the CDS pins.
 | `--attest-endpoints` | `true` | `false` serves only the routing listener and probes. Requires `--routing-port`. |
 | `--publish-routes` | `false` | Serves the applied signed manifest at `/.well-known/c8s/routes`. Requires `--cds-url` and `--attest-endpoints=true`. Set by `router.routePublication.enabled`. |
 
-`cds-attest` takes the operator keys from `--operator-keys-file` when that
-file exists at startup. When the default path is absent, it takes them from
-CDS's `GET /operator-keys` and logs a warning: that list is control-plane
-configuration, and the router does not stop a substituted key. An explicit
-`--operator-keys-file` that is absent stops `cds-attest` at startup. Keys from
-an unpinned CDS stop it too, unless `--allow-unpinned-cds` is set: any attested
-TEE answering as CDS would then choose both the manifest and its keys.
+`cds-attest` takes the operator keys from the node's launch configuration,
+`/run/c8s-node/operator-pubkey`, when that file exists at startup. Otherwise it
+takes them from `--operator-keys-file`. A keys file that exists but holds no
+readable key stops `cds-attest` at startup, and so does a set
+`--operator-keys-file` that is absent. With neither, it
+takes them from CDS's `GET /operator-keys` and logs a warning: that list is
+control-plane configuration, and the router does not stop a substituted key.
+Keys from an unpinned CDS stop `cds-attest` at startup, unless
+`--allow-unpinned-cds` is set: any attested TEE answering as CDS would then
+choose both the manifest and its keys.
 
 The chart pins CDS from `cds.measurements` or `cds.measurementsConfig`. It
 passes `--operator-keys-file` from the launch configuration on a baked node,
-else from `cds.operatorKeys`. With neither a CDS pin nor `cds.operatorKeys`,
+so a node image without the keys stops `cds-attest`, else from
+`cds.operatorKeys`. With neither a CDS pin nor `cds.operatorKeys`,
 the render fails with `kind=unpinned_route_source` and `c8s install` refuses
 before it starts. Fix it with `--measurements` (or `--image-policy-file`) or
 `--operator-keys`. On a development cluster only, set

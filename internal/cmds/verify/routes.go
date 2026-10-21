@@ -272,23 +272,20 @@ var errRouteRequired = errors.New("this attestation response binds a route diges
 var errRouteNotBound = errors.New("--route-digest does not apply to a certificate: only attest-pq and attest-lb evidence binds a route digest")
 
 // resolveRoute picks the route the transcript is recomputed with, using the
-// bundle's informational route_digest. It only ever rejects: a match proves
-// nothing, since report_data is what binds the digest.
+// bundle's route_digest (E1). It only ever rejects: a match proves nothing,
+// since report_data is what binds the digest.
 func resolveRoute(served string, route *boundRoute) (*boundRoute, error) {
 	if route == nil {
 		return nil, errRouteRequired
 	}
-	if served == "" {
-		if len(route.alternatives) > 0 {
-			return nil, errors.New("the responder reports no route_digest to choose among the --route-digest values: pass only the digest it binds")
-		}
-		return route, nil
+	if d, err := hex.DecodeString(served); err != nil || len(d) != overenc.RouteDigestBytes || hex.EncodeToString(d) != served {
+		return nil, fmt.Errorf("the responder's route_digest %q is not %d lower-case hex characters", served, 2*overenc.RouteDigestBytes)
 	}
-	if strings.EqualFold(served, hex.EncodeToString(route.digest)) {
+	if served == hex.EncodeToString(route.digest) {
 		return route, nil
 	}
 	for _, d := range route.alternatives {
-		if strings.EqualFold(served, hex.EncodeToString(d)) {
+		if served == hex.EncodeToString(d) {
 			return &boundRoute{digest: d, note: route.note}, nil
 		}
 	}

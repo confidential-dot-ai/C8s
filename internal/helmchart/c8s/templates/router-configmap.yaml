@@ -252,6 +252,16 @@ data:
                 client_body_timeout 10s;
                 limit_conn c8s_tunnel_per_client {{ $tunnelConnsPerClient }};
                 limit_conn_status 503;
+                # Only nginx's own 503 lands here: proxy_intercept_errors is
+                # off, so a 503 from cds-attest passes through as sent.
+                error_page 503 @tunnel_busy;
+            }
+
+            # The per-address cap answers like the cds-attest bounds (A7).
+            location @tunnel_busy {
+                {{- include "router.wellKnownCorsDirectives" . | nindent 16 }}
+                default_type application/json;
+                return 503 '{"error":"tunnel_busy","message":"too many tunnelled requests from this client"}';
             }
 
             {{- end }}
@@ -265,8 +275,13 @@ data:
                 {{- if default false .Values.router.cors.enabled }}
                 {{- include "router.corsLocationDirectives" .Values.router.cors | nindent 16 }}
                 {{- end }}
+                # $host would drop a trailing dot and fall back to
+                # server_name; the listener matches the client's Host (M1).
+                if ($http_host = "") {
+                    return 400;
+                }
                 proxy_pass http://127.0.0.1:{{ $routingPort }};
-                proxy_set_header Host $host;
+                proxy_set_header Host $http_host;
                 proxy_set_header X-Real-IP $remote_addr;
                 proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
                 proxy_set_header X-Forwarded-Proto $scheme;

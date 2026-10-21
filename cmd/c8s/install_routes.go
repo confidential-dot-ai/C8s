@@ -482,7 +482,7 @@ func writeRoutesOut(manifest []byte) error {
 // cause that refuses the revision drops --revision from the add commands.
 func writeUpstreamRoutes(w io.Writer, u upstreamRoutes, cds cdsTarget, entries map[string]adoptedEntry, manifest []byte, cause error) error {
 	var status *operatorauth.StatusError
-	badRevision := errors.As(cause, new(revisionError)) || errors.As(cause, &status) && status.Status == http.StatusConflict
+	badRevision := errors.As(cause, new(revisionError)) || errors.As(cause, &status) && status.Status == http.StatusConflict && !cliroutes.SpentToken(cause)
 	offerPut := manifest == nil && !errors.As(cause, new(storedManifestError))
 	if manifest == nil {
 		var err error

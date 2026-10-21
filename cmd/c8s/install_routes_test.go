@@ -303,6 +303,7 @@ func TestWriteUpstreamRoutes(t *testing.T) {
 		{"write refused", stored, refused, 0, []string{add}, []string{"c8s routes put "}},
 		{"--routes-revision", nil, nil, 7, []string{addRevision, addRevision2}, nil},
 		{"--routes-revision refused", nil, storedManifestError{revisionError{refused}}, 7, []string{add}, []string{"--revision", "c8s routes put "}},
+		{"--routes-revision, token spent", nil, storedManifestError{&operatorauth.StatusError{Status: http.StatusConflict, Body: operatorauth.ErrTokenReused.Error()}}, 7, []string{addRevision}, []string{"c8s routes put "}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			resetCLIState(t)

@@ -11,6 +11,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"log/slog"
@@ -531,10 +532,25 @@ func TestW6OperatorKeySource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	present := filepath.Join(t.TempDir(), "operator-pubkey")
-	if err := os.WriteFile(present, []byte("keys"), 0o600); err != nil {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
 		t.Fatal(err)
 	}
+	der, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})
+	write := func(name string, b []byte) string {
+		p := filepath.Join(t.TempDir(), name)
+		if err := os.WriteFile(p, b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	present := write("operator-pubkey", keyPEM)
+	other := write("keys.pem", keyPEM)
+	empty := write("operator-pubkey", []byte("no keys"))
 	missing := filepath.Join(t.TempDir(), "operator-pubkey")
 	logger := slog.New(slog.DiscardHandler)
 	tests := []struct {
@@ -544,12 +560,17 @@ func TestW6OperatorKeySource(t *testing.T) {
 		want    routing.KeySource
 		wantErr bool
 	}{
-		{"W6 launch configuration present", routingConfig{operatorKeysFile: present}, true, routing.KeyFile(present), false},
-		{"W6 launch configuration absent", routingConfig{operatorKeysFile: missing}, true, cds, false},
-		{"W6 explicit file absent", routingConfig{operatorKeysFile: missing, operatorKeysFileSet: true}, true, nil, true},
-		{"unpinned CDS with keys file", routingConfig{operatorKeysFile: present}, false, routing.KeyFile(present), false},
-		{"unpinned CDS supplying keys", routingConfig{operatorKeysFile: missing}, false, nil, true},
-		{"unpinned CDS supplying keys, dev opt-in", routingConfig{operatorKeysFile: missing, allowUnpinnedCDS: true}, false, cds, false},
+		{"W6 launch configuration", routingConfig{launchKeysFile: present}, true, routing.KeyFile(present), false},
+		{"W6 launch configuration over a configured file", routingConfig{launchKeysFile: present, operatorKeysFile: other}, true, routing.KeyFile(present), false},
+		{"W6 configured file", routingConfig{launchKeysFile: missing, operatorKeysFile: other}, true, routing.KeyFile(other), false},
+		{"W6 configured file absent", routingConfig{launchKeysFile: missing, operatorKeysFile: missing}, true, nil, true},
+		{"W6 CDS", routingConfig{launchKeysFile: missing}, true, cds, false},
+		{"unpinned CDS with launch keys", routingConfig{launchKeysFile: present}, false, routing.KeyFile(present), false},
+		{"unpinned CDS with a configured file", routingConfig{launchKeysFile: missing, operatorKeysFile: other}, false, routing.KeyFile(other), false},
+		{"W6 launch configuration without keys", routingConfig{launchKeysFile: empty}, true, nil, true},
+		{"W6 configured file without keys", routingConfig{launchKeysFile: missing, operatorKeysFile: empty}, true, nil, true},
+		{"unpinned CDS supplying keys", routingConfig{launchKeysFile: missing}, false, nil, true},
+		{"unpinned CDS supplying keys, dev opt-in", routingConfig{launchKeysFile: missing, allowUnpinnedCDS: true}, false, cds, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -572,7 +593,7 @@ func TestRoutingFlagDefaults(t *testing.T) {
 		{"routing-host", "127.0.0.1"},
 		{"backend-timeout", "1h0m0s"},
 		{"attest-endpoints", "true"},
-		{"operator-keys-file", nodeOperatorKeysFile},
+		{"operator-keys-file", ""},
 		{"allow-unpinned-cds", "false"},
 	} {
 		f := flags.Lookup(tc.flag)

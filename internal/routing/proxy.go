@@ -158,7 +158,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // clientAddressHeaders name the client's network address. A tunnelled request
 // takes them from the outer request nginx populated, never from the sealed
-// headers the client chose (router R6). Either way they are metadata the host
+// headers the client chose (router R2). Either way they are metadata the host
 // can forge, not identity.
 var clientAddressHeaders = []string{"X-Real-IP", "X-Forwarded-For", "X-Forwarded-Proto"}
 
@@ -282,7 +282,7 @@ func (p *Proxy) reverseProxy(route routes.Route, target *url.URL, onErr func(err
 			pr.Out.URL = &out
 			pr.Out.Host = pr.In.Host
 			// ReverseProxy drops these before Rewrite; nginx set them for
-			// the backend (router R6).
+			// the backend (router R2).
 			for _, name := range []string{"X-Forwarded-For", "X-Forwarded-Proto"} {
 				if v, ok := pr.In.Header[name]; ok {
 					pr.Out.Header[name] = v

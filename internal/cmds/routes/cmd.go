@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -133,7 +134,7 @@ func put(ctx context.Context, c routesclient.Client, manifest []byte, signer ope
 	var se *operatorauth.StatusError
 	if errors.As(err, &se) {
 		switch {
-		case se.Status == http.StatusConflict && se.Body == operatorauth.ErrTokenReused.Error():
+		case SpentToken(err):
 			return fmt.Errorf("%w; re-run the command to mint a fresh token", err)
 		case se.Status == http.StatusServiceUnavailable && se.Body == operatorauth.ErrTokenNotRecorded.Error():
 			return fmt.Errorf("%w; nothing was stored, so re-running the command with a fresh token is safe", err)
@@ -144,6 +145,14 @@ func put(ctx context.Context, c routesclient.Client, manifest []byte, signer ope
 		}
 	}
 	return err
+}
+
+// SpentToken reports whether err is the CDS's 409 for a write token that
+// already authorized a write, which a fresh token fixes, unlike a stale
+// revision's 409.
+func SpentToken(err error) bool {
+	var se *operatorauth.StatusError
+	return errors.As(err, &se) && se.Status == http.StatusConflict && strings.Contains(se.Body, operatorauth.ErrTokenReused.Error())
 }
 
 func digestHex(manifest []byte) string {
