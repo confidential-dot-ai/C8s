@@ -84,8 +84,14 @@ func pinnedImage(image string) error {
 	if err != nil {
 		return err
 	}
-	if _, ok := ref.(reference.Canonical); !ok {
+	canonical, ok := ref.(reference.Canonical)
+	if !ok {
 		return errors.New("must pin the image by digest (name@sha256:<hex>)")
+	}
+	// The measured list, the allowlist and the journal carry sha256 digests
+	// only, so refuse another algorithm here rather than at admission.
+	if canonical.Digest().Algorithm() != "sha256" {
+		return fmt.Errorf("digest algorithm %s is not sha256", canonical.Digest().Algorithm())
 	}
 	return nil
 }
