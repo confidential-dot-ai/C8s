@@ -1,4 +1,4 @@
-package nriimagepolicy
+package nriimagepolicy_test
 
 import (
 	"os"
@@ -9,6 +9,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/nodeservices"
+	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
@@ -34,7 +35,7 @@ func testNodeImagePodRoleConfig(t *testing.T, platform string) {
 			t.Fatal(err)
 		}
 	}
-	write("usr/lib/c8s/image-policy.yaml", []byte(renderNodeImagePolicy(t)))
+	write("usr/lib/c8s/image-policy.yaml", []byte(nriimagepolicy.RenderNodeImagePolicy(t)))
 	pins, err := refvalues.Load("../../../internal/testdata/node-identities.json")
 	if err != nil {
 		t.Fatal(err)
@@ -62,13 +63,13 @@ func testNodeImagePodRoleConfig(t *testing.T, platform string) {
 	if err := nodeservices.Prepare(root, doc); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := loadConfig(filepath.Join(root, "etc/nri/conf.d/image-policy.yaml"))
+	cfg, err := nriimagepolicy.LoadConfig(filepath.Join(root, "etc/nri/conf.d/image-policy.yaml"))
 	if err != nil {
 		t.Fatalf("pod-role config does not load: %v", err)
 	}
-	if cfg.PullEnabled() || cfg.Allowlist.NodeTCB || cfg.sandboxMode() != SandboxEnforce || !cfg.Policy.FatalExisting {
+	if cfg.PullEnabled() || cfg.Allowlist.NodeTCB || nriimagepolicy.SandboxModeOf(cfg) != nriimagepolicy.SandboxEnforce || !cfg.Policy.FatalExisting {
 		t.Fatalf("pod-role config: pull=%v node_tcb=%v sandbox=%v fatal_existing=%v",
-			cfg.PullEnabled(), cfg.Allowlist.NodeTCB, cfg.sandboxMode(), cfg.Policy.FatalExisting)
+			cfg.PullEnabled(), cfg.Allowlist.NodeTCB, nriimagepolicy.SandboxModeOf(cfg), cfg.Policy.FatalExisting)
 	}
 	if cfg.Measure.RTMR3 != (platform == "tdx") {
 		t.Fatalf("measure.rtmr3 = %v on %s", cfg.Measure.RTMR3, platform)
