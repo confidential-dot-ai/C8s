@@ -79,8 +79,13 @@ func TestNodeImageRender(t *testing.T) {
 						t.Fatal("HA CDS DaemonSet does not name the node-local CDS image")
 					}
 					names, err := os.ReadFile(filepath.Join(out, "local-names.txt"))
-					if err != nil || string(names) != cdsRef+" registry.example.com/cds:c8s-node\n" {
+					meshRef := "registry.example.com/armtls-mesh@" + nodeImageTestMeshDigest
+					if err != nil || string(names) != meshRef+" registry.example.com/armtls-mesh:c8s-node\n"+cdsRef+" registry.example.com/cds:c8s-node\n" {
 						t.Fatalf("local-names.txt: %q %v", names, err)
+					}
+					integration, _ := os.ReadFile(filepath.Join(out, "c8s-integration.yaml"))
+					if !bytes.Contains(integration, []byte("image: registry.example.com/armtls-mesh:c8s-node")) {
+						t.Fatal("the mesh DaemonSet does not name the node-local mesh image")
 					}
 					floor, err := os.ReadFile(filepath.Join(out, "cds-floor.json"))
 					if err != nil || !bytes.Contains(floor, []byte(nodeImageTestCDSDigest)) {
@@ -192,6 +197,20 @@ func TestNodeImageRender(t *testing.T) {
 			if platform == "sev-snp" && !slices.Contains(images, "registry.example.com/nginx@"+nodeImageTestRouterDigest) {
 				t.Error("inventory lost the router image override")
 			}
+			// A DaemonSet names the build's own images node-locally; each
+			// local name must stand for an inventory image (local-names.txt).
+			localNames, _ := os.ReadFile(filepath.Join(out, "local-names.txt"))
+			preloaded := func(image string) bool {
+				if slices.Contains(images, image) {
+					return true
+				}
+				for _, line := range strings.Split(strings.TrimSpace(string(localNames)), "\n") {
+					if f := strings.Fields(line); len(f) == 2 && f[1] == image && slices.Contains(images, f[0]) {
+						return true
+					}
+				}
+				return false
+			}
 			for _, key := range []string{"Deployment/c8s-operator", "Deployment/c8s-cds", "Deployment/c8s-router", "DaemonSet/c8s-armtls-mesh"} {
 				var workload appsv1.Deployment // Deployment and DaemonSet share spec.template.
 				if err := yaml.Unmarshal(docs[key], &workload); err != nil {
@@ -206,7 +225,7 @@ func TestNodeImageRender(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if !slices.Contains(images, ref.String()) || c.ImagePullPolicy != corev1.PullNever {
+					if !preloaded(ref.String()) || c.ImagePullPolicy != corev1.PullNever {
 						t.Errorf("%s/%s must use a preloaded inventory image: image=%s pullPolicy=%s", key, c.Name, c.Image, c.ImagePullPolicy)
 					}
 				}
@@ -361,7 +380,7 @@ func TestNodeImageRenderRejectsBadInputsBeforeHelm(t *testing.T) {
 
 func TestNodeImageCollectRejectsIncompleteOrUnexpectedChart(t *testing.T) {
 	for _, input := range []string{"", "kind: Deployment\nmetadata:\n  name: c8s-cds\n", "kind: DaemonSet\nmetadata:\n  name: armtls-mesh\n", "kind: HelmChart\nmetadata:\n  name: c8s\n"} {
-		if _, err := collectNodeImageArtifacts([]byte(input)); err == nil {
+		if _, err := collectNodeImageArtifacts([]byte(input), nil); err == nil {
 			t.Errorf("accepted incomplete or unexpected render %q", input)
 		}
 	}
@@ -481,7 +500,7 @@ func nodeImageCollectFixture() string {
 
 func TestNodeImageCollectPreservesCompleteResourcesAndConfigData(t *testing.T) {
 	fixture := nodeImageCollectFixture()
-	artifacts, err := collectNodeImageArtifacts([]byte(fixture))
+	artifacts, err := collectNodeImageArtifacts([]byte(fixture), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -536,7 +555,7 @@ func TestNodeImageCollectRejectsExtraInvalidResources(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			input := nodeImageCollectFixture() + "---\n" + tc.resource
-			if _, err := collectNodeImageArtifacts([]byte(input)); err == nil {
+			if _, err := collectNodeImageArtifacts([]byte(input), nil); err == nil {
 				t.Fatal("accepted an invalid resource alongside otherwise complete chart artifacts")
 			}
 		})
@@ -551,7 +570,7 @@ func TestNodeImageCollectRejectsIncompleteRouterNginx(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			input := strings.Replace(nodeImageCollectFixture(), "  tls-acme.conf: ssl_certificate /etc/c8s-acme-tls/cert.pem;\n", replacement, 1)
-			if _, err := collectNodeImageArtifacts([]byte(input)); err == nil {
+			if _, err := collectNodeImageArtifacts([]byte(input), nil); err == nil {
 				t.Fatal("accepted a router nginx ConfigMap that does not hold exactly routerNginxFiles")
 			}
 		})
@@ -574,7 +593,7 @@ func TestNodeImageCollectRejectsUnpinnedOrUnseededImages(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			input := strings.ReplaceAll(nodeImageCollectFixture(), tc.old, tc.replacement)
-			if _, err := collectNodeImageArtifacts([]byte(input)); err == nil {
+			if _, err := collectNodeImageArtifacts([]byte(input), nil); err == nil {
 				t.Fatal("accepted incomplete or unpinned measured workload inventory")
 			}
 		})
@@ -589,7 +608,7 @@ func TestNodeImageCollectCanonicalizesPreloadReferences(t *testing.T) {
 	} {
 		t.Run(tc.image, func(t *testing.T) {
 			input := strings.ReplaceAll(nodeImageCollectFixture(), "registry.example.com/operator", tc.image)
-			artifacts, err := collectNodeImageArtifacts([]byte(input))
+			artifacts, err := collectNodeImageArtifacts([]byte(input), nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -735,9 +754,9 @@ func TestNodeImageCollectPinnedArgs(t *testing.T) {
 			if tc.manifest != "" {
 				input = strings.Replace(input, router, tc.manifest, 1)
 			}
-			_, err := collectNodeImageArtifacts([]byte(input))
+			_, err := collectNodeImageArtifacts([]byte(input), nil)
 			if (err == nil) != tc.ok {
-				t.Fatalf("collectNodeImageArtifacts() error = %v, want ok %v", err, tc.ok)
+				t.Fatalf("collectNodeImageArtifacts(, nil) error = %v, want ok %v", err, tc.ok)
 			}
 		})
 	}
@@ -750,7 +769,7 @@ func TestNodeImageCollectAcceptsPinnedEntrypoint(t *testing.T) {
 	if input == nodeImageCollectFixture() {
 		t.Fatal("fixture did not change")
 	}
-	if _, err := collectNodeImageArtifacts([]byte(input)); err != nil {
+	if _, err := collectNodeImageArtifacts([]byte(input), nil); err != nil {
 		t.Fatalf("rejected a seed pinning the baked image to its entrypoint: %v", err)
 	}
 }
@@ -870,9 +889,9 @@ func TestNodeImageCollectMatchedEnv(t *testing.T) {
 			if tc.links {
 				input = strings.Replace(input, "enableServiceLinks: false\n      containers:\n        - name: mesh", "containers:\n        - name: mesh", 1)
 			}
-			_, err := collectNodeImageArtifacts([]byte(input))
+			_, err := collectNodeImageArtifacts([]byte(input), nil)
 			if (err == nil) != tc.ok {
-				t.Fatalf("collectNodeImageArtifacts() error = %v, want ok %v", err, tc.ok)
+				t.Fatalf("collectNodeImageArtifacts(, nil) error = %v, want ok %v", err, tc.ok)
 			}
 		})
 	}
