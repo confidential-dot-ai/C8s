@@ -176,12 +176,13 @@ func meshRunning(ctx context.Context, node string) error {
 	return nil
 }
 
-// The tenant image is python:3.12-alpine. Alpine's busybox ping sends its
-// echo request over an ICMP datagram socket, which the ping_group_range
-// sysctl admits without NET_RAW (the library busybox image's ping cannot,
+// The tenant image is images/tenant-app, on python:3.12-alpine. Alpine's
+// busybox ping sends its echo request over an ICMP datagram socket, which the
+// ping_group_range sysctl admits without NET_RAW (the library busybox image's
+// ping cannot,
 // and the chart's admission policy lets a tenant add back NET_BIND_SERVICE
-// only); its nc has no UDP mode and it has no httpd, so datagrams and the
-// hello API go through python.
+// only); its nc has no UDP mode and it has no httpd, so datagrams
+// (c8s-udp-listen, c8s-udp-send) and the hello API go through python.
 
 // helloSite writes the hello body where the hello API will serve it.
 func helloSite(port int) string {
