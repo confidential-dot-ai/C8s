@@ -183,6 +183,11 @@ type plugin struct {
 	// config carries a mesh policy, and a node without one hosts no members.
 	mesh *meshGate
 
+	// cdsPins is the node-side path of the CDS attestation policy handed to
+	// the injected credential clients, or "" when the node pins nothing.
+	// prepareCDSPins sets it before any container can be created (cdspins.go).
+	cdsPins string
+
 	// boot is the boot gate: nil unless policy.fatal_existing. See
 	// bootgate.go. bootRestart records that this registration is a plugin
 	// restart, which makes the startup check's denials fatal.
@@ -212,6 +217,11 @@ func newPlugin(
 	}
 	p.boot = newBootGate(cfg, logger)
 	p.mesh = newMeshGate(cfg.Mesh, logger)
+	if cfg.Mesh != nil {
+		logger.Info("mesh gate enabled",
+			"trusted_enforcement", cfg.requiresTrustedMeshEnforcement(),
+			"exempt_namespaces", cfg.Mesh.ExemptNamespaces)
+	}
 	if cfg.WorkloadClaims.SocketDir != "" {
 		procRoot := cfg.WorkloadClaims.ProcRoot
 		if procRoot == "" {
@@ -424,14 +434,20 @@ func (p *plugin) recordForInventory(ctx context.Context, pod *api.PodSandbox, ct
 			p.logger.Error("cannot resolve the image digest of a running container; the sandbox inventory will refuse to answer for this pod", "image", imageRef, "error", err)
 		}
 	}
-	p.recordDigest(ctr, digest, observedMounts(pod, ctr, p.cfg.WorkloadClaims.SocketDir))
+	p.recordDigest(ctr, digest, observedMounts(pod, ctr, nodeMounts{
+		socketDir: p.cfg.WorkloadClaims.SocketDir,
+		cdsPins:   p.cdsPins,
+	}))
 }
 
 // recordUncheckedForInventory records the digest inlined in the reference
 // without resolving; the pre-Ready hook must answer inside NRI's
 // plugin_request_timeout, so recording adds no containerd round-trip.
 func (p *plugin) recordUncheckedForInventory(pod *api.PodSandbox, ctr *api.Container, imageRef string) {
-	p.recordDigest(ctr, extractDigest(imageRef), observedMounts(pod, ctr, p.cfg.WorkloadClaims.SocketDir))
+	p.recordDigest(ctr, extractDigest(imageRef), observedMounts(pod, ctr, nodeMounts{
+		socketDir: p.cfg.WorkloadClaims.SocketDir,
+		cdsPins:   p.cdsPins,
+	}))
 }
 
 // recordDigest is the only inventory.record call site. ctr.Args is the
@@ -444,11 +460,11 @@ func (p *plugin) recordDigest(ctr *api.Container, digest string, mounts []allowl
 	p.inventory.recordObserved(ctr.GetId(), ctr.GetPodSandboxId(), ctr.GetName(), digest, ctr.GetArgs(), env, mounts)
 }
 
-func observedMounts(pod *api.PodSandbox, ctr *api.Container, socketDir string) []allowlist.ObservedMount {
+func observedMounts(pod *api.PodSandbox, ctr *api.Container, own nodeMounts) []allowlist.ObservedMount {
 	if pod == nil {
 		return nil
 	}
-	return newMountObserver(nil, socketDir).Observe(pod, ctr)
+	return newMountObserver(nil, own).Observe(pod, ctr)
 }
 
 // resolveDigest returns the canonical store digest for imageRef using the same
@@ -662,7 +678,10 @@ func (p *plugin) checkContainer(ctx context.Context, cfg *config, pod *api.PodSa
 func (p *plugin) checkContainerPhase(ctx context.Context, cfg *config, pod *api.PodSandbox, ctr *api.Container, imageRef string, phase launchPhase) (imageVerdict, string) {
 	var mounts []allowlist.ObservedMount
 	if phase == launchFinal {
-		mounts = newMountObserver(nil, cfg.WorkloadClaims.SocketDir).Observe(pod, ctr)
+		mounts = newMountObserver(nil, nodeMounts{
+			socketDir: cfg.WorkloadClaims.SocketDir,
+			cdsPins:   p.cdsPins,
+		}).Observe(pod, ctr)
 	}
 	verdict, reason := p.checkContainerObserved(ctx, cfg, pod, ctr, imageRef, phase, containerEnv(ctr), mounts)
 	if verdict == verdictDeny || phase != launchFinal || !cfg.sandboxObserved() {
@@ -756,7 +775,10 @@ func (p *plugin) exemptNamespace(ctx context.Context, cfg *config, pod *api.PodS
 // The digest is resolved only when an exemption could apply, so an ordinary
 // container costs no containerd round-trip.
 func (p *plugin) checkSandbox(ctx context.Context, cfg *config, pod *api.PodSandbox, ctr *api.Container, imageRef string, env *allowlist.EnvObservation, mounts []allowlist.ObservedMount) (imageVerdict, string) {
-	obs := observeSandbox(pod, ctr, cfg.WorkloadClaims.SocketDir, mounts, nil)
+	obs := observeSandbox(pod, ctr, nodeMounts{
+		socketDir: cfg.WorkloadClaims.SocketDir,
+		cdsPins:   p.cdsPins,
+	}, mounts, nil)
 	violations := obs.violations()
 	if len(violations) == 0 {
 		return verdictAllow, ""
@@ -765,7 +787,10 @@ func (p *plugin) checkSandbox(ctx context.Context, cfg *config, pod *api.PodSand
 	if cfg.AllowlistEnabled() && len(obs.HostBinds) > 0 && slices.ContainsFunc(mounts, func(m allowlist.ObservedMount) bool { return m.Provenance != "" }) {
 		digest = p.resolveDigest(ctx, imageRef)
 		rc := allowlist.RunningContainer{Digest: digest, Argv: ctr.GetArgs(), Env: env, Mounts: mounts}
-		obs = observeSandbox(pod, ctr, cfg.WorkloadClaims.SocketDir, mounts, func(m allowlist.ObservedMount) bool {
+		obs = observeSandbox(pod, ctr, nodeMounts{
+			socketDir: cfg.WorkloadClaims.SocketDir,
+			cdsPins:   p.cdsPins,
+		}, mounts, func(m allowlist.ObservedMount) bool {
 			return p.policy.admitsNodeRoot(rc, m)
 		})
 		if violations = obs.violations(); len(violations) == 0 {
@@ -1076,7 +1101,7 @@ func (p *plugin) CreateContainer(ctx context.Context, pod *api.PodSandbox, ctr *
 		}
 		return nil, nil, p.denyContainerCreation(pod.GetId(), ctr.GetName(), fmt.Errorf("%s", reason))
 	}
-	return p.socketDirAdjustment(pod, ctr), nil, nil
+	return p.sidecarAdjustment(pod, ctr), nil, nil
 }
 
 // StartContainer runs before task.Start/execve. Its environment is the final
@@ -1108,7 +1133,10 @@ func (p *plugin) noteMeshStarted(ctx context.Context, pod *api.PodSandbox, ctr *
 	if !p.mesh.hosts(pod) {
 		return
 	}
-	launch := p.observedLaunch(ctx, ctr, imageRef, containerEnv(ctr), observedMounts(pod, ctr, p.cfg.WorkloadClaims.SocketDir))
+	launch := p.observedLaunch(ctx, ctr, imageRef, containerEnv(ctr), observedMounts(pod, ctr, nodeMounts{
+		socketDir: p.cfg.WorkloadClaims.SocketDir,
+		cdsPins:   p.cdsPins,
+	}))
 	if p.roleOf(launch) == meshRole {
 		p.mesh.noteMeshStarted(pod.GetId())
 	}
@@ -1134,34 +1162,49 @@ func (p *plugin) observedLaunch(ctx context.Context, ctr *api.Container, imageRe
 	}
 }
 
-// socketDirAdjustment bind-mounts the inventory's socket directory, read-only,
-// at workloadclaims.SidecarSocketDir into the socket consumers
-// (workloadclaims.IsSocketConsumer) of an injected pod — the OCI-level
-// replacement for a pod-spec hostPath volume,
-// which PodSecurity baseline and restricted would reject. nil for every other
-// container, and whenever the inventory is disabled.
+// sidecarAdjustment bind-mounts what the node hands a webhook-injected
+// credential sidecar, read-only: the inventory's socket directory at
+// workloadclaims.SidecarSocketDir into the socket consumers
+// (workloadclaims.IsSocketConsumer) of an injected pod, and the node's CDS
+// attestation policy at workloadclaims.CDSPinsPath. Both are OCI-level
+// replacements for a pod-spec hostPath volume, which PodSecurity baseline and
+// restricted would reject. nil for every other container, and whenever the
+// inventory is disabled.
 //
-// The annotation+name gate scopes the mount; it is NOT a security boundary.
+// The policy mount is what makes the pins trusted: the client reads a compiled
+// path, so a pod cannot name another source and the control plane cannot pass
+// one as an argument.
+//
+// The annotation+name gate scopes the mounts; it is NOT a security boundary.
 // Both are tenant-forgeable, so every socket in the directory must stay safe
 // against any on-node caller (peer-credential binding, RO mount).
-func (p *plugin) socketDirAdjustment(pod *api.PodSandbox, ctr *api.Container) *api.ContainerAdjustment {
-	if p.inventory == nil {
-		return nil
-	}
+func (p *plugin) sidecarAdjustment(pod *api.PodSandbox, ctr *api.Container) *api.ContainerAdjustment {
 	if pod.GetAnnotations()[workloadclaims.AnnotationInjected] != "true" {
 		return nil
 	}
 	if !workloadclaims.IsSocketConsumer(ctr.GetName()) {
 		return nil
 	}
-	adjust := &api.ContainerAdjustment{}
-	adjust.AddMount(&api.Mount{
-		Destination: workloadclaims.SidecarSocketDir,
+	var mounts []*api.Mount
+	if servesInventory := p.inventory != nil; servesInventory {
+		mounts = append(mounts, readOnlyBind(p.cfg.WorkloadClaims.SocketDir, workloadclaims.SidecarSocketDir))
+	}
+	if pinsCDS := p.cdsPins != ""; pinsCDS {
+		mounts = append(mounts, readOnlyBind(p.cdsPins, workloadclaims.CDSPinsPath))
+	}
+	if len(mounts) == 0 {
+		return nil
+	}
+	return &api.ContainerAdjustment{Mounts: mounts}
+}
+
+func readOnlyBind(source, destination string) *api.Mount {
+	return &api.Mount{
+		Destination: destination,
 		Type:        "bind",
-		Source:      p.cfg.WorkloadClaims.SocketDir,
+		Source:      source,
 		Options:     []string{"rbind", "ro", "rprivate", "nosuid", "nodev", "noexec"},
-	})
-	return adjust
+	}
 }
 
 // extractDigest returns the canonical "sha256:<64hex>" digest from an image

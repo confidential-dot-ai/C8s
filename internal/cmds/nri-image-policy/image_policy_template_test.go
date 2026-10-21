@@ -1,21 +1,36 @@
 package nriimagepolicy
 
 import (
+	"bytes"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 // The node image's baked boot config is the plugin's other config schema
 // consumer: mkosi.sync renders image-policy.yaml.in by placeholder
 // substitution, so nothing type-checks it against this package's config
-// struct. Load the rendered form here so a drift fails in `go test`, not at
+// struct. Parse the rendered form here so a drift fails in `go test`, not at
 // node boot.
 const nodeImagePolicyTemplate = "../../../node-guest-image/c8s/image-policy.yaml.in"
+
+// The platform images mkosi.sync substitutes, as this test's stand-ins.
+const (
+	meshImageRepo       = "ghcr.io/confidential-dot-ai/armtls-mesh"
+	meshImageDigest     = "sha256:" + "11111111111111111111111111111111111111111111111111111111111111ab"
+	operatorImageRepo   = "ghcr.io/confidential-dot-ai/c8s-operator"
+	operatorImageDigest = "sha256:" + "22222222222222222222222222222222222222222222222222222222222222cd"
+)
 
 func renderNodeImagePolicy(t *testing.T) string {
 	t.Helper()
@@ -23,26 +38,34 @@ func renderNodeImagePolicy(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("read node-image policy template: %v", err)
 	}
-	out := strings.ReplaceAll(string(body), "@PLATFORM@", "snp")
+	out := string(body)
+	for placeholder, value := range map[string]string{
+		"@PLATFORM@":        "snp",
+		"@MESH_REPO@":       meshImageRepo,
+		"@MESH_DIGEST@":     meshImageDigest,
+		"@OPERATOR_REPO@":   operatorImageRepo,
+		"@OPERATOR_DIGEST@": operatorImageDigest,
+	} {
+		out = strings.ReplaceAll(out, placeholder, value)
+	}
 	if ph := regexp.MustCompile(`@[A-Z_]+@`).FindString(out); ph != "" {
 		t.Fatalf("unsubstituted placeholder %s left in rendered template", ph)
 	}
 	return out
 }
 
-func TestNodeImageBootConfig_LoadsAndAdmitsSystemImages(t *testing.T) {
+func TestNodeImageBootConfig_ParsesAndAdmitsSystemImages(t *testing.T) {
 	rendered := renderNodeImagePolicy(t)
-	if strings.Contains(rendered, "exempt_namespaces") {
-		t.Fatal("exempt_namespaces must not return: admission keys on the base allowlist alone")
+	// policy.exempt_namespaces, not mesh.exempt_namespaces: image admission
+	// keys on the base allowlist alone, while the mesh policy names the
+	// namespaces that host no member pods.
+	if strings.Contains(rendered, "exempt_snapshot_path") {
+		t.Fatal("policy.exempt_namespaces must not return: admission keys on the base allowlist alone")
 	}
 
-	path := filepath.Join(t.TempDir(), "image-policy.yaml")
-	if err := os.WriteFile(path, []byte(rendered), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := loadConfig(path)
+	cfg, err := parseConfig([]byte(rendered))
 	if err != nil {
-		t.Fatalf("the rendered node-image boot config does not load: %v", err)
+		t.Fatalf("the rendered node-image boot config does not parse: %v", err)
 	}
 
 	// The baked config is the only place the boot gate is armed, and
@@ -94,17 +117,61 @@ func TestNodeImageBootConfig_LoadsAndAdmitsSystemImages(t *testing.T) {
 		}
 	}
 
-	// The template contains the generated system set. Boot preparation adds
-	// the separately rendered chart component seed before containerd starts.
-	// The exact count catches an entry a regen adds or drops.
-	if want := len(systemImages); len(cfg.Allowlist.Base.Workloads) != want {
-		t.Errorf("baked base allowlist has %d entries, want %d (%d system images)",
+	// The template contains the generated system set plus the two role
+	// entries. Boot preparation adds the separately rendered chart component
+	// seed before containerd starts. The exact count catches an entry a regen
+	// adds or drops.
+	if want := len(systemImages) + 2; len(cfg.Allowlist.Base.Workloads) != want {
+		t.Errorf("baked base allowlist has %d entries, want %d (%d system images plus the role entries)",
 			len(cfg.Allowlist.Base.Workloads), want, len(systemImages))
+	}
+
+	// A platform role is granted from the node's own measured base, so the
+	// endpoint and the credential clients must be role-tagged there.
+	roles := newPolicyStore(cfg.Allowlist.Base)
+	for digest, want := range map[string]string{
+		meshImageDigest:     meshRole,
+		operatorImageDigest: CredentialRole,
+	} {
+		if got := roles.base.RoleOf(allowlist.RunningContainer{Digest: digest}); got != want {
+			t.Errorf("the base grants %s the role %q, want %q", digest, got, want)
+		}
 	}
 	for digest := range baseEntries {
 		if strings.Contains(baseEntries[digest], "busybox") {
 			t.Errorf("busybox %s must not return to the permissive base allowlist; it is seeded argv-pinned", digest)
 		}
+	}
+
+	// The measured mesh policy is what lets a baked node host member pods.
+	// The capture ports and the mesh identity are shared with the injector, so
+	// a drift here would seal pods against their own endpoint.
+	mesh := cfg.Mesh
+	if mesh == nil {
+		t.Fatal("the baked config carries no mesh policy, so the node hosts no member pods")
+	}
+	if !cfg.requiresTrustedMeshEnforcement() {
+		t.Error("the baked config does not require trusted mesh enforcement; its members would rest on policy the cluster admin writes")
+	}
+	for _, ns := range []string{"kube-system", "c8s-system"} {
+		if !slices.Contains(mesh.ExemptNamespaces, ns) {
+			t.Errorf("mesh.exempt_namespaces = %v, want %s exempt: it runs the node's own components", mesh.ExemptNamespaces, ns)
+		}
+	}
+	if got, want := mesh.Resolver.String(), "10.53.0.10"; got != want {
+		t.Errorf("mesh.resolver = %s, want the baked cluster-dns %s", got, want)
+	}
+	wantCapture := capturePorts{
+		Outbound: uint16(workloadclaims.MeshOutboundPort),
+		Inbound:  uint16(workloadclaims.MeshInboundPort),
+		Health:   uint16(workloadclaims.MeshHealthPort),
+	}
+	if mesh.Capture != wantCapture {
+		t.Errorf("mesh.capture = %+v, want the ports the injected endpoint binds %+v", mesh.Capture, wantCapture)
+	}
+	bound, ok := mesh.role(meshRole)
+	if !ok || bound.UID != workloadclaims.MeshUID {
+		t.Errorf("mesh role = %+v, want the reserved uid %d", bound, workloadclaims.MeshUID)
 	}
 
 	// System images must remain admitted with their host mounts at final admission.
@@ -115,5 +182,86 @@ func TestNodeImageBootConfig_LoadsAndAdmitsSystemImages(t *testing.T) {
 		}}, launchFinal) {
 			t.Errorf("base entry %q is not admitted by digest alone", d)
 		}
+	}
+}
+
+// bakedAddonManifests is where RKE2 applies the node image's own addons at
+// boot.
+const bakedAddonManifests = "../../../node-guest-image/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests"
+
+// podKinds are the baked manifest kinds that run a pod.
+var podKinds = []string{"Pod", "Deployment", "DaemonSet", "StatefulSet", "Job"}
+
+// The baked addons run before any C8s install, so their pods carry no mesh
+// endpoint: a pod ruleset would send their traffic to a listener that does not
+// exist, and the privilege floor would refuse the root helper pods one of them
+// creates. Every namespace they run a pod in keeps the node's own rules.
+func TestNodeImageBootConfig_ExemptsTheBakedAddonNamespaces(t *testing.T) {
+	rendered := renderNodeImagePolicy(t)
+	cfg, err := parseConfig([]byte(rendered))
+	if err != nil {
+		t.Fatalf("the rendered node-image boot config does not parse: %v", err)
+	}
+	if cfg.Mesh == nil {
+		t.Fatal("the baked config carries no mesh policy, so the node hosts no member pods")
+	}
+	for _, namespace := range bakedAddonNamespaces(t) {
+		if !slices.Contains(cfg.Mesh.ExemptNamespaces, namespace) {
+			t.Errorf("mesh.exempt_namespaces = %v, want %s exempt: the baked addon it holds runs no mesh endpoint",
+				cfg.Mesh.ExemptNamespaces, namespace)
+		}
+	}
+}
+
+// bakedAddonNamespaces are the namespaces the baked manifests run a pod in.
+func bakedAddonNamespaces(t *testing.T) []string {
+	t.Helper()
+	entries, err := os.ReadDir(bakedAddonManifests)
+	if err != nil {
+		t.Fatalf("read the baked manifests: %v", err)
+	}
+	var namespaces []string
+	for _, entry := range entries {
+		body, err := os.ReadFile(filepath.Join(bakedAddonManifests, entry.Name()))
+		if err != nil {
+			t.Fatalf("read %s: %v", entry.Name(), err)
+		}
+		for _, doc := range manifestDocs(t, entry.Name(), body) {
+			if !slices.Contains(podKinds, doc.Kind) || doc.Metadata.Namespace == "" {
+				continue
+			}
+			if !slices.Contains(namespaces, doc.Metadata.Namespace) {
+				namespaces = append(namespaces, doc.Metadata.Namespace)
+			}
+		}
+	}
+	if len(namespaces) == 0 {
+		t.Fatalf("no manifest under %s runs a pod in a namespace", bakedAddonManifests)
+	}
+	return namespaces
+}
+
+// manifestDoc is as much of a baked document as the namespaces above need.
+type manifestDoc struct {
+	Kind     string `yaml:"kind"`
+	Metadata struct {
+		Namespace string `yaml:"namespace"`
+	} `yaml:"metadata"`
+}
+
+func manifestDocs(t *testing.T, name string, body []byte) []manifestDoc {
+	t.Helper()
+	var docs []manifestDoc
+	decoder := yaml.NewDecoder(bytes.NewReader(body))
+	for {
+		var doc manifestDoc
+		err := decoder.Decode(&doc)
+		if errors.Is(err, io.EOF) {
+			return docs
+		}
+		if err != nil {
+			t.Fatalf("parse %s: %v", name, err)
+		}
+		docs = append(docs, doc)
 	}
 }

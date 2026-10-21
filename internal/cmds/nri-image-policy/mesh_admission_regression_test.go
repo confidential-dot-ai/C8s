@@ -104,7 +104,7 @@ func TestMeshConfigRejectsUnboundBaseRoles(t *testing.T) {
 		t.Run(role, func(t *testing.T) {
 			cfg := meshConfigForLoad(t)
 			cfg.Allowlist.Base = roleBase(t, pushDigestB, role, []string{"/usr/local/bin/c8s"})
-			_, err := parseConfig(meshConfigDocument(t, cfg))
+			_, err := loadMeshConfigDocument(t, cfg)
 			if role == "unknown-role" {
 				if err == nil || !strings.Contains(err.Error(), role) {
 					t.Fatalf("load = %v, want unbound role error", err)
@@ -122,7 +122,7 @@ func TestMeshConfigRejectsUnboundBaseRoles(t *testing.T) {
 			} else {
 				cfg.Mesh = nil
 			}
-			if err := cfg.validateMesh(); err != nil {
+			if err := cfg.validateMeshRoleBindings(); err != nil {
 				t.Fatalf("config without %s: %v", omit, err)
 			}
 		})

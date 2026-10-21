@@ -606,9 +606,9 @@ func TestValidateRejectsBadCDSRTMRs(t *testing.T) {
 // A malformed RTMR pin fails the pull-client build rather than silently
 // unpinning the registers.
 func TestAllowlistPullHTTPClientRejectsBadRTMRs(t *testing.T) {
-	cfg := validConfig().Allowlist.Pull
-	cfg.CDSRTMRs = []string{"1=zz"}
-	if _, err := allowlistPullHTTPClient(cfg); err == nil || !strings.Contains(err.Error(), "--cds-rtmrs") {
+	cfg := validConfig()
+	cfg.Allowlist.Pull.CDSRTMRs = []string{"1=zz"}
+	if _, err := allowlistPullHTTPClient(cfg.Allowlist.Pull, cfg.NormalizedPlatform()); err == nil || !strings.Contains(err.Error(), "--cds-rtmrs") {
 		t.Fatalf("err = %v, want an RTMR parse failure", err)
 	}
 }

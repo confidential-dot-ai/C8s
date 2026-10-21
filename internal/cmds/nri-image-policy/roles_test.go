@@ -114,8 +114,14 @@ func TestMeshPolicyValidation(t *testing.T) {
 			wants: "binds no reserved uid to the mesh role",
 		},
 		{
-			name:  "mesh policy over a base the node does not claim",
-			wants: "requires allowlist.node_tcb",
+			// The install lane: the chart renders both the base and the mesh
+			// policy, so holding it to the baked lane's enforcement would only
+			// refuse a test cluster the same admin configured.
+			name: "chart-rendered mesh policy on the install lane",
+			policy: func(p *policyConfig) {
+				p.Mode = ModeAudit
+				p.FatalExisting = false
+			},
 		},
 		{
 			name: "admission in audit mode",

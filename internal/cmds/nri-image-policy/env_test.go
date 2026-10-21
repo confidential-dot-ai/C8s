@@ -201,7 +201,7 @@ func TestMountCreationValidatorChecksCumulativeEdits(t *testing.T) {
 			}
 			req := &api.ValidateContainerAdjustmentRequest{Pod: pod, Container: ctr, Adjust: adjust}
 			before := proto.Clone(req)
-			if tc.cdi && adjustedMounts(req, proto.Clone(ctr).(*api.Container), "") != nil {
+			if tc.cdi && adjustedMounts(req, proto.Clone(ctr).(*api.Container), nodeMounts{}) != nil {
 				t.Fatal("deferred CDI produced complete mount evidence")
 			}
 			err := p.ValidateContainerAdjustment(context.Background(), req)

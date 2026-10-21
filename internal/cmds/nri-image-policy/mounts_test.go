@@ -22,7 +22,7 @@ func TestMountObserverBindsSourcesToCurrentPodAndSandbox(t *testing.T) {
 		{Source: containerdRoots[0] + "/io.containerd.grpc.v1.cri/sandboxes/sandbox-a/hostname", Destination: "/etc/hostname"},
 		{Source: containerdRoots[0] + "/io.containerd.grpc.v1.cri/sandboxes/sandbox-b/resolv.conf", Destination: "/etc/resolv.conf"},
 	}}
-	got := newMountObserver(fixedStorage(allowlist.MountMemory), "").Observe(pod, ctr)
+	got := newMountObserver(fixedStorage(allowlist.MountMemory), nodeMounts{}).Observe(pod, ctr)
 	want := []allowlist.MountClass{allowlist.MountPlatform, allowlist.MountHost, allowlist.MountPlatform, allowlist.MountHost}
 	for j := range want {
 		if got[j].Class != want[j] {
@@ -38,7 +38,7 @@ func TestMountObserverClassifiesOnlyCurrentPodEmptyDir(t *testing.T) {
 		{Source: kubeletRoot + "/pods/pod-b/volumes/" + emptyDirPlugin + "/cache", Destination: "/stolen"},
 		{Source: kubeletRoot + "/pods/pod-a/volumes/" + emptyDirPlugin + "/cache/subdir", Destination: "/subpath"},
 	}}
-	got := newMountObserver(fixedStorage(allowlist.MountEncrypted), "").Observe(pod, ctr)
+	got := newMountObserver(fixedStorage(allowlist.MountEncrypted), nodeMounts{}).Observe(pod, ctr)
 	if got[0].Class != allowlist.MountEmptyDir || got[0].Storage != allowlist.MountEncrypted {
 		t.Fatalf("same-pod emptyDir = %+v", got[0])
 	}
@@ -69,7 +69,7 @@ func TestMountObserverClassifiesVolumePlaceholdersAsData(t *testing.T) {
 					Source:      kubeletRoot + "/pods/" + tc.podUID + "/volumes/" + emptyDirPlugin + "/" + tc.volume,
 					Destination: "/models",
 				}}}
-				got := newMountObserver(fixedStorage(storage), "").Observe(pod, ctr)
+				got := newMountObserver(fixedStorage(storage), nodeMounts{}).Observe(pod, ctr)
 				wantStorage := storage
 				if tc.class == allowlist.MountHost {
 					wantStorage = allowlist.MountUnknown
@@ -89,7 +89,7 @@ func TestMountObserverBindsSubpathToPodAndContainer(t *testing.T) {
 		{Source: kubeletRoot + "/pods/pod-a/volume-subpaths/config/other/0", Destination: "/stolen"},
 		{Source: kubeletRoot + "/pods/pod-b/volume-subpaths/config/app/0", Destination: "/foreign"},
 	}}
-	got := newMountObserver(fixedStorage(allowlist.MountEncrypted), "").Observe(pod, ctr)
+	got := newMountObserver(fixedStorage(allowlist.MountEncrypted), nodeMounts{}).Observe(pod, ctr)
 	if got[0].Class != allowlist.MountData || got[0].Storage != allowlist.MountEncrypted {
 		t.Fatalf("current container subpath = %+v", got[0])
 	}
@@ -106,7 +106,7 @@ func TestMountObserverRejectsUncleanAndLookalikePaths(t *testing.T) {
 		{Source: kubeletRoot + "/pods/pod-a/x/../etc-hosts", Destination: "/etc/hosts"},
 		{Source: "/tmp/io.containerd.grpc.v1.cri/sandboxes/sandbox-a/hostname", Destination: "/etc/hostname"},
 	}}
-	for _, got := range newMountObserver(nil, "").Observe(pod, ctr) {
+	for _, got := range newMountObserver(nil, nodeMounts{}).Observe(pod, ctr) {
 		if got.Class != allowlist.MountHost {
 			t.Errorf("lookalike classified as %q", got.Class)
 		}
@@ -133,7 +133,7 @@ func TestHostMountSourceAndAccess(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctr := &api.Container{Mounts: []*api.Mount{{Type: "bind", Source: tc.source, Destination: "/config", Options: tc.options}}}
-			got := newMountObserver(nil, "").Observe(&api.PodSandbox{}, ctr)
+			got := newMountObserver(nil, nodeMounts{}).Observe(&api.PodSandbox{}, ctr)
 			if len(got) != 1 || got[0].Class != allowlist.MountHost {
 				t.Fatalf("host bind disappeared: %+v", got)
 			}
@@ -172,7 +172,7 @@ func TestMountObserverClassifiesItsOwnSocketDirAsPlatform(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctr := &api.Container{Name: tc.ctr, PodSandboxId: "sandbox-a", Mounts: []*api.Mount{tc.m}}
-			got := newMountObserver(fixedStorage(allowlist.MountMemory), tc.dir).Observe(tc.pod, ctr)
+			got := newMountObserver(fixedStorage(allowlist.MountMemory), nodeMounts{socketDir: tc.dir}).Observe(tc.pod, ctr)
 			if len(got) != 1 || got[0].Class != tc.class {
 				t.Fatalf("observed = %+v, want %s", got, tc.class)
 			}
