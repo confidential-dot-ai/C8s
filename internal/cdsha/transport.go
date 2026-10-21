@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"slices"
 	"strings"
@@ -89,8 +90,9 @@ type mux struct {
 	done     chan struct{}
 	once     sync.Once
 
-	connMu sync.Mutex
-	conns  map[*peerConn]struct{}
+	connMu    sync.Mutex
+	conns     map[*peerConn]struct{}
+	refusedAt map[string]time.Time // remote host + stage -> last logged
 }
 
 // peerConn is a live attested connection and what its peer attested. TLS
@@ -181,6 +183,28 @@ func (m *mux) recheck() {
 	}
 }
 
+// refused logs why a peer connection was closed, at most once a minute per
+// remote host and reason: a peer that is refused for good (a new image not
+// yet pinned, a foreign cluster) would otherwise only show as resets on the
+// other side.
+func (m *mux) refused(remote net.Addr, stage string, err error) {
+	host, _, _ := net.SplitHostPort(remote.String())
+	key := host + " " + stage
+	now := time.Now()
+	m.connMu.Lock()
+	if m.refusedAt == nil {
+		m.refusedAt = map[string]time.Time{}
+	}
+	last, seen := m.refusedAt[key]
+	if seen && now.Sub(last) < time.Minute {
+		m.connMu.Unlock()
+		return
+	}
+	m.refusedAt[key] = now
+	m.connMu.Unlock()
+	slog.Info("cds-ha: peer connection refused", "component", "cds-ha", "remote", host, "stage", stage, "err", err)
+}
+
 func (m *mux) serve() {
 	for {
 		c, err := m.ln.Accept()
@@ -205,6 +229,7 @@ func (m *mux) route(raw net.Conn) {
 	c := tls.Server(raw, m.tls)
 	_ = c.SetDeadline(time.Now().Add(handshakeTimeout))
 	if err := c.Handshake(); err != nil {
+		m.refused(raw.RemoteAddr(), "handshake", err)
 		c.Close()
 		return
 	}
@@ -216,6 +241,7 @@ func (m *mux) route(raw net.Conn) {
 	_ = c.SetDeadline(time.Time{})
 	pc, err := m.track(c)
 	if err != nil {
+		m.refused(raw.RemoteAddr(), "peer identity", err)
 		c.Close()
 		return
 	}
@@ -229,6 +255,7 @@ func (m *mux) route(raw net.Conn) {
 		}
 		target := make([]byte, n[0])
 		if _, err := io.ReadFull(pc, target); err != nil || string(target) != m.advert.id {
+			m.refused(raw.RemoteAddr(), "raft target", fmt.Errorf("for member %q, this is %q (%v)", target, m.advert.id, err))
 			pc.Close()
 			return
 		}
