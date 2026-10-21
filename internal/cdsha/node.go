@@ -1311,6 +1311,10 @@ func (n *Node) CA() (*issuer.CA, error) {
 // Core is the agreed cluster state.
 func (n *Node) Core() Core { return n.fsm.Core() }
 
+// PinsDecree is the signed decree behind the current pin set, or nil when
+// the pins came from Genesis or from a decree without images.
+func (n *Node) PinsDecree() *SignedDecree { return n.fsm.Core().PinsDecree }
+
 // Status is this replica's view of the cluster.
 func (n *Node) Status() Status {
 	core := n.fsm.Core()

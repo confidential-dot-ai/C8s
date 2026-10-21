@@ -13,6 +13,8 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -36,6 +38,7 @@ func newHADecreeCmd() *cobra.Command {
 		expiresIn  time.Duration
 		ackFork    bool
 		ackRecover bool
+		images     []string
 	)
 	cmd := &cobra.Command{
 		Use:   "decree",
@@ -80,6 +83,9 @@ func newHADecreeCmd() *cobra.Command {
 					fmt.Fprintln(cmd.ErrOrStderr(), "WARNING: RotateKey without --measurements delivers the new key to the current pin set (D14). Prefer UpdateMeasurements first (D13).")
 				}
 			}
+			if err := setDecreeImages(&d, images); err != nil {
+				return err
+			}
 			key, err := loadECPrivateKey(keyPath)
 			if err != nil {
 				return err
@@ -105,7 +111,8 @@ func newHADecreeCmd() *cobra.Command {
 	f.StringVar(&d.ClusterID, "cluster-id", "", "cluster the decree is for")
 	f.Uint64Var(&d.BaseEpoch, "base-epoch", 0, "the epoch you observed (c8s cds ha status)")
 	f.StringVar(&kind, "kind", string(cdsha.UpdateMeasurements), "Genesis (mint the first key), UpdateMeasurements, RotateKey, or Recover (break-glass after losing a majority)")
-	f.StringSliceVar(&d.Measurements, "measurements", nil, "complete new replica pin set (D6); optional for RotateKey (D14)")
+	f.StringSliceVar(&d.Measurements, "measurements", nil, "complete new replica pin set (D6); optional for RotateKey (D14). Derived from --image when that is given")
+	f.StringArrayVar(&images, "image", nil, "a CDS launch identity, mrtd:rtmr1:rtmr2 in hex; repeat for each. Lets nodes and pods follow the pin set (GET /ha/pins), so a CDS image rollout needs no node relaunch")
 	f.StringVar(&d.IntentID, "intent-id", "", "decree nonce (default random)")
 	f.StringVar(&d.BootstrapNode, "bootstrap-node", "", "Genesis: the node whose replica starts the cluster; Recover: the surviving node")
 	f.StringVar(&keyPath, "operator-key", "", "PEM EC private key matching the cluster's --ha-operator-key")
@@ -200,4 +207,38 @@ func randomID() string {
 	b := make([]byte, 8)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+// setDecreeImages fills d.Images from --image values and derives the replica
+// pins from them; explicit --measurements must then be the same set.
+func setDecreeImages(d *cdsha.Decree, specs []string) error {
+	if len(specs) == 0 {
+		return nil
+	}
+	if d.Kind != cdsha.UpdateMeasurements && d.Kind != cdsha.RotateKey {
+		return fmt.Errorf("--image is for UpdateMeasurements and RotateKey decrees")
+	}
+	var pins []string
+	for _, spec := range specs {
+		parts := strings.Split(strings.ToLower(strings.TrimSpace(spec)), ":")
+		if len(parts) != 3 {
+			return fmt.Errorf("--image %q: want mrtd:rtmr1:rtmr2", spec)
+		}
+		img := cdsha.DecreeImage{MRTD: parts[0], RTMR1: parts[1], RTMR2: parts[2]}
+		pin, err := img.Pin()
+		if err != nil {
+			return fmt.Errorf("--image %q: %w", spec, err)
+		}
+		d.Images = append(d.Images, img)
+		pins = append(pins, pin)
+	}
+	pins = slices.Compact(slices.Sorted(slices.Values(pins)))
+	if len(d.Measurements) > 0 {
+		given := slices.Compact(slices.Sorted(slices.Values(d.Measurements)))
+		if !slices.Equal(given, pins) {
+			return errors.New("--measurements must be exactly the pins of the --image values (or leave it out)")
+		}
+	}
+	d.Measurements = pins
+	return nil
 }
