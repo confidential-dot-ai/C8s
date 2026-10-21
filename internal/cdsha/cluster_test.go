@@ -128,6 +128,7 @@ type cluster struct {
 	cut    map[string]bool     // partitioned IPs
 	nextIP int
 	ipOf   map[string]string
+	reads  map[string]uint32 // node name -> newest format its next replica reads (0: Format)
 }
 
 // clusterSeq gives every test cluster its own loopback range, so one
@@ -146,7 +147,7 @@ func newCluster(t *testing.T, seats int) *cluster {
 	rk, _ := operatorKey(t)
 	c := &cluster{t: t, opKey: k, opPub: pub, seats: seats, port: port, backups: &memBackups{}, recKey: rk,
 		decrees: &memDecrees{items: map[string]SignedDecree{}, status: map[string]DecreeStatus{}},
-		nodes:   map[string]*replica{}, meas: map[string]string{}, cut: map[string]bool{}, nextIP: 2, ipOf: map[string]string{},
+		nodes:   map[string]*replica{}, meas: map[string]string{}, cut: map[string]bool{}, nextIP: 2, ipOf: map[string]string{}, reads: map[string]uint32{},
 		block: 1 + clusterSeq.Add(1)%250}
 	t.Cleanup(func() {
 		c.mu.Lock()
@@ -199,6 +200,7 @@ func (c *cluster) start(name, measurement string) *replica {
 		c.ipOf[name] = ip
 	}
 	c.meas[name] = measurement
+	reads := c.reads[name]
 	c.mu.Unlock()
 	al, err := allowlist.OpenInMemory()
 	if err != nil {
@@ -211,7 +213,7 @@ func (c *cluster) start(name, measurement string) *replica {
 		Attestor: testAttestor{measurement}, BakedPins: []string{measurement}, OperatorPubKey: c.opPub,
 		Seats: c.seats, MaxNonVoters: 8, Peers: c.peers(ip), Decrees: c.decrees, Timing: testTiming,
 		RecoveryKey: mustPKIX(c.t, &c.recKey.PublicKey), Backups: c.backups,
-		Allowlist: &al, Secrets: mem, Ledger: led,
+		Allowlist: &al, Secrets: mem, Ledger: led, Format: reads,
 	})
 	if err != nil {
 		c.t.Fatal(err)
