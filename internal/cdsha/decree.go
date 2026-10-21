@@ -40,7 +40,15 @@ const (
 	// commits the snapshot whose SHA-256 the decree names. Like Genesis it
 	// applies only to a replica that holds no cluster.
 	Restore DecreeKind = "Restore"
+	// SetVoters changes the number of voter seats (Voters, odd). The leader
+	// promotes healthy non-voters into new seats, or demotes voters, one
+	// at a time, so the group keeps its majority throughout.
+	SetVoters DecreeKind = "SetVoters"
 )
+
+// MaxVoters bounds the voter seats: each voter adds a round trip to every
+// commit.
+const MaxVoters = 9
 
 // Decree is an operator intent (D1). It never names a target epoch (D4).
 type Decree struct {
@@ -56,6 +64,8 @@ type Decree struct {
 	BootstrapNode string `json:"bootstrap_node,omitempty"`
 	// SnapshotSHA256 names the backup a Restore decree restores (hex).
 	SnapshotSHA256 string `json:"snapshot_sha256,omitempty"`
+	// Voters is the voter seat count a SetVoters decree sets.
+	Voters int `json:"voters,omitempty"`
 	// Images are the launch identities behind Measurements, for clients
 	// outside the group (node agents, pods) that pin CDS by its full launch
 	// identity rather than by a replica pin. When set, Measurements must be
@@ -192,8 +202,14 @@ func verifyDecree(sd SignedDecree, tail Core) error {
 		return errors.New("only Genesis, Recover and Restore decrees name a node")
 	case d.Kind == Recover && (len(tail.RootCert) == 0 || len(d.Measurements) != 0):
 		return errors.New("a Recover decree applies to a cluster with a key, and carries no measurements")
-	case d.Kind != UpdateMeasurements && d.Kind != RotateKey && d.Kind != Genesis && d.Kind != Recover && d.Kind != Restore:
+	case d.Kind != UpdateMeasurements && d.Kind != RotateKey && d.Kind != Genesis && d.Kind != Recover && d.Kind != Restore && d.Kind != SetVoters:
 		return fmt.Errorf("unknown kind %q", d.Kind)
+	case (d.Kind == SetVoters) != (d.Voters != 0):
+		return errors.New("a SetVoters decree, and only one, names a voter count")
+	case d.Kind == SetVoters && (d.Voters < 1 || d.Voters > MaxVoters || d.Voters%2 == 0):
+		return fmt.Errorf("voters must be odd, between 1 and %d", MaxVoters)
+	case d.Kind == SetVoters && (len(d.Measurements) != 0 || len(tail.RootCert) == 0):
+		return errors.New("a SetVoters decree applies to a cluster with a key, and carries no measurements")
 	case !slices.Equal(d.Measurements, normalizePins(d.Measurements)):
 		return errors.New("measurements not in canonical form")
 	case len(d.Images) > 0 && d.Kind != UpdateMeasurements && d.Kind != RotateKey:

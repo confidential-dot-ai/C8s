@@ -1,6 +1,8 @@
 package cmdsutil
 
 import (
+	"crypto/ecdsa"
+	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -82,6 +84,13 @@ func decreeKeyDER(s string) ([]byte, error) {
 	b, _ := pem.Decode([]byte(s))
 	if b == nil || b.Type != "PUBLIC KEY" {
 		return nil, errors.New("decree key must be a PEM PUBLIC KEY")
+	}
+	k, err := x509.ParsePKIXPublicKey(b.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("decree key: %w", err)
+	}
+	if _, ok := k.(*ecdsa.PublicKey); !ok {
+		return nil, errors.New("decree key is not an ECDSA key")
 	}
 	return b.Bytes, nil
 }

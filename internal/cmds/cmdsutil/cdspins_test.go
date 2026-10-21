@@ -1,9 +1,16 @@
 package cmdsutil
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"encoding/pem"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/confidential-dot-ai/attestation-go/refvalues"
 )
 
 func TestCDSPinsFlags(t *testing.T) {
@@ -35,5 +42,52 @@ func TestCDSPinsFlags(t *testing.T) {
 	}
 	if _, err := decreeKeyDER("not pem"); err == nil {
 		t.Fatal("a non-PEM decree key was accepted")
+	}
+}
+
+func testDecreeKeyPEM(t *testing.T) string {
+	t.Helper()
+	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.MarshalPKIXPublicKey(&k.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))
+}
+
+func TestCDSPinsSource(t *testing.T) {
+	bootstrap, err := refvalues.Load("../../testdata/node-identities.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if src, err := (CDSPinsFlags{}).Source(bootstrap, "https://cds"); src != nil || err != nil {
+		t.Fatalf("off: %v %v", src, err)
+	}
+	f := CDSPinsFlags{ClusterID: "c1", DecreeKey: testDecreeKeyPEM(t), StateFile: filepath.Join(t.TempDir(), "s.json")}
+	src, err := f.Source(bootstrap, "https://cds/")
+	if err != nil || src == nil || len(src.Current().Images) != len(bootstrap.Images) {
+		t.Fatalf("on: %v %v", src, err)
+	}
+	if _, err := (CDSPinsFlags{ClusterID: "c1", DecreeKey: "-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----\n"}).Source(bootstrap, "https://cds"); err == nil {
+		t.Fatal("a non-key PEM accepted")
+	}
+	if _, err := (CDSPinsFlags{ClusterID: "c1", DecreeKey: "-----BEGIN NOT A KEY"}).Source(bootstrap, "https://cds"); err == nil {
+		t.Fatal("a broken PEM accepted")
+	}
+	dir := t.TempDir()
+	for name, body := range map[string]string{"bad.json": "{", "empty.json": "{}"} {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := (CDSPinsFlags{File: p}).Info(); err == nil {
+			t.Fatalf("%s accepted", name)
+		}
+	}
+	if _, _, err := (CDSPinsFlags{File: dir}).Info(); err == nil {
+		t.Fatal("a directory accepted")
 	}
 }

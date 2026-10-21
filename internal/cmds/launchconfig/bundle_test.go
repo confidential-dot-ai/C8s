@@ -483,3 +483,32 @@ func TestNewBundleWithAPeerImage(t *testing.T) {
 		t.Fatalf("server.json: %v, %d pins", err, len(policy.Images))
 	}
 }
+
+func TestPeerImagesValidation(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "bundle")
+	if err := runBundleCmd(t, "new", "--out", dir, "--cluster-id", "demo", "--image-manifest", writeManifest(t, "tdx")); err != nil {
+		t.Fatal(err)
+	}
+	doc, _ := readBundleDocument(t, dir, serverDir)
+	img := func(b string) Image {
+		return Image{Platform: "tdx", Measurement: strings.Repeat(b, 48), RTMRs: map[int]string{1: strings.Repeat(b, 48), 2: strings.Repeat(b, 48)}}
+	}
+	for name, peers := range map[string][]Image{
+		"too many":        {img("a1"), img("a2"), img("a3"), img("a4"), img("a5")},
+		"bad measurement": {{Platform: "tdx", Measurement: "zz", RTMRs: img("a1").RTMRs}},
+		"bad registers":   {{Platform: "tdx", Measurement: strings.Repeat("a1", 48)}},
+		"repeated":        {img("a1"), img("a1")},
+	} {
+		d := *doc
+		d.PeerImages = peers
+		if err := d.validate(); err == nil {
+			t.Fatalf("%s validated", name)
+		}
+	}
+	if err := runBundleCmd(t, "new", "--out", dir+"-2", "--cluster-id", "demo", "--image-manifest", writeManifest(t, "tdx"), "--peer-image-manifest", "/nonexistent"); err == nil {
+		t.Fatal("a missing peer manifest accepted")
+	}
+	if err := runBundleCmd(t, "add-cds-node", "--bundle", dir, "--name", "x", "--image-manifest", "/nonexistent"); err == nil {
+		t.Fatal("a missing image manifest accepted")
+	}
+}

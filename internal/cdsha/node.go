@@ -147,6 +147,8 @@ type Node struct {
 	addedAt  map[raft.ServerID]time.Time // leader: when this leader added a member (handleJoin)
 	reads    map[raft.ServerID]uint32    // leader: the newest format each member reads
 
+	joinRefusedAt map[string]time.Time // peer + reason -> last logged
+
 	backupAt    time.Time // leader: last backup attempt
 	backupIndex uint64    // leader: applied index of the last stored backup
 	recovery    *ecdsa.PublicKey
@@ -169,8 +171,9 @@ type Status struct {
 	AppliedIndex  uint64   `json:"applied_index"`
 	LastContactMS int64    `json:"last_contact_ms,omitempty"`
 	// SeatsFilled (leader only): every voter seat is held by a member whose
-	// heartbeats succeed.
+	// heartbeats succeed. Seats is the voter seat count in force.
 	SeatsFilled bool `json:"seats_filled,omitempty"`
+	Seats       int  `json:"seats,omitempty"`
 	// Format is the cluster's agreed encoding format; Reads the newest this
 	// replica reads. Stuck says why it stopped following the log.
 	Format uint32 `json:"format,omitempty"`
@@ -504,7 +507,7 @@ func (n *Node) joinOrBootstrap(ctx context.Context) {
 			n.lastLoner.Store(time.Now().UnixMilli())
 		}
 		if err != nil || resp.Err != "" {
-			n.log.Debug("join refused", "peer", p, "err", errors.Join(err, errorsOrNil(resp.Err)))
+			n.joinRefused(p, errors.Join(err, errorsOrNil(resp.Err)))
 		}
 	}
 	if anyMember {
@@ -516,6 +519,26 @@ func (n *Node) joinOrBootstrap(ctx context.Context) {
 	if g, ok := n.pendingGenesis(ctx); ok {
 		n.bootstrap(ctx, g)
 	}
+}
+
+// joinRefused logs why a peer would not add this replica, at Info once a
+// minute per peer and reason: a replica that can never join (a release too
+// old for the cluster's format, an image not pinned) must say so.
+func (n *Node) joinRefused(peer string, err error) {
+	key := peer + " " + err.Error()
+	now := time.Now()
+	n.mu.Lock()
+	if n.joinRefusedAt == nil {
+		n.joinRefusedAt = map[string]time.Time{}
+	}
+	last, seen := n.joinRefusedAt[key]
+	if seen && now.Sub(last) < time.Minute {
+		n.mu.Unlock()
+		return
+	}
+	n.joinRefusedAt[key] = now
+	n.mu.Unlock()
+	n.log.Info("join refused", "peer", peer, "err", err)
 }
 
 // rejoin asks reachable replicas to add this member, as a joiner would; a
@@ -952,7 +975,7 @@ func (n *Node) reconcile() {
 	}
 	var promote []raft.Server
 	for _, s := range servers {
-		if voters+len(promote) >= n.cfg.Seats {
+		if voters+len(promote) >= n.seats() {
 			break
 		}
 		if s.Suffrage == raft.Voter || slices.Contains(remove, s.ID) || voterNodes[nodeOf(s.ID)] || !healthy(s.ID) {
@@ -982,9 +1005,49 @@ func (n *Node) reconcile() {
 		}
 		n.log.Info("member promoted to voter", "id", s.ID)
 	}
+	if len(remove) == 0 && len(promote) == 0 {
+		n.demoteExtraVoter(servers)
+	}
 	if len(remove) == 0 {
 		n.raiseFormat(servers)
 	}
+}
+
+// demoteExtraVoter (leader) demotes one voter when there are more voters than
+// seats: a failing one first, never itself. One per pass, so the group never
+// loses more than one vote at a time.
+func (n *Node) demoteExtraVoter(servers []raft.Server) {
+	var voters []raft.ServerID
+	for _, s := range servers {
+		if s.Suffrage == raft.Voter {
+			voters = append(voters, s.ID)
+		}
+	}
+	if len(voters) <= n.seats() {
+		return
+	}
+	n.mu.Lock()
+	var pick raft.ServerID
+	for _, id := range voters {
+		if id == n.id {
+			continue
+		}
+		if _, bad := n.failing[id]; bad || pick == "" {
+			pick = id
+			if bad {
+				break
+			}
+		}
+	}
+	n.mu.Unlock()
+	if pick == "" {
+		return
+	}
+	if err := n.r().DemoteVoter(pick, 0, n.cfg.Timing.Apply).Error(); err != nil {
+		n.log.Warn("demote voter", "id", pick, "err", err)
+		return
+	}
+	n.log.Info("voter demoted: more voters than seats", "id", pick, "seats", n.seats())
 }
 
 // raiseFormat (leader): once every voter seat is filled and every member
@@ -1320,7 +1383,7 @@ func (n *Node) Status() Status {
 	core := n.fsm.Core()
 	st := Status{ClusterID: n.cfg.ClusterID, NodeName: n.cfg.NodeName, ID: string(n.id), Joined: core.Joined(),
 		Epoch: core.Epoch, Measurement: n.measurement, AppliedIndex: n.fsm.AppliedIndex(),
-		Format: core.format(), Reads: n.fsm.readable, Stuck: n.fsm.Stuck()}
+		Format: core.format(), Reads: n.fsm.readable, Stuck: n.fsm.Stuck(), Seats: n.seats()}
 	if core.Joined() {
 		sum := sha256.Sum256(core.RootCert)
 		st.CAFingerprint = hex.EncodeToString(sum[:])
@@ -1369,7 +1432,16 @@ func (n *Node) seatsFilled() bool {
 		}
 		voters++
 	}
-	return voters >= n.cfg.Seats
+	return voters >= n.seats()
+}
+
+// seats is the voter seat count: the agreed one once a SetVoters decree
+// set it, the launch configuration's before.
+func (n *Node) seats() int {
+	if s := n.fsm.Core().Seats; s > 0 {
+		return s
+	}
+	return n.cfg.Seats
 }
 
 // isVoter reports whether this member holds a voter seat.

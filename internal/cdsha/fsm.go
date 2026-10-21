@@ -248,6 +248,8 @@ func nextCore(cur Core, de DecreeEntry) (Core, *issuer.CA, error) {
 		}
 		next.Measurements = pins
 		next.GenesisAtMS = de.AtMS
+	case SetVoters:
+		next.Seats = d.Voters
 	case UpdateMeasurements, RotateKey:
 		if len(d.Measurements) > 0 {
 			next.Measurements = slices.Clone(d.Measurements)
