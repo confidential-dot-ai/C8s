@@ -1,9 +1,10 @@
 # armtls-dial
 
-A mesh peer the conformance step definitions drive. A static binary the
-backend builds for the node's architecture (`dialer_bin`), it is copied with
-`kubectl cp` into a pod that idles on `sleep 3600` and run there with
-`kubectl exec`: it dials a c8s armTLS mesh inbound proxy over TLS 1.3
+A mesh peer the conformance step definitions drive. A static binary on
+`PATH` in the suite's `mesh-dialer` image
+([`images/mesh-dialer`](../../images/mesh-dialer/Dockerfile)), it runs in a
+pod that idles on `sleep 3600`, through `kubectl exec` or the backend's
+agent: it dials a c8s armTLS mesh inbound proxy over TLS 1.3
 presenting the client certificate the scenario chose, names a destination
 pod, sends one HTTP GET and prints a JSON report.
 

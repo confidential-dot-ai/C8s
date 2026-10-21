@@ -92,9 +92,16 @@ func describePod(ctx context.Context, name string, images ...string) error {
 	if err != nil {
 		return err
 	}
-	w.describe(name, refs...)
+	p := w.describe(name, refs...)
+	if len(images) == 1 && podShapes[images[0]] != nil {
+		podShapes[images[0]](p)
+	}
 	return nil
 }
+
+// podShapes is what a pod of one container takes from its logical image
+// beyond the image itself.
+var podShapes = map[string]func(*pod){"mesh-dialer": (*pod).asDialer}
 
 func podNamesImageByTag(ctx context.Context, name, image string) error {
 	w := getWorld(ctx)

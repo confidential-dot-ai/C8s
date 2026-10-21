@@ -158,9 +158,11 @@ pod it renders may ping: the pod carries the `net.ipv4.ping_group_range`
 sysctl, and the tenant image's ping (Alpine's) uses an ICMP datagram socket
 under it, which the library busybox image's does not. A peer that connects to the inbound
 proxy itself, presenting a certificate the scenario shaped, is
-[`tools/armtls-dial`](tools/armtls-dial/README.md), which the backend builds
-for the node's architecture and the steps copy into a pod of the logical
-image `mesh-dialer`.
+[`tools/armtls-dial`](tools/armtls-dial/README.md), on `PATH` in the suite's
+`mesh-dialer` image ([`images/mesh-dialer`](images/mesh-dialer/Dockerfile)),
+whose one container is named and marked as a requester's so that the peer can
+reach the node's attestation service where the backend has one
+(`attestation_endpoint`).
 
 For scenarios about secret release, the backend sends one request to the CDS
 as the scenario shaped it (`cds_request`: a method, a route, a body, an
@@ -198,13 +200,13 @@ rejects unknown names.
 
 | Backend | Environment | Requires |
 |---|---|---|
-| [`kind.sh`](backends/kind.sh) | the kept kind cluster of [`test/integration/cluster/run.sh`](../integration/cluster/run.sh) (`C8S_IT_KEEP=1 C8S_IT_SETUP_ONLY=1`); mocked attestation, node shell via `docker exec`; the mock signs nothing and verifies only at the mock, so `evidence_signed` answers no and `relying_party` unsupported; the CDS reads its seed ConfigMap once, as on any chart-managed install, so `seed_add` answers unsupported | `C8S_IT_WORKDIR`; `go` for `dialer_bin` |
+| [`kind.sh`](backends/kind.sh) | the kept kind cluster of [`test/integration/cluster/run.sh`](../integration/cluster/run.sh) (`C8S_IT_KEEP=1 C8S_IT_SETUP_ONLY=1`); mocked attestation, node shell via `docker exec`; the mock signs nothing and verifies only at the mock, so `evidence_signed` answers no and `relying_party` unsupported; the CDS reads its seed ConfigMap once, as on any chart-managed install, so `seed_add` answers unsupported | `C8S_IT_WORKDIR` |
 | [`metal.sh`](backends/metal.sh) | the attested node image a metal lane booted (`snp-metal-e2e`, `tdx-metal-e2e`), from its `extra-suite` hook; what it cannot reach answers unsupported ([below](#the-metal-backend)) | `KUBECONFIG`, `C8S_ALLOWLIST_URL`, `C8S_OPERATOR_KEY`, the `c8s` CLI on `PATH`; `go` for the write-token functions, `crane` for `image_entrypoint` and `image_env` |
 
 The backends source the kind harness's `lib.sh`, render pods with
 `pod-fixture.py`, and name components (the NRI DaemonSet, its socket) that
-change with c8s. The tools under [`tools/`](tools) are built by the backends,
-copied into pods by the steps, and may import c8s packages: they stand in for
+change with c8s. The tools under [`tools/`](tools) are built into the suite's
+images or by the backends, and may import c8s packages: they stand in for
 peers the cluster does not have, not for the steps' judgement. A change to any of those updates the backend in
 the same PR.
 `shellcheck` runs over them and `run.sh` in the node-guest-image lint workflow.

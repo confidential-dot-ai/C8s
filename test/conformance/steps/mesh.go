@@ -11,17 +11,17 @@ import (
 	"strings"
 	"time"
 
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 	"github.com/cucumber/godog"
 )
 
 // Sentences about the armTLS mesh: which pod traffic its proxies carry, what
 // its guards drop, and what the inbound proxy makes of a peer that connects
 // to it. Pods act through kubectl exec (the tenant image's wget, nc, ping and
-// python); a peer is the armtls-dial tool, copied into a pod of the
-// "mesh-dialer" image, which dials the inbound proxy presenting the
-// certificate the scenario described. The
-// proxies are observed through the counters of the node's mesh pod and its
-// ipsets, read by the backend.
+// python); a peer is the armtls-dial tool in a pod of the "mesh-dialer"
+// image, which dials the inbound proxy presenting the certificate the
+// scenario described. The proxies are observed through the counters of the
+// node's mesh pod and its ipsets, read by the backend.
 func registerMesh(sc *godog.ScenarioContext) {
 	sc.Step(`^the mesh proxy of node "([^"]*)" is running$`, meshRunning)
 	sc.Step(`^"([^"]*)" serves a hello API$`, servesHello)
@@ -243,7 +243,7 @@ func receivesDatagrams(ctx context.Context, name, which string) error {
 		port = 53
 		p.opts = append(p.opts, "--add-capability", "NET_BIND_SERVICE")
 	}
-	p.listener = firstContainer
+	p.listener = p.first
 	if len(p.hello) == 0 {
 		p.containers[0].command = datagramListener(port)
 	} else {
@@ -878,7 +878,7 @@ func (w *world) unheldAddress(network *net.IPNet) (net.IP, error) {
 // printed and its exit status, which a failing command does not turn into
 // an error here.
 func (w *world) exec(p *pod, script string) (*execResult, error) {
-	out, err := w.podExec(p, firstContainer, "sh", "-c", script+"; echo \"rc=$?\"")
+	out, err := w.podExec(p, p.first, "sh", "-c", script+"; echo \"rc=$?\"")
 	if err != nil {
 		return nil, err
 	}
@@ -1135,9 +1135,6 @@ func (w *world) dial(src, node, dest string, second bool) error {
 		args = append(args, "--rewrite-not-after", p.cert.rewriteNotAfter.String())
 	}
 	args = append(args, net.JoinHostPort(nodeAddr, inbound), target)
-	if err := w.ensureDialer(p); err != nil {
-		return err
-	}
 	if err := w.snapshot(); err != nil {
 		return err
 	}
@@ -1217,32 +1214,21 @@ func (w *world) mintCert(p *pod) error {
 	return nil
 }
 
-// dialerPath is where the mesh peer sits in the pod that runs it.
-const dialerPath = "/tmp/armtls-dial"
-
-// ensureDialer copies the binary the backend built into the pod's first
-// container, once per pod, so a dial's counter window holds only the dial.
-func (w *world) ensureDialer(p *pod) error {
-	if p.dialer {
-		return nil
-	}
-	bin, err := w.be.call("dialer_bin")
-	if err != nil {
-		return err
-	}
-	if _, err := kubectl(nil, "cp", bin, p.namespace+"/"+p.name+":"+dialerPath, "-c", firstContainer); err != nil {
-		return err
-	}
-	p.dialer = true
-	return nil
+// asDialer makes the pod's only container the mesh peer's, named as the
+// cds-attest sidecar an application may run itself in a pod marked injected:
+// the admission plugin binds the node's socket directory into it, so a peer
+// that mints its own certificate reaches the local attestation service there
+// (attestation_endpoint).
+func (p *pod) asDialer() {
+	p.first = workloadclaims.AttestContainerName
+	p.opts = append(p.opts, "--container-name", p.first,
+		"--supplemental-group", strconv.Itoa(workloadclaims.InventorySocketGID),
+		"--annotation", workloadclaims.AnnotationInjected+"=true")
 }
 
-// armtlsDial runs the mesh peer in the pod's first container.
+// armtlsDial runs the mesh peer, which the mesh-dialer image has on PATH.
 func (w *world) armtlsDial(p *pod, args ...string) (string, error) {
-	if err := w.ensureDialer(p); err != nil {
-		return "", err
-	}
-	return w.podExec(p, firstContainer, append([]string{dialerPath}, args...)...)
+	return w.podExec(p, p.first, append([]string{"armtls-dial"}, args...)...)
 }
 
 // --- Outcomes ---

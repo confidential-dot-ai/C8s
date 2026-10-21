@@ -182,9 +182,6 @@
 #   external_endpoint                <address>:<port> of a hello API outside
 #                                    the cluster, or unsupported
 #   attestation_endpoint             the URL a pod obtains evidence from, or unsupported
-#   dialer_bin                       the armtls-dial binary for the node's
-#                                    architecture, built once per run; unsupported
-#                                    without a Go toolchain
 #   cert_paths                       the certificate and key paths of a pod
 #                                    carrying a workload ID, one per line
 #   cds_request <method> <route> [body-file] [authorization] [client-cert] [client-key] [header...]
@@ -244,18 +241,18 @@ kubeconfig() { echo "$KUBECONFIG"; }
 # served entry and no base allowlist names, for the scenarios that write their
 # own entries; each has its own digest. "requester" is the curl image of the
 # pod requester_manifest renders, distinct from "rogue" so that one stays
-# undeclared while a scenario admits this one. "mesh-dialer" is the pod the
+# undeclared while a scenario admits this one.
 # "secret-client" is the image the webhook injects its helpers from, for a
 # pod that runs a helper of its own; a backend whose node holds that image
 # out of the harness's reach answers unsupported from injected_image. The
-# steps copy the mesh peer (tools/armtls-dial, dialer_bin) into: an image with
-# tar for the copy, which no other logical image shares. The suite's own
-# images (images/, built by conformance-images.yml) stand in for the logical
-# images CONFORMANCE_IMAGES names: tenant-app, Alpine's python with the
-# programs the steps run in it, for every backend; a backend adds its own.
+# suite's own images (images/, built by conformance-images.yml) stand in for
+# the logical images CONFORMANCE_IMAGES names, for every backend: tenant-app,
+# Alpine's python with the programs the steps run in it, and mesh-dialer, the
+# mesh peer (tools/armtls-dial) on busybox; a backend adds its own.
 CONFORMANCE_REPO=ghcr.io/confidential-dot-ai/c8s-conformance-
 declare -A CONFORMANCE_IMAGES=(
     [tenant-app]=sha256:96261c697b2c970034ce6bcb663fd7f636834dbeb1397c074e58cf2e85254139
+    [mesh-dialer]=sha256:fa04d42850acb798da9de055418c7344d477aea33210199f9277fbc8afec5ce8
 )
 image_ref() {
     [ -z "${CONFORMANCE_IMAGES[$1]:-}" ] || { echo "$CONFORMANCE_REPO$1@${CONFORMANCE_IMAGES[$1]}"; return; }
@@ -266,23 +263,9 @@ image_ref() {
         model-server) echo "docker.io/library/debian:bookworm-slim" ;;
         model-loader) echo "docker.io/library/busybox:1.35.0" ;;
         requester) echo "docker.io/curlimages/curl:8.11.0" ;;
-        mesh-dialer) echo "docker.io/library/busybox:1.36.1" ;;
         secret-client) injected_image ;;
         *) return $UNSUPPORTED ;;
     esac
-}
-
-# The mesh peer the steps drive, built from this checkout for the node's
-# architecture (the steps call this once per run and copy the binary into the
-# pod that dials), into a fresh directory: never an earlier run's binary, and
-# never the results a metal lane uploads.
-dialer_bin() {
-    local bin arch
-    command -v go >/dev/null || return "$UNSUPPORTED"
-    bin="$(mktemp -d)/armtls-dial" || return
-    arch="$(kubectl get node "$(node_name one)" -o jsonpath='{.status.nodeInfo.architecture}')" || return
-    CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -C "$C8S_ROOT" -ldflags='-s -w' -o "$bin" ./test/conformance/tools/armtls-dial >&2 || return 1
-    echo "$bin"
 }
 
 # The plugin's pull interval: the chart's nriImagePolicy.refresh.interval,
@@ -307,8 +290,10 @@ manifest_filter() { cat; }
 
 # The node's admission plugin binds its socket directory into a container
 # named as a sidecar an application may run itself (cds-attest) in a pod
-# marked injected; the sockets are group-owned by 65532. Nothing else about
-# the pod is c8s's, so the webhook leaves it alone.
+# marked injected; the sockets are group-owned by 65532
+# (workloadclaims.AttestContainerName and InventorySocketGID, which a
+# mesh-dialer pod takes as well). Nothing else about the pod is c8s's, so the
+# webhook leaves it alone.
 REQUESTER_CONTAINER=cds-attest
 requester_manifest() {
     local image
