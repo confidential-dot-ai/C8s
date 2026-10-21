@@ -369,7 +369,7 @@ func followMeshCA(base *tls.Config, current func() (*issuer.CA, error)) *tls.Con
 func haGate(serving func() bool, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/healthz", "/readyz", "/metrics", "/ha/status":
+		case "/healthz", "/readyz", "/metrics", "/ha/status", "/ha/pins":
 		default:
 			if !serving() {
 				http.Error(w, "cds-ha: this replica is not serving (not joined, not pinned, or out of contact with the cluster)", http.StatusServiceUnavailable)
@@ -385,6 +385,21 @@ func haStatus(node *cdsha.Node) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(node.Status())
+	}
+}
+
+// haPins serves the signed decree behind the current CDS pin set. It is
+// public: clients that no longer recognise a replica's image fetch it before
+// they can trust any replica, and check the operator's signature themselves.
+func haPins(node *cdsha.Node) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		sd := node.PinsDecree()
+		if sd == nil {
+			http.Error(w, "cds-ha: the pin set came from Genesis; the launch document's is current", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(sd)
 	}
 }
 
@@ -468,6 +483,7 @@ func preJoinMux(node *cdsha.Node) http.Handler {
 	})
 	mux.HandleFunc("GET /ha/status", haStatus(node))
 	mux.HandleFunc("POST /ha/restore", handleRestore(node))
+	mux.HandleFunc("GET /ha/pins", haPins(node))
 	// Anything else is retryable: the full server takes over once joined.
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "cds-ha: this replica has not joined the cluster yet", http.StatusServiceUnavailable)

@@ -3,6 +3,7 @@ package launchconfig
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -390,5 +391,67 @@ func TestNewBundleWithCDSNodes(t *testing.T) {
 	if err := runBundleCmd(t, "new", "--out", dir+"-one", "--cluster-id", "demo", "--image-manifest", writeManifest(t, "tdx"),
 		"--server-address", "10.0.0.10", "--cds-node", "lonely"); err == nil {
 		t.Fatal("one cds node accepted")
+	}
+}
+
+// A CDS rollout: a cds node launched on image B boots B only, and accepts
+// the server's image A for its peers and CDS, so it trusts every node not
+// yet rolled. Its CDS policy pins the server and cds launch keys on both.
+func TestAddCDSNodeOnANewImage(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "bundle")
+	if err := runBundleCmd(t, "new", "--out", dir, "--cluster-id", "demo", "--image-manifest", writeManifest(t, "tdx"),
+		"--server-address", "10.0.0.10", "--cds-node", "demo-cds-1", "--cds-node", "demo-cds-2"); err != nil {
+		t.Fatal(err)
+	}
+	b := filepath.Join(t.TempDir(), "manifest-b.json")
+	body := `{"version":1,"build":{"platform":"tdx"},"tdx":{"mrtd":"` + strings.Repeat("66", 48) +
+		`","rtmr1":"` + strings.Repeat("77", 48) + `","rtmr2":"` + strings.Repeat("88", 48) + `"}}`
+	if err := os.WriteFile(b, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := runBundleCmd(t, "add-cds-node", "--bundle", dir, "--name", "demo-cds-3", "--image-manifest", b); err != nil {
+		t.Fatal(err)
+	}
+	server, _ := readBundleDocument(t, dir, serverDir)
+	doc, _ := readBundleDocument(t, dir, "demo-cds-3")
+	if doc.Image.Measurement != strings.Repeat("66", 48) || len(doc.PeerImages) != 1 || !sameImage(doc.PeerImages[0], server.Image) {
+		t.Fatalf("image %s, peer images %+v", doc.Image.Measurement, doc.PeerImages)
+	}
+	stageBundleNode(t, dir, "demo-cds-3")
+	pins, err := doc.referenceValues()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cds := doc.cdsPins(pins)
+	if len(cds.Images) != 4 {
+		t.Fatalf("server and cds keys on A and B: %d pins", len(cds.Images))
+	}
+	seen := map[string]bool{}
+	for _, pin := range cds.Images {
+		seen[string(pin.Anchor)+hex.EncodeToString(pin.Digest)] = true
+	}
+	for _, key := range []string{server.Server.OperatorPublicKey, server.CDSOperatorPublicKeys[0]} {
+		for _, m := range []string{strings.Repeat("11", 48), strings.Repeat("66", 48)} {
+			if !seen[key+m] {
+				t.Fatalf("missing pin for image %s…", m[:6])
+			}
+		}
+	}
+	// Same image as the server: an ordinary document, no peer images.
+	if err := runBundleCmd(t, "add-cds-node", "--bundle", dir, "--name", "demo-cds-4", "--image-manifest", writeManifest(t, "tdx")); err != nil {
+		t.Fatal(err)
+	}
+	if same, _ := readBundleDocument(t, dir, "demo-cds-4"); len(same.PeerImages) != 0 {
+		t.Fatalf("peer images on the server's own image: %+v", same.PeerImages)
+	}
+	// A repeated or foreign peer image does not validate.
+	bad := *doc
+	bad.PeerImages = []Image{doc.Image}
+	if err := bad.validate(); err == nil {
+		t.Fatal("the node's own image as a peer image validated")
+	}
+	bad.PeerImages = []Image{{Platform: "snp", Measurement: strings.Repeat("44", 48)}}
+	if err := bad.validate(); err == nil {
+		t.Fatal("a peer image of another platform validated")
 	}
 }

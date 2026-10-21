@@ -199,9 +199,19 @@ func requireAttestationApi(url string) error {
 // the endpoint provisions on the first handshake instead, and taking the
 // inventory down would cost far more than a slow first callback.
 func StartDigestsEndpoint(ctx context.Context, logger *slog.Logger, resolver SandboxResolver, identity []byte, platform string, attestFunc func(ctx context.Context, customData string) (string, error), attestationApiURL string, cdsPins armtls.Pins) error {
+	return StartDigestsEndpointFollowing(ctx, logger, resolver, identity, platform, attestFunc, attestationApiURL, cdsPins, nil)
+}
+
+// StartDigestsEndpointFollowing is StartDigestsEndpoint whose CDS pins
+// follow src (the operator's signed CDS pin decrees) when it is not nil: a
+// CDS replica on a newly accepted image passes once the node has the decree.
+func StartDigestsEndpointFollowing(ctx context.Context, logger *slog.Logger, resolver SandboxResolver, identity []byte, platform string, attestFunc func(ctx context.Context, customData string) (string, error), attestationApiURL string, cdsPins armtls.Pins, src armtls.PinSource) error {
 	tlsCfg, certMgr, err := DigestsServerTLSConfig(platform, attestFunc, attestationApiURL, cdsPins, 0)
 	if err != nil {
 		return err
+	}
+	if src != nil {
+		tlsCfg.VerifyPeerCertificate = armtls.RefreshingPeerVerifier(src, attestationApiURL)
 	}
 	addr := net.JoinHostPort("", strconv.Itoa(listenPort))
 	l, err := tls.Listen("tcp", addr, tlsCfg)

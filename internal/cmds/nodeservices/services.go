@@ -18,6 +18,10 @@ const (
 	// PublicDir contains only authenticated, nonsecret workload inputs. Core
 	// pods mount it read-only; the token-bearing launch directory stays private.
 	PublicDir = "/run/c8s-node"
+
+	// CDSPinsFile (in PublicDir) tells CDS clients how to follow the
+	// operator's signed CDS pin decrees: cluster id and decree key.
+	CDSPinsFile = "cds-pins.json"
 )
 
 func validateRole(d *launchconfig.Document) error {

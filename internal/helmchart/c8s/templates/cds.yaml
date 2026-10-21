@@ -61,7 +61,7 @@ containers:
       - --allowlist-persistent={{ .Values.cds.persistence.enabled }}
       {{- if .ha }}
       # A memory emptyDir need not report its sizeLimit to statfs.
-      - --allowlist-max-bytes={{ .Values.cds.persistence.memorySizeLimit }}
+      - --allowlist-max-bytes={{ .Values.cds.ha.storeSizeLimit }}
       {{- end }}
       {{- if .Values.node.baked }}
       - --allowlist-seed=/run/c8s-node/allowlist-seed.json
@@ -187,7 +187,11 @@ containers:
       periodSeconds: 30
 
     resources:
+{{- if .ha }}
+{{ toYaml .Values.cds.ha.resources | indent 6 }}
+{{- else }}
 {{ toYaml .Values.cds.resources | indent 6 }}
+{{- end }}
     volumeMounts:
       - name: data
         mountPath: /mnt/c8s-data/cds
@@ -229,7 +233,11 @@ volumes:
     {{- else }}
     emptyDir:
       medium: Memory
+      {{- if .ha }}
+      sizeLimit: {{ required "cds.ha.storeSizeLimit is required" .Values.cds.ha.storeSizeLimit | toString | quote }}
+      {{- else }}
       sizeLimit: {{ required "cds.persistence.memorySizeLimit is required unless cds.persistence.enabled" .Values.cds.persistence.memorySizeLimit | toString | quote }}
+      {{- end }}
     {{- end }}
   {{- include "c8s.attestationApiSocketVolume" . | nindent 2 }}
   {{- include "c8s.nodeConfigVolume" . | nindent 2 }}

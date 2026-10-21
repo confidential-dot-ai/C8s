@@ -14,6 +14,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 // config represents the plugin configuration.
@@ -93,6 +94,13 @@ type pullConfig struct {
 	CDSMeasurements       []string      `yaml:"cds_measurements"`        // SHA-384 hex launch digests
 	CDSRTMRs              []string      `yaml:"cds_rtmrs"`               // TDX RTMR pins <index>=<sha384-hex>; ignored for SNP evidence
 	CDSMeasurementsConfig string        `yaml:"cds_measurements_config"` // complete CDS image and operator identity policy
+	// CDSPinsFile follows the operator's signed CDS pin decrees (a node's
+	// /run/c8s-node/cds-pins.json); CDSPinsState keeps the newest across
+	// plugin restarts. Both need cds_measurements_config.
+	CDSPinsFile  string `yaml:"cds_pins_file"`
+	CDSPinsState string `yaml:"cds_pins_state"`
+
+	pinSource armtls.PinSource // built once at start, shared by pull and the digests endpoint
 }
 
 // validatePolicyInputs rejects competing CDS identity policy sources before I/O.

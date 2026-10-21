@@ -298,6 +298,8 @@ containers:
       - {{ .Values.armtlsMesh.cds.caPollInterval | quote }}
       {{- if .Values.node.baked }}
       - --cds-image-policy-file=/run/c8s-node/cds.json
+      - --cds-pins-file=/run/c8s-node/cds-pins.json
+      - --cds-pins-state=/tmp/cds-pins-state.json
       {{- else if not .Values.armtlsMesh.measurementsConfig }}
       {{- with .Values.cds.measurements }}
       - --cds-measurements
