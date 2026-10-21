@@ -221,7 +221,7 @@ config)
   *cds*) echo '{"config":{"Entrypoint":["/c8s","cds"],"Env":["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin","SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"]}}' ;;
   *armtls-mesh*) echo '{"config":{"Entrypoint":["/app/c8s","armtls-mesh"],"Env":["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"]}}' ;;
   *volumed*) echo '{"config":{"Entrypoint":["/app/c8s","volumed"],"Env":["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"]}}' ;;
-  *nginx*) echo '{"config":{"Entrypoint":["/docker-entrypoint.sh"],"Cmd":["nginx","-g","daemon off;"],"Env":["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin","NGINX_VERSION=1.30.5","PKG_RELEASE=1","DYNPKG_RELEASE=1"]}}' ;;
+  *nginx*) echo '{"config":{"Entrypoint":["/docker-entrypoint.sh"],"Cmd":["nginx","-g","daemon off;"],"Env":["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin","NGINX_VERSION=1.30.6","PKG_RELEASE=1","DYNPKG_RELEASE=1"]}}' ;;
   *attestation-api*) echo '{"config":{"Entrypoint":["/attestation-api"],"Env":["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"]}}' ;;
   *) echo '{"config":{"Entrypoint":["/c8s"],"Env":["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin","SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"]}}' ;;
   esac ;;

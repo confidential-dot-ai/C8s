@@ -1308,8 +1308,8 @@ router:
   nginx:
     image:
       repository: nginxinc/nginx-unprivileged
-      # Resolve nginxinc/nginx-unprivileged:1.30.5-alpine-slim to bump this digest.
-      digest: "sha256:3af0c10d960cc2502427fe1219c52989d309e7d65596869c60a34fd2fa2406f0"
+      # Resolve nginxinc/nginx-unprivileged:1.30.6-alpine-slim to bump this digest.
+      digest: "sha256:5d8bb9437d74a600ec5dbf90c035451c724dc33eac8d3a71078f6f8612c345f6"
       tag: ""
       pullPolicy: IfNotPresent
     # The argv prefix the seeded allowlist entry pins this image to: its
@@ -1321,7 +1321,7 @@ router:
     # with the image.
     imageEnv:
       PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-      NGINX_VERSION: "1.30.5"
+      NGINX_VERSION: "1.30.6"
       PKG_RELEASE: "1"
       DYNPKG_RELEASE: "1"
     # -- Number of nginx replicas.
