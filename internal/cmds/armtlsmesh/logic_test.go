@@ -196,7 +196,7 @@ func TestPodEligibleForMeshSource(t *testing.T) {
 }
 
 func TestCertModeStr(t *testing.T) {
-	p := &Proxy{metrics: &metrics{}}
+	p := &Proxy{metrics: &metrics{}, bufPool: newBufPool(0)}
 
 	if got := p.certModeStr(); got != "self-signed" {
 		t.Fatalf("certModeStr() = %q, want self-signed (default)", got)
