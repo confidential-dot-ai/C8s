@@ -52,6 +52,18 @@ func TestPolicyRefusesWhatARuleCannotExpress(t *testing.T) {
 			},
 		},
 		{"pod-local destination", func(p *Policy) { p.Roles[0].Destinations[0].Addr = netip.MustParseAddr("127.0.0.1") }},
+		{"server egress port with no cluster ranges to exclude", func(p *Policy) {
+			p.Server = serverPolicy().Server
+			p.Server.ClusterRanges = nil
+		}},
+		{"cluster range carrying host bits", func(p *Policy) {
+			p.Server = serverPolicy().Server
+			p.Server.ClusterRanges[0] = netip.PrefixFrom(netip.MustParseAddr("10.52.0.1"), 16)
+		}},
+		{"unset cluster range", func(p *Policy) {
+			p.Server = serverPolicy().Server
+			p.Server.ClusterRanges[0] = netip.Prefix{}
+		}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -65,7 +77,11 @@ func TestPolicyRefusesWhatARuleCannotExpress(t *testing.T) {
 }
 
 func TestPolicyAcceptsANodesTrustedInput(t *testing.T) {
-	if err := testPolicy().validate(); err != nil {
-		t.Fatalf("validate = %v", err)
+	for name, policy := range map[string]Policy{"member": testPolicy(), "server": serverPolicy()} {
+		t.Run(name, func(t *testing.T) {
+			if err := policy.validate(); err != nil {
+				t.Fatalf("validate = %v", err)
+			}
+		})
 	}
 }

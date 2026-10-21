@@ -46,7 +46,7 @@ func TestMeshGateRequiresNonrootContainers(t *testing.T) {
 					Name: ctrCase.name,
 					User: user,
 				}
-				_, err := gate.admissible(pod, ctr, gatedContainer{role: ctrCase.role})
+				_, _, err := gate.admissible(pod, ctr, gatedContainer{role: ctrCase.role})
 				if (err != nil) != (user.GetUid() == 0) {
 					t.Fatalf("admission error = %v for user %v", err, user)
 				}

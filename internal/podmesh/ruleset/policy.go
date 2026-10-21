@@ -34,6 +34,40 @@ type Policy struct {
 	// destination: the mesh endpoint authenticates its own peers.
 	MeshUID uint32
 	Roles   []Role
+	// Server is the platform role whose own ports this pod serves, where the
+	// caller builds it for a pod of the router's namespace. Its application
+	// traffic is captured like a workload's, and only its external listener
+	// ports and its egress identity's ports pass the pod boundary in the
+	// clear.
+	Server ServerRole
+}
+
+// ServerRole is the platform role a pod serves external traffic for: the ports
+// it answers on itself, and the one port one identity of that pod may reach
+// outside the cluster. An inbound accept cannot name a socket UID, so the
+// listeners belong to the ruleset of that pod and to no other.
+type ServerRole struct {
+	UID       uint32
+	Listeners []uint16
+	Egress    ServerEgress
+	// ClusterRanges are this cluster's pod and Service ranges: the egress
+	// exception excludes them, so a connection to a member is captured and
+	// rides the mesh like any other.
+	ClusterRanges []netip.Prefix
+}
+
+// ServerEgress is the one identity of a server-role pod whose sockets leave
+// the cluster in the clear, and the ports they leave on. It is never the
+// identity that forwards application traffic: a forwarded connection whose
+// destination resolves outside the cluster is captured, not passed.
+type ServerEgress struct {
+	UID   uint32
+	Ports []uint16
+}
+
+// serves reports whether this pod answers any port of its own.
+func (s ServerRole) serves() bool {
+	return len(s.Listeners) > 0
 }
 
 // CapturePorts are the ports the mesh endpoint listens on in its pod.
@@ -76,6 +110,40 @@ func (p Policy) validate() error {
 		if err := role.validate(); err != nil {
 			return err
 		}
+	}
+	return p.Server.validate()
+}
+
+// validate rejects a server role no ruleset can carry. Its identities and its
+// ports are compiled in (internal/cmds/nri-image-policy), so the cluster
+// ranges its egress exception excludes are the one input left: an exception
+// that excludes none would carry a forwarded connection to a member out of
+// the pod in the clear.
+func (s ServerRole) validate() error {
+	if !s.serves() {
+		return nil
+	}
+	if len(s.Egress.Ports) > 0 && len(s.ClusterRanges) == 0 {
+		return fmt.Errorf("%w: server role UID %d has egress ports and no cluster ranges to exclude from them", ErrPolicy, s.UID)
+	}
+	for _, in := range s.ClusterRanges {
+		if err := validClusterRange(in); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validClusterRange requires a range one rule can match: a masked prefix of
+// one family.
+func validClusterRange(in netip.Prefix) error {
+	switch {
+	case !in.IsValid():
+		return fmt.Errorf("%w: invalid cluster range", ErrPolicy)
+	case in.Addr().Is4In6():
+		return fmt.Errorf("%w: 4-in-6 cluster range %s", ErrPolicy, in)
+	case in != in.Masked():
+		return fmt.Errorf("%w: cluster range %s carries host bits", ErrPolicy, in)
 	}
 	return nil
 }

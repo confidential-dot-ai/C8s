@@ -483,12 +483,13 @@ func (c *config) validateMeshRoleBindings() error {
 	if c.Mesh == nil || c.Allowlist.Base == nil {
 		return nil
 	}
+	identities := c.Mesh.reservedIdentities()
 	for name, workload := range c.Allowlist.Base.Workloads {
 		for _, container := range workload.Containers {
 			if container.Role == "" {
 				continue
 			}
-			if _, bound := c.Mesh.role(container.Role); !bound {
+			if _, bound := identities[container.Role]; !bound {
 				return fmt.Errorf("allowlist.base workload %s role %s has no mesh identity binding", name, container.Role)
 			}
 		}

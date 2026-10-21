@@ -10,10 +10,10 @@ const meshSupported = false
 
 var errNoPodRuleset = errors.New("the pod mesh ruleset is only implemented on linux")
 
-func installPodRuleset(podNamespace, meshPolicy) error {
+func installPodRuleset(podNamespace, meshPolicy, string) error {
 	return errNoPodRuleset
 }
 
-func verifyPodRuleset(podNamespace, meshPolicy) error {
+func verifyPodRuleset(podNamespace, meshPolicy, string) error {
 	return errNoPodRuleset
 }

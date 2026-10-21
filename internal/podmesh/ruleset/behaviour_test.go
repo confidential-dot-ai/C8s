@@ -65,15 +65,22 @@ func TestTheRulesetCarriesOnlyPermittedTrafficInTheNamespace(t *testing.T) {
 		if err := connectPeer(peer); err != nil {
 			return err
 		}
-		if err := Install(netnsPath, behaviourPolicy()); err != nil {
+		policy := behaviourPolicy()
+		if err := Install(netnsPath, policy); err != nil {
 			return err
 		}
-		mesh, err := listenAs(meshUID, "127.0.0.1", 15001)
+		mesh, err := listenAs(meshUID, "127.0.0.1", policy.Capture.Outbound)
 		if err != nil {
 			return err
 		}
 		defer mesh.Close()
 		go acceptAll(mesh)
+		inbound, err := listenAs(meshUID, "0.0.0.0", policy.Capture.Inbound)
+		if err != nil {
+			return err
+		}
+		defer inbound.Close()
+		go acceptAll(inbound)
 
 		tests := []struct {
 			name        string
@@ -108,7 +115,134 @@ func TestTheRulesetCarriesOnlyPermittedTrafficInTheNamespace(t *testing.T) {
 			if err := sendAs(test.uid, test.network, test.destination, sourcePort); err != nil {
 				return fmt.Errorf("%s: %w", test.name, err)
 			}
-			got, err := treatmentOf(test.network, test.destination, sourcePort)
+			got, err := treatmentOf(policy, test.network, test.destination, sourcePort)
+			if err != nil {
+				return err
+			}
+			if got != test.want {
+				t.Errorf("%s: traffic was %s, want %s", test.name, got, test.want)
+			}
+		}
+
+		// The port the server role may leave the cluster on is nothing special
+		// to a member pod: a connection arriving on it is captured for the
+		// endpoint like any other.
+		const routerSourcePort = 40900
+		arriving := address(podAddress, serverEgressPort)
+		if err := peer.dial(arriving, routerSourcePort); err != nil {
+			return err
+		}
+		got, err := treatmentOf(policy, "tcp", arriving, routerSourcePort)
+		if err != nil {
+			return err
+		}
+		if got != captured {
+			t.Errorf("a connection arriving on port %d was %s, want captured", serverEgressPort, got)
+		}
+		return nil
+	})
+}
+
+// The ports a server role answers on, the identity that reaches the egress
+// port outside the cluster and the port it reaches there, and the range of the
+// peer's addresses that plays the cluster's own.
+const (
+	serverUID        = 1339
+	serverEgressUID  = 1340
+	serverListenPort = 8443
+	serverEgressPort = 443
+	clusterRange     = "10.9.0.40/29"
+)
+
+func serverBehaviourPolicy() Policy {
+	policy := behaviourPolicy()
+	policy.Server = ServerRole{
+		UID:       serverUID,
+		Listeners: []uint16{serverListenPort},
+		Egress: ServerEgress{
+			UID:   serverEgressUID,
+			Ports: []uint16{serverEgressPort},
+		},
+		ClusterRanges: []netip.Prefix{netip.MustParsePrefix(clusterRange)},
+	}
+	return policy
+}
+
+// What the ruleset does to the traffic of a pod that serves a platform role's
+// own ports: an external client reaches the port that role answers on, the
+// pod's egress identity reaches the egress port outside the cluster in the
+// clear, and everything else — the same port inside the cluster, that
+// identity's other connections, the role that forwards application traffic,
+// and every other identity in the pod — still rides the mesh.
+func TestTheServerRoleCarriesOnlyItsOwnPortsInTheNamespace(t *testing.T) {
+	podNetNS(t, func(netnsPath string) error {
+		peer, err := startPeerNamespace()
+		if err != nil {
+			return err
+		}
+		defer peer.stop()
+		if err := connectPeer(peer); err != nil {
+			return err
+		}
+		policy := serverBehaviourPolicy()
+		if err := Install(netnsPath, policy); err != nil {
+			return err
+		}
+		for _, listener := range []struct {
+			uid  uint32
+			port uint16
+		}{
+			{meshUID, policy.Capture.Outbound},
+			{meshUID, policy.Capture.Inbound},
+			{serverUID, serverListenPort},
+		} {
+			opened, err := listenAs(listener.uid, "0.0.0.0", listener.port)
+			if err != nil {
+				return err
+			}
+			defer opened.Close()
+			go acceptAll(opened)
+		}
+
+		for _, test := range []struct {
+			name       string
+			port       uint16
+			sourcePort uint16
+			want       treatment
+		}{
+			{"an external client reaches the port the role answers on", serverListenPort, 41000, admitted},
+			{"an external client on any other port is captured", plaintextPort, 41001, captured},
+		} {
+			destination := address(podAddress, test.port)
+			if err := peer.dial(destination, test.sourcePort); err != nil {
+				return fmt.Errorf("%s: %w", test.name, err)
+			}
+			got, err := treatmentOf(policy, "tcp", destination, test.sourcePort)
+			if err != nil {
+				return err
+			}
+			if got != test.want {
+				t.Errorf("%s: traffic was %s, want %s", test.name, got, test.want)
+			}
+		}
+
+		for _, test := range []struct {
+			name        string
+			uid         uint32
+			destination string
+			sourcePort  uint16
+			want        treatment
+		}{
+			{"the egress identity reaches its port outside the cluster", serverEgressUID, address(unapproved, serverEgressPort), 41100, admitted},
+			{"the same port inside the cluster is captured", serverEgressUID, address(service, serverEgressPort), 41101, captured},
+			{"the egress identity's other connections are captured", serverEgressUID, address(unapproved, 8080), 41102, captured},
+			{"the role that forwards application traffic reaches no egress port", serverUID, address(unapproved, serverEgressPort), 41103, captured},
+			{"another identity reaches no egress port", workloadUID, address(unapproved, serverEgressPort), 41104, captured},
+		} {
+			if err := sendAs(test.uid, "tcp", test.destination, test.sourcePort); err != nil {
+				return fmt.Errorf("%s: %w", test.name, err)
+			}
+			got, err := treatmentOf(policy, "tcp", test.destination, test.sourcePort)
 			if err != nil {
 				return err
 			}
@@ -169,9 +303,10 @@ const (
 )
 
 // treatmentOf reads the conntrack entry of one packet: no entry means it never
-// left the hooks, a reply tuple from the outbound capture port means it was
-// redirected to the mesh endpoint, and anything else left the pod.
-func treatmentOf(network, destination string, sourcePort uint16) (treatment, error) {
+// left the hooks, a reply tuple from one of the pod's mesh listeners means it
+// was redirected to the endpoint, and anything else crossed the pod boundary
+// as it was addressed.
+func treatmentOf(policy Policy, network, destination string, sourcePort uint16) (treatment, error) {
 	flow, err := flowOf(network, destination, sourcePort)
 	if err != nil {
 		return "", err
@@ -179,11 +314,17 @@ func treatmentOf(network, destination string, sourcePort uint16) (treatment, err
 	switch {
 	case flow == nil:
 		return denied, nil
-	case flow.Reverse.SrcPort == behaviourPolicy().Capture.Outbound:
+	case redirectedToMesh(flow, policy.Capture.Outbound), redirectedToMesh(flow, policy.Capture.Inbound):
 		return captured, nil
 	default:
 		return admitted, nil
 	}
+}
+
+// redirectedToMesh reports whether the flow answers from one of the pod's own
+// mesh listeners, which is where the capture rules send application traffic.
+func redirectedToMesh(flow *netlink.ConntrackFlow, listener uint16) bool {
+	return flow.Reverse.SrcPort == listener
 }
 
 func flowOf(network, destination string, sourcePort uint16) (*netlink.ConntrackFlow, error) {
