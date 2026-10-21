@@ -252,7 +252,7 @@ kubeconfig() { echo "$KUBECONFIG"; }
 # tar for the copy, which no other logical image shares. "tenant-app" is
 # images/tenant-app, Alpine's python with the programs the steps run in it
 # (built by conformance-images.yml), so pinned for every backend.
-TENANT_APP_IMAGE=ghcr.io/confidential-dot-ai/c8s-conformance-tenant-app@sha256:PENDING
+TENANT_APP_IMAGE=ghcr.io/confidential-dot-ai/c8s-conformance-tenant-app@sha256:b50aaeeaf2658e2905db146a56a6f48156af0ac2a8a6fa8e395b14ad0f3a4328
 image_ref() {
     case "$1" in
         rogue) echo "docker.io/$CURL_IMAGE" ;;
