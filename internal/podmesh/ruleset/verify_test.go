@@ -260,52 +260,64 @@ func TestRuleCheckRequiresTheExpectedRulesInOrder(t *testing.T) {
 	}
 }
 
-// A BPF link is refused for what its description names: an interface of the
-// pod, the pod's namespace, or the node for a link type that names neither.
+// A BPF attachment is refused for what it reaches: a program on a hook of the
+// pod's interface, a link on the pod's namespace, or the node for a link type
+// that names neither. A link another namespace holds never condemns the pod,
+// however its description's index compares inside it: the hook query, resolved
+// in the pod's namespace, is what decides the pod's interfaces.
 func TestPacketBPFLinkCheckRefusesWhatReachesThePod(t *testing.T) {
 	pod := podNetwork{
 		inode:      4026532748,
 		interfaces: map[uint32]string{1: "lo", 2: "eth0"},
 	}
 	tests := []struct {
-		name    string
-		link    bpfLink
-		refused bool
+		name     string
+		links    []bpfLink
+		programs func(ifindex, attachType uint32) (int, error)
+		refusal  string
 	}{
-		{"tcx on a pod interface", bpfLink{bpfLinkTypeTCX, 2}, true},
-		{"netkit on a pod interface", bpfLink{bpfLinkTypeNetkit, 2}, true},
-		{"netns on the pod namespace", bpfLink{bpfLinkTypeNetNS, uint32(pod.inode)}, true},
-		{"netfilter anywhere on the node", bpfLink{bpfLinkTypeNetfilter, 0}, true},
-		{"tcx on another namespace's interface", bpfLink{bpfLinkTypeTCX, 3}, false},
-		{"netns on another namespace", bpfLink{bpfLinkTypeNetNS, 7}, false},
-		{"a link type that carries no packets", bpfLink{bpfLinkTypeCgroup, 2}, false},
+		{"a tcx program on a pod interface", nil, programsOnHook(bpfTcxIngress), "tcx ingress BPF program on link"},
+		{"a tcx egress program on a pod interface", nil, programsOnHook(bpfTcxEgress), "tcx egress BPF program on link"},
+		{"a netkit program on a pod interface", nil, programsOnHook(bpfNetkitPrimary), "netkit primary BPF program on link"},
+		{"a netkit peer program on a pod interface", nil, programsOnHook(bpfNetkitPeer), "netkit peer BPF program on link"},
+		{"a netns link on the pod namespace", []bpfLink{{bpfLinkTypeNetNS, uint32(pod.inode)}}, noPrograms, "netns BPF link on this namespace"},
+		{"a netfilter link anywhere on the node", []bpfLink{{bpfLinkTypeNetfilter, 0}}, noPrograms, "netfilter BPF link on this node"},
+		{"a tcx link of another namespace whose index matches a pod interface", []bpfLink{{bpfLinkTypeTCX, 2}}, noPrograms, ""},
+		{"a netkit link of another namespace whose index matches a pod interface", []bpfLink{{bpfLinkTypeNetkit, 2}}, noPrograms, ""},
+		{"a netns link on another namespace", []bpfLink{{bpfLinkTypeNetNS, 7}}, noPrograms, ""},
+		{"a link type that carries no packets", []bpfLink{{bpfLinkTypeCgroup, 2}}, noPrograms, ""},
+		{"a netkit hook of another device type", nil, hookError(bpfNetkitPrimary, unix.ENXIO), ""},
+		{"a netkit hook on a kernel without netkit", nil, hookError(bpfNetkitPeer, unix.EINVAL), ""},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			bpfLinks(t, func() ([]bpfLink, error) { return []bpfLink{test.link}, nil })
-			refusal := ""
-			if test.refused {
-				refusal = "BPF link"
-			}
-			requireRefusal(t, requireNoPacketBPFLinks(pod), refusal)
+			bpfLinks(t, func() ([]bpfLink, error) { return test.links, nil })
+			hookPrograms(t, test.programs)
+			requireRefusal(t, requireNoPacketBPFLinks(pod), test.refusal)
 		})
 	}
 }
 
-// A namespace a link description cannot name and an enumeration the kernel
-// refuses both leave the pod unverified, which is no mismatch.
+// A namespace a link description cannot name, an enumeration the kernel
+// refuses, and a hook the kernel cannot answer all leave the pod unverified,
+// which is no mismatch.
 func TestPacketBPFLinkCheckFailsWhenLinksCannotBeDecided(t *testing.T) {
 	tests := []struct {
-		name  string
-		pod   podNetwork
-		links func() ([]bpfLink, error)
+		name     string
+		pod      podNetwork
+		links    func() ([]bpfLink, error)
+		programs func(ifindex, attachType uint32) (int, error)
 	}{
-		{"an inode wider than a link description", podNetwork{inode: math.MaxUint32 + 1}, func() ([]bpfLink, error) { return nil, nil }},
-		{"an enumeration the kernel refuses", podNetwork{}, func() ([]bpfLink, error) { return nil, unix.EPERM }},
+		{"an inode wider than a link description", podNetwork{inode: math.MaxUint32 + 1}, noLinks, noPrograms},
+		{"an enumeration the kernel refuses", podNetwork{}, func() ([]bpfLink, error) { return nil, unix.EPERM }, noPrograms},
+		{"a hook query the kernel refuses", podNetwork{interfaces: map[uint32]string{2: "eth0"}}, noLinks, hookError(bpfTcxIngress, unix.EPERM)},
+		{"a netkit hook visible only from another namespace", podNetwork{interfaces: map[uint32]string{2: "eth0"}}, noLinks, hookError(bpfNetkitPeer, unix.EACCES)},
+		{"an interface that went away", podNetwork{interfaces: map[uint32]string{2: "eth0"}}, noLinks, hookError(bpfTcxEgress, unix.ENODEV)},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			bpfLinks(t, test.links)
+			hookPrograms(t, test.programs)
 			err := requireNoPacketBPFLinks(test.pod)
 			if err == nil || errors.Is(err, ErrMismatch) {
 				t.Fatalf("BPF link check = %v, want a failure that is no mismatch", err)
@@ -499,6 +511,42 @@ func bpfLinks(t *testing.T, enumerate func() ([]bpfLink, error)) {
 	previous := enumerateBPFLinks
 	enumerateBPFLinks = enumerate
 	t.Cleanup(func() { enumerateBPFLinks = previous })
+}
+
+// hookPrograms drives hook decisions from the test instead of the kernel.
+func hookPrograms(t *testing.T, query func(ifindex, attachType uint32) (int, error)) {
+	t.Helper()
+	previous := queryHookPrograms
+	queryHookPrograms = query
+	t.Cleanup(func() { queryHookPrograms = previous })
+}
+
+// noLinks answers a link enumeration with no links.
+func noLinks() ([]bpfLink, error) { return nil, nil }
+
+// noPrograms answers a hook query with no programs on any hook.
+func noPrograms(uint32, uint32) (int, error) { return 0, nil }
+
+// programsOnHook answers a hook query with one program on the given hook and
+// none on the others.
+func programsOnHook(attachType uint32) func(uint32, uint32) (int, error) {
+	return func(_, hook uint32) (int, error) {
+		if hook == attachType {
+			return 1, nil
+		}
+		return 0, nil
+	}
+}
+
+// hookError answers a hook query with err on the given hook and no programs
+// on the others.
+func hookError(attachType uint32, err error) func(uint32, uint32) (int, error) {
+	return func(_, hook uint32) (int, error) {
+		if hook == attachType {
+			return 0, err
+		}
+		return 0, nil
+	}
 }
 
 // nftDumps answers each nftables dump with the replies given for its message
