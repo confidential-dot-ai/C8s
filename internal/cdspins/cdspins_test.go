@@ -10,6 +10,7 @@ import (
 	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -240,5 +241,93 @@ func TestHTTPFetch(t *testing.T) {
 	got, err := fetch(t.Context())
 	if err != nil || got == nil || got.Decree.BaseEpoch != 4 || len(got.Decree.Images) != 1 {
 		t.Fatalf("200: %+v %v", got, err)
+	}
+}
+
+func TestHTTPFetchErrors(t *testing.T) {
+	code, body := http.StatusServiceUnavailable, "x"
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(code)
+		_, _ = w.Write([]byte(body))
+	}))
+	defer ts.Close()
+	if _, err := HTTPFetch(ts.URL)(t.Context()); err == nil {
+		t.Fatal("503 accepted")
+	}
+	code = http.StatusOK
+	if _, err := HTTPFetch(ts.URL)(t.Context()); err == nil {
+		t.Fatal("non-JSON accepted")
+	}
+	if _, err := HTTPFetch("https://127.0.0.1:1")(t.Context()); err == nil {
+		t.Fatal("unreachable accepted")
+	}
+	if _, err := HTTPFetch("::bad")(t.Context()); err == nil {
+		t.Fatal("bad URL accepted")
+	}
+}
+
+func TestNewAndPolicyErrors(t *testing.T) {
+	k, pub := key(t)
+	if _, err := New(Config{DecreeKey: pub}); err == nil {
+		t.Fatal("no cluster id accepted")
+	}
+	dir := t.TempDir()
+	state := filepath.Join(dir, "state.json")
+	if err := os.WriteFile(state, []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(Config{ClusterID: cluster, DecreeKey: pub, Bootstrap: bootstrap(), StateFile: state}); err == nil {
+		t.Fatal("corrupt state accepted")
+	}
+	other, _ := key(t)
+	bad, _ := json.Marshal(pinDecree(t, other, cluster, 3, img(5)))
+	if err := os.WriteFile(state, bad, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(Config{ClusterID: cluster, DecreeKey: pub, Bootstrap: bootstrap(), StateFile: state}); err == nil {
+		t.Fatal("a state decree with a foreign signature accepted")
+	}
+	if err := os.Mkdir(filepath.Join(dir, "dir"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(Config{ClusterID: cluster, DecreeKey: pub, Bootstrap: bootstrap(), StateFile: filepath.Join(dir, "dir")}); err == nil {
+		t.Fatal("unreadable state accepted")
+	}
+	if _, err := Policy(refvalues.ReferenceValues{Family: teetypes.FamilySNP}, []cdsha.DecreeImage{img(1)}); err == nil {
+		t.Fatal("SNP bootstrap accepted")
+	}
+	if _, err := Policy(bootstrap(), nil); err == nil {
+		t.Fatal("no images accepted")
+	}
+	// No anchors in the bootstrap: images are pinned without one.
+	pol, err := Policy(refvalues.ReferenceValues{Family: teetypes.FamilyTDX}, []cdsha.DecreeImage{img(1)})
+	if err != nil || len(pol.Images) != 1 || pol.Images[0].Anchor != nil {
+		t.Fatalf("anchorless: %+v %v", pol, err)
+	}
+	// Fetches are spaced: a burst of misses fetches once.
+	srv := &served{sd: pinDecree(t, k, cluster, 4, img(5))}
+	calls := 0
+	src, err := New(Config{ClusterID: cluster, DecreeKey: pub, Bootstrap: bootstrap(), MinInterval: time.Hour,
+		Fetch: func(ctx context.Context) (*cdsha.SignedDecree, error) { calls++; return srv.fetch(ctx) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		_, _ = src.Refresh(t.Context())
+	}
+	if calls != 1 || src.Generation() != 1 {
+		t.Fatalf("calls %d generation %d", calls, src.Generation())
+	}
+	// The policy file cannot be written: the decree is not taken.
+	ro := filepath.Join(dir, "ro")
+	if err := os.Mkdir(ro, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	src2, _ := New(Config{ClusterID: cluster, DecreeKey: pub, Bootstrap: bootstrap(), MinInterval: time.Nanosecond,
+		Fetch: srv.fetch, PolicyFile: filepath.Join(ro, "sub", "cds.json")})
+	if changed, err := src2.Refresh(t.Context()); changed || err == nil {
+		if os.Geteuid() != 0 {
+			t.Fatalf("unwritable policy file: %v %v", changed, err)
+		}
 	}
 }
