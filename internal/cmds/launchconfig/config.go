@@ -13,12 +13,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/mail"
 	"net/netip"
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -62,10 +64,15 @@ const (
 // Document is the signed launch.yaml wire contract. All secrets are boot
 // inputs; agent documents must never carry the control-plane server token.
 type Document struct {
-	SchemaVersion           string       `yaml:"schemaVersion" json:"schema_version"`
-	ClusterID               string       `yaml:"clusterID" json:"cluster_id"`
-	Role                    Role         `yaml:"role" json:"role"`
-	Image                   Image        `yaml:"image" json:"image"`
+	SchemaVersion string `yaml:"schemaVersion" json:"schema_version"`
+	ClusterID     string `yaml:"clusterID" json:"cluster_id"`
+	Role          Role   `yaml:"role" json:"role"`
+	Image         Image  `yaml:"image" json:"image"`
+	// PeerImages are images, besides Image, that this node accepts its
+	// peers and CDS to run: the images of an unfinished rollout. Image is
+	// still the only one this node may boot. A node launched on a new image
+	// lists the old one here, so it trusts the nodes not yet rolled.
+	PeerImages              []Image      `yaml:"peerImages,omitempty" json:"peer_images,omitempty"`
 	Node                    Node         `yaml:"node" json:"node"`
 	RKE2                    RKE2         `yaml:"rke2" json:"rke2"`
 	Server                  ServerConfig `yaml:"server" json:"server"`
@@ -351,10 +358,7 @@ func Verify(ctx context.Context, cfg Config) (*Verified, error) {
 	}
 	// CDS clients accept CDS on the server (singleton) and on cds-role nodes
 	// (HA): the server entry plus one per cds launch key.
-	return &Verified{
-		document: *doc, operatorPub: pub, pins: pins,
-		cdsPins: refvalues.ReferenceValues{Family: pins.Family, Images: pins.Images[:1+len(doc.CDSOperatorPublicKeys)]},
-	}, nil
+	return &Verified{document: *doc, operatorPub: pub, pins: pins, cdsPins: doc.cdsPins(pins)}, nil
 }
 
 var tokenRE = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -381,6 +385,25 @@ func (d *Document) validate() error {
 	}
 	if err := platform.validateRegisters(d.Image.RTMRs); err != nil {
 		return err
+	}
+	if len(d.PeerImages) > maxPeerImages {
+		return fmt.Errorf("peerImages: at most %d", maxPeerImages)
+	}
+	for i, img := range d.PeerImages {
+		if img.Platform != d.Image.Platform {
+			return fmt.Errorf("peerImages[%d]: platform must be the node's (%s)", i, d.Image.Platform)
+		}
+		if !registerHex(img.Measurement) {
+			return fmt.Errorf("peerImages[%d].measurement must be 96 lowercase hex characters", i)
+		}
+		if err := platform.validateRegisters(img.RTMRs); err != nil {
+			return fmt.Errorf("peerImages[%d]: %w", i, err)
+		}
+		for _, other := range append([]Image{d.Image}, d.PeerImages[:i]...) {
+			if sameImage(img, other) {
+				return fmt.Errorf("peerImages[%d] repeats an image", i)
+			}
+		}
 	}
 	if d.Server.Address != "" || d.Role != Server {
 		if err := ValidateIPv4(d.Server.Address, true); err != nil {
@@ -588,14 +611,20 @@ func (d *Document) referenceValues() (refvalues.ReferenceValues, error) {
 		keys = append(keys, named{fmt.Sprintf("agent-%d", i+1), pub})
 	}
 	for _, k := range keys {
-		entry := remote.ImagePin{Name: k.name, Digest: mustDecodeHex(d.Image.Measurement), Anchor: []byte(k.pub)}
-		if len(d.Image.RTMRs) > 0 {
-			entry.Registers = make(map[int][]byte, len(d.Image.RTMRs))
-			for idx, digest := range d.Image.RTMRs {
-				entry.Registers[idx] = mustDecodeHex(digest)
+		for i, img := range d.images() {
+			name := k.name
+			if i > 0 {
+				name = fmt.Sprintf("%s@%s", k.name, img.Measurement[:12])
 			}
+			entry := remote.ImagePin{Name: name, Digest: mustDecodeHex(img.Measurement), Anchor: []byte(k.pub)}
+			if len(img.RTMRs) > 0 {
+				entry.Registers = make(map[int][]byte, len(img.RTMRs))
+				for idx, digest := range img.RTMRs {
+					entry.Registers[idx] = mustDecodeHex(digest)
+				}
+			}
+			pins.Images = append(pins.Images, entry)
 		}
-		pins.Images = append(pins.Images, entry)
 	}
 	// Use the shared parser as a final schema check on the emitted policy.
 	data, err := refvalues.Format(pins)
@@ -604,6 +633,29 @@ func (d *Document) referenceValues() (refvalues.ReferenceValues, error) {
 	}
 	return refvalues.Parse(data)
 }
+
+// cdsPins is the part of the peer pins that may serve CDS: the server's and
+// the cds keys', on every accepted image.
+func (d *Document) cdsPins(pins refvalues.ReferenceValues) refvalues.ReferenceValues {
+	cds := refvalues.ReferenceValues{Family: pins.Family}
+	for _, pin := range pins.Images {
+		if a := string(pin.Anchor); a == d.Server.OperatorPublicKey || slices.Contains(d.CDSOperatorPublicKeys, a) {
+			cds.Images = append(cds.Images, pin)
+		}
+	}
+	return cds
+}
+
+// maxPeerImages bounds the images of one rollout a node accepts besides its
+// own.
+const maxPeerImages = 4
+
+func sameImage(a, b Image) bool {
+	return a.Platform == b.Platform && a.Measurement == b.Measurement && maps.Equal(a.RTMRs, b.RTMRs)
+}
+
+// images is the node's own image first, then its peer images.
+func (d *Document) images() []Image { return append([]Image{d.Image}, d.PeerImages...) }
 
 // CDSURL is derived from the signed server address and the image's fixed port.
 func (d *Document) CDSURL() string { return "https://" + d.Server.Address + ":30808" }
