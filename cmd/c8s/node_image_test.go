@@ -71,6 +71,21 @@ func TestNodeImageRender(t *testing.T) {
 							t.Fatalf("HA replicas render without %q", want)
 						}
 					}
+					// Every cds node runs the CDS its own image carries: the
+					// DaemonSet names it by the node-local tag, the airgap
+					// import adds that name, and the floor pins the digest.
+					cdsRef := "registry.example.com/cds@" + nodeImageTestCDSDigest
+					if bytes.Contains(part, []byte("image: "+cdsRef)) || !bytes.Contains(part, []byte("image: registry.example.com/cds:c8s-node")) {
+						t.Fatal("HA CDS DaemonSet does not name the node-local CDS image")
+					}
+					names, err := os.ReadFile(filepath.Join(out, "local-names.txt"))
+					if err != nil || string(names) != cdsRef+" registry.example.com/cds:c8s-node\n" {
+						t.Fatalf("local-names.txt: %q %v", names, err)
+					}
+					floor, err := os.ReadFile(filepath.Join(out, "cds-floor.json"))
+					if err != nil || !bytes.Contains(floor, []byte(nodeImageTestCDSDigest)) {
+						t.Fatal("the cds floor no longer pins the CDS digest")
+					}
 				}
 				raw = append(raw, part...)
 			}
