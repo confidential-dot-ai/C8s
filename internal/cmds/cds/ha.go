@@ -137,6 +137,7 @@ func haStart(ctx context.Context, cfg config, st haStores, preJoin func(*cdsha.N
 			os.Exit(1)
 		}
 	}()
+	slog.Info("cds-ha: replica starting", "build", "v3-rollout-image-b")
 	slog.Info("cds-ha: waiting to join the cluster", "cluster_id", cfg.ha.clusterID, "id", node.ID())
 	if preJoin != nil {
 		// Until it joins, the replica serves only health, status and the
