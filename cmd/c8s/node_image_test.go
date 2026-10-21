@@ -7,7 +7,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"maps"
 	"os"
 	"os/exec"
@@ -894,5 +896,36 @@ func TestNodeImageCollectMatchedEnv(t *testing.T) {
 				t.Fatalf("collectNodeImageArtifacts(, nil) error = %v, want ok %v", err, tc.ok)
 			}
 		})
+	}
+}
+
+func TestLocalizeDaemonSet(t *testing.T) {
+	comp := "registry.example.com/cds@" + nodeImageTestCDSDigest
+	other := "registry.example.com/other@sha256:" + strings.Repeat("9", 64)
+	ds := func(images ...string) *unstructured.Unstructured {
+		var cs []any
+		for i, img := range images {
+			cs = append(cs, map[string]any{"name": fmt.Sprintf("c%d", i), "image": img})
+		}
+		return &unstructured.Unstructured{Object: map[string]any{"spec": map[string]any{"template": map[string]any{"spec": map[string]any{"containers": cs}}}}}
+	}
+	names := map[string]string{}
+	obj := ds(comp, other)
+	if err := localizeDaemonSet(obj, map[string]bool{nodeImageTestCDSDigest: true}, names); err != nil {
+		t.Fatal(err)
+	}
+	cs, _, _ := unstructured.NestedSlice(obj.Object, "spec", "template", "spec", "containers")
+	if cs[0].(map[string]any)["image"] != "registry.example.com/cds:c8s-node" || cs[1].(map[string]any)["image"] != other {
+		t.Fatalf("rewritten: %v", cs)
+	}
+	if string(localNamesFile(names)) != comp+" registry.example.com/cds:c8s-node\n" {
+		t.Fatalf("names %v", names)
+	}
+	if err := localizeDaemonSet(ds("not a ref!"), nil, names); err == nil {
+		t.Fatal("bad image reference accepted")
+	}
+	bad := &unstructured.Unstructured{Object: map[string]any{"spec": map[string]any{"template": map[string]any{"spec": map[string]any{"containers": []any{"x"}}}}}}
+	if err := localizeDaemonSet(bad, nil, names); err == nil {
+		t.Fatal("non-object container accepted")
 	}
 }
