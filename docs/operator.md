@@ -207,7 +207,8 @@ tokens. The image runs containerd and a standalone kubelet
 the scratch disk. The kubelet listens on loopback only; pod status is served
 over armTLS on `:8443` (`c8s pod-status`). A container port with a `hostPort`
 is published on the VM's address at that port; `8443` is reserved for pod
-status. The pod has no outbound NAT.
+status. The pod routes through the VM only to answer connections made to it;
+it cannot open connections out of the VM.
 
 The generated document is the strict schema below; edit it only when a field
 the command does not expose is needed, then re-sign with
