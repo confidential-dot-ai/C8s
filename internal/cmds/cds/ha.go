@@ -403,6 +403,16 @@ func haPins(node *cdsha.Node) http.HandlerFunc {
 	}
 }
 
+// haDecrees serves the record of applied decrees: every operator decision
+// as the operator signed it, read over the attested channel from a serving
+// replica (the decree objects in Kubernetes are only the host's word).
+func haDecrees(node *cdsha.Node) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(node.Decrees())
+	}
+}
+
 // haCACertPEM serves the current mesh CA certificate.
 func haCACertPEM(node *cdsha.Node) func() []byte {
 	return func() []byte {

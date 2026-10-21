@@ -392,6 +392,7 @@ func run(cfg config) error {
 		deps.CACertSource = haCACertPEM(haNode)
 		deps.HAStatus = haStatus(haNode)
 		deps.HAPins = haPins(haNode)
+		deps.HADecrees = haDecrees(haNode)
 		// Ready also waits for the voter seats to be full again (see
 		// cdsha.Node.Ready), so a rolling restart never takes the majority.
 		deps.ReadyFn = func() bool {

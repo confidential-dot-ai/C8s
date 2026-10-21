@@ -1381,6 +1381,10 @@ func (n *Node) CA() (*issuer.CA, error) {
 // Core is the agreed cluster state.
 func (n *Node) Core() Core { return n.fsm.Core() }
 
+// Decrees is the record of applied decrees, oldest first (empty while the
+// cluster's agreed format is below 2).
+func (n *Node) Decrees() []DecreeRecord { return n.fsm.Decrees() }
+
 // PinsDecree is the signed decree behind the current pin set, or nil when
 // the pins came from Genesis or from a decree without images.
 func (n *Node) PinsDecree() *SignedDecree { return n.fsm.Core().PinsDecree }
