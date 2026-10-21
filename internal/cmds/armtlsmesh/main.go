@@ -121,7 +121,6 @@ type proxyConfig struct {
 	cdsMeasurements           string
 	cdsRTMRs                  string
 	measuredPolicies          string
-	sessionCacheSize          int
 	accessLog                 bool
 	certPipelineProbeURL      string
 	cdsRetryBackoff           time.Duration
@@ -169,7 +168,6 @@ func bindProxyFlags(fs *pflag.FlagSet, c *proxyConfig) {
 	fs.StringVar(&c.cdsMeasurements, "cds-measurements", "", "comma-separated SHA-384 hex launch measurements that CDS's armTLS peer cert must match. Empty = accept any (UNSAFE outside development).")
 	fs.StringVar(&c.cdsRTMRs, "cds-rtmrs", "", "comma-separated TDX RTMR pins <index>=<sha384-hex> that CDS's armTLS peer cert must additionally satisfy. Ignored when CDS presents SNP evidence. Empty = launch-digest pinning only")
 	fs.StringVar(&c.measuredPolicies, "measured-policies-file", armtls.NodeJournal, "the node's journal of allowlist policies extended into TDX RTMR[3]; mesh certificates and CDS CSRs list it. Empty lists none")
-	fs.IntVar(&c.sessionCacheSize, "session-cache-size", 64, "TLS session cache size per node (0 disables session resumption)")
 	fs.BoolVar(&c.accessLog, "access-log", true, "emit per-connection structured access log")
 	fs.StringVar(&c.certPipelineProbeURL, "cert-pipeline-probe-url", "", "CDS /readyz URL for pipeline health probing (empty = disabled)")
 	fs.DurationVar(&c.cdsRetryBackoff, "cds-retry-backoff", 2*time.Second, "initial backoff duration for CDS certificate upgrade retries")
@@ -311,7 +309,7 @@ func runProxy(ctx context.Context, c *proxyConfig) error {
 		Logger:          logger,
 
 		MeasuredPoliciesFile: c.measuredPolicies,
-	}, logger, c.sessionCacheSize)
+	}, logger)
 	if err != nil {
 		return err
 	}
@@ -486,7 +484,6 @@ func (e hostMesh) start(ctx context.Context, r *meshRuntime) {
 		"max_conns_per_source", c.maxConnsPerSource,
 		"idle_timeout", c.idleTimeout,
 		"keepalive", c.keepAlive,
-		"session_cache_size", c.sessionCacheSize,
 	)
 }
 

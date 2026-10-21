@@ -1315,7 +1315,7 @@ func selfSignedRequester(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
-	value, err := asn1.MarshalWithParams(id, "ia5")
+	value, err := asn1.MarshalWithParams(id, "utf8")
 	if err != nil {
 		return err
 	}
