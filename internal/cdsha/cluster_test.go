@@ -41,6 +41,9 @@ type memBackups struct {
 func (m *memBackups) PutBackup(_ context.Context, b Backup) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.last != nil && !b.Meta.Newer(m.last.Meta) {
+		return ErrBackupNotNewer
+	}
 	m.last, m.n = &b, m.n+1
 	return nil
 }

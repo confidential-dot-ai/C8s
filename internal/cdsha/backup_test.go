@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -35,9 +36,26 @@ func TestBackupStoreRoundTrip(t *testing.T) {
 	if err := st.PutBackup(ctx, b); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.PutBackup(ctx, b); err != nil { // update in place
+	// The same state again, or older state, never replaces it: a deposed
+	// leader or a cut-off replica must not overwrite the majority's backup.
+	if err := st.PutBackup(ctx, b); !errors.Is(err, ErrBackupNotNewer) {
+		t.Fatalf("same backup again: %v", err)
+	}
+	older, _ := SealBackup(&rk.PublicKey, BackupMeta{ClusterID: testCluster, Epoch: 2, Index: 8}, snap)
+	if err := st.PutBackup(ctx, older); !errors.Is(err, ErrBackupNotNewer) {
+		t.Fatalf("older index: %v", err)
+	}
+	olderEpoch, _ := SealBackup(&rk.PublicKey, BackupMeta{ClusterID: testCluster, Epoch: 1, Index: 99}, snap)
+	if err := st.PutBackup(ctx, olderEpoch); !errors.Is(err, ErrBackupNotNewer) {
+		t.Fatalf("older epoch, later index: %v", err)
+	}
+	// Later state replaces it in place (a Restore restarts the index at a
+	// higher epoch).
+	b, _ = SealBackup(&rk.PublicKey, BackupMeta{ClusterID: testCluster, Epoch: 2, Index: 10}, snap)
+	if err := st.PutBackup(ctx, b); err != nil {
 		t.Fatal(err)
 	}
+	meta.Index = 10
 	got, err := st.GetBackup(ctx)
 	if err != nil {
 		t.Fatal(err)

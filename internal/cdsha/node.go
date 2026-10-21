@@ -664,6 +664,13 @@ func (n *Node) maybeBackup(ctx context.Context) {
 		return
 	}
 	if err := n.cfg.Backups.PutBackup(ctx, b); err != nil {
+		if errors.Is(err, ErrBackupNotNewer) {
+			// Another leader stored later state (this one is deposed or was
+			// cut off): leave it.
+			n.log.Warn("backup: not stored, a newer one exists", "err", err)
+			n.backupIndex = applied
+			return
+		}
 		n.log.Warn("backup: store", "err", err)
 		return
 	}
