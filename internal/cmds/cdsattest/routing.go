@@ -5,10 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
+	"net/netip"
+	"net/url"
 	"os"
+	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/spf13/pflag"
@@ -18,6 +23,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/routing"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/routes"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 // nodeOperatorKeysFile is where a baked node's signed launch configuration
@@ -39,28 +45,28 @@ var defaultReservedPaths = []string{
 }
 
 type routingConfig struct {
-	cdsURL              string
-	cdsMeasurements     []string
-	cdsRTMRs            []string
-	imagePolicyFile     string
-	operatorKeysFile    string
-	operatorKeysFileSet bool
-	allowUnpinnedCDS    bool
-	pollInterval        time.Duration
-	host                string
-	port                int
-	backendTimeout      time.Duration
-	reservedPaths       []string
-	tunnelBudget        quantityFlag
-	publish             bool
+	cdsURL           string
+	cdsMeasurements  []string
+	cdsRTMRs         []string
+	imagePolicyFile  string
+	launchKeysFile   string // empty means nodeOperatorKeysFile; tests point it elsewhere
+	operatorKeysFile string
+	allowUnpinnedCDS bool
+	pollInterval     time.Duration
+	host             string
+	port             int
+	backendTimeout   time.Duration
+	reservedPaths    []string
+	tunnelBudget     quantityFlag
+	publish          bool
 }
 
 func bindRoutingFlags(f *pflag.FlagSet, cfg *routingConfig) {
-	f.StringVar(&cfg.cdsURL, "cds-url", "", "REQUIRED: CDS base URL (https, armTLS-verified) to poll the signed route manifest from")
+	f.StringVar(&cfg.cdsURL, "cds-url", "", "CDS base URL (https, armTLS-verified) to poll the signed route manifest from; required unless this node's enforcer mounts the endpoint")
 	f.StringSliceVar(&cfg.cdsMeasurements, "cds-measurements", nil, "allowed CDS SHA-384 launch measurement(s), repeatable/comma-separated; empty accepts any attested CDS (unsafe)")
 	f.StringSliceVar(&cfg.cdsRTMRs, "cds-rtmrs", nil, "TDX RTMR pin(s) <index>=<sha384-hex> CDS must additionally satisfy, repeatable/comma-separated")
-	cmdsutil.BindImagePolicyFlags(f, &cfg.imagePolicyFile, nil, "", "pins the CDS endpoint; excludes --cds-measurements and --cds-rtmrs")
-	f.StringVar(&cfg.operatorKeysFile, "operator-keys-file", nodeOperatorKeysFile, "PEM operator public keys a route manifest must be signed under; when the default path is absent, the keys come from the verified CDS's GET /operator-keys")
+	cmdsutil.BindImagePolicyFlags(f, &cfg.imagePolicyFile, nil, "pins the CDS endpoint; excludes --cds-measurements and --cds-rtmrs")
+	f.StringVar(&cfg.operatorKeysFile, "operator-keys-file", "", "PEM operator public keys a route manifest must be signed under, used when the node's launch configuration carries none; unset, the keys come from the verified CDS's GET /operator-keys")
 	f.BoolVar(&cfg.allowUnpinnedCDS, "allow-unpinned-cds", false, "development only: route with no CDS pin and the operator keys from that CDS, so any attested CDS chooses both the keys and the manifest")
 	f.DurationVar(&cfg.pollInterval, "routes-poll-interval", 30*time.Second, "how often to poll the CDS for the route manifest")
 	f.StringVar(&cfg.host, "routing-host", "127.0.0.1", "routing listener host (loopback: nginx proxies application requests to it)")
@@ -82,7 +88,7 @@ func checkRoutingFlags(cfg config) error {
 		return errors.New("--measured-policies-file requires --attest-endpoints=true: only the attestation bundles carry the list")
 	}
 	if r.cdsURL == "" {
-		return errors.New("--cds-url is required: the router routes only by the route manifest it polls from CDS")
+		return errors.New("--cds-url is required: no node hands this router a CDS endpoint, and it routes only by the route manifest it polls from one")
 	}
 	if cfg.attestOff && r.port == 0 {
 		return errors.New("--attest-endpoints=false requires --routing-port: without it the process serves nothing")
@@ -145,6 +151,7 @@ func newRoutingEngine(cfg config, logger *slog.Logger) (*routingEngine, error) {
 	if err != nil {
 		return nil, fmt.Errorf("--cds-url: %w", err)
 	}
+	fetcher := clusterWorkloadRoutes{routes: cds}
 	keys, err := operatorKeySource(r, cdsPinned, cds, logger)
 	if err != nil {
 		return nil, err
@@ -153,7 +160,7 @@ func newRoutingEngine(cfg config, logger *slog.Logger) (*routingEngine, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load mesh identity for backends: %w", err)
 	}
-	meshCAs := routing.CAFile(cfg.meshIdentityCAFile)
+	meshCAs := memberMeshCAs()
 	state := routing.NewState(routing.StateConfig{Reserved: r.reservedPaths, MeshCAs: meshCAs})
 	transports := routing.NewTransports(routing.TransportConfig{MeshCAs: meshCAs, ClientCertificate: clientCert.GetClientCertificate})
 	return &routingEngine{
@@ -163,29 +170,164 @@ func newRoutingEngine(cfg config, logger *slog.Logger) (*routingEngine, error) {
 			State: state, Transports: transports, Timeout: r.backendTimeout, TunnelBudget: tunnelBudget(r.tunnelBudget, cgroupMemoryMax, logger), Logger: logger,
 		}),
 		poller: routing.NewPoller(routing.PollerConfig{
-			State: state, Fetcher: cds, Keys: keys, Transports: transports, Interval: r.pollInterval, Logger: logger,
+			State: state, Fetcher: fetcher, Keys: keys, Transports: transports, Interval: r.pollInterval, Logger: logger,
 		}),
 	}, nil
 }
 
+// checkNodeVerifier binds this router to the verifier its node chose, as
+// every credential client is bound, and refuses one it would reach in the
+// clear at an address of its own: the upstream identity's connections into
+// the cluster are uncaptured, so a plaintext verifier an argument named
+// could be a member pod rather than the node's own attestation-api.
+//
+// resolved is the URL this process dials, after ExpandHostIP replaced a node
+// address reference with the address the enforcer published.
+func checkNodeVerifier(resolved string) error {
+	if err := cmdsutil.RequireNodeVerifier(workloadclaims.CDSPinsPath, workloadclaims.AttestationAPISocket, resolved); err != nil {
+		return err
+	}
+	return checkVerifierEndpoint(resolved, cmdsutil.NodeIPPath)
+}
+
+// checkVerifierEndpoint admits the node's own attestation-api socket, an
+// https endpoint, and plaintext only where it crosses no pod boundary: this
+// pod's loopback, or the node's own address as nodeIPPath holds it. The
+// decision is made on the parsed URL after expansion and compares addresses,
+// so a host that merely carries the node's address — in userinfo, or as the
+// head of a longer name — is another host and is refused, and no name is
+// resolved: DNS is the control plane's.
+func checkVerifierEndpoint(resolved, nodeIPPath string) error {
+	endpoint, err := url.Parse(resolved)
+	if err != nil {
+		return fmt.Errorf("--attestation-api-url %q: %w", resolved, err)
+	}
+	switch endpoint.Scheme {
+	case "unix", "https":
+		return nil
+	case "http":
+		return checkPlaintextVerifier(resolved, endpoint, nodeIPPath)
+	}
+	return fmt.Errorf("--attestation-api-url %q names the scheme %q: the verifier is this node's attestation-api socket, an https endpoint, or http at this node's own address",
+		resolved, endpoint.Scheme)
+}
+
+func checkPlaintextVerifier(resolved string, endpoint *url.URL, nodeIPPath string) error {
+	// The port is the node's to serve on and the pod ruleset's to admit; the
+	// host, and nothing else in the URL, is what this check decides.
+	refusal := fmt.Errorf("--attestation-api-url %q is plaintext at an address this pod named: give this node's attestation-api socket, an https endpoint, or http://%s:<port>",
+		resolved, cmdsutil.NodeIPReference)
+	if endpoint.User != nil || endpoint.Path != "" || endpoint.RawQuery != "" || endpoint.Fragment != "" {
+		return refusal
+	}
+	host, err := netip.ParseAddr(endpoint.Hostname())
+	if err != nil {
+		return refusal
+	}
+	if host.Unmap().IsLoopback() {
+		return nil
+	}
+	node, err := nodeAddress(nodeIPPath)
+	if err != nil {
+		return errors.Join(refusal, err)
+	}
+	if host.Unmap() != node {
+		return refusal
+	}
+	return nil
+}
+
+// nodeAddress is the node's own address, as the enforcer publishes it for the
+// components that reach its attestation-api by address.
+func nodeAddress(nodeIPPath string) (netip.Addr, error) {
+	published, err := os.ReadFile(nodeIPPath)
+	if err != nil {
+		return netip.Addr{}, fmt.Errorf("read the node address: %w", err)
+	}
+	address, err := netip.ParseAddr(strings.TrimSpace(string(published)))
+	if err != nil {
+		return netip.Addr{}, fmt.Errorf("the node address in %s: %w", nodeIPPath, err)
+	}
+	return address.Unmap(), nil
+}
+
+// memberMeshCAs is the trust root of the hop to a member backend: the mesh CA
+// of the credential generation get-cert published on this pod's own volume,
+// re-read per handshake so a rotation takes effect without a restart. The
+// path is compiled and no argument reaches it — a CA an argument named would
+// be one the control plane chose, and its holder could stamp any workload
+// name on a leaf this router then accepted.
+func memberMeshCAs() routing.CASource {
+	return routing.CAFile(workloadclaims.MemberCAPath)
+}
+
+// clusterWorkloadRoutes refuses a fetched manifest this router cannot serve,
+// so the refusal arrives with the manifest that names it rather than at dial
+// time. Every route must name a cluster workload: this pod reaches a backend
+// as the mesh client of the workload its route names, and its ruleset leaves
+// it nothing else to reach. Nothing is applied either way, so reading the
+// manifest here, before Accept verifies its signature, decides nothing but
+// the diagnostic.
+type clusterWorkloadRoutes struct {
+	routes routing.Fetcher
+}
+
+func (c clusterWorkloadRoutes) Routes(ctx context.Context) (routes.Envelope, error) {
+	env, err := c.routes.Routes(ctx)
+	if err != nil {
+		return routes.Envelope{}, err
+	}
+	manifest, err := routes.Parse(env.Manifest)
+	if err != nil {
+		return routes.Envelope{}, err
+	}
+	for _, host := range slices.Sorted(maps.Keys(manifest.Hosts)) {
+		for _, route := range manifest.Hosts[host].Routes {
+			if route.Backend.Workload == "" {
+				return routes.Envelope{}, fmt.Errorf("host %q route %q names the address backend %s: the router serves cluster workloads only", host, route.Path, route.Backend.Address)
+			}
+		}
+	}
+	return env, nil
+}
+
 // operatorKeySource implements W6: the node's signed launch configuration
-// when it carries the keys, else the verified CDS. An explicit
-// --operator-keys-file must exist. Keys from an unpinned CDS need
+// when it carries the keys, else --operator-keys-file, else the verified CDS.
+// A set --operator-keys-file must exist. Keys from an unpinned CDS need
 // --allow-unpinned-cds: that CDS could be any attested TEE.
 func operatorKeySource(r routingConfig, cdsPinned bool, cds *routing.CDSClient, logger *slog.Logger) (routing.KeySource, error) {
-	_, statErr := os.Stat(r.operatorKeysFile)
-	switch {
-	case statErr == nil:
+	if r.launchKeysFile == "" {
+		r.launchKeysFile = nodeOperatorKeysFile
+	}
+	switch err := loadKeys(r.launchKeysFile); {
+	case err == nil:
+		if r.operatorKeysFile != "" && r.operatorKeysFile != r.launchKeysFile {
+			logger.Warn("ignoring --operator-keys-file: the launch configuration carries operator keys", "path", r.launchKeysFile)
+		}
+		logger.Info("route manifest operator keys from the launch configuration", "path", r.launchKeysFile)
+		return routing.KeyFile(r.launchKeysFile), nil
+	case !errors.Is(err, os.ErrNotExist):
+		return nil, fmt.Errorf("launch configuration operator keys: %w", err)
+	}
+	if r.operatorKeysFile != "" {
+		if err := loadKeys(r.operatorKeysFile); err != nil {
+			return nil, fmt.Errorf("--operator-keys-file: %w", err)
+		}
 		logger.Info("route manifest operator keys from file", "path", r.operatorKeysFile)
 		return routing.KeyFile(r.operatorKeysFile), nil
-	case r.operatorKeysFileSet || !errors.Is(statErr, os.ErrNotExist):
-		return nil, fmt.Errorf("--operator-keys-file: %w", statErr)
-	case !cdsPinned && !r.allowUnpinnedCDS:
-		return nil, fmt.Errorf("refusing to route: no CDS pin and no operator keys at %s, so any attested CDS would supply both the manifest and its keys; pin CDS with --cds-measurements or --image-policy-file, provide --operator-keys-file, or pass --allow-unpinned-cds in development", r.operatorKeysFile)
 	}
-	logger.Warn("route manifest operator keys from the CDS (GET /operator-keys): control-plane configuration, so clients detect a substituted key but the router does not prevent it",
-		"absent", r.operatorKeysFile)
+	if !cdsPinned && !r.allowUnpinnedCDS {
+		return nil, fmt.Errorf("refusing to route: no CDS pin and no operator keys in the launch configuration (%s) or --operator-keys-file, so any attested CDS would supply both the manifest and its keys; pin CDS with --cds-measurements or --image-policy-file, provide --operator-keys-file, or pass --allow-unpinned-cds in development", r.launchKeysFile)
+	}
+	logger.Warn("route manifest operator keys from the CDS (GET /operator-keys): control-plane configuration, so clients detect a substituted key but the router does not prevent it")
 	return cds, nil
+}
+
+// loadKeys checks at startup that path holds at least one operator key;
+// KeyFile re-reads it at each fetch.
+func loadKeys(path string) error {
+	_, err := routing.KeyFile(path).OperatorKeys(context.Background())
+	return err
 }
 
 // start runs the poller and, when a port is set, the routing listener. Errors

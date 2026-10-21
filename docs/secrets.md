@@ -358,62 +358,23 @@ lists every variable by name, so a set that changes whenever a Service is added
 would deny them. A workload that reads service-link variables must resolve the
 Service by DNS instead (`<service>.<namespace>.svc`).
 
-### The injected drop set
+### The platform drop set
 
 C8s injects its own containers into every confidential pod. They are not part of
 a workload's declared set, so they are removed before matching — an entry never
-has to enumerate C8s's own sidecars.
+has to enumerate C8s's own containers.
 
-A container is dropped when its argv is the C8s binary in a mode the webhook
-injects — `/c8s get-cert`, `/c8s get-secret`, `/c8s get-volume`, or `/c8s
-probe-file` — *and* some entry admits its digest running that binary under an
-**unconstrained args policy**: `command` exact at the invocation (`/c8s
-get-cert`) with `args: any`, the sidecar shapes the chart seeds the C8s image
-with, `command` exact at `/c8s` with `args: any`, or `command` and `args` both
-`any`, the shapes earlier releases seeded. The same entry container must
-admit the complete observed launch, mounts and environment included, under its
-own policies; a second entry cannot supply the mount or environment half of a
-decision whose open arguments came from the first. The shared predicate is
-`allowlist.AdmitsInjected`. Both conditions are required. Admission alone
-would let a pod add any component image with its entrypoint overridden — and
-have it ignored. The mode matters for the same reason. The C8s image in any
-other mode — `cds-attest`, `allowlist-proxy`, or a mode a pod author chose — is
-a declared container. The entry must admit it, as an init or a main container,
-or the pod matches nothing.
+A container is dropped when the node that admitted it reports a **platform
+role** for it: the mesh endpoint, the credential clients and the front door each
+run on a reserved identity that only the node's measured base allowlist grants
+(`role:` on a base entry). The role travels per container on the digests
+channel, which is a mutually attested connection to that node's inventory.
 
-A pod may add the image in one of the four modes, with arguments of its own.
-That container is dropped too: the inventory reports no container name, and
-matching keys on nothing the host writes. The drop therefore also requires
-every mount the container holds to be confined to the node, so whatever the
-container fetches or writes cannot reach any location the host reads. A
-confined mount is a platform mount, a read-only host path, or a volume on memory
-or encrypted scratch. A writable host path, a disk-backed `emptyDir`, or a PVC
-turns the container into a foreign container, and the pod matches nothing.
-Missing mount evidence fails closed the same way. The same holds for the real
-sidecars: a discovery or reload-watch volume the pod names for `get-cert` must
-be memory-backed, or the sidecar is foreign and the pod matches nothing. The
-node admits a real sidecar only under the mount table its shape pins, so a
-discovery volume must be an `emptyDir` and a reload-watch volume a Secret,
-ConfigMap, projected or downward API volume; the webhook refuses any other
-kind at admission. On a node without encrypted scratch (a GKE,
-AKS or kind node), a ConfigMap volume and a disk-backed `emptyDir` observe as
-`unknown` and the node refuses the sidecar: use `emptyDir: {medium: Memory}`
-for discovery, and a Secret or projected volume for reload-watch. Each
-mode finds the node's sockets at a baked-in path, never a flag, so a pod author
-cannot point one at a socket of their choosing.
-
-The seeded component entries are the source: the injected image is among them,
-since it could not run otherwise, and an image bump seeds the new digest's entry
-beside the old one ([`allowlist-and-capabilities.md`](allowlist-and-capabilities.md#bootstrap)).
-
-What this rests on, in both directions: no image admitted with open args for
-`/c8s` other than C8s's carries an executable at that path, and the injected
-image's own entry keeps the sidecar shapes' args open. An operator who pins
-them (`bootstrapAllowlist.workloads` or `c8s allowlist edit`) turns every
-injected sidecar into a foreign container, and every release in the cluster is
-refused.
-Allowlist contents are operator-controlled and auditable, but that is a property
-of the deployment rather than something enforced here.
+What this rests on: a role is a local fact of the node's boot configuration.
+`role:` is YAML-only, so the document CDS serves cannot carry one, and no pod
+spec, annotation or container name can claim one. A container the base names no
+role for is a workload container, whatever image it runs and whatever its
+command line looks like.
 
 ## The grant
 
@@ -485,27 +446,27 @@ kept for operator-authored input, where an unknown field is a typo.
 ## The mount policy
 
 Every container in the entry also needs a `mounts` policy admitting what the
-webhook injects: the cert volume, and the secret directory. An absent policy is
-`deny`, which admits platform mounts alone and so refuses the pod at container
-creation.
+webhook injects: the secret directory. An absent policy is `deny`, which
+admits platform mounts alone and so refuses the pod at container creation.
 
 The workload-claims socket directory that the node policy bind-mounts into the
 sidecars and an application's `cds-attest` container is a platform mount: no
 rule names it, and a `host` rule for it would refuse the grant.
 
-Both are memory-backed `emptyDir`s, so an `exact` policy names them by
+It is a memory-backed `emptyDir`, so an `exact` policy names it by
 destination:
 
 ```json
 "mounts": {"policy": "exact", "rules": [
-  {"destination": "/etc/c8s/certs", "kind": "emptyDir"},
   {"destination": "/run/c8s/secrets", "kind": "emptyDir"}
 ]}
 ```
 
-These destinations are fixed. `exact` is set equality, so the rules also cover
-every other non-platform mount the pod declares; a configMap, projected or PVC
-source classes as `data`, whose destination sits below `/mnt/c8s-data/`.
+These destinations are fixed. The credential volume is mounted into the
+injected containers alone, which this entry does not describe. `exact` is set
+equality, so the rules also cover every other non-platform mount the pod
+declares; a configMap, projected or PVC source classes as `data`, whose
+destination sits below `/mnt/c8s-data/`.
 
 `{"policy": "any"}` admits any mount table, leaving the host free to add one.
 The chart seeds C8s's own components with `exact` instead, and an entry with a
@@ -521,7 +482,7 @@ mount and is not in the table:
 
 | Mount | Destination | Sidecars |
 |---|---|---|
-| cert volume | `/etc/c8s/certs` | all four, and every workload container |
+| cert volume | `/etc/c8s/certs` | all four, and the pod's mesh endpoint read-only |
 | secrets volume | `/run/c8s/secrets` | `c8s-secret`, and every workload container read-only |
 | discovery volume (`confidential.ai/c8s-discovery-volume`) | `/run/c8s/discovery` | `c8s-cert`, `c8s-cert-wait`, `c8s-secret`, `c8s-volume` |
 | reload-watch volume (`confidential.ai/c8s-reload-watch-volume`) | `/mnt/c8s-data/c8s-reload-watch` | `c8s-cert` |

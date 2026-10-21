@@ -55,9 +55,10 @@ func ValidateAttestationAPIURL(flagName, u string) error {
 
 // Node address references in an attestation-api URL. The chart writes them as
 // $$(HOST_IP) and $$(NODE_IP) so the kubelet passes them through unexpanded.
+// NodeIPReference is the one the node itself fills, from NodeIPPath.
 const (
 	hostIPReference = "$(HOST_IP)"
-	nodeIPReference = "$(NODE_IP)"
+	NodeIPReference = "$(NODE_IP)"
 )
 
 // NodeIPPath is where the chart mounts, read-only, the node-ip file the image
@@ -83,16 +84,16 @@ func ExpandHostIP(u string) (string, error) {
 }
 
 func expandNodeAddress(u, nodeIPPath string, getenv func(string) string) (string, error) {
-	if strings.Contains(u, nodeIPReference) {
+	if strings.Contains(u, NodeIPReference) {
 		data, err := os.ReadFile(nodeIPPath)
 		if err != nil {
-			return "", fmt.Errorf("attestation-api URL %q names %s: %w", u, nodeIPReference, err)
+			return "", fmt.Errorf("attestation-api URL %q names %s: %w", u, NodeIPReference, err)
 		}
 		host, err := urlHost(strings.TrimSpace(string(data)))
 		if err != nil {
-			return "", fmt.Errorf("attestation-api URL %q names %s, but %s: %w", u, nodeIPReference, nodeIPPath, err)
+			return "", fmt.Errorf("attestation-api URL %q names %s, but %s: %w", u, NodeIPReference, nodeIPPath, err)
 		}
-		u = strings.ReplaceAll(u, nodeIPReference, host)
+		u = strings.ReplaceAll(u, NodeIPReference, host)
 	}
 	if strings.Contains(u, hostIPReference) {
 		host, err := urlHost(getenv("HOST_IP"))

@@ -1,0 +1,30 @@
+# Cilium overrides for RKE2's bundled chart (`rke2-cilium`).
+
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: rke2-cilium
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    # INVARIANT: kube-proxy owns Services. Replacement rewrites the resolver
+    # address before the pod ruleset sees it, and member DNS would break.
+    kubeProxyReplacement: false
+    socketLB:
+      enabled: false
+    # Nested C8s guests run on outer hosts whose own CNI already uses
+    # VXLAN UDP/8472; the inner overlay on 8472 is dropped on the outer
+    # path. Use 8473 for the inner Cilium VXLAN.
+    routingMode: tunnel
+    tunnelProtocol: vxlan
+    tunnelPort: 8473
+    bpf:
+      # The mesh gate reads a pod's hooks from inside its namespace; netkit
+      # peers answer only from the primary's namespace.
+      datapathMode: veth
+    cni:
+      # The sealed image denies every runc exec; the default renders an
+      # exec hook, which kills the agent.
+      iptablesRemoveAWSRules: false
+      # The router's hostPort 443 needs the portmap chain.
+      chainingMode: portmap

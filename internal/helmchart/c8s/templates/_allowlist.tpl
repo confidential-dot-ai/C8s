@@ -282,22 +282,21 @@
      (internal/webhook): each pinned to its invocation with args open, since
      the SAN and file paths are per pod, to a fixed mount table, and to the
      env names getCertEnv gives it, matched present since they differ per
-     pod. The discovery and reload-watch mounts are optional, so each
-     combination is its own shape. The plugin's own inventory socket mount
+     pod. The discovery mount is optional, so each combination is its own
+     shape. The plugin's own inventory socket mount
      observes as platform, so no shape names it. The destinations match
      the webhook's defaults, which pods can no longer move. Takes root, digest,
      image and imageEnv. */ -}}
 {{- define "c8s.injectedShapes" -}}
 {{- $certs := dict "destination" "/etc/c8s/certs" "kind" "emptyDir" -}}
 {{- $discovery := dict "destination" "/run/c8s/discovery" "kind" "emptyDir" -}}
-{{- $reload := dict "destination" "/mnt/c8s-data/c8s-reload-watch" "kind" "data" -}}
 {{- $secrets := dict "destination" "/run/c8s/secrets" "kind" "emptyDir" -}}
 {{- $podEnv := list -}}
 {{- range $name := list "C8S_WORKLOAD_ID" "C8S_POD_NAME" "C8S_POD_UID" "HOST_IP" -}}
 {{- $podEnv = append $podEnv (dict "name" $name "valueFrom" (dict "fieldRef" dict)) -}}
 {{- end -}}
 {{- $sidecars := list
-      (dict "mode" "get-cert" "fixed" (list $certs) "optional" (list $discovery $reload) "env" $podEnv)
+      (dict "mode" "get-cert" "fixed" (list $certs) "optional" (list $discovery) "env" $podEnv)
       (dict "mode" "probe-file" "fixed" (list $certs) "optional" (list $discovery) "env" list)
       (dict "mode" "get-secret" "fixed" (list $certs $secrets) "optional" (list $discovery) "env" $podEnv)
       (dict "mode" "get-volume" "fixed" (list $certs) "optional" (list $discovery) "env" $podEnv) -}}
@@ -342,6 +341,13 @@
 {{- if hasKey $components $operator -}}
 {{- $injected := include "c8s.injectedShapes" (dict "root" . "digest" $operator "image" (get $refs $operator) "imageEnv" (get $envs $operator)) | fromJsonArray -}}
 {{- $_ := set $shapes $operator (concat (get $shapes $operator | default list) $injected) -}}
+{{- end -}}
+{{- /* The mesh endpoint runs in every covered pod, injected like the
+       sidecars, so no chart container names it. */ -}}
+{{- $mesh := default "" .Values.armtlsMesh.image.digest -}}
+{{- if hasKey $components $mesh -}}
+{{- $endpoint := include "c8s.meshShapes" (dict "digest" $mesh "image" (get $refs $mesh) "imageEnv" (get $envs $mesh) "entrypoint" (get $pins $mesh)) | fromJsonArray -}}
+{{- $_ := set $shapes $mesh (concat (get $shapes $mesh | default list) $endpoint) -}}
 {{- end -}}
 {{- $out := dict -}}
 {{- range $digest, $entry := $components -}}
@@ -495,7 +501,16 @@
 {{- range $d := (include "c8s.argvPinnedDigests" . | fromJsonArray) -}}{{- $excluded = append $excluded (lower $d) -}}{{- end -}}
 {{- range $digest, $entry := (include "c8s.generatedShapes" . | fromJson) -}}
 {{- $name := include "c8s.shapeWorkloadName" (dict "digest" $digest "image" (get $entry "image") "containers" (get $entry "containers")) -}}
-{{- $_ := set $workloads $name (dict "label" (get $entry "image") "initContainers" list "containers" (get $entry "containers")) -}}
+{{- /* The base alone carries the platform roles: the field is YAML-only,
+       so the seed this same shape set feeds cannot claim one. */ -}}
+{{- $tagged := list -}}
+{{- range $c := (get $entry "containers") -}}
+{{- with include "c8s.platformRole" (dict "root" $ "argv" (concat (get (get $c "command") "argv" | default list) (get (get $c "args") "argv" | default list))) -}}
+{{- $c = merge (dict "role" .) $c -}}
+{{- end -}}
+{{- $tagged = append $tagged $c -}}
+{{- end -}}
+{{- $_ := set $workloads $name (dict "label" (get $entry "image") "initContainers" list "containers" $tagged) -}}
 {{- end -}}
 {{- /* Keyed by the lowercased digest, as the entry name is: two spellings of
        one digest are one entry. */ -}}
@@ -517,6 +532,9 @@
 {{- $_ := set $workloads (include "c8s.digestWorkloadName" (dict "digest" $digest "image" $image)) (dict "label" $image "initContainers" list "containers" $list) -}}
 {{- end -}}
 {{- end -}}
+{{- range $name, $entry := (include "c8s.roleFloorWorkloads" . | fromJson) -}}
+{{- $_ := set $workloads $name $entry -}}
+{{- end -}}
 {{ $workloads | toJson }}
 {{- end -}}
 
@@ -528,6 +546,145 @@
 {{- else -}}
 {{ dict "digest" .digest "image" (get .entry "image") "mounts" (dict "policy" "any") "command" (dict "policy" "any") "args" (dict "policy" "any") | toJson }}
 {{- end -}}
+{{- end -}}
+
+
+{{/* The mesh endpoint shape the webhook injects into every covered pod: the
+     image's entrypoint, the three credential paths it reads, the credential
+     volume it mounts read-only, and the probe variable a pod with forwarded
+     probes carries (internal/webhook/pod_mutator.go). Takes digest, image,
+     imageEnv and entrypoint. */ -}}
+{{- define "c8s.meshShapes" -}}
+{{- $certs := dict "destination" "/etc/c8s/certs" "kind" "emptyDir" -}}
+{{- $args := list "--cert-path=/etc/c8s/certs/tls.crt" "--key-path=/etc/c8s/certs/tls.key" "--ca-path=/etc/c8s/certs/ca.crt" -}}
+{{- $out := list -}}
+{{- range $env := list (list) (list (dict "name" "C8S_MESH_PROBES" "valueFrom" (dict "fieldRef" dict))) -}}
+{{- $matched := include "c8s.componentEnv" (dict "imageEnv" $.imageEnv "container" (dict "env" $env) "where" "injected mesh endpoint") | fromJson -}}
+{{- $out = append $out (dict "digest" $.digest "image" $.image "command" (dict "policy" "exact" "argv" $.entrypoint) "args" (dict "policy" "exact" "argv" $args) "mounts" (dict "policy" "exact" "rules" (list $certs)) "env" $matched) -}}
+{{- end -}}
+{{ $out | toJson }}
+{{- end -}}
+
+{{/* The platform role the enforcer grants a base container, by the
+     invocation its command pins: the credential clients the webhook injects
+     and the mesh endpoint beside them. Empty for every other invocation of
+     the same images. Takes root and argv. */ -}}
+{{- define "c8s.platformRole" -}}
+{{- $argv := .argv -}}
+{{- $root := .root -}}
+{{- if and (ge (len $argv) 2) (eq (first $argv) "/c8s") -}}
+{{- $mode := index $argv 1 -}}
+{{- if has $mode (list "get-cert" "probe-file" "get-secret" "get-volume" "allowlist-proxy") -}}
+credentials
+{{- else if eq $mode "cds-attest" -}}
+upstream
+{{- else if eq $mode "acme" -}}
+acme
+{{- end -}}
+{{- else if include "c8s.argvHasPrefix" (dict "argv" $argv "prefix" (include "c8s.meshEntrypoint" $root | fromJsonArray)) -}}
+mesh
+{{- else if include "c8s.argvHasPrefix" (dict "argv" $argv "prefix" (include "c8s.routerNginxArgv" $root | fromJsonArray)) -}}
+router
+{{- end -}}
+{{- end -}}
+
+{{/* "true" when argv starts with a non-empty prefix, else "". */ -}}
+{{- define "c8s.argvHasPrefix" -}}
+{{- $prefix := .prefix -}}
+{{- if and $prefix (ge (len .argv) (len $prefix)) (eq (slice .argv 0 (len $prefix) | toJson) ($prefix | toJson)) -}}
+true
+{{- end -}}
+{{- end -}}
+
+{{/* The front door's argv as JSON: the shell reading the reload script out of
+     the configuration directory it mounts (router-deployment.yaml). */ -}}
+{{- define "c8s.routerNginxArgv" -}}
+{{- list "/bin/sh" (printf "%s/reload.sh" (include "router.configDir" .)) | toJson -}}
+{{- end -}}
+
+{{/* The mesh image's entrypoint as JSON, or "null" where no mesh digest
+     reaches the allowlist. */ -}}
+{{- define "c8s.meshEntrypoint" -}}
+{{- $components := include "c8s.imageAllowlist" . | fromJson -}}
+{{- $digest := default "" .Values.armtlsMesh.image.digest -}}
+{{- if hasKey $components $digest -}}
+{{- get (get $components $digest) "entrypoint" | toJson -}}
+{{- else -}}
+null
+{{- end -}}
+{{- end -}}
+
+{{/* Role entries for a digest the base admits only through an open-args floor
+     entry (the integration lane's image-store scan): that entry pins nothing
+     but the image's executable, so the subcommand a role rides on has to be
+     named here. A digest with a rendered component shape is tagged in place
+     (c8s.baseWorkloads) instead. Takes the chart context. */ -}}
+{{- define "c8s.roleFloorWorkloads" -}}
+{{- $root := . -}}
+{{- $shaped := include "c8s.generatedShapes" $root | fromJson -}}
+{{- $entries := dict -}}
+{{- range $digest, $entry := (include "c8s.openArgsEntries" $root | fromJson) -}}
+{{- if not (hasKey $shaped $digest) -}}
+{{- $image := get $entry "image" -}}
+{{- $repository := include "c8s.imageRepository" $image -}}
+{{- $argvs := list -}}
+{{- if eq $repository (include "c8s.imageRepository" $root.Values.armtlsMesh.image.repository) -}}
+{{- $argvs = list (dict "role" "mesh" "container" "c8s-mesh" "argv" (list "/app/c8s" "armtls-mesh")) -}}
+{{- else if eq $repository (include "c8s.imageRepository" $root.Values.image.repository) -}}
+{{- range $mode := list "get-cert" "probe-file" "get-secret" "get-volume" "allowlist-proxy" -}}
+{{- $argvs = append $argvs (dict "role" "credentials" "container" (get (dict "get-cert" "c8s-cert" "probe-file" "c8s-cert-wait" "allowlist-proxy" "allowlist-proxy") $mode | default "") "argv" (list "/c8s" $mode)) -}}
+{{- end -}}
+{{- $argvs = append $argvs (dict "role" "upstream" "container" "cds-attest" "argv" (list "/c8s" "cds-attest")) -}}
+{{- $argvs = append $argvs (dict "role" "acme" "container" "acme" "argv" (list "/c8s" "acme")) -}}
+{{- else if eq $repository (include "c8s.imageRepository" $root.Values.router.nginx.image.repository) -}}
+{{- $argvs = list (dict "role" "router" "container" "nginx" "argv" (include "c8s.routerNginxArgv" $root | fromJsonArray)) -}}
+{{- end -}}
+{{- range $a := $argvs -}}
+{{- $containers := list (dict "digest" $digest "image" $image "role" (get $a "role") "command" (dict "policy" "exact" "argv" (get $a "argv")) "args" (dict "policy" "any") "mounts" (dict "policy" "any")) -}}
+{{- $name := printf "c8s-role-%s-%s" (last (get $a "argv") | base) (trimPrefix "sha256:" $digest | lower | trunc 12) -}}
+{{- $_ := set $entries $name (dict "label" $image "initContainers" list "containers" $containers) -}}
+{{- /* A pod of the router's namespace runs a role container only under a
+       declaration that pins its mounts, so the rendered pod's own mount set
+       is named beside the open floor entry. */ -}}
+{{- with include "c8s.routerContainerMounts" (dict "root" $root "container" (get $a "container")) -}}
+{{- $pinned := list (dict "digest" $digest "image" $image "role" (get $a "role") "command" (dict "policy" "exact" "argv" (get $a "argv")) "args" (dict "policy" "any") "mounts" (dict "policy" "exact" "rules" (. | fromJsonArray))) -}}
+{{- $_ := set $entries (printf "%s-pinned" $name) (dict "label" $image "initContainers" list "containers" $pinned) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{ $entries | toJson }}
+{{- end -}}
+
+{{/* The exact mount rules of one container of the rendered router pod, as
+     JSON, or "" where the router renders no such container. Takes root and
+     the container name. */ -}}
+{{- define "c8s.routerContainerMounts" -}}
+{{- $root := .root -}}
+{{- $name := .container -}}
+{{- if and $name $root.Values.router.enabled -}}
+{{- $spec := include "router.podSpec" $root | fromYaml -}}
+{{- $volumes := dict -}}
+{{- range $v := (default list $spec.volumes) -}}
+{{- $_ := set $volumes (toString $v.name) $v -}}
+{{- end -}}
+{{- range $c := concat (default list $spec.initContainers) (default list $spec.containers) -}}
+{{- if eq (toString $c.name) $name -}}
+{{- include "c8s.mountRules" (dict "mounts" (default list $c.volumeMounts) "volumes" $volumes "where" (printf "router container %s" $name)) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/* The repository an image reference names, as one canonical string: no tag,
+     no digest, and Docker Hub's implicit registry and library namespace left
+     off, so a reference naming them explicitly and a component value that
+     omits them compare equal. */ -}}
+{{- define "c8s.imageRepository" -}}
+{{- $path := . | splitList "@" | first | splitList "/" -}}
+{{- $repository := append (initial $path) (last $path | splitList ":" | first) | join "/" -}}
+{{- $repository = regexReplaceAll "^(index\\.)?docker\\.io/" $repository "" -}}
+{{- regexReplaceAll "^library/" $repository "" -}}
 {{- end -}}
 
 {{- define "c8s.digestWorkloadName" -}}
@@ -687,6 +844,17 @@
 {{- range $init := list true false -}}
 {{- range $c := ternary (default list $spec.initContainers) (default list $spec.containers) $init -}}
 {{- $shapes := include "c8s.podShapes" (dict "name" "router" "spec" (dict "volumes" $volumes "containers" (list $c)) "pins" $pins "envs" $envs "refs" $refs) | fromJsonArray -}}
+{{- /* The platform clients of every member pod are dropped before matching
+       (internal/secrets.WorkloadContainers), so the entry declares the
+       containers this pod runs for its own purpose. */ -}}
+{{- $declared := list -}}
+{{- range $shape := $shapes -}}
+{{- $role := include "c8s.platformRole" (dict "root" $ "argv" (concat (get (get $shape "command") "argv" | default list) (get (get $shape "args") "argv" | default list))) -}}
+{{- if not (has $role (list "mesh" "credentials")) -}}
+{{- $declared = append $declared $shape -}}
+{{- end -}}
+{{- end -}}
+{{- $shapes = $declared -}}
 {{- if $init -}}
 {{- $inits = concat $inits $shapes -}}
 {{- else -}}

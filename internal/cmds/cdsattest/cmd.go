@@ -19,6 +19,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 type config struct {
@@ -66,7 +67,6 @@ func NewCmd() *cobra.Command {
 		Short: "Run the router routing, attestation and over-encryption sidecar",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg.attestOff = !attestEndpoints
-			cfg.routing.operatorKeysFileSet = cmd.Flags().Changed("operator-keys-file")
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 			return run(ctx, cfg)
@@ -131,7 +131,18 @@ func run(ctx context.Context, cfg config) error {
 	if cfg.tunnelIOTimeout <= 0 {
 		return errors.New("--tunnel-io-timeout must be positive")
 	}
+	endpoint, fromNode, err := cmdsutil.ResolveCDSEndpoint(workloadclaims.CDSAddressPath, cfg.routing.cdsURL)
+	if err != nil {
+		return err
+	}
+	if fromNode {
+		cfg.routing.cdsURL = cmdsutil.CDSURL(endpoint)
+	}
+	logger.Info("CDS endpoint resolved", "cds_url", cfg.routing.cdsURL, "from_node", fromNode)
 	if err := checkRoutingFlags(cfg); err != nil {
+		return err
+	}
+	if err := checkNodeVerifier(attestationURL); err != nil {
 		return err
 	}
 

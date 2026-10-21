@@ -19,7 +19,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -28,12 +27,9 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/credrelease"
+	"github.com/confidential-dot-ai/c8s/internal/guestverify"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
-
-// tdxEnvelope is a minimal self-describing evidence envelope; the actual
-// verification verdict comes from the stubbed verifyEnvelope.
-const tdxEnvelope = `{"platform":"tdx","evidence":{}}`
 
 // newAttestedTLSServer starts a TLS httptest server whose serving cert is a
 // genuine armTLS attested cert (quote envelope embedded, self-signed), the
@@ -147,7 +143,9 @@ type testEnv struct {
 	attestURL    string
 	releaseURL   string
 	outPath      string
-	exp          measuredPolicy
+	exp          guestverify.Policy
+	// operatorPubPEM is the public half of the key at keyPath.
+	operatorPubPEM []byte
 	// releaseRole holds the role the fake cred-release last received.
 	releaseRole *atomic.Value
 }
@@ -169,24 +167,25 @@ func newTestEnv(t *testing.T, attestURL string, releaseStatus int, releaseBody s
 		t.Fatal(err)
 	}
 	manifestPath := writeTestManifest(t, tdxManifest())
-	policy, err := policyFor(manifestPath, pub, nil)
+	policy, err := guestverify.PolicyFor(manifestPath, pub, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	exp := policy
-	stubVerify(t, verifiedResultFor(exp), nil)
+	stubVerify(t, verifiedResultFor(pub), nil)
 
 	releaseRole := new(atomic.Value)
 	release := newAttestedTLSServer(t, releaseHandler(t, releaseStatus, releaseBody, releaseRole))
 
 	return testEnv{
-		keyPath:      keyPath,
-		manifestPath: manifestPath,
-		attestURL:    attestURL,
-		releaseURL:   release.URL,
-		outPath:      filepath.Join(dir, "kubeconfig"),
-		exp:          exp,
-		releaseRole:  releaseRole,
+		keyPath:        keyPath,
+		manifestPath:   manifestPath,
+		attestURL:      attestURL,
+		releaseURL:     release.URL,
+		outPath:        filepath.Join(dir, "kubeconfig"),
+		exp:            exp,
+		operatorPubPEM: pub,
+		releaseRole:    releaseRole,
 	}
 }
 
@@ -238,8 +237,9 @@ func TestRunEndToEnd(t *testing.T) {
 // gate would accept one recorded genuine quote replayed forever.
 func TestAttestNonceIsFreshPerRun(t *testing.T) {
 	attest := newAttestStub(t)
-	exp := testPolicy(t, operatorPub(t))
-	rec := stubVerify(t, verifiedResultFor(exp), nil)
+	pub := operatorPub(t)
+	exp := testPolicy(t, pub)
+	rec := stubVerify(t, verifiedResultFor(pub), nil)
 
 	for i := range 2 {
 		if err := attestAndVerify(context.Background(), attest.URL()+"/attest", exp); err != nil {
@@ -292,7 +292,7 @@ func TestRunErrors(t *testing.T) {
 // before ever contacting cred-release.
 func TestRunRejectsWrongRTMR3(t *testing.T) {
 	env := newTestEnv(t, newAttestStub(t).URL()+"/attest", http.StatusOK, goodRelease)
-	res := verifiedResultFor(env.exp)
+	res := verifiedResultFor(env.operatorPubPEM)
 	res.Claims.PlatformData["rtmr_3"] = strings.Repeat("00", 48)
 	stubVerify(t, res, nil) // overrides the env's stub
 
@@ -375,140 +375,6 @@ func TestRequestCredentialErrors(t *testing.T) {
 			t.Fatalf("want missing-field error, got %v", err)
 		}
 	})
-}
-
-func TestVerifyEvidenceErrors(t *testing.T) {
-	exp := testPolicy(t, operatorPub(t))
-
-	t.Run("bad envelope JSON", func(t *testing.T) {
-		_, err := verifyEvidence([]byte("not json"), nil, exp)
-		if err == nil || !strings.Contains(err.Error(), "parse evidence envelope") {
-			t.Fatalf("want parse error, got %v", err)
-		}
-	})
-
-	t.Run("empty evidence object", func(t *testing.T) {
-		_, err := verifyEvidence([]byte(`{"platform":"tdx"}`), nil, exp)
-		if err == nil || !strings.Contains(err.Error(), "no evidence object") {
-			t.Fatalf("want empty-evidence error, got %v", err)
-		}
-	})
-
-	// The envelope shape is single-wrap on both gates; a double-wrapped
-	// envelope must fail loudly rather than reach the verifier as evidence it
-	// misparses or ignores.
-	t.Run("double-wrapped envelope", func(t *testing.T) {
-		stubVerify(t, verifiedResultFor(exp), nil) // must not be reached
-		double := `{"platform":"tdx","evidence":` + tdxEnvelope + `}`
-		_, err := verifyEvidence([]byte(double), nil, exp)
-		if err == nil || !strings.Contains(err.Error(), "double-wrapped") {
-			t.Fatalf("want double-wrap rejection, got %v", err)
-		}
-	})
-
-	t.Run("verifier error", func(t *testing.T) {
-		stubVerify(t, nil, fmt.Errorf("boom"))
-		_, err := verifyEvidence([]byte(tdxEnvelope), nil, exp)
-		if err == nil || !strings.Contains(err.Error(), "verify evidence: boom") {
-			t.Fatalf("want wrapped verifier error, got %v", err)
-		}
-	})
-
-	t.Run("signature invalid", func(t *testing.T) {
-		res := verifiedResultFor(exp)
-		res.SignatureValid = false
-		stubVerify(t, res, nil)
-		_, err := verifyEvidence([]byte(tdxEnvelope), nil, exp)
-		if err == nil || !strings.Contains(err.Error(), "quote signature invalid") {
-			t.Fatalf("want signature error, got %v", err)
-		}
-	})
-}
-
-func TestCheckMeasuredIdentityNoRTMR3Claim(t *testing.T) {
-	exp := testPolicy(t, operatorPub(t))
-	res := verifiedResultFor(exp)
-	res.Claims.PlatformData["rtmr_3"] = ""
-	err := exp.checkIdentity(res)
-	if err == nil || !strings.Contains(err.Error(), "no rtmr_3") {
-		t.Fatalf("want no-rtmr_3 error, got %v", err)
-	}
-}
-
-// --workload-image extends the expected RTMR[3] from the operator-key seed in
-// the given (first-extend) order; tags never pass, and order changes the
-// register.
-func TestPolicyForWorkloadImages(t *testing.T) {
-	pub := operatorPub(t)
-	manifest := writeTestManifest(t, tdxManifest())
-	digA := "sha256:" + strings.Repeat("aa", 32)
-	digB := "ghcr.io/acme/api@sha256:" + strings.Repeat("bb", 32)
-
-	bare, err := policyFor(manifest, pub, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := bare.workloadDigests; len(got) != 0 {
-		t.Errorf("workloadDigests = %v, want none so the expected register is the bare operator-key seed", got)
-	}
-
-	chained, err := policyFor(manifest, pub, []string{digA, digB})
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []string{digA, "sha256:" + strings.Repeat("bb", 32)}
-	if got := chained.workloadDigests; !slices.Equal(got, want) {
-		t.Errorf("workloadDigests = %v, want %v (canonicalized, in first-extend order)", got, want)
-	}
-
-	reversed, err := policyFor(manifest, pub, []string{digB, digA})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := reversed.workloadDigests; slices.Equal(got, want) {
-		t.Error("extend order must reach the chain unchanged — the register is ordered")
-	}
-
-	for _, bad := range []string{"nginx:latest", "ghcr.io/acme/api:v1", "sha256:" + strings.Repeat("AB", 32)} {
-		if _, err := policyFor(manifest, pub, []string{bad}); err == nil {
-			t.Errorf("policyFor accepted non-canonical workload image %q", bad)
-		}
-	}
-}
-
-// The node's measurer extends each image once, so repeating one here would
-// extend the EXPECTED register an extra time and build a gate no node can ever
-// satisfy — a permanently red, silently wrong policy. It has to be a usage
-// error, including when the two spellings differ but the digest does not.
-func TestPolicyForRejectsDuplicateWorkloadImages(t *testing.T) {
-	pub := operatorPub(t)
-	manifest := writeTestManifest(t, tdxManifest())
-	dig := "sha256:" + strings.Repeat("aa", 32)
-
-	for _, tc := range []struct {
-		name string
-		refs []string
-	}{
-		{"identical refs", []string{dig, dig}},
-		{"same digest, different spelling", []string{dig, "ghcr.io/acme/api@" + dig}},
-		{"repeat separated by another image", []string{dig, "sha256:" + strings.Repeat("bb", 32), dig}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if _, err := policyFor(manifest, pub, tc.refs); err == nil {
-				t.Fatal("a repeated workload image must be rejected, not silently doubled into the chain")
-			}
-		})
-	}
-
-	// Sanity: the single-occurrence policy this rejection protects is exactly
-	// the one a node with that image can satisfy.
-	single, err := policyFor(manifest, pub, []string{dig})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := single.workloadDigests; !slices.Equal(got, []string{dig}) {
-		t.Errorf("workloadDigests = %v, want [%s]", got, dig)
-	}
 }
 
 func TestPublicKeyPEMFromPrivateErrors(t *testing.T) {

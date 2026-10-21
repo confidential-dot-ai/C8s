@@ -269,7 +269,7 @@ func holdsLeaf(ctx context.Context, name string) error {
 		return err
 	}
 	if !found {
-		return fmt.Errorf("%q holds no leaf after %s; its requester logged: %s", name, observe, tail(w.certLog(p), 5))
+		return fmt.Errorf("%q holds no leaf after %s; its requester logged: %s; its containers: %+v", name, observe, tail(w.certLog(p), 5), w.statuses(p))
 	}
 	return nil
 }
@@ -841,7 +841,7 @@ func cdsPinsDigests(ctx context.Context) error {
 		return err
 	}
 	if len(pins) == 0 {
-		return godog.ErrSkip
+		return skipf("the CDS pins no launch digests here")
 	}
 	return nil
 }

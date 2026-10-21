@@ -1,7 +1,9 @@
 package cmdsutil
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"strings"
 
@@ -101,10 +103,7 @@ func LoadImagePolicyValues(cfg ImagePolicyValuesConfig) (refvalues.ReferenceValu
 		return values, err
 	}
 	if cfg.Platform != "" {
-		flag := cfg.PlatformFlag
-		if flag == "" {
-			flag = "--platform"
-		}
+		flag := cfg.platformFlag()
 		family, err := teetypes.ParseFamily(cfg.Platform)
 		if err != nil {
 			return refvalues.ReferenceValues{}, fmt.Errorf("%s: %w", flag, err)
@@ -114,6 +113,114 @@ func LoadImagePolicyValues(cfg ImagePolicyValuesConfig) (refvalues.ReferenceValu
 		}
 	}
 	return values, nil
+}
+
+// LoadImagePolicySet is one reference set from whichever form the caller
+// configured: a complete policy document, or independent launch digests on the
+// configured platform's family, each carrying the register pins. An empty set
+// pins nothing; refvalues refuses a register pin the family does not carry
+// when the set is rendered or enforced.
+func LoadImagePolicySet(cfg ImagePolicyValuesConfig) (refvalues.ReferenceValues, error) {
+	if cfg.Source.IsSet() {
+		return LoadImagePolicyValues(cfg)
+	}
+	digests, err := LoadMeasurements(cfg.Pins.Measurements, cfg.Pins.MeasurementsFile)
+	if err != nil {
+		return refvalues.ReferenceValues{}, fmt.Errorf("--%smeasurements: %w", cfg.Pins.Prefix, err)
+	}
+	registers, err := refvalues.ParseRegisterPins(cfg.Pins.Registers)
+	if err != nil {
+		return refvalues.ReferenceValues{}, fmt.Errorf("--%srtmrs: %w", cfg.Pins.Prefix, err)
+	}
+	if len(digests) == 0 {
+		if len(registers) > 0 {
+			return refvalues.ReferenceValues{}, fmt.Errorf("--%srtmrs pins %d register(s) with no --%smeasurements digest to pin them to", cfg.Pins.Prefix, len(registers), cfg.Pins.Prefix)
+		}
+		return refvalues.ReferenceValues{}, nil
+	}
+	family, err := teetypes.ParseFamily(cfg.Platform)
+	if err != nil {
+		return refvalues.ReferenceValues{}, fmt.Errorf("%s: %w", cfg.platformFlag(), err)
+	}
+	set := refvalues.FromFlags(digests, registers)
+	set.Family = family
+	return set, nil
+}
+
+// platformFlag names the caller's platform input in an error.
+func (cfg ImagePolicyValuesConfig) platformFlag() string {
+	if cfg.PlatformFlag == "" {
+		return "--platform"
+	}
+	return cfg.PlatformFlag
+}
+
+// ResolveCDSPins returns the pins a client holds its CDS to, and whether the
+// node's own policy decided them. resolveNodePolicy states the rule.
+func ResolveCDSPins(nodePolicy string, source ImagePolicySource, pins MeasurementPins) (remote.Policy, bool, error) {
+	values, fromNode, err := resolveNodePolicy(nodePolicy, suppliedPolicyFlags(source, pins), refvalues.Parse)
+	if err != nil {
+		return remote.Policy{}, false, err
+	}
+	if fromNode {
+		return values.Policy(), true, nil
+	}
+	policy, err := source.Load(pins)
+	return policy, false, err
+}
+
+// RequireNodeVerifier holds a credential client to the node's own
+// attestation-api while the enforcer mounts its CDS policy at nodePolicy and
+// presents that attestation-api at socket. The verifier is what decides
+// whether the CDS a client dials satisfies those pins, so a client answering
+// to a named verifier is not pinned at all.
+//
+// Both paths are the node's own mounts, and the rule is ResolveCDSPins': while
+// they are there they are the only source, and a supplied verifier is refused.
+// Where the node hands out no policy, or runs no attestation-api a pod can
+// reach, the caller's own argument stands.
+func RequireNodeVerifier(nodePolicy, socket, supplied string) error {
+	pinned, err := nodeProvides(nodePolicy)
+	if err != nil {
+		return err
+	}
+	served, err := nodeProvides(socket)
+	if err != nil {
+		return err
+	}
+	if !pinned || !served {
+		return nil
+	}
+	if endpoint := "unix://" + socket; supplied != endpoint {
+		return fmt.Errorf("this node pins CDS in %s and serves its attestation-api at %s, so --attestation-api-url must be %s; got %q",
+			nodePolicy, socket, endpoint, supplied)
+	}
+	return nil
+}
+
+// nodeProvides reports whether the node mounts path. An error other than an
+// absent path fails the caller: a mount it cannot read still binds it.
+func nodeProvides(path string) (bool, error) {
+	switch _, err := os.Stat(path); {
+	case errors.Is(err, fs.ErrNotExist):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("node mount %s: %w", path, err)
+	}
+	return true, nil
+}
+
+// suppliedPolicyFlags names the pin inputs the caller set, for an error that
+// says which argument to drop.
+func suppliedPolicyFlags(source ImagePolicySource, pins MeasurementPins) []string {
+	var flags []string
+	if source.File != "" {
+		flags = append(flags, "--image-policy-file")
+	}
+	if source.JSON != "" {
+		flags = append(flags, "--image-policy-json")
+	}
+	return append(flags, pins.flags()...)
 }
 
 // Load returns complete image identities or independent digest/register pins.
@@ -149,20 +256,17 @@ func LoadMeasurements(values []string, path string) ([][]byte, error) {
 }
 
 // BindImagePolicyFlags registers canonical JSON sources. A nil inline pointer
-// exposes only file input; prefix is "cds-" for the mesh's independent CDS policy.
-// Only one source may be used.
-func BindImagePolicyFlags(fs *pflag.FlagSet, file, inline *string, prefix, purpose string) {
+// exposes only file input. Only one source may be used.
+func BindImagePolicyFlags(fs *pflag.FlagSet, file, inline *string, purpose string) {
 	selected := ""
 	bind := func(target *string, name, usage string) {
 		fs.Var(&policySourceFlag{target: target, selected: &selected, name: name}, name, usage)
 	}
-	fileName := prefix + "image-policy-file"
-	jsonName := prefix + "image-policy-json"
 	*file = ""
-	bind(file, fileName, "path to a complete JSON image policy (image, RTMR and launch-key pins); "+purpose)
+	bind(file, "image-policy-file", "path to a complete JSON image policy (image, RTMR and launch-key pins); "+purpose)
 	if inline != nil {
 		*inline = ""
-		bind(inline, jsonName, "inline complete JSON image policy, in the same format as --"+fileName+"; "+purpose)
+		bind(inline, "image-policy-json", "inline complete JSON image policy, in the same format as --image-policy-file; "+purpose)
 	}
 }
 

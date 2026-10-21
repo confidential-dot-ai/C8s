@@ -29,14 +29,17 @@ func TestMutatePodInjectsCertSidecar(t *testing.T) {
 		},
 	}
 
-	mutatePod(pod, &injection{WorkloadID: "api"}, Config{
+	mutatePod(pod, &injection{
+		WorkloadID: "api",
+		SAN:        "api",
+	}, Config{
 		GetCertImage:      "ghcr.io/confidential-dot-ai/c8s-operator:test",
-		CDSURL:            "http://cds.c8s-system.svc:8443",
+		MeshImage:         testMeshImage,
 		AttestationApiURL: "http://attestation-api.c8s-system.svc:8400",
 	})
 
-	if len(pod.Spec.InitContainers) != 2 {
-		t.Fatalf("init containers = %d, want c8s-cert sidecar + c8s-cert-wait gate", len(pod.Spec.InitContainers))
+	if got := containerNames(pod.Spec.InitContainers); !slices.Equal(got, []string{reservedMeshContainerName, reservedCertContainerName, reservedCertWaitContainerName}) {
+		t.Fatalf("init containers = %v, want the endpoint, get-cert and the credential-wait gate", got)
 	}
 	if len(pod.Spec.Containers) != 1 {
 		t.Fatalf("containers = %d, want app container only", len(pod.Spec.Containers))
@@ -48,18 +51,13 @@ func TestMutatePodInjectsCertSidecar(t *testing.T) {
 	if got := *pod.Spec.SecurityContext.FSGroup; got != defaultCertFSGroup {
 		t.Fatalf("fsGroup = %d, want %d", got, defaultCertFSGroup)
 	}
-	cert := pod.Spec.InitContainers[0]
-	if cert.Name != "c8s-cert" {
-		t.Fatalf("init container[0] name = %q, want c8s-cert", cert.Name)
-	}
+	cert := *containerNamed(pod, reservedCertContainerName)
 	for _, want := range []string{
-		"--cds-url=http://cds.c8s-system.svc:8443",
 		"--san=api",
-		"--out=/etc/c8s/certs/tls.crt",
-		"--key-out=/etc/c8s/certs/tls.key",
-		"--ca-out=/etc/c8s/certs/ca.crt",
+		"--cert-path=/etc/c8s/certs/tls.crt",
+		"--key-path=/etc/c8s/certs/tls.key",
+		"--ca-path=/etc/c8s/certs/ca.crt",
 		"--renew-interval=2h0m0s",
-		"--reload-nginx=false",
 		"--continue-on-initial-error",
 	} {
 		if !hasArg(cert.Args, want) {
@@ -80,10 +78,7 @@ func TestMutatePodInjectsCertSidecar(t *testing.T) {
 	if cert.StartupProbe != nil {
 		t.Fatalf("c8s-cert must NOT carry a startupProbe; got %#v", cert.StartupProbe)
 	}
-	wait := pod.Spec.InitContainers[1]
-	if wait.Name != reservedCertWaitContainerName {
-		t.Fatalf("init container[1] name = %q, want %s (the exec-free cert gate)", wait.Name, reservedCertWaitContainerName)
-	}
+	wait := *containerNamed(pod, reservedCertWaitContainerName)
 	if wait.RestartPolicy != nil {
 		t.Fatalf("c8s-cert-wait must be a run-once init container (nil restartPolicy), got %#v", wait.RestartPolicy)
 	}
@@ -101,11 +96,13 @@ func TestMutatePodInjectsCertSidecar(t *testing.T) {
 	if cert.SecurityContext.RunAsNonRoot == nil || !*cert.SecurityContext.RunAsNonRoot {
 		t.Fatalf("c8s-cert does not require non-root")
 	}
-	if cert.SecurityContext.RunAsUser == nil || *cert.SecurityContext.RunAsUser != defaultGetCertRunAsUser {
-		t.Fatalf("c8s-cert runAsUser = %v", cert.SecurityContext.RunAsUser)
+	// The credential role's reserved identity, which the node binds to the CDS
+	// address and refuses elsewhere.
+	if got := *cert.SecurityContext.RunAsUser; got != int64(workloadclaims.CredentialsUID) {
+		t.Fatalf("c8s-cert runAsUser = %d, want the reserved %d", got, workloadclaims.CredentialsUID)
 	}
-	if cert.SecurityContext.RunAsGroup == nil || *cert.SecurityContext.RunAsGroup != defaultGetCertRunAsGroup {
-		t.Fatalf("c8s-cert runAsGroup = %v", cert.SecurityContext.RunAsGroup)
+	if got := *cert.SecurityContext.RunAsGroup; got != int64(workloadclaims.CredentialsUID) {
+		t.Fatalf("c8s-cert runAsGroup = %d, want the reserved %d", got, workloadclaims.CredentialsUID)
 	}
 	if cert.SecurityContext.SeccompProfile == nil || cert.SecurityContext.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
 		t.Fatalf("c8s-cert seccomp profile = %#v", cert.SecurityContext.SeccompProfile)
@@ -114,9 +111,10 @@ func TestMutatePodInjectsCertSidecar(t *testing.T) {
 		t.Fatalf("c8s-cert mounts = %#v, want writable c8s cert mount", cert.VolumeMounts)
 	}
 
-	app := pod.Spec.Containers[0]
-	if len(app.VolumeMounts) != 1 || !app.VolumeMounts[0].ReadOnly {
-		t.Fatalf("app mounts = %#v, want read-only c8s cert mount", app.VolumeMounts)
+	// The credential volume is the platform containers': a workload container
+	// reads no leaf, key or CA set of its own.
+	if app := pod.Spec.Containers[0]; containerMount(&app, CertVolumeName) != nil {
+		t.Fatalf("app mounts the credential volume: %#v", app.VolumeMounts)
 	}
 }
 
@@ -134,11 +132,10 @@ func TestMutatePodCertSidecarCarriesHostIPEnv(t *testing.T) {
 
 	mutatePod(pod, &injection{WorkloadID: "api"}, Config{
 		GetCertImage:      "image",
-		CDSURL:            "http://cds",
 		AttestationApiURL: "http://$(HOST_IP):8400",
 	})
 
-	cert := pod.Spec.InitContainers[0]
+	cert := *containerNamed(pod, reservedCertContainerName)
 	if !hasArg(cert.Args, "--attestation-api-url=http://$(HOST_IP):8400") {
 		t.Fatalf("c8s-cert args %v missing verbatim $(HOST_IP) URL", cert.Args)
 	}
@@ -167,7 +164,7 @@ func TestMutatePodDisablesServiceLinks(t *testing.T) {
 				Annotations: map[string]string{},
 				Spec:        corev1.PodSpec{EnableServiceLinks: links, Containers: []corev1.Container{{Name: "app"}}},
 			}
-			mutatePod(pod, &injection{WorkloadID: "api"}, Config{GetCertImage: "image", CDSURL: "http://cds"})
+			mutatePod(pod, &injection{WorkloadID: "api"}, Config{GetCertImage: "image"})
 			if got := pod.Spec.EnableServiceLinks; got == nil || *got {
 				t.Errorf("mutatePod(service links %s).EnableServiceLinks = %v, want false", name, ptr.Deref(got, true))
 			}
@@ -184,7 +181,12 @@ func TestHandleWarnsWhenDisablingServiceLinks(t *testing.T) {
 	}
 	m := &podMutator{
 		decoder: admission.NewDecoder(scheme),
-		cfg:     Config{GetCertImage: "image", CDSURL: "http://cds", AttestationApiURL: "http://attestation-api"},
+		cfg: Config{
+			MeshImage:             testMeshImage,
+			WorkloadClaimsHostDir: "/run/nri-image-policy",
+			GetCertImage:          "image",
+			AttestationApiURL:     "http://attestation-api",
+		},
 	}
 	for name, tc := range map[string]struct {
 		annotations map[string]string
@@ -194,7 +196,8 @@ func TestHandleWarnsWhenDisablingServiceLinks(t *testing.T) {
 		"links on":      {annotations: map[string]string{AnnotationWorkload: "api"}, links: ptr.To(true), want: true},
 		"links default": {annotations: map[string]string{AnnotationWorkload: "api"}},
 		"links off":     {annotations: map[string]string{AnnotationWorkload: "api"}, links: ptr.To(false)},
-		"not injected":  {links: ptr.To(true)},
+		// Every pod of a covered namespace is injected, annotated or not.
+		"no annotations": {links: ptr.To(true), want: true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			pod := &corev1.Pod{
@@ -228,7 +231,6 @@ func TestMutatePodPreservesExistingFSGroup(t *testing.T) {
 
 	mutatePod(pod, &injection{WorkloadID: "api"}, Config{
 		GetCertImage:      "image",
-		CDSURL:            "http://cds",
 		AttestationApiURL: "http://attestation-api",
 	})
 
@@ -246,34 +248,21 @@ func TestMutatePodUsesConfiguredCertAndInitSecurity(t *testing.T) {
 	}
 
 	mutatePod(pod, &injection{WorkloadID: "api"}, Config{
-		GetCertImage:        "image",
-		CDSURL:              "http://cds",
-		AttestationApiURL:   "http://attestation-api",
-		CertFSGroup:         new(int64(4242)),
-		CertRenewInterval:   time.Hour,
-		GetCertRunAsUser:    new(int64(0)),
-		GetCertRunAsGroup:   new(int64(0)),
-		GetCertRunAsNonRoot: new(false),
+		GetCertImage:      "image",
+		AttestationApiURL: "http://attestation-api",
+		CertFSGroup:       new(int64(4242)),
+		CertRenewInterval: time.Hour,
 	})
 
 	if got := *pod.Spec.SecurityContext.FSGroup; got != 4242 {
 		t.Fatalf("fsGroup = %d, want 4242", got)
 	}
-	if len(pod.Spec.InitContainers) != 2 {
-		t.Fatalf("init containers = %d, want c8s-cert sidecar + c8s-cert-wait gate", len(pod.Spec.InitContainers))
+	if got := containerNames(pod.Spec.InitContainers); !slices.Equal(got, []string{reservedMeshContainerName, reservedCertContainerName, reservedCertWaitContainerName}) {
+		t.Fatalf("init containers = %v, want the endpoint, get-cert and the credential-wait gate", got)
 	}
-	cert := pod.Spec.InitContainers[0]
+	cert := *containerNamed(pod, reservedCertContainerName)
 	if !hasArg(cert.Args, "--renew-interval=1h0m0s") {
 		t.Fatalf("c8s-cert args %v missing configured renewal interval", cert.Args)
-	}
-	if got := *cert.SecurityContext.RunAsUser; got != 0 {
-		t.Fatalf("runAsUser = %d, want 0", got)
-	}
-	if got := *cert.SecurityContext.RunAsGroup; got != 0 {
-		t.Fatalf("runAsGroup = %d, want 0", got)
-	}
-	if got := *cert.SecurityContext.RunAsNonRoot; got {
-		t.Fatalf("runAsNonRoot = %t, want false", got)
 	}
 }
 
@@ -281,64 +270,51 @@ func TestMutatePodSupportsRouterProfile(t *testing.T) {
 	pod := &corev1.Pod{
 		Annotations: map[string]string{
 			AnnotationWorkload:               "c8s-router.c8s-system.svc",
-			AnnotationCertVolume:             "tls-certs",
-			AnnotationCertFile:               "cert.pem",
-			AnnotationKeyFile:                "key.pem",
 			AnnotationRenewInterval:          "1h",
-			AnnotationReloadNginx:            "true",
-			AnnotationReloadWatchVolume:      "public-tls",
-			AnnotationReloadWatchPaths:       "/mnt/c8s-data/c8s-reload-watch/public.crt,/mnt/c8s-data/c8s-reload-watch/public.key",
 			AnnotationDiscoveryVolume:        "discovery",
 			AnnotationDiscoveryOut:           "/run/c8s/discovery/discovery.json",
 			AnnotationDiscoveryCDSCertURL:    "/.well-known/cds-cert.pem",
 			AnnotationDiscoveryMeshCAURL:     "/.well-known/mesh-ca.pem",
 			AnnotationDiscoveryPublicTLSMode: "webpki",
-			AnnotationGetCertRunAsUser:       "101",
-			AnnotationGetCertRunAsGroup:      "101",
-			AnnotationGetCertRunAsNonRoot:    "true",
 			AnnotationGetCertVerbose:         "true",
 		},
 		Spec: corev1.PodSpec{
 			Volumes: []corev1.Volume{
-				{Name: "tls-certs"},
 				{Name: "public-tls"},
 				{Name: "discovery"},
 			},
 			Containers: []corev1.Container{{
-				Name:         "nginx",
-				VolumeMounts: []corev1.VolumeMount{{Name: "tls-certs", MountPath: "/etc/c8s/certs", ReadOnly: true}},
+				Name: "nginx",
 			}},
 		},
 	}
 
-	inj, err := parseAnnotations(pod)
+	inj, err := parseAnnotations(pod, "")
 	if err != nil {
 		t.Fatalf("parseAnnotations: %v", err)
 	}
 	mutatePod(pod, inj, Config{
 		GetCertImage:      "image",
-		CDSURL:            "http://cds",
 		AttestationApiURL: "http://attestation-api",
 	})
 
-	if pod.Spec.ShareProcessNamespace == nil || !*pod.Spec.ShareProcessNamespace {
-		t.Fatalf("shareProcessNamespace = %v, want true", pod.Spec.ShareProcessNamespace)
+	// No injected container signals nginx, so the injector leaves the
+	// process namespace alone.
+	if pod.Spec.ShareProcessNamespace != nil {
+		t.Fatalf("shareProcessNamespace = %v, want it unset", *pod.Spec.ShareProcessNamespace)
 	}
 	if len(pod.Spec.Volumes) != 3 {
-		t.Fatalf("volumes = %#v, want existing router volumes only", pod.Spec.Volumes)
+		t.Fatalf("volumes = %#v, want the router's own plus the injected cert volume", pod.Spec.Volumes)
 	}
-	if len(pod.Spec.InitContainers) != 2 {
-		t.Fatalf("init containers = %d, want c8s-cert sidecar + c8s-cert-wait gate", len(pod.Spec.InitContainers))
+	if got := containerNames(pod.Spec.InitContainers); !slices.Equal(got, []string{reservedMeshContainerName, reservedCertContainerName, reservedCertWaitContainerName}) {
+		t.Fatalf("init containers = %v, want the endpoint, get-cert and the credential-wait gate", got)
 	}
-	cert := pod.Spec.InitContainers[0]
+	cert := *containerNamed(pod, reservedCertContainerName)
 	for _, want := range []string{
-		"--out=/etc/c8s/certs/cert.pem",
-		"--key-out=/etc/c8s/certs/key.pem",
-		"--ca-out=/etc/c8s/certs/ca.crt",
+		"--cert-path=/etc/c8s/certs/tls.crt",
+		"--key-path=/etc/c8s/certs/tls.key",
+		"--ca-path=/etc/c8s/certs/ca.crt",
 		"--renew-interval=1h0m0s",
-		"--reload-nginx=true",
-		"--reload-watch=/mnt/c8s-data/c8s-reload-watch/public.crt",
-		"--reload-watch=/mnt/c8s-data/c8s-reload-watch/public.key",
 		"--discovery-out=/run/c8s/discovery/discovery.json",
 		"--discovery-cds-cert-url=/.well-known/cds-cert.pem",
 		"--discovery-public-tls-mode=webpki",
@@ -349,14 +325,11 @@ func TestMutatePodSupportsRouterProfile(t *testing.T) {
 			t.Fatalf("c8s-cert args %v missing %s", cert.Args, want)
 		}
 	}
-	if got := *cert.SecurityContext.RunAsUser; got != 101 {
-		t.Fatalf("c8s-cert runAsUser = %d, want 101", got)
+	if got := *cert.SecurityContext.RunAsUser; got != int64(workloadclaims.CredentialsUID) {
+		t.Fatalf("c8s-cert runAsUser = %d, want the reserved credentials uid %d", got, workloadclaims.CredentialsUID)
 	}
-	if !hasMount(cert.VolumeMounts, "tls-certs", "/etc/c8s/certs", false) {
-		t.Fatalf("c8s-cert mounts %v missing writable tls-certs", cert.VolumeMounts)
-	}
-	if !hasMount(cert.VolumeMounts, "public-tls", "/mnt/c8s-data/c8s-reload-watch", true) {
-		t.Fatalf("c8s-cert mounts %v missing read-only public-tls", cert.VolumeMounts)
+	if !hasMount(cert.VolumeMounts, CertVolumeName, CertDir, false) {
+		t.Fatalf("c8s-cert mounts %v missing the writable cert volume", cert.VolumeMounts)
 	}
 	if !hasMount(cert.VolumeMounts, "discovery", "/run/c8s/discovery", false) {
 		t.Fatalf("c8s-cert mounts %v missing writable discovery", cert.VolumeMounts)
@@ -373,7 +346,6 @@ func TestMutatePodStampsWorkloadLabel(t *testing.T) {
 
 	mutatePod(pod, &injection{WorkloadID: "api"}, Config{
 		GetCertImage: "ghcr.io/confidential-dot-ai/c8s-operator:test",
-		CDSURL:       "http://cds.c8s-system.svc:8443",
 	})
 
 	if got := pod.Labels[LabelWorkload]; got != "api" {
@@ -391,7 +363,7 @@ func TestParseAnnotationsRejectsWorkloadIDInvalidAsLabelValue(t *testing.T) {
 			Annotations: map[string]string{
 				AnnotationWorkload: id,
 			},
-		})
+		}, "")
 		if !errors.Is(err, errInvalidInjectionAnnotation) {
 			t.Fatalf("parseAnnotations(%q) error = %v, want invalid annotation", id, err)
 		}
@@ -429,7 +401,7 @@ func TestParseAnnotationsRejectsInvalidRenewInterval(t *testing.T) {
 			AnnotationWorkload:      "api",
 			AnnotationRenewInterval: "not-a-duration",
 		},
-	})
+	}, "")
 	if !errors.Is(err, errInvalidInjectionAnnotation) {
 		t.Fatalf("parseAnnotations error = %v, want invalid annotation", err)
 	}
@@ -438,21 +410,9 @@ func TestParseAnnotationsRejectsInvalidRenewInterval(t *testing.T) {
 func TestParseAnnotationsRejectsInjectionDetailsWithoutWorkloadAnnotation(t *testing.T) {
 	_, err := parseAnnotations(&corev1.Pod{
 		Annotations: map[string]string{
-			AnnotationCertVolume: "tls-certs",
+			AnnotationRenewInterval: "1h",
 		},
-	})
-	if !errors.Is(err, errInvalidInjectionAnnotation) {
-		t.Fatalf("parseAnnotations error = %v, want invalid annotation", err)
-	}
-}
-
-func TestParseAnnotationsRejectsReloadWatchWithoutMount(t *testing.T) {
-	_, err := parseAnnotations(&corev1.Pod{
-		Annotations: map[string]string{
-			AnnotationWorkload:         "api",
-			AnnotationReloadWatchPaths: "/public-tls/tls.crt",
-		},
-	})
+	}, "")
 	if !errors.Is(err, errInvalidInjectionAnnotation) {
 		t.Fatalf("parseAnnotations error = %v, want invalid annotation", err)
 	}
@@ -464,7 +424,7 @@ func TestParseAnnotationsRejectsIncompleteDiscovery(t *testing.T) {
 			AnnotationWorkload:            "api",
 			AnnotationDiscoveryCDSCertURL: "/.well-known/cds-cert.pem",
 		},
-	})
+	}, "")
 	if !errors.Is(err, errInvalidInjectionAnnotation) {
 		t.Fatalf("parseAnnotations error = %v, want invalid annotation", err)
 	}
@@ -479,7 +439,7 @@ func TestParseAnnotationsRejectsInvalidDiscoveryPublicTLSMode(t *testing.T) {
 			AnnotationDiscoveryCDSCertURL:    "/.well-known/cds-cert.pem",
 			AnnotationDiscoveryPublicTLSMode: "invalid",
 		},
-	})
+	}, "")
 	if !errors.Is(err, errInvalidInjectionAnnotation) {
 		t.Fatalf("parseAnnotations error = %v, want invalid annotation", err)
 	}
@@ -499,14 +459,12 @@ func TestParseAnnotationsPinsSidecarDestinations(t *testing.T) {
 		{AnnotationSecretDir, defaultSecretDir, true},
 		{AnnotationDiscoveryMountPath, "/discovery", false},
 		{AnnotationDiscoveryMountPath, discoveryMountPath, true},
-		{AnnotationReloadWatchMountPath, "/etc/nginx/certs", false},
-		{AnnotationReloadWatchMountPath, reloadWatchMountPath, true},
 	} {
 		t.Run(tc.annotation+"="+tc.value, func(t *testing.T) {
 			_, err := parseAnnotations(&corev1.Pod{Annotations: map[string]string{
 				AnnotationWorkload: "api",
 				tc.annotation:      tc.value,
-			}})
+			}}, "")
 			if (err == nil) != tc.ok {
 				t.Fatalf("parseAnnotations(%s=%s) error = %v, want ok %v", tc.annotation, tc.value, err, tc.ok)
 			}
@@ -524,7 +482,6 @@ func TestParseAnnotationsKeepsSidecarFilesInTheirMounts(t *testing.T) {
 		AnnotationDiscoveryCDSCertURL:    "/.well-known/cds-cert.pem",
 		AnnotationDiscoveryPublicTLSMode: "cds",
 	}
-	reload := map[string]string{AnnotationReloadWatchVolume: "public-tls"}
 	for _, tc := range []struct {
 		name        string
 		annotations map[string]string
@@ -535,20 +492,13 @@ func TestParseAnnotationsKeepsSidecarFilesInTheirMounts(t *testing.T) {
 		{"discovery elsewhere", discovery, AnnotationDiscoveryOut, "/discovery/discovery.json", false},
 		{"discovery escaping", discovery, AnnotationDiscoveryOut, discoveryMountPath + "/../discovery.json", false},
 		{"discovery in a subdirectory", discovery, AnnotationDiscoveryOut, discoveryMountPath + "/sub/discovery.json", false},
-		{"watch inside", reload, AnnotationReloadWatchPaths, reloadWatchMountPath + "/tls.crt", true},
-		{"watch elsewhere", reload, AnnotationReloadWatchPaths, reloadWatchMountPath + "/tls.crt,/edge-tls/tls.key", false},
-		{"cert file relative", nil, AnnotationCertFile, "server.crt", true},
-		{"cert file inside", nil, AnnotationCertFile, CertDir + "/server.crt", true},
-		{"cert file elsewhere", nil, AnnotationCertFile, "/certs/tls.crt", false},
-		{"key file escaping", nil, AnnotationKeyFile, "../tls.key", false},
-		{"ca file elsewhere", nil, AnnotationCAFile, "/etc/ssl/ca.crt", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			annotations := map[string]string{AnnotationWorkload: "api", tc.key: tc.value}
 			for k, v := range tc.annotations {
 				annotations[k] = v
 			}
-			_, err := parseAnnotations(&corev1.Pod{Annotations: annotations})
+			_, err := parseAnnotations(&corev1.Pod{Annotations: annotations}, "")
 			if (err == nil) != tc.ok {
 				t.Fatalf("parseAnnotations(%s=%s) error = %v, want ok %v", tc.key, tc.value, err, tc.ok)
 			}
@@ -566,8 +516,7 @@ func TestParseAnnotationsRejectsDiscoveryVolumeAliases(t *testing.T) {
 		wantRefused bool
 	}{
 		{"own volume", "discovery", "", false},
-		{"default cert volume", DefaultCertVolumeName, "", true},
-		{"renamed cert volume", "edge-certs", "edge-certs", true},
+		{"cert volume", CertVolumeName, "", true},
 		{"secrets volume", secretsVolumeName, "", true},
 		{"encrypted volume", volume.KubeVolumePrefix + "data", "", true},
 	} {
@@ -582,7 +531,7 @@ func TestParseAnnotationsRejectsDiscoveryVolumeAliases(t *testing.T) {
 			if tc.certVolume != "" {
 				annotations[AnnotationCertVolume] = tc.certVolume
 			}
-			_, err := parseAnnotations(&corev1.Pod{Annotations: annotations})
+			_, err := parseAnnotations(&corev1.Pod{Annotations: annotations}, "")
 			if refused := err != nil; refused != tc.wantRefused {
 				t.Fatalf("parseAnnotations(discovery volume %q) error = %v, want refused %v", tc.volume, err, tc.wantRefused)
 			}
@@ -635,9 +584,10 @@ func TestHandleDerivesServiceSAN(t *testing.T) {
 	m := &podMutator{
 		decoder: admission.NewDecoder(scheme),
 		cfg: Config{
-			GetCertImage:      "ghcr.io/confidential-dot-ai/c8s-operator:test",
-			CDSURL:            "http://cds.c8s-system.svc:8443",
-			AttestationApiURL: "http://attestation-api.c8s-system.svc:8400",
+			MeshImage:             testMeshImage,
+			WorkloadClaimsHostDir: "/run/nri-image-policy",
+			GetCertImage:          "ghcr.io/confidential-dot-ai/c8s-operator:test",
+			AttestationApiURL:     "http://attestation-api.c8s-system.svc:8400",
 		},
 	}
 	pod := &corev1.Pod{
@@ -657,11 +607,12 @@ func TestHandleDerivesServiceSAN(t *testing.T) {
 	}
 
 	initContainers := initContainersPatch(t, resp)
-	if len(initContainers) != 2 {
-		t.Fatalf("initContainers patch = %d containers, want c8s-cert sidecar + c8s-cert-wait gate", len(initContainers))
+	if len(initContainers) != 3 {
+		t.Fatalf("initContainers patch = %d containers, want the endpoint, get-cert and the gate", len(initContainers))
 	}
-	if !hasArg(initContainers[0].Args, "--san=c8s-api.default.svc") {
-		t.Fatalf("%s args %v missing --san=c8s-api.default.svc", initContainers[0].Name, initContainers[0].Args)
+	cert := initContainers[1]
+	if !hasArg(cert.Args, "--san=c8s-api.default.svc") {
+		t.Fatalf("%s args %v missing --san=c8s-api.default.svc", cert.Name, cert.Args)
 	}
 }
 
@@ -677,7 +628,7 @@ func TestHandleRejectsCWHostNetwork(t *testing.T) {
 		decoder: admission.NewDecoder(scheme),
 		cfg: Config{
 			GetCertImage: "ghcr.io/confidential-dot-ai/c8s-operator:test",
-			CDSURL:       "http://cds.c8s-system.svc:8443",
+			MeshImage:    testMeshImage,
 		},
 	}
 	pod := &corev1.Pod{
@@ -746,7 +697,7 @@ func TestParseAnnotationsSANOverride(t *testing.T) {
 		AnnotationWorkload: "api",
 		AnnotationSAN:      "api.default.svc",
 	}}
-	inj, err := parseAnnotations(pod)
+	inj, err := parseAnnotations(pod, "")
 	if err != nil {
 		t.Fatalf("parseAnnotations: %v", err)
 	}
@@ -755,7 +706,7 @@ func TestParseAnnotationsSANOverride(t *testing.T) {
 	}
 
 	pod.Annotations[AnnotationSAN] = "https://api.default.svc"
-	if _, err := parseAnnotations(pod); !errors.Is(err, errInvalidInjectionAnnotation) {
+	if _, err := parseAnnotations(pod, ""); !errors.Is(err, errInvalidInjectionAnnotation) {
 		t.Fatalf("parseAnnotations error = %v, want invalid annotation", err)
 	}
 }
@@ -768,9 +719,10 @@ func TestHandleSANOverrideWinsOverDerivation(t *testing.T) {
 	m := &podMutator{
 		decoder: admission.NewDecoder(scheme),
 		cfg: Config{
-			GetCertImage:      "ghcr.io/confidential-dot-ai/c8s-operator:test",
-			CDSURL:            "http://cds.c8s-system.svc:8443",
-			AttestationApiURL: "http://attestation-api.c8s-system.svc:8400",
+			MeshImage:             testMeshImage,
+			WorkloadClaimsHostDir: "/run/nri-image-policy",
+			GetCertImage:          "ghcr.io/confidential-dot-ai/c8s-operator:test",
+			AttestationApiURL:     "http://attestation-api.c8s-system.svc:8400",
 		},
 	}
 	pod := &corev1.Pod{
@@ -792,11 +744,11 @@ func TestHandleSANOverrideWinsOverDerivation(t *testing.T) {
 		t.Fatalf("Handle denied: %v", resp.Result)
 	}
 	initContainers := initContainersPatch(t, resp)
-	if len(initContainers) != 2 {
-		t.Fatalf("initContainers patch = %d containers, want c8s-cert sidecar + c8s-cert-wait gate", len(initContainers))
+	if len(initContainers) != 3 {
+		t.Fatalf("initContainers patch = %d containers, want the endpoint, get-cert and the gate", len(initContainers))
 	}
-	if !hasArg(initContainers[0].Args, "--san=api.default.svc") {
-		t.Fatalf("%s args %v missing --san=api.default.svc", initContainers[0].Name, initContainers[0].Args)
+	if cert := initContainers[1]; !hasArg(cert.Args, "--san=api.default.svc") {
+		t.Fatalf("%s args %v missing --san=api.default.svc", cert.Name, cert.Args)
 	}
 }
 
@@ -819,9 +771,12 @@ func TestMutatePodReplacesPreexistingCertContainer(t *testing.T) {
 		},
 	}
 
-	mutatePod(pod, &injection{WorkloadID: "api"}, Config{
+	mutatePod(pod, &injection{
+		WorkloadID: "api",
+		SAN:        "api",
+	}, Config{
 		GetCertImage:      "ghcr.io/confidential-dot-ai/c8s-operator:test",
-		CDSURL:            "http://cds.c8s-system.svc:8443",
+		MeshImage:         testMeshImage,
 		AttestationApiURL: "http://attestation-api.c8s-system.svc:8400",
 	})
 
@@ -834,14 +789,14 @@ func TestMutatePodReplacesPreexistingCertContainer(t *testing.T) {
 	if certs != 1 {
 		t.Fatalf("c8s-cert init containers = %d, want exactly 1 (real sidecar replaces the decoy)", certs)
 	}
-	got := pod.Spec.InitContainers[0]
-	if got.Name != "c8s-cert" {
-		t.Fatalf("init[0] = %q, want c8s-cert leading the list", got.Name)
+	got := *containerNamed(pod, reservedCertContainerName)
+	if pod.Spec.InitContainers[0].Name != reservedMeshContainerName {
+		t.Fatalf("init[0] = %q, want the endpoint leading the list", pod.Spec.InitContainers[0].Name)
 	}
 	if got.Image != "ghcr.io/confidential-dot-ai/c8s-operator:test" {
 		t.Fatalf("c8s-cert image = %q, want the operator get-cert image (decoy survived)", got.Image)
 	}
-	if !hasArg(got.Args, "--cds-url=http://cds.c8s-system.svc:8443") {
+	if !hasArg(got.Args, "--renew-interval=2h0m0s") {
 		t.Fatalf("c8s-cert args %v are not operator-built (decoy survived)", got.Args)
 	}
 	if got.RestartPolicy == nil || *got.RestartPolicy != corev1.ContainerRestartPolicyAlways {
@@ -859,14 +814,14 @@ func TestMutatePodInjectionIsIdempotent(t *testing.T) {
 	}
 	cfg := Config{
 		GetCertImage:      "img",
-		CDSURL:            "http://cds",
+		MeshImage:         testMeshImage,
 		AttestationApiURL: "http://attestation-api",
 	}
 	mutatePod(pod, &injection{WorkloadID: "api"}, cfg)
 	mutatePod(pod, &injection{WorkloadID: "api"}, cfg)
 
-	if got := len(pod.Spec.InitContainers); got != 2 {
-		t.Fatalf("init containers = %d after two injections, want 2 (c8s-cert + c8s-cert-wait, deduped)", got)
+	if got := len(pod.Spec.InitContainers); got != 3 {
+		t.Fatalf("init containers = %d after two injections, want the three platform containers, deduped", got)
 	}
 	volumes := 0
 	for _, v := range pod.Spec.Volumes {
@@ -877,7 +832,7 @@ func TestMutatePodInjectionIsIdempotent(t *testing.T) {
 	if volumes != 1 {
 		t.Fatalf("c8s-certs volumes = %d after two injections, want 1", volumes)
 	}
-	for _, c := range append(pod.Spec.InitContainers, pod.Spec.Containers...) {
+	for _, c := range pod.Spec.InitContainers {
 		mounts := 0
 		for _, mnt := range c.VolumeMounts {
 			if mnt.Name == "c8s-certs" {
@@ -885,7 +840,7 @@ func TestMutatePodInjectionIsIdempotent(t *testing.T) {
 			}
 		}
 		if mounts != 1 {
-			t.Fatalf("container %s c8s-certs mounts = %d, want 1", c.Name, mounts)
+			t.Fatalf("platform container %s c8s-certs mounts = %d, want 1", c.Name, mounts)
 		}
 	}
 }
@@ -902,7 +857,7 @@ func TestHandleRejectsReservedCertContainerName(t *testing.T) {
 		decoder: admission.NewDecoder(scheme),
 		cfg: Config{
 			GetCertImage: "ghcr.io/confidential-dot-ai/c8s-operator:test",
-			CDSURL:       "http://cds.c8s-system.svc:8443",
+			MeshImage:    testMeshImage,
 		},
 	}
 	pod := &corev1.Pod{
@@ -935,8 +890,9 @@ func TestHandleRejectsReservedCertVolumeCollision(t *testing.T) {
 	m := &podMutator{
 		decoder: admission.NewDecoder(scheme),
 		cfg: Config{
-			GetCertImage: "ghcr.io/confidential-dot-ai/c8s-operator:test",
-			CDSURL:       "http://cds.c8s-system.svc:8443",
+			MeshImage:             testMeshImage,
+			WorkloadClaimsHostDir: "/run/nri-image-policy",
+			GetCertImage:          "ghcr.io/confidential-dot-ai/c8s-operator:test",
 		},
 	}
 	// The default reserved cert volume name (see withDefaults / certsVolume).
@@ -988,47 +944,6 @@ func TestHandleRejectsReservedCertVolumeCollision(t *testing.T) {
 	})
 }
 
-// Handle refuses a reload-watch volume the sidecar's mount rules cannot admit.
-func TestHandleRejectsUnpinnableReloadWatchVolume(t *testing.T) {
-	scheme := runtime.NewScheme()
-	if err := corev1.AddToScheme(scheme); err != nil {
-		t.Fatal(err)
-	}
-	m := &podMutator{
-		decoder: admission.NewDecoder(scheme),
-		cfg:     Config{GetCertImage: "ghcr.io/confidential-dot-ai/c8s-operator:test", CDSURL: "http://cds.c8s-system.svc:8443"},
-	}
-	for name, tc := range map[string]struct {
-		source  corev1.VolumeSource
-		allowed bool
-	}{
-		"secret":   {source: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: "tls"}}, allowed: true},
-		"hostPath": {source: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: "/srv/tls"}}},
-	} {
-		t.Run(name, func(t *testing.T) {
-			pod := &corev1.Pod{
-				Annotations: map[string]string{
-					AnnotationWorkload:          "api",
-					AnnotationReloadWatchVolume: "watched",
-					AnnotationReloadWatchPaths:  reloadWatchMountPath + "/tls.crt",
-				},
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{{Name: "app"}},
-					Volumes:    []corev1.Volume{{Name: "watched", VolumeSource: tc.source}},
-				},
-			}
-			raw, err := json.Marshal(pod)
-			if err != nil {
-				t.Fatal(err)
-			}
-			resp := m.Handle(context.Background(), admission.Request{Namespace: "default", Object: runtime.RawExtension{Raw: raw}})
-			if resp.Allowed != tc.allowed {
-				t.Fatalf("Handle(reload-watch %s).Allowed = %v, want %v: %+v", name, resp.Allowed, tc.allowed, resp.Result)
-			}
-		})
-	}
-}
-
 // TestHandleInjectsDespitePresetInjectedMarker proves the
 // confidential.ai/c8s-injected marker no longer suppresses injection: a pod
 // that presets it (with no real sidecar) is still given the c8s-cert sidecar,
@@ -1041,9 +956,10 @@ func TestHandleInjectsDespitePresetInjectedMarker(t *testing.T) {
 	m := &podMutator{
 		decoder: admission.NewDecoder(scheme),
 		cfg: Config{
-			GetCertImage:      "ghcr.io/confidential-dot-ai/c8s-operator:test",
-			CDSURL:            "http://cds.c8s-system.svc:8443",
-			AttestationApiURL: "http://attestation-api.c8s-system.svc:8400",
+			MeshImage:             testMeshImage,
+			WorkloadClaimsHostDir: "/run/nri-image-policy",
+			GetCertImage:          "ghcr.io/confidential-dot-ai/c8s-operator:test",
+			AttestationApiURL:     "http://attestation-api.c8s-system.svc:8400",
 		},
 	}
 	pod := &corev1.Pod{
@@ -1063,44 +979,10 @@ func TestHandleInjectsDespitePresetInjectedMarker(t *testing.T) {
 	if !resp.Allowed {
 		t.Fatalf("Handle denied: %v", resp.Result)
 	}
-	inits := initContainersPatch(t, resp)
-	if len(inits) != 2 || inits[0].Name != "c8s-cert" || inits[1].Name != "c8s-cert-wait" {
-		t.Fatalf("initContainers patch = %+v, want injected c8s-cert + c8s-cert-wait despite the preset marker", inits)
-	}
-}
-
-func TestParseAnnotationsWatchPathsImplyNginxReload(t *testing.T) {
-	tests := []struct {
-		name        string
-		annotations map[string]string
-		wantNginx   bool
-	}{
-		{
-			name: "watch paths turn the reload on",
-			annotations: map[string]string{
-				AnnotationWorkload:          "api",
-				AnnotationReloadWatchPaths:  "/mnt/c8s-data/c8s-reload-watch/upstream.crt",
-				AnnotationReloadWatchVolume: "upstream-certs",
-			},
-			wantNginx: true,
-		},
-		{
-			name:        "plain opt-in leaves the reload off",
-			annotations: map[string]string{AnnotationWorkload: "api"},
-			wantNginx:   false,
-		},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			pod := &corev1.Pod{Annotations: tc.annotations}
-			inj, err := parseAnnotations(pod)
-			if err != nil {
-				t.Fatalf("parseAnnotations: %v", err)
-			}
-			if inj.Reload.Nginx != tc.wantNginx {
-				t.Fatalf("Reload.Nginx = %v, want %v", inj.Reload.Nginx, tc.wantNginx)
-			}
-		})
+	inits := containerNames(initContainersPatch(t, resp))
+	want := []string{reservedMeshContainerName, reservedCertContainerName, reservedCertWaitContainerName}
+	if !slices.Equal(inits, want) {
+		t.Fatalf("initContainers patch = %v, want %v despite the preset marker", inits, want)
 	}
 }
 
@@ -1130,8 +1012,9 @@ func TestHandleGetCertOnlyLeavesRuntimeClassUnset(t *testing.T) {
 	m := &podMutator{
 		decoder: admission.NewDecoder(scheme),
 		cfg: Config{
-			GetCertImage: "ghcr.io/confidential-dot-ai/c8s-operator:test",
-			CDSURL:       "http://cds.c8s-system.svc:8443",
+			MeshImage:             testMeshImage,
+			WorkloadClaimsHostDir: "/run/nri-image-policy",
+			GetCertImage:          "ghcr.io/confidential-dot-ai/c8s-operator:test",
 		}.withDefaults(),
 	}
 	pod := &corev1.Pod{
@@ -1148,8 +1031,8 @@ func TestHandleGetCertOnlyLeavesRuntimeClassUnset(t *testing.T) {
 	if !resp.Allowed {
 		t.Fatalf("Handle denied: %v", resp.Result)
 	}
-	if len(initContainersPatch(t, resp)) != 2 {
-		t.Fatal("expected get-cert injection to run")
+	if len(initContainersPatch(t, resp)) != 3 {
+		t.Fatal("expected the platform containers to be injected")
 	}
 	if got := runtimeClassPatch(t, resp); got != "" {
 		t.Fatalf("runtimeClassName patch = %q, want none", got)
@@ -1273,55 +1156,40 @@ func TestCertWaitContainerTimeout(t *testing.T) {
 		Annotations: map[string]string{},
 		Spec:        corev1.PodSpec{Containers: []corev1.Container{{Name: "app"}}},
 	}
-	mutatePod(pod, &injection{WorkloadID: "api"}, Config{GetCertImage: "image"})
-	wait := pod.Spec.InitContainers[1]
+	mutatePod(pod, &injection{WorkloadID: "api"}, Config{
+		GetCertImage: "image",
+		MeshImage:    testMeshImage,
+	})
+	wait := *containerNamed(pod, reservedCertWaitContainerName)
 	if !hasArg(wait.Command, "--timeout=3m0s") {
 		t.Fatalf("c8s-cert-wait command %v missing --timeout=3m0s", wait.Command)
 	}
 }
 
-// Get-cert spells the pin flag --cds-measurements and takes it comma-joined,
-// where the secret and volume fetchers take a repeatable --measurements.
-func TestCertContainerCarriesCDSMeasurements(t *testing.T) {
-	for _, tc := range []struct {
-		name         string
-		measurements []string
-		want         string
-	}{
-		{"multiple pins", []string{"aa", "bb"}, "--cds-measurements=aa,bb"},
-		{"node shape pins CDS", []string{"aa"}, "--cds-measurements=aa"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			pod := podWithApp()
-			cfg := secretsConfig()
-			cfg.CDSMeasurements = tc.measurements
-			mutatePod(pod, &injection{WorkloadID: "api"}, cfg)
-
-			args := containerNamed(pod, reservedCertContainerName).Args
-			if !hasArg(args, tc.want) {
-				t.Fatalf("c8s-cert args %v missing %q", args, tc.want)
-			}
-		})
-	}
-}
-
-// An unset pin emits no flag at all: get-cert reads "" as "accept any attested
-// CDS", which an empty --cds-measurements= would also mean but by a longer road.
-func TestCertContainerOmitsEmptyCDSMeasurements(t *testing.T) {
+// No injected client takes a pin as an argument: it reads the node's CDS
+// policy from the path the enforcer mounts, which neither the pod nor the
+// control plane can choose.
+func TestInjectedClientsCarryNoCDSPins(t *testing.T) {
+	cfg := secretsConfig()
+	cfg.WorkloadClaimsHostDir = "/var/run/nri-image-policy"
 	pod := podWithApp()
-	mutatePod(pod, &injection{WorkloadID: "api"}, secretsConfig())
+	mutatePod(pod, &injection{
+		WorkloadID: "api",
+		Secrets:    secretsSpec{Specs: []string{"DB=/api/db"}},
+		Volumes:    volumesSpec{Specs: []string{"weights=/tenant-a/volumes/weights"}},
+	}, cfg)
 
-	for _, arg := range containerNamed(pod, reservedCertContainerName).Args {
-		if strings.HasPrefix(arg, "--cds-measurements") {
-			t.Fatalf("c8s-cert carries %q with no measurements configured", arg)
+	for _, name := range []string{reservedCertContainerName, reservedSecretContainerName, reservedVolumeContainerName} {
+		for _, arg := range containerNamed(pod, name).Args {
+			for _, pin := range []string{"--cds-measurements", "--cds-rtmrs", "--measurements", "--rtmrs", "--image-policy"} {
+				if strings.HasPrefix(arg, pin) {
+					t.Errorf("%s carries %q; pins come from the node policy mount", name, arg)
+				}
+			}
 		}
 	}
 }
 
-// The chart points the operator at the attestation proxy's Unix socket inside
-// the inventory's host directory; an injected sidecar sees that directory at
-// workloadclaims.SidecarSocketDir, so the endpoint must be rebased onto the
-// mount — and only there (every other shape passes through untouched).
 func TestSidecarAttestationApiURLRebase(t *testing.T) {
 	const hostDir = "/run/nri-image-policy"
 	for _, tc := range []struct {
@@ -1332,16 +1200,37 @@ func TestSidecarAttestationApiURLRebase(t *testing.T) {
 	}{
 		{"socket rebased onto the sidecar mount", hostDir,
 			"unix://" + hostDir + "/attestation-api.sock",
-			"unix://" + workloadclaims.SidecarSocketDir + "/attestation-api.sock"},
-		{"no inventory mount leaves the URL alone", "",
-			"unix://" + hostDir + "/attestation-api.sock",
-			"unix://" + hostDir + "/attestation-api.sock"},
-		{"http endpoint passes through", hostDir,
+			"unix://" + workloadclaims.AttestationAPISocket},
+		{"http endpoint is preserved", hostDir,
 			"http://attestation-api.c8s-system.svc:8400",
 			"http://attestation-api.c8s-system.svc:8400"},
-		{"socket outside the inventory dir passes through", hostDir,
+		{"host-IP endpoint is preserved", hostDir,
+			"http://$(HOST_IP):8400",
+			"http://$(HOST_IP):8400"},
+		{"socket outside the inventory dir is preserved", hostDir,
 			"unix:///elsewhere/attest.sock",
 			"unix:///elsewhere/attest.sock"},
+		{"matching socket keeps its suffix", hostDir,
+			"unix://" + hostDir + "/custom.sock",
+			"unix://" + workloadclaims.SidecarSocketDir + "/custom.sock"},
+		{"similar directory is preserved", hostDir,
+			"unix://" + hostDir + "-other/attest.sock",
+			"unix://" + hostDir + "-other/attest.sock"},
+		{"parent traversal is preserved", hostDir,
+			"unix://" + hostDir + "/../other.sock",
+			"unix://" + hostDir + "/../other.sock"},
+		{"dot segment is preserved", hostDir,
+			"unix://" + hostDir + "/./attestation-api.sock",
+			"unix://" + hostDir + "/./attestation-api.sock"},
+		{"repeated separator is preserved", hostDir,
+			"unix://" + hostDir + "//attestation-api.sock",
+			"unix://" + hostDir + "//attestation-api.sock"},
+		{"trailing host directory slash is accepted", hostDir + "/",
+			"unix://" + hostDir + "/attestation-api.sock",
+			"unix://" + workloadclaims.AttestationAPISocket},
+		{"no inventory mount leaves the URL alone", "",
+			"http://attestation-api.c8s-system.svc:8400",
+			"http://attestation-api.c8s-system.svc:8400"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := secretsConfig()
@@ -1365,6 +1254,26 @@ func TestCertContainerGetsRebasedAttestationURL(t *testing.T) {
 	want := "--attestation-api-url=unix://" + workloadclaims.SidecarSocketDir + "/attestation-api.sock"
 	if args := containerNamed(pod, reservedCertContainerName).Args; !hasArg(args, want) {
 		t.Fatalf("c8s-cert args %v missing %q", args, want)
+	}
+}
+
+func TestFetchersPreserveAnHTTPEndpoint(t *testing.T) {
+	cfg := secretsConfig()
+	cfg.WorkloadClaimsHostDir = "/var/run/nri-image-policy"
+	cfg.AttestationApiURL = "http://$(HOST_IP):8400"
+	pod := podWithApp()
+	mutatePod(pod, &injection{
+		WorkloadID: "api",
+		Secrets:    secretsSpec{Specs: []string{"DB=/api/db"}},
+		Volumes:    volumesSpec{Specs: []string{"weights=/tenant-a/volumes/weights"}},
+	}, cfg)
+
+	want := "--attestation-api-url=http://$(HOST_IP):8400"
+	for _, name := range []string{reservedCertContainerName, reservedSecretContainerName, reservedVolumeContainerName} {
+		args := containerNamed(pod, name).Args
+		if !hasArg(args, want) {
+			t.Errorf("%s args %v missing %q", name, args, want)
+		}
 	}
 }
 
@@ -1419,13 +1328,10 @@ func TestFetchersCarryRebasedURLAsNRIMountTargets(t *testing.T) {
 	}
 }
 
-// A pod without the cw annotation passes through untouched even when it
-// pre-sets the injected annotation and names a sidecar container itself. This
-// pins the forgeable NRI-mount trigger deliberately: such a pod can obtain the
-// RO socket-directory mount on the node, and the sockets behind it must stay
-// safe against any on-node caller (peer-credential binding) — the annotation
-// is scoping, not a security boundary.
-func TestHandleLeavesNonCWPodWithForgedInjectedAnnotationAlone(t *testing.T) {
+// Every pod is in scope now, so one that pre-sets the injected marker and
+// names a platform container itself is refused rather than passed through: the
+// name is the injector's, and the marker is scoping, not a security boundary.
+func TestHandleRefusesAForgedPlatformContainer(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := corev1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
@@ -1438,15 +1344,20 @@ func TestHandleLeavesNonCWPodWithForgedInjectedAnnotationAlone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := &podMutator{decoder: admission.NewDecoder(scheme), cfg: secretsConfig()}
-	resp := m.Handle(context.Background(), admission.Request{
-		Namespace: "tenant", Object: runtime.RawExtension{Raw: raw},
-	})
-	if !resp.Allowed {
-		t.Fatalf("non-cw pod denied: %+v", resp.Result)
+	m := &podMutator{
+		decoder: admission.NewDecoder(scheme),
+		cfg:     secretsConfig().withDefaults(),
 	}
-	if len(resp.Patches) != 0 {
-		t.Fatalf("non-cw pod mutated: %+v", resp.Patches)
+
+	resp := m.Handle(context.Background(), admission.Request{
+		Namespace: "default", Object: runtime.RawExtension{Raw: raw},
+	})
+
+	if resp.Allowed {
+		t.Fatal("a pod naming a platform container was admitted")
+	}
+	if !strings.Contains(resp.Result.Message, "reserved") {
+		t.Fatalf("denial = %+v, want it to name the reserved container", resp.Result)
 	}
 }
 
@@ -1465,7 +1376,7 @@ func evaluateRestricted(t *testing.T, pod *corev1.Pod) psapolicy.AggregateCheckR
 
 // The acceptance bar for hardened clusters: a restricted-compliant cw pod must
 // STAY restricted-admissible after the full node-CVM mutation (cert, wait,
-// secret and volume fetchers, nginx reload). The socket directory reaches the
+// secret and volume fetchers). The socket directory reaches the
 // sidecars by NRI mount, so nothing the webhook adds may name a hostPath.
 // Default injection shape only: a pod overriding c8s-get-cert-run-as-* to root
 // fails restricted by its own choice.
@@ -1507,7 +1418,6 @@ func TestMutatePodStaysRestrictedAdmissible(t *testing.T) {
 	cfg.AttestationApiURL = "unix:///run/nri-image-policy/attestation-api.sock"
 	mutatePod(pod, &injection{
 		WorkloadID: "api",
-		Reload:     reloadSpec{Nginx: true},
 		Secrets:    secretsSpec{Specs: []string{"DB=/api/db"}},
 		Volumes:    volumesSpec{Specs: []string{"weights=/tenant-a/volumes/weights"}},
 	}, cfg)
@@ -1517,44 +1427,9 @@ func TestMutatePodStaysRestrictedAdmissible(t *testing.T) {
 	}
 }
 
-// The RTMR pins ride the same routes as the measurements: comma-joined
-// --cds-rtmrs on get-cert, repeatable --rtmrs on the secret and volume
-// fetchers, and no flag at all when unset.
-func TestFetchersCarryCDSRTMRPins(t *testing.T) {
-	rtmrs := []string{"1=" + strings.Repeat("ab", 48), "2=" + strings.Repeat("cd", 48)}
-	pod := podWithApp()
-	cfg := secretsConfig()
-	cfg.CDSRTMRs = rtmrs
-	mutatePod(pod, &injection{
-		WorkloadID: "api",
-		Secrets:    secretsSpec{Specs: []string{"DB=/api/db"}},
-		Volumes:    volumesSpec{Specs: []string{"weights=/tenant-a/volumes/weights"}},
-	}, cfg)
-
-	if args := containerNamed(pod, reservedCertContainerName).Args; !hasArg(args, "--cds-rtmrs="+rtmrs[0]+","+rtmrs[1]) {
-		t.Fatalf("c8s-cert args %v missing --cds-rtmrs", args)
-	}
-	for _, name := range []string{reservedSecretContainerName, reservedVolumeContainerName} {
-		args := containerNamed(pod, name).Args
-		for _, r := range rtmrs {
-			if !hasArg(args, "--rtmrs="+r) {
-				t.Fatalf("%s args %v missing --rtmrs=%s", name, args, r)
-			}
-		}
-	}
-
-	unpinned := podWithApp()
-	mutatePod(unpinned, &injection{WorkloadID: "api"}, secretsConfig())
-	for _, arg := range containerNamed(unpinned, reservedCertContainerName).Args {
-		if strings.HasPrefix(arg, "--cds-rtmrs") {
-			t.Fatalf("c8s-cert carries %q with no RTMR pins configured", arg)
-		}
-	}
-}
-
 // The set of containers injection adds must equal what
 // workloadclaims.IsInjectedContainerName matches: `c8s allowlist derive` drops
-// exactly that set from an admitted pod, so a fifth injected container added
+// exactly that set from an admitted pod, so a sixth injected container added
 // here without the predicate learning its name would be silently derived into
 // every workload entry.
 func TestInjectedContainersMatchThePublishedNameSet(t *testing.T) {
@@ -1569,13 +1444,37 @@ func TestInjectedContainersMatchThePublishedNameSet(t *testing.T) {
 	}, cfg)
 
 	all := append(append([]corev1.Container{}, pod.Spec.InitContainers...), pod.Spec.Containers...)
-	if len(all) != len(authored)+4 {
-		t.Fatalf("containers = %d, want the 2 authored plus 4 injected: %+v", len(all), all)
+	if len(all) != len(authored)+5 {
+		t.Fatalf("containers = %d, want the 2 authored plus 5 injected: %v", len(all), containerNames(all))
 	}
 	for _, c := range all {
 		if workloadclaims.IsInjectedContainerName(c.Name) == authored[c.Name] {
 			t.Errorf("container %q: authored %v but IsInjectedContainerName %v; derive would drop the wrong set",
 				c.Name, authored[c.Name], workloadclaims.IsInjectedContainerName(c.Name))
+		}
+	}
+}
+
+// A pod the webhook selected no SAN for asks for none explicitly.
+func TestCertContainerSANArgs(t *testing.T) {
+	pod := podWithApp()
+	mutatePod(pod, &injection{
+		WorkloadID: "api",
+		SAN:        "api",
+	}, secretsConfig())
+	args := containerNamed(pod, reservedCertContainerName).Args
+	if !hasArg(args, "--san=api") {
+		t.Fatalf("c8s-cert args %v missing the selected SAN", args)
+	}
+	sanless := podWithApp()
+	mutatePod(sanless, &injection{WorkloadID: ""}, secretsConfig())
+	args = containerNamed(sanless, reservedCertContainerName).Args
+	if !hasArg(args, "--no-san") {
+		t.Fatalf("c8s-cert args %v must ask for no SAN explicitly", args)
+	}
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "--san") {
+			t.Fatalf("c8s-cert carries %q beside --no-san", arg)
 		}
 	}
 }

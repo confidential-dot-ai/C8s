@@ -6,8 +6,9 @@
 # calls these functions and how.
 #
 # Interface: a backend exposes these functions, each exiting 0 with its answer
-# on stdout, 77 when this environment cannot express the request (a named
-# skip), anything else when the harness is broken.
+# on stdout, UNSUPPORTED (77; "unsupported" below) when this environment
+# cannot express the request (a named skip), anything else when the harness
+# is broken.
 #   subject                          the system under test, for the run summary
 #   kubeconfig                       the file every kubectl call of a run uses
 #   setup                            once per run, before the scenarios
@@ -38,7 +39,7 @@
 #   served_version                   the version of the allowlist CDS serves now
 #   applied_version                  the allowlist version the admission plugin
 #                                    on the node decides with, from its health
-#                                    endpoint, or 77 where the node cannot be
+#                                    endpoint, or unsupported where the node cannot be
 #                                    reached
 #   node_containers <node> <digest>  ids of the runtime's containers from digest
 #   pod_manifest [options] -- <name> <ns> <node> <image> <command...> [+ <image> <command...>]...
@@ -61,10 +62,12 @@
 #   operator_keys                    yes/no: the CDS holds an operator key
 #   seed_declares <digest>           yes/no: the seed of the CDS names digest
 #   seed_add <name> <file>           add the entry in file to the seed the CDS
-#                                    follows, under name; 77 where the seed is
-#                                    not the cluster's to change or the CDS
-#                                    does not follow it (only a measured
-#                                    node image's CDS follows its seed)
+#                                    follows, under name; unsupported where
+#                                    the CDS does not follow its seed or the
+#                                    seed it follows is not the cluster's to
+#                                    change (only a measured node image's CDS
+#                                    follows its seed, and that seed is in
+#                                    the image)
 #   seed_restore                     put back the seed seed_add changed, if any
 #   cds_instance                     the CDS pod's uid and restart count, one
 #                                    line, so a later read tells a restart
@@ -113,15 +116,15 @@
 #   cds_pod_url                      the CDS address a pod's requester dials
 #   cds_arg <flag>                   the value of --<flag>= the CDS runs with,
 #                                    empty when it is not set
-#   evidence <ns> <pod> <report-data-hex> [launch-digest-hex]
+#   evidence <ns> <pod> <report-data-base64>
 #                                    evidence from the local attestation
 #                                    service of the pod's node over the report
 #                                    data, as the {platform, evidence} envelope
-#                                    the CDS takes; with a launch digest,
-#                                    evidence reporting that digest instead of
-#                                    the node's
-#   evidence_unsigned <ns> <pod> <report-data-hex>
-#                                    evidence whose signature does not verify
+#                                    the CDS takes
+#   evidence_signed                  yes/no: the CDS checks the evidence's
+#                                    signature, so editing it breaks the
+#                                    evidence (yes) or makes evidence for
+#                                    another launch digest (no)
 #   pod_exec                         how steps run a command in a pod: kubectl
 #                                    (exec), or agent (agent_run)
 #   agent_run <ns> <pod> <container> <script>
@@ -145,7 +148,7 @@
 #                                    the operator's verifier on a saved leaf;
 #                                    prints accepts or rejects, then on a
 #                                    rejection the verifier's reason
-#   mesh_ready <node>                wait until the node's mesh proxy runs; 77
+#   mesh_ready <node>                wait until the node's mesh proxy runs; unsupported
 #                                    where the mesh is not installed
 #   mesh_member <node> <interception|guard> <ip>
 #                                    yes/no: the address is in the node's
@@ -162,38 +165,39 @@
 #   mesh_cert_mode <node>            cds or self-signed: the certificate the
 #                                    node's mesh proxy presents (both roles
 #                                    switch together)
-#   mesh_chain_ready <node>          wait until the mesh proxy's verify set
-#                                    holds the mesh CA
+#   mesh_arg <flag>                  the mesh proxy's value for --<flag>,
+#                                    empty when unset
+#   mesh_proxy_log <node>            the mesh proxy's log, with timestamps
 #   mesh_pins_satisfied <node>       yes/no: the node's evidence satisfies
 #                                    the pins its mesh proxy verifies with
 #   mesh_platform                    the evidence family the mesh produces,
 #                                    sev-snp or tdx
-#   node_address <node> <ipv4|ipv6>  the node's address of that family; 77
+#   node_address <node> <ipv4|ipv6>  the node's address of that family; unsupported
 #                                    when it has none
-#   excluded_namespace               a namespace the mesh excludes
+#   excluded_namespace               a namespace the mesh excludes, or unsupported
 #   host_namespace_ns                a namespace admitting pods in the node's
-#                                    network namespace and root pods
+#                                    network namespace and root pods, or unsupported
+#   node_writes                      yes, or unsupported where the harness may not
+#                                    write Node objects
 #   external_endpoint                <address>:<port> of a hello API outside
-#                                    the cluster, or 77
-#   attestation_endpoint             the URL a pod obtains evidence from, or 77
-#   dialer_bin                       the armtls-dial binary for the node's
-#                                    architecture, built once per run; 77
-#                                    without a Go toolchain
+#                                    the cluster, or unsupported
+#   attestation_endpoint             the URL a pod obtains evidence from, or unsupported
 #   cert_paths                       the certificate and key paths of a pod
 #                                    carrying a workload ID, one per line
-#   cds_request <method> <route> [body-file] [authorization] [client-cert] [client-key]
+#   cds_request <method> <route> [body-file] [authorization] [client-cert] [client-key] [header...]
 #                                    send the request to the CDS from here, as
-#                                    given (empty arguments are omitted);
-#                                    prints the status (000 when nothing
-#                                    answered), then the body
-#   router_request <method> <path> [body-file] [authorization]
+#                                    given (empty arguments are omitted; each
+#                                    header is "Name: value"); prints the
+#                                    status (000 when nothing answered), then
+#                                    the body
+#   router_request <method> <path> [body-file] [authorization] [client-cert] [client-key] [header...]
 #                                    the same to the router's public address
 #   router_headers <path>            GET path at the router; prints the status,
 #                                    then the response headers, one per line
 #   router_serving_cert              the leaf the router presents on its public
 #                                    address, PEM
 #   router_nginx_conf                the router's rendered nginx configuration;
-#                                    77 where the node image holds it
+#                                    unsupported where the node image holds it
 #   router_tls_mode                  cds, webpki or acme: the public TLS
 #                                    credential the router selects
 #   cds_relay_block / cds_relay_unblock
@@ -213,7 +217,7 @@
 #   cds_url                          the base URL of the CDS, reachable from here
 #   router_url                       the base URL of the router's public HTTPS
 #                                    address, reachable from here
-#   cds_plain_url                    the same listener over http://, or 77
+#   cds_plain_url                    the same listener over http://, or unsupported
 #   operator_key                     the operator's private key, PEM
 #   optoken_bin                      the token minter built from
 #                                    test/integration/cluster/optoken
@@ -237,38 +241,31 @@ kubeconfig() { echo "$KUBECONFIG"; }
 # served entry and no base allowlist names, for the scenarios that write their
 # own entries; each has its own digest. "requester" is the curl image of the
 # pod requester_manifest renders, distinct from "rogue" so that one stays
-# undeclared while a scenario admits this one. "mesh-dialer" is the pod the
+# undeclared while a scenario admits this one.
 # "secret-client" is the image the webhook injects its helpers from, for a
 # pod that runs a helper of its own; a backend whose node holds that image
-# out of the harness's reach answers 77 from injected_image. The
-# steps copy the mesh peer (tools/armtls-dial, dialer_bin) into: an image with
-# tar for the copy, which no other logical image shares.
+# out of the harness's reach answers unsupported from injected_image. The
+# suite's own images (images/, built by conformance-images.yml) stand in for
+# the logical images CONFORMANCE_IMAGES names, for every backend: tenant-app,
+# Alpine's python with the programs the steps run in it, and mesh-dialer, the
+# mesh peer (tools/armtls-dial) on busybox; a backend adds its own.
+CONFORMANCE_REPO=ghcr.io/confidential-dot-ai/c8s-conformance-
+declare -A CONFORMANCE_IMAGES=(
+    [tenant-app]=sha256:96261c697b2c970034ce6bcb663fd7f636834dbeb1397c074e58cf2e85254139
+    [mesh-dialer]=sha256:fa04d42850acb798da9de055418c7344d477aea33210199f9277fbc8afec5ce8
+)
 image_ref() {
+    [ -z "${CONFORMANCE_IMAGES[$1]:-}" ] || { echo "$CONFORMANCE_REPO$1@${CONFORMANCE_IMAGES[$1]}"; return; }
     case "$1" in
         rogue) echo "docker.io/$CURL_IMAGE" ;;
         nginx) echo "docker.io/${NGINX_IMAGE:-$WORKLOAD_IMAGE}" ;;
-        tenant-app) echo "docker.io/library/python:3.12-alpine" ;;
         job-runner) echo "docker.io/library/alpine:3.20" ;;
         model-server) echo "docker.io/library/debian:bookworm-slim" ;;
         model-loader) echo "docker.io/library/busybox:1.35.0" ;;
         requester) echo "docker.io/curlimages/curl:8.11.0" ;;
-        mesh-dialer) echo "docker.io/library/busybox:1.36.1" ;;
         secret-client) injected_image ;;
         *) return $UNSUPPORTED ;;
     esac
-}
-
-# The mesh peer the steps drive, built from this checkout for the node's
-# architecture (the steps call this once per run and copy the binary into the
-# pod that dials), into a fresh directory: never an earlier run's binary, and
-# never the results a metal lane uploads.
-dialer_bin() {
-    local bin arch
-    command -v go >/dev/null || return "$UNSUPPORTED"
-    bin="$(mktemp -d)/armtls-dial" || return
-    arch="$(kubectl get node "$(node_name one)" -o jsonpath='{.status.nodeInfo.architecture}')" || return
-    CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -C "$C8S_ROOT" -ldflags='-s -w' -o "$bin" ./test/conformance/tools/armtls-dial >&2 || return 1
-    echo "$bin"
 }
 
 # The plugin's pull interval: the chart's nriImagePolicy.refresh.interval,
@@ -293,8 +290,10 @@ manifest_filter() { cat; }
 
 # The node's admission plugin binds its socket directory into a container
 # named as a sidecar an application may run itself (cds-attest) in a pod
-# marked injected; the sockets are group-owned by 65532. Nothing else about
-# the pod is c8s's, so the webhook leaves it alone.
+# marked injected; the sockets are group-owned by 65532
+# (workloadclaims.AttestContainerName and InventorySocketGID, which a
+# mesh-dialer pod takes as well). Nothing else about the pod is c8s's, so the
+# webhook leaves it alone.
 REQUESTER_CONTAINER=cds-attest
 requester_manifest() {
     local image
@@ -464,11 +463,13 @@ seed_declares() {
     if printf '%s' "$seed" | grep -qF "$1"; then echo yes; else echo no; fi
 }
 
-# The seed is the ConfigMap the CDS Deployment mounts; a baked node holds it
-# in the image instead, and renders no ConfigMap, so there it is not the
-# cluster's to change. A CDS rereads it only with --follow-seed, which the
-# chart sets only on a baked node, so on a chart-managed install seed_add
-# answers 77. The first change keeps the original for seed_restore.
+# The seed the CDS reads is the ConfigMap only where the CDS Deployment
+# mounts it; a baked node's CDS reads the seed held in the image, and the
+# chart still renders the ConfigMap, which nothing reads. A CDS rereads its
+# seed only with --follow-seed, which the chart sets only on a baked node. So
+# seed_add answers unsupported on a chart-managed install (not followed) and on a
+# baked node (followed, but not the cluster's to change), and the original
+# is kept for seed_restore only once a change is possible.
 seed_configmap() {
     kubectl -n "$NS" get configmaps -o json |
         jq -r '.items[] | select(.metadata.name | endswith("-allowlist-seed")) | .metadata.name' | head -1
@@ -479,11 +480,17 @@ seed_followed() {
         jq -e '[.items[].spec.template.spec.containers[] | select(.name == "cds") | .args[]?] | index("--follow-seed")' >/dev/null
 }
 
+# Whether the CDS Deployment mounts the ConfigMap, as a projected volume.
+seed_mounted() {
+    kubectl -n "$NS" get deployments -l app.kubernetes.io/component=cds -o json |
+        jq -e --arg cm "$1" '[.items[].spec.template.spec.volumes[]? | .projected.sources[]?.configMap.name // .configMap.name // empty] | index($cm)' >/dev/null
+}
+
 seed_add() {
     local cm original
     cm="$(seed_configmap)"
     [ -n "$cm" ] || return $UNSUPPORTED
-    seed_followed || return $UNSUPPORTED
+    seed_followed && seed_mounted "$cm" || return $UNSUPPORTED
     original="$(scratch)/seed-original.json"
     [ -s "$original" ] || kubectl -n "$NS" get configmap "$cm" -o json > "$original" || return
     kubectl -n "$NS" get configmap "$cm" -o json |
@@ -545,7 +552,7 @@ allowlist_get() {
 }
 
 # --- The CDS's own documents and state ---
-# A backend provides cds_plain_url, the same listener over http://, or 77.
+# A backend provides cds_plain_url, the same listener over http://, or unsupported.
 
 cds_document_path() {
     case "$1" in
@@ -573,13 +580,15 @@ router_request() {
     http_request "$url" "$@"
 }
 
-# http_request <base-url> <method> <route> [body-file] [authorization] [client-cert] [client-key]
+# http_request <base-url> <method> <route> [body-file] [authorization] [client-cert] [client-key] [header...]
 http_request() {
-    local url="$1" method="$2" route="$3" body="${4:-}" authorization="${5:-}" cert="${6:-}" key="${7:-}" answer
+    local url="$1" method="$2" route="$3" body="${4:-}" authorization="${5:-}" cert="${6:-}" key="${7:-}" answer h
     local -a opts=(-sk --max-time 30 -X "$method" -w $'\n%{http_code}')
     [ -z "$body" ] || opts+=(-H 'Content-Type: application/json' --data-binary "@$body")
     [ -z "$authorization" ] || opts+=(-H "Authorization: $authorization")
     [ -z "$cert" ] || opts+=(--cert "$cert" --key "$key")
+    shift "$(($# < 7 ? $# : 7))"
+    for h; do opts+=(-H "$h"); done
     answer="$(curl_paced "${opts[@]}" "$url$route")"
     echo "${answer##*$'\n'}"
     printf '%s' "${answer%$'\n'*}"
@@ -735,7 +744,7 @@ MESH_SET_GUARDED=ARMTLS-MESH-CW-PODS
 # directory after the first call and dropped by teardown; for what does
 # not change during a run (the mesh DaemonSet's spec, the mesh pod on a node
 # until mesh_restart, the node address the proxy is scraped at). An empty answer is not kept, nor
-# a failure, whose status (77 included) is passed on.
+# a failure, whose status (unsupported included) is passed on.
 cached() {
     local file rc
     file="$(scratch)/cache-$1"
@@ -890,57 +899,7 @@ mesh_cert_mode() {
     if [ "$v" -ge 1 ]; then echo cds; else echo self-signed; fi
 }
 
-# The verify set fills on the first CA refresh after the proxy switched to
-# its CDS leaf, and a failed refresh keeps the set it had. Success is logged
-# at debug level only, so the observation is the latest refresh tick (one
-# poll interval apart from "CA bundle refresh enabled") with no failure
-# logged after it; when it failed, the next tick decides.
-mesh_chain_ready() {
-    local pod interval started verdict wait tries=0
-    pod="$(mesh_pod_on "$1")"
-    [ -n "$pod" ] || { echo "backend: no mesh pod on $1" >&2; return 1; }
-    [ "$(mesh_cert_mode "$1")" = cds ] || { echo "backend: the mesh proxy on $1 presents no CDS leaf" >&2; return 1; }
-    interval="$(mesh_arg ca-poll-interval)"
-    started="$(kubectl -n "$NS" get pod "$pod" -o jsonpath='{.status.containerStatuses[?(@.name=="armtls-mesh")].state.running.startedAt}')"
-    while :; do
-        read -r verdict wait < <(kubectl -n "$NS" logs "$pod" -c armtls-mesh --timestamps 2>/dev/null |
-            python3 -c "$MESH_REFRESH_PY" "${interval:-5m}" "$started")
-        case "$verdict" in
-            ok) return 0 ;;
-            failed) [ "$tries" -lt 1 ] || { echo "backend: the mesh proxy on $1 failed its last CA refresh" >&2; return 1; } ;;
-        esac
-        tries=$((tries + 1))
-        sleep "$wait"
-    done
-}
-
-# stdin: the proxy's log with timestamps; argv: the poll interval and the
-# container's start. Prints ok, failed or wait, then the seconds until the
-# next tick has had time to be logged.
-MESH_REFRESH_PY='
-import datetime, re, sys
-def ts(s):
-    s = re.sub(r"\.\d+", "", s.rstrip("Z"))
-    return datetime.datetime.strptime(s, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=datetime.timezone.utc).timestamp()
-units = {"h": 3600, "m": 60, "s": 1}
-interval = sum(int(n) * units[u] for n, u in re.findall(r"(\d+)([hms])", sys.argv[1]))
-anchor, failures = ts(sys.argv[2]), []
-for line in sys.stdin:
-    stamp, _, msg = line.partition(" ")
-    if "CA bundle refresh enabled" in msg:
-        anchor, failures = ts(stamp), []
-    elif "CA bundle refresh failed" in msg:
-        failures.append(ts(stamp))
-margin = 35  # a refresh is logged within --cds-op-timeout (30s) of its tick
-now = datetime.datetime.now(datetime.timezone.utc).timestamp()
-ticks = int((now - anchor - margin) // interval)
-nxt = anchor + (ticks + 1) * interval + margin
-if ticks < 1:
-    print("wait", max(1, int(nxt - now)))
-else:
-    last = anchor + ticks * interval
-    print("failed" if any(f >= last - 1 for f in failures) else "ok", max(1, int(nxt - now)))
-'
+mesh_proxy_log() { kubectl -n "$NS" logs "$(mesh_pod_on "$1")" -c armtls-mesh --timestamps; }
 
 mesh_platform() {
     local p
@@ -970,6 +929,7 @@ excluded_namespace() {
     echo "${ns:-kube-system}" | cut -d, -f1
 }
 host_namespace_ns() { echo kube-system; }
+node_writes() { echo yes; }
 
 cert_paths() { printf '%s/tls.crt\n%s/tls.key\n' "$CERT_VOLUME_PATH" "$CERT_VOLUME_PATH"; }
 

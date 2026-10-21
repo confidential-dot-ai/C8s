@@ -17,12 +17,12 @@ func TestHistoryRetainsDistinctAdmissions(t *testing.T) {
 	if err != nil || digests == nil || containers == nil || len(digests)+len(containers) != 0 {
 		t.Fatalf("empty history = %v, %v, %v", digests, containers, err)
 	}
-	h.Record("one", "sha256:b", []string{"run", "z"}, nil)
-	h.Record("two", "sha256:a", nil, nil)
-	h.Record("three", "sha256:a", []string{}, nil)
-	h.Record("replica", "sha256:b", []string{"run", "z"}, nil)
-	h.Record("one", "sha256:b", []string{"run", "a"}, nil)
-	h.Record("one", "sha256:a", []string{""}, nil)
+	h.Record("one", "sha256:b", "", []string{"run", "z"}, nil)
+	h.Record("two", "sha256:a", "", nil, nil)
+	h.Record("three", "sha256:a", "", []string{}, nil)
+	h.Record("replica", "sha256:b", "", []string{"run", "z"}, nil)
+	h.Record("one", "sha256:b", "", []string{"run", "a"}, nil)
+	h.Record("one", "sha256:a", "", []string{""}, nil)
 	digests, containers, err = h.Snapshot(nil)
 	want := []workloadclaims.SandboxContainer{
 		{Digest: "sha256:a", Argv: []string{}},
@@ -37,9 +37,9 @@ func TestHistoryRetainsDistinctAdmissions(t *testing.T) {
 
 func TestHistoryResolutionIsPerContainer(t *testing.T) {
 	var h History
-	h.Record("known", "sha256:a", nil, nil)
-	h.Record("first", "", nil, nil)
-	h.Record("second", "", nil, nil)
+	h.Record("known", "sha256:a", "", nil, nil)
+	h.Record("first", "", "", nil, nil)
+	h.Record("second", "", "", nil, nil)
 	assertUnresolved := func() {
 		t.Helper()
 		digests, containers, err := h.Snapshot(nil)
@@ -48,17 +48,17 @@ func TestHistoryResolutionIsPerContainer(t *testing.T) {
 		}
 	}
 	assertUnresolved()
-	h.Record("different", "sha256:b", nil, nil)
+	h.Record("different", "sha256:b", "", nil, nil)
 	assertUnresolved()
-	h.Record("first", "sha256:b", nil, nil)
+	h.Record("first", "sha256:b", "", nil, nil)
 	assertUnresolved()
-	h.Record("second", "sha256:b", nil, nil)
+	h.Record("second", "sha256:b", "", nil, nil)
 	if digests, containers, err := h.Snapshot(nil); err != nil || len(digests) != 2 || len(containers) != 2 {
 		t.Fatalf("resolved snapshot = %v, %v, %v", digests, containers, err)
 	}
-	h.Record("known", "", nil, nil)
+	h.Record("known", "", "", nil, nil)
 	assertUnresolved()
-	h.Record("known", "sha256:c", nil, nil)
+	h.Record("known", "sha256:c", "", nil, nil)
 	if digests, _, err := h.Snapshot(nil); err != nil || len(digests) != 3 {
 		t.Fatalf("resolution lost an earlier admission: %v, %v", digests, err)
 	}
@@ -67,7 +67,7 @@ func TestHistoryResolutionIsPerContainer(t *testing.T) {
 func TestHistoryOwnsArgumentsAndSnapshots(t *testing.T) {
 	var h History
 	argv := []string{"run", "original"}
-	h.Record("one", "sha256:a", argv, nil)
+	h.Record("one", "sha256:a", "", argv, nil)
 	argv[1] = "changed input"
 	digests, containers, err := h.Snapshot(nil)
 	if err != nil || len(containers) != 1 || containers[0].Argv[1] != "original" {
@@ -86,9 +86,9 @@ func TestHistoryEnvVariantsAndOwnership(t *testing.T) {
 	var h History
 	a, _ := allowlist.ObserveEnv([]string{"MODE=a"})
 	b, _ := allowlist.ObserveEnv([]string{"MODE=b"})
-	h.Record("c", "sha256:a", []string{"run"}, nil) // older/unavailable evidence
-	h.Record("c", "sha256:a", []string{"run"}, a)
-	h.Record("c", "sha256:a", []string{"run"}, b)
+	h.Record("c", "sha256:a", "", []string{"run"}, nil) // older/unavailable evidence
+	h.Record("c", "sha256:a", "", []string{"run"}, a)
+	h.Record("c", "sha256:a", "", []string{"run"}, b)
 	a.Digest = "mutated"
 	a.VariableDigests["MODE"] = "mutated"
 	_, cs, err := h.Snapshot(nil)
@@ -127,8 +127,8 @@ func TestHistoryEnvVariantsAndOwnership(t *testing.T) {
 func TestHistoryMountEvidenceAndOwnership(t *testing.T) {
 	var h History
 	mounts := []allowlist.ObservedMount{{Destination: "/config", Class: allowlist.MountData, Storage: allowlist.MountMemory}}
-	h.Record("c", "sha256:a", []string{"run"}, nil, mounts...)
-	h.Record("legacy", "sha256:a", []string{"run"}, nil)
+	h.Record("c", "sha256:a", "", []string{"run"}, nil, mounts...)
+	h.Record("legacy", "sha256:a", "", []string{"run"}, nil)
 	mounts[0].Destination = "/changed"
 	_, cs, err := h.Snapshot(nil)
 	if err != nil || len(cs) != 2 {
@@ -153,7 +153,7 @@ func TestHistoryMountEvidenceAndOwnership(t *testing.T) {
 func TestHistoryRetainsDistinctProvenance(t *testing.T) {
 	var h History
 	for _, provenance := range []string{"", allowlist.ProvenanceNodeRoot} {
-		h.Record("same-id", "sha256:a", nil, nil, allowlist.ObservedMount{Destination: "/usr/bin/nvidia-smi", Class: allowlist.MountHost, ReadOnly: true, Provenance: provenance})
+		h.Record("same-id", "sha256:a", "", nil, nil, allowlist.ObservedMount{Destination: "/usr/bin/nvidia-smi", Class: allowlist.MountHost, ReadOnly: true, Provenance: provenance})
 	}
 	_, containers, err := h.Snapshot(nil)
 	if err != nil || len(containers) != 2 {
@@ -197,7 +197,7 @@ func evidenceByEnv(t *testing.T, h History, needed func(string) bool) map[string
 func TestHistoryEvictsExitedEvidenceFirst(t *testing.T) {
 	var h History
 	live := observeAtLimits(t, "live")
-	h.Record("main", "sha256:a", []string{"/app"}, live)
+	h.Record("main", "sha256:a", "", []string{"/app"}, live)
 	h.Bound(nil)
 	perRecord := live.VariableEvidenceBytes()
 	fit := allowlist.MaxSandboxVariableEvidenceBytes / perRecord
@@ -206,7 +206,7 @@ func TestHistoryEvictsExitedEvidenceFirst(t *testing.T) {
 		env := observeAtLimits(t, fmt.Sprint(i))
 		churn = append(churn, env)
 		id := fmt.Sprint("sidecar-", i)
-		h.Record(id, "sha256:b", []string{"/sidecar"}, env)
+		h.Record(id, "sha256:b", "", []string{"/sidecar"}, env)
 		h.Bound(nil)
 		h.Exited(id)
 	}
@@ -237,10 +237,10 @@ func TestHistoryEvictsUnneededBeforeOldest(t *testing.T) {
 	needed := func(digest string) bool { return digest == "sha256:a" }
 	fit := allowlist.MaxSandboxVariableEvidenceBytes / observeAtLimits(t, "x").VariableEvidenceBytes()
 	first := observeAtLimits(t, "first")
-	h.Record("first", "sha256:a", []string{"/app"}, first)
+	h.Record("first", "sha256:a", "", []string{"/app"}, first)
 	h.Bound(needed)
 	for i := range fit {
-		h.Record(fmt.Sprint("other-", i), "sha256:b", []string{"/other"}, observeAtLimits(t, fmt.Sprint(i)))
+		h.Record(fmt.Sprint("other-", i), "sha256:b", "", []string{"/other"}, observeAtLimits(t, fmt.Sprint(i)))
 		h.Bound(needed)
 	}
 	if got := evidenceByEnv(t, h, nil)[first.Digest]; got.VariableDigests == nil {
@@ -255,11 +255,11 @@ func TestHistoryEvictsUnneededBeforeExited(t *testing.T) {
 	needed := func(digest string) bool { return digest == "sha256:a" }
 	fit := allowlist.MaxSandboxVariableEvidenceBytes / observeAtLimits(t, "x").VariableEvidenceBytes()
 	initEnv := observeAtLimits(t, "init")
-	h.Record("init", "sha256:a", []string{"/init"}, initEnv)
+	h.Record("init", "sha256:a", "", []string{"/init"}, initEnv)
 	h.Bound(needed)
 	h.Exited("init")
 	for i := range fit {
-		h.Record(fmt.Sprint("main-", i), "sha256:b", []string{"/main"}, observeAtLimits(t, fmt.Sprint(i)))
+		h.Record(fmt.Sprint("main-", i), "sha256:b", "", []string{"/main"}, observeAtLimits(t, fmt.Sprint(i)))
 		h.Bound(needed)
 	}
 	if got := evidenceByEnv(t, h, needed)[initEnv.Digest]; got.VariableDigests == nil {
@@ -274,11 +274,11 @@ func TestHistoryEvictsExitedEvidenceFirstWhenNoneNeeded(t *testing.T) {
 	var h History
 	none := func(string) bool { return false }
 	live := observeAtLimits(t, "live")
-	h.Record("main", "sha256:a", []string{"/app"}, live)
+	h.Record("main", "sha256:a", "", []string{"/app"}, live)
 	h.Bound(none)
 	for i := range allowlist.MaxSandboxVariableEvidenceBytes/live.VariableEvidenceBytes() + 2 {
 		id := fmt.Sprint("sidecar-", i)
-		h.Record(id, "sha256:b", []string{"/sidecar"}, observeAtLimits(t, fmt.Sprint(i)))
+		h.Record(id, "sha256:b", "", []string{"/sidecar"}, observeAtLimits(t, fmt.Sprint(i)))
 		h.Exited(id)
 		h.Bound(none)
 	}
@@ -292,7 +292,7 @@ func TestHistoryEvictsExitedEvidenceFirstWhenNoneNeeded(t *testing.T) {
 func TestHistoryServesEvidenceByCurrentPolicy(t *testing.T) {
 	var h History
 	env := observeAtLimits(t, "x")
-	h.Record("c", "sha256:a", []string{"/app"}, env)
+	h.Record("c", "sha256:a", "", []string{"/app"}, env)
 	h.Bound(func(string) bool { return false })
 	if got := evidenceByEnv(t, h, func(string) bool { return false })[env.Digest]; got.VariableDigests != nil || got.VariableDigestsEvicted {
 		t.Fatalf("unneeded record served %+v, want the aggregate digest alone", got)
@@ -308,16 +308,16 @@ func TestHistoryRestoresEvictedEvidence(t *testing.T) {
 	var h History
 	env := observeAtLimits(t, "first")
 	fit := allowlist.MaxSandboxVariableEvidenceBytes / env.VariableEvidenceBytes()
-	h.Record("first", "sha256:a", []string{"/app"}, env)
+	h.Record("first", "sha256:a", "", []string{"/app"}, env)
 	h.Exited("first")
 	for i := range fit {
-		h.Record(fmt.Sprint(i), "sha256:a", []string{"/app"}, observeAtLimits(t, fmt.Sprint(i)))
+		h.Record(fmt.Sprint(i), "sha256:a", "", []string{"/app"}, observeAtLimits(t, fmt.Sprint(i)))
 		h.Bound(nil)
 	}
 	if evidenceByEnv(t, h, nil)[env.Digest].VariableDigests != nil {
 		t.Fatal("setup: the exited record kept its evidence")
 	}
-	h.Record("again", "sha256:a", []string{"/app"}, env)
+	h.Record("again", "sha256:a", "", []string{"/app"}, env)
 	got := evidenceByEnv(t, h, nil)
 	if len(got) != fit+1 || got[env.Digest].VariableDigests == nil || got[env.Digest].VariableDigestsEvicted {
 		t.Fatalf("re-admission served %+v across %d records, want restored evidence across %d", got[env.Digest], len(got), fit+1)
@@ -330,7 +330,7 @@ func TestHistoryInventoryFitsResponseLimit(t *testing.T) {
 	for image := range 4 {
 		for variant := range 32 {
 			id := fmt.Sprint(image, "-", variant)
-			h.Record(id, fmt.Sprintf("sha256:%064d", image), []string{"/app"}, observeAtLimits(t, fmt.Sprint(variant)))
+			h.Record(id, fmt.Sprintf("sha256:%064d", image), "", []string{"/app"}, observeAtLimits(t, fmt.Sprint(variant)))
 			h.Bound(nil)
 		}
 	}

@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/credrelease"
+	"github.com/confidential-dot-ai/c8s/internal/guestverify"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
@@ -16,7 +17,7 @@ import (
 // credential service to call the guest's loopback attester. The response's
 // runtime extensions, read after the quote and authenticated by the channel,
 // replace the leaf's list, which may predate the node's latest policy.
-func attestCredentialRelease(ctx context.Context, client *http.Client, baseURL string, keyPEM []byte, exp measuredPolicy) error {
+func attestCredentialRelease(ctx context.Context, client *http.Client, baseURL string, keyPEM []byte, exp guestverify.Policy) error {
 	nonce := make([]byte, 32)
 	if _, err := rand.Read(nonce); err != nil {
 		return fmt.Errorf("nonce: %w", err)
@@ -39,9 +40,9 @@ func attestCredentialRelease(ctx context.Context, client *http.Client, baseURL s
 		return fmt.Errorf("credential-service attestation: %w", err)
 	}
 	var response credrelease.AttestResponse
-	if json.Unmarshal(evidence, &response) == nil && exp.policies != nil && response.RuntimeExtensions != nil {
-		exp.policies = &policyList{list: response.RuntimeExtensions}
+	if json.Unmarshal(evidence, &response) == nil && exp.MeasuresPolicies() && response.RuntimeExtensions != nil {
+		exp = exp.WithMeasuredPolicies(response.RuntimeExtensions)
 	}
-	_, err = verifyEvidence(evidence, nonce, exp)
+	_, err = guestverify.VerifyEvidence(evidence, nonce, exp)
 	return err
 }

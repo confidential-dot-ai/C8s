@@ -205,7 +205,7 @@ func TestEphemeralContainerMayNotMountAnOpenedVolume(t *testing.T) {
 		Name:         "debug",
 		VolumeMounts: []corev1.VolumeMount{{Name: volume.KubeVolumeName("weights")}},
 	}}
-	if err := rejectEphemeralReservedMounts(pod); err == nil {
+	if err := rejectEphemeralReach(pod); err == nil {
 		t.Fatal("an ephemeral container mounted an opened volume")
 	}
 }
@@ -215,7 +215,7 @@ func TestEphemeralContainerMayNotTakeTheFetcherName(t *testing.T) {
 	pod.Spec.EphemeralContainers = []corev1.EphemeralContainer{{
 		Name: reservedVolumeContainerName,
 	}}
-	if err := rejectEphemeralReservedMounts(pod); err == nil {
+	if err := rejectEphemeralReach(pod); err == nil {
 		t.Fatal("an ephemeral container took the reserved fetcher name")
 	}
 }
@@ -263,8 +263,6 @@ func TestVolumeDirMustBePinnable(t *testing.T) {
 		{"/run/c8s/volumes", true},
 		{"/mnt/c8s-data-models", true},
 		{"/mnt/c8s-data/../etc", true},
-		{"/mnt/c8s-data/c8s-reload-watch", true},
-		{"/mnt/c8s-data/c8s-reload-watch/models", true},
 	} {
 		inj := &injection{WorkloadID: "api", Volumes: volumesSpec{
 			Specs: []string{"weights=/tenant-a/volumes/weights"},
@@ -283,7 +281,7 @@ func TestVolumeDirMustBePinnable(t *testing.T) {
 func TestVolumesAnnotationRequiresOptIn(t *testing.T) {
 	pod := podWithApp()
 	pod.Annotations = map[string]string{AnnotationVolumes: "weights=/tenant-a/volumes/weights"}
-	if _, err := parseAnnotations(pod); err == nil {
+	if _, err := parseAnnotations(pod, ""); err == nil {
 		t.Fatal("volumes were requested without the workload annotation")
 	}
 }
@@ -295,7 +293,7 @@ func TestVolumesAnnotationParsing(t *testing.T) {
 		AnnotationVolumes:   "weights=/tenant-a/volumes/weights, datasets=/tenant-a/volumes/ds",
 		AnnotationVolumeDir: "/mnt/c8s-data/models",
 	}
-	inj, err := parseAnnotations(pod)
+	inj, err := parseAnnotations(pod, "")
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}

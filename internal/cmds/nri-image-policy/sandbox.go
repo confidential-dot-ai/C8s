@@ -34,6 +34,10 @@ const (
 // (internal/cri/opts/spec_opts.go, WithPodNamespaces).
 var sandboxNamespaces = []string{"ipc", "network", "pid", "uts"}
 
+// pidNamespace is the namespace type a member pod's container must hold on
+// its own (requirePrivatePIDNamespace).
+const pidNamespace = "pid"
+
 // cgroupNamespace is present on every container containerd creates under
 // unified cgroups and omitted for a privileged one
 // (internal/cri/server/container_create.go). NRI carries no privileged flag, so
@@ -82,17 +86,16 @@ type sandboxObservation struct {
 // the runtime did not fill reads as absent, which violations() treats as a
 // violation rather than as consent.
 //
-// ownSocketDir is the inventory socket directory this plugin bind-mounts into
-// injected sidecars itself (socketDirAdjustment); the policy put it there, so
-// it does not hold that bind against a container. mounts is the container's
-// mount evidence, as mountObserver.Observe returns it. A bind whose evidence
-// nodeRoot accepts carries measured node bytes an allowlist rule pinned at that
-// destination, so it is not a host bind either; nil accepts none.
-func observeSandbox(pod *api.PodSandbox, ctr *api.Container, ownSocketDir string, mounts []allowlist.ObservedMount, nodeRoot func(allowlist.ObservedMount) bool) sandboxObservation {
+// own names the binds this plugin adds itself (sidecarAdjustment); the policy
+// put them there, so it does not hold them against a container. mounts is the
+// container's mount evidence, as mountObserver.Observe returns it. A bind whose
+// evidence nodeRoot accepts carries measured node bytes an allowlist rule
+// pinned at that destination, so it is not a host bind either; nil accepts none.
+func observeSandbox(pod *api.PodSandbox, ctr *api.Container, own nodeMounts, mounts []allowlist.ObservedMount, nodeRoot func(allowlist.ObservedMount) bool) sandboxObservation {
 	obs := sandboxObservation{
 		PodNamespaces:    namespaceTypes(pod.GetLinux().GetNamespaces()),
 		CtrNamespaces:    namespaceTypes(ctr.GetLinux().GetNamespaces()),
-		HostBinds:        hostBinds(pod, ctr, ownSocketDir, mounts, nodeRoot),
+		HostBinds:        hostBinds(pod, ctr, own, mounts, nodeRoot),
 		WritableKernelFS: writableKernelFS(ctr),
 		Hooks:            hookStages(ctr.GetHooks()),
 		Sysctls:          slices.Sorted(maps.Keys(ctr.GetLinux().GetSysctl())),
@@ -182,7 +185,7 @@ func namespaceTypes(nss []*api.LinuxNamespace) []string {
 // the pod UID, so a UID appearing anywhere in the source proves nothing, and an
 // uncleaned source would let `<uid>/..` name the parent. A pod with neither
 // identifier is unidentifiable, and every bind is then foreign.
-func hostBinds(pod *api.PodSandbox, ctr *api.Container, ownSocketDir string, mounts []allowlist.ObservedMount, nodeRoot func(allowlist.ObservedMount) bool) []string {
+func hostBinds(pod *api.PodSandbox, ctr *api.Container, own nodeMounts, mounts []allowlist.ObservedMount, nodeRoot func(allowlist.ObservedMount) bool) []string {
 	var owned []string
 	if uid := pod.GetUid(); uid != "" {
 		owned = append(owned, kubeletRoot+"/pods/"+uid+"/")
@@ -201,7 +204,7 @@ func hostBinds(pod *api.PodSandbox, ctr *api.Container, ownSocketDir string, mou
 		if cleanAbsolute(src) && slices.ContainsFunc(owned, func(dir string) bool { return strings.HasPrefix(src, dir) }) {
 			continue
 		}
-		if ownSocketDir != "" && src == ownSocketDir && isInjectedSocketMount(pod, ctr, m) {
+		if isInjectedNodeMount(pod, ctr, m, own) {
 			continue
 		}
 		if nodeRoot != nil && nodeRootBind(src, m.GetDestination(), mounts, nodeRoot) {
@@ -229,16 +232,28 @@ func nodeRootBind(source, destination string, mounts []allowlist.ObservedMount, 
 	return found
 }
 
-// isInjectedSocketMount reports whether m is the mount socketDirAdjustment
-// adds: read-only, at the sidecar socket directory, in a socket consumer of an
-// injected pod. A pod-spec hostPath at the same source and destination is a host bind
-// like any other — writable, it would let the container replace the node's
-// inventory sockets.
-func isInjectedSocketMount(pod *api.PodSandbox, ctr *api.Container, m *api.Mount) bool {
-	return m.GetDestination() == workloadclaims.SidecarSocketDir &&
-		endsReadOnly(m) &&
-		pod.GetAnnotations()[workloadclaims.AnnotationInjected] == "true" &&
-		workloadclaims.IsSocketConsumer(ctr.GetName())
+// nodeMounts names the sources credentialMounts binds into node credential clients.
+type nodeMounts struct {
+	socketDir  string
+	cdsPins    string
+	cdsAddress string
+}
+
+// isInjectedNodeMount requires a credential client's read-only bind from the node's own source.
+func isInjectedNodeMount(pod *api.PodSandbox, ctr *api.Container, m *api.Mount, own nodeMounts) bool {
+	source := ""
+	eligible := injectedCredentialSidecar(pod, ctr)
+	switch m.GetDestination() {
+	case workloadclaims.SidecarSocketDir:
+		source = own.socketDir
+	case workloadclaims.CDSPinsPath:
+		source = own.cdsPins
+		eligible = eligible || holdsCredentialsIdentity(ctr)
+	case workloadclaims.CDSAddressPath:
+		source = own.cdsAddress
+		eligible = eligible || holdsCredentialsIdentity(ctr) || fetchesRouteManifest(pod, ctr)
+	}
+	return eligible && source != "" && m.GetSource() == source && endsReadOnly(m)
 }
 
 // endsReadOnly reports whether m is read-only once runc has applied its

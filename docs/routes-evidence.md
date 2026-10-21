@@ -7,7 +7,7 @@ The router's attestation sidecar (`cds-attest`) binds the digest of the route ma
 Three changes a control plane without an operator key can attempt, and what catches each:
 
 - **Manifest tampering.** The router refuses a manifest whose write token does not verify and keeps its last valid manifest. The evidence then binds that older manifest, so a client pinning the new digest fails, while a client checking the operator keys accepts it unless its floor refuses the revision.
-- **Endpoint substitution.** Repointing DNS or a Service changes no manifest byte, so attestation still succeeds. The router's backend TLS check rejects the substitute: a workload backend must present a leaf carrying the manifest's workload name, and an address backend must chain to the manifest's `ca` under its `serverName`.
+- **Endpoint substitution.** Repointing DNS or a Service changes no manifest byte, so attestation still succeeds. The router's backend TLS check rejects the substitute: a workload backend must present a leaf carrying the manifest's workload name, whatever address the name resolved to.
 - **Post-handshake update.** A manifest applied after the handshake routes the session without new evidence. See [Server](#server).
 
 The route digest is the SHA-256 of the manifest bytes as stored on CDS. `c8s routes show` and `c8s routes digest FILE` print it as 64 lowercase hex characters, the form `c8s verify --route-digest` takes.

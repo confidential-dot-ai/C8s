@@ -14,7 +14,7 @@ Create a default fully qualified app name.
 
 {{/*
 The router.san list, defaulted. Empty -> the chart-managed Service DNS name
-(<release>-router.<namespace>.svc) as a single entry. The first entry is the
+(<release>-router.c8s-router.svc) as a single entry. The first entry is the
 CDS mesh-cert identity (see router.san); the whole list is joined into nginx
 server_name by router-configmap.yaml. Fails if san is set but not a list.
 */}}
@@ -26,7 +26,7 @@ server_name by router-configmap.yaml. Fails if san is set but not a list.
 {{- if $san -}}
 {{- toJson $san -}}
 {{- else -}}
-{{- toJson (list (printf "%s.%s.svc" (include "router.fullname" .) .Release.Namespace)) -}}
+{{- toJson (list (printf "%s.%s.svc" (include "router.fullname" .) (include "c8s.routerMeshNamespace" .))) -}}
 {{- end -}}
 {{- end -}}
 
@@ -422,12 +422,16 @@ nginx :80 server, and the cert-path helpers below.
 {{- define "router.acmeCertDir" -}}/etc/c8s-acme-tls{{- end -}}
 {{- define "router.acmeChallengePort" -}}8402{{- end -}}
 {{- define "router.acmeHTTPPort" -}}8080{{- end -}}
+
+{{/* The serving key and the ACME account key, which the front door alone
+     mounts: every other reader of this credential takes the chain above. */}}
+{{- define "router.acmeKeyDir" -}}/etc/c8s-acme-key{{- end -}}
 {{- define "router.acmeReadyPort" -}}8403{{- end -}}
 
 {{/*
 Path to the public-TLS certificate nginx serves: the publicTLS Secret
 (webpki), the sidecar-issued ACME leaf (acme), or the CDS-issued cert under
-tlsMountPath (cds).
+the member credential volume (cds).
 */}}
 {{- define "router.publicCertPath" -}}
 {{- $mode := include "router.publicTLSMode" . -}}
@@ -436,7 +440,7 @@ tlsMountPath (cds).
 {{- else if eq $mode "acme" -}}
 {{- printf "%s/cert.pem" (include "router.acmeCertDir" .) -}}
 {{- else -}}
-{{- printf "%s/cert.pem" .Values.router.tlsMountPath -}}
+{{- include "c8s.certFile" . -}}
 {{- end -}}
 {{- end -}}
 
@@ -445,9 +449,9 @@ tlsMountPath (cds).
 {{- if eq $mode "webpki" -}}
 {{- printf "%s/%s" .Values.router.publicTLS.mountPath .Values.router.publicTLS.keyKey -}}
 {{- else if eq $mode "acme" -}}
-{{- printf "%s/key.pem" (include "router.acmeCertDir" .) -}}
+{{- printf "%s/key.pem" (include "router.acmeKeyDir" .) -}}
 {{- else -}}
-{{- printf "%s/key.pem" .Values.router.tlsMountPath -}}
+{{- include "c8s.keyFile" . -}}
 {{- end -}}
 {{- end -}}
 
@@ -528,19 +532,20 @@ router.cdsAttestArgs takes (dict "root" $ "expectedWorkload" <name>).
 {{- end -}}
 {{- /* The identity-bound PQ flow uses the TEE-held mesh credential, never the
        optional publicTLS Secret. */ -}}
-{{- $args = append $args (printf "--mesh-identity-cert-file=%s/cert.pem" $v.tlsMountPath) -}}
-{{- $args = append $args (printf "--mesh-identity-key-file=%s/key.pem" $v.tlsMountPath) -}}
-{{- $args = append $args (printf "--mesh-identity-ca-file=%s/ca.pem" $v.tlsMountPath) -}}
+{{- $args = append $args (printf "--mesh-identity-cert-file=%s" (include "c8s.certFile" $root)) -}}
+{{- $args = append $args (printf "--mesh-identity-key-file=%s" (include "c8s.keyFile" $root)) -}}
+{{- $args = append $args (printf "--mesh-identity-ca-file=%s" (include "c8s.caFile" $root)) -}}
 {{- /* Route by the operator-signed manifest polled from the verified CDS:
        application requests from nginx on --routing-port, and requests
-       decrypted from the tunnel. */ -}}
-{{- $args = append $args (printf "--cds-url=%s" (include "c8s.cdsURL" $root)) -}}
+       decrypted from the tunnel. The enforcer mounts the one CDS endpoint
+       this node admits for the router role, so the chart names none. */ -}}
 {{- $args = concat $args (include "router.cdsPinArgs" $root | fromJsonArray) -}}
-{{- /* Operator keys: the launch configuration on a baked node, else
-       cds.operatorKeys, else CDS's GET /operator-keys (route policy W6;
-       docs/operator.md, Route manifest). An unpinned CDS could be any
-       attested TEE, so cds-attest refuses that last source without the
-       opt-in. */ -}}
+{{- /* Operator keys: the launch configuration on a baked node, where
+       naming it makes a missing file fatal, else cds.operatorKeys, else
+       CDS's GET /operator-keys (route policy W6; docs/operator.md, Route
+       manifest). cds-attest prefers the launch configuration whenever it
+       finds it. An unpinned CDS could be any attested TEE, so cds-attest
+       refuses that last source without the opt-in. */ -}}
 {{- if $root.Values.node.baked -}}
 {{- $args = append $args "--operator-keys-file=/run/c8s-node/operator-pubkey" -}}
 {{- else if $root.Values.cds.operatorKeys -}}
@@ -570,9 +575,11 @@ router.cdsAttestArgs takes (dict "root" $ "expectedWorkload" <name>).
 {{- $args | toJson -}}
 {{- end -}}
 
+{{/* The proxy holds the credentials role, so the node hands it the one CDS
+     its pod may reach and the pins to verify it with, and refuses an argument
+     naming either (cmdsutil.ResolveCDSEndpoint, cmdsutil.ResolveCDSPins). */}}
 {{- define "router.allowlistProxyArgs" -}}
-{{- $args := list "allowlist-proxy" "--host=127.0.0.1" (printf "--port=%s" (include "c8s.int" .Values.router.allowlist.proxyPort)) (printf "--cds-url=%s" (include "c8s.cdsURL" .)) (printf "--attestation-api-url=%s" (include "c8s.attestationApiURL" .)) -}}
-{{- concat $args (include "router.cdsPinArgs" . | fromJsonArray) | toJson -}}
+{{- list "allowlist-proxy" "--host=127.0.0.1" (printf "--port=%s" (include "c8s.int" .Values.router.allowlist.proxyPort)) (printf "--attestation-api-url=%s" (include "router.credentialsVerifierURL" .)) | toJson -}}
 {{- end -}}
 
 {{- define "router.acmeArgs" -}}
@@ -584,7 +591,7 @@ router.cdsAttestArgs takes (dict "root" $ "expectedWorkload" <name>).
 {{- $args = append $args (printf "--domains-file=%s/hostnames" $dir) -}}
 {{- $args = append $args (printf "--acme-email-file=%s/acme-email" $dir) -}}
 {{- $args = append $args (printf "--acme-directory-url-file=%s/acme-directory-url" $dir) -}}
-{{- $args = append $args (printf "--standby-cert-dir=%s" .Values.router.tlsMountPath) -}}
+{{- $args = append $args (printf "--standby-cert-dir=%s" (include "c8s.certDir" .)) -}}
 {{- else -}}
 {{- $args = append $args (printf "--domains=%s" (include "router.sanList" . | fromJsonArray | join ",")) -}}
 {{- end -}}
@@ -596,7 +603,6 @@ router.cdsAttestArgs takes (dict "root" $ "expectedWorkload" <name>).
 {{- end -}}
 {{- $args = append $args (printf "--challenge-port=%s" (include "router.acmeChallengePort" .)) -}}
 {{- $args = append $args (printf "--http-port=%s" (include "router.acmeHTTPPort" .)) -}}
-{{- $args = append $args (printf "--cert-dir=%s" (include "router.acmeCertDir" .)) -}}
 {{- $args = append $args (printf "--ready-port=%s" (include "router.acmeReadyPort" .)) -}}
 {{- $args | toJson -}}
 {{- end -}}
@@ -642,8 +648,10 @@ true
 
 {{/*
 "true" when the router pod must mount the node inventory's socket directory:
-workload claims are required and this is the node-CVM shape. A baked
-router always requests claims so clients can verify its workload stamp.
+the node runs an admission inventory for get-cert to redeem a sandbox token at.
+The pod's own mesh endpoint adopts only a leaf that names a workload instance
+(internal/cmds/armtlsmesh), so a router whose get-cert redeems no token has no
+endpoint and carries no traffic.
 
 The condition mirrors the operator's own inventory condition
 (operator.yaml): the directory exists only where an installer put it, and a
@@ -652,15 +660,31 @@ ContainerCreating. validations.yaml (kind=require_host_image_policy) makes that
 condition true in every renderable shape today; the condition is spelled out
 anyway so the two consumers of the socket stay on one rule.
 */}}
+{{/*
+router.credentialsVerifierURL — the attestation-api a credentials-role
+container of this pod verifies CDS through. A node running the admission
+inventory this pod mounts at the compiled path serves its own attestation-api
+in that directory, and that socket is the only verifier its clients accept
+(cmdsutil.RequireNodeVerifier); elsewhere the cluster's own endpoint stands.
+*/}}
+{{- define "router.credentialsVerifierURL" -}}
+{{- if eq (include "router.mountInventorySocket" .) "true" -}}
+unix:///run/c8s/workload-claims/attestation-api.sock
+{{- else -}}
+{{ include "c8s.attestationApiURL" . }}
+{{- end -}}
+{{- end -}}
+
 {{- define "router.mountInventorySocket" -}}
-{{- if and (or .Values.node.baked (include "router.expectedWorkload" .)) (or .Values.nriImagePolicy.enabled (eq .Values.attestationApi.cvmMode "bare-metal")) -}}
+{{- if or .Values.nriImagePolicy.enabled (eq .Values.attestationApi.cvmMode "bare-metal") -}}
 true
 {{- end -}}
 {{- end -}}
 
 {{/*
 c8s-cert native sidecar (restartPolicy: Always): obtains the leaf on startup
-and renews it on a ticker, SIGHUP-ing nginx after each renewal. Caller nindents into the Pod spec's initContainers
+and renews it on a ticker. nginx's own entrypoint reloads on the renewal, so
+this sidecar signals nothing. Caller nindents into the Pod spec's initContainers
 list.
 */}}
 {{- define "router.getCertContainers" -}}
@@ -668,57 +692,48 @@ list.
 {{- if .Values.router.discovery.enabled -}}
 {{- $mounts = append $mounts (printf "- name: discovery\n  mountPath: %s" .Values.router.discovery.mountPath) -}}
 {{- end -}}
+{{- if ne (include "router.mountInventorySocket" .) "true" -}}
 {{- with include "c8s.attestationApiSocketMount" . | trim -}}
 {{- $mounts = append $mounts . -}}
+{{- end -}}
 {{- end -}}
 {{- $extraArgs := include "router.getCertCommonArgs" . | fromYamlArray -}}
 {{- $sanFile := "" -}}
 {{- if .Values.node.baked -}}
 {{- $mounts = append $mounts (include "c8s.nodeConfigMount" . | trim) -}}
-{{- $extraArgs = append $extraArgs "--image-policy-file=/run/c8s-node/cds.json" -}}
 {{- $sanFile = "/run/c8s-node/tls-san" -}}
 {{- end -}}
 {{- if or .Values.node.baked (include "router.expectedWorkload" .) -}}
-
-{{- /* A baked router needs the same workload stamp that clients pin, even
-       when the optional ingress readiness gate is unset.
-       The readiness gate (cds-attest /readyz) demands a matched-workload
-       stamp on the mesh leaf, which only exists when get-cert redeems a
-       sandbox token from the inventory — so wire the claims flow whenever
-       the gate is enabled (the deployment fails the render if the gate is
-       set without the sidecar it gates). Node-CVM mounts the inventory
-       socket directory at get-cert's compiled path
-       (workloadclaims.SidecarSocketDir). The deployment adds the hostPath
-       volume and the socket's supplemental group
-       (workloadclaims.InventorySocketGID) on the same condition. */ -}}
-{{- $extraArgs = append $extraArgs "--workload-claims" -}}
-{{- /* Renew past a stamp taken while only part of the pod runs. */ -}}
+{{- /* Renew past a stamp taken while only part of the pod runs. A baked
+       router needs the same workload stamp that clients pin, even when the
+       optional ingress readiness gate is unset. */ -}}
 {{- with include "c8s.routerEntryName" . -}}
 {{- $extraArgs = append $extraArgs (printf "--expected-workload=%s" .) -}}
 {{- end -}}
-{{- if eq (include "router.mountInventorySocket" .) "true" -}}
-{{- $mounts = append $mounts "- name: workload-claims\n  mountPath: /run/c8s/workload-claims\n  readOnly: true" -}}
 {{- end -}}
+{{- if eq (include "router.mountInventorySocket" .) "true" -}}
+{{- /* get-cert redeems a sandbox token from the node inventory over its
+       compiled socket path (workloadclaims.SidecarSocketDir), so node-CVM
+       mounts the inventory socket directory there. The deployment adds the
+       hostPath volume and the socket's supplemental group
+       (workloadclaims.InventorySocketGID) on the same condition. */ -}}
+{{- $mounts = append $mounts "- name: workload-claims\n  mountPath: /run/c8s/workload-claims\n  readOnly: true" -}}
+{{- else -}}
+{{- /* INVARIANT: the flag goes with the absent mount. The router is a chart
+       component, not an injected workload: on a cluster whose nodes run no
+       admission inventory there is nothing to redeem a sandbox token at, and
+       its leaf carries no workload instance. */ -}}
+{{- $extraArgs = append $extraArgs "--no-workload-claims" -}}
 {{- end -}}
 {{- if eq (include "router.publicTLSMode" .) "webpki" -}}
 {{- $mounts = append $mounts (printf "- name: public-tls\n  mountPath: %s\n  readOnly: true" .Values.router.publicTLS.mountPath) -}}
-{{- $extraArgs = append $extraArgs (printf "--reload-watch=%s" (include "router.publicCertPath" .)) -}}
-{{- $extraArgs = append $extraArgs (printf "--reload-watch=%s" (include "router.publicKeyPath" .)) -}}
 {{- end -}}
 {{- include "c8s.getCertContainers" (dict
   "root" .
+  "attestationApiURL" (include "router.credentialsVerifierURL" .)
   "san" (include "router.san" .)
   "sanFile" $sanFile
-  "certOut" (printf "%s/cert.pem" .Values.router.tlsMountPath)
-  "keyOut" (printf "%s/key.pem" .Values.router.tlsMountPath)
-  "caOut" (printf "%s/ca.pem" .Values.router.tlsMountPath)
-  "volume" "tls-certs"
-  "mountPath" .Values.router.tlsMountPath
   "renewInterval" .Values.router.certProvisioning.renewInterval
-  "runAsUser" .Values.router.nginx.runAsUser
-  "runAsGroup" .Values.router.nginx.runAsGroup
-  "runAsNonRoot" .Values.router.nginx.runAsNonRoot
-  "reloadNginx" "true"
   "extraArgs" $extraArgs
   "extraMounts" (join "\n" $mounts)
 ) -}}
@@ -795,13 +810,17 @@ router.wellKnownProxyDirectives renders the directives every
 buffering on and no temp-file spill, and the forwarded headers. Inputs: root
 (the chart context) and readTimeout.
 */}}
+{{- define "router.wellKnownCorsDirectives" -}}
+{{- if default false .Values.router.cors.enabled -}}
+{{ include "router.corsLocationDirectives" .Values.router.cors | trim }}
+{{ else if eq (include "router.protocolCorsEnabled" .) "true" -}}
+{{ include "router.protocolCorsLocationDirectives" . | trim }}
+{{ end -}}
+{{- end -}}
+
 {{- define "router.wellKnownProxyDirectives" -}}
 {{- $root := .root -}}
-{{- if default false $root.Values.router.cors.enabled -}}
-{{ include "router.corsLocationDirectives" $root.Values.router.cors | trim }}
-{{ else if eq (include "router.protocolCorsEnabled" $root) "true" -}}
-{{ include "router.protocolCorsLocationDirectives" $root | trim }}
-{{ end -}}
+{{ include "router.wellKnownCorsDirectives" $root -}}
 proxy_pass http://127.0.0.1:{{ $root.Values.router.attest.port }};
 proxy_buffering on;
 proxy_request_buffering on;
@@ -811,4 +830,25 @@ proxy_set_header Host $host;
 proxy_set_header X-Real-IP $remote_addr;
 proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 proxy_set_header X-Forwarded-Proto $scheme;
+
+
+{{- end -}}
+
+{{/*
+router.filesNginxLoads — every file an nginx directive loads: the leaf and key
+get-cert publishes, the mesh CA it proxies upstream with, and the public
+certificate and key of whichever TLS mode serves the front door. One
+space-separated list, read by reload.sh.
+*/}}
+{{- define "router.filesNginxLoads" -}}
+{{- $paths := list (include "c8s.certFile" .) (include "c8s.keyFile" .) (include "c8s.caFile" .) -}}
+{{- if eq (include "router.publicTLSMode" .) "webpki" -}}
+{{- $paths = append $paths (include "router.publicCertPath" .) -}}
+{{- $paths = append $paths (include "router.publicKeyPath" .) -}}
+{{- end -}}
+{{- if eq (include "router.publicTLSMode" .) "acme" -}}
+{{- $paths = append $paths (include "router.publicCertPath" .) -}}
+{{- $paths = append $paths (include "router.publicKeyPath" .) -}}
+{{- end -}}
+{{ join " " $paths }}
 {{- end -}}

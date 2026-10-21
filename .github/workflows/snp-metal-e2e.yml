@@ -130,7 +130,7 @@ jobs:
             # `|| true`: under `set -e` a failed substitution exits before the
             # pinned fallback on the next line can be reached.
             GOVER="$(curl -fsSL https://go.dev/VERSION?m=text 2>/dev/null | head -1 | sed 's/^go//' || true)"
-            [ -n "$GOVER" ] || GOVER=1.27.1
+            [ -n "$GOVER" ] || GOVER=1.27.3
             retry curl -fsSL "https://go.dev/dl/go${GOVER}.linux-amd64.tar.gz" -o /tmp/go.tar.gz
             sudo tar -C /usr/local -xzf /tmp/go.tar.gz
           fi
