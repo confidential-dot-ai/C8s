@@ -47,3 +47,23 @@ func TestPinDecreeIsAgreedState(t *testing.T) {
 		eventually(t, 3*time.Second, "pin decree dropped on "+r.name, func() bool { return r.node.PinsDecree() == nil })
 	}
 }
+
+// A decree image's pin is exactly what a TDX replica on that image reports
+// (NodeAttestor): otherwise a decree naming the running image would not
+// keep its replicas pinned.
+func TestDecreeImagePinIsTheReplicaMeasurement(t *testing.T) {
+	img := testImage(1)
+	pin, err := img.Pin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _ := ImagePin("tdx", img.MRTD, map[int]string{1: img.RTMR1, 2: img.RTMR2})
+	if pin != want || pin != img.MRTD+":"+img.RTMR1+":"+img.RTMR2 {
+		t.Fatalf("pin %q, replica reports %q", pin, want)
+	}
+	bad := img
+	bad.RTMR1 = strings.ToUpper(bad.RTMR1)
+	if _, err := bad.Pin(); err == nil {
+		t.Fatal("uppercase register accepted")
+	}
+}
