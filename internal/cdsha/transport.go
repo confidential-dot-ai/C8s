@@ -326,6 +326,7 @@ type controlRequest struct {
 	ID      string          `json:"id,omitempty"`
 	Address string          `json:"address,omitempty"`
 	Entry   json.RawMessage `json:"entry,omitempty"`
+	Reads   uint32          `json:"reads,omitempty"` // join: newest format the joiner reads
 }
 
 type controlResponse struct {
