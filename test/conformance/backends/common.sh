@@ -226,7 +226,8 @@
 #   scratch                          a directory kept for the run
 set -o pipefail
 
-C8S_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+BACKEND_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+C8S_ROOT="$(cd "$BACKEND_DIR/../../.." && pwd)"
 . "$C8S_ROOT/test/integration/cluster/lib.sh"
 
 UNSUPPORTED=77
@@ -920,7 +921,7 @@ mesh_chain_ready() {
     started="$(kubectl -n "$NS" get pod "$pod" -o jsonpath='{.status.containerStatuses[?(@.name=="armtls-mesh")].state.running.startedAt}')"
     while :; do
         read -r verdict wait < <(kubectl -n "$NS" logs "$pod" -c armtls-mesh --timestamps 2>/dev/null |
-            python3 -c "$MESH_REFRESH_PY" "${interval:-5m}" "$started")
+            python3 "$BACKEND_DIR/mesh_refresh.py" "${interval:-5m}" "$started")
         case "$verdict" in
             ok) return 0 ;;
             failed) [ "$tries" -lt 1 ] || { echo "backend: the mesh proxy on $1 failed its last CA refresh" >&2; return 1; } ;;
@@ -929,34 +930,6 @@ mesh_chain_ready() {
         sleep "$wait"
     done
 }
-
-# stdin: the proxy's log with timestamps; argv: the poll interval and the
-# container's start. Prints ok, failed or wait, then the seconds until the
-# next tick has had time to be logged.
-MESH_REFRESH_PY='
-import datetime, re, sys
-def ts(s):
-    s = re.sub(r"\.\d+", "", s.rstrip("Z"))
-    return datetime.datetime.strptime(s, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=datetime.timezone.utc).timestamp()
-units = {"h": 3600, "m": 60, "s": 1}
-interval = sum(int(n) * units[u] for n, u in re.findall(r"(\d+)([hms])", sys.argv[1]))
-anchor, failures = ts(sys.argv[2]), []
-for line in sys.stdin:
-    stamp, _, msg = line.partition(" ")
-    if "CA bundle refresh enabled" in msg:
-        anchor, failures = ts(stamp), []
-    elif "CA bundle refresh failed" in msg:
-        failures.append(ts(stamp))
-margin = 35  # a refresh is logged within --cds-op-timeout (30s) of its tick
-now = datetime.datetime.now(datetime.timezone.utc).timestamp()
-ticks = int((now - anchor - margin) // interval)
-nxt = anchor + (ticks + 1) * interval + margin
-if ticks < 1:
-    print("wait", max(1, int(nxt - now)))
-else:
-    last = anchor + ticks * interval
-    print("failed" if any(f >= last - 1 for f in failures) else "ok", max(1, int(nxt - now)))
-'
 
 mesh_platform() {
     local p

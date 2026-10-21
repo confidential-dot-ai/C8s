@@ -196,40 +196,19 @@ evidence() {
     local socket body out
     socket="$(attestation_socket)" || return
     body="$(mktemp)"
-    python3 -c 'import base64, json, sys; print(json.dumps({"report_data": base64.b64encode(bytes.fromhex(sys.argv[1])).decode()}))' "$3" >"$body"
+    python3 "$BACKEND_DIR/evidence.py" body "$3" >"$body"
     out="$(requester_request "$1" "$2" POST http://localhost/attest "$body" "$socket")"
     rm -f "$body"
     [ "$(head -1 <<<"$out")" = 200 ] || { echo "backend: attestation service: $out" >&2; return 1; }
     tail -n +2 <<<"$out"
 }
 
-# Real evidence with one byte of the signed report body changed, its launch
-# measurement: an SNP report's MEASUREMENT, or a TDX quote's MRTD (after the
-# 48-byte header, and in a v5 quote the 6-byte body descriptor). Other
-# evidence shapes are not edited here.
+# Real evidence with one byte of its signed report body changed
+# (evidence.py unsigned).
 evidence_unsigned() {
     local env
     env="$(evidence "$1" "$2" "$3")" || return
-    python3 - "$env" <<'PYEOF'
-import base64, json, sys
-env = json.loads(sys.argv[1])
-ev = env.get("evidence") or {}
-if "attestation_report" in ev:
-    key, offset = "attestation_report", 0x90
-elif "quote" in ev:
-    key = "quote"
-else:
-    sys.exit(77)  # UNSUPPORTED
-blob = bytearray(base64.b64decode(ev[key]))
-if key == "quote":
-    version = int.from_bytes(blob[0:2], "little")
-    if version not in (4, 5):
-        sys.exit(77)
-    offset = 48 + (6 if version == 5 else 0) + 136
-blob[offset] ^= 0xFF
-ev[key] = base64.b64encode(bytes(blob)).decode()
-print(json.dumps(env))
-PYEOF
+    python3 "$BACKEND_DIR/evidence.py" unsigned <<<"$env"
 }
 
 # The node image's confos-pod-exec policy closes pod exec for every

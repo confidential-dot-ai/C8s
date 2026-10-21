@@ -259,25 +259,7 @@ attest_direct() {
 # signature anyone checks. Evidence for another launch digest is the same
 # report with those bytes set; the mock's verifier reads the digest from the
 # report it is shown.
-evidence() {
-    python3 - "$(mock_attestation_url)" "$3" "${4:-}" <<'PYEOF'
-import base64, json, sys, urllib.request
-url, report_data, digest = sys.argv[1:4]
-if not digest:
-    body = json.dumps({"report_data": base64.b64encode(bytes.fromhex(report_data)).decode()}).encode()
-    req = urllib.request.Request(url + "/attest", body, {"Content-Type": "application/json"})
-    sys.stdout.write(urllib.request.urlopen(req, timeout=20).read().decode())
-    sys.exit()
-report = bytearray(1184)
-report[0] = 0x02    # report version 2
-report[0x0A] = 0x03 # SMT-allowed policy
-rd = bytes.fromhex(report_data)
-report[0x50:0x50 + len(rd)] = rd
-d = bytes.fromhex(digest)
-report[0x90:0x90 + len(d)] = d
-print(json.dumps({"platform": "snp", "evidence": {"attestation_report": base64.b64encode(bytes(report)).decode()}}))
-PYEOF
-}
+evidence() { python3 "$BACKEND_DIR/evidence.py" mock "$(mock_attestation_url)" "$3" ${4:+"$4"}; }
 
 # The mock reports every signature valid, so nothing here is unsigned; and
 # its evidence verifies nowhere but at the mock, so no verifier on this host
