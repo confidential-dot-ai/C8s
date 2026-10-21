@@ -571,7 +571,7 @@ surfaces names only the violated rules, which are the pod's own spec.
 
 ### What the node TCB is, and who may declare it
 
-Some containers must hold host privilege — the RKE2 static pods, Canal,
+Some containers must hold host privilege — the RKE2 static pods, Cilium,
 C8s's own node-level components. They are the node's trusted computing base,
 and the exemption belongs to whoever measured them.
 

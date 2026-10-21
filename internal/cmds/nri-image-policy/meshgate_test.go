@@ -80,7 +80,7 @@ func TestMeshGateHostsOnlyOwnNamespacePods(t *testing.T) {
 		{name: "own namespace", pod: meshPod("default", "pod", testNetNS), hosts: true},
 		{name: "node networking", pod: makePod("default", "host-network")},
 		{name: "namespace without a path", pod: meshPod("default", "pod", "")},
-		{name: "exempt namespace", pod: meshPod("kube-system", "canal", testNetNS)},
+		{name: "exempt namespace", pod: meshPod("kube-system", "cilium", testNetNS)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := gate.hosts(tc.pod); got != tc.hosts {
@@ -648,8 +648,8 @@ func TestValidateContainerAdjustmentGatesOnProtection(t *testing.T) {
 	}
 
 	// A pod outside the mesh's scope keeps the admission path it had.
-	exempt := meshPod("kube-system", "canal", testNetNS)
-	exemptCtr := makeCtrWithImage(exempt.Id, "canal", "registry/repo@"+pushDigestA)
+	exempt := meshPod("kube-system", "cilium", testNetNS)
+	exemptCtr := makeCtrWithImage(exempt.Id, "cilium", "registry/repo@"+pushDigestA)
 	exemptReq := &api.ValidateContainerAdjustmentRequest{
 		Pod:       exempt,
 		Container: exemptCtr,
@@ -843,7 +843,7 @@ func TestStartContainerOpensTheGateOnTheMeshEndpointAlone(t *testing.T) {
 	}
 
 	// A pod the mesh does not host has no gate to open.
-	exempt := meshPod("kube-system", "canal", testNetNS)
+	exempt := meshPod("kube-system", "cilium", testNetNS)
 	if err := p.StartContainer(context.Background(), exempt, mesh); err != nil {
 		t.Fatalf("a pod outside the mesh's scope was refused: %v", err)
 	}
