@@ -111,6 +111,11 @@ type Config struct {
 	// Format overrides the newest encoding format this replica reads (0:
 	// the package's Format). Tests use it to run an older release.
 	Format uint32
+
+	// HistoryVersions bounds the allowlist history the cluster keeps: the
+	// leader prunes it to the newest HistoryVersions entries through the
+	// log. 0 keeps every entry.
+	HistoryVersions int
 }
 
 // Node is one CDS replica.
@@ -150,6 +155,7 @@ type Node struct {
 	joinRefusedAt map[string]time.Time // peer + reason -> last logged
 
 	backupAt    time.Time // leader: last backup attempt
+	pruneAt     time.Time // leader: last history prune check
 	backupIndex uint64    // leader: applied index of the last stored backup
 	recovery    *ecdsa.PublicKey
 }
@@ -442,6 +448,7 @@ func (n *Node) Run(ctx context.Context) error {
 			n.reconcile()
 			n.applyDecrees(ctx)
 			n.maybeBackup(ctx)
+			n.maybePruneHistory()
 		case addr != "":
 			n.noLeader = time.Time{}
 			n.refreshSeats()
@@ -664,11 +671,48 @@ func (n *Node) maybeBackup(ctx context.Context) {
 		return
 	}
 	if err := n.cfg.Backups.PutBackup(ctx, b); err != nil {
+		if errors.Is(err, ErrBackupNotNewer) {
+			// Another leader stored later state (this one is deposed or was
+			// cut off): leave it.
+			n.log.Warn("backup: not stored, a newer one exists", "err", err)
+			n.backupIndex = applied
+			return
+		}
 		n.log.Warn("backup: store", "err", err)
 		return
 	}
 	n.backupIndex = applied
 	n.log.Info("backup stored", "epoch", b.Meta.Epoch, "index", b.Meta.Index, "bytes", len(b.Ciphertext))
+}
+
+// pruneSlack lets the history grow this far past HistoryVersions before the
+// leader prunes, so pruning is one entry per batch of writes, not per write.
+var pruneSlack = 64 // a var so tests can prune small histories
+
+// maybePruneHistory (leader) bounds the allowlist history through the log,
+// so every replica drops the same entries. A replica of a release that
+// cannot apply the command would keep its history and drift, so the command
+// waits for an agreed format every member reads.
+func (n *Node) maybePruneHistory() {
+	keep := n.cfg.HistoryVersions
+	if keep <= 0 || n.cfg.Allowlist == nil || n.fsm.Core().format() < 2 || time.Since(n.pruneAt) < n.cfg.Timing.Backup {
+		return
+	}
+	n.pruneAt = time.Now()
+	have, err := n.cfg.Allowlist.HistoryLen()
+	if err != nil || have <= keep+pruneSlack {
+		return
+	}
+	raw, err := json.Marshal(Entry{Kind: KindAllowlist, Format: 2,
+		Allowlist: &allowlist.Command{Op: allowlist.OpPruneHistory, Keep: keep, AtMS: time.Now().UnixMilli()}})
+	if err != nil {
+		return
+	}
+	if _, _, err := n.applyLocal(raw); err != nil {
+		n.log.Warn("prune allowlist history", "err", err)
+		return
+	}
+	n.log.Info("allowlist history pruned", "kept", keep, "had", have)
 }
 
 // AwaitingRestore reports a replica that holds no cluster and has not seen
@@ -1373,6 +1417,10 @@ func (n *Node) CA() (*issuer.CA, error) {
 
 // Core is the agreed cluster state.
 func (n *Node) Core() Core { return n.fsm.Core() }
+
+// Decrees is the record of applied decrees, oldest first (empty while the
+// cluster's agreed format is below 2).
+func (n *Node) Decrees() []DecreeRecord { return n.fsm.Decrees() }
 
 // PinsDecree is the signed decree behind the current pin set, or nil when
 // the pins came from Genesis or from a decree without images.

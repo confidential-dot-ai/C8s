@@ -246,3 +246,68 @@ func (s *Store) consumeToken(token string) error {
 	}
 	return nil
 }
+
+// HistoryLen is the number of entries in the history.
+func (s *Store) HistoryLen() (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var n int
+	err := s.db.QueryRow("SELECT COUNT(*) FROM journal_event").Scan(&n)
+	return n, err
+}
+
+// pruneHistory keeps the newest keep entries of the history and drops the
+// documents and signatures no remaining entry names. The served document is
+// the head, which always remains, and spent tokens are kept (a token must
+// never be spendable again). It depends only on the store's contents, so
+// every replica applying it prunes the same entries.
+func (s *Store) pruneHistory(keep int) (int, error) {
+	if keep < 1 {
+		return 0, errors.New("allowlist: a history must keep at least one entry")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	var head int64
+	if err := tx.QueryRow("SELECT COALESCE(MAX(position), 0) FROM journal_event").Scan(&head); err != nil {
+		return 0, err
+	}
+	res, err := tx.Exec("DELETE FROM journal_event WHERE position <= ?", head-int64(keep))
+	if err != nil {
+		return 0, err
+	}
+	dropped, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	if dropped == 0 {
+		return 0, nil
+	}
+	for _, q := range []string{
+		"DELETE FROM journal_object WHERE digest NOT IN (SELECT digest FROM journal_event)",
+		"DELETE FROM journal_signature WHERE digest NOT IN (SELECT digest FROM journal_event)",
+	} {
+		if _, err := tx.Exec(q); err != nil {
+			return 0, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	s.gen++
+	return int(dropped), nil
+}
+
+// PruneHistory keeps the newest keep entries of the history (see
+// pruneHistory); with a replicator, every replica prunes through the log.
+func (s *Store) PruneHistory(keep int) (int, error) {
+	if s.repl == nil {
+		return s.pruneHistory(keep)
+	}
+	res, err := s.replicate(Command{Op: OpPruneHistory, Keep: keep})
+	return res.Retired, err
+}

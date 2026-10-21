@@ -516,3 +516,35 @@ func TestSetDecreeImages(t *testing.T) {
 		}
 	}
 }
+
+func TestPrintDecrees(t *testing.T) {
+	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sd, err := cdsha.SignDecree(cdsha.Decree{ClusterID: "c1", IntentID: "i1", BaseEpoch: 2, Kind: cdsha.SetVoters, Voters: 5}, k)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, _ := x509.MarshalPKIXPublicKey(&k.PublicKey)
+	keyFile := filepath.Join(t.TempDir(), "decree.pub")
+	if err := os.WriteFile(keyFile, pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	records := []cdsha.DecreeRecord{{Decree: sd, AtMS: 1, Epoch: 3}}
+	var out bytes.Buffer
+	if err := printDecrees(&out, records, keyFile, false); err != nil || !strings.Contains(out.String(), "SetVoters") || !strings.Contains(out.String(), "voters=5") {
+		t.Fatalf("%v: %s", err, out.String())
+	}
+	out.Reset()
+	if err := printDecrees(&out, records, "", true); err != nil || !strings.Contains(out.String(), `"intent_id": "i1"`) {
+		t.Fatalf("json: %v: %s", err, out.String())
+	}
+	records[0].Decree.Decree.Voters = 7 // tampered after signing
+	if err := printDecrees(io.Discard, records, keyFile, false); err == nil {
+		t.Fatal("a tampered record passed the signature check")
+	}
+	if err := printDecrees(io.Discard, records, filepath.Join(t.TempDir(), "absent"), false); err == nil {
+		t.Fatal("absent key file accepted")
+	}
+}

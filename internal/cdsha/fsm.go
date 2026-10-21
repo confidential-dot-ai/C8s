@@ -86,6 +86,12 @@ type FSM struct {
 	ledger    *sandboxledger.Ledger
 
 	applied atomic.Uint64
+	// decrees is the record of applied decrees (newest last, at most
+	// maxDecreeRecord), kept from format 2 on: the audit trail an operator
+	// or user reads over the attested channel (GET /ha/decrees), where the
+	// decree objects in Kubernetes are only the host's word.
+	decrees []DecreeRecord
+
 	// readable is the newest format this replica reads; stuck is set once it
 	// met an entry it could not apply, and keeps it from serving.
 	readable uint32
@@ -184,11 +190,41 @@ func (f *FSM) applyDecree(de DecreeEntry) DecreeResult {
 	if err != nil {
 		return DecreeResult{Epoch: f.core.Epoch, Err: err.Error()}
 	}
+	f.record(de.Decree, de.AtMS, next.Epoch)
 	f.core = next
 	if ca != nil {
 		f.ca = ca
 	}
 	return DecreeResult{Epoch: next.Epoch}
+}
+
+// DecreeRecord is one applied decree: what the operator signed, when the
+// leader applied it, and the epoch it produced.
+type DecreeRecord struct {
+	Decree SignedDecree `json:"decree"`
+	AtMS   int64        `json:"at_ms"`
+	Epoch  uint64       `json:"epoch"`
+}
+
+// maxDecreeRecord bounds the record; older decrees fall off the front.
+const maxDecreeRecord = 256
+
+// record appends to the decree record (f.mu held), from format 2 on.
+func (f *FSM) record(sd SignedDecree, atMS int64, epoch uint64) {
+	if f.core.format() < 2 {
+		return
+	}
+	f.decrees = append(f.decrees, DecreeRecord{Decree: sd, AtMS: atMS, Epoch: epoch})
+	if over := len(f.decrees) - maxDecreeRecord; over > 0 {
+		f.decrees = slices.Clone(f.decrees[over:])
+	}
+}
+
+// Decrees is a copy of the decree record, oldest first.
+func (f *FSM) Decrees() []DecreeRecord {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return slices.Clone(f.decrees)
 }
 
 // applyRestore loads an operator backup, checked against the decree that
@@ -222,6 +258,9 @@ func (f *FSM) applyRestore(re RestoreEntry) DecreeResult {
 	if err := f.restore(sn); err != nil {
 		return fail(err)
 	}
+	f.mu.Lock()
+	f.record(re.Decree, re.AtMS, sn.Core.Epoch)
+	f.mu.Unlock()
 	return DecreeResult{Epoch: sn.Core.Epoch}
 }
 
@@ -273,7 +312,9 @@ type snapshot struct {
 	// backups from before it was recorded).
 	Index uint64 `json:"index,omitempty"`
 	// Format is the encoding of the snapshot (0 is 1).
-	Format    uint32                  `json:"format,omitempty"`
+	Format uint32 `json:"format,omitempty"`
+	// Decrees is the decree record (format 2 on).
+	Decrees   []DecreeRecord          `json:"decrees,omitempty"`
 	Core      Core                    `json:"core"`
 	Key       []byte                  `json:"key,omitempty"`
 	Allowlist allowlist.Snapshot      `json:"allowlist"`
@@ -298,6 +339,9 @@ func (f *FSM) Snapshot() (raft.FSMSnapshot, error) {
 	f.mu.RLock()
 	sn := snapshot{Index: f.applied.Load(), Core: f.core.clone()}
 	sn.Format = sn.Core.format() // what every member reads, not what this one could write
+	if sn.Format >= 2 {
+		sn.Decrees = slices.Clone(f.decrees)
+	}
 	if f.ca != nil {
 		key, err := x509.MarshalPKCS8PrivateKey(f.ca.Key)
 		if err != nil {
@@ -426,7 +470,7 @@ func (f *FSM) restore(sn snapshot) error {
 	f.secrets.Restore(sn.Secrets)
 	f.ledger.Restore(sn.Bindings)
 	f.mu.Lock()
-	f.core, f.ca = sn.Core, ca
+	f.core, f.ca, f.decrees = sn.Core, ca, sn.Decrees
 	f.mu.Unlock()
 	return nil
 }

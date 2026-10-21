@@ -227,6 +227,29 @@ func verifyDecree(sd SignedDecree, tail Core) error {
 	return nil
 }
 
+// VerifyDecreeSignature checks only the operator's signature over a decree
+// with decreeKey (PKIX DER): what an auditor of the decree record checks.
+func VerifyDecreeSignature(sd SignedDecree, decreeKey []byte) error {
+	tail := Core{ClusterID: sd.Decree.ClusterID, OperatorPubKey: decreeKey}
+	pubAny, err := x509.ParsePKIXPublicKey(tail.OperatorPubKey)
+	if err != nil {
+		return fmt.Errorf("decree key: %w", err)
+	}
+	pub, ok := pubAny.(*ecdsa.PublicKey)
+	if !ok {
+		return errors.New("decree key is not ECDSA")
+	}
+	msg, err := sd.Decree.signedBytes()
+	if err != nil {
+		return err
+	}
+	h := sha256.Sum256(msg)
+	if !ecdsa.VerifyASN1(pub, h[:], sd.Signature) {
+		return errors.New("bad operator signature")
+	}
+	return nil
+}
+
 // VerifyPinDecree is what a client outside the group checks before it pins
 // CDS to a decree's images: the operator's signature with the decree key
 // from its launch document, the cluster, and that the decree sets images.
