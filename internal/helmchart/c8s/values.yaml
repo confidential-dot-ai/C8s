@@ -218,6 +218,10 @@ cds:
     ## below resources.limits.memory: a replica that is OOM-killed rejoins as a
     ## new member, and several at once lose the majority.
     goMemLimit: 1GiB
+    ## Allowlist history entries the cluster keeps (GET /allowlist/history):
+    ## the leader prunes older ones through the log. 0 keeps every entry,
+    ## until writes stop at the store guard.
+    historyVersions: 1000
     resources:
       requests:
         cpu: 100m

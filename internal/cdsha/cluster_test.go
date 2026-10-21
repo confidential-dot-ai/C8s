@@ -133,6 +133,8 @@ type cluster struct {
 	nextIP int
 	ipOf   map[string]string
 	reads  map[string]uint32 // node name -> newest format its next replica reads (0: Format)
+
+	historyVersions int // Config.HistoryVersions of every replica started
 }
 
 // clusterSeq gives every test cluster its own loopback range, so one
@@ -217,7 +219,7 @@ func (c *cluster) start(name, measurement string) *replica {
 		Attestor: testAttestor{measurement}, BakedPins: []string{measurement}, OperatorPubKey: c.opPub,
 		Seats: c.seats, MaxNonVoters: 8, Peers: c.peers(ip), Decrees: c.decrees, Timing: testTiming,
 		RecoveryKey: mustPKIX(c.t, &c.recKey.PublicKey), Backups: c.backups,
-		Allowlist: &al, Secrets: mem, Ledger: led, Format: reads,
+		Allowlist: &al, Secrets: mem, Ledger: led, Format: reads, HistoryVersions: c.historyVersions,
 	})
 	if err != nil {
 		c.t.Fatal(err)

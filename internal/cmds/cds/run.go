@@ -406,6 +406,9 @@ func run(cfg config) error {
 	}
 
 	go checker.Run(ctx)
+	if haNode == nil && cfg.allowlistHistoryVersions > 0 {
+		go pruneHistoryLoop(ctx, &allowlistStore, cfg.allowlistHistoryVersions)
+	}
 
 	addr := fmt.Sprintf("%s:%d", cfg.host, cfg.port)
 	srv := newHTTPServer(addr, router, cfg)
@@ -721,5 +724,26 @@ func readinessFn(svcReady func() bool, caCert *x509.Certificate, minCAValidity t
 			return false
 		}
 		return true
+	}
+}
+
+// pruneHistoryLoop bounds a singleton's allowlist history (an HA replica's
+// leader prunes through the log instead, cdsha.Node.maybePruneHistory).
+func pruneHistoryLoop(ctx context.Context, store *allowlist.Store, keep int) {
+	t := time.NewTicker(time.Minute)
+	defer t.Stop()
+	for {
+		if n, err := store.HistoryLen(); err == nil && n > keep {
+			if dropped, err := store.PruneHistory(keep); err != nil {
+				slog.Warn("prune allowlist history", "err", err)
+			} else if dropped > 0 {
+				slog.Info("allowlist history pruned", "dropped", dropped, "kept", keep)
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
 	}
 }

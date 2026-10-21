@@ -82,6 +82,7 @@
             "peerPort": {},
             "decreeNamespace": {},
             "goMemLimit": {},
+            "historyVersions": {},
             "storeSizeLimit": {},
             "resources": {}
           }
