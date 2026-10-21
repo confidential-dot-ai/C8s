@@ -74,6 +74,7 @@ func NewCmd() *cobra.Command {
 	flags.StringVar(&cfg.allowlistDB, "allowlist-db", "", "Path to the allowlist SQLite database")
 	flags.BoolVar(&cfg.allowlistPersistent, "allowlist-persistent", false, "whether --allowlist-db is on durable storage; false makes CDS warn at startup that operator-added digests, the allowlist history, spent operator tokens, the route manifest and the mesh CA do not survive a restart")
 	flags.Float64Var(&cfg.allowlistMaxFill, "allowlist-max-fill", 0, "refuse allowlist writes (507) once the --allowlist-db volume is this full (0-1; 0 = off, and 0.45 for an HA replica, so a replacement replica always has room to restore a full copy)")
+	flags.IntVar(&cfg.allowlistHistoryVersions, "allowlist-history-versions", 0, "keep only the newest N allowlist history entries (GET /allowlist/history); 0 keeps every one. HA replicas prune through the log, so every replica keeps the same entries")
 	flags.StringVar(&cfg.allowlistMaxBytes, "allowlist-max-bytes", "", "size of the --allowlist-db volume when the filesystem does not report it (a memory emptyDir's sizeLimit, e.g. 64Mi)")
 	flags.StringSliceVar(&cfg.inventoryCIDRs, "sandbox-inventory-cidr", nil, "CIDR(s) holding the node addresses CDS may dial for a sandbox's admission inventory (repeatable). It is what stops a workload pointing the callback at its own pod IP and answering as the inventory (docs/armtls.md). Unset, CDS derives one host route per node from the live node list and refuses sandbox tokens until that syncs")
 	flags.StringVar(&cfg.allowlistSeed, "allowlist-seed", "", "Path to a JSON allowlist (version + digests map) seeded into the store at startup before serving; missing entries are added, existing entries are left untouched (empty disables seeding)")
@@ -153,14 +154,16 @@ type config struct {
 	allowlistDB         string
 	allowlistPersistent bool
 	allowlistMaxFill    float64
-	allowlistMaxBytes   string
-	allowlistSeed       string
-	followSeed          bool
-	inventoryCIDRs      []string
-	operatorKeys        string
-	armtlsPlatform      string
-	armtlsCertTTL       time.Duration
-	measuredPolicies    string
+	// allowlistHistoryVersions bounds the allowlist history (0: keep all).
+	allowlistHistoryVersions int
+	allowlistMaxBytes        string
+	allowlistSeed            string
+	followSeed               bool
+	inventoryCIDRs           []string
+	operatorKeys             string
+	armtlsPlatform           string
+	armtlsCertTTL            time.Duration
+	measuredPolicies         string
 
 	rateLimit                float64
 	rateBurst                int
