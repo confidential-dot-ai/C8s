@@ -84,6 +84,11 @@ type Config struct {
 	// CDSImages additionally binds the CDS image to its authorized server key.
 	CDSImages []remote.ImagePin
 
+	// PinSource, when set, replaces the static CDS pins above with a set
+	// that follows the operator's signed pin decrees (a CDS image rollout):
+	// a request CDS fails is retried once if the source has newer pins.
+	PinSource armtls.PinSource
+
 	// HTTPClient is an optional HTTP client. If nil, a default armTLS
 	// transport is built using the CDSMeasurements policy. Tests that
 	// need to bypass armTLS (e.g. against a plain HTTP fake) can supply a
@@ -108,6 +113,12 @@ type Client struct {
 // allowed measurement, so the TLS handshake fails before any cert is issued).
 func NewClient(cfg *Config) *Client {
 	httpClient := cfg.HTTPClient
+	if httpClient == nil && cfg.PinSource != nil {
+		hc, err := armtls.NewRefreshingHTTPClient(cfg.PinSource, cfg.AttestationApiURL)
+		if err == nil {
+			httpClient = hc
+		}
+	}
 	if httpClient == nil {
 		policy := &armtls.VerifyPolicy{Policy: remote.Policy{Images: cfg.CDSImages, Measurements: cfg.CDSMeasurements, Registers: cfg.CDSRTMRs}, AttestationApiURL: cfg.AttestationApiURL}
 		tlsCfg, _, err := armtls.NewClientTLSConfig(&armtls.ClientConfig{Policy: policy})

@@ -251,6 +251,13 @@ func nextCore(cur Core, de DecreeEntry) (Core, *issuer.CA, error) {
 	case UpdateMeasurements, RotateKey:
 		if len(d.Measurements) > 0 {
 			next.Measurements = slices.Clone(d.Measurements)
+			// A set without images leaves clients outside the group on
+			// the last one they were told; they cannot pin a bare hash.
+			next.PinsDecree = nil
+			if len(d.Images) > 0 {
+				sd := de.Decree
+				next.PinsDecree = &sd
+			}
 		}
 	}
 	next.Epoch++

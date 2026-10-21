@@ -23,6 +23,7 @@ type dependencies struct {
 	CACertPEM         []byte
 	CACertSource      func() []byte         // HA mode: the current epoch's CA, replacing CACertPEM
 	HAStatus          http.HandlerFunc      // HA mode: GET /ha/status
+	HAPins            http.HandlerFunc      // HA mode: GET /ha/pins
 	OperatorKeysPEM   []byte                // pinned operator public keys; empty = /operator-keys 404s
 	MeasurementsDoc   []byte                // reference values being enforced, as served at /measurements
 	RateLimiter       *issuer.IPRateLimiter // per-source-IP limiter for attestation endpoints
@@ -101,6 +102,9 @@ func newRouter(deps dependencies) http.Handler {
 		})
 	} else {
 		r.Get("/ca", handleCA(deps.CACertPEM))
+	}
+	if deps.HAPins != nil {
+		r.Get("/ha/pins", deps.HAPins)
 	}
 	if deps.HAStatus != nil {
 		r.Get("/ha/status", deps.HAStatus)
