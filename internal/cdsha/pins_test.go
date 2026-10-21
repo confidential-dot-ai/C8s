@@ -155,6 +155,12 @@ func TestVerifyDecreeRefusals(t *testing.T) {
 		"unknown kind":      {sign(Decree{Kind: "Nope", BaseEpoch: 3}), tail},
 		"non-canonical":     {noncanon, tail},
 		"images on recover": {sign(Decree{Kind: Recover, BaseEpoch: 3, BootstrapNode: "n0", Images: []DecreeImage{img}}), tail},
+		"voters even":       {sign(Decree{Kind: SetVoters, BaseEpoch: 3, Voters: 2}), tail},
+		"voters too many":   {sign(Decree{Kind: SetVoters, BaseEpoch: 3, Voters: MaxVoters + 2}), tail},
+		"voters on update":  {sign(Decree{Kind: UpdateMeasurements, BaseEpoch: 3, Measurements: []string{pin}, Voters: 3}), tail},
+		"set voters no n":   {sign(Decree{Kind: SetVoters, BaseEpoch: 3}), tail},
+		"voters pre-key":    {sign(Decree{Kind: SetVoters, BaseEpoch: 3, Voters: 3}), Core{ClusterID: testCluster, OperatorPubKey: pub, Epoch: 3}},
+		"voters with set":   {sign(Decree{Kind: SetVoters, BaseEpoch: 3, Voters: 3, Measurements: []string{pin}}), tail},
 	}
 	for name, c := range cases {
 		if err := verifyDecree(c.sd, c.tail); err == nil {
