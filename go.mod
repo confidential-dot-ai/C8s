@@ -1,6 +1,6 @@
 module github.com/confidential-dot-ai/c8s
 
-go 1.27.0
+go 1.27.3
 
 require (
 	cel.dev/cel-go v0.32.0
