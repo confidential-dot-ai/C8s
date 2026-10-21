@@ -161,9 +161,36 @@ type backupManifest struct {
 	SHA256       string     `json:"sha256"`
 }
 
+// ErrBackupNotNewer refuses to replace a stored backup with an older one: a
+// deposed leader, or a replica cut off from the majority, must never
+// overwrite the majority's backup with its own stale state.
+var ErrBackupNotNewer = errors.New("cds-ha: a newer backup is already stored")
+
+// Newer reports whether m is later state than o: a later epoch (every decree,
+// Restore and Recover raises it), or the same epoch at a later log index.
+func (m BackupMeta) Newer(o BackupMeta) bool {
+	if m.Epoch != o.Epoch {
+		return m.Epoch > o.Epoch
+	}
+	return m.Index > o.Index
+}
+
 // PutBackup writes the parts, then the manifest that names them, so a
-// reader never sees a manifest whose parts are not there yet.
+// reader never sees a manifest whose parts are not there yet. It refuses a
+// backup that is not newer than the stored one (ErrBackupNotNewer). The
+// stored manifest is only the host's word, so a forged one can block
+// backups (as deleting them could); it cannot make a restore pick old state:
+// recover checks the operator's own record (--min-epoch/--min-index).
 func (s KubeDecrees) PutBackup(ctx context.Context, b Backup) error {
+	if cur, err := s.cms().Get(ctx, BackupName(s.ClusterID), metav1.GetOptions{}); err == nil {
+		var man backupManifest
+		if json.Unmarshal([]byte(cur.Data[keyBackup]), &man) == nil && !b.Meta.Newer(man.Meta) {
+			return fmt.Errorf("%w (stored epoch %d index %d, this one epoch %d index %d)", ErrBackupNotNewer,
+				man.Meta.Epoch, man.Meta.Index, b.Meta.Epoch, b.Meta.Index)
+		}
+	} else if !apierrors.IsNotFound(err) {
+		return err
+	}
 	var parts int
 	for off := 0; off < len(b.Ciphertext) || parts == 0; off += backupPartBytes {
 		end := min(off+backupPartBytes, len(b.Ciphertext))
