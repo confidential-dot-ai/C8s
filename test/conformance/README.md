@@ -64,8 +64,15 @@ reporter as its `sleep`: it sleeps as asked and, while it does, prints each
 file of the certificate volume but the key, and of the secret client's output
 directory, as `c8s-report file <path> <base64>` when it appears or changes,
 and that directory's filesystem type, as `c8s-report fstype <dir> <type>`.
+The tenant-app image ([`images/tenant-app`](images/tenant-app)) is Alpine's
+python with the programs the steps run in a tenant pod on its `PATH`: the
+hello API, the echo API a workload backend serves, and a UDP listener and
+sender. The steps run them by name and pass no program as a string, so a
+backend that can put no file in a pod runs them too.
 [`conformance-images.yml`](../../.github/workflows/conformance-images.yml)
-builds it on dispatch, and a backend pins its digest.
+builds the suite's images on dispatch; `CONFORMANCE_IMAGES` in
+[`common.sh`](backends/common.sh) pins those every backend uses, and a
+backend adds its own.
 
 ## Running
 
@@ -177,7 +184,7 @@ backend, and the steps wait until the probe answers 502, which no earlier
 manifest gives it. The CDS removes no manifest, so after the scenario the
 steps write the one stored before it again, or an empty one, under a later
 revision. A workload backend is a pod of `tenant-app` running
-[`steps/echo.py`](steps/echo.py) over TLS under the leaf it holds, read again
+[`c8s-echo-api`](images/tenant-app/c8s-echo-api) over TLS under the leaf it holds, read again
 for each connection: it answers every request with the request target and
 headers it received.
 

@@ -1,8 +1,9 @@
-# The echo API a workload backend serves (routebackend.go): every request is
+#!/usr/bin/env python3
+# The echo API a workload backend serves (steps/routebackend.go): every request is
 # answered with what it received, as JSON, under the pod's leaf, read again
 # for each connection so that a renewal never leaves it serving an expired
 # one. It listens once the leaf is there.
-# Usage: python3 echo.py <tls.crt> <tls.key> <port>
+# Usage: c8s-echo-api <tls.crt> <tls.key> <port>
 import http.server, json, os, socket, ssl, sys, time
 crt, key, port = sys.argv[1], sys.argv[2], int(sys.argv[3])
 while not (os.path.exists(crt) and os.path.exists(key)):

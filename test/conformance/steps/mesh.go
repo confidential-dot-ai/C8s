@@ -176,27 +176,16 @@ func meshRunning(ctx context.Context, node string) error {
 	return nil
 }
 
-// The tenant image is python:3.12-alpine. Alpine's busybox ping sends its
-// echo request over an ICMP datagram socket, which the ping_group_range
-// sysctl admits without NET_RAW (the library busybox image's ping cannot,
-// and the chart's admission policy lets a tenant add back NET_BIND_SERVICE
-// only); its nc has no UDP mode and it has no httpd, so datagrams and the
-// hello API go through python.
-
-// helloSite writes the hello body where the hello API will serve it.
-func helloSite(port int) string {
-	return fmt.Sprintf("mkdir -p /tmp/www%d && echo %s > /tmp/www%d/index.html", port, hello, port)
-}
-
-// httpServer serves the hello directory on both address families, or IPv4
-// alone where the pod has no IPv6 stack to bind.
-func httpServer(port int) string {
-	dir := fmt.Sprintf("/tmp/www%d", port)
-	return fmt.Sprintf("python3 -m http.server -b :: -d %s %d || python3 -m http.server -d %s %d", dir, port, dir, port)
-}
+// The tenant image is images/tenant-app, on python:3.12-alpine. Alpine's
+// busybox ping sends its echo request over an ICMP datagram socket, which the
+// ping_group_range sysctl admits without NET_RAW (the library busybox image's
+// ping cannot, and the chart's admission policy lets a tenant add back
+// NET_BIND_SERVICE only); its nc has no UDP mode and it has no httpd, so the
+// hello API (c8s-hello-api) and datagrams (c8s-udp-listen, c8s-udp-send) are
+// the image's own programs.
 
 func helloServer(port int) []string {
-	return []string{"sh", "-c", fmt.Sprintf("%s && (%s)", helloSite(port), httpServer(port))}
+	return []string{"c8s-hello-api", strconv.Itoa(port), hello}
 }
 
 func servesHello(ctx context.Context, name string) error {
@@ -225,8 +214,8 @@ func servesSecondHello(ctx context.Context, name string) error {
 	if !p.deployed {
 		return fmt.Errorf("%q is not deployed; the second hello API starts in the running pod", name)
 	}
-	r, err := w.exec(p, fmt.Sprintf("%s && (setsid sh -c '%s' >/dev/null 2>&1 </dev/null &) && sleep 1 && wget -qO- -T 3 http://127.0.0.1:%d/ >/dev/null",
-		helloSite(secondHelloPort), httpServer(secondHelloPort), secondHelloPort))
+	r, err := w.exec(p, fmt.Sprintf("(setsid c8s-hello-api %d %s >/dev/null 2>&1 </dev/null &) && sleep 1 && wget -qO- -T 3 http://127.0.0.1:%d/ >/dev/null",
+		secondHelloPort, hello, secondHelloPort))
 	if err != nil {
 		return err
 	}
@@ -238,14 +227,9 @@ func servesSecondHello(ctx context.Context, name string) error {
 }
 
 // datagramListener receives UDP on the port and prints each datagram to its
-// log. It binds both families where the pod has an IPv6 stack (the kernel
-// lists its addresses in /proc/net/if_inet6), IPv4 alone otherwise. One line
-// of python, since the manifest renderer shell-quotes a container's command.
+// log (images/tenant-app/c8s-udp-listen).
 func datagramListener(port int) []string {
-	return []string{"python3", "-u", "-c", fmt.Sprintf("import os, socket; "+
-		"s = socket.socket(socket.AF_INET6 if os.path.exists('/proc/net/if_inet6') else socket.AF_INET, socket.SOCK_DGRAM); "+
-		"s.bind(('', %d)); "+
-		"[print(s.recvfrom(65535)[0].decode(errors='replace'), flush=True) for _ in iter(int, 1)]", port)}
+	return []string{"c8s-udp-listen", strconv.Itoa(port)}
 }
 
 func receivesDatagrams(ctx context.Context, name, which string) error {
@@ -1025,13 +1009,11 @@ func (w *world) sendDatagram(src, dest string, port int, sourcePort int) error {
 		return err
 	}
 	w.mesh.payload = fmt.Sprintf("datagram-%s-%d", w.suffix(), time.Now().UnixNano())
-	bind := ""
+	argv := []string{"c8s-udp-send", ip, strconv.Itoa(port), w.mesh.payload}
 	if sourcePort != 0 {
-		bind = fmt.Sprintf("s.bind((\"\", %d)); ", sourcePort)
+		argv = append(argv, strconv.Itoa(sourcePort))
 	}
-	_, err = w.exec(p, fmt.Sprintf("python3 -c 'import socket; ip = \"%s\"; "+
-		"s = socket.socket(socket.AF_INET6 if \":\" in ip else socket.AF_INET, socket.SOCK_DGRAM); "+
-		"%ss.sendto(b\"%s\", (ip, %d))'", ip, bind, w.mesh.payload, port))
+	_, err = w.exec(p, strings.Join(argv, " "))
 	return err
 }
 

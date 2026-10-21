@@ -69,17 +69,9 @@ image_alias() { return $UNSUPPORTED; }
 # The node image's own c8s image is not pullable from the harness host.
 injected_image() { return $UNSUPPORTED; }
 
-# The reporter images (images/reporter, built by conformance-images.yml), in
-# place of the logical images they are built on.
-REPORTER_REPO=ghcr.io/confidential-dot-ai/c8s-conformance-
-declare -A REPORTER_IMAGES=(
-    [model-server]=sha256:a4f2d2cbfc58d3ce1305472844e9cda80bd13d01087571169cf0db7600c62f07
-)
-eval "common_$(declare -f image_ref)"
-image_ref() {
-    local pinned="${REPORTER_IMAGES[$1]:-}"
-    if [ -n "$pinned" ]; then echo "$REPORTER_REPO$1@$pinned"; else common_image_ref "$1"; fi
-}
+# model-server's reporter image (images/reporter), whose log the steps read
+# in place of an exec (pod_read).
+CONFORMANCE_IMAGES[model-server]=sha256:a4f2d2cbfc58d3ce1305472844e9cda80bd13d01087571169cf0db7600c62f07
 
 # The node image keeps its state on encrypted scratch (docs/node-image.md).
 scratch_encrypted() { echo yes; }
@@ -312,7 +304,7 @@ agent_run() {
 # pod_read <ns> <pod> <container> <file|fstype> <path>: the file as base64,
 # or the directory's filesystem type, failing while absent. A pod with the
 # agent runs the read; one whose first container runs a reporter image
-# (REPORTER_IMAGES) as sleep, with no init container of the scenario's to
+# (image_ref model-server) as sleep, with no init container of the scenario's to
 # hold it back, printed it to its log, the key never; any other pod is unsupported.
 pod_read() {
     local ns="$1" pod="$2" container="$3" kind="$4" path="$5" spec line
@@ -328,7 +320,7 @@ pod_read() {
         (.spec.containers[0] | "\(.image) \(.name) \(((.command // []) + (.args // []))[0] // "-")"),
         ([.spec.initContainers[]? | select(.restartPolicy != "Always" and (.name | startswith("c8s-") | not))] | length)
     ' <<<"$spec" | paste -sd' ' -)
-    [[ "$image" == "$REPORTER_REPO"* ]] && [ "${argv0##*/}" = sleep ] && [ "$blocked" = 0 ] &&
+    [ "$image" = "$(image_ref model-server)" ] && [ "${argv0##*/}" = sleep ] && [ "$blocked" = 0 ] &&
         [ "$path" != "$CERT_VOLUME_PATH/tls.key" ] || return "$UNSUPPORTED"
     line="$(kubectl -n "$ns" logs "$pod" -c "$container" 2>/dev/null | grep -F "c8s-report $kind $path " | tail -1)"
     [ -n "$line" ] || { echo "backend: the reporter in $ns/$pod has printed no $kind for $path" >&2; return 1; }

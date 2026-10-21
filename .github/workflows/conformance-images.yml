@@ -1,9 +1,9 @@
 name: Conformance images
 
-# The conformance suite's reporter image (test/conformance/images/reporter):
-# model-server with the reporter as its sleep. Dispatched by hand when the
-# reporter or its base changes; test/conformance/backends/metal.sh pins the
-# digest the summary prints.
+# The conformance suite's images (test/conformance/images): model-server with
+# the reporter as its sleep, and tenant-app with the programs the steps run in
+# a tenant pod. Dispatched by hand when one of them or its base changes; the
+# backends' CONFORMANCE_IMAGES pin the digests the summary prints.
 on:
   workflow_dispatch:
 
@@ -14,6 +14,15 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - image: model-server
+            context: test/conformance/images/reporter
+            file: test/conformance/images/reporter/Dockerfile
+          - image: tenant-app
+            context: test/conformance/images/tenant-app
+            file: test/conformance/images/tenant-app/Dockerfile
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -31,14 +40,16 @@ jobs:
         id: push
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
-          context: test/conformance/images/reporter
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
           platforms: linux/amd64
           push: true
           provenance: false
-          tags: ghcr.io/confidential-dot-ai/c8s-conformance-model-server:${{ github.sha }}
+          tags: ghcr.io/confidential-dot-ai/c8s-conformance-${{ matrix.image }}:${{ github.sha }}
 
       - name: Summary
         env:
+          IMAGE: ${{ matrix.image }}
           DIGEST: ${{ steps.push.outputs.digest }}
         run: |
-          echo "model-server: ghcr.io/confidential-dot-ai/c8s-conformance-model-server@$DIGEST" >> "$GITHUB_STEP_SUMMARY"
+          echo "$IMAGE: ghcr.io/confidential-dot-ai/c8s-conformance-$IMAGE@$DIGEST" >> "$GITHUB_STEP_SUMMARY"
