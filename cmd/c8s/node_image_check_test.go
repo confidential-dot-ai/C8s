@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -155,5 +156,20 @@ func TestCheckNodeImagesRefusesTamperedBlob(t *testing.T) {
 		if err := os.WriteFile(path, data, 0o644); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func TestResolveLocalNames(t *testing.T) {
+	ref := "registry.example.com/cds@sha256:" + strings.Repeat("c", 64)
+	in := []byte("    image: registry.example.com/cds:c8s-node\n    image: other@sha256:" + strings.Repeat("d", 64) + "\n")
+	out, err := resolveLocalNames(in, []byte(ref+" registry.example.com/cds:c8s-node\n"))
+	if err != nil || !bytes.Contains(out, []byte("image: "+ref+"\n")) || bytes.Contains(out, []byte(":c8s-node")) {
+		t.Fatalf("%s %v", out, err)
+	}
+	if _, err := resolveLocalNames(in, []byte("one-field\n")); err == nil {
+		t.Fatal("bad line accepted")
+	}
+	if same, _ := resolveLocalNames(in, nil); !bytes.Equal(same, in) {
+		t.Fatal("no names changed the manifest")
 	}
 }
