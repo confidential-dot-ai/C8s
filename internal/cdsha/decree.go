@@ -71,18 +71,17 @@ type DecreeImage struct {
 	RTMR2 string `json:"rtmr2"`
 }
 
-// Pin is the replica pin of the image, as a TDX replica reports its own:
-// SHA-384 over MRTD, RTMR1 and RTMR2.
+// Pin is the replica pin of the image, as a TDX replica reports its own
+// (NodeAttestor, ImagePin): "mrtd:rtmr1:rtmr2".
 func (i DecreeImage) Pin() (string, error) {
-	h := sha512.New384()
+	rtmrs := map[int]string{1: i.RTMR1, 2: i.RTMR2}
 	for _, v := range []string{i.MRTD, i.RTMR1, i.RTMR2} {
 		b, err := hex.DecodeString(v)
 		if err != nil || len(b) != sha512.Size384 || v != strings.ToLower(v) {
 			return "", fmt.Errorf("image register %q is not 48 bytes of lowercase hex", v)
 		}
-		h.Write(b)
 	}
-	return hex.EncodeToString(h.Sum(nil)), nil
+	return ImagePin("tdx", i.MRTD, rtmrs)
 }
 
 // imagePins are the replica pins of images, canonical.
