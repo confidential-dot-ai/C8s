@@ -80,6 +80,29 @@ func TestPodRulesetGivesTheRouterRoleTheNodesCDS(t *testing.T) {
 	}
 }
 
+// Every member pod reaches the CDS the credential role is bound to, on its CDS
+// port alone, so a workload reads what CDS publishes without authentication.
+// The verifier port stays the credential clients' own.
+func TestPodRulesetGivesEveryMemberTheNodesCDSPort(t *testing.T) {
+	policy := meshRoles()
+	policy.CredentialAttestationPort = 8400
+	policy.Roles = append(policy.Roles, roleBinding{
+		Name:         CredentialRole,
+		UID:          workloadclaims.CredentialsUID,
+		Destinations: []netip.AddrPort{netip.MustParseAddrPort("172.18.0.2:30808")},
+	})
+
+	want := []ruleset.Exit{{Range: netip.MustParsePrefix("172.18.0.2/32"), Port: 30808}}
+	for _, namespace := range []string{"default", routerNamespace} {
+		if got := policy.podRuleset(namespace).Exits; !slices.Equal(got, want) {
+			t.Fatalf("exits of a pod in %s = %+v, want this node's CDS port alone", namespace, got)
+		}
+	}
+	if got := meshRoles().podRuleset("default").Exits; len(got) != 0 {
+		t.Fatalf("exits without a bound CDS = %+v, want none", got)
+	}
+}
+
 // A policy that binds no CDS leaves the router role without one, as it leaves
 // the credential clients without one.
 func TestPodRulesetWithoutABoundCDSServesTheRouterRoleNone(t *testing.T) {

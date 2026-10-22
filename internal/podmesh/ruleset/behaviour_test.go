@@ -47,14 +47,16 @@ func behaviourPolicy() Policy {
 			UID:          credentialUID,
 			Destinations: []Destination{{netip.MustParseAddr(service), servicePort}},
 		}},
+		Exits: []Exit{{netip.PrefixFrom(netip.MustParseAddr(service), 32), servicePort}},
 	}
 }
 
 // What the ruleset does to real traffic: application connections are captured
 // for the mesh endpoint, the endpoint's own sockets leave over TCP alone, a
 // platform role reaches only what it is bound to, the resolver exception is
-// the approved address on port 53 with its replies, and a socket entering the
-// namespace as root carries nothing. Every case is read from the namespace's
+// the approved address on port 53 with its replies, any socket reaches the
+// pod's exit over TCP alone, and a socket entering the namespace as root
+// carries nothing. Every case is read from the namespace's
 // connection tracking, never from a timeout.
 func TestTheRulesetCarriesOnlyPermittedTrafficInTheNamespace(t *testing.T) {
 	podNetNS(t, func(netnsPath string) error {
@@ -95,6 +97,9 @@ func TestTheRulesetCarriesOnlyPermittedTrafficInTheNamespace(t *testing.T) {
 			{"the mesh endpoint sends nothing outside TCP", meshUID, "udp", address(unapproved, 8080), denied},
 			{"a credential role reaches its service", credentialUID, "tcp", address(service, servicePort), admitted},
 			{"a credential role reaches nothing else", credentialUID, "tcp", address(unapproved, 8080), denied},
+			{"a workload reaches the pod's exit", workloadUID, "tcp", address(service, servicePort), admitted},
+			{"another port at the exit address is captured", workloadUID, "tcp", address(service, 8080), captured},
+			{"an exit carries no UDP", workloadUID, "udp", address(service, servicePort), denied},
 			{"a resolver query is admitted", workloadUID, "udp", address(resolver, 53), admitted},
 			{"a resolver query over TCP is admitted", workloadUID, "tcp", address(resolver, 53), admitted},
 			{"port 53 elsewhere is captured, not exempted", workloadUID, "tcp", address(unapproved, 53), captured},

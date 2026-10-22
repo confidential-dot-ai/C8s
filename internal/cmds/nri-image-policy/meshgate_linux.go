@@ -4,6 +4,7 @@ package nriimagepolicy
 
 import (
 	"fmt"
+	"net/netip"
 
 	"github.com/confidential-dot-ai/c8s/internal/podmesh/ruleset"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
@@ -31,17 +32,37 @@ func verifyPodRuleset(netns podNamespace, policy meshPolicy, namespace string) e
 
 // podRuleset is the ruleset a member pod of that Kubernetes namespace
 // carries: the mesh endpoint's reserved UID owns the capture ports, every
-// dialing role reaches only what its binding names, and a pod of the
-// router's namespace also answers the router's external listeners.
+// dialing role reaches only what its binding names, every container reaches
+// this node's CDS, and a pod of the router's namespace also answers the
+// router's external listeners.
 func (p meshPolicy) podRuleset(kubeNamespace string) ruleset.Policy {
 	endpoint, _ := p.role(meshRole)
 	return ruleset.Policy{
 		Resolver: p.Resolver,
 		Capture:  ruleset.CapturePorts(p.Capture),
 		MeshUID:  endpoint.UID,
+		Exits:    p.cdsExit(),
 		Server:   p.servedPorts(kubeNamespace),
 		Roles:    p.dialingRoles(),
 	}
+}
+
+// cdsExit lets every container of a member pod reach the one CDS this node's
+// credential clients are bound to, so a workload reads what CDS publishes
+// without authentication: the allowlist, its history and objects, the route
+// manifest, the CA, the operator keys and the measurements. That connection
+// is armTLS to CDS, and every other route there still needs what it needs
+// from any caller: an operator-signed token to write, attestation evidence for
+// a certificate, a mesh leaf and sandbox token for a secret.
+func (p meshPolicy) cdsExit() []ruleset.Exit {
+	cds, bound := p.boundCDS()
+	if !bound {
+		return nil
+	}
+	return []ruleset.Exit{{
+		Range: netip.PrefixFrom(cds.Addr, cds.Addr.BitLen()),
+		Port:  cds.Port,
+	}}
 }
 
 // servedPorts is the server role the ruleset of a pod of the router's
