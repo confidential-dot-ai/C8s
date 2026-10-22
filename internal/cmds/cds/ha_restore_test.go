@@ -11,6 +11,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -158,15 +159,41 @@ func TestRunHARestoreAfterTotalLoss(t *testing.T) {
 	raw, _ := json.Marshal(corev1.ConfigMapList{Items: backups})
 	backupFile := filepath.Join(dir, "backup.json")
 	_ = os.WriteFile(backupFile, raw, 0o600)
-	recover := func(extra ...string) (string, error) {
+	// The custodians hold shares (3 of 5); the restore below runs from them,
+	// through the CLI's own flag handling.
+	shareDir := filepath.Join(dir, "shares")
+	split := newHARecoveryKeyCmd()
+	split.SetArgs([]string{"split", "--recovery-key", recKeyPath, "--out", shareDir, "--shares", "5", "--threshold", "3"})
+	split.SetOut(new(nopWriter))
+	if err := split.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	share := func(i int) []string {
+		return []string{"--recovery-key-share", filepath.Join(shareDir, fmt.Sprintf("share-%d.json", i))}
+	}
+	keyArgs := append(append(share(1), share(3)...), share(5)...)
+	run := func(key []string, extra ...string) (string, error) {
 		cmd := newHARecoverCmd()
 		var out bytes.Buffer
 		cmd.SetOut(&out)
 		cmd.SetErr(&out)
-		cmd.SetArgs(append([]string{"--backup-file", backupFile, "--recovery-key", recKeyPath, "--decree-key", decreeKeyPath,
-			"--cluster-id", "c1", "--url", bases[2], "--insecure"}, extra...))
+		args := append([]string{"--backup-file", backupFile, "--decree-key", decreeKeyPath,
+			"--cluster-id", "c1", "--url", bases[2], "--insecure"}, key...)
+		cmd.SetArgs(append(args, extra...))
 		err := cmd.ExecuteContext(context.Background())
 		return out.String(), err
+	}
+	recover := func(extra ...string) (string, error) { return run(keyArgs, extra...) }
+	ok := []string{"--bootstrap-node", "n2", "--min-epoch", "1", "--min-index", "0", "--attempts", "2"}
+	for name, key := range map[string][]string{
+		"no key":                nil,
+		"key and shares":        append([]string{"--recovery-key", recKeyPath}, share(1)...),
+		"two shares of three":   append(share(2), share(4)...),
+		"one share given twice": append(append(share(2), share(2)...), share(2)...),
+	} {
+		if out, err := run(key, ok...); err == nil {
+			t.Fatalf("%s: restored: %q", name, out)
+		}
 	}
 	if _, err := recover("--bootstrap-node", "n2"); err == nil {
 		t.Fatal("recover without --min-epoch/--min-index")
@@ -181,11 +208,41 @@ func TestRunHARestoreAfterTotalLoss(t *testing.T) {
 		t.Fatalf("recover: %v\n%s", err, out)
 	}
 	waitServing(bases, true)
+	// A second recover over the serving cluster is refused: its new intent
+	// is not in the decree record.
+	if out, err := recover(ok...); err == nil {
+		t.Fatalf("a second restore over a serving cluster succeeded: %q", out)
+	}
 	for _, b := range bases {
 		_, h, _ := do(t, http.MethodGet, b+"/allowlist", "", nil)
 		_, _, c := do(t, http.MethodGet, b+"/ca", "", nil)
 		if h.Get("ETag") != h0.Get("ETag") || !bytes.Equal(c, ca) {
 			t.Fatalf("%s after restore: etag %q want %q, same CA %v", b, h.Get("ETag"), h0.Get("ETag"), bytes.Equal(c, ca))
 		}
+	}
+}
+
+// restoreApplied confirms a Restore from the decree record: a recover whose
+// request timed out while the replica restored learns that it worked.
+func TestRestoreAppliedReadsTheDecreeRecord(t *testing.T) {
+	rec := []cdsha.DecreeRecord{{Decree: cdsha.SignedDecree{Decree: cdsha.Decree{Kind: cdsha.Restore, IntentID: "restore-1"}}},
+		{Decree: cdsha.SignedDecree{Decree: cdsha.Decree{Kind: cdsha.UpdateMeasurements, IntentID: "restore-2"}}}}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/ha/decrees" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(rec)
+	}))
+	defer srv.Close()
+	ctx := context.Background()
+	if !restoreApplied(ctx, srv.Client(), srv.URL, "restore-1") {
+		t.Fatal("the recorded Restore was not found")
+	}
+	if restoreApplied(ctx, srv.Client(), srv.URL, "restore-2") || restoreApplied(ctx, srv.Client(), srv.URL, "restore-3") {
+		t.Fatal("another decree kind or an unknown intent counted as the Restore")
+	}
+	if restoreApplied(ctx, srv.Client(), srv.URL+"/nowhere", "restore-1") {
+		t.Fatal("an unreadable record counted as applied")
 	}
 }
