@@ -23,7 +23,7 @@ var (
 // the verdict policies, then applyInitDataNote on the final verdict.
 func finalOutcome(cfg config, ev *evidence, result *teetypes.VerificationResult, plan *verifyPlan) Outcome {
 	oc := newOutcome(cfg, ev, result, nil, plan)
-	applyVerdictPolicies(context.Background(), &oc, cfg, ev, nil, operatorKeysReport{}, &verifyPlan{}, measurementsReport{})
+	applyVerdictPolicies(&oc, cfg, ev, nil, operatorKeysReport{}, &verifyPlan{}, measurementsReport{})
 	applyInitDataNote(&oc, result, plan)
 	return oc
 }

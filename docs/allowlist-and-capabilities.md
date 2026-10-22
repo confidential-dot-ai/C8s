@@ -1007,8 +1007,8 @@ holds, the same baked seed the node's image policy plugin enforces through its
 base allowlist. CDS reads it once at start and keeps it as a fixed layer
 beside the store (`--seed-layer`, which the chart sets only there). The
 launch document's signed `workloads`, if any, are seeded into the store at
-start instead (`--allowlist-seed`): they are served and measured like any
-stored entry, and the first upload replaces them.
+start instead (`--allowlist-seed`): they are served like any stored entry,
+and the first upload replaces them.
 
 - The seed never enters the store. `GET /allowlist` serves the stored
   document alone, byte for byte the one an operator signed, and names the

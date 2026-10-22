@@ -2,7 +2,6 @@ package verify
 
 import (
 	"bytes"
-	"context"
 	"encoding/hex"
 	"errors"
 	"path/filepath"
@@ -141,7 +140,7 @@ func TestCDSMultipleLaunchAnchorsWarning(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			plan := &verifyPlan{refValues: refvalues.ReferenceValues{Family: serverOnly.Family, Images: tc.images}}
 			oc := Outcome{Verified: tc.verified, Partial: tc.partial}
-			applyVerdictPolicies(context.Background(), &oc, config{kind: tc.kind}, &evidence{}, nil, operatorKeysReport{}, plan, measurementsReport{})
+			applyVerdictPolicies(&oc, config{kind: tc.kind}, &evidence{}, nil, operatorKeysReport{}, plan, measurementsReport{})
 			if oc.Verified != tc.verified || oc.Partial != tc.partial {
 				t.Fatalf("warning changed verdict: %+v", oc)
 			}
