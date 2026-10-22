@@ -169,6 +169,9 @@ func TestChartBakedRouterReadsLaunchFiles(t *testing.T) {
 	}
 	assertRouterWebSocketUpgrade(t, cfg, route)
 	assertRouterRoutingLocation(t, route, "8802", "3600s")
+	// The signed launch file sets the body limit, not a chart value.
+	route.assertDirective(t, "include", "/run/c8s-node/router/request-body.conf")
+	route.assertNoDirective(t, "client_max_body_size")
 
 	snippets := renderedConfigMap(t, out, "c8s-router-nginx").Data
 	for key, want := range map[string]string{

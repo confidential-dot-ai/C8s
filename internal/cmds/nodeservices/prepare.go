@@ -203,6 +203,7 @@ var serverOutputNames = []string{
 	"operator-pubkey", "allowlist-seed.json", "tls-san",
 	"router/tls.conf", "router/hostnames",
 	"router/acme-email", "router/acme-directory-url", "router/front-door-mode",
+	"router/request-body.conf",
 }
 
 // RouterTLSSnippetDir is where the node image installs tls-cds.conf and
@@ -238,6 +239,8 @@ func (c serverConfig) files() map[string][]byte {
 		"router/acme-email":         line(c.router.ACMEEmail),
 		"router/acme-directory-url": line(c.router.ACMEDirectoryURL),
 		"router/front-door-mode":    []byte(mode + "\n"),
+		// nginx includes this in its application location.
+		"router/request-body.conf": []byte(fmt.Sprintf("client_max_body_size %d;\n", c.router.RequestBodyLimit())),
 	}
 	// A server output an agent does not clear would survive a demotion, so
 	// the two sets must not drift apart.

@@ -542,6 +542,7 @@
               "type": "boolean"
             },
             "backendTimeout": {},
+            "maxRequestBodyBytes": {},
             "pollInterval": {},
             "port": {},
             "readTimeout": {},

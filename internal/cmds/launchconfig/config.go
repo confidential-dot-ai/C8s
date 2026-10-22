@@ -137,13 +137,28 @@ type Document struct {
 	serverTokenPresent bool
 }
 
-// Router selects the router's public hostnames. All fields are optional;
-// non-empty Hostnames switches the front door to ACME. The route manifest, not
-// this block, names every backend.
+// Router selects the router's public hostnames and front-door limits. All
+// fields are optional; non-empty Hostnames switches the front door to ACME.
+// The route manifest, not this block, names every backend.
 type Router struct {
 	Hostnames        []string `yaml:"hostnames,omitempty" json:"hostnames,omitempty"`
 	ACMEEmail        string   `yaml:"acmeEmail,omitempty" json:"acme_email,omitempty"`
 	ACMEDirectoryURL string   `yaml:"acmeDirectoryURL,omitempty" json:"acme_directory_url,omitempty"`
+	// MaxRequestBodyBytes caps an application request body on the public
+	// listener; 0 keeps DefaultMaxRequestBodyBytes.
+	MaxRequestBodyBytes int64 `yaml:"maxRequestBodyBytes,omitempty" json:"max_request_body_bytes,omitempty"`
+}
+
+// DefaultMaxRequestBodyBytes is the router's application request body cap
+// when the launch document sets none: nginx's own default, 1 MiB.
+const DefaultMaxRequestBodyBytes = 1 << 20
+
+// RequestBodyLimit is the application request body cap the router applies.
+func (r Router) RequestBodyLimit() int64 {
+	if r.MaxRequestBodyBytes == 0 {
+		return DefaultMaxRequestBodyBytes
+	}
+	return r.MaxRequestBodyBytes
 }
 
 // ValidateHostname accepts a lowercase DNS hostname: no IP, no wildcard.
@@ -177,6 +192,9 @@ func (r *Router) validate() error {
 			return fmt.Errorf("router.hostnames lists %q twice", name)
 		}
 		seen[name] = true
+	}
+	if r.MaxRequestBodyBytes < 0 {
+		return fmt.Errorf("router.maxRequestBodyBytes must be a positive number of bytes")
 	}
 	if len(r.Hostnames) == 0 && (r.ACMEEmail != "" || r.ACMEDirectoryURL != "") {
 		return fmt.Errorf("router.acmeEmail and router.acmeDirectoryURL require router.hostnames")

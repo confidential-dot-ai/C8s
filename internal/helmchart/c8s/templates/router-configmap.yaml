@@ -13,6 +13,10 @@
 {{- $acmeSidecar := eq (include "router.acmeSidecar" .) "true" -}}
 {{- $defaultMeshCAPath := include "c8s.caFile" . -}}
 {{- $routingPort := include "router.routingPort" . -}}
+{{- $maxRequestBodyBytes := include "c8s.int" .Values.router.routing.maxRequestBodyBytes | int64 -}}
+{{- if lt $maxRequestBodyBytes 1 -}}
+{{- fail (printf "router.routing.maxRequestBodyBytes must be a positive number of bytes, got: %d" $maxRequestBodyBytes) -}}
+{{- end -}}
 {{- $readTimeout := toString .Values.router.routing.readTimeout -}}
 {{- if or (not (regexMatch `^[0-9]+(ms|s|m|h)$` $readTimeout)) (regexMatch `^0+(ms|s|m|h)$` $readTimeout) -}}
 {{- fail (printf "router.routing.readTimeout must be a positive whole number of ms, s, m or h, such as 3600s, got: %s" $readTimeout) -}}
@@ -358,6 +362,16 @@ data:
                 proxy_set_header X-Forwarded-Proto $scheme;
                 proxy_set_header Upgrade $http_upgrade;
                 proxy_set_header Connection $connection_upgrade;
+                {{- if $launchDriven }}
+                # The signed launch file's router.maxRequestBodyBytes.
+                include {{ include "router.launchDir" . }}/request-body.conf;
+                {{- else }}
+                client_max_body_size {{ $maxRequestBodyBytes }};
+                {{- end }}
+                # Stream request bodies to the routing listener: a body held
+                # whole would spool to the nginx-cache volume, which a few
+                # large uploads would fill. client_max_body_size still applies.
+                proxy_request_buffering off;
                 # A non-streaming completion sends nothing until it is done, so
                 # nginx's 60s default read timeout would 504 long generations.
                 # A dead routing listener must fail fast instead.

@@ -191,14 +191,15 @@ to `c8s.local` and must be a lowercase DNS hostname. Arbitrary routes and CORS
 overrides are not launch settings in this image.
 
 A server document may carry an optional `router` block. It sets the router's
-public hostnames at boot, because the image cannot know them at build time. An
-agent document must not carry it.
+public hostnames and request body limit at boot, because the image cannot know
+them at build time. An agent document must not carry it.
 
 ```yaml
 router:
   hostnames: ["candidate.api.confidential.ai"]
   acmeEmail: "ops@example.com"
   acmeDirectoryURL: "https://acme-staging-v02.api.letsencrypt.org/directory"
+  maxRequestBodyBytes: 67108864
 ```
 
 - `hostnames` are lowercase DNS names. When set, the in-guest `c8s acme`
@@ -208,13 +209,21 @@ router:
   certificate through `router/tls.conf`, which nginx includes.
 - `acmeEmail` and `acmeDirectoryURL` are optional and need `hostnames`. Use a
   staging directory for tests.
+- `maxRequestBodyBytes` is the largest application request body, in bytes, the
+  public listener accepts; a larger one gets nginx's 413. It is optional, must
+  be positive and defaults to 1048576 (1 MiB). nginx streams the body to the
+  routing listener rather than holding it, so a large limit costs no router
+  disk. It reaches nginx through `router/request-body.conf`. Protocol
+  endpoints keep their own limits: 16 KiB for the attestation handshakes,
+  8 MiB for a tunnel record and 1 MiB for the built-in allowlist route.
 
 The block names no backend: a baked router routes by the route manifest, as
 any router does (see [Route manifest](#route-manifest)). A document that
 still carries `router.upstream` is refused; write its route with `c8s routes`.
 
 `c8s node launch-config new` writes the block from `--router-hostname`
-(repeatable), `--acme-email` and `--acme-directory-url`.
+(repeatable), `--acme-email`, `--acme-directory-url` and
+`--router-max-request-body-bytes`.
 The block is part of the signed bytes. Boot preparation publishes it as files
 in `/run/c8s-node/router/`, which the router pod reads at start. To change it,
 re-sign the document and relaunch the server.
@@ -641,6 +650,11 @@ follows these rules:
   in total for its backend call. `router.routing.tunnelBudget` (default 75%
   of the cds-attest memory limit, or 32Gi) bounds the bytes the tunnelled
   requests in flight in each router replica may buffer.
+- `router.routing.maxRequestBodyBytes` (default 1048576) is the largest
+  application request body nginx accepts; a larger one gets 413. nginx
+  streams the body to the routing listener rather than spooling it. A baked
+  node ignores this value and takes `router.maxRequestBodyBytes` from the
+  signed launch file (see [Authenticated launch configuration](#authenticated-launch-configuration)).
 
 `c8s install --upstream <cw-id>` writes the first manifest for an adopted
 workload: every DNS name in `router.san` (default
