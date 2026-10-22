@@ -15,8 +15,11 @@ import (
 const haAllowlistMaxFill = 0.45
 
 // allowlistFullGuard returns the allowlist handler's Full check, or nil when
-// it is off. The history keeps every document, so the store only grows.
-func allowlistFullGuard(cfg config) (func() error, error) {
+// it is off. live, if set, is the store's own data size (pages in use): a
+// pruned history frees pages SQLite keeps for reuse, so the volume's used
+// space stays at its peak and would refuse writes for good, while what a
+// replacement replica copies is only the live data.
+func allowlistFullGuard(cfg config, live ...func() (int64, error)) (func() error, error) {
 	fill := cfg.allowlistMaxFill
 	if fill == 0 && (cfg.ha.clusterID != "" || cfg.ha.configFile != "") {
 		fill = haAllowlistMaxFill
@@ -41,13 +44,18 @@ func allowlistFullGuard(cfg config) (func() error, error) {
 		if err != nil {
 			return nil // cannot tell: do not refuse
 		}
+		if len(live) > 0 && live[0] != nil {
+			if n, err := live[0](); err == nil && n >= 0 && uint64(n) < used {
+				used = uint64(n)
+			}
+		}
 		if limit > 0 && (size == 0 || limit < size) {
 			size = limit
 		}
 		if size == 0 || float64(used) <= fill*float64(size) {
 			return nil
 		}
-		return fmt.Errorf("allowlist store nearly full: %d of %d bytes used (limit %.0f%%); the allowlist history keeps every document, so free space or raise the volume size", used, size, fill*100)
+		return fmt.Errorf("allowlist store nearly full: %d of %d bytes used (limit %.0f%%); lower the allowlist history bound (--allowlist-history-versions, --allowlist-history-bytes) or raise the volume size", used, size, fill*100)
 	}, nil
 }
 

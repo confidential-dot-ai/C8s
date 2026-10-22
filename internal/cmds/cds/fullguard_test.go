@@ -30,6 +30,15 @@ func TestAllowlistFullGuard(t *testing.T) {
 	if g, _ = allowlistFullGuard(ha); g == nil || g() == nil || !strings.Contains(g().Error(), "nearly full") {
 		t.Fatal("a nearly full store took a write")
 	}
+	// The store's live data, not the volume's peak use, decides: pages a
+	// pruned history freed must not block writes for good.
+	small := func() (int64, error) { return 1, nil }
+	if g, _ = allowlistFullGuard(ha, small); g == nil || g() != nil {
+		t.Fatal("freed pages still counted against the store")
+	}
+	if g, _ = allowlistFullGuard(ha, func() (int64, error) { return 0, os.ErrInvalid }); g() == nil {
+		t.Fatal("a failing live count hid a full volume")
+	}
 	for _, bad := range []config{{allowlistDB: db, allowlistMaxFill: 1.5}, {allowlistDB: db, allowlistMaxFill: 0.5, allowlistMaxBytes: "lots"}} {
 		if _, err := allowlistFullGuard(bad); err == nil {
 			t.Fatalf("bad flags accepted: %+v", bad)

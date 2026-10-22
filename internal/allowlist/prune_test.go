@@ -89,3 +89,35 @@ func TestPruneHistoryIsDeterministic(t *testing.T) {
 		t.Fatalf("replicas differ:\n%v\n%v", ha, hb)
 	}
 }
+
+// The byte budget counts each distinct document once, newest first, and
+// always keeps the served one; pruning frees pages, which LiveBytes sees.
+func TestHistoryKeepForBytesAndLiveBytes(t *testing.T) {
+	store := openJournaled(t)
+	for i := range 8 {
+		if err := store.PutWorkload(fmt.Sprintf("w%d", i), pruneWorkload(t, i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h, _ := store.History()
+	last, _, _ := store.Object(h[len(h)-1].Digest)
+	if keep, err := store.HistoryKeepForBytes(1); err != nil || keep != 1 {
+		t.Fatalf("tiny budget keeps the head only: %d %v", keep, err)
+	}
+	if keep, _ := store.HistoryKeepForBytes(int64(len(last)) * 3); keep < 2 || keep >= len(h) {
+		t.Fatalf("budget of ~3 documents kept %d of %d", keep, len(h))
+	}
+	if keep, _ := store.HistoryKeepForBytes(1 << 40); keep != len(h) {
+		t.Fatalf("huge budget kept %d of %d", keep, len(h))
+	}
+	before, err := store.LiveBytes()
+	if err != nil || before <= 0 {
+		t.Fatalf("live bytes: %d %v", before, err)
+	}
+	if _, err := store.PruneHistory(1); err != nil {
+		t.Fatal(err)
+	}
+	if after, _ := store.LiveBytes(); after >= before {
+		t.Fatalf("pruning freed nothing: %d -> %d", before, after)
+	}
+}
