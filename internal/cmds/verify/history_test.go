@@ -180,7 +180,7 @@ func TestPinPolicy(t *testing.T) {
 			}
 			for _, partial := range []bool{false, true} {
 				oc := Outcome{Verified: !partial, Partial: partial, MeasuredPolicies: tc.history}
-				applyPinPolicy(&oc, cfg, ev)
+				applyPinPolicy(context.Background(), &oc, cfg, ev)
 				if passed := oc.Verified || oc.Partial; passed != (tc.wantErr == "") || !strings.Contains(oc.Error, tc.wantErr) {
 					t.Errorf("applyPinPolicy(partial %v) = passed %v, error %q; want error containing %q", partial, passed, oc.Error, tc.wantErr)
 				}
@@ -232,7 +232,7 @@ func TestPinPolicyThroughVerdictPolicies(t *testing.T) {
 				ev.leaf = &x509.Certificate{}
 			}
 			oc := newOutcome(cfg, ev, tdxResult(testMRTD, rtmr3Claims(runtimemeasure.FromDigestsSeeded(seed, measured))), nil, plan)
-			applyVerdictPolicies(&oc, cfg, ev, nil, operatorKeysReport{}, plan, measurementsReport{})
+			applyVerdictPolicies(context.Background(), &oc, cfg, ev, nil, operatorKeysReport{}, plan, measurementsReport{})
 			checkPolicyHistory(context.Background(), &oc, cfg, ev, plan.trustKeys)
 			if oc.Verified || oc.Partial != (tc.wantErr == "") || !strings.Contains(oc.Error, tc.wantErr) {
 				t.Errorf("verdict = verified %v, partial %v, error %q; want partial only without error containing %q", oc.Verified, oc.Partial, oc.Error, tc.wantErr)
@@ -623,7 +623,7 @@ func TestUncheckedHistoryIsPartial(t *testing.T) {
 			}
 			ev := &evidence{platform: "tdx", measured: measured, fresh: true}
 			oc := newOutcome(tc.cfg, ev, tdxResult(testMRTD, rtmr3Claims(reg)), nil, plan)
-			applyVerdictPolicies(&oc, tc.cfg, ev, nil, operatorKeysReport{}, plan, measurementsReport{})
+			applyVerdictPolicies(context.Background(), &oc, tc.cfg, ev, nil, operatorKeysReport{}, plan, measurementsReport{})
 			if oc.Partial != tc.wantPartial || oc.Verified == tc.wantPartial || oc.Error != "" {
 				t.Fatalf("verdict = verified %v, partial %v, error %q; want partial %v", oc.Verified, oc.Partial, oc.Error, tc.wantPartial)
 			}
@@ -652,7 +652,9 @@ func TestStaleHistoryIsPartial(t *testing.T) {
 	trustCfg := config{url: srv.URL, trustOperator: true, trustOperatorKeys: keysPath, timeout: 5 * time.Second}
 	plan, _ := historyPlan(t, trustCfg)
 	judges := map[string]func(*Outcome, *evidence){
-		"pin": func(oc *Outcome, ev *evidence) { applyPinPolicy(oc, config{pinPolicies: []string{digest}}, ev) },
+		"pin": func(oc *Outcome, ev *evidence) {
+			applyPinPolicy(context.Background(), oc, config{pinPolicies: []string{digest}}, ev)
+		},
 		"trust": func(oc *Outcome, ev *evidence) {
 			checkPolicyHistory(context.Background(), oc, trustCfg, ev, plan.trustKeys)
 		},
@@ -748,7 +750,7 @@ func TestHistoryReplayBoundToMatchedImage(t *testing.T) {
 	if !slices.ContainsFunc(oc.Warnings, func(w string) bool { return strings.Contains(w, "not replayed") }) {
 		t.Errorf("Warnings = %v, want the unreplayed-history warning", oc.Warnings)
 	}
-	applyPinPolicy(&oc, cfg, ev)
+	applyPinPolicy(context.Background(), &oc, cfg, ev)
 	if oc.Verified || oc.Partial || !strings.Contains(oc.Error, "policy_history_absent") {
 		t.Errorf("verdict = verified %v, partial %v, error %q; want policy_history_absent", oc.Verified, oc.Partial, oc.Error)
 	}

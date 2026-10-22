@@ -541,7 +541,7 @@ func (h AttestHandler) matchWorkload(ctx context.Context, snapshot *PolicySnapsh
 	matched := &armtls.MatchedWorkload{
 		Name:             name,
 		AllowlistVersion: snapshot.Version,
-		AllowlistDigest:  snapshot.Digest,
+		AllowlistDigest:  snapshot.StampDigest(name),
 	}
 	if err := matched.Validate(); err != nil {
 		return unnamed(slog.LevelError, "matched workload failed validation", "error", err)

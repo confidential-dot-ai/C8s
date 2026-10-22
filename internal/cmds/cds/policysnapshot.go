@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
@@ -13,11 +14,19 @@ import (
 // the policy — the matched name, the version, the digest — comes from ONE
 // snapshot, so a write racing an issuance can never mix two documents into one
 // stamp. The version is never read separately from the document.
+//
+// With a seed layer (allowlist.Layered) decisions run on both layers, and a
+// leaf matched by a seed entry is stamped with the seed's digest.
 type PolicySnapshot struct {
+	// Allowlist is the document decisions run on: the stored one combined
+	// with the seed layer, if any.
 	Allowlist *pkgallowlist.Allowlist
 	Version   string
-	Canonical []byte
+	Canonical []byte // canonical bytes of the stored (served) document
 	Digest    []byte // SHA-256 of Canonical, 32 bytes
+
+	seed       *pkgallowlist.Allowlist // nil without a seed layer
+	seedDigest []byte                  // SHA-256 of seed's canonical bytes
 
 	// members indexes every admitted digest — each workload's init and main
 	// containers — for the membership gate.
@@ -32,8 +41,20 @@ type policyStore interface {
 	LoadAll() (*pkgallowlist.Allowlist, string, error)
 }
 
+// seedLayerStore is a policy store with a seed layer, satisfied by
+// *internal/allowlist.Layered.
+type seedLayerStore interface {
+	LoadLayers() (stored *pkgallowlist.Allowlist, version string, seed *pkgallowlist.Allowlist, err error)
+}
+
 // NewPolicySnapshot builds a validated snapshot from one LoadAll result.
 func NewPolicySnapshot(al *pkgallowlist.Allowlist, version string) (*PolicySnapshot, error) {
+	return newLayeredSnapshot(al, version, nil)
+}
+
+// newLayeredSnapshot builds a validated snapshot of the stored document al and
+// the seed layer (nil without one).
+func newLayeredSnapshot(al *pkgallowlist.Allowlist, version string, seed *pkgallowlist.Allowlist) (*PolicySnapshot, error) {
 	if al == nil {
 		return nil, fmt.Errorf("policy snapshot: nil allowlist")
 	}
@@ -48,25 +69,54 @@ func NewPolicySnapshot(al *pkgallowlist.Allowlist, version string) (*PolicySnaps
 	if err != nil {
 		return nil, fmt.Errorf("policy snapshot: digest allowlist: %w", err)
 	}
-	members := make(map[string]struct{}, len(al.Workloads))
-	for _, w := range al.Workloads {
+	var seedDigest []byte
+	if seed != nil {
+		if seedDigest, err = seed.CanonicalDigest(); err != nil {
+			return nil, fmt.Errorf("policy snapshot: digest allowlist seed: %w", err)
+		}
+	}
+	decision := allowlist.Combine(al, seed)
+	members := make(map[string]struct{}, len(decision.Workloads))
+	for _, w := range decision.Workloads {
 		for _, d := range w.Digests() {
 			members[d.String()] = struct{}{}
 		}
 	}
 	return &PolicySnapshot{
-		Allowlist: al,
-		Version:   version,
-		Canonical: canonical,
-		Digest:    digest,
-		members:   members,
+		Allowlist:  decision,
+		Version:    version,
+		Canonical:  canonical,
+		Digest:     digest,
+		seed:       seed,
+		seedDigest: seedDigest,
+		members:    members,
 	}, nil
+}
+
+// StampDigest is the policy digest a leaf matched to entry name is stamped
+// with: the seed layer's when the entry is the seed's, else the served
+// document's.
+func (s *PolicySnapshot) StampDigest(name string) []byte {
+	if s.seed == nil {
+		return s.Digest
+	}
+	if _, ok := s.seed.Workloads[name]; ok {
+		return s.seedDigest
+	}
+	return s.Digest
 }
 
 // loadPolicySnapshot reads the store exactly once and snapshots the result. An
 // unavailable store is an error — issuance fails rather than stamping from
 // stale cached authorization state.
 func loadPolicySnapshot(store policyStore) (*PolicySnapshot, error) {
+	if layered, ok := store.(seedLayerStore); ok {
+		al, version, seed, err := layered.LoadLayers()
+		if err != nil {
+			return nil, fmt.Errorf("load allowlist: %w", err)
+		}
+		return newLayeredSnapshot(al, version, seed)
+	}
 	al, version, err := store.LoadAll()
 	if err != nil {
 		return nil, fmt.Errorf("load allowlist: %w", err)

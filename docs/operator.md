@@ -582,7 +582,8 @@ With CDS a singleton:
 For the measured node image, CDS stores its database at `/mnt/c8s-data/cds/allowlist.db`
 in the Pod's `emptyDir`. A container restart preserves that directory; Pod
 recreation or a VM reboot loses it. The baked component seed and optional
-signed `workloads` document initialize the new store; reapply any later
+signed `workloads` document form a fixed seed layer beside the store: the new
+store starts empty, and an upload never drops the seed. Reapply any later
 operator changes. The CA signing key is in process memory and changes on
 any CDS process restart, so plan for certificate re-bootstrap even when the
 database survives. This image does not expose a persistent-volume switch in
@@ -1225,6 +1226,21 @@ themselves against the replayed digests, so any router replica may serve
 them. Each fetch, here and with `--fetch-allowlists`, has its own `--timeout`, and all of them together get four times
 `--timeout`; a fetch that times out or cannot
 connect exits 3, as for unavailable evidence.
+
+On a measured node image, CDS keeps the image's allowlist seed as a fixed
+layer, and a leaf whose pod matched a seed entry (the router, the operator,
+the mesh) is stamped with the seed's digest. The seed carries no operator
+signature. `--trust-operator` accepts such a leaf policy when the target names
+the same digest in the `C8s-Allowlist-Seed` header of `GET /allowlist`, fetched
+over TLS bound to the attested serving certificate. It still fetches the seed
+and checks it hashes to the digest, and reports it as `leaf_policy_seed`. The
+seed is the image's baked seed plus the launch document's workloads, which the
+image pin and the pinned launch key already cover. This applies only to the
+leaf's policy: every policy in the replayed history still needs a signature.
+Without an attested serving certificate (a saved evidence file, or a target
+that does not serve `/allowlist`), the leaf policy fails as unsigned.
+`--pin-policy` never accepts the seed on its own; when the leaf's unpinned
+policy is the seed the target names, the error says so, and you can pin it.
 
 To review the documents before pinning them, add `--fetch-allowlists DIR`
 (also requires `--operator-pkey` or an anchored `--image-policy-file` image): `verify` saves each one as

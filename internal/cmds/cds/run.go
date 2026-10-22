@@ -182,22 +182,14 @@ func run(cfg config) error {
 	secretsChallenges := attestation.NewChallengeStore(cfg.challengeTTL)
 	checker := readiness.NewChecker(asClient, cfg.readinessInterval)
 
-	// Seed before serving so the first GET /allowlist returns the bootstrap
-	// allowlist (CDS, attestation-api, system images) rather than an empty
-	// set; an unseeded store would deny every worker pull until an operator
-	// populated it. Fail closed on any seed error.
-	if cfg.allowlistSeed != "" {
-		seedCtx, stopSeed := context.WithCancel(ctx)
-		following, err := startSeed(seedCtx, &allowlistStore, cfg.allowlistSeed, cfg.followSeed)
-		if err != nil {
-			stopSeed()
-			return fmt.Errorf("seed allowlist: %w", err)
-		}
-		// Runs before the store's deferred Close.
-		defer func() {
-			stopSeed()
-			<-following
-		}()
+	// Seed before serving so the first decision includes the bootstrap
+	// allowlist (CDS, attestation-api, system images); an unseeded store would
+	// deny every worker pull until an operator populated it. On a chart-managed
+	// install the seed enters the store; with --seed-layer it stays a layer of
+	// its own. Fail closed on any seed error.
+	allowlistLayers, err := openSeed(&allowlistStore, cfg.allowlistSeed, cfg.seedLayer)
+	if err != nil {
+		return fmt.Errorf("seed allowlist: %w", err)
 	}
 
 	// C6: there is no route seed; an empty store waits for an operator write.
@@ -277,7 +269,7 @@ func run(cfg config) error {
 		// One store behind both handlers: an operator write and a workload read
 		// are two doors onto the same paths.
 		store := newSecretsStore(cfg)
-		policy := secrets.NewCachedPolicy(&allowlistStore)
+		policy := secrets.NewCachedPolicy(allowlistLayers)
 		secretsHandler = &secrets.Handler{
 			Store:          store,
 			Challenges:     &secretsChallenges,
@@ -321,7 +313,7 @@ func run(cfg config) error {
 			Images:            pinned.Images,
 			SANValidation:     cfg.sanValidation,
 			Policy:            policy,
-			AllowlistStore:    &allowlistStore,
+			AllowlistStore:    allowlistLayers,
 			PolicySnapshots:   &policySnapshotCache{},
 			SandboxDigests:    sandboxDigests,
 			InventoryHosts:    inventoryHosts,
@@ -331,6 +323,7 @@ func run(cfg config) error {
 			Store:             &allowlistStore,
 			WriteAuthorizer:   operatorAuthorizer,
 			MaxWriteBodyBytes: allowlistWriteBodyCap,
+			Layers:            allowlistLayers,
 		},
 		Routes: routeHandler{
 			Store:     &allowlistStore,
@@ -554,8 +547,8 @@ func validateConfig(cfg config) error {
 	if cfg.readinessInterval <= 0 {
 		return fmt.Errorf("--readiness-interval must be positive")
 	}
-	if cfg.followSeed && cfg.allowlistSeed == "" {
-		return fmt.Errorf("--follow-seed needs --allowlist-seed")
+	if cfg.seedLayer && cfg.allowlistSeed == "" {
+		return fmt.Errorf("--seed-layer needs --allowlist-seed")
 	}
 	if cfg.minCAValidity <= 0 {
 		return fmt.Errorf("--min-ca-validity must be positive (it is the window CA renewal has to succeed in before /readyz fails)")
