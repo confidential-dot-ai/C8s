@@ -12,18 +12,36 @@
 # front door is stamped with the seeded router entry.
 #
 # Deletes the lane's CVM first: the host may not hold two.
-# Env: NS, VM (the lane's CVM), IMAGE_MANIFEST, ROUTER_SEED (the seed this
-# build renders, prepare.sh's node-image/allowlist-seed.json).
+# Needs: c8s, crane, jq, kubectl (launcher cluster).
+# Env: NS, VM (the lane's CVM), IMAGE_MANIFEST, C8S_SOURCE_DIR, c8sRef,
+# GH_TOKEN (reads the component images).
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 . "$here/lib.sh"
-: "${NS:?}" "${VM:?}" "${IMAGE_MANIFEST:?}" "${ROUTER_SEED:?}"
+: "${NS:?}" "${VM:?}" "${IMAGE_MANIFEST:?}" "${C8S_SOURCE_DIR:?}" "${c8sRef:?}" "${GH_TOKEN:?}"
 
 acme_vm=$VM-acme
 host=front.c8s-e2e.test
 work=$(mktemp -d)
 cd "$work"
-router=$(jq -er '[.workloads | keys[] | select(startswith("c8s-router-"))] | if length == 1 then .[0] else error("want one router entry") end' "$ROUTER_SEED")
+
+# The seed rendered the way node-guest-image/c8s/mkosi.sync renders the one
+# it bakes, from this commit's core images and the Helm version it pins.
+crane auth login ghcr.io -u "${GITHUB_ACTOR:-c8s-e2e}" --password-stdin <<<"$GH_TOKEN"
+sync="$C8S_SOURCE_DIR/node-guest-image/c8s/mkosi.sync"
+helm_version=$(sed -n 's/^HELM_VERSION="\(.*\)"$/\1/p' "$sync")
+helm_sha=$(sed -n 's/^HELM_LINUX_AMD64_SHA256="\(.*\)"$/\1/p' "$sync")
+rke2_version=$(sed -n 's/^RKE2_VERSION="\([^+]*\)+.*"$/\1/p' "$sync")
+curl -fsSL --retry 4 -o helm.tgz "https://get.helm.sh/helm-$helm_version-linux-amd64.tar.gz"
+echo "$helm_sha  helm.tgz" | sha256sum -c -
+mkdir -p bin && tar -xzf helm.tgz -C bin --strip-components 1 linux-amd64/helm
+render=()
+for pair in image:c8s-operator cds-image:cds armtls-mesh-image:armtls-mesh; do
+  flag=${pair%%:*} repo=ghcr.io/confidential-dot-ai/${pair#*:}
+  render+=("--$flag-repository" "$repo" "--$flag-digest" "$(crane digest "$repo:$c8sRef")")
+done
+PATH="$work/bin:$PATH" c8s node-image render --hardware-platform tdx --kube-version "$rke2_version" "${render[@]}" --output-dir node-image
+router=$(jq -er '[.workloads | keys[] | select(startswith("c8s-router-"))] | if length == 1 then .[0] else error("want one router entry") end' node-image/allowlist-seed.json)
 echo "seeded router entry: $router"
 
 # The ACME directory is under .invalid, so the sidecar can reach no CA.
@@ -35,16 +53,14 @@ kubectl -n "$NS" create secret generic "$acme_vm-opkey" \
   --from-file=launch.yaml=launch/server/launch.yaml \
   --from-file=launch.yaml.sig=launch/server/launch.yaml.sig
 
-# The lane VM's spec with this launch's opkey and a scratch disk of its own,
-# and without the gateway's state disk.
+# The lane VM's spec with this launch's opkey and a scratch disk of its own.
 kubectl -n "$NS" get vm "$VM" -o json | jq --arg name "$acme_vm" '
   {apiVersion, kind,
    metadata: {name: $name, namespace: .metadata.namespace, labels: .metadata.labels, annotations: .metadata.annotations},
    spec: (.spec
      | .template.metadata.labels["kubevirt.io/domain"] = $name
-     | .template.spec.domain.devices.disks |= map(select(.name != "gwstate"))
-     | .template.spec.volumes |= map(select(.name != "gwstate")
-         | if .name == "scratch" then .persistentVolumeClaim.claimName = "\($name)-scratch"
+     | .template.spec.volumes |= map(
+         if .name == "scratch" then .persistentVolumeClaim.claimName = "\($name)-scratch"
            elif .name == "opkey" then .secret.secretName = "\($name)-opkey"
            else . end))}' > vm.json
 kubectl -n "$NS" get pvc "$VM-scratch" -o json | jq --arg name "$acme_vm-scratch" '
