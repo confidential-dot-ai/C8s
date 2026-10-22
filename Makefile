@@ -84,13 +84,10 @@ C8S_TEST_COUNT ?= -count=1
 test:
 	go test -race $(C8S_TEST_COUNT) -timeout=120s work
 
-# The pod ruleset installs over netlink into a network namespace the test
-# creates, so it needs uid 0 there: the test binary runs under sudo unless this
-# shell is already root. C8S_REQUIRE_NFT=1 turns a namespace it cannot create
-# into a failure instead of a skip.
+# Real packet capture, guest bootstrap and private RAM credential custody need
+# Linux root and namespace capabilities. Missing privileges fail this target.
 test-podmesh-netns:
-	@runner="env C8S_REQUIRE_NFT=1"; [ "$$(id -u)" = 0 ] || runner="sudo -n $$runner"; \
-		go test -race -count=1 -exec "$$runner" -run InTheNamespace ./internal/podmesh/ruleset ./internal/cmds/nri-image-policy ./internal/cmds/armtlsmesh
+	bash ./scripts/test-podmesh.sh -race
 
 test-integration:
 	./test/integration/run.sh
