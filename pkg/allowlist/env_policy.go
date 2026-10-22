@@ -205,7 +205,7 @@ func (p matchEnvPolicy) admits(o *EnvObservation) bool {
 		return false
 	}
 	for name := range o.VariableDigests {
-		if _, listed := p.variables[name]; !listed && !(p.serviceLinks && ServiceLinkName(name)) {
+		if _, listed := p.variables[name]; !listed && (!p.serviceLinks || !ServiceLinkName(name)) {
 			return false
 		}
 	}
