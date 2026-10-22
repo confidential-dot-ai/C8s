@@ -1,0 +1,176 @@
+{
+  "apiVersion": "v1",
+  "kind": "List",
+  "items": [
+    {
+      "metadata": {
+        "name": "cilium-72q2n",
+        "namespace": "kube-system",
+        "uid": "9da9cb89-4e3e-4e6e-b96b-cc02fc9eaa13",
+        "ownerReferences": [
+          {
+            "apiVersion": "apps/v1",
+            "blockOwnerDeletion": true,
+            "controller": true,
+            "kind": "DaemonSet",
+            "name": "cilium",
+            "uid": "ad3fe072-f930-40bf-9595-fd465c78665e"
+          }
+        ]
+      },
+      "spec": {
+        "initContainers": [
+          {
+            "name": "install-portmap-cni-plugin",
+            "image": "rancher/hardened-cni-plugins:v1.9.1-build20260717",
+            "env": [
+              {
+                "name": "SKIP_CNI_BINARIES",
+                "value": "bandwidth,bridge,dhcp,firewall,flannel,host-device,host-local,ipvlan,loopback,macvlan,ptp,sbr,static,tuning,vlan,vrf"
+              }
+            ]
+          },
+          {
+            "name": "config",
+            "image": "rancher/mirrored-cilium-cilium:v1.19.6",
+            "env": [
+              {
+                "name": "K8S_NODE_NAME",
+                "valueFrom": {
+                  "fieldRef": {
+                    "apiVersion": "v1",
+                    "fieldPath": "spec.nodeName"
+                  }
+                }
+              },
+              {
+                "name": "CILIUM_K8S_NAMESPACE",
+                "valueFrom": {
+                  "fieldRef": {
+                    "apiVersion": "v1",
+                    "fieldPath": "metadata.namespace"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "name": "mount-cgroup",
+            "image": "rancher/mirrored-cilium-cilium:v1.19.6",
+            "env": [
+              {
+                "name": "CGROUP_ROOT",
+                "value": "/run/cilium/cgroupv2"
+              },
+              {
+                "name": "BIN_PATH",
+                "value": "/opt/cni/bin"
+              }
+            ]
+          },
+          {
+            "name": "apply-sysctl-overwrites",
+            "image": "rancher/mirrored-cilium-cilium:v1.19.6",
+            "env": [
+              {
+                "name": "BIN_PATH",
+                "value": "/opt/cni/bin"
+              }
+            ]
+          },
+          {
+            "name": "mount-bpf-fs",
+            "image": "rancher/mirrored-cilium-cilium:v1.19.6"
+          },
+          {
+            "name": "clean-cilium-state",
+            "image": "rancher/mirrored-cilium-cilium:v1.19.6",
+            "env": [
+              {
+                "name": "CILIUM_ALL_STATE",
+                "valueFrom": {
+                  "configMapKeyRef": {
+                    "key": "clean-cilium-state",
+                    "name": "cilium-config",
+                    "optional": true
+                  }
+                }
+              },
+              {
+                "name": "CILIUM_BPF_STATE",
+                "valueFrom": {
+                  "configMapKeyRef": {
+                    "key": "clean-cilium-bpf-state",
+                    "name": "cilium-config",
+                    "optional": true
+                  }
+                }
+              },
+              {
+                "name": "WRITE_CNI_CONF_WHEN_READY",
+                "valueFrom": {
+                  "configMapKeyRef": {
+                    "key": "write-cni-conf-when-ready",
+                    "name": "cilium-config",
+                    "optional": true
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "name": "install-cni-binaries",
+            "image": "rancher/mirrored-cilium-cilium:v1.19.6"
+          }
+        ],
+        "containers": [
+          {
+            "name": "cilium-agent",
+            "image": "rancher/mirrored-cilium-cilium:v1.19.6",
+            "env": [
+              {
+                "name": "K8S_NODE_NAME",
+                "valueFrom": {
+                  "fieldRef": {
+                    "apiVersion": "v1",
+                    "fieldPath": "spec.nodeName"
+                  }
+                }
+              },
+              {
+                "name": "CILIUM_K8S_NAMESPACE",
+                "valueFrom": {
+                  "fieldRef": {
+                    "apiVersion": "v1",
+                    "fieldPath": "metadata.namespace"
+                  }
+                }
+              },
+              {
+                "name": "CILIUM_CLUSTERMESH_CONFIG",
+                "value": "/var/lib/cilium/clustermesh/"
+              },
+              {
+                "name": "GOMEMLIMIT",
+                "valueFrom": {
+                  "resourceFieldRef": {
+                    "divisor": "1",
+                    "resource": "limits.memory"
+                  }
+                }
+              },
+              {
+                "name": "KUBE_CLIENT_BACKOFF_BASE",
+                "value": "1"
+              },
+              {
+                "name": "KUBE_CLIENT_BACKOFF_DURATION",
+                "value": "120"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}
