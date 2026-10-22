@@ -222,6 +222,9 @@ func newHANode(cfg config, st haStores) (*cdsha.Node, error) {
 	}
 	decrees := cdsha.KubeDecrees{Client: kube, Namespace: h.decreeNS, ClusterID: h.clusterID}
 	return cdsha.NewNode(cdsha.Config{
+		// format1-sim: a release that reads only format 1, to test a live
+		// rolling upgrade that raises the agreed format (test image only).
+		Format:          1,
 		ClusterID:       h.clusterID,
 		NodeName:        h.nodeName,
 		Bind:            net.JoinHostPort(cfg.host, strconv.Itoa(h.port)),
