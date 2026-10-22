@@ -15,7 +15,6 @@ import (
 	"strings"
 
 	"github.com/confidential-dot-ai/attestation-go/remote"
-	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
@@ -71,7 +70,7 @@ func checkHistoryFlags(cfg config, images []remote.ImagePin) ([]*ecdsa.PublicKey
 // applyPinPolicy enforces --pin-policy: every policy the node enforced since
 // boot, and the one the leaf was issued under, must be pinned. It fails a
 // partial verdict too, so it holds wherever it runs among the demotions.
-func applyPinPolicy(ctx context.Context, oc *Outcome, cfg config, ev *evidence) {
+func applyPinPolicy(oc *Outcome, cfg config, ev *evidence) {
 	if len(cfg.pinPolicies) == 0 || (!oc.Verified && !oc.Partial) {
 		return
 	}
@@ -97,11 +96,7 @@ func applyPinPolicy(ctx context.Context, oc *Outcome, cfg config, ev *evidence) 
 	case err != nil:
 		fail("policy_history_not_pinned: %v", err)
 	case d != "" && !slices.Contains(cfg.pinPolicies, d):
-		hint := ""
-		if seed, err := attestedSeed(ctx, cfg, ev); err == nil && seed == d && !slices.Contains(oc.MeasuredPolicies, d) {
-			hint = "; the target names it, over the attested channel, as the node image's allowlist seed: pin it to accept it"
-		}
-		fail("policy_history_not_pinned: the leaf was issued under policy %s, which is not pinned%s", d, hint)
+		fail("policy_history_not_pinned: the leaf was issued under policy %s, which is not pinned", d)
 	case d != "":
 		demoteUnvouchedStamp(oc, cfg, "pinned")
 	}
@@ -127,31 +122,6 @@ func applyUncheckedHistoryPolicy(oc *Outcome, cfg config) {
 		return
 	}
 	demoteToPartial(oc, fmt.Sprintf("the node's policy history: RTMR[3] replayed %d measured policies, but no policy over them was checked (pass --pin-policy or --trust-operator)", len(oc.MeasuredPolicies)))
-}
-
-// attestedSeed returns the digest of the allowlist seed the target's CDS keeps
-// as a fixed layer, from the pkgallowlist.SeedHeader of GET /allowlist fetched
-// over TLS bound to the attested serving certificate; "" when it names none.
-// On a router the response comes from CDS through the allowlist proxy, which
-// attests CDS. The seed is the node image's baked seed, which the image pin
-// covers and the node's base allowlist enforces.
-func attestedSeed(ctx context.Context, cfg config, ev *evidence) (string, error) {
-	if ev.certSHA256 == "" {
-		return "", errors.New("no attested serving certificate to bind the fetch to")
-	}
-	_, baseURL, err := normalizeTarget(cfg.url, defaultPort(cfg))
-	if err != nil {
-		return "", err
-	}
-	resp, err := fetchAttested(ctx, baseURL+"/allowlist", cfg.server, ev.certSHA256, cfg.timeout)
-	if err != nil {
-		return "", err
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("GET /allowlist: status %d", resp.StatusCode)
-	}
-	return resp.Header.Get(pkgallowlist.SeedHeader), nil
 }
 
 // errLeafUnstamped reports a leaf without a matched-workload stamp: CDS
@@ -219,11 +189,6 @@ const historyTimeouts = 4
 // against keys, so the fetch needs no attested channel: binding it to one
 // serving leaf would only fail on a different replica. It reports whether the
 // verdict failed because the target could not be reached.
-//
-// Only the seed needs that channel: a leaf policy without a signature passes when it is outside the history and
-// the target names it as its seed layer over the attested channel
-// (attestedSeed); it is reported as LeafPolicySeed. The history itself always
-// needs signatures: a node never measures its seed.
 func checkPolicyHistory(ctx context.Context, oc *Outcome, cfg config, ev *evidence, keys []*ecdsa.PublicKey) (unreachable bool) {
 	if (!cfg.trustOperator && cfg.fetchAllowlists == "") || (!oc.Verified && !oc.Partial) {
 		return false
@@ -246,10 +211,9 @@ func checkPolicyHistory(ctx context.Context, oc *Outcome, cfg config, ev *eviden
 	}
 	digests := oc.MeasuredPolicies
 	unstamped, stamped := false, false
-	leaf := ""
 	if cfg.trustOperator {
 		d, err := leafPolicy(ev)
-		unstamped, stamped, leaf = errors.Is(err, errLeafUnstamped), d != "", d
+		unstamped, stamped = errors.Is(err, errLeafUnstamped), d != ""
 		if err != nil && !unstamped {
 			fail("policy_history_unsigned: %v", err)
 			return false
@@ -304,22 +268,6 @@ func checkPolicyHistory(ctx context.Context, oc *Outcome, cfg config, ev *eviden
 			continue
 		}
 		token, err := fetchPolicy(ctx, object+"/signature", cfg.server, cfg.timeout)
-		if errors.Is(err, errNotFound) && digest == leaf && !slices.Contains(oc.MeasuredPolicies, digest) {
-			seed, err := attestedSeed(ctx, cfg, ev)
-			if err == nil && seed == digest {
-				oc.LeafPolicySeed = digest
-				continue
-			}
-			why := "the target names no seed"
-			switch {
-			case err != nil:
-				why = "the target's seed could not be authenticated: " + err.Error()
-			case seed != "":
-				why = "the target names seed " + seed
-			}
-			fail("policy_history_unsigned: policy %s carries no operator signature; it is the leaf's policy and not the node image's allowlist seed (%s)", digest, why)
-			return false
-		}
 		if errors.Is(err, errNotFound) {
 			fail("policy_history_unsigned: policy %s carries no operator signature; upload the whole document to sign it (c8s allowlist upload)", digest)
 			return false

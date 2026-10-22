@@ -421,7 +421,7 @@ func verifyEvidence(ctx context.Context, cfg config, plan *verifyPlan, ev *evide
 	oc := newOutcome(cfg, ev, result, verr, plan)
 	oc.OperatorKeys = opKeys.fingerprints
 	oc.OperatorKeysNote = opKeys.note
-	applyVerdictPolicies(ctx, &oc, cfg, ev, held, opKeys, plan, servedMeasurements)
+	applyVerdictPolicies(&oc, cfg, ev, held, opKeys, plan, servedMeasurements)
 	// The history check gets its own --timeout budget, not what the
 	// verification left of it.
 	unreachable := checkPolicyHistory(ctx, &oc, cfg, ev, plan.trustKeys)
@@ -445,10 +445,10 @@ func verifyEvidence(ctx context.Context, cfg config, plan *verifyPlan, ev *evide
 // the verdict), then the honesty demotions, which only ever turn a passing
 // verdict partial. Ordering matters: applyChainAnchorPolicy reads the pinned
 // chain check's outcome from oc.Verified.
-func applyVerdictPolicies(ctx context.Context, oc *Outcome, cfg config, ev *evidence, held *heldAllowlist, opKeys operatorKeysReport, plan *verifyPlan, servedMeasurements measurementsReport) {
+func applyVerdictPolicies(oc *Outcome, cfg config, ev *evidence, held *heldAllowlist, opKeys operatorKeysReport, plan *verifyPlan, servedMeasurements measurementsReport) {
 	applySandboxPolicy(oc, cfg, ev, opKeys, plan, servedMeasurements)
 	applyWorkloadPolicy(oc, cfg, ev, held)
-	applyPinPolicy(ctx, oc, cfg, ev)
+	applyPinPolicy(oc, cfg, ev)
 	applyUncheckedHistoryPolicy(oc, cfg)
 	applyFrontDoorPolicy(oc, ev)
 	applyChainAnchorPolicy(oc, cfg, ev)
@@ -1230,11 +1230,6 @@ type Outcome struct {
 	// --pin-policy and --trust-operator at partial. True does not mean the
 	// stamp was authenticated: that takes --mesh-ca (see WorkloadNote).
 	LeafStamped *bool `json:"leaf_stamped,omitempty"`
-
-	// LeafPolicySeed is the leaf's stamped policy digest when --trust-operator
-	// accepted it as the target's allowlist seed layer (named over the
-	// attested channel) rather than by an operator signature.
-	LeafPolicySeed string `json:"leaf_policy_seed,omitempty"`
 }
 
 // applySandboxPolicy surfaces the leaf's sandbox ID and enforces --sandbox-id /
@@ -1845,9 +1840,6 @@ func renderText(cfg config, oc Outcome, out io.Writer) {
 	}
 	if len(oc.MeasuredPolicies) > 0 {
 		fmt.Fprintf(out, "  history:      %s (enforced on this node from boot up to the evidence's quote, RTMR[3])\n", strings.Join(oc.MeasuredPolicies, ", "))
-	}
-	if oc.LeafPolicySeed != "" {
-		fmt.Fprintf(out, "  leaf policy:  %s (the node image's allowlist seed, named by the target over the attested channel)\n", oc.LeafPolicySeed)
 	}
 	if oc.InitDataNote != "" {
 		if oc.InitData != "" {
