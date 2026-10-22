@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -121,6 +123,23 @@ func (w *world) elsewhere(p *pod, fn string) error {
 
 // meshEndpointContainer is the name the webhook gives the endpoint.
 const meshEndpointContainer = "c8s-mesh"
+
+// meshLogs is the endpoint log of every deployed pod that runs one.
+func (w *world) meshLogs() []godog.Attachment {
+	var logs []godog.Attachment
+	for _, name := range slices.Sorted(maps.Keys(w.pods)) {
+		p := w.pods[name]
+		if !p.deployed {
+			continue
+		}
+		out, err := kubectl(nil, "-n", p.namespace, "logs", p.name, "-c", meshEndpointContainer, "--tail=200")
+		if err != nil {
+			continue
+		}
+		logs = append(logs, godog.Attachment{FileName: name + "-" + meshEndpointContainer + ".log", MediaType: "text/plain", Body: []byte(out)})
+	}
+	return logs
+}
 
 // carriesMeshEndpoint: the pod's first init container is the endpoint, a
 // native sidecar, so it starts before get-cert and every workload container

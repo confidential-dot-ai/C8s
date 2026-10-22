@@ -145,6 +145,11 @@ func initializeScenario(be backend) func(*godog.ScenarioContext) {
 			if status == godog.StepSkipped && err != nil && err.Error() != godog.ErrSkip.Error() {
 				ctx = godog.Attach(ctx, godog.Attachment{FileName: "skip-reason", MediaType: "text/plain", Body: []byte(err.Error())})
 			}
+			// The scenario namespace is gone before the cluster's logs are
+			// collected, so a failure keeps its members' endpoint logs here.
+			if w, ok := ctx.Value(worldKey{}).(*world); ok && status == godog.StepFailed {
+				ctx = godog.Attach(ctx, w.meshLogs()...)
+			}
 			return ctx, err
 		})
 		registerAdmission(sc)
