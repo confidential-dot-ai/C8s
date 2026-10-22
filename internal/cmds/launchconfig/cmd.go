@@ -29,7 +29,8 @@ a server launch key and an agent launch key, fresh RKE2 join tokens, a
 signed launch.yaml per node and the client policy that pins the server.
 
   <out>/server.key    server launch key; also the operator key for
-                      'c8s get-kubeconfig --operator-key' and signed CDS writes
+                      'c8s get-kubeconfig --operator-key' and signed CDS writes.
+                      --operator-key reuses an existing key (a copy lands here)
   <out>/agent.key     the agent launch key; 'add-agent' reuses it
   <out>/server.json   C8S_MEASUREMENTS_CONFIG for clients of this cluster
   <out>/peers.json    every launch identity CDS admits and serves;
@@ -75,6 +76,8 @@ HOST_DATA to SHA-256 of that node's pubkey file. See docs/operator.md,
 	f.StringVar(&opts.Router.ACMEDirectoryURL, "acme-directory-url", "", "ACME directory URL, e.g. a staging directory for tests (requires --router-hostname; default Let's Encrypt)")
 	f.Int64Var(&opts.Router.MaxRequestBodyBytes, "router-max-request-body-bytes", 0, "largest application request body the router accepts, in bytes (default 1048576)")
 	f.StringArrayVar(&mirrors, "registry-mirror", nil, "registry=http://ipv4[:port], the mirror containerd pulls that registry through; repeatable, once per registry")
+	f.StringVar(&opts.OperatorKeyPath, "operator-key", "", "existing operator private key PEM to use as the server launch key instead of generating one")
+	f.StringVar(&opts.OperatorPubPath, "operator-pubkey", "", "public key PEM --operator-key must match byte for byte, e.g. the one clients pin (c8s keys new --pub-out)")
 	for _, name := range []string{"out", "cluster-id", "image-manifest"} {
 		_ = cmd.MarkFlagRequired(name)
 	}

@@ -3,6 +3,9 @@ package launchconfig
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -354,5 +357,101 @@ func TestNewBundleCarriesRegistryMirrorsToEveryNode(t *testing.T) {
 			t.Fatalf("%s lost the registry mirror: %+v", node, doc.RegistryMirrors)
 		}
 		stageBundleNode(t, dir, node)
+	}
+}
+
+// writeOperatorKey writes a P-256 key and its public half the way
+// `c8s keys new` does, returning both paths.
+func writeOperatorKey(t *testing.T) (keyPath, pubPath string) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	keyPath, pubPath = filepath.Join(dir, "op.key"), filepath.Join(dir, "op.pub")
+	keyPEM, err := certutil.MarshalECKeyPEM(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub, err := publicKeyPEM(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pubPath, []byte(pub), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return keyPath, pubPath
+}
+
+// An existing operator key becomes the server launch key unchanged: the
+// server's pubkey is the pinned file byte for byte, and the node boots.
+func TestNewBundleReusesTheOperatorKey(t *testing.T) {
+	keyPath, pubPath := writeOperatorKey(t)
+	dir := filepath.Join(t.TempDir(), "bundle")
+	if err := runBundleCmd(t, "new", "--out", dir, "--cluster-id", "demo", "--image-manifest", writeManifest(t, "tdx"),
+		"--server-address", "10.0.0.10", "--agent", "demo-f1",
+		"--operator-key", keyPath, "--operator-pubkey", pubPath); err != nil {
+		t.Fatal(err)
+	}
+	want, _ := os.ReadFile(pubPath)
+	got, err := os.ReadFile(filepath.Join(dir, serverDir, pubkeyFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatal("server pubkey is not the operator's public key")
+	}
+	server, _ := readBundleDocument(t, dir, serverDir)
+	if server.Server.OperatorPublicKey != string(want) {
+		t.Fatal("server.operatorPublicKey is not the operator's public key")
+	}
+	op, _ := certutil.LoadECPrivateKeyFile(keyPath)
+	copied, err := certutil.LoadECPrivateKeyFile(filepath.Join(dir, serverKeyFile))
+	if err != nil || !copied.Equal(op) {
+		t.Fatalf("bundle server.key is not the operator key (err %v)", err)
+	}
+	agentPub, _ := os.ReadFile(filepath.Join(dir, "demo-f1", pubkeyFile))
+	if bytes.Equal(agentPub, want) {
+		t.Fatal("the agent reuses the operator key")
+	}
+	stageBundleNode(t, dir, serverDir)
+	stageBundleNode(t, dir, "demo-f1")
+}
+
+func TestNewBundleRefusesAMismatchedOperatorPubkey(t *testing.T) {
+	keyPath, _ := writeOperatorKey(t)
+	_, otherPub := writeOperatorKey(t)
+	_, samePub := writeOperatorKey(t)
+	// The same key in a different encoding would change SNP HOST_DATA.
+	key, _ := certutil.LoadECPrivateKeyFile(keyPath)
+	pub, _ := publicKeyPEM(key)
+	if err := os.WriteFile(samePub, []byte(pub+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"other key", []string{"--operator-key", keyPath, "--operator-pubkey", otherPub}, "does not match"},
+		{"other encoding", []string{"--operator-key", keyPath, "--operator-pubkey", samePub}, "another encoding"},
+		{"pubkey alone", []string{"--operator-pubkey", otherPub}, "--operator-key"},
+		{"not a key", []string{"--operator-key", otherPub}, "--operator-key"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "bundle")
+			args := append([]string{"new", "--out", dir, "--cluster-id", "demo", "--image-manifest", writeManifest(t, "tdx")}, tc.args...)
+			err := runBundleCmd(t, args...)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want it to mention %q", err, tc.want)
+			}
+			if _, err := os.Stat(dir); !os.IsNotExist(err) {
+				t.Fatal("a refused bundle left its directory behind")
+			}
+		})
 	}
 }

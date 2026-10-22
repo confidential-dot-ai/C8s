@@ -174,6 +174,13 @@ The bundle directory is created new and never reused:
 | `demo/server/` | `pubkey`, `launch.yaml`, `launch.yaml.sig`: the server's opkeydata |
 | `demo/<agent>/` | the same three files for each agent |
 
+To keep an operator key that clients already pin across clusters, pass it
+with `--operator-key op.key` instead of letting the command generate one; it
+becomes the server launch key and is copied to `demo/server.key`. Add
+`--operator-pubkey op.pub` (the file `c8s keys new --pub-out` wrote) to refuse
+a key that does not match it byte for byte: on SNP, HOST_DATA hashes those
+bytes. The agent key is always generated.
+
 An agent can be added to a running cluster without touching the server:
 `c8s node launch-config add-agent --bundle demo --name demo-agent-3` derives
 its document from the server's (same cluster, image, agent token and keys,
