@@ -97,13 +97,10 @@ func SealBackup(recovery *ecdsa.PublicKey, meta BackupMeta, snapshot []byte) (Ba
 	return Backup{Meta: meta, EphemeralPub: eph.PublicKey().Bytes(), Nonce: nonce, Ciphertext: aead.Seal(nil, nonce, z, aad)}, nil
 }
 
-// backupWindowMax bounds the compression window. A snapshot holds the whole
-// allowlist history, and successive versions are near copies of one document
-// (often hundreds of KiB): gzip's 32 KiB window sees none of that repetition,
-// so a backup grew by about one compressed document per version. A window
-// reaching back past the previous version stores each repeat as a
-// reference; 16 MiB covers allowlist documents of several MiB while keeping
-// the encoder's memory small however long the history is.
+// backupWindowMax bounds the compression window. The snapshot is already
+// compressed (zstd with a long window from format 2, see encodeSnapshot), so
+// this layer gains little; it stays zstd so a backup of an uncompressed
+// payload is still small, and gzip backups of earlier releases still open.
 const backupWindowMax = 16 << 20
 
 // maxBackupPlain bounds a decompressed snapshot.
