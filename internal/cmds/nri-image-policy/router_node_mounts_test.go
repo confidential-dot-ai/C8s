@@ -112,6 +112,53 @@ func TestRouterNodePolicyMountsRefuseForeignAndWritableSources(t *testing.T) {
 	}
 }
 
+// The router's route manifest poller reads the node's followed CDS pins at
+// its own path, read-only from the plugin's file; the same mount from another
+// source, writable, or into another identity is refused.
+func TestRouterFollowedPinsMount(t *testing.T) {
+	for _, change := range []string{"", "foreign source", "writable", "wrong identity"} {
+		t.Run("change="+change, func(t *testing.T) {
+			p := routerNodeMountPlugin(t)
+			pod := routerNodeMountPod()
+			declaration := p.cfg.Allowlist.Base.Workloads["c8s-router-upstream"].Containers[0]
+			ctr := routerNodeMountContainer(pod, workloadclaims.AttestContainerName, workloadclaims.UpstreamUID, declaration)
+			adjustment := mustCredentialMounts(t, p, pod, ctr)
+			mount := mountTo(adjustment, workloadclaims.RouterCDSPinsPath)
+			if mount == nil || mount.GetSource() != p.cdsPins || !endsReadOnly(mount) {
+				t.Fatalf("followed pins mount = %+v, want a read-only bind of %s", mount, p.cdsPins)
+			}
+			if mountTo(adjustment, workloadclaims.CDSPinsPath) != nil {
+				t.Fatal("the router poller took the credential clients' pins path")
+			}
+			own := nodeMounts{cdsPins: p.cdsPins, cdsAddress: p.cdsAddress}
+			switch change {
+			case "foreign source":
+				mount.Source = "/other-node/policy"
+			case "writable":
+				mount.Options = append(mount.Options, "rw")
+			case "wrong identity":
+				ctr.User.Uid = workloadclaims.CredentialsUID
+			}
+			if got := isInjectedNodeMount(pod, ctr, mount, own); got != (change == "") {
+				t.Fatalf("injected node mount = %v for change %q", got, change)
+			}
+		})
+	}
+	// Without a rendered pins file the poller takes the address alone.
+	p := routerNodeMountPlugin(t)
+	p.cdsPins = ""
+	pod := routerNodeMountPod()
+	declaration := p.cfg.Allowlist.Base.Workloads["c8s-router-upstream"].Containers[0]
+	ctr := routerNodeMountContainer(pod, workloadclaims.AttestContainerName, workloadclaims.UpstreamUID, declaration)
+	if adjustment := mustCredentialMounts(t, p, pod, ctr); mountTo(adjustment, workloadclaims.RouterCDSPinsPath) != nil || mountTo(adjustment, workloadclaims.CDSAddressPath) == nil {
+		t.Fatalf("no pins file: mounts %+v", adjustment.GetMounts())
+	}
+	p.cdsAddress = ""
+	if adjustment := mustCredentialMounts(t, p, pod, ctr); adjustment != nil {
+		t.Fatalf("nothing to mount: %+v", adjustment)
+	}
+}
+
 func TestRouterNodeMountEligibilityDoesNotAuthorizeLaunch(t *testing.T) {
 	for _, client := range []struct {
 		name     string

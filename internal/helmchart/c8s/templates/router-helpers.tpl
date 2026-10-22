@@ -783,9 +783,10 @@ refuses one that is not already normalized.
 {{/*
 The CDS measurement pins a router sidecar verifies the chart-managed CDS
 against, as a JSON list of container args: the node's signed policy on a baked node, else
-cds.measurementsConfig, else cds.measurements and cds.rtmrs. Shared by
-allowlist-proxy and cds-attest, so the relay and the route manifest poller
-trust the same CDS.
+cds.measurementsConfig, else cds.measurements and cds.rtmrs. On a baked
+node cds-attest prefers the same policy as the enforcer follows it through
+the operator's CDS pin decrees (mounted at /run/c8s/router-cds-pins.json),
+so a CDS image rollout does not cut the router off its route manifest.
 */}}
 {{- define "router.cdsPinArgs" -}}
 {{- $args := list -}}
