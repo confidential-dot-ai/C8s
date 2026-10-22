@@ -25,9 +25,8 @@ var openRegister = runtimemeasure.Open
 
 // openMeasurer opens the pod role's RTMR[3] writer: the measured-policy
 // journal under the plugin's runtime directory, seeded with the launch key
-// the initrd staged. It is the one journal every reader of a guest's list
-// knows (armtls.NodeJournal), so pod-status and the get-cert sidecars read
-// the pod's measured images where they read a node's measured policies.
+// the initrd staged. Guest readers such as pod-status use the shared
+// armtls.NodeJournal path; measuring does not mount the journal into a Pod.
 // Config refuses allowlist.pull.measure_policies beside measure.rtmr3, so a
 // boot has one writer. Nil when measure.rtmr3 is off or the platform has no
 // runtime register. Any journal problem (divergence, unreadable register,

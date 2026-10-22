@@ -148,7 +148,9 @@ launch key:
   <out>/pod/      pubkey, launch.yaml, launch.yaml.sig: the pod CVM's opkeydata
 
 The pod's uid, namespace and name come from the manifest's metadata. The
-workloads allowlist is the complete set of images the pod CVM admits.`,
+workloads allowlist supplies the cold-boot base. The guest also polls CDS
+at --server-address, authenticated with --server-public-key and the image
+pins. The server public key must differ from the pod launch key.`,
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -166,9 +168,11 @@ workloads allowlist is the complete set of images the pod CVM admits.`,
 	f.IntVar(&opts.VCPUs, "vcpus", 0, "SNP only: the VM's vCPU count, selecting its launch digest from the manifest")
 	f.StringVar(&opts.NodeName, "name", "", "node name (default p-<pod uid>)")
 	f.StringVar(&opts.LaunchKeyPath, "launch-key", "", "existing pod launch key PEM (default: generate <out>/pod.key)")
+	f.StringVar(&opts.ServerAddress, "server-address", "", "server IPv4 address the pod CVM can reach for CDS")
+	f.StringVar(&opts.ServerPublicKeyPath, "server-public-key", "", "server launch public key PEM file, e.g. <cluster>/server/pubkey")
 	f.StringVar(&opts.PodManifest, "pod-manifest", "", "v1 Pod manifest, YAML or JSON, with metadata.uid set")
-	f.StringVar(&opts.WorkloadsPath, "workloads", "", "c8s.allowlist/v1 JSON file: every image the pod may run")
-	for _, name := range []string{"out", "cluster-id", "image-manifest", "pod-manifest", "workloads"} {
+	f.StringVar(&opts.WorkloadsPath, "workloads", "", "nonempty c8s.allowlist/v1 JSON base admitted before CDS is available")
+	for _, name := range []string{"out", "cluster-id", "image-manifest", "pod-manifest", "workloads", "server-address", "server-public-key"} {
 		_ = cmd.MarkFlagRequired(name)
 	}
 	return cmd

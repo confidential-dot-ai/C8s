@@ -461,15 +461,23 @@ func (p *plugin) recordDigest(ctr *api.Container, digest string, mounts []allowl
 	p.inventory.recordObserved(ctr.GetId(), ctr.GetPodSandboxId(), ctr.GetName(), digest, role, ctr.GetArgs(), env, mounts)
 }
 
+// nodeMounts grants no node-service exception to a measured Pod workload.
+func (p *plugin) nodeMounts() nodeMounts {
+	if p.cfg.Measure.RTMR3 {
+		return nodeMounts{}
+	}
+	return nodeMounts{
+		socketDir:  p.cfg.WorkloadClaims.SocketDir,
+		cdsPins:    p.cdsPins,
+		cdsAddress: p.cdsAddress,
+	}
+}
+
 func (p *plugin) observedMounts(pod *api.PodSandbox, ctr *api.Container) []allowlist.ObservedMount {
 	if pod == nil {
 		return nil
 	}
-	return newMountObserver(p.mountStorage, nodeMounts{
-		socketDir:  p.cfg.WorkloadClaims.SocketDir,
-		cdsPins:    p.cdsPins,
-		cdsAddress: p.cdsAddress,
-	}).Observe(pod, ctr)
+	return newMountObserver(p.mountStorage, p.nodeMounts()).Observe(pod, ctr)
 }
 
 // resolveDigest returns the canonical store digest for imageRef using the same
@@ -813,11 +821,7 @@ func (p *plugin) exemptNamespace(ctx context.Context, cfg *config, pod *api.PodS
 // The digest is resolved only when an exemption could apply, so an ordinary
 // container costs no containerd round-trip.
 func (p *plugin) checkSandbox(ctx context.Context, cfg *config, pod *api.PodSandbox, ctr *api.Container, imageRef string, env *allowlist.EnvObservation, mounts []allowlist.ObservedMount) (imageVerdict, string) {
-	obs := observeSandbox(pod, ctr, nodeMounts{
-		socketDir:  cfg.WorkloadClaims.SocketDir,
-		cdsPins:    p.cdsPins,
-		cdsAddress: p.cdsAddress,
-	}, mounts, nil)
+	obs := observeSandbox(pod, ctr, p.nodeMounts(), mounts, nil)
 	violations := obs.violations()
 	if len(violations) == 0 {
 		return verdictAllow, ""
@@ -826,11 +830,7 @@ func (p *plugin) checkSandbox(ctx context.Context, cfg *config, pod *api.PodSand
 	if cfg.AllowlistEnabled() && len(obs.HostBinds) > 0 && slices.ContainsFunc(mounts, func(m allowlist.ObservedMount) bool { return m.Provenance != "" }) {
 		digest = p.resolveDigest(ctx, imageRef)
 		rc := allowlist.RunningContainer{Digest: digest, Argv: ctr.GetArgs(), Env: env, Mounts: mounts}
-		obs = observeSandbox(pod, ctr, nodeMounts{
-			socketDir:  cfg.WorkloadClaims.SocketDir,
-			cdsPins:    p.cdsPins,
-			cdsAddress: p.cdsAddress,
-		}, mounts, func(m allowlist.ObservedMount) bool {
+		obs = observeSandbox(pod, ctr, p.nodeMounts(), mounts, func(m allowlist.ObservedMount) bool {
 			return p.policy.admitsNodeRoot(rc, m)
 		})
 		if violations = obs.violations(); len(violations) == 0 {
@@ -1243,6 +1243,9 @@ func (p *plugin) observedLaunch(ctx context.Context, ctr *api.Container, imageRe
 // plane cannot pass one as an argument. A container running as the credentials
 // identity that this node's measured base grants no such role is refused.
 func (p *plugin) credentialMounts(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) (*api.ContainerAdjustment, error) {
+	if p.cfg.Measure.RTMR3 {
+		return nil, nil
+	}
 	if fetchesRouteManifest(pod, ctr) {
 		return p.routerCDSMount(), nil
 	}

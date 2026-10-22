@@ -1,6 +1,7 @@
 package nodeservices
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -10,6 +11,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
+	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
 )
 
 const podWorkloads = `{"schema":"c8s.allowlist/v1","workloads":{"app":{"containers":[{"digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","command":{"policy":"any"},"args":{"policy":"any"}}]}}}`
@@ -17,7 +19,7 @@ const podWorkloads = `{"schema":"c8s.allowlist/v1","workloads":{"app":{"containe
 func podDocument(t *testing.T) *launchconfig.Document {
 	t.Helper()
 	doc := document(t, launchconfig.Pod)
-	doc.Server.Address = ""
+	doc.PodOperatorPublicKey = string(testPins(t).Images[1].Anchor)
 	doc.Node.Name = "p-pod"
 	doc.Workloads = podWorkloads
 	doc.Pod = &launchconfig.PodSpec{UID: "u1", Namespace: "tenant", Name: "app",
@@ -40,8 +42,9 @@ func TestPreparePodRefusesAPlatformWithoutARuntimeRegister(t *testing.T) {
 	}
 }
 
-func TestPreparePodAdmitsOnlySignedWorkloads(t *testing.T) {
+func TestPreparePodBindsCDSPullAndUsesOnlySignedBase(t *testing.T) {
 	root := prepareRoot(t)
+	writeInput(t, root, "/usr/lib/c8s/image-policy.yaml", []byte(strings.Replace(floor, "    timeout: 30s", "    timeout: 30s\n    interval: 7s\n    measure_policies: false", 1)))
 	// A server boot earlier must not leave its inputs to the pod.
 	writeInput(t, root, PublicDir+"/allowlist-seed.json", []byte(seed))
 	doc := podDocument(t)
@@ -65,8 +68,14 @@ func TestPreparePodAdmitsOnlySignedWorkloads(t *testing.T) {
 		t.Fatalf("measure = %v", m)
 	}
 	a := got["allowlist"].(map[string]any)
-	if _, ok := a["pull"]; ok {
-		t.Fatal("pod role must not pull a CDS allowlist")
+	pull, ok := a["pull"].(map[string]any)
+	if !ok || pull["url"] != doc.CDSURL() || pull["cds_measurements_config"] != launchDir+"cds.json" || pull["timeout"] != "30s" || pull["interval"] != "7s" || pull["measure_policies"] != false {
+		t.Fatalf("pod CDS pull = %v", pull)
+	}
+	for _, legacy := range []string{"cds_measurements", "cds_rtmrs"} {
+		if _, exists := pull[legacy]; exists {
+			t.Fatalf("pod CDS pull kept competing %s", legacy)
+		}
 	}
 	if _, ok := got["mesh"]; ok {
 		t.Fatal("pod role must not keep the node's mesh policy: the signed workloads can authorize no mesh endpoint")
@@ -113,6 +122,9 @@ func TestPreparePodFailsClosed(t *testing.T) {
 	}{
 		{"no pod", func(d *launchconfig.Document) { d.Pod = nil }, "requires a pod"},
 		{"no workloads", func(d *launchconfig.Document) { d.Workloads = "" }, "requires a pod"},
+		{"empty workloads", func(d *launchconfig.Document) { d.Workloads = `{"schema":"c8s.allowlist/v1","workloads":{}}` }, "nonempty workloads base"},
+		{"no CDS address", func(d *launchconfig.Document) { d.Server.Address = "" }, "server.address"},
+		{"invalid CDS address", func(d *launchconfig.Document) { d.Server.Address = "127.0.0.1" }, "server.address"},
 		{"bad workloads", func(d *launchconfig.Document) { d.Workloads = "{" }, "launch workloads"},
 		{"bad manifest", func(d *launchconfig.Document) { d.Pod.Manifest = "kind: Deployment" }, "pod.manifest"},
 	}
@@ -129,5 +141,18 @@ func TestPreparePodFailsClosed(t *testing.T) {
 				t.Fatal("published NRI policy from a rejected pod launch")
 			}
 		})
+	}
+}
+
+func TestPreparePodRejectsCompetingPolicyMeasurementsBeforePublication(t *testing.T) {
+	root := prepareRoot(t)
+	writeInput(t, root, "/usr/lib/c8s/image-policy.yaml", []byte(strings.Replace(floor, "    timeout: 30s", "    timeout: 30s\n    measure_policies: true", 1)))
+	if err := Prepare(root, podDocument(t)); !errors.Is(err, nriimagepolicy.ErrPodRoleMeasurePolicies) {
+		t.Fatalf("got %v, want the competing RTMR writer refusal", err)
+	}
+	for _, path := range []string{nriPolicyPath, podManifestPath, PublicDir + "/cds.json"} {
+		if _, err := os.Stat(filepath.Join(root, path)); !os.IsNotExist(err) {
+			t.Fatalf("published %s after refusing the RTMR writer: %v", path, err)
+		}
 	}
 }

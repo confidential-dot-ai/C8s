@@ -150,7 +150,10 @@ application services:
 `rke2-role.service` verifies and stages launch settings before either RKE2
 role starts. The local attester must precede this gate because launch
 verification uses it. The host attester listens on `127.0.0.1:8400`;
-pods access its Unix socket in the admission-inventory directory. CDS uses
+credential clients on server and agent nodes access its Unix socket in the
+admission-inventory directory. The [pod launch role](../docs/operator.md#authenticated-launch-configuration)
+keeps that directory inside the guest and supplies no node credential-client
+mounts or sandbox-token service to pod containers. CDS uses
 its Kubernetes Service and server NodePort `30808`; agents join RKE2 at
 `9345`; the router exposes the server's port `443`. Cilium's VXLAN
 runs on UDP `8473`, not the kernel default `8472`: a nested guest's outer
