@@ -5,6 +5,7 @@ WORKDIR /src
 # Repo-root build context (the module replaces c8s => ../..); #13's .dockerignore must keep these paths.
 COPY go.mod go.sum ./
 COPY pkg/ ./pkg/
+COPY internal/attestation/ ./internal/attestation/
 COPY internal/strictjson/ ./internal/strictjson/
 COPY test/mock-cds/ ./test/mock-cds/
 RUN CGO_ENABLED=0 go build -C test/mock-cds -ldflags="-s -w" -o /mock-cds .
