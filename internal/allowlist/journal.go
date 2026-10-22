@@ -287,7 +287,7 @@ const spentTokenMargin = time.Hour
 // operatorauth.ErrTokenReused if it or another encoding of it already did. Stored
 // signatures make write tokens public, so each must authorize one request only.
 //
-// With expiry (every store from cdsha.Format 3; a replicated group of an
+// With expiry (every store from cdsha.Format 2; a replicated group of an
 // earlier format leaves it off so it agrees with replicas that predate it),
 // it also records the token's iat and exp and prunes by spentTokenMargin.
 // A token whose claims do not parse is recorded with 0s and kept, and

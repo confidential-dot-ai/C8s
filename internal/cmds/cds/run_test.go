@@ -2,6 +2,7 @@ package cds
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -873,6 +874,35 @@ func TestRun_ARMTLSServesPublishedDocumentsToCertlessClients(t *testing.T) {
 	}
 }
 
+// pastHalfLife is the renewal trigger: half the certificate's lifetime,
+// leaving the rest of it for renewal to keep retrying in.
+func TestPastHalfLife(t *testing.T) {
+	now := time.Now()
+	window := func(start, end time.Duration) *x509.Certificate {
+		return &x509.Certificate{
+			NotBefore: now.Add(start),
+			NotAfter:  now.Add(end),
+		}
+	}
+
+	for _, tc := range []struct {
+		name string
+		cert *x509.Certificate
+		want bool
+	}{
+		{"fresh certificate", window(-time.Minute, time.Hour), false},
+		{"just before half its lifetime", window(-29*time.Minute, 31*time.Minute), false},
+		{"past half its lifetime", window(-31*time.Minute, 29*time.Minute), true},
+		{"expired", window(-2*time.Hour, -time.Hour), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := pastHalfLife(tc.cert, now); got != tc.want {
+				t.Errorf("pastHalfLife() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // A certificate that is presented is verified against the mesh CA: one the
 // CA did not issue fails the handshake, so a handler never sees it. Together
 // with the certless reads above this pins ClientAuth to
@@ -1003,5 +1033,68 @@ func TestRun_SecretsOperatorTokenSpendsOnce(t *testing.T) {
 		if got := send(http.MethodGet, explain, nil, step.authz); got != step.want {
 			t.Fatalf("GET %s, %s = %d, want %d", explain, step.name, got, step.want)
 		}
+	}
+}
+
+// A due renewal replaces the published certificate, which is what /ca and
+// every issuance then answer with.
+func TestRenewMeshCAWhenDueRepublishesTheCertificate(t *testing.T) {
+	mesh, err := issuer.NewMeshCA("test ca", 2*time.Millisecond)
+	if err != nil {
+		t.Fatalf("mesh ca: %v", err)
+	}
+	first := mesh.Current().CA.Cert
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go renewMeshCAWhenDue(ctx, mesh, time.Millisecond, nil)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for mesh.Current().CA.Cert.Equal(first) {
+		if time.Now().After(deadline) {
+			t.Fatal("renewal did not replace the published certificate")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// Cancelling the context stops the loop.
+func TestRenewMeshCAWhenDueStopsOnContextCancel(t *testing.T) {
+	mesh, err := issuer.NewMeshCA("test ca", 2*time.Millisecond)
+	if err != nil {
+		t.Fatalf("mesh ca: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped := make(chan struct{})
+	go func() {
+		renewMeshCAWhenDue(ctx, mesh, time.Millisecond, nil)
+		close(stopped)
+	}()
+
+	cancel()
+	select {
+	case <-stopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("renewal loop outlived its context")
+
+	}
+}
+
+func TestCAKeyIDSurvivesARenewal(t *testing.T) {
+	mesh, err := issuer.NewMeshCA("test ca", time.Hour)
+	if err != nil {
+		t.Fatalf("mesh ca: %v", err)
+	}
+	first := mesh.Current().CA.Cert
+
+	renewed, err := mesh.RenewCertificate()
+	if err != nil {
+		t.Fatalf("renew: %v", err)
+	}
+	if bytes.Equal(renewed.CA.Cert.Raw, first.Raw) {
+		t.Fatal("renewal published the same certificate, so no field could tell the two apart")
+	}
+	if got, want := caKeyID(renewed.CA.Cert), caKeyID(first); got != want {
+		t.Errorf("key id after renewal = %s, want the retained key's %s", got, want)
 	}
 }

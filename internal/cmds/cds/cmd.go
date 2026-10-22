@@ -50,7 +50,7 @@ func NewCmd() *cobra.Command {
 
 	flags.StringVar(&cfg.attestationApiURL, "attestation-api-url", "", "URL of the attestation-api service"+cmdsutil.NodeAddressHelp)
 	flags.StringVar(&cfg.caCommonName, "ca-common-name", issuer.DefaultCACommonName, "common name for the in-memory generated mesh CA")
-	flags.DurationVar(&cfg.caCertValidity, "ca-cert-validity", 8760*time.Hour, "validity period of the in-memory mesh CA certificate")
+	flags.DurationVar(&cfg.caCertValidity, "ca-cert-validity", 8760*time.Hour, "validity period of each in-memory mesh CA certificate; past half of it CDS renews the certificate under the same key")
 	flags.StringSliceVar(&cfg.measurements, "measurements", nil, "SHA-384 hex launch measurements allowed to call /attest (empty = no pinning, UNSAFE)")
 	cmdsutil.BindImagePolicyFlags(flags, &cfg.measurementsConfig, nil, "pins complete client identities for /attest; excludes --measurements and --rtmrs")
 	flags.StringSliceVar(&cfg.rtmrs, "rtmrs", nil, "TDX RTMR pins <index>=<sha384-hex> required of TDX callers on /attest (repeatable; RTMR[1] pins the guest kernel, RTMR[2] the command line carrying the dm-verity root hash). SNP evidence is unaffected. Empty = no RTMR pinning: on TDX the reference values then cover TDVF firmware only, UNSAFE")
@@ -72,7 +72,7 @@ func NewCmd() *cobra.Command {
 	flags.StringVar(&cfg.dnsSANFile, "dns-san-file", "", "Path to a file containing one literal DNS SAN to allow in addition to --dns-san-pattern")
 	flags.StringVar(&cfg.allowedCNPattern, "allowed-cn-pattern", "", "regex the CSR Subject CN must match in full (empty disables)")
 	flags.DurationVar(&cfg.readinessInterval, "readiness-interval", 10*time.Second, "")
-	flags.DurationVar(&cfg.minCAValidity, "min-ca-validity", time.Hour, "/readyz fails when the loaded mesh CA has less than this remaining lifetime")
+	flags.DurationVar(&cfg.minCAValidity, "min-ca-validity", time.Hour, "/readyz fails when the current mesh CA certificate has less than this remaining lifetime")
 	flags.StringVar(&cfg.allowlistDB, "allowlist-db", "", "Path to the allowlist SQLite database")
 	flags.BoolVar(&cfg.allowlistPersistent, "allowlist-persistent", false, "whether --allowlist-db is on durable storage; false makes CDS warn at startup that operator-added digests, the allowlist history, spent operator tokens, the route manifest and the mesh CA do not survive a restart")
 	flags.Float64Var(&cfg.allowlistMaxFill, "allowlist-max-fill", 0, "refuse allowlist writes (507) once the --allowlist-db volume is this full (0-1; 0 = off, and 0.45 for an HA replica, so a replacement replica always has room to restore a full copy)")

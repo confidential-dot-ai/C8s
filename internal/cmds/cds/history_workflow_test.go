@@ -47,17 +47,18 @@ func TestOperatorChangePolicyWorkflow(t *testing.T) {
 		t.Fatal(err)
 	}
 	keys := []*ecdsa.PublicKey{&key.PublicKey}
-	ca, err := issuer.NewCA("test ca", time.Hour)
+	mesh, err := issuer.NewMeshCA("test ca", time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
 	srv := httptest.NewServer(newRouter(dependencies{
-		AttestHandler: AttestHandler{CA: ca, CertTTL: time.Hour},
+		AttestHandler: AttestHandler{CertTTL: time.Hour},
 		AllowlistHandler: allowlist.Handler{
 			Store:           &store,
 			WriteAuthorizer: singleUse(operatorauth.Verifier{Keys: keys, ClockSkew: time.Second}.AuthorizeIssuedAt, &store, time.Time{}, 0),
 		},
 		ReadyFn:          func() bool { return true },
+		MeshCA:           mesh,
 		RateLimiter:      newTestRateLimiter(t),
 		ChallengeLimiter: newTestRateLimiter(t),
 		MaxRequestSize:   65536,

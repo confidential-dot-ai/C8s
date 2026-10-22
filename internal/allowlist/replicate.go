@@ -110,7 +110,7 @@ func (r Result) Error() error {
 // member has them, so replicas of two releases apply a command alike.
 type ApplyOptions struct {
 	// TokenExpiry records each spent token's iat and exp and prunes the
-	// records of long-expired ones (see consumeToken); cdsha.Format 3.
+	// records of long-expired ones (see consumeToken); cdsha.Format 2.
 	TokenExpiry bool
 }
 

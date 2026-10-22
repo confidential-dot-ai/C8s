@@ -15,9 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
-	"net"
 	"net/http"
-	"net/url"
 	"strconv"
 	"sync"
 	"time"
@@ -202,6 +200,13 @@ func closedBackend() map[string]any {
 	return map[string]any{"address": "127.0.0.1:1", "serverName": "closed.c8s.test", "ca": unrelatedCA()}
 }
 
+// closedWorkload is the same address as a workload backend, for a manifest
+// the router must apply: a router in a member pod rejects any manifest with
+// an address backend (A8).
+func closedWorkload() map[string]any {
+	return map[string]any{"address": "127.0.0.1:1", "workload": "conformance-closed"}
+}
+
 // routesWrite is PUT /routes of body, with ifMatch as If-Match when set; it
 // is the manifest the scenario sent last.
 func (w *world) routesWrite(body []byte, ifMatch string) write {
@@ -299,15 +304,16 @@ func cdsServesManifest(ctx context.Context) error {
 
 // applyRoutes writes a manifest routing hosts and waits for the router to
 // route by it. Beside them it routes a probe host named for its revision to
-// a closed backend: the probe's 502 is this revision applied, where an
-// earlier manifest answers 404 and none 503.
+// a closed backend: the probe's failed dial (502, or 504 where the router's
+// rules drop it) is this revision applied, where an earlier manifest answers
+// 404 and none 503.
 func (w *world) applyRoutes(hosts map[string]any) error {
 	r, err := w.readRoutes()
 	if err != nil {
 		return err
 	}
 	probe := w.routeHost("applied-" + strconv.FormatUint(r.next, 10))
-	hosts[probe] = prefixRoute("/", closedBackend())
+	hosts[probe] = prefixRoute("/", closedWorkload())
 	if err := w.operatorWrite(w.routesWrite(mustJSON(manifest(r.next, hosts)), "")); err != nil {
 		return err
 	}
@@ -323,7 +329,7 @@ func (w *world) applyRoutes(hosts map[string]any) error {
 			return false, err
 		}
 		last = a.status
-		return last == http.StatusBadGateway, nil
+		return last == http.StatusBadGateway || last == http.StatusGatewayTimeout, nil
 	})
 	if err != nil || applied {
 		return err
@@ -333,30 +339,14 @@ func (w *world) applyRoutes(hosts map[string]any) error {
 
 func routerApplied(ctx context.Context, path, host string) error {
 	w := getWorld(ctx)
-	return w.applyRoutes(map[string]any{w.routeHost(host): prefixRoute(path, closedBackend())})
+	return w.applyRoutes(map[string]any{w.routeHost(host): prefixRoute(path, closedWorkload())})
 }
 
-// routerAppliedUnrelatedCA routes to the CDS's in-cluster address, which
-// answers TLS under a certificate the unrelated CA did not issue (B3).
-func routerAppliedUnrelatedCA(ctx context.Context, path, host string) error {
-	w := getWorld(ctx)
-	raw, err := w.be.call("cds_pod_url")
-	if err != nil {
-		return err
-	}
-	u, err := url.Parse(raw)
-	if err != nil {
-		return fmt.Errorf("the CDS URL %q: %w", raw, err)
-	}
-	if net.ParseIP(u.Hostname()) != nil {
-		return skipf("the CDS URL %q names no DNS server name", raw)
-	}
-	port := u.Port()
-	if port == "" {
-		port = "443"
-	}
-	backend := map[string]any{"address": net.JoinHostPort(u.Hostname(), port), "serverName": u.Hostname(), "ca": unrelatedCA()}
-	return w.applyRoutes(map[string]any{w.routeHost(host): prefixRoute(path, backend)})
+// routerAppliedUnrelatedCA: the chart's router namespace is not exempt from
+// the mesh, and a router in a member pod applies no manifest with an address
+// backend (A8), so B3 is out of reach.
+func routerAppliedUnrelatedCA(context.Context, string, string) error {
+	return skipf("the router's pod is a mesh member, which applies no manifest with an address backend (A8)")
 }
 
 func (w *world) routerAnswered(status int, what string) error {

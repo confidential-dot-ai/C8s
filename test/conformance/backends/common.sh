@@ -28,11 +28,14 @@
 #   plugin_stop <node>               stop the plugin; the runtime creates no workload container
 #                                    until plugin_start
 #   plugin_start <node>              start the plugin again and wait until it is ready
-#   cds_block / cds_unblock          make the CDS unreachable for every node's pull, and undo it;
-#                                    cds_block returns once node_refuses says a pull is refused
-#   node_refuses <port>              yes/no: a connection from the node to 127.0.0.1:<port>
-#                                    is refused now; a backend without a node shell answers yes
+#   cds_block / cds_unblock          make the CDS unreachable for every node's pull, leaving
+#                                    the pods' issuance alone, and undo it; cds_block returns
+#                                    once node_refuses says a pull is refused
+#   node_refuses <port>              yes/no: a connect from the node to 127.0.0.1:<port>
+#                                    fails or hangs now; a backend without a node shell answers yes
 #   cds_restart                      restart the CDS and wait until it serves again
+#   api_service_name                 the fully qualified DNS name of the cluster's
+#                                    API Service
 #   mesh_restart                     recreate every controller-owned mesh member and wait
 #                                    until all are ready, so each holds a leaf under the
 #                                    CDS's mesh CA
@@ -93,8 +96,8 @@
 #                                    startup, PEM
 #   cds_restart_with <parameter> <value>
 #                                    restart the CDS with one parameter
-#                                    changed: min-ca-validity <duration>,
-#                                    pins <digest>|none, operator-keys none,
+#                                    changed: pins <digest>|none,
+#                                    operator-keys none,
 #                                    san-validation true|false, inventory-cidr
 #                                    <cidr>; default restores the installed
 #                                    configuration
@@ -149,14 +152,16 @@
 #                                    the operator's verifier on a saved leaf;
 #                                    prints accepts or rejects, then on a
 #                                    rejection the verifier's reason
+#   exempt_namespace                 a namespace the webhook exempts from the mesh, which
+#                                    the harness may deploy into, or unsupported
 #   cert_paths                       the certificate and key paths of a pod
 #                                    carrying a workload ID, one per line
 #   cds_request <method> <route> [body-file] [authorization] [client-cert] [client-key] [header...]
 #                                    send the request to the CDS from here, as
 #                                    given (empty arguments are omitted; each
 #                                    header is "Name: value"); prints the
-#                                    status (000 when nothing answered), then
-#                                    the body
+#                                    status, then the body (000 and curl's
+#                                    exit code when nothing answered)
 #   router_request <method> <path> [body-file] [authorization] [client-cert] [client-key] [header...]
 #                                    the same to the router's public address
 #   router_headers <path>            GET path at the router; prints the status,
@@ -172,8 +177,9 @@
 #                                    the router's allowlist relay cannot reach
 #                                    the CDS, and undo it; each returns once
 #                                    the Service's endpoints say so
-# node_name, image_ref, image_digest, pull_interval, cds_pod_url, cert_paths
-# and pod_exec answer the same for a whole run; callers may cache them. The
+# node_name, image_ref, image_digest, pull_interval, cds_pod_url, cert_paths,
+# pod_exec, exempt_namespace and api_service_name answer the same for a whole
+# run; callers may cache them. The
 # allowlist is state: served_allowlist answers for the moment of the call.
 #
 # The implementations below that are the same everywhere need these from the
@@ -214,7 +220,7 @@ kubeconfig() { echo "$KUBECONFIG"; }
 # Alpine's python with the programs the steps run in it; a backend adds its own.
 CONFORMANCE_REPO=ghcr.io/confidential-dot-ai/c8s-conformance-
 declare -A CONFORMANCE_IMAGES=(
-    [tenant-app]=sha256:96261c697b2c970034ce6bcb663fd7f636834dbeb1397c074e58cf2e85254139
+    [tenant-app]=sha256:e1c7fc0eef8212a8a5beaf993ed804e518f80cce32d858c3c7e9c1339bdb3938
 )
 image_ref() {
     [ -z "${CONFORMANCE_IMAGES[$1]:-}" ] || { echo "$CONFORMANCE_REPO$1@${CONFORMANCE_IMAGES[$1]}"; return; }
@@ -334,49 +340,18 @@ cds_arg() { deploy_arg "$1" '{.spec.template.spec.containers[?(@.name=="cds")].a
 # The image the webhook injects get-cert and its siblings from.
 injected_image() { operator_arg get-cert-image; }
 
-# What the webhook tells every requester it injects.
-cds_pod_url() { operator_arg cds-url; }
-
-# Every plugin pulls from https://127.0.0.1:<node port of the CDS Service>
-# (the chart's nriImagePolicy.allowlist.pull.url default and the node image's
-# image-policy.yaml.in). Moving the Service's node port leaves nothing
-# listening on the port the plugin dials, so each pull is refused at once
-# rather than after its timeout, while the Service stays reachable on its
-# cluster IP for the operator's writes. The port it had is kept in an
-# annotation on the Service, so cds_unblock restores it from any process.
-CDS_PORT_ANNOTATION=c8s-conformance/node-port
-
-cds_block() {
-    local port candidate
-    port="$(kubectl -n "$NS" get svc c8s-cds -o jsonpath="{.metadata.annotations.$CDS_PORT_ANNOTATION}")"
-    [ -z "$port" ] || return 0 # already blocked
-    port="$(kubectl -n "$NS" get svc c8s-cds -o jsonpath='{.spec.ports[0].nodePort}')"
-    [ -n "$port" ] || { echo "backend: the CDS Service has no node port" >&2; return 1; }
-    kubectl -n "$NS" annotate svc c8s-cds "$CDS_PORT_ANNOTATION=$port" --overwrite >/dev/null
-    for candidate in $(seq $((port + 1)) $((port + 5))); do
-        kubectl -n "$NS" patch svc c8s-cds --type json \
-            -p "[{\"op\":\"replace\",\"path\":\"/spec/ports/0/nodePort\",\"value\":$candidate}]" >/dev/null 2>&1 || continue
-        # kube-proxy reprograms the node after the patch; until it has, a
-        # pull still reaches the CDS.
-        local deadline=$(($(date +%s) + 60))
-        until [ "$(node_refuses "$port")" = yes ]; do
-            [ "$(date +%s)" -lt "$deadline" ] || { echo "backend: the node still accepts pulls on $port after 60s" >&2; return 1; }
-            sleep 1
-        done
-        return 0
-    done
-    kubectl -n "$NS" annotate svc c8s-cds "$CDS_PORT_ANNOTATION-" >/dev/null
-    echo "backend: no free node port near $port" >&2
-    return 1
-}
-
-cds_unblock() {
-    local port
-    port="$(kubectl -n "$NS" get svc c8s-cds -o jsonpath="{.metadata.annotations.$CDS_PORT_ANNOTATION}")"
-    [ -n "$port" ] || return 0
-    kubectl -n "$NS" patch svc c8s-cds --type json \
-        -p "[{\"op\":\"replace\",\"path\":\"/spec/ports/0/nodePort\",\"value\":$port}]" >/dev/null
-    kubectl -n "$NS" annotate svc c8s-cds "$CDS_PORT_ANNOTATION-" >/dev/null
+# Where an injected credential client dials CDS on an install: node "one"'s
+# own address and the CDS Service's node port.
+cds_pod_url() {
+    local node host port
+    node="$(node_name one)" || return
+    host="$(kubectl get node "$node" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')" || return
+    port="$(kubectl -n "$NS" get svc c8s-cds -o jsonpath='{.spec.ports[0].nodePort}')" || return
+    if [ -z "$host" ] || [ -z "$port" ]; then
+        echo "backend: no address or CDS node port for node $node" >&2
+        return 1
+    fi
+    echo "https://${host%% *}:$port"
 }
 
 # The CDS keeps its allowlist and version counter in its data volume; a
@@ -561,7 +536,8 @@ http_request() {
 curl_paced() {
     local answer _
     for _ in $(seq 10); do
-        answer="$(curl "$@" 2>/dev/null)" || answer=$'\n000'
+        # No answer is status 000, with curl's exit code as the body.
+        answer="$(curl "$@" 2>/dev/null)" || answer="curl exited $?"$'\n000'
         [ "${answer##*$'\n'}" = 429 ] || break
         sleep 1
     done
@@ -590,7 +566,7 @@ serving_cert() {
 }
 
 # --- The router ---
-# The chart's router Deployment and its nginx ConfigMap in $NS, whether the
+# The chart's router Deployment and its nginx ConfigMap in $ROUTER_NS, whether the
 # chart or a node image's launch configuration drives it.
 ROUTER_DEPLOY=c8s-router
 CDS_SELECTOR_ANNOTATION=c8s-conformance/selector
@@ -614,7 +590,7 @@ router_headers() {
 # (hostPath), which nothing here can read without a node shell.
 router_nginx_conf() {
     local volumes cm
-    volumes="$(kubectl -n "$NS" get deploy "$ROUTER_DEPLOY" -o json | jq -c '.spec.template.spec.volumes // []')" || return
+    volumes="$(kubectl -n "$ROUTER_NS" get deploy "$ROUTER_DEPLOY" -o json | jq -c '.spec.template.spec.volumes // []')" || return
     cm="$(jq -r '.[] | (.configMap.name // empty), (.projected.sources[]?.configMap.name // empty)' <<<"$volumes" |
         grep -- '-nginx$' | head -1)"
     if [ -z "$cm" ]; then
@@ -624,7 +600,7 @@ router_nginx_conf() {
         echo "backend: the router mounts no nginx ConfigMap" >&2
         return 1
     fi
-    kubectl -n "$NS" get configmap "$cm" -o json | jq -r '.data | to_entries | map(select(.key | endswith(".conf"))) | .[].value'
+    kubectl -n "$ROUTER_NS" get configmap "$cm" -o json | jq -r '.data | to_entries | map(select(.key | endswith(".conf"))) | .[].value'
 }
 
 # The attest container is started with --front-door-mode, or, where a launch
@@ -633,7 +609,7 @@ router_nginx_conf() {
 # read from the document the router serves, which needs no exec.
 router_tls_mode() {
     local args mode out path conf
-    args="$(kubectl -n "$NS" get deploy "$ROUTER_DEPLOY" -o json |
+    args="$(kubectl -n "$ROUTER_NS" get deploy "$ROUTER_DEPLOY" -o json |
         jq -r '.spec.template.spec | ((.initContainers // []) + .containers)[] | (.args // [])[]')" || return
     mode="$(sed -n 's/^--front-door-mode=//p' <<<"$args" | head -1)"
     if [ -z "$mode" ]; then
@@ -729,43 +705,19 @@ owned_mesh_members_ready() {
             and any(.status.conditions[]?; .type == "Ready" and .status == "True"))' >/dev/null
 }
 
-# --- A pod kept for the run ---
-# A pod in its own namespace, kept for the whole run, that sends from inside
-# the cluster what a backend cannot send from here: one exec per request
-# instead of a pod per request. Its image is admitted by an entry of its own,
-# since the plugin denies what no served entry declares; the entry goes with
-# the pod.
-TOOLS_NS=c8s-conformance-tools
-TOOLS_POD=conformance-tools
-tools_pod() {
-    local ready
-    ready="$(scratch)/tools-pod.ready"
-    [ ! -e "$ready" ] || return 0
-    if ! kubectl -n "$TOOLS_NS" get pod "$TOOLS_POD" >/dev/null 2>&1; then
-        kubectl create namespace "$TOOLS_NS" >/dev/null 2>&1 || true
-        local node image digest entry
-        node="$(node_name one)" || return
-        image="$(image_ref requester)" || return
-        digest="$(image_digest "$image")" || return
-        entry="$(scratch)/tools-pod.json"
-        any_workload "$digest" "$image" > "$entry"
-        allowlist_put "$TOOLS_POD" "$entry" || return
-        render_pod --annotation c8s-conformance/harness-argv=yes -- "$TOOLS_POD" "$TOOLS_NS" "$node" "$image" sleep 86400 |
-            manifest_filter | kubectl apply -f - >/dev/null
-    fi
-    kubectl -n "$TOOLS_NS" wait --for=condition=Ready "pod/$TOOLS_POD" --timeout=180s >/dev/null || return
-    touch "$ready"
-}
-
-# Once per run, after the scenarios: what every backend kept for the run (the
-# pod and its entry), then what this one did.
+# Once per run, after the scenarios: the seed any scenario changed, then what
+# this backend did.
 teardown() {
-    kubectl delete namespace "$TOOLS_NS" --ignore-not-found --wait=false >/dev/null 2>&1 || true
-    allowlist_delete "$TOOLS_POD" || true
     seed_restore || true
-    rm -f "$(scratch)/tools-pod.ready"
     teardown_backend
 }
+
+# A namespace the chart's webhook excludes (c8s.webhookExcludedNamespaces),
+# which also admits the harness's pods.
+exempt_namespace() { echo kube-system; }
+# The fully qualified name of the cluster's API Service, which every
+# cluster's DNS answers.
+api_service_name() { echo kubernetes.default.svc.cluster.local; }
 
 cert_paths() { printf '%s/tls.crt\n%s/tls.key\n' "$CERT_VOLUME_PATH" "$CERT_VOLUME_PATH"; }
 

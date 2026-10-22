@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
 # The echo API a workload backend serves (steps/routebackend.go): every request is
-# answered with what it received, as JSON, under the pod's leaf, read again
-# for each connection so that a renewal never leaves it serving an expired
-# one. It listens once the leaf is there.
-# Usage: c8s-echo-api <tls.crt> <tls.key> <port>
-import http.server, json, os, socket, ssl, sys, time
-crt, key, port = sys.argv[1], sys.argv[2], int(sys.argv[3])
-while not (os.path.exists(crt) and os.path.exists(key)):
-    time.sleep(0.5)
+# answered with what it received, as JSON. It serves plaintext: the pod's mesh
+# endpoint holds the leaf, terminates the router's armTLS and delivers the
+# request to this port.
+# Usage: c8s-echo-api <port>
+import http.server, json, socket, sys
+port = int(sys.argv[1])
 class Handler(http.server.BaseHTTPRequestHandler):
     def handle_one_request(self):
         self.raw_requestline = self.rfile.readline(65537)
@@ -23,12 +21,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.flush()
 class Server(http.server.ThreadingHTTPServer):
     address_family = socket.AF_INET6 if socket.has_ipv6 else socket.AF_INET
-    def get_request(self):
-        sock, addr = self.socket.accept()
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        ctx.minimum_version = ssl.TLSVersion.TLSv1_3  # the router's floor for a workload backend
-        ctx.load_cert_chain(crt, key)
-        return ctx.wrap_socket(sock, server_side=True), addr
 try:
     Server(("::", port), Handler).serve_forever()
 except OSError:

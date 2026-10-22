@@ -416,15 +416,16 @@ func haDecrees(node *cdsha.Node) http.HandlerFunc {
 	}
 }
 
-// haCACertPEM serves the current mesh CA certificate.
-func haCACertPEM(node *cdsha.Node) func() []byte {
-	return func() []byte {
-		ca, err := node.CA()
-		if err != nil {
-			return nil
-		}
-		return certutil.EncodeCertPEM(ca.Cert.Raw)
+// haMeshCA is an HA replica's mesh CA: the replicated one, renewed by the
+// leader through the log, or empty (CA nil) while the replica may not issue.
+type haMeshCA struct{ node *cdsha.Node }
+
+func (h haMeshCA) Current() issuer.CurrentCA {
+	ca, err := h.node.CA()
+	if err != nil || ca == nil || ca.Cert == nil {
+		return issuer.CurrentCA{}
 	}
+	return issuer.CurrentCA{CA: ca, CertPEM: certutil.EncodeCertPEM(ca.Cert.Raw)}
 }
 
 // haChallengeKey derives a per-purpose challenge MAC key from the current
@@ -516,7 +517,7 @@ func restoreServer(cfg config) func(*cdsha.Node) func() {
 			defer close(done)
 			var err error
 			if cfg.armtlsPlatform != "" {
-				if srv.TLSConfig, err = armtlsServerTLS(ctx, cfg, nil); err != nil {
+				if srv.TLSConfig, _, err = armtlsServerTLS(ctx, cfg, nil); err != nil {
 					slog.Error("cds-ha: pre-join server", "err", err)
 					return
 				}
