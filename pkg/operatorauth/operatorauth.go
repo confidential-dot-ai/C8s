@@ -186,6 +186,34 @@ func VerifyStored(keys []*ecdsa.PublicKey, token, method, path string, body []by
 	return err
 }
 
+// UnverifiedTimes returns the iat and exp claims of token without checking
+// its signature or comparing them with any clock. It is for a caller that
+// already verified the token (or holds the record of one that was) and
+// needs only its validity window; it refuses a token whose window is not
+// one the Verifier accepts: both claims present, iat after the epoch, and
+// exp−iat within (0, MaxTokenValidity].
+func UnverifiedTimes(token string) (iat, exp time.Time, err error) {
+	claims := jwt.MapClaims{}
+	if _, _, err := jwt.NewParser().ParseUnverified(token, claims); err != nil {
+		return time.Time{}, time.Time{}, err
+	}
+	i, err := claims.GetIssuedAt()
+	if err != nil || i == nil {
+		return time.Time{}, time.Time{}, fmt.Errorf("operator token missing iat claim")
+	}
+	e, err := claims.GetExpirationTime()
+	if err != nil || e == nil {
+		return time.Time{}, time.Time{}, fmt.Errorf("operator token missing exp claim")
+	}
+	if !i.After(time.Unix(0, 0)) {
+		return time.Time{}, time.Time{}, fmt.Errorf("operator token iat %s not after the epoch", i.UTC().Format(time.RFC3339))
+	}
+	if validity := e.Sub(i.Time); validity <= 0 || validity > MaxTokenValidity {
+		return time.Time{}, time.Time{}, fmt.Errorf("operator token validity %s outside (0, %s]", validity, MaxTokenValidity)
+	}
+	return i.Time, e.Time, nil
+}
+
 // verifyToken returns the iat claim of a token it verified.
 func verifyToken(keys []*ecdsa.PublicKey, tokenStr, method, path string, body []byte, opts ...jwt.ParserOption) (time.Time, error) {
 	if len(keys) == 0 {

@@ -94,6 +94,10 @@ func OpenStore(path string) (Store, error) {
 		db.Close()
 		return Store{}, fmt.Errorf("init allowlist schema: %w", err)
 	}
+	if err := migrateJournal(db); err != nil {
+		db.Close()
+		return Store{}, fmt.Errorf("migrate allowlist schema: %w", err)
+	}
 
 	return Store{db: db}, nil
 }
@@ -105,6 +109,10 @@ func OpenInMemory() (Store, error) {
 		return Store{}, err
 	}
 	if _, err := db.Exec(initSQL + journalSQL); err != nil {
+		db.Close()
+		return Store{}, err
+	}
+	if err := migrateJournal(db); err != nil {
 		db.Close()
 		return Store{}, err
 	}

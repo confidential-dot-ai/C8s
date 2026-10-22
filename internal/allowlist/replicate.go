@@ -106,9 +106,24 @@ func (r Result) Error() error {
 	}
 }
 
-// Apply runs one replicated command against the local database. Replicas
-// apply the same commands in the same order, so they hold the same store.
+// ApplyOptions are the behaviors a replicated group turns on only once every
+// member has them, so replicas of two releases apply a command alike.
+type ApplyOptions struct {
+	// TokenExpiry records each spent token's iat and exp and prunes the
+	// records of long-expired ones (see consumeToken); cdsha.Format 3.
+	TokenExpiry bool
+}
+
+// Apply runs one replicated command against the local database with every
+// behavior of this release on (see ApplyWith).
 func (s *Store) Apply(cmd Command) Result {
+	return s.ApplyWith(cmd, ApplyOptions{TokenExpiry: true})
+}
+
+// ApplyWith runs one replicated command against the local database. Replicas
+// apply the same commands in the same order, with the same options, so they
+// hold the same store.
+func (s *Store) ApplyWith(cmd Command, opts ApplyOptions) Result {
 	s.at.Store(cmd.AtMS)
 	defer s.at.Store(0)
 	switch cmd.Op {
@@ -132,7 +147,7 @@ func (s *Store) Apply(cmd Command) Result {
 	case OpSignPolicy:
 		return resultErr(s.signPolicy(cmd.Body, cmd.Token))
 	case OpConsumeToken:
-		return resultErr(s.consumeToken(cmd.Token))
+		return resultErr(s.consumeToken(cmd.Token, opts.TokenExpiry))
 	case OpReplaceRoutes:
 		if cmd.Routes == nil {
 			return resultErr(errors.New("replace_routes without a manifest"))
@@ -212,7 +227,7 @@ func (s *Store) SignPolicy(body []byte, token string) error {
 // token spent at any replica is spent at all of them.
 func (s *Store) ConsumeToken(token string) error {
 	if s.repl == nil {
-		return s.consumeToken(token)
+		return s.consumeToken(token, true)
 	}
 	_, err := s.replicate(Command{Op: OpConsumeToken, Token: token})
 	return err
@@ -250,8 +265,21 @@ var snapshotTables = []string{
 }
 
 // Snapshot is the whole database as rows, for a replica that joins or
-// recovers. Columns are kept by name.
+// recovers. Columns are kept by name; a row that lacks a column restores
+// with the column's default.
 type Snapshot map[string][]map[string]any
+
+// StripTokenExpiry drops the used_token columns a release before
+// ApplyOptions.TokenExpiry cannot restore. A group that has not turned
+// TokenExpiry on holds only 0s in them, which is what restoring without
+// them writes.
+func (sn Snapshot) StripTokenExpiry() {
+	for _, row := range sn["used_token"] {
+		for _, c := range usedTokenColumns {
+			delete(row, c)
+		}
+	}
+}
 
 // Dump returns every row of every table.
 func (s *Store) Dump() (Snapshot, error) {
