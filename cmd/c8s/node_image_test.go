@@ -214,8 +214,8 @@ func TestNodeImageRender(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(allowlist.Workloads) != 6 {
-				t.Errorf("seed has %d workloads, want four core images, the local-path helper and the router pod", len(allowlist.Workloads))
+			if len(allowlist.Workloads) != 5 {
+				t.Errorf("seed has %d workloads, want four core images and the router pod", len(allowlist.Workloads))
 			}
 			routerEntry := false
 			for name := range allowlist.Workloads {
@@ -224,34 +224,70 @@ func TestNodeImageRender(t *testing.T) {
 			if !routerEntry {
 				t.Error("router pod entry missing from the baked CDS seed")
 			}
-			var helperDigest string
-			for _, workload := range allowlist.Workloads {
-				for _, c := range workload.Containers {
-					if strings.HasPrefix(c.Image, "busybox@") {
-						helperDigest = c.Digest.String()
-					}
-				}
-			}
-			if helperDigest == "" {
-				t.Fatal("local-path helper missing from the baked CDS seed")
-			}
-			index := allowlist.BuildIndex()
-			for _, script := range []string{"/script/setup", "/script/teardown"} {
-				if !index.AdmitsContainer(pkgallowlist.RunningContainer{
-					Digest: helperDigest,
-					Argv:   []string{"/bin/sh", script, "-p", "/opt/local-path-provisioner/pvc-123"},
-				}) {
-					t.Errorf("seed denies local-path helper %s", script)
-				}
-			}
-			if index.AdmitsContainer(pkgallowlist.RunningContainer{
-				Digest: helperDigest,
-				Argv:   []string{"/bin/sh", "-c", "echo arbitrary command"},
-			}) {
-				t.Error("seed admits arbitrary busybox commands")
+			if helper := localPathHelperDigest(allowlist); helper != "" {
+				t.Errorf("default seed admits the local-path helper %s; it is opt-in (--local-path)", helper)
 			}
 		})
 	}
+}
+
+// The local-path helper is seeded only for an image that bakes the
+// provisioner, and then only under its two script prefixes.
+func TestNodeImageRenderLocalPath(t *testing.T) {
+	if _, err := exec.LookPath("helm"); err != nil {
+		t.Skip("helm not installed")
+	}
+	out := t.TempDir()
+	cmd := newNodeImageCmd()
+	cmd.SetArgs([]string{
+		"render", "--hardware-platform", "tdx", "--kube-version", "v1.34.5",
+		"--image-digest", testDigest, "--cds-image-digest", nodeImageTestCDSDigest,
+		"--armtls-mesh-image-digest", nodeImageTestMeshDigest,
+		"--local-path", "--output-dir", out,
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	seed, err := os.ReadFile(filepath.Join(out, "allowlist-seed.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	allowlist, err := pkgallowlist.ParseJSON(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	helperDigest := localPathHelperDigest(allowlist)
+	if helperDigest == "" {
+		t.Fatal("--local-path did not seed the local-path helper")
+	}
+	index := allowlist.BuildIndex()
+	for _, script := range []string{"/script/setup", "/script/teardown"} {
+		if !index.AdmitsContainer(pkgallowlist.RunningContainer{
+			Digest: helperDigest,
+			Argv:   []string{"/bin/sh", script, "-p", "/opt/local-path-provisioner/pvc-123"},
+		}) {
+			t.Errorf("seed denies local-path helper %s", script)
+		}
+	}
+	if index.AdmitsContainer(pkgallowlist.RunningContainer{
+		Digest: helperDigest,
+		Argv:   []string{"/bin/sh", "-c", "echo arbitrary command"},
+	}) {
+		t.Error("seed admits arbitrary busybox commands")
+	}
+}
+
+// localPathHelperDigest returns the digest of the seed's busybox helper
+// entry, or "" when the seed has none.
+func localPathHelperDigest(allowlist *pkgallowlist.Allowlist) string {
+	for _, workload := range allowlist.Workloads {
+		for _, c := range workload.Containers {
+			if strings.HasPrefix(c.Image, "busybox@") {
+				return c.Digest.String()
+			}
+		}
+	}
+	return ""
 }
 
 func nodeImageDocuments(t *testing.T, raw []byte) map[string][]byte {

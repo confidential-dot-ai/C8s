@@ -48,6 +48,7 @@ type nodeImageRenderConfig struct {
 	routerImageRepository     string
 	chartDir                  string
 	outputDir                 string
+	localPath                 bool
 }
 
 func init() {
@@ -77,6 +78,7 @@ func newNodeImageCmd() *cobra.Command {
 	f.StringVar(&cfg.armtlsMeshImageRepository, "armtls-mesh-image-repository", "", "armTLS mesh container repository; empty uses the chart default")
 	f.StringVar(&cfg.routerImageDigest, "router-image-digest", "", "digest of the nginx container image; empty uses the pinned chart default")
 	f.StringVar(&cfg.routerImageRepository, "router-image-repository", "", "nginx container repository; empty uses the chart default")
+	f.BoolVar(&cfg.localPath, "local-path", false, "seed the local-path provisioner's helper entry; only for an image that bakes the provisioner (C8S_LOCAL_PATH=1)")
 	f.StringVar(&cfg.chartDir, "chart-dir", "", "chart source directory; empty uses the chart bundled in this binary")
 	f.StringVar(&cfg.outputDir, "output-dir", "", "directory for c8s-integration.yaml, allowlist-seed.json, images.txt and router-nginx/ (required)")
 	cmd.AddCommand(render, newNodeImageCheckImagesCmd())
@@ -163,6 +165,9 @@ func renderNodeImage(ctx context.Context, cfg nodeImageRenderConfig) error {
 		// c8s verify --operator-keys reads the publication.
 		"--set", "router.routePublication.enabled=true",
 	)
+	if cfg.localPath {
+		args = append(args, "--set", "rke2.localPathHelper.enabled=true")
+	}
 	for _, input := range cfg.images() {
 		args = append(args, "--set-string", input.valuePath+".pullPolicy=Never")
 		if input.repository != "" {

@@ -338,6 +338,7 @@ writes=$( {
     | awk '{print $2}' | grep -E '^/(etc|opt|usr|srv|boot)/' || true
   grep -hoE '(path: *|"paths":\[")/(etc|opt|usr|srv|boot)/[A-Za-z0-9_./-]+' \
        "$ngi"/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/*.yaml \
+       "$ngi"/c8s/local-path/*.yaml \
     | grep -oE '/(etc|opt|usr|srv|boot)/.*' || true
 } | sort -u )
 for w in $writes; do

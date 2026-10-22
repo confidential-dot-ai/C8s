@@ -28,9 +28,10 @@ import (
 const (
 	// prepBusyboxDigest is values.yaml's nriImagePolicy.containerdPrep.image.digest.
 	prepBusyboxDigest = "sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028"
-	// localPathHelperManifest is the node image's baked local-path provisioner
-	// manifest, whose helper pod the rke2.localPathHelper values pin in lockstep.
-	localPathHelperManifest = "../../node-guest-image/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/local-path-storage.yaml"
+	// localPathHelperManifest is the node image's optional local-path
+	// provisioner manifest, whose helper pod the rke2.localPathHelper values
+	// pin in lockstep.
+	localPathHelperManifest = "../../node-guest-image/c8s/local-path/local-path-storage.yaml"
 )
 
 // renderedSeed parses the allowlist document out of the rendered CDS seed
@@ -166,11 +167,24 @@ func TestChartPinnedSeedAdmitsRKE2ContainerdPrepArgv(t *testing.T) {
 	denyArgvs(t, seed, prepBusyboxDigest, []string{"/bin/sh", "/script/setup"})
 }
 
-// The local-path helper entry pins the node image's baked helper pod to its
-// two provisioner command prefixes; the per-PVC flags stay open.
-func TestChartPinnedSeedAdmitsLocalPathHelperArgv(t *testing.T) {
+// The local-path helper entry is opt-in: a default render seeds no helper
+// digest at all.
+func TestChartSeedOmitsLocalPathHelperByDefault(t *testing.T) {
 	t.Parallel()
 	out, err := helmTemplate(t)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	if seed := renderedSeed(t, out); seed.BuildIndex().AdmitsDigest(localPathHelperDigest(t)) {
+		t.Error("default seed admits the local-path helper; it needs rke2.localPathHelper.enabled")
+	}
+}
+
+// The local-path helper entry pins the node image's helper pod to its two
+// provisioner command prefixes; the per-PVC flags stay open.
+func TestChartPinnedSeedAdmitsLocalPathHelperArgv(t *testing.T) {
+	t.Parallel()
+	out, err := helmTemplate(t, "--set", "rke2.localPathHelper.enabled=true")
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
@@ -228,6 +242,7 @@ func localPathHelperDigest(t *testing.T) string {
 		t.Fatalf("read values.yaml: %v", err)
 	}
 	m := regexp.MustCompile(`(?ms)localPathHelper:\s*
+\s*enabled: false\s*
 \s*image:\s*
 \s*repository: (\S+)\s*
 \s*digest: "?(sha256:[0-9a-f]{64})"?`).FindSubmatch(raw)
@@ -268,6 +283,7 @@ func TestChartPinnedSeedHasNoAnyArgvShadow(t *testing.T) {
 	out, err := helmTemplate(t,
 		"--set", "nriImagePolicy.distro=rke2",
 		"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
+		"--set", "rke2.localPathHelper.enabled=true",
 	)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)

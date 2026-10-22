@@ -768,7 +768,7 @@ null
 {{- $_ := set $entries $name (dict "label" $ref "initContainers" list "containers" (list $container)) -}}
 {{- end -}}
 {{- end -}}
-{{- if eq .Values.attestationApi.cvmMode "bare-metal" -}}
+{{- if and (eq .Values.attestationApi.cvmMode "bare-metal") .Values.rke2.localPathHelper.enabled -}}
 {{- $img := .Values.rke2.localPathHelper.image -}}
 {{- if $img.digest -}}
 {{- $ref := printf "%s@%s" $img.repository $img.digest -}}
@@ -792,7 +792,7 @@ null
 {{- $digests = append $digests .Values.nriImagePolicy.containerdPrep.image.digest -}}
 {{- end -}}
 {{- end -}}
-{{- if and (eq .Values.attestationApi.cvmMode "bare-metal") .Values.rke2.localPathHelper.image.digest -}}
+{{- if and (eq .Values.attestationApi.cvmMode "bare-metal") .Values.rke2.localPathHelper.enabled .Values.rke2.localPathHelper.image.digest -}}
 {{- $digests = append $digests .Values.rke2.localPathHelper.image.digest -}}
 {{- end -}}
 {{ $digests | toJson }}
