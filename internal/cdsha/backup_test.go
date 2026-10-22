@@ -247,10 +247,8 @@ func TestBackupWriteIsAtomic(t *testing.T) {
 	}
 }
 
-// A snapshot's allowlist history is many near copies of one document. The
-// backup must store the repeats as references: with gzip a backup grew by
-// about one compressed document per version (5 MB for 464 versions of a
-// 70 KiB allowlist on TDX), all of it rewritten into etcd every minute.
+// The backup layer's own compression shares repeats in an uncompressed
+// payload (snapshots themselves are compressed by encodeSnapshot).
 func TestBackupCompressesHistoryRepeats(t *testing.T) {
 	rng := mathrand.New(mathrand.NewPCG(1, 2))
 	doc := map[string]string{}
