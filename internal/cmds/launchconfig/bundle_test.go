@@ -116,8 +116,21 @@ func TestNewBundleBootsServerAndAgentsOnBothPlatforms(t *testing.T) {
 			if server.RKE2.ServerToken == server.RKE2.AgentToken || !tokenRE.MatchString(server.RKE2.ServerToken) {
 				t.Fatalf("tokens not generated independently: %+v", server.RKE2)
 			}
+			// Every node has its own node password, carried only in its own
+			// document: the shared agent token opens no other node's name.
+			passwords := map[string]string{server.RKE2.NodePassword: serverDir}
+			if !tokenRE.MatchString(server.RKE2.NodePassword) {
+				t.Fatalf("server node password %q", server.RKE2.NodePassword)
+			}
 			for _, name := range []string{"demo-f1", "demo-f2"} {
 				agent, data := readBundleDocument(t, dir, name)
+				if p := agent.RKE2.NodePassword; !tokenRE.MatchString(p) || passwords[p] != "" {
+					t.Fatalf("agent %s node password %q is missing or shared", name, p)
+				}
+				passwords[agent.RKE2.NodePassword] = name
+				if bytes.Contains(data, []byte(server.RKE2.NodePassword)) {
+					t.Fatalf("agent %s carries the server's node password", name)
+				}
 				if agent.Role != Agent || agent.Node.Name != name || agent.Server.Address != "10.0.0.10" {
 					t.Fatalf("unexpected agent %s: %+v", name, agent)
 				}
