@@ -77,11 +77,18 @@ for _ in $(seq 1 30); do
 done
 [ -s mesh-ca.pem ] || { echo "FAIL: no mesh CA from CDS at $ip:30808" >&2; exit 1; }
 
+# attest-lb binds the router's route manifest (#852), which the client checks
+# under the launch operator key. One route; its backend is never dialled here.
+c8s routes add --new --url "https://$ip:30808" --image-policy-file launch/server.json \
+  --operator-key launch/server.key --operator-keys launch/server/pubkey \
+  --host "$host" --path / --address c8s-none.default.svc.cluster.local:9443 --workload none
+
 # The router pod starts once the acme sidecar has written its placeholder,
 # and get-cert's stamp follows the pod's match.
 verdict() {
   c8s verify "https://$ip:443" --kind lb --mode attest-lb --server-name "$host" \
-    --image-policy-file launch/server.json --mesh-ca mesh-ca.pem --workload "$router" -o json > verdict.json
+    --image-policy-file launch/server.json --mesh-ca mesh-ca.pem --operator-keys launch/server/pubkey \
+    --workload "$router" -o json > verdict.json
 }
 ok=""
 for _ in $(seq 1 30); do
