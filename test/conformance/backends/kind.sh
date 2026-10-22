@@ -364,10 +364,10 @@ cds_unblock() {
     while node_exec iptables -C $rule 2>/dev/null; do node_exec iptables -D $rule || return; done
 }
 
+# A connect that fails or hangs is refused: a reset to a node-port connection
+# may never reach the socket, so the dial times out instead.
 node_refuses() {
-    local rc=0
-    node_exec curl -sk --max-time 2 -o /dev/null "https://127.0.0.1:$1/healthz" 2>/dev/null || rc=$?
-    if [ "$rc" -eq 7 ]; then echo yes; else echo no; fi
+    if node_exec timeout 2 bash -c "</dev/tcp/127.0.0.1/$1" 2>/dev/null; then echo no; else echo yes; fi
 }
 
 # The pids running the plugin binary; the kind node image ships procps.

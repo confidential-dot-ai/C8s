@@ -31,8 +31,8 @@
 #   cds_block / cds_unblock          make the CDS unreachable for every node's pull, leaving
 #                                    the pods' issuance alone, and undo it; cds_block returns
 #                                    once node_refuses says a pull is refused
-#   node_refuses <port>              yes/no: a connection from the node to 127.0.0.1:<port>
-#                                    is refused now; a backend without a node shell answers yes
+#   node_refuses <port>              yes/no: a connect from the node to 127.0.0.1:<port>
+#                                    fails or hangs now; a backend without a node shell answers yes
 #   cds_restart                      restart the CDS and wait until it serves again
 #   api_service_name                 the fully qualified DNS name of the cluster's
 #                                    API Service
@@ -192,8 +192,8 @@
 #                                    send the request to the CDS from here, as
 #                                    given (empty arguments are omitted; each
 #                                    header is "Name: value"); prints the
-#                                    status (000 when nothing answered), then
-#                                    the body
+#                                    status, then the body (000 and curl's
+#                                    exit code when nothing answered)
 #   router_request <method> <path> [body-file] [authorization] [client-cert] [client-key] [header...]
 #                                    the same to the router's public address
 #   router_headers <path>            GET path at the router; prints the status,
@@ -562,7 +562,8 @@ http_request() {
 curl_paced() {
     local answer _
     for _ in $(seq 10); do
-        answer="$(curl "$@" 2>/dev/null)" || answer=$'\n000'
+        # No answer is status 000, with curl's exit code as the body.
+        answer="$(curl "$@" 2>/dev/null)" || answer="curl exited $?"$'\n000'
         [ "${answer##*$'\n'}" = 429 ] || break
         sleep 1
     done

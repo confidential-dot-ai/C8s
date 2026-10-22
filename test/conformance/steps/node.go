@@ -84,11 +84,10 @@ func cdsUnreachable(ctx context.Context, node string) error {
 	if _, err := w.node(node); err != nil {
 		return err
 	}
-	if _, err := w.be.call("cds_block"); err != nil {
-		return err
-	}
+	// Set first: a block that never settles may still have taken hold.
 	w.cdsBlocked = true
-	return nil
+	_, err := w.be.call("cds_block")
+	return err
 }
 
 func pluginStartedSinceBlock(ctx context.Context, node string) error {
