@@ -63,6 +63,7 @@ containers:
       # A memory emptyDir need not report its sizeLimit to statfs.
       - --allowlist-max-bytes={{ .Values.cds.ha.storeSizeLimit }}
       - --allowlist-history-versions={{ .Values.cds.ha.historyVersions }}
+      - --allowlist-history-bytes={{ .Values.cds.ha.historyBytes }}
       {{- end }}
       {{- if .Values.node.baked }}
       - --allowlist-seed=/run/c8s-node/allowlist-seed.json

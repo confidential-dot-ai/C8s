@@ -4,10 +4,12 @@ package cds
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
+	"k8s.io/apimachinery/pkg/api/resource"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsca"
@@ -75,6 +77,7 @@ func NewCmd() *cobra.Command {
 	flags.BoolVar(&cfg.allowlistPersistent, "allowlist-persistent", false, "whether --allowlist-db is on durable storage; false makes CDS warn at startup that operator-added digests, the allowlist history, spent operator tokens, the route manifest and the mesh CA do not survive a restart")
 	flags.Float64Var(&cfg.allowlistMaxFill, "allowlist-max-fill", 0, "refuse allowlist writes (507) once the --allowlist-db volume is this full (0-1; 0 = off, and 0.45 for an HA replica, so a replacement replica always has room to restore a full copy)")
 	flags.IntVar(&cfg.allowlistHistoryVersions, "allowlist-history-versions", 0, "keep only the newest N allowlist history entries (GET /allowlist/history); 0 keeps every one. HA replicas prune through the log, so every replica keeps the same entries")
+	flags.Var(newBytesFlag(&cfg.allowlistHistoryBytes), "allowlist-history-bytes", "keep only the newest allowlist history entries whose documents fit in this size (e.g. 512Mi); 0 = no byte bound")
 	flags.StringVar(&cfg.allowlistMaxBytes, "allowlist-max-bytes", "", "size of the --allowlist-db volume when the filesystem does not report it (a memory emptyDir's sizeLimit, e.g. 64Mi)")
 	flags.StringSliceVar(&cfg.inventoryCIDRs, "sandbox-inventory-cidr", nil, "CIDR(s) holding the node addresses CDS may dial for a sandbox's admission inventory (repeatable). It is what stops a workload pointing the callback at its own pod IP and answering as the inventory (docs/armtls.md). Unset, CDS derives one host route per node from the live node list and refuses sandbox tokens until that syncs")
 	flags.StringVar(&cfg.allowlistSeed, "allowlist-seed", "", "Path to a JSON allowlist (version + digests map) seeded into the store at startup before serving; missing entries are added, existing entries are left untouched (empty disables seeding)")
@@ -156,14 +159,16 @@ type config struct {
 	allowlistMaxFill    float64
 	// allowlistHistoryVersions bounds the allowlist history (0: keep all).
 	allowlistHistoryVersions int
-	allowlistMaxBytes        string
-	allowlistSeed            string
-	followSeed               bool
-	inventoryCIDRs           []string
-	operatorKeys             string
-	armtlsPlatform           string
-	armtlsCertTTL            time.Duration
-	measuredPolicies         string
+	// allowlistHistoryBytes bounds it by document size (0: no byte bound).
+	allowlistHistoryBytes int64
+	allowlistMaxBytes     string
+	allowlistSeed         string
+	followSeed            bool
+	inventoryCIDRs        []string
+	operatorKeys          string
+	armtlsPlatform        string
+	armtlsCertTTL         time.Duration
+	measuredPolicies      string
 
 	rateLimit                float64
 	rateBurst                int
@@ -192,3 +197,26 @@ func validateARMTLSPlatformFlag(v string) error {
 	}
 	return nil
 }
+
+// bytesFlag parses a Kubernetes quantity ("512Mi") into bytes.
+type bytesFlag struct{ v *int64 }
+
+func newBytesFlag(v *int64) bytesFlag { return bytesFlag{v} }
+
+func (b bytesFlag) String() string {
+	if b.v == nil {
+		return "0"
+	}
+	return strconv.FormatInt(*b.v, 10)
+}
+
+func (b bytesFlag) Set(s string) error {
+	q, err := resource.ParseQuantity(s)
+	if err != nil || q.Value() < 0 {
+		return fmt.Errorf("want a size such as 512Mi: %q", s)
+	}
+	*b.v = q.Value()
+	return nil
+}
+
+func (bytesFlag) Type() string { return "quantity" }

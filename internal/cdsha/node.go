@@ -116,6 +116,10 @@ type Config struct {
 	// leader prunes it to the newest HistoryVersions entries through the
 	// log. 0 keeps every entry.
 	HistoryVersions int
+	// HistoryBytes, if set, also bounds the history by the size of the
+	// documents it keeps: a large allowlist document makes a version count
+	// alone fill the store.
+	HistoryBytes int64
 }
 
 // Node is one CDS replica.
@@ -695,12 +699,27 @@ var pruneSlack = 64 // a var so tests can prune small histories
 // waits for an agreed format every member reads.
 func (n *Node) maybePruneHistory() {
 	keep := n.cfg.HistoryVersions
-	if keep <= 0 || n.cfg.Allowlist == nil || n.fsm.Core().format() < 2 || time.Since(n.pruneAt) < n.cfg.Timing.Backup {
+	if (keep <= 0 && n.cfg.HistoryBytes <= 0) || n.cfg.Allowlist == nil || n.fsm.Core().format() < 2 || time.Since(n.pruneAt) < n.cfg.Timing.Backup {
 		return
 	}
 	n.pruneAt = time.Now()
 	have, err := n.cfg.Allowlist.HistoryLen()
-	if err != nil || have <= keep+pruneSlack {
+	if err != nil {
+		return
+	}
+	slack := pruneSlack
+	if n.cfg.HistoryBytes > 0 {
+		// The leader turns the byte budget into a count, so every replica
+		// prunes the same entries.
+		fit, err := n.cfg.Allowlist.HistoryKeepForBytes(n.cfg.HistoryBytes)
+		if err != nil {
+			return
+		}
+		if keep <= 0 || fit < keep {
+			keep, slack = fit, 0
+		}
+	}
+	if have <= keep+slack {
 		return
 	}
 	raw, err := json.Marshal(Entry{Kind: KindAllowlist, Format: 2,
