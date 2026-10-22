@@ -33,6 +33,8 @@
 #   node_refuses <port>              yes/no: a connection from the node to 127.0.0.1:<port>
 #                                    is refused now; a backend without a node shell answers yes
 #   cds_restart                      restart the CDS and wait until it serves again
+#   api_service_name                 the fully qualified DNS name of the cluster's
+#                                    API Service
 #   mesh_restart                     restart every mesh proxy, and recreate every
 #                                    controller-owned mesh member, and wait until all
 #                                    are ready, so each bootstraps from the CDS's mesh CA
@@ -967,6 +969,9 @@ excluded_namespace() {
     echo "${ns:-kube-system}" | cut -d, -f1
 }
 host_namespace_ns() { echo kube-system; }
+# The fully qualified name of the cluster's API Service, which every
+# cluster's DNS answers.
+api_service_name() { echo kubernetes.default.svc.cluster.local; }
 node_writes() { echo yes; }
 
 cert_paths() { printf '%s/tls.crt\n%s/tls.key\n' "$CERT_VOLUME_PATH" "$CERT_VOLUME_PATH"; }

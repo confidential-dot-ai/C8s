@@ -32,7 +32,7 @@ func registerMesh(sc *godog.ScenarioContext) {
 	sc.Step(`^"([^"]*)" runs in the node's network namespace$`, hostNetwork)
 	sc.Step(`^"([^"]*)" runs as neither the proxy UID nor an excluded UID$`, ordinaryUID)
 	sc.Step(`^"([^"]*)" runs as an excluded UID$`, excludedUID)
-	sc.Step(`^"([^"]*)" is in an excluded namespace$`, inExcludedNamespace)
+	sc.Step(`^"([^"]*)" is in an (?:excluded|exempt) namespace$`, inExcludedNamespace)
 	sc.Step(`^"([^"]*)" may bind port 53$`, mayBind53)
 	sc.Step(`^"([^"]*)" is running$`, podRunning)
 	sc.Step(`^"([^"]*)" is (not )?in the (interception|guard) membership of node "([^"]*)"$`, membership)

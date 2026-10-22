@@ -163,6 +163,7 @@ func initializeScenario(be backend) func(*godog.ScenarioContext) {
 		registerRequester(sc)
 		registerNode(sc)
 		registerMesh(sc)
+		registerPodMesh(sc)
 		registerSecrets(sc)
 		registerRouter(sc)
 		registerRoutes(sc)
