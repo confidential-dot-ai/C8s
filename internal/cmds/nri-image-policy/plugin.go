@@ -200,6 +200,10 @@ type plugin struct {
 	// (cdsaddress.go).
 	cdsAddress string
 
+	// cdiSpecDirs are the CDI spec directories the sandbox policy expands a
+	// container's trusted CDI devices from (cdi.go).
+	cdiSpecDirs []string
+
 	// boot is the boot gate: nil unless policy.fatal_existing. See
 	// bootgate.go. bootRestart records that this registration is a plugin
 	// restart, which makes the startup check's denials fatal.
@@ -226,6 +230,8 @@ func newPlugin(
 		audit:      auditLogger,
 		logger:     logger,
 		containerd: ctrd,
+
+		cdiSpecDirs: cdiSpecDirs,
 	}
 	p.boot = newBootGate(cfg, logger)
 	p.mesh = newMeshGate(*cfg.Mesh, logger)
@@ -778,11 +784,16 @@ func (p *plugin) exemptNamespace(ctx context.Context, cfg *config, pod *api.PodS
 // The digest is resolved only when an exemption could apply, so an ordinary
 // container costs no containerd round-trip.
 func (p *plugin) checkSandbox(ctx context.Context, cfg *config, pod *api.PodSandbox, ctr *api.Container, imageRef string, env *allowlist.EnvObservation, mounts []allowlist.ObservedMount) (imageVerdict, string) {
+	cdi, err := expandCDI(ctr, p.cdiSpecDirs)
+	if err != nil {
+		p.logger.Warn("cannot expand the container's CDI devices; their edits count as host privilege",
+			"namespace", pod.GetNamespace(), "pod", pod.GetName(), "container", ctr.GetName(), "error", err)
+	}
 	obs := observeSandbox(pod, ctr, nodeMounts{
 		socketDir:  cfg.WorkloadClaims.SocketDir,
 		cdsPins:    p.cdsPins,
 		cdsAddress: p.cdsAddress,
-	}, mounts, nil)
+	}, mounts, nil, cdi)
 	violations := obs.violations()
 	if len(violations) == 0 {
 		return verdictAllow, ""
@@ -797,7 +808,7 @@ func (p *plugin) checkSandbox(ctx context.Context, cfg *config, pod *api.PodSand
 			cdsAddress: p.cdsAddress,
 		}, mounts, func(m allowlist.ObservedMount) bool {
 			return p.policy.admitsNodeRoot(rc, m)
-		})
+		}, cdi)
 		if violations = obs.violations(); len(violations) == 0 {
 			return verdictAllow, ""
 		}

@@ -394,7 +394,7 @@ func TestSandboxViolations(t *testing.T) {
 				cdsPins:    tt.ownPins,
 				cdsAddress: tt.ownAddress,
 			}
-			got := observeSandbox(pod, ctr, own, nil, nil).violations()
+			got := observeSandbox(pod, ctr, own, nil, nil, cdiExpansion{}).violations()
 			if tt.want == "" {
 				if len(got) != 0 {
 					t.Fatalf("observeSandbox(ordinary pod).violations() = %v, want none", got)
@@ -637,7 +637,7 @@ func TestVerifiedFileBindIsNotHostBind(t *testing.T) {
 			admitted := func(m allowlist.ObservedMount) bool {
 				return m.Provenance == allowlist.ProvenanceNodeRoot && m.ReadOnly
 			}
-			got := observeSandbox(pod, ctr, nodeMounts{}, mounts, admitted).HostBinds
+			got := observeSandbox(pod, ctr, nodeMounts{}, mounts, admitted, cdiExpansion{}).HostBinds
 			if (len(got) > 0) != tc.hostBind {
 				t.Fatalf("observeSandbox(%s).HostBinds = %v, want host bind %t", tc.name, got, tc.hostBind)
 			}
@@ -720,10 +720,10 @@ func TestNodeRootBindMatchesEvidenceBySourceAndDestination(t *testing.T) {
 	// Evidence order differs from the container's mount order.
 	mounts := []allowlist.ObservedMount{verified, {Source: "/var/lib/kubelet/pods/" + testPodUID + "/etc-hosts", Destination: "/etc/hosts"}}
 	admitted := func(m allowlist.ObservedMount) bool { return m.Provenance == allowlist.ProvenanceNodeRoot }
-	if got := observeSandbox(pod, ctr, nodeMounts{}, mounts, admitted).HostBinds; len(got) != 0 {
+	if got := observeSandbox(pod, ctr, nodeMounts{}, mounts, admitted, cdiExpansion{}).HostBinds; len(got) != 0 {
 		t.Fatalf("observeSandbox(reordered evidence).HostBinds = %v, want none", got)
 	}
-	if got := observeSandbox(pod, ctr, nodeMounts{}, mounts[1:], admitted).HostBinds; len(got) != 1 {
+	if got := observeSandbox(pod, ctr, nodeMounts{}, mounts[1:], admitted, cdiExpansion{}).HostBinds; len(got) != 1 {
 		t.Fatalf("observeSandbox(no evidence for the bind).HostBinds = %v, want the bind", got)
 	}
 }

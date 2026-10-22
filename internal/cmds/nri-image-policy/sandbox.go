@@ -69,8 +69,12 @@ type sandboxObservation struct {
 	WritableKernelFS []string
 	// Devices is the container's explicit device nodes.
 	Devices []string
-	// CDIDevices is the CDI devices containerd injected.
+	// CDIDevices is the CDI devices containerd injected through the CRI field,
+	// less those the node's trusted CDI specs expanded.
 	CDIDevices []string
+	// CDIExpanded is the trusted CDI devices whose device nodes, hooks and
+	// bind mounts are set aside (cdi.go).
+	CDIExpanded []string
 	// Hooks is the OCI hook stages the spec populates.
 	Hooks []string
 	// NetDevices is host network interfaces moved into the container.
@@ -91,22 +95,28 @@ type sandboxObservation struct {
 // container's mount evidence, as mountObserver.Observe returns it. A bind whose
 // evidence nodeRoot accepts carries measured node bytes an allowlist rule
 // pinned at that destination, so it is not a host bind either; nil accepts none.
-func observeSandbox(pod *api.PodSandbox, ctr *api.Container, own nodeMounts, mounts []allowlist.ObservedMount, nodeRoot func(allowlist.ObservedMount) bool) sandboxObservation {
+// The device nodes, hooks and binds cdi expanded are not observed.
+func observeSandbox(pod *api.PodSandbox, ctr *api.Container, own nodeMounts, mounts []allowlist.ObservedMount, nodeRoot func(allowlist.ObservedMount) bool, cdi cdiExpansion) sandboxObservation {
 	obs := sandboxObservation{
 		PodNamespaces:    namespaceTypes(pod.GetLinux().GetNamespaces()),
 		CtrNamespaces:    namespaceTypes(ctr.GetLinux().GetNamespaces()),
-		HostBinds:        hostBinds(pod, ctr, own, mounts, nodeRoot),
+		HostBinds:        hostBinds(pod, ctr, own, mounts, nodeRoot, cdi),
 		WritableKernelFS: writableKernelFS(ctr),
-		Hooks:            hookStages(ctr.GetHooks()),
+		Hooks:            hookStages(ctr.GetHooks(), cdi),
 		Sysctls:          slices.Sorted(maps.Keys(ctr.GetLinux().GetSysctl())),
 		NetDevices:       slices.Sorted(maps.Keys(ctr.GetLinux().GetNetDevices())),
+		CDIExpanded:      cdi.names,
 		Seccomp:          "none",
 	}
 	for _, d := range ctr.GetLinux().GetDevices() {
-		obs.Devices = append(obs.Devices, d.GetPath())
+		if !slices.Contains(cdi.devices, d.GetPath()) {
+			obs.Devices = append(obs.Devices, d.GetPath())
+		}
 	}
 	for _, d := range ctr.GetCDIDevices() {
-		obs.CDIDevices = append(obs.CDIDevices, d.GetName())
+		if !slices.Contains(cdi.names, d.GetName()) {
+			obs.CDIDevices = append(obs.CDIDevices, d.GetName())
+		}
 	}
 	if s := ctr.GetLinux().GetSeccompPolicy(); s != nil {
 		obs.Seccomp = s.GetDefaultAction()
@@ -159,6 +169,7 @@ func (o sandboxObservation) logAttrs() []any {
 		"writable_kernel_fs", o.WritableKernelFS,
 		"devices", o.Devices,
 		"cdi_devices", o.CDIDevices,
+		"cdi_expanded", o.CDIExpanded,
 		"hooks", o.Hooks,
 		"net_devices", o.NetDevices,
 		"sysctls", o.Sysctls,
@@ -185,7 +196,7 @@ func namespaceTypes(nss []*api.LinuxNamespace) []string {
 // the pod UID, so a UID appearing anywhere in the source proves nothing, and an
 // uncleaned source would let `<uid>/..` name the parent. A pod with neither
 // identifier is unidentifiable, and every bind is then foreign.
-func hostBinds(pod *api.PodSandbox, ctr *api.Container, own nodeMounts, mounts []allowlist.ObservedMount, nodeRoot func(allowlist.ObservedMount) bool) []string {
+func hostBinds(pod *api.PodSandbox, ctr *api.Container, own nodeMounts, mounts []allowlist.ObservedMount, nodeRoot func(allowlist.ObservedMount) bool, cdi cdiExpansion) []string {
 	var owned []string
 	if uid := pod.GetUid(); uid != "" {
 		owned = append(owned, kubeletRoot+"/pods/"+uid+"/")
@@ -204,7 +215,7 @@ func hostBinds(pod *api.PodSandbox, ctr *api.Container, own nodeMounts, mounts [
 		if cleanAbsolute(src) && slices.ContainsFunc(owned, func(dir string) bool { return strings.HasPrefix(src, dir) }) {
 			continue
 		}
-		if isInjectedNodeMount(pod, ctr, m, own) {
+		if isInjectedNodeMount(pod, ctr, m, own) || cdi.mount(m) {
 			continue
 		}
 		if nodeRoot != nil && nodeRootBind(src, m.GetDestination(), mounts, nodeRoot) {
@@ -290,9 +301,10 @@ func writableKernelFS(ctr *api.Container) []string {
 	return out
 }
 
-// hookStages names the OCI hook stages the spec populates. A hook names code
-// outside the reviewed image and entrypoint, so any stage is a violation.
-func hookStages(h *api.Hooks) []string {
+// hookStages names the OCI hook stages that hold a hook cdi did not expand. A
+// hook names code outside the reviewed image and entrypoint, so any such stage
+// is a violation.
+func hookStages(h *api.Hooks, cdi cdiExpansion) []string {
 	stages := []struct {
 		name  string
 		hooks []*api.Hook
@@ -306,7 +318,7 @@ func hookStages(h *api.Hooks) []string {
 	}
 	var out []string
 	for _, s := range stages {
-		if len(s.hooks) > 0 {
+		if slices.ContainsFunc(s.hooks, func(hook *api.Hook) bool { return !cdi.hook(s.name, hook) }) {
 			out = append(out, s.name)
 		}
 	}
