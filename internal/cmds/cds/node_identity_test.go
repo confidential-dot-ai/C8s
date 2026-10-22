@@ -113,3 +113,22 @@ func TestAttestReplaysRuntimeExtensions(t *testing.T) {
 		})
 	}
 }
+
+// A claimed extend order is only replayable against runtime registers.
+func TestAttestRejectsRuntimeExtensionsWithoutRegisters(t *testing.T) {
+	stub := newStubAttestationApi(t, testMRTD)
+	h := newTestAttestHandler(t, stub.URL(), nil)
+	csr, _ := generateCSR(t)
+	body, err := json.Marshal(types.AttestRequestBody{
+		Challenge:         issueChallenge(t, h),
+		Evidence:          teetypes.AttestationEvidence{Platform: teetypes.PlatformSNP, Evidence: json.RawMessage(`{"test":true}`)},
+		CSR:               csr,
+		RuntimeExtensions: []string{"sha256:" + strings.Repeat("1", 64)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	h.HandleAttest(w, httptest.NewRequest(http.MethodPost, "/attest", bytes.NewReader(body)))
+	wantRefusal(t, w, http.StatusUnprocessableEntity, types.ErrorCodeInvalidRequest)
+}
