@@ -70,7 +70,12 @@ c8s get-kubeconfig --node "$ip" --operator-key launch/server.key --image-manifes
   --out kubeconfig --timeout 180s
 export KUBECONFIG=$work/kubeconfig
 
-c8s cds ca --url "https://$ip:30808" --image-policy-file launch/server.json --out mesh-ca.pem
+# The kubeconfig is served before CDS is up.
+for _ in $(seq 1 30); do
+  c8s cds ca --url "https://$ip:30808" --image-policy-file launch/server.json --out mesh-ca.pem && break
+  sleep 10
+done
+[ -s mesh-ca.pem ] || { echo "FAIL: no mesh CA from CDS at $ip:30808" >&2; exit 1; }
 
 # The router pod starts once the acme sidecar has written its placeholder,
 # and get-cert's stamp follows the pod's match.
