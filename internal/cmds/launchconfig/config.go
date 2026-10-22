@@ -43,6 +43,7 @@ const (
 	MaxDocumentSize   = 1024 * 1024
 	maxSignatureSize  = 4096
 	maxAgentKeys      = 128
+	maxMirrors        = 8
 	defaultTLSSAN     = "c8s.local"
 )
 
@@ -133,6 +134,13 @@ type Document struct {
 	// Router is the server's front door. A baked image cannot know it at
 	// build time, so the signed launch file carries it.
 	Router *Router `yaml:"router,omitempty" json:"router,omitempty"`
+
+	// RegistryMirrors maps a registry host to the http endpoint containerd
+	// pulls it through; Stage writes it as RKE2's registries.yaml. Only http:
+	// the document carries no CA, and a cache on a private address has no
+	// public certificate. Image references stay digest-pinned, so a mirror
+	// cannot change what a node runs.
+	RegistryMirrors map[string]string `yaml:"registryMirrors,omitempty" json:"registry_mirrors,omitempty"`
 
 	serverTokenPresent bool
 }
@@ -509,7 +517,39 @@ func (d *Document) validate() error {
 			return fmt.Errorf("workloads: %w", err)
 		}
 	}
+	return validateRegistryMirrors(d.RegistryMirrors)
+}
+
+// validateRegistryMirrors accepts registry hosts (a lowercase DNS name with an
+// optional port) mapped to http origins with a unicast IPv4 host.
+func validateRegistryMirrors(mirrors map[string]string) error {
+	if len(mirrors) > maxMirrors {
+		return fmt.Errorf("registryMirrors has more than %d entries", maxMirrors)
+	}
+	for registry, endpoint := range mirrors {
+		host, port, hasPort := strings.Cut(registry, ":")
+		if ValidateHostname(host) != nil || (hasPort && !portNumber(port)) {
+			return fmt.Errorf("registryMirrors: %q must be a lowercase DNS hostname with an optional port", registry)
+		}
+		u, err := url.Parse(endpoint)
+		if err != nil || u.Scheme != "http" || u.Host == "" || endpoint != "http://"+u.Host {
+			return fmt.Errorf("registryMirrors: %q must map to an endpoint of the form http://host[:port]", registry)
+		}
+		host, port, hasPort = strings.Cut(u.Host, ":")
+		if hasPort && !portNumber(port) {
+			return fmt.Errorf("registryMirrors: %q endpoint port must be 1..65535", registry)
+		}
+		if err := ValidateIPv4(host, true); err != nil {
+			return fmt.Errorf("registryMirrors: %q endpoint host %w", registry, err)
+		}
+	}
 	return nil
+}
+
+// portNumber accepts a canonical decimal TCP port.
+func portNumber(s string) bool {
+	p, err := strconv.Atoi(s)
+	return err == nil && strconv.Itoa(p) == s && len(validation.IsValidPortNum(p)) == 0
 }
 
 func (d *Document) authorizeKey(pub []byte, key *ecdsa.PublicKey) error {

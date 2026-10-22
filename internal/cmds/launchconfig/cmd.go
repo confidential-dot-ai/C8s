@@ -3,6 +3,7 @@ package launchconfig
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -19,6 +20,7 @@ func NewCmd() *cobra.Command {
 
 func newBundleCmd() *cobra.Command {
 	var opts BundleOptions
+	var mirrors []string
 	cmd := &cobra.Command{
 		Use:   "new",
 		Short: "Create a cluster's launch bundle: keys, tokens and signed server/agent documents",
@@ -42,6 +44,10 @@ HOST_DATA to SHA-256 of that node's pubkey file. See docs/operator.md,
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			var err error
+			if opts.RegistryMirrors, err = parseRegistryMirrors(mirrors); err != nil {
+				return err
+			}
 			if err := NewBundle(opts); err != nil {
 				return err
 			}
@@ -68,10 +74,31 @@ HOST_DATA to SHA-256 of that node's pubkey file. See docs/operator.md,
 	f.StringVar(&opts.Router.ACMEEmail, "acme-email", "", "contact email for the router's ACME account (requires --router-hostname)")
 	f.StringVar(&opts.Router.ACMEDirectoryURL, "acme-directory-url", "", "ACME directory URL, e.g. a staging directory for tests (requires --router-hostname; default Let's Encrypt)")
 	f.Int64Var(&opts.Router.MaxRequestBodyBytes, "router-max-request-body-bytes", 0, "largest application request body the router accepts, in bytes (default 1048576)")
+	f.StringArrayVar(&mirrors, "registry-mirror", nil, "registry=http://ipv4[:port], the mirror containerd pulls that registry through; repeatable, once per registry")
 	for _, name := range []string{"out", "cluster-id", "image-manifest"} {
 		_ = cmd.MarkFlagRequired(name)
 	}
 	return cmd
+}
+
+// parseRegistryMirrors turns repeated registry=endpoint flags into a map and
+// refuses a registry given twice, so no mirror is silently dropped.
+func parseRegistryMirrors(values []string) (map[string]string, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]string, len(values))
+	for _, v := range values {
+		registry, endpoint, ok := strings.Cut(v, "=")
+		if !ok {
+			return nil, fmt.Errorf("--registry-mirror %q must be registry=http://ipv4[:port]", v)
+		}
+		if _, dup := out[registry]; dup {
+			return nil, fmt.Errorf("--registry-mirror: registry %q given more than once", registry)
+		}
+		out[registry] = endpoint
+	}
+	return out, nil
 }
 
 func newAddAgentCmd() *cobra.Command {

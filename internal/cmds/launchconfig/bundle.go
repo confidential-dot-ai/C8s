@@ -59,6 +59,8 @@ type BundleOptions struct {
 	TLSSAN        string
 	WorkloadsPath string
 	Router        Router
+	// RegistryMirrors goes into the server document; agents inherit it.
+	RegistryMirrors map[string]string
 }
 
 // NewBundle generates the cluster's two launch keys and join tokens, writes
@@ -129,6 +131,7 @@ func NewBundle(opts BundleOptions) (err error) {
 		AgentOperatorPublicKeys: []string{agentPub},
 		TLSSAN:                  opts.TLSSAN,
 		Workloads:               workloads,
+		RegistryMirrors:         opts.RegistryMirrors,
 	}
 	if len(opts.Router.Hostnames) > 0 || opts.Router.ACMEEmail != "" || opts.Router.ACMEDirectoryURL != "" || opts.Router.MaxRequestBodyBytes != 0 {
 		router := opts.Router
