@@ -4,9 +4,9 @@
   "items": [
     {
       "metadata": {
-        "name": "cilium-72q2n",
+        "name": "cilium-nw7db",
         "namespace": "kube-system",
-        "uid": "9da9cb89-4e3e-4e6e-b96b-cc02fc9eaa13",
+        "uid": "905da202-c907-4d44-8e21-a0752a5eeea1",
         "ownerReferences": [
           {
             "apiVersion": "apps/v1",
@@ -14,7 +14,7 @@
             "controller": true,
             "kind": "DaemonSet",
             "name": "cilium",
-            "uid": "ad3fe072-f930-40bf-9595-fd465c78665e"
+            "uid": "334b8c0d-ed25-413c-a6e4-75d744e3aa50"
           }
         ]
       },
