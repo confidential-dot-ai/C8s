@@ -54,6 +54,9 @@
         "measurementsConfig": {
           "type": "string"
         },
+        "podImagePolicy": {
+          "type": "string"
+        },
         "namedCertTTL": {},
         "publishedShape": {
           "type": "string"

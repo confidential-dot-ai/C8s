@@ -74,6 +74,13 @@ func run(cfg config) error {
 	if err != nil {
 		return err
 	}
+	podImages, err := loadPodImages(cfg.podImagePolicy)
+	if err != nil {
+		return err
+	}
+	if err := validatePodAuthorities(podImages, pinned.Images, nil); err != nil {
+		return err
+	}
 	if !pinned.Empty() {
 		digests, common, _ := pinned.Flatten()
 		cfg.measurements = digests
@@ -106,6 +113,9 @@ func run(cfg config) error {
 	if cfg.operatorKeys != "" {
 		keys, pemBytes, err := loadOperatorKeys(cfg.operatorKeys)
 		if err != nil {
+			return err
+		}
+		if err := validatePodAuthorities(podImages, nil, keys); err != nil {
 			return err
 		}
 		operatorKeysHash, err = operatorauth.KeySetHash(keys)
@@ -319,6 +329,7 @@ func run(cfg config) error {
 			Measurements:      measurements,
 			RTMRs:             rtmrPins,
 			Images:            pinned.Images,
+			PodImages:         podImages,
 			SANValidation:     cfg.sanValidation,
 			Policy:            policy,
 			AllowlistStore:    &allowlistStore,

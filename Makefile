@@ -90,7 +90,7 @@ test:
 # into a failure instead of a skip.
 test-podmesh-netns:
 	@runner="env C8S_REQUIRE_NFT=1"; [ "$$(id -u)" = 0 ] || runner="sudo -n $$runner"; \
-		go test -race -count=1 -exec "$$runner" -run InTheNamespace ./internal/podmesh/ruleset ./internal/cmds/nri-image-policy
+		go test -race -count=1 -exec "$$runner" -run InTheNamespace ./internal/podmesh/ruleset ./internal/cmds/nri-image-policy ./internal/cmds/armtlsmesh
 
 test-integration:
 	./test/integration/run.sh

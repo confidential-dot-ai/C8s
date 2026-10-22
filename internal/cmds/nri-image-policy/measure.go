@@ -65,6 +65,8 @@ type journalMeasurer struct {
 	path    string
 }
 
+func (m *journalMeasurer) Digests() []string { return m.journal.Digests() }
+
 func (m *journalMeasurer) MeasureOnce(ref string) (bool, error) {
 	digest, err := runtimemeasure.CanonicalDigest(ref)
 	if err != nil {
