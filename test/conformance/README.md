@@ -88,7 +88,9 @@ backend down, reading:
 | `GODOG_TAGS` | optional tag expression, such as `@area:enforcement` |
 
 It exits with godog's status, so a failed step fails the command; undefined
-and pending steps are the judge's backlog and do not.
+and pending steps are the judge's backlog and do not. A failed step carries
+the `c8s-mesh` log of each pod the scenario deployed, since the scenario
+namespace is deleted before the cluster's logs are collected.
 
 ## Backends
 
