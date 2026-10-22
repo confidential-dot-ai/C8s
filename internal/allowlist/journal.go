@@ -311,3 +311,51 @@ func (s *Store) PruneHistory(keep int) (int, error) {
 	res, err := s.replicate(Command{Op: OpPruneHistory, Keep: keep})
 	return res.Retired, err
 }
+
+// LiveBytes is the space the store's data takes: its pages less the free
+// ones. A pruned history frees pages SQLite reuses but does not return to the
+// filesystem, so the volume's used space overstates what a replacement
+// replica would have to copy; this does not.
+func (s *Store) LiveBytes() (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var pageSize, pages, free int64
+	for q, v := range map[string]*int64{"PRAGMA page_size": &pageSize, "PRAGMA page_count": &pages, "PRAGMA freelist_count": &free} {
+		if err := s.db.QueryRow(q).Scan(v); err != nil {
+			return 0, err
+		}
+	}
+	return (pages - free) * pageSize, nil
+}
+
+// HistoryKeepForBytes is how many of the newest history entries fit in
+// budget bytes of distinct documents (at least one: the served document).
+func (s *Store) HistoryKeepForBytes(budget int64) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rows, err := s.db.Query(`SELECT e.digest, LENGTH(o.body) FROM journal_event e
+		JOIN journal_object o ON o.digest = e.digest ORDER BY e.position DESC`)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	seen := map[string]bool{}
+	var total int64
+	keep := 0
+	for rows.Next() {
+		var digest string
+		var size int64
+		if err := rows.Scan(&digest, &size); err != nil {
+			return 0, err
+		}
+		if !seen[digest] {
+			seen[digest] = true
+			total += size
+		}
+		if total > budget && keep > 0 {
+			break
+		}
+		keep++
+	}
+	return keep, rows.Err()
+}

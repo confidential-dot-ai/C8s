@@ -140,7 +140,7 @@ func run(cfg config) error {
 	// touches a Kubernetes Secret. In HA mode the replicas share one, minted
 	// by the Genesis replica and handed only to attested replicas, and every
 	// write is replicated through the Raft log.
-	fullGuard, err := allowlistFullGuard(cfg)
+	fullGuard, err := allowlistFullGuard(cfg, allowlistStore.LiveBytes)
 	if err != nil {
 		return err
 	}
@@ -406,8 +406,8 @@ func run(cfg config) error {
 	}
 
 	go checker.Run(ctx)
-	if haNode == nil && cfg.allowlistHistoryVersions > 0 {
-		go pruneHistoryLoop(ctx, &allowlistStore, cfg.allowlistHistoryVersions)
+	if haNode == nil && (cfg.allowlistHistoryVersions > 0 || cfg.allowlistHistoryBytes > 0) {
+		go pruneHistoryLoop(ctx, &allowlistStore, cfg.allowlistHistoryVersions, cfg.allowlistHistoryBytes)
 	}
 
 	addr := fmt.Sprintf("%s:%d", cfg.host, cfg.port)
@@ -729,11 +729,17 @@ func readinessFn(svcReady func() bool, caCert *x509.Certificate, minCAValidity t
 
 // pruneHistoryLoop bounds a singleton's allowlist history (an HA replica's
 // leader prunes through the log instead, cdsha.Node.maybePruneHistory).
-func pruneHistoryLoop(ctx context.Context, store *allowlist.Store, keep int) {
+func pruneHistoryLoop(ctx context.Context, store *allowlist.Store, versions int, budget int64) {
 	t := time.NewTicker(time.Minute)
 	defer t.Stop()
 	for {
-		if n, err := store.HistoryLen(); err == nil && n > keep {
+		keep := versions
+		if budget > 0 {
+			if fit, err := store.HistoryKeepForBytes(budget); err == nil && (keep <= 0 || fit < keep) {
+				keep = fit
+			}
+		}
+		if n, err := store.HistoryLen(); err == nil && keep > 0 && n > keep {
 			if dropped, err := store.PruneHistory(keep); err != nil {
 				slog.Warn("prune allowlist history", "err", err)
 			} else if dropped > 0 {
