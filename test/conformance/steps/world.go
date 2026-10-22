@@ -30,6 +30,7 @@ type world struct {
 	api      cdsAPIState
 	cds      cdsState
 	issuance issuanceState
+	podMesh  podMeshState
 	secrets  secretsState
 	router   routerState
 	routes   routesState
@@ -69,11 +70,15 @@ type pod struct {
 	refusal    *refusal
 	// How the pod is rendered: pod_manifest options, its namespace, the name
 	// of its first container, and how its certificate container verifies the
-	// CDS.
+	// CDS; and the port of its hello API and its datagram listener, and the
+	// container whose log shows the datagrams received.
 	opts      []string
 	namespace string
 	first     string
 	verifyCDS []string // as the probe's flags
+	hello     int
+	datagram  int
+	listener  string
 	// What the secrets sentences add: the secret client's NAME=path specs,
 	// an init container (which "that container" addresses while initLast),
 	// and the requester state of the pod.
@@ -149,6 +154,7 @@ func initializeScenario(be backend) func(*godog.ScenarioContext) {
 		registerIssuance(sc)
 		registerRequester(sc)
 		registerNode(sc)
+		registerPodMesh(sc)
 		registerSecrets(sc)
 		registerRouter(sc)
 		registerRoutes(sc)
