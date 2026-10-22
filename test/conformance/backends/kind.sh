@@ -105,7 +105,6 @@ cds_restart_with() {
     local flag=
     case "$1" in
         default) args="$installed" ;;
-        min-ca-validity) flag=--min-ca-validity ;;
         pins) flag=--measurements ;;
         operator-keys) flag=--operator-keys ;;
         san-validation) flag=--san-validation ;;
@@ -156,8 +155,8 @@ cds_arg_set() {
 # Wait for the one CDS pod that is none of the given UIDs (the pods before
 # the change) to run and answer /healthz through the forward, then for the
 # Service to route to it: that takes its readiness probe, which runs some
-# seconds after the pod does. A CDS that reports itself not ready
-# (min-ca-validity) never joins the Service, and is not waited for.
+# seconds after the pod does. A CDS that reports itself not ready never
+# joins the Service, and is not waited for.
 cds_await_running() {
     local deadline=$(($(date +%s) + 180)) pods uid phase
     while :; do

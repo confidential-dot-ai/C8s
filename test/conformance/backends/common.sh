@@ -96,8 +96,8 @@
 #                                    startup, PEM
 #   cds_restart_with <parameter> <value>
 #                                    restart the CDS with one parameter
-#                                    changed: min-ca-validity <duration>,
-#                                    pins <digest>|none, operator-keys none,
+#                                    changed: pins <digest>|none,
+#                                    operator-keys none,
 #                                    san-validation true|false, inventory-cidr
 #                                    <cidr>; default restores the installed
 #                                    configuration
