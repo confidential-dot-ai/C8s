@@ -25,6 +25,21 @@ func podDocument(t *testing.T) *launchconfig.Document {
 	return doc
 }
 
+func TestPreparePodRefusesAPlatformWithoutARuntimeRegister(t *testing.T) {
+	root := prepareRoot(t)
+	doc := podDocument(t)
+	doc.Image.Platform = "snp"
+	// Prepare checks the staged pins' family first; the pod step is what
+	// must refuse, so call it as Prepare would.
+	err := preparePod(root, doc, map[string][]byte{})
+	if err == nil || !strings.Contains(err.Error(), "runtime register") {
+		t.Fatalf("got %v, want a runtime register refusal", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, nriPolicyPath)); !os.IsNotExist(err) {
+		t.Fatalf("policy written without measurement: %v", err)
+	}
+}
+
 func TestPreparePodAdmitsOnlySignedWorkloads(t *testing.T) {
 	root := prepareRoot(t)
 	// A server boot earlier must not leave its inputs to the pod.
