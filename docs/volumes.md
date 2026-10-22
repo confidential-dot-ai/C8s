@@ -84,6 +84,37 @@ There is no integrity anchor to carry — a volume the host can rewrite has
 nothing for an anchor to commit to. The mode and the tree are one invariant: a
 blob carrying both or neither is refused rather than disambiguated.
 
+A mutable blob may also ask the node to lay down the filesystem itself, inside
+the TEE, so no ciphertext has to be built anywhere else:
+
+```json
+{
+  "type": "c8s.volume/v1",
+  "key": "<base64, 64 bytes>",
+  "mutable": true,
+  "format": { "fs": "ext4", "when": "blank", "root_owner": "65532:65532" }
+}
+```
+
+volumed opens the crypt mapping and then decides:
+
+| `when` | volumed formats when | use |
+|---|---|---|
+| `blank` | the host-visible ciphertext is all zeros over the first MiB: a disk nothing has written | a state volume on a blank disk (for example a KubeVirt `DataVolume` with `source: blank: {}`) |
+| `no-filesystem` | the plaintext holds no ext4 superblock, as when the key that wrote it is gone | a cache, whose contents can always be rebuilt |
+
+`root_owner` (numeric `uid:gid`, optional) owns the new root directory, so a
+non-root consumer can write there. Every other device opens as it is. A blob
+without `format` behaves exactly as before. volumed logs a warning on every
+format.
+
+The host can force a format by zeroing the device (`blank`) or by corrupting
+it (`no-filesystem`). That is the same class as the documented rollback risk
+for mutable volumes: the empty filesystem is one the TEE made. Sectors never
+written stay zero ciphertext, which shows the host how much of the volume is
+in use, on top of the access-pattern leak below. `format` is part of what a
+second open of the same volume must present.
+
 ## Creating a volume
 
 Immutable, the default — package a directory:
@@ -448,6 +479,15 @@ than read it at startup.
 The key must already be in the store. Unlike a secret — where the first pod to
 ask is the one that defines the value — `get-volume` only ever reads, so a pod
 scheduled before `c8s volume create` has run retries and then fails.
+
+A cache volume is the exception (`get-volume --cache-volume NAME=/store/path`).
+Its key is never created outside the TEE: the first pod to ask has CDS generate
+the secret at the path, as for any secret, and get-volume derives the volume
+key from it (HKDF-SHA-256), with `format.when: no-filesystem`. No operator holds
+the key and nothing is escrowed. A CDS restart loses the secret; the next open
+derives another key, finds no filesystem and formats an empty one. The path
+needs a read and a write grant. Use it only for state that can be rebuilt,
+such as the router's ACME certificate.
 
 Teardown is the sidecar's last act. Kubelet terminates sidecars only after the
 workload's containers have exited, so the close it posts lands while nothing
