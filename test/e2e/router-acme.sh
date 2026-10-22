@@ -87,7 +87,7 @@ c8s routes add --new --url "https://$ip:30808" --image-policy-file launch/server
 # and get-cert's stamp follows the pod's match.
 verdict() {
   c8s verify "https://$ip:443" --kind lb --mode attest-lb --server-name "$host" \
-    --image-policy-file launch/server.json --mesh-ca mesh-ca.pem --operator-keys launch/server/pubkey \
+    --image-manifest "$IMAGE_MANIFEST" --mesh-ca mesh-ca.pem --operator-keys launch/server/pubkey \
     --workload "$router" -o json > verdict.json
 }
 ok=""

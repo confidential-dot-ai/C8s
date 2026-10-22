@@ -109,6 +109,11 @@ dump() {
       "\(.metadata.name) deletion=\(.metadata.deletionTimestamp) phase=\(.status.phase) reason=\(.status.reason) \(.status.message)",
       ((.status.initContainerStatuses // []) + (.status.containerStatuses // []) | .[]
       | "  \(.name): ready=\(.ready) restarts=\(.restartCount) state=\(.state) last=\(.lastState.terminated // {} | tostring | .[0:600])")'
+    for c in $(kubectl -n "$ns" get "$p" -o jsonpath='{.spec.initContainers[*].name} {.spec.containers[*].name}'); do
+      echo "== logs $p/$c"
+      kubectl -n "$ns" logs "$p" -c "$c" --tail=40 2>&1 || true
+      kubectl -n "$ns" logs "$p" -c "$c" --previous --tail=20 2>/dev/null | sed 's/^/  previous: /' || true
+    done
   done
 }
 ready=""

@@ -9,6 +9,9 @@
   c8s-sglang-router Service. The chart hardcodes the sglang-router ClusterIP
   Service, whose VIP armtls-mesh does not intercept, so the cw guard drops
   the connection (C8s#933).
+- The worker's probes time out within the pod mesh's 5 s forwarding budget.
+  The chart's longer timeouts make the webhook refuse the pod
+  ("forwarded probe timeoutSeconds exceeds the 5s budget").
 
 run.sh applies this output and allowlist.py derives the entries from it, so
 both see the same pods.
@@ -40,6 +43,9 @@ def patch(docs: list[dict], image: str) -> list[dict]:
         container["image"] = image
         container["command"] = ["/app/llm-d-inference-sim"]
         container["args"] = [f"--model={flags['--served-model-name']}", f"--port={flags['--port']}"]
+        for probe in ("startupProbe", "readinessProbe", "livenessProbe"):
+            if probe in container:
+                container[probe]["timeoutSeconds"] = min(container[probe].get("timeoutSeconds", 1), 5)
     return docs
 
 
