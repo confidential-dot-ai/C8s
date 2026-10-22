@@ -88,9 +88,10 @@ backend down, reading:
 | `GODOG_TAGS` | optional tag expression, such as `@area:enforcement` |
 
 It exits with godog's status, so a failed step fails the command; undefined
-and pending steps are the judge's backlog and do not. A failed step carries
-the `c8s-mesh` log of each pod the scenario deployed, since the scenario
-namespace is deleted before the cluster's logs are collected.
+and pending steps are the judge's backlog and do not. A failed step carries,
+for each pod the scenario deployed, its containers' states and the logs of
+its `c8s-mesh` endpoint and first container, since the scenario namespace is
+deleted before the cluster's logs are collected.
 
 ## Backends
 
@@ -168,9 +169,9 @@ backend, and the steps wait until the probe answers 502, which no earlier
 manifest gives it. The CDS removes no manifest, so after the scenario the
 steps write the one stored before it again, or an empty one, under a later
 revision. A workload backend is a pod of `tenant-app` running
-[`c8s-echo-api`](images/tenant-app/c8s-echo-api) over TLS under the leaf it holds, read again
-for each connection: it answers every request with the request target and
-headers it received.
+[`c8s-echo-api`](images/tenant-app/c8s-echo-api) in plaintext behind its mesh endpoint,
+which holds the pod's leaf and terminates the router's armTLS: it answers
+every request with the request target and headers it received.
 
 [`backends/common.sh`](backends/common.sh) states the interface: every
 function, its arguments, what it prints, and when it answers *unsupported*:
