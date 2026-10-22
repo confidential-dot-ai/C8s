@@ -114,6 +114,7 @@ func fetchAll(ctx context.Context, cfg config, pins armtls.Pins) (map[string][]b
 	if err != nil {
 		return nil, err
 	}
+	defer client.CloseIdleConnections()
 	return fetchAllWith(ctx, cfg, client, pub, cfg.Endpoint())
 }
 

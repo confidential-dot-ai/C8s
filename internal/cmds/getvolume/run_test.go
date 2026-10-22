@@ -48,7 +48,7 @@ func validConfig() config {
 	return config{
 		CDSURL:            "https://cds.example",
 		AttestationApiURL: "http://127.0.0.1:8400",
-		Attempts:          60,
+		Attempts:          0,
 		RetryInterval:     5 * time.Second,
 		RequestTimeout:    10 * time.Second,
 		InventoryTimeout:  5 * time.Second,
@@ -69,7 +69,7 @@ func TestValidate(t *testing.T) {
 		"attestation api":   func(c *config) { c.AttestationApiURL = "" },
 		"no volumes":        func(c *config) { c.Volumes = nil },
 		"socket dir":        func(c *config) { c.SocketDir = "" },
-		"attempts":          func(c *config) { c.Attempts = 0 },
+		"attempts":          func(c *config) { c.Attempts = -1 },
 		"retry interval":    func(c *config) { c.RetryInterval = 0 },
 		"request timeout":   func(c *config) { c.RequestTimeout = 0 },
 		"inventory timeout": func(c *config) { c.InventoryTimeout = 0 },
