@@ -625,5 +625,19 @@ So after a CDS restart, restart every secret-consuming workload rather than
 letting them recover piecemeal — a rolling restart of each Deployment. Treat a released value as ephemeral for the
 lifetime of the CDS process; nothing durable may be keyed on one.
 
+A value that must outlive CDS — a volume key, a pepper, an API token — is the
+operator's to keep, in escrow, and to write back. Grant it `read` only. A
+workload holding `write` on that path finds it empty after the restart and
+generates a new value before you can write the old one back, and the escrowed
+value is then refused with `409`. With `read` only, the workload is refused
+with `404` and retries until the value is back. After a restart, in order:
+
+1. wait `--jwt-clock-skew` after CDS starts (see "Operator-supplied values");
+2. read the new mesh CA with `c8s cds ca --out mesh-ca.pem`;
+3. `c8s secrets put <path> --from-file <escrow> --mesh-ca mesh-ca.pem` for each
+   escrowed path, without `--overwrite`: on the restarted CDS each one is
+   created, and a `409` naming a workload means a `write` grant won the race;
+4. roll every workload that holds a secret.
+
 The sandbox ledger is process memory too, so a leaf that outlives a restart has
 no binding until its next renewal and is refused meanwhile.
