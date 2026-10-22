@@ -114,7 +114,7 @@ jobs:
     permissions:
       contents: read
       actions: read
-      packages: read # The conf-inference e2e pulls its app images.
+      packages: read # The acme check reads the component images.
     uses: ./.github/workflows/tdx-image-acceptance.yml
     with:
       image_acceptance_artifact_prefix: node-image-acceptance-rke2-tdx

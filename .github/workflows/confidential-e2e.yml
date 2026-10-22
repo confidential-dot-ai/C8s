@@ -28,7 +28,7 @@ permissions:
   #   elif [ -z "$st" ] && [ "$age" -gt 10800 ]
   # which means a leaked CVM squats a finite bare-metal host for up to 3 hours.
   actions: read
-  # The tdx lane pulls the org-internal confidential-inference images.
+  # The tdx lane's acme check reads the component images.
   packages: read
 
 concurrency:
