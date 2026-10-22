@@ -409,10 +409,8 @@ func TestNewBundleReusesTheOperatorKey(t *testing.T) {
 	if server.Server.OperatorPublicKey != string(want) {
 		t.Fatal("server.operatorPublicKey is not the operator's public key")
 	}
-	op, _ := certutil.LoadECPrivateKeyFile(keyPath)
-	copied, err := certutil.LoadECPrivateKeyFile(filepath.Join(dir, serverKeyFile))
-	if err != nil || !copied.Equal(op) {
-		t.Fatalf("bundle server.key is not the operator key (err %v)", err)
+	if _, err := os.Stat(filepath.Join(dir, serverKeyFile)); !os.IsNotExist(err) {
+		t.Fatal("the bundle holds a copy of the operator key")
 	}
 	agentPub, _ := os.ReadFile(filepath.Join(dir, "demo-f1", pubkeyFile))
 	if bytes.Equal(agentPub, want) {
@@ -432,6 +430,18 @@ func TestNewBundleRefusesAMismatchedOperatorPubkey(t *testing.T) {
 	if err := os.WriteFile(samePub, []byte(pub+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	p384, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p384PEM, err := certutil.MarshalECKeyPEM(p384)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p384Key := filepath.Join(t.TempDir(), "p384.key")
+	if err := os.WriteFile(p384Key, p384PEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	for _, tc := range []struct {
 		name string
 		args []string
@@ -441,6 +451,7 @@ func TestNewBundleRefusesAMismatchedOperatorPubkey(t *testing.T) {
 		{"other encoding", []string{"--operator-key", keyPath, "--operator-pubkey", samePub}, "another encoding"},
 		{"pubkey alone", []string{"--operator-pubkey", otherPub}, "--operator-key"},
 		{"not a key", []string{"--operator-key", otherPub}, "--operator-key"},
+		{"not P-256", []string{"--operator-key", p384Key, "--operator-pubkey", otherPub}, "P-256"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), "bundle")

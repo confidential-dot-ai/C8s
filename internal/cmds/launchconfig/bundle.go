@@ -29,7 +29,8 @@ import (
 // beside it, never inside it:
 //
 //	<dir>/server.key      server launch key; also the operator key that
-//	                      get-kubeconfig and signed CDS writes use
+//	                      get-kubeconfig and signed CDS writes use. Absent
+//	                      when the bundle reuses an operator key
 //	<dir>/agent.key    the one agent launch key this cluster trusts
 //	<dir>/server.json     client policy pinning the server (C8S_MEASUREMENTS_CONFIG)
 //	<dir>/peers.json      every launch identity CDS admits and serves
@@ -69,9 +70,9 @@ type BundleOptions struct {
 }
 
 // NewBundle generates the cluster's launch keys (or takes the server key from
-// --operator-key) and join tokens, writes
-// and signs the server document plus one agent document per name, and
-// emits the client policy. Dir must not exist; a failed run removes it so a
+// OperatorKeyPath) and join tokens, writes and signs the server document plus
+// one agent document per name, and emits the client policy. A reused server
+// key stays where it is; only a generated one is written to the bundle. Dir must not exist; a failed run removes it so a
 // half-written bundle can never be attached.
 func NewBundle(opts BundleOptions) (err error) {
 	if opts.Dir == "" || opts.ClusterID == "" || opts.ManifestPath == "" {
@@ -113,7 +114,12 @@ func NewBundle(opts BundleOptions) (err error) {
 			os.RemoveAll(opts.Dir)
 		}
 	}()
-	serverPub, err := writeLaunchKey(filepath.Join(opts.Dir, serverKeyFile), serverKey)
+	var serverPub string
+	if opts.OperatorKeyPath != "" {
+		serverPub, err = publicKeyPEM(serverKey)
+	} else {
+		serverPub, err = writeLaunchKey(filepath.Join(opts.Dir, serverKeyFile), serverKey)
+	}
 	if err != nil {
 		return err
 	}
@@ -342,10 +348,13 @@ func operatorKey(keyPath, pubPath string) (*ecdsa.PrivateKey, error) {
 	if err != nil {
 		return nil, fmt.Errorf("--operator-key: %w", err)
 	}
+	if key.Curve != elliptic.P256() {
+		return nil, fmt.Errorf("--operator-key %s must be an ECDSA P-256 key, not %s", keyPath, key.Curve.Params().Name)
+	}
 	if pubPath == "" {
 		return key, nil
 	}
-	want, err := os.ReadFile(pubPath)
+	want, err := readBounded(pubPath, 8192)
 	if err != nil {
 		return nil, fmt.Errorf("--operator-pubkey: %w", err)
 	}
