@@ -33,6 +33,9 @@
 #   node_refuses <port>              yes/no: a connection from the node to 127.0.0.1:<port>
 #                                    is refused now; a backend without a node shell answers yes
 #   cds_restart                      restart the CDS and wait until it serves again
+#   mesh_restart                     recreate every controller-owned mesh member and wait
+#                                    until all are ready, so each holds a leaf under the
+#                                    CDS's mesh CA
 #   cds_volatile                     yes/no: a CDS restart loses the allowlist and its version
 #   served_version                   the version of the allowlist CDS serves now
 #   applied_version                  the allowlist version the admission plugin
@@ -683,6 +686,47 @@ cds_endpoints_await() {
         [ "$(date +%s)" -lt "$deadline" ] || { echo "backend: the CDS Service's endpoints are not $1 after 60s" >&2; return 1; }
         sleep 1
     done
+}
+
+# --- Mesh members ---
+# The requester the webhook injects into every per-pod mesh member.
+MESH_CERT_CONTAINER=c8s-cert
+
+# A restarted CDS mints a new mesh CA, and a per-pod mesh member is bound to
+# the CA key of its first leaf for the pod's life (get-cert R3), so only a pod
+# created after the restart holds a leaf under the new CA. Every member a
+# controller owns, such as the router, outlives the scenario and is
+# recreated; a scenario's own pods go with it.
+mesh_restart() {
+    local members deadline
+    members="$(owned_mesh_members)" || return
+    [ -n "$members" ] || return 0
+    while read -r ns pod; do
+        kubectl -n "$ns" delete pod "$pod" --wait=false >/dev/null || return
+    done <<<"$members"
+    deadline=$(($(date +%s) + 240))
+    until owned_mesh_members_ready "$(wc -l <<<"$members")"; do
+        [ "$(date +%s)" -lt "$deadline" ] || { echo "backend: the recreated mesh members are not ready after 240s" >&2; return 1; }
+        sleep 2
+    done
+}
+
+# "<namespace> <pod>" for each controller-owned pod carrying the requester.
+owned_mesh_members() {
+    kubectl get pods -A -o json | jq -r --arg c "$MESH_CERT_CONTAINER" '.items[]
+        | select(.metadata.ownerReferences != null)
+        | select([(.spec.initContainers // [])[], .spec.containers[]] | any(.name == $c))
+        | "\(.metadata.namespace) \(.metadata.name)"'
+}
+
+# owned_mesh_members_ready <count>: at least count such pods, none
+# terminating, all Ready.
+owned_mesh_members_ready() {
+    kubectl get pods -A -o json | jq -e --arg c "$MESH_CERT_CONTAINER" --argjson n "$1" '[.items[]
+        | select(.metadata.ownerReferences != null)
+        | select([(.spec.initContainers // [])[], .spec.containers[]] | any(.name == $c))]
+        | length >= $n and all(.metadata.deletionTimestamp == null
+            and any(.status.conditions[]?; .type == "Ready" and .status == "True"))' >/dev/null
 }
 
 # --- A pod kept for the run ---
