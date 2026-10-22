@@ -552,8 +552,9 @@ With CDS a singleton:
   voluntary disruptions;
 - treat any CDS restart as a planned maintenance event with workload
   churn;
-- watch CDS startup logs for key replacement or a process restart, which
-  requires workload re-provisioning.
+- watch the `key_id` in CDS's mesh CA log lines: a renewal moves the
+  `fingerprint` and keeps the `key_id`, so a new `key_id` is a new key and
+  every workload needs re-provisioning.
 
 ### Operator-added allowlist entries across restarts
 

@@ -1079,3 +1079,22 @@ func TestRenewMeshCAWhenDueStopsOnContextCancel(t *testing.T) {
 
 	}
 }
+
+func TestCAKeyIDSurvivesARenewal(t *testing.T) {
+	mesh, err := issuer.NewMeshCA("test ca", time.Hour)
+	if err != nil {
+		t.Fatalf("mesh ca: %v", err)
+	}
+	first := mesh.Current().CA.Cert
+
+	renewed, err := mesh.RenewCertificate()
+	if err != nil {
+		t.Fatalf("renew: %v", err)
+	}
+	if bytes.Equal(renewed.CA.Cert.Raw, first.Raw) {
+		t.Fatal("renewal published the same certificate, so no field could tell the two apart")
+	}
+	if got, want := caKeyID(renewed.CA.Cert), caKeyID(first); got != want {
+		t.Errorf("key id after renewal = %s, want the retained key's %s", got, want)
+	}
+}

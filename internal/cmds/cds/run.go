@@ -137,6 +137,7 @@ func run(cfg config) error {
 		return fmt.Errorf("generate mesh CA: %w", err)
 	}
 	slog.Info("generated in-memory mesh CA",
+		"key_id", caKeyID(mesh.Current().CA.Cert),
 		"fingerprint", certutil.CertFingerprint(mesh.Current().CA.Cert.Raw),
 		"not_after", mesh.Current().CA.Cert.NotAfter.Format(time.RFC3339),
 	)
@@ -668,6 +669,12 @@ func caValidityHolds(cert *x509.Certificate, minValidity time.Duration, now time
 	return cert.NotAfter.Sub(now) >= minValidity
 }
 
+// caKeyID identifies the mesh CA key the process holds: SHA-256 over the SPKI
+// DER, which every certificate renewed under that key carries.
+func caKeyID(cert *x509.Certificate) string {
+	return certutil.CertFingerprint(cert.RawSubjectPublicKeyInfo)
+}
+
 // renewMeshCAWhenDue renews the mesh CA certificate under the key the process
 // keeps and republishes it to meshPeers, the pool that verifies client leaves;
 // a nil meshPeers is a listener with no such pool. A failed renewal is retried
@@ -695,6 +702,7 @@ func renewMeshCAWhenDue(ctx context.Context, mesh *issuer.MeshCA, every time.Dur
 			}
 			slog.Info("renewed mesh CA certificate",
 				"audit", true,
+				"key_id", caKeyID(renewed.CA.Cert),
 				"fingerprint", certutil.CertFingerprint(renewed.CA.Cert.Raw),
 				"not_after", renewed.CA.Cert.NotAfter.Format(time.RFC3339),
 			)
