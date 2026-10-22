@@ -67,6 +67,11 @@ func checkNodeImages(outputDir, layoutDir string) error {
 	if err != nil {
 		return err
 	}
+	// The seed pins the operator's argv with the injected images' node-local
+	// names; compare it with the render mapped back to digests.
+	if rawSeed, err = resolveLocalNames(rawSeed, names); err != nil {
+		return err
+	}
 	seed, err := pkgallowlist.ParseJSON(rawSeed)
 	if err != nil {
 		return fmt.Errorf("decode node-image bootstrap seed: %w", err)
