@@ -304,8 +304,9 @@ func TestChartSeedRetiresPreShapeComponentEntries(t *testing.T) {
 }
 
 // A seed layer admits without an operator token, so CDS keeps only the
-// measured node image's seed as one and seeds the seed ConfigMap into the
-// store, with or without operator keys.
+// measured node image's baked seed as one, and seeds the launch document's
+// workloads or the seed ConfigMap into the store, with or without operator
+// keys.
 func TestChartCDSSeedLayerOnlyOnBakedNode(t *testing.T) {
 	t.Parallel()
 	keys := filepath.Join(t.TempDir(), "operator.pub")
@@ -315,11 +316,12 @@ func TestChartCDSSeedLayerOnlyOnBakedNode(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		args  []string
-		layer bool
+		layer string
+		store string
 	}{
-		{name: "chart-managed"},
-		{name: "chart-managed with operator keys", args: []string{"--set-file", "cds.operatorKeys=" + keys}},
-		{name: "baked node", args: bakedArgs, layer: true},
+		{name: "chart-managed", store: "/mnt/c8s-data/cds-seed/allowlist-seed.json"},
+		{name: "chart-managed with operator keys", args: []string{"--set-file", "cds.operatorKeys=" + keys}, store: "/mnt/c8s-data/cds-seed/allowlist-seed.json"},
+		{name: "baked node", args: bakedArgs, layer: "/run/c8s-node/allowlist-seed.json", store: "/run/c8s-node/launch-workloads.json"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out, err := helmTemplate(t, tc.args...)
@@ -327,8 +329,12 @@ func TestChartCDSSeedLayerOnlyOnBakedNode(t *testing.T) {
 				t.Fatalf("helm template: %v\n%s", err, out)
 			}
 			args := renderedDeploymentContainer(t, out, "c8s-cds", "cds").Args
-			if got := slices.Contains(args, "--seed-layer"); got != tc.layer {
-				t.Errorf("CDS args contain --seed-layer = %t, want %t: %q", got, tc.layer, args)
+			layer := slices.ContainsFunc(args, func(a string) bool { return strings.HasPrefix(a, "--seed-layer") })
+			if layer != (tc.layer != "") || (tc.layer != "" && !slices.Contains(args, "--seed-layer="+tc.layer)) {
+				t.Errorf("CDS args %q, want --seed-layer=%q", args, tc.layer)
+			}
+			if !slices.Contains(args, "--allowlist-seed="+tc.store) {
+				t.Errorf("CDS args %q, want --allowlist-seed=%s", args, tc.store)
 			}
 		})
 	}

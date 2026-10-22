@@ -145,15 +145,19 @@ func TestPrepareCannotReplaceBakedWorkload(t *testing.T) {
 	if err := Prepare(root, doc); err != nil {
 		t.Fatal(err)
 	}
-	data, err := os.ReadFile(filepath.Join(root, PublicDir, "allowlist-seed.json"))
-	if err != nil {
-		t.Fatal(err)
+	// CDS keeps the baked seed alone as its fixed layer and seeds the launch
+	// document's workloads into its store.
+	for name, want := range map[string]string{"allowlist-seed.json": "operator", "launch-workloads.json": "application"} {
+		data, err := os.ReadFile(filepath.Join(root, PublicDir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		published, err := allowlist.ParseJSON(data)
+		if _, ok := published.Workloads[want]; err != nil || !ok || len(published.Workloads) != 1 {
+			t.Fatalf("%s: %v %v, want %s alone", name, published, err, want)
+		}
 	}
-	merged, err := allowlist.ParseJSON(data)
-	if err != nil || len(merged.Workloads) != 2 {
-		t.Fatalf("merged policy: %v %v", merged, err)
-	}
-	data, err = os.ReadFile(filepath.Join(root, "/etc/nri/conf.d/image-policy.yaml"))
+	data, err := os.ReadFile(filepath.Join(root, "/etc/nri/conf.d/image-policy.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +223,7 @@ func TestPreparePublishesOnlyPublicRoleInputs(t *testing.T) {
 			}
 			want := []string{"cds.json", "peers.json"}
 			if role == launchconfig.Server {
-				want = []string{"allowlist-seed.json", "cds.json", "operator-pubkey", "peers.json", "router", "tls-san"}
+				want = []string{"allowlist-seed.json", "cds.json", "launch-workloads.json", "operator-pubkey", "peers.json", "router", "tls-san"}
 				for name, expected := range map[string]string{"operator-pubkey": doc.Server.OperatorPublicKey, "tls-san": doc.TLSSAN + "\n"} {
 					data, err := os.ReadFile(filepath.Join(root, PublicDir, name))
 					if err != nil || string(data) != expected {

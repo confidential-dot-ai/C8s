@@ -133,8 +133,8 @@ func applyUncheckedHistoryPolicy(oc *Outcome, cfg config) {
 // as a fixed layer, from the pkgallowlist.SeedHeader of GET /allowlist fetched
 // over TLS bound to the attested serving certificate; "" when it names none.
 // On a router the response comes from CDS through the allowlist proxy, which
-// attests CDS. The seed is the node image's baked seed plus the launch
-// document's workloads, which the image pin and the pinned launch key cover.
+// attests CDS. The seed is the node image's baked seed, which the image pin
+// covers and the node's base allowlist enforces.
 func attestedSeed(ctx context.Context, cfg config, ev *evidence) (string, error) {
 	if ev.certSHA256 == "" {
 		return "", errors.New("no attested serving certificate to bind the fetch to")

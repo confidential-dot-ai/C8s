@@ -75,7 +75,7 @@ func NewCmd() *cobra.Command {
 	flags.BoolVar(&cfg.allowlistPersistent, "allowlist-persistent", false, "whether --allowlist-db is on durable storage; false makes CDS warn at startup that operator-added digests, the allowlist history, spent operator tokens, the route manifest and the mesh CA do not survive a restart")
 	flags.StringSliceVar(&cfg.inventoryCIDRs, "sandbox-inventory-cidr", nil, "CIDR(s) holding the node addresses CDS may dial for a sandbox's admission inventory (repeatable). It is what stops a workload pointing the callback at its own pod IP and answering as the inventory (docs/armtls.md). Unset, CDS derives one host route per node from the live node list and refuses sandbox tokens until that syncs")
 	flags.StringVar(&cfg.allowlistSeed, "allowlist-seed", "", "Path to a JSON allowlist (version + digests map) seeded into the store at startup before serving; missing entries are added, existing entries are left untouched (empty disables seeding)")
-	flags.BoolVar(&cfg.seedLayer, "seed-layer", false, "keep --allowlist-seed, read once at startup, as a fixed read-only layer beside the stored allowlist instead of seeding it into the store. Decisions use both (a seed entry wins a name both hold), GET /allowlist serves the stored document alone, and no write drops the seed. The seed then admits without an operator token, so set it only for a seed no one can change, such as the measured node image's")
+	flags.StringVar(&cfg.seedLayer, "seed-layer", "", "Path to a JSON allowlist read once at startup and kept as a fixed read-only layer beside the stored allowlist, never seeded into the store. Decisions use both (a seed entry wins a name both hold), GET /allowlist serves the stored document alone, and no write drops the seed. It admits without an operator token, so pass only a seed no one can change, such as the measured node image's (empty disables)")
 	flags.StringVar(&cfg.operatorKeys, "operator-keys", "", "Path to a PEM bundle of pinned operator EC public keys; /allowlist writes (PUT/DELETE) and PUT /routes require an operator token signed by one of them, each token authorizing one write (empty = writes disabled, reads still served)")
 
 	flags.Float64Var(&cfg.rateLimit, "rate-limit", 10, "max requests per second per source IP on attestation endpoints")
@@ -147,7 +147,7 @@ type config struct {
 	allowlistDB         string
 	allowlistPersistent bool
 	allowlistSeed       string
-	seedLayer           bool
+	seedLayer           string
 	inventoryCIDRs      []string
 	operatorKeys        string
 	armtlsPlatform      string

@@ -65,12 +65,6 @@
 #                                    configuration sets, one per line
 #   operator_keys                    yes/no: the CDS holds an operator key
 #   seed_declares <digest>           yes/no: the seed of the CDS names digest
-#   seed_add <name> <file>           add the entry in file to the seed a
-#                                    running CDS reads, under name; always
-#                                    unsupported, since no CDS rereads its seed
-#   seed_restore                     put back the seed seed_add changed, if any
-#   cds_instance                     the CDS pod's uid and restart count, one
-#                                    line, so a later read tells a restart
 #   write_token <operator|foreign> <method> <path> <body-file> [validity]
 #                                    the Authorization header of a write token,
 #                                    signed with the operator's key or with one
@@ -395,18 +389,6 @@ seed_declares() {
     if printf '%s' "$seed" | grep -qF "$1"; then echo yes; else echo no; fi
 }
 
-# No CDS rereads its seed while it runs: a chart-managed CDS seeds its
-# ConfigMap into the store once at start, and a baked node's CDS keeps the
-# seed held in the image as a fixed layer (--seed-layer). So no change to the
-# seed reaches a running CDS, and seed_add answers unsupported everywhere.
-seed_add() { return $UNSUPPORTED; }
-seed_restore() { :; }
-
-cds_instance() {
-    kubectl -n "$NS" get pods -l app.kubernetes.io/component=cds \
-        -o jsonpath='{range .items[*]}{.metadata.uid} {.status.containerStatuses[0].restartCount}{"\n"}{end}' | head -1
-}
-
 # A key that is not an operator key, minted once per run.
 foreign_key() {
     local key
@@ -662,10 +644,8 @@ owned_mesh_members_ready() {
             and any(.status.conditions[]?; .type == "Ready" and .status == "True"))' >/dev/null
 }
 
-# Once per run, after the scenarios: the seed any scenario changed, then what
-# this backend did.
+# Once per run, after the scenarios: what this backend did.
 teardown() {
-    seed_restore || true
     teardown_backend
 }
 

@@ -179,21 +179,22 @@ func TestSeedStore_FailsClosedOnStoreError(t *testing.T) {
 	}
 }
 
-// A seed layer never enters the store: an upload replaces the stored
-// document only, decisions still hold the seed, and a seed entry wins a name
-// both layers hold.
+// A seed layer never enters the store, while --allowlist-seed does: an upload
+// replaces the stored document only, decisions still hold the seed layer, and
+// a seed entry wins a name both layers hold.
 func TestOpenSeedLayerSurvivesUpload(t *testing.T) {
 	store, err := allowlist.OpenInMemory()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	layers, err := openSeed(&store, writeSeed(t, anySeed(map[string]string{"cds": digestA})), true)
+	launch := writeSeed(t, anySeed(map[string]string{"launch": digestB}))
+	layers, err := openSeed(&store, launch, writeSeed(t, anySeed(map[string]string{"cds": digestA})))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stored, _, err := store.LoadAll(); err != nil || len(stored.Workloads) != 0 {
-		t.Fatalf("the seed reached the store: %v, %v", stored.Workloads, err)
+	if stored, _, err := store.LoadAll(); err != nil || len(stored.Workloads) != 1 || stored.Workloads["launch"].Label == "" {
+		t.Fatalf("store holds %v, %v; want the launch workloads alone, not the seed layer", stored.Workloads, err)
 	}
 	upload, err := pkgallowlist.ParseJSON([]byte(anySeed(map[string]string{"app": digestB, "cds": digestB})))
 	if err != nil {
@@ -228,7 +229,7 @@ func TestOpenSeedWithoutLayerSeedsTheStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	layers, err := openSeed(&store, writeSeed(t, anySeed(map[string]string{"cds": digestA})), false)
+	layers, err := openSeed(&store, writeSeed(t, anySeed(map[string]string{"cds": digestA})), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,7 +248,7 @@ func TestOpenSeedLayerFailsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	if _, err := openSeed(&store, writeSeed(t, `{"schema":"c8s.allowlist/v1","workloads":{"x":{}}`), true); err == nil {
+	if _, err := openSeed(&store, "", writeSeed(t, `{"schema":"c8s.allowlist/v1","workloads":{"x":{}}`)); err == nil {
 		t.Fatal("openSeed accepted a malformed seed")
 	}
 }

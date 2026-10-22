@@ -1002,10 +1002,13 @@ the 41 characters a generated shape keeps. Pods that still run the narrowed-away
 launch keep running, but cannot restart under it. A CDS that seeds the
 override at start retires those entries itself.
 
-On a measured node image (`node.baked`), the seed is a file the image holds
-(the baked seed plus the launch document's `workloads`). CDS reads it once at
-start and keeps it as a fixed layer beside the store (`--seed-layer`, which
-the chart sets only there):
+On a measured node image (`node.baked`), the seed is the file the image
+holds, the same baked seed the node's image policy plugin enforces through its
+base allowlist. CDS reads it once at start and keeps it as a fixed layer
+beside the store (`--seed-layer`, which the chart sets only there). The
+launch document's signed `workloads`, if any, are seeded into the store at
+start instead (`--allowlist-seed`): they are served and measured like any
+stored entry, and the first upload replaces them.
 
 - The seed never enters the store. `GET /allowlist` serves the stored
   document alone, byte for byte the one an operator signed, and names the
@@ -1014,15 +1017,13 @@ the chart sets only there):
   drop C8s's own. `c8s allowlist upload` skips its core-component check when
   CDS names a seed.
 - `/attest` and `/secrets` decide on both layers. On a name both hold, the
-  seed's entry wins; the node's image policy plugin enforces the image's
-  baked seed through its base allowlist too.
+  seed's entry wins, as the node's base allowlist admits it too.
 - A leaf whose pod matched a seed entry is stamped with the seed's digest
   (SHA-256 of its canonical bytes) and the store version. CDS serves the
   seed's canonical bytes at `/allowlist/objects/sha256/<hex>`. The seed is
   not in the allowlist history and carries no operator signature. get-cert
   does not renew a leaf stamped with the seed on an upload.
-- The seed changes only with a new node image or launch document, that is,
-  when CDS restarts.
+- The seed changes only with a new node image.
 
 The steps above that publish the seed with `apply` are for chart-managed
 installs; on a measured node image there is nothing to publish.
