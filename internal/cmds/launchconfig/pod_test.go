@@ -134,6 +134,9 @@ func TestValidatePodRole(t *testing.T) {
 		{"short digest", func(d *Document) {
 			d.Pod.Manifest = strings.Replace(testPodManifest(""), strings.Repeat("a", 64), strings.Repeat("a", 63), 1)
 		}, "image"},
+		{"disk emptyDir", func(d *Document) {
+			d.Pod.Manifest = testPodManifest(`,"volumes":[{"name":"d","emptyDir":{}}]`)
+		}, "medium: Memory"},
 		{"host path", func(d *Document) {
 			d.Pod.Manifest = testPodManifest(`,"volumes":[{"name":"h","hostPath":{"path":"/"}}]`)
 		}, "only emptyDir"},
@@ -161,9 +164,18 @@ func TestValidatePodRole(t *testing.T) {
 			}
 		})
 	}
-	doc, _, _ := testDocument(t, "tdx", Server)
+	doc, _, _ := testPodDocument(t, "tdx")
+	doc.Pod.Manifest = testPodManifest(`,"volumes":[{"name":"m","emptyDir":{"medium":"Memory","sizeLimit":"64Mi"}}]`)
+	data, err := yaml.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Parse(data); err != nil {
+		t.Fatalf("memory emptyDir refused: %v", err)
+	}
+	doc, _, _ = testDocument(t, "tdx", Server)
 	doc.Pod = &PodSpec{}
-	data, _ := yaml.Marshal(doc)
+	data, _ = yaml.Marshal(doc)
 	if _, err := Parse(data); err == nil || !strings.Contains(err.Error(), "requires role pod") {
 		t.Fatalf("server with pod section: %v", err)
 	}
