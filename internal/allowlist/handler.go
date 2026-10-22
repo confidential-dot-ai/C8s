@@ -26,6 +26,9 @@ type Handler struct {
 	// MaxWriteBodyBytes caps mutation request bodies. Zero means
 	// DefaultMaxWriteBodyBytes; a non-positive value clamps to the default.
 	MaxWriteBodyBytes int64
+	// Layers, when it has a seed layer, names it on GET /allowlist and serves
+	// its bytes by digest beside the history.
+	Layers *Layered
 }
 
 // WriteAuthorizer authorizes a mutation given the raw request body, so the
@@ -37,6 +40,9 @@ type WriteAuthorizer func(r *http.Request, body []byte) error
 // JSON. Emits a weak ETag from the store version; a matching If-None-Match
 // returns 304.
 func (h Handler) HandleList(w http.ResponseWriter, r *http.Request) {
+	if h.Layers != nil && h.Layers.SeedDigest() != "" {
+		w.Header().Set(pkgallowlist.SeedHeader, h.Layers.SeedDigest())
+	}
 	// Every enforcer polls this route on its refresh interval and is current
 	// almost every time, so settle the 304 on the single-row version read
 	// rather than loading every entry under the writers' lock.
@@ -195,10 +201,14 @@ func (h Handler) HandleHistory(w http.ResponseWriter, _ *http.Request) {
 var objectHex = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // HandleObject handles GET /allowlist/objects/sha256/{hex}: the exact bytes
-// of a document in the history.
+// of a document in the history, or of the seed layer.
 func (h Handler) HandleObject(w http.ResponseWriter, r *http.Request) {
 	h.serveByDigest(w, r, "application/json", func(digest string) ([]byte, bool, error) {
-		return h.Store.Object(digest)
+		body, ok, err := h.Store.Object(digest)
+		if !ok && err == nil && h.Layers != nil {
+			body, ok = h.Layers.SeedObject(digest)
+		}
+		return body, ok, err
 	})
 }
 

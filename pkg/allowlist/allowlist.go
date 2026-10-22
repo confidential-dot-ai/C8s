@@ -37,6 +37,11 @@ import (
 // canonical form.
 const Schema = "c8s.allowlist/v1"
 
+// SeedHeader is the GET /allowlist response header by which CDS names the
+// digest ("sha256:<hex>") of the node image's seed it keeps as a fixed layer
+// beside the served document. Absent without a seed layer.
+const SeedHeader = "C8s-Allowlist-Seed"
+
 // Policy values. Argv policies use Deny/Any/Exact; secrets grants use
 // Deny/Allow — never Any (normalizeSecrets).
 const (

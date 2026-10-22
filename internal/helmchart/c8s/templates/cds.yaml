@@ -46,10 +46,11 @@ containers:
       - --allowlist-persistent={{ .Values.cds.persistence.enabled }}
       {{- if .Values.node.baked }}
       - --allowlist-seed=/run/c8s-node/allowlist-seed.json
-      {{- /* The measured image holds this seed, so following it publishes
-             nothing an operator token would not. The seed ConfigMap below is
-             editable by namespace RBAC: read it once. */}}
-      - --follow-seed
+      {{- /* The measured image and the signed launch document hold this
+             seed, so keeping it as a fixed layer admits nothing an operator
+             token would not. The seed ConfigMap below is editable by
+             namespace RBAC: it is seeded into the store, once. */}}
+      - --seed-layer
       - --operator-keys=/run/c8s-node/operator-pubkey
       - --dns-san-file=/run/c8s-node/tls-san
       {{- else }}

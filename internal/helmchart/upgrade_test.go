@@ -303,23 +303,23 @@ func TestChartSeedRetiresPreShapeComponentEntries(t *testing.T) {
 	}
 }
 
-// Following the seed lets whoever edits it publish entries, so CDS follows
-// only the measured node image's seed and reads the seed ConfigMap once,
-// with or without operator keys.
-func TestChartCDSFollowsOnlyBakedSeed(t *testing.T) {
+// A seed layer admits without an operator token, so CDS keeps only the
+// measured node image's seed as one and seeds the seed ConfigMap into the
+// store, with or without operator keys.
+func TestChartCDSSeedLayerOnlyOnBakedNode(t *testing.T) {
 	t.Parallel()
 	keys := filepath.Join(t.TempDir(), "operator.pub")
 	if err := os.WriteFile(keys, []byte("-----BEGIN PUBLIC KEY-----\nMFkwfakefakefake\n-----END PUBLIC KEY-----\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
-		name   string
-		args   []string
-		follow bool
+		name  string
+		args  []string
+		layer bool
 	}{
 		{name: "chart-managed"},
 		{name: "chart-managed with operator keys", args: []string{"--set-file", "cds.operatorKeys=" + keys}},
-		{name: "baked node", args: bakedArgs, follow: true},
+		{name: "baked node", args: bakedArgs, layer: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out, err := helmTemplate(t, tc.args...)
@@ -327,8 +327,8 @@ func TestChartCDSFollowsOnlyBakedSeed(t *testing.T) {
 				t.Fatalf("helm template: %v\n%s", err, out)
 			}
 			args := renderedDeploymentContainer(t, out, "c8s-cds", "cds").Args
-			if got := slices.Contains(args, "--follow-seed"); got != tc.follow {
-				t.Errorf("CDS args contain --follow-seed = %t, want %t: %q", got, tc.follow, args)
+			if got := slices.Contains(args, "--seed-layer"); got != tc.layer {
+				t.Errorf("CDS args contain --seed-layer = %t, want %t: %q", got, tc.layer, args)
 			}
 		})
 	}

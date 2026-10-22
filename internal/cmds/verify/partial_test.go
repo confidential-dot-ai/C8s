@@ -81,7 +81,7 @@ func snpVerifiedOutcome(t *testing.T, cfg config, ev *evidence) Outcome {
 		Claims:         teetypes.Claims{LaunchDigest: launch},
 	}
 	oc := newOutcome(cfg, ev, result, nil, plan)
-	applyVerdictPolicies(&oc, cfg, ev, nil, operatorKeysReport{}, &verifyPlan{}, measurementsReport{})
+	applyVerdictPolicies(context.Background(), &oc, cfg, ev, nil, operatorKeysReport{}, &verifyPlan{}, measurementsReport{})
 	return oc
 }
 
@@ -142,7 +142,7 @@ func TestWebPKIFrontDoorIsPartialNotVerified(t *testing.T) {
 	// the door lie rides the failure instead of being buried by it.
 	verr := &securityError{err: errors.New("rejected")}
 	failed := newOutcome(config{}, ev, nil, verr, mustPlan(t, config{measurements: []string{"ab" + strings.Repeat("00", 47)}}))
-	applyVerdictPolicies(&failed, config{}, ev, nil, operatorKeysReport{}, &verifyPlan{}, measurementsReport{})
+	applyVerdictPolicies(context.Background(), &failed, config{}, ev, nil, operatorKeysReport{}, &verifyPlan{}, measurementsReport{})
 	if failed.Partial || verdictExitCode(failed) != exitFailed {
 		t.Errorf("failed evidence + webpki: partial=%v exit=%d, want a plain failure", failed.Partial, verdictExitCode(failed))
 	}
@@ -169,7 +169,7 @@ func TestFrontDoorVerdictJSONHonesty(t *testing.T) {
 	failedOutcome := func(ev *evidence) Outcome {
 		verr := &securityError{err: errors.New("rejected")}
 		oc := newOutcome(config{}, ev, nil, verr, mustPlan(t, config{measurements: []string{"ab" + strings.Repeat("00", 47)}}))
-		applyVerdictPolicies(&oc, config{}, ev, nil, operatorKeysReport{}, &verifyPlan{}, measurementsReport{})
+		applyVerdictPolicies(context.Background(), &oc, config{}, ev, nil, operatorKeysReport{}, &verifyPlan{}, measurementsReport{})
 		return oc
 	}
 	renderJSON := func(oc Outcome) map[string]any {

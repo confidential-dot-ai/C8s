@@ -65,13 +65,9 @@
 #                                    configuration sets, one per line
 #   operator_keys                    yes/no: the CDS holds an operator key
 #   seed_declares <digest>           yes/no: the seed of the CDS names digest
-#   seed_add <name> <file>           add the entry in file to the seed the CDS
-#                                    follows, under name; unsupported where
-#                                    the CDS does not follow its seed or the
-#                                    seed it follows is not the cluster's to
-#                                    change (only a measured node image's CDS
-#                                    follows its seed, and that seed is in
-#                                    the image)
+#   seed_add <name> <file>           add the entry in file to the seed a
+#                                    running CDS reads, under name; always
+#                                    unsupported, since no CDS rereads its seed
 #   seed_restore                     put back the seed seed_add changed, if any
 #   cds_instance                     the CDS pod's uid and restart count, one
 #                                    line, so a later read tells a restart
@@ -414,51 +410,12 @@ seed_declares() {
     if printf '%s' "$seed" | grep -qF "$1"; then echo yes; else echo no; fi
 }
 
-# The seed the CDS reads is the ConfigMap only where the CDS Deployment
-# mounts it; a baked node's CDS reads the seed held in the image, and the
-# chart still renders the ConfigMap, which nothing reads. A CDS rereads its
-# seed only with --follow-seed, which the chart sets only on a baked node. So
-# seed_add answers unsupported on a chart-managed install (not followed) and on a
-# baked node (followed, but not the cluster's to change), and the original
-# is kept for seed_restore only once a change is possible.
-seed_configmap() {
-    kubectl -n "$NS" get configmaps -o json |
-        jq -r '.items[] | select(.metadata.name | endswith("-allowlist-seed")) | .metadata.name' | head -1
-}
-
-seed_followed() {
-    kubectl -n "$NS" get deployments -l app.kubernetes.io/component=cds -o json |
-        jq -e '[.items[].spec.template.spec.containers[] | select(.name == "cds") | .args[]?] | index("--follow-seed")' >/dev/null
-}
-
-# Whether the CDS Deployment mounts the ConfigMap, as a projected volume.
-seed_mounted() {
-    kubectl -n "$NS" get deployments -l app.kubernetes.io/component=cds -o json |
-        jq -e --arg cm "$1" '[.items[].spec.template.spec.volumes[]? | .projected.sources[]?.configMap.name // .configMap.name // empty] | index($cm)' >/dev/null
-}
-
-seed_add() {
-    local cm original
-    cm="$(seed_configmap)"
-    [ -n "$cm" ] || return $UNSUPPORTED
-    seed_followed && seed_mounted "$cm" || return $UNSUPPORTED
-    original="$(scratch)/seed-original.json"
-    [ -s "$original" ] || kubectl -n "$NS" get configmap "$cm" -o json > "$original" || return
-    kubectl -n "$NS" get configmap "$cm" -o json |
-        jq --arg name "$1" --slurpfile entry "$2" \
-            '.data["allowlist-seed.json"] |= (fromjson | .workloads[$name] = $entry[0] | tojson)' |
-        kubectl replace -f - >/dev/null
-}
-
-# Only the data goes back: the ConfigMap's resourceVersion moved with the
-# change, so a replace of the saved object conflicts.
-seed_restore() {
-    local original cm
-    original="$(scratch)/seed-original.json"
-    [ -s "$original" ] || return 0
-    cm="$(jq -r .metadata.name "$original")"
-    kubectl -n "$NS" patch configmap "$cm" --type merge -p "$(jq -c '{data: .data}' "$original")" >/dev/null && rm -f "$original"
-}
+# No CDS rereads its seed while it runs: a chart-managed CDS seeds its
+# ConfigMap into the store once at start, and a baked node's CDS keeps the
+# seed held in the image as a fixed layer (--seed-layer). So no change to the
+# seed reaches a running CDS, and seed_add answers unsupported everywhere.
+seed_add() { return $UNSUPPORTED; }
+seed_restore() { :; }
 
 cds_instance() {
     kubectl -n "$NS" get pods -l app.kubernetes.io/component=cds \
