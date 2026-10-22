@@ -188,6 +188,9 @@ func Run(args []string) error {
 	}()
 
 	if plugin.inventory != nil {
+		if cfg.Mesh == nil {
+			logger.Warn("serving the workload-claims socket with no mesh policy, so this node signs no workload identity assertions")
+		}
 		socketPath := filepath.Join(cfg.WorkloadClaims.SocketDir, workloadclaims.SocketName)
 		if err := startAdmissionInventory(ctx, logger, cfg, plugin, socketPath); err != nil {
 			return fmt.Errorf("start admission inventory: %w", err)
