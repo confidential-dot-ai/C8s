@@ -10,11 +10,13 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -338,12 +340,14 @@ func (m manifestSpec) bytes(t testing.TB) []byte {
 	return b
 }
 
-// fixture is a router: a mesh CA, its own mesh leaf, an operator, and the
-// routing engine wired the way cds-attest wires it.
+// fixture is a router: a mesh CA, its own mesh leaf published on a credential
+// volume, an operator, and the routing engine wired the way cds-attest wires
+// it.
 type fixture struct {
 	mesh       *issuer.CA
-	meshCAFile string
+	volume     string
 	routerLeaf tls.Certificate
+	identity   *MeshIdentity
 	op         operator
 	clock      *fakeClock
 	state      *State
@@ -354,22 +358,74 @@ type fixture struct {
 func newFixture(t testing.TB) *fixture {
 	t.Helper()
 	f := &fixture{
-		mesh:  newCA(t, "mesh"),
-		op:    newOperator(t),
-		clock: &fakeClock{now: time.Now()},
+		mesh:   newCA(t, "mesh"),
+		volume: t.TempDir(),
+		op:     newOperator(t),
+		clock:  &fakeClock{now: time.Now()},
 	}
 	f.routerLeaf = issueLeaf(t, f.mesh, "router")
-	f.meshCAFile = writeFile(t, "ca.pem", []byte(caPEM(f.mesh)))
-	meshCAs := CAFile(f.meshCAFile)
-	f.state = NewState(StateConfig{Reserved: testReserved, MeshCAs: meshCAs, Now: f.clock.Now})
-	f.transports = NewTransports(TransportConfig{
-		MeshCAs: meshCAs,
-		ClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
-			return &f.routerLeaf, nil
-		},
-	})
+	f.publish(t, caPEM(f.mesh))
+	certFile, keyFile, caFile := volumePaths(f.volume)
+	identity, err := NewMeshIdentity(certFile, keyFile, caFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.identity = identity
+	f.state = NewState(StateConfig{Reserved: testReserved, MeshCAs: identity.MeshCAs, Now: f.clock.Now})
+	f.transports = NewTransports(TransportConfig{MeshIdentity: identity.Credential})
 	f.proxy = NewProxy(ProxyConfig{State: f.state, Transports: f.transports, Timeout: 10 * time.Second})
 	return f
+}
+
+// publish publishes a generation holding the router's leaf and bundle as its
+// mesh CAs.
+func (f *fixture) publish(t testing.TB, bundle string) {
+	t.Helper()
+	key, ok := f.routerLeaf.PrivateKey.(*ecdsa.PrivateKey)
+	if !ok {
+		t.Fatalf("router leaf key is %T, want an ECDSA key", f.routerLeaf.PrivateKey)
+	}
+	keyPEM, err := certutil.MarshalECKeyPEM(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publishGeneration(t, f.volume, certutil.EncodeCertPEM(f.routerLeaf.Certificate[0]), keyPEM, []byte(bundle))
+}
+
+// volumePaths are the three reader paths of the credential volume in dir.
+func volumePaths(dir string) (certFile, keyFile, caFile string) {
+	return filepath.Join(dir, "tls.crt"), filepath.Join(dir, "tls.key"), filepath.Join(dir, "ca.crt")
+}
+
+// publishGeneration writes the next generation of the credential volume in dir
+// and flips the pointer onto it, the way get-cert publishes: the stable reader
+// paths are replaced beside the pointer.
+func publishGeneration(t testing.TB, dir string, chainPEM, keyPEM, caPEM []byte) {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(dir, "generations"))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+	name := filepath.Join("generations", strconv.Itoa(len(entries)+1))
+	generation := filepath.Join(dir, name)
+	if err := os.MkdirAll(generation, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for file, data := range map[string][]byte{"tls.crt": chainPEM, "tls.key": keyPEM, "ca.crt": caPEM} {
+		if err := os.WriteFile(filepath.Join(generation, file), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, file), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pointer := filepath.Join(dir, "current")
+	if err := os.Symlink(name, pointer+".next"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(pointer+".next", pointer); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // apply signs and accepts m, failing the test on any error.
