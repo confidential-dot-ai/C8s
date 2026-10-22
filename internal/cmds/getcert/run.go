@@ -300,9 +300,7 @@ func run(cfg config) error {
 
 	creds, err := resumeCredentials(ctx, cfg, volume)
 	if err != nil {
-		// Nothing resumed means nothing was revalidated, so whatever the volume
-		// still points at is unvalidated: withdraw it before exiting, or a
-		// crashlooping sidecar would leave it readable.
+		// Nothing resumed means nothing was revalidated: no set stays readable.
 		return errors.Join(err, withdrawGeneration(volume))
 	}
 
@@ -318,8 +316,8 @@ func run(cfg config) error {
 }
 
 // resumeCredentials is the pod's state before anything is requested: the
-// workload instance its node inventory asserts, and the generation and issuer
-// its volume already holds. Both must hold for a request to be made at all.
+// workload instance its node inventory asserts, the CA key its volume records,
+// and the generation it holds while that still validates under the record.
 func resumeCredentials(ctx context.Context, cfg config, volume credentialVolume) (*credentials, error) {
 	instanceID, err := workloadInstance(ctx, cfg)
 	if err != nil {

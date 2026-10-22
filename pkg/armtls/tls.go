@@ -937,27 +937,11 @@ func chainVerifyPeerCallback(meshCA *x509.Certificate, peerPurpose x509.ExtKeyUs
 	roots := x509.NewCertPool()
 	roots.AddCert(meshCA)
 	return func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
-		leaf, intermediates, err := parsePeerChain(rawCerts)
+		// INVARIANT: a mesh leaf is vouched for by the CA signature, so the
+		// chain is verified at the current time with no evidence-window skew.
+		leaf, err := verifyPeerChain(rawCerts, roots, peerPurpose, time.Now(), "armtls: mesh peer chain to a trusted mesh CA")
 		if err != nil {
 			return err
-		}
-		if err := checkPeerKeyType(leaf); err != nil {
-			return err
-		}
-		if err := checkPeerPurpose(leaf, peerPurpose); err != nil {
-			return err
-		}
-		// Chain validity at the current time: what vouches for a mesh leaf is
-		// the CA signature, so there is no evidence window to align a
-		// not-before allowance with. Every issuer of the chain must permit the
-		// peer's purpose too, not only the leaf checked above.
-		if _, err := leaf.Verify(x509.VerifyOptions{
-			Roots:         roots,
-			Intermediates: intermediates,
-			KeyUsages:     []x509.ExtKeyUsage{peerPurpose},
-			CurrentTime:   time.Now(),
-		}); err != nil {
-			return fmt.Errorf("armtls: mesh peer chain to a trusted mesh CA: %w", err)
 		}
 		sandboxID, err := SandboxIDFromCert(leaf)
 		if err != nil {

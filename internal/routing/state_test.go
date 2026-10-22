@@ -3,7 +3,6 @@ package routing
 import (
 	"errors"
 	"net/http"
-	"os"
 	"testing"
 	"time"
 
@@ -254,9 +253,7 @@ func TestB3MeshCARotatedIntoAnchor(t *testing.T) {
 		t.Fatalf("GET / = %d, want %d", got, http.StatusOK)
 	}
 
-	if err := os.WriteFile(f.meshCAFile, []byte(caPEM(f.mesh, external)), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	f.publish(t, caPEM(f.mesh, external))
 	// The next poll notices the new bundle and drops the pooled connection.
 	if err := f.transports.dropMeshPools(); err != nil {
 		t.Fatal(err)
@@ -288,9 +285,7 @@ func TestB3MeshIssuedIntermediateAnchor(t *testing.T) {
 		t.Fatalf("GET / = %d, want %d", got, http.StatusOK)
 	}
 
-	if err := os.WriteFile(f.meshCAFile, []byte(caPEM(f.mesh, root)), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	f.publish(t, caPEM(f.mesh, root))
 	if err := f.transports.dropMeshPools(); err != nil {
 		t.Fatal(err)
 	}
@@ -313,9 +308,7 @@ func TestB1UnreadableMeshCADropsPool(t *testing.T) {
 	if got := f.get("/").Code; got != http.StatusOK {
 		t.Fatalf("GET / = %d, want %d", got, http.StatusOK)
 	}
-	if err := os.WriteFile(f.meshCAFile, []byte("garbage"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	f.publish(t, "garbage")
 	if err := f.transports.dropMeshPools(); err == nil {
 		t.Fatal("dropMeshPools() with an unreadable bundle = nil, want an error")
 	}
@@ -343,9 +336,7 @@ func TestB1RotationRetiresInFlightConnection(t *testing.T) {
 	<-web.entered
 	// CDS holds one mesh CA, so a rotation replaces the published bundle
 	// rather than adding to it: the backend's leaf no longer chains.
-	if err := os.WriteFile(f.meshCAFile, []byte(caPEM(newCA(t, "mesh-2"))), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	f.publish(t, caPEM(newCA(t, "mesh-2")))
 	if err := f.transports.dropMeshPools(); err != nil {
 		t.Fatal(err)
 	}
@@ -369,9 +360,7 @@ func TestB3A4StagedFetchRechecksApplied(t *testing.T) {
 		testHost: {addressRoute("/", "prefix", "127.0.0.1:1", "admin.ops.svc", caPEM(external))},
 	}}
 	f.apply(t, applied)
-	if err := os.WriteFile(f.meshCAFile, []byte(caPEM(f.mesh, external)), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	f.publish(t, caPEM(f.mesh, external))
 	staged := simpleManifest(2, "127.0.0.1:1")
 	staged.notBefore = f.clock.Now().Add(time.Hour)
 	staged.maxAge = time.Minute

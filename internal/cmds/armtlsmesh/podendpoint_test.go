@@ -33,11 +33,11 @@ var testPeerAddress = podAddresses{netip.MustParseAddr("10.42.0.7")}
 
 // startTestEndpoint runs an endpoint on ephemeral ports whose captured
 // destination is supplied by the test instead of by the kernel.
-func startTestEndpoint(t *testing.T, volume credentialVolume, own podAddresses, captured string) (*podEndpoint, podListeners) {
+func startTestEndpoint(t *testing.T, volume meshVolume, own podAddresses, captured string) (*podEndpoint, podListeners) {
 	t.Helper()
 	e := &podEndpoint{
 		credentials: &credentials{
-			volume: volume,
+			volume: volume.Volume,
 			logger: discardLogger(),
 		},
 		own:     own,
@@ -236,7 +236,7 @@ func TestInboundRefusesAnUnauthenticatedPeer(t *testing.T) {
 func (ca meshCA) meshConfigsWithoutInstanceID(t *testing.T) (server, client *tls.Config) {
 	t.Helper()
 	set := ca.issue(t, leafSpec{omitInstanceID: true})
-	cert, err := tls.X509KeyPair(set.chainPEM, set.keyPEM)
+	cert, err := tls.X509KeyPair(set.ChainPEM, set.KeyPEM)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -448,23 +448,5 @@ func TestOwnPodAddressesExcludeLoopback(t *testing.T) {
 		if addr.IsLoopback() {
 			t.Errorf("%s is a loopback address", addr)
 		}
-	}
-}
-
-// The three reader paths must name three different files in one directory, so
-// one pointer covers the whole generation.
-func TestCredentialVolumeFor(t *testing.T) {
-	if _, err := credentialVolumeFor("/run/certs/tls.crt", "/run/keys/tls.key", "/run/certs/ca.crt"); err == nil {
-		t.Error("paths in two directories were accepted")
-	}
-	if _, err := credentialVolumeFor("/run/certs/tls.crt", "/run/certs/tls.crt", "/run/certs/ca.crt"); err == nil {
-		t.Error("two paths naming one file were accepted")
-	}
-	volume, err := credentialVolumeFor("/run/certs/tls.crt", "/run/certs/tls.key", "/run/certs/ca.crt")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if volume.pointerPath() != "/run/certs/current" {
-		t.Errorf("pointerPath = %q", volume.pointerPath())
 	}
 }

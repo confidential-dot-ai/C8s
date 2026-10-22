@@ -122,17 +122,9 @@ func newE2ERouter(t *testing.T, stub *mockapi.Stub, cdsURL string, pin []byte, m
 	if err != nil {
 		t.Fatal(err)
 	}
-	caFile := filepath.Join(t.TempDir(), "ca.pem")
-	if err := os.WriteFile(caFile, certutil.EncodeCertPEM(mesh.Cert.Raw), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	meshCAs := routing.CAFile(caFile)
-	leaf := e2eNamedLeaf(t, mesh, "router")
-	state := routing.NewState(routing.StateConfig{MeshCAs: meshCAs})
-	transports := routing.NewTransports(routing.TransportConfig{
-		MeshCAs:           meshCAs,
-		ClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) { return &leaf, nil },
-	})
+	identity := e2ePublishedIdentity(t, e2eNamedLeaf(t, mesh, "router"), mesh)
+	state := routing.NewState(routing.StateConfig{MeshCAs: identity.MeshCAs})
+	transports := routing.NewTransports(routing.TransportConfig{MeshIdentity: identity.Credential})
 	return &e2eRouter{
 		state: state,
 		poller: routing.NewPoller(routing.PollerConfig{
@@ -140,6 +132,47 @@ func newE2ERouter(t *testing.T, stub *mockapi.Stub, cdsURL string, pin []byte, m
 		}),
 		proxy: routing.NewProxy(routing.ProxyConfig{State: state, Transports: transports, Timeout: 10 * time.Second}),
 	}
+}
+
+// e2ePublishedIdentity publishes leaf and ca as one credential generation on a
+// volume shaped like the one get-cert publishes on, and reads the router's mesh
+// identity from it.
+func e2ePublishedIdentity(t *testing.T, leaf tls.Certificate, ca *issuer.CA) *routing.MeshIdentity {
+	t.Helper()
+	key, ok := leaf.PrivateKey.(*ecdsa.PrivateKey)
+	if !ok {
+		t.Fatalf("leaf key is %T, want an ECDSA key", leaf.PrivateKey)
+	}
+	keyPEM, err := certutil.MarshalECKeyPEM(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	generation := filepath.Join("generations", "1")
+	if err := os.MkdirAll(filepath.Join(dir, generation), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, data := range map[string][]byte{
+		"tls.crt": certutil.EncodeCertPEM(leaf.Certificate[0]),
+		"tls.key": keyPEM,
+		"ca.crt":  certutil.EncodeCertPEM(ca.Cert.Raw),
+	} {
+		if err := os.WriteFile(filepath.Join(dir, generation, name), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(generation, filepath.Join(dir, "current")); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := routing.NewMeshIdentity(
+		filepath.Join(dir, "tls.crt"),
+		filepath.Join(dir, "tls.key"),
+		filepath.Join(dir, "ca.crt"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return identity
 }
 
 // e2eSandboxID is the workload instance a member leaf names.

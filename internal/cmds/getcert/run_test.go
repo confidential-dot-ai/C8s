@@ -1369,9 +1369,8 @@ func TestMeasuredPoliciesFileDefaultsToSidecarJournal(t *testing.T) {
 	}
 }
 
-// A restart that cannot resume withdraws what the volume still points at. A
-// crashlooping sidecar would otherwise leave an unvalidated generation readable
-// for as long as the pod lives.
+// A restart that cannot resume withdraws what the volume still points at:
+// nothing was revalidated, so nothing stays readable.
 func TestRunWithdrawsWhenResumingFails(t *testing.T) {
 	v, _, _ := publishedVolume(t, newTestCA(t))
 	cfg := config{

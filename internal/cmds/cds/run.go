@@ -378,6 +378,9 @@ func run(cfg config) error {
 		if err != nil {
 			return fmt.Errorf("warm up armtls serving cert: %w", err)
 		}
+
+		go certMgr.RunRotation(ctx)
+
 		slog.Info("cds serving armTLS", "platform", cfg.armtlsPlatform)
 	} else {
 		slog.Warn("armTLS disabled (--armtls-platform empty); serving plain HTTP. UNSAFE outside tests.")
