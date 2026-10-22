@@ -217,6 +217,7 @@ func StartDigestsEndpoint(ctx context.Context, logger *slog.Logger, resolver San
 		if err != nil {
 			logger.Error("sandbox-digests cert warm-up failed; the endpoint will provision on first handshake", "error", err)
 		}
+		go certMgr.RunRotation(ctx)
 		logger.Info("starting sandbox-digests endpoint", "addr", addr)
 		if err := ServeDigests(ctx, l, resolver, identity); err != nil {
 			logger.Error("sandbox-digests endpoint error", "error", err)
@@ -261,7 +262,8 @@ func (c DigestsClientConfig) tlsConfig() *armtls.ClientConfig {
 	}
 }
 
-// NewDigestsClient builds the client.
+// NewDigestsClient builds the client. ctx bounds the client's certificate
+// renewal, so callers pass their lifetime context.
 //
 // It warms its own armTLS certificate before returning: provisioning costs an
 // attestation round-trip, and paying it lazily would put it inside the first
@@ -279,6 +281,7 @@ func NewDigestsClient(ctx context.Context, cfg DigestsClientConfig) (*DigestsCli
 	if err := warmUpCert(warmupCtx, certMgr); err != nil {
 		return nil, fmt.Errorf("workloadclaims: warm up sandbox-digests client cert: %w", err)
 	}
+	go certMgr.RunRotation(ctx)
 	timeout := cfg.Timeout
 	if timeout <= 0 {
 		timeout = 10 * time.Second

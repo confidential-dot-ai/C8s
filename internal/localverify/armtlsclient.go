@@ -50,6 +50,9 @@ func NewARMTLSHTTPClient(measurements [][]byte, verify VerifyFunc, verifyTimeout
 			if body != certutil.BodySelfSigned {
 				return fmt.Errorf("localverify: peer certificate is not self-signed (issuer != subject) and this client verifies no issuing chain, so nothing authenticates its body")
 			}
+			if err := CheckServingLeaf(cert); err != nil {
+				return fmt.Errorf("localverify: peer %w", err)
+			}
 			platform, evidence, params, err := CertEnvelope(cert)
 			if err != nil {
 				return fmt.Errorf("localverify: peer attestation: %w", err)

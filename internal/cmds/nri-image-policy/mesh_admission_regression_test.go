@@ -8,8 +8,6 @@ import (
 
 	"github.com/containerd/nri/pkg/api"
 	"gopkg.in/yaml.v3"
-
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 func TestMeshGateRequiresNonrootContainers(t *testing.T) {
@@ -91,12 +89,8 @@ func TestInitializingDenialDoesNotRefuseSandbox(t *testing.T) {
 			if err := p.StartContainer(context.Background(), pod, ctr); err != nil {
 				t.Fatalf("retry start: %v", err)
 			}
-			caller, err := p.SandboxForPeer(workloadclaims.PeerForPID(4242))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if caller.Refusal != nil {
-				t.Fatalf("sandbox refused after readmission: %v", caller.Refusal)
+			if refusal := p.inventory.denial(pod.GetId()); refusal != nil {
+				t.Fatalf("the initializing denial held after readmission: %v", refusal)
 			}
 		})
 	}
@@ -117,19 +111,13 @@ func TestMeshConfigRejectsUnboundBaseRoles(t *testing.T) {
 			}
 		})
 	}
-	for _, omit := range []string{"base", "mesh"} {
-		t.Run("no "+omit, func(t *testing.T) {
-			cfg := meshConfigForLoad(t)
-			if omit == "base" {
-				cfg.Allowlist.Base = nil
-			} else {
-				cfg.Mesh = nil
-			}
-			if err := cfg.validateMeshRoleBindings(); err != nil {
-				t.Fatalf("config without %s: %v", omit, err)
-			}
-		})
-	}
+	t.Run("no base", func(t *testing.T) {
+		cfg := meshConfigForLoad(t)
+		cfg.Allowlist.Base = nil
+		if err := cfg.validateMeshRoleBindings(); err != nil {
+			t.Fatalf("config without a base: %v", err)
+		}
+	})
 }
 
 func TestMeshConfigRejectsInvalidRulesetInputs(t *testing.T) {

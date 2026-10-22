@@ -28,6 +28,7 @@ import (
 
 	"github.com/fxamacker/cbor/v2"
 
+	"github.com/confidential-dot-ai/c8s/internal/credvolume"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/routing"
 	"github.com/confidential-dot-ai/c8s/internal/testutil"
@@ -37,6 +38,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/overenc"
 	"github.com/confidential-dot-ai/c8s/pkg/routes"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 type testClock struct {
@@ -79,10 +81,6 @@ func newRoutedServer(t *testing.T, opts ...func(*routing.ProxyConfig, *Config)) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	caFile := filepath.Join(t.TempDir(), "ca.pem")
-	if err := os.WriteFile(caFile, certutil.EncodeCertPEM(ca.Cert.Raw), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	routerLeaf := namedLeaf(t, ca, "router")
 	rs := &routedServer{clock: &testClock{now: time.Now()}, lastHost: make(chan string, 16)}
 
@@ -114,12 +112,11 @@ func newRoutedServer(t *testing.T, opts ...func(*routing.ProxyConfig, *Config)) 
 	}
 	rs.keys = []*ecdsa.PublicKey{&opKey.PublicKey}
 
-	meshCAs := routing.CAFile(caFile)
-	clientCert := func(*tls.CertificateRequestInfo) (*tls.Certificate, error) { return &routerLeaf, nil }
-	rs.state = routing.NewState(routing.StateConfig{Reserved: defaultReservedPaths, MeshCAs: meshCAs, Now: rs.clock.Now})
+	routerIdentity := publishedMeshIdentity(t, routerLeaf, ca)
+	rs.state = routing.NewState(routing.StateConfig{Reserved: defaultReservedPaths, MeshCAs: routerIdentity.MeshCAs, Now: rs.clock.Now})
 	proxyCfg := routing.ProxyConfig{
 		State:      rs.state,
-		Transports: routing.NewTransports(routing.TransportConfig{MeshCAs: meshCAs, ClientCertificate: clientCert}),
+		Transports: routing.NewTransports(routing.TransportConfig{MeshIdentity: routerIdentity.Credential}),
 	}
 	certPath, _ := writeTestServingLeaf(t)
 	srvCfg := Config{
@@ -172,6 +169,47 @@ func namedLeaf(t *testing.T, ca *issuer.CA, workload string) tls.Certificate {
 		t.Fatal(err)
 	}
 	return pair
+}
+
+// publishedMeshIdentity publishes leaf and its CA as one credential generation
+// on a credential volume, the way get-cert does, and returns the router's
+// identity read from it.
+func publishedMeshIdentity(t *testing.T, leaf tls.Certificate, ca *issuer.CA) *routing.MeshIdentity {
+	t.Helper()
+	key, ok := leaf.PrivateKey.(*ecdsa.PrivateKey)
+	if !ok {
+		t.Fatalf("leaf key is %T, want an ECDSA key", leaf.PrivateKey)
+	}
+	keyPEM, err := certutil.MarshalECKeyPEM(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	generation := filepath.Join("generations", "1")
+	if err := os.MkdirAll(filepath.Join(dir, generation), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, data := range map[string][]byte{
+		"tls.crt": certutil.EncodeCertPEM(leaf.Certificate[0]),
+		"tls.key": keyPEM,
+		"ca.crt":  certutil.EncodeCertPEM(ca.Cert.Raw),
+	} {
+		if err := os.WriteFile(filepath.Join(dir, generation, name), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(generation, filepath.Join(dir, "current")); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := routing.NewMeshIdentity(
+		filepath.Join(dir, "tls.crt"),
+		filepath.Join(dir, "tls.key"),
+		filepath.Join(dir, "ca.crt"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return identity
 }
 
 // apply signs a manifest routing app.example to the web backend.
@@ -503,7 +541,12 @@ func TestCheckRoutingFlags(t *testing.T) {
 		{"no cds", routed(func(c *config) { c.routing.cdsURL = "" }), "--cds-url is required"},
 		{"tunnel budget under one request", routed(func(c *config) { c.routing.tunnelBudget = quantityFlag{bytes: oneRequestBudget - 1, set: true} }), "--tunnel-budget"},
 		{"cds without attestation api", routed(func(c *config) { c.attestationAPIURL = "" }), "--attestation-api-url"},
-		{"cds without mesh identity", routed(func(c *config) { c.meshIdentityKeyFile = "" }), "--mesh-identity"},
+		{"attest endpoints without mesh identity", routed(func(c *config) { c.meshIdentityKeyFile = "" }), "--mesh-identity"},
+		{"attest off without mesh identity", routed(func(c *config) {
+			c.attestOff = true
+			c.routing.port = 8802
+			c.meshIdentityKeyFile = ""
+		}), ""},
 		{"non-loopback routing host", routed(func(c *config) { c.routing.port = 8802; c.routing.host = "0.0.0.0" }), "loopback"},
 		{"non-loopback routing host without port", routed(func(c *config) { c.routing.host = "0.0.0.0" }), "loopback"},
 		{"zero poll interval", routed(func(c *config) { c.routing.pollInterval = 0 }), "--routes-poll-interval"},
@@ -727,48 +770,17 @@ func testAnchorPEM(t *testing.T) string {
 	return string(certutil.EncodeCertPEM(ca.Cert.Raw))
 }
 
-// The hop to a member backend takes its trust root from the credential
-// generation on this pod's own volume, at the compiled path. A CA an
-// argument names is the control plane's choice, so it anchors nothing: a
-// backend keyed to it is refused.
-func TestMemberBackendRefusesACAAnArgumentNames(t *testing.T) {
-	ca, err := issuer.NewCA("control plane", time.Hour)
+// The hop to a member backend takes its identity and its trust root from the
+// credential generation on this pod's own volume: the paths are compiled, so
+// no argument redirects them to a CA the control plane chose.
+func TestMemberBackendCredentialComesFromTheCompiledVolume(t *testing.T) {
+	identity, err := memberCredentials()
 	if err != nil {
 		t.Fatal(err)
 	}
-	named := filepath.Join(t.TempDir(), "tls.crt")
-	if err := os.WriteFile(named, certutil.EncodeCertPEM(ca.Cert.Raw), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	// The argument's CA is not among the mesh CAs the member dial trusts.
-	cas, _ := memberMeshCAs()()
-	for _, trusted := range cas {
-		if trusted.Equal(ca.Cert) {
-			t.Fatalf("the member dial trusts the CA %q names", named)
-		}
-	}
-
-	backend := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(w, "reached")
-	}))
-	leaf := namedLeaf(t, ca, "web")
-	testutil.ServeMeshBackend(backend, leaf)
-	backend.StartTLS()
-	t.Cleanup(backend.Close)
-
-	transports := routing.NewTransports(routing.TransportConfig{
-		MeshCAs:           memberMeshCAs(),
-		ClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) { return &leaf, nil },
-	})
-	address := strings.TrimPrefix(backend.URL, "https://")
-	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://"+address+"/", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	response, err := transports.For(routes.Backend{Address: address, Workload: "web"}).RoundTrip(request)
-	if err == nil {
-		response.Body.Close()
-		t.Fatal("a backend keyed by the CA an argument names answered the router")
+	want := filepath.Join(workloadclaims.MemberCertDir, credvolume.PointerName)
+	if got := identity.PointerPath(); got != want {
+		t.Fatalf("memberCredentials() resolves the generation pointer at %q, want %q", got, want)
 	}
 }
 

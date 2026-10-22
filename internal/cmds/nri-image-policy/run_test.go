@@ -110,9 +110,9 @@ func TestConfigure_InventoryAddsRemoveContainerMask(t *testing.T) {
 	want.Set(api.Event_VALIDATE_CONTAINER_ADJUSTMENT)
 	want.Set(api.Event_STOP_CONTAINER)
 	want.Set(api.Event_REMOVE_CONTAINER)
-	// The inventory also needs the pod-sandbox lifecycle for its sandbox set.
 	want.Set(api.Event_RUN_POD_SANDBOX)
 	want.Set(api.Event_REMOVE_POD_SANDBOX)
+	want.Set(api.Event_UPDATE_CONTAINER)
 	if mask != want {
 		t.Fatalf("mask = %v, want %v", mask, want)
 	}
@@ -217,7 +217,7 @@ policy:
   enforce_existing: false
 logging:
   level: error
-`, dir, dir, pushDigestA)
+`+meshYAML, dir, dir, pushDigestA)
 }
 
 // --- Run: startup plumbing --------------------------------------------------
@@ -271,7 +271,7 @@ policy:
   enforce_existing: false
 logging:
   level: error
-`, dir, pushDigestA)
+`+meshYAML, dir, pushDigestA)
 	err := runWithDeadline(t, 10*time.Second, []string{"-config", writeConfigYAML(t, cfgYAML)})
 	if err == nil || !strings.Contains(err.Error(), "start health server") {
 		t.Fatalf("err = %v, want a health server start failure on the config address", err)
@@ -314,7 +314,7 @@ workload_claims:
   cds_node_port: 30808
 logging:
   level: error
-`, dir, dir, pushDigestA, dir)
+`+meshYAML, dir, dir, pushDigestA, dir)
 	err := runWithDeadline(t, 10*time.Second, []string{"-config", writeConfigYAML(t, cfgYAML)})
 	if err == nil || !strings.Contains(err.Error(), "start admission inventory") {
 		t.Fatalf("err = %v, want an admission-inventory start failure", err)
@@ -369,7 +369,7 @@ policy:
   enforce_existing: false
 logging:
   level: error
-`, dir, dir, pushDigestA, strings.Repeat("ab", 48))
+`+meshYAML, dir, dir, pushDigestA, strings.Repeat("ab", 48))
 	err := runWithDeadline(t, 20*time.Second, []string{"-config", writeConfigYAML(t, cfgYAML)})
 	if !errors.Is(err, errPluginDied) {
 		t.Fatalf("err = %v, want errPluginDied", err)
@@ -434,7 +434,7 @@ policy:
   enforce_existing: false
 logging:
   level: error
-`, dir, dir, pushDigestA, stalledCDS, stalledAttestation.URL, strings.Repeat("ab", 48))
+`+meshYAML, dir, dir, pushDigestA, stalledCDS, stalledAttestation.URL, strings.Repeat("ab", 48))
 
 	// Hand the stub a connected socket so the plugin cannot die while the pull
 	// is running: without it the NRI dial fails instantly, pullInitial's first
@@ -578,6 +578,7 @@ func TestNewPlugin_WorkloadClaimsWiring(t *testing.T) {
 			cfg := &config{
 				Policy:         policyConfig{Mode: ModeFailClosed},
 				WorkloadClaims: workloadClaimsConfig{SocketDir: tc.socketDir, ProcRoot: tc.procRoot},
+				Mesh:           meshRoles(),
 			}
 			p, err := newPlugin(cfg, &fakeContainerd{}, store, audit.NewLogger(), discardLogger())
 			if err != nil {

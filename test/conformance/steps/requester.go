@@ -161,17 +161,13 @@ func requesterOnNode(ctx context.Context, name, node string) error {
 		return err
 	}
 	p := w.describe(name, ref)
-	if err := w.elsewhere(p, "excluded_namespace"); err != nil {
+	if err := w.elsewhere(p, "exempt_namespace"); err != nil {
 		return err
 	}
 	manifest, err := w.be.call("requester_manifest", p.name, p.namespace, k8sNode)
 	if err != nil {
 		return err
 	}
-	w.onUndo(func() error {
-		_, err := kubectl(nil, "-n", p.namespace, "delete", "pod", p.name, "--ignore-not-found", "--wait=false")
-		return err
-	})
 	p.deployed = true
 	if _, err := kubectl([]byte(manifest), "apply", "-f", "-"); err != nil {
 		return err

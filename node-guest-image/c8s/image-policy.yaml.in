@@ -582,8 +582,8 @@ allowlist:
     # nriImagePolicy.measurePolicies.
 
 # The measured mesh policy: what a member pod's packet ruleset is built from,
-# and the identity each platform role runs as. A node whose config carries no
-# mesh policy hosts no member pods (internal/cmds/nri-image-policy/roles.go).
+# and the identity each platform role runs as. The enforcer requires it
+# (internal/cmds/nri-image-policy/config.go).
 mesh:
   # These namespaces keep the node's own rules: they run the node's trusted
   # components, which need host privileges a member pod may not hold (volumed

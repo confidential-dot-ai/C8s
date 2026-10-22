@@ -181,8 +181,8 @@ func versionBelowApplied(ctx context.Context, node string) error {
 // it, or on every node it addressed and on node "one" if the CDS was
 // restarted, since only a start lets a plugin accept the versions a
 // restarted CDS serves, whether or not the scenario spoke of its node. After
-// a CDS restart the mesh is restarted too: only a proxy or mesh member started
-// after the CDS holds the mesh CA it minted.
+// a CDS restart the mesh members are recreated too: only a member started
+// after the CDS holds a leaf under the mesh CA it minted.
 func (w *world) restoreNode() error {
 	var errs []error
 	if w.cdsBlocked {
@@ -202,9 +202,8 @@ func (w *world) restoreNode() error {
 		errs = append(errs, err)
 	}
 	if w.cdsRestarted {
-		if _, err := w.be.call("mesh_restart"); !errors.Is(err, godog.ErrSkip) {
-			errs = append(errs, err)
-		}
+		_, err := w.be.call("mesh_restart")
+		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
 }
