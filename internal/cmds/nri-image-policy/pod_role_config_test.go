@@ -35,6 +35,8 @@ func TestNodeImagePodRoleConfig_RefusesSNP(t *testing.T) {
 	}
 }
 
+const podImageDigest = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
 // podRoleInputs stages the baked policy, the pins and a pod document of the
 // given platform under a fresh root, as the initrd leaves them for Prepare.
 func podRoleInputs(t *testing.T, platform string) (string, *launchconfig.Document) {
@@ -71,7 +73,7 @@ func podRoleInputs(t *testing.T, platform string) (string, *launchconfig.Documen
 		Role:      launchconfig.Pod,
 		Image:     launchconfig.Image{Platform: platform},
 		Node:      launchconfig.Node{Name: "p-pod"},
-		Workloads: `{"schema":"c8s.allowlist/v1","workloads":{"app":{"containers":[{"digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","command":{"policy":"any"},"args":{"policy":"any"}}]}}}`,
+		Workloads: `{"schema":"c8s.allowlist/v1","workloads":{"app":{"containers":[{"digest":"` + podImageDigest + `","command":{"policy":"any"},"args":{"policy":"any"}}]}}}`,
 		Pod: &launchconfig.PodSpec{UID: "u1", Namespace: "tenant", Name: "app",
 			Manifest: `{"apiVersion":"v1","kind":"Pod","metadata":{"name":"app","namespace":"tenant","uid":"u1"},"spec":{"containers":[{"name":"app","image":"busybox"}]}}`},
 	}
@@ -96,5 +98,13 @@ func testNodeImagePodRoleConfig(t *testing.T, platform string) {
 	}
 	if cfg.WorkloadClaims.SocketDir != filepath.Dir(armtls.NodeJournal) {
 		t.Fatalf("socket_dir = %q: the pod journal would not be where its readers look", cfg.WorkloadClaims.SocketDir)
+	}
+	// The node's mesh policy gates every pod on a verified mesh endpoint the
+	// signed workloads cannot declare; kept, it would refuse the pod itself.
+	if cfg.Mesh != nil {
+		t.Fatal("pod-role config keeps the node's mesh policy")
+	}
+	if err := nriimagepolicy.AdmitsCreation(cfg, doc.Pod.Namespace, "busybox@"+podImageDigest, podImageDigest); err != nil {
+		t.Fatalf("the pod's own allowlisted workload is refused: %v", err)
 	}
 }

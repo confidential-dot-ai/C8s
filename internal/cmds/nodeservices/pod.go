@@ -47,6 +47,12 @@ func preparePod(rootDir string, d *launchconfig.Document, outputs map[string][]b
 	a["base"] = workloads
 	a["node_tcb"] = false
 	delete(a, "pull")
+	// The baked mesh policy is a node's: it gates every pod outside its
+	// exempt namespaces on a verified mesh endpoint, which only the measured
+	// base allowlist can declare. The signed workloads replace that base and
+	// name no roles, so with the policy kept no pod could ever start. A pod
+	// CVM hosts no mesh members until its mesh integration is defined.
+	delete(floor, "mesh")
 	policy["sandbox"] = "enforce"
 	// Measure every started workload into RTMR[3], on top of the launch-key
 	// seed the initrd extended from operator-pubkey's exact bytes, into the

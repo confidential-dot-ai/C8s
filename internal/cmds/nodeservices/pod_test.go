@@ -68,6 +68,9 @@ func TestPreparePodAdmitsOnlySignedWorkloads(t *testing.T) {
 	if _, ok := a["pull"]; ok {
 		t.Fatal("pod role must not pull a CDS allowlist")
 	}
+	if _, ok := got["mesh"]; ok {
+		t.Fatal("pod role must not keep the node's mesh policy: the signed workloads can authorize no mesh endpoint")
+	}
 	if a["node_tcb"] != false {
 		t.Fatal("pod workloads must not be exempt from the sandbox policy")
 	}
