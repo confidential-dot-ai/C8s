@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strconv"
 
+	"github.com/klauspost/compress/zstd"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -81,12 +82,8 @@ func SealBackup(recovery *ecdsa.PublicKey, meta BackupMeta, snapshot []byte) (Ba
 	if err != nil {
 		return Backup{}, err
 	}
-	var z bytes.Buffer
-	zw := gzip.NewWriter(&z)
-	if _, err := zw.Write(snapshot); err != nil {
-		return Backup{}, err
-	}
-	if err := zw.Close(); err != nil {
+	z, err := compressBackup(snapshot)
+	if err != nil {
 		return Backup{}, err
 	}
 	aad, err := json.Marshal(meta)
@@ -97,7 +94,50 @@ func SealBackup(recovery *ecdsa.PublicKey, meta BackupMeta, snapshot []byte) (Ba
 	if _, err := rand.Read(nonce); err != nil {
 		return Backup{}, err
 	}
-	return Backup{Meta: meta, EphemeralPub: eph.PublicKey().Bytes(), Nonce: nonce, Ciphertext: aead.Seal(nil, nonce, z.Bytes(), aad)}, nil
+	return Backup{Meta: meta, EphemeralPub: eph.PublicKey().Bytes(), Nonce: nonce, Ciphertext: aead.Seal(nil, nonce, z, aad)}, nil
+}
+
+// backupWindowMax bounds the compression window. A snapshot holds the whole
+// allowlist history, and successive versions are near copies of one document
+// (often hundreds of KiB): gzip's 32 KiB window sees none of that repetition,
+// so a backup grew by about one compressed document per version. A window
+// reaching back past the previous version stores each repeat as a
+// reference; 16 MiB covers allowlist documents of several MiB while keeping
+// the encoder's memory small however long the history is.
+const backupWindowMax = 16 << 20
+
+// maxBackupPlain bounds a decompressed snapshot.
+const maxBackupPlain = 1 << 30
+
+func compressBackup(snapshot []byte) ([]byte, error) {
+	window := zstd.MinWindowSize
+	for window < len(snapshot) && window < backupWindowMax {
+		window <<= 1
+	}
+	zw, err := zstd.NewWriter(nil, zstd.WithWindowSize(window), zstd.WithEncoderConcurrency(1))
+	if err != nil {
+		return nil, err
+	}
+	defer zw.Close()
+	return zw.EncodeAll(snapshot, nil), nil
+}
+
+// decompressBackup opens zstd backups, and gzip ones written by releases
+// before the switch.
+func decompressBackup(z []byte) ([]byte, error) {
+	if len(z) >= 2 && z[0] == 0x1f && z[1] == 0x8b {
+		zr, err := gzip.NewReader(bytes.NewReader(z))
+		if err != nil {
+			return nil, err
+		}
+		return io.ReadAll(io.LimitReader(zr, maxBackupPlain))
+	}
+	zr, err := zstd.NewReader(nil, zstd.WithDecoderMaxWindow(backupWindowMax), zstd.WithDecoderMaxMemory(maxBackupPlain), zstd.WithDecoderConcurrency(1))
+	if err != nil {
+		return nil, err
+	}
+	defer zr.Close()
+	return zr.DecodeAll(z, nil)
 }
 
 // OpenBackup decrypts a backup with the recovery private key. The metadata is
@@ -127,11 +167,7 @@ func OpenBackup(recovery *ecdsa.PrivateKey, b Backup) ([]byte, error) {
 	if err != nil {
 		return nil, errors.New("backup does not open with this recovery key (wrong key, or the backup or its metadata was changed)")
 	}
-	zr, err := gzip.NewReader(bytes.NewReader(z))
-	if err != nil {
-		return nil, err
-	}
-	return io.ReadAll(io.LimitReader(zr, 1<<30))
+	return decompressBackup(z)
 }
 
 // SnapshotSHA256 names a snapshot in a Restore decree.

@@ -1,6 +1,8 @@
 package cdsha
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -8,6 +10,8 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"errors"
+	"fmt"
+	mathrand "math/rand/v2"
 	"strings"
 	"testing"
 	"time"
@@ -240,5 +244,61 @@ func TestBackupWriteIsAtomic(t *testing.T) {
 	}
 	if got, err := st.GetBackup(ctx); err != nil || got.Meta.Index != 7 {
 		t.Fatalf("a raced write damaged the stored backup: %v %v", got.Meta.Index, err)
+	}
+}
+
+// A snapshot's allowlist history is many near copies of one document. The
+// backup must store the repeats as references: with gzip a backup grew by
+// about one compressed document per version (5 MB for 464 versions of a
+// 70 KiB allowlist on TDX), all of it rewritten into etcd every minute.
+func TestBackupCompressesHistoryRepeats(t *testing.T) {
+	rng := mathrand.New(mathrand.NewPCG(1, 2))
+	doc := map[string]string{}
+	for i := range 900 { // ~70 KiB of distinct-looking entries
+		doc[fmt.Sprintf("w%03d", i)] = fmt.Sprintf("sha256:%064x", rng.Uint64())
+	}
+	var versions [][]byte
+	for v := range 1000 {
+		doc[fmt.Sprintf("w%03d", v%900)] = fmt.Sprintf("sha256:%064x", rng.Uint64())
+		b, _ := json.Marshal(doc)
+		versions = append(versions, b)
+	}
+	snapshot, _ := json.Marshal(versions) // base64 cells, as the store's snapshot
+	rk, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	b, err := SealBackup(&rk.PublicKey, BackupMeta{ClusterID: testCluster, Epoch: 1, Index: 1}, snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	one := len(versions[0])
+	var gz bytes.Buffer
+	gw := gzip.NewWriter(&gz)
+	_, _ = gw.Write(snapshot)
+	_ = gw.Close()
+	t.Logf("gzip would store %d KiB", gz.Len()>>10)
+	t.Logf("snapshot %d KiB, %d versions of %d KiB, backup %d KiB", len(snapshot)>>10, len(versions), one>>10, len(b.Ciphertext)>>10)
+	if len(b.Ciphertext) > 20*one {
+		t.Fatalf("backup %d bytes for %d near-identical versions of %d bytes: repeats are not shared", len(b.Ciphertext), len(versions), one)
+	}
+	plain, err := OpenBackup(rk, b)
+	if err != nil || !bytes.Equal(plain, snapshot) {
+		t.Fatalf("round trip: %v", err)
+	}
+}
+
+// Backups written before the switch to zstd (gzip) still open.
+func TestOpenBackupReadsGzipBackups(t *testing.T) {
+	var z bytes.Buffer
+	zw := gzip.NewWriter(&z)
+	_, _ = zw.Write([]byte("old snapshot"))
+	_ = zw.Close()
+	got, err := decompressBackup(z.Bytes())
+	if err != nil || string(got) != "old snapshot" {
+		t.Fatalf("gzip backup: %q %v", got, err)
+	}
+	if _, err := decompressBackup([]byte("neither gzip nor zstd")); err == nil {
+		t.Fatal("garbage decompressed")
+	}
+	if _, err := decompressBackup([]byte{0x1f, 0x8b, 0}); err == nil {
+		t.Fatal("a broken gzip header decompressed")
 	}
 }
