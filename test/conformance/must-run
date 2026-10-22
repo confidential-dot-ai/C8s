@@ -5,12 +5,13 @@
 # steps no backend defines (TERMINATION-AND-FORWARDING-3..6), the base allowlist naming no
 # fixture by design (ALLOWLIST-SYNC-8, FAIL-CLOSED-4), cds_restart_with and
 # attest_direct (EVIDENCE-REQUIREMENTS-5,11,12,13, MESH-CA-CUSTODY-5,6,
-# OPERATOR-KEY-5, ROOT-OF-TRUST-10, SANDBOX-IDENTITY-6) and
-# attestation_endpoint (PEER-IDENTITY-5,7,8,9, RELAY-DISCIPLINE-3,5,6,
-# TRAFFIC-INTERCEPTION-7), evidence over a chosen launch digest
-# (EVIDENCE-REQUIREMENTS-3,4), and what the lane's node has not: an IPv6
-# address (TRAFFIC-INTERCEPTION-3), unencrypted disk (RELEASE-GATE-18) and a
-# seed naming the nginx fixture (ALLOWLIST-VERSIONING-7).
+# OPERATOR-KEY-5, ROOT-OF-TRUST-10, SANDBOX-IDENTITY-6), evidence over a
+# chosen launch digest (EVIDENCE-REQUIREMENTS-3,4), and what the lane's node
+# has not: unencrypted disk (RELEASE-GATE-18) and a seed naming the nginx
+# fixture (ALLOWLIST-VERSIONING-7). The armtls features (DROPPED-TRAFFIC,
+# PEER-IDENTITY, RELAY-DISCIPLINE, TRAFFIC-INTERCEPTION) are out until they
+# describe the per-pod mesh: they need the node's mesh proxy and its ipsets,
+# which went with the node DaemonSet (#809).
 metal @ALLOWLIST-AUTHORITY-1
 metal @ALLOWLIST-AUTHORITY-2
 metal @ALLOWLIST-AUTHORITY-3
@@ -124,14 +125,6 @@ metal-dev @CONTROL-PLANE-ROUTE-4
 metal-dev @CONTROL-PLANE-ROUTE-5
 metal-dev @CONTROL-PLANE-ROUTE-7
 metal-dev @CONTROL-PLANE-ROUTE-9
-metal-dev @DROPPED-TRAFFIC-1
-metal-dev @DROPPED-TRAFFIC-2
-metal-dev @DROPPED-TRAFFIC-3
-metal-dev @DROPPED-TRAFFIC-4
-metal-dev @DROPPED-TRAFFIC-5
-metal-dev @DROPPED-TRAFFIC-6
-metal-dev @DROPPED-TRAFFIC-7
-metal-dev @DROPPED-TRAFFIC-9
 metal-dev @EVIDENCE-REQUIREMENTS-1
 metal-dev @EVIDENCE-REQUIREMENTS-2
 metal-dev @EVIDENCE-REQUIREMENTS-9
@@ -146,10 +139,6 @@ metal-dev @MESH-CA-CUSTODY-2
 metal-dev @MESH-CA-CUSTODY-3
 metal-dev @MESH-CA-CUSTODY-4
 metal-dev @OPERATOR-KEY-1
-metal-dev @PEER-IDENTITY-3
-metal-dev @PEER-IDENTITY-6
-metal-dev @RELAY-DISCIPLINE-1
-metal-dev @RELAY-DISCIPLINE-2
 metal-dev @RELEASE-GATE-1
 metal-dev @RELEASE-GATE-2
 metal-dev @RELEASE-GATE-3
@@ -215,11 +204,3 @@ metal-dev @SECRET-STORE-6
 metal-dev @SECRET-STORE-7
 metal-dev @SECRET-STORE-8
 metal-dev @SECRET-STORE-9
-metal-dev @TRAFFIC-INTERCEPTION-1
-metal-dev @TRAFFIC-INTERCEPTION-2
-metal-dev @TRAFFIC-INTERCEPTION-4
-metal-dev @TRAFFIC-INTERCEPTION-5
-metal-dev @TRAFFIC-INTERCEPTION-8
-metal-dev @TRAFFIC-INTERCEPTION-9
-metal-dev @TRAFFIC-INTERCEPTION-10
-metal-dev @TRAFFIC-INTERCEPTION-12

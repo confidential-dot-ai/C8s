@@ -49,7 +49,7 @@ node_write() { ssh -F "$C8S_NODE_SSH_CONFIG" node "cat > $(printf '%q' "$1")"; }
 router_nginx_conf() { node_exec sh -c 'cat /usr/lib/c8s/router-nginx/*.conf'; }
 
 # Boot staging writes the seed the CDS loads to the node's /run/c8s-node, which
-# the CDS mounts; a change there takes effect at the next cds_restart.
+# the CDS mounts and, on a baked node, follows (--follow-seed).
 seed_declares() {
     if node_exec grep -qF "$1" "$SEED"; then echo yes; else echo no; fi
 }
@@ -68,9 +68,43 @@ seed_restore() {
     node_write "$SEED" < "$original" && rm -f "$original"
 }
 
+# The outgoing CDS's log is kept first: its pod goes with the restart.
+# A CDS without persistence refuses operator tokens issued before its start
+# plus --jwt-clock-skew (internal/cmds/cds/tokens.go), whoever mints them,
+# the steps included; the restart returns once that has passed.
 cds_restart() {
+    local skew
+    cds_log_keep
     kubectl -n "$NS" rollout restart deploy/c8s-cds >/dev/null
-    kubectl -n "$NS" rollout status deploy/c8s-cds --timeout=180s >/dev/null
+    kubectl -n "$NS" rollout status deploy/c8s-cds --timeout=180s >/dev/null || return
+    skew="$(kubectl -n "$NS" get deploy c8s-cds -o json |
+        jq -r '[.spec.template.spec.containers[] | select(.name == "cds") | .args[] | select(startswith("--jwt-clock-skew=")) | ltrimstr("--jwt-clock-skew=")] | first')"
+    sleep "$((skew + 1))"
+}
+
+# The CDS's log, appended to cds.log in the results, so a failed run shows
+# what each CDS of the run saw.
+cds_log_keep() {
+    kubectl -n "$NS" logs deploy/c8s-cds -c cds --timestamps >> "$(scratch)/cds.log" 2>&1 || true
+}
+
+# The scenarios' entries go, as on metal, after the last CDS's log is kept.
+eval "metal_$(declare -f teardown_backend)"
+teardown_backend() {
+    cds_log_keep
+    metal_teardown_backend
+}
+
+# The plugin pulls from the address boot staging wrote into its config (the
+# launch's server address at the CDS node port), not 127.0.0.1: RKE2 runs
+# kube-proxy without localhost node ports, so loopback refuses whatever the
+# Service says. Refused is exit 7 from curl, as a TLS failure is not.
+node_refuses() {
+    local host rc=0
+    host="$(cached plugin-pull-host node_exec sed -nE 's#^ +url: "?https://([^:/"]+).*#\1#p' /etc/nri/conf.d/image-policy.yaml)" || return
+    [ -n "$host" ] || { echo "backend: no pull URL in the plugin's config" >&2; return 1; }
+    node_exec curl -sk --max-time 2 -o /dev/null "https://$host:$1/healthz" 2>/dev/null || rc=$?
+    if [ "$rc" -eq 7 ]; then echo yes; else echo no; fi
 }
 
 # RKE2 runs containerd as its child and exits when it does; systemd starts

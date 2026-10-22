@@ -30,8 +30,9 @@
 #   plugin_start <node>              start the plugin again and wait until it is ready
 #   cds_block / cds_unblock          make the CDS unreachable for every node's pull, and undo it;
 #                                    cds_block returns once node_refuses says a pull is refused
-#   node_refuses <port>              yes/no: a connection from the node to 127.0.0.1:<port>
-#                                    is refused now; a backend without a node shell answers yes
+#   node_refuses <port>              yes/no: a connection from the node to <port> at the
+#                                    address its plugin pulls from is refused now; a backend
+#                                    without a node shell answers yes
 #   cds_restart                      restart the CDS and wait until it serves again
 #   mesh_restart                     restart every mesh proxy and wait until all are
 #                                    ready, so each bootstraps from the CDS's mesh CA

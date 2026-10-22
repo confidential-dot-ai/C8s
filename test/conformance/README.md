@@ -240,9 +240,11 @@ takes metal.sh's definitions, then the shared ones in `common.sh` over them,
 so exec and the node shell work as on kind. The CDS is reached on its
 Service's node port at the guest's address. `attestation_service_stop`
 freezes the node's attestation-api unit, since RKE2 and cred-release require
-it. `cds_restart_with`, `attest_direct`, `attestation_endpoint`,
-`external_endpoint` and evidence over a chosen launch digest answer 77, as on
-metal.
+it. `cds_restart` returns once the new CDS accepts operator tokens, and
+keeps each CDS's log in the results as `cds.log`. `node_refuses` dials the
+address the plugin pulls from, not loopback. `cds_restart_with`,
+`attest_direct`, `attestation_endpoint`, `external_endpoint` and evidence over
+a chosen launch digest answer 77, as on metal.
 
 ## What is a coordinated change
 
