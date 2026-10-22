@@ -48,10 +48,10 @@ var (
 	// generation's life.
 	errGenerationExpired = errors.New("generation has expired")
 
-	// errFailClosed is the state a pod cannot leave: it is bound to a CA key
-	// but holds no generation it can prove it was already using, so it
+	// errFailClosed is the one state a pod cannot leave: its issuer record
+	// cannot be read, so the CA key it is bound to is unrecoverable and it
 	// publishes nothing until the pod is recreated.
-	errFailClosed = errors.New("credential state is incomplete; fail closed until the pod is recreated")
+	errFailClosed = errors.New("the CA key binding cannot be recovered; fail closed until the pod is recreated")
 )
 
 // generation is one credential set: a key, the leaf CDS issued for it, and the
@@ -518,10 +518,11 @@ type credentials struct {
 	current    *generation
 }
 
-// loadCredentials reads what the volume holds. Neither an issuer record nor a
-// published generation is a first bootstrap; any other incomplete state is
-// fail-closed, because a pod that cannot show the credentials it was using must
-// not re-bind to whichever CA key answers next.
+// loadCredentials reads what the volume holds. A readable issuer record is the
+// pod's binding: with it, a generation that is missing, partial or unreadable
+// is withdrawn and the pod stays bound but empty, issuing again under the
+// recorded key. A volume holding neither record nor generation is a first
+// start. A record that cannot be read is fail-closed.
 func loadCredentials(v credentialVolume, instanceID string) (*credentials, error) {
 	record, recordErr := loadIssuerRecord(v)
 	stored, storedErr := storedGeneration(v)
@@ -533,8 +534,22 @@ func loadCredentials(v credentialVolume, instanceID string) (*credentials, error
 		}, nil
 	case recordErr != nil:
 		return nil, fmt.Errorf("%w: issuer record: %w", errFailClosed, recordErr)
+	case errors.Is(storedErr, errNoGeneration):
+		return &credentials{
+			volume:     v,
+			instanceID: instanceID,
+			issuer:     record,
+		}, nil
 	case storedErr != nil:
-		return nil, fmt.Errorf("%w: published generation: %w", errFailClosed, storedErr)
+		slog.Error("the published generation cannot be read, withdrawing it", "error", storedErr)
+		if err := withdrawGeneration(v); err != nil {
+			return nil, err
+		}
+		return &credentials{
+			volume:     v,
+			instanceID: instanceID,
+			issuer:     record,
+		}, nil
 	default:
 		return &credentials{
 			volume:     v,
@@ -545,23 +560,17 @@ func loadCredentials(v credentialVolume, instanceID string) (*credentials, error
 	}
 }
 
-// adoptStoredGeneration keeps a restart's generation only while it still
-// validates under the recorded issuer, and withdraws it otherwise: a pod adopts
-// its key and credentials only from a generation it can revalidate, so no
-// restart publishes under another CA key.
+// adoptStoredGeneration keeps a restart's generation while it still validates
+// under the recorded issuer. A generation that does not is withdrawn, and the
+// pod carries on bound but empty, issuing again under the recorded key.
 func (c *credentials) adoptStoredGeneration(now time.Time) error {
-	if c.current == nil {
-		return nil
+	if err := c.withdrawUnusable(now); err != nil {
+		return err
 	}
-	err := validateGeneration(c.current, c.instanceID, c.issuer, now)
-	if err == nil {
+	if c.current != nil {
 		slog.Info("adopted the published generation", "expires", generationExpiry(c.current))
-		return nil
 	}
-	if withdrawErr := withdrawGeneration(c.volume); withdrawErr != nil {
-		return errors.Join(err, withdrawErr)
-	}
-	return fmt.Errorf("%w: published generation: %w", errFailClosed, err)
+	return nil
 }
 
 // publish is the only way a generation becomes readable: validate it, bind the
@@ -597,8 +606,8 @@ func (c *credentials) bindIssuer(issuer issuerKeyID) error {
 	return nil
 }
 
-// withdrawUnusable withdraws the published generation once it stops validating,
-// so a failed renewal never leaves an expired set readable.
+// withdrawUnusable withdraws the published generation once it stops validating
+// under the pod's binding, leaving the pod bound but empty.
 func (c *credentials) withdrawUnusable(now time.Time) error {
 	if c.current == nil {
 		return nil

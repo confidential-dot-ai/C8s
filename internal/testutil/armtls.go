@@ -100,6 +100,8 @@ func ARMTLSServingCert(t testing.TB) tls.Certificate {
 		Subject:         pkix.Name{CommonName: "cds"},
 		NotBefore:       time.Now().Add(-time.Hour),
 		NotAfter:        time.Now().Add(time.Hour),
+		KeyUsage:        x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
 		DNSNames:        []string{"localhost"},
 		ExtraExtensions: []pkix.Extension{ext},
 	}

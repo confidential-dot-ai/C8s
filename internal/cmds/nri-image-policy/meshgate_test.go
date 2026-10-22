@@ -47,7 +47,7 @@ func meshPod(namespace, name, netnsPath string) *api.PodSandbox {
 // gateWithPod returns a gate already holding a protected sandbox, so the
 // state rules can be exercised without a kernel namespace.
 func gateWithPod(pod *api.PodSandbox) (*meshGate, *protectedPod) {
-	gate := newMeshGate(meshRoles(), slog.Default())
+	gate := newMeshGate(*meshRoles(), slog.Default())
 	state := &protectedPod{
 		netns:         testNamespace(),
 		kubeNamespace: pod.GetNamespace(),
@@ -87,9 +87,6 @@ func TestMeshGateHostsOnlyOwnNamespacePods(t *testing.T) {
 				t.Fatalf("hosts = %v, want %v", got, tc.hosts)
 			}
 		})
-	}
-	if newMeshGate(nil, discardLogger()).hosts(meshPod("default", "pod", testNetNS)) {
-		t.Fatal("a node with no mesh policy hosts a member pod")
 	}
 }
 
@@ -300,9 +297,8 @@ func TestMeshGateAdmitsAnAdmittedRoleLaunchAgain(t *testing.T) {
 // A pod of the router's namespace holds role containers only: nothing else in
 // it could bind the router's listen port first.
 func TestMeshGateKeepsARouterNamespacePodRoleOnly(t *testing.T) {
-	policy := meshRoles()
 	pod := meshPod(routerNamespace, "router", testNetNS)
-	gate := newMeshGate(policy, discardLogger())
+	gate := newMeshGate(*meshRoles(), discardLogger())
 	gate.pods[pod.GetId()] = &protectedPod{
 		netns:         testNamespace(),
 		meshStarted:   true,
@@ -416,7 +412,7 @@ func TestMeshGateRefusesASharedPIDNamespace(t *testing.T) {
 // sandbox event cannot replace it with a fresh one.
 func TestMeshGateRefusesSandboxesItDidNotProtect(t *testing.T) {
 	pod := meshPod("default", "pod", testNetNS)
-	gate := newMeshGate(meshRoles(), discardLogger())
+	gate := newMeshGate(*meshRoles(), discardLogger())
 	gate.refuseExisting([]*api.PodSandbox{pod, makePod("default", "host-network")})
 
 	workload := gateCtr("app", testWorkloadUID)
@@ -433,8 +429,7 @@ func TestMeshGateRefusesSandboxesItDidNotProtect(t *testing.T) {
 }
 
 // An assertion needs the gate's verification of the caller's pod: the plugin
-// answers with a refusal until it has one, and a node with no mesh policy has
-// no protection to withhold.
+// answers with a refusal until it has one.
 func TestSandboxForPeerRequiresVerifiedProtection(t *testing.T) {
 	procRoot := t.TempDir()
 	pod := meshPod("default", "pod", testNetNS)
@@ -469,14 +464,6 @@ func TestSandboxForPeerRequiresVerifiedProtection(t *testing.T) {
 	gate.noteMeshStarted(pod.GetId())
 	if caller, err = p.SandboxForPeer(workloadclaims.PeerForPID(4242)); err != nil || caller.Refusal == nil {
 		t.Fatalf("a refused sandbox was answered without a refusal: %v %v", caller, err)
-	}
-
-	// A node whose measured config carries no mesh policy hosts no member
-	// pods, so it withholds nothing.
-	p.mesh = newMeshGate(nil, discardLogger())
-	caller, err = p.SandboxForPeer(workloadclaims.PeerForPID(4242))
-	if err != nil || caller.Refusal != nil {
-		t.Fatalf("a node with no mesh policy withheld an assertion: %v %v", caller, err)
 	}
 }
 
@@ -535,8 +522,9 @@ func TestSandboxForPeerRefusesASandboxWithADeniedContainer(t *testing.T) {
 // A container the enforcer kept from being created never ran, so admitting a
 // container of that name in the sandbox lifts its refusal: a pod created
 // between an allowlist apply and this node pulling the new entry gets its
-// identity once the retried container passes the admission check. The node
-// here hosts no member pods, so the sandbox's answer is that refusal alone.
+// identity once the retried container passes the admission check. The
+// sandbox's own record is the inventory's; the gate's verification of the
+// pod's protection is a separate refusal.
 func TestSandboxForPeerLiftsADeniedCreationOnTheSameName(t *testing.T) {
 	procRoot := t.TempDir()
 	p, store := newCachedPlugin(&config{
@@ -566,7 +554,10 @@ func TestSandboxForPeerLiftsADeniedCreationOnTheSameName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if caller.Refusal == nil {
+	if caller.SandboxID != pod.GetId() {
+		t.Fatalf("sandbox = %q, want %q", caller.SandboxID, pod.GetId())
+	}
+	if p.inventory.denial(pod.GetId()) == nil {
 		t.Fatal("another container's admission lifted a denied container's refusal")
 	}
 
@@ -578,12 +569,8 @@ func TestSandboxForPeerLiftsADeniedCreationOnTheSameName(t *testing.T) {
 	if err := p.StartContainer(context.Background(), pod, retry); err != nil {
 		t.Fatalf("the retried container was refused: %v", err)
 	}
-	caller, err = p.SandboxForPeer(workloadclaims.PeerForPID(4242))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if caller.Refusal != nil {
-		t.Fatalf("refusal = %v, want none once the denied container was admitted under its own name", caller.Refusal)
+	if refusal := p.inventory.denial(pod.GetId()); refusal != nil {
+		t.Fatalf("refusal = %v, want none once the denied container was admitted under its own name", refusal)
 	}
 }
 
@@ -614,7 +601,7 @@ func TestSandboxForPeerKeepsARefusalOtherThanADeniedCreation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if caller.Refusal == nil {
+	if caller.Refusal == nil || p.inventory.denial(pod.GetId()) == nil {
 		t.Fatal("a sandbox refused for a reason other than a denied creation asserted an identity")
 	}
 }
@@ -631,7 +618,7 @@ func TestValidateContainerAdjustmentGatesOnProtection(t *testing.T) {
 		},
 		Policy: policyConfig{Mode: ModeAudit},
 	}, anyAllowlist(map[string]string{pushDigestA: "image-a"}))
-	p.mesh = newMeshGate(meshRoles(), discardLogger())
+	p.mesh = newMeshGate(*meshRoles(), discardLogger())
 	p.SetReady()
 
 	pod := meshPod("default", "pod", testNetNS)
@@ -749,33 +736,6 @@ func TestUpdateContainerRefusedForProtectedPods(t *testing.T) {
 	}
 	if _, err := p.UpdateContainer(context.Background(), makePod("default", "host-network"), ctr, nil); err != nil {
 		t.Fatalf("a pod outside the mesh's scope was refused an update: %v", err)
-	}
-}
-
-// The gate subscribes to the events it needs, and a node with no mesh policy
-// subscribes to none of them.
-func TestConfigureSubscribesMeshEvents(t *testing.T) {
-	p := newTestPlugin(&config{})
-	mask, err := p.Configure(context.Background(), "", "containerd", "2.0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if mask.IsSet(api.Event_UPDATE_CONTAINER) {
-		t.Fatal("container updates subscribed without a mesh policy")
-	}
-	if !mask.IsSet(api.Event_VALIDATE_CONTAINER_ADJUSTMENT) {
-		t.Fatal("the plugin does not register as a validator")
-	}
-
-	p.mesh = newMeshGate(&meshPolicy{}, discardLogger())
-	mask, err = p.Configure(context.Background(), "", "containerd", "2.0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, event := range []api.Event{api.Event_RUN_POD_SANDBOX, api.Event_REMOVE_POD_SANDBOX, api.Event_UPDATE_CONTAINER, api.Event_VALIDATE_CONTAINER_ADJUSTMENT} {
-		if !mask.IsSet(event) {
-			t.Fatalf("event %v not subscribed with a mesh policy", event)
-		}
 	}
 }
 

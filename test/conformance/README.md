@@ -111,8 +111,8 @@ and starts a node's plugin, makes the CDS unreachable for the plugins' pulls
 and undoes that, and restarts the CDS. Each is undone after the scenario, and
 a plugin is started again wherever the CDS was restarted, since a plugin only
 accepts the versions a restarted CDS serves after a start of its own. The
-mesh is restarted after a CDS restart too: a restarted CDS mints a new mesh
-CA, which only a proxy started after it accepts.
+mesh members a controller owns, such as the router, are recreated too, since
+a member stays bound to the CA key of its first leaf.
 
 Where a scenario is about the CDS's own API, the backend sends the request as
 the scenario says rather than through its signed path: a write with the
@@ -143,26 +143,6 @@ attestation service of its node, searches the cluster for private keys and
 performs one issuance against it; `common.sh` lists each function. The kind
 backend reaches the CDS through a port-forward to its pod, so a CDS that is
 not ready, and so has no Service endpoint, is still read.
-
-For scenarios about the armTLS mesh, the backend reads the node's mesh proxy:
-whether it is running, whether a pod address is in the node's interception or
-guard membership, its connection and guard-drop counters (scraped from the
-proxy's health port by a long-lived pod the backend keeps in its own
-namespace, torn down with the backend), its listener ports, the UIDs and
-namespaces it excepts, whether each role presents a CDS-issued leaf, and
-whether its verify set has taken the mesh CA. It renders pods with the options
-the mesh scenarios need (the node's network namespace, a chosen UID, a
-capability, a label, an init container), serves a hello API at an address
-outside the cluster, and blocks the node's local attestation service. Every
-pod it renders may ping: the pod carries the `net.ipv4.ping_group_range`
-sysctl, and the tenant image's ping (Alpine's) uses an ICMP datagram socket
-under it, which the library busybox image's does not. A peer that connects to the inbound
-proxy itself, presenting a certificate the scenario shaped, is
-[`tools/armtls-dial`](tools/armtls-dial/README.md), on `PATH` in the suite's
-`mesh-dialer` image ([`images/mesh-dialer`](images/mesh-dialer/Dockerfile)),
-whose one container is named and marked as a requester's so that the peer can
-reach the node's attestation service where the backend has one
-(`attestation_endpoint`).
 
 For scenarios about secret release, the backend sends one request to the CDS
 as the scenario shaped it (`cds_request`: a method, a route, a body, an

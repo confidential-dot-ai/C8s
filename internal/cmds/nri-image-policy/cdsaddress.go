@@ -42,9 +42,6 @@ func (p *plugin) prepareCDSAddress() error {
 //
 // The mesh gate copies the policy, so this belongs to loading the config.
 func bindCredentialRole(cfg *config) error {
-	if cfg.Mesh == nil {
-		return nil
-	}
 	if _, bound := cfg.credentialRole(); bound {
 		return nil
 	}
@@ -89,9 +86,6 @@ func credentialEndpoint(cfg *config) (netip.AddrPort, error) {
 
 // credentialRole is this node's binding of the credential role.
 func (c *config) credentialRole() (roleBinding, bool) {
-	if c.Mesh == nil {
-		return roleBinding{}, false
-	}
 	return c.Mesh.role(CredentialRole)
 }
 
