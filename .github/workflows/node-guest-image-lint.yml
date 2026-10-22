@@ -207,7 +207,11 @@ jobs:
             -template node-guest-image/c8s/image-policy.yaml.in \
             -bundle core.tar.zst \
             -bundle cilium.tar.zst \
-            -manifest "$manifests/nvidia-device-plugin.yaml"
+            -manifest "$manifests/nvidia-device-plugin.yaml" \
+            -launches node-guest-image/c8s/launches \
+            -pin-daemonset kube-system/cilium \
+            -pin-manifest "$manifests/nvidia-device-plugin.yaml" \
+            -image-config node-guest-image/c8s/launches/k8s-device-plugin-config.json
 
   containerd-runtime-handlers:
     name: every pod runtime reaches the measured wrapper

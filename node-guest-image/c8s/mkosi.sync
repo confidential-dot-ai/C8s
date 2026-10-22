@@ -24,7 +24,12 @@
 #   go run ./node-guest-image/c8s/systemfloor -write \
 #     -template node-guest-image/c8s/image-policy.yaml.in \
 #     -bundle <core bundle> -bundle <cilium bundle> \
-#     -manifest node-guest-image/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/nvidia-device-plugin.yaml
+#     -manifest node-guest-image/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/nvidia-device-plugin.yaml \
+#     -launches node-guest-image/c8s/launches -pin-daemonset kube-system/cilium \
+#     -pin-manifest node-guest-image/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/nvidia-device-plugin.yaml \
+#     -image-config node-guest-image/c8s/launches/k8s-device-plugin-config.json
+# The pinned system launches need a fresh capture from a booted C8S_DEV image
+# (node-guest-image/c8s/launches/README.md) when RKE2 or the Cilium chart moves.
 # The optional local-path provisioner (C8S_LOCAL_PATH=1, below) keeps its own
 # base entry between the template's local-path markers; bump it with
 # local-path/local-path-storage.yaml (a repo test pins the pair).

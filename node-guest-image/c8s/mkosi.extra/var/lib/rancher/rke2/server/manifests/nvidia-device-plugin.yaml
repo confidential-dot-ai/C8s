@@ -58,6 +58,10 @@ spec:
       containers:
         - name: nvidia-device-plugin
           image: nvcr.io/nvidia/k8s-device-plugin:v0.19.3@sha256:25cc340fe6fd53c101e16fc452f503e7a92c219c64a80ed5381784b522dbbf77
+          # The image's ENTRYPOINT, spelled out: the node pins this launch
+          # exactly (image-policy.yaml.in, pinned system launches), and the
+          # image config is not in the manifest.
+          command: ["nvidia-device-plugin"]
           env:
             - name: FAIL_ON_INIT_ERROR
               value: "false"

@@ -18,6 +18,7 @@ import (
 	"testing"
 
 	"github.com/distribution/reference"
+	yamlv3 "gopkg.in/yaml.v3"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -743,12 +744,14 @@ func testNodeImageBootstrap(t *testing.T, seed []byte) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			// Read as the plugin reads it: YAML-only fields (role, node,
+			// serviceLinks) do not survive a JSON round trip.
 			var policy struct {
 				Allowlist struct {
-					Base pkgallowlist.Allowlist `json:"base"`
-				} `json:"allowlist"`
+					Base pkgallowlist.Allowlist `yaml:"base"`
+				} `yaml:"allowlist"`
 			}
-			if err := yaml.Unmarshal(prepared, &policy); err != nil {
+			if err := yamlv3.Unmarshal(prepared, &policy); err != nil {
 				t.Fatal(err)
 			}
 			if err := policy.Allowlist.Base.Normalize(); err != nil {
@@ -765,6 +768,16 @@ func testNodeImageBootstrap(t *testing.T, seed []byte) {
 				}
 				if !reflect.DeepEqual(got, workload) {
 					t.Errorf("bootstrap floor lost or changed chart workload %s: got %#v, want %#v", name, got, workload)
+				}
+			}
+			// The node exempts host binds only for a launch a base entry
+			// pins, so every seed container that names a host mount must pin
+			// its whole launch.
+			for name, workload := range components.Workloads {
+				for _, c := range slices.Concat(workload.InitContainers, workload.Containers) {
+					if slices.ContainsFunc(c.Mounts.Rules, func(r pkgallowlist.MountRule) bool { return r.Kind == pkgallowlist.MountHost }) && !c.LaunchPinned() {
+						t.Errorf("seed workload %s holds a host mount without pinning its launch: %+v", name, c)
+					}
 				}
 			}
 		})

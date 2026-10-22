@@ -561,7 +561,8 @@ A container is denied when it holds any of:
 - the marks of a privileged container: no cgroup namespace, or a writable
   `sysfs`/`cgroupfs` mount.
 
-GPU containers are the one exception. containerd applies the edits of the CDI
+GPU containers are the one exception, for a launch whose admitting allowlist
+entry fixes its command and args (an open entry never receives a GPU). containerd applies the edits of the CDI
 devices a container requests (the CRI `CDIDevices` field or a `cdi.k8s.io/`
 annotation) before NRI sees the spec, so they arrive as plain device nodes,
 hooks and bind mounts. For devices of the kinds `k8s.device-plugin.nvidia.com/gpu`
@@ -594,17 +595,53 @@ C8s's own node-level components. They are the node's trusted computing base,
 and the exemption belongs to whoever measured them.
 
 `allowlist.node_tcb: true` in the plugin's boot config marks that config's
-`allowlist.base` document as the node TCB: a container that base admits —
-digest, argv, env and mounts together — is exempt, and nothing else is. `policy.exempt_namespaces` does not reach it: the frozen snapshot
+`allowlist.base` document as the node TCB. Only that base exempts, and only
+in three steps:
+
+- **Static pods.** A container of a kubelet static pod is exempt when the base
+  admits it. The plugin reads the sandbox annotation
+  `kubernetes.io/config.source: file`, which the kubelet sets on the pods it
+  reads from its manifest directory and overwrites with `api` on every pod
+  created through the API. On the node image, only RKE2 writes those manifests,
+  from the measured config and the signed launch document. Their arguments
+  differ per node (addresses, the etcd member name), so they are not pinned.
+- **Host network alone.** A container whose only host privilege is the node's
+  network (and uts) namespace is exempt when the base admits it, even through
+  an open entry. This covers the bootstrap `helm-install` jobs and the Cilium
+  operator without pins. Such a container can listen on and reach the node's
+  addresses, including localhost; the mesh is mutually authenticated TLS, etcd
+  and the kubelet need client certificates, and the plugin's inventory is a
+  Unix socket.
+- **Anything more** — host PID or IPC, a host bind mount, a device, an OCI hook,
+  a sysctl, the marks of a privileged container — needs a base entry that pins
+  the launch: command, args and mounts not `any`, and an environment
+  constrained by `match` or `exact`. On the node image those are the chart seed
+  merged at boot (CDS, the router) and the generated pinned system launches
+  (the Cilium agent and its init containers, the NVIDIA device plugin). An open
+  entry still admits its image, sandboxed.
+
+Two YAML-only fields serve the pinned system launches, and the JSON ingest
+never accepts them, so a served document cannot set them: `serviceLinks: true`
+on a `match` env policy also admits, unlisted, the kubelet's variables for the
+Services of the pod's namespace (which of them a container gets depends on
+which Services existed when it started), and `node: true` lets a `data` mount
+rule name a node component's own volume outside `/mnt/c8s-data/`.
+
+`policy.exempt_namespaces` does not reach any of this: the frozen snapshot
 admits an image the allowlist would deny, never a host privilege the pod spec
-claims. The node image sets it because its base is measured with the image
-(`node-guest-image/c8s/image-policy.yaml.in`). A chart-rendered boot config
-must not: that base comes from chart values, which the cluster admin the
+claims. The node image sets `node_tcb` because its base is measured with the
+image (`node-guest-image/c8s/image-policy.yaml.in`). A chart-rendered boot
+config must not: that base comes from chart values, which the cluster admin the
 policy defends against chooses.
 
 A CDS-served document cannot express the marker: it is a boot-config key, not
 an allowlist field, and both allowlist parse paths reject unknown fields.
 Node-TCB status is a property of a measured boot config, never of a document.
+
+OCI hooks are checked twice. The runtime runs `createRuntime`,
+`createContainer` and `prestart` hooks while it creates the container, before
+the start-time check, so container creation already refuses a hook the policy
+does not set aside.
 
 ### What NRI does not show
 
@@ -669,10 +706,10 @@ entry is seeded only on an image that opts into the provisioner
 content residuals need the content pinned, or an image that carries the file. The node image's generated RKE2 system
 entries still admit their digests under `command`, `args` and `mounts` of
 `any`, so the control plane can restage one of those images — several ship a
-shell — as a privileged tenant pod and the base admits it. Closing that means
-pinning argv in the generated entries, which is systemfloor's to do; the
-plugin already matches the whole entry, so a pin takes effect as soon as it is
-measured.
+shell — as a tenant pod. The sandbox policy hands such a launch at most the
+host network (see "What the node TCB is"); NRI does not show capabilities, so a
+restaged image with a shell can still be given `NET_ADMIN` or `NET_RAW` in the
+node's network namespace.
 
 ## Where it's enforced
 

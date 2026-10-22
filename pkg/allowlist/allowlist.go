@@ -107,6 +107,10 @@ type MountRule struct {
 	Kind        MountClass `json:"kind" yaml:"kind"`
 	Source      string     `json:"source,omitempty" yaml:"source,omitempty"`
 	ReadOnly    bool       `json:"readOnly,omitempty" yaml:"readOnly,omitempty"`
+	// Node marks a data rule of a node component's own volume, which may sit
+	// outside DataMountPrefix. YAML-only, like Container.Role: only a measured
+	// boot config sets it, and the JSON ingest rejects it.
+	Node bool `json:"-" yaml:"node,omitempty"`
 	// VerityDigest is reserved for fs-verity and rejected for now.
 	VerityDigest string `json:"verityDigest,omitempty" yaml:"verityDigest,omitempty"`
 }
@@ -147,6 +151,13 @@ type EnvPolicy struct {
 	Policy    string                `json:"policy" yaml:"policy"`
 	Values    map[string]string     `json:"values,omitempty" yaml:"values,omitempty"`
 	Variables map[string]EnvMatcher `json:"variables,omitzero" yaml:"variables,omitempty"`
+	// ServiceLinks lets a match policy admit, unlisted, the variables the
+	// kubelet derives from the Services of the pod's namespace
+	// (ServiceLinkName). Which of them a container gets depends on which
+	// Services existed when it started, so a node component's entry cannot
+	// list them. YAML-only, like Container.Role: only a measured boot config
+	// sets it, and the JSON ingest rejects it.
+	ServiceLinks bool `json:"-" yaml:"serviceLinks,omitempty"`
 }
 
 // SecretsPolicy grants secret-store read/write globs to a whole workload entry.

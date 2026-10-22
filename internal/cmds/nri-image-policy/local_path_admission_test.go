@@ -130,7 +130,9 @@ func TestLocalPathMeshExemptionKeepsImageAndLaunchAdmission(t *testing.T) {
 			p.mesh = newMeshGate(*cfg.Mesh, discardLogger())
 			p.SetReady()
 			pod := meshPod("local-path-storage", "helper", testNetNS)
+			pod.Linux.Namespaces = append(pod.Linux.Namespaces, &api.LinuxNamespace{Type: "ipc"}, &api.LinuxNamespace{Type: "uts"})
 			ctr := makeCtrWithImageArgs(pod.Id, "helper", tc.image, tc.argv)
+			ctr.Linux = &api.LinuxContainer{Namespaces: []*api.LinuxNamespace{{Type: cgroupNamespace}}}
 			ctr.User = &api.User{Uid: 0}
 			if p.mesh.hosts(pod) {
 				t.Fatal("local-path-storage is covered by the mesh gate")

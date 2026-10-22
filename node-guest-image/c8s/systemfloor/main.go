@@ -28,6 +28,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -189,9 +190,15 @@ const (
 	endMarker   = "# END rke2 system images"
 )
 
-// splice returns the template with the lines between the marker lines
-// replaced by body.
+// splice returns the template with the lines between the system-image
+// marker lines replaced by body.
 func splice(template, body string) (string, error) {
+	return spliceBlock(template, beginMarker, endMarker, body)
+}
+
+// spliceBlock returns the template with the lines between the begin and end
+// marker lines replaced by body.
+func spliceBlock(template, beginMarker, endMarker, body string) (string, error) {
 	lines := strings.Split(template, "\n")
 	begin, end := -1, -1
 	for i, l := range lines {
@@ -231,12 +238,16 @@ func main() {
 
 func run(args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("systemfloor", flag.ContinueOnError)
-	var bundles, manifests, excludes stringList
-	var templatePath string
+	var bundles, manifests, excludes, pinDaemonsets, pinManifests, imageConfigs stringList
+	var templatePath, launchesDir string
 	var check, write bool
 	fs.Var(&bundles, "bundle", "RKE2 airgap image bundle (*.tar.zst); repeatable")
 	fs.Var(&manifests, "manifest", "YAML manifest to scan for digest-pinned image refs; repeatable")
 	fs.Var(&excludes, "exclude-ref", "drop entries whose image reference contains this substring (repeatable); use for interpreter-class images admitted argv-pinned elsewhere, e.g. busybox")
+	fs.StringVar(&launchesDir, "launches", "", "capture of a booted node (pods.json and containers/*.json from crictl inspect) to pin -pin-daemonset launches from")
+	fs.Var(&pinDaemonsets, "pin-daemonset", "namespace/name of a DaemonSet whose containers get exact base entries from -launches; repeatable")
+	fs.Var(&pinManifests, "pin-manifest", "baked DaemonSet manifest whose container gets an exact base entry; repeatable, paired in order with -image-config")
+	fs.Var(&imageConfigs, "image-config", "image config JSON (crane config) of the -pin-manifest image at the same position; repeatable")
 	fs.StringVar(&templatePath, "template", "", "image-policy.yaml.in to splice the block into")
 	fs.BoolVar(&check, "check", false, "exit non-zero when the template block is stale")
 	fs.BoolVar(&write, "write", false, "rewrite the template block in place")
@@ -270,8 +281,13 @@ func run(args []string, stdout io.Writer) error {
 		return err
 	}
 
+	pinned, err := pinnedBlock(launchesDir, pinDaemonsets, pinManifests, imageConfigs)
+	if err != nil {
+		return err
+	}
+
 	if templatePath == "" {
-		_, err := io.WriteString(stdout, block)
+		_, err := io.WriteString(stdout, block+pinned)
 		return err
 	}
 
@@ -283,6 +299,11 @@ func run(args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
+	if launchesDir != "" || len(pinManifests) > 0 {
+		if updated, err = spliceBlock(updated, pinnedBegin, pinnedEnd, pinned); err != nil {
+			return err
+		}
+	}
 	switch {
 	case check:
 		if updated != string(data) {
@@ -293,8 +314,34 @@ func run(args []string, stdout io.Writer) error {
 			return err
 		}
 	default:
-		_, err := io.WriteString(stdout, block)
+		_, err := io.WriteString(stdout, block+pinned)
 		return err
 	}
 	return nil
+}
+
+// pinnedBlock renders the pinned launches of the -launches capture and the
+// -pin-manifest manifests.
+func pinnedBlock(launchesDir string, daemonsets, manifests, configs []string) (string, error) {
+	if len(manifests) != len(configs) {
+		return "", fmt.Errorf("pass one -image-config per -pin-manifest")
+	}
+	components := map[string][]launch{}
+	if launchesDir != "" {
+		captured, err := capturedLaunches(launchesDir, daemonsets)
+		if err != nil {
+			return "", err
+		}
+		maps.Copy(components, captured)
+	} else if len(daemonsets) > 0 {
+		return "", fmt.Errorf("-pin-daemonset needs -launches")
+	}
+	for i, manifest := range manifests {
+		name, l, err := manifestLaunch(manifest, configs[i])
+		if err != nil {
+			return "", err
+		}
+		components[name] = []launch{l}
+	}
+	return renderPinned(components)
 }

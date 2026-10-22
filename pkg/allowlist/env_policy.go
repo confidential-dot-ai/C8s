@@ -4,15 +4,17 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
+	"regexp"
 )
 
 func (p EnvPolicy) MarshalYAML() (any, error) {
 	type wirePolicy struct {
-		Policy    string                 `yaml:"policy"`
-		Values    map[string]string      `yaml:"values,omitempty"`
-		Variables *map[string]EnvMatcher `yaml:"variables,omitempty"`
+		Policy       string                 `yaml:"policy"`
+		Values       map[string]string      `yaml:"values,omitempty"`
+		Variables    *map[string]EnvMatcher `yaml:"variables,omitempty"`
+		ServiceLinks bool                   `yaml:"serviceLinks,omitempty"`
 	}
-	wire := wirePolicy{Policy: p.Policy, Values: p.Values}
+	wire := wirePolicy{Policy: p.Policy, Values: p.Values, ServiceLinks: p.ServiceLinks}
 	if p.Variables != nil {
 		wire.Variables = &p.Variables
 	}
@@ -27,6 +29,9 @@ type envPolicyBehavior interface {
 }
 
 func (p EnvPolicy) behavior() (envPolicyBehavior, error) {
+	if p.ServiceLinks && p.Policy != PolicyMatch {
+		return nil, fmt.Errorf("serviceLinks needs a match env policy")
+	}
 	switch p.Policy {
 	case PolicyAny, "", PolicyDeny:
 		if p.Values != nil || p.Variables != nil {
@@ -50,7 +55,9 @@ func (p EnvPolicy) behavior() (envPolicyBehavior, error) {
 		if p.Variables == nil || p.Values != nil {
 			return nil, fmt.Errorf("match env requires variables and takes no values")
 		}
-		return newMatchEnvPolicy(p.Variables)
+		policy, err := newMatchEnvPolicy(p.Variables)
+		policy.serviceLinks = p.ServiceLinks
+		return policy, err
 	default:
 		return nil, fmt.Errorf("unknown env policy %q (want deny, any, exact, or match)", p.Policy)
 	}
@@ -170,7 +177,10 @@ func (exactEnvPolicy) isUnconstrained() bool {
 	return false
 }
 
-type matchEnvPolicy struct{ variables map[string]envMatcherBehavior }
+type matchEnvPolicy struct {
+	variables    map[string]envMatcherBehavior
+	serviceLinks bool
+}
 
 func newMatchEnvPolicy(variables map[string]EnvMatcher) (matchEnvPolicy, error) {
 	p := matchEnvPolicy{variables: make(map[string]envMatcherBehavior, len(variables))}
@@ -191,8 +201,13 @@ func newMatchEnvPolicy(variables map[string]EnvMatcher) (matchEnvPolicy, error) 
 }
 
 func (p matchEnvPolicy) admits(o *EnvObservation) bool {
-	if !o.Valid() || o.VariableDigests == nil || len(o.VariableDigests) != len(p.variables) {
+	if !o.Valid() || o.VariableDigests == nil {
 		return false
+	}
+	for name := range o.VariableDigests {
+		if _, listed := p.variables[name]; !listed && !(p.serviceLinks && ServiceLinkName(name)) {
+			return false
+		}
 	}
 	for name, matcher := range p.variables {
 		digest, present := o.VariableDigests[name]
@@ -221,4 +236,16 @@ func (p matchEnvPolicy) hostIndependent() bool {
 }
 func (matchEnvPolicy) isUnconstrained() bool {
 	return false
+}
+
+// serviceLinkPattern is the shape of the variables the kubelet derives from a
+// Service (k8s.io/kubernetes pkg/kubelet/envvars): <NAME>_SERVICE_HOST,
+// <NAME>_SERVICE_PORT[_<PORT NAME>], <NAME>_PORT and
+// <NAME>_PORT_<port>_<PROTOCOL>[_PROTO|_PORT|_ADDR].
+var serviceLinkPattern = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*_(SERVICE_HOST|SERVICE_PORT(_[A-Z0-9_]+)?|PORT(_[0-9]+_(TCP|UDP|SCTP)(_(PROTO|PORT|ADDR))?)?)$`)
+
+// ServiceLinkName reports whether name has the shape of a kubelet service
+// link variable.
+func ServiceLinkName(name string) bool {
+	return serviceLinkPattern.MatchString(name)
 }
