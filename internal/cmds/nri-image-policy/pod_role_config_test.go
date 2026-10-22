@@ -3,6 +3,7 @@ package nriimagepolicy_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
@@ -15,15 +16,29 @@ import (
 
 // The pod role rewrites the baked config at boot (nodeservices.preparePod).
 // Load that output here so the rewrite cannot drift from the plugin schema.
-// A TDX pod measures its images: the rewrite must keep the baked
+// A pod measures its images: the rewrite must keep the baked
 // workload_claims.socket_dir the measure.rtmr3 validation requires.
 func TestNodeImagePodRoleConfig_LoadsBaseOnlyAndEnforces(t *testing.T) {
-	for _, platform := range []string{"snp", "tdx"} {
-		t.Run(platform, func(t *testing.T) { testNodeImagePodRoleConfig(t, platform) })
+	testNodeImagePodRoleConfig(t, "tdx")
+}
+
+// A platform without a runtime register cannot measure the pod, so
+// preparation refuses it rather than writing a policy that measures nothing.
+func TestNodeImagePodRoleConfig_RefusesSNP(t *testing.T) {
+	root, doc := podRoleInputs(t, "snp")
+	err := nodeservices.Prepare(root, doc)
+	if err == nil || !strings.Contains(err.Error(), "runtime register") {
+		t.Fatalf("got %v, want a runtime register refusal", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "etc/nri/conf.d/image-policy.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("pod-role config written without measurement: %v", err)
 	}
 }
 
-func testNodeImagePodRoleConfig(t *testing.T, platform string) {
+// podRoleInputs stages the baked policy, the pins and a pod document of the
+// given platform under a fresh root, as the initrd leaves them for Prepare.
+func podRoleInputs(t *testing.T, platform string) (string, *launchconfig.Document) {
+	t.Helper()
 	root := t.TempDir()
 	write := func(name string, data []byte) {
 		t.Helper()
@@ -60,6 +75,11 @@ func testNodeImagePodRoleConfig(t *testing.T, platform string) {
 		Pod: &launchconfig.PodSpec{UID: "u1", Namespace: "tenant", Name: "app",
 			Manifest: `{"apiVersion":"v1","kind":"Pod","metadata":{"name":"app","namespace":"tenant","uid":"u1"},"spec":{"containers":[{"name":"app","image":"busybox"}]}}`},
 	}
+	return root, doc
+}
+
+func testNodeImagePodRoleConfig(t *testing.T, platform string) {
+	root, doc := podRoleInputs(t, platform)
 	if err := nodeservices.Prepare(root, doc); err != nil {
 		t.Fatal(err)
 	}
@@ -71,10 +91,10 @@ func testNodeImagePodRoleConfig(t *testing.T, platform string) {
 		t.Fatalf("pod-role config: pull=%v node_tcb=%v sandbox=%v fatal_existing=%v",
 			cfg.PullEnabled(), cfg.Allowlist.NodeTCB, nriimagepolicy.SandboxModeOf(cfg), cfg.Policy.FatalExisting)
 	}
-	if cfg.Measure.RTMR3 != (platform == "tdx") {
+	if !cfg.Measure.RTMR3 {
 		t.Fatalf("measure.rtmr3 = %v on %s", cfg.Measure.RTMR3, platform)
 	}
-	if cfg.Measure.RTMR3 && cfg.WorkloadClaims.SocketDir != filepath.Dir(armtls.NodeJournal) {
+	if cfg.WorkloadClaims.SocketDir != filepath.Dir(armtls.NodeJournal) {
 		t.Fatalf("socket_dir = %q: the pod journal would not be where its readers look", cfg.WorkloadClaims.SocketDir)
 	}
 }
