@@ -51,10 +51,13 @@ func preparePod(rootDir string, d *launchconfig.Document, outputs map[string][]b
 	// Measure every started workload into RTMR[3], on top of the launch-key
 	// seed the initrd extended from operator-pubkey's exact bytes, into the
 	// journal under the baked inventory directory that pod-status and the
-	// get-cert sidecars read.
-	if d.Image.HasRuntimeRegister() {
-		floor["measure"] = map[string]any{"rtmr3": true}
+	// get-cert sidecars read. Validation already refuses a pod document on a
+	// platform without the register; a pod that could not be measured must
+	// not start.
+	if !d.Image.HasRuntimeRegister() {
+		return fmt.Errorf("pod role requires a platform with a runtime register; %s has none", d.Image.Platform)
 	}
+	floor["measure"] = map[string]any{"rtmr3": true}
 	policyData, err := yaml.Marshal(floor)
 	if err != nil {
 		return err

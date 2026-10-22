@@ -169,7 +169,10 @@ never the server token) and signs it with the agent key. A server created
 without `--server-address` autodetects its own; `add-agent` then needs
 `--server-address`.
 
-A pod CVM boots the same image as one pod, with no RKE2:
+A pod CVM boots the same image as one pod, with no RKE2. It is TDX only:
+the pod role measures each container image it starts into RTMR[3], and
+SNP has no register a guest can extend after launch, so an SNP image
+manifest is refused at signing and in the guest.
 `c8s node launch-config new-pod --out pod1 --cluster-id demo --image-manifest manifest.json
 --pod-manifest pod.json --workloads workloads.json` writes a `role: pod` document
 signed by a pod launch key (`pod1/pod.key`, or `--launch-key`). It carries the
