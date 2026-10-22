@@ -42,6 +42,7 @@ const (
 	DefaultStagedPath = Dir + "/config.json"
 	MaxDocumentSize   = 1024 * 1024
 	maxSignatureSize  = 4096
+	maxLaunchKeySize  = 8192
 	maxAgentKeys      = 128
 	maxMirrors        = 8
 	defaultTLSSAN     = "c8s.local"
@@ -83,6 +84,7 @@ type roleRules struct {
 	joinsCluster bool
 	serverToken  presence // rke2.serverToken, distinct from rke2.agentToken
 	agentKeys    presence // agentOperatorPublicKeys
+	podKey       presence // podOperatorPublicKey
 	pod          presence // the pod section, which then requires workloads
 	// measuresWorkloads requires a platform with a runtime register: the
 	// role measures what it runs after launch, and without the register no
@@ -97,11 +99,8 @@ type roleRules struct {
 	router        bool // may carry a router block
 	// ownLaunchKey authorizes the exact server.operatorPublicKey bytes;
 	// otherwise the launch key must be listed in agentOperatorPublicKeys and
-	// differ from the server's.
+	// differ from the server's. A podKey authorizes its own exact bytes.
 	ownLaunchKey bool
-	// anchorPin names the reference value anchored at
-	// server.operatorPublicKey, which a pod uses for its own key.
-	anchorPin string
 }
 
 var roles = map[Role]roleRules{
@@ -109,36 +108,35 @@ var roles = map[Role]roleRules{
 		joinsCluster:  true,
 		serverToken:   required,
 		agentKeys:     optional,
+		podKey:        forbidden,
 		pod:           forbidden,
 		namesServer:   false,
 		stagedAddress: true,
 		router:        true,
 		ownLaunchKey:  true,
-		anchorPin:     "server",
 	},
 	Agent: {
 		joinsCluster:  true,
 		serverToken:   forbidden,
 		agentKeys:     required,
+		podKey:        forbidden,
 		pod:           forbidden,
 		namesServer:   true,
 		stagedAddress: true,
 		router:        false,
 		ownLaunchKey:  false,
-		anchorPin:     "server",
 	},
 	Pod: {
 		joinsCluster:      false,
 		serverToken:       forbidden,
 		agentKeys:         forbidden,
+		podKey:            required,
 		pod:               required,
 		measuresWorkloads: true,
-		namesServer:       false,
-		stagedAddress:     false,
+		namesServer:       true,
+		stagedAddress:     true,
 		router:            false,
-		// A pod document carries its own launch key in server.operatorPublicKey.
-		ownLaunchKey: true,
-		anchorPin:    "pod",
+		ownLaunchKey:      false,
 	},
 }
 
@@ -157,7 +155,9 @@ type Document struct {
 	RKE2                    RKE2         `yaml:"rke2" json:"rke2"`
 	Server                  ServerConfig `yaml:"server" json:"server"`
 	AgentOperatorPublicKeys []string     `yaml:"agentOperatorPublicKeys" json:"agent_operator_public_keys"`
-	TLSSAN                  string       `yaml:"tlsSAN,omitempty" json:"tls_san"`
+	// PodOperatorPublicKey verifies pod documents; Server still pins CDS.
+	PodOperatorPublicKey string `yaml:"podOperatorPublicKey,omitempty" json:"pod_operator_public_key,omitempty"`
+	TLSSAN               string `yaml:"tlsSAN,omitempty" json:"tls_san"`
 
 	// Workloads is an optional strict c8s.allowlist/v1 JSON document. Keeping
 	// its existing wire schema avoids an independent YAML policy language.
@@ -522,6 +522,20 @@ func (d *Document) validate() error {
 	if err != nil {
 		return fmt.Errorf("server.operatorPublicKey: %w", err)
 	}
+	switch rules.podKey {
+	case required:
+		podKey, err := parseLaunchKey(d.PodOperatorPublicKey)
+		if err != nil {
+			return fmt.Errorf("podOperatorPublicKey: %w", err)
+		}
+		if podKey.Equal(server) {
+			return fmt.Errorf("pod and server public keys must be distinct")
+		}
+	case forbidden:
+		if d.PodOperatorPublicKey != "" {
+			return fmt.Errorf("podOperatorPublicKey requires role pod")
+		}
+	}
 	if len(d.AgentOperatorPublicKeys) > maxAgentKeys {
 		return fmt.Errorf("too many agent operator keys")
 	}
@@ -568,7 +582,7 @@ func (d *Document) validate() error {
 			return fmt.Errorf("%s requires a pod section", d.Role)
 		}
 		if d.Workloads == "" {
-			return fmt.Errorf("%s requires workloads: they are its only admitted images", d.Role)
+			return fmt.Errorf("%s requires workloads as its base allowlist", d.Role)
 		}
 		if err := d.Pod.validate(); err != nil {
 			return err
@@ -582,8 +596,12 @@ func (d *Document) validate() error {
 		if !json.Valid([]byte(d.Workloads)) {
 			return fmt.Errorf("workloads must contain one valid JSON document")
 		}
-		if _, err := allowlist.ParseJSON([]byte(d.Workloads)); err != nil {
+		workloads, err := allowlist.ParseJSON([]byte(d.Workloads))
+		if err != nil {
 			return fmt.Errorf("workloads: %w", err)
+		}
+		if rules.pod == required && len(workloads.Workloads) == 0 {
+			return fmt.Errorf("%s requires workloads with at least one workload as its cold-boot base", d.Role)
 		}
 	}
 	return validateRegistryMirrors(d.RegistryMirrors)
@@ -622,6 +640,12 @@ func portNumber(s string) bool {
 }
 
 func (d *Document) authorizeKey(pub []byte, key *ecdsa.PublicKey) error {
+	if d.rules().podKey == required {
+		if !bytes.Equal(pub, []byte(d.PodOperatorPublicKey)) {
+			return fmt.Errorf("%s launch key does not match podOperatorPublicKey bytes", d.Role)
+		}
+		return nil
+	}
 	server, err := parseLaunchKey(d.Server.OperatorPublicKey)
 	if err != nil {
 		return fmt.Errorf("parse server operator public key: %w", err)
@@ -644,7 +668,7 @@ func (d *Document) authorizeKey(pub []byte, key *ecdsa.PublicKey) error {
 }
 
 func parseLaunchKey(raw string) (*ecdsa.PublicKey, error) {
-	if len(raw) > 8192 {
+	if len(raw) > maxLaunchKeySize {
 		return nil, fmt.Errorf("launch public key is too large")
 	}
 	return runtimemeasure.ParsePublicKeyPEM([]byte(raw))
@@ -704,13 +728,17 @@ func (d *Document) referenceValues() (refvalues.ReferenceValues, error) {
 		return refvalues.ReferenceValues{}, fmt.Errorf("image.platform must be tdx or snp")
 	}
 	pins := refvalues.ReferenceValues{Family: platform.family}
-	keys := append([]string{d.Server.OperatorPublicKey}, d.AgentOperatorPublicKeys...)
-	for i, pub := range keys {
-		name := d.rules().anchorPin
-		if i > 0 {
-			name = fmt.Sprintf("agent-%d", i)
-		}
-		entry := remote.ImagePin{Name: name, Digest: mustDecodeHex(d.Image.Measurement), Anchor: []byte(pub)}
+	type identity struct{ name, publicKey string }
+	// The first pin is always the CDS server, independently of this boot's key.
+	keys := []identity{{"server", d.Server.OperatorPublicKey}}
+	for i, pub := range d.AgentOperatorPublicKeys {
+		keys = append(keys, identity{fmt.Sprintf("agent-%d", i+1), pub})
+	}
+	if d.PodOperatorPublicKey != "" {
+		keys = append(keys, identity{"pod", d.PodOperatorPublicKey})
+	}
+	for _, key := range keys {
+		entry := remote.ImagePin{Name: key.name, Digest: mustDecodeHex(d.Image.Measurement), Anchor: []byte(key.publicKey)}
 		if len(d.Image.RTMRs) > 0 {
 			entry.Registers = make(map[int][]byte, len(d.Image.RTMRs))
 			for idx, digest := range d.Image.RTMRs {

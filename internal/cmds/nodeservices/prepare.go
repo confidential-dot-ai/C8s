@@ -61,9 +61,8 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 	if err != nil {
 		return err
 	}
-	pull, ok := a["pull"].(map[string]any)
-	if !ok {
-		return fmt.Errorf("baked NRI policy missing pull")
+	if _, err := bindCDSPull(a, d); err != nil {
+		return err
 	}
 	base, err := bakedBase(a["base"])
 	if err != nil {
@@ -73,10 +72,6 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 		return fmt.Errorf("merge chart seed into NRI base: %w", err)
 	}
 	a["base"] = base
-	pull["url"] = d.CDSURL()
-	pull["cds_measurements_config"] = launchDir + "cds.json"
-	delete(pull, "cds_measurements")
-	delete(pull, "cds_rtmrs")
 	mesh, declared := floor["mesh"]
 	if !declared {
 		return fmt.Errorf("baked NRI policy missing mesh")
@@ -106,6 +101,22 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 }
 
 const nriPolicyPath = "/etc/nri/conf.d/image-policy.yaml"
+
+// bindCDSPull applies the signed server endpoint and its separately staged pins.
+func bindCDSPull(a map[string]any, d *launchconfig.Document) (map[string]any, error) {
+	pull, ok := a["pull"].(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("baked NRI policy missing pull")
+	}
+	if err := launchconfig.ValidateIPv4(d.Server.Address, true); err != nil {
+		return nil, fmt.Errorf("staged server.address: %w", err)
+	}
+	pull["url"] = d.CDSURL()
+	pull["cds_measurements_config"] = launchDir + "cds.json"
+	delete(pull, "cds_measurements")
+	delete(pull, "cds_rtmrs")
+	return pull, nil
+}
 
 // loadFloor reads the NRI policy baked into the image, returning the whole
 // document and its allowlist section for the caller to edit.

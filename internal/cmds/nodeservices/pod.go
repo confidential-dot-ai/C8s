@@ -8,6 +8,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
+	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
@@ -21,9 +22,8 @@ const (
 	podUnmanagedConfig = "[Match]\nName=veth* c8spod*\n\n[Link]\nUnmanaged=yes\n"
 )
 
-// preparePod admits exactly the signed workloads: the baked floor's plugin,
-// inventory and fail-closed settings stay, but its base, the chart seed and
-// the CDS pull are dropped, and nothing is exempt from the sandbox policy.
+// preparePod admits the signed base and the authenticated CDS allowlist.
+// The node's baked base and chart seed are dropped; nothing is node TCB.
 func preparePod(rootDir string, d *launchconfig.Document, outputs map[string][]byte) error {
 	path := func(name string) string { return filepath.Join(rootDir, name) }
 	if d.Pod == nil || d.Workloads == "" {
@@ -32,6 +32,9 @@ func preparePod(rootDir string, d *launchconfig.Document, outputs map[string][]b
 	workloads, err := allowlist.ParseJSON([]byte(d.Workloads))
 	if err != nil {
 		return fmt.Errorf("launch workloads: %w", err)
+	}
+	if len(workloads.Workloads) == 0 {
+		return fmt.Errorf("staged pod role requires a nonempty workloads base")
 	}
 	if _, err := launchconfig.ParsePodManifest([]byte(d.Pod.Manifest)); err != nil {
 		return err
@@ -46,7 +49,19 @@ func preparePod(rootDir string, d *launchconfig.Document, outputs map[string][]b
 	}
 	a["base"] = workloads
 	a["node_tcb"] = false
-	delete(a, "pull")
+	pull, err := bindCDSPull(a, d)
+	if err != nil {
+		return err
+	}
+	if value, exists := pull["measure_policies"]; exists {
+		enabled, ok := value.(bool)
+		if !ok {
+			return fmt.Errorf("baked allowlist.pull.measure_policies must be a boolean")
+		}
+		if enabled {
+			return nriimagepolicy.ErrPodRoleMeasurePolicies
+		}
+	}
 	// The baked mesh policy is a node's: it gates every pod outside its
 	// exempt namespaces on a verified mesh endpoint, which only the measured
 	// base allowlist can declare. The signed workloads replace that base and
@@ -56,10 +71,8 @@ func preparePod(rootDir string, d *launchconfig.Document, outputs map[string][]b
 	policy["sandbox"] = "enforce"
 	// Measure every started workload into RTMR[3], on top of the launch-key
 	// seed the initrd extended from operator-pubkey's exact bytes, into the
-	// journal under the baked inventory directory that pod-status and the
-	// get-cert sidecars read. Validation already refuses a pod document on a
-	// platform without the register; a pod that could not be measured must
-	// not start.
+	// journal under the baked inventory directory that pod-status reads.
+	// A platform without the register cannot run measured pod workloads.
 	if !d.Image.HasRuntimeRegister() {
 		return fmt.Errorf("pod role requires a platform with a runtime register; %s has none", d.Image.Platform)
 	}

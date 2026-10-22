@@ -18,7 +18,7 @@ import (
 // Load that output here so the rewrite cannot drift from the plugin schema.
 // A pod measures its images: the rewrite must keep the baked
 // workload_claims.socket_dir the measure.rtmr3 validation requires.
-func TestNodeImagePodRoleConfig_LoadsBaseOnlyAndEnforces(t *testing.T) {
+func TestNodeImagePodRoleConfig_LoadsBaseAndPullAndEnforces(t *testing.T) {
 	testNodeImagePodRoleConfig(t, "tdx")
 }
 
@@ -52,11 +52,18 @@ func podRoleInputs(t *testing.T, platform string) (string, *launchconfig.Documen
 			t.Fatal(err)
 		}
 	}
-	write("usr/lib/c8s/image-policy.yaml", []byte(nriimagepolicy.RenderNodeImagePolicy(t)))
+	baked := nriimagepolicy.RenderNodeImagePolicy(t)
+	if strings.Count(baked, `platform: "snp"`) != 1 {
+		t.Fatal("rendered fixture must contain exactly one platform setting")
+	}
+	baked = strings.Replace(baked, `platform: "snp"`, `platform: "`+platform+`"`, 1)
+	write("usr/lib/c8s/image-policy.yaml", []byte(baked))
 	pins, err := refvalues.Load("../../../internal/testdata/node-identities.json")
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The server and Pod launch authorities stay distinct.
+	serverKey, podKey := string(pins.Images[0].Anchor), string(pins.Images[1].Anchor)
 	// The pins are TDX pins; an SNP pod has no register pins.
 	pins.Images = pins.Images[:1]
 	if platform == "snp" {
@@ -70,10 +77,12 @@ func podRoleInputs(t *testing.T, platform string) (string, *launchconfig.Documen
 	write(launchconfig.Dir+"/peers.json", policy)
 	write(launchconfig.Dir+"/cds.json", policy)
 	doc := &launchconfig.Document{
-		Role:      launchconfig.Pod,
-		Image:     launchconfig.Image{Platform: platform},
-		Node:      launchconfig.Node{Name: "p-pod"},
-		Workloads: `{"schema":"c8s.allowlist/v1","workloads":{"app":{"containers":[{"digest":"` + podImageDigest + `","command":{"policy":"any"},"args":{"policy":"any"}}]}}}`,
+		Role:                 launchconfig.Pod,
+		Server:               launchconfig.ServerConfig{Address: "10.1.2.3", OperatorPublicKey: serverKey},
+		PodOperatorPublicKey: podKey,
+		Image:                launchconfig.Image{Platform: platform},
+		Node:                 launchconfig.Node{Name: "p-pod"},
+		Workloads:            `{"schema":"c8s.allowlist/v1","workloads":{"app":{"containers":[{"digest":"` + podImageDigest + `","command":{"policy":"any"},"args":{"policy":"any"}}]}}}`,
 		Pod: &launchconfig.PodSpec{UID: "u1", Namespace: "tenant", Name: "app",
 			Manifest: `{"apiVersion":"v1","kind":"Pod","metadata":{"name":"app","namespace":"tenant","uid":"u1"},"spec":{"containers":[{"name":"app","image":"busybox"}]}}`},
 	}
@@ -89,7 +98,7 @@ func testNodeImagePodRoleConfig(t *testing.T, platform string) {
 	if err != nil {
 		t.Fatalf("pod-role config does not load: %v", err)
 	}
-	if cfg.PullEnabled() || cfg.Allowlist.NodeTCB || nriimagepolicy.SandboxModeOf(cfg) != nriimagepolicy.SandboxEnforce || !cfg.Policy.FatalExisting {
+	if !cfg.PullEnabled() || cfg.Allowlist.NodeTCB || nriimagepolicy.SandboxModeOf(cfg) != nriimagepolicy.SandboxEnforce || !cfg.Policy.FatalExisting {
 		t.Fatalf("pod-role config: pull=%v node_tcb=%v sandbox=%v fatal_existing=%v",
 			cfg.PullEnabled(), cfg.Allowlist.NodeTCB, nriimagepolicy.SandboxModeOf(cfg), cfg.Policy.FatalExisting)
 	}
@@ -107,4 +116,18 @@ func testNodeImagePodRoleConfig(t *testing.T, platform string) {
 	if err := nriimagepolicy.AdmitsCreation(cfg, doc.Pod.Namespace, "busybox@"+podImageDigest, podImageDigest); err != nil {
 		t.Fatalf("the pod's own allowlisted workload is refused: %v", err)
 	}
+}
+
+// Exercise the prepared policy through the production startup path and an NRI
+// runtime connection, including admission before CDS becomes available.
+func TestNodeImagePodRoleConfig_StartsAndRetainsServedPolicy(t *testing.T) {
+	root, doc := podRoleInputs(t, "tdx")
+	if err := nodeservices.Prepare(root, doc); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := nriimagepolicy.LoadConfig(filepath.Join(root, "etc/nri/conf.d/image-policy.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	nriimagepolicy.AssertPodBootstrap(t, cfg, root, []byte(doc.PodOperatorPublicKey), podImageDigest)
 }

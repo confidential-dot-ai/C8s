@@ -115,10 +115,12 @@ initrd extends TDX RTMR[3], while an SNP launcher must set HOST_DATA to
 
 The strict `c8s-launch/v1` document selects the role, cluster identity, node
 addresses, RKE2 join credentials, trusted role keys, image pins and TLS SAN.
-It accepts an optional `workloads` string containing a complete
-`c8s.allowlist/v1` JSON document, and an optional `registryMirrors` map from
-a registry host to one `http://<IPv4>[:port]` endpoint, at most 8 (for
-example `ghcr.io: http://10.43.0.5:5000`). Staging writes the map as
+Server and agent documents accept an optional `workloads` string containing
+a complete `c8s.allowlist/v1` JSON document; pod documents require a nonempty
+base allowlist, as described below. The document also accepts an optional
+`registryMirrors` map from a registry host to one `http://<IPv4>[:port]`
+endpoint, at most 8 (for example `ghcr.io: http://10.43.0.5:5000`). Staging
+writes the map as
 `/etc/rancher/rke2/registries.yaml`, so containerd pulls through the mirror
 first and from the registry itself as the last resort. The mirror is plain
 http and gets no registry credentials: the host can see which blobs a node
@@ -199,30 +201,54 @@ A pod CVM boots the same image as one pod, with no RKE2. It is TDX only:
 the pod role measures each container image it starts into RTMR[3], and
 SNP has no register a guest can extend after launch, so an SNP image
 manifest is refused at signing and in the guest.
-`c8s node launch-config new-pod --out pod1 --cluster-id demo --image-manifest manifest.json
---pod-manifest pod.json --workloads workloads.json` writes a `role: pod` document
-signed by a pod launch key (`pod1/pod.key`, or `--launch-key`). It carries the
-pod manifest (`metadata.uid` required; every container image pinned by
-digest; only `emptyDir` volumes with `medium: Memory`, so pod state stays
-in VM memory whether or not a scratch disk is attached; no host
-namespaces, `hostPort`, `hostIP` or privileged containers) and the
-workloads allowlist,
-which is the complete set of images the pod CVM admits. It carries no RKE2
-tokens. The image runs containerd and a standalone kubelet
-(`podcvm-containerd`, `podcvm-kubelet`) instead of RKE2, and does not require
-the scratch disk. The kubelet listens on loopback only; pod status is served
-over armTLS on `:8443` (`c8s pod-status`), the only port the VM publishes;
-nothing outside the VM can open a connection to the pod.
+
+```sh
+c8s node launch-config new-pod --out pod1 --cluster-id demo \
+  --image-manifest manifest.json \
+  --server-address 10.0.0.10 --server-public-key demo/server/pubkey \
+  --pod-manifest pod.json --workloads workloads.json
+```
+
+This writes a `role: pod` document signed by a separate pod launch key
+(`pod1/pod.key`, or an existing key supplied with `--launch-key`). The document
+records that public key in `podOperatorPublicKey`; the initrd binds its exact
+bytes, and workload measurements extend that pod key's seed. The required
+`--server-public-key` supplies the server's public PEM file, recorded in
+`server.operatorPublicKey`. The guest derives its CDS pins from that server
+key and the image pins. The two keys must differ. `--server-address` supplies
+the reachable server IPv4 address; CDS is contacted over armTLS on port
+`30808`. The pod document carries no RKE2 join credentials or agent keys.
+
+`workloads.json` must contain a `c8s.allowlist/v1` document with at least one
+workload. It becomes the base allowlist, available before CDS responds. The
+plugin also admits entries fetched from the authenticated CDS. Failed initial
+pulls leave the base available while polling continues; failed refreshes
+leave the last applied CDS policy in force. Neither source receives a node-TCB
+exemption. The pod role measures started images only and refuses a baked
+configuration that also enables `allowlist.pull.measure_policies`.
+
+The pod manifest requires `metadata.uid` and digest-pinned container images.
+Volumes must be `emptyDir` with `medium: Memory`, so pod state stays in VM
+memory whether or not a scratch disk is attached. Host namespaces, `hostPort`,
+`hostIP` and privileged containers are refused. The image runs containerd and
+a standalone kubelet (`podcvm-containerd`, `podcvm-kubelet`) instead of RKE2,
+and does not require the scratch disk. The kubelet listens on loopback only;
+`c8s pod-status` serves
+guest status over armTLS on `:8443`. The measurement journal stays inside the
+guest: this role supplies no node credential-client mounts or sandbox-token
+service to pod containers.
 
 The kubelet sets `makeIPTablesUtilChains: false`: the admission plugin owns the
 guest's packet rules, and a kubelet utility chain would make it refuse the pod.
 
-The generated document is the strict schema below; edit it only when a field
-the command does not expose is needed, then re-sign with
+Manual edits require a new signature from that document's launch key. For a
+server document, run
 `c8s keys sign-launch --key demo/server.key --force demo/server/launch.yaml`.
+Use the pod launch key when re-signing a pod document.
 
-Attach the corresponding ISO to each VM along with its required scratch
-disk, booting the **same image and supported VM shape** for both roles.
+For server and agent roles, attach the corresponding ISO to each VM along
+with its required scratch disk, booting the **same image and supported VM
+shape** for both roles.
 The image is built separately for TDX and SNP; their image digests and
 measurements are different. SNP's launch digest also depends on vCPU count.
 Every `image.measurement` is 96 lowercase hexadecimal characters. TDX
@@ -231,8 +257,8 @@ pins firmware, not the guest kernel and verity root. Do not put RTMR[0] or
 RTMR[3] in the image pins: RTMR[3] is checked against each role's launch key.
 
 For a server, `server.address` may be omitted: staging uses `node.ip`, or
-selects the primary IPv4 address if that is also omitted. An agent must
-always carry its server's reachable IPv4 address. `node.ip` is optional
+selects the primary IPv4 address if that is also omitted. Agent and pod
+documents must always carry their server's reachable IPv4 address. `node.ip` is optional
 (`0.0.0.0` means autodetect); `node.externalIP` is an optional explicit unicast
 IPv4 address. `node.name` must be unique within the cluster. `tlsSAN` defaults
 to `c8s.local` and must be a lowercase DNS hostname. Arbitrary routes and CORS
@@ -240,7 +266,7 @@ overrides are not launch settings in this image.
 
 A server document may carry an optional `router` block. It sets the router's
 public hostnames and request body limit at boot, because the image cannot know
-them at build time. An agent document must not carry it.
+them at build time. An agent or pod document must not carry it.
 
 ```yaml
 router:

@@ -342,11 +342,10 @@ func (c *config) NormalizedPlatform() string {
 	return family.String()
 }
 
-// injectsCredentialClients reports whether a pod of this node carries the
-// webhook's credential clients: the inventory directory is what the plugin
-// mounts into them, and without it no pod of this node is injected.
+// injectsCredentialClients excludes the Pod guest journal: recording measured
+// workloads does not grant containers access to node credential services.
 func (c *config) injectsCredentialClients() bool {
-	return c.WorkloadClaims.SocketDir != ""
+	return c.WorkloadClaims.SocketDir != "" && !c.Measure.RTMR3
 }
 
 // PullEnabled reports whether the plugin should poll a remote CDS.

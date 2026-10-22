@@ -15,6 +15,7 @@ import (
 var (
 	LoadConfig            = loadConfig
 	RenderNodeImagePolicy = renderNodeImagePolicy
+	AssertPodBootstrap    = assertPodBootstrap
 )
 
 func SandboxModeOf(c *config) sandboxMode { return c.sandboxMode() }
