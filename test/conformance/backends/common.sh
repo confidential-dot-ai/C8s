@@ -340,8 +340,16 @@ cds_arg() { deploy_arg "$1" '{.spec.template.spec.containers[?(@.name=="cds")].a
 # The image the webhook injects get-cert and its siblings from.
 injected_image() { operator_arg get-cert-image; }
 
-# What the webhook tells every requester it injects.
-cds_pod_url() { operator_arg cds-url; }
+# Where an injected credential client dials CDS on an install: node "one"'s
+# own address and the CDS Service's node port.
+cds_pod_url() {
+    local node host port
+    node="$(node_name one)" || return
+    host="$(kubectl get node "$node" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')" || return
+    port="$(kubectl -n "$NS" get svc c8s-cds -o jsonpath='{.spec.ports[0].nodePort}')" || return
+    [ -n "$host" ] && [ -n "$port" ] || { echo "backend: no address or CDS node port for node $node" >&2; return 1; }
+    echo "https://${host%% *}:$port"
+}
 
 # The CDS keeps its allowlist and version counter in its data volume; a
 # restart loses both when that volume is an emptyDir (the chart's
