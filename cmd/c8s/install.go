@@ -1332,13 +1332,17 @@ func printAttestVerifyHint(w io.Writer, attestEnabled bool) {
 	}
 	if len(installMeasurements) > 0 {
 		fmt.Fprintln(w, "+ router attestation sidecar enabled; mesh pinned to --measurements.")
-		fmt.Fprintln(w, "  Clients verify with the same M: c8s verify https://<router> --measurements <M>")
+		fmt.Fprintln(w, "  Clients verify with the same M and the mesh anchor:")
+		fmt.Fprintln(w, "    c8s verify https://<router> --measurements <M> --mesh-ca mesh-ca.pem")
+		fmt.Fprintln(w, "  Write the anchor with: c8s cds ca --out mesh-ca.pem")
 		return
 	}
 	fmt.Fprintln(w, "+ router attestation sidecar enabled, but the mesh is UNPINNED (accepts any")
 	fmt.Fprintln(w, "  attested TEE). Pin it with the node image's launch measurement M (its")
 	fmt.Fprintln(w, "  manifest.json): reinstall with --measurements <M>. Clients verify with the")
-	fmt.Fprintln(w, "  same M: c8s verify https://<router> --measurements <M>.")
+	fmt.Fprintln(w, "  same M and the mesh anchor:")
+	fmt.Fprintln(w, "    c8s verify https://<router> --measurements <M> --mesh-ca mesh-ca.pem")
+	fmt.Fprintln(w, "  Write the anchor with: c8s cds ca --out mesh-ca.pem")
 }
 
 // extractChart writes the embedded chart tree to a fresh tmpdir and returns

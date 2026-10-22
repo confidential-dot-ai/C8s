@@ -1105,12 +1105,9 @@ Certificate-sourced evidence must also carry an authenticated certificate
 body. A self-signed leaf authenticates its own body under the attested key; a
 CA-issued one does not, and `x509` parsing verifies no signature — so a
 CA-issued leaf is accepted only when its chain verifies against `--mesh-ca`,
-or when a live TLS handshake proves the peer holds the attested key. For
-`--mode discovery` on an https target that handshake doubles as the front-door
-check below: a CA-issued discovery certificate the live door presents
-byte-identically is authenticated by possession. A door serving some other
-certificate — or a fetch with no handshake to observe (a non-https target) —
-still requires `--mesh-ca` (the document publishes `cds_tls.mesh_ca_url`).
+including on a `--mode discovery` target whose live door presents the attested
+certificate byte-identically. `c8s cds ca` writes that anchor. What the live
+handshake decides is the front-door check below.
 
 Exit codes are a CI contract: `0` verified, `1` usage error, `2`
 verification/policy failed (e.g. wrong measurement), `3` evidence unavailable

@@ -31,6 +31,7 @@ func fetchAttested(ctx context.Context, endpoint, serverName, certSHA256 string,
 		Transport: &http.Transport{
 			DisableKeepAlives: true,
 			TLSClientConfig: &tls.Config{
+				MinVersion:         tls.VersionTLS13,
 				InsecureSkipVerify: true, //nolint:gosec // the attested leaf fingerprint authenticates the peer
 				ServerName:         serverName,
 				VerifyConnection: func(cs tls.ConnectionState) error {
