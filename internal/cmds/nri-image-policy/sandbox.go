@@ -252,6 +252,9 @@ func isInjectedNodeMount(pod *api.PodSandbox, ctr *api.Container, m *api.Mount, 
 	case workloadclaims.CDSAddressPath:
 		source = own.cdsAddress
 		eligible = eligible || holdsCredentialsIdentity(ctr) || fetchesRouteManifest(pod, ctr)
+	case workloadclaims.RouterCDSPinsPath:
+		source = own.cdsPins
+		eligible = fetchesRouteManifest(pod, ctr)
 	}
 	return eligible && source != "" && m.GetSource() == source && endsReadOnly(m)
 }
