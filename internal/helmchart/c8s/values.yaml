@@ -851,6 +851,11 @@ router:
     # non-streaming completion sends nothing until it is done, so this must
     # outlive the longest generation.
     readTimeout: 3600s
+    # -- Largest application request body nginx accepts, in bytes; a larger
+    # one gets 413. nginx streams the body to the routing listener rather
+    # than holding it. A baked node ignores this value and takes the signed
+    # launch file's router.maxRequestBodyBytes (default 1048576) instead.
+    maxRequestBodyBytes: 1048576
     # -- How long a routed request may go with no data moving either way, as a
     # positive whole number of ms, s, m or h, such as 1h or 90m; a slow client
     # that keeps reading is never cut. A tunnelled request, whose response

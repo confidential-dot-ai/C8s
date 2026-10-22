@@ -3040,6 +3040,16 @@ func TestRouterRejectsInvalidValues(t *testing.T) {
 			want: "router.routing.port must differ from router.nginx.httpsPort, got: 8443",
 		},
 		{
+			name: "routing-maxRequestBodyBytes-zero",
+			args: []string{"--set", "routing.maxRequestBodyBytes=0"},
+			want: "router.routing.maxRequestBodyBytes must be a positive number of bytes, got: 0",
+		},
+		{
+			name: "routing-maxRequestBodyBytes-injection",
+			args: []string{"--set-string", "routing.maxRequestBodyBytes=1m; return 200"},
+			want: `expected an integer, got "1m; return 200"`,
+		},
+		{
 			name: "routing-readTimeout-injection",
 			args: []string{"--set-string", "routing.readTimeout=1h; return 200"},
 			want: "router.routing.readTimeout must be a positive whole number of ms, s, m or h, such as 3600s, got: 1h; return 200",
@@ -3594,12 +3604,13 @@ func helmTemplateIn(t *testing.T, dir string, args ...string) (string, error) {
 func assertRouterRoutingLocation(t *testing.T, route *nginxBlock, port, readTimeout string) {
 	t.Helper()
 	for name, want := range map[string]string{
-		"proxy_pass":            "http://127.0.0.1:" + port,
-		"proxy_connect_timeout": "5s",
-		"proxy_read_timeout":    readTimeout,
-		"proxy_send_timeout":    readTimeout,
-		"proxy_buffering":       "off",
-		"proxy_http_version":    "1.1",
+		"proxy_pass":              "http://127.0.0.1:" + port,
+		"proxy_connect_timeout":   "5s",
+		"proxy_read_timeout":      readTimeout,
+		"proxy_send_timeout":      readTimeout,
+		"proxy_buffering":         "off",
+		"proxy_request_buffering": "off",
+		"proxy_http_version":      "1.1",
 	} {
 		if got := route.directives[name]; len(got) != 1 || !slices.Equal(got[0], []string{want}) {
 			t.Errorf("location / %s = %v, want exactly [%s]", name, got, want)
@@ -3620,6 +3631,7 @@ func TestChartRouterRoutingLocation(t *testing.T) {
 	cfg := renderedRouterNginxConfig(t, out)
 	route := cfg.location(t, "prefix", "/")
 	assertRouterRoutingLocation(t, route, "8802", "3600s")
+	route.assertDirective(t, "client_max_body_size", "1048576")
 	route.assertNoDirective(t, "add_header")
 	cfg.assertNoDirectivePrefix(t, "proxy_ssl_")
 	cfg.http.assertNoDirective(t, "resolver")
@@ -3632,11 +3644,14 @@ func TestChartRouterRoutingLocation(t *testing.T) {
 		"--set-string", "router.routing.readTimeout=900s",
 		"--set-string", "router.routing.pollInterval=5s",
 		"--set-string", "router.routing.backendTimeout=2h",
+		"--set", "router.routing.maxRequestBodyBytes=67108864",
 	)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	assertRouterRoutingLocation(t, renderedRouterNginxConfig(t, out).location(t, "prefix", "/"), "9900", "900s")
+	route = renderedRouterNginxConfig(t, out).location(t, "prefix", "/")
+	assertRouterRoutingLocation(t, route, "9900", "900s")
+	route.assertDirective(t, "client_max_body_size", "67108864")
 	assertContainerArgs(t, renderedDeploymentContainer(t, out, "c8s-router", "cds-attest"),
 		"--routing-port=9900", "--routes-poll-interval=5s", "--backend-timeout=2h")
 
@@ -4624,6 +4639,11 @@ func Example_routerConfig() {
 	//             proxy_set_header X-Forwarded-Proto $scheme;
 	//             proxy_set_header Upgrade $http_upgrade;
 	//             proxy_set_header Connection $connection_upgrade;
+	//             client_max_body_size 1048576;
+	//             # Stream request bodies to the routing listener: a body held
+	//             # whole would spool to the nginx-cache volume, which a few
+	//             # large uploads would fill. client_max_body_size still applies.
+	//             proxy_request_buffering off;
 	//             # A non-streaming completion sends nothing until it is done, so
 	//             # nginx's 60s default read timeout would 504 long generations.
 	//             # A dead routing listener must fail fast instead.

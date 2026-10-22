@@ -317,3 +317,20 @@ func TestNewBundleCarriesASignedServerRouter(t *testing.T) {
 	}
 	stageBundleNode(t, dir, "worker-1")
 }
+
+func TestNewBundleCarriesARouterBodyLimitAlone(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "bundle")
+	err := runBundleCmd(t, "new", "--out", dir, "--cluster-id", "demo", "--image-manifest", writeManifest(t, "tdx"),
+		"--router-max-request-body-bytes", "67108864")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, data := readBundleDocument(t, dir, serverDir)
+	if server.Router == nil || server.Router.MaxRequestBodyBytes != 64<<20 || len(server.Router.Hostnames) != 0 {
+		t.Fatalf("server router = %+v", server.Router)
+	}
+	if !bytes.Contains(data, []byte("maxRequestBodyBytes: 67108864")) {
+		t.Fatal("body limit missing from the signed document")
+	}
+	stageBundleNode(t, dir, serverDir)
+}

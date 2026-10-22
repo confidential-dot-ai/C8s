@@ -76,6 +76,7 @@ func TestValidateRejectsEachMalformedField(t *testing.T) {
 		{"router acme directory", Server, func(d *Document) {
 			d.Router = &Router{Hostnames: []string{"a.example.com"}, ACMEDirectoryURL: "http://acme.example/dir"}
 		}, "router.acmeDirectoryURL"},
+		{"router body limit negative", Server, func(d *Document) { d.Router = &Router{MaxRequestBodyBytes: -1} }, "router.maxRequestBodyBytes"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -110,6 +111,21 @@ func TestParseAcceptsServerRouter(t *testing.T) {
 	}
 	if parsed.Router == nil || len(parsed.Router.Hostnames) != 2 {
 		t.Fatalf("router = %+v", parsed.Router)
+	}
+	if got := parsed.Router.RequestBodyLimit(); got != DefaultMaxRequestBodyBytes {
+		t.Fatalf("default request body limit = %d, want %d", got, DefaultMaxRequestBodyBytes)
+	}
+	// The body limit needs no hostnames: it applies in either front-door mode.
+	withLimit := bytes.Replace(data, []byte("router:\n"), []byte("router:\n    maxRequestBodyBytes: 67108864\n"), 1)
+	parsed, err = Parse(withLimit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := parsed.Router.RequestBodyLimit(); got != 64<<20 {
+		t.Fatalf("request body limit = %d, want %d", got, 64<<20)
+	}
+	if _, err := Parse(bytes.Replace(data, []byte("router:\n"), []byte("router:\n    maxRequestBodyBytes: 64Mi\n"), 1)); err == nil {
+		t.Fatal("Parse accepted a non-integer router.maxRequestBodyBytes")
 	}
 	// The removed router.upstream key is refused as unknown.
 	withUpstream := bytes.Replace(data, []byte("    hostnames:"), []byte("    upstream: gw.ns.svc:9443\n    hostnames:"), 1)

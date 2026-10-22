@@ -316,6 +316,11 @@ func TestPrepareWritesRouterInputs(t *testing.T) {
 			"acme-email":         "",
 			"acme-directory-url": "",
 			"front-door-mode":    "cds\n",
+			"request-body.conf":  "client_max_body_size 1048576;\n",
+		}},
+		{"body limit", &launchconfig.Router{MaxRequestBodyBytes: 64 << 20}, map[string]string{
+			"front-door-mode":   "cds\n",
+			"request-body.conf": "client_max_body_size 67108864;\n",
 		}},
 		{"public", &launchconfig.Router{
 			Hostnames:        []string{"candidate.api.confidential.ai", "api.confidential.ai"},
@@ -327,6 +332,7 @@ func TestPrepareWritesRouterInputs(t *testing.T) {
 			"acme-directory-url": "https://acme-staging-v02.api.letsencrypt.org/directory\n",
 			"front-door-mode":    "acme\n",
 			"tls.conf":           "include /usr/lib/c8s/router-nginx/tls-acme.conf;\n",
+			"request-body.conf":  "client_max_body_size 1048576;\n",
 		}},
 	}
 	for _, tc := range tests {
