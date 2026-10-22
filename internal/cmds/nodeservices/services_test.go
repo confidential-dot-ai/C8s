@@ -606,6 +606,20 @@ func TestPrepareHACluster(t *testing.T) {
 			t.Fatal("a cluster without HA CDS kept cds-pins.json")
 		}
 	})
+	t.Run("cds node binds the credential role", func(t *testing.T) {
+		// The measured base names the credential workloads on every node, and
+		// the runtime refuses a base whose credential role is unbound: a cds
+		// node without the binding could start no pod at all (found on TDX).
+		root := haRoot(t, 2)
+		writeInput(t, root, "/usr/lib/c8s/image-policy.yaml", []byte(meshFloor))
+		if err := Prepare(root, haDoc(launchconfig.CDS)); err != nil {
+			t.Fatal(err)
+		}
+		staged := stagedMeshPolicy(t, root)
+		if len(staged.Roles) != 2 || staged.Roles[1].Name != nriimagepolicy.CredentialRole {
+			t.Fatalf("cds node roles = %+v", staged.Roles)
+		}
+	})
 	t.Run("cds", func(t *testing.T) {
 		root := haRoot(t, 2)
 		if err := Prepare(root, haDoc(launchconfig.CDS)); err != nil {

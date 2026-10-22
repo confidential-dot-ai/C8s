@@ -135,20 +135,23 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 		}
 		delete(pull, "cds_measurements")
 		delete(pull, "cds_rtmrs")
-		// A node carrying no mesh policy hosts no member pods, so there is no
-		// role to bind.
-		if mesh, declared := floor["mesh"]; declared {
-			policy, ok := mesh.(map[string]any)
-			if !ok {
-				return fmt.Errorf("baked NRI mesh policy is %T, not a mapping", mesh)
-			}
-			address, err := d.CDSAddrPort()
-			if err != nil {
-				return err
-			}
-			if err := appendCredentialRole(policy, address); err != nil {
-				return err
-			}
+	}
+	// Every role binds the credential role: the measured base names the
+	// credential workloads on every node (a cds node included), and the
+	// runtime refuses a base whose credential role is unbound. A node
+	// carrying no mesh policy hosts no member pods, so there is no role to
+	// bind.
+	if mesh, declared := floor["mesh"]; declared {
+		policy, ok := mesh.(map[string]any)
+		if !ok {
+			return fmt.Errorf("baked NRI mesh policy is %T, not a mapping", mesh)
+		}
+		address, err := d.CDSAddrPort()
+		if err != nil {
+			return err
+		}
+		if err := appendCredentialRole(policy, address); err != nil {
+			return err
 		}
 	}
 	data, err = yaml.Marshal(floor)
