@@ -3,14 +3,12 @@ package routing
 import (
 	"context"
 	"crypto/ecdsa"
-	"crypto/x509"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"os"
 
-	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 	"github.com/confidential-dot-ai/c8s/pkg/routes"
 	"github.com/confidential-dot-ai/c8s/pkg/routesclient"
@@ -41,18 +39,6 @@ func (f KeyFile) OperatorKeys(context.Context) ([]*ecdsa.PublicKey, error) {
 		return nil, err
 	}
 	return operatorauth.ParsePublicKeysPEM(b)
-}
-
-// CAFile returns a CASource that reads a PEM CA bundle from path on every
-// call, so a bundle get-cert rewrites after a CDS restart takes effect.
-func CAFile(path string) CASource {
-	return func() ([]*x509.Certificate, error) {
-		b, err := os.ReadFile(path)
-		if err != nil {
-			return nil, err
-		}
-		return certutil.ParsePEMCertificates(b)
-	}
 }
 
 // CDSClient reads the route manifest and the operator keys from the CDS. It

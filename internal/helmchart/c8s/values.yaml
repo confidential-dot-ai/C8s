@@ -173,7 +173,6 @@ webhook:
   annotations: {}
   service:
     port: 443
-  failurePolicy: Fail
   extraExcluded: []
   certVolume:
     fsGroup: 65532

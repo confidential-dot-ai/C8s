@@ -513,12 +513,12 @@ func TestSandboxConfigValidation(t *testing.T) {
 	}{
 		{
 			name: "defaults to enforce",
-			yaml: "allowlist:" + baseYAML(pushDigestA, "img"),
+			yaml: "allowlist:" + baseYAML(pushDigestA, "img") + meshYAML,
 			want: SandboxEnforce,
 		},
 		{
 			name: "explicit audit",
-			yaml: "allowlist:" + baseYAML(pushDigestA, "img") + "policy:\n  sandbox: audit\n",
+			yaml: "allowlist:" + baseYAML(pushDigestA, "img") + "policy:\n  sandbox: audit\n" + meshYAML,
 			want: SandboxAudit,
 		},
 		{

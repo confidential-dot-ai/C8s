@@ -1,110 +1,28 @@
 //go:build linux
 
 // The per-pod mesh endpoint's credentials. get-cert publishes one generation at a
-// time behind a pointer; the endpoint resolves that pointer and validates what it
-// names, so the leaf it presents and the CA it trusts come from one set.
+// time behind a pointer; the endpoint validates the generation credvolume
+// resolves, so the leaf it presents and the CA it trusts come from one set.
 
 package armtlsmesh
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"sync/atomic"
 	"time"
 
+	"github.com/confidential-dot-ai/c8s/internal/credvolume"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 )
 
-const (
-	// generationPollInterval is how often the generation pointer is resolved.
-	generationPollInterval = time.Second
-
-	// pointerName is the pointer get-cert flips onto a published generation.
-	pointerName = "current"
-)
-
-var errMissingCredentialPointer = errors.New("credential generation pointer is missing")
-
-// credentialVolume is the directory get-cert publishes on: its pointer, plus
-// the three file names the pod's readers use.
-type credentialVolume struct {
-	dir                        string
-	chainName, keyName, caName string
-}
-
-// credentialVolumeFor requires the three reader paths in one directory under
-// distinct names: one pointer covers a generation only if it covers all three.
-func credentialVolumeFor(chainPath, keyPath, caPath string) (credentialVolume, error) {
-	paths := []string{chainPath, keyPath, caPath}
-	dirs := map[string]bool{}
-	names := map[string]bool{}
-	for _, path := range paths {
-		dirs[filepath.Clean(filepath.Dir(path))] = true
-		names[filepath.Base(path)] = true
-	}
-	if len(dirs) != 1 || len(names) != 3 {
-		return credentialVolume{}, fmt.Errorf("--cert-path, --key-path and --ca-path must name three different files in one directory, not %q", paths)
-	}
-	return credentialVolume{
-		dir:       filepath.Clean(filepath.Dir(chainPath)),
-		chainName: filepath.Base(chainPath),
-		keyName:   filepath.Base(keyPath),
-		caName:    filepath.Base(caPath),
-	}, nil
-}
-
-func (v credentialVolume) pointerPath() string {
-	return filepath.Join(v.dir, pointerName)
-}
-
-// read resolves the pointer once and reads the three files of the generation it
-// names, so a publication part-way through cannot mix two generations.
-func (v credentialVolume) read() (publishedSet, error) {
-	target, err := os.Readlink(v.pointerPath())
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return publishedSet{}, fmt.Errorf("%w: %w", errMissingCredentialPointer, err)
-		}
-		return publishedSet{}, fmt.Errorf("resolve the generation pointer: %w", err)
-	}
-	dir := filepath.Join(v.dir, target)
-	chain, err := os.ReadFile(filepath.Join(dir, v.chainName))
-	if err != nil {
-		return publishedSet{}, fmt.Errorf("read generation %s: %w", target, err)
-	}
-	key, err := os.ReadFile(filepath.Join(dir, v.keyName))
-	if err != nil {
-		return publishedSet{}, fmt.Errorf("read generation %s: %w", target, err)
-	}
-	ca, err := os.ReadFile(filepath.Join(dir, v.caName))
-	if err != nil {
-		return publishedSet{}, fmt.Errorf("read generation %s: %w", target, err)
-	}
-	return publishedSet{
-		chainPEM: chain,
-		keyPEM:   key,
-		caPEM:    ca,
-	}, nil
-}
-
-// publishedSet is the PEM of one generation, as the pointer named it.
-type publishedSet struct {
-	chainPEM, keyPEM, caPEM []byte
-}
-
-func (s publishedSet) sameAs(other publishedSet) bool {
-	return bytes.Equal(s.chainPEM, other.chainPEM) &&
-		bytes.Equal(s.keyPEM, other.keyPEM) &&
-		bytes.Equal(s.caPEM, other.caPEM)
-}
+// generationPollInterval is how often the generation pointer is resolved.
+const generationPollInterval = time.Second
 
 // generation is one adopted credential set with the two mesh configurations
 // built from it. A configuration is never carried across an adoption, so an
@@ -113,22 +31,22 @@ type generation struct {
 	serverTLS, clientTLS *tls.Config
 	cert                 *tls.Certificate
 	ca                   *x509.Certificate
-	published            publishedSet
+	published            credvolume.Set
 }
 
 // adoptPublishedSet validates a published set and builds the configurations that
 // serve it: the leaf matches the published key, names a workload instance, and
 // chains to the CA published with it.
-func adoptPublishedSet(published publishedSet, now time.Time, logger *slog.Logger) (*generation, error) {
-	cert, err := tls.X509KeyPair(published.chainPEM, published.keyPEM)
+func adoptPublishedSet(published credvolume.Set, now time.Time, logger *slog.Logger) (*generation, error) {
+	cert, err := tls.X509KeyPair(published.ChainPEM, published.KeyPEM)
 	if err != nil {
 		return nil, fmt.Errorf("published leaf and key: %w", err)
 	}
-	cert.Leaf, err = certutil.ParseCertificatePEM(published.chainPEM)
+	cert.Leaf, err = certutil.ParseCertificatePEM(published.ChainPEM)
 	if err != nil {
 		return nil, fmt.Errorf("published leaf: %w", err)
 	}
-	cas, err := certutil.ParsePEMCertificates(published.caPEM)
+	cas, err := certutil.ParsePEMCertificates(published.CAPEM)
 	if err != nil {
 		return nil, fmt.Errorf("published CA: %w", err)
 	}
@@ -245,7 +163,7 @@ func (p publishedCredentials) Provision(context.Context) (*tls.Certificate, time
 // credentials is the endpoint's view of the published generations: it adopts
 // each one that validates and holds nothing else.
 type credentials struct {
-	volume  credentialVolume
+	volume  credvolume.Volume
 	logger  *slog.Logger
 	adopted atomic.Pointer[generation]
 }
@@ -290,16 +208,16 @@ func (c *credentials) reload(now time.Time) {
 // A publication that does not validate never replaces a usable generation;
 // a withdrawn pointer leaves the endpoint with nothing.
 func (c *credentials) adoptPublication(now time.Time) {
-	published, err := c.volume.read()
+	published, err := c.volume.Read()
 	switch {
-	case errors.Is(err, errMissingCredentialPointer):
+	case errors.Is(err, credvolume.ErrMissingPointer):
 		c.withdraw(err)
 		return
 	case err != nil:
 		c.logger.Warn("reading the published generation failed", "error", err)
 		return
 	}
-	if adopted := c.adopted.Load(); adopted != nil && adopted.published.sameAs(published) {
+	if adopted := c.adopted.Load(); adopted != nil && adopted.published.SameAs(published) {
 		return
 	}
 	g, err := adoptPublishedSet(published, now, c.logger)

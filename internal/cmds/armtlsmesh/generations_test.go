@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/confidential-dot-ai/c8s/internal/credvolume"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 )
@@ -69,7 +70,7 @@ type leafSpec struct {
 }
 
 // issue returns the published set of a generation issued by this CA.
-func (ca meshCA) issue(t *testing.T, spec leafSpec) publishedSet {
+func (ca meshCA) issue(t *testing.T, spec leafSpec) credvolume.Set {
 	t.Helper()
 	key := spec.key
 	if key == nil {
@@ -110,10 +111,10 @@ func (ca meshCA) issue(t *testing.T, spec leafSpec) publishedSet {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return publishedSet{
-		chainPEM: certutil.EncodeCertPEM(der),
-		keyPEM:   testKeyPEM(t, key),
-		caPEM:    certutil.EncodeCertPEM(ca.cert.Raw),
+	return credvolume.Set{
+		ChainPEM: certutil.EncodeCertPEM(der),
+		KeyPEM:   testKeyPEM(t, key),
+		CAPEM:    certutil.EncodeCertPEM(ca.cert.Raw),
 	}
 }
 
@@ -157,24 +158,32 @@ func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
-// testVolume is a credential volume with the file names get-cert's callers use.
-func testVolume(t *testing.T) credentialVolume {
+// meshVolume is a credential volume a test publishes generations on, with the
+// directory and file names get-cert's callers use.
+type meshVolume struct {
+	credvolume.Volume
+	dir                        string
+	chainName, keyName, caName string
+}
+
+func testVolume(t *testing.T) meshVolume {
 	t.Helper()
-	dir := t.TempDir()
-	volume, err := credentialVolumeFor(
-		filepath.Join(dir, "tls.crt"),
-		filepath.Join(dir, "tls.key"),
-		filepath.Join(dir, "ca.crt"),
+	v := meshVolume{dir: t.TempDir(), chainName: "tls.crt", keyName: "tls.key", caName: "ca.crt"}
+	volume, err := credvolume.For(
+		filepath.Join(v.dir, v.chainName),
+		filepath.Join(v.dir, v.keyName),
+		filepath.Join(v.dir, v.caName),
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return volume
+	v.Volume = volume
+	return v
 }
 
 // publishSet writes a generation under a name no earlier publication used and
 // flips the pointer onto it, as get-cert's publication does.
-func publishSet(t *testing.T, volume credentialVolume, set publishedSet) {
+func publishSet(t *testing.T, volume meshVolume, set credvolume.Set) {
 	t.Helper()
 	entries, err := os.ReadDir(filepath.Join(volume.dir, "generations"))
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -186,9 +195,9 @@ func publishSet(t *testing.T, volume credentialVolume, set publishedSet) {
 		t.Fatal(err)
 	}
 	for name, data := range map[string][]byte{
-		volume.chainName: set.chainPEM,
-		volume.keyName:   set.keyPEM,
-		volume.caName:    set.caPEM,
+		volume.chainName: set.ChainPEM,
+		volume.keyName:   set.KeyPEM,
+		volume.caName:    set.CAPEM,
 	} {
 		if err := os.WriteFile(filepath.Join(dir, name), data, 0o600); err != nil {
 			t.Fatal(err)
@@ -196,19 +205,19 @@ func publishSet(t *testing.T, volume credentialVolume, set publishedSet) {
 	}
 	// One rename, as the publication the watcher observes: a pointer that
 	// briefly names nothing is a withdrawal.
-	tmp := volume.pointerPath() + ".next"
+	tmp := volume.PointerPath() + ".next"
 	if err := os.Symlink(name, tmp); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Rename(tmp, volume.pointerPath()); err != nil {
+	if err := os.Rename(tmp, volume.PointerPath()); err != nil {
 		t.Fatal(err)
 	}
 }
 
 // withdrawSet removes the generation pointer, as get-cert's withdrawal does.
-func withdrawSet(t *testing.T, volume credentialVolume) {
+func withdrawSet(t *testing.T, volume meshVolume) {
 	t.Helper()
-	if err := os.Remove(volume.pointerPath()); err != nil {
+	if err := os.Remove(volume.PointerPath()); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -222,19 +231,19 @@ func TestAdoptPublishedSetValidatesTheSet(t *testing.T) {
 	valid := ca.issue(t, leafSpec{})
 
 	wrongKey := valid
-	wrongKey.keyPEM = testKeyPEM(t, testKey(t))
+	wrongKey.KeyPEM = testKeyPEM(t, testKey(t))
 	foreignCA := valid
-	foreignCA.caPEM = foreign.issue(t, leafSpec{}).caPEM
+	foreignCA.CAPEM = foreign.issue(t, leafSpec{}).CAPEM
 	noCA := valid
-	noCA.caPEM = nil
+	noCA.CAPEM = nil
 	twoCAs := valid
-	twoCAs.caPEM = append(append([]byte{}, valid.caPEM...), foreign.issue(t, leafSpec{}).caPEM...)
+	twoCAs.CAPEM = append(append([]byte{}, valid.CAPEM...), foreign.issue(t, leafSpec{}).CAPEM...)
 	garbageLeaf := valid
-	garbageLeaf.chainPEM = []byte("-----BEGIN CERTIFICATE-----\nnot a certificate\n-----END CERTIFICATE-----\n")
+	garbageLeaf.ChainPEM = []byte("-----BEGIN CERTIFICATE-----\nnot a certificate\n-----END CERTIFICATE-----\n")
 
 	tests := []struct {
 		name    string
-		set     publishedSet
+		set     credvolume.Set
 		wantErr bool
 	}{
 		{"published generation", valid, false},
@@ -279,20 +288,20 @@ func TestAdoptPublishedSetValidatesTheSet(t *testing.T) {
 func TestReadResolvesThePointerOnce(t *testing.T) {
 	ca := newMeshCA(t, time.Hour)
 	volume := testVolume(t)
-	if _, err := volume.read(); !errors.Is(err, os.ErrNotExist) || !errors.Is(err, errMissingCredentialPointer) {
+	if _, err := volume.Read(); !errors.Is(err, os.ErrNotExist) || !errors.Is(err, credvolume.ErrMissingPointer) {
 		t.Fatalf("read without a pointer = %v, want a not-exist error", err)
 	}
 	first := ca.issue(t, leafSpec{})
 	publishSet(t, volume, first)
-	read, err := volume.read()
+	read, err := volume.Read()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !read.sameAs(first) {
+	if !read.SameAs(first) {
 		t.Fatal("read returned a set other than the published one")
 	}
 	withdrawSet(t, volume)
-	if _, err := volume.read(); !errors.Is(err, os.ErrNotExist) || !errors.Is(err, errMissingCredentialPointer) {
+	if _, err := volume.Read(); !errors.Is(err, os.ErrNotExist) || !errors.Is(err, credvolume.ErrMissingPointer) {
 		t.Fatalf("read after withdrawal = %v, want a not-exist error", err)
 	}
 }
@@ -305,7 +314,7 @@ func TestCredentialsAdoptEachValidatedGeneration(t *testing.T) {
 	foreign := newMeshCA(t, time.Hour)
 	volume := testVolume(t)
 	creds := &credentials{
-		volume: volume,
+		volume: volume.Volume,
 		logger: discardLogger(),
 	}
 
@@ -328,7 +337,7 @@ func TestCredentialsAdoptEachValidatedGeneration(t *testing.T) {
 
 	// A leaf published with another CA's set: nothing a reader could use.
 	inconsistent := ca.issue(t, leafSpec{})
-	inconsistent.caPEM = foreign.issue(t, leafSpec{}).caPEM
+	inconsistent.CAPEM = foreign.issue(t, leafSpec{}).CAPEM
 	publishSet(t, volume, inconsistent)
 	creds.reload(time.Now())
 	if kept, _ := creds.usable(time.Now()); kept != first {
@@ -360,7 +369,7 @@ func TestUsableRefusesAnExpiredGeneration(t *testing.T) {
 
 	tests := []struct {
 		name   string
-		set    publishedSet
+		set    credvolume.Set
 		expiry time.Duration
 	}{
 		{"expired leaf", ca.issue(t, leafSpec{notAfter: time.Now().Add(10 * time.Minute)}), 10 * time.Minute},
@@ -371,7 +380,7 @@ func TestUsableRefusesAnExpiredGeneration(t *testing.T) {
 			volume := testVolume(t)
 			publishSet(t, volume, tc.set)
 			creds := &credentials{
-				volume: volume,
+				volume: volume.Volume,
 				logger: discardLogger(),
 			}
 			creds.reload(time.Now())

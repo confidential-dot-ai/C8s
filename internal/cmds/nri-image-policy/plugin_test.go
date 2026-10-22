@@ -24,13 +24,16 @@ func newTestPlugin(cfg *config) *plugin {
 	if err := validateLabelRules(cfg.Policy.LabelRules); err != nil {
 		panic(err)
 	}
+	if cfg.Mesh == nil {
+		cfg.Mesh = meshRoles()
+	}
 	return &plugin{
 		cfg:        cfg,
 		policy:     newPolicyStore(cfg.Allowlist.Base),
 		audit:      audit.NewLogger(),
 		logger:     slog.Default(),
 		containerd: &fakeContainerd{},
-		mesh:       newMeshGate(nil, slog.Default()),
+		mesh:       newMeshGate(*cfg.Mesh, slog.Default()),
 	}
 }
 
@@ -160,15 +163,19 @@ func TestPodSandboxEventsFeedInventory(t *testing.T) {
 	}
 }
 
-// Pod-sandbox events are subscribed exactly when the inventory is enabled.
-func TestConfigureSubscribesPodSandboxEventsWithInventory(t *testing.T) {
+// Pod-sandbox events carry the gate's protection, and the container
+// lifecycle the inventory needs is subscribed exactly when it is enabled.
+func TestConfigureSubscribesContainerLifecycleWithInventory(t *testing.T) {
 	p := newTestPlugin(&config{})
 	mask, err := p.Configure(context.Background(), "", "containerd", "2.0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if mask.IsSet(api.Event_RUN_POD_SANDBOX) || mask.IsSet(api.Event_REMOVE_POD_SANDBOX) {
-		t.Fatal("pod-sandbox events subscribed without an inventory")
+	if !mask.IsSet(api.Event_RUN_POD_SANDBOX) || !mask.IsSet(api.Event_REMOVE_POD_SANDBOX) {
+		t.Fatal("pod-sandbox events not subscribed")
+	}
+	if mask.IsSet(api.Event_STOP_CONTAINER) || mask.IsSet(api.Event_REMOVE_CONTAINER) {
+		t.Fatal("container stop and removal subscribed without an inventory")
 	}
 
 	p.inventory = newAdmissionInventory(t.TempDir())
@@ -176,8 +183,8 @@ func TestConfigureSubscribesPodSandboxEventsWithInventory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !mask.IsSet(api.Event_RUN_POD_SANDBOX) || !mask.IsSet(api.Event_REMOVE_POD_SANDBOX) {
-		t.Fatal("pod-sandbox events not subscribed with the inventory enabled")
+	if !mask.IsSet(api.Event_STOP_CONTAINER) || !mask.IsSet(api.Event_REMOVE_CONTAINER) {
+		t.Fatal("container stop and removal not subscribed with the inventory enabled")
 	}
 }
 
@@ -304,7 +311,7 @@ func TestCreateContainer_Ready_PassesThrough(t *testing.T) {
 		logger:     slog.Default(),
 		policy:     newPolicyStore(nil),
 		containerd: &fakeContainerd{},
-		mesh:       newMeshGate(nil, discardLogger()),
+		mesh:       newMeshGate(*meshRoles(), discardLogger()),
 	}
 	p.SetReady()
 
@@ -703,6 +710,9 @@ func newCachedPlugin(cfg *config, wl *allowlist.Allowlist) (*plugin, *policyStor
 	if err := validateLabelRules(cfg.Policy.LabelRules); err != nil {
 		panic(err)
 	}
+	if cfg.Mesh == nil {
+		cfg.Mesh = meshRoles()
+	}
 	store := newPolicyStore(cfg.Allowlist.Base)
 	store.apply(wl, 1)
 	p := &plugin{
@@ -711,7 +721,7 @@ func newCachedPlugin(cfg *config, wl *allowlist.Allowlist) (*plugin, *policyStor
 		audit:      audit.NewLogger(),
 		logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 		containerd: &fakeContainerd{},
-		mesh:       newMeshGate(nil, discardLogger()),
+		mesh:       newMeshGate(*cfg.Mesh, discardLogger()),
 	}
 	return p, store
 }
@@ -1282,7 +1292,7 @@ func basePlugin(t *testing.T) *plugin {
 		audit:      audit.NewLogger(),
 		logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 		containerd: &fakeContainerd{},
-		mesh:       newMeshGate(nil, discardLogger()),
+		mesh:       newMeshGate(*meshRoles(), discardLogger()),
 	}
 	p.inventory = newAdmissionInventory("/proc")
 	return p
@@ -1679,6 +1689,9 @@ func TestConfigure_SetsCreateContainerMask(t *testing.T) {
 	want.Set(api.Event_CREATE_CONTAINER)
 	want.Set(api.Event_START_CONTAINER)
 	want.Set(api.Event_VALIDATE_CONTAINER_ADJUSTMENT)
+	want.Set(api.Event_RUN_POD_SANDBOX)
+	want.Set(api.Event_REMOVE_POD_SANDBOX)
+	want.Set(api.Event_UPDATE_CONTAINER)
 	if mask != want {
 		t.Fatalf("mask = %v, want %v", mask, want)
 	}

@@ -58,6 +58,7 @@ func reissueWithSandboxID(t *testing.T, key *ecdsa.PrivateKey, sandboxID string)
 		Subject:         pkix.Name{CommonName: "workload"},
 		NotBefore:       time.Now().Add(-time.Hour),
 		NotAfter:        time.Now().Add(time.Hour),
+		ExtKeyUsage:     armtlsPurposes,
 		ExtraExtensions: []pkix.Extension{attExt, sandboxExt},
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
@@ -177,9 +178,16 @@ type sandboxTestError struct{}
 
 func (*sandboxTestError) Error() string { return "bad sandbox extension" }
 
-// caSignedLeaf mints a leaf carrying sandboxID and signed by a fresh CA,
-// returning the leaf and the CA bundle path — the shape CDS produces.
-func caSignedLeaf(t *testing.T, sandboxID string) (*x509.Certificate, string) {
+// serverAuthOnly is the TLS purpose a CDS-issued serving leaf carries.
+var serverAuthOnly = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}
+
+// armtlsPurposes is what armtls.CreateAttestedCert stamps on an attested leaf.
+var armtlsPurposes = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth}
+
+// caSignedLeaf mints a leaf carrying sandboxID and the given TLS purpose,
+// signed by a fresh CA, returning the leaf and the CA bundle path — the shape
+// CDS produces.
+func caSignedLeaf(t *testing.T, sandboxID string, usages []x509.ExtKeyUsage) (*x509.Certificate, string) {
 	t.Helper()
 	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -216,6 +224,7 @@ func caSignedLeaf(t *testing.T, sandboxID string) (*x509.Certificate, string) {
 		Subject:         pkix.Name{CommonName: "workload"},
 		NotBefore:       time.Now().Add(-time.Hour),
 		NotAfter:        time.Now().Add(time.Hour),
+		ExtKeyUsage:     usages,
 		ExtraExtensions: []pkix.Extension{ext},
 	}
 	leafDER, err := x509.CreateCertificate(rand.Reader, leafTmpl, caCert, &leafKey.PublicKey, caKey)
@@ -238,7 +247,7 @@ func caSignedLeaf(t *testing.T, sandboxID string) (*x509.Certificate, string) {
 // actually verified rather than merely reported.
 func TestApplySandboxPolicyVerifiedAgainstMeshCA(t *testing.T) {
 	const id = "8d9f6c2b1a0e"
-	leaf, caPath := caSignedLeaf(t, id)
+	leaf, caPath := caSignedLeaf(t, id, serverAuthOnly)
 	ev := &evidence{leaf: leaf, sandboxID: id}
 
 	oc := Outcome{Verified: true}
@@ -269,10 +278,27 @@ func TestApplySandboxPolicyVerifiedAgainstMeshCA(t *testing.T) {
 	}
 }
 
+// --mesh-ca authenticates a leaf the CA issued for serving TLS: the same CA
+// over a clientAuth-only leaf fails the chain check.
+func TestApplySandboxPolicyMeshCARequiresServerAuth(t *testing.T) {
+	const id = "8d9f6c2b1a0e"
+	leaf, caPath := caSignedLeaf(t, id, []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth})
+
+	oc := Outcome{Verified: true}
+	applySandboxPolicy(&oc, config{sandboxID: id, meshCA: caPath}, &evidence{leaf: leaf, sandboxID: id},
+		operatorKeysReport{}, &verifyPlan{}, measurementsReport{})
+	if oc.Verified {
+		t.Fatal("a leaf the CA did not issue for serving TLS passed --mesh-ca")
+	}
+	if !strings.Contains(oc.Error, "mesh-ca") {
+		t.Fatalf("error = %q, want it to name the CA check", oc.Error)
+	}
+}
+
 // --mesh-ca asks a question; with no leaf to ask it of, that is an error rather
 // than a silently skipped check reported as success.
 func TestApplySandboxPolicyMeshCANeedsALeaf(t *testing.T) {
-	_, caPath := caSignedLeaf(t, "abc")
+	_, caPath := caSignedLeaf(t, "abc", serverAuthOnly)
 	oc := Outcome{Verified: true}
 	applySandboxPolicy(&oc, config{meshCA: caPath}, &evidence{}, operatorKeysReport{}, &verifyPlan{}, measurementsReport{})
 	if oc.Verified {
@@ -417,7 +443,7 @@ func TestMeshCABundleErrors(t *testing.T) {
 	}
 
 	// And at policy-application time, where the file is read again.
-	leaf, _ := caSignedLeaf(t, "abc")
+	leaf, _ := caSignedLeaf(t, "abc", serverAuthOnly)
 	oc := Outcome{Verified: true}
 	applySandboxPolicy(&oc, config{meshCA: notPEM}, &evidence{leaf: leaf}, operatorKeysReport{}, &verifyPlan{}, measurementsReport{})
 	if oc.Verified {

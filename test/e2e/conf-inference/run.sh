@@ -109,6 +109,8 @@ dump() {
       "\(.metadata.name) deletion=\(.metadata.deletionTimestamp) phase=\(.status.phase) reason=\(.status.reason) \(.status.message)",
       ((.status.initContainerStatuses // []) + (.status.containerStatuses // []) | .[]
       | "  \(.name): ready=\(.ready) restarts=\(.restartCount) state=\(.state) last=\(.lastState.terminated // {} | tostring | .[0:600])")'
+    # The requester's log says why a pod holds no leaf (c8s-cert-wait only times out).
+    kubectl -n "$ns" logs "$p" -c c8s-cert --tail=15 2>/dev/null | sed 's/^/    c8s-cert: /' || true
   done
 }
 ready=""

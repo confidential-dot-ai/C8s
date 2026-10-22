@@ -50,7 +50,7 @@ func writeInput(t *testing.T, root, name string, data []byte) {
 func prepareRoot(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
-	for name, data := range map[string]string{"image-policy.yaml": floor, "allowlist-seed.json": seed} {
+	for name, data := range map[string]string{"image-policy.yaml": meshFloor, "allowlist-seed.json": seed} {
 		writeInput(t, root, "/usr/lib/c8s/"+name, []byte(data))
 	}
 	pins := testPins(t)
@@ -401,21 +401,13 @@ func TestPrepareBindsTheCredentialRoleToTheStagedCDS(t *testing.T) {
 	}
 }
 
-// A node whose measured config carries no mesh policy hosts no member pods, so
-// there is no role to bind and staging adds none.
-func TestPrepareAddsNoRoleWithoutAMeshPolicy(t *testing.T) {
+// A baked config without a mesh policy is staged by no launch.
+func TestPrepareRefusesABakedConfigWithoutAMeshPolicy(t *testing.T) {
 	root := prepareRoot(t)
+	writeInput(t, root, "/usr/lib/c8s/image-policy.yaml", []byte(floor))
 
-	if err := Prepare(root, document(t, launchconfig.Server)); err != nil {
-		t.Fatal(err)
-	}
-
-	data, err := os.ReadFile(filepath.Join(root, "etc/nri/conf.d/image-policy.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(data), nriimagepolicy.CredentialRole) {
-		t.Fatal("staging invented a mesh role on a node that hosts no members")
+	if err := Prepare(root, document(t, launchconfig.Server)); err == nil {
+		t.Fatal("staging completed a baked config with no mesh policy")
 	}
 }
 
@@ -488,7 +480,7 @@ allowlist:
 policy:
   mode: fail-closed
   enforce_existing: true
-`
+` + meshPolicy
 
 // stagedMeshPolicy reads the mesh policy out of the staged boot config as the
 // plugin's own loader would type it.
@@ -525,10 +517,9 @@ type stagedRole struct {
 	Destinations []string `yaml:"destinations"`
 }
 
-// meshFloor is the baked config of a node that hosts members: the measured
-// mesh policy with its own role bound and the credential destination left to
-// the launch.
-const meshFloor = floor + `mesh:
+// meshPolicy is the measured mesh policy a baked config carries: its own role
+// bound and the credential destination left to the launch.
+const meshPolicy = `mesh:
   exempt_namespaces: [kube-system]
   resolver: "10.53.0.10"
   capture: {outbound: 15001, inbound: 15006, health: 15021}
@@ -536,3 +527,6 @@ const meshFloor = floor + `mesh:
     - name: mesh
       uid: 1337
 `
+
+// meshFloor is the baked config of a node, as the image always writes one.
+const meshFloor = floor + meshPolicy

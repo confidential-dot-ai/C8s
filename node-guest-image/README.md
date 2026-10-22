@@ -49,7 +49,8 @@ sets `EXPECT_IMMUTABLE_ROOT=1` explicitly.
 
 Every node VM needs a write-storage disk with virtio-blk serial
 `confai-scratch`, at least 64G. The serial is what matters: the confos
-initrd scans `/dev/vd{b,c,d}` for it and ignores labels. In KubeVirt that's
+initrd scans every attached virtio disk except the image disk for it and
+ignores labels, so the disk may be attached in any order. In KubeVirt that's
 `disk: {bus: virtio}` plus `serial: confai-scratch` (see the vendored
 `tdx-metal-e2e.yml`); confidential-metal attaches one by default
 (`--datadisk-gi`, 0 opts out).
