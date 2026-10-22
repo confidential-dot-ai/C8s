@@ -1511,7 +1511,10 @@ read all three files from that directory for a consistent generation.
 The stable `tls.key`, `ca.crt` and `tls.crt` hard links are replaced in that
 order and can span generations during renewal. On a sidecar restart, a valid
 stored generation remains available until its replacement is published;
-every certificate request generates a fresh key.
+every certificate request generates a fresh key. After a withdrawal the pod
+stays bound to the CA key its `issuer` record names and re-issues under it;
+only a pod whose `issuer` record cannot be read publishes nothing until it is
+recreated.
 
 In renewal mode, `--ca-watch-interval` defaults to one minute. It compares
 CDS `/ca` with `--ca-path` and renews when the CA certificate changes under
