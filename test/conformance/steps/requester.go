@@ -136,7 +136,9 @@ func (w *world) requester(name string) (*requester, error) {
 
 // requesterOnNode admits the requester's image, deploys the pod and checks
 // that it can reach the CDS, so a scenario fails here, with the pod's view,
-// rather than at its first request.
+// rather than at its first request. A member pod reaches the CDS only from
+// its credential client, so the requester runs in a namespace the mesh
+// exempts, and is unsupported where none is open to the harness.
 func requesterOnNode(ctx context.Context, name, node string) error {
 	w := getWorld(ctx)
 	if _, ok := w.issuance.requesters[name]; ok {
@@ -159,10 +161,17 @@ func requesterOnNode(ctx context.Context, name, node string) error {
 		return err
 	}
 	p := w.describe(name, ref)
+	if err := w.elsewhere(p, "excluded_namespace"); err != nil {
+		return err
+	}
 	manifest, err := w.be.call("requester_manifest", p.name, p.namespace, k8sNode)
 	if err != nil {
 		return err
 	}
+	w.onUndo(func() error {
+		_, err := kubectl(nil, "-n", p.namespace, "delete", "pod", p.name, "--ignore-not-found", "--wait=false")
+		return err
+	})
 	p.deployed = true
 	if _, err := kubectl([]byte(manifest), "apply", "-f", "-"); err != nil {
 		return err
@@ -687,6 +696,11 @@ func holdsInventoryToken(ctx context.Context, name, node, otherKey string) error
 	status, resp, err := w.relay(r, "POST", "http://localhost/sandbox", body, inventorySocket)
 	if err != nil {
 		return err
+	}
+	// The inventory asserts only for a mesh member (workload identity B4),
+	// which the requester is not.
+	if status == 403 && strings.Contains(string(resp), "no assertion for this caller") {
+		return skipf("the inventory asserts no sandbox outside the mesh, where the requester runs: %s", resp)
 	}
 	if status != 200 {
 		return fmt.Errorf("the sandbox inventory answered %d: %s", status, resp)

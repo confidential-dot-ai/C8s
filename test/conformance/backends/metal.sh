@@ -79,10 +79,11 @@ scratch_encrypted() { echo yes; }
 # The lane's allowlist URL is the router on the guest's public address: the
 # c8s CLI's signed writes and raw reads reach the CDS through its built-in
 # allowlist route, which forwards the /allowlist routes unchanged. The
-# operator's credential may neither exec, port-forward nor write in $NS, so
-# the CDS's other routes are sent from the pod the run keeps (mesh_scraper),
-# to the address pods dial, as is the CDS's own serving certificate read;
-# its Service answers unsupported below. The launch bundle's key is the run's operator key; the
+# operator's credential may neither exec, port-forward nor write in $NS, and
+# a pod the run keeps is a mesh member whose traffic to the CDS is dropped,
+# so the CDS's other routes are sent from here to its Service's node port on
+# the guest's address, as is the CDS's own serving certificate read; its
+# Service answers unsupported below. The launch bundle's key is the run's operator key; the
 # token minter is built from the checkout on first use, with the Go
 # toolchain that built the CLI.
 cds_url() { echo "${C8S_ALLOWLIST_URL%/}"; }
@@ -93,15 +94,15 @@ cds_request() {
     esac
 }
 # cds_pod_request <method> <route> [body-file] [authorization] [client-cert] [client-key] [header...]
-cds_pod_request() {
-    local url route="$2" body="${3:-}" cert="${5:-}" key="${6:-}" h
-    local -a opts=(-X "$1")
-    [ -z "${4:-}" ] || opts+=(-H "Authorization: $4")
-    shift "$(($# < 6 ? $# : 6))"
-    for h; do opts+=(-H "$h"); done
-    url="$(cds_pod_url)" || return
-    mesh_scraper || return
-    agent_curl "$MESH_SCRAPER_NS" "$MESH_SCRAPER" "" "$body" "$cert" "$key" "${opts[@]}" "$url$route"
+cds_pod_request() { local url; url="$(cds_node_url)" || return; http_request "$url" "$@"; }
+# The guest's address from the allowlist URL, with the CDS Service's node port.
+cds_node_url() {
+    local host port
+    host="${C8S_ALLOWLIST_URL#*://}"
+    host="${host%%/*}"
+    port="$(kubectl -n "$NS" get svc c8s-cds -o jsonpath='{.spec.ports[0].nodePort}')" || return
+    [ -n "$port" ] || { echo "backend: the CDS Service has no node port" >&2; return 1; }
+    echo "https://${host%:*}:$port"
 }
 cds_read() {
     local path
@@ -111,13 +112,7 @@ cds_read() {
 }
 router_url() { echo "${C8S_ALLOWLIST_URL%/}"; }
 # The leaf, the first certificate curl's %{certs} lists for the chain.
-cds_serving_cert() {
-    local url out
-    url="$(cds_pod_url)" || return
-    mesh_scraper || return
-    out="$(agent_run "$MESH_SCRAPER_NS" "$MESH_SCRAPER" "" "curl -sk --max-time 30 -o /dev/null -w '%{certs}' $(shq "$url")")" || return
-    awk '/-----BEGIN CERTIFICATE-----/ {on = 1} on {print} /-----END CERTIFICATE-----/ {exit}' <<<"$out"
-}
+cds_serving_cert() { local url; url="$(cds_node_url)" || return; serving_cert "$url"; }
 # No node shell, so the plugin's health socket is out of reach.
 applied_version() { return "$UNSUPPORTED"; }
 cds_block() { return "$UNSUPPORTED"; }
