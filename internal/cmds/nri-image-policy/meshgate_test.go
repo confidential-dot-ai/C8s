@@ -432,6 +432,21 @@ func TestMeshGateRefusesSandboxesItDidNotProtect(t *testing.T) {
 	}
 }
 
+// A pod the gate does not host is no mesh member, so it asserts no identity
+// while the node carries a mesh policy: an identity client in an exempt
+// namespace is refused, and the refusal says why (C8s#1000).
+func TestMeshGateRefusesAnIdentityToAnExemptPod(t *testing.T) {
+	pod := meshPod("kube-system", "router", testNetNS)
+	gate := newMeshGate(meshRoles(), discardLogger())
+	if err := gate.protect(pod); err != nil {
+		t.Fatalf("protect an exempt pod: %v", err)
+	}
+	err := gate.verifyMember(pod.GetId())
+	if err == nil || !strings.Contains(err.Error(), "no mesh member") {
+		t.Fatalf("error = %v, want the non-member refusal", err)
+	}
+}
+
 // An assertion needs the gate's verification of the caller's pod: the plugin
 // answers with a refusal until it has one, and a node with no mesh policy has
 // no protection to withhold.

@@ -1,12 +1,14 @@
 package helmchart
 
 import (
+	"os"
 	"slices"
 	"strings"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	sigsyaml "sigs.k8s.io/yaml"
 
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
@@ -408,5 +410,70 @@ func TestChartBakedNodeHoldsInjectionScopeToTheMeasuredExemptSet(t *testing.T) {
 				t.Fatalf("render failed for another reason, want %s:\n%s", tc.kind, out)
 			}
 		})
+	}
+}
+
+// The measured mesh policy refuses an identity to every sandbox it does not
+// protect, so a chart pod that asserts its workload instance through the
+// node's inventory must be a mesh member on a baked node: outside the exempt
+// namespaces the image measures, with the mesh endpoint as its first
+// container. v0.62.0 measured the policy while the router still ran in
+// c8s-system, and its c8s-cert was refused on every boot (C8s#1000).
+func TestChartBakedCredentialClientsRunInMemberPods(t *testing.T) {
+	t.Parallel()
+	const bakedPath = "../../node-guest-image/c8s/image-policy.yaml.in"
+	body, err := os.ReadFile(bakedPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", bakedPath, err)
+	}
+	var measured struct {
+		Mesh *struct {
+			ExemptNamespaces []string `json:"exempt_namespaces"`
+		} `json:"mesh"`
+	}
+	if err := sigsyaml.Unmarshal(body, &measured); err != nil {
+		t.Fatalf("parse %s: %v", bakedPath, err)
+	}
+	if measured.Mesh == nil {
+		t.Fatalf("%s measures no mesh policy", bakedPath)
+	}
+
+	out, err := helmTemplate(t, bakedArgs...)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	clients := 0
+	iterateManifests(t, out, func(doc []byte) bool {
+		var obj struct {
+			Kind     string `json:"kind"`
+			Metadata struct {
+				Name      string `json:"name"`
+				Namespace string `json:"namespace"`
+			} `json:"metadata"`
+			Spec struct {
+				Template corev1.PodTemplateSpec `json:"template"`
+			} `json:"spec"`
+		}
+		if err := sigsyaml.Unmarshal(doc, &obj); err != nil {
+			return false
+		}
+		spec := obj.Spec.Template.Spec
+		if !slices.ContainsFunc(append(spec.InitContainers, spec.Containers...), func(c corev1.Container) bool {
+			return workloadclaims.IsSocketConsumer(c.Name)
+		}) {
+			return false
+		}
+		clients++
+		name := obj.Kind + "/" + obj.Metadata.Name
+		if slices.Contains(measured.Mesh.ExemptNamespaces, obj.Metadata.Namespace) {
+			t.Errorf("%s asserts its workload instance from namespace %s, which the measured mesh policy exempts", name, obj.Metadata.Namespace)
+		}
+		if len(spec.InitContainers) == 0 || spec.InitContainers[0].Name != workloadclaims.MeshContainerName {
+			t.Errorf("%s asserts its workload instance but does not start the mesh endpoint first", name)
+		}
+		return false
+	})
+	if clients == 0 {
+		t.Fatal("the baked chart renders no credential client, so this test checks nothing")
 	}
 }

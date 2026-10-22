@@ -258,6 +258,9 @@ func (g *meshGate) verifyMemberRuleset(sandboxID string) error {
 func (g *meshGate) memberNamespace(sandboxID string) (podNamespace, string, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if g.pods[sandboxID] == nil {
+		return podNamespace{}, "", fmt.Errorf("sandbox %s is no mesh member, and only a member asserts a workload identity: this enforcer protects no pod in an exempt namespace %v or on the node's network", sandboxID, g.policy.ExemptNamespaces)
+	}
 	state, err := g.state(sandboxID)
 	if err != nil {
 		return podNamespace{}, "", err
