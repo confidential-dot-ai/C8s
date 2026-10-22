@@ -739,7 +739,12 @@ short-lived token bound to the exact method, path, and body (so a captured token
 cannot be replayed against a different payload) and CDS verifies it against the
 operator public keys it pins. Each token authorizes one request to any
 operator-token endpoint (allowlist, routes, secrets): CDS remembers every spent
-token and answers a replay with 409. CDS answers 503 when it verifies a token
+token and answers a replay with 409. It forgets a spent token once a token
+issued more than an hour after it expired is spent, and from then on refuses
+(409) every token that expired that long before the newest spent one: the
+comparison uses only the tokens' own iat and exp, so every HA replica forgets
+the same records, and a host that turns CDS's clock back cannot make a
+forgotten token valid again. CDS answers 503 when it verifies a token
 but cannot record it as spent; nothing ran, so retry with a fresh token. Without
 `cds.persistence.enabled` that memory resets with CDS, so CDS refuses every
 token issued before its start plus `--jwt-clock-skew`; after a restart, wait
