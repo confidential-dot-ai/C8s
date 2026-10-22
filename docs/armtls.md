@@ -123,7 +123,7 @@ The full `1.3.6.1.4.1.66378.1` arc a C8s certificate may carry:
 |---|---|---|
 | `…1.1` | armTLS attestation (`TEEAttestation`) — format owned by attestation-go/armtls, OID assigned here in `pkg/armtls` | the attesting component, on its own certificate and on its CSR |
 | `…1.2` | SHA-256 audit digest of the issuance evidence — `pkg/certutil` | CDS, on every issued leaf |
-| `…1.4` | pod sandbox ID — `sandbox.go`, see [Sandbox identity](#sandbox-identity-which-workload-is-behind-a-key) | CDS, on a leaf whose requester presented a sandbox token |
+| `…1.4` | pod sandbox ID — `sandbox.go`, see [Sandbox identity](#sandbox-identity-which-workload-is-behind-a-key) | CDS, from a verified node inventory token or the [Pod CVM issuance profile](#pod-cvm-issuance) |
 | `…1.5` | matched workload — `matchedworkload.go`, see [Matched workload](#matched-workload-which-allowlist-entry-is-behind-a-key) | CDS, on a leaf whose sandbox's high-water inventory uniquely matches one allowlist entry |
 
 `…1.3` was the config-claims extension; it is retired and not reusable.
@@ -340,6 +340,46 @@ session cache. On a resumed handshake, `crypto/tls` skips
 `VerifyConnection` still runs. Disabling resumption makes every connection
 check the current CA trust and sandbox ID on the chain path, or the current
 pins on the evidence path.
+
+### Pod CVM issuance
+
+A `role: pod` guest runs the same mesh endpoint, with credentials supplied by
+its measured guest admission plugin. There is no container credential client
+or node inventory callback. The guest authenticates CDS against the signed
+launch document's independent server pins, then sends an empty-subject CSR,
+fresh challenge, evidence and canonical `pod_claims` to `POST /attest`.
+
+The claims bind the boot identity, assigned and runtime Pod UIDs, sandbox ID,
+revision, complete ordered image measurement list and complete retained admission
+observations. Each observation includes image, arguments, environment commitments
+and mounts; completed containers remain in the history. `pkg/workloadclaims`
+owns the canonical encoding and client. The report-data binding is:
+
+```text
+SHA384("c8s-pod-attestation/v1\0" || SHA384(SPKI DER) || challenge || SHA384(claims))
+```
+
+CDS verifies this binding and the entire measurement replay against its separate
+Pod image policy. Every measured digest must appear in the current workload
+policy, and every non-platform observation must pass that policy's admission
+checks. An initial snapshot containing only the measured endpoint can receive
+an unnamed membership leaf. A named leaf requires one unique whole-workload
+match of the complete non-platform history. Neither a status quote nor a node
+inventory token can substitute for this profile.
+
+The guest publishes complete credential generations to a verified RAM-backed
+volume mounted read-only by the endpoint alone. Publication rechecks the retained
+revision, sandbox and packet protection. Renewal uses fresh evidence and the
+current policy. Loss of retained history or protection ends issuance and removes
+locally published credentials; a plugin restart cannot reconstruct history from
+the remaining processes. A copied leaf can remain usable until expiry, and an
+abrupt process failure cannot guarantee immediate local removal.
+
+These are ordinary mesh leaves: they do not expose the claims or distinguish the
+issuance profile to a relying party. A named leaf records authorization at issuance,
+not current liveness or exclusive assignment. This path creates no node inventory
+binding and does not enable the existing secret-release protocol. See
+[operator setup](operator.md) for Pod trust, peer destinations and probe handling.
 
 ## What armTLS guarantees — and what it does not
 

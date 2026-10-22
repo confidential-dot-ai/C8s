@@ -57,7 +57,10 @@ func Verify(netnsPath string, p Policy) error {
 	if err := p.validate(); err != nil {
 		return err
 	}
-	expected := build(p)
+	return verifyRuleset(netnsPath, build(p))
+}
+
+func verifyRuleset(netnsPath string, expected []chain) error {
 	namespace, err := readNamespaceInode(netnsPath)
 	if err != nil {
 		return err
@@ -300,9 +303,12 @@ func marshalExpressions(r rule) ([]byte, error) {
 	for _, e := range r.exprs {
 		var encoded []byte
 		var err error
-		if bitwise, isBitwise := e.(*expr.Bitwise); isBitwise {
-			encoded, err = marshalBitwise(bitwise)
-		} else {
+		switch e := e.(type) {
+		case *expr.Bitwise:
+			encoded, err = marshalBitwise(e)
+		case *expr.NAT:
+			encoded, err = marshalNAT(e)
+		default:
 			encoded, err = expr.Marshal(byte(nftables.TableFamilyINet), e)
 		}
 		if err != nil {
@@ -314,6 +320,51 @@ func marshalExpressions(r rule) ([]byte, error) {
 		})
 	}
 	return nfnl.MarshalAttributes(elements)
+}
+
+// marshalNAT makes the range maxima and flags derived by nft_nat_init explicit
+// in the expected encoding. The live dump still undergoes exact comparison.
+func marshalNAT(nat *expr.NAT) ([]byte, error) {
+	normalized := *nat
+	var flags uint32
+	if normalized.RegAddrMin != 0 {
+		if normalized.RegAddrMax == 0 {
+			normalized.RegAddrMax = normalized.RegAddrMin
+		}
+		flags |= unix.NF_NAT_RANGE_MAP_IPS
+	}
+	if normalized.RegProtoMin != 0 {
+		if normalized.RegProtoMax == 0 {
+			normalized.RegProtoMax = normalized.RegProtoMin
+		}
+		flags |= unix.NF_NAT_RANGE_PROTO_SPECIFIED
+	}
+	raw, err := expr.MarshalExprData(byte(nftables.TableFamilyINet), &normalized)
+	if err != nil {
+		return nil, err
+	}
+	fields, err := nfnl.UnmarshalAttributes(raw)
+	if err != nil {
+		return nil, err
+	}
+	for i := range fields {
+		if fields[i].Type == unix.NFTA_NAT_FLAGS {
+			flags |= binary.BigEndian.Uint32(fields[i].Data)
+			fields = slices.Delete(fields, i, i+1)
+			break
+		}
+	}
+	if flags != 0 {
+		fields = append(fields, nfnl.Attribute{Type: unix.NFTA_NAT_FLAGS, Data: binaryutil.BigEndian.PutUint32(flags)})
+	}
+	data, err := nfnl.MarshalAttributes(fields)
+	if err != nil {
+		return nil, err
+	}
+	return nfnl.MarshalAttributes([]nfnl.Attribute{
+		{Type: unix.NFTA_EXPR_NAME, Data: []byte("nat\x00")},
+		{Type: unix.NFTA_EXPR_DATA | unix.NLA_F_NESTED, Data: data},
+	})
 }
 
 // marshalBitwise encodes a mask and xor with the boolean operation the kernel

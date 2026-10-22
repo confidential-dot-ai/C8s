@@ -50,16 +50,17 @@ const (
 
 // BundleOptions describes a new cluster's launch bundle.
 type BundleOptions struct {
-	Dir           string
-	ClusterID     string
-	ManifestPath  string
-	VCPUs         int
-	ServerName    string
-	ServerAddress string
-	Agents        []string
-	TLSSAN        string
-	WorkloadsPath string
-	Router        Router
+	Dir                string
+	ClusterID          string
+	ManifestPath       string
+	VCPUs              int
+	ServerName         string
+	ServerAddress      string
+	Agents             []string
+	TLSSAN             string
+	WorkloadsPath      string
+	PodImagePolicyPath string
+	Router             Router
 	// RegistryMirrors goes into the server document; agents inherit it.
 	RegistryMirrors map[string]string
 	// OperatorKeyPath, when set, is an existing server launch key (the
@@ -105,6 +106,17 @@ func NewBundle(opts BundleOptions) (err error) {
 			return err
 		}
 		workloads = string(data)
+	}
+	var podImagePolicy string
+	if opts.PodImagePolicyPath != "" {
+		data, err := readBounded(opts.PodImagePolicyPath, MaxDocumentSize)
+		if err != nil {
+			return err
+		}
+		if len(data) == 0 {
+			return errors.New("--pod-image-policy-file must contain a nonempty Pod image policy")
+		}
+		podImagePolicy = string(data)
 	}
 	if err := os.Mkdir(opts.Dir, 0o700); err != nil {
 		return fmt.Errorf("create bundle directory: %w", err)
@@ -155,6 +167,7 @@ func NewBundle(opts BundleOptions) (err error) {
 		TLSSAN:                  opts.TLSSAN,
 		Workloads:               workloads,
 		RegistryMirrors:         opts.RegistryMirrors,
+		PodImagePolicy:          podImagePolicy,
 	}
 	if len(opts.Router.Hostnames) > 0 || opts.Router.ACMEEmail != "" || opts.Router.ACMEDirectoryURL != "" || opts.Router.MaxRequestBodyBytes != 0 {
 		router := opts.Router
@@ -247,6 +260,7 @@ func AddAgent(dir, name, serverAddress string) (err error) {
 	agent.RKE2 = RKE2{AgentToken: server.RKE2.AgentToken, NodePassword: password}
 	agent.Server.Address = serverAddress
 	agent.Router = nil
+	agent.PodImagePolicy = ""
 	return writeSignedDocument(filepath.Join(dir, name), agent, key, pub)
 }
 

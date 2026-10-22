@@ -16,6 +16,9 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"reflect"
+
+	"github.com/confidential-dot-ai/c8s/internal/podmesh"
 )
 
 // resolverPort is the only destination port the resolver exception permits.
@@ -40,6 +43,13 @@ type Policy struct {
 	// ports and its egress identity's ports pass the pod boundary in the
 	// clear.
 	Server ServerRole
+	// Pod restricts a standalone Pod to signed peer tuples, with no node-role
+	// or resolver exceptions. Nil preserves the cluster member policy.
+	Pod *PodPolicy
+}
+
+type PodPolicy struct {
+	Peers []Destination
 }
 
 // ServerRole is the platform role a pod serves external traffic for: the ports
@@ -104,8 +114,17 @@ func (p Policy) validate() error {
 	if err := p.Capture.validate(); err != nil {
 		return err
 	}
-	if err := validRemoteAddress(p.Resolver); err != nil {
-		return err
+	if p.Pod == nil {
+		if err := validRemoteAddress(p.Resolver); err != nil {
+			return err
+		}
+	} else {
+		if len(p.Roles) != 0 || !reflect.DeepEqual(p.Server, ServerRole{}) {
+			return fmt.Errorf("%w: standalone Pod has platform-role exceptions", ErrPolicy)
+		}
+		if err := validatePeers(p.Pod.Peers); err != nil {
+			return err
+		}
 	}
 	if p.MeshUID == 0 {
 		return fmt.Errorf("%w: mesh UID is root", ErrPolicy)
@@ -121,6 +140,17 @@ func (p Policy) validate() error {
 		}
 	}
 	return p.Server.validate()
+}
+
+func validatePeers(peers []Destination) error {
+	values := make([]string, len(peers))
+	for i, peer := range peers {
+		values[i] = netip.AddrPortFrom(peer.Addr, peer.Port).String()
+	}
+	if _, err := podmesh.ParseMeshPeers(values); err != nil {
+		return fmt.Errorf("%w: %w", ErrPolicy, err)
+	}
+	return nil
 }
 
 // validate rejects a server role no ruleset can carry. Its identities and its

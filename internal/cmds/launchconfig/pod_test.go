@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -157,6 +158,27 @@ func TestValidatePodRole(t *testing.T) {
 		{"not a pod", func(d *Document) { d.Pod.Manifest = strings.Replace(d.Pod.Manifest, `"Pod"`, `"Deployment"`, 1) }, "v1 Pod"},
 		{"unknown field", func(d *Document) { d.Pod.Manifest = testPodManifest(`,"bogus":true`) }, "pod.manifest"},
 		{"host network", func(d *Document) { d.Pod.Manifest = testPodManifest(`,"hostNetwork":true`) }, "host namespaces"},
+		{"shared processes", func(d *Document) { d.Pod.Manifest = testPodManifest(`,"shareProcessNamespace":true`) }, "shareProcessNamespace"},
+		{"platform container", func(d *Document) {
+			d.Pod.Manifest = strings.Replace(d.Pod.Manifest, `"name":"app","image"`, `"name":"c8s-mesh","image"`, 1)
+		}, "reserved"},
+		{"platform volume", func(d *Document) {
+			d.Pod.Manifest = testPodManifest(`,"volumes":[{"name":"c8s-certs","emptyDir":{"medium":"Memory"}}]`)
+		}, "reserved"},
+		{"credential mount", func(d *Document) {
+			d.Pod.Manifest = strings.Replace(d.Pod.Manifest, `"name":"app","image"`, `"name":"app","volumeMounts":[{"name":"c8s-certs","mountPath":"/keys"}],"image"`, 1)
+		}, "private credential volume"},
+		{"router namespace", func(d *Document) {
+			d.Pod.Namespace = "c8s-router"
+			d.Pod.Manifest = strings.Replace(d.Pod.Manifest, `"tenant"`, `"c8s-router"`, 1)
+		}, "reserved"},
+		{"guest status ingress", func(d *Document) {
+			d.Pod.Manifest = strings.Replace(d.Pod.Manifest, `"name":"app","image"`, `"name":"app","ports":[{"containerPort":8443}],"image"`, 1)
+		}, "reserved"},
+		{"local peer", func(d *Document) { d.Pod.MeshPeers = []string{"169.254.169.254:80"} }, "pod.meshPeers"},
+		{"Pod subnet peer", func(d *Document) { d.Pod.MeshPeers = []string{"10.255.254.1:8400"} }, "pod.meshPeers"},
+		{"IPv6 peer", func(d *Document) { d.Pod.MeshPeers = []string{"[2001:db8::1]:80"} }, "pod.meshPeers"},
+		{"peer without port", func(d *Document) { d.Pod.MeshPeers = []string{"192.0.2.1"} }, "pod.meshPeers"},
 		{"tag-only image", func(d *Document) {
 			d.Pod.Manifest = strings.Replace(testPodManifest(""), `"image":"busybox@sha256:`+strings.Repeat("a", 64)+`"`, `"image":"busybox:1.36"`, 1)
 		}, "pin the image by digest"},
@@ -253,10 +275,14 @@ func TestNewPodBundleStages(t *testing.T) {
 	serverPubPath, serverPub := writePodServerKey(t)
 	if err := runBundleCmd(t, "new-pod", "--out", dir, "--cluster-id", "cluster-one",
 		"--image-manifest", writeManifest(t, "tdx"), "--pod-manifest", manifest, "--workloads", workloads,
-		"--server-address", "10.0.0.1", "--server-public-key", serverPubPath); err != nil {
+		"--server-address", "10.0.0.1", "--server-public-key", serverPubPath,
+		"--mesh-peer", "192.0.2.1:15006", "--mesh-peer", "192.0.2.1:31000"); err != nil {
 		t.Fatal(err)
 	}
 	doc, _ := readBundleDocument(t, dir, podDir)
+	if !slices.Equal(doc.Pod.MeshPeers, []string{"192.0.2.1:15006", "192.0.2.1:31000"}) {
+		t.Fatalf("signed mesh peers = %v", doc.Pod.MeshPeers)
+	}
 	if doc.Role != Pod || doc.Node.Name != "p-"+testPodUID || doc.Pod.Namespace != "tenant" {
 		t.Fatalf("pod document %+v", doc)
 	}

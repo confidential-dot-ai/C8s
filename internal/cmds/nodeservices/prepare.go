@@ -222,6 +222,7 @@ func appendCredentialRole(policy map[string]any, address netip.AddrPort) error {
 type serverConfig struct {
 	operatorPubKey []byte
 	allowlistSeed  []byte
+	podImagePolicy []byte
 	tlsSAN         string
 	router         launchconfig.Router
 }
@@ -230,7 +231,7 @@ type serverConfig struct {
 // these, and an agent clears exactly these. The router files are always
 // written, empty when unset, so the router pod never waits on a missing file.
 var serverOutputNames = []string{
-	"operator-pubkey", "allowlist-seed.json", "tls-san",
+	"operator-pubkey", "allowlist-seed.json", "pods.json", "tls-san",
 	"router/tls.conf", "router/hostnames",
 	"router/acme-email", "router/acme-directory-url", "router/front-door-mode",
 	"router/request-body.conf",
@@ -262,6 +263,7 @@ func (c serverConfig) files() map[string][]byte {
 	files := map[string][]byte{
 		"operator-pubkey":     c.operatorPubKey,
 		"allowlist-seed.json": c.allowlistSeed,
+		"pods.json":           c.podImagePolicy,
 		"tls-san":             []byte(c.tlsSAN + "\n"),
 		// nginx includes this in its server block to pick the certificate.
 		"router/tls.conf":           []byte(fmt.Sprintf("include %s/tls-%s.conf;\n", RouterTLSSnippetDir, mode)),
@@ -300,6 +302,17 @@ func serverOutputs(d *launchconfig.Document, bakedData []byte) (serverConfig, er
 	if err != nil {
 		return serverConfig{}, err
 	}
+	podPolicy := []byte(d.PodImagePolicy)
+	if len(podPolicy) > 0 {
+		pins, err := workloadclaims.ParsePodImagePolicy(podPolicy)
+		if err != nil {
+			return serverConfig{}, fmt.Errorf("staged Pod image policy: %w", err)
+		}
+		podPolicy, err = refvalues.Format(pins)
+		if err != nil {
+			return serverConfig{}, fmt.Errorf("format Pod image policy: %w", err)
+		}
+	}
 	var router launchconfig.Router
 	if d.Router != nil {
 		router = *d.Router
@@ -311,7 +324,7 @@ func serverOutputs(d *launchconfig.Document, bakedData []byte) (serverConfig, er
 			return serverConfig{}, fmt.Errorf("staged router hostname: %w", err)
 		}
 	}
-	return serverConfig{operatorPubKey: pub, allowlistSeed: seed, tlsSAN: d.TLSSAN, router: router}, nil
+	return serverConfig{operatorPubKey: pub, allowlistSeed: seed, podImagePolicy: podPolicy, tlsSAN: d.TLSSAN, router: router}, nil
 }
 
 // removeServerOutputs clears the server-only inputs from an agent's public

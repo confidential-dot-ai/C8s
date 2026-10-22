@@ -28,13 +28,13 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/validation"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/volume"
+	"github.com/confidential-dot-ai/c8s/internal/podmesh"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
@@ -120,7 +120,7 @@ const reservedSecretContainerName = workloadclaims.SecretContainerName
 // endpoint, the fetchers and the workload — resolves the same three paths.
 const (
 	// CertVolumeName is the injected memory-backed credential volume.
-	CertVolumeName = "c8s-certs"
+	CertVolumeName = podmesh.CertVolumeName
 	// CertDir is where the injected containers mount it; no other container
 	// may (rejectCredentialMounts).
 	CertDir  = workloadclaims.MemberCertDir
@@ -908,82 +908,7 @@ func mutatePod(pod *corev1.Pod, inj *injection, cfg Config) {
 // pod's fsGroup owns the credential volume, which is how the mesh role reads a
 // key get-cert's UID wrote.
 func meshContainer(cfg Config, probes []string) corev1.Container {
-	always := corev1.ContainerRestartPolicyAlways
-	return corev1.Container{
-		Name:            reservedMeshContainerName,
-		Image:           cfg.MeshImage,
-		ImagePullPolicy: corev1.PullIfNotPresent,
-		RestartPolicy:   &always,
-		Args: []string{
-			"--cert-path=" + certPath(certFile),
-			"--key-path=" + certPath(keyFile),
-			"--ca-path=" + certPath(caFile),
-		},
-		// The pod's probe targets, which vary per pod: a node's measured
-		// policy pins the endpoint's arguments and mounts for every member
-		// pod alike (node-guest-image/c8s/image-policy.yaml.in).
-		Env: meshEnv(probes),
-		VolumeMounts: []corev1.VolumeMount{
-			{
-				Name:      CertVolumeName,
-				MountPath: CertDir,
-				ReadOnly:  true,
-			},
-		},
-		SecurityContext: meshSecurityContext(),
-		// Startup reports initialization, readiness adds usable credentials
-		// and working listeners: one minute to initialize, and endpoints
-		// withdrawn after 15 unready seconds.
-		StartupProbe:   meshProbe("/startupz", 1, 60),
-		ReadinessProbe: meshProbe("/readyz", 5, 3),
-	}
-}
-
-// meshEnv names the probes the injector rewrote onto the health port. A pod
-// with none leaves the endpoint forwarding nothing.
-func meshEnv(probes []string) []corev1.EnvVar {
-	if len(probes) == 0 {
-		return nil
-	}
-	return []corev1.EnvVar{
-		{
-			Name:  workloadclaims.MeshProbesEnv,
-			Value: workloadclaims.JoinMeshProbePaths(probes),
-		},
-	}
-}
-
-// meshSecurityContext is the mesh role's floor: its reserved UID and no
-// capabilities, because the pod's packet rules are the node enforcer's.
-func meshSecurityContext() *corev1.SecurityContext {
-	return &corev1.SecurityContext{
-		AllowPrivilegeEscalation: new(false),
-		ReadOnlyRootFilesystem:   new(true),
-		RunAsNonRoot:             new(true),
-		RunAsUser:                new(int64(workloadclaims.MeshUID)),
-		RunAsGroup:               new(int64(workloadclaims.MeshUID)),
-		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
-		SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
-	}
-}
-
-// meshProbe is an HTTP probe on the endpoint's health port, every field set so
-// a stored pod still matches what the injector built. Never exec: that would
-// run another process inside the mesh role.
-func meshProbe(path string, period, failureThreshold int32) *corev1.Probe {
-	return &corev1.Probe{
-		ProbeHandler: corev1.ProbeHandler{
-			HTTPGet: &corev1.HTTPGetAction{
-				Path:   path,
-				Port:   intstr.FromInt32(workloadclaims.MeshHealthPort),
-				Scheme: corev1.URISchemeHTTP,
-			},
-		},
-		PeriodSeconds:    period,
-		TimeoutSeconds:   1,
-		SuccessThreshold: 1,
-		FailureThreshold: failureThreshold,
-	}
+	return podmesh.Endpoint(cfg.MeshImage, probes)
 }
 
 // certContainer is the workload's mesh-cert sidecar. It publishes the pod's

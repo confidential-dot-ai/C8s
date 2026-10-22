@@ -2,6 +2,7 @@ package nriimagepolicy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -187,6 +188,9 @@ type plugin struct {
 	// measurer extends each started workload into RTMR[3]; nil unless
 	// measure.rtmr3. Pause sandboxes never reach StartContainer.
 	measurer workloadMeasurer
+	// Pod admission and credential publication share one ordering boundary.
+	podMu     sync.Mutex
+	podBroker *podCredentialBroker
 
 	// cdsPins is the node-side path of the CDS attestation policy handed to
 	// the injected credential clients, or "" when the node pins nothing.
@@ -328,9 +332,11 @@ func (p *plugin) Configure(ctx context.Context, config, runtime, version string)
 // (inventory.stop). Only subscribed when the inventory is enabled (see
 // Configure).
 func (p *plugin) StopContainer(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) ([]*api.ContainerUpdate, error) {
+	defer p.lockPodAdmission()()
 	if p.inventory != nil {
 		p.inventory.stop(ctr.GetId())
 	}
+	p.podChanged()
 	return nil, nil
 }
 
@@ -338,9 +344,11 @@ func (p *plugin) StopContainer(ctx context.Context, pod *api.PodSandbox, ctr *ap
 // sandbox's record keeps it (inventory.remove). Only subscribed when the
 // inventory is enabled (see Configure).
 func (p *plugin) RemoveContainer(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) error {
+	defer p.lockPodAdmission()()
 	if p.inventory != nil {
 		p.inventory.remove(ctr.GetId())
 	}
+	p.podChanged()
 	return nil
 }
 
@@ -349,6 +357,7 @@ func (p *plugin) RemoveContainer(ctx context.Context, pod *api.PodSandbox, ctr *
 // is created. A failed install refuses the sandbox, so the gate is what
 // refuses its containers (docs/armtls.md).
 func (p *plugin) RunPodSandbox(ctx context.Context, pod *api.PodSandbox) error {
+	defer p.lockPodAdmission()()
 	if p.inventory != nil {
 		p.inventory.recordSandbox(pod.GetId())
 	}
@@ -361,6 +370,8 @@ func (p *plugin) RunPodSandbox(ctx context.Context, pod *api.PodSandbox) error {
 // RemovePodSandbox evicts a removed pod sandbox (and its containers) from the
 // inventory and the mesh gate.
 func (p *plugin) RemovePodSandbox(ctx context.Context, pod *api.PodSandbox) error {
+	defer p.lockPodAdmission()()
+	p.endPodIdentity(errors.New("pod sandbox removed; its boot history cannot be reused for a new identity"))
 	if p.inventory != nil {
 		p.inventory.removeSandbox(pod.GetId())
 	}
@@ -408,9 +419,13 @@ func (p *plugin) DigestsForSandbox(sandboxID string) ([]string, []workloadclaims
 // INVARIANT: every refusal a hook returns in enforcing mode passes through
 // here, so the sandbox it belongs to asserts no identity.
 func (p *plugin) denyContainer(sandboxID string, refusal error) error {
+	if p.cfg.Pod != nil {
+		p.endPodIdentity(refusal)
+	}
 	if p.inventory != nil {
 		p.inventory.recordDenial(sandboxID, refusal)
 	}
+	p.podChanged()
 	return refusal
 }
 
@@ -423,6 +438,7 @@ func (p *plugin) denyContainerCreation(sandboxID, containerName string, refusal 
 	if p.inventory != nil {
 		p.inventory.recordCreationDenial(sandboxID, containerName, refusal)
 	}
+	p.podChanged()
 	return refusal
 }
 
@@ -970,6 +986,7 @@ func (p *plugin) captureExempt(ctx context.Context, pods []*api.PodSandbox, ctrs
 // existing container, checks what it can, and kills violations when
 // enforce_existing is set.
 func (p *plugin) Synchronize(ctx context.Context, pods []*api.PodSandbox, ctrs []*api.Container) ([]*api.ContainerUpdate, error) {
+	defer p.lockPodAdmission()()
 	cfg := p.cfg
 
 	// Seed the inventory's sandbox set now, even when the container check is
@@ -987,6 +1004,7 @@ func (p *plugin) Synchronize(ctx context.Context, pods []*api.PodSandbox, ctrs [
 	// call does not return when that is what happened.
 	if p.boot.check(ctx, p, pods, ctrs) {
 		p.bootRestart.Store(true)
+		p.endPodIdentity(errors.New("pod inventory was reconstructed after a plugin restart"))
 	}
 
 	// Load or capture the exempt-namespace snapshot from this connect-time set,
@@ -1134,16 +1152,21 @@ func (p *plugin) admitWhileInitializing(ctx context.Context, cfg *config, pod *a
 // OCI spec after all NRI/CDI edits.
 // Nothing is added to the admission history until that final check.
 func (p *plugin) CreateContainer(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) (*api.ContainerAdjustment, []*api.ContainerUpdate, error) {
+	defer p.lockPodAdmission()()
 	verdict, reason := p.checkContainerPhase(ctx, p.cfg, pod, ctr, ctr.GetAnnotations()[annotationImageName], launchPreliminary)
 	if verdict == verdictDeny && p.cfg.Policy.Mode != ModeAudit {
 		if !p.Ready() {
-			return nil, nil, fmt.Errorf("image policy plugin initializing: %s", reason)
+			refusal := fmt.Errorf("image policy plugin initializing: %s", reason)
+			if p.cfg.Pod != nil {
+				return nil, nil, p.denyContainerCreation(pod.GetId(), ctr.GetName(), refusal)
+			}
+			return nil, nil, refusal
 		}
 		return nil, nil, p.denyContainerCreation(pod.GetId(), ctr.GetName(), fmt.Errorf("%s", reason))
 	}
 	adjustment, err := p.credentialMounts(ctx, pod, ctr)
 	if err != nil && p.cfg.Policy.Mode != ModeAudit {
-		return nil, nil, err
+		return nil, nil, p.denyContainerCreation(pod.GetId(), ctr.GetName(), err)
 	}
 	return adjustment, nil, nil
 }
@@ -1153,14 +1176,35 @@ func (p *plugin) CreateContainer(ctx context.Context, pod *api.PodSandbox, ctr *
 // precedes other plugins and runtime CDI injection. Start updates cannot edit
 // argv/env. Failed checks leave no admitted-container evidence.
 func (p *plugin) StartContainer(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) error {
+	defer p.lockPodAdmission()()
 	ctx = withResolved(ctx)
 	cfg := p.cfg
 	imageRef := ctr.GetAnnotations()[annotationImageName]
+	var credentialSource string
+	if cfg.Pod != nil {
+		mounts := p.observedMounts(pod, ctr)
+		launch := p.observedLaunch(ctx, ctr, imageRef, containerEnv(ctr), mounts)
+		role := p.roleOf(launch)
+		var err error
+		credentialSource, err = p.podCredentialSource(pod, ctr, role, mounts)
+		if err == nil {
+			err = p.mesh.admit(pod, ctr, gatedContainer{role: role, mountsPinned: p.bindsRoleMounts(launch, role), digest: launch.Digest, argv: launch.Argv})
+		}
+		if err != nil {
+			return p.denyContainer(pod.GetId(), err)
+		}
+	}
 	if !p.Ready() {
 		if err := p.admitWhileInitializing(ctx, cfg, pod, ctr, imageRef); err != nil {
+			if cfg.Pod != nil {
+				return p.denyContainer(pod.GetId(), err)
+			}
 			return err
 		}
 		if err := p.measureStarted(ctx, imageRef); err != nil {
+			if cfg.Pod != nil {
+				return p.denyContainer(pod.GetId(), err)
+			}
 			return err
 		}
 		// INVARIANT: the gate holds a member pod whether or not the first
@@ -1172,18 +1216,21 @@ func (p *plugin) StartContainer(ctx context.Context, pod *api.PodSandbox, ctr *a
 		// brings up with CDS.
 		p.noteMeshStarted(ctx, pod, ctr, imageRef)
 		p.recordForInventory(ctx, pod, ctr, imageRef)
-		return nil
+		return p.afterPodStart(pod, credentialSource)
 	}
 	verdict, reason := p.checkContainer(ctx, cfg, pod, ctr, imageRef)
 	if verdict == verdictDeny && cfg.Policy.Mode != ModeAudit {
 		return p.denyContainer(pod.GetId(), fmt.Errorf("%s", reason))
 	}
 	if err := p.measureStarted(ctx, imageRef); err != nil {
+		if cfg.Pod != nil {
+			return p.denyContainer(pod.GetId(), err)
+		}
 		return err
 	}
 	p.noteMeshStarted(ctx, pod, ctr, imageRef)
 	p.recordForInventory(ctx, pod, ctr, imageRef)
-	return nil
+	return p.afterPodStart(pod, credentialSource)
 }
 
 // noteMeshStarted tells the gate a pod's mesh endpoint is running, the start

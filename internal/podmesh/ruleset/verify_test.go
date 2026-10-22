@@ -42,6 +42,54 @@ func TestAttributeComparisonIgnoresOnlyTheNestedFlag(t *testing.T) {
 	}
 }
 
+// NAT dumps include implicit range maxima and flags. Only that exact kernel
+// representation may match; widening the range or translating ports may not.
+func TestNATComparisonRequiresExactKernelEncoding(t *testing.T) {
+	u32 := func(kind uint16, value uint32) nfnl.Attribute {
+		return nfnl.Attribute{Type: kind, Data: binaryutil.BigEndian.PutUint32(value)}
+	}
+	encode := func(fields []nfnl.Attribute) []byte {
+		return marshal(t, nfnl.Attribute{Type: unix.NFTA_LIST_ELEM | unix.NLA_F_NESTED, Data: marshal(t,
+			nfnl.Attribute{Type: unix.NFTA_EXPR_NAME, Data: []byte("nat\x00")},
+			nfnl.Attribute{Type: unix.NFTA_EXPR_DATA | unix.NLA_F_NESTED, Data: marshal(t, fields...)},
+		)})
+	}
+	for _, ports := range []bool{false, true} {
+		nat := &expr.NAT{Type: expr.NATTypeDestNAT, Family: unix.NFPROTO_IPV4, RegAddrMin: 1}
+		fields := []nfnl.Attribute{
+			u32(unix.NFTA_NAT_TYPE, unix.NFT_NAT_DNAT), u32(unix.NFTA_NAT_FAMILY, unix.NFPROTO_IPV4),
+			u32(unix.NFTA_NAT_REG_ADDR_MIN, 1), u32(unix.NFTA_NAT_REG_ADDR_MAX, 1),
+		}
+		flags := uint32(unix.NF_NAT_RANGE_MAP_IPS)
+		if ports {
+			nat.RegProtoMin = 2
+			fields = append(fields, u32(unix.NFTA_NAT_REG_PROTO_MIN, 2), u32(unix.NFTA_NAT_REG_PROTO_MAX, 2))
+			flags |= unix.NF_NAT_RANGE_PROTO_SPECIFIED
+		}
+		fields = append(fields, u32(unix.NFTA_NAT_FLAGS, flags))
+		expected, err := marshalExpressions(rule{"nat", []expr.Any{nat}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := compareAttributes(expected, encode(fields)); err != nil {
+			t.Fatalf("kernel NAT encoding (ports=%v): %v", ports, err)
+		}
+		for _, change := range []nfnl.Attribute{
+			u32(unix.NFTA_NAT_REG_ADDR_MAX, 3),
+			u32(unix.NFTA_NAT_REG_PROTO_MAX, 3),
+			u32(unix.NFTA_NAT_FLAGS, flags|unix.NF_NAT_RANGE_PROTO_RANDOM),
+			u32(255, 1),
+		} {
+			changed := slices.Clone(fields)
+			changed = slices.DeleteFunc(changed, func(a nfnl.Attribute) bool { return a.Type == change.Type })
+			changed = append(changed, change)
+			if err := compareAttributes(expected, encode(changed)); err == nil {
+				t.Errorf("accepted NAT attribute %d change (ports=%v)", change.Type, ports)
+			}
+		}
+	}
+}
+
 // Whatever the kernel reports instead of the expected tree, it is a
 // difference: a value where a tree belongs, a tree where a value belongs, an
 // attribute more, one fewer, or one changed.

@@ -1,15 +1,22 @@
 # armtls-mesh
 
 The C8s mesh endpoint of one pod: a capability-less native sidecar the
-admission webhook injects into every pod it covers. It carries that pod's
-captured TCP over armTLS (attestation-rooted TLS) with the credentials
-get-cert publishes, and delivers inbound mesh connections to the destination
-the kernel recorded. Applications need no modification.
+admission webhook injects into every pod it covers. A Pod CVM's measured guest
+injects the same endpoint. It carries captured TCP over armTLS
+(attestation-rooted TLS) with credentials from get-cert on a node, or from the
+guest-owned broker on a Pod CVM, and delivers inbound mesh connections to the
+destination the kernel recorded. Applications need no modification.
 
 The pod's packet rules are the node enforcer's
 (`internal/podmesh/ruleset`), installed before any container of the pod runs
 and verified before each one; this process never touches them. See
 [docs/armtls.md](../../docs/armtls.md) for the trust model.
+
+For a Pod CVM, guest forwarding preserves the declared application port through
+provider address translation; the endpoint refuses direct connections to its
+internal capture listener. Only exact peer address-and-port tuples configured
+in the signed launch document are reachable. See
+[operator setup](../../docs/operator.md) for launch flags and HTTP probes.
 
 ## Build
 
