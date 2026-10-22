@@ -124,19 +124,27 @@ func (w *world) elsewhere(p *pod, fn string) error {
 // meshEndpointContainer is the name the webhook gives the endpoint.
 const meshEndpointContainer = "c8s-mesh"
 
-// meshLogs is the endpoint log of every deployed pod that runs one.
-func (w *world) meshLogs() []godog.Attachment {
+// podLogs is, for every deployed pod, the state of each container and the
+// log of its endpoint and of its first container, where they have one.
+func (w *world) podLogs() []godog.Attachment {
 	var logs []godog.Attachment
+	attach := func(file, out string, err error) {
+		if err == nil {
+			logs = append(logs, godog.Attachment{FileName: file, MediaType: "text/plain", Body: []byte(out)})
+		}
+	}
 	for _, name := range slices.Sorted(maps.Keys(w.pods)) {
 		p := w.pods[name]
 		if !p.deployed {
 			continue
 		}
-		out, err := kubectl(nil, "-n", p.namespace, "logs", p.name, "-c", meshEndpointContainer, "--tail=200")
-		if err != nil {
-			continue
+		out, err := kubectl(nil, "-n", p.namespace, "get", "pod", p.name, "-o",
+			`jsonpath={range .status.initContainerStatuses[*]}{.name}{" "}{.state}{" restarts="}{.restartCount}{"\n"}{end}{range .status.containerStatuses[*]}{.name}{" "}{.state}{" restarts="}{.restartCount}{"\n"}{end}`)
+		attach(name+"-containers.txt", out, err)
+		for _, c := range []string{meshEndpointContainer, p.first} {
+			out, err := kubectl(nil, "-n", p.namespace, "logs", p.name, "-c", c, "--tail=200")
+			attach(name+"-"+c+".log", out, err)
 		}
-		logs = append(logs, godog.Attachment{FileName: name + "-" + meshEndpointContainer + ".log", MediaType: "text/plain", Body: []byte(out)})
 	}
 	return logs
 }
