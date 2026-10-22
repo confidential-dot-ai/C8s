@@ -653,6 +653,16 @@ runs:
       run: ${{ inputs.suite_run }}
       platform: tdx-metal
 
+  - name: assert the router matches its seeded entry in acme front-door mode
+    # Boots a second CVM in place of the lane's, so it runs last, and not
+    # when the lane's CVM is kept for debugging.
+    if: ${{ !cancelled() && env.GUEST_IP != '' && inputs.keep_cvm != 'true' }}
+    env:
+      IMAGE_MANIFEST: /tmp/image-manifest.json
+      ROUTER_SEED: /tmp/conf-inference/node-image/allowlist-seed.json
+    shell: bash
+    run: bash "$GITHUB_WORKSPACE/test/e2e/router-acme.sh"
+
   - name: summary
     if: always()
     shell: bash
@@ -678,10 +688,10 @@ runs:
     run: |
       set +e
       cleanup_failed=0
-      kubectl -n "$NS" delete vm "$VM" --ignore-not-found --wait=true --timeout=120s || cleanup_failed=1
-      kubectl -n "$NS" delete secret "$VM-opkey" "$VM-cloudinit" --ignore-not-found || cleanup_failed=1
+      kubectl -n "$NS" delete vm "$VM" "$VM-acme" --ignore-not-found --wait=true --timeout=120s || cleanup_failed=1
+      kubectl -n "$NS" delete secret "$VM-opkey" "$VM-acme-opkey" "$VM-cloudinit" --ignore-not-found || cleanup_failed=1
       kubectl -n "$NS" delete pod "$VM-gwstate-copy" --ignore-not-found --wait=false || cleanup_failed=1
-      kubectl -n "$NS" delete pvc "$VM-scratch" "$VM-gwstate" --ignore-not-found --wait=false || cleanup_failed=1
+      kubectl -n "$NS" delete pvc "$VM-scratch" "$VM-acme-scratch" "$VM-gwstate" --ignore-not-found --wait=false || cleanup_failed=1
       # The helper ignores absent disks and refuses anything not owned by
       # this run, including the shared staged root PVC.
       if [ "$EXACT_IMAGE" = true ]; then

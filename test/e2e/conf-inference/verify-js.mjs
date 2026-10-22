@@ -31,14 +31,12 @@ function frontDoorFetch(url, init = {}) {
         const chunks = [];
         res.on("data", (c) => chunks.push(c));
         res.on("error", reject);
+        // A real Response: the client reads bodies as streams.
         res.on("end", () => {
-          const body = Buffer.concat(chunks);
-          resolve({
-            ok: res.statusCode >= 200 && res.statusCode < 300,
-            status: res.statusCode,
-            arrayBuffer: async () => body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength),
-            json: async () => JSON.parse(body.toString("utf8")),
-          });
+          const headers = new Headers();
+          for (let i = 0; i < res.rawHeaders.length; i += 2) headers.append(res.rawHeaders[i], res.rawHeaders[i + 1]);
+          const empty = [204, 205, 304].includes(res.statusCode);
+          resolve(new Response(empty ? null : Buffer.concat(chunks), { status: res.statusCode, headers }));
         });
       },
     );
