@@ -203,8 +203,10 @@ manifest is refused at signing and in the guest.
 --pod-manifest pod.json --workloads workloads.json` writes a `role: pod` document
 signed by a pod launch key (`pod1/pod.key`, or `--launch-key`). It carries the
 pod manifest (`metadata.uid` required; every container image pinned by
-digest; only `emptyDir` volumes, no host namespaces, `hostPort`, `hostIP` or
-privileged containers) and the workloads allowlist,
+digest; only `emptyDir` volumes with `medium: Memory`, so pod state stays
+in VM memory whether or not a scratch disk is attached; no host
+namespaces, `hostPort`, `hostIP` or privileged containers) and the
+workloads allowlist,
 which is the complete set of images the pod CVM admits. It carries no RKE2
 tokens. The image runs containerd and a standalone kubelet
 (`podcvm-containerd`, `podcvm-kubelet`) instead of RKE2, and does not require
