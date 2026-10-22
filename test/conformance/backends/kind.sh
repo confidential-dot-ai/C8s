@@ -30,12 +30,10 @@ setup() {
 }
 
 # Each function runs in its own process, so the CDS port-forward lib.sh shares
-# through WORKDIR outlives the call that opened it, as does the container
-# outside the cluster.
+# through WORKDIR outlives the call that opened it.
 teardown_backend() {
     allowlist_delete "$nginx_entry" || true
     cds_pf_stop
-    docker rm -f "$EXTERNAL_HELLO" >/dev/null 2>&1 || true
 }
 
 scratch_encrypted() { echo no; }
@@ -64,40 +62,6 @@ image_alias() {
     node_exec ctr -n k8s.io images pull "$1" >/dev/null
     node_exec ctr -n k8s.io images tag --force "$1" "$2" >/dev/null
 }
-
-# A hello API outside the cluster: a container on the kind docker network,
-# which pods reach through the node's address translation, so the address is
-# neither a pod's nor a Service's.
-EXTERNAL_HELLO="c8s-conformance-hello-$(basename "$WORKDIR")"
-external_endpoint() {
-    local addr
-    if ! docker inspect "$EXTERNAL_HELLO" >/dev/null 2>&1; then
-        docker run -d --name "$EXTERNAL_HELLO" --network kind "$(image_ref tenant-app)" \
-            c8s-hello-api 8080 hello >/dev/null || return 1
-        # python takes a moment to listen, unlike the httpd it replaced.
-        local i
-        for i in $(seq 30); do
-            docker exec "$EXTERNAL_HELLO" wget -qO- -T 1 http://127.0.0.1:8080/ >/dev/null 2>&1 && break
-            sleep 0.5
-        done
-        if [ "$i" = 30 ]; then
-            echo "backend: the external hello API did not come up: $(docker logs "$EXTERNAL_HELLO" 2>&1 | tail -3)" >&2
-            return 1
-        fi
-    fi
-    addr="$(docker inspect -f '{{.NetworkSettings.Networks.kind.IPAddress}}' "$EXTERNAL_HELLO")"
-    [ -n "$addr" ] || { echo "backend: the external hello container has no address" >&2; return 1; }
-    echo "$addr:8080"
-}
-
-# Pods obtain evidence where every component does: the mock, on the node
-# address. Making the node's local attestation service unreachable is
-# attestation_service_stop, which also takes the CDS's readiness with it.
-attestation_endpoint() { mock_attestation_url; }
-
-# The CDS and the mesh pin the mock's launch digest, which the mock reports
-# for every requester.
-mesh_pins_satisfied() { echo yes; }
 
 # The CDS through the port-forward lib.sh shares; the harness's operator key
 # and token minter beside it.
@@ -141,7 +105,6 @@ cds_restart_with() {
     local flag=
     case "$1" in
         default) args="$installed" ;;
-        min-ca-validity) flag=--min-ca-validity ;;
         pins) flag=--measurements ;;
         operator-keys) flag=--operator-keys ;;
         san-validation) flag=--san-validation ;;
@@ -192,8 +155,8 @@ cds_arg_set() {
 # Wait for the one CDS pod that is none of the given UIDs (the pods before
 # the change) to run and answer /healthz through the forward, then for the
 # Service to route to it: that takes its readiness probe, which runs some
-# seconds after the pod does. A CDS that reports itself not ready
-# (min-ca-validity) never joins the Service, and is not waited for.
+# seconds after the pod does. A CDS that reports itself not ready never
+# joins the Service, and is not waited for.
 cds_await_running() {
     local deadline=$(($(date +%s) + 180)) pods uid phase
     while :; do
@@ -329,12 +292,43 @@ base_declares() {
 PLUGIN_BIN=/opt/nri/plugins/10-nri-image-policy
 PLUGIN_HEALTH=/run/nri-image-policy/health.sock
 
-# Refused is exit 7 from curl, as a TLS failure against the CDS is not; the
-# kind node image ships curl.
+# The plugin pulls from https://127.0.0.1:<node port of the CDS Service>
+# (the chart's nriImagePolicy.allowlist.pull.url default), from the node's
+# own network namespace; every pod's get-cert dials the node's address from
+# its own. A reject rule on connections the node itself opens to that port on
+# loopback refuses each pull at once and leaves issuance, and so every pod's
+# start, alone. Matched on the original destination, since kube-proxy has
+# rewritten it by the filter table.
+CDS_BLOCK_RULE=(OUTPUT -p tcp -m conntrack --ctorigdst 127.0.0.1 --ctorigdstport PORT
+    -m comment --comment c8s-conformance-cds-block -j REJECT --reject-with tcp-reset)
+cds_block_rule() {
+    local port
+    port="$(kubectl -n "$NS" get svc c8s-cds -o jsonpath='{.spec.ports[0].nodePort}')" || return
+    [ -n "$port" ] || { echo "backend: the CDS Service has no node port" >&2; return 1; }
+    echo "$port" "${CDS_BLOCK_RULE[@]/PORT/$port}"
+}
+cds_block() {
+    local port rule
+    read -r port rule < <(cds_block_rule) || return
+    # shellcheck disable=SC2086  # the rule's words
+    node_exec iptables -C $rule 2>/dev/null || node_exec iptables -I $rule || return
+    local deadline=$(($(date +%s) + 60))
+    until [ "$(node_refuses "$port")" = yes ]; do
+        [ "$(date +%s)" -lt "$deadline" ] || { echo "backend: the node still accepts pulls on $port after 60s" >&2; return 1; }
+        sleep 1
+    done
+}
+cds_unblock() {
+    local port rule
+    read -r port rule < <(cds_block_rule) || return
+    # shellcheck disable=SC2086  # the rule's words
+    while node_exec iptables -C $rule 2>/dev/null; do node_exec iptables -D $rule || return; done
+}
+
+# A connect that fails or hangs is refused: a reset to a node-port connection
+# may never reach the socket, so the dial times out instead.
 node_refuses() {
-    local rc=0
-    node_exec curl -sk --max-time 2 -o /dev/null "https://127.0.0.1:$1/healthz" 2>/dev/null || rc=$?
-    if [ "$rc" -eq 7 ]; then echo yes; else echo no; fi
+    if node_exec timeout 2 bash -c "</dev/tcp/127.0.0.1/$1" 2>/dev/null; then echo no; else echo yes; fi
 }
 
 # The pids running the plugin binary; the kind node image ships procps.

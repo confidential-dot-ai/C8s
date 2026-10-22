@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/cucumber/godog"
+
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 // Sentences of the container-admission vocabulary
@@ -25,6 +27,7 @@ func registerAdmission(sc *godog.ScenarioContext) {
 	sc.Step(`^the argv of that container is "([^"]*)"$`, argv)
 	sc.Step(`^the environment of that container is "([^"]*)"$`, environment)
 	sc.Step(`^"([^"]*)" is deployed on node "([^"]*)"$`, deployOnNode)
+	sc.Step(`^"([^"]*)" is running$`, podRunning)
 	sc.Step(`^the container of "([^"]*)" is not created$`, containerNotCreated)
 	sc.Step(`^(?:the container|both containers) of "([^"]*)" (?:is|are) created$`, containersCreated)
 	sc.Step(`^"([^"]*)" keeps running$`, keepsRunning)
@@ -92,16 +95,9 @@ func describePod(ctx context.Context, name string, images ...string) error {
 	if err != nil {
 		return err
 	}
-	p := w.describe(name, refs...)
-	if len(images) == 1 && podShapes[images[0]] != nil {
-		podShapes[images[0]](p)
-	}
+	w.describe(name, refs...)
 	return nil
 }
-
-// podShapes is what a pod of one container takes from its logical image
-// beyond the image itself.
-var podShapes = map[string]func(*pod){"mesh-dialer": (*pod).asDialer}
 
 func podNamesImageByTag(ctx context.Context, name, image string) error {
 	w := getWorld(ctx)
@@ -231,16 +227,77 @@ func deployOnNode(ctx context.Context, name, node string) error {
 	if err != nil {
 		return err
 	}
-	if p.namespace != w.namespace {
-		// Deleting the scenario namespace will not take this one.
-		w.onUndo(func() error {
-			_, err := kubectl(nil, "-n", p.namespace, "delete", "pod", p.name, "--ignore-not-found", "--wait=false")
-			return err
-		})
-	}
 	p.deployed = true
 	_, err = kubectl([]byte(manifest), "apply", "-f", "-")
 	return err
+}
+
+// podRunning waits for the deployed pod to be Running with a pod address.
+func podRunning(ctx context.Context, name string) error {
+	w := getWorld(ctx)
+	p, err := w.pod(name)
+	if err != nil {
+		return err
+	}
+	if !p.deployed {
+		return fmt.Errorf("%q has not been deployed", name)
+	}
+	var phase string
+	ok, err := poll(2*time.Minute, func() (bool, error) {
+		addrs, current, err := w.podIPs(p)
+		if err != nil {
+			return false, err
+		}
+		phase = current
+		if phase == "Failed" || phase == "Succeeded" {
+			return false, fmt.Errorf("%q is %s%s", name, phase, podExits(p))
+		}
+		return phase == "Running" && len(addrs) > 0, nil
+	})
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("%q is %s without a pod address after 2 minutes", name, phase)
+	}
+	return nil
+}
+
+// podExits describes the pod's containers that terminated: exit code,
+// reason and the log lines the kubelet kept (FallbackToLogsOnError), for an
+// error saying why a pod stopped. Empty when none did or the pod is gone.
+func podExits(p *pod) string {
+	out, err := kubectl(nil, "-n", p.namespace, "get", "pod", p.name, "-o", "json")
+	if err != nil {
+		return ""
+	}
+	var st struct {
+		Status struct {
+			Init       []containerExit `json:"initContainerStatuses"`
+			Containers []containerExit `json:"containerStatuses"`
+		} `json:"status"`
+	}
+	if json.Unmarshal([]byte(out), &st) != nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, c := range append(st.Status.Init, st.Status.Containers...) {
+		if t := c.State.Terminated; t != nil && t.ExitCode != 0 {
+			fmt.Fprintf(&b, "\ncontainer %s exited %d (%s):\n%s", c.Name, t.ExitCode, t.Reason, strings.TrimSpace(t.Message))
+		}
+	}
+	return b.String()
+}
+
+type containerExit struct {
+	Name  string `json:"name"`
+	State struct {
+		Terminated *struct {
+			ExitCode int    `json:"exitCode"`
+			Reason   string `json:"reason"`
+			Message  string `json:"message"`
+		} `json:"terminated"`
+	} `json:"state"`
 }
 
 type containerStatus struct {
@@ -249,34 +306,54 @@ type containerStatus struct {
 	restarts   int
 }
 
+type podContainerStatus struct {
+	Name         string `json:"name"`
+	ContainerID  string `json:"containerID"`
+	RestartCount int    `json:"restartCount"`
+	State        struct {
+		Waiting *struct {
+			Reason  string `json:"reason"`
+			Message string `json:"message"`
+		} `json:"waiting"`
+		Running *struct{} `json:"running"`
+	} `json:"state"`
+}
+
+func (c podContainerStatus) denial() string {
+	if c.State.Waiting != nil && c.State.Waiting.Reason == "CreateContainerError" {
+		return strings.TrimSpace(c.State.Waiting.Message)
+	}
+	return ""
+}
+
 // statuses reads every container's id (empty until the runtime has created
 // it), the denial reason the create check returned, if any, and its running
-// state in one call. A pull failure or a crash is not a denial.
+// state in one call. A pull failure or a crash is not a denial. The injected
+// containers start first, so a denial of one is the denial of every workload
+// container not yet created.
 func (w *world) statuses(p *pod) []containerStatus {
 	out, _ := kubectl(nil, "-n", p.namespace, "get", "pod", p.name, "-o", "json")
 	var doc struct {
 		Status struct {
-			ContainerStatuses []struct {
-				ContainerID  string `json:"containerID"`
-				RestartCount int    `json:"restartCount"`
-				State        struct {
-					Waiting *struct {
-						Reason  string `json:"reason"`
-						Message string `json:"message"`
-					} `json:"waiting"`
-					Running *struct{} `json:"running"`
-				} `json:"state"`
-			} `json:"containerStatuses"`
+			InitContainerStatuses []podContainerStatus `json:"initContainerStatuses"`
+			ContainerStatuses     []podContainerStatus `json:"containerStatuses"`
 		} `json:"status"`
 	}
 	if err := json.Unmarshal([]byte(out), &doc); err != nil {
 		return nil
 	}
+	var injected string
+	for _, c := range doc.Status.InitContainerStatuses {
+		if d := c.denial(); d != "" && workloadclaims.IsInjectedContainerName(c.Name) {
+			injected = c.Name + ": " + d
+			break
+		}
+	}
 	var st []containerStatus
 	for _, c := range doc.Status.ContainerStatuses {
-		s := containerStatus{id: c.ContainerID, running: c.State.Running != nil, restarts: c.RestartCount}
-		if c.State.Waiting != nil && c.State.Waiting.Reason == "CreateContainerError" {
-			s.denial = strings.TrimSpace(c.State.Waiting.Message)
+		s := containerStatus{id: c.ContainerID, running: c.State.Running != nil, restarts: c.RestartCount, denial: c.denial()}
+		if s.id == "" && s.denial == "" {
+			s.denial = injected
 		}
 		st = append(st, s)
 	}

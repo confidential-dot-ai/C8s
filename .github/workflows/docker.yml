@@ -154,8 +154,9 @@ jobs:
         id: docker-matrix
         env:
           # A beta push rebuilds every component: retag-unchanged copies :main,
-          # which does not describe a beta commit.
-          SHARED: ${{ github.ref == 'refs/heads/beta' || steps.filter.outputs['shared-core'] == 'true' || steps.filter.outputs['shared-cmdsutil'] == 'true' || steps.filter.outputs['shared-root'] == 'true' }}
+          # which does not describe a beta commit. Every image ships the same
+          # multi-command build/c8s binary, so a change to it rebuilds them all.
+          SHARED: ${{ github.ref == 'refs/heads/beta' || steps.filter.outputs['shared-core'] == 'true' || steps.filter.outputs['shared-cmdsutil'] == 'true' || steps.filter.outputs['shared-root'] == 'true' || steps.filter.outputs.c8s == 'true' }}
           C8S: ${{ steps.filter.outputs.c8s }}
           CDS: ${{ steps.filter.outputs.cds }}
           GET_CERT: ${{ steps.filter.outputs['get-cert'] }}

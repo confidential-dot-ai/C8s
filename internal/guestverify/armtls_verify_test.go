@@ -6,6 +6,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/hex"
@@ -13,6 +14,8 @@ import (
 	"encoding/pem"
 	"fmt"
 	"math/big"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -294,9 +297,12 @@ func TestVerifyServerCertAccepts(t *testing.T) {
 	}
 }
 
+// serverAuthOnly is the TLS purpose an armTLS serving leaf carries.
+var serverAuthOnly = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}
+
 // mintServingCert builds a self-issued armTLS-shaped cert with chosen
-// validity, embedded key from holder, and signature from signer.
-func mintServingCert(t *testing.T, holder *ecdsa.PublicKey, signer *ecdsa.PrivateKey, notBefore, notAfter time.Time) *x509.Certificate {
+// validity, purpose, embedded key from holder, and signature from signer.
+func mintServingCert(t *testing.T, holder *ecdsa.PublicKey, signer *ecdsa.PrivateKey, usages []x509.ExtKeyUsage, notBefore, notAfter time.Time) *x509.Certificate {
 	t.Helper()
 	report, err := json.Marshal(teetypes.AttestationEvidence{Platform: "tdx", Evidence: json.RawMessage(`{}`)})
 	if err != nil {
@@ -312,6 +318,7 @@ func mintServingCert(t *testing.T, holder *ecdsa.PublicKey, signer *ecdsa.Privat
 		Subject:         pkix.Name{CommonName: "cred-release"},
 		NotBefore:       notBefore,
 		NotAfter:        notAfter,
+		ExtKeyUsage:     usages,
 		ExtraExtensions: []pkix.Extension{ext},
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, holder, signer)
@@ -338,14 +345,14 @@ func TestVerifyServerCertAuthenticatesBody(t *testing.T) {
 	}
 
 	t.Run("expired serving cert rejected", func(t *testing.T) {
-		cert := mintServingCert(t, &key.PublicKey, key, now.Add(-2*time.Hour), now.Add(-time.Minute))
+		cert := mintServingCert(t, &key.PublicKey, key, serverAuthOnly, now.Add(-2*time.Hour), now.Add(-time.Minute))
 		if err := verifyServerCert(cert, exp); err == nil || !strings.Contains(err.Error(), "expired") {
 			t.Fatalf("want expiry rejection, got %v", err)
 		}
 	})
 
 	t.Run("future serving cert rejected", func(t *testing.T) {
-		cert := mintServingCert(t, &key.PublicKey, key, now.Add(time.Hour), now.Add(2*time.Hour))
+		cert := mintServingCert(t, &key.PublicKey, key, serverAuthOnly, now.Add(time.Hour), now.Add(2*time.Hour))
 		if err := verifyServerCert(cert, exp); err == nil || !strings.Contains(err.Error(), "not yet valid") {
 			t.Fatalf("want NotBefore rejection, got %v", err)
 		}
@@ -356,7 +363,7 @@ func TestVerifyServerCertAuthenticatesBody(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cert := mintServingCert(t, &key.PublicKey, other, now.Add(-time.Hour), now.Add(time.Hour))
+		cert := mintServingCert(t, &key.PublicKey, other, serverAuthOnly, now.Add(-time.Hour), now.Add(time.Hour))
 		if err := verifyServerCert(cert, exp); err == nil ||
 			!strings.Contains(err.Error(), "does not verify with its own key") {
 			t.Fatalf("want self-signature rejection, got %v", err)
@@ -364,11 +371,63 @@ func TestVerifyServerCertAuthenticatesBody(t *testing.T) {
 	})
 
 	t.Run("valid body accepted", func(t *testing.T) {
-		cert := mintServingCert(t, &key.PublicKey, key, now.Add(-time.Hour), now.Add(time.Hour))
+		cert := mintServingCert(t, &key.PublicKey, key, serverAuthOnly, now.Add(-time.Hour), now.Add(time.Hour))
 		if err := verifyServerCert(cert, exp); err != nil {
 			t.Fatalf("want accept, got %v", err)
 		}
 	})
+}
+
+// The serving leaf must carry what the in-cluster armTLS path requires of a
+// server peer: the serverAuth purpose and an ECDSA P-256/P-384 key.
+func TestVerifyServerCertRequiresServerAuthAndSupportedCurve(t *testing.T) {
+	now := time.Now()
+	exp := testPolicy(t, operatorPub(t))
+	stubVerify(t, verifiedResultFor(exp), nil)
+
+	for _, tc := range []struct {
+		name   string
+		curve  elliptic.Curve
+		usages []x509.ExtKeyUsage
+		want   string
+	}{
+		{"clientAuth only", elliptic.P256(), []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, "does not permit serverAuth"},
+		{"no purpose at all", elliptic.P256(), nil, "does not permit serverAuth"},
+		{"P-521 key", elliptic.P521(), serverAuthOnly, "want P-256 or P-384"},
+		{"P-256 serverAuth leaf", elliptic.P256(), serverAuthOnly, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			key, err := ecdsa.GenerateKey(tc.curve, rand.Reader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cert := mintServingCert(t, &key.PublicKey, key, tc.usages, now.Add(-time.Hour), now.Add(time.Hour))
+			err = verifyServerCert(cert, exp)
+			if tc.want == "" {
+				if err != nil {
+					t.Fatalf("want accept, got %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("want %q, got %v", tc.want, err)
+			}
+		})
+	}
+}
+
+// The dial floor is TLS 1.3: a server that caps at TLS 1.2 is unreachable
+// through the client this flow uses.
+func TestNewClientRefusesTLS12Server(t *testing.T) {
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	srv.TLS = &tls.Config{MaxVersion: tls.VersionTLS12}
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+
+	_, err := NewClient(testPolicy(t, operatorPub(t)), 5*time.Second).Get(srv.URL)
+	if err == nil || !strings.Contains(err.Error(), "protocol version") {
+		t.Fatalf("want a TLS version failure, got %v", err)
+	}
 }
 
 // snpTestPolicy builds an SNP gate from a two-variant manifest.

@@ -30,7 +30,7 @@ type world struct {
 	api      cdsAPIState
 	cds      cdsState
 	issuance issuanceState
-	mesh     meshState
+	podMesh  podMeshState
 	secrets  secretsState
 	router   routerState
 	routes   routesState
@@ -68,19 +68,17 @@ type pod struct {
 	leaf       *leaf
 	renewed    bool
 	refusal    *refusal
-	// How the mesh sentences shape the pod: the ports its hello APIs and
-	// datagram listener use, pod_manifest options, its namespace (the
-	// scenario's unless a sentence moves it), the certificate a dialer in it
-	// presents, the first container's name, and its addresses once running.
-	hello     []int
-	datagram  int
-	listener  string // the container whose log shows the datagrams received
+	// How the pod is rendered: pod_manifest options, its namespace, the name
+	// of its first container, and how its certificate container verifies the
+	// CDS; and the port of its hello API and its datagram listener, and the
+	// container whose log shows the datagrams received.
 	opts      []string
 	namespace string
-	cert      *peerCert
-	first     string   // the first container's name
-	verifyCDS []string // how the pod's certificate container verifies the CDS, as probe flags
-	addrs     []string
+	first     string
+	verifyCDS []string // as the probe's flags
+	hello     int
+	datagram  int
+	listener  string
 	// What the secrets sentences add: the secret client's NAME=path specs,
 	// an init container (which "that container" addresses while initLast),
 	// and the requester state of the pod.
@@ -123,13 +121,7 @@ func initializeScenario(be backend) func(*godog.ScenarioContext) {
 				nodes:      map[string]bool{},
 				pluginDown: map[string]bool{},
 				issuance:   issuanceState{requesters: map[string]*requester{}},
-				mesh: meshState{
-					nodes:     map[string]bool{},
-					counters:  map[string]int64{},
-					ghosts:    map[string]*pod{},
-					endpoints: map[string]string{},
-				},
-				secrets: secretsState{active: hasTag(sc, "area:secrets"), stored: map[string][]byte{}},
+				secrets:    secretsState{active: hasTag(sc, "area:secrets"), stored: map[string][]byte{}},
 			}
 			if _, err := kubectl(nil, "create", "namespace", w.namespace); err != nil {
 				return ctx, err
@@ -153,6 +145,11 @@ func initializeScenario(be backend) func(*godog.ScenarioContext) {
 			if status == godog.StepSkipped && err != nil && err.Error() != godog.ErrSkip.Error() {
 				ctx = godog.Attach(ctx, godog.Attachment{FileName: "skip-reason", MediaType: "text/plain", Body: []byte(err.Error())})
 			}
+			// The scenario namespace is gone before the cluster's logs are
+			// collected, so a failure keeps its pods' logs here.
+			if w, ok := ctx.Value(worldKey{}).(*world); ok && status == godog.StepFailed {
+				ctx = godog.Attach(ctx, w.podLogs()...)
+			}
 			return ctx, err
 		})
 		registerAdmission(sc)
@@ -162,7 +159,7 @@ func initializeScenario(be backend) func(*godog.ScenarioContext) {
 		registerIssuance(sc)
 		registerRequester(sc)
 		registerNode(sc)
-		registerMesh(sc)
+		registerPodMesh(sc)
 		registerSecrets(sc)
 		registerRouter(sc)
 		registerRoutes(sc)
@@ -197,6 +194,11 @@ func (w *world) runUndo() error {
 	return errors.Join(errs...)
 }
 
+// firstContainer is the name the fixture gives a pod's first container. The
+// steps act and read logs through it by name, so kubectl's "Defaulted
+// container" notice never lands in what they parse.
+const firstContainer = "curl"
+
 // describe records a pod the scenario will deploy, one container per
 // reference; it becomes the last pod. A scenario that says nothing about the
 // argv gets one that keeps the container alive.
@@ -224,6 +226,28 @@ func (w *world) pod(name string) (*pod, error) {
 		return nil, fmt.Errorf("no pod %q has been described in this scenario", name)
 	}
 	return p, nil
+}
+
+// undeployed is a pod the scenario may still shape.
+func (w *world) undeployed(name string) (*pod, error) {
+	p, err := w.pod(name)
+	if err != nil {
+		return nil, err
+	}
+	if p.deployed {
+		return nil, fmt.Errorf("%q is already deployed", name)
+	}
+	return p, nil
+}
+
+// podIPs reads the pod's phase and addresses from its status.
+func (w *world) podIPs(p *pod) (ips []string, phase string, err error) {
+	out, err := kubectl(nil, "-n", p.namespace, "get", "pod", p.name, "-o", `jsonpath={.status.phase}{"\n"}{.status.podIPs[*].ip}`)
+	if err != nil {
+		return nil, "", err
+	}
+	phase, addrs, _ := strings.Cut(out, "\n")
+	return strings.Fields(addrs), phase, nil
 }
 
 // refs maps logical images to the references the manifests use.

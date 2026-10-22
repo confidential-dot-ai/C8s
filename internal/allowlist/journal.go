@@ -18,7 +18,8 @@ import (
 // served: journal_object holds each document's canonical bytes under its
 // digest, journal_event the order they were served in, journal_signature the
 // operator write token of a whole-document PUT, and used_token the tokens
-// already spent (docs/allowlist-and-capabilities.md, "Allowlist history").
+// already spent (docs/allowlist-and-capabilities.md, "Allowlist history"),
+// with each one's iat and exp in Unix seconds (0 when not recorded).
 const journalSQL = `
 CREATE TABLE IF NOT EXISTS journal_object (
 	digest TEXT PRIMARY KEY,
@@ -36,9 +37,52 @@ CREATE TABLE IF NOT EXISTS journal_signature (
 	token  TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS used_token (
-	digest TEXT PRIMARY KEY
+	digest   TEXT PRIMARY KEY,
+	exp_unix INTEGER NOT NULL DEFAULT 0,
+	iat_unix INTEGER NOT NULL DEFAULT 0
 );
 `
+
+// usedTokenColumns are the used_token columns later releases added, which a
+// database created earlier lacks.
+var usedTokenColumns = []string{"exp_unix", "iat_unix"}
+
+// migrateJournal brings a database created by an earlier release to
+// journalSQL: it adds the used_token columns it lacks (rows it held keep 0,
+// which is never pruned) and their indexes.
+func migrateJournal(db *sql.DB) error {
+	rows, err := db.Query("SELECT name FROM pragma_table_info('used_token')")
+	if err != nil {
+		return err
+	}
+	have := map[string]bool{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			rows.Close()
+			return err
+		}
+		have[name] = true
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	for _, c := range usedTokenColumns {
+		if have[c] {
+			continue
+		}
+		if _, err := db.Exec("ALTER TABLE used_token ADD COLUMN " + c + " INTEGER NOT NULL DEFAULT 0"); err != nil {
+			return fmt.Errorf("add used_token.%s: %w", c, err)
+		}
+	}
+	_, err = db.Exec(`
+CREATE INDEX IF NOT EXISTS used_token_exp ON used_token (exp_unix);
+CREATE INDEX IF NOT EXISTS used_token_iat ON used_token (iat_unix);
+`)
+	return err
+}
 
 // HistoryEntry is one document in the allowlist history, as GET
 // /allowlist/history serves it.
@@ -220,23 +264,87 @@ func (s *Store) Signature(digest string) (string, bool, error) {
 	return token, err == nil, err
 }
 
+// spentTokenMargin is how long after the newest spent token's iat CDS keeps
+// the record of an expired one. Pruning compares two operator-signed claims,
+// never a clock, so every replica prunes the same rows: consumeToken drops
+// the records of tokens whose exp is more than spentTokenMargin before the
+// highest iat spent so far (the watermark), and refuses any later token in
+// that range itself, so a pruned token stays spent even under a clock the
+// host turned back.
+//
+// The margin only has to keep that refusal away from tokens the Verifier
+// accepts. A token the Verifier accepts now has exp >= now - skew, and the
+// watermark was accepted earlier, so iat <= now + skew (on another replica,
+// plus the clock difference between the two). 2 x skew plus the replicas'
+// clock difference must therefore stay below the margin: an hour covers
+// --jwt-clock-skew (Helm cds.jwtClockSkew, 30 s by default) up to about 25
+// minutes with replicas minutes apart. A larger skew only refuses (409) a
+// token issued that long before the newest one; nothing becomes replayable.
+// The table keeps the tokens spent in the last margin plus MaxTokenValidity.
+const spentTokenMargin = time.Hour
+
 // ConsumeToken records that the JWT token authorized a request, or returns
 // operatorauth.ErrTokenReused if it or another encoding of it already did. Stored
 // signatures make write tokens public, so each must authorize one request only.
-// Records are never pruned: expiry is judged on a clock the host can turn
-// back, and a pruned record would let a published token write again.
-func (s *Store) consumeToken(token string) error {
+//
+// With expiry (every store from cdsha.Format 2; a replicated group of an
+// earlier format leaves it off so it agrees with replicas that predate it),
+// it also records the token's iat and exp and prunes by spentTokenMargin.
+// A token whose claims do not parse is recorded with 0s and kept, and
+// prunes nothing. Records written without expiry are kept too.
+func (s *Store) consumeToken(token string, expiry bool) error {
+	var iat, exp int64
+	if expiry {
+		if i, e, err := operatorauth.UnverifiedTimes(token); err == nil {
+			iat, exp = i.Unix(), e.Unix()
+			if e.Nanosecond() != 0 {
+				exp++ // round exp up and iat down: either keeps a record longer
+			}
+		}
+	}
 	// Key on the signed header.payload: the signature segment has several
 	// encodings that all verify (non-strict base64 padding bits, ECDSA (r, n-s)).
 	if i := strings.LastIndexByte(token, '.'); i >= 0 {
 		token = token[:i]
 	}
+	digest := objectDigest([]byte(token))
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	res, err := s.db.Exec("INSERT OR IGNORE INTO used_token (digest) VALUES (?)", objectDigest([]byte(token)))
+	if exp == 0 {
+		res, err := s.db.Exec("INSERT OR IGNORE INTO used_token (digest) VALUES (?)", digest)
+		if err != nil {
+			return err
+		}
+		return spentUnlessInserted(res)
+	}
+	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
+	defer tx.Rollback()
+	var watermark int64
+	if err := tx.QueryRow("SELECT COALESCE(MAX(iat_unix), 0) FROM used_token").Scan(&watermark); err != nil {
+		return err
+	}
+	margin := int64(spentTokenMargin / time.Second)
+	if exp < watermark-margin {
+		// Its record may be pruned: only this refusal keeps it spent.
+		return fmt.Errorf("%w: it expired over %s before the newest spent token was issued", operatorauth.ErrTokenReused, spentTokenMargin)
+	}
+	res, err := tx.Exec("INSERT OR IGNORE INTO used_token (digest, exp_unix, iat_unix) VALUES (?, ?, ?)", digest, exp, iat)
+	if err != nil {
+		return err
+	}
+	if err := spentUnlessInserted(res); err != nil {
+		return err
+	}
+	if _, err := tx.Exec("DELETE FROM used_token WHERE exp_unix > 0 AND exp_unix < ?", max(watermark, iat)-margin); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func spentUnlessInserted(res sql.Result) error {
 	n, err := res.RowsAffected()
 	if err != nil {
 		return err
@@ -258,8 +366,8 @@ func (s *Store) HistoryLen() (int, error) {
 
 // pruneHistory keeps the newest keep entries of the history and drops the
 // documents and signatures no remaining entry names. The served document is
-// the head, which always remains, and spent tokens are kept (a token must
-// never be spendable again). It depends only on the store's contents, so
+// the head, which always remains, and spent tokens are left to consumeToken
+// (a token must never be spendable again). It depends only on the store's contents, so
 // every replica applying it prunes the same entries.
 func (s *Store) pruneHistory(keep int) (int, error) {
 	if keep < 1 {

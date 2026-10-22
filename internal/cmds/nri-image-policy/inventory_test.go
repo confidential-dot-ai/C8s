@@ -34,7 +34,7 @@ func TestInventoryPreservesUnavailableMountEvidence(t *testing.T) {
 			p := &plugin{
 				cfg:       &config{},
 				inventory: newAdmissionInventory(t.TempDir()),
-				mesh:      newMeshGate(nil, discardLogger()),
+				mesh:      newMeshGate(*meshRoles(), discardLogger()),
 			}
 			ctr := &api.Container{Id: "ctr", PodSandboxId: "pod", Args: []string{"/app"}}
 			p.recordDigest(ctr, digestApp, p.observedMounts(tc.pod, ctr))

@@ -56,8 +56,7 @@ var (
 )
 
 // meshPolicy is the trusted mesh policy: the pod ruleset's inputs and the
-// reserved UID each platform role runs as. A measured config carrying no mesh
-// policy hosts no member pods.
+// reserved UID each platform role runs as.
 type meshPolicy struct {
 	// ExemptNamespaces host no member pods: their pods keep the node's rules.
 	ExemptNamespaces []string `yaml:"exempt_namespaces"`
@@ -105,18 +104,14 @@ type RoleFloor struct {
 	Name string
 }
 
-// LoadMeshFloor reads the measured config and returns its mesh floor, or nil
-// when the config carries no mesh policy and the node hosts no member pods.
+// LoadMeshFloor reads the measured config and returns its mesh floor.
 // validate refuses two roles on one UID, so no reserved id names two roles.
-func LoadMeshFloor(configPath string) (*MeshFloor, error) {
+func LoadMeshFloor(configPath string) (MeshFloor, error) {
 	cfg, err := loadConfig(configPath)
 	if err != nil {
-		return nil, err
+		return MeshFloor{}, err
 	}
-	if cfg.Mesh == nil {
-		return nil, nil
-	}
-	floor := &MeshFloor{
+	floor := MeshFloor{
 		ExemptNamespaces: cfg.Mesh.ExemptNamespaces,
 		ReservedIDs:      map[uint32]RoleFloor{},
 	}

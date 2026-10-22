@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -62,22 +63,25 @@ func TestB1RequiresTLS13(t *testing.T) {
 func TestB1PicksUpRotatedMeshCA(t *testing.T) {
 	f := newFixture(t)
 	rotated := newCA(t, "mesh-2")
-	caFile := writeFile(t, "ca.pem", []byte(caPEM(f.mesh)))
-	f.transports = NewTransports(TransportConfig{
-		MeshCAs:           CAFile(caFile),
-		ClientCertificate: f.transports.cfg.ClientCertificate,
-	})
-	f.proxy = NewProxy(ProxyConfig{State: f.state, Transports: f.transports})
 	b := startBackend(t, "web", issueLeaf(t, rotated, "web"))
 	f.apply(t, simpleManifest(1, b.addr()))
 	if got := f.get("/").Code; got != http.StatusBadGateway {
 		t.Fatalf("GET / before the bundle holds the new CA = %d, want %d", got, http.StatusBadGateway)
 	}
-	// get-cert publishes the one mesh CA of the generation it adopted, so a
-	// rotation replaces the bundle rather than adding to it.
-	if err := os.WriteFile(caFile, []byte(caPEM(rotated)), 0o600); err != nil {
+	// The reader paths of a generation the pointer does not name anchor
+	// nothing: the rotation counts once it is published.
+	if err := os.WriteFile(filepath.Join(f.volume, "ca.crt"), []byte(caPEM(rotated)), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if got := f.get("/").Code; got != http.StatusBadGateway {
+		t.Fatalf("GET / with the new CA on the reader path alone = %d, want %d", got, http.StatusBadGateway)
+	}
+	if n := b.hits.Load(); n != 0 {
+		t.Fatalf("backend saw %d requests before the rotation was published, want 0", n)
+	}
+	// get-cert publishes the one mesh CA of the generation it adopted, so a
+	// rotation replaces the bundle rather than adding to it.
+	f.publish(t, caPEM(rotated))
 	if got := f.get("/").Code; got != http.StatusOK {
 		t.Fatalf("GET / after the bundle rotation = %d, want %d", got, http.StatusOK)
 	}

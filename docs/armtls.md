@@ -254,9 +254,11 @@ Properties worth noting:
   close the bootstrap window against a pod-network impostor — *iff*
   measurements are pinned.
 - **The mesh CA private key exists only in CDS process memory** (P-384, CN
-  `c8s Mesh CA`, 1-year validity, generated at startup). It is never a
-  Kubernetes Secret, never on disk. A (singleton) CDS restart mints a fresh
-  CA and workloads re-bootstrap.
+  `c8s Mesh CA`, generated at startup). Its certificate is valid for one year
+  by default and renews at half its lifetime under the same process-lifetime
+  key. The current certificate is published at `/ca` and in issuance responses.
+  The private key is never a Kubernetes Secret, never on disk. A (singleton)
+  CDS restart mints a fresh CA and workloads re-bootstrap.
 - **Issued leaves are capped at 24h** and always carry a SHA-256 digest of
   the issuance evidence as an audit extension. When the CSR itself embeds an
   armTLS extension — the mesh client and get-cert both do, bound to the bare
@@ -267,9 +269,9 @@ Properties worth noting:
   replayed into an issuance.
 - **CA bundle distribution is continuity-checked.** `GET /ca` is deliberately
   unauthenticated; consumers seed trust from the *authenticated* issuance
-  response and afterwards accept only bundle updates signed by an
-  already-trusted CA (`pkg/armtls/cdsclient`). A MITM'd `/ca` read cannot
-  inject a new root.
+  response and afterwards accept only a bundle signed by an already-trusted CA,
+  or a certificate renewed under an already-trusted CA's own key
+  (`pkg/armtls/cdsclient`). A MITM'd `/ca` read cannot inject a new root.
 - **The serving certificate commits only CDS's key and measurement** — not its
   operator-key set, not its allowlist seed. A verifier cross-checks the key set
   CDS *serves* at `/operator-keys`, fetched over that attested serving cert
@@ -492,10 +494,10 @@ Two things this rests on that attestation does not enforce:
 
 get-cert fetches the CDS challenge for this issuance first, then POSTs its CSR
 public key and that challenge to `/sandbox`. The inventory resolves the
-*caller's* identity to a sandbox — nothing the caller sends names the pod. On a
-node with a mesh policy it answers `403` unless the enforcer verifies that
-sandbox as a member pod whose live ruleset is the one trusted policy defines
-and the caller is still the live process. Then it signs
+*caller's* identity to a sandbox — nothing the caller sends names the pod. It
+answers `403` unless the enforcer verifies that sandbox as a member pod whose
+live ruleset is the one trusted policy defines and the caller is still the live
+process. Then it signs
 
 ```text
 SandboxToken ::= SEQUENCE {
@@ -904,7 +906,7 @@ confidentiality.)
 |---|---|---|---|---|---|
 | Self-issued armTLS cert | the holding process's memory (in the TEE) | itself — trust is the embedded attestation | the evidence-path listeners and dials (CDS, the inventory, the credential clients) | peer's armTLS verification: local attestation-api `/verify` + measurement allowlist | attested transport with no CA in it |
 | CDS armTLS serving cert | CDS process memory | itself — attestation bound to CDS's own measurement | CDS API (:8443) | injected clients read the node policy the enforcer mounts; armtls-mesh, allowlist CLI and nri-image-policy pin `--cds-measurements` | protect the issuance/allowlist API from pod-network impostors |
-| Mesh CA (P-384, CN `c8s Mesh CA`, 1y) | CDS process memory only — never a Secret, never disk | self-signed root | never served as a leaf; public bundle via `GET /ca` and issuance responses | continuity check: new bundle must be signed by an already-trusted CA | root of trust for the chain path |
+| Mesh CA (P-384, CN `c8s Mesh CA`, 1y certificate validity by default, renewed at half-life under the same key) | CDS process memory only — never a Secret, never disk | self-signed root | never served as a leaf; current certificate via `GET /ca` and issuance responses | continuity check: a new bundle must be signed by an already-trusted CA, or renewed under its key | root of trust for the chain path |
 | CDS-issued workload leaf (≤ 24h) | pod volume published by get-cert as one generation (`/etc/c8s/certs`, keys 0640 with fsGroup) — inside the node TEE | mesh CA, after challenge–attest–certify | the pod's own mesh endpoint, inbound and outbound | chain to the mesh CA bundle | nameable workload identity (SAN = workload id / `c8s-<id>` Service), plus the sandbox-ID extension when the requester presented a sandbox token |
 | router public leaf | router pod volume — get-cert init container (mode `cds`) or the `c8s acme` sidecar's Memory-medium emptyDir (mode `acme`) — or an operator-supplied `publicTLS` Secret (mode `webpki`, host-visible) | mesh CA (`cds`), ACME CA (`acme`), or external CA (`webpki`) | public HTTPS front door | browsers: standard TLS; verifiers: `cds-attest` binds the leaf SPKI or session keys into REPORTDATA | TLS termination for external clients, attestably bound to the TEE |
 | Inventory identity/digests certs (self-signed armTLS, both ends) | nri-image-policy process memory; CDS process memory for the client side | itself — attestation bound to the node's own measurement | the inventory's `:1019` endpoint (fixed, privileged), mTLS both ways | mutual: CDS pins the inventory measurement, the inventory pins CDS's | let CDS resolve the sandbox-token signing key and ask what a pod sandbox is running before issuing that pod a leaf |

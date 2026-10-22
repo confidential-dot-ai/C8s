@@ -24,7 +24,6 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
-	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
@@ -38,12 +37,11 @@ import (
 type AttestHandler struct {
 	Challenges        *attestation.ChallengeStore
 	AttestationClient remote.Client
-	CA                *issuer.CA
-	CAChainPEM        []byte
-	// CASource, when set, replaces CA and CAChainPEM: the HA replica's
-	// current mesh CA, or an error while it may not issue.
-	CASource func() (*issuer.CA, error)
-	CertTTL  time.Duration
+	// MeshCA is the current mesh CA: a singleton's issuer.MeshCA, or an HA
+	// replica's replicated CA, which reads empty while the replica may not
+	// issue.
+	MeshCA  meshCA
+	CertTTL time.Duration
 
 	// RequestTimeout caps how long /attest may spend on attestation
 	// verification + signing. Zero = no timeout.
@@ -140,6 +138,11 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
 		attestation.WriteError(w, http.StatusUnprocessableEntity, types.ErrorCodeInvalidRequest, err.Error())
+		return
+	}
+	if len(req.RuntimeExtensions) > 0 && !req.Evidence.Platform.HasRegisters() {
+		attestation.WriteError(w, http.StatusUnprocessableEntity, types.ErrorCodeInvalidRequest,
+			"runtime_extensions requires evidence from a platform with runtime measurement registers")
 		return
 	}
 
@@ -293,13 +296,14 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 		}
 		ttl = issuer.CapTTL(ttl, namedTTL)
 	}
-	ca, err := h.currentCA()
-	if err != nil {
-		slog.Warn("attest: no mesh CA to issue with", "err", err)
+	// One read: the certificate that signs the leaf is the chain returned with it.
+	signing := h.MeshCA.Current()
+	if signing.CA == nil {
+		slog.Warn("attest: no mesh CA to issue with")
 		attestation.WriteError(w, http.StatusServiceUnavailable, types.ErrorCodeSignFailed, "mesh CA unavailable")
 		return
 	}
-	certPEM, serial, err := ca.SignCSR(issuer.SignCSRParams{
+	certPEM, serial, err := signing.CA.SignCSR(issuer.SignCSRParams{
 		CSR:             csr,
 		TTL:             ttl,
 		Evidence:        evidenceJSON,
@@ -309,15 +313,6 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		slog.Error("in-process sign failed", "error", err)
 		attestation.WriteError(w, http.StatusInternalServerError, types.ErrorCodeSignFailed, err.Error())
-		return
-	}
-	caChainPEM := h.caChainPEM()
-	if h.CASource != nil {
-		caChainPEM = certutil.EncodeCertPEM(ca.Cert.Raw) // the CA that signed, even across a rotation
-	}
-	if len(caChainPEM) == 0 {
-		slog.Error("in-process sign failed: CA chain unavailable")
-		attestation.WriteError(w, http.StatusInternalServerError, types.ErrorCodeSignFailed, "CA chain unavailable")
 		return
 	}
 
@@ -350,7 +345,7 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 	}
 	slog.Info("certificate issued (in-process)", issued...)
 	w.Header().Set("Content-Type", "application/x-pem-file")
-	w.Write(slices.Concat(certPEM, caChainPEM))
+	w.Write(slices.Concat(certPEM, signing.CertPEM))
 }
 
 // serialHex renders a certificate serial the way `openssl x509 -serial` does,
@@ -581,23 +576,6 @@ func (h AttestHandler) recordSandboxBinding(sandbox workloadclaims.VerifiedSandb
 	}
 }
 
-func (h AttestHandler) currentCA() (*issuer.CA, error) {
-	if h.CASource != nil {
-		return h.CASource()
-	}
-	return h.CA, nil
-}
-
-func (h AttestHandler) caChainPEM() []byte {
-	if len(h.CAChainPEM) > 0 {
-		return h.CAChainPEM
-	}
-	if h.CA == nil || h.CA.Cert == nil {
-		return nil
-	}
-	return certutil.EncodeCertPEM(h.CA.Cert.Raw)
-}
-
 // classifyVerifyError maps a VerifyEnforced error to (HTTP status, error code,
 // message). A rejected verdict — bad signature, REPORTDATA mismatch, or a 4xx
 // the attestation-api returns for malformed/unacceptable evidence — is the
@@ -639,4 +617,12 @@ func rejectsRequest(status int) bool {
 	return status == http.StatusBadRequest ||
 		status == http.StatusUnsupportedMediaType ||
 		status == http.StatusUnprocessableEntity
+}
+
+// meshCA is the mesh CA a CDS issues under and serves at /ca: one read gives
+// the certificate that signs a leaf and the chain returned with it. A
+// singleton's is an issuer.MeshCA; an HA replica's reads the replicated CA and
+// is empty (CA nil) while the replica may not issue.
+type meshCA interface {
+	Current() issuer.CurrentCA
 }

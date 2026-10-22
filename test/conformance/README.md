@@ -88,7 +88,10 @@ backend down, reading:
 | `GODOG_TAGS` | optional tag expression, such as `@area:enforcement` |
 
 It exits with godog's status, so a failed step fails the command; undefined
-and pending steps are the judge's backlog and do not.
+and pending steps are the judge's backlog and do not. A failed step carries,
+for each pod the scenario deployed, its containers' states and the logs of
+its `c8s-mesh` endpoint and first container, since the scenario namespace is
+deleted before the cluster's logs are collected.
 
 ## Backends
 
@@ -111,8 +114,8 @@ and starts a node's plugin, makes the CDS unreachable for the plugins' pulls
 and undoes that, and restarts the CDS. Each is undone after the scenario, and
 a plugin is started again wherever the CDS was restarted, since a plugin only
 accepts the versions a restarted CDS serves after a start of its own. The
-mesh is restarted after a CDS restart too: a restarted CDS mints a new mesh
-CA, which only a proxy started after it accepts.
+mesh members a controller owns, such as the router, are recreated too, since
+a member stays bound to the CA key of its first leaf.
 
 Where a scenario is about the CDS's own API, the backend sends the request as
 the scenario says rather than through its signed path: a write with the
@@ -144,26 +147,6 @@ performs one issuance against it; `common.sh` lists each function. The kind
 backend reaches the CDS through a port-forward to its pod, so a CDS that is
 not ready, and so has no Service endpoint, is still read.
 
-For scenarios about the armTLS mesh, the backend reads the node's mesh proxy:
-whether it is running, whether a pod address is in the node's interception or
-guard membership, its connection and guard-drop counters (scraped from the
-proxy's health port by a long-lived pod the backend keeps in its own
-namespace, torn down with the backend), its listener ports, the UIDs and
-namespaces it excepts, whether each role presents a CDS-issued leaf, and
-whether its verify set has taken the mesh CA. It renders pods with the options
-the mesh scenarios need (the node's network namespace, a chosen UID, a
-capability, a label, an init container), serves a hello API at an address
-outside the cluster, and blocks the node's local attestation service. Every
-pod it renders may ping: the pod carries the `net.ipv4.ping_group_range`
-sysctl, and the tenant image's ping (Alpine's) uses an ICMP datagram socket
-under it, which the library busybox image's does not. A peer that connects to the inbound
-proxy itself, presenting a certificate the scenario shaped, is
-[`tools/armtls-dial`](tools/armtls-dial/README.md), on `PATH` in the suite's
-`mesh-dialer` image ([`images/mesh-dialer`](images/mesh-dialer/Dockerfile)),
-whose one container is named and marked as a requester's so that the peer can
-reach the node's attestation service where the backend has one
-(`attestation_endpoint`).
-
 For scenarios about secret release, the backend sends one request to the CDS
 as the scenario shaped it (`cds_request`: a method, a route, a body, an
 Authorization and a client certificate, each only when given), which carries
@@ -186,9 +169,9 @@ backend, and the steps wait until the probe answers 502, which no earlier
 manifest gives it. The CDS removes no manifest, so after the scenario the
 steps write the one stored before it again, or an empty one, under a later
 revision. A workload backend is a pod of `tenant-app` running
-[`c8s-echo-api`](images/tenant-app/c8s-echo-api) over TLS under the leaf it holds, read again
-for each connection: it answers every request with the request target and
-headers it received.
+[`c8s-echo-api`](images/tenant-app/c8s-echo-api) in plaintext behind its mesh endpoint,
+which holds the pod's leaf and terminates the router's armTLS: it answers
+every request with the request target and headers it received.
 
 [`backends/common.sh`](backends/common.sh) states the interface: every
 function, its arguments, what it prints, and when it answers *unsupported*:

@@ -1,13 +1,17 @@
 package verify
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
 	"math/big"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
@@ -34,6 +38,7 @@ func mintAttestedLeaf(t *testing.T, holder *ecdsa.PublicKey, signer *ecdsa.Priva
 		Subject:         pkix.Name{CommonName: "workload"},
 		NotBefore:       notBefore,
 		NotAfter:        notAfter,
+		ExtKeyUsage:     armtlsPurposes,
 		ExtraExtensions: []pkix.Extension{attExt},
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, holder, signer)
@@ -81,6 +86,7 @@ func mintForgedIssuerLeaf(t *testing.T, holder *ecdsa.PublicKey, notAfter time.T
 		Subject:         pkix.Name{CommonName: "workload"},
 		NotBefore:       time.Now().Add(-time.Hour),
 		NotAfter:        notAfter,
+		ExtKeyUsage:     armtlsPurposes,
 		ExtraExtensions: []pkix.Extension{attExt},
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, issuer, holder, testKey(t))
@@ -95,11 +101,10 @@ func mintForgedIssuerLeaf(t *testing.T, holder *ecdsa.PublicKey, notAfter time.T
 	return cert
 }
 
-// The forged-issuer certificate must not become evidence on any source that
-// cannot prove the presenter holds the attested key. Both sources that can't —
-// a saved file and a discovery document fetched over a connection nothing
-// binds it to — must fail closed, as a security verdict rather than an
-// "evidence unavailable".
+// The forged-issuer certificate must not become evidence: no source
+// authenticates a CA-issued body except a --mesh-ca chain check, so a saved
+// file, a discovery document and a live armTLS dial must all fail closed, as a
+// security verdict rather than an "evidence unavailable".
 func TestUnauthenticatedCertBodyRejected(t *testing.T) {
 	holder := testKey(t)
 	forged := mintForgedIssuerLeaf(t, &holder.PublicKey, time.Now().Add(500000*time.Hour))
@@ -139,28 +144,98 @@ func TestUnauthenticatedCertBodyRejected(t *testing.T) {
 		}
 	})
 
-	// A live armTLS dial is different in kind: completing the handshake proves
-	// the peer holds the attested private key, which a re-minted body around
-	// someone else's SPKI cannot do. That path records the proof instead of
-	// demanding a chain.
-	t.Run("live handshake stands in for the chain", func(t *testing.T) {
-		ev, err := evidenceFromCert(forged, "test", leafTrust{keyProven: true})
-		if err != nil {
-			t.Fatalf("a proof-of-possession source must not need --mesh-ca: %v", err)
+	// A live armTLS dial proves the peer holds the attested key, which says
+	// nothing about the body fields around it: the CA-issued leaf it presents
+	// is authenticated by the issuing chain or by nothing.
+	t.Run("live handshake does not stand in for the chain", func(t *testing.T) {
+		leaf, key, _ := mintCAIssuedLeaf(t, serverAuthOnly)
+		srv := httptest.NewUnstartedServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+		srv.TLS = &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{leaf.Raw}, PrivateKey: key}}}
+		srv.StartTLS()
+		defer srv.Close()
+
+		_, err := gatherFromARMTLSCert(context.Background(), strings.TrimPrefix(srv.URL, "https://"), "", 5*time.Second, leafTrust{})
+		if err == nil {
+			t.Fatal("a CA-issued certificate whose chain is unchecked must not become evidence")
 		}
-		if ev.leafChainVerified {
-			t.Error("no chain was checked on this path; the verdict must not claim one")
+		if !isSecurityError(err) {
+			t.Fatalf("want a security verdict (no auto-mode fall-through, exit 2), got %T", err)
 		}
-		if !strings.Contains(describeCertBody(config{}, ev), "holds the attested key") {
-			t.Errorf("cert-body note must say what actually backs the body: %q", describeCertBody(config{}, ev))
+		if !strings.Contains(err.Error(), "--mesh-ca") {
+			t.Errorf("error = %q, want it to name the flag that fixes it", err)
 		}
 	})
 }
 
-// With --mesh-ca the CA-issued body IS authenticated, and the verdict records
-// that a CA anchor stands behind the leaf — which is what downgrades the
-// deployment-class measurement rule to a warning.
-func TestMeshCAAuthenticatesCAIssuedCertBody(t *testing.T) {
+// mintCurveLeaf mints a self-issued attested leaf with the given key curve and
+// TLS purposes.
+func mintCurveLeaf(t *testing.T, curve elliptic.Curve, usages []x509.ExtKeyUsage) *x509.Certificate {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(curve, rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	att := &armtls.Attestation{Family: armtls.TEETypeSEVSNP, Report: make([]byte, armtls.SNPReportSize)}
+	attExt, err := armtls.MarshalExtension(att)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:    big.NewInt(13),
+		Subject:         pkix.Name{CommonName: "workload"},
+		NotBefore:       time.Now().Add(-time.Hour),
+		NotAfter:        time.Now().Add(time.Hour),
+		ExtKeyUsage:     usages,
+		ExtraExtensions: []pkix.Extension{attExt},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cert
+}
+
+// The operator's evidence path holds a serving leaf to the same shape as the
+// in-cluster paths: the serverAuth purpose and an ECDSA P-256/P-384 key.
+func TestEvidenceFromCertRequiresServerAuthAndSupportedCurve(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		curve  elliptic.Curve
+		usages []x509.ExtKeyUsage
+		want   string
+	}{
+		{"clientAuth only", elliptic.P256(), []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, "does not permit serverAuth"},
+		{"no purpose at all", elliptic.P256(), nil, "does not permit serverAuth"},
+		{"P-521 key", elliptic.P521(), armtlsPurposes, "want P-256 or P-384"},
+		{"P-256 serverAuth leaf", elliptic.P256(), armtlsPurposes, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := evidenceFromCert(mintCurveLeaf(t, tc.curve, tc.usages), "test", leafTrust{})
+			if tc.want == "" {
+				if err != nil {
+					t.Fatalf("want accept, got %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("want %q, got %v", tc.want, err)
+			}
+			if !isSecurityError(err) {
+				t.Fatalf("want a security verdict (no auto-mode fall-through), got %T", err)
+			}
+		})
+	}
+}
+
+// mintCAIssuedLeaf mints an attested leaf issued by a fresh CA with the given
+// TLS purpose, and returns it with its key and a pool holding that CA — the
+// shape CDS produces.
+func mintCAIssuedLeaf(t *testing.T, usages []x509.ExtKeyUsage) (*x509.Certificate, *ecdsa.PrivateKey, *x509.CertPool) {
+	t.Helper()
 	caKey := testKey(t)
 	caTmpl := &x509.Certificate{
 		SerialNumber:          big.NewInt(1),
@@ -191,6 +266,7 @@ func TestMeshCAAuthenticatesCAIssuedCertBody(t *testing.T) {
 		Subject:         pkix.Name{CommonName: "cds"},
 		NotBefore:       time.Now().Add(-time.Hour),
 		NotAfter:        time.Now().Add(time.Hour),
+		ExtKeyUsage:     usages,
 		ExtraExtensions: []pkix.Extension{attExt},
 	}
 	leafDER, err := x509.CreateCertificate(rand.Reader, leafTmpl, ca, &leafKey.PublicKey, caKey)
@@ -203,6 +279,37 @@ func TestMeshCAAuthenticatesCAIssuedCertBody(t *testing.T) {
 	}
 	pool := x509.NewCertPool()
 	pool.AddCert(ca)
+	return leaf, leafKey, pool
+}
+
+// The --mesh-ca chain check authenticates a CA-issued body only for a leaf the
+// CA issued for serving TLS: a clientAuth-only leaf under the same CA is a
+// chain failure.
+func TestMeshCAChainRequiresServerAuth(t *testing.T) {
+	clientOnly, _, pool := mintCAIssuedLeaf(t, []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth})
+	_, err := evidenceFromCert(clientOnly, "test", leafTrust{meshCA: pool})
+	if err == nil || !strings.Contains(err.Error(), "does not chain") {
+		t.Fatalf("want a chain failure for a leaf without serverAuth, got %v", err)
+	}
+	if !isSecurityError(err) {
+		t.Fatalf("want a security verdict, got %T", err)
+	}
+
+	serving, _, servingPool := mintCAIssuedLeaf(t, serverAuthOnly)
+	ev, err := evidenceFromCert(serving, "test", leafTrust{meshCA: servingPool})
+	if err != nil {
+		t.Fatalf("a serverAuth leaf chaining to --mesh-ca must be accepted: %v", err)
+	}
+	if !ev.leafChainVerified {
+		t.Fatal("leafChainVerified must record the CA anchor the verdict keys on")
+	}
+}
+
+// With --mesh-ca the CA-issued body IS authenticated, and the verdict records
+// that a CA anchor stands behind the leaf — which is what downgrades the
+// deployment-class measurement rule to a warning.
+func TestMeshCAAuthenticatesCAIssuedCertBody(t *testing.T) {
+	leaf, _, pool := mintCAIssuedLeaf(t, serverAuthOnly)
 
 	measured := []string{"sha256:" + strings.Repeat("1", 64)}
 	var fields map[string]any
@@ -364,17 +471,6 @@ func TestDescribeCertBody(t *testing.T) {
 	}
 	if strings.Contains(dgot, "verified issuing chain") {
 		t.Errorf("derived-chain note = %q: a responder-chosen anchor is not a verified chain", dgot)
-	}
-	// A live handshake proves possession of the attested key, which is what
-	// stands behind an un-chained body there — say that, not "validity
-	// enforced": NotAfter inside an unsigned body bounds nothing on its own.
-	proven := &evidence{leafKeyProven: true}
-	got := describeCertBody(config{}, proven)
-	if !strings.Contains(got, "holds the attested key") {
-		t.Errorf("key-proven note = %q", got)
-	}
-	if strings.Contains(got, "validity enforced") {
-		t.Errorf("key-proven note = %q, must not claim validity bounds an unauthenticated body", got)
 	}
 	// The residual class reaches no caller today (authorizeLeafBody rejects
 	// it), but if it ever renders it must not dress itself up.

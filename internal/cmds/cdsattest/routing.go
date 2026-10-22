@@ -102,8 +102,8 @@ func checkRoutingFlags(cfg config) error {
 	if cfg.attestationAPIURL == "" {
 		return errors.New("--cds-url requires --attestation-api-url to verify the CDS")
 	}
-	if cfg.meshIdentityCertFile == "" || cfg.meshIdentityKeyFile == "" || cfg.meshIdentityCAFile == "" {
-		return errors.New("--cds-url requires --mesh-identity-cert-file, --mesh-identity-key-file and --mesh-identity-ca-file")
+	if !cfg.attestOff && (cfg.meshIdentityCertFile == "" || cfg.meshIdentityKeyFile == "" || cfg.meshIdentityCAFile == "") {
+		return errors.New("--attest-endpoints=true requires --mesh-identity-cert-file, --mesh-identity-key-file and --mesh-identity-ca-file: the attestation endpoints bind their evidence to that leaf")
 	}
 	if r.pollInterval <= 0 {
 		return errors.New("--routes-poll-interval must be positive")
@@ -147,13 +147,12 @@ func newRoutingEngine(cfg config, logger *slog.Logger) (*routingEngine, error) {
 	if err != nil {
 		return nil, err
 	}
-	clientCert, err := routing.NewClientCert(cfg.meshIdentityCertFile, cfg.meshIdentityKeyFile)
+	identity, err := memberCredentials()
 	if err != nil {
-		return nil, fmt.Errorf("load mesh identity for backends: %w", err)
+		return nil, err
 	}
-	meshCAs := memberMeshCAs()
-	state := routing.NewState(routing.StateConfig{Reserved: r.reservedPaths, MeshCAs: meshCAs})
-	transports := routing.NewTransports(routing.TransportConfig{MeshCAs: meshCAs, ClientCertificate: clientCert.GetClientCertificate})
+	state := routing.NewState(routing.StateConfig{Reserved: r.reservedPaths, MeshCAs: identity.MeshCAs})
+	transports := routing.NewTransports(routing.TransportConfig{MeshIdentity: identity.Credential})
 	return &routingEngine{
 		cfg: r,
 		log: logger,
@@ -283,14 +282,25 @@ func nodeAddress(nodeIPPath string) (netip.Addr, error) {
 	return address.Unmap(), nil
 }
 
-// memberMeshCAs is the trust root of the hop to a member backend: the mesh CA
-// of the credential generation get-cert published on this pod's own volume,
-// re-read per handshake so a rotation takes effect without a restart. The
-// path is compiled and no argument reaches it — a CA an argument named would
-// be one the control plane chose, and its holder could stamp any workload
-// name on a leaf this router then accepted.
-func memberMeshCAs() routing.CASource {
-	return routing.CAFile(workloadclaims.MemberCAPath)
+// The leaf and the key of the credential generation get-cert publishes on a
+// member pod's volume, beside workloadclaims.MemberCAPath.
+const (
+	memberCertPath = workloadclaims.MemberCertDir + "/tls.crt"
+	memberKeyPath  = workloadclaims.MemberCertDir + "/tls.key"
+)
+
+// memberCredentials is the identity of the hop to a member backend and its
+// trust root in one: the credential generation get-cert published on this
+// pod's own volume, re-resolved per handshake so a rotation takes effect
+// without a restart. The volume is compiled and no argument reaches it — a CA
+// an argument named would be one the control plane chose, and its holder could
+// stamp any workload name on a leaf this router then accepted.
+func memberCredentials() (*routing.MeshIdentity, error) {
+	identity, err := routing.NewMeshIdentity(memberCertPath, memberKeyPath, workloadclaims.MemberCAPath)
+	if err != nil {
+		return nil, fmt.Errorf("mesh identity for backends: %w", err)
+	}
+	return identity, nil
 }
 
 // clusterWorkloadRoutes refuses a fetched manifest this router cannot serve,

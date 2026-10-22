@@ -897,6 +897,19 @@ func (w *world) awaitReady(p *pod) error {
 	return nil
 }
 
+// certPaths is where a pod carrying a workload ID holds its leaf and key.
+func (w *world) certPaths() (certFile, keyFile string, err error) {
+	paths, err := w.be.call("cert_paths")
+	if err != nil {
+		return "", "", err
+	}
+	files := strings.Fields(paths)
+	if len(files) != 2 {
+		return "", "", fmt.Errorf("the backend named %d certificate paths, not two", len(files))
+	}
+	return files[0], files[1], nil
+}
+
 // probe runs `c8s secret-probe` in the pod's certificate container.
 func (w *world) probe(p *pod, args ...string) (string, error) {
 	if !p.deployed || !p.workloadID {

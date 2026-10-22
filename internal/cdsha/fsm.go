@@ -34,6 +34,9 @@ const (
 	KindBinding   EntryKind = "binding"
 	KindDecree    EntryKind = "decree"
 	KindRestore   EntryKind = "restore"
+	// KindRenewCA replaces the mesh CA certificate with one renewed under the
+	// same key (format 2).
+	KindRenewCA EntryKind = "renew_ca"
 )
 
 // Entry is one Raft log entry. Exactly one payload is set.
@@ -47,6 +50,15 @@ type Entry struct {
 	Binding   *sandboxledger.Command `json:"binding,omitempty"`
 	Decree    *DecreeEntry           `json:"decree,omitempty"`
 	Restore   *RestoreEntry          `json:"restore,omitempty"`
+	RenewCA   *RenewCAEntry          `json:"renew_ca,omitempty"`
+}
+
+// RenewCAEntry carries a mesh CA certificate the leader renewed under the
+// cluster's key. Every replica checks it (issuer.RenewalOf) before adopting
+// it, so the group serves one certificate and running workloads keep their
+// trust anchor: the key, subject and key identifier do not change.
+type RenewCAEntry struct {
+	RootCert []byte `json:"root_cert"`
 }
 
 // RestoreEntry restores a backup into a replica that holds no cluster. It is
@@ -171,7 +183,7 @@ func (f *FSM) apply(e Entry) any {
 		}
 		return nil
 	case e.Kind == KindAllowlist && e.Allowlist != nil:
-		return f.allowlist.Apply(*e.Allowlist)
+		return f.allowlist.ApplyWith(*e.Allowlist, f.allowlistOptions())
 	case e.Kind == KindSecret && e.Secret != nil:
 		return f.secrets.Apply(*e.Secret)
 	case e.Kind == KindBinding && e.Binding != nil:
@@ -180,8 +192,18 @@ func (f *FSM) apply(e Entry) any {
 		return f.applyDecree(*e.Decree)
 	case e.Kind == KindRestore && e.Restore != nil:
 		return f.applyRestore(*e.Restore)
+	case e.Kind == KindRenewCA && e.RenewCA != nil:
+		return f.applyRenewCA(*e.RenewCA)
 	}
 	return fmt.Errorf("%w of kind %q", errMalformed, e.Kind)
+}
+
+// allowlistOptions are the allowlist behaviors the agreed format turns on.
+// The format is replicated state, so every replica applies an entry alike.
+func (f *FSM) allowlistOptions() allowlist.ApplyOptions {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return allowlist.ApplyOptions{TokenExpiry: f.core.format() >= 2}
 }
 
 func (f *FSM) applyDecree(de DecreeEntry) DecreeResult {
@@ -356,6 +378,9 @@ func (f *FSM) Snapshot() (raft.FSMSnapshot, error) {
 	if err != nil {
 		return nil, err
 	}
+	if sn.Format < 2 {
+		al.StripTokenExpiry() // a format 1 replica cannot restore the columns
+	}
 	sn.Allowlist, sn.Secrets, sn.Bindings = al, f.secrets.Dump(), f.ledger.Dump()
 	return &fsmSnapshot{sn: sn}, nil
 }
@@ -520,3 +545,27 @@ func (s *fsmSnapshot) Persist(sink raft.SnapshotSink) error {
 }
 
 func (s *fsmSnapshot) Release() { s.sn = snapshot{} }
+
+// applyRenewCA adopts a renewed mesh CA certificate, or returns why not. The
+// checks read only the entry and the replicated state, so every replica
+// decides alike.
+func (f *FSM) applyRenewCA(re RenewCAEntry) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.core.format() < 2 {
+		return errors.New("cds-ha: CA renewal needs format 2")
+	}
+	if f.ca == nil {
+		return errors.New("cds-ha: no mesh CA to renew")
+	}
+	cert, err := x509.ParseCertificate(re.RootCert)
+	if err != nil {
+		return fmt.Errorf("renewed mesh CA certificate: %w", err)
+	}
+	if err := issuer.RenewalOf(f.ca.Cert, cert); err != nil {
+		return err
+	}
+	f.core.RootCert = slices.Clone(re.RootCert)
+	f.ca = &issuer.CA{Cert: cert, Key: f.ca.Key}
+	return nil
+}

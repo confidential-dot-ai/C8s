@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	"crypto/elliptic"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -28,7 +27,11 @@ import (
 
 func mustCA(t *testing.T) *issuer.CA {
 	t.Helper()
-	ca, err := issuer.NewCAWithCurve("test", time.Hour, elliptic.P384())
+	mesh, err := issuer.NewMeshCA("test", time.Hour)
+	var ca *issuer.CA
+	if err == nil {
+		ca = mesh.Current().CA
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
