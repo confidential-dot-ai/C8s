@@ -19,6 +19,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 // config represents the plugin configuration.
@@ -37,6 +38,15 @@ type config struct {
 	// Mesh is the trusted mesh policy (roles.go); required.
 	Mesh    *meshPolicy   `yaml:"mesh"`
 	Measure measureConfig `yaml:"measure"`
+	Pod     *podConfig    `yaml:"pod,omitempty"`
+}
+
+// podConfig is the signed identity the guest preparation stages. Runtime UID
+// and sandbox identity come independently from NRI, never from this document.
+type podConfig struct {
+	UID       string `yaml:"uid"`
+	Namespace string `yaml:"namespace"`
+	Name      string `yaml:"name"`
 }
 
 // measureConfig extends each started workload's image digest into RTMR[3]
@@ -476,7 +486,29 @@ func (c *config) Validate() error {
 	if err := c.validateMesh(); err != nil {
 		return err
 	}
+	if err := c.validatePod(); err != nil {
+		return err
+	}
 	return validateLabelRules(c.Policy.LabelRules)
+}
+
+func (c *config) validatePod() error {
+	if !c.Measure.RTMR3 && c.Pod == nil && c.Mesh.Pod == nil {
+		return nil
+	}
+	if !c.Measure.RTMR3 || c.Pod == nil || c.Mesh.Pod == nil || c.Pod.UID == "" || c.Pod.Namespace == "" || c.Pod.Name == "" {
+		return fmt.Errorf("the Pod broker requires measure.rtmr3 and the signed pod uid, namespace and name")
+	}
+	if c.NormalizedPlatform() != "tdx" || !c.PullEnabled() || c.Allowlist.Pull.CDSMeasurementsConfig == "" || c.Allowlist.NodeTCB || c.Policy.Mode != ModeFailClosed || c.Policy.Sandbox != SandboxEnforce || !c.Policy.FatalExisting {
+		return fmt.Errorf("the Pod broker requires TDX, authenticated CDS pull and fail-closed sandbox enforcement without node TCB")
+	}
+	if len(c.Policy.ExemptNamespaces) != 0 || len(c.Mesh.ExemptNamespaces) != 0 || c.Pod.Namespace == routerNamespace {
+		return fmt.Errorf("the Pod broker permits no namespace exemptions or router namespace")
+	}
+	if len(c.Mesh.Roles) != 1 || c.Mesh.Roles[0].Name != meshRole || c.Mesh.Roles[0].UID != workloadclaims.MeshUID || len(c.Mesh.Roles[0].Destinations) != 0 || c.Mesh.CredentialAttestationPort != 0 || c.WorkloadClaims.CDSNodePort != 0 {
+		return fmt.Errorf("the Pod broker requires only the mesh role and no Pod credential-client bypass")
+	}
+	return nil
 }
 
 // validateMesh requires a mesh policy this node can enforce.
@@ -525,7 +557,7 @@ func (c *config) validateMeshRoleBindings() error {
 // install, where the mesh runs for test clusters and the admin who wrote the
 // policy could undo the enforcement anyway.
 func (c *config) requiresTrustedMeshEnforcement() bool {
-	return c.Allowlist.NodeTCB
+	return c.Allowlist.NodeTCB || c.Measure.RTMR3
 }
 
 // validateLabelRules checks label rules for errors.

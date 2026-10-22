@@ -79,6 +79,13 @@ func captureOutbound(p Policy) chain {
 		{"pod-local", withVerdict(matchLocalDestination(), expr.VerdictReturn)},
 		{"mesh-sockets", withVerdict(matchSocketUID(p.MeshUID), expr.VerdictReturn)},
 	}
+	if p.Pod != nil {
+		for _, peer := range p.Pod.Peers {
+			match := slices.Concat(matchDestination(peer.Addr), matchTCPPort(peer.Port), redirectTo(p.Capture.Outbound))
+			rules = append(rules, rule{fmt.Sprintf("capture-peer-%s-%d", peer.Addr, peer.Port), match})
+		}
+		return captureChain("capture-outbound", *nftables.ChainHookOutput, rules)
+	}
 	for _, role := range p.Roles {
 		name := fmt.Sprintf("role-%d-sockets", role.UID)
 		rules = append(rules, rule{name, withVerdict(matchSocketUID(role.UID), expr.VerdictReturn)})
@@ -113,6 +120,14 @@ func filterInput(p Policy) chain {
 // root-owned socket here entered the namespace from outside, as port-forward
 // does.
 func filterOutput(p Policy) chain {
+	if p.Pod != nil {
+		rules := slices.Concat([]rule{
+			{"namespace-entrant", withVerdict(matchSocketUID(0), expr.VerdictDrop)},
+		}, listenerOwnerRules(p), replyAndControlRules(), []rule{
+			{"pod-local", withVerdict(matchLocalDestination(), expr.VerdictAccept)},
+		}, roleDestinationRules(Role{UID: p.MeshUID, Destinations: p.Pod.Peers}))
+		return denyChain("filter-output", *nftables.ChainHookOutput, rules)
+	}
 	resolverUDP := fmt.Sprintf("resolver-%s-udp", p.Resolver)
 	resolverTCP := fmt.Sprintf("resolver-%s-tcp", p.Resolver)
 	rules := slices.Concat([]rule{
@@ -141,6 +156,9 @@ func listenerOwnerRules(p Policy) []rule {
 	rules := make([]rule, 0, 4)
 	for _, port := range []uint16{p.Capture.Inbound, p.Capture.Health} {
 		mesh := slices.Concat(matchSocketUID(p.MeshUID), matchTCPSourcePort(port))
+		if p.Pod != nil {
+			mesh = append(mesh, matchCtState(ctStateEstablished)...)
+		}
 		name := fmt.Sprintf("mesh-listener-%d", port)
 		rules = append(rules, rule{name, withVerdict(mesh, expr.VerdictAccept)})
 		taken := fmt.Sprintf("listener-%d-taken-over", port)

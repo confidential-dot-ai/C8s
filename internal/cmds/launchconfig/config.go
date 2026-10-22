@@ -32,6 +32,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/readutil"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 const (
@@ -162,6 +163,10 @@ type Document struct {
 	// Workloads is an optional strict c8s.allowlist/v1 JSON document. Keeping
 	// its existing wire schema avoids an independent YAML policy language.
 	Workloads string `yaml:"workloads,omitempty" json:"workloads,omitempty"`
+
+	// PodImagePolicy authorizes Pod workload issuance, separately from node
+	// peer trust. Only a signed server document may supply this JSON policy.
+	PodImagePolicy string `yaml:"podImagePolicy,omitempty" json:"pod_image_policy,omitempty"`
 
 	// Router is the server's front door. A baked image cannot know it at
 	// build time, so the signed launch file carries it.
@@ -562,6 +567,9 @@ func (d *Document) validate() error {
 		}
 		seen = append(seen, key)
 	}
+	if err := d.validatePodImagePolicy(seen); err != nil {
+		return err
+	}
 	if d.TLSSAN == "" {
 		d.TLSSAN = defaultTLSSAN
 	}
@@ -637,6 +645,31 @@ func validateRegistryMirrors(mirrors map[string]string) error {
 func portNumber(s string) bool {
 	p, err := strconv.Atoi(s)
 	return err == nil && strconv.Itoa(p) == s && len(validation.IsValidPortNum(p)) == 0
+}
+
+func (d *Document) validatePodImagePolicy(nodeKeys []*ecdsa.PublicKey) error {
+	if d.PodImagePolicy == "" {
+		return nil
+	}
+	if d.Role != Server {
+		return fmt.Errorf("podImagePolicy is server-only")
+	}
+	pins, err := workloadclaims.ParsePodImagePolicy([]byte(d.PodImagePolicy))
+	if err != nil {
+		return fmt.Errorf("podImagePolicy: %w", err)
+	}
+	for _, pin := range pins.Images {
+		key, err := parseLaunchKey(string(pin.Anchor))
+		if err != nil {
+			return fmt.Errorf("podImagePolicy: %w", err)
+		}
+		for _, nodeKey := range nodeKeys {
+			if key.Equal(nodeKey) {
+				return fmt.Errorf("pod launch keys must differ from server and agent launch keys")
+			}
+		}
+	}
+	return nil
 }
 
 func (d *Document) authorizeKey(pub []byte, key *ecdsa.PublicKey) error {

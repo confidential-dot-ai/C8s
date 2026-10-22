@@ -68,6 +68,7 @@ type generation struct {
 // credentialVolume is the private volume a pod publishes on, named by the file
 // names its readers use.
 type credentialVolume struct {
+	root     *os.Root
 	dir      string
 	leafName string
 	keyName  string
@@ -357,6 +358,9 @@ func chainIssuer(g *generation, now time.Time) error {
 // publishGeneration writes one generation and atomically replaces current.
 // Readers resolve current once before opening files in that directory.
 func publishGeneration(v credentialVolume, g *generation) error {
+	if v.root != nil {
+		return publishRootGeneration(v, g)
+	}
 	previous, err := v.publishedName()
 	if err != nil {
 		return err
@@ -412,6 +416,9 @@ func publishGeneration(v credentialVolume, g *generation) error {
 // withdrawGeneration removes the pointer and the reader paths, so no consumer
 // can read the withdrawn set.
 func withdrawGeneration(v credentialVolume) error {
+	if v.root != nil {
+		return withdrawRootGeneration(v)
+	}
 	paths := []string{v.pointerPath()}
 	for _, name := range v.names() {
 		paths = append(paths, filepath.Join(v.dir, name))
@@ -486,7 +493,13 @@ func linkTempPath(path string) (string, error) {
 // loadIssuerRecord reads the CA key the pod is bound to. The record outlives
 // withdrawal, so errNoIssuerRecord means no generation was ever published here.
 func loadIssuerRecord(v credentialVolume) (issuerKeyID, error) {
-	data, err := os.ReadFile(v.issuerPath())
+	var data []byte
+	var err error
+	if v.root != nil {
+		data, err = v.root.ReadFile(issuerRecordName)
+	} else {
+		data, err = os.ReadFile(v.issuerPath())
+	}
 	if errors.Is(err, os.ErrNotExist) {
 		return "", errNoIssuerRecord
 	}
@@ -501,6 +514,9 @@ func loadIssuerRecord(v credentialVolume) (issuerKeyID, error) {
 }
 
 func writeIssuerRecord(v credentialVolume, id issuerKeyID) error {
+	if v.root != nil {
+		return fileutil.WriteAtomicRoot(v.root, issuerRecordName, []byte(string(id)+"\n"), 0o644)
+	}
 	if err := fileutil.WriteAtomic(v.issuerPath(), []byte(string(id)+"\n"), 0o644); err != nil {
 		return fmt.Errorf("write issuer record: %w", err)
 	}

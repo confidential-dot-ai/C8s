@@ -114,6 +114,54 @@ func TestInventoryReportsTheMeasuredRole(t *testing.T) {
 	}
 }
 
+func TestInventoryKeepsEveryUnresolvedCreationDenial(t *testing.T) {
+	inv := newAdmissionInventory(t.TempDir())
+	first, second := errors.New("first image not admitted"), errors.New("second image not admitted")
+	inv.recordCreationDenial("pod", "first", first)
+	inv.recordCreationDenial("pod", "second", second)
+	if refusal := inv.denial("pod"); !errors.Is(refusal, first) || !errors.Is(refusal, second) {
+		t.Fatalf("one of two creation refusals was lost: %v", refusal)
+	}
+	inv.record("retry-first", "pod", "first", digestApp, []string{"/app"}, nil)
+	if refusal := inv.denial("pod"); errors.Is(refusal, first) || !errors.Is(refusal, second) {
+		t.Fatalf("first retry cleared the wrong refusal: %v", refusal)
+	}
+	inv.record("unrelated", "pod", "other", digestApp, []string{"/app"}, nil)
+	if refusal := inv.denial("pod"); !errors.Is(refusal, second) {
+		t.Fatalf("unrelated admission cleared second refusal: %v", refusal)
+	}
+	inv.record("retry-second", "pod", "second", digestApp, []string{"/app"}, nil)
+	if refusal := inv.denial("pod"); refusal != nil {
+		t.Fatalf("all denied names retried successfully: %v", refusal)
+	}
+}
+
+func TestInventoryPermanentDenialDominatesCreationRetries(t *testing.T) {
+	for _, permanentFirst := range []bool{false, true} {
+		t.Run(fmt.Sprintf("permanent-first=%v", permanentFirst), func(t *testing.T) {
+			inv := newAdmissionInventory(t.TempDir())
+			permanent, temporary := errors.New("final admission failed"), errors.New("creation failed")
+			if permanentFirst {
+				inv.recordDenial("pod", permanent)
+			}
+			inv.recordCreationDenial("pod", "app", temporary)
+			if !permanentFirst {
+				inv.recordDenial("pod", permanent)
+			}
+			inv.recordCreationDenial("pod", "other", errors.New("later creation failed"))
+			inv.record("retry", "pod", "app", digestApp, []string{"/app"}, nil)
+			inv.record("retry-other", "pod", "other", digestApp, []string{"/other"}, nil)
+			if refusal := inv.denial("pod"); !errors.Is(refusal, permanent) {
+				t.Fatalf("creation retry erased permanent refusal: %v", refusal)
+			}
+			inv.removeSandbox("pod")
+			if refusal := inv.denial("pod"); refusal != nil {
+				t.Fatalf("removed sandbox retained refusal: %v", refusal)
+			}
+		})
+	}
+}
+
 // sandboxDigestsFor walks the production path CDS drives: bind the caller by
 // kernel credentials to its sandbox, then list what that sandbox runs.
 func sandboxDigestsFor(b *admissionInventory, pid int) ([]string, error) {

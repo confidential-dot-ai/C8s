@@ -333,6 +333,10 @@ cds:
   ## `c8s install --image-policy-file <file>` or `helm --set-file`. Empty
   ## disables whole-image matching; `measurements` above still pins.
   measurementsConfig: ""
+  ## Separate complete Pod image and launch-key policy for Pod workload
+  ## issuance. Empty disables Pod issuance. Never added to node peer trust.
+  ## Content, not a path: helm --set-file cds.podImagePolicy=<file>.
+  podImagePolicy: ""
   operatorKeys: ""
   rateLimit: 10
   rateBurst: 20

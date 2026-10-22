@@ -206,6 +206,7 @@ manifest is refused at signing and in the guest.
 c8s node launch-config new-pod --out pod1 --cluster-id demo \
   --image-manifest manifest.json \
   --server-address 10.0.0.10 --server-public-key demo/server/pubkey \
+  --mesh-peer 10.0.0.20:8080 \
   --pod-manifest pod.json --workloads workloads.json
 ```
 
@@ -227,6 +228,42 @@ leave the last applied CDS policy in force. Neither source receives a node-TCB
 exemption. The pod role measures started images only and refuses a baked
 configuration that also enables `allowlist.pull.measure_policies`.
 
+Every pod includes the image's measured mesh endpoint as its first native init
+sidecar. Admission requires the baked mesh policy and verified packet capture;
+omitting that policy cannot disable these checks. A guest-owned broker obtains
+the endpoint's TLS credentials from CDS, using fresh evidence over the complete
+admission history. Only the endpoint mounts the broker's credential volume,
+read-only. Applications receive neither those keys nor access to guest evidence
+services. The endpoint can start before credentials exist; it becomes ready
+only after receiving valid credentials. Base-policy applications can start
+while CDS is unavailable, but cannot establish mesh connections without them.
+
+CDS must explicitly authorize the Pod image and launch key. Supply a separate
+image-policy JSON file with TDX MRTD, RTMR1, RTMR2 and the exact Pod public-key
+PEM bytes; node peer pins do not authorize Pod issuance. For a new server bundle,
+pass `--pod-image-policy-file pods.json` to `c8s node launch-config new`.
+For an existing signed server document, set `podImagePolicy` to that file's
+contents, re-sign and relaunch the server. Agent and Pod documents cannot carry
+this authority, and its keys must differ from server and agent keys. In an
+unbaked Helm deployment use `--set-file cds.podImagePolicy=pods.json`; a direct
+CDS process uses `--pod-image-policy-file`. An absent or zero-byte policy disables
+Pod issuance.
+
+The CDS workload policy must also include every measured image digest, including
+the platform endpoint. A mesh-only bootstrap snapshot can receive an unnamed
+membership certificate. A workload name requires a unique match of the complete
+retained application history, including exited init containers. This profile
+does not authorize secret release. See [Pod CVM issuance](armtls.md#pod-cvm-issuance).
+
+Repeat `--mesh-peer` for each already-known destination's exact IPv4 address and
+TCP port. An empty list permits no outbound peer. To expose an application,
+declare its TCP `containerPort` in the signed Pod manifest and map the provider's
+external endpoint to that guest port. Guest forwarding preserves the application
+port and traffic passes through mesh authentication before reaching it. Do not
+map to the internal capture listener or add `hostPort`. Dynamic endpoint discovery
+is not provided. This implementation permits those mesh destinations; general
+internet and DNS egress are not yet available.
+
 The pod manifest requires `metadata.uid` and digest-pinned container images.
 Volumes must be `emptyDir` with `medium: Memory`, so pod state stays in VM
 memory whether or not a scratch disk is attached. Host namespaces, `hostPort`,
@@ -238,22 +275,17 @@ guest status over armTLS on `:8443`. The measurement journal stays inside the
 guest: this role supplies no node credential-client mounts or sandbox-token
 service to pod containers.
 
-The pod is a mesh member. The guest keeps the node image's mesh policy with
-the mesh role alone and no exempt namespace, and keeps the mesh endpoint's
-entry of the measured base beside the signed workloads. The manifest must
-therefore run the mesh endpoint before anything else: the `armtls-mesh` image
-at the digest the node image bakes, with the argv, the `c8s-certs` emptyDir
-at `/etc/c8s/certs` and the UID that the chart's `c8s.meshEndpointContainer`
-helper renders, first in `initContainers` with `restartPolicy: Always`. The
-enforcer grants the mesh role to that image under that argv as that UID and
-to nothing else, and refuses every other container until it has started. Every
-other container runs as a nonzero UID no role reserves, and the runtime
-wrapper's privilege floor (`docs/node-exec-mode.md`) bounds every container of
-the pod; a container that drops all capabilities, sets
-`allowPrivilegeEscalation: false` and `runAsNonRoot: true`, and requests no
-TTY and no shared process namespace stays within it. The pod's TCP is
-captured into the endpoint, which serves nothing until it holds a
-certificate; this role does not yet obtain one for it.
+The guest keeps the baked mesh policy with the endpoint role alone and no
+exempt namespace. The runtime wrapper's [privilege floor](node-exec-mode.md)
+covers every container. Workload containers must use a nonzero, unreserved UID,
+drop all capabilities, set `allowPrivilegeEscalation: false` and
+`runAsNonRoot: true`, and request neither a TTY nor a shared process namespace.
+The guest adds the endpoint; do not supply a platform sidecar in the manifest.
+
+Use HTTP probes of the application's own path and port. The guest rewrites them
+through the endpoint's health listener; no host port is needed. TCP/gRPC probes,
+HTTP probes with a custom host or headers, HTTPS probes and HTTP lifecycle hooks
+are refused. Locked images also refuse exec probes through the runtime wrapper.
 
 Manual edits require a new signature from that document's launch key. For a
 server document, run

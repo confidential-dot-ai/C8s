@@ -138,6 +138,7 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 	store := newPolicyStore(cfg.Allowlist.Base)
 
 	var wlClient allowlistclient.Client
+	var cdsHTTPClient *http.Client
 	if cfg.PullEnabled() {
 		logger.Info("initializing allowlist client", "url", cfg.Allowlist.Pull.URL)
 		httpClient, err := allowlistPullHTTPClient(cfg.Allowlist.Pull, cfg.NormalizedPlatform())
@@ -145,6 +146,7 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 			return fmt.Errorf("create allowlist client: %w", err)
 		}
 		wlClient = allowlistclient.NewClientWithHTTP(cfg.Allowlist.Pull.URL, httpClient)
+		cdsHTTPClient = httpClient
 	}
 
 	logNodeRoot(logger, cfg.AllowlistEnabled(), nodeRootUnavailable)
@@ -152,6 +154,10 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 	if err != nil {
 		return fmt.Errorf("create plugin: %w", err)
 	}
+	if err := plugin.preparePodBroker(ctx, cdsHTTPClient); err != nil {
+		return fmt.Errorf("prepare Pod credential broker: %w", err)
+	}
+	defer plugin.closePodBroker()
 	// Before the plugin serves a single container creation: a pod admitted
 	// without this mount would read no pins at all.
 	if err := plugin.prepareCDSPins(); err != nil {

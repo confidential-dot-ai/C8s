@@ -25,7 +25,8 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/getcert"
+	"github.com/confidential-dot-ai/c8s/internal/podmesh"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
@@ -33,15 +34,18 @@ import (
 // assertPodBootstrap receives nodeservices.Prepare's validated output. Only
 // paths and the policy transport are rebased: armTLS authentication is tested
 // separately, while this test controls outages and exercises real NRI RPCs.
-// The pod runs in a network namespace of its own, so the gate installs and
-// verifies its ruleset for real; the kubelet root is not this host's, so the
-// pod's emptyDir is read as memory-backed without a mount under it.
 func assertPodBootstrap(t *testing.T, cfg *config, root string, podKey []byte, baseDigest string) {
 	t.Helper()
-	sandboxPID := sandboxProcess(t)
-	oldStorage := newStorageInspector
-	newStorageInspector = func() mountStorageInspector { return fixedStorage(allowlist.MountMemory) }
-	t.Cleanup(func() { newStorageInspector = oldStorage })
+	for _, scenario := range []string{"workload before endpoint", "wrong endpoint argv", "complete bootstrap"} {
+		t.Run(scenario, func(t *testing.T) {
+			local := *cfg
+			runPodBootstrap(t, &local, root, podKey, baseDigest, scenario)
+		})
+	}
+}
+
+func runPodBootstrap(t *testing.T, cfg *config, root string, podKey []byte, baseDigest, scenario string) {
+	t.Helper()
 	// Keep Unix socket paths below the kernel limit, including on long CI roots.
 	dir, err := os.MkdirTemp("", "pod-nri-")
 	if err != nil {
@@ -55,6 +59,7 @@ func assertPodBootstrap(t *testing.T, cfg *config, root string, podKey []byte, b
 	cfg.Allowlist.Pull.CDSMeasurementsConfig = filepath.Join(root, cfg.Allowlist.Pull.CDSMeasurementsConfig)
 	cfg.Allowlist.Pull.Timeout = 5 * time.Second
 	cfg.Allowlist.Pull.Interval = 20 * time.Millisecond
+	pod, credentialSource := preparePodBootstrapRuntime(t, cfg, dir)
 	if !cfg.Measure.RTMR3 || cfg.Allowlist.Pull.MeasurePolicies || !cfg.PullEnabled() {
 		t.Fatal("prepared policy must measure workloads and poll CDS")
 	}
@@ -67,6 +72,14 @@ func assertPodBootstrap(t *testing.T, cfg *config, root string, podKey []byte, b
 	t.Cleanup(func() {
 		readOperatorKey, openRegister, allowlistApiMaxRetries = oldKey, oldOpen, oldRetries
 	})
+	brokerStarted := make(chan getcert.GuestConfig, 1)
+	oldGuest := runGuestCredentials
+	runGuestCredentials = func(ctx context.Context, guest getcert.GuestConfig) error {
+		brokerStarted <- guest
+		<-ctx.Done()
+		return nil
+	}
+	t.Cleanup(func() { runGuestCredentials = oldGuest })
 
 	body := canonicalBody(t, anyAllowlist(map[string]string{pushDigestB: "served"}))
 	firstPull := make(chan struct{})
@@ -153,18 +166,19 @@ func assertPodBootstrap(t *testing.T, cfg *config, root string, podKey []byte, b
 	wait("NRI synchronization", func() bool { return closed(registered) })
 	wait("first CDS pull", func() bool { return closed(firstPull) })
 
-	pod := sandboxedPod()
-	pod.Pid = sandboxPID
-	for _, ns := range pod.Linux.Namespaces {
-		if ns.Type == "network" {
-			ns.Path = sandboxNetNSPath(sandboxPID)
-		}
-	}
 	injectedPod(pod) // Forged injection metadata must not enable node services.
 	if err := nri.RunPodSandbox(ctx, &api.RunPodSandboxRequest{Pod: pod}); err != nil {
 		t.Fatal(err)
 	}
-	start := func(ctr *api.Container) {
+	// A structural denial ends this guest's issuance authority, so each
+	// negative case has its own fresh runtime and boot identity.
+	if scenario == "workload before endpoint" {
+		if _, err := nri.CreateContainer(ctx, &api.CreateContainerRequest{Pod: pod, Container: podBootstrapContainer(pod, "early", "app", baseDigest)}); err == nil {
+			t.Fatal("a workload was admitted before the pod's mesh endpoint")
+		}
+		return
+	}
+	start := func(ctr *api.Container) *api.Container {
 		t.Helper()
 		response, err := nri.CreateContainer(ctx, &api.CreateContainerRequest{Pod: pod, Container: ctr})
 		if err != nil {
@@ -176,31 +190,64 @@ func assertPodBootstrap(t *testing.T, cfg *config, root string, podKey []byte, b
 		if err := nri.StartContainer(ctx, &api.StartContainerRequest{Pod: pod, Container: ctr}); err != nil {
 			t.Fatalf("start %s: %v", ctr.Name, err)
 		}
-	}
-	create := func(id, name, digest string) *api.Container {
-		t.Helper()
-		ctr := podBootstrapContainer(pod, id, name, digest)
-		start(ctr)
 		return ctr
 	}
-	// The pod is a mesh member from its first container: nothing starts
-	// before the mesh endpoint, which the measured base admits while the
-	// first pull is still blocked, and the mesh role goes to that image under
-	// its exact argv as its reserved identity alone.
-	if _, err := nri.CreateContainer(ctx, &api.CreateContainerRequest{Pod: pod, Container: podBootstrapContainer(pod, "early", "app", baseDigest)}); err == nil {
-		t.Fatal("a workload was admitted before the pod's mesh endpoint")
+	create := func(id, name, digest string) *api.Container {
+		return start(podBootstrapContainer(pod, id, name, digest))
 	}
-	impostor := podMeshEndpoint(pod, "impostor")
-	impostor.Args = impostor.Args[:2]
-	if _, err := nri.CreateContainer(ctx, &api.CreateContainerRequest{Pod: pod, Container: impostor}); err == nil {
-		t.Fatal("the mesh image under another argv was admitted as the mesh endpoint")
+	var meshDigest string
+	for _, workload := range cfg.Allowlist.Base.Workloads {
+		for _, container := range workload.Containers {
+			if container.Role != meshRole {
+				continue
+			}
+			meshDigest = container.Digest.String()
+			mesh := podBootstrapContainer(pod, "endpoint", workloadclaims.MeshContainerName, meshDigest)
+			mesh.Args = slices.Concat(container.Command.Argv, container.Args.Argv)
+			mesh.User = &api.User{Uid: workloadclaims.MeshUID, Gid: workloadclaims.MeshUID}
+			mesh.Mounts = append(mesh.Mounts, readOnlyBind(credentialSource, podmesh.CertDir))
+			if scenario == "wrong endpoint argv" {
+				mesh.Args = mesh.Args[:2]
+				if _, err := nri.CreateContainer(ctx, &api.CreateContainerRequest{Pod: pod, Container: mesh}); err == nil {
+					t.Fatal("the measured image under another argv was admitted as the mesh endpoint")
+				}
+				return
+			}
+			start(mesh)
+		}
 	}
-	start(podMeshEndpoint(pod, "mesh"))
+	if meshDigest == "" {
+		t.Fatal("prepared policy has no measured mesh endpoint")
+	}
+	var guest getcert.GuestConfig
+	select {
+	case guest = <-brokerStarted:
+	case <-ctx.Done():
+		t.Fatal("guest broker did not start after the measured endpoint")
+	}
+	first, err := guest.Snapshot(ctx)
+	if err != nil || len(first.Containers) != 1 || first.Containers[0].Role != meshRole || !slices.Equal(first.RuntimeExtensions, []string{meshDigest}) {
+		t.Fatalf("first broker snapshot = %+v, %v", first, err)
+	}
+	if err := guest.Commit(first, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
 	// This start completes while the first pull is still blocked.
 	create("base", "app", baseDigest)
+	published := false
+	if err := guest.Commit(first, func() error { published = true; return nil }); err == nil || published {
+		t.Fatal("credential publication accepted the snapshot from before workload admission")
+	}
 	unknown := podBootstrapContainer(pod, "unknown", "unknown", pushDigestC)
 	if _, err := nri.CreateContainer(ctx, &api.CreateContainerRequest{Pod: pod, Container: unknown}); err == nil {
 		t.Fatal("unlisted workload admitted during first pull")
+	}
+	if _, err := guest.Snapshot(ctx); err == nil {
+		t.Fatal("bootstrap broker asserted identity with an unresolved pre-ready creation refusal")
+	}
+	create("unknown-initial-retry", "unknown", baseDigest)
+	if _, err := guest.Snapshot(ctx); err != nil {
+		t.Fatalf("bootstrap broker did not recover after that same name was admitted: %v", err)
 	}
 	release()
 	healthClient := unixHealthClient(filepath.Join(dir, "health.sock"))
@@ -241,51 +288,47 @@ func assertPodBootstrap(t *testing.T, cfg *config, root string, podKey []byte, b
 	waitHealth(1)
 	create("cached", "cached", pushDigestB)
 	create("base-after-pull", "app", baseDigest)
+	// A transient Create refusal is lifted only by admitting that same name.
+	create("mount-now-admitted", workloadclaims.CertContainerName, baseDigest)
+	claims, err := guest.Snapshot(ctx)
+	if err != nil || len(claims.Containers) < 3 || !slices.Equal(claims.RuntimeExtensions, []string{meshDigest, baseDigest, pushDigestB}) {
+		t.Fatalf("complete broker snapshot = %+v, %v", claims, err)
+	}
+	if err := nri.RemovePodSandbox(ctx, &api.RemovePodSandboxRequest{Pod: pod}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := guest.Snapshot(ctx); err == nil {
+		t.Fatal("broker retained identity after losing sandbox history")
+	}
 	stop()
 
 	data, err := os.ReadFile(filepath.Join(cfg.WorkloadClaims.SocketDir, armtls.MeasuredPoliciesJournal))
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The mesh endpoint is a started image of the pod like any other, so the
-	// pod's measurement carries it first.
-	started := []string{meshImageDigest, baseDigest, pushDigestB}
-	if got := strings.Fields(string(data)); !slices.Equal(got, started) {
-		t.Fatalf("journal = %v; want only started image digests %v", got, started)
+	if got := strings.Fields(string(data)); !slices.Equal(got, []string{meshDigest, baseDigest, pushDigestB}) {
+		t.Fatalf("journal = %v; want only started workload digests", got)
 	}
-	want := runtimemeasure.FromDigestsSeeded(runtimemeasure.Seed(podKey), started)
+	want := runtimemeasure.FromDigestsSeeded(runtimemeasure.Seed(podKey), []string{meshDigest, baseDigest, pushDigestB})
 	if reg.value != want {
-		t.Fatal("runtime register does not match Pod launch key plus started images")
+		t.Fatal("runtime register does not match Pod launch key plus started workloads")
 	}
 }
 
-// podBootstrapContainer is a container of the pod as containerd reports one:
-// in a pid namespace of its own, as every container of a member pod is.
 func podBootstrapContainer(pod *api.PodSandbox, id, name, digest string) *api.Container {
 	ctr := sandboxedContainer()
 	ctr.Id, ctr.Name, ctr.PodSandboxId = id, name, pod.Id
+	ctr.Args = []string{"/app/workload", name}
+	ctr.Env = []string{}
 	ctr.User = &api.User{Uid: workloadclaims.CredentialsUID}
 	ctr.Annotations = map[string]string{annotationImageName: "image@" + digest}
 	ctr.Mounts = slices.DeleteFunc(ctr.Mounts, func(m *api.Mount) bool {
 		return m.Destination == serviceAccountDestination
 	})
-	ctr.Linux.Namespaces = append(ctr.Linux.Namespaces, &api.LinuxNamespace{Type: pidNamespace})
-	return ctr
-}
-
-// podMeshEndpoint is the pod's mesh endpoint as the baked base declares it:
-// the baked image under the injected argv, its certificate emptyDir mounted,
-// running as the mesh role's reserved identity.
-func podMeshEndpoint(pod *api.PodSandbox, id string) *api.Container {
-	ctr := podBootstrapContainer(pod, id, "c8s-mesh", meshImageDigest)
-	ctr.User = &api.User{Uid: workloadclaims.MeshUID}
-	ctr.Args = []string{"/app/c8s", "armtls-mesh", "--cert-path=/etc/c8s/certs/tls.crt", "--key-path=/etc/c8s/certs/tls.key", "--ca-path=/etc/c8s/certs/ca.crt"}
-	ctr.Mounts = append(ctr.Mounts, &api.Mount{
-		Destination: "/etc/c8s/certs",
-		Type:        "bind",
-		Source:      kubeletRoot + "/pods/" + pod.Uid + "/volumes/" + emptyDirPlugin + "/c8s-certs",
-		Options:     []string{"rbind", "rprivate", "ro"},
-	})
+	for _, m := range ctr.Mounts {
+		m.Source = strings.ReplaceAll(m.Source, testPodUID, pod.Uid)
+	}
+	ctr.Linux.Namespaces = append(ctr.Linux.Namespaces, &api.LinuxNamespace{Type: "pid"})
 	return ctr
 }
 
