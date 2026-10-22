@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/raft"
+	"github.com/klauspost/compress/zstd"
 
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
@@ -386,14 +387,28 @@ func (f *FSM) Restore(rc io.ReadCloser) error {
 // ErrStaleSnapshot refuses a snapshot older than the state already applied.
 var ErrStaleSnapshot = errors.New("cds-ha: refusing a snapshot older than the applied state")
 
-// A snapshot is gzip over JSON lines: a header line with everything but the
+// A snapshot is compressed JSON lines: a header line with everything but the
 // allowlist tables, then one line per allowlist row (a one-row
 // allowlist.Snapshot, which keeps BLOB columns apart). The allowlist history
 // keeps a whole document per version, so it is most of the state; lines keep
-// encoding and decoding to one row at a time. A snapshot that does not start
-// with the gzip magic is the earlier single JSON object (older backups).
+// encoding and decoding to one row at a time.
+//
+// From cluster format 2 the compression is zstd with a window reaching back
+// past the previous version, so each near-copy of the document is stored as
+// a reference; gzip's 32 KiB window shares nothing between versions of a
+// document larger than that, and a snapshot (and every backup and every
+// snapshot sent to a joining replica) grew by a compressed document per
+// version. Format 1 snapshots stay gzip, which every release reads. A
+// snapshot that starts with neither magic is the earlier single JSON object
+// (older backups).
 func encodeSnapshot(w io.Writer, sn snapshot) error {
-	zw, err := gzip.NewWriterLevel(w, gzip.BestSpeed)
+	var zw io.WriteCloser
+	var err error
+	if sn.Core.format() >= 2 {
+		zw, err = zstd.NewWriter(w, zstd.WithWindowSize(snapshotWindow), zstd.WithEncoderConcurrency(1))
+	} else {
+		zw, err = gzip.NewWriterLevel(w, gzip.BestSpeed)
+	}
 	if err != nil {
 		return err
 	}
@@ -414,6 +429,13 @@ func encodeSnapshot(w io.Writer, sn snapshot) error {
 	return zw.Close()
 }
 
+// snapshotWindow is the zstd window of a format 2 snapshot: enough to reach
+// the previous version of allowlist documents of several MiB, small enough
+// to keep encoder and decoder memory modest.
+const snapshotWindow = 16 << 20
+
+var zstdMagic = []byte{0x28, 0xb5, 0x2f, 0xfd}
+
 func decodeSnapshot(r io.Reader, readable uint32) (snapshot, error) {
 	sn, err := decodeSnapshotAny(r)
 	if err == nil && (formatOr1(sn.Format) > readable || sn.Core.format() > readable) {
@@ -426,15 +448,27 @@ func decodeSnapshot(r io.Reader, readable uint32) (snapshot, error) {
 func decodeSnapshotAny(r io.Reader) (snapshot, error) {
 	var sn snapshot
 	br := bufio.NewReader(r)
-	if magic, _ := br.Peek(2); len(magic) < 2 || magic[0] != 0x1f || magic[1] != 0x8b {
+	magic, _ := br.Peek(4)
+	var zr io.Reader
+	switch {
+	case bytes.HasPrefix(magic, zstdMagic):
+		d, err := zstd.NewReader(br, zstd.WithDecoderMaxWindow(snapshotWindow), zstd.WithDecoderConcurrency(1))
+		if err != nil {
+			return snapshot{}, fmt.Errorf("decode snapshot: %w", err)
+		}
+		defer d.Close()
+		zr = d
+	case len(magic) >= 2 && magic[0] == 0x1f && magic[1] == 0x8b:
+		g, err := gzip.NewReader(br)
+		if err != nil {
+			return snapshot{}, fmt.Errorf("decode snapshot: %w", err)
+		}
+		zr = g
+	default:
 		if err := json.NewDecoder(br).Decode(&sn); err != nil {
 			return snapshot{}, fmt.Errorf("decode snapshot: %w", err)
 		}
 		return sn, nil
-	}
-	zr, err := gzip.NewReader(br)
-	if err != nil {
-		return snapshot{}, fmt.Errorf("decode snapshot: %w", err)
 	}
 	dec := json.NewDecoder(zr)
 	if err := dec.Decode(&sn); err != nil {
