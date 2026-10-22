@@ -12,7 +12,6 @@ package getsecret
 import (
 	"context"
 	"crypto"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -27,7 +26,6 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
-	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
 // config is everything the sidecar needs. The webhook renders all of it.

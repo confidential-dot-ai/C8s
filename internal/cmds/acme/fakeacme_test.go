@@ -33,6 +33,8 @@ type fakeACME struct {
 	// onNewOrder observes each new-order request (front-door race test).
 	onNewOrder   func()
 	failFinalize bool
+	// rateLimitNewOrder refuses every order with RFC 8555 rateLimited.
+	rateLimitNewOrder bool
 
 	mu         sync.Mutex
 	domains    map[string][]string // order id -> identifier values
@@ -107,6 +109,15 @@ func (f *fakeACME) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		if f.failNewOrder {
 			http.Error(w, "boom", http.StatusBadRequest)
+			return
+		}
+		if f.rateLimitNewOrder {
+			w.Header().Set("Content-Type", "application/problem+json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"type":   "urn:ietf:params:acme:error:rateLimited",
+				"detail": "too many certificates (5) already issued for this exact set of identifiers in the last 168h0m0s",
+			})
 			return
 		}
 		var req struct {

@@ -15,9 +15,9 @@ func TestFormatValidation(t *testing.T) {
 		return b
 	}
 	ok := map[string]*Format{
-		"blank":                 {FS: "ext4", When: FormatBlank},
-		"no filesystem, owned":  {FS: "ext4", When: FormatNoFilesystem, RootOwner: "65532:65532"},
-		"absent keeps today's":  nil,
+		"blank":                {FS: "ext4", When: FormatBlank},
+		"no filesystem, owned": {FS: "ext4", When: FormatNoFilesystem, RootOwner: "65532:65532"},
+		"absent keeps today's": nil,
 	}
 	for name, f := range ok {
 		if err := mutable(f).Validate(); err != nil {
@@ -25,12 +25,12 @@ func TestFormatValidation(t *testing.T) {
 		}
 	}
 	bad := map[string]*Format{
-		"other fs":         {FS: "xfs", When: FormatBlank},
-		"no when":          {FS: "ext4"},
-		"unknown when":     {FS: "ext4", When: "always"},
+		"other fs":          {FS: "xfs", When: FormatBlank},
+		"no when":           {FS: "ext4"},
+		"unknown when":      {FS: "ext4", When: "always"},
 		"owner not uid:gid": {FS: "ext4", When: FormatBlank, RootOwner: "nobody"},
-		"owner negative":   {FS: "ext4", When: FormatBlank, RootOwner: "-1:0"},
-		"owner too large":  {FS: "ext4", When: FormatBlank, RootOwner: "4294967296:0"},
+		"owner negative":    {FS: "ext4", When: FormatBlank, RootOwner: "-1:0"},
+		"owner too large":   {FS: "ext4", When: FormatBlank, RootOwner: "4294967296:0"},
 	}
 	for name, f := range bad {
 		if err := mutable(f).Validate(); err == nil {
