@@ -52,11 +52,10 @@ teardown_backend() {
     rm -f "$written"
 }
 
-# The lane's one node, not a Node object a scenario wrote (the steps label
-# those conformance.c8s/ghost).
+# The lane's one node.
 node_name() {
     case "$1" in
-        one) kubectl get nodes -l '!conformance.c8s/ghost' -o jsonpath='{.items[0].metadata.name}' ;;
+        one) kubectl get nodes -o jsonpath='{.items[0].metadata.name}' ;;
         *) return $UNSUPPORTED ;;
     esac
 }
@@ -80,7 +79,7 @@ scratch_encrypted() { echo yes; }
 # c8s CLI's signed writes and raw reads reach the CDS through its built-in
 # allowlist route, which forwards the /allowlist routes unchanged. The
 # operator's credential may neither exec, port-forward nor write in $NS, so
-# the CDS's other routes are sent from the pod the run keeps (mesh_scraper),
+# the CDS's other routes are sent from the pod the run keeps (tools_pod),
 # to the address pods dial, as is the CDS's own serving certificate read;
 # its Service answers unsupported below. The launch bundle's key is the run's operator key; the
 # token minter is built from the checkout on first use, with the Go
@@ -100,8 +99,8 @@ cds_pod_request() {
     shift "$(($# < 6 ? $# : 6))"
     for h; do opts+=(-H "$h"); done
     url="$(cds_pod_url)" || return
-    mesh_scraper || return
-    agent_curl "$MESH_SCRAPER_NS" "$MESH_SCRAPER" "" "$body" "$cert" "$key" "${opts[@]}" "$url$route"
+    tools_pod || return
+    agent_curl "$TOOLS_NS" "$TOOLS_POD" "" "$body" "$cert" "$key" "${opts[@]}" "$url$route"
 }
 cds_read() {
     local path
@@ -114,8 +113,8 @@ router_url() { echo "${C8S_ALLOWLIST_URL%/}"; }
 cds_serving_cert() {
     local url out
     url="$(cds_pod_url)" || return
-    mesh_scraper || return
-    out="$(agent_run "$MESH_SCRAPER_NS" "$MESH_SCRAPER" "" "curl -sk --max-time 30 -o /dev/null -w '%{certs}' $(shq "$url")")" || return
+    tools_pod || return
+    out="$(agent_run "$TOOLS_NS" "$TOOLS_POD" "" "curl -sk --max-time 30 -o /dev/null -w '%{certs}' $(shq "$url")")" || return
     awk '/-----BEGIN CERTIFICATE-----/ {on = 1} on {print} /-----END CERTIFICATE-----/ {exit}' <<<"$out"
 }
 # No node shell, so the plugin's health socket is out of reach.
@@ -161,14 +160,6 @@ attestation_service_stop() { return "$UNSUPPORTED"; }
 attestation_service_start() { return "$UNSUPPORTED"; }
 private_keys() { return "$UNSUPPORTED"; }
 attest_direct() { return "$UNSUPPORTED"; }
-
-# The lane pins the node's own measurement, so its evidence satisfies them.
-mesh_pins_satisfied() { echo yes; }
-
-# No address outside the cluster answers for the lane. A mesh-dialer pod
-# reaches the attestation service over the socket a requester does.
-external_endpoint() { return "$UNSUPPORTED"; }
-attestation_endpoint() { local socket; socket="$(attestation_socket)" && echo "unix://$socket"; }
 
 # The node's local attestation service, over the socket the plugin binds into
 # the requester (the webhook rebases a unix:// attestation-api URL under
@@ -339,32 +330,8 @@ pod_cert_file() {
     esac
 }
 
-# No exec into mesh-sync: it logs a set's whole membership whenever a write
-# changes it, and every set on its first write, so the last line for the set
-# is the set. A mesh that logs none predates that log, so it is unsupported.
-mesh_member() {
-    local pod set member
-    pod="$(mesh_pod_on "$1")"
-    [ -n "$pod" ] || { echo "backend: no mesh pod on $1" >&2; return 1; }
-    case "$2" in
-        interception) set="$MESH_SET_LOCAL" ;;
-        guard) set="$MESH_SET_GUARDED" ;;
-        *) echo "backend: mesh_member: no membership '$2'" >&2; return 2 ;;
-    esac
-    case "$3" in *:*) set+="6" ;; esac
-    member="$(kubectl -n "$NS" logs "$pod" -c "$MESH_SYNC_CONTAINER" |
-        jq -Rr --arg set "$set" --arg ip "$3" '
-            fromjson? | select(.msg == "ipset membership changed" and .set == $set)
-            | if any(.members[]; . == $ip) then "yes" else "no" end' | tail -1)" || return
-    [ -n "$member" ] || return "$UNSUPPORTED"
-    echo "$member"
-}
-
 # agent_exec <ns> <pod> <container> <argv...>: agent_run of the argv.
 agent_exec() { local ns="$1" pod="$2" container="$3"; shift 3; agent_run "$ns" "$pod" "$container" "$(shq "$@")"; }
-
-# The kept scraper runs the agent (manifest_filter).
-mesh_scrape() { agent_exec "$MESH_SCRAPER_NS" "$MESH_SCRAPER" "" "$@"; }
 
 pod_sandbox_id() { return "$UNSUPPORTED"; }
 
@@ -427,21 +394,6 @@ plugin_ready() {
 }
 
 node_containers() { return $UNSUPPORTED; }
-
-# The node image's confos-operator-scope policy denies the operator every
-# write in kube-system, local-path-storage and c8s-system, and every Node
-# write. Those namespaces are the ones that admit host-network and root
-# pods, so those are out of reach.
-PRIVILEGED_NAMESPACES="kube-system local-path-storage c8s-system"
-host_namespace_ns() { return "$UNSUPPORTED"; }
-node_writes() { return "$UNSUPPORTED"; }
-excluded_namespace() {
-    local ns
-    for ns in $(mesh_arg exclude-source-namespaces | tr ',' ' '); do
-        [[ " $PRIVILEGED_NAMESPACES " == *" $ns "* ]] || { echo "$ns"; return; }
-    done
-    return "$UNSUPPORTED"
-}
 
 # No shell on the node, so its plugin cannot be stopped or started; and
 # without a plugin start the plugin would ignore every allowlist a restarted
