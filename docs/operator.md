@@ -639,9 +639,7 @@ The router routes only by this manifest. Its `cds-attest` sidecar polls
 (default 30s). It verifies CDS against the same pins as the allowlist route.
 It verifies the manifest against the operator keys: the node's launch
 configuration on a baked node, else `cds.operatorKeys` (`c8s install
---operator-keys`), else the verified CDS's `GET /operator-keys`. That last
-source needs a CDS pin or, on a development cluster only,
-`router.routing.allowUnpinnedCDS=true`; `c8s install` refuses otherwise (see
+--operator-keys`), else the verified CDS's `GET /operator-keys` (see
 [Route by the manifest](#route-by-the-manifest)). nginx sends every request
 that no protocol endpoint claims to the sidecar's
 loopback routing listener (`router.routing.port`, default 8802). Requests
@@ -884,9 +882,8 @@ The chart sets these flags from `router.routing` and the CDS pins.
 | Flag | Default | Effect |
 |---|---|---|
 | `--cds-url` | none | CDS origin to poll. Required, with `--attestation-api-url`. |
-| `--cds-measurements`, `--cds-rtmrs`, `--image-policy-file` | none | CDS pins. Without `--cds-measurements` or `--image-policy-file`, `cds-attest` logs a warning and accepts any armTLS-attested CDS. Unsafe outside development: any TEE on the pod network can pose as CDS and serve the manifest. |
+| `--cds-measurements`, `--cds-rtmrs`, `--image-policy-file` | none | CDS pins. `cds-attest` refuses to start without `--cds-measurements` or `--image-policy-file`: any TEE on the pod network could otherwise pose as CDS and serve the manifest. |
 | `--operator-keys-file` | none | PEM operator public keys a manifest must verify under, when the launch configuration carries none. |
-| `--allow-unpinned-cds` | `false` | Development only. Route with no CDS pin and the operator keys from that CDS. Without it, `cds-attest` refuses to start in that case. |
 | `--routes-poll-interval` | `30s` | Time between polls. Keep it under half of `maxAgeSeconds`. |
 | `--routing-port` | `0` | Port of the loopback routing listener. `0` disables it. |
 | `--routing-host` | `127.0.0.1` | Host of the routing listener. Must be a loopback IP. |
@@ -904,19 +901,13 @@ readable key stops `cds-attest` at startup, and so does a set
 `--operator-keys-file` that is absent. With neither, it
 takes them from CDS's `GET /operator-keys` and logs a warning: that list is
 control-plane configuration, and the router does not stop a substituted key.
-Keys from an unpinned CDS stop `cds-attest` at startup, unless
-`--allow-unpinned-cds` is set: any attested TEE answering as CDS would then
-choose both the manifest and its keys.
 
-The chart pins CDS from `cds.measurements` or `cds.measurementsConfig`. It
-passes `--operator-keys-file` from the launch configuration on a baked node,
-so a node image without the keys stops `cds-attest`, else from
-`cds.operatorKeys`. With neither a CDS pin nor `cds.operatorKeys`,
-the render fails with `kind=unpinned_route_source` and `c8s install` refuses
-before it starts. Fix it with `--measurements` (or `--image-policy-file`) or
-`--operator-keys`. On a development cluster only, set
-`router.routing.allowUnpinnedCDS=true` in a `-f` file; the chart then passes
-`--allow-unpinned-cds`.
+The chart pins CDS from `cds.measurements` or `cds.measurementsConfig`, and
+refuses a render that sets neither with `kind=cds_pins_required`; `c8s install`
+refuses before it starts. Fix it with `--measurements` (or
+`--image-policy-file`). The chart passes `--operator-keys-file` from the launch
+configuration on a baked node, so a node image without the keys stops
+`cds-attest`, else from `cds.operatorKeys`.
 
 Until it applies a manifest, `cds-attest` answers routed requests with 503
 and refuses attest-pq and attest-lb handshakes with 503 `routes_unavailable`.
@@ -1686,8 +1677,7 @@ It renders exact `/allowlist` and `/allowlist/` prefix locations backed by the
 release's chart-managed CDS Service, so lookalike paths such as `/allowlisted`
 are not exposed. The router-to-CDS hop verifies CDS's armTLS attestation using
 `cds.measurements`; `c8s install --measurements` populates that pin in node-CVM
-mode. An empty pin still verifies that the peer is a TEE but accepts any launch
-measurement, which is unsafe outside development.
+mode. The proxy refuses to start without it.
 
 Before nginx collapses requests onto the loopback proxy connection, it
 rate-limits the route while it still has the public client address. Mutation
@@ -1849,13 +1839,14 @@ component, so only image tags are required (no digests). Disabling it renders
 only because the chart's default `attestationApi.cvmMode=bare-metal` bakes its own
 policy plugin and so is exempt from the `require_host_image_policy` guard; other
 modes (gke/aks) must keep nri-image-policy enabled and digest-pinned, as in the
-full-shape render below. Both renders pin neither CDS nor the operator keys,
-so they set `router.routing.allowUnpinnedCDS`; a real install pins one instead.
+full-shape render below. Both renders carry a placeholder CDS launch digest:
+the chart refuses a release that names no CDS guest, and a real install passes
+the node image's own value.
 
 ```bash
 helm template c8s internal/helmchart/c8s \
   --namespace c8s-system \
-  --set router.routing.allowUnpinnedCDS=true \
+  --set cds.measurements[0]=abababababababababababababababababababababababababababababababababababababababababababababababab \
   --set image.tag=main \
   --set attestationApi.image.tag=main \
   --set cds.image.tag=main \
@@ -1874,7 +1865,7 @@ different label. `c8s install` fills these digests from the registry by default
 ```bash
 helm template c8s internal/helmchart/c8s \
   --namespace c8s-system \
-  --set router.routing.allowUnpinnedCDS=true \
+  --set cds.measurements[0]=abababababababababababababababababababababababababababababababababababababababababababababababab \
   --set image.tag=main \
   --set attestationApi.image.tag=main \
   --set cds.image.tag=main \

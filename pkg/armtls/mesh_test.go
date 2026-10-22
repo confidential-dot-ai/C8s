@@ -287,7 +287,7 @@ func TestEveryConfigRefusesResumption(t *testing.T) {
 	configs := map[string]func(t *testing.T) (*tls.Config, *CertManager, error){
 		"evidence server": func(t *testing.T) (*tls.Config, *CertManager, error) {
 			cfg := testServerConfig()
-			cfg.ClientPolicy = &VerifyPolicy{AttestationApiURL: "http://unused.invalid"}
+			cfg.ClientPolicy = pinnedPolicy("http://unused.invalid")
 			return NewServerTLSConfig(cfg)
 		},
 		"client-CA server": func(t *testing.T) (*tls.Config, *CertManager, error) {
@@ -298,7 +298,7 @@ func TestEveryConfigRefusesResumption(t *testing.T) {
 		},
 		"evidence client": func(t *testing.T) (*tls.Config, *CertManager, error) {
 			return NewClientTLSConfig(&ClientConfig{
-				Policy: &VerifyPolicy{},
+				Policy: pinnedPolicy("http://unused.invalid"),
 				CertProvider: &mockProvider{
 					cert: generateSimpleCert(t),
 					ttl:  time.Hour,
