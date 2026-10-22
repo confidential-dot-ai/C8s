@@ -371,6 +371,8 @@ func run(cfg config) error {
 			return fmt.Errorf("warm up armtls serving cert: %w", err)
 		}
 
+		go certMgr.RunRotation(ctx)
+
 		go cmdsutil.ShutdownOnDone(ctx, srv, 5*time.Second)
 
 		slog.Info("cds listening (armTLS)", "addr", addr, "platform", cfg.armtlsPlatform)
