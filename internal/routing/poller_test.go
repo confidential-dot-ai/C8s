@@ -8,7 +8,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"sync"
 	"testing"
 
@@ -206,9 +205,7 @@ func TestB3PollRetiresPoolsOnBundleChangeDuringFetch(t *testing.T) {
 			if !rotate {
 				return
 			}
-			if err := os.WriteFile(f.meshCAFile, []byte(caPEM(f.mesh, external)), 0o600); err != nil {
-				t.Error(err)
-			}
+			f.publish(t, caPEM(f.mesh, external))
 		}},
 		Keys:       KeyFile(writeFile(t, "keys.pem", publicKeysPEM(t, f.op))),
 		Transports: f.transports,
