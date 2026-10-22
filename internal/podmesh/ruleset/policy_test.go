@@ -77,10 +77,39 @@ func TestPolicyRefusesWhatARuleCannotExpress(t *testing.T) {
 }
 
 func TestPolicyAcceptsANodesTrustedInput(t *testing.T) {
-	for name, policy := range map[string]Policy{"member": testPolicy(), "server": serverPolicy()} {
+	for name, policy := range map[string]Policy{"member": testPolicy(), "server": serverPolicy(), "isolated": {Isolated: true}} {
 		t.Run(name, func(t *testing.T) {
 			if err := policy.validate(); err != nil {
 				t.Fatalf("validate = %v", err)
+			}
+		})
+	}
+}
+
+func TestIsolatedPolicyRefusesClusterExceptions(t *testing.T) {
+	tests := []struct {
+		name  string
+		spoil func(*Policy)
+	}{
+		{"resolver", func(p *Policy) { p.Resolver = netip.MustParseAddr("10.53.0.10") }},
+		{"outbound capture", func(p *Policy) { p.Capture.Outbound = 15001 }},
+		{"inbound capture", func(p *Policy) { p.Capture.Inbound = 15006 }},
+		{"health port", func(p *Policy) { p.Capture.Health = 15021 }},
+		{"mesh identity", func(p *Policy) { p.MeshUID = 1337 }},
+		{"role", func(p *Policy) { p.Roles = []Role{{}} }},
+		{"upstream identity", func(p *Policy) { p.Server.Upstream = 1339 }},
+		{"upstream service", func(p *Policy) { p.Server.Services = []Destination{{}} }},
+		{"server listener", func(p *Policy) { p.Server.Listeners = []uint16{8443} }},
+		{"egress identity", func(p *Policy) { p.Server.Egress.UID = 1340 }},
+		{"egress port", func(p *Policy) { p.Server.Egress.Ports = []uint16{443} }},
+		{"cluster range", func(p *Policy) { p.Server.ClusterRanges = []netip.Prefix{netip.MustParsePrefix("10.52.0.0/16")} }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			policy := Policy{Isolated: true}
+			test.spoil(&policy)
+			if err := policy.validate(); !errors.Is(err, ErrPolicy) {
+				t.Fatalf("error = %v, want ErrPolicy", err)
 			}
 		})
 	}

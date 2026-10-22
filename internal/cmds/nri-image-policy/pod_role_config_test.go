@@ -1,3 +1,5 @@
+//go:build linux
+
 package nriimagepolicy_test
 
 import (
@@ -16,10 +18,10 @@ import (
 
 // The pod role rewrites the baked config at boot (nodeservices.preparePod).
 // Load that output here so the rewrite cannot drift from the plugin schema.
-// A pod measures its images: the rewrite must keep the baked
+// A TDX pod measures its images: the rewrite must keep the baked
 // workload_claims.socket_dir the measure.rtmr3 validation requires.
 func TestNodeImagePodRoleConfig_LoadsBaseOnlyAndEnforces(t *testing.T) {
-	testNodeImagePodRoleConfig(t, "tdx")
+	testNodeImagePodRoleConfig(t, false)
 }
 
 // A platform without a runtime register cannot measure the pod, so
@@ -35,8 +37,11 @@ func TestNodeImagePodRoleConfig_RefusesSNP(t *testing.T) {
 	}
 }
 
-// podRoleInputs stages the baked policy, the pins and a pod document of the
-// given platform under a fresh root, as the initrd leaves them for Prepare.
+func TestNodeImagePodRoleAdmissionInTheNamespace(t *testing.T) {
+	testNodeImagePodRoleConfig(t, true)
+}
+
+// podRoleInputs stages the baked policy, pins and document as the initrd does.
 func podRoleInputs(t *testing.T, platform string) (string, *launchconfig.Document) {
 	t.Helper()
 	root := t.TempDir()
@@ -50,7 +55,8 @@ func podRoleInputs(t *testing.T, platform string) (string, *launchconfig.Documen
 			t.Fatal(err)
 		}
 	}
-	write("usr/lib/c8s/image-policy.yaml", []byte(nriimagepolicy.RenderNodeImagePolicy(t)))
+	rendered := strings.Replace(nriimagepolicy.RenderNodeImagePolicy(t), `platform: "snp"`, `platform: "`+platform+`"`, 1)
+	write("usr/lib/c8s/image-policy.yaml", []byte(rendered))
 	pins, err := refvalues.Load("../../../internal/testdata/node-identities.json")
 	if err != nil {
 		t.Fatal(err)
@@ -71,19 +77,21 @@ func podRoleInputs(t *testing.T, platform string) (string, *launchconfig.Documen
 		Role:      launchconfig.Pod,
 		Image:     launchconfig.Image{Platform: platform},
 		Node:      launchconfig.Node{Name: "p-pod"},
-		Workloads: `{"schema":"c8s.allowlist/v1","workloads":{"app":{"containers":[{"digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","command":{"policy":"any"},"args":{"policy":"any"}}]}}}`,
+		Workloads: `{"schema":"c8s.allowlist/v1","workloads":{"app":{"containers":[{"digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"},"env":{"policy":"any"}}]}}}`,
 		Pod: &launchconfig.PodSpec{UID: "u1", Namespace: "tenant", Name: "app",
-			Manifest: `{"apiVersion":"v1","kind":"Pod","metadata":{"name":"app","namespace":"tenant","uid":"u1"},"spec":{"containers":[{"name":"app","image":"busybox"}]}}`},
+			Manifest: `{"apiVersion":"v1","kind":"Pod","metadata":{"name":"app","namespace":"tenant","uid":"u1"},"spec":{"containers":[{"name":"app","image":"busybox@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]}}`},
 	}
 	return root, doc
 }
 
-func testNodeImagePodRoleConfig(t *testing.T, platform string) {
+func testNodeImagePodRoleConfig(t *testing.T, admit bool) {
+	const platform = "tdx"
 	root, doc := podRoleInputs(t, platform)
 	if err := nodeservices.Prepare(root, doc); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := nriimagepolicy.LoadConfig(filepath.Join(root, "etc/nri/conf.d/image-policy.yaml"))
+	configPath := filepath.Join(root, "etc/nri/conf.d/image-policy.yaml")
+	cfg, err := nriimagepolicy.LoadConfig(configPath)
 	if err != nil {
 		t.Fatalf("pod-role config does not load: %v", err)
 	}
@@ -94,7 +102,20 @@ func testNodeImagePodRoleConfig(t *testing.T, platform string) {
 	if !cfg.Measure.RTMR3 {
 		t.Fatalf("measure.rtmr3 = %v on %s", cfg.Measure.RTMR3, platform)
 	}
+	if cfg.Platform != platform {
+		t.Fatalf("prepared platform = %q, want %q", cfg.Platform, platform)
+	}
 	if cfg.WorkloadClaims.SocketDir != filepath.Dir(armtls.NodeJournal) {
 		t.Fatalf("socket_dir = %q: the pod journal would not be where its readers look", cfg.WorkloadClaims.SocketDir)
+	}
+	floor, err := nriimagepolicy.LoadMeshFloor(configPath)
+	if err != nil || floor == nil {
+		t.Fatalf("pod-role OCI floor missing: %v", err)
+	}
+	if len(floor.ReservedIDs) != 0 || len(floor.ExemptNamespaces) != 0 {
+		t.Fatalf("isolated OCI floor carries cluster identities or exemptions: %+v", floor)
+	}
+	if admit {
+		nriimagepolicy.AdmitPodRoleInTheNamespace(t, cfg)
 	}
 }

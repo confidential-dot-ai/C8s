@@ -54,6 +54,27 @@ on there, and `acme`, which proves control of the public names, to the ports a
 pod of that namespace may reach outside the mesh in the clear. See
 `docs/armtls.md`.
 
+### Isolated pod-role policy
+
+A pod-role CVM admits only the workloads in its signed launch document.
+Preparation replaces the cluster mesh configuration with
+`mesh: {isolated: true}`. This policy requires fail-closed admission, the boot
+gate, image evidence and sandbox enforcement. It accepts no platform roles,
+namespace exemptions, node-TCB exemption, CDS pull or cluster network settings.
+
+The enforcer installs and verifies packet protection before admitting each
+container. Only traffic within the pod is permitted; internet, external DNS, guest
+services and incoming connections from outside the pod remain inaccessible.
+The host keeps its inventory and measurement journal for status and
+attestation, without mounting cluster credential inputs into the pod or
+asserting mesh membership. The
+[runtime privilege floor](node-exec-mode.md#the-privilege-floor) remains active.
+
+For isolated pods, final creation validation also checks cumulative mounts
+against the sandbox policy, even with `mounts: any`. Runtime adjustments may
+not add CDI devices, hooks, device permissions or sysctls, move namespaces or
+cgroups, or replace seccomp policy or annotations.
+
 ### Document shape
 
 ```json
@@ -597,8 +618,8 @@ flag itself, `no_new_privs`, masked and readonly paths, the AppArmor profile,
 and a read-only root. So this policy *infers* privilege from the cgroup
 namespace and writable `sysfs`, and sees no capability set at all. The
 measured runtime wrapper reads the bundle's `config.json` instead and refuses
-the create for a container of a member pod that holds more than the floor
-(`docs/node-exec-mode.md`); outside a mesh policy, a pod adding
+the create for a container of a mesh-member or isolated pod that holds more
+than the floor (`docs/node-exec-mode.md`); outside a mesh policy, a pod adding
 `CAP_SYS_ADMIN` without any other privilege still passes here.
 
 Two more limits: the host user namespace is the Kubernetes default, so its

@@ -50,9 +50,28 @@ type rule struct {
 
 // build returns the chains p defines, in the order they are installed.
 func build(p Policy) []chain {
+	if p.Isolated {
+		return isolatedChains()
+	}
 	return []chain{
 		captureInbound(p), captureOutbound(p), filterInput(p), filterOutput(p),
 		// A member pod routes nothing.
+		denyChain("filter-forward", *nftables.ChainHookForward, nil),
+	}
+}
+
+// isolatedChains permit only traffic that stays in this pod's network
+// namespace. A root-owned socket entered from outside and cannot reach even
+// a local listener. Replies, DNS and neighbour discovery grant no exceptions.
+func isolatedChains() []chain {
+	return []chain{
+		denyChain("filter-input", *nftables.ChainHookInput, []rule{
+			{"loopback", withVerdict(matchInputLoopback(), expr.VerdictAccept)},
+		}),
+		denyChain("filter-output", *nftables.ChainHookOutput, []rule{
+			{"namespace-entrant", withVerdict(matchSocketUID(0), expr.VerdictDrop)},
+			{"pod-local", withVerdict(matchLocalDestination(), expr.VerdictAccept)},
+		}),
 		denyChain("filter-forward", *nftables.ChainHookForward, nil),
 	}
 }

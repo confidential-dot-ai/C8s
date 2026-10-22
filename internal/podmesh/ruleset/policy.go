@@ -1,7 +1,7 @@
 //go:build linux
 
 // Package ruleset builds, installs and verifies the nftables ruleset that
-// protects one mesh member pod.
+// protects one mesh member or isolated pod.
 //
 // The ruleset comes from trusted policy alone and carries no pod address, so
 // one expected ruleset covers every member pod on a node: a host-side caller
@@ -10,6 +10,7 @@
 // listeners; everything else is denied in both directions, apart from
 // loopback, pod-local addresses, neighbour discovery, the resolver trusted
 // policy names, and the destinations each platform role is bound to.
+// An isolated pod carries only pod-local traffic and has no mesh exceptions.
 package ruleset
 
 import (
@@ -26,6 +27,8 @@ var ErrPolicy = errors.New("pod ruleset policy")
 
 // Policy is the trusted input the ruleset is built from.
 type Policy struct {
+	// Isolated confines traffic to this pod, with no cluster exceptions.
+	Isolated bool
 	// Resolver is the one address a member pod may reach on the resolver
 	// port, over UDP and TCP.
 	Resolver netip.Addr
@@ -101,6 +104,9 @@ type Destination struct {
 
 // validate rejects policy whose ruleset would be wider than intended.
 func (p Policy) validate() error {
+	if p.Isolated {
+		return p.validateIsolated()
+	}
 	if err := p.Capture.validate(); err != nil {
 		return err
 	}
@@ -121,6 +127,19 @@ func (p Policy) validate() error {
 		}
 	}
 	return p.Server.validate()
+}
+
+// validateIsolated refuses configuration that would grant a cluster exception
+// or make an isolated pod depend on a mesh endpoint that it does not run.
+func (p Policy) validateIsolated() error {
+	if p.Resolver != (netip.Addr{}) || p.Capture != (CapturePorts{}) || p.MeshUID != 0 || len(p.Roles) != 0 {
+		return fmt.Errorf("%w: isolated pod has mesh configuration", ErrPolicy)
+	}
+	server := p.Server
+	if len(server.Listeners) != 0 || server.Egress.UID != 0 || len(server.Egress.Ports) != 0 || server.Upstream != 0 || len(server.Services) != 0 || len(server.ClusterRanges) != 0 {
+		return fmt.Errorf("%w: isolated pod has server configuration", ErrPolicy)
+	}
+	return nil
 }
 
 // validate rejects a server role no ruleset can carry. Its identities and its

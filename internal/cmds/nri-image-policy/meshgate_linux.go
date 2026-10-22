@@ -38,6 +38,9 @@ func verifyPodRuleset(netns podNamespace, policy meshPolicy, namespace string) e
 // dialing role reaches only what its binding names, and a pod of the
 // router's namespace also answers the router's external listeners.
 func (p meshPolicy) podRuleset(kubeNamespace string) ruleset.Policy {
+	if p.Isolated {
+		return ruleset.Policy{Isolated: true}
+	}
 	endpoint, _ := p.role(meshRole)
 	return ruleset.Policy{
 		Resolver: p.Resolver,

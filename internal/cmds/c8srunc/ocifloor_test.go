@@ -302,6 +302,31 @@ func TestFloorRefusals(t *testing.T) {
 	}
 }
 
+func TestIsolatedFloorCoversEveryNamespaceWithoutRolePrivileges(t *testing.T) {
+	floor := nriimagepolicy.MeshFloor{}
+	for _, namespace := range []string{"tenant", "kube-system", "c8s-router"} {
+		t.Run(namespace, func(t *testing.T) {
+			bundle := workloadBundle()
+			bundle.Annotations[annotationSandboxNamespace] = namespace
+			bundle.Process.User.UID = testRouterUID
+			bundle.Process.User.GID = testMeshUID
+			if err := requireFloor(bundle, "ctr", nil, floor); err != nil {
+				t.Fatalf("isolated workload's ids acquired a platform role: %v", err)
+			}
+			bundle.Process.Capabilities.Effective = append(bundle.Process.Capabilities.Effective, "CAP_NET_ADMIN")
+			if err := requireFloor(bundle, "ctr", nil, floor); err == nil {
+				t.Fatal("isolated workload escaped the OCI capability floor")
+			}
+			bundle = workloadBundle()
+			bundle.Annotations[annotationSandboxNamespace] = namespace
+			bundle.Process.User.UID = 0
+			if err := requireFloor(bundle, "ctr", nil, floor); err == nil {
+				t.Fatal("isolated workload ran as root")
+			}
+		})
+	}
+}
+
 // A role's container holds no capabilities, whichever role it is.
 func TestFloorLeavesARoleNoCapabilities(t *testing.T) {
 	for _, uid := range []uint32{testMeshUID, testRouterUID} {

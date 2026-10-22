@@ -4,12 +4,22 @@ package nriimagepolicy
 
 import (
 	"net/netip"
+	"reflect"
 	"slices"
 	"testing"
 
 	"github.com/confidential-dot-ai/c8s/internal/podmesh/ruleset"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
+
+func TestIsolatedPodRulesetIgnoresNamespacePrivileges(t *testing.T) {
+	policy := meshPolicy{Isolated: true}
+	for _, namespace := range []string{"tenant", "kube-system", routerNamespace} {
+		if got := policy.podRuleset(namespace); !reflect.DeepEqual(got, ruleset.Policy{Isolated: true}) {
+			t.Fatalf("isolated ruleset in %s = %+v", namespace, got)
+		}
+	}
+}
 
 // The ports the router answers on belong to the ruleset of the pods of its
 // namespace, and to no other pod: an inbound accept cannot be tied to a
