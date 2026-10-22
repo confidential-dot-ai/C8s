@@ -8,13 +8,12 @@ import (
 	"net"
 	"net/http"
 	"strconv"
-	"strings"
 
 	"github.com/cucumber/godog"
 )
 
-// echoPort is where a pod's echo API listens, over TLS under the leaf it
-// holds.
+// echoPort is where a pod's echo API listens, in plaintext behind the pod's
+// mesh endpoint, which holds the leaf.
 const echoPort = 40443
 
 // echo is what a pod's echo API answered: the request it received.
@@ -63,15 +62,7 @@ func servesEcho(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
-	paths, err := w.be.call("cert_paths")
-	if err != nil {
-		return err
-	}
-	crt, key, ok := strings.Cut(paths, "\n")
-	if !ok {
-		return fmt.Errorf("cert_paths answered %q", paths)
-	}
-	p.containers[0].command = []string{"c8s-echo-api", crt, key, strconv.Itoa(echoPort)}
+	p.containers[0].command = []string{"c8s-echo-api", strconv.Itoa(echoPort)}
 	return nil
 }
 
