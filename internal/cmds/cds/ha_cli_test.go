@@ -256,7 +256,7 @@ func TestHAHandlersBeforeJoin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if haCACertPEM(node)() != nil || haChallengeKey(node, "issuance")() != nil {
+	if (haMeshCA{node: node}).Current().CA != nil || haChallengeKey(node, "issuance")() != nil {
 		t.Fatal("a replica that has not joined serves key material")
 	}
 	w := httptest.NewRecorder()
@@ -270,6 +270,12 @@ func TestHAHandlersBeforeJoin(t *testing.T) {
 	haPins(node)(pw, httptest.NewRequest(http.MethodGet, "/ha/pins", nil))
 	if pw.Code != http.StatusNotFound {
 		t.Fatalf("/ha/pins before any pin decree: %d", pw.Code)
+	}
+	// /ca refuses rather than serving an empty bundle.
+	cw := httptest.NewRecorder()
+	handleCA(haMeshCA{node: node})(cw, httptest.NewRequest(http.MethodGet, "/ca", nil))
+	if cw.Code != http.StatusServiceUnavailable {
+		t.Fatalf("/ca before join: %d", cw.Code)
 	}
 	ok := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	gated := haGate(node.Serving, ok)

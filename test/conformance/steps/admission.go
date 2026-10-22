@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/cucumber/godog"
+
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 // Sentences of the container-admission vocabulary
@@ -304,34 +306,54 @@ type containerStatus struct {
 	restarts   int
 }
 
+type podContainerStatus struct {
+	Name         string `json:"name"`
+	ContainerID  string `json:"containerID"`
+	RestartCount int    `json:"restartCount"`
+	State        struct {
+		Waiting *struct {
+			Reason  string `json:"reason"`
+			Message string `json:"message"`
+		} `json:"waiting"`
+		Running *struct{} `json:"running"`
+	} `json:"state"`
+}
+
+func (c podContainerStatus) denial() string {
+	if c.State.Waiting != nil && c.State.Waiting.Reason == "CreateContainerError" {
+		return strings.TrimSpace(c.State.Waiting.Message)
+	}
+	return ""
+}
+
 // statuses reads every container's id (empty until the runtime has created
 // it), the denial reason the create check returned, if any, and its running
-// state in one call. A pull failure or a crash is not a denial.
+// state in one call. A pull failure or a crash is not a denial. The injected
+// containers start first, so a denial of one is the denial of every workload
+// container not yet created.
 func (w *world) statuses(p *pod) []containerStatus {
 	out, _ := kubectl(nil, "-n", p.namespace, "get", "pod", p.name, "-o", "json")
 	var doc struct {
 		Status struct {
-			ContainerStatuses []struct {
-				ContainerID  string `json:"containerID"`
-				RestartCount int    `json:"restartCount"`
-				State        struct {
-					Waiting *struct {
-						Reason  string `json:"reason"`
-						Message string `json:"message"`
-					} `json:"waiting"`
-					Running *struct{} `json:"running"`
-				} `json:"state"`
-			} `json:"containerStatuses"`
+			InitContainerStatuses []podContainerStatus `json:"initContainerStatuses"`
+			ContainerStatuses     []podContainerStatus `json:"containerStatuses"`
 		} `json:"status"`
 	}
 	if err := json.Unmarshal([]byte(out), &doc); err != nil {
 		return nil
 	}
+	var injected string
+	for _, c := range doc.Status.InitContainerStatuses {
+		if d := c.denial(); d != "" && workloadclaims.IsInjectedContainerName(c.Name) {
+			injected = c.Name + ": " + d
+			break
+		}
+	}
 	var st []containerStatus
 	for _, c := range doc.Status.ContainerStatuses {
-		s := containerStatus{id: c.ContainerID, running: c.State.Running != nil, restarts: c.RestartCount}
-		if c.State.Waiting != nil && c.State.Waiting.Reason == "CreateContainerError" {
-			s.denial = strings.TrimSpace(c.State.Waiting.Message)
+		s := containerStatus{id: c.ContainerID, running: c.State.Running != nil, restarts: c.RestartCount, denial: c.denial()}
+		if s.id == "" && s.denial == "" {
+			s.denial = injected
 		}
 		st = append(st, s)
 	}

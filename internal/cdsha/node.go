@@ -1257,11 +1257,12 @@ func (n *Node) applyDecree(ctx context.Context, p PendingDecree) {
 		de.Pins = n.cfg.BakedPins
 	}
 	if d.Kind == Genesis || d.Kind == RotateKey {
-		ca, err := issuer.NewCAWithCurve(n.cfg.CACommonName, n.cfg.CAValidity, elliptic.P384())
+		minted, err := issuer.NewMeshCA(caCommonName(n.cfg.CACommonName), caValidity(n.cfg.CAValidity))
 		if err != nil {
 			n.log.Error("mint mesh CA", "err", err)
 			return
 		}
+		ca := minted.Current().CA
 		key, err := x509.MarshalPKCS8PrivateKey(ca.Key)
 		if err != nil {
 			n.log.Error("encode mesh CA key", "err", err)
@@ -1614,3 +1615,19 @@ func (w slogWriter) Write(p []byte) (int, error) {
 }
 
 var _ io.Writer = slogWriter{}
+
+// caCommonName and caValidity default what the configuration leaves unset,
+// as issuer.NewCA does.
+func caCommonName(name string) string {
+	if strings.TrimSpace(name) == "" {
+		return issuer.DefaultCACommonName
+	}
+	return name
+}
+
+func caValidity(d time.Duration) time.Duration {
+	if d <= 0 {
+		return issuer.DefaultCAValidity
+	}
+	return d
+}

@@ -20,8 +20,7 @@ type dependencies struct {
 	AllowlistHandler  allowlist.Handler
 	Routes            routeHandler
 	ReadyFn           attestation.ReadinessFunc
-	CACertPEM         []byte
-	CACertSource      func() []byte         // HA mode: the current epoch's CA, replacing CACertPEM
+	MeshCA            meshCA                // the one current CA: served at /ca and signs every leaf (HA: the replicated CA)
 	HAStatus          http.HandlerFunc      // HA mode: GET /ha/status
 	HAPins            http.HandlerFunc      // HA mode: GET /ha/pins
 	HADecrees         http.HandlerFunc      // HA mode: GET /ha/decrees
@@ -49,6 +48,12 @@ func newRouter(deps dependencies) http.Handler {
 	if deps.ChallengeLimiter == deps.RateLimiter {
 		panic("cds: dependencies.ChallengeLimiter must be a limiter of its own, not the attestation one")
 	}
+	if deps.MeshCA == nil {
+		panic("cds: dependencies.MeshCA must be set")
+	}
+	// One CA for the whole router: the handler signs with the certificate
+	// /ca publishes.
+	deps.AttestHandler.MeshCA = deps.MeshCA
 	r := chi.NewRouter()
 	r.Use(server.RequestLogger)
 
@@ -90,20 +95,7 @@ func newRouter(deps dependencies) http.Handler {
 		r.Method(http.MethodGet, secrets.ExplainRoute, deps.allowlistWrite(deps.SecretsExplain))
 	}
 
-	if deps.CACertSource != nil {
-		r.Get("/ca", func(w http.ResponseWriter, req *http.Request) {
-			ca := deps.CACertSource()
-			if len(ca) == 0 {
-				// HA replica not serving (no key, behind a rotation, retired):
-				// fail, never answer 200 with an empty bundle.
-				http.Error(w, "mesh CA unavailable", http.StatusServiceUnavailable)
-				return
-			}
-			handleCA(ca)(w, req)
-		})
-	} else {
-		r.Get("/ca", handleCA(deps.CACertPEM))
-	}
+	r.Get("/ca", handleCA(deps.MeshCA))
 	if deps.HAPins != nil {
 		r.Get("/ha/pins", deps.HAPins)
 	}
@@ -160,10 +152,18 @@ func capBody(max int64, next http.Handler) http.Handler {
 	return http.MaxBytesHandler(next, max)
 }
 
-func handleCA(caCertPEM []byte) http.HandlerFunc {
+// handleCA serves the one current mesh CA certificate; a renewal replaces it.
+// An HA replica that may not issue has none: fail, never answer 200 with an
+// empty bundle.
+func handleCA(mesh meshCA) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
+		current := mesh.Current()
+		if current.CA == nil || len(current.CertPEM) == 0 {
+			http.Error(w, "mesh CA unavailable", http.StatusServiceUnavailable)
+			return
+		}
 		w.Header().Set("Content-Type", "application/x-pem-file")
-		w.Write(caCertPEM)
+		w.Write(current.CertPEM)
 	}
 }
 
