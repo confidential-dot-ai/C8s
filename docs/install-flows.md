@@ -291,6 +291,7 @@ whose release a bare `helm uninstall` already deleted. See [`operator.md`](opera
 
 # Base — normal cluster, host-side components, no per-pod confidentiality.
 c8s install --cvm-mode=bare-metal --hardware-platform=sev-snp --operator-keys operator-pub.pem \
+  --measurements <node image manifest.json launch digest> \
   --workload-ref vllm=vllm/deployment/serving:8443 --upstream vllm
 
 # Uninstall: helm uninstall + sweep chart-installed host artifacts.

@@ -12,6 +12,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha512"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
@@ -67,11 +68,10 @@ type Config struct {
 	// supported by the CDS client evidence extraction path.
 	TEEType armtls.TEEType
 
-	// CDSMeasurements, when non-empty, restricts the CDS server's
-	// accepted launch digests during the armTLS handshake to this set.
-	// Each entry is a 48-byte SEV-SNP measurement. Empty means "any
-	// measurement" — UNSAFE outside development; the chart should always
-	// populate this from `cds.measurements` in values.yaml.
+	// CDSMeasurements restricts the CDS server's accepted launch digests
+	// during the armTLS handshake to this set. Each entry is a 48-byte
+	// launch measurement. With CDSImages also empty, every handshake fails
+	// ([armtls.ErrUnpinned]).
 	CDSMeasurements [][]byte
 
 	// CDSRTMRs, when non-empty, additionally pins CDS's TDX runtime
@@ -117,10 +117,14 @@ func NewClient(cfg *Config) *Client {
 		policy := &armtls.VerifyPolicy{Policy: remote.Policy{Images: cfg.CDSImages, Measurements: cfg.CDSMeasurements, Registers: cfg.CDSRTMRs}, AttestationApiURL: cfg.AttestationApiURL}
 		tlsCfg, _, err := armtls.NewClientTLSConfig(&armtls.ClientConfig{Policy: policy})
 		if err != nil {
-			// NewClientTLSConfig only errors on misconfigured Platform/AttestFunc
-			// pairs, which we never set; treat unexpected failure as a programmer
-			// bug by falling back to a transport that will always fail closed.
-			tlsCfg = nil
+			// INVARIANT: a policy armtls refuses fails every handshake.
+			tlsCfg = &tls.Config{
+				MinVersion:         tls.VersionTLS13,
+				InsecureSkipVerify: true,
+				VerifyPeerCertificate: func([][]byte, [][]*x509.Certificate) error {
+					return err
+				},
+			}
 		}
 		httpClient = &http.Client{
 			Timeout: 30 * time.Second,

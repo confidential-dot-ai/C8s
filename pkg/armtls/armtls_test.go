@@ -162,7 +162,7 @@ func TestSentinelErrors(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		_, err = VerifyCert(cert, nil, nil)
+		_, err = VerifyCert(cert, pinnedPolicy(""), nil)
 		if !errors.Is(err, ErrNoAttestation) {
 			t.Errorf("got %v, want errors.Is ErrNoAttestation", err)
 		}
@@ -723,7 +723,7 @@ func TestVerifyAttestationUnsupportedKey(t *testing.T) {
 	_, att := testKeyAndAttestation(t)
 	stub := mockapi.New(t)
 
-	_, err := VerifyAttestation("not-a-key", att, &VerifyPolicy{AttestationApiURL: stub.URL()}, nil)
+	_, err := VerifyAttestation("not-a-key", att, pinnedPolicy(stub.URL()), nil)
 	if err == nil || !strings.Contains(err.Error(), "compute expected REPORTDATA") {
 		t.Fatalf("got %v, want REPORTDATA computation error", err)
 	}

@@ -381,7 +381,8 @@ func TestRequestDoesNotTrustAnUnverifiedCDS(t *testing.T) {
 	t.Cleanup(srv.Close)
 	h := newHarnessAt(t, cds, srv.URL)
 	code, out, errOut := executeWith(t, sidecar.NewClient,
-		append(append([]string{}, h.common...), "request", "GET", "/api/db", "--no-challenge", "--no-token")...)
+		append(append([]string{}, h.common...), "--measurements", strings.Repeat("ab", 48),
+			"request", "GET", "/api/db", "--no-challenge", "--no-token")...)
 	if code != 0 || out != "000 - -\n" {
 		t.Fatalf("exit %d, stdout %q, stderr %q; want 0 and 000", code, out, errOut)
 	}

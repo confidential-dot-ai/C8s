@@ -42,6 +42,10 @@ func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
 	return f(r)
 }
 
+// testLaunchDigest is the launch measurement the stubbed attestation-api
+// reports.
+const testLaunchDigest = "deadbeef"
+
 func newStubAttestationApi(t *testing.T, launchDigest string) *mockapi.Stub {
 	t.Helper()
 	stub := mockapi.New(t)
@@ -68,8 +72,14 @@ func generateCSRWith(t *testing.T, subject pkix.Name, dnsNames []string, ips []n
 	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der})), key
 }
 
+// newTestAttestHandler builds the /attest handler. A nil measurement set pins
+// testLaunchDigest, the digest the stubbed attestation-api reports, since
+// /attest admits only a pinned guest.
 func newTestAttestHandler(t *testing.T, stubURL string, allowedMeasurements map[string]bool) AttestHandler {
 	t.Helper()
+	if allowedMeasurements == nil {
+		allowedMeasurements = map[string]bool{testLaunchDigest: true}
+	}
 	ca, err := issuer.NewCA("test ca", 2*issuer.MaxLeafTTL)
 	if err != nil {
 		t.Fatalf("new ca: %v", err)
@@ -137,7 +147,7 @@ func leafFromAttestResponse(t *testing.T, w *httptest.ResponseRecorder) *x509.Ce
 }
 
 func TestAttest_InProcessSignAndReturnsChain(t *testing.T) {
-	stub := newStubAttestationApi(t, "deadbeef")
+	stub := newStubAttestationApi(t, testLaunchDigest)
 	h := newTestAttestHandler(t, stub.URL(), nil)
 	challenge := issueChallenge(t, h)
 	csrPEM, key := generateCSR(t)
@@ -173,7 +183,7 @@ func TestAttest_InProcessSignAndReturnsChain(t *testing.T) {
 }
 
 func TestAttest_ClampsCertTTLBeforeSigning(t *testing.T) {
-	stub := newStubAttestationApi(t, "deadbeef")
+	stub := newStubAttestationApi(t, testLaunchDigest)
 	base := newTestAttestHandler(t, stub.URL(), nil)
 	for _, tc := range []struct {
 		name       string
@@ -218,7 +228,7 @@ func TestAttest_LaunchDigestAllowlistAllowed(t *testing.T) {
 
 func TestAttest_LaunchDigestAllowlistCaseInsensitive(t *testing.T) {
 	stub := newStubAttestationApi(t, "DEADBEEF")
-	h := newTestAttestHandler(t, stub.URL(), map[string]bool{"deadbeef": true})
+	h := newTestAttestHandler(t, stub.URL(), map[string]bool{testLaunchDigest: true})
 	challenge := issueChallenge(t, h)
 	csrPEM, _ := generateCSR(t)
 
@@ -231,6 +241,17 @@ func TestAttest_LaunchDigestAllowlistCaseInsensitive(t *testing.T) {
 func TestAttest_LaunchDigestAllowlistDenied(t *testing.T) {
 	stub := newStubAttestationApi(t, "unknown-digest")
 	h := newTestAttestHandler(t, stub.URL(), map[string]bool{"approved-digest": true})
+	challenge := issueChallenge(t, h)
+	csrPEM, _ := generateCSR(t)
+
+	wantRefusal(t, postAttest(t, h, challenge, csrPEM), http.StatusForbidden, types.ErrorCodeMeasurementDenied)
+}
+
+// An empty allowlist admits no caller: the flat path denies instead of issuing
+// against whatever measurement attested.
+func TestAttest_EmptyLaunchDigestAllowlistDenied(t *testing.T) {
+	stub := newStubAttestationApi(t, testLaunchDigest)
+	h := newTestAttestHandler(t, stub.URL(), map[string]bool{})
 	challenge := issueChallenge(t, h)
 	csrPEM, _ := generateCSR(t)
 
@@ -285,7 +306,7 @@ func TestAttest_TimeoutBeforeSigningReturns504(t *testing.T) {
 }
 
 func TestAttest_ConsumedChallengeRejectsReplay(t *testing.T) {
-	stub := newStubAttestationApi(t, "x")
+	stub := newStubAttestationApi(t, testLaunchDigest)
 	h := newTestAttestHandler(t, stub.URL(), nil)
 	challenge := issueChallenge(t, h)
 	csrPEM, _ := generateCSR(t)
@@ -299,7 +320,7 @@ func TestAttest_ConsumedChallengeRejectsReplay(t *testing.T) {
 // A challenge is consumed by the attempt that carries it, not by success: a
 // requester whose evidence was refused cannot retry under the same challenge.
 func TestAttest_RefusedAttestConsumesChallenge(t *testing.T) {
-	stub := newStubAttestationApi(t, "deadbeef")
+	stub := newStubAttestationApi(t, testLaunchDigest)
 	verdict := mockapi.PassingVerdict("deadbeef")
 	match := false
 	verdict.ReportDataMatch = &match
@@ -317,7 +338,7 @@ func TestAttest_RefusedAttestConsumesChallenge(t *testing.T) {
 // The verify request must bind this request's CSR key and challenge:
 // anything weaker signs a leaf for whoever holds any verifiable TEE report.
 func TestAttest_BindsReportDataToCSRKeyAndChallenge(t *testing.T) {
-	stub := newStubAttestationApi(t, "deadbeef")
+	stub := newStubAttestationApi(t, testLaunchDigest)
 	h := newTestAttestHandler(t, stub.URL(), nil)
 	challenge := issueChallenge(t, h)
 	csrPEM, csrKey := generateCSR(t)
@@ -360,7 +381,7 @@ func TestAttest_BindsReportDataToCSRKeyAndChallenge(t *testing.T) {
 // non-production shape (mockapi.Verdict) — production refuses a mismatch
 // with a 422; the 401 pins CDS's own fail-closed gate.
 func TestAttest_ReportDataMismatchReturns401(t *testing.T) {
-	stub := newStubAttestationApi(t, "deadbeef")
+	stub := newStubAttestationApi(t, testLaunchDigest)
 	verdict := mockapi.PassingVerdict("deadbeef")
 	match := false
 	verdict.ReportDataMatch = &match
@@ -373,7 +394,7 @@ func TestAttest_ReportDataMismatchReturns401(t *testing.T) {
 }
 
 func TestAttest_BadCSRRejected(t *testing.T) {
-	stub := newStubAttestationApi(t, "x")
+	stub := newStubAttestationApi(t, testLaunchDigest)
 	h := newTestAttestHandler(t, stub.URL(), nil)
 	challenge := issueChallenge(t, h)
 
@@ -381,7 +402,7 @@ func TestAttest_BadCSRRejected(t *testing.T) {
 }
 
 func TestAttest_RejectsCSRWithUnconfiguredDNSSAN(t *testing.T) {
-	stub := newStubAttestationApi(t, "x")
+	stub := newStubAttestationApi(t, testLaunchDigest)
 	h := newTestAttestHandler(t, stub.URL(), nil)
 	challenge := issueChallenge(t, h)
 	csrPEM, _ := generateCSRWith(t, pkix.Name{CommonName: "node"}, []string{"foo.mesh.svc"}, nil)
@@ -393,7 +414,7 @@ func TestAttest_RejectsCSRWithUnconfiguredDNSSAN(t *testing.T) {
 }
 
 func TestAttest_AcceptsCSRWithAllowedDNSSAN(t *testing.T) {
-	stub := newStubAttestationApi(t, "x")
+	stub := newStubAttestationApi(t, testLaunchDigest)
 	h := newTestAttestHandler(t, stub.URL(), nil)
 	h.Policy.DNSSANPatterns = []*regexp.Regexp{regexp.MustCompile(`^[a-z]+\.mesh\.svc$`)}
 	challenge := issueChallenge(t, h)
@@ -406,7 +427,7 @@ func TestAttest_AcceptsCSRWithAllowedDNSSAN(t *testing.T) {
 }
 
 func TestAttest_RejectsCSRWithBadCN(t *testing.T) {
-	stub := newStubAttestationApi(t, "x")
+	stub := newStubAttestationApi(t, testLaunchDigest)
 	h := newTestAttestHandler(t, stub.URL(), nil)
 	h.Policy.AllowedCNPattern = regexp.MustCompile(`^armtls-mesh-[0-9.]+$`)
 	challenge := issueChallenge(t, h)
@@ -416,7 +437,7 @@ func TestAttest_RejectsCSRWithBadCN(t *testing.T) {
 }
 
 func TestAttest_RejectsCSRWithMismatchedSourceIP(t *testing.T) {
-	stub := newStubAttestationApi(t, "x")
+	stub := newStubAttestationApi(t, testLaunchDigest)
 	h := newTestAttestHandler(t, stub.URL(), nil)
 	h.SANValidation = true
 	challenge := issueChallenge(t, h)
@@ -437,7 +458,7 @@ func TestAttest_RejectsCSRWithMismatchedSourceIP(t *testing.T) {
 }
 
 func TestAttest_RejectsCSRWithIPSANWhenSANValidationDisabled(t *testing.T) {
-	stub := newStubAttestationApi(t, "x")
+	stub := newStubAttestationApi(t, testLaunchDigest)
 	h := newTestAttestHandler(t, stub.URL(), nil)
 	// SANValidation defaults to false, leaving Policy.SourceIP empty.
 	challenge := issueChallenge(t, h)
@@ -785,7 +806,7 @@ func TestAttestHandler_caChainPEM(t *testing.T) {
 }
 
 func TestAttest_RejectsUnknownJSONFields(t *testing.T) {
-	stub := newStubAttestationApi(t, "x")
+	stub := newStubAttestationApi(t, testLaunchDigest)
 	h := newTestAttestHandler(t, stub.URL(), nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/attest", bytes.NewReader([]byte(`{"unknown":true}`)))
@@ -795,7 +816,7 @@ func TestAttest_RejectsUnknownJSONFields(t *testing.T) {
 }
 
 func TestAttest_RejectsMalformedChallengeEncoding(t *testing.T) {
-	stub := newStubAttestationApi(t, "x")
+	stub := newStubAttestationApi(t, testLaunchDigest)
 	h := newTestAttestHandler(t, stub.URL(), nil)
 	csrPEM, _ := generateCSR(t)
 
@@ -814,7 +835,7 @@ func TestAttest_RejectsMalformedChallengeEncoding(t *testing.T) {
 }
 
 func TestAttest_RejectsValidBase64UnknownChallenge(t *testing.T) {
-	stub := newStubAttestationApi(t, "x")
+	stub := newStubAttestationApi(t, testLaunchDigest)
 	h := newTestAttestHandler(t, stub.URL(), nil)
 	csrPEM, _ := generateCSR(t)
 
@@ -835,7 +856,7 @@ func TestAttest_RejectsValidBase64UnknownChallenge(t *testing.T) {
 
 // A CSR whose public key is not ECDSA must be rejected before verification.
 func TestAttest_RejectsNonECDSACSR(t *testing.T) {
-	stub := newStubAttestationApi(t, "x")
+	stub := newStubAttestationApi(t, testLaunchDigest)
 	h := newTestAttestHandler(t, stub.URL(), nil)
 	challenge := issueChallenge(t, h)
 
@@ -857,7 +878,7 @@ func TestAttest_RejectsNonECDSACSR(t *testing.T) {
 // An unloaded CA makes in-process signing fail after all validation passed.
 // Also exercises the RequestTimeout>0 wrapping.
 func TestAttest_SignFailureReturns500(t *testing.T) {
-	stub := newStubAttestationApi(t, "x")
+	stub := newStubAttestationApi(t, testLaunchDigest)
 	h := newTestAttestHandler(t, stub.URL(), nil)
 	h.CA = &issuer.CA{} // no cert/key loaded: SignCSR fails
 	h.RequestTimeout = time.Second
@@ -872,7 +893,7 @@ func TestAttest_SignFailureReturns500(t *testing.T) {
 // leaf, and this line is what an operator reconciles against expected
 // workloads afterwards. The serial has to match the leaf actually returned.
 func TestAttest_IssuanceIsRecorded(t *testing.T) {
-	stub := newStubAttestationApi(t, "deadbeef")
+	stub := newStubAttestationApi(t, testLaunchDigest)
 	h := newTestAttestHandler(t, stub.URL(), nil)
 	challenge := issueChallenge(t, h)
 	csrPEM, _ := generateCSR(t)
@@ -912,7 +933,7 @@ func TestAttest_IssuanceIsRecorded(t *testing.T) {
 // A denial and the issuance that follows it have to be correlatable, or a run
 // of probes against CDS cannot be tied to the leaf that eventually succeeded.
 func TestAttest_MeasurementDenialRecordsPeer(t *testing.T) {
-	stub := newStubAttestationApi(t, "deadbeef")
+	stub := newStubAttestationApi(t, testLaunchDigest)
 	h := newTestAttestHandler(t, stub.URL(), map[string]bool{"cafe": true})
 	challenge := issueChallenge(t, h)
 	csrPEM, _ := generateCSR(t)

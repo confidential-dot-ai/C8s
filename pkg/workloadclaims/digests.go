@@ -162,12 +162,12 @@ func outboundHost(ctx context.Context, target string) (string, error) {
 
 // DigestsServerTLSConfig builds the inventory's listener config for
 // ServeDigests: it presents an armTLS certificate proving the inventory runs in
-// a TEE, and requires the caller to present a hardware-attested one too. With
-// cdsPins set the caller must satisfy them (launch measurement, and TDX RTMRs
-// when pinned), so the endpoint discloses what a node runs only to a CDS on an
-// expected measurement; zero pins accept any TEE on the network. UNSAFE
-// outside development; callers warn. A TDX certificate lists the policies in
-// the measuredPolicies journal; empty lists none.
+// a TEE, and requires the caller to present a hardware-attested one too. The
+// caller must satisfy cdsPins (launch measurement, and TDX RTMRs when pinned),
+// so the endpoint discloses what a node runs only to a CDS on an expected
+// measurement; pins that name no guest are refused ([armtls.ErrUnpinned]). A
+// TDX certificate lists the policies in the measuredPolicies journal; empty
+// lists none.
 func DigestsServerTLSConfig(platform string, attestFunc func(ctx context.Context, customData string) (string, error), attestationApiURL string, cdsPins armtls.Pins, certTTL time.Duration, measuredPolicies string) (*tls.Config, *armtls.CertManager, error) {
 	if err := requireAttestationApi(attestationApiURL); err != nil {
 		return nil, nil, err
@@ -241,9 +241,8 @@ type DigestsClientConfig struct {
 	// Pins hold the launch digests (and any TDX RTMR pins) an inventory may
 	// present — the same allowlist CDS pins for the inventory's armTLS
 	// certificate, so a sandbox token and the callback that follows it are
-	// held to one standard. Zero pins accept any armTLS-attested inventory,
-	// matching what an empty allowlist already means for the certificate:
-	// UNSAFE outside development; callers warn.
+	// held to one standard. Pins that name no guest are refused
+	// ([armtls.ErrUnpinned]).
 	Pins armtls.Pins
 	// Timeout bounds one callback. Zero or negative means 10s.
 	Timeout time.Duration

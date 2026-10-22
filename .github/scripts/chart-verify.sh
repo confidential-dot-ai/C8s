@@ -20,8 +20,6 @@ set -euo pipefail
 # arbitrary sha256 placeholders (lint/template only need them to parse).
 common_set=(
   --set image.tag=ci
-  # The default install pins no CDS, which the router refuses without this.
-  --set router.routing.allowUnpinnedCDS=true
   --set attestationApi.image.tag=ci
   --set cds.image.tag=ci
   --set armtlsMesh.image.tag=ci
@@ -34,6 +32,8 @@ common_set=(
   # digests (what `c8s install --resolve-digests` turns on) — the representative
   # way to render a valid fail-closed config without hand-listing CI placeholders.
   --set nriImagePolicy.bootstrapAllowlist.deriveComponents=true
+  # The chart refuses to render a release that pins no CDS guest identity.
+  --set-string cds.measurements[0]=000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001
   # A mesh policy needs the resolver a member pod may reach, and the router's
   # egress exception needs this cluster's pod and Service ranges. kind's
   # cluster DNS and the kubeadm defaults are the representative values.

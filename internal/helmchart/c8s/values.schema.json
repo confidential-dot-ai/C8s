@@ -538,9 +538,6 @@
           ],
           "additionalProperties": false,
           "properties": {
-            "allowUnpinnedCDS": {
-              "type": "boolean"
-            },
             "backendTimeout": {},
             "pollInterval": {},
             "port": {},
