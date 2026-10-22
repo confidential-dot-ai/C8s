@@ -68,11 +68,9 @@ type Wrapper struct {
 	// caller's environment would not be a choke point.
 	RealRunc string
 	// MeshConfig is the measured node policy the floor came from, named in
-	// the error when reading it failed. Floor is what New read: nil with no
-	// FloorError means the node hosts no member pods and has no floor
-	// (ocifloor.go).
+	// the error when reading it failed. Floor is what New read (ocifloor.go).
 	MeshConfig string
-	Floor      *nriimagepolicy.MeshFloor
+	Floor      nriimagepolicy.MeshFloor
 	FloorError error
 	// Stdin is this invocation's own standard input, which the floor reads to
 	// tell a create that carries the container's stdin from one that does not.
@@ -149,14 +147,11 @@ func (w Wrapper) checkFloor(args []string) error {
 	if w.FloorError != nil {
 		return fmt.Errorf("read the measured mesh floor from %s: %w", w.MeshConfig, w.FloorError)
 	}
-	if w.Floor == nil {
-		return nil
-	}
 	spec, containerID, err := readBundle(args)
 	if err != nil {
 		return err
 	}
-	return requireFloor(spec, containerID, w.Stdin, *w.Floor)
+	return requireFloor(spec, containerID, w.Stdin, w.Floor)
 }
 
 // deny reports msg on stderr and, when the caller asked runc to log to a file,

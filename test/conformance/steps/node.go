@@ -181,7 +181,9 @@ func versionBelowApplied(ctx context.Context, node string) error {
 // is unblocked, and the plugin is started again where the scenario stopped
 // it, or on every node it addressed and on node "one" if the CDS was
 // restarted, since only a start lets a plugin accept the versions a
-// restarted CDS serves, whether or not the scenario spoke of its node.
+// restarted CDS serves, whether or not the scenario spoke of its node. After
+// a CDS restart the mesh members are recreated too: only a member started
+// after the CDS holds a leaf under the mesh CA it minted.
 func (w *world) restoreNode() error {
 	var errs []error
 	if w.cdsBlocked {
@@ -198,6 +200,10 @@ func (w *world) restoreNode() error {
 			continue
 		}
 		_, err := w.be.call("plugin_start", k8sNode)
+		errs = append(errs, err)
+	}
+	if w.cdsRestarted {
+		_, err := w.be.call("mesh_restart")
 		errs = append(errs, err)
 	}
 	return errors.Join(errs...)

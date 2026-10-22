@@ -32,7 +32,10 @@ func TestChartRouterNodeMountAdmission(t *testing.T) {
 		t.Run(client.name, func(t *testing.T) {
 			p := routerNodeMountPlugin(t)
 			p.mountStorage = fixedStorage(allowlist.MountMemory)
-			pod := meshPod(deployment.Namespace, deployment.Name, testNetNS)
+			// The mount and role checks run outside the gate's scope;
+			// assertRouterMeshRole drives the same containers through the
+			// gate on a member view of this pod.
+			pod := makePod(deployment.Namespace, deployment.Name)
 			pod.Uid = "5a1d-pod"
 			pod.Annotations = deployment.Spec.Template.Annotations
 			ctr := chartRouterContainer(t, pod, deployment.Spec.Template.Spec, client.name)
@@ -315,11 +318,12 @@ func chartRouterContainer(t *testing.T, pod *api.PodSandbox, spec corev1.PodSpec
 
 func assertRouterMeshRole(t *testing.T, p *plugin, pod *api.PodSandbox, ctr *api.Container, launch allowlist.RunningContainer) {
 	t.Helper()
-	gate, state := gateWithPod(pod)
-	gate.policy = p.cfg.Mesh
+	member := meshPod(pod.GetNamespace(), pod.GetName(), testNetNS)
+	gate, state := gateWithPod(member)
+	gate.policy = *p.cfg.Mesh
 	state.meshStarted = true
 	role := p.roleOf(launch)
-	_, _, err := gate.admissible(pod, ctr, gatedContainer{
+	_, _, err := gate.admissible(member, ctr, gatedContainer{
 		role:         role,
 		mountsPinned: p.bindsRoleMounts(launch, role),
 		digest:       launch.Digest,

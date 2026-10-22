@@ -82,20 +82,20 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 	pull["cds_measurements_config"] = launchDir + "cds.json"
 	delete(pull, "cds_measurements")
 	delete(pull, "cds_rtmrs")
-	// A node carrying no mesh policy hosts no member pods, so there is no
-	// role to bind.
-	if mesh, declared := floor["mesh"]; declared {
-		policy, ok := mesh.(map[string]any)
-		if !ok {
-			return fmt.Errorf("baked NRI mesh policy is %T, not a mapping", mesh)
-		}
-		address, err := d.CDSAddrPort()
-		if err != nil {
-			return err
-		}
-		if err := appendCredentialRole(policy, address); err != nil {
-			return err
-		}
+	mesh, declared := floor["mesh"]
+	if !declared {
+		return fmt.Errorf("baked NRI policy missing mesh")
+	}
+	policy, ok := mesh.(map[string]any)
+	if !ok {
+		return fmt.Errorf("baked NRI mesh policy is %T, not a mapping", mesh)
+	}
+	address, err := d.CDSAddrPort()
+	if err != nil {
+		return err
+	}
+	if err := appendCredentialRole(policy, address); err != nil {
+		return err
 	}
 	data, err = yaml.Marshal(floor)
 	if err != nil {

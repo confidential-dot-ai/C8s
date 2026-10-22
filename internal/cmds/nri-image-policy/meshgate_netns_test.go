@@ -135,7 +135,7 @@ func TestProtectAndGateAPodInTheNamespace(t *testing.T) {
 	pid := sandboxProcess(t)
 	pod := meshPod("default", "pod", sandboxNetNSPath(pid))
 	pod.Pid = pid
-	gate := newMeshGate(meshRoles(), discardLogger())
+	gate := newMeshGate(*meshRoles(), discardLogger())
 
 	if err := gate.protect(pod); err != nil {
 		t.Fatalf("protect: %v", err)
@@ -172,7 +172,7 @@ func TestProtectAndGateAPodInTheNamespace(t *testing.T) {
 
 	// A second install into the same namespace is refused, so the pod's
 	// protection cannot be replaced under a running container.
-	if err := installPodRuleset(podNamespace{path: sandboxNetNSPath(pid)}, *gate.policy, "default"); !errors.Is(err, ruleset.ErrForeignRules) {
+	if err := installPodRuleset(podNamespace{path: sandboxNetNSPath(pid)}, gate.policy, "default"); !errors.Is(err, ruleset.ErrForeignRules) {
 		t.Fatalf("second install = %v, want ErrForeignRules", err)
 	}
 

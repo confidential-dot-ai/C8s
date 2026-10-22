@@ -364,6 +364,9 @@ func TestSidecarAdjustmentWithoutPins(t *testing.T) {
 func testPlugin(t *testing.T, cfg *config) *plugin {
 	t.Helper()
 	cfg.Policy.Mode = ModeFailClosed
+	if cfg.Mesh == nil {
+		cfg.Mesh = meshRoles()
+	}
 	p, err := newPlugin(cfg, &fakeContainerd{}, newPolicyStore(nil), audit.NewLogger(), discardLogger())
 	if err != nil {
 		t.Fatalf("newPlugin: %v", err)
