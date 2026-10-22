@@ -79,15 +79,24 @@ done
 
 # attest-lb binds the router's route manifest (#852), which the client checks
 # under the launch operator key. One route; its backend is never dialled here.
-c8s routes add --new --url "https://$ip:30808" --image-policy-file launch/server.json \
-  --operator-key launch/server.key --operator-keys launch/server/pubkey \
-  --host "$host" --path / --address c8s-none.default.svc.cluster.local:9443 --workload none
+# A CDS without persistence refuses an operator token issued before it
+# started until --jwt-clock-skew has passed, so retry with a fresh one.
+routed=""
+for _ in $(seq 1 12); do
+  if c8s routes add --new --url "https://$ip:30808" --image-policy-file launch/server.json \
+      --operator-key launch/server.key --operator-keys launch/server/pubkey \
+      --host "$host" --path / --address c8s-none.default.svc.cluster.local:9443 --workload none; then
+    routed=1; break
+  fi
+  sleep 10
+done
+[ -n "$routed" ] || fail "no route stored on the acme-mode CDS"
 
 # The router pod starts once the acme sidecar has written its placeholder,
 # and get-cert's stamp follows the pod's match.
 verdict() {
   c8s verify "https://$ip:443" --kind lb --mode attest-lb --server-name "$host" \
-    --image-policy-file launch/server.json --mesh-ca mesh-ca.pem --operator-keys launch/server/pubkey \
+    --image-manifest "$IMAGE_MANIFEST" --mesh-ca mesh-ca.pem --operator-keys launch/server/pubkey \
     --workload "$router" -o json > verdict.json
 }
 ok=""
