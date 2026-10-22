@@ -347,7 +347,10 @@ cds_pod_url() {
     node="$(node_name one)" || return
     host="$(kubectl get node "$node" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')" || return
     port="$(kubectl -n "$NS" get svc c8s-cds -o jsonpath='{.spec.ports[0].nodePort}')" || return
-    [ -n "$host" ] && [ -n "$port" ] || { echo "backend: no address or CDS node port for node $node" >&2; return 1; }
+    if [ -z "$host" ] || [ -z "$port" ]; then
+        echo "backend: no address or CDS node port for node $node" >&2
+        return 1
+    fi
     echo "https://${host%% *}:$port"
 }
 
