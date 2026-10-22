@@ -239,6 +239,10 @@ func resolveLocalNames(rendered, names []byte) ([]byte, error) {
 			return nil, fmt.Errorf("local-names.txt: bad line %q", line)
 		}
 		rendered = bytes.ReplaceAll(rendered, []byte("image: "+f[1]+"\n"), []byte("image: "+f[0]+"\n"))
+		// The operator's injected-image flags (--mesh-image=<name>).
+		for _, flag := range injectedImageFlags {
+			rendered = bytes.ReplaceAll(rendered, []byte(flag+f[1]), []byte(flag+f[0]))
+		}
 	}
 	return rendered, nil
 }

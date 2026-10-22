@@ -169,6 +169,10 @@ func TestResolveLocalNames(t *testing.T) {
 	if _, err := resolveLocalNames(in, []byte("one-field\n")); err == nil {
 		t.Fatal("bad line accepted")
 	}
+	flagged := []byte("      - --mesh-image=registry.example.com/cds:c8s-node\n")
+	if out, _ := resolveLocalNames(flagged, []byte(ref+" registry.example.com/cds:c8s-node\n")); !bytes.Contains(out, []byte("--mesh-image="+ref)) {
+		t.Fatalf("injected-image flag not resolved: %s", out)
+	}
 	if same, _ := resolveLocalNames(in, nil); !bytes.Equal(same, in) {
 		t.Fatal("no names changed the manifest")
 	}
