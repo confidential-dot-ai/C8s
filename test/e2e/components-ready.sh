@@ -26,9 +26,11 @@ if [ "${C8S_NODE_IMAGE:-}" = 1 ]; then
     kubectl -n "$ns" rollout status "$workload" --timeout=8m
   done
   kubectl -n "$router_ns" rollout status deployment/c8s-router --timeout=8m
-  # Public policies are host-staged, not stored in Kubernetes. Check that
-  # every consumer uses its required read-only file. The external armTLS
-  # request below verifies the actual endpoint against the signed policy.
+  # Public policies are host-staged, not stored in Kubernetes. CDS and the
+  # router's cds-attest read theirs from the read-only node file. The router's
+  # credential clients take the node's CDS endpoint and pins from the mount the
+  # enforcer adds at admission, so the spec must set neither. The external
+  # armTLS request below verifies the actual endpoint against the signed policy.
   kubectl get deployments -A -l app.kubernetes.io/instance=c8s -o json | jq -e '
     def policy($workload; $container; $flag):
       any(.items[];
@@ -41,9 +43,17 @@ if [ "${C8S_NODE_IMAGE:-}" = 1 ]; then
             .name == $container and ((.args // []) | index($flag)) != null and
             any(.volumeMounts[]?;
               .name == "node-config" and .mountPath == "/run/c8s-node" and .readOnly == true))));
+    def nodepins($workload; $container):
+      any(.items[];
+        .metadata.name == $workload and
+        any((.spec.template.spec | .containers + (.initContainers // []))[];
+          .name == $container and
+          all((.args // [])[];
+            test("^--(cds-url|image-policy-file|image-policy-json|cds-measurements|cds-rtmrs)(=|$)") | not)));
     policy("c8s-cds"; "cds"; "--image-policy-file=/run/c8s-node/peers.json") and
-    policy("c8s-router"; "c8s-cert"; "--image-policy-file=/run/c8s-node/cds.json") and
-    policy("c8s-router"; "allowlist-proxy"; "--image-policy-file=/run/c8s-node/cds.json") and
+    policy("c8s-router"; "cds-attest"; "--image-policy-file=/run/c8s-node/cds.json") and
+    nodepins("c8s-router"; "c8s-cert") and
+    nodepins("c8s-router"; "allowlist-proxy") and
     all(.items[].spec.template.spec.volumes[]?;
       ((.hostPath.path // "") | startswith("/run/confos")) | not)
   ' >/dev/null || fail "baked workloads lost their required public identity policies or mount private launch data"
