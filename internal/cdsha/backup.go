@@ -159,6 +159,16 @@ type backupManifest struct {
 	Nonce        []byte     `json:"nonce"`
 	Parts        int        `json:"parts"`
 	SHA256       string     `json:"sha256"`
+	// Gen names this backup's parts (<manifest>-<gen>-<i>). Empty in
+	// backups written before it: their parts are <manifest>-<i>.
+	Gen string `json:"gen,omitempty"`
+}
+
+func (m backupManifest) partName(clusterID string, i int) string {
+	if m.Gen == "" {
+		return BackupName(clusterID) + "-" + strconv.Itoa(i)
+	}
+	return BackupName(clusterID) + "-" + m.Gen + "-" + strconv.Itoa(i)
 }
 
 // ErrBackupNotNewer refuses to replace a stored backup with an older one: a
@@ -175,54 +185,97 @@ func (m BackupMeta) Newer(o BackupMeta) bool {
 	return m.Index > o.Index
 }
 
-// PutBackup writes the parts, then the manifest that names them, so a
-// reader never sees a manifest whose parts are not there yet. It refuses a
-// backup that is not newer than the stored one (ErrBackupNotNewer). The
-// stored manifest is only the host's word, so a forged one can block
-// backups (as deleting them could); it cannot make a restore pick old state:
-// recover checks the operator's own record (--min-epoch/--min-index).
+// PutBackup writes the parts under names of their own, then switches the
+// manifest to them, then deletes the parts no manifest names. The stored
+// backup therefore stays whole if the writer dies part way (the moment a
+// total loss is likeliest), and two writers cannot mix parts. It refuses a
+// backup that is not newer than the stored one (ErrBackupNotNewer), and the
+// switch is conditional on the manifest it checked, so a writer that raced
+// another loses rather than overwriting it. The stored manifest is only the
+// host's word, so a forged one can block backups (as deleting them could);
+// it cannot make a restore pick old state: recover checks the operator's own
+// record (--min-epoch/--min-index).
 func (s KubeDecrees) PutBackup(ctx context.Context, b Backup) error {
-	if cur, err := s.cms().Get(ctx, BackupName(s.ClusterID), metav1.GetOptions{}); err == nil {
+	name := BackupName(s.ClusterID)
+	cur, err := s.cms().Get(ctx, name, metav1.GetOptions{})
+	switch {
+	case apierrors.IsNotFound(err):
+		cur = nil
+	case err != nil:
+		return err
+	default:
 		var man backupManifest
 		if json.Unmarshal([]byte(cur.Data[keyBackup]), &man) == nil && !b.Meta.Newer(man.Meta) {
 			return fmt.Errorf("%w (stored epoch %d index %d, this one epoch %d index %d)", ErrBackupNotNewer,
 				man.Meta.Epoch, man.Meta.Index, b.Meta.Epoch, b.Meta.Index)
 		}
-	} else if !apierrors.IsNotFound(err) {
-		return err
 	}
-	var parts int
-	for off := 0; off < len(b.Ciphertext) || parts == 0; off += backupPartBytes {
-		end := min(off+backupPartBytes, len(b.Ciphertext))
-		cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
-			Name: BackupName(s.ClusterID) + "-" + strconv.Itoa(parts), Namespace: s.Namespace,
-			Labels: map[string]string{LabelBackup: s.ClusterID}}, BinaryData: map[string][]byte{keyPart: b.Ciphertext[off:end]}}
-		if err := s.upsert(ctx, cm); err != nil {
-			return err
-		}
-		parts++
+	var nonce [4]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return err
 	}
 	sum := sha256.Sum256(b.Ciphertext)
-	man, err := json.Marshal(backupManifest{Meta: b.Meta, EphemeralPub: b.EphemeralPub, Nonce: b.Nonce, Parts: parts, SHA256: hex.EncodeToString(sum[:])})
+	man := backupManifest{Meta: b.Meta, EphemeralPub: b.EphemeralPub, Nonce: b.Nonce, SHA256: hex.EncodeToString(sum[:]),
+		Gen: fmt.Sprintf("e%d-i%d-%s", b.Meta.Epoch, b.Meta.Index, hex.EncodeToString(nonce[:]))}
+	labels := map[string]string{LabelBackup: s.ClusterID}
+	for off := 0; off < len(b.Ciphertext) || man.Parts == 0; off += backupPartBytes {
+		end := min(off+backupPartBytes, len(b.Ciphertext))
+		cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: man.partName(s.ClusterID, man.Parts), Namespace: s.Namespace,
+			Labels: labels}, BinaryData: map[string][]byte{keyPart: b.Ciphertext[off:end]}}
+		if _, err := s.cms().Create(ctx, cm, metav1.CreateOptions{}); err != nil {
+			s.deleteUnnamedParts(ctx)
+			return err
+		}
+		man.Parts++
+	}
+	data, err := json.Marshal(man)
 	if err != nil {
 		return err
 	}
-	return s.upsert(ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: BackupName(s.ClusterID), Namespace: s.Namespace,
-		Labels: map[string]string{LabelBackup: s.ClusterID}}, Data: map[string]string{keyBackup: string(man)}})
+	mcm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: s.Namespace, Labels: labels},
+		Data: map[string]string{keyBackup: string(data)}}
+	if cur == nil {
+		_, err = s.cms().Create(ctx, mcm, metav1.CreateOptions{})
+	} else {
+		mcm.ResourceVersion = cur.ResourceVersion // only over the manifest checked above
+		_, err = s.cms().Update(ctx, mcm, metav1.UpdateOptions{})
+	}
+	if apierrors.IsConflict(err) || apierrors.IsAlreadyExists(err) {
+		err = fmt.Errorf("%w (another writer stored a backup meanwhile)", ErrBackupNotNewer)
+	}
+	s.deleteUnnamedParts(ctx)
+	return err
 }
 
-func (s KubeDecrees) upsert(ctx context.Context, cm *corev1.ConfigMap) error {
-	cur, err := s.cms().Get(ctx, cm.Name, metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
-		_, err = s.cms().Create(ctx, cm, metav1.CreateOptions{})
-		return err
-	}
+// deleteUnnamedParts removes backup parts the stored manifest does not name:
+// earlier backups', and a failed write's. Best effort; the next backup
+// retries.
+func (s KubeDecrees) deleteUnnamedParts(ctx context.Context) {
+	list, err := s.cms().List(ctx, metav1.ListOptions{LabelSelector: LabelBackup + "=" + s.ClusterID})
 	if err != nil {
-		return err
+		return
 	}
-	cm.ResourceVersion = cur.ResourceVersion
-	_, err = s.cms().Update(ctx, cm, metav1.UpdateOptions{})
-	return err
+	keep := map[string]bool{BackupName(s.ClusterID): true}
+	for _, cm := range list.Items {
+		if cm.Name != BackupName(s.ClusterID) {
+			continue
+		}
+		var man backupManifest
+		if json.Unmarshal([]byte(cm.Data[keyBackup]), &man) != nil {
+			return // cannot tell which parts are live: delete nothing
+		}
+		for i := range man.Parts {
+			keep[man.partName(s.ClusterID, i)] = true
+		}
+	}
+	if len(keep) == 1 {
+		return // no manifest yet: a first write in progress may own the parts
+	}
+	for _, cm := range list.Items {
+		if !keep[cm.Name] {
+			_ = s.cms().Delete(ctx, cm.Name, metav1.DeleteOptions{})
+		}
+	}
 }
 
 // BackupFromConfigMaps reassembles a backup from its objects, as listed by
@@ -245,7 +298,7 @@ func BackupFromConfigMaps(clusterID string, cms []corev1.ConfigMap) (Backup, err
 	}
 	var ct []byte
 	for i := range man.Parts {
-		p, ok := byName[BackupName(clusterID)+"-"+strconv.Itoa(i)]
+		p, ok := byName[man.partName(clusterID, i)]
 		if !ok {
 			return Backup{}, fmt.Errorf("backup part %d is missing", i)
 		}
