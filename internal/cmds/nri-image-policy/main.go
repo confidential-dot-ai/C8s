@@ -94,7 +94,11 @@ func Run(args []string) error {
 		return fmt.Errorf("load config %q: %w", *configPath, err)
 	}
 
-	logger, err := certutil.NewJSONLogger(cfg.Logging.Level)
+	logOut, err := logWriter(cfg.Logging)
+	if err != nil {
+		return err
+	}
+	logger, err := certutil.NewJSONLoggerTo(logOut, cfg.Logging.Level)
 	if err != nil {
 		return fmt.Errorf("log level: %w", err)
 	}

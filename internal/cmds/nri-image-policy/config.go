@@ -214,6 +214,11 @@ const (
 // loggingConfig contains logging settings.
 type loggingConfig struct {
 	Level string `yaml:"level"`
+	// Syslog is the syslog socket the plugin logs to, such as journald's
+	// /dev/log. Empty logs to stdout, which containerd discards for a
+	// pre-installed plugin: it starts one with its standard streams on
+	// /dev/null.
+	Syslog string `yaml:"syslog"`
 }
 
 const defaultPullInterval = 5 * time.Second

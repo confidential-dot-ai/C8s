@@ -78,6 +78,9 @@ func TestNodeImageBootConfig_ParsesAndAdmitsSystemImages(t *testing.T) {
 	if !cfg.Policy.FatalExisting {
 		t.Error("the baked config must set policy.fatal_existing: a container predating the plugin means admission was not in place")
 	}
+	if cfg.Logging.Syslog != "/dev/log" {
+		t.Errorf("logging.syslog = %q, want /dev/log: containerd discards a pre-installed plugin's stdout", cfg.Logging.Syslog)
+	}
 	if !strings.HasPrefix(cfg.Policy.BootMarkerPath, "/run/") {
 		t.Errorf("policy.boot_marker_path = %q, want a path under /run (tmpfs, cleared by a reboot)", cfg.Policy.BootMarkerPath)
 	}
