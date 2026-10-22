@@ -643,3 +643,42 @@ func TestAuthorizeIssuedAt(t *testing.T) {
 		}
 	}
 }
+
+// UnverifiedTimes reads the window of a token without its signature and
+// refuses one the Verifier would refuse for its window.
+func TestUnverifiedTimes(t *testing.T) {
+	keyPEM, _ := genKey(t, elliptic.P256())
+	signer, err := NewSignerFromKeyPEM(keyPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth, err := signer.Authorization(http.MethodPut, "/allowlist", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	iat, exp, err := UnverifiedTimes(strings.TrimPrefix(auth, "Bearer "))
+	if err != nil || exp.Sub(iat) != DefaultTokenTTL {
+		t.Fatalf("signed token: %v %v %v", iat, exp, err)
+	}
+	now := time.Now().Unix()
+	if _, _, err := UnverifiedTimes(strings.TrimPrefix(mintCustom(t, keyPEM, jwt.MapClaims{"iat": now, "exp": now + 1}), "Bearer ")); err != nil {
+		t.Fatalf("custom token: %v", err)
+	}
+	for name, claims := range map[string]jwt.MapClaims{
+		"no exp":       {"iat": now},
+		"no iat":       {"exp": now},
+		"exp at iat":   {"iat": now, "exp": now},
+		"too long":     {"iat": now, "exp": now + int64(MaxTokenValidity/time.Second) + 1},
+		"iat at epoch": {"iat": 0, "exp": 60},
+		"string exp":   {"iat": now, "exp": "soon"},
+	} {
+		if _, _, err := UnverifiedTimes(strings.TrimPrefix(mintCustom(t, keyPEM, claims), "Bearer ")); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	for _, bad := range []string{"", "a", "a.b.c", "h.p.s"} {
+		if _, _, err := UnverifiedTimes(bad); err == nil {
+			t.Errorf("%q: accepted", bad)
+		}
+	}
+}

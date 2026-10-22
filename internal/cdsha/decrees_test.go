@@ -13,7 +13,7 @@ import (
 func TestDecreeRecordIsReplicated(t *testing.T) {
 	c := newCluster(t, 3)
 	c.genesis("n0", "n1", "n2")
-	eventually(t, 10*time.Second, "format 2", func() bool { return c.leader() != nil && c.leader().node.Core().format() == 2 })
+	eventually(t, 10*time.Second, "format 2", func() bool { return c.leader() != nil && c.leader().node.Core().format() >= 2 })
 	for i, voters := range []int{5, 3} {
 		d := c.decree(Decree{Kind: SetVoters, BaseEpoch: uint64(1 + i), Voters: voters})
 		eventually(t, 10*time.Second, "decree applied", func() bool { st, ok := c.decrees.get(d); return ok && st.AppliedEpoch != nil })

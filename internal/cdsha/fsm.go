@@ -171,7 +171,7 @@ func (f *FSM) apply(e Entry) any {
 		}
 		return nil
 	case e.Kind == KindAllowlist && e.Allowlist != nil:
-		return f.allowlist.Apply(*e.Allowlist)
+		return f.allowlist.ApplyWith(*e.Allowlist, f.allowlistOptions())
 	case e.Kind == KindSecret && e.Secret != nil:
 		return f.secrets.Apply(*e.Secret)
 	case e.Kind == KindBinding && e.Binding != nil:
@@ -182,6 +182,14 @@ func (f *FSM) apply(e Entry) any {
 		return f.applyRestore(*e.Restore)
 	}
 	return fmt.Errorf("%w of kind %q", errMalformed, e.Kind)
+}
+
+// allowlistOptions are the allowlist behaviors the agreed format turns on.
+// The format is replicated state, so every replica applies an entry alike.
+func (f *FSM) allowlistOptions() allowlist.ApplyOptions {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return allowlist.ApplyOptions{TokenExpiry: f.core.format() >= 3}
 }
 
 func (f *FSM) applyDecree(de DecreeEntry) DecreeResult {
@@ -355,6 +363,9 @@ func (f *FSM) Snapshot() (raft.FSMSnapshot, error) {
 	al, err := f.allowlist.Dump()
 	if err != nil {
 		return nil, err
+	}
+	if sn.Format < 3 {
+		al.StripTokenExpiry() // a format 2 replica cannot restore the columns
 	}
 	sn.Allowlist, sn.Secrets, sn.Bindings = al, f.secrets.Dump(), f.ledger.Dump()
 	return &fsmSnapshot{sn: sn}, nil
