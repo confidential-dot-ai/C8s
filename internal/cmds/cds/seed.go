@@ -9,23 +9,22 @@ import (
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
-// openSeed applies the allowlist seed at path (none when path is empty) and
-// returns the allowlist CDS decides on. With layer set the seed is the
-// measured node image's: it becomes the fixed seed layer for this boot and
-// never enters the store. Otherwise it is merged into store, which an upload
-// replaces. Any error fails closed: CDS must not decide on an empty or partial
-// allowlist because its seed could not be applied.
-func openSeed(store *allowlist.Store, path string, layer bool) (*allowlist.Layered, error) {
-	if path == "" {
-		return allowlist.NewLayered(store, nil)
-	}
-	if !layer {
-		if err := seedStore(store, path); err != nil {
+// openSeed seeds store from storeSeed and returns the allowlist CDS decides
+// on, with the seed at layerSeed as its fixed seed layer; an empty path means
+// none. Only a seed no one can change may be a layer, such as the measured node
+// image's: it is read once and never enters the store, so no write drops it.
+// Any error fails closed: CDS must not decide on an empty or partial allowlist
+// because a seed could not be applied.
+func openSeed(store *allowlist.Store, storeSeed, layerSeed string) (*allowlist.Layered, error) {
+	if storeSeed != "" {
+		if err := seedStore(store, storeSeed); err != nil {
 			return nil, err
 		}
+	}
+	if layerSeed == "" {
 		return allowlist.NewLayered(store, nil)
 	}
-	seed, err := readSeed(path)
+	seed, err := readSeed(layerSeed)
 	if err != nil {
 		return nil, err
 	}
@@ -33,7 +32,7 @@ func openSeed(store *allowlist.Store, path string, layer bool) (*allowlist.Layer
 	if err != nil {
 		return nil, err
 	}
-	slog.Info("allowlist seed kept as a fixed layer", "digest", layers.SeedDigest(), "workloads_in_seed", len(seed.Workloads))
+	slog.Info("allowlist seed kept as a fixed layer", "path", layerSeed, "digest", layers.SeedDigest(), "workloads_in_seed", len(seed.Workloads))
 	return layers, nil
 }
 

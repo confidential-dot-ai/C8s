@@ -184,9 +184,9 @@ func run(cfg config) error {
 
 	// Seed before serving so the first decision includes the bootstrap
 	// allowlist (CDS, attestation-api, system images); an unseeded store would
-	// deny every worker pull until an operator populated it. On a chart-managed
-	// install the seed enters the store; with --seed-layer it stays a layer of
-	// its own. Fail closed on any seed error.
+	// deny every worker pull until an operator populated it. --allowlist-seed
+	// enters the store; --seed-layer stays a layer of its own. Fail closed on
+	// any seed error.
 	allowlistLayers, err := openSeed(&allowlistStore, cfg.allowlistSeed, cfg.seedLayer)
 	if err != nil {
 		return fmt.Errorf("seed allowlist: %w", err)
@@ -546,9 +546,6 @@ func validateConfig(cfg config) error {
 	}
 	if cfg.readinessInterval <= 0 {
 		return fmt.Errorf("--readiness-interval must be positive")
-	}
-	if cfg.seedLayer && cfg.allowlistSeed == "" {
-		return fmt.Errorf("--seed-layer needs --allowlist-seed")
 	}
 	if cfg.minCAValidity <= 0 {
 		return fmt.Errorf("--min-ca-validity must be positive (it is the window CA renewal has to succeed in before /readyz fails)")

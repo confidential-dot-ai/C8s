@@ -595,10 +595,10 @@ With CDS a singleton:
 
 For the measured node image, CDS stores its database at `/mnt/c8s-data/cds/allowlist.db`
 in the Pod's `emptyDir`. A container restart preserves that directory; Pod
-recreation or a VM reboot loses it. The baked component seed and optional
-signed `workloads` document form a fixed seed layer beside the store: the new
-store starts empty, and an upload never drops the seed. Reapply any later
-operator changes. The CA signing key is in process memory and changes on
+recreation or a VM reboot loses it. The baked component seed is a fixed seed
+layer beside the store, which no upload drops; the optional signed `workloads`
+document initializes the new store, and the first upload replaces it. Reapply
+any later operator changes. The CA signing key is in process memory and changes on
 any CDS process restart, so plan for certificate re-bootstrap even when the
 database survives. This image does not expose a persistent-volume switch in
 launch configuration.
@@ -1245,8 +1245,8 @@ signature. `--trust-operator` accepts such a leaf policy when the target names
 the same digest in the `C8s-Allowlist-Seed` header of `GET /allowlist`, fetched
 over TLS bound to the attested serving certificate. It still fetches the seed
 and checks it hashes to the digest, and reports it as `leaf_policy_seed`. The
-seed is the image's baked seed plus the launch document's workloads, which the
-image pin and the pinned launch key already cover. This applies only to the
+seed is the image's baked seed, which the image pin already covers and the node's
+base allowlist enforces. This applies only to the
 leaf's policy: every policy in the replayed history still needs a signature.
 Without an attested serving certificate (a saved evidence file, or a target
 that does not serve `/allowlist`), the leaf policy fails as unsigned.
