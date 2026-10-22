@@ -8,11 +8,17 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 )
 
 func TestBackupStoreRoundTrip(t *testing.T) {
@@ -66,14 +72,23 @@ func TestBackupStoreRoundTrip(t *testing.T) {
 	}
 	list, _ := kube.CoreV1().ConfigMaps("decrees").List(ctx, metav1.ListOptions{})
 	items := list.Items
-	if len(items) < 3 {
-		t.Fatalf("expected several parts, got %d objects", len(items))
+	var man backupManifest
+	for _, cm := range items {
+		if cm.Name == BackupName(testCluster) {
+			_ = json.Unmarshal([]byte(cm.Data[keyBackup]), &man)
+		}
 	}
+	// Only the stored backup's parts remain: the earlier one's were deleted.
+	if man.Gen == "" || len(items) != man.Parts+1 || man.Parts < 3 {
+		t.Fatalf("want the manifest and its %d parts (gen %q), got %d objects", man.Parts, man.Gen, len(items))
+	}
+	tamperedOne := false
 	if _, err := BackupFromConfigMaps("other", items); err == nil {
 		t.Fatal("a backup for another cluster")
 	}
 	for i := range items {
-		if items[i].Name == BackupName(testCluster)+"-1" {
+		if items[i].Name == man.partName(testCluster, 1) {
+			tamperedOne = true
 			bad := append([]byte{}, items[i].BinaryData[keyPart]...)
 			bad[0] ^= 1
 			tampered := append(items[:0:0], items...)
@@ -93,6 +108,9 @@ func TestBackupStoreRoundTrip(t *testing.T) {
 				t.Fatal("a garbage manifest parsed")
 			}
 		}
+	}
+	if !tamperedOne {
+		t.Fatal("part 1 not found")
 	}
 	bad := got
 	bad.EphemeralPub = []byte("x")
@@ -162,5 +180,65 @@ func TestApplyRestoreRefusals(t *testing.T) {
 		if err := CheckDecree(sd, pre, time.Now()); err == nil {
 			t.Errorf("%s accepted", name)
 		}
+	}
+}
+
+// A backup stays whole while the next is written: a writer that dies after
+// writing parts leaves the stored manifest and its parts as they were, and a
+// writer that raced another loses instead of overwriting it.
+func TestBackupWriteIsAtomic(t *testing.T) {
+	ctx := context.Background()
+	kube := fake.NewClientset()
+	st := KubeDecrees{Client: kube, Namespace: "decrees", ClusterID: testCluster}
+	rk, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	orig := backupPartBytes
+	backupPartBytes = 100
+	t.Cleanup(func() { backupPartBytes = orig })
+	seal := func(index uint64) Backup {
+		snap := make([]byte, 400)
+		_, _ = rand.Read(snap)
+		b, err := SealBackup(&rk.PublicKey, BackupMeta{ClusterID: testCluster, Epoch: 1, Index: index}, snap)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	first := seal(5)
+	if err := st.PutBackup(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	// A crashed writer: its parts are there, its manifest never was.
+	crashed := backupManifest{Gen: "e1-i6-dead", Parts: 2}
+	for i := range crashed.Parts {
+		cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: crashed.partName(testCluster, i), Namespace: "decrees",
+			Labels: map[string]string{LabelBackup: testCluster}}, BinaryData: map[string][]byte{keyPart: []byte("junk")}}
+		if _, err := kube.CoreV1().ConfigMaps("decrees").Create(ctx, cm, metav1.CreateOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := st.GetBackup(ctx)
+	if err != nil || got.Meta.Index != 5 {
+		t.Fatalf("the stored backup broke under a crashed write: %v", err)
+	}
+	// The next backup goes in and sweeps the crashed parts.
+	if err := st.PutBackup(ctx, seal(7)); err != nil {
+		t.Fatal(err)
+	}
+	list, _ := kube.CoreV1().ConfigMaps("decrees").List(ctx, metav1.ListOptions{})
+	for _, cm := range list.Items {
+		if strings.Contains(cm.Name, crashed.Gen) {
+			t.Fatalf("crashed part %s left behind", cm.Name)
+		}
+	}
+	// A writer whose manifest changed under it loses: the update is
+	// conditional on the manifest it checked.
+	kube.PrependReactor("update", "configmaps", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewConflict(schema.GroupResource{Resource: "configmaps"}, BackupName(testCluster), errors.New("changed"))
+	})
+	if err := st.PutBackup(ctx, seal(9)); !errors.Is(err, ErrBackupNotNewer) {
+		t.Fatalf("a raced write: %v", err)
+	}
+	if got, err := st.GetBackup(ctx); err != nil || got.Meta.Index != 7 {
+		t.Fatalf("a raced write damaged the stored backup: %v %v", got.Meta.Index, err)
 	}
 }

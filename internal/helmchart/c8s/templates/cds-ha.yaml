@@ -104,10 +104,11 @@ metadata:
     app.kubernetes.io/component: cds
 rules:
   # Decrees (read, status update) and the sealed state backups, which only
-  # the operator's offline recovery key opens.
+  # the operator's offline recovery key opens. delete: each backup is written
+  # under new part names, then the parts of the one it replaced are removed.
   - apiGroups: [""]
     resources: ["configmaps"]
-    verbs: ["get", "list", "watch", "create", "update"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
