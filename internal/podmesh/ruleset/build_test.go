@@ -82,29 +82,6 @@ func TestBuildMatchesTheGoldenRuleset(t *testing.T) {
 	}
 }
 
-// This complete ruleset pins the absence of every cluster permission, including
-// established replies, while preserving communication inside the pod.
-func TestIsolatedRulesetHasOnlyPodLocalExceptions(t *testing.T) {
-	const want = `table inet c8s-podmesh {
-	chain filter-input {
-		type filter hook input priority filter; policy drop;
-		iifname "lo" accept # loopback
-	}
-	chain filter-output {
-		type filter hook output priority filter; policy drop;
-		skuid 0 drop # namespace-entrant
-		fib daddr type local accept # pod-local
-	}
-	chain filter-forward {
-		type filter hook forward priority filter; policy drop;
-	}
-}
-`
-	if got := renderRuleset(build(Policy{Isolated: true})); got != want {
-		t.Fatalf("ruleset =\n%s\nwant\n%s", got, want)
-	}
-}
-
 // The mesh listeners belong to the mesh endpoint: a process that takes one
 // over once the endpoint is gone must not be able to answer on it, so the
 // ruleset drops what leaves a listener port from another socket owner before

@@ -59,8 +59,6 @@ var (
 // reserved UID each platform role runs as. A measured config carrying no mesh
 // policy hosts no member pods.
 type meshPolicy struct {
-	// Isolated permits pod-local traffic only and grants no mesh membership.
-	Isolated bool `yaml:"isolated"`
 	// ExemptNamespaces host no member pods: their pods keep the node's rules.
 	ExemptNamespaces []string `yaml:"exempt_namespaces"`
 	// Resolver is the address the ruleset admits on the resolver port.
@@ -122,9 +120,12 @@ func LoadMeshFloor(configPath string) (*MeshFloor, error) {
 		ExemptNamespaces: cfg.Mesh.ExemptNamespaces,
 		ReservedIDs:      map[uint32]RoleFloor{},
 	}
-	for role, uid := range cfg.Mesh.reservedIdentities() {
-		floor.ReservedIDs[uid] = RoleFloor{Name: role}
+	for _, role := range cfg.Mesh.Roles {
+		floor.ReservedIDs[role.UID] = RoleFloor{Name: role.Name}
 	}
+	floor.ReservedIDs[workloadclaims.RouterUID] = RoleFloor{Name: routerRole}
+	floor.ReservedIDs[workloadclaims.AcmeUID] = RoleFloor{Name: acmeRole}
+	floor.ReservedIDs[workloadclaims.UpstreamUID] = RoleFloor{Name: upstreamRole}
 	return floor, nil
 }
 
@@ -132,12 +133,6 @@ func LoadMeshFloor(configPath string) (*MeshFloor, error) {
 // load: a node whose mesh policy describes no ruleset refuses to start. A
 // role this policy does not bind holds no identity, so the gate refuses it.
 func (p meshPolicy) validate() error {
-	if p.Isolated {
-		if len(p.ExemptNamespaces) != 0 || p.Resolver.IsValid() || p.Capture != (capturePorts{}) || p.CredentialAttestationPort != 0 || len(p.Roles) != 0 || len(p.ClusterRanges) != 0 {
-			return errors.New("mesh.isolated cannot be combined with exemptions, resolver, capture, credential attestation port, roles or cluster ranges")
-		}
-		return nil
-	}
 	if p.Capture.Outbound == 0 || p.Capture.Inbound == 0 || p.Capture.Health == 0 {
 		return errors.New("mesh.capture needs the outbound, inbound and health port of the mesh endpoint")
 	}
@@ -214,9 +209,6 @@ func validateRole(role roleBinding) error {
 // the dialing roles trusted policy binds, and the three compiled roles of the
 // router's namespace.
 func (p meshPolicy) reservedIdentities() map[string]uint32 {
-	if p.Isolated {
-		return nil
-	}
 	ids := make(map[string]uint32, len(p.Roles)+3)
 	for _, role := range p.Roles {
 		ids[role.Name] = role.UID

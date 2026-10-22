@@ -20,14 +20,6 @@ func (p *plugin) ValidateContainerAdjustment(ctx context.Context, req *api.Valid
 	if req.GetContainer() == nil || req.GetPod() == nil {
 		return fmt.Errorf("missing container or sandbox in NRI validation")
 	}
-	if p.cfg.Mesh != nil && p.cfg.Mesh.Isolated {
-		if cdiInjected(req.GetContainer()) {
-			return p.denyContainerCreation(req.GetPod().GetId(), req.GetContainer().GetName(), fmt.Errorf("isolated pod refuses CDI device injection"))
-		}
-		if err := requireIsolatedAdjustment(req.GetAdjust()); err != nil {
-			return p.denyContainerCreation(req.GetPod().GetId(), req.GetContainer().GetName(), err)
-		}
-	}
 	ctr, env := adjustedLaunchContainer(req)
 	mounts := p.adjustedMounts(req, ctr)
 	// The gate runs ahead of the admission check and independently of
@@ -36,45 +28,11 @@ func (p *plugin) ValidateContainerAdjustment(ctx context.Context, req *api.Valid
 		return p.denyContainer(req.GetPod().GetId(), err)
 	}
 	verdict, reason := p.checkContainerObserved(ctx, p.cfg, req.GetPod(), ctr, ctr.GetAnnotations()[annotationImageName], launchFinal, env, mounts)
-	// Isolated pods cannot acquire host-service mounts through cumulative edits,
-	// even when the signed allowlist leaves mounts unrestricted.
-	if verdict != verdictDeny && p.cfg.Mesh != nil && p.cfg.Mesh.Isolated {
-		verdict, reason = p.checkSandbox(ctx, p.cfg, req.GetPod(), ctr, ctr.GetAnnotations()[annotationImageName], env, mounts)
-	}
 	if verdict == verdictDeny && p.cfg.Policy.Mode != ModeAudit {
 		return p.denyContainerCreation(req.GetPod().GetId(), ctr.GetName(), fmt.Errorf("%s", reason))
 	}
 	// No inventory record here: later validators can still reject creation, and
 	// CDI transformations under an any policy have not happened yet.
-	return nil
-}
-
-// requireIsolatedAdjustment refuses privileges not represented by the
-// cumulative argv/env/mount observation. The gate checks namespace/device moves.
-func requireIsolatedAdjustment(adjust *api.ContainerAdjustment) error {
-	linux := adjust.GetLinux()
-	var change string
-	switch {
-	case len(adjust.GetCDIDevices()) != 0:
-		change = "CDI device injection"
-	case len(hookStages(adjust.GetHooks())) != 0:
-		change = "OCI hook"
-	case len(linux.GetDevices()) != 0:
-		change = "host device node"
-	case len(linux.GetResources().GetDevices()) != 0:
-		change = "device cgroup rule"
-	case len(linux.GetSysctl()) != 0:
-		change = "container sysctl"
-	case linux.GetCgroupsPath() != "":
-		change = "cgroup move"
-	case linux.GetSeccompPolicy() != nil:
-		change = "seccomp replacement"
-	case len(adjust.GetAnnotations()) != 0:
-		change = "runtime annotation replacement"
-	}
-	if change != "" {
-		return fmt.Errorf("isolated pod refuses an adjustment adding %s", change)
-	}
 	return nil
 }
 

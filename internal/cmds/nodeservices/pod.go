@@ -23,7 +23,7 @@ const (
 
 // preparePod admits exactly the signed workloads: the baked floor's plugin,
 // inventory and fail-closed settings stay, but its base, the chart seed and
-// the CDS pull are dropped. Every workload keeps the sandbox and isolation floor.
+// the CDS pull are dropped, and nothing is exempt from the sandbox policy.
 func preparePod(rootDir string, d *launchconfig.Document, outputs map[string][]byte) error {
 	path := func(name string) string { return filepath.Join(rootDir, name) }
 	if d.Pod == nil || d.Workloads == "" {
@@ -48,7 +48,6 @@ func preparePod(rootDir string, d *launchconfig.Document, outputs map[string][]b
 	a["node_tcb"] = false
 	delete(a, "pull")
 	policy["sandbox"] = "enforce"
-	floor["mesh"] = map[string]any{"isolated": true}
 	// Measure every started workload into RTMR[3], on top of the launch-key
 	// seed the initrd extended from operator-pubkey's exact bytes, into the
 	// journal under the baked inventory directory that pod-status and the

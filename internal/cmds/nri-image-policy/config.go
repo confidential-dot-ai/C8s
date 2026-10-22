@@ -339,9 +339,9 @@ func (c *config) NormalizedPlatform() string {
 
 // injectsCredentialClients reports whether a pod of this node carries the
 // webhook's credential clients: the inventory directory is what the plugin
-// mounts into them. Isolated pods keep the inventory without injected clients.
+// mounts into them, and without it no pod of this node is injected.
 func (c *config) injectsCredentialClients() bool {
-	return c.WorkloadClaims.SocketDir != "" && (c.Mesh == nil || !c.Mesh.Isolated)
+	return c.WorkloadClaims.SocketDir != ""
 }
 
 // PullEnabled reports whether the plugin should poll a remote CDS.
@@ -487,14 +487,6 @@ func (c *config) validateMesh() error {
 	if err := c.Mesh.validate(); err != nil {
 		return err
 	}
-	if c.Mesh.Isolated {
-		if c.Policy.Mode != ModeFailClosed || !c.Policy.FatalExisting || !c.Policy.DenyMissingAnnotation || c.sandboxMode() != SandboxEnforce || c.Allowlist.NodeTCB || len(c.Policy.ExemptNamespaces) != 0 {
-			return errors.New("mesh.isolated requires fail-closed admission, fatal_existing, deny_missing_annotation and sandbox enforcement without node_tcb or policy exemptions")
-		}
-		if !c.baseEnabled() || c.PullEnabled() || c.WorkloadClaims.CDSNodePort != 0 {
-			return errors.New("mesh.isolated requires a base allowlist without CDS pull or credential clients")
-		}
-	}
 	if c.requiresTrustedMeshEnforcement() && (c.Policy.Mode != ModeFailClosed || !c.Policy.FatalExisting) {
 		return fmt.Errorf("mesh requires policy.mode %q and policy.fatal_existing: a member pod needs trusted enforcement from node startup", ModeFailClosed)
 	}
@@ -514,7 +506,7 @@ func (c *config) validateMeshRoleBindings() error {
 	}
 	identities := c.Mesh.reservedIdentities()
 	for name, workload := range c.Allowlist.Base.Workloads {
-		for _, container := range slices.Concat(workload.InitContainers, workload.Containers) {
+		for _, container := range workload.Containers {
 			if container.Role == "" {
 				continue
 			}

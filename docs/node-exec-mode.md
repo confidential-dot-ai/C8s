@@ -86,8 +86,8 @@ records the RKE2 version it came from, and the invariants gate compares that to
 
 ## The privilege floor
 
-The same wrapper bounds the privileges of mesh-member and isolated pod
-containers, because NRI shows the plugin no capabilities, `no_new_privs`,
+The same wrapper is where a member pod's containers get their privileges
+bounded, because NRI shows the plugin no capabilities, `no_new_privs`,
 privileged flag or user-namespace mappings
 (`docs/allowlist-and-capabilities.md`). On `create` and `run` it reads the
 bundle's `config.json` and refuses the create when a container of a pod the
@@ -127,14 +127,6 @@ container id is the sandbox's, which no other bundle can claim. A measured
 policy that cannot be read denies the create; one with no `mesh` policy
 applies no floor. The floor is independent of the exec mode above.
 
-Pod-role CVMs use `mesh: {isolated: true}` and retain this floor for every init
-and application container, in every Kubernetes namespace. They have no
-reserved platform identities or namespace exemptions. Use a nonzero
-`runAsUser`, `allowPrivilegeEscalation: false`, and preferably
-`capabilities.drop: ["ALL"]`; in particular, `NET_RAW`, `SETUID` and `SETGID`
-are not allowed. Leave `stdin` and `tty` false. See the
-[pod manifest fragment](operator.md#authenticated-launch-configuration).
-
 ## Writing a component that runs on such a node
 
 A C8s-owned exec probe or lifecycle exec hook cannot pass on a locked node, so
@@ -153,10 +145,6 @@ preference:
    runs `armtls-mesh iptables-cleanup --on-shutdown`, which idles until SIGTERM
    and then cleans up; native sidecars stop in reverse init order, so it still
    runs after the proxy drains.
-
-For isolated pod-role CVMs, network probes from outside the pod cannot reach
-its listeners. The probe guidance above does not open that boundary; use the
-host's attested pod-status endpoint to observe the pod.
 
 ## Known limits
 

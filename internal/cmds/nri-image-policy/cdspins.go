@@ -40,7 +40,8 @@ func renderNodeDocument(name string, document []byte) (string, error) {
 // of in every pod.
 func (p *plugin) prepareCDSPins() error {
 	if !p.cfg.injectsCredentialClients() {
-		// No pod of this node has an injected client to read a CDS policy.
+		// No inventory directory, so no pod of this node is injected and
+		// nothing would read a policy.
 		return nil
 	}
 	set, err := p.cfg.Allowlist.Pull.policySet(p.cfg.NormalizedPlatform())

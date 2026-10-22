@@ -471,7 +471,11 @@ func (p *plugin) observedMounts(pod *api.PodSandbox, ctr *api.Container) []allow
 	if pod == nil {
 		return nil
 	}
-	return newMountObserver(p.mountStorage, p.nodeMounts()).Observe(pod, ctr)
+	return newMountObserver(p.mountStorage, nodeMounts{
+		socketDir:  p.cfg.WorkloadClaims.SocketDir,
+		cdsPins:    p.cdsPins,
+		cdsAddress: p.cdsAddress,
+	}).Observe(pod, ctr)
 }
 
 // resolveDigest returns the canonical store digest for imageRef using the same
@@ -815,7 +819,11 @@ func (p *plugin) exemptNamespace(ctx context.Context, cfg *config, pod *api.PodS
 // The digest is resolved only when an exemption could apply, so an ordinary
 // container costs no containerd round-trip.
 func (p *plugin) checkSandbox(ctx context.Context, cfg *config, pod *api.PodSandbox, ctr *api.Container, imageRef string, env *allowlist.EnvObservation, mounts []allowlist.ObservedMount) (imageVerdict, string) {
-	obs := observeSandbox(pod, ctr, p.nodeMounts(), mounts, nil)
+	obs := observeSandbox(pod, ctr, nodeMounts{
+		socketDir:  cfg.WorkloadClaims.SocketDir,
+		cdsPins:    p.cdsPins,
+		cdsAddress: p.cdsAddress,
+	}, mounts, nil)
 	violations := obs.violations()
 	if len(violations) == 0 {
 		return verdictAllow, ""
@@ -824,7 +832,11 @@ func (p *plugin) checkSandbox(ctx context.Context, cfg *config, pod *api.PodSand
 	if cfg.AllowlistEnabled() && len(obs.HostBinds) > 0 && slices.ContainsFunc(mounts, func(m allowlist.ObservedMount) bool { return m.Provenance != "" }) {
 		digest = p.resolveDigest(ctx, imageRef)
 		rc := allowlist.RunningContainer{Digest: digest, Argv: ctr.GetArgs(), Env: env, Mounts: mounts}
-		obs = observeSandbox(pod, ctr, p.nodeMounts(), mounts, func(m allowlist.ObservedMount) bool {
+		obs = observeSandbox(pod, ctr, nodeMounts{
+			socketDir:  cfg.WorkloadClaims.SocketDir,
+			cdsPins:    p.cdsPins,
+			cdsAddress: p.cdsAddress,
+		}, mounts, func(m allowlist.ObservedMount) bool {
 			return p.policy.admitsNodeRoot(rc, m)
 		})
 		if violations = obs.violations(); len(violations) == 0 {
@@ -1237,9 +1249,6 @@ func (p *plugin) observedLaunch(ctx context.Context, ctr *api.Container, imageRe
 // plane cannot pass one as an argument. A container running as the credentials
 // identity that this node's measured base grants no such role is refused.
 func (p *plugin) credentialMounts(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) (*api.ContainerAdjustment, error) {
-	if p.cfg.Mesh != nil && p.cfg.Mesh.Isolated {
-		return nil, nil
-	}
 	if fetchesRouteManifest(pod, ctr) {
 		return p.routerCDSMount(), nil
 	}
@@ -1251,16 +1260,15 @@ func (p *plugin) credentialMounts(ctx context.Context, pod *api.PodSandbox, ctr 
 		return nil, fmt.Errorf("container %q runs as the credentials identity (uid %d) but this node's measured base grants it no %s role, so it would reach CDS unpinned",
 			ctr.GetName(), workloadclaims.CredentialsUID, CredentialRole)
 	}
-	own := p.nodeMounts()
 	var mounts []*api.Mount
-	if p.inventory != nil && own.socketDir != "" {
-		mounts = append(mounts, readOnlyBind(own.socketDir, workloadclaims.SidecarSocketDir))
+	if servesInventory := p.inventory != nil; servesInventory {
+		mounts = append(mounts, readOnlyBind(p.cfg.WorkloadClaims.SocketDir, workloadclaims.SidecarSocketDir))
 	}
-	if own.cdsPins != "" {
-		mounts = append(mounts, readOnlyBind(own.cdsPins, workloadclaims.CDSPinsPath))
+	if pinsCDS := p.cdsPins != ""; pinsCDS {
+		mounts = append(mounts, readOnlyBind(p.cdsPins, workloadclaims.CDSPinsPath))
 	}
-	if own.cdsAddress != "" {
-		mounts = append(mounts, readOnlyBind(own.cdsAddress, workloadclaims.CDSAddressPath))
+	if p.cdsAddress != "" {
+		mounts = append(mounts, readOnlyBind(p.cdsAddress, workloadclaims.CDSAddressPath))
 	}
 	if len(mounts) == 0 {
 		return nil, nil
@@ -1291,12 +1299,11 @@ func fetchesRouteManifest(pod *api.PodSandbox, ctr *api.Container) bool {
 // manifest from the one CDS its node admits, and takes its pins from the
 // measured base the chart renders rather than from a node document.
 func (p *plugin) routerCDSMount() *api.ContainerAdjustment {
-	address := p.nodeMounts().cdsAddress
-	if address == "" {
+	if p.cdsAddress == "" {
 		return nil
 	}
 	return &api.ContainerAdjustment{
-		Mounts: []*api.Mount{readOnlyBind(address, workloadclaims.CDSAddressPath)},
+		Mounts: []*api.Mount{readOnlyBind(p.cdsAddress, workloadclaims.CDSAddressPath)},
 	}
 }
 
@@ -1317,19 +1324,6 @@ func injectedCredentialSidecar(pod *api.PodSandbox, ctr *api.Container) bool {
 func (p *plugin) measuredRole(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) string {
 	imageRef := ctr.GetAnnotations()[annotationImageName]
 	return p.roleOf(p.observedLaunch(ctx, ctr, imageRef, containerEnv(ctr), p.observedMounts(pod, ctr)))
-}
-
-// nodeMounts defines both the mounts we inject and their admission exceptions.
-// Isolated pods keep the host inventory without access to its sockets.
-func (p *plugin) nodeMounts() nodeMounts {
-	if p.cfg.Mesh != nil && p.cfg.Mesh.Isolated {
-		return nodeMounts{}
-	}
-	return nodeMounts{
-		socketDir:  p.cfg.WorkloadClaims.SocketDir,
-		cdsPins:    p.cdsPins,
-		cdsAddress: p.cdsAddress,
-	}
 }
 
 func readOnlyBind(source, destination string) *api.Mount {

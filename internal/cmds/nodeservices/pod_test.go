@@ -21,7 +21,7 @@ func podDocument(t *testing.T) *launchconfig.Document {
 	doc.Node.Name = "p-pod"
 	doc.Workloads = podWorkloads
 	doc.Pod = &launchconfig.PodSpec{UID: "u1", Namespace: "tenant", Name: "app",
-		Manifest: `{"apiVersion":"v1","kind":"Pod","metadata":{"name":"app","namespace":"tenant","uid":"u1"},"spec":{"containers":[{"name":"app","image":"busybox@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]}}`}
+		Manifest: `{"apiVersion":"v1","kind":"Pod","metadata":{"name":"app","namespace":"tenant","uid":"u1"},"spec":{"containers":[{"name":"app","image":"busybox"}]}}`}
 	return doc
 }
 
@@ -70,9 +70,6 @@ func TestPreparePodAdmitsOnlySignedWorkloads(t *testing.T) {
 	}
 	if a["node_tcb"] != false {
 		t.Fatal("pod workloads must not be exempt from the sandbox policy")
-	}
-	if !reflect.DeepEqual(got["mesh"], map[string]any{"isolated": true}) {
-		t.Fatalf("pod mesh policy = %v, want isolation without cluster exceptions", got["mesh"])
 	}
 	base := basePolicy(t, a["base"])
 	if len(base.Workloads) != 1 || len(base.Workloads["app"].Containers) != 1 {

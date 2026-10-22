@@ -80,12 +80,12 @@ func newMeshGate(policy *meshPolicy, logger *slog.Logger) *meshGate {
 	}
 }
 
-// hosts reports a sandbox the enforcer protects. Isolation covers every pod,
-// including a missing namespace, which protection must refuse.
+// hosts reports a sandbox the enforcer protects: its own network namespace,
+// in a namespace trusted policy does not exempt.
 func (g *meshGate) hosts(pod *api.PodSandbox) bool {
 	return g.policy != nil &&
-		(g.policy.Isolated || (!slices.Contains(g.policy.ExemptNamespaces, pod.GetNamespace()) &&
-			podNetworkNamespace(pod) != ""))
+		!slices.Contains(g.policy.ExemptNamespaces, pod.GetNamespace()) &&
+		podNetworkNamespace(pod) != ""
 }
 
 // protect installs the pod ruleset once in a sandbox's life, before any of
@@ -214,15 +214,9 @@ func (g *meshGate) admissible(pod *api.PodSandbox, ctr *api.Container, launch ga
 		state.refusal = fmt.Errorf("the reported namespace moved from %s to %s", state.kubeNamespace, reported)
 		return podNamespace{}, "", state.refusal
 	}
-	if !g.policy.Isolated {
-		if err := state.requireRoleOrder(launch); err != nil {
-			return podNamespace{}, "", err
-		}
-		if err := state.requireRoleOnlyPod(launch); err != nil {
-			return podNamespace{}, "", err
-		}
-	}
 	for _, check := range []func() error{
+		func() error { return state.requireRoleOrder(launch) },
+		func() error { return state.requireRoleOnlyPod(launch) },
 		func() error { return g.policy.requireRoleIdentity(ctr, launch.role) },
 		func() error { return launch.requireNoNetworkChange() },
 		func() error { return requirePrivatePIDNamespace(ctr) },
@@ -262,9 +256,6 @@ func (g *meshGate) verifyMemberRuleset(sandboxID string) error {
 // verified mesh endpoint is running, with the Kubernetes namespace its ruleset
 // was built for.
 func (g *meshGate) memberNamespace(sandboxID string) (podNamespace, string, error) {
-	if g.policy.Isolated {
-		return podNamespace{}, "", errors.New("isolated pods are not mesh members")
-	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	state, err := g.state(sandboxID)

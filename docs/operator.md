@@ -188,37 +188,6 @@ the scratch disk. The kubelet listens on loopback only; pod status is served
 over armTLS on `:8443` (`c8s pod-status`), the only port the VM publishes;
 nothing outside the VM can open a connection to the pod.
 
-Pod-role preparation selects the trusted `mesh: {isolated: true}` policy.
-Containers in the pod can communicate locally, but cannot reach the internet,
-external DNS, other pods or guest services over IPv4 or IPv6. Service routing
-and network probes from outside the pod cannot reach its listeners. The
-host's armTLS status endpoint on `:8443` remains available. The guest retains
-its admission inventory and measurement journal for host services; it injects
-no cluster credential mounts and grants no mesh membership.
-
-Every init and application container must satisfy the
-[runtime privilege floor](node-exec-mode.md#the-privilege-floor): use a nonzero
-UID, disable privilege escalation, and leave `stdin` and `tty` false. Dropping
-all capabilities is the simplest configuration. Apply this fragment to the
-pod manifest, retaining the container's pinned image and command, and repeat
-the container settings for each additional init or application container:
-
-```yaml
-spec:
-  securityContext:
-    runAsUser: 65532
-    runAsGroup: 65532
-    runAsNonRoot: true
-  containers:
-    - name: app
-      securityContext:
-        allowPrivilegeEscalation: false
-        capabilities:
-          drop: ["ALL"]
-      stdin: false
-      tty: false
-```
-
 The generated document is the strict schema below; edit it only when a field
 the command does not expose is needed, then re-sign with
 `c8s keys sign-launch --key demo/server.key --force demo/server/launch.yaml`.
