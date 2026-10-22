@@ -115,7 +115,7 @@ Additional optional disks:
   The allowlist decides which container may write it: a `host` mount rule
   with `source: /var/lib/models` for the downloader, and the same source with
   `readOnly: true` for the server. An entry that holds a `secrets` grant may
-  have no `host` mount rule in any container (allowlist spec G7), so
+  have no `host` mount rule in any container, so
   containers that mount the weights disk go in an entry without a grant.
 
 ## Operator kubeconfig bootstrap
