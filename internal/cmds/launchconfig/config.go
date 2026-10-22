@@ -301,6 +301,12 @@ type Node struct {
 type RKE2 struct {
 	ServerToken string `yaml:"serverToken,omitempty" json:"server_token,omitempty"`
 	AgentToken  string `yaml:"agentToken" json:"agent_token"`
+	// NodePassword is this node's RKE2 node password, random per node and
+	// carried only in its own document. /etc/rancher is per-boot scratch, so
+	// without it RKE2 makes a new password at every boot and the server
+	// refuses a rebooted node's name. Per node, so holding the shared agent
+	// token, or one node's document, does not open another node's name.
+	NodePassword string `yaml:"nodePassword,omitempty" json:"node_password,omitempty"`
 }
 
 type ServerConfig struct {
@@ -489,6 +495,14 @@ func (d *Document) validate() error {
 	case forbidden:
 		if d.RKE2.ServerToken != "" || d.serverTokenPresent {
 			return fmt.Errorf("%s must not carry rke2.serverToken", d.Role)
+		}
+	}
+	if p := d.RKE2.NodePassword; p != "" {
+		if !tokenRE.MatchString(p) {
+			return fmt.Errorf("rke2.nodePassword must be 64 lowercase hex characters")
+		}
+		if p == d.RKE2.AgentToken || p == d.RKE2.ServerToken {
+			return fmt.Errorf("rke2.nodePassword must differ from the join tokens")
 		}
 	}
 	server, err := parseLaunchKey(d.Server.OperatorPublicKey)
