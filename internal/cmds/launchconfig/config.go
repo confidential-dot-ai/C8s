@@ -676,7 +676,9 @@ func (d *Document) referenceValues() (refvalues.ReferenceValues, error) {
 		for i, img := range d.images() {
 			name := k.name
 			if i > 0 {
-				name = fmt.Sprintf("%s@%s", k.name, img.Measurement[:12])
+				// Images of one firmware share their measurement: name a
+				// peer image by its index, which is unique and stable.
+				name = fmt.Sprintf("%s@peer%d", k.name, i)
 			}
 			entry := remote.ImagePin{Name: name, Digest: mustDecodeHex(img.Measurement), Anchor: []byte(k.pub)}
 			if len(img.RTMRs) > 0 {

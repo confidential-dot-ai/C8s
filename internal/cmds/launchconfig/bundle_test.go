@@ -526,3 +526,21 @@ func TestAddNodeWithAPinFloor(t *testing.T) {
 		t.Fatal("added a server")
 	}
 }
+
+// Peer images of one firmware share their measurement; the pins still get
+// distinct names (the shared parser refuses duplicates).
+func TestPeerImagesSharingAMeasurement(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "bundle")
+	if err := runBundleCmd(t, "new", "--out", dir, "--cluster-id", "demo", "--image-manifest", writeManifest(t, "tdx"),
+		"--server-address", "10.0.0.10", "--cds-node", "demo-cds-1", "--cds-node", "demo-cds-2"); err != nil {
+		t.Fatal(err)
+	}
+	doc, _ := readBundleDocument(t, dir, serverDir)
+	img := func(r string) Image {
+		return Image{Platform: "tdx", Measurement: strings.Repeat("ab", 48), RTMRs: map[int]string{1: strings.Repeat(r, 48), 2: strings.Repeat(r, 48)}}
+	}
+	doc.PeerImages = []Image{img("c1"), img("c2")}
+	if _, err := doc.referenceValues(); err != nil {
+		t.Fatal(err)
+	}
+}

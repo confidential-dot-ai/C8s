@@ -20,6 +20,7 @@ package cdspins
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
@@ -251,11 +252,11 @@ func Policy(bootstrap refvalues.ReferenceValues, images []cdsha.DecreeImage) (re
 			if err := errors.Join(err1, err2, err3); err != nil {
 				return refvalues.ReferenceValues{}, err
 			}
-			short := im.MRTD
-			if len(short) > 12 {
-				short = short[:12]
-			}
-			out.Images = append(out.Images, remote.ImagePin{Name: a.name + "@" + short, Digest: mrtd,
+			// Images of one firmware share their MRTD and differ in their
+			// RTMRs (kernel, command line): name each pin by all three, so
+			// two images of one firmware get distinct names.
+			id := sha256.Sum256([]byte(im.MRTD + im.RTMR1 + im.RTMR2))
+			out.Images = append(out.Images, remote.ImagePin{Name: a.name + "@" + hex.EncodeToString(id[:6]), Digest: mrtd,
 				Registers: map[int][]byte{1: r1, 2: r2}, Anchor: slices.Clone(a.key)})
 		}
 	}
