@@ -37,15 +37,20 @@ type config struct {
 	sidecar.Config
 
 	Volumes []volumeRequest
+	// CacheRootOwner is the "uid:gid" owning a cache volume's root when it
+	// is formatted.
+	CacheRootOwner string
 	// SocketDir holds the node's volumed socket, as this pod sees it.
 	SocketDir string
 }
 
 // volumeRequest is one NAME=/store/path pair: which volume to open and where
-// its key blob lives in the store.
+// its key blob lives in the store. A cache volume's path holds instead the
+// secret CDS generated for it, which its key is derived from.
 type volumeRequest struct {
-	Name string
-	Path string
+	Name  string
+	Path  string
+	Cache bool
 }
 
 // parseVolumeSpec parses a NAME=/store/path pair. The name selects the device
@@ -155,7 +160,7 @@ func openAll(ctx context.Context, cfg config, pins armtls.Pins) error {
 // openAllWith is openAll once the clients exist.
 func openAllWith(ctx context.Context, cfg config, cds *http.Client, pub crypto.PublicKey, endpoint string, daemon *http.Client, daemonBase string) error {
 	for _, v := range cfg.Volumes {
-		blob, err := fetchBlob(ctx, cfg, cds, pub, endpoint, v.Path)
+		blob, err := fetchBlob(ctx, cfg, cds, pub, endpoint, v)
 		if err != nil {
 			return fmt.Errorf("volume %s: %w", v.Name, err)
 		}
@@ -168,13 +173,30 @@ func openAllWith(ctx context.Context, cfg config, cds *http.Client, pub crypto.P
 
 // fetchBlob reads one volume's key blob from the store.
 //
-// GET only. get-secret creates a value when the store holds none, because the
-// first pod of a workload to ask is the one that defines it. A volume key is
-// never minted: the operator put it there with `c8s volume create`, and a POST
-// here would squat the path with random bytes that decrypt nothing, leaving the
-// real key unwritable behind a 409.
-func fetchBlob(ctx context.Context, cfg config, client *http.Client, pub crypto.PublicKey, endpoint, path string) (volume.Blob, error) {
-	value, _, err := sidecar.Do(ctx, cfg.Config, client, pub, endpoint, http.MethodGet, path)
+// GET only for an operator's volume. get-secret creates a value when the store
+// holds none, because the first pod of a workload to ask is the one that
+// defines it. An operator's volume key is never minted: the operator put it
+// there with `c8s volume create`, and a POST here would squat the path with
+// random bytes that decrypt nothing, leaving the real key unwritable behind a
+// 409.
+//
+// A cache volume is the exception: its key exists only inside the TEE. The
+// first pod to ask has CDS generate the secret, and the key is derived from
+// it here, so no operator holds it and nothing is escrowed.
+func fetchBlob(ctx context.Context, cfg config, client *http.Client, pub crypto.PublicKey, endpoint string, v volumeRequest) (volume.Blob, error) {
+	if v.Cache {
+		secret, err := sidecar.GetOrCreate(ctx, cfg.Config, client, pub, endpoint, v.Path)
+		if err != nil {
+			return volume.Blob{}, err
+		}
+		defer clear(secret)
+		blob, err := volume.NewCacheBlob(secret, cfg.CacheRootOwner)
+		if err != nil {
+			return volume.Blob{}, sidecar.Terminal(err)
+		}
+		return blob, nil
+	}
+	value, _, err := sidecar.Do(ctx, cfg.Config, client, pub, endpoint, http.MethodGet, v.Path)
 	if err != nil {
 		return volume.Blob{}, err
 	}
@@ -225,7 +247,12 @@ func validate(cfg *config) error {
 		return err
 	}
 	if len(cfg.Volumes) == 0 {
-		return fmt.Errorf("at least one --volume NAME=/store/path is required")
+		return fmt.Errorf("at least one --volume or --cache-volume NAME=/store/path is required")
+	}
+	if cfg.CacheRootOwner != "" {
+		if _, _, err := volume.ParseOwner(cfg.CacheRootOwner); err != nil {
+			return fmt.Errorf("--cache-root-owner: %w", err)
+		}
 	}
 	seen := map[string]bool{}
 	for _, v := range cfg.Volumes {

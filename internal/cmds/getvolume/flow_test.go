@@ -69,10 +69,11 @@ func (f *fakeCDS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	next := queue[0]
 	f.replies[key] = queue[1:]
-	if next.status != http.StatusOK {
+	if next.status != http.StatusOK && next.status != http.StatusCreated {
 		w.WriteHeader(next.status)
 		return
 	}
+	w.WriteHeader(next.status)
 	json.NewEncoder(w).Encode(map[string]string{"value": base64.StdEncoding.EncodeToString(next.value)})
 }
 
@@ -139,6 +140,8 @@ func flowConfig(t *testing.T, url string) config {
 	}
 }
 
+var weights = volumeRequest{Name: "weights", Path: "/tenant-a/volumes/weights"}
+
 func testKey(t *testing.T) *ecdsa.PublicKey {
 	t.Helper()
 	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -154,7 +157,7 @@ func TestFetchBlobReadsTheStore(t *testing.T) {
 		"GET /secrets/tenant-a/volumes/weights": {{status: http.StatusOK, value: testBlobJSON(t)}},
 	})
 
-	got, err := fetchBlob(context.Background(), flowConfig(t, url), http.DefaultClient, testKey(t), endpoint, "/tenant-a/volumes/weights")
+	got, err := fetchBlob(context.Background(), flowConfig(t, url), http.DefaultClient, testKey(t), endpoint, weights)
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
@@ -173,7 +176,7 @@ func TestFetchBlobNeverCreates(t *testing.T) {
 		"GET /secrets/tenant-a/volumes/weights": {{status: http.StatusNotFound}},
 	})
 
-	if _, err := fetchBlob(context.Background(), flowConfig(t, url), http.DefaultClient, testKey(t), endpoint, "/tenant-a/volumes/weights"); err == nil {
+	if _, err := fetchBlob(context.Background(), flowConfig(t, url), http.DefaultClient, testKey(t), endpoint, weights); err == nil {
 		t.Fatal("an absent key was accepted")
 	}
 	for _, req := range f.seen() {
@@ -191,7 +194,7 @@ func TestFetchBlobDoesNotWriteOnDenial(t *testing.T) {
 		"GET /secrets/tenant-a/volumes/weights": {{status: http.StatusForbidden}},
 	})
 
-	if _, err := fetchBlob(context.Background(), flowConfig(t, url), http.DefaultClient, testKey(t), endpoint, "/tenant-a/volumes/weights"); err == nil {
+	if _, err := fetchBlob(context.Background(), flowConfig(t, url), http.DefaultClient, testKey(t), endpoint, weights); err == nil {
 		t.Fatal("a denial was accepted")
 	}
 	if got := f.seen(); len(got) != 1 || got[0] != "GET /secrets/tenant-a/volumes/weights" {
@@ -206,7 +209,7 @@ func TestFetchBlobRejectsANonBlob(t *testing.T) {
 		"GET /secrets/tenant-a/volumes/weights": {{status: http.StatusOK, value: []byte(`{"type":"something/else"}`)}},
 	})
 
-	if _, err := fetchBlob(context.Background(), flowConfig(t, url), http.DefaultClient, testKey(t), endpoint, "/tenant-a/volumes/weights"); err == nil {
+	if _, err := fetchBlob(context.Background(), flowConfig(t, url), http.DefaultClient, testKey(t), endpoint, weights); err == nil {
 		t.Fatal("a foreign document was accepted as a key blob")
 	}
 }
@@ -224,7 +227,7 @@ func TestEveryRequestTakesAFreshChallengeAndToken(t *testing.T) {
 	cfg := flowConfig(t, url)
 
 	for range 2 {
-		_, _ = fetchBlob(context.Background(), cfg, http.DefaultClient, testKey(t), endpoint, "/tenant-a/volumes/weights")
+		_, _ = fetchBlob(context.Background(), cfg, http.DefaultClient, testKey(t), endpoint, weights)
 	}
 
 	f.mu.Lock()
@@ -234,5 +237,52 @@ func TestEveryRequestTakesAFreshChallengeAndToken(t *testing.T) {
 	}
 	if len(f.tokens) == 2 && f.tokens[0] == f.tokens[1] {
 		t.Error("the same sandbox token was presented twice")
+	}
+}
+
+// A cache volume's secret is the first requester's to create, and its key is
+// derived from what CDS generated rather than taken from the store.
+func TestFetchBlobCreatesACacheKeyInTheTEE(t *testing.T) {
+	endpoint := "unix://" + testutil.StartInventory(t)
+	secret := []byte(strings.Repeat("s", volume.CacheSecretBytes))
+	f, url := newFakeCDS(t, map[string][]reply{
+		"GET /secrets/c8s/router/acme":  {{status: http.StatusNotFound}, {status: http.StatusOK, value: secret}},
+		"POST /secrets/c8s/router/acme": {{status: http.StatusCreated, value: secret}},
+	})
+	cfg := flowConfig(t, url)
+	cfg.CacheRootOwner = "65532:65532"
+	cache := volumeRequest{Name: "acme", Path: "/c8s/router/acme", Cache: true}
+
+	created, err := fetchBlob(context.Background(), cfg, http.DefaultClient, testKey(t), endpoint, cache)
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	want, err := volume.NewCacheBlob(secret, "65532:65532")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Key != want.Key || created.Format == nil || created.Format.RootOwner != "65532:65532" {
+		t.Fatalf("blob = %+v, want the key derived from the generated secret", created)
+	}
+	// The next pod reads the same secret, so it opens the same volume.
+	again, err := fetchBlob(context.Background(), cfg, http.DefaultClient, testKey(t), endpoint, cache)
+	if err != nil || again.Key != created.Key {
+		t.Fatalf("second open: %v, same key %v", err, again.Key == created.Key)
+	}
+	if got := strings.Join(f.seen(), ","); got != "GET /secrets/c8s/router/acme,POST /secrets/c8s/router/acme,GET /secrets/c8s/router/acme" {
+		t.Fatalf("requests = %s", got)
+	}
+}
+
+// A value too short to be a CDS-generated secret is no key to derive from.
+func TestFetchBlobRefusesAShortCacheSecret(t *testing.T) {
+	endpoint := "unix://" + testutil.StartInventory(t)
+	_, url := newFakeCDS(t, map[string][]reply{
+		"GET /secrets/c8s/router/acme": {{status: http.StatusOK, value: []byte("short")}},
+	})
+	_, err := fetchBlob(context.Background(), flowConfig(t, url), http.DefaultClient, testKey(t), endpoint,
+		volumeRequest{Name: "acme", Path: "/c8s/router/acme", Cache: true})
+	if err == nil {
+		t.Fatal("derived a cache key from a short secret")
 	}
 }

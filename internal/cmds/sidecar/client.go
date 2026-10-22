@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -189,4 +190,42 @@ func FetchChallenge(ctx context.Context, client *http.Client, cdsURL string, tim
 		return nil, fmt.Errorf("challenge is not base64: %w", err)
 	}
 	return challenge, nil
+}
+
+// GetOrCreate reads a secret, creating it if the store holds nothing yet. CDS
+// generates the value, so no caller chooses it.
+//
+// A workload that starts and finds its path empty is the one that creates it,
+// so 404 means "create". A 409 on that create means another replica won the
+// race, and the value is read back rather than returned by the create.
+func GetOrCreate(ctx context.Context, cfg Config, client *http.Client, pub crypto.PublicKey, endpoint, path string) ([]byte, error) {
+	value, status, err := Do(ctx, cfg, client, pub, endpoint, http.MethodGet, path)
+	switch {
+	case err != nil && status != http.StatusNotFound:
+		return nil, err
+	case status == http.StatusOK:
+		return value, nil
+	}
+
+	value, status, err = Do(ctx, cfg, client, pub, endpoint, http.MethodPost, path)
+	switch {
+	case status == http.StatusCreated:
+		return value, nil
+	case status == http.StatusInsufficientStorage:
+		// The ceiling clears only on a CDS restart; the holder quota clears
+		// whenever an operator moves a charge off this entry.
+		var refusal *StatusError
+		if errors.As(err, &refusal) && refusal.Code == types.ErrorCodeSecretStoreFull {
+			return nil, Terminal(err)
+		}
+		return nil, err
+	case status != http.StatusConflict:
+		return nil, err
+	}
+
+	value, status, err = Do(ctx, cfg, client, pub, endpoint, http.MethodGet, path)
+	if status != http.StatusOK {
+		return nil, fmt.Errorf("created by another replica but not readable: %w", err)
+	}
+	return value, nil
 }

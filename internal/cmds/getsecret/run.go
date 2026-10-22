@@ -131,40 +131,8 @@ func fetchAllWith(ctx context.Context, cfg config, client *http.Client, pub cryp
 }
 
 // fetchOne reads a secret, creating it if the store holds nothing yet.
-//
-// A workload that starts and finds its path empty is the one that creates it,
-// so 404 means "create". A 409 on that create means another replica won the
-// race, and the value is read back rather than returned by the create.
 func fetchOne(ctx context.Context, cfg config, client *http.Client, pub crypto.PublicKey, endpoint, path string) ([]byte, error) {
-	value, status, err := sidecar.Do(ctx, cfg.Config, client, pub, endpoint, http.MethodGet, path)
-	switch {
-	case err != nil && status != http.StatusNotFound:
-		return nil, err
-	case status == http.StatusOK:
-		return value, nil
-	}
-
-	value, status, err = sidecar.Do(ctx, cfg.Config, client, pub, endpoint, http.MethodPost, path)
-	switch {
-	case status == http.StatusCreated:
-		return value, nil
-	case status == http.StatusInsufficientStorage:
-		// The ceiling clears only on a CDS restart; the holder quota clears
-		// whenever an operator moves a charge off this entry.
-		var refusal *sidecar.StatusError
-		if errors.As(err, &refusal) && refusal.Code == types.ErrorCodeSecretStoreFull {
-			return nil, sidecar.Terminal(err)
-		}
-		return nil, err
-	case status != http.StatusConflict:
-		return nil, err
-	}
-
-	value, status, err = sidecar.Do(ctx, cfg.Config, client, pub, endpoint, http.MethodGet, path)
-	if status != http.StatusOK {
-		return nil, fmt.Errorf("created by another replica but not readable: %w", err)
-	}
-	return value, nil
+	return sidecar.GetOrCreate(ctx, cfg.Config, client, pub, endpoint, path)
 }
 
 // prepareOutDir creates the out-dir and enforces that it is RAM-backed: the

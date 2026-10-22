@@ -76,6 +76,10 @@ func TestValidate(t *testing.T) {
 		"repeated name": func(c *config) {
 			c.Volumes = append(c.Volumes, volumeRequest{Name: "weights", Path: "/tenant-a/volumes/other"})
 		},
+		"cache name repeats a volume": func(c *config) {
+			c.Volumes = append(c.Volumes, volumeRequest{Name: "weights", Path: "/tenant-a/volumes/other", Cache: true})
+		},
+		"cache root owner": func(c *config) { c.CacheRootOwner = "nobody" },
 	} {
 		cfg := validConfig()
 		mutate(&cfg)
@@ -98,7 +102,7 @@ func TestValidateTrimsURL(t *testing.T) {
 
 func TestNewCmdHasTheSidecarFlags(t *testing.T) {
 	cmd := NewCmd()
-	for _, flag := range []string{"cds-url", "attestation-api-url", "cert", "key", "volume", "attempts"} {
+	for _, flag := range []string{"cds-url", "attestation-api-url", "cert", "key", "volume", "cache-volume", "cache-root-owner", "attempts"} {
 		if cmd.Flags().Lookup(flag) == nil {
 			t.Errorf("missing --%s", flag)
 		}

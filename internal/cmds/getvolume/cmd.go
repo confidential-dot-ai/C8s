@@ -10,8 +10,9 @@ import (
 // NewCmd returns the cobra subcommand. Registered as a child of `c8s`.
 func NewCmd() *cobra.Command {
 	var (
-		cfg   config
-		specs []string
+		cfg        config
+		specs      []string
+		cacheSpecs []string
 	)
 	cmd := &cobra.Command{
 		Use:   "get-volume",
@@ -27,8 +28,14 @@ the requested path. That is only true once every main container is running, so
 early attempts are refused and get-volume retries — the volume appears shortly
 after the workload starts, and a consumer must wait for it.
 
-The key must already be in the store, put there by ` + "`c8s volume create`" + `.
-Nothing here creates one.`,
+For --volume, the key must already be in the store, put there by
+` + "`c8s volume create`" + `. Nothing here creates one.
+
+A --cache-volume holds state that can always be rebuilt, such as the router's
+ACME certificate. Its key is derived from a secret CDS generates on first use,
+so it never leaves the TEE and has no escrow. The node formats the volume when
+it holds no filesystem under that key: on first use, and after CDS has lost the
+secret.`,
 		SilenceUsage: true,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			if err := cfg.ResolveCDSEndpoint(); err != nil {
@@ -41,6 +48,14 @@ Nothing here creates one.`,
 				}
 				cfg.Volumes = append(cfg.Volumes, v)
 			}
+			for _, spec := range cacheSpecs {
+				v, err := parseVolumeSpec(spec)
+				if err != nil {
+					return err
+				}
+				v.Cache = true
+				cfg.Volumes = append(cfg.Volumes, v)
+			}
 			return run(cfg)
 		},
 	}
@@ -49,6 +64,8 @@ Nothing here creates one.`,
 	// This command's timeout also covers the node agent.
 	f.Lookup("request-timeout").Usage = "per-request timeout against CDS and the node agent"
 	f.StringSliceVar(&specs, "volume", nil, "NAME=/store/path to open; NAME selects the device by serial (repeatable)")
+	f.StringSliceVar(&cacheSpecs, "cache-volume", nil, "NAME=/store/path of a cache volume whose key CDS generates and no one escrows; needs a read and write grant on the path (repeatable)")
+	f.StringVar(&cfg.CacheRootOwner, "cache-root-owner", "", "uid:gid owning a cache volume's root when the node formats it")
 	// The socket directory is baked in, not supplied, like get-cert's inventory
 	// endpoint: a flag would let a pod author point the key handoff at a
 	// socket of their own choosing.

@@ -5,7 +5,8 @@
 // writes the chain and its key to the two directories below and renews at 2/3
 // lifetime; nginx's own entrypoint re-reads the files it serves. Under a
 // confidential runtime both are Memory-medium emptyDirs, so the serving key is
-// TEE-held and re-issued on pod recreation.
+// TEE-held. Without --state-dir it is re-issued on pod recreation; with it, a
+// copy is kept on an encrypted cache volume whose key never leaves the TEE.
 package acme
 
 import (
@@ -38,13 +39,17 @@ type config struct {
 	readyPort     int
 	certDir       string
 	keyDir        string
+	stateDir      string
 	logLevel      string
 
+	fallbackDirectoryURL string
+
 	// Launch-driven inputs (node image): each file overrides its flag.
-	domainsFile      string
-	emailFile        string
-	directoryURLFile string
-	standbyCertDir   string
+	domainsFile              string
+	emailFile                string
+	directoryURLFile         string
+	fallbackDirectoryURLFile string
+	standbyCertDir           string
 }
 
 // The front door's issued credential, split so that a reader of the chain
@@ -81,6 +86,15 @@ state is lost with the pod and re-issued on recreation; point
 --acme-directory-url at a staging directory when testing to stay clear of the
 CA's duplicate-certificate limits.
 
+--state-dir keeps the account key, the certificate and its key on an encrypted
+c8s cache volume instead, so they survive pod and VM restarts. The sidecar then
+issues nothing until that volume is mounted, installs the certificate it holds,
+and renews it only at 2/3 of its lifetime as usual.
+
+--acme-fallback-directory-url names a second directory, used for an order the
+first refuses with a rateLimited error. The fallback must not need external
+account binding.
+
 On a node image the inputs come from the signed launch file:
 --domains-file, --acme-email-file and --acme-directory-url-file. When the
 domains file is empty, no ACME account is used: nginx serves the mesh leaf
@@ -97,6 +111,8 @@ leaf exists.`,
 	f := cmd.Flags()
 	f.StringSliceVar(&cfg.domains, "domains", nil, "FQDNs the certificate covers (one multi-SAN certificate), repeatable/comma-separated")
 	f.StringVar(&cfg.directoryURL, "acme-directory-url", letsEncryptDirectoryURL, "ACME directory URL (point at a staging directory for testing)")
+	f.StringVar(&cfg.fallbackDirectoryURL, "acme-fallback-directory-url", "", "ACME directory URL for an order --acme-directory-url refuses with a rate limit (empty: no fallback)")
+	f.StringVar(&cfg.stateDir, "state-dir", "", "mount point of the encrypted cache volume that keeps the account key, certificate and key across restarts (empty: nothing persists)")
 	f.StringVar(&cfg.email, "acme-email", "", "contact email registered with the ACME account")
 	f.IntVar(&cfg.challengePort, "challenge-port", 8402, "loopback port answering ACME HTTP-01 challenges (nginx's :80 server proxies /.well-known/acme-challenge/ to it)")
 	f.IntVar(&cfg.httpPort, "http-port", 8080, "loopback port of nginx's :80 server, probed round-trip before each order so no validation is sent at a listener that is still starting")
@@ -105,6 +121,7 @@ leaf exists.`,
 	f.StringVar(&cfg.domainsFile, "domains-file", "", "file with one domain per line, read at start instead of --domains; empty file means no ACME (see --standby-cert-dir)")
 	f.StringVar(&cfg.emailFile, "acme-email-file", "", "file holding --acme-email; an empty file keeps the flag value")
 	f.StringVar(&cfg.directoryURLFile, "acme-directory-url-file", "", "file holding --acme-directory-url; an empty file keeps the flag value")
+	f.StringVar(&cfg.fallbackDirectoryURLFile, "acme-fallback-directory-url-file", "", "file holding --acme-fallback-directory-url; an empty file keeps the flag value")
 	f.StringVar(&cfg.standbyCertDir, "standby-cert-dir", "", "with an empty --domains-file, do no ACME: report ready once this directory holds the tls.crt and tls.key nginx serves instead")
 
 	return cmd
@@ -119,6 +136,9 @@ func loadFiles(cfg *config) (standby bool, err error) {
 	}
 	if err := overrideFromFile(cfg.directoryURLFile, &cfg.directoryURL); err != nil {
 		return false, fmt.Errorf("--acme-directory-url-file: %w", err)
+	}
+	if err := overrideFromFile(cfg.fallbackDirectoryURLFile, &cfg.fallbackDirectoryURL); err != nil {
+		return false, fmt.Errorf("--acme-fallback-directory-url-file: %w", err)
 	}
 	if cfg.domainsFile == "" {
 		return false, nil
@@ -200,6 +220,17 @@ func validateConfig(cfg *config) error {
 	if err := cmdsutil.ValidateHTTPURL("--acme-directory-url", cfg.directoryURL); err != nil {
 		return err
 	}
+	if cfg.fallbackDirectoryURL != "" {
+		if err := cmdsutil.ValidateHTTPURL("--acme-fallback-directory-url", cfg.fallbackDirectoryURL); err != nil {
+			return err
+		}
+		if cfg.fallbackDirectoryURL == cfg.directoryURL {
+			return fmt.Errorf("--acme-fallback-directory-url must differ from --acme-directory-url")
+		}
+	}
+	if cfg.stateDir != "" && !filepath.IsAbs(cfg.stateDir) {
+		return fmt.Errorf("--state-dir must be an absolute path, got %q", cfg.stateDir)
+	}
 	if cfg.challengePort < 1 || cfg.challengePort > 65535 {
 		return fmt.Errorf("--challenge-port must be between 1 and 65535, got %d", cfg.challengePort)
 	}
@@ -244,6 +275,8 @@ func runWith(cfg config, probe *http.Client) error {
 		return err
 	}
 	mgr := newManager(cfg.directoryURL, cfg.email, cfg.certDir, cfg.keyDir, cfg.domains, logger)
+	mgr.fallbackURL = cfg.fallbackDirectoryURL
+	mgr.stateDir = cfg.stateDir
 	mgr.httpPort = cfg.httpPort
 	if probe == nil {
 		probe = publicProbeClient()
@@ -261,7 +294,7 @@ func runWith(cfg config, probe *http.Client) error {
 		}
 	}
 
-	logger.Info("acme sidecar running", "domains", cfg.domains, "cert_dir", cfg.certDir, "key_dir", cfg.keyDir)
+	logger.Info("acme sidecar running", "domains", cfg.domains, "cert_dir", cfg.certDir, "key_dir", cfg.keyDir, "state_dir", cfg.stateDir)
 	mgr.run(ctx)
 	logger.Info("shutting down")
 	return nil

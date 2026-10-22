@@ -26,6 +26,11 @@ type fakeOps struct {
 	cryptRO map[string]bool
 	mounts  []mountCall
 
+	// blank and hasExt4 are what the device probes report; formatted
+	// records the rootOwner each MakeExt4 was given.
+	blank, hasExt4 bool
+	formatted      []string
+
 	// honorCtx makes every op fail once its context is done.
 	honorCtx bool
 	// afterCryptOpen fires once the first privileged step has landed.
@@ -184,6 +189,39 @@ func (f *fakeOps) Unmount(ctx context.Context, target string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	delete(f.mounted, target)
+	return nil
+}
+
+func (f *fakeOps) Blank(ctx context.Context, _ string) (bool, error) {
+	if err := f.ctxErr(ctx); err != nil {
+		return false, err
+	}
+	if err := f.record("Blank"); err != nil {
+		return false, err
+	}
+	return f.blank, nil
+}
+
+func (f *fakeOps) HasExt4(ctx context.Context, _ string) (bool, error) {
+	if err := f.ctxErr(ctx); err != nil {
+		return false, err
+	}
+	if err := f.record("HasExt4"); err != nil {
+		return false, err
+	}
+	return f.hasExt4, nil
+}
+
+func (f *fakeOps) MakeExt4(ctx context.Context, _, rootOwner string) error {
+	if err := f.ctxErr(ctx); err != nil {
+		return err
+	}
+	if err := f.record("MakeExt4"); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.formatted = append(f.formatted, rootOwner)
 	return nil
 }
 

@@ -255,7 +255,7 @@ func TestAccountKey(t *testing.T) {
 	if _, err := mgr.accountKey(); err == nil {
 		t.Fatal("corrupted account key accepted")
 	}
-	if _, err := mgr.acmeClient(context.Background()); err == nil {
+	if _, err := mgr.acmeClient(context.Background(), mgr.directoryURL); err == nil {
 		t.Fatal("acmeClient built on a corrupted account key")
 	}
 
@@ -291,7 +291,7 @@ func TestAccountKeyStoreErrors(t *testing.T) {
 
 func TestClientRegistrationFailure(t *testing.T) {
 	mgr := newManager("http://127.0.0.1:1/dir", "ops@example.com", t.TempDir(), t.TempDir(), testDomains, slog.Default())
-	if _, err := mgr.acmeClient(context.Background()); err == nil {
+	if _, err := mgr.acmeClient(context.Background(), mgr.directoryURL); err == nil {
 		t.Fatal("acmeClient succeeded against an unreachable directory")
 	}
 }
@@ -462,7 +462,7 @@ func TestFulfillAuthorizationSkipsValidAuthz(t *testing.T) {
 	if mgr.needsIssue() {
 		t.Fatal("issuance failed")
 	}
-	client, err := mgr.acmeClient(ctx)
+	client, err := mgr.acmeClient(ctx, mgr.directoryURL)
 	if err != nil {
 		t.Fatal(err)
 	}

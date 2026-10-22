@@ -51,11 +51,20 @@ const (
 // front door mounts both.
 type manager struct {
 	directoryURL string
-	email        string
-	certDir      string
-	keyDir       string
-	domains      []string
-	log          *slog.Logger
+	// fallbackURL, when set, is the directory an order goes to after
+	// directoryURL refuses it with a rate limit.
+	fallbackURL string
+	email       string
+	certDir     string
+	keyDir      string
+	// stateDir, when set, is an encrypted cache volume that keeps the
+	// account key, the certificate and its key across pod and VM restarts.
+	stateDir string
+	// stateReady reports whether stateDir is mounted; nil reads
+	// /proc/self/mountinfo.
+	stateReady func() bool
+	domains    []string
+	log        *slog.Logger
 	// httpPort is nginx's :80 server on pod loopback, probed before any CA
 	// contact so a validation is never sent at a listener that is still
 	// starting. 0 (tests without a front door) skips the probe; the CLI
@@ -70,9 +79,9 @@ type manager struct {
 	recheck time.Duration
 	retry   time.Duration
 
-	mu     sync.Mutex
-	client *acme.Client
-	tokens map[string]string // challenge token -> key authorization
+	mu      sync.Mutex
+	clients map[string]*acme.Client // directory URL -> registered client
+	tokens  map[string]string       // challenge token -> key authorization
 }
 
 func newManager(directoryURL, email, certDir, keyDir string, domains []string, log *slog.Logger) *manager {
@@ -85,6 +94,7 @@ func newManager(directoryURL, email, certDir, keyDir string, domains []string, l
 		log:          log,
 		recheck:      recheckInterval,
 		retry:        retryInterval,
+		clients:      make(map[string]*acme.Client),
 		tokens:       make(map[string]string),
 	}
 }
@@ -133,6 +143,14 @@ func (m *manager) handler() http.Handler {
 func (m *manager) run(ctx context.Context) {
 	if err := m.bootstrap(); err != nil {
 		m.log.Error("bootstrap certificate failed", "error", err)
+	}
+	if m.stateDir != "" {
+		if !m.waitForState(ctx) {
+			return
+		}
+		if err := m.restore(); err != nil {
+			m.log.Error("restore persisted certificate failed; issuing a new one", "error", err)
+		}
 	}
 	for {
 		m.ensure(ctx)
@@ -253,19 +271,20 @@ func (m *manager) ensure(ctx context.Context) {
 	m.log.Info("certificate issued", "domains", domains)
 }
 
-// acmeClient lazily initializes the ACME account: key from disk or freshly
-// generated (0600), then registered at the directory.
-func (m *manager) acmeClient(ctx context.Context) (*acme.Client, error) {
+// acmeClient lazily initializes the ACME account at directoryURL: key from
+// disk or freshly generated (0600), then registered at the directory. One
+// account key serves every directory.
+func (m *manager) acmeClient(ctx context.Context, directoryURL string) (*acme.Client, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.client != nil {
-		return m.client, nil
+	if client := m.clients[directoryURL]; client != nil {
+		return client, nil
 	}
 	key, err := m.accountKey()
 	if err != nil {
 		return nil, err
 	}
-	client := &acme.Client{Key: key, DirectoryURL: m.directoryURL}
+	client := &acme.Client{Key: key, DirectoryURL: directoryURL, RetryBackoff: retryBackoff}
 	account := &acme.Account{}
 	if m.email != "" {
 		account.Contact = []string{"mailto:" + m.email}
@@ -273,12 +292,32 @@ func (m *manager) acmeClient(ctx context.Context) (*acme.Client, error) {
 	if _, err := client.Register(ctx, account, acme.AcceptTOS); err != nil && !errors.Is(err, acme.ErrAccountAlreadyExists) {
 		return nil, fmt.Errorf("register ACME account: %w", err)
 	}
-	m.client = client
+	m.clients[directoryURL] = client
 	return client, nil
 }
 
+// retryBackoff is the acme package's truncated exponential backoff, except
+// that a 429 is not retried. A CA's rate limit outlasts any order, often by
+// days, and waiting it out inside the order would leave no time for the
+// fallback directory.
+func retryBackoff(n int, _ *http.Request, res *http.Response) time.Duration {
+	if res != nil && res.StatusCode == http.StatusTooManyRequests {
+		return 0
+	}
+	return min(time.Second<<min(n, 4), 10*time.Second)
+}
+
+// accountKeyDir holds the account key: the persisted state when there is
+// one, so the account outlives the pod, else the key's directory.
+func (m *manager) accountKeyDir() string {
+	if m.stateDir != "" {
+		return m.stateDir
+	}
+	return m.keyDir
+}
+
 func (m *manager) accountKey() (*ecdsa.PrivateKey, error) {
-	path := filepath.Join(m.keyDir, accountKeyFile)
+	path := filepath.Join(m.accountKeyDir(), accountKeyFile)
 	if data, err := os.ReadFile(path); err == nil {
 		key, err := certutil.ParseECPrivateKey(data)
 		if err != nil {
@@ -353,40 +392,12 @@ func (m *manager) issueDomains(ctx context.Context, domains []string) error {
 			return err
 		}
 	}
-	client, err := m.acmeClient(ctx)
-	if err != nil {
-		return err
+	keyPEM, chainPEM, err := m.order(ctx, m.directoryURL, domains)
+	if rateLimited(err) && m.fallbackURL != "" {
+		m.log.Warn("ACME directory rate-limited this order; trying the fallback directory",
+			"directory", m.directoryURL, "fallback", m.fallbackURL, "error", err)
+		keyPEM, chainPEM, err = m.order(ctx, m.fallbackURL, domains)
 	}
-	order, err := client.AuthorizeOrder(ctx, acme.DomainIDs(domains...))
-	if err != nil {
-		return fmt.Errorf("new order: %w", err)
-	}
-	for _, authzURL := range order.AuthzURLs {
-		if err := m.fulfillAuthorization(ctx, client, authzURL); err != nil {
-			return err
-		}
-	}
-	if order, err = client.WaitOrder(ctx, order.URI); err != nil {
-		return fmt.Errorf("order: %w", err)
-	}
-
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return err
-	}
-	csr, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{DNSNames: domains}, key)
-	if err != nil {
-		return fmt.Errorf("create CSR: %w", err)
-	}
-	ders, _, err := client.CreateOrderCert(ctx, order.FinalizeURL, csr, true)
-	if err != nil {
-		return fmt.Errorf("finalize: %w", err)
-	}
-	var chainPEM []byte
-	for _, der := range ders {
-		chainPEM = append(chainPEM, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})...)
-	}
-	keyPEM, err := certutil.MarshalECKeyPEM(key)
 	if err != nil {
 		return err
 	}
@@ -402,7 +413,63 @@ func (m *manager) issueDomains(ctx context.Context, domains []string) error {
 	if err := fileutil.WriteAtomic(m.certPath(), chainPEM, 0o644); err != nil {
 		return fmt.Errorf("write certificate: %w", err)
 	}
+	if m.stateDir != "" {
+		// The served copy is already installed, so a failed save costs only
+		// an issuance on the next start.
+		if err := m.persist(keyPEM, chainPEM); err != nil {
+			m.log.Error("certificate issued but not persisted", "error", err)
+		}
+	}
 	return nil
+}
+
+// order runs the RFC 8555 HTTP-01 flow at one directory and returns the new
+// key and the full chain.
+func (m *manager) order(ctx context.Context, directoryURL string, domains []string) (keyPEM, chainPEM []byte, err error) {
+	client, err := m.acmeClient(ctx, directoryURL)
+	if err != nil {
+		return nil, nil, err
+	}
+	order, err := client.AuthorizeOrder(ctx, acme.DomainIDs(domains...))
+	if err != nil {
+		return nil, nil, fmt.Errorf("new order: %w", err)
+	}
+	for _, authzURL := range order.AuthzURLs {
+		if err := m.fulfillAuthorization(ctx, client, authzURL); err != nil {
+			return nil, nil, err
+		}
+	}
+	if order, err = client.WaitOrder(ctx, order.URI); err != nil {
+		return nil, nil, fmt.Errorf("order: %w", err)
+	}
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, nil, err
+	}
+	csr, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{DNSNames: domains}, key)
+	if err != nil {
+		return nil, nil, fmt.Errorf("create CSR: %w", err)
+	}
+	ders, _, err := client.CreateOrderCert(ctx, order.FinalizeURL, csr, true)
+	if err != nil {
+		return nil, nil, fmt.Errorf("finalize: %w", err)
+	}
+	for _, der := range ders {
+		chainPEM = append(chainPEM, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})...)
+	}
+	keyPEM, err = certutil.MarshalECKeyPEM(key)
+	if err != nil {
+		return nil, nil, err
+	}
+	return keyPEM, chainPEM, nil
+}
+
+// rateLimited reports an RFC 8555 rateLimited problem anywhere in err's chain.
+// acme.RateLimit inspects only an unwrapped error.
+func rateLimited(err error) bool {
+	var problem *acme.Error
+	return errors.As(err, &problem) && strings.HasSuffix(strings.ToLower(problem.ProblemType), ":ratelimited")
 }
 
 // fulfillAuthorization answers one authorization's http-01 challenge.

@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"slices"
 	"strings"
@@ -48,6 +49,15 @@ type DeviceOps interface {
 	Unmount(ctx context.Context, target string) error
 	// ListMappings names the device-mapper targets published on this node.
 	ListMappings(ctx context.Context) ([]string, error)
+	// Blank reports whether the host-visible device is all zeros over the
+	// probed range, a disk nothing has written.
+	Blank(ctx context.Context, device string) (bool, error)
+	// HasExt4 reports whether an opened plaintext device carries an ext4
+	// superblock.
+	HasExt4(ctx context.Context, device string) (bool, error)
+	// MakeExt4 creates ext4 on an opened plaintext device, with its root
+	// owned by rootOwner ("uid:gid", or "" for root).
+	MakeExt4(ctx context.Context, device, rootOwner string) error
 }
 
 // ErrNotAuthorized is returned when a caller presents the wrong key for a
@@ -230,6 +240,12 @@ func (o *Opener) open(ctx context.Context, req Request, key []byte, commitment [
 	}
 	undo = append(undo, func(ctx context.Context) { _ = o.Ops.CryptClose(ctx, cryptMapper) })
 
+	if f := req.Blob.Format; f != nil {
+		if err := o.formatIfNeeded(ctx, req, cryptMapper, *f); err != nil {
+			return fail(err)
+		}
+	}
+
 	mode := modeFor(req.Blob.Mutable)
 	if err := mode.open(ctx, o.Ops, req.Pod.UID, req.Name, cryptMapper, req.Blob, target); err != nil {
 		return fail(err)
@@ -245,6 +261,37 @@ func (o *Opener) open(ctx context.Context, req Request, key []byte, commitment [
 		cryptDev:   cryptMapper,
 		target:     target.Name(),
 	}, nil
+}
+
+// formatIfNeeded gives a mutable volume its filesystem inside the TEE, when
+// the blob asks for it and the device is in the state the blob names. The
+// host can force this by zeroing the device: the same class as rolling a
+// mutable volume back, since the empty filesystem is one the TEE made.
+func (o *Opener) formatIfNeeded(ctx context.Context, req Request, cryptMapper string, f volume.Format) error {
+	var format bool
+	switch f.When {
+	case volume.FormatBlank:
+		blank, err := o.Ops.Blank(ctx, req.Device)
+		if err != nil {
+			return fmt.Errorf("volumed: probe device: %w", err)
+		}
+		format = blank
+	case volume.FormatNoFilesystem:
+		has, err := o.Ops.HasExt4(ctx, devPath(cryptMapper))
+		if err != nil {
+			return fmt.Errorf("volumed: probe filesystem: %w", err)
+		}
+		format = !has
+	}
+	if !format {
+		return nil
+	}
+	if err := o.Ops.MakeExt4(ctx, devPath(cryptMapper), f.RootOwner); err != nil {
+		return fmt.Errorf("volumed: format: %w", err)
+	}
+	slog.Warn("volumed: formatted the volume inside the TEE; it starts empty",
+		"pod", req.Pod.UID, "name", req.Name, "device", req.Device, "when", f.When)
+	return nil
 }
 
 // Close tears down one volume. Idempotent: a volume already gone is not an
@@ -391,6 +438,9 @@ func commitmentFor(key []byte, b volume.Blob) [sha256.Size]byte {
 	h.Write(key)
 	if b.Mutable {
 		h.Write([]byte("mutable"))
+		if f := b.Format; f != nil {
+			h.Write([]byte("\x00format\x00" + f.FS + "\x00" + f.When + "\x00" + f.RootOwner))
+		}
 	} else {
 		h.Write([]byte(b.Verity.RootHash))
 	}
