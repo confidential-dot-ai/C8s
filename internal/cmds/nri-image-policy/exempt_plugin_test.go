@@ -34,7 +34,7 @@ func exemptPlugin(t *testing.T, snapshotPath string, namespaces ...string) *plug
 		audit:      audit.NewLogger(),
 		logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 		containerd: &fakeContainerd{},
-		mesh:       newMeshGate(nil, discardLogger()),
+		mesh:       newMeshGate(*meshRoles(), discardLogger()),
 	}
 	p.inventory = newAdmissionInventory("/proc")
 	return p

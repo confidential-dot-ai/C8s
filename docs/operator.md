@@ -848,7 +848,7 @@ The chart sets these flags from `router.routing` and the CDS pins.
 
 | Flag | Default | Effect |
 |---|---|---|
-| `--cds-url` | none | CDS origin to poll. Required, with `--attestation-api-url` and the three `--mesh-identity-*` files. |
+| `--cds-url` | none | CDS origin to poll. Required, with `--attestation-api-url`. |
 | `--cds-measurements`, `--cds-rtmrs`, `--image-policy-file` | none | CDS pins. Without `--cds-measurements` or `--image-policy-file`, `cds-attest` logs a warning and accepts any armTLS-attested CDS. Unsafe outside development: any TEE on the pod network can pose as CDS and serve the manifest. |
 | `--operator-keys-file` | none | PEM operator public keys a manifest must verify under, when the launch configuration carries none. |
 | `--allow-unpinned-cds` | `false` | Development only. Route with no CDS pin and the operator keys from that CDS. Without it, `cds-attest` refuses to start in that case. |
@@ -859,7 +859,7 @@ The chart sets these flags from `router.routing` and the CDS pins.
 | `--tunnel-io-timeout` | `30s` | How long a tunnel upload, or the download of its sealed response, may make no progress. Must be positive. |
 | `--tunnel-budget` | 75% of the container memory limit, else `32Gi` | Bytes the tunnelled requests in flight in one replica may buffer, as a quantity such as `64Gi`. Each request reserves three copies of its record and four of the largest response (32 MiB); one client (by `X-Real-IP`) holds at most a quarter. Must cover one full-size request, 152 MiB. Set by `router.routing.tunnelBudget`. |
 | `--reserved-paths` | the router's own endpoints | Paths no manifest route can match. Each entry must be a normalized path. |
-| `--attest-endpoints` | `true` | `false` serves only the routing listener and probes. Requires `--routing-port`. |
+| `--attest-endpoints` | `true` | `false` serves only the routing listener and probes. Requires `--routing-port`. `true` requires the three `--mesh-identity-*` files, whose leaf the attestation endpoints bind to. |
 | `--publish-routes` | `false` | Serves the applied signed manifest at `/.well-known/c8s/routes`. Requires `--cds-url` and `--attest-endpoints=true`. Set by `router.routePublication.enabled`. |
 
 `cds-attest` takes the operator keys from the node's launch configuration,
@@ -1105,12 +1105,9 @@ Certificate-sourced evidence must also carry an authenticated certificate
 body. A self-signed leaf authenticates its own body under the attested key; a
 CA-issued one does not, and `x509` parsing verifies no signature — so a
 CA-issued leaf is accepted only when its chain verifies against `--mesh-ca`,
-or when a live TLS handshake proves the peer holds the attested key. For
-`--mode discovery` on an https target that handshake doubles as the front-door
-check below: a CA-issued discovery certificate the live door presents
-byte-identically is authenticated by possession. A door serving some other
-certificate — or a fetch with no handshake to observe (a non-https target) —
-still requires `--mesh-ca` (the document publishes `cds_tls.mesh_ca_url`).
+including on a `--mode discovery` target whose live door presents the attested
+certificate byte-identically. `c8s cds ca` writes that anchor. What the live
+handshake decides is the front-door check below.
 
 Exit codes are a CI contract: `0` verified, `1` usage error, `2`
 verification/policy failed (e.g. wrong measurement), `3` evidence unavailable
@@ -1514,7 +1511,10 @@ read all three files from that directory for a consistent generation.
 The stable `tls.key`, `ca.crt` and `tls.crt` hard links are replaced in that
 order and can span generations during renewal. On a sidecar restart, a valid
 stored generation remains available until its replacement is published;
-every certificate request generates a fresh key.
+every certificate request generates a fresh key. After a withdrawal the pod
+stays bound to the CA key its `issuer` record names and re-issues under it;
+only a pod whose `issuer` record cannot be read publishes nothing until it is
+recreated.
 
 In renewal mode, `--ca-watch-interval` defaults to one minute. It compares
 CDS `/ca` with `--ca-path` and renews when the CA certificate changes under

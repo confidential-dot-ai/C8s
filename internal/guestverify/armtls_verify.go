@@ -42,6 +42,7 @@ func NewClient(exp Policy, timeout time.Duration) *http.Client {
 // Go's chain and hostname checks.
 func TLSConfig(exp Policy) *tls.Config {
 	return &tls.Config{
+		MinVersion:         tls.VersionTLS13,
 		InsecureSkipVerify: true, //nolint:gosec // armTLS in VerifyConnection is the real check
 		VerifyConnection: func(cs tls.ConnectionState) error {
 			if len(cs.PeerCertificates) == 0 {
@@ -95,6 +96,9 @@ func (exp Policy) verifyTDXCertificate(leaf *x509.Certificate) error {
 	att, err := armtls.ExtractAttestation(leaf)
 	if err != nil {
 		return fmt.Errorf("armtls: %w", err)
+	}
+	if err := localverify.CheckServingLeaf(leaf); err != nil {
+		return fmt.Errorf("armtls: cred-release serving %w", err)
 	}
 	evidence, ok := att.EmbeddedEvidence()
 	if !ok {
@@ -152,6 +156,9 @@ func (exp Policy) verifySNPCertificate(leaf *x509.Certificate) error {
 	platform, evidence, params, err := localverify.CertEnvelope(leaf)
 	if err != nil {
 		return fmt.Errorf("armtls: %w", err)
+	}
+	if err := localverify.CheckServingLeaf(leaf); err != nil {
+		return fmt.Errorf("armtls: cred-release serving %w", err)
 	}
 	// Bare-metal snp only: on az-snp/gcp-snp the HOSTDATA field is owned by
 	// the cloud stack, so it cannot carry the operator-key binding.

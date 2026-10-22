@@ -16,11 +16,11 @@ import (
 
 // newIdleEndpoint is an endpoint whose handlers a test drives directly, with
 // the captured destination the kernel would have recorded.
-func newIdleEndpoint(t *testing.T, volume credentialVolume, own podAddresses, origDst origDstFunc) *podEndpoint {
+func newIdleEndpoint(t *testing.T, volume meshVolume, own podAddresses, origDst origDstFunc) *podEndpoint {
 	t.Helper()
 	e := &podEndpoint{
 		credentials: &credentials{
-			volume: volume,
+			volume: volume.Volume,
 			logger: discardLogger(),
 		},
 		own:     own,

@@ -459,6 +459,9 @@ func armtlsServerTLS(ctx context.Context, cfg config, meshCA *x509.Certificate) 
 	if err := certMgr.WarmUp(warmupCtx); err != nil {
 		return nil, fmt.Errorf("warm up armtls serving cert: %w", err)
 	}
+	// Keep the serving certificate fresh for as long as ctx lives (every
+	// warmed-up certificate gets its rotation worker).
+	go certMgr.RunRotation(ctx)
 	return tlsCfg, nil
 }
 

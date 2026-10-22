@@ -493,25 +493,27 @@ func TestCreateIsGatedOnTheBundle(t *testing.T) {
 	}
 }
 
-// The floor is the node's policy, not an option: a measured config that
-// cannot be read denies the create, while one carrying no mesh policy hosts
-// no member pods and leaves every create alone.
+// The floor is the node's policy, not an option: a measured config the floor
+// cannot be read from denies the create, whether the file is unreadable or
+// carries no mesh policy.
 func TestFloorFailsClosedOnTheMeasuredConfig(t *testing.T) {
 	bundle := bundleDirWith(t, workloadBundle())
 	create := []string{"c8s-runc", "create", "--bundle", bundle, "ctr"}
 
-	rec := &recorder{}
-	stderr := &bytes.Buffer{}
-	missing := filepath.Join(t.TempDir(), "absent.yaml")
-	if code := floorWrapper(rec, stderr, missing).Run(create); rec.called || code != exitDenied {
-		t.Fatalf("an unreadable measured config admitted a create (code %d)", code)
-	}
-
-	rec = &recorder{}
-	stderr = &bytes.Buffer{}
-	floorWrapper(rec, stderr, measuredConfig(t, false)).Run(create)
-	if !rec.called {
-		t.Fatalf("a config with no mesh policy denied a create: %s", stderr.String())
+	for _, tc := range []struct {
+		name   string
+		config string
+	}{
+		{name: "unreadable file", config: filepath.Join(t.TempDir(), "absent.yaml")},
+		{name: "no mesh policy", config: measuredConfig(t, false)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := &recorder{}
+			stderr := &bytes.Buffer{}
+			if code := floorWrapper(rec, stderr, tc.config).Run(create); rec.called || code != exitDenied {
+				t.Fatalf("a measured config without a floor admitted a create (code %d)", code)
+			}
+		})
 	}
 }
 

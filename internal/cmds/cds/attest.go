@@ -142,6 +142,11 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 		attestation.WriteError(w, http.StatusUnprocessableEntity, types.ErrorCodeInvalidRequest, err.Error())
 		return
 	}
+	if len(req.RuntimeExtensions) > 0 && !req.Evidence.Platform.HasRegisters() {
+		attestation.WriteError(w, http.StatusUnprocessableEntity, types.ErrorCodeInvalidRequest,
+			"runtime_extensions requires evidence from a platform with runtime measurement registers")
+		return
+	}
 
 	challengeBytes, err := base64.StdEncoding.DecodeString(req.Challenge)
 	if err != nil {

@@ -172,7 +172,7 @@ func TestVerifyPodRulesetNeedsTheInstalledNamespace(t *testing.T) {
 // never had.
 func TestProtectRefusesASandboxItCannotProve(t *testing.T) {
 	pod := meshPod("default", "pod", filepath.Join(t.TempDir(), "gone"))
-	gate := newMeshGate(meshRoles(), discardLogger())
+	gate := newMeshGate(*meshRoles(), discardLogger())
 
 	err := gate.protect(pod)
 	if err == nil || !strings.Contains(err.Error(), "protect pod default/pod") {
@@ -209,7 +209,7 @@ func TestAdmitAndVerifyReadTheLiveRuleset(t *testing.T) {
 		t.Fatal(err)
 	}
 	pod := meshPod("default", "pod", regular)
-	gate := newMeshGate(meshRoles(), discardLogger())
+	gate := newMeshGate(*meshRoles(), discardLogger())
 	gate.pods[pod.GetId()] = &protectedPod{
 		netns:         described,
 		kubeNamespace: pod.GetNamespace(),
@@ -238,7 +238,7 @@ func TestAdmitAndVerifyReadTheLiveRuleset(t *testing.T) {
 func TestRunPodSandboxRecordsAnInstallItCouldNotDo(t *testing.T) {
 	pod := meshPod("default", "pod", filepath.Join(t.TempDir(), "gone"))
 	p := newTestPlugin(&config{Policy: policyConfig{Mode: ModeFailClosed}})
-	p.mesh = newMeshGate(meshRoles(), discardLogger())
+	p.mesh = newMeshGate(*meshRoles(), discardLogger())
 
 	if err := p.RunPodSandbox(context.Background(), pod); err != nil {
 		t.Fatalf("a sandbox event failed on an install the enforcer could not do: %v", err)

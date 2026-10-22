@@ -190,9 +190,6 @@ func TestNodeImageBootConfig_ParsesAndAdmitsSystemImages(t *testing.T) {
 	// The capture ports and the mesh identity are shared with the injector, so
 	// a drift here would seal pods against their own endpoint.
 	mesh := cfg.Mesh
-	if mesh == nil {
-		t.Fatal("the baked config carries no mesh policy, so the node hosts no member pods")
-	}
 	if !cfg.requiresTrustedMeshEnforcement() {
 		t.Error("the baked config does not require trusted mesh enforcement; its members would rest on policy the cluster admin writes")
 	}
@@ -504,9 +501,6 @@ func TestNodeImageBootConfig_ExemptsTheBakedAddonNamespaces(t *testing.T) {
 	cfg, err := parseConfig([]byte(rendered))
 	if err != nil {
 		t.Fatalf("the rendered node-image boot config does not parse: %v", err)
-	}
-	if cfg.Mesh == nil {
-		t.Fatal("the baked config carries no mesh policy, so the node hosts no member pods")
 	}
 	for _, namespace := range bakedAddonNamespaces(t) {
 		if !slices.Contains(cfg.Mesh.ExemptNamespaces, namespace) {

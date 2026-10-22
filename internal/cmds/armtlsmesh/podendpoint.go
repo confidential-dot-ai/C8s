@@ -23,6 +23,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/confidential-dot-ai/c8s/internal/credvolume"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
@@ -106,9 +107,9 @@ func runPodEndpoint(ctx context.Context, c *podEndpointConfig, outbound, inbound
 // newPodEndpoint reads the credential volume get-cert publishes into and the
 // pod's own addresses. It binds nothing.
 func newPodEndpoint(c *podEndpointConfig, logger *slog.Logger) (*podEndpoint, error) {
-	volume, err := credentialVolumeFor(c.chainPath, c.keyPath, c.caPath)
+	volume, err := credvolume.For(c.chainPath, c.keyPath, c.caPath)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("--cert-path, --key-path and --ca-path: %w", err)
 	}
 	own, err := ownPodAddresses()
 	if err != nil {

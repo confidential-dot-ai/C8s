@@ -9,10 +9,6 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
-// meshSupported gates a mesh policy at config load: a pod ruleset is nftables
-// in a Linux network namespace.
-const meshSupported = true
-
 // installPodRuleset puts the ruleset trusted policy defines for a pod of that
 // Kubernetes namespace into the network namespace the enforcer proved.
 func installPodRuleset(netns podNamespace, policy meshPolicy, namespace string) error {

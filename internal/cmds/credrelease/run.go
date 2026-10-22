@@ -159,6 +159,8 @@ func Run(ctx context.Context, cfg Config) error {
 		return fmt.Errorf("warm up armTLS serving cert: %w", err)
 	}
 
+	go certMgr.RunRotation(ctx)
+
 	srv := newServer(cfg.ListenAddr, handler, tlsCfg)
 
 	// Bind explicitly so the accepted sockets can be capped: every connection

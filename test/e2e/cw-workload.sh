@@ -36,10 +36,10 @@ if [ -n "${C8S_OPERATOR_KEY:-}" ]; then
   : "${C8S_ALLOWLIST_URL:?needed alongside C8S_OPERATOR_KEY}"
   cds_measurement_args
   pins="$(mktemp -d)"
-  # Mounts: the certificate volume the webhook adds. Env: the image's
-  # variables, then those containerd and the kubelet add with service links
-  # off, as the chart's c8s.runtimeEnv; the sample sets none of its own.
-  echo '{"nginx": {"policy": "exact", "rules": [{"destination": "/etc/c8s/certs", "kind": "emptyDir"}]}}' >"$pins/mounts.json"
+  # Mounts: none. The webhook mounts the certificate volume only into its
+  # mesh and certificate sidecars, so nginx has only platform mounts. Env: the
+  # image's variables, then those containerd and the kubelet add with service
+  # links off, as the chart's c8s.runtimeEnv; the sample sets none of its own.
   crane config "$image" | jq '
     {PATH: {exact: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}}
     + ((.config.Env // []) | map(capture("^(?<k>[^=]*)=(?<v>.*)$") | {(.k): {exact: .v}}) | add // {})
@@ -50,7 +50,7 @@ if [ -n "${C8S_OPERATOR_KEY:-}" ]; then
         KUBERNETES_PORT_443_TCP_PORT: {exact: "443"}, KUBERNETES_PORT_443_TCP_PROTO: {exact: "tcp"}} + .)}}' \
     >"$pins/env.json" || fail "no image config for $image"
   kubectl apply --dry-run=client -o json -f "$manifest" |
-    c8s allowlist derive "$deploy" - --env-file "$pins/env.json" --mounts-file "$pins/mounts.json" |
+    c8s allowlist derive "$deploy" - --env-file "$pins/env.json" --mounts deny |
     c8s allowlist apply - --url "$C8S_ALLOWLIST_URL" "${measurement_args[@]}" >/dev/null \
     || fail "signed allowlist write rejected for the workload digest"
   echo "ok: workload digest admitted"

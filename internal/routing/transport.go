@@ -26,26 +26,20 @@ const (
 
 // TransportConfig configures Transports.
 type TransportConfig struct {
-	// MeshCAs anchor workload backends (B1).
-	MeshCAs CASource
-	// ClientCertificate supplies the router's CDS-issued mesh leaf, presented
-	// to every backend (B4).
-	ClientCertificate func(*tls.CertificateRequestInfo) (*tls.Certificate, error)
+	// MeshIdentity is the router's mesh leaf, presented to every backend, and
+	// the CAs anchoring workload backends. A mesh dial takes both from one
+	// resolution; an address backend resolves them separately.
+	MeshIdentity CredentialSource
 }
 
-// routerLeaf hands the router's own member credential to a mesh handshake.
-// Renewal is get-cert's: ClientCert follows the files it publishes, and a
-// configuration built from this carries one connection.
+// routerLeaf hands one generation's leaf to a mesh handshake. Renewal is
+// get-cert's: a configuration built from this carries one connection.
 type routerLeaf struct {
-	get func(*tls.CertificateRequestInfo) (*tls.Certificate, error)
+	cert *tls.Certificate
 }
 
 func (l routerLeaf) Provision(context.Context) (*tls.Certificate, time.Duration, error) {
-	cert, err := l.get(nil)
-	if err != nil {
-		return nil, 0, err
-	}
-	return cert, 0, nil
+	return l.cert, 0, nil
 }
 
 // Transports caches one HTTP transport per backend, so connections are pooled
@@ -127,7 +121,7 @@ func (t *Transports) build(b routes.Backend) *http.Transport {
 	transport.TLSClientConfig = &tls.Config{
 		MinVersion:           tls.VersionTLS12,
 		NextProtos:           []string{"http/1.1"},
-		GetClientCertificate: t.cfg.ClientCertificate,
+		GetClientCertificate: t.clientCertificate,
 		RootCAs:              pool,
 		ServerName:           b.ServerName,
 		VerifyConnection:     t.refuseMeshAnchor,
@@ -144,8 +138,8 @@ func (t *Transports) build(b routes.Backend) *http.Transport {
 // crosses the pod boundary.
 func (t *Transports) dialWorkload(workload string, dialer *net.Dialer) func(context.Context, string, string) (net.Conn, error) {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
-		// Per connection: the credential and the CA both follow what get-cert
-		// publishes, and a backend is dialled far less often than it is used.
+		// Per connection: one resolution of what get-cert publishes, and a
+		// backend is dialled far less often than it is used.
 		cfg, err := t.meshClientConfig(workload)
 		if err != nil {
 			return nil, err
@@ -166,25 +160,45 @@ func (t *Transports) dialWorkload(workload string, dialer *net.Dialer) func(cont
 }
 
 // meshClientConfig is the armTLS mesh client configuration for one workload
-// backend, built on the credential set published now.
+// backend, built on one published generation: the leaf it presents and the CA
+// it trusts are the ones published together.
 func (t *Transports) meshClientConfig(workload string) (*tls.Config, error) {
-	cas, err := t.cfg.MeshCAs()
+	cred, err := t.cfg.MeshIdentity()
 	if err != nil {
-		return nil, fmt.Errorf("routing: mesh CA bundle: %w", err)
+		return nil, fmt.Errorf("routing: mesh credential: %w", err)
 	}
 	// CDS publishes the one mesh CA its members are verified against.
-	if len(cas) != 1 {
-		return nil, fmt.Errorf("routing: mesh CA bundle holds %d certificates, want one", len(cas))
+	if len(cred.MeshCAs) != 1 {
+		return nil, fmt.Errorf("routing: mesh CA bundle holds %d certificates, want one", len(cred.MeshCAs))
 	}
 	cfg, _, err := armtls.NewMeshClientTLSConfig(&armtls.MeshConfig{
-		CertProvider: routerLeaf{get: t.cfg.ClientCertificate},
-		MeshCA:       cas[0],
+		CertProvider: routerLeaf{cert: cred.Certificate},
+		MeshCA:       cred.MeshCAs[0],
 		AcceptPeer:   acceptWorkload(workload),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("routing: mesh client for workload %q: %w", workload, err)
 	}
 	return cfg, nil
+}
+
+// clientCertificate implements tls.Config.GetClientCertificate from the
+// published generation.
+func (t *Transports) clientCertificate(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+	cred, err := t.cfg.MeshIdentity()
+	if err != nil {
+		return nil, err
+	}
+	return cred.Certificate, nil
+}
+
+// meshCAs are the CAs of the published generation.
+func (t *Transports) meshCAs() ([]*x509.Certificate, error) {
+	cred, err := t.cfg.MeshIdentity()
+	if err != nil {
+		return nil, err
+	}
+	return cred.MeshCAs, nil
 }
 
 // acceptWorkload fails the handshake unless the peer the chain path
@@ -207,7 +221,7 @@ func acceptWorkload(workload string) func(armtls.Peer) error {
 // apply time; this covers a mesh CA rotated in after the manifest was applied
 // (B3).
 func (t *Transports) refuseMeshAnchor(cs tls.ConnectionState) error {
-	cas, err := t.cfg.MeshCAs()
+	cas, err := t.meshCAs()
 	if err != nil {
 		return fmt.Errorf("routing: mesh CA bundle: %w", err)
 	}
@@ -228,7 +242,7 @@ func (t *Transports) refuseMeshAnchor(cs tls.ConnectionState) error {
 // a connection in flight returns to its pool after CloseIdleConnections, so
 // new requests get fresh transports while the old ones drain.
 func (t *Transports) dropMeshPools() error {
-	cas, err := t.cfg.MeshCAs()
+	cas, err := t.meshCAs()
 	var digest [sha256.Size]byte
 	if err == nil {
 		h := sha256.New()
