@@ -84,6 +84,10 @@ type roleRules struct {
 	serverToken  presence // rke2.serverToken, distinct from rke2.agentToken
 	agentKeys    presence // agentOperatorPublicKeys
 	pod          presence // the pod section, which then requires workloads
+	// measuresWorkloads requires a platform with a runtime register: the
+	// role measures what it runs after launch, and without the register no
+	// evidence could carry those measurements.
+	measuresWorkloads bool
 	// namesServer requires server.address in the signed document; otherwise
 	// it is checked only when present.
 	namesServer bool
@@ -124,13 +128,14 @@ var roles = map[Role]roleRules{
 		anchorPin:     "server",
 	},
 	Pod: {
-		joinsCluster:  false,
-		serverToken:   forbidden,
-		agentKeys:     forbidden,
-		pod:           required,
-		namesServer:   false,
-		stagedAddress: false,
-		router:        false,
+		joinsCluster:      false,
+		serverToken:       forbidden,
+		agentKeys:         forbidden,
+		pod:               required,
+		measuresWorkloads: true,
+		namesServer:       false,
+		stagedAddress:     false,
+		router:            false,
 		// A pod document carries its own launch key in server.operatorPublicKey.
 		ownLaunchKey: true,
 		anchorPin:    "pod",
@@ -463,6 +468,9 @@ func (d *Document) validate() error {
 	}
 	if err := platform.validateRegisters(d.Image.RTMRs); err != nil {
 		return err
+	}
+	if rules.measuresWorkloads && !platform.runtimeRegister {
+		return fmt.Errorf("%s requires a platform with a runtime register to measure its workloads; %s has none", d.Role, d.Image.Platform)
 	}
 	if d.Server.Address != "" || rules.namesServer {
 		if err := ValidateIPv4(d.Server.Address, true); err != nil {
