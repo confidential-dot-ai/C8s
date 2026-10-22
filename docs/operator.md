@@ -120,12 +120,17 @@ It accepts an optional `workloads` string containing a complete
 a registry host to one `http://<IPv4>[:port]` endpoint, at most 8 (for
 example `ghcr.io: http://10.43.0.5:5000`). Staging writes the map as
 `/etc/rancher/rke2/registries.yaml`, so containerd pulls through the mirror
-first and from the registry itself as the last resort. Image references stay
-digest-pinned, so a mirror cannot change what a node runs. It does not accept
-Helm values, arbitrary service arguments or component toggles. The measured image runs volumed as a
-host service, so encrypted volumes ([docs/volumes.md](volumes.md)) open on
-every node without an install. Its router always publishes the applied route
-manifest ([Route manifest](#route-manifest)).
+first and from the registry itself as the last resort. The mirror is plain
+http and gets no registry credentials: the host can see which blobs a node
+pulls, and a private image falls back to its registry unless the mirror holds
+its own credentials. This is acceptable because image references stay
+digest-pinned and containerd checks every blob against its digest, so a
+mirror can withhold an image but cannot change what a node runs. It does not
+accept Helm values, arbitrary service arguments or component toggles. The
+measured image runs volumed as a host service, so encrypted volumes
+([docs/volumes.md](volumes.md)) open on every node without an install. Its
+router always publishes the applied route manifest
+([Route manifest](#route-manifest)).
 
 Use **distinct launch keys for server and agent roles, and new keys for
 each cluster**. `clusterID` is a descriptive RFC1123 label; the distinct
@@ -141,8 +146,8 @@ per node and the client policy that pins the server. Give it the trusted
 `manifest.json` published with the exact node image, the server's guest IPv4
 address that every node can reach, and the agent names. On SNP, also pass
 the VM's vCPU count, which selects the launch digest. `--registry-mirror
-ghcr.io=http://10.43.0.5:5000` (repeatable) sets `registryMirrors`; agents
-inherit it from the server document.
+ghcr.io=http://10.43.0.5:5000` (repeatable, once per registry) sets
+`registryMirrors`; agents inherit it from the server document.
 
 ```sh
 c8s node launch-config new --out demo --cluster-id demo \

@@ -246,6 +246,8 @@ func TestNewBundleRefusesBadInputsAndLeavesNothingBehind(t *testing.T) {
 		{"loopback server", []string{"--image-manifest", tdx, "--server-address", "127.0.0.1"}, "server.address"},
 		{"not a manifest", []string{"--image-manifest", filepath.Join(base, "missing.json")}, "--image-manifest"},
 		{"dns mirror", []string{"--image-manifest", tdx, "--registry-mirror", "ghcr.io=http://cache.example"}, "registryMirrors"},
+		{"duplicate mirror", []string{"--image-manifest", tdx, "--registry-mirror", "ghcr.io=http://10.43.0.5", "--registry-mirror", "ghcr.io=http://10.43.0.6"}, "more than once"},
+		{"mirror without endpoint", []string{"--image-manifest", tdx, "--registry-mirror", "ghcr.io"}, "registry=http"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
