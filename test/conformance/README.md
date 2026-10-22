@@ -110,7 +110,9 @@ A backend also acts on the node and the CDS where a scenario asks: it stops
 and starts a node's plugin, makes the CDS unreachable for the plugins' pulls
 and undoes that, and restarts the CDS. Each is undone after the scenario, and
 a plugin is started again wherever the CDS was restarted, since a plugin only
-accepts the versions a restarted CDS serves after a start of its own.
+accepts the versions a restarted CDS serves after a start of its own. The
+mesh members a controller owns, such as the router, are recreated too, since
+a member stays bound to the CA key of its first leaf.
 
 Where a scenario is about the CDS's own API, the backend sends the request as
 the scenario says rather than through its signed path: a write with the
