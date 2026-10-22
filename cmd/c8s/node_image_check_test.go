@@ -177,3 +177,34 @@ func TestResolveLocalNames(t *testing.T) {
 		t.Fatal("no names changed the manifest")
 	}
 }
+
+// The operator's seed argv names injected images node-locally, as render
+// writes it; check-images maps both the render and the seed back through
+// local-names.txt (a build failed when only the render was mapped).
+func TestCheckNodeImagesWithLocalNames(t *testing.T) {
+	layouts := t.TempDir()
+	digest := writeNodeImageLayout(t, layouts, "amd64", nil)
+	out := writeNodeImageRender(t, digest, map[string]string{"PATH": containerdDefaultPath})
+	ref, local := "registry.example.com/cds@"+digest, "registry.example.com/cds:c8s-node"
+	seedPath := filepath.Join(out, "allowlist-seed.json")
+	raw, err := os.ReadFile(seedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw = bytes.Replace(raw, []byte(`"args":{"policy":"deny"}`), []byte(`"args":{"policy":"exact","argv":["--mesh-image=`+local+`"]}`), 1)
+	if !bytes.Contains(raw, []byte(local)) {
+		t.Fatalf("fixture seed shape changed: %s", raw)
+	}
+	integration, _ := os.ReadFile(filepath.Join(out, "c8s-integration.yaml"))
+	integration = append(integration, []byte("          args: [\"--mesh-image="+local+"\"]\n")...)
+	for name, data := range map[string][]byte{
+		"allowlist-seed.json": raw, "c8s-integration.yaml": integration, "local-names.txt": []byte(ref + " " + local + "\n"),
+	} {
+		if err := os.WriteFile(filepath.Join(out, name), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := checkNodeImages(out, layouts); err != nil {
+		t.Fatal(err)
+	}
+}
