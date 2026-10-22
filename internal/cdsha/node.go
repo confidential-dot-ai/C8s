@@ -160,6 +160,7 @@ type Node struct {
 
 	backupAt    time.Time // leader: last backup attempt
 	pruneAt     time.Time // leader: last history prune check
+	renewAt     time.Time // leader: last mesh CA renewal attempt
 	backupIndex uint64    // leader: applied index of the last stored backup
 	recovery    *ecdsa.PublicKey
 }
@@ -453,6 +454,7 @@ func (n *Node) Run(ctx context.Context) error {
 			n.applyDecrees(ctx)
 			n.maybeBackup(ctx)
 			n.maybePruneHistory()
+			n.maybeRenewCA()
 		case addr != "":
 			n.noLeader = time.Time{}
 			n.refreshSeats()
@@ -732,6 +734,39 @@ func (n *Node) maybePruneHistory() {
 		return
 	}
 	n.log.Info("allowlist history pruned", "kept", keep, "had", have)
+}
+
+// maybeRenewCA (leader) renews the mesh CA certificate under the cluster's
+// key once it is past half its lifetime, through the log, so every replica
+// serves the same certificate and running workloads keep their trust anchor.
+// A replica of a release that cannot apply the entry would stop, so it waits
+// for format 2, which every member reads.
+func (n *Node) maybeRenewCA() {
+	ca := n.fsm.CA()
+	if ca == nil || n.fsm.Core().format() < 2 || time.Since(n.renewAt) < n.cfg.Timing.Backup {
+		return
+	}
+	cert := ca.Cert
+	if time.Now().Before(cert.NotBefore.Add(cert.NotAfter.Sub(cert.NotBefore) / 2)) {
+		return
+	}
+	n.renewAt = time.Now()
+	renewed, err := issuer.SelfSignCA(ca.Key, cert.Subject.CommonName, caValidity(n.cfg.CAValidity))
+	if err != nil {
+		n.log.Error("renew mesh CA certificate", "err", err)
+		return
+	}
+	raw, err := json.Marshal(Entry{Kind: KindRenewCA, Format: 2, RenewCA: &RenewCAEntry{RootCert: renewed.Raw}})
+	if err != nil {
+		return
+	}
+	if _, _, err := n.applyLocal(raw); err != nil {
+		n.log.Warn("renew mesh CA certificate", "err", err)
+		return
+	}
+	keyID := sha256.Sum256(renewed.RawSubjectPublicKeyInfo)
+	n.log.Info("renewed mesh CA certificate", "audit", true,
+		"key_id", hex.EncodeToString(keyID[:]), "not_after", renewed.NotAfter.Format(time.RFC3339))
 }
 
 // AwaitingRestore reports a replica that holds no cluster and has not seen

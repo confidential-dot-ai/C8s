@@ -32,6 +32,14 @@ new format, so during the rollout the old format stays in force.
 The router, `get-cert`, the injected sidecars and `allowlist-proxy` follow the
 decrees through the node's enforcer.
 
+## The mesh CA certificate
+
+The replicas share one mesh CA key for the life of the cluster. Past half the
+certificate's lifetime (`--ca-cert-validity`, one year by default), the leader
+renews the certificate under the same key through the log, so every replica
+serves the same new certificate and running workloads keep their trust anchor.
+Replacing the key itself is the `RotateKey` decree, a break-glass step.
+
 ## Rebooting nodes
 
 * A rebooted cds or agent node rejoins under its own name. A rebooted voter
