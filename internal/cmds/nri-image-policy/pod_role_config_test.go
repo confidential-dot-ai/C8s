@@ -12,6 +12,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cmds/nodeservices"
 	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 // The pod role rewrites the baked config at boot (nodeservices.preparePod).
@@ -108,10 +109,24 @@ func testNodeImagePodRoleConfig(t *testing.T, platform string) {
 	if cfg.WorkloadClaims.SocketDir != filepath.Dir(armtls.NodeJournal) {
 		t.Fatalf("socket_dir = %q: the pod journal would not be where its readers look", cfg.WorkloadClaims.SocketDir)
 	}
-	// The node's mesh policy gates every pod on a verified mesh endpoint the
-	// signed workloads cannot declare; kept, it would refuse the pod itself.
-	if cfg.Mesh != nil {
-		t.Fatal("pod-role config keeps the node's mesh policy")
+	// The pod is a mesh member: the baked mesh policy stays, bound to the
+	// mesh role alone and exempting nothing, and the measured base carries
+	// the mesh endpoint's entry beside the signed workloads, so the enforcer
+	// grants the role to that image under that argv as its reserved identity
+	// and to nothing else.
+	if cfg.Mesh == nil {
+		t.Fatal("pod-role config carries no mesh policy")
+	}
+	if len(cfg.Mesh.ExemptNamespaces) != 0 {
+		t.Fatalf("mesh.exempt_namespaces = %v: the one pod of a pod CVM is a member", cfg.Mesh.ExemptNamespaces)
+	}
+	if len(cfg.Mesh.Roles) != 1 || cfg.Mesh.Roles[0].Name != workloadclaims.MeshRole || cfg.Mesh.Roles[0].UID != workloadclaims.MeshUID {
+		t.Fatalf("mesh.roles = %+v, want the mesh role alone", cfg.Mesh.Roles)
+	}
+	base := cfg.Allowlist.Base.Workloads
+	endpoint := base["c8s-mesh-endpoint"].Containers
+	if len(base) != 2 || base["app"].Containers[0].Role != "" || len(endpoint) != 1 || endpoint[0].Role != workloadclaims.MeshRole || endpoint[0].Digest.String() != nriimagepolicy.MeshImageDigest {
+		t.Fatalf("base = %+v, want the signed app and the baked mesh endpoint alone", base)
 	}
 	if err := nriimagepolicy.AdmitsCreation(cfg, doc.Pod.Namespace, "busybox@"+podImageDigest, podImageDigest); err != nil {
 		t.Fatalf("the pod's own allowlisted workload is refused: %v", err)
@@ -119,8 +134,10 @@ func testNodeImagePodRoleConfig(t *testing.T, platform string) {
 }
 
 // Exercise the prepared policy through the production startup path and an NRI
-// runtime connection, including admission before CDS becomes available.
-func TestNodeImagePodRoleConfig_StartsAndRetainsServedPolicy(t *testing.T) {
+// runtime connection, including admission before CDS becomes available. The
+// pod is gated on its mesh endpoint over a real network namespace, so this
+// runs as root (make test-podmesh-netns) and skips elsewhere.
+func TestNodeImagePodRoleConfig_StartsInTheNamespace(t *testing.T) {
 	root, doc := podRoleInputs(t, "tdx")
 	if err := nodeservices.Prepare(root, doc); err != nil {
 		t.Fatal(err)
