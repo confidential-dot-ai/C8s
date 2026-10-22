@@ -1,8 +1,9 @@
-# Baked into server/manifests so RKE2 auto-applies it at boot. RKE2's `cis`
-# profile (config.yaml) does NOT ship local-path-provisioner, so without this
-# the confidential node has no StorageClass and any PVC (e.g. C8s tee-proxy
-# certs, CDI rootdisks) stays Pending forever. v0.0.30 matches the ansible
-# local-path-provisioner role on the outer clusters.
+# Optional (#872): mkosi.sync bakes this into server/manifests, so RKE2
+# auto-applies it at boot, only for a C8S_LOCAL_PATH=1 build. RKE2's `cis`
+# profile (config.yaml) does NOT ship local-path-provisioner, so without it
+# the node has no StorageClass and any PVC stays Pending. It is off by
+# default because its helper pod writes a host path from a ConfigMap script,
+# and a pod consuming one of its volumes holds a host bind mount.
 #
 # Volumes live under /var/lib/local-path-provisioner, not upstream's /opt:
 # /opt is on the read-only verity root, while /var is a writable state
