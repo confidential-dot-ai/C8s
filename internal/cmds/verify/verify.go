@@ -188,7 +188,10 @@ Evidence sources:
                          receipt was fetched with.
 
   c8s cds verify https://cds.example.com:8443 --measurements <sha384-hex>
-  c8s verify https://lb.example.com:443 --kind lb --measurements <sha384-hex>
+  c8s verify https://lb.example.com:443 --kind lb --measurements <sha384-hex> --mesh-ca mesh-ca.pem
+
+A front door serving a CA-issued leaf is verified only with its mesh anchor;
+'c8s cds ca --out mesh-ca.pem' writes that file.
 
 --mode attest-pq and attest-lb evidence binds the digest of the route
 manifest the router applied. Check it with exactly one of:
@@ -1172,11 +1175,9 @@ type Outcome struct {
 
 	// CertBody says what authenticates the leaf certificate's body fields
 	// (subject/serial/validity): the leaf's own attested key when
-	// self-signed, a verified issuing chain, possession of the attested key
-	// proven by a live TLS handshake (the armTLS dial, or the discovery
-	// gather's front-door probe), or — on attest-pq — the identity
-	// transcript the hardware evidence binds (whose chain anchor is
-	// responder-chosen; see ChainAnchor). A leaf with none of these is not
+	// self-signed, a verified issuing chain (--mesh-ca), or — on attest-pq —
+	// the identity transcript the hardware evidence binds (whose chain anchor
+	// is responder-chosen; see ChainAnchor). A leaf with none of these is not
 	// accepted as evidence at all (authorizeLeafBody), because checking a
 	// validity window inside an unsigned body bounds nothing.
 	CertBody string `json:"cert_body,omitempty"`
@@ -1753,8 +1754,6 @@ func describeCertBody(_ config, ev *evidence) string {
 		return "CA-signed: body authenticated by a verified issuing chain (--mesh-ca)" + skew + certutil.LeafValiditySkew.String() + ")"
 	case ev.leafChainDerived:
 		return "CA-signed: body committed into the identity transcript — the hardware evidence binds these exact bytes" + skew + certutil.LeafValiditySkew.String() + ")"
-	case ev.leafKeyProven:
-		return "CA-signed: body not chain-checked, but the live TLS handshake proves the peer holds the attested key, so this body could not have been minted around it — pass --mesh-ca to also check the issuing chain"
 	default:
 		return "CA-signed: body fields are CA-vouched and UNAUTHENTICATED — pass --mesh-ca to check the chain"
 	}
