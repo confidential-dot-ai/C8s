@@ -402,3 +402,23 @@ func TestPinFloorRefusesOlderDecrees(t *testing.T) {
 		t.Fatal("a state decree below the floor was taken")
 	}
 }
+
+// Two images built on one firmware share their MRTD and differ only in their
+// RTMRs (found on TDX: the "A and B" decree was refused for duplicate pin
+// names, so nodes never trusted B until "B only").
+func TestImagesSharingAnMRTD(t *testing.T) {
+	k, pub := key(t)
+	a, b := img(1), img(1)
+	b.RTMR1, b.RTMR2 = img(7).RTMR1, img(7).RTMR2
+	srv := &served{sd: pinDecree(t, k, cluster, 3, a, b)}
+	src, err := New(Config{ClusterID: cluster, DecreeKey: pub, Bootstrap: bootstrap(), Fetch: srv.fetch, MinInterval: time.Nanosecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := src.Refresh(t.Context()); !changed || err != nil {
+		t.Fatalf("A and B of one firmware: %v %v", changed, err)
+	}
+	if n := len(src.Current().Images); n != 4 {
+		t.Fatalf("%d pins, want 2 images under 2 keys", n)
+	}
+}
