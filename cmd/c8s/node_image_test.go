@@ -84,10 +84,20 @@ func TestNodeImageRender(t *testing.T) {
 						t.Fatal("HA CDS DaemonSet does not name the node-local CDS image")
 					}
 					names, err := os.ReadFile(filepath.Join(out, "local-names.txt"))
-					// Only the HA CDS is a DaemonSet of the build's images now
-					// (the mesh runs per pod).
-					if err != nil || string(names) != cdsRef+" registry.example.com/cds:c8s-node\n" {
+					// The HA CDS DaemonSet and the sidecars the webhook injects
+					// (the per-pod mesh and the credential clients) run the
+					// node's own images.
+					meshRef := "registry.example.com/armtls-mesh@" + nodeImageTestMeshDigest
+					opRef := "registry.example.com/c8s-operator@" + testDigest
+					want := meshRef + " registry.example.com/armtls-mesh:c8s-node\n" + opRef + " registry.example.com/c8s-operator:c8s-node\n" + cdsRef + " registry.example.com/cds:c8s-node\n"
+					if err != nil || string(names) != want {
 						t.Fatalf("local-names.txt: %q %v", names, err)
+					}
+					integration, _ := os.ReadFile(filepath.Join(out, "c8s-integration.yaml"))
+					for _, flag := range []string{"--get-cert-image=registry.example.com/c8s-operator:c8s-node", "--mesh-image=registry.example.com/armtls-mesh:c8s-node"} {
+						if !bytes.Contains(integration, []byte(flag)) {
+							t.Fatalf("operator does not inject node-local images: missing %s", flag)
+						}
 					}
 					floor, err := os.ReadFile(filepath.Join(out, "cds-floor.json"))
 					if err != nil || !bytes.Contains(floor, []byte(nodeImageTestCDSDigest)) {
