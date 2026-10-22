@@ -72,19 +72,11 @@ func (m *MeshCA) RenewCertificate() (CurrentCA, error) {
 	m.renew.Lock()
 	defer m.renew.Unlock()
 
-	serial, err := certutil.GenerateSerial()
+	cert, err := SelfSignCA(m.key, m.commonName, m.validity)
 	if err != nil {
-		return CurrentCA{}, fmt.Errorf("generate mesh ca serial: %w", err)
+		return CurrentCA{}, err
 	}
-	tmpl := certutil.NewCATemplate(serial, m.commonName, time.Now().Add(m.validity))
-	certDER, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &m.key.PublicKey, m.key)
-	if err != nil {
-		return CurrentCA{}, fmt.Errorf("self-sign mesh ca: %w", err)
-	}
-	cert, err := x509.ParseCertificate(certDER)
-	if err != nil {
-		return CurrentCA{}, fmt.Errorf("parse freshly-signed mesh ca: %w", err)
-	}
+	certDER := cert.Raw
 	if outgoing := m.current.Load(); outgoing != nil {
 		if err := sameIssuerIdentity(outgoing.CA.Cert, cert); err != nil {
 			return CurrentCA{}, err
@@ -110,6 +102,51 @@ func sameIssuerIdentity(outgoing, renewed *x509.Certificate) error {
 	}
 	if !bytes.Equal(outgoing.SubjectKeyId, renewed.SubjectKeyId) {
 		return fmt.Errorf("renewed mesh ca changed its subject key identifier")
+	}
+	return nil
+}
+
+// SelfSignCA issues a self-signed mesh CA certificate under key, valid for
+// validity from now. A highly available CDS renews its shared CA with it: the
+// leader signs under the replicated key and the replicas adopt the result
+// once RenewalOf accepts it.
+func SelfSignCA(key *ecdsa.PrivateKey, commonName string, validity time.Duration) (*x509.Certificate, error) {
+	serial, err := certutil.GenerateSerial()
+	if err != nil {
+		return nil, fmt.Errorf("generate mesh ca serial: %w", err)
+	}
+	tmpl := certutil.NewCATemplate(serial, commonName, time.Now().Add(validity))
+	certDER, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		return nil, fmt.Errorf("self-sign mesh ca: %w", err)
+	}
+	cert, err := x509.ParseCertificate(certDER)
+	if err != nil {
+		return nil, fmt.Errorf("parse freshly-signed mesh ca: %w", err)
+	}
+	return cert, nil
+}
+
+// RenewalOf reports why renewed may not replace current as the mesh CA
+// certificate, or nil when it may: a CA certificate self-signed under the
+// same key, naming the same issuer that live leaves were signed by (subject
+// and subject key identifier), and outliving the one it replaces, so a
+// replayed older certificate cannot shorten the anchor.
+func RenewalOf(current, renewed *x509.Certificate) error {
+	if !renewed.IsCA || !renewed.BasicConstraintsValid {
+		return fmt.Errorf("renewed mesh ca is not a CA certificate")
+	}
+	if !bytes.Equal(current.RawSubjectPublicKeyInfo, renewed.RawSubjectPublicKeyInfo) {
+		return fmt.Errorf("renewed mesh ca changed its key")
+	}
+	if err := renewed.CheckSignatureFrom(renewed); err != nil {
+		return fmt.Errorf("renewed mesh ca is not self-signed under its key: %w", err)
+	}
+	if err := sameIssuerIdentity(current, renewed); err != nil {
+		return err
+	}
+	if !renewed.NotAfter.After(current.NotAfter) {
+		return fmt.Errorf("renewed mesh ca does not outlive the certificate it replaces")
 	}
 	return nil
 }

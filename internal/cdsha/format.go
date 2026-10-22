@@ -25,7 +25,8 @@ const Format uint32 = 2
 //      (OpPruneHistory); snapshots are zstd with a long window; spent
 //      operator tokens record their iat and exp, and consuming one prunes the
 //      records of tokens long expired (allowlist.ApplyOptions TokenExpiry),
-//      so snapshots carry the two used_token columns. A group at format 1
+//      so snapshots carry the two used_token columns; the leader renews the
+//      mesh CA certificate under the same key (KindRenewCA). A group at format 1
 //      does none of these and leaves the columns out, so replicas of format
 //      1 and 2 agree on the state while they run together.
 
