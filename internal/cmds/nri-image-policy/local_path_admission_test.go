@@ -57,7 +57,7 @@ func TestLocalPathMeshExemptionKeepsImageAndLaunchAdmission(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p := newTestPlugin(cfg)
-			p.mesh = newMeshGate(cfg.Mesh, discardLogger())
+			p.mesh = newMeshGate(*cfg.Mesh, discardLogger())
 			p.SetReady()
 			pod := meshPod("local-path-storage", "helper", testNetNS)
 			ctr := makeCtrWithImageArgs(pod.Id, "helper", tc.image, tc.argv)

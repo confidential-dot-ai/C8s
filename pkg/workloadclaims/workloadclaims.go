@@ -430,7 +430,7 @@ type SandboxResolver interface {
 // CallerSandbox is what an inventory establishes about a token caller: the pod
 // sandbox the kernel-bound caller runs in, and why no assertion may be signed
 // for it. A nil Refusal states that the enforcer verifies that sandbox as a
-// protected mesh member, or that the node hosts no member pods.
+// protected mesh member.
 type CallerSandbox struct {
 	SandboxID string
 	Refusal   error

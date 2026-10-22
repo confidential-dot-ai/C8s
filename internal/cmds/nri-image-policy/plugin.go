@@ -181,8 +181,8 @@ type plugin struct {
 	// lifecycle callback over bookkeeping.
 	inventory *admissionInventory
 
-	// mesh is the mesh gate (meshgate.go). It is disabled unless the measured
-	// config carries a mesh policy, and a node without one hosts no members.
+	// mesh is the mesh gate (meshgate.go), under the mesh policy the measured
+	// config carries.
 	mesh *meshGate
 
 	// cdsPins is the node-side path of the CDS attestation policy handed to
@@ -224,12 +224,10 @@ func newPlugin(
 		containerd: ctrd,
 	}
 	p.boot = newBootGate(cfg, logger)
-	p.mesh = newMeshGate(cfg.Mesh, logger)
-	if cfg.Mesh != nil {
-		logger.Info("mesh gate enabled",
-			"trusted_enforcement", cfg.requiresTrustedMeshEnforcement(),
-			"exempt_namespaces", cfg.Mesh.ExemptNamespaces)
-	}
+	p.mesh = newMeshGate(*cfg.Mesh, logger)
+	logger.Info("mesh gate enabled",
+		"trusted_enforcement", cfg.requiresTrustedMeshEnforcement(),
+		"exempt_namespaces", cfg.Mesh.ExemptNamespaces)
 	if cfg.WorkloadClaims.SocketDir != "" {
 		procRoot := cfg.WorkloadClaims.ProcRoot
 		if procRoot == "" {
@@ -305,19 +303,15 @@ func (p *plugin) Configure(ctx context.Context, config, runtime, version string)
 	mask.Set(api.Event_CREATE_CONTAINER)
 	mask.Set(api.Event_START_CONTAINER)
 	mask.Set(api.Event_VALIDATE_CONTAINER_ADJUSTMENT)
+	// The mesh gate holds a sandbox's protection over its life, and the
+	// inventory keeps its sandbox set (the /sandbox and /digests routes) live.
+	mask.Set(api.Event_RUN_POD_SANDBOX)
+	mask.Set(api.Event_REMOVE_POD_SANDBOX)
+	mask.Set(api.Event_UPDATE_CONTAINER)
 	if p.inventory != nil {
-		// The inventory needs stop and removal to stay correct across pod
-		// churn, and the pod-sandbox lifecycle to keep its sandbox set (the
-		// /sandbox and /digests routes) live.
+		// The inventory needs stop and removal to stay correct across pod churn.
 		mask.Set(api.Event_STOP_CONTAINER)
 		mask.Set(api.Event_REMOVE_CONTAINER)
-		mask.Set(api.Event_RUN_POD_SANDBOX)
-		mask.Set(api.Event_REMOVE_POD_SANDBOX)
-	}
-	if p.mesh.policy != nil {
-		mask.Set(api.Event_RUN_POD_SANDBOX)
-		mask.Set(api.Event_REMOVE_POD_SANDBOX)
-		mask.Set(api.Event_UPDATE_CONTAINER)
 	}
 	return mask, nil
 }

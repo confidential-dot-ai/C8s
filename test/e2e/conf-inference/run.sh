@@ -96,9 +96,8 @@ docs = [identity if d["kind"] == "ConfigMap" and d["metadata"]["name"] == "gatew
 yaml.safe_dump_all(docs, sys.stdout, sort_keys=False)
 EOF
 kubectl -n "$ns" apply -f deploy.yaml
-# Not `rollout status`: a first pull can outlast the deployments' 10-minute
-# progress deadline. The minute-by-minute listing is the timeline a failure
-# needs; exec is closed on the node image.
+# Not `rollout status`: the minute-by-minute listing is the timeline a
+# failure needs, and exec is closed on the node image.
 dump() {
   kubectl get namespace "$ns" -o jsonpath='{.status.phase} {.metadata.deletionTimestamp}{"\n"}' || true
   kubectl get nodes -o json | jq -r '.items[] | (.spec.taints // [] | .[] | "node taint \(.key):\(.effect) since \(.timeAdded)"),
@@ -109,10 +108,15 @@ dump() {
       "\(.metadata.name) deletion=\(.metadata.deletionTimestamp) phase=\(.status.phase) reason=\(.status.reason) \(.status.message)",
       ((.status.initContainerStatuses // []) + (.status.containerStatuses // []) | .[]
       | "  \(.name): ready=\(.ready) restarts=\(.restartCount) state=\(.state) last=\(.lastState.terminated // {} | tostring | .[0:600])")'
+    for c in $(kubectl -n "$ns" get "$p" -o jsonpath='{.spec.initContainers[*].name} {.spec.containers[*].name}'); do
+      echo "== logs $p/$c"
+      kubectl -n "$ns" logs "$p" -c "$c" --tail=40 2>&1 || true
+      kubectl -n "$ns" logs "$p" -c "$c" --previous --tail=20 2>/dev/null | sed 's/^/  previous: /' || true
+    done
   done
 }
 ready=""
-for _ in $(seq 1 30); do
+for _ in $(seq 1 8); do
   kubectl -n "$ns" get pods --no-headers -o wide | sed "s/^/$(date -u +%H:%M:%S) /"
   if kubectl -n "$ns" get pods -o json | jq -e '
       [.items[] | select(.metadata.deletionTimestamp == null)
@@ -124,7 +128,7 @@ for _ in $(seq 1 30); do
 done
 if [ -z "$ready" ]; then
   dump
-  fail "the gateway, router and worker did not all become ready in 30 minutes"
+  fail "the gateway, router and worker did not all become ready in 8 minutes"
 fi
 echo "ok: gateway (pepper, gwstate, claims socket), worker and router are ready"
 

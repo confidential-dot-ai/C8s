@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/confidential-dot-ai/c8s/internal/credvolume"
 )
 
 // A generation whose pointer names an incomplete publication is not read as a
@@ -19,7 +21,7 @@ func TestReadRefusesAnIncompletePublication(t *testing.T) {
 		t.Run(missing, func(t *testing.T) {
 			volume := testVolume(t)
 			publishSet(t, volume, ca.issue(t, leafSpec{}))
-			target, err := os.Readlink(volume.pointerPath())
+			target, err := os.Readlink(volume.PointerPath())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -31,7 +33,7 @@ func TestReadRefusesAnIncompletePublication(t *testing.T) {
 			if err := os.Remove(filepath.Join(volume.dir, target, names[missing])); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := volume.read(); err == nil {
+			if _, err := volume.Read(); err == nil {
 				t.Fatalf("a publication without its %s was read as a generation", missing)
 			}
 		})
@@ -46,7 +48,7 @@ func TestAdoptPublicationKeepsTheGenerationOnAnUnreadablePointer(t *testing.T) {
 	volume := testVolume(t)
 	publishSet(t, volume, ca.issue(t, leafSpec{}))
 	creds := &credentials{
-		volume: volume,
+		volume: volume.Volume,
 		logger: discardLogger(),
 	}
 	creds.reload(time.Now())
@@ -55,10 +57,10 @@ func TestAdoptPublicationKeepsTheGenerationOnAnUnreadablePointer(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := os.Remove(volume.pointerPath()); err != nil {
+	if err := os.Remove(volume.PointerPath()); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(volume.pointerPath(), []byte("generations/2\n"), 0o600); err != nil {
+	if err := os.WriteFile(volume.PointerPath(), []byte("generations/2\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	creds.reload(time.Now())
@@ -96,7 +98,7 @@ func TestWatchGenerationsReturnsOnACancelledContext(t *testing.T) {
 	volume := testVolume(t)
 	publishSet(t, volume, ca.issue(t, leafSpec{}))
 	creds := &credentials{
-		volume: volume,
+		volume: volume.Volume,
 		logger: discardLogger(),
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -124,20 +126,20 @@ func TestIncompletePublicationKeepsTheUsableGeneration(t *testing.T) {
 			volume := testVolume(t)
 			publishSet(t, volume, ca.issue(t, leafSpec{}))
 			creds := &credentials{
-				volume: volume,
+				volume: volume.Volume,
 				logger: discardLogger(),
 			}
 			creds.reload(time.Now())
 			adopted := creds.adopted.Load()
 			publishSet(t, volume, ca.issue(t, leafSpec{}))
-			target, err := os.Readlink(volume.pointerPath())
+			target, err := os.Readlink(volume.PointerPath())
 			if err != nil {
 				t.Fatal(err)
 			}
 			if err := os.Remove(filepath.Join(volume.dir, target, missing)); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := volume.read(); !errors.Is(err, os.ErrNotExist) || errors.Is(err, errMissingCredentialPointer) {
+			if _, err := volume.Read(); !errors.Is(err, os.ErrNotExist) || errors.Is(err, credvolume.ErrMissingPointer) {
 				t.Fatalf("missing generation file error = %v", err)
 			}
 			creds.reload(time.Now())

@@ -116,7 +116,7 @@ func TestCDSEndpointIsRequiredWhereClientsAreInjected(t *testing.T) {
 	}{
 		{
 			name:  "no node port",
-			cfg:   &config{WorkloadClaims: workloadClaimsConfig{SocketDir: nodeDir(t, "10.0.0.7")}},
+			cfg:   &config{WorkloadClaims: workloadClaimsConfig{SocketDir: nodeDir(t, "10.0.0.7")}, Mesh: meshRoles()},
 			wants: "cds_node_port",
 		},
 		{
@@ -124,7 +124,7 @@ func TestCDSEndpointIsRequiredWhereClientsAreInjected(t *testing.T) {
 			cfg: &config{WorkloadClaims: workloadClaimsConfig{
 				SocketDir:   t.TempDir(),
 				CDSNodePort: 30808,
-			}},
+			}, Mesh: meshRoles()},
 			wants: "this node's own address",
 		},
 		{
@@ -132,7 +132,7 @@ func TestCDSEndpointIsRequiredWhereClientsAreInjected(t *testing.T) {
 			cfg: &config{WorkloadClaims: workloadClaimsConfig{
 				SocketDir:   nodeDir(t, "node.cluster.local"),
 				CDSNodePort: 30808,
-			}},
+			}, Mesh: meshRoles()},
 			wants: "this node's own address",
 		},
 	} {
@@ -162,6 +162,7 @@ func TestRenderedDocumentsAreOutsideTheMountedSocketDirectory(t *testing.T) {
 			CDSNodePort: 30808,
 		},
 		Allowlist: allowlistConfig{Pull: pullConfig{CDSMeasurements: []string{testDigestA}}},
+		Mesh:      meshRoles(),
 	}
 	renderInTempDir(t)
 	p := &plugin{cfg: cfg}

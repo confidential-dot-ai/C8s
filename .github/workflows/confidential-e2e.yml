@@ -28,6 +28,8 @@ permissions:
   #   elif [ -z "$st" ] && [ "$age" -gt 10800 ]
   # which means a leaked CVM squats a finite bare-metal host for up to 3 hours.
   actions: read
+  # The tdx lane pulls the org-internal confidential-inference images.
+  packages: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.workflow_run.head_sha || github.sha }}

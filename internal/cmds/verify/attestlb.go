@@ -42,7 +42,7 @@ func gatherFromAttestLB(ctx context.Context, base, serverName string, timeout ti
 	var servingLeaf []byte
 	dialer := &tls.Dialer{
 		NetDialer: &net.Dialer{Timeout: timeout},
-		Config:    &tls.Config{InsecureSkipVerify: true, ServerName: serverName}, //nolint:gosec // the transcript binds the observed leaf
+		Config:    &tls.Config{MinVersion: tls.VersionTLS13, InsecureSkipVerify: true, ServerName: serverName}, //nolint:gosec // the transcript binds the observed leaf
 	}
 	client := &http.Client{Timeout: timeout, CheckRedirect: func(*http.Request, []*http.Request) error {
 		// The evidence must come from the connection it binds.

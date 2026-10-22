@@ -34,7 +34,7 @@ type config struct {
 	Policy         policyConfig         `yaml:"policy"`
 	Logging        loggingConfig        `yaml:"logging"`
 	WorkloadClaims workloadClaimsConfig `yaml:"workload_claims"`
-	// Mesh is the trusted mesh policy (roles.go); absent, no member pods.
+	// Mesh is the trusted mesh policy (roles.go); required.
 	Mesh *meshPolicy `yaml:"mesh"`
 }
 
@@ -467,14 +467,10 @@ func (c *config) Validate() error {
 	return validateLabelRules(c.Policy.LabelRules)
 }
 
-// validateMesh refuses a mesh policy this node cannot enforce. What the policy
-// must come with depends on the lane, decided once by meshLane.
+// validateMesh requires a mesh policy this node can enforce.
 func (c *config) validateMesh() error {
 	if c.Mesh == nil {
-		return nil
-	}
-	if !meshSupported {
-		return errors.New("mesh is only implemented on linux: the pod ruleset is nftables in a network namespace")
+		return errors.New("mesh is required: the enforcer verifies a pod's protection before any workload identity assertion")
 	}
 	if err := c.Mesh.validate(); err != nil {
 		return err
@@ -493,7 +489,7 @@ func (c *config) validateMesh() error {
 }
 
 func (c *config) validateMeshRoleBindings() error {
-	if c.Mesh == nil || c.Allowlist.Base == nil {
+	if c.Allowlist.Base == nil {
 		return nil
 	}
 	identities := c.Mesh.reservedIdentities()

@@ -9,6 +9,8 @@
   c8s-sglang-router Service. The chart hardcodes the sglang-router ClusterIP
   Service, whose VIP armtls-mesh does not intercept, so the cw guard drops
   the connection (C8s#933).
+- No probe timeout exceeds the mesh's forwarded-probe budget (5 s), which
+  the webhook enforces; the chart gives the worker's startup probe 10 s.
 
 run.sh applies this output and allowlist.py derives the entries from it, so
 both see the same pods.
@@ -25,11 +27,16 @@ import sys
 import yaml
 
 ROUTER_URL = "http://c8s-sglang-router.confidential-inference.svc.cluster.local:30000"
+PROBE_TIMEOUT_SECONDS = 5  # workloadclaims.MeshProbeTimeout
 
 
 def patch(docs: list[dict], image: str) -> list[dict]:
     for doc in docs:
         kind, name = doc.get("kind"), doc["metadata"]["name"]
+        for container in doc.get("spec", {}).get("template", {}).get("spec", {}).get("containers", []):
+            for probe in ("startupProbe", "readinessProbe", "livenessProbe"):
+                if probe in container:
+                    container[probe]["timeoutSeconds"] = min(container[probe].get("timeoutSeconds", 1), PROBE_TIMEOUT_SECONDS)
         if kind == "Deployment" and name == "gateway":
             container = next(c for c in doc["spec"]["template"]["spec"]["containers"] if c["name"] == "gateway")
             next(e for e in container["env"] if e["name"] == "GATEWAY_INFERENCE_URL")["value"] = ROUTER_URL

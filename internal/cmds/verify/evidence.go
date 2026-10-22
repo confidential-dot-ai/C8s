@@ -100,11 +100,6 @@ type evidence struct {
 	// an attest-lb transcript was verified against, the form the receipt's
 	// serving_leaf_sha256 carries ("" for other gathers).
 	servingLeafSHA256 string
-	// leafKeyProven is true when a live TLS handshake with the leaf completed,
-	// which proves the presenter holds the attested private key. A forged body
-	// carrying someone else's attested SubjectPublicKeyInfo cannot complete
-	// one, so on that path possession — not the body check — is the backstop.
-	leafKeyProven bool
 	// sandboxID is the CRI pod sandbox the leaf names (cert modes only; ""
 	// when the cert carries no sandbox-ID extension). CDS stamps it into the
 	// signed area, so unlike the rest of this struct it is vouched by the mesh
@@ -160,18 +155,11 @@ type attestationResponse struct {
 
 // leafTrust is what a caller can offer to authenticate a leaf body that is
 // only CA-vouched. A self-issued leaf authenticates its own body under the
-// attested key and needs neither of these.
+// attested key and needs none of this.
 type leafTrust struct {
-	// keyProven is set by evidence sources that completed a TLS handshake
-	// with the leaf: the peer demonstrably holds the private half of the
-	// attested SubjectPublicKeyInfo, so it could not be replaying a body some
-	// third party re-minted around a genuine attestation extension.
-	keyProven bool
 	// meshCA is the operator's --mesh-ca anchor (nil when unset). It is the
-	// only thing that can authenticate a CA-vouched body on a source with no
-	// proof of possession — a saved file, or a discovery document whose gather
-	// made no usable handshake observation (non-TLS target, or a leaf the
-	// document does not attest).
+	// only thing that authenticates a CA-vouched body: nothing else the
+	// gather observes signs for the body's own bytes.
 	meshCA *x509.CertPool
 }
 
@@ -183,7 +171,7 @@ func gatherFromARMTLSCert(ctx context.Context, addr, serverName string, timeout 
 		NetDialer: &net.Dialer{Timeout: timeout},
 		// INVARIANT: PKI verification is intentionally skipped — the armTLS
 		// attestation in the cert extension is the trust anchor, verified below.
-		Config: &tls.Config{InsecureSkipVerify: true, ServerName: serverName}, //nolint:gosec
+		Config: &tls.Config{MinVersion: tls.VersionTLS13, InsecureSkipVerify: true, ServerName: serverName}, //nolint:gosec
 	}
 	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
@@ -196,10 +184,6 @@ func gatherFromARMTLSCert(ctx context.Context, addr, serverName string, timeout 
 	if len(certs) == 0 {
 		return nil, &connectError{err: fmt.Errorf("%s presented no certificate", addr)}
 	}
-	// The handshake above completed against this leaf, so the peer holds the
-	// attested key: that is the proof of possession this path relies on, not
-	// the certificate body's own bytes.
-	trust.keyProven = true
 	return evidenceFromCert(certs[0], fmt.Sprintf("armTLS serving certificate at %s", addr), trust)
 }
 
@@ -227,24 +211,23 @@ func authenticateLeafBody(cert *x509.Certificate) (certutil.BodyAuthentication, 
 // can re-mint its certificate around the same attested SubjectPublicKeyInfo
 // (same REPORTDATA, so the hardware evidence still verifies) with an Issuer DN
 // one byte off the Subject, a junk Signature, NotAfter decades out, and any
-// sandbox-ID / matched-workload stamp it likes. Only a verified chain or live
-// proof of possession closes that; without one this is a securityError, so
-// auto-mode never falls through past it and the verdict is a failure rather
-// than an "evidence unavailable".
+// sandbox-ID / matched-workload stamp it likes. Only a verified chain closes
+// that; without one this is a securityError, so auto-mode never falls through
+// past it and the verdict is a failure rather than an "evidence unavailable".
 //
 // Returns whether the chain was verified here, which is what tells the verdict
 // a CA anchor stands behind the leaf.
 func authorizeLeafBody(cert *x509.Certificate, body certutil.BodyAuthentication, trust leafTrust) (chainVerified bool, err error) {
-	if body == certutil.BodySelfSigned || trust.keyProven {
+	if body == certutil.BodySelfSigned {
 		return false, nil
 	}
 	if trust.meshCA == nil {
 		return false, &securityError{err: fmt.Errorf(
-			"leaf certificate body is unauthenticated: the certificate is CA-issued (issuer != subject) and this evidence source proves neither the issuing chain nor possession of the attested key, so its validity window, subject and CA-vouched stamps are chosen by whoever produced the bytes — pass --mesh-ca to check the chain")}
+			"leaf certificate body is unauthenticated: the certificate is CA-issued (issuer != subject) and nothing here verified its issuing chain, so its validity window, subject and CA-vouched stamps are chosen by whoever produced the bytes — pass --mesh-ca to check the chain")}
 	}
 	if _, err := cert.Verify(x509.VerifyOptions{
 		Roots:     trust.meshCA,
-		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
+		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}); err != nil {
 		return false, &securityError{err: fmt.Errorf("leaf does not chain to the --mesh-ca bundle: %w", err)}
 	}
@@ -271,6 +254,9 @@ func evidenceFromCert(cert *x509.Certificate, source string, trust leafTrust) (*
 	if err != nil {
 		return nil, err
 	}
+	if err := localverify.CheckServingLeaf(cert); err != nil {
+		return nil, &securityError{err: fmt.Errorf("serving %w", err)}
+	}
 	binding := "REPORTDATA binds the certificate public key (no per-request nonce — replayable within the authenticated certificate validity window, which is the only freshness bound on this path)"
 	sandboxID, sandboxErr := armtls.SandboxIDFromCert(cert)
 	workload, workloadErr := armtls.MatchedWorkloadFromCert(cert)
@@ -287,7 +273,6 @@ func evidenceFromCert(cert *x509.Certificate, source string, trust leafTrust) (*
 		leaf:              cert,
 		leafBody:          body,
 		leafChainVerified: chainVerified,
-		leafKeyProven:     trust.keyProven,
 		frontDoor:         frontDoorNone,
 		sandboxID:         sandboxID,
 		sandboxErr:        sandboxErr,
@@ -300,7 +285,7 @@ func evidenceFromCert(cert *x509.Certificate, source string, trust leafTrust) (*
 // attestation in the payload, not PKI on the hop.
 func insecureClient(serverName string, timeout time.Duration) *http.Client {
 	return &http.Client{Timeout: timeout, Transport: &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true, ServerName: serverName}, //nolint:gosec
+		TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS13, InsecureSkipVerify: true, ServerName: serverName}, //nolint:gosec
 	}}
 }
 
