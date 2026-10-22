@@ -245,6 +245,7 @@ func TestNewBundleRefusesBadInputsAndLeavesNothingBehind(t *testing.T) {
 		{"bad agent name", []string{"--image-manifest", tdx, "--server-address", "10.0.0.10", "--agent", "server"}, "reserved"},
 		{"loopback server", []string{"--image-manifest", tdx, "--server-address", "127.0.0.1"}, "server.address"},
 		{"not a manifest", []string{"--image-manifest", filepath.Join(base, "missing.json")}, "--image-manifest"},
+		{"dns mirror", []string{"--image-manifest", tdx, "--registry-mirror", "ghcr.io=http://cache.example"}, "registryMirrors"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -333,4 +334,23 @@ func TestNewBundleCarriesARouterBodyLimitAlone(t *testing.T) {
 		t.Fatal("body limit missing from the signed document")
 	}
 	stageBundleNode(t, dir, serverDir)
+}
+
+func TestNewBundleCarriesRegistryMirrorsToEveryNode(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "bundle")
+	err := runBundleCmd(t, "new", "--out", dir, "--cluster-id", "demo", "--image-manifest", writeManifest(t, "tdx"),
+		"--server-address", "10.0.0.10", "--agent", "demo-agent-1", "--registry-mirror", "ghcr.io=http://10.43.0.5:5000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runBundleCmd(t, "add-agent", "--bundle", dir, "--name", "late"); err != nil {
+		t.Fatal(err)
+	}
+	for _, node := range []string{serverDir, "demo-agent-1", "late"} {
+		doc, _ := readBundleDocument(t, dir, node)
+		if doc.RegistryMirrors["ghcr.io"] != "http://10.43.0.5:5000" {
+			t.Fatalf("%s lost the registry mirror: %+v", node, doc.RegistryMirrors)
+		}
+		stageBundleNode(t, dir, node)
+	}
 }

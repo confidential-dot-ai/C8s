@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -62,6 +63,20 @@ func TestValidateRejectsEachMalformedField(t *testing.T) {
 		{"tls san label", Server, func(d *Document) { d.TLSSAN = "C8S.Local" }, "lowercase DNS hostname"},
 		{"workloads json", Server, func(d *Document) { d.Workloads = "{" }, "valid JSON"},
 		{"workloads schema", Server, func(d *Document) { d.Workloads = `{"schema":"other/v1","workloads":{}}` }, "workloads:"},
+		{"mirror https", Server, func(d *Document) { d.RegistryMirrors = map[string]string{"ghcr.io": "https://10.43.0.5"} }, "http://host"},
+		{"mirror path", Agent, func(d *Document) { d.RegistryMirrors = map[string]string{"ghcr.io": "http://10.43.0.5:5000/v2"} }, "http://host"},
+		{"mirror userinfo", Server, func(d *Document) { d.RegistryMirrors = map[string]string{"ghcr.io": "http://u:p@10.43.0.5"} }, "http://host"},
+		{"mirror dns host", Server, func(d *Document) { d.RegistryMirrors = map[string]string{"ghcr.io": "http://cache.example:5000"} }, "endpoint host"},
+		{"mirror loopback", Server, func(d *Document) { d.RegistryMirrors = map[string]string{"ghcr.io": "http://127.0.0.1:5000"} }, "endpoint host"},
+		{"mirror port", Server, func(d *Document) { d.RegistryMirrors = map[string]string{"ghcr.io": "http://10.43.0.5:70000"} }, "endpoint port"},
+		{"mirror registry case", Server, func(d *Document) { d.RegistryMirrors = map[string]string{"GHCR.io": "http://10.43.0.5"} }, "lowercase DNS hostname"},
+		{"mirror registry port", Server, func(d *Document) { d.RegistryMirrors = map[string]string{"ghcr.io:x": "http://10.43.0.5"} }, "optional port"},
+		{"too many mirrors", Server, func(d *Document) {
+			d.RegistryMirrors = map[string]string{}
+			for i := 0; i <= maxMirrors; i++ {
+				d.RegistryMirrors[fmt.Sprintf("r%d.example", i)] = "http://10.43.0.5"
+			}
+		}, "more than"},
 		{"router on agent", Agent, func(d *Document) { d.Router = &Router{Hostnames: []string{"a.example.com"}} }, "router is server-only"},
 		{"empty router on agent", Agent, func(d *Document) { d.Router = &Router{} }, "router is server-only"},
 		{"router hostname ip", Server, func(d *Document) { d.Router = &Router{Hostnames: []string{"10.0.0.1"}} }, "router.hostnames"},

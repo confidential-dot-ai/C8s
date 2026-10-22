@@ -116,8 +116,13 @@ initrd extends TDX RTMR[3], while an SNP launcher must set HOST_DATA to
 The strict `c8s-launch/v1` document selects the role, cluster identity, node
 addresses, RKE2 join credentials, trusted role keys, image pins and TLS SAN.
 It accepts an optional `workloads` string containing a complete
-`c8s.allowlist/v1` JSON document. It does not accept Helm values, arbitrary
-service arguments or component toggles. The measured image runs volumed as a
+`c8s.allowlist/v1` JSON document, and an optional `registryMirrors` map from
+a registry host to one `http://<IPv4>[:port]` endpoint, at most 8 (for
+example `ghcr.io: http://10.43.0.5:5000`). Staging writes the map as
+`/etc/rancher/rke2/registries.yaml`, so containerd pulls through the mirror
+first and from the registry itself as the last resort. Image references stay
+digest-pinned, so a mirror cannot change what a node runs. It does not accept
+Helm values, arbitrary service arguments or component toggles. The measured image runs volumed as a
 host service, so encrypted volumes ([docs/volumes.md](volumes.md)) open on
 every node without an install. Its router always publishes the applied route
 manifest ([Route manifest](#route-manifest)).
@@ -135,7 +140,9 @@ launch key, an agent launch key, fresh join tokens, a signed `launch.yaml`
 per node and the client policy that pins the server. Give it the trusted
 `manifest.json` published with the exact node image, the server's guest IPv4
 address that every node can reach, and the agent names. On SNP, also pass
-the VM's vCPU count, which selects the launch digest.
+the VM's vCPU count, which selects the launch digest. `--registry-mirror
+ghcr.io=http://10.43.0.5:5000` (repeatable) sets `registryMirrors`; agents
+inherit it from the server document.
 
 ```sh
 c8s node launch-config new --out demo --cluster-id demo \
