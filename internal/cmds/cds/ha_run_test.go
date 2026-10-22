@@ -153,12 +153,13 @@ func TestRunHAReplicasServeOneState(t *testing.T) {
 	if code, _, body := do(t, http.MethodPut, bases[0]+"/allowlist", tok, doc); code != http.StatusNoContent {
 		t.Fatalf("PUT /allowlist at replica 0: %d %s", code, body)
 	}
+	// Followers serve reads from their own applied state, so they may lag
+	// the write briefly (bounded staleness), then serve the same document.
 	_, h0, _ := do(t, http.MethodGet, bases[0]+"/allowlist", "", nil)
 	for _, b := range bases[1:] {
-		code, h, body := do(t, http.MethodGet, b+"/allowlist", "", nil)
-		if code != http.StatusOK || h.Get("ETag") != h0.Get("ETag") || !strings.Contains(string(body), digestA) {
-			t.Fatalf("%s serves another allowlist: %d etag %q vs %q", b, code, h.Get("ETag"), h0.Get("ETag"))
-		}
+		waitServed(t, b, func(code int, h http.Header, body []byte) bool {
+			return code == http.StatusOK && h.Get("ETag") == h0.Get("ETag") && strings.Contains(string(body), digestA)
+		}, "/allowlist", "the allowlist written at replica 0")
 	}
 	// The same token replayed at another replica is refused.
 	if code, _, _ := do(t, http.MethodPut, bases[2]+"/allowlist", tok, doc); code < 400 {
@@ -169,14 +170,34 @@ func TestRunHAReplicasServeOneState(t *testing.T) {
 	if code, _, body := do(t, http.MethodPut, bases[1]+"/allowlist/workloads/api", opToken(t, opKey, http.MethodPut, "/allowlist/workloads/api", entry), entry); code != http.StatusNoContent {
 		t.Fatalf("PUT workload at replica 1: %d %s", code, body)
 	}
-	if _, _, body := do(t, http.MethodGet, bases[0]+"/allowlist", "", nil); !strings.Contains(string(body), "2222222222") {
-		t.Fatal("replica 0 does not serve the entry written at replica 1")
-	}
+	waitServed(t, bases[0], func(_ int, _ http.Header, body []byte) bool { return strings.Contains(string(body), "2222222222") },
+		"/allowlist", "the entry written at replica 1")
 	// Every replica serves the same history, signature included.
+	for _, b := range bases {
+		waitServed(t, b, func(_ int, _ http.Header, body []byte) bool { return strings.Contains(string(body), "2222222222") },
+			"/allowlist", "the entry written at replica 1")
+	}
 	_, _, hist0 := do(t, http.MethodGet, bases[0]+"/allowlist/history", "", nil)
 	for _, b := range bases[1:] {
 		if _, _, h := do(t, http.MethodGet, b+"/allowlist/history", "", nil); !bytes.Equal(h, hist0) {
 			t.Fatalf("%s serves another history:\n%s\nvs\n%s", b, h, hist0)
 		}
+	}
+}
+
+// waitServed polls base+path until ok holds, failing after a few seconds: a
+// follower serves a committed write once it has applied it.
+func waitServed(t *testing.T, base string, ok func(int, http.Header, []byte) bool, path, what string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		code, h, body := do(t, http.MethodGet, base+path, "", nil)
+		if ok(code, h, body) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s does not serve %s: %d etag %q", base, what, code, h.Get("ETag"))
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
