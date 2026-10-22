@@ -561,6 +561,24 @@ A container is denied when it holds any of:
 - the marks of a privileged container: no cgroup namespace, or a writable
   `sysfs`/`cgroupfs` mount.
 
+GPU containers are the one exception. containerd applies the edits of the CDI
+devices a container requests (the CRI `CDIDevices` field or a `cdi.k8s.io/`
+annotation) before NRI sees the spec, so they arrive as plain device nodes,
+hooks and bind mounts. For devices of the kinds `k8s.device-plugin.nvidia.com/gpu`
+(the NVIDIA device plugin's own spec) and `nvidia.com/gpu` (the node's
+`nvidia-ctk cdi generate` spec), the plugin re-expands the requested devices
+from the spec files in `/etc/cdi` and `/var/run/cdi`. It then sets aside exactly
+the device nodes, the hooks (same stage, path, args and env) and the bind mounts
+(same source and destination, read-only where the spec says so) that the
+expansion produces. Everything else is still a violation: another device node or
+hook, a device of another kind, and a device that no spec defines or that two
+specs define. Only node code writes those directories: the image's
+`nvidia-cdi-generate.service` and the device plugin. A spec that changed between
+containerd's read and the plugin's read makes the edits differ, and the
+container is refused. A pod annotation chooses which GPU devices a container
+gets, but the container still needs an allowlist entry, and CDI bind mounts
+still have to match that entry's mount policy.
+
 A missing pod or container spec reads as every violation at once: unobservable
 is denied, not assumed safe. Denials log the whole observation node-locally, so
 a reviewer can write the missing rule from the record; the message the kubelet
