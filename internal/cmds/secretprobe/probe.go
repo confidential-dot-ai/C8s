@@ -36,8 +36,7 @@ type probe struct {
 type clientFunc func(sidecar.Config, armtls.Pins) (*http.Client, crypto.PublicKey, error)
 
 // newProbe verifies CDS as the pod's sidecars do, through armTLS against the
-// pins it was given. The pins are loaded without the sidecars' unpinned
-// warning: the steps read the probe's output and stderr as one stream.
+// pins it was given.
 func newProbe(o options) (*probe, error) {
 	cfg := sidecar.Config{
 		CDSURL:                 o.cdsURL,

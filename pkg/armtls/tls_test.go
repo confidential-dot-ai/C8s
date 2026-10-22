@@ -113,7 +113,7 @@ func TestNewServerTLSConfigCaching(t *testing.T) {
 
 func TestNewServerTLSConfigWithClientPolicy(t *testing.T) {
 	cfg := testServerConfig()
-	cfg.ClientPolicy = &VerifyPolicy{}
+	cfg.ClientPolicy = pinnedPolicy("http://unused.invalid")
 
 	tlsCfg, _, err := NewServerTLSConfig(cfg)
 	if err != nil {
@@ -193,7 +193,7 @@ func TestNewServerTLSConfigWithClientCA(t *testing.T) {
 }
 
 func TestNewClientTLSConfig(t *testing.T) {
-	tlsCfg, _, err := NewClientTLSConfig(&ClientConfig{Policy: &VerifyPolicy{}})
+	tlsCfg, _, err := NewClientTLSConfig(&ClientConfig{Policy: pinnedPolicy("http://unused.invalid")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,7 +214,7 @@ func TestNewClientTLSConfig(t *testing.T) {
 
 func TestNewClientTLSConfigWithAttestation(t *testing.T) {
 	tlsCfg, _, err := NewClientTLSConfig(&ClientConfig{
-		Policy:     &VerifyPolicy{AttestationApiURL: "http://unused.invalid"},
+		Policy:     pinnedPolicy("http://unused.invalid"),
 		Platform:   "sev-snp",
 		AttestFunc: fakeAttestFunc,
 		CertTTL:    1 * time.Hour,
@@ -419,7 +419,7 @@ func TestTDXPlatformAcceptedAtConfigTime(t *testing.T) {
 		t.Errorf("expected TDX server config to build, got: %v", err)
 	}
 	if _, _, err := NewClientTLSConfig(&ClientConfig{
-		Policy:     &VerifyPolicy{AttestationApiURL: "http://unused.invalid"},
+		Policy:     pinnedPolicy("http://unused.invalid"),
 		Platform:   "tdx",
 		AttestFunc: fakeAttestFunc,
 	}); err != nil {
@@ -523,9 +523,8 @@ func TestCertRotationTiming(t *testing.T) {
 			t.Fatal(err)
 		}
 		if cert2 != cert1 {
-			verifier := mockapi.New(t)
-			verifier.SetVerdict(mockapi.PassingVerdict(hex.EncodeToString(make([]byte, SNPMeasurementSize))))
-			if _, err := VerifyCert(cert2.Leaf, &VerifyPolicy{AttestationApiURL: verifier.URL()}, nil); err != nil {
+			verifier := pinnedStub(t)
+			if _, err := VerifyCert(cert2.Leaf, pinnedPolicy(verifier.URL()), nil); err != nil {
 				t.Fatalf("renewed certificate failed attestation verification: %v", err)
 			}
 			if len(verifier.VerifyRequests()) != 1 {
@@ -1059,7 +1058,7 @@ func TestSwapProviderRotateAtHalvesDefaultTTL(t *testing.T) {
 func TestChainSignedPeerIsRefusedOnTheServerEvidencePath(t *testing.T) {
 	caKey, caCert := generateCACert(t)
 	cfg := testServerConfig()
-	cfg.ClientPolicy = &VerifyPolicy{AttestationApiURL: "http://unused.invalid"}
+	cfg.ClientPolicy = pinnedPolicy("http://unused.invalid")
 	server, _, err := NewServerTLSConfig(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -1072,7 +1071,7 @@ func TestChainSignedPeerIsRefusedOnTheServerEvidencePath(t *testing.T) {
 func TestChainSignedPeerIsRefusedOnTheClientEvidencePath(t *testing.T) {
 	caKey, caCert := generateCACert(t)
 	client, _, err := NewClientTLSConfig(&ClientConfig{
-		Policy: &VerifyPolicy{AttestationApiURL: "http://unused.invalid"},
+		Policy: pinnedPolicy("http://unused.invalid"),
 		CertProvider: &mockProvider{
 			cert: generateSimpleCert(t),
 			ttl:  time.Hour,
@@ -1109,7 +1108,7 @@ func TestEvidencePathRequiresTheRolePurpose(t *testing.T) {
 		"client": x509.ExtKeyUsageClientAuth,
 	} {
 		t.Run(name, func(t *testing.T) {
-			cb := verifyPeerCallback(&VerifyPolicy{AttestationApiURL: stub.URL()}, purpose)
+			cb := verifyPeerCallback(pinnedPolicy(stub.URL()), purpose)
 			if err := cb([][]byte{attested}, nil); err == nil {
 				t.Fatal("a leaf permitting no purpose was accepted")
 			}
@@ -1178,11 +1177,12 @@ func TestVerifyPeerCallback(t *testing.T) {
 }
 
 func TestNewVerifyingHTTPClient(t *testing.T) {
-	if _, err := NewVerifyingHTTPClient(Pins{}, ""); err == nil {
+	pins := Pins{Measurements: [][]byte{testMeasurement}}
+	if _, err := NewVerifyingHTTPClient(pins, ""); err == nil {
 		t.Fatal("expected error for empty attestation-api URL")
 	}
 
-	client, err := NewVerifyingHTTPClient(Pins{}, "http://127.0.0.1:8400")
+	client, err := NewVerifyingHTTPClient(pins, "http://127.0.0.1:8400")
 	if err != nil {
 		t.Fatal(err)
 	}

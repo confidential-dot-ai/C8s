@@ -12,7 +12,7 @@ write a route manifest for it instead (see [Route manifest](operator.md#route-ma
 
 ```sh
 c8s install --namespace c8s-system --cvm-mode=bare-metal --hardware-platform=sev-snp \
-  --operator-keys operator-pub.pem -f - <<'EOF'
+  --operator-keys operator-pub.pem --measurements abababababababababababababababababababababababababababababababababababababababababababababababab -f - <<'EOF'
 router:
   enabled: false
 EOF
@@ -23,6 +23,8 @@ EOF
 or `tdx`). `--operator-keys` points at a PEM bundle
 of EC public keys authorizing `c8s allowlist` writes (or pass `--force` to
 install with writes disabled; the router then routes nothing).
+`--measurements` pins CDS and is required; the digest above is a placeholder for
+the launch measurement in your node image's `manifest.json`.
 
 ## 2. Apply optional CRD object
 

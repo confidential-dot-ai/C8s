@@ -50,7 +50,7 @@ func issueWithInventory(t *testing.T, store policyStore, digests []string, conta
 
 func leafFromInventory(t *testing.T, store policyStore, digests []string, containers []workloadclaims.SandboxContainer, tune func(*AttestHandler)) *x509.Certificate {
 	t.Helper()
-	stub := newStubAttestationApi(t, "deadbeef")
+	stub := newStubAttestationApi(t, testLaunchDigest)
 	h, signer := newSandboxTestEnv(t, stub.URL())
 	h.AllowlistStore = store
 	h.SandboxDigests = fakeDigests{

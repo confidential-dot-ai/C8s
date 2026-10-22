@@ -34,7 +34,7 @@ import (
 //
 // THREAT MODEL: the measurement check is the only thing standing between an
 // attacker who controls a TEE workload and a CA-signed leaf for any subject
-// they choose. Empty Measurements skips this check (UNSAFE outside dev).
+// they choose. Empty Measurements admits no flat-pinned caller.
 type AttestHandler struct {
 	Challenges        *attestation.ChallengeStore
 	AttestationClient remote.Client
@@ -47,7 +47,7 @@ type AttestHandler struct {
 	RequestTimeout time.Duration
 
 	// Measurements is the flat set of SHA-384 launch digests permitted
-	// to obtain a signed leaf. Empty = no measurement pinning.
+	// to obtain a signed leaf when Images is empty.
 	Measurements map[string]bool
 
 	// RTMRs pins TDX runtime measurement registers on issuance: on TDX the
@@ -200,9 +200,6 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Read outside the pinning branch: with h.Measurements empty every
-	// measurement is admitted, so the digest a leaf was issued against is the
-	// only record of what actually attested.
 	launchDigest := strings.ToLower(verifyResp.Result.Claims.LaunchDigest)
 	if len(h.Images) > 0 {
 		if err := armtls.EnforceImages(verifyResp, h.Images, req.Evidence.Platform, req.RuntimeExtensions); err != nil {
@@ -211,12 +208,10 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		if len(h.Measurements) > 0 {
-			if !h.Measurements[launchDigest] {
-				slog.Warn("measurement does not match any reference value", "launch_digest", launchDigest, "remote_addr", r.RemoteAddr)
-				attestation.WriteError(w, http.StatusForbidden, types.ErrorCodeMeasurementDenied, "launch measurement not allowed")
-				return
-			}
+		if !h.Measurements[launchDigest] {
+			slog.Warn("measurement does not match any reference value", "launch_digest", launchDigest, "remote_addr", r.RemoteAddr)
+			attestation.WriteError(w, http.StatusForbidden, types.ErrorCodeMeasurementDenied, "launch measurement not allowed")
+			return
 		}
 		if req.Evidence.Platform.HasRegisters() {
 			if err := remote.EnforceRTMRs(verifyResp, h.RTMRs); err != nil {

@@ -51,6 +51,7 @@ func TestCDSHTTPClientRejectsPlainHTTP(t *testing.T) {
 func TestCDSHTTPClientUsesARMTLSForHTTPS(t *testing.T) {
 	client, err := cdsHTTPClient(config{
 		CDSURL:            "https://cds:8443",
+		CDSMeasurements:   testCDSMeasurement,
 		AttestationApiURL: "http://attestation-api:8400",
 	})
 	if err != nil {
@@ -1110,6 +1111,7 @@ func TestRunFailsFastWithoutClaimsSocketDir(t *testing.T) {
 	dir := ramBackedDir(t)
 	err := run(config{
 		CDSURL:            "https://cds:8443",
+		CDSMeasurements:   testCDSMeasurement,
 		AttestationApiURL: "http://attestation-api:8400",
 		SAN:               "host.example.com",
 		CertPath:          filepath.Join(dir, "tls.crt"),
@@ -1376,6 +1378,7 @@ func TestRunWithdrawsWhenResumingFails(t *testing.T) {
 	v, _, _ := publishedVolume(t, newTestCA(t))
 	cfg := config{
 		CDSURL:                "https://cds:8443",
+		CDSMeasurements:       testCDSMeasurement,
 		AttestationApiURL:     "http://attestation-api:8400",
 		SAN:                   "host.example.com",
 		WorkloadClaimsTimeout: time.Second,

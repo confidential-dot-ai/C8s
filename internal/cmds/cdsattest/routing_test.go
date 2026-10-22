@@ -12,6 +12,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -571,25 +572,20 @@ func TestW6OperatorKeySource(t *testing.T) {
 	tests := []struct {
 		name    string
 		cfg     routingConfig
-		pinned  bool
 		want    routing.KeySource
 		wantErr bool
 	}{
-		{"W6 launch configuration", routingConfig{launchKeysFile: present}, true, routing.KeyFile(present), false},
-		{"W6 launch configuration over a configured file", routingConfig{launchKeysFile: present, operatorKeysFile: other}, true, routing.KeyFile(present), false},
-		{"W6 configured file", routingConfig{launchKeysFile: missing, operatorKeysFile: other}, true, routing.KeyFile(other), false},
-		{"W6 configured file absent", routingConfig{launchKeysFile: missing, operatorKeysFile: missing}, true, nil, true},
-		{"W6 CDS", routingConfig{launchKeysFile: missing}, true, cds, false},
-		{"unpinned CDS with launch keys", routingConfig{launchKeysFile: present}, false, routing.KeyFile(present), false},
-		{"unpinned CDS with a configured file", routingConfig{launchKeysFile: missing, operatorKeysFile: other}, false, routing.KeyFile(other), false},
-		{"W6 launch configuration without keys", routingConfig{launchKeysFile: empty}, true, nil, true},
-		{"W6 configured file without keys", routingConfig{launchKeysFile: missing, operatorKeysFile: empty}, true, nil, true},
-		{"unpinned CDS supplying keys", routingConfig{launchKeysFile: missing}, false, nil, true},
-		{"unpinned CDS supplying keys, dev opt-in", routingConfig{launchKeysFile: missing, allowUnpinnedCDS: true}, false, cds, false},
+		{"W6 launch configuration", routingConfig{launchKeysFile: present}, routing.KeyFile(present), false},
+		{"W6 launch configuration over a configured file", routingConfig{launchKeysFile: present, operatorKeysFile: other}, routing.KeyFile(present), false},
+		{"W6 configured file", routingConfig{launchKeysFile: missing, operatorKeysFile: other}, routing.KeyFile(other), false},
+		{"W6 configured file absent", routingConfig{launchKeysFile: missing, operatorKeysFile: missing}, nil, true},
+		{"W6 CDS", routingConfig{launchKeysFile: missing}, cds, false},
+		{"W6 launch configuration without keys", routingConfig{launchKeysFile: empty}, nil, true},
+		{"W6 configured file without keys", routingConfig{launchKeysFile: missing, operatorKeysFile: empty}, nil, true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := operatorKeySource(tc.cfg, tc.pinned, cds, logger)
+			got, err := operatorKeySource(tc.cfg, cds, logger)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("operatorKeySource() error = %v, want error %v", err, tc.wantErr)
 			}
@@ -597,6 +593,17 @@ func TestW6OperatorKeySource(t *testing.T) {
 				t.Fatalf("operatorKeySource() = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// A router whose launch configuration carries no operator keys takes both the
+// manifest and its keys from the CDS it polls, so the client is built only for
+// a pinned one.
+func TestRoutingRefusesAnUnpinnedCDS(t *testing.T) {
+	cfg := routedRunConfig(t, freePort(t))
+	cfg.routing.cdsMeasurements = nil
+	if _, err := newRoutingEngine(cfg, slog.New(slog.DiscardHandler)); !errors.Is(err, armtls.ErrUnpinned) {
+		t.Fatalf("newRoutingEngine() = %v, want errors.Is armtls.ErrUnpinned", err)
 	}
 }
 
@@ -609,7 +616,6 @@ func TestRoutingFlagDefaults(t *testing.T) {
 		{"backend-timeout", "1h0m0s"},
 		{"attest-endpoints", "true"},
 		{"operator-keys-file", ""},
-		{"allow-unpinned-cds", "false"},
 	} {
 		f := flags.Lookup(tc.flag)
 		if f == nil {

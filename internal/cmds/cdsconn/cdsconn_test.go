@@ -58,8 +58,9 @@ func TestHTTPClientRefusesPlaintextWithoutInsecure(t *testing.T) {
 // client rather than an error.
 func TestHTTPClientFallsBackToARMTLS(t *testing.T) {
 	o := Options{
-		URL:     "https://" + closedAddr(t),
-		Timeout: time.Second,
+		URL:          "https://" + closedAddr(t),
+		Measurements: []string{strings.Repeat("ab", 48)},
+		Timeout:      time.Second,
 		Verifier: testutil.VerifierStub(func(context.Context, string, json.RawMessage, localverify.Params) (*teetypes.VerificationResult, error) {
 			return nil, nil
 		}),
@@ -70,6 +71,15 @@ func TestHTTPClientFallsBackToARMTLS(t *testing.T) {
 	}
 	if hc.Timeout != time.Second {
 		t.Fatalf("Timeout = %s, want the --timeout value", hc.Timeout)
+	}
+}
+
+// armTLS proves the peer is a TEE, not that it is the CDS this operator meant,
+// so an https endpoint with no pin is refused before any request.
+func TestHTTPClientRefusesAnUnpinnedEndpoint(t *testing.T) {
+	o := Options{URL: "https://" + closedAddr(t), Timeout: time.Second}
+	if _, err := o.HTTPClient(context.Background()); err == nil || !strings.Contains(err.Error(), "unpinned endpoint") {
+		t.Fatalf("err = %v, want the unpinned-endpoint refusal", err)
 	}
 }
 
@@ -233,10 +243,9 @@ func TestBindFlagsNamesEveryOption(t *testing.T) {
 }
 
 // An https CDS with no --measurements is attested but not identified: armTLS
-// proves the peer is a TEE, not that it is the CDS this operator meant. Reads
-// only warn, but a signed token hands `c8s secrets put`'s secret and
-// `c8s allowlist`'s policy change to whatever answered, so minting one is
-// refused outright.
+// proves the peer is a TEE, not that it is the CDS this operator meant, so
+// minting a token names the flag that pins it rather than the transport
+// refusal a request would hit.
 func TestSignerRefusesAnUnpinnedEndpoint(t *testing.T) {
 	key := writeTestKey(t)
 
@@ -286,6 +295,7 @@ func TestCheckEndpointRefusesWithoutNetwork(t *testing.T) {
 		"unknown scheme":             {URL: "ftp://cds.example"},
 		"no host":                    {URL: "https://"},
 		"bad measurement":            {URL: "https://" + closedAddr(t), Measurements: []string{"nothex"}},
+		"unpinned https":             {URL: "https://" + closedAddr(t)},
 	} {
 		if err := o.CheckEndpoint(); err == nil {
 			t.Errorf("%s: accepted", name)
@@ -293,7 +303,7 @@ func TestCheckEndpointRefusesWithoutNetwork(t *testing.T) {
 	}
 	for name, o := range map[string]Options{
 		"plaintext with insecure": {URL: "http://" + closedAddr(t), Insecure: true},
-		"https":                   {URL: "https://" + closedAddr(t)},
+		"pinned https":            {URL: "https://" + closedAddr(t), Measurements: []string{strings.Repeat("ab", 48)}},
 	} {
 		if err := o.CheckEndpoint(); err != nil {
 			t.Errorf("%s: %v", name, err)
