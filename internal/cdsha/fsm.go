@@ -189,7 +189,7 @@ func (f *FSM) apply(e Entry) any {
 func (f *FSM) allowlistOptions() allowlist.ApplyOptions {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
-	return allowlist.ApplyOptions{TokenExpiry: f.core.format() >= 3}
+	return allowlist.ApplyOptions{TokenExpiry: f.core.format() >= 2}
 }
 
 func (f *FSM) applyDecree(de DecreeEntry) DecreeResult {
@@ -364,8 +364,8 @@ func (f *FSM) Snapshot() (raft.FSMSnapshot, error) {
 	if err != nil {
 		return nil, err
 	}
-	if sn.Format < 3 {
-		al.StripTokenExpiry() // a format 2 replica cannot restore the columns
+	if sn.Format < 2 {
+		al.StripTokenExpiry() // a format 1 replica cannot restore the columns
 	}
 	sn.Allowlist, sn.Secrets, sn.Bindings = al, f.secrets.Dump(), f.ledger.Dump()
 	return &fsmSnapshot{sn: sn}, nil
