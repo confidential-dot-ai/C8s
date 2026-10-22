@@ -132,6 +132,10 @@ measured image runs volumed as a host service, so encrypted volumes
 router always publishes the applied route manifest
 ([Route manifest](#route-manifest)).
 
+An optional `models: {writable: true, rootOwner: "UID:GID"}` lets the node
+format a blank `confai-models` disk and mount it read-write
+([node-guest-image/README.md](../node-guest-image/README.md)).
+
 Use **distinct launch keys for server and agent roles, and new keys for
 each cluster**. `clusterID` is a descriptive RFC1123 label; the distinct
 launch keys establish cluster separation during peer verification. Keep one

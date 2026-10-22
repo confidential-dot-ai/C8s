@@ -101,9 +101,22 @@ Additional optional disks:
 
 - serial `confai-containerd` (or label `containerd`): backs containerd's
   image cache (`containerd-data-disk.service`).
-- serial `confai-models`: a pre-populated, read-only weights disk mounted at
-  `/var/lib/models`. It is unencrypted and host-writable; attach public
-  weights whose digests the workload verifies (`models-disk.service`).
+- serial `confai-models`: a weights disk mounted at `/var/lib/models`
+  (`models-disk.service`), always `nodev,nosuid,noexec`. It is unencrypted
+  and host-writable; it holds public weights whose digests the workload
+  verifies. By default it must be pre-populated, and it is mounted read-only
+  and never formatted. With `models: {writable: true}` in the signed launch
+  document (`launch-config new --models-writable`), a disk with no filesystem
+  or partition table is formatted ext4, optionally with its root directory
+  owned by `models.rootOwner` (`--models-root-owner UID:GID`), and the disk is
+  mounted read-write so a workload can download weights inside the TEE. A
+  disk that already has a filesystem keeps it and its owner.
+
+  The allowlist decides which container may write it: a `host` mount rule
+  with `source: /var/lib/models` for the downloader, and the same source with
+  `readOnly: true` for the server. An entry that holds a `secrets` grant may
+  have no `host` mount rule in any container (allowlist spec G7), so
+  containers that mount the weights disk go in an entry without a grant.
 
 ## Operator kubeconfig bootstrap
 

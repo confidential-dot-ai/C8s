@@ -70,6 +70,8 @@ HOST_DATA to SHA-256 of that node's pubkey file. See docs/operator.md,
 	f.StringArrayVar(&opts.Agents, "agent", nil, "agent node name; repeatable")
 	f.StringVar(&opts.TLSSAN, "tls-san", "", "DNS name for the front-door certificate (default c8s.local)")
 	f.StringVar(&opts.WorkloadsPath, "workloads", "", "optional c8s.allowlist/v1 JSON file applied as the initial workload allowlist")
+	f.BoolVar(&opts.Models.Writable, "models-writable", false, "format a blank confai-models disk and mount it read-write (noexec) at /var/lib/models; default read-only")
+	f.StringVar(&opts.Models.RootOwner, "models-root-owner", "", "UID:GID owning the root of a confai-models filesystem the node creates (requires --models-writable)")
 	f.StringArrayVar(&opts.Router.Hostnames, "router-hostname", nil, "public DNS name the router serves with an ACME certificate; repeatable")
 	f.StringVar(&opts.Router.ACMEEmail, "acme-email", "", "contact email for the router's ACME account (requires --router-hostname)")
 	f.StringVar(&opts.Router.ACMEDirectoryURL, "acme-directory-url", "", "ACME directory URL, e.g. a staging directory for tests (requires --router-hostname; default Let's Encrypt)")
