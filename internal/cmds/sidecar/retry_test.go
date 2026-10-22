@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRetryRecoversOnceReleased(t *testing.T) {
@@ -68,8 +69,24 @@ func TestRefusalReasonNamesTheContainerGate(t *testing.T) {
 	if got := refusalReason(forbidden); !strings.Contains(got, "every main container") {
 		t.Fatalf("403 reason = %q, want it to name the main-container gate", got)
 	}
+	missing := fmt.Errorf("volume weights: %w", &StatusError{Status: http.StatusNotFound, Err: errNotYet})
+	if got := refusalReason(missing); !strings.Contains(got, "c8s volume create") {
+		t.Fatalf("404 reason = %q, want it to name c8s volume create", got)
+	}
 	if got := refusalReason(errNotYet); strings.Contains(got, "every main container") {
 		t.Fatalf("non-403 reason = %q, want it not to blame the container gate", got)
+	}
+}
+
+func TestNextWait(t *testing.T) {
+	for _, tc := range []struct{ wait, interval, want time.Duration }{
+		{5 * time.Second, 5 * time.Second, 10 * time.Second},
+		{20 * time.Second, 5 * time.Second, 30 * time.Second},
+		{time.Minute, time.Minute, time.Minute},
+	} {
+		if got := nextWait(tc.wait, tc.interval); got != tc.want {
+			t.Errorf("nextWait(%v, %v) = %v, want %v", tc.wait, tc.interval, got, tc.want)
+		}
 	}
 }
 

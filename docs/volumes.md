@@ -451,9 +451,11 @@ scheduled before `c8s volume create` has run keeps retrying until the key is
 there.
 
 Retries back off from `--retry-interval` (5s) to 30s and, by default, have no
-bound: the sidecar cannot see when the main containers exist, and a multi-GB
-image pull can hold them back for tens of minutes. Each refused attempt is
-logged with its likely reason. `--attempts N` restores a bounded count.
+limit (`--attempts 0`): the sidecar cannot see when the main containers exist,
+and a multi-GB image pull can hold them back for tens of minutes. Each refused
+attempt is logged with its likely reason, at WARN once the sidecar has waited
+10 minutes. `--attempts N` sets a limit; because the waits back off, N attempts
+last longer than N x `--retry-interval` (60 attempts last about 28 minutes).
 
 Teardown is the sidecar's last act. Kubelet terminates sidecars only after the
 workload's containers have exited, so the close it posts lands while nothing

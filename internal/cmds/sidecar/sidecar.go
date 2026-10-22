@@ -1,9 +1,10 @@
 // Package sidecar holds the CDS-release plumbing shared by the get-secret and
 // get-volume sidecars: the config they render from the webhook, the mTLS
 // client bound to the pod's leaf, the challenge/sandbox-token dance around
-// each store request, and the retry loop that waits out "not released yet". The two commands differ only in what they do with the
-// released bytes. The conformance probe (internal/cmds/secretprobe) uses the
-// dance's pieces one at a time, with the sidecar's choices handed to its caller.
+// each store request, and the retry loop that waits out "not released yet".
+// The two commands differ only in what they do with the released bytes. The
+// conformance probe (internal/cmds/secretprobe) uses the dance's pieces one at
+// a time, with the sidecar's choices handed to its caller.
 package sidecar
 
 import (
@@ -63,8 +64,8 @@ func BindFlags(f *pflag.FlagSet, cfg *Config) {
 	f.StringSliceVar(&cfg.RTMRs, "rtmrs", nil, "TDX RTMR pin(s) <index>=<sha384-hex> CDS must additionally satisfy (repeatable; ignored when CDS presents SNP evidence, empty pins no registers)")
 	f.StringVar(&cfg.CertPath, "cert", "/run/c8s/certs/tls.crt", "the pod's CDS-issued certificate, presented to CDS")
 	f.StringVar(&cfg.KeyPath, "key", "/run/c8s/certs/tls.key", "private key for --cert")
-	f.IntVar(&cfg.Attempts, "attempts", 0, "how many times to try before failing (0 retries until released); release is refused until every main container is running, which a slow image pull can delay for many minutes")
-	f.DurationVar(&cfg.RetryInterval, "retry-interval", 5*time.Second, "wait after the first refused attempt; it doubles on each further one up to "+maxRetryInterval.String())
+	f.IntVar(&cfg.Attempts, "attempts", 0, "how many times to try before failing; 0 (the default) means no limit. The waits between attempts back off (see --retry-interval), so N attempts last longer than N x --retry-interval. Release is refused until every main container is running, which a slow image pull can delay for many minutes")
+	f.DurationVar(&cfg.RetryInterval, "retry-interval", 5*time.Second, "wait after the first refused attempt; it doubles on each further one up to "+maxRetryInterval.String()+" (an interval above that stays constant)")
 	f.DurationVar(&cfg.RequestTimeout, "request-timeout", 10*time.Second, "per-request timeout against CDS")
 	f.DurationVar(&cfg.InventoryTimeout, "inventory-timeout", 5*time.Second, "timeout for redeeming a sandbox token from the node's admission inventory")
 }
@@ -143,6 +144,17 @@ func (t terminal) Unwrap() error { return t.err }
 // becomes possible is picked up within this long.
 const maxRetryInterval = 30 * time.Second
 
+// stuckAfter is how long refusals are logged at INFO. After it they are logged
+// at WARN: a slow image pull rarely takes this long, so a pod still refused is
+// more likely misconfigured.
+const stuckAfter = 10 * time.Minute
+
+// nextWait is the wait after one that lasted wait: double, capped at
+// maxRetryInterval, or at interval when that is larger.
+func nextWait(wait, interval time.Duration) time.Duration {
+	return min(2*wait, max(maxRetryInterval, interval))
+}
+
 // Retry runs one whole release pass at a time, retrying the set until an
 // attempt succeeds, one returns a Terminal error, or cfg.Attempts (when
 // positive) runs out.
@@ -176,25 +188,35 @@ func Retry(ctx context.Context, cfg Config, what string, attempt func(context.Co
 				"attempt", n, "of", cfg.Attempts, "error", err)
 			return fmt.Errorf("giving up after %d attempts: %w", cfg.Attempts, err)
 		}
-		slog.Info(what+" not released yet; retrying", "reason", refusalReason(err),
-			"attempt", n, "waited", time.Since(start).Round(time.Second), "retry_in", wait, "error", err)
+		waited := time.Since(start)
+		level := slog.LevelInfo
+		if waited >= stuckAfter {
+			level = slog.LevelWarn
+		}
+		slog.Log(ctx, level, what+" not released yet; retrying", "reason", refusalReason(err),
+			"attempt", n, "waited", waited.Round(time.Second), "retry_in", wait, "error", err)
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-time.After(wait):
 		}
-		wait = min(2*wait, max(maxRetryInterval, cfg.RetryInterval))
+		wait = nextWait(wait, cfg.RetryInterval)
 	}
 }
 
 // refusalReason says what a failed attempt most likely means. CDS answers
 // every authorization failure with the same opaque 403, and the expected one
-// is a pod whose main containers are not all running yet.
+// is a pod whose main containers are not all running yet. A 404 is a path the
+// store holds nothing at (or a grant without read access).
 func refusalReason(err error) string {
-	if se, ok := errors.AsType[*StatusError](err); ok && se.Status == http.StatusForbidden {
+	se, ok := errors.AsType[*StatusError](err)
+	switch {
+	case ok && se.Status == http.StatusForbidden:
 		return "CDS releases only once every main container of this pod is running; " +
 			"a main image still pulling delays it. If they are running, the pod's allowlist entry " +
 			"does not match or has no grant for this path (the CDS log names the denial)"
+	case ok && se.Status == http.StatusNotFound:
+		return "the store holds no value at this path yet; for a volume, run `c8s volume create`"
 	}
 	return "CDS or the node could not complete the request"
 }
