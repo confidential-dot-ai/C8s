@@ -887,9 +887,12 @@ verifier trusts it only as far as it replays against a quote's RTMR[3]:
 - **pod-status.** In the `pod` launch role the plugin measures each admitted
   image digest instead of policies (`measure.rtmr3`, which excludes
   `allowlist.pull.measure_policies`: a boot has one RTMR[3] writer), into the
-  same journal, seeded with the launch key the initrd staged. `c8s pod-status
-  serve` lists that journal in its armTLS certificate the way cred-release
-  lists the node's, and `c8s pod-attest` accepts the certificate's binding as
+  same journal, seeded with the pod launch key the initrd staged. The guest
+  polls CDS using the separate server key; fetched policies affect admission
+  without extending this journal. The journal directory is not mounted into
+  pod containers. See [pod launch configuration](operator.md#authenticated-launch-configuration).
+  `c8s pod-status serve` lists that journal in its armTLS certificate the way
+  cred-release lists the node's, and `c8s pod-attest` accepts the certificate's binding as
   the seed followed by a prefix of the list, then requires the list it read on
   both sides of a fresh quote to replay in full.
 - **`c8s get-kubeconfig`.** On TDX it takes the list from the verified

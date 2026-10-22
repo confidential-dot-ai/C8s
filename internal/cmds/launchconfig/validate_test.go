@@ -48,6 +48,8 @@ func TestValidateRejectsEachMalformedField(t *testing.T) {
 		{"agent token", Server, func(d *Document) { d.RKE2.AgentToken = "short" }, "rke2.agentToken"},
 		{"missing server token", Server, func(d *Document) { d.RKE2.ServerToken = "" }, "rke2.serverToken"},
 		{"server key", Server, func(d *Document) { d.Server.OperatorPublicKey = "not a key" }, "server.operatorPublicKey"},
+		{"pod key on server", Server, func(d *Document) { d.PodOperatorPublicKey = otherPub }, "requires role pod"},
+		{"pod key on agent", Agent, func(d *Document) { d.PodOperatorPublicKey = otherPub }, "requires role pod"},
 		{"agent key", Server, func(d *Document) { d.AgentOperatorPublicKeys = []string{"not a key"} }, "agentOperatorPublicKeys"},
 		{"duplicate agent keys", Server, func(d *Document) {
 			d.AgentOperatorPublicKeys = append(d.AgentOperatorPublicKeys, d.AgentOperatorPublicKeys[0])
