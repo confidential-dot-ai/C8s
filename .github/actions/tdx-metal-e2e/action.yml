@@ -556,6 +556,16 @@ runs:
       done
       [ "$ready" = 1 ] || { echo "::error::credential release did not start; signed launch or measured service startup failed"; exit 1; }
 
+  - name: node journal when the boot fails (dev image)
+    # The dev image's sshd trusts the launch key without any boot service, so
+    # a boot that never serves credentials can still be read.
+    if: failure() && inputs.dev == 'true'
+    shell: bash
+    run: |
+      ssh -i /tmp/launch-data/server.key -o IdentitiesOnly=yes -o StrictHostKeyChecking=no \
+        -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 "root@$GUEST_IP" \
+        'systemctl --failed --no-pager; journalctl -b --no-pager -o short-monotonic -u rke2-role -u rke2-server -u rke2-agent -u cred-release -u psa-ready | tail -n 400' || true
+
   - name: get an attested, operator-key-bound kubeconfig (armTLS)
     shell: bash
     run: |
