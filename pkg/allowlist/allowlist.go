@@ -4,7 +4,7 @@
 // The allowlist is a map of named workload entries. Each entry pins an
 // init/main container set; every container binds a digest to the process
 // (argv), bind-mount and environment policy permitted for those bytes, and the
-// entry as a whole carries a secret-store grant. An image that may run however
+// entry as a whole carries a secret-store grant and its declared exits. An image that may run however
 // it is invoked is an entry whose container policy is any. Policy is always looked
 // up by container digest — the entry name and image labels are informational,
 // never a trust-bearing key, because the image reference a pod presents is
@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"path"
 	"slices"
 	"sort"
@@ -65,6 +66,19 @@ type Workload struct {
 	InitContainers []Container    `json:"initContainers" yaml:"initContainers,omitempty"`
 	Containers     []Container    `json:"containers" yaml:"containers"`
 	Secrets        *SecretsPolicy `json:"secrets,omitempty" yaml:"secrets,omitempty"`
+	// Egress are the exits a pod this entry matches may reach outside the
+	// mesh. Like a secrets grant it belongs to the whole entry.
+	Egress []Egress `json:"egress,omitempty" yaml:"egress,omitempty"`
+}
+
+// MaxEgress bounds an entry's exits: each is a way out of the TEE that a
+// relying party has to weigh, and one rule per exit in every chain.
+const MaxEgress = 8
+
+// Egress is one declared exit: a range and a TCP port.
+type Egress struct {
+	CIDR netip.Prefix `json:"cidr" yaml:"cidr"`
+	Port uint16       `json:"port" yaml:"port"`
 }
 
 // Container binds a digest to the process policy permitted for it.
@@ -262,6 +276,9 @@ func ParseWorkloadJSON(data []byte) (*Workload, error) {
 	}
 	if err := w.CheckVariableEvidenceBudget(); err != nil {
 		return nil, fmt.Errorf("entry: %w", err)
+	}
+	if err := normalizeEgress(&w.Egress); err != nil {
+		return nil, fmt.Errorf("entry egress: %w", err)
 	}
 	sortContainers(w.InitContainers)
 	sortContainers(w.Containers)
@@ -463,9 +480,58 @@ func (a *Allowlist) normalize(strict bool) error {
 		if err := w.CheckVariableEvidenceBudget(); strict && err != nil {
 			return fmt.Errorf("workload %q: %w", name, err)
 		}
+		if err := normalizeEgress(&w.Egress); err != nil {
+			if strict {
+				return fmt.Errorf("workload %q egress: %w", name, err)
+			}
+			// Dropping is fail-closed: the entry grants no exit.
+			slog.Warn("allowlist: dropping a served workload entry's egress this consumer cannot validate",
+				"name", name, "error", err)
+			w.Egress = nil
+		}
 		sortContainers(w.InitContainers)
 		sortContainers(w.Containers)
 		a.Workloads[name] = w
+	}
+	return nil
+}
+
+// normalizeEgress validates an entry's exits and sorts them. An empty list
+// becomes nil, so an entry with no exit carries no "egress" key.
+func normalizeEgress(exits *[]Egress) error {
+	list := *exits
+	if len(list) == 0 {
+		*exits = nil
+		return nil
+	}
+	if len(list) > MaxEgress {
+		return fmt.Errorf("%d exits; the maximum is %d", len(list), MaxEgress)
+	}
+	for _, e := range list {
+		switch {
+		case !e.CIDR.IsValid():
+			return fmt.Errorf("an exit needs a cidr")
+		case e.CIDR.Addr().Is4In6():
+			return fmt.Errorf("cidr %s is a 4-in-6 range; write it as IPv4", e.CIDR)
+		case e.CIDR != e.CIDR.Masked():
+			return fmt.Errorf("cidr %s carries host bits (did you mean %s?)", e.CIDR, e.CIDR.Masked())
+		case e.Port == 0:
+			return fmt.Errorf("exit %s needs a TCP port", e.CIDR)
+		}
+	}
+	slices.SortFunc(list, func(a, b Egress) int {
+		if c := a.CIDR.Addr().Compare(b.CIDR.Addr()); c != 0 {
+			return c
+		}
+		if c := a.CIDR.Bits() - b.CIDR.Bits(); c != 0 {
+			return c
+		}
+		return int(a.Port) - int(b.Port)
+	})
+	for i := 1; i < len(list); i++ {
+		if list[i] == list[i-1] {
+			return fmt.Errorf("exit %s port %d is declared twice", list[i].CIDR, list[i].Port)
+		}
 	}
 	return nil
 }

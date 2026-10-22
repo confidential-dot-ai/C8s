@@ -534,6 +534,43 @@ filesystem once a value is inside it — so a grant names store paths only. An
 install still setting the per-container `paths` field needs
 [`secrets.md`](secrets.md#upgrading).
 
+## Declared exits (`egress`)
+
+A pod in the mesh sends TCP out of the pod only through its mesh endpoint,
+to the cluster resolver, or to its node's CDS (which serves the allowlist and
+the other public routes without authentication). An entry may declare
+`egress`: up to 8 exits, each a CIDR range and one TCP port, that a pod this
+entry matches reaches directly, uncaptured.
+
+```json
+"otel-collector": {
+  "containers": [{"digest": "sha256:…", "command": {"policy": "exact", "argv": ["/otelcol"]}, "args": {"policy": "deny"}}],
+  "egress": [{"cidr": "203.0.113.7/32", "port": 443}]
+}
+```
+
+- The protocol is always TCP. A `cidr` must have no host bits set, and an
+  exit is listed once. The exits are part of the signed canonical document,
+  so they are visible to anyone reading `GET /allowlist`. An entry without
+  exits carries no `egress` key, so its bytes and digest do not change.
+- The node grants a pod its entry's exits once the pod's workload containers
+  match that entry, by the same rule secret release uses (the injected mesh
+  and credential containers are left out). From then on every workload
+  container of that pod must keep that match; one that does not is refused.
+  The exits are fixed for the pod's life: a changed or removed exit applies
+  when the pod is recreated.
+- The node refuses an exit that overlaps the cluster's pod or Service ranges
+  from its measured mesh policy, or a loopback, link-local or multicast
+  range; a node whose policy names no cluster ranges grants no exit. The
+  container whose start would have completed the match is refused with the
+  reason.
+- An exit is a way out of the TEE for whatever the workload sends. It is not
+  inspected: whether its payload is acceptable (for example, telemetry with
+  no customer content, sent to a relay the operator controls) is for the
+  operator to decide and for relying parties to weigh.
+- Exits open when the match completes, so an init container that runs
+  before every main container exists cannot use them.
+
 ## Host privilege
 
 The allowlist bounds which bytes run. It says nothing about what those bytes

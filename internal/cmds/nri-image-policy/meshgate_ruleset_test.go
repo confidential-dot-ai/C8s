@@ -17,7 +17,7 @@ import (
 func TestPodRulesetServesOwnPortsOnlyInTheRouterNamespace(t *testing.T) {
 	policy := meshRoles()
 
-	server := policy.podRuleset(routerNamespace).Server
+	server := policy.podRuleset(routerNamespace, nil).Server
 	if server.Upstream != workloadclaims.UpstreamUID {
 		t.Fatalf("server upstream uid = %d, want the reserved %d", server.Upstream, workloadclaims.UpstreamUID)
 	}
@@ -33,7 +33,7 @@ func TestPodRulesetServesOwnPortsOnlyInTheRouterNamespace(t *testing.T) {
 		t.Fatalf("server cluster ranges = %v, want the measured range", server.ClusterRanges)
 	}
 
-	member := policy.podRuleset("default")
+	member := policy.podRuleset("default", nil)
 	if member.Server.Upstream != 0 {
 		t.Fatalf("a pod outside that namespace serves %+v", member.Server)
 	}
@@ -63,11 +63,11 @@ func TestPodRulesetGivesTheRouterRoleTheNodesCDS(t *testing.T) {
 
 	node := netip.MustParseAddr("172.18.0.2")
 	want := []ruleset.Destination{{Addr: node, Port: 30808}}
-	server := policy.podRuleset(routerNamespace).Server
+	server := policy.podRuleset(routerNamespace, nil).Server
 	if !slices.Equal(server.Services, want) {
 		t.Fatalf("router services = %+v, want this node's CDS alone", server.Services)
 	}
-	if member := policy.podRuleset("default").Server; len(member.Services) != 0 {
+	if member := policy.podRuleset("default", nil).Server; len(member.Services) != 0 {
 		t.Fatalf("a pod outside that namespace reaches %+v", member.Services)
 	}
 
@@ -75,7 +75,7 @@ func TestPodRulesetGivesTheRouterRoleTheNodesCDS(t *testing.T) {
 	// router verifies that CDS's evidence there and nowhere else.
 	policy.CredentialAttestationPort = 8400
 	want = append(want, ruleset.Destination{Addr: node, Port: 8400})
-	if got := policy.podRuleset(routerNamespace).Server.Services; !slices.Equal(got, want) {
+	if got := policy.podRuleset(routerNamespace, nil).Server.Services; !slices.Equal(got, want) {
 		t.Fatalf("router services = %+v, want the CDS and its verifier on this node", got)
 	}
 }
@@ -94,11 +94,11 @@ func TestPodRulesetGivesEveryMemberTheNodesCDSPort(t *testing.T) {
 
 	want := []ruleset.Exit{{Range: netip.MustParsePrefix("172.18.0.2/32"), Port: 30808}}
 	for _, namespace := range []string{"default", routerNamespace} {
-		if got := policy.podRuleset(namespace).Exits; !slices.Equal(got, want) {
+		if got := policy.podRuleset(namespace, nil).Exits; !slices.Equal(got, want) {
 			t.Fatalf("exits of a pod in %s = %+v, want this node's CDS port alone", namespace, got)
 		}
 	}
-	if got := meshRoles().podRuleset("default").Exits; len(got) != 0 {
+	if got := meshRoles().podRuleset("default", nil).Exits; len(got) != 0 {
 		t.Fatalf("exits without a bound CDS = %+v, want none", got)
 	}
 }
@@ -106,7 +106,7 @@ func TestPodRulesetGivesEveryMemberTheNodesCDSPort(t *testing.T) {
 // A policy that binds no CDS leaves the router role without one, as it leaves
 // the credential clients without one.
 func TestPodRulesetWithoutABoundCDSServesTheRouterRoleNone(t *testing.T) {
-	if server := meshRoles().podRuleset(routerNamespace).Server; len(server.Services) != 0 {
+	if server := meshRoles().podRuleset(routerNamespace, nil).Server; len(server.Services) != 0 {
 		t.Fatalf("router services = %+v, want none", server.Services)
 	}
 }
@@ -124,7 +124,7 @@ func TestPodRulesetAdmitsTheCredentialAttestationPort(t *testing.T) {
 	})
 
 	var credentials ruleset.Role
-	for _, role := range policy.podRuleset("default").Roles {
+	for _, role := range policy.podRuleset("default", nil).Roles {
 		if role.UID == workloadclaims.CredentialsUID {
 			credentials = role
 		}

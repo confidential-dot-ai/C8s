@@ -78,7 +78,7 @@ func TestPodRulesetCarriesTrustedPolicyOnly(t *testing.T) {
 			},
 		},
 	}
-	if got := policy.podRuleset("default"); !reflect.DeepEqual(got, want) {
+	if got := policy.podRuleset("default", nil); !reflect.DeepEqual(got, want) {
 		t.Fatalf("podRuleset = %+v, want %+v", got, want)
 	}
 }
@@ -144,7 +144,7 @@ func TestProveSandboxNamespaceRefusals(t *testing.T) {
 // namespace say nothing about this pod.
 func TestVerifyPodRulesetNeedsTheInstalledNamespace(t *testing.T) {
 	gone := podNamespace{path: filepath.Join(t.TempDir(), "gone")}
-	err := verifyPodRuleset(gone, *meshRoles(), "default")
+	err := verifyPodRuleset(gone, *meshRoles(), "default", nil)
 	if err == nil || !strings.Contains(err.Error(), "describe network namespace") {
 		t.Fatalf("error = %v, want the unreadable-namespace refusal", err)
 	}
@@ -161,7 +161,7 @@ func TestVerifyPodRulesetNeedsTheInstalledNamespace(t *testing.T) {
 			inode:  described.id.inode + 1,
 		},
 	}
-	err = verifyPodRuleset(replaced, *meshRoles(), "default")
+	err = verifyPodRuleset(replaced, *meshRoles(), "default", nil)
 	if err == nil || !strings.Contains(err.Error(), "was replaced") {
 		t.Fatalf("error = %v, want the replaced-namespace refusal", err)
 	}
