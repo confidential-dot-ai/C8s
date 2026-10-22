@@ -495,8 +495,8 @@ seed_add() {
     [ -n "$cm" ] || return $UNSUPPORTED
     seed_followed && seed_mounted "$cm" || return $UNSUPPORTED
     original="$(scratch)/seed-original.json"
-    [ -s "$original" ] || kubectl -n "$NS" get configmap "$cm" -o json > "$original" || return
-    kubectl -n "$NS" get configmap "$cm" -o json |
+    [ -s "$original" ] || kubectl -n "$ROUTER_NS" get configmap "$cm" -o json > "$original" || return
+    kubectl -n "$ROUTER_NS" get configmap "$cm" -o json |
         jq --arg name "$1" --slurpfile entry "$2" \
             '.data["allowlist-seed.json"] |= (fromjson | .workloads[$name] = $entry[0] | tojson)' |
         kubectl replace -f - >/dev/null
@@ -632,7 +632,7 @@ serving_cert() {
 }
 
 # --- The router ---
-# The chart's router Deployment and its nginx ConfigMap in $NS, whether the
+# The chart's router Deployment and its nginx ConfigMap in $ROUTER_NS, whether the
 # chart or a node image's launch configuration drives it.
 ROUTER_DEPLOY=c8s-router
 CDS_SELECTOR_ANNOTATION=c8s-conformance/selector
@@ -656,7 +656,7 @@ router_headers() {
 # (hostPath), which nothing here can read without a node shell.
 router_nginx_conf() {
     local volumes cm
-    volumes="$(kubectl -n "$NS" get deploy "$ROUTER_DEPLOY" -o json | jq -c '.spec.template.spec.volumes // []')" || return
+    volumes="$(kubectl -n "$ROUTER_NS" get deploy "$ROUTER_DEPLOY" -o json | jq -c '.spec.template.spec.volumes // []')" || return
     cm="$(jq -r '.[] | (.configMap.name // empty), (.projected.sources[]?.configMap.name // empty)' <<<"$volumes" |
         grep -- '-nginx$' | head -1)"
     if [ -z "$cm" ]; then
@@ -666,7 +666,7 @@ router_nginx_conf() {
         echo "backend: the router mounts no nginx ConfigMap" >&2
         return 1
     fi
-    kubectl -n "$NS" get configmap "$cm" -o json | jq -r '.data | to_entries | map(select(.key | endswith(".conf"))) | .[].value'
+    kubectl -n "$ROUTER_NS" get configmap "$cm" -o json | jq -r '.data | to_entries | map(select(.key | endswith(".conf"))) | .[].value'
 }
 
 # The attest container is started with --front-door-mode, or, where a launch
@@ -675,7 +675,7 @@ router_nginx_conf() {
 # read from the document the router serves, which needs no exec.
 router_tls_mode() {
     local args mode out path conf
-    args="$(kubectl -n "$NS" get deploy "$ROUTER_DEPLOY" -o json |
+    args="$(kubectl -n "$ROUTER_NS" get deploy "$ROUTER_DEPLOY" -o json |
         jq -r '.spec.template.spec | ((.initContainers // []) + .containers)[] | (.args // [])[]')" || return
     mode="$(sed -n 's/^--front-door-mode=//p' <<<"$args" | head -1)"
     if [ -z "$mode" ]; then

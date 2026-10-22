@@ -329,9 +329,15 @@ pod_read() {
 pod_file() { pod_read "$1" "$2" "$3" file "$4"; }
 pod_fstype() { pod_read "$1" "$2" "$3" fstype "$4"; }
 
-# Nothing while the file is absent, as pod_cert_file answers elsewhere.
+# Nothing while the file is absent, as pod_cert_file answers elsewhere. Only
+# the platform containers mount the credential volume (the webhook's
+# rejectCredentialMounts), so a pod whose readable container does not is
+# unsupported.
 pod_cert_file() {
     local out rc=0
+    kubectl -n "$1" get pod "$2" -o json 2>/dev/null |
+        jq -e --arg d "$CERT_VOLUME_PATH" '.spec.containers[0].volumeMounts // [] | any(.mountPath == $d)' >/dev/null ||
+        return "$UNSUPPORTED"
     out="$(pod_file "$1" "$2" "" "$CERT_VOLUME_PATH/$3" 2>/dev/null)" || rc=$?
     case "$rc" in
         0) base64 -d <<<"$out" ;;
