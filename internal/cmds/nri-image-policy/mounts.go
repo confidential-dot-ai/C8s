@@ -120,11 +120,16 @@ func (o mountObserver) observeMount(ctx MountContext, m *api.Mount) allowlist.Ob
 	return observeHostMount(m)
 }
 
+// newStorageInspector builds the inspector that classifies the storage behind
+// a pod volume. A test of the configured plugin replaces it, so a kubelet
+// root that is not this host's still reads as the node would.
+var newStorageInspector = newMountStorageInspector
+
 func defaultStorage(s mountStorageInspector) mountStorageInspector {
 	if s != nil {
 		return s
 	}
-	return newMountStorageInspector()
+	return newStorageInspector()
 }
 
 // injectedNodeMountHandler classifies read-only binds from this plugin's own sources.

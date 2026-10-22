@@ -238,6 +238,23 @@ guest status over armTLS on `:8443`. The measurement journal stays inside the
 guest: this role supplies no node credential-client mounts or sandbox-token
 service to pod containers.
 
+The pod is a mesh member. The guest keeps the node image's mesh policy with
+the mesh role alone and no exempt namespace, and keeps the mesh endpoint's
+entry of the measured base beside the signed workloads. The manifest must
+therefore run the mesh endpoint before anything else: the `armtls-mesh` image
+at the digest the node image bakes, with the argv, the `c8s-certs` emptyDir
+at `/etc/c8s/certs` and the UID that the chart's `c8s.meshEndpointContainer`
+helper renders, first in `initContainers` with `restartPolicy: Always`. The
+enforcer grants the mesh role to that image under that argv as that UID and
+to nothing else, and refuses every other container until it has started. Every
+other container runs as a nonzero UID no role reserves, and the runtime
+wrapper's privilege floor (`docs/node-exec-mode.md`) bounds every container of
+the pod; a container that drops all capabilities, sets
+`allowPrivilegeEscalation: false` and `runAsNonRoot: true`, and requests no
+TTY and no shared process namespace stays within it. The pod's TCP is
+captured into the endpoint, which serves nothing until it holds a
+certificate; this role does not yet obtain one for it.
+
 Manual edits require a new signature from that document's launch key. For a
 server document, run
 `c8s keys sign-launch --key demo/server.key --force demo/server/launch.yaml`.

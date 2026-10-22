@@ -18,11 +18,17 @@ var (
 	AssertPodBootstrap    = assertPodBootstrap
 )
 
+// MeshImageDigest is the mesh endpoint image the rendered fixture bakes.
+const MeshImageDigest = meshImageDigest
+
 func SandboxModeOf(c *config) sandboxMode { return c.sandboxMode() }
 
-// AdmitsCreation runs the creation validator of a plugin built from cfg for
-// an ordinary, sandbox-compliant container of a pod in namespace, whose image
-// resolves to digest. It answers whether a config admits a plain workload.
+// AdmitsCreation runs the creation hook of a plugin built from cfg for an
+// ordinary, sandbox-compliant container of a pod in namespace, whose image
+// resolves to digest. It answers whether a config's allowlist admits a plain
+// workload. The mesh gate is not in this answer: it decides at adjustment
+// validation over a protected sandbox, which only the namespace test holds
+// (assertPodBootstrap).
 func AdmitsCreation(cfg *config, namespace, image, digest string) error {
 	p := &plugin{
 		cfg:        cfg,
@@ -30,9 +36,10 @@ func AdmitsCreation(cfg *config, namespace, image, digest string) error {
 		audit:      audit.NewLogger(),
 		logger:     discardLogger(),
 		containerd: &fakeContainerd{resolve: func(context.Context, string) (string, error) { return digest, nil }},
-		mesh:       newMeshGate(cfg.Mesh, discardLogger()),
+		mesh:       newMeshGate(*cfg.Mesh, discardLogger()),
 	}
 	p.inventory = newAdmissionInventory("/proc")
+	p.SetReady()
 	pod := sandboxedPod()
 	pod.Namespace = namespace
 	// A pod CVM's static pod carries no service account token, and a
@@ -43,5 +50,6 @@ func AdmitsCreation(cfg *config, namespace, image, digest string) error {
 	})
 	ctr.PodSandboxId = pod.Id
 	ctr.Annotations = map[string]string{annotationImageName: image}
-	return p.ValidateContainerAdjustment(context.Background(), &api.ValidateContainerAdjustmentRequest{Pod: pod, Container: ctr})
+	_, _, err := p.CreateContainer(context.Background(), pod, ctr)
+	return err
 }

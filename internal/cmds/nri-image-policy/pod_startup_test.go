@@ -1,3 +1,5 @@
+//go:build linux
+
 package nriimagepolicy
 
 import (
@@ -9,7 +11,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -24,6 +25,7 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
+	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
@@ -31,11 +33,15 @@ import (
 // assertPodBootstrap receives nodeservices.Prepare's validated output. Only
 // paths and the policy transport are rebased: armTLS authentication is tested
 // separately, while this test controls outages and exercises real NRI RPCs.
+// The pod runs in a network namespace of its own, so the gate installs and
+// verifies its ruleset for real; the kubelet root is not this host's, so the
+// pod's emptyDir is read as memory-backed without a mount under it.
 func assertPodBootstrap(t *testing.T, cfg *config, root string, podKey []byte, baseDigest string) {
 	t.Helper()
-	if runtime.GOOS != "linux" {
-		t.Skip("NRI adaptation uses Linux peer credentials")
-	}
+	sandboxPID := sandboxProcess(t)
+	oldStorage := newStorageInspector
+	newStorageInspector = func() mountStorageInspector { return fixedStorage(allowlist.MountMemory) }
+	t.Cleanup(func() { newStorageInspector = oldStorage })
 	// Keep Unix socket paths below the kernel limit, including on long CI roots.
 	dir, err := os.MkdirTemp("", "pod-nri-")
 	if err != nil {
@@ -148,25 +154,48 @@ func assertPodBootstrap(t *testing.T, cfg *config, root string, podKey []byte, b
 	wait("first CDS pull", func() bool { return closed(firstPull) })
 
 	pod := sandboxedPod()
+	pod.Pid = sandboxPID
+	for _, ns := range pod.Linux.Namespaces {
+		if ns.Type == "network" {
+			ns.Path = sandboxNetNSPath(sandboxPID)
+		}
+	}
 	injectedPod(pod) // Forged injection metadata must not enable node services.
 	if err := nri.RunPodSandbox(ctx, &api.RunPodSandboxRequest{Pod: pod}); err != nil {
 		t.Fatal(err)
 	}
+	start := func(ctr *api.Container) {
+		t.Helper()
+		response, err := nri.CreateContainer(ctx, &api.CreateContainerRequest{Pod: pod, Container: ctr})
+		if err != nil {
+			t.Fatalf("create %s: %v", ctr.Name, err)
+		}
+		if len(response.GetAdjust().GetMounts()) != 0 {
+			t.Fatalf("container %s received guest service mounts: %v", ctr.Name, response.GetAdjust().GetMounts())
+		}
+		if err := nri.StartContainer(ctx, &api.StartContainerRequest{Pod: pod, Container: ctr}); err != nil {
+			t.Fatalf("start %s: %v", ctr.Name, err)
+		}
+	}
 	create := func(id, name, digest string) *api.Container {
 		t.Helper()
 		ctr := podBootstrapContainer(pod, id, name, digest)
-		response, err := nri.CreateContainer(ctx, &api.CreateContainerRequest{Pod: pod, Container: ctr})
-		if err != nil {
-			t.Fatalf("create %s: %v", name, err)
-		}
-		if len(response.GetAdjust().GetMounts()) != 0 {
-			t.Fatalf("container %s received guest service mounts: %v", name, response.GetAdjust().GetMounts())
-		}
-		if err := nri.StartContainer(ctx, &api.StartContainerRequest{Pod: pod, Container: ctr}); err != nil {
-			t.Fatalf("start %s: %v", name, err)
-		}
+		start(ctr)
 		return ctr
 	}
+	// The pod is a mesh member from its first container: nothing starts
+	// before the mesh endpoint, which the measured base admits while the
+	// first pull is still blocked, and the mesh role goes to that image under
+	// its exact argv as its reserved identity alone.
+	if _, err := nri.CreateContainer(ctx, &api.CreateContainerRequest{Pod: pod, Container: podBootstrapContainer(pod, "early", "app", baseDigest)}); err == nil {
+		t.Fatal("a workload was admitted before the pod's mesh endpoint")
+	}
+	impostor := podMeshEndpoint(pod, "impostor")
+	impostor.Args = impostor.Args[:2]
+	if _, err := nri.CreateContainer(ctx, &api.CreateContainerRequest{Pod: pod, Container: impostor}); err == nil {
+		t.Fatal("the mesh image under another argv was admitted as the mesh endpoint")
+	}
+	start(podMeshEndpoint(pod, "mesh"))
 	// This start completes while the first pull is still blocked.
 	create("base", "app", baseDigest)
 	unknown := podBootstrapContainer(pod, "unknown", "unknown", pushDigestC)
@@ -218,15 +247,20 @@ func assertPodBootstrap(t *testing.T, cfg *config, root string, podKey []byte, b
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Fields(string(data)); !slices.Equal(got, []string{baseDigest, pushDigestB}) {
-		t.Fatalf("journal = %v; want only started workload digests", got)
+	// The mesh endpoint is a started image of the pod like any other, so the
+	// pod's measurement carries it first.
+	started := []string{meshImageDigest, baseDigest, pushDigestB}
+	if got := strings.Fields(string(data)); !slices.Equal(got, started) {
+		t.Fatalf("journal = %v; want only started image digests %v", got, started)
 	}
-	want := runtimemeasure.FromDigestsSeeded(runtimemeasure.Seed(podKey), []string{baseDigest, pushDigestB})
+	want := runtimemeasure.FromDigestsSeeded(runtimemeasure.Seed(podKey), started)
 	if reg.value != want {
-		t.Fatal("runtime register does not match Pod launch key plus started workloads")
+		t.Fatal("runtime register does not match Pod launch key plus started images")
 	}
 }
 
+// podBootstrapContainer is a container of the pod as containerd reports one:
+// in a pid namespace of its own, as every container of a member pod is.
 func podBootstrapContainer(pod *api.PodSandbox, id, name, digest string) *api.Container {
 	ctr := sandboxedContainer()
 	ctr.Id, ctr.Name, ctr.PodSandboxId = id, name, pod.Id
@@ -234,6 +268,23 @@ func podBootstrapContainer(pod *api.PodSandbox, id, name, digest string) *api.Co
 	ctr.Annotations = map[string]string{annotationImageName: "image@" + digest}
 	ctr.Mounts = slices.DeleteFunc(ctr.Mounts, func(m *api.Mount) bool {
 		return m.Destination == serviceAccountDestination
+	})
+	ctr.Linux.Namespaces = append(ctr.Linux.Namespaces, &api.LinuxNamespace{Type: pidNamespace})
+	return ctr
+}
+
+// podMeshEndpoint is the pod's mesh endpoint as the baked base declares it:
+// the baked image under the injected argv, its certificate emptyDir mounted,
+// running as the mesh role's reserved identity.
+func podMeshEndpoint(pod *api.PodSandbox, id string) *api.Container {
+	ctr := podBootstrapContainer(pod, id, "c8s-mesh", meshImageDigest)
+	ctr.User = &api.User{Uid: workloadclaims.MeshUID}
+	ctr.Args = []string{"/app/c8s", "armtls-mesh", "--cert-path=/etc/c8s/certs/tls.crt", "--key-path=/etc/c8s/certs/tls.key", "--ca-path=/etc/c8s/certs/ca.crt"}
+	ctr.Mounts = append(ctr.Mounts, &api.Mount{
+		Destination: "/etc/c8s/certs",
+		Type:        "bind",
+		Source:      kubeletRoot + "/pods/" + pod.Uid + "/volumes/" + emptyDirPlugin + "/c8s-certs",
+		Options:     []string{"rbind", "rprivate", "ro"},
 	})
 	return ctr
 }

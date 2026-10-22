@@ -124,8 +124,10 @@ identity holds that role.
 The namespaces `mesh.exempt_namespaces` lists host no member pods and keep
 their privileges, as does the pod's own sandbox container — the one whose own
 container id is the sandbox's, which no other bundle can claim. A measured
-policy that cannot be read denies the create; one with no `mesh` policy
-applies no floor. The floor is independent of the exec mode above.
+policy that cannot be read, or that carries no `mesh` policy, denies the
+create. A pod CVM's policy keeps the node's with the mesh role alone and no
+exempt namespace, so the floor covers every container of its pod. The floor is
+independent of the exec mode above.
 
 ## Writing a component that runs on such a node
 
