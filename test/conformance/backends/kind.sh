@@ -105,7 +105,6 @@ cds_restart_with() {
     local flag=
     case "$1" in
         default) args="$installed" ;;
-        min-ca-validity) flag=--min-ca-validity ;;
         pins) flag=--measurements ;;
         operator-keys) flag=--operator-keys ;;
         san-validation) flag=--san-validation ;;
@@ -156,8 +155,8 @@ cds_arg_set() {
 # Wait for the one CDS pod that is none of the given UIDs (the pods before
 # the change) to run and answer /healthz through the forward, then for the
 # Service to route to it: that takes its readiness probe, which runs some
-# seconds after the pod does. A CDS that reports itself not ready
-# (min-ca-validity) never joins the Service, and is not waited for.
+# seconds after the pod does. A CDS that reports itself not ready never
+# joins the Service, and is not waited for.
 cds_await_running() {
     local deadline=$(($(date +%s) + 180)) pods uid phase
     while :; do
@@ -293,12 +292,43 @@ base_declares() {
 PLUGIN_BIN=/opt/nri/plugins/10-nri-image-policy
 PLUGIN_HEALTH=/run/nri-image-policy/health.sock
 
-# Refused is exit 7 from curl, as a TLS failure against the CDS is not; the
-# kind node image ships curl.
+# The plugin pulls from https://127.0.0.1:<node port of the CDS Service>
+# (the chart's nriImagePolicy.allowlist.pull.url default), from the node's
+# own network namespace; every pod's get-cert dials the node's address from
+# its own. A reject rule on connections the node itself opens to that port on
+# loopback refuses each pull at once and leaves issuance, and so every pod's
+# start, alone. Matched on the original destination, since kube-proxy has
+# rewritten it by the filter table.
+CDS_BLOCK_RULE=(OUTPUT -p tcp -m conntrack --ctorigdst 127.0.0.1 --ctorigdstport PORT
+    -m comment --comment c8s-conformance-cds-block -j REJECT --reject-with tcp-reset)
+cds_block_rule() {
+    local port
+    port="$(kubectl -n "$NS" get svc c8s-cds -o jsonpath='{.spec.ports[0].nodePort}')" || return
+    [ -n "$port" ] || { echo "backend: the CDS Service has no node port" >&2; return 1; }
+    echo "$port" "${CDS_BLOCK_RULE[@]/PORT/$port}"
+}
+cds_block() {
+    local port rule
+    read -r port rule < <(cds_block_rule) || return
+    # shellcheck disable=SC2086  # the rule's words
+    node_exec iptables -C $rule 2>/dev/null || node_exec iptables -I $rule || return
+    local deadline=$(($(date +%s) + 60))
+    until [ "$(node_refuses "$port")" = yes ]; do
+        [ "$(date +%s)" -lt "$deadline" ] || { echo "backend: the node still accepts pulls on $port after 60s" >&2; return 1; }
+        sleep 1
+    done
+}
+cds_unblock() {
+    local port rule
+    read -r port rule < <(cds_block_rule) || return
+    # shellcheck disable=SC2086  # the rule's words
+    while node_exec iptables -C $rule 2>/dev/null; do node_exec iptables -D $rule || return; done
+}
+
+# A connect that fails or hangs is refused: a reset to a node-port connection
+# may never reach the socket, so the dial times out instead.
 node_refuses() {
-    local rc=0
-    node_exec curl -sk --max-time 2 -o /dev/null "https://127.0.0.1:$1/healthz" 2>/dev/null || rc=$?
-    if [ "$rc" -eq 7 ]; then echo yes; else echo no; fi
+    if node_exec timeout 2 bash -c "</dev/tcp/127.0.0.1/$1" 2>/dev/null; then echo no; else echo yes; fi
 }
 
 # The pids running the plugin binary; the kind node image ships procps.

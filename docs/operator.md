@@ -539,13 +539,10 @@ CDS answers 304 while nothing changed, so an idle poll is cheap. Strict
 clients recover without a router restart within one poll interval, plus up to
 half an interval of jitter, plus one issuance.
 
-There is **no scheduled in-process CA rotation today** — no cds flag or
-loop drives it, so every CA fingerprint change is a restart-shaped
-re-bootstrap. (An unwired rotator exists at `internal/issuer.CARotator`:
-it signs a successor CA with the still-live current CA's key, so the
-continuity check would accept it and workloads would pick it up on their
-next `/ca` refresh, without re-bootstrap. Wiring it into `c8s cds` is
-future work.)
+CDS renews its mesh CA certificate at half its configured lifetime under the
+same process-lifetime key. Workloads pick up the current certificate on their
+next `/ca` refresh, and the continuity check accepts its signature under the
+trusted key. A CDS restart replaces the key and requires re-bootstrap.
 
 With CDS a singleton:
 
@@ -555,8 +552,9 @@ With CDS a singleton:
   voluntary disruptions;
 - treat any CDS restart as a planned maintenance event with workload
   churn;
-- watch CDS startup logs for the active CA fingerprint — any fingerprint
-  change means a restart happened and workload re-provisioning is needed.
+- watch the `key_id` in CDS's mesh CA log lines: a renewal moves the
+  `fingerprint` and keeps the `key_id`, so a new `key_id` is a new key and
+  every workload needs re-provisioning.
 
 ### Operator-added allowlist entries across restarts
 

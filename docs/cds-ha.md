@@ -1,5 +1,7 @@
 # Highly available CDS: operator notes
 
+"Workload policy" below is what the API and CLI call the allowlist.
+
 These notes cover running CDS as several replicas that share one mesh CA
 (`launch-config new --cds-node`). Each step below was run on TDX hardware.
 
@@ -9,7 +11,7 @@ HA CDS starts with a **fresh launch**. A cluster that runs a single CDS
 (no `cdsHA` in its launch documents) does not convert in place. Create a new
 bundle with `c8s node launch-config new --cds-node <name>` (repeat the flag,
 at least two), launch every node, and apply the Genesis decree. Then move
-workloads and re-apply the allowlist and secrets.
+workloads and re-apply the workload policy (`c8s allowlist apply`) and secrets.
 
 ## Rolling CDS to a new image
 
@@ -21,7 +23,7 @@ workloads and re-apply the allowlist and secrets.
    <new manifest.json>`). Wait until the new replica serves before you remove
    the old node.
 3. Sign and apply a decree that pins only the new image.
-4. Remove the old image's allowlist entries. They stay until you do.
+4. Remove the old image's workload policy entries. They stay until you do.
 
 When the new release reads a newer state format, the cluster changes format
 by itself. That happens when every seat is filled by a replica that reads the
@@ -29,6 +31,14 @@ new format, so during the rollout the old format stays in force.
 
 The router, `get-cert`, the injected sidecars and `allowlist-proxy` follow the
 decrees through the node's enforcer.
+
+## The mesh CA certificate
+
+The replicas share one mesh CA key for the life of the cluster. Past half the
+certificate's lifetime (`--ca-cert-validity`, one year by default), the leader
+renews the certificate under the same key through the log, so every replica
+serves the same new certificate and running workloads keep their trust anchor.
+Replacing the key itself is the `RotateKey` decree, a break-glass step.
 
 ## Rebooting nodes
 
@@ -38,9 +48,9 @@ decrees through the node's enforcer.
 * **A server-node reboot starts a new, empty cluster.** The server keeps
   all cluster state on the per-boot encrypted scratch disk (see
   operator.md, "Revocation is a launch-time decision"). That includes the CDS
-  backups, because they are ConfigMaps in the same etcd. After a server
-  reboot, relaunch the cluster and restore CDS from a backup you exported
-  earlier (below).
+  backups, because they are ConfigMaps in the same etcd. Surviving the loss
+  of the control plane is the job of server HA, which is tracked separately.
+  Until then, a backup you exported earlier (below) is the way back.
 
 ## Backups
 
@@ -75,6 +85,6 @@ Use this when every replica lost its state:
       --recovery-key-share share-1.json --recovery-key-share share-3.json --recovery-key-share share-4.json
 
 Fewer shares than the threshold are refused. The restored cluster keeps its
-mesh CA, secrets, allowlist and decree record, and the other replicas join it.
+mesh CA, secrets, workload policy and decree record, and the other replicas join it.
 If an attempt's answer times out while the replica restores, `recover` checks
 the decree record and reports success when its own Restore is there.
