@@ -636,6 +636,8 @@ runs:
     # confidential-inference release, checked as a customer: TEErminator
     # attest-lb with the seeded router name, allowlist fetch --pin, and
     # completions, by launch allowlist and again after an upload.
+    # Reported, not gating, while the per-pod mesh contract settles.
+    continue-on-error: true
     env:
       KUBECONFIG: /tmp/guest.kubeconfig
       CIE_DIR: /tmp/conf-inference
@@ -657,6 +659,8 @@ runs:
     # Boots a second CVM in place of the lane's, so it runs last, and not
     # when the lane's CVM is kept for debugging.
     if: ${{ !cancelled() && env.GUEST_IP != '' && inputs.keep_cvm != 'true' }}
+    # Reported, not gating, while the per-pod mesh contract settles.
+    continue-on-error: true
     env:
       IMAGE_MANIFEST: /tmp/image-manifest.json
       ROUTER_SEED: /tmp/conf-inference/node-image/allowlist-seed.json

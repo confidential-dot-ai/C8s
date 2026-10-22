@@ -16,10 +16,10 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// meshGate holds this node's protection state. A gate without a policy hosts
-// no member pods, which is what a config with no mesh policy says.
+// meshGate holds this node's protection state, under the mesh policy its
+// measured configuration carries.
 type meshGate struct {
-	policy *meshPolicy
+	policy meshPolicy
 	logger *slog.Logger
 	mu     sync.Mutex
 	pods   map[string]*protectedPod
@@ -72,7 +72,7 @@ type gatedContainer struct {
 	netDevices   map[string]*api.LinuxNetDevice
 }
 
-func newMeshGate(policy *meshPolicy, logger *slog.Logger) *meshGate {
+func newMeshGate(policy meshPolicy, logger *slog.Logger) *meshGate {
 	return &meshGate{
 		policy: policy,
 		logger: logger,
@@ -83,8 +83,7 @@ func newMeshGate(policy *meshPolicy, logger *slog.Logger) *meshGate {
 // hosts reports a sandbox the enforcer protects: its own network namespace,
 // in a namespace trusted policy does not exempt.
 func (g *meshGate) hosts(pod *api.PodSandbox) bool {
-	return g.policy != nil &&
-		!slices.Contains(g.policy.ExemptNamespaces, pod.GetNamespace()) &&
+	return !slices.Contains(g.policy.ExemptNamespaces, pod.GetNamespace()) &&
 		podNetworkNamespace(pod) != ""
 }
 
@@ -99,7 +98,7 @@ func (g *meshGate) protect(pod *api.PodSandbox) error {
 	if _, onRecord := g.pods[pod.GetId()]; onRecord {
 		return fmt.Errorf("sandbox %s is on record already, so its protection stands as installed", pod.GetId())
 	}
-	netns, err := installProtection(pod, *g.policy)
+	netns, err := installProtection(pod, g.policy)
 	g.pods[pod.GetId()] = &protectedPod{
 		netns:         netns,
 		refusal:       err,
@@ -185,7 +184,7 @@ func (g *meshGate) admit(pod *api.PodSandbox, ctr *api.Container, launch gatedCo
 	if err != nil {
 		return fmt.Errorf("mesh gate: container %s of pod %s/%s: %w", ctr.GetName(), pod.GetNamespace(), pod.GetName(), err)
 	}
-	if err := verifyPodRuleset(netns, *g.policy, kubeNamespace); err != nil {
+	if err := verifyPodRuleset(netns, g.policy, kubeNamespace); err != nil {
 		return fmt.Errorf("mesh gate: container %s of pod %s/%s: %w", ctr.GetName(), pod.GetNamespace(), pod.GetName(), err)
 	}
 	g.noteLaunched(pod.GetId(), launch)
@@ -229,12 +228,8 @@ func (g *meshGate) admissible(pod *api.PodSandbox, ctr *api.Container, launch ga
 }
 
 // verifyMember is the verification an identity assertion requires: a current
-// member pod whose live ruleset is the one trusted policy defines. A node with
-// no mesh policy has no protection to verify and withholds none.
+// member pod whose live ruleset is the one trusted policy defines.
 func (g *meshGate) verifyMember(sandboxID string) error {
-	if g.policy == nil {
-		return nil
-	}
 	if err := g.verifyMemberRuleset(sandboxID); err != nil {
 		g.logger.Warn("refusing to verify a sandbox as a protected mesh member", "sandbox", sandboxID, "error", err)
 		return err
@@ -249,7 +244,7 @@ func (g *meshGate) verifyMemberRuleset(sandboxID string) error {
 	if err != nil {
 		return err
 	}
-	return verifyPodRuleset(netns, *g.policy, kubeNamespace)
+	return verifyPodRuleset(netns, g.policy, kubeNamespace)
 }
 
 // memberNamespace is the network namespace of a protected sandbox whose

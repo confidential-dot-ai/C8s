@@ -64,7 +64,7 @@ policy:
 
 logging:
   level: "info"
-`
+` + meshYAML
 
 func writeConfig(t *testing.T, body string) string {
 	t.Helper()

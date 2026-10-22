@@ -92,7 +92,7 @@ func gatherFromDiscovery(ctx context.Context, base, path, serverName string, tim
 func dialFrontDoor(ctx context.Context, addr, serverName string, timeout time.Duration) (*tls.Conn, error) {
 	dialer := &tls.Dialer{
 		NetDialer: &net.Dialer{Timeout: timeout},
-		Config:    &tls.Config{InsecureSkipVerify: true, ServerName: serverName}, //nolint:gosec
+		Config:    &tls.Config{MinVersion: tls.VersionTLS13, InsecureSkipVerify: true, ServerName: serverName}, //nolint:gosec
 	}
 	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
@@ -161,15 +161,14 @@ func fetchDiscoveryDoc(ctx context.Context, client *http.Client, base *url.URL, 
 // gets the same body authentication as every other cert-sourced path, and is
 // retained as the evidence leaf so the --mesh-ca / --sandbox-id / --workload
 // pins work against discovery targets too. A CDS-issued (CA-vouched) cert in
-// the document is authenticated by a --mesh-ca chain check, or by the live
-// handshake below; with neither the document is rejected rather than verified
-// against a body nothing signed for (authorizeLeafBody).
+// the document is authenticated by a --mesh-ca chain check; without one the
+// document is rejected rather than verified against a body nothing signed for
+// (authorizeLeafBody).
 //
 // observed is the leaf the target connection's TLS handshake presented (nil
 // when no handshake was made). Byte-identical to the attested cert, the
-// completed handshake proves the peer holds the attestation-bound key — the
-// same possession backstop as the armTLS path — and the verdict may stand on
-// the front door speaking the attested key (applyFrontDoorPolicy).
+// verdict may stand on the front door speaking the attested key
+// (applyFrontDoorPolicy).
 //
 // An unknown public_tls.mode fails closed here — a securityError, so auto
 // mode cannot fall through to the serving cert past a document it cannot
@@ -197,10 +196,6 @@ func evidenceFromDiscovery(data []byte, source string, trust leafTrust, observed
 		observedSHA256 = hex.EncodeToString(sum[:])
 		if bytes.Equal(observed.Raw, cert.Raw) {
 			frontDoor = frontDoorAttested
-			// The possession backstop admits the body only where no pinned CA
-			// authenticates it instead: with --mesh-ca the chain check is the
-			// stronger authentication, and authorizeLeafBody reports it.
-			trust.keyProven = trust.meshCA == nil
 		} else {
 			frontDoor = frontDoorOther
 		}
@@ -234,7 +229,6 @@ func evidenceFromDiscovery(data []byte, source string, trust leafTrust, observed
 		leaf:                cert,
 		leafBody:            body,
 		leafChainVerified:   chainVerified,
-		leafKeyProven:       trust.keyProven,
 		frontDoor:           frontDoor,
 		frontDoorCertSHA256: observedSHA256,
 		sandboxID:           sandboxID,

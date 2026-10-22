@@ -7124,6 +7124,20 @@ func TestChartRendersPodValidatorFailClosed(t *testing.T) {
 	}
 }
 
+// The injector renders fail-closed whatever webhook.failurePolicy is set to:
+// an injection the mutator never made must not reach the API server.
+func TestChartInjectorFailClosed(t *testing.T) {
+	t.Parallel()
+	out, err := helmTemplate(t, "--set", "webhook.failurePolicy=Ignore")
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	injector := renderedMutatingWebhook(t, out, "pods.c8s.confidential.ai")
+	if injector.FailurePolicy == nil || *injector.FailurePolicy != admissionregv1.Fail {
+		t.Errorf("injector failurePolicy = %v, want Fail", injector.FailurePolicy)
+	}
+}
+
 // The install lane renders the mesh policy in the same shape the node image
 // measures, so the enforcer it installs hosts member pods there too (the lane
 // is for test clusters, decision 5).

@@ -9,7 +9,8 @@ webhooks:
   - name: pods.c8s.confidential.ai
     admissionReviewVersions: [v1]
     sideEffects: None
-    failurePolicy: {{ .Values.webhook.failurePolicy }}
+    # Not tunable: an injection the webhook never made leaves a pod unprotected.
+    failurePolicy: Fail
     timeoutSeconds: 5
     reinvocationPolicy: Never
     # Every pod of a namespace this selector admits is injected, so the

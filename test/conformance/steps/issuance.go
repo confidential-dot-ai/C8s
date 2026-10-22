@@ -152,6 +152,38 @@ func (w *world) publicKeyOf(name string) (crypto.PublicKey, error) {
 	return &key.PublicKey, nil
 }
 
+// heldPair is a pod's leaf read together with its key. Every renewal publishes
+// a fresh key, and the reader files are replaced one at a time, so a pair
+// counts only when the key is the same before and after the leaf is read.
+func (w *world) heldPair(name string) (*leaf, crypto.PublicKey, error) {
+	p, err := w.injectedPod(name)
+	if err != nil {
+		return nil, nil, err
+	}
+	for range 3 {
+		before, err := w.publicKeyOf(name)
+		if err != nil {
+			return nil, nil, err
+		}
+		l, err := w.podLeaf(p)
+		if err != nil {
+			return nil, nil, err
+		}
+		if l == nil {
+			return nil, nil, fmt.Errorf("%q holds no leaf in its certificate volume", name)
+		}
+		after, err := w.publicKeyOf(name)
+		if err != nil {
+			return nil, nil, err
+		}
+		if same, ok := before.(interface{ Equal(crypto.PublicKey) bool }); ok && same.Equal(after) {
+			p.leaf = l
+			return l, after, nil
+		}
+	}
+	return nil, nil, fmt.Errorf("the key %q holds changed during every read of its leaf", name)
+}
+
 func carriesWorkloadID(ctx context.Context, name string) error {
 	w := getWorld(ctx)
 	p, err := w.pod(name)
@@ -470,11 +502,17 @@ func leafSandboxIDOf(ctx context.Context, name, podName string) error {
 
 func leafCertifiesKey(ctx context.Context, name, keyHolder string) error {
 	w := getWorld(ctx)
-	l, err := w.leafOf(name)
-	if err != nil {
-		return err
+	var l *leaf
+	var pub crypto.PublicKey
+	var err error
+	if _, driven := w.issuance.requesters[name]; !driven && name == keyHolder {
+		l, pub, err = w.heldPair(name)
+	} else {
+		l, err = w.leafOf(name)
+		if err == nil {
+			pub, err = w.publicKeyOf(keyHolder)
+		}
 	}
-	pub, err := w.publicKeyOf(keyHolder)
 	if err != nil {
 		return err
 	}
