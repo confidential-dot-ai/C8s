@@ -266,21 +266,9 @@ func newHADecreesCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			req, err := http.NewRequestWithContext(cmd.Context(), http.MethodGet, strings.TrimRight(conn.URL, "/")+"/ha/decrees", nil)
+			records, err := fetchDecreeRecord(cmd.Context(), hc, conn.URL)
 			if err != nil {
 				return err
-			}
-			resp, err := hc.Do(req)
-			if err != nil {
-				return err
-			}
-			defer resp.Body.Close()
-			if resp.StatusCode != http.StatusOK {
-				return fmt.Errorf("GET /ha/decrees: %s", resp.Status)
-			}
-			var records []cdsha.DecreeRecord
-			if err := json.NewDecoder(io.LimitReader(resp.Body, 16<<20)).Decode(&records); err != nil {
-				return fmt.Errorf("GET /ha/decrees: %w", err)
 			}
 			return printDecrees(cmd.OutOrStdout(), records, decrKey, asJSON)
 		},
@@ -339,4 +327,25 @@ func printDecrees(w io.Writer, records []cdsha.DecreeRecord, keyPath string, asJ
 		return fmt.Errorf("%d of %d records do not carry a valid operator signature", bad, len(records))
 	}
 	return nil
+}
+
+// fetchDecreeRecord reads the decrees the cluster applied (GET /ha/decrees).
+func fetchDecreeRecord(ctx context.Context, hc *http.Client, base string) ([]cdsha.DecreeRecord, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(base, "/")+"/ha/decrees", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := hc.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GET /ha/decrees: %s", resp.Status)
+	}
+	var records []cdsha.DecreeRecord
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 16<<20)).Decode(&records); err != nil {
+		return nil, fmt.Errorf("GET /ha/decrees: %w", err)
+	}
+	return records, nil
 }
