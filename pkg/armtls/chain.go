@@ -32,14 +32,9 @@ func VerifyChain(rawCerts [][]byte, roots *x509.CertPool, now time.Time) (*x509.
 	return leaf, nil
 }
 
-// verifyChain checks leaf against roots through the intermediates in
-// rawIntermediates. x509.Verify grants no NotBefore skew, while
-// certutil.CheckValidity (the embedded-evidence path, through VerifyCert)
-// grants certutil.LeafValiditySkew. Shifting CurrentTime by that skew keeps a
-// CA-signed leaf whose NotBefore is slightly ahead of the local clock on the
-// chain path; otherwise it falls through to embedded-evidence verification,
-// which enforces no pin. CheckValidity then rechecks NotAfter at the true now,
-// so the shift has no effect at the expiry end.
+// verifyChain requires a chain to roots under any extended key usage, judging
+// every certificate in it at now+certutil.LeafValiditySkew, then the leaf
+// alone at now (certutil.CheckValidity).
 func verifyChain(leaf *x509.Certificate, rawIntermediates [][]byte, roots *x509.CertPool, now time.Time) error {
 	intermediates := x509.NewCertPool()
 	for _, raw := range rawIntermediates {

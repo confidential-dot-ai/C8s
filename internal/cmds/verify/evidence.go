@@ -183,7 +183,7 @@ func gatherFromARMTLSCert(ctx context.Context, addr, serverName string, timeout 
 		NetDialer: &net.Dialer{Timeout: timeout},
 		// INVARIANT: PKI verification is intentionally skipped — the armTLS
 		// attestation in the cert extension is the trust anchor, verified below.
-		Config: &tls.Config{InsecureSkipVerify: true, ServerName: serverName}, //nolint:gosec
+		Config: &tls.Config{MinVersion: tls.VersionTLS13, InsecureSkipVerify: true, ServerName: serverName}, //nolint:gosec
 	}
 	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
@@ -244,7 +244,7 @@ func authorizeLeafBody(cert *x509.Certificate, body certutil.BodyAuthentication,
 	}
 	if _, err := cert.Verify(x509.VerifyOptions{
 		Roots:     trust.meshCA,
-		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
+		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}); err != nil {
 		return false, &securityError{err: fmt.Errorf("leaf does not chain to the --mesh-ca bundle: %w", err)}
 	}
@@ -270,6 +270,9 @@ func evidenceFromCert(cert *x509.Certificate, source string, trust leafTrust) (*
 	chainVerified, err := authorizeLeafBody(cert, body, trust)
 	if err != nil {
 		return nil, err
+	}
+	if err := localverify.CheckServingLeaf(cert); err != nil {
+		return nil, &securityError{err: fmt.Errorf("serving %w", err)}
 	}
 	binding := "REPORTDATA binds the certificate public key (no per-request nonce — replayable within the authenticated certificate validity window, which is the only freshness bound on this path)"
 	sandboxID, sandboxErr := armtls.SandboxIDFromCert(cert)
@@ -300,7 +303,7 @@ func evidenceFromCert(cert *x509.Certificate, source string, trust leafTrust) (*
 // attestation in the payload, not PKI on the hop.
 func insecureClient(serverName string, timeout time.Duration) *http.Client {
 	return &http.Client{Timeout: timeout, Transport: &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true, ServerName: serverName}, //nolint:gosec
+		TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS13, InsecureSkipVerify: true, ServerName: serverName}, //nolint:gosec
 	}}
 }
 

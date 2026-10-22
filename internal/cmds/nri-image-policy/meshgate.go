@@ -228,12 +228,16 @@ func (g *meshGate) admissible(pod *api.PodSandbox, ctr *api.Container, launch ga
 	return state.netns, state.kubeNamespace, nil
 }
 
+// errNoMeshPolicy is the refusal every assertion gets on a node whose
+// measured config carries no mesh policy.
+var errNoMeshPolicy = errors.New("this node has no mesh policy, so no sandbox is a verified member")
+
 // verifyMember is the verification an identity assertion requires: a current
 // member pod whose live ruleset is the one trusted policy defines. A node with
-// no mesh policy has no protection to verify and withholds none.
+// no mesh policy verifies no sandbox, so it asserts no identity.
 func (g *meshGate) verifyMember(sandboxID string) error {
 	if g.policy == nil {
-		return nil
+		return errNoMeshPolicy
 	}
 	if err := g.verifyMemberRuleset(sandboxID); err != nil {
 		g.logger.Warn("refusing to verify a sandbox as a protected mesh member", "sandbox", sandboxID, "error", err)

@@ -2,6 +2,7 @@ package nriimagepolicy
 
 import (
 	"context"
+	"errors"
 	"net/netip"
 	"strings"
 	"testing"
@@ -95,8 +96,8 @@ func TestInitializingDenialDoesNotRefuseSandbox(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if caller.Refusal != nil {
-				t.Fatalf("sandbox refused after readmission: %v", caller.Refusal)
+			if !errors.Is(caller.Refusal, errNoMeshPolicy) {
+				t.Fatalf("refusal after readmission = %v, want the missing mesh policy alone", caller.Refusal)
 			}
 		})
 	}

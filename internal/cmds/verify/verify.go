@@ -1260,7 +1260,7 @@ func applySandboxPolicy(oc *Outcome, cfg config, ev *evidence, opKeys operatorKe
 		}
 		if _, err := ev.leaf.Verify(x509.VerifyOptions{
 			Roots:     pool,
-			KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
+			KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		}); err != nil {
 			fail("leaf does not chain to the --mesh-ca bundle: %v", err)
 			return

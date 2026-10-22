@@ -434,7 +434,7 @@ func TestMeshGateRefusesSandboxesItDidNotProtect(t *testing.T) {
 
 // An assertion needs the gate's verification of the caller's pod: the plugin
 // answers with a refusal until it has one, and a node with no mesh policy has
-// no protection to withhold.
+// no verification to give.
 func TestSandboxForPeerRequiresVerifiedProtection(t *testing.T) {
 	procRoot := t.TempDir()
 	pod := meshPod("default", "pod", testNetNS)
@@ -471,12 +471,15 @@ func TestSandboxForPeerRequiresVerifiedProtection(t *testing.T) {
 		t.Fatalf("a refused sandbox was answered without a refusal: %v %v", caller, err)
 	}
 
-	// A node whose measured config carries no mesh policy hosts no member
-	// pods, so it withholds nothing.
+	// A node whose measured config carries no mesh policy verifies no
+	// membership, so it issues no assertion.
 	p.mesh = newMeshGate(nil, discardLogger())
 	caller, err = p.SandboxForPeer(workloadclaims.PeerForPID(4242))
-	if err != nil || caller.Refusal != nil {
-		t.Fatalf("a node with no mesh policy withheld an assertion: %v %v", caller, err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !errors.Is(caller.Refusal, errNoMeshPolicy) {
+		t.Fatalf("refusal = %v, want the missing mesh policy refusal", caller.Refusal)
 	}
 }
 
@@ -536,7 +539,7 @@ func TestSandboxForPeerRefusesASandboxWithADeniedContainer(t *testing.T) {
 // container of that name in the sandbox lifts its refusal: a pod created
 // between an allowlist apply and this node pulling the new entry gets its
 // identity once the retried container passes the admission check. The node
-// here hosts no member pods, so the sandbox's answer is that refusal alone.
+// here carries no mesh policy, so that is the refusal left once it is lifted.
 func TestSandboxForPeerLiftsADeniedCreationOnTheSameName(t *testing.T) {
 	procRoot := t.TempDir()
 	p, store := newCachedPlugin(&config{
@@ -566,8 +569,8 @@ func TestSandboxForPeerLiftsADeniedCreationOnTheSameName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if caller.Refusal == nil {
-		t.Fatal("another container's admission lifted a denied container's refusal")
+	if caller.Refusal == nil || errors.Is(caller.Refusal, errNoMeshPolicy) {
+		t.Fatalf("refusal = %v, want the denied container's own refusal still held", caller.Refusal)
 	}
 
 	retry := makeCtrWithImage(pod.GetId(), "app", "registry/repo@"+pushDigestB)
@@ -582,8 +585,8 @@ func TestSandboxForPeerLiftsADeniedCreationOnTheSameName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if caller.Refusal != nil {
-		t.Fatalf("refusal = %v, want none once the denied container was admitted under its own name", caller.Refusal)
+	if !errors.Is(caller.Refusal, errNoMeshPolicy) {
+		t.Fatalf("refusal = %v, want only the missing mesh policy once the denied container was admitted under its own name", caller.Refusal)
 	}
 }
 
@@ -614,8 +617,8 @@ func TestSandboxForPeerKeepsARefusalOtherThanADeniedCreation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if caller.Refusal == nil {
-		t.Fatal("a sandbox refused for a reason other than a denied creation asserted an identity")
+	if caller.Refusal == nil || errors.Is(caller.Refusal, errNoMeshPolicy) {
+		t.Fatalf("refusal = %v, want the sandbox's own refusal for a reason other than a denied creation", caller.Refusal)
 	}
 }
 

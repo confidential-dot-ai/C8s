@@ -107,10 +107,11 @@ func filterInput(p Policy) chain {
 }
 
 // filterOutput denies traffic leaving the pod unless it is a reply, bound for
-// a pod-local address, neighbour discovery, an approved resolver query, or sent
-// by a platform role to a destination it is bound to. No member pod process
-// runs as root, so a root-owned socket here entered the namespace from
-// outside, as port-forward does.
+// a pod-local address, neighbour discovery, an approved resolver query, TCP
+// from the mesh endpoint's own sockets, or sent by a platform role to a
+// destination it is bound to. No member pod process runs as root, so a
+// root-owned socket here entered the namespace from outside, as port-forward
+// does.
 func filterOutput(p Policy) chain {
 	resolverUDP := fmt.Sprintf("resolver-%s-udp", p.Resolver)
 	resolverTCP := fmt.Sprintf("resolver-%s-tcp", p.Resolver)
@@ -120,7 +121,7 @@ func filterOutput(p Policy) chain {
 		{"pod-local", withVerdict(matchLocalDestination(), expr.VerdictAccept)},
 		{resolverUDP, withVerdict(matchResolver(p.Resolver, unix.IPPROTO_UDP), expr.VerdictAccept)},
 		{resolverTCP, withVerdict(matchResolver(p.Resolver, unix.IPPROTO_TCP), expr.VerdictAccept)},
-		{"mesh-sockets", withVerdict(matchSocketUID(p.MeshUID), expr.VerdictAccept)},
+		{"mesh-sockets", withVerdict(slices.Concat(matchSocketUID(p.MeshUID), matchProtocol(unix.IPPROTO_TCP)), expr.VerdictAccept)},
 	})
 	for _, role := range p.Roles {
 		rules = append(rules, roleDestinationRules(role)...)

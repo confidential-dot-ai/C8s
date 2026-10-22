@@ -92,7 +92,7 @@ func gatherFromDiscovery(ctx context.Context, base, path, serverName string, tim
 func dialFrontDoor(ctx context.Context, addr, serverName string, timeout time.Duration) (*tls.Conn, error) {
 	dialer := &tls.Dialer{
 		NetDialer: &net.Dialer{Timeout: timeout},
-		Config:    &tls.Config{InsecureSkipVerify: true, ServerName: serverName}, //nolint:gosec
+		Config:    &tls.Config{MinVersion: tls.VersionTLS13, InsecureSkipVerify: true, ServerName: serverName}, //nolint:gosec
 	}
 	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
