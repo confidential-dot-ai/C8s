@@ -8,7 +8,10 @@ test this c8s build instead of the release's pinned one:
 - the core entries are this build's allowlist-seed.json (`c8s node-image
   render`), not the seed recorded in the confidential-inference repository;
 - the binary under test derives and lints, so the sourceCommit pin check of
-  `generate()` is not run.
+  `generate()` is not run;
+- no container expects the cert directory mount: since #798 the webhook
+  mounts the cert volume only into the c8s sidecars, so the generator's
+  rule for it matches nothing and the enforcer rejects the container.
 
 Writes app.json (the application entries, for launch-config --workloads)
 and allowlist.json (seed plus application entries, for `c8s allowlist
@@ -62,6 +65,9 @@ def main() -> None:
         controller = controllers[item["controller"]]
         pod = controller["spec"]["template"]["spec"]
         env_policies, mount_policies = {}, {}
+        annotations = controller["spec"]["template"].get("metadata", {}).get("annotations", {})
+        cert_rule = {"destination": annotations.get("confidential.ai/c8s-cert-dir", gen["DEFAULT_CERT_DIR"]),
+                     "kind": "emptyDir"}
         for container in pod.get("initContainers", []) + pod["containers"]:
             name = container["name"]
             if gen["is_carved_out"](gen["effective_process"](container, image_env[container["image"]]),
@@ -70,7 +76,8 @@ def main() -> None:
                 continue
             env_policies[name] = {"policy": "exact",
                                   "values": gen["container_env"](controller, container, image_env, policy, None)}
-            rules = gen["container_mounts"](controller, container, None, c8s_release=args.c8s_release)
+            rules = [rule for rule in gen["container_mounts"](controller, container, None, c8s_release=args.c8s_release)
+                     if rule != cert_rule]
             mount_policies[name] = {"policy": "exact", "rules": rules} if rules else {"policy": "deny"}
         reads = sorted(set(item.get("secretReads", [])) | set(gen["volume_reads"](controller)))
         explicit = json.loads(json.dumps(controller))

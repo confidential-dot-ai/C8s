@@ -11,6 +11,8 @@
   the connection (C8s#933).
 - No probe timeout exceeds the mesh's forwarded-probe budget (5 s), which
   the webhook enforces; the chart gives the worker's startup probe 10 s.
+- The worker's tcpSocket probes become HTTP GETs of /health, the path its
+  startup probe already uses: the mesh forwards only HTTP probes.
 - The workloads' CDS egress also allows the node's CDS port. Since the
   enforcer mounts the node's own CDS endpoint into credential clients
   (#806, #814), c8s-cert dials <node IP>:30808, not the c8s-cds Service on
@@ -50,6 +52,9 @@ def patch(docs: list[dict], image: str) -> list[dict]:
         if kind != "StatefulSet" or not name.startswith("inference-worker-"):
             continue
         container = next(c for c in doc["spec"]["template"]["spec"]["containers"] if c["name"] == "sglang")
+        for probe in ("readinessProbe", "livenessProbe"):
+            if "tcpSocket" in container.get(probe, {}):
+                container[probe]["httpGet"] = {"path": "/health", "port": container[probe].pop("tcpSocket")["port"]}
         flags = dict(arg.split("=", 1) for arg in container["args"] if arg.startswith("--") and "=" in arg)
         container["image"] = image
         container["command"] = ["/app/llm-d-inference-sim"]
