@@ -33,8 +33,9 @@
 #   node_refuses <port>              yes/no: a connection from the node to 127.0.0.1:<port>
 #                                    is refused now; a backend without a node shell answers yes
 #   cds_restart                      restart the CDS and wait until it serves again
-#   mesh_restart                     restart every mesh proxy and wait until all are
-#                                    ready, so each bootstraps from the CDS's mesh CA
+#   mesh_restart                     restart every mesh proxy, and recreate every
+#                                    controller-owned mesh member, and wait until all
+#                                    are ready, so each bootstraps from the CDS's mesh CA
 #   cds_volatile                     yes/no: a CDS restart loses the allowlist and its version
 #   served_version                   the version of the allowlist CDS serves now
 #   applied_version                  the allowlist version the admission plugin
@@ -735,6 +736,8 @@ cds_endpoints_await() {
 MESH_DS=c8s-armtls-mesh
 MESH_SELECTOR=app=c8s-armtls-mesh
 MESH_SYNC_CONTAINER=iptables-sync
+# The requester the webhook injects into every per-pod mesh member.
+MESH_CERT_CONTAINER=c8s-cert
 # The ipsets the mesh keeps (internal/cmds/armtlsmesh/pod_ipsets_linux.go):
 # local eligible pods, whose traffic is redirected, and guarded pods.
 MESH_SET_LOCAL=ARMTLS-MESH-LOCAL-PODS
@@ -775,11 +778,46 @@ mesh_ready() {
 # A restarted CDS mints a new mesh CA, which a running proxy refuses as a
 # CA bundle with no continuity; only a proxy started after it bootstraps
 # from the new one. The mesh pods are new, so their cached names go.
+#
+# A per-pod mesh member is bound to the CA key of its first leaf for the
+# pod's life (get-cert R3), so only a pod created after the restart holds a
+# leaf under the new CA. Every member a controller owns, such as the router,
+# outlives the scenario and is recreated; a scenario's own pods go with it.
 mesh_restart() {
-    kubectl -n "$NS" get ds "$MESH_DS" >/dev/null 2>&1 || return "$UNSUPPORTED"
-    kubectl -n "$NS" rollout restart "ds/$MESH_DS" >/dev/null || return
-    kubectl -n "$NS" rollout status "ds/$MESH_DS" --timeout=240s >/dev/null || return
-    rm -f "$(scratch)"/cache-mesh-pod-*
+    local members deadline
+    if kubectl -n "$NS" get ds "$MESH_DS" >/dev/null 2>&1; then
+        kubectl -n "$NS" rollout restart "ds/$MESH_DS" >/dev/null || return
+        kubectl -n "$NS" rollout status "ds/$MESH_DS" --timeout=240s >/dev/null || return
+        rm -f "$(scratch)"/cache-mesh-pod-*
+    fi
+    members="$(owned_mesh_members)" || return
+    [ -n "$members" ] || return 0
+    while read -r ns pod; do
+        kubectl -n "$ns" delete pod "$pod" --wait=false >/dev/null || return
+    done <<<"$members"
+    deadline=$(($(date +%s) + 240))
+    until owned_mesh_members_ready "$(wc -l <<<"$members")"; do
+        [ "$(date +%s)" -lt "$deadline" ] || { echo "backend: the recreated mesh members are not ready after 240s" >&2; return 1; }
+        sleep 2
+    done
+}
+
+# "<namespace> <pod>" for each controller-owned pod carrying the requester.
+owned_mesh_members() {
+    kubectl get pods -A -o json | jq -r --arg c "$MESH_CERT_CONTAINER" '.items[]
+        | select(.metadata.ownerReferences != null)
+        | select([(.spec.initContainers // [])[], .spec.containers[]] | any(.name == $c))
+        | "\(.metadata.namespace) \(.metadata.name)"'
+}
+
+# owned_mesh_members_ready <count>: at least count such pods, none
+# terminating, all Ready.
+owned_mesh_members_ready() {
+    kubectl get pods -A -o json | jq -e --arg c "$MESH_CERT_CONTAINER" --argjson n "$1" '[.items[]
+        | select(.metadata.ownerReferences != null)
+        | select([(.spec.initContainers // [])[], .spec.containers[]] | any(.name == $c))]
+        | length >= $n and all(.metadata.deletionTimestamp == null
+            and any(.status.conditions[]?; .type == "Ready" and .status == "True"))' >/dev/null
 }
 
 mesh_member() {

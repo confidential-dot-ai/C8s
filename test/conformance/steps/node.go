@@ -182,8 +182,8 @@ func versionBelowApplied(ctx context.Context, node string) error {
 // it, or on every node it addressed and on node "one" if the CDS was
 // restarted, since only a start lets a plugin accept the versions a
 // restarted CDS serves, whether or not the scenario spoke of its node. After
-// a CDS restart the mesh is restarted too: only a proxy started after the
-// CDS accepts the mesh CA it minted.
+// a CDS restart the mesh is restarted too: only a proxy or mesh member started
+// after the CDS holds the mesh CA it minted.
 func (w *world) restoreNode() error {
 	var errs []error
 	if w.cdsBlocked {
