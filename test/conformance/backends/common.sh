@@ -220,7 +220,7 @@ kubeconfig() { echo "$KUBECONFIG"; }
 # Alpine's python with the programs the steps run in it; a backend adds its own.
 CONFORMANCE_REPO=ghcr.io/confidential-dot-ai/c8s-conformance-
 declare -A CONFORMANCE_IMAGES=(
-    [tenant-app]=sha256:96261c697b2c970034ce6bcb663fd7f636834dbeb1397c074e58cf2e85254139
+    [tenant-app]=sha256:e1c7fc0eef8212a8a5beaf993ed804e518f80cce32d858c3c7e9c1339bdb3938
 )
 image_ref() {
     [ -z "${CONFORMANCE_IMAGES[$1]:-}" ] || { echo "$CONFORMANCE_REPO$1@${CONFORMANCE_IMAGES[$1]}"; return; }
