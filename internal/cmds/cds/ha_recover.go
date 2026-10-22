@@ -2,6 +2,7 @@ package cds
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"encoding/json"
 	"errors"
@@ -103,6 +104,16 @@ func newHARecoverCmd() *cobra.Command {
 					return nil
 				case code == http.StatusMisdirectedRequest:
 				default:
+					// An earlier attempt may have restored the cluster after
+					// its request timed out: a serving replica no longer takes
+					// /ha/restore. The decree record says whether ours applied.
+					if restoreApplied(cmd.Context(), hc, conn.URL, sd.Decree.IntentID) {
+						fmt.Fprintf(cmd.OutOrStdout(), "restored on %s (the decree record holds %s)\n", node, sd.Decree.IntentID)
+						return nil
+					}
+					if code == http.StatusNotFound {
+						return errors.New("restore refused: the replica is serving; a Restore only goes to a fresh replica after a total loss (c8s cds ha status shows the cluster)")
+					}
 					return fmt.Errorf("restore refused (%d): %s", code, strings.TrimSpace(msg))
 				}
 				time.Sleep(time.Second)
@@ -122,15 +133,33 @@ func newHARecoverCmd() *cobra.Command {
 	f.Uint64Var(&minIndex, "min-index", 0, "with --min-epoch: refuse a backup below this index in that epoch (required)")
 	f.DurationVar(&expiresIn, "expires-in", 10*time.Minute, "Restore decree lifetime")
 	f.IntVar(&attempts, "attempts", 30, "requests before giving up, each to whichever replica the address reaches")
-	for _, r := range []string{"backup-file", "recovery-key", "decree-key", "cluster-id", "bootstrap-node", "url"} {
+	for _, r := range []string{"backup-file", "decree-key", "cluster-id", "bootstrap-node", "url"} {
 		_ = cmd.MarkFlagRequired(r)
 	}
+	// The whole key, or custodians' shares of it: exactly one.
+	cmd.MarkFlagsOneRequired("recovery-key", "recovery-key-share")
+	cmd.MarkFlagsMutuallyExclusive("recovery-key", "recovery-key-share")
 	return cmd
 }
 
 func signRestore(key *ecdsa.PrivateKey, clusterID, node string, snap []byte, expiresIn time.Duration) (cdsha.SignedDecree, error) {
 	return cdsha.SignDecree(cdsha.Decree{ClusterID: clusterID, IntentID: "restore-" + randomID(), Kind: cdsha.Restore,
 		BootstrapNode: node, SnapshotSHA256: cdsha.SnapshotSHA256(snap), ExpiresAt: time.Now().Add(expiresIn).UTC().Truncate(time.Second)}, key)
+}
+
+// restoreApplied reports whether the cluster's decree record holds the
+// Restore decree with this intent.
+func restoreApplied(ctx context.Context, hc *http.Client, base, intent string) bool {
+	records, err := fetchDecreeRecord(ctx, hc, base)
+	if err != nil {
+		return false
+	}
+	for _, r := range records {
+		if r.Decree.Decree.Kind == cdsha.Restore && r.Decree.Decree.IntentID == intent {
+			return true
+		}
+	}
+	return false
 }
 
 func postRestore(hc *http.Client, url string, body []byte) (int, string, error) {
