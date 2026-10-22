@@ -28,8 +28,9 @@
 #   plugin_stop <node>               stop the plugin; the runtime creates no workload container
 #                                    until plugin_start
 #   plugin_start <node>              start the plugin again and wait until it is ready
-#   cds_block / cds_unblock          make the CDS unreachable for every node's pull, and undo it;
-#                                    cds_block returns once node_refuses says a pull is refused
+#   cds_block / cds_unblock          make the CDS unreachable for every node's pull, leaving
+#                                    the pods' issuance alone, and undo it; cds_block returns
+#                                    once node_refuses says a pull is refused
 #   node_refuses <port>              yes/no: a connection from the node to 127.0.0.1:<port>
 #                                    is refused now; a backend without a node shell answers yes
 #   cds_restart                      restart the CDS and wait until it serves again
@@ -378,48 +379,6 @@ injected_image() { operator_arg get-cert-image; }
 
 # What the webhook tells every requester it injects.
 cds_pod_url() { operator_arg cds-url; }
-
-# Every plugin pulls from https://127.0.0.1:<node port of the CDS Service>
-# (the chart's nriImagePolicy.allowlist.pull.url default and the node image's
-# image-policy.yaml.in). Moving the Service's node port leaves nothing
-# listening on the port the plugin dials, so each pull is refused at once
-# rather than after its timeout, while the Service stays reachable on its
-# cluster IP for the operator's writes. The port it had is kept in an
-# annotation on the Service, so cds_unblock restores it from any process.
-CDS_PORT_ANNOTATION=c8s-conformance/node-port
-
-cds_block() {
-    local port candidate
-    port="$(kubectl -n "$NS" get svc c8s-cds -o jsonpath="{.metadata.annotations.$CDS_PORT_ANNOTATION}")"
-    [ -z "$port" ] || return 0 # already blocked
-    port="$(kubectl -n "$NS" get svc c8s-cds -o jsonpath='{.spec.ports[0].nodePort}')"
-    [ -n "$port" ] || { echo "backend: the CDS Service has no node port" >&2; return 1; }
-    kubectl -n "$NS" annotate svc c8s-cds "$CDS_PORT_ANNOTATION=$port" --overwrite >/dev/null
-    for candidate in $(seq $((port + 1)) $((port + 5))); do
-        kubectl -n "$NS" patch svc c8s-cds --type json \
-            -p "[{\"op\":\"replace\",\"path\":\"/spec/ports/0/nodePort\",\"value\":$candidate}]" >/dev/null 2>&1 || continue
-        # kube-proxy reprograms the node after the patch; until it has, a
-        # pull still reaches the CDS.
-        local deadline=$(($(date +%s) + 60))
-        until [ "$(node_refuses "$port")" = yes ]; do
-            [ "$(date +%s)" -lt "$deadline" ] || { echo "backend: the node still accepts pulls on $port after 60s" >&2; return 1; }
-            sleep 1
-        done
-        return 0
-    done
-    kubectl -n "$NS" annotate svc c8s-cds "$CDS_PORT_ANNOTATION-" >/dev/null
-    echo "backend: no free node port near $port" >&2
-    return 1
-}
-
-cds_unblock() {
-    local port
-    port="$(kubectl -n "$NS" get svc c8s-cds -o jsonpath="{.metadata.annotations.$CDS_PORT_ANNOTATION}")"
-    [ -n "$port" ] || return 0
-    kubectl -n "$NS" patch svc c8s-cds --type json \
-        -p "[{\"op\":\"replace\",\"path\":\"/spec/ports/0/nodePort\",\"value\":$port}]" >/dev/null
-    kubectl -n "$NS" annotate svc c8s-cds "$CDS_PORT_ANNOTATION-" >/dev/null
-}
 
 # The CDS keeps its allowlist and version counter in its data volume; a
 # restart loses both when that volume is an emptyDir (the chart's
