@@ -277,6 +277,7 @@ func collectNodeImageArtifacts(rendered []byte, components map[string]bool) (*no
 		return nil, fmt.Errorf("encode node namespace: %w", err)
 	}
 	artifacts := nodeImageArtifacts{localNames: map[string]string{}}
+	injected := map[string]string{} // injected sidecar image -> node-local name
 	var manifests bytes.Buffer
 	manifests.Write(namespace)
 	decoder := k8syaml.NewYAMLOrJSONDecoder(bytes.NewReader(rendered), 4096)
@@ -329,6 +330,15 @@ func collectNodeImageArtifacts(rendered []byte, components map[string]bool) (*no
 			}
 			if err := collectWorkloadImages(object, key, images); err != nil {
 				return nil, err
+			}
+			if key == "Deployment/c8s-operator" {
+				// The webhook injects sidecars into pods on every node, so
+				// it names their images node-locally too; the seed's exact
+				// argv for the operator is rewritten to match below, after
+				// the seed is checked against the digest-pinned render.
+				if err := localizeInjectedImages(&object, components, injected); err != nil {
+					return nil, fmt.Errorf("node-image workload %s: %w", key, err)
+				}
 			}
 			if key == routerWorkloadKey {
 				image, err := frontDoorImage(object)
@@ -409,6 +419,19 @@ func collectNodeImageArtifacts(rendered []byte, components map[string]bool) (*no
 			}
 		}
 		artifacts.images = append(artifacts.images, image)
+	}
+	// The operator's exact argv in the seed names the injected images; keep
+	// it equal to the rewritten Deployment, in the seed file and in the seed
+	// ConfigMap the manifests carry.
+	for image, local := range injected {
+		for _, flag := range injectedImageFlags {
+			from, to := []byte(flag+image), []byte(flag+local)
+			artifacts.seed = bytes.ReplaceAll(artifacts.seed, from, to)
+			rewritten := bytes.ReplaceAll(manifests.Bytes(), from, to)
+			manifests.Reset()
+			manifests.Write(rewritten)
+		}
+		artifacts.localNames[image] = local
 	}
 	slices.Sort(artifacts.images)
 	artifacts.integration = manifests.Bytes()
@@ -1078,6 +1101,55 @@ func localizeDaemonSet(object *unstructured.Unstructured, components map[string]
 		}
 	}
 	return nil
+}
+
+// injectedImageFlags are the operator flags naming the images its webhook
+// injects into member pods.
+var injectedImageFlags = []string{"--get-cert-image=", "--mesh-image="}
+
+// localizeInjectedImages rewrites the operator's injected-image flags that
+// name one of the build's component images to their node-local names. The
+// operator runs on the server, but the sidecars it injects run on every
+// node: a pod on a node launched on a newer image must run that image's
+// sidecars (the node's measured mesh policy recognises only its own mesh
+// endpoint), and pullPolicy IfNotPresent finds them under the local name.
+func localizeInjectedImages(object *unstructured.Unstructured, components map[string]bool, names map[string]string) error {
+	list, found, err := unstructured.NestedSlice(object.Object, "spec", "template", "spec", "containers")
+	if err != nil || !found {
+		return err
+	}
+	for i, item := range list {
+		c, ok := item.(map[string]any)
+		if !ok {
+			return fmt.Errorf("containers[%d] is not an object", i)
+		}
+		args, _ := c["args"].([]any)
+		for j, a := range args {
+			arg, _ := a.(string)
+			for _, flag := range injectedImageFlags {
+				image, ok := strings.CutPrefix(arg, flag)
+				if !ok {
+					continue
+				}
+				ref, err := reference.ParseDockerRef(image)
+				if err != nil {
+					return fmt.Errorf("%s: %w", flag, err)
+				}
+				pinned, ok := ref.(reference.Canonical)
+				if !ok || !components[pinned.Digest().String()] {
+					continue
+				}
+				local := reference.TrimNamed(ref).Name() + ":" + nodeLocalTag
+				names[image] = local
+				args[j] = flag + local
+			}
+		}
+		if args != nil {
+			c["args"] = args
+			list[i] = c
+		}
+	}
+	return unstructured.SetNestedSlice(object.Object, list, "spec", "template", "spec", "containers")
 }
 
 func localNamesFile(names map[string]string) []byte {
