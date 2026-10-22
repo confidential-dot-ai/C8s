@@ -65,3 +65,20 @@ func TestNoPruneBeforeEveryMemberReadsIt(t *testing.T) {
 		t.Fatalf("pruned to %d at format 1", n)
 	}
 }
+
+// A byte budget bounds the history by document size: the leader turns it
+// into a count, so every replica keeps the same entries.
+func TestLeaderPrunesTheHistoryByBytes(t *testing.T) {
+	c := newCluster(t, 3)
+	c.historyBytes = 1 // any document exceeds it: only the served one stays
+	c.genesis("n0", "n1", "n2")
+	eventually(t, 10*time.Second, "format 2", func() bool { return c.leader() != nil && c.leader().node.Core().format() >= 2 })
+	for i := range 5 {
+		if err := c.leader().al.PutWorkload(fmt.Sprintf("w%d", i), historyWorkload(t, i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, r := range c.live() {
+		eventually(t, 10*time.Second, "pruned to the head on "+r.name, func() bool { n, _ := r.al.HistoryLen(); return n == 1 })
+	}
+}

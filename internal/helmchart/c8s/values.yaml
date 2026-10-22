@@ -222,6 +222,10 @@ cds:
     ## the leader prunes older ones through the log. 0 keeps every entry,
     ## until writes stop at the store guard.
     historyVersions: 1000
+    ## ...and only as many as fit in this size of documents: an allowlist
+    ## document can be hundreds of KiB, so a count alone can fill the store.
+    ## Keep it well below 45% of storeSizeLimit (the write guard).
+    historyBytes: 512Mi
     resources:
       requests:
         cpu: 100m
