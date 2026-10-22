@@ -51,10 +51,11 @@ func behaviourPolicy() Policy {
 }
 
 // What the ruleset does to real traffic: application connections are captured
-// for the mesh endpoint, a platform role reaches only what it is bound to, the
-// resolver exception is the approved address on port 53 with its replies,
-// and a socket entering the namespace as root carries nothing. Every case is
-// read from the namespace's connection tracking, never from a timeout.
+// for the mesh endpoint, the endpoint's own sockets leave over TCP alone, a
+// platform role reaches only what it is bound to, the resolver exception is
+// the approved address on port 53 with its replies, and a socket entering the
+// namespace as root carries nothing. Every case is read from the namespace's
+// connection tracking, never from a timeout.
 func TestTheRulesetCarriesOnlyPermittedTrafficInTheNamespace(t *testing.T) {
 	podNetNS(t, func(netnsPath string) error {
 		peer, err := startPeerNamespace()
@@ -91,6 +92,7 @@ func TestTheRulesetCarriesOnlyPermittedTrafficInTheNamespace(t *testing.T) {
 		}{
 			{"a workload connection is captured", workloadUID, "tcp", address(unapproved, 8080), captured},
 			{"the mesh endpoint is not captured", meshUID, "tcp", address(unapproved, 8080), admitted},
+			{"the mesh endpoint sends nothing outside TCP", meshUID, "udp", address(unapproved, 8080), denied},
 			{"a credential role reaches its service", credentialUID, "tcp", address(service, servicePort), admitted},
 			{"a credential role reaches nothing else", credentialUID, "tcp", address(unapproved, 8080), denied},
 			{"a resolver query is admitted", workloadUID, "udp", address(resolver, 53), admitted},
