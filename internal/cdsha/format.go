@@ -16,18 +16,18 @@ import (
 //     cannot join;
 //   - a replica that meets an entry or a snapshot newer than it reads stops
 //     serving: skipping an entry would silently diverge from the group.
-const Format uint32 = 3
+const Format uint32 = 2
 
 // Format history:
 //   1: the original encoding.
-//   2: snapshots carry the decree record (FSM.Decrees), and decrees append
-//      to it. A group at format 1 keeps no record, so replicas of format 1
-//      and 2 agree on the state while they run together.
-//   3: spent operator tokens record their iat and exp, and consuming one
-//      prunes the records of tokens long expired (allowlist.ApplyOptions
-//      TokenExpiry); snapshots carry the two used_token columns. A group at
-//      format 2 keeps every record and leaves the columns out, so replicas
-//      of format 2 and 3 agree on the state while they run together.
+//   2: (v4) snapshots carry the decree record (FSM.Decrees), and decrees
+//      append to it; the leader prunes the allowlist history through the log
+//      (OpPruneHistory); snapshots are zstd with a long window; spent
+//      operator tokens record their iat and exp, and consuming one prunes the
+//      records of tokens long expired (allowlist.ApplyOptions TokenExpiry),
+//      so snapshots carry the two used_token columns. A group at format 1
+//      does none of these and leaves the columns out, so replicas of format
+//      1 and 2 agree on the state while they run together.
 
 // ErrNewerFormat is a log entry or snapshot this replica cannot read.
 var ErrNewerFormat = errors.New("cds-ha: log entry or snapshot in a newer format than this replica reads")
