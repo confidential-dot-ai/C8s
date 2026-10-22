@@ -60,10 +60,10 @@ c8s verify "$cds" --kind cds --mode armtls-cert --image-policy-file cds-image-po
   --served-policy-file served-image-policy.json --operator-keys "$operator_pub"
 echo "ok: CDS attests, serves the launch measurements and the launch operator key"
 
-# The front door's only route: / on $host to the gateway's mesh TLS port,
-# whose leaf must name the gateway entry.
+# The front door's only route: / on $host to the gateway's plain port. The
+# router dials it as a mesh client and requires the gateway entry of the peer.
 c8s routes add --new --url "$cds" "${pin[@]}" --operator-key "$key" --operator-keys "$operator_pub" \
-  --host "$host" --path / --address "c8s-gateway.$ns.svc.cluster.local:9444" --workload gateway
+  --host "$host" --path / --address "c8s-gateway.$ns.svc.cluster.local:9443" --workload gateway
 echo "$GUEST_IP $host" | sudo tee -a /etc/hosts >/dev/null
 
 pub_der() { openssl pkey -in "$key" -pubout -outform DER; }
