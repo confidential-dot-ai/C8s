@@ -15,6 +15,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -46,6 +47,22 @@ type Blob struct {
 	Key     string  `json:"key"`
 	Mutable bool    `json:"mutable,omitempty"`
 	Verity  *Verity `json:"verity,omitempty"`
+	// Format lets the opener lay down a mutable volume's filesystem itself on
+	// a blank device, so no ciphertext has to be built outside the TEE.
+	// Absent, the device must already hold the filesystem.
+	Format *Format `json:"format,omitempty"`
+}
+
+// Format asks the opener to give a mutable volume its filesystem inside the
+// TEE, and only on a blank device: one whose host-visible ciphertext is all
+// zeros over the probed range, so nothing has written it. Any other device
+// opens as it is, so a wrong key can never wipe it.
+type Format struct {
+	// FS is the filesystem to create. Only ext4, the mutable filesystem.
+	FS string `json:"fs"`
+	// RootOwner is the "uid:gid" of the new filesystem's root directory, so a
+	// non-root consumer can create files there. Empty leaves it root-owned.
+	RootOwner string `json:"root_owner,omitempty"`
 }
 
 // Verity is the geometry needed to open the hash tree without reading a
@@ -133,7 +150,13 @@ func (b Blob) Validate() error {
 		if b.Verity != nil {
 			return fmt.Errorf("volume: mutable blob must not carry verity geometry")
 		}
+		if b.Format != nil {
+			return b.Format.validate()
+		}
 		return nil
+	}
+	if b.Format != nil {
+		return fmt.Errorf("volume: an immutable blob cannot be formatted on open")
 	}
 	if b.Verity == nil {
 		return fmt.Errorf("volume: immutable blob carries no verity geometry")
@@ -154,6 +177,35 @@ func (b Blob) Validate() error {
 			b.Verity.HashOffset, want, VerityBlockSize)
 	}
 	return nil
+}
+
+func (f Format) validate() error {
+	if f.FS != "ext4" {
+		return fmt.Errorf("volume: format fs is %q, want \"ext4\"", f.FS)
+	}
+	if f.RootOwner != "" {
+		if _, _, err := ParseOwner(f.RootOwner); err != nil {
+			return fmt.Errorf("volume: format root_owner: %w", err)
+		}
+	}
+	return nil
+}
+
+// ParseOwner parses a numeric "uid:gid".
+func ParseOwner(s string) (uid, gid uint32, err error) {
+	u, g, ok := strings.Cut(s, ":")
+	if !ok {
+		return 0, 0, fmt.Errorf("%q is not uid:gid", s)
+	}
+	uid64, err := strconv.ParseUint(u, 10, 32)
+	if err != nil {
+		return 0, 0, fmt.Errorf("%q is not uid:gid", s)
+	}
+	gid64, err := strconv.ParseUint(g, 10, 32)
+	if err != nil {
+		return 0, 0, fmt.Errorf("%q is not uid:gid", s)
+	}
+	return uint32(uid64), uint32(gid64), nil
 }
 
 // DecodeKey returns the raw XTS key. Validate has already run, so the only way

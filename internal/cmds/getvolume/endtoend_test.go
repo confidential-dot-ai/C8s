@@ -91,6 +91,9 @@ func (o *recordingOps) Unmount(context.Context, string) error {
 // This path never sweeps: the daemon under test is already serving.
 func (o *recordingOps) ListMappings(context.Context) ([]string, error) { return nil, nil }
 
+func (o *recordingOps) Blank(context.Context, string) (bool, error)    { return false, nil }
+func (o *recordingOps) MakeExt4(context.Context, string, string) error { return nil }
+
 // fixedIdentity stands in for the kernel peer-credential lookup, which needs a
 // real pod cgroup. Everything downstream of it is the production path.
 type fixedIdentity struct{ pod volumed.PodCgroup }

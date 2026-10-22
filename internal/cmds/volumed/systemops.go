@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -140,6 +142,41 @@ func (SystemOps) Unmount(_ context.Context, target string) error {
 // directory, so arriving second is the normal case, not a failure.
 func unmounted(err error) bool {
 	return err == nil || errors.Is(err, unix.EINVAL) || errors.Is(err, unix.ENOENT)
+}
+
+// blankProbeBytes is how much of a device Blank reads. mkfs writes its
+// superblock and group descriptors inside it, so any formatted volume has
+// non-zero ciphertext here.
+const blankProbeBytes = 1 << 20
+
+// Blank reads the host-visible ciphertext, never the plaintext: a zeroed
+// disk decrypts to noise, so blankness is only visible below dm-crypt.
+func (SystemOps) Blank(_ context.Context, device string) (bool, error) {
+	f, err := os.Open(device)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+	buf := make([]byte, blankProbeBytes)
+	n, err := io.ReadFull(f, buf)
+	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return false, fmt.Errorf("read %s: %w", device, err)
+	}
+	return !slices.ContainsFunc(buf[:n], func(b byte) bool { return b != 0 }), nil
+}
+
+func (s SystemOps) MakeExt4(ctx context.Context, device, rootOwner string) error {
+	return s.run(ctx, "mkfs.ext4", nil, mkfsArgs(device, rootOwner)...)
+}
+
+// mkfsArgs builds a non-interactive mkfs with no reserved blocks: the volume
+// has one consumer, and blocks held back for root are blocks it cannot use.
+func mkfsArgs(device, rootOwner string) []string {
+	ext := "nodiscard"
+	if rootOwner != "" {
+		ext += ",root_owner=" + rootOwner
+	}
+	return []string{"-q", "-F", "-m", "0", "-E", ext, device}
 }
 
 // cryptOpenArgs builds the plain-mode open.

@@ -70,7 +70,7 @@ entry because it is the integrity anchor, and an anchor the host can edit
 anchors nothing. It is also a fingerprint naming which model a volume holds, and
 `GET /allowlist` is unauthenticated.
 
-A mutable blob carries the key and its mode, nothing else:
+A mutable blob carries the key and its mode, and optionally `format`:
 
 ```json
 {
@@ -83,6 +83,36 @@ A mutable blob carries the key and its mode, nothing else:
 There is no integrity anchor to carry — a volume the host can rewrite has
 nothing for an anchor to commit to. The mode and the tree are one invariant: a
 blob carrying both or neither is refused rather than disambiguated.
+
+A mutable blob may ask the node to lay down the filesystem itself, inside the
+TEE, so no ciphertext has to be built anywhere else:
+
+```json
+{
+  "type": "c8s.volume/v1",
+  "key": "<base64, 64 bytes>",
+  "mutable": true,
+  "format": { "fs": "ext4", "root_owner": "65532:65532" }
+}
+```
+
+volumed opens the crypt mapping, then formats only when the host-visible
+ciphertext is all zeros over the first MiB: a disk nothing has written, such
+as a fresh sparse file or a KubeVirt `DataVolume` with `source: blank: {}`.
+Every other device opens as it is, so a wrong key never wipes a written
+volume. `fs` must be `ext4`. `root_owner` (numeric `uid:gid`, optional) owns
+the new root directory, so a non-root consumer can write there. A blob without
+`format` behaves exactly as before, and an immutable blob with `format` is
+refused. volumed logs a warning on every format. `format` is part of what a
+second open of the same volume must present. `c8s volume create` does not
+write this field yet; a blob written by hand is stored with
+`c8s secrets put <path> --from-file <blob> --mesh-ca <bundle>`, and that file
+is then the escrow.
+
+The host can force a format by zeroing the device. That is the same class as
+the documented rollback risk for mutable volumes: the empty filesystem is one
+the TEE made. Sectors never written stay zero ciphertext, which shows the host
+how much of the volume is in use, on top of the access-pattern leak below.
 
 ## Creating a volume
 
