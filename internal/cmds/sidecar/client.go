@@ -110,17 +110,20 @@ func Do(ctx context.Context, cfg Config, client *http.Client, pub crypto.PublicK
 		// The body is deliberately opaque; the reason is in the CDS log.
 		detail, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return nil, resp.StatusCode, &StatusError{
-			Code: envelopeCode(detail),
-			Err:  fmt.Errorf("%s %s: %s: %s", method, path, resp.Status, strings.TrimSpace(string(detail))),
+			Status: resp.StatusCode,
+			Code:   envelopeCode(detail),
+			Err:    fmt.Errorf("%s %s: %s: %s", method, path, resp.Status, strings.TrimSpace(string(detail))),
 		}
 	}
 }
 
-// StatusError is a non-2xx answer from CDS. Code is the C8s error-envelope code
-// its body named, and is empty for a body that is not an envelope.
+// StatusError is a non-2xx answer from CDS. Status is its HTTP status; Code is
+// the C8s error-envelope code its body named, and is empty for a body that is
+// not an envelope.
 type StatusError struct {
-	Code string
-	Err  error
+	Status int
+	Code   string
+	Err    error
 }
 
 func (e *StatusError) Error() string { return e.Err.Error() }

@@ -447,7 +447,13 @@ than read it at startup.
 
 The key must already be in the store. Unlike a secret — where the first pod to
 ask is the one that defines the value — `get-volume` only ever reads, so a pod
-scheduled before `c8s volume create` has run retries and then fails.
+scheduled before `c8s volume create` has run keeps retrying until the key is
+there.
+
+Retries back off from `--retry-interval` (5s) to 30s and, by default, have no
+bound: the sidecar cannot see when the main containers exist, and a multi-GB
+image pull can hold them back for tens of minutes. Each refused attempt is
+logged with its likely reason. `--attempts N` restores a bounded count.
 
 Teardown is the sidecar's last act. Kubelet terminates sidecars only after the
 workload's containers have exited, so the close it posts lands while nothing
