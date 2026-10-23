@@ -381,13 +381,9 @@ func (s *Store) PruneHistory(keep int) (int, error) {
 func (s *Store) LiveBytes() (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var pageSize, pages, free int64
-	for q, v := range map[string]*int64{"PRAGMA page_size": &pageSize, "PRAGMA page_count": &pages, "PRAGMA freelist_count": &free} {
-		if err := s.db.QueryRow(q).Scan(v); err != nil {
-			return 0, err
-		}
-	}
-	return (pages - free) * pageSize, nil
+	var n int64
+	err := s.db.QueryRow("SELECT (page_count - freelist_count) * page_size FROM pragma_page_count, pragma_freelist_count, pragma_page_size").Scan(&n)
+	return n, err
 }
 
 // HistoryKeepForBytes is how many of the newest history entries fit in
