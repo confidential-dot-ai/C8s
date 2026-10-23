@@ -144,4 +144,27 @@ spec:
       port: {{ .Values.kubeStateMetrics.port }}
       targetPort: http-metrics
       protocol: TCP
+---
+# RKE2's kube-system/default-network-policy admits ingress from kube-system
+# alone, so the member pods' exit needs this allowance: the metrics port,
+# from every namespace.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kube-state-metrics
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: kube-state-metrics
+    app.kubernetes.io/part-of: c8s-node-image
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: kube-state-metrics
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector: {}
+      ports:
+        - protocol: TCP
+          port: http-metrics
 {{- end }}
