@@ -59,25 +59,16 @@ func rulesetExits(exits []exit) []ruleset.Exit {
 // podRuleset is the ruleset a member pod of that Kubernetes namespace
 // carries: the mesh endpoint's reserved UID owns the capture ports, every
 // dialing role reaches only what its binding names, every container reaches
-<<<<<<< HEAD
-// this node's CDS and the exits the pod was granted, and a pod of the
-// router's namespace also answers the router's external listeners.
+// this node's CDS, the platform services the policy names and the exits the
+// pod was granted, and a pod of the router's namespace also answers the
+// router's external listeners.
 func (p meshPolicy) podRuleset(kubeNamespace string, granted []exit) ruleset.Policy {
-=======
-// this node's CDS and the platform services the policy names, and a pod of
-// the router's namespace also answers the router's external listeners.
-func (p meshPolicy) podRuleset(kubeNamespace string) ruleset.Policy {
->>>>>>> origin/c8s/ksm-platform-addon
 	endpoint, _ := p.role(meshRole)
 	return ruleset.Policy{
 		Resolver: p.Resolver,
 		Capture:  ruleset.CapturePorts(p.Capture),
 		MeshUID:  endpoint.UID,
-<<<<<<< HEAD
-		Exits:    slices.Concat(p.cdsExit(), rulesetExits(granted)),
-=======
-		Exits:    append(p.cdsExit(), p.serviceExits()...),
->>>>>>> origin/c8s/ksm-platform-addon
+		Exits:    slices.Concat(p.cdsExit(), p.serviceExits(), rulesetExits(granted)),
 		Server:   p.servedPorts(kubeNamespace),
 		Roles:    p.dialingRoles(),
 	}
