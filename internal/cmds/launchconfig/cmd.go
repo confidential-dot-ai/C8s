@@ -54,7 +54,7 @@ HOST_DATA to SHA-256 of that node's pubkey file. See docs/operator.md,
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), " (private keys: %s, %s", filepath.Join(opts.Dir, serverKeyFile), filepath.Join(opts.Dir, agentKeyFile))
 			if len(opts.CDSNodes) > 0 {
-				fmt.Fprintf(cmd.OutOrStdout(), ", %s, %s", filepath.Join(opts.Dir, cdsKeyFile), filepath.Join(opts.Dir, decreeKeyFile))
+				fmt.Fprintf(cmd.OutOrStdout(), ", %s, %s, %s", filepath.Join(opts.Dir, cdsKeyFile), filepath.Join(opts.Dir, decreeKeyFile), filepath.Join(opts.Dir, recoveryKeyFile))
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), ")")
 			return nil
