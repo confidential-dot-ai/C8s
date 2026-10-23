@@ -535,6 +535,11 @@ func TestNodeImageCollectPreservesCompleteResourcesAndConfigData(t *testing.T) {
 		if err := k8syaml.Unmarshal(after[key], &got); err != nil {
 			t.Fatal(err)
 		}
+		if key == "ConfigMap/c8s-cds-allowlist-seed" {
+			// Rewritten in canonical bytes; checked below.
+			delete(want["data"].(map[string]any), "allowlist-seed.json")
+			delete(got["data"].(map[string]any), "allowlist-seed.json")
+		}
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("chart resource %s lost fields: got %#v, want %#v", key, got, want)
 		}
