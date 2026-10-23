@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"github.com/confidential-dot-ai/c8s/internal/cdsha"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsconn"
@@ -127,18 +128,19 @@ func newHADecreeCmd() *cobra.Command {
 	return cmd
 }
 
+// newHAStatusCmd reads each replica's view over armTLS, as `ha decrees` does.
+// A status is the replica's own word; the command only compares them.
 func newHAStatusCmd() *cobra.Command {
-	var timeout time.Duration
+	conn := cdsconn.Options{DirectCDS: true}
 	cmd := &cobra.Command{
 		Use:   "status URL...",
-		Short: "Report each replica's role, epoch, mesh CA and freshness from GET /ha/status",
+		Short: "Report each replica's role, epoch, mesh CA and freshness from GET /ha/status (over armTLS)",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, urls []string) error {
-			client := &http.Client{Timeout: timeout}
 			var seen []cdsha.Status
 			for _, u := range urls {
-				hb, err := fetchHAStatus(cmd.Context(), client, u)
-				if err != nil {
+				var hb cdsha.Status
+				if err := fetchHAStatus(cmd.Context(), conn, u, &hb); err != nil {
 					fmt.Fprintf(cmd.OutOrStdout(), "%-40s ERROR %v\n", u, err)
 					continue
 				}
@@ -149,7 +151,15 @@ func newHAStatusCmd() *cobra.Command {
 			return reportDivergence(seen, len(urls))
 		},
 	}
-	cmd.Flags().DurationVar(&timeout, "timeout", 5*time.Second, "per-replica timeout")
+	// The connection flags of every CDS CLI, but the replicas are the
+	// arguments and nothing is written.
+	all := pflag.NewFlagSet("", pflag.ContinueOnError)
+	cdsconn.BindFlags(all, &conn)
+	all.VisitAll(func(f *pflag.Flag) {
+		if f.Name != "url" && f.Name != "operator-key" {
+			cmd.Flags().AddFlag(f)
+		}
+	})
 	return cmd
 }
 
@@ -165,21 +175,35 @@ func reportDivergence(seen []cdsha.Status, want int) error {
 	return nil
 }
 
-func fetchHAStatus(ctx context.Context, c *http.Client, url string) (cdsha.Status, error) {
-	var hb cdsha.Status
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url+"/ha/status", nil)
+// fetchHAStatus reads one replica's status on its own attested connection:
+// one client reaches one peer (cdsconn).
+func fetchHAStatus(ctx context.Context, conn cdsconn.Options, url string, hb *cdsha.Status) error {
+	conn.URL = url
+	hc, err := conn.HTTPClient(ctx)
 	if err != nil {
-		return hb, err
+		return err
 	}
-	resp, err := c.Do(req)
+	return getJSON(ctx, hc, url, "/ha/status", 1<<16, hb)
+}
+
+// getJSON decodes the JSON answer of GET base+path, at most limit bytes.
+func getJSON(ctx context.Context, hc *http.Client, base, path string, limit int64, out any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(base, "/")+path, nil)
 	if err != nil {
-		return hb, err
+		return err
+	}
+	resp, err := hc.Do(req)
+	if err != nil {
+		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return hb, errors.New(resp.Status)
+		return fmt.Errorf("GET %s: %s", path, resp.Status)
 	}
-	return hb, json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&hb)
+	if err := json.NewDecoder(io.LimitReader(resp.Body, limit)).Decode(out); err != nil {
+		return fmt.Errorf("GET %s: %w", path, err)
+	}
+	return nil
 }
 
 func loadECPrivateKey(path string) (*ecdsa.PrivateKey, error) {
@@ -331,21 +355,6 @@ func printDecrees(w io.Writer, records []cdsha.DecreeRecord, keyPath string, asJ
 
 // fetchDecreeRecord reads the decrees the cluster applied (GET /ha/decrees).
 func fetchDecreeRecord(ctx context.Context, hc *http.Client, base string) ([]cdsha.DecreeRecord, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(base, "/")+"/ha/decrees", nil)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := hc.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GET /ha/decrees: %s", resp.Status)
-	}
 	var records []cdsha.DecreeRecord
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 16<<20)).Decode(&records); err != nil {
-		return nil, fmt.Errorf("GET /ha/decrees: %w", err)
-	}
-	return records, nil
+	return records, getJSON(ctx, hc, base, "/ha/decrees", 16<<20, &records)
 }

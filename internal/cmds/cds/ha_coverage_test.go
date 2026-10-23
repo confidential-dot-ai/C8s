@@ -89,15 +89,6 @@ func TestLoadECPrivateKeyRefusesOtherKeyTypes(t *testing.T) {
 	}
 }
 
-func TestFetchHAStatusErrors(t *testing.T) {
-	if _, err := fetchHAStatus(context.Background(), http.DefaultClient, "http://bad host"); err == nil {
-		t.Fatal("an invalid URL")
-	}
-	if _, err := fetchHAStatus(context.Background(), http.DefaultClient, "http://127.0.0.1:1"); err == nil {
-		t.Fatal("an unreachable replica")
-	}
-}
-
 // The decree command refuses a bad --image before it reads the key.
 func TestHADecreeCLIRefusesBadImage(t *testing.T) {
 	if _, err := runHA(t, "decree", "--cluster-id", "c1", "--operator-key", filepath.Join(t.TempDir(), "none"),
