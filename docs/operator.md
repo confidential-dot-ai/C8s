@@ -689,8 +689,9 @@ follows these rules:
   the same 503 until the client reconnects or attests again on it. No
   traffic moves to the new routes unattested. See
   [Route evidence](routes-evidence.md#server).
-- Each router replica holds at most 65536 attest-lb bindings. At that
-  limit, new attest-lb handshakes get 503 `sessions_busy`.
+- Each router replica holds at most 65536 attest-lb bindings, and one
+  client address prefix at most 512 of them. At either limit, new attest-lb
+  handshakes from that client get 503 `sessions_busy`.
 - The router serves cluster workloads only: it refuses a polled manifest that
   names an address backend (`serverName`, `ca`), keeps the applied one, and
   logs `the router serves cluster workloads only` with the host and path.

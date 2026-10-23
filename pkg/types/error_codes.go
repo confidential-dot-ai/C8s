@@ -52,8 +52,8 @@ const (
 	// (route policy E6). Attest again.
 	ErrorCodeRouterDigestChanged = "router_digest_changed"
 	// ErrorCodeSessionsBusy: the router holds as many attest-lb bindings as
-	// it may, so it refuses the handshake rather than drop one (route policy
-	// E7). Retry shortly.
+	// it may, for this client or in all, so it refuses the handshake rather
+	// than drop one (route policy E7). Retry shortly.
 	ErrorCodeSessionsBusy = "sessions_busy"
 )
 

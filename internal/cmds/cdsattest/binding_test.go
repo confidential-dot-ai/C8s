@@ -236,6 +236,14 @@ func TestE7PerClientBindingCap(t *testing.T) {
 	if err := b.bind("1.3", "client:b", routing.Binding{}); err != nil {
 		t.Fatalf("another client's binding = %v, want nil", err)
 	}
+	b.max = 2 // the store is full: 1.1 and 1.3
+	if err := b.bind("1.1", "client:c", routing.Binding{}); err != nil {
+		t.Fatalf("rebind under another client at the global bound = %v, want nil", err)
+	}
+	if err := b.bind("1.1", "client:b", routing.Binding{}); !errors.Is(err, errClientBindingsFull) {
+		t.Fatalf("rebind under a client at its share = %v, want %v", err, errClientBindingsFull)
+	}
+	b.max = maxLBBindings
 	b.mu.Lock()
 	b.dropLocked("1.1", b.entries["1.1"])
 	b.mu.Unlock()

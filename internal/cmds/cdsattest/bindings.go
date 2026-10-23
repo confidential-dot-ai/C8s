@@ -153,8 +153,13 @@ func (b *Bindings) pruneSomeLocked() {
 // rebind takes no room. The client's share is checked before the global
 // bound, so one client cannot fill the store (E7). The caller holds b.mu.
 func (b *Bindings) roomLocked(connection, client string) error {
-	if old, ok := b.entries[connection]; ok && old.client == client {
+	// A rebind takes no room; one under another client key only needs that
+	// client's share.
+	if old, ok := b.entries[connection]; ok {
 		b.pruneSomeLocked()
+		if old.client != client && b.perClient[client] >= b.maxClient {
+			return errClientBindingsFull
+		}
 		return nil
 	}
 	if b.perClient[client] < b.maxClient && len(b.entries) < b.max {
