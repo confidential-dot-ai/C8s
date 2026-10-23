@@ -200,16 +200,21 @@ func NewCluster(t *testing.T) *Cluster {
 func newClusterWithRaftTiming(t *testing.T, heartbeat, election time.Duration, extraArgs ...string) *Cluster {
 	t.Helper()
 	dir := t.TempDir()
+	if err := os.MkdirAll(logRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A test name repeats under -count; retain each invocation's evidence.
+	logDir, err := os.MkdirTemp(logRoot, strings.ReplaceAll(t.Name(), "/", "_")+"-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("replica logs: %s", logDir)
 	c := &Cluster{t: t, extraArgs: extraArgs, heartbeat: heartbeat, election: election, Net: newFaultNet(), Dir: dir, KubeDir: filepath.Join(dir, "kube"),
-		LogDir:   filepath.Join(logRoot, strings.ReplaceAll(t.Name(), "/", "_")),
+		LogDir:   logDir,
 		HTTPPort: freePortOn(t, replicas), PeerPort: freePortOn(t, replicas),
 		client: &http.Client{Timeout: 15 * time.Second, Transport: &http.Transport{MaxIdleConnsPerHost: 64}}}
 	for c.PeerPort == c.HTTPPort {
 		c.PeerPort = freePortOn(t, replicas)
-	}
-	_ = os.RemoveAll(c.LogDir)
-	if err := os.MkdirAll(c.LogDir, 0o755); err != nil {
-		t.Fatal(err)
 	}
 	var opPEM []byte
 	c.OpKey, opPEM, c.OpKeyPath, c.OpPubPath = newKeyPair(t, dir, "decree")
@@ -243,6 +248,16 @@ func newClusterWithRaftTiming(t *testing.T, heartbeat, election time.Duration, e
 		}
 	}
 	t.Cleanup(func() {
+		// Capture every live replica before killing any process. Status contains
+		// HA metadata only, not keys, secret values, or database contents.
+		if t.Failed() {
+			for _, r := range c.Replicas {
+				if c.Running(r.Idx) {
+					st, ok := c.Status(r.Idx)
+					c.Logf("failure status %s reachable=%t: %+v", r.Node, ok, st)
+				}
+			}
+		}
 		for _, r := range c.Replicas {
 			c.Kill(r.Idx)
 		}

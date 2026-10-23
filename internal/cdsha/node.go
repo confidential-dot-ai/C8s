@@ -792,10 +792,14 @@ func (n *Node) Serving() bool {
 	return n.validReadCertificate(cert) && n.fsm.AppliedIndex() >= cert.index
 }
 
+// ErrNotServing means the replica cannot currently admit a mesh CA read.
+// Callers must not use a cached CA to bypass this refusal.
+var ErrNotServing = errors.New("cds-ha: replica is not serving (not joined, not pinned, or not fresh)")
+
 // CA is the mesh CA to issue with, while serving.
 func (n *Node) CA() (*issuer.CA, error) {
 	if !n.Serving() {
-		return nil, errors.New("cds-ha: replica is not serving (not joined, not pinned, or not fresh)")
+		return nil, ErrNotServing
 	}
 	if ca := n.fsm.CA(); ca != nil {
 		return ca, nil

@@ -76,10 +76,12 @@ type Checker struct {
 	regress []string                  // monotonic-read violations within one incarnation
 	reads   atomic.Int64
 
-	stop   chan struct{}
-	wg     sync.WaitGroup
-	gate   sync.RWMutex // writers hold it shared; Pause holds it
-	paused bool         // set and read by the test goroutine only
+	stop           chan struct{}
+	stopOnce       sync.Once
+	wg             sync.WaitGroup
+	gate           sync.RWMutex // writers hold it shared; Pause holds it
+	paused         bool         // Pause/Resume and the first Stop run on the test goroutine
+	checkCompleted bool         // set and read by the test goroutine only
 }
 
 // Pause waits for in-flight writes and blocks new ones; Resume lets them go.
@@ -106,7 +108,19 @@ func badStatus(code int, body string) bool {
 // NewChecker prepares writers concurrent writers; each sleeps pause
 // between writes.
 func NewChecker(c *Cluster, writers int, pause time.Duration) *Checker {
-	return &Checker{c: c, writers: writers, pause: pause, obs: map[[2]int]map[string]int{}, stop: make(chan struct{})}
+	k := &Checker{c: c, writers: writers, pause: pause, obs: map[[2]int]map[string]int{}, stop: make(chan struct{})}
+	// Registered after cluster cleanup, so load stops before replicas are
+	// killed even when a scenario returns early or calls Fatal before Check.
+	c.t.Cleanup(func() {
+		k.Stop()
+		if !k.checkCompleted {
+			k.mu.Lock()
+			defer k.mu.Unlock()
+			c.t.Logf("checker: partial observations only (Check did not complete; convergence and final safety oracle not evaluated): writes=%d reads=%d observed-regress=%d observed-bad5xx=%d observed-bad4xx=%d",
+				len(k.ops), k.reads.Load(), len(k.regress), len(k.bad5xx), len(k.bad4xx))
+		}
+	})
+	return k
 }
 
 // Start launches writers and one reader per replica.
@@ -123,11 +137,13 @@ func (k *Checker) Start() {
 
 // Stop ends the load and waits for in-flight requests.
 func (k *Checker) Stop() {
-	close(k.stop)
-	if k.paused {
-		k.Resume()
-	}
-	k.wg.Wait()
+	k.stopOnce.Do(func() {
+		close(k.stop)
+		if k.paused {
+			k.Resume()
+		}
+		k.wg.Wait()
+	})
 }
 
 func (k *Checker) stopped() bool {
@@ -499,6 +515,7 @@ func (k *Checker) Check(convergeTimeout time.Duration) Report {
 			}
 		}
 	}
+	k.checkCompleted = true
 	return rep
 }
 
