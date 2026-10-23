@@ -427,7 +427,7 @@ func (n *Node) demoteExtraVoter(servers []raft.Server) {
 func (n *Node) raiseFormat(servers []raft.Server) {
 	agreed := n.fsm.Core().format()
 	low := n.fsm.readable
-	if low <= agreed || !n.seatsFilled() {
+	if low <= agreed || !n.seatsFilledLocked() {
 		return
 	}
 	for _, s := range servers {
@@ -460,8 +460,23 @@ func (n *Node) raiseFormat(servers []raft.Server) {
 }
 
 // seatsFilled (leader): the configuration has Seats voters and none of them
-// is failing heartbeats.
+// is failing heartbeats. GetConfiguration is the latest configuration, which
+// may not be committed: a promotion still in flight is lost if this leader
+// dies, and a rollout that counted it as a filled seat could restart a voter
+// of what is really a two-voter configuration, losing the majority for good.
+// Every membership change holds membershipMu until Raft commits it, so while
+// one is in flight the seats are not reported filled.
 func (n *Node) seatsFilled() bool {
+	if !n.membershipMu.TryLock() {
+		return false
+	}
+	defer n.membershipMu.Unlock()
+	return n.seatsFilledLocked()
+}
+
+// seatsFilledLocked is seatsFilled for a caller holding membershipMu, whose
+// own changes have already returned committed.
+func (n *Node) seatsFilledLocked() bool {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	voters := 0
