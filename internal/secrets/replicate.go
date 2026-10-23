@@ -91,17 +91,23 @@ type ReplicatedStore struct {
 	Repl Replicator
 }
 
+// write checks the value, replicates cmd, and returns this replica's result.
+func (s ReplicatedStore) write(cmd Command) (Result, error) {
+	if err := s.checkValue(cmd.Value); err != nil {
+		return Result{}, err
+	}
+	res, err := s.Repl.ReplicateSecret(cmd)
+	if err != nil {
+		return Result{}, err
+	}
+	return res, res.err()
+}
+
 // PutIfAbsent replicates a compare-and-set; the first committed write for a
 // path wins at every replica.
 func (s ReplicatedStore) PutIfAbsent(_ context.Context, path string, value []byte, by Holder) ([]byte, Held, error) {
-	if err := s.checkValue(value); err != nil {
-		return nil, Held{}, err
-	}
-	res, err := s.Repl.ReplicateSecret(Command{Op: OpPutIfAbsent, Path: path, Value: value, Origin: by.origin, Name: by.name})
+	res, err := s.write(Command{Op: OpPutIfAbsent, Path: path, Value: value, Origin: by.origin, Name: by.name})
 	if err != nil {
-		return nil, Held{}, err
-	}
-	if err := res.err(); err != nil {
 		return nil, Held{}, err
 	}
 	return res.Current, Held{Exists: res.HeldExists, Origin: res.HeldOrigin}, nil
@@ -109,14 +115,8 @@ func (s ReplicatedStore) PutIfAbsent(_ context.Context, path string, value []byt
 
 // Put replicates an operator write.
 func (s ReplicatedStore) Put(_ context.Context, path string, value []byte) (Held, error) {
-	if err := s.checkValue(value); err != nil {
-		return Held{}, err
-	}
-	res, err := s.Repl.ReplicateSecret(Command{Op: OpPut, Path: path, Value: value})
+	res, err := s.write(Command{Op: OpPut, Path: path, Value: value})
 	if err != nil {
-		return Held{}, err
-	}
-	if err := res.err(); err != nil {
 		return Held{}, err
 	}
 	return Held{Exists: res.HeldExists, Origin: res.HeldOrigin}, nil

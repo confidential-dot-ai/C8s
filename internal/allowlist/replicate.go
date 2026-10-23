@@ -39,10 +39,7 @@ const (
 	OpConsumeToken   Op = "consume_token"
 	OpReplaceRoutes  Op = "replace_routes"
 	OpStartJournal   Op = "start_journal"
-	// OpPruneHistory keeps the newest Keep entries of the history. A
-	// replica of a release without it would answer an error and keep its
-	// history, so the leader proposes it only in a format every member reads
-	// (cdsha.Format 2).
+	// OpPruneHistory keeps the newest Keep entries of the history.
 	OpPruneHistory Op = "prune_history"
 )
 
@@ -79,16 +76,18 @@ var sentinels = map[string]error{
 	"digest_mismatch":      ErrDigestMismatch,
 }
 
-func resultErr(err error) Result {
+// with records err in r for the trip back across the log.
+func (r Result) with(err error) Result {
 	if err == nil {
-		return Result{}
+		return r
 	}
+	r.ErrKind, r.Err = "other", err.Error()
 	for kind, s := range sentinels {
 		if errors.Is(err, s) {
-			return Result{ErrKind: kind, Err: err.Error()}
+			r.ErrKind = kind
 		}
 	}
-	return Result{ErrKind: "other", Err: err.Error()}
+	return r
 }
 
 // Error rebuilds the error Apply returned, wrapping its sentinel.
@@ -106,65 +105,52 @@ func (r Result) Error() error {
 	}
 }
 
-// ApplyOptions are the behaviors a replicated group turns on only once every
-// member has them, so replicas of two releases apply a command alike.
-type ApplyOptions struct {
-	// TokenExpiry records each spent token's iat and exp and prunes the
-	// records of long-expired ones (see consumeToken); cdsha.Format 2.
-	TokenExpiry bool
-}
-
-// Apply runs one replicated command against the local database with every
-// behavior of this release on (see ApplyWith).
+// Apply runs one replicated command against the local database. Replicas
+// apply the same commands in the same order, so they hold the same store.
 func (s *Store) Apply(cmd Command) Result {
-	return s.ApplyWith(cmd, ApplyOptions{TokenExpiry: true})
+	r, err := s.apply(cmd)
+	return r.with(err)
 }
 
-// ApplyWith runs one replicated command against the local database. Replicas
-// apply the same commands in the same order, with the same options, so they
-// hold the same store.
-func (s *Store) ApplyWith(cmd Command, opts ApplyOptions) Result {
+func (s *Store) apply(cmd Command) (r Result, err error) {
 	s.at.Store(cmd.AtMS)
 	defer s.at.Store(0)
 	switch cmd.Op {
 	case OpSeed:
-		added, retired, err := s.seedWorkloads(cmd.Workloads)
-		r := resultErr(err)
-		r.Added, r.Retired = added, retired
-		return r
+		r.Added, r.Retired, err = s.seedWorkloads(cmd.Workloads)
 	case OpPutWorkload:
 		if cmd.Workload == nil {
-			return resultErr(errors.New("put_workload without a workload"))
+			return r, errors.New("put_workload without a workload")
 		}
-		return resultErr(s.putWorkload(cmd.Name, *cmd.Workload))
+		err = s.putWorkload(cmd.Name, *cmd.Workload)
 	case OpDeleteWorkload:
-		found, err := s.deleteWorkload(cmd.Name)
-		r := resultErr(err)
-		r.Found = found
-		return r
+		r.Found, err = s.deleteWorkload(cmd.Name)
 	case OpReplaceAll:
-		return resultErr(s.replaceAll(cmd.Allowlist))
+		err = s.replaceAll(cmd.Allowlist)
 	case OpSignPolicy:
-		return resultErr(s.signPolicy(cmd.Body, cmd.Token))
+		err = s.signPolicy(cmd.Body, cmd.Token)
 	case OpConsumeToken:
-		return resultErr(s.consumeToken(cmd.Token, opts.TokenExpiry))
+		err = s.consumeToken(cmd.Token)
 	case OpReplaceRoutes:
 		if cmd.Routes == nil {
-			return resultErr(errors.New("replace_routes without a manifest"))
+			return r, errors.New("replace_routes without a manifest")
 		}
-		return resultErr(s.replaceRoutes(*cmd.Routes, cmd.IfMatch))
+		err = s.replaceRoutes(*cmd.Routes, cmd.IfMatch)
 	case OpStartJournal:
-		return resultErr(s.startJournal())
+		err = s.startJournal()
 	case OpPruneHistory:
-		dropped, err := s.pruneHistory(cmd.Keep)
-		r := resultErr(err)
-		r.Retired = dropped
-		return r
+		r.Retired, err = s.PruneHistory(cmd.Keep)
+	default:
+		err = fmt.Errorf("unknown allowlist command %q", cmd.Op)
 	}
-	return resultErr(fmt.Errorf("unknown allowlist command %q", cmd.Op))
+	return r, err
 }
 
-func (s *Store) replicate(cmd Command) (Result, error) {
+// write runs cmd here, or through the log when the store is replicated.
+func (s *Store) write(cmd Command) (Result, error) {
+	if s.repl == nil {
+		return s.apply(cmd)
+	}
 	cmd.AtMS = time.Now().UnixMilli()
 	res, err := s.repl.Replicate(cmd)
 	if err != nil {
@@ -176,83 +162,62 @@ func (s *Store) replicate(cmd Command) (Result, error) {
 // SeedWorkloads adds every workload entry whose name is not already present
 // and retires each stored entry the seed replaces (see seedWorkloads).
 func (s *Store) SeedWorkloads(workloads map[string]pkgallowlist.Workload) (added, retired int, err error) {
-	if s.repl == nil {
-		return s.seedWorkloads(workloads)
-	}
 	if len(workloads) == 0 {
 		return 0, 0, nil
 	}
-	res, err := s.replicate(Command{Op: OpSeed, Workloads: workloads})
+	res, err := s.write(Command{Op: OpSeed, Workloads: workloads})
 	return res.Added, res.Retired, err
 }
 
 // PutWorkload upserts one named workload entry (see putWorkload).
 func (s *Store) PutWorkload(name string, w pkgallowlist.Workload) error {
-	if s.repl == nil {
-		return s.putWorkload(name, w)
-	}
-	_, err := s.replicate(Command{Op: OpPutWorkload, Name: name, Workload: &w})
+	_, err := s.write(Command{Op: OpPutWorkload, Name: name, Workload: &w})
 	return err
 }
 
 // DeleteWorkload removes one named entry (see deleteWorkload).
 func (s *Store) DeleteWorkload(name string) (bool, error) {
-	if s.repl == nil {
-		return s.deleteWorkload(name)
-	}
-	res, err := s.replicate(Command{Op: OpDeleteWorkload, Name: name})
+	res, err := s.write(Command{Op: OpDeleteWorkload, Name: name})
 	return res.Found, err
 }
 
 // ReplaceAll swaps the entire allowlist (see replaceAll).
 func (s *Store) ReplaceAll(al *pkgallowlist.Allowlist) error {
-	if s.repl == nil || al == nil {
-		return s.replaceAll(al)
+	if al == nil {
+		return s.replaceAll(al) // refused before it reaches the log
 	}
-	_, err := s.replicate(Command{Op: OpReplaceAll, Allowlist: al})
+	_, err := s.write(Command{Op: OpReplaceAll, Allowlist: al})
 	return err
 }
 
 // SignPolicy stores the operator token of a whole-document write (see
 // signPolicy).
 func (s *Store) SignPolicy(body []byte, token string) error {
-	if s.repl == nil {
-		return s.signPolicy(body, token)
-	}
-	_, err := s.replicate(Command{Op: OpSignPolicy, Body: body, Token: token})
+	_, err := s.write(Command{Op: OpSignPolicy, Body: body, Token: token})
 	return err
 }
 
 // ConsumeToken spends a write token once (see consumeToken). Replicated, a
 // token spent at any replica is spent at all of them.
 func (s *Store) ConsumeToken(token string) error {
-	if s.repl == nil {
-		return s.consumeToken(token, true)
-	}
-	_, err := s.replicate(Command{Op: OpConsumeToken, Token: token})
+	_, err := s.write(Command{Op: OpConsumeToken, Token: token})
 	return err
 }
 
 // ReplaceRoutes stores a signed route manifest (see replaceRoutes).
 func (s *Store) ReplaceRoutes(env routes.Envelope, ifMatch string) error {
-	if s.repl == nil {
-		return s.replaceRoutes(env, ifMatch)
-	}
 	// Refuse what routes.Parse refuses before it reaches the log.
 	if _, err := routes.Parse(env.Manifest); err != nil {
 		return err
 	}
-	_, err := s.replicate(Command{Op: OpReplaceRoutes, Routes: &env, IfMatch: ifMatch})
+	_, err := s.write(Command{Op: OpReplaceRoutes, Routes: &env, IfMatch: ifMatch})
 	return err
 }
 
 // StartJournal verifies the history and journals the current document if it
 // is not the head (see startJournal).
 func (s *Store) StartJournal() error {
-	if s.repl == nil {
-		return s.startJournal()
-	}
-	_, err := s.replicate(Command{Op: OpStartJournal})
+	_, err := s.write(Command{Op: OpStartJournal})
 	return err
 }
 
@@ -268,18 +233,6 @@ var snapshotTables = []string{
 // recovers. Columns are kept by name; a row that lacks a column restores
 // with the column's default.
 type Snapshot map[string][]map[string]any
-
-// StripTokenExpiry drops the used_token columns a release before
-// ApplyOptions.TokenExpiry cannot restore. A group that has not turned
-// TokenExpiry on holds only 0s in them, which is what restoring without
-// them writes.
-func (sn Snapshot) StripTokenExpiry() {
-	for _, row := range sn["used_token"] {
-		for _, c := range usedTokenColumns {
-			delete(row, c)
-		}
-	}
-}
 
 // Dump returns every row of every table.
 func (s *Store) Dump() (Snapshot, error) {

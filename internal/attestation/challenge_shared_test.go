@@ -1,6 +1,7 @@
 package attestation
 
 import (
+	"encoding/binary"
 	"testing"
 	"time"
 )
@@ -45,14 +46,32 @@ func TestSharedChallengesAcrossReplicas(t *testing.T) {
 	}
 }
 
-func TestSharedChallengeExpires(t *testing.T) {
+// signedChallenge is a challenge valid under key that expires at expiry.
+func signedChallenge(key []byte, expiry time.Time) []byte {
+	var c [32]byte
+	binary.BigEndian.PutUint64(c[:8], uint64(expiry.UnixNano()))
+	copy(c[16:], challengeMAC(key, c[:16]))
+	return c[:]
+}
+
+// A correctly signed challenge is refused once expired, and also when it
+// claims to live longer than the TTL (clock skew, or minted under a leaked
+// key with a long life).
+func TestSharedChallengeExpiryBounds(t *testing.T) {
 	key := []byte("k")
-	a, b := NewChallengeStore(20*time.Millisecond), NewChallengeStore(20*time.Millisecond)
-	a.SetSharedKey(func() []byte { return key })
-	b.SetSharedKey(func() []byte { return key })
-	c := a.Create()
-	time.Sleep(40 * time.Millisecond)
-	if b.Consume(c[:]) {
-		t.Fatal("expired shared challenge accepted")
+	s := NewChallengeStore(time.Minute)
+	s.SetSharedKey(func() []byte { return key })
+	now := time.Now()
+	for name, c := range map[string]struct {
+		expiry time.Time
+		ok     bool
+	}{
+		"live":           {now.Add(30 * time.Second), true},
+		"expired":        {now.Add(-time.Second), false},
+		"beyond the TTL": {now.Add(2 * time.Minute), false},
+	} {
+		if got := s.Consume(signedChallenge(key, c.expiry)); got != c.ok {
+			t.Errorf("%s: accepted = %v, want %v", name, got, c.ok)
+		}
 	}
 }
