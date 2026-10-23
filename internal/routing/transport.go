@@ -49,14 +49,20 @@ type Transports struct {
 	cfg TransportConfig
 
 	mu    sync.Mutex
-	cache map[string]*http.Transport
+	cache map[string]pooled
 	// caDigest identifies the mesh CA bundle last seen by dropMeshPools.
 	caDigest [sha256.Size]byte
-	// routerDigest is the router stamp's allowlist digest the cached
-	// workload transports were dialled under, empty for none (B10).
+	// routerDigest is the router stamp's allowlist digest last seen by
+	// dropMeshPools, empty for none (B10).
 	routerDigest string
 
 	stamp stampCache
+}
+
+// pooled is a cached transport and whether it reaches a workload backend.
+type pooled struct {
+	*http.Transport
+	workload bool
 }
 
 // errNoPolicyIdentity refuses a workload dial while the router's own leaf
@@ -109,46 +115,21 @@ func (t *Transports) routerDigestOf(cred MeshCredential) ([]byte, error) {
 	return stamp.AllowlistDigest, nil
 }
 
-// currentRouterDigest is the digest workload transports are pooled under,
-// empty when the credential cannot be read or the router has no stamp: a
-// dial then fails on its own reading.
-func (t *Transports) currentRouterDigest() string {
-	cred, err := t.cfg.MeshIdentity()
-	if err != nil {
-		return ""
-	}
-	digest, err := t.routerDigestOf(cred)
-	if err != nil {
-		return ""
-	}
-	return string(digest)
-}
-
 // NewTransports returns an empty cache.
 func NewTransports(cfg TransportConfig) *Transports {
-	return &Transports{cfg: cfg, cache: map[string]*http.Transport{}}
+	return &Transports{cfg: cfg, cache: map[string]pooled{}}
 }
 
-// For returns the transport for b, building it on first use. A workload
-// backend's transport is built under the router stamp current at the call:
-// once it changes, every pooled connection is retired (B10).
+// For returns the transport for b, building it on first use.
 func (t *Transports) For(b routes.Backend) *http.Transport {
 	key := backendKey(b)
-	var digest string
-	if b.Workload != "" {
-		digest = t.currentRouterDigest()
-	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if b.Workload != "" && digest != t.routerDigest {
-		t.routerDigest = digest
-		t.retireLocked()
-	}
-	if tr, ok := t.cache[key]; ok {
-		return tr
+	if p, ok := t.cache[key]; ok {
+		return p.Transport
 	}
 	tr := t.build(b)
-	t.cache[key] = tr
+	t.cache[key] = pooled{Transport: tr, workload: b.Workload != ""}
 	return tr
 }
 
@@ -326,34 +307,47 @@ func (t *Transports) refuseMeshAnchor(cs tls.ConnectionState) error {
 }
 
 // dropMeshPools retires every transport when the mesh CA bundle changed since
-// the last call or cannot be read. Pooled connections skip the handshake, and
-// a connection in flight returns to its pool after CloseIdleConnections, so
-// new requests get fresh transports while the old ones drain.
+// the last call or cannot be read, and every workload transport when the
+// router stamp's allowlist digest changed (B10). Pooled connections skip the
+// handshake, and a connection in flight returns to its pool after
+// CloseIdleConnections, so new requests get fresh transports while the old
+// ones drain.
 func (t *Transports) dropMeshPools() error {
-	cas, err := t.meshCAs()
-	var digest [sha256.Size]byte
+	cred, err := t.cfg.MeshIdentity()
+	var caDigest [sha256.Size]byte
+	var routerDigest []byte
 	if err == nil {
 		h := sha256.New()
-		for _, ca := range cas {
+		for _, ca := range cred.MeshCAs {
 			h.Write(ca.Raw)
 		}
-		h.Sum(digest[:0])
+		h.Sum(caDigest[:0])
+		// An unstamped router keeps the empty digest; its dials fail (B9).
+		routerDigest, _ = t.routerDigestOf(cred)
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if err == nil && digest == t.caDigest {
-		return nil
+	if err != nil || caDigest != t.caDigest {
+		t.caDigest = caDigest // zero after a failed read: the next good read differs
+		t.routerDigest = string(routerDigest)
+		t.retireLocked(false)
+		return err
 	}
-	t.caDigest = digest // zero after a failed read: the next good read differs
-	t.retireLocked()
-	return err
+	if string(routerDigest) != t.routerDigest {
+		t.routerDigest = string(routerDigest)
+		t.retireLocked(true)
+	}
+	return nil
 }
 
-// retireLocked drops every transport and closes its idle connections. The
-// caller holds t.mu.
-func (t *Transports) retireLocked() {
-	for _, tr := range t.cache {
-		tr.CloseIdleConnections()
+// retireLocked drops the transports, only the workload ones if workloadOnly,
+// and closes their idle connections. The caller holds t.mu.
+func (t *Transports) retireLocked(workloadOnly bool) {
+	for key, p := range t.cache {
+		if workloadOnly && !p.workload {
+			continue
+		}
+		p.CloseIdleConnections()
+		delete(t.cache, key)
 	}
-	t.cache = map[string]*http.Transport{}
 }
