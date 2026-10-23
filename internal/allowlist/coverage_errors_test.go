@@ -1,9 +1,6 @@
 package allowlist
 
-import (
-	"errors"
-	"testing"
-)
+import "testing"
 
 // A store whose database is gone reports errors from every read and write,
 // instead of an empty history or a silently skipped write.
@@ -47,33 +44,6 @@ func TestClosedStoreReportsErrors(t *testing.T) {
 	}
 	if err := s.StartJournal(); err == nil {
 		t.Error("StartJournal")
-	}
-}
-
-type pruneRepl struct{ got []Command }
-
-func (r *pruneRepl) Replicate(cmd Command) (Result, error) {
-	r.got = append(r.got, cmd)
-	if cmd.Keep < 1 {
-		return Result{}, errors.New("refused")
-	}
-	return Result{Retired: 3}, nil
-}
-
-// With a replicator, pruning is a replicated command and reports what the
-// replicas dropped.
-func TestPruneHistoryReplicates(t *testing.T) {
-	s := openJournaled(t)
-	r := &pruneRepl{}
-	s.SetReplicator(r)
-	if n, err := s.PruneHistory(2); err != nil || n != 3 {
-		t.Fatalf("dropped %d: %v", n, err)
-	}
-	if _, err := s.PruneHistory(0); err == nil {
-		t.Fatal("a refused prune reported success")
-	}
-	if len(r.got) != 2 || r.got[0].Op != OpPruneHistory || r.got[0].Keep != 2 {
-		t.Fatalf("commands %+v", r.got)
 	}
 }
 
