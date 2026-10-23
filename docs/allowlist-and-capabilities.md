@@ -663,10 +663,19 @@ pinned launch bounds the process a container starts, not what it is handed:
 the exemption still covers a pinned shape restaged with host namespaces,
 devices or a privileged security context, and the runtime's locked exec
 ([node-exec-mode.md](node-exec-mode.md)) is what keeps that from becoming a
-shell. The other RKE2 system entries still
-admit their digests under `command`, `args` and `mounts` of `any`, so the
-control plane can restage one of those images — several ship a shell — as a
-privileged tenant pod and the base admits it.
+shell. The RKE2 add-ons that run a static
+executable (CoreDNS's autoscaler, metrics-server, the snapshot controller) and
+Cilium's portmap installer, a busybox script, which reads no `ENV` when it runs
+non-interactively, are pinned the same way. CoreDNS's argv is pinned but its
+mounts stay open: RKE2's chart mounts its Corefile at `/etc/coredns`, which a
+data rule cannot name, so a restaged CoreDNS keeps the exemption with a
+Corefile of the pod's choosing. The Cilium agent and its other init
+containers, the Cilium operator and the helm-install jobs still admit their
+digests under `command`, `args` and `mounts` of `any`: their bash scripts read
+`BASH_ENV`, and their relative commands resolve through a `PATH` the pod
+chooses beside a writable `/tmp` or a ConfigMap, so argv pins without the
+environment would not bound what runs. The control plane can restage one of
+those images as a privileged tenant pod and the base admits it.
 
 ## Where it's enforced
 
@@ -795,7 +804,7 @@ mounts at final admission; unavailable evidence fails constrained policies.
 The chart's component entries carry the same exact argv and mount pins in the
 base as in the served seed, leaving only the environment open, so the platform
 can start before CDS is reachable; the node image's RKE2 system entries pin
-the control plane's argv and mounts and leave the rest open.
+argv and mounts except Cilium's, the helm-install jobs' and CoreDNS's mounts.
 
 ### Allowlist history
 

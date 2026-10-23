@@ -184,7 +184,8 @@ func admitsAlone(c allowlist.Container, r allowlist.RunningContainer) bool {
 type capturedPods struct {
 	Items []struct {
 		Metadata struct {
-			Name string `json:"name"`
+			Name      string `json:"name"`
+			Namespace string `json:"namespace"`
 		} `json:"metadata"`
 		Spec   corev1.PodSpec `json:"spec"`
 		Status struct {
@@ -237,7 +238,7 @@ func capturedLaunches(t *testing.T, capture, node string, entrypoints map[string
 				name: pod.Metadata.Name + "/" + c.Name,
 				running: allowlist.RunningContainer{
 					Digest: digest,
-					Argv:   launchArgv(c, entrypoints[digest]),
+					Argv:   kubeletExpanded(launchArgv(c, entrypoints[digest]), c.Env, pod.Metadata.Namespace),
 					Mounts: launchMounts(t, c, volumes),
 				},
 			})
@@ -253,6 +254,29 @@ func launchArgv(c corev1.Container, entrypoint []string) []string {
 		return slices.Concat(entrypoint, c.Args)
 	}
 	return slices.Concat(c.Command, c.Args)
+}
+
+// kubeletExpanded is argv with each $(NAME) the container's env defines
+// replaced by its value, as the kubelet does: a literal value, or the pod's
+// namespace from the downward API.
+func kubeletExpanded(argv []string, env []corev1.EnvVar, namespace string) []string {
+	values := map[string]string{}
+	for _, e := range env {
+		switch {
+		case e.ValueFrom == nil:
+			values[e.Name] = e.Value
+		case e.ValueFrom.FieldRef != nil && e.ValueFrom.FieldRef.FieldPath == "metadata.namespace":
+			values[e.Name] = namespace
+		}
+	}
+	expanded := make([]string, len(argv))
+	for i, element := range argv {
+		for name, value := range values {
+			element = strings.ReplaceAll(element, "$("+name+")", value)
+		}
+		expanded[i] = element
+	}
+	return expanded
 }
 
 // launchMounts are the container's volume mounts as the node classifies
