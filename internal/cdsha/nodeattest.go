@@ -12,7 +12,6 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote"
-
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
