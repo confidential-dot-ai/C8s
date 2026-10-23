@@ -22,6 +22,7 @@ import (
 
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/raft"
+	"k8s.io/apimachinery/pkg/util/cache"
 	"k8s.io/apimachinery/pkg/util/wait"
 
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
@@ -156,7 +157,7 @@ type Node struct {
 	addedAt  map[raft.ServerID]time.Time // leader: when this leader added a member (handleJoin)
 	reads    map[raft.ServerID]uint32    // leader: the newest format each member reads
 
-	joinRefusedLog logEvery // peer + reason
+	joinRefusedLog *cache.LRUExpireCache // peer + reason
 
 	backupAt    time.Time // leader: last backup attempt
 	pruneAt     time.Time // leader: last history prune check
@@ -232,14 +233,15 @@ func NewNode(cfg Config) (*Node, error) {
 		return nil, err
 	}
 	n := &Node{
-		cfg:         cfg,
-		id:          raft.ServerID(cfg.NodeName + "/" + strconv.FormatInt(time.Now().UnixMilli(), 10) + "-" + hex.EncodeToString(rnd[:])),
-		measurement: own.Measurement,
-		log:         cfg.Logger.With("component", "cds-ha"),
-		failing:     map[raft.ServerID]time.Time{},
-		joinedAt:    map[raft.ServerID]time.Time{},
-		addedAt:     map[raft.ServerID]time.Time{},
-		reads:       map[raft.ServerID]uint32{},
+		cfg:            cfg,
+		id:             raft.ServerID(cfg.NodeName + "/" + strconv.FormatInt(time.Now().UnixMilli(), 10) + "-" + hex.EncodeToString(rnd[:])),
+		measurement:    own.Measurement,
+		log:            cfg.Logger.With("component", "cds-ha"),
+		failing:        map[raft.ServerID]time.Time{},
+		joinedAt:       map[raft.ServerID]time.Time{},
+		addedAt:        map[raft.ServerID]time.Time{},
+		reads:          map[raft.ServerID]uint32{},
+		joinRefusedLog: newLogOnce(),
 	}
 	if len(cfg.RecoveryKey) > 0 {
 		k, err := x509.ParsePKIXPublicKey(cfg.RecoveryKey)
