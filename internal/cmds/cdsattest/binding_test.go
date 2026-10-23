@@ -256,6 +256,34 @@ func TestE7PerClientBindingCap(t *testing.T) {
 	}
 }
 
+// TestE7LapsedBindingsKeepTheirClientShare: a client cannot cycle through
+// handshakes and idling to hold more than its share, and a handshake without
+// a client key is bounded only globally.
+func TestE7LapsedBindingsKeepTheirClientShare(t *testing.T) {
+	clock := &testClock{now: time.Now()}
+	b := NewBindings()
+	b.now, b.maxClient = clock.Now, 1
+	if err := b.bind("1.1", "client:a", routing.Binding{}); err != nil {
+		t.Fatal(err)
+	}
+	clock.Advance(lbBindingIdle + time.Second)
+	if err := b.bind("1.2", "client:a", routing.Binding{}); !errors.Is(err, errClientBindingsFull) {
+		t.Fatalf("bind after the client's binding lapsed = %v, want %v", err, errClientBindingsFull)
+	}
+	for _, c := range []string{"2.1", "2.2", "2.3"} {
+		if err := b.bind(c, "", routing.Binding{}); err != nil {
+			t.Fatalf("bind %s with no client key = %v, want nil", c, err)
+		}
+	}
+	clock.Advance(lbBindingLife)
+	if err := b.bind("1.2", "client:a", routing.Binding{}); err != nil {
+		t.Fatalf("bind once the lapsed binding's connection is gone = %v, want nil", err)
+	}
+	if n := len(b.perClient); n != 1 {
+		t.Fatalf("clients charged = %d, want 1: the empty key is never charged", n)
+	}
+}
+
 // TestE6RefuseSkipsAReplacedBinding: a refusal recorded for a request that
 // held an earlier binding does not mark the binding a later handshake on the
 // same connection installed meanwhile.
@@ -307,11 +335,11 @@ func TestE7BindingIdleLifetime(t *testing.T) {
 	if _, ok := b.entries["1.1"]; !ok {
 		t.Fatal("used binding expired, want it kept")
 	}
-	if e, ok := b.entries["1.2"]; !ok || e.refused != types.ErrorCodeBindingExpired || e.client != "" {
-		t.Fatalf("idle binding after prune = %+v, %v, want it lapsed to %s and charged to no client", e, ok, types.ErrorCodeBindingExpired)
+	if e, ok := b.entries["1.2"]; !ok || e.refused != types.ErrorCodeBindingExpired || e.client != "c" {
+		t.Fatalf("idle binding after prune = %+v, %v, want it lapsed to %s and still charged", e, ok, types.ErrorCodeBindingExpired)
 	}
-	if n := b.perClient["c"]; n != 1 {
-		t.Fatalf("client charge after a lapse = %d, want 1", n)
+	if n := b.perClient["c"]; n != 2 {
+		t.Fatalf("client charge after a lapse = %d, want 2", n)
 	}
 	clock.Advance(lbBindingIdle + time.Second)
 	if _, refused, _, release, ok := b.Hold("1.1"); !ok || refused != types.ErrorCodeBindingExpired {

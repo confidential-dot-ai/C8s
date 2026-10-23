@@ -19,8 +19,10 @@ var (
 // a name while the connection is open, but the store does not see the close:
 // a binding outlives its connection, which is why the lifetime slides on use.
 // A binding idle past lbBindingIdle lapses: it stays, refusing the
-// connection with binding_expired and charged to no client, until nginx must
-// have closed the connection (lbBindingLife), so a lapse never fails open. A
+// connection with binding_expired and still charged to its client, until
+// nginx must have closed the connection (lbBindingLife), so a lapse neither
+// fails open nor frees room for the next cycle of handshakes. A handshake
+// with no client key is charged to no client and bounded only globally. A
 // binding with a request in flight never lapses: the routing location allows
 // a request far longer than the idle lifetime (E7). The routing listener
 // reads it through routing.Bindings. It is safe for concurrent use.
@@ -118,7 +120,9 @@ func (b *Bindings) bind(connection, client string, binding routing.Binding) erro
 	if old, ok := b.entries[connection]; ok {
 		b.unchargeLocked(old.client)
 	}
-	b.perClient[client]++
+	if client != "" {
+		b.perClient[client]++
+	}
 	b.gen++
 	b.entries[connection] = lbBinding{Binding: binding, client: client, gen: b.gen, lastUsed: b.now(), inFlight: b.entries[connection].inFlight}
 	return nil
@@ -141,14 +145,13 @@ func (b *Bindings) unchargeLocked(client string) {
 }
 
 // lapseLocked turns a binding idle past its lifetime into one that refuses
-// its connection with binding_expired and is charged to no client. It returns
-// the entry as stored. The caller holds b.mu.
+// its connection with binding_expired. It returns the entry as stored. The
+// caller holds b.mu.
 func (b *Bindings) lapseLocked(connection string, entry lbBinding) lbBinding {
 	if entry.refused != "" || !entry.idleFor(b.now(), b.idle) {
 		return entry
 	}
-	b.unchargeLocked(entry.client)
-	entry.client, entry.refused = "", types.ErrorCodeBindingExpired
+	entry.refused = types.ErrorCodeBindingExpired
 	b.entries[connection] = entry
 	return entry
 }
@@ -183,19 +186,20 @@ func (b *Bindings) pruneSomeLocked() {
 func (b *Bindings) roomLocked(connection, client string) error {
 	// A rebind takes no room; one under another client key only needs that
 	// client's share.
+	clientFull := func() bool { return client != "" && b.perClient[client] >= b.maxClient }
 	if old, ok := b.entries[connection]; ok {
 		b.pruneSomeLocked()
-		if old.client != client && b.perClient[client] >= b.maxClient {
+		if old.client != client && clientFull() {
 			return errClientBindingsFull
 		}
 		return nil
 	}
-	if b.perClient[client] < b.maxClient && len(b.entries) < b.max {
+	if !clientFull() && len(b.entries) < b.max {
 		b.pruneSomeLocked()
 		return nil
 	}
 	b.pruneLocked()
-	if b.perClient[client] >= b.maxClient {
+	if clientFull() {
 		return errClientBindingsFull
 	}
 	if len(b.entries) >= b.max {
