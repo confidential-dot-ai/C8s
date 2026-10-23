@@ -350,10 +350,14 @@ role marker. It leaves `/run/confos/enroll-pending`, which starts
 1. Over armTLS, the node checks that the enrollment service's evidence matches
    one `management` entry, image and launch key together, and asks
    `POST /v1/challenge` for a nonce.
-2. It makes a fresh key and a self-signed armTLS certificate whose evidence
-   binds that key and the nonce, and sends it with `POST /v1/enroll`.
-3. The service releases the Machine's role material once per Machine UID, with
-   the provider ID `cc://<instance id>`. The node refuses material whose exact
+2. It makes a self-signed armTLS certificate whose evidence binds the boot's
+   node key, made once and kept in memory, and the nonce. It presents that
+   certificate as its TLS client certificate on the connection that sends
+   `POST /v1/enroll`, so the handshake proves the connection holds the key the
+   evidence names.
+3. The service grants the Machine's role material to one node key per Machine
+   UID, with the provider ID `cc://<instance id>`, and delivers it again to
+   that key on a retry. The node refuses material whose exact
    bytes do not hash to `bootstrapDigest`, or whose role is not the document's.
 4. It writes the RKE2 settings to `/etc/rancher/rke2/config.yaml.d/60-managed.yaml`,
    appending list settings (`tls-san+`, `kubelet-arg+` and so on) to the
@@ -364,10 +368,11 @@ role marker. It leaves `/run/confos/enroll-pending`, which starts
 5. It writes the role marker last, so the matching RKE2 unit starts only after
    all of that.
 
-Enrollment retries an unreachable service for 15 minutes and stops at once on a
-refusal (403 or 409); the Machine is then left to its health check. A rebooted
-managed node enrolls again, and the service refuses a second grant for the same
-Machine UID, so a reboot replaces the Machine.
+Enrollment retries an unreachable service or a lost response for 15 minutes,
+with the same node key, and stops at once on a refusal (403 or 409); the
+Machine is then left to its health check. A rebooted managed node has a new
+node key, and the service refuses it with 409, so a reboot replaces the
+Machine.
 
 ### Chart-managed defaults
 

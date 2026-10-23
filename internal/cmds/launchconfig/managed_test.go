@@ -4,10 +4,14 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdsa"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/json"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -140,7 +144,12 @@ type fakeEnrollment struct {
 	challenges atomic.Int32
 	enrolls    atomic.Int32
 	nonce      []byte
-	gotCert    []byte
+	gotCert    *x509.Certificate
+	// keys are the node keys each enroll connection presented.
+	keys [][]byte
+	// lose, when set, drops the first enroll response after the service
+	// recorded it, as a lost reply would.
+	lose atomic.Bool
 }
 
 func (f *fakeEnrollment) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -157,11 +166,24 @@ func (f *fakeEnrollment) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case enrollPath:
 		f.enrolls.Add(1)
 		var req enrollRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || !bytes.Equal(req.Nonce, f.nonce) {
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&req); err != nil || !bytes.Equal(req.Nonce, f.nonce) {
 			http.Error(w, "stale challenge", http.StatusForbidden)
 			return
 		}
-		f.gotCert = req.Certificate
+		if r.TLS == nil || len(r.TLS.PeerCertificates) != 1 {
+			http.Error(w, "no client certificate", http.StatusForbidden)
+			return
+		}
+		f.gotCert = r.TLS.PeerCertificates[0]
+		f.keys = append(f.keys, f.gotCert.RawSubjectPublicKeyInfo)
+		if f.lose.CompareAndSwap(true, false) {
+			hj, _ := w.(http.Hijacker)
+			conn, _, _ := hj.Hijack()
+			_ = conn.Close()
+			return
+		}
 		if f.status != 0 {
 			http.Error(w, "refused: machine already enrolled", f.status)
 			return
@@ -172,10 +194,30 @@ func (f *fakeEnrollment) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-type fakeCertProvider struct{ nonce []byte }
+// fakeCertProvider makes a self-signed certificate for the node key whose
+// common name stands in for evidence bound to the nonce.
+type fakeCertProvider struct {
+	key   *ecdsa.PrivateKey
+	nonce []byte
+}
 
 func (p *fakeCertProvider) Provision(context.Context) (*tls.Certificate, time.Duration, error) {
-	return &tls.Certificate{Certificate: [][]byte{append([]byte("evidence bound to "), p.nonce...)}}, time.Minute, nil
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "evidence bound to " + hex.EncodeToString(p.nonce)},
+		NotBefore: time.Now().Add(-time.Minute), NotAfter: time.Now().Add(time.Hour), ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &p.key.PublicKey, p.key)
+	if err != nil {
+		return nil, 0, err
+	}
+	return &tls.Certificate{Certificate: [][]byte{der}, PrivateKey: p.key}, time.Minute, nil
+}
+
+// newEnrollmentServer serves h over TLS and asks each client for a
+// certificate, as the service does.
+func newEnrollmentServer(h http.Handler) *httptest.Server {
+	srv := httptest.NewUnstartedServer(h)
+	srv.TLS = &tls.Config{ClientAuth: tls.RequestClientCert}
+	srv.StartTLS()
+	return srv
 }
 
 // stageManagedNode stages a managed launch, points it at srv and installs the
@@ -204,19 +246,22 @@ func stageManagedNode(t *testing.T, role Role, srv *httptest.Server, material []
 	oldClient, oldProvider := newEnrollClient, newCertProvider
 	t.Cleanup(func() { newEnrollClient, newCertProvider = oldClient, oldProvider })
 	var gotPolicy *armtls.VerifyPolicy
-	newEnrollClient = func(policy *armtls.VerifyPolicy) (*http.Client, error) {
+	newEnrollClient = func(policy *armtls.VerifyPolicy, cert *tls.Certificate) (*http.Client, error) {
 		gotPolicy = policy
 		// The document names a routable address; the test service listens on
 		// loopback.
 		transport := srv.Client().Transport.(*http.Transport).Clone()
 		transport.TLSClientConfig.ServerName = "127.0.0.1"
+		if cert != nil {
+			transport.TLSClientConfig.Certificates = []tls.Certificate{*cert}
+		}
 		transport.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, network, srv.Listener.Addr().String())
 		}
 		return &http.Client{Transport: transport}, nil
 	}
-	newCertProvider = func(_ EnrollConfig, _ string, nonce []byte) armtls.CertProvider {
-		return &fakeCertProvider{nonce: nonce}
+	newCertProvider = func(_ EnrollConfig, _ string, key *ecdsa.PrivateKey, nonce []byte) armtls.CertProvider {
+		return &fakeCertProvider{key: key, nonce: nonce}
 	}
 	t.Cleanup(func() {
 		if gotPolicy != nil && (len(gotPolicy.Policy.Images) != 1 || !bytes.Equal(gotPolicy.Policy.Images[0].Anchor, []byte(doc.Managed.Enrollment.Management[0].LaunchKey))) {
@@ -257,14 +302,14 @@ func serverMaterial() Material {
 func TestEnrollStagesTheReleasedRole(t *testing.T) {
 	material := marshalMaterial(t, serverMaterial())
 	f := &fakeEnrollment{material: material, providerID: "cc://i-0a1b2c3d"}
-	srv := httptest.NewTLSServer(f)
+	srv := newEnrollmentServer(f)
 	defer srv.Close()
 	cfg, _ := stageManagedNode(t, Server, srv, material)
 	if err := Enroll(context.Background(), cfg); err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.HasSuffix(f.gotCert, f.nonce) {
-		t.Fatal("the enrollment certificate is not bound to the challenge")
+	if f.gotCert == nil || f.gotCert.Subject.CommonName != "evidence bound to "+hex.EncodeToString(f.nonce) {
+		t.Fatal("the enroll connection did not present a certificate bound to the challenge")
 	}
 	requirePresent(t, cfg.path(serverMarker))
 	requireAbsent(t, cfg.path(agentMarker))
@@ -357,7 +402,7 @@ func TestEnrollRefusesMaterialTheLaunchDidNotName(t *testing.T) {
 				signed = material
 			}
 			f := &fakeEnrollment{material: material, providerID: tt.provider}
-			srv := httptest.NewTLSServer(f)
+			srv := newEnrollmentServer(f)
 			defer srv.Close()
 			cfg, _ := stageManagedNode(t, tt.role, srv, signed)
 			err := Enroll(context.Background(), cfg)
@@ -374,7 +419,7 @@ func TestEnrollRefusesMaterialTheLaunchDidNotName(t *testing.T) {
 func TestEnrollStopsAtARefusal(t *testing.T) {
 	material := marshalMaterial(t, serverMaterial())
 	f := &fakeEnrollment{material: material, providerID: "cc://i-1", status: http.StatusConflict}
-	srv := httptest.NewTLSServer(f)
+	srv := newEnrollmentServer(f)
 	defer srv.Close()
 	cfg, _ := stageManagedNode(t, Server, srv, material)
 	if err := Enroll(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "already enrolled") {
@@ -390,7 +435,7 @@ func TestEnrollRetriesAnUnreachableService(t *testing.T) {
 	material := marshalMaterial(t, serverMaterial())
 	f := &fakeEnrollment{material: material, providerID: "cc://i-1"}
 	var calls atomic.Int32
-	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newEnrollmentServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if calls.Add(1) == 1 {
 			http.Error(w, "starting", http.StatusServiceUnavailable)
 			return
@@ -401,6 +446,22 @@ func TestEnrollRetriesAnUnreachableService(t *testing.T) {
 	cfg, _ := stageManagedNode(t, Server, srv, material)
 	if err := Enroll(context.Background(), cfg); err != nil {
 		t.Fatal(err)
+	}
+	requirePresent(t, cfg.path(serverMarker))
+}
+
+func TestEnrollRetriesALostResponseWithTheSameKey(t *testing.T) {
+	material := marshalMaterial(t, serverMaterial())
+	f := &fakeEnrollment{material: material, providerID: "cc://i-1"}
+	f.lose.Store(true)
+	srv := newEnrollmentServer(f)
+	defer srv.Close()
+	cfg, _ := stageManagedNode(t, Server, srv, material)
+	if err := Enroll(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.keys) != 2 || !bytes.Equal(f.keys[0], f.keys[1]) {
+		t.Fatalf("%d enroll connections; the retry must present the first one's node key", len(f.keys))
 	}
 	requirePresent(t, cfg.path(serverMarker))
 }

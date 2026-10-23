@@ -3,7 +3,9 @@ package launchconfig
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -29,14 +31,18 @@ import (
 // The enrollment wire contract, which cloud's managed Kubernetes enrollment
 // service serves (docs/managed-kubernetes/enrollment.md in that repository):
 //
-//	POST /v1/challenge {"machineUID"}                         -> {"nonce"}
-//	POST /v1/enroll    {"machineUID", "nonce", "certificate"} -> {"material", "providerID"}
+//	POST /v1/challenge {"machineUID"}          -> {"nonce"}
+//	POST /v1/enroll    {"machineUID", "nonce"} -> {"material", "providerID"}
 //
 // Both go over armTLS to a management image the launch document pins. The
-// certificate is a self-signed armTLS certificate whose evidence binds a fresh
-// node key and the nonce, so the service sees this boot's evidence, fresh.
-// material is released once per Machine UID, and its exact bytes must hash to
-// the document's managed.bootstrapDigest.
+// enroll connection presents, as its TLS client certificate, a self-signed
+// armTLS certificate whose evidence binds this boot's node key and the nonce,
+// and the TLS handshake proves the guest holds that key: the material goes to
+// the connection the evidence was made for. One boot uses one node key, so a
+// retry after a lost response is the same recipient, to which the service
+// delivers the same material again; another key, as after a reboot, is
+// refused. material's exact bytes must hash to the document's
+// managed.bootstrapDigest.
 const (
 	challengePath = "/v1/challenge"
 	enrollPath    = "/v1/enroll"
@@ -53,9 +59,8 @@ type challengeResponse struct {
 }
 
 type enrollRequest struct {
-	MachineUID  string `json:"machineUID"`
-	Nonce       []byte `json:"nonce"`
-	Certificate []byte `json:"certificate"`
+	MachineUID string `json:"machineUID"`
+	Nonce      []byte `json:"nonce"`
 }
 
 type enrollResponse struct {
@@ -95,23 +100,30 @@ func (c EnrollConfig) path(absolute string) string { return Config{RootDir: c.Ro
 var ErrRefused = errors.New("enrollment refused")
 
 // newEnrollClient is a package var so tests can serve enrollment over plain
-// TLS; the real client verifies the service's armTLS evidence.
-var newEnrollClient = func(policy *armtls.VerifyPolicy) (*http.Client, error) {
+// TLS; the real client verifies the service's armTLS evidence. cert, when
+// set, is the TLS client certificate: each one gets its own client, so a
+// connection made without it is never reused for enroll.
+var newEnrollClient = func(policy *armtls.VerifyPolicy, cert *tls.Certificate) (*http.Client, error) {
 	tlsCfg, _, err := armtls.NewClientTLSConfig(&armtls.ClientConfig{Policy: policy})
 	if err != nil {
 		return nil, err
 	}
+	if cert != nil {
+		tlsCfg.Certificates = []tls.Certificate{*cert}
+	}
 	return armtls.HTTPClient(tlsCfg), nil
 }
 
-// newCertProvider makes the node's nonce-bound enrollment certificate.
-var newCertProvider = func(cfg EnrollConfig, api string, nonce []byte) armtls.CertProvider {
+// newCertProvider makes the node's nonce-bound enrollment certificate for
+// the boot's node key.
+var newCertProvider = func(cfg EnrollConfig, api string, key *ecdsa.PrivateKey, nonce []byte) armtls.CertProvider {
 	return &armtls.SelfSignedProvider{
 		Platform:         cfg.Platform,
 		AttestFunc:       attestclient.MakeSNPARMTLSAttestFunc(attestclient.NewClient(""), api),
 		MeasuredPolicies: armtls.NewJournal(cfg.MeasuredPoliciesFile),
 		Opts:             &armtls.CertOptions{TTL: 5 * time.Minute},
 		Nonce:            nonce,
+		Key:              key,
 	}
 }
 
@@ -133,9 +145,16 @@ func Enroll(ctx context.Context, cfg EnrollConfig) error {
 	if api == "" {
 		api = DefaultAttestationAPIURL
 	}
-	client, err := newEnrollClient(&armtls.VerifyPolicy{Policy: doc.Managed.ManagementPolicy(), AttestationApiURL: api})
+	policy := &armtls.VerifyPolicy{Policy: doc.Managed.ManagementPolicy(), AttestationApiURL: api}
+	client, err := newEnrollClient(policy, nil)
 	if err != nil {
 		return fmt.Errorf("enrollment client: %w", err)
+	}
+	// The boot's node key, in memory only: every attempt presents it, so the
+	// service can tell a retry from another boot.
+	key, _, err := armtls.GenerateKeyPair()
+	if err != nil {
+		return err
 	}
 	timeout := cfg.Timeout
 	if timeout == 0 {
@@ -145,7 +164,7 @@ func Enroll(ctx context.Context, cfg EnrollConfig) error {
 	defer cancel()
 	var resp *enrollResponse
 	for delay := time.Second; ; delay = min(2*delay, 30*time.Second) {
-		resp, err = enrollOnce(ctx, client, cfg, api, doc.Managed)
+		resp, err = enrollOnce(ctx, client, policy, key, cfg, api, doc.Managed)
 		if err == nil || errors.Is(err, ErrRefused) {
 			break
 		}
@@ -162,7 +181,7 @@ func Enroll(ctx context.Context, cfg EnrollConfig) error {
 	return stageMaterial(cfg, doc, resp)
 }
 
-func enrollOnce(ctx context.Context, client *http.Client, cfg EnrollConfig, api string, m *Managed) (*enrollResponse, error) {
+func enrollOnce(ctx context.Context, client *http.Client, policy *armtls.VerifyPolicy, key *ecdsa.PrivateKey, cfg EnrollConfig, api string, m *Managed) (*enrollResponse, error) {
 	var challenge challengeResponse
 	if err := post(ctx, client, m.Enrollment.URL+challengePath, challengeRequest{MachineUID: m.MachineUID}, &challenge); err != nil {
 		return nil, fmt.Errorf("challenge: %w", err)
@@ -170,13 +189,18 @@ func enrollOnce(ctx context.Context, client *http.Client, cfg EnrollConfig, api 
 	if len(challenge.Nonce) < 16 || len(challenge.Nonce) > 64 {
 		return nil, fmt.Errorf("challenge: nonce of %d bytes, want 16..64", len(challenge.Nonce))
 	}
-	cert, _, err := newCertProvider(cfg, api, challenge.Nonce).Provision(ctx)
+	cert, _, err := newCertProvider(cfg, api, key, challenge.Nonce).Provision(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("node evidence: %w", err)
 	}
+	attested, err := newEnrollClient(policy, cert)
+	if err != nil {
+		return nil, fmt.Errorf("enrollment client: %w", err)
+	}
+	defer attested.CloseIdleConnections()
 	var resp enrollResponse
-	req := enrollRequest{MachineUID: m.MachineUID, Nonce: challenge.Nonce, Certificate: cert.Certificate[0]}
-	if err := post(ctx, client, m.Enrollment.URL+enrollPath, req, &resp); err != nil {
+	req := enrollRequest{MachineUID: m.MachineUID, Nonce: challenge.Nonce}
+	if err := post(ctx, attested, m.Enrollment.URL+enrollPath, req, &resp); err != nil {
 		return nil, fmt.Errorf("enroll: %w", err)
 	}
 	return &resp, nil

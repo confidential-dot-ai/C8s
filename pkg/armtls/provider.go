@@ -2,6 +2,7 @@ package armtls
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -41,6 +42,9 @@ type SelfSignedProvider struct {
 	// REPORTDATA = hash(pubkey || nonce), for a verifier that issued it as a
 	// challenge (VerifyPolicy.Nonce). Nil binds the key alone.
 	Nonce []byte
+	// Key, when set, is the certificate's key, so that a caller can present
+	// one key across several certificates. Nil generates a key per Provision.
+	Key *ecdsa.PrivateKey
 }
 
 var _ CertProvider = (*SelfSignedProvider)(nil)
@@ -48,9 +52,12 @@ var _ CertProvider = (*SelfSignedProvider)(nil)
 // Provision generates a key, obtains hardware attestation, and creates a
 // self-signed certificate with the attestation embedded as an X.509 extension.
 func (p *SelfSignedProvider) Provision(ctx context.Context) (*tls.Certificate, time.Duration, error) {
-	key, _, err := GenerateKeyPair()
-	if err != nil {
-		return nil, 0, err
+	key := p.Key
+	if key == nil {
+		var err error
+		if key, _, err = GenerateKeyPair(); err != nil {
+			return nil, 0, err
+		}
 	}
 
 	family, err := teetypes.ParseFamily(p.Platform)
