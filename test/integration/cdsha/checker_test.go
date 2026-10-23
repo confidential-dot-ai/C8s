@@ -58,7 +58,17 @@ func (o Op) Definite() bool {
 	if o.Code == http.StatusServiceUnavailable && strings.Contains(o.Body, gateMsg) {
 		return true
 	}
+	if capacityRefusal(o.Code, o.Body) {
+		return true // refused before it was proposed
+	}
 	return o.Code >= 400 && o.Code < 500
+}
+
+// capacityMsg marks a write the HA admission cap refused (507).
+const capacityMsg = "snapshot capacity"
+
+func capacityRefusal(code int, body string) bool {
+	return code == http.StatusInsufficientStorage && strings.Contains(body, capacityMsg)
 }
 
 // Checker runs writers and readers against a cluster and checks the
@@ -76,12 +86,25 @@ type Checker struct {
 	regress []string                  // monotonic-read violations within one incarnation
 	reads   atomic.Int64
 
+	// capacityOK (set before Start, by a scenario that drives the state to
+	// the admission cap): a capacity refusal is counted in capacity, not
+	// bad5xx.
+	capacityOK bool
+	capacity   int
+
 	stop           chan struct{}
 	stopOnce       sync.Once
 	wg             sync.WaitGroup
 	gate           sync.RWMutex // writers hold it shared; Pause holds it
 	paused         bool         // Pause/Resume and the first Stop run on the test goroutine
 	checkCompleted bool         // set and read by the test goroutine only
+}
+
+// Capacity is how many capacity refusals the writers have met so far.
+func (k *Checker) Capacity() int {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return k.capacity
 }
 
 // Pause waits for in-flight writes and blocks new ones; Resume lets them go.
@@ -226,7 +249,9 @@ func (k *Checker) write(kind, key string, seq int) Op {
 	}
 	k.mu.Lock()
 	k.ops = append(k.ops, op)
-	if badStatus(r.Code, op.Body) {
+	if k.capacityOK && capacityRefusal(r.Code, op.Body) {
+		k.capacity++
+	} else if badStatus(r.Code, op.Body) {
 		k.bad5xx = append(k.bad5xx, fmt.Sprintf("%s PUT %s at %s: %d %s", op.End.Format("15:04:05.000"), path, k.c.Replicas[i].Node, r.Code, op.Body))
 	}
 	if r.Code == http.StatusUnauthorized || r.Code == http.StatusConflict {
@@ -463,13 +488,14 @@ type Report struct {
 	Regress                                []string
 	Bad5xx                                 []string
 	Bad4xx                                 []string
+	Capacity                               int // capacity refusals, where the scenario expects them
 	ConvergeIn                             time.Duration
 	ConvergeErr                            error
 }
 
 func (r Report) String() string {
-	return fmt.Sprintf("writes=%d acked=%d definite-fail=%d indeterminate=%d reads=%d lost=%d invented=%d regress=%d bad5xx=%d bad4xx=%d converge=%s",
-		r.Writes, r.Acked, r.Definite, r.Indeterminate, r.Reads, len(r.Lost), len(r.Invented), len(r.Regress), len(r.Bad5xx), len(r.Bad4xx), r.ConvergeIn.Round(time.Millisecond))
+	return fmt.Sprintf("writes=%d acked=%d definite-fail=%d indeterminate=%d reads=%d lost=%d invented=%d regress=%d bad5xx=%d bad4xx=%d capacity-refused=%d converge=%s",
+		r.Writes, r.Acked, r.Definite, r.Indeterminate, r.Reads, len(r.Lost), len(r.Invented), len(r.Regress), len(r.Bad5xx), len(r.Bad4xx), r.Capacity, r.ConvergeIn.Round(time.Millisecond))
 }
 
 // Check stops the load, waits for convergence and checks the history. The
@@ -485,6 +511,7 @@ func (k *Checker) Check(convergeTimeout time.Duration) Report {
 	rep.Regress = append(rep.Regress, k.regress...)
 	rep.Bad5xx = append(rep.Bad5xx, k.bad5xx...)
 	rep.Bad4xx = append(rep.Bad4xx, k.bad4xx...)
+	rep.Capacity = k.capacity
 	maxAcked := map[string]int{}
 	maxTried := map[string]int{}
 	for _, op := range k.ops {

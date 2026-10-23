@@ -152,7 +152,44 @@ func (s *MemoryStore) Restore(entries []SnapshotEntry) {
 	defer s.mu.Unlock()
 	s.values = make(map[string]entry, len(entries))
 	s.holders = make(map[Holder]int)
+	s.bytes = 0
 	for _, e := range entries {
 		s.storeLocked(e.Path, e.Value, Holder{origin: e.Origin, name: e.Name})
 	}
+}
+
+// entryBytes bounds the JSON size of one SnapshotEntry: the value in base64,
+// path and name escaped (at most twice their length for the characters a
+// path may hold), and the field names.
+func entryBytes(path string, value []byte, by Holder) int64 {
+	return int64(64 + 2*(len(path)+len(by.name)+len(by.origin)) + 4*((len(value)+2)/3))
+}
+
+// SnapshotBytes bounds the size the store adds to a CDS HA snapshot header,
+// in O(1).
+func (s *MemoryStore) SnapshotBytes() int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.bytes
+}
+
+// SnapshotGrowth is how many bytes applying cmd now would add to
+// SnapshotBytes; 0 for a write that would not grow it (a put_if_absent on a
+// held path, an overwrite with a value no larger).
+func (s *MemoryStore) SnapshotGrowth(cmd Command) int64 {
+	by := Holder{origin: cmd.Origin, name: cmd.Name}
+	if cmd.Op == OpPut {
+		by = OperatorHolder()
+	}
+	s.mu.RLock()
+	prior, held := s.values[cmd.Path]
+	s.mu.RUnlock()
+	add := entryBytes(cmd.Path, cmd.Value, by)
+	switch {
+	case !held:
+		return add
+	case cmd.Op == OpPutIfAbsent:
+		return 0
+	}
+	return max(0, add-entryBytes(cmd.Path, prior.value, prior.holder))
 }

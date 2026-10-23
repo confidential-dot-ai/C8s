@@ -20,6 +20,11 @@ var ErrNotFound = errors.New("secrets: no such path")
 // handlers answer 503.
 var ErrUnavailable = errors.New("secrets: replicated store unavailable (no leader or no quorum); retry")
 
+// ErrCapacity wraps a write an HA cluster refused because its replicated
+// state is near what a snapshot can hold. It clears when the state shrinks,
+// so handlers answer 507 with a retryable code.
+var ErrCapacity = errors.New("secrets: replicated state at capacity")
+
 // The two refusals a write that grows the path map can meet.
 var (
 	ErrHolderQuota = errors.New("secrets: holder path quota")
@@ -127,6 +132,10 @@ type MemoryStore struct {
 	maxPaths     int
 	maxPerHolder int
 	maxValue     int
+
+	// bytes is the snapshot size of values (entryBytes summed), kept as the
+	// map changes so the HA admission cap reads it in O(1).
+	bytes int64
 }
 
 type entry struct {
@@ -206,6 +215,7 @@ func (s *MemoryStore) checkValue(value []byte) error {
 // another holder's value returns that holder's quota.
 func (s *MemoryStore) storeLocked(path string, value []byte, by Holder) {
 	if prior, ok := s.values[path]; ok {
+		s.bytes -= entryBytes(path, prior.value, prior.holder)
 		if s.holders[prior.holder] <= 1 {
 			delete(s.holders, prior.holder)
 		} else {
@@ -214,6 +224,7 @@ func (s *MemoryStore) storeLocked(path string, value []byte, by Holder) {
 	}
 	s.values[path] = entry{value: append([]byte(nil), value...), holder: by}
 	s.holders[by]++
+	s.bytes += entryBytes(path, value, by)
 }
 
 // checkRoomLocked guards the path bounds for a write that grows the map:
