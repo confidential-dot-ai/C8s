@@ -1,7 +1,6 @@
 package cdsha
 
 import (
-	"bytes"
 	"cmp"
 	"crypto/ecdsa"
 	"crypto/ed25519"
@@ -9,10 +8,19 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/json"
-	"io"
 	"strings"
 	"testing"
 	"time"
+
+	"context"
+	"errors"
+
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
@@ -152,8 +160,7 @@ func TestVerifyDecreeSignature(t *testing.T) {
 // The decree record is bounded, oldest first out, and snapshots carry it.
 func TestDecreeRecordBound(t *testing.T) {
 	_, opPub := operatorKey(t)
-	al, sec, led := testStores(t)
-	f := NewFSM(PreGenesis(testCluster, opPub), al, sec, led)
+	f := newTestFSM(t, opPub)
 	f.mu.Lock()
 	for i := range maxDecreeRecord + 10 {
 		f.record(SignedDecree{Decree: Decree{IntentID: "d"}}, int64(i), uint64(i))
@@ -163,17 +170,28 @@ func TestDecreeRecordBound(t *testing.T) {
 	if len(rec) != maxDecreeRecord || rec[0].Epoch != 10 {
 		t.Fatalf("bound: %d records, first epoch %d", len(rec), rec[0].Epoch)
 	}
-	s, err := f.Snapshot()
-	if err != nil {
-		t.Fatal(err)
-	}
-	var buf bytes.Buffer
-	if err := s.Persist(&memSink{Buffer: &buf}); err != nil {
-		t.Fatal(err)
-	}
-	al2, sec2, led2 := testStores(t)
-	g := NewFSM(PreGenesis(testCluster, opPub), al2, sec2, led2)
-	if err := g.Restore(io.NopCloser(bytes.NewReader(buf.Bytes()))); err != nil || len(g.Decrees()) != maxDecreeRecord {
+	g := newTestFSM(t, opPub)
+	if err := restoreCopy(t, f, g); err != nil || len(g.Decrees()) != maxDecreeRecord {
 		t.Fatalf("restore: %v, %d records", err, len(g.Decrees()))
+	}
+}
+
+// A decree object without data still takes a status; a failing API is reported.
+func TestSetDecreeStatusEdges(t *testing.T) {
+	ctx := context.Background()
+	kube := fake.NewClientset(&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "d", Namespace: "decrees"}})
+	st := KubeDecrees{Client: kube, Namespace: "decrees", ClusterID: testCluster}
+	if err := st.SetDecreeStatus(ctx, "d", DecreeStatus{RejectedReason: "no"}); err != nil {
+		t.Fatal(err)
+	}
+	cm, _ := kube.CoreV1().ConfigMaps("decrees").Get(ctx, "d", metav1.GetOptions{})
+	if !strings.Contains(cm.Data[keyStatus], "no") {
+		t.Fatalf("status %q", cm.Data[keyStatus])
+	}
+	kube.PrependReactor("update", "configmaps", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewConflict(corev1.Resource("configmaps"), "d", errors.New("changed"))
+	})
+	if err := st.SetDecreeStatus(ctx, "d", DecreeStatus{RejectedReason: "no"}); err == nil {
+		t.Fatal("a conflicting update reported as written")
 	}
 }

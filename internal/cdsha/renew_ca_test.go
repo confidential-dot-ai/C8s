@@ -2,11 +2,8 @@ package cdsha
 
 import (
 	"bytes"
-	"encoding/json"
 	"testing"
 	"time"
-
-	"github.com/hashicorp/raft"
 
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 )
@@ -49,13 +46,9 @@ func TestLeaderRenewsTheMeshCACertificate(t *testing.T) {
 // A renewal entry is adopted only when it renews the current certificate:
 // self-signed under the same key, same subject, a later expiry.
 func TestApplyRenewCARefusals(t *testing.T) {
-	al, sec, led := testStores(t)
 	_, opPub := operatorKey(t)
-	f := NewFSM(PreGenesis(testCluster, opPub), al, sec, led)
-	apply := func(i uint64, e Entry) any {
-		raw, _ := json.Marshal(e)
-		return f.Apply(&raft.Log{Index: i, Type: raft.LogCommand, Data: raw})
-	}
+	f := newTestFSM(t, opPub)
+	apply := func(i uint64, e Entry) any { return applyAt(f, i, e) }
 	mesh, err := issuer.NewMeshCA("c8s-mesh-ca", time.Hour)
 	if err != nil {
 		t.Fatal(err)

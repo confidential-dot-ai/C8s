@@ -3,8 +3,6 @@ package cdsha
 import (
 	"context"
 	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"crypto/x509"
 	"errors"
 	"fmt"
@@ -58,52 +56,6 @@ func (m *memBackups) get() (Backup, bool) {
 	return *m.last, true
 }
 
-func operatorKey(t *testing.T) (*ecdsa.PrivateKey, []byte) {
-	t.Helper()
-	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pub, err := x509.MarshalPKIXPublicKey(&k.PublicKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return k, pub
-}
-
-// memDecrees stands in for the decree ConfigMaps.
-type memDecrees struct {
-	mu     sync.Mutex
-	items  map[string]SignedDecree
-	status map[string]DecreeStatus
-}
-
-func (m *memDecrees) PendingDecrees(context.Context) ([]PendingDecree, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	var out []PendingDecree
-	for name, sd := range m.items {
-		if _, done := m.status[name]; !done {
-			out = append(out, PendingDecree{Name: name, Decree: sd})
-		}
-	}
-	return out, nil
-}
-
-func (m *memDecrees) SetDecreeStatus(_ context.Context, name string, st DecreeStatus) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.status[name] = st
-	return nil
-}
-
-func (m *memDecrees) get(name string) (DecreeStatus, bool) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	st, ok := m.status[name]
-	return st, ok
-}
-
 // replica is one test node and its local stores.
 type replica struct {
 	name   string
@@ -155,7 +107,7 @@ func newCluster(t *testing.T, seats int) *cluster {
 	l.Close()
 	rk, _ := operatorKey(t)
 	c := &cluster{t: t, opKey: k, opPub: pub, seats: seats, port: port, backups: &memBackups{}, recKey: rk,
-		decrees: &memDecrees{items: map[string]SignedDecree{}, status: map[string]DecreeStatus{}},
+		decrees: newMemDecrees(),
 		nodes:   map[string]*replica{}, meas: map[string]string{}, cut: map[string]bool{}, nextIP: 2, ipOf: map[string]string{}, reads: map[string]uint32{},
 		block: 1 + clusterSeq.Add(1)%250}
 	t.Cleanup(func() {
@@ -265,22 +217,7 @@ func (c *cluster) partition(name string, on bool) {
 
 func (c *cluster) decree(d Decree) string {
 	c.t.Helper()
-	d.ClusterID = testCluster
-	if d.IntentID == "" {
-		d.IntentID = fmt.Sprintf("i%d", time.Now().UnixNano())
-	}
-	if d.ExpiresAt.IsZero() {
-		d.ExpiresAt = time.Now().Add(time.Hour)
-	}
-	sd, err := SignDecree(d, c.opKey)
-	if err != nil {
-		c.t.Fatal(err)
-	}
-	name := DecreeName(testCluster, d.IntentID)
-	c.decrees.mu.Lock()
-	c.decrees.items[name] = sd
-	c.decrees.mu.Unlock()
-	return name
+	return c.decrees.put(signDecree(c.t, c.opKey, d))
 }
 
 func (c *cluster) live() []*replica {
@@ -291,17 +228,6 @@ func (c *cluster) live() []*replica {
 		out = append(out, r)
 	}
 	return out
-}
-
-func eventually(t *testing.T, within time.Duration, what string, ok func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(within)
-	for !ok() {
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for: %s", what)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
 }
 
 func (c *cluster) leader() *replica {
@@ -936,4 +862,38 @@ func TestPinsMustKeepAMajority(t *testing.T) {
 	}
 	both := c.decree(Decree{Kind: UpdateMeasurements, BaseEpoch: 1, Measurements: []string{"m1", "m2"}})
 	eventually(t, 5*time.Second, "both pinned", func() bool { st, ok := c.decrees.get(both); return ok && st.AppliedEpoch != nil })
+}
+
+// A Recover decree on a cluster whose leader holds a majority is refused,
+// with a reason, even when it names a replica that is cut off; nothing
+// changes, and the cut-off replica rejoins after the heal.
+func TestRecoverRefusedWithQuorum(t *testing.T) {
+	c := newCluster(t, 3)
+	c.genesis("n0", "n1", "n2")
+	l := c.leader()
+	var cut *replica
+	for _, r := range c.live() {
+		if r != l {
+			cut = r
+			break
+		}
+	}
+	c.partition(cut.name, true)
+	eventually(t, 4*time.Second, "cut-off replica stops serving", func() bool { return !cut.node.Serving() })
+	epoch := l.node.Core().Epoch
+	rec := c.decree(Decree{Kind: Recover, BootstrapNode: cut.name, BaseEpoch: epoch})
+	eventually(t, 5*time.Second, "recover refused", func() bool { _, ok := c.decrees.get(rec); return ok })
+	if st, _ := c.decrees.get(rec); st.AppliedEpoch != nil || st.RejectedReason != ErrRecoverWithQuorum.Error() {
+		t.Fatalf("Recover with a quorum: %+v", st)
+	}
+	// Past dead_after the cut-off replica must not recover itself either.
+	time.Sleep(testTiming.DeadAfter + 500*time.Millisecond)
+	if cut.node.r().State().String() == "Leader" || l.node.Core().Epoch != epoch {
+		t.Fatalf("Recover took effect: cut-off state %s, epoch %d -> %d", cut.node.r().State(), epoch, l.node.Core().Epoch)
+	}
+	c.partition(cut.name, false)
+	c.settled(15 * time.Second)
+	if e := c.leader().node.Core().Epoch; e != epoch {
+		t.Fatalf("epoch moved %d -> %d", epoch, e)
+	}
 }

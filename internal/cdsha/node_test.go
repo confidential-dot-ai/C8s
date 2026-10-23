@@ -11,37 +11,15 @@ import (
 	"net"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/hashicorp/raft"
 
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/sandboxledger"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
 )
-
-// flakyDecrees is a decree source whose reads and status writes can fail.
-type flakyDecrees struct {
-	*memDecrees
-	failList   atomic.Bool
-	failStatus atomic.Bool
-	statusErrs atomic.Int32
-}
-
-func (f *flakyDecrees) PendingDecrees(ctx context.Context) ([]PendingDecree, error) {
-	if f.failList.Load() {
-		return nil, errors.New("api down")
-	}
-	return f.memDecrees.PendingDecrees(ctx)
-}
-
-func (f *flakyDecrees) SetDecreeStatus(ctx context.Context, name string, st DecreeStatus) error {
-	if f.failStatus.Load() {
-		f.statusErrs.Add(1)
-		return errors.New("api down")
-	}
-	return f.memDecrees.SetDecreeStatus(ctx, name, st)
-}
 
 // failingBackups refuses every backup with err.
 type failingBackups struct {
@@ -68,19 +46,9 @@ func (f *failingBackups) n() int {
 type solo struct {
 	t       *testing.T
 	opKey   *ecdsa.PrivateKey
-	decrees *flakyDecrees
+	decrees *memDecrees
 	node    *Node
 	addr    string
-}
-
-func freeAddr(t *testing.T) string {
-	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer l.Close()
-	return l.Addr().String()
 }
 
 func soloConfig(t *testing.T, name, addr string, opPub []byte, ds DecreeSource) Config {
@@ -110,7 +78,7 @@ func runNode(t *testing.T, n *Node) {
 func newSolo(t *testing.T, mutate func(*Config)) *solo {
 	t.Helper()
 	k, pub := operatorKey(t)
-	s := &solo{t: t, opKey: k, decrees: &flakyDecrees{memDecrees: &memDecrees{items: map[string]SignedDecree{}, status: map[string]DecreeStatus{}}}, addr: freeAddr(t)}
+	s := &solo{t: t, opKey: k, decrees: newMemDecrees(), addr: freeAddr(t)}
 	cfg := soloConfig(t, "n0", s.addr, pub, s.decrees)
 	if mutate != nil {
 		mutate(&cfg)
@@ -130,28 +98,10 @@ func newSolo(t *testing.T, mutate func(*Config)) *solo {
 
 func (s *solo) sign(d Decree) SignedDecree {
 	s.t.Helper()
-	d.ClusterID = testCluster
-	if d.IntentID == "" {
-		d.IntentID = fmt.Sprintf("i%d", time.Now().UnixNano())
-	}
-	if d.ExpiresAt.IsZero() {
-		d.ExpiresAt = time.Now().Add(time.Hour)
-	}
-	sd, err := SignDecree(d, s.opKey)
-	if err != nil {
-		s.t.Fatal(err)
-	}
-	return sd
+	return signDecree(s.t, s.opKey, d)
 }
 
-func (s *solo) decree(d Decree) string {
-	sd := s.sign(d)
-	name := DecreeName(testCluster, sd.Decree.IntentID)
-	s.decrees.mu.Lock()
-	s.decrees.items[name] = sd
-	s.decrees.mu.Unlock()
-	return name
-}
+func (s *solo) decree(d Decree) string { return s.decrees.put(s.sign(d)) }
 
 func (s *solo) applied(name string, epoch uint64) {
 	s.t.Helper()
@@ -308,7 +258,7 @@ func TestRestoreRefusals(t *testing.T) {
 // Recover and Genesis decrees a replica cannot use, or cannot read, do not start it.
 func TestPendingBootstrapDecreesUnusable(t *testing.T) {
 	k, pub := operatorKey(t)
-	ds := &flakyDecrees{memDecrees: &memDecrees{items: map[string]SignedDecree{}, status: map[string]DecreeStatus{}}}
+	ds := newMemDecrees()
 	expired, _ := SignDecree(Decree{ClusterID: testCluster, IntentID: "r", Kind: Recover, BootstrapNode: "n0", ExpiresAt: time.Now().Add(-time.Minute)}, k)
 	ds.items["r"] = expired
 	gen, _ := SignDecree(Decree{ClusterID: testCluster, IntentID: "g", Kind: Genesis, BootstrapNode: "n0", ExpiresAt: time.Now().Add(-time.Minute)}, k)
@@ -377,5 +327,53 @@ func TestNewNodeAndStartErrors(t *testing.T) {
 	}
 	if err := n.Start(); err == nil || !strings.Contains(err.Error(), "advertise") {
 		t.Fatalf("an advertise address that does not resolve: %v", err)
+	}
+}
+
+// Heartbeat failures from the replication stream of a member's earlier
+// membership (last contact before it was added again) do not count; a
+// member is dead only after dead_after from its last successful contact.
+func TestNoteFailureIgnoresStaleStreams(t *testing.T) {
+	n := &Node{failing: map[raft.ServerID]time.Time{}, addedAt: map[raft.ServerID]time.Time{}}
+	id := raft.ServerID("n4/1-a")
+	t0 := time.Now()
+	n.addedAt[id] = t0
+	n.noteFailure(id, t0.Add(-10*time.Second), t0.Add(time.Second))
+	if _, bad := n.failing[id]; bad {
+		t.Fatal("a failure from before the member joined counted")
+	}
+	// The current stream fails: measured from its last contact.
+	n.noteFailure(id, t0.Add(2*time.Second), t0.Add(5*time.Second))
+	if got := n.failing[id]; !got.Equal(t0.Add(2 * time.Second)) {
+		t.Fatalf("failing since %v, want the last contact", got)
+	}
+	// A stream that never reached it: from the join, not earlier.
+	other := raft.ServerID("n5/1-b")
+	n.addedAt[other] = t0
+	n.noteFailure(other, time.Time{}, t0.Add(3*time.Second))
+	if got := n.failing[other]; !got.Equal(t0.Add(3 * time.Second)) {
+		t.Fatalf("never contacted: failing since %v", got)
+	}
+	unknown := raft.ServerID("n6/1-c")
+	n.noteFailure(unknown, t0.Add(-time.Minute), t0)
+	if got := n.failing[unknown]; !got.Equal(t0.Add(-time.Minute)) {
+		t.Fatalf("member without a join time: %v", got)
+	}
+}
+
+// A write that does not commit (here: a replica that has not joined) is
+// reported as unavailable to both stores, so their handlers answer 503.
+func TestReplicateFailureIsUnavailable(t *testing.T) {
+	al, sec, led := testStores(t)
+	n, err := NewNode(Config{ClusterID: testCluster, NodeName: "n0", Bind: "127.0.0.1:0", Advertise: "127.0.0.1:1", Attestor: MockAttestor{"m1"},
+		Seats: 3, Allowlist: al, Secrets: sec, Ledger: led})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := n.Replicate(allowlist.Command{Op: allowlist.OpConsumeToken, Token: "t"}); !errors.Is(err, allowlist.ErrUnavailable) {
+		t.Errorf("allowlist: %v", err)
+	}
+	if _, err := n.ReplicateSecret(secrets.Command{Op: secrets.OpPut, Path: "/p", Value: []byte("v")}); !errors.Is(err, secrets.ErrUnavailable) {
+		t.Errorf("secrets: %v", err)
 	}
 }
