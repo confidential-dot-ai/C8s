@@ -307,18 +307,6 @@ jobs:
       - name: Run the exact production-script harness
         run: make test-node-guest-image-psa-ready
 
-  models-disk:
-    name: Weights disk mount (script)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Run the exact production-script harness
-        run: make test-node-guest-image-models-disk
-
-      - name: Shellcheck the script and its harness
-        run: shellcheck -x -P SCRIPTDIR node-guest-image/c8s/mkosi.extra/usr/local/bin/models-disk.sh node-guest-image/tests/models-disk-test.sh
-
   rke2-role:
     name: rke2-role dispatch (script)
     runs-on: ubuntu-latest

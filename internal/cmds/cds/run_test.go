@@ -298,6 +298,11 @@ func TestRun_ErrorPaths(t *testing.T) {
 			wantSub: "--dns-san-pattern",
 		},
 		{
+			name:    "follow seed without a seed",
+			mutate:  func(_ *testing.T, cfg *config) { cfg.followSeed = true },
+			wantSub: "--follow-seed",
+		},
+		{
 			name:    "invalid cn pattern",
 			mutate:  func(_ *testing.T, cfg *config) { cfg.allowedCNPattern = "(" },
 			wantSub: "--allowed-cn-pattern",
@@ -306,13 +311,6 @@ func TestRun_ErrorPaths(t *testing.T) {
 			name: "seed file missing fails closed",
 			mutate: func(t *testing.T, cfg *config) {
 				cfg.allowlistSeed = filepath.Join(t.TempDir(), "missing-seed.json")
-			},
-			wantSub: "seed allowlist",
-		},
-		{
-			name: "seed layer missing fails closed",
-			mutate: func(t *testing.T, cfg *config) {
-				cfg.seedLayer = filepath.Join(t.TempDir(), "missing-seed.json")
 			},
 			wantSub: "seed allowlist",
 		},

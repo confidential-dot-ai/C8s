@@ -132,10 +132,6 @@ measured image runs volumed as a host service, so encrypted volumes
 router always publishes the applied route manifest
 ([Route manifest](#route-manifest)).
 
-An optional `models: {writable: true, rootOwner: "UID:GID"}` lets the node
-format a blank `confai-models` disk and mount it read-write
-([node-guest-image/README.md](../node-guest-image/README.md)).
-
 Use **distinct launch keys for server and agent roles, and new keys for
 each cluster**. `clusterID` is a descriptive RFC1123 label; the distinct
 launch keys establish cluster separation during peer verification. Keep one
@@ -617,10 +613,9 @@ With CDS a singleton:
 
 For the measured node image, CDS stores its database at `/mnt/c8s-data/cds/allowlist.db`
 in the Pod's `emptyDir`. A container restart preserves that directory; Pod
-recreation or a VM reboot loses it. The baked component seed is a fixed seed
-layer beside the store, which no upload drops; the optional signed `workloads`
-document initializes the new store, and the first upload replaces it. Reapply
-any later operator changes. The CA signing key is in process memory and changes on
+recreation or a VM reboot loses it. The baked component seed and optional
+signed `workloads` document initialize the new store; reapply any later
+operator changes. The CA signing key is in process memory and changes on
 any CDS process restart, so plan for certificate re-bootstrap even when the
 database survives. This image does not expose a persistent-volume switch in
 launch configuration.

@@ -480,31 +480,6 @@ func TestAuthorizeKeyRejectsUnparsedServerKey(t *testing.T) {
 // TestNodePasswordFromDocument: a node stages exactly its document's
 // rke2.nodePassword on every boot, so a rebooted node rejoins under its name;
 // a document without one leaves RKE2 to generate its own.
-func TestStageMarksTheModelsDiskWritableOnlyWhenTheDocumentSaysSo(t *testing.T) {
-	doc, key, pub := testDocument(t, "tdx", Agent)
-	doc.Models = &Models{Writable: true, RootOwner: "65532:65532"}
-	testLoader(t, doc, pub)
-	cfg := testConfig(t, doc, key)
-	if err := Stage(context.Background(), cfg); err != nil {
-		t.Fatal(err)
-	}
-	marker := cfg.path(Dir + "/" + modelsWritableFile)
-	owner, err := os.ReadFile(marker)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(owner) != "65532:65532" {
-		t.Fatalf("models-writable holds %q", owner)
-	}
-	// A re-stage without the field leaves the disk read-only.
-	doc.Models = nil
-	signDocument(t, cfg, doc, key)
-	if err := Stage(context.Background(), cfg); err != nil {
-		t.Fatal(err)
-	}
-	requireAbsent(t, marker)
-}
-
 func TestNodePasswordFromDocument(t *testing.T) {
 	doc, key, pub := testDocument(t, "tdx", Agent)
 	doc.RKE2.NodePassword = strings.Repeat("c", 64)

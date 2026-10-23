@@ -78,9 +78,6 @@ type Served struct {
 	// Allowlist.Canonical, so this is the policy digest it stamps into
 	// workload certificates and nodes measure into RTMR[3].
 	Digest string
-	// Seed is the digest of the seed layer CDS names in
-	// allowlist.SeedHeader, "" without one.
-	Seed string
 }
 
 // FetchServed is Fetch that also returns the digest of the served bytes.
@@ -140,7 +137,7 @@ func (c Client) fetch(ctx context.Context, ifNoneMatch string, raw *[]byte) (Ser
 		*raw = body
 	}
 	sum := sha256.Sum256(body)
-	return Served{Allowlist: al, ETag: resp.Header.Get("ETag"), Digest: "sha256:" + hex.EncodeToString(sum[:]), Seed: resp.Header.Get(allowlist.SeedHeader)}, false, nil
+	return Served{Allowlist: al, ETag: resp.Header.Get("ETag"), Digest: "sha256:" + hex.EncodeToString(sum[:])}, false, nil
 }
 
 // Object returns the allowlist document of the CDS's history whose digest is
