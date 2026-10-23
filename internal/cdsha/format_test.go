@@ -1,14 +1,10 @@
 package cdsha
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
-	"io"
 	"testing"
 	"time"
-
-	"github.com/hashicorp/raft"
 
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
 )
@@ -26,10 +22,8 @@ func TestFSMStopsOnEntryItCannotRead(t *testing.T) {
 		"undecodable":  json.RawMessage("[1]"),
 	} {
 		t.Run(name, func(t *testing.T) {
-			al, sec, led := testStores(t)
-			f := NewFSM(PreGenesis(testCluster, opPub), al, sec, led)
-			raw, _ := json.Marshal(e)
-			res := f.Apply(&raft.Log{Index: 3, Type: raft.LogCommand, Data: raw})
+			f := newTestFSM(t, opPub)
+			res := applyAt(f, 3, e)
 			if _, ok := res.(error); !ok || f.Stuck() == "" {
 				t.Fatalf("applied %v, stuck %q", res, f.Stuck())
 			}
@@ -39,10 +33,8 @@ func TestFSMStopsOnEntryItCannotRead(t *testing.T) {
 		})
 	}
 	// An entry it reads is not a reason to stop, nor is a secret store refusal.
-	al, sec, led := testStores(t)
-	f := NewFSM(PreGenesis(testCluster, opPub), al, sec, led)
-	raw, _ := json.Marshal(Entry{Kind: KindFormat, SetFormat: Format})
-	if res := f.Apply(&raft.Log{Index: 1, Type: raft.LogCommand, Data: raw}); res != nil || f.Stuck() != "" {
+	f := newTestFSM(t, opPub)
+	if res := applyAt(f, 1, Entry{Kind: KindFormat, SetFormat: Format}); res != nil || f.Stuck() != "" {
 		t.Fatalf("current format: %v, stuck %q", res, f.Stuck())
 	}
 }
@@ -52,38 +44,19 @@ func TestFSMStopsOnEntryItCannotRead(t *testing.T) {
 // follow.
 func TestSnapshotInANewerFormatIsRefused(t *testing.T) {
 	_, opPub := operatorKey(t)
-	al, sec, led := testStores(t)
-	f := NewFSM(PreGenesis(testCluster, opPub), al, sec, led)
+	f := newTestFSM(t, opPub)
 	f.readable = Format + 1
-	apply := func(i uint64, e Entry) {
-		t.Helper()
-		raw, _ := json.Marshal(e)
-		if res := f.Apply(&raft.Log{Index: i, Type: raft.LogCommand, Data: raw}); res != nil {
-			t.Fatalf("entry %d: %v", i, res)
-		}
-	}
-	apply(1, Entry{Kind: KindFormat, SetFormat: Format + 1})
-	apply(2, Entry{Kind: KindFormat, SetFormat: Format}) // never lowers
+	applyAt(f, 1, Entry{Kind: KindFormat, SetFormat: Format + 1})
+	applyAt(f, 2, Entry{Kind: KindFormat, SetFormat: Format}) // never lowers
 	if got := f.Core().format(); got != Format+1 {
 		t.Fatalf("agreed format %d", got)
 	}
-	s, err := f.Snapshot()
-	if err != nil {
-		t.Fatal(err)
-	}
-	var buf bytes.Buffer
-	if err := s.Persist(&memSink{Buffer: &buf}); err != nil {
-		t.Fatal(err)
-	}
-	al2, sec2, led2 := testStores(t)
-	old := NewFSM(PreGenesis(testCluster, opPub), al2, sec2, led2)
-	if err := old.Restore(io.NopCloser(bytes.NewReader(buf.Bytes()))); !errors.Is(err, ErrNewerFormat) {
+	if err := restoreCopy(t, f, newTestFSM(t, opPub)); !errors.Is(err, ErrNewerFormat) {
 		t.Fatalf("older replica installed a newer snapshot: %v", err)
 	}
-	al3, sec3, led3 := testStores(t)
-	same := NewFSM(PreGenesis(testCluster, opPub), al3, sec3, led3)
+	same := newTestFSM(t, opPub)
 	same.readable = Format + 1
-	if err := same.Restore(io.NopCloser(bytes.NewReader(buf.Bytes()))); err != nil || same.Core().format() != Format+1 {
+	if err := restoreCopy(t, f, same); err != nil || same.Core().format() != Format+1 {
 		t.Fatalf("same release: %v, format %d", err, same.Core().format())
 	}
 }

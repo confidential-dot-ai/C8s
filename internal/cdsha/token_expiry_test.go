@@ -1,15 +1,10 @@
 package cdsha
 
 import (
-	"bytes"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
-	"io"
 	"reflect"
 	"testing"
-
-	"github.com/hashicorp/raft"
 
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 )
@@ -24,18 +19,12 @@ func expiryToken(iat int64, id string) string {
 // windows survive a snapshot round trip.
 func TestSpentTokenExpiry(t *testing.T) {
 	_, opPub := operatorKey(t)
-	al, sec, led := testStores(t)
-	f := NewFSM(PreGenesis(testCluster, opPub), al, sec, led)
+	f := newTestFSM(t, opPub)
 	idx := uint64(0)
-	apply := func(e Entry) any {
-		t.Helper()
-		idx++
-		raw, _ := json.Marshal(e)
-		return f.Apply(&raft.Log{Index: idx, Type: raft.LogCommand, Data: raw})
-	}
 	consume := func(tok string) {
 		t.Helper()
-		res := apply(Entry{Kind: KindAllowlist, Allowlist: &allowlist.Command{Op: allowlist.OpConsumeToken, Token: tok}})
+		idx++
+		res := applyAt(f, idx, Entry{Kind: KindAllowlist, Allowlist: &allowlist.Command{Op: allowlist.OpConsumeToken, Token: tok}})
 		if r, ok := res.(allowlist.Result); !ok || r.Err != "" {
 			t.Fatalf("consume: %#v", res)
 		}
@@ -44,24 +33,15 @@ func TestSpentTokenExpiry(t *testing.T) {
 	// used_token rows of both.
 	roundTrip := func() (src, dst []map[string]any) {
 		t.Helper()
-		s, err := f.Snapshot()
+		g := newTestFSM(t, opPub)
+		if err := restoreCopy(t, f, g); err != nil {
+			t.Fatal(err)
+		}
+		a, err := f.allowlist.Dump()
 		if err != nil {
 			t.Fatal(err)
 		}
-		var buf bytes.Buffer
-		if err := s.Persist(&memSink{Buffer: &buf}); err != nil {
-			t.Fatal(err)
-		}
-		al2, sec2, led2 := testStores(t)
-		g := NewFSM(PreGenesis(testCluster, opPub), al2, sec2, led2)
-		if err := g.Restore(io.NopCloser(bytes.NewReader(buf.Bytes()))); err != nil {
-			t.Fatal(err)
-		}
-		a, err := al.Dump()
-		if err != nil {
-			t.Fatal(err)
-		}
-		b, err := al2.Dump()
+		b, err := g.allowlist.Dump()
 		if err != nil {
 			t.Fatal(err)
 		}

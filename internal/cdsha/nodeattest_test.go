@@ -1,7 +1,6 @@
 package cdsha
 
 import (
-	"bytes"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
@@ -52,8 +51,6 @@ func (f *fakeAttestationAPI) handler() http.Handler {
 	})
 	return mux
 }
-
-func digest(b byte) string { return hex.EncodeToString(bytes.Repeat([]byte{b}, 48)) }
 
 func TestNodeAttestorRoundTrip(t *testing.T) {
 	f := &fakeAttestationAPI{mrtd: digest(1), rtmr: [4]string{digest(0xa0), digest(2), digest(3), digest(0x33)}}

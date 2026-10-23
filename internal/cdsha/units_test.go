@@ -6,7 +6,6 @@ import (
 	"crypto/ecdsa"
 	"crypto/rand"
 	"crypto/x509"
-	"encoding/json"
 	"errors"
 	"io"
 	"maps"
@@ -21,10 +20,7 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 
-	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
-	"github.com/confidential-dot-ai/c8s/internal/sandboxledger"
-	"github.com/confidential-dot-ai/c8s/internal/secrets"
 )
 
 func mustCA(t *testing.T) *issuer.CA {
@@ -216,16 +212,6 @@ func TestKubeDecrees(t *testing.T) {
 	}
 }
 
-func testStores(t *testing.T) (*allowlist.Store, *secrets.MemoryStore, *sandboxledger.Ledger) {
-	t.Helper()
-	al, err := allowlist.OpenInMemory()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { al.Close() })
-	return &al, secrets.NewMemoryStore(8, 4, 64), sandboxledger.New(time.Hour, 8)
-}
-
 func TestNewNodeRejectsIncompleteConfig(t *testing.T) {
 	al, sec, led := testStores(t)
 	good := Config{ClusterID: testCluster, NodeName: "n0", Bind: "127.0.0.1:0", Advertise: "127.0.0.1:1", Attestor: MockAttestor{"m1"},
@@ -270,13 +256,9 @@ func TestNewNodeRejectsIncompleteConfig(t *testing.T) {
 // The state machine refuses malformed entries and decrees that do not
 // apply, and a snapshot restores the same state, mesh CA included.
 func TestFSMEdges(t *testing.T) {
-	al, sec, led := testStores(t)
 	opKey, opPub := operatorKey(t)
-	f := NewFSM(PreGenesis(testCluster, opPub), al, sec, led)
-	apply := func(e any) any {
-		raw, _ := json.Marshal(e)
-		return f.Apply(&raft.Log{Index: 7, Type: raft.LogCommand, Data: raw})
-	}
+	f := newTestFSM(t, opPub)
+	apply := func(e any) any { return applyAt(f, 7, e) }
 	if f.Apply(&raft.Log{Index: 8, Type: raft.LogConfiguration}) != nil || f.AppliedIndex() != 8 {
 		t.Fatal("configuration entries are not commands but advance the index")
 	}
@@ -308,18 +290,8 @@ func TestFSMEdges(t *testing.T) {
 	if res := apply(Entry{Kind: KindDecree, Decree: &g}).(DecreeResult); res.Err == "" {
 		t.Fatal("genesis applied twice")
 	}
-	snap, err := f.Snapshot()
-	if err != nil {
-		t.Fatal(err)
-	}
-	var buf bytes.Buffer
-	if err := snap.Persist(&memSink{Buffer: &buf}); err != nil {
-		t.Fatal(err)
-	}
-	snap.Release()
-	al2, sec2, led2 := testStores(t)
-	f2 := NewFSM(PreGenesis(testCluster, opPub), al2, sec2, led2)
-	if err := f2.Restore(io.NopCloser(&buf)); err != nil {
+	f2 := newTestFSM(t, opPub)
+	if err := restoreCopy(t, f, f2); err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(f2.CA().Cert.Raw, ca.Cert.Raw) || f2.Core().Epoch != 1 {
@@ -340,23 +312,6 @@ func TestFSMEdges(t *testing.T) {
 		}
 	}
 }
-
-type memSink struct {
-	*bytes.Buffer
-	fail bool
-}
-
-func (s *memSink) Write(p []byte) (int, error) {
-	if s.fail {
-		return 0, errors.New("disk full")
-	}
-	return s.Buffer.Write(p)
-}
-func (s *memSink) ID() string    { return "mem" }
-func (s *memSink) Cancel() error { return nil }
-func (s *memSink) Close() error  { return nil }
-
-var _ raft.SnapshotSink = (*memSink)(nil)
 
 func zstdOf(t *testing.T, s string) []byte {
 	t.Helper()
@@ -381,25 +336,15 @@ func TestSnapshotKeepsAllowlistHistory(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	s, err := f.Snapshot()
-	if err != nil {
+	f2 := newTestFSM(t, opPub)
+	if err := restoreCopy(t, f, f2); err != nil {
 		t.Fatal(err)
 	}
-	var buf bytes.Buffer
-	if err := s.Persist(&memSink{Buffer: &buf}); err != nil {
-		t.Fatal(err)
-	}
-	s.Release()
-	al2, sec2, led2 := testStores(t)
-	f2 := NewFSM(PreGenesis(testCluster, opPub), al2, sec2, led2)
-	if err := f2.Restore(io.NopCloser(&buf)); err != nil {
-		t.Fatal(err)
-	}
-	if err := al2.StartJournal(); err != nil {
+	if err := f2.allowlist.StartJournal(); err != nil {
 		t.Fatalf("restored history: %v", err)
 	}
 	h1, _ := al.History()
-	h2, _ := al2.History()
+	h2, _ := f2.allowlist.History()
 	if len(h1) != 4 || len(h2) != len(h1) || h2[3].Digest != h1[3].Digest {
 		t.Fatalf("history %d vs %d entries", len(h1), len(h2))
 	}
