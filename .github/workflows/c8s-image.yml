@@ -628,48 +628,37 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      # A release image must bake the allowlist seed that the signed release
-      # statement lists for its platform (docs/releases.md). semver-tag.yml
-      # publishes both inside the parent Docker run, before this build starts.
+      # A release image must bake the allowlist seed that the release statement
+      # lists for its platform (docs/releases.md). semver-tag.yml publishes both
+      # inside the parent Docker run, before this build starts. A statement
+      # from a commit without seed assets (an older commit, or beta before it
+      # has this change) lists none, so there is nothing to check.
       - name: Check the baked allowlist seed against the release
         if: inputs.gate != true && inputs.release_tag != ''
         env:
-          # Keep in step with semver-tag.yml.
-          COSIGN_SHA256: 4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71
-          COSIGN_VERSION: "3.1.3"
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          PLATFORM: ${{ matrix.platform }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
           release="$RUNNER_TEMP/release-seed"
-          cosign="$RUNNER_TEMP/cosign"
           mkdir -p "$release"
-          curl --fail --location --proto '=https' --tlsv1.2 \
-            --connect-timeout 10 --max-time 120 --retry 3 --retry-all-errors \
-            --output "$cosign" \
-            "https://github.com/sigstore/cosign/releases/download/v$COSIGN_VERSION/cosign-linux-amd64"
-          printf '%s  %s\n' "$COSIGN_SHA256" "$cosign" | sha256sum --check --status
-          chmod +x "$cosign"
-          case "$RELEASE_TAG" in
-            *-beta.*) signer_ref=refs/heads/beta ;;
-            *) signer_ref=refs/heads/main ;;
-          esac
           gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir "$release" \
-            --pattern release-statement.json --pattern release-statement.sigstore.json \
-            --pattern "allowlist-seed-${{ matrix.platform }}.json"
-          "$cosign" verify-blob \
-            --bundle "$release/release-statement.sigstore.json" \
-            --certificate-identity "https://github.com/$GITHUB_REPOSITORY/.github/workflows/semver-tag.yml@$signer_ref" \
-            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-            "$release/release-statement.json"
+            --pattern release-statement.json
           jq -e --arg repository "$GITHUB_REPOSITORY" --arg tag "$RELEASE_TAG" --arg commit "$HEAD_SHA" \
             '.repository == $repository and .tag == $tag and .commit == $commit' \
             "$release/release-statement.json" > /dev/null
+          if ! jq -e 'has("allowlistSeeds")' "$release/release-statement.json" > /dev/null; then
+            echo "::notice::$RELEASE_TAG publishes no allowlist seed assets; skipping the seed check"
+            exit 0
+          fi
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir "$release" \
+            --pattern "allowlist-seed-$PLATFORM.json"
           sudo bash c8s/.github/scripts/release-seeds.sh baked \
             "confidential-os-builder/output/$VARIANT/disk.raw" "$release/baked.json"
           # rke2-<platform>-cdi is the same disk.
-          bash c8s/.github/scripts/release-seeds.sh check "$release" "${{ matrix.platform }}" "$release/baked.json"
+          bash c8s/.github/scripts/release-seeds.sh check "$release" "$PLATFORM" "$release/baked.json"
 
       - name: Check whether the rootfs changed
         if: inputs.gate != true

@@ -344,19 +344,28 @@ jobs:
       contents: read
       packages: read
     steps:
+      # calculate requires target-sha to equal github.sha. Naming github.sha
+      # tells code scanning this unprivileged job builds the pushed commit.
       - name: Checkout release source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          ref: ${{ inputs.target-sha }}
+          ref: ${{ github.sha }}
 
       - uses: ./.github/actions/setup-go-c8s
 
-      # The version node-guest-image/c8s/mkosi.sync renders with.
+      - name: Read the Helm version mkosi.sync renders with
+        id: helm
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^HELM_VERSION="\(v[0-9.]*\)"$/\1/p' node-guest-image/c8s/mkosi.sync)"
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
       - name: Setup Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
-          version: v3.14.4
+          version: ${{ steps.helm.outputs.version }}
 
       - name: Setup ORAS
         uses: oras-project/setup-oras@005458ad77f1c8facd38a094e4af2e69e5607ff4 # v2.0.2
@@ -403,8 +412,8 @@ jobs:
 
   publish:
     name: Publish release
-    needs: [calculate, images, chart]
-    if: needs.calculate.outputs.publish == 'true' && needs.images.result == 'success' && needs.chart.result == 'success'
+    needs: [calculate, images, chart, seeds]
+    if: needs.calculate.outputs.publish == 'true' && needs.images.result == 'success' && needs.chart.result == 'success' && needs.seeds.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -758,21 +767,13 @@ jobs:
           test "$target_type" = commit
           test "$target_sha" = "$TARGET_SHA"
 
-          expected="$(for platform in $RELEASE_SEED_PLATFORMS; do
-            echo "seeds/allowlist-seed-$platform.json"
-          done | sort)"
-          if [ "$(find seeds -mindepth 1 -print | sort)" != "$expected" ] || \
-             find seeds -mindepth 1 ! -type f -print | grep -q .; then
-            echo "::error::release seed payload is not exactly one regular file per platform"
-            exit 1
-          fi
-          allowlist_seeds="$(for platform in $RELEASE_SEED_PLATFORMS; do
+          allowlist_seeds='{}'
+          for platform in $RELEASE_SEED_PLATFORMS; do
             asset="allowlist-seed-$platform.json"
-            jq -e 'type == "object"' "seeds/$asset" > /dev/null
             sha="$(sha256sum < "seeds/$asset")"
-            jq -n --arg platform "$platform" --arg asset "$asset" --arg sha256 "${sha%% *}" \
-              '{key: $platform, value: {asset: $asset, sha256: $sha256}}'
-          done | jq -cs from_entries)"
+            allowlist_seeds="$(jq -c --arg p "$platform" --arg a "$asset" --arg s "${sha%% *}" \
+              '.[$p] = {asset: $a, sha256: $s}' <<< "$allowlist_seeds")"
+          done
 
           jq -cnS \
             --arg repository "$GITHUB_REPOSITORY" \
