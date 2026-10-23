@@ -16,6 +16,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 
@@ -141,32 +142,40 @@ func (c *haTestCluster) stop(errs chan error) {
 	}
 }
 
+// eventually polls cond until it holds, failing the test after d.
+func eventually(t *testing.T, d time.Duration, what string, cond func() bool) {
+	t.Helper()
+	if err := wait.PollUntilContextTimeout(t.Context(), 50*time.Millisecond, d, true, func(context.Context) (bool, error) {
+		return cond(), nil
+	}); err != nil {
+		t.Fatalf("never: %s", what)
+	}
+}
+
 // waitServing waits until every replica's serving state is want. Serving
 // means the full server answers (/ca 200), not the pre-join one.
 func waitServing(t *testing.T, bases []string, want bool) {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for _, b := range bases {
-		for {
-			if time.Now().After(deadline) {
-				t.Fatalf("%s: serving never became %v", b, want)
+	eventually(t, 30*time.Second, fmt.Sprintf("every replica serving=%v", want), func() bool {
+		for _, b := range bases {
+			resp, err := http.Get(b + "/ha/status")
+			if err != nil {
+				return false
 			}
-			if resp, err := http.Get(b + "/ha/status"); err == nil {
-				var st cdsha.Status
-				_ = json.NewDecoder(resp.Body).Decode(&st)
-				resp.Body.Close()
-				full := true
-				if want {
-					c, _, _ := do(t, http.MethodGet, b+"/ca", "", nil)
-					full = c == http.StatusOK
-				}
-				if st.Serving == want && (want || st.ID != "") && full {
-					break
-				}
+			var st cdsha.Status
+			_ = json.NewDecoder(resp.Body).Decode(&st)
+			resp.Body.Close()
+			full := true
+			if want {
+				c, _, _ := do(t, http.MethodGet, b+"/ca", "", nil)
+				full = c == http.StatusOK
 			}
-			time.Sleep(50 * time.Millisecond)
+			if st.Serving != want || (!want && st.ID == "") || !full {
+				return false
+			}
 		}
-	}
+		return true
+	})
 }
 
 // auth signs one operator write with the real CLI signer.
@@ -183,16 +192,13 @@ func (c *haTestCluster) auth(method, path string, body []byte) string {
 // within the clock skew of Genesis are refused (an earlier life of the
 // cluster may have spent them), so it retries with a fresh token while
 // the answer is 401.
-func (c *haTestCluster) firstWrite(base, path string, body []byte) (int, []byte) {
+func (c *haTestCluster) firstWrite(base, path string, body []byte) (code int, resp []byte) {
 	c.t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		code, _, resp := do(c.t, http.MethodPut, base+path, c.auth(http.MethodPut, path, body), body)
-		if code != http.StatusUnauthorized || time.Now().After(deadline) {
-			return code, resp
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+	_ = wait.PollUntilContextTimeout(c.t.Context(), 100*time.Millisecond, 10*time.Second, true, func(context.Context) (bool, error) {
+		code, _, resp = do(c.t, http.MethodPut, base+path, c.auth(http.MethodPut, path, body), body)
+		return code != http.StatusUnauthorized, nil
+	})
+	return code, resp
 }
 
 // Three complete CDS processes in HA mode, driven through the HTTP API: one
@@ -295,17 +301,9 @@ func TestRunHAReplicasServeOneState(t *testing.T) {
 // follower serves a committed write once it has applied it.
 func waitServed(t *testing.T, base string, ok func(int, http.Header, []byte) bool, path, what string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		code, h, body := do(t, http.MethodGet, base+path, "", nil)
-		if ok(code, h, body) {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%s does not serve %s: %d etag %q", base, what, code, h.Get("ETag"))
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	eventually(t, 5*time.Second, base+" serves "+what, func() bool {
+		return ok(do(t, http.MethodGet, base+path, "", nil))
+	})
 }
 
 // An HA replica refuses writes once its allowlist volume is too full for a
