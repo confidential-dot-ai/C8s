@@ -38,9 +38,12 @@ func TestSnapshotCompression(t *testing.T) {
 	if err := encodeSnapshot(&buf, sn); err != nil {
 		t.Fatal(err)
 	}
-	got, err := decodeSnapshot(bytes.NewReader(buf.Bytes()), Format)
+	got, err := decodeSnapshot(bytes.NewReader(buf.Bytes()), Format, false)
 	if err != nil || len(got.Allowlist["journal_object"]) != 300 {
 		t.Fatalf("round trip: %v (%d rows)", err, len(got.Allowlist["journal_object"]))
+	}
+	if head, err := decodeSnapshot(bytes.NewReader(buf.Bytes()), Format, true); err != nil || len(head.Allowlist) != 0 || head.Core.ClusterID != testCluster {
+		t.Fatalf("header only: %v, %+v", err, head.Core)
 	}
 	if buf.Len()*50 > size {
 		t.Fatalf("snapshot of %d bytes for %d bytes of near copies: repeats not shared", buf.Len(), size)
@@ -49,12 +52,12 @@ func TestSnapshotCompression(t *testing.T) {
 		buf.Reset()
 		sn, _ := historySnapshot(format, 2)
 		_ = encodeSnapshot(&buf, sn)
-		if _, err := decodeSnapshot(bytes.NewReader(buf.Bytes()), Format); err == nil {
+		if _, err := decodeSnapshot(bytes.NewReader(buf.Bytes()), Format, false); err == nil {
 			t.Fatalf("took a format %d snapshot", format)
 		}
 	}
 	for _, bad := range [][]byte{{0x28, 0xb5, 0x2f, 0xfd, 1, 2, 3}, []byte(`{"core":{}}`)} {
-		if _, err := decodeSnapshot(bytes.NewReader(bad), Format); err == nil {
+		if _, err := decodeSnapshot(bytes.NewReader(bad), Format, false); err == nil {
 			t.Fatalf("garbage %x decoded", bad)
 		}
 	}

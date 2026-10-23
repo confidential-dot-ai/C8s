@@ -31,6 +31,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/sandboxledger"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
+	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 )
 
 // DecreeSource is where operator decrees arrive (Kubernetes objects). Its
@@ -621,16 +622,16 @@ func (n *Node) maybeBackup(ctx context.Context) {
 	defer rc.Close()
 	body, err := io.ReadAll(rc)
 	if err != nil {
+		n.log.Warn("backup: read snapshot", "err", err)
 		return
 	}
-	sn, err := decodeSnapshot(bytes.NewReader(body), n.fsm.readable)
+	sn, err := decodeSnapshot(bytes.NewReader(body), n.fsm.readable, true)
 	if err != nil {
 		n.log.Warn("backup: decode snapshot", "err", err)
 		return
 	}
-	sum := sha256.Sum256(sn.Core.RootCert)
 	b, err := SealBackup(n.recovery, BackupMeta{ClusterID: sn.Core.ClusterID, Epoch: sn.Core.Epoch, Index: meta.Index,
-		AppliedDecrees: sn.Core.AppliedDecrees, TakenAtMS: time.Now().UnixMilli(), CAFingerprint: hex.EncodeToString(sum[:])}, body)
+		AppliedDecrees: sn.Core.AppliedDecrees, TakenAtMS: time.Now().UnixMilli(), CAFingerprint: certutil.CertFingerprint(sn.Core.RootCert)}, body)
 	if err != nil {
 		n.log.Warn("backup: seal", "err", err)
 		return
@@ -1413,8 +1414,7 @@ func (n *Node) Status() Status {
 		Epoch: core.Epoch, Measurement: n.measurement, AppliedIndex: n.fsm.AppliedIndex(),
 		Format: core.format(), Reads: n.fsm.readable, Stuck: n.fsm.Stuck(), Seats: n.seats()}
 	if core.Joined() {
-		sum := sha256.Sum256(core.RootCert)
-		st.CAFingerprint = hex.EncodeToString(sum[:])
+		st.CAFingerprint = certutil.CertFingerprint(core.RootCert)
 	}
 	if n.r() == nil {
 		return st
