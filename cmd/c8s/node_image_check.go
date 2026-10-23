@@ -93,7 +93,7 @@ func checkNodeImages(outputDir, layoutDir string) error {
 			return fmt.Errorf("decode node integration resource: %w", err)
 		}
 		if kind := object.GetKind(); kind == "Deployment" || kind == "DaemonSet" {
-			if err := collectWorkloadImages(object, kind+"/"+object.GetName(), images); err != nil {
+			if _, err := collectWorkloadImages(object, kind+"/"+object.GetName(), images); err != nil {
 				return err
 			}
 		}
