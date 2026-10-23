@@ -64,8 +64,8 @@ Replacing the key itself is the `RotateKey` decree, a break-glass step.
 
 ## Backups
 
-The leader seals the state to the recovery key and stores it at most once per
-`--ha-backup-interval` (1 minute). Writes made after the last backup are lost
+The leader seals the state to the recovery key and stores it at most once a
+minute. Writes made after the last backup are lost
 in a total loss, so the window is up to one interval.
 
 **Export the backup off the cluster on a schedule.** The backup is sealed to

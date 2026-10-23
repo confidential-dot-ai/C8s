@@ -74,7 +74,7 @@ func newHATestCluster(t *testing.T, hosts []string) *haTestCluster {
 	t.Cleanup(func() { newInClusterKubeClientset, newHAAttestor = origKube, origAtt })
 	c := &haTestCluster{t: t, kube: fake.NewClientset(), apiURL: newHealthyAttestationApi(t).URL, hosts: hosts, httpPort: freePort(t), peerPort: freePort(t)}
 	newInClusterKubeClientset = func() (kubernetes.Interface, error) { return c.kube, nil }
-	newHAAttestor = func(string, cdsha.AttestorOptions) (cdsha.Attestor, error) { return fakeAttestor{"m1"}, nil }
+	newHAAttestor = func(config) (cdsha.Attestor, error) { return fakeAttestor{"m1"}, nil }
 	opKey, keysPath := writeOperatorKeyPair(t)
 	c.keysPath = keysPath
 	keyPEM, err := certutil.MarshalECKeyPEM(opKey)
@@ -126,7 +126,7 @@ func (c *haTestCluster) start(ha haConfig) (chan error, []string) {
 // haTemplate is the HA config the tests share.
 func (c *haTestCluster) haTemplate(timing cdsha.Timing) haConfig {
 	return haConfig{clusterID: "c1", decreeNS: "ns", attestor: "test", pins: []string{"m1"}, operatorKey: c.keysPath,
-		seats: 3, maxNonVoters: 4, timing: timing}
+		seats: 3, timing: timing}
 }
 
 // stop ends every replica of run() (they all listen for SIGTERM).
