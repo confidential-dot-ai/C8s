@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"slices"
@@ -201,7 +202,21 @@ func TestLeaderControlRefusals(t *testing.T) {
 func TestRestoreRefusals(t *testing.T) {
 	s := newSolo(t, nil)
 	ctx := context.Background()
-	snap := []byte("{}")
+	// A real healthy snapshot must pass preflight before this test can
+	// exercise refusal due to a reachable live cluster.
+	future := s.node.r().Snapshot()
+	if err := future.Error(); err != nil {
+		t.Fatal(err)
+	}
+	_, reader, err := future.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap, err := io.ReadAll(reader)
+	reader.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
 	restore := func(node string) SignedDecree {
 		return signDecree(t, s.opKey, Decree{Kind: Restore, BootstrapNode: node, SnapshotSHA256: SnapshotSHA256(snap)})
 	}
