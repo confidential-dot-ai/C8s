@@ -29,6 +29,11 @@ func (n *Node) member() bool {
 // reachable replica already belongs to one. Discovery or contact failure
 // cannot establish absence and therefore blocks Genesis fallback.
 func (n *Node) joinOrBootstrap(ctx context.Context) {
+	n.eligibilityMu.Lock()
+	defer n.eligibilityMu.Unlock()
+	if n.member() {
+		return
+	}
 	peers, err := n.cfg.Peers(ctx)
 	switch {
 	case err != nil:
@@ -189,16 +194,33 @@ func bornOf(id raft.ServerID) int64 {
 	return v
 }
 
-func (n *Node) observe(ch <-chan raft.Observation) {
-	for o := range ch {
-		n.mu.Lock()
-		switch d := o.Data.(type) {
-		case raft.FailedHeartbeatObservation:
-			n.noteFailure(d.PeerID, d.LastContact, time.Now())
-		case raft.ResumedHeartbeatObservation:
-			delete(n.failing, d.PeerID)
+type heartbeatObserver struct {
+	raft     *raft.Raft
+	observer *raft.Observer
+	cancel   context.CancelFunc
+	done     chan struct{}
+}
+
+func (n *Node) observe(ctx context.Context, generation *raft.Raft, ch <-chan raft.Observation) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case o, ok := <-ch:
+			if !ok {
+				return
+			}
+			n.mu.Lock()
+			if ctx.Err() == nil && generation == n.r() && o.Raft == generation {
+				switch d := o.Data.(type) {
+				case raft.FailedHeartbeatObservation:
+					n.noteFailure(d.PeerID, d.LastContact, time.Now())
+				case raft.ResumedHeartbeatObservation:
+					delete(n.failing, d.PeerID)
+				}
+			}
+			n.mu.Unlock()
 		}
-		n.mu.Unlock()
 	}
 }
 
