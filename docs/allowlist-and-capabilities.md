@@ -675,7 +675,11 @@ digests under `command`, `args` and `mounts` of `any`: their bash scripts read
 `BASH_ENV`, and their relative commands resolve through a `PATH` the pod
 chooses beside a writable `/tmp` or a ConfigMap, so argv pins without the
 environment would not bound what runs. The control plane can restage one of
-those images as a privileged tenant pod and the base admits it.
+those images as a privileged tenant pod and the base admits it. The node image's own add-ons, the
+local-path provisioner and the NVIDIA device plugin, pin their whole launch,
+environment included: their manifests turn service links off and mount the
+provisioner's ConfigMap under `/mnt/c8s-data/`, so each entry lists every
+variable its container starts with.
 
 ## Where it's enforced
 
@@ -803,8 +807,9 @@ Both sources check argv at preliminary admission, then argv, environment, and
 mounts at final admission; unavailable evidence fails constrained policies.
 The chart's component entries carry the same exact argv and mount pins in the
 base as in the served seed, leaving only the environment open, so the platform
-can start before CDS is reachable; the node image's RKE2 system entries pin
-argv and mounts except Cilium's, the helm-install jobs' and CoreDNS's mounts.
+can start before CDS is reachable; the node image's system entries pin
+argv and mounts, and its own add-ons their environment too, except Cilium's,
+the helm-install jobs' and CoreDNS's mounts.
 
 ### Allowlist history
 

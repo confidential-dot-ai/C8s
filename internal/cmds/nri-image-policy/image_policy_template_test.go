@@ -147,7 +147,7 @@ func TestNodeImageBootConfig_ParsesAndAdmitsSystemImages(t *testing.T) {
 			t.Errorf("the baked base carries no %q entry, so that component holds no role", name)
 			continue
 		}
-		if got := roles.base.RoleOf(entryLaunch(entry)); got != want {
+		if got := roles.base.RoleOf(containerLaunch(t, entry.Containers[0])); got != want {
 			t.Errorf("the base grants the %q launch the role %q, want %q", name, got, want)
 		}
 	}
@@ -214,7 +214,7 @@ func TestNodeImageBootConfig_ParsesAndAdmitsSystemImages(t *testing.T) {
 	store := newPolicyStore(cfg.Allowlist.Base)
 	for name, w := range cfg.Allowlist.Base.Workloads {
 		for _, c := range slices.Concat(w.InitContainers, w.Containers) {
-			if !store.baseAdmits(containerLaunch(c), launchFinal) {
+			if !store.baseAdmits(containerLaunch(t, c), launchFinal) {
 				t.Errorf("base entry %q does not admit the launch its %s container describes", name, c.Image)
 			}
 		}
@@ -224,12 +224,10 @@ func TestNodeImageBootConfig_ParsesAndAdmitsSystemImages(t *testing.T) {
 	// except those of the images named here, whose launch stays open for the
 	// reasons docs/allowlist-and-capabilities.md ("Host privilege") gives.
 	openSystemImages := map[string]bool{
-		"docker.io/rancher/mirrored-cilium-cilium:v1.19.6":                                                                 true,
-		"docker.io/rancher/mirrored-cilium-operator-generic:v1.19.6":                                                       true,
-		"docker.io/rancher/klipper-helm:v0.13.3-build20260820":                                                             true,
-		"docker.io/rancher/hardened-coredns:v1.14.7-build20260819":                                                         true,
-		"rancher/local-path-provisioner:v0.0.36@sha256:1eba82e9c386038b4af6d69cca7519fac738c28c42735ed48ce70c882ad0d80f":   true,
-		"nvcr.io/nvidia/k8s-device-plugin:v0.19.3@sha256:25cc340fe6fd53c101e16fc452f503e7a92c219c64a80ed5381784b522dbbf77": true,
+		"docker.io/rancher/mirrored-cilium-cilium:v1.19.6":           true,
+		"docker.io/rancher/mirrored-cilium-operator-generic:v1.19.6": true,
+		"docker.io/rancher/klipper-helm:v0.13.3-build20260820":       true,
+		"docker.io/rancher/hardened-coredns:v1.14.7-build20260819":   true,
 	}
 	for name, w := range cfg.Allowlist.Base.Workloads {
 		for _, c := range slices.Concat(w.InitContainers, w.Containers) {
@@ -249,7 +247,7 @@ func TestNodeImageBaseRefusesAMountOverCoreDNS(t *testing.T) {
 		t.Fatal(err)
 	}
 	coredns := cfg.Allowlist.Base.Workloads["coredns"].Containers[0]
-	launch := containerLaunch(coredns)
+	launch := containerLaunch(t, coredns)
 	launch.Mounts = []allowlist.ObservedMount{{Destination: "/etc/coredns", Volume: "config-volume", Class: allowlist.MountData, Storage: allowlist.MountEncrypted}}
 	store := newPolicyStore(cfg.Allowlist.Base)
 	if !store.baseAdmits(launch, launchFinal) {
@@ -450,20 +448,44 @@ func (l launchEvidence) container() allowlist.RunningContainer {
 	}
 }
 
-// entryLaunch is the launch an entry's first container describes.
-func entryLaunch(w allowlist.Workload) allowlist.RunningContainer {
-	return containerLaunch(w.Containers[0])
-}
-
-// containerLaunch is the launch a container describes: the argv it pins, and
-// the mounts it pins where it pins any.
-func containerLaunch(c allowlist.Container) allowlist.RunningContainer {
+// containerLaunch is the launch a container describes: the argv it pins, the
+// mounts it pins where it pins any, and the environment it matches.
+func containerLaunch(t *testing.T, c allowlist.Container) allowlist.RunningContainer {
 	return allowlist.RunningContainer{
 		Digest: c.Digest.String(),
 		Argv:   append(slices.Clone(c.Command.Argv), c.Args.Argv...),
 		Mounts: entryMounts(c.Mounts),
+		Env:    entryEnv(t, c.Env),
 	}
 }
+
+// entryEnv is environment evidence a match policy admits: each variable at
+// its pinned value, or at presentValue where it need only be set. It is nil,
+// no evidence, for a policy that leaves the environment open.
+func entryEnv(t *testing.T, p allowlist.EnvPolicy) *allowlist.EnvObservation {
+	t.Helper()
+	if p.Policy != allowlist.PolicyMatch {
+		return nil
+	}
+	exact := p.ExactValues()
+	entries := make([]string, 0, len(p.Variables))
+	for name := range p.Variables {
+		value, pinned := exact[name]
+		if !pinned {
+			value = presentValue
+		}
+		entries = append(entries, name+"="+value)
+	}
+	env, err := allowlist.ObserveEnv(entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return env
+}
+
+// presentValue stands for the value of a variable a match policy requires
+// only to be set.
+const presentValue = "set"
 
 // entryMounts is mount evidence the policy admits: the mounts it pins, a host
 // mount where it leaves them open, and none where it denies them.
