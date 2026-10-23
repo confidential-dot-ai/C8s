@@ -261,3 +261,14 @@ func (s *MemoryStore) TopHolders(n int) []HolderPaths {
 	})
 	return slices.Clip(out[:min(n, len(out))])
 }
+
+// EmptyClone returns an empty store with identical application limits.
+// Recovery replay must not change which logged writes succeed.
+func (s *MemoryStore) EmptyClone() *MemoryStore {
+	return NewMemoryStore(s.maxPaths, s.maxPerHolder, s.maxValue)
+}
+
+// Policy returns the store's immutable application settings.
+func (s *MemoryStore) Policy() (maxPaths, maxPerHolder, maxValue int) {
+	return s.maxPaths, s.maxPerHolder, s.maxValue
+}

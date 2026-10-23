@@ -32,6 +32,40 @@ new format, so during the rollout the old format stays in force.
 The router, `get-cert`, the injected sidecars and `allowlist-proxy` follow the
 decrees through the node's enforcer.
 
+## Application policy and read freshness
+
+Genesis records application policy version 1 in the replicated Core: the exact
+sandbox binding TTL and capacity, and the secret path, per-holder and value
+limits. These values are immutable for that cluster. Every joining replica
+must use identical effective values. Missing, unknown or different policy is
+refused before membership or snapshot state changes. Recovery uses the same
+policy as live application, including refused logged commands. Policy version
+is separate from snapshot format. The format-3 release requires a clean
+redeploy; it does not infer policy for old clusters or support format-2 restore
+or rolling conversion.
+
+Local authorization reads are **bounded stale, not linearizable**. Each replica
+periodically asks the leader for a Raft barrier, then waits until its own FSM
+has applied the returned watermark. The read certificate expires one Lease
+(default five seconds) after the request **started**. Heartbeats alone never
+renew it. A changed Raft instance, leader, term or decree epoch invalidates it.
+HTTP admission, CA access and readiness check this evidence locally. Ordinary
+GET requests do not append log entries. Explicit CatchUp calls force a barrier.
+At a Lease/3 refresh interval the default cost is at most about 0.6 barrier
+entries per replica per second, plus explicit CatchUp calls; test settings with
+a one-second Lease use about three per replica per second. If application or
+quorum confirmation stalls, replicas stop admitting reads when evidence expires.
+This is an admission-time guarantee, not an atomic transaction around an entire
+HTTP handler that was already admitted.
+
+Genesis fallback fails closed on discovery errors and unreachable discovered
+peers, and never replaces locally known cluster state. A successful **empty**
+discovery result still permits the explicitly signed initial Genesis. Stateless
+reboots cannot distinguish a true first launch from replay of a still-valid
+Genesis when discovery hides all existing members. Complete prevention needs a
+trusted one-time boot generation or new operator authorization; this change
+does not claim to provide that marker.
+
 ## Checking the replicas
 
     c8s cds ha status --image-policy-file server.json https://<node-1>:30808 https://<node-2>:30808 ...

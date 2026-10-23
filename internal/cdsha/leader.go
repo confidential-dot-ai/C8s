@@ -14,8 +14,6 @@ import (
 
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
-	"github.com/confidential-dot-ai/c8s/internal/sandboxledger"
-	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 )
 
@@ -25,6 +23,10 @@ import (
 // recover makes this replica the only voter of the cluster, with the state
 // it holds, for a verified Recover decree naming it.
 func (n *Node) recover(ctx context.Context, p PendingDecree) {
+	if err := n.fsm.ValidatePolicy(n.fsm.Core().Policy); err != nil {
+		n.log.Error("recover: application policy", "err", err)
+		return
+	}
 	n.log.Warn("RECOVER: forcing a one-voter configuration with this replica's state", "decree", p.Name, "id", n.id)
 	if err := n.r().Shutdown().Error(); err != nil {
 		n.log.Error("recover: shut down raft", "err", err)
@@ -38,7 +40,7 @@ func (n *Node) recover(ctx context.Context, p PendingDecree) {
 		return
 	}
 	defer al.Close()
-	scratch := NewFSM(PreGenesis(n.cfg.ClusterID, n.cfg.OperatorPubKey), &al, secrets.NewMemoryStore(1<<20, 1<<19, 1<<20), sandboxledger.New(time.Hour, 1<<20))
+	scratch := n.recoveryFSM(&al)
 	// snapStore ignores the transport RecoverCluster passes it.
 	if err := raft.RecoverCluster(n.rcfg, scratch, n.logs, n.stable, n.snaps, nil, n.solo()); err != nil {
 		n.log.Error("recover: RecoverCluster", "err", err)
@@ -50,6 +52,13 @@ func (n *Node) recover(ctx context.Context, p PendingDecree) {
 	n.waitFor(20*n.cfg.Timing.Election, n.leading)
 	// Record the decree in the log, so it can never apply again.
 	n.applyDecree(ctx, p)
+}
+
+// recoveryFSM keeps replay policy identical to this replica's live FSM.
+// Operators must still configure identical policies on all replicas.
+func (n *Node) recoveryFSM(al *allowlist.Store) *FSM {
+	return NewFSM(PreGenesis(n.cfg.ClusterID, n.cfg.OperatorPubKey), al,
+		n.cfg.Secrets.EmptyClone(), n.cfg.Ledger.EmptyClone())
 }
 
 // pendingDecree is a valid pending decree of kind naming this replica.
@@ -370,6 +379,7 @@ func (n *Node) applyDecree(ctx context.Context, p PendingDecree) {
 	de := DecreeEntry{Decree: p.Decree, AtMS: time.Now().UnixMilli()}
 	if d.Kind == Genesis {
 		de.Pins = n.cfg.BakedPins
+		de.Policy = n.fsm.LocalPolicy()
 	}
 	if d.Kind == Genesis || d.Kind == RotateKey {
 		minted, err := issuer.NewMeshCA(n.cfg.CACommonName, n.cfg.CAValidity)
