@@ -10,7 +10,24 @@ import (
 	"testing"
 
 	toml "github.com/pelletier/go-toml/v2"
+	"sigs.k8s.io/yaml"
 )
+
+func TestPodRoleKubeletLeavesPacketRulesToNRI(t *testing.T) {
+	data, err := os.ReadFile("../mkosi.extra/usr/lib/c8s/pod-runtime/kubelet.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config struct {
+		MakeIPTablesUtilChains *bool `json:"makeIPTablesUtilChains"`
+	}
+	if err := yaml.Unmarshal(data, &config); err != nil {
+		t.Fatal(err)
+	}
+	if config.MakeIPTablesUtilChains == nil || *config.MakeIPTablesUtilChains {
+		t.Fatal("standalone kubelet must explicitly disable utility iptables chains; NRI owns the guest packet rules")
+	}
+}
 
 // podRoleConfig is the pod role's hand-written containerd config.
 const podRoleConfig = "../mkosi.extra/usr/lib/c8s/pod-runtime/containerd.toml"

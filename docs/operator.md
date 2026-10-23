@@ -272,7 +272,9 @@ blocked for applications and the measured endpoint.
 The standalone kubelet uses `/run/systemd/resolve/resolv.conf`, containing the
 guest's upstream resolvers, rather than the guest-local DNS stub or a cluster
 DNS address. Pod preparation sets `dnsPolicy: Default` and removes `dnsConfig`
-overrides so every container receives those upstreams.
+overrides so every container receives those upstreams. Its
+`makeIPTablesUtilChains: false` setting leaves guest packet-rule management to
+NRI.
 
 The pod manifest requires `metadata.uid` and digest-pinned container images.
 Volumes must be `emptyDir` with `medium: Memory`, so pod state stays in VM

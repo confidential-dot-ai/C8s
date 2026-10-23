@@ -27,10 +27,10 @@ type workflowDocument struct {
 	Concurrency      yaml.Node
 	Env, Permissions map[string]string
 	Jobs             map[string]struct {
-		Uses    string
-		Needs   yaml.Node
-		Outputs map[string]string
-		Steps   []workflowStep
+		Uses, If string
+		Needs    yaml.Node
+		Outputs  map[string]string
+		Steps    []workflowStep
 	}
 }
 
@@ -162,7 +162,10 @@ func TestTDXWrappersShareLifecycleIdentity(t *testing.T) {
 	exact, staged := readWorkflow(t, exactWorkflow), readWorkflow(t, stagedWorkflow)
 	var action lifecycleDocument
 	readYAML(t, "../../.github/actions/tdx-metal-e2e/action.yml", &action)
-	for _, doc := range []workflowDocument{exact, staged} {
+	// Match the entire reviewed predicate and fixed fallback. A per-ref/run group,
+	// broader diagnostic condition or changed fallback would split shared-root users.
+	const diagnosticOnly = "github.event_name == 'workflow_dispatch' && inputs.pod_runtime_diagnostic && !inputs.pod_diagnostic && !inputs.pod_acceptance"
+	for name, doc := range map[string]workflowDocument{exactWorkflow: exact, stagedWorkflow: staged} {
 		var concurrency struct {
 			Group  string
 			Cancel bool `yaml:"cancel-in-progress"`
@@ -170,8 +173,12 @@ func TestTDXWrappersShareLifecycleIdentity(t *testing.T) {
 		if err := doc.Concurrency.Decode(&concurrency); err != nil {
 			t.Fatal(err)
 		}
-		if concurrency.Group != "tdx-metal-e2e" || concurrency.Cancel {
-			t.Fatal("TDX wrappers must serialize in the same non-cancelling group")
+		wantGroup := "tdx-metal-e2e"
+		if name == stagedWorkflow {
+			wantGroup = "${{ " + diagnosticOnly + " && 'tdx-pod-runtime-diagnostic' || 'tdx-metal-e2e' }}"
+		}
+		if strings.Join(strings.Fields(concurrency.Group), " ") != wantGroup || concurrency.Cancel {
+			t.Fatalf("%s must preserve the fixed non-cancelling shared-root group outside exclusive runtime diagnostics", name)
 		}
 		if doc.Env["VM"] != "c8s-tdx-${{ github.run_id }}-${{ github.run_attempt }}" || doc.Env["NS"] != "confai-images" {
 			t.Fatalf("unexpected resource identity: %v", doc.Env)
@@ -179,6 +186,12 @@ func TestTDXWrappersShareLifecycleIdentity(t *testing.T) {
 		if doc.Permissions["contents"] != "read" || doc.Permissions["actions"] != "read" {
 			t.Fatal("missing checkout/artifact/reaper read permissions")
 		}
+	}
+	if got := strings.Join(strings.Fields(staged.Jobs["pod-runtime-diagnostic"].If), " "); got != "${{ "+diagnosticOnly+" }}" {
+		t.Fatal("the private diagnostic job must use the same exclusive manual predicate as its concurrency group")
+	}
+	if got := strings.Join(strings.Fields(staged.Jobs["e2e"].If), " "); got != "${{ !inputs.pod_diagnostic && !inputs.pod_acceptance && !inputs.pod_runtime_diagnostic }}" {
+		t.Fatal("the shared-root staged lifecycle must not run in a Pod diagnostic or acceptance mode")
 	}
 	exactCall, stagedCall := actionCall(t, exact.Jobs["e2e"].Steps), actionCall(t, staged.Jobs["e2e"].Steps)
 	if exactCall.With["exact_image"] != "true" {
