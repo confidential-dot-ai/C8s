@@ -2,75 +2,150 @@ package cdsha
 
 import (
 	"bytes"
+	"cmp"
+	"crypto/ecdsa"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/json"
 	"io"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
+// signRaw signs a decree as is, without SignDecree's normalization.
+func signRaw(t *testing.T, d Decree, k *ecdsa.PrivateKey) SignedDecree {
+	t.Helper()
+	msg, err := d.signedBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig, err := operatorauth.SignDetached(k, msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return SignedDecree{Decree: d, Signature: sig}
+}
+
+// Every refusal of the decree check, each matched by its own error, so a
+// row cannot pass on another check's refusal.
 func TestCheckDecree(t *testing.T) {
-	opKey, opPub := operatorKey(t)
-	tail := Core{ClusterID: testCluster, OperatorPubKey: opPub, RootCert: []byte("ca"), Measurements: []string{"m1"}, AppliedDecrees: []string{"used"}}
-	now := time.Now()
-	good := Decree{ClusterID: testCluster, IntentID: "i1", BaseEpoch: 0, ExpiresAt: now.Add(time.Hour), Kind: UpdateMeasurements, Measurements: []string{"m1", "m2"}}
-	sign := func(d Decree) SignedDecree {
-		sd, err := SignDecree(d, opKey)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return sd
-	}
-	if err := CheckDecree(sign(good), tail, now); err != nil {
-		t.Fatalf("good decree: %v", err)
-	}
-	bad := map[string]SignedDecree{}
-	for name, f := range map[string]func(*Decree){
-		"other cluster": func(d *Decree) { d.ClusterID = "tenant-b" },
-		"replayed":      func(d *Decree) { d.IntentID = "used" },
-		"stale base":    func(d *Decree) { d.BaseEpoch = 7 },
-		"expired":       func(d *Decree) { d.ExpiresAt = now.Add(-time.Second) },
-		"empty set":     func(d *Decree) { d.Measurements = nil },
-		"unknown kind":  func(d *Decree) { d.Kind = "Nuke" },
-	} {
-		d := good
-		f(&d)
-		bad[name] = sign(d)
-	}
-	forged := sign(good)
-	forged.Decree.Measurements = []string{"evil"}
-	bad["field changed after signing"] = forged
+	k, pub := operatorKey(t)
 	otherKey, _ := operatorKey(t)
-	wrongSigner, _ := SignDecree(good, otherKey)
-	bad["wrong signer"] = wrongSigner
-	for name, sd := range bad {
-		if err := CheckDecree(sd, tail, now); err == nil {
-			t.Errorf("%s: accepted", name)
+	rsaKey, _ := rsa.GenerateKey(rand.Reader, 2048)
+	rsaDER, _ := x509.MarshalPKIXPublicKey(&rsaKey.PublicKey)
+	now := time.Now()
+	img := testImage(1)
+	pin, _ := img.Pin()
+	// keyed is a cluster with a mesh CA at epoch 3; bare has none yet.
+	keyed := Core{ClusterID: testCluster, OperatorPubKey: pub, Epoch: 3, RootCert: []byte{1}, AppliedDecrees: []string{"done"}}
+	bare := Core{ClusterID: testCluster, OperatorPubKey: pub, Epoch: 3}
+	sign := func(d Decree) SignedDecree {
+		t.Helper()
+		d.ClusterID, d.BaseEpoch = cmp.Or(d.ClusterID, testCluster), 3
+		if d.IntentID == "" {
+			d.IntentID = "i"
+		}
+		if d.ExpiresAt.IsZero() {
+			d.ExpiresAt = now.Add(time.Hour)
+		}
+		return signRaw(t, d, k)
+	}
+	update := Decree{Kind: UpdateMeasurements, Measurements: []string{pin}, Images: []DecreeImage{img}}
+	tampered := sign(update)
+	tampered.Decree.Measurements = []string{"evil"}
+	wrongSigner, _ := SignDecree(sign(update).Decree, otherKey)
+	stale := sign(Decree{Kind: RotateKey})
+	stale.Decree.BaseEpoch = 2
+	stale = signRaw(t, stale.Decree, k)
+	noIntent := sign(Decree{Kind: RotateKey})
+	noIntent.Decree.IntentID = ""
+	noIntent = signRaw(t, noIntent.Decree, k)
+	for _, c := range []struct {
+		name string
+		sd   SignedDecree
+		tail Core
+		want string // "" accepts
+	}{
+		{"update with images", sign(update), keyed, ""},
+		{"genesis", sign(Decree{Kind: Genesis, BootstrapNode: "n0"}), bare, ""},
+		{"no operator key", sign(update), Core{ClusterID: testCluster, Epoch: 3}, "no operator key"},
+		{"key not PKIX", sign(update), Core{ClusterID: testCluster, OperatorPubKey: []byte("x"), Epoch: 3}, "decree key"},
+		{"key not ECDSA", sign(update), Core{ClusterID: testCluster, OperatorPubKey: rsaDER, Epoch: 3}, "not ECDSA"},
+		{"changed after signing", tampered, keyed, "bad operator signature"},
+		{"wrong signer", wrongSigner, keyed, "bad operator signature"},
+		{"other cluster", sign(Decree{ClusterID: "tenant-b", Kind: RotateKey}), keyed, "decree for cluster"},
+		{"empty intent", noIntent, keyed, "empty intent_id"},
+		{"already applied", sign(Decree{IntentID: "done", Kind: RotateKey}), keyed, "already applied"},
+		{"stale base epoch", stale, keyed, "base_epoch 2"},
+		{"empty set", sign(Decree{Kind: UpdateMeasurements}), keyed, "empty measurement set"},
+		{"genesis with a key", sign(Decree{Kind: Genesis, BootstrapNode: "n0"}), keyed, "without a key"},
+		{"genesis with a set", sign(Decree{Kind: Genesis, BootstrapNode: "n0", Measurements: []string{pin}}), bare, "without a key"},
+		{"restore without hash", sign(Decree{Kind: Restore, BootstrapNode: "n0"}), bare, "names the snapshot"},
+		{"hash on update", sign(Decree{Kind: UpdateMeasurements, Measurements: []string{pin}, SnapshotSHA256: "aa"}), keyed, "names the snapshot"},
+		{"genesis without node", sign(Decree{Kind: Genesis}), bare, "must name its node"},
+		{"restore without node", sign(Decree{Kind: Restore, SnapshotSHA256: "aa"}), bare, "must name its node"},
+		{"node on rotate", sign(Decree{Kind: RotateKey, BootstrapNode: "n0"}), keyed, "only Genesis, Recover and Restore"},
+		{"recover with a set", sign(Decree{Kind: Recover, BootstrapNode: "n0", Measurements: []string{pin}}), keyed, "a Recover decree"},
+		{"recover without a key", sign(Decree{Kind: Recover, BootstrapNode: "n0"}), bare, "a Recover decree"},
+		{"unknown kind", sign(Decree{Kind: "Nuke"}), keyed, "unknown kind"},
+		{"voters on update", sign(Decree{Kind: UpdateMeasurements, Measurements: []string{pin}, Voters: 3}), keyed, "names a voter count"},
+		{"set voters without count", sign(Decree{Kind: SetVoters}), keyed, "names a voter count"},
+		{"even voters", sign(Decree{Kind: SetVoters, Voters: 2}), keyed, "voters must be odd"},
+		{"too many voters", sign(Decree{Kind: SetVoters, Voters: MaxVoters + 2}), keyed, "voters must be odd"},
+		{"voters without a key", sign(Decree{Kind: SetVoters, Voters: 3}), bare, "a SetVoters decree applies"},
+		{"voters with a set", sign(Decree{Kind: SetVoters, Voters: 3, Measurements: []string{pin}}), keyed, "a SetVoters decree applies"},
+		{"unsorted set", sign(Decree{Kind: UpdateMeasurements, Measurements: []string{"m2", "m1"}}), keyed, "canonical"},
+		{"duplicate pins", sign(Decree{Kind: UpdateMeasurements, Measurements: []string{"m1", "m1"}}), keyed, "canonical"},
+		{"images on recover", sign(Decree{Kind: Recover, BootstrapNode: "n0", Images: []DecreeImage{img}}), keyed, "not exactly the pins"},
+		{"set is not the images", sign(Decree{Kind: UpdateMeasurements, Measurements: []string{"m1"}, Images: []DecreeImage{img}}), keyed, "not exactly the pins"},
+		{"bad image", sign(Decree{Kind: UpdateMeasurements, Measurements: []string{"m1"}, Images: []DecreeImage{{MRTD: "zz"}}}), keyed, "lowercase hex"},
+		{"expired", sign(Decree{Kind: RotateKey, ExpiresAt: now.Add(-time.Second)}), keyed, "expired"},
+	} {
+		err := CheckDecree(c.sd, c.tail, now)
+		if c.want == "" && err != nil || c.want != "" && (err == nil || !strings.Contains(err.Error(), c.want)) {
+			t.Errorf("%s: %v, want %q", c.name, err, c.want)
 		}
 	}
-	noOp := tail
-	noOp.OperatorPubKey = nil
-	if err := CheckDecree(sign(good), noOp, now); err != ErrNoOperatorKey {
-		t.Errorf("cluster without operator key accepted a decree (G5): %v", err)
+}
+
+// VerifyDecreeSignature is the audit check of the decree record: the
+// operator signature only.
+func TestVerifyDecreeSignature(t *testing.T) {
+	k, pub := operatorKey(t)
+	ok, err := SignDecree(Decree{ClusterID: testCluster, IntentID: "i", Kind: RotateKey}, k)
+	if err != nil {
+		t.Fatal(err)
 	}
-	// Genesis: only against a keyless cluster, and never with measurements.
-	g := Decree{ClusterID: testCluster, IntentID: "g1", ExpiresAt: now.Add(time.Hour), Kind: Genesis, BootstrapNode: "n0"}
-	if err := CheckDecree(sign(g), PreGenesis(testCluster, opPub), now); err != nil {
-		t.Errorf("genesis against a keyless cluster: %v", err)
+	if err := VerifyDecreeSignature(ok, pub); err != nil {
+		t.Fatalf("good signature: %v", err)
 	}
-	if err := CheckDecree(sign(g), tail, now); err == nil {
-		t.Error("genesis accepted by a cluster that already has a key")
-	}
-	g.Measurements = []string{"m1"}
-	if err := CheckDecree(sign(g), PreGenesis(testCluster, opPub), now); err == nil {
-		t.Error("genesis with measurements accepted")
-	}
-	g.Measurements, g.BootstrapNode = nil, ""
-	if err := CheckDecree(sign(g), PreGenesis(testCluster, opPub), now); err == nil {
-		t.Error("genesis without a bootstrap node accepted")
-	}
-	u := good
-	u.BootstrapNode = "n0"
-	if err := CheckDecree(sign(u), tail, now); err == nil {
-		t.Error("a non-Genesis decree naming a bootstrap node accepted")
+	tampered := ok
+	tampered.Decree.BaseEpoch = 9
+	// The operator key signs other things with SignDetached too: a
+	// signature over the bare decree JSON, without the domain, is not one.
+	body, _ := json.Marshal(ok.Decree)
+	bare := ok
+	bare.Signature, _ = operatorauth.SignDetached(k, body)
+	edPub, _, _ := ed25519.GenerateKey(rand.Reader)
+	edDER, _ := x509.MarshalPKIXPublicKey(edPub)
+	for name, c := range map[string]struct {
+		sd   SignedDecree
+		key  []byte
+		want string
+	}{
+		"tampered":    {tampered, pub, "bad operator signature"},
+		"no domain":   {bare, pub, "bad operator signature"},
+		"junk key":    {ok, []byte("junk"), "decree key"},
+		"Ed25519 key": {ok, edDER, "not ECDSA"},
+	} {
+		if err := VerifyDecreeSignature(c.sd, c.key); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: %v, want %q", name, err, c.want)
+		}
 	}
 }
 

@@ -174,19 +174,6 @@ func TestApplyRestoreRefusals(t *testing.T) {
 	if res := f.applyRestore(RestoreEntry{Decree: sign(Restore, enc(good)), AtMS: now, Snapshot: enc(good)}); res.Err == "" {
 		t.Fatal("restored over a cluster that has a key")
 	}
-	// Decree rules for Restore.
-	pre := PreGenesis(testCluster, opPub)
-	for name, d := range map[string]Decree{
-		"no hash":        {Kind: Restore, BootstrapNode: "n0"},
-		"no node":        {Kind: Restore, SnapshotSHA256: "aa"},
-		"hash on update": {Kind: UpdateMeasurements, Measurements: []string{"m"}, SnapshotSHA256: "aa"},
-	} {
-		d.ClusterID, d.IntentID, d.ExpiresAt = testCluster, "x", time.Now().Add(time.Hour)
-		sd, _ := SignDecree(d, opKey)
-		if err := CheckDecree(sd, pre, time.Now()); err == nil {
-			t.Errorf("%s accepted", name)
-		}
-	}
 }
 
 // A backup stays whole while the next is written: a writer that dies after
