@@ -29,13 +29,14 @@ type containerDiff struct {
 // entryDiff is the field-level change set for one changed workload entry.
 type entryDiff struct {
 	Label   *changedEntry   `json:"label,omitempty"`
+	Secrets *changedEntry   `json:"secrets,omitempty"`
 	Added   []containerDiff `json:"containersAdded,omitempty"`
 	Removed []containerDiff `json:"containersRemoved,omitempty"`
 	Changed []containerDiff `json:"containersChanged,omitempty"`
 }
 
 func (e entryDiff) empty() bool {
-	return e.Label == nil && len(e.Added) == 0 && len(e.Removed) == 0 && len(e.Changed) == 0
+	return e.Label == nil && e.Secrets == nil && len(e.Added) == 0 && len(e.Removed) == 0 && len(e.Changed) == 0
 }
 
 // allowlistDiff is the entry-level diff of two allowlists.
@@ -77,6 +78,9 @@ func diffEntry(live, desired pkgallowlist.Workload) entryDiff {
 	var ed entryDiff
 	if live.Label != desired.Label {
 		ed.Label = &changedEntry{From: live.Label, To: desired.Label}
+	}
+	if from, to := secretsGrant(live.Secrets), secretsGrant(desired.Secrets); from != to {
+		ed.Secrets = &changedEntry{From: from, To: to}
 	}
 	added, removed, changed := diffContainers("init", live.InitContainers, desired.InitContainers)
 	ed.Added, ed.Removed, ed.Changed = added, removed, changed
@@ -142,6 +146,20 @@ func policySummary(key string) string {
 	return containerSummary(c)
 }
 
+// secretsGrant renders a grant in full for display and comparison; parsing has
+// already sorted and deduplicated its globs. Paths are quoted, since a path may
+// itself contain a comma.
+func secretsGrant(p *pkgallowlist.SecretsPolicy) string {
+	if p == nil {
+		return pkgallowlist.PolicyDeny
+	}
+	s := fmt.Sprintf("%s read=%q", p.Policy, p.Read)
+	if len(p.Write) > 0 {
+		s += fmt.Sprintf(" write=%q", p.Write)
+	}
+	return s
+}
+
 // multisetSub returns the elements of a not covered by an equal element of b,
 // respecting multiplicity.
 func multisetSub(a, b []string) []string {
@@ -189,6 +207,9 @@ func printDiff(w io.Writer, format string, d allowlistDiff) error {
 func printEntryDiff(w io.Writer, e entryDiff) {
 	if e.Label != nil {
 		fmt.Fprintf(w, "    label: %q -> %q\n", e.Label.From, e.Label.To)
+	}
+	if e.Secrets != nil {
+		fmt.Fprintf(w, "    secrets: %s -> %s\n", e.Secrets.From, e.Secrets.To)
 	}
 	for _, c := range e.Added {
 		fmt.Fprintf(w, "    + %s %s %s\n", c.Kind, c.Digest, c.To)

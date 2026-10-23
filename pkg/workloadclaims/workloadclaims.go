@@ -114,6 +114,15 @@ const CDSAddressPath = "/run/c8s/cds-address"
 // it.
 const AnnotationInjected = "confidential.ai/c8s-injected"
 
+// AnnotationSecrets, when it names at least one secret, adds the secret
+// fetcher and mounts the memory-backed SecretsVolumeName emptyDir read-only
+// into every container at SecretDir, unless the container already mounts it.
+const (
+	AnnotationSecrets = "confidential.ai/c8s-secrets"
+	SecretsVolumeName = "c8s-secrets"
+	SecretDir         = "/run/c8s/secrets"
+)
+
 // CertContainerName, SecretContainerName and VolumeContainerName are the
 // webhook-injected sidecars that dial sockets in the inventory's directory
 // (workload-claims.sock, attestation-api.sock, volumed.sock); on node-CVM the

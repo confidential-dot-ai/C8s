@@ -339,9 +339,9 @@ cds:
   rateLimiterMaxEntries: 10000
   rateLimiterEvictInterval: 1m
   rateLimiterIdleTimeout: 5m
-  ## armTLS settings for the cds serving cert. Without this, clients talk to
-  ## cds over plaintext HTTP and an on-path attacker can forge responses.
-  ## Empty platform disables TLS — UNSAFE outside tests.
+  ## armTLS settings for the cds serving cert. armtlsPlatform is the TEE
+  ## family whose evidence binds it (snp or tdx; `c8s install` sets it from
+  ## --hardware-platform). CDS refuses to start with it empty.
   armtlsPlatform: snp
   armtlsCertTTL: 24h
   ca:
@@ -418,7 +418,7 @@ attestationApi:
   ##
   ## bare-metal (default): generalized node-as-CVM — our own nodes (self-managed
   ##   TDX/SNP) are themselves confidential VMs exposing a native TEE device
-  ##   (/dev/sev-guest, or /dev/tdx-guest with --hardware-platform tdx); pods run
+  ##   (/dev/sev-guest, or ConfigFS TSM with --hardware-platform tdx); pods run
   ##   as ordinary processes attested via the node's own quote. Cloud-agnostic.
   ## gke: GKE managed confidential VM — also native /dev/sev-guest.
   ## aks: Azure confidential VM — SEV-SNP via the vTPM at /dev/tpm0.

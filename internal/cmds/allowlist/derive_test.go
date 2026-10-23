@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -414,5 +415,100 @@ func TestDeriveContainersAdmitsArgvOfImageWithoutEntrypoint(t *testing.T) {
 		if idx.AdmitsProcess(pkgallowlist.RunningContainer{Digest: digest, Argv: longer}) {
 			t.Errorf("%s: entry admits an extended argv %v", tc.name, longer)
 		}
+	}
+}
+
+// annotatedDeployJSON is deployJSON with annotations on its pod template.
+func annotatedDeployJSON(annotations string) string {
+	return strings.Replace(deployJSON(), `"spec": {"template": {"spec": {`,
+		`"spec": {"template": {"metadata": {"annotations": {`+annotations+`}}, "spec": {`, 1)
+}
+
+func TestDeriveAddsInjectedMounts(t *testing.T) {
+	const withSecrets = `"confidential.ai/c8s-secrets": "db=/db/password"`
+	secrets := pkgallowlist.MountRule{Destination: "/run/c8s/secrets", Kind: pkgallowlist.MountEmptyDir}
+	config := pkgallowlist.MountRule{Destination: "/config", Kind: pkgallowlist.MountEmptyDir}
+	exact := func(rules ...pkgallowlist.MountRule) pkgallowlist.MountPolicy {
+		return pkgallowlist.MountPolicy{Policy: pkgallowlist.PolicyExact, Rules: rules}
+	}
+	mounting := func(mounts string) string {
+		return strings.ReplaceAll(annotatedDeployJSON(withSecrets), `"image": "`+testImage+`",`,
+			`"image": "`+testImage+`", "volumeMounts": [`+mounts+`],`)
+	}
+	tests := []struct {
+		name       string
+		object     string
+		mounts     string
+		mountsFile string
+		want       pkgallowlist.MountPolicy
+	}{
+		{name: "no secrets", object: annotatedDeployJSON(`"confidential.ai/cw": "dynamo"`), want: pkgallowlist.MountPolicy{}},
+		{name: "empty secrets list", object: annotatedDeployJSON(`"confidential.ai/c8s-secrets": " ,\n "`), want: pkgallowlist.MountPolicy{}},
+		{name: "default", object: annotatedDeployJSON(withSecrets), want: exact(secrets)},
+		{name: "deny", object: annotatedDeployJSON(withSecrets), mounts: "--mounts=deny", want: exact(secrets)},
+		{name: "any", object: annotatedDeployJSON(withSecrets), mounts: "--mounts=any", want: pkgallowlist.MountPolicy{Policy: pkgallowlist.PolicyAny}},
+		{
+			name:   "container already mounts the secrets volume",
+			object: mounting(`{"name": "c8s-secrets", "mountPath": "/secrets"}`),
+			want:   exact(pkgallowlist.MountRule{Destination: "/secrets", Kind: pkgallowlist.MountEmptyDir}),
+		},
+		{
+			name:   "secrets volume mounted twice, once by subpath",
+			object: mounting(`{"name": "c8s-secrets", "mountPath": "/secrets"}, {"name": "c8s-secrets", "mountPath": "/mnt/c8s-data/db", "subPath": "db"}`),
+			want: exact(
+				pkgallowlist.MountRule{Destination: "/mnt/c8s-data/db", Kind: pkgallowlist.MountData},
+				pkgallowlist.MountRule{Destination: "/secrets", Kind: pkgallowlist.MountEmptyDir},
+			),
+		},
+		{
+			name:       "exact file",
+			object:     annotatedDeployJSON(withSecrets),
+			mountsFile: `{"policy":"exact","rules":[{"destination":"/config","kind":"emptyDir"}]}`,
+			want:       exact(config, secrets),
+		},
+		{
+			name:       "file already lists the secrets mount",
+			object:     annotatedDeployJSON(withSecrets),
+			mountsFile: `{"policy":"exact","rules":[{"destination":"/run/c8s/secrets","kind":"emptyDir"}]}`,
+			want:       exact(secrets),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			args := []string{"dynamo", "-", "--env=any"}
+			if tt.mounts != "" {
+				args = append(args, tt.mounts)
+			}
+			if tt.mountsFile != "" {
+				file := t.TempDir() + "/mounts.json"
+				p := tt.mountsFile
+				data := `{"seed":` + p + `,"frontend":` + p + `,"worker":` + p + `}`
+				if err := os.WriteFile(file, []byte(data), 0600); err != nil {
+					t.Fatal(err)
+				}
+				args = append(args, "--mounts-file", file)
+			}
+			got, err := runDerive(t, tt.object, args...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := json.Marshal(got["dynamo"])
+			if err != nil {
+				t.Fatal(err)
+			}
+			applied, err := pkgallowlist.ParseWorkloadJSON(raw)
+			if err != nil {
+				t.Fatalf("derived entry does not parse: %v", err)
+			}
+			want := tt.want
+			if want.Policy == "" {
+				want.Policy = pkgallowlist.PolicyDeny
+			}
+			for _, c := range allContainers(*applied) {
+				if !reflect.DeepEqual(c.Mounts, want) {
+					t.Errorf("mounts = %+v, want %+v", c.Mounts, want)
+				}
+			}
+		})
 	}
 }

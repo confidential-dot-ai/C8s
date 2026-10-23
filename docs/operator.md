@@ -169,7 +169,7 @@ The bundle directory is created new and never reused:
 |---|---|
 | `demo/server.key` | server launch key; also the operator key for `c8s get-kubeconfig --operator-key` and signed CDS writes (not written with `--operator-key`) |
 | `demo/agent.key` | the agent launch key every agent boots with |
-| `demo/server.json` | `C8S_MEASUREMENTS_CONFIG` for clients of this cluster |
+| `demo/server.json` | `--image-policy-file` for clients of this cluster |
 | `demo/peers.json` | every launch identity CDS admits and serves; `c8s cds verify --served-policy-file` |
 | `demo/server/` | `pubkey`, `launch.yaml`, `launch.yaml.sig`: the server's opkeydata |
 | `demo/<agent>/` | the same three files for each agent |
@@ -1376,7 +1376,7 @@ the wait, omit `--attest-url`: the default flow takes the list from the
 `/attest` response, read after the quote.
 
 The released kubeconfig's client certificate is
-`CN=operator, O=c8s:node-operators`, with a one-hour default (and baked
+`CN=operator, O=c8s:node-operators`, with a 7-day default (and baked
 node-image) TTL. The node image's baked `cred-release-rbac` RKE2 AddOn binds
 that group to the baked `c8s-node-operator` ClusterRole through ordinary
 RBAC. That role is deliberately not `cluster-admin`: the operator manages
@@ -1386,7 +1386,7 @@ wildcard and nothing that reaches the guards or the host. See "Bounded
 operator" below.
 
 `--role log-reader` asks cred-release for `CN=log-reader, O=c8s:log-readers`
-instead, with a 24-hour default TTL. The baked `log-reader-rbac` AddOn binds
+instead, also with a 7-day default TTL. The baked `log-reader-rbac` AddOn binds
 that group to the `c8s-log-reader` ClusterRole: get/list/watch on pods and
 `pods/log`, namespaces and events, and nothing else (no ConfigMaps or
 Secrets, no exec). The role travels in the token-bound request body, so the

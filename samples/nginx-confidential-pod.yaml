@@ -16,11 +16,9 @@ spec:
     spec:
       # The node image enforces restricted PodSecurity in every tenant
       # namespace, `default` included. nginx-unprivileged runs non-root and
-      # listens on 8080. In bare-metal mode the injected sidecar still mounts the
-      # node's inventory socket as a hostPath, so deploy into a namespace the
-      # operator has labelled privileged. The chart's deny-host-namespaces policy
-      # restores Restricted semantics there and admits only that exact
-      # read-only sidecar mount (docs/DEMO.md).
+      # listens on 8080. The node's NRI plugin mounts the inventory socket into
+      # the injected sidecars below the pod spec, so the pod admits under
+      # Restricted in any tenant namespace (docs/DEMO.md).
       securityContext:
         runAsNonRoot: true
         seccompProfile:

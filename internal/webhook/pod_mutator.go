@@ -80,7 +80,7 @@ const (
 	// AnnotationSecrets requests secrets for the pod, as a comma-separated
 	// list of NAME=/store/path. NAME is the file each value is written to
 	// under the secrets directory. Setting it injects the fetcher sidecar.
-	AnnotationSecrets = "confidential.ai/c8s-secrets"
+	AnnotationSecrets = workloadclaims.AnnotationSecrets
 	// AnnotationSecretDir once moved the secrets directory. It is refused
 	// unless it names the fixed one; see pinnedDestinations.
 	AnnotationSecretDir = "confidential.ai/c8s-secret-dir"
@@ -130,14 +130,14 @@ const (
 
 // secretsVolumeName is the memory-backed volume the fetcher writes to and the
 // workload reads from.
-const secretsVolumeName = "c8s-secrets"
+const secretsVolumeName = workloadclaims.SecretsVolumeName
 
 // The injected sidecars' mount destinations. The allowlist pins each
 // sidecar's mount table exactly (the chart's c8s.injectedShapes), so a pod
 // cannot move them.
 const (
 	// defaultSecretDir is where the fetcher writes, matching its own default.
-	defaultSecretDir = "/run/c8s/secrets"
+	defaultSecretDir = workloadclaims.SecretDir
 	// discoveryMountPath is where get-cert mounts the pod's discovery volume.
 	discoveryMountPath = "/run/c8s/discovery"
 )
@@ -622,8 +622,8 @@ func (m *podMutator) Handle(ctx context.Context, req admission.Request) admissio
 	return resp
 }
 
-// serviceLinksWarning tells the pod's author that mutatePod overrode an
-// explicit enableServiceLinks: true.
+// serviceLinksWarning tells the pod's author that mutatePod turned service
+// links off.
 const serviceLinksWarning = "c8s: enableServiceLinks set to false; the pod no longer receives <SERVICE>_SERVICE_HOST and <SERVICE>_PORT_* variables, so resolve Services by DNS and re-derive allowlist entries that pin them; set enableServiceLinks: false in the pod template to silence this warning"
 
 // rejectUnservedRequests requires the inventory socket for injected credentials.
