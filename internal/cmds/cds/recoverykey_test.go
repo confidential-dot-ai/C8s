@@ -2,13 +2,18 @@ package cds
 
 import (
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/confidential-dot-ai/c8s/internal/shamir"
 )
 
 func TestRecoveryKeySplitAndCombine(t *testing.T) {
@@ -25,8 +30,8 @@ func TestRecoveryKeySplitAndCombine(t *testing.T) {
 	out := filepath.Join(dir, "shares")
 	cmd := newHARecoveryKeyCmd()
 	cmd.SetArgs([]string{"split", "--recovery-key", keyFile, "--out", out, "--shares", "5", "--threshold", "3"})
-	cmd.SetOut(new(nopWriter))
-	cmd.SetErr(new(nopWriter))
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
 	}
@@ -62,13 +67,42 @@ func TestRecoveryKeySplitAndCombine(t *testing.T) {
 	// Splitting again into the same directory does not overwrite shares.
 	cmd = newHARecoveryKeyCmd()
 	cmd.SetArgs([]string{"split", "--recovery-key", keyFile, "--out", out})
-	cmd.SetOut(new(nopWriter))
-	cmd.SetErr(new(nopWriter))
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
 	if err := cmd.Execute(); err == nil {
 		t.Fatal("overwrote existing shares")
 	}
 }
 
-type nopWriter struct{}
-
-func (*nopWriter) Write(p []byte) (int, error) { return len(p), nil }
+// Shares that rebuild a non-EC key, a key other than the one they name, or
+// that repeat an x, do not combine.
+func TestCombineRecoveryKeyRefusesBadShares(t *testing.T) {
+	key, _ := testKeyPEM(t)
+	fp, _ := publicKeySHA256(&key.PublicKey)
+	shares := func(der []byte) []RecoveryKeyShare {
+		parts, err := shamir.Split(der, 3, 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []RecoveryKeyShare
+		for _, p := range parts {
+			out = append(out, RecoveryKeyShare{Kind: recoveryShareKind, Version: 1, X: p.X, Y: p.Y, Threshold: 2, Shares: 3, PublicKeySHA256: fp})
+		}
+		return out
+	}
+	_, edKey, _ := ed25519.GenerateKey(rand.Reader)
+	edDER, _ := x509.MarshalPKCS8PrivateKey(edKey)
+	if _, err := CombineRecoveryKey(shares(edDER)); err == nil || !strings.Contains(err.Error(), "EC key") {
+		t.Fatalf("shares of an Ed25519 key: %v", err)
+	}
+	other, _ := testKeyPEM(t)
+	otherDER, _ := x509.MarshalPKCS8PrivateKey(other)
+	if _, err := CombineRecoveryKey(shares(otherDER)); err == nil || !strings.Contains(err.Error(), "different key") {
+		t.Fatalf("shares naming another key: %v", err)
+	}
+	s := shares(otherDER)
+	s[0].X = s[1].X
+	if _, err := CombineRecoveryKey(s); err == nil {
+		t.Fatal("two shares at the same x combined")
+	}
+}

@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -164,7 +165,7 @@ func TestRunHARestoreAfterTotalLoss(t *testing.T) {
 	shareDir := filepath.Join(dir, "shares")
 	split := newHARecoveryKeyCmd()
 	split.SetArgs([]string{"split", "--recovery-key", recKeyPath, "--out", shareDir, "--shares", "5", "--threshold", "3"})
-	split.SetOut(new(nopWriter))
+	split.SetOut(io.Discard)
 	if err := split.Execute(); err != nil {
 		t.Fatal(err)
 	}

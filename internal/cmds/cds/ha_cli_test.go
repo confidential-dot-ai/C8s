@@ -548,3 +548,46 @@ func TestPrintDecrees(t *testing.T) {
 		t.Fatal("absent key file accepted")
 	}
 }
+
+// decrees reads the applied record from a replica and refuses what it cannot
+// trust or decode.
+func TestHADecreesCLI(t *testing.T) {
+	k, _ := testKeyPEM(t)
+	h := strings.Repeat("a", 96)
+	sd, err := cdsha.SignDecree(cdsha.Decree{ClusterID: "c1", IntentID: "g1", Kind: cdsha.Genesis, BootstrapNode: "n0",
+		Images: []cdsha.DecreeImage{{MRTD: h, RTMR1: h, RTMR2: h}}}, k)
+	if err != nil {
+		t.Fatal(err)
+	}
+	records := []cdsha.DecreeRecord{{Decree: sd, AtMS: 1, Epoch: 1}}
+	serve := func(code int, body string) string {
+		s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/ha/decrees" {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			w.WriteHeader(code)
+			_, _ = io.WriteString(w, body)
+		}))
+		t.Cleanup(s.Close)
+		return s.URL
+	}
+	raw, _ := json.Marshal(records)
+	good := serve(http.StatusOK, string(raw))
+	out, err := runHA(t, "decrees", "--url", good+"/", "--insecure")
+	if err != nil || !strings.Contains(out, "Genesis") || !strings.Contains(out, "images=1") || !strings.Contains(out, "node=n0") {
+		t.Fatalf("decrees: %v %q", err, out)
+	}
+	if _, err := runHA(t, "decrees", "--url", good); err == nil {
+		t.Fatal("plaintext http without --insecure accepted")
+	}
+	for name, url := range map[string]string{
+		"server error":  serve(http.StatusInternalServerError, "boom"),
+		"not JSON":      serve(http.StatusOK, "{"),
+		"nobody serves": "http://127.0.0.1:1",
+	} {
+		if _, err := runHA(t, "decrees", "--url", url, "--insecure"); err == nil {
+			t.Errorf("%s: decrees succeeded", name)
+		}
+	}
+}
