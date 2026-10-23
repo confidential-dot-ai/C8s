@@ -32,7 +32,7 @@ func TestCheckerCleanupEarlyReturn(t *testing.T) {
 			<-k.stop
 			close(workerDone)
 		}()
-		return // Deliberately skip Check and Stop.
+		// Deliberately leave without Check or Stop.
 	})
 	if !cleaned {
 		t.Fatal("cluster cleanup did not run")
