@@ -23,8 +23,7 @@ import (
 var update = flag.Bool("update", false, "regenerate testdata/ruleset.golden")
 
 // testPolicy exercises every kind of permission a node's trusted policy can
-// name: the resolver, a credential role with one destination, and that
-// destination as an exit of the whole pod.
+// name: the resolver and a credential role with one destination.
 func testPolicy() Policy {
 	return Policy{
 		Resolver: netip.MustParseAddr("10.53.0.10"),
@@ -38,7 +37,6 @@ func testPolicy() Policy {
 			UID:          1338,
 			Destinations: []Destination{{netip.MustParseAddr("10.43.0.2"), 8443}},
 		}},
-		Exits: []Exit{{netip.MustParsePrefix("10.43.0.2/32"), 8443}},
 	}
 }
 

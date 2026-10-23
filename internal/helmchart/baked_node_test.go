@@ -27,8 +27,6 @@ var bakedArgs = []string{
 	"--set", "armtlsMesh.image.pullPolicy=Never",
 	"--set", "router.nginx.image.pullPolicy=Never",
 	"--set", "router.attest.enabled=true",
-	"--set", "kubeStateMetrics.enabled=true",
-	"--set", "kubeStateMetrics.image.pullPolicy=Never",
 }
 
 func TestChartBakedNodeLaunchContract(t *testing.T) {
@@ -41,8 +39,8 @@ func TestChartBakedNodeLaunchContract(t *testing.T) {
 	// mounts the node's policy for them and the chart passes none.
 	wantPolicies := map[string]string{"c8s-cds/cds": "peers.json"}
 	workloads := renderedPodSpecs(t, out)
-	if len(workloads) != 4 {
-		t.Fatalf("baked chart should contain operator, CDS, router and kube-state-metrics; got %d workloads", len(workloads))
+	if len(workloads) != 3 {
+		t.Fatalf("baked chart should contain operator, CDS and router; got %d workloads", len(workloads))
 	}
 	for _, workload := range workloads {
 		for _, volume := range workload.spec.Volumes {

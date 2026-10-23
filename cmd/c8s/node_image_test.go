@@ -35,7 +35,6 @@ var (
 	nodeImageTestCDSDigest    = "sha256:" + strings.Repeat("c", 64)
 	nodeImageTestMeshDigest   = "sha256:" + strings.Repeat("d", 64)
 	nodeImageTestRouterDigest = "sha256:" + strings.Repeat("e", 64)
-	nodeImageTestKSMDigest    = "sha256:" + strings.Repeat("9", 64)
 	// A digest no bootstrap seed entry names.
 	nodeImageTestUnseededDigest = "sha256:" + strings.Repeat("f", 64)
 )
@@ -72,8 +71,6 @@ func TestNodeImageRender(t *testing.T) {
 				"Namespace/c8s-system", "Namespace/" + workloadclaims.RouterNamespace,
 				"CustomResourceDefinition/confidentialworkloads.confidential.ai",
 				"Deployment/c8s-operator", "Deployment/c8s-cds", "Deployment/c8s-router",
-				"Deployment/kube-state-metrics", "Service/kube-state-metrics", "ServiceAccount/kube-state-metrics",
-				"ClusterRole/c8s-kube-state-metrics", "ClusterRoleBinding/c8s-kube-state-metrics", "NetworkPolicy/kube-state-metrics",
 				"ConfigMap/c8s-cds-allowlist-seed", "MutatingWebhookConfiguration/c8s-pod-injector",
 				"ValidatingWebhookConfiguration/c8s-pod-validator",
 				"ValidatingAdmissionPolicy/c8s-deny-host-namespaces", "ValidatingAdmissionPolicyBinding/c8s-deny-host-namespaces",
@@ -140,8 +137,8 @@ func TestNodeImageRender(t *testing.T) {
 				t.Fatal(err)
 			}
 			images := strings.Fields(string(imageList))
-			if len(images) != 5 || !slices.IsSorted(images) {
-				t.Fatalf("image inventory must contain the four sorted core images and kube-state-metrics, got %v", images)
+			if len(images) != 4 || !slices.IsSorted(images) {
+				t.Fatalf("image inventory must contain the four sorted core images, got %v", images)
 			}
 			for _, image := range []string{
 				"registry.example.com/c8s-operator@" + testDigest,
@@ -155,7 +152,7 @@ func TestNodeImageRender(t *testing.T) {
 			if platform == "sev-snp" && !slices.Contains(images, "registry.example.com/nginx@"+nodeImageTestRouterDigest) {
 				t.Error("inventory lost the router image override")
 			}
-			for _, key := range []string{"Deployment/c8s-operator", "Deployment/c8s-cds", "Deployment/c8s-router", "Deployment/kube-state-metrics"} {
+			for _, key := range []string{"Deployment/c8s-operator", "Deployment/c8s-cds", "Deployment/c8s-router"} {
 				var workload appsv1.Deployment // Deployment and DaemonSet share spec.template.
 				if err := yaml.Unmarshal(docs[key], &workload); err != nil {
 					t.Fatal(err)
@@ -217,8 +214,8 @@ func TestNodeImageRender(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(allowlist.Workloads) != 7 {
-				t.Errorf("seed has %d workloads, want four core images, kube-state-metrics, the local-path helper and the router pod", len(allowlist.Workloads))
+			if len(allowlist.Workloads) != 6 {
+				t.Errorf("seed has %d workloads, want four core images, the local-path helper and the router pod", len(allowlist.Workloads))
 			}
 			routerEntry := false
 			for name := range allowlist.Workloads {
@@ -352,11 +349,6 @@ func TestNodeImageCollectRequiresEachResourceWhereItBelongs(t *testing.T) {
 			`Deployment/c8s-cds has namespace "c8s-router", want "c8s-system"`,
 		},
 		{
-			"kube-state-metrics in the release namespace",
-			"name: kube-state-metrics\n  namespace: kube-system", "name: kube-state-metrics\n  namespace: c8s-system",
-			`Deployment/kube-state-metrics has namespace "c8s-system", want "kube-system"`,
-		},
-		{
 			"front door without an image",
 			"- name: nginx\n          image: registry.example.com/nginx@" + nodeImageTestRouterDigest, "- name: sidecar\n          image: registry.example.com/nginx@" + nodeImageTestRouterDigest,
 			`runs no "nginx" container`,
@@ -430,19 +422,6 @@ spec:
           image: registry.example.com/operator@CORE_DIGEST
           command: ["/app/c8s"]
 ---
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: kube-state-metrics
-  namespace: kube-system
-spec:
-  template:
-    spec:
-      containers:
-        - name: kube-state-metrics
-          image: registry.example.com/kube-state-metrics@KSM_DIGEST
-          command: ["/kube-state-metrics"]
----
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
@@ -496,7 +475,7 @@ metadata:
   name: c8s-cds-allowlist-seed
   namespace: c8s-system
 data:
-  allowlist-seed.json: '{"schema":"c8s.allowlist/v1","workloads":{"core":{"containers":[{"digest":"CORE_DIGEST","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}]},"init":{"containers":[{"digest":"INIT_DIGEST","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}]},"mesh":{"containers":[{"digest":"MESH_DIGEST","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}]},"router":{"containers":[{"digest":"ROUTER_DIGEST","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}]},"ksm":{"containers":[{"digest":"KSM_DIGEST","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}]}}}'
+  allowlist-seed.json: '{"schema":"c8s.allowlist/v1","workloads":{"core":{"containers":[{"digest":"CORE_DIGEST","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}]},"init":{"containers":[{"digest":"INIT_DIGEST","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}]},"mesh":{"containers":[{"digest":"MESH_DIGEST","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}]},"router":{"containers":[{"digest":"ROUTER_DIGEST","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}]}}}'
 ---
 # An empty trailing document is harmless.
 `
@@ -507,7 +486,6 @@ func nodeImageCollectFixture() string {
 		"INIT_DIGEST", nodeImageTestCDSDigest,
 		"MESH_DIGEST", nodeImageTestMeshDigest,
 		"ROUTER_DIGEST", nodeImageTestRouterDigest,
-		"KSM_DIGEST", nodeImageTestKSMDigest,
 	).Replace(nodeImageCollectFixtureTemplate)
 }
 
@@ -576,7 +554,6 @@ func TestNodeImageCollectPreservesCompleteResourcesAndConfigData(t *testing.T) {
 	wantImages := []string{
 		"registry.example.com/armtls-mesh@" + nodeImageTestMeshDigest,
 		"registry.example.com/init@" + nodeImageTestCDSDigest,
-		"registry.example.com/kube-state-metrics@" + nodeImageTestKSMDigest,
 		"registry.example.com/nginx@" + nodeImageTestRouterDigest,
 		"registry.example.com/operator@" + testDigest,
 	}
@@ -885,13 +862,11 @@ func nodeImageEnvSeed(t *testing.T, extra map[string]any) string {
 	initEntry := map[string]any{"digest": nodeImageTestCDSDigest, "command": map[string]any{"policy": "any"}, "args": map[string]any{"policy": "any"}, "mounts": map[string]any{"policy": "any"}}
 	meshEntry := map[string]any{"digest": nodeImageTestMeshDigest, "command": map[string]any{"policy": "any"}, "args": map[string]any{"policy": "any"}, "mounts": map[string]any{"policy": "any"}}
 	routerEntry := map[string]any{"digest": nodeImageTestRouterDigest, "command": map[string]any{"policy": "any"}, "args": map[string]any{"policy": "any"}, "mounts": map[string]any{"policy": "any"}}
-	ksmEntry := map[string]any{"digest": nodeImageTestKSMDigest, "command": map[string]any{"policy": "any"}, "args": map[string]any{"policy": "any"}, "mounts": map[string]any{"policy": "any"}}
 	seed, err := json.Marshal(map[string]any{"schema": "c8s.allowlist/v1", "workloads": map[string]any{
 		"core":   map[string]any{"containers": []any{component, operatorEntry}},
 		"init":   map[string]any{"containers": []any{initEntry}},
 		"mesh":   map[string]any{"containers": []any{meshEntry}},
 		"router": map[string]any{"containers": []any{routerEntry}},
-		"ksm":    map[string]any{"containers": []any{ksmEntry}},
 	}})
 	if err != nil {
 		t.Fatal(err)

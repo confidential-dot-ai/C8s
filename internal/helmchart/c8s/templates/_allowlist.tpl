@@ -92,15 +92,6 @@
 {{- $_ := set $digests $lbImg.digest (dict "image" (printf "%s@%s" $lbImg.repository $lbImg.digest) "entrypoint" .Values.router.nginx.entrypoint "imageEnv" (.Values.router.nginx.imageEnv | default dict)) -}}
 {{- end -}}
 {{- end -}}
-{{- /* kube-state-metrics self-entry: an upstream image the chart renders
-       only for a baked node, seeded from its pinned digest like nginx. */ -}}
-{{- if .Values.kubeStateMetrics.enabled -}}
-{{- $ksm := .Values.kubeStateMetrics -}}
-{{- if not $ksm.image.digest -}}
-{{- fail "kubeStateMetrics.image.digest is required: the seeded entry admits that image alone" -}}
-{{- end -}}
-{{- $_ := set $digests $ksm.image.digest (dict "image" (printf "%s@%s" $ksm.image.repository $ksm.image.digest) "entrypoint" $ksm.entrypoint "imageEnv" ($ksm.imageEnv | default dict)) -}}
-{{- end -}}
 {{ $digests | toJson }}
 {{- end -}}
 
@@ -116,7 +107,6 @@
 {{- $templates = append $templates (list "volumed-teardown" "c8s.volumedTeardownPodSpec") -}}
 {{- end -}}
 {{- if .Values.router.enabled -}}{{- $templates = append $templates (list "router" "router.podSpec") -}}{{- end -}}
-{{- if .Values.kubeStateMetrics.enabled -}}{{- $templates = append $templates (list "kube-state-metrics" "kube-state-metrics.podSpec") -}}{{- end -}}
 {{- $pods := list -}}
 {{- range $t := $templates -}}
 {{- $spec := include (index $t 1) $ | fromYaml -}}
@@ -481,7 +471,6 @@
 {{- with get (get $c "image") "digest" -}}{{- $componentDigests = append $componentDigests (lower .) -}}{{- end -}}
 {{- end -}}
 {{- with .Values.router.nginx.image.digest -}}{{- $componentDigests = append $componentDigests (lower .) -}}{{- end -}}
-{{- if .Values.kubeStateMetrics.enabled -}}{{- $componentDigests = append $componentDigests (lower .Values.kubeStateMetrics.image.digest) -}}{{- end -}}
 {{- $digests := dict -}}
 {{- range $name, $entry := (.Values.nriImagePolicy.bootstrapAllowlist.workloads | default dict) -}}
 {{- range $c := concat (default list $entry.initContainers) (default list $entry.containers) -}}

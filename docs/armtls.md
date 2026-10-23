@@ -899,36 +899,6 @@ confidentiality.)
   it can do at the network layer regardless. The carve-out is scoped to the
   cw pod ipset and to UDP/53; every other non-TCP from a cw pod still
   drops.
-- **CDS public reads.** Every non-root socket of a member pod may open TCP to
-  the one CDS endpoint its node binds the credential clients to, uncaptured, so a
-  workload can read what CDS serves without authentication (`GET /allowlist`,
-  its history and objects, the route manifest, `/ca`, `/operator-keys`,
-  `/measurements`). The connection is armTLS to CDS, and every other CDS route
-  still requires what it requires from any caller: an operator-signed token
-  to write, attestation evidence for a certificate, a mesh leaf and sandbox
-  token for a secret. Like DNS, it is an address and port, not a payload
-  filter: a workload can send arbitrary bytes to that port, so it is not an
-  exfiltration barrier. It also lets every member pod load CDS with
-  unauthenticated requests, which before only the credential clients could. The endpoint is the address in
-  `/run/c8s/cds-address` of the pod's credential clients: the server
-  address and port 30808 on a baked node, the node's own address and the
-  CDS node port on an install.
-- **Cluster metrics.** On a baked node, every non-root socket of a member pod
-  may also open TCP to the kube-state-metrics Service, `10.53.0.11:8080`,
-  uncaptured, and read `GET /metrics` there. The measured mesh policy names
-  that one address and port (`mesh.exits`); kube-state-metrics itself runs in
-  `kube-system`, outside the mesh, as a stock image the seed pins to its
-  exact argv, mounts and environment. It serves plain HTTP and exports the
-  metadata of cluster objects: names, namespaces, owners, phases, conditions,
-  restart counts, images, node and pod addresses, resource requests and
-  limits, replica counts and job status, for pods, nodes, namespaces,
-  Services, PersistentVolumes and their claims, Deployments, ReplicaSets,
-  StatefulSets, DaemonSets, Jobs, CronJobs and PodDisruptionBudgets. Its RBAC
-  is list and watch on those kinds alone, so it reads no Secret or ConfigMap,
-  and it exports no labels or annotations, no environment, arguments or
-  container output, and nothing a workload processes. Any member pod can read
-  that metadata about every other pod of the cluster. Like the CDS exit, it is
-  an address and port, not a payload filter.
 
 ## Which certificate is used where
 
