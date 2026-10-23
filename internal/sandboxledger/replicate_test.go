@@ -2,6 +2,7 @@ package sandboxledger
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -73,15 +74,38 @@ func TestReplicatedBindingHoldsEverywhere(t *testing.T) {
 	}
 }
 
-type failingCatchUp struct{ ledgerFanout }
+// lagging is a replica that has not applied pending yet; CatchUp applies it
+// and then reports err.
+type lagging struct {
+	ledgerFanout
+	pending []Command
+	err     error
+}
 
-func (*failingCatchUp) CatchUp() error { return errors.New("no leader") }
+func (f *lagging) CatchUp() error {
+	for _, cmd := range f.pending {
+		f.ledgers[0].Apply(cmd)
+	}
+	f.pending = nil
+	return f.err
+}
 
-// A miss catches up once; when that fails the lookup fails closed.
-func TestReplicatedLookupFailsClosed(t *testing.T) {
+// A miss catches up once and looks again, so a binding taken at another
+// replica a moment ago is found; what the catch-up never applied stays a miss.
+func TestReplicatedLookupCatchesUp(t *testing.T) {
+	now := time.UnixMilli(1_000_000)
 	l := New(time.Hour, 4)
-	l.SetReplicator(&failingCatchUp{})
-	if _, ok := l.Lookup("sb"); ok {
-		t.Fatal("a miss without catch-up reported a binding")
+	l.now = func() time.Time { return now }
+	for _, err := range []error{nil, errors.New("timed out after applying")} {
+		f := &lagging{ledgerFanout: ledgerFanout{ledgers: []*Ledger{l}}, err: err}
+		l.SetReplicator(f)
+		id := fmt.Sprintf("sb-%v", err)
+		f.pending = []Command{{SandboxID: id, Host: "10.0.0.1", AtMS: now.UnixMilli()}}
+		if h, ok := l.Lookup(id); !ok || h != "10.0.0.1" {
+			t.Fatalf("catch-up err %v: binding applied by the catch-up not found: %q %v", err, h, ok)
+		}
+		if _, ok := l.Lookup("never-bound"); ok {
+			t.Fatalf("catch-up err %v: a binding nobody took was found", err)
+		}
 	}
 }

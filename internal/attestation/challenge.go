@@ -12,9 +12,8 @@ import (
 // ChallengeStore holds short-lived attestation challenges. Each challenge can
 // only be consumed once, preventing replay attacks.
 //
-// NOTE: challenges are stored in-memory and lost on restart. This is acceptable
-// for single-instance deployments but must be addressed for HA configurations.
-// One TTL governs every challenge, so insertion order is expiry order: issued
+// Challenges are stored in memory and lost on restart; HA replicas share
+// them through SetSharedKey. One TTL governs every challenge, so insertion order is expiry order: issued
 // holds the keys oldest-first, and a consumed key stays there until it reaches
 // the front.
 type ChallengeStore struct {
