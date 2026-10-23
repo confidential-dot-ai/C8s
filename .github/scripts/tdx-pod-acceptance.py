@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Manual connected native TDX acceptance; never Cloud API/provider conformance."""
 import base64
-from datetime import datetime
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -19,6 +19,14 @@ FIXTURE = Path(__file__).resolve().parent / "fixtures/pod-connected"
 PAUSE = "docker.io/rancher/mirrored-pause:3.10.2@sha256:f548e0e8e3dc1896ca956272154dde3314e8cc4fde0a57577ee9fa1c63f5baf4"
 SIDES = ("server", "a", "b")
 SOAK = 65 * 60
+READ_COMMANDS = {"cds-ca": ("cds", "ca"), "pod-status": ("pod-status", "get"),
+                 "pod-attest": ("pod-attest",), "pod-attest-observed": ("pod-attest",), "pod-mesh": ()}
+
+
+def progress(phase, side="all", status="started", **fields):
+    event = {"timestamp": datetime.now(timezone.utc).isoformat(), "phase": phase, "side": side, "status": status, **fields}
+    print(json.dumps(event), flush=True)
+    return event
 
 
 def validate_pins(pins):
@@ -96,6 +104,50 @@ class Acceptance(OwnedResources):
     def deadline(self, seconds):
         return min(self.run_deadline, time.monotonic() + seconds)
 
+    def observation_error(self, phase, side, error):
+        # Only static labels and bounded errors from read-only observations reach evidence.
+        require(side in SIDES and phase in {*READ_COMMANDS, "pod-state"}, "invalid observation label")
+        message = "read-only observation timed out" if isinstance(error, subprocess.TimeoutExpired) else str(error)
+        message = message.replace(str(self.private), "<private-run-directory>")[-4096:]
+        message = "".join(char if char.isprintable() or char in "\n\t" else "?" for char in message)
+        event = progress(phase, side, "failed", error=message)
+        write(self.evidence / (side + "-" + phase + "-last-error.json"), event)
+
+    def read_only_cli(self, phase, side, options, deadline=None):
+        require(phase in READ_COMMANDS, "command is not an allowed CLI observation")
+        require(side == "server" if phase == "cds-ca" else side in ("a", "b"), "invalid CLI observation side")
+        allowed = {"--url", "--image-policy-file", "--out"} if phase == "cds-ca" else {"--node", "--launch-key-pub", "--image-manifest", "--timeout"}
+        if phase == "pod-attest":
+            allowed.add("--expect-digest")
+        if phase == "pod-mesh":
+            allowed = {"--address", "--ca", "--mode"}
+            require(all(value in ("certless", "wrong-ca", "plaintext") for flag, value in zip(options[::2], options[1::2]) if flag == "--mode"), "unexpected mesh probe mode")
+        require(len(options) % 2 == 0 and set(options[::2]) <= allowed, "unexpected CLI observation option")
+        executable = self.probe if phase == "pod-mesh" else self.cli
+        argv = [str(executable), *READ_COMMANDS[phase], *map(str, options)]
+        # Reads need only public pins. Never inherit an optional operator private key.
+        env = {key: value for key, value in os.environ.items() if key != "C8S_OPERATOR_KEY"}
+        progress(phase, side)
+        try:
+            result = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, timeout=budget(deadline, 15 if phase == "pod-mesh" else 50), env=env)
+        except subprocess.TimeoutExpired as error:
+            # str(TimeoutExpired) contains argv, so report only its bounded stderr.
+            detail = (error.stderr or b"")[-3072:].decode(errors="replace")
+            failure = RuntimeError("read-only CLI timed out; stderr: " + detail)
+        except OSError:
+            failure = RuntimeError("could not start read-only CLI")
+        else:
+            if result.returncode == 0:
+                require(len(result.stdout) <= (8192 if phase == "pod-mesh" else 65536), "oversized authenticated response")
+                progress(phase, side, "complete")
+                return result.stdout
+            detail = result.stderr[-3072:].decode(errors="replace")
+            failure = RuntimeError("read-only CLI exit " + str(result.returncode) + "; stderr: " + detail)
+        message = str(failure).replace(str(self.private), "<private-run-directory>")
+        failure = RuntimeError("".join(char if char.isprintable() or char in "\n\t" else "?" for char in message))
+        self.observation_error(phase, side, failure)
+        raise failure from None
+
     def prepare(self):
         validate_pins(self.pins)
         source = Path(os.environ["POD_ACCEPTANCE_SOURCE"])
@@ -140,6 +192,7 @@ class Acceptance(OwnedResources):
             "accessModes": ["ReadWriteOnce"], "storageClassName": "local-path", "resources": {"requests": {"storage": "80Gi"}}}})
 
     def import_root(self):
+        progress("root-import")
         self.pvc("-root")
         binder = {"apiVersion": "v1", "kind": "Pod", "spec": {
             "restartPolicy": "Never", "activeDeadlineSeconds": 1500, "automountServiceAccountToken": False,
@@ -167,6 +220,7 @@ class Acceptance(OwnedResources):
             phase = self.get("pvc", "-root", deadline)["metadata"].get("annotations", {}).get("cdi.kubevirt.io/storage.pod.phase")
             require(phase != "Failed", "production root import failed")
             if phase == "Succeeded":
+                progress("root-import", status="complete")
                 return
             pause(deadline, 10)
         raise RuntimeError("production root import timed out")
@@ -203,9 +257,11 @@ class Acceptance(OwnedResources):
         self.create_launch_secrets()
         for side in SIDES:
             self.create("vm", "-" + side, self.vm(side))
+        progress("vm-boot")
         deadline = self.deadline(600)
         while time.monotonic() < deadline:
             if all(self.instance(side, deadline).get("status", {}).get("phase") == "Running" for side in SIDES):
+                progress("vm-boot", status="complete")
                 return
             pause(deadline, 10)
         raise RuntimeError("three owned TDX VMIs did not reach Running")
@@ -273,24 +329,69 @@ class Acceptance(OwnedResources):
                 process.wait(timeout=5)
             log.close()
 
-    def cli_read(self, side, mode, deadline=None):
-        argv = [self.cli, *mode, "--node", self.connections[side, 8443], "--launch-key-pub", self.bundle / side / "pod/pubkey",
-                "--image-manifest", self.private / "manifest.json", "--timeout", "45s"]
-        if mode == ["pod-attest"]:
+    def cli_read(self, side, mode, deadline=None, *, exact_digests=True):
+        require(mode in (["pod-attest"], ["pod-status", "get"]), "unsupported authenticated observation")
+        phase = "pod-status" if mode == ["pod-status", "get"] else "pod-attest" if exact_digests else "pod-attest-observed"
+        options = ["--node", self.connections[side, 8443], "--launch-key-pub", self.bundle / side / "pod/pubkey",
+                   "--image-manifest", self.private / "manifest.json", "--timeout", "45s"]
+        if phase == "pod-attest":
+            require(bool(self.identity["expectedDigests"]), "exact digest gate must be nonempty")
             for digest in self.identity["expectedDigests"]:
-                argv += ["--expect-digest", digest]
-        raw = command(argv, timeout=budget(deadline, 50))
-        require(len(raw) <= 65536, "oversized authenticated response")
-        return json.loads(raw)
+                options += ["--expect-digest", digest]
+        return json.loads(self.read_only_cli(phase, side, options, deadline))
 
     def leaf(self, side, mode="certless"):
-        raw = command([self.probe, "--address", self.connections[side, 8080], "--ca", self.evidence / "mesh-ca.pem", "--mode", mode], timeout=15)
-        require(len(raw) <= 8192, "oversized mesh observation")
+        raw = self.read_only_cli("pod-mesh", side, ["--address", self.connections[side, 8080],
+                                 "--ca", self.evidence / "mesh-ca.pem", "--mode", mode])
         return json.loads(raw)
 
     def ca(self, path, deadline):
-        command([self.cli, "cds", "ca", "--url", "https://" + self.connections["server", 30808],
-                 "--image-policy-file", self.bundle / "server/server.json", "--out", path], timeout=budget(deadline, 50))
+        self.read_only_cli("cds-ca", "server", ["--url", "https://" + self.connections["server", 30808],
+                          "--image-policy-file", self.bundle / "server/server.json", "--out", path], deadline)
+
+    def warmup_pod(self, side, deadline, traces, states, ca_ready):
+        state, exact = None, False
+        try:
+            status = self.cli_read(side, ["pod-status", "get"], deadline)
+            write(self.evidence / (side + "-initial-status.json"), status)
+            state = pod_state(status, self.name)
+            traces[side].append(state["ready"])
+            states[side] = state
+        except (RuntimeError, OSError, ValueError) as error:
+            self.observation_error("pod-state", side, error)
+        try:
+            report = self.cli_read(side, ["pod-attest"], deadline)
+            write(self.evidence / (side + "-initial-attestation.json"), report)
+            exact = True
+        except (RuntimeError, OSError, ValueError) as error:
+            self.observation_error("pod-attest", side, error)
+            try:
+                report = self.cli_read(side, ["pod-attest"], deadline, exact_digests=False)
+                write(self.evidence / (side + "-diagnostic-attestation.json"), {
+                    "diagnosticOnly": True, "exactDigestGatePassed": False, "report": report})
+            except (RuntimeError, OSError, ValueError) as diagnostic_error:
+                self.observation_error("pod-attest-observed", side, diagnostic_error)
+        if ca_ready:
+            try:
+                candidate = self.leaf(side)
+                if exact and state and state["running"] and candidate["workload"] == "connected":
+                    return candidate
+            except (RuntimeError, subprocess.TimeoutExpired, OSError, ValueError) as error:
+                self.observation_error("pod-mesh", side, error)
+        return None
+
+    def warmup_round(self, deadline, traces, states):
+        ca_ready, initial = False, {}
+        try:
+            self.ca(self.evidence / "mesh-ca.pem", deadline)
+            ca_ready = True
+        except (RuntimeError, OSError, ValueError) as error:
+            self.observation_error("cds-ca", "server", error)
+        for side in ("a", "b"):
+            candidate = self.warmup_pod(side, deadline, traces, states, ca_ready)
+            if candidate is not None:
+                initial[side] = candidate
+        return initial
 
     def observe(self):
         for side in SIDES:
@@ -301,24 +402,10 @@ class Acceptance(OwnedResources):
         deadline = self.deadline(1200)
         initial, traces, states = {}, {"a": [], "b": []}, {}
         while time.monotonic() < deadline:
-            try:
-                initial = {}
-                self.ca(self.evidence / "mesh-ca.pem", deadline)
-                for side in ("a", "b"):
-                    report = self.cli_read(side, ["pod-attest"], deadline)
-                    status = self.cli_read(side, ["pod-status", "get"], deadline)
-                    state = pod_state(status, self.name)
-                    traces[side].append(state["ready"])
-                    states[side] = state
-                    write(self.evidence / (side + "-initial-attestation.json"), report)
-                    write(self.evidence / (side + "-initial-status.json"), status)
-                    candidate = self.leaf(side)
-                    if candidate["workload"] == "connected" and state["running"]:
-                        initial[side] = candidate
-                if set(initial) == {"a", "b"}:
-                    break
-            except (RuntimeError, subprocess.TimeoutExpired, OSError) as error:
-                write(self.evidence / "warmup-last-error.json", {"error": str(error)})
+            progress("warmup", status="polling")
+            initial = self.warmup_round(deadline, traces, states)
+            if set(initial) == {"a", "b"}:
+                break
             pause(deadline, 10)
         require(set(initial) == {"a", "b"}, "both Pods did not obtain named CDS leaves")
         require(initial["a"]["sandboxID"] != initial["b"]["sandboxID"], "two guests share a mesh instance identity")
@@ -333,6 +420,7 @@ class Acceptance(OwnedResources):
         index = 0
         while time.monotonic() < deadline:
             index += 1
+            progress("renewal-soak", status="polling", elapsedSeconds=round(time.monotonic() - start))
             sample = {"elapsed": time.monotonic() - start, "pods": {}}
             for side in ("a", "b"):
                 self.instance(side, deadline)
@@ -408,13 +496,16 @@ def main():
     require(len(sys.argv) == 2 and sys.argv[1] in ("run", "cleanup"), "expected run or cleanup")
     task = Acceptance(Path(os.environ["RUNNER_TEMP"]) / "pod-acceptance", os.environ["GITHUB_RUN_ID"], os.environ["GITHUB_RUN_ATTEMPT"], os.environ["GITHUB_REPOSITORY"])
     if sys.argv[1] == "cleanup":
+        progress("cleanup")
         task.cleanup()
+        progress("cleanup", status="complete")
         return
     require(not task.resources(), "acceptance already owns resources")
     try:
-        task.prepare()
-        task.provision()
-        task.observe()
+        for phase, action in (("prepare", task.prepare), ("provision", task.provision), ("observe", task.observe)):
+            progress(phase)
+            action()
+            progress(phase, status="complete")
     except BaseException as error:
         write(task.evidence / "failure.json", {"error": str(error), "type": type(error).__name__})
         raise

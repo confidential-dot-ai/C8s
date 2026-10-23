@@ -173,6 +173,9 @@ server scratch disk, and approximately 8 vCPUs and 32 GiB of guest memory.
 The `pod-connected-acceptance-<run>-<attempt>` artifact retains image identity,
 authenticated attestations/status, public certificates, negative-probe receipts,
 bounded boot logs and cleanup results for seven days. Acceptance requires both
+the exact expected-digest checks and the timed observations. Failure artifacts
+include bounded CLI errors and separately labeled diagnostic attestations;
+those diagnostic reports cannot satisfy acceptance. Completion requires
 `result.json` with `passed: true` and `cleanup.json` with `complete: true`, plus
 a successful workflow. Cleanup always removes owned resources; `keep_cvm` does
 not apply. Do not enable `pod_diagnostic` in the same dispatch.

@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Offline gates for the native hardware harness, not hardware substitutes."""
 import base64
+import contextlib
 import copy
 import hashlib
 import importlib.util
+import io
 import json
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -178,17 +181,121 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(task.connections["a", 8443], "10.96.0.1:8443")
         self.assertEqual(task.forwards, [])
 
-    def test_authenticated_reads_use_root_cli_commands(self):
+    def test_authenticated_reads_use_root_cli_commands_and_keep_exact_gate(self):
         task = acceptance.Acceptance(Path(self.temp.name), "123", "2", "confidential-dot-ai/C8s")
         task.connections["a", 8443] = "127.0.0.1:12345"
         task.identity = {"expectedDigests": ["sha256:" + "a" * 64]}
-        for mode in (["pod-attest"], ["pod-status", "get"]):
-            with patch.object(acceptance, "command", return_value=b"{}") as command:
-                task.cli_read("a", mode)
-            argv = command.call_args.args[0]
-            self.assertEqual(argv[1:1+len(mode)], mode)
-            self.assertEqual("--expect-digest" in argv, mode == ["pod-attest"])
-            self.assertNotIn("node", argv)
+        result = subprocess.CompletedProcess([], 0, stdout=b"{}", stderr=b"")
+        with patch.object(acceptance.subprocess, "run", return_value=result) as run, contextlib.redirect_stdout(io.StringIO()):
+            task.cli_read("a", ["pod-attest"])
+            task.cli_read("a", ["pod-status", "get"])
+            task.cli_read("a", ["pod-attest"], exact_digests=False)
+        exact, status, observed = [call.args[0] for call in run.call_args_list]
+        self.assertEqual(exact[1], "pod-attest")
+        self.assertEqual(status[1:3], ["pod-status", "get"])
+        self.assertNotIn("node", exact)
+        self.assertIn("--expect-digest", exact)
+        self.assertNotIn("--expect-digest", observed)
+        self.assertEqual(exact[:exact.index("--expect-digest")], observed)
+        task.identity["expectedDigests"] = []
+        with self.assertRaises(RuntimeError): task.cli_read("a", ["pod-attest"])
+
+    def test_read_wrapper_rejects_mutations_and_private_key_flags(self):
+        task = acceptance.Acceptance(Path(self.temp.name), "123", "2", "confidential-dot-ai/C8s")
+        with patch.object(acceptance.subprocess, "run") as run:
+            for phase, side, options in [("secrets-put", "server", []), ("cds-ca", "server", ["--operator-key", "private.key"]),
+                                          ("pod-status", "a", ["--insecure", "true"]), ("pod-attest", "server", [])]:
+                with self.assertRaises(RuntimeError): task.read_only_cli(phase, side, options)
+        run.assert_not_called()
+
+    def test_read_errors_expose_bounded_stderr_without_argv_stdout_or_private_path(self):
+        task = acceptance.Acceptance(Path(self.temp.name), "123", "2", "confidential-dot-ai/C8s")
+        stderr = b"x" * 5000 + str(task.private).encode() + b"/manifest.json: digest mismatch\x1b"
+        result = subprocess.CompletedProcess([], 1, stdout=b"not-for-logs", stderr=stderr)
+        output = io.StringIO()
+        with patch.object(acceptance.subprocess, "run", return_value=result) as run, patch.dict(acceptance.os.environ, {"C8S_OPERATOR_KEY": "not-for-child"}), contextlib.redirect_stdout(output):
+            with self.assertRaises(RuntimeError): task.read_only_cli("pod-attest", "a", ["--node", "argv-not-for-logs"])
+        self.assertNotIn("C8S_OPERATOR_KEY", run.call_args.kwargs["env"])
+        self.assertEqual(run.call_args.kwargs["stdin"], subprocess.DEVNULL)
+        record = json.loads((task.evidence / "a-pod-attest-last-error.json").read_text())
+        self.assertLessEqual(len(record["error"]), 4096)
+        self.assertIn("digest mismatch", record["error"])
+        self.assertEqual((record["phase"], record["side"]), ("pod-attest", "a"))
+        self.assertIn("timestamp", record)
+        for forbidden in ("argv-not-for-logs", "not-for-logs", str(task.private), "\x1b"):
+            self.assertNotIn(forbidden, output.getvalue())
+
+    def test_read_timeout_does_not_stringify_the_command(self):
+        task = acceptance.Acceptance(Path(self.temp.name), "123", "2", "confidential-dot-ai/C8s")
+        timeout = subprocess.TimeoutExpired(["argv-not-for-logs"], 1, output=b"stdout-not-for-logs", stderr=b"context deadline")
+        with patch.object(acceptance.subprocess, "run", side_effect=timeout), contextlib.redirect_stdout(io.StringIO()) as output:
+            with self.assertRaisesRegex(RuntimeError, "context deadline"):
+                task.read_only_cli("pod-status", "b", [])
+        self.assertNotIn("argv-not-for-logs", output.getvalue())
+        self.assertNotIn("stdout-not-for-logs", output.getvalue())
+
+    def test_mesh_probe_uses_owned_binary_known_mode_and_bounded_diagnostics(self):
+        task = acceptance.Acceptance(Path(self.temp.name), "123", "2", "confidential-dot-ai/C8s")
+        task.connections["a", 8080] = "127.0.0.1:12345"
+        result = subprocess.CompletedProcess([], 1, stdout=b"", stderr=b"peer certificate signature invalid")
+        with patch.object(acceptance.subprocess, "run", return_value=result) as run, contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaisesRegex(RuntimeError, "signature invalid"): task.leaf("a", "certless")
+            self.assertEqual(run.call_args.args[0][0], str(task.probe))
+            self.assertEqual(run.call_args.kwargs["timeout"], 15)
+            self.assertEqual(run.call_args.kwargs["stdin"], subprocess.DEVNULL)
+            run.reset_mock()
+            with self.assertRaises(RuntimeError): task.leaf("a", "unknown-mode")
+            run.assert_not_called()
+        record = json.loads((task.evidence / "a-pod-mesh-last-error.json").read_text())
+        self.assertIn("signature invalid", record["error"])
+        self.assertEqual((record["side"], record["phase"]), ("a", "pod-mesh"))
+
+    def test_mutation_command_errors_still_hide_payload_and_stderr(self):
+        result = subprocess.CompletedProcess([], 1, stdout=b"", stderr=b"payload-not-for-logs")
+        with patch.object(resources.subprocess, "run", return_value=result):
+            with self.assertRaises(RuntimeError) as error:
+                resources.command(["kubectl", "create"], data=b"stdin-not-for-logs")
+        self.assertNotIn("payload-not-for-logs", str(error.exception))
+        self.assertNotIn("stdin-not-for-logs", str(error.exception))
+
+    def test_warmup_saves_status_and_diagnostic_attestation_without_bypassing_gate(self):
+        task = acceptance.Acceptance(Path(self.temp.name), "123", "2", "confidential-dot-ai/C8s")
+        calls = []
+        def read(side, mode, deadline, **kwargs):
+            calls.append((side, mode, kwargs))
+            if side == "a" and mode == ["pod-attest"] and kwargs.get("exact_digests", True):
+                raise RuntimeError("measured digest mismatch")
+            return {"side": side, "measured_digests": ["observed"]}
+        state = {"ready": True, "running": True}
+        traces, states = {"a": [], "b": []}, {}
+        with patch.object(task, "ca"), patch.object(task, "cli_read", side_effect=read), patch.object(acceptance, "pod_state", return_value=state), patch.object(task, "leaf", return_value={"workload": "connected"}), contextlib.redirect_stdout(io.StringIO()):
+            initial = task.warmup_round(None, traces, states)
+        self.assertEqual(set(initial), {"b"})
+        self.assertEqual(calls[0][:2], ("a", ["pod-status", "get"]))
+        self.assertEqual(calls[3][:2], ("b", ["pod-status", "get"]))
+        self.assertTrue((task.evidence / "a-initial-status.json").exists())
+        self.assertFalse((task.evidence / "a-initial-attestation.json").exists())
+        diagnostic = json.loads((task.evidence / "a-diagnostic-attestation.json").read_text())
+        self.assertTrue(diagnostic["diagnosticOnly"])
+        self.assertFalse(diagnostic["exactDigestGatePassed"])
+        self.assertEqual(diagnostic["report"]["measured_digests"], ["observed"])
+        self.assertTrue((task.evidence / "b-initial-attestation.json").exists())
+
+    def test_cds_and_first_pod_failures_do_not_hide_other_pod_observations(self):
+        task = acceptance.Acceptance(Path(self.temp.name), "123", "2", "confidential-dot-ai/C8s")
+        calls = []
+        def read(side, mode, deadline, **kwargs):
+            calls.append((side, mode))
+            if side == "a": raise RuntimeError("guest unavailable")
+            return {"side": side}
+        with patch.object(task, "ca", side_effect=RuntimeError("CDS unavailable")), patch.object(task, "cli_read", side_effect=read), patch.object(acceptance, "pod_state", return_value={"ready": False, "running": True}), contextlib.redirect_stdout(io.StringIO()):
+            initial = task.warmup_round(None, {"a": [], "b": []}, {})
+        self.assertEqual(initial, {})
+        self.assertIn(("b", ["pod-status", "get"]), calls)
+        self.assertIn(("b", ["pod-attest"]), calls)
+        self.assertTrue((task.evidence / "server-cds-ca-last-error.json").exists())
+        self.assertTrue((task.evidence / "a-pod-attest-last-error.json").exists())
+        self.assertTrue((task.evidence / "b-initial-status.json").exists())
 
     def test_launch_secrets_use_only_required_bundle_files_without_disk_copy(self):
         task = acceptance.Acceptance(Path(self.temp.name), "123", "2", "confidential-dot-ai/C8s")
