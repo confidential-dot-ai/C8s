@@ -103,11 +103,6 @@ The floor, and why each item is in it:
   container's own, so neither the node's nor the pod's shared one.
 - **Identity** — no root user outside a role, and no id reserved for another
   role, as a group or a supplementary group.
-- **Terminal and standard input** — a terminal is refused, and so is a create
-  whose own `fd 0` is a pipe: the shim wires runc's standard input to the
-  container's stdin pipe only for a container the control plane asked to keep
-  stdin open, and leaves it at the null device otherwise. Together they leave
-  an attach session no way in.
 
 A role's container holds no capabilities at all: the enforcer installs the pod
 ruleset, and a role only speaks on it. The role is read from the reserved id in
@@ -119,6 +114,14 @@ their privileges, as does the pod's own sandbox container — the one whose own
 container id is the sandbox's, which no other bundle can claim. A measured
 policy that cannot be read denies the create; one with no `mesh` policy
 applies no floor. The floor is independent of the exec mode above.
+
+Attachability is refused outside the floor, for every container the wrapper
+creates: a terminal is refused, and so is a create whose own `fd 0` is a pipe —
+the shim wires runc's standard input to the container's stdin pipe only for a
+container the control plane asked to keep stdin open, and leaves it at the null
+device otherwise. Together they leave an attach session no way in, in an exempt
+namespace and in the pod's sandbox too. What an attach can still carry is the
+output streams the kubelet also serves as `logs`.
 
 ## Writing a component that runs on such a node
 
