@@ -12,7 +12,6 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
@@ -539,7 +538,7 @@ const meshFloor = floor + meshPolicy
 func TestPrepareHACluster(t *testing.T) {
 	pins := testPins(t)
 	if len(pins.Images) < 2 {
-		t.Skip("testdata needs two identities")
+		t.Fatal("testdata needs two identities")
 	}
 	haRoot := func(t *testing.T, cdsImages int) string {
 		root := prepareRoot(t)
@@ -582,26 +581,26 @@ func TestPrepareHACluster(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(manifests, "c8s-cds-ha.yaml.skip")); err == nil {
 			t.Fatal("HA server skips the HA CDS")
 		}
-		// CDS clients learn how to follow the operator's pin decrees.
-		var info cmdsutil.CDSDecreesInfo
-		raw, err := os.ReadFile(filepath.Join(root, PublicDir, CDSDecreesFile))
-		if err != nil || json.Unmarshal(raw, &info) != nil || info.ClusterID != "cdsha" || info.DecreeKey != string(pins.Images[1].Anchor) || info.PinFloor != 5 {
-			t.Fatalf("cds-decrees.json: %s %v", raw, err)
+		// The enforcer learns how to follow the operator's pin decrees, and
+		// where to keep the newest across restarts (replay defence).
+		var staged struct {
+			Allowlist struct {
+				Pull struct {
+					Decrees struct {
+						ClusterID string `yaml:"cluster_id"`
+						DecreeKey string `yaml:"decree_key"`
+						PinFloor  uint64 `yaml:"pin_floor"`
+					} `yaml:"cds_decrees"`
+					State string `yaml:"cds_decrees_state"`
+				}
+			}
 		}
 		policy, err := os.ReadFile(filepath.Join(root, "/etc/nri/conf.d/image-policy.yaml"))
-		if err != nil || !bytes.Contains(policy, []byte("cds_decrees_file: "+PublicDir+"/"+CDSDecreesFile)) {
+		if err != nil || yaml.Unmarshal(policy, &staged) != nil {
+			t.Fatalf("NRI policy: %v", err)
+		}
+		if p := staged.Allowlist.Pull; p.Decrees.ClusterID != "cdsha" || p.Decrees.DecreeKey != string(pins.Images[1].Anchor) || p.Decrees.PinFloor != 5 || p.State == "" {
 			t.Fatalf("NRI pull does not follow pin decrees:\n%s", policy)
-		}
-		// Without HA the file goes.
-		noHA := haDoc(launchconfig.Server)
-		noHA.CDSHA, noHA.CDSOperatorPublicKeys = nil, nil
-		root1 := haRoot(t, 1)
-		writeInput(t, root1, PublicDir+"/"+CDSDecreesFile, raw)
-		if err := Prepare(root1, noHA); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := os.Stat(filepath.Join(root1, PublicDir, CDSDecreesFile)); !os.IsNotExist(err) {
-			t.Fatal("a cluster without HA CDS kept cds-pins.json")
 		}
 	})
 	t.Run("cds node binds the credential role", func(t *testing.T) {

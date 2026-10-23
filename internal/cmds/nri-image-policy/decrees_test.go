@@ -6,7 +6,6 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
-	"encoding/json"
 	"encoding/pem"
 	"log/slog"
 	"os"
@@ -41,16 +40,15 @@ func testImage(c string) cdsha.DecreeImage {
 func TestFollowedDecreesRewriteTheMountedPolicyInPlace(t *testing.T) {
 	k, pub := decreeKey(t)
 	dir := t.TempDir()
-	info, _ := json.Marshal(map[string]string{"cluster_id": "c1", "decree_key": pub})
-	decreesFile := filepath.Join(dir, "cds-decrees.json")
-	if err := os.WriteFile(decreesFile, info, 0o600); err != nil {
-		t.Fatal(err)
-	}
 	cfg := pullConfig{URL: "https://cds:30808", AttestationApiURL: "http://127.0.0.1:1", CDSMeasurementsConfig: "../../testdata/node-identities.json"}
 	if src, err := cfg.cdsDecrees("tdx", slog.Default()); src != nil || err != nil {
 		t.Fatalf("off: %v %v", src, err)
 	}
-	cfg.CDSDecreesFile = decreesFile
+	cfg.CDSDecrees = &cdsDecreesInfo{ClusterID: "c1", DecreeKey: "junk"}
+	if _, err := cfg.cdsDecrees("tdx", slog.Default()); err == nil {
+		t.Fatal("a bad decree key accepted")
+	}
+	cfg.CDSDecrees.DecreeKey = pub
 	src, err := cfg.cdsDecrees("tdx", slog.Default())
 	if err != nil || src == nil {
 		t.Fatalf("on: %v %v", src, err)

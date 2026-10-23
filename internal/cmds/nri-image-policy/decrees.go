@@ -2,14 +2,16 @@ package nriimagepolicy
 
 import (
 	"context"
+	"crypto/x509"
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
+	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/internal/cdspins"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
@@ -49,24 +51,41 @@ func (f *followedPins) mirrorTo(path string) {
 	}
 }
 
+// cdsDecreesInfo is the cluster, decree key and pin floor of the node's
+// launch document, which nodeservices writes into the plugin's config.
+type cdsDecreesInfo struct {
+	ClusterID string `yaml:"cluster_id"`
+	DecreeKey string `yaml:"decree_key"` // PEM P-256 public key
+	// PinFloor is the lowest decree base epoch the node accepts: an older
+	// decree the operator also signed is refused.
+	PinFloor uint64 `yaml:"pin_floor"`
+}
+
 // cdsDecrees builds the node's decree-following pin source, or nil when the
-// node publishes no decree info (a cluster without HA CDS).
+// config names no decrees (a cluster without HA CDS). It fetches decrees from
+// the CDS (GET /ha/pins), starting from the launch document's CDS policy.
 func (c pullConfig) cdsDecrees(platform string, logger *slog.Logger) (*followedPins, error) {
-	if c.CDSDecreesFile == "" {
+	info := c.CDSDecrees
+	if info == nil {
 		return nil, nil
 	}
-	info, ok, err := cmdsutil.LoadCDSDecreesInfo(c.CDSDecreesFile)
-	if err != nil || !ok {
-		return nil, err
-	}
 	if c.CDSMeasurementsConfig == "" {
-		return nil, fmt.Errorf("allowlist.pull.cds_decrees_file needs cds_measurements_config")
+		return nil, fmt.Errorf("allowlist.pull.cds_decrees needs cds_measurements_config")
 	}
 	bootstrap, err := c.policySet(platform)
 	if err != nil {
 		return nil, err
 	}
-	src, err := cmdsutil.CDSDecreeSource(info, bootstrap, c.URL, c.CDSDecreesState)
+	key, err := runtimemeasure.ParsePublicKeyPEM([]byte(info.DecreeKey))
+	if err != nil {
+		return nil, fmt.Errorf("CDS pin decrees: decree key: %w", err)
+	}
+	der, err := x509.MarshalPKIXPublicKey(key)
+	if err != nil {
+		return nil, err
+	}
+	src, err := cdspins.New(cdspins.Config{ClusterID: info.ClusterID, DecreeKey: der, Bootstrap: bootstrap,
+		Fetch: cdspins.HTTPFetch(strings.TrimRight(c.URL, "/")), StateFile: c.CDSDecreesState, MinEpoch: info.PinFloor})
 	if err != nil {
 		return nil, fmt.Errorf("CDS pin decrees: %w", err)
 	}
