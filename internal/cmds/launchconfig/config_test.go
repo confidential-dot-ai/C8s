@@ -537,7 +537,8 @@ func TestCDSRoleStagesAndKeysAreExclusive(t *testing.T) {
 		{"agent doc signed by the cds key", func(d *Document) { d.Role = Agent }, "not in agentOperatorPublicKeys"},
 		{"cds key also an agent key", func(d *Document) { d.AgentOperatorPublicKeys = append(d.AgentOperatorPublicKeys, pub) }, "distinct"},
 		{"cds role without cdsHA", func(d *Document) { d.CDSHA = nil; d.CDSOperatorPublicKeys = nil }, "cdsHA"},
-		{"one replica", func(d *Document) { d.CDSHA.Replicas = 1 }, "replicas"},
+		{"even replicas", func(d *Document) { d.CDSHA.Replicas = 4 }, "replicas"},
+		{"more replicas than voter seats", func(d *Document) { d.CDSHA.Replicas = 11 }, "replicas"},
 		{"bad decree key", func(d *Document) { d.CDSHA.DecreeKey = "nope" }, "decreeKey"},
 	}
 	for _, tc := range bad {
@@ -550,6 +551,12 @@ func TestCDSRoleStagesAndKeysAreExclusive(t *testing.T) {
 				t.Fatalf("got %v, want %q", err, tc.want)
 			}
 		})
+	}
+	// The reverse of the first case: a cds document under an agent key.
+	agentPub := doc.AgentOperatorPublicKeys[0]
+	agentKey, _ := parseLaunchKey(agentPub)
+	if err := doc.authorizeKey([]byte(agentPub), agentKey); err == nil || !strings.Contains(err.Error(), "not in cdsOperatorPublicKeys") {
+		t.Fatalf("cds document under an agent key: %v", err)
 	}
 }
 

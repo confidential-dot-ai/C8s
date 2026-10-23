@@ -137,8 +137,15 @@ func newHAStatusCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, urls []string) error {
 			var seen []cdsha.Status
 			for _, u := range urls {
+				// One attested client per replica: one client reaches one peer (cdsconn).
 				var hb cdsha.Status
-				if err := fetchHAStatus(cmd.Context(), conn, u, &hb); err != nil {
+				one := conn
+				one.URL = u
+				hc, err := one.HTTPClient(cmd.Context())
+				if err == nil {
+					err = getJSON(cmd.Context(), hc, u, "/ha/status", 1<<16, &hb)
+				}
+				if err != nil {
 					fmt.Fprintf(cmd.OutOrStdout(), "%-40s ERROR %v\n", u, err)
 					continue
 				}
@@ -171,17 +178,6 @@ func reportDivergence(seen []cdsha.Status, want int) error {
 		}
 	}
 	return nil
-}
-
-// fetchHAStatus reads one replica's status on its own attested connection:
-// one client reaches one peer (cdsconn).
-func fetchHAStatus(ctx context.Context, conn cdsconn.Options, url string, hb *cdsha.Status) error {
-	conn.URL = url
-	hc, err := conn.HTTPClient(ctx)
-	if err != nil {
-		return err
-	}
-	return getJSON(ctx, hc, url, "/ha/status", 1<<16, hb)
 }
 
 // getJSON decodes the JSON answer of GET base+path, at most limit bytes.

@@ -25,6 +25,7 @@ import (
 	"time"
 
 	utilnet "k8s.io/apimachinery/pkg/util/net"
+	"k8s.io/apimachinery/pkg/util/wait"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
@@ -151,8 +152,8 @@ func Run(args []string) error {
 	if err := plugin.prepareCDSPins(); err != nil {
 		return fmt.Errorf("prepare the CDS pins handed to injected clients: %w", err)
 	}
-	if decrees != nil && plugin.cdsPins != "" {
-		decrees.mirrorTo(plugin.cdsPins)
+	if decrees != nil {
+		decrees.mounted = plugin.cdsPins
 	}
 	if err := plugin.prepareCDSAddress(); err != nil {
 		return fmt.Errorf("prepare the CDS address handed to injected clients: %w", err)
@@ -162,7 +163,9 @@ func Run(args []string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	if decrees != nil {
-		go followDecrees(ctx, decrees, decreePollInterval)
+		// Clients also refresh on a pin miss; the poll moves a node that is
+		// not talking to CDS.
+		go wait.UntilWithContext(ctx, func(ctx context.Context) { _, _ = decrees.Refresh(ctx) }, decreePollInterval)
 	}
 
 	sigCh := make(chan os.Signal, 1)

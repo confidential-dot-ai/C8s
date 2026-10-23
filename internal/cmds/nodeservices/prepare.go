@@ -13,7 +13,6 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
@@ -59,13 +58,6 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 	outputs[CDSModeFile] = []byte(CDSModeSingleton + "\n")
 	if d.CDSHA != nil {
 		outputs[CDSModeFile] = []byte(CDSModeHA + "\n")
-		// What the node's enforcer needs to follow the operator's signed
-		// CDS pin decrees across a CDS image rollout. Public.
-		info, err := json.Marshal(cmdsutil.CDSDecreesInfo{ClusterID: d.ClusterID, DecreeKey: d.CDSHA.DecreeKey, PinFloor: d.CDSHA.PinFloor})
-		if err != nil {
-			return err
-		}
-		outputs[CDSDecreesFile] = info
 	}
 	nodeSeed := bakedSeed
 	switch d.Role {
@@ -126,7 +118,9 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 		pull["url"] = d.CDSURL()
 		pull["cds_measurements_config"] = launchDir + "cds.json"
 		if d.CDSHA != nil {
-			pull["cds_decrees_file"] = PublicDir + "/" + CDSDecreesFile
+			// What the enforcer needs to follow the operator's signed CDS
+			// pin decrees across a CDS image rollout.
+			pull["cds_decrees"] = map[string]any{"cluster_id": d.ClusterID, "decree_key": d.CDSHA.DecreeKey, "pin_floor": d.CDSHA.PinFloor}
 			pull["cds_decrees_state"] = "/run/nri-image-policy/cds-decree-state.json"
 		}
 		delete(pull, "cds_measurements")
@@ -166,7 +160,7 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 	}
 	// Remove every public file this role does not publish, so a node whose
 	// signed document changed role or dropped cdsHA keeps no stale input.
-	for _, name := range append([]string{cdsHAFile, CDSDecreesFile}, serverOutputNames...) {
+	for _, name := range append([]string{cdsHAFile}, serverOutputNames...) {
 		if _, ok := outputs[name]; ok {
 			continue
 		}

@@ -23,8 +23,8 @@ type PinSource interface {
 }
 
 // NewRefreshingHTTPClient is NewVerifyingHTTPClient over a PinSource. A
-// request that fails asks the source for a newer set; if it changed, the
-// request is retried once against it. A request whose body cannot be
+// request that fails asks the source for a newer set; if the set moved since
+// the attempt, the request is retried once against it. A request whose body cannot be
 // replayed is not retried, and nothing is retried when the set did not
 // change, so a peer that fails the pins still fails.
 func NewRefreshingHTTPClient(src PinSource, attestationApiURL string) (*http.Client, error) {
@@ -47,12 +47,12 @@ func NewRefreshingHTTPClient(src PinSource, attestationApiURL string) (*http.Cli
 }
 
 // NewRefreshingTransport rebuilds the transport with build whenever src's
-// pins change, and retries a failed request once when a refresh changed
-// them. build makes the TLS client for one pin set (a client certificate,
+// pins change, and retries a failed request once when the pins moved since
+// the attempt. build makes the TLS client for one pin set (a client certificate,
 // timeouts).
 func NewRefreshingTransport(src PinSource, build func(Pins) (*http.Transport, error)) (http.RoundTripper, error) {
 	t := &refreshingTransport{src: src, build: func(rv refvalues.ReferenceValues) (*http.Transport, error) { return build(Pins(rv.Policy())) }}
-	if _, err := t.transport(); err != nil {
+	if _, _, err := t.transport(); err != nil {
 		return nil, err
 	}
 	return t, nil
@@ -67,27 +67,28 @@ type refreshingTransport struct {
 	cur *http.Transport
 }
 
-// transport is the TLS transport for the source's current set.
-func (t *refreshingTransport) transport() (*http.Transport, error) {
+// transport is the TLS transport for the source's current set, and the
+// generation it was built for.
+func (t *refreshingTransport) transport() (*http.Transport, uint64, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	gen := t.src.Generation()
 	if t.cur != nil && gen == t.gen {
-		return t.cur, nil
+		return t.cur, gen, nil
 	}
 	base, err := t.build(t.src.Current())
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if t.cur != nil {
 		t.cur.CloseIdleConnections()
 	}
 	t.cur, t.gen = base, gen
-	return base, nil
+	return base, gen, nil
 }
 
 func (t *refreshingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	tr, err := t.transport()
+	tr, gen, err := t.transport()
 	if err != nil {
 		return nil, err
 	}
@@ -95,8 +96,10 @@ func (t *refreshingTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	if err == nil {
 		return resp, nil
 	}
-	changed, _ := t.src.Refresh(req.Context())
-	if !changed || (req.Body != nil && req.Body != http.NoBody && req.GetBody == nil) {
+	// Retry when the set moved since this attempt, also when another
+	// request's refresh moved it (a throttled Refresh reports no change).
+	_, _ = t.src.Refresh(req.Context())
+	if t.src.Generation() == gen || (req.Body != nil && req.Body != http.NoBody && req.GetBody == nil) {
 		return nil, err
 	}
 	retry := req.Clone(req.Context())
@@ -105,7 +108,7 @@ func (t *refreshingTransport) RoundTrip(req *http.Request) (*http.Response, erro
 			return nil, err
 		}
 	}
-	if tr, err = t.transport(); err != nil {
+	if tr, _, err = t.transport(); err != nil {
 		return nil, err
 	}
 	return tr.RoundTrip(retry)
@@ -122,24 +125,27 @@ func RefreshingPeerVerifier(src PinSource, attestationApiURL string) func([][]by
 		gen    uint64
 		verify func([][]byte, [][]*x509.Certificate) error
 	)
-	current := func() func([][]byte, [][]*x509.Certificate) error {
+	current := func() (func([][]byte, [][]*x509.Certificate) error, uint64) {
 		mu.Lock()
 		defer mu.Unlock()
 		if g := src.Generation(); verify == nil || g != gen {
 			verify, gen = verifyPeerCallback(Pins(src.Current().Policy()).VerifyPolicy(attestationApiURL), x509.ExtKeyUsageClientAuth), g
 		}
-		return verify
+		return verify, gen
 	}
 	return func(raw [][]byte, chains [][]*x509.Certificate) error {
-		err := current()(raw, chains)
+		v, used := current()
+		err := v(raw, chains)
 		if err == nil {
 			return nil
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		if changed, _ := src.Refresh(ctx); !changed {
+		// As in RoundTrip: retry when the set moved since this check.
+		if _, _ = src.Refresh(ctx); src.Generation() == used {
 			return err
 		}
-		return current()(raw, chains)
+		v, _ = current()
+		return v(raw, chains)
 	}
 }
