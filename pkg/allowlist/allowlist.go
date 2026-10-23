@@ -68,7 +68,7 @@ type Workload struct {
 	Secrets        *SecretsPolicy `json:"secrets,omitempty" yaml:"secrets,omitempty"`
 	// Egress are the exits a pod this entry matches may reach outside the
 	// mesh. Like a secrets grant it belongs to the whole entry.
-	Egress []Egress `json:"egress,omitempty" yaml:"egress,omitempty"`
+	Egress EgressList `json:"egress,omitempty" yaml:"egress,omitempty"`
 }
 
 // minEgressBits4 and minEgressBits6 are the broadest range an exit may name.
@@ -88,6 +88,35 @@ const MaxEgress = 8
 type Egress struct {
 	CIDR netip.Prefix `json:"cidr" yaml:"cidr"`
 	Port uint16       `json:"port" yaml:"port"`
+}
+
+// EgressList is an entry's exits. Each exit decodes strictly: an exit with a
+// member other than cidr and port, or a value of the wrong type, and an egress
+// value that is not a list, decode as one empty exit, which normalizeEgress
+// refuses. So a strict parse rejects the document, and a lenient parse drops
+// the list (the entry grants no exit) instead of failing the whole document or
+// granting an exit without a member a newer schema narrows it with.
+type EgressList []Egress
+
+// UnmarshalJSON never fails: what does not decode is the empty exit above.
+func (l *EgressList) UnmarshalJSON(data []byte) error {
+	*l = EgressList{{}}
+	var items []json.RawMessage
+	if err := json.Unmarshal(data, &items); err != nil {
+		return nil
+	}
+	list := make(EgressList, 0, len(items))
+	for _, item := range items {
+		dec := json.NewDecoder(bytes.NewReader(item))
+		dec.DisallowUnknownFields()
+		var e Egress
+		if err := dec.Decode(&e); err != nil {
+			return nil
+		}
+		list = append(list, e)
+	}
+	*l = list
+	return nil
 }
 
 // Container binds a digest to the process policy permitted for it.
@@ -526,23 +555,38 @@ func (a *Allowlist) normalize(strict bool) error {
 
 // nonUnicastRanges are what an exit must not overlap: this network, loopback,
 // link-local, multicast, reserved and broadcast, and the IPv6 forms that
-// stand for IPv4 addresses. Overlapping one of them also refuses /0.
+// stand for or embed IPv4 addresses (IPv4-compatible, IPv4-mapped, SIIT,
+// NAT64, Teredo, 6to4). Overlapping one of them also refuses /0.
 var nonUnicastRanges = []netip.Prefix{
 	netip.MustParsePrefix("0.0.0.0/8"),
 	netip.MustParsePrefix("127.0.0.0/8"),
 	netip.MustParsePrefix("169.254.0.0/16"),
 	netip.MustParsePrefix("224.0.0.0/3"),
-	netip.MustParsePrefix("::/127"),
+	netip.MustParsePrefix("::/96"),
 	netip.MustParsePrefix("::ffff:0:0/96"),
+	netip.MustParsePrefix("::ffff:0:0:0/96"),
 	netip.MustParsePrefix("64:ff9b::/96"),
+	netip.MustParsePrefix("64:ff9b:1::/48"),
+	netip.MustParsePrefix("2001::/32"),
 	netip.MustParsePrefix("2002::/16"),
 	netip.MustParsePrefix("fe80::/10"),
 	netip.MustParsePrefix("ff00::/8"),
 }
 
+// NonUnicastOverlap returns the first range of addresses no exit may name
+// that p overlaps.
+func NonUnicastOverlap(p netip.Prefix) (netip.Prefix, bool) {
+	for _, special := range nonUnicastRanges {
+		if p.Overlaps(special) {
+			return special, true
+		}
+	}
+	return netip.Prefix{}, false
+}
+
 // normalizeEgress validates an entry's exits and sorts them. An empty list
 // becomes nil, so an entry with no exit carries no "egress" key.
-func normalizeEgress(exits *[]Egress) error {
+func normalizeEgress(exits *EgressList) error {
 	list := *exits
 	if len(list) == 0 {
 		*exits = nil
@@ -554,7 +598,7 @@ func normalizeEgress(exits *[]Egress) error {
 	for _, e := range list {
 		switch {
 		case !e.CIDR.IsValid():
-			return fmt.Errorf("an exit needs a cidr")
+			return fmt.Errorf(`an exit is {"cidr": "<range>", "port": <1-65535>} and nothing else`)
 		case e.CIDR.Addr().Is4In6():
 			return fmt.Errorf("cidr %s is a 4-in-6 range; write it as IPv4", e.CIDR)
 		case e.CIDR != e.CIDR.Masked():
@@ -565,10 +609,8 @@ func normalizeEgress(exits *[]Egress) error {
 			e.CIDR.Addr().Is6() && e.CIDR.Bits() < minEgressBits6:
 			return fmt.Errorf("cidr %s is broader than /%d (IPv4) or /%d (IPv6); an exit names a relay, usually one address", e.CIDR, minEgressBits4, minEgressBits6)
 		}
-		for _, special := range nonUnicastRanges {
-			if e.CIDR.Overlaps(special) {
-				return fmt.Errorf("cidr %s overlaps %s, which is not a range of unicast hosts an exit can name", e.CIDR, special)
-			}
+		if special, overlaps := NonUnicastOverlap(e.CIDR); overlaps {
+			return fmt.Errorf("cidr %s overlaps %s, which is not a range of unicast hosts an exit can name", e.CIDR, special)
 		}
 	}
 	slices.SortFunc(list, func(a, b Egress) int {
