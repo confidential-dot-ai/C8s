@@ -559,7 +559,7 @@ func TestAttestEndpointsDisabled(t *testing.T) {
 }
 
 func TestCheckRoutingFlags(t *testing.T) {
-	mesh := config{meshIdentityCertFile: "c", meshIdentityKeyFile: "k", meshIdentityCAFile: "ca", attestationAPIURL: "http://127.0.0.1:9"}
+	mesh := config{meshIdentityCertFile: memberCertPath, meshIdentityKeyFile: memberKeyPath, meshIdentityCAFile: workloadclaims.MemberCAPath, attestationAPIURL: "http://127.0.0.1:9"}
 	routed := func(edit func(*config)) config {
 		c := mesh
 		c.routing = routingConfig{cdsURL: "https://cds:8443", pollInterval: time.Second, backendTimeout: time.Hour, host: "127.0.0.1"}
@@ -578,6 +578,14 @@ func TestCheckRoutingFlags(t *testing.T) {
 		{"tunnel budget under one request", routed(func(c *config) { c.routing.tunnelBudget = quantityFlag{bytes: oneRequestBudget - 1, set: true} }), "--tunnel-budget"},
 		{"cds without attestation api", routed(func(c *config) { c.attestationAPIURL = "" }), "--attestation-api-url"},
 		{"attest endpoints without mesh identity", routed(func(c *config) { c.meshIdentityKeyFile = "" }), "--mesh-identity"},
+		{"mesh identity cert off the member volume", routed(func(c *config) { c.meshIdentityCertFile = "/other/tls.crt" }), "--mesh-identity-cert-file"},
+		{"mesh identity key off the member volume", routed(func(c *config) { c.meshIdentityKeyFile = "/other/tls.key" }), "--mesh-identity-cert-file"},
+		{"mesh identity CA off the member volume", routed(func(c *config) { c.meshIdentityCAFile = "/other/ca.crt" }), "--mesh-identity-cert-file"},
+		{"attest off with another mesh identity", routed(func(c *config) {
+			c.attestOff = true
+			c.routing.port = 8802
+			c.meshIdentityCertFile = "/other/tls.crt"
+		}), ""},
 		{"attest off without mesh identity", routed(func(c *config) {
 			c.attestOff = true
 			c.routing.port = 8802

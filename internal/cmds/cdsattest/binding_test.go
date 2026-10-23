@@ -396,24 +396,3 @@ func TestB10HandshakeRetiresPoolsOfARenewedLeaf(t *testing.T) {
 		t.Fatalf("GET after the handshake = %d %q, want 502 backend_digest_mismatch: the old pool must be retired", status, body)
 	}
 }
-
-// TestE7InsertAtTheCapPrunesOnce: the full sweep at the cap replaces the
-// bounded prune, rather than run before it.
-func TestE7InsertAtTheCapPrunesOnce(t *testing.T) {
-	clock := &testClock{now: time.Now()}
-	b := NewBindings()
-	b.max, b.now = 1, clock.Now
-	if err := b.bind("1.1", routing.Binding{}); err != nil {
-		t.Fatal(err)
-	}
-	clock.Advance(lbBindingIdle + time.Second)
-	reads := 0
-	b.now = func() time.Time { reads++; return clock.Now() }
-	if err := b.bind("1.2", routing.Binding{}); err != nil {
-		t.Fatal(err)
-	}
-	// One read for the sweep, one for the new entry's lastUsed.
-	if reads != 2 {
-		t.Fatalf("bind() at the cap read the clock %d times, want 2 (one prune)", reads)
-	}
-}

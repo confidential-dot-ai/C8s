@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -104,6 +105,12 @@ func checkRoutingFlags(cfg config) error {
 	}
 	if !cfg.attestOff && (cfg.meshIdentityCertFile == "" || cfg.meshIdentityKeyFile == "" || cfg.meshIdentityCAFile == "") {
 		return errors.New("--attest-endpoints=true requires --mesh-identity-cert-file, --mesh-identity-key-file and --mesh-identity-ca-file: the attestation endpoints bind their evidence to that leaf")
+	}
+	// The handshakes bind the router digest of the flags' leaf, and requests
+	// carry the digest of the leaf memberCredentials reads: two leaves would
+	// never converge and every handshake would be refused.
+	if !cfg.attestOff && (filepath.Clean(cfg.meshIdentityCertFile) != memberCertPath || filepath.Clean(cfg.meshIdentityKeyFile) != memberKeyPath || filepath.Clean(cfg.meshIdentityCAFile) != workloadclaims.MemberCAPath) {
+		return fmt.Errorf("--mesh-identity-cert-file, --mesh-identity-key-file and --mesh-identity-ca-file must be %s, %s and %s: the router reaches backends with that credential", memberCertPath, memberKeyPath, workloadclaims.MemberCAPath)
 	}
 	if r.pollInterval <= 0 {
 		return errors.New("--routes-poll-interval must be positive")
