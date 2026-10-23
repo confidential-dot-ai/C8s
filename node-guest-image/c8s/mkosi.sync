@@ -28,6 +28,14 @@
 #     -manifest node-guest-image/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/local-path-storage.yaml \
 #     -manifest node-guest-image/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/nvidia-device-plugin.yaml \
 #     node-guest-image/c8s/image-policy.yaml.in
+# then capture the system pods of the new image into
+# internal/cmds/nodeservices/testdata/rke2-system-pods/ from a server and an
+# agent, from a server whose launch document leaves its address to
+# autodetection, and from one that names an external IP:
+#   kubectl get pods -n kube-system -o json | jq -f capture.jq > <capture>.json
+# with image-entrypoints.json from `crane config` of each image that runs
+# without a command. TestPreparedFloorAdmitsTheCapturedSystemPods names each
+# launch whose argv or mounts the floor must follow.
 # rke2's own containerd base template imports config-v3.toml.d/*.toml since
 # v1.36 (k3s b51167a9), which is where the NRI drop-in lives, so this profile
 # bakes no config-v3.toml.tmpl: one that added the import produced a duplicate
