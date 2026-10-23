@@ -1,8 +1,11 @@
 package cdsha
 
 import (
+	"slices"
 	"testing"
 	"time"
+
+	"github.com/hashicorp/raft"
 )
 
 // Ready (what a rolling restart waits for) holds back a restarted voter
@@ -43,5 +46,14 @@ func TestReadyWaitsForTheSeats(t *testing.T) {
 	}
 	if st := c.leader().node.Status(); !st.SeatsFilled || len(st.Voters) != 3 {
 		t.Fatalf("leader reports seats filled %v with %d voters", st.SeatsFilled, len(st.Voters))
+	}
+	// A voter failing heartbeats leaves its seat unfilled.
+	l = c.leader()
+	other := slices.DeleteFunc(l.node.Status().Voters, func(id string) bool { return id == l.node.ID() })[0]
+	l.node.mu.Lock()
+	l.node.failing[raft.ServerID(other)] = time.Now()
+	l.node.mu.Unlock()
+	if l.node.seatsFilled() {
+		t.Fatal("seats filled with a failing voter")
 	}
 }
