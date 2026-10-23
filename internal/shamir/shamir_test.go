@@ -3,6 +3,7 @@ package shamir
 import (
 	"bytes"
 	"crypto/rand"
+	"encoding/hex"
 	"testing"
 )
 
@@ -65,5 +66,20 @@ func TestField(t *testing.T) {
 		if mul(byte(a), div(1, byte(a))) != 1 {
 			t.Fatalf("no inverse for %d", a)
 		}
+	}
+}
+
+// TestKnownShares pins the field: shares made by an earlier build (3 of 5)
+// must still combine, so a change of modulus or generator fails here
+// rather than in the hands of custodians.
+func TestKnownShares(t *testing.T) {
+	y := func(s string) []byte { b, _ := hex.DecodeString(s); return b }
+	shares := []Share{
+		{X: 1, Y: y("202f53ffb7a5b4df71c2955f4d7a2b9e")},
+		{X: 3, Y: y("aa9d4ab968391d27cd58b3b1208afea6")},
+		{X: 5, Y: y("1f161ed2319a8d0eecfc38267de4a577")},
+	}
+	if got, err := Combine(shares); err != nil || string(got) != "c8s recovery key" {
+		t.Fatalf("got %q, %v", got, err)
 	}
 }
