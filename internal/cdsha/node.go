@@ -158,7 +158,7 @@ type Node struct {
 	addedAt  map[raft.ServerID]time.Time // leader: when this leader added a member (handleJoin)
 	reads    map[raft.ServerID]uint32    // leader: the newest format each member reads
 
-	joinRefusedAt map[string]time.Time // peer + reason -> last logged
+	joinRefusedLog logEvery // peer + reason
 
 	backupAt    time.Time // leader: last backup attempt
 	pruneAt     time.Time // leader: last history prune check
@@ -260,7 +260,7 @@ func NewNode(cfg Config) (*Node, error) {
 		return nil, err
 	}
 	n.verifier = peerVerifier{clusterID: cfg.ClusterID, att: cfg.Attestor, anchor: own.Anchor, pins: n.peerPins}
-	n.tls = peerTLSConfig(n.verifier, n.certs)
+	n.tls = peerTLSConfig(n.certs)
 	return n, nil
 }
 
@@ -537,20 +537,9 @@ func (n *Node) joinOrBootstrap(ctx context.Context) {
 // minute per peer and reason: a replica that can never join (a release too
 // old for the cluster's format, an image not pinned) must say so.
 func (n *Node) joinRefused(peer string, err error) {
-	key := peer + " " + err.Error()
-	now := time.Now()
-	n.mu.Lock()
-	if n.joinRefusedAt == nil {
-		n.joinRefusedAt = map[string]time.Time{}
+	if n.joinRefusedLog.ok(peer+" "+err.Error(), time.Now()) {
+		n.log.Info("join refused", "peer", peer, "err", err)
 	}
-	last, seen := n.joinRefusedAt[key]
-	if seen && now.Sub(last) < time.Minute {
-		n.mu.Unlock()
-		return
-	}
-	n.joinRefusedAt[key] = now
-	n.mu.Unlock()
-	n.log.Info("join refused", "peer", peer, "err", err)
 }
 
 // rejoin asks reachable replicas to add this member, as a joiner would; a
@@ -591,7 +580,7 @@ func (n *Node) call(addr string, timeout time.Duration, req controlRequest) (con
 	if m := n.mux.Load(); m != nil {
 		local = m.advert.tcp
 	}
-	return callControl(addr, n.tls, timeout, req, local)
+	return callControl(addr, n.tls, n.verifier, timeout, req, local)
 }
 
 // bootstrap starts a one-voter group with this replica and applies Genesis.

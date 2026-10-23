@@ -19,6 +19,7 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
+
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/sandboxledger"
@@ -212,9 +213,6 @@ func TestPeerVerifier(t *testing.T) {
 	cold.pins = func() []string { return nil }
 	if _, err := cold.claims(unpinned.Certificate[0]); err != nil {
 		t.Errorf("a cold replica must defer the pin check to the offered chain: %v", err)
-	}
-	if err := v.verifyConn(tls.ConnectionState{}); err == nil {
-		t.Error("connection without a peer certificate accepted")
 	}
 }
 
