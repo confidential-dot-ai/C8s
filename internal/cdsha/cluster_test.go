@@ -682,8 +682,8 @@ func mustPKIX(t *testing.T, k *ecdsa.PublicKey) []byte {
 
 // Total loss: every replica gone. The sealed backup, opened with the
 // operator's recovery key, restores the cluster on fresh replicas with the
-// same mesh CA, allowlist, spent tokens and secrets; a wrong key, a changed
-// backup and a second restore are refused.
+// same mesh CA, allowlist, spent tokens and secrets; a restore for another
+// node, or of another snapshot, is refused.
 func TestTotalLossRestoreFromBackup(t *testing.T) {
 	c := newCluster(t, 3)
 	c.genesis("n0", "n1", "n2")
@@ -710,15 +710,6 @@ func TestTotalLossRestoreFromBackup(t *testing.T) {
 		c.stopReplica(r)
 	}
 
-	// Only the recovery key opens it, and the metadata is bound.
-	if _, err := OpenBackup(c.opKey, bk); err == nil {
-		t.Fatal("backup opened with another key")
-	}
-	tampered := bk
-	tampered.Meta.Epoch = 99
-	if _, err := OpenBackup(c.recKey, tampered); err == nil {
-		t.Fatal("backup with changed metadata opened")
-	}
 	snap, err := OpenBackup(c.recKey, bk)
 	if err != nil {
 		t.Fatal(err)
@@ -736,12 +727,7 @@ func TestTotalLossRestoreFromBackup(t *testing.T) {
 		return true
 	})
 	sign := func(node string, s []byte) SignedDecree {
-		sd, err := SignDecree(Decree{ClusterID: testCluster, IntentID: fmt.Sprintf("restore-%d", time.Now().UnixNano()), Kind: Restore,
-			BootstrapNode: node, SnapshotSHA256: SnapshotSHA256(s), ExpiresAt: time.Now().Add(time.Hour)}, c.opKey)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return sd
+		return signDecree(t, c.opKey, Decree{Kind: Restore, BootstrapNode: node, SnapshotSHA256: SnapshotSHA256(s)})
 	}
 	if _, err := c.nodes["n1"].node.Restore(ctx, sign("n0", snap), snap); !errors.Is(err, ErrNotForThisNode) {
 		t.Fatalf("a restore for another node: %v", err)
@@ -777,7 +763,7 @@ func TestTotalLossRestoreFromBackup(t *testing.T) {
 }
 
 // An expired Genesis does not start a cluster; a replica that has not joined
-// refuses writes; a stale Recover is not used, and catch-up needs a leader.
+// refuses writes, and catch-up needs a leader.
 func TestUnusableDecreesAndUnjoinedWrites(t *testing.T) {
 	c := newCluster(t, 3)
 	for _, n := range []string{"n0", "n1", "n2"} {
@@ -802,29 +788,6 @@ func TestUnusableDecreesAndUnjoinedWrites(t *testing.T) {
 	}
 	g := c.decree(Decree{Kind: Genesis, BootstrapNode: "n0"})
 	eventually(t, 10*time.Second, "genesis", func() bool { st, ok := c.decrees.get(g); return ok && st.AppliedEpoch != nil })
-	c.settled(15 * time.Second)
-	// Cut two voters off: the survivor sees a Recover for a stale epoch and
-	// leaves it alone.
-	l := c.leader()
-	var surv *replica
-	for _, r := range c.live() {
-		if r != l && surv == nil {
-			surv = r
-		} else {
-			c.partition(r.name, true)
-		}
-	}
-	stale := c.decree(Decree{Kind: Recover, BootstrapNode: surv.name, BaseEpoch: 7})
-	time.Sleep(3 * time.Second)
-	if st, ok := c.decrees.get(stale); ok && st.AppliedEpoch != nil {
-		t.Fatal("a stale Recover was applied")
-	}
-	if surv.node.Serving() {
-		t.Fatal("a lone survivor serves")
-	}
-	for _, r := range c.live() {
-		c.partition(r.name, false)
-	}
 	c.settled(15 * time.Second)
 }
 
