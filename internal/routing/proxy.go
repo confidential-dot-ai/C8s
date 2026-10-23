@@ -278,8 +278,8 @@ func (p *Proxy) Forward(outer *http.Request, req types.TunnelRequest) (types.Tun
 	rec := &capture{header: http.Header{}}
 	rp.ServeHTTP(rec, in)
 	if errors.Is(backendErr, errBackendDigestMismatch) {
-		status, body := p.refusal(backendErr, in.Host, target.RawPath, route.Backend.Address)
-		return textResponse(status, body), nil
+		status, msg := p.refusal(backendErr, in.Host, target.RawPath, route.Backend.Address)
+		return textResponse(status, msg), nil
 	}
 	if backendErr != nil {
 		return types.TunnelResponse{}, fmt.Errorf("backend %s: %w", route.Backend.Address, backendErr)

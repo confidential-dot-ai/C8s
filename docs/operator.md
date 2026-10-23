@@ -581,7 +581,8 @@ their own watch ticks, so after an allowlist write a workload route can answer
 502 until both carry the new digest. The slower of the two
 `--ca-watch-interval`s (`router.certProvisioning.caWatchInterval` on the
 router), plus half an interval of jitter, plus one issuance bounds that
-window; with the watch off (`0`) it lasts until the next scheduled renewal. Connections the router pooled under its previous digest retire on its
+window; with the watch off (`0`) it lasts until the next scheduled
+renewal. Connections the router pooled under its previous digest retire on its
 next route poll (`--routes-poll-interval`).
 
 CDS renews its mesh CA certificate at half its configured lifetime under the

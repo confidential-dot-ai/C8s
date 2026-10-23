@@ -658,13 +658,71 @@ func TestB9UnnamedRouter(t *testing.T) {
 			if w := f.get("/"); w.Code != tc.want {
 				t.Fatalf("GET / = %d %q, want %d", w.Code, w.Body.String(), tc.want)
 			}
+			if tc.want == http.StatusOK {
+				sealedHost := []types.HeaderField{{Name: "Host", Value: testHost}}
+				if resp, err := f.proxy.Forward(outerRequest(testHost), types.TunnelRequest{Path: "/", Headers: sealedHost}); err != nil || resp.Status != http.StatusOK {
+					t.Fatalf("Forward(/) through an unstamped router = %d, %v, want %d, nil", resp.Status, err, http.StatusOK)
+				}
+			}
+			if tc.want != http.StatusOK && b.hits.Load() != 0 {
+				t.Fatalf("backend saw %d requests through a router with a damaged stamp, want 0", b.hits.Load())
+			}
 			if got := f.get("/unnamed").Code; got != http.StatusBadGateway {
 				t.Fatalf("GET /unnamed = %d, want %d (B1 still requires a name)", got, http.StatusBadGateway)
 			}
 			if got := f.get("/admin").Code; got != http.StatusOK {
 				t.Fatalf("GET /admin = %d, want %d (B3 unaffected)", got, http.StatusOK)
 			}
+			if tc.want != http.StatusOK {
+				return
+			}
+			// Once the router gains a stamp, the name-only pool retires and
+			// B8 judges the backend against the router's digest.
+			hits := b.hits.Load()
+			f.renew(t, issueStampedLeaf(t, f.mesh, "router", digestOf(0x42)))
+			if err := f.transports.dropMeshPools(); err != nil {
+				t.Fatal(err)
+			}
+			if w := f.get("/"); w.Code != http.StatusBadGateway || !strings.Contains(w.Body.String(), backendDigestMismatch) {
+				t.Fatalf("GET / after the router gained a stamp = %d %q, want %d %q", w.Code, w.Body.String(), http.StatusBadGateway, backendDigestMismatch)
+			}
+			if b.hits.Load() != hits {
+				t.Fatalf("backend served %d more requests after the router gained a stamp, want 0", b.hits.Load()-hits)
+			}
 		})
+	}
+}
+
+// TestB9DamagedStampRetiresPools: a router renewed to a leaf with a damaged
+// stamp retires the pools it filled while unstamped, and a later good leaf
+// counts as a change too.
+func TestB9DamagedStampRetiresPools(t *testing.T) {
+	f := newFixture(t)
+	f.renew(t, issueLeaf(t, f.mesh, ""))
+	b := startBackend(t, "web", issueStampedLeaf(t, f.mesh, "web", digestOf(0x43)))
+	f.apply(t, simpleManifest(1, b.addr()))
+	if err := f.transports.dropMeshPools(); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.get("/").Code; got != http.StatusOK {
+		t.Fatalf("GET / through an unstamped router = %d, want %d", got, http.StatusOK)
+	}
+	f.renew(t, damagedStampLeaf(t))
+	if err := f.transports.dropMeshPools(); err != nil {
+		t.Fatal(err)
+	}
+	if w := f.get("/"); w.Code != http.StatusBadGateway {
+		t.Fatalf("GET / through a router with a damaged stamp = %d %q, want %d", w.Code, w.Body.String(), http.StatusBadGateway)
+	}
+	if n := b.hits.Load(); n != 1 {
+		t.Fatalf("backend served %d requests, want 1: the name-only pool must retire on a damaged stamp", n)
+	}
+	f.renew(t, issueStampedLeaf(t, f.mesh, "router", digestOf(0x43)))
+	if err := f.transports.dropMeshPools(); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.get("/").Code; got != http.StatusOK {
+		t.Fatalf("GET / after the router regained a good stamp = %d, want %d", got, http.StatusOK)
 	}
 }
 

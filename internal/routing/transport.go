@@ -69,6 +69,10 @@ type pooled struct {
 // under another allowlist than the router's (B8).
 var errBackendDigestMismatch = errors.New("routing: backend allowlist digest differs from the router's")
 
+// damagedRouterStamp is the tracked digest of a leaf whose stamp fails to
+// parse: shorter than any real digest and never empty.
+const damagedRouterStamp = "damaged"
+
 // stampCache holds the router stamp of the last leaf it parsed, so an
 // unchanged leaf is parsed once.
 type stampCache struct {
@@ -327,8 +331,13 @@ func (t *Transports) dropMeshPools() error {
 			h.Write(ca.Raw)
 		}
 		h.Sum(caDigest[:0])
-		// An unstamped router tracks the empty digest (B9).
-		routerDigest, _ = t.routerDigestOf(cred)
+		// An unstamped router tracks the empty digest (B9). A damaged stamp
+		// tracks a value no leaf can carry, so it retires the pools and the
+		// next good read counts as a change.
+		var derr error
+		if routerDigest, derr = t.routerDigestOf(cred); derr != nil {
+			routerDigest = []byte(damagedRouterStamp)
+		}
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
