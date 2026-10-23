@@ -375,11 +375,13 @@ func haGate(serving func() bool, next http.Handler) http.Handler {
 	})
 }
 
-// haStatus serves the replica's view for the CLI. It is untrusted output.
-func haStatus(node *cdsha.Node) http.HandlerFunc {
+// serveJSON serves what read returns as JSON. It serves /ha/status (the
+// replica's own, untrusted view) and /ha/decrees (the applied decrees as the
+// operator signed them; the Kubernetes objects are only the host's word).
+func serveJSON[T any](read func() T) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(node.Status())
+		_ = json.NewEncoder(w).Encode(read())
 	}
 }
 
@@ -395,16 +397,6 @@ func haPins(node *cdsha.Node) http.HandlerFunc {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(sd)
-	}
-}
-
-// haDecrees serves the record of applied decrees: every operator decision
-// as the operator signed it, read over the attested channel from a serving
-// replica (the decree objects in Kubernetes are only the host's word).
-func haDecrees(node *cdsha.Node) http.HandlerFunc {
-	return func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(node.Decrees())
 	}
 }
 
@@ -487,7 +479,7 @@ func preJoinMux(node *cdsha.Node) http.Handler {
 		}
 		w.WriteHeader(http.StatusOK)
 	})
-	mux.HandleFunc("GET /ha/status", haStatus(node))
+	mux.HandleFunc("GET /ha/status", serveJSON(node.Status))
 	mux.HandleFunc("POST /ha/restore", handleRestore(node))
 	mux.HandleFunc("GET /ha/pins", haPins(node))
 	// Anything else is retryable: the full server takes over once joined.
