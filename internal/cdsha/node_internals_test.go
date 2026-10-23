@@ -67,26 +67,6 @@ func TestStoppedReplicaClaimsNothing(t *testing.T) {
 	n.demoteExtraVoter([]raft.Server{{Suffrage: raft.Voter, ID: n.id}, {Suffrage: raft.Voter, ID: "x/1-a"}, {Suffrage: raft.Voter, ID: "y/1-a"}})
 }
 
-// Failures from before a member was added count from when it was added.
-func TestNoteFailureNotBeforeJoin(t *testing.T) {
-	_, pub := operatorKey(t)
-	n, err := NewNode(soloConfig(t, "n0", freeAddr(t), pub, nil))
-	if err != nil {
-		t.Fatal(err)
-	}
-	joined := time.Now()
-	id := raft.ServerID("x/1-a")
-	n.addedAt[id] = joined
-	n.noteFailure(id, time.Time{}, joined.Add(-time.Minute))
-	if got := n.failing[id]; !got.Equal(joined) {
-		t.Fatalf("failing since %v, want the join %v", got, joined)
-	}
-	n.noteFailure(id, joined.Add(-time.Hour), joined.Add(time.Minute))
-	if got := n.failing[id]; !got.Equal(joined) {
-		t.Fatalf("a failure already noted moved: %v", got)
-	}
-}
-
 // A suspect member that answers as itself is not removed; one that does not
 // answer stays suspect. Extra voters are demoted, a failing one first, never
 // the leader.

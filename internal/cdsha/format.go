@@ -1,6 +1,7 @@
 package cdsha
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 )
@@ -29,16 +30,8 @@ var ErrNewerFormat = errors.New("cds-ha: log entry or snapshot in a newer format
 // KindFormat raises the cluster's agreed format.
 const KindFormat EntryKind = "format"
 
-// formatOrBase maps an unset format to baseFormat.
-func formatOrBase(f uint32) uint32 {
-	if f == 0 {
-		return baseFormat
-	}
-	return f
-}
-
 // format is the agreed encoding format.
-func (c Core) format() uint32 { return formatOrBase(c.Format) }
+func (c Core) format() uint32 { return cmp.Or(c.Format, baseFormat) }
 
 // applyFormat raises the agreed format. It never lowers it: a replica that
 // joined because it reads the current format must keep reading the log.

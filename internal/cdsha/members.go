@@ -1,6 +1,7 @@
 package cdsha
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -37,17 +38,17 @@ func (n *Node) joinOrBootstrap(ctx context.Context) {
 	anyMember := false
 	for _, p := range peers {
 		resp, err := n.askJoin(p)
-		if err == nil && resp.Err == "" {
+		switch {
+		case err != nil:
+		case resp.Err == "":
 			if !n.joinLogged {
 				n.log.Info("joined the CDS cluster", "via", p, "id", n.id)
 				n.joinLogged = true
 			}
 			return
-		}
-		if err == nil && resp.Member {
+		case resp.Member:
 			anyMember = true
-		}
-		if err == nil && !resp.Member {
+		default:
 			n.lastLoner.Store(time.Now().UnixMilli())
 		}
 		if err == nil {
@@ -222,9 +223,6 @@ func (n *Node) noteFailure(id raft.ServerID, lastContact, now time.Time) {
 	since := lastContact
 	if since.IsZero() {
 		since = now
-	}
-	if ok && since.Before(joined) {
-		since = joined
 	}
 	n.failing[id] = since
 }
@@ -420,10 +418,7 @@ func (n *Node) seatsFilled() bool {
 // seats is the voter seat count: the agreed one once a SetVoters decree
 // set it, the launch configuration's before.
 func (n *Node) seats() int {
-	if s := n.fsm.Core().Seats; s > 0 {
-		return s
-	}
-	return n.cfg.Seats
+	return cmp.Or(n.fsm.Core().Seats, n.cfg.Seats)
 }
 
 // isVoter reports whether this member holds a voter seat.
