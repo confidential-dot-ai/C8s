@@ -174,6 +174,10 @@ type FSM struct {
 	// met an entry it could not apply, and keeps it from serving.
 	readable uint32
 	stuck    atomic.Pointer[string]
+
+	// applyDelay is a test seam (set only from tests, zero otherwise): it
+	// slows every command apply, as a slow local disk does.
+	applyDelay atomic.Int64
 }
 
 // NewFSM builds the state machine over the replica's local stores. pre is
@@ -212,6 +216,9 @@ func (f *FSM) Apply(l *raft.Log) any {
 	defer f.applied.Store(l.Index)
 	if l.Type != raft.LogCommand {
 		return nil
+	}
+	if d := f.applyDelay.Load(); d > 0 {
+		time.Sleep(time.Duration(d))
 	}
 	var e Entry
 	if err := json.Unmarshal(l.Data, &e); err != nil {
