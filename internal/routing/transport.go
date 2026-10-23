@@ -277,12 +277,16 @@ func (t *Transports) meshCAs() ([]*x509.Certificate, error) {
 // the router's own allowlist digest (B8). A leaf CDS stamped no workload on
 // names none, and is refused with the rest.
 func acceptWorkload(workload string, routerDigest []byte) func(armtls.Peer) error {
+	router := "with no router allowlist digest"
+	if routerDigest != nil {
+		router = fmt.Sprintf("under router allowlist digest %x", routerDigest)
+	}
 	return func(peer armtls.Peer) error {
 		if peer.WorkloadName == "" {
-			return fmt.Errorf("routing: backend leaf carries no matched-workload stamp and no allowlist digest, and this route names %q under router allowlist digest %x", workload, routerDigest)
+			return fmt.Errorf("routing: backend leaf carries no matched-workload stamp and no allowlist digest, and this route names %q %s", workload, router)
 		}
 		if peer.WorkloadName != workload {
-			return fmt.Errorf("routing: backend leaf names workload %q under allowlist digest %x, and this route names %q under router allowlist digest %x", peer.WorkloadName, peer.AllowlistDigest, workload, routerDigest)
+			return fmt.Errorf("routing: backend leaf names workload %q under allowlist digest %x, and this route names %q %s", peer.WorkloadName, peer.AllowlistDigest, workload, router)
 		}
 		if routerDigest == nil {
 			return nil // B9: an unstamped router binds no policy digest
