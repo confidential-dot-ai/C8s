@@ -37,15 +37,15 @@ func TestSharedChallengesAcrossReplicas(t *testing.T) {
 	if b.Consume(tampered[:]) {
 		t.Fatal("tampered challenge accepted")
 	}
-	// Without a key (replica not serving), only local challenges work.
+	// Without a key (replica not serving), shared mode fails closed.
 	nokey := NewChallengeStore(time.Minute)
 	nokey.SetSharedKey(func() []byte { return nil })
 	if c3 := a.Create(); nokey.Consume(c3[:]) {
 		t.Fatal("keyless replica accepted a foreign challenge")
 	}
 	local := nokey.Create()
-	if !nokey.Consume(local[:]) {
-		t.Fatal("keyless replica refused its own challenge")
+	if nokey.Consume(local[:]) {
+		t.Fatal("keyless replica accepted its own challenge")
 	}
 }
 
