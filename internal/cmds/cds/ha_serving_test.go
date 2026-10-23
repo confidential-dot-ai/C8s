@@ -1,6 +1,7 @@
 package cds
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -90,6 +91,10 @@ func TestHAServingReplicaPublishesDecrees(t *testing.T) {
 	}
 	put(cdsha.Decree{IntentID: "g", Kind: cdsha.Genesis, BootstrapNode: "n0"})
 	settled("genesis")
+	// Issuance and /secrets challenges must not be redeemable against each other.
+	if iss := haChallengeKey(node, "issuance")(); iss == nil || bytes.Equal(iss, haChallengeKey(node, "secrets")()) {
+		t.Fatal("a serving replica derives no challenge key, or one key for both pools")
+	}
 	get := func(hf http.HandlerFunc) *httptest.ResponseRecorder {
 		w := httptest.NewRecorder()
 		hf(w, httptest.NewRequest(http.MethodGet, "/", nil))
