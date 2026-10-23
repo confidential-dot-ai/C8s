@@ -1,4 +1,4 @@
-//go:build integration
+//go:build integration && linux
 
 package cdsha_test
 
@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -157,7 +158,7 @@ func TestMajorityLoss(t *testing.T) {
 				}
 			}
 			k.Pause()
-			if _, _, err := k.Converge(30 * time.Second); err != nil {
+			if _, _, err := c.Converge(30 * time.Second); err != nil {
 				t.Fatal(err)
 			}
 			epoch, ca := c.epochCA()
@@ -240,7 +241,7 @@ func TestRestore(t *testing.T) {
 	k.Resume()
 	time.Sleep(3 * time.Second)
 	k.Pause()
-	snaps, _, err := k.Converge(30 * time.Second)
+	snaps, _, err := c.Converge(30 * time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,7 +266,8 @@ func TestRestore(t *testing.T) {
 		args := append([]string{"cds", "ha", "recover", "--backup-file", file, "--recovery-key", c.RecKeyPath, "--decree-key", c.OpKeyPath,
 			"--cluster-id", clusterID, "--bootstrap-node", c.Replicas[node].Node, "--url", c.Replicas[node].Base, "--insecure",
 			"--min-epoch", strconv.FormatUint(minEpoch, 10), "--min-index", strconv.FormatUint(minIndex, 10)}, extra...)
-		return c.RunCLI(ctx, args...)
+		out, err := exec.CommandContext(ctx, binPath, args...).CombinedOutput()
+		return string(out), err
 	}
 	// A live replica refuses a restore.
 	if out, err := recoverCLI(newFile, 0, 1, 0, "--attempts", "1"); err == nil {
@@ -294,8 +296,7 @@ func TestRestore(t *testing.T) {
 	}
 	c.WaitAllServing(60 * time.Second)
 	c.Logf("restored and every replica serving %s after recover", time.Since(start))
-	k2 := NewChecker(c, 0, 0)
-	got, _, err := k2.Converge(30 * time.Second)
+	got, _, err := c.Converge(30 * time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -361,8 +362,7 @@ func TestBigState(t *testing.T) {
 	if r := c.Do(context.Background(), nv, http.MethodPut, "/secrets/big/max", big, true); r.Code != http.StatusCreated && r.Code != http.StatusOK {
 		t.Fatalf("max-size secret through a non-voter: %d %s", r.Code, r.Body)
 	}
-	k := NewChecker(c, 0, 0)
-	if _, d, err := k.Converge(60 * time.Second); err != nil {
+	if _, d, err := c.Converge(60 * time.Second); err != nil {
 		t.Fatal(err)
 	} else {
 		c.Logf("converged in %s", d)
@@ -372,7 +372,7 @@ func TestBigState(t *testing.T) {
 	// A new member (restart with an empty store) installs the snapshot.
 	c.Restart(nv, false)
 	c.Logf("new member serving after %s", c.WaitServing([]int{nv}, 120*time.Second))
-	if _, d, err := k.Converge(60 * time.Second); err != nil {
+	if _, d, err := c.Converge(60 * time.Second); err != nil {
 		t.Fatal(err)
 	} else {
 		c.Logf("new member converged %s later", d)

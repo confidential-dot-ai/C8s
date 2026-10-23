@@ -1,4 +1,4 @@
-//go:build integration
+//go:build integration && linux
 
 // Package cdsha_test is the multi-process integration test of CDS-HA
 // (docs/cds-ha.md): five real `c8s cds` processes on loopback addresses, a
@@ -25,7 +25,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -66,10 +65,6 @@ var (
 )
 
 func TestMain(m *testing.M) {
-	if runtime.GOOS != "linux" {
-		fmt.Println("cdsha integration test needs Linux (127.0.0.0/8 on lo)")
-		os.Exit(0)
-	}
 	dir, err := os.MkdirTemp("", "cdsha-it-")
 	if err != nil {
 		panic(err)
@@ -81,12 +76,8 @@ func TestMain(m *testing.M) {
 	binPath = os.Getenv("CDSHA_IT_BIN")
 	if binPath == "" {
 		binPath = filepath.Join(dir, "c8s")
-		root, err := repoRoot()
-		if err != nil {
-			panic(err)
-		}
-		cmd := exec.Command("go", "build", "-tags", "c8s_dev", "-o", binPath, "./cmd/c8s")
-		cmd.Dir, cmd.Stdout, cmd.Stderr = root, os.Stdout, os.Stderr
+		cmd := exec.Command("go", "build", "-tags", "c8s_dev", "-o", binPath, "github.com/confidential-dot-ai/c8s/cmd/c8s")
+		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 		if err := cmd.Run(); err != nil {
 			fmt.Println("build c8s:", err)
 			os.Exit(1)
@@ -98,14 +89,6 @@ func TestMain(m *testing.M) {
 		_ = os.RemoveAll(dir)
 	}
 	os.Exit(code)
-}
-
-func repoRoot() (string, error) {
-	out, err := exec.Command("go", "env", "GOMOD").Output()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Dir(strings.TrimSpace(string(out))), nil
 }
 
 // Replica is one CDS process slot (a "node"): the process may be killed and
@@ -695,11 +678,4 @@ func (c *Cluster) StatusAll() string {
 // Backups reads the sealed backup objects of the cluster.
 func (c *Cluster) Backups() []corev1.ConfigMap {
 	return c.ConfigMaps(cdsha.LabelBackup, clusterID)
-}
-
-// RunCLI runs the c8s binary with args and returns its combined output.
-func (c *Cluster) RunCLI(ctx context.Context, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, binPath, args...)
-	out, err := cmd.CombinedOutput()
-	return string(out), err
 }
