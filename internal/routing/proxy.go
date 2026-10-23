@@ -44,6 +44,14 @@ func TunnelReservation(recordBytes int64) int64 {
 	return recordCopies*recordBytes + responseCopies*MaxTunnelResponseBytes
 }
 
+// Response bodies of the route policy's error codes: the 503 a workload route
+// gets while the router's leaf carries no stamp (B9), and the 502 for a
+// backend stamped under another allowlist (B8).
+const (
+	routerDigestUnavailable = "router_digest_unavailable"
+	backendDigestMismatch   = "backend_digest_mismatch"
+)
+
 // ExporterHeader carries the tunnel's channel-binding exporter to backends.
 // Only the tunnel may set it: the routing listener drops a client's value.
 const ExporterHeader = "X-C8s-Exporter"
@@ -151,9 +159,25 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		defer stop()
 	}
 	p.reverseProxy(route, target, func(err error) {
-		p.log.Warn("backend request failed", "host", r.Host, "path", target.RawPath, "backend", route.Backend.Address, "error", err)
-		http.Error(w, "backend unavailable", http.StatusBadGateway) // B5
+		status, body := p.refusal(err, r.Host, target.RawPath, route.Backend.Address)
+		http.Error(w, body, status)
 	}).ServeHTTP(w, r)
+}
+
+// refusal logs a failed backend exchange and returns the response it gets:
+// 503 router_digest_unavailable (B9), 502 backend_digest_mismatch (B8), or
+// the plain 502 of B5. B9 never dialled, so it logs at Debug: an unnamed
+// router's steady 503s must not flood the log with backend blame.
+func (p *Proxy) refusal(err error, host, path, backend string) (int, string) {
+	if errors.Is(err, errNoPolicyIdentity) {
+		p.log.Debug(routerDigestUnavailable, "host", host, "path", path, "error", err)
+		return http.StatusServiceUnavailable, routerDigestUnavailable
+	}
+	p.log.Warn("backend request failed", "host", host, "path", path, "backend", backend, "error", err)
+	if errors.Is(err, errBackendDigestMismatch) {
+		return http.StatusBadGateway, backendDigestMismatch
+	}
+	return http.StatusBadGateway, "backend unavailable"
 }
 
 // clientAddressHeaders name the client's network address. A tunnelled request
@@ -175,7 +199,7 @@ var sealedDropped = map[string]bool{
 // Forward routes a request reconstructed from the automated ingress tunnel
 // (A7), within outer's context. Its host is the sealed Host header, never
 // outer's host: a sealed request without exactly one gets 400 (M1). Routing
-// outcomes the client must see (A2, M5) are responses; an error means the
+// outcomes the client must see (A2, B9, M5) are responses; an error means the
 // backend failed (B5). The caller holds a reservation from Acquire.
 func (p *Proxy) Forward(outer *http.Request, req types.TunnelRequest) (types.TunnelResponse, error) {
 	ctx := outer.Context()
@@ -263,6 +287,10 @@ func (p *Proxy) Forward(outer *http.Request, req types.TunnelRequest) (types.Tun
 	}
 	rec := &capture{header: http.Header{}}
 	rp.ServeHTTP(rec, in)
+	if errors.Is(backendErr, errNoPolicyIdentity) || errors.Is(backendErr, errBackendDigestMismatch) {
+		status, body := p.refusal(backendErr, in.Host, target.RawPath, route.Backend.Address)
+		return textResponse(status, body), nil
+	}
 	if backendErr != nil {
 		return types.TunnelResponse{}, fmt.Errorf("backend %s: %w", route.Backend.Address, backendErr)
 	}
