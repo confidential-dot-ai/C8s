@@ -318,24 +318,24 @@ func TestPendingBootstrapDecreesUnusable(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if _, ok := n.pendingRecover(ctx); ok {
+	if _, ok := n.pendingDecree(ctx, Recover); ok {
 		t.Fatal("an expired Recover decree used")
 	}
-	if _, ok := n.pendingGenesis(ctx); ok {
+	if _, ok := n.pendingDecree(ctx, Genesis); ok {
 		t.Fatal("an expired Genesis decree used")
 	}
 	ds.failList.Store(true)
-	if _, ok := n.pendingRecover(ctx); ok {
+	if _, ok := n.pendingDecree(ctx, Recover); ok {
 		t.Fatal("a Recover decree from a failing source")
 	}
-	if _, ok := n.pendingGenesis(ctx); ok {
+	if _, ok := n.pendingDecree(ctx, Genesis); ok {
 		t.Fatal("a Genesis decree from a failing source")
 	}
 	nodecrees, err := NewNode(soloConfig(t, "n0", freeAddr(t), pub, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := nodecrees.pendingRecover(ctx); ok {
+	if _, ok := nodecrees.pendingDecree(ctx, Recover); ok {
 		t.Fatal("a Recover decree without a decree source")
 	}
 }

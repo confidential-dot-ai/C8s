@@ -25,6 +25,7 @@ import (
 
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/raft"
+	"k8s.io/apimachinery/pkg/util/wait"
 
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
@@ -139,6 +140,7 @@ type Node struct {
 	joinLogged  bool
 	certs       *certHolder
 	tls         *tls.Config
+	verifier    peerVerifier
 	measurement string
 	log         *slog.Logger
 
@@ -216,10 +218,10 @@ func NewNode(cfg Config) (*Node, error) {
 		cfg.Logger = slog.Default()
 	}
 	if cfg.CACommonName == "" {
-		cfg.CACommonName = "c8s-mesh-ca"
+		cfg.CACommonName = issuer.DefaultCACommonName
 	}
-	if cfg.CAValidity == 0 {
-		cfg.CAValidity = 10 * 365 * 24 * time.Hour
+	if cfg.CAValidity <= 0 {
+		cfg.CAValidity = issuer.DefaultCAValidity
 	}
 	own, err := ownClaims(cfg.Attestor)
 	if err != nil {
@@ -255,8 +257,8 @@ func NewNode(cfg Config) (*Node, error) {
 	if n.certs, err = newCertHolder(func() (tls.Certificate, error) { return newPeerCert(cfg.ClusterID, cfg.Attestor) }); err != nil {
 		return nil, err
 	}
-	v := peerVerifier{clusterID: cfg.ClusterID, att: cfg.Attestor, anchor: own.Anchor, pins: n.peerPins}
-	n.tls = peerTLSConfig(v, n.certs)
+	n.verifier = peerVerifier{clusterID: cfg.ClusterID, att: cfg.Attestor, anchor: own.Anchor, pins: n.peerPins}
+	n.tls = peerTLSConfig(n.verifier, n.certs)
 	return n, nil
 }
 
@@ -288,6 +290,11 @@ func (n *Node) peerPins() []string {
 
 // r is the current Raft instance (replaced by a recovery).
 func (n *Node) r() *raft.Raft { return n.rft.Load() }
+
+// solo is the one-voter configuration of this member.
+func (n *Node) solo() raft.Configuration {
+	return raft.Configuration{Servers: []raft.Server{{Suffrage: raft.Voter, ID: n.id, Address: n.raftAddress()}}}
+}
 
 // raftAddress is where peers reach this member's Raft, with its member ID.
 func (n *Node) raftAddress() raft.ServerAddress {
@@ -338,8 +345,7 @@ func (n *Node) startRaft() error {
 }
 
 func (n *Node) transport() (*raft.NetworkTransport, error) {
-	v := peerVerifier{clusterID: n.cfg.ClusterID, att: n.cfg.Attestor, anchor: n.ownAnchor(), pins: n.peerPins}
-	m, err := newMux(n.cfg.Bind, n.cfg.Advertise, string(n.id), n.tls, v, n.handleControl, n.blocked)
+	m, err := newMux(n.cfg.Bind, n.cfg.Advertise, string(n.id), n.tls, n.verifier, n.handleControl, n.blocked)
 	if err != nil {
 		return nil, err
 	}
@@ -369,8 +375,7 @@ func (n *Node) recover(ctx context.Context, p PendingDecree) {
 		n.log.Error("recover: transport", "err", err)
 		return
 	}
-	conf := raft.Configuration{Servers: []raft.Server{{Suffrage: raft.Voter, ID: n.id, Address: n.raftAddress()}}}
-	if err := raft.RecoverCluster(n.rcfg, scratch, n.logs, n.stable, n.snaps, trans, conf); err != nil {
+	if err := raft.RecoverCluster(n.rcfg, scratch, n.logs, n.stable, n.snaps, trans, n.solo()); err != nil {
 		n.log.Error("recover: RecoverCluster", "err", err)
 	}
 	_ = trans.Close()
@@ -379,16 +384,13 @@ func (n *Node) recover(ctx context.Context, p PendingDecree) {
 		n.log.Error("recover: restart raft", "err", err)
 		return
 	}
-	deadline := time.Now().Add(20 * n.cfg.Timing.Election)
-	for n.r().State() != raft.Leader && time.Now().Before(deadline) {
-		time.Sleep(20 * time.Millisecond)
-	}
+	n.waitFor(20*n.cfg.Timing.Election, n.leading)
 	// Record the decree in the log, so it can never apply again.
 	n.applyDecree(ctx, p)
 }
 
-// pendingRecover is a valid Recover decree naming this replica.
-func (n *Node) pendingRecover(ctx context.Context) (PendingDecree, bool) {
+// pendingDecree is a valid pending decree of kind naming this replica.
+func (n *Node) pendingDecree(ctx context.Context, kind DecreeKind) (PendingDecree, bool) {
 	if n.cfg.Decrees == nil {
 		return PendingDecree{}, false
 	}
@@ -397,21 +399,16 @@ func (n *Node) pendingRecover(ctx context.Context) (PendingDecree, bool) {
 		return PendingDecree{}, false
 	}
 	for _, d := range ds {
-		if d.Err != nil || d.Decree.Decree.Kind != Recover || d.Decree.Decree.BootstrapNode != n.cfg.NodeName {
+		if d.Err != nil || d.Decree.Decree.Kind != kind || d.Decree.Decree.BootstrapNode != n.cfg.NodeName {
 			continue
 		}
 		if err := CheckDecree(d.Decree, n.fsm.Core(), time.Now()); err != nil {
-			n.log.Info("recover decree not usable", "decree", d.Name, "why", err)
+			n.log.Info("decree not usable", "decree", d.Name, "kind", kind, "why", err)
 			continue
 		}
 		return d, true
 	}
 	return PendingDecree{}, false
-}
-
-func (n *Node) ownAnchor() string {
-	c, _ := ownClaims(n.cfg.Attestor)
-	return c.Anchor
 }
 
 // Run drives the replica until ctx ends: join or bootstrap, then as leader
@@ -464,7 +461,7 @@ func (n *Node) Run(ctx context.Context) error {
 			// No majority for a while: an operator Recover decree naming us
 			// makes us the only voter; otherwise the cluster may have been
 			// recovered around us, so ask to be added again.
-			if p, ok := n.pendingRecover(ctx); ok {
+			if p, ok := n.pendingDecree(ctx, Recover); ok {
 				n.recover(ctx, p)
 				n.noLeader = time.Time{}
 			} else {
@@ -488,11 +485,7 @@ func (n *Node) member() bool {
 	if n.r() == nil {
 		return false
 	}
-	f := n.r().GetConfiguration()
-	if f.Error() != nil {
-		return false
-	}
-	return slices.ContainsFunc(f.Configuration().Servers, func(s raft.Server) bool { return s.ID == n.id })
+	return slices.ContainsFunc(n.servers(), func(s raft.Server) bool { return s.ID == n.id })
 }
 
 // joinOrBootstrap asks the replicas it can reach to add it. A replica named
@@ -523,17 +516,16 @@ func (n *Node) joinOrBootstrap(ctx context.Context) {
 		if err == nil && !resp.Member {
 			n.lastLoner.Store(time.Now().UnixMilli())
 		}
-		if err != nil || resp.Err != "" {
-			n.joinRefused(p, errors.Join(err, errorsOrNil(resp.Err)))
+		if err == nil {
+			err = errors.New(resp.Err)
 		}
+		n.joinRefused(p, err)
 	}
 	if anyMember {
 		n.lastMember.Store(time.Now().UnixMilli())
-	}
-	if anyMember || n.cfg.Decrees == nil {
 		return
 	}
-	if g, ok := n.pendingGenesis(ctx); ok {
+	if g, ok := n.pendingDecree(ctx, Genesis); ok {
 		n.bootstrap(ctx, g)
 	}
 }
@@ -569,13 +561,6 @@ func (n *Node) rejoin(ctx context.Context) {
 	}
 }
 
-func errorsOrNil(s string) error {
-	if s == "" {
-		return nil
-	}
-	return errors.New(s)
-}
-
 // askJoin asks peer p to add this replica, following one redirect to the
 // leader.
 func (n *Node) askJoin(p string) (controlResponse, error) {
@@ -606,36 +591,14 @@ func (n *Node) call(addr string, timeout time.Duration, req controlRequest) (con
 	return callControl(addr, n.tls, timeout, req, local)
 }
 
-func (n *Node) pendingGenesis(ctx context.Context) (PendingDecree, bool) {
-	ds, err := n.cfg.Decrees.PendingDecrees(ctx)
-	if err != nil {
-		return PendingDecree{}, false
-	}
-	for _, d := range ds {
-		if d.Err != nil || d.Decree.Decree.Kind != Genesis || d.Decree.Decree.BootstrapNode != n.cfg.NodeName {
-			continue
-		}
-		if err := CheckDecree(d.Decree, n.fsm.Core(), time.Now()); err != nil {
-			n.log.Info("genesis decree not usable", "decree", d.Name, "why", err)
-			continue
-		}
-		return d, true
-	}
-	return PendingDecree{}, false
-}
-
 // bootstrap starts a one-voter group with this replica and applies Genesis.
 func (n *Node) bootstrap(ctx context.Context, g PendingDecree) {
 	n.log.Info("bootstrapping the CDS cluster", "decree", g.Name, "id", n.id)
-	cfg := raft.Configuration{Servers: []raft.Server{{Suffrage: raft.Voter, ID: n.id, Address: n.raftAddress()}}}
-	if err := n.r().BootstrapCluster(cfg).Error(); err != nil {
+	if err := n.r().BootstrapCluster(n.solo()).Error(); err != nil {
 		n.log.Warn("bootstrap", "err", err)
 		return
 	}
-	deadline := time.Now().Add(10 * n.cfg.Timing.Election)
-	for n.r().State() != raft.Leader && time.Now().Before(deadline) {
-		time.Sleep(50 * time.Millisecond)
-	}
+	n.waitFor(10*n.cfg.Timing.Election, n.leading)
 	n.applyDecree(ctx, g)
 }
 
@@ -728,12 +691,8 @@ func (n *Node) maybePruneHistory() {
 	if have <= keep+slack {
 		return
 	}
-	raw, err := json.Marshal(Entry{Kind: KindAllowlist, Format: 2,
-		Allowlist: &allowlist.Command{Op: allowlist.OpPruneHistory, Keep: keep, AtMS: time.Now().UnixMilli()}})
-	if err != nil {
-		return
-	}
-	if _, _, err := n.applyLocal(raw); err != nil {
+	if _, err := n.applyEntry(Entry{Kind: KindAllowlist, Format: 2,
+		Allowlist: &allowlist.Command{Op: allowlist.OpPruneHistory, Keep: keep, AtMS: time.Now().UnixMilli()}}); err != nil {
 		n.log.Warn("prune allowlist history", "err", err)
 		return
 	}
@@ -755,16 +714,12 @@ func (n *Node) maybeRenewCA() {
 		return
 	}
 	n.renewAt = time.Now()
-	renewed, err := issuer.SelfSignCA(ca.Key, cert.Subject.CommonName, caValidity(n.cfg.CAValidity))
+	renewed, err := issuer.SelfSignCA(ca.Key, cert.Subject.CommonName, n.cfg.CAValidity)
 	if err != nil {
 		n.log.Error("renew mesh CA certificate", "err", err)
 		return
 	}
-	raw, err := json.Marshal(Entry{Kind: KindRenewCA, Format: 2, RenewCA: &RenewCAEntry{RootCert: renewed.Raw}})
-	if err != nil {
-		return
-	}
-	if _, _, err := n.applyLocal(raw); err != nil {
+	if _, err := n.applyEntry(Entry{Kind: KindRenewCA, Format: 2, RenewCA: &RenewCAEntry{RootCert: renewed.Raw}}); err != nil {
 		n.log.Warn("renew mesh CA certificate", "err", err)
 		return
 	}
@@ -830,29 +785,17 @@ func (n *Node) Restore(ctx context.Context, sd SignedDecree, snapshot []byte) (D
 		}
 	}
 	n.log.Warn("RESTORE: starting the cluster from an operator backup", "decree", d.IntentID, "snapshot", d.SnapshotSHA256)
-	conf := raft.Configuration{Servers: []raft.Server{{Suffrage: raft.Voter, ID: n.id, Address: n.raftAddress()}}}
-	if err := n.r().BootstrapCluster(conf).Error(); err != nil {
+	if err := n.r().BootstrapCluster(n.solo()).Error(); err != nil {
 		return DecreeResult{}, err
 	}
-	deadline := time.Now().Add(20 * n.cfg.Timing.Election)
-	for n.r().State() != raft.Leader {
-		if time.Now().After(deadline) {
-			return DecreeResult{}, errors.New("cds-ha: did not become leader after bootstrap")
-		}
-		time.Sleep(20 * time.Millisecond)
+	if !n.waitFor(20*n.cfg.Timing.Election, n.leading) {
+		return DecreeResult{}, errors.New("cds-ha: did not become leader after bootstrap")
 	}
-	raw, err := json.Marshal(Entry{Kind: KindRestore, Restore: &RestoreEntry{Decree: sd, AtMS: time.Now().UnixMilli(), Snapshot: snapshot}})
+	resp, err := n.applyEntry(Entry{Kind: KindRestore, Restore: &RestoreEntry{Decree: sd, AtMS: time.Now().UnixMilli(), Snapshot: snapshot}})
 	if err != nil {
 		return DecreeResult{}, err
 	}
-	_, resp, err := n.applyLocal(raw)
-	if err != nil {
-		return DecreeResult{}, err
-	}
-	var res DecreeResult
-	if err := json.Unmarshal(resp, &res); err != nil {
-		return DecreeResult{}, err
-	}
+	res, _ := resp.(DecreeResult)
 	if res.Err != "" {
 		return res, errors.New("cds-ha: restore refused: " + res.Err)
 	}
@@ -890,10 +833,14 @@ func (n *Node) handleControl(peer Claims, req controlRequest) controlResponse {
 		return n.handleJoin(req)
 	}
 	idx, resp, err := n.applyLocal(req.Entry)
+	var body json.RawMessage
+	if err == nil {
+		body, err = json.Marshal(resp)
+	}
 	if err != nil {
 		return controlResponse{Member: true, Err: err.Error()}
 	}
-	return controlResponse{Member: true, Index: idx, Response: resp}
+	return controlResponse{Member: true, Index: idx, Response: body}
 }
 
 func (n *Node) handleJoin(req controlRequest) controlResponse {
@@ -987,9 +934,8 @@ func (n *Node) clearReachable(servers []raft.Server, now time.Time) {
 	}
 	n.mu.Unlock()
 	for _, s := range suspects {
-		hostport, _ := splitRaftAddr(string(s.Address))
 		// The same member must answer, not a later process at its address.
-		if resp, err := n.call(hostport, time.Second, controlRequest{Op: ctlStatus}); err == nil && resp.Status != nil && resp.Status.ID == string(s.ID) {
+		if st, err := n.peerStatus(s.Address, time.Second); err == nil && st.ID == string(s.ID) {
 			n.log.Info("member answers; its heartbeat failures were stale", "id", s.ID)
 			n.mu.Lock()
 			delete(n.failing, s.ID)
@@ -1027,11 +973,10 @@ func (n *Node) noteFailure(id raft.ServerID, lastContact, now time.Time) {
 // it removes members that are dead or were replaced by a restart of the
 // same node, and promotes stable non-voters into free seats.
 func (n *Node) reconcile() {
-	f := n.r().GetConfiguration()
-	if f.Error() != nil {
+	servers := n.servers()
+	if servers == nil {
 		return
 	}
-	servers := f.Configuration().Servers
 	now := time.Now()
 	n.clearReachable(servers, now)
 	n.mu.Lock()
@@ -1173,12 +1118,11 @@ func (n *Node) raiseFormat(servers []raft.Server) {
 		v, ok := n.reads[s.ID]
 		n.mu.Unlock()
 		if !ok {
-			hp, _ := splitRaftAddr(string(s.Address))
-			resp, err := n.call(hp, time.Second, controlRequest{Op: ctlStatus})
-			if err != nil || resp.Status == nil || resp.Status.ID != string(s.ID) {
+			st, err := n.peerStatus(s.Address, time.Second)
+			if err != nil || st.ID != string(s.ID) {
 				return
 			}
-			v = formatOr1(resp.Status.Reads)
+			v = formatOr1(st.Reads)
 			n.mu.Lock()
 			n.reads[s.ID] = v
 			n.mu.Unlock()
@@ -1188,11 +1132,7 @@ func (n *Node) raiseFormat(servers []raft.Server) {
 	if low <= agreed {
 		return
 	}
-	raw, err := json.Marshal(Entry{Kind: KindFormat, SetFormat: low})
-	if err != nil {
-		return
-	}
-	if _, _, err := n.applyLocal(raw); err != nil {
+	if _, err := n.applyEntry(Entry{Kind: KindFormat, SetFormat: low}); err != nil {
 		n.log.Warn("raise cluster format", "to", low, "err", err)
 		return
 	}
@@ -1242,12 +1182,11 @@ func (n *Node) checkPinsKeepMajority(pins []string) error {
 		voters++
 		m := n.measurement
 		if s.ID != n.id {
-			hp, _ := splitRaftAddr(string(s.Address))
-			resp, err := n.call(hp, 2*time.Second, controlRequest{Op: ctlStatus})
-			if err != nil || resp.Status == nil {
+			st, err := n.peerStatus(s.Address, 2*time.Second)
+			if err != nil {
 				continue // unknown counts as unpinned
 			}
-			m = resp.Status.Measurement
+			m = st.Measurement
 		}
 		if slices.Contains(pins, m) {
 			pinned++
@@ -1296,7 +1235,7 @@ func (n *Node) applyDecree(ctx context.Context, p PendingDecree) {
 		de.Pins = n.cfg.BakedPins
 	}
 	if d.Kind == Genesis || d.Kind == RotateKey {
-		minted, err := issuer.NewMeshCA(caCommonName(n.cfg.CACommonName), caValidity(n.cfg.CAValidity))
+		minted, err := issuer.NewMeshCA(n.cfg.CACommonName, n.cfg.CAValidity)
 		if err != nil {
 			n.log.Error("mint mesh CA", "err", err)
 			return
@@ -1309,17 +1248,12 @@ func (n *Node) applyDecree(ctx context.Context, p PendingDecree) {
 		}
 		de.RootCert, de.Key = ca.Cert.Raw, key
 	}
-	raw, err := json.Marshal(Entry{Kind: KindDecree, Decree: &de})
-	if err != nil {
-		return
-	}
-	_, resp, err := n.applyLocal(raw)
+	resp, err := n.applyEntry(Entry{Kind: KindDecree, Decree: &de})
 	if err != nil {
 		n.log.Warn("apply decree", "decree", p.Name, "err", err)
 		return
 	}
-	var res DecreeResult
-	_ = json.Unmarshal(resp, &res)
+	res, _ := resp.(DecreeResult)
 	if res.Err != "" {
 		n.setStatus(ctx, p.Name, DecreeStatus{RejectedReason: res.Err})
 		return
@@ -1334,8 +1268,19 @@ func (n *Node) setStatus(ctx context.Context, name string, st DecreeStatus) {
 	}
 }
 
-// applyLocal commits an entry through this replica, which must lead.
-func (n *Node) applyLocal(raw json.RawMessage) (uint64, json.RawMessage, error) {
+// applyEntry commits e through this replica, which must lead, and returns
+// the FSM's answer.
+func (n *Node) applyEntry(e Entry) (any, error) {
+	raw, err := json.Marshal(e)
+	if err != nil {
+		return nil, err
+	}
+	_, resp, err := n.applyLocal(raw)
+	return resp, err
+}
+
+// applyLocal commits raw through this replica, which must lead.
+func (n *Node) applyLocal(raw json.RawMessage) (uint64, any, error) {
 	f := n.r().Apply(raw, n.cfg.Timing.Apply)
 	if err := f.Error(); err != nil {
 		return 0, nil, err
@@ -1344,8 +1289,7 @@ func (n *Node) applyLocal(raw json.RawMessage) (uint64, json.RawMessage, error) 
 	if err, ok := resp.(error); ok {
 		return 0, nil, err
 	}
-	body, err := json.Marshal(resp)
-	return f.Index(), body, err
+	return f.Index(), resp, nil
 }
 
 // propose commits an entry through the leader, wherever it is, and returns
@@ -1360,7 +1304,10 @@ func (n *Node) propose(e Entry) (json.RawMessage, error) {
 	}
 	if n.r().State() == raft.Leader {
 		_, resp, err := n.applyLocal(raw)
-		return resp, err
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(resp)
 	}
 	addr, _ := n.r().LeaderWithID()
 	if addr == "" {
@@ -1374,44 +1321,39 @@ func (n *Node) propose(e Entry) (json.RawMessage, error) {
 	if resp.Err != "" {
 		return nil, errors.New("cds-ha: " + resp.Err)
 	}
-	deadline := time.Now().Add(n.cfg.Timing.Apply)
-	for n.fsm.AppliedIndex() < resp.Index {
-		if time.Now().After(deadline) {
-			return nil, errors.New("cds-ha: write committed but not yet applied here")
-		}
-		time.Sleep(5 * time.Millisecond)
+	if !n.waitFor(n.cfg.Timing.Apply, func() bool { return n.fsm.AppliedIndex() >= resp.Index }) {
+		return nil, errors.New("cds-ha: write committed but not yet applied here")
 	}
 	return resp.Response, nil
 }
 
-// Replicate implements allowlist.Replicator.
-func (n *Node) Replicate(cmd allowlist.Command) (allowlist.Result, error) {
-	var res allowlist.Result
-	raw, err := n.propose(Entry{Kind: KindAllowlist, Allowlist: &cmd})
+// replicate proposes e and decodes the FSM's answer. A failed proposal
+// wraps unavailable, if set, so the store reports the cluster unavailable.
+func replicate[R any](n *Node, e Entry, unavailable error) (R, error) {
+	var res R
+	raw, err := n.propose(e)
 	if err != nil {
-		return res, fmt.Errorf("%w: %w", allowlist.ErrUnavailable, err)
+		if unavailable != nil {
+			err = fmt.Errorf("%w: %w", unavailable, err)
+		}
+		return res, err
 	}
 	return res, json.Unmarshal(raw, &res)
+}
+
+// Replicate implements allowlist.Replicator.
+func (n *Node) Replicate(cmd allowlist.Command) (allowlist.Result, error) {
+	return replicate[allowlist.Result](n, Entry{Kind: KindAllowlist, Allowlist: &cmd}, allowlist.ErrUnavailable)
 }
 
 // ReplicateSecret implements secrets.Replicator.
 func (n *Node) ReplicateSecret(cmd secrets.Command) (secrets.Result, error) {
-	var res secrets.Result
-	raw, err := n.propose(Entry{Kind: KindSecret, Secret: &cmd})
-	if err != nil {
-		return res, fmt.Errorf("%w: %w", secrets.ErrUnavailable, err)
-	}
-	return res, json.Unmarshal(raw, &res)
+	return replicate[secrets.Result](n, Entry{Kind: KindSecret, Secret: &cmd}, secrets.ErrUnavailable)
 }
 
 // ReplicateBinding implements sandboxledger.Replicator.
 func (n *Node) ReplicateBinding(cmd sandboxledger.Command) (bool, error) {
-	var held bool
-	raw, err := n.propose(Entry{Kind: KindBinding, Binding: &cmd})
-	if err == nil {
-		err = json.Unmarshal(raw, &held)
-	}
-	return held, err
+	return replicate[bool](n, Entry{Kind: KindBinding, Binding: &cmd}, nil)
 }
 
 // CatchUp implements sandboxledger.Replicator: it waits until this replica
@@ -1424,20 +1366,12 @@ func (n *Node) CatchUp() error {
 	if addr == "" {
 		return errors.New("cds-ha: no leader")
 	}
-	hp, _ := splitRaftAddr(string(addr))
-	resp, err := n.call(hp, 2*time.Second, controlRequest{Op: ctlStatus})
+	st, err := n.peerStatus(addr, 2*time.Second)
 	if err != nil {
 		return err
 	}
-	if resp.Status == nil {
-		return errors.New("cds-ha: leader sent no status")
-	}
-	deadline := time.Now().Add(2 * time.Second)
-	for n.fsm.AppliedIndex() < resp.Status.AppliedIndex {
-		if time.Now().After(deadline) {
-			return errors.New("cds-ha: not caught up with the leader")
-		}
-		time.Sleep(5 * time.Millisecond)
+	if !n.waitFor(2*time.Second, func() bool { return n.fsm.AppliedIndex() >= st.AppliedIndex }) {
+		return errors.New("cds-ha: not caught up with the leader")
 	}
 	return nil
 }
@@ -1505,13 +1439,11 @@ func (n *Node) Status() Status {
 	if lc := n.r().LastContact(); !lc.IsZero() {
 		st.LastContactMS = time.Since(lc).Milliseconds()
 	}
-	if f := n.r().GetConfiguration(); f.Error() == nil {
-		for _, s := range f.Configuration().Servers {
-			if s.Suffrage == raft.Voter {
-				st.Voters = append(st.Voters, string(s.ID))
-			} else {
-				st.NonVoters = append(st.NonVoters, string(s.ID))
-			}
+	for _, s := range n.servers() {
+		if s.Suffrage == raft.Voter {
+			st.Voters = append(st.Voters, string(s.ID))
+		} else {
+			st.NonVoters = append(st.NonVoters, string(s.ID))
 		}
 	}
 	if n.r().State() == raft.Leader {
@@ -1523,14 +1455,10 @@ func (n *Node) Status() Status {
 // seatsFilled (leader): the configuration has Seats voters and none of them
 // is failing heartbeats.
 func (n *Node) seatsFilled() bool {
-	f := n.r().GetConfiguration()
-	if f.Error() != nil {
-		return false
-	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	voters := 0
-	for _, s := range f.Configuration().Servers {
+	for _, s := range n.servers() {
 		if s.Suffrage != raft.Voter {
 			continue
 		}
@@ -1553,16 +1481,9 @@ func (n *Node) seats() int {
 
 // isVoter reports whether this member holds a voter seat.
 func (n *Node) isVoter() bool {
-	f := n.r().GetConfiguration()
-	if f.Error() != nil {
-		return false
-	}
-	for _, s := range f.Configuration().Servers {
-		if s.ID == n.id {
-			return s.Suffrage == raft.Voter
-		}
-	}
-	return false
+	ss := n.servers()
+	i := slices.IndexFunc(ss, func(s raft.Server) bool { return s.ID == n.id })
+	return i >= 0 && ss[i].Suffrage == raft.Voter
 }
 
 // Ready is readiness for a rolling restart (a DaemonSet with
@@ -1595,9 +1516,7 @@ func (n *Node) refreshSeats() {
 	if addr == "" {
 		return
 	}
-	hp, _ := splitRaftAddr(string(addr))
-	resp, err := n.call(hp, time.Second, controlRequest{Op: ctlStatus})
-	if err == nil && resp.Status != nil && resp.Status.SeatsFilled {
+	if st, err := n.peerStatus(addr, time.Second); err == nil && st.SeatsFilled {
 		n.seatsOKAt.Store(time.Now().UnixMilli())
 	}
 }
@@ -1653,20 +1572,29 @@ func (w slogWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-var _ io.Writer = slogWriter{}
+func (n *Node) leading() bool { return n.r().State() == raft.Leader }
 
-// caCommonName and caValidity default what the configuration leaves unset,
-// as issuer.NewCA does.
-func caCommonName(name string) string {
-	if strings.TrimSpace(name) == "" {
-		return issuer.DefaultCACommonName
-	}
-	return name
+// waitFor polls cond until it holds or timeout passes.
+func (n *Node) waitFor(timeout time.Duration, cond func() bool) bool {
+	return wait.PollUntilContextTimeout(context.Background(), 5*time.Millisecond, timeout, true,
+		func(context.Context) (bool, error) { return cond(), nil }) == nil
 }
 
-func caValidity(d time.Duration) time.Duration {
-	if d <= 0 {
-		return issuer.DefaultCAValidity
+// peerStatus asks the member at Raft address addr for its status.
+func (n *Node) peerStatus(addr raft.ServerAddress, timeout time.Duration) (*Status, error) {
+	hp, _ := splitRaftAddr(string(addr))
+	resp, err := n.call(hp, timeout, controlRequest{Op: ctlStatus})
+	if err == nil && resp.Status == nil {
+		err = errors.New("cds-ha: peer sent no status")
 	}
-	return d
+	return resp.Status, err
+}
+
+// servers is the current configuration, or nil when Raft cannot say.
+func (n *Node) servers() []raft.Server {
+	f := n.r().GetConfiguration()
+	if f.Error() != nil {
+		return nil
+	}
+	return f.Configuration().Servers
 }
