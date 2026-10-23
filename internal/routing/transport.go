@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -30,6 +31,9 @@ type TransportConfig struct {
 	// the CAs anchoring workload backends. A mesh dial takes both from one
 	// resolution; an address backend resolves them separately.
 	MeshIdentity CredentialSource
+	// Logger reports a router leaf whose stamp does not parse, once per leaf.
+	// nil uses slog.Default.
+	Logger *slog.Logger
 }
 
 // routerLeaf hands one generation's leaf to a mesh handshake. Renewal is
@@ -81,6 +85,7 @@ var errRouterStampDamaged = errors.New("routing: router stamp damaged")
 // stampCache holds the router stamp of the last leaf it parsed, so an
 // unchanged leaf is parsed once.
 type stampCache struct {
+	log   *slog.Logger
 	mu    sync.Mutex
 	raw   []byte
 	stamp *armtls.MatchedWorkload
@@ -108,6 +113,10 @@ func (c *stampCache) of(cert *tls.Certificate) (*armtls.MatchedWorkload, error) 
 	}
 	c.raw = raw
 	c.stamp, c.err = armtls.MatchedWorkloadFromCert(leaf)
+	if c.err != nil {
+		// Once per leaf: the per-request refusals log at Debug.
+		c.log.Error("router stamp damaged", "error", c.err)
+	}
 	return c.stamp, c.err
 }
 
@@ -128,7 +137,12 @@ func (t *Transports) routerDigestOf(cred MeshCredential) ([]byte, error) {
 
 // NewTransports returns an empty cache.
 func NewTransports(cfg TransportConfig) *Transports {
-	return &Transports{cfg: cfg, cache: map[string]pooled{}}
+	if cfg.Logger == nil {
+		cfg.Logger = slog.Default()
+	}
+	t := &Transports{cfg: cfg, cache: map[string]pooled{}}
+	t.stamp.log = cfg.Logger
+	return t
 }
 
 // For returns the transport for b, building it on first use.

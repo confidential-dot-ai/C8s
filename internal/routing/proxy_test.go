@@ -667,9 +667,13 @@ func TestB9UnnamedRouter(t *testing.T) {
 				t.Fatalf("Forward(/) = %d, %v, want %d, nil", resp.Status, err, tc.want)
 			}
 			if tc.want != http.StatusOK {
-				// Both paths blame the router's own leaf, never the backend.
-				if strings.Count(logs.String(), "level=ERROR msg=\"router stamp damaged\"") != 2 || strings.Contains(logs.String(), "backend request failed") {
-					t.Fatalf("damaged router stamp logged %q, want two router stamp damaged lines at Error and no backend blame", logs.String())
+				// Neither path blames the backend; the damaged leaf is reported
+				// once, where it is parsed.
+				if strings.Contains(logs.String(), "backend request failed") || strings.Contains(logs.String(), "level=ERROR") {
+					t.Fatalf("damaged router stamp logged per request %q, want no backend blame and no per-request Error", logs.String())
+				}
+				if n := strings.Count(f.transportLogs.String(), "router stamp damaged"); n != 1 {
+					t.Fatalf("damaged router stamp reported %d times, want once per leaf: %s", n, f.transportLogs.String())
 				}
 			}
 			if tc.want != http.StatusOK && b.hits.Load() != 0 {

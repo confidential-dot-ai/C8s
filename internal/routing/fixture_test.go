@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -358,15 +359,16 @@ func (m manifestSpec) bytes(t testing.TB) []byte {
 // volume, an operator, and the routing engine wired the way cds-attest wires
 // it.
 type fixture struct {
-	mesh       *issuer.CA
-	volume     string
-	routerLeaf tls.Certificate
-	identity   *MeshIdentity
-	op         operator
-	clock      *fakeClock
-	state      *State
-	transports *Transports
-	proxy      *Proxy
+	transportLogs bytes.Buffer // what Transports reports, once per leaf
+	mesh          *issuer.CA
+	volume        string
+	routerLeaf    tls.Certificate
+	identity      *MeshIdentity
+	op            operator
+	clock         *fakeClock
+	state         *State
+	transports    *Transports
+	proxy         *Proxy
 }
 
 func newFixture(t testing.TB) *fixture {
@@ -386,7 +388,7 @@ func newFixture(t testing.TB) *fixture {
 	}
 	f.identity = identity
 	f.state = NewState(StateConfig{Reserved: testReserved, MeshCAs: identity.MeshCAs, Now: f.clock.Now})
-	f.transports = NewTransports(TransportConfig{MeshIdentity: identity.Credential})
+	f.transports = NewTransports(TransportConfig{MeshIdentity: identity.Credential, Logger: slog.New(slog.NewTextHandler(&f.transportLogs, nil))})
 	f.proxy = NewProxy(ProxyConfig{State: f.state, Transports: f.transports, Timeout: 10 * time.Second})
 	return f
 }
