@@ -153,17 +153,10 @@ func (h Handler) HandleDeleteWorkload(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// WriteUnavailable answers a write the replicated store could not commit:
-// 503, retryable, never 401 or 500.
-func WriteUnavailable(w http.ResponseWriter) {
-	w.Header().Set("Retry-After", "1")
-	http.Error(w, ErrUnavailable.Error(), http.StatusServiceUnavailable)
-}
-
 // writeStoreError answers a failed store write.
 func writeStoreError(w http.ResponseWriter, err error) {
 	if errors.Is(err, ErrUnavailable) {
-		WriteUnavailable(w)
+		httputil.WriteUnavailable(w, ErrUnavailable)
 		return
 	}
 	if storeFull(err) {
