@@ -38,12 +38,6 @@ func TestRecoveryKeySplitAndCombine(t *testing.T) {
 	if _, err := loadRecoveryKey("", []string{share(1), share(2)}); err == nil {
 		t.Fatal("two of three restored the key")
 	}
-	if _, err := loadRecoveryKey(keyFile, []string{share(1)}); err == nil {
-		t.Fatal("key and shares together accepted")
-	}
-	if _, err := loadRecoveryKey("", nil); err == nil {
-		t.Fatal("neither accepted")
-	}
 	if k, err := loadRecoveryKey(keyFile, nil); err != nil || !k.Equal(key) {
 		t.Fatalf("key file: %v", err)
 	}

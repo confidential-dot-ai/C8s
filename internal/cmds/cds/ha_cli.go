@@ -2,10 +2,7 @@ package cds
 
 import (
 	"context"
-	"crypto/ecdsa"
 	"crypto/rand"
-	"crypto/x509"
-	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -22,6 +19,7 @@ import (
 
 	"github.com/confidential-dot-ai/c8s/internal/cdsha"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsconn"
+	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 )
 
 // newHACmd groups the operator side of HA CDS.
@@ -88,12 +86,12 @@ func newHADecreeCmd() *cobra.Command {
 			if err := setDecreeImages(&d, images); err != nil {
 				return err
 			}
-			key, err := loadECPrivateKey(keyPath)
+			key, err := certutil.LoadECPrivateKeyFile(keyPath)
 			if err != nil {
 				return err
 			}
 			if d.IntentID == "" {
-				d.IntentID = randomID()
+				d.IntentID = rand.Text()
 			}
 			d.ExpiresAt = time.Now().Add(expiresIn).UTC().Truncate(time.Second)
 			sd, err := cdsha.SignDecree(d, key)
@@ -204,35 +202,6 @@ func getJSON(ctx context.Context, hc *http.Client, base, path string, limit int6
 		return fmt.Errorf("GET %s: %w", path, err)
 	}
 	return nil
-}
-
-func loadECPrivateKey(path string) (*ecdsa.PrivateKey, error) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	block, _ := pem.Decode(raw)
-	if block == nil {
-		return nil, errors.New("operator key: no PEM block")
-	}
-	if k, err := x509.ParseECPrivateKey(block.Bytes); err == nil {
-		return k, nil
-	}
-	anyKey, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-	if err != nil {
-		return nil, fmt.Errorf("operator key: %w", err)
-	}
-	k, ok := anyKey.(*ecdsa.PrivateKey)
-	if !ok {
-		return nil, errors.New("operator key is not ECDSA")
-	}
-	return k, nil
-}
-
-func randomID() string {
-	b := make([]byte, 8)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
 }
 
 // setDecreeImages fills d.Images from --image values and derives the replica
