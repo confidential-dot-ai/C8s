@@ -44,6 +44,10 @@ func TunnelReservation(recordBytes int64) int64 {
 	return recordCopies*recordBytes + responseCopies*MaxTunnelResponseBytes
 }
 
+// noPolicyIdentity is the body of the 503 a workload route gets while the
+// router's leaf carries no stamp (B9).
+const noPolicyIdentity = "router has no policy identity"
+
 // ExporterHeader carries the tunnel's channel-binding exporter to backends.
 // Only the tunnel may set it: the routing listener drops a client's value.
 const ExporterHeader = "X-C8s-Exporter"
@@ -152,6 +156,10 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	p.reverseProxy(route, target, func(err error) {
 		p.log.Warn("backend request failed", "host", r.Host, "path", target.RawPath, "backend", route.Backend.Address, "error", err)
+		if errors.Is(err, errNoPolicyIdentity) {
+			http.Error(w, noPolicyIdentity, http.StatusServiceUnavailable) // B9
+			return
+		}
 		http.Error(w, "backend unavailable", http.StatusBadGateway) // B5
 	}).ServeHTTP(w, r)
 }
@@ -175,7 +183,7 @@ var sealedDropped = map[string]bool{
 // Forward routes a request reconstructed from the automated ingress tunnel
 // (A7), within outer's context. Its host is the sealed Host header, never
 // outer's host: a sealed request without exactly one gets 400 (M1). Routing
-// outcomes the client must see (A2, M5) are responses; an error means the
+// outcomes the client must see (A2, B9, M5) are responses; an error means the
 // backend failed (B5). The caller holds a reservation from Acquire.
 func (p *Proxy) Forward(outer *http.Request, req types.TunnelRequest) (types.TunnelResponse, error) {
 	ctx := outer.Context()
@@ -263,6 +271,9 @@ func (p *Proxy) Forward(outer *http.Request, req types.TunnelRequest) (types.Tun
 	}
 	rec := &capture{header: http.Header{}}
 	rp.ServeHTTP(rec, in)
+	if errors.Is(backendErr, errNoPolicyIdentity) {
+		return textResponse(http.StatusServiceUnavailable, noPolicyIdentity), nil
+	}
 	if backendErr != nil {
 		return types.TunnelResponse{}, fmt.Errorf("backend %s: %w", route.Backend.Address, backendErr)
 	}

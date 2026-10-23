@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/confidential-dot-ai/c8s/internal/credvolume"
@@ -28,6 +29,11 @@ type CredentialSource func() (MeshCredential, error)
 // published together. It is safe for concurrent use.
 type MeshIdentity struct {
 	volume credvolume.Volume
+
+	// Every routed request reads the volume; a generation is parsed once.
+	mu     sync.Mutex
+	set    credvolume.Set
+	parsed MeshCredential
 }
 
 // NewMeshIdentity names the credential volume the three reader paths lie on.
@@ -46,6 +52,11 @@ func (m *MeshIdentity) read() (MeshCredential, error) {
 	if err != nil {
 		return MeshCredential{}, err
 	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.parsed.Certificate != nil && m.set.SameAs(set) {
+		return m.parsed, nil
+	}
 	pair, err := tls.X509KeyPair(set.ChainPEM, set.KeyPEM)
 	if err != nil {
 		return MeshCredential{}, err
@@ -59,7 +70,8 @@ func (m *MeshIdentity) read() (MeshCredential, error) {
 	if err != nil {
 		return MeshCredential{}, fmt.Errorf("mesh CA bundle: %w", err)
 	}
-	return MeshCredential{Certificate: &pair, MeshCAs: cas}, nil
+	m.set, m.parsed = set, MeshCredential{Certificate: &pair, MeshCAs: cas}
+	return m.parsed, nil
 }
 
 // Credential implements CredentialSource. It never hands a handshake a
