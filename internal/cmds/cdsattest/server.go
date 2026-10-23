@@ -710,12 +710,18 @@ func (s *Server) routesAdmit(w http.ResponseWriter) (*routing.Applied, bool) {
 func (s *Server) routerDigest(w http.ResponseWriter, identity *meshIdentity) (string, bool) {
 	leaf := identity.routerDigest()
 	current, err := s.routes.SyncRouterDigest(leaf)
-	if err != nil || current != leaf {
-		s.log.Warn("router digest differs from the attested mesh leaf's", "error", err)
-		writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeBindingUnavailable, "the router's mesh identity is renewing; retry shortly")
-		return "", false
+	switch {
+	case err != nil:
+		s.log.Warn("router credential unreadable; refusing the handshake", "error", err)
+	case current != leaf:
+		// A renewal in progress; clients retry, so one line per handshake
+		// would flood.
+		s.log.Debug("router digest differs from the attested mesh leaf's; refusing the handshake")
+	default:
+		return leaf, true
 	}
-	return leaf, true
+	writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeBindingUnavailable, "the router's mesh identity is renewing; retry shortly")
+	return "", false
 }
 
 // meshIdentity loads the mesh credential set from the three files.
