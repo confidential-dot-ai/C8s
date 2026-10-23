@@ -97,7 +97,7 @@ a port-forward).
   verifier's gather path in both attested modes with both route checks,
   including a route update between publication and admission. Other
   implementations interoperate through the `pkg/overenc/testdata` vectors
-  ([Upgrade from the earlier layout](routes-evidence.md#upgrade-from-the-earlier-layout)).
+  ([Upgrade from v1](routes-evidence.md#upgrade-from-v1)).
 - Workload adoption: `c8s install --workload-ref` patches a running
   deployment, its rollout goes through injection, and the status mirror
   reports `kubectl get cwl`.

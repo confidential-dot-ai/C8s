@@ -78,13 +78,12 @@ personal access token, or long-lived release credential is required.
 A c8s release that changes an attestation transcript ships after compatible
 client releases. Release `c8s-verify-js` and TEErminator versions that
 reproduce the new vectors first, then the router that carries the new
-transcript. The binding ids stay at v1: c8s is unreleased and no released
-client depends on the transcript, so the layout changes in place. A client and
-router on different layouts therefore fail verification instead of reporting a
-version mismatch. After an upgrade, a transcript or signature mismatch from a
-client most likely means the client predates the field, not an attack. No workflow
-enforces this order. See [Upgrade from the earlier
-layout](routes-evidence.md#upgrade-from-the-earlier-layout).
+transcript. A layout change takes new binding ids (the allowlist digest moved
+both transcripts to v2), and the router serves only the current ids. A client
+on an older layout therefore fails with a version error that names the id the
+router serves; it most likely predates the change, not an attack. No workflow
+enforces this order. See [Upgrade from
+v1](routes-evidence.md#upgrade-from-v1).
 
 ## One-time GitHub setup
 
