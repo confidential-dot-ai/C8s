@@ -29,8 +29,9 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/credrelease"
 	"github.com/confidential-dot-ai/c8s/internal/guestverify"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
 const pods = `{"kind":"PodList","apiVersion":"v1","items":[
@@ -162,7 +163,7 @@ func attestFixture(t *testing.T, registered, journal []string, relayKey crypto.P
 		},
 	}
 	var guest http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		h.ServeHTTP(w, r.WithContext(credrelease.WithServingKey(r.Context(), servingKey)))
+		h.ServeHTTP(w, r.WithContext(armtls.WithServingKey(r.Context(), servingKey)))
 	})
 	for _, w := range wrap {
 		guest = w(guest)
@@ -331,9 +332,9 @@ func TestEvidenceReportDataRoundTrip(t *testing.T) {
 	var sent []byte
 	h := Handler{Evidence: func(_ context.Context, rd []byte) ([]byte, error) { sent = rd; return []byte(`{}`), nil }}
 	rec := httptest.NewRecorder()
-	body, _ := json.Marshal(credrelease.AttestRequest{Nonce: nonce})
+	body, _ := json.Marshal(types.NonceRequest{Nonce: nonce})
 	req := httptest.NewRequest(http.MethodPost, EvidencePath, bytes.NewReader(body))
-	h.ServeHTTP(rec, req.WithContext(credrelease.WithServingKey(req.Context(), cert.Leaf.PublicKey)))
+	h.ServeHTTP(rec, req.WithContext(armtls.WithServingKey(req.Context(), cert.Leaf.PublicKey)))
 	if rec.Code != http.StatusOK || rec.Header().Get(BindingHeader) != BindingVersion {
 		t.Fatalf("status %d header %q", rec.Code, rec.Header().Get(BindingHeader))
 	}
