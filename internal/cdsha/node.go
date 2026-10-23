@@ -403,11 +403,27 @@ func (n *Node) Run(ctx context.Context) error {
 	t := time.NewTicker(n.cfg.Timing.Tick)
 	defer t.Stop()
 	var lastEpoch uint64
+	var stuckAt time.Time
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-t.C:
+		}
+		if reason := n.fsm.Stuck(); reason != "" {
+			// A stuck replica serves nothing, and only a restart, which
+			// replays the log from the cluster, brings it back. A transient
+			// fault (a disk that filled and was freed, descriptors exhausted
+			// for a moment) must not take it out for good, and its peer
+			// port stays open, so no TCP liveness check notices. A leader
+			// first hands off leadership (reconcile); return once it has,
+			// or after DeadAfter, so the process exits and is restarted.
+			if stuckAt.IsZero() {
+				stuckAt = time.Now()
+			}
+			if since := time.Since(stuckAt); (!n.leading() && since >= n.cfg.Timing.Lease) || since >= n.cfg.Timing.DeadAfter {
+				return fmt.Errorf("%w: %s", ErrStuck, reason)
+			}
 		}
 		n.renewPeerCert()
 		if !n.member() {
@@ -828,6 +844,10 @@ func (n *Node) Serving() bool {
 	cert := n.readCert.Load()
 	return n.validReadCertificate(cert) && n.fsm.AppliedIndex() >= cert.index
 }
+
+// ErrStuck ends Run: this replica stopped following the log (see FSM.stop)
+// and must be restarted to rejoin with the cluster's state.
+var ErrStuck = errors.New("cds-ha: replica stopped following the log; restart to rejoin")
 
 // ErrNotServing means the replica cannot currently admit a mesh CA read.
 // Callers must not use a cached CA to bypass this refusal.
