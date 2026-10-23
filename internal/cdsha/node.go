@@ -201,6 +201,9 @@ type Status struct {
 	Format uint32 `json:"format,omitempty"`
 	Reads  uint32 `json:"reads,omitempty"`
 	Stuck  string `json:"stuck,omitempty"`
+	// Term is this replica's current Raft term: election churn shows as it
+	// climbing.
+	Term uint64 `json:"term,omitempty"`
 }
 
 // NewNode prepares a replica. Every start is a new Raft member: the log
@@ -751,6 +754,7 @@ func (n *Node) CatchUp() error {
 // refreshReads runs independently of membership and status handling. Serving
 // never makes a network call, and a failed refresh cannot renew an old lease.
 func (n *Node) refreshReads(ctx context.Context) {
+	var down readOutage
 	period := min(n.cfg.Timing.Tick, n.cfg.Timing.Lease/3)
 	t := time.NewTicker(period)
 	defer t.Stop()
@@ -768,14 +772,47 @@ func (n *Node) refreshReads(ctx context.Context) {
 		fresh, err := n.confirmRead(min(n.cfg.Timing.Apply, n.cfg.Timing.Lease))
 		if err != nil {
 			n.readCert.Store(nil)
+			down.failed(n.log, err)
 			continue
 		}
+		down.renewed(n.log)
 		// A barrier started after the observed jump proves state freshness.
 		n.readCert.Store(fresh)
 		if fresh.at.UnixMilli() > jump {
 			n.jumpAt.CompareAndSwap(jump, 0)
 		}
 	}
+}
+
+// readOutage reports why a replica cannot certify reads. Without it a
+// replica that refuses every read says nothing about the reason: the first
+// failure, a changed reason (at most every readOutageLogEvery), and the
+// recovery are logged.
+type readOutage struct {
+	since, logged time.Time
+	reason        string
+}
+
+const readOutageLogEvery = 5 * time.Second
+
+func (o *readOutage) failed(log *slog.Logger, err error) {
+	now, reason := time.Now(), err.Error()
+	switch {
+	case o.since.IsZero():
+		o.since = now
+	case reason == o.reason || now.Sub(o.logged) < readOutageLogEvery:
+		return
+	}
+	o.reason, o.logged = reason, now
+	log.Warn("cds-ha: reads not certified; not serving", "reason", reason, "for", now.Sub(o.since).Round(time.Millisecond))
+}
+
+func (o *readOutage) renewed(log *slog.Logger) {
+	if o.since.IsZero() {
+		return
+	}
+	log.Info("cds-ha: reads certified again; serving", "after", time.Since(o.since).Round(time.Millisecond))
+	*o = readOutage{}
 }
 
 // Serving permits bounded-stale reads only after a quorum-confirmed watermark
@@ -826,6 +863,7 @@ func (n *Node) Status() Status {
 		return st
 	}
 	st.State = n.r().State().String()
+	st.Term = n.r().CurrentTerm()
 	st.Serving = n.Serving()
 	st.Leader = n.leaderHostPort()
 	if lc := n.r().LastContact(); !lc.IsZero() {
