@@ -1,12 +1,13 @@
 package cdsha
 
 import (
-	"github.com/confidential-dot-ai/c8s/internal/allowlist"
-	"github.com/confidential-dot-ai/c8s/internal/sandboxledger"
-	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/confidential-dot-ai/c8s/internal/allowlist"
+	"github.com/confidential-dot-ai/c8s/internal/sandboxledger"
+	"github.com/confidential-dot-ai/c8s/internal/secrets"
 )
 
 func TestRecoveryReplayPreservesPolicy(t *testing.T) {
