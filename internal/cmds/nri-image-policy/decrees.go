@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
@@ -20,24 +21,37 @@ import (
 // every CDS client of the node moves to a new CDS image together.
 type followedPins struct {
 	*cdspins.Source
-	mounted string
-	logger  *slog.Logger
+	mu        sync.Mutex // orders refresh, formatting and in-place publication
+	dirty     bool       // retry failed publication even without a newer decree
+	mounted   string
+	logger    *slog.Logger
+	writeFile func(string, []byte, os.FileMode) error // nil uses os.WriteFile
 }
 
 func (f *followedPins) Refresh(ctx context.Context) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	changed, err := f.Source.Refresh(ctx)
+	f.dirty = f.dirty || changed
 	if changed {
 		epoch, _ := f.Epoch()
 		f.logger.Info("following a new CDS pin decree", "base_epoch", epoch, "images", len(f.Current().Images))
 	}
-	if changed && f.mounted != "" {
+	if f.dirty && f.mounted != "" {
 		// Rewrite the bytes in place (os.WriteFile truncates, it does not
 		// rename): running pods' bind mounts pin the file's inode. A client
 		// reading it halfway finds a document that does not parse, keeps its
 		// set, and reads it again on its next pin miss.
 		doc, werr := refvalues.Format(f.Current())
 		if werr == nil {
-			werr = os.WriteFile(f.mounted, doc, 0o644)
+			write := f.writeFile
+			if write == nil {
+				write = os.WriteFile
+			}
+			werr = write(f.mounted, doc, 0o644)
+		}
+		if werr == nil {
+			f.dirty = false
 		}
 		if werr != nil {
 			f.logger.Error("could not hand the new CDS pins to credential clients", "error", werr)
