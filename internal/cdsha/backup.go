@@ -1,36 +1,32 @@
 package cdsha
 
 import (
-	"bytes"
-	"compress/gzip"
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/ecdh"
 	"crypto/ecdsa"
-	"crypto/hkdf"
+	"crypto/elliptic"
+	"crypto/hpke"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"sort"
 	"strconv"
 
-	"github.com/klauspost/compress/zstd"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // A backup is the whole replicated state (the Raft snapshot: core, mesh CA
-// key, allowlist, secrets, bindings), gzipped and encrypted to the operator's
-// offline recovery key. Only that key opens it, so it can sit in the
-// untrusted control plane; its metadata is authenticated, not secret.
+// key, allowlist, secrets, bindings), sealed with HPKE (RFC 9180,
+// DHKEM(P-256) + HKDF-SHA256 + AES-256-GCM) to the operator's offline
+// recovery key. Only that key opens it, so it can sit in the untrusted
+// control plane; its metadata is authenticated (bound into the HPKE info),
+// not secret. The snapshot is already zstd-compressed.
 
-const backupInfo = "c8s-cds-ha-backup-v1"
+const backupInfo = "c8s-cds-ha-backup-v2\n"
 
 // BackupMeta says which state a backup holds. The operator compares it with
 // their own record before restoring: an older backup would roll back
@@ -44,97 +40,41 @@ type BackupMeta struct {
 	CAFingerprint  string   `json:"ca_fingerprint"`
 }
 
-// Backup is one sealed backup.
+// Backup is one sealed backup. Ciphertext is the HPKE encapsulated key
+// followed by the sealed snapshot.
 type Backup struct {
-	Meta         BackupMeta `json:"meta"`
-	EphemeralPub []byte     `json:"ephemeral_pub"` // uncompressed P-256 point
-	Nonce        []byte     `json:"nonce"`
-	Ciphertext   []byte     `json:"ciphertext"`
+	Meta       BackupMeta `json:"meta"`
+	Ciphertext []byte     `json:"ciphertext"`
 }
 
-func backupKey(shared, ephPub, recPub []byte) (cipher.AEAD, error) {
-	key, err := hkdf.Key(sha256.New, shared, append(append([]byte{}, ephPub...), recPub...), backupInfo, 32)
-	if err != nil {
-		return nil, err
-	}
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, err
-	}
-	return cipher.NewGCM(block)
+// info binds the metadata into the HPKE key schedule.
+func (m BackupMeta) info() ([]byte, error) {
+	j, err := json.Marshal(m)
+	return append([]byte(backupInfo), j...), err
 }
 
-// SealBackup encrypts a snapshot to the recovery public key.
+// SealBackup encrypts a snapshot to the recovery public key (P-256).
 func SealBackup(recovery *ecdsa.PublicKey, meta BackupMeta, snapshot []byte) (Backup, error) {
+	if recovery.Curve != elliptic.P256() {
+		return Backup{}, errors.New("recovery key must be ECDSA P-256")
+	}
 	rec, err := recovery.ECDH()
 	if err != nil {
 		return Backup{}, fmt.Errorf("recovery key: %w", err)
 	}
-	eph, err := ecdh.P256().GenerateKey(rand.Reader)
+	pk, err := hpke.NewDHKEMPublicKey(rec)
+	if err != nil {
+		return Backup{}, fmt.Errorf("recovery key: %w", err)
+	}
+	info, err := meta.info()
 	if err != nil {
 		return Backup{}, err
 	}
-	shared, err := eph.ECDH(rec)
+	ct, err := hpke.Seal(pk, hpke.HKDFSHA256(), hpke.AES256GCM(), info, snapshot)
 	if err != nil {
 		return Backup{}, err
 	}
-	aead, err := backupKey(shared, eph.PublicKey().Bytes(), rec.Bytes())
-	if err != nil {
-		return Backup{}, err
-	}
-	z, err := compressBackup(snapshot)
-	if err != nil {
-		return Backup{}, err
-	}
-	aad, err := json.Marshal(meta)
-	if err != nil {
-		return Backup{}, err
-	}
-	nonce := make([]byte, aead.NonceSize())
-	if _, err := rand.Read(nonce); err != nil {
-		return Backup{}, err
-	}
-	return Backup{Meta: meta, EphemeralPub: eph.PublicKey().Bytes(), Nonce: nonce, Ciphertext: aead.Seal(nil, nonce, z, aad)}, nil
-}
-
-// backupWindowMax bounds the compression window. The snapshot is already
-// compressed (zstd with a long window from format 2, see encodeSnapshot), so
-// this layer gains little; it stays zstd so a backup of an uncompressed
-// payload is still small, and gzip backups of earlier releases still open.
-const backupWindowMax = 16 << 20
-
-// maxBackupPlain bounds a decompressed snapshot.
-const maxBackupPlain = 1 << 30
-
-func compressBackup(snapshot []byte) ([]byte, error) {
-	window := zstd.MinWindowSize
-	for window < len(snapshot) && window < backupWindowMax {
-		window <<= 1
-	}
-	zw, err := zstd.NewWriter(nil, zstd.WithWindowSize(window), zstd.WithEncoderConcurrency(1))
-	if err != nil {
-		return nil, err
-	}
-	defer zw.Close()
-	return zw.EncodeAll(snapshot, nil), nil
-}
-
-// decompressBackup opens zstd backups, and gzip ones written by releases
-// before the switch.
-func decompressBackup(z []byte) ([]byte, error) {
-	if len(z) >= 2 && z[0] == 0x1f && z[1] == 0x8b {
-		zr, err := gzip.NewReader(bytes.NewReader(z))
-		if err != nil {
-			return nil, err
-		}
-		return io.ReadAll(io.LimitReader(zr, maxBackupPlain))
-	}
-	zr, err := zstd.NewReader(nil, zstd.WithDecoderMaxWindow(backupWindowMax), zstd.WithDecoderMaxMemory(maxBackupPlain), zstd.WithDecoderConcurrency(1))
-	if err != nil {
-		return nil, err
-	}
-	defer zr.Close()
-	return zr.DecodeAll(z, nil)
+	return Backup{Meta: meta, Ciphertext: ct}, nil
 }
 
 // OpenBackup decrypts a backup with the recovery private key. The metadata is
@@ -144,27 +84,19 @@ func OpenBackup(recovery *ecdsa.PrivateKey, b Backup) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("recovery key: %w", err)
 	}
-	eph, err := ecdh.P256().NewPublicKey(b.EphemeralPub)
+	sk, err := hpke.NewDHKEMPrivateKey(rec)
 	if err != nil {
-		return nil, fmt.Errorf("backup ephemeral key: %w", err)
+		return nil, fmt.Errorf("recovery key: %w", err)
 	}
-	shared, err := rec.ECDH(eph)
-	if err != nil {
-		return nil, err
-	}
-	aead, err := backupKey(shared, b.EphemeralPub, rec.PublicKey().Bytes())
+	info, err := b.Meta.info()
 	if err != nil {
 		return nil, err
 	}
-	aad, err := json.Marshal(b.Meta)
-	if err != nil {
-		return nil, err
-	}
-	z, err := aead.Open(nil, b.Nonce, b.Ciphertext, aad)
+	snapshot, err := hpke.Open(sk, hpke.HKDFSHA256(), hpke.AES256GCM(), info, b.Ciphertext)
 	if err != nil {
 		return nil, errors.New("backup does not open with this recovery key (wrong key, or the backup or its metadata was changed)")
 	}
-	return decompressBackup(z)
+	return snapshot, nil
 }
 
 // SnapshotSHA256 names a snapshot in a Restore decree.
@@ -187,20 +119,13 @@ const (
 func BackupName(clusterID string) string { return "cds-backup-" + clusterID }
 
 type backupManifest struct {
-	Meta         BackupMeta `json:"meta"`
-	EphemeralPub []byte     `json:"ephemeral_pub"`
-	Nonce        []byte     `json:"nonce"`
-	Parts        int        `json:"parts"`
-	SHA256       string     `json:"sha256"`
-	// Gen names this backup's parts (<manifest>-<gen>-<i>). Empty in
-	// backups written before it: their parts are <manifest>-<i>.
-	Gen string `json:"gen,omitempty"`
+	Meta   BackupMeta `json:"meta"`
+	Parts  int        `json:"parts"`
+	SHA256 string     `json:"sha256"`
+	Gen    string     `json:"gen"` // names this backup's parts: <manifest>-<gen>-<i>
 }
 
 func (m backupManifest) partName(clusterID string, i int) string {
-	if m.Gen == "" {
-		return BackupName(clusterID) + "-" + strconv.Itoa(i)
-	}
 	return BackupName(clusterID) + "-" + m.Gen + "-" + strconv.Itoa(i)
 }
 
@@ -248,7 +173,7 @@ func (s KubeDecrees) PutBackup(ctx context.Context, b Backup) error {
 		return err
 	}
 	sum := sha256.Sum256(b.Ciphertext)
-	man := backupManifest{Meta: b.Meta, EphemeralPub: b.EphemeralPub, Nonce: b.Nonce, SHA256: hex.EncodeToString(sum[:]),
+	man := backupManifest{Meta: b.Meta, SHA256: hex.EncodeToString(sum[:]),
 		Gen: fmt.Sprintf("e%d-i%d-%s", b.Meta.Epoch, b.Meta.Index, hex.EncodeToString(nonce[:]))}
 	labels := map[string]string{LabelBackup: s.ClusterID}
 	for off := 0; off < len(b.Ciphertext) || man.Parts == 0; off += backupPartBytes {
@@ -326,7 +251,7 @@ func BackupFromConfigMaps(clusterID string, cms []corev1.ConfigMap) (Backup, err
 	if err := json.Unmarshal([]byte(mcm.Data[keyBackup]), &man); err != nil {
 		return Backup{}, fmt.Errorf("backup manifest: %w", err)
 	}
-	if man.Meta.ClusterID != clusterID || man.Parts < 1 {
+	if man.Meta.ClusterID != clusterID || man.Parts < 1 || man.Gen == "" {
 		return Backup{}, errors.New("backup manifest is for another cluster or names no parts")
 	}
 	var ct []byte
@@ -340,7 +265,7 @@ func BackupFromConfigMaps(clusterID string, cms []corev1.ConfigMap) (Backup, err
 	if sum := sha256.Sum256(ct); hex.EncodeToString(sum[:]) != man.SHA256 {
 		return Backup{}, errors.New("backup parts do not match their manifest (a write in progress, or tampering)")
 	}
-	return Backup{Meta: man.Meta, EphemeralPub: man.EphemeralPub, Nonce: man.Nonce, Ciphertext: ct}, nil
+	return Backup{Meta: man.Meta, Ciphertext: ct}, nil
 }
 
 // GetBackup reads the stored backup.

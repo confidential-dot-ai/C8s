@@ -2,14 +2,12 @@ package cdsha
 
 import (
 	"context"
-	"crypto/ecdh"
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
-	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -45,32 +43,11 @@ func TestBackupRefusesOtherCurves(t *testing.T) {
 	if _, err := OpenBackup(p384, b); err == nil {
 		t.Fatal("opened with a P-384 key")
 	}
-	bad := b
-	bad.EphemeralPub = []byte{4, 1, 2}
-	if _, err := OpenBackup(rk, bad); err == nil {
-		t.Fatal("opened with a malformed ephemeral key")
+	if _, err := OpenBackup(rk, Backup{Meta: meta, Ciphertext: b.Ciphertext[:10]}); err == nil {
+		t.Fatal("opened a truncated backup")
 	}
 	if got, err := OpenBackup(rk, b); err != nil || string(got) != "snap" {
 		t.Fatalf("round trip %q: %v", got, err)
-	}
-}
-
-// A backup that authenticates but does not hold a gzip stream is refused.
-func TestOpenBackupRefusesNonGzipPlaintext(t *testing.T) {
-	rk, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	rec, _ := rk.PublicKey.ECDH()
-	eph, _ := ecdh.P256().GenerateKey(rand.Reader)
-	shared, _ := eph.ECDH(rec)
-	aead, err := backupKey(shared, eph.PublicKey().Bytes(), rec.Bytes())
-	if err != nil {
-		t.Fatal(err)
-	}
-	meta := BackupMeta{ClusterID: testCluster}
-	aad, _ := json.Marshal(meta)
-	nonce := make([]byte, aead.NonceSize())
-	b := Backup{Meta: meta, EphemeralPub: eph.PublicKey().Bytes(), Nonce: nonce, Ciphertext: aead.Seal(nil, nonce, []byte("not gzip"), aad)}
-	if _, err := OpenBackup(rk, b); err == nil {
-		t.Fatal("a non-gzip backup opened")
 	}
 }
 
