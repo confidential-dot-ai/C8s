@@ -20,8 +20,9 @@ type routeHandler struct {
 	Store *allowlist.Store
 	// Authorize is the allowlist write authorizer: same keys, same checks (W1).
 	Authorize allowlist.WriteAuthorizer
-	// MeshCA is this CDS's mesh CA, which no address backend may anchor on (C3).
-	MeshCA *x509.Certificate
+	// MeshCA supplies the currently trusted mesh CA at request time (C3).
+	// Retired keys are not retained here; consumers check their full trusted bundle.
+	MeshCA meshCA
 }
 
 // handleGet serves the stored signed manifest in the C1 envelope, or 404.
@@ -53,7 +54,13 @@ func (h routeHandler) handlePut(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if h.MeshCA == nil {
+	var excluded *x509.Certificate
+	if h.MeshCA != nil {
+		if current := h.MeshCA.Current(); current.CA != nil {
+			excluded = current.CA.Cert
+		}
+	}
+	if excluded == nil {
 		// Without it the C3 anchor check cannot run: fail closed.
 		slog.Error("route manifest write refused: no mesh CA wired")
 		http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -64,7 +71,7 @@ func (h routeHandler) handlePut(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
-	if err := m.CheckAnchorsExclude([]*x509.Certificate{h.MeshCA}); err != nil {
+	if err := m.CheckAnchorsExclude([]*x509.Certificate{excluded}); err != nil {
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
