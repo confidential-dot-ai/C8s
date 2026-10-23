@@ -155,6 +155,43 @@ func TestFetchServedStatus(t *testing.T) {
 	}
 }
 
+// Object fetches a history document by digest and refuses bytes that hash
+// to another one.
+func TestObjectChecksTheDigest(t *testing.T) {
+	al, err := allowlist.ParseJSON([]byte(`{"schema":"c8s.allowlist/v1","workloads":{"cds":{"containers":[{"digest":"` + testDigest + `","command":{"policy":"any"},"args":{"policy":"any"}}]}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := al.Canonical()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(body)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/allowlist/objects/sha256/"+hex.EncodeToString(sum[:]) {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write(body)
+	}))
+	defer srv.Close()
+	c := NewClient(srv.URL)
+
+	got, err := c.Object(context.Background(), sum)
+	if err != nil || len(got.Workloads["cds"].Containers) != 1 {
+		t.Fatalf("Object() = %+v, %v, want the stored document", got, err)
+	}
+	other := sum
+	other[0] ^= 1
+	if _, err := c.Object(context.Background(), other); err == nil {
+		t.Fatal("Object() of a digest the store lacks = nil error, want 404")
+	}
+	body = append(body, ' ')
+	if _, err := c.Object(context.Background(), sum); err == nil || !strings.Contains(err.Error(), "another digest") {
+		t.Fatalf("Object() of bytes hashing elsewhere = %v, want a digest error", err)
+	}
+}
+
 func TestVersionFromETag(t *testing.T) {
 	tests := []struct {
 		name string
