@@ -59,16 +59,20 @@ entry pinned to a component executable (`/c8s`, `/app/c8s`, `/attestation-api`,
 `/docker-entrypoint.sh nginx`) with mounts or env `any`, or with args `any`
 outside a sidecar invocation, covers nothing: `c8s allowlist lint` refuses that shape.
 
-`c8s.allowlistSeedJSON` emits `c8s.allowlist/v1`: one workload per derived
-image digest outside `c8s.argvPinnedDigests`, with that digest's
-`c8s.componentShapes` containers, followed by
+`c8s.allowlistSeedJSON` emits `c8s.allowlist/v1`: one workload per
+`c8s.generatedShapes` digest, with its containers, followed by
 `c8s.argvPinnedEntries`, the [router entry](#router-entry) and
 `bootstrapAllowlist.workloads`. The volumed entry
 also carries the pre-delete teardown hook's script and pause. A
 `bootstrapAllowlist.workloads` override named `c8s.digestWorkloadName`
 replaces a component entry whole, hook
 containers included; an override must declare them too, or the pre-delete hook
-is refused and the uninstall fails. The document must satisfy
+is refused and the uninstall fails. `c8s.generatedShapes` is
+`c8s.componentShapes` less the argv-pinned digests and the overridden ones,
+and `c8s.baseWorkloads` builds from it too, so an override replaces the
+generated entry in the boot base as well. An override named for an
+argv-pinned image's digest replaces its `c8s.argvPinnedEntries` entry in the
+seed the same way. The document must satisfy
 `pkg/allowlist.ParseJSON`.
 
 ## Entry names
@@ -88,7 +92,8 @@ beside the old one; the old entry keeps admitting running pods and rollbacks
 until an operator deletes it. `c8s allowlist lint --seed` names such stale
 entries. CDS deletes a replaced generated entry itself, the pre-shape
 `<image>-<12hex>` form included, when it leaves a component's args or mounts
-open (`internal/allowlist` `retiredBySeed`). The node image merges the seed into its measured base, so it carries
+open, and every generated entry for a digest the seed carries an operator
+override for (`internal/allowlist` `retiredBySeed`). The node image merges the seed into its measured base, so it carries
 the same names.
 
 ## Component shapes
@@ -115,8 +120,8 @@ allowlist container:
   under `/mnt/c8s-data/`. The node admits an `emptyDir` or `data` mount only on
   memory or encrypted storage, so the component templates use memory
   `emptyDir`s and project their ConfigMaps, which puts them on tmpfs. A `subPath`, an unclean path or another volume source
-  fails the render. A hostPath under `/var/run` yields a second container with
-  the source under `/run`, the path containerd resolves it to on most nodes.
+  fails the render, as does a hostPath under `/var/run`: containerd resolves
+  symlinks in the source, and `/var/run` is `/run` on some nodes only.
 - `env` is `match` over every variable the container launches with
   (`c8s.componentEnv`), so a pod cannot add a loader variable such as
   `LD_PRELOAD` or `BASH_ENV`, nor move `PATH`: containerd's `HOSTNAME`
@@ -134,13 +139,18 @@ entry: `get-cert`, `probe-file`, `get-secret` and `get-volume`, each pinned to
 its invocation with `args: any`, its env matched as above over the variables
 the webhook's `getCertEnv` sets (`present`, since they differ per pod; none
 for `probe-file`), and one container per combination of the optional
-discovery and reload-watch mounts. No shape names the inventory socket mount:
+discovery mount. No shape names the inventory socket mount:
 the NRI plugin adds it and observes it as a platform mount, which exact rules
 never match. The webhook turns service links off in every pod it injects into.
 The destinations match the webhook's fixed ones (`internal/webhook`).
 
-`c8s.componentShapes` collects both per digest. Every component digest must
-have a rendered container, or the render fails.
+`c8s.meshShapes` adds the pod mesh endpoint to the endpoint image's entry,
+pinned to its entrypoint, arguments and credential mount, with one container
+per combination of the optional probe variable.
+
+`c8s.componentShapes` collects them per digest, tagging each shape the node
+grants a platform role with `role` (`c8s.platformRole`). Every component
+digest must have a rendered container, or the render fails.
 [component_mounts_test.go](../../../component_mounts_test.go) checks that the
 seed and the base admit every rendered component container exactly as
 rendered, with the environment it launches with, and refuse it with one
@@ -196,17 +206,11 @@ matched.
 | Container | Declared as |
 |---|---|
 | nginx | main |
-| cds-attest, when `router.attest.enabled` | main |
+| cds-attest | main |
 | allowlist-proxy, when `router.renderAllowlistRoute` | main |
 | acme, `c8s-cert`, `c8s-cert-wait` | init |
 
-A declared init container is admitted but not required. A main container with
-a hostPath source under `/var/run` has two mount tables (see
-`c8s.mountRules`), and a node produces only one. It stays a required main in
-the table containerd produces where `/var/run` is `/run`; its other table is
-declared as an init container. Where `/var/run` is its own directory the main
-is missing and the router pod matches nothing, rather than a partial pod
-matching. The router's own `c8s-cert` and `c8s-cert-wait`
+A declared init container is admitted but not required. The router's own `c8s-cert` and `c8s-cert-wait`
 are pinned to their exact args, so they are not dropped as injected
 containers (`allowlist.AdmitsInjected` takes open args) and the entry declares
 them.
@@ -214,9 +218,8 @@ them.
 `c8s.routerEntryBlocker` returns why the entry cannot be derived, or `""`: the
 router is disabled, `router.nginx.image.digest` or `image.digest` is unset,
 `bootstrapAllowlist.deriveComponents` is false (it supplies the c8s image's
-pin), or no c8s-image main container renders. An argv reference the kubelet
-would expand fails the render in `c8s.kubeletExpand`, so the pinned argv is
-the one the runtime starts.
+pin). An argv reference the kubelet would expand fails the render in
+`c8s.kubeletExpand`, so the pinned argv is the one the runtime starts.
 `c8s.routerWorkloadSeeded` returns `true` when nothing blocks the entry and
 `c8s.routerOperatorGate` is empty.
 
@@ -245,8 +248,8 @@ default keeps the name.
 
 `router.expectedWorkload` defaults the cds-attest readiness gate to
 `c8s.routerWorkloadName` when `router.defaultGate` holds: the gate is unset, the
-entry is seeded, `router.attest.enabled` is true, `router.hostPort.enabled` is
-false, and the inventory is reachable. An explicit string, including `""`, wins;
+entry is seeded, `router.hostPort.enabled` is false, and the inventory is
+reachable. An explicit string, including `""`, wins;
 any other non-null value fails the render. An explicit `c8s-router-*` value
 fails the render unless it equals the derived name; when nothing is derivable
 the message names `c8s.routerEntryBlocker`'s cause.

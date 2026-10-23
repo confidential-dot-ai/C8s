@@ -1,6 +1,7 @@
 package nriimagepolicy
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,9 +31,13 @@ func TestInventoryPreservesUnavailableMountEvidence(t *testing.T) {
 		{name: "observed empty spec", pod: &api.PodSandbox{Id: "pod", Uid: "uid"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			p := &plugin{inventory: newAdmissionInventory(t.TempDir())}
+			p := &plugin{
+				cfg:       &config{},
+				inventory: newAdmissionInventory(t.TempDir()),
+				mesh:      newMeshGate(*meshRoles(), discardLogger()),
+			}
 			ctr := &api.Container{Id: "ctr", PodSandboxId: "pod", Args: []string{"/app"}}
-			p.recordDigest(ctr, digestApp, observedMounts(tc.pod, ctr, ""))
+			p.recordDigest(ctr, digestApp, p.observedMounts(tc.pod, ctr))
 			_, reported, known, err := p.inventory.DigestsForSandbox("pod")
 			if err != nil || !known || len(reported) != 1 {
 				t.Fatalf("inventory = %+v, %v, %v", reported, known, err)
@@ -55,7 +60,7 @@ func TestInventoryPreservesUnavailableMountEvidence(t *testing.T) {
 						Mounts:  allowlist.MountPolicy{Policy: policy},
 					}}},
 				}}
-				_, _, err := al.MatchWorkload(secrets.WorkloadContainers(al, decoded))
+				_, _, err := al.MatchWorkload(secrets.WorkloadContainers(decoded))
 				if tc.pod == nil && !errors.Is(err, allowlist.ErrNoMatch) {
 					t.Fatalf("%s accepted unavailable mount evidence: %v", policy, err)
 				}
@@ -67,19 +72,61 @@ func TestInventoryPreservesUnavailableMountEvidence(t *testing.T) {
 	}
 }
 
+// The report carries the role the node's measured base binds to each launch,
+// so a consumer drops the platform's own containers without reading a command
+// line. A launch the base names no role for is reported with none.
+func TestInventoryReportsTheMeasuredRole(t *testing.T) {
+	argv := []string{"/app/c8s", "armtls-mesh"}
+	base := roleBase(t, pushDigestB, meshRole, argv)
+	p, _ := newCachedPlugin(&config{
+		Allowlist: allowlistConfig{
+			Base:    base,
+			NodeTCB: true,
+		},
+		Policy: policyConfig{Mode: ModeFailClosed},
+	}, base)
+	p.inventory = newAdmissionInventory(t.TempDir())
+	p.SetReady()
+
+	pod := makePod("default", "pod")
+	mesh := makeCtrWithImageArgs(pod.Id, "c8s-mesh", "registry/repo@"+pushDigestB, argv)
+	if err := p.StartContainer(context.Background(), pod, mesh); err != nil {
+		t.Fatalf("the pod's mesh endpoint was refused: %v", err)
+	}
+	app := makeCtrWithImageArgs(pod.Id, "app", "registry/repo@"+pushDigestA, []string{"/app"})
+	if err := p.StartContainer(context.Background(), pod, app); err != nil {
+		t.Fatalf("the workload container was refused: %v", err)
+	}
+
+	_, reported, known, err := p.inventory.DigestsForSandbox(pod.Id)
+	if err != nil || !known || len(reported) != 2 {
+		t.Fatalf("inventory = %+v, %v, %v", reported, known, err)
+	}
+	roles := map[string]string{}
+	for _, c := range reported {
+		roles[c.Digest] = c.Role
+	}
+	if roles[pushDigestB] != meshRole {
+		t.Fatalf("the mesh endpoint reports role %q, want %q", roles[pushDigestB], meshRole)
+	}
+	if roles[pushDigestA] != "" {
+		t.Fatalf("the workload container reports role %q, want none", roles[pushDigestA])
+	}
+}
+
 // sandboxDigestsFor walks the production path CDS drives: bind the caller by
 // kernel credentials to its sandbox, then list what that sandbox runs.
 func sandboxDigestsFor(b *admissionInventory, pid int) ([]string, error) {
-	id, err := b.SandboxForPeer(workloadclaims.PeerForPID(pid))
+	sandboxID, err := b.sandboxForPeer(workloadclaims.PeerForPID(pid))
 	if err != nil {
 		return nil, err
 	}
-	digests, _, known, err := b.DigestsForSandbox(id)
+	digests, _, known, err := b.DigestsForSandbox(sandboxID)
 	if err != nil {
 		return nil, err
 	}
 	if !known {
-		return nil, fmt.Errorf("sandbox %s unknown", id)
+		return nil, fmt.Errorf("sandbox %s unknown", sandboxID)
 	}
 	return digests, nil
 }
@@ -253,7 +300,7 @@ func TestInventoryRemoveKeepsAdmissionRecord(t *testing.T) {
 	}
 }
 
-// SandboxForPeer binds the caller by kernel PID → cgroup → tracked container
+// sandboxForPeer binds the caller by kernel PID → cgroup → tracked container
 // → its sandbox. An untracked caller fails.
 func TestInventorySandboxForPeer(t *testing.T) {
 	procRoot := t.TempDir()
@@ -261,7 +308,7 @@ func TestInventorySandboxForPeer(t *testing.T) {
 	b.record(cidGetCert, "sandbox-1", "c8s-cert", digestOther, nil, nil)
 	writeCgroup(t, procRoot, 4242, cidGetCert)
 
-	got, err := b.SandboxForPeer(workloadclaims.PeerForPID(4242))
+	got, err := b.sandboxForPeer(workloadclaims.PeerForPID(4242))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,10 +317,10 @@ func TestInventorySandboxForPeer(t *testing.T) {
 	}
 
 	writeCgroup(t, procRoot, 55, cidOther)
-	if _, err := b.SandboxForPeer(workloadclaims.PeerForPID(55)); err == nil {
+	if _, err := b.sandboxForPeer(workloadclaims.PeerForPID(55)); err == nil {
 		t.Fatal("untracked caller resolved to a sandbox")
 	}
-	if _, err := b.SandboxForPeer(workloadclaims.PeerForPID(0)); err == nil {
+	if _, err := b.sandboxForPeer(workloadclaims.PeerForPID(0)); err == nil {
 		t.Fatal("peer pid 0 accepted")
 	}
 }

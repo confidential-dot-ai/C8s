@@ -311,7 +311,9 @@ func TestParseRejects(t *testing.T) {
 		{name: "D7 port 65536", edit: func(m map[string]any) { backendOf(m, 0)["address"] = "vllm:65536" }, wantErr: "port"},
 		{name: "D7 port with leading zero", edit: func(m map[string]any) { backendOf(m, 0)["address"] = "vllm:08443" }, wantErr: "port"},
 		{name: "D7 named port", edit: func(m map[string]any) { backendOf(m, 0)["address"] = "vllm:https" }, wantErr: "port"},
-		{name: "D7 IPv6 zone", edit: func(m map[string]any) { backendOf(m, 0)["address"] = "[fe80::1%eth0]:443" }, wantErr: "address"},
+		{name: "D7 bracketed IPv4", edit: func(m map[string]any) { backendOf(m, 0)["address"] = "[10.0.0.5]:443" }, wantErr: "brackets"},
+		{name: "D7 bracketed DNS name", edit: func(m map[string]any) { backendOf(m, 0)["address"] = "[vllm.ai.svc]:443" }, wantErr: "brackets"},
+		{name: "D7 IPv6 zone", edit: func(m map[string]any) { backendOf(m, 0)["address"] = "[fe80::1%eth0]:443" }, wantErr: "neither an IP address"},
 		{name: "D7 invalid workload name", edit: func(m map[string]any) { backendOf(m, 0)["workload"] = "a/b" }, wantErr: "workload name"},
 		{name: "D7 empty workload name", edit: func(m map[string]any) { backendOf(m, 0)["workload"] = "" }, wantErr: "workload name"},
 		{name: "D7 workload not a string", edit: func(m map[string]any) { backendOf(m, 0)["workload"] = 1 }, wantErr: "workload: must be a string"},
@@ -442,7 +444,7 @@ func FuzzParse(f *testing.F) {
 			t.Fatalf("Parse(%q) = revision %d, maxAge %v; want both in range", b, m.Revision, m.MaxAge)
 		}
 		for name, h := range m.Hosts {
-			if checkHostKey(name) != nil || len(h.Routes) == 0 {
+			if CheckHost(name) != nil || len(h.Routes) == 0 {
 				t.Fatalf("Parse(%q) accepted host %q with %d routes", b, name, len(h.Routes))
 			}
 			for _, r := range h.Routes {

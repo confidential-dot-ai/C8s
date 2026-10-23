@@ -19,6 +19,9 @@
 // editing a pinned-key list, plus single-file (cert+key) operator credentials.
 //
 // Either way this is the sole authorization path for those requests.
+//
+// ErrTokenReused, ErrTokenBeforeStart and ErrTokenNotRecorded are shared
+// sentinels for CDS's single-use token layer; Verifier never returns them.
 package operatorauth
 
 import (

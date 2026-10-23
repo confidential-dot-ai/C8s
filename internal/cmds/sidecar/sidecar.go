@@ -1,10 +1,10 @@
 // Package sidecar holds the CDS-release plumbing shared by the get-secret and
 // get-volume sidecars: the config they render from the webhook, the mTLS
 // client bound to the pod's leaf, the challenge/sandbox-token dance around
-// each store request, and the retry loop that turns "not released yet" into
-// bounded patience. The two commands differ only in what they do with the
-// released bytes. The conformance probe (internal/cmds/secretprobe) uses the
-// dance's pieces one at a time, with the sidecar's choices handed to its caller.
+// each store request, and the retry loop that waits out "not released yet".
+// The two commands differ only in what they do with the released bytes. The
+// conformance probe (internal/cmds/secretprobe) uses the dance's pieces one at
+// a time, with the sidecar's choices handed to its caller.
 package sidecar
 
 import (
@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strings"
 	"time"
 
@@ -56,17 +57,32 @@ func (c Config) Endpoint() string {
 // shape also moves the volume daemon onto guest loopback) overrides the
 // affected flag's Usage via f.Lookup after this call.
 func BindFlags(f *pflag.FlagSet, cfg *Config) {
-	cmdsutil.BindImagePolicyFlags(f, &cfg.MeasurementsConfig, &cfg.MeasurementsConfigJSON, "", "pins the CDS endpoint; excludes --measurements and --rtmrs")
-	f.StringVar(&cfg.CDSURL, "cds-url", "", "https base URL of CDS")
+	cmdsutil.BindImagePolicyFlags(f, &cfg.MeasurementsConfig, &cfg.MeasurementsConfigJSON, "pins the CDS endpoint; excludes --measurements and --rtmrs")
+	f.StringVar(&cfg.CDSURL, "cds-url", "", "https base URL of CDS; refused in an injected sidecar, which dials the endpoint the node mounts")
 	f.StringVar(&cfg.AttestationApiURL, "attestation-api-url", "", "local attestation-api used to verify CDS's armTLS certificate")
 	f.StringSliceVar(&cfg.Measurements, "measurements", nil, "SHA-384 hex launch measurement(s) CDS must present (repeatable; empty pins none, UNSAFE)")
 	f.StringSliceVar(&cfg.RTMRs, "rtmrs", nil, "TDX RTMR pin(s) <index>=<sha384-hex> CDS must additionally satisfy (repeatable; ignored when CDS presents SNP evidence, empty pins no registers)")
 	f.StringVar(&cfg.CertPath, "cert", "/run/c8s/certs/tls.crt", "the pod's CDS-issued certificate, presented to CDS")
 	f.StringVar(&cfg.KeyPath, "key", "/run/c8s/certs/tls.key", "private key for --cert")
-	f.IntVar(&cfg.Attempts, "attempts", 60, "how many times to try before failing; release is refused until every main container is running, so retries are expected")
-	f.DurationVar(&cfg.RetryInterval, "retry-interval", 5*time.Second, "wait between attempts")
+	f.IntVar(&cfg.Attempts, "attempts", 0, "how many times to try before failing; 0 (the default) means no limit. The waits between attempts back off (see --retry-interval), so N attempts last longer than N x --retry-interval. Release is refused until every main container is running, which a slow image pull can delay for many minutes")
+	f.DurationVar(&cfg.RetryInterval, "retry-interval", 5*time.Second, "wait after the first refused attempt; it doubles on each further one up to "+maxRetryInterval.String()+" (an interval above that stays constant)")
 	f.DurationVar(&cfg.RequestTimeout, "request-timeout", 10*time.Second, "per-request timeout against CDS")
 	f.DurationVar(&cfg.InventoryTimeout, "inventory-timeout", 5*time.Second, "timeout for redeeming a sandbox token from the node's admission inventory")
+}
+
+// ResolveCDSEndpoint fixes the CDS this sidecar dials: the endpoint its node
+// hands an injected client, otherwise --cds-url. Each command calls it while
+// it wires its flags, before validating what it ended up with.
+func (c *Config) ResolveCDSEndpoint() error {
+	endpoint, fromNode, err := cmdsutil.ResolveCDSEndpoint(workloadclaims.CDSAddressPath, c.CDSURL)
+	if err != nil {
+		return err
+	}
+	if fromNode {
+		c.CDSURL = cmdsutil.CDSURL(endpoint)
+	}
+	slog.Info("CDS endpoint resolved", "cds_url", c.CDSURL, "from_node", fromNode)
+	return nil
 }
 
 // Validate checks the shared half of a config and canonicalises the CDS URL.
@@ -85,8 +101,11 @@ func (c *Config) Validate() error {
 	if err := cmdsutil.ValidateAttestationAPIURL("--attestation-api-url", c.AttestationApiURL); err != nil {
 		return err
 	}
-	if c.Attempts <= 0 {
-		return fmt.Errorf("--attempts must be positive")
+	if err := cmdsutil.RequireNodeVerifier(workloadclaims.CDSPinsPath, workloadclaims.AttestationAPISocket, c.AttestationApiURL); err != nil {
+		return err
+	}
+	if c.Attempts < 0 {
+		return fmt.Errorf("--attempts must not be negative")
 	}
 	if c.RetryInterval <= 0 || c.RequestTimeout <= 0 || c.InventoryTimeout <= 0 {
 		return fmt.Errorf("--retry-interval, --request-timeout and --inventory-timeout must be positive")
@@ -94,13 +113,19 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// ParsePins decodes --measurements and --rtmrs, warning when measurements are unpinned.
+// ParsePins resolves the pins this sidecar holds its CDS to: the node's policy
+// where the enforcer mounts it, otherwise --measurements and --rtmrs.
 func (c *Config) ParsePins() (armtls.Pins, error) {
-	policy, err := (cmdsutil.ImagePolicySource{File: c.MeasurementsConfig, JSON: c.MeasurementsConfigJSON}).Load(
+	policy, fromNode, err := cmdsutil.ResolveCDSPins(workloadclaims.CDSPinsPath,
+		cmdsutil.ImagePolicySource{
+			File: c.MeasurementsConfig,
+			JSON: c.MeasurementsConfigJSON,
+		},
 		cmdsutil.MeasurementPins{Measurements: c.Measurements, Registers: c.RTMRs})
 	if err != nil {
 		return armtls.Pins{}, err
 	}
+	slog.Info("CDS pins resolved", "from_node", fromNode)
 	cmdsutil.WarnIfCDSUnpinned(len(policy.Measurements)+len(policy.Images),
 		"--measurements empty: the CDS this sidecar hands its sandbox token to is not pinned to a launch measurement. UNSAFE outside development.")
 	return armtls.Pins(policy), nil
@@ -115,24 +140,44 @@ type terminal struct{ err error }
 func (t terminal) Error() string { return t.err.Error() }
 func (t terminal) Unwrap() error { return t.err }
 
+// maxRetryInterval caps the doubling wait between attempts, so a release that
+// becomes possible is picked up within this long.
+const maxRetryInterval = 30 * time.Second
+
+// stuckAfter is how long refusals are logged at INFO. After it they are logged
+// at WARN: a slow image pull rarely takes this long, so a pod still refused is
+// more likely misconfigured.
+const stuckAfter = 10 * time.Minute
+
+// nextWait is the wait after one that lasted wait: double, capped at
+// maxRetryInterval, or at interval when that is larger.
+func nextWait(wait, interval time.Duration) time.Duration {
+	return min(2*wait, max(maxRetryInterval, interval))
+}
+
 // Retry runs one whole release pass at a time, retrying the set until an
-// attempt succeeds, one returns a Terminal error, or the budget runs out.
+// attempt succeeds, one returns a Terminal error, or cfg.Attempts (when
+// positive) runs out.
 //
 // Retrying is expected, not exceptional: until every main container is running
 // the sandbox does not match its workload entry, so early attempts are denied
-// by design. The bound turns a genuinely stuck release into a visible failure
-// instead of an idle sidecar in a Running pod. The what argument names the
-// thing being released ("secret", "volume") in the log lines.
+// by design. The sidecar cannot see when the main containers exist, and a
+// multi-GB image pull can hold them back for tens of minutes, so by default it
+// waits without a bound, backing off from cfg.RetryInterval to
+// maxRetryInterval. A count measured from pod start would expire during the
+// pull, and an exited native sidecar is only restarted by the kubelet under
+// crash-loop backoff, which delays the release further. The what argument
+// names the thing being released ("secret", "volume") in the log lines.
 func Retry(ctx context.Context, cfg Config, what string, attempt func(context.Context) error) error {
-	var lastErr error
-	for n := 1; n <= cfg.Attempts; n++ {
+	start := time.Now()
+	wait := cfg.RetryInterval
+	for n := 1; ; n++ {
 		err := attempt(ctx)
 		if err == nil {
 			return nil
 		}
-		lastErr = err
 		if _, ok := errors.AsType[terminal](err); ok {
-			slog.Error(what+" release cannot succeed", "attempt", n, "of", cfg.Attempts, "error", err)
+			slog.Error(what+" release cannot succeed", "attempt", n, "error", err)
 			return err
 		}
 		if n == cfg.Attempts {
@@ -141,15 +186,37 @@ func Retry(ctx context.Context, cfg Config, what string, attempt func(context.Co
 			// own log, not just the generic per-attempt INFO line.
 			slog.Error(what+" release failed on the final attempt",
 				"attempt", n, "of", cfg.Attempts, "error", err)
-			break
+			return fmt.Errorf("giving up after %d attempts: %w", cfg.Attempts, err)
 		}
-		slog.Info(what+" not released yet; retrying",
-			"attempt", n, "of", cfg.Attempts, "retry_in", cfg.RetryInterval, "error", err)
+		waited := time.Since(start)
+		level := slog.LevelInfo
+		if waited >= stuckAfter {
+			level = slog.LevelWarn
+		}
+		slog.Log(ctx, level, what+" not released yet; retrying", "reason", refusalReason(err),
+			"attempt", n, "waited", waited.Round(time.Second), "retry_in", wait, "error", err)
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(cfg.RetryInterval):
+		case <-time.After(wait):
 		}
+		wait = nextWait(wait, cfg.RetryInterval)
 	}
-	return fmt.Errorf("giving up after %d attempts: %w", cfg.Attempts, lastErr)
+}
+
+// refusalReason says what a failed attempt most likely means. CDS answers
+// every authorization failure with the same opaque 403, and the expected one
+// is a pod whose main containers are not all running yet. A 404 is a path the
+// store holds nothing at (or a grant without read access).
+func refusalReason(err error) string {
+	se, ok := errors.AsType[*StatusError](err)
+	switch {
+	case ok && se.Status == http.StatusForbidden:
+		return "CDS releases only once every main container of this pod is running; " +
+			"a main image still pulling delays it. If they are running, the pod's allowlist entry " +
+			"does not match or has no grant for this path (the CDS log names the denial)"
+	case ok && se.Status == http.StatusNotFound:
+		return "the store holds no value at this path yet; for a volume, run `c8s volume create`"
+	}
+	return "CDS or the node could not complete the request"
 }

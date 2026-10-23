@@ -32,6 +32,7 @@ func registerAllowlist(sc *godog.ScenarioContext) {
 	sc.Step(`^"([^"]*)" states no args policy for "([^"]*)"$`, entryStatesNoArgsPolicy)
 	sc.Step(`^"([^"]*)" pins the argv of "([^"]*)" to the entrypoint of that image$`, entryPinsEntrypoint)
 	sc.Step(`^"([^"]*)" pins the mounts of "([^"]*)" to one rule of kind "([^"]*)" with destination "([^"]*)"$`, entryPinsMounts)
+	sc.Step(`^"([^"]*)" denies the mounts of "([^"]*)"$`, entryDeniesMounts)
 	sc.Step(`^"([^"]*)" also pins a mount of "([^"]*)" of kind "([^"]*)" with destination "([^"]*)"$`, entryPinsAnotherMount)
 	sc.Step(`^"([^"]*)" matches "([^"]*)" of "([^"]*)" exact "([^"]*)"$`, entryMatchesExact)
 	sc.Step(`^"([^"]*)" matches "([^"]*)" of "([^"]*)" present$`, entryMatchesPresent)
@@ -248,6 +249,16 @@ func entryPinsMounts(ctx context.Context, name, image, kind, destination string)
 		return err
 	}
 	c.Mounts = mountsPolicy{Policy: "exact", Rules: []mountRule{{Destination: destination, Kind: kind}}}
+	return nil
+}
+
+// entryDeniesMounts admits the container with platform mounts alone.
+func entryDeniesMounts(ctx context.Context, name, image string) error {
+	c, err := getWorld(ctx).find(name, image)
+	if err != nil {
+		return err
+	}
+	c.Mounts = mountsPolicy{Policy: "deny"}
 	return nil
 }
 
@@ -537,7 +548,7 @@ func baseDeclares(ctx context.Context, node, image string) error {
 		return err
 	}
 	if answer != "yes" {
-		return godog.ErrSkip
+		return skipf("the base allowlist of node %q does not declare image %q here", node, image)
 	}
 	return nil
 }

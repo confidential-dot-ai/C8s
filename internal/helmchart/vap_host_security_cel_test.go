@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	testClaimsHostDir   = "/var/run/nri-image-policy"
+	testClaimsHostDir   = "/run/nri-image-policy"
 	testClaimsMountPath = "/run/c8s/workload-claims"
 	testC8sImage        = "ghcr.io/confidential-dot-ai/c8s-operator:dev"
 )
@@ -79,9 +79,6 @@ func validClaimsSidecar(name, mode string) map[string]any {
 	sidecar["image"] = testC8sImage
 	sidecar["restartPolicy"] = "Always"
 	sidecar["args"] = []any{mode}
-	if mode == "get-cert" {
-		sidecar["args"] = append(sidecar["args"].([]any), "--workload-claims")
-	}
 	// The node plugin supplies the claims mount through NRI, below the Pod spec.
 	return sidecar
 }

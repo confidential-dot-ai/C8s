@@ -2,11 +2,14 @@ package volume
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+
+	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
 // runCreateDryRun drives the command through cobra so flag validation and the
@@ -158,7 +161,7 @@ func TestPrintResultNamesSerialAnnotationGrantAndMountPolicy(t *testing.T) {
 		`confidential.ai/c8s-volumes: "weights=/tenant-a/volumes/weights"`,
 		"kubernetes.io/hostname: node-1",
 		`"read": ["/tenant-a/volumes/weights"]`,
-		`"mounts": {"policy": "any"}`,
+		`"destination":"/mnt/c8s-data/c8s-volumes/weights","kind":"data"`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("output missing %q:\n%s", want, got)
@@ -167,6 +170,30 @@ func TestPrintResultNamesSerialAnnotationGrantAndMountPolicy(t *testing.T) {
 	// A subtree grant would hand over every volume beneath the base.
 	if strings.Contains(got, "/**") {
 		t.Errorf("output offers a subtree grant:\n%s", got)
+	}
+	// The credential volume reaches the injected containers alone, so an entry
+	// admitting it would describe a mount its containers never hold.
+	if strings.Contains(got, "cert volume") {
+		t.Errorf("output asks the entry to admit the credential volume:\n%s", got)
+	}
+}
+
+// The printed grant and mounts policy must form an entry the allowlist write
+// path accepts: a grant refuses any mounts policy that leaves the table open.
+func TestPrintedMountPolicyIsAcceptedWithTheGrant(t *testing.T) {
+	entry := fmt.Sprintf(`{
+  "label": "app",
+  "initContainers": [],
+  "containers": [{
+    "digest": "sha256:%s",
+    "command": {"policy": "exact", "argv": ["/app"]},
+    "args": {"policy": "deny"},
+    "mounts": %s
+  }],
+  "secrets": {"policy": "allow", "read": ["/tenant-a/volumes/weights"]}
+}`, strings.Repeat("a", 64), grantMounts("weights"))
+	if _, err := pkgallowlist.ParseWorkloadJSON([]byte(entry)); err != nil {
+		t.Fatalf("ParseWorkloadJSON(printed policy) = %v, want nil", err)
 	}
 }
 

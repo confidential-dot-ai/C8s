@@ -1,0 +1,22 @@
+{
+  "label": "adopted/deployment/web",
+  "initContainers": null,
+  "containers": [
+    {
+      "digest": "sha256:3af0c10d960cc2502427fe1219c52989d309e7d65596869c60a34fd2fa2406f0",
+      "image": "docker.io/nginxinc/nginx-unprivileged@sha256:3af0c10d960cc2502427fe1219c52989d309e7d65596869c60a34fd2fa2406f0",
+      "command": {
+        "policy": "any"
+      },
+      "args": {
+        "policy": "any"
+      },
+      "mounts": {
+        "policy": "deny"
+      },
+      "env": {
+        "policy": "any"
+      }
+    }
+  ]
+}

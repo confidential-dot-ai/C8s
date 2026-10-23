@@ -39,7 +39,6 @@ func registerCDS(sc *godog.ScenarioContext) {
 	sc.Step(`^a client holds the operator keys the CDS loaded at startup$`, holdsOperatorKeys)
 	sc.Step(`^a client holds the pins the CDS was started with$`, holdsPins)
 	sc.Step(`^the CDS has no operator keys$`, cdsNoOperatorKeys)
-	sc.Step(`^the mesh CA is within min-ca-validity of its expiry$`, meshCANearExpiry)
 	sc.Step(`^the CDS has been restarted with different pins$`, restartedDifferentPins)
 	sc.Step(`^the CDS is serving$`, cdsServing)
 	sc.Step(`^the local attestation service on the node of the CDS becomes unavailable$`, attestationServiceStops)
@@ -325,11 +324,13 @@ func matchesHeldKeys(ctx context.Context) error {
 	return nil
 }
 
-// referenceValues parses the launch digests of the reference-value document.
+// referenceValues parses the launch digests of the reference-value document:
+// an SNP entry's measurement, a TDX entry's MRTD.
 func referenceValues(body []byte) ([]string, error) {
 	var doc struct {
 		Measurements []struct {
 			Measurement *string `json:"measurement"`
+			MRTD        *string `json:"mrtd"`
 		} `json:"measurements"`
 	}
 	if err := json.Unmarshal(body, &doc); err != nil {
@@ -340,8 +341,11 @@ func referenceValues(body []byte) ([]string, error) {
 	}
 	var digests []string
 	for _, m := range doc.Measurements {
-		if m.Measurement != nil {
+		switch {
+		case m.Measurement != nil:
 			digests = append(digests, strings.ToLower(*m.Measurement))
+		case m.MRTD != nil:
+			digests = append(digests, strings.ToLower(*m.MRTD))
 		}
 	}
 	return sortedUnique(digests), nil
@@ -454,12 +458,6 @@ func (w *world) reconfigure(parameter, value string) error {
 
 func cdsNoOperatorKeys(ctx context.Context) error {
 	return getWorld(ctx).reconfigure("operator-keys", "none")
-}
-
-// meshCANearExpiry raises min-ca-validity above any CA's validity, so the
-// CA is within it from its first second.
-func meshCANearExpiry(ctx context.Context) error {
-	return getWorld(ctx).reconfigure("min-ca-validity", "876000h")
 }
 
 // restartedDifferentPins pins a launch digest no evidence carries.

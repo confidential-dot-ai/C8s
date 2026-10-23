@@ -26,4 +26,9 @@ type AttestRequestBody struct {
 	// (armtls.OIDSandboxID) — docs/armtls.md, "Sandbox identity". Kept opaque
 	// here (types must not import workloadclaims).
 	SandboxToken json.RawMessage `json:"sandbox_token,omitempty"`
+
+	// RuntimeExtensions is the requester's claimed TDX RTMR[3] runtime
+	// extension list, canonical digests in extend order. CDS replays it
+	// against the quote and trusts only the prefix that matches.
+	RuntimeExtensions []string `json:"runtime_extensions,omitempty"`
 }

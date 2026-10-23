@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 var bareMetalHostAPI = []string{
@@ -34,7 +36,7 @@ func attestationURLs(t *testing.T, out string) map[string]renderedContainer {
 			}
 		}
 	}
-	for _, want := range []string{"c8s-cds/cds", "c8s-armtls-mesh/armtls-mesh", "c8s-router/cds-attest", "c8s-router/c8s-cert"} {
+	for _, want := range []string{"c8s-cds/cds", "c8s-router/cds-attest", "c8s-router/c8s-cert"} {
 		if _, ok := urls[want]; !ok {
 			t.Fatalf("%s takes no attestation-api URL; have %v", want, slices.Sorted(maps.Keys(urls)))
 		}
@@ -50,6 +52,14 @@ type renderedContainer struct {
 
 func hasEnv(c corev1.Container, name string) bool {
 	return slices.ContainsFunc(c.Env, func(e corev1.EnvVar) bool { return e.Name == name })
+}
+
+// namesTheNodeVerifier reports a container that reaches the node's own
+// attestation-api over the socket the enforcer mounts for it: a credentials
+// role takes that verifier and no node address at all
+// (router.credentialsVerifierURL).
+func namesTheNodeVerifier(rc renderedContainer) bool {
+	return rc.url == "unix://"+workloadclaims.AttestationAPISocket
 }
 
 // Under a fail-closed policy on bare-metal, every component reads the node
@@ -74,6 +84,9 @@ func assertNodeIPFile(t *testing.T, args []string) {
 		t.Fatalf("helm template %v: %v\n%s", args, err, out)
 	}
 	for name, rc := range attestationURLs(t, out) {
+		if namesTheNodeVerifier(rc) {
+			continue
+		}
 		if strings.HasPrefix(name, "c8s-operator/") {
 			if rc.url != "http://$$(HOST_IP):8400" {
 				t.Errorf("%s --attestation-api-url = %q, want the $(HOST_IP) form for injected sidecars", name, rc.url)
@@ -92,9 +105,9 @@ func assertNodeIPFile(t *testing.T, args []string) {
 			continue
 		}
 		v := slices.IndexFunc(rc.spec.Volumes, func(v corev1.Volume) bool { return v.Name == rc.container.VolumeMounts[i].Name })
-		if v < 0 || rc.spec.Volumes[v].HostPath == nil || rc.spec.Volumes[v].HostPath.Path != "/var/run/nri-image-policy/node-ip" ||
+		if v < 0 || rc.spec.Volumes[v].HostPath == nil || rc.spec.Volumes[v].HostPath.Path != "/run/nri-image-policy/node-ip" ||
 			rc.spec.Volumes[v].HostPath.Type == nil || *rc.spec.Volumes[v].HostPath.Type != corev1.HostPathFile {
-			t.Errorf("%s node-ip volume = %+v, want hostPath /var/run/nri-image-policy/node-ip of type File", name, rc.spec.Volumes)
+			t.Errorf("%s node-ip volume = %+v, want hostPath /run/nri-image-policy/node-ip of type File", name, rc.spec.Volumes)
 		}
 	}
 }
@@ -108,6 +121,9 @@ func TestChartBareMetalAuditKeepsHostIP(t *testing.T) {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
 	for name, rc := range attestationURLs(t, out) {
+		if namesTheNodeVerifier(rc) {
+			continue
+		}
 		if rc.url != "http://$$(HOST_IP):8400" {
 			t.Errorf("%s --attestation-api-url = %q, want http://$$(HOST_IP):8400", name, rc.url)
 		}

@@ -434,10 +434,11 @@ func (w *world) cdsRequest(method, route string, body []byte, auth, cert, key st
 }
 
 // httpRequest sends one request through a backend function that takes
-// cds_request's arguments (cds_request, router_request).
-func (w *world) httpRequest(fn, method, route string, body []byte, auth, cert, key string) (*answer, error) {
+// cds_request's arguments (cds_request, router_request), each header as
+// "Name: value".
+func (w *world) httpRequest(fn, method, route string, body []byte, auth, cert, key string, headers ...string) (*answer, error) {
 	send := func(bodyFile string) (string, error) {
-		return w.be.call(fn, method, route, bodyFile, auth, cert, key)
+		return w.be.call(fn, append([]string{method, route, bodyFile, auth, cert, key}, headers...)...)
 	}
 	var out string
 	var err error
@@ -755,7 +756,7 @@ func mountsDiskVolume(ctx context.Context) error {
 		return err
 	}
 	if answer == "yes" {
-		return godog.ErrSkip
+		return skipf("disk-backed emptyDirs are encrypted here (scratch_encrypted)")
 	}
 	p.opts = append(p.opts, "--disk-volume", "/scratch")
 	return nil
@@ -894,6 +895,19 @@ func (w *world) awaitReady(p *pod) error {
 	}
 	p.ready = true
 	return nil
+}
+
+// certPaths is where a pod carrying a workload ID holds its leaf and key.
+func (w *world) certPaths() (certFile, keyFile string, err error) {
+	paths, err := w.be.call("cert_paths")
+	if err != nil {
+		return "", "", err
+	}
+	files := strings.Fields(paths)
+	if len(files) != 2 {
+		return "", "", fmt.Errorf("the backend named %d certificate paths, not two", len(files))
+	}
+	return files[0], files[1], nil
 }
 
 // probe runs `c8s secret-probe` in the pod's certificate container.
@@ -1314,7 +1328,7 @@ func selfSignedRequester(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
-	value, err := asn1.MarshalWithParams(id, "ia5")
+	value, err := asn1.MarshalWithParams(id, "utf8")
 	if err != nil {
 		return err
 	}
@@ -1705,11 +1719,11 @@ func canStillRead(ctx context.Context, name, logical string) error {
 // --- The secret client ---
 
 func (w *world) readSecretFile(p *pod, logical string) ([]byte, error) {
-	out, err := w.podExec(p, firstContainer, "cat", secretClientDir+"/"+secretFile(logical))
+	out, err := w.be.call("pod_file", p.namespace, p.name, p.first, secretClientDir+"/"+secretFile(logical))
 	if err != nil {
 		return nil, err
 	}
-	return []byte(out), nil
+	return base64.StdEncoding.DecodeString(out)
 }
 
 func outputHoldsFile(ctx context.Context, name, logical string) error {
@@ -1782,7 +1796,7 @@ func outputOnMemory(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
-	out, err := w.podExec(p, firstContainer, "stat", "-f", "-c", "%T", secretClientDir)
+	out, err := w.be.call("pod_fstype", p.namespace, p.name, p.first, secretClientDir)
 	if err != nil {
 		return err
 	}

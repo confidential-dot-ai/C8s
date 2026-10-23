@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 	admissionregv1 "k8s.io/api/admissionregistration/v1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -24,10 +25,13 @@ import (
 	policyv1 "k8s.io/api/policy/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	sigsyaml "sigs.k8s.io/yaml"
 
+	acmecmd "github.com/confidential-dot-ai/c8s/internal/cmds/acme"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 // helmFailMessage extracts the user-visible message from a `helm template`
@@ -51,110 +55,17 @@ func assertHelmFailMessage(t *testing.T, out, want string) {
 	}
 }
 
-// preStopBoundFailure captures the structured shape of the daemonset
-// preStop fail-checks so tests can assert on typed fields instead of
-// substring-matching the rendered error.
-type preStopBoundFailure struct {
-	Cmp   string // "le" for "≤", "ge" for "≥"
-	Bound int
-	Got   int
-}
-
-var preStopBoundRE = regexp.MustCompile(`iptablesCleanup\.preStopSleepSeconds must be ([≤≥]) (-?\d+).*got (-?\d+)`)
-
-func parsePreStopBoundFailure(t *testing.T, out string) preStopBoundFailure {
-	t.Helper()
-	msg := helmFailMessage(t, out)
-	m := preStopBoundRE.FindStringSubmatch(msg)
-	if len(m) != 4 {
-		t.Fatalf("preStop bound regex did not match %q", msg)
-	}
-	cmp := "ge"
-	if m[1] == "≤" {
-		cmp = "le"
-	}
-	bound, err := strconv.Atoi(m[2])
-	if err != nil {
-		t.Fatalf("bound %q is not an int: %v", m[2], err)
-	}
-	got, err := strconv.Atoi(m[3])
-	if err != nil {
-		t.Fatalf("got %q is not an int: %v", m[3], err)
-	}
-	return preStopBoundFailure{Cmp: cmp, Bound: bound, Got: got}
-}
-
-// gracePeriodBudgetFailure: the durations the chart says don't leave a
-// preStop window.
-type gracePeriodBudgetFailure struct {
-	GracePeriod string
-	Drain       string
-}
-
-var gracePeriodBudgetRE = regexp.MustCompile(`terminationGracePeriod \(([^)]+)\) must exceed drainTimeout \(([^)]+)\)`)
-
-func parseGracePeriodBudgetFailure(t *testing.T, out string) gracePeriodBudgetFailure {
-	t.Helper()
-	msg := helmFailMessage(t, out)
-	m := gracePeriodBudgetRE.FindStringSubmatch(msg)
-	if len(m) != 3 {
-		t.Fatalf("grace-period budget regex did not match %q", msg)
-	}
-	return gracePeriodBudgetFailure{GracePeriod: m[1], Drain: m[2]}
-}
-
-// durationFormatFailure classifies the two distinct rejection paths in the
-// duration helper so a future refactor that conflates them flags here.
-type durationFormatFailure struct {
-	Value  string
-	Reason string // "no-unit" | "non-integer"
-}
-
-var (
-	durationNoUnitRE     = regexp.MustCompile(`duration "([^"]+)" must end with h, m, or s`)
-	durationNonIntegerRE = regexp.MustCompile(`duration "([^"]+)" must be a positive integer`)
-)
-
-func parseDurationFormatFailure(t *testing.T, out string) durationFormatFailure {
-	t.Helper()
-	msg := helmFailMessage(t, out)
-	if m := durationNoUnitRE.FindStringSubmatch(msg); len(m) == 2 {
-		return durationFormatFailure{Value: m[1], Reason: "no-unit"}
-	}
-	if m := durationNonIntegerRE.FindStringSubmatch(msg); len(m) == 2 {
-		return durationFormatFailure{Value: m[1], Reason: "non-integer"}
-	}
-	t.Fatalf("duration-format regex did not match %q", msg)
-	return durationFormatFailure{}
-}
-
-// containerArgs returns the args of the named container, searching main and
-// init containers. Fails the test if no such container exists.
+// containerArgs returns the args of the named container, main or init, after
+// kubelet expansion. Fails the test if no such container exists.
 func containerArgs(t *testing.T, ds *appsv1.DaemonSet, name string) []string {
 	t.Helper()
-	for _, c := range ds.Spec.Template.Spec.Containers {
+	for _, c := range slices.Concat(ds.Spec.Template.Spec.Containers, ds.Spec.Template.Spec.InitContainers) {
 		if c.Name == name {
-			return c.Args
-		}
-	}
-	for _, c := range ds.Spec.Template.Spec.InitContainers {
-		if c.Name == name {
-			return c.Args
+			return runtimeArgv(corev1.Container{Args: c.Args, Env: c.Env}, nil)
 		}
 	}
 	t.Fatalf("container %q not found in DaemonSet", name)
 	return nil
-}
-
-// containerArgValue returns (value, true) for `--flag value`, or ("", false)
-// if the flag isn't present.
-func containerArgValue(args []string, flag string) (string, bool) {
-	for i, a := range args {
-		if a == flag && i+1 < len(args) {
-			return args[i+1], true
-		}
-	}
-	return "", false
 }
 
 func TestChartDefaultRendersReplacementStack(t *testing.T) {
@@ -171,7 +82,6 @@ func TestChartDefaultRendersReplacementStack(t *testing.T) {
 	}
 	for _, label := range [][2]string{
 		{"app.kubernetes.io/component", "cds"},
-		{"app.kubernetes.io/name", "armtls-mesh"},
 		{"app.kubernetes.io/name", "nri-image-policy"},
 		{"app.kubernetes.io/name", "router"},
 	} {
@@ -179,17 +89,15 @@ func TestChartDefaultRendersReplacementStack(t *testing.T) {
 			t.Fatalf("default chart missing a manifest labelled %s: %s", label[0], label[1])
 		}
 	}
-	renderedRouterNginxConfig(t, out).server(t).assertDirective(t, "server_name", "c8s-router.c8s-system.svc")
+	renderedRouterNginxConfig(t, out).server(t).assertDirective(t, "server_name", "c8s-router.c8s-router.svc")
 	cert := routerGetCertContainer(t, out, "c8s-cert")
 	assertContainerArgs(t, cert,
 		"get-cert",
-		"--cds-url=https://c8s-cds.c8s-system.svc:8443",
-		"--attestation-api-url=unix:///var/run/nri-image-policy/attestation-api.sock",
-		"--san=c8s-router.c8s-system.svc",
-		"--out=/tls/cert.pem",
-		"--key-out=/tls/key.pem",
+		"--attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock",
+		"--san=c8s-router.c8s-router.svc",
+		"--cert-path=/etc/c8s/certs/tls.crt",
+		"--key-path=/etc/c8s/certs/tls.key",
 		"--renew-interval=1h",
-		"--reload-nginx=true",
 		"--continue-on-initial-error",
 		// The CA watch keeps the served mesh CA tracking the live CDS CA: a
 		// CDS restart regenerates the mesh CA in-memory, and without the watch
@@ -206,188 +114,21 @@ func TestChartDefaultRendersReplacementStack(t *testing.T) {
 		t.Fatalf("c8s-cert must NOT carry a startupProbe; got %+v", cert.StartupProbe)
 	}
 	wait := routerGetCertContainer(t, out, "c8s-cert-wait")
-	if got := strings.Join(wait.Command, " "); !strings.Contains(got, "probe-file") || !strings.Contains(got, "--wait") || !strings.Contains(got, "/tls/cert.pem") {
-		t.Fatalf("c8s-cert-wait command = %q, want `/c8s probe-file --wait --timeout=... /tls/cert.pem`", got)
+	if got := strings.Join(wait.Command, " "); !strings.Contains(got, "probe-file") || !strings.Contains(got, "--wait") || !strings.Contains(got, "/etc/c8s/certs/tls.crt") {
+		t.Fatalf("c8s-cert-wait command = %q, want `/c8s probe-file --wait --timeout=... /etc/c8s/certs/tls.crt`", got)
 	}
-	if got := cert.SecurityContext.RunAsUser; got == nil || *got != 101 {
-		t.Fatalf("c8s-cert runAsUser = %v, want 101", got)
+	if got := cert.SecurityContext.RunAsUser; got == nil || *got != int64(workloadclaims.CredentialsUID) {
+		t.Fatalf("c8s-cert runAsUser = %v, want the credentials role's uid %d", got, workloadclaims.CredentialsUID)
 	}
 	args := renderedOperatorArgs(t, out)
 	for _, want := range []string{
 		"--get-cert-image=ghcr.io/confidential-dot-ai/c8s-operator:dev",
-		"--cds-url=https://c8s-cds.c8s-system.svc:8443",
 		"--get-cert-renew-interval=2h",
 	} {
 		if !slices.Contains(args, want) {
 			t.Fatalf("operator args missing %q\n%v", want, args)
 		}
 	}
-}
-
-func TestChartRendersARMTLSHostRoutingDefaults(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	ds := findARMTLSMeshDaemonSet(t, out)
-
-	sync, ok := findContainer(ds.Spec.Template.Spec.InitContainers, "iptables-sync")
-	if !ok {
-		t.Fatalf("iptables-sync init container missing; have %v", containerNames(ds.Spec.Template.Spec.InitContainers))
-	}
-	for _, pair := range [][2]string{
-		{"--resync-period", "30s"},
-		{"--watchdog-period", "2s"},
-		{"--ipset-maxelem", "262144"},
-		{"--ready-file", "/tmp/armtls-iptables-ready"},
-		{"--iptables-metrics-file", "/tmp/armtls-iptables-metrics.json"},
-		// The release namespace must NOT be excluded: router egress to
-		// workload pod IPs (headless-Service dials) needs mesh interception.
-		{"--exclude-source-namespaces", "kube-system"},
-	} {
-		if !argvContainsFlagValue(sync.Command, pair[0], pair[1]) {
-			t.Errorf("iptables-sync command missing %s %s; command=%q", pair[0], pair[1], sync.Command)
-		}
-	}
-	// The node IP comes from NODE_IP: a $(NODE_IP) argument would put a
-	// per-node value in the argv the allowlist pins.
-	if slices.Contains(sync.Command, "--node-ip") || !hasNodeIPEnv(sync) {
-		t.Errorf("iptables-sync must read the node IP from NODE_IP, not --node-ip; command=%q env=%+v", sync.Command, sync.Env)
-	}
-	if slices.Contains(sync.Command, "--pod-cidrs") {
-		t.Errorf("iptables-sync must not require static --pod-cidrs; command=%q", sync.Command)
-	}
-	// The cw inbound guard is always on; its posture is the passthrough
-	// allowlist, defaulting to DNS replies so get-cert can resolve.
-	if !slices.Contains(sync.Command, "--cw-inbound-passthrough=udp:53,tcp:53") {
-		t.Errorf("iptables-sync command missing --cw-inbound-passthrough=udp:53,tcp:53; command=%q", sync.Command)
-	}
-
-	mesh, ok := findContainer(ds.Spec.Template.Spec.Containers, "armtls-mesh")
-	if !ok {
-		t.Fatalf("armtls-mesh container missing; have %v", containerNames(ds.Spec.Template.Spec.Containers))
-	}
-	if !argvContainsFlagValue(mesh.Args, "--iptables-metrics-file", "/tmp/armtls-iptables-metrics.json") {
-		t.Errorf("armtls-mesh args missing the shared iptables metrics file flag; args=%q", mesh.Args)
-	}
-	// --platform is the armTLS TEE type; an empty value (the old missing
-	// default) trips the binary's "--platform is required" check, so the mesh
-	// pod never starts. Pin the non-empty default.
-	if !argvContainsFlagValue(mesh.Args, "--platform", "sev-snp") {
-		t.Errorf("armtls-mesh args must default --platform to sev-snp; args=%q", mesh.Args)
-	}
-	if hp, ok := containerHostPort(mesh, "inbound"); !ok || hp != 15006 {
-		t.Errorf("armtls-mesh inbound port must publish hostPort 15006; got %d (found=%v)", hp, ok)
-	}
-	for _, banned := range []int32{15001, 15021} {
-		if containers := containersExposingHostPort(ds, banned); len(containers) > 0 {
-			t.Errorf("hostPort %d must not be exposed; exposed by %v", banned, containers)
-		}
-	}
-
-	for _, c := range allContainers(ds) {
-		for name := range c.Resources.Requests {
-			if strings.Contains(string(name), "confidential.ai/tpm") {
-				t.Errorf("container %q requests local TPM resource %q by default", c.Name, name)
-			}
-		}
-		for name := range c.Resources.Limits {
-			if strings.Contains(string(name), "confidential.ai/tpm") {
-				t.Errorf("container %q limits local TPM resource %q by default", c.Name, name)
-			}
-		}
-	}
-
-	// The attestation-api policy must remain; nothing may select the hostNetwork
-	// mesh pods. volumed's is absent here because volumed is off by default.
-	wantPolicies := []string{
-		"c8s-attestation-api",
-		"armtls-mesh-tcp-only-egress",
-		"c8s-cds-ingress",
-		"c8s-operator-ingress",
-		"c8s-router-ingress",
-	}
-	kinds := renderedKinds(t, out)
-	if kinds["NetworkPolicy"] != len(wantPolicies) {
-		t.Errorf("default render NetworkPolicy count = %d, want %d", kinds["NetworkPolicy"], len(wantPolicies))
-	}
-	for _, name := range wantPolicies {
-		if !renderedManifestHasNamedKind(t, out, "NetworkPolicy", name) {
-			t.Errorf("default render is missing NetworkPolicy %q", name)
-		}
-	}
-}
-
-func TestChartCWInboundPassthrough(t *testing.T) {
-	t.Parallel()
-	// An empty passthrough renders the strict fail-closed posture (no
-	// exemptions), and the flag is present-but-empty so the manifest still
-	// self-documents that the guard is on.
-	out, err := helmTemplate(t, "--set", "armtlsMesh.cwInboundEnforcement.passthrough=[]")
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	ds := findARMTLSMeshDaemonSet(t, out)
-	sync, ok := findContainer(ds.Spec.Template.Spec.InitContainers, "iptables-sync")
-	if !ok {
-		t.Fatalf("iptables-sync init container missing; have %v", containerNames(ds.Spec.Template.Spec.InitContainers))
-	}
-	if !slices.Contains(sync.Command, "--cw-inbound-passthrough=") {
-		t.Errorf("iptables-sync command missing empty --cw-inbound-passthrough=; command=%q", sync.Command)
-	}
-
-	// A custom passthrough list renders in order as proto:port,proto:port.
-	out, err = helmTemplate(t,
-		"--set", "armtlsMesh.cwInboundEnforcement.passthrough[0].protocol=udp",
-		"--set", "armtlsMesh.cwInboundEnforcement.passthrough[0].sourcePort=53",
-		"--set", "armtlsMesh.cwInboundEnforcement.passthrough[1].protocol=tcp",
-		"--set", "armtlsMesh.cwInboundEnforcement.passthrough[1].sourcePort=8443",
-	)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	ds = findARMTLSMeshDaemonSet(t, out)
-	sync, _ = findContainer(ds.Spec.Template.Spec.InitContainers, "iptables-sync")
-	if !slices.Contains(sync.Command, "--cw-inbound-passthrough=udp:53,tcp:8443") {
-		t.Errorf("iptables-sync command missing --cw-inbound-passthrough=udp:53,tcp:8443; command=%q", sync.Command)
-	}
-
-	// A wrong-typed value (e.g. --set-string) fails loudly instead of silently
-	// rendering strict drop-all, which would reproduce the DNS-resolution
-	// outage this guard exists to prevent.
-	out, err = helmTemplate(t, "--set-string", "armtlsMesh.cwInboundEnforcement.passthrough=udp:53")
-	if err == nil {
-		t.Fatalf("helm template succeeded on a string passthrough, want a fail\n%s", out)
-	}
-	if !strings.Contains(out, "must be a list") {
-		t.Errorf("passthrough type error should name the fix; got %s", out)
-	}
-
-	// A malformed entry fails at render, not at daemon startup — a rendered
-	// "udp:<nil>" would crash-loop the init container. The key prefix is elided
-	// to pt for readability.
-	const pt = "armtlsMesh.cwInboundEnforcement.passthrough"
-	for _, bad := range [][]string{
-		{"--set", pt + "[0].protocol=udp"},                                       // missing sourcePort
-		{"--set", pt + "[0].protocol=icmp", "--set", pt + "[0].sourcePort=53"},   // bad protocol
-		{"--set", pt + "[0].protocol=udp", "--set", pt + "[0].sourcePort=70000"}, // out-of-range port
-	} {
-		if out, err := helmTemplate(t, bad...); err == nil {
-			t.Errorf("helm template succeeded on malformed passthrough entry %v, want a fail\n%s", bad, out)
-		}
-	}
-}
-
-// argvContainsFlagValue reports whether argv has `flag` immediately followed
-// by `value`.
-func argvContainsFlagValue(argv []string, flag, value string) bool {
-	for i, a := range argv {
-		if a == flag && i+1 < len(argv) && argv[i+1] == value {
-			return true
-		}
-	}
-	return false
 }
 
 func namedContainerPort(c corev1.Container, portName string) (corev1.ContainerPort, bool) {
@@ -402,19 +143,6 @@ func namedContainerPort(c corev1.Container, portName string) (corev1.ContainerPo
 func containerHostPort(c corev1.Container, portName string) (int32, bool) {
 	p, ok := namedContainerPort(c, portName)
 	return p.HostPort, ok
-}
-
-func containersExposingHostPort(ds *appsv1.DaemonSet, port int32) []string {
-	var hits []string
-	for _, c := range allContainers(ds) {
-		for _, p := range c.Ports {
-			if p.HostPort == port {
-				hits = append(hits, c.Name)
-				break
-			}
-		}
-	}
-	return hits
 }
 
 func allContainers(ds *appsv1.DaemonSet) []corev1.Container {
@@ -468,103 +196,6 @@ func renderedKinds(t *testing.T, helmOut string) map[string]int {
 		return false
 	})
 	return out
-}
-
-// Two silent-break risks in a daemonset.yaml refactor:
-//  1. iptables-{cleanup,sync} must stay native sidecars (restartPolicy:
-//     Always); dropping that demotes them to one-shot init containers and
-//     the cleanup preStop never fires, leaking rules across restarts.
-//  2. iptables-cleanup must be the FIRST initContainer; native sidecars
-//     terminate in reverse-init order, so a swap with iptables-sync stops
-//     cleanup before sync loses its chains.
-func TestChartARMTLSNativeSidecarShape(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	ds := findARMTLSMeshDaemonSet(t, out)
-
-	// hostNetwork + dnsPolicy are part of the routing contract: iptables-sync
-	// must run in the host netns to see pre-DNAT pod traffic, and the
-	// matching dnsPolicy keeps in-cluster service DNS working from that
-	// netns. A refactor that templated either to a value and accidentally
-	// toggled it via overlay defaults would still match the substring check
-	// in TestChartRendersARMTLSHostRoutingDefaults; assert against the typed
-	// PodSpec so the contract is unambiguous.
-	if !ds.Spec.Template.Spec.HostNetwork {
-		t.Errorf("armtls-mesh DaemonSet must set hostNetwork: true; got %v", ds.Spec.Template.Spec.HostNetwork)
-	}
-	if got := ds.Spec.Template.Spec.DNSPolicy; got != corev1.DNSClusterFirstWithHostNet {
-		t.Errorf("armtls-mesh DaemonSet must set dnsPolicy: ClusterFirstWithHostNet (paired with hostNetwork); got %q", got)
-	}
-
-	init := ds.Spec.Template.Spec.InitContainers
-	if len(init) < 2 {
-		t.Fatalf("expected at least 2 initContainers (iptables-cleanup, iptables-sync); got %d", len(init))
-	}
-	if init[0].Name != "iptables-cleanup" {
-		t.Fatalf("first init container must be iptables-cleanup so its preStop fires last on shutdown; got %q", init[0].Name)
-	}
-
-	for _, name := range []string{"iptables-cleanup", "iptables-sync"} {
-		c, ok := findContainer(init, name)
-		if !ok {
-			t.Fatalf("init container %q not found in %v", name, containerNames(init))
-		}
-		if c.RestartPolicy == nil || *c.RestartPolicy != corev1.ContainerRestartPolicyAlways {
-			t.Errorf("init container %q must declare restartPolicy: Always (native sidecar contract); got %v", name, c.RestartPolicy)
-		}
-		if !hasCapability(c, "NET_ADMIN") {
-			t.Errorf("init container %q must hold NET_ADMIN to manage iptables/ipset; caps=%+v", name, c.SecurityContext)
-		}
-		// NET_RAW is required for the xt_set match's socket to ip_set on the
-		// nf_tables-compat path; without it `iptables -m set` fails with
-		// "Can't open socket to ipset" despite NET_ADMIN.
-		if !hasCapability(c, "NET_RAW") {
-			t.Errorf("init container %q must hold NET_RAW for the iptables xt_set match; caps=%+v", name, c.SecurityContext)
-		}
-		// The sidecars run as root for iptables/ipset but are bounded by
-		// allowPrivilegeEscalation: false and the runtime-default seccomp
-		// profile. Both are easy to omit silently in a refactor and turn the
-		// containers into a full-root attack surface; pin them.
-		sc := c.SecurityContext
-		if sc == nil || sc.AllowPrivilegeEscalation == nil || *sc.AllowPrivilegeEscalation {
-			t.Errorf("init container %q must set allowPrivilegeEscalation: false; got %+v", name, sc)
-		}
-		if sc == nil || sc.SeccompProfile == nil || sc.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
-			t.Errorf("init container %q must set seccompProfile.type: RuntimeDefault; got %+v", name, sc.SeccompProfile)
-		}
-	}
-
-	sync, ok := findContainer(init, "iptables-sync")
-	if !ok {
-		t.Fatalf("iptables-sync init container missing; initContainers=%v", containerNames(init))
-	}
-	// HTTP because a locked node image denies every runc exec, so an exec
-	// probe would never pass there.
-	if sync.StartupProbe == nil || sync.StartupProbe.HTTPGet == nil {
-		t.Fatalf("iptables-sync must expose an HTTP startupProbe so the main proxy waits for interception; got %+v", sync.StartupProbe)
-	}
-	if got := sync.StartupProbe.HTTPGet; got.Path != "/readyz" || got.Host != "127.0.0.1" {
-		t.Errorf("iptables-sync startupProbe = %+v, want GET /readyz on node loopback", got)
-	}
-
-	// The entire teardown contract hinges on the iptables-cleanup container
-	// cleaning up last in the reverse-init-order stop sequence. A future
-	// refactor that drops --on-shutdown or renames the subcommand would
-	// silently leak iptables rules and ipsets across pod restarts — catch
-	// that here instead of in production.
-	cleanup := init[0]
-	if cleanup.Lifecycle != nil {
-		t.Errorf("iptables-cleanup must clean up on SIGTERM, not through a lifecycle hook; got %+v", cleanup.Lifecycle)
-	}
-	command := strings.Join(cleanup.Command, " ")
-	for _, want := range []string{"armtls-mesh iptables-cleanup", "--on-shutdown"} {
-		if !strings.Contains(command, want) {
-			t.Errorf("iptables-cleanup command %q must contain %q", command, want)
-		}
-	}
 }
 
 // TestChartARMTLSKubeVersionPinned guards the chart's Kubernetes base
@@ -715,7 +346,9 @@ func TestChartHostSecurityPoliciesSplitPodAndEphemeral(t *testing.T) {
 				excluded = append(excluded, requirement.Values...)
 			}
 		}
-		for _, want := range []string{"c8s-system", "kube-system", "local-path-storage", "tenant-platform"} {
+		// The router role's namespace is exempt too: a front-door pod binds
+		// the node's port and reads its inventory socket.
+		for _, want := range []string{"c8s-system", workloadclaims.RouterNamespace, "kube-system", "local-path-storage", "tenant-platform"} {
 			if !slices.Contains(excluded, want) {
 				t.Errorf("%s namespace exclusions = %v, missing %q", policy.Name, excluded, want)
 			}
@@ -735,114 +368,6 @@ func TestChartHostSecurityPoliciesSplitPodAndEphemeral(t *testing.T) {
 			binding.Spec.ValidationActions[0] != admissionregv1.Deny {
 			t.Errorf("%s binding actions = %v, want [Deny]", name, binding.Spec.ValidationActions)
 		}
-	}
-}
-
-// The UID admission policy must cover spec.ephemeralContainers (value check)
-// and the pods/ephemeralcontainers subresource (match) so a debug exec can't
-// run as the proxy UID and escape the mesh.
-// The pods/ephemeralcontainers subresource has a different object shape
-// (spec.ephemeralContainers only) than a pod. The UID policy is therefore
-// split: the pod policy validates pod/container/init shapes, and a separate
-// policy validates the ephemeral subresource so a kubectl debug is not
-// denied by pod-only expressions failing their type-check.
-func TestChartUIDAdmissionPolicySplitsPodAndEphemeral(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	var podPolicy admissionregv1.ValidatingAdmissionPolicy
-	if !findDoc(t, out, "ValidatingAdmissionPolicy", "deny-armtls-mesh-uid", &podPolicy) {
-		t.Fatal("missing deny-armtls-mesh-uid ValidatingAdmissionPolicy")
-	}
-	var ephemeralPolicy admissionregv1.ValidatingAdmissionPolicy
-	if !findDoc(t, out, "ValidatingAdmissionPolicy", "deny-armtls-mesh-uid-ephemeral", &ephemeralPolicy) {
-		t.Fatal("missing deny-armtls-mesh-uid-ephemeral ValidatingAdmissionPolicy")
-	}
-
-	resources := func(p admissionregv1.ValidatingAdmissionPolicy) []string {
-		var outResources []string
-		for _, r := range p.Spec.MatchConstraints.ResourceRules {
-			outResources = append(outResources, r.Resources...)
-		}
-		return outResources
-	}
-	if !slices.Contains(resources(podPolicy), "pods") {
-		t.Error("pod policy does not match pods")
-	}
-	if slices.Contains(resources(podPolicy), "pods/ephemeralcontainers") {
-		t.Error("pod policy must not match pods/ephemeralcontainers (different object shape)")
-	}
-	if !slices.Contains(resources(ephemeralPolicy), "pods/ephemeralcontainers") {
-		t.Error("ephemeral policy does not match pods/ephemeralcontainers")
-	}
-
-	// The ephemeral policy's expressions must reference only the subresource
-	// shape (spec.ephemeralContainers), not pod-only fields.
-	for _, v := range ephemeralPolicy.Spec.Validations {
-		if strings.Contains(v.Expression, "spec.containers") {
-			t.Errorf("ephemeral policy expression references pod-only spec.containers: %s", v.Expression)
-		}
-		if !strings.Contains(v.Expression, "spec.ephemeralContainers") {
-			t.Errorf("ephemeral policy expression does not reference spec.ephemeralContainers: %s", v.Expression)
-		}
-	}
-}
-
-// tcpEgressPolicy is default-on and must render a policy even when the
-// operator opts out of the per-namespace list ([] falls back to the release
-// namespace). The rendered policy must allow mesh-protected TCP egress plus
-// DNS/53 to kube-system and deny everything else by default.
-func TestChartTCPEgressPolicyDefaultOnRendersNoNamespaces(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	var np networkingv1.NetworkPolicy
-	if !findDoc(t, out, "NetworkPolicy", "armtls-mesh-tcp-only-egress", &np) {
-		t.Fatal("default render missing armtls-mesh-tcp-only-egress NetworkPolicy")
-	}
-	if !slices.Contains(np.Spec.PolicyTypes, networkingv1.PolicyTypeEgress) {
-		t.Errorf("policyTypes = %v, want Egress (default-deny)", np.Spec.PolicyTypes)
-	}
-	// podSelector: {} (empty label selector) selects every pod in the
-	// namespace — that's the "applies to all non-excluded pods" posture.
-	if len(np.Spec.PodSelector.MatchLabels) != 0 || len(np.Spec.PodSelector.MatchExpressions) != 0 {
-		t.Errorf("podSelector = %v, want empty (select all pods)", np.Spec.PodSelector)
-	}
-	// First egress rule allows TCP egress (mesh-protected); second allows
-	// DNS UDP/53 to kube-system. Anything else is denied by default.
-	if len(np.Spec.Egress) != 2 {
-		t.Fatalf("egress rules = %d, want 2 (TCP + DNS to kube-system)", len(np.Spec.Egress))
-	}
-	if np.Spec.Egress[0].Ports == nil || len(np.Spec.Egress[0].Ports) != 1 || np.Spec.Egress[0].Ports[0].Protocol == nil || *np.Spec.Egress[0].Ports[0].Protocol != corev1.ProtocolTCP {
-		t.Errorf("first egress rule must allow TCP egress; got %+v", np.Spec.Egress[0])
-	}
-
-	// Default values in values.yaml must be enabled:true / namespaces:[].
-	const valuesPath = "c8s/values.yaml"
-	raw, err := os.ReadFile(valuesPath)
-	if err != nil {
-		t.Fatalf("read %s: %v", valuesPath, err)
-	}
-	var vals struct {
-		ArmtlsMesh struct {
-			TCPEgressPolicy struct {
-				Enabled    bool     `yaml:"enabled"`
-				Namespaces []string `yaml:"namespaces"`
-			} `yaml:"tcpEgressPolicy"`
-		} `json:"armtlsMesh"`
-	}
-	if err := sigsyaml.Unmarshal(raw, &vals); err != nil {
-		t.Fatalf("decode values.yaml: %v", err)
-	}
-	if !vals.ArmtlsMesh.TCPEgressPolicy.Enabled {
-		t.Error("tcpEgressPolicy must default to enabled:true")
-	}
-	if len(vals.ArmtlsMesh.TCPEgressPolicy.Namespaces) != 0 {
-		t.Errorf("tcpEgressPolicy must default to namespaces:[] (got %v)", vals.ArmtlsMesh.TCPEgressPolicy.Namespaces)
 	}
 }
 
@@ -871,24 +396,12 @@ func TestChartHostNamespacePolicyDeniesAllHostPath(t *testing.T) {
 	// Absence, not presence: a leftover carve-out would pass a "some hostPath
 	// deny renders" check.
 	for _, v := range vap.Spec.Validations {
-		for _, stale := range []string{"/var/run/nri-image-policy", "readOnly", "hostPath.type"} {
+		for _, stale := range []string{"/run/nri-image-policy", "readOnly", "hostPath.type"} {
 			if strings.Contains(v.Expression, stale) {
 				t.Errorf("validation still carves out the claims dir (%q); expression=%q", stale, v.Expression)
 			}
 		}
 	}
-}
-
-// hasNodeIPEnv reports whether the container carries a NODE_IP env var sourced
-// from the status.hostIP downward-API field.
-func hasNodeIPEnv(c corev1.Container) bool {
-	for _, e := range c.Env {
-		if e.Name == "NODE_IP" && e.ValueFrom != nil && e.ValueFrom.FieldRef != nil &&
-			e.ValueFrom.FieldRef.FieldPath == "status.hostIP" {
-			return true
-		}
-	}
-	return false
 }
 
 // Single-node (empty cds.node.selector) renders the installer identically to
@@ -905,34 +418,6 @@ func TestChartCDSDeploymentHasNoNodeSelectorUnderEmptySelector(t *testing.T) {
 	if len(cdsDep.Spec.Template.Spec.NodeSelector) != 0 {
 		t.Errorf("cds Deployment must have no nodeSelector under single-node; got %v", cdsDep.Spec.Template.Spec.NodeSelector)
 	}
-}
-
-func findARMTLSMeshDaemonSet(t *testing.T, helmOut string) *appsv1.DaemonSet {
-	t.Helper()
-	var ds *appsv1.DaemonSet
-	iterateManifests(t, helmOut, func(doc []byte) bool {
-		var head struct {
-			Kind     string `json:"kind"`
-			Metadata struct {
-				Name string `json:"name"`
-			} `json:"metadata"`
-		}
-		if err := sigsyaml.Unmarshal(doc, &head); err != nil ||
-			head.Kind != "DaemonSet" ||
-			!strings.Contains(head.Metadata.Name, "armtls-mesh") {
-			return false
-		}
-		var decoded appsv1.DaemonSet
-		if err := sigsyaml.Unmarshal(doc, &decoded); err != nil {
-			t.Fatalf("decode armtls-mesh DaemonSet: %v\n%s", err, doc)
-		}
-		ds = &decoded
-		return true
-	})
-	if ds == nil {
-		t.Fatalf("armtls-mesh DaemonSet not found in helm template output\n%s", helmOut)
-	}
-	return ds
 }
 
 // findContainer mirrors findEnv in internal/webhook/pod_mutator_test.go:
@@ -966,139 +451,29 @@ func routerGetCertContainer(t *testing.T, manifest, name string) corev1.Containe
 	return c
 }
 
+// assertAcmeArgsParse fails unless the sidecar's own command accepts the
+// rendered argv: an unknown flag crash-loops the container, and the front
+// door never starts. The sidecar fixes the credential's two directories
+// itself (internal/cmds/acme), so the chart names neither.
+func assertAcmeArgsParse(t *testing.T, args []string) {
+	t.Helper()
+	cmd := acmecmd.NewCmd()
+	cmd.RunE = func(*cobra.Command, []string) error {
+		return nil
+	}
+	cmd.SetArgs(args[1:])
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	if err := cmd.Execute(); err != nil {
+		t.Errorf("the acme sidecar refuses its rendered args %v: %v", args, err)
+	}
+}
+
 // assertContainerArgs fails unless every wanted arg is present on the container.
 func assertContainerArgs(t *testing.T, c corev1.Container, want ...string) {
 	t.Helper()
 	for _, w := range want {
 		assertContainerHasArg(t, c.Name, c.Args, w)
-	}
-}
-
-func hasCapability(c corev1.Container, want corev1.Capability) bool {
-	if c.SecurityContext == nil || c.SecurityContext.Capabilities == nil {
-		return false
-	}
-	return slices.Contains(c.SecurityContext.Capabilities.Add, want)
-}
-
-// PrometheusRule's types live in a separate go module (prometheus-operator)
-// the chart does not otherwise depend on; decoding into a local typed shim
-// is enough to assert the rule contract without pulling that dep in just
-// for tests.
-type prometheusRule struct {
-	Spec struct {
-		Groups []struct {
-			Name  string `json:"name"`
-			Rules []struct {
-				Alert       string            `json:"alert"`
-				Expr        string            `json:"expr"`
-				For         string            `json:"for"`
-				Labels      map[string]string `json:"labels"`
-				Annotations map[string]string `json:"annotations"`
-			} `json:"rules"`
-		} `json:"groups"`
-	} `json:"spec"`
-}
-
-func findARMTLSMeshPrometheusRule(t *testing.T, helmOut string) prometheusRule {
-	t.Helper()
-	var found prometheusRule
-	var ok bool
-	iterateManifests(t, helmOut, func(doc []byte) bool {
-		var head struct {
-			Kind     string `json:"kind"`
-			Metadata struct {
-				Name string `json:"name"`
-			} `json:"metadata"`
-		}
-		if err := sigsyaml.Unmarshal(doc, &head); err != nil ||
-			head.Kind != "PrometheusRule" ||
-			!strings.Contains(head.Metadata.Name, "armtls-mesh") {
-			return false
-		}
-		var rule prometheusRule
-		if err := sigsyaml.Unmarshal(doc, &rule); err != nil {
-			t.Fatalf("decode armtls-mesh PrometheusRule: %v\n%s", err, doc)
-		}
-		found = rule
-		ok = true
-		return true
-	})
-	if !ok {
-		t.Fatalf("armtls-mesh PrometheusRule not found in helm template output\n%s", helmOut)
-	}
-	return found
-}
-
-// TestChartARMTLSRoutingAlerts pins routing-path alerts that fire on signals
-// downstream consumers should not have to reconstruct by hand: a wedged
-// iptables-sync sidecar (its in-process counters stop publishing), unavailable
-// local CIDR route cross-checking, and direct dials to :15001 outside the
-// REDIRECT path. Drop any alert and a refactor of
-// prometheus-rules.yaml could silently lose the corresponding production
-// signal.
-func TestChartARMTLSRoutingAlerts(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t, "--set", "armtlsMesh.prometheusRules.enabled=true")
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	rule := findARMTLSMeshPrometheusRule(t, out)
-
-	want := map[string]string{
-		"ARMTLSMeshIptablesSyncWedged":             "armtls_mesh_iptables_metrics_file_updated_at_seconds",
-		"ARMTLSMeshLocalCIDRRouteCheckUnavailable": "armtls_mesh_resolver_local_cidrs == 0",
-		"ARMTLSMeshOutboundDirectDial":             `reason="host_addr"`,
-		"ARMTLSMeshIptablesIPSetOverflow":          "armtls_mesh_iptables_ipset_overflow_total",
-		"ARMTLSMeshJumpPositionViolations":         "armtls_mesh_iptables_jump_position_violations_total",
-	}
-	got := make(map[string]string)
-	for _, g := range rule.Spec.Groups {
-		for _, r := range g.Rules {
-			if _, ok := want[r.Alert]; ok {
-				got[r.Alert] = r.Expr
-			}
-		}
-	}
-	for alert, exprSubstr := range want {
-		expr, ok := got[alert]
-		if !ok {
-			t.Errorf("alert %q missing from rendered PrometheusRule", alert)
-			continue
-		}
-		if !strings.Contains(expr, exprSubstr) {
-			t.Errorf("alert %q expr does not reference %q: got %q", alert, exprSubstr, expr)
-		}
-	}
-}
-
-// terminationGracePeriod minus drainTimeout (both Go-style durations) is the
-// budget left for the iptables-cleanup preStop sleep. A higher value is
-// silently truncated at runtime by SIGKILL, leaking managed chains/ipsets
-// across the pod restart. The chart fails the install instead of letting
-// that misconfig ship. The bound is derived, not hardcoded, so changes to
-// either underlying value reshape it automatically.
-func TestChartRejectsExcessivePreStopSleep(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t, "--set", "armtlsMesh.iptablesCleanup.preStopSleepSeconds=30")
-	if err == nil {
-		t.Fatalf("helm template succeeded, want preStopSleepSeconds upper-bound failure\n%s", out)
-	}
-	failure := parsePreStopBoundFailure(t, out)
-	if want := (preStopBoundFailure{Cmp: "le", Bound: 15, Got: 30}); failure != want {
-		t.Fatalf("preStop upper-bound failure = %+v, want %+v", failure, want)
-	}
-}
-
-func TestChartRejectsNegativePreStopSleep(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t, "--set", "armtlsMesh.iptablesCleanup.preStopSleepSeconds=-1")
-	if err == nil {
-		t.Fatalf("helm template succeeded, want preStopSleepSeconds lower-bound failure\n%s", out)
-	}
-	failure := parsePreStopBoundFailure(t, out)
-	if want := (preStopBoundFailure{Cmp: "ge", Bound: 0, Got: -1}); failure != want {
-		t.Fatalf("preStop lower-bound failure = %+v, want %+v", failure, want)
 	}
 }
 
@@ -1132,140 +507,6 @@ func TestChartRendersOperatorKeysPEM(t *testing.T) {
 	}
 }
 
-func TestChartAcceptsPreStopSleepAtBoundary(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t, "--set", "armtlsMesh.iptablesCleanup.preStopSleepSeconds=15")
-	if err != nil {
-		t.Fatalf("helm template at boundary should succeed: %v\n%s", err, out)
-	}
-	ds := findARMTLSMeshDaemonSet(t, out)
-	cleanup, ok := findContainer(ds.Spec.Template.Spec.InitContainers, "iptables-cleanup")
-	if !ok {
-		t.Fatalf("iptables-cleanup init container missing")
-	}
-	command := strings.Join(cleanup.Command, " ")
-	if !strings.Contains(command, "--settle-delay=15s") {
-		t.Fatalf("iptables-cleanup did not render the boundary settle delay: %q", command)
-	}
-}
-
-// Tuning terminationGracePeriod or drainTimeout must reshape the preStop
-// bound automatically — otherwise the bound goes stale silently once an
-// operator changes either knob. Exercising mixed unit forms (h, m, s) also
-// pins that the durationSeconds helper handles each correctly.
-func TestChartPreStopBoundFollowsGracePeriodAndDrain(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t,
-		"--set-string", "armtlsMesh.terminationGracePeriod=2m",
-		"--set-string", "armtlsMesh.drainTimeout=60s",
-		"--set", "armtlsMesh.iptablesCleanup.preStopSleepSeconds=45",
-	)
-	if err != nil {
-		t.Fatalf("helm template at (tgp=2m, drain=60s, sleep=45) should succeed: %v\n%s", err, out)
-	}
-	ds := findARMTLSMeshDaemonSet(t, out)
-	if ds.Spec.Template.Spec.TerminationGracePeriodSeconds == nil {
-		t.Fatalf("DaemonSet.terminationGracePeriodSeconds is nil")
-	}
-	if got := *ds.Spec.Template.Spec.TerminationGracePeriodSeconds; got != 120 {
-		t.Errorf("terminationGracePeriodSeconds = %d, want 120 (from 2m)", got)
-	}
-	args := containerArgs(t, ds, "armtls-mesh")
-	if got, ok := containerArgValue(args, "--drain-timeout"); !ok || got != "60s" {
-		t.Errorf("--drain-timeout = (%q, %v), want (\"60s\", true)", got, ok)
-	}
-
-	// Same knobs, sleep one above the derived bound — must fail.
-	out, err = helmTemplate(t,
-		"--set-string", "armtlsMesh.terminationGracePeriod=2m",
-		"--set-string", "armtlsMesh.drainTimeout=60s",
-		"--set", "armtlsMesh.iptablesCleanup.preStopSleepSeconds=61",
-	)
-	if err == nil {
-		t.Fatalf("helm template succeeded above derived bound, want failure\n%s", out)
-	}
-	failure := parsePreStopBoundFailure(t, out)
-	if want := (preStopBoundFailure{Cmp: "le", Bound: 60, Got: 61}); failure != want {
-		t.Fatalf("derived-bound failure = %+v, want %+v", failure, want)
-	}
-}
-
-// drainTimeout ≥ terminationGracePeriod leaves zero preStop budget — even a
-// 0-second sleep can race shutdown. Fail rather than render a useless
-// DaemonSet.
-func TestChartRejectsZeroPreStopBudget(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t,
-		"--set-string", "armtlsMesh.terminationGracePeriod=30s",
-		"--set-string", "armtlsMesh.drainTimeout=30s",
-	)
-	if err == nil {
-		t.Fatalf("helm template succeeded with zero preStop budget, want failure\n%s", out)
-	}
-	failure := parseGracePeriodBudgetFailure(t, out)
-	if want := (gracePeriodBudgetFailure{GracePeriod: "30s", Drain: "30s"}); failure != want {
-		t.Fatalf("zero-budget failure = %+v, want %+v", failure, want)
-	}
-}
-
-// Reject duration formats the helper intentionally doesn't support so a
-// typo doesn't silently degrade the bound arithmetic via sprig's lenient
-// int parsing (which would otherwise read "1m30s" as 1 second).
-func TestChartRejectsCompoundDurations(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t,
-		"--set-string", "armtlsMesh.drainTimeout=1m30s",
-	)
-	if err == nil {
-		t.Fatalf("helm template succeeded for compound duration, want failure\n%s", out)
-	}
-	failure := parseDurationFormatFailure(t, out)
-	if want := (durationFormatFailure{Value: "1m30s", Reason: "non-integer"}); failure != want {
-		t.Fatalf("compound-duration failure = %+v, want %+v", failure, want)
-	}
-}
-
-// Pin the suffix-only rejection separately so a future refactor of the
-// helper can't remove the unit check without flagging in tests.
-func TestChartRejectsUnitlessDuration(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t,
-		"--set-string", "armtlsMesh.drainTimeout=30",
-	)
-	if err == nil {
-		t.Fatalf("helm template succeeded for unitless duration, want failure\n%s", out)
-	}
-	failure := parseDurationFormatFailure(t, out)
-	if want := (durationFormatFailure{Value: "30", Reason: "no-unit"}); failure != want {
-		t.Fatalf("unitless-duration failure = %+v, want %+v", failure, want)
-	}
-}
-
-func TestChartRendersARMTLSCustomOutboundPortConsistently(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t, "--set", "armtlsMesh.ports.outbound=16001")
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	ds := findARMTLSMeshDaemonSet(t, out)
-	sync, ok := findContainer(ds.Spec.Template.Spec.InitContainers, "iptables-sync")
-	if !ok {
-		t.Fatalf("iptables-sync init container missing; have %v", containerNames(ds.Spec.Template.Spec.InitContainers))
-	}
-	if !argvContainsFlagValue(sync.Command, "--outbound-port", "16001") {
-		t.Fatalf("iptables-sync missing --outbound-port 16001; command=%q", sync.Command)
-	}
-	meshArgs := containerArgs(t, ds, "armtls-mesh")
-	if got, ok := containerArgValue(meshArgs, "--outbound-port"); !ok || got != "16001" {
-		t.Fatalf("armtls-mesh --outbound-port = (%q, %v), want (\"16001\", true)", got, ok)
-	}
-	for _, c := range allContainers(ds) {
-		if argvContainsFlagValue(c.Command, "--outbound-port", "15001") || argvContainsFlagValue(c.Args, "--outbound-port", "15001") {
-			t.Fatalf("container %q rendered the default outbound port despite override", c.Name)
-		}
-	}
-}
-
 func TestChartCanDisableStatusMirror(t *testing.T) {
 	t.Parallel()
 	out, err := helmTemplate(t)
@@ -1296,9 +537,30 @@ func TestChartWebhookInjectsWorkloadsAndExcludesSystemNamespaces(t *testing.T) {
 
 	generalWebhook := renderedMutatingWebhook(t, out, "pods.c8s.confidential.ai")
 	excludedNamespaces := selectorExpressionValues(generalWebhook.NamespaceSelector, "kubernetes.io/metadata.name", metav1.LabelSelectorOpNotIn)
-	for _, want := range []string{"c8s-system", "kube-system", "kube-public", "kube-node-lease"} {
+	// The mesh policy designates the router role's namespace, whose pods hold
+	// platform-role containers the chart renders itself.
+	for _, want := range []string{"c8s-system", workloadclaims.RouterNamespace, "kube-system", "kube-public", "kube-node-lease", "local-path-storage"} {
 		if !slices.Contains(excludedNamespaces, want) {
 			t.Fatalf("general webhook namespaceSelector missing excluded namespace %q: %v", want, excludedNamespaces)
+		}
+	}
+}
+
+// The enforcer gives the pods of one fixed namespace the router's listener and
+// egress rules, so the chart owns that namespace under the name the enforcer
+// and the CLI both compile in.
+func TestChartOwnsTheRouterNamespaceTheEnforcerCompilesIn(t *testing.T) {
+	out, err := helmTemplate(t)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	var namespace corev1.Namespace
+	if !findDoc(t, out, "Namespace", workloadclaims.RouterNamespace, &namespace) {
+		t.Fatalf("rendered manifest missing Namespace %q\n%s", workloadclaims.RouterNamespace, out)
+	}
+	for _, mode := range []string{"enforce", "warn", "audit"} {
+		if got := namespace.Labels["pod-security.kubernetes.io/"+mode]; got != "privileged" {
+			t.Errorf("Namespace %s %s label = %q, want privileged: a front-door pod mounts the node's sockets", workloadclaims.RouterNamespace, mode, got)
 		}
 	}
 }
@@ -1322,36 +584,6 @@ func TestChartWebhookExtraExcludedFlowsToWebhookAndSweep(t *testing.T) {
 		if !slices.Contains(args, "--exclude-namespaces="+ns) {
 			t.Fatalf("operator args missing --exclude-namespaces=%s\n%v", ns, args)
 		}
-	}
-}
-
-// The operator's mesh-egress reconciler must be told the same outbound port
-// and excluded source namespaces the mesh DaemonSet runs with, or its
-// companion policies open the wrong port or appear in namespaces the mesh
-// never intercepts. Disabling the value removes both flags, which turns the
-// reconciler off.
-func TestChartMeshEgressCompanionFlagsMirrorTheMesh(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t,
-		"--set", "armtlsMesh.ports.outbound=15101",
-		"--set", "armtlsMesh.iptablesSync.excludeSourceNamespaces={kube-system,monitoring}")
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	args := renderedOperatorArgs(t, out)
-	assertContainerHasArg(t, "operator", args, "--mesh-outbound-port=15101")
-	for _, ns := range []string{"kube-system", "monitoring"} {
-		assertContainerHasArg(t, "operator", args, "--mesh-exclude-source-namespaces="+ns)
-	}
-
-	for _, disable := range []string{"armtlsMesh.egressCompanionPolicy.enabled=false", "armtlsMesh.enabled=false"} {
-		out, err := helmTemplate(t, "--set", disable)
-		if err != nil {
-			t.Fatalf("helm template (%s): %v\n%s", disable, err, out)
-		}
-		args := renderedOperatorArgs(t, out)
-		assertContainerNoArgPrefix(t, "operator", args, "--mesh-outbound-port=")
-		assertContainerNoArgPrefix(t, "operator", args, "--mesh-exclude-source-namespaces=")
 	}
 }
 
@@ -1410,6 +642,41 @@ func TestChartWebhookOptsOutOfAKSAdmissionsEnforcer(t *testing.T) {
 	}
 	if got := both.Annotations[annotation]; got != "true" {
 		t.Errorf("AKS opt-out must still apply alongside user annotations: %s = %q, want \"true\"", annotation, got)
+	}
+}
+
+func TestChartBothWebhooksShareAnnotations(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"bare-metal", "gke", "aks"} {
+		for _, override := range []bool{false, true} {
+			args := []string{"--set-string", "attestationApi.cvmMode=" + mode, "--set-string", "webhook.annotations.team=platform"}
+			want := ""
+			if mode == "aks" {
+				want = "true"
+			}
+			if override {
+				args = append(args, "--set-string", `webhook.annotations.admissions\.enforcer/disabled=false`)
+				want = "false"
+			}
+			out, err := helmTemplate(t, args...)
+			if err != nil {
+				t.Fatalf("helm template: %v\n%s", err, out)
+			}
+			var mutating admissionregv1.MutatingWebhookConfiguration
+			var validating admissionregv1.ValidatingWebhookConfiguration
+			if !findDoc(t, out, "MutatingWebhookConfiguration", "c8s-pod-injector", &mutating) ||
+				!findDoc(t, out, "ValidatingWebhookConfiguration", "c8s-pod-validator", &validating) {
+				t.Fatal("missing admission webhooks")
+			}
+			for _, annotations := range []map[string]string{mutating.Annotations, validating.Annotations} {
+				if annotations["admissions.enforcer/disabled"] != want || annotations["team"] != "platform" {
+					t.Errorf("mode=%s override=%v: annotations=%v, want opt-out=%q and team=platform", mode, override, annotations, want)
+				}
+			}
+			if mutating.Webhooks[0].ReinvocationPolicy == nil || *mutating.Webhooks[0].ReinvocationPolicy != admissionregv1.NeverReinvocationPolicy {
+				t.Error("the initial-input mutator permits reinvocation")
+			}
+		}
 	}
 }
 
@@ -1532,43 +799,18 @@ func tolerates(tols []corev1.Toleration, key, value string) bool {
 	return false
 }
 
-// TestChartOperatorDialsTrustRootOverHTTPS proves the operator injects get-cert
-// with --cds-url over https://, not http://. A regression to http:// would
-// silently turn off the bootstrap-channel MITM defence (H1).
-func TestChartOperatorDialsTrustRootOverHTTPS(t *testing.T) {
-	t.Parallel()
+// TestChartLeavesTheInjectedCDSEndpointToTheNode proves the chart hands the
+// injected credential clients no CDS URL: the node's plugin does, from the CDS
+// node port rendered here and its own address, which is the one endpoint the
+// pod ruleset admits.
+func TestChartLeavesTheInjectedCDSEndpointToTheNode(t *testing.T) {
 	out, err := helmTemplate(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	const wantURL = "https://c8s-cds.c8s-system.svc:8443"
-
-	operatorArgs := renderedOperatorArgs(t, out)
-	assertContainerHasArg(t, "operator", operatorArgs, "--cds-url="+wantURL)
-	assertContainerNoArgPrefix(t, "operator", operatorArgs, "--cds-url=http://")
-}
-
-// TestChartArmtlsMeshCDSMeasurementsFlagsThrough confirms the single
-// cds.measurements reaches the daemonset's --cds-measurements flag — without
-// this the armTLS handshake accepts any measurement and the H1 defence
-// collapses to "trust the cluster network". armtls-mesh reads the parent's
-// cds.measurements directly, so there is no mirror to drift.
-func TestChartArmtlsMeshCDSMeasurementsFlagsThrough(t *testing.T) {
-	t.Parallel()
-	const measurement = "abc1230000000000000000000000000000000000000000000000000000000000000000000000000000000000000000ff"
-	out, err := helmTemplate(t,
-		"--set", "cds.measurements[0]="+measurement,
-	)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	args := renderedDaemonSetContainer(t, out, "c8s-armtls-mesh", "armtls-mesh").Args
-	i := slices.Index(args, "--cds-measurements")
-	if i < 0 || i+1 >= len(args) {
-		t.Fatalf("armtls-mesh container missing --cds-measurements <value>\nargs: %v", args)
-	}
-	if got := args[i+1]; got != measurement {
-		t.Fatalf("--cds-measurements = %q, want %q", got, measurement)
+	assertContainerNoArgPrefix(t, "operator", renderedOperatorArgs(t, out), "--cds-url=")
+	if got := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker").WorkloadClaims.CDSNodePort; got != 30808 {
+		t.Fatalf("workload_claims.cds_node_port = %d, want the chart's CDS node port 30808", got)
 	}
 }
 
@@ -1589,7 +831,7 @@ func TestChartNRIImagePolicyUsesPullMode(t *testing.T) {
 	if got, want := workerCfg.Allowlist.Pull.Interval, "5s"; got != want {
 		t.Fatalf("worker pull interval = %q, want %q", got, want)
 	}
-	if got, want := workerCfg.Allowlist.Pull.AttestationApiURL, "unix:///var/run/nri-image-policy/attestation-api.sock"; got != want {
+	if got, want := workerCfg.Allowlist.Pull.AttestationApiURL, "unix:///run/nri-image-policy/attestation-api.sock"; got != want {
 		t.Fatalf("runtime attestation-api URL = %q, want %q", got, want)
 	}
 	if want := []string{measurement}; !slices.Equal(workerCfg.Allowlist.Pull.CDSMeasurements, want) {
@@ -1642,7 +884,7 @@ func TestChartAttestationApiDefaultsToNodeLocalSocket(t *testing.T) {
 	proxy := renderedDaemonSetContainer(t, out, "c8s-attestation-api", "attest-proxy")
 	assertContainerArgs(t, proxy,
 		"attest-proxy",
-		"--socket=/var/run/nri-image-policy/attestation-api.sock",
+		"--socket=/run/nri-image-policy/attestation-api.sock",
 		"--upstream=http://127.0.0.1:8400",
 	)
 	assertContainerNoArgPrefix(t, "attest-proxy", proxy.Args, "--api-key-file")
@@ -1650,12 +892,12 @@ func TestChartAttestationApiDefaultsToNodeLocalSocket(t *testing.T) {
 	// API read their config from the ConfigMap — dropping either renders
 	// fine and only fails at runtime.
 	assertPodVolume(t, &ds.Spec.Template.Spec, "socket-dir", func(v corev1.Volume) bool {
-		return v.HostPath != nil && v.HostPath.Path == "/var/run/nri-image-policy"
+		return v.HostPath != nil && v.HostPath.Path == "/run/nri-image-policy"
 	})
 	assertPodVolume(t, &ds.Spec.Template.Spec, "config", func(v corev1.Volume) bool {
 		return projectedConfigMap(v) == "c8s-attestation-api"
 	})
-	assertContainerMount(t, proxy, "socket-dir", "/var/run/nri-image-policy")
+	assertContainerMount(t, proxy, "socket-dir", "/run/nri-image-policy")
 	// HTTP (a locked node image denies every runc exec), against
 	// the proxy's own health listener: the API's loopback bind is not
 	// kubelet-dialable, and this is the evidence path's only liveness signal.
@@ -1739,7 +981,7 @@ func TestChartAttestationApiSocketWiresNRI(t *testing.T) {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
 	cfg := renderedNRIBootConfig(t, out, "c8s-nri-image-policy-worker")
-	if got, want := cfg.Allowlist.Pull.AttestationApiURL, "unix:///var/run/nri-image-policy/attestation-api.sock"; got != want {
+	if got, want := cfg.Allowlist.Pull.AttestationApiURL, "unix:///run/nri-image-policy/attestation-api.sock"; got != want {
 		t.Fatalf("runtime attestation-api URL = %q, want %q", got, want)
 	}
 }
@@ -1949,12 +1191,8 @@ func TestChartWebhookRendersSecurityKnobs(t *testing.T) {
 	}
 	args := renderedOperatorArgs(t, out)
 	for _, want := range []string{
-		"--cds-url=https://c8s-cds.c8s-system.svc:8443",
 		"--cert-fs-group=4242",
 		"--get-cert-renew-interval=3h",
-		"--get-cert-run-as-user=0",
-		"--get-cert-run-as-group=0",
-		"--get-cert-run-as-non-root=false",
 	} {
 		if !slices.Contains(args, want) {
 			t.Fatalf("operator args missing %q\n%v", want, args)
@@ -1971,11 +1209,7 @@ func TestChartIntValuesFromValuesFileRenderPlain(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	vals := filepath.Join(dir, "vals.yaml")
-	if err := os.WriteFile(vals, []byte(
-		"armtlsMesh:\n  uid: 7000000\n"+
-			"router:\n  nginx:\n    runAsUser: 7000000\n    runAsGroup: 7000000\n"+
-			"webhook:\n  certVolume:\n    fsGroup: 1500000\n  getCert:\n    runAsUser: 2000000000\n",
-	), 0o600); err != nil {
+	if err := os.WriteFile(vals, []byte("webhook:\n  certVolume:\n    fsGroup: 1500000\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	out, err := helmTemplate(t, "-f", vals)
@@ -1984,30 +1218,10 @@ func TestChartIntValuesFromValuesFileRenderPlain(t *testing.T) {
 	}
 	// Each affected field is asserted through its decoded typed value; a
 	// scientific-notation render (7e+06) fails the int decode loudly.
-	args := renderedOperatorArgs(t, out)
-	assertContainerHasArg(t, "operator", args, "--cert-fs-group=1500000")
-	assertContainerHasArg(t, "operator", args, "--get-cert-run-as-user=2000000000")
-	nginx := renderedDeploymentContainer(t, out, "c8s-router", "nginx")
-	if got := nginx.SecurityContext.RunAsUser; got == nil || *got != 7000000 {
-		t.Errorf("nginx runAsUser = %v, want 7000000", got)
-	}
-	if got := nginx.SecurityContext.RunAsGroup; got == nil || *got != 7000000 {
-		t.Errorf("nginx runAsGroup = %v, want 7000000", got)
-	}
-	mesh := renderedDaemonSetContainer(t, out, "c8s-armtls-mesh", "armtls-mesh")
-	if got := mesh.SecurityContext.RunAsUser; got == nil || *got != 7000000 {
-		t.Errorf("armtls-mesh runAsUser = %v, want 7000000", got)
-	}
-	// The CEL admission policy, where int != double would be an uninstallable
-	// compile error.
-	var policy admissionregv1.ValidatingAdmissionPolicy
-	if !findDoc(t, out, "ValidatingAdmissionPolicy", "deny-armtls-mesh-uid", &policy) {
-		t.Fatalf("missing deny-armtls-mesh-uid ValidatingAdmissionPolicy\n%s", out)
-	}
-	if !slices.ContainsFunc(policy.Spec.Validations, func(v admissionregv1.Validation) bool {
-		return strings.Contains(v.Expression, "runAsUser != 7000000")
-	}) {
-		t.Errorf("uid policy expression missing the plain-integer comparison: %+v", policy.Spec.Validations)
+	assertContainerHasArg(t, "operator", renderedOperatorArgs(t, out), "--cert-fs-group=1500000")
+	deployment := renderedDeployment(t, out, "c8s-router")
+	if got := deployment.Spec.Template.Spec.SecurityContext.FSGroup; got == nil || *got != 1500000 {
+		t.Errorf("router fsGroup = %v, want 1500000", got)
 	}
 }
 
@@ -2018,12 +1232,12 @@ func TestChartIntValueRejectsNonInteger(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	vals := filepath.Join(dir, "vals.yaml")
-	if err := os.WriteFile(vals, []byte("webhook:\n  getCert:\n    runAsUser: notanumber\n"), 0o600); err != nil {
+	if err := os.WriteFile(vals, []byte("webhook:\n  certVolume:\n    fsGroup: notanumber\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	out, err := helmTemplate(t, "-f", vals)
 	if err == nil {
-		t.Fatalf("expected render to fail on a non-integer runAsUser, got success:\n%s", out)
+		t.Fatalf("expected render to fail on a non-integer fsGroup, got success:\n%s", out)
 	}
 	if !strings.Contains(out, "expected an integer") {
 		t.Errorf("want 'expected an integer' error, got: %s", out)
@@ -2112,6 +1326,8 @@ func hasHostIPEnv(c corev1.Container) bool {
 // into the tenant get-cert sidecars it injects, where the kubelet expands it
 // against the tenant pod's own node; the operator container deliberately omits
 // HOST_IP.
+// The router's credentials-role containers take the node's own socket instead
+// (router.credentialsVerifierURL).
 // KNOWN-GAP (ATTEST-ORACLE, bare-metal mode): the http://$(HOST_IP):8400 wiring
 // this test pins reaches the node image's baked attestation-api, which still
 // binds 0.0.0.0:8400 with no auth — the oracle shape this branch removes
@@ -2123,6 +1339,7 @@ func hasHostIPEnv(c corev1.Container) bool {
 func TestChartBareMetalModeAttestationApiURLUsesHostIP(t *testing.T) {
 	t.Parallel()
 	const hostIPURL = "--attestation-api-url=http://$$(HOST_IP):8400"
+	const nodeVerifierURL = "--attestation-api-url=unix://" + workloadclaims.AttestationAPISocket
 	// The node image bakes attestation-api, so the chart component is off and
 	// consumers dial the baked host service via $(HOST_IP). Only under an
 	// audit policy: a policy that may refuse names it as $(NODE_IP) instead
@@ -2150,12 +1367,11 @@ func TestChartBareMetalModeAttestationApiURLUsesHostIP(t *testing.T) {
 		t.Errorf("cds container missing HOST_IP downward-API env; have %+v", cds.Env)
 	}
 
-	// router c8s-cert sidecar (via c8s.getCertContainers).
+	// router c8s-cert sidecar (via c8s.getCertContainers): a credentials-role
+	// container reading the node's CDS pins, so its verifier is the node's own
+	// attestation-api in the inventory socket directory it mounts.
 	cert := routerGetCertContainer(t, out, "c8s-cert")
-	assertContainerArgs(t, cert, hostIPURL)
-	if !hasHostIPEnv(cert) {
-		t.Errorf("router c8s-cert missing HOST_IP downward-API env; have %+v", cert.Env)
-	}
+	assertContainerArgs(t, cert, nodeVerifierURL)
 
 	// router cds-attest sidecar (rendered under router.attest.enabled).
 	attest := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")
@@ -2164,22 +1380,10 @@ func TestChartBareMetalModeAttestationApiURLUsesHostIP(t *testing.T) {
 		t.Errorf("router cds-attest missing HOST_IP downward-API env; have %+v", attest.Env)
 	}
 
-	// router allowlist proxy: pod-netns, uses the same verifier endpoint for
-	// the armTLS hop to CDS.
+	// router allowlist proxy: the other credentials-role container, on the
+	// same node socket for its armTLS hop to CDS.
 	allowlistProxy := renderedDeploymentContainer(t, out, "c8s-router", "allowlist-proxy")
-	assertContainerArgs(t, allowlistProxy, hostIPURL)
-	if !hasHostIPEnv(allowlistProxy) {
-		t.Errorf("router allowlist-proxy missing HOST_IP downward-API env; have %+v", allowlistProxy.Env)
-	}
-
-	// armtls-mesh: hostNetwork, so $(HOST_IP) is its own node IP. Two-arg form.
-	mesh := renderedDaemonSetContainer(t, out, "c8s-armtls-mesh", "armtls-mesh")
-	if !slices.Contains(mesh.Args, "http://$$(HOST_IP):8400") {
-		t.Errorf("armtls-mesh missing http://$$(HOST_IP):8400 arg; have %v", mesh.Args)
-	}
-	if !hasHostIPEnv(mesh) {
-		t.Errorf("armtls-mesh missing HOST_IP downward-API env; have %+v", mesh.Env)
-	}
+	assertContainerArgs(t, allowlistProxy, nodeVerifierURL)
 
 	// operator: forwards the string verbatim; the placeholder must NOT be
 	// expanded here, so the container must NOT define HOST_IP.
@@ -2244,7 +1448,7 @@ func TestChartOperatorHasPodNameEnv(t *testing.T) {
 // socket URL and the socket-directory mount are asserted per shape.
 func TestChartNonBareMetalModeUsesAttestationSocket(t *testing.T) {
 	t.Parallel()
-	const socketURL = "--attestation-api-url=unix:///var/run/nri-image-policy/attestation-api.sock"
+	const socketURL = "--attestation-api-url=unix:///run/nri-image-policy/attestation-api.sock"
 	for _, mode := range []string{"gke", "aks"} {
 		t.Run(mode, func(t *testing.T) {
 			out, err := helmTemplate(t, "--set-string", "attestationApi.cvmMode="+mode, "--set", "router.attest.enabled=true")
@@ -2269,24 +1473,28 @@ func TestChartNonBareMetalModeUsesAttestationSocket(t *testing.T) {
 			assertHasSocketMount := func(c corev1.Container) {
 				t.Helper()
 				for _, m := range c.VolumeMounts {
-					if m.Name == "attestation-api-socket" && m.MountPath == "/var/run/nri-image-policy" && m.ReadOnly {
+					if m.Name == "attestation-api-socket" && m.MountPath == "/run/nri-image-policy" && m.ReadOnly {
 						return
 					}
 				}
 				t.Errorf("container %s carries the socket URL but no attestation-api-socket mount; mounts %+v", c.Name, c.VolumeMounts)
 			}
 			assertHasSocketMount(cds)
-			mesh := renderedDaemonSetContainer(t, out, "c8s-armtls-mesh", "armtls-mesh")
-			if !slices.Contains(mesh.Args, "unix:///var/run/nri-image-policy/attestation-api.sock") {
-				t.Errorf("armtls-mesh missing the socket URL arg; have %v", mesh.Args)
-			}
-			assertHasSocketMount(mesh)
-			if sc := renderedDaemonSet(t, out, "c8s-armtls-mesh").Spec.Template.Spec.SecurityContext; sc == nil || !slices.Contains(sc.SupplementalGroups, int64(65532)) {
-				t.Errorf("armtls-mesh pod must carry supplementalGroups [65532] to connect to the socket; got %+v", sc)
-			}
-			assertHasSocketMount(routerGetCertContainer(t, out, "c8s-cert"))
 			assertHasSocketMount(renderedDeploymentContainer(t, out, "c8s-router", "cds-attest"))
-			assertHasSocketMount(renderedDeploymentContainer(t, out, "c8s-router", "allowlist-proxy"))
+			// The router's credentials-role containers reach the same socket
+			// through the inventory directory at the compiled path their
+			// clients accept (cmdsutil.RequireNodeVerifier).
+			assertHasInventoryMount := func(c corev1.Container) {
+				t.Helper()
+				for _, m := range c.VolumeMounts {
+					if m.Name == "workload-claims" && m.MountPath == "/run/c8s/workload-claims" && m.ReadOnly {
+						return
+					}
+				}
+				t.Errorf("container %s names the node's verifier but no inventory mount; mounts %+v", c.Name, c.VolumeMounts)
+			}
+			assertHasInventoryMount(routerGetCertContainer(t, out, "c8s-cert"))
+			assertHasInventoryMount(renderedDeploymentContainer(t, out, "c8s-router", "allowlist-proxy"))
 			for _, w := range renderedPodSpecs(t, out) {
 				for _, c := range append(append([]corev1.Container{}, w.spec.InitContainers...), w.spec.Containers...) {
 					for _, e := range c.Env {
@@ -2337,10 +1545,10 @@ func TestChartGlobalImagePullSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	// The global reaches a non-overriding component (armtls-mesh).
-	rm := renderedDaemonSet(t, out, "c8s-armtls-mesh")
-	if !hasPullSecret(rm.Spec.Template.Spec.ImagePullSecrets, "ghcr-pull") {
-		t.Errorf("armtls-mesh missing global pull secret: %v", rm.Spec.Template.Spec.ImagePullSecrets)
+	// The global reaches a non-overriding component (the plugin installer).
+	installer := renderedDaemonSet(t, out, "c8s-nri-image-policy-worker")
+	if !hasPullSecret(installer.Spec.Template.Spec.ImagePullSecrets, "ghcr-pull") {
+		t.Errorf("nri-image-policy installer missing global pull secret: %v", installer.Spec.Template.Spec.ImagePullSecrets)
 	}
 	// router's own value overrides the global.
 	lb := renderedDeployment(t, out, "c8s-router")
@@ -2360,18 +1568,14 @@ func hasPullSecret(refs []corev1.LocalObjectReference, name string) bool {
 
 func TestChartRendersRouterPublicTLSAndDiscovery(t *testing.T) {
 	t.Parallel()
-	out, err := helmTemplate(t, noUpstreamArgs(
+	out, err := helmTemplate(t,
 		"--set-string", "router.publicTLS.mode=webpki",
 		"--set-string", "router.publicTLS.secretName=router-public-tls",
 		"--set-string", "router.publicTLS.mountPath=/mnt/c8s-data/edge-tls",
 		"--set-string", "router.publicTLS.certKey=public.crt",
 		"--set-string", "router.publicTLS.keyKey=public.key",
 		"--set", "router.discovery.enabled=true",
-		"--set-string", "router.upstream.address=my-backend.other-ns.svc:8443",
-		"--set", "router.upstream.protocol=https",
-		"--set", "router.upstream.tls.verify=true",
-		"--set-string", "router.upstream.tls.serverName=my-backend.other-ns.svc.cluster.local",
-	)...)
+	)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
@@ -2385,20 +1589,19 @@ func TestChartRendersRouterPublicTLSAndDiscovery(t *testing.T) {
 		t.Fatalf("ssl_ciphers missing ECDHE-RSA-AES128-GCM-SHA256; got %v", ciphers)
 	}
 	cfg.location(t, "exact", "/v1/discovery").assertDirective(t, "alias", "/discovery/discovery.json")
-	cfg.location(t, "exact", "/.well-known/cds-cert.pem").assertDirective(t, "alias", "/tls/cert.pem")
-	cfg.location(t, "exact", "/.well-known/mesh-ca.pem").assertDirective(t, "alias", "/tls/ca.pem")
-	defaultRoute := cfg.location(t, "prefix", "/")
-	defaultRoute.assertDirective(t, "proxy_ssl_certificate", "/tls/cert.pem")
-	defaultRoute.assertDirective(t, "proxy_ssl_certificate_key", "/tls/key.pem")
-	defaultRoute.assertDirective(t, "proxy_ssl_name", "my-backend.other-ns.svc.cluster.local")
-	defaultRoute.assertDirective(t, "proxy_ssl_verify", "on")
-	defaultRoute.assertDirective(t, "proxy_ssl_trusted_certificate", "/tls/cert.pem")
-	defaultRoute.assertDirective(t, "proxy_pass", "https://catch_all")
-	cfg.upstream(t, "catch_all").assertServer(t, "my-backend.other-ns.svc:8443")
+	cfg.location(t, "exact", "/.well-known/cds-cert.pem").assertDirective(t, "alias", "/etc/c8s/certs/tls.crt")
+	cfg.location(t, "exact", "/.well-known/mesh-ca.pem").assertDirective(t, "alias", "/etc/c8s/certs/ca.crt")
+	// The public TLS mode changes only what nginx serves: application
+	// requests still go to the routing listener, which dials backends itself.
+	app := cfg.location(t, "prefix", "/")
+	app.assertDirective(t, "proxy_pass", "http://127.0.0.1:8802")
+	// $host drops a trailing dot, which M1 keeps.
+	app.assertDirective(t, "proxy_set_header", "Host", "$http_host")
+	cfg.assertNoDirectivePrefix(t, "proxy_ssl_")
 
 	spec := renderedDeployment(t, out, "c8s-router").Spec.Template.Spec
-	if _, ok := podVolume(spec, "tls-certs"); !ok {
-		t.Fatalf("router missing tls-certs volume; volumes=%v", spec.Volumes)
+	if _, ok := podVolume(spec, "c8s-certs"); !ok {
+		t.Fatalf("router missing c8s-certs volume; volumes=%v", spec.Volumes)
 	}
 	pub, ok := podVolume(spec, "public-tls")
 	if !ok || pub.Secret == nil || pub.Secret.SecretName != "router-public-tls" {
@@ -2424,16 +1627,16 @@ func TestChartRendersRouterPublicTLSAndDiscovery(t *testing.T) {
 		"--discovery-cds-cert-url=/.well-known/cds-cert.pem",
 		"--discovery-public-tls-mode=webpki",
 		"--discovery-mesh-ca-url=/.well-known/mesh-ca.pem",
-		"--reload-watch=/mnt/c8s-data/edge-tls/public.crt",
-		"--reload-watch=/mnt/c8s-data/edge-tls/public.key",
 	)
 	// A WebPKI-secret front door is attest-pq-only: its host-visible serving
 	// key cannot support attest-lb's transport binding.
 	attest := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")
 	assertContainerArgs(t, attest, "--front-door-mode=webpki")
+	// nginx reloads itself from its own entrypoint, so the pod shares no
+	// process namespace (router_reload_test.go).
 	deployment := renderedDeployment(t, out, "c8s-router")
-	if got := deployment.Spec.Template.Spec.ShareProcessNamespace; got == nil || !*got {
-		t.Fatalf("router shareProcessNamespace = %v, want true", got)
+	if got := deployment.Spec.Template.Spec.ShareProcessNamespace; got != nil && *got {
+		t.Fatalf("router shareProcessNamespace = %v, want it unset", *got)
 	}
 }
 
@@ -2562,28 +1765,57 @@ func TestChartRouterACMEMode(t *testing.T) {
 		"--acme-email=ops@example.com",
 		"--acme-directory-url=https://acme-staging-v02.api.letsencrypt.org/directory",
 		"--challenge-port=8402",
-		"--cert-dir=/etc/c8s-acme-tls",
 	)
+	assertAcmeArgsParse(t, acme.Args)
 	if acme.RestartPolicy == nil || *acme.RestartPolicy != corev1.ContainerRestartPolicyAlways {
 		t.Fatalf("acme must be a native sidecar (restartPolicy Always), got %v", acme.RestartPolicy)
 	}
-	// SIGHUP-ing nginx across the shared PID namespace needs the nginx uid.
-	if got := acme.SecurityContext.RunAsUser; got == nil || *got != 101 {
-		t.Fatalf("acme runAsUser = %v, want the nginx uid 101", got)
+	// It proves control of the public names, so it holds the acme role: the
+	// one identity of this pod the node lets out of the cluster in the clear.
+	// nginx, which forwards application requests, holds another.
+	if got := acme.SecurityContext.RunAsUser; got == nil || *got != int64(workloadclaims.AcmeUID) {
+		t.Fatalf("acme runAsUser = %v, want the acme role's uid %d", got, workloadclaims.AcmeUID)
 	}
-	if m, ok := containerVolumeMount(acme, "acme-tls"); !ok || m.MountPath != "/etc/c8s-acme-tls" || m.ReadOnly {
-		t.Fatalf("acme must mount acme-tls read-write at /etc/c8s-acme-tls, got (%+v, %v)", m, ok)
+	for _, want := range []struct {
+		volume string
+		path   string
+	}{
+		{
+			volume: "acme-tls",
+			path:   "/etc/c8s-acme-tls",
+		},
+		{
+			volume: "acme-key",
+			path:   "/etc/c8s-acme-key",
+		},
+	} {
+		if m, ok := containerVolumeMount(acme, want.volume); !ok || m.MountPath != want.path || m.ReadOnly {
+			t.Fatalf("acme must mount %s read-write at %s, got (%+v, %v)", want.volume, want.path, m, ok)
+		}
 	}
 
 	spec := renderedDeployment(t, out, "c8s-router").Spec.Template.Spec
-	vol, ok := podVolume(spec, "acme-tls")
-	if !ok || vol.EmptyDir == nil || vol.EmptyDir.Medium != corev1.StorageMediumMemory {
-		t.Fatalf("acme-tls must be a Memory-medium emptyDir, got %+v", vol)
+	for _, name := range []string{"acme-tls", "acme-key"} {
+		vol, ok := podVolume(spec, name)
+		if !ok || vol.EmptyDir == nil || vol.EmptyDir.Medium != corev1.StorageMediumMemory {
+			t.Fatalf("%s must be a Memory-medium emptyDir, got %+v", name, vol)
+		}
 	}
 
+	// The front door serves the pair, so it is the one container holding
+	// both; everything else that reads this credential takes the chain only.
 	nginx := renderedDeploymentContainer(t, out, "c8s-router", "nginx")
-	if m, ok := containerVolumeMount(nginx, "acme-tls"); !ok || !m.ReadOnly {
-		t.Fatalf("nginx must mount acme-tls read-only, got (%+v, %v)", m, ok)
+	for _, name := range []string{"acme-tls", "acme-key"} {
+		if m, ok := containerVolumeMount(nginx, name); !ok || !m.ReadOnly {
+			t.Fatalf("nginx must mount %s read-only, got (%+v, %v)", name, m, ok)
+		}
+	}
+
+	// The identity that leaves the cluster in the clear is the sidecar that
+	// proves the public names, never the nginx that forwards application
+	// requests.
+	if got := nginx.SecurityContext.RunAsUser; got == nil || *got == int64(workloadclaims.AcmeUID) {
+		t.Errorf("nginx runAsUser = %v: the identity that forwards application requests holds no egress exception", got)
 	}
 	httpPort, ok := findContainerPort(nginx, "http")
 	if !ok || httpPort.ContainerPort != 8080 || httpPort.HostPort != 80 {
@@ -2597,6 +1829,11 @@ func TestChartRouterACMEMode(t *testing.T) {
 	)
 	if m, ok := containerVolumeMount(attest, "acme-tls"); !ok || !m.ReadOnly {
 		t.Fatalf("cds-attest must mount acme-tls read-only, got (%+v, %v)", m, ok)
+	}
+	// It binds the leaf the front door presents; the key is not its to read,
+	// and it runs as the same identity, so only the mount keeps it out.
+	if m, ok := containerVolumeMount(attest, "acme-key"); ok {
+		t.Fatalf("cds-attest mounts the front door's serving key at %s", m.MountPath)
 	}
 
 	cert := routerGetCertContainer(t, out, "c8s-cert")
@@ -2613,7 +1850,7 @@ func TestChartRouterACMEMode(t *testing.T) {
 		t.Fatalf("nginx config has %d server blocks, want the :443 and :80 pair", len(cfg.servers))
 	}
 	cfg.servers[0].assertDirective(t, "ssl_certificate", "/etc/c8s-acme-tls/cert.pem")
-	cfg.servers[0].assertDirective(t, "ssl_certificate_key", "/etc/c8s-acme-tls/key.pem")
+	cfg.servers[0].assertDirective(t, "ssl_certificate_key", "/etc/c8s-acme-key/key.pem")
 	cfg.servers[1].assertDirective(t, "listen", "8080")
 	cfg.location(t, "prefix", "/.well-known/acme-challenge/").
 		assertDirective(t, "proxy_pass", "http://127.0.0.1:8402")
@@ -2653,6 +1890,54 @@ func TestChartRouterACMEMode(t *testing.T) {
 }
 
 // findContainerPort returns the named container port.
+// A kubelet probe reaches a port of the router pod only while the pod ruleset
+// leaves it uncaptured: the ports the enforcer compiles in as the router's
+// listeners, and the mesh endpoint's health port. A captured port is answered
+// by the mesh listener, which speaks mTLS, so the probe never passes and the
+// container it gates never starts.
+func TestChartRouterProbePortsAreUncaptured(t *testing.T) {
+	out, err := helmTemplate(t,
+		"--set-string", "router.publicTLS.mode=acme",
+		"--set", "router.san={lb.example.com}",
+		"--set", "router.attest.enabled=true",
+	)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	// internal/cmds/nri-image-policy's routerListeners.
+	uncaptured := []uint16{8443, 8080, 8403, uint16(workloadclaims.MeshHealthPort)}
+	pod := renderedDeployment(t, out, "c8s-router").Spec.Template.Spec
+	for _, container := range append(slices.Clone(pod.InitContainers), pod.Containers...) {
+		for kind, probe := range map[string]*corev1.Probe{
+			"startup":   container.StartupProbe,
+			"readiness": container.ReadinessProbe,
+			"liveness":  container.LivenessProbe,
+		} {
+			if probe == nil || probe.HTTPGet == nil {
+				continue
+			}
+			port := probedPort(t, container, probe.HTTPGet.Port)
+			if !slices.Contains(uncaptured, port) {
+				t.Errorf("%s's %s probe is on port %d, which the pod ruleset captures into the mesh listener", container.Name, kind, port)
+			}
+		}
+	}
+}
+
+// probedPort is the port number a probe reaches, resolving a named port
+// against the container that declares it.
+func probedPort(t *testing.T, c corev1.Container, port intstr.IntOrString) uint16 {
+	t.Helper()
+	if port.Type == intstr.Int {
+		return uint16(port.IntValue())
+	}
+	declared, ok := findContainerPort(c, port.StrVal)
+	if !ok {
+		t.Fatalf("%s is probed on port %q, which it declares nowhere", c.Name, port.StrVal)
+	}
+	return uint16(declared.ContainerPort)
+}
+
 func findContainerPort(c corev1.Container, name string) (corev1.ContainerPort, bool) {
 	for _, p := range c.Ports {
 		if p.Name == name {
@@ -2756,7 +2041,6 @@ func TestChartRouterAttestFrontDoorModeAndReadinessGate(t *testing.T) {
 	if attest.ReadinessProbe != nil {
 		t.Fatalf("no expectedWorkload: cds-attest must keep today's probe-less shape, got %+v", attest.ReadinessProbe)
 	}
-
 	// Readiness can only gate ingress that flows through the Service, so the
 	// gate requires the node port off (see TestChartRouterReadinessGateGuards).
 	out, err = helmTemplate(t, "--set-string", "router.attest.expectedWorkload=infer", "--set", "router.hostPort.enabled=false")
@@ -2768,16 +2052,23 @@ func TestChartRouterAttestFrontDoorModeAndReadinessGate(t *testing.T) {
 	// tunnel routes; the gate must never move it off loopback.
 	assertContainerArgs(t, attest, "--front-door-mode=cds", "--expected-workload=infer", "--host=127.0.0.1")
 	assertRouterReadyzProbe(t, out)
+}
 
-	// The gate is satisfiable only if get-cert can earn the stamp: the
-	// claims flow must be wired on the same condition. Node-CVM shape:
-	// --workload-claims, the inventory socket mounted read-only at the
-	// compiled path, and the socket's supplemental group on the pod.
+// TestChartRouterGetCertRedeemsASandboxToken pins the claims flow on the
+// router pod. Its own mesh endpoint adopts only a leaf that names a workload
+// instance (internal/cmds/armtlsmesh), so get-cert redeems a sandbox token at
+// the node inventory: the socket mounted read-only at the compiled path, the
+// socket's supplemental group on the pod, and no opt-out flag.
+func TestChartRouterGetCertRedeemsASandboxToken(t *testing.T) {
+	out, err := helmTemplate(t, "--set-string", "router.attest.expectedWorkload=infer", "--set", "router.hostPort.enabled=false")
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
 	cert, ok := findContainer(renderedDeploymentInitContainers(t, out, "c8s-router"), "c8s-cert")
 	if !ok {
 		t.Fatal("c8s-cert init container missing")
 	}
-	assertContainerArgs(t, cert, "--workload-claims", "--expected-workload=infer", "--ca-watch-interval=1m")
+	assertContainerArgs(t, cert, "--expected-workload=infer", "--ca-watch-interval=1m")
 	var mount *corev1.VolumeMount
 	for i, m := range cert.VolumeMounts {
 		if m.Name == "workload-claims" {
@@ -2786,6 +2077,9 @@ func TestChartRouterAttestFrontDoorModeAndReadinessGate(t *testing.T) {
 	}
 	if mount == nil || mount.MountPath != "/run/c8s/workload-claims" || !mount.ReadOnly {
 		t.Fatalf("get-cert must mount the inventory socket read-only at the compiled path, got %+v", cert.VolumeMounts)
+	}
+	if slices.Contains(cert.Args, "--no-workload-claims") {
+		t.Fatalf("get-cert opts out of claims behind the mount that carries them, got %v", cert.Args)
 	}
 	dep := renderedDeployment(t, out, "c8s-router")
 	sc := dep.Spec.Template.Spec.SecurityContext
@@ -2798,10 +2092,9 @@ func TestChartRouterAttestFrontDoorModeAndReadinessGate(t *testing.T) {
 			vol = &dep.Spec.Template.Spec.Volumes[i]
 		}
 	}
-	if vol == nil || vol.HostPath == nil || vol.HostPath.Path != "/var/run/nri-image-policy" {
+	if vol == nil || vol.HostPath == nil || vol.HostPath.Path != "/run/nri-image-policy" {
 		t.Fatalf("workload-claims hostPath volume missing or wrong, got %+v", dep.Spec.Template.Spec.Volumes)
 	}
-
 }
 
 // TestChartRouterReadinessGateGuards pins the render-time guards around the
@@ -2810,7 +2103,6 @@ func TestChartRouterAttestFrontDoorModeAndReadinessGate(t *testing.T) {
 func TestChartRouterReadinessGateGuards(t *testing.T) {
 	t.Parallel()
 	gate := []string{"--set-string", "router.attest.expectedWorkload=infer"}
-	noHostPort := []string{"--set", "router.hostPort.enabled=false"}
 	for _, tc := range []struct {
 		name string
 		args []string
@@ -2823,13 +2115,6 @@ func TestChartRouterReadinessGateGuards(t *testing.T) {
 			args: gate,
 			want: "router.attest.expectedWorkload cannot gate ingress while router.hostPort.enabled=true: the node port is published by CNI portmap regardless of pod readiness. Set router.hostPort.enabled=false and route through the Service, or clear expectedWorkload",
 		},
-		{
-			// Without the sidecar there is no /readyz to gate on, yet the
-			// claims wiring the gate pulls in would still render.
-			name: "gate without the sidecar it gates",
-			args: append(append([]string{}, gate...), append(noHostPort, "--set", "router.attest.enabled=false")...),
-			want: "router.attest.expectedWorkload gates the cds-attest sidecar's /readyz endpoint: set router.attest.enabled=true or clear expectedWorkload",
-		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out, err := helmTemplate(t, tc.args...)
@@ -2839,6 +2124,23 @@ func TestChartRouterReadinessGateGuards(t *testing.T) {
 			assertHelmFailMessage(t, out, tc.want)
 		})
 	}
+}
+
+// TestChartRouterReadinessGateWithoutAttestEndpoints pins that the gate no
+// longer needs the attestation endpoints: cds-attest always runs for
+// application routing, and its /readyz serves the gate either way.
+func TestChartRouterReadinessGateWithoutAttestEndpoints(t *testing.T) {
+	out, err := helmTemplate(t,
+		"--set-string", "router.attest.expectedWorkload=infer",
+		"--set", "router.hostPort.enabled=false",
+		"--set", "router.attest.enabled=false",
+	)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	attest := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")
+	assertContainerArgs(t, attest, "--attest-endpoints=false", "--expected-workload=infer")
+	assertRouterReadyzProbe(t, out)
 }
 
 // TestChartRouterServiceType pins that the Service type is exactly what the
@@ -2892,24 +2194,14 @@ func TestChartRouterServiceRejectsInvalidTrafficPolicy(t *testing.T) {
 	assertHelmFailMessage(t, out, "router.service.externalTrafficPolicy must be Local or Cluster, got: bogus")
 }
 
-// With no adopted workload the upstream address is empty; the sidecar must
-// render without any --upstream* flag (its echo backend takes over) instead
-// of a scheme-only "--upstream=http://" that crash-loops the container.
-func TestChartRouterAttestSidecarNoUpstream(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t,
-		"--set", "router.attest.enabled=true",
-		"--set-string", "router.upstream.address=",
-	)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	sidecar := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")
-	for _, arg := range sidecar.Args {
-		if strings.HasPrefix(arg, "--upstream") {
-			t.Fatalf("cds-attest must omit %q when no upstream address is set: %v", arg, sidecar.Args)
-		}
-	}
+// routerRoutingArgs are the manifest-routing arguments cds-attest carries in
+// every shape at the chart defaults.
+var routerRoutingArgs = []string{
+	"--routing-host=127.0.0.1",
+	"--routing-port=8802",
+	"--routes-poll-interval=30s",
+	"--backend-timeout=1h",
+	"--reserved-paths=/allowlist,/.well-known/c8s/,/.well-known/acme-challenge/,/v1/discovery,/.well-known/cds-cert.pem,/.well-known/mesh-ca.pem,/readyz,/healthz",
 }
 
 func TestChartRendersRouterAttestSidecar(t *testing.T) {
@@ -2930,86 +2222,211 @@ func TestChartRendersRouterAttestSidecar(t *testing.T) {
 	if len(sidecar.Args) == 0 || sidecar.Args[0] != "cds-attest" {
 		t.Fatalf("cds-attest args = %v, want first arg 'cds-attest'", sidecar.Args)
 	}
-	assertContainerArgs(t, sidecar,
+	assertContainerArgs(t, sidecar, append([]string{
 		"--host=127.0.0.1",
 		"--port=8800",
 		"--generation=milan",
-		"--mesh-identity-cert-file=/tls/cert.pem",
-		"--mesh-identity-key-file=/tls/key.pem",
-		"--mesh-identity-ca-file=/tls/ca.pem",
-		// The baseline mesh-wrapped upstream is a plain-HTTP workload upstream;
-		// the mTLS args render only for an https upstream.
-		"--upstream=http://c8s-infer.c8s-system.svc.cluster.local:8000",
-	)
-	assertContainerHasArgPrefix(t, "cds-attest", sidecar.Args, "--attestation-api-url=unix:///var/run/nri-image-policy/attestation-api.sock")
-	for _, banned := range []string{"--upstream-ca", "--upstream-cert", "--upstream-key", "--upstream-server-name"} {
+		"--mesh-identity-cert-file=/etc/c8s/certs/tls.crt",
+		"--mesh-identity-key-file=/etc/c8s/certs/tls.key",
+		"--mesh-identity-ca-file=/etc/c8s/certs/ca.crt",
+	}, routerRoutingArgs...)...)
+	assertContainerHasArgPrefix(t, "cds-attest", sidecar.Args, "--attestation-api-url=unix:///run/nri-image-policy/attestation-api.sock")
+	// --cds-url among them: the enforcer mounts the one CDS endpoint this
+	// node admits for the router role, and cds-attest reads it there.
+	for _, banned := range []string{"--upstream", "--attest-endpoints", "--operator-keys-file", "--image-policy-file", "--cds-measurements", "--cds-rtmrs", "--publish-routes", "--cds-url"} {
 		assertContainerNoArgPrefix(t, "cds-attest", sidecar.Args, banned)
-	}
-	// The sidecar must not mount the mesh-CA for the default cert.pem trust path.
-	if _, ok := containerVolumeMount(sidecar, "mesh-ca"); ok {
-		t.Fatalf("cds-attest should not mount mesh-ca with the default /tls/cert.pem trust; mounts=%v", sidecar.VolumeMounts)
 	}
 	if got := len(deployment.Spec.Template.Spec.Containers); got != 3 {
 		t.Fatalf("router should have nginx + cds-attest + allowlist-proxy, got %d containers", got)
 	}
 
-	// nginx reverse-proxies the dynamic well-known prefix to the sidecar.
-	renderedRouterNginxConfig(t, out).
-		location(t, "prefix", "/.well-known/c8s/").
-		assertDirective(t, "proxy_pass", "http://127.0.0.1:8800")
-	renderedRouterNginxConfig(t, out).
-		location(t, "prefix", "/.well-known/c8s/").
-		assertDirective(t, "proxy_set_header", "X-Real-IP", "$remote_addr")
-	renderedRouterNginxConfig(t, out).
-		location(t, "exact", "/readyz").
-		assertDirective(t, "proxy_set_header", "X-Real-IP", "$remote_addr")
-
-	// An https upstream: the sidecar presents the CDS client cert and
-	// verifies the upstream against the CA chain get-cert writes to
-	// /tls/cert.pem, mirroring the nginx proxy_ssl_* config.
-	httpsOut, err := helmTemplate(t, noUpstreamArgs(
-		"--set", "router.attest.enabled=true",
-		"--set-string", "router.upstream.address=my-backend.other-ns.svc:8443",
-		"--set", "router.upstream.protocol=https",
-	)...)
+	// The protocol endpoints take 16k bodies. Tunnel records up to 8 MiB
+	// spill to a sized tmpfs, capped per client address only.
+	cfg := renderedRouterNginxConfig(t, out)
+	protocol := cfg.location(t, "prefix", "/.well-known/c8s/")
+	tunnel := cfg.location(t, "exact", "/.well-known/c8s/tunnel")
+	for _, loc := range []*nginxBlock{protocol, tunnel} {
+		for _, name := range []string{"proxy_buffering", "proxy_request_buffering"} {
+			if got := loc.directives[name]; len(got) != 1 || !slices.Equal(got[0], []string{"on"}) {
+				t.Fatalf("%s = %v, want exactly on", name, got)
+			}
+		}
+		loc.assertDirective(t, "proxy_pass", "http://127.0.0.1:8800")
+		loc.assertDirective(t, "proxy_max_temp_file_size", "0")
+		loc.assertDirective(t, "proxy_read_timeout", "3630s")
+		loc.assertDirective(t, "proxy_set_header", "X-Real-IP", "$remote_addr")
+	}
+	protocol.assertNoDirective(t, "limit_conn")
+	protocol.assertDirective(t, "client_max_body_size", "16k")
+	protocol.assertDirective(t, "client_body_buffer_size", "16k")
+	tunnel.assertDirective(t, "client_max_body_size", "8m")
+	tunnel.assertDirective(t, "client_body_buffer_size", "16k")
+	tunnel.assertDirective(t, "client_body_temp_path", "/var/lib/c8s-tunnel-body")
+	tunnel.assertDirective(t, "client_body_timeout", "10s")
+	tunnel.assertDirective(t, "limit_conn", "c8s_tunnel_per_client", "64")
+	tunnel.assertDirective(t, "limit_conn_status", "503")
+	tunnel.assertDirective(t, "error_page", "503", "@tunnel_busy")
+	cfg.location(t, "named", "@tunnel_busy").assertDirective(t, "default_type", "application/json")
+	if got := cfg.http.directives["limit_conn_zone"]; len(got) != 1 || !slices.Equal(got[0], []string{"$binary_remote_addr", "zone=c8s_tunnel_per_client:10m"}) {
+		t.Fatalf("limit_conn_zone = %v, want only the per-client tunnel zone", got)
+	}
+	conf := renderedRouterNginxConf(t, out)
+	for _, want := range []string{"\nworker_rlimit_nofile 65536;\n", "\n    worker_connections 16384;\n"} {
+		if !strings.Contains(conf, want) {
+			t.Fatalf("router nginx.conf lacks %q", want)
+		}
+	}
+	nginx := renderedDeploymentContainer(t, out, "c8s-router", "nginx")
+	if m, ok := containerVolumeMount(nginx, "nginx-tunnel-body"); !ok || m.MountPath != "/var/lib/c8s-tunnel-body" {
+		t.Fatalf("nginx tunnel body mount = %+v, %v, want /var/lib/c8s-tunnel-body", m, ok)
+	}
+	if v, ok := podVolume(deployment.Spec.Template.Spec, "nginx-tunnel-body"); !ok || v.EmptyDir == nil || v.EmptyDir.Medium != corev1.StorageMediumMemory || v.EmptyDir.SizeLimit == nil || v.EmptyDir.SizeLimit.String() != "8Gi" {
+		t.Fatalf("nginx-tunnel-body volume = %+v, want an 8Gi memory emptyDir", v)
+	}
+	capOut, err := helmTemplate(t, "--set", "router.attest.enabled=true", "--set", "router.nginx.tunnelConnectionsPerClient=512")
 	if err != nil {
-		t.Fatalf("helm template (https upstream): %v\n%s", err, httpsOut)
+		t.Fatalf("helm template (tunnelConnectionsPerClient=512): %v\n%s", err, capOut)
 	}
-	httpsSidecar := renderedDeploymentContainer(t, httpsOut, "c8s-router", "cds-attest")
-	assertContainerArgs(t, httpsSidecar,
-		"--upstream=https://my-backend.other-ns.svc:8443",
-		"--upstream-ca=/tls/cert.pem",
-		"--upstream-cert=/tls/cert.pem",
-		"--upstream-key=/tls/key.pem",
-		"--upstream-server-name=my-backend.other-ns.svc",
-	)
+	renderedRouterNginxConfig(t, capOut).location(t, "exact", "/.well-known/c8s/tunnel").assertDirective(t, "limit_conn", "c8s_tunnel_per_client", "512")
+	if out, err := helmTemplate(t, "--set", "router.attest.enabled=true", "--set", "router.nginx.resources.limits.memory=8Gi"); err == nil || !strings.Contains(out, "must exceed router.nginx.tunnelBodySpace") {
+		t.Fatalf("helm template with an nginx memory limit of tunnelBodySpace = %v, want the tmpfs refusal\n%s", err, out)
+	}
+	if out, err := helmTemplate(t, "--set", "router.attest.enabled=true", "--set", "router.nginx.resources.limits.memory=9Gi"); err != nil {
+		t.Fatalf("helm template with an nginx memory limit above tunnelBodySpace: %v\n%s", err, out)
+	}
+	cfg.location(t, "exact", "/readyz").assertDirective(t, "proxy_set_header", "X-Real-IP", "$remote_addr")
 
-	// Default on: the sidecar and its well-known proxy render without any
-	// attest override.
-	defOut, err := helmTemplate(t)
+	assertContainerNoArgPrefix(t, "cds-attest", sidecar.Args, "--tunnel-budget")
+	budgetOut, err := helmTemplate(t, "--set-string", "router.routing.tunnelBudget=64Gi")
 	if err != nil {
-		t.Fatalf("helm template (defaults): %v\n%s", err, defOut)
+		t.Fatalf("helm template (tunnelBudget=64Gi): %v\n%s", err, budgetOut)
 	}
-	wellKnown := nginxLocationKey{match: "prefix", path: "/.well-known/c8s/"}
-	defContainers := renderedDeployment(t, defOut, "c8s-router").Spec.Template.Spec.Containers
-	if _, ok := findContainer(defContainers, "cds-attest"); !ok {
-		t.Fatal("cds-attest sidecar should render by default (router.attest.enabled defaults true)")
-	}
-	if _, ok := renderedRouterNginxConfig(t, defOut).locations[wellKnown]; !ok {
-		t.Fatal("well-known proxy location should render by default (router.attest.enabled defaults true)")
-	}
+	assertContainerArgs(t, renderedDeploymentContainer(t, budgetOut, "c8s-router", "cds-attest"), "--tunnel-budget=64Gi")
 
-	// Explicit opt-out: no sidecar, no well-known proxy.
+	// attest.enabled=false keeps cds-attest for application routing and only
+	// unregisters the attestation endpoints; /readyz stays proxied to it.
 	offOut, err := helmTemplate(t, "--set", "router.attest.enabled=false")
 	if err != nil {
 		t.Fatalf("helm template (attest disabled): %v\n%s", err, offOut)
 	}
-	offContainers := renderedDeployment(t, offOut, "c8s-router").Spec.Template.Spec.Containers
-	if _, ok := findContainer(offContainers, "cds-attest"); ok {
-		t.Fatal("cds-attest sidecar should not render when router.attest.enabled=false")
-	}
-	if _, ok := renderedRouterNginxConfig(t, offOut).locations[wellKnown]; ok {
+	off := renderedDeploymentContainer(t, offOut, "c8s-router", "cds-attest")
+	assertContainerArgs(t, off, append([]string{"--attest-endpoints=false"}, routerRoutingArgs...)...)
+	assertContainerNoArgPrefix(t, "cds-attest", off.Args, "--upstream")
+	offCfg := renderedRouterNginxConfig(t, offOut)
+	if _, ok := offCfg.locations[nginxLocationKey{match: "prefix", path: "/.well-known/c8s/"}]; ok {
 		t.Fatal("well-known proxy location should not render when router.attest.enabled=false")
+	}
+	offCfg.location(t, "exact", "/readyz").assertDirective(t, "proxy_pass", "http://127.0.0.1:8800")
+	offCfg.location(t, "prefix", "/").assertDirective(t, "proxy_pass", "http://127.0.0.1:8802")
+}
+
+// TestChartRouterRoutePublication pins router.routePublication.enabled to
+// cds-attest --publish-routes, which needs the attestation endpoints.
+func TestChartRouterRoutePublication(t *testing.T) {
+	out, err := helmTemplate(t, "--set", "router.routePublication.enabled=true")
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	assertContainerArgs(t, renderedDeploymentContainer(t, out, "c8s-router", "cds-attest"), "--publish-routes")
+
+	out, err = helmTemplate(t, "--set", "router.routePublication.enabled=true", "--set", "router.attest.enabled=false")
+	if err == nil {
+		t.Fatalf("expected render to fail with publication on and attest off; got success\n%s", out)
+	}
+	assertHelmFailMessage(t, out, "VALIDATION_ERROR kind=router_route_publication: router.routePublication.enabled requires router.attest.enabled: cds-attest serves the route publication beside the attestation endpoints whose evidence binds its route digest. Set router.attest.enabled: true, or set router.routePublication.enabled: false.")
+
+	// A string "false" is truthy in a template; the schema refuses it.
+	out, err = helmTemplate(t, "--set-string", "router.routePublication.enabled=false")
+	if err == nil || !strings.Contains(out, "routePublication") {
+		t.Fatalf("expected a schema refusal of a string routePublication.enabled; err %v\n%s", err, out)
+	}
+}
+
+// TestChartRouterCDSPins pins that cds-attest and allowlist-proxy verify the
+// same CDS: both take their pins from router.cdsPinArgs.
+func TestChartRouterCDSPins(t *testing.T) {
+	measurement := strings.Repeat("ab", armtls.SNPMeasurementSize)
+	rtmr := "2=" + strings.Repeat("cd", 48)
+	policy := writeChartImagePolicy(t, fmt.Sprintf(`{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"snp","measurement":%q}]}`, chartDigestA))
+	for _, tc := range []struct {
+		name      string
+		args      []string
+		wantArgs  []string
+		wantMount bool
+	}{
+		{
+			name:     "measurements and rtmrs",
+			args:     []string{"--set-string", "cds.measurements[0]=" + measurement, "--set-string", "cds.rtmrs[0]=" + rtmr},
+			wantArgs: []string{"--cds-measurements=" + measurement, "--cds-rtmrs=" + rtmr},
+		},
+		{
+			name: "measurementsConfig",
+			// NRI requires the equivalent flat pins beside a policy file; the
+			// router sidecars take the file alone.
+			args:      []string{"--set-file", "cds.measurementsConfig=" + policy, "--set-string", "cds.measurements[0]=" + chartDigestA},
+			wantArgs:  []string{"--image-policy-file=/mnt/c8s-data/measurements/cds.json"},
+			wantMount: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := helmTemplate(t, tc.args...)
+			if err != nil {
+				t.Fatalf("helm template: %v\n%s", err, out)
+			}
+			// The allowlist proxy holds the credentials role, so the node
+			// hands it the pins instead
+			// (TestRouterAllowlistProxyTakesItsCDSPinsFromTheNode).
+			c := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")
+			assertContainerArgs(t, c, tc.wantArgs...)
+			m, ok := containerVolumeMount(c, "measurements-config")
+			if ok != tc.wantMount || (ok && (m.MountPath != "/mnt/c8s-data/measurements" || !m.ReadOnly)) {
+				t.Errorf("cds-attest measurements-config mount = (%+v, %v), want present=%v at /mnt/c8s-data/measurements read-only", m, ok, tc.wantMount)
+			}
+		})
+	}
+}
+
+// TestChartRouterUnpinnedCDS pins the router's operator-key source off a baked
+// node: cds.operatorKeys when set, else CDS, which needs a CDS pin or
+// router.routing.allowUnpinnedCDS. The test helpers set the opt-in.
+func TestChartRouterUnpinnedCDS(t *testing.T) {
+	t.Parallel()
+	optOut := []string{"--set", "router.routing.allowUnpinnedCDS=false"}
+	pinned := append([]string{"--set-string", "cds.measurements[0]=" + strings.Repeat("ab", armtls.SNPMeasurementSize)}, optOut...)
+	keys := append([]string{"--set-string", "cds.operatorKeys=-----BEGIN PUBLIC KEY-----\nMFkw\n-----END PUBLIC KEY-----\n"}, optOut...)
+	const keysArg = "--operator-keys-file=/mnt/c8s-data/operator-keys/keys.pem"
+	for _, tc := range []struct {
+		name               string
+		args               []string
+		wantFlag, wantKeys bool
+	}{
+		{name: "opt-in", wantFlag: true},
+		{name: "pinned CDS", args: pinned},
+		{name: "pinned keys", args: keys, wantKeys: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := helmTemplate(t, tc.args...)
+			if err != nil {
+				t.Fatalf("helm template: %v\n%s", err, out)
+			}
+			c := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")
+			if got := slices.Contains(c.Args, "--allow-unpinned-cds"); got != tc.wantFlag {
+				t.Errorf("cds-attest has --allow-unpinned-cds = %v, want %v", got, tc.wantFlag)
+			}
+			if got := slices.Contains(c.Args, keysArg); got != tc.wantKeys {
+				t.Errorf("cds-attest has %s = %v, want %v", keysArg, got, tc.wantKeys)
+			}
+			if tc.wantKeys {
+				assertContainerMount(t, c, "operator-keys", "/mnt/c8s-data/operator-keys")
+			}
+		})
+	}
+	out, err := helmTemplate(t, optOut...)
+	if err == nil {
+		t.Fatalf("helm template accepted an unpinned CDS without the opt-in\n%s", out)
+	}
+	if got := parseValidationErrorKind(out); got != "unpinned_route_source" {
+		t.Fatalf("validation kind = %q, want unpinned_route_source\n%s", got, out)
 	}
 }
 
@@ -3019,38 +2436,12 @@ func TestRouterCertProvisioningValuesDriveGetCertContainers(t *testing.T) {
 		"--set-string", "router.certProvisioning.renewInterval=30m",
 		"--set-string", "router.certProvisioning.caWatchInterval=2m",
 		"--set", "router.certProvisioning.verbose=true",
-		"--set", "router.nginx.runAsUser=201",
-		"--set", "router.nginx.runAsGroup=202",
-		"--set", "router.nginx.runAsNonRoot=false",
 	)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
 	cert := routerGetCertContainer(t, out, "c8s-cert")
 	assertContainerArgs(t, cert, "--verbose", "--renew-interval=30m", "--ca-watch-interval=2m")
-	if got := cert.SecurityContext.RunAsUser; got == nil || *got != 201 {
-		t.Fatalf("c8s-cert runAsUser = %v, want 201", got)
-	}
-	if got := cert.SecurityContext.RunAsGroup; got == nil || *got != 202 {
-		t.Fatalf("c8s-cert runAsGroup = %v, want 202", got)
-	}
-	if got := cert.SecurityContext.RunAsNonRoot; got == nil || *got {
-		t.Fatalf("c8s-cert runAsNonRoot = %v, want false", got)
-	}
-	deployment := renderedDeployment(t, out, "c8s-router")
-	if got := deployment.Spec.Template.Spec.SecurityContext.FSGroup; got == nil || *got != 202 {
-		t.Fatalf("router fsGroup = %v, want 202", got)
-	}
-	nginx := renderedDeploymentContainer(t, out, "c8s-router", "nginx")
-	if got := nginx.SecurityContext.RunAsUser; got == nil || *got != 201 {
-		t.Fatalf("nginx runAsUser = %v, want 201", got)
-	}
-	if got := nginx.SecurityContext.RunAsGroup; got == nil || *got != 202 {
-		t.Fatalf("nginx runAsGroup = %v, want 202", got)
-	}
-	if got := nginx.SecurityContext.RunAsNonRoot; got == nil || *got {
-		t.Fatalf("nginx runAsNonRoot = %v, want false", got)
-	}
 
 	claimsOut, err := helmTemplate(t,
 		"--set-string", "router.attest.expectedWorkload=infer",
@@ -3061,113 +2452,8 @@ func TestRouterCertProvisioningValuesDriveGetCertContainers(t *testing.T) {
 		t.Fatalf("helm template (workload claims): %v\n%s", err, claimsOut)
 	}
 	claimsCert := routerGetCertContainer(t, claimsOut, "c8s-cert")
-	assertContainerArgs(t, claimsCert, "--workload-claims", "--ca-watch-interval=3m")
-}
-
-// TestChartDefaultRouterUpstreamIsWorkloadDirect pins the default front-door
-// path: router proxies straight to the workload over plain HTTP at the app
-// layer (the node mesh wraps pod-IP hops in attested mTLS), with no
-// proxy_ssl_* directives on the default route. The upstream is dialed via a
-// variable with a resolver so nginx re-resolves per DNS TTL: a headless
-// Service (an adopted workload) returns pod IPs that change on pod churn, and
-// a static upstream block would pin the startup-time IPs and 502 until the
-// next config reload.
-func TestChartRouterMeshWrappedUpstreamIsWorkloadDirect(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	cfg := renderedRouterNginxConfig(t, out)
-	cfg.http.assertDirective(t, "resolver", "kube-dns.kube-system.svc.cluster.local")
-	defaultRoute := cfg.location(t, "prefix", "/")
-	// The baseline mesh-wrapped upstream is the operator-managed headless
-	// Service, so the pod-IP hop is mesh-wrapped.
-	defaultRoute.assertDirective(t, "set", "$backend_addr", "c8s-infer.c8s-system.svc.cluster.local:8000")
-	defaultRoute.assertDirective(t, "proxy_pass", "http://$backend_addr")
-	if len(cfg.upstreams) != 0 {
-		t.Fatalf("catch-all upstream must be a variable dial, not a static upstream block (it would pin headless pod IPs at startup); got %v", cfg.upstreams)
-	}
-	cfg.assertNoDirectivePrefix(t, "proxy_ssl_")
-}
-
-// A manual upstream is dialed through a static upstream block, so nginx
-// resolves it once at startup instead of per request. Per-request resolution
-// asks cluster DNS -- plaintext UDP the mesh does not intercept -- where to
-// send every request, so a forged answer retargets the hop mid-session; a
-// loose tls.serverName or a wildcard SAN pattern leaves nothing to catch it.
-// Only the mesh-wrapped headless shape keeps the variable dial, because its
-// pod IPs churn; the resolver is rendered for that shape alone.
-func TestChartRouterManualUpstreamResolvesAtStartup(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t,
-		"--set-string", "router.upstream.address=my-backend.other-ns.svc:8443",
-		"--set", "router.upstream.protocol=https",
-		"--set", "router.upstream.tls.verify=true")
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	cfg := renderedRouterNginxConfig(t, out)
-	cfg.upstream(t, "catch_all").assertServer(t, "my-backend.other-ns.svc:8443")
-	route := cfg.location(t, "prefix", "/")
-	route.assertDirective(t, "proxy_pass", "https://catch_all")
-	route.assertNoDirective(t, "set")
-	cfg.http.assertNoDirective(t, "resolver")
-}
-
-// nginx exits at startup on a resolver name that does not resolve, and RKE2
-// names its CoreDNS Service rke2-coredns-rke2-coredns — the kube-dns default
-// crash-loops router on every RKE2 cluster. The resolver therefore derives
-// from the distro values (which every RKE2 install already sets for the
-// containerd layout); an explicit router.nginx.resolver still wins.
-func TestChartRouterResolverDerivesFromDistro(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		name string
-		args []string
-		want string
-	}{
-		{
-			name: "rke2 via nriImagePolicy.distro",
-			args: []string{"--set-string", "nriImagePolicy.distro=rke2"},
-			want: "rke2-coredns-rke2-coredns.kube-system.svc.cluster.local",
-		},
-		{
-			name: "explicit resolver wins over distro",
-			args: []string{
-				"--set-string", "nriImagePolicy.distro=rke2",
-				"--set-string", "router.nginx.resolver=my-dns.dns-ns.svc.cluster.local",
-			},
-			want: "my-dns.dns-ns.svc.cluster.local",
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			out, err := helmTemplate(t, tc.args...)
-			if err != nil {
-				t.Fatalf("helm template: %v\n%s", err, out)
-			}
-			cfg := renderedRouterNginxConfig(t, out)
-			if cfg.http == nil {
-				t.Fatal("nginx config missing http block")
-			}
-			cfg.http.assertDirective(t, "resolver", tc.want)
-		})
-	}
-}
-
-func TestRouterVerifyDerivesProxySSLNameFromUpstream(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplateRouter(t,
-		"--set-string", "upstream.address=my-backend.other-ns.svc.cluster.local:443",
-		"--set", "upstream.protocol=https",
-		"--set", "upstream.tls.verify=true",
-	)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	cfg := renderedRouterNginxConfig(t, out)
-	defaultRoute := cfg.location(t, "prefix", "/")
-	defaultRoute.assertDirective(t, "proxy_ssl_name", "my-backend.other-ns.svc.cluster.local")
+	assertContainerArgs(t, claimsCert, "--ca-watch-interval=3m")
+	assertContainerNoArgPrefix(t, "c8s-cert", claimsCert.Args, "--no-workload-claims")
 }
 
 func TestRouterCORSAllowsSessionHeaderByDefault(t *testing.T) {
@@ -3199,6 +2485,7 @@ var protocolCORSLocations = []struct{ match, path string }{
 	{"exact", "/.well-known/cds-cert.pem"},
 	{"exact", "/.well-known/mesh-ca.pem"},
 	{"prefix", "/.well-known/c8s/"},
+	{"exact", "/.well-known/c8s/tunnel"},
 }
 
 func TestRouterProtocolEndpointsCORSByDefault(t *testing.T) {
@@ -3215,7 +2502,7 @@ func TestRouterProtocolEndpointsCORSByDefault(t *testing.T) {
 		block := cfg.location(t, loc.match, loc.path)
 		block.assertDirective(t, "add_header", "Access-Control-Allow-Origin", `"*"`, "always")
 	}
-	// The workload catch-all inherits nothing from the protocol default.
+	// Application routing inherits nothing from the protocol default.
 	cfg.location(t, "prefix", "/").assertNoDirective(t, "add_header")
 	// The built-in policy is self-contained: none of the global CORS
 	// http-level maps are rendered.
@@ -3321,15 +2608,14 @@ func TestRouterExposesAllowlistThroughCDSByDefault(t *testing.T) {
 		"allowlist-proxy",
 		"--host=127.0.0.1",
 		"--port=8801",
-		"--cds-url=https://c8s-cds.c8s-system.svc:8443",
-		"--attestation-api-url=unix:///var/run/nri-image-policy/attestation-api.sock",
+		"--attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock",
 	} {
 		assertContainerHasArg(t, "allowlist-proxy", proxy.Args, want)
 	}
 	// No TLS or operator key material: the only mount is the read-only
-	// attestation socket directory.
+	// inventory socket directory holding the node's attestation-api.
 	for _, m := range proxy.VolumeMounts {
-		if m.Name != "attestation-api-socket" || !m.ReadOnly {
+		if m.Name != "workload-claims" || !m.ReadOnly {
 			t.Fatalf("allowlist-proxy must not receive TLS or operator private keys: mounts=%v", proxy.VolumeMounts)
 		}
 	}
@@ -3366,8 +2652,9 @@ func TestRouterAllowlistRateLimitsAreConfigurable(t *testing.T) {
 	}
 }
 
-func TestRouterAllowlistProxyPinsCDSMeasurements(t *testing.T) {
-	t.Parallel()
+// The node pins the CDS its credential clients reach, so the chart hands the
+// proxy no pin of its own while CDS still takes the operator's.
+func TestRouterAllowlistProxyTakesItsCDSPinsFromTheNode(t *testing.T) {
 	measurement := strings.Repeat("ab", armtls.SNPMeasurementSize)
 	out, err := helmTemplate(t,
 		"--set-string", "cds.measurements[0]="+measurement,
@@ -3376,7 +2663,10 @@ func TestRouterAllowlistProxyPinsCDSMeasurements(t *testing.T) {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
 	proxy := renderedDeploymentContainer(t, out, "c8s-router", "allowlist-proxy")
-	assertContainerHasArg(t, "allowlist-proxy", proxy.Args, "--cds-measurements="+measurement)
+	// It holds the credentials role, so its node hands it the pins and
+	// refuses an argument naming any.
+	assertNoArgWithPrefix(t, "allowlist-proxy", proxy.Args, "--cds-measurements", "--image-policy-file")
+	assertContainerHasArg(t, "cds", renderedDeploymentContainer(t, out, "c8s-cds", "cds").Args, "--measurements="+measurement)
 }
 
 func TestRouterBuiltInAllowlistRouteCanBeDisabled(t *testing.T) {
@@ -3402,170 +2692,6 @@ func TestRouterBuiltInAllowlistRouteCanBeDisabled(t *testing.T) {
 	if _, ok := findContainer(deployment.Spec.Template.Spec.Containers, "allowlist-proxy"); ok {
 		t.Fatal("disabled built-in allowlist route still renders allowlist-proxy")
 	}
-}
-
-func TestRouterExplicitAllowlistRouteOverridesBuiltInRoute(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplateRouter(t,
-		"--set-string", "routes[0].path=/allowlist",
-		"--set-string", "routes[0].match=exact",
-		"--set-string", "routes[0].backend.address=custom-cds.example:8443",
-		"--set-string", "routes[0].backend.protocol=https",
-		"--set", "routes[0].backend.tls.verify=true",
-	)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	cfg := renderedRouterNginxConfig(t, out)
-	cfg.location(t, "exact", "/allowlist").assertDirective(t, "proxy_pass", "https://route_0")
-	if _, ok := cfg.locations[nginxLocationKey{match: "prefix", path: "/allowlist/"}]; ok {
-		t.Fatal("built-in /allowlist/ route rendered alongside explicit allowlist route")
-	}
-	if _, ok := cfg.maps[nginxMapKey{source: "$request_method", target: "$allowlist_write_rate_key"}]; ok {
-		t.Fatal("explicit allowlist route still renders the built-in rate-limit map")
-	}
-	cfg.http.assertNoDirective(t, "limit_req_zone")
-	deployment := renderedDeployment(t, out, "c8s-router")
-	if _, ok := findContainer(deployment.Spec.Template.Spec.Containers, "allowlist-proxy"); ok {
-		t.Fatal("explicit allowlist route still renders the built-in allowlist-proxy")
-	}
-}
-
-func TestRouterAdditionalRoutesConfigureNginxLocations(t *testing.T) {
-	t.Parallel()
-	// Route backends must be secured (https + verify); the location/upstream
-	// wiring under test is protocol-independent.
-	out, err := helmTemplateRouter(t,
-		"--set-string", "routes[0].path=/allowlist",
-		"--set-string", "routes[0].match=exact",
-		"--set-string", "routes[0].backend.address=cds.c8s-system.svc:8080",
-		"--set-string", "routes[0].backend.protocol=https",
-		"--set", "routes[0].backend.tls.verify=true",
-		"--set-string", "routes[1].path=/tenant/",
-		"--set-string", "routes[1].backend.address=tenant-router.c8s-system.svc:8080",
-		"--set-string", "routes[1].backend.protocol=https",
-		"--set", "routes[1].backend.tls.verify=true",
-	)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	cfg := renderedRouterNginxConfig(t, out)
-
-	for _, tt := range []struct {
-		name     string
-		match    string
-		path     string
-		proxyURL string
-	}{
-		{
-			name:     "exact",
-			match:    "exact",
-			path:     "/allowlist",
-			proxyURL: "https://route_0",
-		},
-		{
-			name:     "default-prefix",
-			match:    "prefix",
-			path:     "/tenant/",
-			proxyURL: "https://route_1",
-		},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			route := cfg.location(t, tt.match, tt.path)
-			route.assertDirective(t, "proxy_pass", tt.proxyURL)
-		})
-	}
-
-	defaultRoute := cfg.location(t, "prefix", "/")
-	defaultRoute.assertDirective(t, "proxy_pass", "https://catch_all")
-	cfg.upstream(t, "catch_all").assertServer(t, "vllm:8000")
-	cfg.upstream(t, "route_0").assertServer(t, "cds.c8s-system.svc:8080")
-	cfg.upstream(t, "route_1").assertServer(t, "tenant-router.c8s-system.svc:8080")
-}
-
-// A route backend forwards X-Forwarded-Proto to the origin regardless of the
-// backend protocol; the backend must be secured (https + verify), so a client
-// cert is presented but no proxy_ssl client cert is required for that header.
-func TestRouterRouteForwardsProto(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplateRouter(t,
-		"--set-string", "routes[0].path=/tenant/",
-		"--set-string", "routes[0].backend.address=tenant-router.c8s-system.svc:8080",
-		"--set-string", "routes[0].backend.protocol=https",
-		"--set", "routes[0].backend.tls.verify=true",
-	)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	cfg := renderedRouterNginxConfig(t, out)
-	cfg.upstream(t, "route_0").assertServer(t, "tenant-router.c8s-system.svc:8080")
-	route := cfg.location(t, "prefix", "/tenant/")
-	route.assertDirective(t, "proxy_pass", "https://route_0")
-	route.assertDirective(t, "proxy_set_header", "X-Forwarded-Proto", "$scheme")
-}
-
-func TestRouterTypedHTTPSRouteConfiguresProxyTLS(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplateRouter(t,
-		"--set-string", "routes[0].path=/allowlist",
-		"--set-string", "routes[0].match=exact",
-		"--set-string", "routes[0].backend.address=cds.c8s-system.svc.cluster.local:8080",
-		"--set-string", "routes[0].backend.protocol=https",
-		"--set", "routes[0].backend.tls.verify=true",
-		"--set-string", "routes[0].backend.tls.serverName=cds.c8s-system.svc.cluster.local",
-	)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	cfg := renderedRouterNginxConfig(t, out)
-	cfg.upstream(t, "route_0").assertServer(t, "cds.c8s-system.svc.cluster.local:8080")
-	route := cfg.location(t, "exact", "/allowlist")
-	route.assertDirective(t, "proxy_ssl_server_name", "on")
-	route.assertDirective(t, "proxy_ssl_name", "cds.c8s-system.svc.cluster.local")
-	route.assertDirective(t, "proxy_ssl_verify", "on")
-	route.assertDirective(t, "proxy_ssl_verify_depth", "2")
-	route.assertDirective(t, "proxy_ssl_trusted_certificate", "/tls/ca.pem")
-	route.assertDirective(t, "proxy_pass", "https://route_0")
-	route.assertNoDirective(t, "proxy_ssl_certificate")
-	route.assertNoDirective(t, "proxy_ssl_certificate_key")
-}
-
-func TestRouterTypedHTTPSRouteCanUseCDSClientCert(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplateRouter(t,
-		"--set-string", "routes[0].path=/allowlist",
-		"--set-string", "routes[0].backend.address=cds.c8s-system.svc.cluster.local:8080",
-		"--set-string", "routes[0].backend.protocol=https",
-		"--set", "routes[0].backend.tls.useCDSClientCert=true",
-		"--set", "routes[0].backend.tls.verify=true",
-	)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	cfg := renderedRouterNginxConfig(t, out)
-	route := cfg.location(t, "prefix", "/allowlist")
-	route.assertDirective(t, "proxy_ssl_certificate", "/tls/cert.pem")
-	route.assertDirective(t, "proxy_ssl_certificate_key", "/tls/key.pem")
-	route.assertDirective(t, "proxy_ssl_name", "cds.c8s-system.svc.cluster.local")
-	route.assertDirective(t, "proxy_pass", "https://route_0")
-}
-
-func TestRouterTypedHTTPSRouteCustomTrustedCAPathDoesNotMountMeshCA(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplateRouter(t,
-		"--set-string", "routes[0].path=/allowlist",
-		"--set-string", "routes[0].backend.address=cds.c8s-system.svc.cluster.local:8080",
-		"--set-string", "routes[0].backend.protocol=https",
-		"--set", "routes[0].backend.tls.verify=true",
-		"--set-string", "routes[0].backend.tls.trustedCAPath=/etc/ssl/certs/ca-certificates.crt",
-	)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	cfg := renderedRouterNginxConfig(t, out)
-	route := cfg.location(t, "prefix", "/allowlist")
-	route.assertDirective(t, "proxy_ssl_trusted_certificate", "/etc/ssl/certs/ca-certificates.crt")
-	assertNoRouterMeshCAVolume(t, out)
 }
 
 func renderedRouterNginxConf(t *testing.T, manifest string) string {
@@ -3641,6 +2767,9 @@ func parseNginxConfig(t *testing.T, conf string) nginxConfig {
 				if len(fields) == 3 && fields[1] == "=" {
 					key = nginxLocationKey{match: "exact", path: fields[2]}
 				}
+				if strings.HasPrefix(fields[1], "@") {
+					key = nginxLocationKey{match: "named", path: fields[1]}
+				}
 				cfg.locations[key] = block
 			}
 			stack = append(stack, block)
@@ -3667,15 +2796,6 @@ func parseNginxConfig(t *testing.T, conf string) nginxConfig {
 		t.Fatalf("nginx config has %d unclosed block(s)", len(stack))
 	}
 	return cfg
-}
-
-func (cfg nginxConfig) upstream(t *testing.T, name string) *nginxBlock {
-	t.Helper()
-	upstream, ok := cfg.upstreams[name]
-	if !ok {
-		t.Fatalf("nginx config missing upstream %q; got %v", name, cfg.upstreams)
-	}
-	return upstream
 }
 
 func (cfg nginxConfig) location(t *testing.T, match, path string) *nginxBlock {
@@ -3719,11 +2839,6 @@ func (cfg nginxConfig) mapBlock(t *testing.T, source, target string) *nginxBlock
 	return block
 }
 
-func (block *nginxBlock) assertServer(t *testing.T, server string) {
-	t.Helper()
-	block.assertDirective(t, "server", server)
-}
-
 func (block *nginxBlock) assertDirective(t *testing.T, name string, args ...string) {
 	t.Helper()
 	for _, got := range block.directives[name] {
@@ -3738,16 +2853,6 @@ func (block *nginxBlock) assertNoDirective(t *testing.T, name string) {
 	t.Helper()
 	if got := block.directives[name]; len(got) > 0 {
 		t.Fatalf("nginx directive %q = %v, want absent", name, got)
-	}
-}
-
-func assertNoRouterMeshCAVolume(t *testing.T, manifest string) {
-	t.Helper()
-	dep := renderedDeployment(t, manifest, "c8s-router")
-	for _, volume := range dep.Spec.Template.Spec.Volumes {
-		if volume.Name == "mesh-ca" {
-			t.Fatalf("Deployment/router has mesh-ca volume, want absent: %#v", volume)
-		}
 	}
 }
 
@@ -3821,7 +2926,9 @@ func assertSamePorts(t *testing.T, site string, got, listens []int32) {
 	}
 }
 
-func TestRouterRejectsUnsafeProxyTLS(t *testing.T) {
+// TestRouterRejectsInvalidValues pins the router render guards; helmTemplateRouter
+// prefixes each --set path with router.
+func TestRouterRejectsInvalidValues(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
 		name string
@@ -3913,61 +3020,88 @@ func TestRouterRejectsUnsafeProxyTLS(t *testing.T) {
 			want: "router.allowlist.readRateLimit.burst must be a positive integer, got: 0",
 		},
 		{
-			name: "route-verifyDepth-injection",
-			args: []string{
-				"--set-string", "routes[0].path=/x",
-				"--set-string", "routes[0].backend.address=svc:8080",
-				"--set-string", "routes[0].backend.protocol=https",
-				"--set", "routes[0].backend.tls.verify=true",
-				"--set-string", "routes[0].backend.tls.verifyDepth=9; return 444",
-			},
-			want: "router.routes[0].backend.tls.verifyDepth must be a non-negative integer, got: 9; return 444",
+			name: "routing-port-out-of-range",
+			args: []string{"--set", "routing.port=70000"},
+			want: "router.routing.port must be between 1 and 65535, got: 70000",
 		},
 		{
-			name: "route-tls-on-http-backend",
-			args: []string{
-				"--set-string", "routes[0].path=/x",
-				"--set-string", "routes[0].backend.address=svc:8080",
-				"--set", "routes[0].backend.tls.verify=true",
-			},
-			want: "router.routes[0].backend.tls.verify and useCDSClientCert require backend.protocol: https",
+			name: "routing-port-collides-with-attestation",
+			args: []string{"--set", "routing.port=8800"},
+			want: "router.routing.port must differ from router.attest.port, got: 8800",
 		},
 		{
-			name: "route-verify-not-bool",
-			args: []string{
-				"--set-string", "routes[0].path=/x",
-				"--set-string", "routes[0].backend.address=svc:8080",
-				"--set-string", "routes[0].backend.protocol=https",
-				"--set-string", "routes[0].backend.tls.verify=false",
-			},
-			want: "router.routes[0].backend.tls.verify must be a boolean; do not set it via --set-string, got: false",
+			name: "routing-port-collides-with-allowlist-proxy",
+			args: []string{"--set", "routing.port=8801"},
+			want: "router.routing.port must differ from router.allowlist.proxyPort, got: 8801",
 		},
 		{
-			name: "route-address-with-hash",
-			args: []string{
-				"--set-string", "routes[0].path=/x",
-				"--set-string", "routes[0].backend.address=svc:8080#x",
-			},
-			want: "router.routes[0].backend.address must be a host:port address without scheme, whitespace, semicolons, braces, slashes, or '#', got: svc:8080#x",
+			name: "routing-port-collides-with-nginx",
+			args: []string{"--set", "routing.port=8443"},
+			want: "router.routing.port must differ from router.nginx.httpsPort, got: 8443",
 		},
 		{
-			name: "route-serverName-with-slash",
-			args: []string{
-				"--set-string", "routes[0].path=/x",
-				"--set-string", "routes[0].backend.address=svc:8080",
-				"--set-string", "routes[0].backend.protocol=https",
-				"--set-string", "routes[0].backend.tls.serverName=a/b",
-			},
-			want: "router.routes[0].backend.tls.serverName must not contain whitespace, semicolons, braces, slashes, or '#', got: a/b",
+			name: "routing-maxRequestBodyBytes-zero",
+			args: []string{"--set", "routing.maxRequestBodyBytes=0"},
+			want: "router.routing.maxRequestBodyBytes must be a positive number of bytes, got: 0",
 		},
 		{
-			name: "upstream-serverName-injection",
-			args: []string{
-				"--set", "upstream.protocol=https",
-				"--set", "upstream.tls.verify=true",
-				"--set-string", "upstream.tls.serverName=evil; return 444",
-			},
-			want: "router.upstream.tls.serverName must not contain whitespace, semicolons, braces, slashes, or '#', got: evil; return 444",
+			name: "routing-maxRequestBodyBytes-injection",
+			args: []string{"--set-string", "routing.maxRequestBodyBytes=1m; return 200"},
+			want: `expected an integer, got "1m; return 200"`,
+		},
+		{
+			name: "routing-readTimeout-injection",
+			args: []string{"--set-string", "routing.readTimeout=1h; return 200"},
+			want: "router.routing.readTimeout must be a positive whole number of ms, s, m or h, such as 3600s, got: 1h; return 200",
+		},
+		{
+			name: "routing-readTimeout-zero",
+			args: []string{"--set-string", "routing.readTimeout=0s"},
+			want: "router.routing.readTimeout must be a positive whole number of ms, s, m or h, such as 3600s, got: 0s",
+		},
+		{
+			name: "routing-pollInterval-not-a-duration",
+			args: []string{"--set-string", "routing.pollInterval=soon"},
+			want: "router.routing.pollInterval must be a positive whole number of ms, s, m or h, such as 30s or 90m, got: soon",
+		},
+		{
+			name: "routing-pollInterval-zero",
+			args: []string{"--set-string", "routing.pollInterval=0s"},
+			want: "router.routing.pollInterval must be a positive whole number of ms, s, m or h, such as 30s or 90m, got: 0s",
+		},
+		{
+			name: "routing-backendTimeout-sub-nanosecond",
+			args: []string{"--set-string", "routing.backendTimeout=0.1ns"},
+			want: "router.routing.backendTimeout must be a positive whole number of ms, s, m or h, such as 30s or 90m, got: 0.1ns",
+		},
+		{
+			name: "routing-backendTimeout-not-a-duration",
+			args: []string{"--set-string", "routing.backendTimeout=1d"},
+			want: "router.routing.backendTimeout must be a positive whole number of ms, s, m or h, such as 30s or 90m, got: 1d",
+		},
+		{
+			// nginx reads it as the tunnel's proxy_read_timeout.
+			name: "routing-backendTimeout-microseconds",
+			args: []string{"--set-string", "routing.backendTimeout=500us"},
+			want: "router.routing.backendTimeout must be a positive whole number of ms, s, m or h, such as 30s or 90m, got: 500us",
+		},
+		{
+			// nginx's proxy_read_timeout rejects a multi-unit value.
+			name: "routing-backendTimeout-multi-unit",
+			args: []string{"--set-string", "routing.backendTimeout=30m1h"},
+			want: "router.routing.backendTimeout must be a positive whole number of ms, s, m or h, such as 30s or 90m, got: 30m1h",
+		},
+		{
+			name: "routing-tunnelBudget-not-a-quantity",
+			args: []string{"--set-string", "routing.tunnelBudget=lots"},
+			want: "router.routing.tunnelBudget must be a quantity of bytes such as 64Gi, got: lots",
+		},
+		{
+			// The path joins --reserved-paths, which cds-attest refuses unless
+			// already normalized.
+			name: "discovery-path-dot-segment",
+			args: []string{"--set-string", "discovery.path=/v1/../x"},
+			want: "router.discovery paths must be absolute paths of letters, digits and ._~- segments, without . or .. segments, got: /v1/../x",
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -3980,215 +3114,6 @@ func TestRouterRejectsUnsafeProxyTLS(t *testing.T) {
 	}
 }
 
-// TestRouterVerifyDepthZeroPreserved guards against the sprig `default` footgun
-// where an int 0 is treated as empty: an explicit verifyDepth: 0 (verify leaf
-// only) must reach nginx as 0, not be silently bumped to the default 2.
-func TestRouterVerifyDepthZeroPreserved(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplateRouter(t,
-		"--set", "upstream.protocol=https",
-		"--set", "upstream.tls.verify=true",
-		"--set", "upstream.tls.verifyDepth=0",
-	)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	cfg := renderedRouterNginxConfig(t, out)
-	cfg.location(t, "prefix", "/").assertDirective(t, "proxy_ssl_verify_depth", "0")
-}
-
-// TestRouterMultiRouteVerifiedRouteUsesMeshCABundle pins that a verified HTTPS
-// route using the default (mesh) CA resolves its trusted cert to the mesh CA
-// bundle the get-cert sidecar writes alongside the leaf, even when an earlier
-// route does not need it.
-func TestRouterMultiRouteVerifiedRouteUsesMeshCABundle(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplateRouter(t,
-		"--set-string", "routes[0].path=/a",
-		"--set-string", "routes[0].backend.address=svc-a:8080",
-		"--set-string", "routes[0].backend.protocol=https",
-		"--set", "routes[0].backend.tls.verify=true",
-		"--set-string", "routes[0].backend.tls.trustedCAPath=/tls/other.pem",
-		"--set-string", "routes[1].path=/b",
-		"--set-string", "routes[1].backend.address=svc-b:8080",
-		"--set-string", "routes[1].backend.protocol=https",
-		"--set", "routes[1].backend.tls.verify=true",
-	)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	cfg := renderedRouterNginxConfig(t, out)
-	route := cfg.location(t, "prefix", "/b")
-	route.assertDirective(t, "proxy_ssl_verify", "on")
-	route.assertDirective(t, "proxy_ssl_trusted_certificate", "/tls/ca.pem")
-}
-
-// TestRouterRejectsUnsecuredRoute pins the per-route secured-backend guard,
-// mirroring the catch-all upstream: a route backend must be https with
-// tls.verify=true (app-TLS). A plaintext http backend, or https without verify,
-// fails the render; there is no plaintext-to-unattested acknowledgment.
-func TestRouterRejectsUnsecuredRoute(t *testing.T) {
-	t.Parallel()
-	for _, tt := range []struct {
-		name string
-		args []string
-		kind string
-	}{
-		{
-			name: "http-route",
-			args: []string{
-				"--set-string", "routes[0].path=/x",
-				"--set-string", "routes[0].backend.address=svc:8080",
-			},
-			kind: "router_unsecured_route",
-		},
-		{
-			name: "unverified-https-route",
-			args: []string{
-				"--set-string", "routes[0].path=/x",
-				"--set-string", "routes[0].backend.address=svc:8080",
-				"--set-string", "routes[0].backend.protocol=https",
-			},
-			kind: "router_unsecured_route",
-		},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			out, err := helmTemplateRouter(t, tt.args...)
-			if err == nil {
-				t.Fatalf("helm template succeeded, want %s failure\n%s", tt.kind, out)
-			}
-			if got := parseValidationErrorKind(out); got != tt.kind {
-				t.Fatalf("validation kind = %q, want %q\n%s", got, tt.kind, out)
-			}
-		})
-	}
-}
-
-func TestRouterRejectsInvalidRouteMatch(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplateRouter(t,
-		"--set-string", "routes[0].path=/allowlist",
-		"--set-string", "routes[0].match=regex",
-		"--set-string", "routes[0].backend.address=cds.c8s-system.svc:8080",
-	)
-	if err == nil {
-		t.Fatalf("helm template succeeded, want invalid route match failure\n%s", out)
-	}
-	assertHelmFailMessage(t, out, "router.routes[0].match must be 'exact' or 'prefix', got: regex")
-}
-
-func TestRouterRejectsMissingRouteFields(t *testing.T) {
-	t.Parallel()
-	for _, tt := range []struct {
-		name string
-		args []string
-		want string
-	}{
-		{
-			name: "path",
-			args: []string{
-				"--set-string", "routes[0].backend.address=cds.c8s-system.svc:8080",
-			},
-			want: "router.routes[0].path is required",
-		},
-		{
-			name: "backend",
-			args: []string{
-				"--set-string", "routes[0].path=/allowlist",
-			},
-			want: "router.routes[0].backend is required",
-		},
-		{
-			name: "backend-address",
-			args: []string{
-				"--set-string", "routes[0].path=/allowlist",
-				"--set-string", "routes[0].backend.protocol=https",
-			},
-			want: "router.routes[0].backend.address is required",
-		},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			out, err := helmTemplateRouter(t, tt.args...)
-			if err == nil {
-				t.Fatalf("helm template succeeded, want missing route field failure\n%s", out)
-			}
-			assertHelmFailMessage(t, out, tt.want)
-		})
-	}
-}
-
-func TestRouterRejectsRouteUpstream(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplateRouter(t,
-		"--set-string", "routes[0].path=/allowlist",
-		"--set-string", "routes[0].upstream=http://cds.c8s-system.svc:8080",
-	)
-	if err == nil {
-		t.Fatalf("helm template succeeded, want unsupported route upstream failure\n%s", out)
-	}
-	assertHelmFailMessage(t, out, "router.routes[0].upstream is not supported; set backend.address and backend.protocol instead")
-}
-
-func TestRouterRejectsInvalidTypedRouteProtocol(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplateRouter(t,
-		"--set-string", "routes[0].path=/allowlist",
-		"--set-string", "routes[0].backend.address=cds.c8s-system.svc:8080",
-		"--set-string", "routes[0].backend.protocol=grpc",
-	)
-	if err == nil {
-		t.Fatalf("helm template succeeded, want invalid typed route protocol failure\n%s", out)
-	}
-	assertHelmFailMessage(t, out, "router.routes[0].backend.protocol must be 'http' or 'https', got: grpc")
-}
-
-func TestRouterRejectsUnsafeRoutePath(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplateRouter(t,
-		"--set-string", "routes[0].path=/bad;return",
-		"--set-string", "routes[0].backend.address=cds.c8s-system.svc:8080",
-	)
-	if err == nil {
-		t.Fatalf("helm template succeeded, want unsafe route path failure\n%s", out)
-	}
-	assertHelmFailMessage(t, out, "router.routes[0].path must start with '/' and contain only URI path characters safe for nginx locations, got: /bad;return")
-}
-
-func TestRouterCustomTrustedCAPathDoesNotMountMeshCA(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplateRouter(t,
-		"--set", "upstream.protocol=https",
-		"--set", "upstream.tls.verify=true",
-		"--set-string", "upstream.tls.trustedCAPath=/etc/ssl/certs/ca-certificates.crt",
-	)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	cfg := renderedRouterNginxConfig(t, out)
-	defaultRoute := cfg.location(t, "prefix", "/")
-	defaultRoute.assertDirective(t, "proxy_ssl_trusted_certificate", "/etc/ssl/certs/ca-certificates.crt")
-	assertNoRouterMeshCAVolume(t, out)
-}
-
-// TestRouterExplicitTrustedCAPathRendersVerbatim pins that an operator-supplied
-// trustedCAPath is emitted verbatim in proxy_ssl_trusted_certificate. The chart
-// no longer mounts any volume for it: providing the file at that path is the
-// operator's responsibility.
-func TestRouterExplicitTrustedCAPathRendersVerbatim(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplateRouter(t,
-		"--set", "upstream.protocol=https",
-		"--set", "upstream.tls.verify=true",
-		"--set-string", "upstream.tls.trustedCAPath=/mesh-ca/ca.pem",
-	)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	cfg := renderedRouterNginxConfig(t, out)
-	defaultRoute := cfg.location(t, "prefix", "/")
-	defaultRoute.assertDirective(t, "proxy_ssl_trusted_certificate", "/mesh-ca/ca.pem")
-}
-
 func TestRouterDiscoveryRequiresAdvertisedMeshCA(t *testing.T) {
 	t.Parallel()
 	out, err := helmTemplateRouter(t,
@@ -4199,15 +3124,15 @@ func TestRouterDiscoveryRequiresAdvertisedMeshCA(t *testing.T) {
 	}
 	cfg := renderedRouterNginxConfig(t, out)
 	meshCA := cfg.location(t, "exact", "/.well-known/mesh-ca.pem")
-	meshCA.assertDirective(t, "alias", "/tls/ca.pem")
+	meshCA.assertDirective(t, "alias", "/etc/c8s/certs/ca.crt")
 	assertContainerArgs(t, routerGetCertContainer(t, out, "c8s-cert"),
-		"--ca-out=/tls/ca.pem",
+		"--ca-path=/etc/c8s/certs/ca.crt",
 		"--discovery-mesh-ca-url=/.well-known/mesh-ca.pem")
 }
 
 // TestRouterGetCertWritesMeshCABundle pins the mechanism that replaced the
 // c8s-cds-mesh-ca ConfigMap mount: the c8s-cert sidecar writes the mesh CA
-// bundle to /tls/ca.pem (the tls-certs volume that already holds the leaf).
+// bundle to /etc/c8s/certs/ca.crt (the c8s-certs volume that already holds the leaf).
 func TestRouterGetCertWritesMeshCABundle(t *testing.T) {
 	t.Parallel()
 	out, err := helmTemplateRouter(t)
@@ -4215,7 +3140,7 @@ func TestRouterGetCertWritesMeshCABundle(t *testing.T) {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
 	assertContainerArgs(t, routerGetCertContainer(t, out, "c8s-cert"),
-		"--ca-out=/tls/ca.pem")
+		"--ca-path=/etc/c8s/certs/ca.crt")
 }
 
 func TestRouterDiscoveryReportsCDSModeWithoutPublicTLSSecret(t *testing.T) {
@@ -4242,14 +3167,14 @@ func TestRouterRollsOnNginxConfigChange(t *testing.T) {
 	}
 
 	changedOut, err := helmTemplateRouter(t,
-		"--set-string", "upstream.address=other-upstream:8080",
+		"--set", "routing.port=8803",
 	)
 	if err != nil {
 		t.Fatalf("helm template changed config: %v\n%s", err, changedOut)
 	}
 	changedChecksum := renderedDeployment(t, changedOut, "c8s-router").Spec.Template.Annotations["checksum/nginx-config"]
 	if changedChecksum == defaultChecksum {
-		t.Fatalf("checksum/nginx-config did not change after changing upstream: %s", defaultChecksum)
+		t.Fatalf("checksum/nginx-config did not change after changing routing.port: %s", defaultChecksum)
 	}
 }
 
@@ -4292,11 +3217,6 @@ func TestChartOperatorRBACIsScoped(t *testing.T) {
 	}
 	if got := operatorVerbsFor(role, "", "services"); !slices.Equal(got, []string{"get", "list", "watch", "create", "update", "delete"}) {
 		t.Fatalf("operator services verbs = %v", got)
-	}
-	// The mesh-egress reconciler watches every NetworkPolicy and owns the
-	// companions it creates beside egress-isolating ones.
-	if got := operatorVerbsFor(role, "networking.k8s.io", "networkpolicies"); !slices.Equal(got, []string{"get", "list", "watch", "create", "update", "delete"}) {
-		t.Fatalf("operator networkpolicies verbs = %v", got)
 	}
 	// No rendered Role/ClusterRole may grant any of these resources at all.
 	// nodes is granted — but only to CDS's node-reader, which keeps the
@@ -4421,66 +3341,6 @@ func TestChartRollsAttestationApiOnConfigChange(t *testing.T) {
 	changedChecksum := renderedDaemonSet(t, changedOut, "c8s-attestation-api").Spec.Template.Annotations["checksum/config"]
 	if changedChecksum == defaultChecksum {
 		t.Fatalf("checksum/config did not change after changing platforms: %s", defaultChecksum)
-	}
-}
-
-// TestChartCwLabelIntegrityPolicyRendersByDefault: the cw-label
-// ValidatingAdmissionPolicy guards Service-membership identity and must ship
-// on by default, with the immutability (oldObject) check present and the
-// webhook's namespace exclusions mirrored.
-func TestChartCwLabelIntegrityPolicyRendersByDefault(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t, "--set", "webhook.extraExcluded[0]=skip-me")
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	var policy admissionregv1.ValidatingAdmissionPolicy
-	if !findDoc(t, out, "ValidatingAdmissionPolicy", "c8s-cw-label-integrity", &policy) {
-		t.Fatalf("missing cw-label-integrity ValidatingAdmissionPolicy\n%s", out)
-	}
-	ops := policy.Spec.MatchConstraints.ResourceRules[0].Operations
-	if !slices.Contains(ops, admissionregv1.Update) {
-		t.Fatalf("policy operations = %v, must include UPDATE (post-create label mutation is the attack)", ops)
-	}
-	if !slices.ContainsFunc(policy.Spec.Validations, func(v admissionregv1.Validation) bool {
-		return strings.Contains(v.Expression, "oldObject")
-	}) {
-		t.Fatalf("policy has no oldObject immutability validation: %+v", policy.Spec.Validations)
-	}
-	// The cw label must not exist without the injected c8s-cert sidecar, or a
-	// pod could keep workload identity while shedding attestation-bound
-	// injection (webhook pod_mutator.go, injectInitContainers / VAP backstop).
-	if !slices.ContainsFunc(policy.Spec.Variables, func(v admissionregv1.Variable) bool {
-		return v.Name == "hasCertSidecar" && strings.Contains(v.Expression, "initContainers")
-	}) {
-		t.Fatalf("policy missing hasCertSidecar variable: %+v", policy.Spec.Variables)
-	}
-	if !slices.ContainsFunc(policy.Spec.Validations, func(v admissionregv1.Validation) bool {
-		return strings.Contains(v.Expression, "hasCertSidecar")
-	}) {
-		t.Fatalf("policy has no c8s-cert sidecar-presence validation: %+v", policy.Spec.Validations)
-	}
-	var binding admissionregv1.ValidatingAdmissionPolicyBinding
-	if !findDoc(t, out, "ValidatingAdmissionPolicyBinding", "c8s-cw-label-integrity", &binding) {
-		t.Fatalf("missing cw-label-integrity ValidatingAdmissionPolicyBinding\n%s", out)
-	}
-	excluded := selectorExpressionValues(binding.Spec.MatchResources.NamespaceSelector,
-		"kubernetes.io/metadata.name", metav1.LabelSelectorOpNotIn)
-	for _, ns := range []string{"c8s-system", "kube-system", "kube-public", "kube-node-lease", "skip-me"} {
-		if !slices.Contains(excluded, ns) {
-			t.Fatalf("binding namespace exclusions %v missing %s (must mirror the webhook)", excluded, ns)
-		}
-	}
-}
-
-func TestChartCwLabelIntegrityPolicyDisabled(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t, "--set", "webhook.cwLabelPolicy.enabled=false")
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	if renderedManifestHasNamedKind(t, out, "ValidatingAdmissionPolicy", "c8s-cw-label-integrity") {
-		t.Fatalf("cw-label-integrity policy rendered while disabled\n%s", out)
 	}
 }
 
@@ -4711,17 +3571,17 @@ func helmTemplateIn(t *testing.T, dir string, args ...string) (string, error) {
 		"--set", "attestationApi.image.tag=dev",
 		"--set", "cds.image.tag=dev",
 		"--set", "armtlsMesh.image.tag=dev",
+		// The default install pins no CDS; see TestChartRouterUnpinnedCDS.
+		"--set", "router.routing.allowUnpinnedCDS=true",
 		"--set", "nriImagePolicy.image.tag=dev",
 		// volumed is off by default, so its image is unused unless a test
 		// enables it; set the tag here so those tests need not repeat it (its
 		// own image requires a tag or digest, like every component).
 		"--set", "volumed.image.tag=dev",
-		// router has no default upstream (a silently-plaintext VIP was
-		// removed); a c8s-<id> headless-Service address (what `c8s install
-		// --upstream` derives) is the representative mesh-wrapped baseline, and
-		// the chart recognizes that shape as mesh-wrapped. Tests for the
-		// manual-upstream paths clear it via noUpstreamArgs.
-		"--set-string", "router.upstream.address=c8s-infer.c8s-system.svc.cluster.local:8000",
+		// A mesh policy needs the resolver a member pod may reach and this
+		// cluster's own ranges; both are required values.
+		"--set-string", "nriImagePolicy.mesh.clusterRanges[0]=10.42.0.0/16",
+		"--set-string", "nriImagePolicy.mesh.resolver=10.43.0.10",
 		// The installer image must stay digest-pinned: the seed admits it
 		// argv-pinned (c8s.argvPinnedEntries), which a tag cannot pin. No
 		// bootstrap entry is needed — the uncovered_component_digest guard
@@ -4736,45 +3596,140 @@ func helmTemplateIn(t *testing.T, dir string, args ...string) (string, error) {
 	return string(out), err
 }
 
-// noUpstreamArgs clears the mesh-wrapped upstream that helmTemplate pins by
-// default, for tests exercising the manual router.upstream paths.
-// assertRouterUpstreamTimeouts checks the catch-all route outlives nginx's 60s
-// read/send default (non-streaming LLM responses send nothing until done) and
-// gives up quickly on a dead upstream.
-func assertRouterUpstreamTimeouts(t *testing.T, route *nginxBlock, readTimeout string) {
+// assertRouterRoutingLocation checks location / proxies to the routing
+// listener with no URI (so cds-attest sees the request target as sent), with
+// the forwarding headers, streaming settings and timeouts the catch-all
+// carried: non-streaming LLM responses send nothing until done, and a dead
+// listener must fail fast.
+func assertRouterRoutingLocation(t *testing.T, route *nginxBlock, port, readTimeout string) {
 	t.Helper()
 	for name, want := range map[string]string{
-		"proxy_connect_timeout": "5s",
-		"proxy_read_timeout":    readTimeout,
-		"proxy_send_timeout":    readTimeout,
+		"proxy_pass":              "http://127.0.0.1:" + port,
+		"proxy_connect_timeout":   "5s",
+		"proxy_read_timeout":      readTimeout,
+		"proxy_send_timeout":      readTimeout,
+		"proxy_buffering":         "off",
+		"proxy_request_buffering": "off",
+		"proxy_http_version":      "1.1",
 	} {
 		if got := route.directives[name]; len(got) != 1 || !slices.Equal(got[0], []string{want}) {
 			t.Errorf("location / %s = %v, want exactly [%s]", name, got, want)
 		}
 	}
+	route.assertDirective(t, "proxy_set_header", "Host", "$http_host")
+	route.assertDirective(t, "proxy_set_header", "X-Real-IP", "$remote_addr")
+	route.assertDirective(t, "proxy_set_header", "X-Forwarded-For", "$proxy_add_x_forwarded_for")
+	route.assertDirective(t, "proxy_set_header", "X-Forwarded-Proto", "$scheme")
 }
 
-func TestChartRouterUpstreamReadTimeout(t *testing.T) {
+func TestChartRouterRoutingLocation(t *testing.T) {
 	t.Parallel()
 	out, err := helmTemplate(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	assertRouterUpstreamTimeouts(t, renderedRouterNginxConfig(t, out).location(t, "prefix", "/"), "3600s")
+	cfg := renderedRouterNginxConfig(t, out)
+	route := cfg.location(t, "prefix", "/")
+	assertRouterRoutingLocation(t, route, "8802", "3600s")
+	route.assertDirective(t, "client_max_body_size", "1048576")
+	route.assertNoDirective(t, "add_header")
+	cfg.assertNoDirectivePrefix(t, "proxy_ssl_")
+	cfg.http.assertNoDirective(t, "resolver")
+	if len(cfg.upstreams) != 0 {
+		t.Fatalf("nginx renders upstream blocks %v, want none: cds-attest dials every backend", cfg.upstreams)
+	}
 
-	out, err = helmTemplate(t, "--set-string", "router.upstream.readTimeout=900s")
+	out, err = helmTemplate(t,
+		"--set", "router.routing.port=9900",
+		"--set-string", "router.routing.readTimeout=900s",
+		"--set-string", "router.routing.pollInterval=5s",
+		"--set-string", "router.routing.backendTimeout=2h",
+		"--set", "router.routing.maxRequestBodyBytes=67108864",
+	)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	assertRouterUpstreamTimeouts(t, renderedRouterNginxConfig(t, out).location(t, "prefix", "/"), "900s")
+	route = renderedRouterNginxConfig(t, out).location(t, "prefix", "/")
+	assertRouterRoutingLocation(t, route, "9900", "900s")
+	route.assertDirective(t, "client_max_body_size", "67108864")
+	assertContainerArgs(t, renderedDeploymentContainer(t, out, "c8s-router", "cds-attest"),
+		"--routing-port=9900", "--routes-poll-interval=5s", "--backend-timeout=2h")
 
-	if out, err := helmTemplate(t, "--set-string", "router.upstream.readTimeout=1h; return 200"); err == nil || !strings.Contains(out+err.Error(), "router.upstream.readTimeout must be an nginx time") {
-		t.Errorf("readTimeout with injected directive rendered: %v", err)
+	// Global CORS covers application routing too.
+	out, err = helmTemplate(t,
+		"--set", "router.cors.enabled=true",
+		"--set", "router.cors.allowOrigins={https://example.github.io}",
+	)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	renderedRouterNginxConfig(t, out).location(t, "prefix", "/").
+		assertDirective(t, "add_header", "Access-Control-Allow-Origin", "$cors_out_origin", "always")
+}
+
+// TestChartRouterTunnelBusyCORS checks that nginx's tunnel_busy answer carries
+// the tunnel's CORS headers, so a browser client can read it.
+func TestChartRouterTunnelBusyCORS(t *testing.T) {
+	for name, args := range map[string][]string{
+		"protocol cors": nil,
+		"global cors":   {"--set", "router.cors.enabled=true", "--set", "router.cors.allowOrigins={https://app.example}"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			out, err := helmTemplate(t, args...)
+			if err != nil {
+				t.Fatalf("helm template: %v\n%s", err, out)
+			}
+			cfg := renderedRouterNginxConfig(t, out)
+			want := cfg.location(t, "exact", "/.well-known/c8s/tunnel").directives["add_header"]
+			got := cfg.location(t, "named", "@tunnel_busy").directives["add_header"]
+			if len(want) == 0 || !slices.EqualFunc(got, want, slices.Equal[[]string]) {
+				t.Fatalf("@tunnel_busy add_header = %v, want the tunnel's %v", got, want)
+			}
+		})
+	}
+}
+
+// TestChartRouterHealthzIsExact pins /healthz as an exact location: a prefix
+// one would also claim manifest paths such as /healthz-ui.
+func TestChartRouterHealthzIsExact(t *testing.T) {
+	out, err := helmTemplate(t)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	cfg := renderedRouterNginxConfig(t, out)
+	cfg.location(t, "exact", "/healthz").assertDirective(t, "return", "200", `"ok\n"`)
+	if _, ok := cfg.locations[nginxLocationKey{match: "prefix", path: "/healthz"}]; ok {
+		t.Fatal("prefix location /healthz rendered, want only the exact one")
+	}
+}
+
+// TestChartRejectsRemovedRouterBackendValues pins kind=removed_router_routes:
+// values a carried-over file still sets for the Helm-configured backends must
+// fail the render with a pointer to the route manifest, not be ignored.
+func TestChartRejectsRemovedRouterBackendValues(t *testing.T) {
+	for _, set := range []string{
+		"router.upstream.address=x",
+		"router.upstream.readTimeout=60s",
+		"router.routes[0].path=/x",
+		"router.nginx.resolver=kube-dns",
+	} {
+		t.Run(set, func(t *testing.T) {
+			out, err := helmTemplate(t, "--set-string", set)
+			if err == nil {
+				t.Fatalf("helm template accepted %s\n%s", set, out)
+			}
+			if got := parseValidationErrorKind(out); got != "removed_router_routes" {
+				t.Fatalf("validation kind = %q, want removed_router_routes\n%s", got, out)
+			}
+			if !strings.Contains(out, "c8s routes") {
+				t.Fatalf("removed_router_routes message does not mention `c8s routes`\n%s", out)
+			}
+		})
 	}
 }
 
 // assertRouterWebSocketUpgrade checks location / passes a client's WebSocket
-// upgrade on to the upstream.
+// upgrade on to the routing listener.
 func assertRouterWebSocketUpgrade(t *testing.T, cfg nginxConfig, route *nginxBlock) {
 	t.Helper()
 	upgrade := cfg.mapBlock(t, "$http_upgrade", "$connection_upgrade")
@@ -4793,10 +3748,6 @@ func TestChartRouterWebSocketUpgrade(t *testing.T) {
 	}
 	cfg := renderedRouterNginxConfig(t, out)
 	assertRouterWebSocketUpgrade(t, cfg, cfg.location(t, "prefix", "/"))
-}
-
-func noUpstreamArgs(args ...string) []string {
-	return append([]string{"--set-string", "router.upstream.address="}, args...)
 }
 
 // docMeta is the minimum we decode from each YAML doc to dispatch by kind+name.
@@ -4961,29 +3912,6 @@ func TestChartCDSIsInMemorySingleton(t *testing.T) {
 	}
 }
 
-// TestChartPointsClientsAtCDS proves the operator-injected get-cert and the
-// armtls-mesh daemonset both resolve their single --cds-url to the cds Service,
-// and the mesh runs in cds cert-mode — this locks that wiring.
-func TestChartPointsClientsAtCDS(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	const wantURL = "https://c8s-cds.c8s-system.svc:8443"
-
-	operatorArgs := renderedOperatorArgs(t, out)
-	assertContainerHasArg(t, "operator", operatorArgs, "--cds-url="+wantURL)
-
-	meshArgs := renderedDaemonSetContainer(t, out, "c8s-armtls-mesh", "armtls-mesh").Args
-	if got, ok := containerArgValue(meshArgs, "--cds-url"); !ok || got != wantURL {
-		t.Fatalf("armtls-mesh --cds-url = (%q, %v), want %q\nargs: %v", got, ok, wantURL, meshArgs)
-	}
-	if got, ok := containerArgValue(meshArgs, "--cert-mode"); !ok || got != "cds" {
-		t.Fatalf("armtls-mesh --cert-mode = (%q, %v), want cds\nargs: %v", got, ok, meshArgs)
-	}
-}
-
 // TestChartCDSWiresInProcessTrustRoot confirms the flag set: the in-memory CA
 // (no Secret/ca-cert flag) and the allowlist DB.
 func TestChartCDSWiresInProcessTrustRoot(t *testing.T) {
@@ -4997,7 +3925,7 @@ func TestChartCDSWiresInProcessTrustRoot(t *testing.T) {
 	}
 	args := renderedDeploymentContainer(t, out, "c8s-cds", "cds").Args
 	for _, want := range []string{
-		"--attestation-api-url=unix:///var/run/nri-image-policy/attestation-api.sock",
+		"--attestation-api-url=unix:///run/nri-image-policy/attestation-api.sock",
 		"--allowlist-db=/mnt/c8s-data/cds/allowlist.db",
 		"--ca-common-name=c8s Mesh CA",
 		"--ca-cert-validity=8760h",
@@ -5117,7 +4045,7 @@ func TestChartCDSDnsSanPatternAcceptsAnyNamespace(t *testing.T) {
 		return loc != nil && loc[0] == 0 && loc[1] == len(s)
 	}
 	for _, san := range []string{
-		"c8s-router.c8s-system.svc",
+		"c8s-router.c8s-router.svc",
 		"armtls-mesh.c8s-system.svc",
 		"acme-vllm-router-service.vllm.svc",
 		"acme-vllm-acme-opt-125m-engine-service.vllm.svc",
@@ -5291,24 +4219,6 @@ func TestChartNoTeeProxyRemnants(t *testing.T) {
 	}
 }
 
-// TestChartRejectsMalformedUpstreamAddress pins the catch-all upstream to the
-// same charset guard every routes[].backend.address gets: an address with
-// nginx metacharacters must fail the render, not corrupt the config.
-func TestChartRejectsMalformedUpstreamAddress(t *testing.T) {
-	t.Parallel()
-	// Clear the workload baseline and secure the manual upstream (https + verify)
-	// so the render reaches the address-format check rather than tripping the
-	// workload-conflict / unsecured-upstream guards first.
-	out, err := helmTemplate(t, noUpstreamArgs(
-		"--set-string", "router.upstream.address=bad addr;{}",
-		"--set-string", "router.upstream.protocol=https",
-		"--set", "router.upstream.tls.verify=true")...)
-	if err == nil {
-		t.Fatalf("helm template succeeded, want upstream address rejection\n%s", out)
-	}
-	assertHelmFailMessage(t, out, "router.upstream.address must be a host:port address without scheme, whitespace, semicolons, braces, slashes, or '#', got: bad addr;{}")
-}
-
 // TestChartRejectsLeftoverTeeProxyValues: helm silently ignores values keys
 // the chart no longer reads, so a values file carried over from a release
 // that still had tee-proxy would drop its settings (e.g. the hostPort
@@ -5407,11 +4317,26 @@ type nriRuntimeConfig struct {
 			AttestationApiURL string   `yaml:"attestation_api_url"`
 			CDSMeasurements   []string `yaml:"cds_measurements"`
 			CDSRTMRs          []string `yaml:"cds_rtmrs"`
+			MeasurePolicies   bool     `yaml:"measure_policies"`
 		} `yaml:"pull"`
 		Push struct {
 			PersistPath string `yaml:"persist_path"`
 		} `yaml:"push"`
 	} `yaml:"allowlist"`
+	Mesh *struct {
+		ExemptNamespaces []string `yaml:"exempt_namespaces"`
+		Resolver         string   `yaml:"resolver"`
+		Capture          struct {
+			Outbound uint16 `yaml:"outbound"`
+			Inbound  uint16 `yaml:"inbound"`
+			Health   uint16 `yaml:"health"`
+		} `yaml:"capture"`
+		Roles []struct {
+			Name string `yaml:"name"`
+			UID  uint32 `yaml:"uid"`
+		} `yaml:"roles"`
+		ClusterRanges []string `yaml:"cluster_ranges"`
+	} `yaml:"mesh"`
 }
 
 func renderedNRIBootConfig(t *testing.T, manifest, daemonSetName string) nriRuntimeConfig {
@@ -5488,13 +4413,10 @@ func renderedDeploymentContainer(t *testing.T, manifest, deploymentName, contain
 
 // helmTemplateRouter renders the router component from the parent C8s chart in
 // isolation: siblings are disabled and every caller-supplied --set/--set-string
-// path is prefixed with router. so the existing subchart-relative test values
-// (upstream.*, routes[*], nginx.*) keep working after the hoist. The release is
-// named "c8s" so router.fullname resolves to c8s-router, matching the resource
-// names the parent-chart router tests already assert. upstream.address is
-// pinned to the standalone subchart's old default (vllm:8000) so the
-// default-backend assertions remain a meaningful fixture rather than the
-// parent's default upstream wiring.
+// path is prefixed with router., so callers write router-relative paths
+// (cors.*, allowlist.*, routing.*). The release is named "c8s" so
+// router.fullname resolves to c8s-router, matching the resource names the
+// parent-chart router tests assert.
 func helmTemplateRouter(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 	if _, err := exec.LookPath("helm"); err != nil {
@@ -5507,7 +4429,10 @@ func helmTemplateRouter(t *testing.T, args ...string) (string, error) {
 		"--set", "image.tag=dev",
 		"--set", "attestationApi.image.tag=dev",
 		"--set", "cds.image.tag=dev",
-		"--set", "armtlsMesh.enabled=false",
+		"--set", "router.routing.allowUnpinnedCDS=true",
+		"--set", "armtlsMesh.image.tag=dev",
+		"--set-string", "nriImagePolicy.mesh.clusterRanges[0]=10.42.0.0/16",
+		"--set-string", "nriImagePolicy.mesh.resolver=10.43.0.10",
 		// nri-image-policy is enabled in this render
 		// (require_host_image_policy); pin its digest so the render is valid
 		// (the seed admits it argv-pinned). Output is scoped to the router
@@ -5515,13 +4440,6 @@ func helmTemplateRouter(t *testing.T, args ...string) (string, error) {
 		"--set", "nriImagePolicy.image.tag=dev",
 		"--set", "cds.image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000001",
 		"--set", "nriImagePolicy.image.digest=" + baseNRIDigest,
-		"--set-string", "router.upstream.address=vllm:8000",
-		// Secured (https + verify) upstream baseline for the router subchart
-		// tests, on a bare vllm address. A manual address must be app-TLS now
-		// that no default ships and there is no unmeshed acknowledgment; tests
-		// that exercise a specific upstream protocol override it.
-		"--set", "router.upstream.protocol=https",
-		"--set", "router.upstream.tls.verify=true",
 		"--set", "router.nginx.image.tag=dev",
 		"--show-only", "templates/router-configmap.yaml",
 		"--show-only", "templates/router-deployment.yaml",
@@ -5548,10 +4466,10 @@ func prefixRouterSetArgs(args []string) []string {
 	return out
 }
 
-// Example_routerConfig renders the router ConfigMap for a representative route
-// set — one plaintext HTTP backend (/allowlist) and one armTLS-verified HTTPS
-// backend (/tenant/) — and prints the generated nginx.conf. It doubles as a
-// golden test of templates/configmap.yaml: a template edit that changes the
+// Example_routerConfig renders the router ConfigMap with discovery and the
+// attestation endpoints off — the built-in /allowlist route, /readyz,
+// application routing on location / and /healthz — and prints the generated
+// nginx.conf. It doubles as a golden test of templates/router-configmap.yaml: a template edit that changes the
 // rendered config must be reflected in the Output block, so the full config
 // diff surfaces in review. helm is required, as it is for every test in this
 // package; without it the render errors and the example fails.
@@ -5559,11 +4477,14 @@ func Example_routerConfig() {
 	fmt.Print(renderExampleRouterNginxConf())
 	// Output:
 	// worker_processes auto;
+	// # Each connection may hold a client socket, an upstream socket and a
+	// # request body temp file.
+	// worker_rlimit_nofile 65536;
 	// error_log /var/log/nginx/error.log warn;
 	// pid /tmp/nginx.pid;
 	//
 	// events {
-	//     worker_connections 1024;
+	//     worker_connections 16384;
 	// }
 	//
 	// http {
@@ -5579,27 +4500,43 @@ func Example_routerConfig() {
 	//     keepalive_timeout 65;
 	//
 	//     # Pass a client's WebSocket upgrade (e.g. socket.io) through location /;
-	//     # other requests keep Connection: close to the upstream.
+	//     # other requests keep Connection: close to the routing listener.
 	//     map $http_upgrade $connection_upgrade {
 	//         default upgrade;
 	//         "" close;
 	//     }
-	//     upstream route_0 {
-	//         server c8s-cds.c8s-system.svc:8443;
+	//
+	//     # Rate-limit /allowlist while nginx still has the public client IP;
+	//     # empty map keys are not accounted by limit_req. Mutations count per
+	//     # client and in aggregate (the constant-key zone guards the shared
+	//     # per-pod-IP CDS bucket; see docs/operator.md), reads per client;
+	//     # OPTIONS (CORS preflight) is exempt. The total key chains off the
+	//     # write key so the exempt-method list exists once.
+	//     map $request_method $allowlist_write_rate_key {
+	//         default $binary_remote_addr;
+	//         GET "";
+	//         HEAD "";
+	//         OPTIONS "";
 	//     }
-	//     upstream route_1 {
-	//         server tenant-router.c8s-system.svc:8080;
+	//     map $allowlist_write_rate_key $allowlist_write_total_key {
+	//         "" "";
+	//         default "all";
 	//     }
-	//     upstream catch_all {
-	//         server vllm:8000;
+	//     map $request_method $allowlist_read_rate_key {
+	//         default "";
+	//         GET $binary_remote_addr;
+	//         HEAD $binary_remote_addr;
 	//     }
+	//     limit_req_zone $allowlist_write_rate_key zone=allowlist_write_per_client:10m rate=1r/s;
+	//     limit_req_zone $allowlist_write_total_key zone=allowlist_write_total:1m rate=8r/s;
+	//     limit_req_zone $allowlist_read_rate_key zone=allowlist_read_per_client:10m rate=20r/s;
 	//
 	//     server {
 	//         listen 8443 ssl;
-	//         server_name c8s-router.c8s-system.svc;
+	//         server_name c8s-router.c8s-router.svc;
 	//
-	//         ssl_certificate     /tls/cert.pem;
-	//         ssl_certificate_key /tls/key.pem;
+	//         ssl_certificate     /etc/c8s/certs/tls.crt;
+	//         ssl_certificate_key /etc/c8s/certs/tls.key;
 	//
 	//         ssl_protocols TLSv1.2 TLSv1.3;
 	//         ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-RSA-CHACHA20-POLY1305;
@@ -5610,53 +4547,106 @@ func Example_routerConfig() {
 	//         # Headroom for upstream responses with large headers.
 	//         proxy_buffer_size 16k;
 	//         proxy_buffers 4 16k;
-	//         # Route: /allowlist -> https://c8s-cds.c8s-system.svc:8443
+	//         # Built-in control-plane route. The exact + slash-prefix pair
+	//         # exposes only /allowlist and its API subtree, not lookalike paths.
 	//         location = /allowlist {
-	//
-	//             proxy_ssl_server_name on;
-	//             proxy_ssl_name c8s-cds.c8s-system.svc;
-	//             proxy_ssl_verify on;
-	//             proxy_ssl_verify_depth 2;
-	//             proxy_ssl_trusted_certificate /tls/ca.pem;
-	//             proxy_pass https://route_0;
+	//             proxy_hide_header Access-Control-Allow-Origin;
+	//             proxy_hide_header Access-Control-Allow-Methods;
+	//             proxy_hide_header Access-Control-Allow-Headers;
+	//             proxy_hide_header Access-Control-Allow-Credentials;
+	//             proxy_hide_header Access-Control-Expose-Headers;
+	//             if ($request_method = 'OPTIONS') {
+	//                 add_header Access-Control-Allow-Origin  "*" always;
+	//                 add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
+	//                 add_header Access-Control-Allow-Headers "Authorization, Content-Type, X-C8s-Session" always;
+	//                 add_header Access-Control-Max-Age       "600" always;
+	//                 add_header Content-Length 0;
+	//                 return 204;
+	//             }
+	//             add_header Access-Control-Allow-Origin "*" always;
+	//             # These run before nginx collapses callers onto the loopback proxy source.
+	//             # Each zone's map key is empty for the methods it does not cover, so
+	//             # mutations count per client and in aggregate, reads per client only.
+	//             limit_req zone=allowlist_write_per_client burst=5 nodelay;
+	//             limit_req zone=allowlist_write_total burst=15 nodelay;
+	//             limit_req zone=allowlist_read_per_client burst=40 nodelay;
+	//             limit_req_status 429;
+	//             proxy_pass http://127.0.0.1:8801$request_uri;
+	//             proxy_set_header Host $host;
+	//             proxy_set_header Authorization $http_authorization;
+	//             proxy_set_header X-Real-IP $remote_addr;
+	//             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+	//             proxy_set_header X-Forwarded-Proto $scheme;
+	//         }
+	//         location /allowlist/ {
+	//             proxy_hide_header Access-Control-Allow-Origin;
+	//             proxy_hide_header Access-Control-Allow-Methods;
+	//             proxy_hide_header Access-Control-Allow-Headers;
+	//             proxy_hide_header Access-Control-Allow-Credentials;
+	//             proxy_hide_header Access-Control-Expose-Headers;
+	//             if ($request_method = 'OPTIONS') {
+	//                 add_header Access-Control-Allow-Origin  "*" always;
+	//                 add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
+	//                 add_header Access-Control-Allow-Headers "Authorization, Content-Type, X-C8s-Session" always;
+	//                 add_header Access-Control-Max-Age       "600" always;
+	//                 add_header Content-Length 0;
+	//                 return 204;
+	//             }
+	//             add_header Access-Control-Allow-Origin "*" always;
+	//             # These run before nginx collapses callers onto the loopback proxy source.
+	//             # Each zone's map key is empty for the methods it does not cover, so
+	//             # mutations count per client and in aggregate, reads per client only.
+	//             limit_req zone=allowlist_write_per_client burst=5 nodelay;
+	//             limit_req zone=allowlist_write_total burst=15 nodelay;
+	//             limit_req zone=allowlist_read_per_client burst=40 nodelay;
+	//             limit_req_status 429;
+	//             proxy_pass http://127.0.0.1:8801$request_uri;
+	//             proxy_set_header Host $host;
+	//             proxy_set_header Authorization $http_authorization;
+	//             proxy_set_header X-Real-IP $remote_addr;
+	//             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+	//             proxy_set_header X-Forwarded-Proto $scheme;
+	//         }
+	//         # The sidecar's readiness gate, proxied so kubelet can reach it.
+	//         # cds-attest listens on loopback (its one listener also carries the
+	//         # attestation and tunnel routes, which must not be
+	//         # published on the pod IP). So the probe rides the front door:
+	//         # exact-match, ahead of location /.
+	//         location = /readyz {
+	//             access_log off;
+	//             proxy_pass http://127.0.0.1:8800;
 	//             proxy_set_header Host $host;
 	//             proxy_set_header X-Real-IP $remote_addr;
 	//             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 	//             proxy_set_header X-Forwarded-Proto $scheme;
 	//         }
-	//         # Route: /tenant/ -> https://tenant-router.c8s-system.svc:8080
-	//         location /tenant/ {
 	//
-	//             proxy_ssl_server_name on;
-	//             proxy_ssl_name tenant-router.c8s-system.svc;
-	//             proxy_ssl_verify on;
-	//             proxy_ssl_verify_depth 2;
-	//             proxy_ssl_trusted_certificate /tls/ca.pem;
-	//             proxy_pass https://route_1;
-	//             proxy_set_header Host $host;
-	//             proxy_set_header X-Real-IP $remote_addr;
-	//             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-	//             proxy_set_header X-Forwarded-Proto $scheme;
-	//         }
+	//         # Application routing (route policy A7): every request no location
+	//         # above claims goes to the cds-attest routing listener, which routes
+	//         # it by the applied route manifest and dials the backend itself. No
+	//         # URI on proxy_pass, so the listener sees the request target as the
+	//         # client sent it, which path matching needs (M4).
 	//         location / {
-	//
-	//             proxy_ssl_certificate /tls/cert.pem;
-	//             proxy_ssl_certificate_key /tls/key.pem;
-	//             proxy_ssl_server_name on;
-	//             proxy_ssl_name vllm;
-	//             proxy_ssl_verify on;
-	//             proxy_ssl_verify_depth 2;
-	//             proxy_ssl_trusted_certificate /tls/cert.pem;
-	//             proxy_pass https://catch_all;
-	//             proxy_set_header Host $host;
+	//             # $host would drop a trailing dot and fall back to
+	//             # server_name; the listener matches the client's Host (M1).
+	//             if ($http_host = "") {
+	//                 return 400;
+	//             }
+	//             proxy_pass http://127.0.0.1:8802;
+	//             proxy_set_header Host $http_host;
 	//             proxy_set_header X-Real-IP $remote_addr;
 	//             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 	//             proxy_set_header X-Forwarded-Proto $scheme;
 	//             proxy_set_header Upgrade $http_upgrade;
 	//             proxy_set_header Connection $connection_upgrade;
+	//             client_max_body_size 1048576;
+	//             # Stream request bodies to the routing listener: a body held
+	//             # whole would spool to the nginx-cache volume, which a few
+	//             # large uploads would fill. client_max_body_size still applies.
+	//             proxy_request_buffering off;
 	//             # A non-streaming completion sends nothing until it is done, so
 	//             # nginx's 60s default read timeout would 504 long generations.
-	//             # A dead upstream must fail fast instead.
+	//             # A dead routing listener must fail fast instead.
 	//             proxy_connect_timeout 5s;
 	//             proxy_read_timeout 3600s;
 	//             proxy_send_timeout 3600s;
@@ -5664,7 +4654,9 @@ func Example_routerConfig() {
 	//             proxy_http_version 1.1;
 	//         }
 	//
-	//         location /healthz {
+	//         # Exact: a prefix match would also claim manifest paths such as
+	//         # /healthz-ui.
+	//         location = /healthz {
 	//             access_log off;
 	//             return 200 "ok\n";
 	//             add_header Content-Type text/plain;
@@ -6272,7 +5264,7 @@ func TestChartServesAllowlistSeedInBareMetalMode(t *testing.T) {
 	if got := seedLabel(seed, rmD); got != "ghcr.io/confidential-dot-ai/armtls-mesh@"+rmD {
 		t.Errorf("bare-metal-mode seed missing armtls-mesh entry; got %q\nseed: %v", got, seed.Workloads)
 	}
-	const nginxD = "sha256:3af0c10d960cc2502427fe1219c52989d309e7d65596869c60a34fd2fa2406f0"
+	const nginxD = "sha256:5d8bb9437d74a600ec5dbf90c035451c724dc33eac8d3a71078f6f8612c345f6"
 	if _, ok := seedEntry(seed, nginxD); !ok {
 		t.Errorf("bare-metal-mode seed missing router nginx self-entry\nseed: %v", seed.Workloads)
 	}
@@ -6346,6 +5338,9 @@ func TestChartAllowlistsContainerdPrepOnRke2(t *testing.T) {
 // (internal/cmds/nri-image-policy/config.go, which is unexported) needed by the
 // chart tests, so assertions are against typed fields rather than substrings.
 type installerBootConfig struct {
+	WorkloadClaims struct {
+		CDSNodePort int `yaml:"cds_node_port"`
+	} `yaml:"workload_claims"`
 	Allowlist struct {
 		Base pkgallowlist.Allowlist `yaml:"base"`
 		Pull struct {
@@ -6426,22 +5421,18 @@ func TestChartBootConfigParsesAsPluginYAML(t *testing.T) {
 }
 
 // By default the rendered worker boot config admits by the digest base alone:
-// no exempt_namespaces key. Mirrors the node-image lockstep pin in
-// image_policy_template_test.go. The opt-in render is covered below.
-func TestChartBootConfigHasNoExemptNamespaces(t *testing.T) {
-	t.Parallel()
+// policy.exempt_namespaces is empty, and so is the snapshot path that comes
+// with it. The mesh policy's own exempt list is a different key, so this reads
+// the decoded values. The opt-in render is covered below.
+func TestChartBootConfigExemptsNoNamespaceFromImageAdmission(t *testing.T) {
 	out, err := helmTemplate(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	ds := renderedDaemonSet(t, out, "c8s-nri-image-policy-worker")
-	script := strings.Join(containerArgs(t, &ds, "install"), "\n")
-	m := bootConfigHeredocRE.FindStringSubmatch(script)
-	if m == nil {
-		t.Fatalf("install script has no IMAGE_POLICY_EOF heredoc\n%s", script)
-	}
-	if strings.Contains(m[1], "exempt_namespaces") {
-		t.Errorf("worker boot config still renders exempt_namespaces:\n%s", m[1])
+	cfg := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker")
+	if len(cfg.Policy.ExemptNamespaces) != 0 || cfg.Policy.ExemptSnapshotPath != "" {
+		t.Errorf("worker boot config exempts %v from image admission, with snapshot %q",
+			cfg.Policy.ExemptNamespaces, cfg.Policy.ExemptSnapshotPath)
 	}
 }
 
@@ -6643,8 +5634,10 @@ func TestChartNriComponentCoveredByArgvPin(t *testing.T) {
 	}
 }
 
-// golden stays gofmt-clean. Render errors are returned verbatim so the example
-// fails loudly rather than masking a broken template.
+// renderExampleRouterNginxConf renders the nginx.conf Example_routerConfig
+// prints, with trailing whitespace trimmed so the golden stays gofmt-clean.
+// Render errors are returned verbatim so the example fails loudly rather than
+// masking a broken template.
 func renderExampleRouterNginxConf() string {
 	cmd := exec.Command("helm",
 		"template", "c8s", "c8s",
@@ -6653,7 +5646,10 @@ func renderExampleRouterNginxConf() string {
 		"--set", "image.tag=dev",
 		"--set", "attestationApi.image.tag=dev",
 		"--set", "cds.image.tag=dev",
-		"--set", "armtlsMesh.enabled=false",
+		"--set", "router.routing.allowUnpinnedCDS=true",
+		"--set", "armtlsMesh.image.tag=dev",
+		"--set-string", "nriImagePolicy.mesh.clusterRanges[0]=10.42.0.0/16",
+		"--set-string", "nriImagePolicy.mesh.resolver=10.43.0.10",
 		// nri-image-policy is enabled in this render
 		// (require_host_image_policy); pin its digest (the seed admits it
 		// argv-pinned). The render is scoped to the router ConfigMap, so nri
@@ -6661,23 +5657,12 @@ func renderExampleRouterNginxConf() string {
 		"--set", "nriImagePolicy.image.tag=dev",
 		"--set", "cds.image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000001",
 		"--set", "nriImagePolicy.image.digest="+baseNRIDigest,
-		// discovery defaults to enabled; scope this example to route rendering
-		// (discovery's own locations are covered by a dedicated test above).
+		// discovery and the attestation endpoints default to enabled; their
+		// locations are covered by dedicated tests, so this example shows the
+		// allowlist route and application routing.
 		"--set", "router.discovery.enabled=false",
 		"--set", "router.attest.enabled=false",
-		"--set-string", "router.upstream.address=vllm:8000",
-		"--set", "router.upstream.protocol=https",
-		"--set", "router.upstream.tls.verify=true",
 		"--set", "router.nginx.image.tag=dev",
-		"--set-string", "router.routes[0].path=/allowlist",
-		"--set-string", "router.routes[0].match=exact",
-		"--set-string", "router.routes[0].backend.address=c8s-cds.c8s-system.svc:8443",
-		"--set-string", "router.routes[0].backend.protocol=https",
-		"--set", "router.routes[0].backend.tls.verify=true",
-		"--set-string", "router.routes[1].path=/tenant/",
-		"--set-string", "router.routes[1].backend.address=tenant-router.c8s-system.svc:8080",
-		"--set-string", "router.routes[1].backend.protocol=https",
-		"--set", "router.routes[1].backend.tls.verify=true",
 		"--show-only", "templates/router-configmap.yaml",
 	)
 	cmd.Dir = "."
@@ -6819,11 +5804,11 @@ func TestChartImagePullSecretDedupsExplicitReference(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	ds := findARMTLSMeshDaemonSet(t, out)
-	names := pullSecretNames(ds.Spec.Template.Spec.ImagePullSecrets)
+	installer := renderedDaemonSet(t, out, "c8s-nri-image-policy-worker")
+	names := pullSecretNames(installer.Spec.Template.Spec.ImagePullSecrets)
 	want := []string{"ghcr-secret"}
 	if !reflect.DeepEqual(names, want) {
-		t.Errorf("armtls-mesh imagePullSecrets = %v, want %v (no duplicate)", names, want)
+		t.Errorf("nri-image-policy installer imagePullSecrets = %v, want %v (no duplicate)", names, want)
 	}
 }
 
@@ -6848,176 +5833,6 @@ func TestChartDefaultRendersNoPullSecretRefs(t *testing.T) {
 		}
 		return false
 	})
-}
-
-// routerUpstreamAddress returns the catch-all upstream address from the
-// rendered router nginx config: the `upstream catch_all` block's server for a
-// static dial, or the `set $backend_addr <addr>;` directive for the
-// mesh-wrapped shape that is re-resolved per request.
-func routerUpstreamAddress(t *testing.T, manifest string) string {
-	t.Helper()
-	cfg := renderedRouterNginxConfig(t, manifest)
-	if block, ok := cfg.upstreams["catch_all"]; ok {
-		servers := block.directives["server"]
-		if len(servers) != 1 || len(servers[0]) != 1 {
-			t.Fatalf("upstream catch_all must carry exactly one server; got %v", servers)
-		}
-		return servers[0][0]
-	}
-	sets := cfg.location(t, "prefix", "/").directives["set"]
-	for _, args := range sets {
-		if len(args) == 2 && args[0] == "$backend_addr" {
-			return args[1]
-		}
-	}
-	t.Fatalf("catch-all has neither an `upstream catch_all` block nor a `set $backend_addr <addr>;` directive; got %v", sets)
-	return ""
-}
-
-// TestChartRouterUpstreamChoice: there is no default upstream. An unset upstream
-// is a legal install-then-attach state (router serves with no catch-all); when
-// an upstream IS set that is not a c8s-<id> headless Service it must be https
-// with tls.verify=true (app-TLS) — a plaintext http address or unverified https
-// fails instead of shipping a silently-plaintext hop.
-func TestChartRouterUpstreamChoice(t *testing.T) {
-	t.Parallel()
-	// No upstream renders a healthy front door with NO catch-all: the operator
-	// attaches a workload later via --upstream. The cert, discovery, and
-	// /healthz still render; only location / is withheld.
-	t.Run("no-upstream-renders-without-catch-all", func(t *testing.T) {
-		out, err := helmTemplate(t, noUpstreamArgs()...)
-		if err != nil {
-			t.Fatalf("helm template: %v\n%s", err, out)
-		}
-		cfg := renderedRouterNginxConfig(t, out)
-		if _, ok := cfg.locations[nginxLocationKey{match: "prefix", path: "/"}]; ok {
-			t.Fatalf("no upstream should render no catch-all location /, but one is present\n%s", out)
-		}
-		// The front door is still healthy and serving.
-		cfg.location(t, "prefix", "/healthz")
-	})
-
-	// An https upstream with tls.verify (verify defaults to true) terminates and
-	// authenticates TLS itself: that hop is app-TLS, the only manual-address
-	// shape the guard admits, and the address passes through verbatim.
-	t.Run("verified-https-upstream-passes-verbatim", func(t *testing.T) {
-		out, err := helmTemplate(t, noUpstreamArgs(
-			"--set-string", "router.upstream.address=my-backend.other-ns.svc:8443",
-			"--set", "router.upstream.protocol=https")...)
-		if err != nil {
-			t.Fatalf("helm template: %v\n%s", err, out)
-		}
-		if got, want := routerUpstreamAddress(t, out), "my-backend.other-ns.svc:8443"; got != want {
-			t.Fatalf("upstream = %q, want %q", got, want)
-		}
-	})
-
-	// A disabled router needs no upstream, and a leftover upstream (e.g. a
-	// migration that flips router.enabled=false without clearing the value)
-	// must not trip the secured-backend check: the unmeshed-hop risk cannot
-	// occur when router renders nothing.
-	for _, tc := range []struct {
-		name string
-		args []string
-	}{
-		{"router-disabled-needs-no-upstream", noUpstreamArgs("--set", "router.enabled=false")},
-		{"router-disabled-ignores-leftover-upstream", noUpstreamArgs(
-			"--set", "router.enabled=false",
-			"--set-string", "router.upstream.address=my-router.ns.svc:9000")},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			out, err := helmTemplate(t, tc.args...)
-			if err != nil {
-				t.Fatalf("helm template: %v\n%s", err, out)
-			}
-			// The render must not just succeed: a disabled router must emit no
-			// Deployment, so no upstream (leftover or otherwise) can ship.
-			if renderedManifestHasNamedKind(t, out, "Deployment", "c8s-router") {
-				t.Fatalf("router.enabled=false still rendered a c8s-router Deployment\n%s", out)
-			}
-		})
-	}
-}
-
-func TestChartUpstreamValidation(t *testing.T) {
-	t.Parallel()
-	for _, tt := range []struct {
-		name string
-		args []string
-		kind string
-	}{
-		{
-			// A c8s-<id> headless-Service address is recognized as mesh-wrapped
-			// (plaintext http, the mesh secures it), so https can only fail at runtime.
-			name: "mesh-wrapped-https",
-			args: []string{
-				"--set-string", "router.upstream.address=c8s-infer.c8s-system.svc.cluster.local:8000",
-				"--set", "router.upstream.protocol=https",
-			},
-			kind: "workload_https_upstream",
-		},
-		{
-			// A plaintext http manual upstream cannot render: there is no
-			// acknowledgment, only https + verify is admitted.
-			name: "http-upstream",
-			args: noUpstreamArgs("--set-string", "router.upstream.address=my-router.ns.svc:9000"),
-			kind: "router_unsecured_upstream",
-		},
-		{
-			// https alone does not secure the hop: verify=false is an
-			// encrypted-but-unauthenticated backend, rejected like http.
-			name: "unverified-https-upstream",
-			args: noUpstreamArgs(
-				"--set-string", "router.upstream.address=my-router.ns.svc:8443",
-				"--set", "router.upstream.protocol=https",
-				"--set", "router.upstream.tls.verify=false"),
-			kind: "router_unsecured_upstream",
-		},
-		{
-			// A near-miss of the c8s-<id>.<ns>.svc.cluster.local shape (here the
-			// short .svc form) is NOT recognized as mesh-wrapped, so plaintext
-			// http fails closed: only the exact headless-Service FQDN gets the
-			// plaintext pass. Guards the shape regex against being too loose.
-			name: "c8s-shape-short-svc-not-meshwrapped",
-			args: noUpstreamArgs("--set-string", "router.upstream.address=c8s-infer.vllm.svc:8000"),
-			kind: "router_unsecured_upstream",
-		},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			out, err := helmTemplate(t, tt.args...)
-			if err == nil {
-				t.Fatalf("helm template succeeded, want %s failure\n%s", tt.kind, out)
-			}
-			if got := parseValidationErrorKind(out); got != tt.kind {
-				t.Fatalf("validation kind = %q, want %q\n%s", got, tt.kind, out)
-			}
-		})
-	}
-}
-
-// TestChartRouterUpstreamDefaultEmpty guards the no-default-upstream invariant:
-// a shipped default would silently render a catch-all and could put the
-// inference hop back on an unmeshed Service VIP. Empty keeps the front door
-// catch-all-free until an upstream is deliberately wired.
-func TestChartRouterUpstreamDefaultEmpty(t *testing.T) {
-	t.Parallel()
-	data, err := os.ReadFile("c8s/values.yaml")
-	if err != nil {
-		t.Fatalf("read values.yaml: %v", err)
-	}
-	var values struct {
-		Router struct {
-			Upstream struct {
-				Address string `yaml:"address"`
-			} `yaml:"upstream"`
-		} `yaml:"router"`
-	}
-	if err := yaml.Unmarshal(data, &values); err != nil {
-		t.Fatalf("unmarshal values.yaml: %v", err)
-	}
-	if values.Router.Upstream.Address != "" {
-		t.Fatalf("router.upstream.address default = %q, want empty: a shipped default silently renders a catch-all and can leave the hop unmeshed", values.Router.Upstream.Address)
-	}
 }
 
 // TestCDSPodDisruptionBudget guards the singleton trust root: the PDB must
@@ -7098,38 +5913,23 @@ func TestAttestationApiSeccomp(t *testing.T) {
 	}
 }
 
-// The injected secret fetcher verifies CDS before handing it a sandbox token
-// and taking a value back, so cds.measurements has to reach the operator that
-// renders the fetcher's args. Each hop is unit-tested; this asserts the chart
-// end of the chain, which nothing else covers.
-func TestChartOperatorCarriesCDSMeasurementsForSecretFetcher(t *testing.T) {
-	t.Parallel()
+// The injected credential clients read the node's CDS policy from the mount
+// the enforcer gives them, so the operator renders no pins into their args: a
+// pin the control plane could pass is a pin the control plane could choose.
+// This asserts the chart end of that rule.
+func TestChartOperatorPassesNoCDSPins(t *testing.T) {
 	out, err := helmTemplate(t,
 		"--set-string", "cds.measurements[0]=aa11",
-		"--set-string", "cds.measurements[1]=bb22",
+		"--set-string", "cds.rtmrs[0]=1="+strings.Repeat("11", 48),
 	)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
 	args := strings.Join(renderedDeploymentContainer(t, out, "c8s-operator", "operator").Args, " ")
-	for _, want := range []string{"--cds-measurements=aa11", "--cds-measurements=bb22"} {
-		if !strings.Contains(args, want) {
-			t.Errorf("operator args missing %q; the fetcher would pin no measurement and accept any CDS: %s", want, args)
+	for _, unwanted := range []string{"--cds-measurements", "--cds-rtmrs", "--image-policy-file", "--image-policy-json"} {
+		if strings.Contains(args, unwanted) {
+			t.Errorf("operator carries %s; the injected clients read the node policy instead: %s", unwanted, args)
 		}
-	}
-}
-
-// With no measurements configured the flag is absent rather than empty, so the
-// fetcher falls back to its own unpinned warning instead of parsing "".
-func TestChartOperatorOmitsCDSMeasurementsWhenUnset(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	args := strings.Join(renderedDeploymentContainer(t, out, "c8s-operator", "operator").Args, " ")
-	if strings.Contains(args, "--cds-measurements") {
-		t.Errorf("operator carries --cds-measurements with none configured: %s", args)
 	}
 }
 
@@ -7227,7 +6027,7 @@ func TestChartVolumedDaemonSetShape(t *testing.T) {
 // carve-out would only reopen tenant access to the node filesystem.
 func TestChartVolumedSocketDirTracksTheInventoryDir(t *testing.T) {
 	t.Parallel()
-	const runtimeDir = "/var/run/c8s-inventory-elsewhere"
+	const runtimeDir = "/run/c8s-inventory-elsewhere"
 	out, err := helmTemplate(t,
 		"--set", "volumed.enabled=true",
 		"--set-string", "nriImagePolicy.hostPaths.runtimeDir="+runtimeDir,
@@ -7381,63 +6181,6 @@ func TestChartVolumedAndWebhookAgreeOnTheSocketDir(t *testing.T) {
 	}
 	if hostDir != socketDir {
 		t.Errorf("the operator mounts %q into cw pods but volumed serves in %q", hostDir, socketDir)
-	}
-}
-
-// The shutdown cleanup must run `iptables-cleanup --keep-guard` so a
-// terminating mesh keeps the fail-closed guard while workloads are still
-// running. A regression dropping the flag would pass every rule-shape test but
-// silently downgrade running workloads to plaintext on restart.
-func TestChartDaemonSetShutdownCleanupKeepsGuard(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	ds := findARMTLSMeshDaemonSet(t, out)
-	var found int
-	for _, c := range allContainers(ds) {
-		command := strings.Join(c.Command, " ")
-		if !strings.Contains(command, "iptables-cleanup") {
-			continue
-		}
-		found++
-		for _, want := range []string{"--keep-guard", "--on-shutdown"} {
-			if !strings.Contains(command, want) {
-				t.Errorf("cleanup command %q does not carry %s", command, want)
-			}
-		}
-	}
-	if found == 0 {
-		t.Fatal("no iptables-cleanup container found in the armtls-mesh DaemonSet")
-	}
-}
-
-// The fail-closed egress guards carve out UDP/53 to any destination, so the
-// daemonset names no resolver address. A reintroduced --cluster-dns-ip would
-// scope the carve-out to one address again and silently drop every cw DNS
-// query on a cluster whose resolver sits elsewhere.
-func TestChartIptablesSyncNamesNoClusterDNS(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	ds := findARMTLSMeshDaemonSet(t, out)
-	var flags []string
-	for _, c := range allContainers(ds) {
-		if c.Name != "iptables-sync" {
-			continue
-		}
-		flags = c.Command
-	}
-	if len(flags) == 0 {
-		t.Fatal("iptables-sync container command not found")
-	}
-	for _, f := range flags {
-		if f == "--cluster-dns-ip" {
-			t.Errorf("iptables-sync carries --cluster-dns-ip; the carve-out must name no address: %v", flags)
-		}
 	}
 }
 
@@ -7697,6 +6440,146 @@ func TestChartNRICDSURLRefusesAnUnderivableService(t *testing.T) {
 	}
 }
 
+// The pod's route authority runs as the upstream role's reserved identity: the
+// one identity of this pod the node leaves uncaptured into the cluster,
+// because it authenticates the member it reaches itself. The front door, which
+// forwards application requests, holds the router role's.
+func TestChartRouterRunsTheRouteAuthorityAsTheRoutingIdentity(t *testing.T) {
+	out, err := helmTemplate(t)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	attest := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")
+	if got := attest.SecurityContext.RunAsUser; got == nil || *got != int64(workloadclaims.UpstreamUID) {
+		t.Errorf("cds-attest runAsUser = %v, want the upstream role's uid %d", got, workloadclaims.UpstreamUID)
+	}
+	nginx := renderedDeploymentContainer(t, out, "c8s-router", "nginx")
+	if got := nginx.SecurityContext.RunAsUser; got == nil || *got != int64(workloadclaims.RouterUID) {
+		t.Errorf("nginx runAsUser = %v, want the router role's uid %d", got, workloadclaims.RouterUID)
+	}
+}
+
+// The chart renders the router pod itself, and every pod of the router role's
+// namespace holds platform-role containers only. So each of its containers
+// must take a role from the node's measured base, which pins the argv — and
+// for the endpoint the mounts — it grants.
+func TestChartRouterPodTakesTheMeasuredRoles(t *testing.T) {
+	const (
+		meshDigest     = "sha256:" + "aa00000000000000000000000000000000000000000000000000000000000001"
+		operatorDigest = "sha256:" + "bb00000000000000000000000000000000000000000000000000000000000002"
+		nginxDigest    = "sha256:" + "cc00000000000000000000000000000000000000000000000000000000000003"
+	)
+	measured := measuredBaseAllowlist(t, map[string]string{
+		"@MESH_DIGEST@":     meshDigest,
+		"@OPERATOR_DIGEST@": operatorDigest,
+		"@ROUTER_DIGEST@":   nginxDigest,
+	}).BuildIndex()
+	wantRoles := map[string]string{
+		"c8s-mesh":        "mesh",
+		"c8s-cert":        "credentials",
+		"c8s-cert-wait":   "credentials",
+		"allowlist-proxy": "credentials",
+		"nginx":           "router",
+		"cds-attest":      "upstream",
+		"acme":            "acme",
+	}
+	// The measured base is the baked node's, whose launch file carries the
+	// front-door mode, so one render covers both: the acme sidecar is there
+	// either way and the pinned argv names the configuration directory that
+	// node measures (router.configDir).
+	args := append(slices.Clone(bakedArgs),
+		"--set-string", "armtlsMesh.image.digest="+meshDigest,
+		"--set-string", "image.digest="+operatorDigest,
+		"--set-string", "router.nginx.image.digest="+nginxDigest,
+	)
+	out, err := helmTemplate(t, args...)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	pins := componentPins(t, out, args)
+	pod := renderedDeployment(t, out, "c8s-router").Spec.Template.Spec
+	for _, container := range append(slices.Clone(pod.InitContainers), pod.Containers...) {
+		want, held := wantRoles[container.Name]
+		if !held {
+			t.Errorf("router container %q holds no platform role, so the enforcer refuses the pod", container.Name)
+			continue
+		}
+		launch := renderedLaunch(t, pod, container, pins[digestOf(container.Image)])
+		if got := measured.RoleOf(launch); got != want {
+			t.Errorf("the measured base grants %s the role %q, want %q", container.Name, got, want)
+		}
+	}
+	// The front door's entry admits no arguments at all, so the container
+	// must pass none (image-policy.yaml.in, args: deny).
+	if got := renderedDeploymentContainer(t, out, "c8s-router", "nginx").Args; len(got) != 0 {
+		t.Errorf("nginx runs with arguments %v, which its measured entry denies", got)
+	}
+}
+
+// The enforcer admits no container of a member pod until the pod's own mesh
+// endpoint has started, so the endpoint leads: the first entry of
+// initContainers, a native sidecar whose startup probe holds every later
+// container back.
+func TestChartRouterPodStartsTheMeshEndpointFirst(t *testing.T) {
+	for name, mode := range map[string][]string{
+		"cds front door":  nil,
+		"acme front door": {"--set-string", "router.publicTLS.mode=acme", "--set", "router.san={lb.example.com}"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			args := append([]string{"--set", "router.attest.enabled=true"}, mode...)
+			out, err := helmTemplate(t, args...)
+			if err != nil {
+				t.Fatalf("helm template: %v\n%s", err, out)
+			}
+			pod := renderedDeployment(t, out, "c8s-router").Spec.Template.Spec
+			names := containerNames(append(slices.Clone(pod.InitContainers), pod.Containers...))
+			if len(names) == 0 || names[0] != "c8s-mesh" {
+				t.Fatalf("the router's containers run in the order %v, want the mesh endpoint before every other one", names)
+			}
+			endpoint := pod.InitContainers[0]
+			if endpoint.RestartPolicy == nil || *endpoint.RestartPolicy != corev1.ContainerRestartPolicyAlways {
+				t.Error("the mesh endpoint is no native sidecar, so the containers behind it do not wait for its start")
+			}
+			if endpoint.StartupProbe == nil {
+				t.Error("the mesh endpoint carries no startup probe, so the next container starts before it serves")
+			}
+		})
+	}
+}
+
+// measuredBaseAllowlist is the node image's measured base, with the digests
+// mkosi.sync substitutes at build time.
+func measuredBaseAllowlist(t *testing.T, digests map[string]string) *pkgallowlist.Allowlist {
+	t.Helper()
+	body, err := os.ReadFile("../../node-guest-image/c8s/image-policy.yaml.in")
+	if err != nil {
+		t.Fatalf("read the measured base: %v", err)
+	}
+	rendered := string(body)
+	for placeholder, digest := range digests {
+		rendered = strings.ReplaceAll(rendered, placeholder, digest)
+	}
+	var doc struct {
+		Allowlist struct {
+			Base pkgallowlist.Allowlist `yaml:"base"`
+		} `yaml:"allowlist"`
+	}
+	if err := yaml.Unmarshal([]byte(rendered), &doc); err != nil {
+		t.Fatalf("parse the measured base: %v", err)
+	}
+	return &doc.Allowlist.Base
+}
+
+// podVolumeSource is the host source the kubelet gives a pod volume.
+func podVolumeSource(volume string) string {
+	return "/var/lib/kubelet/pods/5a1d-pod/volumes/kubernetes.io~empty-dir/" + volume
+}
+
+func digestOf(image string) string {
+	_, digest, _ := strings.Cut(image, "@")
+	return digest
+}
+
 // The node image bakes its own copy of the pull URL into the NRI base, and the
 // chart cannot reach it. Keeping the two literals equal in-tree is the half
 // that is enforceable here; a per-install -f override still cannot follow (the
@@ -7919,7 +6802,6 @@ func TestChartRTMRPinsFlagThrough(t *testing.T) {
 		"--set", "cds.measurements[0]="+measurement,
 		"--set", "cds.rtmrs[0]="+rtmr1,
 		"--set", "cds.rtmrs[1]="+rtmr2,
-		"--set", "armtlsMesh.rtmrs[0]="+rtmr1,
 	)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
@@ -7929,25 +6811,15 @@ func TestChartRTMRPinsFlagThrough(t *testing.T) {
 	cdsArgs := renderedDeploymentContainer(t, out, "c8s-cds", "cds").Args
 	assertContainerHasArg(t, "cds", cdsArgs, "--rtmrs="+joined)
 
-	meshArgs := renderedDaemonSetContainer(t, out, "c8s-armtls-mesh", "armtls-mesh").Args
-	if i := slices.Index(meshArgs, "--cds-rtmrs"); i < 0 || i+1 >= len(meshArgs) || meshArgs[i+1] != joined {
-		t.Fatalf("armtls-mesh missing --cds-rtmrs %q\nargs: %v", joined, meshArgs)
-	}
-	if i := slices.Index(meshArgs, "--rtmrs"); i < 0 || i+1 >= len(meshArgs) || meshArgs[i+1] != rtmr1 {
-		t.Fatalf("armtls-mesh missing --rtmrs %q\nargs: %v", rtmr1, meshArgs)
-	}
-
-	operatorArgs := renderedOperatorArgs(t, out)
-	assertContainerHasArg(t, "operator", operatorArgs, "--cds-rtmrs="+rtmr1)
-	assertContainerHasArg(t, "operator", operatorArgs, "--cds-rtmrs="+rtmr2)
-
 	workerCfg := renderedNRIBootConfig(t, out, "c8s-nri-image-policy-worker")
 	if want := []string{rtmr1, rtmr2}; !slices.Equal(workerCfg.Allowlist.Pull.CDSRTMRs, want) {
 		t.Fatalf("worker CDS RTMR pins = %v, want %v", workerCfg.Allowlist.Pull.CDSRTMRs, want)
 	}
 
+	// The router's proxy holds the credentials role, so the enforcer's mount
+	// is its only pin source and the chart passes it none.
 	proxyArgs := renderedDeploymentContainer(t, out, "c8s-router", "allowlist-proxy").Args
-	assertContainerHasArg(t, "allowlist-proxy", proxyArgs, "--cds-rtmrs="+joined)
+	assertNoArgWithPrefix(t, "allowlist-proxy", proxyArgs, "--cds-rtmrs")
 }
 
 // With no rtmrs set nothing renders the flags — the empty default must not
@@ -7960,10 +6832,6 @@ func TestChartNoRTMRPinsRendersNoFlags(t *testing.T) {
 	}
 	cdsArgs := renderedDeploymentContainer(t, out, "c8s-cds", "cds").Args
 	assertContainerNoArgPrefix(t, "cds", cdsArgs, "--rtmrs")
-	meshArgs := renderedDaemonSetContainer(t, out, "c8s-armtls-mesh", "armtls-mesh").Args
-	if slices.Contains(meshArgs, "--rtmrs") || slices.Contains(meshArgs, "--cds-rtmrs") {
-		t.Fatalf("unpinned render emitted RTMR flags\nargs: %v", meshArgs)
-	}
 }
 
 func TestChartRejectsImagePolicyOffOnManagedNodes(t *testing.T) {
@@ -8061,5 +6929,295 @@ func TestChartSweepMountAdmission(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestChartRouterReservedPathsCoverNginxLocations: every path nginx serves
+// itself is a --reserved-paths entry, so the tunnel never routes a request to
+// a manifest backend that the public path would have answered (route policy
+// M6). A location added without its reserved path fails here.
+func TestChartRouterReservedPathsCoverNginxLocations(t *testing.T) {
+	location := regexp.MustCompile(`(?m)^\s*location\s+(?:=\s+)?(\S+)\s*\{`)
+	for name, args := range map[string][]string{
+		"default":      nil,
+		"attest off":   {"--set", "router.attest.enabled=false"},
+		"global cors":  {"--set", "router.cors.enabled=true", "--set", "router.cors.allowOrigins={https://app.example}"},
+		"custom paths": {"--set-string", "router.discovery.path=/x/discovery", "--set-string", "router.discovery.cdsCertPath=/x/cds.pem", "--set-string", "router.discovery.meshCAPath=/x/ca.pem"},
+		"acme":         {"--set-string", "router.publicTLS.mode=acme", "--set", "router.san={lb.example.com}", "--set-string", "router.acme.email=ops@example.com"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			out, err := helmTemplate(t, args...)
+			if err != nil {
+				t.Fatalf("helm template: %v\n%s", err, out)
+			}
+			var reserved []string
+			for _, arg := range renderedDeploymentContainer(t, out, "c8s-router", "cds-attest").Args {
+				if v, ok := strings.CutPrefix(arg, "--reserved-paths="); ok {
+					reserved = strings.Split(v, ",")
+				}
+			}
+			if len(reserved) == 0 {
+				t.Fatal("cds-attest has no --reserved-paths")
+			}
+			// M3 prefix match, as routes.Table.Select applies a reserved path.
+			covered := func(p string) bool {
+				return slices.ContainsFunc(reserved, func(r string) bool {
+					return p == r || strings.HasPrefix(p, r) && (strings.HasSuffix(r, "/") || p[len(r)] == '/')
+				})
+			}
+			matches := location.FindAllStringSubmatch(renderedRouterNginxConf(t, out), -1)
+			if len(matches) < 3 {
+				t.Fatalf("found %d nginx locations, want the router's protocol endpoints", len(matches))
+			}
+			for _, m := range matches {
+				if p := m[1]; p != "/" && !strings.HasPrefix(p, "@") && !covered(p) {
+					t.Errorf("nginx serves location %s, which --reserved-paths %v does not cover", p, reserved)
+				}
+			}
+		})
+	}
+}
+
+// nriImagePolicy.measurePolicies reaches both plugin configs: the rendered
+// boot config and, on a baked node, the set-cds-pins patch. The router's
+// cds-attest reads the journal wherever it mounts the runtime directory, so a
+// node that stopped measuring still reports the extends RTMR[3] keeps.
+func TestChartMeasurePolicies(t *testing.T) {
+	for _, measure := range []bool{false, true} {
+		set := fmt.Sprintf("nriImagePolicy.measurePolicies=%t", measure)
+		out, err := helmTemplate(t, "--set", set)
+		if err != nil {
+			t.Fatalf("helm template: %v\n%s", err, out)
+		}
+		if got := renderedNRIBootConfig(t, out, "c8s-nri-image-policy-worker").Allowlist.Pull.MeasurePolicies; got != measure {
+			t.Errorf("%s: boot config measure_policies = %v, want %v", set, got, measure)
+		}
+
+		out, err = helmTemplate(t,
+			"--set-string", "attestationApi.cvmMode=bare-metal",
+			// Measuring needs the journal mount beside the attestation-api socket.
+			"--set", fmt.Sprintf("attestationApi.enabled=%t", measure),
+			"--set", "nriImagePolicy.baked=true",
+			"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
+			"--set-string", "nriImagePolicy.image.digest=sha256:"+strings.Repeat("d", 64),
+			"--set", set,
+		)
+		if err != nil {
+			t.Fatalf("helm template: %v\n%s", err, out)
+		}
+		ds := renderedDaemonSet(t, out, "c8s-nri-image-policy-worker")
+		script := strings.Join(containerArgs(t, &ds, "install"), "\n")
+		if want := fmt.Sprintf("--measure-policies=%t", measure); !strings.Contains(script, want) {
+			t.Errorf("%s: baked pins script missing %q\n%s", set, want, script)
+		}
+	}
+
+	const custom, defaultDir = "/run/custom-nri", "/run/nri-image-policy"
+	for _, tc := range []struct {
+		name     string
+		args     []string
+		dir      string
+		wantFlag bool
+	}{
+		{name: "no attestation-api", args: []string{"--set", "attestationApi.enabled=false"}, dir: defaultDir},
+		{name: "not measuring", args: []string{"--set", "attestationApi.enabled=true"}, dir: custom, wantFlag: true},
+		{name: "measuring", args: []string{"--set", "attestationApi.enabled=true", "--set", "nriImagePolicy.measurePolicies=true"}, dir: defaultDir, wantFlag: true},
+		{name: "baked", args: bakedArgs, dir: custom, wantFlag: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := tc.dir
+			out, err := helmTemplate(t, append(slices.Clone(tc.args), "--set-string", "nriImagePolicy.hostPaths.runtimeDir="+dir)...)
+			if err != nil {
+				t.Fatalf("helm template: %v\n%s", err, out)
+			}
+			attest := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")
+			flag := "--measured-policies-file=" + dir + "/measured-policies"
+			if got := slices.Contains(attest.Args, flag); got != tc.wantFlag {
+				t.Fatalf("cds-attest carries %s: %v, want %v\nargs: %v", flag, got, tc.wantFlag, attest.Args)
+			}
+			mounted := slices.ContainsFunc(attest.VolumeMounts, func(m corev1.VolumeMount) bool {
+				return m.MountPath == dir && m.ReadOnly
+			})
+			if tc.wantFlag && !mounted {
+				t.Errorf("cds-attest reads the journal without mounting %s read-only: %+v", dir, attest.VolumeMounts)
+			}
+		})
+	}
+}
+
+// Producers read the journal at the default runtime directory only, so the
+// chart refuses measuring with another one.
+func TestChartMeasurePoliciesNeedsDefaultRuntimeDir(t *testing.T) {
+	out, err := helmTemplate(t,
+		"--set", "nriImagePolicy.measurePolicies=true",
+		"--set-string", "nriImagePolicy.hostPaths.runtimeDir=/run/custom-nri",
+	)
+	if err == nil {
+		t.Fatalf("helm template succeeded, want a measure_policies_runtime_dir failure\n%s", out)
+	}
+	if got := parseValidationErrorKind(out); got != "measure_policies_runtime_dir" {
+		t.Fatalf("validation kind = %q, want measure_policies_runtime_dir\n%s", got, out)
+	}
+}
+
+// Producers mount the journal only beside the chart's attestation-api socket,
+// and a node.baked image owns the plugin config, so the chart refuses
+// measuring without attestationApi.enabled.
+func TestChartMeasurePoliciesNeedsJournalMount(t *testing.T) {
+	for name, args := range map[string][]string{
+		"no attestation-api": {"--set", "attestationApi.enabled=false"},
+		"node baked":         bakedArgs,
+	} {
+		t.Run(name, func(t *testing.T) {
+			out, err := helmTemplate(t, append(slices.Clone(args), "--set", "nriImagePolicy.measurePolicies=true")...)
+			if err == nil {
+				t.Fatalf("helm template succeeded, want a measure_policies_no_journal_mount failure\n%s", out)
+			}
+			if got := parseValidationErrorKind(out); got != "measure_policies_no_journal_mount" {
+				t.Fatalf("validation kind = %q, want measure_policies_no_journal_mount\n%s", got, out)
+			}
+		})
+	}
+}
+
+// The pod validator is rendered fail-closed over both pod resources and both
+// write operations, so a pod cannot reach the API server without its injected
+// shape while the webhook is down. The operator is told the
+// configuration name so it patches the serving CA onto it.
+func TestChartRendersPodValidatorFailClosed(t *testing.T) {
+	out, err := helmTemplate(t)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+
+	var cfg admissionregv1.ValidatingWebhookConfiguration
+	if !findDoc(t, out, "ValidatingWebhookConfiguration", "c8s-pod-validator", &cfg) {
+		t.Fatalf("chart missing ValidatingWebhookConfiguration c8s-pod-validator\n%s", out)
+	}
+	if len(cfg.Webhooks) != 1 {
+		t.Fatalf("webhooks = %d, want one", len(cfg.Webhooks))
+	}
+	wh := cfg.Webhooks[0]
+	if wh.FailurePolicy == nil || *wh.FailurePolicy != admissionregv1.Fail {
+		t.Errorf("failurePolicy = %v, want Fail", wh.FailurePolicy)
+	}
+	if wh.ClientConfig.Service == nil || wh.ClientConfig.Service.Path == nil || *wh.ClientConfig.Service.Path != "/validate-pods" {
+		t.Errorf("clientConfig path = %+v, want /validate-pods", wh.ClientConfig.Service)
+	}
+	if len(wh.Rules) != 1 {
+		t.Fatalf("rules = %d, want one", len(wh.Rules))
+	}
+	rule := wh.Rules[0]
+	for _, want := range []admissionregv1.OperationType{admissionregv1.Create, admissionregv1.Update} {
+		if !slices.Contains(rule.Operations, want) {
+			t.Errorf("rule operations = %v, want %v included", rule.Operations, want)
+		}
+	}
+	for _, want := range []string{"pods", "pods/ephemeralcontainers"} {
+		if !slices.Contains(rule.Resources, want) {
+			t.Errorf("rule resources = %v, want %v included", rule.Resources, want)
+		}
+	}
+
+	// The operator is told the injector's name and derives this one, so the
+	// two must stay named beside each other.
+	args := renderedOperatorArgs(t, out)
+	if !slices.Contains(args, "--webhook-config-name=c8s-pod-injector") {
+		t.Errorf("operator args missing --webhook-config-name=c8s-pod-injector\n%v", args)
+	}
+	// Every covered pod gets an endpoint, so the operator must know its image.
+	if !slices.ContainsFunc(args, func(arg string) bool { return strings.HasPrefix(arg, "--mesh-image=") }) {
+		t.Errorf("operator args carry no --mesh-image, so no pod would get an endpoint\n%v", args)
+	}
+
+	// The operator's own namespace and the system namespaces are out of the
+	// validator's scope, so the operator can always boot to patch the caBundle
+	// this fail-closed webhook needs.
+	excluded := selectorExpressionValues(wh.NamespaceSelector, "kubernetes.io/metadata.name", metav1.LabelSelectorOpNotIn)
+	for _, want := range []string{"c8s-system", "kube-system", "kube-public", "kube-node-lease", "local-path-storage"} {
+		if !slices.Contains(excluded, want) {
+			t.Errorf("validator namespaceSelector missing excluded namespace %q: %v", want, excluded)
+		}
+	}
+	if wh.MatchPolicy == nil || *wh.MatchPolicy != admissionregv1.Equivalent {
+		t.Errorf("matchPolicy = %v, want Equivalent", wh.MatchPolicy)
+	}
+}
+
+// The injector renders fail-closed whatever webhook.failurePolicy is set to:
+// an injection the mutator never made must not reach the API server.
+func TestChartInjectorFailClosed(t *testing.T) {
+	t.Parallel()
+	out, err := helmTemplate(t, "--set", "webhook.failurePolicy=Ignore")
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	injector := renderedMutatingWebhook(t, out, "pods.c8s.confidential.ai")
+	if injector.FailurePolicy == nil || *injector.FailurePolicy != admissionregv1.Fail {
+		t.Errorf("injector failurePolicy = %v, want Fail", injector.FailurePolicy)
+	}
+}
+
+// The install lane renders the mesh policy in the same shape the node image
+// measures, so the enforcer it installs hosts member pods there too (the lane
+// is for test clusters, decision 5).
+func TestChartBootConfigRendersTheMeshPolicy(t *testing.T) {
+	out, err := helmTemplate(t)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	cfg := renderedNRIBootConfig(t, out, "c8s-nri-image-policy-worker")
+
+	if cfg.Mesh == nil {
+		t.Fatal("the install lane renders no mesh policy, so its enforcer hosts no member pods")
+	}
+	for _, ns := range []string{"c8s-system", "kube-system", "local-path-storage"} {
+		if !slices.Contains(cfg.Mesh.ExemptNamespaces, ns) {
+			t.Errorf("mesh.exempt_namespaces = %v, want %s exempt", cfg.Mesh.ExemptNamespaces, ns)
+		}
+	}
+	if cfg.Mesh.Capture.Outbound != 15001 || cfg.Mesh.Capture.Inbound != 15006 || cfg.Mesh.Capture.Health != 15021 {
+		t.Errorf("mesh.capture = %+v, want the ports the injected endpoint binds", cfg.Mesh.Capture)
+	}
+	roles := map[string]uint32{}
+	for _, role := range cfg.Mesh.Roles {
+		roles[role.Name] = role.UID
+	}
+	// The credential role is bound by the plugin, from the node's own address
+	// and the CDS node port, so the rendered policy names the mesh role alone.
+	if len(roles) != 1 || roles["mesh"] != 1337 {
+		t.Errorf("mesh.roles = %+v, want the reserved mesh id alone", cfg.Mesh.Roles)
+	}
+	// The router's namespace, listeners and egress ports are compiled into the
+	// enforcer, so the cluster's own ranges are the one router input the
+	// rendered policy carries: the acme egress exception excludes them.
+	if !slices.Equal(cfg.Mesh.ClusterRanges, []string{"10.42.0.0/16"}) {
+		t.Errorf("mesh.cluster_ranges = %v, want the configured cluster ranges", cfg.Mesh.ClusterRanges)
+	}
+}
+
+// The chart's mesh identity and ports must be the constants the injector
+// builds the containers from and the enforcer matches on; a drift would seal a
+// pod against its own endpoint.
+func TestChartMeshPolicyMatchesTheSharedConstants(t *testing.T) {
+	out, err := helmTemplate(t)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	cfg := renderedNRIBootConfig(t, out, "c8s-nri-image-policy-worker")
+	if cfg.Mesh == nil {
+		t.Fatal("no mesh policy rendered")
+	}
+	if cfg.Mesh.Capture.Outbound != uint16(workloadclaims.MeshOutboundPort) ||
+		cfg.Mesh.Capture.Inbound != uint16(workloadclaims.MeshInboundPort) ||
+		cfg.Mesh.Capture.Health != uint16(workloadclaims.MeshHealthPort) {
+		t.Errorf("mesh.capture = %+v, want the workloadclaims ports", cfg.Mesh.Capture)
+	}
+	ids := map[string]uint32{}
+	for _, role := range cfg.Mesh.Roles {
+		ids[role.Name] = role.UID
+	}
+	if ids["mesh"] != workloadclaims.MeshUID {
+		t.Errorf("mesh role uid = %d, want %d", ids["mesh"], workloadclaims.MeshUID)
 	}
 }

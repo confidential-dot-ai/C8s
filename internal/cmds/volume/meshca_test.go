@@ -63,6 +63,7 @@ func attestedOptions(t *testing.T, url, dir string) *options {
 		Timeout:      5 * time.Second,
 		OperatorKey:  operatorKeyFile(t, dir),
 		Verifier:     testutil.ApproveAll(),
+		DirectCDS:    true,
 	}}
 }
 
@@ -116,6 +117,23 @@ func TestRunCreateRefusesBeforeBuilding(t *testing.T) {
 			assertNothingWritten(t, f)
 		})
 	}
+}
+
+// A router front door does not relay /secrets, so it is refused before the
+// build rather than after the image and escrow exist.
+func TestRunCreateRefusesARouterBeforeBuilding(t *testing.T) {
+	f := newFlowFixture(t)
+	ca := testutil.MeshCA(t, "cds-m")
+	cfg := f.config(newFake())
+	cfg.gate = cdsconn.MeshCAGate{What: "volume key", Bundle: writeBundle(t, ca)}
+	router := testutil.NewRouterServer(t)
+
+	cmd, _ := captureCmd()
+	err := runCreate(cmd, attestedOptions(t, router.URL, f.dir), cfg)
+	if err == nil || !strings.Contains(err.Error(), "router front door") {
+		t.Fatalf("runCreate(%s) = %v, want a router front door refusal", router.URL, err)
+	}
+	assertNothingWritten(t, f)
 }
 
 // An attested CDS serving a CA the operator never pinned is not their CDS: the

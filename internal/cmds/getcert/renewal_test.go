@@ -41,20 +41,52 @@ func expiring(leaf *x509.Certificate, ttl time.Duration) *x509.Certificate {
 	return &out
 }
 
+// pacing is what the next renewal delay is computed from: the published leaf
+// and the expiries that bound the generation's life.
+type pacing struct {
+	leaf    *x509.Certificate
+	leafTTL time.Duration
+	caTTL   time.Duration
+}
+
+// paced is a published generation carrying nothing but those inputs.
+func paced(p pacing) *generation {
+	return &generation{
+		Leaf: expiring(p.leaf, p.leafTTL),
+		CA:   &x509.Certificate{NotAfter: time.Now().Add(p.caTTL)},
+	}
+}
+
 func TestRenewalInterval(t *testing.T) {
-	base := config{RenewInterval: 6 * time.Hour, RenewJitterPercent: defaultRenewJitterPercent, UnnamedRenewInterval: 30 * time.Second, WorkloadClaims: true}
+	base := config{
+		RenewInterval:        6 * time.Hour,
+		RenewJitterPercent:   defaultRenewJitterPercent,
+		UnnamedRenewInterval: 30 * time.Second,
+	}
 
 	t.Run("unnamed leaf fast-polls from 2s with bounded jitter", func(t *testing.T) {
-		got := renewalInterval(base, &x509.Certificate{}, 0)
+		got := renewalInterval(base, paced(pacing{
+			leaf:    &x509.Certificate{},
+			leafTTL: 24 * time.Hour,
+			caTTL:   24 * time.Hour,
+		}), 0)
 		if got < 2*time.Second || got > 2500*time.Millisecond {
 			t.Fatalf("interval = %v, want [2s, 2.5s]", got)
 		}
 	})
 	t.Run("unnamed fast poll doubles up to unnamed-renew-interval", func(t *testing.T) {
-		if got := renewalInterval(base, &x509.Certificate{}, 2); got < 8*time.Second || got > 10*time.Second {
+		if got := renewalInterval(base, paced(pacing{
+			leaf:    &x509.Certificate{},
+			leafTTL: 24 * time.Hour,
+			caTTL:   24 * time.Hour,
+		}), 2); got < 8*time.Second || got > 10*time.Second {
 			t.Fatalf("third unnamed interval = %v, want [8s, 10s]", got)
 		}
-		if got := renewalInterval(base, &x509.Certificate{}, 5); got < 30*time.Second || got > 38*time.Second {
+		if got := renewalInterval(base, paced(pacing{
+			leaf:    &x509.Certificate{},
+			leafTTL: 24 * time.Hour,
+			caTTL:   24 * time.Hour,
+		}), 5); got < 30*time.Second || got > 38*time.Second {
 			t.Fatalf("capped unnamed interval = %v, want [30s, ~37.5s]", got)
 		}
 	})
@@ -64,28 +96,33 @@ func TestRenewalInterval(t *testing.T) {
 		}
 	})
 	t.Run("named leaf settles to renew-interval", func(t *testing.T) {
-		if got := renewalInterval(base, namedLeaf(t), 0); got < 288*time.Minute || got > 6*time.Hour {
-			t.Fatalf("interval = %v, want [4h48m, 6h]", got)
-		}
-	})
-	t.Run("no workload-claims never fast-polls", func(t *testing.T) {
-		cfg := base
-		cfg.WorkloadClaims = false
-		if got := renewalInterval(cfg, &x509.Certificate{}, 0); got < 288*time.Minute || got > 6*time.Hour {
+		if got := renewalInterval(base, paced(pacing{
+			leaf:    namedLeaf(t),
+			leafTTL: 24 * time.Hour,
+			caTTL:   24 * time.Hour,
+		}), 0); got < 288*time.Minute || got > 6*time.Hour {
 			t.Fatalf("interval = %v, want [4h48m, 6h]", got)
 		}
 	})
 	t.Run("fast poll disabled by zero", func(t *testing.T) {
 		cfg := base
 		cfg.UnnamedRenewInterval = 0
-		if got := renewalInterval(cfg, &x509.Certificate{}, 0); got < 288*time.Minute || got > 6*time.Hour {
+		if got := renewalInterval(cfg, paced(pacing{
+			leaf:    &x509.Certificate{},
+			leafTTL: 24 * time.Hour,
+			caTTL:   24 * time.Hour,
+		}), 0); got < 288*time.Minute || got > 6*time.Hour {
 			t.Fatalf("interval = %v, want [4h48m, 6h]", got)
 		}
 	})
 	t.Run("fast interval never exceeds renew-interval", func(t *testing.T) {
 		cfg := base
 		cfg.RenewInterval = 10 * time.Second
-		if got := renewalInterval(cfg, &x509.Certificate{}, 5); got < 8*time.Second || got > 10*time.Second {
+		if got := renewalInterval(cfg, paced(pacing{
+			leaf:    &x509.Certificate{},
+			leafTTL: 24 * time.Hour,
+			caTTL:   24 * time.Hour,
+		}), 5); got < 8*time.Second || got > 10*time.Second {
 			t.Fatalf("interval = %v, want the shorter renew-interval", got)
 		}
 	})
@@ -97,26 +134,60 @@ func TestRenewalInterval(t *testing.T) {
 // after) expiry.
 func TestRenewalIntervalFiresBeforeLeafExpiry(t *testing.T) {
 	for name, tc := range map[string]struct {
-		cfg  config
-		leaf *x509.Certificate
+		cfg config
+		gen *generation
 	}{
 		"named leaf at the chart's renew-interval == named TTL": {
-			cfg:  config{RenewInterval: issuer.MaxNamedLeafTTL, RenewJitterPercent: defaultRenewJitterPercent, UnnamedRenewInterval: 30 * time.Second, WorkloadClaims: true},
-			leaf: expiring(namedLeaf(t), issuer.MaxNamedLeafTTL),
+			cfg: config{
+				RenewInterval:        issuer.MaxNamedLeafTTL,
+				RenewJitterPercent:   defaultRenewJitterPercent,
+				UnnamedRenewInterval: 30 * time.Second,
+			},
+			gen: paced(pacing{
+				leaf:    namedLeaf(t),
+				leafTTL: issuer.MaxNamedLeafTTL,
+				caTTL:   24 * time.Hour,
+			}),
 		},
 		"named leaf with a renew-interval far past its TTL": {
-			cfg:  config{RenewInterval: 24 * time.Hour, RenewJitterPercent: defaultRenewJitterPercent},
-			leaf: expiring(namedLeaf(t), issuer.MaxNamedLeafTTL),
+			cfg: config{
+				RenewInterval:      24 * time.Hour,
+				RenewJitterPercent: defaultRenewJitterPercent,
+			},
+			gen: paced(pacing{
+				leaf:    namedLeaf(t),
+				leafTTL: issuer.MaxNamedLeafTTL,
+				caTTL:   365 * 24 * time.Hour,
+			}),
 		},
 		"unnamed leaf shorter than the fast poll": {
-			cfg:  config{RenewInterval: 6 * time.Hour, RenewJitterPercent: defaultRenewJitterPercent, UnnamedRenewInterval: 30 * time.Second, WorkloadClaims: true},
-			leaf: expiring(&x509.Certificate{}, 20*time.Second),
+			cfg: config{
+				RenewInterval:        6 * time.Hour,
+				RenewJitterPercent:   defaultRenewJitterPercent,
+				UnnamedRenewInterval: 30 * time.Second,
+			},
+			gen: paced(pacing{
+				leaf:    &x509.Certificate{},
+				leafTTL: 20 * time.Second,
+				caTTL:   24 * time.Hour,
+			}),
+		},
+		"CA expiring before the leaf": {
+			cfg: config{
+				RenewInterval:      6 * time.Hour,
+				RenewJitterPercent: defaultRenewJitterPercent,
+			},
+			gen: paced(pacing{
+				leaf:    namedLeaf(t),
+				leafTTL: 6 * time.Hour,
+				caTTL:   30 * time.Second,
+			}),
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			remaining := time.Until(tc.leaf.NotAfter)
-			if got := renewalInterval(tc.cfg, tc.leaf, 0); got >= remaining {
-				t.Fatalf("delay = %v, leaf expires in %v: renewal would fire at or after expiry", got, remaining)
+			remaining := time.Until(generationExpiry(tc.gen))
+			if got := renewalInterval(tc.cfg, tc.gen, 0); got >= remaining {
+				t.Fatalf("delay = %v, generation expires in %v: renewal would fire at or after expiry", got, remaining)
 			}
 		})
 	}
@@ -126,11 +197,19 @@ func TestRenewalIntervalFiresBeforeLeafExpiry(t *testing.T) {
 // override a shorter operator-chosen --renew-interval.
 func TestRenewalIntervalFloor(t *testing.T) {
 	cfg := config{RenewInterval: time.Hour, RenewJitterPercent: defaultRenewJitterPercent}
-	if got := renewalInterval(cfg, expiring(&x509.Certificate{}, -time.Hour), 0); got != minRenewalDelay {
+	if got := renewalInterval(cfg, paced(pacing{
+		leaf:    &x509.Certificate{},
+		leafTTL: -time.Hour,
+		caTTL:   24 * time.Hour,
+	}), 0); got != minRenewalDelay {
 		t.Fatalf("expired leaf delay = %v, want the %v floor", got, minRenewalDelay)
 	}
 	cfg.RenewInterval = time.Second
-	if got := renewalInterval(cfg, expiring(&x509.Certificate{}, -time.Hour), 0); got != time.Second {
+	if got := renewalInterval(cfg, paced(pacing{
+		leaf:    &x509.Certificate{},
+		leafTTL: -time.Hour,
+		caTTL:   24 * time.Hour,
+	}), 0); got != time.Second {
 		t.Fatalf("delay = %v, want the operator's shorter --renew-interval", got)
 	}
 }
@@ -153,9 +232,17 @@ func TestRenewalIntervalSpreadsDefaultRefreshes(t *testing.T) {
 // Jitter is added before the clamp, so no delay may exceed --renew-interval —
 // the probe that found this used 31s/30s, where +25% jitter overshot.
 func TestRenewalIntervalJitterIsClamped(t *testing.T) {
-	cfg := config{RenewInterval: 31 * time.Second, RenewJitterPercent: defaultRenewJitterPercent, UnnamedRenewInterval: 30 * time.Second, WorkloadClaims: true}
+	cfg := config{
+		RenewInterval:        31 * time.Second,
+		RenewJitterPercent:   defaultRenewJitterPercent,
+		UnnamedRenewInterval: 30 * time.Second,
+	}
 	for range 500 {
-		if got := renewalInterval(cfg, &x509.Certificate{}, 0); got > cfg.RenewInterval {
+		if got := renewalInterval(cfg, paced(pacing{
+			leaf:    &x509.Certificate{},
+			leafTTL: 24 * time.Hour,
+			caTTL:   24 * time.Hour,
+		}), 0); got > cfg.RenewInterval {
 			t.Fatalf("delay = %v exceeds --renew-interval %v", got, cfg.RenewInterval)
 		}
 	}
@@ -165,8 +252,16 @@ func TestRenewalIntervalJitterIsClamped(t *testing.T) {
 // on. validateConfig rejects such a value, but the pacer must not panic on one.
 func TestRenewalIntervalTinyUnnamedIntervalDoesNotPanic(t *testing.T) {
 	for _, iv := range []time.Duration{1, 2, 3, 4} {
-		cfg := config{RenewInterval: time.Hour, RenewJitterPercent: defaultRenewJitterPercent, UnnamedRenewInterval: iv, WorkloadClaims: true}
-		if got := renewalInterval(cfg, &x509.Certificate{}, 0); got <= 0 {
+		cfg := config{
+			RenewInterval:        time.Hour,
+			RenewJitterPercent:   defaultRenewJitterPercent,
+			UnnamedRenewInterval: iv,
+		}
+		if got := renewalInterval(cfg, paced(pacing{
+			leaf:    &x509.Certificate{},
+			leafTTL: 24 * time.Hour,
+			caTTL:   24 * time.Hour,
+		}), 0); got <= 0 {
 			t.Fatalf("unnamed interval %v: delay = %v, want positive", iv, got)
 		}
 	}
@@ -175,21 +270,33 @@ func TestRenewalIntervalTinyUnnamedIntervalDoesNotPanic(t *testing.T) {
 // A permanently-unnamed pod must not attest every --unnamed-renew-interval for
 // its whole lifetime: the fast poll backs off toward --renew-interval.
 func TestRenewalIntervalUnnamedBacksOff(t *testing.T) {
-	cfg := config{RenewInterval: time.Hour, RenewJitterPercent: defaultRenewJitterPercent, UnnamedRenewInterval: 30 * time.Second, WorkloadClaims: true}
-	leaf := &x509.Certificate{}
+	cfg := config{
+		RenewInterval:        time.Hour,
+		RenewJitterPercent:   defaultRenewJitterPercent,
+		UnnamedRenewInterval: 30 * time.Second,
+	}
+	gen := paced(pacing{
+		leaf:    &x509.Certificate{},
+		leafTTL: 24 * time.Hour,
+		caTTL:   24 * time.Hour,
+	})
 
-	steady := renewalInterval(cfg, leaf, unnamedBackoffAfter)
+	steady := renewalInterval(cfg, gen, unnamedBackoffAfter)
 	if steady > 38*time.Second {
 		t.Fatalf("delay before backoff = %v, want the fast poll", steady)
 	}
-	if got := renewalInterval(cfg, leaf, unnamedBackoffAfter+4); got < 8*steady {
+	if got := renewalInterval(cfg, gen, unnamedBackoffAfter+4); got < 8*steady {
 		t.Fatalf("delay after 4 backoff steps = %v, want at least 8x the fast poll", got)
 	}
-	if got := renewalInterval(cfg, leaf, 1000); got < 48*time.Minute || got > cfg.RenewInterval {
+	if got := renewalInterval(cfg, gen, 1000); got < 48*time.Minute || got > cfg.RenewInterval {
 		t.Fatalf("delay for a permanently unnamed pod = %v, want [48m, 1h]", got)
 	}
 	// A leaf that gets named resets to the ordinary interval.
-	if got := renewalInterval(cfg, namedLeaf(t), 1000); got < 48*time.Minute || got > cfg.RenewInterval {
+	if got := renewalInterval(cfg, paced(pacing{
+		leaf:    namedLeaf(t),
+		leafTTL: 24 * time.Hour,
+		caTTL:   24 * time.Hour,
+	}), 1000); got < 48*time.Minute || got > cfg.RenewInterval {
 		t.Fatalf("named delay = %v, want [48m, 1h]", got)
 	}
 }
@@ -198,31 +305,40 @@ func TestRenewalIntervalUnnamedBacksOff(t *testing.T) {
 // pacing — the installed leaf may be minutes from expiry.
 func TestRenewalRetryInterval(t *testing.T) {
 	cfg := config{RenewInterval: 6 * time.Hour, RenewJitterPercent: defaultRenewJitterPercent}
-	leaf := expiring(namedLeaf(t), 6*time.Hour)
+	gen := paced(pacing{
+		leaf:    namedLeaf(t),
+		leafTTL: 6 * time.Hour,
+		caTTL:   24 * time.Hour,
+	})
 
-	first := renewalRetryInterval(cfg, leaf, 1)
+	first := renewalRetryInterval(cfg, gen, 1)
 	if first != renewalRetryBase {
 		t.Fatalf("first retry = %v, want %v", first, renewalRetryBase)
 	}
-	if second := renewalRetryInterval(cfg, leaf, 2); second != 2*renewalRetryBase {
+	if second := renewalRetryInterval(cfg, gen, 2); second != 2*renewalRetryBase {
 		t.Fatalf("second retry = %v, want %v", second, 2*renewalRetryBase)
 	}
 	// Never past the ordinary pacing ceiling; each call samples fresh jitter.
 	for _, failures := range []int{1, 5, 50} {
-		ceiling := min(cfg.RenewInterval, time.Until(leaf.NotAfter)/2)
-		if got := renewalRetryInterval(cfg, leaf, failures); got > ceiling {
+		ceiling := min(cfg.RenewInterval, time.Until(generationExpiry(gen))/2)
+		if got := renewalRetryInterval(cfg, gen, failures); got > ceiling {
 			t.Fatalf("retry after %d failures = %v, exceeds the pacing ceiling %v", failures, got, ceiling)
 		}
 	}
 	// An expiring leaf shortens the retry below the base delay.
-	if got := renewalRetryInterval(cfg, expiring(namedLeaf(t), 12*time.Second), 9); got > 12*time.Second {
+	if got := renewalRetryInterval(cfg, paced(pacing{
+		leaf:    namedLeaf(t),
+		leafTTL: 12 * time.Second,
+		caTTL:   24 * time.Hour,
+	}), 9); got > 12*time.Second {
 		t.Fatalf("retry = %v, want under the leaf's remaining 12s", got)
 	}
 	// A leaf naming another entry than --expected-workload backs off like a
 	// named one instead of retrying at the fast poll.
 	wrong := cfg
-	wrong.WorkloadClaims, wrong.UnnamedRenewInterval, wrong.ExpectedWorkload = true, 30*time.Second, "c8s-router-0123456789ab"
-	if got := renewalRetryInterval(wrong, leaf, 5); got != 16*renewalRetryBase {
+	wrong.UnnamedRenewInterval = 30 * time.Second
+	wrong.ExpectedWorkload = "c8s-router-0123456789ab"
+	if got := renewalRetryInterval(wrong, gen, 5); got != 16*renewalRetryBase {
 		t.Fatalf("retry after 5 failures on a wrong-name leaf = %v, want %v", got, 16*renewalRetryBase)
 	}
 }
@@ -264,8 +380,17 @@ func TestRenewalIntervalExpectedWorkload(t *testing.T) {
 		{name: "no expected workload", leaf: namedLeaf(t)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := config{RenewInterval: 6 * time.Hour, RenewJitterPercent: defaultRenewJitterPercent, UnnamedRenewInterval: 30 * time.Second, WorkloadClaims: true, ExpectedWorkload: tc.expected}
-			got := renewalInterval(cfg, tc.leaf, 0)
+			cfg := config{
+				RenewInterval:        6 * time.Hour,
+				RenewJitterPercent:   defaultRenewJitterPercent,
+				UnnamedRenewInterval: 30 * time.Second,
+				ExpectedWorkload:     tc.expected,
+			}
+			got := renewalInterval(cfg, paced(pacing{
+				leaf:    tc.leaf,
+				leafTTL: 24 * time.Hour,
+				caTTL:   24 * time.Hour,
+			}), 0)
 			if fast := got <= 2500*time.Millisecond; fast != tc.wantFast {
 				t.Fatalf("renewalInterval(expected %q) = %v, want fast poll %v", tc.expected, got, tc.wantFast)
 			}
@@ -279,7 +404,7 @@ func TestWarnUnexpectedWorkloadOncePerName(t *testing.T) {
 	defer slog.SetDefault(old)
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
 
-	cfg := config{WorkloadClaims: true, ExpectedWorkload: "c8s-router-0123456789ab"}
+	cfg := config{ExpectedWorkload: "c8s-router-0123456789ab"}
 	warned := map[string]bool{}
 	for _, name := range []string{"c8s-operator-a", "c8s-operator-a", "", "other", "c8s-operator-a", "c8s-router-0123456789ab", "other", "c8s-operator-a"} {
 		leaf := &x509.Certificate{}

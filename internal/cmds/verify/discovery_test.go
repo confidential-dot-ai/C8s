@@ -347,7 +347,7 @@ func TestNonDiscoveryEvidencePresentsNoFrontDoor(t *testing.T) {
 			return gatherFromARMTLSCert(context.Background(), strings.TrimPrefix(srv.URL, "https://"), "", 5*time.Second, leafTrust{})
 		}, "verified"},
 		{"attest-pq endpoint", func(*testing.T) (*evidence, error) {
-			return evidenceFromEndpointJSON(endpointJSON, nonce, sess.ek, "attestation endpoint")
+			return evidenceFromEndpointJSON(endpointJSON, nonce, sess.ek, testRoute, "attestation endpoint")
 		}, "partial"},
 		{"saved bare evidence", func(*testing.T) (*evidence, error) {
 			return evidenceFromBareJSON([]byte(`{"evidence":{"attestation_report":"AAAA"}}`), make([]byte, 48), "file")
@@ -465,11 +465,11 @@ func TestSingleConnClientNeverRedials(t *testing.T) {
 }
 
 // A discovery document's CA-vouched serving cert (the chart's shape: issued
-// by the CDS mesh CA) is authenticated by the live handshake when it presents
-// byte-identically that cert — the same possession backstop as the armTLS
-// path — so a live door needs no --mesh-ca. A door serving a different cert
-// gets no such backstop and fails closed.
-func TestDiscoveryHandshakeAuthenticatesCAVouchedBody(t *testing.T) {
+// by the CDS mesh CA) is authenticated by a --mesh-ca chain check alone. A
+// live door presenting byte-identically that cert proves possession of the
+// attested key, which signs for none of the body fields, so without the
+// pinned CA the document fails closed either way.
+func TestDiscoveryCAVouchedBodyNeedsMeshCA(t *testing.T) {
 	challenge := []byte("issuance-challenge")
 	stubEvidence := `{"attestation_report":"AAAA","cert_chain":{"vcek":"BBBB"}}`
 
@@ -478,21 +478,18 @@ func TestDiscoveryHandshakeAuthenticatesCAVouchedBody(t *testing.T) {
 	leafTLSCert := tls.Certificate{Certificate: [][]byte{id.leaf.Raw}, PrivateKey: id.key}
 	doc := discoveryDocWithPublicTLS(t, "cds", leafPEM, challenge, stubEvidence)
 
-	t.Run("handshake presenting the attested CA-vouched leaf needs no --mesh-ca", func(t *testing.T) {
+	t.Run("handshake presenting the attested CA-vouched leaf still needs --mesh-ca", func(t *testing.T) {
 		srv := discoveryServer(t, leafTLSCert, doc)
-		ev, err := gatherFromDiscovery(context.Background(), srv.URL, "", "", 5*time.Second, leafTrust{})
-		if err != nil {
-			t.Fatalf("a live door presenting the attested leaf must authenticate its body: %v", err)
+		_, err := gatherFromDiscovery(context.Background(), srv.URL, "", "", 5*time.Second, leafTrust{})
+		if err == nil || !isSecurityError(err) {
+			t.Fatalf("an unauthenticated CA-vouched body must fail closed, got %v", err)
 		}
-		if ev.frontDoor != frontDoorAttested || !ev.leafKeyProven {
-			t.Errorf("frontDoor = %v leafKeyProven = %v, want attested / proven", ev.frontDoor, ev.leafKeyProven)
-		}
-		if got := describeCertBody(config{}, ev); !strings.Contains(got, "live TLS handshake") {
-			t.Errorf("cert-body note = %q, want the possession branch", got)
+		if !strings.Contains(err.Error(), "--mesh-ca") {
+			t.Errorf("error = %q, want it to name the flag that fixes it", err)
 		}
 	})
 
-	t.Run("a pinned mesh CA stays the body authentication on a match", func(t *testing.T) {
+	t.Run("a pinned mesh CA authenticates the body on a match", func(t *testing.T) {
 		pool := x509.NewCertPool()
 		pool.AddCert(id.ca)
 		srv := discoveryServer(t, leafTLSCert, doc)
@@ -508,7 +505,7 @@ func TestDiscoveryHandshakeAuthenticatesCAVouchedBody(t *testing.T) {
 		}
 	})
 
-	t.Run("a door serving another cert gets no possession backstop", func(t *testing.T) {
+	t.Run("a door serving another cert fails on the digests it served", func(t *testing.T) {
 		_, otherCert := selfSignedServerCert(t)
 		srv := discoveryServer(t, otherCert, doc)
 		_, err := gatherFromDiscovery(context.Background(), srv.URL, "", "", 5*time.Second, leafTrust{})

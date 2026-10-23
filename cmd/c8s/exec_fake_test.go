@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/spf13/pflag"
 )
 
 // fakeBin is a directory of stub executables prepended to PATH. Every stub
@@ -112,6 +114,8 @@ func resetCLIState(t *testing.T) {
 		uninstallDeleteCRDs, uninstallDeleteNamespace, installVolumes                bool
 		installCertFSGroup, installGetCertRunAsUser, installGetCertRunAsGroup        int64
 		installGetCertRenewInterval                                                  time.Duration
+		installOperatorKey, installRoutesOut                                         string
+		installRoutesMaxAge                                                          time.Duration
 	}{
 		installNamespace, installRelease, installCvmMode,
 		installHardwarePlatform, installImagePullSecret, installImageTag,
@@ -126,6 +130,8 @@ func resetCLIState(t *testing.T) {
 		uninstallDeleteCRDs, uninstallDeleteNamespace, installVolumes,
 		installCertFSGroup, installGetCertRunAsUser, installGetCertRunAsGroup,
 		installGetCertRenewInterval,
+		installOperatorKey, installRoutesOut,
+		installRoutesMaxAge,
 	}
 	t.Cleanup(func() {
 		installNamespace, installRelease, installCvmMode = saved.installNamespace, saved.installRelease, saved.installCvmMode
@@ -142,6 +148,7 @@ func resetCLIState(t *testing.T) {
 		installVolumes = saved.installVolumes
 		installCertFSGroup, installGetCertRunAsUser, installGetCertRunAsGroup = saved.installCertFSGroup, saved.installGetCertRunAsUser, saved.installGetCertRunAsGroup
 		installGetCertRenewInterval = saved.installGetCertRenewInterval
+		installOperatorKey, installRoutesOut, installRoutesMaxAge = saved.installOperatorKey, saved.installRoutesOut, saved.installRoutesMaxAge
 	})
 
 	installNamespace, installRelease = "c8s-system", "c8s"
@@ -160,6 +167,18 @@ func resetCLIState(t *testing.T) {
 	uninstallWait, uninstallHostSweep, uninstallHostSweepOnly = true, true, false
 	uninstallForce, uninstallDeleteCRDs, uninstallDeleteNamespace = false, false, false
 	renderValuesDistro = ""
+	installOperatorKey, installRoutesOut, installRoutesMaxAge = "", "routes.json", 24*time.Hour
+	prevOutSet, prevMaxAgeSet := installRoutesOutSet, installRoutesMaxAgeSet
+	prevRevision, prevRegisters := installRoutesRevision, installRegisters
+	t.Cleanup(func() {
+		installRoutesOutSet, installRoutesMaxAgeSet = prevOutSet, prevMaxAgeSet
+		installRoutesRevision, installRegisters = prevRevision, prevRegisters
+	})
+	installRoutesOutSet, installRoutesMaxAgeSet = false, false
+	installRoutesRevision, installRegisters = 0, nil
+	// cobra keeps a flag's Changed across Execute calls on the shared tree.
+	installCmd.Flags().VisitAll(func(f *pflag.Flag) { f.Changed = false })
+	t.Setenv("C8S_OPERATOR_KEY", "")
 }
 
 // runC8s executes the real cobra tree exactly as the binary would, from a
@@ -206,7 +225,7 @@ config)
   *cds*) echo '{"config":{"Entrypoint":["/c8s","cds"],"Env":["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin","SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"]}}' ;;
   *armtls-mesh*) echo '{"config":{"Entrypoint":["/app/c8s","armtls-mesh"],"Env":["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"]}}' ;;
   *volumed*) echo '{"config":{"Entrypoint":["/app/c8s","volumed"],"Env":["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"]}}' ;;
-  *nginx*) echo '{"config":{"Entrypoint":["/docker-entrypoint.sh"],"Cmd":["nginx","-g","daemon off;"],"Env":["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin","NGINX_VERSION=1.30.5","PKG_RELEASE=1","DYNPKG_RELEASE=1"]}}' ;;
+  *nginx*) echo '{"config":{"Entrypoint":["/docker-entrypoint.sh"],"Cmd":["nginx","-g","daemon off;"],"Env":["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin","NGINX_VERSION=1.30.6","PKG_RELEASE=1","DYNPKG_RELEASE=1"]}}' ;;
   *attestation-api*) echo '{"config":{"Entrypoint":["/attestation-api"],"Env":["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"]}}' ;;
   *) echo '{"config":{"Entrypoint":["/c8s"],"Env":["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin","SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"]}}' ;;
   esac ;;

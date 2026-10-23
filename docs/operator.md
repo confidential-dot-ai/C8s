@@ -116,10 +116,21 @@ initrd extends TDX RTMR[3], while an SNP launcher must set HOST_DATA to
 The strict `c8s-launch/v1` document selects the role, cluster identity, node
 addresses, RKE2 join credentials, trusted role keys, image pins and TLS SAN.
 It accepts an optional `workloads` string containing a complete
-`c8s.allowlist/v1` JSON document. It does not accept Helm values, arbitrary
-service arguments or component toggles. The measured image runs volumed as a
-host service, so encrypted volumes ([docs/volumes.md](volumes.md)) open on
-every node without an install.
+`c8s.allowlist/v1` JSON document, and an optional `registryMirrors` map from
+a registry host to one `http://<IPv4>[:port]` endpoint, at most 8 (for
+example `ghcr.io: http://10.43.0.5:5000`). Staging writes the map as
+`/etc/rancher/rke2/registries.yaml`, so containerd pulls through the mirror
+first and from the registry itself as the last resort. The mirror is plain
+http and gets no registry credentials: the host can see which blobs a node
+pulls, and a private image falls back to its registry unless the mirror holds
+its own credentials. This is acceptable because image references stay
+digest-pinned and containerd checks every blob against its digest, so a
+mirror can withhold an image but cannot change what a node runs. It does not
+accept Helm values, arbitrary service arguments or component toggles. The
+measured image runs volumed as a host service, so encrypted volumes
+([docs/volumes.md](volumes.md)) open on every node without an install. Its
+router always publishes the applied route manifest
+([Route manifest](#route-manifest)).
 
 Use **distinct launch keys for server and agent roles, and new keys for
 each cluster**. `clusterID` is a descriptive RFC1123 label; the distinct
@@ -134,7 +145,9 @@ launch key, an agent launch key, fresh join tokens, a signed `launch.yaml`
 per node and the client policy that pins the server. Give it the trusted
 `manifest.json` published with the exact node image, the server's guest IPv4
 address that every node can reach, and the agent names. On SNP, also pass
-the VM's vCPU count, which selects the launch digest.
+the VM's vCPU count, which selects the launch digest. `--registry-mirror
+ghcr.io=http://10.43.0.5:5000` (repeatable, once per registry) sets
+`registryMirrors`; agents inherit it from the server document.
 
 ```sh
 c8s node launch-config new --out demo --cluster-id demo \
@@ -154,12 +167,26 @@ The bundle directory is created new and never reused:
 
 | Path | Purpose |
 |---|---|
-| `demo/server.key` | server launch key; also the operator key for `c8s get-kubeconfig --operator-key` and signed CDS writes |
+| `demo/server.key` | server launch key; also the operator key for `c8s get-kubeconfig --operator-key` and signed CDS writes (not written with `--operator-key`) |
 | `demo/agent.key` | the agent launch key every agent boots with |
 | `demo/server.json` | `--image-policy-file` for clients of this cluster |
 | `demo/peers.json` | every launch identity CDS admits and serves; `c8s cds verify --served-policy-file` |
 | `demo/server/` | `pubkey`, `launch.yaml`, `launch.yaml.sig`: the server's opkeydata |
 | `demo/<agent>/` | the same three files for each agent |
+
+To keep an operator key that clients already pin across clusters, pass it
+with `--operator-key op.key` (an ECDSA P-256 key) instead of letting the
+command generate one. It becomes the server launch key and stays where it is:
+the bundle has no `server.key`, so use `op.key` wherever this guide says
+`demo/server.key`. Add `--operator-pubkey op.pub` (the file
+`c8s keys new --pub-out` wrote) to refuse a key that does not match it byte
+for byte: on SNP, HOST_DATA hashes those bytes. The agent key is always
+generated.
+
+Node evidence and client pins name the server key and the image, not the
+cluster. Clusters that share an operator key and an image therefore look the
+same to a client that pins them, and a host can boot one cluster's server with
+the other's signed server document. Use a distinct key where that matters.
 
 An agent can be added to a running cluster without touching the server:
 `c8s node launch-config add-agent --bundle demo --name demo-agent-3` derives
@@ -190,22 +217,17 @@ to `c8s.local` and must be a lowercase DNS hostname. Arbitrary routes and CORS
 overrides are not launch settings in this image.
 
 A server document may carry an optional `router` block. It sets the router's
-catch-all upstream and public hostnames at boot, because the image cannot know
+public hostnames and request body limit at boot, because the image cannot know
 them at build time. An agent document must not carry it.
 
 ```yaml
 router:
-  upstream: "c8s-gateway.confidential-inference.svc.cluster.local:9443"
   hostnames: ["candidate.api.confidential.ai"]
   acmeEmail: "ops@example.com"
   acmeDirectoryURL: "https://acme-staging-v02.api.letsencrypt.org/directory"
+  maxRequestBodyBytes: 67108864
 ```
 
-- `upstream` is plain http to a mesh-wrapped workload Service, in the form
-  `c8s-<id>.<namespace>.svc.cluster.local:<port>`. This is the same rule the
-  chart applies to a plain http `router.upstream.address`. Without it, `/`
-  returns 404; the attestation, discovery, allowlist and health routes still
-  work.
 - `hostnames` are lowercase DNS names. When set, the in-guest `c8s acme`
   sidecar gets one Let's Encrypt certificate for them over HTTP-01 on port 80
   (front-door mode `acme`). When empty, nginx serves the CDS-issued mesh leaf
@@ -213,9 +235,21 @@ router:
   certificate through `router/tls.conf`, which nginx includes.
 - `acmeEmail` and `acmeDirectoryURL` are optional and need `hostnames`. Use a
   staging directory for tests.
+- `maxRequestBodyBytes` is the largest application request body, in bytes, the
+  public listener accepts; a larger one gets nginx's 413. It is optional, must
+  be positive and defaults to 1048576 (1 MiB). nginx streams the body to the
+  routing listener rather than holding it, so a large limit costs no router
+  disk. It reaches nginx through `router/request-body.conf`. Protocol
+  endpoints keep their own limits: 16 KiB for the attestation handshakes,
+  8 MiB for a tunnel record and 1 MiB for the built-in allowlist route.
 
-`c8s node launch-config new` writes the block from `--router-upstream`,
-`--router-hostname` (repeatable), `--acme-email` and `--acme-directory-url`.
+The block names no backend: a baked router routes by the route manifest, as
+any router does (see [Route manifest](#route-manifest)). A document that
+still carries `router.upstream` is refused; write its route with `c8s routes`.
+
+`c8s node launch-config new` writes the block from `--router-hostname`
+(repeatable), `--acme-email`, `--acme-directory-url` and
+`--router-max-request-body-bytes`.
 The block is part of the signed bytes. Boot preparation publishes it as files
 in `/run/c8s-node/router/`, which the router pod reads at start. To change it,
 re-sign the document and relaunch the server.
@@ -319,14 +353,17 @@ webhook, attestation-api, and CDS. It does not mutate
 application workloads until those workloads opt in with
 `confidential.ai/cw`.
 
-Install with the CLI. Adopt a running workload as a CW and front it behind
-router with `--upstream` (see [Existing workload adoption](#existing-workload-adoption)
-and [router upstream](#router-upstream)):
+Install with the CLI. Adopt a running workload as a CW and route the front
+door to it with `--upstream` (see [Existing workload adoption](#existing-workload-adoption)
+and [Route manifest](#route-manifest)). The ref's port is the port the
+workload listens on; its injected endpoint holds the mesh leaf the router
+verifies:
 
 ```bash
 c8s install \
-  --workload-ref vllm=vllm/deployment/serving:8000 \
-  --upstream vllm
+  --workload-ref vllm=vllm/deployment/serving:8443 \
+  --upstream vllm --operator-keys operator.pub \
+  --operator-key operator.key --measurements CDS_DIGEST
 ```
 
 ### Existing workload adoption
@@ -337,7 +374,7 @@ without any GitOps overlay wiring:
 
 ```bash
 c8s install \
-  --workload-ref vllm-router=vllm/deployment/vllm-deployment-router:8000 \
+  --workload-ref vllm-router=vllm/deployment/vllm-deployment-router:8443 \
   --workload-ref vllm-engine=vllm/deployment/<serving-engine-deployment> \
   --upstream vllm-router
 ```
@@ -345,16 +382,46 @@ c8s install \
 The ref syntax is `<cw-id>=<namespace>/<kind>/<name>[:<port>]`, where kind is any
 resource exposing a pod template at `spec.template` (`deployment`,
 `statefulset`, `daemonset`, or an operator CRD such as `<kind>.<group>`); the
-optional `:<port>` is the router upstream port, needed on the ref `--upstream`
-selects. After Helm reports the C8s release ready, the CLI patches each workload
-pod template with `confidential.ai/cw: <id>`. Those rollouts go through the
-webhook, and the workload-service reconciler creates the `c8s-<id>` headless
-Services. `--upstream vllm-router` points router at
-`c8s-vllm-router.vllm.svc.cluster.local:8000` (its `<cw-id>` must be one of the
-adopted refs, carrying a `:<port>`). With `--resolve-digests=true`, install resolves adopted workload
-images into `nriImagePolicy.bootstrapAllowlist.workloads` entries admitting them
-under any command and args, so image admission (the node NRI plugin) allows
-those rollouts.
+optional `:<port>` is the port the workload listens on, needed on the ref
+`--upstream` selects. After Helm reports the C8s release ready, the CLI patches
+each workload pod template with `confidential.ai/cw: <id>`. Those rollouts go
+through the webhook, and the workload-service reconciler creates the `c8s-<id>`
+headless Services. `--upstream vllm-router` routes `/` on every `router.san`
+DNS name to `c8s-vllm-router.vllm.svc.cluster.local:8443` (its `<cw-id>` must
+be one of the adopted refs, carrying a `:<port>`); see
+[Route manifest](#route-manifest).
+
+With `--resolve-digests=true`, install writes one
+`nriImagePolicy.bootstrapAllowlist.workloads` entry per adopted workload, named
+after its cw id and declaring every container of its pod template in its own
+role (init containers and native sidecars as `initContainers`) under any
+command, args and env. Containers with the same image and mounts are declared
+once; the same image under different mounts is declared once per mount set.
+Image admission then allows the rollout, and CDS stamps the cw id on the
+workload's certificate, which the router requires of a workload backend.
+
+Mounts in that entry are exact: each container may mount the injected cert
+volume and its own memory-backed `emptyDir` volumes, nothing else. When the
+template does any of the following, install writes the entry admitting any
+mounts and warns. CDS still names the pod after the entry, so a route that
+`c8s routes add` writes to it later trusts those mounts. For the `--upstream`
+workload, install refuses instead; write that entry yourself with
+`c8s allowlist`:
+
+- mounts any other volume. A `hostPath` puts host-controlled content under the
+  app; an exact rule cannot admit a ConfigMap, Secret, PVC or disk `emptyDir`.
+- mounts a `subPath` or `subPathExpr` of any volume, which the node observes
+  as a data mount.
+- requests C8s secrets or encrypted volumes.
+- sets `confidential.ai/c8s-cert-dir` to a path that is not absolute.
+
+Install also refuses an adopted workload whose pod another entry of the seed
+it renders describes, under any command line: another adoption with the same
+images and mounts, a `-f` entry, or the entry the chart seeds for a component,
+CDS or, with the router enabled, router nginx. CDS cannot tell which entry
+names such a pod, so it stamps neither. With
+`--resolve-digests=false`, install writes no entry, and you add one named
+after the cw id.
 
 `c8s install --install-crds=false` passes Helm's `--skip-crds`; CRDs are
 advisory and not required for pod injection. That path also disables the
@@ -368,10 +435,10 @@ trusted platform namespaces.
 
 `c8s uninstall` reverses `c8s install`. It runs `helm uninstall` to remove the
 release (operator, CDS, attestation-api, armtls-mesh, router, the
-webhook configuration and admission policies). The
-`MutatingWebhookConfiguration` is release-tracked, so it is deleted with the
-release — a `failurePolicy: Fail` webhook cannot outlive the operator Service
-and block pod creation cluster-wide.
+webhook configurations and admission policies). Both webhook configurations are
+release-tracked, so they are deleted with the release — a `failurePolicy: Fail`
+webhook cannot outlive the operator Service and block pod creation
+cluster-wide.
 
 It then **sweeps the host-side artifacts** that chart hooks cannot guarantee
 were removed: chart-installed NRI policy, armtls-mesh netfilter state, the
@@ -470,7 +537,8 @@ cds:
 ```
 
 Prefer `c8s install --operator-keys operator.pub`, which reads the file and
-sets this value for you. In a GitOps flow, `c8s render-values --operator-keys
+sets this value for you. The router also verifies route manifests under these
+keys. In a GitOps flow, `c8s render-values --operator-keys
 operator.pub` embeds the content into the emitted values.
 
 The value is the PEM **content**, never a file path — a path from the machine
@@ -506,13 +574,10 @@ CDS answers 304 while nothing changed, so an idle poll is cheap. Strict
 clients recover without a router restart within one poll interval, plus up to
 half an interval of jitter, plus one issuance.
 
-There is **no scheduled in-process CA rotation today** — no cds flag or
-loop drives it, so every CA fingerprint change is a restart-shaped
-re-bootstrap. (An unwired rotator exists at `internal/issuer.CARotator`:
-it signs a successor CA with the still-live current CA's key, so the
-continuity check would accept it and workloads would pick it up on their
-next `/ca` refresh, without re-bootstrap. Wiring it into `c8s cds` is
-future work.)
+CDS renews its mesh CA certificate at half its configured lifetime under the
+same process-lifetime key. Workloads pick up the current certificate on their
+next `/ca` refresh, and the continuity check accepts its signature under the
+trusted key. A CDS restart replaces the key and requires re-bootstrap.
 
 With CDS a singleton:
 
@@ -522,8 +587,9 @@ With CDS a singleton:
   voluntary disruptions;
 - treat any CDS restart as a planned maintenance event with workload
   churn;
-- watch CDS startup logs for the active CA fingerprint — any fingerprint
-  change means a restart happened and workload re-provisioning is needed.
+- watch the `key_id` in CDS's mesh CA log lines: a renewal moves the
+  `fingerprint` and keeps the `key_id`, so a new `key_id` is a new key and
+  every workload needs re-provisioning.
 
 ### Operator-added allowlist entries across restarts
 
@@ -539,8 +605,11 @@ launch configuration.
 For chart-managed CDS:
 
 Pod recreation also resets the **served allowlist**. CDS seeds its store
-from the install seed at startup and when the seed changes, then serves whatever an operator writes
-with `c8s allowlist add` or `apply`. With `cds.persistence.enabled=false`
+from the install seed once, at startup, then serves whatever an operator writes
+with `c8s allowlist add` or `apply`. Without `cds.operatorKeys` nothing can
+write, so an upgrade that changes a component's shape needs a reinstall; set
+the keys when you install (see "Known limitations" in
+[`allowlist-and-capabilities.md`](allowlist-and-capabilities.md)). With `cds.persistence.enabled=false`
 (the default), that store is a memory-backed `emptyDir` capped by
 `cds.persistence.memorySizeLimit` (64Mi) and counted toward
 `cds.resources.limits.memory`: it survives a container restart,
@@ -563,8 +632,149 @@ CDS counts past N again, or the plugin itself restarts.
 CDS stores one signed route manifest (`c8s.routes/v1`) at `/routes`, in the
 same database as the allowlist, so it shares the allowlist's lifetime. There
 is no route seed: after CDS starts with an empty database, write the manifest
-again. CDS logs a warning at startup when it holds none. The router does not
-apply the route manifest.
+again. CDS logs a warning at startup when it holds none.
+
+The router routes only by this manifest. Its `cds-attest` sidecar polls
+`GET /routes` from the chart-managed CDS every `router.routing.pollInterval`
+(default 30s). It verifies CDS against the same pins as the allowlist route.
+It verifies the manifest against the operator keys: the node's launch
+configuration on a baked node, else `cds.operatorKeys` (`c8s install
+--operator-keys`), else the verified CDS's `GET /operator-keys`. That last
+source needs a CDS pin or, on a development cluster only,
+`router.routing.allowUnpinnedCDS=true`; `c8s install` refuses otherwise (see
+[Route by the manifest](#route-by-the-manifest)). nginx sends every request
+that no protocol endpoint claims to the sidecar's
+loopback routing listener (`router.routing.port`, default 8802). Requests
+decrypted from the attested tunnel route by the same manifest. Routing
+follows these rules:
+
+- Until the router applies a manifest, application requests get 503 and
+  attested sessions are refused with `routes_unavailable`. Readiness does not
+  wait for a manifest, so `c8s install --wait` completes first. An upgrade
+  rollout that also resets a non-persistent CDS
+  (`cds.persistence.enabled: false`) therefore leaves the front door
+  answering 503: new router pods become Ready before their first fetch, and
+  the old pods are gone. Persist CDS, or run `c8s routes put` after the
+  upgrade.
+- A request whose `Host` is not a manifest host, or whose path matches no
+  route, gets 404. The router's own paths (`/allowlist`, `/.well-known/c8s/`,
+  `/.well-known/acme-challenge/`, the discovery and certificate paths,
+  `/readyz`, `/healthz`) are never routed by the manifest.
+- A workload backend (`workload`) is reached as a mesh client of the member
+  behind it: `cds-attest` presents the router's mesh certificate and requires
+  a peer certificate chaining to the mesh CA whose matched workload name
+  equals `workload`. A failed handshake gets 502; no backend is reached in
+  plaintext.
+- The router serves cluster workloads only: it refuses a polled manifest that
+  names an address backend (`serverName`, `ca`), keeps the applied one, and
+  logs `the router serves cluster workloads only` with the host and path.
+- `router.routing.readTimeout` bounds nginx's wait between reads, and
+  `router.routing.backendTimeout` (default 1h) how long a routed request, or
+  a WebSocket, may go with no data moving; a tunnelled request gets that long
+  in total for its backend call. `router.routing.tunnelBudget` (default 75%
+  of the cds-attest memory limit, or 32Gi) bounds the bytes the tunnelled
+  requests in flight in each router replica may buffer.
+- `router.routing.maxRequestBodyBytes` (default 1048576) is the largest
+  application request body nginx accepts; a larger one gets 413. nginx
+  streams the body to the routing listener rather than spooling it. A baked
+  node ignores this value and takes `router.maxRequestBodyBytes` from the
+  signed launch file (see [Authenticated launch configuration](#authenticated-launch-configuration)).
+
+`c8s install --upstream <cw-id>` writes the first manifest for an adopted
+workload: every DNS name in `router.san` (default
+`<release>-router.<namespace>.svc`; install warns about and skips wildcard,
+IP and numeric-final-label entries) routes prefix `/` to `c8s-<id>.<ns>.svc.cluster.local:<port>`, with `workload: <id>`.
+`--routes-max-age` sets `maxAgeSeconds` of a new manifest (default 24h): how
+long the router admits new attested sessions without a successful fetch.
+Application routing goes on past it. With `--operator-key`
+(or `C8S_OPERATOR_KEY`), install signs it once the release is ready and stores
+it on CDS through a port-forward pinned by `--measurements` (with `--rtmrs`
+on TDX) or `--image-policy-file`. When CDS already stores a manifest, install verifies it
+against `--operator-keys` and adds or replaces the `/` route of each host at the
+next revision, keeping the stored `maxAgeSeconds` (install warns when that
+overrides `--routes-max-age`). Without a key, install writes a new manifest to
+`--routes-out` (default `routes.json`, which install overwrites only when you
+pass the flag) and prints the `c8s routes add` commands that add the route to
+whatever CDS stores. It does the same when it cannot store the manifest after
+the release changed the cluster: the port-forward fails, CDS is unreachable or
+fails verification, the served allowlist cannot be read or does not name the
+pod, or CDS refuses the write, including with 412 when another write landed
+after install read the stored manifest. It also prints `c8s routes put` of the file
+when it sent no write and did not see that CDS stores a manifest, since storing
+the file drops a stored manifest's other routes. When the revision is refused,
+the printed `add` commands leave `--revision` out. The revision is the later of the stored one
+plus one and the current Unix time in seconds; `--routes-revision` sets it.
+`--operator-key`, `--routes-out`, `--routes-max-age` and `--routes-revision`
+require `--upstream`; `C8S_OPERATOR_KEY` does not.
+
+#### Migrate from `router.upstream` and `router.routes`
+
+`router.upstream.*`, `router.routes[]` and `router.nginx.resolver` are gone.
+The chart fails a render that still sets any of them
+(`kind=removed_router_routes`). Write each route into the manifest with `c8s routes add`
+instead, and move `router.upstream.readTimeout` to `router.routing.readTimeout`.
+`router.routing.tunnelSlots` is gone too: the tunnel is bounded by the byte
+budget `router.routing.tunnelBudget`, and the schema refuses a values file
+that still sets `tunnelSlots`.
+`c8s render-values` has no `--upstream` or `--workload-ref`. Expect these
+changes:
+
+- **Backends are reached over the mesh.** The plaintext route to an adopted
+  workload's headless Service has no replacement: the router dials the pod,
+  whose injected endpoint holds the mesh leaf and forwards to the port the
+  route names. Give its `--workload-ref` the port the workload listens on.
+  A `protocol: http` route has no replacement either, and per-route CORS
+  opt-out is gone: `router.cors` covers every manifest route.
+- **The backend's certificate must name its workload.** CDS stamps the matched
+  allowlist entry's name on a workload's certificate only when exactly one
+  entry describes its running containers. Entries written per image digest
+  describe no multi-container pod, so `c8s install` now writes one entry per
+  adoption, named after the cw id. A persistent CDS keeps a stored entry by
+  name over the seed, so after an image bump the stored `<cw-id>` entry is
+  stale, and a per-digest entry left from an older install makes the match
+  ambiguous; either way CDS names the pod nothing and the router answers 502.
+  When install wrote the `<cw-id>` entry (`--resolve-digests=true`) and has
+  `--operator-key`, it reads the served allowlist and refuses to store the
+  route until exactly the `<cw-id>` entry describes the pod's main containers
+  and native sidecars. The refusal names the stale or conflicting entry.
+  Without a key, install prints the `c8s allowlist list` command to check by
+  hand. Update or delete those entries with
+  `c8s allowlist apply` or `c8s allowlist delete`.
+- **Routing is per host.** Before, nginx routed every `Host` to its one
+  backend. Now only manifest hosts route: a client that reaches the router by
+  IP, through a port-forward (`Host: 127.0.0.1`), or by a load balancer name
+  missing from the manifest gets 404. A manifest host must be a DNS name, so an
+  IP-only deployment cannot route application requests.
+- **CDS state is now routing state.** The default chart does not persist the
+  CDS database (`cds.persistence.enabled: false`). After a CDS restart the
+  manifest is gone. The router keeps routing by the one it applied, but
+  refuses new attested sessions (`routes_stale`) once `maxAgeSeconds` pass
+  without a successful fetch. After the router also restarts, application
+  requests get 503 until an operator stores the manifest again
+  (`c8s routes put`). An upgrade that resets CDS hits this at once: new router
+  pods become Ready before their first fetch, and the old pods are gone.
+  Persist CDS, or run `c8s routes put` after the upgrade. Re-running
+  `c8s install --upstream` after such a reset starts a fresh manifest with
+  only the `/` route, so add routes added earlier with `c8s routes add`
+  again. An install
+  without operator keys can never store one, so its router routes nothing.
+- **A CDS reset does not reset the routers.** A router refuses any revision
+  lower than the one it applied, and the same revision with other bytes, until
+  it restarts. `c8s install --upstream`, `c8s routes add` and `c8s routes rm`
+  write at least the current Unix time in seconds, which outranks what the
+  routers hold unless one applied a revision written explicitly, by a
+  faster clock, or in a burst of writes. CDS then accepts the new manifest,
+  but such a router keeps routing by its old one. After a reset, write above
+  the highest revision any router accepted, applied or staged: `--revision` on `add` and `rm`,
+  `--routes-revision` on install, or a `put` of a file with that revision.
+- **Operator keys are control-plane configuration off baked nodes.** Without
+  a launch configuration, the router trusts `cds.operatorKeys`, mounted from
+  the chart, or else the keys CDS serves; both are Kubernetes configuration.
+  Whoever controls the Kubernetes
+  configuration can substitute a key and sign routes to a backend of their
+  choice. A client detects that only by pinning the route digest or the
+  operator keys; see [Route evidence](routes-evidence.md). Route on baked
+  nodes when the control plane is not trusted.
 
 `GET /routes` is unauthenticated and returns
 `{"manifest": "<base64 of the manifest bytes>", "token": "<write token>"}`.
@@ -584,12 +794,16 @@ digest. CDS stores the bytes and the write token verbatim. CDS answers:
 | `PUT`, the body exceeds 1 MiB | 400 |
 | `PUT`, the manifest fails validation, or a `ca` holds the CDS mesh CA | 422 |
 | `PUT`, the revision is not greater than the stored one | 409 |
+| `PUT`, the write token was already spent | 409, plain text `operator token already used` |
+| `PUT`, CDS verifies the write token but cannot record it as spent; nothing is stored, so retry with a fresh token | 503 |
 | `PUT`, `If-Match` differs from the stored manifest's route digest, or no manifest is stored | 412 |
 
 The `c8s routes` CLI takes the `c8s allowlist` connection and credential
 flags. Point `--url` at CDS itself, with no path, because the router does not
 relay `/routes`. A port-forward works; pin the CDS launch digest with
-`--measurements`.
+`--measurements`. On a baked node, CDS listens on NodePort 30808 of the
+server: use `--url https://SERVER_ADDRESS:30808`, pinned with
+`--image-policy-file` set to the bundle's `server.json`.
 
 To show the stored route manifest and add a route:
 
@@ -607,7 +821,7 @@ c8s routes add --url https://127.0.0.1:8443 --measurements CDS_DIGEST \
 
 | Subcommand | Effect |
 |---|---|
-| `show [--raw] [-o json] [--operator-keys FILE]` | Prints revision, `notBefore`, `maxAgeSeconds`, route digest and routes. `--operator-keys` verifies the stored token's signature and bindings. |
+| `show [--raw] [-o json] [--operator-keys FILE]` | Prints revision, `notBefore`, `maxAgeSeconds`, route digest and routes; `--raw` prints the manifest bytes and `-o json` the stored envelope. `--operator-keys` verifies the stored token's signature and bindings. |
 | `digest FILE` | Validates a manifest file and prints its route digest, the hex SHA-256 of its bytes. |
 | `put FILE [--dry-run]` | Validates the file locally, then signs and stores its bytes verbatim. |
 | `add --operator-keys FILE --host H --path P [--match prefix\|exact] --address A (--workload W \| --server-name N --ca FILE) [--new] [--revision N] [--dry-run]` | Adds the route, or replaces the one with the same path and match, and stores the next revision. With no stored manifest it refuses, since a CDS reset looks the same; with `--new` it writes a new one with `--max-age` (default 24h, at least 1s). Over a stored manifest it warns that `--max-age` is ignored. |
@@ -633,9 +847,10 @@ highest revision it accepted, applied or staged, even across a CDS reset. The
 default revision, the current Unix time, outranks it unless a router accepted a
 revision ahead of your clock; then pass `--revision` above that revision.
 
-`GET /routes` serves the write token, so any reader can replay it as a
-`PUT /routes` until its `exp` plus the CDS `--jwt-clock-skew` allowance
-(`cds.jwtClockSkew`, 30 seconds by default). `c8s routes` mints 60-second
+`GET /routes` serves the write token. The CDS that spent it answers a replay
+with 409, but any reader can replay it as a `PUT /routes` on another CDS that
+trusts the same operator key, until its `exp` plus the CDS `--jwt-clock-skew`
+allowance (`cds.jwtClockSkew`, 30 seconds by default). `c8s routes` mints 60-second
 tokens; CDS accepts at most 5 minutes between `iat` and `exp` from any tool.
 The token names no CDS: a replay succeeds on any CDS that trusts the same
 operator key and stores a lower revision, or none. Use a separate operator key
@@ -649,6 +864,151 @@ old public key. To recover, do one of the following:
   which re-signs the manifest under the new key.
 - Review the bytes from `c8s routes show --raw`, raise `revision`, and store
   the file with `put`.
+
+The route digest `show` and `digest` print is the value
+`c8s verify --route-digest` takes. The router binds the digest of the
+manifest it applied into its attest-pq and attest-lb evidence. With
+`router.routePublication.enabled: true` (default `false`; requires
+`router.attest.enabled`), the router also serves that signed manifest at
+`/.well-known/c8s/routes` for `c8s verify --operator-keys`. Leave route
+publication off when the hosts, backend addresses and workload names in the
+manifest are not public, and have clients pin `--route-digest` instead. A baked
+node image always publishes: `c8s node-image render` sets the value in the
+measured image, so keep names that must stay private out of a baked node's
+manifest. See [Route evidence](routes-evidence.md).
+
+### Route by the manifest
+
+`cds-attest --cds-url` polls `GET /routes` from CDS over armTLS, verifies the
+signed manifest, and routes by it. It routes the requests it decrypts from
+the tunnel and, with `--routing-port`, plain requests on a loopback listener.
+The chart sets these flags from `router.routing` and the CDS pins.
+
+| Flag | Default | Effect |
+|---|---|---|
+| `--cds-url` | none | CDS origin to poll. Required, with `--attestation-api-url`. |
+| `--cds-measurements`, `--cds-rtmrs`, `--image-policy-file` | none | CDS pins. Without `--cds-measurements` or `--image-policy-file`, `cds-attest` logs a warning and accepts any armTLS-attested CDS. Unsafe outside development: any TEE on the pod network can pose as CDS and serve the manifest. |
+| `--operator-keys-file` | none | PEM operator public keys a manifest must verify under, when the launch configuration carries none. |
+| `--allow-unpinned-cds` | `false` | Development only. Route with no CDS pin and the operator keys from that CDS. Without it, `cds-attest` refuses to start in that case. |
+| `--routes-poll-interval` | `30s` | Time between polls. Keep it under half of `maxAgeSeconds`. |
+| `--routing-port` | `0` | Port of the loopback routing listener. `0` disables it. |
+| `--routing-host` | `127.0.0.1` | Host of the routing listener. Must be a loopback IP. |
+| `--backend-timeout` | `1h` | On the routing listener, how long a request, or an upgraded connection such as a WebSocket, may go with no data moving either way. A tunnelled request, whose response is buffered whole, gets this long in total for its backend call. Must be positive. |
+| `--tunnel-io-timeout` | `30s` | How long a tunnel upload, or the download of its sealed response, may make no progress. Must be positive. |
+| `--tunnel-budget` | 75% of the container memory limit, else `32Gi` | Bytes the tunnelled requests in flight in one replica may buffer, as a quantity such as `64Gi`. Each request reserves three copies of its record and four of the largest response (32 MiB); one client (by `X-Real-IP`) holds at most a quarter. Must cover one full-size request, 152 MiB. Set by `router.routing.tunnelBudget`. |
+| `--reserved-paths` | the router's own endpoints | Paths no manifest route can match. Each entry must be a normalized path. |
+| `--attest-endpoints` | `true` | `false` serves only the routing listener and probes. Requires `--routing-port`. `true` requires the three `--mesh-identity-*` files, whose leaf the attestation endpoints bind to. |
+| `--publish-routes` | `false` | Serves the applied signed manifest at `/.well-known/c8s/routes`. Requires `--cds-url` and `--attest-endpoints=true`. Set by `router.routePublication.enabled`. |
+
+`cds-attest` takes the operator keys from the node's launch configuration,
+`/run/c8s-node/operator-pubkey`, when that file exists at startup. Otherwise it
+takes them from `--operator-keys-file`. A keys file that exists but holds no
+readable key stops `cds-attest` at startup, and so does a set
+`--operator-keys-file` that is absent. With neither, it
+takes them from CDS's `GET /operator-keys` and logs a warning: that list is
+control-plane configuration, and the router does not stop a substituted key.
+Keys from an unpinned CDS stop `cds-attest` at startup, unless
+`--allow-unpinned-cds` is set: any attested TEE answering as CDS would then
+choose both the manifest and its keys.
+
+The chart pins CDS from `cds.measurements` or `cds.measurementsConfig`. It
+passes `--operator-keys-file` from the launch configuration on a baked node,
+so a node image without the keys stops `cds-attest`, else from
+`cds.operatorKeys`. With neither a CDS pin nor `cds.operatorKeys`,
+the render fails with `kind=unpinned_route_source` and `c8s install` refuses
+before it starts. Fix it with `--measurements` (or `--image-policy-file`) or
+`--operator-keys`. On a development cluster only, set
+`router.routing.allowUnpinnedCDS=true` in a `-f` file; the chart then passes
+`--allow-unpinned-cds`.
+
+Until it applies a manifest, `cds-attest` answers routed requests with 503
+and refuses attest-pq and attest-lb handshakes with 503 `routes_unavailable`.
+When `maxAgeSeconds` passes without a successful poll, it refuses them with
+503 `routes_stale` and keeps routing, by the stale manifest, both established
+sessions and the routing listener. A manifest whose `notBefore` is in the
+future counts as a successful poll. `cds-attest` applies it at the first poll
+at or after `notBefore` and keeps no timer, so while CDS is unreachable the
+applied revision keeps serving. CDS serves only the staged manifest, so a
+replica that starts before its `notBefore` (a restart, rollout or scale-up)
+has nothing to apply: until `notBefore` it refuses handshakes with
+`routes_unavailable` and answers routed requests with 503, while `/readyz`
+stays 200. Keep the `notBefore` window short, and avoid restarts and
+scale-ups inside it. The handshake gates on a fresh applied manifest and
+binds its route digest into the evidence.
+
+`/readyz` ignores route state: it answers 200 before the first apply and
+while the manifest is stale. To spot a router that routes nothing, watch for
+the `route manifest poll failed` log and for handshakes refused with
+`routes_unavailable` or `routes_stale`; a router that routes has logged
+`route manifest applied`.
+
+After its signing key leaves the operator key set, every poll fails to verify
+the stored manifest: `cds-attest` keeps routing by the applied one and goes
+stale within `maxAgeSeconds`. After removing an operator key, write a new
+revision under a remaining key.
+
+A tunnelled request routes by the sealed request's `Host` header only. One
+with no `Host` header, or more than one, gets 400 inside the tunnel and is
+never routed by the outer request's host.
+Upgrade `c8s-verify-js` to a version that seals `Host` in every tunnel
+request before you upgrade the router; earlier versions seal it only when
+the caller passes it.
+
+Backends receive `X-Real-IP`, `X-Forwarded-For` and `X-Forwarded-Proto` as
+nginx set them on the outer request. They are metadata the host can forge,
+not client identity.
+
+`maxAgeSeconds` counts from the last successful poll, not from when the
+manifest was signed. The accepted revision lives in memory only: after a
+restart, `cds-attest` accepts any validly signed revision, including an older
+one. Once it accepts a revision with a future `notBefore`, it refuses every
+lower revision, including the applied one, and keeps the staged revision. To
+withdraw a staged revision, publish a higher one; restoring the previous
+manifest is refused.
+
+Each `cds-attest` replica admits a tunnelled request only while
+`--tunnel-budget` covers every copy it may buffer: three of its record and
+four of the largest response, 32 MiB, so 128 MiB to 152 MiB. One client, by
+`X-Real-IP`, holds at most a quarter of the budget. Others get 503
+`tunnel_busy`. At 32 GiB that is about 250 requests per replica and 64 per
+client. Clients behind one NAT share a quarter, and so do all clients behind
+a node when the Service SNATs them (`externalTrafficPolicy: Cluster`). A
+request holds its reservation from reading the sealed request until the
+client has read the sealed response: through the backend call, up to
+`--backend-timeout`, and then for as long as the client keeps reading. One
+that names no live session gets 401 before its body is read. Anyone can open
+a session, so the per-client quarter is what bounds one client.
+
+A tunnel request body over 8 MiB gets 413, and a response over 32 MiB gets
+a sealed 502; the routing listener streams
+responses without a cap. No timeout assumes a client speed: an upload or
+download loses its budget only once it makes no progress for
+`--tunnel-io-timeout`. `cds-attest` writes a sealed response in 16 KiB
+pieces and restarts that timeout after each, so a client that keeps reading
+gets the whole response however slowly it reads. On the routing listener,
+`--backend-timeout` restarts in the same way whenever data moves either way,
+also on an upgraded connection, which has no fixed lifetime.
+
+The chart's nginx settings apply wherever `router.attest.enabled` is set.
+nginx reads each request body whole before proxying it, so a slow upload
+holds nginx memory rather than budget; keep `proxy_request_buffering` on for
+`/.well-known/c8s/`. Replies stream once they outgrow `proxy_buffers`, so a
+slow download of a large reply holds its budget for as long as the client
+keeps reading. Its timeouts restart on progress too: `client_body_timeout`
+and `send_timeout` (nginx's 60s default) count from the last read from or
+write to the client, and `proxy_read_timeout`
+(`router.routing.backendTimeout` plus 30s) from the last read from the
+sidecar. The handshake endpoints admit bodies up to 16 KiB.
+`/.well-known/c8s/tunnel` admits bodies up to 8 MiB and drops an upload that
+sends nothing for 10s. Bodies past 16 KiB spill to a tmpfs of
+`router.nginx.tunnelBodySpace` (default 8Gi), charged to nginx's memory, so
+a memory limit on nginx must exceed it. An upload that does not fit gets
+500. One client address has at most
+`router.nginx.tunnelConnectionsPerClient` (default 64) tunnel requests open,
+so filling the tmpfs takes 16 addresses at the defaults; past that cap, and
+for a body over 8 MiB, nginx answers with its own HTML 503 or 413 page
+before the sidecar's JSON errors can apply. Each nginx worker accepts 16384
+connections.
 
 ## Attestation-api
 
@@ -765,12 +1125,12 @@ verbatim bytes the guest initrd hashed, as written by `openssl ec -pubout`)
 and `verify` derives the bare operator-key seed,
 `SHA-384(0x00*48 ‖ SHA-384(pubkey))`, itself. The two are mutually exclusive
 — one register, one expected value — and `--operator-pkey` carries the same
-`--image-manifest` requirement. Note its scope: it pins the **bare** seed,
-i.e. a node with no per-workload RTMR[3] extends on top. That is what every
-node reports today; `c8s get-kubeconfig` is the command that also folds
-`--workload-image` extends into the expected register. Supplying any of these
-flags against SEV-SNP evidence is a policy error, not an ignored option: SNP
-has no runtime measurement registers.
+`--image-manifest` requirement. Note its scope: it pins the seed, optionally
+followed by the node's measured allowlist policies, but not per-workload
+extends; `c8s get-kubeconfig` is the command that folds `--workload-image`
+extends into the expected register. Supplying any of these flags against
+SEV-SNP evidence is a policy error, not an ignored option: SNP has no runtime
+measurement registers.
 
 A TDX verdict pinned on MRTD alone is **rejected**, not warned about, when no
 operator-pinned CA anchor (`--mesh-ca`) stands beside the measurements: the
@@ -783,17 +1143,16 @@ Certificate-sourced evidence must also carry an authenticated certificate
 body. A self-signed leaf authenticates its own body under the attested key; a
 CA-issued one does not, and `x509` parsing verifies no signature — so a
 CA-issued leaf is accepted only when its chain verifies against `--mesh-ca`,
-or when a live TLS handshake proves the peer holds the attested key. For
-`--mode discovery` on an https target that handshake doubles as the front-door
-check below: a CA-issued discovery certificate the live door presents
-byte-identically is authenticated by possession. A door serving some other
-certificate — or a fetch with no handshake to observe (a non-https target) —
-still requires `--mesh-ca` (the document publishes `cds_tls.mesh_ca_url`).
+including on a `--mode discovery` target whose live door presents the attested
+certificate byte-identically. `c8s cds ca` writes that anchor. What the live
+handshake decides is the front-door check below.
 
 Exit codes are a CI contract: `0` verified, `1` usage error, `2`
 verification/policy failed (e.g. wrong measurement), `3` evidence unavailable
 (unreachable/unparseable), `4` partially verified — the evidence verified, but
-a property it presents is not proven. The three partial cases today: the
+a property it presents is not proven. The partial cases today: a non-empty
+policy history that neither `--pin-policy` nor `--trust-operator` checked (see
+[Check a node's policy history](#check-a-nodes-policy-history)), the
 front door's live TLS handshake presenting a serving certificate the discovery
 evidence does not attest (a WebPKI front door, whatever the document's
 `public_tls.mode` declares — the verdict keys on the handshake observed on the
@@ -808,22 +1167,105 @@ belongs to is not proven). JSON renders these as
 `verified: false, partial: true` with a `not_proven` list, so a gate checking
 `verified` fails closed while scripts can still tell partial from failure.
 
+`--mode attest-pq` and `--mode attest-lb` evidence also binds the router's
+route digest, so these modes require exactly one route check:
+`--route-digest HEX` pins the digest `c8s routes show` prints (repeat it
+while a route change rolls out), and
+`--operator-keys FILE` verifies the manifest the router publishes, optionally
+against a `--routes-floor REV:HEX` rollback floor. Without either they are a
+usage error (exit 1). [Route evidence](routes-evidence.md) has the transcript
+layouts and the checks.
+
 Caveats the output surfaces:
 
 - **Freshness.** Verifying an armTLS serving cert binds REPORTDATA to the
   certificate key, not a per-request nonce, so it proves "this key was born in a
   TEE with this measurement" but not "freshly now" (`fresh: false`).
 
+### Check a node's policy history
+
+A node that measures its allowlist policies (Helm value
+`nriImagePolicy.measurePolicies`, see
+[Measured policy history](allowlist-and-capabilities.md#measured-policy-history))
+reports RTMR[3] as the seed followed by each policy it enforced since boot.
+Its router's attest-pq and attest-lb bundles list those digests as
+`measured_policies`, and its TDX armTLS certificates and discovery document
+carry them as runtime extensions. With `--operator-pkey`, or an
+`--image-policy-file` whose matching image pins an `approver_key`, `verify`
+replays that list against RTMR[3] and reports the longest prefix that matches
+as `history:` (`measured_policies` in JSON). Only the anchor of an image the
+evidence matches on its own counts: another image's `approver_key` proves
+nothing about a guest that booted an unanchored one. Without such an anchor, a
+listed history is not replayed and the verdict warns. A non-empty replayed history leaves the verdict
+partial until `--pin-policy` or `--trust-operator` checks it: the replay proves
+which policies the node enforced, not that they are acceptable. Choose how to
+accept the history:
+
+| Flag | Accepts | Failure |
+|---|---|---|
+| `--pin-policy sha256:<hex>` (repeatable) | Only these digests, for every history entry and for the policy the leaf was issued under | `policy_history_not_pinned` |
+| `--trust-operator --trust-operator-keys <pem>` | Every history entry, and the policy the leaf was issued under, whose document carries a valid operator signature under these keys | `policy_history_unsigned` |
+
+Both flags require `--operator-pkey` or an `--image-policy-file` image pinning an
+`approver_key`, and exclude each other. Both fail with
+`policy_history_absent` when nothing replays: a node that does not measure
+proves nothing about the policies it enforced. Both also fail when the leaf's
+matched-workload stamp is unreadable; that stamp is CA-vouched, so without
+`--mesh-ca` the verdict stays partial. A leaf with no stamp, which CDS issues
+when the pod matches no single allowlist entry, leaves the verdict partial: it
+is indistinguishable from a leaf issued to a pod that presented no sandbox
+token, so the policy it was issued under is not checked (`leaf_stamped` is
+`false` in JSON for an absent or unreadable stamp, and absent when the evidence
+carries no leaf).
+
+The history runs from boot up to the evidence's quote. Evidence that this
+check's nonce does not bind (a certificate, a discovery document or a saved
+file) cannot show a policy the operator pushed since, so both flags leave such
+a verdict partial: use `--mode attest-pq` or `attest-lb` to check the node's
+current history. With `--operator-pkey`, a list of more than 256 entries, or
+one with an entry that is not a canonical `sha256:<hex>` digest, fails the
+verdict.
+
+`--trust-operator` fetches each document from
+`<target>/allowlist/objects/sha256/<hex>`, checks it hashes to its digest
+(`allowlist_digest_mismatch` otherwise), and checks its stored write token
+against `--trust-operator-keys` with `operatorauth.VerifyStored`.
+`--operator-keys` does not feed it, and `--trust-operator-keys` alone is
+rejected. Only a document uploaded whole with a signed `PUT /allowlist`
+carries a token: a per-workload edit yields an unsigned policy, which fails
+`--trust-operator` until a signed upload of the same document stores a token
+for its digest. The documents authenticate
+themselves against the replayed digests, so any router replica may serve
+them. Each fetch, here and with `--fetch-allowlists`, has its own `--timeout`, and all of them together get four times
+`--timeout`; a fetch that times out or cannot
+connect exits 3, as for unavailable evidence.
+
+To review the documents before pinning them, add `--fetch-allowlists DIR`
+(also requires `--operator-pkey` or an anchored `--image-policy-file` image): `verify` saves each one as
+`DIR/<hex>.json`, and a failed fetch or write fails the verdict with
+`allowlist_fetch_failed`.
+
+```sh
+c8s verify https://app.example.com --mode attest-lb \
+  --image-manifest image.json --operator-pkey operator.pub \
+  --trust-operator --trust-operator-keys operator-keys.pem
+```
+
 ### Complete measured identity policies
 
 Image policy files preserve each image measurement, its TDX RTMR tuple and
 optional `approver_key` as one policy entry. The key is the exact PEM string;
 attestation-go's `refvalues` package maps it to `remote.ImagePin.Anchor`.
-`remote.EnforceImages` checks the image and calls `runtimemeasure.VerifyBinding`
-for that same entry. An image cannot borrow another entry's authorized key.
+`remote.EnforceImagesWithRuntimeLog` checks the image and its launch-key
+binding for that same entry. On TDX the binding may be the key's seed followed
+by a prefix of the peer's measured policies that replays
+([Measured policy history](allowlist-and-capabilities.md#measured-policy-history)).
+An image cannot borrow another entry's authorized key.
 C8s passes these entries through `remote.Policy.Images` to its attestation
 clients and injected workload helpers. Each verifier enforces the complete
-entry, including its launch-key binding when present.
+entry, including its launch-key binding when present. The measured policies
+after the seed are accepted as far as they replay, not judged: see "What
+armTLS guarantees" in [armTLS](armtls.md).
 
 ### Image policy inputs
 
@@ -834,15 +1276,26 @@ File and inline inputs use the same JSON format:
 | Input | Contents |
 |---|---|
 | `--image-policy-file policy.json` | Path to a complete JSON image policy. |
-| `--image-policy-json '{...}'` | The JSON document itself; supported by workload helpers such as `get-cert` and `get-secret`. |
+| `--image-policy-json '{...}'` | The JSON document itself; supported by workload helpers such as `get-cert` and `get-secret` when they run outside an injected pod. |
 | `--measurements-file digests.txt` | Text file containing one launch digest per line; no per-image register or key bindings. Supported by `verify`, `allowlist`, and `secrets`. |
+
+The enforcer bind-mounts the node's own policy at `/run/c8s/cds-pins.json`
+and the CDS endpoint it admits at `/run/c8s/cds-address` for every container
+holding the credentials role — the injected `get-cert`, `get-secret` and
+`get-volume`, and the router's `get-cert` and `allowlist-proxy`, which the
+chart renders — and each of them reads both from there: while those mounts are
+present they are the one source, and a policy, a pin or a `--cds-url` passed as
+an argument is refused rather than silently ignored. On a baked node the pins
+and the address come from the signed launch configuration; on an install they
+come from the chart. The address is the one destination the pod's packet rules
+admit for the credential role: the staged server address on a baked node, the
+node's own address and `cds.service.nodePort` on an install.
 
 Choose one complete policy source. A complete policy cannot be combined with
 independent digest or register inputs such as `--measurements`,
 `--measurements-file`, or `--rtmrs` (including the `--cds-` variants where
 provided). These independent inputs remain available for policies expressed as
-a digest list and a shared register set. Mesh peers and CDS can use separate
-files; `--cds-image-policy-file` selects the CDS-only policy for `armtls-mesh`.
+a digest list and a shared register set.
 
 `c8s install` and `c8s render-values` accept image policies only when every
 image has identical RTMR pins and no `approver_key`. The Helm NRI installer
@@ -872,7 +1325,16 @@ both on the armTLS connection and on a fresh nonce-bound attestation report:
 - **RTMR[3] chain (TDX)** — the register must equal the operator-key seed
   (`runtimemeasure.Seed` over the exact pubkey PEM bytes)
   extended, in order, by each digest-pinned `--workload-image` ref (tags are
-  rejected). With no `--workload-image` the register must equal the bare seed;
+  rejected). With no `--workload-image` the register must equal the bare seed.
+  A node that measures allowlist policies extends them after that chain and
+  sends their list with the fresh report, or in cred-release's armTLS
+  certificate; the register may then also carry the longest prefix of that
+  list that replays (see
+  [Measured policy history](allowlist-and-capabilities.md#measured-policy-history)).
+  That trailing part is a prefix check, not an exact chain: policy and
+  workload extends share one event encoding, so `--workload-image` excludes
+  an unpinned workload only while the measured image journals policies
+  alone, which the image pin above enforces;
 - **guest image + operator key (SEV-SNP)** — the report's MEASUREMENT must be
   one of the per-SMP launch digests pinned by `snp_variants` (one image has
   one digest per vCPU count), and HOSTDATA must equal `SHA-256(operator
@@ -906,6 +1368,12 @@ stop the flow. An explicit `--attest-url` retains the separate nonce check
 for older images with a reachable attestation API. There is no automatic
 fallback: images without the authenticated `/attest` endpoint need a rebuild
 to use the default flow.
+
+With `--attest-url`, the measured-policy list comes from cred-release's
+certificate, which the node reissues only at half its armTLS lifetime. After
+the node measures a new policy, the gate fails until that reissue. To avoid
+the wait, omit `--attest-url`: the default flow takes the list from the
+`/attest` response, read after the quote.
 
 The released kubeconfig's client certificate is
 `CN=operator, O=c8s:node-operators`, with a 7-day default (and baked
@@ -1026,9 +1494,10 @@ workload set to it.
 
 The webhook only reads pod metadata. A `ConfidentialWorkload` CR is not
 required for injection. The single webhook entry (`pods.c8s.confidential.ai`)
-excludes the release namespace via its namespaceSelector, so the chart's own
-pods never hit the webhook during bootstrap; router's get-cert containers are
-rendered directly into its pod template by the chart instead of injected.
+excludes the release namespace and the router's via its namespaceSelector, so
+the chart's own pods never hit the webhook during bootstrap; router's get-cert
+containers are rendered directly into its pod template by the chart instead of
+injected.
 
 Opt a pod template in with:
 
@@ -1051,7 +1520,7 @@ Injection does not require a CR lookup.
 For opted-in pods, the webhook:
 
 - adds an in-memory `emptyDir` volume named `c8s-certs`;
-- mounts that volume read-only into application containers at
+- mounts that volume into the pod's mesh endpoint and credential sidecars at
   `/etc/c8s/certs`;
 - prepends a `c8s-cert` native sidecar (init container with
   `restartPolicy: Always`) that fetches the first cert before application
@@ -1065,30 +1534,38 @@ The sidecar runs:
 
 ```bash
 get-cert \
-  --cds-url=https://<release>-cds.<namespace>.svc:8443 \
   --attestation-api-url=<release-attestation-api-url> \
   --san=<derived from confidential.ai/cw, e.g. c8s-api.default.svc> \
-  --out=/etc/c8s/certs/tls.crt \
-  --key-out=/etc/c8s/certs/tls.key \
-  --ca-out=/etc/c8s/certs/ca.crt \
+  --cert-path=/etc/c8s/certs/tls.crt \
+  --key-path=/etc/c8s/certs/tls.key \
+  --ca-path=/etc/c8s/certs/ca.crt \
   --renew-interval=<webhook.getCert.renewInterval> \
-  --reload-nginx=<from annotation> \
   --continue-on-initial-error
 ```
 
-`--key-out` is idempotent: on a kubelet restart of the sidecar it reuses the
-key that's already on disk, so the previously-issued cert chain stays valid.
-The sidecar leaves `--ca-watch-interval` at get-cert's default, so it polls
-CDS once a minute and renews early when CDS's mesh CA is missing from
-`ca.crt`, or, when the pod requests workload claims, when the allowlist no
-longer matches the snapshot stamped in the leaf.
+get-cert writes the leaf, key and CA together under `generations/` and
+atomically replaces the `current` symlink. Readers resolve `current` once and
+read all three files from that directory for a consistent generation.
+The stable `tls.key`, `ca.crt` and `tls.crt` hard links are replaced in that
+order and can span generations during renewal. On a sidecar restart, a valid
+stored generation remains available until its replacement is published;
+every certificate request generates a fresh key. After a withdrawal the pod
+stays bound to the CA key its `issuer` record names and re-issues under it;
+only a pod whose `issuer` record cannot be read publishes nothing until it is
+recreated.
+
+In renewal mode, `--ca-watch-interval` defaults to one minute. It compares
+CDS `/ca` with `--ca-path` and renews when the CA certificate changes under
+the pod's bound issuer key; it also watches the stamped allowlist policy unless
+`--no-workload-claims`. Replacing the CDS CA key requires pod recreation.
 
 `tls.crt` is the full chain (leaf first, mesh CA after); `ca.crt` is the mesh
 CA alone, world-readable, for applications that take the trust anchor as a
 separate file (`mysqld --ssl-ca`, clients doing `VERIFY_CA` against peers on
-the mesh). File names are overridable per pod with `confidential.ai/c8s-cert-file`,
-`confidential.ai/c8s-key-file`, and `confidential.ai/c8s-ca-file`; each must
-name a file in `/etc/c8s/certs`, or the webhook refuses the pod.
+the mesh). The directory and the three file names are the injector's: a pod
+carrying `confidential.ai/c8s-cert-volume`, `confidential.ai/c8s-cert-dir`,
+`confidential.ai/c8s-cert-file`, `confidential.ai/c8s-key-file` or
+`confidential.ai/c8s-ca-file` is refused.
 
 `tls.key` is written `0640` owned by the get-cert user (UID/GID 65532, the pod's
 `fsGroup`). An image whose entrypoint starts as root and then drops to a
@@ -1098,19 +1575,19 @@ key into a directory the service user owns before dropping privileges.
 The `c8s-cert-wait` init container (`/c8s probe-file --wait /etc/c8s/certs/tls.crt`)
 gates the application containers on the initial cert being written: it blocks
 until the cert exists, then exits, and normal init-completion ordering holds the
-workload until then — fail-closed. Renewals rewrite the file on disk;
-application-level TLS reload remains the workload's responsibility unless the
-pod opts into one of the C8s reload annotations.
+workload until then — fail-closed. Renewals publish a new generation;
+application-level TLS reload is the workload's responsibility.
 
 Platform-owned workloads can specialize the same webhook behavior with typed
-C8s annotations for the cert volume, cert/key filenames, renewal interval,
-nginx reload, Secret watch paths, discovery output, and get-cert UID/GID.
-(router, living in the webhook-excluded release namespace, renders equivalent
-get-cert containers directly from the chart's templates instead.) The
-webhook rejects incomplete reload-watch or discovery annotation sets during pod
-admission instead of admitting a pod that cannot serve its configured
-certificate/discovery path. The sidecars mount at fixed destinations, which the
-allowlist pins; see [Fixed sidecar mounts](secrets.md#fixed-sidecar-mounts).
+C8s annotations for the renewal interval, discovery output, and get-cert
+UID/GID. (router, living in the
+webhook-excluded `c8s-router` namespace, renders the whole member shape —
+endpoint, get-cert containers and the credential paths above — from the
+chart's templates instead.) The webhook rejects an
+incomplete discovery annotation set during pod admission instead of admitting
+a pod that cannot serve its configured discovery path. The sidecars mount at fixed
+destinations, which the allowlist pins; see
+[Fixed sidecar mounts](secrets.md#fixed-sidecar-mounts).
 
 ## router public TLS modes
 
@@ -1120,20 +1597,24 @@ front door:
 - `cds` (default) — get-cert provisions a mesh-CA-issued serving leaf into a
   pod-local volume; the key stays inside the pod's TEE.
 - `webpki` — nginx serves an operator-supplied `publicTLS` Secret; the key is
-  host-visible.
+  host-visible. The Secret lives in the `c8s-router` namespace, the one the
+  router pod runs in.
 - `acme` — the `c8s acme` sidecar keeps one multi-SAN WebPKI certificate for
   the validated router SAN list via ACME HTTP-01: nginx's :80 server proxies
   `/.well-known/acme-challenge/` to the sidecar's loopback challenge listener
   and 301s everything else to https. The CA's validation fetch arrives on that
   port, so the mode needs :80 reachable from the internet, not just from the
-  cluster. Key, chain, and ACME account state live
-  in a Memory-medium emptyDir — TEE-held under a confidential runtime (which
-  this mode requires), lost with the pod and re-issued on recreation (point
-  the sidecar at an ACME staging directory in tests to stay clear of the CA's
-  duplicate-certificate limits). Renewal fires at 2/3 lifetime; each install
-  SIGHUPs nginx. On start the sidecar writes a self-signed placeholder so
-  nginx, whose config names the cert files, can start before the first
-  issuance.
+  cluster. The chain lives in one Memory-medium emptyDir and the serving key
+  with the ACME account state in another, so the front door mounts both while
+  the attestation sidecar — which runs as the same identity and only needs the
+  leaf it binds — mounts the chain alone. Both are TEE-held under a
+  confidential runtime (which this mode requires), lost with the pod and
+  re-issued on recreation (point the sidecar at an ACME staging directory in
+  tests to stay clear of the CA's duplicate-certificate limits). Renewal fires
+  at 2/3 lifetime; nginx's own entrypoint re-reads the files it serves and
+  reloads on each install. On start the sidecar writes a self-signed
+  placeholder so nginx, whose config names the cert files, can start before
+  the first issuance.
 
 The mode is a trust statement, not plumbing: the attestation sidecar commits
 it into the attest-pq and attest-lb report_data transcripts and echoes it as
@@ -1141,10 +1622,42 @@ it into the attest-pq and attest-lb report_data transcripts and echoes it as
 leaf — is served only for the TEE-held-key modes, `cds` and `acme`; `webpki`
 is attest-pq-only.
 
+When `cds-attest --measured-policies-file` names the node's measured-policy
+journal, both bundles also carry `measured_policies`: the policy digests the
+node extended into RTMR[3], read after the quote and outside any transcript.
+The chart passes the journal under `nriImagePolicy.hostPaths.runtimeDir`
+wherever the router mounts the attestation-api socket; an absent journal
+omits the list. With an operator-key anchor, `c8s verify` replays it against
+RTMR[3] (see
+[Check a node's policy history](#check-a-nodes-policy-history) and
+[Measured policy history](allowlist-and-capabilities.md#measured-policy-history)).
+
+CDS, cred-release, the mesh, `launch-config stage` and get-cert take the
+journal from `--measured-policies-file`. It defaults to
+`/run/nri-image-policy/measured-policies`, except for get-cert, whose default
+is the sidecar mount, `/run/c8s/workload-claims/measured-policies`. An empty
+value lists none. The chart passes CDS and the mesh the journal under
+`nriImagePolicy.hostPaths.runtimeDir` wherever it mounts the attestation-api
+socket. A producer logs once, naming
+the path, when the journal is missing. The plugin's digests endpoint reads the
+journal in its runtime directory.
+
+To roll out policy measurement, upgrade in this order:
+
+1. CDS and every verifier: cred-release, the mesh, router discovery and
+   `c8s get-kubeconfig`. An older verifier rejects a node that measures
+   policies.
+2. The clients that send the list: get-cert and the CDS client. An older CDS
+   rejects an `/attest` request carrying `runtime_extensions` with 422 (`invalid_request`).
+3. The node's policy measurer.
+
+At boot the measurer and its readers start in any order: the journal records
+each policy before extending it, and every reader reads it after its report.
+
 On a baked node image (`node.baked=true`, set by `c8s node-image render`), the
-signed launch file selects the mode and the upstream at boot. Mode `acme`
-applies when its `router.hostnames` is not empty, else mode `cds`. See
-"Authenticated launch configuration".
+signed launch file selects the mode at boot. Mode `acme` applies when its
+`router.hostnames` is not empty, else mode `cds`. See "Authenticated launch
+configuration".
 
 ### Verify a saved attest-lb receipt
 
@@ -1156,17 +1669,18 @@ connection proves nothing about that receipt.
 ```bash
 c8s verify --mode attest-lb --from-file receipt.json \
   --attestation-nonce "$NONCE" --observed-serving-cert serving-leaf.pem \
-  --measurements "$MEASUREMENT" -o json
+  --route-digest "$ROUTE_DIGEST" --measurements "$MEASUREMENT" -o json
 ```
 
 `NONCE` is the challenge as unpadded base64url; `MEASUREMENT` is the pinned
-launch digest. The verdict checks the challenge, the serving certificate, the
+launch digest; `ROUTE_DIGEST` is the route digest the receipt must bind (a
+saved receipt takes `--route-digest` only). The verdict checks the challenge, the serving certificate, the
 mesh identity proof and the hardware report, and reports `serving_leaf_sha256`
 in the same form as the receipt so the client can match the two. It is never
 `fresh`: the caller chose the nonce, so the verdict says what that connection
 was, not what the front door serves now.
 
-## router upstream
+## Router front door
 
 ### Built-in allowlist route
 
@@ -1195,7 +1709,7 @@ allowlist fetches — stays bounded; CORS preflights are exempt. If a flood
 saturates the front-door buckets, signed writes still work over a direct CDS
 URL or port-forward, which CDS accounts under the caller's own source IP.
 LoadBalancer and NodePort Services default to `externalTrafficPolicy: Local`
-while this route or the attestation sidecar (`router.attest.enabled`) renders,
+while this route or the attestation endpoints (`router.attest.enabled`) are on,
 so nginx receives the public source address their per-client keys need;
 `router.service.externalTrafficPolicy` overrides (Local delivers traffic only
 through nodes that run the router pod).
@@ -1220,78 +1734,9 @@ modes the public certificate is not yet bound to the discovery attestation and
 the CLI refuses that front door. Use a direct CDS armTLS URL (or a CDS
 port-forward) and pin the CDS launch digest instead.
 
-Set `router.allowlist.enabled=false` to remove this route. For compatibility,
-an explicit `router.routes` entry whose path is `/allowlist` or `/allowlist/`
-takes precedence and suppresses the built-in route.
-
-router proxies its catch-all route to one upstream, `router.upstream.address`,
-an opaque `host:port` the chart never interprets. For a workload run as the
-operator-managed headless Service (annotated `confidential.ai/cw`, see
-[Injection contract](#injection-contract)), that upstream must be the headless
-Service's own DNS name and container port,
-`c8s-<id>.<namespace>.svc.cluster.local:<port>`. Headless DNS resolves
-to pod IPs, which the node mesh intercepts to wrap the hop in attested mTLS; a
-regular Service VIP it cannot intercept, so dialing one leaves the hop in
-plaintext. Dialing the pod IP also bypasses the Service's port remapping, which
-is why the explicit container port is required.
-
-`c8s install --upstream <cw-id>` builds that string for you from an adopted
-workload: `<cw-id>` must be one of your `--workload-ref` ids and that ref must
-carry a `:<port>`, and install sets `router.upstream.address` to
-`c8s-<id>.<ns>.svc.cluster.local:<port>` (the ref's namespace and port). The
-chart recognizes that headless-Service address shape as mesh-wrapped and admits
-the plaintext http hop; any other address must be app-TLS (see below):
-
-```bash
-c8s install --namespace c8s-system \
-  --workload-ref infer=vllm/deployment/serving:8000 --wait \
-  --upstream infer
-# router.upstream.address = c8s-infer.vllm.svc.cluster.local:8000
-```
-
-Without `--upstream`, `router.upstream.address` is used as-is: an upstream that
-is not a C8s-managed workload (an existing Service, an external address). The
-chart cannot verify a manual address resolves to pod IPs the mesh intercepts,
-so it must be `protocol: https` with `tls.verify: true`: an upstream that
-terminates and authenticates TLS itself (app-TLS). There is no
-plaintext-to-unattested escape hatch and no default upstream.
-
-Leaving the upstream unset is legal: router installs and serves its cert,
-discovery, and any explicit routes with **no catch-all** `location /` until one
-is wired. This is the install-then-attach flow: `c8s install` stands up the
-front door, and the operator attaches the workload later (`--upstream`, or a
-verified-https `router.upstream.address` via `-f`). An unmatched request gets
-nginx's default 404 until then.
-
-The chart rejects, at render time, with stable `kind=` markers (the same the
-chart tests assert on):
-
-- `router_unsecured_upstream`: a `router.upstream.address` that is not a
-  `c8s-<id>.<ns>.svc.cluster.local` headless-Service address is a plaintext http
-  backend, or https without `tls.verify=true`. Only a verified-https (app-TLS)
-  manual address is admitted; there is no acknowledgment to override this. To
-  reach a confidential workload, adopt it with `--workload-ref` and pass
-  `--upstream`: pointing a manual address at a Service VIP fronting cw pods is
-  unmeshed, and the always-on cw guard drops it, so the hop fails closed rather
-  than running plaintext.
-- `workload_https_upstream`: the address is a `c8s-<id>` headless Service (a
-  mesh-wrapped upstream) with `router.upstream.protocol=https`. That hop is
-  plaintext at the app layer (the mesh wraps it in attested mTLS), so an https
-  protocol could only fail at runtime; use http for a mesh-wrapped upstream.
-
-The same secured-backend rule applies to every `router.routes[].backend`: it
-must use `protocol: https` with `tls.verify: true` (app-TLS). A plaintext http
-or unverified-https route backend fails the render (`router_unsecured_route`);
-there is no acknowledgment to override it. Routes have no default backend, so
-this only affects routes you configure. A confidential workload is reached via
-`router.upstream` (the `--upstream` flow), not a route.
-
-The mesh guarantee holds only when `--upstream` names a real cw workload: the
-CLI checks the id is one of the adopted refs, but cannot confirm `c8s-<id>`
-fronts attested cw pods. A wrong id derives a headless Service that resolves to
-nothing (router has no backend) rather than a plaintext leak; the runtime
-boundary that a peer is a genuine cw pod is the mesh's always-on cw inbound
-guard, not this render guard.
+Set `router.allowlist.enabled=false` to remove this route. No route manifest
+path under `/allowlist` is routed either way. Application requests route by the
+[route manifest](#route-manifest).
 
 ## Certificate file permissions
 
@@ -1344,11 +1789,10 @@ it:
 | `c8s-cds-ingress` | cds | `cds.port` (armTLS; also the NodePort route) |
 | `c8s-operator-ingress` | operator | 9443 webhook, 8081 probes, 8080 metrics |
 | `c8s-volumed-ingress` | volumed | nothing (it serves a node-local Unix socket) |
-| `c8s-router-ingress` | router | `router.nginx.httpsPort`, plus the :80 HTTP-01/redirect server in `publicTLS.mode=acme` |
+| `c8s-router-ingress` | router (in `c8s-router`) | `router.nginx.httpsPort`, plus the :80 HTTP-01/redirect server in `publicTLS.mode=acme` |
 
-They are ingress-only. `armtls-mesh-tcp-only-egress` already selects every pod in
-the namespace and allows all TCP, and NetworkPolicies union, so an egress rule
-on one component would be allowed by that policy regardless.
+They are ingress-only. NetworkPolicies union, and what bounds a member pod's
+reach is its own packet ruleset.
 
 **None of them restricts the source of a connection** — no rule carries a
 `from`, so each one narrows which port answers, not who may connect. router is
@@ -1382,61 +1826,6 @@ spec:
 
 These are inert on a cluster whose CNI does not enforce NetworkPolicy.
 
-### Workload namespaces with default-deny egress
-
-The node mesh DNATs every TCP connection from one pod to another to the
-node's outbound listener, `nodeIP:15001` (`armtlsMesh.ports.outbound`),
-including connections between pods on the same node. The CNI applies the
-source pod's egress policy after that rewrite, so what it must allow is
-egress to port 15001, not the destination pod's port. A namespace that
-isolates egress and allows only its intended peers therefore drops every
-intercepted connection before the mesh sees it, and nothing logs the drop:
-`armtls_mesh_connections_total` stays at zero.
-
-The operator closes this for you. Beside every NetworkPolicy whose
-`policyTypes` include `Egress`, in a namespace the mesh intercepts, it keeps
-a companion named `<policy>-mesh-egress` that selects the same pods and
-allows egress to TCP 15001 and nothing else:
-
-```yaml
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: default-deny-mesh-egress
-  namespace: my-app
-  labels:
-    app.kubernetes.io/managed-by: c8s-operator
-    c8s.confidential.ai/mesh-egress-companion: "true"
-  ownerReferences: [<the default-deny policy>]
-spec:
-  podSelector: <copied from default-deny>
-  policyTypes: [Egress]
-  egress:
-    - ports:
-        - protocol: TCP
-          port: 15001
-```
-
-The companion is additive and never isolates a pod on its own: it exists
-only where a policy of yours already isolates egress, and it copies that
-policy's `podSelector`. It follows the source: a selector change is
-mirrored, dropping `Egress` from the source's `policyTypes` deletes the
-companion, and deleting the source garbage-collects it. The rule names no
-peer because the rewritten destination is the node's own address, which
-CNIs classify as the host rather than as a CIDR peer. Namespaces in
-`armtlsMesh.iptablesSync.excludeSourceNamespaces` are not intercepted and
-get no companions. A policy whose own rules already admit TCP to the port
-for every destination, such as an allow-all or all-TCP rule, or the chart's
-`armtls-mesh-tcp-only-egress`, gets none either. Turn the mechanism off
-with `armtlsMesh.egressCompanionPolicy.enabled=false` and add the rule above
-to your own policies instead.
-
-The same rewrite means the CNI cannot enforce egress rules that name
-specific pod peers between confidential pods: every intercepted connection
-reaches it as a connection to the node, and the mesh's own guards decide
-what reaches a confidential pod. Service-VIP dials to confidential pods are
-dropped by the cw guard described in the [Overview](#overview).
-
 ## Validation
 
 Run the full Go suite:
@@ -1463,11 +1852,13 @@ component, so only image tags are required (no digests). Disabling it renders
 only because the chart's default `attestationApi.cvmMode=bare-metal` bakes its own
 policy plugin and so is exempt from the `require_host_image_policy` guard; other
 modes (gke/aks) must keep nri-image-policy enabled and digest-pinned, as in the
-full-shape render below.
+full-shape render below. Both renders pin neither CDS nor the operator keys,
+so they set `router.routing.allowUnpinnedCDS`; a real install pins one instead.
 
 ```bash
 helm template c8s internal/helmchart/c8s \
   --namespace c8s-system \
+  --set router.routing.allowUnpinnedCDS=true \
   --set image.tag=main \
   --set attestationApi.image.tag=main \
   --set cds.image.tag=main \
@@ -1476,7 +1867,9 @@ helm template c8s internal/helmchart/c8s \
 ```
 
 To render the full default shape (image policy enabled), the chart requires the
-nri-image-policy installer image and the CDS image to be digest-pinned. The CDS
+nri-image-policy installer image and the CDS image to be digest-pinned, and
+`nriImagePolicy.mesh.resolver` to name the cluster DNS service address. Set
+`nriImagePolicy.mesh.clusterRanges` to the pod and Service CIDRs. The CDS
 node selector defaults to `role: cds`; override it if your CDS node uses a
 different label. `c8s install` fills these digests from the registry by default
 (via `crane`); for a manual render the values below are placeholders:
@@ -1484,11 +1877,14 @@ different label. `c8s install` fills these digests from the registry by default
 ```bash
 helm template c8s internal/helmchart/c8s \
   --namespace c8s-system \
+  --set router.routing.allowUnpinnedCDS=true \
   --set image.tag=main \
   --set attestationApi.image.tag=main \
   --set cds.image.tag=main \
   --set armtlsMesh.image.tag=main \
   --set nriImagePolicy.image.tag=main \
+  --set nriImagePolicy.mesh.resolver=10.96.0.10 \
+  --set 'nriImagePolicy.mesh.clusterRanges={10.244.0.0/16,10.96.0.0/12}' \
   --set nriImagePolicy.image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000000 \
   --set cds.image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000000 >/dev/null && echo OK
 ```
@@ -1500,7 +1896,6 @@ allowlist writes.
 The rendered manifests should include:
 
 - a CDS Deployment, Service, and ServiceAccount;
-- the operator arg `--cds-url=https://c8s-cds.c8s-system.svc:8443`;
 - no CDS admin-password Secret and no attestation-api API-key Secret;
 - `confidential.ai/trust-root-mode: inMemory` annotations on the chart-managed
   CDS resources.

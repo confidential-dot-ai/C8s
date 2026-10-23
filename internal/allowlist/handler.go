@@ -172,15 +172,7 @@ func (a WriteAuthorizer) ReadAuthorized(w http.ResponseWriter, r *http.Request, 
 	}
 	if err := a(r, body); err != nil {
 		slog.Warn("write rejected", "method", r.Method, "path", r.URL.Path, "remote", r.RemoteAddr, "reason", err)
-		if errors.Is(err, ErrTokenReused) {
-			http.Error(w, err.Error(), http.StatusConflict)
-			return nil, false
-		}
-		if errors.Is(err, ErrTokenBeforeStart) {
-			http.Error(w, ErrTokenBeforeStart.Error(), http.StatusUnauthorized)
-			return nil, false
-		}
-		w.WriteHeader(http.StatusUnauthorized)
+		httputil.RefuseOperatorToken(w, err)
 		return nil, false
 	}
 	return body, true

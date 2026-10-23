@@ -1,6 +1,10 @@
 package allowlist
 
-import "github.com/confidential-dot-ai/c8s/pkg/types"
+import (
+	"slices"
+
+	"github.com/confidential-dot-ai/c8s/pkg/types"
+)
 
 // Index answers admission queries for enforcers in O(1). Build it once from a
 // normalized Allowlist (BuildIndex). A nil *Index admits nothing, so an
@@ -136,6 +140,54 @@ func equalStrings(a, b []string) bool {
 	return true
 }
 
+// noRole is what a container holds until a declaration grants it a role.
+const noRole = ""
+
+// RoleOf reports the platform role this policy binds to an observed
+// container. A role rides on the whole verified identity, and two
+// declarations naming different roles for one launch bind none.
+func (i *Index) RoleOf(r RunningContainer) string {
+	if i == nil {
+		return noRole
+	}
+	d, err := types.ParseDigest(r.Digest)
+	if err != nil {
+		return noRole
+	}
+	r.Digest = d.String()
+	var roles []string
+	for _, c := range i.byDigest[r.Digest] {
+		if c.Role != noRole && c.admits(r) && !slices.Contains(roles, c.Role) {
+			roles = append(roles, c.Role)
+		}
+	}
+	if len(roles) != 1 {
+		return noRole
+	}
+	return roles[0]
+}
+
+// BindsRoleMounts reports whether a declaration that grants this launch the
+// role also pins its mount set. A namespace whose pods separate credentials by
+// mount set admits a role container only under such a declaration, so an entry
+// leaving mounts to the host carries no role there.
+func (i *Index) BindsRoleMounts(r RunningContainer, role string) bool {
+	if i == nil || role == noRole {
+		return false
+	}
+	d, err := types.ParseDigest(r.Digest)
+	if err != nil {
+		return false
+	}
+	r.Digest = d.String()
+	for _, c := range i.byDigest[r.Digest] {
+		if c.Role == role && c.Mounts.pinned() && c.admits(r) {
+			return true
+		}
+	}
+	return false
+}
+
 // AdmitsProcess is the preliminary NRI create-time check. It deliberately checks
 // only digest/argv; a successful result MUST be followed by AdmitsContainer on
 // the finalized OCI spec before start, and must never authorize secret release.
@@ -154,4 +206,46 @@ func (i *Index) AdmitsProcess(r RunningContainer) bool {
 		}
 	}
 	return false
+}
+
+// AdmitsNodeRoot reports whether some entry that admits r does so through an
+// exact nodeRootFile mount rule at m's destination and host source. Only such a mount carries bytes the allowlist pinned to the measured
+// node image; mounts admitted under `any` or by a host rule do not.
+func (i *Index) AdmitsNodeRoot(r RunningContainer, m ObservedMount) bool {
+	if i == nil || m.Class != MountHost || m.Provenance != ProvenanceNodeRoot || !m.ReadOnly {
+		return false
+	}
+	d, err := types.ParseDigest(r.Digest)
+	if err != nil {
+		return false
+	}
+	r.Digest = d.String()
+	for _, c := range i.byDigest[r.Digest] {
+		if c.Mounts.Policy != PolicyExact || !c.admits(r) {
+			continue
+		}
+		for _, rule := range c.Mounts.Rules {
+			if rule.Kind == MountNodeRootFile && rule.Destination == m.Destination && rule.behavior().admits(m) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// DeclaresNodeRoot reports whether some entry for digest has a nodeRootFile
+// mount rule.
+func (i *Index) DeclaresNodeRoot(digest string) bool {
+	if i == nil {
+		return false
+	}
+	d, err := types.ParseDigest(digest)
+	if err != nil {
+		return false
+	}
+	return slices.ContainsFunc(i.byDigest[d.String()], func(c Container) bool {
+		return slices.ContainsFunc(c.Mounts.Rules, func(rule MountRule) bool {
+			return rule.Kind == MountNodeRootFile
+		})
+	})
 }

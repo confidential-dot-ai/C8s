@@ -95,7 +95,7 @@ func TestValidate(t *testing.T) {
 		{"plaintext cds url", func(c *config) { c.CDSURL = "http://cds.example" }, "https"},
 		{"no attestation api", func(c *config) { c.AttestationApiURL = "" }, "--attestation-api-url"},
 		{"no secrets", func(c *config) { c.Secrets = nil }, "--secret"},
-		{"zero attempts", func(c *config) { c.Attempts = 0 }, "--attempts"},
+		{"negative attempts", func(c *config) { c.Attempts = -1 }, "--attempts"},
 		{"zero retry interval", func(c *config) { c.RetryInterval = 0 }, "--retry-interval"},
 		{"bad file mode", func(c *config) { c.FileMode = "rw-r-----" }, "--file-mode"},
 		{"file mode out of range", func(c *config) { c.FileMode = "7777" }, "--file-mode"},

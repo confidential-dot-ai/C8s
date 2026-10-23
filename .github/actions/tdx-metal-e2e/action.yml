@@ -57,7 +57,7 @@ runs:
         # `|| true`: under `set -e` a failed substitution exits before the
         # pinned fallback on the next line can be reached.
         GOVER="$(curl -fsSL https://go.dev/VERSION?m=text 2>/dev/null | head -1 | sed 's/^go//' || true)"
-        [ -n "$GOVER" ] || GOVER=1.27.1
+        [ -n "$GOVER" ] || GOVER=1.27.3
         retry curl -fsSL "https://go.dev/dl/go${GOVER}.linux-amd64.tar.gz" -o /tmp/go.tar.gz
         sudo tar -C /usr/local -xzf /tmp/go.tar.gz
       fi
@@ -599,6 +599,18 @@ runs:
       run: ${{ inputs.suite_run }}
       platform: tdx-metal
 
+  - name: assert the router matches its seeded entry in acme front-door mode
+    # Boots a second CVM in place of the lane's, so it runs last, and not
+    # when the lane's CVM is kept for debugging.
+    if: ${{ !cancelled() && env.GUEST_IP != '' && inputs.keep_cvm != 'true' }}
+    # Reported, not gating, while the per-pod mesh contract settles.
+    continue-on-error: true
+    env:
+      IMAGE_MANIFEST: /tmp/image-manifest.json
+      GH_TOKEN: ${{ github.token }}
+    shell: bash
+    run: bash "$GITHUB_WORKSPACE/test/e2e/router-acme.sh"
+
   - name: summary
     if: always()
     shell: bash
@@ -624,9 +636,9 @@ runs:
     run: |
       set +e
       cleanup_failed=0
-      kubectl -n "$NS" delete vm "$VM" --ignore-not-found --wait=true --timeout=120s || cleanup_failed=1
-      kubectl -n "$NS" delete secret "$VM-opkey" "$VM-cloudinit" --ignore-not-found || cleanup_failed=1
-      kubectl -n "$NS" delete pvc "$VM-scratch" --ignore-not-found --wait=false || cleanup_failed=1
+      kubectl -n "$NS" delete vm "$VM" "$VM-acme" --ignore-not-found --wait=true --timeout=120s || cleanup_failed=1
+      kubectl -n "$NS" delete secret "$VM-opkey" "$VM-acme-opkey" "$VM-cloudinit" --ignore-not-found || cleanup_failed=1
+      kubectl -n "$NS" delete pvc "$VM-scratch" "$VM-acme-scratch" --ignore-not-found --wait=false || cleanup_failed=1
       # The helper ignores absent disks and refuses anything not owned by
       # this run, including the shared staged root PVC.
       if [ "$EXACT_IMAGE" = true ]; then

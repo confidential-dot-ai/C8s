@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,9 +22,12 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	sigsyaml "sigs.k8s.io/yaml"
 
 	"github.com/confidential-dot-ai/c8s/internal/helmchart"
 	"github.com/confidential-dot-ai/c8s/internal/webhook"
+	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 var errTestResolve = errors.New("simulated resolve failure")
@@ -43,6 +48,46 @@ func TestOperatorKeysPreflight(t *testing.T) {
 	// -f supplied → operator owns cds.operatorKeys in their values file; no gate.
 	if warn, err := operatorKeysPreflight("", []string{"custom.yaml"}, false); err != nil || warn != "" {
 		t.Fatalf("-f supplied: want no error/warn, got warn=%q err=%v", warn, err)
+	}
+}
+
+func TestRouteSourcePreflight(t *testing.T) {
+	dir := t.TempDir()
+	file := func(name, body string) string {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	optIn := file("opt-in.yaml", "router:\n  routing:\n    allowUnpinnedCDS: true\n")
+	optOut := file("opt-out.yaml", "router:\n  routing:\n    allowUnpinnedCDS: false\n")
+	for _, tc := range []struct {
+		name               string
+		measurements       []string
+		measurementsConfig string
+		operatorKeys       string
+		values             []string
+		wantErr            bool
+	}{
+		{name: "nothing pinned", wantErr: true},
+		{name: "--measurements", measurements: []string{"ab"}},
+		{name: "--image-policy-file", measurementsConfig: "server.json"},
+		{name: "--operator-keys", operatorKeys: "operator-pub.pem"},
+		{name: "opt-in", values: []string{optIn}},
+		{name: "later file opts out", values: []string{optIn, optOut}, wantErr: true},
+		{name: "cds.measurements", values: []string{file("m.yaml", "cds:\n  measurements: [ab]\n")}},
+		{name: "empty cds.measurements", values: []string{file("e.yaml", "cds:\n  measurements: []\n")}, wantErr: true},
+		{name: "cds.operatorKeys", values: []string{file("k.yaml", "cds:\n  operatorKeys: pem\n")}},
+		{name: "router disabled", values: []string{file("r.yaml", "router:\n  enabled: false\n")}},
+		{name: "baked node", values: []string{file("b.yaml", "node:\n  baked: true\n")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := routeSourcePreflight(tc.measurements, tc.measurementsConfig, tc.operatorKeys, tc.values)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("routeSourcePreflight() = %v, want error %v", err, tc.wantErr)
+			}
+		})
 	}
 }
 
@@ -330,7 +375,8 @@ func TestValidateWorkloadAdoptionFlags(t *testing.T) {
 	}{
 		{name: "no ref is valid", wait: false},
 		{name: "adopt in a separate namespace is valid", releaseNS: "c8s-system", refs: []string{"router=workloads/deployment/vllm"}, wait: true},
-		{name: "ref rejects release namespace", releaseNS: "c8s-system", refs: []string{"router=c8s-system/deployment/vllm"}, wait: true, wantErr: []string{"--workload-ref", "release namespace", "excluded"}},
+		{name: "ref rejects release namespace", releaseNS: "c8s-system", refs: []string{"router=c8s-system/deployment/vllm"}, wait: true, wantErr: []string{"--workload-ref", "c8s-system", "excluded"}},
+		{name: "ref rejects the router namespace", releaseNS: "c8s-system", refs: []string{"router=c8s-router/deployment/vllm"}, wait: true, wantErr: []string{"--workload-ref", workloadclaims.RouterNamespace, "excluded"}},
 		{name: "ref requires wait", releaseNS: "c8s-system", refs: []string{"router=workloads/deployment/vllm"}, wait: false, wantErr: []string{"--workload-ref", "--wait=true"}},
 	}
 	for _, tt := range tests {
@@ -358,9 +404,8 @@ func TestValidateWorkloadAdoptionFlags(t *testing.T) {
 	}
 }
 
-// TestUpstreamAddress drives the derivation buildValueArgs uses to set
-// router.upstream.address, so it guards the address the chart receives against
-// divergence from the RunE's --upstream validation. The port comes from the
+// TestUpstreamAddress drives the derivation behind the --upstream route
+// backend address and the --upstream validation. The port comes from the
 // selected ref's :<port> suffix, not a separate flag.
 func TestUpstreamAddress(t *testing.T) {
 	tests := []struct {
@@ -527,7 +572,7 @@ func TestWorkloadPodTemplateImages(t *testing.T) {
 		t.Fatalf("workloadPodTemplate: %v", err)
 	}
 	got := podTemplateImages(template)
-	want := []string{"ghcr.io/acme/init:v1", "ghcr.io/acme/router:v1"}
+	want := podImages{Init: []string{"ghcr.io/acme/init:v1"}, Main: []string{"ghcr.io/acme/router:v1"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("images = %v, want %v", got, want)
 	}
@@ -543,55 +588,356 @@ func TestWorkloadPodTemplateImages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("workloadPodTemplate crd: %v", err)
 	}
-	if got, want := podTemplateImages(template), []string{"ghcr.io/acme/worker:v3"}; !reflect.DeepEqual(got, want) {
+	if got, want := podTemplateImages(template), (podImages{Main: []string{"ghcr.io/acme/worker:v3"}}); !reflect.DeepEqual(got, want) {
 		t.Fatalf("crd images = %v, want %v", got, want)
 	}
 }
 
-func TestBuildWorkloadImageArgsAddsNRIAllowlistDigests(t *testing.T) {
-	resolve := func(ref string) (string, error) {
-		switch ref {
-		case "ghcr.io/acme/router:v1":
-			return "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", nil
-		case "ghcr.io/acme/engine:v2":
-			return "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", nil
-		}
-		t.Fatalf("unexpected ref resolved: %q", ref)
-		return "", nil
-	}
-	got, err := buildWorkloadImageArgs([]string{"upgrade"}, []string{
-		"ghcr.io/acme/router:v1",
-		"ghcr.io/acme/engine:v2",
-		"ghcr.io/acme/router:v1",
-		"busybox@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-	}, resolve)
-	if err != nil {
-		t.Fatalf("buildWorkloadImageArgs: %v", err)
-	}
-	entry := func(name, digest, ref string) []string {
-		p := "nriImagePolicy.bootstrapAllowlist.workloads." + name + "."
-		return []string{
-			"--set-string", p + "label=" + ref,
-			"--set-string", p + "containers[0].digest=" + digest,
-			"--set-string", p + "containers[0].image=" + ref,
-			"--set-string", p + "containers[0].command.policy=any",
-			"--set-string", p + "containers[0].args.policy=any",
-		}
-	}
+func TestBuildWorkloadImageArgsWritesOneEntryPerWorkload(t *testing.T) {
 	const (
 		dA = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 		dB = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 		dC = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 	)
-	want := []string{"upgrade"}
-	want = append(want, entry("engine-aaaaaaaaaaaa", dA, "ghcr.io/acme/engine@"+dA)...)
-	want = append(want, entry("router-bbbbbbbbbbbb", dB, "ghcr.io/acme/router@"+dB)...)
-	want = append(want, entry("busybox-cccccccccccc", dC, "docker.io/library/busybox@"+dC)...)
+	resolve := func(ref string) (string, error) {
+		switch ref {
+		case "ghcr.io/acme/router:v1", "ghcr.io/acme/router:latest":
+			return dB, nil
+		case "ghcr.io/acme/engine:v2":
+			return dA, nil
+		}
+		t.Fatalf("unexpected ref resolved: %q", ref)
+		return "", nil
+	}
+	scratch := corev1.VolumeMount{Name: "scratch", MountPath: "/scratch/"}
+	got, entries, err := buildWorkloadImageArgs([]string{"upgrade"}, []adoptedWorkload{
+		{
+			workloadAdoption: workloadAdoption{cwID: "infer", ref: workloadRef{kind: "deployment", name: "vllm", namespace: "ws"}},
+			template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
+				Volumes:        []corev1.Volume{{Name: "scratch", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{Medium: corev1.StorageMediumMemory}}}},
+				InitContainers: []corev1.Container{{Name: "init", Image: "busybox@" + dC}},
+				// Two tags of one image are one container.
+				Containers: []corev1.Container{
+					{Name: "router", Image: "ghcr.io/acme/router:v1"},
+					{Name: "engine", Image: "ghcr.io/acme/engine:v2", VolumeMounts: []corev1.VolumeMount{scratch}},
+					{Name: "router2", Image: "ghcr.io/acme/router:latest"},
+				},
+			}},
+		},
+	}, "", io.Discard, resolve)
+	if err != nil {
+		t.Fatalf("buildWorkloadImageArgs: %v", err)
+	}
+	container := func(field string, i int, digest, ref string, mounts ...string) []string {
+		p := fmt.Sprintf("nriImagePolicy.bootstrapAllowlist.workloads.infer.%s[%d].", field, i)
+		policy := "exact"
+		if len(mounts) == 0 {
+			policy = "deny"
+		}
+		args := []string{
+			"--set-string", p + "digest=" + digest,
+			"--set-string", p + "image=" + ref,
+			"--set-string", p + "command.policy=any",
+			"--set-string", p + "args.policy=any",
+			"--set-string", p + "env.policy=any",
+			"--set-string", p + "mounts.policy=" + policy,
+		}
+		for i, m := range mounts {
+			r := fmt.Sprintf("%smounts.rules[%d].", p, i)
+			args = append(args, "--set-string", r+"destination="+m, "--set-string", r+"kind=emptyDir")
+		}
+		return args
+	}
+	want := []string{"upgrade", "--set-string", "nriImagePolicy.bootstrapAllowlist.workloads.infer.label=ws/deployment/vllm"}
+	want = append(want, container("containers", 0, dB, "ghcr.io/acme/router@"+dB)...)
+	want = append(want, container("containers", 1, dA, "ghcr.io/acme/engine@"+dA, "/scratch")...)
+	want = append(want, container("initContainers", 0, dC, "docker.io/library/busybox@"+dC)...)
 	assertArgsEqual(t, got, want)
+	if slices.ContainsFunc(got, func(a string) bool { return strings.HasSuffix(a, "mounts.policy=any") }) {
+		t.Fatal("an adopted workload's entry admits any mount")
+	}
+	// install hands these args to helm as a values file, so they must build
+	// one, and the entry in it must be one CDS accepts.
+	tree, err := valueArgsToTree(got[1:])
+	if err != nil {
+		t.Fatalf("valueArgsToTree: %v", err)
+	}
+	workloads, _ := nestedMap(tree, "nriImagePolicy", "bootstrapAllowlist", "workloads")
+	raw, err := json.Marshal(workloads["infer"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := pkgallowlist.ParseWorkloadJSON(raw)
+	if err != nil {
+		t.Fatalf("ParseWorkloadJSON(%s) = %v", raw, err)
+	}
+	i := slices.IndexFunc(w.Containers, func(c pkgallowlist.Container) bool { return c.Digest.String() == dA })
+	if i < 0 {
+		t.Fatalf("parsed entry %+v lacks the engine image", w)
+	}
+	if m := w.Containers[i].Mounts; m.Policy != pkgallowlist.PolicyExact || len(m.Rules) != 1 {
+		t.Fatalf("engine mounts = %+v, want exact /scratch", m)
+	}
+	e := entries["infer"]
+	if got, want := normalized(t, e.workload), normalized(t, *w); got != want {
+		t.Fatalf("entries[infer].workload = %s, want the entry helm renders, %s", got, want)
+	}
+	// The pod CDS sees runs every main, router twice; the init has exited.
+	var running []string
+	for _, r := range e.pod {
+		running = append(running, r.Digest)
+	}
+	if want := []string{dB, dA, dB}; !slices.Equal(running, want) {
+		t.Fatalf("entries[infer].pod = %v, want %v", running, want)
+	}
+	if !w.Diff(e.pod).Describes() {
+		t.Fatalf("entry %+v does not describe its pod %+v", *w, e.pod)
+	}
+}
+
+// TestBuildWorkloadImageArgsKeepsRoles: one image under two mount sets is
+// two declarations, an init container keeps its role, and a native sidecar
+// runs in the pod CDS matches.
+func TestBuildWorkloadImageArgsKeepsRoles(t *testing.T) {
+	busybox := "busybox@sha256:" + strings.Repeat("b", 64)
+	proxy := "proxy@sha256:" + strings.Repeat("e", 64)
+	always := corev1.ContainerRestartPolicyAlways
+	tmpl := corev1.PodTemplateSpec{Spec: corev1.PodSpec{
+		Volumes: []corev1.Volume{{Name: "scratch", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{Medium: corev1.StorageMediumMemory}}}},
+		InitContainers: []corev1.Container{
+			{Name: "prep", Image: busybox, VolumeMounts: []corev1.VolumeMount{{Name: "scratch", MountPath: "/scratch"}}},
+			{Name: "proxy", Image: proxy, RestartPolicy: &always},
+		},
+		Containers: []corev1.Container{{Name: "app", Image: busybox}},
+	}}
+	_, entries, err := buildWorkloadImageArgs(nil, []adoptedWorkload{{workloadAdoption: workloadAdoption{cwID: "web"}, template: tmpl}}, "", io.Discard, nil)
+	if err != nil {
+		t.Fatalf("buildWorkloadImageArgs() = %v, want an entry", err)
+	}
+	e := entries["web"]
+	if len(e.workload.Containers) != 1 || len(e.workload.InitContainers) != 2 || len(e.workload.InitContainers[0].Mounts.Rules) != 1 {
+		t.Fatalf("entry = %+v, want main busybox, init busybox with /scratch, init proxy", e.workload)
+	}
+	if len(e.pod) != 2 || e.pod[1].Digest != "sha256:"+strings.Repeat("e", 64) {
+		t.Fatalf("pod = %+v, want app and the proxy sidecar", e.pod)
+	}
+	al := &pkgallowlist.Allowlist{Workloads: map[string]pkgallowlist.Workload{"web": e.workload}}
+	if name, _, err := al.MatchWorkload(e.pod); err != nil || name != "web" {
+		t.Fatalf("MatchWorkload(pod) = %q, %v, want web", name, err)
+	}
+}
+
+// templateRunning is a pod template with one container running image.
+func templateRunning(image string) corev1.PodTemplateSpec {
+	return corev1.PodTemplateSpec{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "app", Image: image}}}}
+}
+
+// TestBuildWorkloadImageArgsRefusesUnmodelledMounts: when the --upstream
+// target mounts what an exact rule cannot admit, or what the host controls,
+// install writes no entry for it.
+func TestBuildWorkloadImageArgsRefusesUnmodelledMounts(t *testing.T) {
+	withVolume := func(v corev1.VolumeSource) corev1.PodTemplateSpec {
+		tmpl := templateRunning("busybox@sha256:" + strings.Repeat("c", 64))
+		tmpl.Spec.Volumes = []corev1.Volume{{Name: "v", VolumeSource: v}}
+		tmpl.Spec.Containers[0].VolumeMounts = []corev1.VolumeMount{{Name: "v", MountPath: "/app"}}
+		return tmpl
+	}
+	secrets := templateRunning("busybox@sha256:" + strings.Repeat("c", 64))
+	secrets.Annotations = map[string]string{webhook.AnnotationSecrets: "db"}
+	subPath := withVolume(corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{Medium: corev1.StorageMediumMemory}})
+	subPath.Spec.Containers[0].VolumeMounts[0].SubPath = "app"
+	for name, tmpl := range map[string]corev1.PodTemplateSpec{
+		"memory emptyDir subPath": subPath,
+		"hostPath":                withVolume(corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: "/srv"}}),
+		"configMap":               withVolume(corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{}}),
+		"disk emptyDir":           withVolume(corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}),
+		"secrets":                 secrets,
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, _, err := buildWorkloadImageArgs(nil, []adoptedWorkload{{workloadAdoption: workloadAdoption{cwID: "web"}, template: tmpl}}, "web", io.Discard, nil)
+			if err == nil || !strings.Contains(err.Error(), `write one named "web" yourself`) {
+				t.Fatalf("buildWorkloadImageArgs() = %v, want the refusal", err)
+			}
+		})
+	}
+}
+
+// TestBuildWorkloadImageArgsUnmodelledMountsOffUpstream: an adopted workload
+// that is not the --upstream target keeps an entry admitting any mounts, which
+// the node admits with its injected certificate volume, with a warning, and
+// the same workload as the target is refused.
+func TestBuildWorkloadImageArgsUnmodelledMountsOffUpstream(t *testing.T) {
+	tmpl := templateRunning("busybox@sha256:" + strings.Repeat("c", 64))
+	tmpl.Spec.Volumes = []corev1.Volume{{Name: "v", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{}}}}
+	tmpl.Spec.Containers[0].VolumeMounts = []corev1.VolumeMount{{Name: "v", MountPath: "/app"}}
+	adopted := []adoptedWorkload{
+		{workloadAdoption: workloadAdoption{cwID: "web"}, template: tmpl},
+		{workloadAdoption: workloadAdoption{cwID: "infer"}, template: templateRunning("example/infer@sha256:" + strings.Repeat("d", 64))},
+	}
+	var warn bytes.Buffer
+	args, entries, err := buildWorkloadImageArgs(nil, adopted, "infer", &warn, nil)
+	if err != nil {
+		t.Fatalf("buildWorkloadImageArgs(upstream infer) = %v, want nil", err)
+	}
+	if !strings.Contains(warn.String(), "warning: adopted workload web") || !strings.Contains(warn.String(), "a route to it trusts those mounts") {
+		t.Fatalf("warning = %q, want one warning that a route to web trusts its mounts", warn.String())
+	}
+	if _, ok := entries["web"]; ok {
+		t.Fatalf("entries = %v, want no modelled entry for web", slices.Sorted(maps.Keys(entries)))
+	}
+	if _, ok := entries["infer"]; !ok {
+		t.Fatalf("entries = %v, want infer", slices.Sorted(maps.Keys(entries)))
+	}
+	web := "nriImagePolicy.bootstrapAllowlist.workloads.web.containers[0]."
+	if !slices.Contains(args, web+"digest=sha256:"+strings.Repeat("c", 64)) || !slices.Contains(args, web+"mounts.policy=any") {
+		t.Fatalf("args = %q, want a web container admitting any mounts", args)
+	}
+	if _, _, err := buildWorkloadImageArgs(nil, adopted, "web", io.Discard, nil); err == nil || !strings.Contains(err.Error(), `write one named "web" yourself`) {
+		t.Fatalf("buildWorkloadImageArgs(upstream web) = %v, want the refusal", err)
+	}
+}
+
+// TestAdoptMeFixtureGetsAnEntry: the kind harness's adopted workload is one
+// install can write an entry for, so the fixture does not depend on the
+// any-mounts floor to be admitted and named.
+func TestAdoptMeFixtureGetsAnEntry(t *testing.T) {
+	data, err := os.ReadFile("../../test/integration/cluster/manifests/adopt-me.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var deployment appsv1.Deployment
+	for _, doc := range strings.Split(string(data), "\n---\n") {
+		if strings.Contains(doc, "kind: Deployment") {
+			if err := sigsyaml.Unmarshal([]byte(doc), &deployment); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	raw, err := json.Marshal(deployment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl, err := workloadPodTemplate(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adoption := workloadAdoption{cwID: "web", ref: workloadRef{namespace: "adopted", kind: "deployment", name: "web"}}
+	got, entries, err := buildWorkloadImageArgs(nil, []adoptedWorkload{{workloadAdoption: adoption, template: tmpl}}, "", io.Discard, nil)
+	if err != nil {
+		t.Fatalf("buildWorkloadImageArgs(adopt-me) = %v", err)
+	}
+	if !slices.Contains(got, "nriImagePolicy.bootstrapAllowlist.workloads.web.containers[0].mounts.policy=deny") || slices.ContainsFunc(got, func(arg string) bool {
+		return strings.Contains(arg, "mounts.rules[")
+	}) {
+		t.Fatalf("adopt-me entry = %v, want empty mounts", got)
+	}
+	// The NRI plugin's tests match this entry against the mounts it observes
+	// on the injected container.
+	entry, err := json.MarshalIndent(entries["web"].workload, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const golden = "../../test/integration/cluster/testdata/adopt-me-entry.json"
+	if os.Getenv("C8S_UPDATE_GOLDEN") == "1" {
+		if err := os.WriteFile(golden, append(entry, '\n'), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want, err := os.ReadFile(golden)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(want) != string(entry)+"\n" {
+		t.Fatalf("adopt-me entry = %s, want %s (C8S_UPDATE_GOLDEN=1 rewrites it)", entry, want)
+	}
+}
+
+func TestCheckAdoptedEntries(t *testing.T) {
+	const (
+		dA = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		dB = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+		dN = "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+	)
+	pod := func(digests ...string) corev1.PodTemplateSpec {
+		var tmpl corev1.PodTemplateSpec
+		for i, d := range digests {
+			tmpl.Spec.Containers = append(tmpl.Spec.Containers, corev1.Container{Name: fmt.Sprint("c", i), Image: "example/app@" + d})
+		}
+		return tmpl
+	}
+	withInit := func(tmpl corev1.PodTemplateSpec, digest string) corev1.PodTemplateSpec {
+		tmpl.Spec.InitContainers = []corev1.Container{{Name: "init", Image: "example/init@" + digest}}
+		return tmpl
+	}
+	withScratch := func(tmpl corev1.PodTemplateSpec) corev1.PodTemplateSpec {
+		tmpl.Spec.Volumes = []corev1.Volume{{Name: "scratch", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{Medium: corev1.StorageMediumMemory}}}}
+		tmpl.Spec.Containers[0].VolumeMounts = []corev1.VolumeMount{{Name: "scratch", MountPath: "/scratch"}}
+		return tmpl
+	}
+	image := func(digest string) map[string]any {
+		return map[string]any{"repository": "example/component", "digest": digest}
+	}
+	values := func(workloads map[string]any, extra map[string]any) map[string]any {
+		if workloads == nil {
+			workloads = map[string]any{}
+		}
+		v := map[string]any{
+			"router":         map[string]any{"enabled": true, "nginx": map[string]any{"image": map[string]any{"repository": "nginxinc/nginx-unprivileged", "digest": dN}}},
+			"nriImagePolicy": map[string]any{"bootstrapAllowlist": map[string]any{"deriveComponents": true, "workloads": workloads}},
+		}
+		return helmchart.MergeValues(v, extra)
+	}
+	anyContainer := func(digest string) map[string]any {
+		return map[string]any{"digest": digest, "command": map[string]any{"policy": "any"}, "args": map[string]any{"policy": "any"}, "mounts": map[string]any{"policy": "any"}}
+	}
+	perDigest := map[string]any{"a": map[string]any{"containers": []any{anyContainer(dA)}}}
+	tests := []struct {
+		name    string
+		adopt   map[string]corev1.PodTemplateSpec
+		values  map[string]any
+		wantErr string
+	}{
+		{"multi-container pod beside per-digest entries", map[string]corev1.PodTemplateSpec{"web": pod(dA, dB)}, values(perDigest, nil), ""},
+		{"single image with an unconstrained per-digest entry", map[string]corev1.PodTemplateSpec{"web": pod(dA)}, values(perDigest, nil), "entries a also admit"},
+		{"argv-pinned -f entry counts, as on CDS", map[string]corev1.PodTemplateSpec{"web": pod(dA)},
+			values(map[string]any{"a": map[string]any{"containers": []any{map[string]any{"digest": dA, "command": map[string]any{"policy": "exact", "argv": []any{"/serve"}}, "mounts": map[string]any{"policy": "any"}}}}}, nil), "entries a also admit"},
+		{"own -f entry is replaced", map[string]corev1.PodTemplateSpec{"web": pod(dA)}, values(map[string]any{"web": map[string]any{"containers": []any{anyContainer(dA)}}}, nil), ""},
+		{"two adoptions, one image set", map[string]corev1.PodTemplateSpec{"web": pod(dA, dB), "api": pod(dA, dB)}, values(nil, nil), "entries web also admit"},
+		{"init image does not make a pod ambiguous", map[string]corev1.PodTemplateSpec{"web": withInit(pod(dA), dB), "api": pod(dB)}, values(nil, nil), ""},
+		{"same image, different mounts", map[string]corev1.PodTemplateSpec{"web": pod(dA), "api": withScratch(pod(dA))}, values(nil, nil), ""},
+		{"component image", map[string]corev1.PodTemplateSpec{"web": pod(dA)}, values(nil, map[string]any{"cds": map[string]any{"image": image(dA)}}), ""},
+		{"router nginx image", map[string]corev1.PodTemplateSpec{"web": pod(dN)}, values(nil, nil), ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var adopted []adoptedWorkload
+			for _, id := range slices.Sorted(maps.Keys(tc.adopt)) {
+				adopted = append(adopted, adoptedWorkload{workloadAdoption: workloadAdoption{cwID: id}, template: tc.adopt[id]})
+			}
+			args, entries, err := buildWorkloadImageArgs(nil, adopted, "", io.Discard, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			computed, err := valueArgsToTree(args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = checkAdoptedEntries(entries, helmchart.MergeValues(tc.values, computed))
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("checkAdoptedEntries() = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("checkAdoptedEntries() = %v, want an error containing %q", err, tc.wantErr)
+			}
+		})
+	}
 }
 
 func TestBuildWorkloadImageArgsFailsClosedOnResolveError(t *testing.T) {
-	_, err := buildWorkloadImageArgs(nil, []string{"ghcr.io/acme/router:v1"}, func(string) (string, error) {
+	_, _, err := buildWorkloadImageArgs(nil, []adoptedWorkload{{template: templateRunning("ghcr.io/acme/router:v1")}}, "", io.Discard, func(string) (string, error) {
 		return "", errTestResolve
 	})
 	if err == nil {
@@ -604,7 +950,7 @@ func TestBuildWorkloadImageArgsFailsClosedOnResolveError(t *testing.T) {
 // since the NRI allowlist keys on sha256 only.
 func TestBuildWorkloadImageArgsRejectsNonSHA256Digest(t *testing.T) {
 	sha512Image := "busybox@sha512:ee26b0dd4af7e749aa1a8ee3c10ae9923f618980772e473f8819a5d4940e0db27ac185f8a0e1d5f84f88bc887fd67b143732c304cc5fa9ad8e6f57f50028a8ff"
-	_, err := buildWorkloadImageArgs(nil, []string{sha512Image}, func(string) (string, error) {
+	_, _, err := buildWorkloadImageArgs(nil, []adoptedWorkload{{template: templateRunning(sha512Image)}}, "", io.Discard, func(string) (string, error) {
 		t.Fatal("resolve must not run for an already-digested image")
 		return "", nil
 	})
@@ -942,13 +1288,10 @@ func TestAppendCvmModeInstallArgsSetsAttestationApiValue(t *testing.T) {
 			"--set", "attestationApi.teeDevices.tpm=" + tpm,
 		}
 		// Any TDX shape — native (ConfigFS TSM) or Azure vTPM (az-tdx) —
-		// propagates the CPU TEE to the components that name their armTLS
-		// platform, or CDS parses the TDX quote as an SNP report.
+		// propagates the CPU TEE to CDS, which names its armTLS platform, or
+		// CDS parses the TDX quote as an SNP report.
 		if platform == "tdx" {
-			out = append(out,
-				"--set-string", "cds.armtlsPlatform=tdx",
-				"--set-string", "armtlsMesh.platform=tdx",
-			)
+			out = append(out, "--set-string", "cds.armtlsPlatform=tdx")
 		}
 		// The attest sidecar's platform names the evidence shape the sidecar
 		// requests from the attestation-api: az-snp/az-tdx under aks (Azure
@@ -976,7 +1319,6 @@ func TestAppendCvmModeInstallArgsSetsAttestationApiValue(t *testing.T) {
 		// node: the node image bakes attestation-api + nri-image-policy, so the
 		// attestation-api copy is skipped and the NRI installer switches to its
 		// baked form — the only path that reaches the baked plugin's CDS pins.
-		// armtlsMesh is not baked, stays on.
 		if mode == "bare-metal" {
 			out = append(out,
 				"--set", "attestationApi.enabled=false",
@@ -1033,18 +1375,16 @@ func TestAppendCvmModeInstallArgsMeasurements(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	for _, want := range []string{
-		"cds.measurements[0]=" + m0, "armtlsMesh.measurements[0]=" + m0,
-		"cds.measurements[1]=" + m1, "armtlsMesh.measurements[1]=" + m1,
+		"cds.measurements[0]=" + m0,
+		"cds.measurements[1]=" + m1,
 	} {
 		if !slices.Contains(got, want) {
 			t.Errorf("args missing %q; got %v", want, got)
 		}
 	}
 	// The blank must not produce an empty index-2 pin.
-	for _, bad := range []string{"cds.measurements[2]=", "armtlsMesh.measurements[2]="} {
-		if slices.Contains(got, bad) {
-			t.Errorf("blank entry leaked an empty pin %q; got %v", bad, got)
-		}
+	if bad := "cds.measurements[2]="; slices.Contains(got, bad) {
+		t.Errorf("blank entry leaked an empty pin %q; got %v", bad, got)
 	}
 }
 
@@ -1077,7 +1417,6 @@ func TestAppendCvmModeInstallArgsAcceptsAksWithTdx(t *testing.T) {
 		"attestationApi.teeDevices.tpm=true",
 		"attestationApi.teeDevices.tdxGuest=false",
 		"cds.armtlsPlatform=tdx",
-		"armtlsMesh.platform=tdx",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("aks+tdx args missing %q; got %v", want, got)
@@ -1904,8 +2243,8 @@ func TestAppendCvmModeInstallArgsRTMRs(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	for _, want := range []string{
-		"cds.rtmrs[0]=1=" + r1, "armtlsMesh.rtmrs[0]=1=" + r1,
-		"cds.rtmrs[1]=2=" + r2, "armtlsMesh.rtmrs[1]=2=" + r2,
+		"cds.rtmrs[0]=1=" + r1,
+		"cds.rtmrs[1]=2=" + r2,
 	} {
 		if !slices.Contains(got, want) {
 			t.Errorf("args missing %q; got %v", want, got)

@@ -10,12 +10,14 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
@@ -213,9 +215,8 @@ func TestRunServesAuthenticatedBootstrap(t *testing.T) {
 				t.Fatal(err)
 			}
 			addr := ln.Addr().String()
-			_ = ln.Close()
 			cfg := Config{
-				ListenAddr: addr, AttestationAPIURL: stub.URL(), Platform: string(platform),
+				ListenAddr: addr, listener: ln, AttestationAPIURL: stub.URL(), Platform: string(platform),
 				ClientCACert: clientCert, ClientCAKey: clientKey, ServerCACert: serverCert,
 				CertTTL: defaultCertTTL, CertOrg: defaultCertOrg, CertCN: defaultCertCN,
 				LogCertTTL: defaultLogCertTTL, LogCertOrg: defaultLogCertOrg, LogCertCN: defaultLogCertCN,
@@ -290,6 +291,37 @@ func TestRunServesAuthenticatedBootstrap(t *testing.T) {
 			detail, _ := io.ReadAll(failed.Body)
 			if failed.StatusCode != http.StatusBadGateway || strings.TrimSpace(string(detail)) != "attestation unavailable" {
 				t.Errorf("upstream failure response = %d %s", failed.StatusCode, detail)
+			}
+		})
+	}
+}
+
+// The response lists the journal as read after the quote, and omits it when
+// the node journals nothing.
+func TestAttestCarriesMeasuredPolicies(t *testing.T) {
+	p := "sha256:" + strings.Repeat("1", 64)
+	for _, tc := range []struct {
+		name, journal string
+		want          []string
+	}{
+		{name: "journal", journal: p + "\n", want: []string{p}},
+		{name: "no journal"},
+		{name: "journal over the cap", journal: distinctJournal(armtls.MaxRuntimeExtensions + 1)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, signer := newAttestHandler(t)
+			h.measuredPolicies = armtls.NewJournal(writeJournal(t, tc.journal))
+			h.attester = evidenceGeneratorFunc(func(context.Context, []byte) (teetypes.AttestationEvidence, error) {
+				return teetypes.AttestationEvidence{Platform: teetypes.PlatformTDX, Evidence: json.RawMessage(`{}`)}, nil
+			})
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, signedAttestRequest(t, context.Background(), AttestPath, attestBody(t, 32), signer))
+			var got AttestResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || rec.Code != http.StatusOK {
+				t.Fatalf("response = %d %s, %v", rec.Code, rec.Body, err)
+			}
+			if !slices.Equal(got.RuntimeExtensions, tc.want) {
+				t.Errorf("runtime_extensions = %v, want %v", got.RuntimeExtensions, tc.want)
 			}
 		})
 	}

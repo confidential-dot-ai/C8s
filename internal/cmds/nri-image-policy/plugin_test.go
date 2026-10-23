@@ -24,12 +24,16 @@ func newTestPlugin(cfg *config) *plugin {
 	if err := validateLabelRules(cfg.Policy.LabelRules); err != nil {
 		panic(err)
 	}
+	if cfg.Mesh == nil {
+		cfg.Mesh = meshRoles()
+	}
 	return &plugin{
 		cfg:        cfg,
 		policy:     newPolicyStore(cfg.Allowlist.Base),
 		audit:      audit.NewLogger(),
 		logger:     slog.Default(),
 		containerd: &fakeContainerd{},
+		mesh:       newMeshGate(*cfg.Mesh, slog.Default()),
 	}
 }
 
@@ -159,15 +163,19 @@ func TestPodSandboxEventsFeedInventory(t *testing.T) {
 	}
 }
 
-// Pod-sandbox events are subscribed exactly when the inventory is enabled.
-func TestConfigureSubscribesPodSandboxEventsWithInventory(t *testing.T) {
+// Pod-sandbox events carry the gate's protection, and the container
+// lifecycle the inventory needs is subscribed exactly when it is enabled.
+func TestConfigureSubscribesContainerLifecycleWithInventory(t *testing.T) {
 	p := newTestPlugin(&config{})
 	mask, err := p.Configure(context.Background(), "", "containerd", "2.0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if mask.IsSet(api.Event_RUN_POD_SANDBOX) || mask.IsSet(api.Event_REMOVE_POD_SANDBOX) {
-		t.Fatal("pod-sandbox events subscribed without an inventory")
+	if !mask.IsSet(api.Event_RUN_POD_SANDBOX) || !mask.IsSet(api.Event_REMOVE_POD_SANDBOX) {
+		t.Fatal("pod-sandbox events not subscribed")
+	}
+	if mask.IsSet(api.Event_STOP_CONTAINER) || mask.IsSet(api.Event_REMOVE_CONTAINER) {
+		t.Fatal("container stop and removal subscribed without an inventory")
 	}
 
 	p.inventory = newAdmissionInventory(t.TempDir())
@@ -175,8 +183,8 @@ func TestConfigureSubscribesPodSandboxEventsWithInventory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !mask.IsSet(api.Event_RUN_POD_SANDBOX) || !mask.IsSet(api.Event_REMOVE_POD_SANDBOX) {
-		t.Fatal("pod-sandbox events not subscribed with the inventory enabled")
+	if !mask.IsSet(api.Event_STOP_CONTAINER) || !mask.IsSet(api.Event_REMOVE_CONTAINER) {
+		t.Fatal("container stop and removal not subscribed with the inventory enabled")
 	}
 }
 
@@ -303,6 +311,7 @@ func TestCreateContainer_Ready_PassesThrough(t *testing.T) {
 		logger:     slog.Default(),
 		policy:     newPolicyStore(nil),
 		containerd: &fakeContainerd{},
+		mesh:       newMeshGate(*meshRoles(), discardLogger()),
 	}
 	p.SetReady()
 
@@ -335,7 +344,7 @@ func TestCreateContainer_Ready_PassesThrough(t *testing.T) {
 // a sidecar name gets the RO mount, by design — the sockets behind it bind
 // callers by kernel peer credentials, not by who holds the mount.
 func TestCreateContainer_MountsSocketDirIntoInjectedSidecars(t *testing.T) {
-	const socketDir = "/var/run/nri-image-policy"
+	const socketDir = "/run/nri-image-policy"
 	for name, ready := range map[string]bool{"ready": true, "initializing": false} {
 		t.Run(name, func(t *testing.T) {
 			p := newTestPlugin(&config{
@@ -399,7 +408,7 @@ func TestCreateContainer_NoSocketDirMountOutsideInjectedSidecars(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			cfg := &config{Policy: policyConfig{Mode: ModeAudit}}
 			if tc.inventory {
-				cfg.WorkloadClaims = workloadClaimsConfig{SocketDir: "/var/run/nri-image-policy"}
+				cfg.WorkloadClaims = workloadClaimsConfig{SocketDir: "/run/nri-image-policy"}
 			}
 			p := newTestPlugin(cfg)
 			if tc.inventory {
@@ -427,7 +436,7 @@ func TestCreateContainer_DeniedContainerGetsNoAdjustment(t *testing.T) {
 			p := newTestPlugin(&config{
 				Allowlist:      allowlistConfig{Pull: pullConfig{URL: "http://wl.local:8080", Timeout: 30}},
 				Policy:         policyConfig{Mode: ModeFailClosed, DenyMissingAnnotation: true},
-				WorkloadClaims: workloadClaimsConfig{SocketDir: "/var/run/nri-image-policy"},
+				WorkloadClaims: workloadClaimsConfig{SocketDir: "/run/nri-image-policy"},
 			})
 			p.inventory = newAdmissionInventory(t.TempDir())
 			if ready {
@@ -701,6 +710,9 @@ func newCachedPlugin(cfg *config, wl *allowlist.Allowlist) (*plugin, *policyStor
 	if err := validateLabelRules(cfg.Policy.LabelRules); err != nil {
 		panic(err)
 	}
+	if cfg.Mesh == nil {
+		cfg.Mesh = meshRoles()
+	}
 	store := newPolicyStore(cfg.Allowlist.Base)
 	store.apply(wl, 1)
 	p := &plugin{
@@ -709,6 +721,7 @@ func newCachedPlugin(cfg *config, wl *allowlist.Allowlist) (*plugin, *policyStor
 		audit:      audit.NewLogger(),
 		logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 		containerd: &fakeContainerd{},
+		mesh:       newMeshGate(*cfg.Mesh, discardLogger()),
 	}
 	return p, store
 }
@@ -1279,6 +1292,7 @@ func basePlugin(t *testing.T) *plugin {
 		audit:      audit.NewLogger(),
 		logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 		containerd: &fakeContainerd{},
+		mesh:       newMeshGate(*meshRoles(), discardLogger()),
 	}
 	p.inventory = newAdmissionInventory("/proc")
 	return p
@@ -1414,10 +1428,12 @@ func TestCheckContainer_NamespaceNeverRescues(t *testing.T) {
 	}
 }
 
-// Pre-Ready the admission decision resolves a tag against the base allowlist, but the
-// inventory record keeps the inline-only contract: no digest is committed
-// without one riding the reference, and the sandbox answer stays closed.
-func TestCreateContainer_NotReady_ResolvesForAdmission_RecordsInlineOnly(t *testing.T) {
+// Pre-Ready the admission decision resolves a tag against the base allowlist,
+// and the inventory record carries that resolved digest. An unresolved record
+// closes the sandbox's answer for the sandbox's life, and the pods that start
+// in this window are the ones a fresh install brings up alongside CDS: they
+// must still be able to prove what they run.
+func TestCreateContainer_NotReady_RecordsTheResolvedDigest(t *testing.T) {
 	p := basePlugin(t) // not ready
 	var resolved []string
 	p.containerd = &fakeContainerd{resolve: func(_ context.Context, ref string) (string, error) {
@@ -1431,18 +1447,22 @@ func TestCreateContainer_NotReady_ResolvesForAdmission_RecordsInlineOnly(t *test
 	if _, _, err := createAndStart(p, context.Background(), pod, ctr); err != nil {
 		t.Fatalf("a tag resolving to the base allowlist should be admitted: %v", err)
 	}
-	if len(resolved) != 3 {
+	if len(resolved) == 0 {
 		t.Fatalf("admission did not resolve the tag: %v", resolved)
 	}
 	rec, ok := p.inventory.containers[ctr.Id]
 	if !ok {
 		t.Fatalf("bootstrap container not recorded: %v", p.inventory.containers)
 	}
-	if rec.digest != "" {
-		t.Fatalf("the bootstrap path resolved a digest, got %q", rec.digest)
+	if rec.digest != pushDigestA {
+		t.Fatalf("the bootstrap path recorded the digest %q, want the resolved %q", rec.digest, pushDigestA)
 	}
-	if _, _, _, err := p.inventory.DigestsForSandbox(pod.Id); err == nil {
-		t.Fatal("an unresolved digest must fail the sandbox answer closed")
+	digests, _, _, err := p.inventory.DigestsForSandbox(pod.Id)
+	if err != nil {
+		t.Fatalf("the sandbox answer must hold: %v", err)
+	}
+	if !slices.Equal(digests, []string{pushDigestA}) {
+		t.Fatalf("sandbox digests = %v, want the resolved %q", digests, pushDigestA)
 	}
 }
 
@@ -1669,6 +1689,9 @@ func TestConfigure_SetsCreateContainerMask(t *testing.T) {
 	want.Set(api.Event_CREATE_CONTAINER)
 	want.Set(api.Event_START_CONTAINER)
 	want.Set(api.Event_VALIDATE_CONTAINER_ADJUSTMENT)
+	want.Set(api.Event_RUN_POD_SANDBOX)
+	want.Set(api.Event_REMOVE_POD_SANDBOX)
+	want.Set(api.Event_UPDATE_CONTAINER)
 	if mask != want {
 		t.Fatalf("mask = %v, want %v", mask, want)
 	}

@@ -185,9 +185,6 @@ func TestSeedStore_FailsClosedOnStoreError(t *testing.T) {
 // reach the store without a restart, and an entry deleted while the seed is
 // unchanged stays deleted.
 func TestFollowSeedAppliesChangedSeed(t *testing.T) {
-	orig := seedRecheckInterval
-	seedRecheckInterval = time.Millisecond
-	t.Cleanup(func() { seedRecheckInterval = orig })
 	store, err := allowlist.OpenInMemory()
 	if err != nil {
 		t.Fatal(err)
@@ -202,29 +199,108 @@ func TestFollowSeedAppliesChangedSeed(t *testing.T) {
 		t.Fatalf("DeleteWorkload(cds) = %t, %v", ok, err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	tick := make(chan time.Time)
 	done := make(chan struct{})
-	go func() { followSeed(ctx, &store, path, applied); close(done) }()
+	go func() { followSeed(ctx, &store, path, applied, tick); close(done) }()
 	t.Cleanup(func() { cancel(); <-done })
+	// tick is unbuffered: a send returns only once the previous check is done.
+	check := func() { tick <- time.Time{}; tick <- time.Time{} }
 
-	time.Sleep(20 * time.Millisecond)
+	check()
 	if doc, _, err := store.LoadAll(); err != nil || len(doc.Workloads) != 0 {
 		t.Fatalf("unchanged seed reapplied: %v, %v", doc.Workloads, err)
 	}
 	if err := os.WriteFile(path, []byte(anySeed(map[string]string{"cds": digestA, "operator-v2": digestB})), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		doc, _, err := store.LoadAll()
+	check()
+	doc, _, err := store.LoadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := doc.Workloads["operator-v2"]; !ok {
+		t.Fatalf("changed seed not applied: %v", doc.Workloads)
+	}
+}
+
+// Without --follow-seed a changed seed is not published: editing the seed's
+// ConfigMap is no substitute for an operator token. A following store on the
+// same file shows when the change would have been applied.
+func TestStartSeedWithoutFollowIgnoresChanges(t *testing.T) {
+	orig := seedRecheckInterval
+	seedRecheckInterval = time.Millisecond
+	t.Cleanup(func() { seedRecheckInterval = orig })
+	open := func() *allowlist.Store {
+		store, err := allowlist.OpenInMemory()
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, ok := doc.Workloads["operator-v2"]; ok {
+		t.Cleanup(func() { _ = store.Close() })
+		return &store
+	}
+	fixed, following := open(), open()
+	path := writeSeed(t, anySeed(map[string]string{"cds": digestA}))
+	ctx, cancel := context.WithCancel(context.Background())
+	fixedDone, err := startSeed(ctx, fixed, path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	followingDone, err := startSeed(ctx, following, path, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cancel()
+		<-fixedDone
+		<-followingDone
+	})
+	_, before, err := fixed.LoadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(anySeed(map[string]string{"cds": digestA, "intruder": digestB})), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		doc, _, err := following.LoadAll()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := doc.Workloads["intruder"]; ok {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("changed seed not applied: %v", doc.Workloads)
+			t.Fatal("the following store never applied the change")
 		}
 		time.Sleep(time.Millisecond)
+	}
+	doc, after, err := fixed.LoadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := doc.Workloads["intruder"]; ok || after != before {
+		t.Errorf("without --follow-seed: workloads %v at version %s, want no intruder at version %s", doc.Workloads, after, before)
+	}
+}
+
+// startSeed's channel closes once a cancelled follower returns, so a caller
+// waiting on it may then close the store.
+func TestStartSeedDoneClosesOnCancel(t *testing.T) {
+	store, err := allowlist.OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	done, err := startSeed(ctx, &store, writeSeed(t, anySeed(map[string]string{"cds": digestA})), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the follower did not stop after its context was cancelled")
 	}
 }

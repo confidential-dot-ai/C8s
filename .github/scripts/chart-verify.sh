@@ -20,22 +20,25 @@ set -euo pipefail
 # arbitrary sha256 placeholders (lint/template only need them to parse).
 common_set=(
   --set image.tag=ci
+  # The default install pins no CDS, which the router refuses without this.
+  --set router.routing.allowUnpinnedCDS=true
   --set attestationApi.image.tag=ci
   --set cds.image.tag=ci
   --set armtlsMesh.image.tag=ci
   --set nriImagePolicy.image.tag=ci
   --set nriImagePolicy.image.digest=sha256:aaaa000000000000000000000000000000000000000000000000000000000000
   --set cds.image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000001
-  # router has no default upstream; a c8s-<id> headless-Service address (what
-  # `c8s install --upstream` derives, recognized as mesh-wrapped) is the
-  # representative configuration.
-  --set-string router.upstream.address=c8s-infer.c8s-system.svc.cluster.local:8000
   # The default policy mode is fail-closed, which requires every digest-pinned
   # C8s component to be covered in the allowlist floor or the plugin would deny
   # it on its own node. deriveComponents auto-covers the C8s images from their
   # digests (what `c8s install --resolve-digests` turns on) — the representative
   # way to render a valid fail-closed config without hand-listing CI placeholders.
   --set nriImagePolicy.bootstrapAllowlist.deriveComponents=true
+  # A mesh policy needs the resolver a member pod may reach, and the router's
+  # egress exception needs this cluster's pod and Service ranges. kind's
+  # cluster DNS and the kubeadm defaults are the representative values.
+  --set-string nriImagePolicy.mesh.resolver=10.96.0.10
+  --set 'nriImagePolicy.mesh.clusterRanges={10.244.0.0/16,10.96.0.0/12}'
 )
 
 echo "::group::helm lint"

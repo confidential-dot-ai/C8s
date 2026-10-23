@@ -58,10 +58,8 @@ func operatorSigner(t *testing.T) (*operatorauth.Signer, *ecdsa.PublicKey) {
 // production operator verifier, over store.
 func newRouteFixture(t *testing.T, store *allowlist.Store) *routeFixture {
 	t.Helper()
-	mesh, err := issuer.NewCA("mesh ca", time.Hour)
-	if err != nil {
-		t.Fatal(err)
-	}
+	mesh := testMeshCA(t)
+	meshCert := mesh.Current().CA.Cert
 	other, err := issuer.NewCA("backend ca", time.Hour)
 	if err != nil {
 		t.Fatal(err)
@@ -71,8 +69,9 @@ func newRouteFixture(t *testing.T, store *allowlist.Store) *routeFixture {
 	authorize := operatorauth.Verifier{Keys: []*ecdsa.PublicKey{key}, ClockSkew: 30 * time.Second}.Authorize
 	return &routeFixture{
 		router: newRouter(dependencies{
-			Routes:           routeHandler{Store: store, Authorize: authorize, MeshCA: mesh.Cert},
+			Routes:           routeHandler{Store: store, Authorize: authorize, MeshCA: meshCert},
 			ReadyFn:          func() bool { return true },
+			MeshCA:           mesh,
 			RateLimiter:      newTestRateLimiter(t),
 			ChallengeLimiter: newTestRateLimiter(t),
 			MaxRequestSize:   65536,
@@ -81,8 +80,8 @@ func newRouteFixture(t *testing.T, store *allowlist.Store) *routeFixture {
 		signer:   signer,
 		rogue:    rogue,
 		key:      key,
-		meshCA:   mesh.Cert,
-		meshPEM:  string(certutil.EncodeCertPEM(mesh.Cert.Raw)),
+		meshCA:   meshCert,
+		meshPEM:  string(certutil.EncodeCertPEM(meshCert.Raw)),
 		otherPEM: string(certutil.EncodeCertPEM(other.Cert.Raw)),
 	}
 }

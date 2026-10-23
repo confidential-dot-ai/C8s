@@ -50,15 +50,25 @@ type Options struct {
 
 	// Verifier verifies endpoint evidence. Nil defaults to LocalVerifier.
 	Verifier PinVerifier
+
+	// DirectCDS refuses a router front door, for commands that call CDS's
+	// /ca or /secrets: the router relays /allowlist, not those.
+	DirectCDS bool
 }
 
 // BindFlags registers the connection and credential flags on a command's
 // persistent flag set, so every operator CLI spells them the same way.
 func BindFlags(pf *pflag.FlagSet, o *Options) {
-	pf.StringVar(&o.URL, "url", "", "CDS-issued-TLS router or direct CDS base URL (required); WebPKI router URLs are not attestation-bound")
-	pf.StringSliceVar(&o.Measurements, "measurements", nil, "trusted endpoint build ID(s) (repeatable/comma-separated); use the router value for CDS-issued public TLS or the CDS value for a direct URL; empty trusts any attested build (UNSAFE)")
+	urlHelp := "CDS-issued-TLS router or direct CDS base URL (required); WebPKI router URLs are not attestation-bound"
+	pinHelp := "use the router value for CDS-issued public TLS or the CDS value for a direct URL"
+	if o.DirectCDS {
+		urlHelp = "direct CDS base URL, e.g. https://<node>:30808 (required); a router front door does not relay this API"
+		pinHelp = "use the CDS value"
+	}
+	pf.StringVar(&o.URL, "url", "", urlHelp)
+	pf.StringSliceVar(&o.Measurements, "measurements", nil, "trusted endpoint build ID(s) (repeatable/comma-separated); "+pinHelp+"; empty trusts any attested build (UNSAFE)")
 	pf.StringVar(&o.MeasurementsFile, "measurements-file", "", "text file of trusted endpoint SHA-384 hex digests, one per line; use --image-policy-file for complete JSON policies")
-	cmdsutil.BindImagePolicyFlags(pf, &o.MeasurementsConfig, nil, "", "pins the endpoint; excludes --measurements and --measurements-file")
+	cmdsutil.BindImagePolicyFlags(pf, &o.MeasurementsConfig, nil, "pins the endpoint; excludes --measurements and --measurements-file")
 	pf.DurationVar(&o.Timeout, "timeout", 15*time.Second, "per-request timeout")
 	pf.StringVar(&o.OperatorKey, "operator-key", "", "operator EC private key PEM file, whose public key is pinned on CDS via --operator-keys (env "+EnvOperatorKey+"); required for writes")
 	pf.BoolVar(&o.Insecure, "insecure", false, "dev/test only: allow a plaintext http:// CDS URL, skipping armTLS attestation of CDS")
@@ -142,6 +152,15 @@ func (o *Options) httpsClient(ctx context.Context, pins refvalues.ReferenceValue
 	verify := o.pinVerifier(pins)
 	hc, err := routerdiscovery.NewVerifiedHTTPClient(probeCtx, o.URL, pins.Digests(), verify.Verify)
 	switch {
+	case o.DirectCDS && !errors.Is(err, routerdiscovery.ErrNoDiscovery):
+		// A discovery document marks a router even when it does not verify:
+		// pins for CDS reject the router's evidence.
+		if hc != nil {
+			hc.CloseIdleConnections()
+		}
+		return nil, fmt.Errorf("--url %s serves a router discovery document; a router front door does not relay CDS's /ca or /secrets. "+
+			"Use the CDS URL directly, e.g. https://<node>:30808 (cds.service.nodePort) or "+
+			"'kubectl port-forward -n c8s-system svc/c8s-cds 8443:8443', and pin the CDS launch digest instead of the router's", o.URL)
 	case err == nil:
 		fmt.Fprintln(os.Stderr, "note: target is a router front door; verified its discovery attestation and bound this session to the attested connection")
 		return hc, nil

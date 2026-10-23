@@ -3,8 +3,11 @@ package launchconfig
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 // NewCmd returns the authenticated launch configuration command group: the
@@ -17,6 +20,7 @@ func NewCmd() *cobra.Command {
 
 func newBundleCmd() *cobra.Command {
 	var opts BundleOptions
+	var mirrors []string
 	cmd := &cobra.Command{
 		Use:   "new",
 		Short: "Create a cluster's launch bundle: keys, tokens and signed server/agent documents",
@@ -25,7 +29,8 @@ a server launch key and an agent launch key, fresh RKE2 join tokens, a
 signed launch.yaml per node and the client policy that pins the server.
 
   <out>/server.key    server launch key; also the operator key for
-                      'c8s get-kubeconfig --operator-key' and signed CDS writes
+                      'c8s get-kubeconfig --operator-key' and signed CDS writes.
+                      Not written with --operator-key: that key stays where it is
   <out>/agent.key     the agent launch key; 'add-agent' reuses it
   <out>/server.json   --image-policy-file for clients of this cluster
   <out>/peers.json    every launch identity CDS admits and serves;
@@ -40,6 +45,10 @@ HOST_DATA to SHA-256 of that node's pubkey file. See docs/operator.md,
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			var err error
+			if opts.RegistryMirrors, err = parseRegistryMirrors(mirrors); err != nil {
+				return err
+			}
 			if err := NewBundle(opts); err != nil {
 				return err
 			}
@@ -47,8 +56,11 @@ HOST_DATA to SHA-256 of that node's pubkey file. See docs/operator.md,
 			for _, name := range opts.Agents {
 				fmt.Fprintf(cmd.OutOrStdout(), ", %s", filepath.Join(opts.Dir, name))
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), " (private keys: %s, %s)\n",
-				filepath.Join(opts.Dir, serverKeyFile), filepath.Join(opts.Dir, agentKeyFile))
+			serverKey := filepath.Join(opts.Dir, serverKeyFile)
+			if opts.OperatorKeyPath != "" {
+				serverKey = opts.OperatorKeyPath
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), " (private keys: %s, %s)\n", serverKey, filepath.Join(opts.Dir, agentKeyFile))
 			return nil
 		},
 	}
@@ -62,14 +74,37 @@ HOST_DATA to SHA-256 of that node's pubkey file. See docs/operator.md,
 	f.StringArrayVar(&opts.Agents, "agent", nil, "agent node name; repeatable")
 	f.StringVar(&opts.TLSSAN, "tls-san", "", "DNS name for the front-door certificate (default c8s.local)")
 	f.StringVar(&opts.WorkloadsPath, "workloads", "", "optional c8s.allowlist/v1 JSON file applied as the initial workload allowlist")
-	f.StringVar(&opts.Router.Upstream, "router-upstream", "", "router catch-all upstream, a mesh-wrapped c8s-<id>.<namespace>.svc.cluster.local:<port> address (plain http; the mesh wraps the hop)")
 	f.StringArrayVar(&opts.Router.Hostnames, "router-hostname", nil, "public DNS name the router serves with an ACME certificate; repeatable")
 	f.StringVar(&opts.Router.ACMEEmail, "acme-email", "", "contact email for the router's ACME account (requires --router-hostname)")
 	f.StringVar(&opts.Router.ACMEDirectoryURL, "acme-directory-url", "", "ACME directory URL, e.g. a staging directory for tests (requires --router-hostname; default Let's Encrypt)")
+	f.Int64Var(&opts.Router.MaxRequestBodyBytes, "router-max-request-body-bytes", 0, "largest application request body the router accepts, in bytes (default 1048576)")
+	f.StringArrayVar(&mirrors, "registry-mirror", nil, "registry=http://ipv4[:port], the mirror containerd pulls that registry through; repeatable, once per registry")
+	f.StringVar(&opts.OperatorKeyPath, "operator-key", "", "existing ECDSA P-256 operator private key PEM to use as the server launch key instead of generating one; it is not copied into the bundle")
+	f.StringVar(&opts.OperatorPubPath, "operator-pubkey", "", "public key PEM --operator-key must match byte for byte, e.g. the one clients pin (c8s keys new --pub-out)")
 	for _, name := range []string{"out", "cluster-id", "image-manifest"} {
 		_ = cmd.MarkFlagRequired(name)
 	}
 	return cmd
+}
+
+// parseRegistryMirrors turns repeated registry=endpoint flags into a map and
+// refuses a registry given twice, so no mirror is silently dropped.
+func parseRegistryMirrors(values []string) (map[string]string, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]string, len(values))
+	for _, v := range values {
+		registry, endpoint, ok := strings.Cut(v, "=")
+		if !ok {
+			return nil, fmt.Errorf("--registry-mirror %q must be registry=http://ipv4[:port]", v)
+		}
+		if _, dup := out[registry]; dup {
+			return nil, fmt.Errorf("--registry-mirror: registry %q given more than once", registry)
+		}
+		out[registry] = endpoint
+	}
+	return out, nil
 }
 
 func newAddAgentCmd() *cobra.Command {
@@ -119,6 +154,7 @@ func newStageCmd() *cobra.Command {
 	f.StringVar(&cfg.AttestationAPIURL, "attestation-api-url", DefaultAttestationAPIURL, "trusted node-local attestation API")
 	f.StringVar(&cfg.DocumentPath, "config", "", "required signed launch.yaml")
 	f.StringVar(&cfg.SignaturePath, "signature", "", "required detached launch.yaml.sig")
+	f.StringVar(&cfg.MeasuredPoliciesFile, "measured-policies-file", armtls.NodeJournal, "the node's journal of allowlist policies extended into TDX RTMR[3]; the operator-key binding check replays it, as cred-release's flag of the same name. Empty replays none")
 	for _, name := range []string{"platform", "config", "signature"} {
 		_ = stage.MarkFlagRequired(name)
 	}

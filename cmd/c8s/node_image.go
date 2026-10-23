@@ -28,6 +28,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cmds/volume"
 	"github.com/confidential-dot-ai/c8s/internal/helmchart"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 const nodeImageNamespace = "c8s-system"
@@ -158,6 +159,9 @@ func renderNodeImage(ctx context.Context, cfg nodeImageRenderConfig) error {
 		// the chart DaemonSet, which the chart refuses on a baked node.
 		"--set", "volumed.enabled=false",
 		"--set", "router.attest.enabled=true",
+		// Always on: the value is part of the measured image, and
+		// c8s verify --operator-keys reads the publication.
+		"--set", "router.routePublication.enabled=true",
 	)
 	for _, input := range cfg.images() {
 		args = append(args, "--set-string", input.valuePath+".pullPolicy=Never")
@@ -191,6 +195,7 @@ func renderNodeImage(ctx context.Context, cfg nodeImageRenderConfig) error {
 		{"c8s-integration.yaml", artifacts.integration},
 		{"allowlist-seed.json", artifacts.seed},
 		{"images.txt", []byte(strings.Join(artifacts.images, "\n") + "\n")},
+		{"router-image.txt", []byte(artifacts.routerImage + "\n")},
 	}
 	for _, name := range routerNginxFiles {
 		files = append(files, artifact{filepath.Join("router-nginx", name), []byte(artifacts.routerNginx[name])})
@@ -208,12 +213,16 @@ type nodeImageArtifacts struct {
 	seed        []byte
 	images      []string
 	routerNginx map[string]string
+
+	// routerImage is the front door's own image, which the measured base
+	// pins for the router role. Only the chart carries that digest.
+	routerImage string
 }
 
 // routerNginxFiles are the c8s-router-nginx ConfigMap keys the image installs
 // in /usr/lib/c8s/router-nginx (the chart's router.bakedNginxDir), where the
 // baked router mounts them instead of the ConfigMap.
-var routerNginxFiles = []string{"nginx.conf", "tls-cds.conf", "tls-acme.conf"}
+var routerNginxFiles = []string{"nginx.conf", "reload.sh", "tls-cds.conf", "tls-acme.conf"}
 
 // collectNodeImageArtifacts retains complete chart resources and copies the seed
 // for host NRI bootstrap. Every workload image must be pinned and present in the
@@ -239,10 +248,11 @@ func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
 	manifests.Write(namespace)
 	decoder := k8syaml.NewYAMLOrJSONDecoder(bytes.NewReader(rendered), 4096)
 	required := map[string]bool{
-		"Deployment/c8s-operator":   false,
-		"Deployment/c8s-cds":        false,
-		"Deployment/c8s-router":     false,
-		"DaemonSet/c8s-armtls-mesh": false,
+		"Deployment/c8s-operator": false,
+		"Deployment/c8s-cds":      false,
+		"Deployment/c8s-router":   false,
+		// The namespace the measured mesh policy names for the router role.
+		"Namespace/" + workloadclaims.RouterNamespace:                    false,
 		"CustomResourceDefinition/confidentialworkloads.confidential.ai": false,
 		"ConfigMap/c8s-router-nginx":                                     false,
 		"ConfigMap/c8s-cds-allowlist-seed":                               false,
@@ -267,7 +277,7 @@ func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
 		if object.GetAPIVersion() == "" || kind == "" || name == "" {
 			return nil, fmt.Errorf("rendered chart resource requires apiVersion, kind and metadata.name")
 		}
-		if err := setNodeImageNamespace(&object); err != nil {
+		if err := requireNodeImageNamespace(&object); err != nil {
 			return nil, err
 		}
 		key := kind + "/" + name
@@ -283,6 +293,13 @@ func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
 			if err := collectWorkloadImages(object, key, images); err != nil {
 				return nil, err
 			}
+			if key == routerWorkloadKey {
+				image, err := frontDoorImage(object)
+				if err != nil {
+					return nil, err
+				}
+				artifacts.routerImage = image
+			}
 		case "ConfigMap":
 			if err := collectConfigMapArtifact(object, key, name, &artifacts); err != nil {
 				return nil, err
@@ -293,7 +310,7 @@ func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
 				required[key] = true
 				continue
 			}
-		case "CustomResourceDefinition", "ServiceAccount", "ClusterRole", "ClusterRoleBinding", "Role", "RoleBinding", "Service", "PersistentVolumeClaim", "PodDisruptionBudget", "NetworkPolicy", "MutatingWebhookConfiguration", "ValidatingWebhookConfiguration", "ValidatingAdmissionPolicy", "ValidatingAdmissionPolicyBinding":
+		case "Namespace", "CustomResourceDefinition", "ServiceAccount", "ClusterRole", "ClusterRoleBinding", "Role", "RoleBinding", "Service", "PersistentVolumeClaim", "PodDisruptionBudget", "NetworkPolicy", "MutatingWebhookConfiguration", "ValidatingWebhookConfiguration", "ValidatingAdmissionPolicy", "ValidatingAdmissionPolicyBinding":
 		default:
 			return nil, fmt.Errorf("unexpected node-image resource %s", key)
 		}
@@ -311,6 +328,9 @@ func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
 		if !found {
 			return nil, fmt.Errorf("rendered chart lacks required node-image resource %s", key)
 		}
+	}
+	if artifacts.routerImage == "" {
+		return nil, fmt.Errorf("rendered chart names no front-door image for %s, which the measured base pins", routerWorkloadKey)
 	}
 	seed, err := pkgallowlist.ParseJSON(artifacts.seed)
 	if err != nil {
@@ -350,21 +370,39 @@ func seedContainers(seed *pkgallowlist.Allowlist) map[string][]pkgallowlist.Cont
 	return seeded
 }
 
-// setNodeImageNamespace pins a namespaced resource to the node-image namespace
-// and rejects one the chart placed elsewhere. Cluster-scoped kinds must carry
-// no namespace at all, so a namespaced rendering of them is an error.
-func setNodeImageNamespace(object *unstructured.Unstructured) error {
+// nodeImageResourceNamespaces is where the chart must place each namespaced
+// resource a baked node runs: the release namespace, except the router's own
+// resources, whose pods serve the router role's ports from the namespace the
+// measured mesh policy names.
+var nodeImageResourceNamespaces = map[string]string{
+	"Deployment/c8s-operator":          nodeImageNamespace,
+	"Deployment/c8s-cds":               nodeImageNamespace,
+	"ConfigMap/c8s-cds-allowlist-seed": nodeImageNamespace,
+	routerWorkloadKey:                  workloadclaims.RouterNamespace,
+	"Service/c8s-router":               workloadclaims.RouterNamespace,
+	"ConfigMap/c8s-router-nginx":       workloadclaims.RouterNamespace,
+	"NetworkPolicy/c8s-router-ingress": workloadclaims.RouterNamespace,
+}
+
+// requireNodeImageNamespace rejects a namespaced resource the chart placed
+// anywhere but its own namespace, and a cluster-scoped kind carrying a
+// namespace at all. The chart is what names the namespace of every namespaced
+// resource.
+func requireNodeImageNamespace(object *unstructured.Unstructured) error {
 	kind, name := object.GetKind(), object.GetName()
-	switch kind {
-	case "Deployment", "DaemonSet", "ConfigMap", "ServiceAccount", "Role", "RoleBinding", "Service", "PersistentVolumeClaim", "PodDisruptionBudget", "NetworkPolicy":
-		if namespace := object.GetNamespace(); namespace != "" && namespace != nodeImageNamespace {
-			return fmt.Errorf("node-image resource %s/%s has unexpected namespace %q", kind, name, namespace)
-		}
-		object.SetNamespace(nodeImageNamespace)
-	default:
+	key := kind + "/" + name
+	if !namespacedNodeImageKind(kind) {
 		if object.GetNamespace() != "" {
-			return fmt.Errorf("cluster-scoped node-image resource %s/%s has a namespace", kind, name)
+			return fmt.Errorf("cluster-scoped node-image resource %s has a namespace", key)
 		}
+		return nil
+	}
+	want, named := nodeImageResourceNamespaces[key]
+	if !named {
+		want = nodeImageNamespace
+	}
+	if got := object.GetNamespace(); got != want {
+		return fmt.Errorf("node-image resource %s has namespace %q, want %q", key, got, want)
 	}
 	return nil
 }
@@ -592,6 +630,48 @@ func mountRule(m corev1.VolumeMount, volumes map[string]corev1.Volume) (pkgallow
 	}
 	return rule, nil
 }
+func namespacedNodeImageKind(kind string) bool {
+	return slices.Contains([]string{
+		"Deployment", "DaemonSet", "ConfigMap", "ServiceAccount", "Role", "RoleBinding",
+		"Service", "PersistentVolumeClaim", "PodDisruptionBudget", "NetworkPolicy",
+	}, kind)
+}
+
+// routerWorkloadKey is the workload whose front-door container the measured
+// base pins (node-guest-image/c8s/image-policy.yaml.in).
+const routerWorkloadKey = "Deployment/c8s-router"
+
+// frontDoorImage is the image the router's nginx container runs. The node
+// image measures that digest for the router role, and the chart is the only
+// place it is pinned (values.yaml router.nginx.image).
+func frontDoorImage(object unstructured.Unstructured) (string, error) {
+	containers, found, err := unstructured.NestedSlice(object.Object, "spec", "template", "spec", "containers")
+	if err != nil {
+		return "", fmt.Errorf("node-image workload %s containers: %w", routerWorkloadKey, err)
+	}
+	if !found {
+		return "", fmt.Errorf("node-image workload %s declares no containers", routerWorkloadKey)
+	}
+	for _, entry := range containers {
+		container, isMap := entry.(map[string]any)
+		if !isMap {
+			return "", fmt.Errorf("node-image workload %s declares a container that is not an object", routerWorkloadKey)
+		}
+		if name, _ := container["name"].(string); name != frontDoorContainerName {
+			continue
+		}
+		image, _ := container["image"].(string)
+		if image == "" {
+			return "", fmt.Errorf("node-image workload %s container %q runs no pinned image", routerWorkloadKey, frontDoorContainerName)
+		}
+		return image, nil
+	}
+	return "", fmt.Errorf("node-image workload %s runs no %q container", routerWorkloadKey, frontDoorContainerName)
+}
+
+// frontDoorContainerName is the router container that answers external
+// traffic, as the chart names it (templates/router-deployment.yaml).
+const frontDoorContainerName = "nginx"
 
 // collectWorkloadImages records every container image a baked workload runs,
 // keyed by reference. The rootfs preloads exactly these, so an unpinned or
@@ -613,18 +693,12 @@ func collectWorkloadImages(object unstructured.Unstructured, key string, images 
 		volumes[v.Name] = v
 	}
 	for _, c := range append(spec.InitContainers, spec.Containers...) {
-		ref, err := reference.ParseDockerRef(c.Image)
+		baked, err := recordPinnedImage(c.Image, key, c.Name, images)
 		if err != nil {
-			return fmt.Errorf("node-image workload %s container %q image: %w", key, c.Name, err)
+			return err
 		}
-		pinned, ok := ref.(reference.Canonical)
-		if !ok || !nodeImageDigestPattern.MatchString(pinned.Digest().String()) {
-			return fmt.Errorf("node-image workload %s container %q image must be pinned by sha256 digest", key, c.Name)
-		}
-		baked := images[ref.String()]
-		if baked == nil {
-			baked = &bakedImage{digest: pinned.Digest().String()}
-			images[ref.String()] = baked
+		if err := collectInjectedImages(c, key, images); err != nil {
+			return err
 		}
 		command, err := kubeletArgv(c.Command)
 		if err != nil {
@@ -680,6 +754,58 @@ func kubeletArgv(argv []string) ([]string, error) {
 		out = append(out, b.String())
 	}
 	return out, nil
+}
+
+// collectInjectedImages records what a workload injects rather than runs: the
+// operator names the mesh endpoint's image, which every pod on this node will
+// run, so the rootfs must preload it too. A container naming no mesh image
+// injects nothing; one that names it must name an image, or the first tenant
+// pod would pull at runtime.
+func collectInjectedImages(c corev1.Container, key string, images map[string]*bakedImage) error {
+	image, named := meshImageArg(append(c.Command, c.Args...))
+	if !named {
+		return nil
+	}
+	if image == "" {
+		return fmt.Errorf("node-image workload %s container %q names %s without an image", key, c.Name, meshImageFlag)
+	}
+	_, err := recordPinnedImage(image, key, c.Name+" "+meshImageFlag, images)
+	return err
+}
+
+// meshImageArg is the image the mesh-image flag names in one argument vector,
+// and whether the vector names it at all. The operator's arguments are
+// chart-rendered, so --mesh-image=<image> is the form that reaches here.
+func meshImageArg(args []string) (string, bool) {
+	for _, arg := range args {
+		if image, named := strings.CutPrefix(arg, meshImageFlag+"="); named {
+			return image, true
+		}
+	}
+	return "", false
+}
+
+// meshImageFlag is the operator argument naming the image every covered pod
+// runs (internal/webhook).
+const meshImageFlag = "--mesh-image"
+
+// recordPinnedImage records one pinned image and returns its entry, so the
+// caller can append the containers the chart runs under it.
+func recordPinnedImage(image, key, name string, images map[string]*bakedImage) (*bakedImage, error) {
+	ref, err := reference.ParseDockerRef(image)
+	if err != nil {
+		return nil, fmt.Errorf("node-image workload %s container %q image: %w", key, name, err)
+	}
+	pinned, ok := ref.(reference.Canonical)
+	if !ok || !nodeImageDigestPattern.MatchString(pinned.Digest().String()) {
+		return nil, fmt.Errorf("node-image workload %s container %q image must be pinned by sha256 digest", key, name)
+	}
+	baked := images[ref.String()]
+	if baked == nil {
+		baked = &bakedImage{digest: pinned.Digest().String()}
+		images[ref.String()] = baked
+	}
+	return baked, nil
 }
 
 // collectConfigMapArtifact lifts the two ConfigMaps the build consumes as

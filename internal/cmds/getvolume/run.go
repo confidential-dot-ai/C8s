@@ -148,7 +148,9 @@ func openAll(ctx context.Context, cfg config, pins armtls.Pins) error {
 	if err != nil {
 		return err
 	}
+	defer client.CloseIdleConnections()
 	daemon, base := daemonClient(cfg)
+	defer daemon.CloseIdleConnections()
 	return openAllWith(ctx, cfg, client, pub, cfg.Endpoint(), daemon, base)
 }
 

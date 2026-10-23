@@ -23,6 +23,7 @@ type admissionInventory struct {
 	mu         sync.RWMutex
 	containers map[string]ctrRec                   // live containerID -> record (caller resolution)
 	admitted   map[string]admissionhistory.History // sandboxID -> everything ever admitted there
+	denied     map[string]sandboxDenial            // sandboxID -> why it asserts no identity
 	sandboxes  map[string]struct{}                 // live pod sandbox IDs
 	procRoot   string
 
@@ -37,6 +38,17 @@ type admissionInventory struct {
 	pendingExits map[string]bool
 }
 
+// sandboxDenial is why a sandbox asserts no identity. liftOnAdmit names the
+// container whose later admission clears the refusal, empty for a refusal that
+// holds for the sandbox's life.
+//
+// INVARIANT: only a container the plugin kept from being created sets
+// liftOnAdmit, and only to that container's own name.
+type sandboxDenial struct {
+	reason      error
+	liftOnAdmit string
+}
+
 type ctrRec struct {
 	sandboxID string
 	name      string // unread
@@ -48,20 +60,23 @@ func newAdmissionInventory(procRoot string) *admissionInventory {
 	return &admissionInventory{
 		containers: map[string]ctrRec{},
 		admitted:   map[string]admissionhistory.History{},
+		denied:     map[string]sandboxDenial{},
 		sandboxes:  map[string]struct{}{},
 		procRoot:   procRoot,
 	}
 }
 
-// record notes an admitted container, injected sidecars included: /digests is
-// an inventory of what was admitted in the sandbox, and the injected images are
-// admitted under any argv, so CDS drops them from workload matching itself.
-// argv is the effective OCI process.args the container runs.
+// record notes an admitted container outside every platform role. argv is the
+// effective OCI process.args the container runs.
 func (b *admissionInventory) record(containerID, sandboxID, name, digest string, argv []string, env *allowlist.EnvObservation, mounts ...allowlist.ObservedMount) {
-	b.recordObserved(containerID, sandboxID, name, digest, argv, env, mounts)
+	b.recordObserved(containerID, sandboxID, name, digest, "", argv, env, mounts)
 }
 
-func (b *admissionInventory) recordObserved(containerID, sandboxID, name, digest string, argv []string, env *allowlist.EnvObservation, mounts []allowlist.ObservedMount) {
+// recordObserved notes an admitted container, the platform's own containers
+// included: /digests is an inventory of what was admitted in the sandbox, and
+// role names the one each platform container holds, so CDS drops them from
+// workload matching without reading their command line.
+func (b *admissionInventory) recordObserved(containerID, sandboxID, name, digest, role string, argv []string, env *allowlist.EnvObservation, mounts []allowlist.ObservedMount) {
 	if containerID == "" || sandboxID == "" {
 		return
 	}
@@ -73,8 +88,10 @@ func (b *admissionInventory) recordObserved(containerID, sandboxID, name, digest
 		b.containers[containerID] = ctrRec{sandboxID: sandboxID, name: name, digest: digest, argv: argv}
 	}
 
+	b.liftDenial(sandboxID, name)
+
 	rec := b.admitted[sandboxID]
-	rec.Record(containerID, digest, argv, env, mounts...)
+	rec.Record(containerID, digest, role, argv, env, mounts...)
 	if exited {
 		rec.Exited(containerID)
 	}
@@ -166,11 +183,65 @@ func (b *admissionInventory) removeSandbox(sandboxID string) {
 	defer b.mu.Unlock()
 	delete(b.sandboxes, sandboxID)
 	delete(b.admitted, sandboxID)
+	delete(b.denied, sandboxID)
 	for id, rec := range b.containers {
 		if rec.sandboxID == sandboxID {
 			delete(b.containers, id)
 		}
 	}
+}
+
+// recordDenial notes a refusal that kept a container of the sandbox from
+// running and holds for the sandbox's life. The first reason stands;
+// removeSandbox evicts it with the sandbox.
+//
+// INVARIANT: a sandbox with any denied container asserts no identity.
+func (b *admissionInventory) recordDenial(sandboxID string, reason error) {
+	b.denyOnRecord(sandboxID, "", reason)
+}
+
+// recordCreationDenial notes a refusal that kept containerName from being
+// created in the sandbox. Admitting a container of that name there lifts it:
+// the denied one never ran, and the retry faced the whole admission check
+// again.
+func (b *admissionInventory) recordCreationDenial(sandboxID, containerName string, reason error) {
+	b.denyOnRecord(sandboxID, containerName, reason)
+}
+
+func (b *admissionInventory) denyOnRecord(sandboxID, liftOnAdmit string, reason error) {
+	if sandboxID == "" || reason == nil {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if _, onRecord := b.denied[sandboxID]; onRecord {
+		return
+	}
+	b.denied[sandboxID] = sandboxDenial{
+		reason:      reason,
+		liftOnAdmit: liftOnAdmit,
+	}
+}
+
+// liftDenial clears a creation refusal the admission of name supersedes.
+// Requires b.mu.
+func (b *admissionInventory) liftDenial(sandboxID, name string) {
+	if name == "" {
+		return
+	}
+	denial, onRecord := b.denied[sandboxID]
+	if !onRecord || denial.liftOnAdmit != name {
+		return
+	}
+	delete(b.denied, sandboxID)
+}
+
+// denial is why the sandbox asserts no identity, nil when every container of
+// it the plugin decided on was let run.
+func (b *admissionInventory) denial(sandboxID string) error {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.denied[sandboxID].reason
 }
 
 // callerForPeer resolves the calling process to its tracked container record.
@@ -208,9 +279,10 @@ func (b *admissionInventory) callerForPeer(peer workloadclaims.Peer) (ctrRec, er
 	return ctrRec{}, fmt.Errorf("caller cgroup names no tracked container")
 }
 
-// SandboxForPeer resolves the calling process to the pod sandbox it runs in,
-// bound by kernel credentials.
-func (b *admissionInventory) SandboxForPeer(peer workloadclaims.Peer) (string, error) {
+// sandboxForPeer resolves the calling process to the pod sandbox it runs in,
+// bound by kernel credentials. The enforcer's own verification of that
+// sandbox's protection is the plugin's answer (plugin.SandboxForPeer).
+func (b *admissionInventory) sandboxForPeer(peer workloadclaims.Peer) (string, error) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
@@ -221,10 +293,11 @@ func (b *admissionInventory) SandboxForPeer(peer workloadclaims.Peer) (string, e
 	return caller.sandboxID, nil
 }
 
-// DigestsForSandbox reports every container ever admitted in the sandbox,
-// injected containers included: CDS drops the injected ones itself. Digests is
-// the sorted, deduplicated digest set (issuance); containers carries the
-// per-container (digest, argv) detail, sorted for a stable answer.
+// DigestsForSandbox reports every container ever admitted in the sandbox, the
+// platform's own containers included, each carrying the role this node's
+// measured base binds to it. Digests is the sorted, deduplicated digest set
+// (issuance); containers carries the per-container (digest, argv, role) detail,
+// sorted for a stable answer.
 //
 // An unresolved digest fails the whole answer rather than commit a subset as if
 // it were the whole inventory.

@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/confidential-dot-ai/c8s/internal/httputil"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
@@ -21,7 +22,8 @@ import (
 const ExplainRoute = "/secrets-explain/{sandboxID}"
 
 // ReportedContainer is one container the inventory named, and whether the
-// release path drops it as a platform-injected one.
+// release path drops it as one the node's measured base binds a platform role
+// to.
 type ReportedContainer struct {
 	Env      *pkgallowlist.EnvObservation `json:"env,omitempty"`
 	Mounts   []pkgallowlist.ObservedMount `json:"mounts"`
@@ -101,14 +103,13 @@ func (h ExplainHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "operator writes are not configured", http.StatusUnauthorized)
 		return
 	}
-	// The read has no body; the token still binds the method and the sandbox ID
-	// in the path.
+	// Authorized before the ID is checked, as on PUT /secrets. The token binds
+	// the path, so one minted for a malformed ID can never serve a corrected one.
 	if err := h.Authorize(r, nil); err != nil {
 		h.logger().Warn("secret explain rejected", "remote", r.RemoteAddr, "reason", err)
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		httputil.RefuseOperatorToken(w, err)
 		return
 	}
-
 	sandboxID := chi.URLParam(r, "sandboxID")
 	if err := armtls.ValidateSandboxID(sandboxID); err != nil {
 		http.Error(w, "invalid sandbox ID", http.StatusBadRequest)
@@ -160,15 +161,21 @@ func (h ExplainHandler) explain(ctx context.Context, sandboxID string) ExplainRe
 	}
 
 	for _, c := range reported {
-		injected := isInjected(al, c)
-		entry := ReportedContainer{Digest: c.Digest, Argv: c.Argv, Env: c.Env, Mounts: c.Mounts, Injected: injected}
+		platform := c.Role != ""
+		entry := ReportedContainer{
+			Digest:   c.Digest,
+			Argv:     c.Argv,
+			Env:      c.Env,
+			Mounts:   c.Mounts,
+			Injected: platform,
+		}
 		resp.Reported = append(resp.Reported, entry)
-		if injected {
+		if platform {
 			continue
 		}
 		resp.Candidates = append(resp.Candidates, entry)
 	}
-	candidates := WorkloadContainers(al, reported)
+	candidates := WorkloadContainers(reported)
 	if len(candidates) == 0 {
 		resp.Refusal = "every container the sandbox reports is a platform-injected one, so there is nothing to match"
 		return resp

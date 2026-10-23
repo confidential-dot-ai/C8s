@@ -72,6 +72,7 @@ func newTestServerWith(t *testing.T, tune func(*Server)) (*Server, *httptest.Ser
 	identity := writeTestMeshIdentity(t)
 	evidence := &countingEvidence{inner: testFixture()}
 	srv := NewServer(Config{
+		Routes:               testRoutes(t),
 		Evidence:             evidence,
 		FrontDoorMode:        types.FrontDoorModeCDS,
 		MeshIdentityCertFile: identity.certFile,
@@ -185,6 +186,7 @@ func TestAttestPQMetersEachClientSeparately(t *testing.T) {
 func TestAttestLBIsMetered(t *testing.T) {
 	identity := writeTestMeshIdentity(t)
 	srv := NewServer(Config{
+		Routes:               testRoutes(t),
 		Evidence:             testFixture(),
 		FrontDoorMode:        types.FrontDoorModeCDS,
 		ServingCertFile:      identity.certFile,
@@ -1035,6 +1037,7 @@ func TestSessionIdIsNeverOverwritten(t *testing.T) {
 func TestReadyzIsCached(t *testing.T) {
 	identity := writeTestMeshIdentity(t)
 	srv := NewServer(Config{
+		Routes:               testRoutes(t),
 		Evidence:             testFixture(),
 		FrontDoorMode:        types.FrontDoorModeCDS,
 		ExpectedWorkload:     "some-workload",
@@ -1285,7 +1288,9 @@ func TestServeRunsMaintenance(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	served := make(chan error, 1)
-	go func() { served <- srv.Serve(ctx, &http.Server{Addr: "127.0.0.1:0", Handler: srv.Handler()}) }()
+	go func() {
+		served <- srv.Serve(ctx, &http.Server{Addr: "127.0.0.1:0", Handler: srv.Handler()})
+	}()
 
 	waitFor(t, "the expired session to be swept while serving", func() bool {
 		srv.mu.Lock()

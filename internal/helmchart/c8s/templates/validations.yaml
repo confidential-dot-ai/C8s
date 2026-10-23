@@ -13,7 +13,23 @@
   settings (hostPort opt-out, upstream) without a trace. Fail loud instead.
 */ -}}
 {{- if hasKey .Values "teeProxy" -}}
-{{- fail "VALIDATION_ERROR kind=removed_component: teeProxy.* values are set, but the tee-proxy component was removed; router dials the workload directly. Migrate teeProxy.hostPort to router.hostPort and teeProxy.upstream to router.upstream.address, then drop the teeProxy block." -}}
+{{- fail "VALIDATION_ERROR kind=removed_component: teeProxy.* values are set, but the tee-proxy component was removed; router dials the workload directly. Migrate teeProxy.hostPort to router.hostPort and write teeProxy.upstream as a route manifest with `c8s routes add`, then drop the teeProxy block." -}}
+{{- end -}}
+{{- /*
+  The same for the router's own backend configuration: the operator-signed
+  route manifest replaced it, and a carried-over value would otherwise leave
+  the front door answering 503 with no hint why.
+*/ -}}
+{{- $removedRouterKeys := list -}}
+{{- range $key := list "upstream" "routes" -}}
+{{- if hasKey $router $key -}}{{- $removedRouterKeys = append $removedRouterKeys (printf "router.%s" $key) -}}{{- end -}}
+{{- end -}}
+{{- if hasKey (default dict $router.nginx) "resolver" -}}{{- $removedRouterKeys = append $removedRouterKeys "router.nginx.resolver" -}}{{- end -}}
+{{- if $removedRouterKeys -}}
+{{- fail (printf "VALIDATION_ERROR kind=removed_router_routes: the router no longer reads backends from Helm values (%s): it routes only by the operator-signed route manifest on CDS. Write the routes with `c8s routes add --host <host> --path / --address <host:port> --workload <allowlist name>` (or `c8s routes put <file>`), move router.upstream.readTimeout to router.routing.readTimeout, and drop these keys. A workload backend is reached over the mesh; see docs/operator.md, \"Route manifest\"." (join ", " $removedRouterKeys)) -}}
+{{- end -}}
+{{- if and $router.enabled (dig "routePublication" "enabled" false $router) (not $router.attest.enabled) -}}
+{{- fail "VALIDATION_ERROR kind=router_route_publication: router.routePublication.enabled requires router.attest.enabled: cds-attest serves the route publication beside the attestation endpoints whose evidence binds its route digest. Set router.attest.enabled: true, or set router.routePublication.enabled: false." -}}
 {{- end -}}
 
 {{- /*
@@ -175,36 +191,11 @@
 {{- /*
   The mirror of require_host_image_policy for evidence: off bare-metal mode,
   the host attestation-api DaemonSet is the only evidence source for
-  get-cert, armtls-mesh, and CDS. Disabling it there renders a cluster whose
+  get-cert, the mesh endpoint, and CDS. Disabling it there renders a cluster whose
   attestation consumers all point at a socket nothing serves.
 */ -}}
 {{- if and (not .Values.attestationApi.enabled) (ne .Values.attestationApi.cvmMode "bare-metal") -}}
 {{- fail "VALIDATION_ERROR kind=require_attestation_api: attestationApi.enabled=false requires attestationApi.cvmMode=bare-metal. On a non-bare-metal cluster the host attestation-api DaemonSet is the only evidence source for get-cert/armtls-mesh/CDS (`c8s install --cvm-mode=bare-metal` sets attestationApi.enabled=false for you)." -}}
-{{- end -}}
-{{- /*
-  Catch-all upstream check. No upstream is a legal state: router installs and
-  serves with no catch-all until a backend is wired (install-then-attach). When
-  an upstream IS set, it must be either:
-   - an operator-managed headless Service (c8s-<id>.<ns>.svc.cluster.local:<port>,
-     which `c8s install --upstream` derives): the app-layer hop is plaintext
-     http, the node mesh intercepts the pod-IP hop and wraps it in attested mTLS.
-     The shape match below is ADVISORY — it can't prove the Service is headless
-     (a ClusterIP Service of the same name would be a VIP the mesh skips), so the
-     real boundary is armtlsMesh.cwInboundEnforcement, which drops VIP/FORWARD-path
-     hops to cw pods at runtime. This guard only catches accidental plaintext.
-     An https protocol on this shape can only fail at runtime, so reject it.
-   - a manual address that terminates and verifies TLS itself (app-TLS): must
-     be https with tls.verify=true. A silently plaintext manual address would
-     leave the hop unprotected. There is no plaintext-to-unattested escape hatch.
-*/ -}}
-{{- if and $router.enabled $router.upstream.address -}}
-{{- if eq (include "router.meshWrappedUpstream" $router.upstream.address) "true" -}}
-{{- if eq $router.upstream.protocol "https" -}}
-{{- fail "VALIDATION_ERROR kind=workload_https_upstream: a c8s-<id> headless-Service upstream is plaintext http at the app layer (the mesh wraps the hop in attested mTLS), but router.upstream.protocol=https; use protocol http for a mesh-wrapped upstream" -}}
-{{- end -}}
-{{- else -}}
-{{- include "router.requireSecuredBackend" (dict "protocol" $router.upstream.protocol "tls" $router.upstream.tls "address" $router.upstream.address "label" "router.upstream" "kind" "router_unsecured_upstream" "suggest" "To reach a confidential workload adopt it with --workload-ref <id>=<ns>/<kind>/<name>:<port> and pass --upstream <id> (the mesh wraps that plaintext hop in attested mTLS); ") -}}
-{{- end -}}
 {{- end -}}
 {{- /*
   Rate budget for the built-in /allowlist route. CDS rate-limits per source
@@ -258,6 +249,22 @@
 {{- end -}}
 {{- end -}}
 {{- /*
+  Certificate producers read the measured-policy journal at the default
+  runtime directory (armtls.NodeJournal). Elsewhere they send no
+  list and CDS refuses the node's identity.
+*/ -}}
+{{- if and $nri.measurePolicies (ne $nri.hostPaths.runtimeDir "/run/nri-image-policy") -}}
+{{- fail (printf "VALIDATION_ERROR kind=measure_policies_runtime_dir: nriImagePolicy.measurePolicies=true requires the default nriImagePolicy.hostPaths.runtimeDir /run/nri-image-policy (got %q): certificate producers read the measured-policy journal there" $nri.hostPaths.runtimeDir) -}}
+{{- end -}}
+{{- /*
+  Producers mount the runtime directory only beside the attestation-api
+  socket. Under node.baked the image owns the plugin config, which the value
+  cannot reach.
+*/ -}}
+{{- if and $nri.measurePolicies (not .Values.attestationApi.enabled) -}}
+{{- fail "VALIDATION_ERROR kind=measure_policies_no_journal_mount: nriImagePolicy.measurePolicies=true requires attestationApi.enabled=true, and so excludes node.baked: otherwise certificate producers do not mount the measured-policy journal, or the plugin never sees the setting" -}}
+{{- end -}}
+{{- /*
   A component expands $(HOST_IP) from its HOST_IP variable, which the
   allowlist leaves open, so a pod could point it at an attestation verifier of
   its choosing. Under a fail-closed policy (c8s.imagePolicyFailClosed, which
@@ -277,5 +284,22 @@
 {{- end -}}
 {{- end -}}
 {{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{- /*
+  On a baked node the mesh's exempt namespaces are measured into the image
+  (node-guest-image/c8s/image-policy.yaml.in): kube-system and c8s-system host
+  no member pods. The webhooks' scope is this release's namespaceSelector, so a
+  release namespace the measured set does not name, or an extra exclusion it
+  does not know, would inject pods the node refuses to protect — or leave a
+  namespace uninjected that the node would have.
+*/ -}}
+{{- if .Values.node.baked -}}
+{{- if ne .Release.Namespace "c8s-system" -}}
+{{- fail (printf "VALIDATION_ERROR kind=baked_release_namespace: node.baked=true requires the release namespace c8s-system (got %q). The node image measures that name into the mesh policy's exempt set, so another namespace would put this release's own components inside the mesh." .Release.Namespace) -}}
+{{- end -}}
+{{- if .Values.webhook.extraExcluded -}}
+{{- fail (printf "VALIDATION_ERROR kind=baked_webhook_exclusions: node.baked=true leaves webhook.extraExcluded empty (got %v). The measured mesh policy names the namespaces that host no member pods; an exclusion only the webhooks know would leave a pod uninjected in a namespace the node protects." .Values.webhook.extraExcluded) -}}
 {{- end -}}
 {{- end -}}

@@ -43,6 +43,7 @@ const (
 	MaxDocumentSize   = 1024 * 1024
 	maxSignatureSize  = 4096
 	maxAgentKeys      = 128
+	maxMirrors        = 8
 	defaultTLSSAN     = "c8s.local"
 )
 
@@ -53,6 +54,65 @@ const (
 	Server Role = "server"
 	Agent  Role = "agent"
 )
+
+// Valid reports whether r is a role this image can boot.
+func (r Role) Valid() bool {
+	_, ok := roles[r]
+	return ok
+}
+
+// presence says whether a role's document must, may or must not carry a
+// field. The zero value is the strict one.
+type presence int
+
+const (
+	forbidden presence = iota
+	optional
+	required
+)
+
+// roleRules keeps each role's document rules in one place, so validate,
+// and authorizeKey ask the role instead of testing for it
+// inline. Adding a role means adding an entry, not new branches; every entry
+// sets every field.
+type roleRules struct {
+	serverToken presence // rke2.serverToken, distinct from rke2.agentToken
+	agentKeys   presence // agentOperatorPublicKeys
+	// namesServer requires server.address in the signed document; otherwise
+	// it is checked only when present.
+	namesServer bool
+	// stagedAddress requires the staged document to carry a server address,
+	// which Stage resolves for a server that omitted it.
+	stagedAddress bool
+	router        bool // may carry a router block
+	// ownLaunchKey authorizes the exact server.operatorPublicKey bytes;
+	// otherwise the launch key must be listed in agentOperatorPublicKeys and
+	// differ from the server's.
+	ownLaunchKey bool
+}
+
+var roles = map[Role]roleRules{
+	Server: {
+		serverToken:   required,
+		agentKeys:     optional,
+		namesServer:   false,
+		stagedAddress: true,
+		router:        true,
+		ownLaunchKey:  true,
+	},
+	Agent: {
+		serverToken:   forbidden,
+		agentKeys:     required,
+		namesServer:   true,
+		stagedAddress: true,
+		router:        false,
+		ownLaunchKey:  false,
+	},
+}
+
+// rules resolves the document's role. Callers reach it only after validate,
+// which rejects any role without an entry in roles.
+func (d *Document) rules() roleRules { return roles[d.Role] }
 
 // Document is the signed launch.yaml wire contract. All secrets are boot
 // inputs; agent documents must never carry the control-plane server token.
@@ -75,37 +135,38 @@ type Document struct {
 	// build time, so the signed launch file carries it.
 	Router *Router `yaml:"router,omitempty" json:"router,omitempty"`
 
+	// RegistryMirrors maps a registry host to the http endpoint containerd
+	// pulls it through; Stage writes it as RKE2's registries.yaml. Only http:
+	// the document carries no CA, and a cache on a private address has no
+	// public certificate. Image references stay digest-pinned, so a mirror
+	// cannot change what a node runs.
+	RegistryMirrors map[string]string `yaml:"registryMirrors,omitempty" json:"registry_mirrors,omitempty"`
+
 	serverTokenPresent bool
 }
 
-// Router selects the router's catch-all upstream and public hostnames. All
+// Router selects the router's public hostnames and front-door limits. All
 // fields are optional; non-empty Hostnames switches the front door to ACME.
+// The route manifest, not this block, names every backend.
 type Router struct {
-	Upstream         string   `yaml:"upstream,omitempty" json:"upstream,omitempty"`
 	Hostnames        []string `yaml:"hostnames,omitempty" json:"hostnames,omitempty"`
 	ACMEEmail        string   `yaml:"acmeEmail,omitempty" json:"acme_email,omitempty"`
 	ACMEDirectoryURL string   `yaml:"acmeDirectoryURL,omitempty" json:"acme_directory_url,omitempty"`
+	// MaxRequestBodyBytes caps an application request body on the public
+	// listener; 0 keeps DefaultMaxRequestBodyBytes.
+	MaxRequestBodyBytes int64 `yaml:"maxRequestBodyBytes,omitempty" json:"max_request_body_bytes,omitempty"`
 }
 
-// meshWrappedUpstreamRE is the chart's router.meshWrappedUpstream rule: the
-// operator-managed headless Service c8s-<id>.<ns>.svc.cluster.local:<port>.
-// It is the only plaintext http upstream the chart accepts, because the node
-// mesh wraps that hop in attested mTLS. Keep the two in lockstep.
-const meshWrappedUpstreamPattern = `^c8s-[a-z]([-a-z0-9]*[a-z0-9])?\.[a-z0-9]([-a-z0-9]*[a-z0-9])?\.svc\.cluster\.local:[0-9]+$`
+// DefaultMaxRequestBodyBytes is the router's application request body cap
+// when the launch document sets none: nginx's own default, 1 MiB.
+const DefaultMaxRequestBodyBytes = 1 << 20
 
-var meshWrappedUpstreamRE = regexp.MustCompile(meshWrappedUpstreamPattern)
-
-// ValidateRouterUpstream accepts only a mesh-wrapped upstream address with a
-// port in 1..65535, so the value is also safe inside an nginx directive.
-func ValidateRouterUpstream(address string) error {
-	if !meshWrappedUpstreamRE.MatchString(address) {
-		return fmt.Errorf("must be a mesh-wrapped c8s-<id>.<namespace>.svc.cluster.local:<port> address")
+// RequestBodyLimit is the application request body cap the router applies.
+func (r Router) RequestBodyLimit() int64 {
+	if r.MaxRequestBodyBytes == 0 {
+		return DefaultMaxRequestBodyBytes
 	}
-	_, port, _ := strings.Cut(address, ":")
-	if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
-		return fmt.Errorf("port must be between 1 and 65535")
-	}
-	return nil
+	return r.MaxRequestBodyBytes
 }
 
 // ValidateHostname accepts a lowercase DNS hostname: no IP, no wildcard.
@@ -127,11 +188,6 @@ func ValidateHostname(name string) error {
 const maxRouterHostnames = 100 // the ACME CA's SAN limit per certificate
 
 func (r *Router) validate() error {
-	if r.Upstream != "" {
-		if err := ValidateRouterUpstream(r.Upstream); err != nil {
-			return fmt.Errorf("router.upstream: %w", err)
-		}
-	}
 	if len(r.Hostnames) > maxRouterHostnames {
 		return fmt.Errorf("router.hostnames lists more than %d names", maxRouterHostnames)
 	}
@@ -144,6 +200,9 @@ func (r *Router) validate() error {
 			return fmt.Errorf("router.hostnames lists %q twice", name)
 		}
 		seen[name] = true
+	}
+	if r.MaxRequestBodyBytes < 0 {
+		return fmt.Errorf("router.maxRequestBodyBytes must be a positive number of bytes")
 	}
 	if len(r.Hostnames) == 0 && (r.ACMEEmail != "" || r.ACMEDirectoryURL != "") {
 		return fmt.Errorf("router.acmeEmail and router.acmeDirectoryURL require router.hostnames")
@@ -220,6 +279,12 @@ type Node struct {
 type RKE2 struct {
 	ServerToken string `yaml:"serverToken,omitempty" json:"server_token,omitempty"`
 	AgentToken  string `yaml:"agentToken" json:"agent_token"`
+	// NodePassword is this node's RKE2 node password, random per node and
+	// carried only in its own document. /etc/rancher is per-boot scratch, so
+	// without it RKE2 makes a new password at every boot and the server
+	// refuses a rebooted node's name. Per node, so holding the shared agent
+	// token, or one node's document, does not open another node's name.
+	NodePassword string `yaml:"nodePassword,omitempty" json:"node_password,omitempty"`
 }
 
 type ServerConfig struct {
@@ -237,7 +302,10 @@ type Config struct {
 	AttestationAPIURL string
 	DocumentPath      string
 	SignaturePath     string
-	RootDir           string
+	// MeasuredPoliciesFile is the node's measured-policy journal, as
+	// cred-release's --measured-policies-file. Empty replays none.
+	MeasuredPoliciesFile string
+	RootDir              string
 }
 
 var loadMeasuredIdentity = credrelease.LoadMeasuredIdentity
@@ -276,7 +344,7 @@ func Verify(ctx context.Context, cfg Config) (*Verified, error) {
 	}
 	// credrelease compares against the verified report's family ("sev-snp",
 	// "tdx"), not the launch tag ("snp", "tdx").
-	measured, err := loadMeasuredIdentity(ctx, string(platform.Family()), api)
+	measured, err := loadMeasuredIdentity(ctx, string(platform.Family()), api, cfg.MeasuredPoliciesFile)
 	if err != nil {
 		return nil, fmt.Errorf("verify this boot's identity: %w", err)
 	}
@@ -341,9 +409,10 @@ func (d *Document) validate() error {
 	if !dnsLabel(d.Node.Name) {
 		return fmt.Errorf("node.name must be an RFC1123 label")
 	}
-	if d.Role != Server && d.Role != Agent {
+	if !d.Role.Valid() {
 		return fmt.Errorf("role must be server or agent")
 	}
+	rules := d.rules()
 	platform, ok := d.Image.platform()
 	if !ok {
 		return fmt.Errorf("image.platform must be tdx or snp")
@@ -354,7 +423,7 @@ func (d *Document) validate() error {
 	if err := platform.validateRegisters(d.Image.RTMRs); err != nil {
 		return err
 	}
-	if d.Server.Address != "" || d.Role == Agent {
+	if d.Server.Address != "" || rules.namesServer {
 		if err := ValidateIPv4(d.Server.Address, true); err != nil {
 			return fmt.Errorf("server.address: %w", err)
 		}
@@ -375,15 +444,26 @@ func (d *Document) validate() error {
 	if !tokenRE.MatchString(d.RKE2.AgentToken) {
 		return fmt.Errorf("rke2.agentToken must be 64 lowercase hex characters")
 	}
-	if d.Role == Server {
+	switch rules.serverToken {
+	case required:
 		if !tokenRE.MatchString(d.RKE2.ServerToken) {
-			return fmt.Errorf("server requires a 64-character lowercase hex rke2.serverToken")
+			return fmt.Errorf("%s requires a 64-character lowercase hex rke2.serverToken", d.Role)
 		}
 		if d.RKE2.ServerToken == d.RKE2.AgentToken {
 			return fmt.Errorf("server and agent tokens must differ")
 		}
-	} else if d.RKE2.ServerToken != "" || d.serverTokenPresent {
-		return fmt.Errorf("agent must not carry rke2.serverToken")
+	case forbidden:
+		if d.RKE2.ServerToken != "" || d.serverTokenPresent {
+			return fmt.Errorf("%s must not carry rke2.serverToken", d.Role)
+		}
+	}
+	if p := d.RKE2.NodePassword; p != "" {
+		if !tokenRE.MatchString(p) {
+			return fmt.Errorf("rke2.nodePassword must be 64 lowercase hex characters")
+		}
+		if p == d.RKE2.AgentToken || p == d.RKE2.ServerToken {
+			return fmt.Errorf("rke2.nodePassword must differ from the join tokens")
+		}
 	}
 	server, err := parseLaunchKey(d.Server.OperatorPublicKey)
 	if err != nil {
@@ -392,8 +472,15 @@ func (d *Document) validate() error {
 	if len(d.AgentOperatorPublicKeys) > maxAgentKeys {
 		return fmt.Errorf("too many agent operator keys")
 	}
-	if d.Role == Agent && len(d.AgentOperatorPublicKeys) == 0 {
-		return fmt.Errorf("agent requires agentOperatorPublicKeys")
+	switch rules.agentKeys {
+	case required:
+		if len(d.AgentOperatorPublicKeys) == 0 {
+			return fmt.Errorf("%s requires agentOperatorPublicKeys", d.Role)
+		}
+	case forbidden:
+		if len(d.AgentOperatorPublicKeys) != 0 {
+			return fmt.Errorf("%s must not carry agentOperatorPublicKeys", d.Role)
+		}
 	}
 	seen := []*ecdsa.PublicKey{server}
 	for _, raw := range d.AgentOperatorPublicKeys {
@@ -415,7 +502,7 @@ func (d *Document) validate() error {
 		return fmt.Errorf("tlsSAN: %w", err)
 	}
 	if d.Router != nil {
-		if d.Role != Server {
+		if !rules.router {
 			return fmt.Errorf("router is server-only")
 		}
 		if err := d.Router.validate(); err != nil {
@@ -430,7 +517,39 @@ func (d *Document) validate() error {
 			return fmt.Errorf("workloads: %w", err)
 		}
 	}
+	return validateRegistryMirrors(d.RegistryMirrors)
+}
+
+// validateRegistryMirrors accepts registry hosts (a lowercase DNS name with an
+// optional port) mapped to http origins with a unicast IPv4 host.
+func validateRegistryMirrors(mirrors map[string]string) error {
+	if len(mirrors) > maxMirrors {
+		return fmt.Errorf("registryMirrors has more than %d entries", maxMirrors)
+	}
+	for registry, endpoint := range mirrors {
+		host, port, hasPort := strings.Cut(registry, ":")
+		if ValidateHostname(host) != nil || (hasPort && !portNumber(port)) {
+			return fmt.Errorf("registryMirrors: %q must be a lowercase DNS hostname with an optional port", registry)
+		}
+		u, err := url.Parse(endpoint)
+		if err != nil || u.Scheme != "http" || u.Host == "" || endpoint != "http://"+u.Host {
+			return fmt.Errorf("registryMirrors: %q must map to an endpoint of the form http://host[:port]", registry)
+		}
+		host, port, hasPort = strings.Cut(u.Host, ":")
+		if hasPort && !portNumber(port) {
+			return fmt.Errorf("registryMirrors: %q endpoint port must be 1..65535", registry)
+		}
+		if err := ValidateIPv4(host, true); err != nil {
+			return fmt.Errorf("registryMirrors: %q endpoint host %w", registry, err)
+		}
+	}
 	return nil
+}
+
+// portNumber accepts a canonical decimal TCP port.
+func portNumber(s string) bool {
+	p, err := strconv.Atoi(s)
+	return err == nil && strconv.Itoa(p) == s && len(validation.IsValidPortNum(p)) == 0
 }
 
 func (d *Document) authorizeKey(pub []byte, key *ecdsa.PublicKey) error {
@@ -438,21 +557,21 @@ func (d *Document) authorizeKey(pub []byte, key *ecdsa.PublicKey) error {
 	if err != nil {
 		return fmt.Errorf("parse server operator public key: %w", err)
 	}
-	if d.Role == Server {
+	if d.rules().ownLaunchKey {
 		if !bytes.Equal(pub, []byte(d.Server.OperatorPublicKey)) {
-			return fmt.Errorf("server launch key does not match server.operatorPublicKey bytes")
+			return fmt.Errorf("%s launch key does not match server.operatorPublicKey bytes", d.Role)
 		}
 		return nil
 	}
 	if key.Equal(server) {
-		return fmt.Errorf("agent must use a different launch key from its server")
+		return fmt.Errorf("%s must use a different launch key from its server", d.Role)
 	}
 	for _, agent := range d.AgentOperatorPublicKeys {
 		if bytes.Equal(pub, []byte(agent)) {
 			return nil
 		}
 	}
-	return fmt.Errorf("this agent's measured launch key is not in agentOperatorPublicKeys")
+	return fmt.Errorf("this %s's measured launch key is not in agentOperatorPublicKeys", d.Role)
 }
 
 func parseLaunchKey(raw string) (*ecdsa.PublicKey, error) {
@@ -539,8 +658,24 @@ func (d *Document) referenceValues() (refvalues.ReferenceValues, error) {
 	return refvalues.Parse(data)
 }
 
+// cdsPort is the image's fixed CDS node port.
+const cdsPort = 30808
+
 // CDSURL is derived from the signed server address and the image's fixed port.
-func (d *Document) CDSURL() string { return "https://" + d.Server.Address + ":30808" }
+func (d *Document) CDSURL() string {
+	return "https://" + net.JoinHostPort(d.Server.Address, strconv.Itoa(cdsPort))
+}
+
+// CDSAddrPort is that same endpoint as an address and port, which is what a
+// pod ruleset names as a destination. A signed address that is not one fails
+// here rather than in the node's packet rules.
+func (d *Document) CDSAddrPort() (netip.AddrPort, error) {
+	addr, err := netip.ParseAddr(d.Server.Address)
+	if err != nil {
+		return netip.AddrPort{}, fmt.Errorf("staged server address %q: %w", d.Server.Address, err)
+	}
+	return netip.AddrPortFrom(addr, cdsPort), nil
+}
 
 // LoadStaged reads a root-owned boot artifact produced by Stage. It is not an
 // authentication API for host input; only the fixed staged path is trusted.
@@ -563,7 +698,7 @@ func LoadStaged(path string) (*Document, error) {
 	if err := doc.validate(); err != nil {
 		return nil, err
 	}
-	if doc.Server.Address == "" {
+	if doc.Server.Address == "" && doc.rules().stagedAddress {
 		return nil, fmt.Errorf("staged configuration must contain a resolved server address")
 	}
 	return &doc, nil

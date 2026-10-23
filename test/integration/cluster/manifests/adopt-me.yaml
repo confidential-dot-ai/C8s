@@ -1,6 +1,8 @@
 # A plain workload with no C8s opt-in, adopted into the mesh by
 # `c8s install --workload-ref web=adopted/deployment/web:8080 --upstream web`
-# during the harness's upgrade step.
+# during the harness's upgrade step. It serves plaintext on 8080: the pod's
+# injected endpoint holds the mesh leaf and carries what the router sends,
+# and the workload itself reads no credentials.
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -20,6 +22,9 @@ spec:
     metadata:
       labels:
         app: web
+      # No c8s annotations: the webhook refuses injection detail annotations
+      # without confidential.ai/cw, so the harness adds them after install
+      # stamps the template (run.sh, "Workload adoption").
     spec:
       securityContext:
         runAsNonRoot: true
@@ -28,6 +33,25 @@ spec:
       containers:
         - name: app
           image: nginxinc/nginx-unprivileged@sha256:3af0c10d960cc2502427fe1219c52989d309e7d65596869c60a34fd2fa2406f0 # 1.30.5-alpine-slim
+          # The config is written to /tmp rather than mounted: the only mount
+          # install's allowlist entry admits is the injected cert volume.
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              cat > /tmp/nginx.conf <<EOF
+              pid /tmp/nginx.pid;
+              events {}
+              http {
+                  include /etc/nginx/mime.types;
+                  client_body_temp_path /tmp/client_temp;
+                  proxy_temp_path /tmp/proxy_temp;
+                  fastcgi_temp_path /tmp/fastcgi_temp;
+                  uwsgi_temp_path /tmp/uwsgi_temp;
+                  scgi_temp_path /tmp/scgi_temp;
+                  server { listen 8080; root /usr/share/nginx/html; }
+              }
+              EOF
+              exec nginx -c /tmp/nginx.conf -g 'daemon off;'
           ports:
             - containerPort: 8080
           securityContext:

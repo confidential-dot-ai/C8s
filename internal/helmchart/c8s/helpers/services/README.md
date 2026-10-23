@@ -44,17 +44,17 @@ Pod clients use the CDS Service URL; the host NRI client uses its signed endpoin
 `c8s.nodeConfigVolume` and `c8s.nodeConfigMount` expose only the nonsecret verified
 launch files in `/run/c8s-node`, read-only. CDS and mesh verify peers with
 `peers.json`; every CDS client uses the separate server-only `cds.json` policy.
-CDS also consumes the merged seed and operator public key. Router certificate
+CDS also consumes the merged seed and operator public key; the router's
+cds-attest reads the same public key to verify route manifests. Router certificate
 issuance and CDS SAN authorization read `tls-san`; nginx uses its sole default
 virtual host. The token-bearing launch directory is never mounted into pods.
 Missing policy files fail startup. Workload sidecars retain NRI socket injection.
 Cluster administrators remain trusted to manage the rendered Kubernetes objects.
 
-`c8s.cdsURL` builds the in-cluster CDS Service URL; `c8s.trustRootURL` delegates
-to it. `c8s.nriCDSURL` uses `nriImagePolicy.cds.url` when supplied, otherwise
-`https://127.0.0.1:<cds.service.nodePort>` for the host plugin.
+`c8s.routerMeshNamespace` is the namespace whose pods serve the router's own
+ports (`c8s-router`). The chart renders that Namespace under the fixed name the
+enforcer compiles in (`pkg/workloadclaims.RouterNamespace`).
 
-`c8s.router.resolver` honors `router.nginx.resolver`. Otherwise `nriImagePolicy.distro=rke2`
-selects `rke2-coredns-rke2-coredns.kube-system.svc.cluster.local`;
-the default is `kube-dns.kube-system.svc.cluster.local`. Nginx must resolve this
-name at startup.
+`c8s.cdsURL` builds the in-cluster CDS Service URL.
+`c8s.nriCDSURL` uses `nriImagePolicy.cds.url` when supplied, otherwise
+`https://127.0.0.1:<cds.service.nodePort>` for the host plugin.

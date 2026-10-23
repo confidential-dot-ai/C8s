@@ -187,7 +187,7 @@ func parseHosts(raw json.RawMessage) (map[string]Host, error) {
 	// Sorted so that a manifest with several faults always reports the same one.
 	for _, name := range slices.Sorted(maps.Keys(entries)) {
 		at := fmt.Sprintf("hosts[%q]", name)
-		if err := checkHostKey(name); err != nil {
+		if err := CheckHost(name); err != nil {
 			return nil, fmt.Errorf("%s: %w", at, err)
 		}
 		h, err := parseHost(entries[name], at)
@@ -338,8 +338,14 @@ func checkAddress(addr string) error {
 	if err != nil {
 		return errors.New("must be host:port")
 	}
-	if net.ParseIP(host) == nil && !validDNSName(host, false) {
+	ip := net.ParseIP(host)
+	if ip == nil && !validDNSName(host, false) {
 		return fmt.Errorf("host %q is neither an IP address nor a DNS name", host)
+	}
+	// SplitHostPort strips brackets from any host; D7 allows them only
+	// around IPv6.
+	if bracketed := strings.HasPrefix(addr, "["); bracketed != (ip != nil && strings.Contains(host, ":")) {
+		return fmt.Errorf("host %q: brackets must enclose an IPv6 address, and only one", host)
 	}
 	if n, err := strconv.ParseUint(port, 10, 16); err != nil || n == 0 || port[0] == '0' {
 		return fmt.Errorf("port %q is not a decimal integer from 1 to 65535", port)
@@ -459,8 +465,9 @@ func isKind(raw json.RawMessage, first byte) bool {
 
 var errNumericFinalLabel = errors.New("final label must not be numeric (it would parse as an IPv4 address)")
 
-// checkHostKey enforces D5.
-func checkHostKey(name string) error {
+// CheckHost reports whether name can be a manifest host key (D5): a
+// lower-case DNS name with no port, trailing dot or numeric final label.
+func CheckHost(name string) error {
 	if net.ParseIP(name) != nil {
 		return errors.New("must not be an IP literal")
 	}

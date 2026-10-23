@@ -21,40 +21,16 @@ containers:
       - --leader-election-namespace={{ .Release.Namespace }}
       - --status-mirror-enabled={{ .Values.statusMirror.enabled }}
       - --get-cert-image={{ include "c8s.image" . }}
-      - --cds-url={{ include "c8s.trustRootURL" . }}
+      - --mesh-image={{ include "c8s-common.image" .Values.armtlsMesh.image }}
       - --webhook-config-name={{ include "c8s.fullname" . }}-pod-injector
       - --webhook-service-name={{ include "c8s.operatorName" . }}
       - --webhook-service-namespace={{ .Release.Namespace }}
       - --attestation-api-url={{ include "c8s.sidecarAttestationApiURL" . }}
-      {{- /* The same measurements CDS is pinned to elsewhere: the
-             injected secret fetcher verifies CDS before handing it a
-             sandbox token and taking a value back. */}}
-      {{- if .Values.node.baked }}
-      - --image-policy-file=/run/c8s-node/cds.json
-      {{- else if .Values.cds.measurementsConfig }}
-      - --image-policy-file=/mnt/c8s-data/measurements/cds.json
-      {{- else }}
-      {{- range .Values.cds.measurements }}
-      - --cds-measurements={{ . }}
-      {{- end }}
-      {{- range .Values.cds.rtmrs }}
-      - --cds-rtmrs={{ . }}
-      {{- end }}
-      {{- end }}
       {{- range .Values.webhook.extraExcluded }}
       - --exclude-namespaces={{ . }}
       {{- end }}
-      {{- if and .Values.armtlsMesh.enabled .Values.armtlsMesh.egressCompanionPolicy.enabled }}
-      - --mesh-outbound-port={{ include "c8s.int" .Values.armtlsMesh.ports.outbound }}
-      {{- range .Values.armtlsMesh.iptablesSync.excludeSourceNamespaces }}
-      - --mesh-exclude-source-namespaces={{ . }}
-      {{- end }}
-      {{- end }}
       - --cert-fs-group={{ include "c8s.int" .Values.webhook.certVolume.fsGroup }}
       - --get-cert-renew-interval={{ .Values.webhook.getCert.renewInterval }}
-      - --get-cert-run-as-user={{ include "c8s.int" .Values.webhook.getCert.runAsUser }}
-      - --get-cert-run-as-group={{ include "c8s.int" .Values.webhook.getCert.runAsGroup }}
-      - --get-cert-run-as-non-root={{ .Values.webhook.getCert.runAsNonRoot }}
 
       {{- /* Workload-digest claims (docs/armtls.md): get-cert
              redeems a sandbox token from the node's inventory over a
@@ -100,25 +76,11 @@ containers:
       # every component volume (see cds.yaml).
       - name: tmp
         mountPath: /tmp
-      {{- include "c8s.nodeConfigMount" . | nindent 6 }}
-      {{- if and (not .Values.node.baked) .Values.cds.measurementsConfig }}
-      - name: measurements-config
-        mountPath: /mnt/c8s-data/measurements
-        readOnly: true
-      {{- end }}
 volumes:
   - name: tmp
     emptyDir:
       medium: Memory
       sizeLimit: 16Mi
-  {{- include "c8s.nodeConfigVolume" . | nindent 2 }}
-  {{- if and (not .Values.node.baked) .Values.cds.measurementsConfig }}
-  - name: measurements-config
-    projected:
-      sources:
-        - configMap:
-            name: {{ include "c8s.fullname" . }}-measurements
-  {{- end }}
 {{- end -}}
 
 apiVersion: apps/v1
@@ -145,16 +107,9 @@ spec:
         app.kubernetes.io/name: c8s-operator
         app.kubernetes.io/instance: {{ .Release.Name }}
         app.kubernetes.io/component: operator
-      {{- if or .Values.operator.podAnnotations .Values.cds.measurementsConfig }}
+      {{- with .Values.operator.podAnnotations }}
       annotations:
-        {{- if .Values.cds.measurementsConfig }}
-        # A ConfigMap edit alone does not change the pod template, so without
-        # this a tightened pin would not roll the operator.
-        checksum/measurements-config: {{ .Values.cds.measurementsConfig | sha256sum }}
-        {{- end }}
-        {{- with .Values.operator.podAnnotations }}
 {{ toYaml . | indent 8 }}
-        {{- end }}
       {{- end }}
     spec:
 {{- include "c8s.operatorPodSpec" . | nindent 6 }}

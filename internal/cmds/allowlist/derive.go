@@ -111,22 +111,15 @@ func dropInjected(cs []templateContainer) ([]templateContainer, []string) {
 	return out, dropped
 }
 
-// injectedMounts are the mounts the webhook adds to c in an injected pod,
-// which a deny or exact policy must list to admit it. The webhook keeps a
-// mount c already declares for the volume, so those destinations win.
+// injectedMounts are the mounts the webhook adds to c, which a deny or exact
+// policy must list to admit it: the secrets volume, when the pod requests
+// secrets. The webhook keeps a mount c already declares for the volume, so
+// those destinations win.
 func injectedMounts(annotations map[string]string, c templateContainer) []allowlist.MountRule {
-	if annotations[workloadclaims.AnnotationWorkload] == "" {
+	if !requestsSecrets(annotations[workloadclaims.AnnotationSecrets]) {
 		return nil
 	}
-	certVolume := annotations[workloadclaims.AnnotationCertVolume]
-	if certVolume == "" {
-		certVolume = workloadclaims.CertVolumeName
-	}
-	rules := c.emptyDirMounts(certVolume, workloadclaims.CertDir)
-	if requestsSecrets(annotations[workloadclaims.AnnotationSecrets]) {
-		rules = append(rules, c.emptyDirMounts(workloadclaims.SecretsVolumeName, workloadclaims.SecretDir)...)
-	}
-	return rules
+	return c.emptyDirMounts(workloadclaims.SecretsVolumeName, workloadclaims.SecretDir)
 }
 
 // requestsSecrets matches the webhook, which injects the fetcher when the
@@ -249,12 +242,10 @@ container. Omitting both leaves every container at "deny", which admits platform
 mounts alone. The pod spec cannot prove which sources are node-provided or how
 persistent storage is protected, so exact rules go in --mounts-file.
 
-For a pod annotated confidential.ai/cw, derive adds the mounts the webhook
-injects into every container to each deny or exact policy: the cert emptyDir at
-/etc/c8s/certs, and the secrets emptyDir at /run/c8s/secrets when the pod sets
-confidential.ai/c8s-secrets, or wherever the container already mounts those
-volumes. Other volumes, including c8s volumes, go in
---mounts-file.
+For a pod that sets confidential.ai/c8s-secrets, derive adds the secrets
+emptyDir the webhook mounts into every container to each deny or exact policy,
+at /run/c8s/secrets or wherever the container already mounts the volume. Other
+volumes, including c8s volumes, go in --mounts-file.
 
 The entry pins argv, so it expires the moment a container command changes:
 re-derive and re-apply whenever the workload is edited.
@@ -305,8 +296,8 @@ derives the same entry as the manifest it was admitted from.`,
 			}
 			if mountsMode == "" && mountsFile == "" {
 				msg := `mounts: no policy given; every container is "deny", which admits platform mounts alone`
-				if spec.annotations[workloadclaims.AnnotationWorkload] != "" {
-					msg = `mounts: no policy given; every container admits platform mounts and the c8s-injected mounts alone`
+				if requestsSecrets(spec.annotations[workloadclaims.AnnotationSecrets]) {
+					msg = `mounts: no policy given; every container admits platform mounts and the c8s secrets mount alone`
 				}
 				fmt.Fprintln(cmd.ErrOrStderr(), msg)
 			}

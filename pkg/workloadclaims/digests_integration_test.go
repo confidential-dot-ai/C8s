@@ -216,7 +216,7 @@ func TestStartDigestsEndpointServesDespiteWarmUpFailure(t *testing.T) {
 	}
 	err = StartDigestsEndpoint(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)),
 		&fakeResolver{sandboxID: "sandbox-1"}, signer.PublicKeyDER(),
-		"sev-snp", attest, "http://127.0.0.1:1", armtls.Pins{})
+		"sev-snp", attest, "http://127.0.0.1:1", armtls.Pins{}, "")
 	if err != nil {
 		t.Fatalf("StartDigestsEndpoint returned an error for a warm-up failure; it must degrade, not fail: %v", err)
 	}
@@ -282,15 +282,15 @@ func TestNewDigestsClientConstruction(t *testing.T) {
 	attest := func(context.Context, string) (string, error) { return "", errTestAttest }
 	ctx := context.Background()
 
-	if _, err := NewDigestsClient(ctx, "sev-snp", attest, "", armtls.Pins{}, 0); err == nil {
+	if _, err := NewDigestsClient(ctx, DigestsClientConfig{Platform: "sev-snp", AttestFunc: attest}); err == nil {
 		t.Fatal("built with no attestation-api URL")
 	}
-	if _, err := NewDigestsClient(ctx, "bogus-platform", attest, "http://127.0.0.1:1", armtls.Pins{}, 0); err == nil {
+	if _, err := NewDigestsClient(ctx, DigestsClientConfig{Platform: "bogus-platform", AttestFunc: attest, AttestationAPIURL: "http://127.0.0.1:1"}); err == nil {
 		t.Fatal("built with an unsupported TEE platform")
 	}
 	// A warm-up that cannot succeed is a construction failure here, unlike the
 	// server side: CDS has no work to do until it can present a client cert.
-	if _, err := NewDigestsClient(ctx, "sev-snp", attest, "http://127.0.0.1:1", armtls.Pins{}, 0); err == nil {
+	if _, err := NewDigestsClient(ctx, DigestsClientConfig{Platform: "sev-snp", AttestFunc: attest, AttestationAPIURL: "http://127.0.0.1:1"}); err == nil {
 		t.Fatal("built despite an attestation failure during warm-up")
 	}
 }
@@ -370,7 +370,9 @@ func TestDigestsClientTransportAndProtocolFailures(t *testing.T) {
 // 500 — distinct from the 404 that means "no such sandbox".
 type erroringResolver struct{}
 
-func (erroringResolver) SandboxForPeer(Peer) (string, error) { return "", errTestAttest }
+func (erroringResolver) SandboxForPeer(Peer) (CallerSandbox, error) {
+	return CallerSandbox{}, errTestAttest
+}
 func (erroringResolver) DigestsForSandbox(string) ([]string, []SandboxContainer, bool, error) {
 	return nil, nil, false, errTestAttest
 }

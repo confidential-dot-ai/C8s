@@ -2,14 +2,13 @@
 ## Signed launch policies are staged on each node at /run/c8s-node; the host
 ## owns attestation, RKE2 and NRI. Ordinary Helm installs leave this off.
 ##
-## A baked router takes its catch-all upstream and public hostnames from the
-## launch file at /run/c8s-node/router/ instead of the chart, so
-## router.upstream.address stays empty and router.publicTLS.mode stays cds.
-## nginx then includes router/tls.conf, which names the ACME leaf when the
-## launch file lists hostnames and the mesh leaf otherwise. nginx reads
-## nginx.conf and the TLS snippets from the image at /usr/lib/c8s/router-nginx,
-## so changing them, or the router values that render them, takes an image
-## rebuild.
+## A baked router takes its public hostnames from the launch file at
+## /run/c8s-node/router/ instead of the chart, so router.publicTLS.mode stays
+## cds. Its routes come from the route manifest, as off a baked node. nginx
+## includes router/tls.conf, which names the ACME leaf when the launch file
+## lists hostnames and the mesh leaf otherwise. nginx reads nginx.conf and the
+## TLS snippets from the image at /usr/lib/c8s/router-nginx, so changing them,
+## or the router values that render them, takes an image rebuild.
 node:
   baked: false
 
@@ -17,9 +16,10 @@ node:
 ## both enumerate from, so adding a component is one edit here.
 ##   - valuePath:   dotted path to the component's image object (repository/
 ##                  tag/digest live there).
-##   - enabledPath: dotted path to its deploy toggle ("" = always deployed); a
-##                  disabled component is neither derived into the NRI allowlist
-##                  nor coverage-checked.
+##   - enabledPath: dotted path to its deploy toggle; absent means the
+##                  component is always deployed. A disabled component is
+##                  neither derived into the NRI allowlist nor
+##                  coverage-checked.
 ##   - cdsExempt:   cds is always seeded via its self-entry (independent of
 ##                  deriveComponents), so the fail-closed coverage guard skips it.
 ##   - pinnedDigest: the digest `c8s install` pins for this component instead of
@@ -44,14 +44,12 @@ node:
 ## guard) and by `c8s install` (digest resolution, via `helm show values`).
 c8sComponents:
   - valuePath: image
-    enabledPath: ""
     cdsExempt: false
     entrypoint: ["/c8s"]
     imageEnv:
       PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
       SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
   - valuePath: cds.image
-    enabledPath: ""
     cdsExempt: true
     entrypoint: ["/c8s", "cds"]
     imageEnv:
@@ -67,8 +65,9 @@ c8sComponents:
     ## attestation_rs_ref. Bump together with that pin, to
     ##   crane digest ghcr.io/confidential-dot-ai/attestation-api:sha-<first 7 of the ref>
     pinnedDigest: sha256:fb0d98a3f248f6d0f0a8feb8d497fba58d40d775b2db3e9e33d25d3fb283815f
+    ## The injected mesh endpoint: every covered pod runs it, so the node
+    ## must admit it whatever else is deployed.
   - valuePath: armtlsMesh.image
-    enabledPath: armtlsMesh.enabled
     cdsExempt: false
     entrypoint: ["/app/c8s", "armtls-mesh"]
     imageEnv:
@@ -174,14 +173,7 @@ webhook:
   annotations: {}
   service:
     port: 443
-  failurePolicy: Fail
   extraExcluded: []
-  ## ValidatingAdmissionPolicy guarding the confidential.ai/cw pod label
-  ## (workload Service membership): at CREATE it must match the opt-in
-  ## annotation, and both keys are immutable on UPDATE. Enforced in the API
-  ## server, so it holds even when the injection webhook is down.
-  cwLabelPolicy:
-    enabled: true
   certVolume:
     fsGroup: 65532
   getCert:
@@ -212,10 +204,10 @@ cds:
     digest: ""
     pullPolicy: IfNotPresent
   port: 8443
-  ## An upgrade that changes CDS's own command line or mounts fails until the
-  ## running enforcers admit the new CDS. The failure names the new seed entry:
-  ## publish it with `c8s allowlist apply`, wait for every node to pull it, and
-  ## set this to its name (docs/allowlist-and-capabilities.md).
+  ## An upgrade that changes CDS's own image, command line or mounts fails
+  ## until the running enforcers admit the new CDS. The failure names the new
+  ## seed entry: publish it with `c8s allowlist apply`, wait for every node to
+  ## pull it, and set this to its name (docs/allowlist-and-capabilities.md).
   publishedShape: ""
   ## CIDR(s) holding this cluster's node addresses. CDS dials a node's admission
   ## inventory inside them and nowhere else, which is what stops a workload
@@ -265,8 +257,9 @@ cds:
   logLevel: info
   allowlistDB: /mnt/c8s-data/cds/allowlist.db
   # -- Operator token clock skew tolerance in seconds. Without
-  # `persistence.enabled`, CDS also refuses allowlist writes for this long
-  # after it starts, since it forgets spent tokens at restart.
+  # `persistence.enabled`, CDS also refuses operator-token requests
+  # (allowlist, routes, secrets) for this long after it starts, since it
+  # forgets spent tokens at restart.
   jwtClockSkew: 30
   certTTL: 24h
   # -- Upper bound on the TTL of a leaf carrying a matched-workload stamp
@@ -327,9 +320,13 @@ cds:
   ## When set, CDS accepts PUT/DELETE /allowlist from a client presenting a
   ## short-lived token signed by one of the matching operator private keys (see
   ## `c8s allowlist` and the README "Operator allowlist credentials"). Each
-  ## token authorizes one write, and CDS publishes the token of a
-  ## whole-document upload as that document's signature.
-  ## Empty = allowlist writes are rejected (reads are still served). Prefer
+  ## token authorizes one request (allowlist, routes, secrets, including secrets
+  ## explain), and CDS publishes the token of a whole-document upload as that
+  ## document's signature.
+  ## Empty = allowlist writes are rejected (reads are still served), so an
+  ## upgrade that changes a component's shape cannot be published and needs a
+  ## reinstall; adding the keys later is such an upgrade
+  ## (docs/allowlist-and-capabilities.md). Prefer
   ## `c8s install --operator-keys <file>` over hand-editing this multi-line value.
   ## Measurements config: the JSON document listing the VM images this cluster
   ## runs, each pinned as a whole image. Content, not a path — set it with
@@ -450,22 +447,10 @@ attestationApi:
       cpu: 500m
       memory: 256Mi
 
-## armTLS service mesh: transparent L4 proxy with hardware-attested mTLS.
-##
-## --- CRITICAL OPERATIONAL REQUIREMENT ---
-## The armtls-mesh DaemonSet hardcodes hostNetwork: true and
-## dnsPolicy: ClusterFirstWithHostNet (see templates/armtls-mesh-daemonset.yaml).
-## Both are non-toggleable: iptables-sync must run in the host network namespace
-## to intercept pre-DNAT pod traffic at the node level, and the paired
-## dnsPolicy keeps in-cluster service DNS working from that netns. Removing
-## either breaks the routing model — there is no values knob because there
-## is no supported configuration without them. Confirm your cluster CNI and
-## any node-level NetworkPolicy/firewall posture is compatible before
-## deploying.
+## The per-pod mesh endpoint the admission webhook injects into every pod it
+## covers. Its ports, identity and packet rules are the node's measured policy,
+## not chart values (node-guest-image/c8s/image-policy.yaml.in).
 armtlsMesh:
-  ## Host-side mesh routing.
-  enabled: true
-
   image:
     repository: ghcr.io/confidential-dot-ai/armtls-mesh
     # -- Image tag. Required: the chart does not pin a default; the consumer
@@ -474,193 +459,6 @@ armtlsMesh:
     digest: ""
     pullPolicy: IfNotPresent
 
-  imagePullSecrets: []
-
-  # -- armTLS TEE type embedded in and verified on mesh certs: sev-snp or tdx.
-  #    This is the wire-level platform identifier, not the attestation-api
-  #    detection vocab (az-snp and bare-metal snp both verify as sev-snp here);
-  #    attestation-api still auto-detects how to gather the evidence.
-  platform: sev-snp
-
-  # Host path for iptables lock (k3s: /run/k3s/agent/xtables.lock)
-  xtablesLockPath: /run/xtables.lock
-
-  # Mesh ports
-  ports:
-    outbound: 15001
-    inbound: 15006
-    health: 15021
-    ## iptables-sync's readiness endpoint, bound to node loopback only (the
-    ## DaemonSet is hostNetwork). The mesh proxy's start is gated on it.
-    iptablesReady: 15022
-
-  # UID for the armtls-mesh process (iptables excludes this UID)
-  uid: 1337
-
-  # UIDs excluded from iptables redirect (comma-separated)
-  excludeUids: "0"
-
-  # Always-on fail-closed inbound guard for confidential workloads: drop
-  # FORWARD-path traffic to pods labeled confidential.ai/cw (Service-VIP DNAT,
-  # excluded-namespace dials, cross-node direct-to-pod-IP), which the mesh
-  # cannot intercept. passthrough is the reply allowlist: proto:source-port
-  # entries RETURNed before the drop for dataplanes whose conntrack does not
-  # mark a reply ESTABLISHED (e.g. GKE Dataplane V2 / Cilium breaks the DNS
-  # reply, so without udp/tcp:53 get-cert can never resolve). Entries are
-  # bounded to the stock ephemeral destination-port window (32768-60999), and
-  # TCP entries additionally to the handshake reply and segments with SYN
-  # clear, so no TCP entry can open a connection to a cw pod's service ports.
-  # A UDP entry admits any datagram from that source port into the window.
-  # Empty list = strict drop-all.
-  cwInboundEnforcement:
-    passthrough:
-      - protocol: udp
-        sourcePort: 53
-      - protocol: tcp
-        sourcePort: 53
-
-  # Certificate settings
-  certMode: cds  # self-signed | cds
-  certTtl: "4h"
-  rotationTimeout: "30s"
-
-  # CDS integration (used when certMode=cds). The launch-measurement allowlist
-  # for CDS's armTLS peer cert comes from the parent's cds.measurements, not
-  # a per-component mirror.
-  cds:
-    caPollInterval: "5m"
-
-  # Expected launch digests for measurement pinning (empty = accept any)
-  measurements: []
-
-  # TDX RTMR pins for mesh peers, each "<index>=<sha384-hex>" (see cds.rtmrs).
-  # Ignored for SNP peers; empty = no RTMR pinning.
-  rtmrs: []
-
-  # Measurements config for mesh peers and the CDS the proxy dials: the JSON
-  # document's content, not a path (see cds.measurementsConfig).
-  measurementsConfig: ""
-
-  # Pod shutdown budget. The iptables-cleanup preStop hook fires last in the
-  # native-sidecar reverse-init order, so its sleep upper bound must leave room
-  # for the main proxy to drain first:
-  #   preStopSleepSeconds ≤ terminationGracePeriod - drainTimeout
-  # Durations use the Go single-unit form (Ns / Nm / Nh) and are parsed via
-  # the armtls-mesh.durationSeconds helper for chart-bound arithmetic.
-  terminationGracePeriod: "45s"
-  drainTimeout: "30s"
-
-  # Connection limits
-  maxConns: 10000
-  maxConnsPerSource: 0
-  idleTimeout: ""
-
-  # TLS session cache
-  sessionCacheSize: 64
-
-  # Logging
-  logLevel: info
-
-  # Node placement
-  nodeSelector: {}
-
-  # Resources
-  resources:
-    requests:
-      cpu: 100m
-      memory: 64Mi
-    limits:
-      cpu: 500m
-      memory: 128Mi
-
-  # Iptables sync sidecar resources
-  iptablesSync:
-    # Local source namespaces excluded from transparent mesh interception.
-    # The release namespace is intentionally NOT excluded: router's egress
-    # to workload pod IPs must be intercepted to get attested mTLS, and
-    # control-plane traffic dials Service VIPs the mesh never intercepts.
-    # With cwInboundEnforcement, excluded sources are blocked from reaching
-    # confidential-workload pods entirely, not left plaintext.
-    excludeSourceNamespaces:
-      - kube-system
-    resyncPeriod: 30s
-    watchdogPeriod: 2s
-    ipsetMaxElem: 262144
-    resources:
-      requests:
-        cpu: 5m
-        memory: 32Mi
-      limits:
-        cpu: 100m
-        memory: 128Mi
-
-  iptablesCleanup:
-    # --keep-guard keeps the fail-closed filter guard while removing
-    # interception; the sleep lets kube-endpoints drop this node first.
-    preStopSleepSeconds: 5
-    resources:
-      requests:
-        cpu: 1m
-        memory: 8Mi
-      limits:
-        cpu: 10m
-        memory: 16Mi
-
-  # Probe timings
-  probes:
-    startup:
-      periodSeconds: 2
-      failureThreshold: 60
-    readiness:
-      periodSeconds: 10
-      timeoutSeconds: 3
-      failureThreshold: 3
-    liveness:
-      initialDelaySeconds: 30
-      periodSeconds: 30
-      timeoutSeconds: 3
-      failureThreshold: 3
-
-  # --- Policies ---
-
-  # TCP-only egress policy. On by default: the NP allows all TCP (intercepted
-  # by the mesh) and DNS/53 to kube-system, and default-denies everything
-  # else. The mesh's iptables egress guard is the primary non-TCP enforcement
-  # (drop); this NetworkPolicy is the defence-in-depth layer. namespaces is a
-  # per-namespace opt-in list; when empty the policy renders into the release
-  # namespace only, and the guard covers every managed namespace regardless.
-  # It imposes isolation; egressCompanionPolicy below relaxes a user's own
-  # isolation for the mesh port. The two are independent.
-  tcpEgressPolicy:
-    enabled: true
-    namespaces: []
-
-  # Mesh egress companions: the operator keeps a companion NetworkPolicy
-  # beside every policy of yours that isolates egress in an intercepted
-  # namespace, allowing the selected pods TCP to ports.outbound, which is
-  # where the mesh sends every pod-to-pod connection. Additive only; see
-  # docs/operator.md, "Workload namespaces with default-deny egress".
-  egressCompanionPolicy:
-    enabled: true
-
-  # ValidatingAdmissionPolicy to prevent pods from running as mesh UID
-  uidAdmissionPolicy:
-    enabled: true
-
-  # PrometheusRule for threat model alerting
-  prometheusRules:
-    enabled: false
-
-  # Priority class for pod scheduling
-  priorityClassName: system-node-critical
-
-  networkPolicy:
-    enabled: false
-    monitoringNamespace: monitoring
-
-## rke2 system workloads the seed admits argv-pinned rather than by digest
-## alone. Only meaningful on cvmMode=bare-metal, where the node image bakes RKE2 and
-## its local-path provisioner; other lanes do not run these pods.
 rke2:
   # local-path-provisioner helper pods: the node image's baked manifest runs
   # busybox as `/bin/sh /script/{setup,teardown}` with per-PVC flags. The seed
@@ -673,6 +471,17 @@ rke2:
       digest: "sha256:fd8d9aa63ba2f0982b5304e1ee8d3b90a210bc1ffb5314d980eb6962f1a9715d"
 
 nriImagePolicy:
+  ## The mesh policy of an installed (unmeasured) node: the pods of this
+  ## release's namespace and kube-system host no member pods, and the pod
+  ## ruleset admits this resolver on the DNS port.
+  mesh:
+    ## Required with a mesh policy: the resolver a member pod may reach.
+    resolver: ""
+    ## Required with a mesh policy: this cluster's pod and Service CIDRs. The
+    ## router's egress exception excludes them, so its dial to a member is
+    ## captured into the mesh rather than leaving the pod in the clear.
+    clusterRanges: []
+
   ## Host-side NRI image admission: the installer DaemonSet. Its enabled state is
   ## bound to the cvmMode shape, not free: it MUST be true on gke/aks, where host NRI is the only allowlist gate
   ## (require_host_image_policy). On cvmMode=bare-metal it runs in its baked form
@@ -772,7 +581,7 @@ nriImagePolicy:
     pluginDir: /opt/nri/plugins
     configDir: /etc/nri/conf.d
     cacheDir: /var/lib/nri-image-policy
-    runtimeDir: /var/run/nri-image-policy
+    runtimeDir: /run/nri-image-policy
 
   ## The CDS-facing sandbox-digests endpoint (docs/armtls.md, "Sandbox
   ## identity"). Its port is a compiled constant, not a value: it is privileged
@@ -814,6 +623,19 @@ nriImagePolicy:
     # interval after CDS commits the write. Under `baked` the plugin runs the
     # equal value measured into the node image, which an override cannot reach.
     interval: 5s
+
+  # Extend TDX RTMR[3] with each pulled allowlist's digest before applying it,
+  # so the register records every policy the node enforced since boot
+  # (docs/allowlist-and-capabilities.md, "Measured policy history"). External
+  # armTLS verifiers on attestation-go predating runtime extensions, flat
+  # RTMR[3] pins and c8s verify --image-policy-file with an approver_key
+  # still require the bare operator-key seed. Needs the default
+  # hostPaths.runtimeDir and attestationApi.enabled, so certificate producers
+  # mount the journal; node.baked is refused, since its image owns the plugin
+  # config. With nriImagePolicy.baked the pins installer patches it into the
+  # node image's config, which a node image predating the key ignores. After
+  # 256 policies the node applies no new one until it reboots.
+  measurePolicies: false
 
   # containerd's NRI plugin_request_timeout: how long containerd waits on one
   # plugin callback. A callback that overruns it makes NRI drop the plugin,
@@ -859,7 +681,9 @@ nriImagePolicy:
     # (label, initContainers, containers, digest, image, command, args, mounts,
     # env, secrets). A chart-derived component entry is named
     # "<image basename>-<first 12 hex of digest>"; an entry of the same name
-    # here replaces it. Default empty.
+    # here replaces it. An entry whose image names an injected component's
+    # repository (image, armtlsMesh.image) also lands as that component's role
+    # entries in every plugin's base allowlist. Default empty.
     workloads: {}
     #   coredns:
     #     containers:
@@ -1000,54 +824,71 @@ router:
     https: ""
 
   # -- Public hostnames for the front door, as a list. Empty defaults to the
-  # chart-managed Service DNS name: <release>-router.<namespace>.svc. Every entry
+  # chart-managed Service DNS name: <release>-router.c8s-router.svc. Every entry
   # becomes an nginx server_name, so one router can answer on several hostnames
   # the serving cert (publicTLS) covers. The FIRST entry is the single identity
   # on the CDS-issued mesh cert — pin it in cds.dnsSanPatterns; the rest widen
   # only server_name and need no dnsSanPatterns entry.
   san: []
 
-  # -- Upstream backend the front door proxies to. No default, and exactly two
-  # safe shapes: an adopted confidential workload's headless Service
-  # (c8s-<id>.<ns>.svc.cluster.local:<port>, which `c8s install --upstream <id>`
-  # fills in here from the ref's :<port>) so the pod-IP hop is wrapped in the
-  # node mesh's attested mTLS (this is how a confidential workload like vllm is
-  # reached, over plaintext http the mesh secures); otherwise a manual address
-  # must be https with tls.verify=true, an upstream that terminates and
-  # authenticates TLS itself (app-TLS). A plaintext http or unverified-https
-  # manual address fails the render (kind=router_unsecured_upstream): the chart
-  # cannot confirm it resolves to pod IPs the mesh intercepts and there is no
-  # acknowledgment to override that.
-  upstream:
-    # -- Host and port of the upstream service. A c8s-<id>.<ns>.svc.cluster.local
-    # headless-Service address (what `c8s install --upstream` derives) is
-    # recognized as mesh-wrapped and may be plaintext http; any other address
-    # must be https + verify. See validations.yaml.
-    address: ""
-    # -- Protocol for the upstream connection (http or https).
-    protocol: http
-    # -- How long nginx waits for the upstream between reads and writes on the
-    # catch-all route, as an nginx time. A non-streaming completion sends
-    # nothing until it is done, so this must outlive the longest generation.
+  # -- Application routing. nginx proxies every request that no protocol
+  # endpoint or built-in route claims to the cds-attest routing listener on
+  # pod loopback. cds-attest polls the operator-signed route manifest from the
+  # verified CDS and routes by it alone. `c8s routes put|add` writes the
+  # manifest; until the router applies one, application requests get 503. A
+  # request whose Host is not a manifest host, or whose path matches no route,
+  # gets 404. A workload backend is reached over the mesh: the pod's endpoint
+  # presents its get-cert leaf, which must carry the route's allowlist workload
+  # name. See
+  # docs/operator.md, "Route manifest".
+  routing:
+    # -- Loopback port of the cds-attest routing listener. Not a pod or
+    # Service port; must differ from attest.port, allowlist.proxyPort,
+    # nginx.httpsPort and the ACME ports.
+    port: 8802
+    # -- How long nginx waits for the routing listener between reads and
+    # writes, as a positive whole number of ms, s, m or h, such as 3600s. A
+    # non-streaming completion sends nothing until it is done, so this must
+    # outlive the longest generation.
     readTimeout: 3600s
-    tls:
-      # -- Present the CDS-issued certificate to HTTPS upstreams.
-      useCDSClientCert: true
-      # -- Verify the HTTPS upstream's certificate chain against trustedCAPath.
-      verify: true
-      # -- Maximum upstream server certificate chain depth nginx will verify when
-      # upstream.tls.verify=true. Increase for private PKI chains with more
-      # intermediates between the upstream leaf and trusted CA bundle.
-      verifyDepth: 2
-      # -- SNI/verification name for the HTTPS upstream. Must match the upstream
-      # cert SAN. Empty defaults to the address host.
-      serverName: ""
-      # -- CA file nginx verifies the upstream against. Defaults to the get-cert
-      # output at <tlsMountPath>/cert.pem, which CDS returns as leaf+CA chain, so
-      # CDS-issued upstream certs verify out of the box. Set to
-      # <meshCA.mountPath>/<meshCA.key> (and provide that ConfigMap) or another
-      # path for a different upstream.
-      trustedCAPath: /tls/cert.pem
+    # -- Largest application request body nginx accepts, in bytes; a larger
+    # one gets 413. nginx streams the body to the routing listener rather
+    # than holding it. A baked node ignores this value and takes the signed
+    # launch file's router.maxRequestBodyBytes (default 1048576) instead.
+    maxRequestBodyBytes: 1048576
+    # -- How long a routed request may go with no data moving either way, as a
+    # positive whole number of ms, s, m or h, such as 1h or 90m; a slow client
+    # that keeps reading is never cut. A tunnelled request, whose response
+    # cds-attest buffers whole, gets this long in total for its backend call,
+    # and nginx waits 30s longer for its reply.
+    backendTimeout: 1h
+    # -- How often cds-attest polls CDS for the route manifest, as a positive
+    # whole number of ms, s, m or h, such as 30s. Keep it under half the
+    # manifest's maxAgeSeconds.
+    pollInterval: 30s
+    # -- Bytes the tunnelled requests in flight in each router replica may
+    # buffer, as a quantity such as 64Gi. Each reserves three copies of its
+    # record and four of the largest response, 32 MiB; one client address
+    # holds at most a quarter, and further requests get 503 tunnel_busy.
+    # Empty uses 75% of the cds-attest memory limit (router.attest.resources),
+    # or 32Gi without one.
+    tunnelBudget: ""
+    # -- Development only. With no CDS pin (cds.measurements,
+    # cds.measurementsConfig) and no cds.operatorKeys off a baked node, true
+    # lets any attested CDS supply both the route manifest and its keys;
+    # false fails the render.
+    allowUnpinnedCDS: false
+
+  # -- Route publication. When enabled, cds-attest serves the applied signed
+  # route manifest at /.well-known/c8s/routes (the CDS GET /routes envelope,
+  # Cache-Control: no-store). A client then verifies the manifest under pinned
+  # operator keys and checks that the attest-pq or attest-lb evidence binds its
+  # route digest (`c8s verify --operator-keys`). Off by default, and the path
+  # answers 404: the manifest names hosts, backend addresses and workload
+  # names. `c8s node-image render` turns it on for baked nodes. Requires
+  # attest.enabled. See docs/routes-evidence.md.
+  routePublication:
+    enabled: false
 
   # -- Publish CDS's complete /allowlist API through the router front door.
   # The built-in route uses an in-pod loopback proxy that verifies the
@@ -1057,9 +898,8 @@ router:
   # Writes still require the short-lived, body-bound operator token minted by
   # `c8s allowlist --operator-key`; the private key never enters the cluster.
   #
-  # An explicit router.routes entry at /allowlist or /allowlist/ takes precedence
-  # for backwards compatibility. Set enabled: false to remove the built-in
-  # public route entirely.
+  # Set enabled: false to remove the built-in public route entirely. No route
+  # manifest path under /allowlist is selected either way.
   allowlist:
     enabled: true
     # -- Loopback port for the armTLS-verifying allowlist proxy. This is not a
@@ -1084,43 +924,18 @@ router:
     # -- Container resources for the allowlist proxy.
     resources: {}
 
-  # -- Additional path routes proxied before the default upstream backend.
-  # Useful for preserving control-plane endpoints while the catch-all route
-  # points at an inference backend.
-  routes: []
-    # - path: /allowlist
-    #   match: exact  # exact | prefix (default)
-    #   backend:
-    #     # A route backend must be https with tls.verify: true (app-TLS): the
-    #     # chart cannot confirm a plaintext http or unverified-https address
-    #     # resolves to pod IPs the node mesh wraps, so it fails the render
-    #     # (kind=router_unsecured_route). A confidential workload is reached via
-    #     # router.upstream (the --upstream flow), not a route.
-    #     address: cds.default.svc.cluster.local:8443
-    #     protocol: https
-    #     tls:
-    #       useCDSClientCert: true
-    #       verify: true
-    #       verifyDepth: 2
-    #       serverName: cds.default.svc.cluster.local
-    #       trustedCAPath: ""
-    #   cors:
-    #     enabled: false  # opt this route out of the global CORS block
-
-  # -- CORS headers added to every proxied location (the catch-all upstream and
-  # each entry in `routes`) and to the discovery endpoints (`discovery.path`,
+  # -- CORS headers added to every proxied location (application routing and
+  # the protocol endpoints) and to the discovery endpoints (`discovery.path`,
   # `discovery.cdsCertPath`, `discovery.meshCAPath`) so browser clients can
   # bootstrap the attested TLS handshake. The internal /healthz endpoint is
-  # never affected. Upstream pass-through: if the upstream emits
+  # never affected. Backend pass-through: if the backend emits
   # Access-Control-Allow-Origin on a non-preflight response, router forwards
-  # the upstream's CORS header set verbatim and suppresses its own — browsers
-  # never see duplicate headers. If the upstream emits no CORS headers,
+  # the backend's CORS header set verbatim and suppresses its own — browsers
+  # never see duplicate headers. If the backend emits no CORS headers,
   # router injects the configured ones below. Preflight `OPTIONS` requests
   # are short-circuited at nginx with a 204 response using router's policy
-  # (they never reach the upstream). Per-route opt-out: set
-  # `routes[i].cors.enabled: false` to disable CORS on that route while
-  # leaving the global block enabled. Only the `enabled` key is honored on a
-  # per-route cors block.
+  # (they never reach the backend). The policy covers every route manifest
+  # route alike; a manifest cannot opt a route out.
   #
   # Independent of this block, the C8s protocol-owned endpoints
   # (/.well-known/c8s/*, the discovery document and certificate endpoints,
@@ -1136,10 +951,10 @@ router:
     # (hardware evidence, CDS-signed certificates, sealed tunnel records) or
     # public by design, and no request relies on ambient browser credentials
     # (allowlist mutations are operator-signed). An origin allowlist there
-    # cannot protect anything and only breaks third-party verifiers. Workload
-    # locations (`routes` and the catch-all upstream) are never affected by
-    # this flag. Ignored while `enabled` is true — the operator policy below
-    # then covers every location, protocol endpoints included.
+    # cannot protect anything and only breaks third-party verifiers.
+    # Application routing is never affected by this flag. Ignored while
+    # `enabled` is true — the operator policy below then covers every
+    # location, protocol endpoints included.
     protocolEndpoints: true
     # -- Allowed Origin values. Use ["*"] to allow any origin (cannot be
     # combined with allowCredentials: true; browsers reject that pairing).
@@ -1163,12 +978,13 @@ router:
     maxAge: 600
 
   # -- Public TLS credential presented to internet clients. mode selects it:
-  # cds (default) serves the CDS-issued mesh leaf at tlsMountPath; webpki
-  # serves the operator Secret named by secretName (host-visible key, so the
-  # front door is attest-pq only); acme has the in-pod `c8s acme` sidecar
+  # cds (default) serves the CDS-issued mesh leaf; webpki serves the operator
+  # Secret named by secretName (host-visible key, so the front door is
+  # attest-pq only); acme has the in-pod `c8s acme` sidecar
   # issue a multi-SAN leaf for the san list (TEE-held key — requires
   # attestationApi.cvmMode=bare-metal).
-  # secretName/certKey/keyKey/mountPath apply to webpki only.
+  # secretName/certKey/keyKey/mountPath apply to webpki only; the Secret lives
+  # in the c8s-router namespace, the one the router pod runs in.
   publicTLS:
     mode: cds
     secretName: ""
@@ -1208,7 +1024,7 @@ router:
   meshCA:
     # -- Serve and advertise the mesh CA PEM at the discovery meshCAPath when
     # discovery is enabled. The bundle is written by the injected get-cert
-    # (--ca-out) into the shared cert volume alongside the leaf, so no separate
+    # (--ca-path) into the shared cert volume alongside the leaf, so no separate
     # ConfigMap or mount is required.
     expose: true
 
@@ -1217,8 +1033,8 @@ router:
   certProvisioning:
     # -- Enable verbose (debug) logging for the chart-rendered c8s-cert sidecar.
     verbose: false
-    # -- How often the c8s-cert sidecar renews the TLS certificate and SIGHUPs
-    #    nginx. Must be shorter than the cert TTL issued by CDS.
+    # -- How often the c8s-cert sidecar renews the TLS certificate. Must be
+    #    shorter than the cert TTL issued by CDS.
     renewInterval: "1h"
     # -- How often the c8s-cert sidecar polls CDS for changes that make its
     #    leaf stale, renewing when it finds one:
@@ -1233,8 +1049,10 @@ router:
     #    the watch; otherwise the minimum is 1s.
     caWatchInterval: "1m"
 
-  # -- Attestation + over-encryption sidecar (the c8s-verify protocol). When
-  # enabled, an in-pod `c8s cds-attest` container serves the *dynamic*
+  # -- Attestation + over-encryption endpoints (the c8s-verify protocol). The
+  # in-pod `c8s cds-attest` container always runs, since it also carries
+  # application routing (see `routing`); enabled: false only unregisters these
+  # endpoints. When enabled, it serves the *dynamic*
   # client-facing endpoints (the attest-pq attestation + X-Wing key exchange,
   # the attest-lb per-session challenge, and the over-encrypted tunnel) and nginx
   # reverse-proxies `/.well-known/c8s/` to it on loopback. The static CDS/mesh-CA certs are still served by nginx via
@@ -1251,7 +1069,7 @@ router:
   attest:
     enabled: true
     # -- Loopback port the sidecar listens on; nginx proxies `/.well-known/c8s/`
-    # to 127.0.0.1 on this port.
+    # and `/readyz` to 127.0.0.1 on this port.
     port: 8800
     # -- TEE platform and AMD processor generation advertised to the browser
     # WASM verifier.
@@ -1266,6 +1084,9 @@ router:
     # which the sidecar reads from the node-ip file the image policy plugin
     # writes; $(HOST_IP) comes from a variable the allowlist does not pin and
     # fails the render there. An unescaped reference fails the render.
+    # Wherever the chart mounts the attestation-api socket (attestationApi.enabled
+    # or node.baked) and attest.enabled is true, the sidecar also reads the
+    # node's measured-policy journal under nriImagePolicy.hostPaths.runtimeDir.
     attestationApiURL: ""
     # -- Workload-verified ingress gate: when set to an allowlist entry name,
     # the sidecar serves /readyz as 200 only while the installed mesh identity
@@ -1273,27 +1094,23 @@ router:
     # exactly this name, and the chart wires a readinessProbe on the cds-attest
     # container (an HTTPS httpGet through nginx, which proxies /readyz to the
     # sidecar's loopback port), so ingress withholds traffic while the front
-    # door's committed mesh identity is unnamed. Setting it also switches the
-    # router get-cert onto the workload-claims flow (inventory socket mount +
-    # supplemental group on node-CVM) — without that
-    # no stamp could ever arrive and the gate would hold the front door at 503
-    # forever. The named entry must match the router pod's own non-injected
-    # container set: nginx plus the c8s image as cds-attest, allowlist-proxy
-    # and, when enabled, the acme sidecar. The chart seeds that entry as
+    # door's committed mesh identity is unnamed. The named entry must match the
+    # router pod's own container set that holds no platform role, which is
+    # nginx alone. The chart seeds that entry as
     # c8s-router-<12 hex of its content hash> when router.nginx.image.digest
     # and image.digest are set and
     # nriImagePolicy.bootstrapAllowlist.deriveComponents is true.
     #
-    # Requires attest.enabled and hostPort.enabled: false — readiness only
-    # withdraws Service endpoints, while a hostPort is published by the CNI
-    # portmap plugin independently of pod readiness, so the gate would withhold
-    # nothing. The chart fails the render on either mistake. Unset (null)
-    # defaults to that entry's name when it is seeded, attest is enabled,
-    # hostPort is off and the node inventory is reachable; otherwise the
-    # sidecar stays always-ready. "" turns the gate off. Any other name
-    # outside c8s-router-* is your own router entry: the chart seeds none and
-    # does not check that yours exists or matches. A c8s-router-* value must
-    # equal the seeded entry's name, or the render fails.
+    # Requires hostPort.enabled: false — readiness only withdraws Service
+    # endpoints, while a hostPort is published by the CNI portmap plugin
+    # independently of pod readiness, so the gate would withhold nothing. The
+    # chart fails the render otherwise. Unset (null) defaults to that entry's
+    # name when it is seeded, hostPort is off and the node inventory is
+    # reachable; otherwise /readyz stays always 200. "" turns the gate off.
+    # Any other name outside c8s-router-* is your own router entry: the chart
+    # seeds none and does not check that yours exists or matches. A
+    # c8s-router-* value must equal the seeded entry's name, or the render
+    # fails. Readiness never depends on the route manifest.
     expectedWorkload: null
     # -- Container resource requests/limits for the sidecar.
     resources: {}
@@ -1301,8 +1118,8 @@ router:
   nginx:
     image:
       repository: nginxinc/nginx-unprivileged
-      # Resolve nginxinc/nginx-unprivileged:1.30.5-alpine-slim to bump this digest.
-      digest: "sha256:3af0c10d960cc2502427fe1219c52989d309e7d65596869c60a34fd2fa2406f0"
+      # Resolve nginxinc/nginx-unprivileged:1.30.6-alpine-slim to bump this digest.
+      digest: "sha256:5d8bb9437d74a600ec5dbf90c035451c724dc33eac8d3a71078f6f8612c345f6"
       tag: ""
       pullPolicy: IfNotPresent
     # The argv prefix the seeded allowlist entry pins this image to: its
@@ -1314,7 +1131,7 @@ router:
     # with the image.
     imageEnv:
       PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-      NGINX_VERSION: "1.30.5"
+      NGINX_VERSION: "1.30.6"
       PKG_RELEASE: "1"
       DYNPKG_RELEASE: "1"
     # -- Number of nginx replicas.
@@ -1325,25 +1142,17 @@ router:
     #    (targetPort references the named `https` port), so public 443 is
     #    unaffected; front it with a LoadBalancer for external ingress.
     httpsPort: 8443
-    # -- DNS server nginx queries to re-resolve a mesh-wrapped catch-all
-    #    upstream at request time (per record TTL). Only the adopted-workload
-    #    headless Service is dialed that way: its pod IPs change on pod churn,
-    #    so a static upstream block would pin the IPs seen at startup and 502
-    #    until the next config reload. Every other upstream address is static
-    #    and this value is unused (no resolver directive is rendered at all).
-    #    The name itself is resolved once at nginx startup through the pod's
-    #    /etc/resolv.conf, and nginx exits (crash-loops) if it does not
-    #    resolve. Empty derives from the distro values
-    #    (nriImagePolicy.distro): rke2 ->
-    #    rke2-coredns-rke2-coredns.kube-system, else kube-dns.kube-system.
-    #    Set explicitly on clusters whose DNS Service is named differently.
-    resolver: ""
-    # -- UID/GID used by nginx and the get-cert containers so both can access
-    #    the in-memory CDS key material on the shared tls-certs volume.
-    runAsUser: 101
-    runAsGroup: 101
-    runAsNonRoot: true
     resources: {}
+    # -- Memory for the tunnel request bodies nginx holds until cds-attest
+    # reads them, up to 8 MiB per upload in progress, charged to nginx's
+    # memory: a memory limit in resources must exceed it. An upload that does
+    # not fit fails with 500.
+    tunnelBodySpace: 8Gi
+    # -- Tunnel requests one client address may have open in nginx at once;
+    # further ones get nginx's 503 page. It bounds one address's share of
+    # tunnelBodySpace. Under externalTrafficPolicy: Cluster every client
+    # behind a node shares it.
+    tunnelConnectionsPerClient: 64
 
   service:
     # -- Service type. Set to LoadBalancer to expose the listener publicly
@@ -1356,19 +1165,17 @@ router:
     # would SNAT away) and Cluster otherwise. Local delivers traffic only
     # through nodes running the router pod; set Cluster explicitly if your LB
     # cannot health-check nodes, and every client behind a node then shares one
-    # budget and one per-client bound: 512 concurrent attestation sessions for
-    # that whole node, past which any one client's traffic refuses new sessions
-    # for every other client behind it.
+    # per-client bound: 512 concurrent attestation sessions, 10 new ones and
+    # 400 tunnel requests per second, a quarter of the tunnel budget and
+    # router.nginx.tunnelConnectionsPerClient open tunnel requests for that
+    # whole node, past which any one client's traffic refuses the others
+    # behind it.
     externalTrafficPolicy: ""
     # -- Optional annotations on the Service. Use the provider's LB annotation to
     # pin a static IP (e.g. networking.gke.io/load-balancer-ip-addresses on GKE,
     # service.beta.kubernetes.io/azure-pip-name on AKS); the deprecated
     # spec.loadBalancerIP field is intentionally not exposed.
     annotations: {}
-
-  # -- Volume mount path for the CDS-issued TLS certificate and key shared
-  # between get-cert and nginx.
-  tlsMountPath: "/tls"
 
 ## Common pod-level security knobs.
 podSecurityContext:

@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -19,6 +20,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/credrelease"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 func TestValidateRejectsEachMalformedField(t *testing.T) {
@@ -61,14 +63,22 @@ func TestValidateRejectsEachMalformedField(t *testing.T) {
 		{"tls san label", Server, func(d *Document) { d.TLSSAN = "C8S.Local" }, "lowercase DNS hostname"},
 		{"workloads json", Server, func(d *Document) { d.Workloads = "{" }, "valid JSON"},
 		{"workloads schema", Server, func(d *Document) { d.Workloads = `{"schema":"other/v1","workloads":{}}` }, "workloads:"},
-		{"router on agent", Agent, func(d *Document) { d.Router = &Router{Upstream: testUpstream} }, "router is server-only"},
+		{"mirror https", Server, func(d *Document) { d.RegistryMirrors = map[string]string{"ghcr.io": "https://10.43.0.5"} }, "http://host"},
+		{"mirror path", Agent, func(d *Document) { d.RegistryMirrors = map[string]string{"ghcr.io": "http://10.43.0.5:5000/v2"} }, "http://host"},
+		{"mirror userinfo", Server, func(d *Document) { d.RegistryMirrors = map[string]string{"ghcr.io": "http://u:p@10.43.0.5"} }, "http://host"},
+		{"mirror dns host", Server, func(d *Document) { d.RegistryMirrors = map[string]string{"ghcr.io": "http://cache.example:5000"} }, "endpoint host"},
+		{"mirror loopback", Server, func(d *Document) { d.RegistryMirrors = map[string]string{"ghcr.io": "http://127.0.0.1:5000"} }, "endpoint host"},
+		{"mirror port", Server, func(d *Document) { d.RegistryMirrors = map[string]string{"ghcr.io": "http://10.43.0.5:70000"} }, "endpoint port"},
+		{"mirror registry case", Server, func(d *Document) { d.RegistryMirrors = map[string]string{"GHCR.io": "http://10.43.0.5"} }, "lowercase DNS hostname"},
+		{"mirror registry port", Server, func(d *Document) { d.RegistryMirrors = map[string]string{"ghcr.io:x": "http://10.43.0.5"} }, "optional port"},
+		{"too many mirrors", Server, func(d *Document) {
+			d.RegistryMirrors = map[string]string{}
+			for i := 0; i <= maxMirrors; i++ {
+				d.RegistryMirrors[fmt.Sprintf("r%d.example", i)] = "http://10.43.0.5"
+			}
+		}, "more than"},
+		{"router on agent", Agent, func(d *Document) { d.Router = &Router{Hostnames: []string{"a.example.com"}} }, "router is server-only"},
 		{"empty router on agent", Agent, func(d *Document) { d.Router = &Router{} }, "router is server-only"},
-		{"router upstream unmeshed", Server, func(d *Document) {
-			d.Router = &Router{Upstream: "gateway.confidential-inference.svc.cluster.local:8080"}
-		}, "router.upstream"},
-		{"router upstream scheme", Server, func(d *Document) { d.Router = &Router{Upstream: "http://" + testUpstream} }, "router.upstream"},
-		{"router upstream injection", Server, func(d *Document) { d.Router = &Router{Upstream: testUpstream + `"; return 200 "x`} }, "router.upstream"},
-		{"router upstream port", Server, func(d *Document) { d.Router = &Router{Upstream: "c8s-gateway.ns.svc.cluster.local:70000"} }, "port"},
 		{"router hostname ip", Server, func(d *Document) { d.Router = &Router{Hostnames: []string{"10.0.0.1"}} }, "router.hostnames"},
 		{"router hostname wildcard", Server, func(d *Document) { d.Router = &Router{Hostnames: []string{"*.example.com"}} }, "router.hostnames"},
 		{"router hostname case", Server, func(d *Document) { d.Router = &Router{Hostnames: []string{"API.example.com"}} }, "router.hostnames"},
@@ -81,6 +91,7 @@ func TestValidateRejectsEachMalformedField(t *testing.T) {
 		{"router acme directory", Server, func(d *Document) {
 			d.Router = &Router{Hostnames: []string{"a.example.com"}, ACMEDirectoryURL: "http://acme.example/dir"}
 		}, "router.acmeDirectoryURL"},
+		{"router body limit negative", Server, func(d *Document) { d.Router = &Router{MaxRequestBodyBytes: -1} }, "router.maxRequestBodyBytes"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -98,12 +109,9 @@ func TestValidateRejectsEachMalformedField(t *testing.T) {
 	}
 }
 
-const testUpstream = "c8s-gateway.confidential-inference.svc.cluster.local:9443"
-
 func TestParseAcceptsServerRouter(t *testing.T) {
 	doc, _, _ := testDocument(t, "snp", Server)
 	doc.Router = &Router{
-		Upstream:         testUpstream,
 		Hostnames:        []string{"candidate.api.confidential.ai", "api.confidential.ai"},
 		ACMEEmail:        "ops@confidential.ai",
 		ACMEDirectoryURL: "https://acme-staging-v02.api.letsencrypt.org/directory",
@@ -116,20 +124,31 @@ func TestParseAcceptsServerRouter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if parsed.Router == nil || parsed.Router.Upstream != testUpstream || len(parsed.Router.Hostnames) != 2 {
+	if parsed.Router == nil || len(parsed.Router.Hostnames) != 2 {
 		t.Fatalf("router = %+v", parsed.Router)
 	}
-}
-
-// The Go rule must stay the chart's router.meshWrappedUpstream rule.
-func TestRouterUpstreamRuleMatchesChart(t *testing.T) {
-	data, err := os.ReadFile("../../helmchart/c8s/templates/router-helpers.tpl")
+	if got := parsed.Router.RequestBodyLimit(); got != DefaultMaxRequestBodyBytes {
+		t.Fatalf("default request body limit = %d, want %d", got, DefaultMaxRequestBodyBytes)
+	}
+	// The body limit needs no hostnames: it applies in either front-door mode.
+	withLimit := bytes.Replace(data, []byte("router:\n"), []byte("router:\n    maxRequestBodyBytes: 67108864\n"), 1)
+	parsed, err = Parse(withLimit)
 	if err != nil {
 		t.Fatal(err)
 	}
-	chartRule := strings.ReplaceAll(meshWrappedUpstreamPattern, `\`, `\\`)
-	if !strings.Contains(string(data), `regexMatch "`+chartRule+`"`) {
-		t.Fatalf("router-helpers.tpl no longer carries %s", chartRule)
+	if got := parsed.Router.RequestBodyLimit(); got != 64<<20 {
+		t.Fatalf("request body limit = %d, want %d", got, 64<<20)
+	}
+	if _, err := Parse(bytes.Replace(data, []byte("router:\n"), []byte("router:\n    maxRequestBodyBytes: 64Mi\n"), 1)); err == nil {
+		t.Fatal("Parse accepted a non-integer router.maxRequestBodyBytes")
+	}
+	// The removed router.upstream key is refused as unknown.
+	withUpstream := bytes.Replace(data, []byte("    hostnames:"), []byte("    upstream: gw.ns.svc:9443\n    hostnames:"), 1)
+	if bytes.Equal(withUpstream, data) {
+		t.Fatal("router.hostnames not found in the marshalled document")
+	}
+	if _, err := Parse(withUpstream); err == nil {
+		t.Fatal("Parse accepted router.upstream")
 	}
 }
 
@@ -247,13 +266,13 @@ func TestVerifyRejectsBadConfigBeforeReadingFiles(t *testing.T) {
 
 	old := loadMeasuredIdentity
 	t.Cleanup(func() { loadMeasuredIdentity = old })
-	loadMeasuredIdentity = func(context.Context, string, string) (credrelease.MeasuredIdentity, error) {
+	loadMeasuredIdentity = func(context.Context, string, string, string) (credrelease.MeasuredIdentity, error) {
 		return credrelease.MeasuredIdentity{}, errors.New("attestation-api unreachable")
 	}
 	if _, err := Verify(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "verify this boot's identity") {
 		t.Fatalf("self-report failure: %v", err)
 	}
-	loadMeasuredIdentity = func(context.Context, string, string) (credrelease.MeasuredIdentity, error) {
+	loadMeasuredIdentity = func(context.Context, string, string, string) (credrelease.MeasuredIdentity, error) {
 		return testMeasuredIdentity(t, doc, "not a key"), nil
 	}
 	if _, err := Verify(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "measured launch key") {
@@ -368,6 +387,36 @@ func TestStageCommandFailsClosed(t *testing.T) {
 	}
 }
 
+// The binding check replays the journal the operator names, like cred-release,
+// so the two checks of one node read the same file. Empty names none.
+func TestVerifyReplaysTheConfiguredJournal(t *testing.T) {
+	for _, tc := range []struct {
+		name, journal, want string
+	}{
+		{name: "none"},
+		{name: "moved", journal: "/run/custom-nri/measured-policies", want: "/run/custom-nri/measured-policies"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			doc, key, pub := testDocument(t, "tdx", Server)
+			testLoader(t, doc, pub)
+			inner := loadMeasuredIdentity
+			var got string
+			loadMeasuredIdentity = func(ctx context.Context, platform, api, journal string) (credrelease.MeasuredIdentity, error) {
+				got = journal
+				return inner(ctx, platform, api, journal)
+			}
+			cfg := testConfig(t, doc, key)
+			cfg.MeasuredPoliciesFile = tc.journal
+			if _, err := Verify(context.Background(), cfg); err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Fatalf("self-report replayed %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // The self-report loader compares against the verified family name, which for
 // SNP ("sev-snp") differs from the launch platform tag ("snp").
 func TestVerifyPassesTheFamilyNameToTheSelfReport(t *testing.T) {
@@ -377,9 +426,9 @@ func TestVerifyPassesTheFamilyNameToTheSelfReport(t *testing.T) {
 			testLoader(t, doc, pub)
 			inner := loadMeasuredIdentity
 			var got string
-			loadMeasuredIdentity = func(ctx context.Context, platform, api string) (credrelease.MeasuredIdentity, error) {
+			loadMeasuredIdentity = func(ctx context.Context, platform, api, journal string) (credrelease.MeasuredIdentity, error) {
 				got = platform
-				return inner(ctx, platform, api)
+				return inner(ctx, platform, api, journal)
 			}
 			if _, err := Verify(context.Background(), testConfig(t, doc, key)); err != nil {
 				t.Fatal(err)
@@ -388,5 +437,29 @@ func TestVerifyPassesTheFamilyNameToTheSelfReport(t *testing.T) {
 				t.Fatalf("self-report asked for platform %q, want family %q", got, family)
 			}
 		})
+	}
+}
+
+// stage reads the node's journal where cred-release does unless told otherwise.
+func TestStageMeasuredPoliciesFileDefaultsToNodeJournal(t *testing.T) {
+	flag := newStageCmd().Flags().Lookup("measured-policies-file")
+	if flag == nil || flag.DefValue != armtls.NodeJournal {
+		t.Fatalf("--measured-policies-file = %v, want default %s", flag, armtls.NodeJournal)
+	}
+}
+
+func TestRoleValidFollowsRoleTable(t *testing.T) {
+	for _, role := range []Role{Server, Agent} {
+		if !role.Valid() {
+			t.Errorf("%s has no role table entry", role)
+		}
+	}
+	for _, role := range []Role{"", "observer", "Server"} {
+		if role.Valid() {
+			t.Errorf("%q is accepted as a role", role)
+		}
+	}
+	if len(roles) != 2 {
+		t.Errorf("role table has %d entries; give each new role a constant and a case above", len(roles))
 	}
 }

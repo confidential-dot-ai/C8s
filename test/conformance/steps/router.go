@@ -117,15 +117,29 @@ func (c *nginxConf) published(contentType, file string) string {
 	return ""
 }
 
+// allowlistRouteEnabled reads the route off the router's configuration, or,
+// where the backend cannot read it, from the router serving the allowlist
+// there.
 func allowlistRouteEnabled(ctx context.Context) error {
-	c, err := getWorld(ctx).routerConf()
+	w := getWorld(ctx)
+	c, err := w.routerConf()
+	if errors.Is(err, godog.ErrSkip) {
+		a, err := w.httpRequest("router_request", http.MethodGet, allowlistRoute, nil, "", "", "")
+		if err != nil {
+			return err
+		}
+		if a.status != http.StatusOK {
+			return skipf("the built-in allowlist route answers %d here", a.status)
+		}
+		return nil
+	}
 	if err != nil {
 		return err
 	}
 	_, exact := c.exact[allowlistRoute]
 	_, prefix := c.prefix[allowlistRoute+"/"]
 	if !exact || !prefix {
-		return godog.ErrSkip
+		return skipf("the router does not render the built-in allowlist route here")
 	}
 	return nil
 }
@@ -136,7 +150,7 @@ func discoveryEnabled(ctx context.Context) error {
 		return err
 	}
 	if c.published("application/json", "") == "" {
-		return godog.ErrSkip
+		return skipf("the router does not publish discovery here")
 	}
 	return nil
 }
@@ -147,13 +161,14 @@ func cdsCredentialSelected(ctx context.Context) error {
 		return err
 	}
 	if mode != "cds" {
-		return godog.ErrSkip
+		return skipf("the router presents its %s credential here, not the CDS-issued one", mode)
 	}
 	return nil
 }
 
-func (w *world) routerGet(path string) error {
-	a, err := w.httpRequest("router_request", http.MethodGet, path, nil, "", "", "")
+// routerGet sends the router GET path with headers ("Name: value").
+func (w *world) routerGet(path string, headers ...string) error {
+	a, err := w.httpRequest("router_request", http.MethodGet, path, nil, "", "", "", headers...)
 	if err != nil {
 		return err
 	}

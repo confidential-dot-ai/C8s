@@ -201,7 +201,7 @@ func TestMountCreationValidatorChecksCumulativeEdits(t *testing.T) {
 			}
 			req := &api.ValidateContainerAdjustmentRequest{Pod: pod, Container: ctr, Adjust: adjust}
 			before := proto.Clone(req)
-			if tc.cdi && adjustedMounts(req, proto.Clone(ctr).(*api.Container), "") != nil {
+			if tc.cdi && p.adjustedMounts(req, proto.Clone(ctr).(*api.Container)) != nil {
 				t.Fatal("deferred CDI produced complete mount evidence")
 			}
 			err := p.ValidateContainerAdjustment(context.Background(), req)
@@ -298,7 +298,7 @@ func TestInventoryServesEvidenceRecordedBeforeMatchPolicy(t *testing.T) {
 	ctr := makeCtrWithImage(pod.Id, "ctr", "registry/repo@"+pushDigestB)
 	ctr.Args = []string{"/bin/app"}
 	ctr.Env = []string{"MODE=production"}
-	p.recordUncheckedForInventory(pod, ctr, "registry/repo@"+pushDigestB)
+	p.recordForInventory(t.Context(), pod, ctr, "registry/repo@"+pushDigestB)
 
 	al := workloadAllowlist(t, pushDigestA, pushDigestB, []string{"/bin/app"})
 	if err := json.Unmarshal([]byte(`{"policy":"match","variables":{"MODE":{"present":true}}}`), &al.Workloads["w"].Containers[0].Env); err != nil {
@@ -331,7 +331,7 @@ func TestInventoryKeepsRunningEvidenceUntilMatchPolicyApplies(t *testing.T) {
 	pod := makePod("default", "pod")
 	main := makeCtrWithImageArgs(pod.Id, "main", "registry/repo@"+pushDigestB, []string{"/bin/app"})
 	main.Env = variant("main")
-	p.recordUncheckedForInventory(pod, main, "registry/repo@"+pushDigestB)
+	p.recordForInventory(t.Context(), pod, main, "registry/repo@"+pushDigestB)
 	probe, err := allowlist.ObserveEnv(main.Env)
 	if err != nil {
 		t.Fatal(err)
@@ -339,7 +339,7 @@ func TestInventoryKeepsRunningEvidenceUntilMatchPolicyApplies(t *testing.T) {
 	for i := range allowlist.MaxSandboxVariableEvidenceBytes/probe.VariableEvidenceBytes() + 2 {
 		sidecar := makeCtrWithImageArgs(pod.Id, fmt.Sprint("sidecar-", i), "registry/sidecar@"+pushDigestA, []string{"/sidecar"})
 		sidecar.Env = variant(fmt.Sprint(i))
-		p.recordUncheckedForInventory(pod, sidecar, "registry/sidecar@"+pushDigestA)
+		p.recordForInventory(t.Context(), pod, sidecar, "registry/sidecar@"+pushDigestA)
 		if _, err := p.StopContainer(context.Background(), pod, sidecar); err != nil {
 			t.Fatal(err)
 		}
@@ -421,7 +421,7 @@ func TestMatchWorkloadAtEvidenceCeiling(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if name, _, err := al.MatchWorkload(secrets.WorkloadContainers(al, cs)); err != nil || name != "wide" {
+	if name, _, err := al.MatchWorkload(secrets.WorkloadContainers(cs)); err != nil || name != "wide" {
 		t.Fatalf("MatchWorkload() = %q, %v; want wide", name, err)
 	}
 
@@ -499,7 +499,7 @@ func TestSharedDigestMatchWorkloadAtEvidenceCeiling(t *testing.T) {
 			t.Fatalf("record %s lost its per-variable evidence", c.Env.Digest)
 		}
 	}
-	if name, _, err := al.MatchWorkload(secrets.WorkloadContainers(al, cs)); err != nil || name != "shared" {
+	if name, _, err := al.MatchWorkload(secrets.WorkloadContainers(cs)); err != nil || name != "shared" {
 		t.Fatalf("MatchWorkload() = %q, %v; want shared", name, err)
 	}
 

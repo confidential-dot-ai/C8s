@@ -9,13 +9,13 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
-// The secrets drop set names the exact invocations this webhook injects, so
-// every container mutatePod adds must be one of them. A sidecar the drop set
-// does not recognise is a foreign container, and every release in the cluster
-// is refused.
+// The secrets drop set holds the containers a node binds a platform role to,
+// so every container mutatePod adds must be one the node grants a role
+// (internal/helmchart base_roles_test.go). A sidecar left without one is a
+// foreign container, and every release in the cluster is refused.
 func TestInjectedContainersAreTheSecretsDropSet(t *testing.T) {
 	cfg := secretsConfig()
-	cfg.WorkloadClaimsHostDir = "/var/run/nri-image-policy"
+	cfg.WorkloadClaimsHostDir = "/run/nri-image-policy"
 	pod := podWithApp()
 	mutatePod(pod, &injection{
 		WorkloadID: "api",
@@ -27,10 +27,6 @@ func TestInjectedContainersAreTheSecretsDropSet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	al := &allowlist.Allowlist{Workloads: map[string]allowlist.Workload{
-		"c8s": allowlist.DigestEntry(digest, cfg.GetCertImage),
-	}}
-
 	var injected []workloadclaims.SandboxContainer
 	for _, c := range pod.Spec.InitContainers {
 		if !workloadclaims.IsInjectedContainerName(c.Name) {
@@ -42,12 +38,16 @@ func TestInjectedContainersAreTheSecretsDropSet(t *testing.T) {
 		if len(argv) == 0 {
 			argv = append([]string{secrets.InjectedBinary}, c.Args...)
 		}
-		injected = append(injected, workloadclaims.SandboxContainer{Digest: digest.String(), Argv: argv, Mounts: []allowlist.ObservedMount{}})
+		role := "credentials"
+		if c.Name == workloadclaims.MeshContainerName {
+			role = "mesh"
+		}
+		injected = append(injected, workloadclaims.SandboxContainer{Digest: digest.String(), Argv: argv, Mounts: []allowlist.ObservedMount{}, Role: role})
 	}
-	if len(injected) != 4 {
-		t.Fatalf("injected %d containers, want the cert sidecar, cert-wait gate, secret fetcher, and volume fetcher", len(injected))
+	if len(injected) != 5 {
+		t.Fatalf("injected %d containers, want the mesh endpoint, cert sidecar, cert-wait gate, secret fetcher, and volume fetcher", len(injected))
 	}
-	if left := secrets.WorkloadContainers(al, injected); len(left) != 0 {
+	if left := secrets.WorkloadContainers(injected); len(left) != 0 {
 		t.Fatalf("injected containers the drop set does not recognise: %+v", left)
 	}
 }

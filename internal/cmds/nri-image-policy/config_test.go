@@ -15,8 +15,20 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
 )
 
+// meshYAML is the mesh policy every enforcer configuration carries.
+const meshYAML = `
+mesh:
+  exempt_namespaces: [kube-system, local-path-storage]
+  resolver: "10.43.0.10"
+  capture: {outbound: 15001, inbound: 15006, health: 15021}
+  roles:
+    - name: mesh
+      uid: 1337
+`
+
 func validConfig() config {
 	return config{
+		Mesh: meshRoles(),
 		Allowlist: allowlistConfig{
 			Base: anyAllowlist(map[string]string{
 				"sha256:0000000000000000000000000000000000000000000000000000000000000001": "test-installer",
@@ -62,6 +74,16 @@ func TestValidate_AuditMode(t *testing.T) {
 	cfg.Policy.Mode = "audit"
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// The enforcer verifies a member pod's protection before the inventory signs
+// its identity, so a configuration carrying no mesh policy starts none.
+func TestValidate_MeshRequired(t *testing.T) {
+	cfg := validConfig()
+	cfg.Mesh = nil
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "mesh is required") {
+		t.Fatalf("err = %v, want a config with no mesh policy refused", err)
 	}
 }
 
@@ -174,7 +196,7 @@ func TestLoadConfig_Defaults(t *testing.T) {
   pull:
     url: https://127.0.0.1:30808
     attestation_api_url: http://localhost:30840
-`
+` + meshYAML
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
 		t.Fatal(err)
@@ -210,7 +232,7 @@ policy:
   mode: fail-closed
   exempt_namespaces: [kube-system, local-path-storage]
   exempt_snapshot_path: /var/lib/nri-image-policy/exempt-snapshot.json
-`
+` + meshYAML
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
@@ -293,6 +315,7 @@ func TestValidate_LabelRulesOnly(t *testing.T) {
 			Mode:       "fail-closed",
 			LabelRules: []labelRule{validLabelRule()},
 		},
+		Mesh: meshRoles(),
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -308,7 +331,7 @@ func TestValidate_LabelRulesOnly(t *testing.T) {
 func TestValidate_WorkloadClaimsRequireAllowlist(t *testing.T) {
 	cfg := config{
 		Policy:         policyConfig{Mode: "fail-closed", LabelRules: []labelRule{validLabelRule()}},
-		WorkloadClaims: workloadClaimsConfig{SocketDir: "/var/run/nri-image-policy"},
+		WorkloadClaims: workloadClaimsConfig{SocketDir: "/run/nri-image-policy"},
 	}
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected error: label-rules-only config never records for the inventory")
@@ -317,7 +340,7 @@ func TestValidate_WorkloadClaimsRequireAllowlist(t *testing.T) {
 
 func TestValidate_WorkloadClaimsWithAllowlist(t *testing.T) {
 	cfg := validConfig()
-	cfg.WorkloadClaims.SocketDir = "/var/run/nri-image-policy"
+	cfg.WorkloadClaims.SocketDir = "/run/nri-image-policy"
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -438,7 +461,7 @@ func TestLoadConfig_UnixAttestationAPIURL(t *testing.T) {
   pull:
     url: https://127.0.0.1:30808
     attestation_api_url: unix://` + sock + `
-`
+` + meshYAML
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
 		t.Fatal(err)
@@ -473,7 +496,7 @@ policy:
       match_expressions:
         - key: team
           operator: Exists
-`
+` + meshYAML
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
 		t.Fatal(err)
@@ -506,7 +529,7 @@ policy:
       match_expressions:
         - key: tenant
           operator: Exists
-`
+` + meshYAML
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
 		t.Fatal(err)
@@ -544,7 +567,7 @@ func TestLabelOperator(t *testing.T) {
 func TestConfigPlatform(t *testing.T) {
 	base := "allowlist:" + baseYAML(
 		"sha256:0000000000000000000000000000000000000000000000000000000000000000",
-		"example.com/img@sha256:0000000000000000000000000000000000000000000000000000000000000000")
+		"example.com/img@sha256:0000000000000000000000000000000000000000000000000000000000000000") + meshYAML
 
 	t.Run("defaults to snp so existing SNP deployments are unchanged", func(t *testing.T) {
 		cfg := writeAndLoad(t, base)
@@ -606,9 +629,9 @@ func TestValidateRejectsBadCDSRTMRs(t *testing.T) {
 // A malformed RTMR pin fails the pull-client build rather than silently
 // unpinning the registers.
 func TestAllowlistPullHTTPClientRejectsBadRTMRs(t *testing.T) {
-	cfg := validConfig().Allowlist.Pull
-	cfg.CDSRTMRs = []string{"1=zz"}
-	if _, err := allowlistPullHTTPClient(cfg); err == nil || !strings.Contains(err.Error(), "--cds-rtmrs") {
+	cfg := validConfig()
+	cfg.Allowlist.Pull.CDSRTMRs = []string{"1=zz"}
+	if _, err := allowlistPullHTTPClient(cfg.Allowlist.Pull, cfg.NormalizedPlatform()); err == nil || !strings.Contains(err.Error(), "--cds-rtmrs") {
 		t.Fatalf("err = %v, want an RTMR parse failure", err)
 	}
 }

@@ -2,6 +2,7 @@ package cds
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -33,6 +34,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
+	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
@@ -294,6 +296,11 @@ func TestRun_ErrorPaths(t *testing.T) {
 			name:    "invalid dns san pattern",
 			mutate:  func(_ *testing.T, cfg *config) { cfg.dnsSANPatterns = []string{"("} },
 			wantSub: "--dns-san-pattern",
+		},
+		{
+			name:    "follow seed without a seed",
+			mutate:  func(_ *testing.T, cfg *config) { cfg.followSeed = true },
+			wantSub: "--follow-seed",
 		},
 		{
 			name:    "invalid cn pattern",
@@ -580,8 +587,8 @@ func TestRun_NonPersistentStoreRefusesTokensAfterStart(t *testing.T) {
 	}
 	respBody, _ := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusUnauthorized || !strings.Contains(string(respBody), allowlist.ErrTokenBeforeStart.Error()) {
-		t.Fatalf("PUT /allowlist = %d (%s), want 401 carrying ErrTokenBeforeStart", resp.StatusCode, respBody)
+	if resp.StatusCode != http.StatusUnauthorized || !strings.Contains(string(respBody), operatorauth.ErrTokenBeforeStart.Error()) {
+		t.Fatalf("PUT /allowlist = %d (%s), want 401 carrying operatorauth.ErrTokenBeforeStart", resp.StatusCode, respBody)
 	}
 }
 
@@ -867,6 +874,35 @@ func TestRun_ARMTLSServesPublishedDocumentsToCertlessClients(t *testing.T) {
 	}
 }
 
+// pastHalfLife is the renewal trigger: half the certificate's lifetime,
+// leaving the rest of it for renewal to keep retrying in.
+func TestPastHalfLife(t *testing.T) {
+	now := time.Now()
+	window := func(start, end time.Duration) *x509.Certificate {
+		return &x509.Certificate{
+			NotBefore: now.Add(start),
+			NotAfter:  now.Add(end),
+		}
+	}
+
+	for _, tc := range []struct {
+		name string
+		cert *x509.Certificate
+		want bool
+	}{
+		{"fresh certificate", window(-time.Minute, time.Hour), false},
+		{"just before half its lifetime", window(-29*time.Minute, 31*time.Minute), false},
+		{"past half its lifetime", window(-31*time.Minute, 29*time.Minute), true},
+		{"expired", window(-2*time.Hour, -time.Hour), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := pastHalfLife(tc.cert, now); got != tc.want {
+				t.Errorf("pastHalfLife() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // A certificate that is presented is verified against the mesh CA: one the
 // CA did not issue fails the handshake, so a handler never sees it. Together
 // with the certless reads above this pins ClientAuth to
@@ -923,5 +959,142 @@ func TestRun_ARMTLSRefusesPlainHTTP(t *testing.T) {
 	}
 	if block, _ := pem.Decode(body); block != nil {
 		t.Fatalf("plain-HTTP GET /ca refused but the body carries a PEM block: %s", body)
+	}
+}
+
+// Secret writes and explain spend the operator token once, as allowlist writes
+// do: the replay is 409 and a freshly minted token still works.
+func TestRun_SecretsOperatorTokenSpendsOnce(t *testing.T) {
+	cfg := armTLSRunConfig(t)
+	operatorKey, keysPath := writeOperatorKeyPair(t)
+	cfg.operatorKeys = keysPath
+	cfg.allowlistPersistent = true // a non-persistent store refuses tokens for --jwt-clock-skew after start
+	cfg.inventoryCIDRs = []string{"127.0.0.1/32"}
+	base := fmt.Sprintf("https://127.0.0.1:%d", cfg.port)
+	client := armTLSClient(nil)
+	startRunServerOn(t, cfg, base, client)
+
+	der, err := x509.MarshalPKCS8PrivateKey(operatorKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := operatorauth.NewSignerFromKeyPEM(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mint := func(method, path string, body []byte) string {
+		authz, err := signer.Authorization(method, path, body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return authz
+	}
+	send := func(method, path string, body []byte, authz string) int {
+		req, err := http.NewRequest(method, base+path, bytes.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", authz)
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("%s %s: %v", method, path, err)
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	put, _ := json.Marshal(secrets.PutRequest{Value: base64.StdEncoding.EncodeToString([]byte("v1")), Overwrite: true})
+	authz := mint(http.MethodPut, "/secrets/a", put)
+	for _, step := range []struct {
+		name  string
+		authz string
+		want  int
+	}{
+		{"first use", authz, http.StatusCreated},
+		{"replay", authz, http.StatusConflict},
+		{"fresh token", mint(http.MethodPut, "/secrets/a", put), http.StatusOK},
+	} {
+		if got := send(http.MethodPut, "/secrets/a", put, step.authz); got != step.want {
+			t.Fatalf("PUT /secrets/a, %s = %d, want %d", step.name, got, step.want)
+		}
+	}
+
+	explain := "/secrets-explain/" + strings.Repeat("a", 64)
+	authz = mint(http.MethodGet, explain, nil)
+	for _, step := range []struct {
+		name  string
+		authz string
+		want  int
+	}{
+		{"first use", authz, http.StatusOK},
+		{"replay", authz, http.StatusConflict},
+		{"fresh token", mint(http.MethodGet, explain, nil), http.StatusOK},
+	} {
+		if got := send(http.MethodGet, explain, nil, step.authz); got != step.want {
+			t.Fatalf("GET %s, %s = %d, want %d", explain, step.name, got, step.want)
+		}
+	}
+}
+
+// A due renewal replaces the published certificate, which is what /ca and
+// every issuance then answer with.
+func TestRenewMeshCAWhenDueRepublishesTheCertificate(t *testing.T) {
+	mesh, err := issuer.NewMeshCA("test ca", 2*time.Millisecond)
+	if err != nil {
+		t.Fatalf("mesh ca: %v", err)
+	}
+	first := mesh.Current().CA.Cert
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go renewMeshCAWhenDue(ctx, mesh, time.Millisecond, nil)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for mesh.Current().CA.Cert.Equal(first) {
+		if time.Now().After(deadline) {
+			t.Fatal("renewal did not replace the published certificate")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// Cancelling the context stops the loop.
+func TestRenewMeshCAWhenDueStopsOnContextCancel(t *testing.T) {
+	mesh, err := issuer.NewMeshCA("test ca", 2*time.Millisecond)
+	if err != nil {
+		t.Fatalf("mesh ca: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped := make(chan struct{})
+	go func() {
+		renewMeshCAWhenDue(ctx, mesh, time.Millisecond, nil)
+		close(stopped)
+	}()
+
+	cancel()
+	select {
+	case <-stopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("renewal loop outlived its context")
+
+	}
+}
+
+func TestCAKeyIDSurvivesARenewal(t *testing.T) {
+	mesh, err := issuer.NewMeshCA("test ca", time.Hour)
+	if err != nil {
+		t.Fatalf("mesh ca: %v", err)
+	}
+	first := mesh.Current().CA.Cert
+
+	renewed, err := mesh.RenewCertificate()
+	if err != nil {
+		t.Fatalf("renew: %v", err)
+	}
+	if bytes.Equal(renewed.CA.Cert.Raw, first.Raw) {
+		t.Fatal("renewal published the same certificate, so no field could tell the two apart")
+	}
+	if got, want := caKeyID(renewed.CA.Cert), caKeyID(first); got != want {
+		t.Errorf("key id after renewal = %s, want the retained key's %s", got, want)
 	}
 }

@@ -2,10 +2,13 @@ package volume
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
+	"path"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -88,11 +91,12 @@ func runCreate(cmd *cobra.Command, o *options, cfg createConfig) error {
 	if err != nil {
 		return err
 	}
-	// Every refusal that needs no network runs before the build, so it leaves no
-	// image or escrow behind. Connecting and the mesh CA check wait until the
-	// write: a router front door is one attested connection, and a long build
-	// would leave it idle long enough to drop.
+	// Every refusal that needs no CDS response, a router front door included,
+	// runs before the build, so it leaves no image or escrow behind. The mesh CA
+	// check waits until the write, so the CA compared is the one CDS serves when
+	// the key is sent.
 	var signer authorizer
+	var hc *http.Client
 	if !cfg.dryRun {
 		if err := o.Validate(); err != nil {
 			return err
@@ -106,6 +110,9 @@ func runCreate(cmd *cobra.Command, o *options, cfg createConfig) error {
 		}
 		signer = s
 		if err := cfg.gate.Precheck(o.URL); err != nil {
+			return err
+		}
+		if hc, err = o.HTTPClient(cmd.Context()); err != nil {
 			return err
 		}
 	}
@@ -152,10 +159,6 @@ func runCreate(cmd *cobra.Command, o *options, cfg createConfig) error {
 		return nil
 	}
 
-	hc, err := o.HTTPClient(cmd.Context())
-	if err != nil {
-		return notStored(err, cfg, path, "retry with")
-	}
 	if err := cfg.gate.Check(cmd.Context(), cmd.ErrOrStderr(), hc, o.URL); err != nil {
 		if errors.Is(err, cdsconn.ErrMeshCAMismatch) {
 			return notStored(err, cfg, path, "once you reach the CDS your bundle names, store it with")
@@ -276,9 +279,25 @@ func printResult(w io.Writer, cfg createConfig, path string, size uint64, v Veri
 	fmt.Fprintf(w, "  \"secrets\": {\"policy\": \"allow\", \"read\": [%q]}\n", path)
 	fmt.Fprintf(w, "\nA subtree grant would cover every volume beneath it, so this names one path.\n")
 
-	fmt.Fprintf(w, "\nAllowlist mount policy for every container in the entry:\n")
-	fmt.Fprintf(w, "  \"mounts\": {\"policy\": \"any\"}\n")
-	fmt.Fprintf(w, "\nThe webhook mounts this volume and the cert volume into every container, and the\nentry's mount policy has to admit them. docs/volumes.md — \"The mount policy\" —\nhas the exact form.\n")
+	fmt.Fprintf(w, "\nAllowlist mount policy for every container in the entry (a grant requires exact):\n")
+	fmt.Fprintf(w, "  \"mounts\": %s\n", grantMounts(cfg.name))
+	fmt.Fprintf(w, "\nThe webhook mounts this volume, under %s, into every container. Add one data\nrule per further volume, and {\"destination\": \"/run/c8s/secrets\",\n\"kind\": \"emptyDir\"} if the pod also requests secrets. docs/volumes.md — \"The mount\npolicy\" — has the details.\n", DefaultDir)
+}
+
+// grantMounts is the exact mounts policy admitting what the webhook injects
+// into a workload container consuming volume name from DefaultDir. The
+// credential volume reaches the platform containers alone, so no rule names it.
+func grantMounts(name string) string {
+	raw, err := json.Marshal(pkgallowlist.MountPolicy{
+		Policy: pkgallowlist.PolicyExact,
+		Rules: []pkgallowlist.MountRule{
+			{Destination: path.Join(DefaultDir, name), Kind: pkgallowlist.MountData},
+		},
+	})
+	if err != nil {
+		panic(err) // a fixed struct of strings always marshals
+	}
+	return string(raw)
 }
 
 func base64Std(b []byte) string { return base64.StdEncoding.EncodeToString(b) }
