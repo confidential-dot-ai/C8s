@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
@@ -83,12 +84,42 @@ func (r Result) with(err error) Result {
 		return r
 	}
 	r.ErrKind, r.Err = "other", err.Error()
+	if localStoreFault(err) {
+		r.ErrKind = storageKind
+		return r
+	}
 	for kind, s := range sentinels {
 		if errors.Is(err, s) {
 			r.ErrKind = kind
 		}
 	}
 	return r
+}
+
+// storageKind marks a Result whose command failed in this replica's own
+// database, not on its content.
+const storageKind = "storage"
+
+// LocalStoreFault reports that applying the command failed in this
+// replica's database (disk full, I/O error, corruption, ...). Every replica
+// applies the same commands, but each has its own disk: such a failure is
+// not an answer the others share, and a replica that keeps going after one
+// no longer holds the replicated state.
+func (r Result) LocalStoreFault() bool { return r.ErrKind == storageKind }
+
+// localStoreFault reports a SQLite failure of the database itself. Results a
+// command produces identically everywhere (a constraint it violates, a value
+// over a fixed limit) are not faults of the store.
+func localStoreFault(err error) bool {
+	var se *sqlite.Error
+	if !errors.As(err, &se) {
+		return false
+	}
+	switch se.Code() & 0xff {
+	case sqlite3.SQLITE_CONSTRAINT, sqlite3.SQLITE_TOOBIG, sqlite3.SQLITE_MISMATCH, sqlite3.SQLITE_RANGE:
+		return false
+	}
+	return true
 }
 
 // Error rebuilds the error Apply returned: its message, and its sentinel
