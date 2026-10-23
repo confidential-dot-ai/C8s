@@ -428,7 +428,9 @@ func collectNodeImageArtifacts(rendered []byte, components map[string]bool) (*no
 			manifests.Reset()
 			manifests.Write(rewritten)
 		}
-		artifacts.localNames[image] = local
+		if err := recordLocalName(artifacts.localNames, image, local); err != nil {
+			return nil, err
+		}
 	}
 	slices.Sort(artifacts.images)
 	artifacts.integration = manifests.Bytes()
@@ -1062,10 +1064,9 @@ func localizeDaemonSet(object *unstructured.Unstructured, components map[string]
 			if !ok {
 				continue
 			}
-			if prev, dup := names[image]; dup && prev != local {
-				return fmt.Errorf("image %s has two local names", image)
+			if err := recordLocalName(names, image, local); err != nil {
+				return err
 			}
-			names[image] = local
 			c["image"] = local
 			list[i] = c
 		}
@@ -1135,6 +1136,20 @@ func localName(image string, components map[string]bool) (string, bool, error) {
 		return "", false, nil
 	}
 	return reference.TrimNamed(ref).Name() + ":" + nodeLocalTag, true, nil
+}
+
+// recordLocalName records that local stands for image. Two digests of one
+// repository get the same local name, and local-names.txt can map a name
+// back to only one image, so a name already standing for another image
+// is refused.
+func recordLocalName(names map[string]string, image, local string) error {
+	for other, name := range names {
+		if name == local && other != image {
+			return fmt.Errorf("images %s and %s would share the node-local name %s", other, image, local)
+		}
+	}
+	names[image] = local
+	return nil
 }
 
 func localNamesFile(names map[string]string) []byte {
