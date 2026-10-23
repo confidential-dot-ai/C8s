@@ -55,15 +55,20 @@ func secretResult(err error) Result {
 }
 
 func (r Result) err() error {
-	switch {
-	case r.ErrKind == "":
+	if r.ErrKind == "" {
 		return nil
-	case secretSentinels[r.ErrKind] != nil:
-		return fmt.Errorf("%w (%s)", secretSentinels[r.ErrKind], r.Err)
-	default:
-		return errors.New(r.Err)
 	}
+	return wireErr{r.Err, secretSentinels[r.ErrKind]}
 }
+
+// wireErr is an error that crossed the log: the text, and the sentinel.
+type wireErr struct {
+	msg string
+	is  error
+}
+
+func (e wireErr) Error() string { return e.msg }
+func (e wireErr) Unwrap() error { return e.is }
 
 // Apply runs one replicated write against the local store. Replicas apply
 // the same writes in the same order, so quotas and first-writer-wins decide

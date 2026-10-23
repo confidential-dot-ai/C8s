@@ -36,7 +36,7 @@ func (s *Store) LoadRoutes() (routes.Envelope, error) {
 	return env, nil
 }
 
-// ReplaceRoutes stores env as the signed route manifest when its revision is
+// replaceRoutes stores env as the signed route manifest when its revision is
 // greater than the stored one and, when ifMatch is not empty, the stored
 // manifest's lower-case hex route digest equals ifMatch. One statement checks
 // both and replaces the previous manifest (C3, C4). It returns

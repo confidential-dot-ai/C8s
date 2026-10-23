@@ -135,7 +135,9 @@ func (l *Ledger) evictExpiredLocked(now time.Time) {
 	}
 }
 
-// EvictionLoop drops expired bindings on each tick until done is closed.
+// EvictionLoop drops expired bindings on each tick until done is closed. It is
+// for a ledger without a Replicator only: a replica that evicts by its own
+// clock decides capacity differently from the others.
 func (l *Ledger) EvictionLoop(done <-chan struct{}, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
