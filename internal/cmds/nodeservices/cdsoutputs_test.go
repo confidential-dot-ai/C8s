@@ -1,30 +1,19 @@
 package nodeservices
 
 import (
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
-	"crypto/x509"
 	"encoding/json"
-	"encoding/pem"
 	"testing"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 )
 
-func pubPEM(t *testing.T) string {
-	t.Helper()
-	k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	der, _ := x509.MarshalPKIXPublicKey(&k.PublicKey)
-	return string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))
-}
-
 // cdsOutputs carries the HA inputs, recovery key included, and refuses a
-// document without cdsHA or with a bad operator key.
+// bad operator key or seed.
 func TestCDSOutputs(t *testing.T) {
+	pins := testPins(t)
 	d := &launchconfig.Document{ClusterID: "c1", TLSSAN: "cds.example",
-		Server: launchconfig.ServerConfig{OperatorPublicKey: pubPEM(t)},
-		CDSHA:  &launchconfig.CDSHA{DecreeKey: pubPEM(t), Replicas: 3, RecoveryKey: pubPEM(t)}}
+		Server: launchconfig.ServerConfig{OperatorPublicKey: string(pins.Images[0].Anchor)},
+		CDSHA:  &launchconfig.CDSHA{DecreeKey: string(pins.Images[0].Anchor), Replicas: 3, RecoveryKey: string(pins.Images[1].Anchor)}}
 	seed := []byte(`{"schema":"c8s.allowlist/v1","workloads":{}}`)
 	out, err := cdsOutputs(d, seed)
 	if err != nil {
@@ -36,11 +25,6 @@ func TestCDSOutputs(t *testing.T) {
 	}
 	if string(out["tls-san"]) != "cds.example\n" || string(out["operator-pubkey"]) != d.Server.OperatorPublicKey {
 		t.Fatal("cds node outputs")
-	}
-	noHA := *d
-	noHA.CDSHA = nil
-	if _, err := cdsOutputs(&noHA, seed); err == nil {
-		t.Fatal("cds role without cdsHA")
 	}
 	badKey := *d
 	badKey.Server.OperatorPublicKey = "junk"
