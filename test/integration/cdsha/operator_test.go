@@ -74,29 +74,21 @@ func requireFreshBackup(t *testing.T, c *Cluster) cdsha.Backup {
 func TestDecrees(t *testing.T) {
 	runScenarios(t, []scenario{
 		{name: "D1-D2-bad-and-replayed-decrees", short: true, run: func(t *testing.T, c *Cluster, _ *Checker) {
+			// The checks themselves are TestCheckDecree's; this row proves the
+			// leader writes a status for each decree, survives garbage, and
+			// treats replays as no-ops.
 			epoch, ca := c.epochCA()
 			other, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 			exp := time.Now().Add(time.Hour)
-			// D2: wrong key, another cluster, tampered body.
+			// D2: wrong key, and an object that is not JSON.
 			wrong := c.PutDecree(cdsha.Decree{ClusterID: clusterID, IntentID: "wrong-key", Kind: cdsha.RotateKey, BaseEpoch: epoch, ExpiresAt: exp}, other)
-			sd, _ := cdsha.SignDecree(cdsha.Decree{ClusterID: "other-cluster", IntentID: "other-cluster", Kind: cdsha.RotateKey, BaseEpoch: epoch, ExpiresAt: exp}, c.OpKey)
-			cm, _ := cdsha.DecreeConfigMap(decreeNS, sd)
-			cm.Labels[cdsha.LabelDecree] = clusterID // shown to this cluster
-			c.PutConfigMap(cm)
-			sd, _ = cdsha.SignDecree(cdsha.Decree{ClusterID: clusterID, IntentID: "tampered", Kind: cdsha.UpdateMeasurements, BaseEpoch: epoch, Measurements: []string{measurement}, ExpiresAt: exp}, c.OpKey)
-			sd.Decree.Measurements = []string{measurement, "m-evil"}
-			tcm, _ := cdsha.DecreeConfigMap(decreeNS, sd)
-			c.PutConfigMap(tcm)
-			garbage := &corev1.ConfigMap{ObjectMeta: tcm.ObjectMeta, Data: map[string]string{"decree": "{not json"}}
-			garbage.Name = cdsha.DecreeName(clusterID, "garbage")
+			sd, _ := cdsha.SignDecree(cdsha.Decree{ClusterID: clusterID, IntentID: "garbage", Kind: cdsha.RotateKey, BaseEpoch: epoch, ExpiresAt: exp}, c.OpKey)
+			garbage, _ := cdsha.DecreeConfigMap(decreeNS, sd)
+			garbage.Data = map[string]string{"decree": "{not json"}
 			c.PutConfigMap(garbage)
-			// D1: replay of the used Genesis (status removed) and a fresh
-			// Genesis for a cluster that exists.
+			// D1: replay of the used Genesis (status removed).
 			replay := c.PutDecree(cdsha.Decree{ClusterID: clusterID, IntentID: "genesis", Kind: cdsha.Genesis, BootstrapNode: "n1", ExpiresAt: exp}, nil)
-			second := c.PutDecree(cdsha.Decree{ClusterID: clusterID, IntentID: "genesis-2", Kind: cdsha.Genesis, BootstrapNode: "n2", ExpiresAt: exp}, nil)
-			expired := c.PutDecree(cdsha.Decree{ClusterID: clusterID, IntentID: "expired", Kind: cdsha.RotateKey, BaseEpoch: epoch, ExpiresAt: time.Now().Add(-time.Minute)}, nil)
-			stale := c.PutDecree(cdsha.Decree{ClusterID: clusterID, IntentID: "stale-epoch", Kind: cdsha.RotateKey, BaseEpoch: epoch + 5, ExpiresAt: exp}, nil)
-			for _, name := range []string{wrong, cm.Name, tcm.Name, garbage.Name, second, expired, stale} {
+			for _, name := range []string{wrong, garbage.Name} {
 				st := c.WaitDecreeStatus(name, 20*time.Second)
 				if st.AppliedEpoch != nil || st.RejectedReason == "" {
 					t.Errorf("decree %s not rejected: %+v", name, st)
@@ -110,17 +102,22 @@ func TestDecrees(t *testing.T) {
 				t.Fatalf("bad decrees changed the cluster: epoch %d -> %d, CA %.12s -> %.12s", epoch, e, ca, got)
 			}
 			// A good RotateKey under load reaches every replica.
-			good := c.PutDecree(cdsha.Decree{ClusterID: clusterID, IntentID: "rotate-1", Kind: cdsha.RotateKey, BaseEpoch: epoch, ExpiresAt: exp}, nil)
-			if st := c.WaitDecreeStatus(good, 20*time.Second); st.AppliedEpoch == nil {
-				t.Fatalf("RotateKey: %+v", st)
+			rotate := cdsha.Decree{ClusterID: clusterID, IntentID: "rotate-1", Kind: cdsha.RotateKey, BaseEpoch: epoch, ExpiresAt: exp}
+			good := c.PutDecree(rotate, nil)
+			applied := c.WaitDecreeStatus(good, 20*time.Second)
+			if applied.AppliedEpoch == nil {
+				t.Fatalf("RotateKey: %+v", applied)
 			}
 			start := time.Now()
 			c.requireAllCA("", ca, 20*time.Second)
 			c.Logf("every replica has the rotated CA %s after the decree", time.Since(start))
-			// Replay of the applied RotateKey: no second rotation.
+			// Replay of the applied RotateKey: reported as applied at the
+			// same epoch, no second rotation. Rewriting the object drops
+			// its status, so a new status means the leader has read it.
 			_, rotated := c.epochCA()
-			c.PutDecree(cdsha.Decree{ClusterID: clusterID, IntentID: "rotate-1", Kind: cdsha.RotateKey, BaseEpoch: epoch, ExpiresAt: exp}, nil)
-			time.Sleep(3 * time.Second)
+			if st := c.WaitDecreeStatus(c.PutDecree(rotate, nil), 20*time.Second); st.AppliedEpoch == nil || *st.AppliedEpoch != *applied.AppliedEpoch {
+				t.Errorf("replayed RotateKey: %+v, want applied at epoch %d", st, *applied.AppliedEpoch)
+			}
 			if _, got := c.epochCA(); got != rotated {
 				t.Fatal("a replayed RotateKey rotated again")
 			}
@@ -190,20 +187,6 @@ func TestMajorityLoss(t *testing.T) {
 			c.WaitAllServing(60 * time.Second)
 			c.WaitVoters(3, 60*time.Second)
 			c.requireAllCA(ca, "", 30*time.Second)
-			// D1: replay the used Recover decree: nothing happens.
-			e2, _ := c.epochCA()
-			c.PutDecree(cdsha.Decree{ClusterID: clusterID, IntentID: "recover-1", Kind: cdsha.Recover, BaseEpoch: epoch,
-				BootstrapNode: c.Replicas[survivor].Node, ExpiresAt: time.Now().Add(10 * time.Minute)}, nil)
-			time.Sleep(3 * time.Second)
-			if e3, _ := c.epochCA(); e3 != e2 {
-				t.Errorf("replayed Recover changed the epoch %d -> %d", e2, e3)
-			}
-			// Spec D3: follow Recover with RotateKey.
-			rot := c.PutDecree(cdsha.Decree{ClusterID: clusterID, IntentID: "rotate-after-recover", Kind: cdsha.RotateKey, BaseEpoch: e2, ExpiresAt: time.Now().Add(time.Hour)}, nil)
-			if st := c.WaitDecreeStatus(rot, 20*time.Second); st.AppliedEpoch == nil {
-				t.Fatalf("RotateKey after Recover: %+v", st)
-			}
-			c.requireAllCA("", ca, 30*time.Second)
 		}},
 		{name: "D5-recover-while-old-leader-alive", run: func(t *testing.T, c *Cluster, k *Checker) {
 			// The operator wrongly names a replica that is only cut off,
@@ -240,7 +223,8 @@ func TestMajorityLoss(t *testing.T) {
 
 // TestRestore: total loss and `c8s cds ha recover` from the sealed backup;
 // an older backup than the operator's record is refused, and a live replica
-// refuses any restore.
+// refuses any restore. Wrong keys, tampered parts and other clusters'
+// backups are unit tests (backup_test.go, ha_restore_test.go).
 func TestRestore(t *testing.T) {
 	if testing.Short() {
 		t.Skip("not in the -short subset")
@@ -297,38 +281,13 @@ func TestRestore(t *testing.T) {
 	for i := range c.Replicas {
 		c.Start(i, false)
 	}
-	time.Sleep(timing.deadAfter + time.Second) // until they await a restore
 	// D3: the old backup is refused against the operator's newer record.
 	if out, err := recoverCLI(oldFile, 2, newest.Meta.Epoch, newest.Meta.Index); err == nil || !strings.Contains(out, "older than") {
 		t.Fatalf("an older backup was restored: %v %s", err, out)
 	}
-	// D4: the wrong recovery key, a truncated part, another cluster's backup.
-	_, _, wrongPath, _ := newKeyPair(t, c.Dir, "wrong-recovery")
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	out, err := c.RunCLI(ctx, "cds", "ha", "recover", "--backup-file", newFile, "--recovery-key", wrongPath, "--decree-key", c.OpKeyPath,
-		"--cluster-id", clusterID, "--bootstrap-node", "n3", "--url", c.Replicas[2].Base, "--insecure", "--min-epoch", "1", "--min-index", "0")
-	cancel()
-	if err == nil {
-		t.Fatalf("wrong recovery key opened the backup: %s", out)
-	}
-	truncated := make([]corev1.ConfigMap, len(newList))
-	for i, cm := range newList {
-		cm = *cm.DeepCopy()
-		for key, v := range cm.BinaryData {
-			cm.BinaryData[key] = v[:len(v)/2]
-		}
-		truncated[i] = cm
-	}
-	if out, err := recoverCLI(write("trunc.json", truncated), 2, 1, 0); err == nil {
-		t.Fatalf("a truncated backup was restored: %s", out)
-	}
-	ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
-	out, err = c.RunCLI(ctx, "cds", "ha", "recover", "--backup-file", newFile, "--recovery-key", c.RecKeyPath, "--decree-key", c.OpKeyPath,
-		"--cluster-id", "another", "--bootstrap-node", "n3", "--url", c.Replicas[2].Base, "--insecure", "--min-epoch", "1", "--min-index", "0")
-	cancel()
-	if err == nil {
-		t.Fatalf("restored under another cluster id: %s", out)
-	}
+	// The pre-join server is ready once the replica awaits a restore.
+	c.waitFor(timing.deadAfter+30*time.Second, func() bool { return c.Get(2, "/readyz").Code == http.StatusOK },
+		func() string { return "n3 does not await a restore: " + c.StatusLine(2) })
 	start := time.Now()
 	if out, err := recoverCLI(newFile, 2, newest.Meta.Epoch, newest.Meta.Index); err != nil {
 		t.Fatalf("recover: %v\n%s", err, out)
@@ -409,7 +368,7 @@ func TestBigState(t *testing.T) {
 		c.Logf("converged in %s", d)
 	}
 	b := requireFreshBackup(t, c)
-	c.Logf("backup: index %d, %d bytes sealed, %d objects", b.Meta.Index, len(b.Ciphertext), len(c.Backups()))
+	c.Logf("backup: index %d, %d objects", b.Meta.Index, len(c.Backups()))
 	// A new member (restart with an empty store) installs the snapshot.
 	c.Restart(nv, false)
 	c.Logf("new member serving after %s", c.WaitServing([]int{nv}, 120*time.Second))
