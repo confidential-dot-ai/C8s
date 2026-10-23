@@ -1044,7 +1044,9 @@ router:
     #    - when the router requests workload claims (node.baked or
     #      router.attest.expectedWorkload), the allowlist policy CDS serves no
     #      longer matches the snapshot stamped in the leaf, which strict
-    #      clients reject: renews after up to half an interval of jitter.
+    #      clients reject, and that the router requires of every workload
+    #      backend (502 `backend_digest_mismatch` until both match): renews
+    #      after up to half an interval of jitter.
     #    Without it both last until the next scheduled renewal. "0" disables
     #    the watch; otherwise the minimum is 1s.
     caWatchInterval: "1m"
