@@ -85,7 +85,8 @@ func newPeerCert(clusterID string, att Attestor, notAfter time.Time) (tls.Certif
 	if err != nil {
 		return tls.Certificate{}, err
 	}
-	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}, nil
+	leaf, err := x509.ParseCertificate(der)
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key, Leaf: leaf}, err
 }
 
 // peerVerifier checks a peer certificate: evidence verifies, binds this

@@ -136,7 +136,7 @@ type Node struct {
 	lastMember  atomic.Int64 // Unix ms a reachable peer last reported membership (or this start)
 	lastLoner   atomic.Int64 // Unix ms a reachable peer last answered that it holds no cluster either
 	joinLogged  bool
-	certs       *certHolder
+	cert        atomic.Pointer[tls.Certificate] // the peer certificate; renewPeerCert replaces it
 	tls         *tls.Config
 	verifier    peerVerifier
 	measurement string
@@ -254,14 +254,32 @@ func NewNode(cfg Config) (*Node, error) {
 		n.fsm.readable = cfg.Format
 	}
 	n.lastMember.Store(time.Now().UnixMilli())
-	if n.certs, err = newCertHolder(func() (tls.Certificate, error) {
-		return newPeerCert(cfg.ClusterID, cfg.Attestor, time.Now().Add(24*time.Hour))
-	}); err != nil {
+	cert, err := newPeerCert(cfg.ClusterID, cfg.Attestor, time.Now().Add(peerCertLife))
+	if err != nil {
 		return nil, err
 	}
+	n.cert.Store(&cert)
 	n.verifier = peerVerifier{clusterID: cfg.ClusterID, att: cfg.Attestor, anchor: own.Anchor, pins: n.peerPins}
-	n.tls = peerTLSConfig(n.certs)
+	n.tls = peerTLSConfig(n.cert.Load)
 	return n, nil
+}
+
+// peerCertLife is how long a peer certificate lasts; renewPeerCert
+// replaces it after a quarter of that.
+const peerCertLife = 24 * time.Hour
+
+// renewPeerCert replaces an aging peer certificate with fresh evidence over
+// a new key. A failure is retried on the next tick.
+func (n *Node) renewPeerCert() {
+	if time.Since(n.cert.Load().Leaf.NotBefore) < peerCertLife/4 {
+		return
+	}
+	c, err := newPeerCert(n.cfg.ClusterID, n.cfg.Attestor, time.Now().Add(peerCertLife))
+	if err != nil {
+		n.log.Warn("renew peer certificate", "err", err)
+		return
+	}
+	n.cert.Store(&c)
 }
 
 // peerPins is the pin set peers are checked against: the agreed one once
@@ -361,11 +379,7 @@ func (n *Node) Run(ctx context.Context) error {
 			return nil
 		case <-t.C:
 		}
-		if n.certs.age() > 6*time.Hour {
-			if err := n.certs.renew(); err != nil {
-				n.log.Warn("renew peer certificate", "err", err)
-			}
-		}
+		n.renewPeerCert()
 		if !n.member() {
 			n.joinOrBootstrap(ctx)
 			continue
