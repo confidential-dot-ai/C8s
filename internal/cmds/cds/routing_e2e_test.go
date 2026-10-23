@@ -47,7 +47,7 @@ func startE2ECDS(t *testing.T, stub *mockapi.Stub, pin []byte, mesh *issuer.Mesh
 		Routes: routeHandler{
 			Store:     inMemoryStore(t),
 			Authorize: operatorauth.Verifier{Keys: []*ecdsa.PublicKey{key}, ClockSkew: 30 * time.Second}.Authorize,
-			MeshCA:    mesh.Current().CA.Cert,
+			MeshCA:    mesh,
 		},
 		OperatorKeysPEM:  pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}),
 		ReadyFn:          func() bool { return true },

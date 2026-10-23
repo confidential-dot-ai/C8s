@@ -389,7 +389,7 @@ func run(cfg config) error {
 		Routes: routeHandler{
 			Store:     &allowlistStore,
 			Authorize: operatorAuthorizer,
-			MeshCA:    startCA.Cert,
+			MeshCA:    mesh,
 		},
 		ReadyFn:           readinessFn(checker.Ready, mesh, cfg.minCAValidity),
 		MeshCA:            mesh,

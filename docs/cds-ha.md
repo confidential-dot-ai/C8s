@@ -195,7 +195,7 @@ There is no unsigned-backup fallback.
 
 Before loss:
 1. Use `c8s cds ha status --image-policy-file server.json https://<node>:30808`
-   over the attested channel. Retain the full `ca_fingerprint`, cluster identity,
+   over the attested channel. Retain the full 64-hex-character `ca=` value, cluster identity,
    epoch and applied index in an access-controlled offline recovery record.
    Do not use `--insecure` in this workflow.
 2. Retain the CA pin for each backup generation you keep. CA certificate renewal
@@ -230,3 +230,14 @@ release does not add hard stream lifetime timers. Shared challenge redemption
 also checks the current key and signed TTL at the issuer; a missing key fails
 closed. Single-use tracking remains per replica. Use distinct operator keys
 per cluster (see `docs/operator.md`).
+
+## Route backend anchors after rotation
+
+CDS checks address-backend anchors against its current mesh CA on each signed
+route write, including after HA RotateKey without a process restart. Missing
+current CA fails closed. Singleton CDS uses the same live CA provider interface.
+A retired CA that CDS no longer trusts is not permanently banned as a backend
+anchor; this matches behavior after restart. Routers independently reject every
+mesh CA in their current trusted bundle, which can still include an older
+generation. Do not reuse retired mesh keys for backend services as an operational
+practice; CDS does not retain an unbounded historical exclusion list.
