@@ -442,21 +442,22 @@ func TestHARecoverCLIErrors(t *testing.T) {
 		return cmd.ExecuteContext(context.Background())
 	}
 	none := filepath.Join(dir, "none")
-	for name, args := range map[string][]string{
-		"missing backup file": {"--backup-file", none, "--recovery-key", keyPath, "--decree-key", keyPath},
-		"garbage backup file": {"--backup-file", garbage, "--recovery-key", keyPath, "--decree-key", keyPath},
-		"no backup in file":   {"--backup-file", empty, "--recovery-key", keyPath, "--decree-key", keyPath},
-		"no recovery key":     {"--backup-file", good, "--recovery-key", none, "--decree-key", keyPath},
-		"wrong recovery key": {"--backup-file", good, "--recovery-key", writePEM(t, "EC PRIVATE KEY", func() []byte {
-			o, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-			d, _ := x509.MarshalECPrivateKey(o)
-			return d
-		}()), "--decree-key", keyPath},
-		"no decree key":  {"--backup-file", good, "--recovery-key", keyPath, "--decree-key", none},
-		"nobody answers": {"--backup-file", good, "--recovery-key", keyPath, "--decree-key", keyPath},
+	other, _ := testKeyPEM(t)
+	otherDER, _ := x509.MarshalECPrivateKey(other)
+	for name, c := range map[string]struct {
+		args []string
+		want string
+	}{
+		"missing backup file": {[]string{"--backup-file", none, "--recovery-key", keyPath, "--decree-key", keyPath}, "no such file"},
+		"garbage backup file": {[]string{"--backup-file", garbage, "--recovery-key", keyPath, "--decree-key", keyPath}, "--backup-file"},
+		"no backup in file":   {[]string{"--backup-file", empty, "--recovery-key", keyPath, "--decree-key", keyPath}, "no backup manifest"},
+		"no recovery key":     {[]string{"--backup-file", good, "--recovery-key", none, "--decree-key", keyPath}, "recovery key: read"},
+		"wrong recovery key":  {[]string{"--backup-file", good, "--recovery-key", writePEM(t, "EC PRIVATE KEY", otherDER), "--decree-key", keyPath}, "recovery key"},
+		"no decree key":       {[]string{"--backup-file", good, "--recovery-key", keyPath, "--decree-key", none}, "--decree-key"},
+		"nobody answers":      {[]string{"--backup-file", good, "--recovery-key", keyPath, "--decree-key", keyPath}, "no answer"},
 	} {
-		if err := run(args...); err == nil {
-			t.Errorf("%s: recover succeeded", name)
+		if err := run(c.args...); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: got %v, want %q", name, err, c.want)
 		}
 	}
 }
