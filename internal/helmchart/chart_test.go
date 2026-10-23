@@ -1591,6 +1591,18 @@ func TestChartRendersRouterPublicTLSAndDiscovery(t *testing.T) {
 	cfg.location(t, "exact", "/v1/discovery").assertDirective(t, "alias", "/discovery/discovery.json")
 	cfg.location(t, "exact", "/.well-known/cds-cert.pem").assertDirective(t, "alias", "/etc/c8s/certs/tls.crt")
 	cfg.location(t, "exact", "/.well-known/mesh-ca.pem").assertDirective(t, "alias", "/etc/c8s/certs/ca.crt")
+	// Locations that hold no attest-lb binding close the connection after the
+	// response, so a binding cannot lapse under a connection they keep open.
+	// Discovery and the allowlist keep a young connection open, so a CLI can
+	// read the allowlist on the connection whose leaf it attested.
+	for _, path := range []string{"/.well-known/cds-cert.pem", "/.well-known/mesh-ca.pem", "/readyz", "/healthz"} {
+		cfg.location(t, "exact", path).assertDirective(t, "keepalive_timeout", "0")
+	}
+	cfg.location(t, "exact", "/v1/discovery").assertDirective(t, "keepalive_time", "1m")
+	cfg.location(t, "exact", "/allowlist").assertDirective(t, "keepalive_time", "1m")
+	cfg.location(t, "prefix", "/allowlist/").assertDirective(t, "keepalive_time", "1m")
+	cfg.location(t, "named", "@tunnel_busy").assertDirective(t, "keepalive_timeout", "0")
+	cfg.location(t, "exact", "/readyz").assertDirective(t, "proxy_set_header", "X-C8s-Connection", "$pid.$connection")
 	// The public TLS mode changes only what nginx serves: application
 	// requests still go to the routing listener, which dials backends itself.
 	app := cfg.location(t, "prefix", "/")
@@ -2255,6 +2267,7 @@ func TestChartRendersRouterAttestSidecar(t *testing.T) {
 		loc.assertDirective(t, "proxy_max_temp_file_size", "0")
 		loc.assertDirective(t, "proxy_read_timeout", "3630s")
 		loc.assertDirective(t, "proxy_set_header", "X-Real-IP", "$remote_addr")
+		loc.assertDirective(t, "proxy_set_header", "X-C8s-Connection", "$pid.$connection")
 	}
 	protocol.assertNoDirective(t, "limit_conn")
 	protocol.assertDirective(t, "client_max_body_size", "16k")
@@ -3620,6 +3633,7 @@ func assertRouterRoutingLocation(t *testing.T, route *nginxBlock, port, readTime
 	route.assertDirective(t, "proxy_set_header", "X-Real-IP", "$remote_addr")
 	route.assertDirective(t, "proxy_set_header", "X-Forwarded-For", "$proxy_add_x_forwarded_for")
 	route.assertDirective(t, "proxy_set_header", "X-Forwarded-Proto", "$scheme")
+	route.assertDirective(t, "proxy_set_header", "X-C8s-Connection", "$pid.$connection")
 }
 
 func TestChartRouterRoutingLocation(t *testing.T) {
@@ -4497,7 +4511,12 @@ func Example_routerConfig() {
 	//     access_log /var/log/nginx/access.log main;
 	//
 	//     sendfile on;
+	//     # cds-attest keeps a lapsed attest-lb binding until a connection can
+	//     # no longer be open under these three timeouts (E7); change them
+	//     # together with its lifetime.
 	//     keepalive_timeout 65;
+	//     client_header_timeout 60s;
+	//     send_timeout 60s;
 	//
 	//     # Pass a client's WebSocket upgrade (e.g. socket.io) through location /;
 	//     # other requests keep Connection: close to the routing listener.
@@ -4564,6 +4583,11 @@ func Example_routerConfig() {
 	//                 return 204;
 	//             }
 	//             add_header Access-Control-Allow-Origin "*" always;
+	//             # A request here holds no attest-lb binding. The connection stays open
+	//             # for the next request only while it is younger than keepalive_time, so
+	//             # a binding cannot lapse under a connection kept open this way (E7), and
+	//             # a client can read the allowlist on the connection it attested.
+	//             keepalive_time 1m;
 	//             # These run before nginx collapses callers onto the loopback proxy source.
 	//             # Each zone's map key is empty for the methods it does not cover, so
 	//             # mutations count per client and in aggregate, reads per client only.
@@ -4593,6 +4617,11 @@ func Example_routerConfig() {
 	//                 return 204;
 	//             }
 	//             add_header Access-Control-Allow-Origin "*" always;
+	//             # A request here holds no attest-lb binding. The connection stays open
+	//             # for the next request only while it is younger than keepalive_time, so
+	//             # a binding cannot lapse under a connection kept open this way (E7), and
+	//             # a client can read the allowlist on the connection it attested.
+	//             keepalive_time 1m;
 	//             # These run before nginx collapses callers onto the loopback proxy source.
 	//             # Each zone's map key is empty for the methods it does not cover, so
 	//             # mutations count per client and in aggregate, reads per client only.
@@ -4613,6 +4642,11 @@ func Example_routerConfig() {
 	//         # published on the pod IP). So the probe rides the front door:
 	//         # exact-match, ahead of location /.
 	//         location = /readyz {
+	//             # Never a client's value: cds-attest holds the binding this names.
+	//             proxy_set_header X-C8s-Connection $pid.$connection;
+	//             # A request here holds no attest-lb binding; the connection closes after
+	//             # it so a binding cannot lapse under a connection kept open this way (E7).
+	//             keepalive_timeout 0;
 	//             access_log off;
 	//             proxy_pass http://127.0.0.1:8800;
 	//             proxy_set_header Host $host;
@@ -4637,6 +4671,9 @@ func Example_routerConfig() {
 	//             proxy_set_header X-Real-IP $remote_addr;
 	//             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 	//             proxy_set_header X-Forwarded-Proto $scheme;
+	//             # Pairs the request with an attest-lb handshake on the same
+	//             # connection; replaces any client value (route policy E8).
+	//             proxy_set_header X-C8s-Connection $pid.$connection;
 	//             proxy_set_header Upgrade $http_upgrade;
 	//             proxy_set_header Connection $connection_upgrade;
 	//             client_max_body_size 1048576;
@@ -4657,6 +4694,9 @@ func Example_routerConfig() {
 	//         # Exact: a prefix match would also claim manifest paths such as
 	//         # /healthz-ui.
 	//         location = /healthz {
+	//             # A request here holds no attest-lb binding; the connection closes after
+	//             # it so a binding cannot lapse under a connection kept open this way (E7).
+	//             keepalive_timeout 0;
 	//             access_log off;
 	//             return 200 "ok\n";
 	//             add_header Content-Type text/plain;
