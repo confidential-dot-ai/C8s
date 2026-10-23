@@ -26,6 +26,13 @@ containers:
              by default: only names, ownership, status and resource figures
              are exported. */}}
       - --resources={{ include "kube-state-metrics.resources" . | fromJsonArray | join "," }}
+      {{- /* Every member pod reads these metrics, so the series that carry
+             host and infrastructure detail rather than workload state stay
+             off: node system UUID, provider ID, kernel and OS image
+             (kube_node_info); taint and toleration keys and values; PV host
+             and local paths and backing-volume IDs (kube_persistentvolume_info);
+             Service external IPs. docs/armtls.md lists what is exported. */}}
+      - --metric-denylist=^kube_node_info$,^kube_node_spec_taint$,^kube_pod_tolerations$,^kube_persistentvolume_info$,^kube_service_spec_external_ip$
     ports:
       - name: http-metrics
         containerPort: {{ .Values.kubeStateMetrics.port }}
