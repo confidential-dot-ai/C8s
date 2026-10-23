@@ -44,6 +44,7 @@ func TestRunHARestoreAfterTotalLoss(t *testing.T) {
 	recKeyPath := writeFile("recovery.key", rkPEM)
 	timing := cdsha.DefaultTiming
 	timing.Backup = 200 * time.Millisecond
+	timing.DeadAfter = 2 * time.Second // /readyz waits for the dead replicas to be removed
 	ha := c.haTemplate(timing)
 	ha.recoveryKeyPEM = recPub
 
@@ -75,6 +76,9 @@ func TestRunHARestoreAfterTotalLoss(t *testing.T) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+	// Signed now and spent only after the restore: spent tokens are part
+	// of the replicated state, so only tokens from before Genesis are cut off.
+	unspent := c.auth(http.MethodPut, "/allowlist", doc)
 	c.stop(errs)
 
 	// Total loss: fresh replicas, and the Genesis decree long since used.
@@ -153,6 +157,9 @@ func TestRunHARestoreAfterTotalLoss(t *testing.T) {
 		if h.Get("ETag") != h0.Get("ETag") || !bytes.Equal(c, ca) {
 			t.Fatalf("%s after restore: etag %q want %q, same CA %v", b, h.Get("ETag"), h0.Get("ETag"), bytes.Equal(c, ca))
 		}
+	}
+	if code, _, body := do(t, http.MethodPut, bases[0]+"/allowlist", unspent, doc); code != http.StatusNoContent {
+		t.Fatalf("a token signed after Genesis, before the loss, refused after the restore: %d %s", code, body)
 	}
 }
 

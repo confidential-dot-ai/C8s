@@ -21,6 +21,7 @@ import (
 
 	"github.com/spf13/pflag"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 
@@ -30,6 +31,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cmds/nodeservices"
 	"github.com/confidential-dot-ai/c8s/internal/sandboxledger"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
+	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
 func writePEM(t *testing.T, typ string, der []byte) string {
@@ -297,7 +299,7 @@ func TestHAHandlersBeforeJoin(t *testing.T) {
 	}
 	ok := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	gated := haGate(node.Serving, ok)
-	for path, want := range map[string]int{"/attest": 503, "/secrets/x": 503, "/allowlist": 503, "/ca": 503, "/healthz": 200, "/ha/status": 200, "/metrics": 200} {
+	for path, want := range map[string]int{"/attest": 503, "/secrets/x": 503, "/allowlist": 503, "/ca": 503, "/healthz": 200, "/ha/status": 200, "/ha/pins": 200, "/metrics": 200} {
 		w := httptest.NewRecorder()
 		gated.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
 		if w.Code != want {
@@ -324,6 +326,22 @@ func TestHAStartWiring(t *testing.T) {
 	base := config{requestTimeout: time.Second, ha: haConfig{
 		clusterID: "c1", decreeNS: "ns", peersDNS: "peers.invalid", advertiseIP: "127.0.0.1", nodeName: "n0", attestor: "fake",
 		pins: []string{"m1"}, operatorKeyPEM: pub, seats: 3, timing: cdsha.DefaultTiming}}
+	// The replica replaces what the store held before it joined, and takes
+	// every write: a binding is refused until the cluster commits it.
+	seeded, _ := pkgallowlist.ParseJSON([]byte(anySeed(map[string]string{"web": digestA})))
+	if err := al.ReplaceAll(seeded); err != nil {
+		t.Fatal(err)
+	}
+	newInClusterKubeClientset = func() (kubernetes.Interface, error) { return fake.NewClientset(), nil }
+	if _, err := newHANode(base, st); err != nil {
+		t.Fatal(err)
+	}
+	if doc, _, err := al.LoadAll(); err != nil || len(doc.Workloads) != 0 {
+		t.Fatalf("the allowlist kept rows from before the replica: %v %v", doc.Workloads, err)
+	}
+	if st.ledger.Record("sb", "10.0.0.1") {
+		t.Fatal("a sandbox binding was taken on one replica alone")
+	}
 	for name, c := range map[string]struct {
 		mutate func(c *config)
 		want   string // "" builds the replica
@@ -332,6 +350,7 @@ func TestHAStartWiring(t *testing.T) {
 		"static peers":     {func(c *config) { c.ha.peersDNS, c.ha.peers = "", []string{"127.0.0.2:1"} }, ""},
 		"no peers":         {func(c *config) { c.ha.peersDNS = "" }, "are required with --ha-cluster-id"},
 		"no node name":     {func(c *config) { c.ha.nodeName = "" }, "are required with --ha-cluster-id"},
+		"no decree ns":     {func(c *config) { c.ha.decreeNS = "" }, "are required with --ha-cluster-id"},
 		"unknown attestor": {func(c *config) { c.ha.attestor = "nope" }, `attestor "nope" not available`},
 		"no operator key":  {func(c *config) { c.ha.operatorKeyPEM = nil }, "--ha-operator-key is required"},
 		"no kube client": {func(*config) {
@@ -376,7 +395,6 @@ func TestPreJoinRestoreHandler(t *testing.T) {
 	done := make(chan struct{})
 	go func() { defer close(done); _ = node.Run(ctx) }()
 	t.Cleanup(func() { cancel(); <-done })
-	time.Sleep(300 * time.Millisecond)
 	mux := preJoinMux(node)
 	call := func(method, path string, body string) int {
 		w := httptest.NewRecorder()
@@ -395,8 +413,11 @@ func TestPreJoinRestoreHandler(t *testing.T) {
 	sd, _ := cdsha.SignDecree(cdsha.Decree{ClusterID: "c1", IntentID: "r", Kind: cdsha.Restore, BootstrapNode: "n9",
 		SnapshotSHA256: cdsha.SnapshotSHA256([]byte("s")), ExpiresAt: time.Now().Add(time.Hour)}, k)
 	body, _ := json.Marshal(RestoreRequest{Decree: sd, Snapshot: []byte("s")})
-	if c := call(http.MethodPost, "/ha/restore", string(body)); c != http.StatusMisdirectedRequest {
-		t.Fatalf("restore for another node: %d", c)
+	// 409 until Run is up; then a restore for another node is misdirected.
+	if err := wait.PollUntilContextTimeout(t.Context(), 10*time.Millisecond, 5*time.Second, true, func(context.Context) (bool, error) {
+		return call(http.MethodPost, "/ha/restore", string(body)) == http.StatusMisdirectedRequest, nil
+	}); err != nil {
+		t.Fatal("a restore for another node is not refused as misdirected")
 	}
 	sd.Decree.BootstrapNode = "n0" // signature no longer matches
 	body, _ = json.Marshal(RestoreRequest{Decree: sd, Snapshot: []byte("s")})

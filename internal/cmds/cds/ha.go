@@ -118,11 +118,6 @@ func haStart(ctx context.Context, cfg config, st haStores) (node *cdsha.Node, st
 	if node, err = newHANode(cfg, st); err != nil {
 		return nil, stop, err
 	}
-	if err := resetHAAllowlist(st.allowlist); err != nil {
-		return nil, stop, err
-	}
-	st.allowlist.SetReplicator(node)
-	st.ledger.SetReplicator(node)
 	if err := node.Start(); err != nil {
 		return nil, stop, err
 	}
@@ -182,6 +177,7 @@ func resetHAAllowlist(s *allowlist.Store) error {
 	return nil
 }
 
+// newHANode builds this replica and makes it the replicator of every store.
 func newHANode(cfg config, st haStores) (*cdsha.Node, error) {
 	h := cfg.ha
 	if (h.peersDNS == "" && len(h.peers) == 0) || h.decreeNS == "" || h.nodeName == "" {
@@ -223,7 +219,7 @@ func newHANode(cfg config, st haStores) (*cdsha.Node, error) {
 		recovery = block.Bytes
 	}
 	decrees := cdsha.KubeDecrees{Client: kube, Namespace: h.decreeNS, ClusterID: h.clusterID}
-	return cdsha.NewNode(cdsha.Config{
+	node, err := cdsha.NewNode(cdsha.Config{
 		ClusterID:       h.clusterID,
 		NodeName:        h.nodeName,
 		Bind:            net.JoinHostPort(cfg.host, strconv.Itoa(h.port)),
@@ -247,6 +243,15 @@ func newHANode(cfg config, st haStores) (*cdsha.Node, error) {
 		HistoryVersions: cfg.allowlistHistoryVersions,
 		HistoryBytes:    cfg.allowlistHistoryBytes.Value(),
 	})
+	if err != nil {
+		return nil, err
+	}
+	if err := resetHAAllowlist(st.allowlist); err != nil {
+		return nil, err
+	}
+	st.allowlist.SetReplicator(node)
+	st.ledger.SetReplicator(node)
+	return node, nil
 }
 
 // devHARoutes adds the integration test's routes in c8s_dev builds
