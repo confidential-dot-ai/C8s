@@ -28,6 +28,7 @@ func (n *Node) recover(ctx context.Context, p PendingDecree) {
 		return
 	}
 	n.log.Warn("RECOVER: forcing a one-voter configuration with this replica's state", "decree", p.Name, "id", n.id)
+	n.readCert.Store(nil) // recovery stops read admission before shutting Raft down
 	if err := n.r().Shutdown().Error(); err != nil {
 		n.log.Error("recover: shut down raft", "err", err)
 	}
@@ -44,6 +45,13 @@ func (n *Node) recover(ctx context.Context, p PendingDecree) {
 	// snapStore ignores the transport RecoverCluster passes it.
 	if err := raft.RecoverCluster(n.rcfg, scratch, n.logs, n.stable, n.snaps, nil, n.solo()); err != nil {
 		n.log.Error("recover: RecoverCluster", "err", err)
+		return
+	}
+	// RecoverCluster ignores application results. A rejected policy or
+	// unreadable command must not turn a partial replay into serving state.
+	if reason := scratch.Stuck(); reason != "" {
+		n.log.Error("recover: replay stopped", "reason", reason)
+		return
 	}
 	if err := n.startRaft(); err != nil {
 		n.log.Error("recover: restart raft", "err", err)
