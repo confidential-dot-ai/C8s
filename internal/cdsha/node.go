@@ -309,7 +309,7 @@ func (n *Node) ID() string { return string(n.id) }
 
 // Start opens the peer port and starts Raft. Run drives it.
 func (n *Node) Start() error {
-	n.logs, n.stable, n.snaps = raft.NewInmemStore(), raft.NewInmemStore(), newSnapStore()
+	n.logs, n.stable, n.snaps = raft.NewInmemStore(), raft.NewInmemStore(), &snapStore{}
 	rc := raft.DefaultConfig()
 	rc.LocalID = n.id
 	rc.HeartbeatTimeout = n.cfg.Timing.Heartbeat
