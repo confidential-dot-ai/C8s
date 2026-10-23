@@ -20,7 +20,8 @@ var (
 // a binding outlives its connection, which is why the lifetime slides on use.
 // A binding idle past lbBindingIdle lapses: it stays, refusing the
 // connection with binding_expired and still charged to its client, until
-// nginx must have closed the connection (lbBindingLife), so a lapse neither
+// nginx must have closed the connection (lbBindingLife, past its idle and
+// header and send timeouts), so a lapse neither
 // fails open nor frees room for the next cycle of handshakes. A handshake
 // with no client key is charged to no client and bounded only globally. A
 // binding with a request in flight never lapses: the routing location allows

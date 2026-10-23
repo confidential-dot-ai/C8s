@@ -168,10 +168,12 @@ data:
         access_log /var/log/nginx/access.log main;
 
         sendfile on;
+        # cds-attest keeps a lapsed attest-lb binding until a connection can
+        # no longer be open under these three timeouts (E7); change them
+        # together with its lifetime.
         keepalive_timeout 65;
-        # cds-attest keeps a lapsed attest-lb binding until a connection this
-        # old is closed (E7); change both together.
-        keepalive_time 1h;
+        client_header_timeout 60s;
+        send_timeout 60s;
 
         # Pass a client's WebSocket upgrade (e.g. socket.io) through location /;
         # other requests keep Connection: close to the routing listener.

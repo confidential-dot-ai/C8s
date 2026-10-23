@@ -101,10 +101,13 @@ const (
 	// between requests past it, so a lapsed binding does not fail open: it
 	// refuses with binding_expired (E7) until the connection is gone.
 	lbBindingIdle = 2 * time.Minute
-	// lbBindingLife is when a lapsed binding is dropped: past the router
-	// chart's nginx keepalive_time (1h), measured from the connection's
-	// start, nginx has closed the connection, so nothing can reach the entry.
-	lbBindingLife = 65 * time.Minute
+	// lbBindingLife is when a lapsed binding is dropped. An open connection
+	// cannot stay silent longer than the router chart's nginx
+	// keepalive_timeout (65s), client_header_timeout (60s) and send_timeout
+	// (60s) allow between the last request and the next, so past this nginx
+	// has closed it and nothing can reach the entry. A client dripping its
+	// own response slower than that is the one case that can outlive it.
+	lbBindingLife = 5 * time.Minute
 	// maxLBBindings bounds the attest-lb bindings. At the bound a handshake is
 	// refused, never a binding dropped (E7).
 	maxLBBindings = 1 << 16
