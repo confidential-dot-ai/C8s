@@ -15,7 +15,7 @@ func egressDocument(egress string) []byte {
 // Exits are part of the signed canonical form, sorted, and absent from an
 // entry that declares none, so existing documents keep their digests.
 func TestEgressIsCanonicalAndOmittedWhenEmpty(t *testing.T) {
-	al, err := ParseJSON(egressDocument(`,"egress":[{"cidr":"2001:db8::/32","port":443},{"cidr":"203.0.113.7/32","port":8443},{"cidr":"203.0.113.0/24","port":443}]`))
+	al, err := ParseJSON(egressDocument(`,"egress":[{"cidr":"2001:DB8:0::/32","port":443},{"cidr":"203.0.113.7/32","port":8443},{"cidr":"203.0.113.0/24","port":443}]`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,16 +51,27 @@ func TestEgressRefusesWhatARuleCannotExpress(t *testing.T) {
 		many = append(many, fmt.Sprintf(`{"cidr":"203.0.113.%d/32","port":443}`, i))
 	}
 	for name, egress := range map[string]string{
-		"no port":        `[{"cidr":"203.0.113.0/24"}]`,
-		"port zero":      `[{"cidr":"203.0.113.0/24","port":0}]`,
-		"port too large": `[{"cidr":"203.0.113.0/24","port":65536}]`,
-		"no cidr":        `[{"port":443}]`,
-		"bare address":   `[{"cidr":"203.0.113.7","port":443}]`,
-		"host bits":      `[{"cidr":"203.0.113.7/24","port":443}]`,
-		"4-in-6":         `[{"cidr":"::ffff:203.0.113.7/128","port":443}]`,
-		"declared twice": `[{"cidr":"203.0.113.0/24","port":443},{"cidr":"203.0.113.0/24","port":443}]`,
-		"unknown member": `[{"cidr":"203.0.113.0/24","port":443,"protocol":"udp"}]`,
-		"too many exits": "[" + strings.Join(many, ",") + "]",
+		"no port":         `[{"cidr":"203.0.113.0/24"}]`,
+		"port zero":       `[{"cidr":"203.0.113.0/24","port":0}]`,
+		"port too large":  `[{"cidr":"203.0.113.0/24","port":65536}]`,
+		"no cidr":         `[{"port":443}]`,
+		"bare address":    `[{"cidr":"203.0.113.7","port":443}]`,
+		"host bits":       `[{"cidr":"203.0.113.7/24","port":443}]`,
+		"4-in-6":          `[{"cidr":"::ffff:203.0.113.7/128","port":443}]`,
+		"declared twice":  `[{"cidr":"203.0.113.0/24","port":443},{"cidr":"203.0.113.0/24","port":443}]`,
+		"unknown member":  `[{"cidr":"203.0.113.0/24","port":443,"protocol":"udp"}]`,
+		"every address":   `[{"cidr":"0.0.0.0/0","port":443}]`,
+		"every IPv6":      `[{"cidr":"::/0","port":443}]`,
+		"over loopback":   `[{"cidr":"96.0.0.0/3","port":443}]`,
+		"loopback":        `[{"cidr":"127.0.0.1/32","port":443}]`,
+		"link-local":      `[{"cidr":"169.254.169.254/32","port":80}]`,
+		"multicast":       `[{"cidr":"239.0.0.0/8","port":443}]`,
+		"broadcast":       `[{"cidr":"255.255.255.255/32","port":443}]`,
+		"unspecified":     `[{"cidr":"0.0.0.0/32","port":443}]`,
+		"IPv6 loopback":   `[{"cidr":"::1/128","port":443}]`,
+		"IPv6 link-local": `[{"cidr":"fe80::/64","port":443}]`,
+		"NAT64":           `[{"cidr":"64:ff9b::a00:1/128","port":443}]`,
+		"too many exits":  "[" + strings.Join(many, ",") + "]",
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := ParseJSON(egressDocument(`,"egress":` + egress)); err == nil {
