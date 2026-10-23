@@ -76,7 +76,7 @@ const (
 // sidecars see it.
 const MeasuredPoliciesJournal = SidecarSocketDir + "/" + armtls.MeasuredPoliciesJournal
 
-// MemberCertDir is where every container of a member pod mounts the
+// MemberCertDir is where the injected containers of a member pod mount the
 // credential volume get-cert publishes on, and MemberCAPath is the mesh CA of
 // the generation it published there. The path is compiled because it is a
 // trust root: a relying party that took its mesh CA from an argument would
