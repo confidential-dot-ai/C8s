@@ -29,14 +29,14 @@ func muxPeers(t *testing.T, control controlHandler) (a, b *Node, v peerVerifier,
 	al, sec, led := testStores(t)
 	mk := func(name string) *Node {
 		n, err := NewNode(Config{ClusterID: testCluster, NodeName: name, Bind: "127.0.0.1:0", Advertise: "127.0.0.1:1",
-			Attestor: testAttestor{"m1"}, Seats: 3, Allowlist: al, Secrets: sec, Ledger: led})
+			Attestor: MockAttestor{"m1"}, Seats: 3, Allowlist: al, Secrets: sec, Ledger: led})
 		if err != nil {
 			t.Fatal(err)
 		}
 		return n
 	}
 	a, b = mk("a"), mk("b")
-	v = peerVerifier{clusterID: testCluster, att: testAttestor{}, anchor: "", pins: func() []string { return nil }}
+	v = peerVerifier{clusterID: testCluster, att: MockAttestor{}, anchor: "", pins: func() []string { return nil }}
 	m, err := newMux("127.0.0.1:0", "127.0.0.1:1", string(a.id), a.tls, v, control, nil)
 	if err != nil {
 		t.Fatal(err)

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"maps"
 	"os"
 	"strings"
 	"testing"
@@ -29,14 +30,10 @@ import (
 func mustCA(t *testing.T) *issuer.CA {
 	t.Helper()
 	mesh, err := issuer.NewMeshCA("test", time.Hour)
-	var ca *issuer.CA
-	if err == nil {
-		ca = mesh.Current().CA
-	}
 	if err != nil {
 		t.Fatal(err)
 	}
-	return ca
+	return mesh.Current().CA
 }
 
 func TestNewAttestor(t *testing.T) {
@@ -46,17 +43,10 @@ func TestNewAttestor(t *testing.T) {
 	if a, err := NewAttestor("node", AttestorOptions{AttestationAPIURL: "http://127.0.0.1:1", Timeout: time.Second}); err != nil || a == nil {
 		t.Fatalf("node attestor: %v", err)
 	}
-	if _, err := NewAttestor("tdx", AttestorOptions{}); err == nil {
-		t.Fatal("tdx attestor without accepted TCB statuses")
-	}
-	if _, err := NewAttestor("tdx", AttestorOptions{TDXTCBStatuses: []string{"NoSuchStatus"}}); err == nil {
-		t.Fatal("tdx attestor with an unknown TCB status")
-	}
-	if a, err := NewAttestor("tdx", AttestorOptions{TDXTCBStatuses: DefaultTDXTCBStatuses}); err != nil || a == nil {
-		t.Fatalf("tdx attestor: %v", err)
-	}
-	if _, err := NewAttestor("nope", AttestorOptions{}); err == nil || !strings.Contains(err.Error(), "not available") {
-		t.Fatalf("unknown attestor: %v", err)
+	for _, name := range []string{"tdx", "nope"} {
+		if _, err := NewAttestor(name, AttestorOptions{}); err == nil || !strings.Contains(err.Error(), "not available") {
+			t.Fatalf("attestor %q: %v", name, err)
+		}
 	}
 }
 
@@ -65,36 +55,56 @@ func tdxClaims(rd []byte) teetypes.Claims {
 		PlatformData: map[string]any{"rtmr_1": digest(2), "rtmr_2": digest(3), "rtmr_3": digest(4)}}
 }
 
-func TestPeerClaims(t *testing.T) {
+// nodeClaims maps a verified result to the image pin and the launch-key
+// anchor, and refuses anything incomplete.
+func TestNodeClaims(t *testing.T) {
+	tdxRes := func(c teetypes.Claims) teetypes.VerificationResult {
+		return teetypes.VerificationResult{SignatureValid: true, Platform: teetypes.PlatformTDX, Claims: c}
+	}
 	rd := make([]byte, 64)
 	rd[0] = 7
-	c, err := peerClaims(tdxClaims(rd))
+	c, err := nodeClaims(tdxRes(tdxClaims(rd)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Anchor != digest(4) || c.ReportData[0] != 7 || len(c.Measurement) != 96 {
-		t.Fatalf("claims %+v", c)
+	pin, _ := ImagePin("tdx", digest(1), map[int]string{1: digest(2), 2: digest(3)})
+	if c.Measurement != pin || c.Anchor != digest(4) || c.ReportData[0] != 7 {
+		t.Fatalf("claims %+v, want measurement %s", c, pin)
 	}
-	// Measurement covers MRTD and RTMR1-2, not RTMR3 (the anchor).
+	// RTMR3 is the anchor, not part of the measurement.
 	other := tdxClaims(rd)
 	other.PlatformData["rtmr_3"] = digest(9)
-	if c2, _ := peerClaims(other); c2.Measurement != c.Measurement || c2.Anchor == c.Anchor {
+	if c2, _ := nodeClaims(tdxRes(other)); c2.Measurement != c.Measurement || c2.Anchor == c.Anchor {
 		t.Fatal("RTMR3 must change the anchor only")
 	}
-	other.PlatformData["rtmr_2"] = digest(9)
-	if c3, _ := peerClaims(other); c3.Measurement == c.Measurement {
-		t.Fatal("RTMR2 must change the measurement")
+	snp := teetypes.VerificationResult{SignatureValid: true, Platform: teetypes.PlatformSNP,
+		Claims: teetypes.Claims{LaunchDigest: digest(5), InitData: []byte{0xab, 0xcd}, ReportData: rd}}
+	if c, err := nodeClaims(snp); err != nil || c.Anchor != "abcd" || c.Measurement != digest(5) {
+		t.Fatalf("snp claims %+v: %v", c, err)
 	}
-	bad := make([]byte, 64)
-	bad[63] = 1
-	for name, cl := range map[string]teetypes.Claims{
-		"short report_data":    tdxClaims(make([]byte, 48)),
-		"non-zero tail":        tdxClaims(bad),
-		"no launch digest":     {ReportData: make([]byte, 64), PlatformData: tdxClaims(nil).PlatformData},
-		"no RTMR1":             {LaunchDigest: digest(1), ReportData: make([]byte, 64), PlatformData: map[string]any{"rtmr_2": digest(3), "rtmr_3": digest(4)}},
-		"no RTMR3 (no anchor)": {LaunchDigest: digest(1), ReportData: make([]byte, 64), PlatformData: map[string]any{"rtmr_1": digest(2), "rtmr_2": digest(3)}},
+	tail := make([]byte, 64)
+	tail[60] = 1
+	unsigned := tdxRes(tdxClaims(rd))
+	unsigned.SignatureValid = false
+	unknown := snp
+	unknown.Platform = "other"
+	regs := func(drop string) teetypes.Claims {
+		c := tdxClaims(rd)
+		c.PlatformData = maps.Clone(c.PlatformData)
+		delete(c.PlatformData, drop)
+		return c
+	}
+	for name, res := range map[string]teetypes.VerificationResult{
+		"invalid signature": unsigned,
+		"short report_data": tdxRes(tdxClaims(make([]byte, 20))),
+		"non-zero tail":     tdxRes(tdxClaims(tail)),
+		"no launch digest":  tdxRes(teetypes.Claims{ReportData: rd, PlatformData: tdxClaims(nil).PlatformData}),
+		"no RTMR1":          tdxRes(regs("rtmr_1")),
+		"no RTMR2":          tdxRes(regs("rtmr_2")),
+		"no RTMR3":          tdxRes(regs("rtmr_3")),
+		"unknown platform":  unknown,
 	} {
-		if _, err := peerClaims(cl); err == nil {
+		if _, err := nodeClaims(res); err == nil {
 			t.Errorf("%s accepted", name)
 		}
 	}
@@ -117,82 +127,23 @@ func TestImagePin(t *testing.T) {
 	}
 }
 
-// The pin a launch document produces (ImagePin) is the measurement the node
-// attestor reports for that image, on both platforms.
-func TestNodeIdentityMatchesImagePin(t *testing.T) {
-	cl := tdxClaims(make([]byte, 64))
-	m, anchor, err := nodeIdentity(teetypes.PlatformTDX, cl)
-	if err != nil || anchor != digest(4) {
-		t.Fatalf("tdx: %v anchor %s", err, anchor)
-	}
-	if pin, _ := ImagePin("tdx", digest(1), map[int]string{1: digest(2), 2: digest(3)}); pin != m {
-		t.Fatalf("tdx identity %s != pin %s", m, pin)
-	}
-	snp := teetypes.Claims{LaunchDigest: digest(5), InitData: []byte{0xab, 0xcd}}
-	m, anchor, err = nodeIdentity(teetypes.PlatformSNP, snp)
-	if err != nil || anchor != "abcd" {
-		t.Fatalf("snp: %v anchor %s", err, anchor)
-	}
-	if pin, _ := ImagePin("snp", digest(5), nil); pin != m {
-		t.Fatalf("snp identity %s != pin %s", m, pin)
-	}
-	if _, _, err := nodeIdentity(teetypes.PlatformType("other"), snp); err == nil {
-		t.Fatal("unknown platform accepted")
-	}
-	if _, _, err := nodeIdentity(teetypes.PlatformTDX, teetypes.Claims{LaunchDigest: digest(1)}); err == nil {
-		t.Fatal("tdx claims without RTMRs accepted")
-	}
-}
-
-func TestNodeClaimsRejects(t *testing.T) {
-	ok := teetypes.VerificationResult{SignatureValid: true, Platform: teetypes.PlatformTDX, Claims: tdxClaims(make([]byte, 64))}
-	if _, err := nodeClaims(ok); err != nil {
-		t.Fatal(err)
-	}
-	unsigned := ok
-	unsigned.SignatureValid = false
-	short := ok
-	short.Claims = tdxClaims(make([]byte, 20))
-	for name, res := range map[string]teetypes.VerificationResult{"invalid signature": unsigned, "short report_data": short} {
-		if _, err := nodeClaims(res); err == nil {
-			t.Errorf("%s accepted", name)
-		}
-	}
-}
-
 type failingAttestor struct{}
 
 func (failingAttestor) Evidence([48]byte) ([]byte, error) { return nil, errors.New("no TEE") }
 func (failingAttestor) Verify([]byte) (Claims, error)     { return Claims{}, errors.New("no TEE") }
 
-// The tdx attestor fails closed outside a TD and on garbage evidence.
-func TestTDXAttestorFailsClosed(t *testing.T) {
-	a, err := NewTDXAttestor(DefaultTDXTCBStatuses)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := a.Verify([]byte("not a quote")); err == nil {
-		t.Fatal("garbage quote verified")
-	}
-	if _, err := os.Stat("/sys/kernel/config/tsm/report"); err != nil {
-		if _, err := a.Evidence([48]byte{}); err == nil {
-			t.Fatal("quote produced outside a TD")
-		}
-	}
-}
-
 // peerVerifier refuses every peer that is not a replica of this cluster.
 func TestPeerVerifier(t *testing.T) {
-	v := peerVerifier{clusterID: testCluster, att: testAttestor{}, pins: func() []string { return []string{"m1"} }}
-	good, err := newPeerCert(testCluster, testAttestor{measurement: "m1"})
+	v := peerVerifier{clusterID: testCluster, att: MockAttestor{}, pins: func() []string { return []string{"m1"} }}
+	good, err := newPeerCert(testCluster, MockAttestor{Measurement: "m1"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := v.claims(good.Certificate[0]); err != nil {
 		t.Fatal(err)
 	}
-	unpinned, _ := newPeerCert(testCluster, testAttestor{measurement: "m9"})
-	otherCluster, _ := newPeerCert("tenant-b", testAttestor{measurement: "m1"})
+	unpinned, _ := newPeerCert(testCluster, MockAttestor{Measurement: "m9"})
+	otherCluster, _ := newPeerCert("tenant-b", MockAttestor{Measurement: "m1"})
 	plain := mustCA(t).Cert.Raw // no evidence extension
 	for name, der := range map[string][]byte{
 		"unpinned measurement": unpinned.Certificate[0],
@@ -267,7 +218,7 @@ func testStores(t *testing.T) (*allowlist.Store, *secrets.MemoryStore, *sandboxl
 
 func TestNewNodeRejectsIncompleteConfig(t *testing.T) {
 	al, sec, led := testStores(t)
-	good := Config{ClusterID: testCluster, NodeName: "n0", Bind: "127.0.0.1:0", Advertise: "127.0.0.1:1", Attestor: testAttestor{"m1"},
+	good := Config{ClusterID: testCluster, NodeName: "n0", Bind: "127.0.0.1:0", Advertise: "127.0.0.1:1", Attestor: MockAttestor{"m1"},
 		Seats: 3, Allowlist: al, Secrets: sec, Ledger: led}
 	n, err := NewNode(good)
 	if err != nil {
@@ -290,7 +241,7 @@ func TestNewNodeRejectsIncompleteConfig(t *testing.T) {
 		"no attestor":      func(c *Config) { c.Attestor = nil },
 		"no stores":        func(c *Config) { c.Allowlist = nil },
 		"attestor fails":   func(c *Config) { c.Attestor = failingAttestor{} },
-		"own evidence bad": func(c *Config) { c.Attestor = testAttestor{} },
+		"own evidence bad": func(c *Config) { c.Attestor = MockAttestor{} },
 	} {
 		c := good
 		mutate(&c)
