@@ -574,16 +574,20 @@ CDS answers 304 while nothing changed, so an idle poll is cheap. Strict
 clients recover without a router restart within one poll interval, plus up to
 half an interval of jitter, plus one issuance.
 
-Workload routes fail closed across that window. The router forwards to a
-workload backend only when the backend's leaf is stamped under the allowlist
-digest on the router's own leaf. The router and each backend re-issue on
-their own watch ticks, so after an allowlist write a workload route can answer
-502 until both carry the new digest. The slower of the two
-`--ca-watch-interval`s (`router.certProvisioning.caWatchInterval` on the
-router), plus half an interval of jitter, plus one issuance bounds that
-window; with the watch off (`0`) it lasts until the next scheduled
-renewal. Connections the router pooled under its previous digest retire on its
-next route poll (`--routes-poll-interval`).
+An allowlist write does not interrupt workload routes whose entry it leaves
+unchanged. The router reads the current allowlist from CDS on every route
+poll (`--routes-poll-interval`). It forwards to a workload backend when the
+entry named in the backend leaf's stamp is in the current allowlist with the
+same canonical content as in the document the leaf was stamped under. It
+fetches that document from CDS's allowlist history
+(`GET /allowlist/objects/sha256/<digest>`) and caches the last 16 by digest.
+A write that removes or redefines an entry cuts that entry's backends off at
+the router's next route poll: their pooled connections retire and new
+connections get 502 `backend_entry_changed` until the backend re-issues under
+the current allowlist (one `--ca-watch-interval`, plus half an interval of
+jitter, plus one issuance). The check fails closed: a stamped document CDS
+can no longer serve, as after a CDS reset, is refused the same way until the
+backend re-issues.
 
 CDS renews its mesh CA certificate at half its configured lifetime under the
 same process-lifetime key. Workloads pick up the current certificate on their
@@ -674,17 +678,17 @@ follows these rules:
 - A workload backend (`workload`) is reached as a mesh client of the member
   behind it: `cds-attest` presents the router's mesh certificate and requires
   a peer certificate chaining to the mesh CA whose matched workload name
-  equals `workload`, stamped under the allowlist digest on the router's own
-  leaf. A failed handshake gets 502, `backend_digest_mismatch` when the
-  stamped digests differ; no backend is reached in plaintext.
-  While the router's own leaf carries no stamp, as under get-cert's
-  `--no-workload-claims`, the router binds no policy digest and checks
-  workload backends by name alone; a client pinning the router's allowlist
-  digest fails closed on the absent stamp.
-- An attested session routes only by the manifest and router digest its
-  handshake bound. After a route change or an allowlist change that renews
-  the router's leaf, the router answers that session's requests with 503
-  `route_digest_changed` or `router_digest_changed`. It ends an attest-pq
+  equals `workload`, and whose stamped entry is unchanged in the allowlist
+  CDS serves now. A failed handshake gets 502, `backend_entry_changed` when
+  the entry was removed or redefined or its stamped document cannot be
+  fetched; no backend is reached in plaintext.
+- An attested session routes only by the manifest its handshake bound, and
+  only while the entries its workload routes name are unchanged from the
+  allowlist on the router leaf it bound. After a route change, or an
+  allowlist change that removes or redefines one of those entries, the router
+  answers that session's requests with 503 `route_digest_changed` or
+  `route_entry_changed`. Other allowlist writes, and the router's renewal
+  under them, do not refuse the session. It ends an attest-pq
   session. An attest-lb connection stays open and every request on it gets
   the same 503 until the client reconnects or attests again on it. No
   traffic moves to the new routes unattested. See
@@ -923,7 +927,7 @@ The chart sets these flags from `router.routing` and the CDS pins.
 | `--tunnel-io-timeout` | `30s` | How long a tunnel upload, or the download of its sealed response, may make no progress. Must be positive. |
 | `--tunnel-budget` | 75% of the container memory limit, else `32Gi` | Bytes the tunnelled requests in flight in one replica may buffer, as a quantity such as `64Gi`. Each request reserves three copies of its record and four of the largest response (32 MiB); one client (by `X-Real-IP`) holds at most a quarter. Must cover one full-size request, 152 MiB. Set by `router.routing.tunnelBudget`. |
 | `--reserved-paths` | the router's own endpoints | Paths no manifest route can match. Each entry must be a normalized path. |
-| `--attest-endpoints` | `true` | `false` serves only the routing listener and probes. Requires `--routing-port`. `true` requires the three `--mesh-identity-*` files, whose leaf the attestation endpoints bind to; they must name `/etc/c8s/certs/tls.crt`, `tls.key` and `ca.crt`, the credential the router reaches backends with, since a session is bound to that leaf's digest. |
+| `--attest-endpoints` | `true` | `false` serves only the routing listener and probes. Requires `--routing-port`. `true` requires the three `--mesh-identity-*` files, whose leaf the attestation endpoints bind to; they must name `/etc/c8s/certs/tls.crt`, `tls.key` and `ca.crt`, the credential the router reaches backends with. |
 | `--publish-routes` | `false` | Serves the applied signed manifest at `/.well-known/c8s/routes`. Requires `--cds-url` and `--attest-endpoints=true`. Set by `router.routePublication.enabled`. |
 
 `cds-attest` takes the operator keys from the node's launch configuration,
