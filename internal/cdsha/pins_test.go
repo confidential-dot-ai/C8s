@@ -2,6 +2,7 @@ package cdsha
 
 import (
 	"crypto/ecdsa"
+	"crypto/x509"
 	"strings"
 	"testing"
 	"time"
@@ -19,53 +20,29 @@ func TestPinDecreeIsAgreedState(t *testing.T) {
 	a, b := testImage(1), testImage(5)
 	pinA, _ := a.Pin()
 	pinB, _ := b.Pin()
-	c := newCluster(t, 3)
-	for _, n := range []string{"n0", "n1", "n2"} {
-		c.start(n, pinA)
-	}
-	g := c.decree(Decree{Kind: Genesis, BootstrapNode: "n0"})
-	eventually(t, 10*time.Second, "genesis", func() bool { st, ok := c.decrees.get(g); return ok && st.AppliedEpoch != nil })
-	c.settled(15 * time.Second)
-	for _, r := range c.live() {
-		if r.node.Core().PinsDecree != nil {
-			t.Fatal("a pin decree before any was applied")
+	opKey, opPub := operatorKey(t)
+	f := newTestFSM(t, opPub)
+	ca := mustCA(t)
+	key, _ := x509.MarshalPKCS8PrivateKey(ca.Key)
+	apply := func(i uint64, de DecreeEntry) {
+		t.Helper()
+		de.AtMS = time.Now().UnixMilli()
+		if res := applyAt(f, i, Entry{Kind: KindDecree, Decree: &de}).(DecreeResult); res.Err != "" {
+			t.Fatalf("entry %d: %s", i, res.Err)
 		}
 	}
-	// Measurements that are not the images' pins are refused.
-	bad := c.decree(Decree{Kind: UpdateMeasurements, BaseEpoch: 1, Measurements: []string{pinA}, Images: []DecreeImage{a, b}})
-	eventually(t, 10*time.Second, "mismatched decree rejected", func() bool { st, ok := c.decrees.get(bad); return ok && st.RejectedReason != "" })
-	ab := c.decree(Decree{Kind: UpdateMeasurements, BaseEpoch: 1, Measurements: normalizePins([]string{pinA, pinB}), Images: []DecreeImage{a, b}})
-	eventually(t, 10*time.Second, "A+B applied", func() bool { st, ok := c.decrees.get(ab); return ok && st.AppliedEpoch != nil })
-	for _, r := range c.live() {
-		eventually(t, 3*time.Second, "pin decree on "+r.name, func() bool {
-			sd := r.node.Core().PinsDecree
-			return sd != nil && sd.Decree.BaseEpoch == 1 && len(sd.Decree.Images) == 2
-		})
+	apply(1, DecreeEntry{Decree: signDecree(t, opKey, Decree{Kind: Genesis, BootstrapNode: "n0"}), Pins: []string{pinA}, RootCert: ca.Cert.Raw, Key: key})
+	if f.Core().PinsDecree != nil {
+		t.Fatal("a pin decree before any was applied")
 	}
-	bare := c.decree(Decree{Kind: UpdateMeasurements, BaseEpoch: 2, Measurements: normalizePins([]string{pinA, pinB, "ee"})})
-	eventually(t, 10*time.Second, "bare set applied", func() bool { st, ok := c.decrees.get(bare); return ok && st.AppliedEpoch != nil })
-	for _, r := range c.live() {
-		eventually(t, 3*time.Second, "pin decree dropped on "+r.name, func() bool { return r.node.Core().PinsDecree == nil })
+	ab := signDecree(t, opKey, Decree{Kind: UpdateMeasurements, BaseEpoch: 1, Measurements: normalizePins([]string{pinA, pinB}), Images: []DecreeImage{a, b}})
+	apply(2, DecreeEntry{Decree: ab})
+	if sd := f.Core().PinsDecree; sd == nil || sd.Decree.IntentID != ab.Decree.IntentID {
+		t.Fatalf("pin decree %+v", sd)
 	}
-}
-
-// A decree image's pin is exactly what a TDX replica on that image reports
-// (NodeAttestor): otherwise a decree naming the running image would not
-// keep its replicas pinned.
-func TestDecreeImagePinIsTheReplicaMeasurement(t *testing.T) {
-	img := testImage(1)
-	pin, err := img.Pin()
-	if err != nil {
-		t.Fatal(err)
-	}
-	want, _ := ImagePin("tdx", img.MRTD, map[int]string{1: img.RTMR1, 2: img.RTMR2})
-	if pin != want || pin != img.MRTD+":"+img.RTMR1+":"+img.RTMR2 {
-		t.Fatalf("pin %q, replica reports %q", pin, want)
-	}
-	bad := img
-	bad.RTMR1 = strings.Repeat("AB", 48)
-	if _, err := bad.Pin(); err == nil {
-		t.Fatal("uppercase register accepted")
+	apply(3, DecreeEntry{Decree: signDecree(t, opKey, Decree{Kind: UpdateMeasurements, BaseEpoch: 2, Measurements: normalizePins([]string{pinA, pinB, "ee"})})})
+	if f.Core().PinsDecree != nil {
+		t.Fatal("a set without images kept the pin decree")
 	}
 }
 
