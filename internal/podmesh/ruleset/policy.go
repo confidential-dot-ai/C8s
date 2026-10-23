@@ -148,8 +148,6 @@ var localRanges = []netip.Prefix{
 	netip.MustParsePrefix("224.0.0.0/3"),
 	netip.MustParsePrefix("::/127"),
 	netip.MustParsePrefix("::ffff:0:0/96"),
-	netip.MustParsePrefix("64:ff9b::/96"),
-	netip.MustParsePrefix("2002::/16"),
 	netip.MustParsePrefix("fe80::/10"),
 	netip.MustParsePrefix("ff00::/8"),
 }

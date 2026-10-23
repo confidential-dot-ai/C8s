@@ -75,9 +75,7 @@ type Workload struct {
 // relying party has to weigh, and one rule per exit in every chain.
 const MaxEgress = 8
 
-// Egress is one declared exit: a range and a TCP port. The canonical text of
-// the range is its RFC 5952 form (lower case, zeros compressed), whatever
-// spelling the author wrote.
+// Egress is one declared exit: a range and a TCP port.
 type Egress struct {
 	CIDR netip.Prefix `json:"cidr" yaml:"cidr"`
 	Port uint16       `json:"port" yaml:"port"`
@@ -498,22 +496,6 @@ func (a *Allowlist) normalize(strict bool) error {
 	return nil
 }
 
-// nonUnicastRanges are what an exit must not overlap: this network, loopback,
-// link-local, multicast, reserved and broadcast, and the IPv6 forms that
-// stand for IPv4 addresses. Overlapping one of them also refuses /0.
-var nonUnicastRanges = []netip.Prefix{
-	netip.MustParsePrefix("0.0.0.0/8"),
-	netip.MustParsePrefix("127.0.0.0/8"),
-	netip.MustParsePrefix("169.254.0.0/16"),
-	netip.MustParsePrefix("224.0.0.0/3"),
-	netip.MustParsePrefix("::/127"),
-	netip.MustParsePrefix("::ffff:0:0/96"),
-	netip.MustParsePrefix("64:ff9b::/96"),
-	netip.MustParsePrefix("2002::/16"),
-	netip.MustParsePrefix("fe80::/10"),
-	netip.MustParsePrefix("ff00::/8"),
-}
-
 // normalizeEgress validates an entry's exits and sorts them. An empty list
 // becomes nil, so an entry with no exit carries no "egress" key.
 func normalizeEgress(exits *[]Egress) error {
@@ -535,11 +517,6 @@ func normalizeEgress(exits *[]Egress) error {
 			return fmt.Errorf("cidr %s carries host bits (did you mean %s?)", e.CIDR, e.CIDR.Masked())
 		case e.Port == 0:
 			return fmt.Errorf("exit %s needs a TCP port", e.CIDR)
-		}
-		for _, special := range nonUnicastRanges {
-			if e.CIDR.Overlaps(special) {
-				return fmt.Errorf("cidr %s overlaps %s, which is not a range of unicast hosts an exit can name", e.CIDR, special)
-			}
 		}
 	}
 	slices.SortFunc(list, func(a, b Egress) int {
