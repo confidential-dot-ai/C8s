@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -52,15 +53,6 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 	if err != nil {
 		return fmt.Errorf("baked workload seed: %w", err)
 	}
-	if d.Role == launchconfig.Server {
-		server, err := serverOutputs(d, bakedData)
-		if err != nil {
-			return err
-		}
-		for name, data := range server.files() {
-			outputs[name] = data
-		}
-	}
 	// Every node publishes which CDS flavour the signed document selected, so
 	// the baked singleton can yield on an HA cluster without reading the
 	// root-only staged document (which carries join tokens).
@@ -75,13 +67,30 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 		}
 		outputs[CDSDecreesFile] = info
 	}
-	if d.Role == launchconfig.CDS {
+	nodeSeed := bakedSeed
+	switch d.Role {
+	case launchconfig.Server:
+		server, err := serverOutputs(d, bakedData)
+		if err != nil {
+			return err
+		}
+		maps.Copy(outputs, server.files())
+	case launchconfig.CDS:
 		cds, err := cdsOutputs(d, bakedData)
 		if err != nil {
 			return err
 		}
-		for name, data := range cds {
-			outputs[name] = data
+		maps.Copy(outputs, cds)
+		// A cds-role node admits the cds floor instead of the chart seed: the
+		// HA CDS replica with its exact argv and the per-node DaemonSets,
+		// nothing else of the chart (the operator image carries the same c8s
+		// binary).
+		floorData, err := os.ReadFile(path("/usr/lib/c8s/cds-floor.json"))
+		if err != nil {
+			return fmt.Errorf("cds role needs the baked cds floor: %w", err)
+		}
+		if nodeSeed, err = allowlist.ParseJSON(floorData); err != nil {
+			return fmt.Errorf("baked cds floor: %w", err)
 		}
 	}
 
@@ -104,19 +113,6 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 	base, err := bakedBase(a["base"])
 	if err != nil {
 		return err
-	}
-	// A cds-role node admits the cds floor instead of the chart seed: the HA
-	// CDS replica with its exact argv and the per-node DaemonSets, nothing
-	// else of the chart (the operator image carries the same c8s binary).
-	nodeSeed := bakedSeed
-	if d.Role == launchconfig.CDS {
-		floorData, err := os.ReadFile(path("/usr/lib/c8s/cds-floor.json"))
-		if err != nil {
-			return fmt.Errorf("cds role needs the baked cds floor: %w", err)
-		}
-		if nodeSeed, err = allowlist.ParseJSON(floorData); err != nil {
-			return fmt.Errorf("baked cds floor: %w", err)
-		}
 	}
 	if err := mergeWorkloads(base, nodeSeed, true); err != nil {
 		return fmt.Errorf("merge chart seed into NRI base: %w", err)
@@ -168,18 +164,13 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 	if err := os.Chmod(publicPath, 0755); err != nil {
 		return err
 	}
-	if d.Role != launchconfig.Server {
-		if err := removeServerOutputs(publicPath); err != nil {
-			return err
+	// Remove every public file this role does not publish, so a node whose
+	// signed document changed role or dropped cdsHA keeps no stale input.
+	for _, name := range append([]string{cdsHAFile, CDSDecreesFile}, serverOutputNames...) {
+		if _, ok := outputs[name]; ok {
+			continue
 		}
-	}
-	if d.Role != launchconfig.CDS {
-		if err := os.Remove(filepath.Join(publicPath, cdsHAFile)); err != nil && !os.IsNotExist(err) {
-			return err
-		}
-	}
-	if d.CDSHA == nil {
-		if err := os.Remove(filepath.Join(publicPath, CDSDecreesFile)); err != nil && !os.IsNotExist(err) {
+		if err := os.Remove(filepath.Join(publicPath, name)); err != nil && !os.IsNotExist(err) {
 			return err
 		}
 	}
@@ -351,17 +342,6 @@ func serverOutputs(d *launchconfig.Document, bakedData []byte) (serverConfig, er
 		}
 	}
 	return serverConfig{operatorPubKey: pub, allowlistSeed: seed, tlsSAN: d.TLSSAN, router: router}, nil
-}
-
-// removeServerOutputs clears the server-only inputs from an agent's public
-// directory, so a node demoted to agent cannot keep serving stale ones.
-func removeServerOutputs(publicPath string) error {
-	for _, name := range serverOutputNames {
-		if err := os.Remove(filepath.Join(publicPath, name)); err != nil && !os.IsNotExist(err) {
-			return err
-		}
-	}
-	return nil
 }
 
 // readPolicy refuses partial pins even when the staged file parses. The
