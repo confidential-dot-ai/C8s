@@ -195,7 +195,7 @@ func (k *Checker) write(kind, key string, seq int) Op {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	op := Op{Kind: kind, Key: key, Seq: seq}
-	r := k.c.Do(ctx, i, http.MethodPut, path, body, "op")
+	r := k.c.Do(ctx, i, http.MethodPut, path, body, true)
 	op.End, op.Code = time.Now(), r.Code
 	if r.Err != nil {
 		op.Err = r.Err.Error()
