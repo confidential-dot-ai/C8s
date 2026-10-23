@@ -12,7 +12,9 @@ import time
 import urllib.request
 import uuid
 
+# Historical build: matching CLI/components, but a node-only profile from main.
 SOURCE = "4774df9ebc1bd186765b8997f5356005510b9342"
+PROFILE_SOURCE = "00f43aca8047bd5e2a3e30586d6a72b3091e5da5"
 IMAGE = "ghcr.io/confidential-dot-ai/node-guest-base@sha256:94609d81bb2309ef0e73319551dcc46a2ddbf217c7a34cb413586898b5116b52"
 MANIFEST = "f9b69ce2ad039fb36c6b16bb805befa453b4df6b0706915af8411edfcaf22bc1"
 DISK = "bc3bcd04d700370edaed13899370e783361aa0a6368449426fecbbd182b9d49d"
@@ -149,7 +151,7 @@ class Diagnostic:
                           "--image-manifest", str(self.evidence / "manifest.json"),
                           "--pod-manifest", str(self.private / "pod.json"), "--workloads", str(self.private / "workloads.json"),
                           "--server-address", "10.255.255.1", "--server-public-key", str(self.private / "server/server/pubkey")])
-        write(self.evidence / "identity.json", {"source": SOURCE, "buildRun": "39943645155", "image": IMAGE,
+        write(self.evidence / "identity.json", {"componentSource": SOURCE, "profileSource": PROFILE_SOURCE, "buildRun": "39943645155", "image": IMAGE,
               "manifestSHA256": MANIFEST, "diskSHA256": DISK, "scope": "boot diagnostics only; CDS deliberately unavailable"})
         try:
             probe = subprocess.run(["kubectl", "-n", NS, "auth", "can-i", "create", "services"], capture_output=True, timeout=10)
