@@ -345,6 +345,10 @@ func (s *Server) maintain(ctx context.Context) {
 func (s *Server) Handler() http.Handler {
 	r := chi.NewRouter()
 	r.Use(server.RequestLogger)
+	// Every request on a bound public connection holds its binding while it
+	// runs, whichever path it reaches, matched or not: a long request must
+	// not let the sweep drop the binding under it (E7).
+	r.Use(s.holdingBinding)
 
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	// Unmetered: the kubelet probes it through the same front door as the
@@ -355,13 +359,7 @@ func (s *Server) Handler() http.Handler {
 	if s.cfg.DisableAttestEndpoints {
 		return r
 	}
-	// Every request on a bound public connection holds its binding while it
-	// runs, whichever location it reaches: a long tunnel request must not let
-	// the sweep drop the binding under it (E7).
-	r.Group(func(r chi.Router) {
-		r.Use(s.holdingBinding)
-		s.attestRoutes(r)
-	})
+	s.attestRoutes(r)
 	return r
 }
 

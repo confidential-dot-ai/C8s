@@ -428,6 +428,9 @@ data:
             # Exact: a prefix match would also claim manifest paths such as
             # /healthz-ui.
             location = /healthz {
+                # A request here holds no attest-lb binding; the connection closes after
+                # it so a binding cannot lapse under a connection kept open this way (E7).
+                keepalive_timeout 0;
                 access_log off;
                 return 200 "ok\n";
                 add_header Content-Type text/plain;

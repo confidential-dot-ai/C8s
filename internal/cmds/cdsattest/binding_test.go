@@ -306,6 +306,15 @@ func TestE7WellKnownRequestHoldsTheBinding(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, wellKnownPrefix+"/tunnel", nil)
 	req.Header.Set(routing.ConnectionHeader, "7.1")
 	handler.ServeHTTP(httptest.NewRecorder(), req)
+	// An unmatched path goes through the same hold: the middleware wraps the
+	// whole mux, 404s included.
+	unmatched := httptest.NewRequest(http.MethodGet, wellKnownPrefix+"/nothing", nil)
+	unmatched.Header.Set(routing.ConnectionHeader, "7.1")
+	rec := httptest.NewRecorder()
+	(&Server{bindings: b, cfg: Config{DisableAttestEndpoints: true}}).Handler().ServeHTTP(rec, unmatched)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("unmatched path = %d, want %d", rec.Code, http.StatusNotFound)
+	}
 	if e, ok := b.entries["7.1"]; !ok || e.inFlight != 0 || e.refused != "" {
 		t.Fatalf("binding after the request = %+v, %v, want released and live", e, ok)
 	}

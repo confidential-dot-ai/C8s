@@ -1593,7 +1593,7 @@ func TestChartRendersRouterPublicTLSAndDiscovery(t *testing.T) {
 	cfg.location(t, "exact", "/.well-known/mesh-ca.pem").assertDirective(t, "alias", "/etc/c8s/certs/ca.crt")
 	// Locations that hold no attest-lb binding close the connection after the
 	// response, so a binding cannot lapse under a connection they keep open.
-	for _, path := range []string{"/v1/discovery", "/.well-known/cds-cert.pem", "/.well-known/mesh-ca.pem", "/readyz"} {
+	for _, path := range []string{"/v1/discovery", "/.well-known/cds-cert.pem", "/.well-known/mesh-ca.pem", "/readyz", "/healthz"} {
 		cfg.location(t, "exact", path).assertDirective(t, "keepalive_timeout", "0")
 	}
 	// The public TLS mode changes only what nginx serves: application
@@ -4681,6 +4681,9 @@ func Example_routerConfig() {
 	//         # Exact: a prefix match would also claim manifest paths such as
 	//         # /healthz-ui.
 	//         location = /healthz {
+	//             # A request here holds no attest-lb binding; the connection closes after
+	//             # it so a binding cannot lapse under a connection kept open this way (E7).
+	//             keepalive_timeout 0;
 	//             access_log off;
 	//             return 200 "ok\n";
 	//             add_header Content-Type text/plain;
