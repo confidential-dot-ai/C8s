@@ -609,10 +609,16 @@ func TestB8WorkloadBackendDigest(t *testing.T) {
 				t.Fatalf("GET / = %d %q, want %d %q", w.Code, w.Body.String(), tc.want, tc.wantBody)
 			}
 			if tc.want != http.StatusOK {
+				var logs bytes.Buffer
+				f.proxy.log = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
 				sealedHost := []types.HeaderField{{Name: "Host", Value: testHost}}
 				resp, err := f.proxy.Forward(outerRequest(testHost), types.TunnelRequest{Path: "/", Headers: sealedHost})
 				if err != nil || resp.Status != tc.want || !strings.Contains(string(resp.Body), tc.wantBody) {
 					t.Fatalf("Forward(/) = %d %q, %v, want %d %q, nil", resp.Status, resp.Body, err, tc.want, tc.wantBody)
+				}
+				// A tunnelled refusal leaves the same Warn line as the listener.
+				if !strings.Contains(logs.String(), "backend request failed") {
+					t.Fatalf("tunnelled B8 refusal logged %q, want a backend request failed line at Warn", logs.String())
 				}
 			}
 			if tc.want != http.StatusOK && b.hits.Load() != 0 {
@@ -675,8 +681,8 @@ func TestB9UnnamedRouter(t *testing.T) {
 			}
 			sealedHost := []types.HeaderField{{Name: "Host", Value: testHost}}
 			resp, err := f.proxy.Forward(outerRequest(testHost), types.TunnelRequest{Path: "/", Headers: sealedHost})
-			if err != nil || resp.Status != http.StatusServiceUnavailable {
-				t.Fatalf("Forward(/) = %d, %v, want %d, nil", resp.Status, err, http.StatusServiceUnavailable)
+			if err != nil || resp.Status != http.StatusServiceUnavailable || !strings.Contains(string(resp.Body), routerDigestUnavailable) {
+				t.Fatalf("Forward(/) = %d %q, %v, want %d %q, nil", resp.Status, resp.Body, err, http.StatusServiceUnavailable, routerDigestUnavailable)
 			}
 			if n := accepted.Load(); n != 0 {
 				t.Fatalf("workload backend accepted %d connections, want 0", n)
@@ -718,8 +724,8 @@ func TestB10RenewedRouterLeafRetiresPools(t *testing.T) {
 	if err := f.transports.dropMeshPools(); err != nil {
 		t.Fatal(err)
 	}
-	if got := f.get("/").Code; got != http.StatusBadGateway {
-		t.Fatalf("GET / after the router renewed under another digest = %d, want %d", got, http.StatusBadGateway)
+	if w := f.get("/"); w.Code != http.StatusBadGateway || !strings.Contains(w.Body.String(), backendDigestMismatch) {
+		t.Fatalf("GET / after the router renewed under another digest = %d %q, want %d %q", w.Code, w.Body.String(), http.StatusBadGateway, backendDigestMismatch)
 	}
 	if n := old.hits.Load(); n != 1 {
 		t.Fatalf("backend under the old digest served %d requests, want 1", n)

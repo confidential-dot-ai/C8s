@@ -159,20 +159,25 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		defer stop()
 	}
 	p.reverseProxy(route, target, func(err error) {
-		if errors.Is(err, errNoPolicyIdentity) {
-			// The backend was never dialled; Debug keeps an unnamed router's
-			// steady 503s from flooding the log with backend blame.
-			p.log.Debug(routerDigestUnavailable, "host", r.Host, "path", target.RawPath, "error", err)
-			http.Error(w, routerDigestUnavailable, http.StatusServiceUnavailable) // B9
-			return
-		}
-		p.log.Warn("backend request failed", "host", r.Host, "path", target.RawPath, "backend", route.Backend.Address, "error", err)
-		if errors.Is(err, errBackendDigestMismatch) {
-			http.Error(w, backendDigestMismatch, http.StatusBadGateway) // B8
-			return
-		}
-		http.Error(w, "backend unavailable", http.StatusBadGateway) // B5
+		status, body := p.refusal(err, r.Host, target.RawPath, route.Backend.Address)
+		http.Error(w, body, status)
 	}).ServeHTTP(w, r)
+}
+
+// refusal logs a failed backend exchange and returns the response it gets:
+// 503 router_digest_unavailable (B9), 502 backend_digest_mismatch (B8), or
+// the plain 502 of B5. B9 never dialled, so it logs at Debug: an unnamed
+// router's steady 503s must not flood the log with backend blame.
+func (p *Proxy) refusal(err error, host, path, backend string) (int, string) {
+	if errors.Is(err, errNoPolicyIdentity) {
+		p.log.Debug(routerDigestUnavailable, "host", host, "path", path, "error", err)
+		return http.StatusServiceUnavailable, routerDigestUnavailable
+	}
+	p.log.Warn("backend request failed", "host", host, "path", path, "backend", backend, "error", err)
+	if errors.Is(err, errBackendDigestMismatch) {
+		return http.StatusBadGateway, backendDigestMismatch
+	}
+	return http.StatusBadGateway, "backend unavailable"
 }
 
 // clientAddressHeaders name the client's network address. A tunnelled request
@@ -282,11 +287,9 @@ func (p *Proxy) Forward(outer *http.Request, req types.TunnelRequest) (types.Tun
 	}
 	rec := &capture{header: http.Header{}}
 	rp.ServeHTTP(rec, in)
-	if errors.Is(backendErr, errNoPolicyIdentity) {
-		return textResponse(http.StatusServiceUnavailable, routerDigestUnavailable), nil
-	}
-	if errors.Is(backendErr, errBackendDigestMismatch) {
-		return textResponse(http.StatusBadGateway, backendDigestMismatch), nil
+	if errors.Is(backendErr, errNoPolicyIdentity) || errors.Is(backendErr, errBackendDigestMismatch) {
+		status, body := p.refusal(backendErr, in.Host, target.RawPath, route.Backend.Address)
+		return textResponse(status, body), nil
 	}
 	if backendErr != nil {
 		return types.TunnelResponse{}, fmt.Errorf("backend %s: %w", route.Backend.Address, backendErr)
