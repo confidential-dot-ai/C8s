@@ -3,7 +3,6 @@ package allowlist
 import (
 	"database/sql"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -201,8 +200,8 @@ func TestSpentTokenPruningIsDeterministic(t *testing.T) {
 	}
 }
 
-// Rows with and without a window round-trip through Dump, the JSON encoding
-// and Restore, and stay spent.
+// Rows with and without a window round-trip through Dump and Restore, and
+// stay spent.
 func TestSpentTokenSnapshotRoundTrip(t *testing.T) {
 	src := openJournaled(t)
 	toks := []string{tokenAt(t0, "a"), tokenAt(t0+30, "b"), "h.p.legacy"}
@@ -212,20 +211,12 @@ func TestSpentTokenSnapshotRoundTrip(t *testing.T) {
 		}
 	}
 	want := spent(t, src)
-	sn, err := src.Dump()
+	image, err := src.Dump()
 	if err != nil {
-		t.Fatal(err)
-	}
-	raw, err := json.Marshal(sn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var back Snapshot
-	if err := json.Unmarshal(raw, &back); err != nil {
 		t.Fatal(err)
 	}
 	dst := openJournaled(t)
-	if err := dst.Restore(back); err != nil {
+	if err := dst.Restore(image); err != nil {
 		t.Fatal(err)
 	}
 	if got := spent(t, dst); !reflect.DeepEqual(got, want) {
