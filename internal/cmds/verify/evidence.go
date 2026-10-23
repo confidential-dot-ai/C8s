@@ -115,6 +115,9 @@ type evidence struct {
 	// workloadErr records a carried matched-workload extension this build
 	// cannot interpret (or a duplicate). The verdict fails closed on it.
 	workloadErr error
+	// allowlistDigest is the allowlist digest erd binds (attested modes
+	// only; nil otherwise), checked by applyAllowlistDigestPolicy.
+	allowlistDigest []byte
 	// route is the route digest erd binds (attested modes only; nil
 	// otherwise).
 	route *boundRoute
@@ -149,7 +152,10 @@ type attestationResponse struct {
 	// it from the leaf it observed and only checks that the two agree.
 	ServingLeafSHA256 string `json:"serving_leaf_sha256,omitempty"`
 	// RouteDigest is informational: resolveRoute only selects or rejects on it.
-	RouteDigest      string   `json:"route_digest"`
+	RouteDigest string `json:"route_digest"`
+	// AllowlistDigest is recomputed into the transcript, then pinned on the
+	// verified value (applyAllowlistDigestPolicy).
+	AllowlistDigest  string   `json:"allowlist_digest"`
 	MeasuredPolicies []string `json:"measured_policies,omitempty"`
 }
 
@@ -349,8 +355,9 @@ func evidenceFromEndpointJSON(data, expectNonce, expectEK []byte, route *boundRo
 		return nil, fmt.Errorf("parse attestation response: %w", err)
 	}
 	// This parser consumes exactly the attest-pq binding. Anything else —
-	// including the retired "c8s-verify/v1" tag or a cross-endpoint attest-lb
-	// response — is rejected even if its evidence is otherwise valid: the
+	// including the retired "c8s-verify/v1" tag, the c8s/attest-pq/v1 layout
+	// without the allowlist digest, or a cross-endpoint attest-lb response —
+	// is rejected even if its evidence is otherwise valid: the
 	// endpoints are non-negotiated and there is no downgrade.
 	if r.Version != types.BindingAttestPQ {
 		return nil, fmt.Errorf("attestation response version %q is not the attest-pq binding %q", r.Version, types.BindingAttestPQ)
@@ -394,6 +401,10 @@ func evidenceFromEndpointJSON(data, expectNonce, expectEK []byte, route *boundRo
 	if err != nil {
 		return nil, err
 	}
+	allowlistDigest, err := servedAllowlistDigest(r.AllowlistDigest)
+	if err != nil {
+		return nil, err
+	}
 	leaf, ca, err := committedMeshChain(r.CDSCertPEM, r.IdentityProof)
 	if err != nil {
 		return nil, err
@@ -401,7 +412,7 @@ func evidenceFromEndpointJSON(data, expectNonce, expectEK []byte, route *boundRo
 	// The transcript rejects wrong-size keys and nonces: report_data framing is
 	// length-prefixed, so a wrong-size field can never reproduce the served
 	// hash — refuse it here instead of failing report-data match downstream.
-	erd, err := overenc.IdentityTranscriptHash(r.FrontDoorMode, xwingEK, xwingCT, sessionID, nonce, leaf.Raw, ca.Raw, route.digest)
+	erd, err := overenc.IdentityTranscriptHash(r.FrontDoorMode, xwingEK, xwingCT, sessionID, nonce, leaf.Raw, ca.Raw, route.digest, allowlistDigest)
 	if err != nil {
 		return nil, fmt.Errorf("compute identity transcript: %w", err)
 	}
@@ -430,7 +441,7 @@ func evidenceFromEndpointJSON(data, expectNonce, expectEK []byte, route *boundRo
 		fresh:            fresh,
 		measured:         r.MeasuredPolicies,
 		source:           source,
-		bindingNote:      "REPORTDATA binds the identity transcript: front-door mode + session keys + nonce + the exact mesh leaf and its transcript-committed issuing CA + the route digest (leaf proof of possession verified)",
+		bindingNote:      "REPORTDATA binds the identity transcript: front-door mode + session keys + nonce + the exact mesh leaf and its transcript-committed issuing CA + the route digest + the allowlist digest (leaf proof of possession verified)",
 		leaf:             leaf,
 		leafChainDerived: true,
 		frontDoor:        frontDoorNone,
@@ -439,6 +450,7 @@ func evidenceFromEndpointJSON(data, expectNonce, expectEK []byte, route *boundRo
 		workload:         workload,
 		workloadErr:      workloadErr,
 		route:            route,
+		allowlistDigest:  allowlistDigest,
 	}, nil
 }
 
@@ -583,7 +595,7 @@ func evidenceFromBareJSON(data []byte, erd []byte, source string) (*evidence, er
 	if err := json.Unmarshal(data, &r); err != nil {
 		return nil, fmt.Errorf("parse bare evidence: %w", err)
 	}
-	if r.Version == types.BindingAttestPQ || r.Version == types.BindingAttestLB {
+	if strings.HasPrefix(r.Version, "c8s/attest-") {
 		return nil, fmt.Errorf("%s is an attestation response (version %q), not bare evidence", source, r.Version)
 	}
 	if len(r.Evidence) == 0 {

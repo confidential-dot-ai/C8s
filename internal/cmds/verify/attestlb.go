@@ -131,11 +131,15 @@ func evidenceFromAttestLBJSON(data, nonce, servingLeaf []byte, fresh bool, route
 	if err != nil {
 		return nil, err
 	}
+	allowlistDigest, err := servedAllowlistDigest(r.AllowlistDigest)
+	if err != nil {
+		return nil, err
+	}
 	leaf, ca, err := committedMeshChain(r.CDSCertPEM, r.IdentityProof)
 	if err != nil {
 		return nil, err
 	}
-	erd, err := overenc.LBTranscriptHash(r.FrontDoorMode, nonce, servingLeaf, leaf.Raw, ca.Raw, route.digest)
+	erd, err := overenc.LBTranscriptHash(r.FrontDoorMode, nonce, servingLeaf, leaf.Raw, ca.Raw, route.digest, allowlistDigest)
 	if err != nil {
 		return nil, fmt.Errorf("compute attest-lb transcript: %w", err)
 	}
@@ -159,7 +163,7 @@ func evidenceFromAttestLBJSON(data, nonce, servingLeaf []byte, fresh bool, route
 		fresh:             fresh,
 		measured:          r.MeasuredPolicies,
 		source:            source,
-		bindingNote:       "REPORTDATA binds the attest-lb transcript: front-door mode + nonce + " + servingLeafNote + " + the exact mesh leaf and its transcript-committed issuing CA + the route digest (leaf proof of possession verified)",
+		bindingNote:       "REPORTDATA binds the attest-lb transcript: front-door mode + nonce + " + servingLeafNote + " + the exact mesh leaf and its transcript-committed issuing CA + the route digest + the allowlist digest (leaf proof of possession verified)",
 		leaf:              leaf,
 		leafChainDerived:  true,
 		frontDoor:         frontDoorAttested,
@@ -169,6 +173,7 @@ func evidenceFromAttestLBJSON(data, nonce, servingLeaf []byte, fresh bool, route
 		workload:          workload,
 		workloadErr:       workloadErr,
 		route:             route,
+		allowlistDigest:   allowlistDigest,
 	}, nil
 }
 

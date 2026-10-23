@@ -119,6 +119,7 @@ func routedRunConfig(t *testing.T, port int) config {
 			launchKeysFile:   filepath.Join(t.TempDir(), "absent"),
 			allowUnpinnedCDS: true,
 			pollInterval:     time.Hour,
+			allowlistMaxAge:  defaultAllowlistMaxAge,
 			backendTimeout:   time.Hour,
 			host:             "127.0.0.1",
 			reservedPaths:    defaultReservedPaths,

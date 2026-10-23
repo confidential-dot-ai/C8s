@@ -19,22 +19,26 @@ const (
 	// RouteDigestBytes is the length of the route digest both transcripts
 	// bind: SHA-256 of the applied route manifest's bytes.
 	RouteDigestBytes = sha256.Size
+	// AllowlistDigestBytes is the length of the allowlist digest both
+	// transcripts bind: SHA-256 of the allowlist bytes the CDS served.
+	AllowlistDigestBytes = sha256.Size
 )
 
 // IdentityTranscriptHash commits the front-door mode and the complete key
 // exchange — the client's X-Wing encapsulation key, the server's ciphertext,
 // the session id, and the client nonce — together with the exact mesh leaf,
-// issuing mesh CA and route digest to one SHA-384 value suitable for TEE
-// report_data, the attest-pq binding (types.BindingAttestPQ):
+// issuing mesh CA, route digest and allowlist digest to one SHA-384 value
+// suitable for TEE report_data, the attest-pq binding (types.BindingAttestPQ):
 //
-//	SHA-384( LP("c8s-verify/v1") || LP(mode) || LP(SHA-256(mesh_CA_DER)) ||
+//	SHA-384( LP("c8s-verify/v2") || LP(mode) || LP(SHA-256(mesh_CA_DER)) ||
 //	         LP(SHA-256(mesh_leaf_DER)) || LP(xwing_ek) || LP(xwing_ct) ||
-//	         LP(session_id) || LP(nonce) || LP(route_digest) )
+//	         LP(session_id) || LP(nonce) || LP(route_digest) ||
+//	         LP(allowlist_digest) )
 //
 // The evidence therefore covers both sides of the exchange, not only the
 // server's contribution. Every variable-length field is length-prefixed to
 // make the transcript unambiguous across the Go and browser implementations.
-func IdentityTranscriptHash(mode types.FrontDoorMode, xwingEK, xwingCT, sessionID, nonce, leafDER, caDER, routeDigest []byte) ([]byte, error) {
+func IdentityTranscriptHash(mode types.FrontDoorMode, xwingEK, xwingCT, sessionID, nonce, leafDER, caDER, routeDigest, allowlistDigest []byte) ([]byte, error) {
 	if mode == "" {
 		return nil, fmt.Errorf("overenc: identity transcript requires a front-door mode")
 	}
@@ -56,6 +60,9 @@ func IdentityTranscriptHash(mode types.FrontDoorMode, xwingEK, xwingCT, sessionI
 	if len(routeDigest) != RouteDigestBytes {
 		return nil, fmt.Errorf("overenc: identity transcript route digest must be %d bytes, got %d", RouteDigestBytes, len(routeDigest))
 	}
+	if len(allowlistDigest) != AllowlistDigestBytes {
+		return nil, fmt.Errorf("overenc: identity transcript allowlist digest must be %d bytes, got %d", AllowlistDigestBytes, len(allowlistDigest))
+	}
 
 	leafHash := sha256.Sum256(leafDER)
 	caHash := sha256.Sum256(caDER)
@@ -71,6 +78,7 @@ func IdentityTranscriptHash(mode types.FrontDoorMode, xwingEK, xwingCT, sessionI
 		sessionID,
 		nonce,
 		routeDigest,
+		allowlistDigest,
 	} {
 		var err error
 		if encoded, err = appendLengthPrefixed(encoded, field); err != nil {
@@ -82,18 +90,19 @@ func IdentityTranscriptHash(mode types.FrontDoorMode, xwingEK, xwingCT, sessionI
 }
 
 // LBTranscriptHash commits the front-door mode, client nonce, exact outer
-// serving leaf, exact mesh leaf, issuing mesh CA and route digest to one
-// SHA-384 value suitable for TEE report_data — the attest-lb binding for
-// clients that ride ordinary nginx TLS:
+// serving leaf, exact mesh leaf, issuing mesh CA, route digest and allowlist
+// digest to one SHA-384 value suitable for TEE report_data — the attest-lb
+// binding for clients that ride ordinary nginx TLS:
 //
-//	SHA-384( LP("c8s/attest-lb/v1") || LP(mode) || LP(nonce) ||
+//	SHA-384( LP("c8s/attest-lb/v2") || LP(mode) || LP(nonce) ||
 //	         LP(SHA-256(serving_leaf_DER)) || LP(SHA-256(mesh_leaf_DER)) ||
-//	         LP(SHA-256(mesh_CA_DER)) || LP(route_digest) )
+//	         LP(SHA-256(mesh_CA_DER)) || LP(route_digest) ||
+//	         LP(allowlist_digest) )
 //
 // A client recomputes it from the exact leaf it observed on the connection
 // being authorized, so a response relayed through a different serving leaf
 // fails even when both leaves share an issuer.
-func LBTranscriptHash(mode types.FrontDoorMode, nonce, servingLeafDER, meshLeafDER, caDER, routeDigest []byte) ([]byte, error) {
+func LBTranscriptHash(mode types.FrontDoorMode, nonce, servingLeafDER, meshLeafDER, caDER, routeDigest, allowlistDigest []byte) ([]byte, error) {
 	if mode == "" {
 		return nil, fmt.Errorf("overenc: lb transcript requires a front-door mode")
 	}
@@ -105,6 +114,9 @@ func LBTranscriptHash(mode types.FrontDoorMode, nonce, servingLeafDER, meshLeafD
 	}
 	if len(routeDigest) != RouteDigestBytes {
 		return nil, fmt.Errorf("overenc: lb transcript route digest must be %d bytes, got %d", RouteDigestBytes, len(routeDigest))
+	}
+	if len(allowlistDigest) != AllowlistDigestBytes {
+		return nil, fmt.Errorf("overenc: lb transcript allowlist digest must be %d bytes, got %d", AllowlistDigestBytes, len(allowlistDigest))
 	}
 
 	servingHash := sha256.Sum256(servingLeafDER)
@@ -119,6 +131,7 @@ func LBTranscriptHash(mode types.FrontDoorMode, nonce, servingLeafDER, meshLeafD
 		meshHash[:],
 		caHash[:],
 		routeDigest,
+		allowlistDigest,
 	} {
 		var err error
 		if encoded, err = appendLengthPrefixed(encoded, field); err != nil {

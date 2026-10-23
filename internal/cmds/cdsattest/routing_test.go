@@ -127,6 +127,7 @@ func newRoutedServer(t *testing.T, opts ...func(*routing.ProxyConfig, *Config)) 
 		MeshIdentityCertFile: identity.certFile,
 		MeshIdentityKeyFile:  identity.keyFile,
 		MeshIdentityCAFile:   identity.caFile,
+		Allowlist:            fixedAllowlist(testAllowlistDigest[:]),
 	}
 	for _, opt := range opts {
 		opt(&proxyCfg, &srvCfg)
@@ -499,7 +500,7 @@ func TestTunnelBudgetNeedsSession(t *testing.T) {
 }
 
 func TestAttestEndpointsDisabled(t *testing.T) {
-	srv := NewServer(Config{Routes: testRoutes(t), DisableAttestEndpoints: true})
+	srv := NewServer(Config{Routes: testRoutes(t), Allowlist: fixedAllowlist(testAllowlistDigest[:]), DisableAttestEndpoints: true})
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	for _, path := range []string{"/.well-known/c8s/attest-lb", "/.well-known/c8s/tunnel"} {
@@ -526,7 +527,7 @@ func TestCheckRoutingFlags(t *testing.T) {
 	mesh := config{meshIdentityCertFile: "c", meshIdentityKeyFile: "k", meshIdentityCAFile: "ca", attestationAPIURL: "http://127.0.0.1:9"}
 	routed := func(edit func(*config)) config {
 		c := mesh
-		c.routing = routingConfig{cdsURL: "https://cds:8443", pollInterval: time.Second, backendTimeout: time.Hour, host: "127.0.0.1"}
+		c.routing = routingConfig{cdsURL: "https://cds:8443", pollInterval: time.Second, allowlistMaxAge: time.Minute, backendTimeout: time.Hour, host: "127.0.0.1"}
 		if edit != nil {
 			edit(&c)
 		}
@@ -549,6 +550,12 @@ func TestCheckRoutingFlags(t *testing.T) {
 		}), ""},
 		{"non-loopback routing host", routed(func(c *config) { c.routing.port = 8802; c.routing.host = "0.0.0.0" }), "loopback"},
 		{"non-loopback routing host without port", routed(func(c *config) { c.routing.host = "0.0.0.0" }), "loopback"},
+		{"short allowlist max age", routed(func(c *config) { c.routing.allowlistMaxAge = time.Second }), "--allowlist-max-age"},
+		{"allowlist max age unused with attest off", routed(func(c *config) {
+			c.attestOff = true
+			c.routing.port = 8802
+			c.routing.allowlistMaxAge = 0
+		}), ""},
 		{"zero poll interval", routed(func(c *config) { c.routing.pollInterval = 0 }), "--routes-poll-interval"},
 		{"zero backend timeout", routed(func(c *config) { c.routing.backendTimeout = 0 }), "--backend-timeout"},
 		{"negative backend timeout", routed(func(c *config) { c.routing.backendTimeout = -time.Second }), "--backend-timeout"},

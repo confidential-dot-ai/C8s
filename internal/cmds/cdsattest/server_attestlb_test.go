@@ -65,6 +65,7 @@ func newAttestLBServer(t *testing.T, identity testMeshIdentity, servingCertFile 
 	prov := &capturingProvider{}
 	srv := NewServer(Config{
 		Routes:               testRoutes(t),
+		Allowlist:            fixedAllowlist(testAllowlistDigest[:]),
 		Evidence:             prov,
 		FrontDoorMode:        types.FrontDoorModeCDS,
 		ServingCertFile:      servingCertFile,
@@ -123,7 +124,7 @@ func TestAttestLBBindsServingLeafAndMeshIdentity(t *testing.T) {
 	if b.FrontDoorMode != types.FrontDoorModeCDS {
 		t.Errorf("front_door_mode = %q, want %q", b.FrontDoorMode, types.FrontDoorModeCDS)
 	}
-	want, err := overenc.LBTranscriptHash(b.FrontDoorMode, nonce, servingDER, identity.leaf.Raw, identity.ca.Raw, testRouteDigest[:])
+	want, err := overenc.LBTranscriptHash(b.FrontDoorMode, nonce, servingDER, identity.leaf.Raw, identity.ca.Raw, testRouteDigest[:], testAllowlistDigest[:])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,11 +160,11 @@ func TestAttestLBTranscriptDiffersFromPQ(t *testing.T) {
 	nonce := make([]byte, 32)
 	pq, err := overenc.IdentityTranscriptHash(types.FrontDoorModeCDS,
 		make([]byte, overenc.XWingEKBytes), make([]byte, overenc.XWingCTBytes),
-		make([]byte, overenc.SessionIDBytes), nonce, identity.leaf.Raw, identity.ca.Raw, testRouteDigest[:])
+		make([]byte, overenc.SessionIDBytes), nonce, identity.leaf.Raw, identity.ca.Raw, testRouteDigest[:], testAllowlistDigest[:])
 	if err != nil {
 		t.Fatal(err)
 	}
-	lb, err := overenc.LBTranscriptHash(types.FrontDoorModeCDS, nonce, servingDER, identity.leaf.Raw, identity.ca.Raw, testRouteDigest[:])
+	lb, err := overenc.LBTranscriptHash(types.FrontDoorModeCDS, nonce, servingDER, identity.leaf.Raw, identity.ca.Raw, testRouteDigest[:], testAllowlistDigest[:])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,6 +178,7 @@ func TestAttestLBRefusedOnWebPKIFrontDoor(t *testing.T) {
 	certPath, _ := writeTestServingLeaf(t)
 	srv := NewServer(Config{
 		Routes:               testRoutes(t),
+		Allowlist:            fixedAllowlist(testAllowlistDigest[:]),
 		Evidence:             &capturingProvider{},
 		FrontDoorMode:        types.FrontDoorModeWebPKI,
 		ServingCertFile:      certPath,
@@ -321,6 +323,7 @@ func TestReadyzGatesOnMatchedWorkloadStamp(t *testing.T) {
 		t.Helper()
 		srv := NewServer(Config{
 			Routes:               testRoutes(t),
+			Allowlist:            fixedAllowlist(testAllowlistDigest[:]),
 			Evidence:             &capturingProvider{},
 			MeshIdentityCertFile: identity.certFile,
 			MeshIdentityKeyFile:  identity.keyFile,

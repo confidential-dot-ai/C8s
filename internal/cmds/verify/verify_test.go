@@ -373,7 +373,7 @@ func fakeSession(fill byte) testSession {
 // this identity and session.
 func (id *endpointIdentity) transcript(t *testing.T, nonce []byte, s testSession) []byte {
 	t.Helper()
-	erd, err := overenc.IdentityTranscriptHash("cds", s.ek, s.ct, s.sid, nonce, id.leaf.Raw, id.ca.Raw, testRouteDigest)
+	erd, err := overenc.IdentityTranscriptHash("cds", s.ek, s.ct, s.sid, nonce, id.leaf.Raw, id.ca.Raw, testRouteDigest, testAllowlistDigest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -425,6 +425,7 @@ func buildEndpointJSONWithEvidence(t *testing.T, id *endpointIdentity, nonce []b
 		"session_id":        b64u(s.sid),
 		"measured_policies": []string{testPolicyP},
 		"route_digest":      hex.EncodeToString(testRouteDigest),
+		"allowlist_digest":  hex.EncodeToString(testAllowlistDigest),
 	}
 	if id != nil {
 		resp["cds_cert_pem"] = id.chainPEM
@@ -614,7 +615,7 @@ func TestEvidenceFromEndpointJSON(t *testing.T) {
 		// issuing relationship, which must fail closed.
 		other := mintEndpointIdentity(t)
 		b64u := base64.RawURLEncoding.EncodeToString
-		erd, err := overenc.IdentityTranscriptHash("cds", sess.ek, sess.ct, sess.sid, nonce, id.leaf.Raw, other.ca.Raw, testRouteDigest)
+		erd, err := overenc.IdentityTranscriptHash("cds", sess.ek, sess.ct, sess.sid, nonce, id.leaf.Raw, other.ca.Raw, testRouteDigest, testAllowlistDigest)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -672,7 +673,7 @@ func TestEvidenceFromEndpointJSON(t *testing.T) {
 	})
 
 	t.Run("wrong or missing version rejected (cross-endpoint responses)", func(t *testing.T) {
-		for _, version := range []string{"", "c8s-verify/v1", types.BindingAttestLB, "c8s/attest-pq/v2"} {
+		for _, version := range []string{"", "c8s-verify/v1", "c8s-verify/v2", types.BindingAttestLB, "c8s/attest-pq/v1", "c8s/attest-pq/v3"} {
 			var obj map[string]any
 			if err := json.Unmarshal(data, &obj); err != nil {
 				t.Fatal(err)
@@ -792,6 +793,7 @@ func TestEvidenceFromEndpointJSON_RealShape(t *testing.T) {
   "xwing_ct": %q,
   "session_id": %q,
   "route_digest": %q,
+  "allowlist_digest": %q,
   "identity_proof": { "algorithm": "ecdsa-sha384", "leaf_sha256": %q, "mesh_ca_sha256": %q, "signature": %q }
 }`,
 		types.BindingAttestPQ,
@@ -801,6 +803,7 @@ func TestEvidenceFromEndpointJSON_RealShape(t *testing.T) {
 		id.chainPEM,
 		b64u(sess.ek), b64u(sess.ct), b64u(sess.sid),
 		hex.EncodeToString(testRouteDigest),
+		hex.EncodeToString(testAllowlistDigest),
 		b64u(leafHash[:]), b64u(caHash[:]), b64u(sig),
 	)
 

@@ -42,6 +42,11 @@ func (p *recordingProvider) Evidence(_ context.Context, reportData []byte) (json
 	return json.RawMessage(`{"attestation_report":"AAAA"}`), "snp", "", nil
 }
 
+// fixedAllowlist stands in for the router's allowlist tracker.
+type fixedAllowlist []byte
+
+func (f fixedAllowlist) Digest() ([]byte, error) { return f, nil }
+
 func (p *recordingProvider) last() []byte {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -107,6 +112,7 @@ func productionRouter(t *testing.T, operator operatorSigner, afterResponse func(
 		MeshIdentityKeyFile:  writePEM(t, "mesh-key.pem", "EC PRIVATE KEY", keyDER),
 		MeshIdentityCAFile:   writePEM(t, "mesh-ca.pem", "CERTIFICATE", id.ca.Raw),
 		Routes:               routing.NewProxy(routing.ProxyConfig{State: state}),
+		Allowlist:            fixedAllowlist(testAllowlistDigest),
 		PublishRoutes:        true,
 	}).Handler()
 	ts := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -187,6 +193,9 @@ func TestProductionRouterAgainstVerifier(t *testing.T) {
 				}
 				if !bytes.Equal(ev.route.digest, digest) {
 					t.Fatalf("bound route digest %x, want %x", ev.route.digest, digest)
+				}
+				if !bytes.Equal(ev.allowlistDigest, testAllowlistDigest) {
+					t.Fatalf("bound allowlist digest %x, want %x", ev.allowlistDigest, testAllowlistDigest)
 				}
 			})
 		}

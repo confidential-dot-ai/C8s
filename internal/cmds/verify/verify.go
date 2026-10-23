@@ -122,6 +122,7 @@ type config struct {
 	rtmrs              []string
 	operatorKeys       string
 	routeDigests       []string
+	allowlistDigests   []string
 	routesFloor        string
 	measurementsConfig string
 	servedPolicyFile   string
@@ -203,6 +204,9 @@ manifest the router applied. Check it with exactly one of:
                          token under these keys and require the evidence
                          to bind its digest; add
                          --routes-floor REV:HEX to refuse a rollback.
+It also binds the digest of the allowlist the router last fetched from CDS:
+  --allowlist-digest sha256:HEX   require it; repeatable. Without the flag
+                         the verdict reports the digest.
 
 Exit codes: 0 verified · 1 usage · 2 verification/policy failed · 3 evidence
 unavailable (unreachable / unparseable) · 4 partially verified (the evidence
@@ -242,6 +246,7 @@ responder chose).`,
 	cmdsutil.BindImagePolicyFlags(f, &cfg.measurementsConfig, nil, "pins complete target identities; for kind=cds also checks the served /measurements policy against it, unless --served-policy-file names the set for that check; excludes --measurements, --measurements-file and --image-manifest")
 	f.StringVar(&cfg.operatorKeys, "operator-keys", "", "PEM bundle of expected operator public keys. kind=cds: verification fails unless the key set the attested target serves at /operator-keys matches it. --mode attest-pq/attest-lb: the manifest the router publishes at /.well-known/c8s/routes must verify under these keys, and its digest must be the one the evidence binds; refused with --kind cds")
 	f.StringVar(&cfg.routesFloor, "routes-floor", "", "with --operator-keys in attest-pq/attest-lb: <revision>:<route digest hex> last accepted; a published manifest with a lower revision, or the same revision and another digest, fails (rollback)")
+	f.StringSliceVar(&cfg.allowlistDigests, "allowlist-digest", nil, "expected allowlist digest(s) sha256:<hex> (repeatable / comma-separated), the SHA-256 of the exact GET /allowlist bytes. attest-pq and attest-lb evidence binds the digest of the allowlist the router last fetched from CDS; any other fails verification. Without it the verdict reports the digest")
 	f.StringSliceVar(&cfg.routeDigests, "route-digest", nil, "expected route digest(s) (repeatable / comma-separated), the hex SHA-256 of the route manifest bytes as `c8s routes show` prints it; attest-pq and attest-lb evidence binds one, so evidence binding any other digest fails verification. These modes require this or --operator-keys")
 	f.StringVar(&cfg.servedPolicyFile, "served-policy-file", "", "path to a complete JSON image policy naming the exact set the target must serve and enforce at /measurements (kind=cds targets); when set, the served-set equality check compares against this file instead of --image-policy-file, which then pins the target's own identity only — for a cluster launched from a c8s launch-config bundle this is peers.json beside server.json")
 	f.StringVar(&cfg.sandboxID, "sandbox-id", "", "expected CRI pod sandbox ID on the target's leaf; requires --mesh-ca, since CDS's signature on the leaf is what vouches for the ID (docs/armtls.md)")
@@ -449,6 +454,7 @@ func applyVerdictPolicies(oc *Outcome, cfg config, ev *evidence, held *heldAllow
 	applySandboxPolicy(oc, cfg, ev, opKeys, plan, servedMeasurements)
 	applyWorkloadPolicy(oc, cfg, ev, held)
 	applyPinPolicy(oc, cfg, ev)
+	applyAllowlistDigestPolicy(oc, cfg, ev)
 	applyUncheckedHistoryPolicy(oc, cfg)
 	applyFrontDoorPolicy(oc, ev)
 	applyChainAnchorPolicy(oc, cfg, ev)
@@ -718,6 +724,9 @@ func buildPolicy(cfg config) (*verifyPlan, error) {
 	}
 	routes, err := parseRouteCheck(cfg)
 	if err != nil {
+		return nil, err
+	}
+	if err := checkAllowlistDigestFlags(cfg); err != nil {
 		return nil, err
 	}
 
@@ -1216,6 +1225,13 @@ type Outcome struct {
 	RouteDigest   string `json:"route_digest,omitempty"`
 	RouteRevision uint64 `json:"route_revision,omitempty"`
 	RouteNote     string `json:"route_note,omitempty"`
+
+	// AllowlistDigest is the sha256:<hex> allowlist digest the attested
+	// transcript binds (attest-pq and attest-lb only): the allowlist the
+	// router last fetched from CDS. AllowlistNote says whether
+	// --allowlist-digest pinned it.
+	AllowlistDigest string `json:"allowlist_digest,omitempty"`
+	AllowlistNote   string `json:"allowlist_note,omitempty"`
 
 	// MeasuredPolicies is the node's allowlist policy history from boot up to
 	// the evidence's quote: the prefix of the evidence's measured list that
@@ -1869,6 +1885,10 @@ func renderText(cfg config, oc Outcome, out io.Writer) {
 			fmt.Fprintf(out, "  route rev:    %d\n", oc.RouteRevision)
 		}
 		fmt.Fprintf(out, "                %s\n", oc.RouteNote)
+	}
+	if oc.AllowlistDigest != "" {
+		fmt.Fprintf(out, "  allowlist:    %s\n", oc.AllowlistDigest)
+		fmt.Fprintf(out, "                %s\n", oc.AllowlistNote)
 	}
 	for _, np := range oc.NotProven {
 		fmt.Fprintf(out, "  not proven:   %s\n", np)

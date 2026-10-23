@@ -130,6 +130,7 @@ func TestIdentityBoundAttestationAndChannel(t *testing.T) {
 	provider := &capturingProvider{}
 	srv := NewServer(Config{
 		Routes:               testRoutes(t),
+		Allowlist:            fixedAllowlist(testAllowlistDigest[:]),
 		Evidence:             provider,
 		FrontDoorMode:        types.FrontDoorModeCDS,
 		MeshIdentityCertFile: identity.certFile,
@@ -163,7 +164,7 @@ func TestIdentityBoundAttestationAndChannel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantReportData, err := overenc.IdentityTranscriptHash(bundle.FrontDoorMode, ck.EncapsulationKey(), ct, sessionIDRaw, nonce, identity.leaf.Raw, identity.ca.Raw, testRouteDigest[:])
+	wantReportData, err := overenc.IdentityTranscriptHash(bundle.FrontDoorMode, ck.EncapsulationKey(), ct, sessionIDRaw, nonce, identity.leaf.Raw, identity.ca.Raw, testRouteDigest[:], testAllowlistDigest[:])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,7 +215,7 @@ func validAttestPQBody(t *testing.T) []byte {
 }
 
 func TestIdentityBoundAttestationFailsClosedWithoutIdentity(t *testing.T) {
-	srv := NewServer(Config{Routes: testRoutes(t), Evidence: &capturingProvider{}, FrontDoorMode: types.FrontDoorModeCDS})
+	srv := NewServer(Config{Routes: testRoutes(t), Allowlist: fixedAllowlist(testAllowlistDigest[:]), Evidence: &capturingProvider{}, FrontDoorMode: types.FrontDoorModeCDS})
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	resp := postAttestPQ(t, ts.URL, validAttestPQBody(t))
@@ -227,6 +228,7 @@ func TestIdentityBoundAttestationFailsClosedWithoutIdentity(t *testing.T) {
 func TestIdentityBoundAttestationFailsClosedOnInvalidConfiguredIdentity(t *testing.T) {
 	srv := NewServer(Config{
 		Routes:               testRoutes(t),
+		Allowlist:            fixedAllowlist(testAllowlistDigest[:]),
 		Evidence:             &capturingProvider{},
 		FrontDoorMode:        types.FrontDoorModeCDS,
 		MeshIdentityCertFile: "/does/not/exist/cert.pem",
@@ -444,6 +446,7 @@ func TestAttestationRejectsQuerySelectors(t *testing.T) {
 	certPath, _ := writeTestServingLeaf(t)
 	srv := NewServer(Config{
 		Routes:               testRoutes(t),
+		Allowlist:            fixedAllowlist(testAllowlistDigest[:]),
 		Evidence:             &capturingProvider{},
 		FrontDoorMode:        types.FrontDoorModeCDS,
 		ServingCertFile:      certPath,
@@ -489,6 +492,7 @@ func TestIdentityBoundAttestationRejectsDegenerateKey(t *testing.T) {
 	identity := writeTestMeshIdentity(t)
 	srv := NewServer(Config{
 		Routes:               testRoutes(t),
+		Allowlist:            fixedAllowlist(testAllowlistDigest[:]),
 		Evidence:             &capturingProvider{},
 		FrontDoorMode:        types.FrontDoorModeCDS,
 		MeshIdentityCertFile: identity.certFile,

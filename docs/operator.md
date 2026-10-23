@@ -888,6 +888,7 @@ The chart sets these flags from `router.routing` and the CDS pins.
 | `--operator-keys-file` | none | PEM operator public keys a manifest must verify under, when the launch configuration carries none. |
 | `--allow-unpinned-cds` | `false` | Development only. Route with no CDS pin and the operator keys from that CDS. Without it, `cds-attest` refuses to start in that case. |
 | `--routes-poll-interval` | `30s` | Time between polls. Keep it under half of `maxAgeSeconds`. |
+| `--allowlist-max-age` | `60s` | Maximum age of the allowlist digest the attested handshakes bind. `cds-attest` fetches `GET /allowlist` three times per this period and refuses handshakes with 503 `allowlist_stale` once the last successful fetch is this old. At least `3s`. See [Allowlist digest](routes-evidence.md#allowlist-digest). |
 | `--routing-port` | `0` | Port of the loopback routing listener. `0` disables it. |
 | `--routing-host` | `127.0.0.1` | Host of the routing listener. Must be a loopback IP. |
 | `--backend-timeout` | `1h` | On the routing listener, how long a request, or an upgraded connection such as a WebSocket, may go with no data moving either way. A tunnelled request, whose response is buffered whole, gets this long in total for its backend call. Must be positive. |
@@ -1171,7 +1172,10 @@ while a route change rolls out), and
 `--operator-keys FILE` verifies the manifest the router publishes, optionally
 against a `--routes-floor REV:HEX` rollback floor. Without either they are a
 usage error (exit 1). [Route evidence](routes-evidence.md) has the transcript
-layouts and the checks.
+layouts and the checks. The same evidence binds the digest of the allowlist
+the router last fetched from CDS: `--allowlist-digest sha256:HEX` requires it
+(repeatable), and without the flag the verdict reports it
+([Allowlist digest](routes-evidence.md#allowlist-digest)).
 
 Caveats the output surfaces:
 

@@ -175,6 +175,7 @@ func run(ctx context.Context, cfg config) error {
 		ExpectedWorkload:       cfg.expectedWorkload,
 		MeasuredPoliciesFile:   cfg.measuredPolicies,
 		Routes:                 engine.proxy,
+		Allowlist:              engine.allowlist,
 		PublishRoutes:          cfg.routing.publish,
 		SessionTTL:             cfg.sessionTTL,
 		SessionMaxAge:          cfg.sessionMaxAge,
@@ -193,6 +194,9 @@ func run(ctx context.Context, cfg config) error {
 	errc := make(chan error, 2)
 	if err := engine.start(ctx, cfg.readHeaderTimeout, errc); err != nil {
 		return err
+	}
+	if !cfg.attestOff {
+		go engine.allowlist.Run(ctx)
 	}
 	logger.Info("LB browser-facing endpoints listening", "addr", addr, "attest_endpoints", !cfg.attestOff)
 	go func() { errc <- srv.Serve(ctx, httpSrv) }()

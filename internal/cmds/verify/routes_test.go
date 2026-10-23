@@ -35,6 +35,9 @@ import (
 // testRouteDigest is the route digest every test fixture binds.
 var testRouteDigest = bytes.Repeat([]byte{0x5a}, 32)
 
+// testAllowlistDigest is the allowlist digest test bundles bind.
+var testAllowlistDigest = bytes.Repeat([]byte{0xa1}, 32)
+
 // testRoute pins testRouteDigest, as --route-digest would.
 var testRoute = &boundRoute{digest: testRouteDigest, note: "pinned: matches --route-digest"}
 
@@ -496,14 +499,15 @@ func TestTranscriptWithoutRouteDigestRejected(t *testing.T) {
 		serving := []byte("serving-der")
 		short := transcriptOf([]byte(types.BindingAttestLB), []byte("cds"), nonce, sum256(serving), sum256(id.leaf.Raw), sum256(id.ca.Raw))
 		data, err := json.Marshal(map[string]any{
-			"version":         types.BindingAttestLB,
-			"platform":        "snp",
-			"nonce":           base64.RawURLEncoding.EncodeToString(nonce),
-			"evidence":        map[string]any{"attestation_report": "AAAA"},
-			"front_door_mode": "cds",
-			"cds_cert_pem":    id.chainPEM,
-			"identity_proof":  id.proofJSON(t, short),
-			"route_digest":    hex.EncodeToString(testRouteDigest),
+			"version":          types.BindingAttestLB,
+			"platform":         "snp",
+			"nonce":            base64.RawURLEncoding.EncodeToString(nonce),
+			"evidence":         map[string]any{"attestation_report": "AAAA"},
+			"front_door_mode":  "cds",
+			"cds_cert_pem":     id.chainPEM,
+			"identity_proof":   id.proofJSON(t, short),
+			"route_digest":     hex.EncodeToString(testRouteDigest),
+			"allowlist_digest": hex.EncodeToString(testAllowlistDigest),
 		})
 		if err != nil {
 			t.Fatal(err)

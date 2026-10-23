@@ -21,16 +21,19 @@ type AttestPQRequest struct {
 const (
 	// ProtocolVersion is the attest-pq identity-transcript domain: the exact
 	// string overenc.IdentityTranscriptHash frames into report_data. Clients
-	// check the per-endpoint binding identifier below, not this domain.
-	ProtocolVersion = "c8s-verify/v1"
+	// check the per-endpoint binding identifier below, not this domain. The
+	// record layer's HKDF labels and AAD tags keep their c8s-verify/v1 names:
+	// the transcript, which salts the key schedule, is what v2 changed.
+	ProtocolVersion = "c8s-verify/v2"
 
 	// BindingAttestPQ / BindingAttestLB are the response binding identifiers
 	// carried in AttestationBundle.Version by the two explicit attestation
 	// endpoints. A client requires the identifier selected by its endpoint
 	// mode and rejects any other — there is no negotiation, alias, or
-	// fallback. BindingAttestLB is also the attest-lb transcript domain.
-	BindingAttestPQ = "c8s/attest-pq/v1"
-	BindingAttestLB = "c8s/attest-lb/v1"
+	// fallback. BindingAttestLB is also the attest-lb transcript domain. v2
+	// added the allowlist digest to both transcripts.
+	BindingAttestPQ = "c8s/attest-pq/v2"
+	BindingAttestLB = "c8s/attest-lb/v2"
 
 	// MeshIdentityProofECDSASHA384 is the proof-of-possession algorithm.
 	MeshIdentityProofECDSASHA384 = "ecdsa-sha384"
@@ -111,6 +114,12 @@ type AttestationBundle struct {
 	// proves only which manifest the router applied: to require one, a client
 	// pins the digest or verifies the operator-signed published manifest.
 	RouteDigest string `json:"route_digest,omitempty"`
+	// AllowlistDigest is the lowercase hex SHA-256 of the allowlist bytes the
+	// router last fetched from the CDS GET /allowlist; both transcripts bind
+	// it after the route digest. Like RouteDigest, recomputing the transcript
+	// with it proves only which allowlist the router saw: to require one, a
+	// client pins it.
+	AllowlistDigest string `json:"allowlist_digest,omitempty"`
 }
 
 // HeaderField is one HTTP header field in a tunnel envelope, on the wire a

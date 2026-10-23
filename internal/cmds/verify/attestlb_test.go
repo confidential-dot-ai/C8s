@@ -51,7 +51,7 @@ func routedLBServer(t *testing.T, id *endpointIdentity, bindLeaf, routeDigest, p
 		if leaf == nil {
 			leaf = ts.Certificate().Raw
 		}
-		transcript, err := overenc.LBTranscriptHash(types.FrontDoorModeCDS, nonce, leaf, id.leaf.Raw, id.ca.Raw, routeDigest)
+		transcript, err := overenc.LBTranscriptHash(types.FrontDoorModeCDS, nonce, leaf, id.leaf.Raw, id.ca.Raw, routeDigest, testAllowlistDigest)
 		if err != nil {
 			t.Error(err)
 		}
@@ -65,6 +65,7 @@ func routedLBServer(t *testing.T, id *endpointIdentity, bindLeaf, routeDigest, p
 			"identity_proof":    id.proofJSON(t, transcript),
 			"measured_policies": []string{testPolicyP},
 			"route_digest":      hex.EncodeToString(routeDigest),
+			"allowlist_digest":  hex.EncodeToString(testAllowlistDigest),
 		})
 	}))
 	return ts

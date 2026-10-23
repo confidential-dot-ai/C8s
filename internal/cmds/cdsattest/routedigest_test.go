@@ -31,6 +31,14 @@ const testManifest = `{"schema":"c8s.routes/v1","revision":1,"notBefore":"2020-0
 // testRouteDigest is the digest every testRoutes state binds.
 var testRouteDigest = sha256.Sum256([]byte(testManifest))
 
+// testAllowlistDigest is the allowlist digest fixedAllowlist servers bind.
+var testAllowlistDigest = sha256.Sum256([]byte(testAllowlist))
+
+// fixedAllowlist is an AllowlistSource that always has this digest.
+type fixedAllowlist []byte
+
+func (f fixedAllowlist) Digest() ([]byte, error) { return f, nil }
+
 // signManifest signs manifest with a fresh operator key.
 func signManifest(t *testing.T, manifest string) (routes.Envelope, []*ecdsa.PublicKey) {
 	t.Helper()
@@ -121,6 +129,12 @@ type digestServer struct {
 // newDigestServer serves both handshakes from router.
 func newDigestServer(t *testing.T, router Router) *digestServer {
 	t.Helper()
+	return newDigestServerWith(t, router, fixedAllowlist(testAllowlistDigest[:]))
+}
+
+// newDigestServerWith serves both handshakes from router and allowlist.
+func newDigestServerWith(t *testing.T, router Router, allowlist AllowlistSource) *digestServer {
+	t.Helper()
 	identity := writeTestMeshIdentity(t)
 	certPath, servingDER := writeTestServingLeaf(t)
 	prov := &capturingProvider{}
@@ -132,6 +146,7 @@ func newDigestServer(t *testing.T, router Router) *digestServer {
 		MeshIdentityKeyFile:  identity.keyFile,
 		MeshIdentityCAFile:   identity.caFile,
 		Routes:               router,
+		Allowlist:            allowlist,
 	})
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
@@ -139,8 +154,20 @@ func newDigestServer(t *testing.T, router Router) *digestServer {
 }
 
 // pqDigestBound runs attest-pq and requires report_data and the bundle's
-// informational field to carry digest.
+// informational fields to carry the route digest and testAllowlistDigest.
 func (d *digestServer) pqDigestBound(t *testing.T, digest [sha256.Size]byte) {
+	t.Helper()
+	d.pqBound(t, digest, testAllowlistDigest)
+}
+
+func (d *digestServer) lbDigestBound(t *testing.T, digest [sha256.Size]byte) {
+	t.Helper()
+	d.lbBound(t, digest, testAllowlistDigest)
+}
+
+// pqBound runs attest-pq and requires report_data and the bundle's
+// informational fields to carry both digests.
+func (d *digestServer) pqBound(t *testing.T, digest, allowlist [sha256.Size]byte) {
 	t.Helper()
 	ck, err := overenc.GenerateClientKey()
 	if err != nil {
@@ -156,19 +183,22 @@ func (d *digestServer) pqDigestBound(t *testing.T, digest [sha256.Size]byte) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want, err := overenc.IdentityTranscriptHash(b.FrontDoorMode, ck.EncapsulationKey(), ct, sessionID, nonce, d.identity.leaf.Raw, d.identity.ca.Raw, digest[:])
+	want, err := overenc.IdentityTranscriptHash(b.FrontDoorMode, ck.EncapsulationKey(), ct, sessionID, nonce, d.identity.leaf.Raw, d.identity.ca.Raw, digest[:], allowlist[:])
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(d.prov.lastReportData, want) {
-		t.Fatalf("attest-pq report_data does not bind route digest %x", digest)
+		t.Fatalf("attest-pq report_data does not bind route digest %x and allowlist digest %x", digest, allowlist)
 	}
 	if b.RouteDigest != hex.EncodeToString(digest[:]) {
 		t.Fatalf("attest-pq route_digest = %q, want %x", b.RouteDigest, digest)
 	}
+	if b.AllowlistDigest != hex.EncodeToString(allowlist[:]) {
+		t.Fatalf("attest-pq allowlist_digest = %q, want %x", b.AllowlistDigest, allowlist)
+	}
 }
 
-func (d *digestServer) lbDigestBound(t *testing.T, digest [sha256.Size]byte) {
+func (d *digestServer) lbBound(t *testing.T, digest, allowlist [sha256.Size]byte) {
 	t.Helper()
 	nonce := bytes.Repeat([]byte{0x31}, 32)
 	resp, err := http.Get(d.url + "/.well-known/c8s/attest-lb?nonce=" + b64url(nonce))
@@ -183,15 +213,18 @@ func (d *digestServer) lbDigestBound(t *testing.T, digest [sha256.Size]byte) {
 	if err := json.NewDecoder(resp.Body).Decode(&b); err != nil {
 		t.Fatal(err)
 	}
-	want, err := overenc.LBTranscriptHash(b.FrontDoorMode, nonce, d.servingDER, d.identity.leaf.Raw, d.identity.ca.Raw, digest[:])
+	want, err := overenc.LBTranscriptHash(b.FrontDoorMode, nonce, d.servingDER, d.identity.leaf.Raw, d.identity.ca.Raw, digest[:], allowlist[:])
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(d.prov.lastReportData, want) {
-		t.Fatalf("attest-lb report_data does not bind route digest %x", digest)
+		t.Fatalf("attest-lb report_data does not bind route digest %x and allowlist digest %x", digest, allowlist)
 	}
 	if b.RouteDigest != hex.EncodeToString(digest[:]) {
 		t.Fatalf("attest-lb route_digest = %q, want %x", b.RouteDigest, digest)
+	}
+	if b.AllowlistDigest != hex.EncodeToString(allowlist[:]) {
+		t.Fatalf("attest-lb allowlist_digest = %q, want %x", b.AllowlistDigest, allowlist)
 	}
 }
 

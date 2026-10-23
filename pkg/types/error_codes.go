@@ -43,6 +43,13 @@ const (
 	// automated ingress service refuses new attested sessions (route policy
 	// F2).
 	ErrorCodeRoutesStale = "routes_stale"
+	// ErrorCodeAllowlistUnavailable: the router has not yet fetched the
+	// allowlist from the CDS, so it has no allowlist digest to bind.
+	ErrorCodeAllowlistUnavailable = "allowlist_unavailable"
+	// ErrorCodeAllowlistStale: the router's last successful allowlist fetch
+	// is older than --allowlist-max-age, so it refuses to bind a digest that
+	// may no longer be the one the CDS serves.
+	ErrorCodeAllowlistStale = "allowlist_stale"
 )
 
 // ErrorResponse is the body a C8s service returns with a non-2xx status: one

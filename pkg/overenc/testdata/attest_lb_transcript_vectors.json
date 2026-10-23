@@ -7,7 +7,8 @@
     "mesh_leaf_der_b64": "sbGxsbGxsbE=",
     "mesh_ca_der_b64": "wsLCwsLCwsI=",
     "route_digest_b64": "1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NQ=",
-    "report_data_b64": "+SlUWAeDrtrXcr3UgB4dv8F0jO2Zo8KxCAqGRRnB2pDeJCQmqn0hKQPcnGRwyKXv"
+    "allowlist_digest_b64": "5eXl5eXl5eXl5eXl5eXl5eXl5eXl5eXl5eXl5eXl5eU=",
+    "report_data_b64": "U3WmIEVA1uUuTi8mwSbuD1Laf0OWEqbMZcmUCmO6X/3yJOZfBWl4HAm7qKLp5eqY"
   },
   {
     "description": "ascii DER placeholders, distinct lengths, acme mode",
@@ -17,16 +18,29 @@
     "mesh_leaf_der_b64": "bWVzaC1sZWFmLWRlcg==",
     "mesh_ca_der_b64": "bWVzaC1jYS1kZXI=",
     "route_digest_b64": "yq3hqQUT2ZPEzd55u/y6A0EPf2oQ9kQ6mCSAIYVj0Ug=",
-    "report_data_b64": "1j7pq31+X++tUQgsW8TQuqLcl/DjaoPALicCCIGrxPcQEWysxDZTrp/6uiLM3Yfj"
+    "allowlist_digest_b64": "y2BwKWdDAmcwjEeLIS3XJp1ScWgLjUYP5CW3o5YySYA=",
+    "report_data_b64": "oyMpak80nv4vOZYe+BfLduLrUJuxKo5lTFs9JbQZXHRgfmFsehkHySXq7+gTTunm"
   },
   {
-    "description": "duplicate serving and mesh leaf bytes are hashed twice, not deduplicated",
+    "description": "duplicate serving and mesh leaf bytes are hashed twice, not deduplicated; equal route and allowlist digests",
     "front_door_mode": "cds",
     "nonce_b64": "//////////////////////////////////////////8=",
     "serving_leaf_der_b64": "c2FtZS1kZXI=",
     "mesh_leaf_der_b64": "c2FtZS1kZXI=",
     "mesh_ca_der_b64": "aXNzdWVyLWRlcg==",
     "route_digest_b64": "//////////////////////////////////////////8=",
-    "report_data_b64": "owS2MWuoNHPxuaCLrAXc12vyJreB/Ux0Lf6D0zw070Cx8AIFnIL/raf39+XPMAWV"
+    "allowlist_digest_b64": "//////////////////////////////////////////8=",
+    "report_data_b64": "k/YMbPdUO/D5Z8wOI9vmHGt0cbPTRnWwxOm52UlFH+0ZdyJGs6Bpdj6cexo2Ua3u"
+  },
+  {
+    "description": "route and allowlist digests swapped against the first vector",
+    "front_door_mode": "cds",
+    "nonce_b64": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+    "serving_leaf_der_b64": "oKCgoKCgoKA=",
+    "mesh_leaf_der_b64": "sbGxsbGxsbE=",
+    "mesh_ca_der_b64": "wsLCwsLCwsI=",
+    "route_digest_b64": "5eXl5eXl5eXl5eXl5eXl5eXl5eXl5eXl5eXl5eXl5eU=",
+    "allowlist_digest_b64": "1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NQ=",
+    "report_data_b64": "WbrPmqamvpZ1hs3E1zJNHhLVR19Y0dSzFxlyzAG8/pP8VfQ1VOz/S4iliZKFQdK2"
   }
 ]

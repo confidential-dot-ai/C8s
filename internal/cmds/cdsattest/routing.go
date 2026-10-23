@@ -19,6 +19,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/nodeservices"
 	"github.com/confidential-dot-ai/c8s/internal/routing"
+	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/routes"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
@@ -51,6 +52,7 @@ type routingConfig struct {
 	operatorKeysFile string
 	allowUnpinnedCDS bool
 	pollInterval     time.Duration
+	allowlistMaxAge  time.Duration
 	host             string
 	port             int
 	backendTimeout   time.Duration
@@ -67,6 +69,7 @@ func bindRoutingFlags(f *pflag.FlagSet, cfg *routingConfig) {
 	f.StringVar(&cfg.operatorKeysFile, "operator-keys-file", "", "PEM operator public keys a route manifest must be signed under, used when the node's launch configuration carries none; unset, the keys come from the verified CDS's GET /operator-keys")
 	f.BoolVar(&cfg.allowUnpinnedCDS, "allow-unpinned-cds", false, "development only: route with no CDS pin and the operator keys from that CDS, so any attested CDS chooses both the keys and the manifest")
 	f.DurationVar(&cfg.pollInterval, "routes-poll-interval", 30*time.Second, "how often to poll the CDS for the route manifest")
+	f.DurationVar(&cfg.allowlistMaxAge, "allowlist-max-age", defaultAllowlistMaxAge, "attest-pq and attest-lb bind the digest of the allowlist the CDS serves; it is fetched three times per this period, and handshakes are refused with allowlist_stale once the last successful fetch is this old")
 	f.StringVar(&cfg.host, "routing-host", "127.0.0.1", "routing listener host (loopback: nginx proxies application requests to it)")
 	f.IntVar(&cfg.port, "routing-port", 0, "routing listener port; 0 disables the listener (the tunnel still routes by the applied manifest)")
 	f.DurationVar(&cfg.backendTimeout, "backend-timeout", time.Hour, "how long a request or upgraded connection on the routing listener may go with no data moving either way; a tunnelled request, whose response is buffered whole, gets this long in total")
@@ -106,6 +109,9 @@ func checkRoutingFlags(cfg config) error {
 	if r.pollInterval <= 0 {
 		return errors.New("--routes-poll-interval must be positive")
 	}
+	if !cfg.attestOff && r.allowlistMaxAge < 3*time.Second {
+		return errors.New("--allowlist-max-age must be at least 3s")
+	}
 	if r.backendTimeout <= 0 {
 		return errors.New("--backend-timeout must be positive")
 	}
@@ -128,6 +134,9 @@ type routingEngine struct {
 	log    *slog.Logger
 	proxy  *routing.Proxy
 	poller *routing.Poller
+	// allowlist tracks the digest the attested handshakes bind. run starts
+	// it only when the attestation endpoints are served.
+	allowlist *allowlistTracker
 }
 
 func newRoutingEngine(cfg config, logger *slog.Logger) (*routingEngine, error) {
@@ -159,9 +168,15 @@ func newRoutingEngine(cfg config, logger *slog.Logger) (*routingEngine, error) {
 	}
 	state := routing.NewState(routing.StateConfig{Reserved: r.reservedPaths, MeshCAs: identity.MeshCAs})
 	transports := routing.NewTransports(routing.TransportConfig{MeshIdentity: identity.Credential})
+	al := allowlistclient.NewClientWithHTTP(r.cdsURL, httpClient)
+	allowlist := newAllowlistTracker(func(ctx context.Context) ([]byte, error) {
+		body, _, err := al.CanonicalBytes(ctx)
+		return body, err
+	}, r.allowlistMaxAge, logger)
 	return &routingEngine{
-		cfg: r,
-		log: logger,
+		cfg:       r,
+		log:       logger,
+		allowlist: allowlist,
 		proxy: routing.NewProxy(routing.ProxyConfig{
 			State: state, Transports: transports, Timeout: r.backendTimeout, TunnelBudget: tunnelBudget(r.tunnelBudget, cgroupMemoryMax, logger), Logger: logger,
 		}),

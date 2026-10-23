@@ -22,6 +22,7 @@ func TestAttestLBServedOnACMEFrontDoor(t *testing.T) {
 	prov := &capturingProvider{}
 	srv := NewServer(Config{
 		Routes:               testRoutes(t),
+		Allowlist:            fixedAllowlist(testAllowlistDigest[:]),
 		Evidence:             prov,
 		FrontDoorMode:        types.FrontDoorModeACME,
 		ServingCertFile:      certPath,
@@ -60,14 +61,14 @@ func TestAttestLBServedOnACMEFrontDoor(t *testing.T) {
 	}
 	// Recompute the transcript from the served mode: report_data must commit
 	// "acme", so a relay cannot re-serve this response under another mode.
-	want, err := overenc.LBTranscriptHash(b.FrontDoorMode, nonce, servingDER, identity.leaf.Raw, identity.ca.Raw, testRouteDigest[:])
+	want, err := overenc.LBTranscriptHash(b.FrontDoorMode, nonce, servingDER, identity.leaf.Raw, identity.ca.Raw, testRouteDigest[:], testAllowlistDigest[:])
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(prov.lastReportData, want) {
 		t.Fatal("report_data does not commit the acme-mode lb transcript")
 	}
-	other, err := overenc.LBTranscriptHash(types.FrontDoorModeCDS, nonce, servingDER, identity.leaf.Raw, identity.ca.Raw, testRouteDigest[:])
+	other, err := overenc.LBTranscriptHash(types.FrontDoorModeCDS, nonce, servingDER, identity.leaf.Raw, identity.ca.Raw, testRouteDigest[:], testAllowlistDigest[:])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,6 +83,7 @@ func TestAttestPQCommitsFrontDoorMode(t *testing.T) {
 	prov := &capturingProvider{}
 	srv := NewServer(Config{
 		Routes:               testRoutes(t),
+		Allowlist:            fixedAllowlist(testAllowlistDigest[:]),
 		Evidence:             prov,
 		FrontDoorMode:        types.FrontDoorModeACME,
 		MeshIdentityCertFile: identity.certFile,
@@ -111,7 +113,7 @@ func TestAttestPQCommitsFrontDoorMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want, err := overenc.IdentityTranscriptHash(b.FrontDoorMode, ck.EncapsulationKey(), ct, sessionID, nonce, identity.leaf.Raw, identity.ca.Raw, testRouteDigest[:])
+	want, err := overenc.IdentityTranscriptHash(b.FrontDoorMode, ck.EncapsulationKey(), ct, sessionID, nonce, identity.leaf.Raw, identity.ca.Raw, testRouteDigest[:], testAllowlistDigest[:])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,6 +128,7 @@ func TestAttestPQRefusedWithoutFrontDoorMode(t *testing.T) {
 	identity := writeTestMeshIdentity(t)
 	srv := NewServer(Config{
 		Routes:               testRoutes(t),
+		Allowlist:            fixedAllowlist(testAllowlistDigest[:]),
 		Evidence:             &capturingProvider{},
 		MeshIdentityCertFile: identity.certFile,
 		MeshIdentityKeyFile:  identity.keyFile,

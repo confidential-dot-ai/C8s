@@ -73,6 +73,7 @@ func newTestServerWith(t *testing.T, tune func(*Server)) (*Server, *httptest.Ser
 	evidence := &countingEvidence{inner: testFixture()}
 	srv := NewServer(Config{
 		Routes:               testRoutes(t),
+		Allowlist:            fixedAllowlist(testAllowlistDigest[:]),
 		Evidence:             evidence,
 		FrontDoorMode:        types.FrontDoorModeCDS,
 		MeshIdentityCertFile: identity.certFile,
@@ -187,6 +188,7 @@ func TestAttestLBIsMetered(t *testing.T) {
 	identity := writeTestMeshIdentity(t)
 	srv := NewServer(Config{
 		Routes:               testRoutes(t),
+		Allowlist:            fixedAllowlist(testAllowlistDigest[:]),
 		Evidence:             testFixture(),
 		FrontDoorMode:        types.FrontDoorModeCDS,
 		ServingCertFile:      identity.certFile,
@@ -1038,6 +1040,7 @@ func TestReadyzIsCached(t *testing.T) {
 	identity := writeTestMeshIdentity(t)
 	srv := NewServer(Config{
 		Routes:               testRoutes(t),
+		Allowlist:            fixedAllowlist(testAllowlistDigest[:]),
 		Evidence:             testFixture(),
 		FrontDoorMode:        types.FrontDoorModeCDS,
 		ExpectedWorkload:     "some-workload",

@@ -404,6 +404,7 @@ type channelVectors struct {
 	Nonce             string              `json:"nonce_hex"`
 	SessionID         string              `json:"session_id_hex"`
 	RouteDigest       string              `json:"route_digest_hex"`
+	AllowlistDigest   string              `json:"allowlist_digest_hex"`
 	TranscriptHash    string              `json:"transcript_hash_hex"`
 	C2SKey            string              `json:"c2s_key_hex"`
 	S2CKey            string              `json:"s2c_key_hex"`
@@ -454,7 +455,7 @@ func TestChannelGoldenVectors(t *testing.T) {
 	}
 
 	th, err := IdentityTranscriptHash(v.FrontDoorMode, ck.EncapsulationKey(), mustHex(t, v.XWingCT),
-		mustHex(t, v.SessionID), mustHex(t, v.Nonce), mustHex(t, v.LeafDER), mustHex(t, v.CADER), mustHex(t, v.RouteDigest))
+		mustHex(t, v.SessionID), mustHex(t, v.Nonce), mustHex(t, v.LeafDER), mustHex(t, v.CADER), mustHex(t, v.RouteDigest), mustHex(t, v.AllowlistDigest))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -545,7 +546,8 @@ func writeChannelVectors(t *testing.T) {
 	nonce := bytes.Repeat([]byte{0x33}, 32)
 	sessionID := bytes.Repeat([]byte{0x44}, SessionIDBytes)
 	routeDigest := bytes.Repeat([]byte{0x55}, RouteDigestBytes)
-	th, err := IdentityTranscriptHash("cds", ck.EncapsulationKey(), ct, sessionID, nonce, leafDER, caDER, routeDigest)
+	allowlistDigest := bytes.Repeat([]byte{0x66}, AllowlistDigestBytes)
+	th, err := IdentityTranscriptHash("cds", ck.EncapsulationKey(), ct, sessionID, nonce, leafDER, caDER, routeDigest, allowlistDigest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -582,6 +584,7 @@ func writeChannelVectors(t *testing.T) {
 		Nonce:             hex.EncodeToString(nonce),
 		SessionID:         hex.EncodeToString(sessionID),
 		RouteDigest:       hex.EncodeToString(routeDigest),
+		AllowlistDigest:   hex.EncodeToString(allowlistDigest),
 		TranscriptHash:    hex.EncodeToString(th),
 		C2SKey:            hex.EncodeToString(keys.c2sKey),
 		S2CKey:            hex.EncodeToString(keys.s2cKey),

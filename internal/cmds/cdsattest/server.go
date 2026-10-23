@@ -144,6 +144,12 @@ type Router interface {
 	Forward(outer *http.Request, req types.TunnelRequest) (types.TunnelResponse, error)
 }
 
+// AllowlistSource returns the digest of the allowlist the CDS serves, for a
+// new attested handshake to bind. *allowlistTracker implements it.
+type AllowlistSource interface {
+	Digest() ([]byte, error)
+}
+
 // Config configures the sidecar server.
 type Config struct {
 	Logger   *slog.Logger
@@ -179,6 +185,9 @@ type Config struct {
 	// Routes gates attested sessions, routes the tunnel and serves the route
 	// publication. Required.
 	Routes Router
+	// Allowlist supplies the allowlist digest both attested handshakes bind.
+	// Required unless DisableAttestEndpoints.
+	Allowlist AllowlistSource
 	// PublishRoutes serves the applied signed manifest at
 	// /.well-known/c8s/routes (E4). Off, that path answers 404: the manifest
 	// names hosts and backends a private deployment may not want public.
@@ -463,8 +472,9 @@ func attestNonce(w http.ResponseWriter, r *http.Request) (nonceB64 string, nonce
 // first: the client POSTs its nonce and X-Wing encapsulation key, the server
 // encapsulates once, and report_data commits the front-door mode and the
 // complete key exchange — the client's key, the server's ciphertext, the
-// session id, and the nonce — plus the exact mesh leaf, issuing mesh CA and
-// applied route digest to one domain-separated transcript. The leaf signs that
+// session id, and the nonce — plus the exact mesh leaf, issuing mesh CA,
+// applied route digest and allowlist digest to one domain-separated
+// transcript. The leaf signs that
 // transcript to prove possession of its private key, and the session is live
 // when the response leaves; there is no second round trip.
 func (s *Server) handleAttestPQ(w http.ResponseWriter, r *http.Request) {
@@ -477,6 +487,10 @@ func (s *Server) handleAttestPQ(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	digest := applied.Signed.Digest()
+	allowlistDigest, ok := s.allowlistAdmit(w)
+	if !ok {
+		return
+	}
 	// Ahead of the report this request would mint: a request the store will
 	// not take costs no attestation.
 	client := clientBucket(r)
@@ -511,7 +525,7 @@ func (s *Server) handleAttestPQ(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	reportData, proof, err := identity.bind(s.cfg.FrontDoorMode, xwingEK, xwingCT, sessionID, nonce, digest[:])
+	reportData, proof, err := identity.bind(s.cfg.FrontDoorMode, xwingEK, xwingCT, sessionID, nonce, digest[:], allowlistDigest)
 	if err != nil {
 		s.log.Error("bind mesh identity", "error", err)
 		writeErr(w, http.StatusInternalServerError, types.ErrorCodeInternal, "mesh identity binding failed")
@@ -552,13 +566,14 @@ func (s *Server) handleAttestPQ(w http.ResponseWriter, r *http.Request) {
 		IdentityProof:    proof,
 		MeasuredPolicies: s.measuredPolicies.Policies(),
 		RouteDigest:      hex.EncodeToString(digest[:]),
+		AllowlistDigest:  hex.EncodeToString(allowlistDigest),
 	})
 }
 
 // handleAttestLB serves the ordinary-TLS binding: report_data commits the
 // front-door mode, nonce, the exact serving leaf nginx presents, the exact
-// mesh leaf, the issuing mesh CA and the applied route digest
-// (overenc.LBTranscriptHash), and the mesh leaf signs that transcript. No
+// mesh leaf, the issuing mesh CA, the applied route digest and the allowlist
+// digest (overenc.LBTranscriptHash), and the mesh leaf signs that transcript. No
 // over-encryption key exchange happens and no session is stored — the client
 // recomputes the transcript from the leaf it observed on its own TLS
 // connection and then rides that TLS.
@@ -572,6 +587,10 @@ func (s *Server) handleAttestLB(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	digest := applied.Signed.Digest()
+	allowlistDigest, ok := s.allowlistAdmit(w)
+	if !ok {
+		return
+	}
 	// The exact-DER binding detects leaf substitution, not key sharing: a
 	// WebPKI Secret's serving key is host-visible, so the host could terminate
 	// the client's TLS with the same leaf and proxy this request. Only a
@@ -595,7 +614,7 @@ func (s *Server) handleAttestLB(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	reportData, proof, err := identity.bindServingLeaf(s.cfg.FrontDoorMode, servingLeafDER, nonce, digest[:])
+	reportData, proof, err := identity.bindServingLeaf(s.cfg.FrontDoorMode, servingLeafDER, nonce, digest[:], allowlistDigest)
 	if err != nil {
 		s.log.Error("bind serving leaf", "error", err)
 		writeErr(w, http.StatusInternalServerError, types.ErrorCodeInternal, "serving-leaf binding failed")
@@ -621,6 +640,7 @@ func (s *Server) handleAttestLB(w http.ResponseWriter, r *http.Request) {
 		IdentityProof:     proof,
 		ServingLeafSHA256: base64.RawURLEncoding.EncodeToString(servingLeafHash[:]),
 		RouteDigest:       hex.EncodeToString(digest[:]),
+		AllowlistDigest:   hex.EncodeToString(allowlistDigest),
 		MeasuredPolicies:  s.measuredPolicies.Policies(),
 	})
 }
@@ -642,6 +662,27 @@ func (s *Server) routesAdmit(w http.ResponseWriter) (*routing.Applied, bool) {
 		return nil, false
 	}
 	return applied, true
+}
+
+// allowlistAdmit refuses an attested handshake while the sidecar has no
+// allowlist digest, or only one older than its maximum age, so evidence never
+// binds a digest the CDS may have replaced. It returns the digest the
+// handshake binds.
+func (s *Server) allowlistAdmit(w http.ResponseWriter) ([]byte, bool) {
+	if s.cfg.Allowlist == nil {
+		writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeAllowlistUnavailable, "no allowlist source is configured")
+		return nil, false
+	}
+	digest, err := s.cfg.Allowlist.Digest()
+	switch {
+	case errors.Is(err, errAllowlistStale):
+		writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeAllowlistStale, "the allowlist digest is stale: the CDS has not answered within its maximum age")
+		return nil, false
+	case err != nil:
+		writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeAllowlistUnavailable, "no allowlist has been fetched from the CDS yet")
+		return nil, false
+	}
+	return digest, true
 }
 
 // meshIdentity loads the mesh credential set from the three files.

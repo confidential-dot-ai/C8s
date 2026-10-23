@@ -1,6 +1,6 @@
 # Route evidence
 
-The router's attestation sidecar (`cds-attest`) binds the digest of the route manifest it routes by into the evidence of both attested handshakes. A client that verifies the evidence learns the digest of the manifest the router had applied when it admitted the session. A later manifest routes the session's later requests without new evidence; a client that needs a tighter bound attests again. Attestation authenticates that manifest; backend TLS authenticates the destinations it names.
+The router's attestation sidecar (`cds-attest`) binds the digest of the route manifest it routes by, and the digest of the allowlist CDS serves ([Allowlist digest](#allowlist-digest)), into the evidence of both attested handshakes. A client that verifies the evidence learns the digest of the manifest the router had applied when it admitted the session. A later manifest routes the session's later requests without new evidence; a client that needs a tighter bound attests again. Attestation authenticates that manifest; backend TLS authenticates the destinations it names.
 
 ## What the evidence proves
 
@@ -14,34 +14,37 @@ The route digest is the SHA-256 of the manifest bytes as stored on CDS. `c8s rou
 
 ## Transcripts
 
-Each transcript is SHA-384 over length-prefixed fields, where `LP(x)` is the 4-byte big-endian length of `x` followed by `x`. The route digest is the last field of both.
+Each transcript is SHA-384 over length-prefixed fields, where `LP(x)` is the 4-byte big-endian length of `x` followed by `x`. The route digest and then the [allowlist digest](#allowlist-digest) are the last two fields of both.
 
-attest-pq, binding id `c8s/attest-pq/v1`:
+attest-pq, binding id `c8s/attest-pq/v2`:
 
 ```text
-SHA-384( LP("c8s-verify/v1") || LP(mode) || LP(SHA-256(mesh_CA_DER)) ||
+SHA-384( LP("c8s-verify/v2") || LP(mode) || LP(SHA-256(mesh_CA_DER)) ||
          LP(SHA-256(mesh_leaf_DER)) || LP(xwing_ek) || LP(xwing_ct) ||
-         LP(session_id) || LP(nonce) || LP(route_digest) )
+         LP(session_id) || LP(nonce) || LP(route_digest) ||
+         LP(allowlist_digest) )
 ```
 
-attest-lb, binding id `c8s/attest-lb/v1`:
+attest-lb, binding id `c8s/attest-lb/v2`:
 
 ```text
-SHA-384( LP("c8s/attest-lb/v1") || LP(mode) || LP(nonce) ||
+SHA-384( LP("c8s/attest-lb/v2") || LP(mode) || LP(nonce) ||
          LP(SHA-256(serving_leaf_DER)) || LP(SHA-256(mesh_leaf_DER)) ||
-         LP(SHA-256(mesh_CA_DER)) || LP(route_digest) )
+         LP(SHA-256(mesh_CA_DER)) || LP(route_digest) ||
+         LP(allowlist_digest) )
 ```
 
-- `route_digest` is exactly 32 bytes. `pkg/overenc` refuses any other length, including an empty one.
-- The attest-pq domain string is `c8s-verify/v1`, shared with the HKDF labels and tunnel AAD tags (`c8s-verify/v1/...`); the attest-pq transcript is also the HKDF salt. The attest-lb domain is its binding id.
+- `route_digest` and `allowlist_digest` are exactly 32 bytes each. `pkg/overenc` refuses any other length, including an empty one.
+- The attest-pq domain string is `c8s-verify/v2`. The HKDF labels and tunnel AAD tags keep their `c8s-verify/v1/...` names: the record layer did not change, and the attest-pq transcript, which v2 changed, is the HKDF salt.
+- The attest-lb domain is its binding id.
 - There is no negotiation. The bundle's `version` carries the binding id, and a client rejects any other value.
-- The bundle carries `route_digest` in hex. A client may recompute the transcript with it, since a forged value fails verification, but that proves only which manifest the router applied. To require a specific manifest, a client pins its digest or verifies the published manifest. `c8s verify` requires one of the two. It uses the field to choose among `--route-digest` pins, to trigger the V2 re-fetch, and to name a mismatch early; `report_data` alone binds the digest.
+- The bundle carries `route_digest` and `allowlist_digest` in hex. A client may recompute the transcript with them, since a forged value fails verification, but that proves only which manifest the router applied and which allowlist it last fetched. To require a specific manifest, a client pins its digest or verifies the published manifest. `c8s verify` requires one of the two. It uses the field to choose among `--route-digest` pins, to trigger the V2 re-fetch, and to name a mismatch early; `report_data` alone binds the digest.
 
 The golden vectors in `pkg/overenc/testdata/` pin both layouts.
 
-### Upgrade from the earlier layout
+### Upgrade from v1
 
-The route digest field redefines both transcripts, and the attest-pq channel keys derived from them, under the same binding ids. No version field marks the layout (only a new router sets `route_digest`), so this is a breaking replacement. Only new against new works; any mixed pair fails verification, and an attest-pq channel fails to open, with no version error to say why.
+v2 adds the allowlist digest to both transcripts under new binding ids. The router serves only v2; there is no negotiation and no v1 fallback. A v1 client gets a v2 bundle and refuses it with a version error that names the v2 id (for `c8s verify`: `attestation response version "c8s/attest-pq/v2" is not the attest-pq binding "c8s/attest-pq/v1"`). An attest-pq v1 client also cannot open the channel. The endpoints have no negotiation to extend, and serving both layouts would let old clients keep verifying without the allowlist binding; one version keeps the contract simple.
 
 Each independent implementation of a transcript must change:
 
@@ -53,10 +56,10 @@ Each independent implementation of a transcript must change:
 
 No workflow enforces this order. Release by hand in this order:
 
-1. Release TEErminator and `c8s-verify-js` versions whose tests reproduce these vectors. The `c8s-verify-js` version must also seal `Host` in every tunnel request ([Route by the manifest](operator.md#route-by-the-manifest)).
+1. Release TEErminator and `c8s-verify-js` versions whose tests reproduce these vectors and that accept the v2 binding ids.
 2. Record those versions in the c8s release notes as the minimum compatible clients.
 3. Release c8s. The CLI, router image and chart share one version ([Releases](releases.md)), so `c8s verify` and the router match.
-4. Upgrade the router and every client in one window. Attested handshakes from clients not yet upgraded fail until they are; plain routing is unaffected.
+4. Upgrade the router and every client in one window. Attested handshakes from clients not yet upgraded fail with the version error until they are; plain routing is unaffected.
 
 To roll back, redeploy the previous c8s chart and pin clients to the versions before step 1. Rollback is the same breaking change in reverse, with the same window.
 
@@ -67,11 +70,35 @@ Evidence saved before the change no longer verifies. Keep the c8s release that p
 Each handshake loads the applied manifest once, at admission, and binds that manifest's digest; it never loads a second one. `cds-attest` refuses the handshake with HTTP 503 and one of these codes:
 
 - `routes_unavailable` before the router has applied a manifest;
-- `routes_stale` while the applied manifest is older than its `maxAgeSeconds` without a refresh.
+- `routes_stale` while the applied manifest is older than its `maxAgeSeconds` without a refresh;
+- `allowlist_unavailable` and `allowlist_stale` as in [Allowlist digest](#allowlist-digest).
 
 The evidence is an admission-time snapshot: the digest identifies the manifest applied when the session was admitted. Requests are routed by whatever manifest is applied when each one arrives, so a manifest applied after the handshake routes the session's later requests without new evidence. A client that needs a tighter bound attests again; no evidence binds the manifest that routes a given request.
 
 `cds-attest` refuses to start without `--cds-url`, so a running sidecar always has a route source.
+
+## Allowlist digest
+
+`cds-attest` fetches `GET /allowlist` from CDS over the same armTLS connection it polls routes on, and keeps the SHA-256 of the exact bytes CDS served. CDS serves the canonical bytes of its stored allowlist, so this is the allowlist digest workload certificates stamp and nodes measure (`sha256:<hex>`). Both handshakes bind the digest `cds-attest` holds when it admits the handshake.
+
+- `cds-attest` fetches the whole body every time. It does not send `If-None-Match`: after a CDS reset the version in the entity tag can repeat with other content, so a 304 would not prove the digest unchanged.
+- A failed fetch, or a body that does not parse as an allowlist, changes nothing. The held digest ages until a fetch succeeds.
+- `--allowlist-max-age` (default `60s`) bounds that age. `cds-attest` fetches three times per max age (every 20 s by default), so two failed fetches in a row still leave it fresh. Once the last successful fetch is that old, it refuses both handshakes with HTTP 503 `allowlist_stale`. Before the first successful fetch it refuses them with 503 `allowlist_unavailable`. It retries sooner before the first success, from 1 s doubling up to the interval.
+- After an allowlist upload, a new handshake binds the new digest within one fetch interval.
+- The digest says which allowlist CDS served at the last fetch. It does not say which allowlist each node enforced; that is RTMR[3] and `measured_policies`. It covers the whole served document.
+
+`c8s verify --allowlist-digest sha256:HEX` requires the attested digest to be one of the given values (repeat the flag, or separate values by commas, to accept the old and the new allowlist while an upload rolls out). A mismatch fails the verdict with `allowlist_digest_not_pinned`. Without the flag, the verdict reports the digest. The verdict prints it as `allowlist:` and JSON output carries `allowlist_digest` and `allowlist_note`. The flag applies to `--mode attest-pq`, `--mode attest-lb` and saved attestation responses (`--from-file`).
+
+To get the value to pin, hash the exact bytes CDS serves:
+
+```sh
+c8s allowlist export live.json
+echo "sha256:$(sha256sum live.json | cut -d' ' -f1)"
+c8s verify https://router.example --mode attest-lb --measurements DIGEST \
+    --route-digest ROUTE_DIGEST --allowlist-digest sha256:ALLOWLIST_HEX
+```
+
+A re-encoded copy of the allowlist can have another digest. Hash the exported bytes, not a document you edited and re-serialized.
 
 ## Publication
 

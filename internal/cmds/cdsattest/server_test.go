@@ -56,7 +56,8 @@ func newTestServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	identity := writeTestMeshIdentity(t)
 	srv := NewServer(Config{
-		Routes: testRoutes(t),
+		Routes:    testRoutes(t),
+		Allowlist: fixedAllowlist(testAllowlistDigest[:]),
 		Evidence: FixtureEvidenceProvider{
 			Raw:        json.RawMessage(`{"attestation_report":"AAAA","cert_chain":{"vcek":"BBBB"}}`),
 			Platform:   "snp",
@@ -132,7 +133,11 @@ func clientChannelFromBundle(t *testing.T, bundle types.AttestationBundle, ck *o
 	if err != nil {
 		t.Fatal(err)
 	}
-	transcript, err := overenc.IdentityTranscriptHash(bundle.FrontDoorMode, ck.EncapsulationKey(), ct, sessionID, nonce, certs[0].Raw, certs[1].Raw, routeDigest)
+	allowlistDigest, err := hex.DecodeString(bundle.AllowlistDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transcript, err := overenc.IdentityTranscriptHash(bundle.FrontDoorMode, ck.EncapsulationKey(), ct, sessionID, nonce, certs[0].Raw, certs[1].Raw, routeDigest, allowlistDigest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,6 +273,7 @@ func newBackendTestServer(t *testing.T, backend backendFunc) *httptest.Server {
 	identity := writeTestMeshIdentity(t)
 	srv := NewServer(Config{
 		Routes:               testRouter{State: testRoutes(t).State, backendFunc: backend},
+		Allowlist:            fixedAllowlist(testAllowlistDigest[:]),
 		Evidence:             FixtureEvidenceProvider{Raw: json.RawMessage(`{"attestation_report":"AAAA","cert_chain":{"vcek":"BBBB"}}`), Platform: "snp", Generation: "genoa"},
 		FrontDoorMode:        types.FrontDoorModeCDS,
 		MeshIdentityCertFile: identity.certFile,
@@ -356,6 +362,7 @@ func TestTunnelRejectsIdleExpiredSession(t *testing.T) {
 	identity := writeTestMeshIdentity(t)
 	srv := NewServer(Config{
 		Routes:               testRoutes(t),
+		Allowlist:            fixedAllowlist(testAllowlistDigest[:]),
 		Evidence:             FixtureEvidenceProvider{Raw: json.RawMessage(`{"attestation_report":"AAAA","cert_chain":{"vcek":"BBBB"}}`), Platform: "snp", Generation: "genoa"},
 		FrontDoorMode:        types.FrontDoorModeCDS,
 		MeshIdentityCertFile: identity.certFile,
@@ -384,6 +391,7 @@ func TestTunnelRejectsOverAgeSession(t *testing.T) {
 	identity := writeTestMeshIdentity(t)
 	srv := NewServer(Config{
 		Routes:               testRoutes(t),
+		Allowlist:            fixedAllowlist(testAllowlistDigest[:]),
 		Evidence:             FixtureEvidenceProvider{Raw: json.RawMessage(`{"attestation_report":"AAAA","cert_chain":{"vcek":"BBBB"}}`), Platform: "snp", Generation: "genoa"},
 		FrontDoorMode:        types.FrontDoorModeCDS,
 		MeshIdentityCertFile: identity.certFile,
@@ -486,7 +494,7 @@ func TestAttestPQRejectsBadRequests(t *testing.T) {
 // TestCDSCertRouteAbsentWithoutCert: the optional cds-cert endpoint must not be
 // mounted when no cert was supplied.
 func TestCDSCertRouteAbsentWithoutCert(t *testing.T) {
-	srv := NewServer(Config{Routes: testRoutes(t), Evidence: failingProvider{}})
+	srv := NewServer(Config{Routes: testRoutes(t), Allowlist: fixedAllowlist(testAllowlistDigest[:]), Evidence: failingProvider{}})
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	resp, err := http.Get(ts.URL + "/.well-known/c8s/cds-cert.pem")
@@ -506,6 +514,7 @@ func TestAttestationEvidenceUnavailable(t *testing.T) {
 	identity := writeTestMeshIdentity(t)
 	srv := NewServer(Config{
 		Routes:               testRoutes(t),
+		Allowlist:            fixedAllowlist(testAllowlistDigest[:]),
 		Evidence:             failingProvider{},
 		FrontDoorMode:        types.FrontDoorModeCDS,
 		ServingCertFile:      certPath,
@@ -673,7 +682,7 @@ func TestServingLeafErrors(t *testing.T) {
 	rand.Read(nonce)
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			srv := NewServer(Config{Routes: testRoutes(t), Evidence: &capturingProvider{}, FrontDoorMode: types.FrontDoorModeCDS, ServingCertFile: tc.file})
+			srv := NewServer(Config{Routes: testRoutes(t), Allowlist: fixedAllowlist(testAllowlistDigest[:]), Evidence: &capturingProvider{}, FrontDoorMode: types.FrontDoorModeCDS, ServingCertFile: tc.file})
 			ts := httptest.NewServer(srv.Handler())
 			defer ts.Close()
 			resp, err := http.Get(ts.URL + "/.well-known/c8s/attest-lb?nonce=" + b64url(nonce))
