@@ -19,10 +19,9 @@ import (
 	"time"
 
 	"github.com/hashicorp/raft"
-	"k8s.io/apimachinery/pkg/runtime"
-	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
+	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/sandboxledger"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
@@ -31,9 +30,10 @@ import (
 
 // Shared test helpers and fakes.
 
-func mkWorkload(t *testing.T) pkgallowlist.Workload {
+// mkWorkload is a one-container workload; i picks its digest.
+func mkWorkload(t *testing.T, i int) pkgallowlist.Workload {
 	t.Helper()
-	d, err := types.ParseDigest("sha256:a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2")
+	d, err := types.ParseDigest(fmt.Sprintf("sha256:%064x", i+1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,15 +151,6 @@ func freeAddr(t *testing.T) string {
 	return l.Addr().String()
 }
 
-func failOn(verb string, match func(k8stesting.Action) bool) k8stesting.ReactionFunc {
-	return func(a k8stesting.Action) (bool, runtime.Object, error) {
-		if a.GetVerb() == verb && (match == nil || match(a)) {
-			return true, nil, errors.New("api down")
-		}
-		return false, nil, nil
-	}
-}
-
 func testStores(t *testing.T) (*allowlist.Store, *secrets.MemoryStore, *sandboxledger.Ledger) {
 	t.Helper()
 	al, err := allowlist.OpenInMemory()
@@ -192,7 +183,9 @@ var _ raft.SnapshotSink = (*memSink)(nil)
 func newTestFSM(t *testing.T, pub []byte) *FSM {
 	t.Helper()
 	al, sec, led := testStores(t)
-	return NewFSM(PreGenesis(testCluster, pub), al, sec, led)
+	f := NewFSM(PreGenesis(testCluster, pub), al, sec, led)
+	f.core.Policy = f.LocalPolicy()
+	return f
 }
 
 // applyAt applies e to f as log entry i.
@@ -213,4 +206,13 @@ func restoreCopy(t *testing.T, f, to *FSM) error {
 		t.Fatal(err)
 	}
 	return to.Restore(io.NopCloser(&buf))
+}
+
+func mustCA(t *testing.T) *issuer.CA {
+	t.Helper()
+	mesh, err := issuer.NewMeshCA("test", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return mesh.Current().CA
 }

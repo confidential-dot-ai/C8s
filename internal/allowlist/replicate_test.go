@@ -1,8 +1,13 @@
 package allowlist
 
 import (
+	"context"
+	"database/sql"
+	"encoding/binary"
 	"errors"
+	"path/filepath"
 	"reflect"
+	"slices"
 	"sync"
 	"testing"
 
@@ -76,16 +81,9 @@ func TestReplicatedStoresConverge(t *testing.T) {
 	if err := st[0].PutWorkload("BAD NAME", w); !errors.Is(err, ErrInvalidWorkload) {
 		t.Fatalf("invalid workload error lost its sentinel: %v", err)
 	}
-	ref, err := st[0].Dump()
-	if err != nil {
-		t.Fatal(err)
-	}
+	ref := contents(t, st[0])
 	for i, s := range st[1:] {
-		d, err := s.Dump()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !reflect.DeepEqual(d, ref) {
+		if d := contents(t, s); !reflect.DeepEqual(d, ref) {
 			t.Fatalf("replica %d diverged:\n%v\nvs\n%v", i+1, d, ref)
 		}
 	}
@@ -96,45 +94,132 @@ func TestReplicatedStoresConverge(t *testing.T) {
 	}
 }
 
-// A snapshot restores an identical store, through JSON.
+// contents is every row of every table, rowids included: what replicas
+// must agree on. Database images may differ in bytes.
+func contents(t *testing.T, s *Store) map[string][]map[string]any {
+	t.Helper()
+	tables, err := s.db.Query("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for tables.Next() {
+		var n string
+		if err := tables.Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		names = append(names, n)
+	}
+	tables.Close()
+	out := map[string][]map[string]any{}
+	for _, n := range names {
+		rows, err := s.db.Query("SELECT rowid AS rowid_, * FROM " + n + " ORDER BY rowid")
+		if err != nil {
+			t.Fatal(err)
+		}
+		cols, _ := rows.Columns()
+		for rows.Next() {
+			vals := make([]any, len(cols))
+			ptrs := make([]any, len(cols))
+			for i := range vals {
+				ptrs[i] = &vals[i]
+			}
+			if err := rows.Scan(ptrs...); err != nil {
+				t.Fatal(err)
+			}
+			row := map[string]any{}
+			for i, c := range cols {
+				row[c] = vals[i]
+			}
+			out[n] = append(out[n], row)
+		}
+		rows.Close()
+	}
+	return out
+}
+
+// A database image restores an identical store, into a file as into memory;
+// an image that is not a database leaves the store as it was.
 func TestSnapshotRoundTrip(t *testing.T) {
 	st := replicated(t, 1)
 	if err := st[0].StartJournal(); err != nil {
 		t.Fatal(err)
 	}
-	if err := st[0].PutWorkload("web", oneContainerWorkload(mustParseDigest(t, digestA))); err != nil {
+	for _, name := range []string{"web", "gone", "db"} {
+		if err := st[0].PutWorkload(name, oneContainerWorkload(mustParseDigest(t, digestA))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := st[0].DeleteWorkload("gone"); err != nil { // a rowid gap
 		t.Fatal(err)
 	}
 	if err := st[0].ConsumeToken("x.y.z"); err != nil {
 		t.Fatal(err)
 	}
-	sn, err := st[0].Dump()
+	image, err := st[0].Dump()
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw, err := sn.MarshalJSON()
+	mem, _ := OpenInMemory()
+	defer mem.Close()
+	file, err := OpenStore(filepath.Join(t.TempDir(), "allowlist.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var back Snapshot
-	if err := back.UnmarshalJSON(raw); err != nil {
+	defer file.Close()
+	for name, fresh := range map[string]*Store{"memory": &mem, "file": &file} {
+		gen := fresh.Generation()
+		if err := fresh.Restore(image); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if got, want := contents(t, fresh), contents(t, st[0]); !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s: restored store differs:\n%v\nvs\n%v", name, got, want)
+		}
+		if fresh.Generation() == gen {
+			t.Fatalf("%s: restore did not invalidate cached views", name)
+		}
+		if err := fresh.ConsumeToken("x.y.z"); !errors.Is(err, operatorauth.ErrTokenReused) {
+			t.Fatalf("%s: restored store forgot a spent token", name)
+		}
+		before := contents(t, fresh)
+		for what, b := range map[string][]byte{"garbage": []byte("not a database"), "truncated": image[:len(image)/2], "bad page": badPage(image)} {
+			if err := fresh.Restore(b); err == nil {
+				t.Errorf("%s: restore accepted a %s image", name, what)
+			}
+		}
+		if !reflect.DeepEqual(contents(t, fresh), before) {
+			t.Fatalf("%s: a refused image changed the store", name)
+		}
+	}
+}
+
+// An image from before the token window columns is migrated on restore.
+func TestRestoreMigratesAnOlderImage(t *testing.T) {
+	old, err := sql.Open("sqlite", memdbURI("old"))
+	if err != nil {
 		t.Fatal(err)
 	}
-	fresh, _ := OpenInMemory()
-	defer fresh.Close()
-	if err := fresh.Restore(back); err != nil {
+	defer old.Close()
+	if _, err := old.Exec("CREATE TABLE used_token (digest TEXT PRIMARY KEY)"); err != nil {
 		t.Fatal(err)
 	}
-	got, _ := fresh.Dump()
-	if !reflect.DeepEqual(got, sn) {
-		t.Fatalf("restored store differs:\n%v\nvs\n%v", got, sn)
+	tok := tokenAt(t0, "old")
+	if _, err := old.Exec("INSERT INTO used_token VALUES (?)", tokenDigest(tok)); err != nil {
+		t.Fatal(err)
 	}
-	if err := fresh.ConsumeToken("x.y.z"); !errors.Is(err, operatorauth.ErrTokenReused) {
-		t.Fatal("restored store forgot a spent token")
+	conn, _ := old.Conn(context.Background())
+	var image []byte
+	if err := conn.Raw(func(dc any) error { image, err = dc.(imageConn).Serialize(); return err }); err != nil {
+		t.Fatal(err)
 	}
-	bad := Snapshot{"workload_entry": {{"name; DROP": "x"}}}
-	if err := fresh.Restore(bad); err == nil {
-		t.Fatal("restore accepted a bad column name")
+	conn.Close()
+	s, _ := OpenInMemory()
+	defer s.Close()
+	if err := s.Restore(image); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ConsumeToken(tok); !errors.Is(err, operatorauth.ErrTokenReused) {
+		t.Fatalf("migrated image: %v", err)
 	}
 }
 
@@ -177,27 +262,15 @@ func TestReplicatedWholeDocumentAndMalformed(t *testing.T) {
 			t.Errorf("%s applied", name)
 		}
 	}
-	if (Result{ErrKind: "token_reused", Err: operatorauth.ErrTokenReused.Error()}).Error() != operatorauth.ErrTokenReused {
-		t.Fatal("a bare sentinel must come back as itself")
+	msg := "operator token already used: it expired"
+	if err := (Result{ErrKind: "token_reused", Err: msg}).Error(); !errors.Is(err, operatorauth.ErrTokenReused) || err.Error() != msg {
+		t.Fatalf("error across the log: %v", err)
 	}
 }
 
-func TestSnapshotUnmarshalRejectsBadCells(t *testing.T) {
-	var sn Snapshot
-	for name, raw := range map[string]string{
-		"not JSON":          `{`,
-		"fractional number": `{"t":[{"c":{"v":1.5}}]}`,
-		"not a scalar":      `{"t":[{"c":{"v":{"x":1}}}]}`,
-	} {
-		if err := sn.UnmarshalJSON([]byte(raw)); err == nil {
-			t.Errorf("%s accepted", name)
-		}
-	}
-	if err := sn.UnmarshalJSON([]byte(`{"t":[{"c":{},"d":{"v":"s"},"e":{"v":7}}]}`)); err != nil {
-		t.Fatal(err)
-	}
-	row := sn["t"][0]
-	if row["c"] != nil || row["d"] != "s" || row["e"] != int64(7) {
-		t.Fatalf("row %#v", row)
-	}
+// badPage is image with the b-tree page type of its last page broken.
+func badPage(image []byte) []byte {
+	b := slices.Clone(image)
+	b[len(b)-int(binary.BigEndian.Uint16(b[16:18]))] = 0xee // header: page size
+	return b
 }

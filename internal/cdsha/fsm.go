@@ -1,14 +1,15 @@
 package cdsha
 
 import (
+	"bufio"
 	"bytes"
+	"cmp"
 	"crypto/ecdsa"
 	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -28,12 +29,14 @@ import (
 // here is ever written outside the attested replicas, so it needs no
 // signature of its own; the log is its history.
 type Core struct {
-	ClusterID      string   `json:"cluster_id"`
-	Epoch          uint64   `json:"epoch"` // decrees applied
-	RootCert       []byte   `json:"root_cert,omitempty"`
-	Measurements   []string `json:"measurements,omitempty"` // replica pin set, sorted lowercase hex
-	OperatorPubKey []byte   `json:"operator_pubkey"`        // PKIX DER; nil means decrees are rejected
-	AppliedDecrees []string `json:"applied_decrees,omitempty"`
+	// Policy is fixed by Genesis and retained by snapshots and recovery.
+	Policy         FSMPolicy `json:"policy"`
+	ClusterID      string    `json:"cluster_id"`
+	Epoch          uint64    `json:"epoch"` // decrees applied
+	RootCert       []byte    `json:"root_cert,omitempty"`
+	Measurements   []string  `json:"measurements,omitempty"` // replica pin set, sorted lowercase hex
+	OperatorPubKey []byte    `json:"operator_pubkey"`        // PKIX DER; nil means decrees are rejected
+	AppliedDecrees []string  `json:"applied_decrees,omitempty"`
 	// GenesisAtMS is when the cluster was born. Single-use operator tokens
 	// issued before it are refused: no replica can know whether they were
 	// spent in an earlier life of the cluster.
@@ -134,6 +137,7 @@ type RestoreEntry struct {
 // for Genesis and RotateKey, the new mesh CA, so every replica applies the
 // same result; each replica still checks the operator's signature itself.
 type DecreeEntry struct {
+	Policy   FSMPolicy    `json:"policy"` // Genesis only
 	Decree   SignedDecree `json:"decree"`
 	AtMS     int64        `json:"at_ms"`
 	Pins     []string     `json:"pins,omitempty"`      // Genesis: the bootstrap replica's baked pins
@@ -212,7 +216,7 @@ func (f *FSM) Apply(l *raft.Log) any {
 	if err := json.Unmarshal(l.Data, &e); err != nil {
 		return f.stop(fmt.Errorf("decode log entry %d: %w", l.Index, err))
 	}
-	if formatOrBase(e.Format) > f.readable {
+	if cmp.Or(e.Format, baseFormat) > f.readable {
 		return f.stop(fmt.Errorf("%w: entry %d needs format %d, this replica reads up to %d", ErrNewerFormat, l.Index, e.Format, f.readable))
 	}
 	res := f.apply(e)
@@ -236,6 +240,16 @@ func (f *FSM) stop(err error) error {
 }
 
 func (f *FSM) apply(e Entry) any {
+	// Only Genesis and backup restore may establish the initial policy.
+	// They validate their incoming policy before replacing any state.
+	cur := f.Core()
+	initial := !cur.Joined() && cur.Policy == (FSMPolicy{})
+	establishing := initial && ((e.Kind == KindDecree && e.Decree != nil && e.Decree.Decree.Decree.Kind == Genesis) || (e.Kind == KindRestore && e.Restore != nil))
+	if !establishing {
+		if err := f.ValidatePolicy(cur.Policy); err != nil {
+			return f.stop(err)
+		}
+	}
 	switch {
 	case e.Kind == KindFormat && e.SetFormat != 0:
 		if err := f.applyFormat(e.SetFormat); err != nil {
@@ -261,6 +275,12 @@ func (f *FSM) apply(e Entry) any {
 func (f *FSM) applyDecree(de DecreeEntry) DecreeResult {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if de.Decree.Decree.Kind == Genesis {
+		if err := f.ValidatePolicy(de.Policy); err != nil {
+			err = f.stop(err)
+			return DecreeResult{Epoch: f.core.Epoch, Err: err.Error()}
+		}
+	}
 	next, ca, err := nextCore(f.core, de)
 	if err != nil {
 		return DecreeResult{Epoch: f.core.Epoch, Err: err.Error()}
@@ -325,6 +345,9 @@ func (f *FSM) applyRestore(re RestoreEntry) DecreeResult {
 	case !sn.Core.Joined():
 		return fail(errors.New("snapshot holds no mesh CA"))
 	}
+	if sn.Core.Epoch == ^uint64(0) {
+		return fail(errors.New("snapshot epoch overflows on restore"))
+	}
 	sn.Core.Epoch++
 	sn.Core.AppliedDecrees = append(sn.Core.AppliedDecrees, re.Decree.Decree.IntentID)
 	if err := f.restore(sn); err != nil {
@@ -353,6 +376,11 @@ func nextCore(cur Core, de DecreeEntry) (Core, *issuer.CA, error) {
 	}
 	switch d.Kind {
 	case Genesis:
+		if err := de.Policy.Validate(); err != nil {
+			return Core{}, nil, err
+		}
+		next.Policy = de.Policy
+		next.Format = Format
 		pins := normalizePins(de.Pins)
 		if len(pins) == 0 {
 			return Core{}, nil, errors.New("genesis without the bootstrap replica's pins")
@@ -385,10 +413,12 @@ type snapshot struct {
 	// Format is the encoding of the snapshot (0 is baseFormat).
 	Format uint32 `json:"format,omitempty"`
 	// Decrees is the decree record.
-	Decrees   []DecreeRecord          `json:"decrees,omitempty"`
-	Core      Core                    `json:"core"`
-	Key       []byte                  `json:"key,omitempty"`
-	Allowlist allowlist.Snapshot      `json:"allowlist"`
+	Decrees []DecreeRecord `json:"decrees,omitempty"`
+	Core    Core           `json:"core"`
+	Key     []byte         `json:"key,omitempty"`
+	// Allowlist is the allowlist database image (allowlist.Store.Dump). It
+	// follows the header line as raw bytes, not inside it.
+	Allowlist []byte                  `json:"-"`
 	Secrets   []secrets.SnapshotEntry `json:"secrets"`
 	Bindings  []sandboxledger.Binding `json:"bindings"`
 }
@@ -407,6 +437,10 @@ var _ raft.ConfigurationStore = (*FSM)(nil)
 // state captured here is one point of the log. Encoding happens in Persist,
 // as a stream, so the state is held once, not once per encoding stage.
 func (f *FSM) Snapshot() (raft.FSMSnapshot, error) {
+	if reason := f.Stuck(); reason != "" {
+		return nil, fmt.Errorf("cds-ha: cannot snapshot stopped FSM: %s", reason)
+	}
+
 	f.mu.RLock()
 	sn := snapshot{Index: f.applied.Load(), Core: f.core.clone(), Decrees: slices.Clone(f.decrees)}
 	sn.Format = sn.Core.format() // what every member reads, not what this one could write
@@ -452,31 +486,29 @@ func (f *FSM) Restore(rc io.ReadCloser) error {
 // ErrStaleSnapshot refuses a snapshot older than the state already applied.
 var ErrStaleSnapshot = errors.New("cds-ha: refusing a snapshot older than the applied state")
 
-// A snapshot is zstd-compressed JSON lines: a header line with everything
-// but the allowlist tables, then one line per allowlist row (a one-row
-// allowlist.Snapshot, which keeps BLOB columns apart). The allowlist history
-// keeps a whole document per version, so it is most of the state; lines keep
-// encoding and decoding to one row at a time, and the zstd window reaches
-// back past the previous version, so each near-copy of a document is stored
-// as a reference.
+// A snapshot is zstd-compressed: a JSON header line with everything but the
+// allowlist, then the allowlist database image as raw bytes. The allowlist
+// history keeps a whole document per version, so it is most of the state;
+// the zstd window reaches back past the previous version, so each near-copy
+// of a document is stored as a reference.
 func encodeSnapshot(w io.Writer, sn snapshot) error {
-	zw, err := zstd.NewWriter(w, zstd.WithWindowSize(snapshotWindow), zstd.WithEncoderConcurrency(1))
+	header, err := json.Marshal(sn)
 	if err != nil {
 		return err
 	}
-	enc := json.NewEncoder(zw)
-	head := sn
-	head.Allowlist = nil
-	if err := enc.Encode(head); err != nil {
+	if len(header)+1 > maxSnapshotHeader || len(sn.Allowlist) > maxSnapshotImage {
+		return errors.New("snapshot exceeds supported decoded size")
+	}
+	zw, err := zstd.NewWriter(&snapshotLimitWriter{w: w, remaining: MaxSnapshotBytes}, zstd.WithWindowSize(snapshotWindow), zstd.WithEncoderConcurrency(1))
+	if err != nil {
 		return err
 	}
-	tables := slices.Sorted(maps.Keys(sn.Allowlist))
-	for _, t := range tables {
-		for _, row := range sn.Allowlist[t] {
-			if err := enc.Encode(allowlist.Snapshot{t: {row}}); err != nil {
-				return err
-			}
-		}
+	defer zw.Close()
+	if _, err := zw.Write(append(header, '\n')); err != nil {
+		return err
+	}
+	if _, err := zw.Write(sn.Allowlist); err != nil {
+		return err
 	}
 	return zw.Close()
 }
@@ -486,20 +518,43 @@ func encodeSnapshot(w io.Writer, sn snapshot) error {
 // to keep encoder and decoder memory modest.
 const snapshotWindow = 16 << 20
 
+// Operational limits bound allocations before JSON/SQLite validation. Creation
+// uses the same limits as restore. SQLite restore may hold several image copies.
+const maxSnapshotHeader = 16 << 20
+const maxSnapshotImage = 256 << 20
+
+// MaxSnapshotBytes bounds compressed snapshots, including backups and transport.
+const MaxSnapshotBytes = 128 << 20
+
 // decodeSnapshot reads a snapshot in a format from baseFormat to readable.
-// With headOnly it stops after the header line, without the allowlist rows.
+// With headOnly it stops after the header line, without the allowlist.
 func decodeSnapshot(r io.Reader, readable uint32, headOnly bool) (snapshot, error) {
-	d, err := zstd.NewReader(r, zstd.WithDecoderMaxWindow(snapshotWindow), zstd.WithDecoderConcurrency(1))
+	compressed := &io.LimitedReader{R: r, N: MaxSnapshotBytes + 1}
+	d, err := zstd.NewReader(compressed, zstd.WithDecoderMaxWindow(snapshotWindow), zstd.WithDecoderConcurrency(1))
 	if err != nil {
 		return snapshot{}, fmt.Errorf("decode snapshot: %w", err)
 	}
 	defer d.Close()
+	sn, err := decodeSnapshotBody(d, readable, headOnly, maxSnapshotHeader, maxSnapshotImage)
+	if compressed.N <= 0 {
+		return snapshot{}, errors.New("snapshot exceeds compressed size limit")
+	}
+	return sn, err
+}
+
+func decodeSnapshotBody(r io.Reader, readable uint32, headOnly bool, headerLimit, imageLimit int64) (snapshot, error) {
+	// Read the newline-delimited header through a limit before unmarshalling;
+	// json.Decoder alone can allocate arbitrarily before returning a value.
+	br := bufio.NewReader(io.LimitReader(r, headerLimit+1))
+	header, err := br.ReadBytes('\n')
+	if err != nil || int64(len(header)) > headerLimit {
+		return snapshot{}, errors.New("decode snapshot: missing or oversized header")
+	}
 	var sn snapshot
-	dec := json.NewDecoder(d)
-	if err := dec.Decode(&sn); err != nil {
+	if err := json.Unmarshal(header, &sn); err != nil {
 		return snapshot{}, fmt.Errorf("decode snapshot: %w", err)
 	}
-	switch v, c := formatOrBase(sn.Format), sn.Core.format(); {
+	switch v, c := cmp.Or(sn.Format, baseFormat), sn.Core.format(); {
 	case v > readable || c > readable:
 		return snapshot{}, fmt.Errorf("%w: snapshot format %d, cluster format %d, this replica reads up to %d", ErrNewerFormat, v, c, readable)
 	case v < baseFormat || c < baseFormat:
@@ -508,23 +563,27 @@ func decodeSnapshot(r io.Reader, readable uint32, headOnly bool) (snapshot, erro
 	if headOnly {
 		return sn, nil
 	}
-	sn.Allowlist = allowlist.Snapshot{}
-	for {
-		var rows allowlist.Snapshot
-		err := dec.Decode(&rows)
-		if errors.Is(err, io.EOF) {
-			return sn, nil
-		}
-		if err != nil {
-			return snapshot{}, fmt.Errorf("decode snapshot: %w", err)
-		}
-		for t, rs := range rows {
-			sn.Allowlist[t] = append(sn.Allowlist[t], rs...)
-		}
+	// Recover bytes prefetched through the header limit, then the original stream.
+	rest := io.MultiReader(br, r)
+	if sn.Allowlist, err = io.ReadAll(io.LimitReader(rest, imageLimit+1)); err != nil {
+		return snapshot{}, fmt.Errorf("decode snapshot: %w", err)
 	}
+	if int64(len(sn.Allowlist)) > imageLimit {
+		return snapshot{}, errors.New("decode snapshot: oversized allowlist image")
+	}
+	return sn, nil
 }
 
 func (f *FSM) restore(sn snapshot) error {
+	// Check before touching any store. In particular, never derive a missing
+	// snapshot policy from this process's launch configuration.
+	if err := f.ValidatePolicy(sn.Core.Policy); err != nil {
+		return err
+	}
+	cur := f.Core()
+	if cur.Policy != (FSMPolicy{}) && cur.Policy != sn.Core.Policy {
+		return fmt.Errorf("%w: snapshot changes established policy", ErrPolicy)
+	}
 	var ca *issuer.CA
 	if sn.Core.Joined() {
 		var err error
@@ -574,4 +633,18 @@ func (f *FSM) applyRenewCA(re RenewCAEntry) error {
 	f.core.RootCert = slices.Clone(re.RootCert)
 	f.ca = &issuer.CA{Cert: cert, Key: f.ca.Key}
 	return nil
+}
+
+type snapshotLimitWriter struct {
+	w         io.Writer
+	remaining int
+}
+
+func (w *snapshotLimitWriter) Write(p []byte) (int, error) {
+	if len(p) > w.remaining {
+		return 0, errors.New("snapshot exceeds compressed size limit")
+	}
+	n, err := w.w.Write(p)
+	w.remaining -= n
+	return n, err
 }

@@ -353,6 +353,7 @@ func TestRun_ServesAndShutsDownOnSIGTERM(t *testing.T) {
 	cfg.operatorKeys = writeOperatorKeysPEM(t)
 	cfg.allowlistSeed = seedPath
 	cfg.sanValidation = true
+	evictions := countEvictions(t)
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- run(cfg) }()
@@ -380,6 +381,9 @@ func TestRun_ServesAndShutsDownOnSIGTERM(t *testing.T) {
 	}
 	if !up {
 		t.Fatal("cds never became healthy")
+	}
+	if evictions.Load() != 1 {
+		t.Error("a singleton does not evict expired sandbox bindings")
 	}
 
 	// The seeded allowlist must be served before shutdown.
@@ -870,35 +874,6 @@ func TestRun_ARMTLSServesPublishedDocumentsToCertlessClients(t *testing.T) {
 				t.Fatalf("GET %s = %d (%s), want 200", tc.path, resp.StatusCode, body)
 			}
 			tc.check(t, body)
-		})
-	}
-}
-
-// pastHalfLife is the renewal trigger: half the certificate's lifetime,
-// leaving the rest of it for renewal to keep retrying in.
-func TestPastHalfLife(t *testing.T) {
-	now := time.Now()
-	window := func(start, end time.Duration) *x509.Certificate {
-		return &x509.Certificate{
-			NotBefore: now.Add(start),
-			NotAfter:  now.Add(end),
-		}
-	}
-
-	for _, tc := range []struct {
-		name string
-		cert *x509.Certificate
-		want bool
-	}{
-		{"fresh certificate", window(-time.Minute, time.Hour), false},
-		{"just before half its lifetime", window(-29*time.Minute, 31*time.Minute), false},
-		{"past half its lifetime", window(-31*time.Minute, 29*time.Minute), true},
-		{"expired", window(-2*time.Hour, -time.Hour), true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := pastHalfLife(tc.cert, now); got != tc.want {
-				t.Errorf("pastHalfLife() = %v, want %v", got, tc.want)
-			}
 		})
 	}
 }

@@ -1,4 +1,4 @@
-//go:build integration
+//go:build integration && linux
 
 package cdsha_test
 
@@ -10,11 +10,13 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -132,10 +134,14 @@ func TestDecrees(t *testing.T) {
 			if st := c.WaitDecreeStatus(name, 20*time.Second); st.AppliedEpoch == nil {
 				t.Fatalf("RotateKey during a partition: %+v", st)
 			}
-			// The isolated replica must not serve the old CA.
-			if st, _ := c.Status(f); st.Serving {
-				t.Errorf("isolated replica serving during the rotation: %s", c.StatusLine(f))
-			}
+			// The isolated replica must not serve the old CA, for at least
+			// a lease after the rotation.
+			c.never(timing.lease, func() string {
+				if st, _ := c.Status(f); st.Serving {
+					return "isolated replica serving during the rotation: " + c.StatusLine(f)
+				}
+				return ""
+			})
 			c.Heal()
 			c.requireAllCA("", ca, 60*time.Second)
 		}},
@@ -157,7 +163,7 @@ func TestMajorityLoss(t *testing.T) {
 				}
 			}
 			k.Pause()
-			if _, _, err := k.Converge(30 * time.Second); err != nil {
+			if _, _, err := c.Converge(30 * time.Second); err != nil {
 				t.Fatal(err)
 			}
 			epoch, ca := c.epochCA()
@@ -167,12 +173,15 @@ func TestMajorityLoss(t *testing.T) {
 			for _, i := range c.RunningIDs() {
 				c.Logf("%s stopped serving after %s", c.Replicas[i].Node, c.WaitNotServing(i, timing.lease+5*time.Second))
 			}
-			hold(10 * time.Second) // fail closed: nobody serves, writes refused
-			for _, i := range c.RunningIDs() {
-				if st, _ := c.Status(i); st.Serving {
-					t.Errorf("%s serving without a majority", c.Replicas[i].Node)
+			// Fail closed: nobody serves, writes are refused.
+			c.never(scaled(10*time.Second), func() string {
+				for _, i := range c.RunningIDs() {
+					if st, _ := c.Status(i); st.Serving {
+						return c.Replicas[i].Node + " serving without a majority"
+					}
 				}
-			}
+				return ""
+			})
 			name := c.PutDecree(cdsha.Decree{ClusterID: clusterID, IntentID: "recover-1", Kind: cdsha.Recover, BaseEpoch: epoch,
 				BootstrapNode: c.Replicas[survivor].Node, ExpiresAt: time.Now().Add(10 * time.Minute)}, nil)
 			start := time.Now()
@@ -205,26 +214,23 @@ func TestMajorityLoss(t *testing.T) {
 				t.Errorf("the majority leader did not refuse the Recover: %+v", st)
 			}
 			// Both sides serving at once = split brain.
-			deadline := time.Now().Add(timing.deadAfter + 10*time.Second)
-			for time.Now().Before(deadline) {
+			c.never(timing.deadAfter+10*time.Second, func() string {
 				a, _ := c.Status(l)
 				b, _ := c.Status(nl)
 				if a.Serving && b.Serving {
-					t.Errorf("split brain: isolated %s serves (state %s, epoch %d) while %s serves (epoch %d)", c.Replicas[l].Node, a.State, a.Epoch, c.Replicas[nl].Node, b.Epoch)
-					break
+					return fmt.Sprintf("split brain: isolated %s serves (state %s, epoch %d) while %s serves (epoch %d)", c.Replicas[l].Node, a.State, a.Epoch, c.Replicas[nl].Node, b.Epoch)
 				}
-				time.Sleep(200 * time.Millisecond)
-			}
+				return ""
+			})
 			c.Heal()
 			c.WaitAllServing(60 * time.Second)
 		}},
 	})
 }
 
-// TestRestore: total loss and `c8s cds ha recover` from the sealed backup;
-// an older backup than the operator's record is refused, and a live replica
-// refuses any restore. Wrong keys, tampered parts and other clusters'
-// backups are unit tests (backup_test.go, ha_restore_test.go).
+// TestRestore: total loss and `c8s cds ha recover` from the sealed backup.
+// Refusals (older backup, live replica, wrong keys, tampered parts, other
+// clusters) are unit tests (backup_test.go, ha_restore_test.go).
 func TestRestore(t *testing.T) {
 	if testing.Short() {
 		t.Skip("not in the -short subset")
@@ -235,43 +241,28 @@ func TestRestore(t *testing.T) {
 	k.Start()
 	time.Sleep(3 * time.Second)
 	k.Pause()
-	old := requireFreshBackup(t, c)
-	oldList := c.Backups()
-	k.Resume()
-	time.Sleep(3 * time.Second)
-	k.Pause()
-	snaps, _, err := k.Converge(30 * time.Second)
+	snaps, _, err := c.Converge(30 * time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Retain trust from the live cluster, before exporting backups or losing
+	// every member. The local harness uses trusted loopback plus operator auth;
+	// production operators must authenticate the server with armTLS.
+	leader := c.WaitLeader(30 * time.Second)
+	pinResponse := c.Do(context.Background(), leader, http.MethodGet, "/ha/status", nil, true)
+	var trusted cdsha.Status
+	if pinResponse.Err != nil || pinResponse.Code != http.StatusOK || json.Unmarshal(pinResponse.Body, &trusted) != nil {
+		t.Fatalf("authenticated pre-loss status: %d %v %s", pinResponse.Code, pinResponse.Err, pinResponse.Body)
+	}
+	pin, err := hex.DecodeString(trusted.CAFingerprint)
+	if err != nil || len(pin) != 32 || len(trusted.CAFingerprint) != 64 || !trusted.Serving || trusted.ClusterID != clusterID {
+		t.Fatalf("invalid pre-loss recovery identity: %+v", trusted)
+	}
 	newest := requireFreshBackup(t, c)
-	newList := c.Backups()
-	c.Logf("old backup index %d, newest %d", old.Meta.Index, newest.Meta.Index)
-	if newest.Meta.Index <= old.Meta.Index {
-		t.Fatal("no newer backup")
-	}
-	write := func(name string, cms []corev1.ConfigMap) string {
-		raw, _ := json.Marshal(corev1.ConfigMapList{Items: cms})
-		p := filepath.Join(c.Dir, name)
-		if err := os.WriteFile(p, raw, 0o600); err != nil {
-			t.Fatal(err)
-		}
-		return p
-	}
-	oldFile, newFile := write("old.json", oldList), write("new.json", newList)
-	recoverCLI := func(file string, node int, minEpoch, minIndex uint64, extra ...string) (string, error) {
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-		defer cancel()
-		args := append([]string{"cds", "ha", "recover", "--backup-file", file, "--recovery-key", c.RecKeyPath, "--decree-key", c.OpKeyPath,
-			"--cluster-id", clusterID, "--bootstrap-node", c.Replicas[node].Node, "--url", c.Replicas[node].Base, "--insecure",
-			"--min-epoch", strconv.FormatUint(minEpoch, 10), "--min-index", strconv.FormatUint(minIndex, 10)}, extra...)
-		return c.RunCLI(ctx, args...)
-	}
-	// A live replica refuses a restore.
-	if out, err := recoverCLI(newFile, 0, 1, 0, "--attempts", "1"); err == nil {
-		t.Fatalf("a live replica took a restore: %s", out)
-	} else {
-		c.Logf("live replica refused the restore: %s", strings.TrimSpace(out))
+	raw, _ := json.Marshal(corev1.ConfigMapList{Items: c.Backups()})
+	newFile := filepath.Join(c.Dir, "backup.json")
+	if err := os.WriteFile(newFile, raw, 0o600); err != nil {
+		t.Fatal(err)
 	}
 	k.Stop()
 	// Total loss.
@@ -281,21 +272,23 @@ func TestRestore(t *testing.T) {
 	for i := range c.Replicas {
 		c.Start(i, false)
 	}
-	// D3: the old backup is refused against the operator's newer record.
-	if out, err := recoverCLI(oldFile, 2, newest.Meta.Epoch, newest.Meta.Index); err == nil || !strings.Contains(out, "older than") {
-		t.Fatalf("an older backup was restored: %v %s", err, out)
-	}
 	// The pre-join server is ready once the replica awaits a restore.
 	c.waitFor(timing.deadAfter+30*time.Second, func() bool { return c.Get(2, "/readyz").Code == http.StatusOK },
 		func() string { return "n3 does not await a restore: " + c.StatusLine(2) })
 	start := time.Now()
-	if out, err := recoverCLI(newFile, 2, newest.Meta.Epoch, newest.Meta.Index); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, binPath, "cds", "ha", "recover", "--backup-file", newFile,
+		"--recovery-key", c.RecKeyPath, "--decree-key", c.OpKeyPath, "--cluster-id", clusterID,
+		"--trusted-ca-sha256", trusted.CAFingerprint,
+		"--bootstrap-node", c.Replicas[2].Node, "--url", c.Replicas[2].Base, "--insecure",
+		"--min-epoch", strconv.FormatUint(newest.Meta.Epoch, 10), "--min-index", strconv.FormatUint(newest.Meta.Index, 10)).CombinedOutput()
+	if err != nil {
 		t.Fatalf("recover: %v\n%s", err, out)
 	}
 	c.WaitAllServing(60 * time.Second)
 	c.Logf("restored and every replica serving %s after recover", time.Since(start))
-	k2 := NewChecker(c, 0, 0)
-	got, _, err := k2.Converge(30 * time.Second)
+	got, _, err := c.Converge(30 * time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -311,14 +304,19 @@ func TestRestore(t *testing.T) {
 	}
 }
 
-// TestBigState: C3 (2,000 allowlist entries + 500 secrets, then a new member
-// installs the snapshot; backup and restore sizes) and C4 (a secret of the
-// maximum size through a follower).
+// TestBigState: C3 (2,000 allowlist entries + 500 secrets, then a restarted
+// non-voter installs the snapshot) and C4 (a max-size secret through a
+// non-voter).
 func TestBigState(t *testing.T) {
 	if testing.Short() {
 		t.Skip("not in the -short subset")
 	}
-	c := NewCluster(t)
+	// This tests live state size, not unbounded quadratic document history.
+	// Keep the existing production pruning and store guard enabled. The hard
+	// snapshot capacity contract needs separate admission tests; these knobs
+	// alone do not prove admission safety for arbitrary workloads.
+	c := newClusterWithRaftTiming(t, timing.heartbeat, timing.election,
+		"--allowlist-history-bytes", "64Mi", "--allowlist-max-bytes", "256Mi")
 	c.WaitVoters(3, 30*time.Second)
 	start := time.Now()
 	var wg sync.WaitGroup
@@ -361,8 +359,7 @@ func TestBigState(t *testing.T) {
 	if r := c.Do(context.Background(), nv, http.MethodPut, "/secrets/big/max", big, true); r.Code != http.StatusCreated && r.Code != http.StatusOK {
 		t.Fatalf("max-size secret through a non-voter: %d %s", r.Code, r.Body)
 	}
-	k := NewChecker(c, 0, 0)
-	if _, d, err := k.Converge(60 * time.Second); err != nil {
+	if _, d, err := c.Converge(60 * time.Second); err != nil {
 		t.Fatal(err)
 	} else {
 		c.Logf("converged in %s", d)
@@ -372,7 +369,7 @@ func TestBigState(t *testing.T) {
 	// A new member (restart with an empty store) installs the snapshot.
 	c.Restart(nv, false)
 	c.Logf("new member serving after %s", c.WaitServing([]int{nv}, 120*time.Second))
-	if _, d, err := k.Converge(60 * time.Second); err != nil {
+	if _, d, err := c.Converge(60 * time.Second); err != nil {
 		t.Fatal(err)
 	} else {
 		c.Logf("new member converged %s later", d)

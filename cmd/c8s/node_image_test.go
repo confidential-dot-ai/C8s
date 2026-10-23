@@ -102,6 +102,14 @@ func TestNodeImageRender(t *testing.T) {
 					t.Fatalf("operator does not inject node-local images: missing %s", flag)
 				}
 			}
+			// The seed pins the operator's exact argv: in the seed file and
+			// in the seed ConfigMap it names the same node-local images,
+			// or NRI refuses the operator.
+			seedRaw, err := os.ReadFile(filepath.Join(out, "allowlist-seed.json"))
+			if err != nil || !bytes.Contains(seedRaw, []byte("--mesh-image=registry.example.com/armtls-mesh:c8s-node")) ||
+				bytes.Contains(parts["c8s-integration.yaml"], []byte("--mesh-image="+meshRef)) {
+				t.Fatalf("seed argv does not name the node-local injected images: %v", err)
+			}
 			// The cds-role floor: the HA replica pinned to its digest and
 			// exact argv, the DaemonSets kept, and no other chart image (the
 			// operator image carries the same c8s binary).
@@ -213,17 +221,8 @@ func TestNodeImageRender(t *testing.T) {
 			}
 			// A DaemonSet names the build's own images node-locally; each
 			// local name must stand for an inventory image (local-names.txt).
-			preloaded := func(image string) bool {
-				if slices.Contains(images, image) {
-					return true
-				}
-				for _, line := range strings.Split(strings.TrimSpace(string(localNames)), "\n") {
-					if f := strings.Fields(line); len(f) == 2 && f[1] == image && slices.Contains(images, f[0]) {
-						return true
-					}
-				}
-				return false
-			}
+			local := map[string]string{"registry.example.com/armtls-mesh:c8s-node": meshRef,
+				"registry.example.com/c8s-operator:c8s-node": opRef, "registry.example.com/cds:c8s-node": cdsRef}
 			for _, key := range []string{"Deployment/c8s-operator", "Deployment/c8s-cds", "Deployment/c8s-router", "DaemonSet/c8s-cds-ha"} {
 				var workload appsv1.Deployment // Deployment and DaemonSet share spec.template.
 				if err := yaml.Unmarshal(docs[key], &workload); err != nil {
@@ -235,7 +234,7 @@ func TestNodeImageRender(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if !preloaded(ref.String()) || c.ImagePullPolicy != corev1.PullNever {
+					if !slices.Contains(images, ref.String()) && !slices.Contains(images, local[ref.String()]) || c.ImagePullPolicy != corev1.PullNever {
 						t.Errorf("%s/%s must use a preloaded inventory image: image=%s pullPolicy=%s", key, c.Name, c.Image, c.ImagePullPolicy)
 					}
 				}

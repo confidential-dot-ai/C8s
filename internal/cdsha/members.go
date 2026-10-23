@@ -1,7 +1,9 @@
 package cdsha
 
 import (
+	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -24,30 +26,39 @@ func (n *Node) member() bool {
 
 // joinOrBootstrap asks the replicas it can reach to add it. A replica named
 // by a pending Genesis decree starts the group instead, but only when no
-// reachable replica already belongs to one.
+// reachable replica already belongs to one. Discovery or contact failure
+// cannot establish absence and therefore blocks Genesis fallback.
 func (n *Node) joinOrBootstrap(ctx context.Context) {
+	n.eligibilityMu.Lock()
+	defer n.eligibilityMu.Unlock()
+	if n.member() {
+		return
+	}
 	peers, err := n.cfg.Peers(ctx)
 	switch {
 	case err != nil:
 		// A replica that cannot find its peers can never join: say so.
 		n.joinRefused("peer discovery", err)
+		return
 	case len(peers) == 0:
 		n.joinRefused("peer discovery", errors.New("no other replica found"))
 	}
 	anyMember := false
+	uncertain := false
 	for _, p := range peers {
 		resp, err := n.askJoin(p)
-		if err == nil && resp.Err == "" {
+		switch {
+		case err != nil:
+			uncertain = true
+		case resp.Err == "":
 			if !n.joinLogged {
 				n.log.Info("joined the CDS cluster", "via", p, "id", n.id)
 				n.joinLogged = true
 			}
 			return
-		}
-		if err == nil && resp.Member {
+		case resp.Member:
 			anyMember = true
-		}
-		if err == nil && !resp.Member {
+		default:
 			n.lastLoner.Store(time.Now().UnixMilli())
 		}
 		if err == nil {
@@ -59,6 +70,9 @@ func (n *Node) joinOrBootstrap(ctx context.Context) {
 		n.lastMember.Store(time.Now().UnixMilli())
 		return
 	}
+	if uncertain || n.fsm.Core().Joined() || n.member() {
+		return
+	}
 	if g, ok := n.pendingDecree(ctx, Genesis); ok {
 		n.bootstrap(ctx, g)
 	}
@@ -68,7 +82,7 @@ func (n *Node) joinOrBootstrap(ctx context.Context) {
 // minute per peer and reason: a replica that can never join (a release too
 // old for the cluster's format, an image not pinned) must say so.
 func (n *Node) joinRefused(peer string, err error) {
-	if n.joinRefusedLog.ok(peer+" "+err.Error(), time.Now()) {
+	if logOnce(n.joinRefusedLog, peer+" "+err.Error()) {
 		n.log.Info("join refused", "peer", peer, "err", err)
 	}
 }
@@ -87,7 +101,8 @@ func (n *Node) rejoin(ctx context.Context) {
 // askJoin asks peer p to add this replica, following one redirect to the
 // leader.
 func (n *Node) askJoin(p string) (controlResponse, error) {
-	req := controlRequest{Op: ctlJoin, ID: string(n.id), Address: string(n.raftAddress()), Reads: n.fsm.readable}
+	policy, _ := json.Marshal(n.fsm.LocalPolicy())
+	req := controlRequest{Entry: policy, Op: ctlJoin, ID: string(n.id), Address: string(n.raftAddress()), Reads: n.fsm.readable}
 	resp, err := n.call(p, 5*time.Second, req)
 	if err != nil || resp.Leader == "" || resp.Leader == p || resp.Leader == n.cfg.Advertise {
 		return resp, err
@@ -104,6 +119,17 @@ func (n *Node) askJoin(p string) (controlResponse, error) {
 }
 
 func (n *Node) handleJoin(req controlRequest) controlResponse {
+	var policy FSMPolicy
+	if err := json.Unmarshal(req.Entry, &policy); err != nil {
+		return controlResponse{Member: true, Err: "join application policy missing or invalid"}
+	}
+	if err := n.fsm.ValidatePolicy(n.fsm.Core().Policy); err != nil {
+		return controlResponse{Member: true, Err: err.Error()}
+	}
+	if err := policy.Validate(); err != nil || policy != n.fsm.Core().Policy {
+		return controlResponse{Member: true, Err: "join application policy differs from cluster"}
+	}
+
 	id := raft.ServerID(req.ID)
 	hostport, addrID := splitRaftAddr(req.Address)
 	if nodeOf(id) == "" || hostport == "" || addrID != req.ID {
@@ -168,16 +194,33 @@ func bornOf(id raft.ServerID) int64 {
 	return v
 }
 
-func (n *Node) observe(ch <-chan raft.Observation) {
-	for o := range ch {
-		n.mu.Lock()
-		switch d := o.Data.(type) {
-		case raft.FailedHeartbeatObservation:
-			n.noteFailure(d.PeerID, d.LastContact, time.Now())
-		case raft.ResumedHeartbeatObservation:
-			delete(n.failing, d.PeerID)
+type heartbeatObserver struct {
+	raft     *raft.Raft
+	observer *raft.Observer
+	cancel   context.CancelFunc
+	done     chan struct{}
+}
+
+func (n *Node) observe(ctx context.Context, generation *raft.Raft, ch <-chan raft.Observation) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case o, ok := <-ch:
+			if !ok {
+				return
+			}
+			n.mu.Lock()
+			if ctx.Err() == nil && generation == n.r() && o.Raft == generation {
+				switch d := o.Data.(type) {
+				case raft.FailedHeartbeatObservation:
+					n.noteFailure(d.PeerID, d.LastContact, time.Now())
+				case raft.ResumedHeartbeatObservation:
+					delete(n.failing, d.PeerID)
+				}
+			}
+			n.mu.Unlock()
 		}
-		n.mu.Unlock()
 	}
 }
 
@@ -222,9 +265,6 @@ func (n *Node) noteFailure(id raft.ServerID, lastContact, now time.Time) {
 	since := lastContact
 	if since.IsZero() {
 		since = now
-	}
-	if ok && since.Before(joined) {
-		since = joined
 	}
 	n.failing[id] = since
 }
@@ -420,10 +460,7 @@ func (n *Node) seatsFilled() bool {
 // seats is the voter seat count: the agreed one once a SetVoters decree
 // set it, the launch configuration's before.
 func (n *Node) seats() int {
-	if s := n.fsm.Core().Seats; s > 0 {
-		return s
-	}
-	return n.cfg.Seats
+	return cmp.Or(n.fsm.Core().Seats, n.cfg.Seats)
 }
 
 // isVoter reports whether this member holds a voter seat.

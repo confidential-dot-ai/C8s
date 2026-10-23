@@ -135,7 +135,9 @@ func (l *Ledger) evictExpiredLocked(now time.Time) {
 	}
 }
 
-// EvictionLoop drops expired bindings on each tick until done is closed.
+// EvictionLoop drops expired bindings on each tick until done is closed. It is
+// for a ledger without a Replicator only: a replica that evicts by its own
+// clock decides capacity differently from the others.
 func (l *Ledger) EvictionLoop(done <-chan struct{}, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -149,4 +151,15 @@ func (l *Ledger) EvictionLoop(done <-chan struct{}, interval time.Duration) {
 			l.mu.Unlock()
 		}
 	}
+}
+
+// EmptyClone returns an empty ledger with identical application policy.
+// Recovery must replay commands with the same TTL and capacity as live Apply.
+func (l *Ledger) EmptyClone() *Ledger {
+	return New(l.ttl, l.max)
+}
+
+// Policy returns the ledger's immutable application settings.
+func (l *Ledger) Policy() (ttl time.Duration, max int) {
+	return l.ttl, l.max
 }

@@ -64,22 +64,22 @@ func Combine(shares []Share) ([]byte, error) {
 		}
 		seen[s.X] = true
 	}
+	// Lagrange basis at x = 0; it depends only on the public x coordinates.
+	basis := make([]byte, len(shares))
+	for i, si := range shares {
+		num, den := byte(1), byte(1)
+		for j, sj := range shares {
+			if i != j {
+				num, den = mul(num, sj.X), mul(den, si.X^sj.X)
+			}
+		}
+		basis[i] = mul(num, inv(den))
+	}
 	secret := make([]byte, size)
 	for b := range secret {
-		// Lagrange interpolation at x = 0.
-		var acc byte
-		for i, si := range shares {
-			num, den := byte(1), byte(1)
-			for j, sj := range shares {
-				if i == j {
-					continue
-				}
-				num = mul(num, sj.X)
-				den = mul(den, si.X^sj.X)
-			}
-			acc ^= mul(si.Y[b], div(num, den))
+		for i, s := range shares {
+			secret[b] ^= mul(s.Y[b], basis[i])
 		}
-		secret[b] = acc
 	}
 	return secret, nil
 }
@@ -93,42 +93,21 @@ func eval(coeffs []byte, x byte) byte {
 	return y
 }
 
-var expT, logT = tables()
-
-// tables are GF(2^8) exponent and log tables, generator 3, modulus x^8 +
-// x^4 + x^3 + x + 1 (AES).
-func tables() (exp [510]byte, log [256]byte) {
-	x := byte(1)
-	for i := range 255 {
-		exp[i] = x
-		log[x] = byte(i)
-		// x *= 3: x*2 ^ x, reducing by the modulus.
-		hi := x & 0x80
-		x2 := x << 1
-		if hi != 0 {
-			x2 ^= 0x1b
-		}
-		x = x2 ^ x
-	}
-	for i := 255; i < 510; i++ {
-		exp[i] = exp[i-255]
-	}
-	return exp, log
-}
-
+// mul multiplies in GF(2^8) with the AES modulus, in constant time: no
+// branch or table index depends on a secret byte.
 func mul(a, b byte) byte {
-	if a == 0 || b == 0 {
-		return 0
+	var r byte
+	for i := 7; i >= 0; i-- {
+		r = -(b>>i&1)&a ^ -(r>>7)&0x1b ^ r<<1
 	}
-	return expT[int(logT[a])+int(logT[b])]
+	return r
 }
 
-func div(a, b byte) byte {
-	if b == 0 {
-		panic("shamir: division by zero")
+// inv is a^254, the inverse of a non-zero a.
+func inv(a byte) byte {
+	r := byte(1)
+	for range 254 {
+		r = mul(r, a)
 	}
-	if a == 0 {
-		return 0
-	}
-	return expT[int(logT[a])+255-int(logT[b])]
+	return r
 }

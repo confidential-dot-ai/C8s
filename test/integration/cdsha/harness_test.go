@@ -1,4 +1,4 @@
-//go:build integration
+//go:build integration && linux
 
 // Package cdsha_test is the multi-process integration test of CDS-HA
 // (docs/cds-ha.md): five real `c8s cds` processes on loopback addresses, a
@@ -25,7 +25,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -66,10 +65,6 @@ var (
 )
 
 func TestMain(m *testing.M) {
-	if runtime.GOOS != "linux" {
-		fmt.Println("cdsha integration test needs Linux (127.0.0.0/8 on lo)")
-		os.Exit(0)
-	}
 	dir, err := os.MkdirTemp("", "cdsha-it-")
 	if err != nil {
 		panic(err)
@@ -81,12 +76,8 @@ func TestMain(m *testing.M) {
 	binPath = os.Getenv("CDSHA_IT_BIN")
 	if binPath == "" {
 		binPath = filepath.Join(dir, "c8s")
-		root, err := repoRoot()
-		if err != nil {
-			panic(err)
-		}
-		cmd := exec.Command("go", "build", "-tags", "c8s_dev", "-o", binPath, "./cmd/c8s")
-		cmd.Dir, cmd.Stdout, cmd.Stderr = root, os.Stdout, os.Stderr
+		cmd := exec.Command("go", "build", "-tags", "c8s_dev", "-o", binPath, "github.com/confidential-dot-ai/c8s/cmd/c8s")
+		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 		if err := cmd.Run(); err != nil {
 			fmt.Println("build c8s:", err)
 			os.Exit(1)
@@ -98,14 +89,6 @@ func TestMain(m *testing.M) {
 		_ = os.RemoveAll(dir)
 	}
 	os.Exit(code)
-}
-
-func repoRoot() (string, error) {
-	out, err := exec.Command("go", "env", "GOMOD").Output()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Dir(strings.TrimSpace(string(out))), nil
 }
 
 // Replica is one CDS process slot (a "node"): the process may be killed and
@@ -126,14 +109,16 @@ type Replica struct {
 
 // Cluster is five replica slots, the fault net, and the operator's keys.
 type Cluster struct {
-	t        *testing.T
-	Replicas []*Replica
-	Net      *faultNet
-	Dir      string
-	KubeDir  string
-	LogDir   string
-	HTTPPort int
-	PeerPort int
+	t                   *testing.T
+	Replicas            []*Replica
+	Net                 *faultNet
+	Dir                 string
+	KubeDir             string
+	LogDir              string
+	HTTPPort            int
+	PeerPort            int
+	heartbeat, election time.Duration
+	extraArgs           []string
 
 	OpKey      *ecdsa.PrivateKey
 	OpKeyPath  string // private, for the CLI
@@ -209,8 +194,13 @@ func newKeyPair(t *testing.T, dir, name string) (k *ecdsa.PrivateKey, privPEM []
 // cluster born from a Genesis decree naming n1.
 func NewCluster(t *testing.T) *Cluster {
 	t.Helper()
+	return newClusterWithRaftTiming(t, timing.heartbeat, timing.election)
+}
+
+func newClusterWithRaftTiming(t *testing.T, heartbeat, election time.Duration, extraArgs ...string) *Cluster {
+	t.Helper()
 	dir := t.TempDir()
-	c := &Cluster{t: t, Net: newFaultNet(), Dir: dir, KubeDir: filepath.Join(dir, "kube"),
+	c := &Cluster{t: t, extraArgs: extraArgs, heartbeat: heartbeat, election: election, Net: newFaultNet(), Dir: dir, KubeDir: filepath.Join(dir, "kube"),
 		LogDir:   filepath.Join(logRoot, strings.ReplaceAll(t.Name(), "/", "_")),
 		HTTPPort: freePortOn(t, replicas), PeerPort: freePortOn(t, replicas),
 		client: &http.Client{Timeout: 15 * time.Second, Transport: &http.Transport{MaxIdleConnsPerHost: 64}}}
@@ -306,11 +296,12 @@ func (c *Cluster) Start(i int, keepDB bool) {
 		"--ha-node-name", r.Node, "--ha-attestor", "mock", "--ha-measurement", measurement, "--ha-replica-pins", measurement,
 		"--ha-operator-key", c.OpPubPath, "--ha-recovery-key", c.RecPubPath,
 		"--ha-seats", strconv.Itoa(seats),
-		"--ha-heartbeat", timing.heartbeat.String(), "--ha-election", timing.election.String(),
+		"--ha-heartbeat", c.heartbeat.String(), "--ha-election", c.election.String(),
 		"--ha-lease", timing.lease.String(), "--ha-dead-after", timing.deadAfter.String(),
 		"--ha-stabilize", timing.stabilize.String(), "--ha-apply-timeout", timing.apply.String(),
 		"--ha-tick", timing.tick.String(), "--ha-backup-interval", timing.backup.String(),
 	}
+	args = append(args, c.extraArgs...)
 	cmd := exec.Command(binPath, args...)
 	cmd.Env = append(os.Environ(), "C8S_DEV_KUBE_DIR="+c.KubeDir, "C8S_DEV_TEST_ROUTES=1")
 	logf, err := os.Create(filepath.Join(c.LogDir, fmt.Sprintf("%s.%d.log", r.Node, r.inc)))
@@ -494,6 +485,18 @@ func (c *Cluster) waitFor(timeout time.Duration, cond func() bool, what func() s
 		c.t.Fatalf("after %s: %s", timeout, what())
 	}
 	return time.Since(start)
+}
+
+// never polls bad every 200 ms for d and fails the test on the first
+// violation it reports.
+func (c *Cluster) never(d time.Duration, bad func() string) {
+	c.t.Helper()
+	for end := time.Now().Add(d); time.Now().Before(end); time.Sleep(200 * time.Millisecond) {
+		if msg := bad(); msg != "" {
+			c.t.Error(msg)
+			return
+		}
+	}
 }
 
 // WaitDecreeStatus waits until the decree has a status.
@@ -695,11 +698,4 @@ func (c *Cluster) StatusAll() string {
 // Backups reads the sealed backup objects of the cluster.
 func (c *Cluster) Backups() []corev1.ConfigMap {
 	return c.ConfigMaps(cdsha.LabelBackup, clusterID)
-}
-
-// RunCLI runs the c8s binary with args and returns its combined output.
-func (c *Cluster) RunCLI(ctx context.Context, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, binPath, args...)
-	out, err := cmd.CombinedOutput()
-	return string(out), err
 }

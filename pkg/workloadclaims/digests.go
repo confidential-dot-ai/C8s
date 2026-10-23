@@ -202,8 +202,8 @@ func requireAttestationApi(url string) error {
 // inventory down would cost far more than a slow first callback.
 //
 // When src is not nil the CDS pins follow it (the operator's signed CDS pin
-// decrees): a CDS replica on a newly decreed image passes once the node has
-// the decree.
+// decrees) and cdsPins no longer checks peers: a CDS replica on a newly
+// decreed image passes once the node has the decree.
 func StartDigestsEndpoint(ctx context.Context, logger *slog.Logger, resolver SandboxResolver, identity []byte, platform string, attestFunc func(ctx context.Context, customData string) (string, error), attestationApiURL string, cdsPins armtls.Pins, measuredPolicies string, src armtls.PinSource) error {
 	tlsCfg, certMgr, err := DigestsServerTLSConfig(platform, attestFunc, attestationApiURL, cdsPins, 0, measuredPolicies)
 	if err != nil {

@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/hashicorp/raft"
+	"k8s.io/apimachinery/pkg/util/cache"
+	clocktesting "k8s.io/utils/clock/testing"
 )
 
 // closedByPeer reads until the mux closes the connection; a read timeout
@@ -65,6 +67,11 @@ func TestMuxRefusals(t *testing.T) {
 	}
 	closedByPeer(t, tc, "unknown kind")
 	tc.Close()
+	m.connMu.Lock()
+	if len(m.conns) != 0 {
+		t.Errorf("%d refused connections still tracked", len(m.conns))
+	}
+	m.connMu.Unlock()
 	// A control request when the mux has no handler: closed without answer.
 	if _, err := callControl(addr, b.tls, v, time.Second, controlRequest{Op: ctlStatus}, nil); err == nil {
 		t.Fatal("a control answer without a handler")
@@ -187,16 +194,20 @@ func TestMuxClosesIncompleteConnections(t *testing.T) {
 	}
 }
 
-// logEvery allows one line a minute per key.
-func TestLogEvery(t *testing.T) {
-	var l logEvery
-	now := time.Now()
+// logOnce allows one line a minute per key, and holds a bounded number of keys.
+func TestLogOnce(t *testing.T) {
+	start := time.Now()
+	clk := clocktesting.NewFakeClock(start)
+	seen := cache.NewLRUExpireCacheWithClock(2, clk)
 	for i, c := range []struct {
 		key  string
 		at   time.Duration
 		want bool
-	}{{"a", 0, true}, {"a", 30 * time.Second, false}, {"b", 30 * time.Second, true}, {"a", time.Minute, true}, {"a", time.Minute + time.Second, false}} {
-		if got := l.ok(c.key, now.Add(c.at)); got != c.want {
+	}{{"a", 0, true}, {"a", 30 * time.Second, false}, {"b", 30 * time.Second, true}, {"a", 61 * time.Second, true}, {"a", 62 * time.Second, false},
+		// Two more keys evict "a" (LRU, 2 entries): it may log again early.
+		{"c", 62 * time.Second, true}, {"d", 62 * time.Second, true}, {"a", 63 * time.Second, true}} {
+		clk.SetTime(start.Add(c.at))
+		if got := logOnce(seen, c.key); got != c.want {
 			t.Errorf("call %d (%s at %v): %v, want %v", i, c.key, c.at, got, c.want)
 		}
 	}

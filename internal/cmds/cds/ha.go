@@ -54,8 +54,7 @@ type haConfig struct {
 	operatorKeyPEM []byte // set from --ha-config instead of a file
 	recoveryKeyPEM []byte // from --ha-config or --ha-recovery-key: backups are sealed to it
 	seats          int
-	maxNonVoters   int
-	timing         cdsha.Timing
+	timing         cdsha.Timing // c8s_dev builds can tune it (devha_dev.go)
 }
 
 func bindHAFlags(flags *pflag.FlagSet, c *haConfig) {
@@ -69,7 +68,6 @@ func bindHAFlags(flags *pflag.FlagSet, c *haConfig) {
 	flags.IntVar(&c.port, "ha-port", 9443, "port of the replica-to-replica channel (mutually attested TLS; Raft and control)")
 	flags.StringVar(&c.nodeName, "ha-node-name", os.Getenv("NODE_NAME"), "the node this replica runs on: one voter seat per node, and a Genesis decree names its bootstrap node")
 	flags.StringVar(&c.attestor, "ha-attestor", "node", "peer attestor: node (the node attestation-api at --attestation-api-url; TDX and SEV-SNP), or mock in c8s_dev builds")
-	flags.StringVar(&c.measurement, "ha-measurement", "", "this replica's measurement as reported by the mock attestor")
 	flags.StringSliceVar(&c.pins, "ha-replica-pins", nil, "replica measurement pins; the Genesis replica makes them the cluster's first pin set")
 	flags.StringVar(&c.operatorKey, "ha-operator-key", "", "PEM P-256 public key authorizing HA decrees, including Genesis (REQUIRED with --ha-cluster-id)")
 	flags.Func("ha-recovery-key", "PEM P-256 public key the leader seals state backups to (dev/test; baked nodes take it from --ha-config). Without one there is no recovery from the loss of every replica", func(p string) error {
@@ -78,16 +76,14 @@ func bindHAFlags(flags *pflag.FlagSet, c *haConfig) {
 		return err
 	})
 	flags.IntVar(&c.seats, "ha-seats", 3, "number of voting replicas; further replicas are non-voters that serve and take a seat when one frees up")
-	flags.IntVar(&c.maxNonVoters, "ha-max-non-voters", 16, "most non-voting replicas the leader admits")
-	flags.DurationVar(&c.timing.Heartbeat, "ha-heartbeat", cdsha.DefaultTiming.Heartbeat, "Raft heartbeat timeout")
-	flags.DurationVar(&c.timing.Election, "ha-election", cdsha.DefaultTiming.Election, "Raft election timeout")
-	flags.DurationVar(&c.timing.Lease, "ha-lease", cdsha.DefaultTiming.Lease, "a follower stops issuing and releasing this long after it last heard from the leader")
-	flags.DurationVar(&c.timing.DeadAfter, "ha-dead-after", cdsha.DefaultTiming.DeadAfter, "the leader removes a member that failed heartbeats this long")
-	flags.DurationVar(&c.timing.Stabilize, "ha-stabilize", cdsha.DefaultTiming.Stabilize, "a non-voter must be healthy this long before it takes a seat")
-	flags.DurationVar(&c.timing.Apply, "ha-apply-timeout", cdsha.DefaultTiming.Apply, "bound on one replicated write")
-	flags.DurationVar(&c.timing.Backup, "ha-backup-interval", cdsha.DefaultTiming.Backup, "the leader seals and stores a backup of changed state at most this often")
-	flags.DurationVar(&c.timing.Tick, "ha-tick", cdsha.DefaultTiming.Tick, "membership and decree loop period")
+	c.timing = cdsha.DefaultTiming
+	bindDevHAFlags(flags, c)
 }
+
+// bindDevHAFlags adds the integration harness's flags (the mock attestor's
+// measurement and the Raft timings) in c8s_dev builds; release builds keep
+// cdsha.DefaultTiming.
+var bindDevHAFlags = func(*pflag.FlagSet, *haConfig) {}
 
 // haStores are the local stores a replica's Raft log applies to.
 type haStores struct {
@@ -98,63 +94,63 @@ type haStores struct {
 
 // haStart builds this replica, makes it the replicator of every store, and
 // returns once it serves the cluster's mesh CA. A nil node means singleton.
-func haStart(ctx context.Context, cfg config, st haStores, preJoin func(*cdsha.Node) (stop func())) (*cdsha.Node, error) {
+// stop ends the replica and waits for it: run calls it before it closes the
+// stores the Raft log applies to.
+func haStart(ctx context.Context, cfg config, st haStores) (node *cdsha.Node, stop func(), err error) {
+	stop = func() {}
 	if cfg.ha.yieldFile != "" {
 		if err := yieldIfHA(cfg.ha.yieldFile); err != nil {
-			return nil, err
+			return nil, stop, err
 		}
 	}
 	if cfg.ha.configFile != "" {
 		if err := loadHAConfigFile(&cfg.ha); err != nil {
-			return nil, err
+			return nil, stop, err
 		}
 	}
 	if cfg.ha.clusterID == "" {
-		return nil, nil
+		return nil, stop, nil
 	}
-	node, err := newHANode(cfg, st)
-	if err != nil {
-		return nil, err
+	if node, err = newHANode(cfg, st); err != nil {
+		return nil, stop, err
 	}
-	if err := resetHAAllowlist(st.allowlist); err != nil {
-		return nil, err
-	}
-	st.allowlist.SetReplicator(node)
-	st.ledger.SetReplicator(node)
 	if err := node.Start(); err != nil {
-		return nil, err
+		return nil, stop, err
 	}
-	errc := make(chan error, 1)
+	runCtx, cancel := context.WithCancel(ctx)
+	errc, done := make(chan error, 1), make(chan struct{})
 	go func() {
-		err := node.Run(ctx)
+		defer close(done)
+		err := node.Run(runCtx)
 		errc <- err
-		if err != nil && ctx.Err() == nil {
+		if err != nil && runCtx.Err() == nil {
 			// After startup nobody reads errc: a dead replica must not
 			// leave CDS serving state it no longer tracks.
 			slog.Error("cds-ha replica stopped; exiting", "err", err)
 			os.Exit(1)
 		}
 	}()
+	stop = func() { cancel(); <-done }
 	slog.Info("cds-ha: replica starting", "build", "v4-rollout-image-b")
 	slog.Info("cds-ha: waiting to join the cluster", "cluster_id", cfg.ha.clusterID, "id", node.ID())
-	if preJoin != nil {
-		// Until it joins, the replica serves only health, status and the
-		// operator's restore of a backup, on the CDS port.
-		defer preJoin(node)()
-	}
+	// Until it joins, the replica serves only health, status and the
+	// operator's restore of a backup, on the CDS port.
+	defer startPreJoinServer(cfg, node)()
 	t := time.NewTicker(250 * time.Millisecond)
 	defer t.Stop()
 	for !node.Serving() {
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			stop()
+			return nil, func() {}, ctx.Err()
 		case err := <-errc:
-			return nil, fmt.Errorf("cds-ha replica: %w", err)
+			stop()
+			return nil, func() {}, fmt.Errorf("cds-ha replica: %w", err)
 		case <-t.C:
 		}
 	}
 	slog.Info("cds-ha: serving", "status", node.Status())
-	return node, nil
+	return node, stop, nil
 }
 
 // resetHAAllowlist empties the allowlist database before the replica joins.
@@ -178,16 +174,13 @@ func resetHAAllowlist(s *allowlist.Store) error {
 	return nil
 }
 
+// newHANode builds this replica and makes it the replicator of every store.
 func newHANode(cfg config, st haStores) (*cdsha.Node, error) {
 	h := cfg.ha
 	if (h.peersDNS == "" && len(h.peers) == 0) || h.decreeNS == "" || h.nodeName == "" {
 		return nil, errors.New("--ha-peers-dns (or --ha-peers), --ha-decree-namespace and --ha-node-name are required with --ha-cluster-id")
 	}
-	att, err := newHAAttestor(h.attestor, cdsha.AttestorOptions{
-		MockMeasurement:   h.measurement,
-		AttestationAPIURL: cfg.attestationApiURL, // the node's attestation-api, as every CDS path uses
-		Timeout:           cfg.requestTimeout,
-	})
+	att, err := newHAAttestor(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -219,7 +212,7 @@ func newHANode(cfg config, st haStores) (*cdsha.Node, error) {
 		recovery = block.Bytes
 	}
 	decrees := cdsha.KubeDecrees{Client: kube, Namespace: h.decreeNS, ClusterID: h.clusterID}
-	return cdsha.NewNode(cdsha.Config{
+	node, err := cdsha.NewNode(cdsha.Config{
 		ClusterID:       h.clusterID,
 		NodeName:        h.nodeName,
 		Bind:            net.JoinHostPort(cfg.host, strconv.Itoa(h.port)),
@@ -228,7 +221,7 @@ func newHANode(cfg config, st haStores) (*cdsha.Node, error) {
 		BakedPins:       h.pins,
 		OperatorPubKey:  opKey,
 		Seats:           h.seats,
-		MaxNonVoters:    h.maxNonVoters,
+		MaxNonVoters:    16,
 		Peers:           peers,
 		Decrees:         decrees,
 		RecoveryKey:     recovery,
@@ -243,6 +236,15 @@ func newHANode(cfg config, st haStores) (*cdsha.Node, error) {
 		HistoryVersions: cfg.allowlistHistoryVersions,
 		HistoryBytes:    cfg.allowlistHistoryBytes.Value(),
 	})
+	if err != nil {
+		return nil, err
+	}
+	if err := resetHAAllowlist(st.allowlist); err != nil {
+		return nil, err
+	}
+	st.allowlist.SetReplicator(node)
+	st.ledger.SetReplicator(node)
+	return node, nil
 }
 
 // devHARoutes adds the integration test's routes in c8s_dev builds
@@ -251,8 +253,17 @@ var devHARoutes = func(next http.Handler, _ secrets.Store, _ *secrets.MemoryStor
 	return next
 }
 
-// newHAAttestor resolves the peer attestor; tests replace it.
-var newHAAttestor = cdsha.NewAttestor
+// newHAAttestor is the peer attestor: the node's attestation-api, as every
+// CDS path uses. c8s_dev builds add the mock (devha_dev.go); tests replace it.
+var newHAAttestor = func(cfg config) (cdsha.Attestor, error) {
+	if cfg.ha.attestor != "node" {
+		return nil, fmt.Errorf("attestor %q not available in this build (node; mock needs -tags c8s_dev)", cfg.ha.attestor)
+	}
+	if cfg.attestationApiURL == "" {
+		return nil, errors.New("node attestor needs the attestation-api URL")
+	}
+	return cdsha.NewNodeAttestor(cfg.attestationApiURL, cfg.requestTimeout), nil
+}
 
 // errYield is returned by the baked singleton when the launch document selects HA.
 var errYield = errors.New("this cluster runs CDS as HA replicas on cds-role nodes (launch document cdsHA); the singleton yields")
@@ -298,9 +309,7 @@ func loadHAConfigFile(h *haConfig) error {
 	h.clusterID, h.pins = c.ClusterID, []string{pin}
 	h.operatorKeyPEM = []byte(c.DecreeKey)
 	h.recoveryKeyPEM = []byte(c.RecoveryKey)
-	if c.Replicas > 0 {
-		h.seats = c.Replicas
-	}
+	h.seats = c.Replicas // launchconfig refuses fewer than 2
 	return nil
 }
 
@@ -445,12 +454,59 @@ type RestoreRequest struct {
 // handleRestore restores a backup into this replica. The decree, signed by
 // the operator's decree key and checked against the replica's own launch
 // configuration, is the authority; the snapshot must be the one it names.
+const (
+	restoreDecreeHeader   = "X-CDS-Restore-Decree"
+	maxRestoreDecreeBytes = 16 << 10
+	maxLegacyRestoreBytes = 1 << 20
+	maxRestoreBytes       = 256 << 20 // JSON wire bytes, including base64 snapshot
+)
+
+// A process-wide budget, independent of attacker-controlled source addresses.
+var restoreAdmission = make(chan struct{}, 1)
+
 func handleRestore(node *cdsha.Node) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case restoreAdmission <- struct{}{}:
+			defer func() { <-restoreAdmission }()
+		default:
+			http.Error(w, "restore already in progress", http.StatusTooManyRequests)
+			return
+		}
+		// The server also bounds request reads. Set an explicit handler deadline
+		// so a slow upload cannot retain the restore admission slot indefinitely.
+		_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(30 * time.Second))
+		limit := int64(maxLegacyRestoreBytes)
+		if header := r.Header.Get(restoreDecreeHeader); header != "" {
+			var sd cdsha.SignedDecree
+			if len(header) > maxRestoreDecreeBytes || json.Unmarshal([]byte(header), &sd) != nil {
+				http.Error(w, "bad restore decree header", http.StatusBadRequest)
+				return
+			}
+			if err := node.CheckRestore(sd); err != nil {
+				code := http.StatusConflict
+				if errors.Is(err, cdsha.ErrNotForThisNode) {
+					code = http.StatusMisdirectedRequest
+				}
+				http.Error(w, err.Error(), code)
+				return
+			}
+			limit = maxRestoreBytes
+		}
 		var req RestoreRequest
-		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 256<<20)).Decode(&req); err != nil {
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit)).Decode(&req); err != nil {
 			http.Error(w, "bad restore request: "+err.Error(), http.StatusBadRequest)
 			return
+		}
+		if header := r.Header.Get(restoreDecreeHeader); header != "" {
+			var sd cdsha.SignedDecree
+			_ = json.Unmarshal([]byte(header), &sd)
+			expected, _ := json.Marshal(sd)
+			actual, _ := json.Marshal(req.Decree)
+			if string(expected) != string(actual) {
+				http.Error(w, "restore body decree differs from header", http.StatusBadRequest)
+				return
+			}
 		}
 		res, err := node.Restore(r.Context(), req.Decree, req.Snapshot)
 		switch {
@@ -490,36 +546,35 @@ func preJoinMux(node *cdsha.Node) http.Handler {
 	return mux
 }
 
-// restoreServer returns the pre-join server starter for run(): the CDS port
-// with only health, status and restore, armTLS as the full server is.
-func restoreServer(cfg config) func(*cdsha.Node) func() {
-	return func(node *cdsha.Node) func() {
-		addr := net.JoinHostPort(cfg.host, strconv.Itoa(cfg.port))
-		srv := newHTTPServer(addr, preJoinMux(node), cfg)
-		ctx, cancel := context.WithCancel(context.Background())
-		done := make(chan struct{})
-		go func() {
-			defer close(done)
-			var err error
-			if cfg.armtlsPlatform != "" {
-				if srv.TLSConfig, _, err = armtlsServerTLS(ctx, cfg, nil); err != nil {
-					slog.Error("cds-ha: pre-join server", "err", err)
-					return
-				}
-				err = srv.ListenAndServeTLS("", "")
-			} else {
-				err = srv.ListenAndServe()
+// startPreJoinServer serves the CDS port with only health, status and
+// restore, armTLS as the full server is, until the returned stop is called.
+func startPreJoinServer(cfg config, node *cdsha.Node) (stop func()) {
+	addr := net.JoinHostPort(cfg.host, strconv.Itoa(cfg.port))
+	srv := newHTTPServer(addr, preJoinMux(node), cfg)
+	srv.MaxHeaderBytes = maxRestoreDecreeBytes + (4 << 10)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		var err error
+		if cfg.armtlsPlatform != "" {
+			if srv.TLSConfig, _, err = armtlsServerTLS(ctx, cfg, nil); err != nil {
+				slog.Error("cds-ha: pre-join server", "err", err)
+				return
 			}
-			if err != nil && !errors.Is(err, http.ErrServerClosed) {
-				slog.Warn("cds-ha: pre-join server", "err", err)
-			}
-		}()
-		return func() {
-			cancel()
-			sctx, c := context.WithTimeout(context.Background(), 5*time.Second)
-			defer c()
-			_ = srv.Shutdown(sctx)
-			<-done
+			err = srv.ListenAndServeTLS("", "")
+		} else {
+			err = srv.ListenAndServe()
 		}
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Warn("cds-ha: pre-join server", "err", err)
+		}
+	}()
+	return func() {
+		cancel()
+		sctx, c := context.WithTimeout(context.Background(), 5*time.Second)
+		defer c()
+		_ = srv.Shutdown(sctx)
+		<-done
 	}
 }

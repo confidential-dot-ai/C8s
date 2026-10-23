@@ -109,3 +109,17 @@ func TestReplicatedLookupCatchesUp(t *testing.T) {
 		}
 	}
 }
+
+type downLedger struct{ ledgerFanout }
+
+func (*downLedger) ReplicateBinding(Command) (bool, error) { return false, errors.New("no leader") }
+
+// A binding no replica committed is refused: another replica could give the
+// sandbox to a second inventory.
+func TestUnreplicatedBindingIsRefused(t *testing.T) {
+	l := New(time.Hour, 4)
+	l.SetReplicator(&downLedger{})
+	if l.Record("sb", "10.0.0.1") {
+		t.Fatal("a binding no replica committed was taken")
+	}
+}

@@ -1,7 +1,6 @@
 package cdsha
 
 import (
-	"bufio"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -15,6 +14,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/raft"
+	"k8s.io/apimachinery/pkg/util/cache"
 )
 
 // One attested TLS port carries two protocols, told apart by the first byte
@@ -24,57 +24,20 @@ const (
 	muxRaft    byte = 'R'
 	muxControl byte = 'C'
 
-	handshakeTimeout = 10 * time.Second
-	maxControlBytes  = 8 << 20
+	handshakeTimeout      = 10 * time.Second
+	maxControlBytes       = 8 << 20
+	maxInboundConnections = 64
 )
-
-// certHolder serves the replica's current peer certificate and replaces it
-// before it expires. Each certificate carries fresh evidence over a new key.
-type certHolder struct {
-	mu   sync.RWMutex
-	cert tls.Certificate
-	made time.Time
-	mint func() (tls.Certificate, error)
-}
-
-func newCertHolder(mint func() (tls.Certificate, error)) (*certHolder, error) {
-	h := &certHolder{mint: mint}
-	return h, h.renew()
-}
-
-func (h *certHolder) renew() error {
-	c, err := h.mint()
-	if err != nil {
-		return err
-	}
-	h.mu.Lock()
-	h.cert, h.made = c, time.Now()
-	h.mu.Unlock()
-	return nil
-}
-
-func (h *certHolder) current() *tls.Certificate {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	c := h.cert
-	return &c
-}
-
-func (h *certHolder) age() time.Duration {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	return time.Since(h.made)
-}
 
 // peerTLSConfig is used for both directions. It checks no chain: the
 // caller checks the peer's evidence with peerVerifier.peer.
-func peerTLSConfig(h *certHolder) *tls.Config {
+func peerTLSConfig(cert func() *tls.Certificate) *tls.Config {
 	return &tls.Config{
 		MinVersion:           tls.VersionTLS13,
 		ClientAuth:           tls.RequireAnyClientCert,
 		InsecureSkipVerify:   true, //nolint:gosec // attestation, not PKI, authenticates the peer (peerVerifier.peer)
-		GetCertificate:       func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return h.current(), nil },
-		GetClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) { return h.current(), nil },
+		GetCertificate:       func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return cert(), nil },
+		GetClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) { return cert(), nil },
 	}
 }
 
@@ -94,9 +57,48 @@ type mux struct {
 	done     chan struct{}
 	once     sync.Once
 
+	inbound map[*inboundConn]struct{}
 	connMu  sync.Mutex
 	conns   map[*peerConn]struct{}
-	refused logEvery // remote host + stage
+	refused *cache.LRUExpireCache // remote host + stage
+}
+
+// inboundConn owns an accepted socket from admission through protocol close.
+// Closing the raw socket avoids blocking shutdown on TLS close_notify.
+type inboundConn struct {
+	net.Conn
+	m    *mux
+	once sync.Once
+}
+
+func (c *inboundConn) Close() error {
+	c.once.Do(func() {
+		c.m.connMu.Lock()
+		delete(c.m.inbound, c)
+		c.m.connMu.Unlock()
+	})
+	return c.Conn.Close()
+}
+
+func (m *mux) admit(raw net.Conn) *inboundConn {
+	m.connMu.Lock()
+	defer m.connMu.Unlock()
+	select {
+	case <-m.done:
+		raw.Close()
+		return nil
+	default:
+	}
+	if len(m.inbound) >= maxInboundConnections {
+		raw.Close()
+		return nil
+	}
+	if m.inbound == nil {
+		m.inbound = make(map[*inboundConn]struct{})
+	}
+	c := &inboundConn{Conn: raw, m: m}
+	m.inbound[c] = struct{}{}
+	return c
 }
 
 // peerConn is a live attested connection and what its peer attested. TLS
@@ -149,25 +151,36 @@ func newMux(bind string, advertise, id string, cfg *tls.Config, v peerVerifier, 
 	}
 	adv := raftAddr{tcp: tcp, id: id}
 	m := &mux{ln: ln, tls: cfg, verifier: v, advert: adv, control: control, blocked: blocked,
-		raftConn: make(chan net.Conn), done: make(chan struct{}), conns: map[*peerConn]struct{}{}}
+		raftConn: make(chan net.Conn), done: make(chan struct{}), conns: map[*peerConn]struct{}{}, refused: newLogOnce()}
 	go m.serve()
 	return m, nil
 }
 
 // track registers a verified connection, so recheck can cut it later.
-func (m *mux) track(c *tls.Conn, claims Claims) *peerConn {
+func (m *mux) track(c *tls.Conn, claims Claims) (*peerConn, error) {
 	pc := &peerConn{Conn: c, m: m, claims: claims}
 	m.connMu.Lock()
+	defer m.connMu.Unlock()
+	select {
+	case <-m.done:
+		return nil, errors.New("cds-ha transport closed")
+	default:
+	}
+	// Serialize this final pin snapshot and registration with recheck.
+	// Verification may have completed before the latest epoch's sweep.
+	pins := m.verifier.pins()
+	if (pins != nil && !slices.Contains(pins, claims.Measurement)) || (m.blocked != nil && m.blocked(c.RemoteAddr().String())) {
+		return nil, errors.New("peer no longer admitted")
+	}
 	m.conns[pc] = struct{}{}
-	m.connMu.Unlock()
-	return pc
+	return pc, nil
 }
 
 // recheck closes every connection whose peer is no longer admitted: its
 // measurement left the pin set, or (in tests) it is partitioned away.
 func (m *mux) recheck() {
-	pins := m.verifier.pins()
 	m.connMu.Lock()
+	pins := m.verifier.pins()
 	var drop []*peerConn
 	for c := range m.conns {
 		if (pins != nil && !slices.Contains(pins, c.claims.Measurement)) || (m.blocked != nil && m.blocked(c.RemoteAddr().String())) {
@@ -180,32 +193,25 @@ func (m *mux) recheck() {
 	}
 }
 
-// logEvery allows one log line a minute per key: a peer refused for good
-// (a new image not yet pinned, a foreign cluster) must show in the logs,
-// but not on every retry.
-type logEvery struct {
-	mu sync.Mutex
-	at map[string]time.Time
-}
-
-func (l *logEvery) ok(key string, now time.Time) bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if last, seen := l.at[key]; seen && now.Sub(last) < time.Minute {
+// logOnce reports whether key was not logged in the last minute: a peer
+// refused for good (a new image not yet pinned, a foreign cluster) must show
+// in the logs, but not on every retry. The cache is bounded, because a
+// handshake failure's key is the remote host, which anyone can vary.
+func logOnce(seen *cache.LRUExpireCache, key string) bool {
+	if _, ok := seen.Get(key); ok {
 		return false
 	}
-	if l.at == nil {
-		l.at = map[string]time.Time{}
-	}
-	l.at[key] = now
+	seen.Add(key, nil, time.Minute)
 	return true
 }
+
+func newLogOnce() *cache.LRUExpireCache { return cache.NewLRUExpireCache(1024) }
 
 // refuse logs why a peer connection was closed, which would otherwise show
 // only as resets on the other side.
 func (m *mux) refuse(remote net.Addr, stage string, err error) {
 	host, _, _ := net.SplitHostPort(remote.String())
-	if m.refused.ok(host+" "+stage, time.Now()) {
+	if logOnce(m.refused, host+" "+stage) {
 		slog.Info("cds-ha: peer connection refused", "component", "cds-ha", "remote", host, "stage", stage, "err", err)
 	}
 }
@@ -222,11 +228,20 @@ func (m *mux) serve() {
 			time.Sleep(50 * time.Millisecond)
 			continue
 		}
-		go m.route(c)
+		if owned := m.admit(c); owned != nil {
+			go m.route(owned)
+		}
 	}
 }
 
 func (m *mux) route(raw net.Conn) {
+	if _, ok := raw.(*inboundConn); !ok {
+		owned := m.admit(raw)
+		if owned == nil {
+			return
+		}
+		raw = owned
+	}
 	if m.blocked != nil && m.blocked(raw.RemoteAddr().String()) {
 		raw.Close()
 		return
@@ -249,8 +264,12 @@ func (m *mux) route(raw net.Conn) {
 		c.Close()
 		return
 	}
-	_ = c.SetDeadline(time.Time{})
-	pc := m.track(c, claims)
+	pc, err := m.track(c, claims)
+	if err != nil {
+		m.refuse(raw.RemoteAddr(), "peer admission", err)
+		c.Close()
+		return
+	}
 	switch kind[0] {
 	case muxRaft:
 		// The member this connection is for; anything else is refused.
@@ -265,6 +284,7 @@ func (m *mux) route(raw net.Conn) {
 			pc.Close()
 			return
 		}
+		_ = c.SetDeadline(time.Time{})
 		select {
 		case m.raftConn <- pc:
 		case <-m.done:
@@ -282,7 +302,7 @@ func (m *mux) route(raw net.Conn) {
 		}
 		_ = json.NewEncoder(c).Encode(m.control(claims, req))
 	default:
-		c.Close()
+		pc.Close()
 	}
 }
 
@@ -297,7 +317,25 @@ func (m *mux) Accept() (net.Conn, error) {
 }
 
 func (m *mux) Close() error {
-	m.once.Do(func() { close(m.done) })
+	m.once.Do(func() {
+		m.connMu.Lock()
+		close(m.done)
+		raw := make([]*inboundConn, 0, len(m.inbound))
+		for c := range m.inbound {
+			raw = append(raw, c)
+		}
+		peers := make([]*peerConn, 0, len(m.conns))
+		for c := range m.conns {
+			peers = append(peers, c)
+		}
+		m.connMu.Unlock()
+		for _, c := range raw {
+			_ = c.Close()
+		}
+		for _, c := range peers {
+			_ = c.Close()
+		}
+	})
 	return m.ln.Close()
 }
 
@@ -320,7 +358,12 @@ func (m *mux) Dial(address raft.ServerAddress, timeout time.Duration) (net.Conn,
 		c.Close()
 		return nil, err
 	}
-	return m.track(c, claims), nil
+	pc, err := m.track(c, claims)
+	if err != nil {
+		c.Close()
+		return nil, err
+	}
+	return pc, nil
 }
 
 // dialKind opens an attested connection of one kind and verifies the peer
@@ -377,11 +420,7 @@ func callControl(addr string, cfg *tls.Config, v peerVerifier, timeout time.Dura
 	}
 	defer c.Close()
 	_ = c.SetDeadline(time.Now().Add(timeout))
-	w := bufio.NewWriter(c)
-	if err := json.NewEncoder(w).Encode(req); err != nil {
-		return controlResponse{}, err
-	}
-	if err := w.Flush(); err != nil {
+	if err := json.NewEncoder(c).Encode(req); err != nil { // one Write
 		return controlResponse{}, err
 	}
 	var resp controlResponse

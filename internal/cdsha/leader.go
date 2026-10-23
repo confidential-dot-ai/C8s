@@ -3,9 +3,7 @@ package cdsha
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"crypto/x509"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -16,8 +14,6 @@ import (
 
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
-	"github.com/confidential-dot-ai/c8s/internal/sandboxledger"
-	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 )
 
@@ -27,8 +23,13 @@ import (
 // recover makes this replica the only voter of the cluster, with the state
 // it holds, for a verified Recover decree naming it.
 func (n *Node) recover(ctx context.Context, p PendingDecree) {
+	if err := n.fsm.ValidatePolicy(n.fsm.Core().Policy); err != nil {
+		n.log.Error("recover: application policy", "err", err)
+		return
+	}
 	n.log.Warn("RECOVER: forcing a one-voter configuration with this replica's state", "decree", p.Name, "id", n.id)
-	if err := n.r().Shutdown().Error(); err != nil {
+	n.readCert.Store(nil) // recovery stops read admission before shutting Raft down
+	if err := n.stopRaft(n.r()); err != nil {
 		n.log.Error("recover: shut down raft", "err", err)
 	}
 	_ = n.mux.Load().Close()
@@ -40,17 +41,18 @@ func (n *Node) recover(ctx context.Context, p PendingDecree) {
 		return
 	}
 	defer al.Close()
-	scratch := NewFSM(PreGenesis(n.cfg.ClusterID, n.cfg.OperatorPubKey), &al, secrets.NewMemoryStore(1<<20, 1<<19, 1<<20), sandboxledger.New(time.Hour, 1<<20))
-	trans, err := n.transport()
-	if err != nil {
-		n.log.Error("recover: transport", "err", err)
+	scratch := n.recoveryFSM(&al)
+	// snapStore ignores the transport RecoverCluster passes it.
+	if err := raft.RecoverCluster(n.rcfg, scratch, n.logs, n.stable, n.snaps, nil, n.solo()); err != nil {
+		n.log.Error("recover: RecoverCluster", "err", err)
 		return
 	}
-	if err := raft.RecoverCluster(n.rcfg, scratch, n.logs, n.stable, n.snaps, trans, n.solo()); err != nil {
-		n.log.Error("recover: RecoverCluster", "err", err)
+	// RecoverCluster ignores application results. A rejected policy or
+	// unreadable command must not turn a partial replay into serving state.
+	if reason := scratch.Stuck(); reason != "" {
+		n.log.Error("recover: replay stopped", "reason", reason)
+		return
 	}
-	_ = trans.Close()
-	_ = n.mux.Load().Close()
 	if err := n.startRaft(); err != nil {
 		n.log.Error("recover: restart raft", "err", err)
 		return
@@ -58,6 +60,15 @@ func (n *Node) recover(ctx context.Context, p PendingDecree) {
 	n.waitFor(20*n.cfg.Timing.Election, n.leading)
 	// Record the decree in the log, so it can never apply again.
 	n.applyDecree(ctx, p)
+}
+
+// recoveryFSM keeps replay policy identical to this replica's live FSM.
+// Operators must still configure identical policies on all replicas.
+func (n *Node) recoveryFSM(al *allowlist.Store) *FSM {
+	f := NewFSM(PreGenesis(n.cfg.ClusterID, n.cfg.OperatorPubKey), al,
+		n.cfg.Secrets.EmptyClone(), n.cfg.Ledger.EmptyClone())
+	f.readable = n.fsm.readable
+	return f
 }
 
 // pendingDecree is a valid pending decree of kind naming this replica.
@@ -112,7 +123,7 @@ func (n *Node) maybeBackup(ctx context.Context) {
 		n.log.Warn("backup: snapshot", "err", err)
 		return
 	}
-	meta, rc, err := f.Open()
+	_, rc, err := f.Open()
 	if err != nil {
 		n.log.Warn("backup: open snapshot", "err", err)
 		return
@@ -128,8 +139,9 @@ func (n *Node) maybeBackup(ctx context.Context) {
 		n.log.Warn("backup: decode snapshot", "err", err)
 		return
 	}
-	b, err := SealBackup(n.recovery, BackupMeta{ClusterID: sn.Core.ClusterID, Epoch: sn.Core.Epoch, Index: meta.Index,
-		AppliedDecrees: sn.Core.AppliedDecrees, TakenAtMS: time.Now().UnixMilli(), CAFingerprint: certutil.CertFingerprint(sn.Core.RootCert)}, body)
+	// Export the application state watermark, not Raft's barrier-only suffix.
+	b, err := SealAuthenticatedBackup(n.recovery, BackupMeta{ClusterID: sn.Core.ClusterID, Epoch: sn.Core.Epoch, Index: sn.Index,
+		AppliedDecrees: sn.Core.AppliedDecrees, TakenAtMS: time.Now().UnixMilli(), CAFingerprint: certutil.CertFingerprint(sn.Core.RootCert)}, body, sn.Core.RootCert, sn.Key)
 	if err != nil {
 		n.log.Warn("backup: seal", "err", err)
 		return
@@ -181,7 +193,7 @@ func (n *Node) maybePruneHistory() {
 		return
 	}
 	if _, err := n.applyEntry(Entry{Kind: KindAllowlist,
-		Allowlist: &allowlist.Command{Op: allowlist.OpPruneHistory, Keep: keep, AtMS: time.Now().UnixMilli()}}); err != nil {
+		Allowlist: &allowlist.Command{Op: allowlist.OpPruneHistory, Keep: keep}}); err != nil {
 		n.log.Warn("prune allowlist history", "err", err)
 		return
 	}
@@ -197,7 +209,7 @@ func (n *Node) maybeRenewCA() {
 		return
 	}
 	cert := ca.Cert
-	if time.Now().Before(cert.NotBefore.Add(cert.NotAfter.Sub(cert.NotBefore) / 2)) {
+	if !issuer.PastHalfLife(cert, time.Now()) {
 		return
 	}
 	n.renewAt = time.Now()
@@ -210,9 +222,8 @@ func (n *Node) maybeRenewCA() {
 		n.log.Warn("renew mesh CA certificate", "err", err)
 		return
 	}
-	keyID := sha256.Sum256(renewed.RawSubjectPublicKeyInfo)
 	n.log.Info("renewed mesh CA certificate", "audit", true,
-		"key_id", hex.EncodeToString(keyID[:]), "not_after", renewed.NotAfter.Format(time.RFC3339))
+		"key_id", certutil.CertFingerprint(renewed.RawSubjectPublicKeyInfo), "not_after", renewed.NotAfter.Format(time.RFC3339))
 }
 
 // AwaitingRestore reports a replica that holds no cluster and has not seen
@@ -247,29 +258,56 @@ var ErrNotForThisNode = errors.New("cds-ha: the Restore decree names another nod
 // Restore starts a cluster from an operator backup on this replica, which
 // must hold no cluster and be the node the decree names. No replica it can
 // reach may belong to a cluster: a restore never forks a live one.
-func (n *Node) Restore(ctx context.Context, sd SignedDecree, snapshot []byte) (DecreeResult, error) {
+// CheckRestore checks authorization and local eligibility without reading snapshot bytes.
+// Restore repeats this check because state may change during an upload.
+func (n *Node) CheckRestore(sd SignedDecree) error {
 	d := sd.Decree
 	switch {
 	case n.r() == nil:
-		return DecreeResult{}, errors.New("cds-ha: replica not started")
+		return errors.New("cds-ha: replica not started")
 	case d.Kind != Restore:
-		return DecreeResult{}, errors.New("cds-ha: not a Restore decree")
+		return errors.New("cds-ha: not a Restore decree")
 	case d.BootstrapNode != n.cfg.NodeName:
-		return DecreeResult{}, ErrNotForThisNode
+		return ErrNotForThisNode
 	case n.member() || n.fsm.Core().Joined():
-		return DecreeResult{}, errors.New("cds-ha: this replica already belongs to a cluster")
+		return errors.New("cds-ha: this replica already belongs to a cluster")
 	}
 	if err := CheckDecree(sd, n.fsm.Core(), time.Now()); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (n *Node) Restore(ctx context.Context, sd SignedDecree, snapshot []byte) (DecreeResult, error) {
+	n.eligibilityMu.Lock()
+	defer n.eligibilityMu.Unlock()
+	if err := n.CheckRestore(sd); err != nil {
 		return DecreeResult{}, err
 	}
+	d := sd.Decree
 	if SnapshotSHA256(snapshot) != d.SnapshotSHA256 {
 		return DecreeResult{}, errors.New("cds-ha: snapshot differs from the one the decree names")
+	}
+	// Reuse the complete application path on disposable stores. Authorization and
+	// hash checks precede bounded decoding; no live store or Raft state changes.
+	al, err := allowlist.OpenInMemory()
+	if err != nil {
+		return DecreeResult{}, err
+	}
+	scratch := n.recoveryFSM(&al)
+	result := scratch.applyRestore(RestoreEntry{Decree: sd, AtMS: time.Now().UnixMilli(), Snapshot: snapshot})
+	al.Close()
+	if result.Err != "" {
+		return result, fmt.Errorf("cds-ha: restore preflight: %s", result.Err)
 	}
 	peers, _ := n.cfg.Peers(ctx)
 	for _, p := range peers {
 		if resp, err := n.call(p, 3*time.Second, controlRequest{Op: ctlStatus}); err == nil && resp.Member {
 			return DecreeResult{}, fmt.Errorf("cds-ha: replica %s belongs to a cluster; join it instead of restoring", p)
 		}
+	}
+	if err := n.CheckRestore(sd); err != nil {
+		return DecreeResult{}, err
 	}
 	n.log.Warn("RESTORE: starting the cluster from an operator backup", "decree", d.IntentID, "snapshot", d.SnapshotSHA256)
 	if err := n.r().BootstrapCluster(n.solo()).Error(); err != nil {
@@ -320,12 +358,8 @@ func (n *Node) applyDecrees(ctx context.Context) {
 // upgrade adds the new image's pin first and drops the old one once a
 // majority of voters run the new image.
 func (n *Node) checkPinsKeepMajority(pins []string) error {
-	f := n.r().GetConfiguration()
-	if err := f.Error(); err != nil {
-		return err
-	}
-	voters, pinned := 0, 0
-	for _, s := range f.Configuration().Servers {
+	voters, pinned := 0, 0 // no configuration: 0 of 0, refused
+	for _, s := range n.servers() {
 		if s.Suffrage != raft.Voter {
 			continue
 		}
@@ -383,6 +417,7 @@ func (n *Node) applyDecree(ctx context.Context, p PendingDecree) {
 	de := DecreeEntry{Decree: p.Decree, AtMS: time.Now().UnixMilli()}
 	if d.Kind == Genesis {
 		de.Pins = n.cfg.BakedPins
+		de.Policy = n.fsm.LocalPolicy()
 	}
 	if d.Kind == Genesis || d.Kind == RotateKey {
 		minted, err := issuer.NewMeshCA(n.cfg.CACommonName, n.cfg.CAValidity)

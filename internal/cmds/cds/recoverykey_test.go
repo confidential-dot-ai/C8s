@@ -1,14 +1,10 @@
 package cds
 
 import (
-	"crypto/ecdsa"
 	"crypto/ed25519"
-	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
-	"encoding/pem"
 	"io"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -17,17 +13,9 @@ import (
 )
 
 func TestRecoveryKeySplitAndCombine(t *testing.T) {
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	der, _ := x509.MarshalECPrivateKey(key)
-	dir := t.TempDir()
-	keyFile := filepath.Join(dir, "recovery.key")
-	if err := os.WriteFile(keyFile, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: der}), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	out := filepath.Join(dir, "shares")
+	key, _ := testKeyPEM(t)
+	keyFile := writeKey(t, key)
+	out := filepath.Join(t.TempDir(), "shares")
 	cmd := newHARecoveryKeyCmd()
 	cmd.SetArgs([]string{"split", "--recovery-key", keyFile, "--out", out, "--shares", "5", "--threshold", "3"})
 	cmd.SetOut(io.Discard)
@@ -40,18 +28,18 @@ func TestRecoveryKeySplitAndCombine(t *testing.T) {
 	if err != nil || !got.Equal(key) {
 		t.Fatalf("three shares: %v", err)
 	}
-	if _, err := loadRecoveryKey("", []string{share(1), share(2)}); err == nil {
-		t.Fatal("two of three restored the key")
+	if _, err := loadRecoveryKey("", []string{share(1), share(2)}); err == nil || !strings.Contains(err.Error(), "the key needs 3") {
+		t.Fatalf("two of three: %v", err)
 	}
 	if k, err := loadRecoveryKey(keyFile, nil); err != nil || !k.Equal(key) {
 		t.Fatalf("key file: %v", err)
 	}
 	// Shares of another key, or a damaged share, are caught.
-	other, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	other, _ := testKeyPEM(t)
 	o, _ := SplitRecoveryKey(other, 3, 2)
 	mine, _ := loadRecoveryShares([]string{share(1), share(2), share(3)})
-	if _, err := CombineRecoveryKey([]RecoveryKeyShare{mine[0], o[1], mine[2]}); err == nil {
-		t.Fatal("mixed keys accepted")
+	if _, err := CombineRecoveryKey([]RecoveryKeyShare{mine[0], o[1], mine[2]}); err == nil || !strings.Contains(err.Error(), "different recovery keys") {
+		t.Fatalf("mixed keys: %v", err)
 	}
 	mine[1].Y[3] ^= 1
 	if _, err := CombineRecoveryKey(mine); err == nil {

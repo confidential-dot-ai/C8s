@@ -4,6 +4,9 @@ import (
 	"encoding/binary"
 	"testing"
 	"time"
+
+	"k8s.io/apimachinery/pkg/util/cache"
+	clocktesting "k8s.io/utils/clock/testing"
 )
 
 // TestSharedChallengesAcrossReplicas: with one shared key, a challenge
@@ -30,19 +33,19 @@ func TestSharedChallengesAcrossReplicas(t *testing.T) {
 		t.Fatal("challenge accepted under another key")
 	}
 	tampered := a.Create()
-	tampered[0] ^= 0x80 // move the expiry
+	tampered[7] ^= 1 // move the expiry by 1 ns: only the MAC can tell
 	if b.Consume(tampered[:]) {
 		t.Fatal("tampered challenge accepted")
 	}
-	// Without a key (replica not serving), only local challenges work.
+	// Without a key (replica not serving), shared mode fails closed.
 	nokey := NewChallengeStore(time.Minute)
 	nokey.SetSharedKey(func() []byte { return nil })
 	if c3 := a.Create(); nokey.Consume(c3[:]) {
 		t.Fatal("keyless replica accepted a foreign challenge")
 	}
 	local := nokey.Create()
-	if !nokey.Consume(local[:]) {
-		t.Fatal("keyless replica refused its own challenge")
+	if nokey.Consume(local[:]) {
+		t.Fatal("keyless replica accepted its own challenge")
 	}
 }
 
@@ -73,5 +76,31 @@ func TestSharedChallengeExpiryBounds(t *testing.T) {
 		if got := s.Consume(signedChallenge(key, c.expiry)); got != c.ok {
 			t.Errorf("%s: accepted = %v, want %v", name, got, c.ok)
 		}
+	}
+}
+
+// Redeemed challenges leave the store when they expire, locally consumed ones
+// too, and a full store refuses foreign challenges until entries expire.
+func TestRedeemedChallengesExpire(t *testing.T) {
+	key := []byte("k")
+	s := NewChallengeStore(time.Minute)
+	s.SetSharedKey(func() []byte { return key })
+	clock := clocktesting.NewFakeClock(time.Now())
+	s.redeemed = cache.NewExpiringWithClock(clock)
+	live := func() []byte { return signedChallenge(key, time.Now().Add(30*time.Second)) }
+
+	local := s.Create()
+	if !s.Consume(local[:]) || s.redeemed.Len() != 1 {
+		t.Fatalf("local consume: redeemed %d, want 1", s.redeemed.Len())
+	}
+	for range maxChallenges - 1 {
+		s.redeemed.Set(new(int), nil, time.Minute)
+	}
+	if s.Consume(live()) {
+		t.Fatal("a foreign challenge was accepted with the redeemed set full")
+	}
+	clock.Step(2 * time.Minute)
+	if !s.Consume(live()) || s.redeemed.Len() != 1 {
+		t.Fatalf("after expiry: redeemed %d, want 1", s.redeemed.Len())
 	}
 }

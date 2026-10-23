@@ -2,6 +2,7 @@ package allowlist
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -29,6 +30,9 @@ import (
 type Store struct {
 	mu sync.Mutex
 	db *sql.DB
+	// uri names the database for Restore, which writes it through a
+	// connection of its own.
+	uri string
 	// gen counts committed mutations in this process. It is the invalidation
 	// signal for a reader that memoizes a whole-document snapshot
 	// (internal/cmds/cds).
@@ -90,33 +94,39 @@ func OpenStore(path string) (Store, error) {
 		slog.Warn("allowlist db did not exist, creating", "path", path)
 	}
 
-	if _, err := db.Exec(initSQL + journalSQL); err != nil {
+	if err := initDB(context.Background(), db); err != nil {
 		db.Close()
 		return Store{}, fmt.Errorf("init allowlist schema: %w", err)
 	}
-	if err := migrateJournal(db); err != nil {
-		db.Close()
-		return Store{}, fmt.Errorf("migrate allowlist schema: %w", err)
-	}
-
-	return Store{db: db}, nil
+	return Store{db: db, uri: path}, nil
 }
 
 // OpenInMemory opens an in-memory allowlist store, useful for testing.
 func OpenInMemory() (Store, error) {
-	db, err := sql.Open("sqlite", ":memory:")
+	uri := memdbURI("store")
+	db, err := sql.Open("sqlite", uri)
 	if err != nil {
 		return Store{}, err
 	}
-	if _, err := db.Exec(initSQL + journalSQL); err != nil {
+	if err := initDB(context.Background(), db); err != nil {
 		db.Close()
 		return Store{}, err
 	}
-	if err := migrateJournal(db); err != nil {
-		db.Close()
-		return Store{}, err
+	return Store{db: db, uri: uri}, nil
+}
+
+// dbConn is what initDB needs: an *sql.DB, or one connection of it.
+type dbConn interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// initDB creates the tables a store needs and migrates older ones.
+func initDB(ctx context.Context, db dbConn) error {
+	if _, err := db.ExecContext(ctx, initSQL+journalSQL); err != nil {
+		return err
 	}
-	return Store{db: db}, nil
+	return migrateJournal(ctx, db)
 }
 
 // Close closes the underlying database connection.
@@ -255,7 +265,7 @@ func bumpVersionTx(tx *sql.Tx) error {
 	return err
 }
 
-// SeedWorkloads adds every workload entry whose name is not already present
+// seedWorkloads adds every workload entry whose name is not already present
 // and retires each stored entry the seed replaces (retiredBySeed), in a single
 // transaction, and returns the numbers added and retired. Additive for
 // everything else and idempotent: an existing entry is left untouched and the
@@ -371,7 +381,7 @@ func seedWorkloadsTx(tx *sql.Tx, workloads map[string]pkgallowlist.Workload) (in
 	return added, nil
 }
 
-// PutWorkload upserts one named workload entry and rebuilds its digest index in
+// putWorkload upserts one named workload entry and rebuilds its digest index in
 // a single transaction, then bumps the version. The name and containers are
 // validated against the frozen allowlist rules; a rejection wraps
 // ErrInvalidWorkload.
@@ -398,7 +408,7 @@ func (s *Store) putWorkload(name string, w pkgallowlist.Workload) error {
 	return s.commitTx(tx)
 }
 
-// DeleteWorkload removes one named entry and its index rows, bumping the version
+// deleteWorkload removes one named entry and its index rows, bumping the version
 // only when the entry existed. Returns false if absent.
 func (s *Store) deleteWorkload(name string) (bool, error) {
 	s.mu.Lock()
@@ -430,7 +440,7 @@ func (s *Store) deleteWorkload(name string) (bool, error) {
 	return true, s.commitTx(tx)
 }
 
-// ReplaceAll atomically swaps the entire allowlist for the given document and
+// replaceAll atomically swaps the entire allowlist for the given document and
 // bumps the version. An empty document clears everything.
 func (s *Store) replaceAll(al *pkgallowlist.Allowlist) error {
 	if al == nil {

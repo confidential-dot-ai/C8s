@@ -8,6 +8,7 @@ import (
 
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/attestation"
+	"github.com/confidential-dot-ai/c8s/internal/cdsha"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	"github.com/confidential-dot-ai/c8s/internal/server"
@@ -21,9 +22,7 @@ type dependencies struct {
 	Routes            routeHandler
 	ReadyFn           attestation.ReadinessFunc
 	MeshCA            meshCA                // the one current CA: served at /ca and signs every leaf (HA: the replicated CA)
-	HAStatus          http.HandlerFunc      // HA mode: GET /ha/status
-	HAPins            http.HandlerFunc      // HA mode: GET /ha/pins
-	HADecrees         http.HandlerFunc      // HA mode: GET /ha/decrees
+	HA                *cdsha.Node           // HA mode: serves /ha/status, /ha/pins and /ha/decrees
 	OperatorKeysPEM   []byte                // pinned operator public keys; empty = /operator-keys 404s
 	MeasurementsDoc   []byte                // reference values being enforced, as served at /measurements
 	RateLimiter       *issuer.IPRateLimiter // per-source-IP limiter for attestation endpoints
@@ -96,14 +95,10 @@ func newRouter(deps dependencies) http.Handler {
 	}
 
 	r.Get("/ca", handleCA(deps.MeshCA))
-	if deps.HAPins != nil {
-		r.Get("/ha/pins", deps.HAPins)
-	}
-	if deps.HADecrees != nil {
-		r.Get("/ha/decrees", deps.HADecrees)
-	}
-	if deps.HAStatus != nil {
-		r.Get("/ha/status", deps.HAStatus)
+	if deps.HA != nil {
+		r.Get("/ha/status", serveJSON(deps.HA.Status))
+		r.Get("/ha/pins", haPins(deps.HA))
+		r.Get("/ha/decrees", serveJSON(deps.HA.Decrees))
 	}
 	r.Get("/operator-keys", handleOperatorKeys(deps.OperatorKeysPEM))
 	r.Get("/measurements", handleMeasurements(deps.MeasurementsDoc))
@@ -158,7 +153,7 @@ func capBody(max int64, next http.Handler) http.Handler {
 func handleCA(mesh meshCA) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		current := mesh.Current()
-		if current.CA == nil || len(current.CertPEM) == 0 {
+		if current.CA == nil {
 			http.Error(w, "mesh CA unavailable", http.StatusServiceUnavailable)
 			return
 		}
