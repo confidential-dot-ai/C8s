@@ -304,6 +304,8 @@ data:
             # published on the pod IP). So the probe rides the front door:
             # exact-match, ahead of location /.
             location = /readyz {
+                # Never a client's value: cds-attest holds the binding this names.
+                proxy_set_header X-C8s-Connection $pid.$connection;
                 # A request here holds no attest-lb binding; the connection closes after
                 # it so a binding cannot lapse under a connection kept open this way (E7).
                 keepalive_timeout 0;

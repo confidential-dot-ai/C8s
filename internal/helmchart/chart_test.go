@@ -1593,9 +1593,12 @@ func TestChartRendersRouterPublicTLSAndDiscovery(t *testing.T) {
 	cfg.location(t, "exact", "/.well-known/mesh-ca.pem").assertDirective(t, "alias", "/etc/c8s/certs/ca.crt")
 	// Locations that hold no attest-lb binding close the connection after the
 	// response, so a binding cannot lapse under a connection they keep open.
-	for _, path := range []string{"/v1/discovery", "/.well-known/cds-cert.pem", "/.well-known/mesh-ca.pem", "/readyz", "/healthz"} {
+	for _, path := range []string{"/v1/discovery", "/.well-known/cds-cert.pem", "/.well-known/mesh-ca.pem", "/readyz", "/healthz", "/allowlist"} {
 		cfg.location(t, "exact", path).assertDirective(t, "keepalive_timeout", "0")
 	}
+	cfg.location(t, "prefix", "/allowlist/").assertDirective(t, "keepalive_timeout", "0")
+	cfg.location(t, "named", "@tunnel_busy").assertDirective(t, "keepalive_timeout", "0")
+	cfg.location(t, "exact", "/readyz").assertDirective(t, "proxy_set_header", "X-C8s-Connection", "$pid.$connection")
 	// The public TLS mode changes only what nginx serves: application
 	// requests still go to the routing listener, which dials backends itself.
 	app := cfg.location(t, "prefix", "/")
@@ -4631,6 +4634,8 @@ func Example_routerConfig() {
 	//         # published on the pod IP). So the probe rides the front door:
 	//         # exact-match, ahead of location /.
 	//         location = /readyz {
+	//             # Never a client's value: cds-attest holds the binding this names.
+	//             proxy_set_header X-C8s-Connection $pid.$connection;
 	//             # A request here holds no attest-lb binding; the connection closes after
 	//             # it so a binding cannot lapse under a connection kept open this way (E7).
 	//             keepalive_timeout 0;
