@@ -18,17 +18,6 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
-// withOperatorKeys adds CDS's /operator-keys route to h.
-func withOperatorKeys(h http.Handler, keysPEM string) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == operatorauth.PublishedKeysPath {
-			w.Write([]byte(keysPEM))
-			return
-		}
-		h.ServeHTTP(w, r)
-	})
-}
-
 func TestCheckAllowlistSigner(t *testing.T) {
 	v := loadSignatureVector(t)
 	sum := sha256.Sum256(v.Policy)
@@ -71,10 +60,6 @@ func TestCheckAllowlistSigner(t *testing.T) {
 		{"pem", signed, stamped(sum), []string{keysPath}, "mesh-ca.pem", "", false},
 		{"pem, unvouched stamp", signed, stamped(sum), []string{keysPath}, "", "", true},
 		{"one of several", signed, stamped(sum), []string{otherP256, keysPath}, "mesh-ca.pem", "", false},
-		{"fingerprint", withOperatorKeys(signed, v.KeysPEM), stamped(sum), []string{"sha256:" + signer}, "mesh-ca.pem", "", false},
-		{"bare fingerprint", withOperatorKeys(signed, v.KeysPEM), stamped(sum), []string{signer}, "mesh-ca.pem", "", false},
-		{"fingerprint, no /operator-keys", signed, stamped(sum), []string{signer}, "mesh-ca.pem", "allowlist_signer_not_pinned: the target serves no key", false},
-		{"fingerprint of another key", withOperatorKeys(signed, v.KeysPEM), stamped(sum), []string{strings.Repeat("a", 64)}, "mesh-ca.pem", "allowlist_signer_not_pinned: the target serves no key", false},
 		{"other P-256 key", signed, stamped(sum), []string{otherP256}, "mesh-ca.pem", "allowlist_signer_not_pinned: the leaf's allowlist " + digest, false},
 		{"other P-384 key", signed, stamped(sum), []string{otherP384}, "mesh-ca.pem", "allowlist_signer_not_pinned", false},
 		{"token for another document", objectServer("sha256:"+hex.EncodeToString(otherSum[:]), other, v.Token), stamped(otherSum), []string{keysPath}, "mesh-ca.pem", "allowlist_signature_invalid", false},
@@ -90,14 +75,14 @@ func TestCheckAllowlistSigner(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := httptest.NewServer(tc.handler)
 			defer srv.Close()
-			cfg := config{url: srv.URL, operatorKey: tc.pins, timeout: 5 * time.Second}
-			pins, err := parseSignerPins(cfg)
+			cfg := config{url: srv.URL, allowlistSigner: tc.pins, timeout: 5 * time.Second}
+			pinned, err := parseSignerPins(cfg)
 			if err != nil {
 				t.Fatal(err)
 			}
 			cfg.meshCA = tc.meshCA
 			oc := Outcome{Verified: true}
-			if checkAllowlistSigner(context.Background(), &oc, cfg, tc.ev, pins) {
+			if checkAllowlistSigner(context.Background(), &oc, cfg, tc.ev, pinned) {
 				t.Fatal("reported the target unreachable")
 			}
 			if passed := oc.Verified || oc.Partial; passed != (tc.wantErr == "") || !strings.Contains(oc.Error, tc.wantErr) {
@@ -121,15 +106,15 @@ func TestCheckAllowlistSignerUnreachable(t *testing.T) {
 	url := srv.URL
 	srv.Close()
 	keyPath, _, _ := operatorKeypair(t)
-	cfg := config{url: url, operatorKey: []string{keyPath}, timeout: time.Second}
-	pins, err := parseSignerPins(cfg)
+	cfg := config{url: url, allowlistSigner: []string{keyPath}, timeout: time.Second}
+	keys, err := parseSignerPins(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	sum := sha256.Sum256(nil)
 	oc := Outcome{Verified: true}
 	ev := &evidence{leaf: &x509.Certificate{}, workload: &armtls.MatchedWorkload{AllowlistDigest: sum[:]}}
-	if !checkAllowlistSigner(context.Background(), &oc, cfg, ev, pins) || !strings.HasPrefix(oc.Error, "allowlist_fetch_failed") {
+	if !checkAllowlistSigner(context.Background(), &oc, cfg, ev, keys) || !strings.HasPrefix(oc.Error, "allowlist_fetch_failed") {
 		t.Errorf("unreachable target: error %q, want allowlist_fetch_failed reported unreachable", oc.Error)
 	}
 }
@@ -142,11 +127,10 @@ func TestParseSignerPins(t *testing.T) {
 		wantErr string
 	}{
 		{"unset", config{}, ""},
-		{"pem and fingerprint", config{url: "https://x", operatorKey: []string{keyPath, "sha256:" + strings.Repeat("0", 64)}}, ""},
-		{"no target", config{fromFile: "ev.json", operatorKey: []string{keyPath}}, "--operator-key needs a live target"},
-		{"missing file", config{url: "https://x", operatorKey: []string{"nope.pem"}}, "neither a sha256 key fingerprint nor a readable PEM file"},
-		{"short fingerprint", config{url: "https://x", operatorKey: []string{"sha256:abcd"}}, "neither a sha256 key fingerprint"},
-		{"private key", config{url: "https://x", operatorKey: []string{keyPaths[0]}}, "no PEM PUBLIC KEY block"},
+		{"two files", config{url: "https://x", allowlistSigner: []string{keyPath, keyPath}}, ""},
+		{"no target", config{fromFile: "ev.json", allowlistSigner: []string{keyPath}}, "--allowlist-signer needs a live target"},
+		{"missing file", config{url: "https://x", allowlistSigner: []string{"nope.pem"}}, "read --allowlist-signer"},
+		{"private key", config{url: "https://x", allowlistSigner: []string{keyPaths[0]}}, "no PEM PUBLIC KEY block"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := parseSignerPins(tc.cfg)
