@@ -173,7 +173,7 @@ func (n *Node) maybePruneHistory() {
 		return
 	}
 	if _, err := n.applyEntry(Entry{Kind: KindAllowlist,
-		Allowlist: &allowlist.Command{Op: allowlist.OpPruneHistory, Keep: keep, AtMS: time.Now().UnixMilli()}}); err != nil {
+		Allowlist: &allowlist.Command{Op: allowlist.OpPruneHistory, Keep: keep}}); err != nil {
 		n.log.Warn("prune allowlist history", "err", err)
 		return
 	}
