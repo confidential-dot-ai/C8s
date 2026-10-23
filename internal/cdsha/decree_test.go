@@ -1,6 +1,8 @@
 package cdsha
 
 import (
+	"bytes"
+	"io"
 	"testing"
 	"time"
 )
@@ -69,5 +71,34 @@ func TestCheckDecree(t *testing.T) {
 	u.BootstrapNode = "n0"
 	if err := CheckDecree(sign(u), tail, now); err == nil {
 		t.Error("a non-Genesis decree naming a bootstrap node accepted")
+	}
+}
+
+// The decree record is bounded, oldest first out, and snapshots carry it.
+func TestDecreeRecordBound(t *testing.T) {
+	_, opPub := operatorKey(t)
+	al, sec, led := testStores(t)
+	f := NewFSM(PreGenesis(testCluster, opPub), al, sec, led)
+	f.mu.Lock()
+	for i := range maxDecreeRecord + 10 {
+		f.record(SignedDecree{Decree: Decree{IntentID: "d"}}, int64(i), uint64(i))
+	}
+	f.mu.Unlock()
+	rec := f.Decrees()
+	if len(rec) != maxDecreeRecord || rec[0].Epoch != 10 {
+		t.Fatalf("bound: %d records, first epoch %d", len(rec), rec[0].Epoch)
+	}
+	s, err := f.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if err := s.Persist(&memSink{Buffer: &buf}); err != nil {
+		t.Fatal(err)
+	}
+	al2, sec2, led2 := testStores(t)
+	g := NewFSM(PreGenesis(testCluster, opPub), al2, sec2, led2)
+	if err := g.Restore(io.NopCloser(bytes.NewReader(buf.Bytes()))); err != nil || len(g.Decrees()) != maxDecreeRecord {
+		t.Fatalf("restore: %v, %d records", err, len(g.Decrees()))
 	}
 }
