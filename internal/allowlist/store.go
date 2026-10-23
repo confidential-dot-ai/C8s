@@ -2,6 +2,7 @@ package allowlist
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -29,6 +30,9 @@ import (
 type Store struct {
 	mu sync.Mutex
 	db *sql.DB
+	// uri names the database for Restore, which writes it through a
+	// connection of its own.
+	uri string
 	// gen counts committed mutations in this process. It is the invalidation
 	// signal for a reader that memoizes a whole-document snapshot
 	// (internal/cmds/cds).
@@ -90,33 +94,39 @@ func OpenStore(path string) (Store, error) {
 		slog.Warn("allowlist db did not exist, creating", "path", path)
 	}
 
-	if _, err := db.Exec(initSQL + journalSQL); err != nil {
+	if err := initDB(context.Background(), db); err != nil {
 		db.Close()
 		return Store{}, fmt.Errorf("init allowlist schema: %w", err)
 	}
-	if err := migrateJournal(db); err != nil {
-		db.Close()
-		return Store{}, fmt.Errorf("migrate allowlist schema: %w", err)
-	}
-
-	return Store{db: db}, nil
+	return Store{db: db, uri: path}, nil
 }
 
 // OpenInMemory opens an in-memory allowlist store, useful for testing.
 func OpenInMemory() (Store, error) {
-	db, err := sql.Open("sqlite", ":memory:")
+	uri := memdbURI("store")
+	db, err := sql.Open("sqlite", uri)
 	if err != nil {
 		return Store{}, err
 	}
-	if _, err := db.Exec(initSQL + journalSQL); err != nil {
+	if err := initDB(context.Background(), db); err != nil {
 		db.Close()
 		return Store{}, err
 	}
-	if err := migrateJournal(db); err != nil {
-		db.Close()
-		return Store{}, err
+	return Store{db: db, uri: uri}, nil
+}
+
+// dbConn is what initDB needs: an *sql.DB, or one connection of it.
+type dbConn interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// initDB creates the tables a store needs and migrates older ones.
+func initDB(ctx context.Context, db dbConn) error {
+	if _, err := db.ExecContext(ctx, initSQL+journalSQL); err != nil {
+		return err
 	}
-	return Store{db: db}, nil
+	return migrateJournal(ctx, db)
 }
 
 // Close closes the underlying database connection.

@@ -3,6 +3,7 @@ package allowlist
 import (
 	"bytes"
 	"cmp"
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -47,20 +48,20 @@ CREATE TABLE IF NOT EXISTS used_token (
 // migrateJournal brings a singleton database created by a release before
 // spent-token expiry to journalSQL: it adds the used_token columns it lacks
 // (rows it held keep 0, which is never pruned) and their indexes.
-func migrateJournal(db *sql.DB) error {
+func migrateJournal(ctx context.Context, db dbConn) error {
 	for _, c := range []string{"exp_unix", "iat_unix"} {
 		var have bool
-		if err := db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('used_token') WHERE name = ?", c).Scan(&have); err != nil {
+		if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM pragma_table_info('used_token') WHERE name = ?", c).Scan(&have); err != nil {
 			return err
 		}
 		if have {
 			continue
 		}
-		if _, err := db.Exec("ALTER TABLE used_token ADD COLUMN " + c + " INTEGER NOT NULL DEFAULT 0"); err != nil {
+		if _, err := db.ExecContext(ctx, "ALTER TABLE used_token ADD COLUMN "+c+" INTEGER NOT NULL DEFAULT 0"); err != nil {
 			return fmt.Errorf("add used_token.%s: %w", c, err)
 		}
 	}
-	_, err := db.Exec(`
+	_, err := db.ExecContext(ctx, `
 CREATE INDEX IF NOT EXISTS used_token_exp ON used_token (exp_unix);
 CREATE INDEX IF NOT EXISTS used_token_iat ON used_token (iat_unix);
 `)
