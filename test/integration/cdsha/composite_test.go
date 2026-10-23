@@ -4,6 +4,7 @@ package cdsha_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math/rand/v2"
 	"net/http"
@@ -227,7 +228,7 @@ func (c *Cluster) probeFirstReads(i int, deadline time.Time) func() []firstRead 
 // write acknowledged before it was thawed (its read evidence expired while
 // it was stopped, so the next one needs a barrier with the new leader), and
 // writes through it are checked by the oracle.
-func frozenLeader(name string, freezeFor time.Duration) scenario {
+func frozenLeader(name string, freezeFor time.Duration, watch bool) scenario {
 	return scenario{name: name, run: func(t *testing.T, c *Cluster, k *Checker) {
 		if freezeFor <= timing.lease+timing.election {
 			t.Fatalf("freeze %s is not past lease+election", freezeFor)
@@ -249,6 +250,11 @@ func frozenLeader(name string, freezeFor time.Duration) scenario {
 		}
 		if d := freezeFor - time.Since(frozeAt); d > 0 {
 			time.Sleep(d)
+		}
+		var watchDone func() majorityWatch
+		if watch {
+			watchDone = c.watchMajority(l, time.Now().Add(16*time.Second))
+			time.Sleep(time.Second) // a baseline before the thaw
 		}
 		wait := c.probeFirstReads(l, time.Now().Add(60*time.Second))
 		time.Sleep(300 * time.Millisecond) // the probes are queued at the stopped process
@@ -308,9 +314,118 @@ func frozenLeader(name string, freezeFor time.Duration) scenario {
 				t.Errorf("thawed old leader %s served a read older than writes acknowledged before the thaw (%s):\n  %s", c.Replicas[l].Node, fr.path, strings.Join(stale, "\n  "))
 			}
 		}
+		if watch {
+			w := watchDone()
+			c.reportMajorityWatch(l, thawAt, w)
+		}
 		c.Logf("all serving %s after the thaw", c.WaitAllServing(60*time.Second))
 		c.WaitVoters(seats, 60*time.Second)
 	}}
+}
+
+// majorityWatch is what the majority (every replica but the thawed one)
+// reported while the thawed replica came back.
+type majorityWatch struct {
+	samples         int
+	leaders         []string // distinct serving leaders seen, in order
+	noLeader        int      // samples with no serving leader in the majority
+	stateChanges    map[string]int
+	firstThawServed time.Time
+}
+
+// watchMajority polls the status of every replica but ex until deadline;
+// metric only: which replica leads, how often a majority member changes
+// state. The harness cannot see the Raft term: /ha/status has none and
+// Raft logs at Warn (node.go), so leader identity and state stand in.
+func (c *Cluster) watchMajority(ex int, deadline time.Time) func() majorityWatch {
+	var w majorityWatch
+	w.stateChanges = map[string]int{}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		last := map[string]string{}
+		for time.Now().Before(deadline) {
+			w.samples++
+			leader := ""
+			for _, i := range others(c, ex) {
+				st, ok := c.Status(i)
+				node := c.Replicas[i].Node
+				state := "unreachable"
+				if ok {
+					state = st.State
+				}
+				if prev, had := last[node]; had && prev != state {
+					w.stateChanges[node]++
+					c.Logf("watch: %s %s -> %s", node, prev, state)
+				}
+				last[node] = state
+				if ok && st.State == "Leader" && st.Serving {
+					leader = node
+				}
+			}
+			if leader == "" {
+				w.noLeader++
+			} else if len(w.leaders) == 0 || w.leaders[len(w.leaders)-1] != leader {
+				w.leaders = append(w.leaders, leader)
+			}
+			if w.firstThawServed.IsZero() && !c.Frozen(ex) {
+				if st, ok := c.Status(ex); ok && st.Serving {
+					w.firstThawServed = time.Now()
+				}
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+	}()
+	return func() majorityWatch { <-done; return w }
+}
+
+// reportMajorityWatch logs the watch and counts, in the majority's replica
+// logs from the thaw on, the Raft lines that show disruption by a removed
+// member: refused pre-votes, step-downs and newer-term notices.
+func (c *Cluster) reportMajorityWatch(ex int, thawAt time.Time, w majorityWatch) {
+	c.t.Helper()
+	rejoin := "never in the window"
+	if !w.firstThawServed.IsZero() {
+		rejoin = w.firstThawServed.Sub(thawAt).Round(time.Millisecond).String()
+	}
+	c.Logf("majority watch: %d samples, serving leaders in order %v, samples without a serving leader %d, state changes %v; thawed %s serving again after %s",
+		w.samples, w.leaders, w.noLeader, w.stateChanges, c.Replicas[ex].Node, rejoin)
+	if len(w.leaders) > 1 {
+		c.Logf("FINDING-CANDIDATE: the majority's leader changed while %s came back: %v", c.Replicas[ex].Node, w.leaders)
+	}
+	pats := map[string]string{
+		"prevote-rejected-not-in-config": "rejecting pre-vote request since node is not in configuration",
+		"prevote-rejected-have-leader":   "rejecting pre-vote request since we have a leader",
+		"step-down":                      "stepping down",
+		"newer-term":                     "newer term",
+		"election-started":               "starting election",
+	}
+	end := thawAt.Add(15 * time.Second)
+	for _, i := range others(c, ex) {
+		r := c.Replicas[i]
+		raw, err := os.ReadFile(filepath.Join(c.LogDir, fmt.Sprintf("%s.%d.log", r.Node, r.incarnation())))
+		if err != nil {
+			continue
+		}
+		counts := map[string]int{}
+		for _, line := range strings.Split(string(raw), "\n") {
+			var at struct {
+				Time time.Time `json:"time"`
+			}
+			if json.Unmarshal([]byte(line), &at) != nil || at.Time.Before(thawAt.Add(-time.Second)) || at.Time.After(end) {
+				continue
+			}
+			for name, pat := range pats {
+				if strings.Contains(line, pat) {
+					counts[name]++
+					if name == "step-down" || name == "newer-term" || name == "election-started" {
+						c.Logf("watch log %s: %.300s", r.Node, line)
+					}
+				}
+			}
+		}
+		c.Logf("majority log %s [thaw-1s, thaw+15s]: %v", r.Node, counts)
+	}
 }
 
 // --- G2..G5 -----------------------------------------------------------------
@@ -320,8 +435,8 @@ func setAllLinks(c *Cluster, l Link) { setAll(c, l) }
 
 func TestComposite(t *testing.T) {
 	runScenarios(t, []scenario{
-		frozenLeader("G1-frozen-leader", timing.lease+timing.election+3*time.Second),
-		frozenLeader("G1-frozen-leader-past-dead-after", timing.deadAfter+6*time.Second),
+		frozenLeader("G1-frozen-leader", timing.lease+timing.election+3*time.Second, false),
+		frozenLeader("G1-frozen-leader-past-dead-after", timing.deadAfter+6*time.Second, true),
 		{name: "G1-frozen-follower-voter", run: func(t *testing.T, c *Cluster, k *Checker) {
 			l := c.WaitLeader(10 * time.Second)
 			f := followerVoter(t, c, l)
