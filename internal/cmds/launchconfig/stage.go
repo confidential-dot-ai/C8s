@@ -22,9 +22,6 @@ const (
 	serverTokenPath  = "/run/confos/rke2-server-token"
 	agentTokenPath   = "/run/confos/rke2-agent-token"
 	rke2FragmentPath = "/etc/rancher/rke2/config.yaml.d/50-role.yaml"
-	// models-disk.sh formats and mounts the weights disk read-write only
-	// when this file exists; it holds models.rootOwner, possibly empty.
-	modelsWritableFile = "models-writable"
 	// nodePasswordPath is where RKE2 keeps the secret that proves this node's
 	// name to the server. /etc/rancher is per-boot scratch, so a random one
 	// would lock a rebooted node out of its own name: the document's
@@ -64,7 +61,7 @@ func clearOutputs(cfg Config) error {
 	// attempting to remove the other.
 	var errs []error
 	paths := []string{serverMarker, agentMarker, serverTokenPath, agentTokenPath, rke2FragmentPath, nodePasswordPath, rke2RegistriesPath}
-	for _, name := range []string{"peers.json", "cds.json", "operator-pubkey", "config.json", "workloads.json", modelsWritableFile} {
+	for _, name := range []string{"peers.json", "cds.json", "operator-pubkey", "config.json", "workloads.json"} {
 		paths = append(paths, Dir+"/"+name)
 	}
 	for _, path := range paths {
@@ -120,9 +117,6 @@ func stageVerified(cfg Config, v *Verified) error {
 		{Dir + "/config.json", append(encoded, '\n')},
 		{agentTokenPath, []byte(doc.RKE2.AgentToken)},
 		{rke2FragmentPath, fragment},
-	}
-	if doc.Models != nil {
-		outputs = append(outputs, outputFile{Dir + "/" + modelsWritableFile, []byte(doc.Models.RootOwner)})
 	}
 	if doc.RKE2.NodePassword != "" {
 		// Without one (an older bundle), RKE2 generates its own per boot.

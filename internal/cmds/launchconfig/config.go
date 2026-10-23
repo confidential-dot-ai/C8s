@@ -131,10 +131,6 @@ type Document struct {
 	// its existing wire schema avoids an independent YAML policy language.
 	Workloads string `yaml:"workloads,omitempty" json:"workloads,omitempty"`
 
-	// Models makes the plain weights disk (serial confai-models) writable.
-	// Absent, the node mounts that disk read-only and never formats it.
-	Models *Models `yaml:"models,omitempty" json:"models,omitempty"`
-
 	// Router is the server's front door. A baked image cannot know it at
 	// build time, so the signed launch file carries it.
 	Router *Router `yaml:"router,omitempty" json:"router,omitempty"`
@@ -171,39 +167,6 @@ func (r Router) RequestBodyLimit() int64 {
 		return DefaultMaxRequestBodyBytes
 	}
 	return r.MaxRequestBodyBytes
-}
-
-// Models is the node's treatment of its plain weights disk. The disk is
-// unencrypted and the host can rewrite it at any time, so the workload still
-// verifies what it reads; writable only lets the guest fill it.
-type Models struct {
-	// Writable formats the disk when it carries no filesystem and mounts it
-	// rw,nodev,nosuid,noexec.
-	Writable bool `yaml:"writable" json:"writable"`
-	// RootOwner is UID:GID for the root directory of a filesystem the node
-	// creates. An existing filesystem keeps its owner.
-	RootOwner string `yaml:"rootOwner,omitempty" json:"root_owner,omitempty"`
-}
-
-var ownerRE = regexp.MustCompile(`^(0|[1-9][0-9]{0,9}):(0|[1-9][0-9]{0,9})$`)
-
-func (m *Models) validate() error {
-	if !m.Writable {
-		return fmt.Errorf("models.writable must be true when models is set")
-	}
-	if m.RootOwner == "" {
-		return nil
-	}
-	uid, gid, _ := strings.Cut(m.RootOwner, ":")
-	if !ownerRE.MatchString(m.RootOwner) || !uint32ID(uid) || !uint32ID(gid) {
-		return fmt.Errorf("models.rootOwner %q must be UID:GID", m.RootOwner)
-	}
-	return nil
-}
-
-func uint32ID(s string) bool {
-	_, err := strconv.ParseUint(s, 10, 32)
-	return err == nil
 }
 
 // ValidateHostname accepts a lowercase DNS hostname: no IP, no wildcard.
@@ -543,11 +506,6 @@ func (d *Document) validate() error {
 			return fmt.Errorf("router is server-only")
 		}
 		if err := d.Router.validate(); err != nil {
-			return err
-		}
-	}
-	if d.Models != nil {
-		if err := d.Models.validate(); err != nil {
 			return err
 		}
 	}
