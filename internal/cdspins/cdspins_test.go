@@ -142,48 +142,21 @@ func TestRefreshFollowsNewerSignedDecrees(t *testing.T) {
 	}
 }
 
+// Refresh checks the decree (cdsha.VerifyPinDecree has the per-field
+// cases): one signed by another key leaves the pin set alone.
 func TestRefreshRefusesWhatTheOperatorDidNotSign(t *testing.T) {
-	k, pub := key()
+	_, pub := key()
 	other, _ := key()
-	for name, sd := range map[string]*cdsha.SignedDecree{
-		"other key":     pinDecree(t, other, cluster, 9, img(5)),
-		"other cluster": pinDecree(t, k, "c2", 9, img(5)),
-		"tampered": func() *cdsha.SignedDecree {
-			sd := pinDecree(t, k, cluster, 9, img(5))
-			sd.Decree.Images = []cdsha.DecreeImage{img(7)}
-			return sd
-		}(),
-		"no images": func() *cdsha.SignedDecree {
-			sd, err := cdsha.SignDecree(cdsha.Decree{ClusterID: cluster, IntentID: "i", BaseEpoch: 9, Kind: cdsha.UpdateMeasurements,
-				ExpiresAt: time.Now().Add(time.Hour), Measurements: []string{"aa"}}, k)
-			if err != nil {
-				t.Fatal(err)
-			}
-			return &sd
-		}(),
-		"pins not the images": func() *cdsha.SignedDecree {
-			p, _ := img(1).Pin()
-			sd, err := cdsha.SignDecree(cdsha.Decree{ClusterID: cluster, IntentID: "i", BaseEpoch: 9, Kind: cdsha.UpdateMeasurements,
-				ExpiresAt: time.Now().Add(time.Hour), Measurements: []string{p}, Images: []cdsha.DecreeImage{img(5)}}, k)
-			if err != nil {
-				t.Fatal(err)
-			}
-			return &sd
-		}(),
-	} {
-		t.Run(name, func(t *testing.T) {
-			srv := &served{sd: sd}
-			src, err := New(Config{ClusterID: cluster, DecreeKey: pub, Bootstrap: bootstrap(), Fetch: srv.fetch})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if changed, err := src.Refresh(t.Context()); changed || err == nil {
-				t.Fatalf("taken: %v %v", changed, err)
-			}
-			if len(src.Current().Images) != 2 {
-				t.Fatal("pin set changed")
-			}
-		})
+	srv := &served{sd: pinDecree(t, other, cluster, 9, img(5))}
+	src, err := New(Config{ClusterID: cluster, DecreeKey: pub, Bootstrap: bootstrap(), Fetch: srv.fetch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := src.Refresh(t.Context()); changed || err == nil {
+		t.Fatalf("taken: %v %v", changed, err)
+	}
+	if len(src.Current().Images) != 2 {
+		t.Fatal("pin set changed")
 	}
 }
 
