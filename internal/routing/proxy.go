@@ -67,14 +67,14 @@ type Binding struct {
 	RouterDigest string
 }
 
-// Bindings holds the attest-lb bindings by connection identifier. Lookup
+// Bindings holds the attest-lb bindings by connection identifier. Hold
 // reports the binding of connection, the code a request on it was refused
-// with ("" for none), and whether it has one. Refuse records that refusal, so
-// the connection stays refused (E6). Touch restarts its idle lifetime (E7).
+// with ("" for none), and whether it has one; a held binding does not expire
+// until release, which restarts its idle lifetime (E7). Refuse records a
+// refusal, so the connection stays refused (E6).
 type Bindings interface {
-	Lookup(connection string) (bound Binding, refused string, ok bool)
+	Hold(connection string) (bound Binding, refused string, release func(), ok bool)
 	Refuse(connection, code string)
-	Touch(connection string)
 }
 
 // BindingChangedError refuses a request whose session is bound to another
@@ -162,7 +162,7 @@ func (p *Proxy) SyncRouterDigest(leaf string) (string, error) {
 	if current := p.transports.RouterDigest(); current == leaf {
 		return current, nil
 	}
-	if err := p.transports.dropMeshPools(); err != nil {
+	if err := p.transports.syncRouterDigest(); err != nil {
 		return "", err
 	}
 	return p.transports.RouterDigest(), nil
@@ -204,24 +204,27 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "routes not applied", http.StatusServiceUnavailable) // A2
 		return
 	}
+	var bound *Binding
+	refuse := func(code string) {
+		// A digest changing back does not route the connection again (E6).
+		p.bindings.Refuse(connection, code)
+		p.log.Debug("bound request refused", "code", code, "host", r.Host)
+		http.Error(w, code, http.StatusServiceUnavailable)
+	}
 	if p.bindings != nil && connection != "" {
-		if bound, refused, ok := p.bindings.Lookup(connection); ok {
+		if b, refused, release, ok := p.bindings.Hold(connection); ok {
 			// Refused requests slide the lifetime too, so the connection stays
-			// refused while nginx keeps it open; the deferred touch covers a
-			// request that outlasts it (E7).
-			p.bindings.Touch(connection)
-			defer p.bindings.Touch(connection)
+			// refused while nginx keeps it open (E7).
+			defer release()
 			code := refused
 			if code == "" {
-				code = p.changed(bound, applied)
+				code = p.changed(b, applied)
 			}
 			if code != "" {
-				// A digest changing back does not route the connection again (E6).
-				p.bindings.Refuse(connection, code)
-				p.log.Debug("bound request refused", "code", code, "host", r.Host)
-				http.Error(w, code, http.StatusServiceUnavailable)
+				refuse(code)
 				return
 			}
+			bound = &b
 		}
 	}
 	route, target, ok := applied.Table.Select(r)
@@ -229,15 +232,36 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r) // M5
 		return
 	}
+	transport, ok := p.transport(route, bound)
+	if !ok {
+		refuse(types.ErrorCodeRouterDigestChanged)
+		return
+	}
 	if p.timeout > 0 {
 		var stop func()
 		w, r, stop = idleExchange(w, r, p.timeout)
 		defer stop()
 	}
-	p.reverseProxy(route, target, func(err error) {
+	p.reverseProxy(transport, route, target, func(err error) {
+		if bound != nil && errors.Is(err, errRouterRenewed) {
+			refuse(types.ErrorCodeRouterDigestChanged)
+			return
+		}
 		status, body := p.refusal(err, r.Host, target.RawPath, route.Backend.Address)
 		http.Error(w, body, status)
 	}).ServeHTTP(w, r)
+}
+
+// transport returns route's backend transport. For a request bound to a
+// router digest it reports false when a workload transport pools connections
+// accepted under another one, which a poll between the binding check and the
+// dial can cause (E6).
+func (p *Proxy) transport(route routes.Route, bound *Binding) (*http.Transport, bool) {
+	transport, routerDigest := p.transports.For(route.Backend)
+	if bound != nil && route.Backend.Workload != "" && routerDigest != bound.RouterDigest {
+		return nil, false
+	}
+	return transport, true
 }
 
 // changed returns the code refusing a request bound to b, or "" while applied
@@ -362,8 +386,12 @@ func (p *Proxy) Forward(outer *http.Request, req types.TunnelRequest, bound Bind
 		return textResponse(http.StatusNotFound, "404 page not found"), nil
 	}
 
+	transport, ok := p.transport(route, &bound)
+	if !ok {
+		return types.TunnelResponse{}, &BindingChangedError{Code: types.ErrorCodeRouterDigestChanged}
+	}
 	var backendErr error
-	rp := p.reverseProxy(route, target, func(err error) { backendErr = err })
+	rp := p.reverseProxy(transport, route, target, func(err error) { backendErr = err })
 	// Buffer the body here rather than in the copy ReverseProxy does after
 	// this hook: a failed read surfaces as a backend error, never as a
 	// truncated 200.
@@ -386,6 +414,9 @@ func (p *Proxy) Forward(outer *http.Request, req types.TunnelRequest, bound Bind
 	}
 	rec := &capture{header: http.Header{}}
 	rp.ServeHTTP(rec, in)
+	if errors.Is(backendErr, errRouterRenewed) {
+		return types.TunnelResponse{}, &BindingChangedError{Code: types.ErrorCodeRouterDigestChanged}
+	}
 	if errors.Is(backendErr, errBackendDigestMismatch) || errors.Is(backendErr, errRouterStampDamaged) {
 		status, msg := p.refusal(backendErr, in.Host, target.RawPath, route.Backend.Address)
 		return textResponse(status, msg), nil
@@ -399,9 +430,9 @@ func (p *Proxy) Forward(outer *http.Request, req types.TunnelRequest, bound Bind
 // reverseProxy forwards to route's backend at target, which Select built
 // (B6). onErr runs when the backend cannot be reached or fails verification;
 // nothing is retried, in plaintext or on another route (B5).
-func (p *Proxy) reverseProxy(route routes.Route, target *url.URL, onErr func(error)) *httputil.ReverseProxy {
+func (p *Proxy) reverseProxy(transport *http.Transport, route routes.Route, target *url.URL, onErr func(error)) *httputil.ReverseProxy {
 	return &httputil.ReverseProxy{
-		Transport: p.transports.For(route.Backend),
+		Transport: transport,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			out := *target
 			out.Scheme = "https"

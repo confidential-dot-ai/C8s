@@ -759,7 +759,7 @@ func TestB10RenewedRouterLeafRetiresPools(t *testing.T) {
 		}
 	}
 	adminBackend := f.state.Current().Manifest.Hosts[testHost].Routes[1].Backend
-	adminTransport := f.transports.For(adminBackend)
+	adminTransport, _ := f.transports.For(adminBackend)
 
 	f.renew(t, issueStampedLeaf(t, f.mesh, "router", digestOf(0x43)))
 	if err := f.transports.dropMeshPools(); err != nil {
@@ -771,7 +771,7 @@ func TestB10RenewedRouterLeafRetiresPools(t *testing.T) {
 	if n := old.hits.Load(); n != 1 {
 		t.Fatalf("backend under the old digest served %d requests, want 1", n)
 	}
-	if f.transports.For(adminBackend) != adminTransport {
+	if got, _ := f.transports.For(adminBackend); got != adminTransport {
 		t.Fatal("router digest renewal retired the address backend's transport, want it kept")
 	}
 	if got := f.get("/admin").Code; got != http.StatusOK {

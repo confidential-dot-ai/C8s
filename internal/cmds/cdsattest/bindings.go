@@ -14,7 +14,9 @@ var errBindingsFull = errors.New("too many attest-lb connections are bound; retr
 // arrived on it bound (E5). nginx names the connection (E8) and never reuses
 // a name while the connection is open, but the store does not see the close:
 // a binding outlives its connection by up to the idle lifetime, which is why
-// the lifetime slides on use and expired bindings are pruned. The routing
+// the lifetime slides on use and expired bindings are pruned. A binding with a
+// request in flight never expires: the routing location allows a request far
+// longer than the idle lifetime (E7). The routing
 // listener reads it through routing.Bindings. It is safe for concurrent use.
 type Bindings struct {
 	mu      sync.Mutex
@@ -28,6 +30,11 @@ type lbBinding struct {
 	routing.Binding
 	refused  string // the code a request on the connection was refused with
 	lastUsed time.Time
+	inFlight int
+}
+
+func (e lbBinding) expired(now time.Time, idle time.Duration) bool {
+	return e.inFlight == 0 && now.Sub(e.lastUsed) > idle
 }
 
 // NewBindings returns an empty store.
@@ -35,20 +42,35 @@ func NewBindings() *Bindings {
 	return &Bindings{entries: map[string]lbBinding{}, idle: lbBindingIdle, max: maxLBBindings, now: time.Now}
 }
 
-// Lookup returns the live binding of connection and the code a request on it
-// was refused with.
-func (b *Bindings) Lookup(connection string) (bound routing.Binding, refused string, ok bool) {
+// Hold returns the live binding of connection and the code a request on it
+// was refused with, and keeps the binding until release, which restarts its
+// idle lifetime. The caller calls release once.
+func (b *Bindings) Hold(connection string) (bound routing.Binding, refused string, release func(), ok bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	entry, ok := b.entries[connection]
 	if !ok {
-		return routing.Binding{}, "", false
+		return routing.Binding{}, "", nil, false
 	}
-	if b.now().Sub(entry.lastUsed) > b.idle {
+	if entry.expired(b.now(), b.idle) {
 		delete(b.entries, connection)
-		return routing.Binding{}, "", false
+		return routing.Binding{}, "", nil, false
 	}
-	return entry.Binding, entry.refused, true
+	entry.inFlight++
+	entry.lastUsed = b.now()
+	b.entries[connection] = entry
+	return entry.Binding, entry.refused, func() { b.release(connection) }, true
+}
+
+// release ends a Hold. A held entry is never pruned, and a handshake that
+// rebinds it keeps its count, so the entry is still there.
+func (b *Bindings) release(connection string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	entry := b.entries[connection]
+	entry.inFlight--
+	entry.lastUsed = b.now()
+	b.entries[connection] = entry
 }
 
 // Refuse records that a request on connection was refused with code; only a
@@ -58,16 +80,6 @@ func (b *Bindings) Refuse(connection, code string) {
 	defer b.mu.Unlock()
 	if entry, ok := b.entries[connection]; ok && entry.refused == "" {
 		entry.refused = code
-		b.entries[connection] = entry
-	}
-}
-
-// Touch restarts the idle lifetime of connection's binding.
-func (b *Bindings) Touch(connection string) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if entry, ok := b.entries[connection]; ok {
-		entry.lastUsed = b.now()
 		b.entries[connection] = entry
 	}
 }
@@ -88,12 +100,29 @@ func (b *Bindings) bind(connection string, binding routing.Binding) error {
 	if !b.roomLocked(connection) {
 		return errBindingsFull
 	}
-	b.entries[connection] = lbBinding{Binding: binding, lastUsed: b.now()}
+	b.pruneSomeLocked()
+	b.entries[connection] = lbBinding{Binding: binding, lastUsed: b.now(), inFlight: b.entries[connection].inFlight}
 	return nil
 }
 
-// roomLocked prunes only at the bound: a full sweep per handshake would cost
-// more than the periodic one. The caller holds b.mu.
+// pruneOnInsert is how many entries an insert checks for expiry. Map order
+// varies per range, so inserts spread over the store between sweeps.
+const pruneOnInsert = 4
+
+func (b *Bindings) pruneSomeLocked() {
+	now, checked := b.now(), 0
+	for connection, entry := range b.entries {
+		if checked++; checked > pruneOnInsert {
+			return
+		}
+		if entry.expired(now, b.idle) {
+			delete(b.entries, connection)
+		}
+	}
+}
+
+// roomLocked prunes fully only at the bound: a full sweep per handshake would
+// cost more than the periodic one. The caller holds b.mu.
 func (b *Bindings) roomLocked(connection string) bool {
 	if _, ok := b.entries[connection]; ok || len(b.entries) < b.max {
 		return true
@@ -112,7 +141,7 @@ func (b *Bindings) prune() {
 func (b *Bindings) pruneLocked() {
 	now := b.now()
 	for connection, entry := range b.entries {
-		if now.Sub(entry.lastUsed) > b.idle {
+		if entry.expired(now, b.idle) {
 			delete(b.entries, connection)
 		}
 	}

@@ -11,19 +11,32 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
-// fakeBindings is a binding store that counts touches.
+// fakeBindings is a binding store that counts holds and their releases.
 type fakeBindings struct {
-	mu      sync.Mutex
-	entries map[string]Binding
-	refused map[string]string
-	touched map[string]int
+	mu       sync.Mutex
+	entries  map[string]Binding
+	refused  map[string]string
+	held     map[string]int
+	released map[string]int
 }
 
-func (b *fakeBindings) Lookup(connection string) (Binding, string, bool) {
+func newFakeBindings(entries map[string]Binding) *fakeBindings {
+	return &fakeBindings{entries: entries, refused: map[string]string{}, held: map[string]int{}, released: map[string]int{}}
+}
+
+func (b *fakeBindings) Hold(connection string) (Binding, string, func(), bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	bound, ok := b.entries[connection]
-	return bound, b.refused[connection], ok
+	if !ok {
+		return Binding{}, "", nil, false
+	}
+	b.held[connection]++
+	return bound, b.refused[connection], func() {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		b.released[connection]++
+	}, true
 }
 
 func (b *fakeBindings) Refuse(connection, code string) {
@@ -32,12 +45,6 @@ func (b *fakeBindings) Refuse(connection, code string) {
 	if b.refused[connection] == "" {
 		b.refused[connection] = code
 	}
-}
-
-func (b *fakeBindings) Touch(connection string) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.touched[connection]++
 }
 
 // getOn sends GET / through the routing listener's handler on connection, or
@@ -63,7 +70,7 @@ func TestE6ListenerRefusesAChangedBinding(t *testing.T) {
 	if err := f.transports.dropMeshPools(); err != nil { // records the router digest
 		t.Fatal(err)
 	}
-	bindings := &fakeBindings{entries: map[string]Binding{"1.1": f.bound()}, refused: map[string]string{}, touched: map[string]int{}}
+	bindings := newFakeBindings(map[string]Binding{"1.1": f.bound()})
 	f.proxy = NewProxy(ProxyConfig{State: f.state, Transports: f.transports, Bindings: bindings})
 
 	if w := f.getOn("1.1"); w.Code != http.StatusOK {
@@ -101,8 +108,8 @@ func TestE6ListenerRefusesAChangedBinding(t *testing.T) {
 	if w := f.getOn("1.1"); w.Code != http.StatusServiceUnavailable || strings.TrimSpace(w.Body.String()) != types.ErrorCodeRouterDigestChanged {
 		t.Fatalf("GET / after the router renewed = %d %q, want %d %q", w.Code, w.Body.String(), http.StatusServiceUnavailable, types.ErrorCodeRouterDigestChanged)
 	}
-	if bindings.touched["1.1"] == 0 || bindings.touched["1.2"] != 0 {
-		t.Fatalf("touches = %v, want only the bound connection touched", bindings.touched)
+	if bindings.held["1.1"] == 0 || bindings.held["1.2"] != 0 || bindings.released["1.1"] != bindings.held["1.1"] {
+		t.Fatalf("holds = %v, releases = %v, want only the bound connection held, each hold released", bindings.held, bindings.released)
 	}
 }
 
@@ -147,5 +154,98 @@ func TestE6ForwardRefusesAChangedBinding(t *testing.T) {
 	}
 	if n := web.hits.Load(); n != 0 {
 		t.Fatalf("backend served %d requests, want 0", n)
+	}
+}
+
+// TestE6RenewalBeforeThePollRefusesABoundDial: a router leaf renewed after
+// the binding check and before the poll fails the dial of a request bound to
+// the previous digest, and retires the pools, rather than serve it by a
+// backend accepted under the renewed one.
+func TestE6RenewalBeforeThePollRefusesABoundDial(t *testing.T) {
+	f := newFixture(t)
+	web := startBackend(t, "web", issueStampedLeaf(t, f.mesh, "web", digestOf(0x43)))
+	f.apply(t, simpleManifest(1, web.addr()))
+	if err := f.transports.dropMeshPools(); err != nil {
+		t.Fatal(err)
+	}
+	bindings := newFakeBindings(map[string]Binding{"1.1": f.bound()})
+	f.proxy = NewProxy(ProxyConfig{State: f.state, Transports: f.transports, Bindings: bindings})
+	backend := f.state.Current().Manifest.Hosts[testHost].Routes[0].Backend
+	f.transports.For(backend) // built under the bound digest
+
+	f.renew(t, issueStampedLeaf(t, f.mesh, "router", digestOf(0x43)))
+	if w := f.getOn("1.1"); w.Code != http.StatusServiceUnavailable || strings.TrimSpace(w.Body.String()) != types.ErrorCodeRouterDigestChanged {
+		t.Fatalf("GET / bound to the digest before a renewal no poll saw = %d %q, want 503 %q", w.Code, w.Body.String(), types.ErrorCodeRouterDigestChanged)
+	}
+	if n := web.hits.Load(); n != 0 {
+		t.Fatalf("backend under the renewed digest served %d requests, want 0", n)
+	}
+	if got := f.transports.RouterDigest(); got != string(digestOf(0x43)) {
+		t.Fatalf("RouterDigest() after the refused dial = %x, want the renewed %x", got, digestOf(0x43))
+	}
+	if w := f.get("/"); w.Code != http.StatusOK {
+		t.Fatalf("unbound GET / after the pools retired = %d %q, want 200", w.Code, w.Body.String())
+	}
+}
+
+// TestE6TransportUnderAnotherDigest: a bound request never takes a workload
+// transport whose pool was accepted under another router digest.
+func TestE6TransportUnderAnotherDigest(t *testing.T) {
+	f := newFixture(t)
+	f.apply(t, simpleManifest(1, "127.0.0.1:1"))
+	if err := f.transports.dropMeshPools(); err != nil {
+		t.Fatal(err)
+	}
+	route := f.state.Current().Manifest.Hosts[testHost].Routes[0]
+	bound := f.bound()
+	if _, ok := f.proxy.transport(route, &bound); !ok {
+		t.Fatal("transport(bound to the tracked digest) refused, want it")
+	}
+	bound.RouterDigest = string(digestOf(0x44))
+	if _, ok := f.proxy.transport(route, &bound); ok {
+		t.Fatal("transport(bound to another digest) taken, want it refused")
+	}
+	if _, ok := f.proxy.transport(route, nil); !ok {
+		t.Fatal("transport(unbound) refused, want it")
+	}
+}
+
+// TestE6UnreadableCredentialKeepsTheRouterDigest: a failed credential read
+// is no renewal, so a bound connection is not refused for it, and a request a
+// client drives through syncRouterDigest retires no pool while it fails.
+func TestE6UnreadableCredentialKeepsTheRouterDigest(t *testing.T) {
+	f := newFixture(t)
+	web := startBackend(t, "web", issueLeaf(t, f.mesh, "web"))
+	f.apply(t, simpleManifest(1, web.addr()))
+	if err := f.transports.dropMeshPools(); err != nil {
+		t.Fatal(err)
+	}
+	bindings := newFakeBindings(map[string]Binding{"1.1": f.bound()})
+	f.proxy = NewProxy(ProxyConfig{State: f.state, Transports: f.transports, Bindings: bindings})
+	backend := f.state.Current().Manifest.Hosts[testHost].Routes[0].Backend
+	before, _ := f.transports.For(backend)
+
+	f.publish(t, "garbage")
+	if err := f.transports.syncRouterDigest(); err == nil {
+		t.Fatal("syncRouterDigest() with an unreadable bundle = nil, want an error")
+	}
+	if got, _ := f.transports.For(backend); got != before {
+		t.Fatal("syncRouterDigest() with an unreadable bundle retired a pool, want none retired")
+	}
+	if err := f.transports.dropMeshPools(); err == nil {
+		t.Fatal("dropMeshPools() with an unreadable bundle = nil, want an error")
+	}
+	if w := f.getOn("1.1"); w.Code != http.StatusBadGateway {
+		t.Fatalf("GET / while the credential is unreadable = %d %q, want 502 (the dial fails, the binding holds)", w.Code, w.Body.String())
+	}
+	f.publish(t, caPEM(f.mesh))
+	if err := f.transports.dropMeshPools(); err != nil {
+		t.Fatal(err)
+	}
+	if w := f.getOn("1.1"); w.Code != http.StatusOK {
+		t.Fatalf("GET / once the credential reads again = %d %q, want 200", w.Code, w.Body.String())
+	}
+	if len(bindings.refused) != 0 {
+		t.Fatalf("refusals = %v, want none", bindings.refused)
 	}
 }

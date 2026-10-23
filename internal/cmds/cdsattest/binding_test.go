@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdsa"
+	"crypto/tls"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/routing"
 	"github.com/confidential-dot-ai/c8s/pkg/overenc"
 	"github.com/confidential-dot-ai/c8s/pkg/routes"
@@ -211,7 +213,7 @@ func TestE7BindingCapRefusesHandshakes(t *testing.T) {
 	if code := errorCode(t, attestLB(t, rs.ts.URL, "1.2")); code != "" {
 		t.Fatalf("attest-lb once the binding expired = %q, want success", code)
 	}
-	if _, _, ok := rs.bindings.Lookup("1.1"); ok {
+	if _, ok := rs.bindings.entries["1.1"]; ok {
 		t.Fatal("expired binding survived a handshake at the cap")
 	}
 }
@@ -227,14 +229,72 @@ func TestE7BindingIdleLifetime(t *testing.T) {
 		t.Fatal(err)
 	}
 	clock.Advance(lbBindingIdle - time.Second)
-	b.Touch("1.1")
+	_, _, release, ok := b.Hold("1.1")
+	if !ok {
+		t.Fatal("Hold() of a live binding = false, want true")
+	}
+	release()
 	clock.Advance(2 * time.Second)
 	b.prune()
-	if _, _, ok := b.Lookup("1.1"); !ok {
-		t.Fatal("touched binding expired, want it kept")
+	if _, ok := b.entries["1.1"]; !ok {
+		t.Fatal("used binding expired, want it kept")
 	}
 	if _, ok := b.entries["1.2"]; ok {
 		t.Fatal("idle binding survived prune")
+	}
+	clock.Advance(lbBindingIdle + time.Second)
+	if _, _, _, ok := b.Hold("1.1"); ok {
+		t.Fatal("Hold() of an idle binding = true, want it expired")
+	}
+}
+
+// TestE7BindingHeldByARequestInFlight: a request outlasting the idle lifetime
+// keeps its connection bound, and its end restarts the lifetime.
+func TestE7BindingHeldByARequestInFlight(t *testing.T) {
+	clock := &testClock{now: time.Now()}
+	b := NewBindings()
+	b.now = clock.Now
+	if err := b.bind("1.1", routing.Binding{RouterDigest: "D"}); err != nil {
+		t.Fatal(err)
+	}
+	_, _, release, ok := b.Hold("1.1")
+	if !ok {
+		t.Fatal("Hold() of a live binding = false, want true")
+	}
+	clock.Advance(3 * lbBindingIdle)
+	b.prune()
+	if err := b.bind("1.2", routing.Binding{}); err != nil { // prunes on insert
+		t.Fatal(err)
+	}
+	if bound, _, again, ok := b.Hold("1.1"); !ok || bound.RouterDigest != "D" {
+		t.Fatalf("Hold() during a long request = %+v, %v, want the binding kept", bound, ok)
+	} else {
+		again()
+	}
+	release()
+	clock.Advance(lbBindingIdle - time.Second)
+	if _, _, again, ok := b.Hold("1.1"); !ok {
+		t.Fatal("Hold() within the idle lifetime after the request ended = false, want true")
+	} else {
+		again()
+	}
+}
+
+// TestE7InsertPrunesExpiredBindings: an insert drops expired bindings without
+// waiting for the sweep or the cap.
+func TestE7InsertPrunesExpiredBindings(t *testing.T) {
+	clock := &testClock{now: time.Now()}
+	b := NewBindings()
+	b.now = clock.Now
+	if err := b.bind("1.1", routing.Binding{}); err != nil {
+		t.Fatal(err)
+	}
+	clock.Advance(lbBindingIdle + time.Second)
+	if err := b.bind("1.2", routing.Binding{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := b.entries["1.1"]; ok {
+		t.Fatal("expired binding survived an insert")
 	}
 }
 
@@ -251,6 +311,32 @@ func TestE5HandshakeWaitsForTheRouterDigest(t *testing.T) {
 	rs.poll(t)
 	if pq, lb := rs.handshakeCodes(t); pq != types.ErrorCodeBindingUnavailable || lb != types.ErrorCodeBindingUnavailable {
 		t.Fatalf("handshakes with a leaf the router does not hold = %q, %q, want %q", pq, lb, types.ErrorCodeBindingUnavailable)
+	}
+}
+
+// TestE5HandshakeWaitsForARenewalToReachTheRouter: a leaf stamped under
+// another digest than the router's own credential is refused, and admitted
+// once the router holds it.
+func TestE5HandshakeWaitsForARenewalToReachTheRouter(t *testing.T) {
+	var renewed tls.Certificate
+	var renewedCA *issuer.CA
+	rs := newRoutedServer(t, func(_ *routing.ProxyConfig, cfg *Config) {
+		var err error
+		if renewedCA, err = issuer.NewCA("mesh", time.Hour); err != nil {
+			t.Fatal(err)
+		}
+		renewed = namedLeafUnder(t, renewedCA, "router", bytes.Repeat([]byte{0x43}, 32))
+		_, dir := publishedMeshIdentity(t, renewed, renewedCA)
+		cfg.MeshIdentityCertFile, cfg.MeshIdentityKeyFile, cfg.MeshIdentityCAFile = volumeFile(dir, "tls.crt"), volumeFile(dir, "tls.key"), volumeFile(dir, "ca.crt")
+	})
+	rs.apply(t, 1, time.Hour)
+	rs.poll(t)
+	if pq, lb := rs.handshakeCodes(t); pq != types.ErrorCodeBindingUnavailable || lb != types.ErrorCodeBindingUnavailable {
+		t.Fatalf("handshakes with a leaf stamped under another digest = %q, %q, want %q", pq, lb, types.ErrorCodeBindingUnavailable)
+	}
+	publishLeaf(t, rs.meshDir, renewed, renewedCA)
+	if pq, lb := rs.handshakeCodes(t); pq != "" || lb != "" {
+		t.Fatalf("handshakes once the router holds the leaf = %q, %q, want success", pq, lb)
 	}
 }
 
