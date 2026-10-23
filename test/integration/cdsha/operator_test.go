@@ -133,10 +133,14 @@ func TestDecrees(t *testing.T) {
 			if st := c.WaitDecreeStatus(name, 20*time.Second); st.AppliedEpoch == nil {
 				t.Fatalf("RotateKey during a partition: %+v", st)
 			}
-			// The isolated replica must not serve the old CA.
-			if st, _ := c.Status(f); st.Serving {
-				t.Errorf("isolated replica serving during the rotation: %s", c.StatusLine(f))
-			}
+			// The isolated replica must not serve the old CA, for at least
+			// a lease after the rotation.
+			c.never(timing.lease, func() string {
+				if st, _ := c.Status(f); st.Serving {
+					return "isolated replica serving during the rotation: " + c.StatusLine(f)
+				}
+				return ""
+			})
 			c.Heal()
 			c.requireAllCA("", ca, 60*time.Second)
 		}},
@@ -168,12 +172,15 @@ func TestMajorityLoss(t *testing.T) {
 			for _, i := range c.RunningIDs() {
 				c.Logf("%s stopped serving after %s", c.Replicas[i].Node, c.WaitNotServing(i, timing.lease+5*time.Second))
 			}
-			hold(10 * time.Second) // fail closed: nobody serves, writes refused
-			for _, i := range c.RunningIDs() {
-				if st, _ := c.Status(i); st.Serving {
-					t.Errorf("%s serving without a majority", c.Replicas[i].Node)
+			// Fail closed: nobody serves, writes are refused.
+			c.never(scaled(10*time.Second), func() string {
+				for _, i := range c.RunningIDs() {
+					if st, _ := c.Status(i); st.Serving {
+						return c.Replicas[i].Node + " serving without a majority"
+					}
 				}
-			}
+				return ""
+			})
 			name := c.PutDecree(cdsha.Decree{ClusterID: clusterID, IntentID: "recover-1", Kind: cdsha.Recover, BaseEpoch: epoch,
 				BootstrapNode: c.Replicas[survivor].Node, ExpiresAt: time.Now().Add(10 * time.Minute)}, nil)
 			start := time.Now()
@@ -206,16 +213,14 @@ func TestMajorityLoss(t *testing.T) {
 				t.Errorf("the majority leader did not refuse the Recover: %+v", st)
 			}
 			// Both sides serving at once = split brain.
-			deadline := time.Now().Add(timing.deadAfter + 10*time.Second)
-			for time.Now().Before(deadline) {
+			c.never(timing.deadAfter+10*time.Second, func() string {
 				a, _ := c.Status(l)
 				b, _ := c.Status(nl)
 				if a.Serving && b.Serving {
-					t.Errorf("split brain: isolated %s serves (state %s, epoch %d) while %s serves (epoch %d)", c.Replicas[l].Node, a.State, a.Epoch, c.Replicas[nl].Node, b.Epoch)
-					break
+					return fmt.Sprintf("split brain: isolated %s serves (state %s, epoch %d) while %s serves (epoch %d)", c.Replicas[l].Node, a.State, a.Epoch, c.Replicas[nl].Node, b.Epoch)
 				}
-				time.Sleep(200 * time.Millisecond)
-			}
+				return ""
+			})
 			c.Heal()
 			c.WaitAllServing(60 * time.Second)
 		}},

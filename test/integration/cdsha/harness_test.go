@@ -479,6 +479,18 @@ func (c *Cluster) waitFor(timeout time.Duration, cond func() bool, what func() s
 	return time.Since(start)
 }
 
+// never polls bad every 200 ms for d and fails the test on the first
+// violation it reports.
+func (c *Cluster) never(d time.Duration, bad func() string) {
+	c.t.Helper()
+	for end := time.Now().Add(d); time.Now().Before(end); time.Sleep(200 * time.Millisecond) {
+		if msg := bad(); msg != "" {
+			c.t.Error(msg)
+			return
+		}
+	}
+}
+
 // WaitDecreeStatus waits until the decree has a status.
 func (c *Cluster) WaitDecreeStatus(name string, timeout time.Duration) cdsha.DecreeStatus {
 	c.t.Helper()
