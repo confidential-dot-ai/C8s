@@ -682,12 +682,11 @@ follows these rules:
   CDS serves now. A failed handshake gets 502, `backend_entry_changed` when
   the entry was removed or redefined or its stamped document cannot be
   fetched; no backend is reached in plaintext.
-- An attested session routes only by the manifest its handshake bound, and
-  only while the entries its workload routes name are unchanged from the
-  allowlist on the router leaf it bound. After a route change, or an
-  allowlist change that removes or redefines one of those entries, the router
-  answers that session's requests with 503 `route_digest_changed` or
-  `route_entry_changed`. Other allowlist writes, and the router's renewal
+- An attested session routes only by the manifest its handshake bound, and a
+  request on it only while the entry its route names is unchanged from the
+  allowlist on the router leaf the handshake bound. After a route change, or
+  an allowlist change that removes or redefines that entry, the router
+  answers with 503 `route_digest_changed` or `route_entry_changed`. Other allowlist writes, and the router's renewal
   under them, do not refuse the session. It ends an attest-pq
   session. An attest-lb connection stays open and every request on it gets
   the same 503 until the client reconnects or attests again on it. No

@@ -173,8 +173,43 @@ func TestE6UnstampedBindingHoldsTheManifestAlone(t *testing.T) {
 	unbound := Binding{RouteDigest: f.state.Current().Signed.Digest()}
 	f.allowlists.serve(digestOf(0x43), labelled(map[string]string{"web": "v2"}))
 	f.refresh(t)
-	if code := f.proxy.changed(context.Background(), unbound, f.state.Current()); code != "" {
-		t.Fatalf("changed(no router digest) after the route's entry changed = %q, want none", code)
+	route := f.state.Current().Manifest.Hosts[testHost].Routes[0]
+	if code := f.proxy.entryChanged(context.Background(), unbound, route); code != "" {
+		t.Fatalf("entryChanged(no router digest) after the route's entry changed = %q, want none", code)
+	}
+}
+
+// TestE6EntryCheckIsPerRoute: removing the entry one route names refuses a
+// bound request to that route only.
+func TestE6EntryCheckIsPerRoute(t *testing.T) {
+	f := newFixture(t)
+	web := startBackend(t, "web", issueLeaf(t, f.mesh, "web"))
+	admin := startBackend(t, "admin", issueLeaf(t, f.mesh, "admin"))
+	f.apply(t, manifestSpec{revision: 1, hosts: map[string][]route{testHost: {
+		workloadRoute("/", "prefix", web.addr(), "web"),
+		workloadRoute("/admin", "prefix", admin.addr(), "admin"),
+	}}})
+	bindings := newFakeBindings(map[string]Binding{"1.1": f.bound(), "1.2": f.bound()})
+	f.proxy = NewProxy(ProxyConfig{State: f.state, Transports: f.transports, Bindings: bindings})
+	f.allowlists.serve(digestOf(0x43), labelled(map[string]string{"web": "v1", "router": "v1"}))
+	f.refresh(t)
+
+	get := func(connection, path string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodGet, path, nil)
+		r.Host = testHost
+		r.Header.Set(ConnectionHeader, connection)
+		w := httptest.NewRecorder()
+		f.proxy.ServeHTTP(w, r)
+		return w
+	}
+	if w := get("1.1", "/"); w.Code != http.StatusOK {
+		t.Fatalf("bound GET / after admin was removed = %d %q, want 200", w.Code, w.Body.String())
+	}
+	if w := get("1.2", "/admin"); w.Code != http.StatusServiceUnavailable || strings.TrimSpace(w.Body.String()) != types.ErrorCodeRouteEntryChanged {
+		t.Fatalf("bound GET /admin after admin was removed = %d %q, want 503 %q", w.Code, w.Body.String(), types.ErrorCodeRouteEntryChanged)
+	}
+	if n := admin.hits.Load(); n != 0 {
+		t.Fatalf("admin served %d requests, want 0", n)
 	}
 }
 

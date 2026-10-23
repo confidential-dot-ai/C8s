@@ -127,12 +127,12 @@ func (e *Entries) Digest() string {
 	return e.current.digest
 }
 
-// Check returns nil when every entry in names is in the current allowlist
-// with the same canonical content as in the document whose digest is
-// stamped. When stamped is the current digest nothing is fetched; otherwise
-// the stamped document comes from the CDS's allowlist history, and a failed
-// fetch fails the check.
-func (e *Entries) Check(ctx context.Context, stamped string, names ...string) error {
+// Check returns nil when entry name is in the current allowlist with the
+// same canonical content as in the document whose digest is stamped. When
+// stamped is the current digest nothing is fetched; otherwise the stamped
+// document comes from the CDS's allowlist history, and a failed fetch fails
+// the check.
+func (e *Entries) Check(ctx context.Context, stamped, name string) error {
 	if e == nil {
 		return fmt.Errorf("%w: the router reads no allowlist", errEntryChanged)
 	}
@@ -142,10 +142,9 @@ func (e *Entries) Check(ctx context.Context, stamped string, names ...string) er
 	if current == nil {
 		return fmt.Errorf("%w: no current allowlist from the CDS yet", errEntryChanged)
 	}
-	for _, name := range names {
-		if _, ok := current.entries[name]; !ok {
-			return fmt.Errorf("%w: entry %q is not in the current allowlist %x", errEntryChanged, name, current.digest)
-		}
+	entry, ok := current.entries[name]
+	if !ok {
+		return fmt.Errorf("%w: entry %q is not in the current allowlist %x", errEntryChanged, name, current.digest)
 	}
 	if stamped == current.digest {
 		return nil
@@ -154,10 +153,8 @@ func (e *Entries) Check(ctx context.Context, stamped string, names ...string) er
 	if err != nil {
 		return fmt.Errorf("%w: allowlist %x: %w", errEntryChanged, stamped, err)
 	}
-	for _, name := range names {
-		if !bytes.Equal(old.entries[name], current.entries[name]) {
-			return fmt.Errorf("%w: entry %q under allowlist %x differs from the current allowlist %x", errEntryChanged, name, stamped, current.digest)
-		}
+	if !bytes.Equal(old.entries[name], entry) {
+		return fmt.Errorf("%w: entry %q under allowlist %x differs from the current allowlist %x", errEntryChanged, name, stamped, current.digest)
 	}
 	return nil
 }

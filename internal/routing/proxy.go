@@ -62,9 +62,9 @@ const ConnectionHeader = "X-C8s-Connection"
 
 // Binding is what a client verified on an attested handshake (E5): the digest
 // of the manifest the handshake bound, and the allowlist digest of the router
-// stamp on the mesh leaf it bound, empty for a leaf without one. The session
-// routes while that manifest is applied and the entries its workload routes
-// name are unchanged from that allowlist in the current one (E6).
+// stamp on the mesh leaf it bound, empty for a leaf without one. A request on
+// the session routes while that manifest is applied and the entry its route
+// names is unchanged from that allowlist in the current one (E6).
 type Binding struct {
 	RouteDigest  [sha256.Size]byte
 	RouterDigest string
@@ -83,8 +83,8 @@ type Bindings interface {
 }
 
 // BindingChangedError refuses a request whose session is bound to another
-// route digest than the applied one, or to entries the current allowlist
-// changed (E6). Code is the route policy's error code for it.
+// route digest than the applied one, or whose route names an entry the
+// current allowlist changed (E6). Code is the route policy's error code for it.
 type BindingChangedError struct {
 	Code string
 }
@@ -191,6 +191,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "routes not applied", http.StatusServiceUnavailable) // A2
 		return
 	}
+	var bound *Binding
 	var held uint64
 	refuse := func(code string) {
 		// A digest changing back does not route the connection again (E6).
@@ -206,18 +207,25 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			held = gen
 			code := refused
 			if code == "" {
-				code = p.changed(r.Context(), b, applied)
+				code = p.changed(b, applied)
 			}
 			if code != "" {
 				refuse(code)
 				return
 			}
+			bound = &b
 		}
 	}
 	route, target, ok := applied.Table.Select(r)
 	if !ok {
 		http.NotFound(w, r) // M5
 		return
+	}
+	if bound != nil {
+		if code := p.entryChanged(r.Context(), *bound, route); code != "" {
+			refuse(code)
+			return
+		}
 	}
 	if p.timeout > 0 {
 		var stop func()
@@ -231,18 +239,24 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // changed returns the code refusing a request bound to b, or "" while applied
-// is the manifest b holds and every entry its workload routes name is
-// unchanged from b's router digest in the current allowlist (E6). A binding
-// with no router digest holds the manifest alone.
-func (p *Proxy) changed(ctx context.Context, b Binding, applied *Applied) string {
+// is the manifest b holds (E6).
+func (p *Proxy) changed(b Binding, applied *Applied) string {
 	if applied.Signed.Digest() != b.RouteDigest {
 		return types.ErrorCodeRouteDigestChanged
 	}
-	if b.RouterDigest == "" {
+	return ""
+}
+
+// entryChanged returns the code refusing a request bound to b that selected
+// route, or "" while the entry route's workload names is unchanged from b's
+// router digest in the current allowlist (E6). A binding with no router
+// digest, and an address route, hold the manifest alone.
+func (p *Proxy) entryChanged(ctx context.Context, b Binding, route routes.Route) string {
+	if b.RouterDigest == "" || route.Backend.Workload == "" {
 		return ""
 	}
-	if err := p.transports.cfg.Entries.Check(ctx, b.RouterDigest, applied.workloadNames()...); err != nil {
-		p.log.Info("bound session refused", "error", err)
+	if err := p.transports.cfg.Entries.Check(ctx, b.RouterDigest, route.Backend.Workload); err != nil {
+		p.log.Info("bound request refused", "error", err)
 		return types.ErrorCodeRouteEntryChanged
 	}
 	return ""
@@ -308,7 +322,7 @@ func (p *Proxy) Forward(outer *http.Request, req types.TunnelRequest, bound Bind
 	}
 	// Against the manifest this request is then routed by, so a manifest
 	// applied after the check cannot route it.
-	if code := p.changed(ctx, bound, applied); code != "" {
+	if code := p.changed(bound, applied); code != "" {
 		return types.TunnelResponse{}, &BindingChangedError{Code: code}
 	}
 	if p.timeout > 0 {
@@ -349,6 +363,9 @@ func (p *Proxy) Forward(outer *http.Request, req types.TunnelRequest, bound Bind
 	route, target, ok := applied.Table.Select(in)
 	if !ok {
 		return textResponse(http.StatusNotFound, "404 page not found"), nil
+	}
+	if code := p.entryChanged(ctx, bound, route); code != "" {
+		return types.TunnelResponse{}, &BindingChangedError{Code: code}
 	}
 
 	var backendErr error
