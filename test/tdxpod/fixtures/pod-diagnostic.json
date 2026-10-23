@@ -8,44 +8,6 @@
       "uid": "2f1c6d3e-7a4b-4e8f-9c21-5d6e7f8a9b01"
     },
     "spec": {
-      "initContainers": [
-        {
-          "name": "c8s-mesh",
-          "image": "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:5909cf601055ab61bb9117c00bbd8b05ab59cfcde5819e397c59aeec72a90db9",
-          "restartPolicy": "Always",
-          "command": [
-            "/app/c8s",
-            "armtls-mesh"
-          ],
-          "args": [
-            "--cert-path=/etc/c8s/certs/tls.crt",
-            "--key-path=/etc/c8s/certs/tls.key",
-            "--ca-path=/etc/c8s/certs/ca.crt"
-          ],
-          "volumeMounts": [
-            {
-              "name": "c8s-certs",
-              "mountPath": "/etc/c8s/certs",
-              "readOnly": true
-            }
-          ],
-          "securityContext": {
-            "allowPrivilegeEscalation": false,
-            "readOnlyRootFilesystem": true,
-            "runAsNonRoot": true,
-            "runAsUser": 1337,
-            "runAsGroup": 1337,
-            "capabilities": {
-              "drop": [
-                "ALL"
-              ]
-            },
-            "seccompProfile": {
-              "type": "RuntimeDefault"
-            }
-          }
-        }
-      ],
       "containers": [
         {
           "name": "podinfo",
@@ -74,13 +36,6 @@
         }
       ],
       "volumes": [
-        {
-          "name": "c8s-certs",
-          "emptyDir": {
-            "medium": "Memory",
-            "sizeLimit": "1Mi"
-          }
-        },
         {
           "name": "data",
           "emptyDir": {
