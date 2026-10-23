@@ -2,6 +2,7 @@ package allowlist
 
 import (
 	"bytes"
+	"cmp"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -51,33 +52,19 @@ var usedTokenColumns = []string{"exp_unix", "iat_unix"}
 // journalSQL: it adds the used_token columns it lacks (rows it held keep 0,
 // which is never pruned) and their indexes.
 func migrateJournal(db *sql.DB) error {
-	rows, err := db.Query("SELECT name FROM pragma_table_info('used_token')")
-	if err != nil {
-		return err
-	}
-	have := map[string]bool{}
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			rows.Close()
+	for _, c := range usedTokenColumns {
+		var have bool
+		if err := db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('used_token') WHERE name = ?", c).Scan(&have); err != nil {
 			return err
 		}
-		have[name] = true
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
-		return err
-	}
-	for _, c := range usedTokenColumns {
-		if have[c] {
+		if have {
 			continue
 		}
 		if _, err := db.Exec("ALTER TABLE used_token ADD COLUMN " + c + " INTEGER NOT NULL DEFAULT 0"); err != nil {
 			return fmt.Errorf("add used_token.%s: %w", c, err)
 		}
 	}
-	_, err = db.Exec(`
+	_, err := db.Exec(`
 CREATE INDEX IF NOT EXISTS used_token_exp ON used_token (exp_unix);
 CREATE INDEX IF NOT EXISTS used_token_iat ON used_token (iat_unix);
 `)
@@ -297,9 +284,6 @@ func (s *Store) consumeToken(token string, expiry bool) error {
 	if expiry {
 		if i, e, err := operatorauth.UnverifiedTimes(token); err == nil {
 			iat, exp = i.Unix(), e.Unix()
-			if e.Nanosecond() != 0 {
-				exp++ // round exp up and iat down: either keeps a record longer
-			}
 		}
 	}
 	// Key on the signed header.payload: the signature segment has several
@@ -310,49 +294,35 @@ func (s *Store) consumeToken(token string, expiry bool) error {
 	digest := objectDigest([]byte(token))
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if exp == 0 {
-		res, err := s.db.Exec("INSERT OR IGNORE INTO used_token (digest) VALUES (?)", digest)
-		if err != nil {
-			return err
-		}
-		return spentUnlessInserted(res)
-	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	var watermark int64
-	if err := tx.QueryRow("SELECT COALESCE(MAX(iat_unix), 0) FROM used_token").Scan(&watermark); err != nil {
-		return err
-	}
 	margin := int64(spentTokenMargin / time.Second)
-	if exp < watermark-margin {
-		// Its record may be pruned: only this refusal keeps it spent.
-		return fmt.Errorf("%w: it expired over %s before the newest spent token was issued", operatorauth.ErrTokenReused, spentTokenMargin)
+	var watermark int64
+	if exp > 0 { // a record without a window is never refused and prunes nothing
+		if err := tx.QueryRow("SELECT COALESCE(MAX(iat_unix), 0) FROM used_token").Scan(&watermark); err != nil {
+			return err
+		}
+		if exp < watermark-margin {
+			// Its record may be pruned: only this refusal keeps it spent.
+			return fmt.Errorf("%w: it expired over %s before the newest spent token was issued", operatorauth.ErrTokenReused, spentTokenMargin)
+		}
 	}
 	res, err := tx.Exec("INSERT OR IGNORE INTO used_token (digest, exp_unix, iat_unix) VALUES (?, ?, ?)", digest, exp, iat)
 	if err != nil {
 		return err
 	}
-	if err := spentUnlessInserted(res); err != nil {
-		return err
+	if n, err := res.RowsAffected(); err != nil || n == 0 {
+		return cmp.Or(err, operatorauth.ErrTokenReused)
 	}
-	if _, err := tx.Exec("DELETE FROM used_token WHERE exp_unix > 0 AND exp_unix < ?", max(watermark, iat)-margin); err != nil {
-		return err
+	if exp > 0 {
+		if _, err := tx.Exec("DELETE FROM used_token WHERE exp_unix > 0 AND exp_unix < ?", max(watermark, iat)-margin); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
-}
-
-func spentUnlessInserted(res sql.Result) error {
-	n, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if n == 0 {
-		return operatorauth.ErrTokenReused
-	}
-	return nil
 }
 
 // HistoryLen is the number of entries in the history.
