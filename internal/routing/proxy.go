@@ -148,6 +148,16 @@ func (p *Proxy) Session() (*Applied, error) { return p.state.Session() }
 // Current returns the applied manifest, or nil before the first apply.
 func (p *Proxy) Current() *Applied { return p.state.Current() }
 
+// RouterDigest rereads the router's mesh credential as a poll does (B10) and
+// returns the router digest requests are then checked against (E6), so a
+// handshake binds the digest its session is checked against.
+func (p *Proxy) RouterDigest() (string, error) {
+	if err := p.transports.dropMeshPools(); err != nil {
+		return "", err
+	}
+	return p.transports.RouterDigest(), nil
+}
+
 // Acquire reserves TunnelReservation(recordBytes) for a tunnelled request
 // from client. It reports false when the budget, or client's share of it,
 // cannot cover that. The caller holds the reservation from reading the record

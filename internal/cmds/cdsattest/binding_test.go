@@ -1,6 +1,7 @@
 package cdsattest
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"encoding/json"
@@ -65,9 +66,10 @@ func TestE6TunnelRefusesAChangedBinding(t *testing.T) {
 		want   string
 	}{
 		{"E6 manifest applied", func(t *testing.T, rs *routedServer) { rs.apply(t, 2, time.Hour) }, types.ErrorCodeRouteDigestChanged},
-		// The handshake bound the unstamped test leaf; the poll records the
-		// stamped router leaf's digest.
-		{"E6 router digest changed", func(t *testing.T, rs *routedServer) { rs.poll(t) }, types.ErrorCodeRouterDigestChanged},
+		{"E6 router digest changed", func(t *testing.T, rs *routedServer) {
+			publishLeaf(t, rs.meshDir, namedLeafUnder(t, rs.ca, "router", bytes.Repeat([]byte{0x43}, 32)), rs.ca)
+			rs.poll(t)
+		}, types.ErrorCodeRouterDigestChanged},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -233,5 +235,20 @@ func TestE7BindingIdleLifetime(t *testing.T) {
 	}
 	if _, ok := b.entries["1.2"]; ok {
 		t.Fatal("idle binding survived prune")
+	}
+}
+
+// TestE5HandshakeWaitsForTheRouterDigest: a handshake whose mesh leaf is
+// stamped under another digest than the router checks requests against is
+// refused before any evidence, rather than admit a session every request of
+// which is refused.
+func TestE5HandshakeWaitsForTheRouterDigest(t *testing.T) {
+	rs := newRoutedServer(t, func(_ *routing.ProxyConfig, cfg *Config) {
+		unstamped := writeTestMeshIdentity(t)
+		cfg.MeshIdentityCertFile, cfg.MeshIdentityKeyFile, cfg.MeshIdentityCAFile = unstamped.certFile, unstamped.keyFile, unstamped.caFile
+	})
+	rs.apply(t, 1, time.Hour)
+	if pq, lb := rs.handshakeCodes(t); pq != types.ErrorCodeBindingUnavailable || lb != types.ErrorCodeBindingUnavailable {
+		t.Fatalf("handshakes with a leaf the router does not hold = %q, %q, want %q", pq, lb, types.ErrorCodeBindingUnavailable)
 	}
 }

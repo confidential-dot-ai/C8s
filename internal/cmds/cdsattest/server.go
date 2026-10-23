@@ -145,6 +145,8 @@ var (
 //
 // Session gates a new attested session (A2, F2) and returns the manifest whose
 // digest it binds (E1). Current is the applied manifest the publication serves.
+// RouterDigest refreshes and returns the router digest bound sessions are
+// checked against (E6).
 // Acquire reserves tunnel budget for a record of recordBytes from client.
 // Forward routes a request decrypted from the tunnel of a session bound to
 // bound; outer is the tunnel request itself. A *routing.BindingChangedError
@@ -152,6 +154,7 @@ var (
 type Router interface {
 	Session() (*routing.Applied, error)
 	Current() *routing.Applied
+	RouterDigest() (string, error)
 	Acquire(client string, recordBytes int64) (release func(), ok bool)
 	Forward(outer *http.Request, req types.TunnelRequest, bound routing.Binding) (types.TunnelResponse, error)
 }
@@ -523,6 +526,10 @@ func (s *Server) handleAttestPQ(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeBindingUnavailable, "identity-bound PQ credentials are temporarily unavailable")
 		return
 	}
+	routerDigest, ok := s.routerDigest(w, identity)
+	if !ok {
+		return
+	}
 
 	xwingCT, sharedSecret, err := overenc.Encapsulate(xwingEK)
 	if err != nil {
@@ -558,7 +565,7 @@ func (s *Server) handleAttestPQ(w http.ResponseWriter, r *http.Request) {
 	}
 	id := base64.RawURLEncoding.EncodeToString(sessionID)
 	now := time.Now()
-	bound := routing.Binding{RouteDigest: digest, RouterDigest: identity.routerDigest()} // E5
+	bound := routing.Binding{RouteDigest: digest, RouterDigest: routerDigest} // E5
 	if err := s.addSession(client, id, establishedSession{channel: channel, bound: bound, createdAt: now, lastUsed: now}); err != nil {
 		s.refuseSession(w, err)
 		return
@@ -632,6 +639,10 @@ func (s *Server) handleAttestLB(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeBindingUnavailable, "mesh identity credentials are temporarily unavailable")
 		return
 	}
+	routerDigest, ok := s.routerDigest(w, identity)
+	if !ok {
+		return
+	}
 
 	reportData, proof, err := identity.bindServingLeaf(s.cfg.FrontDoorMode, servingLeafDER, nonce, digest[:])
 	if err != nil {
@@ -651,7 +662,7 @@ func (s *Server) handleAttestLB(w http.ResponseWriter, r *http.Request) {
 		s.unboundOnce.Do(func() {
 			s.log.Warn("attest-lb handshake without " + routing.ConnectionHeader + ": its connection is not bound; binding needs the nginx relay to set the header")
 		})
-	} else if err := s.bindings.bind(connection, routing.Binding{RouteDigest: digest, RouterDigest: identity.routerDigest()}); err != nil {
+	} else if err := s.bindings.bind(connection, routing.Binding{RouteDigest: digest, RouterDigest: routerDigest}); err != nil {
 		writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeSessionsBusy, err.Error())
 		return
 	}
@@ -689,6 +700,21 @@ func (s *Server) routesAdmit(w http.ResponseWriter) (*routing.Applied, bool) {
 		return nil, false
 	}
 	return applied, true
+}
+
+// routerDigest returns the router digest of identity's leaf (E5), or refuses
+// the handshake while the router checks requests against another one: a leaf
+// renewed since the router last read its credential would bind a digest every
+// request of the session is then refused on (E6).
+func (s *Server) routerDigest(w http.ResponseWriter, identity *meshIdentity) (string, bool) {
+	leaf := identity.routerDigest()
+	current, err := s.routes.RouterDigest()
+	if err != nil || current != leaf {
+		s.log.Warn("router digest differs from the attested mesh leaf's", "error", err)
+		writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeBindingUnavailable, "the router's mesh identity is renewing; retry shortly")
+		return "", false
+	}
+	return leaf, true
 }
 
 // meshIdentity loads the mesh credential set from the three files.
