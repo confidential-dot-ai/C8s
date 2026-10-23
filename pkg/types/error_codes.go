@@ -43,6 +43,18 @@ const (
 	// automated ingress service refuses new attested sessions (route policy
 	// F2).
 	ErrorCodeRoutesStale = "routes_stale"
+	// ErrorCodeRouteDigestChanged: a manifest other than the one the
+	// session's handshake bound is applied, so the session's request is
+	// refused (route policy E6). Attest again.
+	ErrorCodeRouteDigestChanged = "route_digest_changed"
+	// ErrorCodeRouterDigestChanged: the router's mesh leaf renewed under
+	// another allowlist digest than the one the session's handshake bound
+	// (route policy E6). Attest again.
+	ErrorCodeRouterDigestChanged = "router_digest_changed"
+	// ErrorCodeSessionsBusy: the router holds as many attest-lb bindings as
+	// it may, so it refuses the handshake rather than drop one (route policy
+	// E7). Retry shortly.
+	ErrorCodeSessionsBusy = "sessions_busy"
 )
 
 // ErrorResponse is the body a C8s service returns with a non-2xx status: one

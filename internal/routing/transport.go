@@ -343,6 +343,14 @@ func (t *Transports) refuseMeshAnchor(cs tls.ConnectionState) error {
 	return nil
 }
 
+// RouterDigest is the router stamp's allowlist digest as of the last poll,
+// empty for none (B10). A bound session is checked against it (E6).
+func (t *Transports) RouterDigest() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.routerDigest
+}
+
 // dropMeshPools retires every transport when the mesh CA bundle changed since
 // the last call or cannot be read, and every workload transport when the
 // router stamp's allowlist digest changed (B10). Pooled connections skip the

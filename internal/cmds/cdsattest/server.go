@@ -95,6 +95,18 @@ const (
 	// sweepInterval paces the background eviction of idle and over-age
 	// sessions. Both conditions are also checked on use.
 	sweepInterval = 10 * time.Second
+	// lbBindingIdle is how long an attest-lb binding outlives the last
+	// request on its connection. It exceeds the router chart's nginx
+	// keepalive_timeout (65s), so no binding expires while nginx keeps its
+	// connection open (E7).
+	lbBindingIdle = 2 * time.Minute
+	// maxLBBindings bounds the attest-lb bindings. At the bound a handshake is
+	// refused, never a binding dropped (E7).
+	maxLBBindings = 1 << 16
+	// maxConnectionIDBytes bounds the identifier nginx assigns ($pid.$connection),
+	// so a caller bypassing nginx cannot grow the store by its header size.
+	maxConnectionIDBytes = 64
+
 	// shutdownGrace bounds the wait for in-flight requests at shutdown.
 	shutdownGrace = 5 * time.Second
 	// defaultSessionMaxAge is the absolute session lifetime: however busy a
@@ -134,14 +146,14 @@ var (
 // Session gates a new attested session (A2, F2) and returns the manifest whose
 // digest it binds (E1). Current is the applied manifest the publication serves.
 // Acquire reserves tunnel budget for a record of recordBytes from client.
-// Forward routes a request decrypted from the tunnel; outer is the tunnel
-// request itself, whose Host routes a sealed request that carries none (M1),
-// and an error is sealed as 502.
+// Forward routes a request decrypted from the tunnel of a session bound to
+// bound; outer is the tunnel request itself. A *routing.BindingChangedError
+// ends the session (E6); any other error is sealed as 502.
 type Router interface {
 	Session() (*routing.Applied, error)
 	Current() *routing.Applied
 	Acquire(client string, recordBytes int64) (release func(), ok bool)
-	Forward(outer *http.Request, req types.TunnelRequest) (types.TunnelResponse, error)
+	Forward(outer *http.Request, req types.TunnelRequest, bound routing.Binding) (types.TunnelResponse, error)
 }
 
 // Config configures the sidecar server.
@@ -179,6 +191,9 @@ type Config struct {
 	// Routes gates attested sessions, routes the tunnel and serves the route
 	// publication. Required.
 	Routes Router
+	// Bindings records attest-lb handshakes for the routing listener, which
+	// must share it. Nil gives the server a store of its own.
+	Bindings *Bindings
 	// PublishRoutes serves the applied signed manifest at
 	// /.well-known/c8s/routes (E4). Off, that path answers 404: the manifest
 	// names hosts and backends a private deployment may not want public.
@@ -201,6 +216,7 @@ type Config struct {
 
 type establishedSession struct {
 	channel   *overenc.Channel
+	bound     routing.Binding
 	createdAt time.Time
 	lastUsed  time.Time
 	client    string
@@ -223,6 +239,10 @@ type Server struct {
 	mu         sync.Mutex
 	sessions   map[string]establishedSession // session id -> channel
 	sessionsBy *holders                      // client -> its session ids
+	bindings   *Bindings
+	// unboundOnce logs the first attest-lb handshake without a connection
+	// identifier.
+	unboundOnce sync.Once
 
 	sweepEvery time.Duration
 	evictEvery time.Duration
@@ -248,6 +268,10 @@ func NewServer(cfg Config) *Server {
 	if cfg.TunnelIOTimeout <= 0 {
 		cfg.TunnelIOTimeout = defaultTunnelIOTimeout
 	}
+	bindings := cfg.Bindings
+	if bindings == nil {
+		bindings = NewBindings()
+	}
 	return &Server{
 		cfg:              cfg,
 		log:              cfg.Logger,
@@ -261,6 +285,7 @@ func NewServer(cfg Config) *Server {
 		idleAfter:        limiterIdleTimeout,
 		sessions:         make(map[string]establishedSession),
 		sessionsBy:       newHolders(),
+		bindings:         bindings,
 	}
 }
 
@@ -283,7 +308,7 @@ func (s *Server) Serve(ctx context.Context, httpSrv *http.Server) error {
 	return nil
 }
 
-// maintain evicts expired sessions and quiet
+// maintain evicts expired sessions, expired attest-lb bindings and quiet
 // rate-limiter entries. It blocks until ctx is cancelled.
 func (s *Server) maintain(ctx context.Context) {
 	for _, limiter := range []*issuer.IPRateLimiter{s.establishLimiter, s.sessionLimiter, s.clientLimiter} {
@@ -533,7 +558,8 @@ func (s *Server) handleAttestPQ(w http.ResponseWriter, r *http.Request) {
 	}
 	id := base64.RawURLEncoding.EncodeToString(sessionID)
 	now := time.Now()
-	if err := s.addSession(client, id, establishedSession{channel: channel, createdAt: now, lastUsed: now}); err != nil {
+	bound := routing.Binding{RouteDigest: digest, RouterDigest: identity.routerDigest()} // E5
+	if err := s.addSession(client, id, establishedSession{channel: channel, bound: bound, createdAt: now, lastUsed: now}); err != nil {
 		s.refuseSession(w, err)
 		return
 	}
@@ -559,12 +585,19 @@ func (s *Server) handleAttestPQ(w http.ResponseWriter, r *http.Request) {
 // front-door mode, nonce, the exact serving leaf nginx presents, the exact
 // mesh leaf, the issuing mesh CA and the applied route digest
 // (overenc.LBTranscriptHash), and the mesh leaf signs that transcript. No
-// over-encryption key exchange happens and no session is stored — the client
-// recomputes the transcript from the leaf it observed on its own TLS
-// connection and then rides that TLS.
+// over-encryption key exchange happens: the client recomputes the transcript
+// from the leaf it observed on its own TLS connection and then rides that
+// TLS. The public connection the handshake arrived on is bound to what it
+// bound (E5), so the routing listener refuses that connection's requests once
+// either digest changes (E6).
 func (s *Server) handleAttestLB(w http.ResponseWriter, r *http.Request) {
 	nonceB64, nonce := attestNonce(w, r)
 	if nonce == nil {
+		return
+	}
+	connection := r.Header.Get(routing.ConnectionHeader)
+	if len(connection) > maxConnectionIDBytes {
+		writeErr(w, http.StatusBadRequest, types.ErrorCodeInvalidRequest, "connection identifier too long")
 		return
 	}
 	applied, ok := s.routesAdmit(w)
@@ -579,6 +612,11 @@ func (s *Server) handleAttestLB(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.FrontDoorMode != types.FrontDoorModeCDS && s.cfg.FrontDoorMode != types.FrontDoorModeACME {
 		writeErr(w, http.StatusBadRequest, types.ErrorCodeExternalTLS,
 			"attest-lb requires a TEE-held serving key (public_tls.mode=cds or acme); this front door is attest-pq-only")
+		return
+	}
+	// Ahead of the report, as for attest-pq.
+	if connection != "" && !s.bindings.room(connection) {
+		writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeSessionsBusy, errBindingsFull.Error())
 		return
 	}
 	servingLeafDER, err := s.servingLeafDER()
@@ -609,6 +647,15 @@ func (s *Server) handleAttestLB(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if connection == "" {
+		s.unboundOnce.Do(func() {
+			s.log.Warn("attest-lb handshake without " + routing.ConnectionHeader + ": its connection is not bound; binding needs the nginx relay to set the header")
+		})
+	} else if err := s.bindings.bind(connection, routing.Binding{RouteDigest: digest, RouterDigest: identity.routerDigest()}); err != nil {
+		writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeSessionsBusy, err.Error())
+		return
+	}
+
 	servingLeafHash := sha256.Sum256(servingLeafDER)
 	writeJSON(w, http.StatusOK, types.AttestationBundle{
 		Version:           types.BindingAttestLB,
@@ -629,8 +676,8 @@ func (s *Server) handleAttestLB(w http.ResponseWriter, r *http.Request) {
 // (A2) or the applied one is stale (F2), each with its own code so a client
 // can tell an unconfigured router from one cut off from the CDS. It returns
 // the manifest it loaded, whose digest the handshake's evidence binds (E1);
-// the handshake loads no other (E2). Later requests in the session route by
-// whatever manifest is then applied (E3).
+// the handshake loads no other (E2). Later requests in the session route only
+// while that manifest is still the applied one (E3, E6).
 func (s *Server) routesAdmit(w http.ResponseWriter) (*routing.Applied, bool) {
 	applied, err := s.routes.Session()
 	switch {
@@ -763,11 +810,13 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Connection", "close")
 		writeErr(w, status, code, msg)
 	}
-	channel := s.useSession(r.Header.Get(sessionHeader))
-	if channel == nil {
+	id := r.Header.Get(sessionHeader)
+	session, ok := s.useSession(id)
+	if !ok {
 		refuse(http.StatusUnauthorized, types.ErrorCodeChannelError, "no over-encryption session")
 		return
 	}
+	channel := session.channel
 	if r.ContentLength > tunnelBodyLimit {
 		refuse(http.StatusRequestEntityTooLarge, types.ErrorCodeChannelError, "tunnel record exceeds 8 MiB; send a smaller request")
 		return
@@ -838,7 +887,15 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 	env.Headers = setHeaderField(env.Headers, routing.ExporterHeader,
 		base64.RawURLEncoding.EncodeToString(channel.Exporter()))
 
-	resp, err := s.routes.Forward(r, env)
+	resp, err := s.routes.Forward(r, env, session.bound)
+	var changed *routing.BindingChangedError
+	if errors.As(err, &changed) {
+		// The client attests again rather than ride a session it did not
+		// verify (E6).
+		s.endSession(id)
+		writeErr(w, http.StatusServiceUnavailable, changed.Code, "the router no longer routes by what this session attested; attest again")
+		return
+	}
 	if err != nil {
 		s.log.Warn("backend forward failed", "method", env.Method, "path", env.Path, "error", err)
 		resp = types.TunnelResponse{Status: http.StatusBadGateway, Body: []byte("backend error")}
@@ -899,8 +956,10 @@ func setHeaderField(fields []types.HeaderField, name, value string) []types.Head
 	return append(kept, types.HeaderField{Name: name, Value: value})
 }
 
-// sweep evicts idle and over-age established sessions.
+// sweep evicts idle and over-age established sessions and expired attest-lb
+// bindings.
 func (s *Server) sweep() {
+	s.bindings.prune()
 	now := time.Now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -952,25 +1011,31 @@ func (s *Server) addSession(client, id string, entry establishedSession) error {
 	return nil
 }
 
-// useSession returns the channel id names, refreshing its idle deadline. An
+// useSession returns the session id names, refreshing its idle deadline. An
 // idle-expired or over-age session is dropped and reported as absent: use
 // refreshes the idle deadline but never the absolute one, so no amount of
 // traffic keeps one key schedule alive past SessionMaxAge.
-func (s *Server) useSession(id string) *overenc.Channel {
+func (s *Server) useSession(id string) (establishedSession, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	entry, ok := s.sessions[id]
 	if !ok {
-		return nil
+		return establishedSession{}, false
 	}
 	now := time.Now()
 	if now.Sub(entry.lastUsed) > s.cfg.SessionTTL || now.Sub(entry.createdAt) > s.cfg.SessionMaxAge {
 		s.dropSession(id)
-		return nil
+		return establishedSession{}, false
 	}
 	entry.lastUsed = now
 	s.sessions[id] = entry
-	return entry.channel
+	return entry, true
+}
+
+func (s *Server) endSession(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.dropSession(id)
 }
 
 func (s *Server) dropSession(id string) {

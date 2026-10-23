@@ -62,13 +62,17 @@ func (c *testClock) Advance(d time.Duration) {
 // with a workload backend "web" holding a named leaf from the mesh CA. Its
 // /big answers with bigResponseBytes.
 type routedServer struct {
-	ts       *httptest.Server
-	state    *routing.State
-	clock    *testClock
-	signer   *operatorauth.Signer
-	keys     []*ecdsa.PublicKey
-	backend  string
-	lastHost chan string
+	ts         *httptest.Server
+	proxy      *routing.Proxy
+	transports *routing.Transports
+	bindings   *Bindings
+	env        routes.Envelope // the last envelope apply accepted
+	state      *routing.State
+	clock      *testClock
+	signer     *operatorauth.Signer
+	keys       []*ecdsa.PublicKey
+	backend    string
+	lastHost   chan string
 }
 
 const bigResponseBytes = 24 << 20
@@ -114,9 +118,12 @@ func newRoutedServer(t *testing.T, opts ...func(*routing.ProxyConfig, *Config)) 
 
 	routerIdentity := publishedMeshIdentity(t, routerLeaf, ca)
 	rs.state = routing.NewState(routing.StateConfig{Reserved: defaultReservedPaths, MeshCAs: routerIdentity.MeshCAs, Now: rs.clock.Now})
+	rs.transports = routing.NewTransports(routing.TransportConfig{MeshIdentity: routerIdentity.Credential})
+	rs.bindings = NewBindings()
 	proxyCfg := routing.ProxyConfig{
 		State:      rs.state,
-		Transports: routing.NewTransports(routing.TransportConfig{MeshIdentity: routerIdentity.Credential}),
+		Transports: rs.transports,
+		Bindings:   rs.bindings,
 	}
 	certPath, _ := writeTestServingLeaf(t)
 	srvCfg := Config{
@@ -127,11 +134,13 @@ func newRoutedServer(t *testing.T, opts ...func(*routing.ProxyConfig, *Config)) 
 		MeshIdentityCertFile: identity.certFile,
 		MeshIdentityKeyFile:  identity.keyFile,
 		MeshIdentityCAFile:   identity.caFile,
+		Bindings:             rs.bindings,
 	}
 	for _, opt := range opts {
 		opt(&proxyCfg, &srvCfg)
 	}
-	srvCfg.Routes = routing.NewProxy(proxyCfg)
+	rs.proxy = routing.NewProxy(proxyCfg)
+	srvCfg.Routes = rs.proxy
 	rs.ts = httptest.NewServer(NewServer(srvCfg).Handler())
 	t.Cleanup(rs.ts.Close)
 	return rs
@@ -235,6 +244,7 @@ func (rs *routedServer) apply(t *testing.T, revision uint64, maxAge time.Duratio
 	if _, err := rs.state.Accept(env, rs.keys); err != nil {
 		t.Fatalf("Accept(revision %d) = %v, want nil", revision, err)
 	}
+	rs.env = env
 }
 
 // handshakeCodes returns the error code each attested handshake answers with,

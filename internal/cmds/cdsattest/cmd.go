@@ -159,7 +159,8 @@ func run(ctx context.Context, cfg config) error {
 	ctx, stop := context.WithCancel(watchCtx)
 	defer stop()
 
-	engine, err := newRoutingEngine(cfg, logger)
+	bindings := NewBindings()
+	engine, err := newRoutingEngine(cfg, bindings, logger)
 	if err != nil {
 		return err
 	}
@@ -175,6 +176,7 @@ func run(ctx context.Context, cfg config) error {
 		ExpectedWorkload:       cfg.expectedWorkload,
 		MeasuredPoliciesFile:   cfg.measuredPolicies,
 		Routes:                 engine.proxy,
+		Bindings:               bindings,
 		PublishRoutes:          cfg.routing.publish,
 		SessionTTL:             cfg.sessionTTL,
 		SessionMaxAge:          cfg.sessionMaxAge,
