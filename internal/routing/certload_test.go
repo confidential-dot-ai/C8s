@@ -134,3 +134,27 @@ func TestMeshIdentityRefusesAWithdrawnGeneration(t *testing.T) {
 		t.Fatal("Credential() after the withdrawal = nil error, want one")
 	}
 }
+
+// An unchanged generation is parsed once; a published one is parsed again.
+func TestMeshIdentityParsesAGenerationOnce(t *testing.T) {
+	f := newFixture(t)
+	first, err := f.identity.Credential()
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := f.identity.Credential()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Certificate != first.Certificate {
+		t.Fatal("Credential() reparsed an unchanged generation")
+	}
+	f.renew(t, issueLeaf(t, f.mesh, "router"))
+	renewed, err := f.identity.Credential()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if renewed.Certificate == first.Certificate || !renewed.Certificate.Leaf.Equal(f.routerLeaf.Leaf) {
+		t.Fatal("Credential() after a renewal did not return the renewed leaf")
+	}
+}

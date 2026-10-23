@@ -99,9 +99,19 @@ func caPEM(cas ...*issuer.CA) string {
 // testSandboxID is the workload instance a member leaf names.
 const testSandboxID = "8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a0e8d9f"
 
+// testDigest is the allowlist digest issueLeaf stamps, the router's own
+// unless a test renews it.
+const testDigest = 0x42
+
 // issueLeaf mints a leaf the way CDS does, carrying the matched workload
 // extension when workload is non-empty.
 func issueLeaf(t testing.TB, ca *issuer.CA, workload string, dnsNames ...string) tls.Certificate {
+	t.Helper()
+	return issueStampedLeaf(t, ca, workload, testDigest, dnsNames...)
+}
+
+// issueStampedLeaf is issueLeaf under an allowlist digest of 32 digest bytes.
+func issueStampedLeaf(t testing.TB, ca *issuer.CA, workload string, digest byte, dnsNames ...string) tls.Certificate {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -123,7 +133,7 @@ func issueLeaf(t testing.TB, ca *issuer.CA, workload string, dnsNames ...string)
 		params.MatchedWorkload = &armtls.MatchedWorkload{
 			Name:             workload,
 			AllowlistVersion: "1",
-			AllowlistDigest:  bytes.Repeat([]byte{0x42}, 32),
+			AllowlistDigest:  bytes.Repeat([]byte{digest}, 32),
 		}
 	}
 	certPEM, _, err := ca.SignCSR(params)
@@ -375,6 +385,13 @@ func newFixture(t testing.TB) *fixture {
 	f.transports = NewTransports(TransportConfig{MeshIdentity: identity.Credential})
 	f.proxy = NewProxy(ProxyConfig{State: f.state, Transports: f.transports, Timeout: 10 * time.Second})
 	return f
+}
+
+// renew publishes leaf as the router's own, with the fixture's mesh CA.
+func (f *fixture) renew(t testing.TB, leaf tls.Certificate) {
+	t.Helper()
+	f.routerLeaf = leaf
+	f.publish(t, caPEM(f.mesh))
 }
 
 // publish publishes a generation holding the router's leaf and bundle as its

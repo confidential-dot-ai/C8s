@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -582,5 +583,107 @@ func TestListenerUpgradeIsIdle(t *testing.T) {
 	}
 	if elapsed := time.Since(quiet); elapsed < timeout {
 		t.Fatalf("quiet upgraded connection closed after %v, want at least %v", elapsed, timeout)
+	}
+}
+
+func TestB8WorkloadBackendDigest(t *testing.T) {
+	f := newFixture(t)
+	tests := []struct {
+		name string
+		leaf tls.Certificate
+		want int
+	}{
+		{"B8 equal digest and name", issueLeaf(t, f.mesh, "web"), http.StatusOK},
+		{"B8 equal name, other digest", issueStampedLeaf(t, f.mesh, "web", 0x43), http.StatusBadGateway},
+		{"B8 backend unnamed", issueLeaf(t, f.mesh, "", "web.default.svc"), http.StatusBadGateway},
+	}
+	for i, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			b := startBackend(t, "web", tc.leaf)
+			f.apply(t, simpleManifest(uint64(i+1), b.addr()))
+			if got := f.get("/").Code; got != tc.want {
+				t.Fatalf("GET / = %d, want %d", got, tc.want)
+			}
+			if tc.want != http.StatusOK && b.hits.Load() != 0 {
+				t.Fatalf("backend saw %d requests after a failed verification, want 0", b.hits.Load())
+			}
+		})
+	}
+}
+
+// countingListener accepts and closes connections, counting them.
+func countingListener(t *testing.T) (addr string, accepted *atomic.Int64) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	accepted = new(atomic.Int64)
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			accepted.Add(1)
+			conn.Close()
+		}
+	}()
+	return ln.Addr().String(), accepted
+}
+
+// TestB9UnnamedRouter: a router whose own leaf carries no stamp refuses every
+// workload route with 503 before dialling, and still serves address routes.
+func TestB9UnnamedRouter(t *testing.T) {
+	f := newFixture(t)
+	f.renew(t, issueLeaf(t, f.mesh, ""))
+	addr, accepted := countingListener(t)
+	external := newCA(t, "external")
+	admin := startBackend(t, "admin", issueLeaf(t, external, "", "admin.ops.svc"), webPKI)
+	f.apply(t, manifestSpec{revision: 1, hosts: map[string][]route{testHost: {
+		workloadRoute("/", "prefix", addr, "web"),
+		addressRoute("/admin", "prefix", admin.addr(), "admin.ops.svc", caPEM(external)),
+	}}})
+
+	w := f.get("/")
+	if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), noPolicyIdentity) {
+		t.Fatalf("GET / = %d %q, want %d %q", w.Code, w.Body.String(), http.StatusServiceUnavailable, noPolicyIdentity)
+	}
+	sealedHost := []types.HeaderField{{Name: "Host", Value: testHost}}
+	resp, err := f.proxy.Forward(outerRequest(testHost), types.TunnelRequest{Path: "/", Headers: sealedHost})
+	if err != nil || resp.Status != http.StatusServiceUnavailable {
+		t.Fatalf("Forward(/) = %d, %v, want %d, nil", resp.Status, err, http.StatusServiceUnavailable)
+	}
+	if n := accepted.Load(); n != 0 {
+		t.Fatalf("workload backend accepted %d connections, want 0", n)
+	}
+	if got := f.get("/admin").Code; got != http.StatusOK {
+		t.Fatalf("GET /admin = %d, want %d (B3 unaffected)", got, http.StatusOK)
+	}
+}
+
+// TestB10RenewedRouterLeafRetiresPools: a connection pooled under the
+// router's previous digest is not reused once its leaf renews under another.
+func TestB10RenewedRouterLeafRetiresPools(t *testing.T) {
+	f := newFixture(t)
+	old := startBackend(t, "old", issueLeaf(t, f.mesh, "web"))
+	f.apply(t, simpleManifest(1, old.addr()))
+	if got := f.get("/").Code; got != http.StatusOK {
+		t.Fatalf("GET / = %d, want %d", got, http.StatusOK)
+	}
+
+	f.renew(t, issueStampedLeaf(t, f.mesh, "router", 0x43))
+	if got := f.get("/").Code; got != http.StatusBadGateway {
+		t.Fatalf("GET / after the router renewed under another digest = %d, want %d", got, http.StatusBadGateway)
+	}
+	if n := old.hits.Load(); n != 1 {
+		t.Fatalf("backend under the old digest served %d requests, want 1", n)
+	}
+
+	renewed := startBackend(t, "renewed", issueStampedLeaf(t, f.mesh, "web", 0x43))
+	f.apply(t, simpleManifest(2, renewed.addr()))
+	if got := f.get("/").Code; got != http.StatusOK {
+		t.Fatalf("GET / to a backend under the router's new digest = %d, want %d", got, http.StatusOK)
 	}
 }
