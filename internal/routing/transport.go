@@ -73,6 +73,11 @@ var errBackendDigestMismatch = errors.New("routing: backend allowlist digest dif
 // parse: shorter than any real digest and never empty.
 const damagedRouterStamp = "damaged"
 
+// errRouterStampDamaged fails every workload dial while the router's own leaf
+// carries a stamp that does not parse. The fault is the router's, not the
+// backend's.
+var errRouterStampDamaged = errors.New("routing: router stamp damaged")
+
 // stampCache holds the router stamp of the last leaf it parsed, so an
 // unchanged leaf is parsed once.
 type stampCache struct {
@@ -240,7 +245,7 @@ func (t *Transports) meshClientConfig(workload string) (*tls.Config, error) {
 	}
 	digest, err := t.routerDigestOf(cred)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %w", errRouterStampDamaged, err)
 	}
 	cfg, _, err := armtls.NewMeshClientTLSConfig(&armtls.MeshConfig{
 		CertProvider: routerLeaf{cert: cred.Certificate},

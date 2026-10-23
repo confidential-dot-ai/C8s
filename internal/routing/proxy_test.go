@@ -610,15 +610,17 @@ func TestB8WorkloadBackendDigest(t *testing.T) {
 			}
 			if tc.want != http.StatusOK {
 				var logs bytes.Buffer
-				f.proxy.log = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
+				f.proxy.log = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
 				sealedHost := []types.HeaderField{{Name: "Host", Value: testHost}}
 				resp, err := f.proxy.Forward(outerRequest(testHost), types.TunnelRequest{Path: "/", Headers: sealedHost})
 				if err != nil || resp.Status != tc.want || !strings.Contains(string(resp.Body), tc.wantBody) {
 					t.Fatalf("Forward(/) = %d %q, %v, want %d %q, nil", resp.Status, resp.Body, err, tc.want, tc.wantBody)
 				}
-				// A tunnelled refusal leaves the same Warn line as the listener.
-				if !strings.Contains(logs.String(), "backend request failed") {
-					t.Fatalf("tunnelled B8 refusal logged %q, want a backend request failed line at Warn", logs.String())
+				// A tunnelled refusal leaves the same Info line as the listener,
+				// and nothing at Warn: the mismatch is expected after an
+				// allowlist write.
+				if !strings.Contains(logs.String(), "backend request refused") || strings.Contains(logs.String(), "level=WARN") {
+					t.Fatalf("tunnelled B8 refusal logged %q, want a backend request refused line at Info", logs.String())
 				}
 			}
 			if tc.want != http.StatusOK && b.hits.Load() != 0 {

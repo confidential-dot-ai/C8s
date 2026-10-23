@@ -161,11 +161,19 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // refusal logs a failed backend exchange and returns the response it gets:
-// 502 backend_digest_mismatch (B8) or the plain 502 of B5.
+// 502 backend_digest_mismatch (B8) or the plain 502 of B5. A B8 mismatch is
+// expected for a while after every allowlist write, so it logs at Info; a
+// damaged router stamp is the router's own fault and logs at Error without
+// blaming the backend.
 func (p *Proxy) refusal(err error, host, path, backend string) (int, string) {
-	p.log.Warn("backend request failed", "host", host, "path", path, "backend", backend, "error", err)
-	if errors.Is(err, errBackendDigestMismatch) {
+	switch {
+	case errors.Is(err, errBackendDigestMismatch):
+		p.log.Info("backend request refused", "host", host, "path", path, "backend", backend, "error", err)
 		return http.StatusBadGateway, backendDigestMismatch
+	case errors.Is(err, errRouterStampDamaged):
+		p.log.Error("router stamp damaged", "host", host, "path", path, "error", err)
+	default:
+		p.log.Warn("backend request failed", "host", host, "path", path, "backend", backend, "error", err)
 	}
 	return http.StatusBadGateway, "backend unavailable"
 }
