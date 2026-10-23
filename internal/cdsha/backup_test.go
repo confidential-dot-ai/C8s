@@ -136,7 +136,13 @@ func TestApplyRestoreRefusals(t *testing.T) {
 	ca := mustCA(t)
 	key, _ := x509.MarshalPKCS8PrivateKey(ca.Key)
 	good := snapshot{Core: Core{ClusterID: testCluster, Epoch: 3, RootCert: ca.Cert.Raw, Measurements: []string{"m1"}, OperatorPubKey: opPub}, Key: key}
-	enc := func(sn snapshot) []byte { b, _ := json.Marshal(sn); return b }
+	enc := func(sn snapshot) []byte {
+		var b bytes.Buffer
+		if err := encodeSnapshot(&b, sn); err != nil {
+			t.Fatal(err)
+		}
+		return b.Bytes()
+	}
 	sign := func(kind DecreeKind, s []byte) SignedDecree {
 		d := Decree{ClusterID: testCluster, IntentID: "r" + string(kind), Kind: kind, BootstrapNode: "n0", ExpiresAt: time.Now().Add(time.Hour)}
 		if kind == Restore {

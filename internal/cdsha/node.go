@@ -655,12 +655,10 @@ func (n *Node) maybeBackup(ctx context.Context) {
 var pruneSlack = 64 // a var so tests can prune small histories
 
 // maybePruneHistory (leader) bounds the allowlist history through the log,
-// so every replica drops the same entries. A replica of a release that
-// cannot apply the command would keep its history and drift, so the command
-// waits for an agreed format every member reads.
+// so every replica drops the same entries.
 func (n *Node) maybePruneHistory() {
 	keep := n.cfg.HistoryVersions
-	if (keep <= 0 && n.cfg.HistoryBytes <= 0) || n.cfg.Allowlist == nil || n.fsm.Core().format() < 2 || time.Since(n.pruneAt) < n.cfg.Timing.Backup {
+	if (keep <= 0 && n.cfg.HistoryBytes <= 0) || n.cfg.Allowlist == nil || time.Since(n.pruneAt) < n.cfg.Timing.Backup {
 		return
 	}
 	n.pruneAt = time.Now()
@@ -683,7 +681,7 @@ func (n *Node) maybePruneHistory() {
 	if have <= keep+slack {
 		return
 	}
-	if _, err := n.applyEntry(Entry{Kind: KindAllowlist, Format: 2,
+	if _, err := n.applyEntry(Entry{Kind: KindAllowlist,
 		Allowlist: &allowlist.Command{Op: allowlist.OpPruneHistory, Keep: keep, AtMS: time.Now().UnixMilli()}}); err != nil {
 		n.log.Warn("prune allowlist history", "err", err)
 		return
@@ -694,11 +692,9 @@ func (n *Node) maybePruneHistory() {
 // maybeRenewCA (leader) renews the mesh CA certificate under the cluster's
 // key once it is past half its lifetime, through the log, so every replica
 // serves the same certificate and running workloads keep their trust anchor.
-// A replica of a release that cannot apply the entry would stop, so it waits
-// for format 2, which every member reads.
 func (n *Node) maybeRenewCA() {
 	ca := n.fsm.CA()
-	if ca == nil || n.fsm.Core().format() < 2 || time.Since(n.renewAt) < n.cfg.Timing.Backup {
+	if ca == nil || time.Since(n.renewAt) < n.cfg.Timing.Backup {
 		return
 	}
 	cert := ca.Cert
@@ -711,7 +707,7 @@ func (n *Node) maybeRenewCA() {
 		n.log.Error("renew mesh CA certificate", "err", err)
 		return
 	}
-	if _, err := n.applyEntry(Entry{Kind: KindRenewCA, Format: 2, RenewCA: &RenewCAEntry{RootCert: renewed.Raw}}); err != nil {
+	if _, err := n.applyEntry(Entry{Kind: KindRenewCA, RenewCA: &RenewCAEntry{RootCert: renewed.Raw}}); err != nil {
 		n.log.Warn("renew mesh CA certificate", "err", err)
 		return
 	}
@@ -841,9 +837,9 @@ func (n *Node) handleJoin(req controlRequest) controlResponse {
 	if nodeOf(id) == "" || hostport == "" || addrID != req.ID {
 		return controlResponse{Member: true, Err: "bad join request"}
 	}
-	if reads, agreed := formatOr1(req.Reads), n.fsm.Core().format(); reads < agreed {
+	if agreed := n.fsm.Core().format(); req.Reads < agreed {
 		// It could not apply the log it would receive.
-		return controlResponse{Member: true, Err: fmt.Sprintf("replica reads format %d, the cluster writes %d", reads, agreed)}
+		return controlResponse{Member: true, Err: fmt.Sprintf("replica reads format %d, the cluster writes %d", req.Reads, agreed)}
 	}
 	f := n.r().GetConfiguration()
 	if err := f.Error(); err != nil {
@@ -876,7 +872,7 @@ func (n *Node) handleJoin(req controlRequest) controlResponse {
 	n.mu.Lock()
 	n.joinedAt[id] = time.Now()
 	n.addedAt[id] = n.joinedAt[id]
-	n.reads[id] = formatOr1(req.Reads)
+	n.reads[id] = req.Reads
 	delete(n.failing, id) // failures of an earlier membership (see noteFailure)
 	n.mu.Unlock()
 	n.log.Info("replica joined as non-voter", "id", id, "address", req.Address)
@@ -1114,7 +1110,7 @@ func (n *Node) raiseFormat(servers []raft.Server) {
 			if err != nil || st.ID != string(s.ID) {
 				return
 			}
-			v = formatOr1(st.Reads)
+			v = st.Reads
 			n.mu.Lock()
 			n.reads[s.ID] = v
 			n.mu.Unlock()
@@ -1403,8 +1399,7 @@ func (n *Node) CA() (*issuer.CA, error) {
 // Core is the agreed cluster state.
 func (n *Node) Core() Core { return n.fsm.Core() }
 
-// Decrees is the record of applied decrees, oldest first (empty while the
-// cluster's agreed format is below 2).
+// Decrees is the record of applied decrees, oldest first.
 func (n *Node) Decrees() []DecreeRecord { return n.fsm.Decrees() }
 
 // PinsDecree is the signed decree behind the current pin set, or nil when

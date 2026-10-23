@@ -20,11 +20,9 @@ func expiryToken(iat int64, id string) string {
 		enc(fmt.Appendf(nil, `{"iat":%d,"exp":%d,"jti":%q}`, iat, iat+60, id)) + ".sig"
 }
 
-// Spent tokens record their window, and long-expired ones are pruned, only
-// from format 2: below it a replica of the previous release shares the
-// group, keeps every record, and could not restore the window columns, so
-// snapshots leave them out. Either way a snapshot round-trips.
-func TestSpentTokenExpiryFollowsFormat(t *testing.T) {
+// Spent tokens record their window, long-expired ones are pruned, and the
+// windows survive a snapshot round trip.
+func TestSpentTokenExpiry(t *testing.T) {
 	_, opPub := operatorKey(t)
 	al, sec, led := testStores(t)
 	f := NewFSM(PreGenesis(testCluster, opPub), al, sec, led)
@@ -71,38 +69,15 @@ func TestSpentTokenExpiryFollowsFormat(t *testing.T) {
 	}
 	const t0, hour = int64(1_800_000_000), int64(3600)
 
-	if f.Core().format() != 1 {
-		t.Fatalf("a fresh FSM is at format %d, want 1", f.Core().format())
-	}
-	consume(expiryToken(t0, "a"))
-	consume(expiryToken(t0+10*hour, "b"))
-	src, dst := roundTrip()
-	if len(src) != 2 || !reflect.DeepEqual(src, dst) {
-		t.Fatalf("format 1 round trip:\n%v\n%v", src, dst)
-	}
-	for _, row := range src {
-		if row["exp_unix"] != int64(0) || row["iat_unix"] != int64(0) {
-			t.Fatalf("format 1 recorded a window: %v", row)
-		}
-	}
-	s, err := f.Snapshot()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if rows := s.(*fsmSnapshot).sn.Allowlist["used_token"]; len(rows) != 2 || len(rows[0]) != 1 || len(rows[1]) != 1 {
-		t.Fatalf("format 1 snapshot carries the window columns: %v", rows)
-	}
-
-	apply(Entry{Kind: KindFormat, SetFormat: 2})
 	consume(expiryToken(t0+20*hour, "c"))
 	consume(expiryToken(t0+20*hour+30, "d"))
-	src, dst = roundTrip()
-	if len(src) != 4 || !reflect.DeepEqual(src, dst) {
-		t.Fatalf("format 2 round trip:\n%v\n%v", src, dst)
+	src, dst := roundTrip()
+	if len(src) != 2 || !reflect.DeepEqual(src, dst) {
+		t.Fatalf("round trip:\n%v\n%v", src, dst)
 	}
-	consume(expiryToken(t0+30*hour, "e")) // prunes c and d, keeps a and b
+	consume(expiryToken(t0+30*hour, "e")) // prunes c and d
 	src, dst = roundTrip()
-	if len(src) != 3 || !reflect.DeepEqual(src, dst) {
+	if len(src) != 1 || !reflect.DeepEqual(src, dst) {
 		t.Fatalf("after pruning:\n%v\n%v", src, dst)
 	}
 	windows := 0

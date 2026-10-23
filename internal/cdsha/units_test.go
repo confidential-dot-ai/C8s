@@ -2,7 +2,6 @@ package cdsha
 
 import (
 	"bytes"
-	"compress/gzip"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -16,6 +15,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/raft"
+	"github.com/klauspost/compress/zstd"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 
@@ -336,12 +336,7 @@ func TestFSMEdges(t *testing.T) {
 	if err := (&fsmSnapshot{}).Persist(&memSink{fail: true}); err == nil {
 		t.Fatal("failed sink reported success")
 	}
-	// A snapshot in the earlier single-object form (older backups) restores.
-	old, _ := json.Marshal(snapshot{Core: PreGenesis(testCluster, opPub)})
-	if err := f2.Restore(io.NopCloser(bytes.NewReader(old))); err != nil {
-		t.Fatalf("earlier snapshot form: %v", err)
-	}
-	for _, bad := range [][]byte{{0x1f, 0x8b, 0}, gzipped(t, "{"), gzipped(t, "{}\n{\"t\":")} {
+	for _, bad := range [][]byte{zstdOf(t, "{"), zstdOf(t, "{}\n{\"t\":")} {
 		if err := f2.Restore(io.NopCloser(bytes.NewReader(bad))); err == nil {
 			t.Fatalf("broken snapshot %q restored", bad)
 		}
@@ -384,15 +379,13 @@ func TestCertHolderRenews(t *testing.T) {
 
 var _ = os.Stat
 
-func gzipped(t *testing.T, s string) []byte {
+func zstdOf(t *testing.T, s string) []byte {
 	t.Helper()
-	var b bytes.Buffer
-	zw := gzip.NewWriter(&b)
-	_, _ = zw.Write([]byte(s))
-	if err := zw.Close(); err != nil {
+	e, err := zstd.NewWriter(nil)
+	if err != nil {
 		t.Fatal(err)
 	}
-	return b.Bytes()
+	return e.EncodeAll([]byte(s), nil)
 }
 
 // A snapshot keeps the allowlist history byte for byte: the restored store

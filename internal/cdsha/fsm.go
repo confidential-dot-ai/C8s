@@ -1,9 +1,7 @@
 package cdsha
 
 import (
-	"bufio"
 	"bytes"
-	"compress/gzip"
 	"crypto/x509"
 	"encoding/json"
 	"errors"
@@ -35,14 +33,14 @@ const (
 	KindDecree    EntryKind = "decree"
 	KindRestore   EntryKind = "restore"
 	// KindRenewCA replaces the mesh CA certificate with one renewed under the
-	// same key (format 2).
+	// same key.
 	KindRenewCA EntryKind = "renew_ca"
 )
 
 // Entry is one Raft log entry. Exactly one payload is set.
 type Entry struct {
 	Kind EntryKind `json:"kind"`
-	// Format is the oldest format that can apply the entry (0 is 1).
+	// Format is the oldest format that can apply the entry (0 is baseFormat).
 	Format    uint32                 `json:"format,omitempty"`
 	SetFormat uint32                 `json:"set_format,omitempty"` // KindFormat
 	Allowlist *allowlist.Command     `json:"allowlist,omitempty"`
@@ -100,7 +98,7 @@ type FSM struct {
 
 	applied atomic.Uint64
 	// decrees is the record of applied decrees (newest last, at most
-	// maxDecreeRecord), kept from format 2 on: the audit trail an operator
+	// maxDecreeRecord): the audit trail an operator
 	// or user reads over the attested channel (GET /ha/decrees), where the
 	// decree objects in Kubernetes are only the host's word.
 	decrees []DecreeRecord
@@ -152,7 +150,7 @@ func (f *FSM) Apply(l *raft.Log) any {
 	if err := json.Unmarshal(l.Data, &e); err != nil {
 		return f.stop(fmt.Errorf("decode log entry %d: %w", l.Index, err))
 	}
-	if formatOr1(e.Format) > f.readable {
+	if formatOrBase(e.Format) > f.readable {
 		return f.stop(fmt.Errorf("%w: entry %d needs format %d, this replica reads up to %d", ErrNewerFormat, l.Index, e.Format, f.readable))
 	}
 	res := f.apply(e)
@@ -183,7 +181,7 @@ func (f *FSM) apply(e Entry) any {
 		}
 		return nil
 	case e.Kind == KindAllowlist && e.Allowlist != nil:
-		return f.allowlist.ApplyWith(*e.Allowlist, f.allowlistOptions())
+		return f.allowlist.Apply(*e.Allowlist)
 	case e.Kind == KindSecret && e.Secret != nil:
 		return f.secrets.Apply(*e.Secret)
 	case e.Kind == KindBinding && e.Binding != nil:
@@ -196,14 +194,6 @@ func (f *FSM) apply(e Entry) any {
 		return f.applyRenewCA(*e.RenewCA)
 	}
 	return fmt.Errorf("%w of kind %q", errMalformed, e.Kind)
-}
-
-// allowlistOptions are the allowlist behaviors the agreed format turns on.
-// The format is replicated state, so every replica applies an entry alike.
-func (f *FSM) allowlistOptions() allowlist.ApplyOptions {
-	f.mu.RLock()
-	defer f.mu.RUnlock()
-	return allowlist.ApplyOptions{TokenExpiry: f.core.format() >= 2}
 }
 
 func (f *FSM) applyDecree(de DecreeEntry) DecreeResult {
@@ -232,11 +222,8 @@ type DecreeRecord struct {
 // maxDecreeRecord bounds the record; older decrees fall off the front.
 const maxDecreeRecord = 256
 
-// record appends to the decree record (f.mu held), from format 2 on.
+// record appends to the decree record (f.mu held).
 func (f *FSM) record(sd SignedDecree, atMS int64, epoch uint64) {
-	if f.core.format() < 2 {
-		return
-	}
 	f.decrees = append(f.decrees, DecreeRecord{Decree: sd, AtMS: atMS, Epoch: epoch})
 	if over := len(f.decrees) - maxDecreeRecord; over > 0 {
 		f.decrees = slices.Clone(f.decrees[over:])
@@ -331,12 +318,11 @@ func nextCore(cur Core, de DecreeEntry) (Core, *issuer.CA, error) {
 
 // snapshot is the whole replicated state.
 type snapshot struct {
-	// Index is the log index the snapshot was taken at (0 in snapshots and
-	// backups from before it was recorded).
+	// Index is the log index the snapshot was taken at.
 	Index uint64 `json:"index,omitempty"`
-	// Format is the encoding of the snapshot (0 is 1).
+	// Format is the encoding of the snapshot (0 is baseFormat).
 	Format uint32 `json:"format,omitempty"`
-	// Decrees is the decree record (format 2 on).
+	// Decrees is the decree record.
 	Decrees   []DecreeRecord          `json:"decrees,omitempty"`
 	Core      Core                    `json:"core"`
 	Key       []byte                  `json:"key,omitempty"`
@@ -360,11 +346,8 @@ var _ raft.ConfigurationStore = (*FSM)(nil)
 // as a stream, so the state is held once, not once per encoding stage.
 func (f *FSM) Snapshot() (raft.FSMSnapshot, error) {
 	f.mu.RLock()
-	sn := snapshot{Index: f.applied.Load(), Core: f.core.clone()}
+	sn := snapshot{Index: f.applied.Load(), Core: f.core.clone(), Decrees: slices.Clone(f.decrees)}
 	sn.Format = sn.Core.format() // what every member reads, not what this one could write
-	if sn.Format >= 2 {
-		sn.Decrees = slices.Clone(f.decrees)
-	}
 	if f.ca != nil {
 		key, err := x509.MarshalPKCS8PrivateKey(f.ca.Key)
 		if err != nil {
@@ -377,9 +360,6 @@ func (f *FSM) Snapshot() (raft.FSMSnapshot, error) {
 	al, err := f.allowlist.Dump()
 	if err != nil {
 		return nil, err
-	}
-	if sn.Format < 2 {
-		al.StripTokenExpiry() // a format 1 replica cannot restore the columns
 	}
 	sn.Allowlist, sn.Secrets, sn.Bindings = al, f.secrets.Dump(), f.ledger.Dump()
 	return &fsmSnapshot{sn: sn}, nil
@@ -397,43 +377,28 @@ func (f *FSM) Restore(rc io.ReadCloser) error {
 	// stream that outlived the member's removal and re-addition) would roll
 	// a serving replica back; the error keeps the state, and the leader
 	// sends the log instead.
-	if applied := f.applied.Load(); sn.Index != 0 && sn.Index < applied {
+	if applied := f.applied.Load(); sn.Index < applied {
 		return fmt.Errorf("%w: snapshot at index %d, applied %d", ErrStaleSnapshot, sn.Index, applied)
 	}
 	if err := f.restore(sn); err != nil {
 		return err
 	}
-	if sn.Index != 0 {
-		f.applied.Store(sn.Index)
-	}
+	f.applied.Store(sn.Index)
 	return nil
 }
 
 // ErrStaleSnapshot refuses a snapshot older than the state already applied.
 var ErrStaleSnapshot = errors.New("cds-ha: refusing a snapshot older than the applied state")
 
-// A snapshot is compressed JSON lines: a header line with everything but the
-// allowlist tables, then one line per allowlist row (a one-row
+// A snapshot is zstd-compressed JSON lines: a header line with everything
+// but the allowlist tables, then one line per allowlist row (a one-row
 // allowlist.Snapshot, which keeps BLOB columns apart). The allowlist history
 // keeps a whole document per version, so it is most of the state; lines keep
-// encoding and decoding to one row at a time.
-//
-// From cluster format 2 the compression is zstd with a window reaching back
-// past the previous version, so each near-copy of the document is stored as
-// a reference; gzip's 32 KiB window shares nothing between versions of a
-// document larger than that, and a snapshot (and every backup and every
-// snapshot sent to a joining replica) grew by a compressed document per
-// version. Format 1 snapshots stay gzip, which every release reads. A
-// snapshot that starts with neither magic is the earlier single JSON object
-// (older backups).
+// encoding and decoding to one row at a time, and the zstd window reaches
+// back past the previous version, so each near-copy of a document is stored
+// as a reference.
 func encodeSnapshot(w io.Writer, sn snapshot) error {
-	var zw io.WriteCloser
-	var err error
-	if sn.Core.format() >= 2 {
-		zw, err = zstd.NewWriter(w, zstd.WithWindowSize(snapshotWindow), zstd.WithEncoderConcurrency(1))
-	} else {
-		zw, err = gzip.NewWriterLevel(w, gzip.BestSpeed)
-	}
+	zw, err := zstd.NewWriter(w, zstd.WithWindowSize(snapshotWindow), zstd.WithEncoderConcurrency(1))
 	if err != nil {
 		return err
 	}
@@ -454,50 +419,28 @@ func encodeSnapshot(w io.Writer, sn snapshot) error {
 	return zw.Close()
 }
 
-// snapshotWindow is the zstd window of a format 2 snapshot: enough to reach
+// snapshotWindow is the zstd window of a snapshot: enough to reach
 // the previous version of allowlist documents of several MiB, small enough
 // to keep encoder and decoder memory modest.
 const snapshotWindow = 16 << 20
 
-var zstdMagic = []byte{0x28, 0xb5, 0x2f, 0xfd}
-
+// decodeSnapshot reads a snapshot in a format from baseFormat to readable.
 func decodeSnapshot(r io.Reader, readable uint32) (snapshot, error) {
-	sn, err := decodeSnapshotAny(r)
-	if err == nil && (formatOr1(sn.Format) > readable || sn.Core.format() > readable) {
-		return snapshot{}, fmt.Errorf("%w: snapshot format %d, cluster format %d, this replica reads up to %d",
-			ErrNewerFormat, formatOr1(sn.Format), sn.Core.format(), readable)
+	d, err := zstd.NewReader(r, zstd.WithDecoderMaxWindow(snapshotWindow), zstd.WithDecoderConcurrency(1))
+	if err != nil {
+		return snapshot{}, fmt.Errorf("decode snapshot: %w", err)
 	}
-	return sn, err
-}
-
-func decodeSnapshotAny(r io.Reader) (snapshot, error) {
+	defer d.Close()
 	var sn snapshot
-	br := bufio.NewReader(r)
-	magic, _ := br.Peek(4)
-	var zr io.Reader
-	switch {
-	case bytes.HasPrefix(magic, zstdMagic):
-		d, err := zstd.NewReader(br, zstd.WithDecoderMaxWindow(snapshotWindow), zstd.WithDecoderConcurrency(1))
-		if err != nil {
-			return snapshot{}, fmt.Errorf("decode snapshot: %w", err)
-		}
-		defer d.Close()
-		zr = d
-	case len(magic) >= 2 && magic[0] == 0x1f && magic[1] == 0x8b:
-		g, err := gzip.NewReader(br)
-		if err != nil {
-			return snapshot{}, fmt.Errorf("decode snapshot: %w", err)
-		}
-		zr = g
-	default:
-		if err := json.NewDecoder(br).Decode(&sn); err != nil {
-			return snapshot{}, fmt.Errorf("decode snapshot: %w", err)
-		}
-		return sn, nil
-	}
-	dec := json.NewDecoder(zr)
+	dec := json.NewDecoder(d)
 	if err := dec.Decode(&sn); err != nil {
 		return snapshot{}, fmt.Errorf("decode snapshot: %w", err)
+	}
+	switch v, c := formatOrBase(sn.Format), sn.Core.format(); {
+	case v > readable || c > readable:
+		return snapshot{}, fmt.Errorf("%w: snapshot format %d, cluster format %d, this replica reads up to %d", ErrNewerFormat, v, c, readable)
+	case v < baseFormat || c < baseFormat:
+		return snapshot{}, fmt.Errorf("cds-ha: snapshot format %d, cluster format %d: older than this release reads (%d)", v, c, baseFormat)
 	}
 	sn.Allowlist = allowlist.Snapshot{}
 	for {
@@ -552,9 +495,6 @@ func (s *fsmSnapshot) Release() { s.sn = snapshot{} }
 func (f *FSM) applyRenewCA(re RenewCAEntry) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.core.format() < 2 {
-		return errors.New("cds-ha: CA renewal needs format 2")
-	}
 	if f.ca == nil {
 		return errors.New("cds-ha: no mesh CA to renew")
 	}
