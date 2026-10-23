@@ -110,8 +110,16 @@ type imageManifest struct {
 			SHA256 string `json:"sha256"`
 		} `json:"disk_image"`
 	} `json:"outputs"`
-	TDX map[string]string `json:"tdx"`
+	// The build manifest's tdx object also carries the firmware entry.
+	TDX struct {
+		MRTD  string `json:"mrtd"`
+		RTMR1 string `json:"rtmr1"`
+		RTMR2 string `json:"rtmr2"`
+	} `json:"tdx"`
 }
+
+// registers are the launch measurements the TDX guest must reproduce.
+func (m *imageManifest) registers() []string { return []string{m.TDX.MRTD, m.TDX.RTMR1, m.TDX.RTMR2} }
 
 func validateManifest(raw []byte, p pins) (*imageManifest, error) {
 	if err := validatePins(p); err != nil {
@@ -145,8 +153,8 @@ func validateManifestStructure(raw []byte, p pins) (*imageManifest, error) {
 	if m.Outputs.DiskImage.SHA256 != p.str("diskSHA256") {
 		return nil, errors.New("published disk differs")
 	}
-	for _, key := range []string{"mrtd", "rtmr1", "rtmr2"} {
-		if !hexRTMR.MatchString(m.TDX[key]) {
+	for _, register := range m.registers() {
+		if !hexRTMR.MatchString(register) {
 			return nil, errors.New("incomplete TDX identity")
 		}
 	}

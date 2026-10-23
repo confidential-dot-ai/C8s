@@ -170,8 +170,8 @@ func renderBundle(in bundleInputs) (*identity, error) {
 	if err := json.Unmarshal(raw, &manifest); err != nil || manifest.Build.Platform != "tdx" {
 		return nil, errors.New("complete TDX manifest required")
 	}
-	for _, key := range []string{"mrtd", "rtmr1", "rtmr2"} {
-		if !hexRTMR.MatchString(manifest.TDX[key]) {
+	for _, register := range manifest.registers() {
+		if !hexRTMR.MatchString(register) {
 			return nil, errors.New("complete TDX manifest required")
 		}
 	}

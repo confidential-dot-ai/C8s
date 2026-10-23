@@ -47,8 +47,8 @@ func validateBootManifest(data []byte, p bootPins) error {
 	if m.Inputs.BaseImage.SHA256 != p.DiskSHA256 {
 		return errors.New("diagnostic disk digest differs")
 	}
-	for _, k := range []string{"mrtd", "rtmr1", "rtmr2"} {
-		if !hexRTMR.MatchString(m.TDX[k]) {
+	for _, register := range m.registers() {
+		if !hexRTMR.MatchString(register) {
 			return errors.New("incomplete TDX identity")
 		}
 	}

@@ -71,7 +71,8 @@ func TestProductionPinRejectsMixedSourcesAndMutatedManifest(t *testing.T) {
 	for _, change := range []string{"valid", "disk", "platform", "rtmr2"} {
 		manifest := map[string]any{"build": map[string]any{"platform": "tdx"}, "inputs": map[string]any{"base_image": map[string]any{"sha256": p.str("diskSHA256")}},
 			"outputs": map[string]any{"disk_image": map[string]any{"sha256": p.str("diskSHA256")}},
-			"tdx":     map[string]any{"mrtd": strings.Repeat("a", 96), "rtmr1": strings.Repeat("a", 96), "rtmr2": strings.Repeat("a", 96)}}
+			"tdx": map[string]any{"mrtd": strings.Repeat("a", 96), "rtmr1": strings.Repeat("a", 96), "rtmr2": strings.Repeat("a", 96),
+				"firmware": map[string]any{"path": "OVMF.tdx.fd", "sha256": strings.Repeat("d", 64)}}}
 		switch change {
 		case "disk":
 			manifest["outputs"].(map[string]any)["disk_image"].(map[string]any)["sha256"] = strings.Repeat("f", 64)

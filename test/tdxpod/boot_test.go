@@ -98,7 +98,9 @@ func TestBootManifestRejectsChangedBytesBeforeParsing(t *testing.T) {
 func TestBootManifestRequiresPairedDiskAndAllTDXRegisters(t *testing.T) {
 	disk := strings.Repeat("2", 64)
 	manifest := map[string]any{"inputs": map[string]any{"base_image": map[string]any{"sha256": disk}},
-		"tdx": map[string]any{"mrtd": strings.Repeat("a", 96), "rtmr1": strings.Repeat("b", 96), "rtmr2": strings.Repeat("c", 96)}}
+		"tdx": map[string]any{"mrtd": strings.Repeat("a", 96), "rtmr1": strings.Repeat("b", 96), "rtmr2": strings.Repeat("c", 96),
+			// The published manifest nests the firmware entry beside the registers.
+			"firmware": map[string]any{"path": "OVMF.tdx.fd", "sha256": strings.Repeat("d", 64)}}}
 	data, _ := json.Marshal(manifest)
 	if err := validateBootManifest(data, bootPins{ManifestSHA256: sha256Hex(data), DiskSHA256: disk}); err != nil {
 		t.Fatal(err)
