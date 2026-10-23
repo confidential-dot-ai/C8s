@@ -14,12 +14,15 @@ import (
 
 func TestRecoveryFatalReplayRetryDoesNotRestart(t *testing.T) {
 	for _, tc := range []struct {
-		name         string
-		fatal, prior bool
+		name                     string
+		fatal, prior, configTail bool
 	}{
-		{"ordinary refusal", false, true},
-		{"fatal with prior snapshot", true, true},
-		{"fatal without prior snapshot", true, false},
+		{"ordinary refusal", false, true, false},
+		{"ordinary refusal then configuration", false, true, true},
+		{"fatal with prior snapshot", true, true, false},
+		{"fatal then configuration with prior snapshot", true, true, true},
+		{"fatal without prior snapshot", true, false, false},
+		{"fatal then configuration without prior snapshot", true, false, true},
 	} {
 		fatal := tc.fatal
 		t.Run(tc.name, func(t *testing.T) {
@@ -69,6 +72,13 @@ func TestRecoveryFatalReplayRetryDoesNotRestart(t *testing.T) {
 			if err := n.logs.StoreLog(&raft.Log{Index: index + 1, Term: old.CurrentTerm(), Type: raft.LogCommand, Data: raw}); err != nil {
 				t.Fatal(err)
 			}
+			last := index + 1
+			if tc.configTail {
+				last++
+				if err := n.logs.StoreLog(&raft.Log{Index: last, Term: old.CurrentTerm(), Type: raft.LogConfiguration, Data: raft.EncodeConfiguration(n.solo())}); err != nil {
+					t.Fatal(err)
+				}
+			}
 			decree := signDecree(t, key, Decree{Kind: Recover, BootstrapNode: "n0", BaseEpoch: n.Core().Epoch})
 			n.snaps.mu.RLock()
 			priorExists, priorID, priorDigest := n.snaps.exists, n.snaps.meta.ID, SnapshotSHA256(n.snaps.body)
@@ -81,7 +91,7 @@ func TestRecoveryFatalReplayRetryDoesNotRestart(t *testing.T) {
 				t.Fatal(err)
 			}
 			priorLogs := make(map[uint64]raft.Log)
-			for i := first; i <= index+1; i++ {
+			for i := first; i <= last; i++ {
 				var log raft.Log
 				if err := n.logs.GetLog(i, &log); err != nil {
 					t.Fatal(err)
