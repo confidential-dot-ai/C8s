@@ -145,10 +145,11 @@ still takes its scripts and actions from this one, at the default branch.
 The manual `tdx-metal-e2e.yml` input `pod_acceptance: true` starts a real CDS
 server and two standalone Pod guests. The image, image manifest, disk, mesh
 container and matching CLI source are pinned in
-`.github/scripts/fixtures/pod-connected/production-image.json`. Image profile
+`test/tdxpod/fixtures/pod-connected/production-image.json`. Image profile
 and component sources must agree. Update the complete pin set together after
 a paired production image build; the harness does not accept a development
-image or substitute a fake CDS.
+image or substitute a fake CDS. The lane tool (`test/tdxpod`) and the paired
+CLI build with the dispatched commit's Go toolchain.
 
 ```sh
 gh workflow run tdx-metal-e2e.yml --repo confidential-dot-ai/C8s \
@@ -188,12 +189,12 @@ the privileged Linux suite supplies controlled listener and source-NAT checks.
 ### Diagnosing Pod runtime startup on TDX
 
 The manual input `pod_runtime_diagnostic: true` uses separate immutable pins in
-`.github/scripts/fixtures/pod-connected/development-image.json` and the same real
-CDS/two-Pod provisioning. It collects bounded systemd unit, journal, CRI and
-containerd-plugin observations through the run-owned Pod consoles. Private raw
-console transcripts are not uploaded; public evidence contains fixed projections
-with sensitive records omitted. UID checks bind observations and cleanup to the
-resources created by that run.
+`test/tdxpod/fixtures/pod-connected/development-image.json` and the same lane
+tool, real CDS and two-Pod provisioning. It collects bounded systemd unit,
+journal, CRI and containerd-plugin observations through the run-owned Pod
+consoles. Private raw console transcripts are not uploaded; public evidence
+contains fixed projections with sensitive records omitted. UID checks bind
+observations and cleanup to the resources created by that run.
 
 Runtime diagnostics use their own serialized workflow queue and request eight
 CPUs and 32 GiB of guest memory, plus virtualization overhead. Scheduling is
@@ -227,7 +228,7 @@ at run time and fails by naming the missing tag, with the manual image build
 command that publishes it. The fixture Pod carries no mesh endpoint; the guest
 injects the measured one.
 The job builds the paired CLI from `pod_image_source` and the lane tool
-(`test/poddiag`) from the dispatched commit with the source commit's Go toolchain,
+(`test/tdxpod`) from the dispatched commit with the source commit's Go toolchain,
 so the dispatched tree's `go` directive must not exceed the source's.
 It uses the existing TDX launcher, a private root import and run-owned VM and
 launch Secret. Cleanup always runs; `keep_cvm` does not retain diagnostic VMs.

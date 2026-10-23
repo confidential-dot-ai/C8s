@@ -83,10 +83,12 @@ jobs:
           HISTORICAL: ${{ inputs.pod_diagnostic }}
           RUNTIME: ${{ inputs.pod_runtime_diagnostic }}
         run: |
-          python3 - <<'PY'
-          import os
-          assert sum(os.environ[key] == 'true' for key in ('ACCEPTANCE', 'HISTORICAL', 'RUNTIME')) <= 1, 'Select only one Pod mode'
-          PY
+          set -euo pipefail
+          selected=0
+          for mode in "$ACCEPTANCE" "$HISTORICAL" "$RUNTIME"; do
+            if [[ "$mode" == true ]]; then selected=$((selected + 1)); fi
+          done
+          if [[ "$selected" -gt 1 ]]; then echo "::error::Select only one Pod mode"; exit 1; fi
 
   e2e:
     if: ${{ !inputs.pod_diagnostic && !inputs.pod_acceptance && !inputs.pod_runtime_diagnostic }}
@@ -163,20 +165,20 @@ jobs:
             chmod +x "$RUNNER_TEMP/pod-diagnostic-bin/kubectl"
             echo "$RUNNER_TEMP/pod-diagnostic-bin" >> "$GITHUB_PATH"
           fi
-          go test ./test/poddiag/
-          go build -o "$RUNNER_TEMP/pod-diagnostic-bin/poddiag" ./test/poddiag
+          go test ./test/tdxpod/
+          go build -o "$RUNNER_TEMP/pod-diagnostic-bin/tdxpod" ./test/tdxpod
 
       - name: Run the owned diagnostic VM
         timeout-minutes: 38
         env:
           GH_TOKEN: ${{ github.token }}
           POD_DIAGNOSTIC_SOURCE: ${{ steps.source.outputs.sha }}
-        run: "\"$RUNNER_TEMP/pod-diagnostic-bin/poddiag\" run"
+        run: "\"$RUNNER_TEMP/pod-diagnostic-bin/tdxpod\" boot run"
 
       - name: Remove this run's VM, launch Secret and private import
         if: always()
         timeout-minutes: 10
-        run: "\"$RUNNER_TEMP/pod-diagnostic-bin/poddiag\" cleanup"
+        run: "\"$RUNNER_TEMP/pod-diagnostic-bin/tdxpod\" boot cleanup"
 
       - name: Retain bounded boot evidence only
         if: always()
@@ -201,24 +203,20 @@ jobs:
           persist-credentials: false
           ref: ${{ github.sha }}
 
-      - name: Select the production image's paired source
+      - uses: ./.github/actions/setup-go-c8s
+        with:
+          cache: 'false'
+
+      - name: Build the lane tool and select the production image's paired source
         id: pins
         env:
           DIAGNOSTIC: ${{ inputs.pod_diagnostic }}
         run: |
+          set -euo pipefail
           test "$DIAGNOSTIC" != true
-          python3 - <<'PY'
-          import importlib.util, json, os, sys
-          from pathlib import Path
-          sys.path.insert(0, '.github/scripts')
-          spec = importlib.util.spec_from_file_location('acceptance', '.github/scripts/tdx-pod-acceptance.py')
-          module = importlib.util.module_from_spec(spec)
-          spec.loader.exec_module(module)
-          pins = json.loads((module.FIXTURE / 'production-image.json').read_text())
-          module.validate_pins(pins)
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-              output.write('source=' + pins['source'] + '\n')
-          PY
+          mkdir -p "$RUNNER_TEMP/pod-acceptance-bin"
+          go build -o "$RUNNER_TEMP/pod-acceptance-bin/tdxpod" ./test/tdxpod
+          "$RUNNER_TEMP/pod-acceptance-bin/tdxpod" pins production >> "$GITHUB_OUTPUT"
 
       - name: Check out the clean CLI source paired with the image
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -226,11 +224,6 @@ jobs:
           persist-credentials: false
           ref: ${{ steps.pins.outputs.source }}
           path: acceptance-source
-
-      - uses: ./.github/actions/setup-go-c8s
-        with:
-          go-version-file: acceptance-source/go.mod
-          cache: 'false'
 
       - name: Prepare paired CLI, public certificate probe and native tools
         timeout-minutes: 10
@@ -253,20 +246,19 @@ jobs:
           printf '%s  %s\n' ec6ee5619290e19590f3f9cd8b8dfce1affe0380eaaca77b3784c7b1acea86a6 "$RUNNER_TEMP/pod-acceptance-bin/virtctl" | sha256sum -c -
           chmod +x "$RUNNER_TEMP/pod-acceptance-bin/virtctl"
           echo "$RUNNER_TEMP/pod-acceptance-bin" >> "$GITHUB_PATH"
-          python3 .github/scripts/tests/test_tdx_pod_acceptance.py
-          python3 .github/scripts/fixtures/pod-connected/test_fixture.py
-          go test ./.github/scripts/pod-mesh-probe
+          go test ./test/tdxpod/ ./.github/scripts/pod-mesh-probe
+          python3 test/tdxpod/fixtures/pod-connected/test_app.py
 
       - name: Run server and two Pods through timed credential renewal
         timeout-minutes: 125
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 .github/scripts/tdx-pod-acceptance.py run
+        run: "\"$RUNNER_TEMP/pod-acceptance-bin/tdxpod\" acceptance run"
 
       - name: Remove this run's VMs, Services, Secrets and private disks
         if: always()
         timeout-minutes: 10
-        run: python3 .github/scripts/tdx-pod-acceptance.py cleanup
+        run: "\"$RUNNER_TEMP/pod-acceptance-bin/tdxpod\" acceptance cleanup"
 
       - name: Retain bounded public acceptance evidence
         if: always()
@@ -291,21 +283,17 @@ jobs:
           persist-credentials: false
           ref: ${{ github.sha }}
 
-      - name: Select the development image's paired source
+      - uses: ./.github/actions/setup-go-c8s
+        with:
+          cache: 'false'
+
+      - name: Build the lane tool and select the development image's paired source
         id: pins
         run: |
-          python3 - <<'PY'
-          import importlib.util, json, os, sys
-          from pathlib import Path
-          sys.path.insert(0, '.github/scripts')
-          spec = importlib.util.spec_from_file_location('runtime_diagnostic', '.github/scripts/tdx-pod-runtime-diagnostic.py')
-          module = importlib.util.module_from_spec(spec)
-          spec.loader.exec_module(module)
-          pins = json.loads((module.acceptance.FIXTURE / 'development-image.json').read_text())
-          module.validate_diagnostic_pins(pins)
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-              output.write('source=' + pins['source'] + '\n')
-          PY
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/pod-runtime-diagnostic-bin"
+          go build -o "$RUNNER_TEMP/pod-runtime-diagnostic-bin/tdxpod" ./test/tdxpod
+          "$RUNNER_TEMP/pod-runtime-diagnostic-bin/tdxpod" pins development >> "$GITHUB_OUTPUT"
 
       - name: Check out the clean CLI source paired with the image
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -313,11 +301,6 @@ jobs:
           persist-credentials: false
           ref: ${{ steps.pins.outputs.source }}
           path: runtime-diagnostic-source
-
-      - uses: ./.github/actions/setup-go-c8s
-        with:
-          go-version-file: runtime-diagnostic-source/go.mod
-          cache: 'false'
 
       - name: Prepare paired CLI, PTY console and native tools
         timeout-minutes: 10
@@ -343,20 +326,19 @@ jobs:
             sudo apt-get update -qq
             sudo apt-get install -y -qq --no-install-recommends expect jq
           fi
-          python3 .github/scripts/tests/test_tdx_pod_runtime_diagnostic.py
-          python3 .github/scripts/tests/test_tdx_pod_acceptance.py
-          python3 .github/scripts/fixtures/pod-connected/test_fixture.py
+          go test ./test/tdxpod/
+          python3 test/tdxpod/fixtures/pod-connected/test_app.py
 
       - name: Observe the owned server and two development Pod guests
         timeout-minutes: 55
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 .github/scripts/tdx-pod-runtime-diagnostic.py run
+        run: "\"$RUNNER_TEMP/pod-runtime-diagnostic-bin/tdxpod\" runtime run"
 
       - name: Remove this run's VMs, Services, Secrets and private disks
         if: always()
         timeout-minutes: 10
-        run: python3 .github/scripts/tdx-pod-runtime-diagnostic.py cleanup
+        run: "\"$RUNNER_TEMP/pod-runtime-diagnostic-bin/tdxpod\" runtime cleanup"
 
       - name: Retain projected runtime observations only
         if: always()
