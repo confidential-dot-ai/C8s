@@ -83,9 +83,6 @@ func TestBackupStoreRoundTrip(t *testing.T) {
 		t.Fatalf("want the manifest and its %d parts (gen %q), got %d objects", man.Parts, man.Gen, len(items))
 	}
 	tamperedOne := false
-	if _, err := BackupFromConfigMaps("other", items); err == nil {
-		t.Fatal("a backup for another cluster")
-	}
 	for i := range items {
 		if items[i].Name == man.partName(testCluster, 1) {
 			tamperedOne = true

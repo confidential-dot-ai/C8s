@@ -96,12 +96,7 @@ func newSolo(t *testing.T, mutate func(*Config)) *solo {
 	return s
 }
 
-func (s *solo) sign(d Decree) SignedDecree {
-	s.t.Helper()
-	return signDecree(s.t, s.opKey, d)
-}
-
-func (s *solo) decree(d Decree) string { return s.decrees.put(s.sign(d)) }
+func (s *solo) decree(d Decree) string { return s.decrees.put(signDecree(s.t, s.opKey, d)) }
 
 func (s *solo) applied(name string, epoch uint64) {
 	s.t.Helper()
@@ -220,7 +215,7 @@ func TestRestoreRefusals(t *testing.T) {
 	ctx := context.Background()
 	snap := []byte("{}")
 	restore := func(node string) SignedDecree {
-		return s.sign(Decree{Kind: Restore, BootstrapNode: node, SnapshotSHA256: SnapshotSHA256(snap)})
+		return signDecree(t, s.opKey, Decree{Kind: Restore, BootstrapNode: node, SnapshotSHA256: SnapshotSHA256(snap)})
 	}
 	_, pub := operatorKey(t)
 	cold, err := NewNode(soloConfig(t, "n1", freeAddr(t), pub, nil))
@@ -230,7 +225,7 @@ func TestRestoreRefusals(t *testing.T) {
 	if _, err := cold.Restore(ctx, restore("n1"), snap); err == nil || !strings.Contains(err.Error(), "not started") {
 		t.Fatalf("unstarted replica: %v", err)
 	}
-	if _, err := s.node.Restore(ctx, s.sign(Decree{Kind: UpdateMeasurements, BaseEpoch: 1, Measurements: []string{"m1"}}), snap); err == nil ||
+	if _, err := s.node.Restore(ctx, signDecree(t, s.opKey, Decree{Kind: UpdateMeasurements, BaseEpoch: 1, Measurements: []string{"m1"}}), snap); err == nil ||
 		!strings.Contains(err.Error(), "not a Restore") {
 		t.Fatalf("not a Restore decree: %v", err)
 	}
@@ -259,9 +254,9 @@ func TestRestoreRefusals(t *testing.T) {
 func TestPendingBootstrapDecreesUnusable(t *testing.T) {
 	k, pub := operatorKey(t)
 	ds := newMemDecrees()
-	expired, _ := SignDecree(Decree{ClusterID: testCluster, IntentID: "r", Kind: Recover, BootstrapNode: "n0", ExpiresAt: time.Now().Add(-time.Minute)}, k)
+	expired := signDecree(t, k, Decree{IntentID: "r", Kind: Recover, BootstrapNode: "n0", ExpiresAt: time.Now().Add(-time.Minute)})
 	ds.items["r"] = expired
-	gen, _ := SignDecree(Decree{ClusterID: testCluster, IntentID: "g", Kind: Genesis, BootstrapNode: "n0", ExpiresAt: time.Now().Add(-time.Minute)}, k)
+	gen := signDecree(t, k, Decree{IntentID: "g", Kind: Genesis, BootstrapNode: "n0", ExpiresAt: time.Now().Add(-time.Minute)})
 	ds.items["g"] = gen
 	n, err := NewNode(soloConfig(t, "n0", freeAddr(t), pub, ds))
 	if err != nil {

@@ -182,7 +182,7 @@ func TestKubeDecrees(t *testing.T) {
 		t.Fatal("status written to a missing decree")
 	}
 	k, _ := operatorKey(t)
-	sd, _ := SignDecree(Decree{ClusterID: testCluster, IntentID: "g", Kind: Genesis, BootstrapNode: "n0", ExpiresAt: time.Now().Add(time.Hour)}, k)
+	sd := signDecree(t, k, Decree{IntentID: "g", Kind: Genesis, BootstrapNode: "n0"})
 	good, err := DecreeConfigMap("decrees", sd)
 	if err != nil || good.Name != DecreeName(testCluster, "g") || good.Labels[LabelDecree] != testCluster {
 		t.Fatalf("decree object %+v: %v", good, err)
@@ -265,11 +265,7 @@ func TestFSMEdges(t *testing.T) {
 	}
 	ca := mustCA(t)
 	key, _ := x509.MarshalPKCS8PrivateKey(ca.Key)
-	sign := func(d Decree) SignedDecree {
-		d.ClusterID, d.ExpiresAt = testCluster, time.Now().Add(time.Hour)
-		sd, _ := SignDecree(d, opKey)
-		return sd
-	}
+	sign := func(d Decree) SignedDecree { return signDecree(t, opKey, d) }
 	now := time.Now().UnixMilli()
 	for name, de := range map[string]DecreeEntry{
 		"genesis without pins":   {Decree: sign(Decree{IntentID: "g0", Kind: Genesis, BootstrapNode: "n0"}), AtMS: now, RootCert: ca.Cert.Raw, Key: key},
