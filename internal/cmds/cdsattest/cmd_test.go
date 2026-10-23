@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 // TestNewCmdDurationDefaults pins the shipped duration-flag defaults.
@@ -181,6 +182,7 @@ func TestRunServesUntilSignalled(t *testing.T) {
 	port := freePort(t)
 	cfg := routedRunConfig(t, port)
 	cfg.attestOff = false
+	cfg.meshIdentityCertFile, cfg.meshIdentityKeyFile, cfg.meshIdentityCAFile = memberCertPath, memberKeyPath, workloadclaims.MemberCAPath
 	cfg.logLevel = "not-a-level" // exercises the newLogger fallback too
 	cfg.frontDoorMode = types.FrontDoorModeCDS
 	cfg.evidenceFixture = fixture

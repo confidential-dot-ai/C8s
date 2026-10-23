@@ -56,17 +56,21 @@ type Transports struct {
 	cache map[string]pooled
 	// caDigest identifies the mesh CA bundle last seen by dropMeshPools.
 	caDigest [sha256.Size]byte
-	// routerDigest is the router stamp's allowlist digest last seen by
-	// dropMeshPools, empty for none (B10).
+	// routerDigest is the router stamp's allowlist digest last read by a
+	// route poll, an attested handshake or a workload dial, empty for none
+	// (B10). tracked reports a first call.
 	routerDigest string
+	tracked      bool
 
 	stamp stampCache
 }
 
-// pooled is a cached transport and whether it reaches a workload backend.
+// pooled is a cached transport, whether it reaches a workload backend, and
+// the router digest tracked when it was built.
 type pooled struct {
 	*http.Transport
-	workload bool
+	workload     bool
+	routerDigest string
 }
 
 // errBackendDigestMismatch fails a workload handshake whose leaf was stamped
@@ -81,6 +85,11 @@ const damagedRouterStamp = "damaged"
 // carries a stamp that does not parse. The fault is the router's, not the
 // backend's.
 var errRouterStampDamaged = errors.New("routing: router stamp damaged")
+
+// errRouterRenewed refuses a workload dial whose router leaf is stamped under
+// another digest than the one its transport was built under, so a pool never
+// mixes digests (B10).
+var errRouterRenewed = errors.New("routing: router leaf renewed under another allowlist digest")
 
 // stampCache holds the router stamp of the last leaf it parsed, so an
 // unchanged leaf is parsed once.
@@ -150,17 +159,18 @@ func NewTransports(cfg TransportConfig) *Transports {
 	return t
 }
 
-// For returns the transport for b, building it on first use.
-func (t *Transports) For(b routes.Backend) *http.Transport {
+// For returns the transport for b, building it on first use, and the router
+// digest every workload connection it pools was accepted under.
+func (t *Transports) For(b routes.Backend) (*http.Transport, string) {
 	key := backendKey(b)
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if p, ok := t.cache[key]; ok {
-		return p.Transport
+		return p.Transport, p.routerDigest
 	}
 	tr := t.build(b)
-	t.cache[key] = pooled{Transport: tr, workload: b.Workload != ""}
-	return tr
+	t.cache[key] = pooled{Transport: tr, workload: b.Workload != "", routerDigest: t.routerDigest}
+	return tr, t.routerDigest
 }
 
 // Retain drops the transports of backends m does not name and closes their
@@ -201,7 +211,7 @@ func (t *Transports) build(b routes.Backend) *http.Transport {
 		// headers only when generation ends. The proxy bounds the request.
 	}
 	if b.Workload != "" {
-		transport.DialTLSContext = t.dialWorkload(b.Workload, dialer)
+		transport.DialTLSContext = t.dialWorkload(b.Workload, t.routerDigest, t.tracked, dialer)
 		return transport
 	}
 	// A fresh pool, never nil: a nil RootCAs means the system roots.
@@ -226,14 +236,21 @@ func (t *Transports) build(b routes.Backend) *http.Transport {
 // published mesh CA, and the route's workload name is required of it before
 // any request is written. The pod's ruleset leaves this identity's
 // connections into the cluster uncaptured, so this handshake is the one that
-// crosses the pod boundary.
-func (t *Transports) dialWorkload(workload string, dialer *net.Dialer) func(context.Context, string, string) (net.Conn, error) {
+// crosses the pod boundary. Once a digest is tracked, a leaf renewed under
+// another one retires the pools instead of dialling.
+func (t *Transports) dialWorkload(workload, routerDigest string, tracked bool, dialer *net.Dialer) func(context.Context, string, string) (net.Conn, error) {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		// Per connection: one resolution of what get-cert publishes, and a
 		// backend is dialled far less often than it is used.
-		cfg, err := t.meshClientConfig(workload)
+		cfg, digest, err := t.meshClientConfig(workload)
 		if err != nil {
 			return nil, err
+		}
+		if tracked && string(digest) != routerDigest {
+			if err := t.syncRouterDigest(); err != nil {
+				return nil, err
+			}
+			return nil, errRouterRenewed
 		}
 		conn, err := dialer.DialContext(ctx, network, addr)
 		if err != nil {
@@ -253,18 +270,18 @@ func (t *Transports) dialWorkload(workload string, dialer *net.Dialer) func(cont
 // meshClientConfig is the armTLS mesh client configuration for one workload
 // backend, built on one published generation: the leaf it presents, the CA it
 // trusts and the allowlist digest it requires are the ones published together.
-func (t *Transports) meshClientConfig(workload string) (*tls.Config, error) {
+func (t *Transports) meshClientConfig(workload string) (*tls.Config, []byte, error) {
 	cred, err := t.cfg.MeshIdentity()
 	if err != nil {
-		return nil, fmt.Errorf("routing: mesh credential: %w", err)
+		return nil, nil, fmt.Errorf("routing: mesh credential: %w", err)
 	}
 	// CDS publishes the one mesh CA its members are verified against.
 	if len(cred.MeshCAs) != 1 {
-		return nil, fmt.Errorf("routing: mesh CA bundle holds %d certificates, want one", len(cred.MeshCAs))
+		return nil, nil, fmt.Errorf("routing: mesh CA bundle holds %d certificates, want one", len(cred.MeshCAs))
 	}
 	digest, err := t.routerDigestOf(cred)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w", errRouterStampDamaged, err)
+		return nil, nil, fmt.Errorf("%w: %w", errRouterStampDamaged, err)
 	}
 	cfg, _, err := armtls.NewMeshClientTLSConfig(&armtls.MeshConfig{
 		CertProvider: routerLeaf{cert: cred.Certificate},
@@ -272,9 +289,9 @@ func (t *Transports) meshClientConfig(workload string) (*tls.Config, error) {
 		AcceptPeer:   acceptWorkload(workload, digest),
 	})
 	if err != nil {
-		return nil, fmt.Errorf("routing: mesh client for workload %q: %w", workload, err)
+		return nil, nil, fmt.Errorf("routing: mesh client for workload %q: %w", workload, err)
 	}
-	return cfg, nil
+	return cfg, digest, nil
 }
 
 // clientCertificate implements tls.Config.GetClientCertificate from the
@@ -343,6 +360,19 @@ func (t *Transports) refuseMeshAnchor(cs tls.ConnectionState) error {
 	return nil
 }
 
+// RouterDigest is the router stamp's allowlist digest as of the last route
+// poll, attested handshake or workload dial that reread the credential,
+// empty for none (B10). A bound session is checked against it (E6). A nil
+// Transports, which dials no workload, has none.
+func (t *Transports) RouterDigest() string {
+	if t == nil {
+		return ""
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.routerDigest
+}
+
 // dropMeshPools retires every transport when the mesh CA bundle changed since
 // the last call or cannot be read, and every workload transport when the
 // router stamp's allowlist digest changed (B10). Pooled connections skip the
@@ -351,29 +381,53 @@ func (t *Transports) refuseMeshAnchor(cs tls.ConnectionState) error {
 // ones drain.
 func (t *Transports) dropMeshPools() error {
 	cred, err := t.cfg.MeshIdentity()
+	return t.retire(cred, err)
+}
+
+// syncRouterDigest is dropMeshPools for paths a client can drive, handshakes
+// and dials: an unreadable credential retires nothing, so clients cannot
+// churn the pools while the read fails.
+func (t *Transports) syncRouterDigest() error {
+	cred, err := t.cfg.MeshIdentity()
+	if err != nil {
+		return fmt.Errorf("routing: mesh credential: %w", err)
+	}
+	return t.retire(cred, nil)
+}
+
+// retire is dropMeshPools on cred, read with err. A failed read tracks no
+// router digest and keeps the one already tracked: the credential did not
+// change, so bound sessions must not be refused for it, and dials fail on the
+// read anyway.
+func (t *Transports) retire(cred MeshCredential, err error) error {
+	if err != nil {
+		t.mu.Lock()
+		defer t.mu.Unlock()
+		t.caDigest = [sha256.Size]byte{} // the next good read differs
+		t.retireLocked(false)
+		return err
+	}
 	var caDigest [sha256.Size]byte
-	var routerDigest []byte
-	if err == nil {
-		h := sha256.New()
-		for _, ca := range cred.MeshCAs {
-			h.Write(ca.Raw)
-		}
-		h.Sum(caDigest[:0])
-		// An unstamped router tracks the empty digest (B9). A damaged stamp
-		// tracks a value no leaf can carry, so it retires the pools and the
-		// next good read counts as a change.
-		var derr error
-		if routerDigest, derr = t.routerDigestOf(cred); derr != nil {
-			routerDigest = []byte(damagedRouterStamp)
-		}
+	h := sha256.New()
+	for _, ca := range cred.MeshCAs {
+		h.Write(ca.Raw)
+	}
+	h.Sum(caDigest[:0])
+	// An unstamped router tracks the empty digest (B9). A damaged stamp
+	// tracks a value no leaf can carry, so it retires the pools and the next
+	// good read counts as a change.
+	routerDigest, derr := t.routerDigestOf(cred)
+	if derr != nil {
+		routerDigest = []byte(damagedRouterStamp)
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if err != nil || caDigest != t.caDigest {
-		t.caDigest = caDigest // zero after a failed read: the next good read differs
+	t.tracked = true
+	if caDigest != t.caDigest {
+		t.caDigest = caDigest
 		t.routerDigest = string(routerDigest)
 		t.retireLocked(false)
-		return err
+		return nil
 	}
 	if string(routerDigest) != t.routerDigest {
 		t.routerDigest = string(routerDigest)

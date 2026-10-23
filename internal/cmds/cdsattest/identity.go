@@ -13,6 +13,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/overenc"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
@@ -105,6 +106,19 @@ func checkValidity(now time.Time, cert *x509.Certificate, role string) error {
 		return fmt.Errorf("mesh identity %s: %w", role, err)
 	}
 	return nil
+}
+
+// routerDigest is the allowlist digest of the leaf's matched-workload stamp,
+// empty for a leaf without one. A stamp that fails to parse also reads as
+// empty here, while the router tracks a sentinel no leaf carries for it, so
+// the two never agree and the handshake is refused until the leaf is
+// replaced (B10).
+func (m *meshIdentity) routerDigest() string {
+	stamp, err := armtls.MatchedWorkloadFromCert(m.leaf)
+	if err != nil || stamp == nil {
+		return ""
+	}
+	return string(stamp.AllowlistDigest)
 }
 
 func (m *meshIdentity) bind(mode types.FrontDoorMode, xwingEK, xwingCT, sessionID, nonce, routeDigest []byte) ([]byte, *types.MeshIdentityProof, error) {

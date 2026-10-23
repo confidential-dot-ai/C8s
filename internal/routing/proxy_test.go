@@ -240,7 +240,7 @@ func TestA7M1TunnelHost(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			resp, err := f.proxy.Forward(outerRequest(tc.outerHost), types.TunnelRequest{Method: "GET", Path: "/x?q=1", Headers: tc.headers})
+			resp, err := f.proxy.Forward(outerRequest(tc.outerHost), types.TunnelRequest{Method: "GET", Path: "/x?q=1", Headers: tc.headers}, f.bound())
 			if err != nil {
 				t.Fatalf("Forward() = %v, want nil", err)
 			}
@@ -263,15 +263,15 @@ func TestA7M1TunnelHost(t *testing.T) {
 func TestA7TunnelPaths(t *testing.T) {
 	f := newFixture(t)
 	sealedHost := []types.HeaderField{{Name: "Host", Value: testHost}}
-	if resp, err := f.proxy.Forward(outerRequest(testHost), types.TunnelRequest{Path: "/", Headers: sealedHost}); err != nil || resp.Status != http.StatusServiceUnavailable {
+	if resp, err := f.proxy.Forward(outerRequest(testHost), types.TunnelRequest{Path: "/", Headers: sealedHost}, f.bound()); err != nil || resp.Status != http.StatusServiceUnavailable {
 		t.Fatalf("Forward() before the first apply = %d, %v, want %d, nil (A2)", resp.Status, err, http.StatusServiceUnavailable)
 	}
 	bad := startBackend(t, "bad", issueLeaf(t, f.mesh, "impostor"))
 	f.apply(t, simpleManifest(1, bad.addr()))
-	if _, err := f.proxy.Forward(outerRequest(testHost), types.TunnelRequest{Path: "/", Headers: sealedHost}); err == nil {
+	if _, err := f.proxy.Forward(outerRequest(testHost), types.TunnelRequest{Path: "/", Headers: sealedHost}, f.bound()); err == nil {
 		t.Fatal("Forward() to a backend failing B1 = nil error, want one (B5)")
 	}
-	resp, err := f.proxy.Forward(outerRequest(testHost), types.TunnelRequest{Path: "/x|%2F..%2Fadmin", Headers: sealedHost})
+	resp, err := f.proxy.Forward(outerRequest(testHost), types.TunnelRequest{Path: "/x|%2F..%2Fadmin", Headers: sealedHost}, f.bound())
 	if err != nil || resp.Status != http.StatusNotFound {
 		t.Fatalf("Forward(/x|%%2F..%%2Fadmin) = %d, %v, want %d, nil (M4)", resp.Status, err, http.StatusNotFound)
 	}
@@ -359,7 +359,7 @@ func TestA7TunnelSealedHeaders(t *testing.T) {
 	f.apply(t, simpleManifest(1, web.addr()))
 	forward := func(headers ...types.HeaderField) types.TunnelResponse {
 		t.Helper()
-		resp, err := f.proxy.Forward(outerRequest(testHost), types.TunnelRequest{Method: "GET", Path: "/", Headers: headers})
+		resp, err := f.proxy.Forward(outerRequest(testHost), types.TunnelRequest{Method: "GET", Path: "/", Headers: headers}, f.bound())
 		if err != nil {
 			t.Fatalf("Forward() = %v, want nil", err)
 		}
@@ -612,7 +612,7 @@ func TestB8WorkloadBackendDigest(t *testing.T) {
 				var logs bytes.Buffer
 				f.proxy.log = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
 				sealedHost := []types.HeaderField{{Name: "Host", Value: testHost}}
-				resp, err := f.proxy.Forward(outerRequest(testHost), types.TunnelRequest{Path: "/", Headers: sealedHost})
+				resp, err := f.proxy.Forward(outerRequest(testHost), types.TunnelRequest{Path: "/", Headers: sealedHost}, f.bound())
 				if err != nil || resp.Status != tc.want || !strings.Contains(string(resp.Body), tc.wantBody) {
 					t.Fatalf("Forward(/) = %d %q, %v, want %d %q, nil", resp.Status, resp.Body, err, tc.want, tc.wantBody)
 				}
@@ -663,7 +663,7 @@ func TestB9UnnamedRouter(t *testing.T) {
 				t.Fatalf("GET / = %d %q, want %d", w.Code, w.Body.String(), tc.want)
 			}
 			sealedHost := []types.HeaderField{{Name: "Host", Value: testHost}}
-			if resp, err := f.proxy.Forward(outerRequest(testHost), types.TunnelRequest{Path: "/", Headers: sealedHost}); err != nil || resp.Status != tc.want {
+			if resp, err := f.proxy.Forward(outerRequest(testHost), types.TunnelRequest{Path: "/", Headers: sealedHost}, f.bound()); err != nil || resp.Status != tc.want {
 				t.Fatalf("Forward(/) = %d, %v, want %d, nil", resp.Status, err, tc.want)
 			}
 			if tc.want != http.StatusOK {
@@ -759,7 +759,7 @@ func TestB10RenewedRouterLeafRetiresPools(t *testing.T) {
 		}
 	}
 	adminBackend := f.state.Current().Manifest.Hosts[testHost].Routes[1].Backend
-	adminTransport := f.transports.For(adminBackend)
+	adminTransport, _ := f.transports.For(adminBackend)
 
 	f.renew(t, issueStampedLeaf(t, f.mesh, "router", digestOf(0x43)))
 	if err := f.transports.dropMeshPools(); err != nil {
@@ -771,7 +771,7 @@ func TestB10RenewedRouterLeafRetiresPools(t *testing.T) {
 	if n := old.hits.Load(); n != 1 {
 		t.Fatalf("backend under the old digest served %d requests, want 1", n)
 	}
-	if f.transports.For(adminBackend) != adminTransport {
+	if got, _ := f.transports.For(adminBackend); got != adminTransport {
 		t.Fatal("router digest renewal retired the address backend's transport, want it kept")
 	}
 	if got := f.get("/admin").Code; got != http.StatusOK {

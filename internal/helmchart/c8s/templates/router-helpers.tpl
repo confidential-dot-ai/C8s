@@ -91,6 +91,9 @@ location{{ if .exact }} ={{ end }} {{ .path }} {
     {{- else if eq (include "router.protocolCorsEnabled" $root) "true" }}
     {{- include "router.protocolCorsLocationDirectives" $root | nindent 4 }}
     {{- end }}
+    # A request here holds no attest-lb binding; the connection closes after
+    # it so a binding cannot lapse under a connection kept open this way (E7).
+    keepalive_timeout 0;
     # These run before nginx collapses callers onto the loopback proxy source.
     # Each zone's map key is empty for the methods it does not cover, so
     # mutations count per client and in aggregate, reads per client only.
@@ -807,7 +810,8 @@ trust the same CDS.
 {{/*
 router.wellKnownProxyDirectives renders the directives every
 /.well-known/c8s/ location shares: CORS, the proxy to cds-attest with
-buffering on and no temp-file spill, and the forwarded headers. Inputs: root
+buffering on and no temp-file spill, and the forwarded headers, including
+the connection identifier attest-lb binds (route policy E8). Inputs: root
 (the chart context) and readTimeout.
 */}}
 {{- define "router.wellKnownCorsDirectives" -}}
@@ -830,6 +834,7 @@ proxy_set_header Host $host;
 proxy_set_header X-Real-IP $remote_addr;
 proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 proxy_set_header X-Forwarded-Proto $scheme;
+proxy_set_header X-C8s-Connection $pid.$connection;
 
 
 {{- end -}}

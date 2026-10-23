@@ -27,14 +27,18 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
-// backendFunc adapts a function to Router's Forward and Acquire.
+// backendFunc adapts a function to Router's Forward and Acquire. It ignores
+// the session's binding: these tests are of the channel, not of routing.
 type backendFunc func(outer *http.Request, req types.TunnelRequest) (types.TunnelResponse, error)
 
-func (f backendFunc) Forward(outer *http.Request, req types.TunnelRequest) (types.TunnelResponse, error) {
+func (f backendFunc) Forward(outer *http.Request, req types.TunnelRequest, _ routing.Binding) (types.TunnelResponse, error) {
 	return f(outer, req)
 }
 
 func (backendFunc) Acquire(string, int64) (func(), bool) { return func() {}, true }
+
+// SyncRouterDigest is that of the unstamped test mesh identities.
+func (backendFunc) SyncRouterDigest(string) (string, error) { return "", nil }
 
 // echoBackend reflects the request, for tests of the channel rather than of
 // routing.
