@@ -247,6 +247,7 @@ func TestNewBundleRefusesBadInputsAndLeavesNothingBehind(t *testing.T) {
 		{"bad cluster id", []string{"--image-manifest", tdx, "--cluster-id", "Demo"}, "clusterID"},
 		{"bad agent name", []string{"--image-manifest", tdx, "--server-address", "10.0.0.10", "--agent", "server"}, "reserved"},
 		{"loopback server", []string{"--image-manifest", tdx, "--server-address", "127.0.0.1"}, "server.address"},
+		{"models owner alone", []string{"--image-manifest", tdx, "--models-root-owner", "1000:1000"}, "models.writable"},
 		{"not a manifest", []string{"--image-manifest", filepath.Join(base, "missing.json")}, "--image-manifest"},
 		{"dns mirror", []string{"--image-manifest", tdx, "--registry-mirror", "ghcr.io=http://cache.example"}, "registryMirrors"},
 		{"duplicate mirror", []string{"--image-manifest", tdx, "--registry-mirror", "ghcr.io=http://10.43.0.5", "--registry-mirror", "ghcr.io=http://10.43.0.6"}, "more than once"},
@@ -271,6 +272,25 @@ func TestNewBundleRefusesBadInputsAndLeavesNothingBehind(t *testing.T) {
 	}
 	if err := runBundleCmd(t, "new", "--out", dir, "--cluster-id", "demo", "--image-manifest", tdx); err == nil {
 		t.Fatal("an existing directory must not be reused for a new bundle")
+	}
+}
+
+func TestNewBundleCarriesWritableModelsToEveryNode(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "bundle")
+	err := runBundleCmd(t, "new", "--out", dir, "--cluster-id", "demo", "--image-manifest", writeManifest(t, "tdx"),
+		"--server-address", "10.0.0.10", "--agent", "demo-agent-1", "--models-writable", "--models-root-owner", "1000:1000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runBundleCmd(t, "add-agent", "--bundle", dir, "--name", "late"); err != nil {
+		t.Fatal(err)
+	}
+	for _, node := range []string{serverDir, "demo-agent-1", "late"} {
+		doc, _ := readBundleDocument(t, dir, node)
+		if doc.Models == nil || !doc.Models.Writable || doc.Models.RootOwner != "1000:1000" {
+			t.Fatalf("%s lost the models setting: %+v", node, doc.Models)
+		}
+		stageBundleNode(t, dir, node)
 	}
 }
 

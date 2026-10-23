@@ -59,6 +59,7 @@ type BundleOptions struct {
 	Agents        []string
 	TLSSAN        string
 	WorkloadsPath string
+	Models        Models
 	Router        Router
 	// RegistryMirrors goes into the server document; agents inherit it.
 	RegistryMirrors map[string]string
@@ -159,6 +160,10 @@ func NewBundle(opts BundleOptions) (err error) {
 	if len(opts.Router.Hostnames) > 0 || opts.Router.ACMEEmail != "" || opts.Router.ACMEDirectoryURL != "" || opts.Router.MaxRequestBodyBytes != 0 {
 		router := opts.Router
 		server.Router = &router
+	}
+	if opts.Models.Writable || opts.Models.RootOwner != "" {
+		models := opts.Models
+		server.Models = &models
 	}
 	if err := writeSignedDocument(filepath.Join(opts.Dir, serverDir), server, serverKey, serverPub); err != nil {
 		return err
