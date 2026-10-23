@@ -1121,8 +1121,7 @@ func servedCAStale(ctx context.Context, client attestclient.Client, caPath strin
 // identical bytes needs no renewal. A 304 settles on CDS's version counter
 // alone, so bytes that diverge at an unchanged counter (a restored database)
 // are not seen here; the CA watch covers a CDS restart. The fetch rides the
-// armTLS-verified client, like servedCAStale's. A leaf stamped with CDS's seed
-// layer is never stale: the seed is fixed for CDS's lifetime.
+// armTLS-verified client, like servedCAStale's.
 func stampedPolicyStale(ctx context.Context, client allowlistclient.Client, version string, digest []byte) (string, bool, error) {
 	served, notModified, err := client.FetchServed(ctx, `W/"`+version+`"`)
 	if err != nil {
@@ -1135,8 +1134,7 @@ func stampedPolicyStale(ctx context.Context, client allowlistclient.Client, vers
 	if servedVersion == "" {
 		return "", false, fmt.Errorf("fetch allowlist from cds: ETag %q is not a weak ETag W/\"N\"", served.ETag)
 	}
-	stamped := "sha256:" + hex.EncodeToString(digest)
-	return servedVersion, served.Digest != stamped && served.Seed != stamped, nil
+	return servedVersion, served.Digest != "sha256:"+hex.EncodeToString(digest), nil
 }
 
 // stampedPolicyVersion is the allowlist version leaf's stamp names, or "" when

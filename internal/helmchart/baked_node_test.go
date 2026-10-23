@@ -99,8 +99,7 @@ func TestChartBakedNodeLaunchContract(t *testing.T) {
 	cds := renderedDeploymentContainer(t, out, "c8s-cds", "cds")
 	for _, arg := range []string{
 		"--operator-keys=/run/c8s-node/operator-pubkey",
-		"--seed-layer=/run/c8s-node/allowlist-seed.json",
-		"--allowlist-seed=/run/c8s-node/launch-workloads.json",
+		"--allowlist-seed=/run/c8s-node/allowlist-seed.json",
 		"--dns-san-file=/run/c8s-node/tls-san",
 	} {
 		assertContainerHasArg(t, "cds", cds.Args, arg)

@@ -50,6 +50,9 @@ type world struct {
 	pluginDown   map[string]bool
 	cdsBlocked   bool
 	cdsRestarted bool
+	// cdsInstance is the CDS pod a seed-change sentence found serving, for
+	// the sentence that says it did not restart.
+	cdsInstance string
 }
 
 type pod struct {

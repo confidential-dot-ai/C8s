@@ -486,8 +486,7 @@ On the measured image this holds even though the bytes are encrypted: CDS's
 entry pins `/mnt/c8s-data/cds` with an exact `data` rule, and a local-path
 volume observes as `host`, so the rule refuses it by kind before storage is
 considered. CDS's store is therefore a memory `emptyDir`, and every new CDS
-pod starts with an empty store beside the image's seed layer (see
-[Bootstrap](#bootstrap)) and its version counter reset. Each
+pod starts the allowlist from the seed with its version counter reset. Each
 node's plugin keeps the highest version it applied (see
 [Refresh and anti-rollback](#refresh-and-anti-rollback)), so after a CDS
 restart a plugin that had applied version N ignores the restarted CDS's
@@ -1061,33 +1060,11 @@ c8s allowlist upload next.json
 `OVERRIDE` is the override's entry name. The filter cuts its image segment to
 the 41 characters a generated shape keeps. Pods that still run the narrowed-away
 launch keep running, but cannot restart under it. A CDS that seeds the
-override at start retires those entries itself.
+override, at start or while following its seed, retires those entries itself.
 
-On a measured node image (`node.baked`), the seed is the file the image
-holds, the same baked seed the node's image policy plugin enforces through its
-base allowlist. CDS reads it once at start and keeps it as a fixed layer
-beside the store (`--seed-layer`, which the chart sets only there). The
-launch document's signed `workloads`, if any, are seeded into the store at
-start instead (`--allowlist-seed`): they are served like any stored entry,
-and the first upload replaces them.
-
-- The seed never enters the store. `GET /allowlist` serves the stored
-  document alone, byte for byte the one an operator signed, and names the
-  seed in a `C8s-Allowlist-Seed: sha256:<hex>` header. An upload replaces the
-  stored document only, so it may carry application entries alone and cannot
-  drop C8s's own. `c8s allowlist upload` skips its core-component check when
-  CDS names a seed.
-- `/attest` and `/secrets` decide on both layers. On a name both hold, the
-  seed's entry wins, as the node's base allowlist admits it too.
-- A leaf whose pod matched a seed entry is stamped with the seed's digest
-  (SHA-256 of its canonical bytes) and the store version. CDS serves the
-  seed's canonical bytes at `/allowlist/objects/sha256/<hex>`. The seed is
-  not in the allowlist history and carries no operator signature. get-cert
-  does not renew a leaf stamped with the seed on an upload.
-- The seed changes only with a new node image.
-
-The steps above that publish the seed with `apply` are for chart-managed
-installs; on a measured node image there is nothing to publish.
+On a measured node image (`node.baked`), the seed is a file the image holds,
+so CDS follows it: it rereads the file every 30 seconds and seeds it again
+when it changed. The chart sets `--follow-seed` only there.
 
 Known limitations:
 

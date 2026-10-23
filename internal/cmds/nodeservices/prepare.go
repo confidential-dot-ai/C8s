@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"maps"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -193,7 +192,6 @@ func appendCredentialRole(policy map[string]any, address netip.AddrPort) error {
 type serverConfig struct {
 	operatorPubKey []byte
 	allowlistSeed  []byte
-	launchSeed     []byte
 	tlsSAN         string
 	router         launchconfig.Router
 }
@@ -202,7 +200,7 @@ type serverConfig struct {
 // these, and an agent clears exactly these. The router files are always
 // written, empty when unset, so the router pod never waits on a missing file.
 var serverOutputNames = []string{
-	"operator-pubkey", "allowlist-seed.json", "launch-workloads.json", "tls-san",
+	"operator-pubkey", "allowlist-seed.json", "tls-san",
 	"router/tls.conf", "router/hostnames",
 	"router/acme-email", "router/acme-directory-url", "router/front-door-mode",
 	"router/request-body.conf",
@@ -232,10 +230,9 @@ func (c serverConfig) files() map[string][]byte {
 		hostnames = append(hostnames, name+"\n"...)
 	}
 	files := map[string][]byte{
-		"operator-pubkey":       c.operatorPubKey,
-		"allowlist-seed.json":   c.allowlistSeed,
-		"launch-workloads.json": c.launchSeed,
-		"tls-san":               []byte(c.tlsSAN + "\n"),
+		"operator-pubkey":     c.operatorPubKey,
+		"allowlist-seed.json": c.allowlistSeed,
+		"tls-san":             []byte(c.tlsSAN + "\n"),
 		// nginx includes this in its server block to pick the certificate.
 		"router/tls.conf":           []byte(fmt.Sprintf("include %s/tls-%s.conf;\n", RouterTLSSnippetDir, mode)),
 		"router/hostnames":          hostnames,
@@ -269,7 +266,7 @@ func serverOutputs(d *launchconfig.Document, bakedData []byte) (serverConfig, er
 	if _, err := operatorauth.ParsePublicKeysPEM(pub); err != nil {
 		return serverConfig{}, fmt.Errorf("staged server operator key: %w", err)
 	}
-	seed, launch, err := serverSeeds(bakedData, d.Workloads)
+	seed, err := mergedSeed(bakedData, d.Workloads)
 	if err != nil {
 		return serverConfig{}, err
 	}
@@ -284,7 +281,7 @@ func serverOutputs(d *launchconfig.Document, bakedData []byte) (serverConfig, er
 			return serverConfig{}, fmt.Errorf("staged router hostname: %w", err)
 		}
 	}
-	return serverConfig{operatorPubKey: pub, allowlistSeed: seed, launchSeed: launch, tlsSAN: d.TLSSAN, router: router}, nil
+	return serverConfig{operatorPubKey: pub, allowlistSeed: seed, tlsSAN: d.TLSSAN, router: router}, nil
 }
 
 // removeServerOutputs clears the server-only inputs from an agent's public
@@ -343,33 +340,21 @@ func policyPinsComplete(pins refvalues.ReferenceValues) bool {
 	return true
 }
 
-// serverSeeds returns, canonical, the baked seed CDS keeps as its fixed seed
-// layer (the one the NRI base enforces) and the launch document's workloads it
-// seeds into its store, an empty document when there are none.
-func serverSeeds(data []byte, workloads string) (seed, launch []byte, err error) {
-	baked, err := allowlist.ParseJSON(data)
+func mergedSeed(data []byte, workloads string) ([]byte, error) {
+	seed, err := allowlist.ParseJSON(data)
 	if err != nil {
-		return nil, nil, fmt.Errorf("baked workload seed: %w", err)
+		return nil, fmt.Errorf("baked workload seed: %w", err)
 	}
-	extra := &allowlist.Allowlist{Schema: allowlist.Schema, Workloads: map[string]allowlist.Workload{}}
 	if workloads != "" {
-		if extra, err = allowlist.ParseJSON([]byte(workloads)); err != nil {
-			return nil, nil, fmt.Errorf("launch workloads: %w", err)
+		extra, err := allowlist.ParseJSON([]byte(workloads))
+		if err != nil {
+			return nil, fmt.Errorf("launch workloads: %w", err)
 		}
-		// Merge into a copy only to refuse a launch workload replacing a baked
-		// one and to validate the combination, as CDS decides on both.
-		combined := &allowlist.Allowlist{Schema: baked.Schema, Workloads: maps.Clone(baked.Workloads)}
-		if err := mergeWorkloads(combined, extra, false); err != nil {
-			return nil, nil, fmt.Errorf("launch workloads: %w", err)
+		if err := mergeWorkloads(seed, extra, false); err != nil {
+			return nil, fmt.Errorf("launch workloads: %w", err)
 		}
 	}
-	if seed, err = baked.Canonical(); err != nil {
-		return nil, nil, err
-	}
-	if launch, err = extra.Canonical(); err != nil {
-		return nil, nil, err
-	}
-	return seed, launch, nil
+	return seed.Canonical()
 }
 
 // allowIdentical is used only for the two measured bootstrap sources. Signed
