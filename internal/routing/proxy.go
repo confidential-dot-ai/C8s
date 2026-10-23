@@ -285,7 +285,7 @@ func (p *Proxy) Forward(outer *http.Request, req types.TunnelRequest) (types.Tun
 	}
 	rec := &capture{header: http.Header{}}
 	rp.ServeHTTP(rec, in)
-	if errors.Is(backendErr, errBackendDigestMismatch) {
+	if errors.Is(backendErr, errBackendDigestMismatch) || errors.Is(backendErr, errRouterStampDamaged) {
 		status, msg := p.refusal(backendErr, in.Host, target.RawPath, route.Backend.Address)
 		return textResponse(status, msg), nil
 	}

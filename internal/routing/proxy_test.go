@@ -657,13 +657,19 @@ func TestB9UnnamedRouter(t *testing.T) {
 				addressRoute("/admin", "prefix", admin.addr(), "admin.ops.svc", caPEM(external)),
 			}}})
 
+			var logs bytes.Buffer
+			f.proxy.log = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
 			if w := f.get("/"); w.Code != tc.want {
 				t.Fatalf("GET / = %d %q, want %d", w.Code, w.Body.String(), tc.want)
 			}
-			if tc.want == http.StatusOK {
-				sealedHost := []types.HeaderField{{Name: "Host", Value: testHost}}
-				if resp, err := f.proxy.Forward(outerRequest(testHost), types.TunnelRequest{Path: "/", Headers: sealedHost}); err != nil || resp.Status != http.StatusOK {
-					t.Fatalf("Forward(/) through an unstamped router = %d, %v, want %d, nil", resp.Status, err, http.StatusOK)
+			sealedHost := []types.HeaderField{{Name: "Host", Value: testHost}}
+			if resp, err := f.proxy.Forward(outerRequest(testHost), types.TunnelRequest{Path: "/", Headers: sealedHost}); err != nil || resp.Status != tc.want {
+				t.Fatalf("Forward(/) = %d, %v, want %d, nil", resp.Status, err, tc.want)
+			}
+			if tc.want != http.StatusOK {
+				// Both paths blame the router's own leaf, never the backend.
+				if strings.Count(logs.String(), "level=ERROR msg=\"router stamp damaged\"") != 2 || strings.Contains(logs.String(), "backend request failed") {
+					t.Fatalf("damaged router stamp logged %q, want two router stamp damaged lines at Error and no backend blame", logs.String())
 				}
 			}
 			if tc.want != http.StatusOK && b.hits.Load() != 0 {
