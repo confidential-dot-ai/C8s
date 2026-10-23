@@ -25,6 +25,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/attestation"
+	"github.com/confidential-dot-ai/c8s/internal/cdsha"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/readiness"
@@ -162,13 +163,13 @@ func run(cfg config) error {
 	if haNode != nil {
 		fullGuard = allowlistFullGuard(filepath.Dir(cfg.allowlistDB), cfg.allowlistMaxBytes.Value(), allowlistStore.LiveBytes)
 	}
-	// startCA is the mesh CA at startup. It is read once: an HA replica can
-	// stop serving (lease lapse) between two reads, and mesh then reads empty.
+	// startCA is one successful startup CA read, reused below: an HA replica
+	// can stop serving (lease lapse) between reads, and mesh then reads empty.
 	var mesh meshCA
 	var singletonCA *issuer.MeshCA
 	var startCA *issuer.CA
 	if haNode != nil {
-		if startCA, err = haNode.CA(); err != nil {
+		if startCA, err = startMeshCA(ctx, haNode.CA); err != nil {
 			return fmt.Errorf("mesh CA: %w", err)
 		}
 		mesh = haMeshCA{node: haNode}
@@ -465,13 +466,34 @@ func run(cfg config) error {
 // can mean the command committed but this replica has not applied it yet.
 // Keep Raft alive and do not expose the full API until history is verified.
 func startJournal(ctx context.Context, store *allowlist.Store) error {
+	return retryStartup(ctx, store.StartJournal, allowlist.ErrUnavailable)
+}
+
+// startMeshCA tolerates a loss of freshness after haStart observed Serving.
+// Only this read is retried; ordinary CA reads still refuse immediately.
+func startMeshCA(ctx context.Context, current func() (*issuer.CA, error)) (*issuer.CA, error) {
+	var ca *issuer.CA
+	err := retryStartup(ctx, func() error {
+		var err error
+		ca, err = current()
+		return err
+	}, cdsha.ErrNotServing)
+	if err != nil {
+		return nil, err
+	}
+	return ca, nil
+}
+
+// retryStartup is only for the idempotent startup operations above. It leaves
+// Raft running while admission is unavailable and stops on permanent errors.
+func retryStartup(ctx context.Context, operation func() error, unavailable error) error {
 	backoff := 100 * time.Millisecond
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		err := store.StartJournal()
-		if err == nil || !errors.Is(err, allowlist.ErrUnavailable) ||
+		err := operation()
+		if err == nil || !errors.Is(err, unavailable) ||
 			errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return err
 		}
