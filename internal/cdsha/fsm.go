@@ -364,6 +364,9 @@ func nextCore(cur Core, de DecreeEntry) (Core, *issuer.CA, error) {
 	if err := CheckDecree(de.Decree, cur, time.UnixMilli(de.AtMS)); err != nil {
 		return Core{}, nil, err
 	}
+	if cur.Epoch == ^uint64(0) {
+		return Core{}, nil, errors.New("epoch overflows on decree")
+	}
 	d := de.Decree.Decree
 	next := cur.clone()
 	var ca *issuer.CA
