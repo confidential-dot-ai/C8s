@@ -204,9 +204,9 @@ func post(ctx context.Context, client *http.Client, url string, body, out any) e
 	if len(payload) > maxMaterial {
 		return fmt.Errorf("response exceeds %d bytes", maxMaterial)
 	}
-	switch {
-	case resp.StatusCode == http.StatusOK:
-	case resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusConflict:
+	switch resp.StatusCode {
+	case http.StatusOK:
+	case http.StatusForbidden, http.StatusConflict:
 		return fmt.Errorf("%w: %s", ErrRefused, strings.TrimSpace(string(payload)))
 	default:
 		return fmt.Errorf("%s: %s", resp.Status, strings.TrimSpace(string(payload)))

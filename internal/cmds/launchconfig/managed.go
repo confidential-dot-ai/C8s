@@ -87,7 +87,7 @@ func (m *Managed) validate(d *Document) error {
 }
 
 func (p ManagementPin) validate() error {
-	platform, ok := p.Image.platform()
+	platform, ok := p.platform()
 	if !ok {
 		return fmt.Errorf("platform must be tdx or snp")
 	}
