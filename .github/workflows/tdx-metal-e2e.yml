@@ -37,6 +37,11 @@ on:
         required: false
         type: boolean
         default: false
+      pod_diagnostic:
+        description: 'Capture boot logs for the pinned 4774df9 Pod diagnostic image; always clean up'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -54,6 +59,7 @@ env:
 
 jobs:
   e2e:
+    if: ${{ !inputs.pod_diagnostic }}
     name: cvm (tdx-metal/rke2-node)
     runs-on: cvm-launcher-tdx
     timeout-minutes: ${{ inputs.suite_run != '' && 115 || 95 }}
@@ -70,3 +76,68 @@ jobs:
           keep_cvm: ${{ inputs.keep_cvm }}
           suite_artifact: ${{ inputs.suite_artifact }}
           suite_run: ${{ inputs.suite_run }}
+
+  pod-diagnostic:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.pod_diagnostic }}
+    name: Pod boot diagnostics (not image acceptance)
+    runs-on: cvm-launcher-tdx
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Check out the CLI matching diagnostic build 39943645155
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: 4774df9ebc1bd186765b8997f5356005510b9342
+          path: diagnostic-source
+
+      - uses: ./.github/actions/setup-go-c8s
+        with:
+          go-version-file: diagnostic-source/go.mod
+          cache: 'false'
+
+      - name: Prepare the paired CLI and launcher tools
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          POD_DIAGNOSTIC_DIR="$RUNNER_TEMP/pod-diagnostic"
+          mkdir -p "$POD_DIAGNOSTIC_DIR/private" "$POD_DIAGNOSTIC_DIR/evidence" "$RUNNER_TEMP/pod-diagnostic-bin"
+          test "$(git -C diagnostic-source rev-parse HEAD)" = 4774df9ebc1bd186765b8997f5356005510b9342
+          test -z "$(git -C diagnostic-source status --porcelain)"
+          (cd diagnostic-source && go build -o "$POD_DIAGNOSTIC_DIR/private/c8s" ./cmd/c8s)
+          if ! command -v kubectl >/dev/null; then
+            version=$(curl --retry 3 --connect-timeout 10 --max-time 60 -fsSL https://dl.k8s.io/release/stable.txt)
+            [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+            curl --retry 3 --connect-timeout 10 --max-time 60 -fsSL "https://dl.k8s.io/release/$version/bin/linux/amd64/kubectl" -o "$RUNNER_TEMP/pod-diagnostic-bin/kubectl"
+            checksum=$(curl --retry 3 --connect-timeout 10 --max-time 60 -fsSL "https://dl.k8s.io/release/$version/bin/linux/amd64/kubectl.sha256")
+            printf '%s  %s\n' "$checksum" "$RUNNER_TEMP/pod-diagnostic-bin/kubectl" | sha256sum -c -
+            chmod +x "$RUNNER_TEMP/pod-diagnostic-bin/kubectl"
+            echo "$RUNNER_TEMP/pod-diagnostic-bin" >> "$GITHUB_PATH"
+          fi
+          python3 .github/scripts/tests/test_tdx_pod_diagnostic.py
+
+      - name: Run the owned diagnostic VM
+        timeout-minutes: 38
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/tdx-pod-diagnostic.py run
+
+      - name: Remove this run's VM, launch Secret and private import
+        if: always()
+        timeout-minutes: 10
+        run: python3 .github/scripts/tdx-pod-diagnostic.py cleanup
+
+      - name: Retain bounded boot evidence only
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pod-boot-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/pod-diagnostic/evidence
+          if-no-files-found: warn
+          retention-days: 7

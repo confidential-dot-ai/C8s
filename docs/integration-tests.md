@@ -140,6 +140,26 @@ against the attested guest with the e2e scripts' environment
 no credential for the suite. Called from another repository, the SNP lane
 still takes its scripts and actions from this one, at the default branch.
 
+### Diagnosing the Pod guest boot regression
+
+The manual `tdx-metal-e2e.yml` input `pod_diagnostic: true` runs the pinned
+`4774df9e` diagnostic build with its matching CLI and signed Pod fixture.
+It uses the existing TDX launcher, a private root import and run-owned VM and
+launch Secret. Cleanup always runs; `keep_cvm` does not retain diagnostic VMs.
+The `pod-boot-diagnostic-<run>-<attempt>` artifact contains bounded serial and
+launcher logs, image identity, native status and the cleanup receipt. It omits
+private signing keys and expires after seven days.
+
+```sh
+gh workflow run tdx-metal-e2e.yml --repo confidential-dot-ai/C8s \
+  --ref podcvm/no-mesh-gate -f pod_diagnostic=true
+```
+
+This mode diagnoses boot only. It deliberately uses an unavailable CDS and a
+separately measured development image; it does not establish production-image,
+mesh, internet or DNS acceptance. The normal node lane and automatic exact-image
+acceptance keep their existing validation.
+
 ## Running it
 
 ```sh
