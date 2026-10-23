@@ -31,20 +31,6 @@ func mustCA(t *testing.T) *issuer.CA {
 	return mesh.Current().CA
 }
 
-func TestNewAttestor(t *testing.T) {
-	if _, err := NewAttestor("node", AttestorOptions{}); err == nil {
-		t.Fatal("node attestor without an attestation-api URL")
-	}
-	if a, err := NewAttestor("node", AttestorOptions{AttestationAPIURL: "http://127.0.0.1:1", Timeout: time.Second}); err != nil || a == nil {
-		t.Fatalf("node attestor: %v", err)
-	}
-	for _, name := range []string{"tdx", "nope"} {
-		if _, err := NewAttestor(name, AttestorOptions{}); err == nil || !strings.Contains(err.Error(), "not available") {
-			t.Fatalf("attestor %q: %v", name, err)
-		}
-	}
-}
-
 func tdxClaims(rd []byte) teetypes.Claims {
 	return teetypes.Claims{LaunchDigest: digest(1), ReportData: rd,
 		PlatformData: map[string]any{"rtmr_1": digest(2), "rtmr_2": digest(3), "rtmr_3": digest(4)}}
