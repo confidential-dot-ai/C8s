@@ -321,11 +321,14 @@ logging:
 	}
 }
 
-// occupySocketPath puts a directory where the inventory's socket belongs, so
-// the listen fails and nothing else does.
+// A nonempty directory survives the listener's stale-socket cleanup.
 func occupySocketPath(t *testing.T, socketDir string) {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Join(socketDir, workloadclaims.SocketName), 0o755); err != nil {
+	path := filepath.Join(socketDir, workloadclaims.SocketName)
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(path, "occupied"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
 }

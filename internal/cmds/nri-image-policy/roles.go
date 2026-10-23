@@ -73,6 +73,13 @@ type meshPolicy struct {
 	// inside them is a member, so the acme egress exception excludes them and
 	// that traffic is captured like any other application connection.
 	ClusterRanges []netip.Prefix `yaml:"cluster_ranges"`
+	// Pod restricts a guest endpoint to the signed peer and ingress tuples.
+	Pod *podMeshPolicy `yaml:"pod,omitempty"`
+}
+
+type podMeshPolicy struct {
+	Peers        []netip.AddrPort `yaml:"peers"`
+	IngressPorts []uint16         `yaml:"ingress_ports"`
 }
 
 type capturePorts struct {

@@ -150,7 +150,10 @@ application services:
 `rke2-role.service` verifies and stages launch settings before either RKE2
 role starts. The local attester must precede this gate because launch
 verification uses it. The host attester listens on `127.0.0.1:8400`;
-pods access its Unix socket in the admission-inventory directory. CDS uses
+credential clients on server and agent nodes access its Unix socket in the
+admission-inventory directory. The [pod launch role](../docs/operator.md#authenticated-launch-configuration)
+keeps that directory inside the guest and supplies no node credential-client
+mounts or sandbox-token service to pod containers. CDS uses
 its Kubernetes Service and server NodePort `30808`; agents join RKE2 at
 `9345`; the router exposes the server's port `443`. Cilium's VXLAN
 runs on UDP `8473`, not the kernel default `8472`: a nested guest's outer
@@ -478,7 +481,18 @@ current attempt has no artifact; there is no fallback to older evidence.
 For manual image builds, dispatch `c8s-image-manual.yml` (Actions name:
 `c8s-image manual`), with the existing `dev`, `c8s_ref`, `confos_ref` and
 `gate` inputs. It builds through the same reusable builder but cannot call
-exact acceptance or promote stable aliases. `tdx-metal-e2e.yml` remains
+exact acceptance or promote stable aliases. The workflow's selected branch
+or tag supplies the image profile, kernel fragments and build pins. For a
+feature build, select that source with `--ref` and supply its matching
+published component SHA as a nonempty `c8s_ref`; this keeps publication on
+commit-scoped tags. Published manual builds reject a `c8s_ref` that is not a
+7–40-character lowercase hexadecimal prefix of the selected source commit.
+An empty `c8s_ref` uses that commit's seven-character SHA and retains the
+existing floating-tag publication behavior. `confos_ref` can still override
+the builder pin for an A/B build. The summary records both the full image
+profile SHA and the component ref.
+
+`tdx-metal-e2e.yml` remains
 manually dispatchable for published-image regression and `keep_cvm` debugging.
 
 ### Post-start exec

@@ -37,6 +37,21 @@ on:
         required: false
         type: boolean
         default: false
+      pod_acceptance:
+        description: 'Boot the pinned production server and two Pods for native TDX connectivity and 65-minute renewal; always clean up'
+        required: false
+        type: boolean
+        default: false
+      pod_runtime_diagnostic:
+        description: 'Capture owned Pod guest runtime diagnostics with the paired development image; never production acceptance'
+        required: false
+        type: boolean
+        default: false
+      pod_diagnostic:
+        description: 'Capture historical mixed-source Pod boot logs; always clean up'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -44,8 +59,8 @@ permissions:
   packages: read # The acme check reads the component images.
 
 concurrency:
-  # One at a time: the lane boots a CVM off a shared RWO rootdisk PVC.
-  group: tdx-metal-e2e
+  # Preserve the shared-root lane; owned runtime diagnostics have their own fixed queue.
+  group: ${{ github.event_name == 'workflow_dispatch' && inputs.pod_runtime_diagnostic && !inputs.pod_diagnostic && !inputs.pod_acceptance && 'tdx-pod-runtime-diagnostic' || 'tdx-metal-e2e' }}
   cancel-in-progress: false
 
 env:
@@ -53,7 +68,23 @@ env:
   VM: c8s-tdx-${{ github.run_id }}-${{ github.run_attempt }}
 
 jobs:
+  validate-pod-mode:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Reject combined Pod modes before provisioning
+        env:
+          ACCEPTANCE: ${{ inputs.pod_acceptance }}
+          HISTORICAL: ${{ inputs.pod_diagnostic }}
+          RUNTIME: ${{ inputs.pod_runtime_diagnostic }}
+        run: |
+          python3 - <<'PY'
+          import os
+          assert sum(os.environ[key] == 'true' for key in ('ACCEPTANCE', 'HISTORICAL', 'RUNTIME')) <= 1, 'Select only one Pod mode'
+          PY
+
   e2e:
+    if: ${{ !inputs.pod_diagnostic && !inputs.pod_acceptance && !inputs.pod_runtime_diagnostic }}
     name: cvm (tdx-metal/rke2-node)
     runs-on: cvm-launcher-tdx
     timeout-minutes: ${{ inputs.suite_run != '' && 115 || 95 }}
@@ -70,3 +101,247 @@ jobs:
           keep_cvm: ${{ inputs.keep_cvm }}
           suite_artifact: ${{ inputs.suite_artifact }}
           suite_run: ${{ inputs.suite_run }}
+
+  pod-diagnostic:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.pod_diagnostic && !inputs.pod_acceptance && !inputs.pod_runtime_diagnostic }}
+    name: Pod boot diagnostics (not image acceptance)
+    runs-on: cvm-launcher-tdx
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Check out the CLI matching diagnostic build 39943645155
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: 4774df9ebc1bd186765b8997f5356005510b9342
+          path: diagnostic-source
+
+      - uses: ./.github/actions/setup-go-c8s
+        with:
+          go-version-file: diagnostic-source/go.mod
+          cache: 'false'
+
+      - name: Prepare the paired CLI and launcher tools
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          POD_DIAGNOSTIC_DIR="$RUNNER_TEMP/pod-diagnostic"
+          mkdir -p "$POD_DIAGNOSTIC_DIR/private" "$POD_DIAGNOSTIC_DIR/evidence" "$RUNNER_TEMP/pod-diagnostic-bin"
+          test "$(git -C diagnostic-source rev-parse HEAD)" = 4774df9ebc1bd186765b8997f5356005510b9342
+          test -z "$(git -C diagnostic-source status --porcelain)"
+          (cd diagnostic-source && go build -o "$POD_DIAGNOSTIC_DIR/private/c8s" ./cmd/c8s)
+          if ! command -v kubectl >/dev/null; then
+            version=$(curl --retry 3 --connect-timeout 10 --max-time 60 -fsSL https://dl.k8s.io/release/stable.txt)
+            [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+            curl --retry 3 --connect-timeout 10 --max-time 60 -fsSL "https://dl.k8s.io/release/$version/bin/linux/amd64/kubectl" -o "$RUNNER_TEMP/pod-diagnostic-bin/kubectl"
+            checksum=$(curl --retry 3 --connect-timeout 10 --max-time 60 -fsSL "https://dl.k8s.io/release/$version/bin/linux/amd64/kubectl.sha256")
+            printf '%s  %s\n' "$checksum" "$RUNNER_TEMP/pod-diagnostic-bin/kubectl" | sha256sum -c -
+            chmod +x "$RUNNER_TEMP/pod-diagnostic-bin/kubectl"
+            echo "$RUNNER_TEMP/pod-diagnostic-bin" >> "$GITHUB_PATH"
+          fi
+          python3 .github/scripts/tests/test_tdx_pod_diagnostic.py
+
+      - name: Run the owned diagnostic VM
+        timeout-minutes: 38
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/tdx-pod-diagnostic.py run
+
+      - name: Remove this run's VM, launch Secret and private import
+        if: always()
+        timeout-minutes: 10
+        run: python3 .github/scripts/tdx-pod-diagnostic.py cleanup
+
+      - name: Retain bounded boot evidence only
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pod-boot-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/pod-diagnostic/evidence
+          if-no-files-found: warn
+          retention-days: 7
+
+  pod-acceptance:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.pod_acceptance && !inputs.pod_diagnostic && !inputs.pod_runtime_diagnostic }}
+    name: Connected Pod acceptance (native TDX)
+    runs-on: cvm-launcher-tdx
+    timeout-minutes: 150
+    env:
+      POD_ACCEPTANCE_SOURCE: ${{ github.workspace }}/acceptance-source
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Select the production image's paired source
+        id: pins
+        env:
+          DIAGNOSTIC: ${{ inputs.pod_diagnostic }}
+        run: |
+          test "$DIAGNOSTIC" != true
+          python3 - <<'PY'
+          import importlib.util, json, os, sys
+          from pathlib import Path
+          sys.path.insert(0, '.github/scripts')
+          spec = importlib.util.spec_from_file_location('acceptance', '.github/scripts/tdx-pod-acceptance.py')
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          pins = json.loads((module.FIXTURE / 'production-image.json').read_text())
+          module.validate_pins(pins)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('source=' + pins['source'] + '\n')
+          PY
+
+      - name: Check out the clean CLI source paired with the image
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ steps.pins.outputs.source }}
+          path: acceptance-source
+
+      - uses: ./.github/actions/setup-go-c8s
+        with:
+          go-version-file: acceptance-source/go.mod
+          cache: 'false'
+
+      - name: Prepare paired CLI, public certificate probe and native tools
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          umask 077
+          ACCEPTANCE_DIR="$RUNNER_TEMP/pod-acceptance"
+          mkdir -p "$ACCEPTANCE_DIR/private" "$ACCEPTANCE_DIR/evidence" "$RUNNER_TEMP/pod-acceptance-bin"
+          (cd acceptance-source && go build -o "$ACCEPTANCE_DIR/private/c8s" ./cmd/c8s)
+          go build -o "$ACCEPTANCE_DIR/private/pod-mesh-probe" ./.github/scripts/pod-mesh-probe
+          if ! command -v kubectl >/dev/null; then
+            version=$(curl --retry 3 --connect-timeout 10 --max-time 60 -fsSL https://dl.k8s.io/release/stable.txt)
+            [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+            curl --retry 3 --connect-timeout 10 --max-time 60 -fsSL "https://dl.k8s.io/release/$version/bin/linux/amd64/kubectl" -o "$RUNNER_TEMP/pod-acceptance-bin/kubectl"
+            checksum=$(curl --retry 3 --connect-timeout 10 --max-time 60 -fsSL "https://dl.k8s.io/release/$version/bin/linux/amd64/kubectl.sha256")
+            printf '%s  %s\n' "$checksum" "$RUNNER_TEMP/pod-acceptance-bin/kubectl" | sha256sum -c -
+            chmod +x "$RUNNER_TEMP/pod-acceptance-bin/kubectl"
+          fi
+          curl --retry 3 --connect-timeout 10 --max-time 60 -fsSL https://github.com/kubevirt/kubevirt/releases/download/v1.7.0/virtctl-v1.7.0-linux-amd64 -o "$RUNNER_TEMP/pod-acceptance-bin/virtctl"
+          printf '%s  %s\n' ec6ee5619290e19590f3f9cd8b8dfce1affe0380eaaca77b3784c7b1acea86a6 "$RUNNER_TEMP/pod-acceptance-bin/virtctl" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/pod-acceptance-bin/virtctl"
+          echo "$RUNNER_TEMP/pod-acceptance-bin" >> "$GITHUB_PATH"
+          python3 .github/scripts/tests/test_tdx_pod_acceptance.py
+          python3 .github/scripts/fixtures/pod-connected/test_fixture.py
+          go test ./.github/scripts/pod-mesh-probe
+
+      - name: Run server and two Pods through timed credential renewal
+        timeout-minutes: 125
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/tdx-pod-acceptance.py run
+
+      - name: Remove this run's VMs, Services, Secrets and private disks
+        if: always()
+        timeout-minutes: 10
+        run: python3 .github/scripts/tdx-pod-acceptance.py cleanup
+
+      - name: Retain bounded public acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pod-connected-acceptance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/pod-acceptance/evidence
+          if-no-files-found: warn
+          retention-days: 7
+
+  pod-runtime-diagnostic:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.pod_runtime_diagnostic && !inputs.pod_diagnostic && !inputs.pod_acceptance }}
+    name: Pod runtime diagnostics (development image)
+    needs: validate-pod-mode
+    runs-on: cvm-launcher-tdx
+    timeout-minutes: 75
+    env:
+      POD_ACCEPTANCE_SOURCE: ${{ github.workspace }}/runtime-diagnostic-source
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Select the development image's paired source
+        id: pins
+        run: |
+          python3 - <<'PY'
+          import importlib.util, json, os, sys
+          from pathlib import Path
+          sys.path.insert(0, '.github/scripts')
+          spec = importlib.util.spec_from_file_location('runtime_diagnostic', '.github/scripts/tdx-pod-runtime-diagnostic.py')
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          pins = json.loads((module.acceptance.FIXTURE / 'development-image.json').read_text())
+          module.validate_diagnostic_pins(pins)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('source=' + pins['source'] + '\n')
+          PY
+
+      - name: Check out the clean CLI source paired with the image
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ steps.pins.outputs.source }}
+          path: runtime-diagnostic-source
+
+      - uses: ./.github/actions/setup-go-c8s
+        with:
+          go-version-file: runtime-diagnostic-source/go.mod
+          cache: 'false'
+
+      - name: Prepare paired CLI, PTY console and native tools
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          umask 077
+          ACCEPTANCE_DIR="$RUNNER_TEMP/pod-runtime-diagnostic"
+          mkdir -p "$ACCEPTANCE_DIR/private" "$ACCEPTANCE_DIR/evidence" "$RUNNER_TEMP/pod-runtime-diagnostic-bin"
+          (cd runtime-diagnostic-source && go build -o "$ACCEPTANCE_DIR/private/c8s" ./cmd/c8s)
+          if ! command -v kubectl >/dev/null; then
+            version=$(curl --retry 3 --connect-timeout 10 --max-time 60 -fsSL https://dl.k8s.io/release/stable.txt)
+            [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+            curl --retry 3 --connect-timeout 10 --max-time 60 -fsSL "https://dl.k8s.io/release/$version/bin/linux/amd64/kubectl" -o "$RUNNER_TEMP/pod-runtime-diagnostic-bin/kubectl"
+            checksum=$(curl --retry 3 --connect-timeout 10 --max-time 60 -fsSL "https://dl.k8s.io/release/$version/bin/linux/amd64/kubectl.sha256")
+            printf '%s  %s\n' "$checksum" "$RUNNER_TEMP/pod-runtime-diagnostic-bin/kubectl" | sha256sum -c -
+            chmod +x "$RUNNER_TEMP/pod-runtime-diagnostic-bin/kubectl"
+          fi
+          curl --retry 3 --connect-timeout 10 --max-time 60 -fsSL https://github.com/kubevirt/kubevirt/releases/download/v1.7.0/virtctl-v1.7.0-linux-amd64 -o "$RUNNER_TEMP/pod-runtime-diagnostic-bin/virtctl"
+          printf '%s  %s\n' ec6ee5619290e19590f3f9cd8b8dfce1affe0380eaaca77b3784c7b1acea86a6 "$RUNNER_TEMP/pod-runtime-diagnostic-bin/virtctl" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/pod-runtime-diagnostic-bin/virtctl"
+          echo "$RUNNER_TEMP/pod-runtime-diagnostic-bin" >> "$GITHUB_PATH"
+          if ! command -v expect >/dev/null || ! command -v jq >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq --no-install-recommends expect jq
+          fi
+          python3 .github/scripts/tests/test_tdx_pod_runtime_diagnostic.py
+          python3 .github/scripts/tests/test_tdx_pod_acceptance.py
+          python3 .github/scripts/fixtures/pod-connected/test_fixture.py
+
+      - name: Observe the owned server and two development Pod guests
+        timeout-minutes: 55
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/tdx-pod-runtime-diagnostic.py run
+
+      - name: Remove this run's VMs, Services, Secrets and private disks
+        if: always()
+        timeout-minutes: 10
+        run: python3 .github/scripts/tdx-pod-runtime-diagnostic.py cleanup
+
+      - name: Retain projected runtime observations only
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pod-runtime-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/pod-runtime-diagnostic/evidence
+          if-no-files-found: warn
+          retention-days: 3

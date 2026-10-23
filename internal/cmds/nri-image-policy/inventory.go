@@ -1,7 +1,10 @@
 package nriimagepolicy
 
 import (
+	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"sync"
 
 	"github.com/confidential-dot-ai/c8s/internal/admissionhistory"
@@ -26,6 +29,7 @@ type admissionInventory struct {
 	denied     map[string]sandboxDenial            // sandboxID -> why it asserts no identity
 	sandboxes  map[string]struct{}                 // live pod sandbox IDs
 	procRoot   string
+	revision   uint64
 
 	// needsVariableEvidence reports whether a current match env policy lists
 	// a digest; records of other images are served without per-variable
@@ -38,15 +42,14 @@ type admissionInventory struct {
 	pendingExits map[string]bool
 }
 
-// sandboxDenial is why a sandbox asserts no identity. liftOnAdmit names the
-// container whose later admission clears the refusal, empty for a refusal that
-// holds for the sandbox's life.
+// sandboxDenial keeps every unresolved creation refusal by container name.
+// A permanent refusal dominates them and holds for the sandbox's life.
 //
 // INVARIANT: only a container the plugin kept from being created sets
-// liftOnAdmit, and only to that container's own name.
+// creations, and only to that container's own name.
 type sandboxDenial struct {
-	reason      error
-	liftOnAdmit string
+	permanent error
+	creations map[string]error
 }
 
 type ctrRec struct {
@@ -82,6 +85,7 @@ func (b *admissionInventory) recordObserved(containerID, sandboxID, name, digest
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.revision++
 	removed, exited := b.pendingExits[containerID]
 	delete(b.pendingExits, containerID)
 	if !removed {
@@ -109,6 +113,7 @@ func (b *admissionInventory) recordObserved(containerID, sandboxID, name, digest
 func (b *admissionInventory) stop(containerID string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.revision++
 	b.noteExit(containerID, false)
 	b.exited(containerID)
 }
@@ -121,6 +126,7 @@ func (b *admissionInventory) stop(containerID string) {
 func (b *admissionInventory) remove(containerID string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.revision++
 	b.noteExit(containerID, true)
 	b.exited(containerID)
 	delete(b.containers, containerID)
@@ -170,6 +176,7 @@ func (b *admissionInventory) recordSandbox(sandboxID string) {
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.revision++
 	b.sandboxes[sandboxID] = struct{}{}
 }
 
@@ -181,6 +188,7 @@ func (b *admissionInventory) removeSandbox(sandboxID string) {
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.revision++
 	delete(b.sandboxes, sandboxID)
 	delete(b.admitted, sandboxID)
 	delete(b.denied, sandboxID)
@@ -192,7 +200,7 @@ func (b *admissionInventory) removeSandbox(sandboxID string) {
 }
 
 // recordDenial notes a refusal that kept a container of the sandbox from
-// running and holds for the sandbox's life. The first reason stands;
+// running and holds for the sandbox's life. The first permanent reason stands;
 // removeSandbox evicts it with the sandbox.
 //
 // INVARIANT: a sandbox with any denied container asserts no identity.
@@ -214,13 +222,23 @@ func (b *admissionInventory) denyOnRecord(sandboxID, liftOnAdmit string, reason 
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if _, onRecord := b.denied[sandboxID]; onRecord {
+	denial := b.denied[sandboxID]
+	if denial.permanent != nil {
 		return
 	}
-	b.denied[sandboxID] = sandboxDenial{
-		reason:      reason,
-		liftOnAdmit: liftOnAdmit,
+	if liftOnAdmit == "" {
+		denial = sandboxDenial{permanent: reason}
+	} else {
+		if denial.creations == nil {
+			denial.creations = map[string]error{}
+		}
+		if _, onRecord := denial.creations[liftOnAdmit]; onRecord {
+			return
+		}
+		denial.creations[liftOnAdmit] = reason
 	}
+	b.revision++
+	b.denied[sandboxID] = denial
 }
 
 // liftDenial clears a creation refusal the admission of name supersedes.
@@ -230,10 +248,13 @@ func (b *admissionInventory) liftDenial(sandboxID, name string) {
 		return
 	}
 	denial, onRecord := b.denied[sandboxID]
-	if !onRecord || denial.liftOnAdmit != name {
+	if !onRecord || denial.permanent != nil {
 		return
 	}
-	delete(b.denied, sandboxID)
+	delete(denial.creations, name)
+	if len(denial.creations) == 0 {
+		delete(b.denied, sandboxID)
+	}
 }
 
 // denial is why the sandbox asserts no identity, nil when every container of
@@ -241,7 +262,15 @@ func (b *admissionInventory) liftDenial(sandboxID, name string) {
 func (b *admissionInventory) denial(sandboxID string) error {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-	return b.denied[sandboxID].reason
+	denial := b.denied[sandboxID]
+	if denial.permanent != nil {
+		return denial.permanent
+	}
+	var reasons []error
+	for _, name := range slices.Sorted(maps.Keys(denial.creations)) {
+		reasons = append(reasons, denial.creations[name])
+	}
+	return errors.Join(reasons...)
 }
 
 // callerForPeer resolves the calling process to its tracked container record.
@@ -313,4 +342,16 @@ func (b *admissionInventory) DigestsForSandbox(sandboxID string) ([]string, []wo
 		return nil, nil, true, fmt.Errorf("sandbox %s %w", sandboxID, err)
 	}
 	return digests, containers, true, nil
+}
+
+// podSnapshot keeps all available environment evidence, independently of the
+// latest local pull: CDS evaluates the quote-bound observations itself.
+func (b *admissionInventory) podSnapshot(sandboxID string) ([]workloadclaims.SandboxContainer, uint64, error) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	if _, ok := b.sandboxes[sandboxID]; !ok {
+		return nil, 0, fmt.Errorf("pod sandbox is no longer live")
+	}
+	_, containers, err := b.admitted[sandboxID].Snapshot(nil)
+	return containers, b.revision, err
 }

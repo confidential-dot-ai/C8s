@@ -140,6 +140,103 @@ against the attested guest with the e2e scripts' environment
 no credential for the suite. Called from another repository, the SNP lane
 still takes its scripts and actions from this one, at the default branch.
 
+### Connected Pod acceptance on TDX
+
+The manual `tdx-metal-e2e.yml` input `pod_acceptance: true` starts a real CDS
+server and two standalone Pod guests. The image, image manifest, disk, mesh
+container and matching CLI source are pinned in
+`.github/scripts/fixtures/pod-connected/production-image.json`. Image profile
+and component sources must agree. Update the complete pin set together after
+a paired production image build; the harness does not accept a development
+image or substitute a fake CDS.
+
+```sh
+gh workflow run tdx-metal-e2e.yml --repo confidential-dot-ai/C8s \
+  --ref podcvm/no-mesh-gate -f pod_acceptance=true
+```
+
+The two signed workloads test authenticated peer traffic, IPv4 HTTPS, system
+DNS, TCP/UDP DNS, and guest/link-local connection denials. Authenticated Pod
+status must show readiness withdrawing and recovering, followed by successful
+checker exits after at least 65 minutes. Public mesh leaves must rotate late in
+the observation window, with new serials and keys, stable Pod identities and
+CA, and no application, checker or endpoint restarts. Certless, wrong-CA and
+plaintext requests must be rejected, followed by fresh healthy Pod status.
+
+Three run-owned Services allocate the addresses signed into the launch inputs.
+Guest-to-guest traffic uses those Services. If runner network policy prevents
+direct observations, the runner uses owned VMI port-forwards for attestation,
+status and certificate probes. Keys remain in the private runner directory or
+their intended guest. The test uses one shared read-only root import, a private
+server scratch disk, and approximately 8 vCPUs and 32 GiB of guest memory.
+
+The `pod-connected-acceptance-<run>-<attempt>` artifact retains image identity,
+authenticated attestations/status, public certificates, negative-probe receipts,
+bounded boot logs and cleanup results for seven days. Acceptance requires both
+the exact expected-digest checks and the timed observations. Failure artifacts
+include bounded CLI errors and separately labeled diagnostic attestations;
+those diagnostic reports cannot satisfy acceptance. Completion requires
+`result.json` with `passed: true` and `cleanup.json` with `complete: true`, plus
+a successful workflow. Cleanup always removes owned resources; `keep_cvm` does
+not apply. Select exactly one Pod mode per dispatch.
+
+This lane validates static Pods on native KubeVirt TDX hardware. Cloud API
+provisioning and Kubernetes provider assignment, discovery and deletion remain
+separate acceptance work. Guest exclusion checks observe connection denial;
+the privileged Linux suite supplies controlled listener and source-NAT checks.
+
+### Diagnosing Pod runtime startup on TDX
+
+The manual input `pod_runtime_diagnostic: true` uses separate immutable pins in
+`.github/scripts/fixtures/pod-connected/development-image.json` and the same real
+CDS/two-Pod provisioning. It collects bounded systemd unit, journal, CRI and
+containerd-plugin observations through the run-owned Pod consoles. Private raw
+console transcripts are not uploaded; public evidence contains fixed projections
+with sensitive records omitted. UID checks bind observations and cleanup to the
+resources created by that run.
+
+Runtime diagnostics use their own serialized workflow queue and request eight
+CPUs and 32 GiB of guest memory, plus virtualization overhead. Scheduling is
+bounded; unavailable capacity fails the run and triggers cleanup. Terminal
+control sequences are removed before parsing the projected console records;
+framing failures retain counts only, without publishing raw console text.
+
+```sh
+gh workflow run tdx-metal-e2e.yml --repo confidential-dot-ai/C8s \
+  --ref podcvm/no-mesh-gate -f pod_runtime_diagnostic=true
+```
+
+The development image has different measurements and bypasses `c8s-runc` through
+`60-dev-runc.toml`. Its outcome is diagnostic-only and cannot satisfy production
+acceptance. The runner does not perform the timed acceptance observations.
+The `pod-runtime-diagnostic-<run>-<attempt>` artifact retains public observations
+and the cleanup receipt for three days. A complete diagnostic run requires
+`captureComplete: true` and cleanup `complete: true`; neither means the Pod
+workload passed. Cleanup always runs, and `keep_cvm` does not apply.
+
+### Diagnosing historical mixed-source Pod boots
+
+The manual `tdx-metal-e2e.yml` input `pod_diagnostic: true` reproduces historical
+build `39943645155`, which mixed `4774df9e` components with the node-only image
+profile from `main` at `00f43aca`. Its matching component CLI signs the Pod fixture.
+The serial logs identify the scratch-enforcement shutdown before Pod role setup;
+this mixed image does not contain the Pod profile being developed.
+It uses the existing TDX launcher, a private root import and run-owned VM and
+launch Secret. Cleanup always runs; `keep_cvm` does not retain diagnostic VMs.
+The `pod-boot-diagnostic-<run>-<attempt>` artifact contains bounded serial and
+launcher logs, image identity, native status and the cleanup receipt. It omits
+private signing keys and expires after seven days.
+
+```sh
+gh workflow run tdx-metal-e2e.yml --repo confidential-dot-ai/C8s \
+  --ref podcvm/no-mesh-gate -f pod_diagnostic=true
+```
+
+This mode diagnoses boot only. It deliberately uses an unavailable CDS and a
+separately measured development image; it does not establish production-image,
+mesh, internet or DNS acceptance. The normal node lane and automatic exact-image
+acceptance keep their existing validation.
+
 ## Running it
 
 ```sh

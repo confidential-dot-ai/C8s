@@ -110,6 +110,19 @@ func Run(args []string) error {
 		"mode", startupSourceMode(cfg),
 	)
 
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+	return runConfigured(ctx, cfg, logger, healthServerConfig{
+		addr:         *healthAddr,
+		readTimeout:  *readTimeout,
+		writeTimeout: *writeTimeout,
+	})
+}
+
+// runConfigured is the startup path after configuration validation.
+func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health healthServerConfig) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	logger.Debug("initializing containerd resolver",
 		"socket", cfg.Containerd.Socket,
 		"namespace", cfg.Containerd.Namespace,
@@ -125,6 +138,7 @@ func Run(args []string) error {
 	store := newPolicyStore(cfg.Allowlist.Base)
 
 	var wlClient allowlistclient.Client
+	var cdsHTTPClient *http.Client
 	if cfg.PullEnabled() {
 		logger.Info("initializing allowlist client", "url", cfg.Allowlist.Pull.URL)
 		httpClient, err := allowlistPullHTTPClient(cfg.Allowlist.Pull, cfg.NormalizedPlatform())
@@ -132,6 +146,7 @@ func Run(args []string) error {
 			return fmt.Errorf("create allowlist client: %w", err)
 		}
 		wlClient = allowlistclient.NewClientWithHTTP(cfg.Allowlist.Pull.URL, httpClient)
+		cdsHTTPClient = httpClient
 	}
 
 	logNodeRoot(logger, cfg.AllowlistEnabled(), nodeRootUnavailable)
@@ -139,6 +154,10 @@ func Run(args []string) error {
 	if err != nil {
 		return fmt.Errorf("create plugin: %w", err)
 	}
+	if err := plugin.preparePodBroker(ctx, cdsHTTPClient); err != nil {
+		return fmt.Errorf("prepare Pod credential broker: %w", err)
+	}
+	defer plugin.closePodBroker()
 	// Before the plugin serves a single container creation: a pod admitted
 	// without this mount would read no pins at all.
 	if err := plugin.prepareCDSPins(); err != nil {
@@ -149,20 +168,9 @@ func Run(args []string) error {
 	}
 	logger.Info("CDS policy for injected clients", "pins", plugin.cdsPins, "address", plugin.cdsAddress)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		sig := <-sigCh
-		logger.Info("received shutdown signal", "signal", sig)
-		cancel()
-	}()
-
 	logger.Info("policy store seeded", "base_entries", store.base.Size())
 
-	if cfg.WorkloadClaims.PublishNodeIP {
+	if cfg.injectsCredentialClients() && cfg.WorkloadClaims.PublishNodeIP {
 		// Fail-soft: exiting would block container creation node-wide, while
 		// a missing file only fails closed the components that read it. The
 		// first attempt runs here so the signer below reads a file this
@@ -172,7 +180,7 @@ func Run(args []string) error {
 		go publisher.run(ctx, publisher.publish())
 	}
 
-	addr := *healthAddr
+	addr := health.addr
 	if cfg.Plugin.HealthAddr != "" {
 		addr = cfg.Plugin.HealthAddr
 	}
@@ -180,8 +188,8 @@ func Run(args []string) error {
 		logger:       logger,
 		plugin:       plugin,
 		addr:         addr,
-		readTimeout:  *readTimeout,
-		writeTimeout: *writeTimeout,
+		readTimeout:  health.readTimeout,
+		writeTimeout: health.writeTimeout,
 	}); err != nil {
 		return fmt.Errorf("start health server on %q: %w", addr, err)
 	}
@@ -191,7 +199,7 @@ func Run(args []string) error {
 		pluginErrCh <- plugin.Run(ctx)
 	}()
 
-	if plugin.inventory != nil {
+	if cfg.injectsCredentialClients() {
 		socketPath := filepath.Join(cfg.WorkloadClaims.SocketDir, workloadclaims.SocketName)
 		if err := startAdmissionInventory(ctx, logger, cfg, plugin, socketPath); err != nil {
 			return fmt.Errorf("start admission inventory: %w", err)

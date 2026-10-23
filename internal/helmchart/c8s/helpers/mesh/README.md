@@ -5,9 +5,9 @@ Source: [templates/_mesh.tpl](../../templates/_mesh.tpl).
 
 `c8s.meshEndpointContainer` renders the pod mesh endpoint: the native sidecar
 that carries a member pod's captured TCP over armTLS. The admission webhook
-builds the same container for tenant pods
-(`internal/webhook/pod_mutator.go "meshContainer"`), so a chart-rendered member
-pod — the router — holds one endpoint shape with it.
+builds the same container for tenant pods using `internal/podmesh.Endpoint`,
+also used by the Pod CVM guest. A chart-rendered member pod — the router —
+therefore holds the same endpoint shape.
 
 The node's measured base allowlist grants the mesh role to that argv, those
 mounts and that reserved UID alone

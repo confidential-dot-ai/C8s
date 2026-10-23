@@ -62,7 +62,7 @@ func clearOutputs(cfg Config) error {
 	// attempting to remove the other.
 	var errs []error
 	paths := []string{serverMarker, agentMarker, podMarker, serverTokenPath, agentTokenPath, rke2FragmentPath, nodePasswordPath, rke2RegistriesPath}
-	for _, name := range []string{"peers.json", "cds.json", "operator-pubkey", "config.json", "workloads.json"} {
+	for _, name := range []string{"peers.json", "cds.json", "pods.json", "operator-pubkey", "config.json", "workloads.json"} {
 		paths = append(paths, Dir+"/"+name)
 	}
 	for _, path := range paths {
@@ -112,6 +112,10 @@ func stageVerified(cfg Config, v *Verified) error {
 		{Dir + "/cds.json", cds},
 		{Dir + "/operator-pubkey", v.operatorPub},
 		{Dir + "/config.json", append(encoded, '\n')},
+	}
+	if doc.Role == Server {
+		// Empty explicitly disables Pod issuance; it never falls back to peers.
+		outputs = append(outputs, outputFile{Dir + "/pods.json", []byte(doc.PodImagePolicy)})
 	}
 	if doc.RKE2.NodePassword != "" {
 		// Without one (an older bundle), RKE2 generates its own per boot.

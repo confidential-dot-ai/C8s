@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "source": "c7cf2f38de3b035fbce00fe22d2451e77cdcefa0",
+  "profileSource": "c7cf2f38de3b035fbce00fe22d2451e77cdcefa0",
+  "buildRun": "40009495268",
+  "image": "ghcr.io/confidential-dot-ai/node-guest-base@sha256:dc1352d9575053edb7245659b20b612d9cd3b903fb06a075749c630bfea2a9e0",
+  "artifact": "ghcr.io/confidential-dot-ai/node-guest-base@sha256:bc1007cbc3c5509a57387f3213d28302a7217cd547b826a0fec1de47dbfae516",
+  "manifestSHA256": "83960cf29e799a0ced9d145e056ae909be3d05b885fe5d755c471a5eace31bea",
+  "diskSHA256": "dad538e217013b0a09eb4471fff50c8f81aa668e7df1b0b364c2c7cc6555255a",
+  "meshImage": "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:461f7d916f0e3d0de24482ce6dda5e8eae948da743a0b4fd09bf14c3eb8ad5f2"
+}
