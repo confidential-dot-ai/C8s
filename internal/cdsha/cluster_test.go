@@ -358,6 +358,15 @@ func TestLeaderKillAndRestartAsNewMember(t *testing.T) {
 		})
 	}
 	back := c.start(old.name, "m1")
+	// The joiner takes the dead member's address, so the leader replaces it
+	// at once, not only once the joiner has been healthy for Stabilize.
+	eventually(t, 5*time.Second, "restarted replica joined", func() bool {
+		l := c.leader()
+		return l != nil && slices.Contains(l.node.Status().NonVoters, back.node.ID())
+	})
+	if st := c.leader().node.Status(); slices.Contains(append(st.Voters, st.NonVoters...), oldID) {
+		t.Fatalf("the dead member at the joiner's address is still a member: %+v", st)
+	}
 	c.settled(10 * time.Second)
 	st := c.leader().node.Status()
 	for _, id := range append(st.Voters, st.NonVoters...) {
