@@ -657,3 +657,6 @@ policy:
 
 logging:
   level: "info"
+  # containerd starts a pre-installed plugin with its standard streams on
+  # /dev/null; journald's socket keeps the denials and audit records.
+  syslog: "/dev/log"
