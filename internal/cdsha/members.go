@@ -480,7 +480,14 @@ func (n *Node) refreshSeats() {
 	if addr == "" {
 		return
 	}
-	if st, err := n.peerStatus(addr, time.Second); err == nil && st.SeatsFilled {
-		n.seatsOKAt.Store(time.Now().UnixMilli())
+	if st, err := n.peerStatus(addr, time.Second); err == nil {
+		if !st.SeatsFilled {
+			n.seatsOKAt.Store(nil)
+			return
+		}
+		// Keep the monotonic clock: a backwards wall step must not extend
+		// rollout readiness after a fresh read barrier reopens Serving.
+		at := time.Now()
+		n.seatsOKAt.Store(&at)
 	}
 }
