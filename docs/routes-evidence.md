@@ -70,7 +70,7 @@ Each handshake loads the applied manifest once, at admission, and binds that man
 - `routes_unavailable` before the router has applied a manifest;
 - `routes_stale` while the applied manifest is older than its `maxAgeSeconds` without a refresh.
 
-A session is bound to what its handshake bound: the route digest, and the allowlist digest of the router stamp on the mesh leaf (empty for an unstamped leaf). An attest-pq session is bound by its session ID. An attest-lb handshake binds the public TLS connection it arrived on, which nginx names in `X-C8s-Connection` (`$pid.$connection`, replacing any client value). A request on a bound session is routed only while the applied manifest's digest and the router's digest, as of its last route poll, equal the bound ones. Otherwise `cds-attest` refuses it with HTTP 503, without forwarding it:
+A session is bound to what its handshake bound: the route digest, and the allowlist digest of the router stamp on the mesh leaf (empty for an unstamped leaf). An attest-pq session is bound by its session ID. An attest-lb handshake binds the public TLS connection it arrived on, which nginx names in `X-C8s-Connection` (`$pid.$connection`, replacing any client value). A request on a bound session is routed only while the applied manifest's digest and the router's digest, as of the last route poll, attested handshake or workload dial that reread its credential, equal the bound ones. Otherwise `cds-attest` refuses it with HTTP 503, without forwarding it:
 
 - `route_digest_changed` when another manifest is applied;
 - `router_digest_changed` when the router's leaf renewed under another allowlist digest.
