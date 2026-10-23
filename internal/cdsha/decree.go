@@ -240,16 +240,13 @@ func VerifyDecreeSignature(sd SignedDecree, decreeKey []byte) error {
 // from its launch document, the cluster, and that the decree sets images.
 // Expiry does not apply: a decree expires as a request to the replicas, and
 // the pin set it made stays in force until a later decree replaces it.
+// verifyDecree checks the cluster, and refuses images on every kind that
+// sets no measurements.
 func VerifyPinDecree(sd SignedDecree, clusterID string, decreeKey []byte) error {
-	d := sd.Decree
-	switch {
-	case d.ClusterID != clusterID:
-		return fmt.Errorf("pin decree for cluster %q", d.ClusterID)
-	case len(d.Images) == 0 || (d.Kind != UpdateMeasurements && d.Kind != RotateKey):
+	if len(sd.Decree.Images) == 0 {
 		return errors.New("not a pin decree: no images")
 	}
-	tail := Core{ClusterID: clusterID, OperatorPubKey: decreeKey, Epoch: d.BaseEpoch}
-	return verifyDecree(sd, tail)
+	return verifyDecree(sd, Core{ClusterID: clusterID, OperatorPubKey: decreeKey, Epoch: sd.Decree.BaseEpoch})
 }
 
 // normalizePins sorts and de-duplicates a pin list.
