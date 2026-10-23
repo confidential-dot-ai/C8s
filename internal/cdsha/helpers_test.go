@@ -21,6 +21,7 @@ import (
 	"github.com/hashicorp/raft"
 
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
+	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/sandboxledger"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
@@ -203,4 +204,13 @@ func restoreCopy(t *testing.T, f, to *FSM) error {
 		t.Fatal(err)
 	}
 	return to.Restore(io.NopCloser(&buf))
+}
+
+func mustCA(t *testing.T) *issuer.CA {
+	t.Helper()
+	mesh, err := issuer.NewMeshCA("test", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return mesh.Current().CA
 }
