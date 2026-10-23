@@ -183,7 +183,7 @@ rejects unknown names.
 
 | Backend | Environment | Requires |
 |---|---|---|
-| [`kind.sh`](backends/kind.sh) | the kept kind cluster of [`test/integration/cluster/run.sh`](../integration/cluster/run.sh) (`C8S_IT_KEEP=1 C8S_IT_SETUP_ONLY=1`); mocked attestation, node shell via `docker exec`; the mock signs nothing and verifies only at the mock, so `evidence_signed` answers no and `relying_party` unsupported; the CDS reads its seed ConfigMap once, as on any chart-managed install, so `seed_add` answers unsupported | `C8S_IT_WORKDIR` |
+| [`kind.sh`](backends/kind.sh) | the kept kind cluster of [`test/integration/cluster/run.sh`](../integration/cluster/run.sh) (`C8S_IT_KEEP=1 C8S_IT_SETUP_ONLY=1`); mocked attestation, node shell via `docker exec`; the mock signs nothing and verifies only at the mock, so `evidence_signed` answers no and `relying_party` unsupported | `C8S_IT_WORKDIR` |
 | [`metal.sh`](backends/metal.sh) | the attested node image a metal lane booted (`snp-metal-e2e`, `tdx-metal-e2e`), from its `extra-suite` hook; what it cannot reach answers unsupported ([below](#the-metal-backend)) | `KUBECONFIG`, `C8S_ALLOWLIST_URL`, `C8S_OPERATOR_KEY`, the `c8s` CLI on `PATH`; `go` for the write-token functions, `crane` for `image_entrypoint` and `image_env` |
 
 The backends source the kind harness's `lib.sh`, render pods with
