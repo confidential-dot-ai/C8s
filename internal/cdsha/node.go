@@ -124,24 +124,26 @@ type Config struct {
 
 // Node is one CDS replica.
 type Node struct {
-	cfg         Config
-	id          raft.ServerID
-	fsm         *FSM
-	rft         atomic.Pointer[raft.Raft]
-	mux         atomic.Pointer[mux] // replaced by a recovery
-	rcfg        *raft.Config
-	logs        *raft.InmemStore
-	stable      *raft.InmemStore
-	snaps       *snapStore
-	noLeader    time.Time    // since when a member has seen no leader
-	lastMember  atomic.Int64 // Unix ms a reachable peer last reported membership (or this start)
-	lastLoner   atomic.Int64 // Unix ms a reachable peer last answered that it holds no cluster either
-	joinLogged  bool
-	cert        atomic.Pointer[tls.Certificate] // the peer certificate; renewPeerCert replaces it
-	tls         *tls.Config
-	verifier    peerVerifier
-	measurement string
-	log         *slog.Logger
+	eligibilityMu sync.Mutex         // serialize fresh-node join/bootstrap and Restore
+	observer      *heartbeatObserver // protected by stopRaftMu
+	cfg           Config
+	id            raft.ServerID
+	fsm           *FSM
+	rft           atomic.Pointer[raft.Raft]
+	mux           atomic.Pointer[mux] // replaced by a recovery
+	rcfg          *raft.Config
+	logs          *raft.InmemStore
+	stable        *raft.InmemStore
+	snaps         *snapStore
+	noLeader      time.Time    // since when a member has seen no leader
+	lastMember    atomic.Int64 // Unix ms a reachable peer last reported membership (or this start)
+	lastLoner     atomic.Int64 // Unix ms a reachable peer last answered that it holds no cluster either
+	joinLogged    bool
+	cert          atomic.Pointer[tls.Certificate] // the peer certificate; renewPeerCert replaces it
+	tls           *tls.Config
+	verifier      peerVerifier
+	measurement   string
+	log           *slog.Logger
 
 	jumpAt        atomic.Int64 // Unix ms of the last clock jump not yet cleared by fresh contact
 	readCert      atomic.Pointer[readCertificate]
@@ -336,6 +338,8 @@ func (n *Node) Start() error {
 
 // startRaft opens the transport and starts Raft on the node's stores.
 func (n *Node) startRaft() error {
+	n.stopRaftMu.Lock()
+	defer n.stopRaftMu.Unlock()
 	trans, err := n.transport()
 	if err != nil {
 		return err
@@ -347,14 +351,18 @@ func (n *Node) startRaft() error {
 	}
 	n.rft.Store(r)
 	obs := make(chan raft.Observation, 256)
-	r.RegisterObserver(raft.NewObserver(obs, false, func(o *raft.Observation) bool {
+	observer := raft.NewObserver(obs, false, func(o *raft.Observation) bool {
 		switch o.Data.(type) {
 		case raft.FailedHeartbeatObservation, raft.ResumedHeartbeatObservation:
 			return true
 		}
 		return false
-	}))
-	go n.observe(obs)
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	worker := &heartbeatObserver{raft: r, observer: observer, cancel: cancel, done: make(chan struct{})}
+	n.observer = worker
+	r.RegisterObserver(observer)
+	go func() { defer close(worker.done); n.observe(ctx, r, obs) }()
 	return nil
 }
 
@@ -444,6 +452,14 @@ func (n *Node) stopRaft(r *raft.Raft) error {
 	}
 	n.barrierGate <- struct{}{}
 	defer func() { <-n.barrierGate }()
+	// Never close the observation channel: Raft owns sends. Deregister,
+	// cancel and join before stores or generation bookkeeping can be retired.
+	if worker := n.observer; worker != nil && worker.raft == r {
+		r.DeregisterObserver(worker.observer)
+		worker.cancel()
+		<-worker.done
+		n.observer = nil
+	}
 	return r.Shutdown().Error()
 }
 

@@ -6,6 +6,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -161,6 +162,10 @@ func TestBackupFailuresAndRetries(t *testing.T) {
 func TestLeaderControlRefusals(t *testing.T) {
 	s := newSolo(t, func(cfg *Config) { cfg.MaxNonVoters = 1 })
 	n := s.node
+	policy, err := json.Marshal(n.fsm.LocalPolicy())
+	if err != nil {
+		t.Fatal(err)
+	}
 	pinned := Claims{Measurement: "m1"}
 	if resp := n.handleControl(Claims{Measurement: "m9"}, controlRequest{Op: ctlJoin}); !strings.Contains(resp.Err, "not pinned") {
 		t.Fatalf("unpinned peer: %+v", resp)
@@ -168,12 +173,12 @@ func TestLeaderControlRefusals(t *testing.T) {
 	if resp := n.handleControl(pinned, controlRequest{Op: ctlApply, Entry: []byte(`{"kind":"nope"}`)}); resp.Err == "" {
 		t.Fatalf("a malformed entry applied: %+v", resp)
 	}
-	if resp := n.handleControl(pinned, controlRequest{Op: ctlJoin, ID: n.ID(), Address: string(n.raftAddress()), Reads: Format}); resp.Err != "" || !resp.Member {
+	if resp := n.handleControl(pinned, controlRequest{Op: ctlJoin, ID: n.ID(), Address: string(n.raftAddress()), Reads: Format, Entry: policy}); resp.Err != "" || !resp.Member {
 		t.Fatalf("a member asking to join again: %+v", resp)
 	}
 	join := func(node, hostport string) controlResponse {
 		id := node + "/1-aa"
-		return n.handleControl(pinned, controlRequest{Op: ctlJoin, ID: id, Address: hostport + "#" + id, Reads: Format})
+		return n.handleControl(pinned, controlRequest{Op: ctlJoin, ID: id, Address: hostport + "#" + id, Reads: Format, Entry: policy})
 	}
 	if resp := join("x", "127.0.0.1:1"); resp.Err != "" {
 		t.Fatalf("first non-voter: %+v", resp)
