@@ -23,7 +23,8 @@ import (
 var update = flag.Bool("update", false, "regenerate testdata/ruleset.golden")
 
 // testPolicy exercises every kind of permission a node's trusted policy can
-// name: the resolver and a credential role with one destination.
+// name: the resolver, a credential role with one destination, and that
+// destination as an exit of the whole pod.
 func testPolicy() Policy {
 	return Policy{
 		Resolver: netip.MustParseAddr("10.53.0.10"),
@@ -37,6 +38,7 @@ func testPolicy() Policy {
 			UID:          1338,
 			Destinations: []Destination{{netip.MustParseAddr("10.43.0.2"), 8443}},
 		}},
+		Exits: []Exit{{netip.MustParsePrefix("10.43.0.2/32"), 8443}},
 	}
 }
 
@@ -68,6 +70,30 @@ func serverPolicy() Policy {
 func TestBuildMatchesTheGoldenRuleset(t *testing.T) {
 	const golden = "testdata/ruleset.golden"
 	got := renderRuleset(build(testPolicy()))
+	if *update {
+		if err := os.WriteFile(golden, []byte(got), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want, err := os.ReadFile(golden)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != string(want) {
+		t.Fatalf("ruleset =\n%s\nwant\n%s", got, want)
+	}
+}
+
+// A pod granted exits carries one accept per exit, before the capture, in
+// both chains; a range is compared under its mask.
+func TestBuildWithGrantedExitsMatchesTheGoldenRuleset(t *testing.T) {
+	const golden = "testdata/ruleset-exits.golden"
+	policy := testPolicy()
+	policy.Exits = append(policy.Exits,
+		Exit{netip.MustParsePrefix("203.0.113.0/24"), 443},
+		Exit{netip.MustParsePrefix("2001:db8::/32"), 4317},
+	)
+	got := renderRuleset(build(policy))
 	if *update {
 		if err := os.WriteFile(golden, []byte(got), 0o644); err != nil {
 			t.Fatal(err)
