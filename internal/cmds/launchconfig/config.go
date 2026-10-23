@@ -30,6 +30,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
+	"github.com/confidential-dot-ai/c8s/internal/cdsha"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/credrelease"
 	"github.com/confidential-dot-ai/c8s/internal/readutil"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
@@ -45,7 +46,6 @@ const (
 	MaxDocumentSize   = 1024 * 1024
 	maxSignatureSize  = 4096
 	maxAgentKeys      = 128
-	maxCDSReplicas    = 128
 	defaultTLSSAN     = "c8s.local"
 )
 
@@ -561,8 +561,10 @@ func (d *Document) validate() error {
 		if _, err := parseLaunchKey(d.CDSHA.DecreeKey); err != nil {
 			return fmt.Errorf("cdsHA.decreeKey: %w", err)
 		}
-		if d.CDSHA.Replicas < 2 || d.CDSHA.Replicas > maxCDSReplicas {
-			return fmt.Errorf("cdsHA.replicas must be between 2 and %d", maxCDSReplicas)
+		// Replicas is the cdsha voter seat count: odd (an even set tolerates
+		// no more loss than one fewer) and at most cdsha.MaxVoters.
+		if r := d.CDSHA.Replicas; r < 3 || r%2 == 0 || r > cdsha.MaxVoters {
+			return fmt.Errorf("cdsHA.replicas must be odd, between 3 and %d", cdsha.MaxVoters)
 		}
 	}
 	if d.TLSSAN == "" {
