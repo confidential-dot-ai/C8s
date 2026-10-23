@@ -3,67 +3,12 @@ package cmdsutil
 import (
 	"bytes"
 	"context"
-	"crypto/x509"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
-	"strings"
 	"sync"
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
-	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
-	"github.com/confidential-dot-ai/c8s/internal/cdspins"
 )
-
-// CDSDecreesInfo is what the node's enforcer needs to follow the operator's
-// signed CDS pin decrees: the cluster and the decree key, from the launch
-// document. Nodes of an HA cluster publish it as
-// /run/c8s-node/cds-decrees.json; it is public.
-type CDSDecreesInfo struct {
-	ClusterID string `json:"cluster_id"`
-	DecreeKey string `json:"decree_key"` // PEM public key
-	// PinFloor is the lowest decree base epoch the node accepts (from its
-	// launch document): an older decree the operator also signed is refused.
-	PinFloor uint64 `json:"pin_floor,omitempty"`
-}
-
-// LoadCDSDecreesInfo reads the node's decree info; ok is false when the
-// node publishes none (a cluster without HA CDS).
-func LoadCDSDecreesInfo(path string) (info CDSDecreesInfo, ok bool, err error) {
-	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return info, false, nil
-	}
-	if err != nil {
-		return info, false, err
-	}
-	if err := json.Unmarshal(data, &info); err != nil {
-		return info, false, fmt.Errorf("%s: %w", path, err)
-	}
-	if info.ClusterID == "" || info.DecreeKey == "" {
-		return info, false, fmt.Errorf("%s: needs cluster_id and decree_key", path)
-	}
-	return info, true, nil
-}
-
-// CDSDecreeSource follows the operator's signed CDS pin decrees from the
-// bootstrap set (the node's launch-document CDS policy), fetching them from
-// cdsURL (GET /ha/pins). state, if set, keeps the newest decree across
-// restarts.
-func CDSDecreeSource(info CDSDecreesInfo, bootstrap refvalues.ReferenceValues, cdsURL, state string) (*cdspins.Source, error) {
-	// The launch document's decree key, which launchconfig holds to P-256.
-	key, err := runtimemeasure.ParsePublicKeyPEM([]byte(info.DecreeKey))
-	if err != nil {
-		return nil, fmt.Errorf("decree key: %w", err)
-	}
-	der, err := x509.MarshalPKIXPublicKey(key)
-	if err != nil {
-		return nil, err
-	}
-	return cdspins.New(cdspins.Config{ClusterID: info.ClusterID, DecreeKey: der, Bootstrap: bootstrap,
-		Fetch: cdspins.HTTPFetch(strings.TrimRight(cdsURL, "/")), StateFile: state, MinEpoch: info.PinFloor})
-}
 
 // NodePins is a credential client's CDS pin set read from the policy the
 // node's enforcer mounts (workloadclaims.CDSPinsPath). The enforcer rewrites
