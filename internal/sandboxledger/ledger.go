@@ -44,6 +44,9 @@ type Ledger struct {
 	// a secret released by any replica asks the inventory bound at issuance
 	// by any other.
 	repl Replicator
+	// bytes is the snapshot size of bindings (bindingBytes summed), kept as
+	// the map changes so the HA admission cap reads it in O(1).
+	bytes int64
 }
 
 // New builds a ledger. ttl should be the maximum leaf lifetime: a binding is
@@ -94,8 +97,30 @@ func (l *Ledger) recordAt(now time.Time, sandboxID, inventoryHost string) bool {
 			return false
 		}
 	}
-	l.bindings[sandboxID] = binding{host: inventoryHost, expires: now.Add(l.ttl)}
+	l.setLocked(sandboxID, binding{host: inventoryHost, expires: now.Add(l.ttl)})
 	return true
+}
+
+// setLocked stores b under sandboxID and keeps bytes (l.mu held).
+func (l *Ledger) setLocked(sandboxID string, b binding) {
+	if prior, ok := l.bindings[sandboxID]; ok {
+		l.bytes -= bindingBytes(sandboxID, prior.host)
+	}
+	l.bindings[sandboxID] = b
+	l.bytes += bindingBytes(sandboxID, b.host)
+}
+
+// bindingBytes bounds the JSON size of one Binding in a snapshot.
+func bindingBytes(sandboxID, host string) int64 {
+	return int64(64 + 2*(len(sandboxID)+len(host)))
+}
+
+// SnapshotBytes bounds the size the ledger adds to a CDS HA snapshot
+// header, in O(1).
+func (l *Ledger) SnapshotBytes() int64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.bytes
 }
 
 // Lookup returns the inventory host bound to sandboxID. An expired or absent
@@ -131,6 +156,7 @@ func (l *Ledger) evictExpiredLocked(now time.Time) {
 	for id, b := range l.bindings {
 		if !now.Before(b.expires) {
 			delete(l.bindings, id)
+			l.bytes -= bindingBytes(id, b.host)
 		}
 	}
 }

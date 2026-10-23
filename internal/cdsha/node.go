@@ -177,6 +177,11 @@ type Node struct {
 	pruneAt     time.Time // leader: last history prune check
 	renewAt     time.Time // leader: last mesh CA renewal attempt
 	backupIndex uint64    // leader: applied index of the last stored backup
+	// backupFails counts consecutive backups that failed on a size bound;
+	// the next waits backupDelay. backupErr is the last one, for Status.
+	backupFails int
+	backupSince time.Time
+	backupErr   atomic.Pointer[string]
 	recovery    *ecdsa.PublicKey
 }
 
@@ -213,6 +218,10 @@ type Status struct {
 	// (leader) is how long its last successful read barrier took.
 	ApplyLag      uint64 `json:"apply_lag,omitempty"`
 	ReadBarrierMS int64  `json:"read_barrier_ms,omitempty"`
+
+	// BackupError (leader) says backups are failing because the state is
+	// over a snapshot size bound: no backup is stored until it shrinks.
+	BackupError string `json:"backup_error,omitempty"`
 }
 
 // NewNode prepares a replica. Every start is a new Raft member: the log
@@ -555,6 +564,11 @@ func (n *Node) handleControl(peer Claims, req controlRequest) controlResponse {
 	if req.Op == ctlJoin {
 		return n.handleJoin(req)
 	}
+	// The forwarding replica checked the cap against its own copy; the
+	// leader's check is the one that holds for every proposer.
+	if err := n.fsm.admitRaw(req.Entry); err != nil {
+		return controlResponse{Member: true, Err: err.Error()}
+	}
 	idx, resp, err := n.applyLocal(req.Entry)
 	var body json.RawMessage
 	if err == nil {
@@ -600,6 +614,9 @@ func (n *Node) propose(e Entry) (json.RawMessage, error) {
 	if !n.fsm.Core().Joined() {
 		return nil, errors.New("cds-ha: this replica has not joined the cluster")
 	}
+	if err := n.fsm.admit(e, len(raw)); err != nil {
+		return nil, err
+	}
 	if n.leading() {
 		_, resp, err := n.applyLocal(raw)
 		if err != nil {
@@ -616,6 +633,9 @@ func (n *Node) propose(e Entry) (json.RawMessage, error) {
 		return nil, err
 	}
 	if resp.Err != "" {
+		if err := capacityErr(resp.Err); err != nil {
+			return nil, err
+		}
 		return nil, errors.New("cds-ha: " + resp.Err)
 	}
 	if !n.waitFor(n.cfg.Timing.Apply, func() bool { return n.fsm.AppliedIndex() >= resp.Index }) {
@@ -625,11 +645,19 @@ func (n *Node) propose(e Entry) (json.RawMessage, error) {
 }
 
 // replicate proposes e and decodes the FSM's answer. A failed proposal
-// wraps unavailable, if set, so the store reports the cluster unavailable.
-func replicate[R any](n *Node, e Entry, unavailable error) (R, error) {
+// wraps unavailable, if set, so the store reports the cluster unavailable;
+// one refused by the admission cap wraps full instead (a write the cluster
+// will not take, not one it could not commit).
+func replicate[R any](n *Node, e Entry, unavailable, full error) (R, error) {
 	var res R
 	raw, err := n.propose(e)
 	if err != nil {
+		if errors.Is(err, ErrCapacity) {
+			if full != nil {
+				err = fmt.Errorf("%w: %w", full, err)
+			}
+			return res, err
+		}
 		if unavailable != nil {
 			err = fmt.Errorf("%w: %w", unavailable, err)
 		}
@@ -640,17 +668,17 @@ func replicate[R any](n *Node, e Entry, unavailable error) (R, error) {
 
 // Replicate implements allowlist.Replicator.
 func (n *Node) Replicate(cmd allowlist.Command) (allowlist.Result, error) {
-	return replicate[allowlist.Result](n, Entry{Kind: KindAllowlist, Allowlist: &cmd}, allowlist.ErrUnavailable)
+	return replicate[allowlist.Result](n, Entry{Kind: KindAllowlist, Allowlist: &cmd}, allowlist.ErrUnavailable, allowlist.ErrCapacity)
 }
 
 // ReplicateSecret implements secrets.Replicator.
 func (n *Node) ReplicateSecret(cmd secrets.Command) (secrets.Result, error) {
-	return replicate[secrets.Result](n, Entry{Kind: KindSecret, Secret: &cmd}, secrets.ErrUnavailable)
+	return replicate[secrets.Result](n, Entry{Kind: KindSecret, Secret: &cmd}, secrets.ErrUnavailable, secrets.ErrCapacity)
 }
 
 // ReplicateBinding implements sandboxledger.Replicator.
 func (n *Node) ReplicateBinding(cmd sandboxledger.Command) (bool, error) {
-	return replicate[bool](n, Entry{Kind: KindBinding, Binding: &cmd}, nil)
+	return replicate[bool](n, Entry{Kind: KindBinding, Binding: &cmd}, nil, nil)
 }
 
 // readCertificate is a quorum-confirmed watermark applied on this replica.
@@ -892,6 +920,9 @@ func (n *Node) Status() Status {
 	st := Status{ClusterID: n.cfg.ClusterID, NodeName: n.cfg.NodeName, ID: string(n.id), Joined: core.Joined(),
 		Epoch: core.Epoch, Measurement: n.measurement, AppliedIndex: n.fsm.AppliedIndex(),
 		Format: core.format(), Reads: n.fsm.readable, Stuck: n.fsm.Stuck(), Seats: n.seats()}
+	if p := n.backupErr.Load(); p != nil && n.r() != nil && n.leading() {
+		st.BackupError = *p
+	}
 	if core.Joined() {
 		st.CAFingerprint = certutil.CertFingerprint(core.RootCert)
 	}

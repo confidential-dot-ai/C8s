@@ -90,6 +90,11 @@ func (h routeHandler) handlePut(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteUnavailable(w, allowlist.ErrUnavailable)
 		return
 	}
+	if errors.Is(err, allowlist.ErrCapacity) {
+		slog.Warn("route manifest write refused", "err", err)
+		http.Error(w, err.Error(), http.StatusInsufficientStorage)
+		return
+	}
 	if err != nil {
 		slog.Error("store route manifest", "err", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
