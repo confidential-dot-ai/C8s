@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
+	"github.com/confidential-dot-ai/c8s/internal/httputil"
 	"github.com/confidential-dot-ai/c8s/pkg/routes"
 )
 
@@ -79,7 +80,7 @@ func (h routeHandler) handlePut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if errors.Is(err, allowlist.ErrUnavailable) {
-		allowlist.WriteUnavailable(w)
+		httputil.WriteUnavailable(w, allowlist.ErrUnavailable)
 		return
 	}
 	if err != nil {
