@@ -65,10 +65,6 @@ type pooled struct {
 	workload bool
 }
 
-// errNoPolicyIdentity refuses a workload dial while the router's own leaf
-// carries no matched-workload stamp (B9).
-var errNoPolicyIdentity = errors.New("routing: router leaf carries no matched-workload stamp")
-
 // errBackendDigestMismatch fails a workload handshake whose leaf was stamped
 // under another allowlist than the router's (B8).
 var errBackendDigestMismatch = errors.New("routing: backend allowlist digest differs from the router's")
@@ -106,15 +102,17 @@ func (c *stampCache) of(cert *tls.Certificate) (*armtls.MatchedWorkload, error) 
 	return c.stamp, c.err
 }
 
-// routerDigestOf is the allowlist digest of the router stamp on cred's leaf.
-// Any leaf that does not carry a well-formed stamp has no router digest.
+// routerDigestOf is the allowlist digest of the router stamp on cred's leaf,
+// nil for an unstamped leaf: that router has no policy digest to bind and
+// checks backends by name alone (B9). A damaged stamp is an error, never
+// absence.
 func (t *Transports) routerDigestOf(cred MeshCredential) ([]byte, error) {
 	stamp, err := t.stamp.of(cred.Certificate)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w", errNoPolicyIdentity, err)
+		return nil, fmt.Errorf("routing: router stamp: %w", err)
 	}
 	if stamp == nil {
-		return nil, errNoPolicyIdentity
+		return nil, nil
 	}
 	return stamp.AllowlistDigest, nil
 }
@@ -282,6 +280,9 @@ func acceptWorkload(workload string, routerDigest []byte) func(armtls.Peer) erro
 		if peer.WorkloadName != workload {
 			return fmt.Errorf("routing: backend leaf names workload %q under allowlist digest %x, and this route names %q under router allowlist digest %x", peer.WorkloadName, peer.AllowlistDigest, workload, routerDigest)
 		}
+		if routerDigest == nil {
+			return nil // B9: an unstamped router binds no policy digest
+		}
 		if !bytes.Equal(peer.AllowlistDigest, routerDigest) {
 			return fmt.Errorf("%w: workload %q is stamped under %x, and the router's is %x", errBackendDigestMismatch, workload, peer.AllowlistDigest, routerDigest)
 		}
@@ -326,7 +327,7 @@ func (t *Transports) dropMeshPools() error {
 			h.Write(ca.Raw)
 		}
 		h.Sum(caDigest[:0])
-		// An unstamped router keeps the empty digest; its dials fail (B9).
+		// An unstamped router tracks the empty digest (B9).
 		routerDigest, _ = t.routerDigestOf(cred)
 	}
 	t.mu.Lock()

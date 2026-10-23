@@ -677,8 +677,9 @@ follows these rules:
   leaf. A failed handshake gets 502, `backend_digest_mismatch` when the
   stamped digests differ; no backend is reached in plaintext.
   While the router's own leaf carries no stamp, as under get-cert's
-  `--no-workload-claims`, every workload route gets 503
-  `router_digest_unavailable` without a dial.
+  `--no-workload-claims`, the router binds no policy digest and checks
+  workload backends by name alone; a client pinning the router's allowlist
+  digest fails closed on the absent stamp.
 - The router serves cluster workloads only: it refuses a polled manifest that
   names an address backend (`serverName`, `ca`), keeps the applied one, and
   logs `the router serves cluster workloads only` with the host and path.
