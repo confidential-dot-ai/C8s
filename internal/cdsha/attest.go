@@ -110,6 +110,12 @@ func (v peerVerifier) claims(der []byte) (Claims, error) {
 	if ev == nil {
 		return Claims{}, errors.New("peer certificate has no evidence")
 	}
+	// A replica renews its certificate every few hours: an expired one is
+	// an old key, perhaps a leaked one. (NotBefore is not checked: a peer
+	// clock a little ahead would refuse fresh certificates.)
+	if time.Now().After(cert.NotAfter) {
+		return Claims{}, fmt.Errorf("peer certificate expired at %s", cert.NotAfter.Format(time.RFC3339))
+	}
 	c, err := v.att.Verify(ev)
 	if err != nil {
 		return Claims{}, fmt.Errorf("peer evidence: %w", err)
@@ -128,22 +134,13 @@ func (v peerVerifier) claims(der []byte) (Claims, error) {
 	return c, nil
 }
 
-func (v peerVerifier) verifyConn(cs tls.ConnectionState) error {
+// peer verifies the evidence of a connection's peer after the handshake.
+// Peer certificates are self-signed by design: attestation, not PKI,
+// authenticates a peer, so every attested connection must pass this.
+func (v peerVerifier) peer(c *tls.Conn) (Claims, error) {
+	cs := c.ConnectionState()
 	if len(cs.PeerCertificates) == 0 {
-		return errors.New("no peer certificate")
+		return Claims{}, errors.New("no peer certificate")
 	}
-	_, err := v.claims(cs.PeerCertificates[0].Raw)
-	return err
-}
-
-// tlsConfig is used for both directions. Chain verification is replaced by
-// evidence verification; certificates are self-signed by design.
-func (v peerVerifier) tlsConfig(cert tls.Certificate) *tls.Config {
-	return &tls.Config{
-		MinVersion:         tls.VersionTLS13,
-		Certificates:       []tls.Certificate{cert},
-		ClientAuth:         tls.RequireAnyClientCert,
-		InsecureSkipVerify: true, //nolint:gosec // attestation, not PKI, authenticates the peer: VerifyConnection below is the check
-		VerifyConnection:   v.verifyConn,
-	}
+	return v.claims(cs.PeerCertificates[0].Raw)
 }

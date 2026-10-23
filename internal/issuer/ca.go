@@ -76,7 +76,6 @@ func (m *MeshCA) RenewCertificate() (CurrentCA, error) {
 	if err != nil {
 		return CurrentCA{}, err
 	}
-	certDER := cert.Raw
 	if outgoing := m.current.Load(); outgoing != nil {
 		if err := sameIssuerIdentity(outgoing.CA.Cert, cert); err != nil {
 			return CurrentCA{}, err
@@ -88,7 +87,7 @@ func (m *MeshCA) RenewCertificate() (CurrentCA, error) {
 			Cert: cert,
 			Key:  m.key,
 		},
-		CertPEM: certutil.EncodeCertPEM(certDER),
+		CertPEM: certutil.EncodeCertPEM(cert.Raw),
 	}
 	m.current.Store(renewed)
 	return *renewed, nil

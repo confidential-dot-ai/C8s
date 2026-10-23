@@ -71,6 +71,28 @@ func TestCDSHTTPClientUsesARMTLSForHTTPS(t *testing.T) {
 	}
 }
 
+// Where the node mounts its CDS policy, the client re-reads it on a pin miss
+// (a static transport would keep the launch-time pins for every renewal).
+func TestCDSHTTPClientFollowsTheNodePolicy(t *testing.T) {
+	policy, err := os.ReadFile("../../testdata/node-identities.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := nodePinsPath
+	t.Cleanup(func() { nodePinsPath = saved })
+	nodePinsPath = filepath.Join(t.TempDir(), "cds-pins.json")
+	if err := os.WriteFile(nodePinsPath, policy, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	client, err := cdsHTTPClient(config{CDSURL: "https://cds:8443", AttestationApiURL: "http://attestation-api:8400"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, static := client.Transport.(*http.Transport); static {
+		t.Fatal("the node mounts its policy, yet the transport is static")
+	}
+}
+
 func TestBuildDiscoveryDocumentIncludesCertificateAndEvidence(t *testing.T) {
 	certPEM := testCertificatePEM(t)
 	result := attestclient.CertificateResult{

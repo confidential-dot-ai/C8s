@@ -37,6 +37,18 @@ func (f *followedPins) Refresh(ctx context.Context) (bool, error) {
 
 var _ armtls.PinSource = (*followedPins)(nil)
 
+// mirrorTo makes every decree the node follows rewrite the policy mounted at
+// path in place, for the credential clients that read it.
+func (f *followedPins) mirrorTo(path string) {
+	f.onChange = func(set refvalues.ReferenceValues) error {
+		doc, err := refvalues.Format(set)
+		if err != nil {
+			return err
+		}
+		return rewriteInPlace(path, doc)
+	}
+}
+
 // cdsDecrees builds the node's decree-following pin source, or nil when the
 // node publishes no decree info (a cluster without HA CDS).
 func (c pullConfig) cdsDecrees(platform string, logger *slog.Logger) (*followedPins, error) {
@@ -73,9 +85,6 @@ func (c pullConfig) pinsSet(platform string) (refvalues.ReferenceValues, error) 
 // followDecrees polls for a newer pin decree until ctx ends. Clients also
 // refresh on a pin miss; the poll moves a node that is not talking to CDS.
 func followDecrees(ctx context.Context, src armtls.PinSource, every time.Duration) {
-	if src == nil {
-		return
-	}
 	t := time.NewTicker(every)
 	defer t.Stop()
 	for {

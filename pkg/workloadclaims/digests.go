@@ -200,14 +200,11 @@ func requireAttestationApi(url string) error {
 // rather than after the warm-up window. Warm-up failure is logged, not fatal:
 // the endpoint provisions on the first handshake instead, and taking the
 // inventory down would cost far more than a slow first callback.
-func StartDigestsEndpoint(ctx context.Context, logger *slog.Logger, resolver SandboxResolver, identity []byte, platform string, attestFunc func(ctx context.Context, customData string) (string, error), attestationApiURL string, cdsPins armtls.Pins, measuredPolicies string) error {
-	return StartDigestsEndpointFollowing(ctx, logger, resolver, identity, platform, attestFunc, attestationApiURL, cdsPins, measuredPolicies, nil)
-}
-
-// StartDigestsEndpointFollowing is StartDigestsEndpoint whose CDS pins follow
-// src (the operator's signed CDS pin decrees) when it is not nil: a CDS
-// replica on a newly decreed image passes once the node has the decree.
-func StartDigestsEndpointFollowing(ctx context.Context, logger *slog.Logger, resolver SandboxResolver, identity []byte, platform string, attestFunc func(ctx context.Context, customData string) (string, error), attestationApiURL string, cdsPins armtls.Pins, measuredPolicies string, src armtls.PinSource) error {
+//
+// When src is not nil the CDS pins follow it (the operator's signed CDS pin
+// decrees): a CDS replica on a newly decreed image passes once the node has
+// the decree.
+func StartDigestsEndpoint(ctx context.Context, logger *slog.Logger, resolver SandboxResolver, identity []byte, platform string, attestFunc func(ctx context.Context, customData string) (string, error), attestationApiURL string, cdsPins armtls.Pins, measuredPolicies string, src armtls.PinSource) error {
 	tlsCfg, certMgr, err := DigestsServerTLSConfig(platform, attestFunc, attestationApiURL, cdsPins, 0, measuredPolicies)
 	if err != nil {
 		return err

@@ -278,13 +278,6 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 // censusHolders is how many holders the full-store log line names.
 const censusHolders = 5
 
-// requestPath returns the canonical store path a request names.
-//
-// It reads the escaped form and refuses anything not already canonical rather
-// than repairing it, so the bytes matched against a grant, and the bytes used as
-// a store key, are the bytes the client sent. Chi routes on the raw or the
-// decoded path depending on whether the URL contained escapes, so deriving from
-// one source and rejecting "%" removes that difference.
 // writeUnavailable answers a write the replicated store could not commit:
 // 503, retryable.
 func writeUnavailable(w http.ResponseWriter) {
@@ -292,6 +285,13 @@ func writeUnavailable(w http.ResponseWriter) {
 	http.Error(w, ErrUnavailable.Error(), http.StatusServiceUnavailable)
 }
 
+// requestPath returns the canonical store path a request names.
+//
+// It reads the escaped form and refuses anything not already canonical rather
+// than repairing it, so the bytes matched against a grant, and the bytes used as
+// a store key, are the bytes the client sent. Chi routes on the raw or the
+// decoded path depending on whether the URL contained escapes, so deriving from
+// one source and rejecting "%" removes that difference.
 func requestPath(r *http.Request) (string, error) {
 	raw := r.URL.EscapedPath()
 	rest, ok := strings.CutPrefix(raw, "/secrets")

@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"syscall"
@@ -144,18 +145,21 @@ func run(cfg config) error {
 	// by the Genesis replica and handed only to attested replicas, and every
 	// write is replicated through the Raft log; the leader renews the CA
 	// certificate under the same key through the log too (cdsha).
-	fullGuard, err := allowlistFullGuard(cfg, allowlistStore.LiveBytes)
-	if err != nil {
-		return err
-	}
 	haNode, err := haStart(ctx, cfg, haStores{allowlist: &allowlistStore, secrets: secretsMem, ledger: sandboxBindings}, restoreServer(cfg))
 	if err != nil {
 		return fmt.Errorf("cds-ha: %w", err)
 	}
+	var fullGuard func() error
+	if haNode != nil {
+		fullGuard = allowlistFullGuard(filepath.Dir(cfg.allowlistDB), cfg.allowlistMaxBytes.Value(), allowlistStore.LiveBytes)
+	}
+	// startCA is the mesh CA at startup. It is read once: an HA replica can
+	// stop serving (lease lapse) between two reads, and mesh then reads empty.
 	var mesh meshCA
 	var singletonCA *issuer.MeshCA
+	var startCA *issuer.CA
 	if haNode != nil {
-		if _, err := haNode.CA(); err != nil {
+		if startCA, err = haNode.CA(); err != nil {
 			return fmt.Errorf("mesh CA: %w", err)
 		}
 		mesh = haMeshCA{node: haNode}
@@ -164,12 +168,12 @@ func run(cfg config) error {
 			return err
 		}
 		mesh = singletonCA
+		startCA = singletonCA.Current().CA
 	}
-	current := mesh.Current()
 	slog.Info("in-memory mesh CA",
-		"key_id", caKeyID(current.CA.Cert),
-		"fingerprint", certutil.CertFingerprint(current.CA.Cert.Raw),
-		"not_after", current.CA.Cert.NotAfter.Format(time.RFC3339),
+		"key_id", caKeyID(startCA.Cert),
+		"fingerprint", certutil.CertFingerprint(startCA.Cert.Raw),
+		"not_after", startCA.Cert.NotAfter.Format(time.RFC3339),
 	)
 
 	measurements := parseReferenceDigests(cfg.measurements)
@@ -254,7 +258,7 @@ func run(cfg config) error {
 		case haNode != nil:
 			// Spent tokens are replicated and outlive any replica; only tokens
 			// from before the cluster was born could have been spent unseen.
-			started = haGenesis(haNode)
+			started = time.UnixMilli(haNode.Core().GenesisAtMS)
 		case !cfg.allowlistPersistent:
 			started = time.Now()
 		}
@@ -309,16 +313,16 @@ func run(cfg config) error {
 		secretsOperator *secrets.OperatorHandler
 		secretsExplain  *secrets.ExplainHandler
 	)
+	// One store behind every secrets door (workload reads, operator writes,
+	// and the c8s_dev test route); in HA mode it writes through the log.
+	var secretsStore secrets.Store = secretsMem
+	if haNode != nil {
+		secretsStore = secrets.ReplicatedStore{MemoryStore: secretsMem, Repl: haNode}
+	}
 	if enabled, why := secretsEnabled(cfg, sandboxDigests, inventoryHosts); enabled {
-		// One store behind both handlers: an operator write and a workload read
-		// are two doors onto the same paths.
-		var store secrets.Store = secretsMem
-		if haNode != nil {
-			store = secrets.ReplicatedStore{MemoryStore: secretsMem, Repl: haNode}
-		}
 		policy := secrets.NewCachedPolicy(&allowlistStore)
 		secretsHandler = &secrets.Handler{
-			Store:          store,
+			Store:          secretsStore,
 			Challenges:     &secretsChallenges,
 			Inventory:      sandboxDigests,
 			Bindings:       sandboxBindings,
@@ -327,7 +331,7 @@ func run(cfg config) error {
 			Logger:         slog.Default(),
 		}
 		secretsOperator = &secrets.OperatorHandler{
-			Store:        store,
+			Store:        secretsStore,
 			Authorize:    operatorAuthorizer,
 			MaxBodyBytes: allowlistWriteBodyCap,
 			Logger:       slog.Default(),
@@ -375,7 +379,7 @@ func run(cfg config) error {
 		Routes: routeHandler{
 			Store:     &allowlistStore,
 			Authorize: operatorAuthorizer,
-			MeshCA:    mesh.Current().CA.Cert,
+			MeshCA:    startCA.Cert,
 		},
 		ReadyFn:           readinessFn(checker.Ready, mesh, cfg.minCAValidity),
 		MeshCA:            mesh,
@@ -396,23 +400,19 @@ func run(cfg config) error {
 	if haNode != nil {
 		// Issuance follows the replica through mesh (haMeshCA): it stops while
 		// the replica is not serving and follows renewals and rotations.
-		deps.HAStatus = haStatus(haNode)
+		deps.HAStatus = serveJSON(haNode.Status)
 		deps.HAPins = haPins(haNode)
-		deps.HADecrees = haDecrees(haNode)
+		deps.HADecrees = serveJSON(haNode.Decrees)
 		// Ready also waits for the voter seats to be full again (see
 		// cdsha.Node.Ready), so a rolling restart never takes the majority.
 		ready := readinessFn(checker.Ready, mesh, cfg.minCAValidity)
 		deps.ReadyFn = func() bool { return haNode.Ready() && ready() }
-		var store secrets.Store = secrets.ReplicatedStore{MemoryStore: secretsMem, Repl: haNode}
-		router = haGate(haNode.Serving, devHARoutes(newRouter(deps), store, secretsMem, writeAuthorizer, deps.SecretsOperator == nil))
+		router = haGate(haNode.Serving, devHARoutes(newRouter(deps), secretsStore, secretsMem, writeAuthorizer, deps.SecretsOperator == nil))
 	} else {
 		router = newRouter(deps)
 	}
 
 	go checker.Run(ctx)
-	if haNode == nil && (cfg.allowlistHistoryVersions > 0 || cfg.allowlistHistoryBytes > 0) {
-		go pruneHistoryLoop(ctx, &allowlistStore, cfg.allowlistHistoryVersions, cfg.allowlistHistoryBytes)
-	}
 
 	addr := fmt.Sprintf("%s:%d", cfg.host, cfg.port)
 	srv := newHTTPServer(addr, router, cfg)
@@ -420,7 +420,7 @@ func run(cfg config) error {
 	serve := srv.ListenAndServe
 	var meshPeers *armtls.CertManager
 	if cfg.armtlsPlatform != "" {
-		tlsCfg, certMgr, err := armtlsServerTLS(ctx, cfg, current.CA.Cert)
+		tlsCfg, certMgr, err := armtlsServerTLS(ctx, cfg, startCA.Cert)
 		if err != nil {
 			return err
 		}
@@ -619,6 +619,9 @@ func validateConfig(cfg config) error {
 	if cfg.maxHeaderBytes < 0 {
 		return fmt.Errorf("--max-header-bytes must be non-negative")
 	}
+	if cfg.allowlistHistoryBytes.Sign() < 0 || cfg.allowlistMaxBytes.Sign() < 0 {
+		return fmt.Errorf("--allowlist-history-bytes and --allowlist-max-bytes must be non-negative")
+	}
 	// Not "0 disables": this is the stale-identity bound for a named leaf, and
 	// 0 is the disable idiom elsewhere in the chart, so a zero here would read
 	// as "no bound" while silently meaning issuer.MaxNamedLeafTTL.
@@ -745,33 +748,6 @@ func readinessFn(svcReady func() bool, mesh meshCA, minCAValidity time.Duration)
 			return false
 		}
 		return true
-	}
-}
-
-// pruneHistoryLoop bounds a singleton's allowlist history (an HA replica's
-// leader prunes through the log instead, cdsha.Node.maybePruneHistory).
-func pruneHistoryLoop(ctx context.Context, store *allowlist.Store, versions int, budget int64) {
-	t := time.NewTicker(time.Minute)
-	defer t.Stop()
-	for {
-		keep := versions
-		if budget > 0 {
-			if fit, err := store.HistoryKeepForBytes(budget); err == nil && (keep <= 0 || fit < keep) {
-				keep = fit
-			}
-		}
-		if n, err := store.HistoryLen(); err == nil && keep > 0 && n > keep {
-			if dropped, err := store.PruneHistory(keep); err != nil {
-				slog.Warn("prune allowlist history", "err", err)
-			} else if dropped > 0 {
-				slog.Info("allowlist history pruned", "dropped", dropped, "kept", keep)
-			}
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-		}
 	}
 }
 

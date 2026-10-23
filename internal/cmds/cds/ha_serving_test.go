@@ -1,6 +1,7 @@
 package cds
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -90,6 +91,10 @@ func TestHAServingReplicaPublishesDecrees(t *testing.T) {
 	}
 	put(cdsha.Decree{IntentID: "g", Kind: cdsha.Genesis, BootstrapNode: "n0"})
 	settled("genesis")
+	// Issuance and /secrets challenges must not be redeemable against each other.
+	if iss := haChallengeKey(node, "issuance")(); iss == nil || bytes.Equal(iss, haChallengeKey(node, "secrets")()) {
+		t.Fatal("a serving replica derives no challenge key, or one key for both pools")
+	}
 	get := func(hf http.HandlerFunc) *httptest.ResponseRecorder {
 		w := httptest.NewRecorder()
 		hf(w, httptest.NewRequest(http.MethodGet, "/", nil))
@@ -109,20 +114,9 @@ func TestHAServingReplicaPublishesDecrees(t *testing.T) {
 		t.Fatalf("served pin decree does not verify: %v", err)
 	}
 	var records []cdsha.DecreeRecord
-	w = get(haDecrees(node))
+	w = get(serveJSON(node.Decrees))
 	if err := json.Unmarshal(w.Body.Bytes(), &records); err != nil || len(records) == 0 ||
 		records[len(records)-1].Decree.Decree.IntentID != "u" || records[len(records)-1].Epoch != 2 {
 		t.Fatalf("decree record %s: %v", w.Body.String(), err)
-	}
-}
-
-func TestResetHAAllowlistClosedStore(t *testing.T) {
-	s, err := allowlist.OpenInMemory()
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = s.Close()
-	if err := resetHAAllowlist(&s); err == nil {
-		t.Fatal("reset a closed store")
 	}
 }

@@ -8,7 +8,8 @@ import (
 
 // The operator changes the voter count with a signed decree: the leader
 // promotes healthy non-voters into new seats, and demotes voters (never
-// itself) when seats go away; writes keep working throughout.
+// itself) when seats go away; writes keep working throughout. Every replica,
+// and a later joiner, holds the same decree record.
 func TestSetVotersGrowsAndShrinks(t *testing.T) {
 	c := newCluster(t, 3)
 	c.genesis("n0", "n1", "n2")
@@ -45,4 +46,12 @@ func TestSetVotersGrowsAndShrinks(t *testing.T) {
 		}
 		eventually(t, 5*time.Second, "serving "+r.name, func() bool { return r.node.Status().Serving })
 	}
+	for _, r := range c.live() {
+		eventually(t, 5*time.Second, "decree record on "+r.name, func() bool {
+			rec := r.node.Decrees()
+			return len(rec) == 3 && rec[1].Epoch == 2 && rec[2].Epoch == 3 && rec[2].Decree.Decree.Voters == 3
+		})
+	}
+	j := c.start("n5", "m1")
+	eventually(t, 15*time.Second, "joiner has the record", func() bool { return len(j.node.Decrees()) == 3 })
 }

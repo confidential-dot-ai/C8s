@@ -11,7 +11,9 @@ import (
 	"errors"
 	"math/big"
 	"net"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -63,7 +65,7 @@ func handshake(t *testing.T, cfg *tls.Config, cert tls.Certificate) error {
 // TestFollowMeshCA: after a rotation, a leaf of the old mesh CA no longer
 // passes client verification (review #2), and the new one does.
 func TestFollowMeshCA(t *testing.T) {
-	ca1, ca2 := mustTestCA(t), mustTestCA(t)
+	ca1, ca2 := testMeshCA(t).Current().CA, testMeshCA(t).Current().CA
 	serverCert := leafFrom(t, ca1)
 	base := &tls.Config{Certificates: []tls.Certificate{serverCert}, ClientAuth: tls.VerifyClientCertIfGiven}
 	var current atomic.Pointer[issuer.CA]
@@ -132,15 +134,41 @@ func TestResetHAAllowlist(t *testing.T) {
 	}
 }
 
-func mustTestCA(t *testing.T) *issuer.CA {
-	t.Helper()
-	mesh, err := issuer.NewMeshCA("test", time.Hour)
-	var ca *issuer.CA
-	if err == nil {
-		ca = mesh.Current().CA
+func TestHAConfigFileRefusesFlagTrustRoots(t *testing.T) {
+	for _, h := range []haConfig{
+		{configFile: "/x", clusterID: "evil"},
+		{configFile: "/x", pins: []string{"evil"}},
+		{configFile: "/x", operatorKey: "/evil.pem"},
+		{configFile: "/x", measurement: "evil"},
+		{configFile: "/x", recoveryKeyPEM: []byte("evil")},
+	} {
+		if err := loadHAConfigFile(&h); err == nil || !strings.Contains(err.Error(), "excludes") {
+			t.Errorf("%+v: %v", h, err)
+		}
 	}
-	if err != nil {
-		t.Fatal(err)
+}
+
+func TestYieldIfHA(t *testing.T) {
+	dir := t.TempDir()
+	write := func(s string) string {
+		p := filepath.Join(dir, "cds-mode")
+		if err := os.WriteFile(p, []byte(s), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
 	}
-	return ca
+	if err := yieldIfHA(write("singleton\n")); err != nil {
+		t.Fatalf("singleton cluster: %v", err)
+	}
+	if err := yieldIfHA(write("ha\n")); !errors.Is(err, errYield) {
+		t.Fatalf("HA cluster: %v", err)
+	}
+	for _, bad := range []string{"", "maybe"} {
+		if err := yieldIfHA(write(bad)); err == nil || errors.Is(err, errYield) {
+			t.Fatalf("%q: %v", bad, err)
+		}
+	}
+	if err := yieldIfHA(filepath.Join(dir, "missing")); err == nil {
+		t.Fatal("missing file accepted")
+	}
 }

@@ -65,15 +65,17 @@ func NewClient(cfg Config, pins armtls.Pins) (*http.Client, crypto.PublicKey, er
 		}
 		return &http.Transport{TLSClientConfig: tlsCfg}, nil
 	}
+	// The node's policy follows the operator's CDS pin decrees: re-read it
+	// on a pin miss.
+	node, err := cmdsutil.FollowNodePins(nodePinsPath)
+	if err != nil {
+		return nil, nil, err
+	}
 	var rt http.RoundTripper
-	rt, err = build(pins)
-	if mounted, merr := cmdsutil.NodeMountsPins(nodePinsPath); merr == nil && mounted {
-		// The node's policy follows the operator's CDS pin decrees: re-read
-		// it on a pin miss.
-		var node *cmdsutil.NodePins
-		if node, err = cmdsutil.NewNodePins(nodePinsPath); err == nil {
-			rt, err = armtls.NewRefreshingTransport(node, build)
-		}
+	if node != nil {
+		rt, err = armtls.NewRefreshingTransport(node, build)
+	} else {
+		rt, err = build(pins)
 	}
 	if err != nil {
 		return nil, nil, err
