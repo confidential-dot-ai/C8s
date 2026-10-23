@@ -294,6 +294,16 @@ func (n *Node) reconcile() {
 	if r == nil || r != n.r() || n.stoppingReads.Load() == r || r.State() != raft.Leader {
 		return
 	}
+	if reason := n.fsm.Stuck(); reason != "" {
+		// A leader that cannot follow its own log certifies no reads and
+		// applies no writes, for anyone: hand the log to a replica that can.
+		// Its own seat is left alone; a restart replays the log.
+		n.log.Warn("stuck leader: transferring leadership", "reason", reason)
+		if err := r.LeadershipTransfer().Error(); err != nil {
+			n.log.Warn("stuck leader: leadership transfer", "err", err)
+		}
+		return
+	}
 	servers = n.servers()
 	if servers == nil {
 		return
