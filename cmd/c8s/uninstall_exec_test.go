@@ -505,7 +505,7 @@ func seedCMFile(t *testing.T, imageRef string, shapes [][]string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	name := allowlist.DigestEntryName(d, imageRef)
+	name := allowlist.DigestEntryName(d, imageRef) + "-0123abcd"
 	containers := []map[string]any{}
 	for _, argv := range shapes {
 		containers = append(containers, map[string]any{

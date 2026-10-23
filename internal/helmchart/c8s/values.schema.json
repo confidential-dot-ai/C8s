@@ -55,6 +55,9 @@
           "type": "string"
         },
         "namedCertTTL": {},
+        "publishedShape": {
+          "type": "string"
+        },
         "node": {
           "type": [
             "object",
@@ -75,6 +78,19 @@
           "additionalProperties": false,
           "properties": {
             "enabled": {},
+            "memorySizeLimit": {
+              "$comment": "A positive Kubernetes resource quantity: a number with a binary or decimal SI suffix or a decimal exponent, not zero.",
+              "type": [
+                "string",
+                "number"
+              ],
+              "pattern": "^\\+?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([KMGTPE]i|[mkMGTPE]|[eE][+-]?[0-9]+)?$",
+              "not": {
+                "type": "string",
+                "pattern": "^\\+?0*(\\.0*)?([KMGTPE]i|[mkMGTPE]|[eE][+-]?[0-9]+)?$"
+              },
+              "exclusiveMinimum": 0
+            },
             "size": {},
             "storageClassName": {}
           }
@@ -141,6 +157,14 @@
       "additionalProperties": false,
       "properties": {
         "baked": {},
+        "mesh": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "clusterRanges": {},
+            "resolver": {}
+          }
+        },
         "bootstrapAllowlist": {
           "type": [
             "object",
@@ -231,6 +255,7 @@
         },
         "imagePullSecrets": {},
         "logLevel": {},
+        "measurePolicies": { "type": "boolean" },
         "nodeAffinity": {
           "type": [
             "object",
@@ -367,7 +392,12 @@
           "properties": {
             "attestationApiURL": {},
             "enabled": {},
-            "expectedWorkload": {},
+            "expectedWorkload": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "generation": {},
             "platform": {},
             "port": {},
@@ -451,6 +481,7 @@
           "properties": {
             "entrypoint": {},
             "httpsPort": {},
+            "imageEnv": {},
             "image": {
               "type": [
                 "object",
@@ -465,11 +496,12 @@
               }
             },
             "replicas": {},
-            "resolver": {},
+            "resolver": {
+              "$comment": "Removed with router.upstream. Listed only so validations.yaml can answer with the migration message."
+            },
             "resources": {},
-            "runAsGroup": {},
-            "runAsNonRoot": {},
-            "runAsUser": {}
+            "tunnelBodySpace": {},
+            "tunnelConnectionsPerClient": {}
           }
         },
         "publicTLS": {
@@ -486,7 +518,37 @@
             "secretName": {}
           }
         },
-        "routes": {},
+        "routePublication": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" }
+          }
+        },
+        "routes": {
+          "$comment": "Removed: the route manifest names every backend. Listed only so validations.yaml can answer with the migration message rather than a generic unknown-key refusal."
+        },
+        "routing": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "allowUnpinnedCDS": {
+              "type": "boolean"
+            },
+            "backendTimeout": {},
+            "maxRequestBodyBytes": {},
+            "pollInterval": {},
+            "port": {},
+            "readTimeout": {},
+            "tunnelBudget": {}
+          }
+        },
         "san": {},
         "service": {
           "type": [
@@ -502,32 +564,8 @@
           }
         },
         "strategy": {},
-        "tlsMountPath": {},
         "upstream": {
-          "type": [
-            "object",
-            "null"
-          ],
-          "additionalProperties": false,
-          "properties": {
-            "address": {},
-            "protocol": {},
-            "readTimeout": {},
-            "tls": {
-              "type": [
-                "object",
-                "null"
-              ],
-              "additionalProperties": false,
-              "properties": {
-                "serverName": {},
-                "trustedCAPath": {},
-                "useCDSClientCert": {},
-                "verify": {},
-                "verifyDepth": {}
-              }
-            }
-          }
+          "$comment": "Removed: the route manifest names every backend. Listed only so validations.yaml can answer with the migration message rather than a generic unknown-key refusal."
         }
       }
     },

@@ -18,7 +18,6 @@ import (
 
 	"github.com/go-logr/logr"
 	appsv1 "k8s.io/api/apps/v1"
-	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -75,9 +74,10 @@ func TestSetupManagerStatusMirrorDiscovery(t *testing.T) {
 func TestSetupManagerWebhookRegisters(t *testing.T) {
 	mgr := newTestManager(t)
 	opts := Options{
-		DisableStatusMirror: true,
-		GetCertImage:        "ghcr.io/c8s/c8s:latest",
-		CDSURL:              "https://cds.c8s-system.svc",
+		DisableStatusMirror:   true,
+		GetCertImage:          "ghcr.io/c8s/c8s:latest",
+		MeshImage:             "ghcr.io/c8s/armtls-mesh:latest",
+		WorkloadClaimsHostDir: "/run/nri-image-policy",
 	}
 	if err := setupManager(context.Background(), mgr, nil, opts, logr.Discard()); err != nil {
 		t.Fatalf("setupManager: %v", err)
@@ -217,39 +217,12 @@ func TestSetupManagerRegistersWorkloadServiceReconcilers(t *testing.T) {
 	}
 }
 
-// Registration of the mesh-egress reconciler is gated on a non-zero mesh
-// outbound port and is independent of get-cert injection, observed through
-// the same controller-name collision as above.
-func TestSetupManagerRegistersMeshEgressReconciler(t *testing.T) {
-	claim := ctrl.NewControllerManagedBy(newTestManagerNameChecked(t)).
-		For(&networkingv1.NetworkPolicy{}).
-		Named(meshEgressControllerName).
-		Complete(crreconcile.Func(func(context.Context, crreconcile.Request) (crreconcile.Result, error) {
-			return crreconcile.Result{}, nil
-		}))
-	if claim != nil && !strings.Contains(claim.Error(), "already exists") {
-		t.Fatalf("claim controller name: %v", claim)
-	}
-
-	opts := Options{DisableStatusMirror: true, MeshOutboundPort: 15001}
-	err := setupManager(context.Background(), newTestManagerNameChecked(t), nil, opts, logr.Discard())
-	if err == nil || !strings.Contains(err.Error(), "setup mesh-egress reconciler") {
-		t.Fatalf("err = %v, want the mesh-egress registration to be attempted and collide", err)
-	}
-
-	// Port zero: nothing is registered, so the claimed name does not collide.
-	opts = Options{DisableStatusMirror: true}
-	if err := setupManager(context.Background(), newTestManagerNameChecked(t), nil, opts, logr.Discard()); err != nil {
-		t.Fatalf("setupManager with the reconciler off: %v", err)
-	}
-}
-
 // An explicit webhook Service namespace must win over the leader-election
 // namespace fallback: the serving cert's SANs are built from it.
 func TestBootstrapWebhookPKIUsesExplicitServiceNamespace(t *testing.T) {
 	dir := stubWebhookCertDir(t)
 	fc := fake.NewClientBuilder().WithScheme(scheme).
-		WithObjects(mutatingWebhookConfig("c8s-mutating")).Build()
+		WithObjects(mutatingWebhookConfig("c8s-mutating"), validatingWebhookConfig("c8s-mutating")).Build()
 	stubDirectClient(t, fc, nil)
 
 	opts := Options{

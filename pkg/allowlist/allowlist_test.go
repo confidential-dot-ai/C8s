@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadname"
 )
 
 const digestA = "sha256:" + "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -68,6 +69,40 @@ func TestParseJSON_SecretsRequirePinnedArgv(t *testing.T) {
 	if _, err := ParseWorkloadJSON([]byte(pinned)); err != nil {
 		t.Fatalf("a pinned entry with a grant was refused: %v", err)
 	}
+}
+
+// A grant is refused wherever a container's mounts are left to the host: any,
+// or exact with a host rule, whose content the host chooses.
+func TestParseJSON_SecretsRequirePinnedMounts(t *testing.T) {
+	argv := `"command":{"policy":"exact","argv":["/app"]},"args":{"policy":"deny"}`
+	grant := `"secrets":{"policy":"allow","read":["/s"]}`
+	for name, mounts := range map[string]string{
+		"any":       `{"policy":"any"}`,
+		"host rule": `{"policy":"exact","rules":[{"destination":"/etc/app","kind":"host","source":"/srv/app","readOnly":true}]}`,
+	} {
+		entry := `{"containers":[{"digest":"` + digestA + `",` + argv + `,"mounts":` + mounts + `}],` + grant + `}`
+		if _, err := ParseWorkloadJSON([]byte(entry)); err == nil || !strings.Contains(err.Error(), "mounts policy") {
+			t.Errorf("%s: ParseWorkloadJSON = %v, want the grant refused", name, err)
+		}
+		doc := `{"schema":"c8s.allowlist/v1","workloads":{"w":` + entry + `}}`
+		if _, err := ParseJSON([]byte(doc)); err == nil || !strings.Contains(err.Error(), "mounts policy") {
+			t.Errorf("%s: ParseJSON = %v, want the grant refused", name, err)
+		}
+		if _, err := ParseServedJSON([]byte(doc)); err != nil {
+			t.Errorf("%s: ParseServedJSON refused a served document: %v", name, err)
+		}
+	}
+	for name, mounts := range map[string]string{
+		"absent":         ``,
+		"deny":           `,"mounts":{"policy":"deny"}`,
+		"exact emptyDir": `,"mounts":{"policy":"exact","rules":[{"destination":"/run/c8s/secrets","kind":"emptyDir"}]}`,
+		"nodeRootFile":   `,"mounts":{"policy":"exact","rules":[{"destination":"/usr/bin/nvidia-smi","kind":"nodeRootFile","source":"/usr/bin/nvidia-smi","readOnly":true}]}`,
+	} {
+		entry := `{"containers":[{"digest":"` + digestA + `",` + argv + mounts + `}],` + grant + `}`
+		if _, err := ParseWorkloadJSON([]byte(entry)); err != nil {
+			t.Errorf("%s: ParseWorkloadJSON = %v, want the grant accepted", name, err)
+		}
+	}
 	if w, _ := ParseWorkloadJSON([]byte(`{"containers":[{"digest":"` + digestA + `","command":{"policy":"any"},"args":{"policy":"any"}}],"secrets":{"policy":"deny"}}`)); w == nil {
 		t.Fatal("a deny grant releases nothing and is accepted on an unconstrained entry")
 	}
@@ -93,7 +128,7 @@ func TestDigestEntryName(t *testing.T) {
 		if got := DigestEntryName(d, image); got != want {
 			t.Errorf("DigestEntryName(%q) = %q, want %q", image, got, want)
 		}
-		if !ValidWorkloadName(want) {
+		if !workloadname.Valid(want) {
 			t.Errorf("%q is not a valid entry name", want)
 		}
 	}
@@ -105,56 +140,6 @@ func TestDigestEntryName(t *testing.T) {
 func TestParseJSON_RejectsBadDigest(t *testing.T) {
 	if _, err := ParseJSON([]byte(`{"schema":"c8s.allowlist/v1","workloads":{"w":{"containers":[{"digest":"sha256:zz"}]}}}`)); err == nil {
 		t.Fatal("expected invalid digest error")
-	}
-}
-
-func TestAdmitsAnyArgs(t *testing.T) {
-	al := mustParse(t, `{"schema":"c8s.allowlist/v1","workloads":{
-		"open":{"containers":[{"digest":"`+digestA+`","command":{"policy":"any"},"args":{"policy":"any"}}]},
-		"component":{"containers":[{"digest":"`+digestB+`","command":{"policy":"exact","argv":["/c8s"]},"args":{"policy":"any"}}]},
-		"pinned":{"containers":[
-			{"digest":"`+digestC+`","command":{"policy":"exact","argv":["/app"]},"args":{"policy":"deny"}},
-			{"digest":"`+digestC+`","command":{"policy":"any"},"args":{"policy":"exact","argv":["x"]}}]}}}`)
-	for name, tc := range map[string]struct {
-		digest string
-		argv   []string
-		want   bool
-	}{
-		"any/any admits any command":          {digestA, []string{"/bin/sh", "-c", "id"}, true},
-		"pinned executable, open args":        {digestB, []string{"/c8s", "get-cert", "--san=x"}, true},
-		"pinned executable, other executable": {digestB, []string{"/bin/sh", "-c", "id"}, false},
-		"exact args are not open":             {digestC, []string{"/app"}, false},
-		"command any with exact args":         {digestC, []string{"x"}, false},
-		"unlisted digest":                     {"sha256:" + strings.Repeat("d", 64), []string{"/c8s"}, false},
-		"canonical digest comparison":         {digestA[:7] + strings.ToUpper(digestA[7:]), []string{"/x"}, true},
-		"malformed digest":                    {"not-a-digest", []string{"/x"}, false},
-	} {
-		t.Run(name, func(t *testing.T) {
-			if got := al.AdmitsAnyArgs(tc.digest, tc.argv); got != tc.want {
-				t.Fatalf("AdmitsAnyArgs(%s, %q) = %v, want %v", tc.digest, tc.argv, got, tc.want)
-			}
-		})
-	}
-}
-
-func TestPinsAtMostCommand(t *testing.T) {
-	any := ArgvPolicy{Policy: PolicyAny}
-	for name, tc := range map[string]struct {
-		c    Container
-		want bool
-	}{
-		"any argv, any mounts":       {Container{Command: any, Args: any, Mounts: MountPolicy{Policy: PolicyAny}}, true},
-		"pinned command, any mounts": {Container{Command: ArgvPolicy{Policy: PolicyExact, Argv: []string{"/c8s"}}, Args: any, Mounts: MountPolicy{Policy: PolicyAny}, Env: EnvPolicy{Policy: PolicyAny}}, true},
-		"pinned args":                {Container{Command: any, Args: ArgvPolicy{Policy: PolicyExact, Argv: []string{"x"}}, Mounts: MountPolicy{Policy: PolicyAny}}, false},
-		"denied command":             {Container{Command: ArgvPolicy{Policy: PolicyDeny}, Args: any, Mounts: MountPolicy{Policy: PolicyAny}}, false},
-		"mounts left absent (deny)":  {Container{Command: any, Args: any}, false},
-		"exact env":                  {Container{Command: any, Args: any, Mounts: MountPolicy{Policy: PolicyAny}, Env: EnvPolicy{Policy: PolicyExact, Values: map[string]string{"A": "1"}}}, false},
-	} {
-		t.Run(name, func(t *testing.T) {
-			if got := tc.c.PinsAtMostCommand(); got != tc.want {
-				t.Fatalf("PinsAtMostCommand() = %v, want %v", got, tc.want)
-			}
-		})
 	}
 }
 
@@ -282,42 +267,6 @@ func TestSortContainers_StableOnFullTie(t *testing.T) {
 	}
 }
 
-func TestValidWorkloadName(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		ok   bool
-	}{
-		{"a", true},
-		{"z", true},
-		{"A", true},
-		{"Z", true},
-		{"0", true},
-		{"9", true},
-		{"a.b_c-d9", true},
-		{"x.", true},
-		{"x_", true},
-		{"x-", true},
-		{"", false},
-		// Bytes adjacent to each accepted range.
-		{"`", false},
-		{"{", false},
-		{"@", false},
-		{"[", false},
-		{"/", false},
-		{":", false},
-		// Separators are only valid after the first byte.
-		{".x", false},
-		{"_x", false},
-		{"-x", false},
-		{"a b", false},
-		{"a/b", false},
-	} {
-		if got := ValidWorkloadName(tc.name); got != tc.ok {
-			t.Errorf("ValidWorkloadName(%q) = %v, want %v", tc.name, got, tc.ok)
-		}
-	}
-}
-
 func TestParseJSON_RejectsBadWorkloadName(t *testing.T) {
 	body := `{"schema":"c8s.allowlist/v1","workloads":{"a/b":{"containers":[{"digest":"` + digestA + `"}]}}}`
 	if _, err := ParseJSON([]byte(body)); err == nil || !strings.Contains(err.Error(), "workload name") {
@@ -385,7 +334,7 @@ func mustParse(t *testing.T, s string) *Allowlist {
 // cluster over an entry nobody can reach — while the write path still refuses
 // to create such a name.
 func TestWorkloadNameBoundIsWritePathOnly(t *testing.T) {
-	long := strings.Repeat("a", MaxWorkloadNameLen+1)
+	long := strings.Repeat("a", workloadname.MaxLen+1)
 	body := `{"schema":"c8s.allowlist/v1","workloads":{
 		"` + long + `":{"containers":[{"digest":"` + digestA + `"}]},
 		"ok":{"containers":[{"digest":"` + digestB + `"}]}}}`
@@ -405,9 +354,6 @@ func TestWorkloadNameBoundIsWritePathOnly(t *testing.T) {
 	// digests admitted would be the fail-open direction.
 	if _, ok := al.Workloads[long]; ok {
 		t.Fatal("the over-long entry survived a served parse")
-	}
-	if !ValidWorkloadName("ok") || ValidWorkloadName(long) {
-		t.Fatal("ValidWorkloadName must still apply the bound")
 	}
 }
 

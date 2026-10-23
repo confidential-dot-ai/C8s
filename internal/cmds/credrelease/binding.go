@@ -14,12 +14,14 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"time"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
 )
 
@@ -38,11 +40,11 @@ var operatorPubkeyPath = "/etc/confai/operator-pubkey"
 // boot.
 var ErrNoOperatorKey = errors.New("no operator pubkey staged")
 
-// readOperatorPubkey reads the operator public key the initrd staged off the
+// ReadOperatorPubkey reads the operator public key the initrd staged off the
 // opkeydata disk. The bytes are exactly what the initrd hashed into the launch
 // binding, so runtimemeasure can re-derive the same digest. Absence is
 // reported as ErrNoOperatorKey; every other read failure is a hard error.
-func readOperatorPubkey() ([]byte, error) {
+func ReadOperatorPubkey() ([]byte, error) {
 	pub, err := os.ReadFile(operatorPubkeyPath)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, fmt.Errorf("%w: %s — was the VM launched with an operator key?", ErrNoOperatorKey, operatorPubkeyPath)
@@ -83,7 +85,7 @@ var (
 // image identity. LoadMeasuredIdentity answers both
 // from one report so the guest attests once.
 func verifiedSelfReport(ctx context.Context, attestationAPIURL string) (*teetypes.VerificationResult, error) {
-	client := remote.NewClient(attestationAPIURL)
+	client := armtls.NewAttestationClient(attestationAPIURL)
 	readyCtx, cancelReady := context.WithTimeout(ctx, attestationReadyTimeout)
 	err := client.WaitHealthy(readyCtx, attestationReadyInterval)
 	cancelReady()
@@ -123,13 +125,15 @@ func verifiedSelfReport(ctx context.Context, attestationAPIURL string) (*teetype
 //
 // Which field carries the binding, and how wide it is, is runtimemeasure's
 // problem: this reads the verified report and asks whether it names this key.
-// Workload digests are nil because the node image runs no workload measurer, so
-// the binding must equal the bare seed exactly; any extension beyond it means
-// an unexpected measurer ran, and the comparison fails closed.
+// The node image runs no workload measurer, so the binding must equal the seed
+// followed by a prefix of the allowlist policies in this node's own journal; an
+// extension the journal does not list fails closed. Remote verifiers cannot
+// read the journal and accept whatever list the node sends (docs/armtls.md).
 //
-// Called once at service start; the binding is fixed for the life of the guest.
-func LoadMeasuredOperatorKey(ctx context.Context, attestationAPIURL string) ([]byte, error) {
-	pub, err := readOperatorPubkey()
+// Called once at service start: it accepts the policies the node had measured
+// by then, and does not see later extends.
+func LoadMeasuredOperatorKey(ctx context.Context, attestationAPIURL, journal string) ([]byte, error) {
+	pub, err := ReadOperatorPubkey()
 	if err != nil {
 		return nil, err
 	}
@@ -140,7 +144,7 @@ func LoadMeasuredOperatorKey(ctx context.Context, attestationAPIURL string) ([]b
 	if err != nil {
 		return nil, err
 	}
-	if err := runtimemeasure.VerifyBinding(report, pub, nil); err != nil {
+	if err := verifyNodeBinding(report, pub, journal); err != nil {
 		return nil, err
 	}
 	return pub, nil
@@ -162,14 +166,14 @@ type MeasuredIdentity struct {
 // identity from one verified self-report. Image is always resolved, even if the
 // key is missing or its binding fails; OperatorKeyErr records that failure.
 // The returned error is reserved for self-report, image, or platform failures.
-func LoadMeasuredIdentity(ctx context.Context, platform, attestationAPIURL string) (MeasuredIdentity, error) {
-	pub, pubErr := readOperatorPubkey()
+func LoadMeasuredIdentity(ctx context.Context, platform, attestationAPIURL, journal string) (MeasuredIdentity, error) {
+	pub, pubErr := ReadOperatorPubkey()
 	report, err := verifiedSelfReport(ctx, attestationAPIURL)
 	if err != nil {
 		return MeasuredIdentity{}, err
 	}
 	if pubErr == nil {
-		pubErr = runtimemeasure.VerifyBinding(report, pub, nil)
+		pubErr = verifyNodeBinding(report, pub, journal)
 	}
 	if pubErr != nil {
 		pub = nil
@@ -182,4 +186,27 @@ func LoadMeasuredIdentity(ctx context.Context, platform, attestationAPIURL strin
 		return MeasuredIdentity{}, fmt.Errorf("this image was built for platform %q but the verified self-report is from %q", platform, report.Platform)
 	}
 	return MeasuredIdentity{OperatorKey: pub, OperatorKeyErr: pubErr, Image: identity}, nil
+}
+
+// verifyNodeBinding checks that report binds anchor followed by a prefix of
+// the allowlist policies in the measured-policy journal; an empty journal path
+// lists none. The journal is read after the report, so it may hold extends
+// the report does not. A journal over armtls.MaxRuntimeExtensions fails, as it
+// does at every verifier.
+func verifyNodeBinding(report *teetypes.VerificationResult, anchor []byte, journal string) error {
+	var policies []string
+	if journal != "" {
+		var err error
+		if policies, err = armtls.ReadRuntimeExtensions(journal); err != nil {
+			return fmt.Errorf("read measured policies: %w", err)
+		}
+		slog.Info("measured-policy journal", "path", journal, "policies", len(policies))
+	}
+	if _, err := runtimemeasure.MatchBindingPrefix(report, anchor, policies); err != nil {
+		if len(policies) == 0 {
+			return err
+		}
+		return fmt.Errorf("binding replays no prefix of the %d measured policies in %s: %w", len(policies), journal, err)
+	}
+	return nil
 }

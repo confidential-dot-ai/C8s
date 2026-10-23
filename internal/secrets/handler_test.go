@@ -51,6 +51,12 @@ const (
 	// is needed. Its digest is its own: a digest two entries share matches both
 	// the moment either widens its argv, and MatchWorkload answers ambiguous.
 	testBulkImg = "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+	// testMeshImg is the mesh endpoint image, whose entrypoint is its own.
+	testMeshImg = "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+	// roleCredentials and roleMesh are the roles a node's measured base binds
+	// to the injected containers (internal/cmds/nri-image-policy).
+	roleCredentials = "credentials"
+	roleMesh        = "mesh"
 )
 
 // --- fakes ---
@@ -244,7 +250,7 @@ func newHarness(t *testing.T) *harness {
 		containers: []workloadclaims.SandboxContainer{
 			{Digest: testAppImg, Argv: []string{"/serve"}},
 			{Digest: testAppImg2, Argv: []string{"/metrics"}},
-			{Digest: testInjected, Argv: []string{"/c8s", "get-cert", "--san=x"}},
+			{Digest: testInjected, Argv: []string{"/c8s", "get-cert", "--san=x"}, Role: roleCredentials},
 		},
 	}
 	challenges := &fakeChallenges{used: map[string]bool{}}
@@ -293,7 +299,7 @@ func (hn *harness) declareBulkEntry(t *testing.T) *x509.Certificate {
 	}
 	hn.inv.bySandbox[testBulkSandbox] = []workloadclaims.SandboxContainer{
 		{Digest: testBulkImg, Argv: []string{"/bulk"}},
-		{Digest: testInjected, Argv: []string{"/c8s", "get-secret"}},
+		{Digest: testInjected, Argv: []string{"/c8s", "get-secret"}, Role: roleCredentials},
 	}
 	leaf, _ := leafFor(t, testBulkSandbox)
 	return leaf
@@ -592,90 +598,31 @@ func TestForeignAnyArgvContainerRefused(t *testing.T) {
 	}
 }
 
-// The injected image is dropped only when running an injected entrypoint. A
-// pod that adds it running a shell must not have that container ignored,
-// whether the entry pins the executable or leaves the argv open.
-func TestInjectedImageWithForeignArgvIsNotDropped(t *testing.T) {
-	for _, digest := range []string{testInjected, testInjectedOld} {
-		hn := newHarness(t)
-		hn.inv.containers = append(hn.inv.containers,
-			workloadclaims.SandboxContainer{Digest: digest, Argv: []string{"/bin/sh", "-c", "cat /run/c8s/secrets/*"}})
-		if w := do(hn.h, hn.request(t, http.MethodGet, "/api/db")); w.Code != http.StatusForbidden {
-			t.Fatalf("smuggled injected-image container = %d, want 403", w.Code)
-		}
-	}
-}
-
-// An injected invocation is dropped only when its image is admitted with the
-// arguments left open. An entry that pins the whole argv declares the
-// container; the pod must then match an entry that names it.
-func TestInjectedModeUnderPinnedArgsIsNotDropped(t *testing.T) {
+// A container is dropped on the role the reporting node binds to it, so a pod
+// that adds the injected image under a command line of its own — which the node
+// grants no role — must not have that container ignored.
+func TestInjectedImageWithoutARoleIsNotDropped(t *testing.T) {
 	hn := newHarness(t)
-	al := hn.h.Policy.(fakePolicy).al
-	c8s := al.Workloads["c8s"]
-	c8s.Containers[0].Args = pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyExact, Argv: []string{"get-cert", "--san=x"}}
-	al.Workloads["c8s"] = c8s
+	hn.inv.containers = append(hn.inv.containers,
+		workloadclaims.SandboxContainer{Digest: testInjected, Argv: []string{"/bin/sh", "-c", "cat /run/c8s/secrets/*"}})
 	if w := do(hn.h, hn.request(t, http.MethodGet, "/api/db")); w.Code != http.StatusForbidden {
-		t.Fatalf("sidecar declared by a pinned entry = %d, want 403", w.Code)
+		t.Fatalf("smuggled injected-image container = %d, want 403", w.Code)
 	}
 }
 
-// The drop set holds exactly the invocations the webhook injects. The C8s
-// binary in any other mode — one a pod author added, or one with no mode at
-// all — is a declared container the entry must admit, never a sidecar to
-// ignore.
-func TestInjectedBinaryInUninjectedModeIsNotDropped(t *testing.T) {
-	for name, argv := range map[string][]string{
-		"operator mode": {"/c8s", "render-values"},
-		"attest mode":   {"/c8s", "cds-attest", "--listen=:8400"},
-		"no mode":       {"/c8s"},
-		"mode as argv0": {"get-cert", "--san=x"},
-	} {
-		t.Run(name, func(t *testing.T) {
-			hn := newHarness(t)
-			hn.inv.containers = append(hn.inv.containers,
-				workloadclaims.SandboxContainer{Digest: testInjected, Argv: argv})
-			if w := do(hn.h, hn.request(t, http.MethodGet, "/api/db")); w.Code != http.StatusForbidden {
-				t.Fatalf("%v = %d, want 403", argv, w.Code)
-			}
-		})
-	}
-}
-
-// A container in an injected mode is dropped only while every mount it holds is
-// confined to the node. With a mount the host can read, dropping it would
-// exempt from matching the one container able to fetch for the pod, so it is a
-// foreign container instead.
-func TestInjectedModeWithUnconfinedMountIsNotDropped(t *testing.T) {
-	memory := pkgallowlist.ObservedMount{Destination: "/run/c8s/secrets", Class: pkgallowlist.MountEmptyDir, Storage: pkgallowlist.MountMemory}
-	for name, tc := range map[string]struct {
-		mounts []pkgallowlist.ObservedMount
-		legacy bool
-		want   int
-	}{
-		"memory volumes and a read-only host path": {mounts: []pkgallowlist.ObservedMount{
-			memory,
-			{Destination: "/mnt/c8s-data/cfg", Class: pkgallowlist.MountData, Storage: pkgallowlist.MountEncrypted},
-			{Destination: "/run/c8s/workload-claims", Class: pkgallowlist.MountHost, ReadOnly: true},
-			{Destination: "/etc/hosts", Class: pkgallowlist.MountPlatform},
-		}, want: http.StatusCreated},
-		"writable host path":   {mounts: []pkgallowlist.ObservedMount{memory, {Destination: "/out", Class: pkgallowlist.MountHost}}, want: http.StatusForbidden},
-		"disk-backed emptyDir": {mounts: []pkgallowlist.ObservedMount{memory, {Destination: "/out", Class: pkgallowlist.MountEmptyDir, Storage: pkgallowlist.MountUnknown}}, want: http.StatusForbidden},
-		"persistent volume":    {mounts: []pkgallowlist.ObservedMount{memory, {Destination: "/out", Class: pkgallowlist.MountData, Storage: pkgallowlist.MountUnknown}}, want: http.StatusForbidden},
-		"no mount evidence":    {legacy: true, want: http.StatusForbidden},
-	} {
-		t.Run(name, func(t *testing.T) {
-			hn := newHarness(t)
-			hn.inv.legacyMounts = tc.legacy
-			hn.inv.containers = []workloadclaims.SandboxContainer{
-				{Digest: testAppImg, Argv: []string{"/serve"}, Mounts: []pkgallowlist.ObservedMount{}},
-				{Digest: testAppImg2, Argv: []string{"/metrics"}, Mounts: []pkgallowlist.ObservedMount{}},
-				{Digest: testInjected, Argv: []string{"/c8s", "get-secret", "--out-dir=/out"}, Mounts: tc.mounts},
-			}
-			if w := do(hn.h, hn.request(t, http.MethodPost, "/api/db")); w.Code != tc.want {
-				t.Fatalf("status = %d, want %d; body = %s", w.Code, tc.want, w.Body)
-			}
-		})
+// The pod's mesh endpoint runs the mesh image's own entrypoint, which is no
+// credential client's. It holds the mesh role, so release reads the same
+// workload as a pod without it.
+func TestMeshEndpointIsDropped(t *testing.T) {
+	hn := newHarness(t)
+	hn.seed(t, "/api/db", []byte("stored-secret"))
+	hn.inv.containers = append(hn.inv.containers, workloadclaims.SandboxContainer{
+		Digest: testMeshImg,
+		Argv:   []string{"/app/c8s", "armtls-mesh", "--cert-path=/etc/c8s/certs/tls.crt"},
+		Role:   roleMesh,
+	})
+	if w := do(hn.h, hn.request(t, http.MethodGet, "/api/db")); w.Code != http.StatusOK {
+		t.Fatalf("pod running its mesh endpoint = %d, want 200: %s", w.Code, w.Body)
 	}
 }
 
@@ -710,41 +657,62 @@ func TestEntryWithoutGrantRefused(t *testing.T) {
 	}
 }
 
-// A grant on an entry that leaves a container's argv unconstrained is refused
-// at release, whatever the write path let through: the value would go to
-// whatever command line the host chose.
+// A grant on an entry that leaves a container's argv or mounts to the host is
+// refused at release, whatever the write path let through: the value would go
+// to whatever command line the host chose, or beside a volume it added.
 func TestGrantOnUnpinnedEntryRefused(t *testing.T) {
-	hn := newHarness(t)
-	var log bytes.Buffer
-	hn.h.Logger = slog.New(slog.NewTextHandler(&log, nil))
-	hn.h.Policy = fakePolicy{al: &pkgallowlist.Allowlist{Schema: pkgallowlist.Schema, Workloads: map[string]pkgallowlist.Workload{
-		"c8s": anyEntry(t, testInjected, "ghcr.io/confidential-dot-ai/c8s@"+testInjected),
-		"api": {
-			Containers: []pkgallowlist.Container{
-				{
-					Digest:  mustDigest(t, testAppImg),
-					Command: pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyExact, Argv: []string{"/serve"}},
-					Args:    pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyDeny},
-				},
-				{
-					Digest:  mustDigest(t, testAppImg2),
-					Command: pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyExact, Argv: []string{"/metrics"}},
-					Args:    pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyAny},
-				},
+	for name, tc := range map[string]struct {
+		metrics pkgallowlist.Container
+		want    string
+	}{
+		"args any": {
+			metrics: pkgallowlist.Container{
+				Command: pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyExact, Argv: []string{"/metrics"}},
+				Args:    pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyAny},
 			},
-			Secrets: &pkgallowlist.SecretsPolicy{Policy: pkgallowlist.PolicyAllow, Read: []string{"/api/**"}},
+			want: "command and args policy",
 		},
-	}}}
-	stored := []byte("stored-secret")
-	hn.seed(t, "/api/db", stored)
+		"mounts any": {
+			metrics: pkgallowlist.Container{
+				Command: pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyExact, Argv: []string{"/metrics"}},
+				Args:    pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyDeny},
+				Mounts:  pkgallowlist.MountPolicy{Policy: pkgallowlist.PolicyAny},
+			},
+			want: "mounts policy",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			hn := newHarness(t)
+			var log bytes.Buffer
+			hn.h.Logger = slog.New(slog.NewTextHandler(&log, nil))
+			metrics := tc.metrics
+			metrics.Digest = mustDigest(t, testAppImg2)
+			hn.h.Policy = fakePolicy{al: &pkgallowlist.Allowlist{Schema: pkgallowlist.Schema, Workloads: map[string]pkgallowlist.Workload{
+				"c8s": anyEntry(t, testInjected, "ghcr.io/confidential-dot-ai/c8s@"+testInjected),
+				"api": {
+					Containers: []pkgallowlist.Container{
+						{
+							Digest:  mustDigest(t, testAppImg),
+							Command: pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyExact, Argv: []string{"/serve"}},
+							Args:    pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyDeny},
+						},
+						metrics,
+					},
+					Secrets: &pkgallowlist.SecretsPolicy{Policy: pkgallowlist.PolicyAllow, Read: []string{"/api/**"}},
+				},
+			}}}
+			stored := []byte("stored-secret")
+			hn.seed(t, "/api/db", stored)
 
-	w := do(hn.h, hn.request(t, http.MethodGet, "/api/db"))
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("unpinned entry with a grant = %d, want 403", w.Code)
-	}
-	assertNoRelease(t, w, stored)
-	if !strings.Contains(log.String(), "unconstrained") {
-		t.Fatalf("refusal did not name the unpinned argv:\n%s", log.String())
+			w := do(hn.h, hn.request(t, http.MethodGet, "/api/db"))
+			if w.Code != http.StatusForbidden {
+				t.Fatalf("unpinned entry with a grant = %d, want 403", w.Code)
+			}
+			assertNoRelease(t, w, stored)
+			if !strings.Contains(log.String(), tc.want) {
+				t.Fatalf("refusal did not name the unpinned field %q:\n%s", tc.want, log.String())
+			}
+		})
 	}
 }
 
@@ -756,7 +724,7 @@ func TestReleaseRefusedUntilEveryMainIsRunning(t *testing.T) {
 	hn.seed(t, "/api/db", stored)
 	hn.inv.containers = []workloadclaims.SandboxContainer{
 		{Digest: testAppImg, Argv: []string{"/serve"}},
-		{Digest: testInjected, Argv: []string{"/c8s", "get-cert", "--san=x"}},
+		{Digest: testInjected, Argv: []string{"/c8s", "get-cert", "--san=x"}, Role: roleCredentials},
 	}
 	w := do(hn.h, hn.request(t, http.MethodGet, "/api/db"))
 	if w.Code != http.StatusForbidden {
@@ -836,14 +804,14 @@ func TestMethodNotAllowed(t *testing.T) {
 }
 
 // A pod created before a C8s image bump still runs the previous injected image.
-// Both digests are configured for the length of an upgrade, so such a pod is
-// not refused its secret until it happens to be recreated.
+// The node that admitted it reports the role it holds, so such a pod is not
+// refused its secret until it happens to be recreated.
 func TestInjectedImageFromPreviousReleaseIsDropped(t *testing.T) {
 	hn := newHarness(t)
 	hn.inv.containers = []workloadclaims.SandboxContainer{
 		{Digest: testAppImg, Argv: []string{"/serve"}},
 		{Digest: testAppImg2, Argv: []string{"/metrics"}},
-		{Digest: testInjectedOld, Argv: []string{"/c8s", "get-cert", "--san=x"}},
+		{Digest: testInjectedOld, Argv: []string{"/c8s", "get-cert", "--san=x"}, Role: roleCredentials},
 	}
 	if w := do(hn.h, hn.request(t, http.MethodPost, "/api/db")); w.Code != http.StatusCreated {
 		t.Fatalf("pod running the previous injected image = %d, want 201", w.Code)
@@ -1096,6 +1064,45 @@ func TestSecretReleaseEnforcesEnvEvidence(t *testing.T) {
 			w := do(hn.h, hn.request(t, http.MethodPost, "/api/db"))
 			if w.Code != tc.want {
 				t.Fatalf("status=%d body=%s", w.Code, w.Body)
+			}
+		})
+	}
+}
+
+func TestSecretReleaseEnforcesMixedEnvironmentMatchers(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		env    []string
+		legacy bool
+		want   int
+	}{
+		{"matches", []string{"MODE=production", "GPU_SERIAL=one"}, false, http.StatusCreated},
+		{"changed present", []string{"MODE=production", "GPU_SERIAL=two"}, false, http.StatusCreated},
+		{"empty present", []string{"MODE=production", "GPU_SERIAL="}, false, http.StatusCreated},
+		{"changed exact", []string{"MODE=unsafe", "GPU_SERIAL=one"}, false, http.StatusForbidden},
+		{"missing", []string{"MODE=production"}, false, http.StatusForbidden},
+		{"extra", []string{"MODE=production", "GPU_SERIAL=one", "LD_PRELOAD=unsafe"}, false, http.StatusForbidden},
+		{"old evidence", []string{"MODE=production", "GPU_SERIAL=one"}, true, http.StatusForbidden},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hn := newHarness(t)
+			al := hn.h.Policy.(fakePolicy).al
+			var policy pkgallowlist.EnvPolicy
+			if err := json.Unmarshal([]byte(`{"policy":"match","variables":{"MODE":{"exact":"production"},"GPU_SERIAL":{"present":true}}}`), &policy); err != nil {
+				t.Fatal(err)
+			}
+			al.Workloads["api"].Containers[0].Env = policy
+			observation, err := pkgallowlist.ObserveEnv(tc.env)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.legacy {
+				observation.VariableDigests = nil
+			}
+			hn.inv.containers[0].Env = observation
+			w := do(hn.h, hn.request(t, http.MethodPost, "/api/db"))
+			if w.Code != tc.want {
+				t.Fatalf("status=%d body=%s, want %d", w.Code, w.Body, tc.want)
 			}
 		})
 	}

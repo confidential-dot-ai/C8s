@@ -1,5 +1,5 @@
 // Package operatorauth implements the operator-credential scheme that
-// authorizes C8s allowlist mutations (POST/PUT/DELETE /allowlist).
+// authorizes C8s allowlist mutations (PUT/DELETE under /allowlist).
 //
 // STOP-GAP DESIGN — pinned public keys. CDS is configured with a set of trusted
 // operator EC public keys. For each write the client mints a short-lived
@@ -9,18 +9,23 @@
 // keys, re-hashes the body against pbh, matches htm/htu against the request,
 // and rejects any token whose exp−iat exceeds MaxTokenValidity — so a captured
 // token cannot be replayed against a different payload, verb, or path, and
-// cannot be minted long-lived regardless of client tooling.
+// cannot be minted long-lived regardless of client tooling. The algorithm must
+// match the key's curve: ES256 for P-256, ES384 for P-384, ES512 for P-521.
 //
 // FUTURE IMPROVEMENT — a CA + operator certificates (chain carried in the JWT
 // x5c header), giving delegated issuance and CA-based revocation instead of
 // editing a pinned-key list, plus single-file (cert+key) operator credentials.
 //
 // Either way this is the sole authorization path for allowlist writes.
+//
+// ErrTokenReused, ErrTokenBeforeStart and ErrTokenNotRecorded are shared
+// sentinels for CDS's single-use token layer; Verifier never returns them.
 package operatorauth
 
 import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"crypto/x509"
@@ -118,9 +123,16 @@ func (s *Signer) WithTTL(ttl time.Duration) *Signer {
 // allowlistclient.Authorizer; the caller must pass the exact method, URL path,
 // and body bytes it will send so the htm/htu/pbh claims match server-side.
 func (s *Signer) Authorization(method, path string, body []byte) (string, error) {
+	// CDS spends each token once, keyed on its signed claims; the jti keeps two
+	// identical writes in the same second from colliding.
+	var jti [16]byte
+	if _, err := rand.Read(jti[:]); err != nil {
+		return "", fmt.Errorf("generate operator token id: %w", err)
+	}
 	now := time.Now()
 	sum := sha256.Sum256(body)
 	claims := jwt.MapClaims{
+		"jti":                base64.RawURLEncoding.EncodeToString(jti[:]),
 		"iat":                now.Unix(),
 		"exp":                now.Add(s.ttl).Unix(),
 		claimHTTPMethod:      method,
@@ -150,31 +162,54 @@ type Verifier struct {
 // token signed by one of the pinned keys. Any failure returns a non-nil error
 // and the caller must reject the mutation.
 func (v Verifier) Authorize(r *http.Request, body []byte) error {
-	if len(v.Keys) == 0 {
-		return fmt.Errorf("no operator keys configured")
-	}
+	_, err := v.AuthorizeIssuedAt(r, body)
+	return err
+}
+
+// AuthorizeIssuedAt is Authorize, also returning the verified token's iat.
+func (v Verifier) AuthorizeIssuedAt(r *http.Request, body []byte) (time.Time, error) {
 	tokenStr, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if !ok || tokenStr == "" {
-		return fmt.Errorf("missing operator bearer token")
+		return time.Time{}, fmt.Errorf("missing operator bearer token")
+	}
+	return verifyToken(v.Keys, tokenStr, r.Method, r.URL.Path, body,
+		jwt.WithLeeway(v.ClockSkew), jwt.WithIssuedAt(), jwt.WithExpirationRequired())
+}
+
+// VerifyStored checks a token that authorized a past request: its signature
+// under one of keys, and its method, path and body binding. It skips the
+// time checks, since a stored token is always expired by the time it is
+// read; the server that accepted the request enforced them. It still
+// requires exp−iat within MaxTokenValidity.
+func VerifyStored(keys []*ecdsa.PublicKey, token, method, path string, body []byte) error {
+	_, err := verifyToken(keys, token, method, path, body, jwt.WithoutClaimsValidation())
+	return err
+}
+
+// verifyToken returns the iat claim of a token it verified.
+func verifyToken(keys []*ecdsa.PublicKey, tokenStr, method, path string, body []byte, opts ...jwt.ParserOption) (time.Time, error) {
+	if len(keys) == 0 {
+		return time.Time{}, fmt.Errorf("no operator keys configured")
 	}
 
 	// Try each pinned key. A signature made by key N fails verification under
 	// the others, so at most one key yields a valid token; once one does, its
 	// result (including the body-binding check) is authoritative.
 	var lastErr error
-	for _, pub := range v.Keys {
+	for _, pub := range keys {
 		claims := jwt.MapClaims{}
 		token, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (any, error) {
-			if _, ok := t.Method.(*jwt.SigningMethodECDSA); !ok {
-				return nil, fmt.Errorf("unexpected signing method %s", t.Method.Alg())
+			// jwt verifies an ES384 signature under a P-256 key; other
+			// verifiers refuse it, so the algorithm must name the key's curve.
+			want, err := esMethodFor(pub.Curve)
+			if err != nil {
+				return nil, err
+			}
+			if t.Method.Alg() != want.Alg() {
+				return nil, fmt.Errorf("signing method %s does not match the %s key", t.Method.Alg(), pub.Curve.Params().Name)
 			}
 			return pub, nil
-		},
-			jwt.WithValidMethods(validMethods),
-			jwt.WithLeeway(v.ClockSkew),
-			jwt.WithIssuedAt(),
-			jwt.WithExpirationRequired(),
-		)
+		}, append([]jwt.ParserOption{jwt.WithValidMethods(validMethods)}, opts...)...)
 		if err != nil {
 			lastErr = err
 			continue
@@ -190,20 +225,20 @@ func (v Verifier) Authorize(r *http.Request, body []byte) error {
 		// tooling minted the token.
 		iat, err := claims.GetIssuedAt()
 		if err != nil || iat == nil {
-			return fmt.Errorf("operator token missing iat claim")
+			return time.Time{}, fmt.Errorf("operator token missing iat claim")
 		}
 		exp, err := claims.GetExpirationTime()
 		if err != nil || exp == nil {
-			return fmt.Errorf("operator token missing exp claim")
+			return time.Time{}, fmt.Errorf("operator token missing exp claim")
 		}
 		if validity := exp.Sub(iat.Time); validity <= 0 || validity > MaxTokenValidity {
-			return fmt.Errorf("operator token validity %s outside (0, %s]", validity, MaxTokenValidity)
+			return time.Time{}, fmt.Errorf("operator token validity %s outside (0, %s]", validity, MaxTokenValidity)
 		}
-		if htm, _ := claims[claimHTTPMethod].(string); htm != r.Method {
-			return fmt.Errorf("operator token %s %q does not match request method %q", claimHTTPMethod, htm, r.Method)
+		if htm, _ := claims[claimHTTPMethod].(string); htm != method {
+			return time.Time{}, fmt.Errorf("operator token %s %q does not match request method %q", claimHTTPMethod, htm, method)
 		}
-		if htu, _ := claims[claimHTTPPath].(string); htu != r.URL.Path {
-			return fmt.Errorf("operator token %s %q does not match request path %q", claimHTTPPath, htu, r.URL.Path)
+		if htu, _ := claims[claimHTTPPath].(string); htu != path {
+			return time.Time{}, fmt.Errorf("operator token %s %q does not match request path %q", claimHTTPPath, htu, path)
 		}
 
 		// Body binding: the token's pbh must equal SHA-256 of the body the
@@ -211,19 +246,19 @@ func (v Verifier) Authorize(r *http.Request, body []byte) error {
 		// timing.
 		pbh, _ := claims[claimPayloadBodyHash].(string)
 		if pbh == "" {
-			return fmt.Errorf("operator token missing %s claim", claimPayloadBodyHash)
+			return time.Time{}, fmt.Errorf("operator token missing %s claim", claimPayloadBodyHash)
 		}
 		sum := sha256.Sum256(body)
 		want := base64.RawURLEncoding.EncodeToString(sum[:])
 		if subtle.ConstantTimeCompare([]byte(pbh), []byte(want)) != 1 {
-			return fmt.Errorf("operator token %s does not match request body", claimPayloadBodyHash)
+			return time.Time{}, fmt.Errorf("operator token %s does not match request body", claimPayloadBodyHash)
 		}
-		return nil
+		return iat.Time, nil
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("token not signed by any pinned operator key")
 	}
-	return fmt.Errorf("operator token invalid: %w", lastErr)
+	return time.Time{}, fmt.Errorf("operator token invalid: %w", lastErr)
 }
 
 // ParsePublicKeysPEM parses one or more PEM "PUBLIC KEY" (PKIX/SubjectPublicKeyInfo)

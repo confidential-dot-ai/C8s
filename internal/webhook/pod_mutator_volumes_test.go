@@ -3,6 +3,7 @@ package webhook
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -83,18 +84,18 @@ func TestVolumeMountIsPropagated(t *testing.T) {
 	if m.MountPropagation == nil || *m.MountPropagation != corev1.MountPropagationHostToContainer {
 		t.Errorf("propagation = %v, want HostToContainer", m.MountPropagation)
 	}
-	if m.MountPath != "/run/c8s/volumes/weights" {
+	if m.MountPath != "/mnt/c8s-data/c8s-volumes/weights" {
 		t.Errorf("mount path = %q, want the default volume dir", m.MountPath)
 	}
 }
 
 func TestVolumeDirOverride(t *testing.T) {
 	pod := podWithApp()
-	mutateWithVolumes(t, pod, []string{"weights=/tenant-a/volumes/weights"}, "/models")
+	mutateWithVolumes(t, pod, []string{"weights=/tenant-a/volumes/weights"}, "/mnt/c8s-data/models")
 
 	app := workloadContainer(t, pod, "app")
-	if m := mountNamed(app, volume.KubeVolumeName("weights")); m == nil || m.MountPath != "/models/weights" {
-		t.Errorf("mount path = %v, want /models/weights", m)
+	if m := mountNamed(app, volume.KubeVolumeName("weights")); m == nil || m.MountPath != "/mnt/c8s-data/models/weights" {
+		t.Errorf("mount path = %v, want /mnt/c8s-data/models/weights", m)
 	}
 }
 
@@ -143,7 +144,7 @@ func TestPreDeclaredVolumeAndMountAreOverwritten(t *testing.T) {
 	if m == nil {
 		t.Fatal("the mount was dropped")
 	}
-	if m.MountPath != "/run/c8s/volumes/weights" {
+	if m.MountPath != "/mnt/c8s-data/c8s-volumes/weights" {
 		t.Errorf("mount path = %q, want the webhook's own", m.MountPath)
 	}
 	if m.ReadOnly {
@@ -204,7 +205,7 @@ func TestEphemeralContainerMayNotMountAnOpenedVolume(t *testing.T) {
 		Name:         "debug",
 		VolumeMounts: []corev1.VolumeMount{{Name: volume.KubeVolumeName("weights")}},
 	}}
-	if err := rejectEphemeralReservedMounts(pod); err == nil {
+	if err := rejectEphemeralReach(pod); err == nil {
 		t.Fatal("an ephemeral container mounted an opened volume")
 	}
 }
@@ -214,7 +215,7 @@ func TestEphemeralContainerMayNotTakeTheFetcherName(t *testing.T) {
 	pod.Spec.EphemeralContainers = []corev1.EphemeralContainer{{
 		Name: reservedVolumeContainerName,
 	}}
-	if err := rejectEphemeralReservedMounts(pod); err == nil {
+	if err := rejectEphemeralReach(pod); err == nil {
 		t.Fatal("an ephemeral container took the reserved fetcher name")
 	}
 }
@@ -245,20 +246,42 @@ func TestVolumesAnnotationValidation(t *testing.T) {
 	}
 }
 
-func TestVolumeDirMustBeAbsolute(t *testing.T) {
-	inj := &injection{WorkloadID: "api", Volumes: volumesSpec{
-		Specs: []string{"weights=/tenant-a/volumes/weights"},
-		Dir:   "relative/models",
-	}}
-	if err := inj.validate(); err == nil {
-		t.Fatal("a relative volume dir was accepted")
+// An opened volume classes as a data mount, and a secrets grant needs every
+// mount pinned by an exact rule; a data rule only names destinations below
+// the data prefix. A volume dir elsewhere could never receive its key.
+func TestVolumeDirMustBePinnable(t *testing.T) {
+	for _, tc := range []struct {
+		dir     string
+		wantErr bool
+	}{
+		{"", false},
+		{"/mnt/c8s-data", false},
+		{"/mnt/c8s-data/", false},
+		{"/mnt/c8s-data/models", false},
+		{"relative/models", true},
+		{"/models", true},
+		{"/run/c8s/volumes", true},
+		{"/mnt/c8s-data-models", true},
+		{"/mnt/c8s-data/../etc", true},
+	} {
+		inj := &injection{WorkloadID: "api", Volumes: volumesSpec{
+			Specs: []string{"weights=/tenant-a/volumes/weights"},
+			Dir:   tc.dir,
+		}}
+		err := inj.validate()
+		if tc.wantErr && !errors.Is(err, errInvalidInjectionAnnotation) {
+			t.Errorf("validate(dir %q) = %v, want invalid annotation", tc.dir, err)
+		}
+		if !tc.wantErr && err != nil {
+			t.Errorf("validate(dir %q) = %v, want nil", tc.dir, err)
+		}
 	}
 }
 
 func TestVolumesAnnotationRequiresOptIn(t *testing.T) {
 	pod := podWithApp()
 	pod.Annotations = map[string]string{AnnotationVolumes: "weights=/tenant-a/volumes/weights"}
-	if _, err := parseAnnotations(pod); err == nil {
+	if _, err := parseAnnotations(pod, ""); err == nil {
 		t.Fatal("volumes were requested without the workload annotation")
 	}
 }
@@ -268,16 +291,16 @@ func TestVolumesAnnotationParsing(t *testing.T) {
 	pod.Annotations = map[string]string{
 		AnnotationWorkload:  "api",
 		AnnotationVolumes:   "weights=/tenant-a/volumes/weights, datasets=/tenant-a/volumes/ds",
-		AnnotationVolumeDir: "/models",
+		AnnotationVolumeDir: "/mnt/c8s-data/models",
 	}
-	inj, err := parseAnnotations(pod)
+	inj, err := parseAnnotations(pod, "")
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
 	if len(inj.Volumes.Specs) != 2 {
 		t.Fatalf("specs = %v, want two", inj.Volumes.Specs)
 	}
-	if inj.Volumes.Dir != "/models" {
+	if inj.Volumes.Dir != "/mnt/c8s-data/models" {
 		t.Fatalf("dir = %q", inj.Volumes.Dir)
 	}
 }

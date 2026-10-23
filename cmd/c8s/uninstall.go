@@ -356,7 +356,7 @@ func nriConfigFromValues(tree map[string]any, cfg hostUninstallConfig) hostUnins
 	cfg.NriPluginDir = stringOrDefault(tree, "nriImagePolicy.hostPaths.pluginDir", "/opt/nri/plugins")
 	cfg.NriPluginFilename = stringOrDefault(tree, "nriImagePolicy.pluginFilename", "10-nri-image-policy")
 	cfg.NriConfigDir = stringOrDefault(tree, "nriImagePolicy.hostPaths.configDir", "/etc/nri/conf.d")
-	cfg.NriRuntimeDir = stringOrDefault(tree, "nriImagePolicy.hostPaths.runtimeDir", "/var/run/nri-image-policy")
+	cfg.NriRuntimeDir = stringOrDefault(tree, "nriImagePolicy.hostPaths.runtimeDir", "/run/nri-image-policy")
 	cfg.NriCacheDir = stringOrDefault(tree, "nriImagePolicy.hostPaths.cacheDir", "/var/lib/nri-image-policy")
 	return cfg
 }
@@ -464,7 +464,6 @@ func seedPinnedSweepArgvs(ctx context.Context, namespace, release, image string)
 	if err != nil {
 		return nil, fmt.Errorf("sweep image digest: %w", err)
 	}
-	entryName := allowlist.DigestEntryName(d, image)
 	cmName := seedConfigMapName(release)
 
 	out, err := exec.CommandContext(ctx, "kubectl", "get", "configmap", cmName,
@@ -482,10 +481,21 @@ func seedPinnedSweepArgvs(ctx context.Context, namespace, release, image string)
 	if err != nil {
 		return nil, fmt.Errorf("parse allowlist seed: %w", err)
 	}
-	entry, ok := seed.Workloads[entryName]
-	if !ok {
-		return nil, fmt.Errorf("seed has no entry %q", entryName)
+	// The chart names the entry by its policy hash, so find it by digest.
+	var entryName string
+	for name, w := range seed.Workloads {
+		if len(w.Containers) == 0 || slices.ContainsFunc(w.Containers, func(c allowlist.Container) bool { return c.Digest != d }) {
+			continue
+		}
+		if entryName != "" {
+			return nil, fmt.Errorf("seed has two entries for %s: %q and %q", d, entryName, name)
+		}
+		entryName = name
 	}
+	if entryName == "" {
+		return nil, fmt.Errorf("seed has no entry for %s", d)
+	}
+	entry := seed.Workloads[entryName]
 	var sweep, pause []string
 	for _, c := range entry.Containers {
 		argv, err := exactArgv(c)

@@ -178,3 +178,77 @@ func TestSeedStore_FailsClosedOnStoreError(t *testing.T) {
 		t.Fatal("seedStore succeeded on a closed store; want fail-closed error")
 	}
 }
+
+// A seed layer never enters the store, while --allowlist-seed does: an upload
+// replaces the stored document only, decisions still hold the seed layer, and
+// a seed entry wins a name both layers hold.
+func TestOpenSeedLayerSurvivesUpload(t *testing.T) {
+	store, err := allowlist.OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	launch := writeSeed(t, anySeed(map[string]string{"launch": digestB}))
+	layers, err := openSeed(&store, launch, writeSeed(t, anySeed(map[string]string{"cds": digestA})))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored, _, err := store.LoadAll(); err != nil || len(stored.Workloads) != 1 || stored.Workloads["launch"].Label == "" {
+		t.Fatalf("store holds %v, %v; want the launch workloads alone, not the seed layer", stored.Workloads, err)
+	}
+	upload, err := pkgallowlist.ParseJSON([]byte(anySeed(map[string]string{"app": digestB, "cds": digestB})))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ReplaceAll(upload); err != nil {
+		t.Fatal(err)
+	}
+	decided, version, err := layers.LoadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := decided.Workloads["app"]; !ok || len(decided.Workloads) != 2 {
+		t.Fatalf("decisions hold %v, want app and cds", decided.Workloads)
+	}
+	if got := decided.Workloads["cds"].Containers[0].Digest.String(); got != digestA {
+		t.Errorf("cds decides on %s, want the seed's %s", got, digestA)
+	}
+	if stored, current, err := store.LoadAll(); err != nil || current != version || len(stored.Workloads) != 2 {
+		t.Errorf("store holds %v at %s, want the upload at the layered version %s (%v)", stored.Workloads, current, version, err)
+	}
+	if layers.SeedDigest() == "" {
+		t.Error("no seed digest")
+	}
+}
+
+// Without --seed-layer the seed is merged into the store and there is no
+// layer.
+func TestOpenSeedWithoutLayerSeedsTheStore(t *testing.T) {
+	store, err := allowlist.OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	layers, err := openSeed(&store, writeSeed(t, anySeed(map[string]string{"cds": digestA})), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if layers.SeedDigest() != "" {
+		t.Errorf("seed layer %s without --seed-layer", layers.SeedDigest())
+	}
+	if stored, _, err := store.LoadAll(); err != nil || len(stored.Workloads) != 1 {
+		t.Fatalf("store holds %v, %v; want the seed", stored.Workloads, err)
+	}
+}
+
+// A seed layer fails closed on a bad seed, as seeding the store does.
+func TestOpenSeedLayerFailsClosed(t *testing.T) {
+	store, err := allowlist.OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := openSeed(&store, "", writeSeed(t, `{"schema":"c8s.allowlist/v1","workloads":{"x":{}}`)); err == nil {
+		t.Fatal("openSeed accepted a malformed seed")
+	}
+}

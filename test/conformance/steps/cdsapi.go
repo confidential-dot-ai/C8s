@@ -55,12 +55,14 @@ const (
 	callerForeign = "foreign"
 )
 
-// write is one request to the CDS's allowlist routes; validity is the
-// lifetime its token is minted with, the signer's default when empty.
+// write is one request to the CDS's write routes; validity is the lifetime
+// its token is minted with, the signer's default when empty, and headers
+// ("Name: value") go beside the token's Authorization.
 type write struct {
 	method, path string
 	body         []byte
 	validity     string
+	headers      []string
 }
 
 // reading is what a relying party got back from a read.
@@ -103,7 +105,7 @@ func (w *world) putAnyArgv(name, image string) (write, error) {
 		Containers: []entryContainer{{
 			Digest: digest, Image: ref,
 			Command: anyArgv(), Args: anyArgv(),
-			Mounts: mountsPolicy{Policy: "any"}, Env: policy{Policy: "any"},
+			Mounts: mountsPolicy{Policy: "any"}, Env: envPolicy{Policy: "any"},
 		}},
 	})
 	if err != nil {
@@ -142,22 +144,22 @@ func (w *world) token(signer string, wr write) (string, error) {
 }
 
 // send sends wr with auth as its Authorization, none when empty, and records
-// the status. A stored write changed the served allowlist: a put entry is
-// the scenario's to delete afterwards.
-func (w *world) send(wr write, auth string) error {
-	var status string
-	err := withBodyFile(wr.body, func(path string) error {
-		out, err := w.be.call("allowlist_request", wr.method, wr.path, path, auth)
-		status = out
-		return err
-	})
+// the status. A stored allowlist write changed the served allowlist: a put
+// entry is the scenario's to delete afterwards.
+func (w *world) send(wr write, auth string) error { return w.sendVia("cds_request", wr, auth) }
+
+// sendVia is send through a backend function taking cds_request's arguments.
+func (w *world) sendVia(fn string, wr write, auth string) error {
+	body := wr.body
+	if body == nil {
+		body = []byte{} // sent as an empty body, which the token signed
+	}
+	a, err := w.httpRequest(fn, wr.method, wr.path, body, auth, "", "", wr.headers...)
 	if err != nil {
 		return err
 	}
-	if w.api.lastStatus, err = strconv.Atoi(status); err != nil {
-		return fmt.Errorf("status %q: %w", status, err)
-	}
-	if w.api.lastStatus == http.StatusNoContent {
+	w.api.lastStatus = a.status
+	if w.api.lastStatus == http.StatusNoContent && strings.HasPrefix(wr.path, workloadsPath) {
 		lastMutation = time.Now()
 		if wr.method == http.MethodPut {
 			w.written[strings.TrimPrefix(wr.path, workloadsPath)] = true
@@ -201,7 +203,7 @@ func seedDeclares(ctx context.Context, image string) error {
 		return err
 	}
 	if answer != "yes" {
-		return godog.ErrSkip
+		return skipf("the seed of the CDS does not declare %s here", digest)
 	}
 	return nil
 }
@@ -251,6 +253,11 @@ func callerWrites(ctx context.Context, name, image string) error {
 	if err != nil {
 		return err
 	}
+	return w.sendAsCaller(wr)
+}
+
+// sendAsCaller sends wr with the write token the scenario's caller holds.
+func (w *world) sendAsCaller(wr write) error {
 	switch w.api.caller {
 	case callerNone:
 		return w.send(wr, "")
@@ -362,7 +369,7 @@ func operatorSendsSigned(ctx context.Context) error {
 	return w.operatorWrite(*w.api.pending)
 }
 
-func (w *world) refused(status int, what string) error {
+func (w *world) cdsAnswered(status int, what string) error {
 	if w.api.lastStatus == 0 {
 		return errors.New("the scenario has sent the CDS no write")
 	}
@@ -373,15 +380,15 @@ func (w *world) refused(status int, what string) error {
 }
 
 func cdsRefusesWrite(ctx context.Context) error {
-	return getWorld(ctx).refused(http.StatusUnauthorized, "authorization failed")
+	return getWorld(ctx).cdsAnswered(http.StatusUnauthorized, "authorization failed")
 }
 
 func cdsRefusesInvalid(ctx context.Context) error {
-	return getWorld(ctx).refused(http.StatusUnprocessableEntity, "validation failed")
+	return getWorld(ctx).cdsAnswered(http.StatusUnprocessableEntity, "validation failed")
 }
 
 func cdsRefusesRemovalNoEntry(ctx context.Context) error {
-	return getWorld(ctx).refused(http.StatusNotFound, "no entry has that name")
+	return getWorld(ctx).cdsAnswered(http.StatusNotFound, "no entry has that name")
 }
 
 func readsVersion(ctx context.Context) error {
@@ -534,13 +541,9 @@ func versionCompares(ctx context.Context, relation string) error {
 	if err != nil {
 		return fmt.Errorf("version read before %q: %w", w.api.versionBefore, err)
 	}
-	s, err := w.be.call("served_version")
+	now, err := w.servedVersion()
 	if err != nil {
 		return err
-	}
-	now, err := strconv.Atoi(s)
-	if err != nil {
-		return fmt.Errorf("served version %q: %w", s, err)
 	}
 	var holds bool
 	switch relation {

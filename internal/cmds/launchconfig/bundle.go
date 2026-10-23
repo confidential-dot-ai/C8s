@@ -29,7 +29,8 @@ import (
 // beside it, never inside it:
 //
 //	<dir>/server.key      server launch key; also the operator key that
-//	                      get-kubeconfig and signed CDS writes use
+//	                      get-kubeconfig and signed CDS writes use. Absent
+//	                      when the bundle reuses an operator key
 //	<dir>/agent.key    the one agent launch key this cluster trusts
 //	<dir>/server.json     client policy pinning the server (C8S_MEASUREMENTS_CONFIG)
 //	<dir>/peers.json      every launch identity CDS admits and serves
@@ -58,12 +59,21 @@ type BundleOptions struct {
 	Agents        []string
 	TLSSAN        string
 	WorkloadsPath string
+	Models        Models
 	Router        Router
+	// RegistryMirrors goes into the server document; agents inherit it.
+	RegistryMirrors map[string]string
+	// OperatorKeyPath, when set, is an existing server launch key (the
+	// operator key) to build the bundle with instead of a fresh one.
+	// OperatorPubPath, when set, is the public key that key must match.
+	OperatorKeyPath string
+	OperatorPubPath string
 }
 
-// NewBundle generates the cluster's two launch keys and join tokens, writes
-// and signs the server document plus one agent document per name, and
-// emits the client policy. Dir must not exist; a failed run removes it so a
+// NewBundle generates the cluster's launch keys (or takes the server key from
+// OperatorKeyPath) and join tokens, writes and signs the server document plus
+// one agent document per name, and emits the client policy. A reused server
+// key stays where it is; only a generated one is written to the bundle. Dir must not exist; a failed run removes it so a
 // half-written bundle can never be attached.
 func NewBundle(opts BundleOptions) (err error) {
 	if opts.Dir == "" || opts.ClusterID == "" || opts.ManifestPath == "" {
@@ -78,7 +88,14 @@ func NewBundle(opts BundleOptions) (err error) {
 	if len(opts.Agents) > 0 && opts.ServerAddress == "" {
 		return errors.New("--server-address is required when the bundle has agents: an agent must be told where its server is")
 	}
+	if opts.OperatorPubPath != "" && opts.OperatorKeyPath == "" {
+		return errors.New("--operator-pubkey checks --operator-key; it needs one")
+	}
 	image, err := imageFromManifest(opts.ManifestPath, opts.VCPUs)
+	if err != nil {
+		return err
+	}
+	serverKey, err := operatorKey(opts.OperatorKeyPath, opts.OperatorPubPath)
 	if err != nil {
 		return err
 	}
@@ -98,11 +115,20 @@ func NewBundle(opts BundleOptions) (err error) {
 			os.RemoveAll(opts.Dir)
 		}
 	}()
-	serverKey, serverPub, err := newLaunchKey(filepath.Join(opts.Dir, serverKeyFile))
+	var serverPub string
+	if opts.OperatorKeyPath != "" {
+		serverPub, err = publicKeyPEM(serverKey)
+	} else {
+		serverPub, err = writeLaunchKey(filepath.Join(opts.Dir, serverKeyFile), serverKey)
+	}
 	if err != nil {
 		return err
 	}
-	_, agentPub, err := newLaunchKey(filepath.Join(opts.Dir, agentKeyFile))
+	agentKey, err := newLaunchKey()
+	if err != nil {
+		return err
+	}
+	agentPub, err := writeLaunchKey(filepath.Join(opts.Dir, agentKeyFile), agentKey)
 	if err != nil {
 		return err
 	}
@@ -114,21 +140,30 @@ func NewBundle(opts BundleOptions) (err error) {
 	if err != nil {
 		return err
 	}
+	serverPassword, err := newToken()
+	if err != nil {
+		return err
+	}
 	server := Document{
 		SchemaVersion:           SchemaVersion,
 		ClusterID:               opts.ClusterID,
 		Role:                    Server,
 		Image:                   image,
 		Node:                    Node{Name: opts.ServerName},
-		RKE2:                    RKE2{ServerToken: serverToken, AgentToken: agentToken},
+		RKE2:                    RKE2{ServerToken: serverToken, AgentToken: agentToken, NodePassword: serverPassword},
 		Server:                  ServerConfig{Address: opts.ServerAddress, OperatorPublicKey: serverPub},
 		AgentOperatorPublicKeys: []string{agentPub},
 		TLSSAN:                  opts.TLSSAN,
 		Workloads:               workloads,
+		RegistryMirrors:         opts.RegistryMirrors,
 	}
-	if opts.Router.Upstream != "" || len(opts.Router.Hostnames) > 0 || opts.Router.ACMEEmail != "" || opts.Router.ACMEDirectoryURL != "" {
+	if len(opts.Router.Hostnames) > 0 || opts.Router.ACMEEmail != "" || opts.Router.ACMEDirectoryURL != "" || opts.Router.MaxRequestBodyBytes != 0 {
 		router := opts.Router
 		server.Router = &router
+	}
+	if opts.Models.Writable || opts.Models.RootOwner != "" {
+		models := opts.Models
+		server.Models = &models
 	}
 	if err := writeSignedDocument(filepath.Join(opts.Dir, serverDir), server, serverKey, serverPub); err != nil {
 		return err
@@ -210,7 +245,11 @@ func AddAgent(dir, name, serverAddress string) (err error) {
 	agent := *server
 	agent.Role = Agent
 	agent.Node = Node{Name: name}
-	agent.RKE2 = RKE2{AgentToken: server.RKE2.AgentToken}
+	password, err := newToken()
+	if err != nil {
+		return err
+	}
+	agent.RKE2 = RKE2{AgentToken: server.RKE2.AgentToken, NodePassword: password}
 	agent.Server.Address = serverAddress
 	agent.Router = nil
 	return writeSignedDocument(filepath.Join(dir, name), agent, key, pub)
@@ -294,23 +333,60 @@ func writeSignedDocument(dir string, doc Document, key *ecdsa.PrivateKey, pub st
 	return writeNew(filepath.Join(dir, signatureFile), []byte(signature+"\n"), 0o600)
 }
 
-func newLaunchKey(path string) (*ecdsa.PrivateKey, string, error) {
+func newLaunchKey() (*ecdsa.PrivateKey, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		return nil, "", fmt.Errorf("generate launch key: %w", err)
+		return nil, fmt.Errorf("generate launch key: %w", err)
 	}
+	return key, nil
+}
+
+// operatorKey returns the server launch key: a fresh one, or the key at
+// keyPath. With pubPath it must also equal that public key byte for byte, the
+// form the bundle writes as the server's pubkey, so a key pinned elsewhere
+// (SNP HOST_DATA hashes the pubkey file) is the one the bundle binds.
+func operatorKey(keyPath, pubPath string) (*ecdsa.PrivateKey, error) {
+	if keyPath == "" {
+		return newLaunchKey()
+	}
+	key, err := certutil.LoadECPrivateKeyFile(keyPath)
+	if err != nil {
+		return nil, fmt.Errorf("--operator-key: %w", err)
+	}
+	if key.Curve != elliptic.P256() {
+		return nil, fmt.Errorf("--operator-key %s must be an ECDSA P-256 key, not %s", keyPath, key.Curve.Params().Name)
+	}
+	if pubPath == "" {
+		return key, nil
+	}
+	want, err := readBounded(pubPath, 8192)
+	if err != nil {
+		return nil, fmt.Errorf("--operator-pubkey: %w", err)
+	}
+	got, err := publicKeyPEM(key)
+	if err != nil {
+		return nil, err
+	}
+	if string(want) == got {
+		return key, nil
+	}
+	if pinned, err := runtimemeasure.ParsePublicKeyPEM(want); err == nil && pinned.Equal(&key.PublicKey) {
+		return nil, fmt.Errorf("--operator-pubkey %s is this key in another encoding; the bundle writes and binds:\n%s", pubPath, got)
+	}
+	return nil, fmt.Errorf("--operator-key %s does not match --operator-pubkey %s", keyPath, pubPath)
+}
+
+// writeLaunchKey writes key's private half to path and returns its public key
+// PEM.
+func writeLaunchKey(path string, key *ecdsa.PrivateKey) (string, error) {
 	keyPEM, err := certutil.MarshalECKeyPEM(key)
 	if err != nil {
-		return nil, "", err
+		return "", err
 	}
 	if err := writeNew(path, keyPEM, 0o600); err != nil {
-		return nil, "", err
+		return "", err
 	}
-	pub, err := publicKeyPEM(key)
-	if err != nil {
-		return nil, "", err
-	}
-	return key, pub, nil
+	return publicKeyPEM(key)
 }
 
 func publicKeyPEM(key *ecdsa.PrivateKey) (string, error) {

@@ -2,17 +2,23 @@ package cds
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
+	"database/sql"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"io"
 	"log/slog"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -25,7 +31,13 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 
+	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
+	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
+	"github.com/confidential-dot-ai/c8s/internal/secrets"
+	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
 func TestCompilePattern(t *testing.T) {
@@ -259,6 +271,28 @@ func TestRun_ErrorPaths(t *testing.T) {
 			wantSub: "allowlist database",
 		},
 		{
+			name: "tampered allowlist history fails closed",
+			mutate: func(t *testing.T, cfg *config) {
+				store, err := allowlist.OpenStore(cfg.allowlistDB)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := store.StartJournal(); err != nil {
+					t.Fatal(err)
+				}
+				store.Close()
+				db, err := sql.Open("sqlite", cfg.allowlistDB)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer db.Close()
+				if _, err := db.Exec("UPDATE journal_object SET body = CAST('{}' AS BLOB)"); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantSub: "allowlist history",
+		},
+		{
 			name:    "invalid dns san pattern",
 			mutate:  func(_ *testing.T, cfg *config) { cfg.dnsSANPatterns = []string{"("} },
 			wantSub: "--dns-san-pattern",
@@ -272,6 +306,13 @@ func TestRun_ErrorPaths(t *testing.T) {
 			name: "seed file missing fails closed",
 			mutate: func(t *testing.T, cfg *config) {
 				cfg.allowlistSeed = filepath.Join(t.TempDir(), "missing-seed.json")
+			},
+			wantSub: "seed allowlist",
+		},
+		{
+			name: "seed layer missing fails closed",
+			mutate: func(t *testing.T, cfg *config) {
+				cfg.seedLayer = filepath.Join(t.TempDir(), "missing-seed.json")
 			},
 			wantSub: "seed allowlist",
 		},
@@ -388,10 +429,18 @@ func TestRun_ServesAndShutsDownOnSIGTERM(t *testing.T) {
 // registers a cleanup that SIGTERMs the process and requires a clean exit.
 func startRunServer(t *testing.T, cfg config) string {
 	t.Helper()
+	base := fmt.Sprintf("http://127.0.0.1:%d", cfg.port)
+	startRunServerOn(t, cfg, base, http.DefaultClient)
+	return base
+}
+
+// startRunServerOn is startRunServer for a listener that client knows how to
+// reach: base carries the scheme, and client the TLS configuration.
+func startRunServerOn(t *testing.T, cfg config, base string, client *http.Client) {
+	t.Helper()
 	errCh := make(chan error, 1)
 	go func() { errCh <- run(cfg) }()
 
-	base := fmt.Sprintf("http://127.0.0.1:%d", cfg.port)
 	deadline := time.Now().Add(15 * time.Second)
 	for {
 		if time.Now().After(deadline) {
@@ -402,7 +451,7 @@ func startRunServer(t *testing.T, cfg config) string {
 			t.Fatalf("run() exited early: %v", err)
 		default:
 		}
-		resp, err := http.Get(base + "/healthz")
+		resp, err := client.Get(base + "/healthz")
 		if err == nil {
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
@@ -425,7 +474,6 @@ func startRunServer(t *testing.T, cfg config) string {
 			t.Fatal("run() did not shut down after SIGTERM")
 		}
 	})
-	return base
 }
 
 // TestRun_LogsMeasurementPinning: with --measurements set, startup must log the
@@ -475,6 +523,7 @@ func TestRun_AllowlistWriteAcceptsClockSkewedToken(t *testing.T) {
 	cfg := validRunConfig(t, api.URL) // jwtClockSkew: 30
 	cfg.port = freePort(t)
 	cfg.operatorKeys = keysPath
+	cfg.allowlistPersistent = true // a non-persistent store refuses tokens for --jwt-clock-skew after start
 	base := startRunServer(t, cfg)
 
 	body := []byte(anySeed(map[string]string{"cds": digestA}))
@@ -505,6 +554,139 @@ func TestRun_AllowlistWriteAcceptsClockSkewedToken(t *testing.T) {
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("PUT /allowlist = %d (%s), want 204", resp.StatusCode, respBody)
 	}
+}
+
+// A non-persistent store forgets spent tokens at restart, so CDS refuses a
+// fresh token until --jwt-clock-skew has passed since start.
+func TestRun_NonPersistentStoreRefusesTokensAfterStart(t *testing.T) {
+	api := newHealthyAttestationApi(t)
+	operatorKey, keysPath := writeOperatorKeyPair(t)
+	cfg := validRunConfig(t, api.URL) // jwtClockSkew: 30, not persistent
+	cfg.port = freePort(t)
+	cfg.operatorKeys = keysPath
+	base := startRunServer(t, cfg)
+
+	body := []byte(anySeed(map[string]string{"cds": digestA}))
+	sum := sha256.Sum256(body)
+	token, err := jwt.NewWithClaims(jwt.SigningMethodES256, jwt.MapClaims{
+		"iat": time.Now().Unix(),
+		"exp": time.Now().Add(time.Minute).Unix(),
+		"htm": http.MethodPut,
+		"htu": "/allowlist",
+		"pbh": base64.RawURLEncoding.EncodeToString(sum[:]),
+	}).SignedString(operatorKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodPut, base+"/allowlist", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	respBody, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized || !strings.Contains(string(respBody), operatorauth.ErrTokenBeforeStart.Error()) {
+		t.Fatalf("PUT /allowlist = %d (%s), want 401 carrying operatorauth.ErrTokenBeforeStart", resp.StatusCode, respBody)
+	}
+}
+
+// A whole-document write stores its token as the document's signature, so the
+// token must not authorize a second write.
+func TestRun_AllowlistWriteTokenSignsOnce(t *testing.T) {
+	api := newHealthyAttestationApi(t)
+	operatorKey, keysPath := writeOperatorKeyPair(t)
+	cfg := validRunConfig(t, api.URL)
+	cfg.port = freePort(t)
+	cfg.operatorKeys = keysPath
+	cfg.allowlistPersistent = true // a non-persistent store refuses tokens for --jwt-clock-skew after start
+	base := startRunServer(t, cfg)
+
+	doc, err := pkgallowlist.ParseJSON([]byte(anySeed(map[string]string{"web": digestA})))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := doc.Canonical()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(body)
+	hexDigest := hex.EncodeToString(sum[:])
+	token, err := jwt.NewWithClaims(jwt.SigningMethodES256, jwt.MapClaims{
+		"iat": time.Now().Unix(),
+		"exp": time.Now().Add(time.Minute).Unix(),
+		"htm": http.MethodPut,
+		"htu": "/allowlist",
+		"pbh": base64.RawURLEncoding.EncodeToString(sum[:]),
+	}).SignedString(operatorKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	put := func() int {
+		req, err := http.NewRequest(http.MethodPut, base+"/allowlist", bytes.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	get := func(path string) []byte {
+		resp, err := http.Get(base + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s = %d: %s", path, resp.StatusCode, b)
+		}
+		return b
+	}
+
+	if code := put(); code != http.StatusNoContent {
+		t.Fatalf("PUT /allowlist = %d, want 204", code)
+	}
+	if code := put(); code != http.StatusConflict {
+		t.Fatalf("PUT /allowlist replaying the token = %d, want 409", code)
+	}
+
+	var history struct {
+		Entries []allowlist.HistoryEntry `json:"entries"`
+	}
+	if err := json.Unmarshal(get("/allowlist/history"), &history); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(history.Entries); n != 2 || history.Entries[1].Digest != "sha256:"+hexDigest || !history.Entries[1].Signed {
+		t.Fatalf("history = %+v, want the startup document then the signed write", history.Entries)
+	}
+	if got := get("/allowlist/objects/sha256/" + hexDigest); !bytes.Equal(got, body) {
+		t.Fatalf("object = %s, want %s", got, body)
+	}
+	keys, err := operatorauth.ParsePublicKeysPEM(mustRead(t, keysPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := string(get("/allowlist/objects/sha256/" + hexDigest + "/signature"))
+	if err := operatorauth.VerifyStored(keys, stored, http.MethodPut, "/allowlist", body); err != nil {
+		t.Fatalf("VerifyStored(served signature) = %v", err)
+	}
+}
+
+func mustRead(t *testing.T, path string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }
 
 // TestRun_ARMTLSWarmupFailureFailsClosed: with armTLS enabled, a failed serving
@@ -586,5 +768,335 @@ func TestMeasurementDigests(t *testing.T) {
 	empty, err := measurementDigests(nil)
 	if err != nil || len(empty) != 0 {
 		t.Fatalf("empty allowlist: got %v, %v", empty, err)
+	}
+}
+
+// armTLSRunConfig returns validRunConfig with the armTLS listener on. A stub
+// attestation API provisions both certificates run() warms up, the serving
+// certificate and the sandbox-digests client's, with a fake SNP report.
+func armTLSRunConfig(t *testing.T) config {
+	t.Helper()
+	seedPath := filepath.Join(t.TempDir(), "seed.json")
+	if err := os.WriteFile(seedPath, []byte(anySeed(map[string]string{"cds": digestA})), 0o600); err != nil {
+		t.Fatalf("write seed: %v", err)
+	}
+	cfg := validRunConfig(t, mockapi.New(t).URL())
+	cfg.port = freePort(t)
+	cfg.armtlsPlatform = "sev-snp"
+	cfg.measurements = []string{strings.Repeat("ab", 48)}
+	cfg.operatorKeys = writeOperatorKeysPEM(t)
+	cfg.allowlistSeed = seedPath
+	return cfg
+}
+
+// armTLSClient returns an HTTPS client that accepts the CDS serving
+// certificate only if it carries an armTLS attestation. The attestation
+// itself is not verified: the stub's report is unsigned. A cert, if given, is
+// presented whenever the server asks for one; crypto/tls would otherwise
+// withhold a certificate whose issuer the server does not list as acceptable,
+// and the policy under test would never see it.
+func armTLSClient(cert *tls.Certificate) *http.Client {
+	tlsCfg := &tls.Config{
+		MinVersion:         tls.VersionTLS13,
+		InsecureSkipVerify: true,
+		VerifyConnection: func(cs tls.ConnectionState) error {
+			_, err := armtls.ExtractAttestation(cs.PeerCertificates[0])
+			return err
+		},
+	}
+	if cert != nil {
+		tlsCfg.GetClientCertificate = func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+			return cert, nil
+		}
+	}
+	return &http.Client{
+		Timeout:   5 * time.Second,
+		Transport: &http.Transport{TLSClientConfig: tlsCfg},
+	}
+}
+
+// The real armTLS listener, with the client-certificate policy run() sets:
+// VerifyClientCertIfGiven against the mesh CA. A client with no certificate
+// reads every document the CDS publishes.
+func TestRun_ARMTLSServesPublishedDocumentsToCertlessClients(t *testing.T) {
+	cfg := armTLSRunConfig(t)
+	base := fmt.Sprintf("https://127.0.0.1:%d", cfg.port)
+	client := armTLSClient(nil)
+	startRunServerOn(t, cfg, base, client)
+
+	for _, tc := range []struct {
+		document string
+		path     string
+		check    func(t *testing.T, body []byte)
+	}{
+		{"mesh CA certificate", "/ca", func(t *testing.T, body []byte) {
+			block, _ := pem.Decode(body)
+			if block == nil || block.Type != "CERTIFICATE" {
+				t.Fatalf("GET /ca body is not a PEM certificate: %q", body)
+			}
+			if _, err := x509.ParseCertificate(block.Bytes); err != nil {
+				t.Fatalf("GET /ca certificate: %v", err)
+			}
+		}},
+		{"reference values", "/measurements", func(t *testing.T, body []byte) {
+			var doc map[string]json.RawMessage
+			if err := json.Unmarshal(body, &doc); err != nil || len(doc) == 0 {
+				t.Fatalf("GET /measurements body = %q, want a JSON document: %v", body, err)
+			}
+		}},
+		{"operator key set", "/operator-keys", func(t *testing.T, body []byte) {
+			if block, _ := pem.Decode(body); block == nil || block.Type != "PUBLIC KEY" {
+				t.Fatalf("GET /operator-keys body is not a PEM public key: %q", body)
+			}
+		}},
+		{"allowlist", "/allowlist", func(t *testing.T, body []byte) {
+			var listing struct {
+				Workloads map[string]json.RawMessage `json:"workloads"`
+			}
+			if err := json.Unmarshal(body, &listing); err != nil {
+				t.Fatalf("decode /allowlist: %v", err)
+			}
+			if _, ok := listing.Workloads["cds"]; !ok {
+				t.Fatalf("seeded entry missing from /allowlist: %v", listing.Workloads)
+			}
+		}},
+	} {
+		t.Run(tc.document, func(t *testing.T) {
+			resp, err := client.Get(base + tc.path)
+			if err != nil {
+				t.Fatalf("GET %s over armTLS: %v", tc.path, err)
+			}
+			body, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("GET %s = %d (%s), want 200", tc.path, resp.StatusCode, body)
+			}
+			tc.check(t, body)
+		})
+	}
+}
+
+// pastHalfLife is the renewal trigger: half the certificate's lifetime,
+// leaving the rest of it for renewal to keep retrying in.
+func TestPastHalfLife(t *testing.T) {
+	now := time.Now()
+	window := func(start, end time.Duration) *x509.Certificate {
+		return &x509.Certificate{
+			NotBefore: now.Add(start),
+			NotAfter:  now.Add(end),
+		}
+	}
+
+	for _, tc := range []struct {
+		name string
+		cert *x509.Certificate
+		want bool
+	}{
+		{"fresh certificate", window(-time.Minute, time.Hour), false},
+		{"just before half its lifetime", window(-29*time.Minute, 31*time.Minute), false},
+		{"past half its lifetime", window(-31*time.Minute, 29*time.Minute), true},
+		{"expired", window(-2*time.Hour, -time.Hour), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := pastHalfLife(tc.cert, now); got != tc.want {
+				t.Errorf("pastHalfLife() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// A certificate that is presented is verified against the mesh CA: one the
+// CA did not issue fails the handshake, so a handler never sees it. Together
+// with the certless reads above this pins ClientAuth to
+// VerifyClientCertIfGiven; RequestClientCert would admit this peer and
+// RequireAndVerifyClientCert would refuse the certless one.
+func TestRun_ARMTLSRefusesClientCertOutsideMeshCA(t *testing.T) {
+	cfg := armTLSRunConfig(t)
+	base := fmt.Sprintf("https://127.0.0.1:%d", cfg.port)
+	startRunServerOn(t, cfg, base, armTLSClient(nil))
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen client key: %v", err)
+	}
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "stranger"},
+		NotBefore:    time.Now().Add(-time.Minute),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("self-sign client cert: %v", err)
+	}
+	stranger := armTLSClient(&tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key})
+
+	resp, err := stranger.Get(base + "/ca")
+	if err == nil {
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		t.Fatalf("GET /ca with a client certificate outside the mesh CA = %d (%s), want a refused handshake", resp.StatusCode, body)
+	}
+}
+
+// The armTLS listener answers nothing to plain HTTP: a client asking for the
+// mesh CA without TLS gets no certificate.
+func TestRun_ARMTLSRefusesPlainHTTP(t *testing.T) {
+	cfg := armTLSRunConfig(t)
+	startRunServerOn(t, cfg, fmt.Sprintf("https://127.0.0.1:%d", cfg.port), armTLSClient(nil))
+
+	// net/http answers a plain request at a TLS listener with a fixed 400,
+	// so the refusal is observed as a status, not as a closed connection.
+	plain := &http.Client{Timeout: 5 * time.Second}
+	resp, err := plain.Get(fmt.Sprintf("http://127.0.0.1:%d/ca", cfg.port))
+	if err != nil {
+		t.Fatalf("plain-HTTP GET /ca: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("plain-HTTP GET /ca = %d (%s), want 400", resp.StatusCode, body)
+	}
+	if block, _ := pem.Decode(body); block != nil {
+		t.Fatalf("plain-HTTP GET /ca refused but the body carries a PEM block: %s", body)
+	}
+}
+
+// Secret writes and explain spend the operator token once, as allowlist writes
+// do: the replay is 409 and a freshly minted token still works.
+func TestRun_SecretsOperatorTokenSpendsOnce(t *testing.T) {
+	cfg := armTLSRunConfig(t)
+	operatorKey, keysPath := writeOperatorKeyPair(t)
+	cfg.operatorKeys = keysPath
+	cfg.allowlistPersistent = true // a non-persistent store refuses tokens for --jwt-clock-skew after start
+	cfg.inventoryCIDRs = []string{"127.0.0.1/32"}
+	base := fmt.Sprintf("https://127.0.0.1:%d", cfg.port)
+	client := armTLSClient(nil)
+	startRunServerOn(t, cfg, base, client)
+
+	der, err := x509.MarshalPKCS8PrivateKey(operatorKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := operatorauth.NewSignerFromKeyPEM(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mint := func(method, path string, body []byte) string {
+		authz, err := signer.Authorization(method, path, body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return authz
+	}
+	send := func(method, path string, body []byte, authz string) int {
+		req, err := http.NewRequest(method, base+path, bytes.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", authz)
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("%s %s: %v", method, path, err)
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	put, _ := json.Marshal(secrets.PutRequest{Value: base64.StdEncoding.EncodeToString([]byte("v1")), Overwrite: true})
+	authz := mint(http.MethodPut, "/secrets/a", put)
+	for _, step := range []struct {
+		name  string
+		authz string
+		want  int
+	}{
+		{"first use", authz, http.StatusCreated},
+		{"replay", authz, http.StatusConflict},
+		{"fresh token", mint(http.MethodPut, "/secrets/a", put), http.StatusOK},
+	} {
+		if got := send(http.MethodPut, "/secrets/a", put, step.authz); got != step.want {
+			t.Fatalf("PUT /secrets/a, %s = %d, want %d", step.name, got, step.want)
+		}
+	}
+
+	explain := "/secrets-explain/" + strings.Repeat("a", 64)
+	authz = mint(http.MethodGet, explain, nil)
+	for _, step := range []struct {
+		name  string
+		authz string
+		want  int
+	}{
+		{"first use", authz, http.StatusOK},
+		{"replay", authz, http.StatusConflict},
+		{"fresh token", mint(http.MethodGet, explain, nil), http.StatusOK},
+	} {
+		if got := send(http.MethodGet, explain, nil, step.authz); got != step.want {
+			t.Fatalf("GET %s, %s = %d, want %d", explain, step.name, got, step.want)
+		}
+	}
+}
+
+// A due renewal replaces the published certificate, which is what /ca and
+// every issuance then answer with.
+func TestRenewMeshCAWhenDueRepublishesTheCertificate(t *testing.T) {
+	mesh, err := issuer.NewMeshCA("test ca", 2*time.Millisecond)
+	if err != nil {
+		t.Fatalf("mesh ca: %v", err)
+	}
+	first := mesh.Current().CA.Cert
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go renewMeshCAWhenDue(ctx, mesh, time.Millisecond, nil)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for mesh.Current().CA.Cert.Equal(first) {
+		if time.Now().After(deadline) {
+			t.Fatal("renewal did not replace the published certificate")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// Cancelling the context stops the loop.
+func TestRenewMeshCAWhenDueStopsOnContextCancel(t *testing.T) {
+	mesh, err := issuer.NewMeshCA("test ca", 2*time.Millisecond)
+	if err != nil {
+		t.Fatalf("mesh ca: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped := make(chan struct{})
+	go func() {
+		renewMeshCAWhenDue(ctx, mesh, time.Millisecond, nil)
+		close(stopped)
+	}()
+
+	cancel()
+	select {
+	case <-stopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("renewal loop outlived its context")
+
+	}
+}
+
+func TestCAKeyIDSurvivesARenewal(t *testing.T) {
+	mesh, err := issuer.NewMeshCA("test ca", time.Hour)
+	if err != nil {
+		t.Fatalf("mesh ca: %v", err)
+	}
+	first := mesh.Current().CA.Cert
+
+	renewed, err := mesh.RenewCertificate()
+	if err != nil {
+		t.Fatalf("renew: %v", err)
+	}
+	if bytes.Equal(renewed.CA.Cert.Raw, first.Raw) {
+		t.Fatal("renewal published the same certificate, so no field could tell the two apart")
+	}
+	if got, want := caKeyID(renewed.CA.Cert), caKeyID(first); got != want {
+		t.Errorf("key id after renewal = %s, want the retained key's %s", got, want)
 	}
 }

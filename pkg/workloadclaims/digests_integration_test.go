@@ -11,17 +11,20 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
@@ -213,7 +216,7 @@ func TestStartDigestsEndpointServesDespiteWarmUpFailure(t *testing.T) {
 	}
 	err = StartDigestsEndpoint(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)),
 		&fakeResolver{sandboxID: "sandbox-1"}, signer.PublicKeyDER(),
-		"sev-snp", attest, "http://127.0.0.1:1", armtls.Pins{})
+		"sev-snp", attest, "http://127.0.0.1:1", armtls.Pins{}, "")
 	if err != nil {
 		t.Fatalf("StartDigestsEndpoint returned an error for a warm-up failure; it must degrade, not fail: %v", err)
 	}
@@ -279,15 +282,15 @@ func TestNewDigestsClientConstruction(t *testing.T) {
 	attest := func(context.Context, string) (string, error) { return "", errTestAttest }
 	ctx := context.Background()
 
-	if _, err := NewDigestsClient(ctx, "sev-snp", attest, "", armtls.Pins{}, 0); err == nil {
+	if _, err := NewDigestsClient(ctx, DigestsClientConfig{Platform: "sev-snp", AttestFunc: attest}); err == nil {
 		t.Fatal("built with no attestation-api URL")
 	}
-	if _, err := NewDigestsClient(ctx, "bogus-platform", attest, "http://127.0.0.1:1", armtls.Pins{}, 0); err == nil {
+	if _, err := NewDigestsClient(ctx, DigestsClientConfig{Platform: "bogus-platform", AttestFunc: attest, AttestationAPIURL: "http://127.0.0.1:1"}); err == nil {
 		t.Fatal("built with an unsupported TEE platform")
 	}
 	// A warm-up that cannot succeed is a construction failure here, unlike the
 	// server side: CDS has no work to do until it can present a client cert.
-	if _, err := NewDigestsClient(ctx, "sev-snp", attest, "http://127.0.0.1:1", armtls.Pins{}, 0); err == nil {
+	if _, err := NewDigestsClient(ctx, DigestsClientConfig{Platform: "sev-snp", AttestFunc: attest, AttestationAPIURL: "http://127.0.0.1:1"}); err == nil {
 		t.Fatal("built despite an attestation failure during warm-up")
 	}
 }
@@ -367,7 +370,9 @@ func TestDigestsClientTransportAndProtocolFailures(t *testing.T) {
 // 500 — distinct from the 404 that means "no such sandbox".
 type erroringResolver struct{}
 
-func (erroringResolver) SandboxForPeer(Peer) (string, error) { return "", errTestAttest }
+func (erroringResolver) SandboxForPeer(Peer) (CallerSandbox, error) {
+	return CallerSandbox{}, errTestAttest
+}
 func (erroringResolver) DigestsForSandbox(string) ([]string, []SandboxContainer, bool, error) {
 	return nil, nil, false, errTestAttest
 }
@@ -471,6 +476,73 @@ func TestFetchSandboxReadsALargeBody(t *testing.T) {
 		}
 		if len(out.Containers) != 1 {
 			t.Fatalf("containers = %d, want 1", len(out.Containers))
+		}
+	}
+}
+
+// Service links inject seven variables per Service in the namespace, and each
+// value change adds a record to the high-water history. Those environments
+// exceed the per-variable evidence limits and carry the aggregate digest alone;
+// beside them, records at the limits fill the per-sandbox evidence budget.
+func TestFetchSandboxDecodesServiceLinkHistory(t *testing.T) {
+	var containers []SandboxContainer
+	for c := range 4 {
+		for generation := range 8 {
+			var env []string
+			for s := range 100 {
+				prefix := "BACKEND_SERVICE_" + strconv.Itoa(s) + "_"
+				for _, suffix := range []string{"SERVICE_HOST", "SERVICE_PORT", "PORT", "PORT_8080_TCP", "PORT_8080_TCP_PROTO", "PORT_8080_TCP_PORT", "PORT_8080_TCP_ADDR"} {
+					env = append(env, prefix+suffix+"=10.0."+strconv.Itoa(generation)+"."+strconv.Itoa(s))
+				}
+			}
+			observation, err := allowlist.ObserveEnv(env)
+			if err != nil || observation.VariableDigests != nil {
+				t.Fatalf("ObserveEnv(service links) = %v, %v; want the aggregate digest alone", observation, err)
+			}
+			containers = append(containers, SandboxContainer{
+				Digest: "sha256:" + strings.Repeat(strconv.Itoa(c), 64),
+				Argv:   []string{"/app"},
+				Env:    observation,
+				Mounts: []allowlist.ObservedMount{},
+			})
+		}
+	}
+	serviceLinks := len(containers)
+	evidenceBytes := 0
+	for variant := 0; ; variant++ {
+		env := make([]string, 128)
+		for i := range env {
+			env[i] = strings.Repeat("V", 29) + fmt.Sprintf("%03d=%d", i, variant)
+		}
+		observation, err := allowlist.ObserveEnv(env)
+		if err != nil || observation.VariableDigests == nil {
+			t.Fatalf("ObserveEnv(at limits) = %v, %v; want per-variable evidence", observation, err)
+		}
+		if evidenceBytes+observation.VariableEvidenceBytes() > allowlist.MaxSandboxVariableEvidenceBytes {
+			break
+		}
+		evidenceBytes += observation.VariableEvidenceBytes()
+		containers = append(containers, SandboxContainer{
+			Digest: "sha256:" + strings.Repeat("e", 64),
+			Argv:   []string{"/app"},
+			Env:    observation,
+			Mounts: []allowlist.ObservedMount{},
+		})
+	}
+	c, host := clientAgainst(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(SandboxDigestsResponse{Containers: containers})
+	}))
+	c.http.Transport.(*http.Transport).TLSClientConfig.ServerName = "example.com"
+	out, err := c.FetchSandbox(context.Background(), host, "sandbox-1")
+	if err != nil {
+		t.Fatalf("FetchSandbox: %v", err)
+	}
+	if len(out.Containers) != len(containers) {
+		t.Fatalf("containers = %d, want %d", len(out.Containers), len(containers))
+	}
+	for i, got := range out.Containers {
+		if want := containers[i].Env; !reflect.DeepEqual(got.Env, want) {
+			t.Fatalf("container %d (service links: %t) env = %+v, want %+v", i, i < serviceLinks, got.Env, want)
 		}
 	}
 }

@@ -169,6 +169,21 @@ func TestPutRefusesOccupiedPathWithoutOverwrite(t *testing.T) {
 	}
 }
 
+// A spent token is a 409 without a PutResponse; it must not read as a refusal
+// naming what holds the path.
+func TestPutReportsSpentToken(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "operator token already used", http.StatusConflict)
+	}))
+	t.Cleanup(srv.Close)
+	key := writeOperatorKey(t)
+
+	_, _, err := run(t, "hunter2", "put", "/tenant-a/db", "--url", srv.URL, "--insecure", "--operator-key", key)
+	if err == nil || !strings.Contains(err.Error(), "operator token already used") {
+		t.Fatalf("put against a spent-token 409 = %v, want the CDS error", err)
+	}
+}
+
 // --overwrite still asks to create first, so the line naming what is destroyed
 // is printed before the write that destroys it.
 func TestPutOverwriteNamesWhatItReplaces(t *testing.T) {
@@ -377,8 +392,11 @@ func TestExplainPrintsANearMiss(t *testing.T) {
 	_, _, url := explainServer(t, intsecrets.ExplainResponse{
 		SandboxID: testSandboxID,
 		Entries: []intsecrets.EntryVerdict{{
-			Name:         "api",
-			Foreign:      []intsecrets.ReportedContainer{{Digest: "sha256:busybox", Argv: []string{"sh", "-c", "sleep"}}},
+			Name: "api",
+			Foreign: []intsecrets.ReportedContainer{
+				{Digest: "sha256:busybox", Argv: []string{"sh", "-c", "sleep"}},
+				{Digest: "sha256:matched", Argv: []string{"/serve"}, EnvEvidence: "evicted"},
+			},
 			MissingMains: []intsecrets.MissingContainer{{Digest: "sha256:app", Image: "ghcr.io/x/app"}},
 		}},
 		Refusal: "no entry describes the candidate set",
@@ -393,6 +411,7 @@ func TestExplainPrintsANearMiss(t *testing.T) {
 		"api  NEAR MISS",
 		"foreign  sha256:busybox",
 		"no container in this entry declares it",
+		"env evidence evicted: the node evicted the per-variable digests",
 		"missing  sha256:app (ghcr.io/x/app)",
 		"nothing is released: no entry describes the candidate set",
 	} {

@@ -8,7 +8,7 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/c8s attest-proxy --socket=/var/run/nri-image-policy/attestation-api.sock --socket-gid=65532 --upstream=http://127.0.0.1:8400
+ExecStart=/usr/local/bin/c8s attest-proxy --socket=/run/nri-image-policy/attestation-api.sock --socket-gid=65532 --upstream=http://127.0.0.1:8400
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=yes

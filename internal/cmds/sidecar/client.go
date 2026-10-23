@@ -32,17 +32,27 @@ func (p leafProvider) Provision(context.Context) (*tls.Certificate, time.Duratio
 	return &cert, time.Hour, nil
 }
 
+// LoadLeaf reads the pod's leaf and key and returns the leaf's public key,
+// which a sandbox token is bound to.
+func LoadLeaf(certPath, keyPath string) (tls.Certificate, crypto.PublicKey, error) {
+	leaf, _, err := leafProvider{certPath: certPath, keyPath: keyPath}.Provision(context.Background())
+	if err != nil {
+		return tls.Certificate{}, nil, err
+	}
+	parsed, err := x509.ParseCertificate(leaf.Certificate[0])
+	if err != nil {
+		return tls.Certificate{}, nil, fmt.Errorf("parse leaf %s: %w", certPath, err)
+	}
+	return *leaf, parsed.PublicKey, nil
+}
+
 // NewClient builds the mTLS client to CDS and returns the leaf's public key,
 // which the sandbox token is bound to.
 func NewClient(cfg Config, pins armtls.Pins) (*http.Client, crypto.PublicKey, error) {
 	provider := leafProvider{certPath: cfg.CertPath, keyPath: cfg.KeyPath}
-	leaf, _, err := provider.Provision(context.Background())
+	_, pub, err := LoadLeaf(cfg.CertPath, cfg.KeyPath)
 	if err != nil {
 		return nil, nil, err
-	}
-	parsed, err := x509.ParseCertificate(leaf.Certificate[0])
-	if err != nil {
-		return nil, nil, fmt.Errorf("parse leaf: %w", err)
 	}
 	tlsCfg, _, err := armtls.NewClientTLSConfig(&armtls.ClientConfig{
 		Policy:       pins.VerifyPolicy(cfg.AttestationApiURL),
@@ -54,34 +64,28 @@ func NewClient(cfg Config, pins armtls.Pins) (*http.Client, crypto.PublicKey, er
 	return &http.Client{
 		Timeout:   cfg.RequestTimeout,
 		Transport: &http.Transport{TLSClientConfig: tlsCfg},
-	}, parsed.PublicKey, nil
+	}, pub, nil
 }
 
 // Do performs one store request: a fresh challenge, a sandbox token redeemed
 // at endpoint and bound to the challenge and this pod's leaf key, then the
 // request itself. Both are single-use, so every call takes its own.
 func Do(ctx context.Context, cfg Config, client *http.Client, pub crypto.PublicKey, endpoint, method, path string) ([]byte, int, error) {
-	challenge, err := fetchChallenge(ctx, cfg, client)
+	challenge, err := FetchChallenge(ctx, client, cfg.CDSURL, cfg.RequestTimeout)
 	if err != nil {
 		return nil, 0, err
 	}
-	token, err := workloadclaims.FetchSandboxToken(ctx, endpoint, cfg.InventoryTimeout, pub, challenge)
-	if err != nil {
-		return nil, 0, fmt.Errorf("redeem sandbox token: %w", err)
-	}
-	tokenJSON, err := json.Marshal(token)
+	tokenJSON, err := RedeemToken(ctx, endpoint, cfg.InventoryTimeout, pub, challenge)
 	if err != nil {
 		return nil, 0, err
 	}
 
 	reqCtx, cancel := context.WithTimeout(ctx, cfg.RequestTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(reqCtx, method, cfg.CDSURL+"/secrets"+path, nil)
+	req, err := NewStoreRequest(reqCtx, cfg.CDSURL, method, path, challenge, tokenJSON)
 	if err != nil {
 		return nil, 0, err
 	}
-	req.Header.Set(secrets.ChallengeHeader, base64.StdEncoding.EncodeToString(challenge))
-	req.Header.Set("Authorization", secrets.AuthScheme+base64.StdEncoding.EncodeToString(tokenJSON))
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -106,17 +110,20 @@ func Do(ctx context.Context, cfg Config, client *http.Client, pub crypto.PublicK
 		// The body is deliberately opaque; the reason is in the CDS log.
 		detail, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return nil, resp.StatusCode, &StatusError{
-			Code: envelopeCode(detail),
-			Err:  fmt.Errorf("%s %s: %s: %s", method, path, resp.Status, strings.TrimSpace(string(detail))),
+			Status: resp.StatusCode,
+			Code:   envelopeCode(detail),
+			Err:    fmt.Errorf("%s %s: %s: %s", method, path, resp.Status, strings.TrimSpace(string(detail))),
 		}
 	}
 }
 
-// StatusError is a non-2xx answer from CDS. Code is the C8s error-envelope code
-// its body named, and is empty for a body that is not an envelope.
+// StatusError is a non-2xx answer from CDS. Status is its HTTP status; Code is
+// the C8s error-envelope code its body named, and is empty for a body that is
+// not an envelope.
 type StatusError struct {
-	Code string
-	Err  error
+	Status int
+	Code   string
+	Err    error
 }
 
 func (e *StatusError) Error() string { return e.Err.Error() }
@@ -130,10 +137,41 @@ func envelopeCode(body []byte) string {
 	return env.Error
 }
 
-func fetchChallenge(ctx context.Context, cfg Config, client *http.Client) ([]byte, error) {
-	reqCtx, cancel := context.WithTimeout(ctx, cfg.RequestTimeout)
+// RedeemToken fetches a sandbox token from the inventory at endpoint, bound to
+// pub and challenge, and returns it as the JSON the Authorization header
+// carries.
+func RedeemToken(ctx context.Context, endpoint string, timeout time.Duration, pub crypto.PublicKey, challenge []byte) ([]byte, error) {
+	token, err := workloadclaims.FetchSandboxToken(ctx, endpoint, timeout, pub, challenge)
+	if err != nil {
+		return nil, fmt.Errorf("redeem sandbox token: %w", err)
+	}
+	return json.Marshal(token)
+}
+
+// NewStoreRequest builds the store request for path, which is appended to the
+// store route verbatim, carrying challenge and tokenJSON in the headers CDS
+// reads. A nil challenge or tokenJSON leaves its header unset; only the
+// conformance probe does that, to show CDS a request a sidecar never sends.
+func NewStoreRequest(ctx context.Context, cdsURL, method, path string, challenge, tokenJSON []byte) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, method, cdsURL+"/secrets"+path, nil)
+	if err != nil {
+		return nil, err
+	}
+	if challenge != nil {
+		req.Header.Set(secrets.ChallengeHeader, base64.StdEncoding.EncodeToString(challenge))
+	}
+	if tokenJSON != nil {
+		req.Header.Set("Authorization", secrets.AuthScheme+base64.StdEncoding.EncodeToString(tokenJSON))
+	}
+	return req, nil
+}
+
+// FetchChallenge POSTs the release-challenge route of the CDS at cdsURL and
+// returns the single-use challenge it answers with.
+func FetchChallenge(ctx context.Context, client *http.Client, cdsURL string, timeout time.Duration) ([]byte, error) {
+	reqCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, cfg.CDSURL+secrets.ChallengeRoute, nil)
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, cdsURL+secrets.ChallengeRoute, nil)
 	if err != nil {
 		return nil, err
 	}

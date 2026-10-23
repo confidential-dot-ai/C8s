@@ -27,10 +27,15 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path"
+	"regexp"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 // SandboxPath is the token route on the local Unix socket; SandboxDigestsPrefix
@@ -66,6 +71,44 @@ const (
 	SidecarSocketDir = "/run/c8s/workload-claims"
 )
 
+// MeasuredPoliciesJournal is the node's measured-policy journal
+// (armtls.NodeJournal), which the plugin keeps in its socket directory, as the
+// sidecars see it.
+const MeasuredPoliciesJournal = SidecarSocketDir + "/" + armtls.MeasuredPoliciesJournal
+
+// MemberCertDir is where every container of a member pod mounts the
+// credential volume get-cert publishes on, and MemberCAPath is the mesh CA of
+// the generation it published there. The path is compiled because it is a
+// trust root: a relying party that took its mesh CA from an argument would
+// chain its peers to whatever CA the control plane named, and admit any peer
+// keyed to it.
+const (
+	MemberCertDir = "/etc/c8s/certs"
+	MemberCAPath  = MemberCertDir + "/ca.crt"
+)
+
+// CDSPinsPath is where an injected credential client reads the CDS attestation
+// policy it holds the CDS to. Compiled for the same reason as the socket path:
+// the node bind-mounts its own policy there, so neither the pod nor the control
+// plane can name another source (see cmdsutil.ResolveCDSPins). The path is the
+// enforcer's alone — a chart-rendered client reads the node config it mounts
+// itself, and keeps its own policy flag.
+const CDSPinsPath = "/run/c8s/cds-pins.json"
+
+// AttestationAPISocket is the node's own attestation-api as an injected
+// credential client sees it: the socket in the directory the NRI plugin
+// mounts. Compiled for the same reason as the paths above — the verifier
+// decides whether the CDS a client dials satisfies CDSPinsPath, so a client
+// the node pins reaches no other one (see cmdsutil.RequireNodeVerifier).
+const AttestationAPISocket = SidecarSocketDir + "/attestation-api.sock"
+
+// CDSAddressPath is where an injected credential client reads the CDS endpoint
+// it dials, as <addr>:<port>. Compiled for the same reason as the pins: the
+// node writes the address its pod ruleset admits for the credential role, so a
+// client reaches the one CDS it is permitted to reach and never an address the
+// control plane names (see cmdsutil.ResolveCDSEndpoint).
+const CDSAddressPath = "/run/c8s/cds-address"
+
 // AnnotationInjected is stamped on a pod by the mutating webhook after
 // injection; the inventory's NRI plugin mounts its socket directory only under
 // it.
@@ -82,9 +125,141 @@ const (
 	VolumeContainerName = "c8s-volume"
 )
 
+// The mesh endpoint's reserved identity and ports, shared by every component
+// that has to agree on them: the endpoint binds the ports, the injector builds
+// its container on MeshUID and probes it on MeshHealthPort, and the node
+// enforcer matches the pod's packet rules on MeshUID. MeshHealthPort carries
+// the probes and no application traffic.
+const (
+	MeshUID          uint32 = 1337
+	MeshOutboundPort int32  = 15001
+	MeshInboundPort  int32  = 15006
+	MeshHealthPort   int32  = 15021
+)
+
+// MeshProbePrefix is where the endpoint answers an application probe the
+// injector moved onto MeshHealthPort. The rendered path names the port and the
+// path the probe reaches inside the pod, so the injector and the endpoint
+// derive the same target from the pod spec alone.
+const MeshProbePrefix = "/probe/"
+
+// MeshProbeTimeout bounds each forwarded probe and its health-port response.
+const MeshProbeTimeout = 5 * time.Second
+
+// MeshProbesEnv is where the injector names a member pod's rewritten probes to
+// its endpoint: MeshProbePath values separated by commas. Not an argument and
+// not a mount, both of which a node's measured policy pins alike for every
+// member pod's endpoint.
+const MeshProbesEnv = "C8S_MESH_PROBES"
+
+// JoinMeshProbePaths renders the MeshProbesEnv value carrying paths.
+func JoinMeshProbePaths(paths []string) string {
+	return strings.Join(paths, ",")
+}
+
+// SplitMeshProbePaths recovers the paths a MeshProbesEnv value carries.
+func SplitMeshProbePaths(value string) []string {
+	var paths []string
+	for _, path := range strings.Split(value, ",") {
+		trimmed := strings.TrimSpace(path)
+		if trimmed != "" {
+			paths = append(paths, trimmed)
+		}
+	}
+	return paths
+}
+
+// MeshProbePath renders the health-port path of one application probe target.
+// path is the probe's own path and must be absolute.
+func MeshProbePath(port int32, path string) string {
+	return fmt.Sprintf("%s%d%s", MeshProbePrefix, port, path)
+}
+
+var renderableProbePath = regexp.MustCompile(`^(/[A-Za-z0-9\-._~]*)+$`)
+
+// ForwardableMeshProbePath accepts clean, absolute paths of unreserved characters.
+func ForwardableMeshProbePath(probePath string) bool {
+	cleaned := path.Clean(probePath)
+	return (cleaned == probePath || cleaned != "/" && cleaned+"/" == probePath) && renderableProbePath.MatchString(probePath)
+}
+
+// ParseMeshProbePath recovers the port and the path MeshProbePath rendered.
+func ParseMeshProbePath(rendered string) (int32, string, error) {
+	target, ok := strings.CutPrefix(rendered, MeshProbePrefix)
+	if !ok {
+		return 0, "", fmt.Errorf("probe path %q does not begin with %s", rendered, MeshProbePrefix)
+	}
+	digits, path, ok := strings.Cut(target, "/")
+	if !ok {
+		return 0, "", fmt.Errorf("probe path %q names no application path", rendered)
+	}
+	port, err := strconv.Atoi(digits)
+	if err != nil {
+		return 0, "", fmt.Errorf("probe path %q names no port: %w", rendered, err)
+	}
+	if port < 1 || port > 65535 {
+		return 0, "", fmt.Errorf("probe path %q names port %d", rendered, port)
+	}
+	if port == int(MeshOutboundPort) || port == int(MeshInboundPort) || port == int(MeshHealthPort) {
+		return 0, "", fmt.Errorf("probe path %q names mesh port %d", rendered, port)
+	}
+	appPath := "/" + path
+	if !ForwardableMeshProbePath(appPath) || rendered != MeshProbePath(int32(port), appPath) {
+		return 0, "", fmt.Errorf("probe path %q is not a canonical forwarded probe", rendered)
+	}
+	return int32(port), appPath, nil
+}
+
+// MeshRole and CredentialsRole are the platform roles of the containers the
+// webhook adds to every member pod: the endpoint that carries the pod's
+// traffic, and the clients that fetch its credentials. Workload matching runs
+// without them (internal/secrets.WorkloadContainers), so a workload entry
+// never enumerates them. A role a pod runs for a purpose of its own, like the
+// router's, is matched like any other container.
+const (
+	MeshRole        = "mesh"
+	CredentialsRole = "credentials"
+)
+
+// CredentialsUID is the reserved identity of the injected credential clients.
+// The node binds it to the CDS address, and the enforcer refuses it in any
+// other container, so a pod cannot reach the CDS with a socket of its own.
+const CredentialsUID uint32 = 1338
+
+// RouterNamespace is the fixed namespace whose pods answer the cluster's
+// external traffic. The chart renders that pod itself and the enforcer gives
+// a pod of this namespace the router's listener and egress rules, so the name
+// is compiled rather than chosen per cluster.
+const RouterNamespace = "c8s-router"
+
+// RouterUID is the reserved identity of the router role, the front door in
+// RouterNamespace. The node gives it no network rule of its own, so its
+// traffic is captured, and the enforcer refuses it in any other container.
+const RouterUID uint32 = 1339
+
+// AcmeUID is the reserved identity of the role that proves control of the
+// front door's public names. The node binds the one port a member pod may
+// reach outside the cluster in the clear to this number, which the role that
+// forwards application traffic never holds, and the enforcer refuses it in
+// any other container.
+const AcmeUID uint32 = 1340
+
+// UpstreamUID is the reserved identity of the upstream role: the router
+// pod's route authority, which holds the signed route manifest and dials a
+// member backend as a mesh client itself. The node leaves this number's connections
+// to the cluster ranges uncaptured, so it is the one identity of that pod
+// that authenticates a backend on its own, and the enforcer refuses it in any
+// other container.
+const UpstreamUID uint32 = 1341
+
 // CertWaitContainerName is the run-once init container injected beside
 // c8s-cert to hold the workload until the first certificate lands.
 const CertWaitContainerName = "c8s-cert-wait"
+
+// MeshContainerName is the webhook-injected per-pod mesh endpoint. It reads the
+// credentials c8s-cert publishes and dials no inventory socket, so it is not a
+// SidecarContainer.
+const MeshContainerName = "c8s-mesh"
 
 // IsSidecarContainer reports whether name is one of the injected sidecars that
 // receive the inventory socket-directory mount.
@@ -107,9 +282,10 @@ func IsSocketConsumer(name string) bool {
 
 // IsInjectedContainerName reports whether name is one the admission webhook
 // injects. Names are host-written, so it holds only over authored input;
-// runtime matching goes by digest and entrypoint (internal/secrets.WorkloadContainers).
+// runtime matching goes by the role a node's measured base binds to a launch
+// (internal/secrets.WorkloadContainers).
 func IsInjectedContainerName(name string) bool {
-	return IsSidecarContainer(name) || name == CertWaitContainerName
+	return IsSidecarContainer(name) || name == CertWaitContainerName || name == MeshContainerName
 }
 
 // InventoryEndpoint is get-cert's compiled inventory endpoint on node-CVM: the
@@ -210,6 +386,11 @@ type SandboxContainer struct {
 	Env    *allowlist.EnvObservation `json:"env,omitempty"`
 	Mounts []allowlist.ObservedMount `json:"mounts"`
 	Digest string                    `json:"digest"`
+	// Role is the platform role the node's own measured base binds to this
+	// launch, and is empty for a container outside every role. It is the
+	// enforcer's reading of its boot config, so nothing a CDS serves and no
+	// pod spec can claim one (pkg/allowlist).
+	Role string `json:"role,omitempty"`
 	// Argv is the effective OCI process.args — the merged image-config and
 	// pod-spec command, which is what the argv policy is written against.
 	Argv []string `json:"argv,omitempty"`
@@ -225,9 +406,10 @@ type SandboxContainer struct {
 // node-CVM resolver binds peer.PID() to a pod and rechecks peer.IsAlive()
 // after its /proc read to reject PID reuse.
 type SandboxResolver interface {
-	// SandboxForPeer returns the pod sandbox ID of the calling process,
-	// bound by kernel peer credentials exactly like ContainersForPeer.
-	SandboxForPeer(peer Peer) (string, error)
+	// SandboxForPeer returns the calling process's pod sandbox, bound by
+	// kernel peer credentials exactly like ContainersForPeer, with the
+	// enforcer's verification of that sandbox's packet protection.
+	SandboxForPeer(peer Peer) (CallerSandbox, error)
 	// DigestsForSandbox returns every container ever admitted in the named
 	// sandbox — deduplicated digests for issuance, and the per-container
 	// (digest, argv) detail for secret release. Admitted means the container
@@ -235,6 +417,15 @@ type SandboxResolver interface {
 	// sandbox (a 404 on the wire); a known sandbox with no containers returns
 	// empty slices.
 	DigestsForSandbox(sandboxID string) (digests []string, containers []SandboxContainer, known bool, err error)
+}
+
+// CallerSandbox is what an inventory establishes about a token caller: the pod
+// sandbox the kernel-bound caller runs in, and why no assertion may be signed
+// for it. A nil Refusal states that the enforcer verifies that sandbox as a
+// protected mesh member.
+type CallerSandbox struct {
+	SandboxID string
+	Refusal   error
 }
 
 // connKey carries the accepted net.Conn through the request context so the
@@ -263,13 +454,41 @@ const maxSandboxRequestBytes = 64 << 10
 // socket the caller is bound by kernel peer credentials.
 // Errors from the resolver are returned as 500s — get-cert fails closed on them.
 func ServeTokens(ctx context.Context, l net.Listener, resolver SandboxResolver, signer *SandboxTokenSigner) error {
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST "+SandboxPath, func(w http.ResponseWriter, r *http.Request) {
+	return serveTokenRoute(ctx, l, resolver, func() (*SandboxTokenSigner, int) {
 		if signer == nil {
 			// No CDS to attest the signing key against, and an unverifiable
 			// token is worse than none. Terminal, so the caller is told to
 			// stop asking rather than to wait.
-			http.Error(w, "inventory serves no sandbox tokens", http.StatusNotFound)
+			return nil, http.StatusNotFound
+		}
+		return signer, 0
+	})
+}
+
+// ServePendingTokens is ServeTokens for a signer that initializes after the
+// listener starts. Until signer holds one, the route answers 503: callers fail
+// closed and retry, rather than issue without a sandbox ID as a 404 tells them to.
+func ServePendingTokens(ctx context.Context, l net.Listener, resolver SandboxResolver, signer *atomic.Pointer[SandboxTokenSigner]) error {
+	return serveTokenRoute(ctx, l, resolver, func() (*SandboxTokenSigner, int) {
+		if s := signer.Load(); s != nil {
+			return s, 0
+		}
+		return nil, http.StatusServiceUnavailable
+	})
+}
+
+// serveTokenRoute serves the token route with the signer current returns, or
+// answers with its status when there is none.
+func serveTokenRoute(ctx context.Context, l net.Listener, resolver SandboxResolver, current func() (*SandboxTokenSigner, int)) error {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST "+SandboxPath, func(w http.ResponseWriter, r *http.Request) {
+		signer, status := current()
+		switch {
+		case status == http.StatusServiceUnavailable:
+			http.Error(w, "sandbox-token signer not initialized yet", status)
+			return
+		case signer == nil:
+			http.Error(w, "inventory serves no sandbox tokens", status)
 			return
 		}
 		var req SandboxTokenRequest
@@ -293,12 +512,21 @@ func ServeTokens(ctx context.Context, l net.Listener, resolver SandboxResolver, 
 		}
 		peer := peerFromRequest(r)
 		defer peer.Close()
-		id, err := resolver.SandboxForPeer(peer)
+		caller, err := resolver.SandboxForPeer(peer)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("resolve caller sandbox: %v", err), http.StatusInternalServerError)
 			return
 		}
-		token, err := signer.Sign(id, keyDigest, req.Nonce)
+		// Required for every nonce and consumer, so it is checked here.
+		if caller.Refusal != nil {
+			http.Error(w, fmt.Sprintf("no assertion for this caller: %v", caller.Refusal), http.StatusForbidden)
+			return
+		}
+		token, err := signForLiveCaller(signer, peer, caller.SandboxID, keyDigest, req.Nonce)
+		if errors.Is(err, errCallerExited) {
+			http.Error(w, err.Error(), http.StatusForbidden)
+			return
+		}
 		if err != nil {
 			http.Error(w, fmt.Sprintf("sign sandbox token: %v", err), http.StatusInternalServerError)
 			return
@@ -307,6 +535,22 @@ func ServeTokens(ctx context.Context, l net.Listener, resolver SandboxResolver, 
 		_ = json.NewEncoder(w).Encode(token)
 	})
 	return serveUntil(ctx, l, mux)
+}
+
+// errCallerExited reports a caller that stopped being the live process.
+var errCallerExited = errors.New("the caller exited before its assertion was signed")
+
+// signForLiveCaller withholds the assertion unless the caller is still that
+// process, so an exit transfers no identity to whatever inherits the socket.
+func signForLiveCaller(signer *SandboxTokenSigner, peer Peer, sandboxID string, keyDigest, nonce []byte) (*SignedSandboxToken, error) {
+	token, err := signer.Sign(sandboxID, keyDigest, nonce)
+	if err != nil {
+		return nil, err
+	}
+	if !peer.IsAlive() {
+		return nil, errCallerExited
+	}
+	return token, nil
 }
 
 // ServeDigests runs the CDS-facing digests endpoint on l until ctx is done. It

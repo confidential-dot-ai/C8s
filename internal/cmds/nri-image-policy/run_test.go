@@ -26,6 +26,7 @@ import (
 	ctrdresolver "github.com/confidential-dot-ai/c8s/internal/containerd"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 // bindDeadResolver points the plugin at a real *ctrdresolver.Resolver on a socket
@@ -107,10 +108,11 @@ func TestConfigure_InventoryAddsRemoveContainerMask(t *testing.T) {
 	want.Set(api.Event_CREATE_CONTAINER)
 	want.Set(api.Event_START_CONTAINER)
 	want.Set(api.Event_VALIDATE_CONTAINER_ADJUSTMENT)
+	want.Set(api.Event_STOP_CONTAINER)
 	want.Set(api.Event_REMOVE_CONTAINER)
-	// The inventory also needs the pod-sandbox lifecycle for its sandbox set.
 	want.Set(api.Event_RUN_POD_SANDBOX)
 	want.Set(api.Event_REMOVE_POD_SANDBOX)
+	want.Set(api.Event_UPDATE_CONTAINER)
 	if mask != want {
 		t.Fatalf("mask = %v, want %v", mask, want)
 	}
@@ -215,7 +217,7 @@ policy:
   enforce_existing: false
 logging:
   level: error
-`, dir, dir, pushDigestA)
+`+meshYAML, dir, dir, pushDigestA)
 }
 
 // --- Run: startup plumbing --------------------------------------------------
@@ -269,7 +271,7 @@ policy:
   enforce_existing: false
 logging:
   level: error
-`, dir, pushDigestA)
+`+meshYAML, dir, pushDigestA)
 	err := runWithDeadline(t, 10*time.Second, []string{"-config", writeConfigYAML(t, cfgYAML)})
 	if err == nil || !strings.Contains(err.Error(), "start health server") {
 		t.Fatalf("err = %v, want a health server start failure on the config address", err)
@@ -281,6 +283,13 @@ logging:
 func TestRun_WorkloadClaimsListenFailureSurfaces(t *testing.T) {
 	t.Setenv("NRI_PLUGIN_NAME", "")
 	dir := t.TempDir()
+	// A directory where the socket belongs: the node can still hand an
+	// injected client its endpoint, and only the listen fails.
+	if err := os.WriteFile(filepath.Join(dir, NodeIPFile), []byte("10.0.0.7\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	occupySocketPath(t, dir)
+	renderInTempDir(t)
 	cfgYAML := fmt.Sprintf(`
 plugin:
   health_addr: unix://%s/health.sock
@@ -301,13 +310,23 @@ policy:
   mode: fail-closed
   enforce_existing: false
 workload_claims:
-  socket_dir: %s/absent/deeper
+  socket_dir: %s
+  cds_node_port: 30808
 logging:
   level: error
-`, dir, dir, pushDigestA, dir)
+`+meshYAML, dir, dir, pushDigestA, dir)
 	err := runWithDeadline(t, 10*time.Second, []string{"-config", writeConfigYAML(t, cfgYAML)})
 	if err == nil || !strings.Contains(err.Error(), "start admission inventory") {
 		t.Fatalf("err = %v, want an admission-inventory start failure", err)
+	}
+}
+
+// occupySocketPath puts a directory where the inventory's socket belongs, so
+// the listen fails and nothing else does.
+func occupySocketPath(t *testing.T, socketDir string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(socketDir, workloadclaims.SocketName), 0o755); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -350,7 +369,7 @@ policy:
   enforce_existing: false
 logging:
   level: error
-`, dir, dir, pushDigestA, strings.Repeat("ab", 48))
+`+meshYAML, dir, dir, pushDigestA, strings.Repeat("ab", 48))
 	err := runWithDeadline(t, 20*time.Second, []string{"-config", writeConfigYAML(t, cfgYAML)})
 	if !errors.Is(err, errPluginDied) {
 		t.Fatalf("err = %v, want errPluginDied", err)
@@ -415,7 +434,7 @@ policy:
   enforce_existing: false
 logging:
   level: error
-`, dir, dir, pushDigestA, stalledCDS, stalledAttestation.URL, strings.Repeat("ab", 48))
+`+meshYAML, dir, dir, pushDigestA, stalledCDS, stalledAttestation.URL, strings.Repeat("ab", 48))
 
 	// Hand the stub a connected socket so the plugin cannot die while the pull
 	// is running: without it the NRI dial fails instantly, pullInitial's first
@@ -464,7 +483,7 @@ func TestAllowlistPullHTTPClient_ValidMeasurements(t *testing.T) {
 		CDSMeasurements:   []string{strings.Repeat("ab", 48)},
 		AttestationApiURL: "http://127.0.0.1:30840",
 		Timeout:           timeout,
-	})
+	}, "sev-snp")
 	if err != nil {
 		t.Fatalf("allowlistPullHTTPClient: %v", err)
 	}
@@ -486,7 +505,7 @@ func TestAllowlistPullHTTPClient_WarnsOnlyWithoutPins(t *testing.T) {
 		CDSMeasurements:   []string{strings.Repeat("ab", 48)},
 		AttestationApiURL: "http://127.0.0.1:30840",
 		Timeout:           time.Second,
-	}); err != nil {
+	}, "sev-snp"); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(buf.String(), warning) {
@@ -497,7 +516,7 @@ func TestAllowlistPullHTTPClient_WarnsOnlyWithoutPins(t *testing.T) {
 	if _, err := allowlistPullHTTPClient(pullConfig{
 		AttestationApiURL: "http://127.0.0.1:30840",
 		Timeout:           time.Second,
-	}); err != nil {
+	}, "sev-snp"); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(buf.String(), warning) {
@@ -559,6 +578,7 @@ func TestNewPlugin_WorkloadClaimsWiring(t *testing.T) {
 			cfg := &config{
 				Policy:         policyConfig{Mode: ModeFailClosed},
 				WorkloadClaims: workloadClaimsConfig{SocketDir: tc.socketDir, ProcRoot: tc.procRoot},
+				Mesh:           meshRoles(),
 			}
 			p, err := newPlugin(cfg, &fakeContainerd{}, store, audit.NewLogger(), discardLogger())
 			if err != nil {
@@ -677,10 +697,7 @@ func TestStartHealthServer_HealthzReflectsReadiness(t *testing.T) {
 
 	p := newTestPlugin(&config{Policy: policyConfig{Mode: ModeFailClosed}})
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	if err := startHealthServer(ctx, healthServerConfig{
+	if err := startHealthServer(t.Context(), healthServerConfig{
 		logger:       discardLogger(),
 		plugin:       p,
 		addr:         addr,
@@ -690,7 +707,59 @@ func TestStartHealthServer_HealthzReflectsReadiness(t *testing.T) {
 		t.Fatalf("startHealthServer: %v", err)
 	}
 
-	httpClient := &http.Client{
+	httpClient := unixHealthClient(sock)
+
+	// Not ready yet → 503.
+	if code, body := healthz(t, httpClient); code != http.StatusServiceUnavailable || body.Status != "not ready" {
+		t.Fatalf("not ready: status %d body %+v, want 503 \"not ready\"", code, body)
+	}
+
+	p.SetReady()
+	if code, body := healthz(t, httpClient); code != http.StatusOK || body.Status != "ok" {
+		t.Fatalf("ready: status %d body %+v, want 200 \"ok\"", code, body)
+	}
+}
+
+// The body reports the version admission decides with: what apply accepted,
+// unmoved by a pull it refused as a rollback.
+func TestStartHealthServer_HealthzReportsAppliedAllowlistVersion(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "health.sock")
+	p := newTestPlugin(&config{Policy: policyConfig{Mode: ModeFailClosed}})
+	p.SetReady()
+	if err := startHealthServer(t.Context(), healthServerConfig{
+		logger:       discardLogger(),
+		plugin:       p,
+		addr:         "unix://" + sock,
+		readTimeout:  time.Second,
+		writeTimeout: time.Second,
+	}); err != nil {
+		t.Fatalf("startHealthServer: %v", err)
+	}
+	httpClient := unixHealthClient(sock)
+
+	if code, body := healthz(t, httpClient); code != http.StatusOK || body.AllowlistVersion != 0 {
+		t.Fatalf("before any pull: status %d allowlist_version %d, want 200 and 0", code, body.AllowlistVersion)
+	}
+	for _, step := range []struct {
+		pulled uint64
+		want   uint64
+	}{
+		{42, 42}, // first pull
+		{41, 42}, // a rollback is ignored, and does not show
+		{43, 43}, // a forward version applies
+	} {
+		p.policy.apply(&allowlist.Allowlist{}, step.pulled)
+		code, body := healthz(t, httpClient)
+		if code != http.StatusOK || body.AllowlistVersion != step.want {
+			t.Fatalf("after pull %d: status %d allowlist_version %d, want 200 and %d", step.pulled, code, body.AllowlistVersion, step.want)
+		}
+	}
+}
+
+// unixHealthClient dials the health server's Unix socket whatever host the
+// URL names.
+func unixHealthClient(sock string) *http.Client {
+	return &http.Client{
 		Timeout: 2 * time.Second,
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -699,28 +768,21 @@ func TestStartHealthServer_HealthzReflectsReadiness(t *testing.T) {
 			},
 		},
 	}
+}
 
-	// Not ready yet → 503.
-	resp, err := httpClient.Get("http://unix/healthz")
+// healthz reads GET /healthz: the status code and the decoded body.
+func healthz(t *testing.T, client *http.Client) (int, healthResponse) {
+	t.Helper()
+	resp, err := client.Get("http://unix/healthz")
 	if err != nil {
-		t.Fatalf("GET /healthz (not ready): %v", err)
+		t.Fatalf("GET /healthz: %v", err)
 	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("not-ready status = %d, want 503", resp.StatusCode)
+	defer resp.Body.Close()
+	var body healthResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode /healthz body: %v", err)
 	}
-
-	p.SetReady()
-	resp2, err := httpClient.Get("http://unix/healthz")
-	if err != nil {
-		t.Fatalf("GET /healthz (ready): %v", err)
-	}
-	resp2.Body.Close()
-	if resp2.StatusCode != http.StatusOK {
-		t.Fatalf("ready status = %d, want 200", resp2.StatusCode)
-	}
-
-	cancel()
+	return resp.StatusCode, body
 }
 
 func TestStartHealthServer_InvalidAddr(t *testing.T) {
@@ -742,7 +804,7 @@ func TestAllowlistPullHTTPClient_InvalidMeasurements(t *testing.T) {
 		CDSMeasurements:   []string{"not-hex"},
 		AttestationApiURL: "http://localhost:30840",
 		Timeout:           time.Second,
-	})
+	}, "sev-snp")
 	if err == nil {
 		t.Fatal("expected error for invalid CDS measurements")
 	}
@@ -771,4 +833,26 @@ func stalledListener(t *testing.T, done <-chan struct{}) string {
 		}
 	}()
 	return ln.Addr().String()
+}
+
+func TestLogNodeRootLevel(t *testing.T) {
+	for _, tc := range []struct {
+		enabled, declared bool
+		want              string
+	}{
+		{true, false, "level=INFO"},
+		{true, true, "level=WARN"},
+		{false, true, ""},
+	} {
+		var buf bytes.Buffer
+		logNodeRoot(slog.New(slog.NewTextHandler(&buf, nil)), tc.enabled, func() (string, bool) {
+			if !tc.enabled {
+				t.Fatal("probed node-root provenance with the allowlist disabled")
+			}
+			return "open /dev/mapper/control: permission denied", tc.declared
+		})
+		if got := buf.String(); tc.want == "" && got != "" || !strings.Contains(got, tc.want) {
+			t.Fatalf("logNodeRoot(enabled=%t, declared=%t) logged %q, want %q", tc.enabled, tc.declared, got, tc.want)
+		}
+	}
 }

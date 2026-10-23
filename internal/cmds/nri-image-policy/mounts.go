@@ -29,10 +29,12 @@ var containerdRoots = []string{
 // being admitted. Handlers must compare these identifiers exactly; a path that
 // merely looks like kubelet or containerd state is untrusted.
 type MountContext struct {
-	PodUID    string
-	SandboxID string
-	Container *api.Container
-	Storage   mountStorageInspector
+	PodUID     string
+	SandboxID  string
+	Pod        *api.PodSandbox
+	Container  *api.Container
+	Storage    mountStorageInspector
+	NodeMounts nodeMounts
 }
 
 func (c MountContext) valid() bool {
@@ -48,19 +50,32 @@ type mountHandler interface {
 type mountObserver struct {
 	handlers []mountHandler
 	storage  mountStorageInspector
+	own      nodeMounts
 }
 
-func newMountObserver(storage mountStorageInspector) mountObserver {
-	return mountObserver{storage: defaultStorage(storage), handlers: []mountHandler{
-		platformMountHandler{},
-		emptyDirMountHandler{},
-		kubeletDataMountHandler{},
-		kubeletSubpathHandler{},
-	}}
+func newMountObserver(storage mountStorageInspector, own nodeMounts) mountObserver {
+	return mountObserver{
+		storage: defaultStorage(storage),
+		own:     own,
+		handlers: []mountHandler{
+			injectedNodeMountHandler{},
+			platformMountHandler{},
+			emptyDirMountHandler{},
+			kubeletDataMountHandler{},
+			kubeletSubpathHandler{},
+		},
+	}
 }
 
 func (o mountObserver) Observe(pod *api.PodSandbox, ctr *api.Container) []allowlist.ObservedMount {
-	ctx := MountContext{PodUID: pod.GetUid(), SandboxID: pod.GetId(), Container: ctr, Storage: o.storage}
+	ctx := MountContext{
+		PodUID:     pod.GetUid(),
+		SandboxID:  pod.GetId(),
+		Pod:        pod,
+		Container:  ctr,
+		Storage:    o.storage,
+		NodeMounts: o.own,
+	}
 	out := make([]allowlist.ObservedMount, 0, len(ctr.GetMounts()))
 	for _, m := range ctr.GetMounts() {
 		if carriesHostBytes(m) {
@@ -78,6 +93,24 @@ func isBindMount(m *api.Mount) bool {
 	return m.GetType() == "bind" || slices.Contains(m.GetOptions(), "bind") || slices.Contains(m.GetOptions(), "rbind")
 }
 
+// bindOptions are the mount options that leave a bind's bytes coming from its
+// source. Anything else, such as an overlay's lowerdir, fails closed.
+var bindOptions = []string{"bind", "rbind", "ro", "rw", "nosuid", "nodev", "noexec", "private", "rprivate", "slave", "rslave", "shared", "rshared"}
+
+// fileBind reports whether m binds its source unchanged, the only mount whose
+// bytes provenance evidence about the source describes.
+func fileBind(m *api.Mount) bool {
+	if m == nil || !slices.Contains([]string{"bind", "none", ""}, m.GetType()) || !isBindMount(m) {
+		return false
+	}
+	for _, option := range m.GetOptions() {
+		if !slices.Contains(bindOptions, option) {
+			return false
+		}
+	}
+	return true
+}
+
 func (o mountObserver) observeMount(ctx MountContext, m *api.Mount) allowlist.ObservedMount {
 	for _, handler := range o.handlers {
 		if mount, ok := handler.Observe(ctx, m); ok {
@@ -92,6 +125,18 @@ func defaultStorage(s mountStorageInspector) mountStorageInspector {
 		return s
 	}
 	return newMountStorageInspector()
+}
+
+// injectedNodeMountHandler classifies read-only binds from this plugin's own sources.
+type injectedNodeMountHandler struct{}
+
+func (injectedNodeMountHandler) Observe(ctx MountContext, m *api.Mount) (allowlist.ObservedMount, bool) {
+	if !ctx.valid() || !isInjectedNodeMount(ctx.Pod, ctx.Container, m, ctx.NodeMounts) {
+		return allowlist.ObservedMount{}, false
+	}
+	mount := observed(m, allowlist.MountPlatform, allowlist.MountUnknown)
+	mount.ReadOnly = true
+	return mount, true
 }
 
 type platformMountHandler struct{}
@@ -143,17 +188,21 @@ func (emptyDirMountHandler) Observe(ctx MountContext, m *api.Mount) (allowlist.O
 		// data. Classify them before that mount propagates into the pod, too.
 		class = allowlist.MountData
 	}
-	return observed(m, class, ctx.Storage.Inspect(m.GetSource())), true
+	mount := observed(m, class, ctx.Storage.Inspect(m.GetSource()))
+	mount.Volume = volumeName(volumePath)
+	return mount, true
 }
 
 type kubeletDataMountHandler struct{}
 
 func (kubeletDataMountHandler) Observe(ctx MountContext, m *api.Mount) (allowlist.ObservedMount, bool) {
-	plugin, _, ok := currentPodVolume(ctx, m)
+	plugin, volumePath, ok := currentPodVolume(ctx, m)
 	if !ok || plugin == emptyDirPlugin {
 		return allowlist.ObservedMount{}, false
 	}
-	return observed(m, allowlist.MountData, ctx.Storage.Inspect(m.GetSource())), true
+	mount := observed(m, allowlist.MountData, ctx.Storage.Inspect(m.GetSource()))
+	mount.Volume = volumeName(volumePath)
+	return mount, true
 }
 
 func currentPodVolume(ctx MountContext, m *api.Mount) (plugin, volumePath string, ok bool) {
@@ -167,6 +216,14 @@ func currentPodVolume(ctx MountContext, m *api.Mount) (plugin, volumePath string
 		return "", "", false
 	}
 	return cutTwoOrMore(rest)
+}
+
+// volumeName is the pod volume a kubelet path stages, which is its first
+// segment: the rest of the path is a directory inside that volume, so a
+// mount of a descendant still names the volume it came out of.
+func volumeName(volumePath string) string {
+	name, _, _ := strings.Cut(volumePath, "/")
+	return name
 }
 
 type kubeletSubpathHandler struct{}
@@ -185,12 +242,40 @@ func (kubeletSubpathHandler) Observe(ctx MountContext, m *api.Mount) (allowlist.
 	if len(parts) != 3 || parts[0] == "" || parts[1] != ctx.Container.GetName() || parts[2] == "" {
 		return allowlist.ObservedMount{}, false
 	}
-	return observed(m, allowlist.MountData, ctx.Storage.Inspect(src)), true
+	mount := observed(m, allowlist.MountData, ctx.Storage.Inspect(src))
+	mount.Volume = parts[0]
+	return mount, true
 }
 
 func cutTwoOrMore(s string) (string, string, bool) {
 	a, b, ok := strings.Cut(s, "/")
 	return a, b, ok && a != "" && b != ""
+}
+
+// nodeRootEvidence is replaced in tests, which cannot boot from a measured root.
+var nodeRootEvidence = nodeRootFile
+
+// nodeRootUnavailableReason is replaced in tests, as nodeRootEvidence is.
+var nodeRootUnavailableReason = nodeRootUnavailable
+
+// nodeRootBindIneligible is why a bind lacks provenance on a measured root:
+// observeHostMount withholds it from anything but a plain read-only bind of a
+// regular file reached without symlinks or crossing mounts.
+const nodeRootBindIneligible = "source is not a plain read-only bind of a regular file on the measured root"
+
+// nodeRootMissing explains why a read-only host bind in mounts carries no
+// node-root provenance, so a denial of a nodeRootFile rule names its cause. It
+// returns "" when there is no such bind.
+func nodeRootMissing(mounts []allowlist.ObservedMount) string {
+	if !slices.ContainsFunc(mounts, func(m allowlist.ObservedMount) bool {
+		return m.Class == allowlist.MountHost && m.ReadOnly && m.HostSourceDigest != "" && m.Provenance == ""
+	}) {
+		return ""
+	}
+	if reason, _ := nodeRootUnavailableReason(); reason != "" {
+		return reason
+	}
+	return nodeRootBindIneligible
 }
 
 func observeHostMount(m *api.Mount) allowlist.ObservedMount {
@@ -210,6 +295,9 @@ func observeHostMount(m *api.Mount) allowlist.ObservedMount {
 		return mount
 	}
 	mount.HostSourceDigest = digest
+	if mount.ReadOnly && fileBind(m) && nodeRootEvidence(m.GetSource()) {
+		mount.Provenance = allowlist.ProvenanceNodeRoot
+	}
 	return mount
 }
 

@@ -4,33 +4,17 @@ metadata:
   name: {{ include "c8s.fullname" . }}-pod-injector
   labels:
 {{ include "c8s.commonLabels" . | indent 4 }}
-  {{- $webhookAnnotations := deepCopy (.Values.webhook.annotations | default dict) }}
-  {{- /*
-    AKS runs an "admissionsenforcer" controller that rewrites the
-    namespaceSelector of admission webhooks and takes server-side-apply
-    ownership of that field. Every later `helm upgrade` then fails with a
-    field-manager conflict (UPGRADE FAILED: conflict with "admissionsenforcer"
-    on .webhooks[...].namespaceSelector). On cvmMode=aks (what
-    `c8s install --cvm-mode aks` sets) opt out so the chart's namespaceSelector
-    stays authoritative across re-installs. An explicit webhook.annotations
-    value for the same key wins.
-  */}}
-  {{- if and (eq (.Values.attestationApi.cvmMode | default "bare-metal") "aks") (not (hasKey $webhookAnnotations "admissions.enforcer/disabled")) }}
-  {{- $_ := set $webhookAnnotations "admissions.enforcer/disabled" "true" }}
-  {{- end }}
-  {{- with $webhookAnnotations }}
-  annotations:
-    {{- toYaml . | nindent 4 }}
-  {{- end }}
+  {{- include "c8s.webhookAnnotations" . | nindent 2 }}
 webhooks:
   - name: pods.c8s.confidential.ai
     admissionReviewVersions: [v1]
     sideEffects: None
-    failurePolicy: {{ .Values.webhook.failurePolicy }}
+    # Not tunable: an injection the webhook never made leaves a pod unprotected.
+    failurePolicy: Fail
     timeoutSeconds: 5
-    reinvocationPolicy: IfNeeded
-    # get-cert injection is opt-in (confidential.ai/cw), so an un-annotated pod
-    # is a no-op regardless of namespace. The reinject sweep excludes the same set.
+    reinvocationPolicy: Never
+    # Every pod of a namespace this selector admits is injected, so the
+    # excluded set is the whole opt-out. The reinject sweep excludes the same set.
     namespaceSelector:
       matchExpressions:
         {{- include "c8s.webhookExcludedNamespaces" . | nindent 8 }}

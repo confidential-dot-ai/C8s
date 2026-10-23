@@ -84,6 +84,11 @@ type Config struct {
 	// CDSImages additionally binds the CDS image to its authorized server key.
 	CDSImages []remote.ImagePin
 
+	// MeasuredPoliciesFile is the node's measured-policy journal
+	// (armtls.NodeJournal on the node) that a TDX CSR and /attest request
+	// list. Empty lists none.
+	MeasuredPoliciesFile string
+
 	// HTTPClient is an optional HTTP client. If nil, a default armTLS
 	// transport is built using the CDSMeasurements policy. Tests that
 	// need to bypass armTLS (e.g. against a plain HTTP fake) can supply a
@@ -129,10 +134,12 @@ func NewClient(cfg *Config) *Client {
 			},
 		}
 	}
+	attestClient := attestclient.NewClientWithHTTP(cfg.CDSURL, httpClient)
+	attestClient.MeasuredPolicies = armtls.NewJournal(cfg.MeasuredPoliciesFile)
 	return &Client{
 		cfg:             cfg,
 		httpClient:      httpClient,
-		cdsAttestClient: attestclient.NewClientWithHTTP(cfg.CDSURL, httpClient),
+		cdsAttestClient: attestClient,
 	}
 }
 
@@ -196,8 +203,7 @@ func (c *Client) fetchAndParseCABundle(ctx context.Context) ([]*x509.Certificate
 	return certs, nil
 }
 
-// TrustedCABundle returns the currently accepted CA bundle. The returned slice
-// can be passed to armtls.CertManager.UpdateCACerts.
+// TrustedCABundle returns the currently accepted CA bundle.
 func (c *Client) TrustedCABundle() []*x509.Certificate {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -290,11 +296,10 @@ func (c *Client) attestationExtension(ctx context.Context, key *ecdsa.PrivateKey
 	if err != nil {
 		return pkix.Extension{}, err
 	}
-	att := &armtls.Attestation{
+	return armtls.MarshalExtension(armtls.WithRuntimeExtensions(&armtls.Attestation{
 		Family: teeType,
 		Report: []byte(report),
-	}
-	return armtls.MarshalExtension(att)
+	}, c.cdsAttestClient.MeasuredPolicies))
 }
 
 func (cfg *Config) teeType() (armtls.TEEType, error) {
@@ -364,12 +369,36 @@ func containsCert(certs []*x509.Certificate, cert *x509.Certificate) bool {
 func continuityCABundle(published, trusted []*x509.Certificate, now time.Time) []*x509.Certificate {
 	seed := make([]*x509.Certificate, 0, len(published))
 	for _, cert := range published {
-		if containsCert(trusted, cert) && isUsableCA(cert, now) {
+		if !isUsableCA(cert, now) {
+			continue
+		}
+		if containsCert(trusted, cert) || renewalOfTrustedCA(cert, trusted) {
 			seed = append(seed, cert)
 		}
 	}
 	accepted := growAcceptedByLink(seed, published, trusted, now, certSignedByOther)
 	return orderLikePublished(accepted, published)
+}
+
+// renewalOfTrustedCA reports whether cert is a renewed certificate for a
+// trusted CA: the same subject and public key, self-signed under that key so
+// only its holder could have published it, and outliving the certificate it
+// replaces so a replay cannot shorten the anchor.
+func renewalOfTrustedCA(cert *x509.Certificate, trusted []*x509.Certificate) bool {
+	if cert.CheckSignatureFrom(cert) != nil {
+		return false
+	}
+	for _, anchor := range trusted {
+		if anchor == nil {
+			continue
+		}
+		if bytes.Equal(anchor.RawSubjectPublicKeyInfo, cert.RawSubjectPublicKeyInfo) &&
+			bytes.Equal(anchor.RawSubject, cert.RawSubject) &&
+			cert.NotAfter.After(anchor.NotAfter) {
+			return true
+		}
+	}
+	return false
 }
 
 // growAcceptedByLink iteratively extends accepted with candidates that share

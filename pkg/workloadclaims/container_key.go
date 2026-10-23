@@ -11,13 +11,17 @@ import (
 // cumulative inventory. Host source commitments and access modes are included in identity.
 // The framing must be injective: a collision erases historical evidence and can
 // allow a sandbox to match a workload it did not actually run.
+//
+// Role is outside the key: the node's measured base is fixed for its life, so
+// the role is a function of the fields above.
 func (c SandboxContainer) Key() string {
 	var key strings.Builder
 	fmt.Fprintf(&key, "digest=%q argv=%q env=", c.Digest, c.Argv)
 	if c.Env == nil {
 		key.WriteString("nil")
 	} else {
-		fmt.Fprintf(&key, "{%q %q}", c.Env.Format, c.Env.Digest)
+		// The aggregate digest fixes the per-variable digests.
+		fmt.Fprintf(&key, "{%q %q %t}", c.Env.Format, c.Env.Digest, c.Env.VariableDigestsEvicted)
 	}
 	key.WriteString(" mounts=")
 	if c.Mounts == nil {
@@ -25,7 +29,7 @@ func (c SandboxContainer) Key() string {
 	} else {
 		key.WriteByte('[')
 		for _, m := range c.Mounts {
-			fmt.Fprintf(&key, "{%q %q %q %q %t}", m.Destination, m.Class, m.Storage, m.HostSourceDigest, m.ReadOnly)
+			fmt.Fprintf(&key, "{%q %q %q %q %t %q}", m.Destination, m.Class, m.Storage, m.HostSourceDigest, m.ReadOnly, m.Provenance)
 		}
 		key.WriteByte(']')
 	}

@@ -12,9 +12,8 @@ import (
 func secretsConfig() Config {
 	return Config{
 		GetCertImage:      "ghcr.io/confidential-dot-ai/c8s-operator:test",
-		CDSURL:            "https://cds.c8s-system.svc:8443",
+		MeshImage:         testMeshImage,
 		AttestationApiURL: "http://attestation-api.c8s-system.svc:8400",
-		CertDir:           "/etc/c8s/certs",
 	}
 }
 
@@ -25,11 +24,11 @@ func podWithApp() *corev1.Pod {
 	}
 }
 
-func mutateWithSecrets(t *testing.T, pod *corev1.Pod, specs []string, dir string) {
+func mutateWithSecrets(t *testing.T, pod *corev1.Pod, specs []string) {
 	t.Helper()
 	mutatePod(pod, &injection{
 		WorkloadID: "api",
-		Secrets:    secretsSpec{Specs: specs, Dir: dir},
+		Secrets:    secretsSpec{Specs: specs},
 	}, secretsConfig())
 }
 
@@ -46,7 +45,7 @@ func containerNamed(pod *corev1.Pod, name string) *corev1.Container {
 // containers only.
 func TestNoSecretsRequestedInjectsNothing(t *testing.T) {
 	pod := podWithApp()
-	mutateWithSecrets(t, pod, nil, "")
+	mutateWithSecrets(t, pod, nil)
 	if c := containerNamed(pod, reservedSecretContainerName); c != nil {
 		t.Fatal("the fetcher was injected without a secrets annotation")
 	}
@@ -62,14 +61,14 @@ func TestNoSecretsRequestedInjectsNothing(t *testing.T) {
 // deadlock the pod it gates.
 func TestFetcherIsANativeSidecarOrderedAfterCertWait(t *testing.T) {
 	pod := podWithApp()
-	mutateWithSecrets(t, pod, []string{"DB=/api/db"}, "")
+	mutateWithSecrets(t, pod, []string{"DB=/api/db"})
 
 	names := make([]string, 0, len(pod.Spec.InitContainers))
 	for _, c := range pod.Spec.InitContainers {
 		names = append(names, c.Name)
 	}
-	want := []string{reservedCertContainerName, reservedCertWaitContainerName, reservedSecretContainerName}
-	if !slices.Equal(names[:3], want) {
+	want := []string{reservedMeshContainerName, reservedCertContainerName, reservedCertWaitContainerName, reservedSecretContainerName}
+	if !slices.Equal(names[:4], want) {
 		t.Fatalf("init containers = %v, want %v first", names, want)
 	}
 
@@ -84,22 +83,17 @@ func TestFetcherIsANativeSidecarOrderedAfterCertWait(t *testing.T) {
 
 func TestFetcherArgs(t *testing.T) {
 	pod := podWithApp()
-	cfg := secretsConfig()
-	cfg.CDSMeasurements = []string{"aa", "bb"}
 	mutatePod(pod, &injection{
 		WorkloadID: "api",
 		Secrets:    secretsSpec{Specs: []string{"DB=/api/db", "HF=/api/hf"}},
-	}, cfg)
+	}, secretsConfig())
 
 	args := strings.Join(containerNamed(pod, reservedSecretContainerName).Args, " ")
 	for _, want := range []string{
 		"get-secret",
-		"--cds-url=https://cds.c8s-system.svc:8443",
 		"--secret=DB=/api/db",
 		"--secret=HF=/api/hf",
 		"--out-dir=" + defaultSecretDir,
-		"--measurements=aa",
-		"--measurements=bb",
 	} {
 		if !strings.Contains(args, want) {
 			t.Fatalf("args %q missing %q", args, want)
@@ -107,18 +101,22 @@ func TestFetcherArgs(t *testing.T) {
 	}
 }
 
-func TestSecretDirOverride(t *testing.T) {
+// The allowlist pins the fetcher's mount table, so the directory is fixed.
+func TestSecretDirIsFixed(t *testing.T) {
 	pod := podWithApp()
-	mutateWithSecrets(t, pod, []string{"DB=/api/db"}, "/var/run/app-secrets")
+	mutatePod(pod, &injection{
+		WorkloadID: "api",
+		Secrets:    secretsSpec{Specs: []string{"DB=/api/db"}, Dir: "/var/run/app-secrets"},
+	}, secretsConfig())
 
 	fetcher := containerNamed(pod, reservedSecretContainerName)
-	if !strings.Contains(strings.Join(fetcher.Args, " "), "--out-dir=/var/run/app-secrets") {
-		t.Fatalf("args = %v, want the overridden dir", fetcher.Args)
+	if !strings.Contains(strings.Join(fetcher.Args, " "), "--out-dir="+defaultSecretDir) {
+		t.Fatalf("args = %v, want --out-dir=%s", fetcher.Args, defaultSecretDir)
 	}
 	for _, c := range pod.Spec.Containers {
 		for _, m := range c.VolumeMounts {
-			if m.Name == secretsVolumeName && m.MountPath != "/var/run/app-secrets" {
-				t.Fatalf("workload mount path = %q, want the overridden dir", m.MountPath)
+			if m.Name == secretsVolumeName && m.MountPath != defaultSecretDir {
+				t.Fatalf("workload mount path = %q, want %s", m.MountPath, defaultSecretDir)
 			}
 		}
 	}
@@ -129,7 +127,7 @@ func TestSecretDirOverride(t *testing.T) {
 func TestOnlyTheFetcherMountsSecretsWritable(t *testing.T) {
 	pod := podWithApp()
 	pod.Spec.InitContainers = append(pod.Spec.InitContainers, corev1.Container{Name: "user-init"})
-	mutateWithSecrets(t, pod, []string{"DB=/api/db"}, "")
+	mutateWithSecrets(t, pod, []string{"DB=/api/db"})
 
 	check := func(c corev1.Container) {
 		for _, m := range c.VolumeMounts {
@@ -181,7 +179,7 @@ func TestReservedSecretsVolumeMustBeMemoryBacked(t *testing.T) {
 // node's disk.
 func TestInjectedSecretsVolumeIsTmpfs(t *testing.T) {
 	pod := podWithApp()
-	mutateWithSecrets(t, pod, []string{"DB=/api/db"}, "")
+	mutateWithSecrets(t, pod, []string{"DB=/api/db"})
 
 	var found *corev1.Volume
 	for i := range pod.Spec.Volumes {
@@ -212,7 +210,7 @@ func TestSecretsAnnotationsRequireOptIn(t *testing.T) {
 	for _, name := range []string{AnnotationSecrets, AnnotationSecretDir} {
 		pod := podWithApp()
 		pod.Annotations = map[string]string{name: "DB=/api/db"}
-		if _, err := parseAnnotations(pod); err == nil {
+		if _, err := parseAnnotations(pod, ""); err == nil {
 			t.Fatalf("%s without %s was silently ignored", name, AnnotationWorkload)
 		}
 	}
@@ -221,19 +219,15 @@ func TestSecretsAnnotationsRequireOptIn(t *testing.T) {
 func TestSecretsAnnotationParsing(t *testing.T) {
 	pod := podWithApp()
 	pod.Annotations = map[string]string{
-		AnnotationWorkload:  "api",
-		AnnotationSecrets:   " DB=/api/db , HF=/api/hf ",
-		AnnotationSecretDir: "/var/run/app-secrets",
+		AnnotationWorkload: "api",
+		AnnotationSecrets:  " DB=/api/db , HF=/api/hf ",
 	}
-	inj, err := parseAnnotations(pod)
+	inj, err := parseAnnotations(pod, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !slices.Equal(inj.Secrets.Specs, []string{"DB=/api/db", "HF=/api/hf"}) {
 		t.Fatalf("specs = %v", inj.Secrets.Specs)
-	}
-	if inj.Secrets.Dir != "/var/run/app-secrets" {
-		t.Fatalf("dir = %q", inj.Secrets.Dir)
 	}
 }
 
@@ -242,23 +236,18 @@ func TestSecretsAnnotationParsing(t *testing.T) {
 // secret straight out of a live pod.
 func TestEphemeralContainerCannotMountReservedVolumes(t *testing.T) {
 	for _, tc := range []struct {
-		name       string
-		certVolume string
-		mount      string
-		ctrName    string
-		target     string
-		injected   bool
-		wantOK     bool
+		name     string
+		mount    string
+		ctrName  string
+		target   string
+		injected bool
+		wantOK   bool
 	}{
 		{name: "mounts secrets", mount: secretsVolumeName},
-		{name: "mounts certs", mount: defaultCertVolumeName},
-		{name: "mounts a renamed cert volume", certVolume: "my-certs", mount: "my-certs"},
+		{name: "mounts certs", mount: CertVolumeName},
 		{name: "claims a reserved name", ctrName: reservedSecretContainerName, mount: "scratch"},
 		{name: "mounts something else", mount: "scratch", wantOK: true},
 		{name: "mounts nothing", wantOK: true},
-		// The pod renamed its cert volume, so the default name is no longer
-		// the one holding its key.
-		{name: "default name after a rename", certVolume: "my-certs", mount: defaultCertVolumeName, wantOK: true},
 		// Every container of an injected pod mounts c8s material, and a target
 		// shares its process namespace.
 		{name: "targets the cert sidecar", injected: true, target: reservedCertContainerName},
@@ -270,10 +259,7 @@ func TestEphemeralContainerCannotMountReservedVolumes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			pod := podWithApp()
 			if tc.injected {
-				mutateWithSecrets(t, pod, []string{"DB=/api/db"}, "")
-			}
-			if tc.certVolume != "" {
-				pod.Annotations = map[string]string{AnnotationCertVolume: tc.certVolume}
+				mutateWithSecrets(t, pod, []string{"DB=/api/db"})
 			}
 			name := tc.ctrName
 			if name == "" {
@@ -298,7 +284,7 @@ func TestEphemeralContainerCannotMountReservedVolumes(t *testing.T) {
 			}
 			pod.Spec.EphemeralContainers = []corev1.EphemeralContainer{ec}
 
-			err := rejectEphemeralReservedMounts(pod)
+			err := rejectEphemeralReach(pod)
 			if tc.wantOK && err != nil {
 				t.Fatalf("rejected a harmless ephemeral container: %v", err)
 			}
@@ -316,11 +302,9 @@ func TestSecretsSpecValidate(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		specs   []string
-		dir     string
 		wantErr bool
 	}{
 		{name: "pair", specs: []string{"DB=/tenant-a/db", "HF=/tenant-a/hf-token"}},
-		{name: "absolute dir", specs: []string{"DB=/tenant-a/db"}, dir: "/run/secrets"},
 		{name: "no equals", specs: []string{"DB"}, wantErr: true},
 		{name: "name with separator", specs: []string{"sub/DB=/tenant-a/db"}, wantErr: true},
 		{name: "name is dotdot", specs: []string{"..=/tenant-a/db"}, wantErr: true},
@@ -330,10 +314,9 @@ func TestSecretsSpecValidate(t *testing.T) {
 		{name: "trailing slash", specs: []string{"DB=/tenant-a/db/"}, wantErr: true},
 		{name: "wildcard path", specs: []string{"DB=/tenant-a/*"}, wantErr: true},
 		{name: "uncanonical path", specs: []string{"DB=/tenant-a/../db"}, wantErr: true},
-		{name: "relative dir", specs: []string{"DB=/tenant-a/db"}, dir: "run/secrets", wantErr: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := secretsSpec{Specs: tc.specs, Dir: tc.dir}.validate()
+			err := secretsSpec{Specs: tc.specs}.validate()
 			if tc.wantErr && err == nil {
 				t.Fatal("admitted a spec get-secret would reject")
 			}

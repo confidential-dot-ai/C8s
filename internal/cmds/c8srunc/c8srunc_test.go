@@ -28,10 +28,12 @@ func (r *recorder) exec(path string, argv, env []string) error {
 	return r.err
 }
 
+// lockedWrapper is the locked wrapper carrying the floor every node has.
 func lockedWrapper(rec *recorder, stderr *bytes.Buffer) Wrapper {
 	return Wrapper{
 		Mode:     ModeLocked,
 		RealRunc: "/opt/c8s/runc",
+		Floor:    testFloor(),
 		Exec:     rec.exec,
 		Env:      []string{"PATH=/usr/bin"},
 		Err:      stderr,
@@ -41,6 +43,9 @@ func lockedWrapper(rec *recorder, stderr *bytes.Buffer) Wrapper {
 // Every spelling of `runc exec` runc itself accepts must be denied without the
 // real runtime being reached, and nothing else may be.
 func TestLockedDispatch(t *testing.T) {
+	// A create reads the bundle it names for the floor; ocifloor_test.go
+	// covers what the floor makes of one.
+	bundle := bundleDirWith(t, workloadBundle())
 	tests := []struct {
 		name string
 		args []string
@@ -57,8 +62,8 @@ func TestLockedDispatch(t *testing.T) {
 		{"exec after the -- boundary", []string{"--", "exec", "ctr"}, true},
 		{"exec after globals and the -- boundary", []string{"--debug", "--", "exec", "ctr"}, true},
 		{"exec with its own flags", []string{"exec", "-t", "--user", "0", "ctr", "sh"}, true},
-		{"exec as the value of a string global", []string{"--root", "exec", "create", "ctr"}, false},
-		{"create", []string{"--root", "/run/runc", "create", "--bundle", "/run/b", "ctr"}, false},
+		{"exec as the value of a string global", []string{"--root", "exec", "create", "--bundle", bundle, "ctr"}, false},
+		{"create", []string{"--root", "/run/runc", "create", "--bundle", bundle, "ctr"}, false},
 		{"start", []string{"start", "ctr"}, false},
 		{"delete", []string{"--log", "/run/log.json", "--log-format", "json", "delete", "ctr"}, false},
 		{"state", []string{"state", "ctr"}, false},
@@ -144,7 +149,7 @@ func TestHandoffPreservesArgvAndEnv(t *testing.T) {
 	rec := &recorder{}
 	var stderr bytes.Buffer
 	w := lockedWrapper(rec, &stderr)
-	args := []string{"--root", "/run/runc", "create", "--bundle", "/run/b", "ctr-1"}
+	args := []string{"--root", "/run/runc", "create", "--bundle", bundleDirWith(t, workloadBundle()), "ctr-1"}
 
 	w.Run(append([]string{"/usr/local/bin/c8s-runc"}, args...))
 

@@ -26,26 +26,33 @@ webhook, attestation-api, and CDS.
 ```sh
 c8s install --namespace c8s-system --cvm-mode=bare-metal --hardware-platform=sev-snp \
   --operator-keys operator-pub.pem \
-  --workload-ref vllm=vllm/deployment/serving:8000 --upstream vllm
+  --workload-ref vllm=vllm/deployment/serving:8443 --upstream vllm
 ```
 
 `--cvm-mode` is required — one of `bare-metal` (node-as-CVM: the nodes themselves are TDX/SNP CVMs, shown here;
 single-tenant), `gke`, or `aks`. So is `--hardware-platform`, naming the nodes' CPU TEE: `sev-snp` or
 `tdx` (under `aks` it selects the Azure vTPM shape instead). `--operator-keys`
 takes a PEM bundle of EC public keys that authorize
-`c8s allowlist` writes; without it the install refuses to proceed (pass
-`--force` to install with allowlist writes disabled):
+`c8s allowlist` writes and that the router verifies route manifests under;
+without it the install refuses to proceed. `--force` installs with
+allowlist writes disabled, but CDS then stores no route manifest, so the
+router answers 503 to every application request until you set
+`cds.operatorKeys` and upgrade the release. Such an install also needs
+`--measurements` (or `--image-policy-file`) to pin CDS, or it refuses to
+render. Generate a key pair:
 
 ```sh
 openssl ecparam -genkey -name prime256v1 -noout -out operator.key
 openssl ec -in operator.key -pubout -out operator-pub.pem
 ```
 
-router ships no default upstream: `--upstream` (with the port on its
-`--workload-ref`) points router at an adopted workload's mesh-wrapped headless Service.
-Without an upstream choice, router renders no catch-all route until one is
-attached rather than shipping an unencrypted inference hop. Alternatives and details: the
-[Upstream](operator.md#router-upstream).
+The router routes only by an operator-signed route manifest on CDS, and answers
+503 until one is stored. `--upstream` (with the port on its `--workload-ref`)
+writes one that routes `/` to the adopted workload on that port. The pod's
+injected endpoint holds the mesh leaf the router verifies, so the workload
+itself listens in the clear. Without `--operator-key`, install writes it to `routes.json` and
+prints the `c8s routes add` commands that store the route. Details:
+[Route manifest](operator.md#route-manifest).
 
 For existing workloads, use `--workload-ref <cw-id>=<namespace>/<kind>/<name>` so install
 adopts them as CWs and resolves their images into the NRI bootstrap allowlist.
@@ -84,7 +91,7 @@ To install without the advisory CRDs:
 ```sh
 c8s install --namespace c8s-system --cvm-mode=bare-metal --hardware-platform=sev-snp \
   --operator-keys operator-pub.pem --install-crds=false \
-  --workload-ref vllm=vllm/deployment/serving:8000 --upstream vllm
+  --workload-ref vllm=vllm/deployment/serving:8443 --upstream vllm
 ```
 
 The cluster still runs without CRDs. CRDs only provide demo/status UX such as
@@ -108,7 +115,7 @@ kubectl create secret docker-registry ghcr-pull-secret \
 c8s install --namespace c8s-system --cvm-mode=bare-metal --hardware-platform=sev-snp \
   --operator-keys operator-pub.pem \
   --image-pull-secret ghcr-pull-secret \
-  --workload-ref vllm=vllm/deployment/serving:8000 --upstream vllm
+  --workload-ref vllm=vllm/deployment/serving:8443 --upstream vllm
 ```
 
 `scripts/deploy-image-pull-secret.sh` wraps the secret-creation step
@@ -119,7 +126,7 @@ IMAGE_PULL_SECRET=<ghcr-token> NAMESPACE=c8s-system ./scripts/deploy-image-pull-
 c8s install --namespace c8s-system --cvm-mode=bare-metal --hardware-platform=sev-snp \
   --operator-keys operator-pub.pem \
   --image-pull-secret ghcr-pull-secret \
-  --workload-ref vllm=vllm/deployment/serving:8000 --upstream vllm
+  --workload-ref vllm=vllm/deployment/serving:8443 --upstream vllm
 ```
 
 Pass `NAMESPACE=c8s-system` explicitly — the script defaults to `default`,
@@ -168,7 +175,8 @@ metadata:
 ```
 
 The webhook injects `c8s get-cert` as an init container and renewal sidecar.
-They write `tls.crt` and `tls.key` into `/etc/c8s/certs`.
+They write `tls.crt` and `tls.key` into the pod's `c8s-certs` volume, which
+the mesh endpoint reads at `/etc/c8s/certs`.
 
 See:
 

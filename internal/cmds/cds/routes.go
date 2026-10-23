@@ -11,14 +11,16 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	"github.com/confidential-dot-ai/c8s/internal/server"
+	"github.com/confidential-dot-ai/c8s/pkg/routes"
 )
 
 // dependencies bundles everything the cds router needs.
 type dependencies struct {
 	AttestHandler     AttestHandler
 	AllowlistHandler  allowlist.Handler
+	Routes            routeHandler
 	ReadyFn           attestation.ReadinessFunc
-	CACertPEM         []byte
+	MeshCA            *issuer.MeshCA        // the one current CA: served at /ca and signs every leaf
 	OperatorKeysPEM   []byte                // pinned operator public keys; empty = /operator-keys 404s
 	MeasurementsDoc   []byte                // reference values being enforced, as served at /measurements
 	RateLimiter       *issuer.IPRateLimiter // per-source-IP limiter for attestation endpoints
@@ -43,6 +45,12 @@ func newRouter(deps dependencies) http.Handler {
 	if deps.ChallengeLimiter == deps.RateLimiter {
 		panic("cds: dependencies.ChallengeLimiter must be a limiter of its own, not the attestation one")
 	}
+	if deps.MeshCA == nil {
+		panic("cds: dependencies.MeshCA must be set")
+	}
+	// One CA for the whole router: the handler signs with the certificate
+	// /ca publishes.
+	deps.AttestHandler.MeshCA = deps.MeshCA
 	r := chi.NewRouter()
 	r.Use(server.RequestLogger)
 
@@ -55,13 +63,20 @@ func newRouter(deps dependencies) http.Handler {
 	r.Method(http.MethodPost, "/authenticate", deps.challengeProtected(attestation.HandleAuthenticate(deps.AttestHandler.Challenges)))
 	r.Method(http.MethodPost, "/attest", deps.protected(http.HandlerFunc(deps.AttestHandler.HandleAttest)))
 
-	// GET is unauthenticated (armTLS integrity only); every mutation goes
+	// GETs are unauthenticated (armTLS integrity only); every mutation goes
 	// through allowlistWrite (operator-JWT auth in the handler + rate limit +
 	// 1 MiB body cap).
 	r.Get("/allowlist", deps.AllowlistHandler.HandleList)
+	r.Get("/allowlist/history", deps.AllowlistHandler.HandleHistory)
+	r.Get("/allowlist/objects/sha256/{hex}", deps.AllowlistHandler.HandleObject)
+	r.Get("/allowlist/objects/sha256/{hex}/signature", deps.AllowlistHandler.HandleSignature)
 	r.Method(http.MethodPut, "/allowlist", deps.allowlistWrite(http.HandlerFunc(deps.AllowlistHandler.HandleReplaceAll)))
 	r.Method(http.MethodPut, "/allowlist/workloads/{name}", deps.allowlistWrite(http.HandlerFunc(deps.AllowlistHandler.HandlePutWorkload)))
 	r.Method(http.MethodDelete, "/allowlist/workloads/{name}", deps.allowlistWrite(http.HandlerFunc(deps.AllowlistHandler.HandleDeleteWorkload)))
+
+	// The route manifest is written like the allowlist (W1) and read like it.
+	r.Get(routes.Path, deps.Routes.handleGet)
+	r.Method(http.MethodPut, routes.Path, deps.allowlistWrite(http.HandlerFunc(deps.Routes.handlePut)))
 
 	// GET and POST are the workload's, authenticated by mesh leaf and sandbox
 	// token. PUT is the operator's, on allowlistWrite so it carries the same
@@ -77,7 +92,7 @@ func newRouter(deps dependencies) http.Handler {
 		r.Method(http.MethodGet, secrets.ExplainRoute, deps.allowlistWrite(deps.SecretsExplain))
 	}
 
-	r.Get("/ca", handleCA(deps.CACertPEM))
+	r.Get("/ca", handleCA(deps.MeshCA))
 	r.Get("/operator-keys", handleOperatorKeys(deps.OperatorKeysPEM))
 	r.Get("/measurements", handleMeasurements(deps.MeasurementsDoc))
 
@@ -125,10 +140,11 @@ func capBody(max int64, next http.Handler) http.Handler {
 	return http.MaxBytesHandler(next, max)
 }
 
-func handleCA(caCertPEM []byte) http.HandlerFunc {
+// handleCA serves the one current mesh CA certificate; a renewal replaces it.
+func handleCA(mesh *issuer.MeshCA) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/x-pem-file")
-		w.Write(caCertPEM)
+		w.Write(mesh.Current().CertPEM)
 	}
 }
 

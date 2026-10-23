@@ -9,7 +9,7 @@
 #      under usr/local/lib/systemd/system/ — on systemd's unit search path)
 #   2. RKE2 airgap image bundles -> var/lib/rancher/rke2/agent/images/
 #      Baked deliberately: the measurement then covers the exact bytes of
-#      every control-plane image (kube-* static pods, Canal, CoreDNS) and
+#      every control-plane image (kube-* static pods, Cilium, CoreDNS) and
 #      the node boots with zero registry dependency. Costs ~1.6G of disk.raw.
 #   3. nri-image-policy plugin   -> opt/nri/plugins/10-nri-image-policy
 #
@@ -23,7 +23,7 @@
 # in mkosi.pkgcache/c8s after a build):
 #   go run ./node-guest-image/c8s/systemfloor -write \
 #     -template node-guest-image/c8s/image-policy.yaml.in \
-#     -bundle <core bundle> -bundle <canal bundle> \
+#     -bundle <core bundle> -bundle <cilium bundle> \
 #     -manifest node-guest-image/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/local-path-storage.yaml \
 #     -manifest node-guest-image/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/nvidia-device-plugin.yaml \
 #     -exclude-ref busybox
@@ -63,10 +63,10 @@ RKE2_VERSION="v1.36.4+rke2r1"
 REAL_RUNC="/var/lib/rancher/rke2/bin/runc"
 RKE2_TARBALL_SHA256="7bcbd3167d6947e1d79cdf722acdc740b28021fefb50dd5b974a1980776d4079"
 RKE2_IMAGES_CORE_SHA256="8988a2eff587dd88b8eab86fe719703e9541a1f08d22771a94cbec446a13db86"
-RKE2_IMAGES_CANAL_SHA256="4359b651bfdec8f3bcc01b351b33a55ff21f06b18a767366db6f3800d5750871"
+RKE2_IMAGES_CILIUM_SHA256="6c76903f258b12bc0f322bcb029247ee49544b925170d320409401beeecd41bd"
 
 # The baked binary and Kubernetes C8s images resolve from one source ref.
-# The binary must include `c8s node-image render`.
+# The binary must include `c8s node-image render` and `c8s node-image check-images`.
 # Inputs arrive through confos's explicit sync-input files; sudo strips the
 # caller's environment. c8s-registry supports private/air-gapped registries.
 SYNC_INPUTS="$SRCDIR/mkosi.local/.confos-sync-inputs"
@@ -245,12 +245,25 @@ echo "c8s sync: ref ${C8S_REF} -> binary ${NRI_DIGEST}, operator ${OPERATOR_DIGE
 # Render the system floor. Boot preparation merges the chart's measured
 # component seed into this base before RKE2/containerd starts, so CDS and
 # its clients can start before the live allowlist becomes available.
-render_nri_base() {
+# The router's own image is pinned by the embedded chart alone, so the base is
+# rendered after the node integration that reports it.
+render_nri_base() {  # <front-door-image>: repository@digest
     local tmpl="$SRCDIR/mkosi.profiles/c8s/image-policy.yaml.in"
     local dst="$STAGE_DIR/usr/lib/c8s/image-policy.yaml"
+    local router_image="$1"
     [ -f "$tmpl" ] || { echo "c8s sync: FATAL base-allowlist template $tmpl missing" >&2; exit 1; }
+    case "$router_image" in
+        *@sha256:*) ;;
+        *) echo "c8s sync: FATAL front-door image '$router_image' is not repository@sha256:..." >&2; exit 1 ;;
+    esac
     mkdir -p "$(dirname "$dst")"
-    sed -e "s|@PLATFORM@|${PLATFORM}|g" "$tmpl" > "$dst"
+    sed -e "s|@PLATFORM@|${PLATFORM}|g" \
+        -e "s|@MESH_REPO@|${MESH_REPO}|g" \
+        -e "s|@MESH_DIGEST@|${MESH_DIGEST}|g" \
+        -e "s|@OPERATOR_REPO@|${OPERATOR_REPO}|g" \
+        -e "s|@OPERATOR_DIGEST@|${OPERATOR_DIGEST}|g" \
+        -e "s|@ROUTER_REPO@|${router_image%@*}|g" \
+        -e "s|@ROUTER_DIGEST@|${router_image##*@}|g" "$tmpl" > "$dst"
     echo "c8s sync: NRI system base allowlist rendered"
 }
 
@@ -258,7 +271,7 @@ render_nri_base() {
 # This command runs only in the mkosi tools tree; no Helm binary, chart archive,
 # install Job or HelmChartConfig is needed by the guest boot path.
 render_node_integration() {
-    local out="$TMP/node-integration" helm_dir="$TMP/helm"
+    local out="$NODE_INTEGRATION_DIR" helm_dir="$TMP/helm"
     local helm_archive="$CACHE_DIR/helm-${HELM_VERSION}-linux-amd64.tar.gz"
     fetch "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz" \
         "$helm_archive" "$HELM_LINUX_AMD64_SHA256"
@@ -284,9 +297,19 @@ render_node_integration() {
         "$STAGE_DIR/var/lib/rancher/rke2/server/manifests/c8s-integration.yaml"
     install -D -m 0644 "$out/allowlist-seed.json" \
         "$STAGE_DIR/usr/lib/c8s/allowlist-seed.json"
+    # The baked router mounts its nginx configuration from here, not from
+    # an editable ConfigMap (chart helper router.bakedNginxDir). The renderer
+    # owns the file list.
+    install -D -m 0644 -t "$STAGE_DIR/usr/lib/c8s/router-nginx" "$out"/router-nginx/*
     bash "$SRCDIR/mkosi.profiles/c8s/airgap-images.sh" \
         "$out/images.txt" "$CACHE_DIR/core-images" "$AIRGAP_DIR" \
         "$LOCAL_IMAGES_DIR" "$C8S_REGISTRY"
+    # Render knows the image env only as the chart declares it; check the
+    # preloaded configs against the seed before they are sealed.
+    if ! "$C8S_TARGET" node-image check-images --output-dir "$out" --layouts "$CACHE_DIR/core-images"; then
+        echo "c8s sync: FATAL ${C8S_REF} must provide a working 'c8s node-image check-images' whose seed admits the preloaded images" >&2
+        exit 1
+    fi
 }
 
 # Download <url> to <dest>, verifying its sha256. Skip if dest exists and
@@ -339,7 +362,7 @@ tar -xzf "$CACHE_DIR/rke2-${CACHE_VER}.tar.gz" -C "$STAGE_DIR/usr/local"
 chmod 0755 "$STAGE_DIR/usr/local/bin/rke2" \
            "$STAGE_DIR/usr/local/bin/rke2-killall.sh" \
            "$STAGE_DIR/usr/local/bin/rke2-uninstall.sh"
-# rke2 keeps containerd on the default CNI dirs and the bundled Canal chart
+# rke2 keeps containerd on the default CNI dirs and the bundled Cilium chart
 # hostPath-mounts them. Under confos's immutable root they get a writable
 # overlay (state.d/60-c8s.conf), and the initrd only overlays directories
 # that already exist in the image — so bake them empty here.
@@ -348,19 +371,19 @@ mkdir -p "$STAGE_DIR/opt/cni/bin" "$STAGE_DIR/etc/cni/net.d" \
 # Marker for inspecting a built image.
 echo "$RKE2_VERSION" > "$STAGE_DIR/usr/local/share/rke2/.confos-baked-version"
 
-# --- 2. Airgap image bundles (core + canal) ------------------------------
+# --- 2. Airgap image bundles (core + cilium) -----------------------------
 
 AIRGAP_DIR="$STAGE_DIR/var/lib/rancher/rke2/agent/images"
 fetch "${BASE_URL}/rke2-images-core.linux-amd64.tar.zst" \
       "$CACHE_DIR/rke2-images-core-${CACHE_VER}.tar.zst" \
       "$RKE2_IMAGES_CORE_SHA256"
-fetch "${BASE_URL}/rke2-images-canal.linux-amd64.tar.zst" \
-      "$CACHE_DIR/rke2-images-canal-${CACHE_VER}.tar.zst" \
-      "$RKE2_IMAGES_CANAL_SHA256"
+fetch "${BASE_URL}/rke2-images-cilium.linux-amd64.tar.zst" \
+      "$CACHE_DIR/rke2-images-cilium-${CACHE_VER}.tar.zst" \
+      "$RKE2_IMAGES_CILIUM_SHA256"
 stage "$CACHE_DIR/rke2-images-core-${CACHE_VER}.tar.zst" \
       "$AIRGAP_DIR/rke2-images-core.linux-amd64.tar.zst"
-stage "$CACHE_DIR/rke2-images-canal-${CACHE_VER}.tar.zst" \
-      "$AIRGAP_DIR/rke2-images-canal.linux-amd64.tar.zst"
+stage "$CACHE_DIR/rke2-images-cilium-${CACHE_VER}.tar.zst" \
+      "$AIRGAP_DIR/rke2-images-cilium.linux-amd64.tar.zst"
 
 # --- 3. nri-image-policy plugin binary ------------------------------------
 
@@ -376,6 +399,7 @@ RUNC_WRAPPER_TARGET="$STAGE_DIR/usr/local/bin/c8s-runc"
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
+NODE_INTEGRATION_DIR="$TMP/node-integration"
 
 # Extract the plugin binary from the pinned nri-image-policy image into
 # PLUGIN_CACHE.
@@ -452,7 +476,9 @@ else
 fi
 install -D -m 0755 "$C8S_TARGET" "$RUNC_WRAPPER_TARGET"
 
-render_nri_base
 render_node_integration
+ROUTER_IMAGE_FILE="$NODE_INTEGRATION_DIR/router-image.txt"
+[ -s "$ROUTER_IMAGE_FILE" ] || { echo "c8s sync: FATAL ${C8S_REF} reported no front-door image at ${ROUTER_IMAGE_FILE#"$TMP"/}" >&2; exit 1; }
+render_nri_base "$(cat "$ROUTER_IMAGE_FILE")"
 
 echo "c8s sync: staged rke2 ${RKE2_VERSION} + airgap bundles + measured c8s Kubernetes workloads"

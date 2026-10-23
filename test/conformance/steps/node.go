@@ -84,11 +84,10 @@ func cdsUnreachable(ctx context.Context, node string) error {
 	if _, err := w.node(node); err != nil {
 		return err
 	}
-	if _, err := w.be.call("cds_block"); err != nil {
-		return err
-	}
+	// Set first: a block that never settles may still have taken hold.
 	w.cdsBlocked = true
-	return nil
+	_, err := w.be.call("cds_block")
+	return err
 }
 
 func pluginStartedSinceBlock(ctx context.Context, node string) error {
@@ -131,7 +130,7 @@ func cdsVolatile(ctx context.Context) error {
 		return err
 	}
 	if answer != "yes" {
-		return godog.ErrSkip
+		return skipf("a CDS restart keeps the allowlist here (cds_volatile)")
 	}
 	return nil
 }
@@ -167,13 +166,9 @@ func versionBelowApplied(ctx context.Context, node string) error {
 	if err != nil {
 		return fmt.Errorf("applied version %q: %w", w.appliedVersion, err)
 	}
-	s, err := w.be.call("served_version")
+	now, err := w.servedVersion()
 	if err != nil {
 		return err
-	}
-	now, err := strconv.Atoi(s)
-	if err != nil {
-		return fmt.Errorf("served version %q: %w", s, err)
 	}
 	if now >= applied {
 		return fmt.Errorf("the served version is %d, not below the applied %d", now, applied)
@@ -185,7 +180,9 @@ func versionBelowApplied(ctx context.Context, node string) error {
 // is unblocked, and the plugin is started again where the scenario stopped
 // it, or on every node it addressed and on node "one" if the CDS was
 // restarted, since only a start lets a plugin accept the versions a
-// restarted CDS serves, whether or not the scenario spoke of its node.
+// restarted CDS serves, whether or not the scenario spoke of its node. After
+// a CDS restart the mesh members are recreated too: only a member started
+// after the CDS holds a leaf under the mesh CA it minted.
 func (w *world) restoreNode() error {
 	var errs []error
 	if w.cdsBlocked {
@@ -202,6 +199,10 @@ func (w *world) restoreNode() error {
 			continue
 		}
 		_, err := w.be.call("plugin_start", k8sNode)
+		errs = append(errs, err)
+	}
+	if w.cdsRestarted {
+		_, err := w.be.call("mesh_restart")
 		errs = append(errs, err)
 	}
 	return errors.Join(errs...)

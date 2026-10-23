@@ -25,7 +25,7 @@ func (m stubStartManager) Start(context.Context) error { return m.startErr }
 func stubRunWiring(t *testing.T, mgr manager.Manager, mgrErr error) {
 	t.Helper()
 	origConfig, origManager := getKubeConfig, newManager
-	getKubeConfig = func() *rest.Config { return &rest.Config{} }
+	getKubeConfig = func() (*rest.Config, error) { return &rest.Config{}, nil }
 	newManager = func(*rest.Config, ctrl.Options) (manager.Manager, error) { return mgr, mgrErr }
 	t.Cleanup(func() { getKubeConfig, newManager = origConfig, origManager })
 }
@@ -48,14 +48,15 @@ func fullWiringOptions(t *testing.T) Options {
 	t.Helper()
 	stubWebhookCertDir(t)
 	fc := fake.NewClientBuilder().WithScheme(scheme).
-		WithObjects(mutatingWebhookConfig("c8s-mutating")).Build()
+		WithObjects(mutatingWebhookConfig("c8s-mutating"), validatingWebhookConfig("c8s-mutating")).Build()
 	stubDirectClient(t, fc, nil)
 	return Options{
-		GetCertImage:       "ghcr.io/c8s/c8s:latest",
-		CDSURL:             "https://cds.c8s-system.svc",
-		WebhookConfigName:  "c8s-mutating",
-		WebhookServiceName: "c8s-webhook",
-		LeaderElectionNS:   "c8s-system",
+		GetCertImage:          "ghcr.io/c8s/c8s:latest",
+		MeshImage:             "ghcr.io/c8s/armtls-mesh:latest",
+		WebhookConfigName:     "c8s-mutating",
+		WorkloadClaimsHostDir: "/run/nri-image-policy",
+		WebhookServiceName:    "c8s-webhook",
+		LeaderElectionNS:      "c8s-system",
 	}
 }
 
@@ -98,5 +99,18 @@ func TestRunManagerStartError(t *testing.T) {
 	err := Run(context.Background(), opts)
 	if err == nil || !strings.Contains(err.Error(), "manager exited: boom") {
 		t.Fatalf("Run error = %v, want wrapped manager-exit error", err)
+	}
+}
+
+func TestRunDisablesClientRateLimit(t *testing.T) {
+	stubRunWiring(t, nil, errors.New("stop"))
+	var qps float32
+	newManager = func(c *rest.Config, _ ctrl.Options) (manager.Manager, error) {
+		qps = c.QPS
+		return nil, errors.New("stop")
+	}
+	_ = Run(context.Background(), Options{}) // Only the config handed to newManager matters.
+	if qps >= 0 {
+		t.Fatalf("newManager config QPS = %v, want < 0", qps)
 	}
 }

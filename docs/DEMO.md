@@ -7,8 +7,8 @@ production trust boundary.
 ## 1. Install C8s
 
 This demo shows confidential-workload injection, not the public front door, so
-it installs with router disabled. To also expose a workload through router, give
-it an upstream instead (see [router upstream](operator.md#router-upstream)).
+it installs with router disabled. To also expose a workload through router,
+write a route manifest for it instead (see [Route manifest](operator.md#route-manifest)).
 
 ```sh
 c8s install --namespace c8s-system --cvm-mode=bare-metal --hardware-platform=sev-snp \
@@ -22,7 +22,7 @@ EOF
 [install-flows.md](install-flows.md)), as is `--hardware-platform` (`sev-snp`
 or `tdx`). `--operator-keys` points at a PEM bundle
 of EC public keys authorizing `c8s allowlist` writes (or pass `--force` to
-install with writes disabled).
+install with writes disabled; the router then routes nothing).
 
 ## 2. Apply optional CRD object
 
@@ -66,7 +66,7 @@ Expected injected pieces:
 
 - an init container and renewal sidecar running `c8s get-cert`;
 - an in-memory `c8s-certs` volume;
-- workload containers mounting `/etc/c8s/certs`;
+- the mesh endpoint and the credential sidecars mounting `/etc/c8s/certs`;
 - no injected credential Secret references.
 
 ## Reset

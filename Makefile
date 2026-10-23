@@ -1,6 +1,6 @@
 .PHONY: build install build-c8s build-c8s-node build-get-cert build-armtls-mesh \
        build-nri-image-policy \
-       test test-integration test-integration-cluster test-node-guest-image-role test-node-guest-image-gpu-label test-node-guest-image-gpu-cc test-node-guest-image-scratch test-node-guest-image-psa-ready test-node-guest-image-role-systemd test-node-guest-image-cloud-init test-e2e-cw-label-policy test-e2e-mesh-cw-enforcement test-e2e-allowlist-enforcement test-e2e-components-ready test-e2e-cw-workload mutation-check mutation-full vet fmt lint clean \
+       test test-podmesh-netns test-integration test-integration-cluster test-node-guest-image-role test-node-guest-image-gpu-label test-node-guest-image-gpu-cc test-node-guest-image-scratch test-node-guest-image-psa-ready test-node-guest-image-models-disk test-node-guest-image-role-systemd test-node-guest-image-cloud-init test-e2e-cw-label-policy test-e2e-allowlist-enforcement test-e2e-components-ready test-e2e-cw-workload mutation-check mutation-full vet fmt lint clean \
        manifests generate check-crd-chart install-controller-gen require-controller-gen
 
 CONTROLLER_GEN         ?= controller-gen
@@ -84,6 +84,14 @@ C8S_TEST_COUNT ?= -count=1
 test:
 	go test -race $(C8S_TEST_COUNT) -timeout=120s work
 
+# The pod ruleset installs over netlink into a network namespace the test
+# creates, so it needs uid 0 there: the test binary runs under sudo unless this
+# shell is already root. C8S_REQUIRE_NFT=1 turns a namespace it cannot create
+# into a failure instead of a skip.
+test-podmesh-netns:
+	@runner="env C8S_REQUIRE_NFT=1"; [ "$$(id -u)" = 0 ] || runner="sudo -n $$runner"; \
+		go test -race -count=1 -exec "$$runner" -run InTheNamespace ./internal/podmesh/ruleset ./internal/cmds/nri-image-policy
+
 test-integration:
 	./test/integration/run.sh
 
@@ -124,6 +132,9 @@ test-node-guest-image-apparmor-runtime:
 test-node-guest-image-psa-ready:
 	./node-guest-image/tests/psa-ready-test.sh
 
+test-node-guest-image-models-disk:
+	./node-guest-image/tests/models-disk-test.sh
+
 # Role-gated unit wiring under real systemd in a privileged container.
 # Needs only docker.
 test-node-guest-image-role-systemd:
@@ -160,14 +171,6 @@ mutation-full:
 # post-merge in the snp-metal-e2e lane's in-guest payload.
 test-e2e-cw-label-policy:
 	./test/e2e/cw-label-policy.sh
-
-# Live-cluster check that the workload path is mesh-wrapped and plaintext
-# bypasses to cw pods fail closed. Needs kubectl pointed at a cluster with
-# the C8s chart installed and a Running confidential workload. Not CI-wired:
-# snp-metal's guest kernel lacks armtls-mesh's netfilter matches (the lane
-# installs armtlsMesh.enabled=false).
-test-e2e-mesh-cw-enforcement:
-	./test/e2e/mesh-cw-enforcement.sh
 
 # Live-cluster check that image admission is fail-closed and that a signed
 # allowlist write opens it. Needs kubectl pointed at a cluster with C8s

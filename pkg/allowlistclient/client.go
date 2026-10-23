@@ -8,6 +8,8 @@ package allowlistclient
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -49,7 +51,7 @@ type Authorizer = operatorauth.Authorizer
 
 // List returns the current allowlist and its version (the ETag counter).
 func (c Client) List(ctx context.Context) (*allowlist.Allowlist, string, error) {
-	al, etag, notModified, err := c.fetch(ctx, "", nil)
+	served, notModified, err := c.fetch(ctx, "", nil)
 	if err != nil {
 		return nil, "", err
 	}
@@ -57,13 +59,32 @@ func (c Client) List(ctx context.Context) (*allowlist.Allowlist, string, error) 
 		// Unreachable without an If-None-Match, but treat as an empty response.
 		return nil, "", fmt.Errorf("unexpected 304 without If-None-Match")
 	}
-	return al, VersionFromETag(etag), nil
+	return served.Allowlist, VersionFromETag(served.ETag), nil
 }
 
 // Fetch issues GET /allowlist with If-None-Match. notModified is true on a 304
 // (allowlist nil, etag ""); on 200 the parsed allowlist and new ETag are
 // returned. Used by enforcers polling for changes.
 func (c Client) Fetch(ctx context.Context, ifNoneMatch string) (*allowlist.Allowlist, string, bool, error) {
+	served, notModified, err := c.FetchServed(ctx, ifNoneMatch)
+	return served.Allowlist, served.ETag, notModified, err
+}
+
+// Served is an allowlist as CDS served it.
+type Served struct {
+	Allowlist *allowlist.Allowlist
+	ETag      string
+	// Digest is "sha256:<hex>" of the exact bytes served. CDS serves
+	// Allowlist.Canonical, so this is the policy digest it stamps into
+	// workload certificates and nodes measure into RTMR[3].
+	Digest string
+	// Seed is the digest of the seed layer CDS names in
+	// allowlist.SeedHeader, "" without one.
+	Seed string
+}
+
+// FetchServed is Fetch that also returns the digest of the served bytes.
+func (c Client) FetchServed(ctx context.Context, ifNoneMatch string) (Served, bool, error) {
 	return c.fetch(ctx, ifNoneMatch, nil)
 }
 
@@ -71,20 +92,20 @@ func (c Client) Fetch(ctx context.Context, ifNoneMatch string) (*allowlist.Allow
 // them. Workload certificates stamp their hash, so exports must preserve them.
 func (c Client) CanonicalBytes(ctx context.Context) ([]byte, string, error) {
 	var body []byte
-	_, etag, notModified, err := c.fetch(ctx, "", &body)
+	served, notModified, err := c.fetch(ctx, "", &body)
 	if err != nil {
 		return nil, "", err
 	}
 	if notModified {
 		return nil, "", fmt.Errorf("unexpected 304 without If-None-Match")
 	}
-	return body, VersionFromETag(etag), nil
+	return body, VersionFromETag(served.ETag), nil
 }
 
-func (c Client) fetch(ctx context.Context, ifNoneMatch string, raw *[]byte) (*allowlist.Allowlist, string, bool, error) {
+func (c Client) fetch(ctx context.Context, ifNoneMatch string, raw *[]byte) (Served, bool, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/allowlist", nil)
 	if err != nil {
-		return nil, "", false, fmt.Errorf("create request: %w", err)
+		return Served{}, false, fmt.Errorf("create request: %w", err)
 	}
 	if ifNoneMatch != "" {
 		req.Header.Set("If-None-Match", ifNoneMatch)
@@ -92,34 +113,34 @@ func (c Client) fetch(ctx context.Context, ifNoneMatch string, raw *[]byte) (*al
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, "", false, fmt.Errorf("fetch allowlist: %w", err)
+		return Served{}, false, fmt.Errorf("fetch allowlist: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotModified {
 		io.Copy(io.Discard, resp.Body)
-		return nil, "", true, nil
+		return Served{}, true, nil
 	}
 	if resp.StatusCode != http.StatusOK {
-		body, _ := readCapped(resp.Body, maxAllowlistResponseBytes)
-		return nil, "", false, &StatusError{Status: resp.StatusCode, Body: strings.TrimSpace(string(body))}
+		return Served{}, false, operatorauth.ResponseError(resp)
 	}
 	if ct := resp.Header.Get("Content-Type"); !isJSONContentType(ct) {
-		return nil, "", false, fmt.Errorf("fetch allowlist: unexpected content type: %s", ct)
+		return Served{}, false, fmt.Errorf("fetch allowlist: unexpected content type: %s", ct)
 	}
 
 	body, err := readCapped(resp.Body, maxAllowlistResponseBytes)
 	if err != nil {
-		return nil, "", false, err
+		return Served{}, false, err
 	}
 	al, err := allowlist.ParseServedJSON(body)
 	if err != nil {
-		return nil, "", false, err
+		return Served{}, false, err
 	}
 	if raw != nil {
 		*raw = body
 	}
-	return al, resp.Header.Get("ETag"), false, nil
+	sum := sha256.Sum256(body)
+	return Served{Allowlist: al, ETag: resp.Header.Get("ETag"), Digest: "sha256:" + hex.EncodeToString(sum[:]), Seed: resp.Header.Get(allowlist.SeedHeader)}, false, nil
 }
 
 // ReplaceAll atomically replaces the entire allowlist. CDS assigns the new
@@ -141,7 +162,8 @@ func (c Client) PutWorkload(ctx context.Context, name string, w allowlist.Worklo
 	return c.mutate(ctx, http.MethodPut, "/allowlist/workloads/"+url.PathEscape(name), data, auth)
 }
 
-// DeleteWorkload removes one named workload entry. Returns a 404 StatusError if
+// DeleteWorkload removes one named workload entry. Returns a 404
+// *operatorauth.StatusError if
 // it is absent.
 func (c Client) DeleteWorkload(ctx context.Context, name string, auth Authorizer) error {
 	return c.mutate(ctx, http.MethodDelete, "/allowlist/workloads/"+url.PathEscape(name), nil, auth)
@@ -168,21 +190,32 @@ func (c Client) mutate(ctx context.Context, method, path string, body []byte, au
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return &StatusError{Status: resp.StatusCode, Body: strings.TrimSpace(string(msg))}
+		return operatorauth.ResponseError(resp)
 	}
 	io.Copy(io.Discard, resp.Body)
 	return nil
 }
 
-// VersionFromETag extracts N from a weak ETag of the form W/"N", or "" if the
-// header is missing or malformed. Exported because enforcers polling the
-// allowlist track the same counter for epoch anti-rollback.
+// VersionFromETag extracts a non-empty N from a weak ETag of the form W/"N",
+// or "" for anything else. A strong ETag yields "" by design: CDS only emits
+// W/"N". Exported because enforcers polling the allowlist track the same
+// counter for epoch anti-rollback.
 func VersionFromETag(etag string) string {
-	v := strings.TrimPrefix(etag, "W/")
-	v = strings.TrimPrefix(v, `"`)
-	v = strings.TrimSuffix(v, `"`)
+	v, _ := weakVersion(etag)
 	return v
+}
+
+// weakVersion returns N from a weak ETag W/"N" with a non-empty N.
+func weakVersion(etag string) (string, bool) {
+	v, ok := strings.CutPrefix(etag, `W/"`)
+	if !ok {
+		return "", false
+	}
+	v, ok = strings.CutSuffix(v, `"`)
+	if !ok || v == "" {
+		return "", false
+	}
+	return v, true
 }
 
 // maxAllowlistResponseBytes caps CDS response bodies. Generous for a realistic
@@ -205,17 +238,4 @@ func readCapped(r io.Reader, maxBytes int64) ([]byte, error) {
 		return nil, fmt.Errorf("read response body: %w", err)
 	}
 	return body, nil
-}
-
-// StatusError represents a non-success HTTP response.
-type StatusError struct {
-	Status int
-	Body   string
-}
-
-func (e *StatusError) Error() string {
-	if e.Body != "" {
-		return fmt.Sprintf("server returned %d: %s", e.Status, e.Body)
-	}
-	return fmt.Sprintf("server returned %d", e.Status)
 }

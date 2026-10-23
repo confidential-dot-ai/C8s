@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
@@ -19,6 +20,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 var operatorPub = []byte("operator public key bytes")
@@ -111,7 +113,7 @@ func TestLoadMeasuredOperatorKey(t *testing.T) {
 			stageOperatorPubkey(t, operatorPub)
 			url := attester(t, tc.platform, tc.binding)
 
-			got, err := LoadMeasuredOperatorKey(context.Background(), url)
+			got, err := LoadMeasuredOperatorKey(context.Background(), url, "")
 			if err != nil {
 				t.Fatalf("LoadMeasuredOperatorKey: %v", err)
 			}
@@ -149,7 +151,7 @@ func TestLoadMeasuredOperatorKeyFailsClosed(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			stageOperatorPubkey(t, tc.staged)
 			url := attester(t, tc.platform, tc.binding)
-			if _, err := LoadMeasuredOperatorKey(context.Background(), url); err == nil {
+			if _, err := LoadMeasuredOperatorKey(context.Background(), url, ""); err == nil {
 				t.Fatal("LoadMeasuredOperatorKey = nil error, want a refusal")
 			}
 		})
@@ -160,7 +162,7 @@ func TestLoadMeasuredOperatorKeyFailsClosed(t *testing.T) {
 // non-operator boot from every other refusal; an empty file is not.
 func TestLoadMeasuredOperatorKeyClassifiesAbsence(t *testing.T) {
 	stageOperatorPubkey(t, nil)
-	_, err := LoadMeasuredOperatorKey(context.Background(), "http://127.0.0.1:1")
+	_, err := LoadMeasuredOperatorKey(context.Background(), "http://127.0.0.1:1", "")
 	if !errors.Is(err, ErrNoOperatorKey) {
 		t.Errorf("err = %v, want errors.Is(..., ErrNoOperatorKey)", err)
 	}
@@ -169,7 +171,7 @@ func TestLoadMeasuredOperatorKeyClassifiesAbsence(t *testing.T) {
 	}
 
 	stageOperatorPubkey(t, []byte{})
-	_, err = LoadMeasuredOperatorKey(context.Background(), "http://127.0.0.1:1")
+	_, err = LoadMeasuredOperatorKey(context.Background(), "http://127.0.0.1:1", "")
 	if err == nil || errors.Is(err, ErrNoOperatorKey) {
 		t.Errorf("err = %v, want a refusal that is NOT ErrNoOperatorKey for an empty staged key", err)
 	}
@@ -179,7 +181,7 @@ func TestLoadMeasuredOperatorKeyClassifiesAbsence(t *testing.T) {
 // register: the binding must come from a report whose signature was checked.
 func TestLoadMeasuredOperatorKeyRefusesUnreachableAttester(t *testing.T) {
 	stageOperatorPubkey(t, operatorPub)
-	if _, err := LoadMeasuredOperatorKey(context.Background(), "http://127.0.0.1:1"); err == nil {
+	if _, err := LoadMeasuredOperatorKey(context.Background(), "http://127.0.0.1:1", ""); err == nil {
 		t.Fatal("LoadMeasuredOperatorKey = nil error, want a refusal")
 	}
 }
@@ -188,7 +190,7 @@ func TestLoadMeasuredOperatorKeyRefusesUnreachableAttester(t *testing.T) {
 func TestLoadMeasuredOperatorKeyRefusesUnknownPlatform(t *testing.T) {
 	stageOperatorPubkey(t, operatorPub)
 	url := attester(t, "nonsense", tdxBinding(operatorPub))
-	if _, err := LoadMeasuredOperatorKey(context.Background(), url); err == nil {
+	if _, err := LoadMeasuredOperatorKey(context.Background(), url, ""); err == nil {
 		t.Fatal("LoadMeasuredOperatorKey = nil error, want a refusal")
 	}
 }
@@ -203,7 +205,7 @@ func TestSelfReportBindsAFreshNonce(t *testing.T) {
 	v.Claims.InitData = snpBinding(operatorPub)
 	stub.SetVerdict(v)
 
-	if _, err := LoadMeasuredOperatorKey(context.Background(), stub.URL()); err != nil {
+	if _, err := LoadMeasuredOperatorKey(context.Background(), stub.URL(), ""); err != nil {
 		t.Fatalf("LoadMeasuredOperatorKey: %v", err)
 	}
 	reqs := stub.VerifyRequests()
@@ -297,7 +299,7 @@ func TestLoadMeasuredIdentityAttestsOnce(t *testing.T) {
 			launchDigest := fill(0xab)
 			stub := stubAttester(t, operatorReport(p.platform, launchDigest))
 
-			got, err := LoadMeasuredIdentity(context.Background(), p.name, stub.URL())
+			got, err := LoadMeasuredIdentity(context.Background(), p.name, stub.URL(), "")
 			if err != nil {
 				t.Fatalf("LoadMeasuredIdentity: %v", err)
 			}
@@ -340,7 +342,7 @@ func TestLoadMeasuredIdentityNonOperatorBoot(t *testing.T) {
 			r.binding = make([]byte, len(r.binding)) // keyless launch: zero binding
 			url := stubAttester(t, r).URL()
 
-			got, err := LoadMeasuredIdentity(context.Background(), p.name, url)
+			got, err := LoadMeasuredIdentity(context.Background(), p.name, url, "")
 			if err != nil {
 				t.Fatalf("unexpected hard error: %v", err)
 			}
@@ -368,7 +370,7 @@ func TestLoadMeasuredIdentitySubstitutedKey(t *testing.T) {
 			launchDigest := fill(0xef)
 			url := stubAttester(t, operatorReport(p.platform, launchDigest)).URL()
 
-			got, err := LoadMeasuredIdentity(context.Background(), p.name, url)
+			got, err := LoadMeasuredIdentity(context.Background(), p.name, url, "")
 			if err != nil {
 				t.Fatalf("unexpected hard error: %v", err)
 			}
@@ -396,7 +398,7 @@ func TestLoadMeasuredIdentityFailsClosedOnUnresolvableMeasurement(t *testing.T) 
 		t.Run("configured family "+platform, func(t *testing.T) {
 			stageOperatorPubkey(t, operatorPub)
 			url := stubAttester(t, operatorReport(teetypes.PlatformTDX, fill(0xaa))).URL()
-			if _, err := LoadMeasuredIdentity(context.Background(), platform, url); err == nil || !strings.Contains(err.Error(), platform) {
+			if _, err := LoadMeasuredIdentity(context.Background(), platform, url, ""); err == nil || !strings.Contains(err.Error(), platform) {
 				t.Fatalf("want configured-family refusal naming %q, got %v", platform, err)
 			}
 		})
@@ -406,15 +408,76 @@ func TestLoadMeasuredIdentityFailsClosedOnUnresolvableMeasurement(t *testing.T) 
 		r := operatorReport(teetypes.PlatformTDX, fill(0xaa))
 		r.rtmr2 = nil
 		url := stubAttester(t, r).URL()
-		if _, err := LoadMeasuredIdentity(context.Background(), "tdx", url); err == nil {
+		if _, err := LoadMeasuredIdentity(context.Background(), "tdx", url, ""); err == nil {
 			t.Fatal("want an error when this guest's own launch measurement cannot be resolved")
 		}
 	})
 
 	t.Run("attestation-api unreachable", func(t *testing.T) {
 		stageOperatorPubkey(t, operatorPub)
-		if _, err := LoadMeasuredIdentity(context.Background(), "sev-snp", "http://127.0.0.1:1"); err == nil {
+		if _, err := LoadMeasuredIdentity(context.Background(), "sev-snp", "http://127.0.0.1:1", ""); err == nil {
 			t.Fatal("want an error when the attestation-api is unreachable")
 		}
 	})
+}
+
+// The binding check replays the measured-policy journal, which may run ahead
+// of the report, and still accepts the bare seed.
+func TestVerifyNodeBindingReplaysMeasuredPolicies(t *testing.T) {
+	p := "sha256:" + strings.Repeat("1", 64)
+	q := "sha256:" + strings.Repeat("2", 64)
+	report := func(digests ...string) *teetypes.VerificationResult {
+		reg := runtimemeasure.FromDigestsSeeded(runtimemeasure.Seed(operatorPub), digests)
+		return &teetypes.VerificationResult{SignatureValid: true, Platform: teetypes.PlatformTDX, Claims: teetypes.Claims{
+			PlatformData: map[string]any{"rtmr_3": hex.EncodeToString(reg[:])},
+		}}
+	}
+	for _, tc := range []struct {
+		name    string
+		journal string // "" leaves no journal file
+		report  *teetypes.VerificationResult
+		wantErr bool
+	}{
+		{name: "bare seed, no journal", report: report()},
+		{name: "bare seed, journal ahead", journal: p + "\n", report: report()},
+		{name: "full journal", journal: p + "\n" + q + "\n", report: report(p, q)},
+		{name: "journal ahead of the report", journal: p + "\n" + q + "\n", report: report(p)},
+		{name: "extend the journal does not hold", journal: p + "\n", report: report(q), wantErr: true},
+		{name: "extend without a journal", report: report(p), wantErr: true},
+		{name: "replaying journal over the cap", journal: distinctJournal(armtls.MaxRuntimeExtensions + 1), report: report("sha256:" + strings.Repeat("0", 64)), wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeJournal(t, tc.journal)
+			err := verifyNodeBinding(tc.report, operatorPub, path)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("verifyNodeBinding = %v, want error %v", err, tc.wantErr)
+			}
+			// The error names the journal only when it held policies.
+			if err != nil && strings.Contains(err.Error(), path) != (tc.journal != "") {
+				t.Errorf("verifyNodeBinding = %v, want %s named only when the journal exists", err, path)
+			}
+		})
+	}
+}
+
+// writeJournal returns the path of a journal holding journal, or of a missing
+// file when journal is empty.
+func writeJournal(t *testing.T, journal string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "measured-policies")
+	if journal != "" {
+		if err := os.WriteFile(path, []byte(journal), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return path
+}
+
+// distinctJournal is a journal of n distinct digests, the first sha256:0…0.
+func distinctJournal(n int) string {
+	var b strings.Builder
+	for i := range n {
+		fmt.Fprintf(&b, "sha256:%064x\n", i)
+	}
+	return b.String()
 }

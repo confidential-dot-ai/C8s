@@ -46,6 +46,8 @@ func newServer(addr string, handler http.Handler, tlsCfg *tls.Config) *http.Serv
 type Config struct {
 	// ListenAddr is the HTTPS bind address (e.g. ":8443").
 	ListenAddr string
+	// listener, when set, is served instead of binding ListenAddr.
+	listener net.Listener
 	// AttestationAPIURL is the local attestation-api base URL (the same
 	// loopback service the rest of the stack uses). It provides the armTLS
 	// serving quote, fresh bootstrap evidence, and the verified self-report
@@ -53,6 +55,10 @@ type Config struct {
 	AttestationAPIURL string
 	// Platform is the TEE platform ("tdx" or "snp"; no default).
 	Platform string
+	// MeasuredPoliciesFile is the node's measured-policy journal
+	// (armtls.NodeJournal). The operator-key binding check replays it, and the
+	// serving certificate and /attest responses list it. Empty lists none.
+	MeasuredPoliciesFile string
 	// ClientCACert / ClientCAKey locate the cluster's client-signing CA
 	// (defaults: the RKE2 paths; kubeadm works via /etc/kubernetes/pki/ca.{crt,key}).
 	ClientCACert string
@@ -109,7 +115,7 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 	cfg.Platform = family.String()
 
-	operatorPub, err := LoadMeasuredOperatorKey(ctx, cfg.AttestationAPIURL)
+	operatorPub, err := LoadMeasuredOperatorKey(ctx, cfg.AttestationAPIURL, cfg.MeasuredPoliciesFile)
 	if err != nil {
 		return fmt.Errorf("load measured operator key: %w", err)
 	}
@@ -125,6 +131,7 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 	attestationClient := attestclient.NewClient("")
 	handler.attester = localEvidenceGenerator{client: attestationClient, apiURL: cfg.AttestationAPIURL}
+	handler.measuredPolicies = armtls.NewJournal(cfg.MeasuredPoliciesFile)
 
 	// armTLS serving config: the presented cert embeds a fresh TDX quote
 	// bound to its own public key, so the operator's armTLS client verifies
@@ -137,6 +144,8 @@ func Run(ctx context.Context, cfg Config) error {
 		Platform:   cfg.Platform,
 		AttestFunc: attestFunc,
 		Logger:     slog.Default(),
+
+		MeasuredPoliciesFile: cfg.MeasuredPoliciesFile,
 	})
 	if err != nil {
 		return fmt.Errorf("build armTLS config: %w", err)
@@ -150,13 +159,18 @@ func Run(ctx context.Context, cfg Config) error {
 		return fmt.Errorf("warm up armTLS serving cert: %w", err)
 	}
 
+	go certMgr.RunRotation(ctx)
+
 	srv := newServer(cfg.ListenAddr, handler, tlsCfg)
 
 	// Bind explicitly so the accepted sockets can be capped: every connection
 	// costs an armTLS handshake before the operator token is ever checked.
-	ln, err := net.Listen("tcp", cfg.ListenAddr)
-	if err != nil {
-		return fmt.Errorf("listen %s: %w", cfg.ListenAddr, err)
+	ln := cfg.listener
+	if ln == nil {
+		ln, err = net.Listen("tcp", cfg.ListenAddr)
+		if err != nil {
+			return fmt.Errorf("listen %s: %w", cfg.ListenAddr, err)
+		}
 	}
 
 	errCh := make(chan error, 1)

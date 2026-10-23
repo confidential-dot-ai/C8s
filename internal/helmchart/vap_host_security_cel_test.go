@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	testClaimsHostDir   = "/var/run/nri-image-policy"
+	testClaimsHostDir   = "/run/nri-image-policy"
 	testClaimsMountPath = "/run/c8s/workload-claims"
 	testC8sImage        = "ghcr.io/confidential-dot-ai/c8s-operator:dev"
 )
@@ -79,9 +79,6 @@ func validClaimsSidecar(name, mode string) map[string]any {
 	sidecar["image"] = testC8sImage
 	sidecar["restartPolicy"] = "Always"
 	sidecar["args"] = []any{mode}
-	if mode == "get-cert" {
-		sidecar["args"] = append(sidecar["args"].([]any), "--workload-claims")
-	}
 	// The node plugin supplies the claims mount through NRI, below the Pod spec.
 	return sidecar
 }
@@ -142,6 +139,7 @@ func hostSecurityContainerSC(object map[string]any, field string) map[string]any
 }
 
 func TestHostSecurityPodPolicyAllowsRestrictedPod(t *testing.T) {
+	t.Parallel()
 	validations := renderedHostSecurityPolicies(t)["c8s-deny-host-namespaces"]
 	allTrue(t, validations, validRestrictedTestPod())
 
@@ -186,6 +184,7 @@ func TestHostSecurityPodPolicyAllowsRestrictedPod(t *testing.T) {
 }
 
 func TestHostSecurityPoliciesAllowNRIClaimsSidecars(t *testing.T) {
+	t.Parallel()
 	policies := renderedHostSecurityPolicies(t)
 	for _, image := range []string{testC8sImage, "ghcr.io/confidential-dot-ai/c8s-operator:previous"} {
 		for _, sidecar := range []struct{ name, mode, annotation string }{
@@ -220,6 +219,7 @@ func TestHostSecurityPoliciesAllowNRIClaimsSidecars(t *testing.T) {
 }
 
 func TestHostSecurityPoliciesDenyEveryHostPath(t *testing.T) {
+	t.Parallel()
 	policies := renderedHostSecurityPolicies(t)
 	for _, tc := range []struct {
 		name, volume, path, hostType, field, mode string
@@ -277,6 +277,7 @@ func TestHostSecurityPoliciesDenyEveryHostPath(t *testing.T) {
 }
 
 func TestHostSecurityPoliciesAllowRestrictedClaimsVolumeName(t *testing.T) {
+	t.Parallel()
 	object := validRestrictedTestPod()
 	spec := hostSecuritySpec(object)
 	spec["volumes"] = append(spec["volumes"].([]any), map[string]any{
@@ -294,6 +295,7 @@ func TestHostSecurityPoliciesAllowRestrictedClaimsVolumeName(t *testing.T) {
 }
 
 func TestHostSecurityPodPolicyRejectsProbeAndLifecycleHosts(t *testing.T) {
+	t.Parallel()
 	validations := renderedHostSecurityPolicies(t)["c8s-deny-host-namespaces"]
 	tests := []struct {
 		name   string
@@ -341,6 +343,7 @@ func TestHostSecurityPodPolicyRejectsProbeAndLifecycleHosts(t *testing.T) {
 }
 
 func TestHostSecurityPodPolicyRejectsNamespaceAndVolumeBypasses(t *testing.T) {
+	t.Parallel()
 	validations := renderedHostSecurityPolicies(t)["c8s-deny-host-namespaces"]
 	tests := []struct {
 		name   string
@@ -377,6 +380,7 @@ func TestHostSecurityPodPolicyRejectsNamespaceAndVolumeBypasses(t *testing.T) {
 }
 
 func TestHostSecurityPodPolicyRejectsContainerSecurityBypasses(t *testing.T) {
+	t.Parallel()
 	validations := renderedHostSecurityPolicies(t)["c8s-deny-host-namespaces"]
 	for _, field := range []string{"containers", "initContainers", "ephemeralContainers"} {
 		t.Run(field, func(t *testing.T) {
@@ -436,6 +440,7 @@ func TestHostSecurityPodPolicyRejectsContainerSecurityBypasses(t *testing.T) {
 }
 
 func TestHostSecurityPodPolicyRejectsPodSecurityBypasses(t *testing.T) {
+	t.Parallel()
 	validations := renderedHostSecurityPolicies(t)["c8s-deny-host-namespaces"]
 	tests := []struct {
 		name   string
@@ -490,6 +495,7 @@ func TestHostSecurityPodPolicyRejectsPodSecurityBypasses(t *testing.T) {
 }
 
 func TestHostSecurityPoliciesPreserveRestrictedPodDefaults(t *testing.T) {
+	t.Parallel()
 	policies := renderedHostSecurityPolicies(t)
 	tests := []struct {
 		name    string
@@ -565,6 +571,7 @@ func TestHostSecurityPoliciesPreserveRestrictedPodDefaults(t *testing.T) {
 }
 
 func TestHostSecurityEphemeralPolicyPreservesHostIsolation(t *testing.T) {
+	t.Parallel()
 	validations := renderedHostSecurityPolicies(t)["c8s-deny-host-namespaces-ephemeral"]
 	tests := []struct {
 		name    string
@@ -614,6 +621,7 @@ func TestHostSecurityEphemeralPolicyPreservesHostIsolation(t *testing.T) {
 }
 
 func TestHostSecurityEphemeralPolicyBehaviors(t *testing.T) {
+	t.Parallel()
 	validations := renderedHostSecurityPolicies(t)["c8s-deny-host-namespaces-ephemeral"]
 	allTrue(t, validations, map[string]any{"spec": map[string]any{}})
 	allTrue(t, validations, validRestrictedEphemeralUpdate())
@@ -679,6 +687,7 @@ func TestHostSecurityEphemeralPolicyBehaviors(t *testing.T) {
 }
 
 func TestHostSecurityEphemeralPolicyInheritance(t *testing.T) {
+	t.Parallel()
 	validations := renderedHostSecurityPolicies(t)["c8s-deny-host-namespaces-ephemeral"]
 	tests := []struct {
 		name    string

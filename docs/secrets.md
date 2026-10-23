@@ -51,14 +51,16 @@ Annotate the pod alongside `confidential.ai/cw`:
 
 | Annotation | |
 |---|---|
-| `confidential.ai/c8s-secrets` | comma-separated `NAME=/store/path`; `NAME` is the file each value is written to |
-| `confidential.ai/c8s-secret-dir` | where the files land; default `/run/c8s/secrets` |
+| `confidential.ai/c8s-secrets` | comma-separated `NAME=/store/path`; `NAME` is the file each value is written to under `/run/c8s/secrets` |
 
 ```yaml
 annotations:
   confidential.ai/cw: api
   confidential.ai/c8s-secrets: "DB=/tenant-a/db,HF=/tenant-a/hf-token"
 ```
+
+The files land in `/run/c8s/secrets`. The directory is fixed; see
+[Fixed sidecar mounts](#fixed-sidecar-mounts).
 
 The webhook injects a `c8s-secret` sidecar and a memory-backed volume. Every
 container in the pod mounts that volume **read-only**; only the fetcher may
@@ -167,8 +169,13 @@ confirm which one was sent.
 serves at `GET /ca` over the attested connection and refuses unless it is one
 you pinned.
 
-The write goes to the peer whose CA was read. Through a router front door the
-CLI uses one connection for both. On a direct URL, a connection the CLI has to
+`$CDS` is CDS itself: its NodePort (`https://<node>:30808`,
+`cds.service.nodePort`) or a port-forward to `svc/c8s-cds`, pinned with the CDS
+launch digest. A router front door relays `/allowlist` but not `/ca` or
+`/secrets`, so `c8s secrets put`, `c8s volume create` and `c8s cds ca` refuse
+it before requesting `/ca` or sending a value.
+
+The write goes to the peer whose CA was read. A connection the CLI has to
 reopen must present the same serving certificate as the first one, or the write
 is refused before anything is sent: a fresh handshake proves only an attested
 build at `$M`, which another CDS can match.
@@ -197,8 +204,8 @@ c8s cds ca --url "$CDS" --measurements "$M" --out mesh-ca.pem
 ```
 
 Endpoint pins are required: use `--image-policy-file` for a complete image
-policy, or `--measurements` / `--measurements-file` for launch digests. Pin CDS
-for a direct URL or the router for a front door. The SHA-256 of each certificate
+policy, or `--measurements` / `--measurements-file` for launch digests, and pin
+CDS: `--url` is CDS itself, as for the write. The SHA-256 of each certificate
 goes to stderr.
 Record it. The read proves an attested build at `$M` served these bytes, which
 is the bound the gate has too: comparing that digest against an earlier read, or
@@ -228,6 +235,20 @@ Authorization is the operator key that CDS already pins for allowlist writes
 token binds the method, path, and body, so a captured one cannot be replayed
 against a different path or a different value. `overwrite` travels in the body
 for that reason: a query parameter is outside what the token covers.
+
+CDS spends each token once, as for allowlist writes, including on
+`GET /secrets-explain`. A token is spent once it verifies, before CDS checks the
+request it carries, so a retry mints a fresh token. Reusing a spent token
+answers `409` with a plain-text error. CDS answers `503` when it verifies a token
+but cannot record it as spent; nothing ran, so retry with a fresh token. Each
+CDS keeps its own record of spent tokens and never prunes it: every request adds
+a row, explain reads included, and without persistence that record counts
+toward `cds.persistence.memorySizeLimit`. Writes count too: when the path
+already holds a value, `c8s secrets put --overwrite` spends two tokens, one for
+the create attempt and one for the overwrite. Do not poll explain.
+Without `cds.persistence.enabled`, CDS also refuses every token issued before
+its start plus `--jwt-clock-skew` (`cds.jwtClockSkew`, 30 seconds by default)
+with `401`; wait that long after a restart.
 
 ### Replacing a value
 
@@ -327,49 +348,33 @@ a whole certificate lifetime — worse than what it prevents. The sandbox is
 instead unusable for secrets, which costs one workload rather than every pod on
 the node.
 
-### The injected drop set
+### Service links are off in injected pods
+
+The webhook sets `enableServiceLinks: false` on every pod it injects into. The
+kubelet then adds only the `KUBERNETES_*` variables for the API server, not the
+`<SERVICE>_SERVICE_HOST` and `<SERVICE>_PORT_*` set for each Service in the
+namespace. The injected sidecars are admitted with an `env: match` policy that
+lists every variable by name, so a set that changes whenever a Service is added
+would deny them. A workload that reads service-link variables must resolve the
+Service by DNS instead (`<service>.<namespace>.svc`).
+
+### The platform drop set
 
 C8s injects its own containers into every confidential pod. They are not part of
 a workload's declared set, so they are removed before matching — an entry never
-has to enumerate C8s's own sidecars.
+has to enumerate C8s's own containers.
 
-A container is dropped when its argv is the C8s binary in a mode the webhook
-injects — `/c8s get-cert`, `/c8s get-secret`, `/c8s get-volume`, or `/c8s
-probe-file` — *and* some entry admits its digest running that binary under an
-**unconstrained args policy**: `command` exact at `/c8s` with `args: any`, the
-shape the chart seeds the C8s image in, or `command` and `args` both `any`, the
-shape earlier releases seeded. Both conditions are required. Admission alone
-would let a pod add any component image with its entrypoint overridden — and
-have it ignored. The mode matters for the same reason. The C8s image in any
-other mode — `cds-attest`, `allowlist-proxy`, or a mode a pod author chose — is
-a declared container. The entry must admit it, as an init or a main container,
-or the pod matches nothing.
+A container is dropped when the node that admitted it reports a **platform
+role** for it: the mesh endpoint, the credential clients and the front door each
+run on a reserved identity that only the node's measured base allowlist grants
+(`role:` on a base entry). The role travels per container on the digests
+channel, which is a mutually attested connection to that node's inventory.
 
-A pod may add the image in one of the four modes, with arguments of its own.
-That container is dropped too: the inventory reports no container name, and
-matching keys on nothing the host writes. The drop therefore also requires
-every mount the container holds to be confined to the node, so whatever the
-container fetches or writes cannot reach any location the host reads. A
-confined mount is a platform mount, a read-only host path, or a volume on memory
-or encrypted scratch. A writable host path, a disk-backed `emptyDir`, or a PVC
-turns the container into a foreign container, and the pod matches nothing.
-Missing mount evidence fails closed the same way. The same holds for the real
-sidecars: a discovery or reload-watch volume the pod names for `get-cert` must
-be memory-backed, or the sidecar is foreign and the pod matches nothing. Each
-mode finds the node's sockets at a baked-in path, never a flag, so a pod author
-cannot point one at a socket of their choosing.
-
-The seeded component entries are the source: the injected image is among them,
-since it could not run otherwise, and an image bump seeds the new digest's entry
-beside the old one ([`allowlist-and-capabilities.md`](allowlist-and-capabilities.md#bootstrap)).
-
-What this rests on, in both directions: no image admitted with open args for
-`/c8s` other than C8s's carries an executable at that path, and the injected
-image's own entry keeps its args open. An operator who pins them
-(`bootstrapAllowlist.workloads` or `c8s allowlist edit`) turns every injected
-sidecar into a foreign container, and every release in the cluster is refused.
-Allowlist contents are operator-controlled and auditable, but that is a property
-of the deployment rather than something enforced here.
+What this rests on: a role is a local fact of the node's boot configuration.
+`role:` is YAML-only, so the document CDS serves cannot carry one, and no pod
+spec, annotation or container name can claim one. A container the base names no
+role for is a workload container, whatever image it runs and whatever its
+command line looks like.
 
 ## The grant
 
@@ -391,8 +396,29 @@ actually released.
 - A grant requires every container in the entry — init and main — to pin its
   argv: `command` and `args` both `exact` or `deny`. A container under `any`
   runs whatever command line the host chose, and the value would be released
-  to it. The write path refuses the entry, and release refuses an entry stored
-  before it did.
+  to it.
+- A grant also requires every container to pin its mounts: `mounts` is `deny`
+  or `exact` with no `host` rule. Under `any` the host can add a volume over
+  what the pinned command reads, and a `host` rule commits to a node path
+  whose content the host chooses. A `data` rule is allowed: its content
+  (a ConfigMap, a PVC) is still the cluster's, but only at a destination
+  under `/mnt/c8s-data/` the entry declares.
+- A read-only `nodeRootFile` rule is allowed. The node proves the file is on
+  its measured dm-verity root, and read-only removes the write channel, so the
+  host chooses neither what the container reads nor where it writes. This is
+  how a GPU worker holds a grant beside the NVIDIA CDI driver files of the
+  node image.
+- A `host` rule stays refused, read-only or writable. This includes
+  `/run/nvidia-persistenced/socket` from the NVIDIA CDI set: a socket has no
+  content to prove, and it is a channel to whatever process the host runs
+  behind it. The c8s node image's device plugin does not inject it (it runs
+  with `CDI_FEATURE_FLAGS=disable-ipc-discoverer`), and it serves the driver
+  files and GSP firmware from their canonical `/usr` paths, so a GPU worker's
+  CDI mounts are all `nodeRootFile` rules.
+- The write path refuses an entry that breaks either rule, and release refuses
+  one stored before it did. `env` is not required yet: `exact` fingerprints
+  the whole environment, including the pod's `HOSTNAME`, so no policy pins it
+  on a real pod; `lint` warns instead.
 - Paths are absolute, clean, and the only wildcard is a trailing `/**`, which
   matches strictly beneath its base — `/a/**` does not grant `/a`.
 - `write` requires `read`. The only client creates with `POST`, then re-reads;
@@ -420,29 +446,64 @@ kept for operator-authored input, where an unknown field is a typo.
 ## The mount policy
 
 Every container in the entry also needs a `mounts` policy admitting what the
-webhook injects: the cert volume, and the secret directory. An absent policy is
-`deny`, which admits platform mounts alone and so refuses the pod at container
-creation.
+webhook injects: the secret directory. An absent policy is `deny`, which
+admits platform mounts alone and so refuses the pod at container creation.
 
-Both are memory-backed `emptyDir`s, so an `exact` policy names them by
+The workload-claims socket directory that the node policy bind-mounts into the
+sidecars and an application's `cds-attest` container is a platform mount: no
+rule names it, and a `host` rule for it would refuse the grant.
+
+It is a memory-backed `emptyDir`, so an `exact` policy names it by
 destination:
 
 ```json
 "mounts": {"policy": "exact", "rules": [
-  {"destination": "/etc/c8s/certs", "kind": "emptyDir"},
   {"destination": "/run/c8s/secrets", "kind": "emptyDir"}
 ]}
 ```
 
-The destinations follow `confidential.ai/c8s-cert-dir` and
-`confidential.ai/c8s-secret-dir` where the pod sets them. `exact` is set
+These destinations are fixed. The credential volume is mounted into the
+injected containers alone, which this entry does not describe. `exact` is set
 equality, so the rules also cover every other non-platform mount the pod
 declares; a configMap, projected or PVC source classes as `data`, whose
 destination sits below `/mnt/c8s-data/`.
 
 `{"policy": "any"}` admits any mount table, leaving the host free to add one.
-It is what the chart seeds for C8s's own components. See
+The chart seeds C8s's own components with `exact` instead, and an entry with a
+grant may not use it. See
 [`allowlist-and-capabilities.md`](allowlist-and-capabilities.md#mount-policy-mounts).
+
+### Fixed sidecar mounts
+
+The C8s image's component entry pins each injected sidecar's mount table
+exactly, so the webhook mounts at fixed destinations. The inventory socket
+directory the NRI plugin adds at `/run/c8s/workload-claims` is a platform
+mount and is not in the table:
+
+| Mount | Destination | Sidecars |
+|---|---|---|
+| cert volume | `/etc/c8s/certs` | all four, and the pod's mesh endpoint read-only |
+| secrets volume | `/run/c8s/secrets` | `c8s-secret`, and every workload container read-only |
+| discovery volume (`confidential.ai/c8s-discovery-volume`) | `/run/c8s/discovery` | `c8s-cert`, `c8s-cert-wait`, `c8s-secret`, `c8s-volume` |
+| reload-watch volume (`confidential.ai/c8s-reload-watch-volume`) | `/mnt/c8s-data/c8s-reload-watch` | `c8s-cert` |
+
+The annotations that used to move these mounts —
+`confidential.ai/c8s-cert-dir`, `confidential.ai/c8s-secret-dir`,
+`confidential.ai/c8s-discovery-mount-path` and
+`confidential.ai/c8s-reload-watch-mount-path` — are refused at admission
+unless they name the fixed destination. To migrate a pod, remove the
+annotation and read the files at the fixed path.
+`confidential.ai/c8s-discovery-out` must name a file directly in the fixed
+discovery destination, not in a subdirectory, and
+`confidential.ai/c8s-reload-watch-paths` must name files below the fixed
+reload-watch destination, or the webhook refuses the pod. The discovery
+volume must be a volume of its own: the webhook refuses one that is also the
+cert, secrets or an encrypted volume, since get-cert writes into it. Back the discovery and reload-watch volumes
+with tmpfs unless the node has encrypted scratch; see
+[The injected drop set](#the-injected-drop-set). A pod admitted before
+the upgrade keeps its old mounts until a sidecar restarts or the pod is
+recreated; from then on the node refuses its sidecars, and the webhook refuses
+the pod until the annotation is gone.
 
 ## What the inventory reports
 
@@ -471,6 +532,61 @@ host mounts carry a source commitment and read-only mode.
 `mounts` field means mount evidence is unavailable; exact and deny mount
 policies fail closed in that case. Inventory responses retain the `mounts` field
 even for an empty set so consumers can preserve this distinction.
+
+The env evidence always carries the aggregate digest of the whole environment.
+Per-variable digests (`variableDigests`) are bounded so they take at most half
+of CDS's 1 MiB response limit:
+
+- The node keeps them for every environment of at most 128 variables and 4 KiB
+  of names, and serves them only for an image a `match` env policy lists in its
+  current base or applied allowlist. It decides when it answers, so a container
+  recorded before the node applied that policy is still served its digests once
+  it does.
+- A sandbox keeps at most 512 KiB of serialized per-variable digests. Past
+  that, the node evicts them in this order: unlisted images' stopped
+  containers, unlisted images' running containers, listed images' stopped
+  containers, then listed images' running containers, the oldest first within
+  each. An image is listed when a `match` policy in the node's current
+  allowlist names it. A stopped init container of a listed image therefore
+  keeps its digests while unlisted images hold any. An image whose `match`
+  policy the node has not applied yet, for example after a failed initial
+  pull, counts as unlisted, so its running containers still keep their digests
+  ahead of stopped ones. An evicted record keeps its aggregate digest and reports
+  `variableDigestsEvicted: true`. Admitting the same environment again restores
+  its digests.
+- `derive`, `lint` and `apply` reject a workload whose containers of
+  `match`-listed images could together need more than 512 KiB, whatever each
+  container's own env policy. Any declaration of the same image whose argv
+  could also satisfy a `match` declaration is charged at that declaration's
+  size, since the `match` declaration can admit the container in its place. A
+  container at both per-record limits needs about 13 KB, so 40 such containers
+  fit. A workload that passes keeps every declared container's evidence in a
+  fresh sandbox.
+
+The authoring check covers each declared container once. It does not cover:
+
+- Records of stopped containers. A container restarted with a new
+  environment, for example a `present` variable that changes on each start,
+  adds a record every time. Once those records pass 512 KiB, the oldest lose
+  their digests, fail `match`, and block secret release until the pod is
+  recreated.
+- Containers whose image only another workload's `match` policy lists. The
+  node retains their evidence at the same priority as this workload's.
+
+The 512 KiB bound covers per-variable digests only. Aggregate-only records,
+argv and mounts have no per-sandbox cap, so a sandbox with large argv or many
+mounts on top of the variable evidence can still exceed 1 MiB, and CDS then
+cannot read its inventory. Capping the whole response is a tracked follow-up.
+
+A record without per-variable digests fails a `match` policy.
+`c8s secrets explain` names which case occurred for each rejected container:
+
+| Case | Cause | Recovery |
+| --- | --- | --- |
+| `env evidence unavailable` | The node reported no environment: the container had no OCI process args, or its CDI edits were deferred. | Waiting does not help. Fix the launch, then recreate the pod. |
+| `env evidence missing` | The node has not applied an allowlist version with a `match` policy for the image, the node recorded the container with software older than per-variable digests, or the environment exceeds 128 variables or 4 KiB of names. | The diagnosis cannot tell these causes apart; apply each remedy that fits. (1) Wait until the node logs the version ([rollout](allowlist-and-capabilities.md#environment-policy-env)); no pod restart is needed. (2) Recreate a pod whose container the node recorded with older software. (3) Shrink an oversized environment, for example with `enableServiceLinks: false`, then recreate the pod. |
+| `env evidence evicted` | Stopped containers, restarts with new environments, or images outside the workload pushed the sandbox past 512 KiB. | Recreate the pod, and stop the churn that changes the environment on each restart. |
+| `env evidence mismatch` | The digests are present and the environment does not satisfy the policy. | Fix the environment or the policy. |
 
 `containers` is absent on an inventory older than the field. A consumer that
 needs it must treat that as "cannot answer" rather than "no containers"

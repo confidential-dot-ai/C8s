@@ -4,9 +4,8 @@
 // The allowlist is a map of named workload entries. Each entry pins an
 // init/main container set; every container binds a digest to the process
 // (argv), bind-mount and environment policy permitted for those bytes, and the
-// entry as a whole carries a secret-store grant. An image that may run however
-// it is invoked — a standalone or injected C8s component, whose argv is
-// per-pod — is an entry whose container policy is any. Policy is always looked
+// entry as a whole carries a secret-store grant and its declared exits. An image that may run however
+// it is invoked is an entry whose container policy is any. Policy is always looked
 // up by container digest — the entry name and image labels are informational,
 // never a trust-bearing key, because the image reference a pod presents is
 // chosen by the untrusted host while the digest is bound to the bytes that run.
@@ -24,17 +23,25 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"path"
 	"slices"
 	"sort"
 	"strings"
 
+	"github.com/confidential-dot-ai/c8s/internal/strictjson"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadname"
 )
 
 // Schema identifies the allowlist document format. It is the first field of the
 // canonical form.
 const Schema = "c8s.allowlist/v1"
+
+// SeedHeader is the GET /allowlist response header by which CDS names the
+// digest ("sha256:<hex>") of the node image's seed it keeps as a fixed layer
+// beside the served document. Absent without a seed layer.
+const SeedHeader = "C8s-Allowlist-Seed"
 
 // Policy values. Argv policies use Deny/Any/Exact; secrets grants use
 // Deny/Allow — never Any (normalizeSecrets).
@@ -42,6 +49,7 @@ const (
 	PolicyDeny  = "deny"
 	PolicyAny   = "any"
 	PolicyExact = "exact"
+	PolicyMatch = "match"
 	PolicyAllow = "allow"
 )
 
@@ -63,12 +71,39 @@ type Workload struct {
 	InitContainers []Container    `json:"initContainers" yaml:"initContainers,omitempty"`
 	Containers     []Container    `json:"containers" yaml:"containers"`
 	Secrets        *SecretsPolicy `json:"secrets,omitempty" yaml:"secrets,omitempty"`
+	// Egress are the exits a pod this entry matches may reach outside the
+	// mesh. Like a secrets grant it belongs to the whole entry.
+	Egress []Egress `json:"egress,omitempty" yaml:"egress,omitempty"`
+}
+
+// minEgressBits4 and minEgressBits6 are the broadest range an exit may name.
+// A single address (/32, /128) is the expected use.
+const (
+	minEgressBits4 = 16
+	minEgressBits6 = 48
+)
+
+// MaxEgress bounds an entry's exits: each is a way out of the TEE that a
+// relying party has to weigh, and one rule per exit in every chain.
+const MaxEgress = 8
+
+// Egress is one declared exit: a range and a TCP port. The canonical text of
+// the range is its RFC 5952 form (lower case, zeros compressed), whatever
+// spelling the author wrote.
+type Egress struct {
+	CIDR netip.Prefix `json:"cidr" yaml:"cidr"`
+	Port uint16       `json:"port" yaml:"port"`
 }
 
 // Container binds a digest to the process policy permitted for it.
+//
+// Role names the platform role an enforcer grants to these bytes under this
+// policy. It is YAML-only: a document on the wire carries no role, so a role
+// comes from a measured boot config and nothing a CDS serves can claim one.
 type Container struct {
 	Digest  types.Digest `json:"digest" yaml:"digest"`
 	Image   string       `json:"image,omitempty" yaml:"image,omitempty"`
+	Role    string       `json:"-" yaml:"role,omitempty"`
 	Command ArgvPolicy   `json:"command" yaml:"command"`
 	Args    ArgvPolicy   `json:"args" yaml:"args"`
 	Mounts  MountPolicy  `json:"mounts" yaml:"mounts,omitempty"`
@@ -100,6 +135,8 @@ type MountRule struct {
 	Kind        MountClass `json:"kind" yaml:"kind"`
 	Source      string     `json:"source,omitempty" yaml:"source,omitempty"`
 	ReadOnly    bool       `json:"readOnly,omitempty" yaml:"readOnly,omitempty"`
+	// VerityDigest is reserved for fs-verity and rejected for now.
+	VerityDigest string `json:"verityDigest,omitempty" yaml:"verityDigest,omitempty"`
 }
 
 // MountClass identifies who controls the content behind a bind mount.
@@ -110,7 +147,16 @@ const (
 	MountEmptyDir MountClass = "emptyDir"
 	MountData     MountClass = "data"
 	MountHost     MountClass = "host"
+	// MountNodeRootFile is a rule kind only: it admits a read-only host file
+	// bind that carries ProvenanceNodeRoot evidence. It is a kind rather than a
+	// field on a host rule so that an enforcer predating it refuses the served
+	// document instead of applying the rule as a plain host rule.
+	MountNodeRootFile MountClass = "nodeRootFile"
 )
+
+// ProvenanceNodeRoot is mount evidence for a regular file reached through the
+// node's measured, read-only dm-verity root.
+const ProvenanceNodeRoot = "node-root"
 
 // MountStorage records the storage guarantee established by the node.
 type MountStorage string
@@ -126,8 +172,9 @@ const DataMountPrefix = "/mnt/c8s-data/"
 
 // EnvPolicy constrains the complete OCI launch environment. An absent policy means Any.
 type EnvPolicy struct {
-	Policy string            `json:"policy" yaml:"policy"`
-	Values map[string]string `json:"values,omitempty" yaml:"values,omitempty"`
+	Policy    string                `json:"policy" yaml:"policy"`
+	Values    map[string]string     `json:"values,omitempty" yaml:"values,omitempty"`
+	Variables map[string]EnvMatcher `json:"variables,omitzero" yaml:"variables,omitempty"`
 }
 
 // SecretsPolicy grants secret-store read/write globs to a whole workload entry.
@@ -159,7 +206,7 @@ func ParseServedJSON(data []byte) (*Allowlist, error) {
 }
 
 func parseJSON(data []byte, strict bool) (*Allowlist, error) {
-	if err := validateJSON(data); err != nil {
+	if err := strictjson.Validate(data); err != nil {
 		return nil, err
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
@@ -170,10 +217,39 @@ func parseJSON(data []byte, strict bool) (*Allowlist, error) {
 	if err := dec.Decode(&a); err != nil {
 		return nil, fmt.Errorf("decode allowlist: %w", err)
 	}
+	if err := a.refuseVolumeBindings(); err != nil {
+		return nil, err
+	}
 	if err := a.normalize(strict); err != nil {
 		return nil, err
 	}
 	return &a, nil
+}
+
+// refuseVolumeBindings refuses a document that names a pod volume on an
+// emptyDir or data rule. The binding belongs to a measured boot config, which
+// is YAML: nothing that arrives as JSON names a volume, so a served or
+// authored document carrying one is refused rather than read as a narrower
+// policy than the format defines.
+func (a *Allowlist) refuseVolumeBindings() error {
+	for name, w := range a.Workloads {
+		if err := w.refuseVolumeBindings(); err != nil {
+			return fmt.Errorf("workload %q: %w", name, err)
+		}
+	}
+	return nil
+}
+
+func (w Workload) refuseVolumeBindings() error {
+	for _, c := range w.containers() {
+		for _, rule := range c.Mounts.Rules {
+			if rule.Source == "" || !rule.bindsVolume() {
+				continue
+			}
+			return fmt.Errorf("mount kind %q at %s names a volume, which only a measured base binds", rule.Kind, rule.Destination)
+		}
+	}
+	return nil
 }
 
 // Normalize validates and canonicalizes a document decoded outside ParseJSON
@@ -186,7 +262,7 @@ func (a *Allowlist) Normalize() error {
 // a PUT /allowlist/workloads/{name} — applying the same normalization as
 // ParseJSON so a stored entry is canonical.
 func ParseWorkloadJSON(data []byte) (*Workload, error) {
-	if err := validateJSON(data); err != nil {
+	if err := strictjson.Validate(data); err != nil {
 		return nil, err
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
@@ -194,6 +270,9 @@ func ParseWorkloadJSON(data []byte) (*Workload, error) {
 	var w Workload
 	if err := dec.Decode(&w); err != nil {
 		return nil, fmt.Errorf("decode workload: %w", err)
+	}
+	if err := w.refuseVolumeBindings(); err != nil {
+		return nil, fmt.Errorf("entry: %w", err)
 	}
 	if err := normalizeContainers("entry", "initContainers", w.InitContainers); err != nil {
 		return nil, err
@@ -204,17 +283,29 @@ func ParseWorkloadJSON(data []byte) (*Workload, error) {
 	if err := normalizeSecrets(&w.Secrets); err != nil {
 		return nil, fmt.Errorf("entry secrets: %w", err)
 	}
-	if w.Secrets != nil && !w.ArgvPinned() {
-		return nil, fmt.Errorf("entry: %w", errGrantUnpinned)
+	if w.Secrets != nil {
+		if err := w.PinnedForGrant(); err != nil {
+			return nil, fmt.Errorf("entry: %w", err)
+		}
+	}
+	if err := w.CheckVariableEvidenceBudget(); err != nil {
+		return nil, fmt.Errorf("entry: %w", err)
+	}
+	if err := normalizeEgress(&w.Egress); err != nil {
+		return nil, fmt.Errorf("entry egress: %w", err)
+	}
+	if err := w.PinnedForEgress(); err != nil {
+		return nil, fmt.Errorf("entry: %w", err)
 	}
 	sortContainers(w.InitContainers)
 	sortContainers(w.Containers)
 	return &w, nil
 }
 
-// errGrantUnpinned refuses a secrets grant on an entry that leaves any
-// container's argv to the host.
-var errGrantUnpinned = fmt.Errorf("a secrets grant requires every container's command and args policy to be exact or deny")
+var (
+	errGrantUnpinnedArgv   = fmt.Errorf("a secrets grant requires every container's command and args policy to be exact or deny")
+	errGrantUnpinnedMounts = fmt.Errorf("a secrets grant requires every container's mounts policy to be deny, or exact without host rules (read-only nodeRootFile rules are allowed)")
+)
 
 // Digests returns every container digest in the workload (init and main), for
 // building a digest index.
@@ -247,20 +338,6 @@ func (c Container) IsUnconstrained() bool {
 	return true
 }
 
-// PinsAtMostCommand reports whether the container leaves everything but its
-// executable to the host: args, mounts and environment are any, and command is
-// any or exact. It is the shape of a seeded component entry, whose arguments
-// and mounts are per-pod but whose binary is the image's.
-func (c Container) PinsAtMostCommand() bool {
-	if c.Command.Policy != PolicyAny && c.Command.Policy != PolicyExact {
-		return false
-	}
-	if c.Args.Policy != PolicyAny {
-		return false
-	}
-	return (mountConstraint{policy: &c.Mounts}).isUnconstrained() && (envConstraint{policy: &c.Env}).isUnconstrained()
-}
-
 // ArgvPinned reports whether every container's command and args policy is
 // exact or deny, so nothing about the entry's argv is left to the host. A
 // secrets grant requires it (docs/secrets.md).
@@ -271,6 +348,47 @@ func (w Workload) ArgvPinned() bool {
 		}
 	}
 	return true
+}
+
+// MountsPinned reports whether every container's mounts policy is deny, or
+// exact with no host rule other than a read-only nodeRootFile, so the host adds
+// no mount and chooses no content. A data rule still mounts content the cluster
+// chooses (a ConfigMap, a PVC) at a destination the entry declares. A secrets
+// grant requires it (docs/secrets.md).
+func (w Workload) MountsPinned() bool {
+	for _, c := range w.containers() {
+		if !(mountConstraint{policy: &c.Mounts}).grantPinned() {
+			return false
+		}
+	}
+	return true
+}
+
+// PinnedForGrant reports why a secrets grant on w would release a value to a
+// launch the host shaped, or nil when the entry pins its argv and mounts. Env
+// is not required until a policy can pin it on a real pod: exact fingerprints
+// the whole environment, including the pod-specific HOSTNAME.
+func (w Workload) PinnedForGrant() error {
+	if !w.ArgvPinned() {
+		return errGrantUnpinnedArgv
+	}
+	if !w.MountsPinned() {
+		return errGrantUnpinnedMounts
+	}
+	return nil
+}
+
+// PinnedForEgress reports why declared exits on w would carry out of the TEE
+// whatever a launch the host shaped sends, or nil when the entry declares
+// none or pins its argv and mounts as a secrets grant must.
+func (w Workload) PinnedForEgress() error {
+	if len(w.Egress) == 0 {
+		return nil
+	}
+	if err := w.PinnedForGrant(); err != nil {
+		return fmt.Errorf("declared egress needs the launch pinned as a secrets grant does: %w", err)
+	}
+	return nil
 }
 
 // HostIndependent reports whether every runtime field that can change what a
@@ -291,29 +409,6 @@ func (w Workload) HostIndependent() bool {
 // containers is the init containers followed by the main containers.
 func (w Workload) containers() []Container {
 	return slices.Concat(w.InitContainers, w.Containers)
-}
-
-// AdmitsAnyArgs reports whether some entry admits the digest running argv's
-// command under an unconstrained args policy: the entry pins at most the
-// executable, and the arguments are the pod's to choose. The
-// injected-container drop set (internal/secrets) keys on it: C8s's own image
-// runs with per-pod arguments, so it is only ever admitted this way.
-func (a *Allowlist) AdmitsAnyArgs(digest string, argv []string) bool {
-	d, err := types.ParseDigest(digest)
-	if err != nil {
-		return false
-	}
-	for _, w := range a.Workloads {
-		for _, c := range w.containers() {
-			if c.Digest != d || c.Args.Policy != PolicyAny {
-				continue
-			}
-			if _, ok := c.Command.matchCommand(argv); ok {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // DigestEntry is the entry that admits an image under any command line: one
@@ -345,7 +440,7 @@ func DigestEntryName(digest types.Digest, image string) string {
 	if len(base) > 50 {
 		base = base[:50]
 	}
-	if !ValidWorkloadName(base) {
+	if !workloadname.Valid(base) {
 		base = "image"
 	}
 	return base + "-" + digest.Hex()[:12]
@@ -369,7 +464,7 @@ func (a *Allowlist) CanonicalDigest() ([]byte, error) {
 }
 
 // normalize canonicalizes the document. strict is the write/ingest posture
-// (ParseJSON): it enforces MaxWorkloadNameLen, so no entry that the cw selector
+// (ParseJSON): it enforces workloadname.MaxLen, so no entry that the cw selector
 // or the leaf stamp cannot represent ever enters the store. A served document
 // (ParseServedJSON) is not ours to reject over that bound — it arrived after
 // entries could already have been written, and failing the whole document would
@@ -382,19 +477,19 @@ func (a *Allowlist) normalize(strict bool) error {
 	for name, w := range a.Workloads {
 		// The grammar is not negotiable on either path: the name is used
 		// verbatim as a URL path segment.
-		if !workloadNameGrammarOK(name) {
+		if !workloadname.ValidGrammar(name) {
 			return fmt.Errorf("workload name %q must match [A-Za-z0-9][A-Za-z0-9._-]* (it is a URL path segment)", name)
 		}
-		if len(name) > MaxWorkloadNameLen {
+		if len(name) > workloadname.MaxLen {
 			if strict {
-				return fmt.Errorf("workload name %q is %d bytes; the maximum is %d (it is mirrored as a Kubernetes label value)", name, len(name), MaxWorkloadNameLen)
+				return fmt.Errorf("workload name %q is %d bytes; the maximum is %d (it is mirrored as a Kubernetes label value)", name, len(name), workloadname.MaxLen)
 			}
 			// Dropping is fail-closed: the entry's digests stop being admitted
 			// by this consumer. It could never have been named on a leaf either
 			// (armtls.MatchedWorkload.Validate applies the same bound), so
 			// nothing that depended on it is lost.
 			slog.Warn("allowlist: dropping a served workload entry whose name exceeds the label-value bound",
-				"name", name, "bytes", len(name), "max", MaxWorkloadNameLen)
+				"name", name, "bytes", len(name), "max", workloadname.MaxLen)
 			delete(a.Workloads, name)
 			continue
 		}
@@ -407,12 +502,93 @@ func (a *Allowlist) normalize(strict bool) error {
 		if err := normalizeSecrets(&w.Secrets); err != nil {
 			return fmt.Errorf("workload %q secrets: %w", name, err)
 		}
-		if strict && w.Secrets != nil && !w.ArgvPinned() {
-			return fmt.Errorf("workload %q: %w", name, errGrantUnpinned)
+		if strict && w.Secrets != nil {
+			if err := w.PinnedForGrant(); err != nil {
+				return fmt.Errorf("workload %q: %w", name, err)
+			}
+		}
+		if err := w.CheckVariableEvidenceBudget(); strict && err != nil {
+			return fmt.Errorf("workload %q: %w", name, err)
+		}
+		if err := normalizeEgress(&w.Egress); err != nil {
+			if strict {
+				return fmt.Errorf("workload %q egress: %w", name, err)
+			}
+			// Dropping is fail-closed: the entry grants no exit.
+			slog.Warn("allowlist: dropping a served workload entry's egress this consumer cannot validate",
+				"name", name, "error", err)
+			w.Egress = nil
+		}
+		if err := w.PinnedForEgress(); strict && err != nil {
+			return fmt.Errorf("workload %q: %w", name, err)
 		}
 		sortContainers(w.InitContainers)
 		sortContainers(w.Containers)
 		a.Workloads[name] = w
+	}
+	return nil
+}
+
+// nonUnicastRanges are what an exit must not overlap: this network, loopback,
+// link-local, multicast, reserved and broadcast, and the IPv6 forms that
+// stand for IPv4 addresses. Overlapping one of them also refuses /0.
+var nonUnicastRanges = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),
+	netip.MustParsePrefix("127.0.0.0/8"),
+	netip.MustParsePrefix("169.254.0.0/16"),
+	netip.MustParsePrefix("224.0.0.0/3"),
+	netip.MustParsePrefix("::/127"),
+	netip.MustParsePrefix("::ffff:0:0/96"),
+	netip.MustParsePrefix("64:ff9b::/96"),
+	netip.MustParsePrefix("2002::/16"),
+	netip.MustParsePrefix("fe80::/10"),
+	netip.MustParsePrefix("ff00::/8"),
+}
+
+// normalizeEgress validates an entry's exits and sorts them. An empty list
+// becomes nil, so an entry with no exit carries no "egress" key.
+func normalizeEgress(exits *[]Egress) error {
+	list := *exits
+	if len(list) == 0 {
+		*exits = nil
+		return nil
+	}
+	if len(list) > MaxEgress {
+		return fmt.Errorf("%d exits; the maximum is %d", len(list), MaxEgress)
+	}
+	for _, e := range list {
+		switch {
+		case !e.CIDR.IsValid():
+			return fmt.Errorf("an exit needs a cidr")
+		case e.CIDR.Addr().Is4In6():
+			return fmt.Errorf("cidr %s is a 4-in-6 range; write it as IPv4", e.CIDR)
+		case e.CIDR != e.CIDR.Masked():
+			return fmt.Errorf("cidr %s carries host bits (did you mean %s?)", e.CIDR, e.CIDR.Masked())
+		case e.Port == 0:
+			return fmt.Errorf("exit %s needs a TCP port", e.CIDR)
+		case e.CIDR.Addr().Is4() && e.CIDR.Bits() < minEgressBits4,
+			e.CIDR.Addr().Is6() && e.CIDR.Bits() < minEgressBits6:
+			return fmt.Errorf("cidr %s is broader than /%d (IPv4) or /%d (IPv6); an exit names a relay, usually one address", e.CIDR, minEgressBits4, minEgressBits6)
+		}
+		for _, special := range nonUnicastRanges {
+			if e.CIDR.Overlaps(special) {
+				return fmt.Errorf("cidr %s overlaps %s, which is not a range of unicast hosts an exit can name", e.CIDR, special)
+			}
+		}
+	}
+	slices.SortFunc(list, func(a, b Egress) int {
+		if c := a.CIDR.Addr().Compare(b.CIDR.Addr()); c != 0 {
+			return c
+		}
+		if c := a.CIDR.Bits() - b.CIDR.Bits(); c != 0 {
+			return c
+		}
+		return int(a.Port) - int(b.Port)
+	})
+	for i := 1; i < len(list); i++ {
+		if list[i] == list[i-1] {
+			return fmt.Errorf("exit %s port %d is declared twice", list[i].CIDR, list[i].Port)
+		}
 	}
 	return nil
 }
@@ -479,34 +655,6 @@ func validateMountRuleKind(r MountRule) error {
 		return fmt.Errorf("mount destination %q has unsupported kind %q", r.Destination, r.Kind)
 	}
 	return behavior.validate()
-}
-
-func normalizeEnv(p *EnvPolicy) error {
-	switch p.Policy {
-	case PolicyAny, "", PolicyDeny:
-		if p.Values != nil {
-			return fmt.Errorf("%s env policy takes no values", p.Policy)
-		}
-		if p.Policy == "" {
-			p.Policy = PolicyAny
-		}
-	case PolicyExact:
-		if p.Values == nil {
-			return fmt.Errorf("exact env requires values")
-		}
-		for n, v := range p.Values {
-			if !validEnvPair(n, v) {
-				return fmt.Errorf("invalid environment name or value")
-			}
-		}
-		if len(p.Values) == 0 {
-			p.Policy = PolicyDeny
-			p.Values = nil
-		}
-	default:
-		return fmt.Errorf("unknown env policy %q (want deny, any, or exact)", p.Policy)
-	}
-	return nil
 }
 
 // normalizeArgv validates an argv policy and canonicalizes an absent policy to
@@ -619,44 +767,4 @@ func sortContainers(cs []Container) {
 func policyKey(c Container) string {
 	b, _ := json.Marshal([]any{c.Command, c.Args, c.Mounts, c.Env})
 	return string(b)
-}
-
-// MaxWorkloadNameLen bounds an entry name to the Kubernetes label-value length,
-// so the confidential.ai/cw selector, an allowlist entry name, and the
-// matched-workload leaf stamp (pkg/armtls) can all represent it. It is enforced
-// where entries are written, not where a served document is read — see
-// normalize.
-const MaxWorkloadNameLen = 63
-
-// workloadNameGrammarOK restricts entry names to a URL-safe segment so a name
-// can be used verbatim as a path parameter without escaping ambiguity. It does
-// not apply MaxWorkloadNameLen; ValidWorkloadName is the bounded form.
-func workloadNameGrammarOK(name string) bool {
-	if name == "" {
-		return false
-	}
-	for i := 0; i < len(name); i++ {
-		b := name[i]
-		switch {
-		case b >= 'a' && b <= 'z', b >= 'A' && b <= 'Z', b >= '0' && b <= '9':
-		case (b == '.' || b == '_' || b == '-') && i > 0:
-		default:
-			return false
-		}
-	}
-	return true
-}
-
-// ValidWorkloadName reports whether name is a legal workload entry name: the
-// URL-path-segment grammar, bounded to MaxWorkloadNameLen. It is the check the
-// write path, the admission selector, and the matched-workload certificate
-// stamp share.
-//
-// It is not identical to what every consumer accepts: a name may end in '.',
-// '_' or '-' here and still fail k8s validation.IsValidLabelValue, which the
-// injection webhook applies to the cw label. Tightening the grammar to close
-// that gap would retroactively invalidate stored entries, so the narrower rule
-// stays where it is enforced.
-func ValidWorkloadName(name string) bool {
-	return workloadNameGrammarOK(name) && len(name) <= MaxWorkloadNameLen
 }

@@ -1,8 +1,10 @@
-go 1.27.0
+go 1.27.3
 
 use (
 	.
 	./test/conformance/steps
+	./test/conformance/tools/armtls-dial
 	./test/mock-attestation
 	./test/mock-cds
+	./test/mock-inventory
 )

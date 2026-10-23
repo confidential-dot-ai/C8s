@@ -1,22 +1,27 @@
 package operatorauth
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/sha512"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 
+	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 )
 
@@ -464,5 +469,177 @@ func TestVerifyUnpinnedKeyErrorKeepsCause(t *testing.T) {
 	}
 	if !errors.Is(err, jwt.ErrTokenSignatureInvalid) {
 		t.Fatalf("err = %v, want it to wrap the signature failure", err)
+	}
+}
+
+func TestVerifyStored(t *testing.T) {
+	keyPEM, pub := genKey(t, elliptic.P256())
+	_, other := genKey(t, elliptic.P256())
+	body := []byte(`{"schema":"x"}`)
+	stale := baseClaims(body)
+	stale["iat"] = time.Now().Add(-time.Hour).Unix()
+	stale["exp"] = time.Now().Add(-59 * time.Minute).Unix()
+	token := strings.TrimPrefix(mintCustom(t, keyPEM, stale), "Bearer ")
+	wide := baseClaims(body)
+	wide["exp"] = time.Now().Add(time.Hour).Unix()
+	wideToken := strings.TrimPrefix(mintCustom(t, keyPEM, wide), "Bearer ")
+	for _, tc := range []struct {
+		name         string
+		keys         []*ecdsa.PublicKey
+		token        string
+		method, path string
+		body         []byte
+		ok           bool
+	}{
+		{"expired token, matching request", []*ecdsa.PublicKey{pub}, token, http.MethodPost, "/allowlist", body, true},
+		{"other key", []*ecdsa.PublicKey{other}, token, http.MethodPost, "/allowlist", body, false},
+		{"other body", []*ecdsa.PublicKey{pub}, token, http.MethodPost, "/allowlist", []byte("{}"), false},
+		{"other method", []*ecdsa.PublicKey{pub}, token, http.MethodPut, "/allowlist", body, false},
+		{"other path", []*ecdsa.PublicKey{pub}, token, http.MethodPost, "/allowlist/workloads/a", body, false},
+		{"validity over the maximum", []*ecdsa.PublicKey{pub}, wideToken, http.MethodPost, "/allowlist", body, false},
+	} {
+		if err := VerifyStored(tc.keys, tc.token, tc.method, tc.path, tc.body); (err == nil) != tc.ok {
+			t.Errorf("%s: VerifyStored = %v, want ok=%v", tc.name, err, tc.ok)
+		}
+	}
+	r := reqWith("Bearer " + token)
+	if err := (Verifier{Keys: []*ecdsa.PublicKey{pub}}).Authorize(r, body); err == nil {
+		t.Error("Authorize accepted an expired token")
+	}
+}
+
+// TestVerifyRejectsAlgorithmOfOtherCurve: a P-256 key signing the SHA-384
+// of a token's signing input yields a signature jwt verifies under ES384.
+func TestVerifyRejectsAlgorithmOfOtherCurve(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"schema":"x"}`)
+	header, err := json.Marshal(map[string]string{"alg": "ES384", "typ": "JWT"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := json.Marshal(baseClaims(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := base64.RawURLEncoding.EncodeToString(header) + "." + base64.RawURLEncoding.EncodeToString(claims)
+	digest := sha512.Sum384([]byte(input))
+	r, sig, err := ecdsa.Sign(rand.Reader, key, digest[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := make([]byte, 96)
+	r.FillBytes(raw[:48])
+	sig.FillBytes(raw[48:])
+	token := input + "." + base64.RawURLEncoding.EncodeToString(raw)
+	keys := []*ecdsa.PublicKey{&key.PublicKey}
+
+	if err := VerifyStored(keys, token, http.MethodPost, "/allowlist", body); err == nil || !strings.Contains(err.Error(), "does not match the P-256 key") {
+		t.Errorf("VerifyStored(ES384 under P-256) = %v, want the curve mismatch refused", err)
+	}
+	if err := (Verifier{Keys: keys}).Authorize(reqWith("Bearer "+token), body); err == nil {
+		t.Error("Authorize(ES384 under P-256) = nil, want error")
+	}
+}
+
+// TestOperatorSignatureVector pins the stored-token check and the key-set hash
+// to testdata/operator_signature_vector.json, which external verifiers reuse.
+func TestOperatorSignatureVector(t *testing.T) {
+	raw, err := os.ReadFile("testdata/operator_signature_vector.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var v struct {
+		OperatorKeysPEM  string `json:"operator_keys_pem"`
+		OperatorKeysHash string `json:"operator_keys_hash"`
+		PolicyB64        string `json:"policy_b64"`
+		Token            string `json:"token"`
+	}
+	if err := json.Unmarshal(raw, &v); err != nil {
+		t.Fatal(err)
+	}
+	keys, err := ParsePublicKeysPEM([]byte(v.OperatorKeysPEM))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := KeySetHash(keys); err != nil || got != v.OperatorKeysHash {
+		t.Fatalf("KeySetHash = %s, %v; want %s", got, err, v.OperatorKeysHash)
+	}
+	policy, err := base64.StdEncoding.DecodeString(v.PolicyB64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyStored(keys, v.Token, http.MethodPut, "/allowlist", policy); err != nil {
+		t.Fatalf("VerifyStored(vector) = %v", err)
+	}
+	// CDS stores a signature only for canonical bytes, so the vector must be.
+	al, err := allowlist.ParseJSON(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if canon, err := al.Canonical(); err != nil || !bytes.Equal(canon, policy) {
+		t.Fatalf("vector policy is not canonical: %s, %v", canon, err)
+	}
+}
+
+// CDS keys spent tokens on header.payload, so two writes of the same body in
+// the same second must still mint distinct tokens.
+func TestSignerTokensAreDistinct(t *testing.T) {
+	keyPEM, pub := genKey(t, elliptic.P256())
+	signer, err := NewSignerFromKeyPEM(keyPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"a":1}`)
+	signed := map[string]bool{}
+	for range 2 {
+		auth, err := signer.Authorization(http.MethodPost, "/allowlist", body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := (Verifier{Keys: []*ecdsa.PublicKey{pub}}).Authorize(reqWith(auth), body); err != nil {
+			t.Fatalf("Authorize = %v", err)
+		}
+		token := strings.TrimPrefix(auth, "Bearer ")
+		if err := VerifyStored([]*ecdsa.PublicKey{pub}, token, http.MethodPost, "/allowlist", body); err != nil {
+			t.Fatalf("VerifyStored = %v", err)
+		}
+		signed[token[:strings.LastIndexByte(token, '.')]] = true
+	}
+	if len(signed) != 2 {
+		t.Fatalf("two Authorization calls signed %d distinct header.payload, want 2", len(signed))
+	}
+}
+
+func TestAuthorizeIssuedAt(t *testing.T) {
+	keyPEM, pub := genKey(t, elliptic.P256())
+	otherPEM, _ := genKey(t, elliptic.P256())
+	body := []byte("body")
+	iat := time.Now().Add(-time.Minute).Truncate(time.Second)
+	valid := baseClaims(body)
+	valid["iat"] = iat.Unix()
+	noIat := baseClaims(body)
+	delete(noIat, "iat")
+	v := Verifier{Keys: []*ecdsa.PublicKey{pub}}
+	for _, tc := range []struct {
+		name string
+		auth string
+		ok   bool
+	}{
+		{"valid", mintCustom(t, keyPEM, valid), true},
+		{"missing iat", mintCustom(t, keyPEM, noIat), false},
+		{"unpinned key", mintCustom(t, otherPEM, valid), false},
+		{"malformed", "Bearer not-a-jwt", false},
+	} {
+		got, err := v.AuthorizeIssuedAt(reqWith(tc.auth), body)
+		if (err == nil) != tc.ok {
+			t.Errorf("%s: AuthorizeIssuedAt = %v, %v; want ok=%v", tc.name, got, err, tc.ok)
+			continue
+		}
+		if tc.ok && !got.Equal(iat) {
+			t.Errorf("%s: AuthorizeIssuedAt = %v, want %v", tc.name, got, iat)
+		}
 	}
 }

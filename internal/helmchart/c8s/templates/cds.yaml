@@ -1,3 +1,209 @@
+{{- define "c8s.cdsPodSpec" -}}
+# Keeps the env names fixed for the allowlist's env match (c8s.componentEnv).
+enableServiceLinks: false
+
+serviceAccountName: {{ include "c8s.cdsName" . }}
+# The live node-list bound needs the API token; static CIDRs do not.
+automountServiceAccountToken: {{ empty .Values.cds.sandboxInventoryCIDRs }}
+{{- /* CDS is a singleton trust root reached over a node-local NodePort
+       and (with persistence) an RWO volume, so pin it to a known node.
+       The CDS digest is always in the NRI floor (c8s.imageAllowlist),
+       so image policy admits CDS on whichever node it lands. */}}
+{{- /* Baked nodes render this chart at build time, before any node
+       exists, so there is no per-cluster selector to set. RKE2 gives
+       node-role.kubernetes.io/control-plane to servers only, never to
+       agents, so this pins CDS to the server. It assumes the single
+       server a baked image boots; promoting a second one would let
+       the singleton move between them. */}}
+{{- if .Values.node.baked }}
+nodeSelector:
+  node-role.kubernetes.io/control-plane: "true"
+{{- else }}
+{{- with .Values.cds.node.selector }}
+nodeSelector:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- end }}
+{{- with .Values.cds.node.tolerations }}
+tolerations:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+securityContext:
+
+{{ toYaml .Values.podSecurityContext | indent 2 }}
+
+containers:
+  - name: cds
+    image: {{ include "c8s.cdsImage" . }}
+    imagePullPolicy: {{ .Values.cds.image.pullPolicy }}
+    command: {{ include "c8s.entrypoint" (dict "root" . "valuePath" "cds.image") }}
+    args:
+      - --port={{ .Values.cds.port }}
+      - --log-level={{ .Values.cds.logLevel }}
+      # Per-mode resolution: see c8s.attestationApiURL.
+      - --attestation-api-url={{ include "c8s.attestationApiURL" . }}
+      - --allowlist-db={{ .Values.cds.allowlistDB }}
+      - --allowlist-persistent={{ .Values.cds.persistence.enabled }}
+      {{- if .Values.node.baked }}
+      {{- /* The measured image holds the baked seed, the one the node's NRI
+             base enforces, so keeping it as a fixed layer admits nothing the
+             node does not. The signed launch document's workloads enter the
+             store and are served. The seed ConfigMap below is editable by
+             namespace RBAC: it is not read here. */}}
+      - --seed-layer=/run/c8s-node/allowlist-seed.json
+      - --allowlist-seed=/run/c8s-node/launch-workloads.json
+      - --operator-keys=/run/c8s-node/operator-pubkey
+      - --dns-san-file=/run/c8s-node/tls-san
+      {{- else }}
+      - --allowlist-seed=/mnt/c8s-data/cds-seed/allowlist-seed.json
+      {{- end }}
+      - --jwt-clock-skew={{ .Values.cds.jwtClockSkew }}
+      - --ca-common-name={{ .Values.cds.ca.commonName }}
+      - --ca-cert-validity={{ .Values.cds.ca.certValidity }}
+      - --min-ca-validity={{ .Values.cds.ca.minValidity }}
+      - --cert-ttl={{ .Values.cds.certTTL }}
+      - --named-cert-ttl={{ .Values.cds.namedCertTTL }}
+      - --challenge-ttl={{ .Values.cds.challengeTTL }}
+      - --request-timeout={{ .Values.cds.requestTimeout }}
+      - --max-request-size={{ .Values.cds.maxRequestSize }}
+      - --secrets-max-paths={{ include "c8s.positiveInt" (dict "value" .Values.cds.secretsMaxPaths "label" "cds.secretsMaxPaths") }}
+      - --secrets-max-paths-per-workload={{ include "c8s.positiveInt" (dict "value" .Values.cds.secretsMaxPathsPerWorkload "label" "cds.secretsMaxPathsPerWorkload") }}
+      - --readiness-interval={{ .Values.cds.readinessInterval }}
+      - --san-validation={{ .Values.cds.sanValidation }}
+      {{- /* Always allow in-cluster Service SANs so the mesh's own
+             get-cert/armtls-mesh CSRs validate; operators append public
+             hostnames via cds.dnsSanPatterns without restating this. */}}
+      - --dns-san-pattern={{ include "c8s.cdsDnsSanPattern" . }}
+      {{- range .Values.cds.dnsSanPatterns }}
+      - --dns-san-pattern={{ . }}
+      {{- end }}
+      {{- if .Values.cds.cnPattern }}
+      - --allowed-cn-pattern={{ .Values.cds.cnPattern }}
+      {{- end }}
+      {{- if .Values.node.baked }}
+      - --image-policy-file=/run/c8s-node/peers.json
+      {{- else if .Values.cds.measurementsConfig }}
+      - --image-policy-file=/mnt/c8s-data/measurements/cds.json
+      {{- else }}
+      {{- with .Values.cds.measurements }}
+      - --measurements={{ join "," . }}
+      {{- end }}
+      {{- with .Values.cds.rtmrs }}
+      - --rtmrs={{ join "," . }}
+      {{- end }}
+      {{- end }}
+      {{- with .Values.cds.sandboxInventoryCIDRs }}
+      - --sandbox-inventory-cidr={{ join "," . }}
+      {{- end }}
+      {{- if and (not .Values.node.baked) .Values.cds.operatorKeys }}
+      - --operator-keys=/mnt/c8s-data/cds-operator-keys/keys.pem
+      {{- end }}
+      - --rate-limit={{ .Values.cds.rateLimit }}
+      - --rate-burst={{ .Values.cds.rateBurst }}
+      - --rate-limiter-max-entries={{ .Values.cds.rateLimiterMaxEntries }}
+      - --rate-limiter-evict-interval={{ .Values.cds.rateLimiterEvictInterval }}
+      - --rate-limiter-idle-timeout={{ .Values.cds.rateLimiterIdleTimeout }}
+      - --armtls-platform={{ .Values.cds.armtlsPlatform }}
+      - --armtls-cert-ttl={{ .Values.cds.armtlsCertTTL }}
+      {{- /* The measured-policy journal, under the attestation-api-socket
+             mount. Without that mount the default node path is absent and
+             CDS logs it. */}}
+      {{- if include "c8s.attestationApiSocketPresent" . }}
+      - --measured-policies-file={{ .Values.nriImagePolicy.hostPaths.runtimeDir }}/measured-policies
+      {{- end }}
+    {{- with (include "c8s.attestationApiHostIPEnv" .) }}
+    # cvmMode=bare-metal: expands $(HOST_IP) in --attestation-api-url to the node
+    # IP so this pod-netns pod reaches the node-baked host attestation-api.
+    env:
+      {{- . | nindent 6 }}
+    {{- end }}
+    ports:
+      - name: https
+        containerPort: {{ .Values.cds.port }}
+
+    readinessProbe:
+      httpGet:
+        path: /readyz
+        port: https
+        scheme: HTTPS
+      initialDelaySeconds: 3
+    livenessProbe:
+      httpGet:
+        path: /healthz
+        port: https
+        scheme: HTTPS
+      periodSeconds: 30
+
+    resources:
+{{ toYaml .Values.cds.resources | indent 6 }}
+    volumeMounts:
+      - name: data
+        mountPath: /mnt/c8s-data/cds
+      {{- include "c8s.attestationApiSocketMount" . | nindent 6 }}
+      {{- include "c8s.nodeConfigMount" . | nindent 6 }}
+      {{- if not .Values.node.baked }}
+      - name: allowlist-seed
+        mountPath: /mnt/c8s-data/cds-seed
+        readOnly: true
+      {{- if .Values.cds.operatorKeys }}
+      - name: operator-keys
+        mountPath: /mnt/c8s-data/cds-operator-keys
+        readOnly: true
+      {{- end }}
+      {{- if .Values.cds.measurementsConfig }}
+      - name: measurements-config
+        mountPath: /mnt/c8s-data/measurements
+        readOnly: true
+      {{- end }}
+      {{- end }}
+    securityContext:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+
+      runAsNonRoot: true
+      runAsUser: 65532
+
+      capabilities:
+        drop:
+          - ALL
+{{- /* Every component volume is tmpfs-backed (memory emptyDirs, ConfigMaps
+       projected): the component entry admits a volume only on storage the
+       node proves memory or encrypted, and tmpfs is that on every node. */}}
+volumes:
+  - name: data
+    {{- if .Values.cds.persistence.enabled }}
+    persistentVolumeClaim:
+      claimName: {{ include "c8s.cdsName" . }}-data
+    {{- else }}
+    emptyDir:
+      medium: Memory
+      sizeLimit: {{ required "cds.persistence.memorySizeLimit is required unless cds.persistence.enabled" .Values.cds.persistence.memorySizeLimit | toString | quote }}
+    {{- end }}
+  {{- include "c8s.attestationApiSocketVolume" . | nindent 2 }}
+  {{- include "c8s.nodeConfigVolume" . | nindent 2 }}
+  {{- if not .Values.node.baked }}
+  - name: allowlist-seed
+    projected:
+      sources:
+        - configMap:
+            name: {{ include "c8s.cdsName" . }}-allowlist-seed
+  {{- if .Values.cds.operatorKeys }}
+  - name: operator-keys
+    projected:
+      sources:
+        - configMap:
+            name: {{ include "c8s.cdsName" . }}-operator-keys
+  {{- end }}
+  {{- if .Values.cds.measurementsConfig }}
+  - name: measurements-config
+    projected:
+      sources:
+        - configMap:
+            name: {{ include "c8s.fullname" . }}-measurements
+  {{- end }}
+  {{- end }}
+{{- end -}}
+
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -36,6 +242,21 @@ data:
   # Public key material — not a secret.
   keys.pem: {{ .Values.cds.operatorKeys | quote }}
 ---
+{{- if and .Values.router.enabled (not .Values.node.baked) }}
+# The router reads the same bundle from its own namespace, which a projected
+# volume cannot leave.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "c8s.cdsName" . }}-operator-keys
+  namespace: {{ include "c8s.routerMeshNamespace" . }}
+  labels:
+{{ include "c8s.commonLabels" . | indent 4 }}
+    app.kubernetes.io/component: cds
+data:
+  keys.pem: {{ .Values.cds.operatorKeys | quote }}
+---
+{{- end }}
 {{- end }}
 {{- if .Values.cds.persistence.enabled }}
 apiVersion: v1
@@ -57,6 +278,9 @@ spec:
   {{- end }}
 ---
 {{- end }}
+{{- $cdsShape := include "c8s.cdsShapeName" . }}
+{{- $liveCDS := lookup "apps/v1" "Deployment" .Release.Namespace (include "c8s.cdsName" .) | default dict }}
+{{- include "c8s.cdsShapeGuard" (dict "live" (dig "metadata" "annotations" "confidential.ai/cds-shape" "" $liveCDS) "want" $cdsShape "entry" (include "c8s.cdsEntryName" .) "published" (default "" .Values.cds.publishedShape)) }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -67,6 +291,9 @@ metadata:
     app.kubernetes.io/component: cds
   annotations:
     confidential.ai/trust-root-mode: "inMemory"
+    {{- with $cdsShape }}
+    confidential.ai/cds-shape: {{ . }}
+    {{- end }}
 spec:
   {{/* Fixed at 1: mesh CA keys are per pod, so a second Ready endpoint
        would issue leaves from a different trust root. */}}
@@ -94,183 +321,7 @@ spec:
         checksum/measurements-config: {{ .Values.cds.measurementsConfig | sha256sum }}
         {{- end }}
     spec:
-
-      serviceAccountName: {{ include "c8s.cdsName" . }}
-      # The live node-list bound needs the API token; static CIDRs do not.
-      automountServiceAccountToken: {{ empty .Values.cds.sandboxInventoryCIDRs }}
-      {{- /* CDS is a singleton trust root reached over a node-local NodePort
-             and (with persistence) an RWO volume, so pin it to a known node.
-             The CDS digest is always in the NRI floor (c8s.imageAllowlist),
-             so image policy admits CDS on whichever node it lands. */}}
-      {{- /* Baked nodes render this chart at build time, before any node
-             exists, so there is no per-cluster selector to set. RKE2 gives
-             node-role.kubernetes.io/control-plane to servers only, never to
-             agents, so this pins CDS to the server. It assumes the single
-             server a baked image boots; promoting a second one would let
-             the singleton move between them. */}}
-      {{- if .Values.node.baked }}
-      nodeSelector:
-        node-role.kubernetes.io/control-plane: "true"
-      {{- else }}
-      {{- with .Values.cds.node.selector }}
-      nodeSelector:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- end }}
-      {{- with .Values.cds.node.tolerations }}
-      tolerations:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      securityContext:
-
-{{ toYaml .Values.podSecurityContext | indent 8 }}
-
-      containers:
-        - name: cds
-          image: {{ include "c8s.cdsImage" . }}
-          imagePullPolicy: {{ .Values.cds.image.pullPolicy }}
-          args:
-            - --port={{ .Values.cds.port }}
-            - --log-level={{ .Values.cds.logLevel }}
-            # Per-mode resolution: see c8s.attestationApiURL.
-            - --attestation-api-url={{ include "c8s.attestationApiURL" . }}
-            - --allowlist-db={{ .Values.cds.allowlistDB }}
-            - --allowlist-persistent={{ .Values.cds.persistence.enabled }}
-            {{- if .Values.node.baked }}
-            - --allowlist-seed=/run/c8s-node/allowlist-seed.json
-            - --operator-keys=/run/c8s-node/operator-pubkey
-            - --dns-san-file=/run/c8s-node/tls-san
-            {{- else }}
-            - --allowlist-seed=/etc/cds/allowlist-seed.json
-            {{- end }}
-            - --jwt-clock-skew={{ .Values.cds.jwtClockSkew }}
-            - --ca-common-name={{ .Values.cds.ca.commonName }}
-            - --ca-cert-validity={{ .Values.cds.ca.certValidity }}
-            - --min-ca-validity={{ .Values.cds.ca.minValidity }}
-            - --cert-ttl={{ .Values.cds.certTTL }}
-            - --named-cert-ttl={{ .Values.cds.namedCertTTL }}
-            - --challenge-ttl={{ .Values.cds.challengeTTL }}
-            - --request-timeout={{ .Values.cds.requestTimeout }}
-            - --max-request-size={{ .Values.cds.maxRequestSize }}
-            - --secrets-max-paths={{ include "c8s.positiveInt" (dict "value" .Values.cds.secretsMaxPaths "label" "cds.secretsMaxPaths") }}
-            - --secrets-max-paths-per-workload={{ include "c8s.positiveInt" (dict "value" .Values.cds.secretsMaxPathsPerWorkload "label" "cds.secretsMaxPathsPerWorkload") }}
-            - --readiness-interval={{ .Values.cds.readinessInterval }}
-            - --san-validation={{ .Values.cds.sanValidation }}
-            {{- /* Always allow in-cluster Service SANs so the mesh's own
-                   get-cert/armtls-mesh CSRs validate; operators append public
-                   hostnames via cds.dnsSanPatterns without restating this. */}}
-            - --dns-san-pattern={{ include "c8s.cdsDnsSanPattern" . }}
-            {{- range .Values.cds.dnsSanPatterns }}
-            - --dns-san-pattern={{ . }}
-            {{- end }}
-            {{- if .Values.cds.cnPattern }}
-            - --allowed-cn-pattern={{ .Values.cds.cnPattern }}
-            {{- end }}
-            {{- if .Values.node.baked }}
-            - --image-policy-file=/run/c8s-node/peers.json
-            {{- else if .Values.cds.measurementsConfig }}
-            - --image-policy-file=/etc/c8s-measurements/cds.json
-            {{- else }}
-            {{- with .Values.cds.measurements }}
-            - --measurements={{ join "," . }}
-            {{- end }}
-            {{- with .Values.cds.rtmrs }}
-            - --rtmrs={{ join "," . }}
-            {{- end }}
-            {{- end }}
-            {{- with .Values.cds.sandboxInventoryCIDRs }}
-            - --sandbox-inventory-cidr={{ join "," . }}
-            {{- end }}
-            {{- if and (not .Values.node.baked) .Values.cds.operatorKeys }}
-            - --operator-keys=/etc/cds-operator-keys/keys.pem
-            {{- end }}
-            - --rate-limit={{ .Values.cds.rateLimit }}
-            - --rate-burst={{ .Values.cds.rateBurst }}
-            - --rate-limiter-max-entries={{ .Values.cds.rateLimiterMaxEntries }}
-            - --rate-limiter-evict-interval={{ .Values.cds.rateLimiterEvictInterval }}
-            - --rate-limiter-idle-timeout={{ .Values.cds.rateLimiterIdleTimeout }}
-            - --armtls-platform={{ .Values.cds.armtlsPlatform }}
-            - --armtls-cert-ttl={{ .Values.cds.armtlsCertTTL }}
-          {{- with (include "c8s.attestationApiHostIPEnv" .) }}
-          # cvmMode=bare-metal: expands $(HOST_IP) in --attestation-api-url to the node
-          # IP so this pod-netns pod reaches the node-baked host attestation-api.
-          env:
-            {{- . | nindent 12 }}
-          {{- end }}
-          ports:
-            - name: https
-              containerPort: {{ .Values.cds.port }}
-
-          readinessProbe:
-            httpGet:
-              path: /readyz
-              port: https
-              scheme: HTTPS
-            initialDelaySeconds: 3
-          livenessProbe:
-            httpGet:
-              path: /healthz
-              port: https
-              scheme: HTTPS
-            periodSeconds: 30
-
-          resources:
-{{ toYaml .Values.cds.resources | indent 12 }}
-          volumeMounts:
-            - name: data
-              mountPath: /data
-            {{- include "c8s.attestationApiSocketMount" . | nindent 12 }}
-            {{- include "c8s.nodeConfigMount" . | nindent 12 }}
-            {{- if not .Values.node.baked }}
-            - name: allowlist-seed
-              mountPath: /etc/cds
-              readOnly: true
-            {{- if .Values.cds.operatorKeys }}
-            - name: operator-keys
-              mountPath: /etc/cds-operator-keys
-              readOnly: true
-            {{- end }}
-            {{- if .Values.cds.measurementsConfig }}
-            - name: measurements-config
-              mountPath: /etc/c8s-measurements
-              readOnly: true
-            {{- end }}
-            {{- end }}
-          securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-
-            runAsNonRoot: true
-            runAsUser: 65532
-
-            capabilities:
-              drop:
-                - ALL
-      volumes:
-        - name: data
-          {{- if .Values.cds.persistence.enabled }}
-          persistentVolumeClaim:
-            claimName: {{ include "c8s.cdsName" . }}-data
-          {{- else }}
-          emptyDir: {}
-          {{- end }}
-        {{- include "c8s.attestationApiSocketVolume" . | nindent 8 }}
-        {{- include "c8s.nodeConfigVolume" . | nindent 8 }}
-        {{- if not .Values.node.baked }}
-        - name: allowlist-seed
-          configMap:
-            name: {{ include "c8s.cdsName" . }}-allowlist-seed
-        {{- if .Values.cds.operatorKeys }}
-        - name: operator-keys
-          configMap:
-            name: {{ include "c8s.cdsName" . }}-operator-keys
-        {{- end }}
-        {{- if .Values.cds.measurementsConfig }}
-        - name: measurements-config
-          configMap:
-            name: {{ include "c8s.fullname" . }}-measurements
-        {{- end }}
-        {{- end }}
+{{- include "c8s.cdsPodSpec" . | nindent 6 }}
 ---
 apiVersion: v1
 kind: Service

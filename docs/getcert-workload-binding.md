@@ -120,8 +120,7 @@ unix socket, and there are two separate threats:
 - **CDS** — verifies the evidence and the sandbox token, calls the inventory
   back for the sandbox's images, checks each against the allowlist store, signs
   the leaf with the mesh CA, stamps the sandbox ID.
-- **The verifier** — anyone doing `c8s verify --sandbox-id … --mesh-ca …`, or a
-  mesh peer pinning `VerifyPolicy.SandboxID`.
+- **The verifier** — anyone doing `c8s verify --sandbox-id … --mesh-ca …`.
 
 ---
 
@@ -132,7 +131,7 @@ unix socket, and there are two separate threats:
    the issuance's existing freshness rather than a wall clock of its own
    (`internal/cmds/getcert/run.go`, `obtainCert`).
 
-2. **get-cert asks, anonymously.** `--workload-claims` opens the inventory at a
+2. **get-cert asks, anonymously.** get-cert opens the inventory at a
    compiled unix socket address and `POST`s `/sandbox`
    carrying only its CSR public key and that challenge. The request carries
    **no** PID, pod name, or container ID. (See "Corner 1".)
@@ -168,8 +167,7 @@ unix socket, and there are two separate threats:
    requires the leaf to chain to the supplied mesh CA and to carry that exact
    sandbox ID. `--mesh-ca` is mandatory with `--sandbox-id`: the ID lives in the
    leaf's signed area, not in REPORTDATA, so CDS's signature is the only thing
-   that authenticates it. In-mesh, `VerifyPolicy.SandboxID` is enforced on the
-   CA-verified path only (`checkSandboxPin`).
+   that authenticates it.
 
 ---
 
@@ -315,6 +313,18 @@ changes behavior. A pod that ever ran a foreign container never gets a name —
 the high-water inventory carries the same fail-closed semantics as secrets
 release, and the named-leaf TTL (`cds.namedCertTTL`) bounds how long an
 already-issued name can outlive its match.
+
+The stamp names the policy snapshot at issuance, so an allowlist write leaves
+every running leaf naming a superseded snapshot, and strict clients reject it
+until it renews. get-cert's CDS watch (`--ca-watch-interval`, default 1m with
+`--workload-claims` and `--renew-interval`) closes that gap: each tick polls
+CDS's `GET /allowlist` over the same armTLS channel, with `If-None-Match`
+starting at the stamped version and following the last served version whose
+bytes still matched the stamp. When the canonical digest differs it renews after a
+random delay of up to half the interval. When a renewal comes back
+unnamed because the policy no longer matches the router, the policy check has no stamp
+to compare and goes silent by design; `--unnamed-renew-interval` (default 30s;
+the chart does not override it) paces renewal until the leaf is named again.
 
 Two inventory behaviours that still matter here:
 
@@ -640,9 +650,10 @@ CDS must be able to reach the nodes on
 `workloadclaims.DigestsPort` (1019, fixed), and the node bound —
 `cds.sandboxInventoryCIDRs` (`c8s install --node-cidr`), or the live node list
 when unset — must cover those addresses or CDS refuses every request carrying a
-token. The advertised host defaults to the installer DaemonSet's own
-`status.hostIP`, written to a `node-ip` file beside the socket;
-set `nriImagePolicy.sandboxDigests.advertiseHost` or
+token. The advertised host defaults to the `node-ip` file beside the socket, which
+the plugin writes from the kubelet's `--node-ip`, else the default-route
+interface's address, and follows when it changes. Where the kubelet registers
+an address neither finds, set `nriImagePolicy.sandboxDigests.advertiseHost` or
 `$C8S_SANDBOX_DIGESTS_ADVERTISE_HOST` to override. Route inference is the last
 resort and is wrong under the chart's default, where the plugin dials the CDS
 NodePort over loopback.
@@ -663,8 +674,8 @@ config validation at startup.
 
 **Upgrade ordering.** Because get-cert fails closed on an inventory error, roll
 `nri-image-policy` (which creates the socket and serves both surfaces) **before
-or with** the operator/webhook that injects `--workload-claims`. If the
-webhook starts injecting the flag while an old plugin (no inventory socket, no
+or with** the operator/webhook that injects the get-cert sidecar. If the
+webhook starts injecting it while an old plugin (no inventory socket, no
 NRI-injected socket-directory mount) is still running, every newly admitted
 `cw` pod fails cert issuance until the plugin is current: get-cert exits while
 the socket directory is absent, so the sidecar crashloops and its next

@@ -43,7 +43,7 @@ func TestPublishNodeIPResolvesTheHostRoute(t *testing.T) {
 	}
 
 	blocked := t.TempDir()
-	if err := os.WriteFile(filepath.Join(blocked, "var"), nil, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(blocked, "run"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := PublishNodeIP(blocked, doc); err == nil {

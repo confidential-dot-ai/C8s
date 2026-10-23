@@ -3,6 +3,9 @@ package launchconfig
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -115,8 +118,21 @@ func TestNewBundleBootsServerAndAgentsOnBothPlatforms(t *testing.T) {
 			if server.RKE2.ServerToken == server.RKE2.AgentToken || !tokenRE.MatchString(server.RKE2.ServerToken) {
 				t.Fatalf("tokens not generated independently: %+v", server.RKE2)
 			}
+			// Every node has its own node password, carried only in its own
+			// document: the shared agent token opens no other node's name.
+			passwords := map[string]string{server.RKE2.NodePassword: serverDir}
+			if !tokenRE.MatchString(server.RKE2.NodePassword) {
+				t.Fatalf("server node password %q", server.RKE2.NodePassword)
+			}
 			for _, name := range []string{"demo-f1", "demo-f2"} {
 				agent, data := readBundleDocument(t, dir, name)
+				if p := agent.RKE2.NodePassword; !tokenRE.MatchString(p) || passwords[p] != "" {
+					t.Fatalf("agent %s node password %q is missing or shared", name, p)
+				}
+				passwords[agent.RKE2.NodePassword] = name
+				if bytes.Contains(data, []byte(server.RKE2.NodePassword)) {
+					t.Fatalf("agent %s carries the server's node password", name)
+				}
 				if agent.Role != Agent || agent.Node.Name != name || agent.Server.Address != "10.0.0.10" {
 					t.Fatalf("unexpected agent %s: %+v", name, agent)
 				}
@@ -231,7 +247,11 @@ func TestNewBundleRefusesBadInputsAndLeavesNothingBehind(t *testing.T) {
 		{"bad cluster id", []string{"--image-manifest", tdx, "--cluster-id", "Demo"}, "clusterID"},
 		{"bad agent name", []string{"--image-manifest", tdx, "--server-address", "10.0.0.10", "--agent", "server"}, "reserved"},
 		{"loopback server", []string{"--image-manifest", tdx, "--server-address", "127.0.0.1"}, "server.address"},
+		{"models owner alone", []string{"--image-manifest", tdx, "--models-root-owner", "1000:1000"}, "models.writable"},
 		{"not a manifest", []string{"--image-manifest", filepath.Join(base, "missing.json")}, "--image-manifest"},
+		{"dns mirror", []string{"--image-manifest", tdx, "--registry-mirror", "ghcr.io=http://cache.example"}, "registryMirrors"},
+		{"duplicate mirror", []string{"--image-manifest", tdx, "--registry-mirror", "ghcr.io=http://10.43.0.5", "--registry-mirror", "ghcr.io=http://10.43.0.6"}, "more than once"},
+		{"mirror without endpoint", []string{"--image-manifest", tdx, "--registry-mirror", "ghcr.io"}, "registry=http"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -252,6 +272,25 @@ func TestNewBundleRefusesBadInputsAndLeavesNothingBehind(t *testing.T) {
 	}
 	if err := runBundleCmd(t, "new", "--out", dir, "--cluster-id", "demo", "--image-manifest", tdx); err == nil {
 		t.Fatal("an existing directory must not be reused for a new bundle")
+	}
+}
+
+func TestNewBundleCarriesWritableModelsToEveryNode(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "bundle")
+	err := runBundleCmd(t, "new", "--out", dir, "--cluster-id", "demo", "--image-manifest", writeManifest(t, "tdx"),
+		"--server-address", "10.0.0.10", "--agent", "demo-agent-1", "--models-writable", "--models-root-owner", "1000:1000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runBundleCmd(t, "add-agent", "--bundle", dir, "--name", "late"); err != nil {
+		t.Fatal(err)
+	}
+	for _, node := range []string{serverDir, "demo-agent-1", "late"} {
+		doc, _ := readBundleDocument(t, dir, node)
+		if doc.Models == nil || !doc.Models.Writable || doc.Models.RootOwner != "1000:1000" {
+			t.Fatalf("%s lost the models setting: %+v", node, doc.Models)
+		}
+		stageBundleNode(t, dir, node)
 	}
 }
 
@@ -277,7 +316,6 @@ func TestNewBundleCarriesASignedServerRouter(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "bundle")
 	err := runBundleCmd(t, "new", "--out", dir, "--cluster-id", "demo", "--image-manifest", writeManifest(t, "tdx"),
 		"--server-address", "10.0.0.10", "--agent", "worker-1",
-		"--router-upstream", "c8s-gateway.confidential-inference.svc.cluster.local:9443",
 		"--router-hostname", "candidate.api.confidential.ai", "--router-hostname", "api.confidential.ai",
 		"--acme-email", "ops@confidential.ai",
 		"--acme-directory-url", "https://acme-staging-v02.api.letsencrypt.org/directory")
@@ -286,7 +324,6 @@ func TestNewBundleCarriesASignedServerRouter(t *testing.T) {
 	}
 	server, data := readBundleDocument(t, dir, serverDir)
 	want := Router{
-		Upstream:         "c8s-gateway.confidential-inference.svc.cluster.local:9443",
 		Hostnames:        []string{"candidate.api.confidential.ai", "api.confidential.ai"},
 		ACMEEmail:        "ops@confidential.ai",
 		ACMEDirectoryURL: "https://acme-staging-v02.api.letsencrypt.org/directory",
@@ -305,10 +342,147 @@ func TestNewBundleCarriesASignedServerRouter(t *testing.T) {
 		t.Fatalf("agent inherited the server-only router block: %+v", agent.Router)
 	}
 	stageBundleNode(t, dir, "worker-1")
+}
 
-	err = runBundleCmd(t, "new", "--out", filepath.Join(t.TempDir(), "bad"), "--cluster-id", "demo", "--image-manifest", writeManifest(t, "tdx"),
-		"--router-upstream", "gateway.confidential-inference.svc.cluster.local:8080")
-	if err == nil || !strings.Contains(err.Error(), "router.upstream") {
-		t.Fatalf("unmeshed upstream: %v", err)
+func TestNewBundleCarriesARouterBodyLimitAlone(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "bundle")
+	err := runBundleCmd(t, "new", "--out", dir, "--cluster-id", "demo", "--image-manifest", writeManifest(t, "tdx"),
+		"--router-max-request-body-bytes", "67108864")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, data := readBundleDocument(t, dir, serverDir)
+	if server.Router == nil || server.Router.MaxRequestBodyBytes != 64<<20 || len(server.Router.Hostnames) != 0 {
+		t.Fatalf("server router = %+v", server.Router)
+	}
+	if !bytes.Contains(data, []byte("maxRequestBodyBytes: 67108864")) {
+		t.Fatal("body limit missing from the signed document")
+	}
+	stageBundleNode(t, dir, serverDir)
+}
+
+func TestNewBundleCarriesRegistryMirrorsToEveryNode(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "bundle")
+	err := runBundleCmd(t, "new", "--out", dir, "--cluster-id", "demo", "--image-manifest", writeManifest(t, "tdx"),
+		"--server-address", "10.0.0.10", "--agent", "demo-agent-1", "--registry-mirror", "ghcr.io=http://10.43.0.5:5000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runBundleCmd(t, "add-agent", "--bundle", dir, "--name", "late"); err != nil {
+		t.Fatal(err)
+	}
+	for _, node := range []string{serverDir, "demo-agent-1", "late"} {
+		doc, _ := readBundleDocument(t, dir, node)
+		if doc.RegistryMirrors["ghcr.io"] != "http://10.43.0.5:5000" {
+			t.Fatalf("%s lost the registry mirror: %+v", node, doc.RegistryMirrors)
+		}
+		stageBundleNode(t, dir, node)
+	}
+}
+
+// writeOperatorKey writes a P-256 key and its public half the way
+// `c8s keys new` does, returning both paths.
+func writeOperatorKey(t *testing.T) (keyPath, pubPath string) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	keyPath, pubPath = filepath.Join(dir, "op.key"), filepath.Join(dir, "op.pub")
+	keyPEM, err := certutil.MarshalECKeyPEM(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub, err := publicKeyPEM(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pubPath, []byte(pub), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return keyPath, pubPath
+}
+
+// An existing operator key becomes the server launch key unchanged: the
+// server's pubkey is the pinned file byte for byte, and the node boots.
+func TestNewBundleReusesTheOperatorKey(t *testing.T) {
+	keyPath, pubPath := writeOperatorKey(t)
+	dir := filepath.Join(t.TempDir(), "bundle")
+	if err := runBundleCmd(t, "new", "--out", dir, "--cluster-id", "demo", "--image-manifest", writeManifest(t, "tdx"),
+		"--server-address", "10.0.0.10", "--agent", "demo-f1",
+		"--operator-key", keyPath, "--operator-pubkey", pubPath); err != nil {
+		t.Fatal(err)
+	}
+	want, _ := os.ReadFile(pubPath)
+	got, err := os.ReadFile(filepath.Join(dir, serverDir, pubkeyFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatal("server pubkey is not the operator's public key")
+	}
+	server, _ := readBundleDocument(t, dir, serverDir)
+	if server.Server.OperatorPublicKey != string(want) {
+		t.Fatal("server.operatorPublicKey is not the operator's public key")
+	}
+	if _, err := os.Stat(filepath.Join(dir, serverKeyFile)); !os.IsNotExist(err) {
+		t.Fatal("the bundle holds a copy of the operator key")
+	}
+	agentPub, _ := os.ReadFile(filepath.Join(dir, "demo-f1", pubkeyFile))
+	if bytes.Equal(agentPub, want) {
+		t.Fatal("the agent reuses the operator key")
+	}
+	stageBundleNode(t, dir, serverDir)
+	stageBundleNode(t, dir, "demo-f1")
+}
+
+func TestNewBundleRefusesAMismatchedOperatorPubkey(t *testing.T) {
+	keyPath, _ := writeOperatorKey(t)
+	_, otherPub := writeOperatorKey(t)
+	_, samePub := writeOperatorKey(t)
+	// The same key in a different encoding would change SNP HOST_DATA.
+	key, _ := certutil.LoadECPrivateKeyFile(keyPath)
+	pub, _ := publicKeyPEM(key)
+	if err := os.WriteFile(samePub, []byte(pub+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p384, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p384PEM, err := certutil.MarshalECKeyPEM(p384)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p384Key := filepath.Join(t.TempDir(), "p384.key")
+	if err := os.WriteFile(p384Key, p384PEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"other key", []string{"--operator-key", keyPath, "--operator-pubkey", otherPub}, "does not match"},
+		{"other encoding", []string{"--operator-key", keyPath, "--operator-pubkey", samePub}, "another encoding"},
+		{"pubkey alone", []string{"--operator-pubkey", otherPub}, "--operator-key"},
+		{"not a key", []string{"--operator-key", otherPub}, "--operator-key"},
+		{"not P-256", []string{"--operator-key", p384Key, "--operator-pubkey", otherPub}, "P-256"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "bundle")
+			args := append([]string{"new", "--out", dir, "--cluster-id", "demo", "--image-manifest", writeManifest(t, "tdx")}, tc.args...)
+			err := runBundleCmd(t, args...)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want it to mention %q", err, tc.want)
+			}
+			if _, err := os.Stat(dir); !os.IsNotExist(err) {
+				t.Fatal("a refused bundle left its directory behind")
+			}
+		})
 	}
 }

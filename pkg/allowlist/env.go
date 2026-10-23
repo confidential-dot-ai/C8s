@@ -5,9 +5,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"iter"
+	"maps"
 	"slices"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/confidential-dot-ai/c8s/internal/strictjson"
 )
 
 // EnvObservation commits to the complete OCI launch environment. Nil means
@@ -15,9 +19,48 @@ import (
 type EnvObservation struct {
 	Format string `json:"format"`
 	Digest string `json:"digest"`
+	// Nil means per-variable evidence is unavailable.
+	VariableDigests map[string]string `json:"variableDigests"`
+	// VariableDigestsEvicted reports that the node dropped VariableDigests to
+	// keep its sandbox under MaxSandboxVariableEvidenceBytes.
+	VariableDigestsEvicted bool `json:"variableDigestsEvicted,omitempty"`
 }
 
 const EnvFormat = "c8s.env/v1"
+
+// Per-variable evidence rides in every inventory record, whose response CDS
+// caps at 1 MiB. Above these bounds VariableDigests is nil, and a match
+// policy, which lists every variable, is rejected when authored.
+const (
+	maxVariableEvidence          = 128
+	maxVariableEvidenceNameBytes = 4 << 10
+)
+
+// MaxSandboxVariableEvidenceBytes bounds the serialized VariableDigests a node
+// keeps per sandbox, half of CDS's 1 MiB inventory response limit. A workload
+// whose match policies could need more is rejected when authored.
+const MaxSandboxVariableEvidenceBytes = 512 << 10
+
+// VariableEvidenceBytes is the serialized size of o's VariableDigests, zero
+// when it has none.
+func (o *EnvObservation) VariableEvidenceBytes() int {
+	if o == nil || o.VariableDigests == nil {
+		return 0
+	}
+	return variableEvidenceBytes(maps.Keys(o.VariableDigests))
+}
+
+// variableEvidenceBytes is exact: every variable digest is 64 hex characters.
+func variableEvidenceBytes(names iter.Seq[string]) int {
+	placeholder := strings.Repeat("0", 64)
+	digests := map[string]string{}
+	for name := range names {
+		digests[name] = placeholder
+	}
+	// Marshal cannot fail on a string map.
+	b, _ := json.Marshal(digests)
+	return len(b)
+}
 
 // ObserveEnv validates before canonicalizing: duplicate names and malformed
 // entries must not disappear into a map and later satisfy a constrained grant.
@@ -34,7 +77,34 @@ func ObserveEnv(entries []string) (*EnvObservation, error) {
 		}
 		values[name] = value
 	}
-	return fingerprintEnv(values), nil
+	observation := fingerprintEnv(values)
+	if !variableEvidenceFits(values) {
+		return observation, nil
+	}
+	observation.VariableDigests = make(map[string]string, len(values))
+	for name, value := range values {
+		observation.VariableDigests[name] = fingerprintEnvVariable(name, value)
+	}
+	return observation, nil
+}
+
+func variableEvidenceFits(values map[string]string) bool {
+	return checkVariableEvidenceLimits(maps.Keys(values)) == nil
+}
+
+func checkVariableEvidenceLimits(names iter.Seq[string]) error {
+	count, nameBytes := 0, 0
+	for name := range names {
+		count++
+		nameBytes += len(name)
+	}
+	if count > maxVariableEvidence {
+		return fmt.Errorf("match env lists %d variables; nodes report per-variable evidence for at most %d", count, maxVariableEvidence)
+	}
+	if nameBytes > maxVariableEvidenceNameBytes {
+		return fmt.Errorf("match env names total %d bytes; nodes report per-variable evidence for at most %d", nameBytes, maxVariableEvidenceNameBytes)
+	}
+	return nil
 }
 
 // ObserveLaunchEnv keeps the last value per name, matching runc's launch environment.
@@ -56,7 +126,15 @@ func ObserveLaunchEnv(entries []string) (*EnvObservation, error) {
 }
 
 func validEnvPair(name, value string) bool {
-	return name != "" && !strings.ContainsAny(name, "=\x00") && !strings.ContainsRune(value, 0) && utf8.ValidString(name) && utf8.ValidString(value)
+	return validEnvName(name) && validEnvValue(value)
+}
+
+func validEnvName(name string) bool {
+	return name != "" && !strings.ContainsAny(name, "=\x00") && utf8.ValidString(name)
+}
+
+func validEnvValue(value string) bool {
+	return !strings.ContainsRune(value, 0) && utf8.ValidString(value)
 }
 
 // The encoding is the UTF-8 domain string "c8s.env/v1", a NUL, then Go
@@ -71,12 +149,32 @@ func fingerprintEnv(values map[string]string) *EnvObservation {
 	return &EnvObservation{Format: EnvFormat, Digest: hex.EncodeToString(sum[:])}
 }
 
-func (o *EnvObservation) Valid() bool {
-	if o == nil || o.Format != EnvFormat || len(o.Digest) != 64 {
+// Each variable digest binds its name and value with NUL framing; neither permits NUL.
+func fingerprintEnvVariable(name, value string) string {
+	sum := sha256.Sum256([]byte("c8s.env.variable/v1\x00" + name + "\x00" + value))
+	return hex.EncodeToString(sum[:])
+}
+
+func validEnvDigest(digest string) bool {
+	if len(digest) != 64 {
 		return false
 	}
-	b, err := hex.DecodeString(o.Digest)
-	return err == nil && hex.EncodeToString(b) == o.Digest
+	b, err := hex.DecodeString(digest)
+	return err == nil && hex.EncodeToString(b) == digest
+}
+
+// Valid reports whether o is non-nil, in EnvFormat, and carries well-formed
+// digests. It says nothing about whether any policy admits o.
+func (o *EnvObservation) Valid() bool {
+	if o == nil || o.Format != EnvFormat || !validEnvDigest(o.Digest) {
+		return false
+	}
+	for name, digest := range o.VariableDigests {
+		if !validEnvName(name) || !validEnvDigest(digest) {
+			return false
+		}
+	}
+	return true
 }
 
 func (o *EnvObservation) Clone() *EnvObservation {
@@ -84,26 +182,19 @@ func (o *EnvObservation) Clone() *EnvObservation {
 		return nil
 	}
 	c := *o
+	c.VariableDigests = maps.Clone(o.VariableDigests)
 	return &c
 }
 
 func (p EnvPolicy) admitsObservation(o *EnvObservation) bool {
-	switch p.Policy {
-	case PolicyAny, "":
-		return true
-	case PolicyDeny:
-		return o.Valid() && *o == *fingerprintEnv(nil)
-	case PolicyExact:
-		return p.Values != nil && o.Valid() && *o == *fingerprintEnv(p.Values)
-	default:
-		return false
-	}
+	behavior, err := p.behavior()
+	return err == nil && behavior.admits(o)
 }
 
 // ParseEnvPoliciesJSON reads per-container policies for CLI derivation. Exact
 // literals are deliberately supplied by the operator, never fetched from a Pod.
 func ParseEnvPoliciesJSON(data []byte) (map[string]EnvPolicy, error) {
-	if err := validateJSON(data); err != nil {
+	if err := strictjson.Validate(data); err != nil {
 		return nil, err
 	}
 	var policies map[string]EnvPolicy

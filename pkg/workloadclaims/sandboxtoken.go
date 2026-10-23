@@ -91,6 +91,25 @@ func RequesterKeyDigest(pub crypto.PublicKey) ([]byte, error) {
 	return sum[:], nil
 }
 
+// UnverifiedSandboxIDFromToken reads the sandbox ID a token states. The caller must have
+// obtained the token from its own node's inventory over the baked socket, whose
+// peer credentials bind the statement to the calling sandbox; the signature is
+// there for CDS, which has no such channel.
+func UnverifiedSandboxIDFromToken(tokenDER []byte) (string, error) {
+	var tok sandboxTokenASN1
+	rest, err := asn1.Unmarshal(tokenDER, &tok)
+	if err != nil {
+		return "", fmt.Errorf("workloadclaims: unmarshal sandbox token: %w", err)
+	}
+	if len(rest) > 0 {
+		return "", fmt.Errorf("workloadclaims: %d trailing bytes after sandbox token", len(rest))
+	}
+	if tok.Version != sandboxTokenVersion {
+		return "", fmt.Errorf("workloadclaims: unsupported sandbox token version %d", tok.Version)
+	}
+	return tok.SandboxID, nil
+}
+
 // VerifiedSandbox is what a valid token establishes: which sandbox the
 // requester is in, and which node's inventory vouched for it.
 type VerifiedSandbox struct {
@@ -187,6 +206,19 @@ func NewSandboxTokenSigner(host string) (*SandboxTokenSigner, error) {
 		return nil, fmt.Errorf("workloadclaims: marshal sandbox signing key: %w", err)
 	}
 	return &SandboxTokenSigner{key: key, pubDER: pubDER, host: host}, nil
+}
+
+// Host is the inventory host every token names.
+func (s *SandboxTokenSigner) Host() string { return s.host }
+
+// WithHost returns a signer that names host and keeps s's key, so the digests
+// endpoint, which serves that key, needs no restart when the node's address
+// changes.
+func (s *SandboxTokenSigner) WithHost(host string) (*SandboxTokenSigner, error) {
+	if err := ValidateInventoryHost(host); err != nil {
+		return nil, err
+	}
+	return &SandboxTokenSigner{key: s.key, pubDER: s.pubDER, host: host}, nil
 }
 
 // PublicKey is the signing key CDS fetches from the digests endpoint.

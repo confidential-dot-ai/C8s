@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/cucumber/godog"
+
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 // Sentences of the container-admission vocabulary
@@ -23,7 +25,9 @@ func registerAdmission(sc *godog.ScenarioContext) {
 	sc.Step(`^a pod "([^"]*)" whose only container names image "([^"]*)" without a digest$`, podNamesImageByTag)
 	sc.Step(`^the image store on node "([^"]*)" resolves that name to the digest of "([^"]*)"$`, storeResolves)
 	sc.Step(`^the argv of that container is "([^"]*)"$`, argv)
+	sc.Step(`^the environment of that container is "([^"]*)"$`, environment)
 	sc.Step(`^"([^"]*)" is deployed on node "([^"]*)"$`, deployOnNode)
+	sc.Step(`^"([^"]*)" is running$`, podRunning)
 	sc.Step(`^the container of "([^"]*)" is not created$`, containerNotCreated)
 	sc.Step(`^(?:the container|both containers) of "([^"]*)" (?:is|are) created$`, containersCreated)
 	sc.Step(`^"([^"]*)" keeps running$`, keepsRunning)
@@ -127,7 +131,46 @@ func argv(ctx context.Context, line string) error {
 		return errors.New("no container has been described yet")
 	}
 	w.lastPod.last().command = strings.Fields(line)
+	w.lastPod.last().stated = true
 	return nil
+}
+
+// environment sets the variables the pod spec gives the container, as
+// NAME=VALUE words. The image's own variables and the ones the node adds are
+// still there; an entry that matches the environment names those too.
+func environment(ctx context.Context, line string) error {
+	w := getWorld(ctx)
+	if w.lastPod == nil {
+		return errors.New("no container has been described yet")
+	}
+	if w.lastPod.last() != w.lastPod.containers[0] {
+		return errors.New("harness limitation: only the first container of a pod takes an environment")
+	}
+	for _, word := range strings.Fields(line) {
+		if !strings.Contains(word, "=") {
+			return fmt.Errorf("environment word %q is not NAME=VALUE", word)
+		}
+	}
+	w.lastPod.last().env = strings.Fields(line)
+	return nil
+}
+
+// annotationHarnessArgv marks a pod whose first container runs an argv the
+// harness chose, beside which a backend may run its pod agent (metal.sh).
+const annotationHarnessArgv = "c8s-conformance/harness-argv"
+
+// pinsLaunch reports whether an entry the scenario described pins the argv
+// or the mounts of the image at ref.
+func (w *world) pinsLaunch(ref string) bool {
+	free := func(p *argvPolicy) bool { return p == nil || p.is("any") }
+	for _, e := range w.entries {
+		for _, c := range e.containers() {
+			if c.Image == ref && (!free(c.Command) || !free(c.Args) || c.Mounts.Policy == "exact") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // deployOnNode applies the pod. The entries the scenario described must have
@@ -147,18 +190,40 @@ func deployOnNode(ctx context.Context, name, node string) error {
 	if err != nil {
 		return err
 	}
-	args := []string{p.name, w.namespace, k8sNode, p.containers[0].ref}
+	args := append([]string(nil), p.opts...)
+	for _, variable := range p.containers[0].env {
+		args = append(args, "--env", variable)
+	}
+	if len(p.secrets) > 0 {
+		args = append(args, "--annotation", annotationSecrets+"="+strings.Join(p.secrets, ","))
+	}
+	if p.init != nil {
+		args = append(args, "--init-container", p.init.ref+" "+strings.Join(p.init.command, " "))
+	}
+	if p.workloadID {
+		// The label the webhook injects on, and how often the requester
+		// renews the leaf: short enough for an issuance scenario to observe
+		// a renewal, long enough that a secrets scenario, which observes the
+		// leaf the pod obtained, sees no renewal replace it.
+		renewal := issuanceRenewal
+		if w.secrets.active {
+			renewal = secretsRenewal
+		}
+		args = append(args, "--annotation", annotationCW+"="+p.name, "--annotation", annotationRenewal+"="+renewal)
+	}
+	if !p.containers[0].stated && !w.pinsLaunch(p.containers[0].ref) {
+		// The backend may run more beside an argv the harness chose, unless
+		// an entry pins that argv or the mounts, which more would break.
+		args = append(args, "--annotation", annotationHarnessArgv+"=yes")
+	}
+	args = append(args, "--", p.name, p.namespace, k8sNode, p.containers[0].ref)
 	for i, c := range p.containers {
 		if i > 0 {
 			args = append(args, "+", c.ref)
 		}
 		args = append(args, c.command...)
 	}
-	renderer := "pod_manifest"
-	if p.workloadID {
-		renderer = "cw_pod_manifest"
-	}
-	manifest, err := w.be.call(renderer, args...)
+	manifest, err := w.be.call("pod_manifest", args...)
 	if err != nil {
 		return err
 	}
@@ -167,40 +232,128 @@ func deployOnNode(ctx context.Context, name, node string) error {
 	return err
 }
 
+// podRunning waits for the deployed pod to be Running with a pod address.
+func podRunning(ctx context.Context, name string) error {
+	w := getWorld(ctx)
+	p, err := w.pod(name)
+	if err != nil {
+		return err
+	}
+	if !p.deployed {
+		return fmt.Errorf("%q has not been deployed", name)
+	}
+	var phase string
+	ok, err := poll(2*time.Minute, func() (bool, error) {
+		addrs, current, err := w.podIPs(p)
+		if err != nil {
+			return false, err
+		}
+		phase = current
+		if phase == "Failed" || phase == "Succeeded" {
+			return false, fmt.Errorf("%q is %s%s", name, phase, podExits(p))
+		}
+		return phase == "Running" && len(addrs) > 0, nil
+	})
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("%q is %s without a pod address after 2 minutes", name, phase)
+	}
+	return nil
+}
+
+// podExits describes the pod's containers that terminated: exit code,
+// reason and the log lines the kubelet kept (FallbackToLogsOnError), for an
+// error saying why a pod stopped. Empty when none did or the pod is gone.
+func podExits(p *pod) string {
+	out, err := kubectl(nil, "-n", p.namespace, "get", "pod", p.name, "-o", "json")
+	if err != nil {
+		return ""
+	}
+	var st struct {
+		Status struct {
+			Init       []containerExit `json:"initContainerStatuses"`
+			Containers []containerExit `json:"containerStatuses"`
+		} `json:"status"`
+	}
+	if json.Unmarshal([]byte(out), &st) != nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, c := range append(st.Status.Init, st.Status.Containers...) {
+		if t := c.State.Terminated; t != nil && t.ExitCode != 0 {
+			fmt.Fprintf(&b, "\ncontainer %s exited %d (%s):\n%s", c.Name, t.ExitCode, t.Reason, strings.TrimSpace(t.Message))
+		}
+	}
+	return b.String()
+}
+
+type containerExit struct {
+	Name  string `json:"name"`
+	State struct {
+		Terminated *struct {
+			ExitCode int    `json:"exitCode"`
+			Reason   string `json:"reason"`
+			Message  string `json:"message"`
+		} `json:"terminated"`
+	} `json:"state"`
+}
+
 type containerStatus struct {
 	id, denial string
 	running    bool
 	restarts   int
 }
 
+type podContainerStatus struct {
+	Name         string `json:"name"`
+	ContainerID  string `json:"containerID"`
+	RestartCount int    `json:"restartCount"`
+	State        struct {
+		Waiting *struct {
+			Reason  string `json:"reason"`
+			Message string `json:"message"`
+		} `json:"waiting"`
+		Running *struct{} `json:"running"`
+	} `json:"state"`
+}
+
+func (c podContainerStatus) denial() string {
+	if c.State.Waiting != nil && c.State.Waiting.Reason == "CreateContainerError" {
+		return strings.TrimSpace(c.State.Waiting.Message)
+	}
+	return ""
+}
+
 // statuses reads every container's id (empty until the runtime has created
 // it), the denial reason the create check returned, if any, and its running
-// state in one call. A pull failure or a crash is not a denial.
+// state in one call. A pull failure or a crash is not a denial. The injected
+// containers start first, so a denial of one is the denial of every workload
+// container not yet created.
 func (w *world) statuses(p *pod) []containerStatus {
-	out, _ := kubectl(nil, "-n", w.namespace, "get", "pod", p.name, "-o", "json")
+	out, _ := kubectl(nil, "-n", p.namespace, "get", "pod", p.name, "-o", "json")
 	var doc struct {
 		Status struct {
-			ContainerStatuses []struct {
-				ContainerID  string `json:"containerID"`
-				RestartCount int    `json:"restartCount"`
-				State        struct {
-					Waiting *struct {
-						Reason  string `json:"reason"`
-						Message string `json:"message"`
-					} `json:"waiting"`
-					Running *struct{} `json:"running"`
-				} `json:"state"`
-			} `json:"containerStatuses"`
+			InitContainerStatuses []podContainerStatus `json:"initContainerStatuses"`
+			ContainerStatuses     []podContainerStatus `json:"containerStatuses"`
 		} `json:"status"`
 	}
 	if err := json.Unmarshal([]byte(out), &doc); err != nil {
 		return nil
 	}
+	var injected string
+	for _, c := range doc.Status.InitContainerStatuses {
+		if d := c.denial(); d != "" && workloadclaims.IsInjectedContainerName(c.Name) {
+			injected = c.Name + ": " + d
+			break
+		}
+	}
 	var st []containerStatus
 	for _, c := range doc.Status.ContainerStatuses {
-		s := containerStatus{id: c.ContainerID, running: c.State.Running != nil, restarts: c.RestartCount}
-		if c.State.Waiting != nil && c.State.Waiting.Reason == "CreateContainerError" {
-			s.denial = strings.TrimSpace(c.State.Waiting.Message)
+		s := containerStatus{id: c.ContainerID, running: c.State.Running != nil, restarts: c.RestartCount, denial: c.denial()}
+		if s.id == "" && s.denial == "" {
+			s.denial = injected
 		}
 		st = append(st, s)
 	}

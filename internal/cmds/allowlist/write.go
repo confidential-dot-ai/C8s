@@ -17,8 +17,8 @@ func newAddCmd(o *options) *cobra.Command {
 		Use:   "add <digest> <image>",
 		Short: "Add an entry admitting an image under any command line",
 		Long: `Write the entry "<image basename>-<first 12 hex of digest>": one container at
-<digest> whose command and args policy are both "any", the entry the chart seeds
-for a bootstrap digest. To pin a command line or grant secrets, write the entry
+<digest> whose command and args policy are both "any". The chart's seed takes an
+entry of that name in place of the one it generates for the digest. To pin a command line or grant secrets, write the entry
 with 'apply' or 'derive' instead.`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -84,11 +84,17 @@ func newUploadCmd(o *options) *cobra.Command {
 		Long: `Atomically replace the entire allowlist with the contents of <file> (the
 canonical JSON 'export' writes). CDS assigns the new version.
 
-If any required core c8s component is missing from the file's image labels (` + fmt.Sprintf("%v", defaultRequiredComponents) + `),
-upload refuses unless --force, since a cluster missing them cannot pull its own
-control plane. --cvm-mode bare-metal omits attestation-api from this set because
-the measured node image supplies it. With gke, aks, or no mode, the full set is
-required. Override the required set with --require. The file is lint-checked
+On a measured node image CDS keeps the image's allowlist seed as a fixed layer
+beside the served document and names it in the ` + pkgallowlist.SeedHeader + ` response
+header. The seed admits C8s's own components there, so the file may carry
+application entries only and the component check below is skipped.
+
+Otherwise, if any required core c8s component is missing from the file's image
+labels (` + fmt.Sprintf("%v", defaultRequiredComponents) + `), upload refuses
+unless --force, since a cluster missing them cannot pull its own control
+plane. --cvm-mode bare-metal omits attestation-api and nri-image-policy
+from this set because the measured node image supplies them. With gke, aks, or
+no mode, the full set is required. Override the required set with --require. The file is lint-checked
 before upload; --strict makes lint warnings fatal.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -127,7 +133,19 @@ before upload; --strict makes lint warnings fatal.`,
 				}
 				reqComponents = required
 			}
-			if missing := missingComponents(uploadImageLabels(desired), reqComponents); len(missing) > 0 {
+
+			c, err := o.client(ctx(cmd))
+			if err != nil {
+				return err
+			}
+			live, _, err := c.FetchServed(ctx(cmd), "")
+			if err != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "warning: could not fetch current allowlist for diff: %v\n", err)
+			}
+
+			if live.Seed != "" {
+				fmt.Fprintf(cmd.ErrOrStderr(), "cds keeps the node image's allowlist seed %s as a fixed layer; it admits the core c8s components\n", live.Seed)
+			} else if missing := missingComponents(uploadImageLabels(desired), reqComponents); len(missing) > 0 {
 				fmt.Fprintf(cmd.ErrOrStderr(),
 					"warning: uploaded allowlist is missing core c8s component(s): %v\n", missing)
 				if !force {
@@ -136,16 +154,9 @@ before upload; --strict makes lint warnings fatal.`,
 				fmt.Fprintln(cmd.ErrOrStderr(), "proceeding anyway (--force)")
 			}
 
-			c, err := o.client(ctx(cmd))
-			if err != nil {
-				return err
-			}
-
 			// Show the operator what will change before writing.
-			if live, _, err := c.List(ctx(cmd)); err == nil {
-				_ = printDiff(cmd.OutOrStdout(), o.output, diffAllowlists(live, desired))
-			} else {
-				fmt.Fprintf(cmd.ErrOrStderr(), "warning: could not fetch current allowlist for diff: %v\n", err)
+			if live.Allowlist != nil {
+				_ = printDiff(cmd.OutOrStdout(), o.output, diffAllowlists(live.Allowlist, desired))
 			}
 
 			if dryRun {
@@ -181,7 +192,7 @@ func requiredComponentsForMode(mode string) ([]string, error) {
 	}
 	if baked {
 		return slices.DeleteFunc(slices.Clone(defaultRequiredComponents), func(component string) bool {
-			return component == "attestation-api"
+			return component == "attestation-api" || component == "nri-image-policy"
 		}), nil
 	}
 	return slices.Clone(defaultRequiredComponents), nil

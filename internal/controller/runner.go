@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -17,6 +18,7 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/discovery"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -43,41 +45,27 @@ type Options struct {
 	// mirror controller. Pod injection does not depend on CRDs.
 	DisableStatusMirror bool
 
+	// MeshImage is the armtls-mesh image the admission webhook injects as the
+	// pod's mesh endpoint. Empty leaves the node DaemonSet as the mesh. See
+	// webhook.Config.
+	MeshImage string
+
 	// GetCertImage is the c8s multi-mode binary image the admission webhook
 	// injects for get-cert bootstrap and renewal. Empty disables pod injection.
-	// Pod-to-pod mTLS is the node-level armtls-mesh DaemonSet's job, so no mesh
-	// sidecar is injected.
 	GetCertImage string
-
-	// CDSURL points at the CDS Service in-cluster (the URL the
-	// injected get-cert containers POST evidence + CSR to).
-	CDSURL string
 
 	// AttestationApiURL points at the attestation-api.
 	AttestationApiURL string
 
-	// CDSMeasurements are the launch measurements the injected secret fetcher
-	// requires CDS to present. Empty pins none.
-	CDSMeasurements []string
-
-	// CDSRTMRs are the TDX RTMR pins (<index>=<sha384-hex>) the injected
-	// sidecars additionally hold CDS to. Ignored for SNP evidence.
-	CDSRTMRs []string
-
-	// CDSMeasurementsConfigJSON retains the complete identity policy for injected clients.
-	CDSMeasurementsConfigJSON string
-
-	// WebhookConfigName is the MutatingWebhookConfiguration to patch.
+	// WebhookConfigName is the MutatingWebhookConfiguration to patch. The pod
+	// validator's configuration is named beside it (validatorConfigName).
 	WebhookConfigName string
 
 	WebhookServiceName      string
 	WebhookServiceNamespace string
 
-	CertFSGroup         int64
-	CertRenewInterval   time.Duration
-	GetCertRunAsUser    int64
-	GetCertRunAsGroup   int64
-	GetCertRunAsNonRoot bool
+	CertFSGroup       int64
+	CertRenewInterval time.Duration
 
 	// ExcludeNamespaces are namespaces the startup reinject sweep and the
 	// workload-service reconciler skip, on top of the release namespace and
@@ -89,11 +77,6 @@ type Options struct {
 	// socket directory: that plugin NRI-mounts it into c8s-cert and the webhook
 	// injects the get-cert workload-digest claim (docs/armtls.md). See webhook.Config.
 	WorkloadClaimsHostDir string
-
-	// MeshOutboundPort enables the MeshEgressReconciler when non-zero and is
-	// its Port; MeshExcludeSourceNamespaces is its Excluded set.
-	MeshOutboundPort            int32
-	MeshExcludeSourceNamespaces []string
 }
 
 var scheme = runtime.NewScheme()
@@ -120,8 +103,11 @@ var podName = func() (string, error) {
 }
 
 // Production wiring hoisted to vars so Run's error paths are testable.
+// getKubeConfig is the in-cluster service-account config only: a kubeconfig
+// from KUBECONFIG or HOME could name an exec credential plugin, code the
+// operator's pinned arguments never named.
 var (
-	getKubeConfig      = ctrl.GetConfigOrDie
+	getKubeConfig      = rest.InClusterConfig
 	newManager         = ctrl.NewManager
 	newDiscoveryClient = discovery.NewDiscoveryClientForConfig
 )
@@ -136,7 +122,15 @@ func Run(ctx context.Context, opts Options) error {
 	ctrl.SetLogger(zap.New(zap.UseDevMode(false)))
 	logger := ctrl.Log.WithName("c8s-operator")
 
-	config := getKubeConfig()
+	config, err := getKubeConfig()
+	if err != nil {
+		return fmt.Errorf("in-cluster config: %w", err)
+	}
+	// Match ctrl.GetConfigOrDie: QPS 0 means client-go's default 5 QPS
+	// limiter, which the manager, cache and webhook bootstrap would share.
+	if config.QPS == 0 {
+		config.QPS = -1
+	}
 	mgr, err := newManager(config, managerOptions(opts))
 	if err != nil {
 		return fmt.Errorf("create manager: %w", err)
@@ -186,9 +180,7 @@ func managerOptions(opts Options) ctrl.Options {
 			// labeled itself; don't cache every Service in the cluster. A
 			// foreign Service is invisible through this cache — CreateOrUpdate
 			// then tries Create and the reconciler maps AlreadyExists to its
-			// not-adopting skip. NetworkPolicies are deliberately not scoped
-			// the same way: the mesh-egress reconciler's sources are user
-			// objects, so it has to see every policy.
+			// not-adopting skip.
 			ByObject: map[client.Object]cache.ByObject{
 				&corev1.Service{}: {
 					Label: labels.SelectorFromSet(labels.Set{managedByLabel: managedByValue}),
@@ -241,44 +233,39 @@ func setupManager(ctx context.Context, mgr manager.Manager, dc serverResourcesFo
 		}
 	}
 
-	// Mesh egress companions. Not gated on injection: the mesh intercepts
-	// every pod's egress, not only injected pods'.
-	if opts.MeshOutboundPort != 0 {
-		if err := (&MeshEgressReconciler{
-			Client:   mgr.GetClient(),
-			Scheme:   mgr.GetScheme(),
-			Recorder: mgr.GetEventRecorder("c8s-operator"),
-			Port:     opts.MeshOutboundPort,
-			Excluded: namespaceSet(opts.MeshExcludeSourceNamespaces),
-		}).SetupWithManager(mgr); err != nil {
-			return fmt.Errorf("setup mesh-egress reconciler: %w", err)
-		}
+	// Admission webhooks — the platform containers a pod gets, and the shape
+	// it is admitted with. Both images or neither: the mesh endpoint and the
+	// credential containers are one shape.
+	if opts.MeshImage == "" && opts.GetCertImage != "" {
+		return fmt.Errorf("--get-cert-image needs --mesh-image: a pod's credential containers and its endpoint are one injected shape")
+	}
+	if opts.GetCertImage == "" && opts.MeshImage != "" {
+		return fmt.Errorf("--mesh-image needs --get-cert-image: a pod's endpoint and its credential containers are one injected shape")
+	}
+	if opts.MeshImage != "" && opts.WorkloadClaimsHostDir == "" {
+		return fmt.Errorf("--mesh-image needs --workload-claims-host-dir: every injected pod's credential containers redeem a sandbox token there")
+	}
+	if opts.MeshImage != "" && opts.CertFSGroup < 0 {
+		return fmt.Errorf("--mesh-image needs --cert-fs-group: the mesh endpoint reads the pod's private key through that group")
 	}
 
-	// Admission webhook — injects get-cert containers into annotated pods.
 	if opts.GetCertImage != "" {
 		if err := bootstrapWebhookPKI(ctx, mgr, opts); err != nil {
 			return fmt.Errorf("bootstrap webhook PKI: %w", err)
 		}
 		if err := webhook.Register(mgr, webhook.Config{
-			GetCertImage:              opts.GetCertImage,
-			CDSURL:                    opts.CDSURL,
-			AttestationApiURL:         opts.AttestationApiURL,
-			CDSMeasurements:           opts.CDSMeasurements,
-			CDSRTMRs:                  opts.CDSRTMRs,
-			CDSMeasurementsConfigJSON: opts.CDSMeasurementsConfigJSON,
-			CertFSGroup:               new(opts.CertFSGroup),
-			CertRenewInterval:         opts.CertRenewInterval,
-			GetCertRunAsUser:          new(opts.GetCertRunAsUser),
-			GetCertRunAsGroup:         new(opts.GetCertRunAsGroup),
-			GetCertRunAsNonRoot:       new(opts.GetCertRunAsNonRoot),
-			WorkloadClaimsHostDir:     opts.WorkloadClaimsHostDir,
+			GetCertImage:          opts.GetCertImage,
+			MeshImage:             opts.MeshImage,
+			AttestationApiURL:     opts.AttestationApiURL,
+			CertFSGroup:           new(opts.CertFSGroup),
+			CertRenewInterval:     opts.CertRenewInterval,
+			WorkloadClaimsHostDir: opts.WorkloadClaimsHostDir,
 		}); err != nil {
 			return fmt.Errorf("register webhook: %w", err)
 		}
-		logger.Info("pod-injection webhook enabled",
+		logger.Info("pod-admission webhooks enabled",
 			"image", opts.GetCertImage,
-			"cds_url", opts.CDSURL)
+			"mesh_image", opts.MeshImage)
 
 		// One-shot startup sweep: delete cw-annotated pods that were admitted
 		// while the webhook was down (so never injected) and let their owners
@@ -408,6 +395,9 @@ func bootstrapWebhookPKI(ctx context.Context, mgr ctrl.Manager, opts Options) er
 	if err := webhook.AppendCABundle(ctx, c, opts.WebhookConfigName, caPEM); err != nil {
 		return err
 	}
+	if err := webhook.AppendValidatingCABundle(ctx, c, validatorConfigName(opts.WebhookConfigName), caPEM); err != nil {
+		return err
+	}
 
 	// Drop the CAs this pod replaced. A leader-only runnable, and the
 	// previous pod does not release the Lease on shutdown, so it runs once
@@ -417,7 +407,7 @@ func bootstrapWebhookPKI(ctx context.Context, mgr ctrl.Manager, opts Options) er
 	// dropped first), rather than reopen the rollout window.
 	if opts.LeaderElection {
 		pruner := webhookCABundlePruner(mgr.GetWebhookServer().StartedChecker(), c,
-			opts.WebhookConfigName, caPEM, 10*time.Second,
+			opts.WebhookConfigName, validatorConfigName(opts.WebhookConfigName), caPEM, 10*time.Second,
 			mgr.GetLogger().WithName("webhook-cabundle-pruner"))
 		if err := mgr.Add(pruner); err != nil {
 			return fmt.Errorf("add webhook caBundle pruner: %w", err)
@@ -440,7 +430,7 @@ func bootstrapWebhookPKI(ctx context.Context, mgr ctrl.Manager, opts Options) er
 // every retry. A failure only leaves a stale CA trusted, whose key died with
 // its pod, so it is logged rather than returned: an error would stop the
 // manager and take the webhook down with it.
-func webhookCABundlePruner(started healthz.Checker, c client.Client, configName string, caPEM []byte, retry time.Duration, logger logr.Logger) manager.RunnableFunc {
+func webhookCABundlePruner(started healthz.Checker, c client.Client, injectorName, validatorName string, caPEM []byte, retry time.Duration, logger logr.Logger) manager.RunnableFunc {
 	return func(ctx context.Context) error {
 		ticker := time.NewTicker(retry)
 		defer ticker.Stop()
@@ -449,9 +439,15 @@ func webhookCABundlePruner(started healthz.Checker, c client.Client, configName 
 				// Re-adding first is a no-op while this pod's CA is in the
 				// bundle, and restores it if something overwrote the bundle
 				// (a helm-set webhook.caBundle) since bootstrap.
-				err := webhook.AppendCABundle(ctx, c, configName, caPEM)
+				err := webhook.AppendCABundle(ctx, c, injectorName, caPEM)
 				if err == nil {
-					err = webhook.PruneCABundle(ctx, c, configName, caPEM)
+					err = webhook.AppendValidatingCABundle(ctx, c, validatorName, caPEM)
+				}
+				if err == nil {
+					err = webhook.PruneCABundle(ctx, c, injectorName, caPEM)
+				}
+				if err == nil {
+					err = webhook.PruneValidatingCABundle(ctx, c, validatorName, caPEM)
 				}
 				if err == nil {
 					logger.Info("pruned superseded webhook CAs from the caBundle")
@@ -466,6 +462,17 @@ func webhookCABundlePruner(started healthz.Checker, c client.Client, configName 
 			}
 		}
 	}
+}
+
+// The chart names the two webhook configurations beside each other, so the
+// operator is told one name and derives the other.
+const (
+	injectorConfigSuffix  = "-pod-injector"
+	validatorConfigSuffix = "-pod-validator"
+)
+
+func validatorConfigName(injectorName string) string {
+	return strings.TrimSuffix(injectorName, injectorConfigSuffix) + validatorConfigSuffix
 }
 
 // webhookCertRotator re-issues the webhook serving leaf before it expires.

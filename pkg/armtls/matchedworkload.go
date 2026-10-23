@@ -27,7 +27,7 @@ import (
 	"fmt"
 	"regexp"
 
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadname"
 )
 
 // OIDMatchedWorkload identifies the matched-workload extension (see
@@ -52,7 +52,7 @@ var allowlistVersionPattern = regexp.MustCompile(`^[1-9][0-9]{0,19}$`)
 // decided under.
 type MatchedWorkload struct {
 	// Name is the matched entry name (allowlist workload-name grammar,
-	// at most allowlist.MaxWorkloadNameLen bytes).
+	// at most workloadname.MaxLen bytes).
 	Name string
 	// AllowlistVersion is the store's monotonic version counter at the
 	// snapshot the match used — a canonical positive decimal integer.
@@ -79,8 +79,8 @@ type matchedWorkloadASN1 struct {
 
 // Validate rejects a value this package must neither emit nor accept.
 func (m *MatchedWorkload) Validate() error {
-	if !allowlist.ValidWorkloadName(m.Name) {
-		return fmt.Errorf("armtls: matched-workload name %q is not a valid workload entry name (1..%d bytes, [A-Za-z0-9][A-Za-z0-9._-]*)", m.Name, allowlist.MaxWorkloadNameLen)
+	if !workloadname.Valid(m.Name) {
+		return fmt.Errorf("armtls: matched-workload name %q is not a valid workload entry name (1..%d bytes, [A-Za-z0-9][A-Za-z0-9._-]*)", m.Name, workloadname.MaxLen)
 	}
 	if !allowlistVersionPattern.MatchString(m.AllowlistVersion) {
 		return fmt.Errorf("armtls: matched-workload allowlist version %q is not a canonical positive decimal integer", m.AllowlistVersion)
@@ -168,7 +168,7 @@ func MatchedWorkloadFromCert(cert *x509.Certificate) (*MatchedWorkload, error) {
 // CheckWorkloadPin enforces expectedName against a leaf whose CA chain the
 // caller has ALREADY verified. The stamp is placed by CDS in the signed area,
 // so the mesh CA signature — not the hardware evidence — is what authenticates
-// it. Calling this on an unverified (e.g. self-signed) leaf would pin an
+// it. Calling this on an unverified (e.g. self-issued) leaf would pin an
 // attacker-chosen string.
 //
 // Empty expectedName is a no-op, so callers can invoke it unconditionally.
@@ -196,18 +196,17 @@ func CheckWorkloadPin(cert *x509.Certificate, expectedName string) error {
 // extension is whatever it chose, and is refused here. nil with no error means
 // the verified peer carries no stamp.
 //
-// This means it only works on a ServerConfig.ClientCAs listener, the one branch
+// This means it only works on a ServerConfig.ClientCA listener, the one branch
 // that lets crypto/tls build the chain itself. It returns an error on every
-// other C8s connection today: a ClientPolicy listener verifies through
-// dualVerifyPeerCallback (which deliberately also admits a self-signed armTLS
-// peer) and every mesh client sets InsecureSkipVerify, and neither populates
-// VerifiedChains.
+// other C8s connection today: a ClientPolicy listener verifies a self-issued
+// peer's own evidence, and every mesh client sets InsecureSkipVerify, so
+// neither populates VerifiedChains.
 //
 // That is the intended contract, not an oversight: on those connections there
 // is no chain for the stamp to be vouched by. Do NOT "fix" a caller by dropping
 // the VerifiedChains check — read the stamp off a leaf the caller has itself
 // verified against the mesh CA (MatchedWorkloadFromCert), or move the listener
-// to ClientCAs. See docs/armtls.md, "Matched workload".
+// to ClientCA. See docs/armtls.md, "Matched workload".
 func PeerMatchedWorkload(cs tls.ConnectionState) (*MatchedWorkload, error) {
 	if len(cs.PeerCertificates) == 0 {
 		return nil, fmt.Errorf("armtls: no peer certificate")

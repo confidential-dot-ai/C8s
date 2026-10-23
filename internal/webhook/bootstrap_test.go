@@ -340,3 +340,57 @@ func TestPruneCABundle(t *testing.T) {
 		t.Fatal("PruneCABundle on a missing configuration = nil, want error")
 	}
 }
+
+// The pod validator's configuration carries the same CA bundle as the
+// injector's, by the same append-then-prune rule: during a rollout the old pod
+// is still the only Ready endpoint for both webhooks.
+func TestAppendValidatingCABundle(t *testing.T) {
+	ctx := context.Background()
+	live := time.Now().Add(time.Hour)
+	a, b := testCAPEM(t, "pod-a", live), testCAPEM(t, "pod-b", live)
+
+	scheme := k8sruntime.NewScheme()
+	if err := admissionv1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &admissionv1.ValidatingWebhookConfiguration{
+		Name: "c8s-validating",
+		Webhooks: []admissionv1.ValidatingWebhook{
+			{Name: "pods-validate.c8s.dev"},
+		},
+	}
+	fc := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cfg).Build()
+
+	if err := AppendValidatingCABundle(ctx, fc, "c8s-validating", a); err != nil {
+		t.Fatalf("AppendValidatingCABundle onto an empty bundle: %v", err)
+	}
+	if err := AppendValidatingCABundle(ctx, fc, "c8s-validating", b); err != nil {
+		t.Fatalf("AppendValidatingCABundle: %v", err)
+	}
+	assertValidatingBundle(t, fc, b, a)
+
+	if err := PruneValidatingCABundle(ctx, fc, "c8s-validating", b); err != nil {
+		t.Fatalf("PruneValidatingCABundle: %v", err)
+	}
+	assertValidatingBundle(t, fc, b)
+
+	if err := AppendValidatingCABundle(ctx, fc, "missing", b); err == nil {
+		t.Fatal("AppendValidatingCABundle on a missing configuration = nil, want error")
+	}
+	if err := PruneValidatingCABundle(ctx, fc, "c8s-validating", a); err == nil {
+		t.Fatal("PruneValidatingCABundle with an absent CA = nil, want error")
+	}
+}
+
+// assertValidatingBundle checks the validator's caBundle holds exactly the
+// given CAs, in order.
+func assertValidatingBundle(t *testing.T, c client.Client, want ...[]byte) {
+	t.Helper()
+	var got admissionv1.ValidatingWebhookConfiguration
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "c8s-validating"}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got.Webhooks[0].ClientConfig.CABundle, bytes.Join(want, nil)) {
+		t.Fatalf("caBundle = %q, want %d CAs in order", got.Webhooks[0].ClientConfig.CABundle, len(want))
+	}
+}

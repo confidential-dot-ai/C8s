@@ -36,4 +36,8 @@ type AttestationDiscovery struct {
 	Challenge string          `json:"challenge"`
 	Platform  string          `json:"platform"`
 	Evidence  json.RawMessage `json:"evidence"`
+
+	// RuntimeExtensions is the TDX RTMR[3] runtime extension list sent with
+	// the evidence, unauthenticated until replayed against the quote.
+	RuntimeExtensions []string `json:"runtime_extensions,omitempty"`
 }

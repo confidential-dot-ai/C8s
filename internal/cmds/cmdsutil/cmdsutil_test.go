@@ -9,6 +9,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -187,7 +189,7 @@ func TestValidateAttestationAPIURL(t *testing.T) {
 	}{
 		{"http://localhost:8400", false},
 		{"https://attestation-api:8400", false},
-		{"unix:///var/run/nri-image-policy/attestation-api.sock", false},
+		{"unix:///run/nri-image-policy/attestation-api.sock", false},
 		{"unix://relative.sock", true},
 		{"unix://", true},
 		{"ftp://example.com", true},
@@ -218,3 +220,61 @@ func TestWarnIfCDSUnpinned(t *testing.T) {
 		}
 	}
 }
+
+func TestExpandHostIP(t *testing.T) {
+	for _, tc := range []struct {
+		name, hostIP, in, want string
+		wantErr                bool
+	}{
+		{name: "reference", hostIP: "192.0.2.7", in: "http://$(HOST_IP):8400", want: "http://192.0.2.7:8400"},
+		{name: "IPv6", hostIP: "2001:db8::7", in: "http://$(HOST_IP):8400", want: "http://[2001:db8::7]:8400"},
+		{name: "IPv4-mapped IPv6", hostIP: "::ffff:192.0.2.7", in: "http://$(HOST_IP):8400", want: "http://192.0.2.7:8400"},
+		{name: "unix socket", in: "unix:///run/attestation-api.sock", want: "unix:///run/attestation-api.sock"},
+		{name: "other variable", in: "http://$(POD_IP):8400", want: "http://$(POD_IP):8400"},
+		{name: "unset", in: "http://$(HOST_IP):8400", wantErr: true},
+		{name: "not an address", hostIP: "node-a", in: "http://$(HOST_IP):8400", wantErr: true},
+		{name: "zoned", hostIP: "fe80::1%eth0", in: "http://$(HOST_IP):8400", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HOST_IP", tc.hostIP)
+			got, err := ExpandHostIP(tc.in)
+			if (err != nil) != tc.wantErr || got != tc.want {
+				t.Fatalf("ExpandHostIP(%q) = %q, %v, want %q, error %v", tc.in, got, err, tc.want, tc.wantErr)
+			}
+		})
+	}
+}
+
+// $(NODE_IP) comes from the node-ip file only: HOST_IP, which a pod sets,
+// never reaches it.
+func TestExpandNodeIP(t *testing.T) {
+	getenv := func(string) string { return "203.0.113.66" }
+	for _, tc := range []struct {
+		name    string
+		file    *string
+		in      string
+		want    string
+		wantErr bool
+	}{
+		{name: "file", file: ptr("192.0.2.7\n"), in: "http://$(NODE_IP):8400", want: "http://192.0.2.7:8400"},
+		{name: "IPv6 file", file: ptr("2001:db8::7"), in: "http://$(NODE_IP):8400", want: "http://[2001:db8::7]:8400"},
+		{name: "missing file", in: "http://$(NODE_IP):8400", wantErr: true},
+		{name: "empty file", file: ptr(""), in: "http://$(NODE_IP):8400", wantErr: true},
+		{name: "not an address", file: ptr("node-a"), in: "http://$(NODE_IP):8400", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "node-ip")
+			if tc.file != nil {
+				if err := os.WriteFile(path, []byte(*tc.file), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := expandNodeAddress(tc.in, path, getenv)
+			if (err != nil) != tc.wantErr || got != tc.want {
+				t.Fatalf("expandNodeAddress(%q) = %q, %v, want %q, error %v", tc.in, got, err, tc.want, tc.wantErr)
+			}
+		})
+	}
+}
+
+func ptr(s string) *string { return &s }

@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+# The router in the acme front-door mode on the measured image: its pod must
+# match the seeded router entry and get that name stamped, as in cds mode.
+#
+# The lane boots in cds mode. A baked router pod has one shape for both
+# modes, but in acme mode its acme sidecar issues instead of standing by, and
+# nginx and cds-attest serve the ACME leaf. So this boots a second CVM from
+# the lane VM's spec, with a launch that names a router hostname and an ACME
+# directory that does not resolve. Nothing is issued and the front door keeps
+# the sidecar's self-signed placeholder, which attest-lb binds like a real
+# ACME leaf. `c8s verify` then checks from outside that the leaf behind the
+# front door is stamped with the seeded router entry.
+#
+# Deletes the lane's CVM first: the host may not hold two.
+# Needs: c8s, crane, jq, kubectl (launcher cluster).
+# Env: NS, VM (the lane's CVM), IMAGE_MANIFEST, C8S_SOURCE_DIR, c8sRef,
+# GH_TOKEN (reads the component images).
+set -euo pipefail
+here=$(cd "$(dirname "$0")" && pwd)
+. "$here/lib.sh"
+: "${NS:?}" "${VM:?}" "${IMAGE_MANIFEST:?}" "${C8S_SOURCE_DIR:?}" "${c8sRef:?}" "${GH_TOKEN:?}"
+
+acme_vm=$VM-acme
+host=front.c8s-e2e.test
+work=$(mktemp -d)
+cd "$work"
+
+# The seed rendered the way node-guest-image/c8s/mkosi.sync renders the one
+# it bakes, from this commit's core images and the Helm version it pins.
+crane auth login ghcr.io -u "${GITHUB_ACTOR:-c8s-e2e}" --password-stdin <<<"$GH_TOKEN"
+sync="$C8S_SOURCE_DIR/node-guest-image/c8s/mkosi.sync"
+helm_version=$(sed -n 's/^HELM_VERSION="\(.*\)"$/\1/p' "$sync")
+helm_sha=$(sed -n 's/^HELM_LINUX_AMD64_SHA256="\(.*\)"$/\1/p' "$sync")
+rke2_version=$(sed -n 's/^RKE2_VERSION="\([^+]*\)+.*"$/\1/p' "$sync")
+curl -fsSL --retry 4 -o helm.tgz "https://get.helm.sh/helm-$helm_version-linux-amd64.tar.gz"
+echo "$helm_sha  helm.tgz" | sha256sum -c -
+mkdir -p bin && tar -xzf helm.tgz -C bin --strip-components 1 linux-amd64/helm
+render=()
+for pair in image:c8s-operator cds-image:cds armtls-mesh-image:armtls-mesh; do
+  flag=${pair%%:*} repo=ghcr.io/confidential-dot-ai/${pair#*:}
+  render+=("--$flag-repository" "$repo" "--$flag-digest" "$(crane digest "$repo:$c8sRef")")
+done
+PATH="$work/bin:$PATH" c8s node-image render --hardware-platform tdx --kube-version "$rke2_version" "${render[@]}" --output-dir node-image
+router=$(jq -er '[.workloads | keys[] | select(startswith("c8s-router-"))] | if length == 1 then .[0] else error("want one router entry") end' node-image/allowlist-seed.json)
+echo "seeded router entry: $router"
+
+# The ACME directory is under .invalid, so the sidecar can reach no CA.
+c8s launch-config new --out launch --cluster-id "$acme_vm" --server-name c8s-node \
+  --image-manifest "$IMAGE_MANIFEST" \
+  --router-hostname "$host" --acme-directory-url https://acme.invalid/directory
+kubectl -n "$NS" create secret generic "$acme_vm-opkey" \
+  --from-file=pubkey=launch/server/pubkey \
+  --from-file=launch.yaml=launch/server/launch.yaml \
+  --from-file=launch.yaml.sig=launch/server/launch.yaml.sig
+
+# The lane VM's spec with this launch's opkey and a scratch disk of its own.
+kubectl -n "$NS" get vm "$VM" -o json | jq --arg name "$acme_vm" '
+  {apiVersion, kind,
+   metadata: {name: $name, namespace: .metadata.namespace, labels: .metadata.labels, annotations: .metadata.annotations},
+   spec: (.spec
+     | .template.metadata.labels["kubevirt.io/domain"] = $name
+     | .template.spec.volumes |= map(
+         if .name == "scratch" then .persistentVolumeClaim.claimName = "\($name)-scratch"
+           elif .name == "opkey" then .secret.secretName = "\($name)-opkey"
+           else . end))}' > vm.json
+kubectl -n "$NS" get pvc "$VM-scratch" -o json | jq --arg name "$acme_vm-scratch" '
+  {apiVersion, kind, metadata: {name: $name, namespace: .metadata.namespace, labels: .metadata.labels},
+   spec: (.spec | {accessModes, resources, storageClassName})}' > scratch.json
+kubectl -n "$NS" delete vm "$VM" --wait=true --timeout=180s
+kubectl -n "$NS" wait --for=delete "vmi/$VM" --timeout=180s
+kubectl create -f scratch.json -f vm.json
+
+ip=""
+for _ in $(seq 1 60); do
+  ip=$(kubectl -n "$NS" get vmi "$acme_vm" -o jsonpath='{.status.interfaces[0].ipAddress}' 2>/dev/null || true)
+  [ -n "$ip" ] && break
+  sleep 5
+done
+[ -n "$ip" ] || { kubectl -n "$NS" describe vmi "$acme_vm" | tail -25; fail "the acme-mode CVM got no IP"; }
+for _ in $(seq 1 120); do
+  code=$(curl -sk --connect-timeout 2 --max-time 4 -o /dev/null -w '%{http_code}' "https://$ip:8443/" || true)
+  [ "${code:-000}" != 000 ] && break
+  sleep 5
+done
+c8s get-kubeconfig --node "$ip" --operator-key launch/server.key --image-manifest "$IMAGE_MANIFEST" \
+  --out kubeconfig --timeout 180s
+export KUBECONFIG=$work/kubeconfig
+
+# The kubeconfig is served before CDS is up.
+for _ in $(seq 1 30); do
+  c8s cds ca --url "https://$ip:30808" --image-policy-file launch/server.json --out mesh-ca.pem && break
+  sleep 10
+done
+[ -s mesh-ca.pem ] || { echo "FAIL: no mesh CA from CDS at $ip:30808" >&2; exit 1; }
+
+# attest-lb binds the router's route manifest (#852), which the client checks
+# under the launch operator key. One route; its backend is never dialled here.
+# A CDS without persistence refuses an operator token issued before it
+# started until --jwt-clock-skew has passed, so retry with a fresh one.
+routed=""
+for _ in $(seq 1 12); do
+  if c8s routes add --new --url "https://$ip:30808" --image-policy-file launch/server.json \
+      --operator-key launch/server.key --operator-keys launch/server/pubkey \
+      --host "$host" --path / --address c8s-none.default.svc.cluster.local:9443 --workload none; then
+    routed=1; break
+  fi
+  sleep 10
+done
+[ -n "$routed" ] || fail "no route stored on the acme-mode CDS"
+
+# The router pod starts once the acme sidecar has written its placeholder,
+# and get-cert's stamp follows the pod's match.
+verdict() {
+  c8s verify "https://$ip:443" --kind lb --mode attest-lb --server-name "$host" \
+    --image-manifest "$IMAGE_MANIFEST" --mesh-ca mesh-ca.pem --operator-keys launch/server/pubkey \
+    --workload "$router" -o json > verdict.json
+}
+ok=""
+for _ in $(seq 1 30); do
+  if verdict; then ok=1; break; fi
+  sleep 10
+done
+if [ -z "$ok" ]; then
+  cat verdict.json || true
+  kubectl -n c8s-router get pods -o json | jq -r '.items[] | "\(.metadata.name) phase=\(.status.phase)",
+    ((.status.initContainerStatuses // []) + (.status.containerStatuses // []) | .[]
+    | "  \(.name): ready=\(.ready) restarts=\(.restartCount) state=\(.state | tostring | .[0:300])")' || true
+  for c in c8s-cert acme cds-attest; do
+    echo "== logs c8s-router/$c"
+    kubectl -n c8s-router logs deploy/c8s-router -c "$c" --tail=40 2>&1 || true
+  done
+  fail "the acme-mode front door is not verified as $router"
+fi
+jq . verdict.json
+
+# The leaf the verdict binds is the acme sidecar's self-signed placeholder,
+# not the CDS-issued leaf the cds mode serves.
+openssl s_client -connect "$ip:443" -servername "$host" </dev/null 2>/dev/null | openssl x509 > serving.pem
+[ "$(openssl x509 -in serving.pem -noout -issuer_hash)" = "$(openssl x509 -in serving.pem -noout -subject_hash)" ] \
+  || fail "the front door serves an issued leaf, not the acme placeholder"
+digest=$(openssl x509 -in serving.pem -outform DER | openssl dgst -sha256 -binary | base64 -w0 | tr '+/' '-_' | tr -d '=')
+jq -e --arg d "$digest" '.serving_leaf_sha256 == $d' verdict.json >/dev/null \
+  || fail "the verdict binds another serving leaf than the placeholder"
+echo "PASS: in acme mode the router matches $router and attest-lb binds the acme leaf"

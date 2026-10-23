@@ -74,12 +74,13 @@ mode sets), where the node image's containerd drop-in fixes it at `2s`.
 |---|---|
 | C8s operator (webhook + controllers) | Ordinary pod; release namespace is webhook-exempt |
 | MWC `pod-injector` | Cluster resource, tracked by the release |
+| VWC `pod-validator` | Cluster resource, tracked by the release |
 | CDS (verify + mesh CA + leaf signing) | Ordinary pod inside the node CVM |
 | attestation API | Baked service in `bare-metal` mode; chart DaemonSet in `gke`/`aks` |
-| armtls-mesh | Node DaemonSet |
+| mesh endpoint | Injected into every covered pod |
 | nri-image-policy | Node process launched by containerd; baked binary in `bare-metal` mode |
-| get-cert injection (`confidential.ai/cw` pods) | Webhook at admission time |
-| router | Ordinary pod inside the node CVM |
+| platform-container injection (every covered pod) | Webhook at admission time |
+| router | Ordinary pod inside the node CVM, in the `c8s-router` namespace |
 
 ---
 
@@ -94,8 +95,8 @@ any other pod on it can reach.
 ```
  HOST (trusted in this mode)
  ┌─────────┐ ┌────────┐ ┌────────────┐ ┌───────────────────┐
- │operator │ │  CDS   │ │armtls-mesh  │ │attestation-service│
- │+webhook │ │ (runc) │ │nri-img-pol │ │   (host DaemonSet) │
+ │operator │ │  CDS   │ │nri-img-pol │ │attestation-service│
+ │+webhooks│ │ (runc) │ │  (plugin)  │ │   (host DaemonSet) │
  └─────────┘ └────────┘ └────────────┘ └───────────────────┘
 ```
 
@@ -136,9 +137,10 @@ Key properties (see `templates/webhook.yaml`, `controller/runner.go`):
   operator hasn't patched the caBundle yet *fails closed* — pod creation is
   rejected and retried, never admitted as an unmutated runc pod.
 - The **chart's own components are exempt** via the MWC's namespaceSelector,
-  which excludes the release namespace (plus `kube-system`, `kube-public`,
-  `kube-node-lease`, and `webhook.extraExcluded`), so the operator can always
-  boot to patch the caBundle — no deadlock.
+  which excludes the release namespace and the router role's (plus
+  `kube-system`, `kube-public`, `kube-node-lease`, `local-path-storage`, and
+  `webhook.extraExcluded`), so the operator can always boot to patch the
+  caBundle — no deadlock.
 - The operator reports **Ready only once its webhook TLS listener accepts
   connections** (`/readyz` dials it), so it never becomes a Service endpoint
   that refuses admission calls.
@@ -177,22 +179,45 @@ operator's handler (`internal/webhook/pod_mutator.go`) decides:
 flowchart TD
     P["Pod CREATE"] --> EX{"namespace excluded?<br/>(release ns, kube-system, ...)"}
     EX -->|yes| PASS["webhook not called (runc)<br/>— host infrastructure"]
-    EX -->|no| CW{"has confidential.ai/cw?"}
-    CW -->|yes| GC["inject get-cert<br/>(c8s-cert sidecar)"]
-    CW -->|no| DONE["admit"]
+    EX -->|no| MESH{"per-pod mesh enabled?"}
+    MESH -->|yes| MC["inject mesh endpoint<br/>and certificate containers"]
+    MESH -->|no| CW{"has confidential.ai/cw?"}
+    CW -->|yes| GC["inject certificate containers"]
+    CW -->|no| DETAILS{"has injection detail annotations?"}
+    DETAILS -->|yes| DENY["reject: cw required"]
+    DETAILS -->|no| DONE["admit"]
+    MC --> DONE
     GC --> DONE
 ```
 
-Get-cert injection is keyed off the pod, not a CR: the
-`confidential.ai/cw=<id>` annotation drives it in every mode. It injects a
+The `pod-validator` VWC then rejects an in-scope pod whose final spec is not
+the one the injector builds, on CREATE and UPDATE of `pods` and
+`pods/ephemeralcontainers`. It is `failurePolicy: Fail` and not tunable.
+
+Under the per-pod mesh the injector also moves every HTTP probe of the pod's
+own containers onto the mesh endpoint's health port, under a path naming the
+port and the path the probe reaches. The endpoint forwards those paths to the
+pod's own loopback and answers with the application's status code. A probe it
+cannot forward is refused: HTTPS, a named port the container declares nowhere,
+a mesh port, a noncanonical path, HTTP headers, or a timeout above five seconds.
+The mutator rejects author-supplied `/probe/` paths and runs once per CREATE.
+TCP and gRPC probes and HTTP lifecycle hooks are refused on member pods.
+HTTP probes naming an explicit host keep their original destination.
+
+In every deployment lane (bare-metal, GKE and AKS), per-pod mesh mode injects
+all covered pods. Node-mesh mode injects pods carrying
+`confidential.ai/cw=<id>`. Injection requires the operator's
+`workload-claims-host-dir` configuration and adds a
 `c8s-cert` native sidecar that fetches the leaf cert from CDS on startup and
 renews it on a ticker, plus a `c8s-cert-wait` run-once init container
 (`/c8s probe-file --wait`) that blocks until the initial cert is written so
 downstream containers wait for it before launching.
 
 **Excluded namespaces** in the MWC's namespaceSelector are the release
-namespace (operator, CDS, and other platform components), `kube-system`,
-`kube-public`, `kube-node-lease`, and `webhook.extraExcluded`.
+namespace (operator, CDS, and other platform components), `c8s-router` (the
+namespace the mesh policy names for the router role, whose pods hold
+chart-rendered platform-role containers), `kube-system`, `kube-public`,
+`kube-node-lease`, `local-path-storage`, and `webhook.extraExcluded`.
 The separate `deny-host-namespaces` policy rejects host namespaces outside
 trusted platform namespaces.
 
@@ -204,8 +229,8 @@ self-provisions its serving cert via armTLS.
 
 ## Certificate and attestation flows
 
-**Node attestation.** Workloads annotated `cw` get a get-cert sidecar
-that dials CDS over the cluster Service (`--cds-url`); CDS verifies the request
+**Node attestation.** Injected workloads get a get-cert sidecar
+that dials the CDS endpoint its node mounts; CDS verifies the request
 against the **host** attestation-service DaemonSet and signs the CSR with its
 in-memory mesh CA — verify and sign happen in one process.
 
@@ -255,14 +280,18 @@ whose release a bare `helm uninstall` already deleted. See [`operator.md`](opera
 
 ```bash
 # Every flow below also requires --hardware-platform (the nodes' CPU TEE:
-# sev-snp or tdx). --operator-keys authorizes `c8s allowlist` writes; a -f
-# values file may carry the keys instead, and --force installs without.
-# --upstream (with the port on its --workload-ref) points router at an adopted
-# workload's mesh-wrapped headless Service (see operator.md, "router upstream").
+# sev-snp or tdx). --operator-keys authorizes `c8s allowlist` writes and pins
+# the router's route-manifest keys; a -f values file may carry the keys
+# instead. --force installs without, but CDS then stores no route manifest, so
+# the router answers 503 until cds.operatorKeys is set and the release upgraded;
+# the install also needs --measurements to pin CDS.
+# --upstream (with the port on its --workload-ref) writes a route manifest that
+# routes / to an adopted workload serving TLS on that port with its get-cert
+# certificate; install prints how to store it (see operator.md, "Route manifest").
 
 # Base — normal cluster, host-side components, no per-pod confidentiality.
 c8s install --cvm-mode=bare-metal --hardware-platform=sev-snp --operator-keys operator-pub.pem \
-  --workload-ref vllm=vllm/deployment/serving:8000 --upstream vllm
+  --workload-ref vllm=vllm/deployment/serving:8443 --upstream vllm
 
 # Uninstall: helm uninstall + sweep chart-installed host artifacts.
 c8s uninstall

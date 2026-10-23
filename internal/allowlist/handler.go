@@ -1,9 +1,12 @@
 package allowlist
 
 import (
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
+	"regexp"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -23,6 +26,9 @@ type Handler struct {
 	// MaxWriteBodyBytes caps mutation request bodies. Zero means
 	// DefaultMaxWriteBodyBytes; a non-positive value clamps to the default.
 	MaxWriteBodyBytes int64
+	// Layers, when it has a seed layer, names it on GET /allowlist and serves
+	// its bytes by digest beside the history.
+	Layers *Layered
 }
 
 // WriteAuthorizer authorizes a mutation given the raw request body, so the
@@ -34,6 +40,9 @@ type WriteAuthorizer func(r *http.Request, body []byte) error
 // JSON. Emits a weak ETag from the store version; a matching If-None-Match
 // returns 304.
 func (h Handler) HandleList(w http.ResponseWriter, r *http.Request) {
+	if h.Layers != nil && h.Layers.SeedDigest() != "" {
+		w.Header().Set(pkgallowlist.SeedHeader, h.Layers.SeedDigest())
+	}
 	// Every enforcer polls this route on its refresh interval and is current
 	// almost every time, so settle the 304 on the single-row version read
 	// rather than loading every entry under the writers' lock.
@@ -79,6 +88,16 @@ func (h Handler) HandleReplaceAll(w http.ResponseWriter, r *http.Request) {
 	if err := h.Store.ReplaceAll(al); err != nil {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
+	}
+	// The token that wrote a canonical whole document is the operator's
+	// signature over it (docs/allowlist-and-capabilities.md). Re-uploading the
+	// same document with a fresh token is a no-op write that stores it.
+	if token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok {
+		if err := h.Store.SignPolicy(body, token); err != nil {
+			slog.Error("store the operator signature of the allowlist", "error", err)
+			http.Error(w, "allowlist replaced but its operator signature was not stored; upload it again", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	slog.Info("allowlist replaced", "workloads", len(al.Workloads))
@@ -138,22 +157,85 @@ func (h Handler) HandleDeleteWorkload(w http.ResponseWriter, r *http.Request) {
 // authorize reads the body (capped) and runs the configured authorizer.
 // On success returns the body for downstream decoding.
 func (h Handler) authorize(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
-	if h.WriteAuthorizer == nil {
-		w.WriteHeader(http.StatusUnauthorized)
-		return nil, false
-	}
 	cap := h.MaxWriteBodyBytes
 	if cap <= 0 {
 		cap = DefaultMaxWriteBodyBytes
 	}
-	body, ok := httputil.ReadCappedBody(w, r, cap)
-	if !ok {
-		return nil, false
-	}
-	if err := h.WriteAuthorizer(r, body); err != nil {
-		slog.Warn("allowlist write rejected", "method", r.Method, "remote", r.RemoteAddr, "reason", err)
+	return h.WriteAuthorizer.ReadAuthorized(w, r, cap)
+}
+
+// ReadAuthorized reads the body, capped at maxBytes, and authorizes it. On
+// failure it has answered the request; a nil authorizer refuses every write.
+// Every write CDS authorizes as an allowlist write goes through it.
+func (a WriteAuthorizer) ReadAuthorized(w http.ResponseWriter, r *http.Request, maxBytes int64) ([]byte, bool) {
+	if a == nil {
 		w.WriteHeader(http.StatusUnauthorized)
 		return nil, false
 	}
+	body, ok := httputil.ReadCappedBody(w, r, maxBytes)
+	if !ok {
+		return nil, false
+	}
+	if err := a(r, body); err != nil {
+		slog.Warn("write rejected", "method", r.Method, "path", r.URL.Path, "remote", r.RemoteAddr, "reason", err)
+		httputil.RefuseOperatorToken(w, err)
+		return nil, false
+	}
 	return body, true
+}
+
+// HandleHistory handles GET /allowlist/history: every document CDS served,
+// oldest first.
+func (h Handler) HandleHistory(w http.ResponseWriter, _ *http.Request) {
+	entries, err := h.Store.History()
+	if err != nil {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(struct {
+		Entries []HistoryEntry `json:"entries"`
+	}{entries})
+}
+
+var objectHex = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+// HandleObject handles GET /allowlist/objects/sha256/{hex}: the exact bytes
+// of a document in the history, or of the seed layer.
+func (h Handler) HandleObject(w http.ResponseWriter, r *http.Request) {
+	h.serveByDigest(w, r, "application/json", func(digest string) ([]byte, bool, error) {
+		body, ok, err := h.Store.Object(digest)
+		if !ok && err == nil && h.Layers != nil {
+			body, ok = h.Layers.SeedObject(digest)
+		}
+		return body, ok, err
+	})
+}
+
+// HandleSignature handles GET /allowlist/objects/sha256/{hex}/signature: the
+// operator write token that signed that document.
+func (h Handler) HandleSignature(w http.ResponseWriter, r *http.Request) {
+	h.serveByDigest(w, r, "text/plain", func(digest string) ([]byte, bool, error) {
+		token, ok, err := h.Store.Signature(digest)
+		return []byte(token), ok, err
+	})
+}
+
+func (h Handler) serveByDigest(w http.ResponseWriter, r *http.Request, contentType string, lookup func(string) ([]byte, bool, error)) {
+	hex := chi.URLParam(r, "hex")
+	if !objectHex.MatchString(hex) {
+		http.Error(w, "digest must be 64 lowercase hex characters", http.StatusBadRequest)
+		return
+	}
+	body, ok, err := lookup("sha256:" + hex)
+	if err != nil {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Write(body)
 }

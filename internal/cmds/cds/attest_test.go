@@ -30,6 +30,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
 	"github.com/confidential-dot-ai/c8s/internal/attestation"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
@@ -69,16 +70,15 @@ func generateCSRWith(t *testing.T, subject pkix.Name, dnsNames []string, ips []n
 
 func newTestAttestHandler(t *testing.T, stubURL string, allowedMeasurements map[string]bool) AttestHandler {
 	t.Helper()
-	ca, err := issuer.NewCA("test ca", 2*issuer.MaxLeafTTL)
+	mesh, err := issuer.NewMeshCA("test ca", 2*issuer.MaxLeafTTL)
 	if err != nil {
-		t.Fatalf("new ca: %v", err)
+		t.Fatalf("new mesh ca: %v", err)
 	}
 	store := attestation.NewChallengeStore(30 * time.Second)
 	return AttestHandler{
 		Challenges:        &store,
 		AttestationClient: remote.NewClient(stubURL),
-		CA:                ca,
-		CAChainPEM:        certutil.EncodeCertPEM(ca.Cert.Raw),
+		MeshCA:            mesh,
 		CertTTL:           time.Hour,
 		Measurements:      allowedMeasurements,
 	}
@@ -106,6 +106,23 @@ func postAttest(t *testing.T, h AttestHandler, challenge, csrPEM string) *httpte
 	return w
 }
 
+// wantRefusal asserts status and the JSON error code, and returns the body so
+// a caller can check the message.
+func wantRefusal(t *testing.T, w *httptest.ResponseRecorder, status int, code string) types.ErrorResponse {
+	t.Helper()
+	if w.Code != status {
+		t.Fatalf("status: got %d, want %d; body=%s", w.Code, status, w.Body.String())
+	}
+	var resp types.ErrorResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("refusal body is not an error response: %v; body=%s", err, w.Body.String())
+	}
+	if resp.Error != code {
+		t.Fatalf("error code: got %q, want %q; message=%q", resp.Error, code, resp.Message)
+	}
+	return resp
+}
+
 func leafFromAttestResponse(t *testing.T, w *httptest.ResponseRecorder) *x509.Certificate {
 	t.Helper()
 	chain, err := certutil.ParsePEMCertificates(w.Body.Bytes())
@@ -122,9 +139,11 @@ func TestAttest_InProcessSignAndReturnsChain(t *testing.T) {
 	stub := newStubAttestationApi(t, "deadbeef")
 	h := newTestAttestHandler(t, stub.URL(), nil)
 	challenge := issueChallenge(t, h)
-	csrPEM, _ := generateCSR(t)
+	csrPEM, key := generateCSR(t)
 
+	before := time.Now()
 	w := postAttest(t, h, challenge, csrPEM)
+	after := time.Now()
 	if w.Code != http.StatusOK {
 		t.Fatalf("status: got %d, want 200; body=%s", w.Code, w.Body.String())
 	}
@@ -140,7 +159,7 @@ func TestAttest_InProcessSignAndReturnsChain(t *testing.T) {
 	}
 	leaf := chain[0]
 	ca := chain[1]
-	if !bytes.Equal(ca.Raw, h.CA.Cert.Raw) {
+	if !bytes.Equal(ca.Raw, h.MeshCA.Current().CA.Cert.Raw) {
 		t.Fatalf("CA bundle cert does not match handler CA")
 	}
 	if err := leaf.CheckSignatureFrom(ca); err != nil {
@@ -149,6 +168,7 @@ func TestAttest_InProcessSignAndReturnsChain(t *testing.T) {
 	if leaf.Subject.CommonName != "test-node" {
 		t.Errorf("CN: got %q, want test-node", leaf.Subject.CommonName)
 	}
+	testutil.CheckLeafProfile(t, leaf, &key.PublicKey, h.CertTTL, before, after)
 }
 
 func TestAttest_ClampsCertTTLBeforeSigning(t *testing.T) {
@@ -213,13 +233,7 @@ func TestAttest_LaunchDigestAllowlistDenied(t *testing.T) {
 	challenge := issueChallenge(t, h)
 	csrPEM, _ := generateCSR(t)
 
-	w := postAttest(t, h, challenge, csrPEM)
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("status: got %d, want 403; body=%s", w.Code, w.Body.String())
-	}
-	if !strings.Contains(w.Body.String(), "measurement_denied") {
-		t.Errorf("body should mention measurement_denied; got %s", w.Body.String())
-	}
+	wantRefusal(t, postAttest(t, h, challenge, csrPEM), http.StatusForbidden, types.ErrorCodeMeasurementDenied)
 }
 
 func TestAttest_TimeoutBeforeSigningReturns504(t *testing.T) {
@@ -263,9 +277,7 @@ func TestAttest_TimeoutBeforeSigningReturns504(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/attest", bytes.NewReader(body)).WithContext(ctx)
 	w := httptest.NewRecorder()
 	h.HandleAttest(w, req)
-	if w.Code != http.StatusGatewayTimeout {
-		t.Fatalf("status: got %d, want 504; body=%s", w.Code, w.Body.String())
-	}
+	wantRefusal(t, w, http.StatusGatewayTimeout, types.ErrorCodeTimeout)
 	if !strings.Contains(w.Body.String(), types.ErrorCodeTimeout) {
 		t.Errorf("body should mention timeout; got %s", w.Body.String())
 	}
@@ -280,10 +292,25 @@ func TestAttest_ConsumedChallengeRejectsReplay(t *testing.T) {
 	if w := postAttest(t, h, challenge, csrPEM); w.Code != http.StatusOK {
 		t.Fatalf("first attest: got %d, want 200; body=%s", w.Code, w.Body.String())
 	}
-	w := postAttest(t, h, challenge, csrPEM)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("replayed challenge: got %d, want 400", w.Code)
-	}
+	wantRefusal(t, postAttest(t, h, challenge, csrPEM), http.StatusBadRequest, types.ErrorCodeInvalidChallenge)
+}
+
+// A challenge is consumed by the attempt that carries it, not by success: a
+// requester whose evidence was refused cannot retry under the same challenge.
+func TestAttest_RefusedAttestConsumesChallenge(t *testing.T) {
+	stub := newStubAttestationApi(t, "deadbeef")
+	verdict := mockapi.PassingVerdict("deadbeef")
+	match := false
+	verdict.ReportDataMatch = &match
+	stub.SetVerdict(verdict)
+	h := newTestAttestHandler(t, stub.URL(), nil)
+	challenge := issueChallenge(t, h)
+	csrPEM, _ := generateCSR(t)
+
+	wantRefusal(t, postAttest(t, h, challenge, csrPEM), http.StatusUnauthorized, types.ErrorCodeVerificationFailed)
+
+	stub.SetVerdict(mockapi.PassingVerdict("deadbeef"))
+	wantRefusal(t, postAttest(t, h, challenge, csrPEM), http.StatusBadRequest, types.ErrorCodeInvalidChallenge)
 }
 
 // The verify request must bind this request's CSR key and challenge:
@@ -341,13 +368,7 @@ func TestAttest_ReportDataMismatchReturns401(t *testing.T) {
 	challenge := issueChallenge(t, h)
 	csrPEM, _ := generateCSR(t)
 
-	w := postAttest(t, h, challenge, csrPEM)
-	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("status: got %d, want 401; body=%s", w.Code, w.Body.String())
-	}
-	if !strings.Contains(w.Body.String(), types.ErrorCodeVerificationFailed) {
-		t.Errorf("body should mention %s; got %s", types.ErrorCodeVerificationFailed, w.Body.String())
-	}
+	wantRefusal(t, postAttest(t, h, challenge, csrPEM), http.StatusUnauthorized, types.ErrorCodeVerificationFailed)
 }
 
 func TestAttest_BadCSRRejected(t *testing.T) {
@@ -355,10 +376,7 @@ func TestAttest_BadCSRRejected(t *testing.T) {
 	h := newTestAttestHandler(t, stub.URL(), nil)
 	challenge := issueChallenge(t, h)
 
-	w := postAttest(t, h, challenge, "not a pem")
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("status: got %d, want 400", w.Code)
-	}
+	wantRefusal(t, postAttest(t, h, challenge, "not a pem"), http.StatusBadRequest, types.ErrorCodeInvalidCSR)
 }
 
 func TestAttest_RejectsCSRWithUnconfiguredDNSSAN(t *testing.T) {
@@ -367,12 +385,9 @@ func TestAttest_RejectsCSRWithUnconfiguredDNSSAN(t *testing.T) {
 	challenge := issueChallenge(t, h)
 	csrPEM, _ := generateCSRWith(t, pkix.Name{CommonName: "node"}, []string{"foo.mesh.svc"}, nil)
 
-	w := postAttest(t, h, challenge, csrPEM)
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("status: got %d, want 403; body=%s", w.Code, w.Body.String())
-	}
-	if !strings.Contains(w.Body.String(), "DNS SAN") {
-		t.Errorf("body should mention DNS SAN; got %s", w.Body.String())
+	resp := wantRefusal(t, postAttest(t, h, challenge, csrPEM), http.StatusForbidden, types.ErrorCodeCSRDenied)
+	if !strings.Contains(resp.Message, "DNS SAN") {
+		t.Errorf("message should mention DNS SAN; got %q", resp.Message)
 	}
 }
 
@@ -396,10 +411,7 @@ func TestAttest_RejectsCSRWithBadCN(t *testing.T) {
 	challenge := issueChallenge(t, h)
 	csrPEM, _ := generateCSRWith(t, pkix.Name{CommonName: "evil"}, nil, nil)
 
-	w := postAttest(t, h, challenge, csrPEM)
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("status: got %d, want 403; body=%s", w.Code, w.Body.String())
-	}
+	wantRefusal(t, postAttest(t, h, challenge, csrPEM), http.StatusForbidden, types.ErrorCodeCSRDenied)
 }
 
 func TestAttest_RejectsCSRWithMismatchedSourceIP(t *testing.T) {
@@ -420,9 +432,7 @@ func TestAttest_RejectsCSRWithMismatchedSourceIP(t *testing.T) {
 	req.RemoteAddr = "192.0.2.1:1234"
 	w := httptest.NewRecorder()
 	h.HandleAttest(w, req)
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("status: got %d, want 403; body=%s", w.Code, w.Body.String())
-	}
+	wantRefusal(t, w, http.StatusForbidden, types.ErrorCodeCSRDenied)
 }
 
 func TestAttest_RejectsCSRWithIPSANWhenSANValidationDisabled(t *testing.T) {
@@ -432,10 +442,7 @@ func TestAttest_RejectsCSRWithIPSANWhenSANValidationDisabled(t *testing.T) {
 	challenge := issueChallenge(t, h)
 	csrPEM, _ := generateCSRWith(t, pkix.Name{CommonName: "node"}, nil, []net.IP{net.ParseIP("10.0.0.99")})
 
-	w := postAttest(t, h, challenge, csrPEM)
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("status: got %d, want 403; body=%s", w.Code, w.Body.String())
-	}
+	wantRefusal(t, postAttest(t, h, challenge, csrPEM), http.StatusForbidden, types.ErrorCodeCSRDenied)
 }
 
 func TestAttest_AttestationApiFailureReturns502(t *testing.T) {
@@ -447,10 +454,7 @@ func TestAttest_AttestationApiFailureReturns502(t *testing.T) {
 	challenge := issueChallenge(t, h)
 	csrPEM, _ := generateCSR(t)
 
-	w := postAttest(t, h, challenge, csrPEM)
-	if w.Code != http.StatusBadGateway {
-		t.Fatalf("status: got %d, want 502; body=%s", w.Code, w.Body.String())
-	}
+	wantRefusal(t, postAttest(t, h, challenge, csrPEM), http.StatusBadGateway, types.ErrorCodeAttestationApiUnreachable)
 }
 
 // A 4xx from the attestation-api means it judged the evidence bad — a client
@@ -469,20 +473,7 @@ func TestAttest_RejectedEvidenceReturns4xxNotUnreachable(t *testing.T) {
 	challenge := issueChallenge(t, h)
 	csrPEM, _ := generateCSR(t)
 
-	w := postAttest(t, h, challenge, csrPEM)
-	if w.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("status: got %d, want 422; body=%s", w.Code, w.Body.String())
-	}
-	var resp types.ErrorResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode error response: %v; body=%s", err, w.Body.String())
-	}
-	if resp.Error == types.ErrorCodeAttestationApiUnreachable {
-		t.Fatalf("bad evidence mislabeled as %q", resp.Error)
-	}
-	if resp.Error != types.ErrorCodeVerificationFailed {
-		t.Fatalf("error code: got %q, want %q", resp.Error, types.ErrorCodeVerificationFailed)
-	}
+	wantRefusal(t, postAttest(t, h, challenge, csrPEM), http.StatusUnprocessableEntity, types.ErrorCodeVerificationFailed)
 }
 
 // A 4xx whose body is not the api's JSON envelope — an axum extractor
@@ -497,17 +488,7 @@ func TestAttest_NonJSONRejectionReturns422NotUnreachable(t *testing.T) {
 	challenge := issueChallenge(t, h)
 	csrPEM, _ := generateCSR(t)
 
-	w := postAttest(t, h, challenge, csrPEM)
-	if w.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("status: got %d, want 422; body=%s", w.Code, w.Body.String())
-	}
-	var resp types.ErrorResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode error response: %v; body=%s", err, w.Body.String())
-	}
-	if resp.Error != types.ErrorCodeVerificationFailed {
-		t.Fatalf("error code: got %q, want %q", resp.Error, types.ErrorCodeVerificationFailed)
-	}
+	wantRefusal(t, postAttest(t, h, challenge, csrPEM), http.StatusUnprocessableEntity, types.ErrorCodeVerificationFailed)
 }
 
 const (
@@ -764,44 +745,6 @@ func TestClassifyVerifyErrorDoesNotEchoUpstreamBody(t *testing.T) {
 	}
 }
 
-// caChainPEM has three branches: prefer CAChainPEM, fall back to CA.Cert, or
-// return nil.
-func TestAttestHandler_caChainPEM(t *testing.T) {
-	ca, err := issuer.NewCA("test ca", time.Hour)
-	if err != nil {
-		t.Fatalf("new ca: %v", err)
-	}
-
-	t.Run("prefers explicit CAChainPEM", func(t *testing.T) {
-		h := AttestHandler{CAChainPEM: []byte("explicit"), CA: ca}
-		if got := string(h.caChainPEM()); got != "explicit" {
-			t.Fatalf("got %q, want explicit", got)
-		}
-	})
-
-	t.Run("derives from CA cert when chain empty", func(t *testing.T) {
-		h := AttestHandler{CA: ca}
-		want := certutil.EncodeCertPEM(ca.Cert.Raw)
-		if !bytes.Equal(h.caChainPEM(), want) {
-			t.Fatal("derived chain does not match CA cert PEM")
-		}
-	})
-
-	t.Run("nil when no chain and no CA", func(t *testing.T) {
-		h := AttestHandler{}
-		if got := h.caChainPEM(); got != nil {
-			t.Fatalf("expected nil, got %v", got)
-		}
-	})
-
-	t.Run("nil when CA has nil cert", func(t *testing.T) {
-		h := AttestHandler{CA: &issuer.CA{}}
-		if got := h.caChainPEM(); got != nil {
-			t.Fatalf("expected nil, got %v", got)
-		}
-	})
-}
-
 func TestAttest_RejectsUnknownJSONFields(t *testing.T) {
 	stub := newStubAttestationApi(t, "x")
 	h := newTestAttestHandler(t, stub.URL(), nil)
@@ -809,9 +752,7 @@ func TestAttest_RejectsUnknownJSONFields(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/attest", bytes.NewReader([]byte(`{"unknown":true}`)))
 	w := httptest.NewRecorder()
 	h.HandleAttest(w, req)
-	if w.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("status: got %d, want 422; body=%s", w.Code, w.Body.String())
-	}
+	wantRefusal(t, w, http.StatusUnprocessableEntity, types.ErrorCodeInvalidRequest)
 }
 
 func TestAttest_RejectsMalformedChallengeEncoding(t *testing.T) {
@@ -830,9 +771,7 @@ func TestAttest_RejectsMalformedChallengeEncoding(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/attest", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 	h.HandleAttest(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("status: got %d, want 400; body=%s", w.Code, w.Body.String())
-	}
+	wantRefusal(t, w, http.StatusBadRequest, types.ErrorCodeInvalidChallenge)
 }
 
 func TestAttest_RejectsValidBase64UnknownChallenge(t *testing.T) {
@@ -852,9 +791,7 @@ func TestAttest_RejectsValidBase64UnknownChallenge(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/attest", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 	h.HandleAttest(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("status: got %d, want 400; body=%s", w.Code, w.Body.String())
-	}
+	wantRefusal(t, w, http.StatusBadRequest, types.ErrorCodeInvalidChallenge)
 }
 
 // A CSR whose public key is not ECDSA must be rejected before verification.
@@ -875,29 +812,26 @@ func TestAttest_RejectsNonECDSACSR(t *testing.T) {
 	}
 	csrPEM := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der}))
 
-	w := postAttest(t, h, challenge, csrPEM)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("status: got %d, want 400; body=%s", w.Code, w.Body.String())
-	}
+	wantRefusal(t, postAttest(t, h, challenge, csrPEM), http.StatusBadRequest, types.ErrorCodeInvalidCSR)
 }
 
-// An unloaded CA makes in-process signing fail after all validation passed.
-// Also exercises the RequestTimeout>0 wrapping.
-func TestAttest_SignFailureReturns500(t *testing.T) {
-	stub := newStubAttestationApi(t, "x")
-	h := newTestAttestHandler(t, stub.URL(), nil)
-	h.CA = &issuer.CA{} // no cert/key loaded: SignCSR fails
-	h.RequestTimeout = time.Second
+// RequestTimeout bounds the attestation round trip: an attestation-api that
+// does not answer inside it fails the request closed.
+func TestAttest_RequestTimeoutRefusesASlowAttestationApi(t *testing.T) {
+	slow := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		if _, err := io.Copy(io.Discard, r.Body); err != nil {
+			return
+		}
+		<-r.Context().Done()
+	}))
+	defer slow.Close()
+
+	h := newTestAttestHandler(t, slow.URL, nil)
+	h.RequestTimeout = 20 * time.Millisecond
 	challenge := issueChallenge(t, h)
 	csrPEM, _ := generateCSR(t)
 
-	w := postAttest(t, h, challenge, csrPEM)
-	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("status: got %d, want 500; body=%s", w.Code, w.Body.String())
-	}
-	if !strings.Contains(w.Body.String(), types.ErrorCodeSignFailed) {
-		t.Errorf("body should mention %s; got %s", types.ErrorCodeSignFailed, w.Body.String())
-	}
+	wantRefusal(t, postAttest(t, h, challenge, csrPEM), http.StatusBadGateway, types.ErrorCodeAttestationApiUnreachable)
 }
 
 // The issuance record is the only durable trace that a mesh identity was
@@ -955,10 +889,7 @@ func TestAttest_MeasurementDenialRecordsPeer(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
-	w := postAttest(t, h, challenge, csrPEM)
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("status: got %d, want 403", w.Code)
-	}
+	wantRefusal(t, postAttest(t, h, challenge, csrPEM), http.StatusForbidden, types.ErrorCodeMeasurementDenied)
 	logs := buf.String()
 	if !strings.Contains(logs, "measurement does not match any reference value") {
 		t.Fatalf("no denial record: %s", logs)

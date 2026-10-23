@@ -1,9 +1,12 @@
 package nriimagepolicy
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -13,7 +16,9 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 // config represents the plugin configuration.
@@ -29,13 +34,16 @@ type config struct {
 	Policy         policyConfig         `yaml:"policy"`
 	Logging        loggingConfig        `yaml:"logging"`
 	WorkloadClaims workloadClaimsConfig `yaml:"workload_claims"`
+	// Mesh is the trusted mesh policy (roles.go); required.
+	Mesh *meshPolicy `yaml:"mesh"`
 }
 
 // pluginConfig contains plugin runtime settings.
 type pluginConfig struct {
 	// HealthAddr is the listen address for the readiness/liveness HTTP
 	// server. `host:port` selects TCP; `unix:///path/to.sock` selects a
-	// Unix socket.
+	// Unix socket. GET /healthz answers 200 once the first pull applied and
+	// 503 before, with a JSON body carrying the applied allowlist version.
 	HealthAddr string `yaml:"health_addr"`
 }
 
@@ -53,10 +61,17 @@ type workloadClaimsConfig struct {
 	// container cgroup. Defaults to "/proc".
 	ProcRoot string `yaml:"proc_root"`
 	// AdvertiseHost is the node address CDS dials to reach this inventory's
-	// digests endpoint. Empty reads it from NodeIPFile, which the installer
-	// writes from its own status.hostIP — the plugin is a host process and has
-	// no downward API of its own.
+	// digests endpoint. Empty reads it from NodeIPFile.
 	AdvertiseHost string `yaml:"advertise_host"`
+	// PublishNodeIP makes the plugin write NodeIPFile at startup from the
+	// node's own view (see publishNodeIP). The chart sets it; the node image
+	// leaves it unset because nri-node-ip.service writes the file there.
+	PublishNodeIP bool `yaml:"publish_node_ip"`
+
+	// CDSNodePort is the port an injected credential client reaches CDS on, at
+	// this node's own address. A measured mesh policy binds that endpoint
+	// itself, so only an install sets this (cdsaddress.go).
+	CDSNodePort uint16 `yaml:"cds_node_port"`
 }
 
 // allowlistConfig groups the digest-source mechanisms.
@@ -65,9 +80,9 @@ type workloadClaimsConfig struct {
 // of every pulled snapshot (CDS and operator digests). Installer and busybox
 // invocations are admitted by argv-pinned entries in the served document.
 // Base entries enforce env and mounts at final admission just like served
-// entries. The chart's component entries pin the executable and explicitly
-// leave the other fields open; the node image's generated RKE2 system entries
-// leave command and args open too.
+// entries. The chart's component entries pin each container's argv and mount
+// table and leave env open; the node image's generated RKE2 system entries
+// leave command and args open.
 // Pull is the runtime-update source: every plugin polls CDS.
 type allowlistConfig struct {
 	Base *allowlist.Allowlist `yaml:"base"`
@@ -88,16 +103,44 @@ type pullConfig struct {
 	Timeout               time.Duration `yaml:"timeout"`                 // per-request timeout; > 0 required when URL is set
 	AttestationApiURL     string        `yaml:"attestation_api_url"`     // required for https pull
 	CDSMeasurements       []string      `yaml:"cds_measurements"`        // SHA-384 hex launch digests
-	CDSRTMRs              []string      `yaml:"cds_rtmrs"`               // TDX RTMR pins <index>=<sha384-hex>; ignored for SNP evidence
+	CDSRTMRs              []string      `yaml:"cds_rtmrs"`               // TDX RTMR pins <index>=<sha384-hex>
 	CDSMeasurementsConfig string        `yaml:"cds_measurements_config"` // complete CDS image and operator identity policy
+	// MeasurePolicies extends RTMR[3] (TDX) with each pulled policy before
+	// applying it. Off by default: verifiers on attestation-go predating
+	// runtime extensions, and flat RTMR[3] pins, still require the bare
+	// operator-key seed.
+	MeasurePolicies bool `yaml:"measure_policies"`
 }
 
-// validatePolicyInputs rejects competing CDS identity policy sources before I/O.
-func (c pullConfig) validatePolicyInputs() error {
+// checkPolicySources rejects competing CDS identity policy sources, before any
+// I/O: config validation runs where the configured document need not exist yet.
+func (c pullConfig) checkPolicySources() error {
 	if c.CDSMeasurementsConfig != "" && (len(c.CDSMeasurements) != 0 || len(c.CDSRTMRs) != 0) {
 		return fmt.Errorf("allowlist.pull.cds_measurements_config cannot be combined with cds_measurements or cds_rtmrs")
 	}
 	return nil
+}
+
+// policySet is the CDS identity set this node's own clients and its injected
+// credential clients are held to, whichever form the config names it in.
+func (c pullConfig) policySet(platform string) (refvalues.ReferenceValues, error) {
+	if err := c.checkPolicySources(); err != nil {
+		return refvalues.ReferenceValues{}, err
+	}
+	set, err := cmdsutil.LoadImagePolicySet(cmdsutil.ImagePolicyValuesConfig{
+		Source: cmdsutil.ImagePolicySource{File: c.CDSMeasurementsConfig},
+		Pins: cmdsutil.MeasurementPins{
+			Measurements: c.CDSMeasurements,
+			Registers:    c.CDSRTMRs,
+			Prefix:       "cds-",
+		},
+		Platform:     platform,
+		PlatformFlag: "platform",
+	})
+	if err != nil {
+		return refvalues.ReferenceValues{}, fmt.Errorf("allowlist.pull: %w", err)
+	}
+	return set, nil
 }
 
 // containerdConfig contains containerd connection settings for tag-to-digest resolution.
@@ -171,31 +214,48 @@ const (
 // loggingConfig contains logging settings.
 type loggingConfig struct {
 	Level string `yaml:"level"`
+	// Syslog is the syslog socket the plugin logs to, such as journald's
+	// /dev/log. Empty logs to stdout, which containerd discards for a
+	// pre-installed plugin: it starts one with its standard streams on
+	// /dev/null.
+	Syslog string `yaml:"syslog"`
 }
 
 const defaultPullInterval = 5 * time.Second
 const defaultPullTimeout = 30 * time.Second
 
-// NodeIPFile is the filename, inside SocketDir, the installer writes this
-// node's address to. Read only when advertise_host is unset.
+// NodeIPFile is the filename, inside SocketDir, holding this node's address:
+// components read it as their attestation-api host (cmdsutil.NodeIPPath), so
+// only a host process may write it, never a pod.
 const NodeIPFile = "node-ip"
 
-// defaultConfigPath is the plugin config containerd's plugin_config_path
-// resolves for this plugin, and the file set-cds-pins patches.
-const defaultConfigPath = "/etc/nri/conf.d/image-policy.yaml"
+// DefaultConfigPath is the plugin config containerd's plugin_config_path
+// resolves for this plugin, the file set-cds-pins patches, and the measured
+// policy the node's runtime wrapper reads (internal/cmds/c8srunc).
+const DefaultConfigPath = "/etc/nri/conf.d/image-policy.yaml"
 
-// loadConfig loads configuration from a YAML file.
+// loadConfig loads configuration from a YAML file, and completes the one
+// binding a launched node makes itself (cdsaddress.go).
 func loadConfig(path string) (*config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read config file: %w", err)
 	}
-	return parseConfig(data)
+	cfg, err := parseConfig(data)
+	if err != nil {
+		return nil, err
+	}
+	if err := bindCredentialRole(cfg); err != nil {
+		return nil, fmt.Errorf("bind the %s role to the CDS this node reaches: %w", CredentialRole, err)
+	}
+	if err := cfg.validateMeshRoleBindings(); err != nil {
+		return nil, fmt.Errorf("validate mesh role bindings: %w", err)
+	}
+	return cfg, nil
 }
 
-// parseConfig decodes and validates a config document. set-cds-pins reads the
-// file it is about to patch through here, so the patched bytes are accepted by
-// exactly the loader the plugin boots with.
+// parseConfig validates static configuration for the plugin and set-cds-pins.
+// loadConfig completes runtime role bindings before validating them.
 func parseConfig(data []byte) (*config, error) {
 	cfg := &config{
 		Allowlist: allowlistConfig{
@@ -269,6 +329,13 @@ func (c *config) NormalizedPlatform() string {
 	return family.String()
 }
 
+// injectsCredentialClients reports whether a pod of this node carries the
+// webhook's credential clients: the inventory directory is what the plugin
+// mounts into them, and without it no pod of this node is injected.
+func (c *config) injectsCredentialClients() bool {
+	return c.WorkloadClaims.SocketDir != ""
+}
+
 // PullEnabled reports whether the plugin should poll a remote CDS.
 func (c *config) PullEnabled() bool { return c.Allowlist.Pull.URL != "" }
 
@@ -322,7 +389,7 @@ func (c *config) Validate() error {
 		return fmt.Errorf("allowlist.base must carry at least one workload when pull is configured (cold-boot baseline)")
 	}
 	if c.PullEnabled() {
-		if err := c.Allowlist.Pull.validatePolicyInputs(); err != nil {
+		if err := c.Allowlist.Pull.checkPolicySources(); err != nil {
 			return err
 		}
 		if c.Allowlist.Pull.Timeout <= 0 {
@@ -372,10 +439,73 @@ func (c *config) Validate() error {
 	if c.WorkloadClaims.SocketDir != "" && !c.AllowlistEnabled() {
 		return fmt.Errorf("workload_claims.socket_dir requires allowlist.base or allowlist.pull: the inventory reports digests for CDS to match against the allowlist")
 	}
+	if c.WorkloadClaims.PublishNodeIP && c.WorkloadClaims.SocketDir == "" {
+		return fmt.Errorf("workload_claims.publish_node_ip requires workload_claims.socket_dir: the node-ip file lives there")
+	}
+	// Certificate producers read the journal only from the default runtime directory.
+	journalDir := filepath.Dir(armtls.NodeJournal)
+	if c.Allowlist.Pull.MeasurePolicies && !c.PullEnabled() {
+		return fmt.Errorf("allowlist.pull.measure_policies requires allowlist.pull.url: only pulled policies are measured")
+	}
+	if c.Allowlist.Pull.MeasurePolicies && filepath.Clean(c.WorkloadClaims.SocketDir) != journalDir {
+		return fmt.Errorf("allowlist.pull.measure_policies requires workload_claims.socket_dir %s (got %q): certificate producers read the measured-policy journal there", journalDir, c.WorkloadClaims.SocketDir)
+	}
 	if len(c.Policy.ExemptNamespaces) > 0 && c.Policy.ExemptSnapshotPath == "" {
 		return fmt.Errorf("policy.exempt_namespaces requires policy.exempt_snapshot_path: the captured digest set must persist across restarts")
 	}
+	if err := c.validateMesh(); err != nil {
+		return err
+	}
 	return validateLabelRules(c.Policy.LabelRules)
+}
+
+// validateMesh requires a mesh policy this node can enforce.
+func (c *config) validateMesh() error {
+	if c.Mesh == nil {
+		return errors.New("mesh is required: the enforcer verifies a pod's protection before any workload identity assertion")
+	}
+	if err := c.Mesh.validate(); err != nil {
+		return err
+	}
+	if c.requiresTrustedMeshEnforcement() && (c.Policy.Mode != ModeFailClosed || !c.Policy.FatalExisting) {
+		return fmt.Errorf("mesh requires policy.mode %q and policy.fatal_existing: a member pod needs trusted enforcement from node startup", ModeFailClosed)
+	}
+	// A namespace the admission carve-out keeps running across an enforcer
+	// restart holds pods the gate refuses for their life, so the mesh exempts it.
+	for _, namespace := range c.Policy.ExemptNamespaces {
+		if !slices.Contains(c.Mesh.ExemptNamespaces, namespace) {
+			return fmt.Errorf("policy.exempt_namespaces %q must also be in mesh.exempt_namespaces: the gate refuses a pod that was running before this enforcer connected", namespace)
+		}
+	}
+	return nil
+}
+
+func (c *config) validateMeshRoleBindings() error {
+	if c.Allowlist.Base == nil {
+		return nil
+	}
+	identities := c.Mesh.reservedIdentities()
+	for name, workload := range c.Allowlist.Base.Workloads {
+		for _, container := range workload.Containers {
+			if container.Role == "" {
+				continue
+			}
+			if _, bound := identities[container.Role]; !bound {
+				return fmt.Errorf("allowlist.base workload %s role %s has no mesh identity binding", name, container.Role)
+			}
+		}
+	}
+	return nil
+}
+
+// requiresTrustedMeshEnforcement reports whether this node's mesh policy is
+// one the cluster admin could not write. A config claiming the node TCB is
+// measured with a baked image, and its members' protection rests on
+// fail-closed admission and the boot gate; a chart-rendered config is an
+// install, where the mesh runs for test clusters and the admin who wrote the
+// policy could undo the enforcement anyway.
+func (c *config) requiresTrustedMeshEnforcement() bool {
+	return c.Allowlist.NodeTCB
 }
 
 // validateLabelRules checks label rules for errors.

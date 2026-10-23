@@ -9,11 +9,16 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
+	"encoding/json"
 	"net"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 )
@@ -46,13 +51,15 @@ func TestCASignCSR_SignsLeafAgainstCA(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new ca: %v", err)
 	}
-	csr, _ := mustCSR(t, "test-node", nil, []net.IP{net.ParseIP("10.0.0.1")}, nil)
+	csr, key := mustCSR(t, "test-node", nil, []net.IP{net.ParseIP("10.0.0.1")}, nil)
 
+	before := time.Now()
 	certPEM, serial, err := ca.SignCSR(issuer.SignCSRParams{
 		CSR:      csr,
 		TTL:      time.Hour,
 		Evidence: []byte(`{"test":true}`),
 	})
+	after := time.Now()
 	if err != nil {
 		t.Fatalf("SignCSR: %v", err)
 	}
@@ -72,6 +79,7 @@ func TestCASignCSR_SignsLeafAgainstCA(t *testing.T) {
 	if len(leaf.IPAddresses) != 1 || !leaf.IPAddresses[0].Equal(net.ParseIP("10.0.0.1")) {
 		t.Errorf("IP SAN: got %v", leaf.IPAddresses)
 	}
+	testutil.CheckLeafProfile(t, leaf, &key.PublicKey, time.Hour, before, after)
 }
 
 func TestCASignCSR_EmbedsAttestationDigest(t *testing.T) {
@@ -148,6 +156,36 @@ func TestCASignCSR_CopiesARMTLSExtension(t *testing.T) {
 		}
 	}
 	t.Fatalf("armTLS extension not propagated to leaf")
+}
+
+// The leaf carries the CSR's armTLS extension whole, measured-policy list
+// included, so armTLS-mode verifiers of CA-issued leaves replay it.
+func TestCASignCSR_KeepsRuntimeExtensions(t *testing.T) {
+	ca, err := issuer.NewCA("test ca", time.Hour)
+	if err != nil {
+		t.Fatalf("new ca: %v", err)
+	}
+	list := []string{"sha256:" + strings.Repeat("1", 64)}
+	report, err := json.Marshal(teetypes.AttestationEvidence{Platform: teetypes.PlatformTDX, Evidence: json.RawMessage(`{"quote":"AA=="}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ext, err := armtls.MarshalExtension(&armtls.Attestation{Family: armtls.TEETypeTDX, Report: report, RuntimeExtensions: list})
+	if err != nil {
+		t.Fatal(err)
+	}
+	csr, _ := mustCSR(t, "node", nil, nil, []pkix.Extension{ext})
+	certPEM, _, err := ca.SignCSR(issuer.SignCSRParams{CSR: csr, TTL: time.Hour})
+	if err != nil {
+		t.Fatalf("SignCSR: %v", err)
+	}
+	att, err := armtls.ExtractAttestation(mustParseCert(t, certPEM))
+	if err != nil {
+		t.Fatalf("ExtractAttestation: %v", err)
+	}
+	if !slices.Equal(att.RuntimeExtensions, list) {
+		t.Errorf("leaf RuntimeExtensions = %v, want %v", att.RuntimeExtensions, list)
+	}
 }
 
 func TestCASignCSR_StampsSandboxID(t *testing.T) {

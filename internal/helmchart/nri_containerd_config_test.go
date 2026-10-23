@@ -22,6 +22,7 @@ const nriPlugin = "io.containerd.nri.v1.nri"
 // one quoted key is a plugin id of its own, which containerd never reads, so
 // the validator stayed disabled and required_plugins empty.
 func TestChartNriInstallerEnablesRequiredPluginGate(t *testing.T) {
+	t.Parallel()
 	out, err := helmTemplate(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
@@ -72,6 +73,7 @@ func renderedNriToml(t *testing.T, script string) string {
 // overruns on a busy node (#683). The schema keeps it a duration: it lands
 // unescaped in a shell heredoc and in containerd's TOML.
 func TestChartNriInstallerRequestTimeout(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		args []string
@@ -111,6 +113,7 @@ func TestChartNriInstallerRequestTimeout(t *testing.T) {
 // stand-in for the host plugin, which NRI does not respawn once it exits
 // (#683). Its readiness has to follow that process, not a sleep.
 func TestChartNriInstallerReadinessTracksPluginProcess(t *testing.T) {
+	t.Parallel()
 	const pluginDir = "/opt/nri/test-plugins"
 	// /bin/sh -c like the entry's other scripts: released `c8s uninstall`
 	// CLIs take the one non-script shape there as the sweep pause.
@@ -180,6 +183,7 @@ func TestChartNriInstallerReadinessTracksPluginProcess(t *testing.T) {
 // The plugin path lands single-quoted in the plugin-ready and install sh -c
 // scripts, so the schema keeps quotes and shell syntax out of it.
 func TestChartNriInstallerRejectsShellInPluginPath(t *testing.T) {
+	t.Parallel()
 	for _, set := range []string{
 		"nriImagePolicy.hostPaths.pluginDir=/opt/nri/plug'ins",
 		"nriImagePolicy.hostPaths.pluginDir=opt/nri/plugins",

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
+	"net/netip"
 	"os"
 	"path/filepath"
 
@@ -12,9 +14,11 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
+	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 // Prepare publishes a fixed set of nonsecret workload inputs from the
@@ -67,13 +71,9 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 	if !ok {
 		return fmt.Errorf("baked NRI policy missing pull")
 	}
-	baseData, err := json.Marshal(a["base"])
+	base, err := bakedBase(a["base"])
 	if err != nil {
-		return fmt.Errorf("baked NRI base: %w", err)
-	}
-	base, err := allowlist.ParseJSON(baseData)
-	if err != nil {
-		return fmt.Errorf("baked NRI base: %w", err)
+		return err
 	}
 	if err := mergeWorkloads(base, bakedSeed, true); err != nil {
 		return fmt.Errorf("merge chart seed into NRI base: %w", err)
@@ -83,6 +83,21 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 	pull["cds_measurements_config"] = launchDir + "cds.json"
 	delete(pull, "cds_measurements")
 	delete(pull, "cds_rtmrs")
+	mesh, declared := floor["mesh"]
+	if !declared {
+		return fmt.Errorf("baked NRI policy missing mesh")
+	}
+	policy, ok := mesh.(map[string]any)
+	if !ok {
+		return fmt.Errorf("baked NRI mesh policy is %T, not a mapping", mesh)
+	}
+	address, err := d.CDSAddrPort()
+	if err != nil {
+		return err
+	}
+	if err := appendCredentialRole(policy, address); err != nil {
+		return err
+	}
 	data, err = yaml.Marshal(floor)
 	if err != nil {
 		return err
@@ -118,12 +133,67 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 	return fileutil.WriteAtomic(policyPath, data, 0600)
 }
 
+// bakedBase decodes the measured base out of the boot config it is written in.
+// It is read as YAML, not through the JSON ingest, because a declared platform
+// role is a YAML-only field: the JSON path refuses it so that a document CDS
+// serves can never claim a role.
+func bakedBase(declared any) (*allowlist.Allowlist, error) {
+	data, err := yaml.Marshal(declared)
+	if err != nil {
+		return nil, fmt.Errorf("baked NRI base: %w", err)
+	}
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	var base allowlist.Allowlist
+	if err := dec.Decode(&base); err != nil {
+		return nil, fmt.Errorf("baked NRI base: %w", err)
+	}
+	if err := base.Normalize(); err != nil {
+		return nil, fmt.Errorf("baked NRI base: %w", err)
+	}
+	return &base, nil
+}
+
+// appendCredentialRole completes the measured mesh policy with the one binding
+// only a launched node can know: the injected credential clients reach this
+// cluster's CDS and nothing else. A policy that already names that role, or
+// its reserved identity, is a measured policy this step would contradict.
+func appendCredentialRole(policy map[string]any, address netip.AddrPort) error {
+	declared, ok := policy["roles"]
+	if !ok {
+		declared = []any{}
+	}
+	roles, ok := declared.([]any)
+	if !ok {
+		return fmt.Errorf("baked NRI mesh roles are %T, not a list", declared)
+	}
+	for _, declared := range roles {
+		role, ok := declared.(map[string]any)
+		if !ok {
+			return fmt.Errorf("baked NRI mesh role is %T, not a mapping", declared)
+		}
+		if role["name"] == nriimagepolicy.CredentialRole {
+			return fmt.Errorf("baked NRI mesh policy already binds the %s role", nriimagepolicy.CredentialRole)
+		}
+		if uid, declared := role["uid"]; declared && fmt.Sprint(uid) == fmt.Sprint(workloadclaims.CredentialsUID) {
+			return fmt.Errorf("baked NRI mesh role %v holds uid %v, reserved for the %s role", role["name"], uid, nriimagepolicy.CredentialRole)
+		}
+	}
+	policy["roles"] = append(roles, map[string]any{
+		"name":         nriimagepolicy.CredentialRole,
+		"uid":          workloadclaims.CredentialsUID,
+		"destinations": []any{address.String()},
+	})
+	return nil
+}
+
 // serverConfig holds the inputs only a server publishes. An agent must never
 // carry them, so they are produced and removed as one named set rather than
 // as loose strings spread across Prepare.
 type serverConfig struct {
 	operatorPubKey []byte
 	allowlistSeed  []byte
+	launchSeed     []byte
 	tlsSAN         string
 	router         launchconfig.Router
 }
@@ -132,15 +202,17 @@ type serverConfig struct {
 // these, and an agent clears exactly these. The router files are always
 // written, empty when unset, so the router pod never waits on a missing file.
 var serverOutputNames = []string{
-	"operator-pubkey", "allowlist-seed.json", "tls-san",
-	"router/upstream.conf", "router/tls.conf", "router/upstream", "router/hostnames",
+	"operator-pubkey", "allowlist-seed.json", "launch-workloads.json", "tls-san",
+	"router/tls.conf", "router/hostnames",
 	"router/acme-email", "router/acme-directory-url", "router/front-door-mode",
+	"router/request-body.conf",
 }
 
-// RouterTLSSnippetDir is where the router chart mounts tls-cds.conf and
-// tls-acme.conf for nginx; router/tls.conf includes the one the front-door
-// mode selects. The chart's router.tlsSnippetDir must equal it.
-const RouterTLSSnippetDir = "/etc/nginx/c8s"
+// RouterTLSSnippetDir is where the node image installs tls-cds.conf and
+// tls-acme.conf and the baked router mounts them; router/tls.conf includes the
+// one the front-door mode selects. The chart's router.bakedNginxDir must equal
+// it.
+const RouterTLSSnippetDir = "/usr/lib/c8s/router-nginx"
 
 // line renders an optional single-line value: empty stays empty.
 func line(s string) []byte {
@@ -160,18 +232,18 @@ func (c serverConfig) files() map[string][]byte {
 		hostnames = append(hostnames, name+"\n"...)
 	}
 	files := map[string][]byte{
-		"operator-pubkey":     c.operatorPubKey,
-		"allowlist-seed.json": c.allowlistSeed,
-		"tls-san":             []byte(c.tlsSAN + "\n"),
-		// nginx includes this in location /; an empty value returns 404.
-		"router/upstream.conf": []byte(fmt.Sprintf("set $c8s_upstream \"%s\";\n", c.router.Upstream)),
+		"operator-pubkey":       c.operatorPubKey,
+		"allowlist-seed.json":   c.allowlistSeed,
+		"launch-workloads.json": c.launchSeed,
+		"tls-san":               []byte(c.tlsSAN + "\n"),
 		// nginx includes this in its server block to pick the certificate.
 		"router/tls.conf":           []byte(fmt.Sprintf("include %s/tls-%s.conf;\n", RouterTLSSnippetDir, mode)),
-		"router/upstream":           line(c.router.Upstream),
 		"router/hostnames":          hostnames,
 		"router/acme-email":         line(c.router.ACMEEmail),
 		"router/acme-directory-url": line(c.router.ACMEDirectoryURL),
 		"router/front-door-mode":    []byte(mode + "\n"),
+		// nginx includes this in its application location.
+		"router/request-body.conf": []byte(fmt.Sprintf("client_max_body_size %d;\n", c.router.RequestBodyLimit())),
 	}
 	// A server output an agent does not clear would survive a demotion, so
 	// the two sets must not drift apart.
@@ -197,7 +269,7 @@ func serverOutputs(d *launchconfig.Document, bakedData []byte) (serverConfig, er
 	if _, err := operatorauth.ParsePublicKeysPEM(pub); err != nil {
 		return serverConfig{}, fmt.Errorf("staged server operator key: %w", err)
 	}
-	seed, err := mergedSeed(bakedData, d.Workloads)
+	seed, launch, err := serverSeeds(bakedData, d.Workloads)
 	if err != nil {
 		return serverConfig{}, err
 	}
@@ -205,19 +277,14 @@ func serverOutputs(d *launchconfig.Document, bakedData []byte) (serverConfig, er
 	if d.Router != nil {
 		router = *d.Router
 	}
-	// LoadStaged validated the document; check again the two values that
-	// reach nginx syntax, so no path can publish an injectable file.
-	if router.Upstream != "" {
-		if err := launchconfig.ValidateRouterUpstream(router.Upstream); err != nil {
-			return serverConfig{}, fmt.Errorf("staged router upstream: %w", err)
-		}
-	}
+	// LoadStaged validated the document; check the hostnames again, so no
+	// path can publish an injectable file.
 	for _, name := range router.Hostnames {
 		if err := launchconfig.ValidateHostname(name); err != nil {
 			return serverConfig{}, fmt.Errorf("staged router hostname: %w", err)
 		}
 	}
-	return serverConfig{operatorPubKey: pub, allowlistSeed: seed, tlsSAN: d.TLSSAN, router: router}, nil
+	return serverConfig{operatorPubKey: pub, allowlistSeed: seed, launchSeed: launch, tlsSAN: d.TLSSAN, router: router}, nil
 }
 
 // removeServerOutputs clears the server-only inputs from an agent's public
@@ -276,21 +343,33 @@ func policyPinsComplete(pins refvalues.ReferenceValues) bool {
 	return true
 }
 
-func mergedSeed(data []byte, workloads string) ([]byte, error) {
-	seed, err := allowlist.ParseJSON(data)
+// serverSeeds returns, canonical, the baked seed CDS keeps as its fixed seed
+// layer (the one the NRI base enforces) and the launch document's workloads it
+// seeds into its store, an empty document when there are none.
+func serverSeeds(data []byte, workloads string) (seed, launch []byte, err error) {
+	baked, err := allowlist.ParseJSON(data)
 	if err != nil {
-		return nil, fmt.Errorf("baked workload seed: %w", err)
+		return nil, nil, fmt.Errorf("baked workload seed: %w", err)
 	}
+	extra := &allowlist.Allowlist{Schema: allowlist.Schema, Workloads: map[string]allowlist.Workload{}}
 	if workloads != "" {
-		extra, err := allowlist.ParseJSON([]byte(workloads))
-		if err != nil {
-			return nil, fmt.Errorf("launch workloads: %w", err)
+		if extra, err = allowlist.ParseJSON([]byte(workloads)); err != nil {
+			return nil, nil, fmt.Errorf("launch workloads: %w", err)
 		}
-		if err := mergeWorkloads(seed, extra, false); err != nil {
-			return nil, fmt.Errorf("launch workloads: %w", err)
+		// Merge into a copy only to refuse a launch workload replacing a baked
+		// one and to validate the combination, as CDS decides on both.
+		combined := &allowlist.Allowlist{Schema: baked.Schema, Workloads: maps.Clone(baked.Workloads)}
+		if err := mergeWorkloads(combined, extra, false); err != nil {
+			return nil, nil, fmt.Errorf("launch workloads: %w", err)
 		}
 	}
-	return seed.Canonical()
+	if seed, err = baked.Canonical(); err != nil {
+		return nil, nil, err
+	}
+	if launch, err = extra.Canonical(); err != nil {
+		return nil, nil, err
+	}
+	return seed, launch, nil
 }
 
 // allowIdentical is used only for the two measured bootstrap sources. Signed

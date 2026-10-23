@@ -45,6 +45,14 @@ func TestNewCmdDurationFlagDefaults(t *testing.T) {
 	}
 }
 
+// CDS takes no kubeconfig: client-go runs a kubeconfig's exec credential
+// plugin, so a path in the pinned arguments' place would load pod-chosen code.
+func TestNewCmdTakesNoKubeconfig(t *testing.T) {
+	if f := NewCmd().Flags().Lookup("kubeconfig"); f != nil {
+		t.Fatal("cds defines --kubeconfig")
+	}
+}
+
 func TestNewCmdRequiresARMTLSPlatform(t *testing.T) {
 	flag := NewCmd().Flags().Lookup("armtls-platform")
 	if flag == nil {
@@ -84,6 +92,33 @@ func TestValidateARMTLSPlatformFlag(t *testing.T) {
 		}
 		if tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
 			t.Errorf("validateARMTLSPlatformFlag(%q) = %v, want substring %q", tc.in, err, tc.wantErr)
+		}
+	}
+}
+
+// CDS reads the node's journal where the plugin keeps it, like the mesh and
+// cred-release, so its certificates list what the node measured.
+func TestNewCmdMeasuredPoliciesFileDefaultsToNodeJournal(t *testing.T) {
+	flag := NewCmd().Flags().Lookup("measured-policies-file")
+	if flag == nil || flag.DefValue != armtls.NodeJournal {
+		t.Fatalf("--measured-policies-file = %v, want default %s", flag, armtls.NodeJournal)
+	}
+}
+
+// Every certificate CDS self-signs lists the node's measured policies: a TDX
+// peer pinning RTMR[3] rejects one that omits them once the node measures a
+// policy.
+func TestProducersCarryMeasuredPoliciesFile(t *testing.T) {
+	const journal = "/run/custom-nri/measured-policies"
+	cfg := config{armtlsPlatform: "tdx", attestationApiURL: "http://127.0.0.1:1", measuredPolicies: journal}
+	for _, tc := range []struct {
+		name, got string
+	}{
+		{"armTLS serving certificate", servingConfig(cfg, nil).MeasuredPoliciesFile},
+		{"sandbox-digests client certificate", digestsClientConfig(cfg, armtls.Pins{}).MeasuredPoliciesFile},
+	} {
+		if tc.got != journal {
+			t.Errorf("%s lists %q, want %q", tc.name, tc.got, journal)
 		}
 	}
 }

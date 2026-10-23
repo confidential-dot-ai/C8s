@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
 	"net"
@@ -133,13 +134,12 @@ func TestRunStartupErrors(t *testing.T) {
 // the context and expects a clean shutdown.
 func TestRunServesAndShutsDown(t *testing.T) {
 	cfg := runnableConfig(t)
-	// Reserve a port so the test knows where to probe.
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	cfg.ListenAddr = ln.Addr().String()
-	_ = ln.Close()
+	cfg.listener = ln
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -148,7 +148,9 @@ func TestRunServesAndShutsDown(t *testing.T) {
 
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		conn, err := net.DialTimeout("tcp", cfg.ListenAddr, time.Second)
+		// The listener accepts before Run serves; a handshake needs the server.
+		conn, err := tls.DialWithDialer(&net.Dialer{Timeout: time.Second}, "tcp", cfg.ListenAddr,
+			&tls.Config{InsecureSkipVerify: true}) //nolint:gosec // reachability only
 		if err == nil {
 			_ = conn.Close()
 			break

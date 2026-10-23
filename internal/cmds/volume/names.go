@@ -11,6 +11,11 @@ const SerialPrefix = "c8s-vol-"
 // KubeVolumePrefix precedes a volume name in the injected Kubernetes volume.
 const KubeVolumePrefix = "c8s-volume-"
 
+// DefaultDir is where the webhook mounts opened volumes, one directory each.
+// An opened volume is a data mount, so the directory sits below
+// pkgallowlist.DataMountPrefix, the only place an exact data rule can name.
+const DefaultDir = "/mnt/c8s-data/c8s-volumes"
+
 // MaxNameLen is what remains of VIRTIO_BLK_ID_BYTES after SerialPrefix. virtio
 // is the tighter of the two transports the serial may arrive over, so its limit
 // is the one that binds.

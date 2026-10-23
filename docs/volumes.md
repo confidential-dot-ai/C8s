@@ -143,11 +143,15 @@ connection and refuses unless it is in the bundle you pinned. `--measurements`
 alone proves an attested build, not your CDS, and a volume key unlocks a whole
 volume. Read the bundle with `c8s cds ca`.
 
-Everything that can be refused without reaching CDS is refused before anything
+`--url` is CDS itself, as for `c8s secrets put`: a router front door does not
+relay `/secrets` or `/ca`.
+
+Everything that can be refused without a CDS response is refused before anything
 is built: a missing or unreadable `--mesh-ca`, a missing operator key, an
-unpinned endpoint, or `http://` without `--insecure`. The connection and the CA
-comparison wait until the build is done, so a long build does not hold a router
-connection idle. A CA that does not match is therefore found after the image
+unpinned endpoint, `http://` without `--insecure`, or a router front door that
+serves its discovery document. The
+CA comparison waits until the build is done, right before the key is sent. A CA
+that does not match is therefore found after the image
 and escrow exist; the key is withheld, and the escrow file can be stored later
 with `c8s secrets put <path> --from-file <escrow> --mesh-ca <bundle>`. `--force` writes
 without the check and says so on stderr. `--dry-run` never reaches CDS and needs
@@ -354,18 +358,20 @@ grant says nothing about whether a workload may see the plaintext.
 
 Every container in the entry also needs a `mounts` policy admitting what the
 webhook injects, exactly as in
-[`secrets.md`](secrets.md#the-mount-policy) — for a volume consumer that is the
-cert volume plus each opened volume at `<volume-dir>/<NAME>`:
+[`secrets.md`](secrets.md#the-mount-policy). A grant requires `exact` (or
+`deny`), so for a volume consumer the rules name each opened volume at
+`<volume-dir>/<NAME>`, which classes as a `data` mount. The credential volume
+is mounted into the injected containers alone, so no rule names it:
 
 ```json
-"mounts": {"policy": "any"}
+"mounts": {"policy": "exact", "rules": [
+  {"destination": "/mnt/c8s-data/c8s-volumes/weights", "kind": "data"}
+]}
 ```
 
-An opened volume classes as a `data` mount, whose `exact` rules sit below
-`/mnt/c8s-data/`, so pinning one means putting the volume dir there with
-`confidential.ai/c8s-volume-dir`. Its rule,
-`{"destination": "/mnt/c8s-data/<NAME>", "kind": "data"}`, joins the cert
-volume's in the same `exact` policy.
+`create` prints this policy for the volume it built. Add one `data` rule per
+further volume, and `{"destination": "/run/c8s/secrets", "kind": "emptyDir"}`
+if the pod also requests secrets.
 
 ## Consuming a volume
 
@@ -375,17 +381,22 @@ A pod names its volumes in an annotation:
 annotations:
   confidential.ai/cw: llama-infer
   confidential.ai/c8s-volumes: "weights=/tenant-a/volumes/weights"
-  confidential.ai/c8s-volume-dir: "/models"    # optional; default /run/c8s/volumes
 ```
 
 Each entry is `NAME=/store/path`. `NAME` selects the node's device by its
 `c8s-vol-<NAME>` serial and names the directory the plaintext appears in under
-the volume dir — above, `/models/weights`. It must be a DNS-1123 label of at
-most 12 characters, because the serial holds no more. The annotation is the
+the volume dir, `/mnt/c8s-data/c8s-volumes` by default — above,
+`/mnt/c8s-data/c8s-volumes/weights`. `NAME` must be a DNS-1123 label of at most
+12 characters, because the serial holds no more. The annotation is the
 same for both modes; whether the plaintext is writable comes from the volume's
 key blob, not from the pod. Flipping the mode in a blob gets nothing: an
 immutable image is erofs and fails to mount as ext4, and a mutable image has
 no hash tree for verity to anchor.
+
+To mount elsewhere, set `confidential.ai/c8s-volume-dir` and change each
+volume's `data` rule destination to match. The webhook refuses a volume dir
+outside `/mnt/c8s-data/`, the only place a `data` rule can pin, and one inside
+`/mnt/c8s-data/c8s-reload-watch`.
 
 The webhook injects a `c8s-volume` sidecar and, per volume, an `emptyDir` with
 `mountPropagation: HostToContainer`. The sidecar fetches the key over the
@@ -436,7 +447,15 @@ than read it at startup.
 
 The key must already be in the store. Unlike a secret — where the first pod to
 ask is the one that defines the value — `get-volume` only ever reads, so a pod
-scheduled before `c8s volume create` has run retries and then fails.
+scheduled before `c8s volume create` has run keeps retrying until the key is
+there.
+
+Retries back off from `--retry-interval` (5s) to 30s and, by default, have no
+limit (`--attempts 0`): the sidecar cannot see when the main containers exist,
+and a multi-GB image pull can hold them back for tens of minutes. Each refused
+attempt is logged with its likely reason, at WARN once the sidecar has waited
+10 minutes. `--attempts N` sets a limit; because the waits back off, N attempts
+last longer than N x `--retry-interval` (60 attempts last about 28 minutes).
 
 Teardown is the sidecar's last act. Kubelet terminates sidecars only after the
 workload's containers have exited, so the close it posts lands while nothing

@@ -81,42 +81,30 @@ spec:
           command: ["/bin/sh", "-c"]
           args:
             - |
-{{ .Files.Get "files/scripts/containerd-prep.sh" | indent 14 }}
+{{ .Files.Get "files/scripts/containerd-prep.sh" | replace "$" "$$" | indent 14 }}
           volumeMounts:
             - name: host-containerd-config
               mountPath: /host{{ include "nri-image-policy.containerdConfigDir" . }}
           resources:
             {{- toYaml .Values.nriImagePolicy.resources | nindent 12 }}
         {{- end }}
+        # Each script's argv is pinned in the seed as the runtime receives it,
+        # and the install script embeds component argv that may hold $(NAME),
+        # so every $ is escaped against the kubelet's expansion.
         - name: install
           image: {{ include "nri-image-policy.image" . }}
           imagePullPolicy: {{ .Values.nriImagePolicy.image.pullPolicy }}
           securityContext:
             privileged: true
-          {{- if not .Values.nriImagePolicy.baked }}
-          env:
-            # The address CDS dials for this node's sandbox-digests endpoint.
-            # The plugin is a host process with no downward API of its own, so
-            # the install script hands it down through a file. Inferring it
-            # from the route to CDS does not work: the chart points the plugin
-            # at the CDS NodePort on loopback.
-            #
-            # Under .baked the node image's nri-node-ip.service writes that file
-            # before containerd starts, so nothing is handed down here.
-            - name: NODE_IP
-              valueFrom:
-                fieldRef:
-                  fieldPath: status.hostIP
-          {{- end }}
           command: ["/bin/sh", "-c"]
           args:
             - |
 {{- if .Values.nriImagePolicy.baked }}
-{{ include "nri-image-policy.pinsScript" (dict "root" .) | indent 14 }}
+{{ include "nri-image-policy.pinsScript" (dict "root" .) | replace "$" "$$" | indent 14 }}
           volumeMounts:
             {{- include "nri-image-policy.pinsVolumeMounts" . | nindent 12 }}
 {{- else }}
-{{ include "nri-image-policy.installScript" (dict "root" . "bootConfig" (include "nri-image-policy.bootConfig" (dict "root" .))) | indent 14 }}
+{{ include "nri-image-policy.installScript" (dict "root" . "bootConfig" (include "nri-image-policy.bootConfig" (dict "root" .))) | replace "$" "$$" | indent 14 }}
           volumeMounts:
             {{- include "nri-image-policy.hostVolumeMounts" . | nindent 12 }}
 {{- end }}
@@ -137,7 +125,7 @@ spec:
           imagePullPolicy: {{ .Values.nriImagePolicy.image.pullPolicy }}
           command: ["/bin/sh", "-c"]
           args:
-            - {{ include "nri-image-policy.pluginReadyScript" . | quote }}
+            - {{ include "nri-image-policy.pluginReadyScript" . | replace "$" "$$" | quote }}
           ports:
             - name: plugin-ready
               containerPort: {{ include "nri-image-policy.pluginReadyPort" . }}

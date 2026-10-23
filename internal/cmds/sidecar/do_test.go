@@ -5,48 +5,14 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 )
-
-// stubResolver is an inventory that vouches for one sandbox. The token route
-// binds its caller by peer credentials, which a unix socket supplies; nothing
-// here needs to disambiguate.
-type stubResolver struct{}
-
-func (stubResolver) SandboxForPeer(workloadclaims.Peer) (string, error) {
-	return "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", nil
-}
-
-func (stubResolver) DigestsForSandbox(string) ([]string, []workloadclaims.SandboxContainer, bool, error) {
-	return nil, nil, false, nil
-}
-
-// startInventory serves the real token route on a unix socket and returns its
-// endpoint.
-func startInventory(t *testing.T) string {
-	t.Helper()
-	signer, err := workloadclaims.NewSandboxTokenSigner("10.0.0.7")
-	if err != nil {
-		t.Fatal(err)
-	}
-	sock := filepath.Join(t.TempDir(), "wc.sock")
-	l, err := net.Listen("unix", sock)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	go workloadclaims.ServeTokens(ctx, l, stubResolver{}, signer)
-	t.Cleanup(func() { cancel(); l.Close() })
-
-	return "unix://" + sock
-}
 
 func testPubKey(t *testing.T) *ecdsa.PublicKey {
 	t.Helper()
@@ -67,7 +33,7 @@ func TestSecretResponseMustBeDecodable(t *testing.T) {
 		{"value not base64", `{"value":"!!!"}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			endpoint := startInventory(t)
+			endpoint := "unix://" + testutil.StartInventory(t)
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == "/secrets" {
 					w.Write([]byte(`{"challenge":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}`))

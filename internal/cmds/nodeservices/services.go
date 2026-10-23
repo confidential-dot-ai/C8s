@@ -13,7 +13,7 @@ import (
 
 const (
 	launchDir  = launchconfig.Dir + "/"
-	nodeIPPath = "/var/run/nri-image-policy/node-ip"
+	nodeIPPath = "/run/nri-image-policy/node-ip"
 
 	// PublicDir contains only authenticated, nonsecret workload inputs. Core
 	// pods mount it read-only; the token-bearing launch directory stays private.
@@ -24,7 +24,7 @@ func validateRole(d *launchconfig.Document) error {
 	if d == nil {
 		return fmt.Errorf("missing staged launch configuration")
 	}
-	if d.Role != launchconfig.Server && d.Role != launchconfig.Agent {
+	if !d.Role.Valid() {
 		return fmt.Errorf("invalid staged role")
 	}
 	return nil
@@ -53,5 +53,7 @@ func PublishNodeIP(rootDir string, d *launchconfig.Document) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
 		return err
 	}
-	return fileutil.WriteAtomic(dst, []byte(address+"\n"), 0600)
+	// World-readable: non-root components read it as their attestation-api
+	// address (cmdsutil.NodeIPPath).
+	return fileutil.WriteAtomic(dst, []byte(address+"\n"), 0644)
 }

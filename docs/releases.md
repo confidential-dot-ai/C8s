@@ -73,6 +73,19 @@ explicit in the originating run, while the existing node workflows consume
 that run's successful `workflow_run` completion. No OAuth App, GitHub App,
 personal access token, or long-lived release credential is required.
 
+## Release a transcript change
+
+A c8s release that changes an attestation transcript ships after compatible
+client releases. Release `c8s-verify-js` and TEErminator versions that
+reproduce the new vectors first, then the router that carries the new
+transcript. The binding ids stay at v1: c8s is unreleased and no released
+client depends on the transcript, so the layout changes in place. A client and
+router on different layouts therefore fail verification instead of reporting a
+version mismatch. After an upgrade, a transcript or signature mismatch from a
+client most likely means the client predates the field, not an attack. No workflow
+enforces this order. See [Upgrade from the earlier
+layout](routes-evidence.md#upgrade-from-the-earlier-layout).
+
 ## One-time GitHub setup
 
 1. Create a GitHub Actions environment named `release`.

@@ -31,10 +31,12 @@ setup() {
 
 # Each function runs in its own process, so the CDS port-forward lib.sh shares
 # through WORKDIR outlives the call that opened it.
-teardown() {
+teardown_backend() {
     allowlist_delete "$nginx_entry" || true
     cds_pf_stop
 }
+
+scratch_encrypted() { echo no; }
 
 node_name() {
     case "$1" in
@@ -64,11 +66,16 @@ image_alias() {
 # The CDS through the port-forward lib.sh shares; the harness's operator key
 # and token minter beside it.
 cds_url() { cds_pf_start && echo "https://127.0.0.1:$CDS_LOCAL_PORT"; }
+# The router's hostPort 443 on the kind node, reachable on the kind network.
+router_url() {
+    local ip
+    ip="$(kubectl get node "$NODE" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}' | awk '{print $1}')"
+    [ -n "$ip" ] || { echo "backend: node $NODE has no InternalIP" >&2; return 1; }
+    echo "https://$ip:443"
+}
 operator_key() { echo "$WORKDIR/operator.key"; }
 optoken_bin() { echo "$WORKDIR/optoken"; }
 scratch() { echo "$WORKDIR"; }
-
-served_allowlist() { curl -sSfk "$(cds_url)/allowlist"; }
 
 # The same forward dialled without TLS; the listener is TLS-only.
 cds_plain_url() { local url; url="$(cds_url)" || return; echo "${url/https:/http:}"; }
@@ -98,7 +105,6 @@ cds_restart_with() {
     local flag=
     case "$1" in
         default) args="$installed" ;;
-        min-ca-validity) flag=--min-ca-validity ;;
         pins) flag=--measurements ;;
         operator-keys) flag=--operator-keys ;;
         san-validation) flag=--san-validation ;;
@@ -149,8 +155,8 @@ cds_arg_set() {
 # Wait for the one CDS pod that is none of the given UIDs (the pods before
 # the change) to run and answer /healthz through the forward, then for the
 # Service to route to it: that takes its readiness probe, which runs some
-# seconds after the pod does. A CDS that reports itself not ready
-# (min-ca-validity) never joins the Service, and is not waited for.
+# seconds after the pod does. A CDS that reports itself not ready never
+# joins the Service, and is not waited for.
 cds_await_running() {
     local deadline=$(($(date +%s) + 180)) pods uid phase
     while :; do
@@ -212,34 +218,15 @@ attest_direct() {
 }
 
 # The mock issues a version-2 SNP report over any report data, with an
-# all-zero launch measurement (the pin the CDS was installed with) and no
-# signature anyone checks. Evidence for another launch digest is the same
-# report with those bytes set; the mock's verifier reads the digest from the
-# report it is shown.
+# all-zero launch measurement (the pin the CDS was installed with), and
+# reports every signature valid; its verifier reads the launch digest from
+# the report it is shown. Its evidence verifies nowhere but at the mock, so no
+# verifier on this host can act as a relying party.
 evidence() {
-    python3 - "$(mock_attestation_url)" "$3" "${4:-}" <<'PYEOF'
-import base64, json, sys, urllib.request
-url, report_data, digest = sys.argv[1:4]
-if not digest:
-    body = json.dumps({"report_data": base64.b64encode(bytes.fromhex(report_data)).decode()}).encode()
-    req = urllib.request.Request(url + "/attest", body, {"Content-Type": "application/json"})
-    sys.stdout.write(urllib.request.urlopen(req, timeout=20).read().decode())
-    sys.exit()
-report = bytearray(1184)
-report[0] = 0x02    # report version 2
-report[0x0A] = 0x03 # SMT-allowed policy
-rd = bytes.fromhex(report_data)
-report[0x50:0x50 + len(rd)] = rd
-d = bytes.fromhex(digest)
-report[0x90:0x90 + len(d)] = d
-print(json.dumps({"platform": "snp", "evidence": {"attestation_report": base64.b64encode(bytes(report)).decode()}}))
-PYEOF
+    jq -n --arg rd "$3" '{report_data: $rd}' |
+        curl -sf --max-time 20 -H 'Content-Type: application/json' --data-binary @- "$(mock_attestation_url)/attest"
 }
-
-# The mock reports every signature valid, so nothing here is unsigned; and
-# its evidence verifies nowhere but at the mock, so no verifier on this host
-# can act as a relying party.
-evidence_unsigned() { return "$UNSUPPORTED"; }
+evidence_signed() { echo no; }
 relying_party() { return "$UNSUPPORTED"; }
 
 pod_uid() { kubectl -n "$1" get pod "$2" -o jsonpath='{.metadata.uid}'; }
@@ -260,7 +247,7 @@ pod_cert_file() {
 pod_sandbox_id() {
     local uid
     uid="$(pod_uid "$1" "$2")" || return
-    node_exec crictl pods --label "io.kubernetes.pod.uid=$uid" -q | head -1
+    node_exec crictl pods --label "io.kubernetes.pod.uid=$uid" -q | awk 'NR == 1'
 }
 
 # From the node's store, pulled when absent: the image's entrypoint, then its
@@ -269,6 +256,12 @@ image_entrypoint() {
     image_digest "$1" >/dev/null
     # shellcheck disable=SC2016  # $1 expands on the node
     node_exec sh -c 'crictl inspecti "$1" | jq -r ".info.imageSpec.config | ((.Entrypoint // []) + (.Cmd // []))[]"' _ "$1"
+}
+
+image_env() {
+    image_digest "$1" >/dev/null
+    # shellcheck disable=SC2016  # $1 expands on the node
+    node_exec sh -c 'crictl inspecti "$1" | jq -r ".info.imageSpec.config | (.Env // [])[]"' _ "$1"
 }
 
 # Signed with the harness's operator key, as its own allowlist checks are.
@@ -297,14 +290,45 @@ base_declares() {
 # containerd launches at its own start (plugin_path), and its runtimeDir/
 # healthSocketName, both on the node.
 PLUGIN_BIN=/opt/nri/plugins/10-nri-image-policy
-PLUGIN_HEALTH=/var/run/nri-image-policy/health.sock
+PLUGIN_HEALTH=/run/nri-image-policy/health.sock
 
-# Refused is exit 7 from curl, as a TLS failure against the CDS is not; the
-# kind node image ships curl.
+# The plugin pulls from https://127.0.0.1:<node port of the CDS Service>
+# (the chart's nriImagePolicy.allowlist.pull.url default), from the node's
+# own network namespace; every pod's get-cert dials the node's address from
+# its own. A reject rule on connections the node itself opens to that port on
+# loopback refuses each pull at once and leaves issuance, and so every pod's
+# start, alone. Matched on the original destination, since kube-proxy has
+# rewritten it by the filter table.
+CDS_BLOCK_RULE=(OUTPUT -p tcp -m conntrack --ctorigdst 127.0.0.1 --ctorigdstport PORT
+    -m comment --comment c8s-conformance-cds-block -j REJECT --reject-with tcp-reset)
+cds_block_rule() {
+    local port
+    port="$(kubectl -n "$NS" get svc c8s-cds -o jsonpath='{.spec.ports[0].nodePort}')" || return
+    [ -n "$port" ] || { echo "backend: the CDS Service has no node port" >&2; return 1; }
+    echo "$port" "${CDS_BLOCK_RULE[@]/PORT/$port}"
+}
+cds_block() {
+    local port rule
+    read -r port rule < <(cds_block_rule) || return
+    # shellcheck disable=SC2086  # the rule's words
+    node_exec iptables -C $rule 2>/dev/null || node_exec iptables -I $rule || return
+    local deadline=$(($(date +%s) + 60))
+    until [ "$(node_refuses "$port")" = yes ]; do
+        [ "$(date +%s)" -lt "$deadline" ] || { echo "backend: the node still accepts pulls on $port after 60s" >&2; return 1; }
+        sleep 1
+    done
+}
+cds_unblock() {
+    local port rule
+    read -r port rule < <(cds_block_rule) || return
+    # shellcheck disable=SC2086  # the rule's words
+    while node_exec iptables -C $rule 2>/dev/null; do node_exec iptables -D $rule || return; done
+}
+
+# A connect that fails or hangs is refused: a reset to a node-port connection
+# may never reach the socket, so the dial times out instead.
 node_refuses() {
-    local rc=0
-    node_exec curl -sk --max-time 2 -o /dev/null "https://127.0.0.1:$1/healthz" 2>/dev/null || rc=$?
-    if [ "$rc" -eq 7 ]; then echo yes; else echo no; fi
+    if node_exec timeout 2 bash -c "</dev/tcp/127.0.0.1/$1" 2>/dev/null; then echo no; else echo yes; fi
 }
 
 # The pids running the plugin binary; the kind node image ships procps.
@@ -314,6 +338,11 @@ plugin_pids() { node_exec pgrep -f "^$PLUGIN_BIN" || true; }
 # kind node image ships curl.
 plugin_healthy() {
     node_exec curl -sf --max-time 2 --unix-socket "$PLUGIN_HEALTH" http://localhost/healthz >/dev/null 2>&1
+}
+
+# The version in that answer, whatever its status: the one the plugin applied.
+applied_version() {
+    node_exec curl -s --max-time 2 --unix-socket "$PLUGIN_HEALTH" http://localhost/healthz | jq -r .allowlist_version
 }
 
 # Ready within the installer's budget: a containerd restart, then the first
@@ -364,8 +393,6 @@ cds_restart() {
 }
 
 # The number in the weak entity tag W/"<n>" of GET /allowlist.
-served_version() { allowlist_get "" | awk 'NR == 1 {print $2}'; }
-
 node_containers() { node_exec crictl ps -a -q --image "$2"; }
 
 dispatch "$@"

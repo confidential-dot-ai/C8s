@@ -172,29 +172,29 @@ jobs:
           sync=node-guest-image/c8s/mkosi.sync
           version=$(sed -n 's/^RKE2_VERSION="\(.*\)"$/\1/p' "$sync")
           core=$(sed -n 's/^RKE2_IMAGES_CORE_SHA256="\(.*\)"$/\1/p' "$sync")
-          canal=$(sed -n 's/^RKE2_IMAGES_CANAL_SHA256="\(.*\)"$/\1/p' "$sync")
-          for v in "$version" "$core" "$canal"; do
+          cilium=$(sed -n 's/^RKE2_IMAGES_CILIUM_SHA256="\(.*\)"$/\1/p' "$sync")
+          for v in "$version" "$core" "$cilium"; do
             [ -n "$v" ] || { echo "::error::could not read the RKE2 pins from $sync"; exit 1; }
           done
           {
             echo "version=$version"
             echo "core=$core"
-            echo "canal=$canal"
+            echo "cilium=$cilium"
           } >> "$GITHUB_OUTPUT"
 
       - name: Fetch the pinned airgap bundles
         env:
           RKE2_VERSION: ${{ steps.pins.outputs.version }}
           CORE_SHA256: ${{ steps.pins.outputs.core }}
-          CANAL_SHA256: ${{ steps.pins.outputs.canal }}
+          CILIUM_SHA256: ${{ steps.pins.outputs.cilium }}
         run: |
           set -euo pipefail
           # '+' is %2B in a release URL, as mkosi.sync does.
           base="https://github.com/rancher/rke2/releases/download/${RKE2_VERSION//+/%2B}"
           curl -fL --retry 3 --retry-delay 5 -o core.tar.zst "$base/rke2-images-core.linux-amd64.tar.zst"
-          curl -fL --retry 3 --retry-delay 5 -o canal.tar.zst "$base/rke2-images-canal.linux-amd64.tar.zst"
+          curl -fL --retry 3 --retry-delay 5 -o cilium.tar.zst "$base/rke2-images-cilium.linux-amd64.tar.zst"
           echo "$CORE_SHA256  core.tar.zst" | sha256sum -c -
-          echo "$CANAL_SHA256  canal.tar.zst" | sha256sum -c -
+          echo "$CILIUM_SHA256  cilium.tar.zst" | sha256sum -c -
 
       - name: The baked base allowlist matches the pinned bundles
         # systemfloor re-derives the system block from the pinned
@@ -206,7 +206,7 @@ jobs:
           go run ./node-guest-image/c8s/systemfloor -check \
             -template node-guest-image/c8s/image-policy.yaml.in \
             -bundle core.tar.zst \
-            -bundle canal.tar.zst \
+            -bundle cilium.tar.zst \
             -manifest "$manifests/local-path-storage.yaml" \
             -manifest "$manifests/nvidia-device-plugin.yaml" \
             -exclude-ref busybox
@@ -306,6 +306,18 @@ jobs:
 
       - name: Run the exact production-script harness
         run: make test-node-guest-image-psa-ready
+
+  models-disk:
+    name: Weights disk mount (script)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Run the exact production-script harness
+        run: make test-node-guest-image-models-disk
+
+      - name: Shellcheck the script and its harness
+        run: shellcheck -x -P SCRIPTDIR node-guest-image/c8s/mkosi.extra/usr/local/bin/models-disk.sh node-guest-image/tests/models-disk-test.sh
 
   rke2-role:
     name: rke2-role dispatch (script)

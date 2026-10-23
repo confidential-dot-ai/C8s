@@ -49,7 +49,8 @@ sets `EXPECT_IMMUTABLE_ROOT=1` explicitly.
 
 Every node VM needs a write-storage disk with virtio-blk serial
 `confai-scratch`, at least 64G. The serial is what matters: the confos
-initrd scans `/dev/vd{b,c,d}` for it and ignores labels. In KubeVirt that's
+initrd scans every attached virtio disk except the image disk for it and
+ignores labels, so the disk may be attached in any order. In KubeVirt that's
 `disk: {bus: virtio}` plus `serial: confai-scratch` (see the vendored
 `tdx-metal-e2e.yml`); confidential-metal attaches one by default
 (`--datadisk-gi`, 0 opts out).
@@ -100,9 +101,22 @@ Additional optional disks:
 
 - serial `confai-containerd` (or label `containerd`): backs containerd's
   image cache (`containerd-data-disk.service`).
-- serial `confai-models`: a pre-populated, read-only weights disk mounted at
-  `/var/lib/models`. It is unencrypted and host-writable; attach public
-  weights whose digests the workload verifies (`models-disk.service`).
+- serial `confai-models`: a weights disk mounted at `/var/lib/models`
+  (`models-disk.service`), always `nodev,nosuid,noexec`. It is unencrypted
+  and host-writable; it holds public weights whose digests the workload
+  verifies. By default it must be pre-populated, and it is mounted read-only
+  and never formatted. With `models: {writable: true}` in the signed launch
+  document (`launch-config new --models-writable`), a disk with no filesystem
+  or partition table is formatted ext4, optionally with its root directory
+  owned by `models.rootOwner` (`--models-root-owner UID:GID`), and the disk is
+  mounted read-write so a workload can download weights inside the TEE. A
+  disk that already has a filesystem keeps it and its owner.
+
+  The allowlist decides which container may write it: a `host` mount rule
+  with `source: /var/lib/models` for the downloader, and the same source with
+  `readOnly: true` for the server. An entry that holds a `secrets` grant may
+  have no `host` mount rule in any container, so
+  containers that mount the weights disk go in an entry without a grant.
 
 ## Operator kubeconfig bootstrap
 
@@ -151,7 +165,7 @@ role starts. The local attester must precede this gate because launch
 verification uses it. The host attester listens on `127.0.0.1:8400`;
 pods access its Unix socket in the admission-inventory directory. CDS uses
 its Kubernetes Service and server NodePort `30808`; agents join RKE2 at
-`9345`; the router exposes the server's port `443`. Canal's flannel VXLAN
+`9345`; the router exposes the server's port `443`. Cilium's VXLAN
 runs on UDP `8473`, not the kernel default `8472`: a nested guest's outer
 host often runs its own VXLAN on `8472` and drops the inner overlay. Open
 UDP `8473` between nodes in any firewall or security group.
@@ -162,11 +176,14 @@ binary and baked RKE2 Kubernetes version. The complete chart renders once
 into `/var/lib/rancher/rke2/server/manifests/c8s-integration.yaml`, including
 CDS, router, mesh, operator, CRDs, RBAC, webhook and admission policies.
 Only `rke2-server` applies that directory; including it in the agent image
-is intentional. There is no guest Helm install, chart archive, runtime
-values merge or separate host nginx configuration.
+is intentional. There is no guest Helm install, chart archive or runtime
+values merge.
 
-The renderer also emits the component allowlist seed and a list of pinned
-core images. `airgap-images.sh` preserves their complete OCI content under
+The renderer also emits the component allowlist seed, a list of pinned
+core images and the router's nginx configuration. The image installs that
+configuration in `/usr/lib/c8s/router-nginx`, and the router mounts it from
+there instead of from a ConfigMap the control plane could edit.
+`airgap-images.sh` preserves the core images' complete OCI content under
 `/var/lib/rancher/rke2/agent/images`; RKE2 imports these archives on either
 role. It reuses a cached layout under `mkosi.pkgcache/c8s/core-images` only
 when every referenced blob is present and matches its digest, and copies the
@@ -310,8 +327,9 @@ operator's `c8s-node-operator` ClusterRole (`cred-release-rbac.yaml`) has
 no admission or cluster-scoped RBAC writes, and the `confos-operator-scope`
 policy (`operator-scope-policy.yaml`) denies them in admission for every
 `c8s:` group regardless of RBAC, together with every write in the
-privileged namespaces (`kube-system`, `local-path-storage` and the baked
-operator's `c8s-system`) and the kubelet-proxy subresources. The
+privileged namespaces (`kube-system`, `local-path-storage`, the baked
+operator's `c8s-system` and the router role's `c8s-router`) and the
+kubelet-proxy subresources. The
 `psa-ready.sh` gate proves that deny path before cred-release serves.
 
 `kubectl exec`, `attach`, `port-forward` and ephemeral containers are closed
@@ -334,9 +352,7 @@ endpoint therefore remains closed until `psa-ready.sh` sees both policies,
 both credential bindings, and proves, through server-side dry-runs as a synthetic non-granter,
 that a restricted namespace is admitted and a privileged one is denied by
 `confos-psa-level`. No externally released operator credential can enter the
-first-boot reconciliation window. The same gate waits until the live
-FelixConfigurations make Canal append its iptables hooks behind armtls-mesh's
-cw guard, which Felix only learns after the chart installs its CRDs.
+first-boot reconciliation window.
 
 The floor also covers namespaces hosting confidential workloads. In bare-metal mode,
 `nri-image-policy` mounts the inventory socket directory read-only into credential
@@ -528,7 +544,7 @@ manual and PR gate builds cannot invoke the exact-image acceptance path.
 `kernel/c8s.config` sets `CONFIG_MODULES=y`, which the confos base kernel
 compiles out. It is on for exactly two out-of-tree modules, `nvidia.ko` and
 `nvidia-uvm.ko` (see [MODULE-SIGNING.md](MODULE-SIGNING.md)); every symbol
-kubelet, containerd and Canal need is `=y`, so nothing modprobes at runtime.
+kubelet, containerd and Cilium need is `=y`, so nothing modprobes at runtime.
 
 Because the key exists on this kernel, the runtime lock has to be set here:
 confos's `99-kspp-hardening.conf` omits `kernel.modules_disabled` on the
@@ -640,7 +656,7 @@ Inspect the core workloads with the attested kubeconfig:
 
 ```sh
 kubectl -n c8s-system get pods -o wide
-kubectl -n c8s-system describe deployment/c8s-router
+kubectl -n c8s-router describe deployment/c8s-router
 ```
 
 `kubectl logs` works on every image. The locked image denies `kubectl exec`,

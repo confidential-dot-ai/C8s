@@ -49,6 +49,7 @@ workload-agnostic: anything that runs on Kubernetes can run confidentially.
 - [c8s-verify](https://github.com/confidential-dot-ai/c8s-verify-js), verify a C8s cluster from a browser
 - [attestation-rs](https://github.com/confidential-dot-ai/attestation-rs), the TEE evidence verification service C8s uses
 - [armTLS](docs/armtls.md), how attested TLS works in C8s — the handshake step by step, the guarantees, and which certificate is used where
+- [Route evidence](docs/routes-evidence.md), how the router binds its route manifest into attestation evidence and how `c8s verify` checks it
 
 ## Features
 
@@ -59,11 +60,10 @@ workload-agnostic: anything that runs on Kubernetes can run confidentially.
   CDS accepted and the pod's sandbox ID, so a relying party can ask *which*
   workload is behind a key, not just whether it is a genuine TEE.
 
-- **armTLS mesh.** A transparent L4 proxy wraps traffic between workloads in
-  attestation-rooted mutual TLS. Bootstrap peers verify embedded evidence;
-  CDS-issued certificates use mesh-CA chain verification. Final-hop plaintext
-  confinement depends on [local-route validation](cmd/armtls-mesh/DESIGN.md#local-cidr-discovery);
-  its HostIP fallback trusts Kubernetes placement metadata.
+- **armTLS mesh.** Every covered pod runs an injected endpoint that wraps its
+  traffic in attestation-rooted mutual TLS against the CDS mesh CA. The node
+  enforcer installs that pod's packet rules before any of its containers runs,
+  so plaintext stays inside the pod ([`cmd/armtls-mesh/README.md`](cmd/armtls-mesh/README.md)).
 
 - **Node-as-CVM.** Run the whole node as one confidential VM. Supported modes
   are `bare-metal`, `gke`, and `aks`. See [Architecture](#architecture).
@@ -180,11 +180,13 @@ kubectl label node <cds-node> role=cds
 openssl ecparam -name prime256v1 -genkey -noout -out operator.key
 openssl ec -in operator.key -pubout -out operator.pub
 
-# Install the platform (node-as-CVM) and point the bundled router
-# at your workload
+# Install the platform (node-as-CVM) and route the bundled router to the port
+# your workload listens on; its injected endpoint holds the mesh leaf the
+# router verifies; install prints the `c8s routes add` commands that store the
+# route
 c8s install --cvm-mode=bare-metal --hardware-platform=sev-snp --namespace c8s-system \
   --operator-keys operator.pub \
-  --workload-ref vllm=vllm/deployment/serving:8000 \
+  --workload-ref vllm=vllm/deployment/serving:8443 \
   --upstream vllm
 ```
 
@@ -214,8 +216,8 @@ The annotation value (`api` here) is a workload id you choose; the
 certificate SAN and the `c8s-<id>` headless Service are derived from it.
 
 The webhook injects `c8s get-cert` as a native sidecar, which fetches an
-attestation-bound certificate from CDS and renews it. Certificates land in
-`/etc/c8s/certs`.
+attestation-bound certificate from CDS and renews it. Certificates land in the
+pod's `c8s-certs` volume, which the mesh endpoint reads at `/etc/c8s/certs`.
 
 ### Production notes
 
@@ -356,8 +358,12 @@ c8s allowlist upload allowlist.json \
   --operator-key operator.key
 ```
 
-For a bare-metal install, pass `--cvm-mode bare-metal` to `allowlist upload`;
-its required component set uses the measured host attestation service. GKE, AKS,
+On a measured node image, CDS keeps the image's allowlist seed as a fixed
+layer and names it in the `C8s-Allowlist-Seed` header of `GET /allowlist`. The
+seed admits C8s's own components, so the uploaded file may carry application
+entries only and `allowlist upload` checks no components. Otherwise, for a
+bare-metal install pass `--cvm-mode bare-metal` to `allowlist upload`; its
+required component set uses the measured host attestation service. GKE, AKS,
 and uploads without a mode require the attestation-api image. `--require`
 overrides the required set.
 
@@ -394,8 +400,9 @@ openssl ec -in operator.key -pubout -out operator.pub
 c8s install --operator-keys operator.pub   # plus your other install flags
 ```
 
-Installing without `--operator-keys` leaves allowlist writes disabled, and
-`c8s install` refuses that on the default path unless you pass `--force` to
+Installing without `--operator-keys` leaves allowlist writes disabled and
+CDS unable to store a route manifest, so the router routes nothing. `c8s
+install` refuses that on the default path unless you pass `--force` to
 acknowledge. Supply the private key to the CLI by flag (`--operator-key`) or
 environment (`C8S_OPERATOR_KEY`). Write tokens are short-lived and bound to
 the request body, so a captured token cannot be replayed against a different
@@ -427,6 +434,15 @@ only verifiers that run it. For
 GitOps consumers, `c8s render-values --operator-keys operator.pub` embeds the
 PEM content (the chart value takes content, never a file path); the chart
 wiring is described in [docs/operator.md](docs/operator.md).
+
+## Manage the route manifest
+
+`c8s routes` (`show`, `digest`, `put`, `add`, `rm`) reads and writes the signed
+route manifest that CDS stores at `/routes`, with the operator key used for
+allowlist writes. Point `--url` at CDS directly, for example through a
+port-forward, because the router does not relay `/routes`. The commands only
+store the manifest: the router does not apply it yet. See
+[Route manifest](docs/operator.md#route-manifest).
 
 ## Docker images
 
@@ -472,11 +488,10 @@ than let you discover them:
   from the operator's escrow file. Rotation, versioning and delete are absent
   — a replaced value is gone, and pods keep what they read at startup.
 
-- **Mesh peers are verified by CA chain, not per-peer measurement.** Leaves
-  carry the evidence CDS verified at issuance, and `VerifyPolicy` has a
-  `RequireCAEvidence` mode that re-checks it — measurement included — on every
-  connection, but no shipped profile enables it. There are no SPIFFE-style URI
-  SANs, and per-workload peer policy is not enforced.
+- **Mesh peers are verified by CA chain, not per-peer measurement.** A
+  chain-path peer proved its measurement to CDS at issuance only; nothing
+  re-checks it per connection. There are no SPIFFE-style URI SANs, and
+  per-workload peer policy is not enforced.
 
 - **A workload's sandbox identity is CA-vouched, not hardware-bound.** The
   sandbox ID in a leaf is signed in by the mesh CA on the word of an on-node

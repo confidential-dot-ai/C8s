@@ -22,17 +22,24 @@ type world struct {
 	// entries the scenario describes, written to CDS when it says the plugin
 	// has applied the served allowlist; written and removed are undone after
 	// the scenario.
-	entries  map[string]*entry
+	entries map[string]*entry
+	// bases holds, per scenario name, the name an entry is written under instead.
+	bases    map[string]string
 	written  map[string]bool
 	removed  map[string]json.RawMessage
 	api      cdsAPIState
 	cds      cdsState
 	issuance issuanceState
+	podMesh  podMeshState
+	secrets  secretsState
+	router   routerState
+	routes   routesState
 	// undo is what the scenario changed in the cluster beyond the node and
 	// the allowlist, put back last in, first out before those are restored.
 	undo []func() error
-	// appliedVersion is the served version the plugin had applied when the
-	// scenario last waited for it.
+	// appliedVersion is the allowlist version the plugin reported applied when
+	// the scenario last waited for it, or the served one where the backend
+	// cannot ask the plugin.
 	appliedVersion string
 	// running maps an image to the pod a scenario started a container of.
 	running map[string]*pod
@@ -58,11 +65,34 @@ type pod struct {
 	leaf       *leaf
 	renewed    bool
 	refusal    *refusal
+	// How the pod is rendered: pod_manifest options, its namespace, the name
+	// of its first container, and how its certificate container verifies the
+	// CDS; and the port of its hello API and its datagram listener, and the
+	// container whose log shows the datagrams received.
+	opts      []string
+	namespace string
+	first     string
+	verifyCDS []string // as the probe's flags
+	hello     int
+	datagram  int
+	listener  string
+	// What the secrets sentences add: the secret client's NAME=path specs,
+	// an init container (which "that container" addresses while initLast),
+	// and the requester state of the pod.
+	secrets  []string
+	init     *container
+	initLast bool
+	secret   *secretReq
+	ready    bool // seen Ready once, so every main container has been admitted
 }
 
 type container struct {
 	ref     string // reference the manifest uses
 	command []string
+	env     []string // NAME=VALUE the pod spec sets, beside what the image and the node add
+	// stated: the scenario gave the argv; otherwise the harness chose it (a
+	// placeholder sleep, a hello server, a datagram listener).
+	stated bool
 }
 
 type worldKey struct{}
@@ -71,7 +101,7 @@ func getWorld(ctx context.Context) *world { return ctx.Value(worldKey{}).(*world
 
 func initializeScenario(be backend) func(*godog.ScenarioContext) {
 	return func(sc *godog.ScenarioContext) {
-		sc.Before(func(ctx context.Context, _ *godog.Scenario) (context.Context, error) {
+		sc.Before(func(ctx context.Context, sc *godog.Scenario) (context.Context, error) {
 			suffix := make([]byte, 4)
 			if _, err := rand.Read(suffix); err != nil {
 				return ctx, err
@@ -81,12 +111,14 @@ func initializeScenario(be backend) func(*godog.ScenarioContext) {
 				namespace:  "conf-" + hex.EncodeToString(suffix),
 				pods:       map[string]*pod{},
 				entries:    map[string]*entry{},
+				bases:      map[string]string{},
 				written:    map[string]bool{},
 				removed:    map[string]json.RawMessage{},
 				running:    map[string]*pod{},
 				nodes:      map[string]bool{},
 				pluginDown: map[string]bool{},
 				issuance:   issuanceState{requesters: map[string]*requester{}},
+				secrets:    secretsState{active: hasTag(sc, "area:secrets"), stored: map[string][]byte{}},
 			}
 			if _, err := kubectl(nil, "create", "namespace", w.namespace); err != nil {
 				return ctx, err
@@ -104,6 +136,19 @@ func initializeScenario(be backend) func(*godog.ScenarioContext) {
 			}
 			return ctx, nil
 		})
+		// godog records a skip without its error; the attachment keeps the
+		// reason in the report.
+		sc.StepContext().After(func(ctx context.Context, _ *godog.Step, status godog.StepResultStatus, err error) (context.Context, error) {
+			if status == godog.StepSkipped && err != nil && err.Error() != godog.ErrSkip.Error() {
+				ctx = godog.Attach(ctx, godog.Attachment{FileName: "skip-reason", MediaType: "text/plain", Body: []byte(err.Error())})
+			}
+			// The scenario namespace is gone before the cluster's logs are
+			// collected, so a failure keeps its pods' logs here.
+			if w, ok := ctx.Value(worldKey{}).(*world); ok && status == godog.StepFailed {
+				ctx = godog.Attach(ctx, w.podLogs()...)
+			}
+			return ctx, err
+		})
 		registerAdmission(sc)
 		registerAllowlist(sc)
 		registerCDSAPI(sc)
@@ -111,8 +156,27 @@ func initializeScenario(be backend) func(*godog.ScenarioContext) {
 		registerIssuance(sc)
 		registerRequester(sc)
 		registerNode(sc)
+		registerPodMesh(sc)
+		registerSecrets(sc)
+		registerRouter(sc)
+		registerRoutes(sc)
+		registerRouteBackends(sc)
 	}
 }
+
+// hasTag reports whether the scenario carries the tag, with or without its @.
+func hasTag(sc *godog.Scenario, name string) bool {
+	for _, t := range sc.Tags {
+		if strings.TrimPrefix(t.Name, "@") == name {
+			return true
+		}
+	}
+	return false
+}
+
+// suffix is the random part of the scenario namespace, for names that must
+// not collide with another scenario's outside it.
+func (w *world) suffix() string { return strings.TrimPrefix(w.namespace, "conf-") }
 
 // onUndo records what the After hook has to run to put the cluster back.
 func (w *world) onUndo(fn func() error) { w.undo = append(w.undo, fn) }
@@ -127,11 +191,16 @@ func (w *world) runUndo() error {
 	return errors.Join(errs...)
 }
 
+// firstContainer is the name the fixture gives a pod's first container. The
+// steps act and read logs through it by name, so kubectl's "Defaulted
+// container" notice never lands in what they parse.
+const firstContainer = "curl"
+
 // describe records a pod the scenario will deploy, one container per
 // reference; it becomes the last pod. A scenario that says nothing about the
 // argv gets one that keeps the container alive.
 func (w *world) describe(name string, refs ...string) *pod {
-	p := &pod{name: name}
+	p := &pod{name: name, namespace: w.namespace, first: firstContainer}
 	for _, ref := range refs {
 		p.containers = append(p.containers, &container{ref: ref, command: []string{"sleep", "3600"}})
 	}
@@ -139,7 +208,14 @@ func (w *world) describe(name string, refs ...string) *pod {
 	return p
 }
 
-func (p *pod) last() *container { return p.containers[len(p.containers)-1] }
+// last is the container "that container" addresses: the init container
+// while it is the one just described, else the last main one.
+func (p *pod) last() *container {
+	if p.initLast {
+		return p.init
+	}
+	return p.containers[len(p.containers)-1]
+}
 
 func (w *world) pod(name string) (*pod, error) {
 	p, ok := w.pods[name]
@@ -147,6 +223,28 @@ func (w *world) pod(name string) (*pod, error) {
 		return nil, fmt.Errorf("no pod %q has been described in this scenario", name)
 	}
 	return p, nil
+}
+
+// undeployed is a pod the scenario may still shape.
+func (w *world) undeployed(name string) (*pod, error) {
+	p, err := w.pod(name)
+	if err != nil {
+		return nil, err
+	}
+	if p.deployed {
+		return nil, fmt.Errorf("%q is already deployed", name)
+	}
+	return p, nil
+}
+
+// podIPs reads the pod's phase and addresses from its status.
+func (w *world) podIPs(p *pod) (ips []string, phase string, err error) {
+	out, err := kubectl(nil, "-n", p.namespace, "get", "pod", p.name, "-o", `jsonpath={.status.phase}{"\n"}{.status.podIPs[*].ip}`)
+	if err != nil {
+		return nil, "", err
+	}
+	phase, addrs, _ := strings.Cut(out, "\n")
+	return strings.Fields(addrs), phase, nil
 }
 
 // refs maps logical images to the references the manifests use.
@@ -186,6 +284,7 @@ type entry struct {
 	Label          string           `json:"label,omitempty"`
 	InitContainers []entryContainer `json:"initContainers"`
 	Containers     []entryContainer `json:"containers"`
+	Secrets        *secretsGrant    `json:"secrets,omitempty"`
 }
 
 // entryContainer is a declared container. Command and Args are nil when the
@@ -196,7 +295,7 @@ type entryContainer struct {
 	Command *argvPolicy  `json:"command,omitempty"`
 	Args    *argvPolicy  `json:"args,omitempty"`
 	Mounts  mountsPolicy `json:"mounts"`
-	Env     policy       `json:"env"`
+	Env     envPolicy    `json:"env"`
 }
 
 type argvPolicy struct {
@@ -210,8 +309,15 @@ func exactArgv(argv []string) *argvPolicy { return &argvPolicy{Policy: "exact", 
 
 func (p *argvPolicy) is(policy string) bool { return p != nil && p.Policy == policy }
 
-type policy struct {
-	Policy string `json:"policy"`
+type envPolicy struct {
+	Policy    string                `json:"policy"`
+	Variables map[string]envMatcher `json:"variables,omitempty"`
+}
+
+// envMatcher is one variable of a match policy: exactly one of the two is set.
+type envMatcher struct {
+	Exact   *string `json:"exact,omitempty"`
+	Present bool    `json:"present,omitempty"`
 }
 
 type mountsPolicy struct {
@@ -248,9 +354,9 @@ func (e *entry) declares(digest string) bool {
 }
 
 // admitsAnyArgv reports whether the entry admits digest under any argv. An
-// entry pinned to an executable with open args — the chart's own component
-// shape — does not count: the scenarios launch their containers under
-// `sleep`, which such an entry refuses.
+// entry pinned to an executable — the chart's own component shape — does not
+// count: the scenarios launch their containers under `sleep`, which such an
+// entry refuses.
 func (e *entry) admitsAnyArgv(digest string) bool {
 	for _, c := range e.containers() {
 		if c.Digest == digest && c.Command.is("any") && c.Args.is("any") {
