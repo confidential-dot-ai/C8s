@@ -9,8 +9,8 @@ These notes cover running CDS as several replicas that share one mesh CA
 
 HA CDS starts with a **fresh launch**. A cluster that runs a single CDS
 (no `cdsHA` in its launch documents) does not convert in place. Create a new
-bundle with `c8s node launch-config new --cds-node <name>` (repeat the flag,
-at least two), launch every node, and apply the Genesis decree. Then move
+bundle with `c8s node launch-config new --cds-node <name>` (repeat the flag:
+an odd number, 3 to 9), launch every node, and apply the Genesis decree. Then move
 workloads and re-apply the workload policy (`c8s allowlist apply`) and secrets.
 
 ## Rolling CDS to a new image
