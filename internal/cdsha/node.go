@@ -124,7 +124,11 @@ type Config struct {
 
 // Node is one CDS replica.
 type Node struct {
+	// Lock order: eligibilityMu -> membershipMu -> stopRaftMu. Never hold mu
+	// across blocking network/Raft waits or observer join. Membership decisions and
+	// generation replacement share membershipMu; observer bookkeeping does not.
 	eligibilityMu sync.Mutex         // serialize fresh-node join/bootstrap and Restore
+	membershipMu  sync.Mutex         // serialize local configuration decisions and replacement
 	observer      *heartbeatObserver // protected by stopRaftMu
 	cfg           Config
 	id            raft.ServerID
@@ -151,7 +155,7 @@ type Node struct {
 	stoppingReads atomic.Pointer[raft.Raft] // admission closes before draining this instance
 	stopRaftMu    sync.Mutex                // serialize shutdowns, including stale instance callers
 
-	seatsOKAt atomic.Int64 // Unix ms the leader last reported every seat filled (non-voters)
+	seatsOKAt atomic.Pointer[time.Time] // monotonic time of the last full-seat report (non-voters)
 
 	// blocked, in tests only, refuses connections to and from addresses as a
 	// network partition would.
@@ -321,6 +325,8 @@ func (n *Node) ID() string { return string(n.id) }
 
 // Start opens the peer port and starts Raft. Run drives it.
 func (n *Node) Start() error {
+	n.membershipMu.Lock()
+	defer n.membershipMu.Unlock()
 	n.logs, n.stable, n.snaps = raft.NewInmemStore(), raft.NewInmemStore(), &snapStore{}
 	rc := raft.DefaultConfig()
 	rc.LocalID = n.id
@@ -464,6 +470,8 @@ func (n *Node) stopRaft(r *raft.Raft) error {
 }
 
 func (n *Node) shutdown() {
+	n.membershipMu.Lock()
+	defer n.membershipMu.Unlock()
 	if r := n.r(); r != nil {
 		_ = n.stopRaft(r)
 	}
@@ -849,7 +857,11 @@ func (n *Node) Ready() bool {
 		return n.seatsFilled()
 	}
 	at := n.seatsOKAt.Load()
-	return at != 0 && time.Since(time.UnixMilli(at)) < 3*n.cfg.Timing.Tick+time.Second
+	if at == nil {
+		return false
+	}
+	age := time.Since(*at)
+	return age >= 0 && age < 3*n.cfg.Timing.Tick+time.Second
 }
 
 // watchClock notices the wall clock moving apart from the monotonic one: a
