@@ -167,8 +167,13 @@ func waitServing(t *testing.T, bases []string, want bool) {
 			resp.Body.Close()
 			full := true
 			if want {
-				c, _, _ := do(t, http.MethodGet, b+"/ca", "", nil)
-				full = c == http.StatusOK
+				// The pre-join server may be gone before the full one listens.
+				resp, err := http.Get(b + "/ca")
+				if err != nil {
+					return false
+				}
+				resp.Body.Close()
+				full = resp.StatusCode == http.StatusOK
 			}
 			if st.Serving != want || (!want && st.ID == "") || !full {
 				return false
