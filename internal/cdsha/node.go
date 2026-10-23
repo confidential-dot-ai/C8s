@@ -157,6 +157,10 @@ type Node struct {
 
 	seatsOKAt atomic.Pointer[time.Time] // monotonic time of the last full-seat report (non-voters)
 
+	readOK    atomic.Pointer[barrierMark] // leader: the last read barrier that succeeded
+	barrierMS atomic.Int64                // leader: how long the last successful read barrier took
+	slow      slowLeader                  // leader: slow-leader check state; protected by mu
+
 	// blocked, in tests only, refuses connections to and from addresses as a
 	// network partition would.
 	blocked func(addr string) bool
@@ -201,6 +205,11 @@ type Status struct {
 	Format uint32 `json:"format,omitempty"`
 	Reads  uint32 `json:"reads,omitempty"`
 	Stuck  string `json:"stuck,omitempty"`
+	// ApplyLag is how far this replica's applied index trails the commit
+	// index it knows (read barriers in flight count too); ReadBarrierMS
+	// (leader) is how long its last successful read barrier took.
+	ApplyLag      uint64 `json:"apply_lag,omitempty"`
+	ReadBarrierMS int64  `json:"read_barrier_ms,omitempty"`
 }
 
 // NewNode prepares a replica. Every start is a new Raft member: the log
@@ -653,7 +662,8 @@ func (n *Node) readBarrier(r *raft.Raft, timeout time.Duration) (uint64, error) 
 	if r == nil || r != n.r() || n.stoppingReads.Load() == r {
 		return 0, errors.New("cds-ha: read instance stopping or replaced")
 	}
-	deadline := time.Now().Add(timeout)
+	start := time.Now()
+	deadline := start.Add(timeout)
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	// Keep the token until the Raft future actually completes, not merely
@@ -685,6 +695,11 @@ func (n *Node) readBarrier(r *raft.Raft, timeout time.Duration) (uint64, error) 
 		currentLeader, currentID := r.LeaderWithID()
 		if err == nil && (r != n.r() || n.stoppingReads.Load() == r || r.State() != raft.Leader || r.CurrentTerm() != term || currentLeader != leader || currentID != id || n.fsm.Stuck() != "") {
 			err = errors.New("cds-ha: read leader or state changed")
+		}
+		if err == nil {
+			// Certificates from this barrier date from before start.
+			n.readOK.Store(&barrierMark{raft: r, term: term, start: start})
+			n.barrierMS.Store(time.Since(start).Milliseconds())
 		}
 		done <- result{index: n.fsm.AppliedIndex(), err: err}
 	}()
@@ -827,6 +842,9 @@ func (n *Node) Status() Status {
 	}
 	st.State = n.r().State().String()
 	st.Serving = n.Serving()
+	if c := n.r().CommitIndex(); c > st.AppliedIndex {
+		st.ApplyLag = c - st.AppliedIndex
+	}
 	st.Leader = n.leaderHostPort()
 	if lc := n.r().LastContact(); !lc.IsZero() {
 		st.LastContactMS = time.Since(lc).Milliseconds()
@@ -840,6 +858,7 @@ func (n *Node) Status() Status {
 	}
 	if n.leading() {
 		st.SeatsFilled = n.seatsFilled()
+		st.ReadBarrierMS = n.barrierMS.Load()
 	}
 	return st
 }
