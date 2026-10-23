@@ -284,6 +284,39 @@ func TestE7LapsedBindingsKeepTheirClientShare(t *testing.T) {
 	}
 }
 
+// TestE7WellKnownRequestHoldsTheBinding: a request to any attestation
+// location on a bound connection keeps the binding live for as long as it
+// runs, so a long tunnel request cannot let the sweep drop it.
+func TestE7WellKnownRequestHoldsTheBinding(t *testing.T) {
+	clock := &testClock{now: time.Now()}
+	b := NewBindings()
+	b.now = clock.Now
+	if err := b.bind("7.1", "c", routing.Binding{}); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{bindings: b}
+	handler := s.holdingBinding(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		clock.Advance(lbBindingLife + time.Minute)
+		b.prune()
+		if e, ok := b.entries["7.1"]; !ok || e.inFlight != 1 {
+			t.Errorf("binding during a long request = %+v, %v, want held", e, ok)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	req := httptest.NewRequest(http.MethodPost, wellKnownPrefix+"/tunnel", nil)
+	req.Header.Set(routing.ConnectionHeader, "7.1")
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+	if e, ok := b.entries["7.1"]; !ok || e.inFlight != 0 || e.refused != "" {
+		t.Fatalf("binding after the request = %+v, %v, want released and live", e, ok)
+	}
+	clock.Advance(lbBindingIdle + time.Second)
+	if _, refused, _, release, ok := b.Hold("7.1"); !ok || refused != types.ErrorCodeBindingExpired {
+		t.Fatalf("Hold() after the request's idle lifetime = %q, %v, want %q, true", refused, ok, types.ErrorCodeBindingExpired)
+	} else {
+		release()
+	}
+}
+
 // TestE6RefuseSkipsAReplacedBinding: a refusal recorded for a request that
 // held an earlier binding does not mark the binding a later handshake on the
 // same connection installed meanwhile.

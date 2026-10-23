@@ -355,6 +355,18 @@ func (s *Server) Handler() http.Handler {
 	if s.cfg.DisableAttestEndpoints {
 		return r
 	}
+	// Every request on a bound public connection holds its binding while it
+	// runs, whichever location it reaches: a long tunnel request must not let
+	// the sweep drop the binding under it (E7).
+	r.Group(func(r chi.Router) {
+		r.Use(s.holdingBinding)
+		s.attestRoutes(r)
+	})
+	return r
+}
+
+// attestRoutes registers the attestation endpoints on r.
+func (s *Server) attestRoutes(r chi.Router) {
 	r.Method(http.MethodPost, wellKnownPrefix+"/attest-pq", s.establishing(http.HandlerFunc(s.handleAttestPQ)))
 	// The pre-client-first shape. Kept registered so a stale client gets the
 	// explicit 400 — never a 404 it might treat as transient, and never an
@@ -372,7 +384,20 @@ func (s *Server) Handler() http.Handler {
 	if s.cfg.PublishRoutes {
 		r.Method(http.MethodGet, routes.PublicationPath, s.perClient(http.HandlerFunc(s.handleRoutePublication)))
 	}
-	return r
+}
+
+// holdingBinding keeps the attest-lb binding of the request's public
+// connection, if any, live until the request ends. The refusal code is the
+// routing listener's concern; here only the lifetime matters.
+func (s *Server) holdingBinding(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if connection := r.Header.Get(routing.ConnectionHeader); connection != "" && s.bindings != nil {
+			if _, _, _, release, ok := s.bindings.Hold(connection); ok {
+				defer release()
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // establishing rate-limits the session-establishment endpoints per client.
