@@ -98,62 +98,67 @@ type haStores struct {
 
 // haStart builds this replica, makes it the replicator of every store, and
 // returns once it serves the cluster's mesh CA. A nil node means singleton.
-func haStart(ctx context.Context, cfg config, st haStores, preJoin func(*cdsha.Node) (stop func())) (*cdsha.Node, error) {
+// stop ends the replica and waits for it: run calls it before it closes the
+// stores the Raft log applies to.
+func haStart(ctx context.Context, cfg config, st haStores) (node *cdsha.Node, stop func(), err error) {
+	stop = func() {}
 	if cfg.ha.yieldFile != "" {
 		if err := yieldIfHA(cfg.ha.yieldFile); err != nil {
-			return nil, err
+			return nil, stop, err
 		}
 	}
 	if cfg.ha.configFile != "" {
 		if err := loadHAConfigFile(&cfg.ha); err != nil {
-			return nil, err
+			return nil, stop, err
 		}
 	}
 	if cfg.ha.clusterID == "" {
-		return nil, nil
+		return nil, stop, nil
 	}
-	node, err := newHANode(cfg, st)
-	if err != nil {
-		return nil, err
+	if node, err = newHANode(cfg, st); err != nil {
+		return nil, stop, err
 	}
 	if err := resetHAAllowlist(st.allowlist); err != nil {
-		return nil, err
+		return nil, stop, err
 	}
 	st.allowlist.SetReplicator(node)
 	st.ledger.SetReplicator(node)
 	if err := node.Start(); err != nil {
-		return nil, err
+		return nil, stop, err
 	}
-	errc := make(chan error, 1)
+	runCtx, cancel := context.WithCancel(ctx)
+	errc, done := make(chan error, 1), make(chan struct{})
 	go func() {
-		err := node.Run(ctx)
+		defer close(done)
+		err := node.Run(runCtx)
 		errc <- err
-		if err != nil && ctx.Err() == nil {
+		if err != nil && runCtx.Err() == nil {
 			// After startup nobody reads errc: a dead replica must not
 			// leave CDS serving state it no longer tracks.
 			slog.Error("cds-ha replica stopped; exiting", "err", err)
 			os.Exit(1)
 		}
 	}()
+	stop = func() { cancel(); <-done }
 	slog.Info("cds-ha: waiting to join the cluster", "cluster_id", cfg.ha.clusterID, "id", node.ID())
-	if preJoin != nil {
-		// Until it joins, the replica serves only health, status and the
-		// operator's restore of a backup, on the CDS port.
-		defer preJoin(node)()
-	}
+	// Until it joins, the replica serves only health, status and the
+	// operator's restore of a backup, on the CDS port.
+	defer startPreJoinServer(cfg, node)()
 	t := time.NewTicker(250 * time.Millisecond)
 	defer t.Stop()
 	for !node.Serving() {
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			stop()
+			return nil, func() {}, ctx.Err()
 		case err := <-errc:
-			return nil, fmt.Errorf("cds-ha replica: %w", err)
+			stop()
+			return nil, func() {}, fmt.Errorf("cds-ha replica: %w", err)
 		case <-t.C:
 		}
 	}
 	slog.Info("cds-ha: serving", "status", node.Status())
-	return node, nil
+	return node, stop, nil
 }
 
 // resetHAAllowlist empties the allowlist database before the replica joins.
@@ -489,36 +494,34 @@ func preJoinMux(node *cdsha.Node) http.Handler {
 	return mux
 }
 
-// restoreServer returns the pre-join server starter for run(): the CDS port
-// with only health, status and restore, armTLS as the full server is.
-func restoreServer(cfg config) func(*cdsha.Node) func() {
-	return func(node *cdsha.Node) func() {
-		addr := net.JoinHostPort(cfg.host, strconv.Itoa(cfg.port))
-		srv := newHTTPServer(addr, preJoinMux(node), cfg)
-		ctx, cancel := context.WithCancel(context.Background())
-		done := make(chan struct{})
-		go func() {
-			defer close(done)
-			var err error
-			if cfg.armtlsPlatform != "" {
-				if srv.TLSConfig, _, err = armtlsServerTLS(ctx, cfg, nil); err != nil {
-					slog.Error("cds-ha: pre-join server", "err", err)
-					return
-				}
-				err = srv.ListenAndServeTLS("", "")
-			} else {
-				err = srv.ListenAndServe()
+// startPreJoinServer serves the CDS port with only health, status and
+// restore, armTLS as the full server is, until the returned stop is called.
+func startPreJoinServer(cfg config, node *cdsha.Node) (stop func()) {
+	addr := net.JoinHostPort(cfg.host, strconv.Itoa(cfg.port))
+	srv := newHTTPServer(addr, preJoinMux(node), cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		var err error
+		if cfg.armtlsPlatform != "" {
+			if srv.TLSConfig, _, err = armtlsServerTLS(ctx, cfg, nil); err != nil {
+				slog.Error("cds-ha: pre-join server", "err", err)
+				return
 			}
-			if err != nil && !errors.Is(err, http.ErrServerClosed) {
-				slog.Warn("cds-ha: pre-join server", "err", err)
-			}
-		}()
-		return func() {
-			cancel()
-			sctx, c := context.WithTimeout(context.Background(), 5*time.Second)
-			defer c()
-			_ = srv.Shutdown(sctx)
-			<-done
+			err = srv.ListenAndServeTLS("", "")
+		} else {
+			err = srv.ListenAndServe()
 		}
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Warn("cds-ha: pre-join server", "err", err)
+		}
+	}()
+	return func() {
+		cancel()
+		sctx, c := context.WithTimeout(context.Background(), 5*time.Second)
+		defer c()
+		_ = srv.Shutdown(sctx)
+		<-done
 	}
 }

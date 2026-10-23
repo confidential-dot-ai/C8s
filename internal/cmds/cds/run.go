@@ -37,6 +37,9 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
+// evictBindings drops expired sandbox bindings until done; tests replace it.
+var evictBindings = (*sandboxledger.Ledger).EvictionLoop
+
 // caRenewalCheckInterval is how often the renewal loop re-reads the current
 // mesh CA certificate.
 const caRenewalCheckInterval = 15 * time.Minute
@@ -138,16 +141,22 @@ func run(cfg config) error {
 	// enabling the feature later would otherwise start with an empty ledger and
 	// fail closed for every pod until its certificate next renews.
 	sandboxBindings := sandboxledger.New(issuer.CapTTL(cfg.certTTL, issuer.MaxLeafTTL), cfg.sandboxLedgerMax)
-	go sandboxBindings.EvictionLoop(ctx.Done(), cfg.rateLimiterEvictInterval)
 
 	// CDS generates its mesh CA in process at startup; the private key never
 	// touches a Kubernetes Secret. In HA mode the replicas share one, minted
 	// by the Genesis replica and handed only to attested replicas, and every
 	// write is replicated through the Raft log; the leader renews the CA
 	// certificate under the same key through the log too (cdsha).
-	haNode, err := haStart(ctx, cfg, haStores{allowlist: &allowlistStore, secrets: secretsMem, ledger: sandboxBindings}, restoreServer(cfg))
+	haNode, stopHA, err := haStart(ctx, cfg, haStores{allowlist: &allowlistStore, secrets: secretsMem, ledger: sandboxBindings})
 	if err != nil {
 		return fmt.Errorf("cds-ha: %w", err)
+	}
+	// Runs before the store's deferred Close: the replica applies the log to it.
+	defer stopHA()
+	if haNode == nil {
+		// Not in HA: a replica applies each binding at the command's time, and
+		// evicting by its own clock would let replicas disagree at capacity.
+		go evictBindings(sandboxBindings, ctx.Done(), cfg.rateLimiterEvictInterval)
 	}
 	var fullGuard func() error
 	if haNode != nil {
