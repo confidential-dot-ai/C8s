@@ -24,22 +24,22 @@ func newFakeBindings(entries map[string]Binding) *fakeBindings {
 	return &fakeBindings{entries: entries, refused: map[string]string{}, held: map[string]int{}, released: map[string]int{}}
 }
 
-func (b *fakeBindings) Hold(connection string) (Binding, string, func(), bool) {
+func (b *fakeBindings) Hold(connection string) (Binding, string, uint64, func(), bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	bound, ok := b.entries[connection]
 	if !ok {
-		return Binding{}, "", nil, false
+		return Binding{}, "", 0, nil, false
 	}
 	b.held[connection]++
-	return bound, b.refused[connection], func() {
+	return bound, b.refused[connection], 1, func() {
 		b.mu.Lock()
 		defer b.mu.Unlock()
 		b.released[connection]++
 	}, true
 }
 
-func (b *fakeBindings) Refuse(connection string, _ Binding, code string) {
+func (b *fakeBindings) Refuse(connection string, _ uint64, code string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.refused[connection] == "" {

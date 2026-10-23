@@ -71,11 +71,12 @@ type Binding struct {
 // reports the binding of connection, the code a request on it was refused
 // with ("" for none), and whether it has one; a held binding does not expire
 // until release, which restarts its idle lifetime (E7). Refuse records a
-// refusal on the binding the request held, so the connection stays refused
-// (E6); a binding replaced by a newer handshake since the hold is left alone.
+// refusal on the binding generation the request held, so the connection stays
+// refused (E6); a binding replaced by a newer handshake since the hold is
+// left alone.
 type Bindings interface {
-	Hold(connection string) (bound Binding, refused string, release func(), ok bool)
-	Refuse(connection string, held Binding, code string)
+	Hold(connection string) (bound Binding, refused string, gen uint64, release func(), ok bool)
+	Refuse(connection string, gen uint64, code string)
 }
 
 // BindingChangedError refuses a request whose session is bound to another
@@ -206,7 +207,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var bound *Binding
-	var held Binding
+	var held uint64
 	refuse := func(code string) {
 		// A digest changing back does not route the connection again (E6).
 		p.bindings.Refuse(connection, held, code)
@@ -214,11 +215,11 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, code, http.StatusServiceUnavailable)
 	}
 	if p.bindings != nil && connection != "" {
-		if b, refused, release, ok := p.bindings.Hold(connection); ok {
+		if b, refused, gen, release, ok := p.bindings.Hold(connection); ok {
 			// Refused requests slide the lifetime too, so the connection stays
 			// refused while nginx keeps it open (E7).
 			defer release()
-			held = b
+			held = gen
 			code := refused
 			if code == "" {
 				code = p.changed(b, applied)

@@ -6,6 +6,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -218,6 +219,31 @@ func TestE7BindingCapRefusesHandshakes(t *testing.T) {
 	}
 }
 
+// TestE7PerClientBindingCap: one client's attest-lb bindings are capped
+// below the store's bound, and another client still binds.
+func TestE7PerClientBindingCap(t *testing.T) {
+	b := NewBindings()
+	b.maxClient = 1
+	if err := b.bind("1.1", "client:a", routing.Binding{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.bind("1.2", "client:a", routing.Binding{}); !errors.Is(err, errClientBindingsFull) {
+		t.Fatalf("second binding for one client = %v, want %v", err, errClientBindingsFull)
+	}
+	if err := b.bind("1.1", "client:a", routing.Binding{}); err != nil {
+		t.Fatalf("rebind at the client's share = %v, want nil", err)
+	}
+	if err := b.bind("1.3", "client:b", routing.Binding{}); err != nil {
+		t.Fatalf("another client's binding = %v, want nil", err)
+	}
+	b.mu.Lock()
+	b.dropLocked("1.1", b.entries["1.1"])
+	b.mu.Unlock()
+	if err := b.bind("1.2", "client:a", routing.Binding{}); err != nil {
+		t.Fatalf("binding after the client's other binding dropped = %v, want nil", err)
+	}
+}
+
 // TestE6RefuseSkipsAReplacedBinding: a refusal recorded for a request that
 // held an earlier binding does not mark the binding a later handshake on the
 // same connection installed meanwhile.
@@ -225,23 +251,25 @@ func TestE6RefuseSkipsAReplacedBinding(t *testing.T) {
 	b := NewBindings()
 	first := routing.Binding{RouterDigest: "a"}
 	second := routing.Binding{RouterDigest: "b"}
-	if err := b.bind("1.1", first); err != nil {
+	if err := b.bind("1.1", "c", first); err != nil {
 		t.Fatal(err)
 	}
-	held, _, release, ok := b.Hold("1.1")
+	_, _, held, release, ok := b.Hold("1.1")
 	if !ok {
 		t.Fatal("Hold() = false, want true")
 	}
-	if err := b.bind("1.1", second); err != nil {
+	if err := b.bind("1.1", "c", second); err != nil {
 		t.Fatal(err)
 	}
 	b.Refuse("1.1", held, types.ErrorCodeRouterDigestChanged)
 	release()
-	if _, refused, _, _ := b.Hold("1.1"); refused != "" {
+	if _, refused, _, _, _ := b.Hold("1.1"); refused != "" {
 		t.Fatalf("replaced binding refused with %q, want the refusal dropped", refused)
 	}
-	b.Refuse("1.1", second, types.ErrorCodeRouterDigestChanged)
-	if _, refused, _, _ := b.Hold("1.1"); refused != types.ErrorCodeRouterDigestChanged {
+	_, _, current, release2, _ := b.Hold("1.1")
+	release2()
+	b.Refuse("1.1", current, types.ErrorCodeRouterDigestChanged)
+	if _, refused, _, _, _ := b.Hold("1.1"); refused != types.ErrorCodeRouterDigestChanged {
 		t.Fatalf("current binding refused with %q, want %q", refused, types.ErrorCodeRouterDigestChanged)
 	}
 }
@@ -250,14 +278,14 @@ func TestE7BindingIdleLifetime(t *testing.T) {
 	clock := &testClock{now: time.Now()}
 	b := NewBindings()
 	b.now = clock.Now
-	if err := b.bind("1.1", routing.Binding{}); err != nil {
+	if err := b.bind("1.1", "c", routing.Binding{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := b.bind("1.2", routing.Binding{}); err != nil {
+	if err := b.bind("1.2", "c", routing.Binding{}); err != nil {
 		t.Fatal(err)
 	}
 	clock.Advance(lbBindingIdle - time.Second)
-	_, _, release, ok := b.Hold("1.1")
+	_, _, _, release, ok := b.Hold("1.1")
 	if !ok {
 		t.Fatal("Hold() of a live binding = false, want true")
 	}
@@ -271,7 +299,7 @@ func TestE7BindingIdleLifetime(t *testing.T) {
 		t.Fatal("idle binding survived prune")
 	}
 	clock.Advance(lbBindingIdle + time.Second)
-	if _, _, _, ok := b.Hold("1.1"); ok {
+	if _, _, _, _, ok := b.Hold("1.1"); ok {
 		t.Fatal("Hold() of an idle binding = true, want it expired")
 	}
 }
@@ -282,26 +310,26 @@ func TestE7BindingHeldByARequestInFlight(t *testing.T) {
 	clock := &testClock{now: time.Now()}
 	b := NewBindings()
 	b.now = clock.Now
-	if err := b.bind("1.1", routing.Binding{RouterDigest: "D"}); err != nil {
+	if err := b.bind("1.1", "c", routing.Binding{RouterDigest: "D"}); err != nil {
 		t.Fatal(err)
 	}
-	_, _, release, ok := b.Hold("1.1")
+	_, _, _, release, ok := b.Hold("1.1")
 	if !ok {
 		t.Fatal("Hold() of a live binding = false, want true")
 	}
 	clock.Advance(3 * lbBindingIdle)
 	b.prune()
-	if err := b.bind("1.2", routing.Binding{}); err != nil { // prunes on insert
+	if err := b.bind("1.2", "c", routing.Binding{}); err != nil { // prunes on insert
 		t.Fatal(err)
 	}
-	if bound, _, again, ok := b.Hold("1.1"); !ok || bound.RouterDigest != "D" {
+	if bound, _, _, again, ok := b.Hold("1.1"); !ok || bound.RouterDigest != "D" {
 		t.Fatalf("Hold() during a long request = %+v, %v, want the binding kept", bound, ok)
 	} else {
 		again()
 	}
 	release()
 	clock.Advance(lbBindingIdle - time.Second)
-	if _, _, again, ok := b.Hold("1.1"); !ok {
+	if _, _, _, again, ok := b.Hold("1.1"); !ok {
 		t.Fatal("Hold() within the idle lifetime after the request ended = false, want true")
 	} else {
 		again()
@@ -314,11 +342,11 @@ func TestE7InsertPrunesExpiredBindings(t *testing.T) {
 	clock := &testClock{now: time.Now()}
 	b := NewBindings()
 	b.now = clock.Now
-	if err := b.bind("1.1", routing.Binding{}); err != nil {
+	if err := b.bind("1.1", "c", routing.Binding{}); err != nil {
 		t.Fatal(err)
 	}
 	clock.Advance(lbBindingIdle + time.Second)
-	if err := b.bind("1.2", routing.Binding{}); err != nil {
+	if err := b.bind("1.2", "c", routing.Binding{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := b.entries["1.1"]; ok {

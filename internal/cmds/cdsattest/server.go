@@ -103,6 +103,9 @@ const (
 	// maxLBBindings bounds the attest-lb bindings. At the bound a handshake is
 	// refused, never a binding dropped (E7).
 	maxLBBindings = 1 << 16
+	// maxLBBindingsPerClient is one client's share of them, the attest-pq
+	// per-client session cap, so one address cannot fill the store.
+	maxLBBindingsPerClient = maxSessionsPerClient
 	// maxConnectionIDBytes bounds the identifier nginx assigns ($pid.$connection),
 	// so a caller bypassing nginx cannot grow the store by its header size.
 	maxConnectionIDBytes = 64
@@ -623,9 +626,11 @@ func (s *Server) handleAttestLB(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Ahead of the report, as for attest-pq.
-	if connection != "" && !s.bindings.room(connection) {
-		writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeSessionsBusy, errBindingsFull.Error())
-		return
+	if connection != "" {
+		if err := s.bindings.room(connection, clientKey(r)); err != nil {
+			writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeSessionsBusy, err.Error())
+			return
+		}
 	}
 	servingLeafDER, err := s.servingLeafDER()
 	if err != nil {
@@ -663,7 +668,7 @@ func (s *Server) handleAttestLB(w http.ResponseWriter, r *http.Request) {
 		s.unboundOnce.Do(func() {
 			s.log.Warn("attest-lb handshake without " + routing.ConnectionHeader + ": its connection is not bound; binding needs the nginx relay to set the header")
 		})
-	} else if err := s.bindings.bind(connection, routing.Binding{RouteDigest: digest, RouterDigest: routerDigest}); err != nil {
+	} else if err := s.bindings.bind(connection, clientKey(r), routing.Binding{RouteDigest: digest, RouterDigest: routerDigest}); err != nil {
 		writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeSessionsBusy, err.Error())
 		return
 	}

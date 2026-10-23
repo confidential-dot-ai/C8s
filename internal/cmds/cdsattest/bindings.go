@@ -8,7 +8,10 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/routing"
 )
 
-var errBindingsFull = errors.New("too many attest-lb connections are bound; retry shortly")
+var (
+	errBindingsFull       = errors.New("too many attest-lb connections are bound; retry shortly")
+	errClientBindingsFull = errors.New("too many attest-lb connections are bound for this client; retry shortly")
+)
 
 // Bindings records, per public connection, what the attest-lb handshake that
 // arrived on it bound (E5). nginx names the connection (E8) and never reuses
@@ -19,15 +22,20 @@ var errBindingsFull = errors.New("too many attest-lb connections are bound; retr
 // longer than the idle lifetime (E7). The routing
 // listener reads it through routing.Bindings. It is safe for concurrent use.
 type Bindings struct {
-	mu      sync.Mutex
-	entries map[string]lbBinding
-	idle    time.Duration
-	max     int
-	now     func() time.Time
+	mu        sync.Mutex
+	entries   map[string]lbBinding
+	perClient map[string]int // client key -> its live bindings
+	idle      time.Duration
+	max       int
+	maxClient int
+	gen       uint64
+	now       func() time.Time
 }
 
 type lbBinding struct {
 	routing.Binding
+	client   string // the client key charged for the binding
+	gen      uint64 // distinguishes successive bindings of one connection
 	refused  string // the code a request on the connection was refused with
 	lastUsed time.Time
 	inFlight int
@@ -39,27 +47,27 @@ func (e lbBinding) expired(now time.Time, idle time.Duration) bool {
 
 // NewBindings returns an empty store.
 func NewBindings() *Bindings {
-	return &Bindings{entries: map[string]lbBinding{}, idle: lbBindingIdle, max: maxLBBindings, now: time.Now}
+	return &Bindings{entries: map[string]lbBinding{}, perClient: map[string]int{}, idle: lbBindingIdle, max: maxLBBindings, maxClient: maxLBBindingsPerClient, now: time.Now}
 }
 
-// Hold returns the live binding of connection and the code a request on it
-// was refused with, and keeps the binding until release, which restarts its
-// idle lifetime. The caller calls release once.
-func (b *Bindings) Hold(connection string) (bound routing.Binding, refused string, release func(), ok bool) {
+// Hold returns the live binding of connection, the code a request on it was
+// refused with and the binding's generation, and keeps the binding until
+// release, which restarts its idle lifetime. The caller calls release once.
+func (b *Bindings) Hold(connection string) (bound routing.Binding, refused string, gen uint64, release func(), ok bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	entry, ok := b.entries[connection]
 	if !ok {
-		return routing.Binding{}, "", nil, false
+		return routing.Binding{}, "", 0, nil, false
 	}
 	if entry.expired(b.now(), b.idle) {
-		delete(b.entries, connection)
-		return routing.Binding{}, "", nil, false
+		b.dropLocked(connection, entry)
+		return routing.Binding{}, "", 0, nil, false
 	}
 	entry.inFlight++
 	entry.lastUsed = b.now()
 	b.entries[connection] = entry
-	return entry.Binding, entry.refused, func() { b.release(connection) }, true
+	return entry.Binding, entry.refused, entry.gen, func() { b.release(connection) }, true
 }
 
 // release ends a Hold. A held entry is never pruned, and a handshake that
@@ -75,35 +83,53 @@ func (b *Bindings) release(connection string) {
 
 // Refuse records that a request on connection was refused with code; only a
 // new handshake on the connection clears it (E6).
-func (b *Bindings) Refuse(connection string, held routing.Binding, code string) {
+func (b *Bindings) Refuse(connection string, gen uint64, code string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	// A handshake that replaced the binding mid-request attested anew; the
-	// refusal belongs to the binding the request was checked against.
-	if entry, ok := b.entries[connection]; ok && entry.refused == "" && entry.Binding == held {
+	// refusal belongs to the generation the request was checked against.
+	if entry, ok := b.entries[connection]; ok && entry.refused == "" && entry.gen == gen {
 		entry.refused = code
 		b.entries[connection] = entry
 	}
 }
 
-// room reports whether bind would take connection. A connection already bound
-// is rebound in place.
-func (b *Bindings) room(connection string) bool {
+// room reports whether bind would take connection for client. A connection
+// already bound is rebound in place.
+func (b *Bindings) room(connection, client string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.roomLocked(connection)
+	return b.roomLocked(connection, client)
 }
 
 // bind records binding for connection, replacing the one an earlier handshake
 // on it recorded. A live binding is never dropped to admit another (E7).
-func (b *Bindings) bind(connection string, binding routing.Binding) error {
+func (b *Bindings) bind(connection, client string, binding routing.Binding) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if !b.roomLocked(connection) {
-		return errBindingsFull
+	if err := b.roomLocked(connection, client); err != nil {
+		return err
 	}
-	b.entries[connection] = lbBinding{Binding: binding, lastUsed: b.now(), inFlight: b.entries[connection].inFlight}
+	if old, ok := b.entries[connection]; ok {
+		b.perClient[old.client]--
+		if b.perClient[old.client] == 0 {
+			delete(b.perClient, old.client)
+		}
+	}
+	b.perClient[client]++
+	b.gen++
+	b.entries[connection] = lbBinding{Binding: binding, client: client, gen: b.gen, lastUsed: b.now(), inFlight: b.entries[connection].inFlight}
 	return nil
+}
+
+// dropLocked removes connection's binding and its client charge. The caller
+// holds b.mu.
+func (b *Bindings) dropLocked(connection string, entry lbBinding) {
+	delete(b.entries, connection)
+	b.perClient[entry.client]--
+	if b.perClient[entry.client] <= 0 {
+		delete(b.perClient, entry.client)
+	}
 }
 
 // pruneOnInsert is how many entries an insert checks for expiry. Map order
@@ -117,21 +143,32 @@ func (b *Bindings) pruneSomeLocked() {
 			return
 		}
 		if entry.expired(now, b.idle) {
-			delete(b.entries, connection)
+			b.dropLocked(connection, entry)
 		}
 	}
 }
 
-// roomLocked prunes once: a few entries below the bound, fully only at it,
-// since a full sweep per handshake would cost more than the periodic one. The
-// caller holds b.mu.
-func (b *Bindings) roomLocked(connection string) bool {
-	if _, ok := b.entries[connection]; ok || len(b.entries) < b.max {
+// roomLocked prunes once: a few entries below the bounds, fully only at one,
+// since a full sweep per handshake would cost more than the periodic one. A
+// rebind takes no room. The client's share is checked before the global
+// bound, so one client cannot fill the store (E7). The caller holds b.mu.
+func (b *Bindings) roomLocked(connection, client string) error {
+	if old, ok := b.entries[connection]; ok && old.client == client {
 		b.pruneSomeLocked()
-		return true
+		return nil
+	}
+	if b.perClient[client] < b.maxClient && len(b.entries) < b.max {
+		b.pruneSomeLocked()
+		return nil
 	}
 	b.pruneLocked()
-	return len(b.entries) < b.max
+	if b.perClient[client] >= b.maxClient {
+		return errClientBindingsFull
+	}
+	if len(b.entries) >= b.max {
+		return errBindingsFull
+	}
+	return nil
 }
 
 // prune drops the bindings idle past their lifetime.
@@ -145,7 +182,7 @@ func (b *Bindings) pruneLocked() {
 	now := b.now()
 	for connection, entry := range b.entries {
 		if entry.expired(now, b.idle) {
-			delete(b.entries, connection)
+			b.dropLocked(connection, entry)
 		}
 	}
 }
