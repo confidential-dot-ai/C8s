@@ -52,16 +52,13 @@ const (
 
 // BundleOptions describes a new cluster's launch bundle.
 type BundleOptions struct {
-	Dir          string
-	ClusterID    string
-	ManifestPath string
-	// PeerImageManifests are images, besides the booted one, every node of
-	// the bundle accepts for its peers and CDS: a planned rollout.
-	PeerImageManifests []string
-	VCPUs              int
-	ServerName         string
-	ServerAddress      string
-	Agents             []string
+	Dir           string
+	ClusterID     string
+	ManifestPath  string
+	VCPUs         int
+	ServerName    string
+	ServerAddress string
+	Agents        []string
 	// CDSNodes are the cds-role nodes of a highly available CDS. Setting any
 	// makes the bundle generate cds.key and decree.key and declare cdsHA.
 	CDSNodes      []string
@@ -93,16 +90,6 @@ func NewBundle(opts BundleOptions) (err error) {
 	image, err := imageFromManifest(opts.ManifestPath, opts.VCPUs)
 	if err != nil {
 		return err
-	}
-	var peerImages []Image
-	for _, m := range opts.PeerImageManifests {
-		peer, err := imageFromManifest(m, opts.VCPUs)
-		if err != nil {
-			return fmt.Errorf("--peer-image-manifest: %w", err)
-		}
-		if !sameImage(peer, image) {
-			peerImages = append(peerImages, peer)
-		}
 	}
 	var workloads string
 	if opts.WorkloadsPath != "" {
@@ -145,7 +132,6 @@ func NewBundle(opts BundleOptions) (err error) {
 		ClusterID:               opts.ClusterID,
 		Role:                    Server,
 		Image:                   image,
-		PeerImages:              peerImages,
 		Node:                    Node{Name: opts.ServerName},
 		RKE2:                    RKE2{ServerToken: serverToken, AgentToken: agentToken, NodePassword: serverPassword},
 		Server:                  ServerConfig{Address: opts.ServerAddress, OperatorPublicKey: serverPub},
