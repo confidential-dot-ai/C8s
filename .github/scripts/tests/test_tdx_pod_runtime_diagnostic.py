@@ -48,6 +48,24 @@ class DiagnosticTests(unittest.TestCase):
         # False flags must not turn the production validator into a dev pin selector.
         with self.assertRaises(RuntimeError): diagnostic.acceptance.validate_pins(dict(self.production, diagnosticOnly=False))
 
+    def test_console_authority_uses_exact_attributes_and_fails_closed(self):
+        response = {"status": {"allowed": True, "reason": "existing scoped role"}}
+        with patch.object(diagnostic, "kube", return_value=response) as kube:
+            self.task.check_console_authority()
+        self.assertEqual(kube.call_args.args, ("create", "--raw", "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews", "-f", "-"))
+        request = json.loads(kube.call_args.kwargs["data"])
+        self.assertEqual(request["spec"]["resourceAttributes"], {"namespace": "confai-images", "verb": "get", "group": "subresources.kubevirt.io", "resource": "virtualmachineinstances", "subresource": "console"})
+        for status in ({"allowed": False, "denied": True, "reason": "existing role denies console", "evaluationError": "x" * 2000},
+                       {"allowed": False, "reason": "token=canary"}, {"allowed": True, "denied": True},
+                       {}, {"allowed": "true"}, {"allowed": True, "denied": "false"}, None):
+            with patch.object(diagnostic, "kube", return_value={"status": status}):
+                with self.assertRaises(RuntimeError): self.task.check_console_authority()
+            report = (self.task.evidence / "console-authority.json").read_text()
+            self.assertNotIn("canary", report)
+            self.assertLessEqual(len(json.loads(report).get("evaluationError", "")), 1024)
+        with patch.object(diagnostic, "kube", side_effect=RuntimeError("command failed: kubectl (exit 1)")):
+            with self.assertRaises(RuntimeError): self.task.check_console_authority()
+
     def test_projection_drops_secrets_noise_and_unrequested_fields(self):
         unit = diagnostic.UNITS[1]
         safe = {"kind": "journal", "unit": unit, "time": "1", "message": "NRI denied unapproved image"}

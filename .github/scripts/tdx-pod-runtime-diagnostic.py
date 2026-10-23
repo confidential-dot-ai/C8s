@@ -54,7 +54,7 @@ exit 0
 
 def public_failure(error):
     # Only our static failure vocabulary is publishable; arbitrary exception text is private.
-    safe = {"missing scoped VMI console authority", "missing native runner credentials",
+    safe = {"missing scoped VMI console authority", "malformed console authorization response", "missing native runner credentials",
             "owned diagnostic VMI is not running", "diagnostic VMI replaced during console",
             "console timed out", "console output exceeded byte limit", "console frame missing or duplicated",
             "console frame order differs", "console command receipts incomplete", "phase deadline reached",
@@ -190,9 +190,28 @@ class RuntimeDiagnostic(acceptance.Acceptance):
         if raw is not None:
             return acceptance.validate_manifest_structure(raw, self.pins)
 
+    def check_console_authority(self):
+        # This group has only subresources. kubectl's discovery fallback can lose
+        # the API group when asked to resolve the nonexistent base resource.
+        attributes = {"namespace": NS, "verb": "get", "group": "subresources.kubevirt.io",
+                      "resource": "virtualmachineinstances", "subresource": "console"}
+        review = {"apiVersion": "authorization.k8s.io/v1", "kind": "SelfSubjectAccessReview",
+                  "spec": {"resourceAttributes": attributes}}
+        response = kube("create", "--raw", "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews", "-f", "-", data=json.dumps(review).encode())
+        status = response.get("status") if isinstance(response, dict) else None
+        require(isinstance(status, dict) and type(status.get("allowed")) is bool and type(status.get("denied", False)) is bool,
+                "malformed console authorization response")
+        decision = {"attributes": attributes, "allowed": status["allowed"], "denied": status.get("denied", False)}
+        for field in ("reason", "evaluationError"):
+            detail = status.get(field, "")
+            require(isinstance(detail, str), "malformed console authorization response")
+            decision[field] = "sensitive detail omitted" if SENSITIVE.search(detail) else "".join(c for c in detail if c.isprintable())[:1024]
+        write(self.evidence / "console-authority.json", decision)
+        require(decision["allowed"] is True and decision["denied"] is False, "missing scoped VMI console authority")
+
     def prepare(self):
         self.validate_image()
-        require(kube("auth", "can-i", "get", "virtualmachineinstances.subresources.kubevirt.io", "--subresource=console", raw=True).strip() == b"yes", "missing scoped VMI console authority")
+        self.check_console_authority()
         # tokenFile avoids copying or exposing the in-cluster service-account token.
         service_account = Path("/var/run/secrets/kubernetes.io/serviceaccount")
         require(all((service_account / name).is_file() for name in ("ca.crt", "token")), "missing native runner credentials")
