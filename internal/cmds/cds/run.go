@@ -313,16 +313,16 @@ func run(cfg config) error {
 		secretsOperator *secrets.OperatorHandler
 		secretsExplain  *secrets.ExplainHandler
 	)
+	// One store behind every secrets door (workload reads, operator writes,
+	// and the c8s_dev test route); in HA mode it writes through the log.
+	var secretsStore secrets.Store = secretsMem
+	if haNode != nil {
+		secretsStore = secrets.ReplicatedStore{MemoryStore: secretsMem, Repl: haNode}
+	}
 	if enabled, why := secretsEnabled(cfg, sandboxDigests, inventoryHosts); enabled {
-		// One store behind both handlers: an operator write and a workload read
-		// are two doors onto the same paths.
-		var store secrets.Store = secretsMem
-		if haNode != nil {
-			store = secrets.ReplicatedStore{MemoryStore: secretsMem, Repl: haNode}
-		}
 		policy := secrets.NewCachedPolicy(&allowlistStore)
 		secretsHandler = &secrets.Handler{
-			Store:          store,
+			Store:          secretsStore,
 			Challenges:     &secretsChallenges,
 			Inventory:      sandboxDigests,
 			Bindings:       sandboxBindings,
@@ -331,7 +331,7 @@ func run(cfg config) error {
 			Logger:         slog.Default(),
 		}
 		secretsOperator = &secrets.OperatorHandler{
-			Store:        store,
+			Store:        secretsStore,
 			Authorize:    operatorAuthorizer,
 			MaxBodyBytes: allowlistWriteBodyCap,
 			Logger:       slog.Default(),
@@ -400,15 +400,14 @@ func run(cfg config) error {
 	if haNode != nil {
 		// Issuance follows the replica through mesh (haMeshCA): it stops while
 		// the replica is not serving and follows renewals and rotations.
-		deps.HAStatus = haStatus(haNode)
+		deps.HAStatus = serveJSON(haNode.Status)
 		deps.HAPins = haPins(haNode)
-		deps.HADecrees = haDecrees(haNode)
+		deps.HADecrees = serveJSON(haNode.Decrees)
 		// Ready also waits for the voter seats to be full again (see
 		// cdsha.Node.Ready), so a rolling restart never takes the majority.
 		ready := readinessFn(checker.Ready, mesh, cfg.minCAValidity)
 		deps.ReadyFn = func() bool { return haNode.Ready() && ready() }
-		var store secrets.Store = secrets.ReplicatedStore{MemoryStore: secretsMem, Repl: haNode}
-		router = haGate(haNode.Serving, devHARoutes(newRouter(deps), store, secretsMem, writeAuthorizer, deps.SecretsOperator == nil))
+		router = haGate(haNode.Serving, devHARoutes(newRouter(deps), secretsStore, secretsMem, writeAuthorizer, deps.SecretsOperator == nil))
 	} else {
 		router = newRouter(deps)
 	}
