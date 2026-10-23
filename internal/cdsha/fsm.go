@@ -2,6 +2,7 @@ package cdsha
 
 import (
 	"bytes"
+	"cmp"
 	"crypto/ecdsa"
 	"crypto/x509"
 	"encoding/json"
@@ -212,7 +213,7 @@ func (f *FSM) Apply(l *raft.Log) any {
 	if err := json.Unmarshal(l.Data, &e); err != nil {
 		return f.stop(fmt.Errorf("decode log entry %d: %w", l.Index, err))
 	}
-	if formatOrBase(e.Format) > f.readable {
+	if cmp.Or(e.Format, baseFormat) > f.readable {
 		return f.stop(fmt.Errorf("%w: entry %d needs format %d, this replica reads up to %d", ErrNewerFormat, l.Index, e.Format, f.readable))
 	}
 	res := f.apply(e)
@@ -499,7 +500,7 @@ func decodeSnapshot(r io.Reader, readable uint32, headOnly bool) (snapshot, erro
 	if err := dec.Decode(&sn); err != nil {
 		return snapshot{}, fmt.Errorf("decode snapshot: %w", err)
 	}
-	switch v, c := formatOrBase(sn.Format), sn.Core.format(); {
+	switch v, c := cmp.Or(sn.Format, baseFormat), sn.Core.format(); {
 	case v > readable || c > readable:
 		return snapshot{}, fmt.Errorf("%w: snapshot format %d, cluster format %d, this replica reads up to %d", ErrNewerFormat, v, c, readable)
 	case v < baseFormat || c < baseFormat:
