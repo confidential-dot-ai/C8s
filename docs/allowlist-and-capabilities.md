@@ -554,23 +554,38 @@ entry matches reaches directly, uncaptured.
   exit is listed once. The exits are part of the signed canonical document,
   so they are visible to anyone reading `GET /allowlist`. An entry without
   exits carries no `egress` key, so its bytes and digest do not change.
-- The node grants a pod its entry's exits once the pod's workload containers
-  match that entry, by the same rule secret release uses (the injected mesh
-  and credential containers are left out). From then on every workload
-  container of that pod must keep that match; one that does not is refused.
-  The exits are fixed for the pod's life: a changed or removed exit applies
-  when the pod is recreated.
+- Write-time validation also refuses ranges that are not unicast hosts: `/0`, loopback, link-local, multicast, reserved and
+  broadcast, unspecified, and the IPv6 forms that stand for IPv4 addresses
+  (IPv4-mapped, NAT64, 6to4). The range is stored in its canonical text
+  (RFC 5952 for IPv6: lower case, zeros compressed).
+- The node decides a pod's exits from the set of its workload containers (the
+  injected mesh and credential containers are left out), so the outcome does
+  not depend on the order they start in. An entry with exits claims a pod once
+  the pod runs all of that entry's main containers and no other entry admits
+  every container of the pod that this entry admits. A claimed pod gets the
+  entry's exits and must run that entry alone: a container the entry does not
+  declare is refused whenever it starts, before or after the entry's own. A
+  claimed pod with nothing foreign is the entry's unique match, by the same
+  rule secret release uses.
+- If another entry also admits an exit entry's containers (for example the
+  same image in a "collector + sidecar" entry), that pod is never claimed: it
+  gets no exits and nothing is refused. The node logs it.
+- The exits are fixed for the pod's life, and they follow the allowlist
+  version the node had pulled when the pod was claimed (logged with the
+  grant). A changed or removed exit applies when the pod is recreated.
 - The node refuses an exit that overlaps the cluster's pod or Service ranges
-  from its measured mesh policy, or a loopback, link-local or multicast
-  range; a node whose policy names no cluster ranges grants no exit. The
-  container whose start would have completed the match is refused with the
-  reason.
+  from its measured mesh policy, contains the node's own address, the
+  resolver, CDS or any other address a platform role is bound to (on any
+  port), or a loopback, link-local or multicast range. A node that cannot name
+  its cluster ranges or its own address grants no exit. The container whose
+  start would have granted the exit is refused with the reason. These checks
+  apply in audit mode too.
 - An exit is a way out of the TEE for whatever the workload sends. It is not
   inspected: whether its payload is acceptable (for example, telemetry with
   no customer content, sent to a relay the operator controls) is for the
   operator to decide and for relying parties to weigh.
-- Exits open when the match completes, so an init container that runs
-  before every main container exists cannot use them.
+- Exits open when the pod is claimed, so an init container that runs before
+  every main container exists cannot use them.
 
 ## Host privilege
 

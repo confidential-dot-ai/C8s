@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"os"
 	"slices"
 	"strings"
@@ -228,6 +229,7 @@ func newPlugin(
 	}
 	p.boot = newBootGate(cfg, logger)
 	p.mesh = newMeshGate(*cfg.Mesh, logger)
+	p.mesh.nodeAddress = func() (netip.Addr, error) { return nodeOwnAddress(cfg) }
 	logger.Info("mesh gate enabled",
 		"trusted_enforcement", cfg.requiresTrustedMeshEnforcement(),
 		"exempt_namespaces", cfg.Mesh.ExemptNamespaces)
@@ -1122,6 +1124,11 @@ func (p *plugin) StartContainer(ctx context.Context, pod *api.PodSandbox, ctr *a
 		if err := p.admitWhileInitializing(ctx, cfg, pod, ctr, imageRef); err != nil {
 			return err
 		}
+		unlock := p.mesh.lockStarts(pod)
+		defer unlock()
+		if err := p.bindExits(ctx, pod, ctr, imageRef); err != nil {
+			return p.denyContainer(pod.GetId(), fmt.Errorf("mesh gate: container %s of pod %s/%s: %w", ctr.GetName(), pod.GetNamespace(), pod.GetName(), err))
+		}
 		// INVARIANT: the gate holds a member pod whether or not the first
 		// pull has settled, so the start that opens it is recorded on both
 		// paths. A role comes from the base alone, which is loaded at boot.
@@ -1137,6 +1144,8 @@ func (p *plugin) StartContainer(ctx context.Context, pod *api.PodSandbox, ctr *a
 	if verdict == verdictDeny && cfg.Policy.Mode != ModeAudit {
 		return p.denyContainer(pod.GetId(), fmt.Errorf("%s", reason))
 	}
+	unlock := p.mesh.lockStarts(pod)
+	defer unlock()
 	if err := p.bindExits(ctx, pod, ctr, imageRef); err != nil {
 		return p.denyContainer(pod.GetId(), fmt.Errorf("mesh gate: container %s of pod %s/%s: %w", ctr.GetName(), pod.GetNamespace(), pod.GetName(), err))
 	}

@@ -62,6 +62,7 @@ func TestPolicyRefusesWhatARuleCannotExpress(t *testing.T) {
 		{"exit to multicast", func(p *Policy) { p.Exits[0].Range = netip.MustParsePrefix("239.0.0.0/8") }},
 		{"exit to broadcast", func(p *Policy) { p.Exits[0].Range = netip.MustParsePrefix("255.255.255.255/32") }},
 		{"exit to IPv6 link-local", func(p *Policy) { p.Exits[0].Range = netip.MustParsePrefix("fe80::/64") }},
+		{"exit to NAT64", func(p *Policy) { p.Exits[0].Range = netip.MustParsePrefix("64:ff9b::/96") }},
 		{"4-in-6 exit", func(p *Policy) { p.Exits[0].Range = netip.MustParsePrefix("::ffff:10.43.0.2/128") }},
 		{"server egress port with no cluster ranges to exclude", func(p *Policy) {
 			p.Server = serverPolicy().Server
