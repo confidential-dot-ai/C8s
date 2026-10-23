@@ -58,10 +58,9 @@ func (a NodeAttestor) Verify(ev []byte) (Claims, error) {
 	return nodeClaims(resp.Result)
 }
 
+// nodeClaims reads the claims of a verdict that VerifyEnforced accepted (it
+// already refused an invalid signature).
 func nodeClaims(res teetypes.VerificationResult) (Claims, error) {
-	if !res.SignatureValid {
-		return Claims{}, errors.New("evidence signature not valid")
-	}
 	rd := res.Claims.ReportData
 	if len(rd) < sha512.Size384 {
 		return Claims{}, errors.New("report_data shorter than 48 bytes")

@@ -12,7 +12,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -178,7 +177,7 @@ func (s KubeDecrees) PutBackup(ctx context.Context, b Backup) error {
 	man := backupManifest{Meta: b.Meta, SHA256: hex.EncodeToString(sum[:]),
 		Gen: fmt.Sprintf("e%d-i%d-%s", b.Meta.Epoch, b.Meta.Index, hex.EncodeToString(nonce[:]))}
 	labels := map[string]string{LabelBackup: s.ClusterID}
-	for off := 0; off < len(b.Ciphertext) || man.Parts == 0; off += backupPartBytes {
+	for off := 0; off < len(b.Ciphertext); off += backupPartBytes {
 		end := min(off+backupPartBytes, len(b.Ciphertext))
 		cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: man.partName(s.ClusterID, man.Parts), Namespace: s.Namespace,
 			Labels: labels}, BinaryData: map[string][]byte{keyPart: b.Ciphertext[off:end]}}
@@ -253,7 +252,7 @@ func BackupFromConfigMaps(clusterID string, cms []corev1.ConfigMap) (Backup, err
 	if err := json.Unmarshal([]byte(mcm.Data[keyBackup]), &man); err != nil {
 		return Backup{}, fmt.Errorf("backup manifest: %w", err)
 	}
-	if man.Meta.ClusterID != clusterID || man.Parts < 1 || man.Gen == "" {
+	if man.Meta.ClusterID != clusterID || man.Parts < 1 {
 		return Backup{}, errors.New("backup manifest is for another cluster or names no parts")
 	}
 	var ct []byte
@@ -276,6 +275,5 @@ func (s KubeDecrees) GetBackup(ctx context.Context) (Backup, error) {
 	if err != nil {
 		return Backup{}, err
 	}
-	sort.Slice(list.Items, func(i, j int) bool { return list.Items[i].Name < list.Items[j].Name })
 	return BackupFromConfigMaps(s.ClusterID, list.Items)
 }
