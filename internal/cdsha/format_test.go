@@ -18,11 +18,12 @@ import (
 // rest of the group does not have.
 func TestFSMStopsOnEntryItCannotRead(t *testing.T) {
 	_, opPub := operatorKey(t)
-	for name, e := range map[string]Entry{
-		"newer format": {Kind: KindSecret, Format: Format + 1, Secret: &secrets.Command{Op: secrets.OpPut, Path: "/p", Value: []byte("v")}},
-		"unknown kind": {Kind: "from-the-future"},
-		"newer agreed": {Kind: KindFormat, SetFormat: Format + 1},
-		"no payload":   {Kind: KindSecret},
+	for name, e := range map[string]any{
+		"newer format": Entry{Kind: KindSecret, Format: Format + 1, Secret: &secrets.Command{Op: secrets.OpPut, Path: "/p", Value: []byte("v")}},
+		"unknown kind": Entry{Kind: "from-the-future"},
+		"newer agreed": Entry{Kind: KindFormat, SetFormat: Format + 1},
+		"no payload":   Entry{Kind: KindSecret},
+		"undecodable":  json.RawMessage("[1]"),
 	} {
 		t.Run(name, func(t *testing.T) {
 			al, sec, led := testStores(t)
@@ -136,20 +137,5 @@ func TestFormatRisesOnlyWhenEveryMemberReadsIt(t *testing.T) {
 	}
 	if st := l.node.Status(); len(st.Voters)+len(st.NonVoters) != 3 {
 		t.Fatalf("membership changed: %+v", st)
-	}
-}
-
-// An entry that does not decode stops the replica too.
-func TestFSMStopsOnUndecodableEntry(t *testing.T) {
-	_, opPub := operatorKey(t)
-	al, sec, led := testStores(t)
-	f := NewFSM(PreGenesis(testCluster, opPub), al, sec, led)
-	if _, ok := f.Apply(&raft.Log{Index: 1, Type: raft.LogCommand, Data: []byte("{")}).(error); !ok || f.Stuck() == "" {
-		t.Fatal("undecodable entry did not stop the replica")
-	}
-	// Non-command entries (configuration, barriers) are not the FSM's.
-	g := NewFSM(PreGenesis(testCluster, opPub), al, sec, led)
-	if res := g.Apply(&raft.Log{Index: 2, Type: raft.LogConfiguration}); res != nil || g.Stuck() != "" || g.AppliedIndex() != 2 {
-		t.Fatalf("configuration entry: %v %q", res, g.Stuck())
 	}
 }

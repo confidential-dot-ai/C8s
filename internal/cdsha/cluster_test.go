@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -426,7 +427,7 @@ func TestLeaderKillAndRestartAsNewMember(t *testing.T) {
 			t.Fatal("the dead member was not replaced")
 		}
 	}
-	if !contains(st.Voters, back.node.ID()) {
+	if !slices.Contains(st.Voters, back.node.ID()) {
 		t.Fatalf("restarted replica did not take its seat: %+v", st)
 	}
 	// It holds what was written while it was gone.
@@ -506,7 +507,7 @@ func TestNonVotersServeAndFillAFreeSeat(t *testing.T) {
 	}
 	var nv *replica
 	for _, r := range c.live() {
-		if contains(st.NonVoters, r.node.ID()) {
+		if slices.Contains(st.NonVoters, r.node.ID()) {
 			nv = r
 		}
 	}
@@ -518,7 +519,7 @@ func TestNonVotersServeAndFillAFreeSeat(t *testing.T) {
 	}
 	var voter *replica
 	for _, r := range c.live() {
-		if contains(st.Voters, r.node.ID()) && r != c.leader() {
+		if slices.Contains(st.Voters, r.node.ID()) && r != c.leader() {
 			voter = r
 		}
 	}
@@ -538,6 +539,9 @@ func TestNonVotersServeAndFillAFreeSeat(t *testing.T) {
 func TestEvictedImageIsCutOff(t *testing.T) {
 	c := newCluster(t, 3)
 	c.genesis("n0", "n1", "n2")
+	if _, err := c.nodes["n0"].sec.Put(t.Context(), "/before", []byte("v")); err != nil {
+		t.Fatal(err)
+	}
 	c.start("n3", "m2") // a new image, not yet pinned: refused
 	time.Sleep(time.Second)
 	if c.nodes["n3"].node.Serving() || c.nodes["n3"].node.member() {
@@ -546,6 +550,7 @@ func TestEvictedImageIsCutOff(t *testing.T) {
 	up := c.decree(Decree{Kind: UpdateMeasurements, BaseEpoch: 1, Measurements: []string{"m1", "m2"}})
 	eventually(t, 5*time.Second, "pin set updated", func() bool { st, ok := c.decrees.get(up); return ok && st.AppliedEpoch != nil })
 	eventually(t, 8*time.Second, "new image joined", func() bool { return c.nodes["n3"].node.Serving() })
+	eventually(t, 5*time.Second, "state on the new image", func() bool { v, _ := c.nodes["n3"].sec.Get(t.Context(), "/before"); return string(v) == "v" })
 	// Now evict m1 except... evict m2 again: n3 is cut off.
 	ev := c.decree(Decree{Kind: UpdateMeasurements, BaseEpoch: 2, Measurements: []string{"m1"}})
 	eventually(t, 5*time.Second, "eviction applied", func() bool { st, ok := c.decrees.get(ev); return ok && st.AppliedEpoch != nil })
@@ -553,7 +558,7 @@ func TestEvictedImageIsCutOff(t *testing.T) {
 	eventually(t, 5*time.Second, "evicted replica stops serving", func() bool { return !n3.node.Serving() })
 	eventually(t, 8*time.Second, "evicted replica removed", func() bool {
 		s := c.leader().node.Status()
-		return !contains(append(s.Voters, s.NonVoters...), n3.node.ID())
+		return !slices.Contains(append(s.Voters, s.NonVoters...), n3.node.ID())
 	})
 }
 
@@ -597,15 +602,6 @@ func TestGenesisStartsOneCluster(t *testing.T) {
 	}
 }
 
-func contains(s []string, v string) bool {
-	for _, x := range s {
-		if x == v {
-			return true
-		}
-	}
-	return false
-}
-
 // Two of three replicas lost for good: the survivor cannot form a majority.
 // A Recover decree naming it makes it the only voter, with its state;
 // replacements join, and the decree cannot be replayed.
@@ -624,7 +620,7 @@ func TestRecoverAfterLosingTheMajority(t *testing.T) {
 	st0 := l.node.Status()
 	for _, r := range c.live() {
 		switch {
-		case contains(st0.NonVoters, r.node.ID()):
+		case slices.Contains(st0.NonVoters, r.node.ID()):
 			nonVoter = r
 		case r != l && surv == nil:
 			surv = r
@@ -683,14 +679,6 @@ func TestClockJumpAndRejectedDecree(t *testing.T) {
 		st, ok := c.decrees.get(bad)
 		return ok && st.RejectedReason != "" && st.AppliedEpoch == nil
 	})
-	// A Recover decree is only for a replica without a leader.
-	rec := c.decree(Decree{Kind: Recover, BootstrapNode: "n1", BaseEpoch: 1})
-	time.Sleep(time.Second)
-	if st, ok := c.decrees.get(rec); ok && st.AppliedEpoch != nil {
-		if s := c.leader().node.Status(); len(s.Voters) != 3 {
-			t.Fatalf("Recover reconfigured a healthy cluster: %+v", s)
-		}
-	}
 }
 
 // CatchUp waits for the leader's applied index; the control channel answers

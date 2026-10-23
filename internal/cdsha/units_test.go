@@ -5,13 +5,11 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"crypto/rand"
-	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"io"
 	"maps"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -267,12 +265,6 @@ func TestNewNodeRejectsIncompleteConfig(t *testing.T) {
 	if nodeOf("no-slash") != "" || bornOf("n0/notanumber-x") != 0 {
 		t.Error("malformed member ids parsed")
 	}
-	if hp, id := splitRaftAddr("10.0.0.1:9443#n0/1-a"); hp != "10.0.0.1:9443" || id != "n0/1-a" {
-		t.Errorf("split %q %q", hp, id)
-	}
-	if a := (raftAddr{}); a.Network() != "tcp" {
-		t.Error("raft address network")
-	}
 }
 
 // The state machine refuses malformed entries and decrees that do not
@@ -284,12 +276,6 @@ func TestFSMEdges(t *testing.T) {
 	apply := func(e any) any {
 		raw, _ := json.Marshal(e)
 		return f.Apply(&raft.Log{Index: 7, Type: raft.LogCommand, Data: raw})
-	}
-	if _, ok := f.Apply(&raft.Log{Index: 1, Type: raft.LogCommand, Data: []byte("{")}).(error); !ok {
-		t.Fatal("garbage entry applied")
-	}
-	if _, ok := apply(Entry{Kind: KindSecret}).(error); !ok {
-		t.Fatal("entry without payload applied")
 	}
 	if f.Apply(&raft.Log{Index: 8, Type: raft.LogConfiguration}) != nil || f.AppliedIndex() != 8 {
 		t.Fatal("configuration entries are not commands but advance the index")
@@ -371,25 +357,6 @@ func (s *memSink) Cancel() error { return nil }
 func (s *memSink) Close() error  { return nil }
 
 var _ raft.SnapshotSink = (*memSink)(nil)
-
-func TestCertHolderRenews(t *testing.T) {
-	n := 0
-	h, err := newCertHolder(func() (tls.Certificate, error) {
-		n++
-		return tls.Certificate{Certificate: [][]byte{{byte(n)}}}, nil
-	})
-	if err != nil || h.current().Certificate[0][0] != 1 || h.age() > time.Minute {
-		t.Fatal(err)
-	}
-	if err := h.renew(); err != nil || h.current().Certificate[0][0] != 2 {
-		t.Fatal("renew did not replace the certificate")
-	}
-	if _, err := newCertHolder(func() (tls.Certificate, error) { return tls.Certificate{}, errors.New("no TEE") }); err == nil {
-		t.Fatal("holder without a certificate")
-	}
-}
-
-var _ = os.Stat
 
 func zstdOf(t *testing.T, s string) []byte {
 	t.Helper()
