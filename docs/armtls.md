@@ -311,11 +311,13 @@ A failed chain is never retried against the leaf's embedded evidence, so a
 self-signed peer and a peer from another mesh CA both fail.
 
 Either role may also set `AcceptPeer`, which runs on the identity the chain
-path read — the sandbox ID, the CA-vouched matched workload name and the
-purpose required — once that verification passed and before any application
-byte moves. An error there fails the handshake. The router's routing sidecar
-sets it: the backend of a route must be the workload the signed manifest
-names, and a leaf CDS stamped no workload on names none.
+path read — the sandbox ID, the CA-vouched matched workload name with its
+allowlist version and digest, and the purpose required — once that
+verification passed and before any application byte moves. An error there
+fails the handshake. The router's routing sidecar sets it: the backend of a
+route must be the workload the signed manifest names, stamped under the
+allowlist digest on the router's own leaf, and a leaf CDS stamped no workload
+on names none.
 
 This profile authenticates member-to-member traffic only: a credential client
 reaches CDS on the evidence path, and the router is itself a member. Its
