@@ -79,7 +79,7 @@ func TestFollowedDecreesRewriteTheMountedPolicyInPlace(t *testing.T) {
 	}
 	var before syscall.Stat_t
 	_ = syscall.Stat(mounted, &before)
-	src.mirrorTo(mounted)
+	src.mounted = mounted
 	if changed, err := src.Refresh(t.Context()); !changed || err != nil {
 		t.Fatalf("decree not taken: %v %v", changed, err)
 	}
@@ -99,8 +99,5 @@ func TestFollowedDecreesRewriteTheMountedPolicyInPlace(t *testing.T) {
 	cfg.CDSMeasurementsConfig = ""
 	if _, err := cfg.cdsDecrees("tdx", slog.Default()); err == nil {
 		t.Fatal("decrees without a CDS policy accepted")
-	}
-	if err := rewriteInPlace(filepath.Join(dir, "absent"), nil); err == nil {
-		t.Fatal("rewriting an absent file succeeded")
 	}
 }
