@@ -75,10 +75,12 @@ func (b *Bindings) release(connection string) {
 
 // Refuse records that a request on connection was refused with code; only a
 // new handshake on the connection clears it (E6).
-func (b *Bindings) Refuse(connection, code string) {
+func (b *Bindings) Refuse(connection string, held routing.Binding, code string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if entry, ok := b.entries[connection]; ok && entry.refused == "" {
+	// A handshake that replaced the binding mid-request attested anew; the
+	// refusal belongs to the binding the request was checked against.
+	if entry, ok := b.entries[connection]; ok && entry.refused == "" && entry.Binding == held {
 		entry.refused = code
 		b.entries[connection] = entry
 	}

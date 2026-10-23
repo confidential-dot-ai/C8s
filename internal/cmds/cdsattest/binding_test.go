@@ -218,6 +218,34 @@ func TestE7BindingCapRefusesHandshakes(t *testing.T) {
 	}
 }
 
+// TestE6RefuseSkipsAReplacedBinding: a refusal recorded for a request that
+// held an earlier binding does not mark the binding a later handshake on the
+// same connection installed meanwhile.
+func TestE6RefuseSkipsAReplacedBinding(t *testing.T) {
+	b := NewBindings()
+	first := routing.Binding{RouterDigest: "a"}
+	second := routing.Binding{RouterDigest: "b"}
+	if err := b.bind("1.1", first); err != nil {
+		t.Fatal(err)
+	}
+	held, _, release, ok := b.Hold("1.1")
+	if !ok {
+		t.Fatal("Hold() = false, want true")
+	}
+	if err := b.bind("1.1", second); err != nil {
+		t.Fatal(err)
+	}
+	b.Refuse("1.1", held, types.ErrorCodeRouterDigestChanged)
+	release()
+	if _, refused, _, _ := b.Hold("1.1"); refused != "" {
+		t.Fatalf("replaced binding refused with %q, want the refusal dropped", refused)
+	}
+	b.Refuse("1.1", second, types.ErrorCodeRouterDigestChanged)
+	if _, refused, _, _ := b.Hold("1.1"); refused != types.ErrorCodeRouterDigestChanged {
+		t.Fatalf("current binding refused with %q, want %q", refused, types.ErrorCodeRouterDigestChanged)
+	}
+}
+
 func TestE7BindingIdleLifetime(t *testing.T) {
 	clock := &testClock{now: time.Now()}
 	b := NewBindings()

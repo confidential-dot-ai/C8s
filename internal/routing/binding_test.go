@@ -39,7 +39,7 @@ func (b *fakeBindings) Hold(connection string) (Binding, string, func(), bool) {
 	}, true
 }
 
-func (b *fakeBindings) Refuse(connection, code string) {
+func (b *fakeBindings) Refuse(connection string, _ Binding, code string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.refused[connection] == "" {

@@ -56,8 +56,9 @@ type Transports struct {
 	cache map[string]pooled
 	// caDigest identifies the mesh CA bundle last seen by dropMeshPools.
 	caDigest [sha256.Size]byte
-	// routerDigest is the router stamp's allowlist digest last seen by
-	// dropMeshPools, empty for none (B10). tracked reports a first call.
+	// routerDigest is the router stamp's allowlist digest last read by a
+	// route poll, an attested handshake or a workload dial, empty for none
+	// (B10). tracked reports a first call.
 	routerDigest string
 	tracked      bool
 
@@ -359,7 +360,8 @@ func (t *Transports) refuseMeshAnchor(cs tls.ConnectionState) error {
 	return nil
 }
 
-// RouterDigest is the router stamp's allowlist digest as of the last poll,
+// RouterDigest is the router stamp's allowlist digest as of the last route
+// poll, attested handshake or workload dial that reread the credential,
 // empty for none (B10). A bound session is checked against it (E6). A nil
 // Transports, which dials no workload, has none.
 func (t *Transports) RouterDigest() string {
