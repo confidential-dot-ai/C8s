@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Offline native-TDX input renderer. Never calls kubectl or creates resources."""
 import argparse
-import base64
 import hashlib
 import ipaddress
 import json
@@ -140,14 +139,6 @@ def bundle(args):
           "samePodManifestSHA256": hashlib.sha256((out / "pod.json").read_bytes()).hexdigest(),
           "expectedDigests": [PYTHON.split("@")[1], args.mesh_image.split("@")[1]],
           "scope": "native KubeVirt TDX hardware; no Cloud API or dynamic endpoint discovery claim"})
-    secrets_list = []
-    for side in ("server", "a", "b"):
-        path = out / side / ("server" if side == "server" else "pod")
-        meta = metadata(args, side)
-        meta["name"] += "-opkey"
-        secrets_list.append({"apiVersion": "v1", "kind": "Secret", "metadata": meta, "type": "Opaque",
-                             "data": {name: base64.b64encode((path / name).read_bytes()).decode() for name in ("pubkey", "launch.yaml", "launch.yaml.sig")}})
-    write(out / "opkey-secrets.json", {"apiVersion": "v1", "kind": "List", "items": secrets_list})
     print(json.dumps({"output": str(out), "scope": "offline inputs only", "serviceIPs": endpoints}, indent=2))
 
 

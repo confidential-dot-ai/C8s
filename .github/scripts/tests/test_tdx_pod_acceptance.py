@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Offline gates for the native hardware harness, not hardware substitutes."""
+import base64
 import copy
 import hashlib
 import importlib.util
@@ -188,6 +189,38 @@ class HarnessTests(unittest.TestCase):
             self.assertEqual(argv[1:1+len(mode)], mode)
             self.assertEqual("--expect-digest" in argv, mode == ["pod-attest"])
             self.assertNotIn("node", argv)
+
+    def test_launch_secrets_use_only_required_bundle_files_without_disk_copy(self):
+        task = acceptance.Acceptance(Path(self.temp.name), "123", "2", "confidential-dot-ai/C8s")
+        expected = {}
+        for side in acceptance.SIDES:
+            directory = task.bundle / side / ("server" if side == "server" else "pod")
+            directory.mkdir(parents=True)
+            expected[side] = {name: (side + ":" + name + "\n").encode()
+                              for name in ("pubkey", "launch.yaml", "launch.yaml.sig")}
+            for name, data in expected[side].items():
+                (directory / name).write_bytes(data)
+            (directory / "operator.key").write_text("fixture excluded from guest inputs")
+        before = {path.relative_to(task.root): path.read_bytes() for path in task.root.rglob("*") if path.is_file()}
+        with patch.object(task, "create") as create:
+            task.create_launch_secrets()
+        self.assertEqual(create.call_count, 3)
+        for call, side in zip(create.call_args_list, acceptance.SIDES):
+            kind, suffix, spec = call.args
+            self.assertEqual((kind, suffix, spec["kind"], spec["type"]), ("secret", "-" + side + "-opkey", "Secret", "Opaque"))
+            self.assertEqual({name: base64.b64decode(data) for name, data in spec["data"].items()}, expected[side])
+        after = {path.relative_to(task.root): path.read_bytes() for path in task.root.rglob("*") if path.is_file()}
+        self.assertEqual(after, before)
+
+    def test_incomplete_bundle_cannot_create_a_partial_secret(self):
+        task = acceptance.Acceptance(Path(self.temp.name), "123", "2", "confidential-dot-ai/C8s")
+        directory = task.bundle / "server/server"
+        directory.mkdir(parents=True)
+        for name in ("pubkey", "launch.yaml"):
+            (directory / name).write_text("fixture")
+        with patch.object(task, "create") as create, self.assertRaises(FileNotFoundError):
+            task.create_launch_secrets()
+        create.assert_not_called()
 
     def test_vm_shapes_share_readonly_root_but_only_server_has_scratch(self):
         task = acceptance.Acceptance(Path(self.temp.name), "123", "2", "confidential-dot-ai/C8s")

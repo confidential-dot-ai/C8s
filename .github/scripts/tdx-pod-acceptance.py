@@ -188,11 +188,19 @@ class Acceptance(OwnedResources):
                                 "interfaces": [{"name": "default", "masquerade": {}}]}},
                 "networks": [{"name": "default", "pod": {}}], "volumes": volumes}}}}
 
+    def create_launch_secrets(self):
+        # CLI-owned bundle files remain private; no duplicate Secret payload is staged.
+        for side in SIDES:
+            path = self.bundle / side / ("server" if side == "server" else "pod")
+            data = {name: base64.b64encode((path / name).read_bytes()).decode()
+                    for name in ("pubkey", "launch.yaml", "launch.yaml.sig")}
+            self.create("secret", "-" + side + "-opkey", {
+                "apiVersion": "v1", "kind": "Secret", "type": "Opaque", "data": data})
+
     def provision(self):
         self.import_root()
         self.pvc("-scratch")
-        for spec in json.loads((self.bundle / "opkey-secrets.json").read_text())["items"]:
-            self.create("secret", spec["metadata"]["name"].removeprefix(self.name), spec)
+        self.create_launch_secrets()
         for side in SIDES:
             self.create("vm", "-" + side, self.vm(side))
         deadline = self.deadline(600)

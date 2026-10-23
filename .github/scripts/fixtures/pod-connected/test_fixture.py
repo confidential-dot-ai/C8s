@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Local fixture checks; no Kubernetes access or public network calls."""
 import contextlib
+import hashlib
 import importlib.util
 import io
 import json
@@ -72,6 +73,38 @@ class FixtureTests(unittest.TestCase):
     def test_checker_refuses_missing_negative_readiness_transition(self):
         result, _ = self.run_checker([state(120, True), state(480, True), state(700, True)])
         self.assertEqual(result, 11)
+
+    def test_renderer_does_not_duplicate_cli_launch_payloads(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = root / "manifest.json"
+            manifest.write_text(json.dumps({"build": {"platform": "tdx"}, "tdx": {key: "a" * 96 for key in ("mrtd", "rtmr1", "rtmr2")}}))
+            args = SimpleNamespace(name="acceptance-fixture", namespace="confai-images", manifest=manifest,
+                                   manifest_sha256=hashlib.sha256(manifest.read_bytes()).hexdigest(),
+                                   mesh_image="registry/mesh@sha256:" + "a" * 64, out=root / "bundle", cli="fixture-cli",
+                                   collector_url="", source="a" * 40)
+            endpoints = {side: {"ip": "10.43.0." + str(index + 10), "uid": side} for index, side in enumerate(("server", "a", "b"))}
+
+            def cli(_cli, *values):
+                if values[0] == "measurements":
+                    return b'{"measurements":[{}]}'
+                out = Path(values[values.index("--out") + 1])
+                if values[0] == "keys":
+                    Path(values[values.index("--pub-out") + 1]).write_text("fixture public key")
+                else:
+                    path = out / ("server" if values[2] == "new" else "pod")
+                    path.mkdir(parents=True)
+                    for name in ("pubkey", "launch.yaml", "launch.yaml.sig"):
+                        (path / name).write_text("fixture " + name)
+                return b""
+
+            with mock.patch.object(stage, "allocated", return_value=endpoints), mock.patch.object(stage, "command", side_effect=cli), contextlib.redirect_stdout(io.StringIO()):
+                stage.bundle(args)
+            self.assertFalse((args.out / "opkey-secrets.json").exists())
+            for side in ("server", "a", "b"):
+                path = args.out / side / ("server" if side == "server" else "pod")
+                self.assertEqual(sorted(p.name for p in path.iterdir()), ["launch.yaml", "launch.yaml.sig", "pubkey"])
+            self.assertEqual(args.out.stat().st_mode & 0o777, 0o700)
 
     def test_service_addresses_can_be_allocated_before_a_vm_exists(self):
         with tempfile.TemporaryDirectory() as directory:
