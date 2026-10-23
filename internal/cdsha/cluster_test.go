@@ -834,11 +834,53 @@ func TestBackupAfterMembershipChange(t *testing.T) {
 	c.start("n3", "m1") // joins: configuration entries, no command
 	c.settled(10 * time.Second)
 	l := c.leader()
-	target := l.node.r().LastIndex()
+	// Read-only barriers advance LastIndex without changing recoverable state.
+	// Identify the actual configuration entry that added n3 instead.
+	containsN3 := func(cfg raft.Configuration) bool {
+		for _, server := range cfg.Servers {
+			if server.ID == c.nodes["n3"].node.id {
+				return true
+			}
+		}
+		return false
+	}
+	first, err := l.node.logs.FirstIndex()
+	if err != nil {
+		t.Fatal(err)
+	}
+	last, err := l.node.logs.LastIndex()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var target uint64
+	for i := first; i <= last; i++ {
+		var entry raft.Log
+		if err := l.node.logs.GetLog(i, &entry); err != nil {
+			t.Fatal(err)
+		}
+		if entry.Type == raft.LogConfiguration && containsN3(raft.DecodeConfiguration(entry.Data)) {
+			target = entry.Index
+		}
+	}
+	if target == 0 {
+		t.Fatal("no retained configuration entry adding n3")
+	}
 	eventually(t, 10*time.Second, "a backup past the membership change", func() bool {
 		b, ok := c.backups.get()
 		return ok && b.Meta.Index >= target
 	})
+	metas, err := l.node.snaps.List()
+	if err != nil || len(metas) == 0 {
+		t.Fatalf("local snapshot: %v", err)
+	}
+	meta := metas[0]
+	if meta.ConfigurationIndex < target || !containsN3(meta.Configuration) {
+		t.Fatalf("local snapshot lacks n3 configuration: %+v, target %d", meta, target)
+	}
+	b, _ := c.backups.get()
+	t.Logf("indices: raft=%d configuration=%d fsm=%d backup=%d snapshot=%d snapshot-config=%d", last, target, l.node.fsm.AppliedIndex(), b.Meta.Index, meta.Index, meta.ConfigurationIndex)
+	// The local Raft snapshot retains membership. Exported application state
+	// deliberately reconstructs membership under the operator's Restore decree.
 }
 
 // A pin set that unpins a majority of the voters is refused (it would leave no

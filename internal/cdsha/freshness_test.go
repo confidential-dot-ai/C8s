@@ -144,6 +144,18 @@ func TestReadBarrierLeaderWithoutQuorumFails(t *testing.T) {
 		t.Fatal("isolated leader passed CatchUp without a quorum")
 	}
 	eventually(t, 3*time.Second, "isolated leader certificate expires", func() bool { return !leader.node.Serving() })
+	// Stepdown must resolve pending uncommitted futures, so production stop
+	// completes even without quorum. Bound the join by several lease periods.
+	stopped := make(chan struct{})
+	go func() { leader.node.shutdown(); close(stopped) }()
+	select {
+	case <-stopped:
+	case <-time.After(5 * leader.node.rcfg.LeaderLeaseTimeout):
+		t.Fatal("no-quorum shutdown did not drain read waiter")
+	}
+	if len(leader.node.barrierGate) != 0 {
+		t.Fatal("no-quorum shutdown retained barrier worker")
+	}
 }
 
 // A delayed reply keeps the request-start timestamp. Identity and age checks
@@ -286,6 +298,10 @@ func TestReadBarrierStalledFSMBoundsWaitersAndShutsDown(t *testing.T) {
 	t.Cleanup(func() { release.Do(func() { close(held.release) }); cancel(); <-done })
 	ds.put(signDecree(t, key, Decree{Kind: Genesis, BootstrapNode: "stalled"}))
 	eventually(t, 10*time.Second, "stalled test leader serves", n.Serving)
+	cert, err := n.confirmRead(time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
 	held.hold.Store(true)
 	applied := make(chan error, 1)
 	go func() { applied <- r.Apply([]byte(`{}`), time.Second).Error() }()
@@ -313,8 +329,37 @@ func TestReadBarrierStalledFSMBoundsWaitersAndShutsDown(t *testing.T) {
 	if got := runtime.NumGoroutine(); got > baseline+4 {
 		t.Fatalf("timed-out barriers accumulated goroutines: before=%d after=%d", baseline, got)
 	}
+	// Concurrent production shutdowns close admission and drain the real
+	// future before Raft is stopped. A late caller must not enqueue work.
+	stopped := make(chan struct{})
+	go func() { n.shutdown(); close(stopped) }()
+	eventually(t, time.Second, "shutdown closes read admission", func() bool { return n.stoppingReads.Load() == r })
+	// Simulate an already-completed refresh publishing late during drain.
+	n.readCert.Store(cert)
+	if n.validReadCertificate(cert) || n.Serving() {
+		t.Fatal("late certificate publication reopened stopping instance")
+	}
+	lastIndex = r.LastIndex()
+	for i := 0; i < 20; i++ {
+		if _, err := n.readBarrier(r, time.Second); err == nil {
+			t.Fatal("late read admitted during shutdown")
+		}
+	}
+	if r.LastIndex() != lastIndex {
+		t.Fatal("late admission enqueued a barrier")
+	}
+	select {
+	case <-stopped:
+		t.Fatal("shutdown abandoned the held barrier future")
+	default:
+	}
 	cancel()
 	release.Do(func() { close(held.release) })
+	select {
+	case <-stopped:
+	case <-time.After(3 * time.Second):
+		t.Fatal("production shutdown did not drain barrier")
+	}
 	select {
 	case <-done:
 	case <-time.After(3 * time.Second):

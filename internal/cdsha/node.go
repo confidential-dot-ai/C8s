@@ -143,9 +143,11 @@ type Node struct {
 	measurement string
 	log         *slog.Logger
 
-	jumpAt      atomic.Int64 // Unix ms of the last clock jump not yet cleared by fresh contact
-	readCert    atomic.Pointer[readCertificate]
-	barrierGate chan struct{} // one pending Barrier, including timed-out callers
+	jumpAt        atomic.Int64 // Unix ms of the last clock jump not yet cleared by fresh contact
+	readCert      atomic.Pointer[readCertificate]
+	barrierGate   chan struct{}             // one pending Barrier, including timed-out callers
+	stoppingReads atomic.Pointer[raft.Raft] // admission closes before draining this instance
+	stopRaftMu    sync.Mutex                // serialize shutdowns, including stale instance callers
 
 	seatsOKAt atomic.Int64 // Unix ms the leader last reported every seat filled (non-voters)
 
@@ -426,9 +428,28 @@ func (n *Node) Run(ctx context.Context) error {
 	}
 }
 
+// stopRaft drains the one genuine read future while Raft can still resolve it.
+// Raft v1.8 Barrier futures have no shutdown channel; shutting down first can
+// strand a committed future in the FSM queue. Keep the gate through shutdown.
+// As with Raft shutdown itself, a permanently blocked FSM must be released.
+func (n *Node) stopRaft(r *raft.Raft) error {
+	if r == nil {
+		return nil
+	}
+	n.stopRaftMu.Lock()
+	defer n.stopRaftMu.Unlock()
+	if r == n.r() {
+		n.stoppingReads.Store(r)
+		n.readCert.Store(nil)
+	}
+	n.barrierGate <- struct{}{}
+	defer func() { <-n.barrierGate }()
+	return r.Shutdown().Error()
+}
+
 func (n *Node) shutdown() {
-	if n.r() != nil {
-		_ = n.r().Shutdown().Error()
+	if r := n.r(); r != nil {
+		_ = n.stopRaft(r)
 	}
 	if m := n.mux.Load(); m != nil {
 		_ = m.Close()
@@ -594,7 +615,7 @@ type readCertificate struct {
 }
 
 func (n *Node) validReadCertificate(cert *readCertificate) bool {
-	if cert == nil || cert.raft != n.r() || time.Since(cert.at) >= n.cfg.Timing.Lease {
+	if cert == nil || cert.raft != n.r() || n.stoppingReads.Load() == cert.raft || time.Since(cert.at) >= n.cfg.Timing.Lease {
 		return false
 	}
 	leader, id := cert.raft.LeaderWithID()
@@ -605,6 +626,9 @@ func (n *Node) validReadCertificate(cert *readCertificate) bool {
 // preceding commands. Raft's Barrier timeout only bounds enqueueing, so also
 // bound the wait for completion.
 func (n *Node) readBarrier(r *raft.Raft, timeout time.Duration) (uint64, error) {
+	if r == nil || r != n.r() || n.stoppingReads.Load() == r {
+		return 0, errors.New("cds-ha: read instance stopping or replaced")
+	}
 	deadline := time.Now().Add(timeout)
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
@@ -614,6 +638,10 @@ func (n *Node) readBarrier(r *raft.Raft, timeout time.Duration) (uint64, error) 
 	case n.barrierGate <- struct{}{}:
 	case <-timer.C:
 		return 0, errors.New("cds-ha: read barrier busy")
+	}
+	if r != n.r() || n.stoppingReads.Load() == r {
+		<-n.barrierGate
+		return 0, errors.New("cds-ha: read instance stopping or replaced")
 	}
 	type result struct {
 		index uint64
@@ -631,7 +659,7 @@ func (n *Node) readBarrier(r *raft.Raft, timeout time.Duration) (uint64, error) 
 		}
 		err := r.Barrier(remaining).Error()
 		currentLeader, currentID := r.LeaderWithID()
-		if err == nil && (r != n.r() || r.State() != raft.Leader || r.CurrentTerm() != term || currentLeader != leader || currentID != id || n.fsm.Stuck() != "") {
+		if err == nil && (r != n.r() || n.stoppingReads.Load() == r || r.State() != raft.Leader || r.CurrentTerm() != term || currentLeader != leader || currentID != id || n.fsm.Stuck() != "") {
 			err = errors.New("cds-ha: read leader or state changed")
 		}
 		done <- result{index: n.fsm.AppliedIndex(), err: err}
@@ -679,7 +707,7 @@ func (n *Node) confirmRead(timeout time.Duration) (*readCertificate, error) {
 	if remaining <= 0 || !n.waitFor(remaining, func() bool { return n.fsm.AppliedIndex() >= index }) {
 		return nil, errors.New("cds-ha: not caught up with quorum watermark")
 	}
-	if n.r() != r || n.fsm.Stuck() != "" {
+	if n.r() != r || n.stoppingReads.Load() == r || n.fsm.Stuck() != "" {
 		return nil, errors.New("cds-ha: read state changed or stuck")
 	}
 	cert := &readCertificate{raft: r, leader: leader, leaderID: leaderID, epoch: epoch, term: term, at: at, index: index}
