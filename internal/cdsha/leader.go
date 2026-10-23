@@ -23,13 +23,20 @@ import (
 // recover makes this replica the only voter of the cluster, with the state
 // it holds, for a verified Recover decree naming it.
 func (n *Node) recover(ctx context.Context, p PendingDecree) {
+	r := n.r()
+	n.membershipMu.Lock()
+	defer n.membershipMu.Unlock()
+	if r == nil || r != n.r() {
+		n.log.Warn("recover: generation changed while waiting for membership", "decree", p.Name)
+		return
+	}
 	if err := n.fsm.ValidatePolicy(n.fsm.Core().Policy); err != nil {
 		n.log.Error("recover: application policy", "err", err)
 		return
 	}
 	n.log.Warn("RECOVER: forcing a one-voter configuration with this replica's state", "decree", p.Name, "id", n.id)
 	n.readCert.Store(nil) // recovery stops read admission before shutting Raft down
-	if err := n.stopRaft(n.r()); err != nil {
+	if err := n.stopRaft(r); err != nil {
 		n.log.Error("recover: shut down raft", "err", err)
 	}
 	_ = n.mux.Load().Close()
@@ -43,7 +50,7 @@ func (n *Node) recover(ctx context.Context, p PendingDecree) {
 	defer al.Close()
 	scratch := n.recoveryFSM(&al)
 	// snapStore ignores the transport RecoverCluster passes it.
-	if err := raft.RecoverCluster(n.rcfg, scratch, n.logs, n.stable, n.snaps, nil, n.solo()); err != nil {
+	if err := raft.RecoverCluster(n.rcfg, scratch, recoveryLogStore{LogStore: n.logs, scratch: scratch}, n.stable, n.snaps, nil, n.solo()); err != nil {
 		n.log.Error("recover: RecoverCluster", "err", err)
 		return
 	}
@@ -95,8 +102,15 @@ func (n *Node) pendingDecree(ctx context.Context, kind DecreeKind) (PendingDecre
 
 // bootstrap starts a one-voter group with this replica and applies Genesis.
 func (n *Node) bootstrap(ctx context.Context, g PendingDecree) {
+	r := n.r()
+	n.membershipMu.Lock()
+	defer n.membershipMu.Unlock()
+	if r == nil || r != n.r() || n.stoppingReads.Load() == r {
+		n.log.Warn("bootstrap: generation changed or stopping", "decree", g.Name)
+		return
+	}
 	n.log.Info("bootstrapping the CDS cluster", "decree", g.Name, "id", n.id)
-	if err := n.r().BootstrapCluster(n.solo()).Error(); err != nil {
+	if err := r.BootstrapCluster(n.solo()).Error(); err != nil {
 		n.log.Warn("bootstrap", "err", err)
 		return
 	}
@@ -306,6 +320,8 @@ func (n *Node) Restore(ctx context.Context, sd SignedDecree, snapshot []byte) (D
 			return DecreeResult{}, fmt.Errorf("cds-ha: replica %s belongs to a cluster; join it instead of restoring", p)
 		}
 	}
+	n.membershipMu.Lock()
+	defer n.membershipMu.Unlock()
 	if err := n.CheckRestore(sd); err != nil {
 		return DecreeResult{}, err
 	}
