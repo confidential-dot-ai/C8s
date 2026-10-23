@@ -71,7 +71,14 @@ type scopeRequest struct {
 // would present.
 func evalOperatorScope(t *testing.T, vap admissionregv1.ValidatingAdmissionPolicy, r scopeRequest) bool {
 	t.Helper()
-	env, err := cel.NewEnv(cel.Variable("request", cel.DynType), cel.Variable("variables", cel.DynType))
+	return evalOperatorScopeObject(t, vap, r, nil)
+}
+
+// evalOperatorScopeObject is evalOperatorScope with the admitted object; nil
+// is the null object the apiserver presents on DELETE.
+func evalOperatorScopeObject(t *testing.T, vap admissionregv1.ValidatingAdmissionPolicy, r scopeRequest, object map[string]any) bool {
+	t.Helper()
+	env, err := cel.NewEnv(cel.Variable("request", cel.DynType), cel.Variable("variables", cel.DynType), cel.Variable("object", cel.DynType))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,12 +101,16 @@ func evalOperatorScope(t *testing.T, vap admissionregv1.ValidatingAdmissionPolic
 			return true
 		}
 	}
+	var obj any
+	if object != nil {
+		obj = object
+	}
 	vars := map[string]any{}
 	for _, v := range vap.Spec.Variables {
-		vars[v.Name] = evalCEL(t, env, v.Expression, map[string]any{"request": req, "variables": vars})
+		vars[v.Name] = evalCEL(t, env, v.Expression, map[string]any{"request": req, "variables": vars, "object": obj})
 	}
 	for _, v := range vap.Spec.Validations {
-		if evalCEL(t, env, v.Expression, map[string]any{"request": req, "variables": vars}) != true {
+		if evalCEL(t, env, v.Expression, map[string]any{"request": req, "variables": vars, "object": obj}) != true {
 			return false
 		}
 	}
@@ -163,6 +174,43 @@ func TestOperatorScopePolicyExpression(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := evalOperatorScope(t, vap, tc.req); got != tc.want {
+				t.Errorf("admitted = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// A Service is the one object the operator may write whose content, not its
+// place, matters: member pods' packet filters let the resolver and the
+// kube-state-metrics exit through by address, so no c8s:* Service may route
+// those addresses elsewhere.
+func TestOperatorScopePolicyServiceAddresses(t *testing.T) {
+	t.Parallel()
+	vap, _ := loadImagePolicy(t, operatorScopePolicyPath, "confos-operator-scope")
+	op := []string{"system:authenticated", "c8s:node-operators"}
+	sys := []string{"system:authenticated", "system:masters"}
+	svc := func(spec map[string]any) map[string]any { return map[string]any{"spec": spec} }
+	for _, tc := range []struct {
+		name   string
+		groups []string
+		object map[string]any
+		want   bool
+	}{
+		{"allocated ClusterIP", op, svc(map[string]any{"clusterIP": "10.53.143.7", "clusterIPs": []any{"10.53.143.7"}}), true},
+		{"headless", op, svc(map[string]any{"clusterIP": "None", "clusterIPs": []any{"None"}}), true},
+		{"empty externalIPs", op, svc(map[string]any{"externalIPs": []any{}}), true},
+		{"no spec", op, map[string]any{}, true},
+		{"delete (null object)", op, nil, true},
+		{"externalIPs on the exit", op, svc(map[string]any{"externalIPs": []any{"10.53.0.11"}}), false},
+		{"externalIPs anywhere", op, svc(map[string]any{"externalIPs": []any{"192.0.2.1"}}), false},
+		{"ClusterIP of the exit", op, svc(map[string]any{"clusterIP": "10.53.0.11"}), false},
+		{"other static-band ClusterIP", op, svc(map[string]any{"clusterIP": "10.53.0.200"}), false},
+		{"static band in clusterIPs only", op, svc(map[string]any{"clusterIPs": []any{"10.53.0.12"}}), false},
+		{"system:masters keeps the band", sys, svc(map[string]any{"clusterIP": "10.53.0.11", "externalIPs": []any{"10.53.0.11"}}), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := scopeRequest{tc.groups, "tenant", "", "services", ""}
+			if got := evalOperatorScopeObject(t, vap, r, tc.object); got != tc.want {
 				t.Errorf("admitted = %v, want %v", got, tc.want)
 			}
 		})
