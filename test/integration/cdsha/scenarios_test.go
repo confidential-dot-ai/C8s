@@ -45,13 +45,16 @@ func runScenarios(t *testing.T, list []scenario) {
 	}
 }
 
-// hold keeps a fault for d (a third of it under -short).
-func hold(d time.Duration) {
+// scaled is d, or a third of it under -short.
+func scaled(d time.Duration) time.Duration {
 	if testing.Short() {
-		d /= 3
+		return d / 3
 	}
-	time.Sleep(d)
+	return d
 }
+
+// hold keeps a fault for scaled(d).
+func hold(d time.Duration) { time.Sleep(scaled(d)) }
 
 // others are every replica but the listed ones.
 func others(c *Cluster, not ...int) []int {
@@ -116,7 +119,12 @@ func TestNetworkFaults(t *testing.T) {
 			}
 			nl := c.WaitLeader(20*time.Second, minority...)
 			c.Logf("majority leader %s", c.Replicas[nl].Node)
-			hold(20 * time.Second) // past dead_after: the minority is removed and must rejoin
+			// Past dead_after the majority removes the minority, which must
+			// then rejoin as new members.
+			c.waitFor(timing.deadAfter+15*time.Second, func() bool {
+				st, ok := c.Status(nl)
+				return ok && len(st.Voters)+len(st.NonVoters) == replicas-len(minority)
+			}, func() string { return "minority not removed:" + c.StatusAll() })
 			c.Heal()
 			c.Logf("minority serving again after %s", c.WaitAllServing(60*time.Second))
 			c.WaitVoters(3, 30*time.Second)
@@ -137,37 +145,10 @@ func TestNetworkFaults(t *testing.T) {
 			c.Logf("minority serving again after %s", c.WaitAllServing(60*time.Second))
 			c.WaitVoters(3, 30*time.Second)
 		}},
-		{name: "A4-asymmetric-leader-cannot-receive", run: func(t *testing.T, c *Cluster, _ *Checker) {
-			l := c.WaitLeader(10 * time.Second)
-			for _, j := range others(c, l) {
-				c.Net.Update(j, l, func(x *Link) { x.Blackhole = true })
-			}
-			c.Logf("%s can send, cannot receive", c.Replicas[l].Node)
-			c.Logf("%s stopped serving after %s", c.Replicas[l].Node, c.WaitNotServing(l, timing.lease+5*time.Second))
-			nl := c.WaitLeader(30*time.Second, l)
-			c.Logf("new leader %s", c.Replicas[nl].Node)
-			hold(15 * time.Second)
-			c.Heal()
-			c.Logf("recovered after %s", c.WaitAllServing(60*time.Second))
-		}},
-		{name: "A4-asymmetric-leader-cannot-send", run: func(t *testing.T, c *Cluster, _ *Checker) {
-			l := c.WaitLeader(10 * time.Second)
-			for _, j := range others(c, l) {
-				c.Net.Update(l, j, func(x *Link) { x.Blackhole = true })
-			}
-			c.Logf("%s can receive, cannot send", c.Replicas[l].Node)
-			c.Logf("%s stopped serving after %s", c.Replicas[l].Node, c.WaitNotServing(l, timing.lease+5*time.Second))
-			nl := c.WaitLeader(30*time.Second, l)
-			c.Logf("new leader %s", c.Replicas[nl].Node)
-			hold(15 * time.Second)
-			c.Heal()
-			c.Logf("recovered after %s", c.WaitAllServing(60*time.Second))
-		}},
+		asymmetric("A4-asymmetric-leader-cannot-receive", false),
+		asymmetric("A4-asymmetric-leader-cannot-send", true),
 		{name: "A5-flapping-voter", run: func(t *testing.T, c *Cluster, _ *Checker) {
 			end := time.Now().Add(60 * time.Second)
-			if testing.Short() {
-				end = time.Now().Add(20 * time.Second)
-			}
 			flaps := 0
 			for time.Now().Before(end) {
 				v := c.Voters()
@@ -184,22 +165,41 @@ func TestNetworkFaults(t *testing.T) {
 			}
 			c.Logf("%d flaps; serving again after %s", flaps, c.WaitAllServing(60*time.Second))
 		}},
-		{name: "A6-latency-100ms", run: func(t *testing.T, c *Cluster, _ *Checker) {
-			setAll(c, Link{Latency: 50 * time.Millisecond, Jitter: 10 * time.Millisecond}) // 100 ms round trip
-			hold(30 * time.Second)
-			c.Logf("under 100 ms RTT: %s", c.StatusAll())
-		}},
-		{name: "A6-latency-300ms", run: func(t *testing.T, c *Cluster, _ *Checker) {
-			setAll(c, Link{Latency: 150 * time.Millisecond, Jitter: 30 * time.Millisecond})
-			hold(30 * time.Second)
-			c.Logf("under 300 ms RTT: %s", c.StatusAll())
-		}},
-		{name: "A6-loss-10pct", run: func(t *testing.T, c *Cluster, _ *Checker) {
-			setAll(c, Link{Loss: 0.1})
-			hold(30 * time.Second)
-			c.Logf("under 10%% loss: %s", c.StatusAll())
-		}},
+		degraded("A6-latency-100ms", Link{Latency: 50 * time.Millisecond, Jitter: 10 * time.Millisecond}), // 100 ms round trip
+		degraded("A6-latency-300ms", Link{Latency: 150 * time.Millisecond, Jitter: 30 * time.Millisecond}),
+		degraded("A6-loss-10pct", Link{Loss: 0.1}),
 	})
+}
+
+// asymmetric blackholes every link into the leader (or, with send, out of
+// it): the leader must step down and a new one take over.
+func asymmetric(name string, send bool) scenario {
+	return scenario{name: name, run: func(t *testing.T, c *Cluster, _ *Checker) {
+		l := c.WaitLeader(10 * time.Second)
+		for _, j := range others(c, l) {
+			from, to := j, l
+			if send {
+				from, to = l, j
+			}
+			c.Net.Update(from, to, func(x *Link) { x.Blackhole = true })
+		}
+		c.Logf("%s stopped serving after %s", c.Replicas[l].Node, c.WaitNotServing(l, timing.lease+5*time.Second))
+		nl := c.WaitLeader(30*time.Second, l)
+		c.Logf("new leader %s", c.Replicas[nl].Node)
+		hold(15 * time.Second)
+		c.Heal()
+		c.Logf("recovered after %s", c.WaitAllServing(60*time.Second))
+	}}
+}
+
+// degraded holds link l on every pair; every replica must still serve
+// under it.
+func degraded(name string, l Link) scenario {
+	return scenario{name: name, run: func(t *testing.T, c *Cluster, _ *Checker) {
+		setAll(c, l)
+		hold(30 * time.Second)
+		c.WaitAllServing(5 * time.Second)
+	}}
 }
 
 // setAll applies one link to every pair.
@@ -216,18 +216,6 @@ func setAll(c *Cluster, l Link) {
 
 func TestProcessFaults(t *testing.T) {
 	runScenarios(t, []scenario{
-		{name: "B1-kill-leader-during-write-burst", short: true, writers: 32, pause: time.Millisecond, run: func(t *testing.T, c *Cluster, _ *Checker) {
-			time.Sleep(2 * time.Second)
-			l := c.WaitLeader(10 * time.Second)
-			c.Kill(l)
-			start := time.Now()
-			nl := c.WaitLeader(30*time.Second, l)
-			c.Logf("new leader %s after %s", c.Replicas[nl].Node, time.Since(start))
-			time.Sleep(3 * time.Second)
-			c.Start(l, false)
-			c.Logf("killed node serving again after %s", c.WaitAllServing(60*time.Second))
-			c.WaitVoters(3, 60*time.Second)
-		}},
 		{name: "B2-kill-leader-during-backup", run: func(t *testing.T, c *Cluster, _ *Checker) {
 			// Backups run every second on the leader while state changes, so
 			// a kill lands during or right after one.
@@ -242,13 +230,6 @@ func TestProcessFaults(t *testing.T) {
 			}
 			requireFreshBackup(t, c)
 		}},
-		{name: "B3-rolling-restart", run: func(t *testing.T, c *Cluster, _ *Checker) {
-			for i := range c.Replicas {
-				c.Restart(i, false)
-				c.Logf("%s serving after %s", c.Replicas[i].Node, c.WaitServing([]int{i}, 60*time.Second))
-				c.WaitVoters(3, 60*time.Second)
-			}
-		}},
 		{name: "B3-rolling-restart-readiness-gated", run: func(t *testing.T, c *Cluster, _ *Checker) {
 			// What a DaemonSet with maxUnavailable 1 does: the next replica
 			// restarts as soon as the previous one is Ready (GET /readyz).
@@ -261,7 +242,7 @@ func TestProcessFaults(t *testing.T) {
 			c.WaitAllServing(60 * time.Second)
 			c.WaitVoters(3, 60*time.Second)
 		}},
-		{name: "B5-repeated-leader-kills", run: func(t *testing.T, c *Cluster, _ *Checker) {
+		{name: "B5-repeated-leader-kills-during-write-burst", short: true, writers: 32, pause: time.Millisecond, run: func(t *testing.T, c *Cluster, _ *Checker) {
 			kills := 6
 			if testing.Short() {
 				kills = 3
