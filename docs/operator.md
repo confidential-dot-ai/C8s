@@ -923,7 +923,7 @@ The chart sets these flags from `router.routing` and the CDS pins.
 | `--tunnel-io-timeout` | `30s` | How long a tunnel upload, or the download of its sealed response, may make no progress. Must be positive. |
 | `--tunnel-budget` | 75% of the container memory limit, else `32Gi` | Bytes the tunnelled requests in flight in one replica may buffer, as a quantity such as `64Gi`. Each request reserves three copies of its record and four of the largest response (32 MiB); one client (by `X-Real-IP`) holds at most a quarter. Must cover one full-size request, 152 MiB. Set by `router.routing.tunnelBudget`. |
 | `--reserved-paths` | the router's own endpoints | Paths no manifest route can match. Each entry must be a normalized path. |
-| `--attest-endpoints` | `true` | `false` serves only the routing listener and probes. Requires `--routing-port`. `true` requires the three `--mesh-identity-*` files, whose leaf the attestation endpoints bind to. |
+| `--attest-endpoints` | `true` | `false` serves only the routing listener and probes. Requires `--routing-port`. `true` requires the three `--mesh-identity-*` files, whose leaf the attestation endpoints bind to; they must name `/etc/c8s/certs/tls.crt`, `tls.key` and `ca.crt`, the credential the router reaches backends with, since a session is bound to that leaf's digest. |
 | `--publish-routes` | `false` | Serves the applied signed manifest at `/.well-known/c8s/routes`. Requires `--cds-url` and `--attest-endpoints=true`. Set by `router.routePublication.enabled`. |
 
 `cds-attest` takes the operator keys from the node's launch configuration,
