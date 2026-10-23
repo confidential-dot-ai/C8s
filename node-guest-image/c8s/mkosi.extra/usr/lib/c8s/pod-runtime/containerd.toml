@@ -2,7 +2,9 @@
 # rke2-base-v3.toml.tmpl) with the values RKE2 fills in on this image, so the
 # same baked drop-ins (c8s-runc, NRI) apply and every path c8s-runc and the
 # NRI plugin hard-code is unchanged. Pod-role differences: CNI from the
-# image, and the sandbox image pinned by digest (pulled; no airgap import).
+# image, the sandbox image pinned by digest (podcvm-containerd imports it
+# from pause.tar), and no Windows runhcs handler. containerdcheck's
+# TestPodRoleConfigFollowsRKE2Base fails on any other key that differs.
 version = 3
 imports = ["/var/lib/rancher/rke2/agent/etc/containerd/config-v3.toml.d/*.toml"]
 root = "/var/lib/rancher/rke2/agent/containerd"
