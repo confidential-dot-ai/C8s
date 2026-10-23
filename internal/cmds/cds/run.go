@@ -323,7 +323,6 @@ func run(cfg config) error {
 			Store:             &allowlistStore,
 			WriteAuthorizer:   operatorAuthorizer,
 			MaxWriteBodyBytes: allowlistWriteBodyCap,
-			Layers:            allowlistLayers,
 		},
 		Routes: routeHandler{
 			Store:     &allowlistStore,

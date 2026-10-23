@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/hex"
 	"errors"
 	"io"
 	"net/http"
@@ -18,7 +17,6 @@ import (
 	"testing"
 	"time"
 
-	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
@@ -466,26 +464,6 @@ func TestStampedPolicyStale(t *testing.T) {
 		}
 		if _, stale, err := stampedPolicyStale(context.Background(), plaintextPolicyClient(srv.URL), stamp.AllowlistVersion, stamp.AllowlistDigest); err != nil || !stale {
 			t.Fatalf("stampedPolicyStale = %v, %v, want stale", stale, err)
-		}
-	})
-
-	t.Run("stamped with the seed layer", func(t *testing.T) {
-		// The seed layer is fixed for CDS's lifetime, so a leaf it stamped
-		// never goes stale on an upload.
-		seed := sha256.Sum256([]byte(policyTwoWorkloads))
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("ETag", `W/"5"`)
-			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set(pkgallowlist.SeedHeader, "sha256:"+hex.EncodeToString(seed[:]))
-			_, _ = w.Write([]byte(policyRouterOnly))
-		}))
-		t.Cleanup(srv.Close)
-		stamp, err := armtls.MatchedWorkloadFromCert(stampedLeaf(t, "4", policyTwoWorkloads))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, stale, err := stampedPolicyStale(context.Background(), plaintextPolicyClient(srv.URL), stamp.AllowlistVersion, stamp.AllowlistDigest); err != nil || stale {
-			t.Fatalf("stampedPolicyStale = %v, %v, want not stale", stale, err)
 		}
 	})
 

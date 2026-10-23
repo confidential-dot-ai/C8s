@@ -597,7 +597,9 @@ For the measured node image, CDS stores its database at `/mnt/c8s-data/cds/allow
 in the Pod's `emptyDir`. A container restart preserves that directory; Pod
 recreation or a VM reboot loses it. The baked component seed is a fixed seed
 layer beside the store, which no upload drops; the optional signed `workloads`
-document initializes the new store, and the first upload replaces it. Reapply
+document initializes the new store, and the first upload replaces it. Every
+leaf, C8s's own included, is stamped with the uploaded document's digest, so
+an upload re-issues all of them. Reapply
 any later operator changes. The CA signing key is in process memory and changes on
 any CDS process restart, so plan for certificate re-bootstrap even when the
 database survives. This image does not expose a persistent-volume switch in

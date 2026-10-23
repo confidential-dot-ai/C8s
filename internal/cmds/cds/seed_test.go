@@ -216,8 +216,8 @@ func TestOpenSeedLayerSurvivesUpload(t *testing.T) {
 	if stored, current, err := store.LoadAll(); err != nil || current != version || len(stored.Workloads) != 2 {
 		t.Errorf("store holds %v at %s, want the upload at the layered version %s (%v)", stored.Workloads, current, version, err)
 	}
-	if layers.SeedDigest() == "" {
-		t.Error("no seed digest")
+	if _, _, seed, _ := layers.LoadLayers(); seed == nil {
+		t.Error("no seed layer")
 	}
 }
 
@@ -233,8 +233,8 @@ func TestOpenSeedWithoutLayerSeedsTheStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if layers.SeedDigest() != "" {
-		t.Errorf("seed layer %s without --seed-layer", layers.SeedDigest())
+	if _, _, seed, _ := layers.LoadLayers(); seed != nil {
+		t.Errorf("seed layer %v without --seed-layer", seed.Workloads)
 	}
 	if stored, _, err := store.LoadAll(); err != nil || len(stored.Workloads) != 1 {
 		t.Fatalf("store holds %v, %v; want the seed", stored.Workloads, err)

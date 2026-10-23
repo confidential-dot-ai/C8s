@@ -708,7 +708,7 @@ MatchedWorkload ::= SEQUENCE {
     formatVersion    INTEGER,           -- exactly 1
     name             IA5String,         -- 1..63 bytes; allowlist workload-name grammar
     allowlistVersion IA5String,         -- 1..20 ASCII decimal digits, no leading zero
-    allowlistDigest  OCTET STRING (32)  -- SHA-256(Allowlist.Canonical()) of that document, or of the seed layer
+    allowlistDigest  OCTET STRING (32)  -- SHA-256(Allowlist.Canonical()) of that document
 }
 ```
 
@@ -746,10 +746,11 @@ verify, CDS makes one unified inventory decision
 A unique match stamps `(name, snapshot version, snapshot digest)`. On a
 measured node image CDS keeps the image's allowlist seed as a fixed layer
 beside the stored document (`--seed-layer`): steps 3 to 6 run on both layers,
-a seed entry wins a name both hold, and a match on a seed entry stamps the
-seed's digest in place of the snapshot digest. CDS serves the seed's bytes at
-`/allowlist/objects/sha256/<hex>` and names it in the `C8s-Allowlist-Seed`
-header of `GET /allowlist`. Everything
+and a seed entry wins a name both hold. The stamp still carries the stored
+(uploaded) document's version and digest, also for a match on a seed entry
+such as the router: every leaf names the allowlist the operator uploaded, and
+an upload re-issues all of them. The node image's launch measurement covers
+the seed. Everything
 else — an old inventory with no containers view, a malformed answer, no match
 mid-lifecycle, an ambiguous match — issues the existing **membership-only
 (unnamed) leaf**: incomplete pods need a mesh certificate to bootstrap, so the
@@ -836,11 +837,12 @@ hardware-bound.
 
 `c8s verify --workload <name>` pins the name; `c8s verify --allowlist <file>`
 hashes the file's exact canonical bytes (as served by `GET /allowlist` — no
-reserialization), checks the stamped digest, then resolves the stamped name in
-the document. Both **require `--mesh-ca`**, exactly like `--sandbox-id`, and
+reserialization) and checks the stamped digest. A stamped name the document
+lacks was matched to the node image's allowlist seed (for example `router`
+beside an application-only upload); the verdict passes and says so. Both **require `--mesh-ca`**, exactly like `--sandbox-id`, and
 the chain check runs before the stamp is reported. The verdict distinguishes
 `workload_absent`, `workload_malformed`, `workload_name_mismatch`,
-`allowlist_digest_mismatch`, `workload_unresolved`, and `workload_verified`;
+`allowlist_digest_mismatch`, and `workload_verified`;
 exit codes are unchanged.
 
 ### Cross-implementation note

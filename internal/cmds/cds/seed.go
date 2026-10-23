@@ -22,18 +22,14 @@ func openSeed(store *allowlist.Store, storeSeed, layerSeed string) (*allowlist.L
 		}
 	}
 	if layerSeed == "" {
-		return allowlist.NewLayered(store, nil)
+		return allowlist.NewLayered(store, nil), nil
 	}
 	seed, err := readSeed(layerSeed)
 	if err != nil {
 		return nil, err
 	}
-	layers, err := allowlist.NewLayered(store, seed)
-	if err != nil {
-		return nil, err
-	}
-	slog.Info("allowlist seed kept as a fixed layer", "path", layerSeed, "digest", layers.SeedDigest(), "workloads_in_seed", len(seed.Workloads))
-	return layers, nil
+	slog.Info("allowlist seed kept as a fixed layer", "path", layerSeed, "workloads_in_seed", len(seed.Workloads))
+	return allowlist.NewLayered(store, seed), nil
 }
 
 func readSeed(path string) (*pkgallowlist.Allowlist, error) {

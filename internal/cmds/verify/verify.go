@@ -246,7 +246,7 @@ responder chose).`,
 	f.StringVar(&cfg.servedPolicyFile, "served-policy-file", "", "path to a complete JSON image policy naming the exact set the target must serve and enforce at /measurements (kind=cds targets); when set, the served-set equality check compares against this file instead of --image-policy-file, which then pins the target's own identity only — for a cluster launched from a c8s launch-config bundle this is peers.json beside server.json")
 	f.StringVar(&cfg.sandboxID, "sandbox-id", "", "expected CRI pod sandbox ID on the target's leaf; requires --mesh-ca, since CDS's signature on the leaf is what vouches for the ID (docs/armtls.md)")
 	f.StringVar(&cfg.workload, "workload", "", "expected matched-workload name on the target's leaf; requires --mesh-ca, since CDS's signature on the leaf is what vouches for the stamp (docs/armtls.md)")
-	f.StringVar(&cfg.allowlistFile, "allowlist", "", "file holding the exact canonical allowlist bytes (as served by GET /allowlist); the leaf's stamped policy digest must equal SHA-256 of these bytes and the stamped name must resolve in the document. Requires --mesh-ca")
+	f.StringVar(&cfg.allowlistFile, "allowlist", "", "file holding the exact canonical allowlist bytes (as served by GET /allowlist); the leaf's stamped policy digest must equal SHA-256 of these bytes. A stamped name the document lacks was admitted by the node image's allowlist seed, which the verdict notes. Requires --mesh-ca")
 	f.StringVar(&cfg.meshCA, "mesh-ca", "", "PEM bundle of the CDS mesh CA; when set, the target's leaf must chain to it, which is what authenticates the reported sandbox ID. On attest-pq and attest-lb it is also what upgrades the chain anchor from responder-chosen (partial verdict) to verified")
 	f.StringVar(&cfg.initDataHex, "init-data", "", "expected init-data digest: SHA-256 hex of the init-data document the target guest must carry. Verification fails unless the evidence commits exactly this digest")
 	f.BoolVar(&cfg.allowDebug, "allow-debug", false, "accept debug-enabled guests")
@@ -967,7 +967,7 @@ func expectedOperatorKeysDigest(cfg config) ([]byte, error) {
 
 // heldAllowlist is the --allowlist file: the exact bytes (which are what gets
 // hashed — no reserialization, per the canonical-bytes rule) and the parsed
-// document the stamped name resolves against.
+// document the stamped name is looked up in.
 type heldAllowlist struct {
 	raw []byte
 	doc *pkgallowlist.Allowlist
@@ -1203,7 +1203,7 @@ type Outcome struct {
 	// CA-vouched like the sandbox ID; WorkloadNote carries the §8 verdict
 	// (workload_verified, or why it is only reported). Failures land in Error
 	// with the same taxonomy (workload_absent, workload_malformed,
-	// workload_name_mismatch, allowlist_digest_mismatch, workload_unresolved).
+	// workload_name_mismatch, allowlist_digest_mismatch).
 	Workload                 string `json:"workload,omitempty"`
 	WorkloadAllowlistVersion string `json:"workload_allowlist_version,omitempty"`
 	WorkloadAllowlistDigest  string `json:"workload_allowlist_digest,omitempty"`
@@ -1402,13 +1402,17 @@ func applyWorkloadPolicy(oc *Outcome, cfg config, ev *evidence, held *heldAllowl
 			fail("allowlist_digest_mismatch: stamped policy digest %x does not match SHA-256 %x of the held --allowlist bytes", ev.workload.AllowlistDigest, digest[:])
 			return
 		}
-		if _, ok := held.doc.Workloads[ev.workload.Name]; !ok {
-			fail("workload_unresolved: stamped name %q does not resolve in the held allowlist document", ev.workload.Name)
-			return
-		}
 	}
 	if oc.Verified {
 		oc.WorkloadNote = "workload_verified: the leaf chains to the supplied mesh CA and the stamp satisfies the pinned policy"
+		// CDS stamps every leaf with the uploaded document's digest, also one
+		// it matched to the measured node image's allowlist seed (a C8s
+		// component such as the router), whose entry the document lacks.
+		if held != nil {
+			if _, ok := held.doc.Workloads[ev.workload.Name]; !ok {
+				oc.WorkloadNote += "; the stamped name is not in the held allowlist, so the node image's allowlist seed admitted it"
+			}
+		}
 	}
 }
 

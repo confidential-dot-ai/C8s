@@ -1,8 +1,6 @@
 package allowlist
 
 import (
-	"fmt"
-
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
@@ -10,40 +8,20 @@ import (
 // image (--seed-layer) the image's seed as a read-only layer beside it. The
 // seed is read once at startup and never written to the store, so an upload
 // cannot drop it, and GET /allowlist still serves exactly the stored,
-// operator-signed document. Without a seed layer it is the store alone.
+// operator-signed document. The node image's launch measurement covers the
+// seed; leaves are stamped with the stored document's digest only. Without a
+// seed layer it is the store alone.
 type Layered struct {
 	Store *Store
 
-	seed       *pkgallowlist.Allowlist // nil without a seed layer
-	seedBytes  []byte                  // canonical bytes of seed
-	seedDigest string                  // "sha256:<hex>" of seedBytes
+	seed *pkgallowlist.Allowlist // nil without a seed layer
 }
 
 // NewLayered returns store with seed as its fixed seed layer; a nil seed means
 // none. Only a seed no one can change may be a layer: it admits without an
 // operator token.
-func NewLayered(store *Store, seed *pkgallowlist.Allowlist) (*Layered, error) {
-	l := &Layered{Store: store}
-	if seed == nil {
-		return l, nil
-	}
-	body, err := seed.Canonical()
-	if err != nil {
-		return nil, fmt.Errorf("canonicalize allowlist seed: %w", err)
-	}
-	l.seed, l.seedBytes, l.seedDigest = seed, body, objectDigest(body)
-	return l, nil
-}
-
-// SeedDigest returns "sha256:<hex>" of the seed layer, "" without one.
-func (l *Layered) SeedDigest() string { return l.seedDigest }
-
-// SeedObject returns the seed layer's canonical bytes when digest names them.
-func (l *Layered) SeedObject(digest string) ([]byte, bool) {
-	if l.seed == nil || digest != l.seedDigest {
-		return nil, false
-	}
-	return l.seedBytes, true
+func NewLayered(store *Store, seed *pkgallowlist.Allowlist) *Layered {
+	return &Layered{Store: store, seed: seed}
 }
 
 // LoadLayers returns the stored document and its version from one store read,

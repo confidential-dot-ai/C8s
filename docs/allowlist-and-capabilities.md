@@ -1011,18 +1011,18 @@ start instead (`--allowlist-seed`): they are served like any stored entry,
 and the first upload replaces them.
 
 - The seed never enters the store. `GET /allowlist` serves the stored
-  document alone, byte for byte the one an operator signed, and names the
-  seed in a `C8s-Allowlist-Seed: sha256:<hex>` header. An upload replaces the
-  stored document only, so it may carry application entries alone and cannot
-  drop C8s's own. `c8s allowlist upload` skips its core-component check when
-  CDS names a seed.
+  document alone, byte for byte the one an operator signed. An upload
+  replaces the stored document only, so it may carry application entries
+  alone and cannot drop C8s's own. `c8s allowlist upload --cvm-mode
+  bare-metal` checks no core components.
 - `/attest` and `/secrets` decide on both layers. On a name both hold, the
   seed's entry wins, as the node's base allowlist admits it too.
-- A leaf whose pod matched a seed entry is stamped with the seed's digest
-  (SHA-256 of its canonical bytes) and the store version. CDS serves the
-  seed's canonical bytes at `/allowlist/objects/sha256/<hex>`. The seed is
-  not in the allowlist history and carries no operator signature. get-cert
-  does not renew a leaf stamped with the seed on an upload.
+- Every leaf is stamped with the uploaded (stored) document's digest and the
+  store version, also a leaf whose pod matched a seed entry, such as the
+  router. A relying party verifying any pod sees the digest of the allowlist
+  the operator uploaded. The node image's launch measurement covers the seed.
+- An upload changes the served digest, so get-cert re-issues every leaf,
+  C8s's own (router, operator, mesh) included.
 - The seed changes only with a new node image.
 
 The steps above that publish the seed with `apply` are for chart-managed

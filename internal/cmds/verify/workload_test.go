@@ -236,12 +236,17 @@ func TestApplyWorkloadPolicyPins(t *testing.T) {
 			t.Fatalf("verdict = %v %q, want allowlist_digest_mismatch", oc.Verified, oc.Error)
 		}
 	})
-	t.Run("stamped name unresolved in held document", func(t *testing.T) {
-		ghost := &armtls.MatchedWorkload{Name: "ghost", AllowlistVersion: "4", AllowlistDigest: digest}
-		ghostLeaf, ghostCA := caSignedWorkloadLeaf(t, ghost)
-		oc := run(config{allowlistFile: allowlistPath, meshCA: ghostCA}, &evidence{leaf: ghostLeaf, workload: ghost})
-		if oc.Verified || !strings.Contains(oc.Error, "workload_unresolved") {
-			t.Fatalf("verdict = %v %q, want workload_unresolved", oc.Verified, oc.Error)
+	t.Run("seed-admitted name absent from held document", func(t *testing.T) {
+		// The router matched the node image's seed; CDS stamped it with the
+		// uploaded document's digest, which lacks the router entry.
+		router := &armtls.MatchedWorkload{Name: "router", AllowlistVersion: "4", AllowlistDigest: digest}
+		routerLeaf, routerCA := caSignedWorkloadLeaf(t, router)
+		oc := run(config{workload: "router", allowlistFile: allowlistPath, meshCA: routerCA}, &evidence{leaf: routerLeaf, workload: router})
+		if !oc.Verified {
+			t.Fatalf("verdict failed: %s", oc.Error)
+		}
+		if !strings.Contains(oc.WorkloadNote, "workload_verified") || !strings.Contains(oc.WorkloadNote, "allowlist seed") {
+			t.Fatalf("note = %q, want workload_verified naming the seed", oc.WorkloadNote)
 		}
 	})
 	t.Run("pin needs a leaf", func(t *testing.T) {

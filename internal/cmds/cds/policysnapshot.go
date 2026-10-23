@@ -15,18 +15,16 @@ import (
 // snapshot, so a write racing an issuance can never mix two documents into one
 // stamp. The version is never read separately from the document.
 //
-// With a seed layer (allowlist.Layered) decisions run on both layers, and a
-// leaf matched by a seed entry is stamped with the seed's digest.
+// With a seed layer (allowlist.Layered) decisions run on both layers, but every
+// leaf, a seed-matched one included, is stamped with the stored document's
+// digest: the one the operator uploaded and GET /allowlist serves.
 type PolicySnapshot struct {
 	// Allowlist is the document decisions run on: the stored one combined
 	// with the seed layer, if any.
 	Allowlist *pkgallowlist.Allowlist
 	Version   string
 	Canonical []byte // canonical bytes of the stored (served) document
-	Digest    []byte // SHA-256 of Canonical, 32 bytes
-
-	seed       *pkgallowlist.Allowlist // nil without a seed layer
-	seedDigest []byte                  // SHA-256 of seed's canonical bytes
+	Digest    []byte // SHA-256 of Canonical, 32 bytes; every leaf's stamp digest
 
 	// members indexes every admitted digest — each workload's init and main
 	// containers — for the membership gate.
@@ -69,12 +67,6 @@ func newLayeredSnapshot(al *pkgallowlist.Allowlist, version string, seed *pkgall
 	if err != nil {
 		return nil, fmt.Errorf("policy snapshot: digest allowlist: %w", err)
 	}
-	var seedDigest []byte
-	if seed != nil {
-		if seedDigest, err = seed.CanonicalDigest(); err != nil {
-			return nil, fmt.Errorf("policy snapshot: digest allowlist seed: %w", err)
-		}
-	}
 	decision := allowlist.Combine(al, seed)
 	members := make(map[string]struct{}, len(decision.Workloads))
 	for _, w := range decision.Workloads {
@@ -83,27 +75,12 @@ func newLayeredSnapshot(al *pkgallowlist.Allowlist, version string, seed *pkgall
 		}
 	}
 	return &PolicySnapshot{
-		Allowlist:  decision,
-		Version:    version,
-		Canonical:  canonical,
-		Digest:     digest,
-		seed:       seed,
-		seedDigest: seedDigest,
-		members:    members,
+		Allowlist: decision,
+		Version:   version,
+		Canonical: canonical,
+		Digest:    digest,
+		members:   members,
 	}, nil
-}
-
-// StampDigest is the policy digest a leaf matched to entry name is stamped
-// with: the seed layer's when the entry is the seed's, else the served
-// document's.
-func (s *PolicySnapshot) StampDigest(name string) []byte {
-	if s.seed == nil {
-		return s.Digest
-	}
-	if _, ok := s.seed.Workloads[name]; ok {
-		return s.seedDigest
-	}
-	return s.Digest
 }
 
 // loadPolicySnapshot reads the store exactly once and snapshots the result. An

@@ -2,12 +2,9 @@ package allowlist
 
 import (
 	"net/http"
-	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
-
-	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
 func TestUploadDeploymentMode(t *testing.T) {
@@ -21,13 +18,13 @@ func TestUploadDeploymentMode(t *testing.T) {
 		{name: "bare metal uses host service", flags: []string{"--cvm-mode=bare-metal"}},
 		{name: "gke requires pod", flags: []string{"--cvm-mode=gke"}, wantErr: "[attestation-api]"},
 		{name: "aks requires pod", flags: []string{"--cvm-mode=aks"}, wantErr: "[attestation-api]"},
-		{name: "bare metal still requires cds", flags: []string{"--cvm-mode=bare-metal"}, missing: "cds", wantErr: "[cds]"},
-		{name: "bare metal still requires mesh", flags: []string{"--cvm-mode=bare-metal"}, missing: "armtls-mesh", wantErr: "[armtls-mesh]"},
+		{name: "bare metal does not require cds", flags: []string{"--cvm-mode=bare-metal"}, missing: "cds"},
+		{name: "bare metal does not require mesh", flags: []string{"--cvm-mode=bare-metal"}, missing: "armtls-mesh"},
 		{name: "bare metal does not require the baked nri plugin", flags: []string{"--cvm-mode=bare-metal"}, missing: "nri-image-policy"},
-		{name: "bare metal still requires router", flags: []string{"--cvm-mode=bare-metal"}, missing: "nginx", wantErr: "[nginx]"},
+		{name: "bare metal does not require router", flags: []string{"--cvm-mode=bare-metal"}, missing: "nginx"},
 		{name: "require can include host service", flags: []string{"--cvm-mode=bare-metal", "--require=attestation-api"}, wantErr: "[attestation-api]"},
-		{name: "require replaces mode defaults", flags: []string{"--cvm-mode=bare-metal", "--require=cds"}, missing: "nginx"},
-		{name: "force bypasses missing component", flags: []string{"--cvm-mode=bare-metal", "--force"}, missing: "nginx"},
+		{name: "require replaces mode defaults", flags: []string{"--cvm-mode=bare-metal", "--require=nginx"}, missing: "nginx", wantErr: "[nginx]"},
+		{name: "force bypasses missing component", flags: []string{"--cvm-mode=gke", "--force"}},
 		{name: "unknown mode", flags: []string{"--cvm-mode=typo"}, wantErr: "--cvm-mode must be one of"},
 		{name: "force cannot bypass unknown mode", flags: []string{"--cvm-mode=typo", "--force"}, wantErr: "--cvm-mode must be one of"},
 		{name: "require cannot bypass unknown mode", flags: []string{"--cvm-mode=typo", "--require=cds"}, wantErr: "--cvm-mode must be one of"},
@@ -48,8 +45,8 @@ func TestUploadDeploymentMode(t *testing.T) {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("error = %v, want %q", err, tt.wantErr)
 				}
-				if slices.Contains(*methods, http.MethodPut) {
-					t.Fatalf("rejected upload wrote to CDS: %v", *methods)
+				if len(*methods) != 0 {
+					t.Fatalf("rejected upload contacted CDS: %v", *methods)
 				}
 				return
 			}
@@ -75,39 +72,5 @@ func TestBareMetalRequirementsLeaveDefaultGuardIntact(t *testing.T) {
 		if !slices.Contains(required, "attestation-api") {
 			t.Fatalf("mode %q lost attestation-api after selecting bare-metal", mode)
 		}
-	}
-}
-
-// A CDS that keeps the node image's seed as a fixed layer names it in the
-// seed header; the seed admits the core components, so an upload of
-// application entries alone needs no --force.
-func TestUploadApplicationEntriesBesideSeedLayer(t *testing.T) {
-	var put bool
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet {
-			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("ETag", `W/"1"`)
-			w.Header().Set(pkgallowlist.SeedHeader, "sha256:"+strings.Repeat("ab", 32))
-			w.Write([]byte(`{"schema":"c8s.allowlist/v1","workloads":{}}`))
-			return
-		}
-		put = r.Method == http.MethodPut
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	defer srv.Close()
-	dir := t.TempDir()
-	app := map[string]string{}
-	for digest, image := range coreImages() {
-		if strings.Contains(image, "/cds@") {
-			app[digest] = "registry.example.com/app@" + digest
-		}
-	}
-	file := writeAllowlistFile(t, dir, app)
-	_, stderr, err := runCmd("upload", file, "--url", srv.URL, "--insecure", "--operator-key", writeOperatorKey(t, dir))
-	if err != nil {
-		t.Fatalf("upload: %v\n%s", err, stderr)
-	}
-	if !put {
-		t.Fatal("upload did not write to CDS")
 	}
 }
