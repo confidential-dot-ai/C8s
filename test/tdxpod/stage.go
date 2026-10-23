@@ -192,10 +192,20 @@ func renderBundle(in bundleInputs) (*identity, error) {
 	if err != nil {
 		return nil, err
 	}
-	var policy struct {
-		Measurements []map[string]any `json:"measurements"`
+	// The derived policy keeps its schema and TEE fields; only the tuple is pinned per Pod.
+	var policy map[string]any
+	measurements, _ := func() ([]any, bool) {
+		if err := json.Unmarshal(derived, &policy); err != nil {
+			return nil, false
+		}
+		m, ok := policy["measurements"].([]any)
+		return m, ok
+	}()
+	var tuple map[string]any
+	if len(measurements) == 1 {
+		tuple, _ = measurements[0].(map[string]any)
 	}
-	if err := json.Unmarshal(derived, &policy); err != nil || len(policy.Measurements) != 1 {
+	if tuple == nil {
 		return nil, errors.New("exactly one TDX image tuple required")
 	}
 	var pinsList []map[string]any
@@ -208,13 +218,14 @@ func renderBundle(in bundleInputs) (*identity, error) {
 			return nil, err
 		}
 		pin := map[string]any{}
-		for k, v := range policy.Measurements[0] {
+		for k, v := range tuple {
 			pin[k] = v
 		}
 		pin["name"], pin["approver_key"] = "pod-"+side, string(pub)
 		pinsList = append(pinsList, pin)
 	}
-	if err := writeNew(filepath.Join(out, "pod-image-policy.json"), map[string]any{"measurements": pinsList}); err != nil {
+	policy["measurements"] = pinsList
+	if err := writeNew(filepath.Join(out, "pod-image-policy.json"), policy); err != nil {
 		return nil, err
 	}
 	config := map[string]any{"peers": []string{in.endpoints["a"].IP, in.endpoints["b"].IP}, "dnsIPv4": "1.1.1.1", "podUID": in.name, "collectorURL": in.collectorURL}

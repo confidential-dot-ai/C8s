@@ -24,7 +24,7 @@ func TestRendererDoesNotDuplicateCLILaunchPayloads(t *testing.T) {
 		}
 		switch argv[1] {
 		case "measurements":
-			return processResult{stdout: []byte(`{"measurements":[{}]}`)}, nil
+			return processResult{stdout: []byte(`{"schema_version":"1","tee":"tdx","measurements":[{"mrtd":"m"}]}`)}, nil
 		case "keys":
 			pub := argv[slices.Index(argv, "--pub-out")+1]
 			if err := os.WriteFile(pub, []byte("fixture public key"), 0o600); err != nil {
@@ -76,6 +76,18 @@ func TestRendererDoesNotDuplicateCLILaunchPayloads(t *testing.T) {
 	}
 	if len(id.ExpectedDigests) != 2 || !exists(filepath.Join(out, "identity.json")) {
 		t.Fatalf("identity: %+v", id)
+	}
+	var policy struct {
+		SchemaVersion string           `json:"schema_version"`
+		TEE           string           `json:"tee"`
+		Measurements  []map[string]any `json:"measurements"`
+	}
+	if err := json.Unmarshal([]byte(readFile(t, filepath.Join(out, "pod-image-policy.json"))), &policy); err != nil {
+		t.Fatal(err)
+	}
+	// The CLI refuses a policy without its schema and TEE fields; the pins keep the derived tuple.
+	if policy.SchemaVersion != "1" || policy.TEE != "tdx" || len(policy.Measurements) != 2 || policy.Measurements[0]["mrtd"] != "m" || policy.Measurements[1]["name"] != "pod-b" || policy.Measurements[1]["approver_key"] != "fixture public key" {
+		t.Fatalf("policy: %+v", policy)
 	}
 	if _, err := renderBundle(bundleInputs{manifest: manifest, manifestSHA256: sha256Hex(raw), meshImage: "registry/mesh:latest", out: filepath.Join(root, "again")}); err == nil {
 		t.Fatal("accepted an unmeasured mesh image")
