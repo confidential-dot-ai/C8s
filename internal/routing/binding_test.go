@@ -188,6 +188,28 @@ func TestE6RenewalBeforeThePollRefusesABoundDial(t *testing.T) {
 	}
 }
 
+// TestE6RenewalBeforeThePollRefusesAnUnboundDial: the unbound request whose
+// dial retires the pools gets a retryable 503, not a backend 502, and the
+// next one is served.
+func TestE6RenewalBeforeThePollRefusesAnUnboundDial(t *testing.T) {
+	f := newFixture(t)
+	web := startBackend(t, "web", issueStampedLeaf(t, f.mesh, "web", digestOf(0x43)))
+	f.apply(t, simpleManifest(1, web.addr()))
+	if err := f.transports.dropMeshPools(); err != nil {
+		t.Fatal(err)
+	}
+	backend := f.state.Current().Manifest.Hosts[testHost].Routes[0].Backend
+	f.transports.For(backend)
+
+	f.renew(t, issueStampedLeaf(t, f.mesh, "router", digestOf(0x43)))
+	if w := f.get("/"); w.Code != http.StatusServiceUnavailable || strings.TrimSpace(w.Body.String()) != types.ErrorCodeRouterDigestChanged {
+		t.Fatalf("unbound GET / on a pool built before a renewal no poll saw = %d %q, want 503 %q", w.Code, w.Body.String(), types.ErrorCodeRouterDigestChanged)
+	}
+	if w := f.get("/"); w.Code != http.StatusOK {
+		t.Fatalf("unbound GET / after the pools retired = %d %q, want 200", w.Code, w.Body.String())
+	}
+}
+
 // TestE6TransportUnderAnotherDigest: a bound request never takes a workload
 // transport whose pool was accepted under another router digest.
 func TestE6TransportUnderAnotherDigest(t *testing.T) {

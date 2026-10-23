@@ -278,13 +278,18 @@ func (p *Proxy) changed(b Binding, applied *Applied) string {
 }
 
 // refusal logs a failed backend exchange and returns the response it gets:
-// 502 backend_digest_mismatch (B8) or the plain 502 of B5. A B8 mismatch is
-// expected for a while after every allowlist write, so it logs at Info; a
-// damaged router stamp is the router's own fault, reported at Error once per
-// leaf where it is parsed, so each refusal logs at Debug without blaming the
+// 503 router_digest_changed for the dial that retired the pools after a
+// renewal (B10), 502 backend_digest_mismatch (B8), or the plain 502 of B5.
+// The 503 never dialled, so it logs at Debug; a B8 mismatch is expected for a
+// while after every allowlist write, so it logs at Info; a damaged router
+// stamp is the router's own fault, reported at Error once per leaf where it
+// is parsed, so each refusal logs at Debug without blaming the
 // backend.
 func (p *Proxy) refusal(err error, host, path, backend string) (int, string) {
 	switch {
+	case errors.Is(err, errRouterRenewed):
+		p.log.Debug(types.ErrorCodeRouterDigestChanged, "host", host, "path", path, "error", err)
+		return http.StatusServiceUnavailable, types.ErrorCodeRouterDigestChanged
 	case errors.Is(err, errBackendDigestMismatch):
 		p.log.Info("backend request refused", "host", host, "path", path, "backend", backend, "error", err)
 		return http.StatusBadGateway, backendDigestMismatch
