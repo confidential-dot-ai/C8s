@@ -11,8 +11,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -144,7 +146,7 @@ func (m BackupMeta) Newer(o BackupMeta) bool {
 }
 
 // PutBackup writes the parts under names of their own, then switches the
-// manifest to them, then deletes the parts no manifest names. The stored
+// manifest to them, then deletes stale parts (deleteStaleParts). The stored
 // backup therefore stays whole if the writer dies part way (the moment a
 // total loss is likeliest), and two writers cannot mix parts. It refuses a
 // backup that is not newer than the stored one (ErrBackupNotNewer), and the
@@ -181,7 +183,9 @@ func (s KubeDecrees) PutBackup(ctx context.Context, b Backup) error {
 		cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: man.partName(s.ClusterID, man.Parts), Namespace: s.Namespace,
 			Labels: labels}, BinaryData: map[string][]byte{keyPart: b.Ciphertext[off:end]}}
 		if _, err := s.cms().Create(ctx, cm, metav1.CreateOptions{}); err != nil {
-			s.deleteUnnamedParts(ctx)
+			for i := range man.Parts { // only this writer's: no manifest names them
+				_ = s.cms().Delete(ctx, man.partName(s.ClusterID, i), metav1.DeleteOptions{})
+			}
 			return err
 		}
 		man.Parts++
@@ -201,36 +205,34 @@ func (s KubeDecrees) PutBackup(ctx context.Context, b Backup) error {
 	if apierrors.IsConflict(err) || apierrors.IsAlreadyExists(err) {
 		err = fmt.Errorf("%w (another writer stored a backup meanwhile)", ErrBackupNotNewer)
 	}
-	s.deleteUnnamedParts(ctx)
+	s.deleteStaleParts(ctx)
 	return err
 }
 
-// deleteUnnamedParts removes backup parts the stored manifest does not name:
-// earlier backups', and a failed write's. Best effort; the next backup
+// deleteStaleParts removes backup parts that the stored manifest does not
+// name and that are not newer than it: earlier backups' and dead writers'.
+// A newer part belongs to a writer that may still switch the manifest to it
+// (two leaders overlap at a leader change). Best effort; the next backup
 // retries.
-func (s KubeDecrees) deleteUnnamedParts(ctx context.Context) {
+func (s KubeDecrees) deleteStaleParts(ctx context.Context) {
 	list, err := s.cms().List(ctx, metav1.ListOptions{LabelSelector: LabelBackup + "=" + s.ClusterID})
 	if err != nil {
 		return
 	}
-	keep := map[string]bool{BackupName(s.ClusterID): true}
-	for _, cm := range list.Items {
-		if cm.Name != BackupName(s.ClusterID) {
-			continue
-		}
-		var man backupManifest
-		if json.Unmarshal([]byte(cm.Data[keyBackup]), &man) != nil {
-			return // cannot tell which parts are live: delete nothing
-		}
-		for i := range man.Parts {
-			keep[man.partName(s.ClusterID, i)] = true
-		}
+	name := BackupName(s.ClusterID)
+	i := slices.IndexFunc(list.Items, func(cm corev1.ConfigMap) bool { return cm.Name == name })
+	var man backupManifest
+	if i < 0 || json.Unmarshal([]byte(list.Items[i].Data[keyBackup]), &man) != nil {
+		return // no manifest yet, or cannot tell which parts are live: delete nothing
 	}
-	if len(keep) == 1 {
-		return // no manifest yet: a first write in progress may own the parts
+	keep := map[string]bool{name: true}
+	for i := range man.Parts {
+		keep[man.partName(s.ClusterID, i)] = true
 	}
 	for _, cm := range list.Items {
-		if !keep[cm.Name] {
+		var part BackupMeta
+		_, err := fmt.Sscanf(strings.TrimPrefix(cm.Name, name+"-"), "e%d-i%d-", &part.Epoch, &part.Index)
+		if !keep[cm.Name] && err == nil && !part.Newer(man.Meta) {
 			_ = s.cms().Delete(ctx, cm.Name, metav1.DeleteOptions{})
 		}
 	}
