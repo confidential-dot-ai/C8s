@@ -233,13 +233,34 @@ func TestPodTransportProcess(t *testing.T) {
 		if err := transportEcho(value, nil); err != nil {
 			t.Fatal(err)
 		}
+	case "source-server":
+		parts := strings.Fields(value)
+		if len(parts) != 2 {
+			t.Fatal("source server requires a network and address")
+		}
+		if err := serveTransportSource(parts[0], parts[1]); err != nil {
+			t.Fatal(err)
+		}
+	case "source-client":
+		parts := strings.Fields(value)
+		if len(parts) != 3 {
+			t.Fatal("source client requires a network, address and expected source")
+		}
+		if err := transportExchange(parts[0], parts[1], "source", parts[2], nil); err != nil {
+			t.Fatal(err)
+		}
 	default:
 		t.Fatalf("unknown transport helper %q", mode)
 	}
 }
 
 func transportEcho(address string, cfg *tls.Config) error {
-	conn, err := net.DialTimeout("tcp", address, time.Second)
+	const message = "authenticated-pod-transport"
+	return transportExchange("tcp", address, message, message, cfg)
+}
+
+func transportExchange(network, address, message, expected string, cfg *tls.Config) error {
+	conn, err := net.DialTimeout(network, address, time.Second)
 	if err != nil {
 		return err
 	}
@@ -250,18 +271,64 @@ func transportEcho(address string, cfg *tls.Config) error {
 	if cfg != nil {
 		conn = tls.Client(conn, cfg)
 	}
-	message := "authenticated-pod-transport"
 	if _, err := io.WriteString(conn, message); err != nil {
 		return err
 	}
-	answer := make([]byte, len(message))
+	answer := make([]byte, len(expected))
 	if _, err := io.ReadFull(conn, answer); err != nil {
 		return err
 	}
-	if string(answer) != message {
+	if string(answer) != expected {
 		return fmt.Errorf("unexpected reply %q", answer)
 	}
 	return nil
+}
+
+// The peer reports the source it actually observed, proving guest SNAT rather
+// than merely accepting a connection somewhere along the route.
+func serveTransportSource(network, address string) error {
+	if network == "udp" {
+		conn, err := net.ListenPacket(network, address)
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+		fmt.Println("ready")
+		for {
+			var request [32]byte
+			_, source, err := conn.ReadFrom(request[:])
+			if err != nil {
+				return err
+			}
+			host, _, err := net.SplitHostPort(source.String())
+			if err != nil {
+				return err
+			}
+			if _, err := conn.WriteTo([]byte(host), source); err != nil {
+				return err
+			}
+		}
+	}
+	listener, err := net.Listen(network, address)
+	if err != nil {
+		return err
+	}
+	defer listener.Close()
+	fmt.Println("ready")
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			return err
+		}
+		_ = conn.SetDeadline(time.Now().Add(time.Second))
+		var request [6]byte
+		_, readErr := io.ReadFull(conn, request[:])
+		host, _, splitErr := net.SplitHostPort(conn.RemoteAddr().String())
+		if readErr == nil && splitErr == nil {
+			_, _ = io.WriteString(conn, host)
+		}
+		_ = conn.Close()
+	}
 }
 
 func TestPodTransportAcrossTwoGuestsInTheNamespace(t *testing.T) {
@@ -335,6 +402,32 @@ func TestPodTransportAcrossTwoGuestsInTheNamespace(t *testing.T) {
 			t.Fatalf("mesh %s: %v\n%s", side.dst, err, out)
 		}
 	}
+	// A nonpeer TCP port on the advertised peer IP remains ordinary egress.
+	// Port 53 must carry both UDP and TCP to guest upstream resolvers.
+	for _, service := range []string{"tcp 203.0.113.1:15007", "udp 203.0.113.1:15007", "udp 203.0.113.1:15006", "tcp 203.0.113.1:53", "udp 203.0.113.1:53"} {
+		startTransportProcess(t, wan, 0, "source-server", service)
+		for _, side := range []struct {
+			pod    *transportNS
+			source string
+		}{{pa, "192.0.2.2"}, {pb, "198.51.100.2"}} {
+			for _, uid := range []int{1500, 1337} {
+				if out, err := transportCommand(t, side.pod, uid, "source-client", service+" "+side.source).CombinedOutput(); err != nil {
+					t.Fatalf("UID %d egress %s from %s: %v\n%s", uid, service, side.source, err, out)
+				}
+			}
+		}
+	}
+	for _, network := range []string{"tcp", "udp"} {
+		startTransportProcess(t, wan, 0, "source-server", network+" 169.254.169.254:80")
+		if err := ga.run(func() error { return transportExchange(network, "169.254.169.254:80", "source", "192.0.2.2", nil) }); err != nil {
+			t.Fatalf("link-local exclusion target is unavailable: %v", err)
+		}
+		for _, uid := range []int{1500, 1337} {
+			if out, err := transportCommand(t, pa, uid, "source-client", network+" 169.254.169.254:80 192.0.2.2").CombinedOutput(); err == nil {
+				t.Fatalf("UID %d reached link-local over %s: %s", uid, network, out)
+			}
+		}
+	}
 	// The guest can receive the endpoint's replies to its own readiness probes.
 	if err := gb.run(func() error {
 		conn, err := net.DialTimeout("tcp", "10.255.254.2:15021", time.Second)
@@ -363,9 +456,20 @@ func TestPodTransportAcrossTwoGuestsInTheNamespace(t *testing.T) {
 		}
 	}
 	for _, uid := range []int{1500, 1337} {
-		for _, dst := range []string{"203.0.113.1:15007", "10.255.254.1:8400", "10.255.254.1:8443", "10.255.254.1:10250", "169.254.169.254:80"} {
+		for _, dst := range []string{"10.255.254.1:8400", "10.255.254.1:8443", "10.255.254.1:10250", "192.0.2.2:8443"} {
 			if out, err := transportCommand(t, pa, uid, "client", dst).CombinedOutput(); err == nil {
 				t.Fatalf("UID %d reached forbidden %s: %s", uid, dst, out)
+			}
+		}
+	}
+	startTransportProcess(t, ga, 0, "source-server", "udp 0.0.0.0:8400")
+	if err := ga.run(func() error { return transportExchange("udp", "10.255.254.1:8400", "source", "10.255.254.1", nil) }); err != nil {
+		t.Fatalf("guest UDP service is unavailable: %v", err)
+	}
+	for _, uid := range []int{1500, 1337} {
+		for _, dst := range []string{"10.255.254.1:8400", "192.0.2.2:8400"} {
+			if out, err := transportCommand(t, pa, uid, "source-client", "udp "+dst+" 10.255.254.2").CombinedOutput(); err == nil {
+				t.Fatalf("UID %d reached guest UDP service %s: %s", uid, dst, out)
 			}
 		}
 	}
@@ -382,6 +486,17 @@ func TestPodTransportAcrossTwoGuestsInTheNamespace(t *testing.T) {
 
 // This is the provider's existing port mapping, outside either protected guest.
 func installTransportProvider() error {
+	lo, err := netlink.LinkByName("lo")
+	if err != nil {
+		return err
+	}
+	linkLocal, err := netlink.ParseAddr("169.254.169.254/32")
+	if err != nil {
+		return err
+	}
+	if err := netlink.AddrAdd(lo, linkLocal); err != nil {
+		return err
+	}
 	conn, err := nftables.New()
 	if err != nil {
 		return err

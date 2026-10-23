@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+	corev1 "k8s.io/api/core/v1"
 	kubeyaml "sigs.k8s.io/yaml"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
@@ -67,6 +68,11 @@ func preparePod(rootDir string, d *launchconfig.Document, outputs map[string][]b
 	if err := podmesh.InjectEndpoint(pod, image); err != nil {
 		return fmt.Errorf("pod mesh endpoint: %w", err)
 	}
+	// Standalone Pods use the guest's upstream resolver configuration; they
+	// have no cluster DNS. Workload overrides cannot replace this measured
+	// networking contract or direct DNS to a guest-local service.
+	pod.Spec.DNSPolicy = corev1.DNSDefault
+	pod.Spec.DNSConfig = nil
 	manifest, err := kubeyaml.Marshal(pod)
 	if err != nil {
 		return fmt.Errorf("render pod manifest: %w", err)

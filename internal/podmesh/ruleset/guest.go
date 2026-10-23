@@ -15,7 +15,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// GuestPolicy routes one standalone Pod through its authenticated endpoint.
+// GuestPolicy routes one standalone Pod's egress and authenticated ingress.
 // The caller installs and verifies the Pod rules before enabling this path.
 type GuestPolicy struct {
 	Bridge       string
@@ -109,8 +109,9 @@ func buildGuest(p GuestPolicy) []chain {
 			{"deny-pod-to-guest", withVerdict(matchInterface(expr.MetaKeyIIFNAME, p.Bridge), expr.VerdictDrop)},
 		}}
 	forward := denyChain("guest-forward", *nftables.ChainHookForward, []rule{
-		{"peer-replies", withVerdict(slices.Concat(toPod, matchCtState(ctStateEstablished), matchCtReply()), expr.VerdictAccept)},
-		{"peer-icmp-errors", withVerdict(slices.Concat(toPod, matchRelatedICMP(unix.IPPROTO_ICMP)), expr.VerdictAccept)},
+		{"deny-link-local", withVerdict(slices.Concat(fromPod, matchDestinationRange(netip.MustParsePrefix("169.254.0.0/16"))), expr.VerdictDrop)},
+		{"egress-replies", withVerdict(slices.Concat(toPod, matchCtState(ctStateEstablished), matchCtReply()), expr.VerdictAccept)},
+		{"egress-icmp-errors", withVerdict(slices.Concat(toPod, matchRelatedICMP(unix.IPPROTO_ICMP)), expr.VerdictAccept)},
 		{"ingress-replies", withVerdict(slices.Concat(fromPod, matchCtState(ctStateEstablished), matchCtReply(), matchDNAT()), expr.VerdictAccept)},
 	})
 	ingress := captureChain("guest-ingress", *nftables.ChainHookPrerouting, []rule{
@@ -127,9 +128,9 @@ func buildGuest(p GuestPolicy) []chain {
 		}
 		ingress.rules = append(ingress.rules, rule{name, slices.Concat([]expr.Any{meta(expr.MetaKeyNFPROTO), compare([]byte{unix.NFPROTO_IPV4})}, matchLocalDestination(), matchTCPPort(port), translate)})
 	}
-	for _, peer := range p.Peers {
-		name := fmt.Sprintf("peer-%s-%d", peer.Addr, peer.Port)
-		match := slices.Concat(fromPod, matchDestination(peer.Addr), matchTCPPort(peer.Port))
+	for _, protocol := range []uint8{unix.IPPROTO_TCP, unix.IPPROTO_UDP} {
+		name := fmt.Sprintf("pod-egress-%d", protocol)
+		match := slices.Concat(fromPod, matchProtocol(protocol))
 		forward.rules = append(forward.rules, rule{name, withVerdict(match, expr.VerdictAccept)})
 		egress.rules = append(egress.rules, rule{name, append(slices.Clone(match), &expr.Masq{})})
 	}
