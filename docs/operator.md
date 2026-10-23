@@ -214,6 +214,9 @@ the scratch disk. The kubelet listens on loopback only; pod status is served
 over armTLS on `:8443` (`c8s pod-status`), the only port the VM publishes;
 nothing outside the VM can open a connection to the pod.
 
+The kubelet sets `makeIPTablesUtilChains: false`: the admission plugin owns the
+guest's packet rules, and a kubelet utility chain would make it refuse the pod.
+
 The generated document is the strict schema below; edit it only when a field
 the command does not expose is needed, then re-sign with
 `c8s keys sign-launch --key demo/server.key --force demo/server/launch.yaml`.

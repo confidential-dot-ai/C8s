@@ -14,6 +14,8 @@ enableDebuggingHandlers: false
 authentication: {anonymous: {enabled: true}, webhook: {enabled: false}}
 authorization: {mode: AlwaysAllow}
 cgroupDriver: systemd
+# NRI exclusively owns the standalone guest's packet rules.
+makeIPTablesUtilChains: false
 containerRuntimeEndpoint: unix:///run/k3s/containerd/containerd.sock
 clusterDNS: [10.53.0.10]
 clusterDomain: cluster.local
