@@ -124,7 +124,7 @@ func decideExits(served *allowlist.Allowlist, running []allowlist.RunningContain
 	}
 	exits := make([]exit, 0, len(entry.Egress))
 	for _, e := range entry.Egress {
-		exits = append(exits, exit{Range: e.CIDR, Port: e.Port})
+		exits = append(exits, exit{Range: e.CIDR, Host: e.Host, Port: e.Port})
 	}
 	return exitDecision{entry: name, exits: exits}
 }

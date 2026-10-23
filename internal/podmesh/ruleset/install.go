@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"runtime"
-	"slices"
 	"strings"
 
 	"github.com/google/nftables"
@@ -54,14 +53,13 @@ func Install(netnsPath string, p Policy) error {
 	})
 }
 
-// Extend adds exits to the ruleset current defines in the pod network
-// namespace at netnsPath. The live ruleset must be exactly current's; the
-// table is then replaced in a single netlink transaction, so the namespace is
-// protected throughout. It only widens what the pod carries, so no flow
-// admitted before it outlives the rules that admitted it.
-func Extend(netnsPath string, current Policy, exits []Exit) error {
-	next := current
-	next.Exits = slices.Concat(current.Exits, exits)
+// Extend replaces the ruleset current defines in the pod network namespace at
+// netnsPath with the one next defines, which differs from it by the exits a
+// grant adds. The live ruleset must be exactly current's; the table is then
+// replaced in a single netlink transaction, so the namespace is protected
+// throughout. It only widens what the pod carries, so no flow admitted before
+// it outlives the rules that admitted it.
+func Extend(netnsPath string, current, next Policy) error {
 	if err := next.validate(); err != nil {
 		return err
 	}

@@ -86,6 +86,7 @@ func captureOutbound(p Policy) chain {
 	resolverTCP := fmt.Sprintf("resolver-%s-tcp", p.Resolver)
 	rules = append(rules, rule{resolverTCP, withVerdict(matchResolver(p.Resolver, unix.IPPROTO_TCP), expr.VerdictReturn)})
 	rules = append(rules, exitRules(p, expr.VerdictReturn)...)
+	rules = append(rules, hostExitRules(p)...)
 	rules = append(rules, serverServiceRules(p, expr.VerdictReturn)...)
 	rules = append(rules, serverUpstreamRules(p, expr.VerdictReturn)...)
 	rules = append(rules, serverClusterCaptureRules(p)...)
@@ -275,6 +276,23 @@ func exitRules(p Policy, kind expr.VerdictKind) []rule {
 		exprs := slices.Concat(destination, matchTCPPort(exit.Port))
 		name := fmt.Sprintf("exit-%s-%d", exit.Range, exit.Port)
 		rules = append(rules, rule{name, withVerdict(exprs, kind)})
+	}
+	return rules
+}
+
+// hostExitRules redirect TCP to a host exit port into the egress listener,
+// which admits TLS to a granted host alone. The same port inside the cluster
+// stays on the mesh, so a member is never reached past it. The redirected
+// connection is pod-local, so the filter chain needs nothing more.
+func hostExitRules(p Policy) []rule {
+	var rules []rule
+	for _, port := range p.HostExits.Ports {
+		for _, in := range p.HostExits.ClusterRanges {
+			exprs := slices.Concat(matchDestinationRange(in), matchTCPPort(port), redirectTo(p.Capture.Outbound))
+			rules = append(rules, rule{fmt.Sprintf("host-exit-%d-in-cluster-%s", port, in), exprs})
+		}
+		exprs := slices.Concat(matchTCPPort(port), redirectTo(p.Capture.Egress))
+		rules = append(rules, rule{fmt.Sprintf("host-exit-%d", port), exprs})
 	}
 	return rules
 }

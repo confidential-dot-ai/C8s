@@ -312,6 +312,7 @@ const (
 	denied   treatment = "denied"
 	admitted treatment = "admitted"
 	captured treatment = "captured"
+	toEgress treatment = "redirected to the egress listener"
 )
 
 // treatmentOf reads the conntrack entry of one packet: no entry means it never
@@ -326,6 +327,8 @@ func treatmentOf(policy Policy, network, destination string, sourcePort uint16) 
 	switch {
 	case flow == nil:
 		return denied, nil
+	case policy.Capture.Egress != 0 && redirectedToMesh(flow, policy.Capture.Egress):
+		return toEgress, nil
 	case redirectedToMesh(flow, policy.Capture.Outbound), redirectedToMesh(flow, policy.Capture.Inbound):
 		return captured, nil
 	default:

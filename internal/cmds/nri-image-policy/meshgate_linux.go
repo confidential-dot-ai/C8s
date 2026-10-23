@@ -34,7 +34,7 @@ func extendPodRuleset(netns podNamespace, policy meshPolicy, namespace string, e
 	if err := requireSameNamespace(netns); err != nil {
 		return err
 	}
-	return ruleset.Extend(netns.path, policy.podRuleset(namespace, nil), rulesetExits(exits))
+	return ruleset.Extend(netns.path, policy.podRuleset(namespace, nil), policy.podRuleset(namespace, exits))
 }
 
 func requireSameNamespace(netns podNamespace) error {
@@ -48,12 +48,31 @@ func requireSameNamespace(netns podNamespace) error {
 	return nil
 }
 
+// rulesetExits are the range exits, which the ruleset carries uncaptured.
 func rulesetExits(exits []exit) []ruleset.Exit {
 	out := make([]ruleset.Exit, 0, len(exits))
 	for _, e := range exits {
-		out = append(out, ruleset.Exit{Range: e.Range, Port: e.Port})
+		if !e.isHost() {
+			out = append(out, ruleset.Exit{Range: e.Range, Port: e.Port})
+		}
 	}
 	return out
+}
+
+// hostExits are the ports of the host exits, which the ruleset sends to the
+// mesh endpoint's egress listener outside the cluster ranges.
+func (p meshPolicy) hostExits(exits []exit) ruleset.HostExits {
+	var ports []uint16
+	for _, e := range exits {
+		if e.isHost() && !slices.Contains(ports, e.Port) {
+			ports = append(ports, e.Port)
+		}
+	}
+	if len(ports) == 0 {
+		return ruleset.HostExits{}
+	}
+	slices.Sort(ports)
+	return ruleset.HostExits{Ports: ports, ClusterRanges: p.ClusterRanges}
 }
 
 // podRuleset is the ruleset a member pod of that Kubernetes namespace
@@ -64,12 +83,13 @@ func rulesetExits(exits []exit) []ruleset.Exit {
 func (p meshPolicy) podRuleset(kubeNamespace string, granted []exit) ruleset.Policy {
 	endpoint, _ := p.role(meshRole)
 	return ruleset.Policy{
-		Resolver: p.Resolver,
-		Capture:  ruleset.CapturePorts(p.Capture),
-		MeshUID:  endpoint.UID,
-		Exits:    slices.Concat(p.cdsExit(), rulesetExits(granted)),
-		Server:   p.servedPorts(kubeNamespace),
-		Roles:    p.dialingRoles(),
+		Resolver:  p.Resolver,
+		Capture:   ruleset.CapturePorts(p.Capture),
+		MeshUID:   endpoint.UID,
+		Exits:     slices.Concat(p.cdsExit(), rulesetExits(granted)),
+		HostExits: p.hostExits(granted),
+		Server:    p.servedPorts(kubeNamespace),
+		Roles:     p.dialingRoles(),
 	}
 }
 

@@ -19,6 +19,7 @@ package allowlist
 
 import (
 	"bytes"
+	"cmp"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -78,15 +79,18 @@ const (
 	minEgressBits6 = 48
 )
 
-// MaxEgress bounds an entry's exits: each is a way out of the TEE that a
-// relying party has to weigh, and one rule per exit in every chain.
-const MaxEgress = 8
+// MaxEgress bounds an entry's exits, ranges and hosts together: each is a
+// way out of the TEE that a relying party has to weigh.
+const MaxEgress = 16
 
-// Egress is one declared exit: a range and a TCP port. The canonical text of
-// the range is its RFC 5952 form (lower case, zeros compressed), whatever
-// spelling the author wrote.
+// Egress is one declared exit: a range or a host, and a TCP port. The
+// canonical text of a range is its RFC 5952 form (lower case, zeros
+// compressed), whatever spelling the author wrote. A host is reached by TLS
+// alone: the mesh endpoint admits a connection whose ClientHello names it and
+// dials the address it resolves the name to itself.
 type Egress struct {
-	CIDR netip.Prefix `json:"cidr" yaml:"cidr"`
+	CIDR netip.Prefix `json:"cidr,omitzero" yaml:"cidr,omitempty"`
+	Host string       `json:"host,omitempty" yaml:"host,omitempty"`
 	Port uint16       `json:"port" yaml:"port"`
 }
 
@@ -552,40 +556,62 @@ func normalizeEgress(exits *[]Egress) error {
 		return fmt.Errorf("%d exits; the maximum is %d", len(list), MaxEgress)
 	}
 	for _, e := range list {
+		var err error
 		switch {
-		case !e.CIDR.IsValid():
-			return fmt.Errorf("an exit needs a cidr")
-		case e.CIDR.Addr().Is4In6():
-			return fmt.Errorf("cidr %s is a 4-in-6 range; write it as IPv4", e.CIDR)
-		case e.CIDR != e.CIDR.Masked():
-			return fmt.Errorf("cidr %s carries host bits (did you mean %s?)", e.CIDR, e.CIDR.Masked())
-		case e.Port == 0:
-			return fmt.Errorf("exit %s needs a TCP port", e.CIDR)
-		case e.CIDR.Addr().Is4() && e.CIDR.Bits() < minEgressBits4,
-			e.CIDR.Addr().Is6() && e.CIDR.Bits() < minEgressBits6:
-			return fmt.Errorf("cidr %s is broader than /%d (IPv4) or /%d (IPv6); an exit names a relay, usually one address", e.CIDR, minEgressBits4, minEgressBits6)
+		case e.CIDR.IsValid() && e.Host != "":
+			err = fmt.Errorf("exit %s names a host too; an exit is a cidr or a host", e.CIDR)
+		case e.Host != "" || !e.CIDR.IsValid():
+			err = validEgressHost(e.Host)
+		default:
+			err = validEgressRange(e.CIDR)
 		}
-		for _, special := range nonUnicastRanges {
-			if e.CIDR.Overlaps(special) {
-				return fmt.Errorf("cidr %s overlaps %s, which is not a range of unicast hosts an exit can name", e.CIDR, special)
-			}
+		if err != nil {
+			return err
+		}
+		if e.Port == 0 {
+			return fmt.Errorf("exit %s%s needs a TCP port", e.CIDR, e.Host)
 		}
 	}
-	slices.SortFunc(list, func(a, b Egress) int {
-		if c := a.CIDR.Addr().Compare(b.CIDR.Addr()); c != 0 {
-			return c
-		}
-		if c := a.CIDR.Bits() - b.CIDR.Bits(); c != 0 {
-			return c
-		}
-		return int(a.Port) - int(b.Port)
-	})
+	slices.SortFunc(list, compareEgress)
 	for i := 1; i < len(list); i++ {
 		if list[i] == list[i-1] {
-			return fmt.Errorf("exit %s port %d is declared twice", list[i].CIDR, list[i].Port)
+			return fmt.Errorf("exit %s%s port %d is declared twice", list[i].CIDR, list[i].Host, list[i].Port)
 		}
 	}
 	return nil
+}
+
+func validEgressRange(cidr netip.Prefix) error {
+	switch {
+	case cidr.Addr().Is4In6():
+		return fmt.Errorf("cidr %s is a 4-in-6 range; write it as IPv4", cidr)
+	case cidr != cidr.Masked():
+		return fmt.Errorf("cidr %s carries host bits (did you mean %s?)", cidr, cidr.Masked())
+	case cidr.Addr().Is4() && cidr.Bits() < minEgressBits4,
+		cidr.Addr().Is6() && cidr.Bits() < minEgressBits6:
+		return fmt.Errorf("cidr %s is broader than /%d (IPv4) or /%d (IPv6); an exit names a relay, usually one address", cidr, minEgressBits4, minEgressBits6)
+	}
+	for _, special := range nonUnicastRanges {
+		if cidr.Overlaps(special) {
+			return fmt.Errorf("cidr %s overlaps %s, which is not a range of unicast hosts an exit can name", cidr, special)
+		}
+	}
+	return nil
+}
+
+// compareEgress orders ranges first, by address, prefix length and port,
+// then hosts, by name and port.
+func compareEgress(a, b Egress) int {
+	if c := cmp.Compare(a.Host, b.Host); c != 0 {
+		return c
+	}
+	if c := a.CIDR.Addr().Compare(b.CIDR.Addr()); c != 0 {
+		return c
+	}
+	if c := a.CIDR.Bits() - b.CIDR.Bits(); c != 0 {
+		return c
+	}
+	return int(a.Port) - int(b.Port)
 }
 
 func normalizeContainers(workload, field string, cs []Container) error {

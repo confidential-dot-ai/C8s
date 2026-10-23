@@ -79,6 +79,8 @@ type capturePorts struct {
 	Outbound uint16 `yaml:"outbound"`
 	Inbound  uint16 `yaml:"inbound"`
 	Health   uint16 `yaml:"health"`
+	// Egress is the endpoint's listener for host exits; 0 grants none.
+	Egress uint16 `yaml:"egress"`
 }
 
 // roleBinding binds a dialing role to its reserved UID and the services it

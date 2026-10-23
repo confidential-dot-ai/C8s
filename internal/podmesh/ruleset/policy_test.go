@@ -64,6 +64,18 @@ func TestPolicyRefusesWhatARuleCannotExpress(t *testing.T) {
 		{"exit to IPv6 link-local", func(p *Policy) { p.Exits[0].Range = netip.MustParsePrefix("fe80::/64") }},
 		{"exit to NAT64", func(p *Policy) { p.Exits[0].Range = netip.MustParsePrefix("64:ff9b::/96") }},
 		{"4-in-6 exit", func(p *Policy) { p.Exits[0].Range = netip.MustParsePrefix("::ffff:10.43.0.2/128") }},
+		{"host exits with no egress listener", func(p *Policy) {
+			p.HostExits = HostExits{Ports: []uint16{443}, ClusterRanges: []netip.Prefix{netip.MustParsePrefix("10.52.0.0/16")}}
+		}},
+		{"host exits with no cluster ranges", func(p *Policy) {
+			p.Capture.Egress = 15002
+			p.HostExits = HostExits{Ports: []uint16{443}}
+		}},
+		{"repeated host exit port", func(p *Policy) {
+			p.Capture.Egress = 15002
+			p.HostExits = HostExits{Ports: []uint16{443, 443}, ClusterRanges: []netip.Prefix{netip.MustParsePrefix("10.52.0.0/16")}}
+		}},
+		{"egress listener on the outbound port", func(p *Policy) { p.Capture.Egress = p.Capture.Outbound }},
 		{"server egress port with no cluster ranges to exclude", func(p *Policy) {
 			p.Server = serverPolicy().Server
 			p.Server.ClusterRanges = nil

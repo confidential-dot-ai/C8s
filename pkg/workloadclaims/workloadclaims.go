@@ -26,6 +26,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path"
 	"regexp"
@@ -426,6 +427,20 @@ type SandboxResolver interface {
 type CallerSandbox struct {
 	SandboxID string
 	Refusal   error
+}
+
+// HostExits are the hosts a pod's mesh endpoint may carry TLS to, as the
+// node granted them from the pod's allowlist entry, and the ranges no
+// resolved address of them may fall in.
+type HostExits struct {
+	Hosts     []HostExit     `json:"hosts"`
+	OffLimits []netip.Prefix `json:"offLimits"`
+}
+
+// HostExit is one granted host (a name, or "*." and a name) and TCP port.
+type HostExit struct {
+	Host string `json:"host"`
+	Port uint16 `json:"port"`
 }
 
 // connKey carries the accepted net.Conn through the request context so the

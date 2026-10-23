@@ -15,6 +15,8 @@ import (
 
 	"github.com/containerd/nri/pkg/api"
 	"golang.org/x/sys/unix"
+
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 // meshGate holds this node's protection state, under the mesh policy its
@@ -49,9 +51,11 @@ type protectedPod struct {
 	starts sync.Mutex
 }
 
-// exit is one range and TCP port a pod reaches uncaptured.
+// exit is one range and TCP port a pod reaches uncaptured, or one host the
+// pod's mesh endpoint carries TLS to on that port (Range unset).
 type exit struct {
 	Range netip.Prefix
+	Host  string
 	Port  uint16
 }
 
@@ -301,6 +305,9 @@ func (g *meshGate) requireOffLimits(exits []exit) error {
 	if err := g.policy.requireOutsideCluster(exits); err != nil {
 		return err
 	}
+	if slices.ContainsFunc(exits, exit.isHost) && g.policy.Capture.Egress == 0 {
+		return errors.New("trusted mesh policy names no egress listener, so this node grants no host exit")
+	}
 	node, err := g.nodeAddress()
 	if err != nil {
 		return fmt.Errorf("no exit can be shown to stay off this node: %w", err)
@@ -313,12 +320,58 @@ func (g *meshGate) requireOffLimits(exits []exit) error {
 	}
 	for _, e := range exits {
 		for _, addr := range offLimits {
-			if addr.IsValid() && e.Range.Contains(addr) {
+			if addr.IsValid() && e.Range.IsValid() && e.Range.Contains(addr) {
 				return fmt.Errorf("exit %s port %d reaches %s, an address of this node or of a service a platform role is bound to", e.Range, e.Port, addr)
 			}
 		}
 	}
 	return nil
+}
+
+func (e exit) isHost() bool {
+	return e.Host != ""
+}
+
+// offLimits are the addresses no host exit connection may be dialed to,
+// whatever a name resolves to: this cluster, this node, its resolver and every
+// service a platform role is bound to. The mesh endpoint checks each address
+// it resolves a granted host to against them.
+func (g *meshGate) offLimits() ([]netip.Prefix, error) {
+	node, err := g.nodeAddress()
+	if err != nil {
+		return nil, err
+	}
+	out := slices.Clone(g.policy.ClusterRanges)
+	for _, addr := range []netip.Addr{node, g.policy.Resolver} {
+		if addr.IsValid() {
+			out = append(out, netip.PrefixFrom(addr, addr.BitLen()))
+		}
+	}
+	for _, role := range g.policy.Roles {
+		for _, dst := range role.Destinations {
+			out = append(out, netip.PrefixFrom(dst.Addr(), dst.Addr().BitLen()))
+		}
+	}
+	return out, nil
+}
+
+// HostExits are the hosts a protected sandbox was granted, with the addresses
+// none of them may be reached at; no hosts for a sandbox granted none.
+func (g *meshGate) HostExits(sandboxID string) (workloadclaims.HostExits, error) {
+	var hosts []workloadclaims.HostExit
+	for _, e := range g.grantedExits(sandboxID) {
+		if e.isHost() {
+			hosts = append(hosts, workloadclaims.HostExit{Host: e.Host, Port: e.Port})
+		}
+	}
+	if len(hosts) == 0 {
+		return workloadclaims.HostExits{}, nil
+	}
+	offLimits, err := g.offLimits()
+	if err != nil {
+		return workloadclaims.HostExits{}, err
+	}
+	return workloadclaims.HostExits{Hosts: hosts, OffLimits: offLimits}, nil
 }
 
 // requireOutsideCluster refuses an exit into this cluster's pod or Service
@@ -330,7 +383,7 @@ func (p meshPolicy) requireOutsideCluster(exits []exit) error {
 	}
 	for _, e := range exits {
 		for _, in := range p.ClusterRanges {
-			if e.Range.Overlaps(in) {
+			if e.Range.IsValid() && e.Range.Overlaps(in) {
 				return fmt.Errorf("exit %s port %d overlaps the cluster range %s", e.Range, e.Port, in)
 			}
 		}

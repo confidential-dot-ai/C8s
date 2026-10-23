@@ -84,8 +84,9 @@ func TestBuildMatchesTheGoldenRuleset(t *testing.T) {
 	}
 }
 
-// A pod granted exits carries one accept per exit, before the capture, in
-// both chains; a range is compared under its mask.
+// A pod granted exits carries one accept per range exit, before the capture,
+// in both chains; a range is compared under its mask. A host exit port is
+// redirected to the egress listener outside the cluster ranges alone.
 func TestBuildWithGrantedExitsMatchesTheGoldenRuleset(t *testing.T) {
 	const golden = "testdata/ruleset-exits.golden"
 	policy := testPolicy()
@@ -93,6 +94,11 @@ func TestBuildWithGrantedExitsMatchesTheGoldenRuleset(t *testing.T) {
 		Exit{netip.MustParsePrefix("203.0.113.0/24"), 443},
 		Exit{netip.MustParsePrefix("2001:db8::/32"), 4317},
 	)
+	policy.Capture.Egress = 15002
+	policy.HostExits = HostExits{
+		Ports:         []uint16{443},
+		ClusterRanges: []netip.Prefix{netip.MustParsePrefix("10.52.0.0/16"), netip.MustParsePrefix("fd00:52::/56")},
+	}
 	got := renderRuleset(build(policy))
 	if *update {
 		if err := os.WriteFile(golden, []byte(got), 0o644); err != nil {

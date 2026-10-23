@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"slices"
 )
 
 // resolverPort is the only destination port the resolver exception permits.
@@ -39,6 +40,10 @@ type Policy struct {
 	// over TCP uncaptured. Each is a way out of the pod for whatever the
 	// application sends, so only trusted policy names one.
 	Exits []Exit
+	// HostExits are the TCP ports on which the pod's connections outside the
+	// cluster go to the mesh endpoint's egress listener, which admits a TLS
+	// connection to a host the pod was granted and nothing else.
+	HostExits HostExits
 	// Server is the platform role whose own ports this pod serves, where the
 	// caller builds it for a pod of the router's namespace. Its application
 	// traffic is captured like a workload's, and only its external listener
@@ -70,6 +75,13 @@ type ServerRole struct {
 	ClusterRanges []netip.Prefix
 }
 
+// HostExits are the ports a pod reaches declared hosts on, and the cluster's
+// pod and Service ranges, which those ports still reach through the mesh.
+type HostExits struct {
+	Ports         []uint16
+	ClusterRanges []netip.Prefix
+}
+
 // ServerEgress is the one identity of a server-role pod whose sockets leave
 // the cluster in the clear, and the ports they leave on. It is never the
 // identity that forwards application traffic: a forwarded connection whose
@@ -89,6 +101,9 @@ type CapturePorts struct {
 	Outbound uint16
 	Inbound  uint16
 	Health   uint16
+	// Egress is the listener host exits are redirected to; 0 where the
+	// node grants none.
+	Egress uint16
 }
 
 // Role is one platform role bound to a reserved UID, with the services that
@@ -135,6 +150,9 @@ func (p Policy) validate() error {
 		if err := exit.validate(); err != nil {
 			return err
 		}
+	}
+	if err := p.HostExits.validate(p.Capture); err != nil {
+		return err
 	}
 	return p.Server.validate()
 }
@@ -221,8 +239,35 @@ func (c CapturePorts) validate() error {
 	switch {
 	case c.Outbound == 0 || c.Inbound == 0 || c.Health == 0:
 		return fmt.Errorf("%w: incomplete capture ports", ErrPolicy)
-	case c.Outbound == c.Inbound || c.Outbound == c.Health || c.Inbound == c.Health:
+	case c.Outbound == c.Inbound || c.Outbound == c.Health || c.Inbound == c.Health,
+		c.Egress != 0 && (c.Egress == c.Outbound || c.Egress == c.Inbound || c.Egress == c.Health):
 		return fmt.Errorf("%w: capture ports collide", ErrPolicy)
+	}
+	return nil
+}
+
+// validate requires an egress listener to redirect to and the cluster ranges
+// that stay on the mesh: without them a connection to a member on a host
+// exit port would leave the mesh.
+func (h HostExits) validate(capture CapturePorts) error {
+	if len(h.Ports) == 0 {
+		return nil
+	}
+	switch {
+	case capture.Egress == 0:
+		return fmt.Errorf("%w: host exits with no egress listener", ErrPolicy)
+	case len(h.ClusterRanges) == 0:
+		return fmt.Errorf("%w: host exits with no cluster ranges to keep on the mesh", ErrPolicy)
+	}
+	for i, port := range h.Ports {
+		if port == 0 || slices.Contains(h.Ports[:i], port) {
+			return fmt.Errorf("%w: host exit port %d is zero or repeated", ErrPolicy, port)
+		}
+	}
+	for _, in := range h.ClusterRanges {
+		if err := validClusterRange(in); err != nil {
+			return err
+		}
 	}
 	return nil
 }
