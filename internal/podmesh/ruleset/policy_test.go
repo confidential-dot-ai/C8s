@@ -52,6 +52,17 @@ func TestPolicyRefusesWhatARuleCannotExpress(t *testing.T) {
 			},
 		},
 		{"pod-local destination", func(p *Policy) { p.Roles[0].Destinations[0].Addr = netip.MustParseAddr("127.0.0.1") }},
+		{"exit without port", func(p *Policy) { p.Exits = []Exit{{netip.MustParsePrefix("203.0.113.7/32"), 0}} }},
+		{"unset exit range", func(p *Policy) { p.Exits = []Exit{{netip.Prefix{}, 443}} }},
+		{"exit range carrying host bits", func(p *Policy) { p.Exits = []Exit{{netip.MustParsePrefix("203.0.113.7/24"), 443}} }},
+		{"exit to every address", func(p *Policy) { p.Exits = []Exit{{netip.MustParsePrefix("0.0.0.0/0"), 443}} }},
+		{"exit to every IPv6 address", func(p *Policy) { p.Exits = []Exit{{netip.MustParsePrefix("::/0"), 443}} }},
+		{"exit over loopback", func(p *Policy) { p.Exits = []Exit{{netip.MustParsePrefix("96.0.0.0/3"), 443}} }},
+		{"exit to link-local", func(p *Policy) { p.Exits = []Exit{{netip.MustParsePrefix("169.254.169.254/32"), 80}} }},
+		{"exit to multicast", func(p *Policy) { p.Exits = []Exit{{netip.MustParsePrefix("239.0.0.0/8"), 443}} }},
+		{"exit to broadcast", func(p *Policy) { p.Exits = []Exit{{netip.MustParsePrefix("255.255.255.255/32"), 443}} }},
+		{"exit to IPv6 link-local", func(p *Policy) { p.Exits = []Exit{{netip.MustParsePrefix("fe80::/64"), 443}} }},
+		{"4-in-6 exit", func(p *Policy) { p.Exits = []Exit{{netip.MustParsePrefix("::ffff:203.0.113.7/128"), 443}} }},
 		{"server egress port with no cluster ranges to exclude", func(p *Policy) {
 			p.Server = serverPolicy().Server
 			p.Server.ClusterRanges = nil
