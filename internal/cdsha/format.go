@@ -18,17 +18,10 @@ import (
 //     serving: skipping an entry would silently diverge from the group.
 const Format uint32 = 2
 
-// Format history:
-//   1: the original encoding.
-//   2: (v4) snapshots carry the decree record (FSM.Decrees), and decrees
-//      append to it; the leader prunes the allowlist history through the log
-//      (OpPruneHistory); snapshots are zstd with a long window; spent
-//      operator tokens record their iat and exp, and consuming one prunes the
-//      records of tokens long expired (allowlist.ApplyOptions TokenExpiry),
-//      so snapshots carry the two used_token columns; the leader renews the
-//      mesh CA certificate under the same key (KindRenewCA). A group at format 1
-//      does none of these and leaves the columns out, so replicas of format
-//      1 and 2 agree on the state while they run together.
+// baseFormat is the oldest format this release reads: a new cluster starts
+// at it, and a format left unset (zero) means it. Earlier formats belong to
+// unreleased builds and are refused.
+const baseFormat uint32 = 2
 
 // ErrNewerFormat is a log entry or snapshot this replica cannot read.
 var ErrNewerFormat = errors.New("cds-ha: log entry or snapshot in a newer format than this replica reads")
@@ -36,16 +29,16 @@ var ErrNewerFormat = errors.New("cds-ha: log entry or snapshot in a newer format
 // KindFormat raises the cluster's agreed format.
 const KindFormat EntryKind = "format"
 
-// formatOr1 maps the zero value (state from before formats were recorded) to 1.
-func formatOr1(f uint32) uint32 {
+// formatOrBase maps an unset format to baseFormat.
+func formatOrBase(f uint32) uint32 {
 	if f == 0 {
-		return 1
+		return baseFormat
 	}
 	return f
 }
 
-// Format is the agreed encoding format.
-func (c Core) format() uint32 { return formatOr1(c.Format) }
+// format is the agreed encoding format.
+func (c Core) format() uint32 { return formatOrBase(c.Format) }
 
 // applyFormat raises the agreed format. It never lowers it: a replica that
 // joined because it reads the current format must keep reading the log.
