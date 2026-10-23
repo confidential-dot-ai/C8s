@@ -6,8 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/internal/sandboxledger"
 	"github.com/hashicorp/raft"
+
+	"github.com/confidential-dot-ai/c8s/internal/sandboxledger"
 )
 
 func TestRecoveryFatalReplayDoesNotRestart(t *testing.T) {

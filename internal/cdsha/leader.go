@@ -65,8 +65,10 @@ func (n *Node) recover(ctx context.Context, p PendingDecree) {
 // recoveryFSM keeps replay policy identical to this replica's live FSM.
 // Operators must still configure identical policies on all replicas.
 func (n *Node) recoveryFSM(al *allowlist.Store) *FSM {
-	return NewFSM(PreGenesis(n.cfg.ClusterID, n.cfg.OperatorPubKey), al,
+	f := NewFSM(PreGenesis(n.cfg.ClusterID, n.cfg.OperatorPubKey), al,
 		n.cfg.Secrets.EmptyClone(), n.cfg.Ledger.EmptyClone())
+	f.readable = n.fsm.readable
+	return f
 }
 
 // pendingDecree is a valid pending decree of kind naming this replica.
@@ -277,6 +279,8 @@ func (n *Node) CheckRestore(sd SignedDecree) error {
 }
 
 func (n *Node) Restore(ctx context.Context, sd SignedDecree, snapshot []byte) (DecreeResult, error) {
+	n.eligibilityMu.Lock()
+	defer n.eligibilityMu.Unlock()
 	if err := n.CheckRestore(sd); err != nil {
 		return DecreeResult{}, err
 	}
@@ -284,11 +288,26 @@ func (n *Node) Restore(ctx context.Context, sd SignedDecree, snapshot []byte) (D
 	if SnapshotSHA256(snapshot) != d.SnapshotSHA256 {
 		return DecreeResult{}, errors.New("cds-ha: snapshot differs from the one the decree names")
 	}
+	// Reuse the complete application path on disposable stores. Authorization and
+	// hash checks precede bounded decoding; no live store or Raft state changes.
+	al, err := allowlist.OpenInMemory()
+	if err != nil {
+		return DecreeResult{}, err
+	}
+	scratch := n.recoveryFSM(&al)
+	result := scratch.applyRestore(RestoreEntry{Decree: sd, AtMS: time.Now().UnixMilli(), Snapshot: snapshot})
+	al.Close()
+	if result.Err != "" {
+		return result, fmt.Errorf("cds-ha: restore preflight: %s", result.Err)
+	}
 	peers, _ := n.cfg.Peers(ctx)
 	for _, p := range peers {
 		if resp, err := n.call(p, 3*time.Second, controlRequest{Op: ctlStatus}); err == nil && resp.Member {
 			return DecreeResult{}, fmt.Errorf("cds-ha: replica %s belongs to a cluster; join it instead of restoring", p)
 		}
+	}
+	if err := n.CheckRestore(sd); err != nil {
+		return DecreeResult{}, err
 	}
 	n.log.Warn("RESTORE: starting the cluster from an operator backup", "decree", d.IntentID, "snapshot", d.SnapshotSHA256)
 	if err := n.r().BootstrapCluster(n.solo()).Error(); err != nil {
