@@ -104,7 +104,7 @@ func TestFSMEdges(t *testing.T) {
 			t.Errorf("%s applied", name)
 		}
 	}
-	g := DecreeEntry{Decree: sign(Decree{IntentID: "g", Kind: Genesis, BootstrapNode: "n0"}), AtMS: now, Pins: []string{"m1"}, RootCert: ca.Cert.Raw, Key: key}
+	g := DecreeEntry{Policy: f.LocalPolicy(), Decree: sign(Decree{IntentID: "g", Kind: Genesis, BootstrapNode: "n0"}), AtMS: now, Pins: []string{"m1"}, RootCert: ca.Cert.Raw, Key: key}
 	if res := apply(Entry{Kind: KindDecree, Decree: &g}).(DecreeResult); res.Err != "" || res.Epoch != 1 {
 		t.Fatalf("genesis: %+v", res)
 	}
@@ -152,6 +152,7 @@ func TestSnapshotKeepsAllowlistHistory(t *testing.T) {
 	al, sec, led := testStores(t)
 	_, opPub := operatorKey(t)
 	f := NewFSM(PreGenesis(testCluster, opPub), al, sec, led)
+	f.core.Policy = f.LocalPolicy()
 	if err := al.StartJournal(); err != nil {
 		t.Fatal(err)
 	}
@@ -340,7 +341,7 @@ func historySnapshot(t *testing.T, format uint32, versions int) (snapshot, int) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	return snapshot{Core: Core{ClusterID: testCluster, Format: format}, Allowlist: image}, size
+	return snapshot{Core: Core{ClusterID: testCluster, Format: format, Policy: newTestFSM(t, nil).LocalPolicy()}, Allowlist: image}, size
 }
 
 func digestWorkload(t *testing.T, rng *rand.Rand) pkgallowlist.Workload {

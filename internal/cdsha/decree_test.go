@@ -257,7 +257,7 @@ func TestPinDecreeIsAgreedState(t *testing.T) {
 			t.Fatalf("entry %d: %s", i, res.Err)
 		}
 	}
-	apply(1, DecreeEntry{Decree: signDecree(t, opKey, Decree{Kind: Genesis, BootstrapNode: "n0"}), Pins: []string{pinA}, RootCert: ca.Cert.Raw, Key: key})
+	apply(1, DecreeEntry{Policy: f.LocalPolicy(), Decree: signDecree(t, opKey, Decree{Kind: Genesis, BootstrapNode: "n0"}), Pins: []string{pinA}, RootCert: ca.Cert.Raw, Key: key})
 	if f.Core().PinsDecree != nil {
 		t.Fatal("a pin decree before any was applied")
 	}

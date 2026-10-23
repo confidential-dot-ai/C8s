@@ -126,13 +126,14 @@ func TestApplyRestoreRefusals(t *testing.T) {
 	al, sec, led := testStores(t)
 	opKey, opPub := operatorKey(t)
 	f := NewFSM(PreGenesis(testCluster, opPub), al, sec, led)
+	f.core.Policy = f.LocalPolicy()
 	ca := mustCA(t)
 	key, _ := x509.MarshalPKCS8PrivateKey(ca.Key)
 	image, err := al.Dump()
 	if err != nil {
 		t.Fatal(err)
 	}
-	good := snapshot{Core: Core{ClusterID: testCluster, Epoch: 3, RootCert: ca.Cert.Raw, Measurements: []string{"m1"}, OperatorPubKey: opPub}, Key: key, Allowlist: image}
+	good := snapshot{Core: Core{Policy: f.LocalPolicy(), ClusterID: testCluster, Epoch: 3, RootCert: ca.Cert.Raw, Measurements: []string{"m1"}, OperatorPubKey: opPub}, Key: key, Allowlist: image}
 	enc := func(sn snapshot) []byte {
 		var b bytes.Buffer
 		if err := encodeSnapshot(&b, sn); err != nil {

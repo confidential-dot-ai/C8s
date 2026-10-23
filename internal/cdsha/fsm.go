@@ -28,12 +28,14 @@ import (
 // here is ever written outside the attested replicas, so it needs no
 // signature of its own; the log is its history.
 type Core struct {
-	ClusterID      string   `json:"cluster_id"`
-	Epoch          uint64   `json:"epoch"` // decrees applied
-	RootCert       []byte   `json:"root_cert,omitempty"`
-	Measurements   []string `json:"measurements,omitempty"` // replica pin set, sorted lowercase hex
-	OperatorPubKey []byte   `json:"operator_pubkey"`        // PKIX DER; nil means decrees are rejected
-	AppliedDecrees []string `json:"applied_decrees,omitempty"`
+	// Policy is fixed by Genesis and retained by snapshots and recovery.
+	Policy         FSMPolicy `json:"policy"`
+	ClusterID      string    `json:"cluster_id"`
+	Epoch          uint64    `json:"epoch"` // decrees applied
+	RootCert       []byte    `json:"root_cert,omitempty"`
+	Measurements   []string  `json:"measurements,omitempty"` // replica pin set, sorted lowercase hex
+	OperatorPubKey []byte    `json:"operator_pubkey"`        // PKIX DER; nil means decrees are rejected
+	AppliedDecrees []string  `json:"applied_decrees,omitempty"`
 	// GenesisAtMS is when the cluster was born. Single-use operator tokens
 	// issued before it are refused: no replica can know whether they were
 	// spent in an earlier life of the cluster.
@@ -134,6 +136,7 @@ type RestoreEntry struct {
 // for Genesis and RotateKey, the new mesh CA, so every replica applies the
 // same result; each replica still checks the operator's signature itself.
 type DecreeEntry struct {
+	Policy   FSMPolicy    `json:"policy"` // Genesis only
 	Decree   SignedDecree `json:"decree"`
 	AtMS     int64        `json:"at_ms"`
 	Pins     []string     `json:"pins,omitempty"`      // Genesis: the bootstrap replica's baked pins
@@ -236,6 +239,16 @@ func (f *FSM) stop(err error) error {
 }
 
 func (f *FSM) apply(e Entry) any {
+	// Only Genesis and backup restore may establish the initial policy.
+	// They validate their incoming policy before replacing any state.
+	cur := f.Core()
+	initial := !cur.Joined() && cur.Policy == (FSMPolicy{})
+	establishing := initial && ((e.Kind == KindDecree && e.Decree != nil && e.Decree.Decree.Decree.Kind == Genesis) || (e.Kind == KindRestore && e.Restore != nil))
+	if !establishing {
+		if err := f.ValidatePolicy(cur.Policy); err != nil {
+			return f.stop(err)
+		}
+	}
 	switch {
 	case e.Kind == KindFormat && e.SetFormat != 0:
 		if err := f.applyFormat(e.SetFormat); err != nil {
@@ -261,6 +274,12 @@ func (f *FSM) apply(e Entry) any {
 func (f *FSM) applyDecree(de DecreeEntry) DecreeResult {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if de.Decree.Decree.Kind == Genesis {
+		if err := f.ValidatePolicy(de.Policy); err != nil {
+			f.stop(err)
+			return DecreeResult{Epoch: f.core.Epoch, Err: err.Error()}
+		}
+	}
 	next, ca, err := nextCore(f.core, de)
 	if err != nil {
 		return DecreeResult{Epoch: f.core.Epoch, Err: err.Error()}
@@ -353,6 +372,11 @@ func nextCore(cur Core, de DecreeEntry) (Core, *issuer.CA, error) {
 	}
 	switch d.Kind {
 	case Genesis:
+		if err := de.Policy.Validate(); err != nil {
+			return Core{}, nil, err
+		}
+		next.Policy = de.Policy
+		next.Format = Format
 		pins := normalizePins(de.Pins)
 		if len(pins) == 0 {
 			return Core{}, nil, errors.New("genesis without the bootstrap replica's pins")
@@ -513,6 +537,15 @@ func decodeSnapshot(r io.Reader, readable uint32, headOnly bool) (snapshot, erro
 }
 
 func (f *FSM) restore(sn snapshot) error {
+	// Check before touching any store. In particular, never derive a missing
+	// snapshot policy from this process's launch configuration.
+	if err := f.ValidatePolicy(sn.Core.Policy); err != nil {
+		return err
+	}
+	cur := f.Core()
+	if cur.Policy != (FSMPolicy{}) && cur.Policy != sn.Core.Policy {
+		return fmt.Errorf("%w: snapshot changes established policy", ErrPolicy)
+	}
 	var ca *issuer.CA
 	if sn.Core.Joined() {
 		var err error

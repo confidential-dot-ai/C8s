@@ -166,6 +166,12 @@ func (c *cluster) peers(self string) func(context.Context) ([]string, error) {
 
 // start runs a fresh replica on node name (a restart if one ran there).
 func (c *cluster) start(name, measurement string) *replica {
+	return c.startWithControl(name, measurement, nil)
+}
+
+// startWithControl installs a test control wrapper before peers can discover
+// the listener. It permits a delayed response without a data race on the mux.
+func (c *cluster) startWithControl(name, measurement string, wrap func(controlHandler) controlHandler) *replica {
 	c.t.Helper()
 	c.mu.Lock()
 	ip, ok := c.ipOf[name]
@@ -198,6 +204,9 @@ func (c *cluster) start(name, measurement string) *replica {
 	led.SetReplicator(n)
 	if err := n.Start(); err != nil {
 		c.t.Fatal(err)
+	}
+	if wrap != nil {
+		n.mux.Load().control = wrap(n.mux.Load().control)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &replica{name: name, ip: ip, node: n, al: &al, sec: secrets.ReplicatedStore{MemoryStore: mem, Repl: n}, led: led, cancel: cancel, done: make(chan struct{})}
