@@ -312,7 +312,12 @@ func TestProcessFaults(t *testing.T) {
 
 func TestLoad(t *testing.T) {
 	runScenarios(t, []scenario{
-		{name: "C1-write-storm", writers: 50, pause: time.Millisecond, run: func(t *testing.T, _ *Cluster, _ *Checker) {
+		// C1 tests throughput and safety under 50 writers, not capacity: with
+		// the harness's unbounded history they grow the state to the
+		// admission cap within a minute, and every write after is refused
+		// (507). Bound the history as a deployment does (like B5); the cap
+		// itself is TestCapacity's.
+		{name: "C1-write-storm", writers: 50, pause: time.Millisecond, args: []string{"--allowlist-history-bytes", "32Mi"}, run: func(t *testing.T, _ *Cluster, _ *Checker) {
 			hold(60 * time.Second)
 		}},
 	})

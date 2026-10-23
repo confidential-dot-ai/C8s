@@ -29,6 +29,10 @@ type Handler struct {
 	// Full, when set, refuses writes while it returns an error: the store's
 	// volume is too full to take more history (HA: see allowlistFullGuard).
 	Full func() error
+	// Capacity, when set, refuses writes that grow the state (every write
+	// but a DELETE) while it returns an error wrapping ErrCapacity: the HA
+	// state is at its snapshot capacity (cdsha Node.CheckCapacity).
+	Capacity func() error
 }
 
 // WriteAuthorizer authorizes a mutation given the raw request body, so the
@@ -187,6 +191,14 @@ func (h Handler) authorize(w http.ResponseWriter, r *http.Request) ([]byte, bool
 		if err := h.Full(); err != nil {
 			slog.Warn("allowlist write refused", "reason", err)
 			http.Error(w, err.Error(), http.StatusInsufficientStorage)
+			return nil, false
+		}
+	}
+	if h.Capacity != nil && r.Method != http.MethodDelete {
+		// Also before the token is spent: a spent token is a replicated row,
+		// so refusing only after it would grow the state with every retry.
+		if err := h.Capacity(); err != nil {
+			writeStoreError(w, err)
 			return nil, false
 		}
 	}

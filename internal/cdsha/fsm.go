@@ -182,6 +182,9 @@ type FSM struct {
 	// base caches the header size of core and decrees for the admission
 	// cap (snapshotEstimate); f.mu guards it.
 	base headerBase
+	// measure is the last snapshot this replica encoded, for the admission
+	// cap's compressed estimate.
+	measure atomic.Pointer[sizeMeasure]
 }
 
 // NewFSM builds the state machine over the replica's local stores. pre is
@@ -480,7 +483,12 @@ func (f *FSM) Snapshot() (raft.FSMSnapshot, error) {
 		return nil, err
 	}
 	sn.Allowlist, sn.Secrets, sn.Bindings = al, f.secrets.Dump(), f.ledger.Dump()
-	return &fsmSnapshot{sn: sn}, nil
+	// Raft calls Snapshot between applies, so the estimate is of this state.
+	decoded := int64(-1)
+	if header, image, err := f.snapshotEstimate(); err == nil {
+		decoded = header + image
+	}
+	return &fsmSnapshot{sn: sn, fsm: f, decoded: decoded}, nil
 }
 
 // Restore implements raft.FSM: a joining replica takes the leader's state.
@@ -627,12 +635,22 @@ func (f *FSM) restore(sn snapshot) error {
 	return nil
 }
 
-type fsmSnapshot struct{ sn snapshot }
+type fsmSnapshot struct {
+	sn snapshot
+	// fsm and decoded (its estimate of this state, or -1) record the
+	// compressed size once encoded, for the admission cap.
+	fsm     *FSM
+	decoded int64
+}
 
 func (s *fsmSnapshot) Persist(sink raft.SnapshotSink) error {
-	if err := encodeSnapshot(sink, s.sn); err != nil {
+	cw := &countWriter{w: sink}
+	if err := encodeSnapshot(cw, s.sn); err != nil {
 		_ = sink.Cancel()
 		return err
+	}
+	if s.fsm != nil && s.decoded >= 0 {
+		s.fsm.measure.Store(&sizeMeasure{decoded: s.decoded, compressed: cw.n})
 	}
 	return sink.Close()
 }

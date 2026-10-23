@@ -23,6 +23,9 @@ type routeHandler struct {
 	// MeshCA supplies the currently trusted mesh CA at request time (C3).
 	// Retired keys are not retained here; consumers check their full trusted bundle.
 	MeshCA meshCA
+	// Capacity, when set (HA), refuses a PUT while the replicated state is
+	// at its snapshot capacity, before the token is spent.
+	Capacity func() error
 }
 
 // handleGet serves the stored signed manifest in the C1 envelope, or 404.
@@ -50,6 +53,14 @@ func (h routeHandler) handleGet(w http.ResponseWriter, _ *http.Request) {
 // order: read, authorize, validate, mesh-CA exclusion, revision, If-Match,
 // store.
 func (h routeHandler) handlePut(w http.ResponseWriter, r *http.Request) {
+	if h.Capacity != nil {
+		// Before the token is spent: a spent token is a replicated row too.
+		if err := h.Capacity(); err != nil {
+			slog.Warn("route manifest write refused", "err", err)
+			http.Error(w, err.Error(), http.StatusInsufficientStorage)
+			return
+		}
+	}
 	body, ok := h.Authorize.ReadAuthorized(w, r, allowlistWriteBodyCap)
 	if !ok {
 		return

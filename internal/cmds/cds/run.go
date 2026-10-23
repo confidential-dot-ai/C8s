@@ -159,8 +159,16 @@ func run(cfg config) error {
 		// evicting by its own clock would let replicas disagree at capacity.
 		go evictBindings(sandboxBindings, ctx.Done(), cfg.rateLimiterEvictInterval)
 	}
-	var fullGuard func() error
+	// capacityGuard refuses writes that grow the replicated state while it
+	// is at its snapshot capacity, before their token is spent.
+	var fullGuard, capacityGuard func() error
 	if haNode != nil {
+		capacityGuard = func() error {
+			if err := haNode.CheckCapacity(false); err != nil {
+				return fmt.Errorf("%w: %w", allowlist.ErrCapacity, err)
+			}
+			return nil
+		}
 		fullGuard = allowlistFullGuard(filepath.Dir(cfg.allowlistDB), cfg.allowlistMaxBytes.Value(), allowlistStore.LiveBytes)
 	}
 	// startCA is one successful startup CA read, reused below: an HA replica
@@ -386,11 +394,13 @@ func run(cfg config) error {
 			WriteAuthorizer:   operatorAuthorizer,
 			MaxWriteBodyBytes: allowlistWriteBodyCap,
 			Full:              fullGuard,
+			Capacity:          capacityGuard,
 		},
 		Routes: routeHandler{
 			Store:     &allowlistStore,
 			Authorize: operatorAuthorizer,
 			MeshCA:    mesh,
+			Capacity:  capacityGuard,
 		},
 		ReadyFn:           readinessFn(checker.Ready, mesh, cfg.minCAValidity),
 		MeshCA:            mesh,
