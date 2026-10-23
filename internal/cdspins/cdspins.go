@@ -26,7 +26,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -38,6 +37,8 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/internal/cdsha"
+	"github.com/confidential-dot-ai/c8s/internal/fileutil"
+	"github.com/confidential-dot-ai/c8s/internal/readutil"
 )
 
 // ErrBelowFloor refuses a decree older than the node's launch-time floor.
@@ -55,9 +56,6 @@ type Config struct {
 	Fetch     Fetcher
 	// StateFile, if set, keeps the decree in force across restarts.
 	StateFile string
-	// PolicyFile, if set, receives the current policy (refvalues JSON) for
-	// readers on the node that take a file.
-	PolicyFile string
 	// MinInterval spaces fetches; a burst of misses fetches once.
 	MinInterval time.Duration
 	// MinEpoch is the lowest decree base epoch taken (the launch document's
@@ -167,57 +165,21 @@ func (s *Source) take(sd *cdsha.SignedDecree) (bool, error) {
 	if s.decree != nil && sd.Decree.BaseEpoch <= s.decree.Decree.BaseEpoch {
 		return false, nil // the same decree, or an older one replayed
 	}
-	if err := s.persist(sd, pol); err != nil {
-		return false, err
+	if s.cfg.StateFile != "" {
+		data, err := json.Marshal(sd)
+		if err != nil {
+			return false, err
+		}
+		if err := os.MkdirAll(filepath.Dir(s.cfg.StateFile), 0o755); err != nil {
+			return false, err
+		}
+		if err := fileutil.WriteAtomic(s.cfg.StateFile, data, 0o644); err != nil {
+			return false, err
+		}
 	}
 	s.cur, s.decree = pol, sd
 	s.gen++
 	return true, nil
-}
-
-func (s *Source) persist(sd *cdsha.SignedDecree, pol refvalues.ReferenceValues) error {
-	if s.cfg.PolicyFile != "" {
-		data, err := refvalues.Format(pol)
-		if err != nil {
-			return err
-		}
-		if err := writeAtomic(s.cfg.PolicyFile, data); err != nil {
-			return err
-		}
-	}
-	if s.cfg.StateFile != "" {
-		data, err := json.Marshal(sd)
-		if err != nil {
-			return err
-		}
-		if err := writeAtomic(s.cfg.StateFile, data); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func writeAtomic(path string, data []byte) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".cdspins-*")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Chmod(0o644); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmp.Name(), path)
 }
 
 // Policy pins CDS to images under the launch anchors of the bootstrap set:
@@ -236,7 +198,7 @@ func Policy(bootstrap refvalues.ReferenceValues, images []cdsha.DecreeImage) (re
 	}
 	var anchors []anchor
 	for _, img := range bootstrap.Images {
-		if !slices.ContainsFunc(anchors, func(a anchor) bool { return bytes.Equal(a.key, img.Anchor) && (a.key != nil || img.Anchor == nil) }) {
+		if !slices.ContainsFunc(anchors, func(a anchor) bool { return bytes.Equal(a.key, img.Anchor) }) {
 			anchors = append(anchors, anchor{name: img.Name, key: img.Anchor})
 		}
 	}
@@ -285,16 +247,16 @@ func HTTPFetch(cdsURL string) Fetcher {
 			return nil, err
 		}
 		defer resp.Body.Close()
-		body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		if err != nil {
-			return nil, err
-		}
 		switch resp.StatusCode {
 		case http.StatusOK:
 		case http.StatusNotFound:
 			return nil, nil
 		default:
 			return nil, fmt.Errorf("cdspins: GET /ha/pins: %s", resp.Status)
+		}
+		body, err := readutil.ReadAll(resp.Body, 1<<20)
+		if err != nil {
+			return nil, fmt.Errorf("cdspins: GET /ha/pins: %w", err)
 		}
 		var sd cdsha.SignedDecree
 		if err := json.Unmarshal(body, &sd); err != nil {

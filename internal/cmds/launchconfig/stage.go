@@ -164,16 +164,15 @@ const (
 
 func rke2Fragment(doc *Document) roleFragment {
 	out := roleFragment{TokenFile: agentTokenPath, NodeName: doc.Node.Name, NodeIP: doc.Node.IP, NodeExternalIP: doc.Node.ExternalIP}
-	switch doc.Role {
-	case Server:
+	if doc.Role == Server {
 		out.TokenFile = serverTokenPath
 		out.AgentTokenFile = agentTokenPath
-	case CDS:
+	} else {
 		out.Server = "https://" + doc.Server.Address + ":9345"
+	}
+	if doc.Role == CDS {
 		out.NodeLabel = []string{CDSNodeLabel}
 		out.NodeTaint = []string{CDSNodeTaint}
-	default:
-		out.Server = "https://" + doc.Server.Address + ":9345"
 	}
 	return out
 }

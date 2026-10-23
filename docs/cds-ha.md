@@ -32,6 +32,16 @@ new format, so during the rollout the old format stays in force.
 The router, `get-cert`, the injected sidecars and `allowlist-proxy` follow the
 decrees through the node's enforcer.
 
+## Checking the replicas
+
+    c8s cds ha status --image-policy-file server.json https://<node-1>:30808 https://<node-2>:30808 ...
+
+`status` reads `GET /ha/status` from each replica over armTLS, with the same
+connection flags as the other `c8s cds` commands. It prints each replica's
+role, epoch, mesh CA and applied index, and fails when a replica cannot be
+reached, is not serving, or disagrees on the epoch or mesh CA. A status is the
+replica's own report; `c8s cds ha decrees` gives the agreed decree record.
+
 ## The mesh CA certificate
 
 The replicas share one mesh CA key for the life of the cluster. Past half the

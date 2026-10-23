@@ -65,50 +65,46 @@ func TestNodeImageRender(t *testing.T) {
 				t.Fatal(err)
 			}
 			var raw []byte
+			parts := map[string][]byte{}
 			for _, f := range []string{"c8s-integration.yaml", "c8s-cds-singleton.yaml", "c8s-cds-ha.yaml"} {
 				part, err := os.ReadFile(filepath.Join(out, f))
 				if err != nil {
 					t.Fatal(err)
 				}
-				if f == "c8s-cds-ha.yaml" {
-					for _, want := range []string{"name: GOMEMLIMIT", "memory: 4Gi", "sizeLimit: 2Gi", "--allowlist-max-bytes=2Gi"} {
-						if !bytes.Contains(part, []byte(want)) {
-							t.Fatalf("HA replicas render without %q", want)
-						}
-					}
-					// Every cds node runs the CDS its own image carries: the
-					// DaemonSet names it by the node-local tag, the airgap
-					// import adds that name, and the floor pins the digest.
-					cdsRef := "registry.example.com/cds@" + nodeImageTestCDSDigest
-					if bytes.Contains(part, []byte("image: "+cdsRef)) || !bytes.Contains(part, []byte("image: registry.example.com/cds:c8s-node")) {
-						t.Fatal("HA CDS DaemonSet does not name the node-local CDS image")
-					}
-					names, err := os.ReadFile(filepath.Join(out, "local-names.txt"))
-					// The HA CDS DaemonSet and the sidecars the webhook injects
-					// (the per-pod mesh and the credential clients) run the
-					// node's own images.
-					meshRef := "registry.example.com/armtls-mesh@" + nodeImageTestMeshDigest
-					opRef := "registry.example.com/c8s-operator@" + testDigest
-					want := meshRef + " registry.example.com/armtls-mesh:c8s-node\n" + opRef + " registry.example.com/c8s-operator:c8s-node\n" + cdsRef + " registry.example.com/cds:c8s-node\n"
-					if err != nil || string(names) != want {
-						t.Fatalf("local-names.txt: %q %v", names, err)
-					}
-					integration, _ := os.ReadFile(filepath.Join(out, "c8s-integration.yaml"))
-					for _, flag := range []string{"--get-cert-image=registry.example.com/c8s-operator:c8s-node", "--mesh-image=registry.example.com/armtls-mesh:c8s-node"} {
-						if !bytes.Contains(integration, []byte(flag)) {
-							t.Fatalf("operator does not inject node-local images: missing %s", flag)
-						}
-					}
-					floor, err := os.ReadFile(filepath.Join(out, "cds-floor.json"))
-					if err != nil || !bytes.Contains(floor, []byte(nodeImageTestCDSDigest)) {
-						t.Fatal("the cds floor no longer pins the CDS digest")
-					}
-				}
+				parts[f] = part
 				raw = append(raw, part...)
 			}
-			// The cds-role floor: the HA replica pinned to its exact argv, the
-			// DaemonSets kept, and no other chart image (the operator image
-			// carries the same c8s binary).
+			ha := parts["c8s-cds-ha.yaml"]
+			for _, want := range []string{"name: GOMEMLIMIT", "memory: 4Gi", "sizeLimit: 2Gi", "--allowlist-max-bytes=2Gi"} {
+				if !bytes.Contains(ha, []byte(want)) {
+					t.Fatalf("HA replicas render without %q", want)
+				}
+			}
+			// Every cds node runs the CDS its own image carries: the
+			// DaemonSet names it by the node-local tag, the airgap import
+			// adds that name, and the floor pins the digest.
+			cdsRef := "registry.example.com/cds@" + nodeImageTestCDSDigest
+			if bytes.Contains(ha, []byte("image: "+cdsRef)) || !bytes.Contains(ha, []byte("image: registry.example.com/cds:c8s-node")) {
+				t.Fatal("HA CDS DaemonSet does not name the node-local CDS image")
+			}
+			// The HA CDS DaemonSet and the sidecars the webhook injects (the
+			// per-pod mesh and the credential clients) run the node's own
+			// images.
+			localNames, err := os.ReadFile(filepath.Join(out, "local-names.txt"))
+			meshRef := "registry.example.com/armtls-mesh@" + nodeImageTestMeshDigest
+			opRef := "registry.example.com/c8s-operator@" + testDigest
+			want := meshRef + " registry.example.com/armtls-mesh:c8s-node\n" + opRef + " registry.example.com/c8s-operator:c8s-node\n" + cdsRef + " registry.example.com/cds:c8s-node\n"
+			if err != nil || string(localNames) != want {
+				t.Fatalf("local-names.txt: %q %v", localNames, err)
+			}
+			for _, flag := range []string{"--get-cert-image=registry.example.com/c8s-operator:c8s-node", "--mesh-image=registry.example.com/armtls-mesh:c8s-node"} {
+				if !bytes.Contains(parts["c8s-integration.yaml"], []byte(flag)) {
+					t.Fatalf("operator does not inject node-local images: missing %s", flag)
+				}
+			}
+			// The cds-role floor: the HA replica pinned to its digest and
+			// exact argv, the DaemonSets kept, and no other chart image (the
+			// operator image carries the same c8s binary).
 			floorRaw, err := os.ReadFile(filepath.Join(out, "cds-floor.json"))
 			if err != nil {
 				t.Fatal(err)
@@ -118,8 +114,8 @@ func TestNodeImageRender(t *testing.T) {
 				t.Fatal(err)
 			}
 			replica := floor.Workloads["cds-ha-replica"].Containers
-			if len(replica) != 1 || replica[0].Args.Policy != pkgallowlist.PolicyExact || !slices.Contains(replica[0].Args.Argv, "--ha-config=/run/c8s-node/cds-ha.json") {
-				t.Fatalf("cds floor does not pin the HA replica argv: %+v", replica)
+			if len(replica) != 1 || replica[0].Digest.String() != nodeImageTestCDSDigest || replica[0].Args.Policy != pkgallowlist.PolicyExact || !slices.Contains(replica[0].Args.Argv, "--ha-config=/run/c8s-node/cds-ha.json") {
+				t.Fatalf("cds floor does not pin the HA replica digest and argv: %+v", replica)
 			}
 			for name, w := range floor.Workloads {
 				for _, c := range w.Containers {
@@ -217,7 +213,6 @@ func TestNodeImageRender(t *testing.T) {
 			}
 			// A DaemonSet names the build's own images node-locally; each
 			// local name must stand for an inventory image (local-names.txt).
-			localNames, _ := os.ReadFile(filepath.Join(out, "local-names.txt"))
 			preloaded := func(image string) bool {
 				if slices.Contains(images, image) {
 					return true
@@ -865,7 +860,7 @@ func TestNodeImageCollectPinnedArgs(t *testing.T) {
 			}
 			_, err := collectNodeImageArtifacts([]byte(input), nil)
 			if (err == nil) != tc.ok {
-				t.Fatalf("collectNodeImageArtifacts(, nil) error = %v, want ok %v", err, tc.ok)
+				t.Fatalf("collectNodeImageArtifacts() error = %v, want ok %v", err, tc.ok)
 			}
 		})
 	}
@@ -1008,7 +1003,7 @@ func TestNodeImageCollectMatchedEnv(t *testing.T) {
 			}
 			_, err := collectNodeImageArtifacts([]byte(input), nil)
 			if (err == nil) != tc.ok {
-				t.Fatalf("collectNodeImageArtifacts(, nil) error = %v, want ok %v", err, tc.ok)
+				t.Fatalf("collectNodeImageArtifacts() error = %v, want ok %v", err, tc.ok)
 			}
 		})
 	}
@@ -1035,6 +1030,12 @@ func TestLocalizeDaemonSet(t *testing.T) {
 	}
 	if string(localNamesFile(names)) != comp+" registry.example.com/cds:c8s-node\n" {
 		t.Fatalf("names %v", names)
+	}
+	// A second digest of the same repository would share the local name,
+	// which local-names.txt can map back to only one image.
+	twin := "registry.example.com/cds@" + nodeImageTestUnseededDigest
+	if err := localizeDaemonSet(ds(twin), map[string]bool{nodeImageTestUnseededDigest: true}, names); err == nil {
+		t.Fatal("two images under one local name accepted")
 	}
 	if err := localizeDaemonSet(ds("not a ref!"), nil, names); err == nil {
 		t.Fatal("bad image reference accepted")

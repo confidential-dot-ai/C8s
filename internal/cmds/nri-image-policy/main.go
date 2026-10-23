@@ -27,7 +27,6 @@ import (
 	utilnet "k8s.io/apimachinery/pkg/util/net"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/internal/audit"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
@@ -153,14 +152,7 @@ func Run(args []string) error {
 		return fmt.Errorf("prepare the CDS pins handed to injected clients: %w", err)
 	}
 	if decrees != nil && plugin.cdsPins != "" {
-		path := plugin.cdsPins
-		decrees.onChange = func(set refvalues.ReferenceValues) error {
-			doc, err := refvalues.Format(set)
-			if err != nil {
-				return err
-			}
-			return rewriteInPlace(path, doc)
-		}
+		decrees.mirrorTo(plugin.cdsPins)
 	}
 	if err := plugin.prepareCDSAddress(); err != nil {
 		return fmt.Errorf("prepare the CDS address handed to injected clients: %w", err)
@@ -301,10 +293,12 @@ func allowlistPullHTTPClient(cfg pullConfig, platform string) (*http.Client, err
 	if set.Empty() {
 		slog.Warn("allowlist.pull.cds_measurements not set; nri-image-policy accepts any armTLS-attested CDS measurement")
 	}
-	client, err := armtls.NewVerifyingHTTPClient(armtls.Pins(set.Policy()), cfg.AttestationApiURL)
+	var client *http.Client
 	if cfg.decrees != nil {
 		// A CDS on a newly decreed image: refresh the pins on a miss.
 		client, err = armtls.NewRefreshingHTTPClient(cfg.decrees, cfg.AttestationApiURL)
+	} else {
+		client, err = armtls.NewVerifyingHTTPClient(armtls.Pins(set.Policy()), cfg.AttestationApiURL)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("CDS armTLS client: %w", err)
@@ -844,7 +838,7 @@ func startSandboxDigests(ctx context.Context, logger *slog.Logger, cfg *config, 
 	}
 	// The attest func is platform-agnostic despite its name (see its doc
 	// comment); the platform string is the only thing that follows the hardware.
-	return workloadclaims.StartDigestsEndpointFollowing(ctx, logger, resolver, signer.PublicKeyDER(),
+	return workloadclaims.StartDigestsEndpoint(ctx, logger, resolver, signer.PublicKeyDER(),
 		cfg.NormalizedPlatform(),
 		attestclient.MakeSNPARMTLSAttestFunc(attestclient.NewClient(""), attestationApiURL),
 		attestationApiURL, armtls.Pins(set.Policy()), journal, cfg.Allowlist.Pull.decrees)

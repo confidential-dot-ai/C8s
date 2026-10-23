@@ -3,9 +3,6 @@ package cds
 import (
 	"bytes"
 	"context"
-	"crypto/ecdsa"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,35 +13,23 @@ import (
 	"testing"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 
 	"github.com/confidential-dot-ai/c8s/internal/cdsha"
+	"github.com/confidential-dot-ai/c8s/pkg/certutil"
+	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
-func opToken(t *testing.T, key *ecdsa.PrivateKey, method, path string, body []byte) string {
-	t.Helper()
-	sum := sha256.Sum256(body)
-	tok, err := jwt.NewWithClaims(jwt.SigningMethodES256, jwt.MapClaims{
-		"iat": time.Now().Unix(), "exp": time.Now().Add(time.Minute).Unix(),
-		"htm": method, "htu": path, "pbh": base64.RawURLEncoding.EncodeToString(sum[:]),
-	}).SignedString(key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return tok
-}
-
-func do(t *testing.T, method, url, token string, body []byte) (int, http.Header, []byte) {
+func do(t *testing.T, method, url, auth string, body []byte) (int, http.Header, []byte) {
 	t.Helper()
 	req, err := http.NewRequest(method, url, bytes.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
+	if auth != "" {
+		req.Header.Set("Authorization", auth)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -55,80 +40,153 @@ func do(t *testing.T, method, url, token string, body []byte) (int, http.Header,
 	return resp.StatusCode, resp.Header, b
 }
 
-// Three complete CDS processes in HA mode, driven through the HTTP API: one
-// cluster from a Genesis decree, one mesh CA, and every operator write made
-// at one replica served by all, with its single-use token spent everywhere.
-func TestRunHAReplicasServeOneState(t *testing.T) {
+// haTestCluster is three CDS processes (run) in HA mode on loopback hosts,
+// with a fake attestor and a fake Kubernetes API holding a Genesis decree.
+type haTestCluster struct {
+	t      *testing.T
+	kube   *fake.Clientset
+	signer *operatorauth.Signer
+	// decreeKeyPEM is the operator private key, which also signs decrees.
+	decreeKeyPEM []byte
+	apiURL       string
+	keysPath     string
+	hosts        []string
+	httpPort     int
+	peerPort     int
+}
+
+func newHATestCluster(t *testing.T, hosts []string) *haTestCluster {
+	t.Helper()
 	origKube, origAtt := newInClusterKubeClientset, newHAAttestor
 	t.Cleanup(func() { newInClusterKubeClientset, newHAAttestor = origKube, origAtt })
-	kube := fake.NewClientset()
-	newInClusterKubeClientset = func() (kubernetes.Interface, error) { return kube, nil }
+	c := &haTestCluster{t: t, kube: fake.NewClientset(), apiURL: newHealthyAttestationApi(t).URL, hosts: hosts, httpPort: freePort(t), peerPort: freePort(t)}
+	newInClusterKubeClientset = func() (kubernetes.Interface, error) { return c.kube, nil }
 	newHAAttestor = func(string, cdsha.AttestorOptions) (cdsha.Attestor, error) { return fakeAttestor{"m1"}, nil }
-
-	api := newHealthyAttestationApi(t)
 	opKey, keysPath := writeOperatorKeyPair(t)
-	httpPort, peerPort := freePort(t), freePort(t)
-	hosts := []string{"127.0.3.10", "127.0.3.11", "127.0.3.12"}
-
+	c.keysPath = keysPath
+	keyPEM, err := certutil.MarshalECKeyPEM(opKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.signer, err = operatorauth.NewSignerFromKeyPEM(keyPEM); err != nil {
+		t.Fatal(err)
+	}
 	sd, err := cdsha.SignDecree(cdsha.Decree{ClusterID: "c1", IntentID: "genesis", Kind: cdsha.Genesis,
 		BootstrapNode: "n0", ExpiresAt: time.Now().Add(time.Hour)}, opKey)
 	if err != nil {
 		t.Fatal(err)
 	}
 	cm, _ := cdsha.DecreeConfigMap("ns", sd)
-	if _, err := kube.CoreV1().ConfigMaps("ns").Create(context.Background(), cm, metav1.CreateOptions{}); err != nil {
+	if _, err := c.kube.CoreV1().ConfigMaps("ns").Create(context.Background(), cm, metav1.CreateOptions{}); err != nil {
 		t.Fatal(err)
 	}
+	c.decreeKeyPEM = keyPEM
+	return c
+}
 
-	errs := make(chan error, len(hosts))
-	bases := make([]string, len(hosts))
-	for i, host := range hosts {
-		cfg := validRunConfig(t, api.URL)
-		cfg.host, cfg.port, cfg.operatorKeys = host, httpPort, keysPath
-		cfg.jwtClockSkew = 1
-		var peers []string
-		for j, h := range hosts {
+// start runs the three replicas; ha is every replica's HA config except
+// its own address, peers and node name.
+func (c *haTestCluster) start(ha haConfig) (chan error, []string) {
+	errs := make(chan error, len(c.hosts))
+	bases := make([]string, len(c.hosts))
+	for i, host := range c.hosts {
+		cfg := validRunConfig(c.t, c.apiURL)
+		cfg.host, cfg.port, cfg.operatorKeys, cfg.jwtClockSkew = host, c.httpPort, c.keysPath, 1
+		h := ha
+		h.peers = nil
+		for j, other := range c.hosts {
 			if j != i {
-				peers = append(peers, fmt.Sprintf("%s:%d", h, peerPort))
+				h.peers = append(h.peers, fmt.Sprintf("%s:%d", other, c.peerPort))
 			}
 		}
-		cfg.ha = haConfig{clusterID: "c1", decreeNS: "ns", peers: peers, advertiseIP: host, port: peerPort,
-			nodeName: fmt.Sprintf("n%d", i), attestor: "test", pins: []string{"m1"}, operatorKey: keysPath,
-			seats: 3, maxNonVoters: 4, timing: cdsha.DefaultTiming}
-		bases[i] = fmt.Sprintf("http://%s:%d", host, httpPort)
+		h.advertiseIP, h.port, h.nodeName = host, c.peerPort, fmt.Sprintf("n%d", i)
+		cfg.ha = h
+		bases[i] = fmt.Sprintf("http://%s:%d", host, c.httpPort)
 		go func() { errs <- run(cfg) }()
 	}
-	t.Cleanup(func() {
-		_ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
-		for range hosts {
-			select {
-			case <-errs:
-			case <-time.After(20 * time.Second):
-				t.Error("a replica did not stop")
-			}
+	return errs, bases
+}
+
+// haTemplate is the HA config the tests share.
+func (c *haTestCluster) haTemplate(timing cdsha.Timing) haConfig {
+	return haConfig{clusterID: "c1", decreeNS: "ns", attestor: "test", pins: []string{"m1"}, operatorKey: c.keysPath,
+		seats: 3, maxNonVoters: 4, timing: timing}
+}
+
+// stop ends every replica of run() (they all listen for SIGTERM).
+func (c *haTestCluster) stop(errs chan error) {
+	_ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
+	for range c.hosts {
+		select {
+		case <-errs:
+		case <-time.After(20 * time.Second):
+			c.t.Error("a replica did not stop")
 		}
-	})
+	}
+}
+
+// waitServing waits until every replica's serving state is want. Serving
+// means the full server answers (/ca 200), not the pre-join one.
+func waitServing(t *testing.T, bases []string, want bool) {
+	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
 	for _, b := range bases {
 		for {
 			if time.Now().After(deadline) {
-				t.Fatalf("%s never became healthy", b)
+				t.Fatalf("%s: serving never became %v", b, want)
 			}
 			if resp, err := http.Get(b + "/ha/status"); err == nil {
 				var st cdsha.Status
 				_ = json.NewDecoder(resp.Body).Decode(&st)
 				resp.Body.Close()
-				if st.Serving {
+				full := true
+				if want {
+					c, _, _ := do(t, http.MethodGet, b+"/ca", "", nil)
+					full = c == http.StatusOK
+				}
+				if st.Serving == want && (want || st.ID != "") && full {
 					break
 				}
 			}
 			time.Sleep(50 * time.Millisecond)
 		}
 	}
+}
 
-	// Tokens are refused until the clock skew has passed since Genesis: an
-	// earlier life of the cluster may have spent older ones.
-	time.Sleep(2500 * time.Millisecond)
+// auth signs one operator write with the real CLI signer.
+func (c *haTestCluster) auth(method, path string, body []byte) string {
+	c.t.Helper()
+	h, err := c.signer.Authorization(method, path, body)
+	if err != nil {
+		c.t.Fatal(err)
+	}
+	return h
+}
+
+// firstWrite makes the first operator write after Genesis. Tokens issued
+// within the clock skew of Genesis are refused (an earlier life of the
+// cluster may have spent them), so it retries with a fresh token while
+// the answer is 401.
+func (c *haTestCluster) firstWrite(base, path string, body []byte) (int, []byte) {
+	c.t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		code, _, resp := do(c.t, http.MethodPut, base+path, c.auth(http.MethodPut, path, body), body)
+		if code != http.StatusUnauthorized || time.Now().After(deadline) {
+			return code, resp
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// Three complete CDS processes in HA mode, driven through the HTTP API: one
+// cluster from a Genesis decree, one mesh CA, and every operator write made
+// at one replica served by all, with its single-use token spent everywhere.
+func TestRunHAReplicasServeOneState(t *testing.T) {
+	c := newHATestCluster(t, []string{"127.0.3.10", "127.0.3.11", "127.0.3.12"})
+	errs, bases := c.start(c.haTemplate(cdsha.DefaultTiming))
+	t.Cleanup(func() { c.stop(errs) })
+	waitServing(t, bases, true)
 
 	// One mesh CA, served by every replica.
 	var ca []byte
@@ -149,8 +207,7 @@ func TestRunHAReplicasServeOneState(t *testing.T) {
 
 	// A whole-document write at replica 0, served by 1 and 2 with one ETag.
 	doc := []byte(anySeed(map[string]string{"web": digestA}))
-	tok := opToken(t, opKey, http.MethodPut, "/allowlist", doc)
-	if code, _, body := do(t, http.MethodPut, bases[0]+"/allowlist", tok, doc); code != http.StatusNoContent {
+	if code, body := c.firstWrite(bases[0], "/allowlist", doc); code != http.StatusNoContent {
 		t.Fatalf("PUT /allowlist at replica 0: %d %s", code, body)
 	}
 	// Followers serve reads from their own applied state, so they may lag
@@ -161,13 +218,17 @@ func TestRunHAReplicasServeOneState(t *testing.T) {
 			return code == http.StatusOK && h.Get("ETag") == h0.Get("ETag") && strings.Contains(string(body), digestA)
 		}, "/allowlist", "the allowlist written at replica 0")
 	}
-	// The same token replayed at another replica is refused.
+	// A token spent at replica 0 is refused at another replica.
+	tok := c.auth(http.MethodPut, "/allowlist", doc)
+	if code, _, body := do(t, http.MethodPut, bases[0]+"/allowlist", tok, doc); code != http.StatusNoContent {
+		t.Fatalf("second PUT /allowlist at replica 0: %d %s", code, body)
+	}
 	if code, _, _ := do(t, http.MethodPut, bases[2]+"/allowlist", tok, doc); code < 400 {
 		t.Fatalf("a spent operator token was accepted at another replica: %d", code)
 	}
 	// A per-entry write at replica 1 reaches replica 0.
 	entry := []byte(`{"label":"ghcr.io/x/api:v1","containers":[{"digest":"sha256:2222222222222222222222222222222222222222222222222222222222222222","command":{"policy":"any"},"args":{"policy":"any"}}]}`)
-	if code, _, body := do(t, http.MethodPut, bases[1]+"/allowlist/workloads/api", opToken(t, opKey, http.MethodPut, "/allowlist/workloads/api", entry), entry); code != http.StatusNoContent {
+	if code, _, body := do(t, http.MethodPut, bases[1]+"/allowlist/workloads/api", c.auth(http.MethodPut, "/allowlist/workloads/api", entry), entry); code != http.StatusNoContent {
 		t.Fatalf("PUT workload at replica 1: %d %s", code, body)
 	}
 	waitServed(t, bases[0], func(_ int, _ http.Header, body []byte) bool { return strings.Contains(string(body), "2222222222") },

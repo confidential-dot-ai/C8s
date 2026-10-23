@@ -2,7 +2,6 @@ package cds
 
 import (
 	"context"
-	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/hkdf"
 	"crypto/sha256"
@@ -29,6 +28,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/sandboxledger"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
+	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
 // allowPlainHTTP is true only in c8s_dev builds (plainhttp_dev.go), where CDS
@@ -55,13 +55,12 @@ type haConfig struct {
 	recoveryKeyPEM []byte // from --ha-config or --ha-recovery-key: backups are sealed to it
 	seats          int
 	maxNonVoters   int
-	tdxTCB         []string
 	timing         cdsha.Timing
 }
 
 func bindHAFlags(flags *pflag.FlagSet, c *haConfig) {
 	flags.StringVar(&c.yieldFile, "ha-yield-file", "", "baked singleton: path of the node's public cds-mode file; when it says \"ha\" (the signed launch document declares cdsHA), this singleton exits so the HA replicas on cds-role nodes are the only CDS")
-	flags.StringVar(&c.configFile, "ha-config", "", "baked nodes: path of cds-ha.json published from the signed launch document (cluster id, decree key, seats, image pins); it overrides --ha-cluster-id, --ha-operator-key, --ha-replica-pins and --ha-seats, so none of those trust roots is a pod flag")
+	flags.StringVar(&c.configFile, "ha-config", "", "baked nodes: path of cds-ha.json published from the signed launch document (cluster id, decree and recovery keys, seats, image pins); it excludes --ha-cluster-id, --ha-operator-key, --ha-recovery-key, --ha-replica-pins and --ha-measurement, so none of those trust roots is a pod flag, and its seat count overrides --ha-seats")
 	flags.StringVar(&c.clusterID, "ha-cluster-id", "", "enable CDS high availability for this cluster id (dev/test; baked nodes use --ha-config); replicas with the same id form one Raft group and share one mesh CA (empty = singleton CDS)")
 	flags.StringVar(&c.decreeNS, "ha-decree-namespace", os.Getenv("POD_NAMESPACE"), "namespace where operators write CDS decree objects (on a locked node image the CDS namespace is privileged, so use one the operator credential can write)")
 	flags.StringVar(&c.peersDNS, "ha-peers-dns", "", "headless Service DNS name resolving to every CDS replica")
@@ -69,8 +68,7 @@ func bindHAFlags(flags *pflag.FlagSet, c *haConfig) {
 	flags.StringVar(&c.advertiseIP, "ha-advertise-ip", os.Getenv("POD_IP"), "address the other replicas reach this one at (default $POD_IP)")
 	flags.IntVar(&c.port, "ha-port", 9443, "port of the replica-to-replica channel (mutually attested TLS; Raft and control)")
 	flags.StringVar(&c.nodeName, "ha-node-name", os.Getenv("NODE_NAME"), "the node this replica runs on: one voter seat per node, and a Genesis decree names its bootstrap node")
-	flags.StringVar(&c.attestor, "ha-attestor", "node", "peer attestor: node (the node attestation-api at --attestation-api-url; TDX and SEV-SNP), tdx (DCAP quotes read in-process, inside a TD), or mock in c8s_dev builds")
-	flags.StringSliceVar(&c.tdxTCB, "ha-tdx-tcb-statuses", cdsha.DefaultTDXTCBStatuses, "Intel TCB statuses a peer platform may report (PCS spelling, e.g. UpToDate,SWHardeningNeeded,OutOfDate)")
+	flags.StringVar(&c.attestor, "ha-attestor", "node", "peer attestor: node (the node attestation-api at --attestation-api-url; TDX and SEV-SNP), or mock in c8s_dev builds")
 	flags.StringVar(&c.measurement, "ha-measurement", "", "this replica's measurement as reported by the mock attestor")
 	flags.StringSliceVar(&c.pins, "ha-replica-pins", nil, "replica measurement pins; the Genesis replica makes them the cluster's first pin set")
 	flags.StringVar(&c.operatorKey, "ha-operator-key", "", "PEM P-256 public key authorizing HA decrees, including Genesis (REQUIRED with --ha-cluster-id)")
@@ -186,7 +184,6 @@ func newHANode(cfg config, st haStores) (*cdsha.Node, error) {
 	}
 	att, err := newHAAttestor(h.attestor, cdsha.AttestorOptions{
 		MockMeasurement:   h.measurement,
-		TDXTCBStatuses:    h.tdxTCB,
 		AttestationAPIURL: cfg.attestationApiURL, // the node's attestation-api, as every CDS path uses
 		Timeout:           cfg.requestTimeout,
 	})
@@ -243,7 +240,7 @@ func newHANode(cfg config, st haStores) (*cdsha.Node, error) {
 		Ledger:          st.ledger,
 		Logger:          slog.Default(),
 		HistoryVersions: cfg.allowlistHistoryVersions,
-		HistoryBytes:    cfg.allowlistHistoryBytes,
+		HistoryBytes:    cfg.allowlistHistoryBytes.Value(),
 	})
 }
 
@@ -282,8 +279,8 @@ func yieldIfHA(path string) error {
 func loadHAConfigFile(h *haConfig) error {
 	// The launch document is the only source of trust roots: refuse flags
 	// that would add to or replace them.
-	if h.clusterID != "" || len(h.pins) > 0 || h.operatorKey != "" || h.measurement != "" {
-		return errors.New("--ha-config excludes --ha-cluster-id, --ha-replica-pins, --ha-operator-key and --ha-measurement")
+	if h.clusterID != "" || len(h.pins) > 0 || h.operatorKey != "" || len(h.recoveryKeyPEM) > 0 || h.measurement != "" {
+		return errors.New("--ha-config excludes --ha-cluster-id, --ha-replica-pins, --ha-operator-key, --ha-recovery-key and --ha-measurement")
 	}
 	raw, err := os.ReadFile(h.configFile)
 	if err != nil {
@@ -333,18 +330,14 @@ func loadHAOperatorKey(path string, raw []byte) ([]byte, error) {
 			return nil, fmt.Errorf("--ha-operator-key: %w", err)
 		}
 	}
-	block, _ := pem.Decode(raw)
-	if block == nil {
-		return nil, errors.New("--ha-operator-key: no PEM block")
-	}
-	pub, err := x509.ParsePKIXPublicKey(block.Bytes)
+	keys, err := operatorauth.ParsePublicKeysPEM(raw)
 	if err != nil {
 		return nil, fmt.Errorf("--ha-operator-key: %w", err)
 	}
-	if k, ok := pub.(*ecdsa.PublicKey); !ok || k.Curve != elliptic.P256() {
-		return nil, errors.New("--ha-operator-key: want an ECDSA P-256 public key")
+	if len(keys) != 1 || keys[0].Curve != elliptic.P256() {
+		return nil, errors.New("--ha-operator-key: want one ECDSA P-256 public key")
 	}
-	return block.Bytes, nil
+	return x509.MarshalPKIXPublicKey(keys[0])
 }
 
 // followMeshCA makes client-certificate verification (the /secrets leaf
@@ -382,11 +375,13 @@ func haGate(serving func() bool, next http.Handler) http.Handler {
 	})
 }
 
-// haStatus serves the replica's view for the CLI. It is untrusted output.
-func haStatus(node *cdsha.Node) http.HandlerFunc {
+// serveJSON serves what read returns as JSON. It serves /ha/status (the
+// replica's own, untrusted view) and /ha/decrees (the applied decrees as the
+// operator signed them; the Kubernetes objects are only the host's word).
+func serveJSON[T any](read func() T) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(node.Status())
+		_ = json.NewEncoder(w).Encode(read())
 	}
 }
 
@@ -395,7 +390,7 @@ func haStatus(node *cdsha.Node) http.HandlerFunc {
 // they can trust any replica, and check the operator's signature themselves.
 func haPins(node *cdsha.Node) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
-		sd := node.PinsDecree()
+		sd := node.Core().PinsDecree
 		if sd == nil {
 			http.Error(w, "cds-ha: the pin set came from Genesis; the launch document's is current", http.StatusNotFound)
 			return
@@ -405,23 +400,13 @@ func haPins(node *cdsha.Node) http.HandlerFunc {
 	}
 }
 
-// haDecrees serves the record of applied decrees: every operator decision
-// as the operator signed it, read over the attested channel from a serving
-// replica (the decree objects in Kubernetes are only the host's word).
-func haDecrees(node *cdsha.Node) http.HandlerFunc {
-	return func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(node.Decrees())
-	}
-}
-
 // haMeshCA is an HA replica's mesh CA: the replicated one, renewed by the
 // leader through the log, or empty (CA nil) while the replica may not issue.
 type haMeshCA struct{ node *cdsha.Node }
 
 func (h haMeshCA) Current() issuer.CurrentCA {
 	ca, err := h.node.CA()
-	if err != nil || ca == nil || ca.Cert == nil {
+	if err != nil {
 		return issuer.CurrentCA{}
 	}
 	return issuer.CurrentCA{CA: ca, CertPEM: certutil.EncodeCertPEM(ca.Cert.Raw)}
@@ -494,7 +479,7 @@ func preJoinMux(node *cdsha.Node) http.Handler {
 		}
 		w.WriteHeader(http.StatusOK)
 	})
-	mux.HandleFunc("GET /ha/status", haStatus(node))
+	mux.HandleFunc("GET /ha/status", serveJSON(node.Status))
 	mux.HandleFunc("POST /ha/restore", handleRestore(node))
 	mux.HandleFunc("GET /ha/pins", haPins(node))
 	// Anything else is retryable: the full server takes over once joined.
@@ -536,9 +521,4 @@ func restoreServer(cfg config) func(*cdsha.Node) func() {
 			<-done
 		}
 	}
-}
-
-// haGenesis is when the cluster was born: the cutoff for single-use tokens.
-func haGenesis(node *cdsha.Node) time.Time {
-	return time.UnixMilli(node.Core().GenesisAtMS)
 }

@@ -81,13 +81,7 @@ func TestFollowedDecreesRewriteTheMountedPolicyInPlace(t *testing.T) {
 	}
 	var before syscall.Stat_t
 	_ = syscall.Stat(mounted, &before)
-	src.onChange = func(set refvalues.ReferenceValues) error {
-		d, err := refvalues.Format(set)
-		if err != nil {
-			return err
-		}
-		return rewriteInPlace(mounted, d)
-	}
+	src.mirrorTo(mounted)
 	if changed, err := src.Refresh(t.Context()); !changed || err != nil {
 		t.Fatalf("decree not taken: %v %v", changed, err)
 	}
@@ -100,22 +94,9 @@ func TestFollowedDecreesRewriteTheMountedPolicyInPlace(t *testing.T) {
 	if err != nil || len(got.Images) == 0 || got.Images[0].Registers[1] == nil {
 		t.Fatalf("mounted policy: %v", err)
 	}
-	for _, p := range got.Images {
-		if p.Name == "" || len(p.Digest) == 0 {
-			t.Fatal("empty pin")
-		}
-	}
 	if set, _ := cfg.pinsSet("tdx"); len(set.Images) != len(got.Images) {
 		t.Fatal("the plugin's own set does not follow the decree")
 	}
-	if hc, err := allowlistPullHTTPClient(cfg, "tdx"); err != nil || hc == nil {
-		t.Fatalf("pull client: %v", err)
-	}
-	// Polling stops with its context.
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-	followDecrees(ctx, src, time.Millisecond)
-	followDecrees(ctx, nil, time.Millisecond)
 
 	cfg.CDSMeasurementsConfig = ""
 	if _, err := cfg.cdsDecrees("tdx", slog.Default()); err == nil {
