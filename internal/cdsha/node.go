@@ -688,14 +688,20 @@ func (n *Node) watchClock(ctx context.Context) {
 			return
 		case now := <-t.C:
 			mono := now.Sub(last)
-			wall := now.Round(0).Sub(last.Round(0))
-			if d := wall - mono; d > 2*time.Second || d < -2*time.Second || mono > 5*time.Second {
+			if wall := now.Round(0).Sub(last.Round(0)); clockJumped(wall, mono) {
 				n.jumpAt.Store(now.UnixMilli())
-				n.log.Warn("clock jump: not serving until the leader is heard again", "wall_minus_mono", d, "tick", mono)
+				n.log.Warn("clock jump: not serving until the leader is heard again", "wall_minus_mono", wall-mono, "tick", mono)
 			}
 			last = now
 		}
 	}
+}
+
+// clockJumped reports a wall clock that moved more than 2 s apart from the
+// monotonic one over a tick, or a tick that took over 5 s (a suspended VM).
+func clockJumped(wall, mono time.Duration) bool {
+	d := wall - mono
+	return d > 2*time.Second || d < -2*time.Second || mono > 5*time.Second
 }
 
 // clearJumpIfFresh ends a clock-jump stop once the replica has fresh
@@ -712,7 +718,8 @@ func (n *Node) clearJumpIfFresh() {
 		}
 		return
 	}
-	if lc := n.r().LastContact(); lc.UnixMilli() > at {
+	// A known leader: raft also sets LastContact when a leader steps down.
+	if lc := n.r().LastContact(); lc.UnixMilli() > at && n.leaderHostPort() != "" {
 		n.jumpAt.CompareAndSwap(at, 0)
 	}
 }

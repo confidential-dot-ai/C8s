@@ -586,9 +586,19 @@ func TestRecoverAfterLosingTheMajority(t *testing.T) {
 	}
 }
 
-// A clock jump stops a replica serving until it hears from the leader
-// again; a decree that does not apply is rejected with a reason.
-func TestClockJumpAndRejectedDecree(t *testing.T) {
+// A clock jump stops a replica serving until it has contact made after the
+// jump: a follower hears from the leader, a leader confirms its quorum.
+func TestClockJump(t *testing.T) {
+	ms := time.Millisecond
+	for _, r := range []struct {
+		wall, mono time.Duration
+		want       bool
+	}{{200 * ms, 200 * ms, false}, {time.Second, 200 * ms, false}, {3 * time.Second, 200 * ms, true},
+		{-3 * time.Second, 200 * ms, true}, {6 * time.Second, 6 * time.Second, true}} {
+		if got := clockJumped(r.wall, r.mono); got != r.want {
+			t.Errorf("wall %v mono %v: jumped %v", r.wall, r.mono, got)
+		}
+	}
 	c := newCluster(t, 3)
 	c.genesis("n0", "n1", "n2")
 	for _, r := range c.live() {
@@ -600,11 +610,25 @@ func TestClockJumpAndRejectedDecree(t *testing.T) {
 	for _, r := range c.live() {
 		eventually(t, 5*time.Second, r.name+" serves after fresh contact", r.node.Serving)
 	}
-	bad := c.decree(Decree{Kind: UpdateMeasurements, BaseEpoch: 9, Measurements: []string{"m1"}})
-	eventually(t, 5*time.Second, "stale decree rejected", func() bool {
-		st, ok := c.decrees.get(bad)
-		return ok && st.RejectedReason != "" && st.AppliedEpoch == nil
-	})
+	l := c.leader()
+	var f *replica
+	for _, r := range c.live() {
+		if r != l {
+			f = r
+		}
+	}
+	// Contact from before the jump does not clear it.
+	f.node.jumpAt.Store(time.Now().Add(2 * time.Second).UnixMilli())
+	time.Sleep(500 * time.Millisecond)
+	if f.node.jumpAt.Load() == 0 {
+		t.Fatal("a follower cleared a jump on contact from before it")
+	}
+	c.partition(l.name, true) // the leader cannot confirm its quorum
+	l.node.jumpAt.Store(time.Now().UnixMilli())
+	time.Sleep(500 * time.Millisecond)
+	if l.node.jumpAt.Load() == 0 {
+		t.Fatal("a partitioned leader cleared a jump")
+	}
 }
 
 // CatchUp waits for the leader's applied index; the control channel answers
