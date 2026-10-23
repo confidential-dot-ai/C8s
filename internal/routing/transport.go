@@ -100,24 +100,29 @@ func (c *stampCache) of(cert *tls.Certificate) (*armtls.MatchedWorkload, error) 
 	}
 	raw := cert.Certificate[0]
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.raw != nil && bytes.Equal(c.raw, raw) {
-		return c.stamp, c.err
+		stamp, err := c.stamp, c.err
+		c.mu.Unlock()
+		return stamp, err
 	}
 	leaf := cert.Leaf
 	if leaf == nil {
 		var err error
 		if leaf, err = x509.ParseCertificate(raw); err != nil {
+			c.mu.Unlock()
 			return nil, fmt.Errorf("routing: parse router leaf: %w", err)
 		}
 	}
 	c.raw = raw
 	c.stamp, c.err = armtls.MatchedWorkloadFromCert(leaf)
-	if c.err != nil {
-		// Once per leaf: the per-request refusals log at Debug.
-		c.log.Error("router stamp damaged", "error", c.err)
+	stamp, err := c.stamp, c.err
+	c.mu.Unlock()
+	if err != nil {
+		// Once per leaf, outside the lock so a slow handler never stalls
+		// dials: the per-request refusals log at Debug.
+		c.log.Error("router stamp damaged", "error", err)
 	}
-	return c.stamp, c.err
+	return stamp, err
 }
 
 // routerDigestOf is the allowlist digest of the router stamp on cred's leaf,

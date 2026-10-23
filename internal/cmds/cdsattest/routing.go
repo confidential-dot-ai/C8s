@@ -161,7 +161,7 @@ func newRoutingEngine(cfg config, logger *slog.Logger) (*routingEngine, error) {
 		return nil, err
 	}
 	state := routing.NewState(routing.StateConfig{Reserved: r.reservedPaths, MeshCAs: identity.MeshCAs})
-	transports := routing.NewTransports(routing.TransportConfig{MeshIdentity: identity.Credential})
+	transports := routing.NewTransports(routing.TransportConfig{MeshIdentity: identity.Credential, Logger: logger})
 	return &routingEngine{
 		cfg: r,
 		log: logger,
