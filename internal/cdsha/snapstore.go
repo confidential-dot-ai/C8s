@@ -21,8 +21,6 @@ type snapStore struct {
 	exists bool
 }
 
-func newSnapStore() *snapStore { return &snapStore{} }
-
 func (s *snapStore) Create(version raft.SnapshotVersion, index, term uint64, configuration raft.Configuration,
 	configurationIndex uint64, _ raft.Transport) (raft.SnapshotSink, error) {
 	if version != 1 {
