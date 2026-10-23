@@ -3,12 +3,7 @@ package cds
 import (
 	"bytes"
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
-	"crypto/x509"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,16 +11,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/kubernetes/fake"
 
 	"github.com/confidential-dot-ai/c8s/internal/cdsha"
+	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 )
 
 // Every replica lost: three fresh CDS processes wait; `c8s cds ha recover`
@@ -33,100 +26,31 @@ import (
 // it through the pre-join server; the new cluster serves the old mesh CA and
 // allowlist.
 func TestRunHARestoreAfterTotalLoss(t *testing.T) {
-	origKube, origAtt := newInClusterKubeClientset, newHAAttestor
-	t.Cleanup(func() { newInClusterKubeClientset, newHAAttestor = origKube, origAtt })
-	kube := fake.NewClientset()
-	newInClusterKubeClientset = func() (kubernetes.Interface, error) { return kube, nil }
-	newHAAttestor = func(string, cdsha.AttestorOptions) (cdsha.Attestor, error) { return fakeAttestor{"m1"}, nil }
-
-	api := newHealthyAttestationApi(t)
-	opKey, keysPath := writeOperatorKeyPair(t)
+	c := newHATestCluster(t, []string{"127.0.4.10", "127.0.4.11", "127.0.4.12"})
 	dir := t.TempDir()
-	writeKey := func(name string, k *ecdsa.PrivateKey) string {
-		der, _ := x509.MarshalECPrivateKey(k)
+	writeFile := func(name string, data []byte) string {
 		p := filepath.Join(dir, name)
-		_ = os.WriteFile(p, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: der}), 0o600)
+		if err := os.WriteFile(p, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
 		return p
 	}
-	decreeKeyPath := writeKey("decree.key", opKey)
-	rk, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	recKeyPath := writeKey("recovery.key", rk)
-	rpub, _ := x509.MarshalPKIXPublicKey(&rk.PublicKey)
-	recPub := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: rpub})
-
-	httpPort, peerPort := freePort(t), freePort(t)
-	hosts := []string{"127.0.4.10", "127.0.4.11", "127.0.4.12"}
-	timing := cdsha.DefaultTiming
-	timing.Backup = 200 * time.Millisecond
-
-	sd, _ := cdsha.SignDecree(cdsha.Decree{ClusterID: "c1", IntentID: "genesis", Kind: cdsha.Genesis, BootstrapNode: "n0", ExpiresAt: time.Now().Add(time.Hour)}, opKey)
-	cm, _ := cdsha.DecreeConfigMap("ns", sd)
-	if _, err := kube.CoreV1().ConfigMaps("ns").Create(context.Background(), cm, metav1.CreateOptions{}); err != nil {
+	decreeKeyPath := writeFile("decree.key", c.decreeKeyPEM)
+	rk, recPub := testKeyPEM(t)
+	rkPEM, err := certutil.MarshalECKeyPEM(rk)
+	if err != nil {
 		t.Fatal(err)
 	}
-	start := func() (chan error, []string) {
-		errs := make(chan error, len(hosts))
-		bases := make([]string, len(hosts))
-		for i, host := range hosts {
-			cfg := validRunConfig(t, api.URL)
-			cfg.host, cfg.port, cfg.operatorKeys, cfg.jwtClockSkew = host, httpPort, keysPath, 1
-			cfg.logLevel = "info"
-			var peers []string
-			for j, h := range hosts {
-				if j != i {
-					peers = append(peers, fmt.Sprintf("%s:%d", h, peerPort))
-				}
-			}
-			cfg.ha = haConfig{clusterID: "c1", decreeNS: "ns", peers: peers, advertiseIP: host, port: peerPort,
-				nodeName: fmt.Sprintf("n%d", i), attestor: "test", pins: []string{"m1"}, operatorKey: keysPath,
-				recoveryKeyPEM: recPub, seats: 3, maxNonVoters: 4, timing: timing}
-			bases[i] = fmt.Sprintf("http://%s:%d", host, httpPort)
-			go func() { errs <- run(cfg) }()
-		}
-		return errs, bases
-	}
-	stop := func(errs chan error) {
-		_ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
-		for range hosts {
-			select {
-			case <-errs:
-			case <-time.After(20 * time.Second):
-				t.Fatal("a replica did not stop")
-			}
-		}
-	}
-	waitServing := func(bases []string, want bool) {
-		deadline := time.Now().Add(30 * time.Second)
-		for _, b := range bases {
-			for {
-				if time.Now().After(deadline) {
-					t.Fatalf("%s: serving never became %v", b, want)
-				}
-				if resp, err := http.Get(b + "/ha/status"); err == nil {
-					var st cdsha.Status
-					_ = json.NewDecoder(resp.Body).Decode(&st)
-					resp.Body.Close()
-					full := true
-					if want {
-						// The pre-join server answers /ha/status too; wait
-						// for the full one.
-						c, _, _ := do(t, http.MethodGet, b+"/ca", "", nil)
-						full = c == http.StatusOK
-					}
-					if st.Serving == want && (want || st.ID != "") && full {
-						break
-					}
-				}
-				time.Sleep(50 * time.Millisecond)
-			}
-		}
-	}
+	recKeyPath := writeFile("recovery.key", rkPEM)
+	timing := cdsha.DefaultTiming
+	timing.Backup = 200 * time.Millisecond
+	ha := c.haTemplate(timing)
+	ha.recoveryKeyPEM = recPub
 
-	errs, bases := start()
-	waitServing(bases, true)
-	time.Sleep(2500 * time.Millisecond) // token cutoff after Genesis
+	errs, bases := c.start(ha)
+	waitServing(t, bases, true)
 	doc := []byte(anySeed(map[string]string{"web": digestA}))
-	if code, _, body := do(t, http.MethodPut, bases[1]+"/allowlist", opToken(t, opKey, http.MethodPut, "/allowlist", doc), doc); code != http.StatusNoContent {
+	if code, body := c.firstWrite(bases[1], "/allowlist", doc); code != http.StatusNoContent {
 		t.Fatalf("write: %d %s", code, body)
 	}
 	_, h0, _ := do(t, http.MethodGet, bases[0]+"/allowlist", "", nil)
@@ -141,7 +65,7 @@ func TestRunHARestoreAfterTotalLoss(t *testing.T) {
 	var backups []corev1.ConfigMap
 	deadline := time.Now().Add(45 * time.Second)
 	for {
-		list, _ := kube.CoreV1().ConfigMaps("ns").List(context.Background(), metav1.ListOptions{LabelSelector: cdsha.LabelBackup + "=c1"})
+		list, _ := c.kube.CoreV1().ConfigMaps("ns").List(context.Background(), metav1.ListOptions{LabelSelector: cdsha.LabelBackup + "=c1"})
 		if b, err := cdsha.BackupFromConfigMaps("c1", list.Items); err == nil && b.Meta.Index >= applied {
 			backups = list.Items
 			break
@@ -151,12 +75,21 @@ func TestRunHARestoreAfterTotalLoss(t *testing.T) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	stop(errs)
+	c.stop(errs)
 
 	// Total loss: fresh replicas, and the Genesis decree long since used.
-	errs, bases = start()
-	t.Cleanup(func() { stop(errs) })
-	waitServing(bases, false)
+	errs, bases = c.start(ha)
+	t.Cleanup(func() { c.stop(errs) })
+	waitServing(t, bases, false)
+	// A replica that waits for a restore is ready, so the operator reaches
+	// it through the Service.
+	deadline = time.Now().Add(40 * time.Second)
+	for code, _, _ := do(t, http.MethodGet, bases[2]+"/readyz", "", nil); code != http.StatusOK; code, _, _ = do(t, http.MethodGet, bases[2]+"/readyz", "", nil) {
+		if time.Now().After(deadline) {
+			t.Fatalf("a replica awaiting a restore is not ready: %d", code)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 	raw, _ := json.Marshal(corev1.ConfigMapList{Items: backups})
 	backupFile := filepath.Join(dir, "backup.json")
 	_ = os.WriteFile(backupFile, raw, 0o600)
@@ -208,7 +141,7 @@ func TestRunHARestoreAfterTotalLoss(t *testing.T) {
 	if out, err := recover("--bootstrap-node", "n2", "--min-epoch", "1", "--min-index", "0"); err != nil {
 		t.Fatalf("recover: %v\n%s", err, out)
 	}
-	waitServing(bases, true)
+	waitServing(t, bases, true)
 	// A second recover over the serving cluster is refused: its new intent
 	// is not in the decree record.
 	if out, err := recover(ok...); err == nil {
