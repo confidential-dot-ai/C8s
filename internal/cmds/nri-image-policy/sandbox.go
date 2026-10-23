@@ -63,7 +63,7 @@ type sandboxObservation struct {
 	PodNamespaces []string
 	// CtrNamespaces is the container's own OCI namespace types.
 	CtrNamespaces []string
-	// HostBinds is every bind source the pod does not own.
+	// HostBinds contains foreign sources without an explicit mount authorization.
 	HostBinds []string
 	// WritableKernelFS is the destinations of sysfs/cgroup mounts without ro.
 	WritableKernelFS []string
@@ -89,13 +89,12 @@ type sandboxObservation struct {
 // own names the binds this plugin adds itself (sidecarAdjustment); the policy
 // put them there, so it does not hold them against a container. mounts is the
 // container's mount evidence, as mountObserver.Observe returns it. A bind whose
-// evidence nodeRoot accepts carries measured node bytes an allowlist rule
-// pinned at that destination, so it is not a host bind either; nil accepts none.
-func observeSandbox(pod *api.PodSandbox, ctr *api.Container, own nodeMounts, mounts []allowlist.ObservedMount, nodeRoot func(allowlist.ObservedMount) bool) sandboxObservation {
+// evidence authorizeHostMount accepts is explicitly allowlisted; nil accepts none.
+func observeSandbox(pod *api.PodSandbox, ctr *api.Container, own nodeMounts, mounts []allowlist.ObservedMount, authorizeHostMount func(allowlist.ObservedMount) bool) sandboxObservation {
 	obs := sandboxObservation{
 		PodNamespaces:    namespaceTypes(pod.GetLinux().GetNamespaces()),
 		CtrNamespaces:    namespaceTypes(ctr.GetLinux().GetNamespaces()),
-		HostBinds:        hostBinds(pod, ctr, own, mounts, nodeRoot),
+		HostBinds:        hostBinds(pod, ctr, own, mounts, authorizeHostMount),
 		WritableKernelFS: writableKernelFS(ctr),
 		Hooks:            hookStages(ctr.GetHooks()),
 		Sysctls:          slices.Sorted(maps.Keys(ctr.GetLinux().GetSysctl())),
@@ -185,7 +184,7 @@ func namespaceTypes(nss []*api.LinuxNamespace) []string {
 // the pod UID, so a UID appearing anywhere in the source proves nothing, and an
 // uncleaned source would let `<uid>/..` name the parent. A pod with neither
 // identifier is unidentifiable, and every bind is then foreign.
-func hostBinds(pod *api.PodSandbox, ctr *api.Container, own nodeMounts, mounts []allowlist.ObservedMount, nodeRoot func(allowlist.ObservedMount) bool) []string {
+func hostBinds(pod *api.PodSandbox, ctr *api.Container, own nodeMounts, mounts []allowlist.ObservedMount, authorizeHostMount func(allowlist.ObservedMount) bool) []string {
 	var owned []string
 	if uid := pod.GetUid(); uid != "" {
 		owned = append(owned, kubeletRoot+"/pods/"+uid+"/")
@@ -207,7 +206,7 @@ func hostBinds(pod *api.PodSandbox, ctr *api.Container, own nodeMounts, mounts [
 		if isInjectedNodeMount(pod, ctr, m, own) {
 			continue
 		}
-		if nodeRoot != nil && nodeRootBind(src, m.GetDestination(), mounts, nodeRoot) {
+		if authorizeHostMount != nil && allMatchingHostBindObservationsAuthorized(src, m.GetDestination(), mounts, authorizeHostMount) {
 			continue
 		}
 		out = append(out, src)
@@ -215,16 +214,14 @@ func hostBinds(pod *api.PodSandbox, ctr *api.Container, own nodeMounts, mounts [
 	return out
 }
 
-// nodeRootBind reports whether mounts holds evidence for source at destination
-// and nodeRoot accepts all of it. Keying on the pair, not on the position, keeps
-// a duplicate bind with weaker evidence from riding on an accepted one.
-func nodeRootBind(source, destination string, mounts []allowlist.ObservedMount, nodeRoot func(allowlist.ObservedMount) bool) bool {
+// allMatchingHostBindObservationsAuthorized requires authorization for every observation of the source/destination pair.
+func allMatchingHostBindObservationsAuthorized(source, destination string, mounts []allowlist.ObservedMount, authorizeHostMount func(allowlist.ObservedMount) bool) bool {
 	found := false
 	for _, m := range mounts {
 		if m.Source != source || m.Destination != destination {
 			continue
 		}
-		if !nodeRoot(m) {
+		if !authorizeHostMount(m) {
 			return false
 		}
 		found = true

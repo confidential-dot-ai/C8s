@@ -2,7 +2,6 @@ package allowlist
 
 import (
 	"encoding/json"
-	"errors"
 	"strings"
 	"testing"
 )
@@ -75,6 +74,22 @@ func TestHostSourceDigestRejectsInvalidPaths(t *testing.T) {
 				t.Fatalf("accepted invalid host source %q", source)
 			}
 		})
+	}
+}
+
+func TestMountsPinnedRejectsInvalidPolicies(t *testing.T) {
+	for _, policy := range []MountPolicy{
+		{Policy: PolicyAny},
+		{Policy: "unknown"},
+		{Policy: PolicyExact},
+		{Policy: PolicyDeny, Rules: []MountRule{{Destination: "/config", Kind: MountHost, Source: "/config"}}},
+		{Policy: PolicyExact, Rules: []MountRule{{Destination: "/config", Kind: MountHost, Source: "relative"}}},
+		{Policy: PolicyExact, Rules: []MountRule{{Destination: "/config", Kind: "unknown"}}},
+	} {
+		w := Workload{InitContainers: []Container{{Mounts: policy}}}
+		if w.MountsPinned() {
+			t.Errorf("invalid policy reported pinned: %+v", policy)
+		}
 	}
 }
 
@@ -171,9 +186,7 @@ func TestNodeRootFileRuleStaysHostDependent(t *testing.T) {
 	}
 }
 
-// A secrets grant accepts a host file only when the node proves what the
-// container reads and the container cannot write back (#934).
-func TestMountRuleGrantPinned(t *testing.T) {
+func TestMountsPinnedByRuleKind(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		rule MountRule
@@ -183,19 +196,18 @@ func TestMountRuleGrantPinned(t *testing.T) {
 		{"data", MountRule{Destination: DataMountPrefix + "config", Kind: MountData}, true},
 		{"nodeRootFile read-only", MountRule{Destination: "/usr/bin/nvidia-smi", Kind: MountNodeRootFile, Source: "/usr/bin/nvidia-smi", ReadOnly: true}, true},
 		{"nodeRootFile writable", MountRule{Destination: "/usr/bin/nvidia-smi", Kind: MountNodeRootFile, Source: "/usr/bin/nvidia-smi"}, false},
-		{"host read-only", MountRule{Destination: "/usr/bin/nvidia-smi", Kind: MountHost, Source: "/usr/bin/nvidia-smi", ReadOnly: true}, false},
-		{"host writable", MountRule{Destination: "/usr/bin/nvidia-smi", Kind: MountHost, Source: "/usr/bin/nvidia-smi"}, false},
+		{"host read-only", MountRule{Destination: "/usr/bin/nvidia-smi", Kind: MountHost, Source: "/usr/bin/nvidia-smi", ReadOnly: true}, true},
+		{"host writable", MountRule{Destination: "/usr/bin/nvidia-smi", Kind: MountHost, Source: "/usr/bin/nvidia-smi"}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := tc.rule.behavior().grantPinned(); got != tc.want {
-				t.Fatalf("grantPinned(%+v) = %t, want %t", tc.rule, got, tc.want)
+			w := Workload{Containers: []Container{{Mounts: MountPolicy{Policy: PolicyExact, Rules: []MountRule{tc.rule}}}}}
+			if got := w.MountsPinned(); got != tc.want {
+				t.Fatalf("MountsPinned(%+v) = %t, want %t", tc.rule, got, tc.want)
 			}
 		})
 	}
 }
 
-// The NVIDIA CDI file set of a GPU worker, as nodeRootFile rules, passes a
-// grant; an unproven host path and the writable persistenced socket do not.
 func TestGPUWorkerGrantWithNodeRootCDIFiles(t *testing.T) {
 	files := []string{
 		"/lib/firmware/nvidia/595.71.05/gsp_ga10x.bin",
@@ -219,16 +231,16 @@ func TestGPUWorkerGrantWithNodeRootCDIFiles(t *testing.T) {
 		t.Fatalf("nodeRootFile CDI files: PinnedForGrant = %v, want nil", err)
 	}
 	for name, extra := range map[string]MountRule{
-		"unproven host path":  {Destination: "/opt/tools", Kind: MountHost, Source: "/opt/tools", ReadOnly: true},
+		"explicit host path":  {Destination: "/opt/tools", Kind: MountHost, Source: "/opt/tools", ReadOnly: true},
 		"persistenced socket": {Destination: "/run/nvidia-persistenced/socket", Kind: MountHost, Source: "/run/nvidia-persistenced/socket"},
 	} {
-		if err := worker(extra).PinnedForGrant(); !errors.Is(err, errGrantUnpinnedMounts) {
-			t.Errorf("%s: PinnedForGrant = %v, want errGrantUnpinnedMounts", name, err)
+		if err := worker(extra).PinnedForGrant(); err != nil {
+			t.Errorf("%s: PinnedForGrant = %v, want nil", name, err)
 		}
 	}
 }
 
-func TestAdmitsNodeRoot(t *testing.T) {
+func TestAdmitsHostMount(t *testing.T) {
 	const source = "/usr/bin/nvidia-smi"
 	sourceDigest, err := HostSourceDigest(source)
 	if err != nil {
@@ -253,6 +265,9 @@ func TestAdmitsNodeRoot(t *testing.T) {
 	plain.Kind = MountHost
 	exact := MountPolicy{Policy: PolicyExact, Rules: []MountRule{rule}}
 	verified := ObservedMount{Destination: source, Class: MountHost, Storage: MountUnknown, HostSourceDigest: sourceDigest, ReadOnly: true, Provenance: ProvenanceNodeRoot}
+	wrongCommand := index(ArgvPolicy{Policy: PolicyExact, Argv: []string{"/bin/app"}}, exact)
+	openMounts := index(anyCommand, MountPolicy{Policy: PolicyAny})
+	wrongCommand.byDigest[dApp] = append(wrongCommand.byDigest[dApp], openMounts.byDigest[dApp]...)
 	for _, tc := range []struct {
 		name   string
 		index  *Index
@@ -261,8 +276,10 @@ func TestAdmitsNodeRoot(t *testing.T) {
 	}{
 		{"exact nodeRootFile rule", index(anyCommand, exact), nil, true},
 		{"mount policy any", index(anyCommand, MountPolicy{Policy: PolicyAny}), nil, false},
-		{"host rule", index(anyCommand, MountPolicy{Policy: PolicyExact, Rules: []MountRule{plain}}), nil, false},
+		{"host rule", index(anyCommand, MountPolicy{Policy: PolicyExact, Rules: []MountRule{plain}}), nil, true},
+		{"host rule without provenance", index(anyCommand, MountPolicy{Policy: PolicyExact, Rules: []MountRule{plain}}), func(m *ObservedMount) { m.Provenance = "" }, true},
 		{"entry refuses argv", index(ArgvPolicy{Policy: PolicyExact, Argv: []string{"/bin/app"}}, exact), nil, false},
+		{"another entry admits argv", wrongCommand, nil, false},
 		{"other source", index(anyCommand, exact), func(m *ObservedMount) { m.HostSourceDigest = otherDigest }, false},
 		{"no observed provenance", index(anyCommand, exact), func(m *ObservedMount) { m.Provenance = "" }, false},
 		{"no allowlist", nil, nil, false},
@@ -273,8 +290,8 @@ func TestAdmitsNodeRoot(t *testing.T) {
 				tc.mutate(&m)
 			}
 			r := RunningContainer{Digest: dApp, Argv: []string{"/bin/other"}, Mounts: []ObservedMount{m}, Env: &EnvObservation{}}
-			if got := tc.index.AdmitsNodeRoot(r, m); got != tc.want {
-				t.Fatalf("AdmitsNodeRoot(%s) = %t, want %t", tc.name, got, tc.want)
+			if got := tc.index.AdmitsHostMount(r, m); got != tc.want {
+				t.Fatalf("AdmitsHostMount(%s) = %t, want %t", tc.name, got, tc.want)
 			}
 		})
 	}

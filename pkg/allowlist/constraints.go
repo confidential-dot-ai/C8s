@@ -1,5 +1,7 @@
 package allowlist
 
+import "slices"
+
 // containerConstraint is the common lifecycle for a concrete field in a
 // container policy. Implementations remain private: the serialized allowlist
 // is made exclusively from the concrete policy structs in allowlist.go.
@@ -65,22 +67,17 @@ func (m mountConstraint) admits(r RunningContainer) bool {
 	return m.policy.admits(r.Mounts)
 }
 
+func (m mountConstraint) pinsMountTable() bool {
+	policy := *m.policy
+	policy.Rules = slices.Clone(policy.Rules)
+	return !m.isUnconstrained() && normalizeMounts(&policy) == nil
+}
+
 // Deny and exact retain verified platform mounts (/etc/hosts, /etc/resolv.conf,
 // etc.), which the runtime adds to the OCI mount table even without workload volumes.
 func (m mountConstraint) hostIndependent() bool {
 	for _, rule := range m.policy.Rules {
 		if behavior := rule.behavior(); behavior == nil || !behavior.hostIndependent() {
-			return false
-		}
-	}
-	return m.policy.Policy == PolicyDeny || m.policy.Policy == PolicyExact || m.policy.Policy == ""
-}
-
-// grantPinned is hostIndependent as a secrets grant judges it: it also accepts
-// rules whose host file the node proves.
-func (m mountConstraint) grantPinned() bool {
-	for _, rule := range m.policy.Rules {
-		if behavior := rule.behavior(); behavior == nil || !behavior.grantPinned() {
 			return false
 		}
 	}
