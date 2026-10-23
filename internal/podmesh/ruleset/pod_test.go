@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestStandalonePodCarriesOnlySignedPeersInTheNamespace(t *testing.T) {
+func TestStandalonePodCapturesPeersAndAdmitsInternetInTheNamespace(t *testing.T) {
 	podNetNS(t, func(path string) error {
 		peer, err := startPeerNamespace()
 		if err != nil {
@@ -37,11 +37,16 @@ func TestStandalonePodCarriesOnlySignedPeersInTheNamespace(t *testing.T) {
 		}{
 			{workloadUID, "tcp", address(unapproved, 8080), captured},
 			{meshUID, "tcp", address(unapproved, 8080), admitted},
-			{workloadUID, "tcp", address(unapproved, 53), denied},
-			{meshUID, "tcp", address(unapproved, 53), denied},
-			{workloadUID, "udp", address(resolver, 53), denied},
-			{workloadUID, "tcp", address(resolver, 53), denied},
-			{meshUID, "tcp", address(service, servicePort), denied},
+			{workloadUID, "tcp", address(unapproved, 53), admitted},
+			{meshUID, "tcp", address(unapproved, 53), admitted},
+			{workloadUID, "udp", address(resolver, 53), admitted},
+			{workloadUID, "tcp", address(resolver, 53), admitted},
+			{meshUID, "udp", address(resolver, 53), admitted},
+			{meshUID, "tcp", address(service, servicePort), admitted},
+			{0, "tcp", address(unapproved, 53), denied},
+			{0, "udp", address(resolver, 53), denied},
+			{workloadUID, "tcp", address(unapproved6, 8080), denied},
+			{meshUID, "udp", address(unapproved6, 53), denied},
 		}
 		for i, tc := range cases {
 			port := firstSourcePort + uint16(i)

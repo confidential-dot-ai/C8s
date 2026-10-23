@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"gopkg.in/yaml.v3"
+	corev1 "k8s.io/api/core/v1"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
@@ -162,6 +163,35 @@ func TestPreparePodBindsCDSPullAndKeepsOnlyMeasuredMeshAndSignedBase(t *testing.
 	}
 	if _, err := os.Stat(filepath.Join(root, PublicDir, "peers.json")); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestPreparePodUsesGuestUpstreamDNS(t *testing.T) {
+	for _, tc := range []struct{ name, dns string }{
+		{"omitted", ``},
+		{"cluster", `"dnsPolicy":"ClusterFirst",`},
+		{"default", `"dnsPolicy":"Default",`},
+		{"custom", `"dnsPolicy":"None","dnsConfig":{"nameservers":["10.255.254.1"],"searches":["tenant.invalid"],"options":[{"name":"ndots","value":"5"}]},`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := preparePodRoot(t)
+			doc := podDocument(t)
+			doc.Pod.Manifest = strings.Replace(doc.Pod.Manifest, `"spec":{`, `"spec":{`+tc.dns, 1)
+			if err := Prepare(root, doc); err != nil {
+				t.Fatal(err)
+			}
+			manifest, err := os.ReadFile(filepath.Join(root, podManifestPath))
+			if err != nil {
+				t.Fatal(err)
+			}
+			pod, err := launchconfig.ParsePodManifest(manifest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if pod.Spec.DNSPolicy != corev1.DNSDefault || pod.Spec.DNSConfig != nil {
+				t.Fatalf("prepared DNS policy = %q, config = %+v", pod.Spec.DNSPolicy, pod.Spec.DNSConfig)
+			}
+		})
 	}
 }
 

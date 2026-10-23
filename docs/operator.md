@@ -261,8 +261,18 @@ declare its TCP `containerPort` in the signed Pod manifest and map the provider'
 external endpoint to that guest port. Guest forwarding preserves the application
 port and traffic passes through mesh authentication before reaching it. Do not
 map to the internal capture listener or add `hostPort`. Dynamic endpoint discovery
-is not provided. This implementation permits those mesh destinations; general
-internet and DNS egress are not yet available.
+is not provided.
+
+Other IPv4 TCP/UDP destinations use ordinary internet egress with the CVM's
+source address. A different port on a peer's IP is an ordinary destination;
+a signed peer TCP tuple always requires mesh authentication and never falls
+back to plaintext. Guest-local services and IPv4 link-local addresses remain
+blocked for applications and the measured endpoint.
+
+The standalone kubelet uses `/run/systemd/resolve/resolv.conf`, containing the
+guest's upstream resolvers, rather than the guest-local DNS stub or a cluster
+DNS address. Pod preparation sets `dnsPolicy: Default` and removes `dnsConfig`
+overrides so every container receives those upstreams.
 
 The pod manifest requires `metadata.uid` and digest-pinned container images.
 Volumes must be `emptyDir` with `medium: Memory`, so pod state stays in VM
