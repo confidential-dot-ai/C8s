@@ -65,8 +65,35 @@ func TestRecoveryFatalReplayDoesNotRestart(t *testing.T) {
 				if n.r() == old || n.r().State() != raft.Leader {
 					t.Fatal("ordinary refusal stopped valid recovery")
 				}
+				cert, err := n.confirmRead(time.Second)
+				if err != nil || !n.validReadCertificate(cert) {
+					t.Fatalf("new recovery instance cannot confirm reads: %v", err)
+				}
+				if _, err := n.readBarrier(old, time.Second); err == nil {
+					t.Fatal("old recovered instance admitted read")
+				}
 				if got, ok := cfg.Ledger.Lookup("s"); !ok || got != "original" {
 					t.Fatalf("refused replay changed binding: %q %v", got, ok)
+				}
+				current := n.r()
+				// A stale stop must neither clear fresh-generation admission nor
+				// overwrite its stopping marker after that generation shuts down.
+				n.readCert.Store(cert)
+				if err := n.stopRaft(old); err != nil {
+					t.Fatal(err)
+				}
+				if n.readCert.Load() != cert || !n.validReadCertificate(cert) {
+					t.Fatal("stale stop cleared current freshness")
+				}
+				if err := n.stopRaft(current); err != nil {
+					t.Fatal(err)
+				}
+				if err := n.stopRaft(old); err != nil {
+					t.Fatal(err)
+				}
+				n.readCert.Store(cert)
+				if n.stoppingReads.Load() != current || n.validReadCertificate(cert) || n.Serving() {
+					t.Fatal("stale stop reopened current generation")
 				}
 			}
 		})

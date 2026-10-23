@@ -29,7 +29,7 @@ func (n *Node) recover(ctx context.Context, p PendingDecree) {
 	}
 	n.log.Warn("RECOVER: forcing a one-voter configuration with this replica's state", "decree", p.Name, "id", n.id)
 	n.readCert.Store(nil) // recovery stops read admission before shutting Raft down
-	if err := n.r().Shutdown().Error(); err != nil {
+	if err := n.stopRaft(n.r()); err != nil {
 		n.log.Error("recover: shut down raft", "err", err)
 	}
 	_ = n.mux.Load().Close()
@@ -121,7 +121,7 @@ func (n *Node) maybeBackup(ctx context.Context) {
 		n.log.Warn("backup: snapshot", "err", err)
 		return
 	}
-	meta, rc, err := f.Open()
+	_, rc, err := f.Open()
 	if err != nil {
 		n.log.Warn("backup: open snapshot", "err", err)
 		return
@@ -137,7 +137,8 @@ func (n *Node) maybeBackup(ctx context.Context) {
 		n.log.Warn("backup: decode snapshot", "err", err)
 		return
 	}
-	b, err := SealAuthenticatedBackup(n.recovery, BackupMeta{ClusterID: sn.Core.ClusterID, Epoch: sn.Core.Epoch, Index: meta.Index,
+	// Export the application state watermark, not Raft's barrier-only suffix.
+	b, err := SealAuthenticatedBackup(n.recovery, BackupMeta{ClusterID: sn.Core.ClusterID, Epoch: sn.Core.Epoch, Index: sn.Index,
 		AppliedDecrees: sn.Core.AppliedDecrees, TakenAtMS: time.Now().UnixMilli(), CAFingerprint: certutil.CertFingerprint(sn.Core.RootCert)}, body, sn.Core.RootCert, sn.Key)
 	if err != nil {
 		n.log.Warn("backup: seal", "err", err)

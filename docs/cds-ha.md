@@ -131,6 +131,12 @@ the recovery key, so you can store the export anywhere:
 Retain the CA fingerprint and epoch/index independently from attested live
 status, as described below. A manifest alone is not a trusted recovery record.
 Recovery refuses a backup older than the `--min-epoch`/`--min-index` you give it.
+The backup index and `--min-index` are application state watermarks, as reported
+by attested status `applied_index`. They include applied commands and membership
+configurations, not read-only Raft barriers. Raft's internal last-log and snapshot
+positions are separate and must not be used as recovery floors. A floor above
+the authenticated state index is refused even if a later barrier exists; the
+CLI never lowers or translates the supplied floor.
 
 ## Splitting the recovery key
 
