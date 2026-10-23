@@ -453,12 +453,59 @@ type RestoreRequest struct {
 // handleRestore restores a backup into this replica. The decree, signed by
 // the operator's decree key and checked against the replica's own launch
 // configuration, is the authority; the snapshot must be the one it names.
+const (
+	restoreDecreeHeader   = "X-CDS-Restore-Decree"
+	maxRestoreDecreeBytes = 16 << 10
+	maxLegacyRestoreBytes = 1 << 20
+	maxRestoreBytes       = 256 << 20 // JSON wire bytes, including base64 snapshot
+)
+
+// A process-wide budget, independent of attacker-controlled source addresses.
+var restoreAdmission = make(chan struct{}, 1)
+
 func handleRestore(node *cdsha.Node) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case restoreAdmission <- struct{}{}:
+			defer func() { <-restoreAdmission }()
+		default:
+			http.Error(w, "restore already in progress", http.StatusTooManyRequests)
+			return
+		}
+		// The server also bounds request reads. Set an explicit handler deadline
+		// so a slow upload cannot retain the restore admission slot indefinitely.
+		_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(30 * time.Second))
+		limit := int64(maxLegacyRestoreBytes)
+		if header := r.Header.Get(restoreDecreeHeader); header != "" {
+			var sd cdsha.SignedDecree
+			if len(header) > maxRestoreDecreeBytes || json.Unmarshal([]byte(header), &sd) != nil {
+				http.Error(w, "bad restore decree header", http.StatusBadRequest)
+				return
+			}
+			if err := node.CheckRestore(sd); err != nil {
+				code := http.StatusConflict
+				if errors.Is(err, cdsha.ErrNotForThisNode) {
+					code = http.StatusMisdirectedRequest
+				}
+				http.Error(w, err.Error(), code)
+				return
+			}
+			limit = maxRestoreBytes
+		}
 		var req RestoreRequest
-		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 256<<20)).Decode(&req); err != nil {
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit)).Decode(&req); err != nil {
 			http.Error(w, "bad restore request: "+err.Error(), http.StatusBadRequest)
 			return
+		}
+		if header := r.Header.Get(restoreDecreeHeader); header != "" {
+			var sd cdsha.SignedDecree
+			_ = json.Unmarshal([]byte(header), &sd)
+			expected, _ := json.Marshal(sd)
+			actual, _ := json.Marshal(req.Decree)
+			if string(expected) != string(actual) {
+				http.Error(w, "restore body decree differs from header", http.StatusBadRequest)
+				return
+			}
 		}
 		res, err := node.Restore(r.Context(), req.Decree, req.Snapshot)
 		switch {
@@ -503,6 +550,7 @@ func preJoinMux(node *cdsha.Node) http.Handler {
 func startPreJoinServer(cfg config, node *cdsha.Node) (stop func()) {
 	addr := net.JoinHostPort(cfg.host, strconv.Itoa(cfg.port))
 	srv := newHTTPServer(addr, preJoinMux(node), cfg)
+	srv.MaxHeaderBytes = maxRestoreDecreeBytes + (4 << 10)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
