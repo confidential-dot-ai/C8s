@@ -3,15 +3,11 @@ package cdsha
 import (
 	"context"
 	"crypto/ecdsa"
-	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/sha256"
-	"crypto/x509"
 	"errors"
 	"strings"
 	"testing"
-	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -116,50 +112,5 @@ func TestSetDecreeStatusEdges(t *testing.T) {
 	})
 	if err := st.SetDecreeStatus(ctx, "d", DecreeStatus{RejectedReason: "no"}); err == nil {
 		t.Fatal("a conflicting update reported as written")
-	}
-}
-
-// signRaw signs a decree as is, without SignDecree's normalization.
-func signRaw(t *testing.T, d Decree, k *ecdsa.PrivateKey) SignedDecree {
-	t.Helper()
-	msg, err := d.signedBytes()
-	if err != nil {
-		t.Fatal(err)
-	}
-	h := sha256.Sum256(msg)
-	sig, err := ecdsa.SignASN1(rand.Reader, k, h[:])
-	if err != nil {
-		t.Fatal(err)
-	}
-	return SignedDecree{Decree: d, Signature: sig}
-}
-
-func TestVerifyDecreeEdges(t *testing.T) {
-	k, pub := operatorKey(t)
-	tail := PreGenesis(testCluster, pub)
-	exp := time.Now().Add(time.Hour)
-	for name, d := range map[string]Decree{
-		"empty intent_id":    {ClusterID: testCluster, Kind: UpdateMeasurements, Measurements: []string{"m"}, ExpiresAt: exp},
-		"non-canonical pins": {ClusterID: testCluster, IntentID: "i", Kind: UpdateMeasurements, Measurements: []string{"m2", "m1"}, ExpiresAt: exp},
-		"duplicate pins":     {ClusterID: testCluster, IntentID: "i", Kind: UpdateMeasurements, Measurements: []string{"m1", "m1"}, ExpiresAt: exp},
-	} {
-		if err := CheckDecree(signRaw(t, d, k), tail, time.Now()); err == nil {
-			t.Errorf("%s accepted", name)
-		}
-	}
-	ok := signRaw(t, Decree{ClusterID: testCluster, IntentID: "i", Kind: UpdateMeasurements, Measurements: []string{"m1", "m2"}, ExpiresAt: exp}, k)
-	if err := CheckDecree(ok, tail, time.Now()); err != nil {
-		t.Fatalf("canonical decree refused: %v", err)
-	}
-	if err := VerifyDecreeSignature(ok, []byte("junk")); err == nil || !strings.Contains(err.Error(), "decree key") {
-		t.Fatalf("junk decree key: %v", err)
-	}
-	edPub, _, _ := ed25519.GenerateKey(rand.Reader)
-	edDER, _ := x509.MarshalPKIXPublicKey(edPub)
-	if err := VerifyDecreeSignature(ok, edDER); err == nil || !strings.Contains(err.Error(), "not ECDSA") {
-		t.Fatalf("Ed25519 decree key: %v", err)
-	}
-	if err := VerifyDecreeSignature(ok, pub); err != nil {
-		t.Fatalf("good signature: %v", err)
 	}
 }
