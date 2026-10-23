@@ -776,7 +776,7 @@ func renewMeshCAWhenDue(ctx context.Context, mesh *issuer.MeshCA, every time.Dur
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if !pastHalfLife(mesh.Current().CA.Cert, time.Now()) {
+			if !issuer.PastHalfLife(mesh.Current().CA.Cert, time.Now()) {
 				continue
 			}
 			renewed, err := mesh.RenewCertificate()
@@ -795,11 +795,4 @@ func renewMeshCAWhenDue(ctx context.Context, mesh *issuer.MeshCA, every time.Dur
 			)
 		}
 	}
-}
-
-// pastHalfLife is the renewal trigger: half the certificate's lifetime, which
-// --ca-cert-validity guarantees leaves room for renewal to retry in before
-// readiness fails.
-func pastHalfLife(cert *x509.Certificate, now time.Time) bool {
-	return now.After(cert.NotBefore.Add(cert.NotAfter.Sub(cert.NotBefore) / 2))
 }

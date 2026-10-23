@@ -45,3 +45,25 @@ func TestRenewalOf(t *testing.T) {
 		}
 	}
 }
+
+// PastHalfLife is the renewal trigger: half the certificate's lifetime,
+// leaving the rest of it for renewal to keep retrying in.
+func TestPastHalfLife(t *testing.T) {
+	now := time.Now()
+	window := func(start, end time.Duration) *x509.Certificate {
+		return &x509.Certificate{NotBefore: now.Add(start), NotAfter: now.Add(end)}
+	}
+	for name, c := range map[string]struct {
+		cert *x509.Certificate
+		want bool
+	}{
+		"fresh certificate":             {window(-time.Minute, time.Hour), false},
+		"just before half its lifetime": {window(-29*time.Minute, 31*time.Minute), false},
+		"past half its lifetime":        {window(-31*time.Minute, 29*time.Minute), true},
+		"expired":                       {window(-2*time.Hour, -time.Hour), true},
+	} {
+		if got := PastHalfLife(c.cert, now); got != c.want {
+			t.Errorf("%s: PastHalfLife = %v, want %v", name, got, c.want)
+		}
+	}
+}
