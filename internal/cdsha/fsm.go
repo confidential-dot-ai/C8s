@@ -174,6 +174,7 @@ type FSM struct {
 	// met an entry it could not apply, and keeps it from serving.
 	readable uint32
 	stuck    atomic.Pointer[string]
+	stuckAt  atomic.Int64 // unix nanoseconds when stuck was set
 
 	// applyDelay is a test seam (set only from tests, zero otherwise): it
 	// slows every command apply, as a slow local disk does.
@@ -199,6 +200,14 @@ func (f *FSM) Stuck() string {
 		return *p
 	}
 	return ""
+}
+
+// stuckFor is how long ago the replica got stuck, or 0 if it is not.
+func (f *FSM) stuckFor() time.Duration {
+	if at := f.stuckAt.Load(); at != 0 {
+		return time.Since(time.Unix(0, at))
+	}
+	return 0
 }
 
 // Core returns a copy of the agreed cluster state.
@@ -256,6 +265,7 @@ var errMalformed = errors.New("malformed log entry")
 func (f *FSM) stop(err error) error {
 	msg := err.Error()
 	if f.stuck.CompareAndSwap(nil, &msg) {
+		f.stuckAt.Store(time.Now().UnixNano())
 		slog.Error("cds-ha: this replica can no longer follow the log; it stops serving and exits to rejoin", "reason", msg)
 	}
 	return err
