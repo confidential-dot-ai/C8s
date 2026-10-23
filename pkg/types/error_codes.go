@@ -47,10 +47,10 @@ const (
 	// session's handshake bound is applied, so the session's request is
 	// refused (route policy E6). Attest again.
 	ErrorCodeRouteDigestChanged = "route_digest_changed"
-	// ErrorCodeRouterDigestChanged: the router's mesh leaf renewed under
-	// another allowlist digest than the one the session's handshake bound
-	// (route policy E6). Attest again.
-	ErrorCodeRouterDigestChanged = "router_digest_changed"
+	// ErrorCodeRouteEntryChanged: an allowlist entry a workload route of the
+	// session's manifest names was removed or redefined since the allowlist
+	// the session's handshake bound (route policy E6). Attest again.
+	ErrorCodeRouteEntryChanged = "route_entry_changed"
 	// ErrorCodeSessionsBusy: the router holds as many attest-lb bindings as
 	// it may, for this client or in all, so it refuses the handshake rather
 	// than drop one (route policy E7). Retry shortly.

@@ -7,11 +7,14 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -32,6 +35,8 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/routing"
 	"github.com/confidential-dot-ai/c8s/internal/testutil"
+	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
@@ -63,6 +68,7 @@ func (c *testClock) Advance(d time.Duration) {
 // /big answers with bigResponseBytes.
 type routedServer struct {
 	ts         *httptest.Server
+	allowlists *testAllowlists
 	proxy      *routing.Proxy
 	transports *routing.Transports
 	bindings   *Bindings
@@ -120,7 +126,13 @@ func newRoutedServer(t *testing.T, opts ...func(*routing.ProxyConfig, *Config)) 
 	routerIdentity, meshDir := publishedMeshIdentity(t, routerLeaf, ca)
 	rs.ca, rs.meshDir = ca, meshDir
 	rs.state = routing.NewState(routing.StateConfig{Reserved: defaultReservedPaths, MeshCAs: routerIdentity.MeshCAs, Now: rs.clock.Now})
-	rs.transports = routing.NewTransports(routing.TransportConfig{MeshIdentity: routerIdentity.Credential})
+	rs.allowlists = &testAllowlists{docs: map[string]*allowlist.Allowlist{}}
+	rs.allowlists.serve(testDigest, testAllowlist("v1"))
+	entries := routing.NewEntries(rs.allowlists)
+	if _, err := entries.Refresh(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	rs.transports = routing.NewTransports(routing.TransportConfig{MeshIdentity: routerIdentity.Credential, Entries: entries})
 	rs.bindings = NewBindings()
 	proxyCfg := routing.ProxyConfig{
 		State:      rs.state,
@@ -153,9 +165,56 @@ func newRoutedServer(t *testing.T, opts ...func(*routing.ProxyConfig, *Config)) 
 // testSandboxID is the workload instance a member leaf names.
 const testSandboxID = "8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a0e8d9f"
 
+// testDigest is the allowlist digest namedLeaf stamps, that of the routed
+// server's first current allowlist.
+var testDigest = bytes.Repeat([]byte{0x42}, 32)
+
+// testAllowlists serves allowlists under the digests a test assigns them.
+type testAllowlists struct {
+	mu      sync.Mutex
+	current string
+	version int
+	docs    map[string]*allowlist.Allowlist
+}
+
+// testAllowlist holds the routed server's entries, web's under label.
+func testAllowlist(label string) *allowlist.Allowlist {
+	return &allowlist.Allowlist{Schema: allowlist.Schema, Workloads: map[string]allowlist.Workload{
+		"web": {Label: label}, "router": {Label: "v1"},
+	}}
+}
+
+// serve stores al under digest and makes it the current allowlist.
+func (a *testAllowlists) serve(digest []byte, al *allowlist.Allowlist) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.docs[string(digest)] = al
+	a.current = string(digest)
+	a.version++
+}
+
+func (a *testAllowlists) FetchServed(_ context.Context, ifNoneMatch string) (allowlistclient.Served, bool, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	etag := fmt.Sprintf("W/\"%d\"", a.version)
+	if ifNoneMatch == etag {
+		return allowlistclient.Served{}, true, nil
+	}
+	return allowlistclient.Served{Allowlist: a.docs[a.current], ETag: etag, Digest: "sha256:" + hex.EncodeToString([]byte(a.current))}, false, nil
+}
+
+func (a *testAllowlists) Object(_ context.Context, digest [sha256.Size]byte) (*allowlist.Allowlist, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if al, ok := a.docs[string(digest[:])]; ok {
+		return al, nil
+	}
+	return nil, errors.New("404 not found")
+}
+
 func namedLeaf(t *testing.T, ca *issuer.CA, workload string) tls.Certificate {
 	t.Helper()
-	return namedLeafUnder(t, ca, workload, bytes.Repeat([]byte{0x42}, 32))
+	return namedLeafUnder(t, ca, workload, testDigest)
 }
 
 // namedLeafUnder is namedLeaf stamped under allowlist digest.

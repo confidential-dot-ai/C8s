@@ -22,7 +22,9 @@ type PollerConfig struct {
 	Fetcher Fetcher
 	Keys    KeySource
 	// Transports, when set, is reset when the mesh CA bundle changes and
-	// pruned to the backends each applied manifest names.
+	// pruned to the backends each applied manifest names. Each poll also
+	// refreshes its Entries and retires the pools of workloads whose entry
+	// the new allowlist removed or redefined (B10).
 	Transports *Transports
 	Interval   time.Duration
 	Logger     *slog.Logger
@@ -68,6 +70,27 @@ func (p *Poller) Run(ctx context.Context) {
 	}
 }
 
+// refreshEntries reads the current allowlist. A failed read keeps the one
+// already read and is no route poll failure: routes and the allowlist are
+// separate documents.
+func (p *Poller) refreshEntries(ctx context.Context, t *Transports) {
+	if t.cfg.Entries == nil {
+		return
+	}
+	before := t.cfg.Entries.Digest()
+	changed, err := t.cfg.Entries.Refresh(ctx)
+	if err != nil {
+		if ctx.Err() == nil {
+			p.log.Warn("allowlist poll failed; keeping the allowlist already read", "error", err, "read", before != "")
+		}
+		return
+	}
+	if after := t.cfg.Entries.Digest(); after != before {
+		p.log.Info("allowlist read", "digest", hex.EncodeToString([]byte(after)), "entries_changed", changed)
+	}
+	t.RetireWorkloads(changed)
+}
+
 // Poll fetches the signed manifest once and offers it to the State.
 func (p *Poller) Poll(ctx context.Context) (err error) {
 	if t := p.cfg.Transports; t != nil {
@@ -81,6 +104,7 @@ func (p *Poller) Poll(ctx context.Context) (err error) {
 				err = fmt.Errorf("mesh CAs: %w", dropErr)
 			}
 		}()
+		p.refreshEntries(ctx, t)
 	}
 	keys, err := p.cfg.Keys.OperatorKeys(ctx)
 	if err != nil {

@@ -104,9 +104,8 @@ func checkRoutingFlags(cfg config) error {
 	if !cfg.attestOff && (cfg.meshIdentityCertFile == "" || cfg.meshIdentityKeyFile == "" || cfg.meshIdentityCAFile == "") {
 		return errors.New("--attest-endpoints=true requires --mesh-identity-cert-file, --mesh-identity-key-file and --mesh-identity-ca-file: the attestation endpoints bind their evidence to that leaf")
 	}
-	// The handshakes bind the router digest of the flags' leaf, and requests
-	// carry the digest of the leaf memberCredentials reads: two leaves would
-	// never converge and every handshake would be refused.
+	// The handshakes bind the router digest of the flags' leaf: it must be
+	// the leaf the router presents to backends (B4).
 	if !cfg.attestOff && (filepath.Clean(cfg.meshIdentityCertFile) != memberCertPath || filepath.Clean(cfg.meshIdentityKeyFile) != memberKeyPath || filepath.Clean(cfg.meshIdentityCAFile) != workloadclaims.MemberCAPath) {
 		return fmt.Errorf("--mesh-identity-cert-file, --mesh-identity-key-file and --mesh-identity-ca-file must be %s, %s and %s: the router reaches backends with that credential", memberCertPath, memberKeyPath, workloadclaims.MemberCAPath)
 	}
@@ -167,7 +166,7 @@ func newRoutingEngine(cfg config, bindings *Bindings, logger *slog.Logger) (*rou
 		return nil, err
 	}
 	state := routing.NewState(routing.StateConfig{Reserved: r.reservedPaths, MeshCAs: identity.MeshCAs})
-	transports := routing.NewTransports(routing.TransportConfig{MeshIdentity: identity.Credential, Logger: logger})
+	transports := routing.NewTransports(routing.TransportConfig{MeshIdentity: identity.Credential, Entries: routing.NewEntries(cds)})
 	return &routingEngine{
 		cfg: r,
 		log: logger,

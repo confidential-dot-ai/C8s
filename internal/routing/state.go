@@ -5,6 +5,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -26,6 +27,20 @@ type Applied struct {
 	Signed   *routes.Signed
 	Manifest *routes.Manifest
 	Table    *routes.Table
+}
+
+// workloadNames are the allowlist entries the manifest's workload routes
+// name, each once.
+func (a *Applied) workloadNames() []string {
+	var names []string
+	for _, h := range a.Manifest.Hosts {
+		for _, r := range h.Routes {
+			if w := r.Backend.Workload; w != "" && !slices.Contains(names, w) {
+				names = append(names, w)
+			}
+		}
+	}
+	return names
 }
 
 // Outcome says what accepting a verified signed manifest did.

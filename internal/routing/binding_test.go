@@ -1,6 +1,7 @@
 package routing
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -61,15 +62,12 @@ func (f *fixture) getOn(connection string) *httptest.ResponseRecorder {
 }
 
 // TestE6ListenerRefusesAChangedBinding: a request on a bound connection is
-// refused with the code of whichever digest changed, before any backend is
-// selected; an unbound or unknown connection routes by the applied manifest.
+// refused once another manifest is applied, before any backend is selected;
+// an unbound or unknown connection routes by the applied manifest.
 func TestE6ListenerRefusesAChangedBinding(t *testing.T) {
 	f := newFixture(t)
 	web := startBackend(t, "web", issueLeaf(t, f.mesh, "web"))
 	f.apply(t, simpleManifest(1, web.addr()))
-	if err := f.transports.dropMeshPools(); err != nil { // records the router digest
-		t.Fatal(err)
-	}
 	bindings := newFakeBindings(map[string]Binding{"1.1": f.bound()})
 	f.proxy = NewProxy(ProxyConfig{State: f.state, Transports: f.transports, Bindings: bindings})
 
@@ -100,41 +98,83 @@ func TestE6ListenerRefusesAChangedBinding(t *testing.T) {
 	if w := f.getOn("1.1"); w.Code != http.StatusServiceUnavailable || strings.TrimSpace(w.Body.String()) != types.ErrorCodeRouteDigestChanged {
 		t.Fatalf("GET / on a refused connection whose digests hold again = %d %q, want 503 %q", w.Code, w.Body.String(), types.ErrorCodeRouteDigestChanged)
 	}
-	delete(bindings.refused, "1.1")
-	f.renew(t, issueStampedLeaf(t, f.mesh, "router", digestOf(0x43)))
-	if err := f.transports.dropMeshPools(); err != nil {
-		t.Fatal(err)
-	}
-	if w := f.getOn("1.1"); w.Code != http.StatusServiceUnavailable || strings.TrimSpace(w.Body.String()) != types.ErrorCodeRouterDigestChanged {
-		t.Fatalf("GET / after the router renewed = %d %q, want %d %q", w.Code, w.Body.String(), http.StatusServiceUnavailable, types.ErrorCodeRouterDigestChanged)
-	}
 	if bindings.held["1.1"] == 0 || bindings.held["1.2"] != 0 || bindings.released["1.1"] != bindings.held["1.1"] {
 		t.Fatalf("holds = %v, releases = %v, want only the bound connection held, each hold released", bindings.held, bindings.released)
 	}
 }
 
-// TestE6EmptyRouterDigestComparesAsAValue: a session bound with no router
-// digest is refused once the router has one, and the other way round.
-func TestE6EmptyRouterDigestComparesAsAValue(t *testing.T) {
+// TestE6AllowlistWriteKeepsTheSession: a session survives an allowlist write
+// and a router renewal that leave the entries its routes name unchanged, and
+// is refused with route_entry_changed once one of them is redefined or
+// removed, or its bound document cannot be fetched.
+func TestE6AllowlistWriteKeepsTheSession(t *testing.T) {
+	tests := []struct {
+		name  string
+		write func(*fixture)
+		want  string
+	}{
+		{"unrelated entry added", func(f *fixture) {
+			f.allowlists.serve(digestOf(0x43), labelled(map[string]string{"web": "v1", "admin": "v1", "router": "v1", "new": "v1"}))
+		}, ""},
+		{"route's entry redefined", func(f *fixture) {
+			f.allowlists.serve(digestOf(0x43), labelled(map[string]string{"web": "v2", "admin": "v1", "router": "v1"}))
+		}, types.ErrorCodeRouteEntryChanged},
+		{"route's entry removed", func(f *fixture) {
+			f.allowlists.serve(digestOf(0x43), labelled(map[string]string{"admin": "v1", "router": "v1"}))
+		}, types.ErrorCodeRouteEntryChanged},
+		{"bound document unavailable", func(f *fixture) {
+			f.allowlists.serve(digestOf(0x43), testAllowlist())
+			f.allowlists.fail = errors.New("CDS unreachable")
+		}, types.ErrorCodeRouteEntryChanged},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			// The router's leaf is stamped under a document the router never
+			// read as current, so the check fetches it.
+			bound := digestOf(0x41)
+			f.allowlists.store(bound, testAllowlist())
+			f.renew(t, issueStampedLeaf(t, f.mesh, "router", bound))
+			web := startBackend(t, "web", issueLeaf(t, f.mesh, "web"))
+			f.apply(t, simpleManifest(1, web.addr()))
+			bindings := newFakeBindings(map[string]Binding{"1.1": f.bound()})
+			f.proxy = NewProxy(ProxyConfig{State: f.state, Transports: f.transports, Bindings: bindings})
+
+			tc.write(f)
+			f.refresh(t)
+			// The router renews under the new allowlist; the session's
+			// binding does not follow it.
+			f.renew(t, issueStampedLeaf(t, f.mesh, "router", digestOf(0x43)))
+			w := f.getOn("1.1")
+			if tc.want == "" {
+				if w.Code != http.StatusOK {
+					t.Fatalf("GET / = %d %q, want 200", w.Code, w.Body.String())
+				}
+				return
+			}
+			if w.Code != http.StatusServiceUnavailable || strings.TrimSpace(w.Body.String()) != tc.want {
+				t.Fatalf("GET / = %d %q, want 503 %q", w.Code, w.Body.String(), tc.want)
+			}
+			sealedHost := []types.HeaderField{{Name: "Host", Value: testHost}}
+			_, err := f.proxy.Forward(outerRequest(testHost), types.TunnelRequest{Path: "/", Headers: sealedHost}, bindings.entries["1.1"])
+			var changed *BindingChangedError
+			if !errors.As(err, &changed) || changed.Code != tc.want {
+				t.Fatalf("Forward() = %v, want a BindingChangedError %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// TestE6UnstampedBindingHoldsTheManifestAlone: a session bound with no router
+// digest is checked against the route digest only.
+func TestE6UnstampedBindingHoldsTheManifestAlone(t *testing.T) {
 	f := newFixture(t)
 	f.apply(t, simpleManifest(1, "127.0.0.1:1"))
 	unbound := Binding{RouteDigest: f.state.Current().Signed.Digest()}
-	if err := f.transports.dropMeshPools(); err != nil {
-		t.Fatal(err)
-	}
-	if code := f.proxy.changed(unbound, f.state.Current()); code != types.ErrorCodeRouterDigestChanged {
-		t.Fatalf("changed(empty router digest) under a stamped router = %q, want %q", code, types.ErrorCodeRouterDigestChanged)
-	}
-	stamped := f.bound()
-	f.renew(t, issueLeaf(t, f.mesh, ""))
-	if err := f.transports.dropMeshPools(); err != nil {
-		t.Fatal(err)
-	}
-	if code := f.proxy.changed(stamped, f.state.Current()); code != types.ErrorCodeRouterDigestChanged {
-		t.Fatalf("changed(stamped router digest) under an unstamped router = %q, want %q", code, types.ErrorCodeRouterDigestChanged)
-	}
-	if code := f.proxy.changed(unbound, f.state.Current()); code != "" {
-		t.Fatalf("changed(empty router digest) under an unstamped router = %q, want none", code)
+	f.allowlists.serve(digestOf(0x43), labelled(map[string]string{"web": "v2"}))
+	f.refresh(t)
+	if code := f.proxy.changed(context.Background(), unbound, f.state.Current()); code != "" {
+		t.Fatalf("changed(no router digest) after the route's entry changed = %q, want none", code)
 	}
 }
 
@@ -154,137 +194,5 @@ func TestE6ForwardRefusesAChangedBinding(t *testing.T) {
 	}
 	if n := web.hits.Load(); n != 0 {
 		t.Fatalf("backend served %d requests, want 0", n)
-	}
-}
-
-// TestE6RenewalBeforeThePollRefusesABoundDial: a router leaf renewed after
-// the binding check and before the poll fails the dial of a request bound to
-// the previous digest, and retires the pools, rather than serve it by a
-// backend accepted under the renewed one.
-func TestE6RenewalBeforeThePollRefusesABoundDial(t *testing.T) {
-	f := newFixture(t)
-	web := startBackend(t, "web", issueStampedLeaf(t, f.mesh, "web", digestOf(0x43)))
-	f.apply(t, simpleManifest(1, web.addr()))
-	if err := f.transports.dropMeshPools(); err != nil {
-		t.Fatal(err)
-	}
-	bindings := newFakeBindings(map[string]Binding{"1.1": f.bound()})
-	f.proxy = NewProxy(ProxyConfig{State: f.state, Transports: f.transports, Bindings: bindings})
-	backend := f.state.Current().Manifest.Hosts[testHost].Routes[0].Backend
-	f.transports.For(backend) // built under the bound digest
-
-	f.renew(t, issueStampedLeaf(t, f.mesh, "router", digestOf(0x43)))
-	if w := f.getOn("1.1"); w.Code != http.StatusServiceUnavailable || strings.TrimSpace(w.Body.String()) != types.ErrorCodeRouterDigestChanged {
-		t.Fatalf("GET / bound to the digest before a renewal no poll saw = %d %q, want 503 %q", w.Code, w.Body.String(), types.ErrorCodeRouterDigestChanged)
-	}
-	if n := web.hits.Load(); n != 0 {
-		t.Fatalf("backend under the renewed digest served %d requests, want 0", n)
-	}
-	if got := f.transports.RouterDigest(); got != string(digestOf(0x43)) {
-		t.Fatalf("RouterDigest() after the refused dial = %x, want the renewed %x", got, digestOf(0x43))
-	}
-	if w := f.get("/"); w.Code != http.StatusOK {
-		t.Fatalf("unbound GET / after the pools retired = %d %q, want 200", w.Code, w.Body.String())
-	}
-}
-
-// TestE6RenewalBeforeThePollRefusesAnUnboundDial: the unbound request whose
-// dial retires the pools gets a retryable 503, not a backend 502, and the
-// next one is served.
-func TestE6RenewalBeforeThePollRefusesAnUnboundDial(t *testing.T) {
-	f := newFixture(t)
-	web := startBackend(t, "web", issueStampedLeaf(t, f.mesh, "web", digestOf(0x43)))
-	f.apply(t, simpleManifest(1, web.addr()))
-	if err := f.transports.dropMeshPools(); err != nil {
-		t.Fatal(err)
-	}
-	backend := f.state.Current().Manifest.Hosts[testHost].Routes[0].Backend
-	f.transports.For(backend)
-
-	f.renew(t, issueStampedLeaf(t, f.mesh, "router", digestOf(0x43)))
-	if w := f.get("/"); w.Code != http.StatusServiceUnavailable || strings.TrimSpace(w.Body.String()) != types.ErrorCodeRouterDigestChanged {
-		t.Fatalf("unbound GET / on a pool built before a renewal no poll saw = %d %q, want 503 %q", w.Code, w.Body.String(), types.ErrorCodeRouterDigestChanged)
-	}
-	if w := f.get("/"); w.Code != http.StatusOK {
-		t.Fatalf("unbound GET / after the pools retired = %d %q, want 200", w.Code, w.Body.String())
-	}
-}
-
-// TestE6TransportUnderAnotherDigest: a bound request never takes a workload
-// transport whose pool was accepted under another router digest.
-func TestE6TransportUnderAnotherDigest(t *testing.T) {
-	f := newFixture(t)
-	f.apply(t, simpleManifest(1, "127.0.0.1:1"))
-	if err := f.transports.dropMeshPools(); err != nil {
-		t.Fatal(err)
-	}
-	route := f.state.Current().Manifest.Hosts[testHost].Routes[0]
-	bound := f.bound()
-	if _, ok := f.proxy.transport(route, &bound); !ok {
-		t.Fatal("transport(bound to the tracked digest) refused, want it")
-	}
-	bound.RouterDigest = string(digestOf(0x44))
-	if _, ok := f.proxy.transport(route, &bound); ok {
-		t.Fatal("transport(bound to another digest) taken, want it refused")
-	}
-	if _, ok := f.proxy.transport(route, nil); !ok {
-		t.Fatal("transport(unbound) refused, want it")
-	}
-}
-
-// TestE6UnreadableCredentialKeepsTheRouterDigest: a failed credential read
-// is no renewal, so a bound connection is not refused for it, and a request a
-// client drives through syncRouterDigest retires no pool while it fails.
-func TestE6UnreadableCredentialKeepsTheRouterDigest(t *testing.T) {
-	f := newFixture(t)
-	web := startBackend(t, "web", issueLeaf(t, f.mesh, "web"))
-	f.apply(t, simpleManifest(1, web.addr()))
-	if err := f.transports.dropMeshPools(); err != nil {
-		t.Fatal(err)
-	}
-	bindings := newFakeBindings(map[string]Binding{"1.1": f.bound()})
-	f.proxy = NewProxy(ProxyConfig{State: f.state, Transports: f.transports, Bindings: bindings})
-	backend := f.state.Current().Manifest.Hosts[testHost].Routes[0].Backend
-	before, _ := f.transports.For(backend)
-
-	f.publish(t, "garbage")
-	if err := f.transports.syncRouterDigest(); err == nil {
-		t.Fatal("syncRouterDigest() with an unreadable bundle = nil, want an error")
-	}
-	if got, _ := f.transports.For(backend); got != before {
-		t.Fatal("syncRouterDigest() with an unreadable bundle retired a pool, want none retired")
-	}
-	if err := f.transports.dropMeshPools(); err == nil {
-		t.Fatal("dropMeshPools() with an unreadable bundle = nil, want an error")
-	}
-	if w := f.getOn("1.1"); w.Code != http.StatusBadGateway {
-		t.Fatalf("GET / while the credential is unreadable = %d %q, want 502 (the dial fails, the binding holds)", w.Code, w.Body.String())
-	}
-	f.publish(t, caPEM(f.mesh))
-	if err := f.transports.dropMeshPools(); err != nil {
-		t.Fatal(err)
-	}
-	if w := f.getOn("1.1"); w.Code != http.StatusOK {
-		t.Fatalf("GET / once the credential reads again = %d %q, want 200", w.Code, w.Body.String())
-	}
-	if len(bindings.refused) != 0 {
-		t.Fatalf("refusals = %v, want none", bindings.refused)
-	}
-}
-
-// TestE6FirstReadFailureTracksNoDigest: a first poll that cannot read the
-// credential tracks no router digest, so the stamped leaf published after it
-// is no renewal.
-func TestE6FirstReadFailureTracksNoDigest(t *testing.T) {
-	f := newFixture(t)
-	web := startBackend(t, "web", issueLeaf(t, f.mesh, "web"))
-	f.apply(t, simpleManifest(1, web.addr()))
-	f.publish(t, "garbage")
-	if err := f.transports.dropMeshPools(); err == nil {
-		t.Fatal("dropMeshPools() with an unreadable bundle = nil, want an error")
-	}
-	f.publish(t, caPEM(f.mesh))
-	if w := f.getOn(""); w.Code != http.StatusOK {
-		t.Fatalf("GET / once a stamped leaf is published = %d %q, want 200", w.Code, w.Body.String())
 	}
 }

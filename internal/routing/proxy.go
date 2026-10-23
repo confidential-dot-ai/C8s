@@ -45,9 +45,10 @@ func TunnelReservation(recordBytes int64) int64 {
 	return recordCopies*recordBytes + responseCopies*MaxTunnelResponseBytes
 }
 
-// backendDigestMismatch is the body of the 502 a workload route gets when the
-// backend was stamped under another allowlist than the router (B8).
-const backendDigestMismatch = "backend_digest_mismatch"
+// backendEntryChanged is the body of the 502 a workload route gets when the
+// backend's stamped allowlist entry is not unchanged in the current allowlist
+// (B8).
+const backendEntryChanged = "backend_entry_changed"
 
 // ExporterHeader carries the tunnel's channel-binding exporter to backends.
 // Only the tunnel may set it: the routing listener drops a client's value.
@@ -61,7 +62,9 @@ const ConnectionHeader = "X-C8s-Connection"
 
 // Binding is what a client verified on an attested handshake (E5): the digest
 // of the manifest the handshake bound, and the allowlist digest of the router
-// stamp on the mesh leaf it bound, empty for a leaf without one.
+// stamp on the mesh leaf it bound, empty for a leaf without one. The session
+// routes while that manifest is applied and the entries its workload routes
+// name are unchanged from that allowlist in the current one (E6).
 type Binding struct {
 	RouteDigest  [sha256.Size]byte
 	RouterDigest string
@@ -80,8 +83,8 @@ type Bindings interface {
 }
 
 // BindingChangedError refuses a request whose session is bound to another
-// route digest or router digest than the router's (E6). Code is the route
-// policy's error code for it.
+// route digest than the applied one, or to entries the current allowlist
+// changed (E6). Code is the route policy's error code for it.
 type BindingChangedError struct {
 	Code string
 }
@@ -152,24 +155,6 @@ func (p *Proxy) Session() (*Applied, error) { return p.state.Session() }
 // Current returns the applied manifest, or nil before the first apply.
 func (p *Proxy) Current() *Applied { return p.state.Current() }
 
-// SyncRouterDigest returns the router digest requests are checked against
-// (E6). When it differs from leaf, the digest of the leaf a handshake is about
-// to present, it first rereads the router's credential as a poll does, so the
-// pools under the previous digest are retired before the renewed leaf is
-// presented (B10).
-func (p *Proxy) SyncRouterDigest(leaf string) (string, error) {
-	if p.transports == nil {
-		return "", nil
-	}
-	if current := p.transports.RouterDigest(); current == leaf {
-		return current, nil
-	}
-	if err := p.transports.syncRouterDigest(); err != nil {
-		return "", err
-	}
-	return p.transports.RouterDigest(), nil
-}
-
 // Acquire reserves TunnelReservation(recordBytes) for a tunnelled request
 // from client. It reports false when the budget, or client's share of it,
 // cannot cover that. The caller holds the reservation from reading the record
@@ -206,7 +191,6 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "routes not applied", http.StatusServiceUnavailable) // A2
 		return
 	}
-	var bound *Binding
 	var held uint64
 	refuse := func(code string) {
 		// A digest changing back does not route the connection again (E6).
@@ -222,13 +206,12 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			held = gen
 			code := refused
 			if code == "" {
-				code = p.changed(b, applied)
+				code = p.changed(r.Context(), b, applied)
 			}
 			if code != "" {
 				refuse(code)
 				return
 			}
-			bound = &b
 		}
 	}
 	route, target, ok := applied.Table.Select(r)
@@ -236,72 +219,45 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r) // M5
 		return
 	}
-	transport, ok := p.transport(route, bound)
-	if !ok {
-		refuse(types.ErrorCodeRouterDigestChanged)
-		return
-	}
 	if p.timeout > 0 {
 		var stop func()
 		w, r, stop = idleExchange(w, r, p.timeout)
 		defer stop()
 	}
-	p.reverseProxy(transport, route, target, func(err error) {
-		if bound != nil && errors.Is(err, errRouterRenewed) {
-			refuse(types.ErrorCodeRouterDigestChanged)
-			return
-		}
+	p.reverseProxy(route, target, func(err error) {
 		status, body := p.refusal(err, r.Host, target.RawPath, route.Backend.Address)
 		http.Error(w, body, status)
 	}).ServeHTTP(w, r)
 }
 
-// transport returns route's backend transport. For a request bound to a
-// router digest it reports false when a workload transport pools connections
-// accepted under another one, which a poll between the binding check and the
-// dial can cause (E6).
-func (p *Proxy) transport(route routes.Route, bound *Binding) (*http.Transport, bool) {
-	transport, routerDigest := p.transports.For(route.Backend)
-	if bound != nil && route.Backend.Workload != "" && routerDigest != bound.RouterDigest {
-		return nil, false
-	}
-	return transport, true
-}
-
 // changed returns the code refusing a request bound to b, or "" while applied
-// and the router digest are the ones b holds (E6). Empty router digests
-// compare as values.
-func (p *Proxy) changed(b Binding, applied *Applied) string {
-	switch {
-	case applied.Signed.Digest() != b.RouteDigest:
+// is the manifest b holds and every entry its workload routes name is
+// unchanged from b's router digest in the current allowlist (E6). A binding
+// with no router digest holds the manifest alone.
+func (p *Proxy) changed(ctx context.Context, b Binding, applied *Applied) string {
+	if applied.Signed.Digest() != b.RouteDigest {
 		return types.ErrorCodeRouteDigestChanged
-	case p.transports.RouterDigest() != b.RouterDigest:
-		return types.ErrorCodeRouterDigestChanged
+	}
+	if b.RouterDigest == "" {
+		return ""
+	}
+	if err := p.transports.cfg.Entries.Check(ctx, b.RouterDigest, applied.workloadNames()...); err != nil {
+		p.log.Info("bound session refused", "error", err)
+		return types.ErrorCodeRouteEntryChanged
 	}
 	return ""
 }
 
 // refusal logs a failed backend exchange and returns the response it gets:
-// 503 router_digest_changed for the dial that retired the pools after a
-// renewal (B10), 502 backend_digest_mismatch (B8), or the plain 502 of B5.
-// The 503 never dialled, so it logs at Debug; a B8 mismatch is expected for a
-// while after every allowlist write, so it logs at Info; a damaged router
-// stamp is the router's own fault, reported at Error once per leaf where it
-// is parsed, so each refusal logs at Debug without blaming the
-// backend.
+// 502 backend_entry_changed (B8) or the plain 502 of B5. A changed entry is
+// expected for a backend not yet renewed after an allowlist write, so it logs
+// at Info.
 func (p *Proxy) refusal(err error, host, path, backend string) (int, string) {
-	switch {
-	case errors.Is(err, errRouterRenewed):
-		p.log.Debug(types.ErrorCodeRouterDigestChanged, "host", host, "path", path, "error", err)
-		return http.StatusServiceUnavailable, types.ErrorCodeRouterDigestChanged
-	case errors.Is(err, errBackendDigestMismatch):
+	if errors.Is(err, errBackendEntryChanged) {
 		p.log.Info("backend request refused", "host", host, "path", path, "backend", backend, "error", err)
-		return http.StatusBadGateway, backendDigestMismatch
-	case errors.Is(err, errRouterStampDamaged):
-		p.log.Debug("router stamp damaged", "host", host, "path", path, "error", err)
-	default:
-		p.log.Warn("backend request failed", "host", host, "path", path, "backend", backend, "error", err)
+		return http.StatusBadGateway, backendEntryChanged
 	}
+	p.log.Warn("backend request failed", "host", host, "path", path, "backend", backend, "error", err)
 	return http.StatusBadGateway, "backend unavailable"
 }
 
@@ -352,7 +308,7 @@ func (p *Proxy) Forward(outer *http.Request, req types.TunnelRequest, bound Bind
 	}
 	// Against the manifest this request is then routed by, so a manifest
 	// applied after the check cannot route it.
-	if code := p.changed(bound, applied); code != "" {
+	if code := p.changed(ctx, bound, applied); code != "" {
 		return types.TunnelResponse{}, &BindingChangedError{Code: code}
 	}
 	if p.timeout > 0 {
@@ -395,12 +351,8 @@ func (p *Proxy) Forward(outer *http.Request, req types.TunnelRequest, bound Bind
 		return textResponse(http.StatusNotFound, "404 page not found"), nil
 	}
 
-	transport, ok := p.transport(route, &bound)
-	if !ok {
-		return types.TunnelResponse{}, &BindingChangedError{Code: types.ErrorCodeRouterDigestChanged}
-	}
 	var backendErr error
-	rp := p.reverseProxy(transport, route, target, func(err error) { backendErr = err })
+	rp := p.reverseProxy(route, target, func(err error) { backendErr = err })
 	// Buffer the body here rather than in the copy ReverseProxy does after
 	// this hook: a failed read surfaces as a backend error, never as a
 	// truncated 200.
@@ -423,10 +375,7 @@ func (p *Proxy) Forward(outer *http.Request, req types.TunnelRequest, bound Bind
 	}
 	rec := &capture{header: http.Header{}}
 	rp.ServeHTTP(rec, in)
-	if errors.Is(backendErr, errRouterRenewed) {
-		return types.TunnelResponse{}, &BindingChangedError{Code: types.ErrorCodeRouterDigestChanged}
-	}
-	if errors.Is(backendErr, errBackendDigestMismatch) || errors.Is(backendErr, errRouterStampDamaged) {
+	if errors.Is(backendErr, errBackendEntryChanged) {
 		status, msg := p.refusal(backendErr, in.Host, target.RawPath, route.Backend.Address)
 		return textResponse(status, msg), nil
 	}
@@ -439,9 +388,9 @@ func (p *Proxy) Forward(outer *http.Request, req types.TunnelRequest, bound Bind
 // reverseProxy forwards to route's backend at target, which Select built
 // (B6). onErr runs when the backend cannot be reached or fails verification;
 // nothing is retried, in plaintext or on another route (B5).
-func (p *Proxy) reverseProxy(transport *http.Transport, route routes.Route, target *url.URL, onErr func(error)) *httputil.ReverseProxy {
+func (p *Proxy) reverseProxy(route routes.Route, target *url.URL, onErr func(error)) *httputil.ReverseProxy {
 	return &httputil.ReverseProxy{
-		Transport: transport,
+		Transport: p.transports.For(route.Backend),
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			out := *target
 			out.Scheme = "https"

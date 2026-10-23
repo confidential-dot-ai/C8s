@@ -109,16 +109,13 @@ func checkValidity(now time.Time, cert *x509.Certificate, role string) error {
 }
 
 // routerDigest is the allowlist digest of the leaf's matched-workload stamp,
-// empty for a leaf without one. A stamp that fails to parse also reads as
-// empty here, while the router tracks a sentinel no leaf carries for it, so
-// the two never agree and the handshake is refused until the leaf is
-// replaced (B10).
-func (m *meshIdentity) routerDigest() string {
+// empty for a leaf without one (B9).
+func (m *meshIdentity) routerDigest() (string, error) {
 	stamp, err := armtls.MatchedWorkloadFromCert(m.leaf)
 	if err != nil || stamp == nil {
-		return ""
+		return "", err
 	}
-	return string(stamp.AllowlistDigest)
+	return string(stamp.AllowlistDigest), nil
 }
 
 func (m *meshIdentity) bind(mode types.FrontDoorMode, xwingEK, xwingCT, sessionID, nonce, routeDigest []byte) ([]byte, *types.MeshIdentityProof, error) {

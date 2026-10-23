@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdsa"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"io"
@@ -14,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/routing"
+	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/overenc"
 	"github.com/confidential-dot-ai/c8s/pkg/routes"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
@@ -69,10 +68,10 @@ func TestE6TunnelRefusesAChangedBinding(t *testing.T) {
 		want   string
 	}{
 		{"E6 manifest applied", func(t *testing.T, rs *routedServer) { rs.apply(t, 2, time.Hour) }, types.ErrorCodeRouteDigestChanged},
-		{"E6 router digest changed", func(t *testing.T, rs *routedServer) {
-			publishLeaf(t, rs.meshDir, namedLeafUnder(t, rs.ca, "router", bytes.Repeat([]byte{0x43}, 32)), rs.ca)
+		{"E6 route's entry redefined", func(t *testing.T, rs *routedServer) {
+			rs.allowlists.serve(bytes.Repeat([]byte{0x43}, 32), testAllowlist("v2"))
 			rs.poll(t)
-		}, types.ErrorCodeRouterDigestChanged},
+		}, types.ErrorCodeRouteEntryChanged},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -343,16 +342,16 @@ func TestE6RefuseSkipsAReplacedBinding(t *testing.T) {
 	if err := b.bind("1.1", "c", second); err != nil {
 		t.Fatal(err)
 	}
-	b.Refuse("1.1", held, types.ErrorCodeRouterDigestChanged)
+	b.Refuse("1.1", held, types.ErrorCodeRouteEntryChanged)
 	release()
 	if _, refused, _, _, _ := b.Hold("1.1"); refused != "" {
 		t.Fatalf("replaced binding refused with %q, want the refusal dropped", refused)
 	}
 	_, _, current, release2, _ := b.Hold("1.1")
 	release2()
-	b.Refuse("1.1", current, types.ErrorCodeRouterDigestChanged)
-	if _, refused, _, _, _ := b.Hold("1.1"); refused != types.ErrorCodeRouterDigestChanged {
-		t.Fatalf("current binding refused with %q, want %q", refused, types.ErrorCodeRouterDigestChanged)
+	b.Refuse("1.1", current, types.ErrorCodeRouteEntryChanged)
+	if _, refused, _, _, _ := b.Hold("1.1"); refused != types.ErrorCodeRouteEntryChanged {
+		t.Fatalf("current binding refused with %q, want %q", refused, types.ErrorCodeRouteEntryChanged)
 	}
 }
 
@@ -452,50 +451,43 @@ func TestE7InsertPrunesExpiredBindings(t *testing.T) {
 	}
 }
 
-// TestE5HandshakeWaitsForTheRouterDigest: a handshake whose mesh leaf is
-// stamped under another digest than the router checks requests against is
-// refused before any evidence, rather than admit a session every request of
-// which is refused.
-func TestE5HandshakeWaitsForTheRouterDigest(t *testing.T) {
-	rs := newRoutedServer(t, func(_ *routing.ProxyConfig, cfg *Config) {
-		unstamped := writeTestMeshIdentity(t)
-		cfg.MeshIdentityCertFile, cfg.MeshIdentityKeyFile, cfg.MeshIdentityCAFile = unstamped.certFile, unstamped.keyFile, unstamped.caFile
-	})
+// TestE6RouterRenewalKeepsSessions: an allowlist write that leaves the
+// route's entries unchanged, and the router's renewal under it, refuse
+// neither an attest-pq session nor an attest-lb connection, and new
+// handshakes on the renewed leaf are admitted at once.
+func TestE6RouterRenewalKeepsSessions(t *testing.T) {
+	rs := newRoutedServer(t)
+	listener := httptest.NewServer(rs.proxy)
+	t.Cleanup(listener.Close)
 	rs.apply(t, 1, time.Hour)
-	rs.poll(t)
-	if pq, lb := rs.handshakeCodes(t); pq != types.ErrorCodeBindingUnavailable || lb != types.ErrorCodeBindingUnavailable {
-		t.Fatalf("handshakes with a leaf the router does not hold = %q, %q, want %q", pq, lb, types.ErrorCodeBindingUnavailable)
+	channel, sessionID := establishSession(t, rs.ts.URL, make([]byte, 32))
+	if code := errorCode(t, attestLB(t, rs.ts.URL, "4.1")); code != "" {
+		t.Fatalf("attest-lb = %q, want success", code)
 	}
-}
 
-// TestE5HandshakeWaitsForARenewalToReachTheRouter: a leaf stamped under
-// another digest than the router's own credential is refused, and admitted
-// once the router holds it.
-func TestE5HandshakeWaitsForARenewalToReachTheRouter(t *testing.T) {
-	var renewed tls.Certificate
-	var renewedCA *issuer.CA
-	rs := newRoutedServer(t, func(_ *routing.ProxyConfig, cfg *Config) {
-		var err error
-		if renewedCA, err = issuer.NewCA("mesh", time.Hour); err != nil {
-			t.Fatal(err)
-		}
-		renewed = namedLeafUnder(t, renewedCA, "router", bytes.Repeat([]byte{0x43}, 32))
-		_, dir := publishedMeshIdentity(t, renewed, renewedCA)
-		cfg.MeshIdentityCertFile, cfg.MeshIdentityKeyFile, cfg.MeshIdentityCAFile = volumeFile(dir, "tls.crt"), volumeFile(dir, "tls.key"), volumeFile(dir, "ca.crt")
-	})
-	rs.apply(t, 1, time.Hour)
+	renewed := bytes.Repeat([]byte{0x43}, 32)
+	next := testAllowlist("v1")
+	next.Workloads["other"] = allowlist.Workload{Label: "v1"}
+	rs.allowlists.serve(renewed, next)
 	rs.poll(t)
-	if pq, lb := rs.handshakeCodes(t); pq != types.ErrorCodeBindingUnavailable || lb != types.ErrorCodeBindingUnavailable {
-		t.Fatalf("handshakes with a leaf stamped under another digest = %q, %q, want %q", pq, lb, types.ErrorCodeBindingUnavailable)
+	publishLeaf(t, rs.meshDir, namedLeafUnder(t, rs.ca, "router", renewed), rs.ca)
+	rs.poll(t)
+
+	if status, code := tunnelGet(t, rs.ts.URL, sessionID, channel); status != http.StatusOK {
+		t.Fatalf("tunnel after the renewal = %d %q, want 200", status, code)
 	}
-	publishLeaf(t, rs.meshDir, renewed, renewedCA)
+	<-rs.lastHost
+	if status, body := routedGet(t, listener.URL, "4.1"); status != http.StatusOK {
+		t.Fatalf("GET on the bound connection after the renewal = %d %q, want 200", status, body)
+	}
+	<-rs.lastHost
 	if pq, lb := rs.handshakeCodes(t); pq != "" || lb != "" {
-		t.Fatalf("handshakes once the router holds the leaf = %q, %q, want success", pq, lb)
+		t.Fatalf("handshakes on the renewed leaf = %q, %q, want success", pq, lb)
 	}
 }
 
 // TestE6RefusalOutlivesItsCause: a connection refused once stays refused when
-// the router digest changes back, until a handshake on it binds again.
+// the entry changes back, until a handshake on it binds again.
 func TestE6RefusalOutlivesItsCause(t *testing.T) {
 	rs := newRoutedServer(t)
 	listener := httptest.NewServer(rs.proxy)
@@ -504,16 +496,15 @@ func TestE6RefusalOutlivesItsCause(t *testing.T) {
 	if code := errorCode(t, attestLB(t, rs.ts.URL, "3.1")); code != "" {
 		t.Fatalf("attest-lb = %q, want success", code)
 	}
-	original := namedLeaf(t, rs.ca, "router")
-	publishLeaf(t, rs.meshDir, namedLeafUnder(t, rs.ca, "router", bytes.Repeat([]byte{0x43}, 32)), rs.ca)
+	rs.allowlists.serve(bytes.Repeat([]byte{0x43}, 32), testAllowlist("v2"))
 	rs.poll(t)
-	if status, body := routedGet(t, listener.URL, "3.1"); status != http.StatusServiceUnavailable || body != types.ErrorCodeRouterDigestChanged {
-		t.Fatalf("GET after the router renewed = %d %q, want 503 %q", status, body, types.ErrorCodeRouterDigestChanged)
+	if status, body := routedGet(t, listener.URL, "3.1"); status != http.StatusServiceUnavailable || body != types.ErrorCodeRouteEntryChanged {
+		t.Fatalf("GET after the route's entry changed = %d %q, want 503 %q", status, body, types.ErrorCodeRouteEntryChanged)
 	}
-	publishLeaf(t, rs.meshDir, original, rs.ca)
+	rs.allowlists.serve(testDigest, testAllowlist("v1"))
 	rs.poll(t)
-	if status, body := routedGet(t, listener.URL, "3.1"); status != http.StatusServiceUnavailable || body != types.ErrorCodeRouterDigestChanged {
-		t.Fatalf("GET after the router digest changed back = %d %q, want 503 %q", status, body, types.ErrorCodeRouterDigestChanged)
+	if status, body := routedGet(t, listener.URL, "3.1"); status != http.StatusServiceUnavailable || body != types.ErrorCodeRouteEntryChanged {
+		t.Fatalf("GET after the entry changed back = %d %q, want 503 %q", status, body, types.ErrorCodeRouteEntryChanged)
 	}
 	if len(rs.lastHost) != 0 {
 		t.Fatal("a refused request reached the backend")
@@ -523,30 +514,5 @@ func TestE6RefusalOutlivesItsCause(t *testing.T) {
 	}
 	if status, body := routedGet(t, listener.URL, "3.1"); status != http.StatusOK {
 		t.Fatalf("GET after attesting again = %d %q, want 200", status, body)
-	}
-}
-
-// TestB10HandshakeRetiresPoolsOfARenewedLeaf: a handshake presenting a leaf
-// renewed under another digest retires the connections pooled under the old
-// one first, without waiting for a poll.
-func TestB10HandshakeRetiresPoolsOfARenewedLeaf(t *testing.T) {
-	rs := newRoutedServer(t)
-	listener := httptest.NewServer(rs.proxy)
-	t.Cleanup(listener.Close)
-	rs.apply(t, 1, time.Hour)
-	rs.poll(t)
-	if status, body := routedGet(t, listener.URL, ""); status != http.StatusOK {
-		t.Fatalf("GET = %d %q, want 200", status, body)
-	}
-	<-rs.lastHost
-
-	// The backend stays stamped under the old digest: a fresh dial fails B8,
-	// a pooled connection would not.
-	publishLeaf(t, rs.meshDir, namedLeafUnder(t, rs.ca, "router", bytes.Repeat([]byte{0x43}, 32)), rs.ca)
-	if code := errorCode(t, attestLB(t, rs.ts.URL, "")); code != "" {
-		t.Fatalf("attest-lb with the renewed leaf = %q, want success", code)
-	}
-	if status, body := routedGet(t, listener.URL, ""); status != http.StatusBadGateway || !strings.Contains(body, "backend_digest_mismatch") {
-		t.Fatalf("GET after the handshake = %d %q, want 502 backend_digest_mismatch: the old pool must be retired", status, body)
 	}
 }

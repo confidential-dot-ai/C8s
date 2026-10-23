@@ -3,12 +3,15 @@ package routing
 import (
 	"context"
 	"crypto/ecdsa"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"os"
 
+	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 	"github.com/confidential-dot-ai/c8s/pkg/routes"
 	"github.com/confidential-dot-ai/c8s/pkg/routesclient"
@@ -45,9 +48,10 @@ func (f KeyFile) OperatorKeys(context.Context) ([]*ecdsa.PublicKey, error) {
 // is a Fetcher and a KeySource. The caller supplies an HTTP client that
 // verifies the CDS (A1).
 type CDSClient struct {
-	routes routesclient.Client
-	base   string
-	http   *http.Client
+	routes    routesclient.Client
+	allowlist allowlistclient.Client
+	base      string
+	http      *http.Client
 }
 
 // NewCDSClient returns a client for the CDS at base, an https origin.
@@ -63,7 +67,19 @@ func NewCDSClient(base string, client *http.Client) (*CDSClient, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &CDSClient{routes: rc, base: u.Scheme + "://" + u.Host, http: client}, nil
+	origin := u.Scheme + "://" + u.Host
+	return &CDSClient{routes: rc, allowlist: allowlistclient.NewClientWithHTTP(origin, client), base: origin, http: client}, nil
+}
+
+// FetchServed implements AllowlistSource: the allowlist the CDS serves now.
+func (c *CDSClient) FetchServed(ctx context.Context, ifNoneMatch string) (allowlistclient.Served, bool, error) {
+	return c.allowlist.FetchServed(ctx, ifNoneMatch)
+}
+
+// Object implements AllowlistSource: a document of the CDS's allowlist
+// history.
+func (c *CDSClient) Object(ctx context.Context, digest [sha256.Size]byte) (*allowlist.Allowlist, error) {
+	return c.allowlist.Object(ctx, digest)
 }
 
 // Routes implements Fetcher.
