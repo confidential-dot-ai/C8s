@@ -58,14 +58,13 @@ func (l *Ledger) recordReplicated(sandboxID, inventoryHost string) bool {
 
 // lookupReplicated is Lookup for a replica: a miss may be a binding another
 // replica took a moment ago (issuance there, release here), so catch up
-// with the cluster once before failing closed.
+// with the cluster once and look again. A failed catch-up needs no branch:
+// whatever it applied is committed, and what it did not apply stays a miss.
 func (l *Ledger) lookupReplicated(sandboxID string) (string, bool) {
 	if h, ok := l.lookupLocal(sandboxID); ok {
 		return h, true
 	}
-	if err := l.repl.CatchUp(); err != nil {
-		return "", false
-	}
+	_ = l.repl.CatchUp()
 	return l.lookupLocal(sandboxID)
 }
 
