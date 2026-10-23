@@ -105,6 +105,7 @@ type Replica struct {
 	exited chan struct{}
 	inc    int // incarnation
 	db     string
+	frozen bool // SIGSTOPped by Freeze
 }
 
 // Cluster is five replica slots, the fault net, and the operator's keys.
@@ -344,7 +345,7 @@ func (c *Cluster) Kill(i int) {
 	}
 	_ = r.cmd.Process.Signal(syscall.SIGKILL)
 	<-r.exited
-	r.cmd = nil
+	r.cmd, r.frozen = nil, false
 	c.Logf("killed %s", r.Node)
 }
 
