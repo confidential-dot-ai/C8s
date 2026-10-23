@@ -614,7 +614,7 @@ func (n *Node) propose(e Entry) (json.RawMessage, error) {
 	if !n.fsm.Core().Joined() {
 		return nil, errors.New("cds-ha: this replica has not joined the cluster")
 	}
-	if err := n.fsm.admit(e, len(raw)); err != nil {
+	if err := n.fsm.admit(e, len(raw), n.leading()); err != nil {
 		return nil, err
 	}
 	if n.leading() {
@@ -642,6 +642,15 @@ func (n *Node) propose(e Entry) (json.RawMessage, error) {
 		return nil, errors.New("cds-ha: write committed but not yet applied here")
 	}
 	return resp.Response, nil
+}
+
+// CheckCapacity refuses (ErrCapacity) while the replicated state is at the
+// admission cap, so a handler can refuse a write that would grow it before
+// spending its token: a spent token is a replicated row too. secret says
+// the write would grow the secrets (the snapshot header) rather than the
+// allowlist. It is the cap propose applies, for a write of no size.
+func (n *Node) CheckCapacity(secret bool) error {
+	return n.fsm.capacity(secret, 0, n.r() != nil && n.leading())
 }
 
 // replicate proposes e and decodes the FSM's answer. A failed proposal

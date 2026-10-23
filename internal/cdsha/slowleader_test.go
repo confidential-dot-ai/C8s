@@ -7,8 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/hashicorp/raft"
+
+	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 )
 
 // writeLoad keeps writes flowing through every replica until stopped, so a

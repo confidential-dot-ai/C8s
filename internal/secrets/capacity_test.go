@@ -12,7 +12,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
-var errCapacity = fmt.Errorf("%w: %w", ErrCapacity, errors.New("cds-ha: the replicated state is at its snapshot capacity: ..."))
+var errCapacity = fmt.Errorf("%w: %w", ErrCapacity, errors.New("cds-ha: the replicated state is at its snapshot capacity"))
 
 type capacityRepl struct{}
 

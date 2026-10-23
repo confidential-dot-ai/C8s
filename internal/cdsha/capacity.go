@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -13,31 +14,42 @@ import (
 
 // The admission cap keeps the replicated state inside what a snapshot can
 // hold. Every snapshot (Raft's own, a joining member's, a backup) must fit
-// the compressed bound MaxSnapshotBytes, and zstd output is not meaningfully
-// larger than its input, so a state whose decoded header and allowlist image
-// together fit MaxSnapshotBytes fits every bound on the snapshot, backup,
-// restore and join path (maxSnapshotHeader, maxSnapshotImage, the backup
-// and restore limits). A state past it cannot be backed up, a new member
-// cannot join, and the Raft log cannot compact.
+// three bounds: the decoded header (maxSnapshotHeader), the decoded
+// allowlist image (maxSnapshotImage) and the compressed whole
+// (MaxSnapshotBytes, which also bounds backups and restores). A state past
+// any of them cannot be backed up, a new member cannot join, and the Raft
+// log cannot compact.
 //
 // Writes that grow the state are refused once the estimate after the write
-// passes 75% of that envelope. The other quarter absorbs writes in flight
+// passes 75% of any bound. The other quarter absorbs writes in flight
 // between the check and their commit, the writes admitted past the cap
-// (deletes, token spends, prunes, bindings, decrees, seeds), estimate error,
-// and the time until the leader next prunes the history.
+// (deletes, token spends, prunes, bindings, decrees, seeds), estimate
+// error, and the time until the leader next prunes the history.
+//
+// The compressed size is estimated from the last snapshot this replica
+// encoded (sizeMeasure): its compressed size plus all growth since,
+// counted as incompressible. Without one, the decoded size stands in
+// (ratio 1).
 //
 // The cap is judged before a write is proposed (Node.propose on the
-// replica that takes it, and again by the leader for forwarded writes),
-// never in FSM.Apply: the estimate depends on each replica's own database
-// pages, and Apply must decide the same on every replica.
+// replica that takes it, again by the leader for forwarded writes, and by
+// the handlers before a token is spent: Node.CheckCapacity), never in
+// FSM.Apply: the estimate depends on each replica's own database pages and
+// snapshots, and Apply must decide the same on every replica.
 //
 // Atomics, so a test can lower them under a running cluster.
-var admitTotalBytes, admitHeaderBytes atomic.Int64
+var admitImageBytes, admitHeaderBytes, admitCompressedBytes atomic.Int64
 
 func init() {
-	admitTotalBytes.Store(MaxSnapshotBytes / 4 * 3)
+	admitImageBytes.Store(maxSnapshotImage / 4 * 3)
 	admitHeaderBytes.Store(maxSnapshotHeader / 4 * 3)
+	admitCompressedBytes.Store(MaxSnapshotBytes / 4 * 3)
 }
+
+// sizeMeasure is a snapshot this replica encoded: the estimate
+// (snapshotEstimate, header plus image) of the state it held, and its
+// compressed size.
+type sizeMeasure struct{ decoded, compressed int64 }
 
 // ErrCapacity refuses a write that would grow the replicated state past the
 // admission cap. The text crosses the control channel; capacityErr rebuilds
@@ -126,38 +138,90 @@ func (f *FSM) growth(e Entry, raw int) (int64, bool) {
 }
 
 // admit refuses e (marshalled as raw) with ErrCapacity when it would grow
-// the state past the cap. It runs before a write is proposed, never in
-// Apply (see admitTotalBytes). A state whose size cannot be read is not
-// refused: the guard is a safety net, not a gate on availability.
-func (f *FSM) admit(e Entry, raw int) error {
+// the state past the cap. leader says whether this replica leads (see
+// capacity). It runs before a write is proposed, never in Apply (see
+// admitImageBytes).
+func (f *FSM) admit(e Entry, raw int, leader bool) error {
 	add, checked := f.growth(e, raw)
 	if !checked {
 		return nil
 	}
+	return f.capacity(e.Kind == KindSecret, add, leader)
+}
+
+// capacity refuses with ErrCapacity a write of add bytes that would take the
+// state past the cap; with add 0 it says whether the state is already
+// there. A secret write grows the header, any other growing write the
+// allowlist image. The compressed bound needs a measurement: a replica
+// without one (just started) leaves it to the leader, which falls back to
+// the decoded size, so a fresh follower is never stricter than the leader.
+// A state whose size cannot be read is not refused: the cap is a safety
+// net, not a gate on availability.
+func (f *FSM) capacity(secret bool, add int64, leader bool) error {
 	header, image, err := f.snapshotEstimate()
 	if err != nil {
 		return nil
 	}
-	capHeader, capTotal := admitHeaderBytes.Load(), admitTotalBytes.Load()
-	if e.Kind == KindSecret && header+add > capHeader {
-		return fmt.Errorf("%w: snapshot header would be about %d bytes, writes that grow it are refused past %d (75%% of %d); secrets are bounded by --secrets-max-paths and --secrets-max-value-bytes",
-			ErrCapacity, header+add, capHeader, maxSnapshotHeader)
+	if secret {
+		if limit := admitHeaderBytes.Load(); header+add > limit {
+			return fmt.Errorf("%w: the snapshot header would be about %d bytes, writes that grow it are refused past %d (75%% of %d); secrets are bounded by --secrets-max-paths and --secrets-max-value-bytes",
+				ErrCapacity, header+add, limit, maxSnapshotHeader)
+		}
+	} else if limit := admitImageBytes.Load(); image+add > limit {
+		return fmt.Errorf("%w: the allowlist store would be about %d bytes, writes that grow it are refused past %d (75%% of the %d-byte snapshot image limit); %s",
+			ErrCapacity, image+add, limit, maxSnapshotImage, shrinkHint)
 	}
-	if total := header + image + add; total > capTotal {
-		return fmt.Errorf("%w: the state would be about %d bytes (allowlist store %d), writes that grow it are refused past %d (75%% of the %d-byte snapshot limit); delete allowlist entries or lower --allowlist-history-bytes/--allowlist-history-versions",
-			ErrCapacity, total, image, capTotal, MaxSnapshotBytes)
+	est, measured := f.compressedEstimate(header + image)
+	if !measured && !leader {
+		return nil
+	}
+	if limit := admitCompressedBytes.Load(); est+add > limit {
+		basis := "the last snapshot's compressed size plus growth since"
+		if !measured {
+			basis = "no snapshot measured yet: the decoded size"
+		}
+		return fmt.Errorf("%w: the compressed snapshot would be about %d bytes (%s), writes that grow the state are refused past %d (75%% of the %d-byte snapshot limit); %s",
+			ErrCapacity, est+add, basis, limit, MaxSnapshotBytes, shrinkHint)
 	}
 	return nil
 }
 
+const shrinkHint = "delete allowlist entries or lower --allowlist-history-bytes/--allowlist-history-versions"
+
+// compressedEstimate bounds the compressed size of a snapshot of a state
+// whose estimate is decoded: the last measured snapshot's compressed size
+// plus everything added since as if it did not compress. Shrinking earns
+// no credit until the next snapshot measures it. Without a measurement it
+// is decoded itself.
+func (f *FSM) compressedEstimate(decoded int64) (int64, bool) {
+	m := f.measure.Load()
+	if m == nil {
+		return decoded, false
+	}
+	return m.compressed + max(0, decoded-m.decoded), true
+}
+
 // admitRaw is admit for an entry that arrived marshalled (a forwarded
-// write). One that does not decode is left to Apply to refuse.
+// write, judged by the leader). One that does not decode is left to Apply
+// to refuse.
 func (f *FSM) admitRaw(raw json.RawMessage) error {
 	var e Entry
 	if json.Unmarshal(raw, &e) != nil {
 		return nil
 	}
-	return f.admit(e, len(raw))
+	return f.admit(e, len(raw), true)
+}
+
+// countWriter counts the bytes written through it.
+type countWriter struct {
+	w io.Writer
+	n int64
+}
+
+func (c *countWriter) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
+	c.n += int64(n)
+	return n, err
 }
 
 // tooLarge reports a snapshot or backup that failed on a size bound. Raft
