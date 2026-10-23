@@ -37,32 +37,21 @@ func (c *Cluster) epochCA() (uint64, string) {
 
 // requireAllCA waits until every running replica serves CA fingerprint ca
 // (or, with ca == "", any one fingerprint other than not).
-func (c *Cluster) requireAllCA(ca, not string, timeout time.Duration) string {
+func (c *Cluster) requireAllCA(ca, not string, timeout time.Duration) {
 	c.t.Helper()
-	deadline := time.Now().Add(timeout)
-	for {
+	c.waitFor(timeout, func() bool {
 		seen := map[string]bool{}
-		ok := true
 		for _, i := range c.RunningIDs() {
-			st, good := c.Status(i)
-			if !good || !st.Serving {
-				ok = false
-				break
+			st, ok := c.Status(i)
+			if !ok || !st.Serving {
+				return false
 			}
 			seen[st.CAFingerprint] = true
 		}
-		if ok && len(seen) == 1 {
-			for got := range seen {
-				if (ca == "" || got == ca) && got != not {
-					return got
-				}
-			}
-		}
-		if time.Now().After(deadline) {
-			c.t.Fatalf("replicas do not agree on the CA (want %.12s, not %.12s): %s", ca, not, c.StatusAll())
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+		return len(seen) == 1 && !seen[not] && (ca == "" || seen[ca])
+	}, func() string {
+		return fmt.Sprintf("replicas do not agree on the CA (want %.12s, not %.12s):%s", ca, not, c.StatusAll())
+	})
 }
 
 // requireFreshBackup: the stored backup reaches the leader's applied index
@@ -71,17 +60,15 @@ func requireFreshBackup(t *testing.T, c *Cluster) cdsha.Backup {
 	t.Helper()
 	l := c.WaitLeader(30 * time.Second)
 	st, _ := c.Status(l)
-	deadline := time.Now().Add(15 * time.Second)
-	for {
-		b, err := cdsha.BackupFromConfigMaps(clusterID, c.Backups())
-		if err == nil && b.Meta.Index >= st.AppliedIndex && b.Meta.Epoch >= st.Epoch {
-			return b
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("no backup at index >= %d (epoch %d) after 15s: %+v %v", st.AppliedIndex, st.Epoch, b.Meta, err)
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
+	var b cdsha.Backup
+	var err error
+	c.waitFor(15*time.Second, func() bool {
+		b, err = cdsha.BackupFromConfigMaps(clusterID, c.Backups())
+		return err == nil && b.Meta.Index >= st.AppliedIndex && b.Meta.Epoch >= st.Epoch
+	}, func() string {
+		return fmt.Sprintf("no backup at index >= %d (epoch %d): %+v %v", st.AppliedIndex, st.Epoch, b.Meta, err)
+	})
+	return b
 }
 
 func TestDecrees(t *testing.T) {
@@ -258,7 +245,7 @@ func TestRestore(t *testing.T) {
 	if testing.Short() {
 		t.Skip("not in the -short subset")
 	}
-	c := NewCluster(t, clusterOpts{})
+	c := NewCluster(t)
 	c.WaitVoters(3, 30*time.Second)
 	k := NewChecker(c, 4, 10*time.Millisecond)
 	k.Start()
@@ -316,8 +303,7 @@ func TestRestore(t *testing.T) {
 		t.Fatalf("an older backup was restored: %v %s", err, out)
 	}
 	// D4: the wrong recovery key, a truncated part, another cluster's backup.
-	wrongKey, wrongPath, _ := newKeyPair(t, c.Dir, "wrong-recovery")
-	_ = wrongKey
+	_, _, wrongPath, _ := newKeyPair(t, c.Dir, "wrong-recovery")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	out, err := c.RunCLI(ctx, "cds", "ha", "recover", "--backup-file", newFile, "--recovery-key", wrongPath, "--decree-key", c.OpKeyPath,
 		"--cluster-id", clusterID, "--bootstrap-node", "n3", "--url", c.Replicas[2].Base, "--insecure", "--min-epoch", "1", "--min-index", "0")
@@ -373,7 +359,7 @@ func TestBigState(t *testing.T) {
 	if testing.Short() {
 		t.Skip("not in the -short subset")
 	}
-	c := NewCluster(t, clusterOpts{})
+	c := NewCluster(t)
 	c.WaitVoters(3, 30*time.Second)
 	start := time.Now()
 	var wg sync.WaitGroup
@@ -393,7 +379,7 @@ func TestBigState(t *testing.T) {
 					body, _ = json.Marshal(map[string]any{"value": base64.StdEncoding.EncodeToString(v)})
 				}
 				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-				r := c.Do(ctx, n%len(c.Replicas), http.MethodPut, path, body, "op")
+				r := c.Do(ctx, n%len(c.Replicas), http.MethodPut, path, body, true)
 				cancel()
 				if r.Err != nil || r.Code >= 300 {
 					select {
@@ -413,7 +399,7 @@ func TestBigState(t *testing.T) {
 	// C4: a secret of the maximum size (4096 bytes), through a non-voter.
 	nv := c.NonVoterIDs()[0]
 	big, _ := json.Marshal(map[string]any{"value": base64.StdEncoding.EncodeToString(bytes.Repeat([]byte("x"), 4096))})
-	if r := c.Do(context.Background(), nv, http.MethodPut, "/secrets/big/max", big, "op"); r.Code != http.StatusCreated && r.Code != http.StatusOK {
+	if r := c.Do(context.Background(), nv, http.MethodPut, "/secrets/big/max", big, true); r.Code != http.StatusCreated && r.Code != http.StatusOK {
 		t.Fatalf("max-size secret through a non-voter: %d %s", r.Code, r.Body)
 	}
 	k := NewChecker(c, 0, 0)
