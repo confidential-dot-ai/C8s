@@ -114,6 +114,15 @@ func TestImagePin(t *testing.T) {
 	if pin, err := ImagePin("snp", m, nil); err != nil || pin != digest(1) {
 		t.Fatalf("snp pin %q: %v", pin, err)
 	}
+	// A decree image's pin is the replica's ImagePin, in lowercase only.
+	img := testImage(1)
+	if pin, err := img.Pin(); err != nil || pin != img.MRTD+":"+img.RTMR1+":"+img.RTMR2 {
+		t.Fatalf("decree image pin %q: %v", pin, err)
+	}
+	img.RTMR1 = strings.Repeat("AB", 48)
+	if _, err := img.Pin(); err == nil {
+		t.Fatal("uppercase register accepted")
+	}
 	if _, err := ImagePin("nope", m, nil); err == nil {
 		t.Fatal("unknown platform pinned")
 	}
