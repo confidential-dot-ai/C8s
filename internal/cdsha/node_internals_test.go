@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -67,7 +68,7 @@ func TestStoppedReplicaClaimsNothing(t *testing.T) {
 }
 
 // A suspect member that answers as itself is not removed; one that does not
-// answer stays suspect. Extra voters are demoted, a failing one first, never
+// answer, or where another process answers, stays suspect. Extra voters are demoted, a failing one first, never
 // the leader.
 func TestLeaderProbesSuspectsAndDemotesExtraVoters(t *testing.T) {
 	logs := &syncBuffer{}
@@ -85,17 +86,20 @@ func TestLeaderProbesSuspectsAndDemotesExtraVoters(t *testing.T) {
 	t.Cleanup(other.shutdown)
 	dead := raft.Server{Suffrage: raft.Voter, ID: "n2/1-a", Address: "127.0.0.1:1#n2/1-a"}
 	live := raft.Server{Suffrage: raft.Voter, ID: other.id, Address: other.raftAddress()}
+	// An earlier member at live's address: another process answers there.
+	earlier := raft.Server{Suffrage: raft.Voter, ID: "n1/1-a", Address: live.Address}
 	long := time.Now().Add(-time.Hour)
 	n.mu.Lock()
-	n.failing[dead.ID], n.failing[live.ID] = long, long
+	n.failing[dead.ID], n.failing[live.ID], n.failing[earlier.ID] = long, long, long
 	n.mu.Unlock()
-	n.clearReachable([]raft.Server{dead, live}, time.Now())
+	n.clearReachable([]raft.Server{dead, live, earlier}, time.Now())
 	n.mu.Lock()
 	_, deadSuspect := n.failing[dead.ID]
 	_, liveSuspect := n.failing[live.ID]
+	_, earlierSuspect := n.failing[earlier.ID]
 	n.mu.Unlock()
-	if !deadSuspect || liveSuspect {
-		t.Fatalf("suspects after the probe: dead %v, answering %v", deadSuspect, liveSuspect)
+	if !deadSuspect || liveSuspect || !earlierSuspect {
+		t.Fatalf("suspects after the probe: dead %v, answering %v, replaced %v", deadSuspect, liveSuspect, earlierSuspect)
 	}
 	self := raft.Server{Suffrage: raft.Voter, ID: n.id, Address: n.raftAddress()}
 	n.demoteExtraVoter([]raft.Server{self, self})
@@ -168,5 +172,45 @@ func TestJoinReportsFailedPeerDiscovery(t *testing.T) {
 				t.Fatalf("peer discovery logged %d times:\n%s", got, logs.String())
 			}
 		})
+	}
+}
+
+// A peer that belongs to a cluster keeps this replica from bootstrapping
+// another, whoever answers the join redirect: a loner at the leader's
+// address, or nobody.
+func TestAskJoinKeepsMembershipOverRedirect(t *testing.T) {
+	loner := func(Claims, controlRequest) controlResponse { return controlResponse{Err: "no cluster here"} }
+	_, b, v, target := muxPeers(t, loner)
+	for name, leader := range map[string]string{"loner answers": target.ln.Addr().String(), "leader unreachable": "127.0.0.1:2"} {
+		redirect := func(Claims, controlRequest) controlResponse {
+			return controlResponse{Member: true, Leader: leader, Err: "not the leader"}
+		}
+		m, err := newMux("127.0.0.1:0", "127.0.0.1:1", "a/1-x", b.tls, v, redirect, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := b.askJoin(m.ln.Addr().String())
+		_ = m.Close()
+		if err != nil || !resp.Member {
+			t.Errorf("%s: %+v, %v: the replica would bootstrap a second cluster", name, resp, err)
+		}
+	}
+}
+
+// A restarted member replaces the earlier one only once it is healthy.
+func TestRestartedMemberReplacesOnlyWhenHealthy(t *testing.T) {
+	n := newSolo(t, nil).node
+	old, restarted := raft.ServerID("x/1-a"), raft.ServerID("x/2-a")
+	for _, id := range []raft.ServerID{old, restarted} {
+		if err := n.r().AddNonvoter(id, raft.ServerAddress("127.0.0.1:1#"+id), 0, time.Second).Error(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	n.mu.Lock()
+	n.failing[restarted] = time.Now()
+	n.mu.Unlock()
+	time.Sleep(2 * testTiming.Stabilize)
+	if !slices.ContainsFunc(n.servers(), func(s raft.Server) bool { return s.ID == old }) {
+		t.Fatal("a failing restart replaced the earlier member")
 	}
 }

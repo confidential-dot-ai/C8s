@@ -48,7 +48,8 @@ func TestLeaderPrunesTheHistoryEverywhere(t *testing.T) {
 // into a count, so every replica keeps the same entries.
 func TestLeaderPrunesTheHistoryByBytes(t *testing.T) {
 	c := newCluster(t, 3)
-	c.historyBytes = 1 // any document exceeds it: only the served one stays
+	c.historyBytes = 1    // any document exceeds it: only the served one stays
+	c.historyVersions = 3 // the tighter bound wins
 	c.genesis("n0", "n1", "n2")
 	for i := range 5 {
 		if err := c.leader().al.PutWorkload(fmt.Sprintf("w%d", i), historyWorkload(t, i)); err != nil {
