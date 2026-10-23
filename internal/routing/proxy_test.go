@@ -2,9 +2,11 @@ package routing
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/tls"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -648,6 +650,8 @@ func TestB9UnnamedRouter(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFixture(t)
 			f.renew(t, tc.leaf(t, f))
+			var logs bytes.Buffer
+			f.proxy.log = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
 			addr, accepted := countingListener(t)
 			external := newCA(t, "external")
 			admin := startBackend(t, "admin", issueLeaf(t, external, "", "admin.ops.svc"), webPKI)
@@ -667,6 +671,9 @@ func TestB9UnnamedRouter(t *testing.T) {
 			}
 			if n := accepted.Load(); n != 0 {
 				t.Fatalf("workload backend accepted %d connections, want 0", n)
+			}
+			if logs.Len() != 0 {
+				t.Fatalf("B9 logged at Warn or above: %s", logs.String())
 			}
 			if got := f.get("/admin").Code; got != http.StatusOK {
 				t.Fatalf("GET /admin = %d, want %d (B3 unaffected)", got, http.StatusOK)

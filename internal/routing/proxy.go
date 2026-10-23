@@ -155,11 +155,14 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		defer stop()
 	}
 	p.reverseProxy(route, target, func(err error) {
-		p.log.Warn("backend request failed", "host", r.Host, "path", target.RawPath, "backend", route.Backend.Address, "error", err)
 		if errors.Is(err, errNoPolicyIdentity) {
+			// The backend was never dialled; Debug keeps an unnamed router's
+			// steady 503s from flooding the log with backend blame.
+			p.log.Debug(noPolicyIdentity, "host", r.Host, "path", target.RawPath, "error", err)
 			http.Error(w, noPolicyIdentity, http.StatusServiceUnavailable) // B9
 			return
 		}
+		p.log.Warn("backend request failed", "host", r.Host, "path", target.RawPath, "backend", route.Backend.Address, "error", err)
 		http.Error(w, "backend unavailable", http.StatusBadGateway) // B5
 	}).ServeHTTP(w, r)
 }
