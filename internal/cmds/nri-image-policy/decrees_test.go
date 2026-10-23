@@ -1,6 +1,7 @@
 package nriimagepolicy
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -89,10 +90,10 @@ func TestFollowedDecreesRewriteTheMountedPolicyInPlace(t *testing.T) {
 		t.Fatal("the mounted policy was replaced, not rewritten: running pods keep the old inode")
 	}
 	got, err := refvalues.Load(mounted)
-	if err != nil || len(got.Images) == 0 || got.Images[0].Registers[1] == nil {
-		t.Fatalf("mounted policy: %v", err)
+	if err != nil || len(got.Images) == 0 || !bytes.Equal(got.Images[0].Digest, bytes.Repeat([]byte{0xee}, 48)) {
+		t.Fatalf("mounted policy does not pin the decreed image: %v", err)
 	}
-	if set, _ := cfg.pinsSet("tdx"); len(set.Images) != len(got.Images) {
+	if set, _ := cfg.pinsSet("tdx"); len(set.Images) == 0 || !bytes.Equal(set.Images[0].Digest, got.Images[0].Digest) {
 		t.Fatal("the plugin's own set does not follow the decree")
 	}
 
