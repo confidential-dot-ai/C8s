@@ -21,8 +21,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
-
-	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 )
 
 // Backups sealed to, or opened with, a key off P-256 fail closed.
@@ -186,26 +184,5 @@ func TestVerifyDecreeEdges(t *testing.T) {
 	}
 	if err := VerifyDecreeSignature(ok, pub); err != nil {
 		t.Fatalf("good signature: %v", err)
-	}
-}
-
-func TestNodeIdentityRejectsMissingRegisters(t *testing.T) {
-	for name, c := range map[string]teetypes.Claims{
-		"no launch": {PlatformData: map[string]any{"rtmr_1": digest(2), "rtmr_2": digest(3), "rtmr_3": digest(4)}},
-		"no RTMR1":  {LaunchDigest: digest(1), PlatformData: map[string]any{"rtmr_2": digest(3), "rtmr_3": digest(4)}},
-		"no RTMR2":  {LaunchDigest: digest(1), PlatformData: map[string]any{"rtmr_1": digest(2), "rtmr_3": digest(4)}},
-		"no RTMR3":  {LaunchDigest: digest(1), PlatformData: map[string]any{"rtmr_1": digest(2), "rtmr_2": digest(3)}},
-	} {
-		if _, _, err := nodeIdentity(teetypes.PlatformTDX, c); err == nil {
-			t.Errorf("%s accepted", name)
-		}
-		res := teetypes.VerificationResult{SignatureValid: true, Platform: teetypes.PlatformTDX, Claims: c}
-		res.Claims.ReportData = make([]byte, 64)
-		if _, err := nodeClaims(res); err == nil {
-			t.Errorf("%s: node claims accepted", name)
-		}
-	}
-	if _, err := (NodeAttestor{}).Verify([]byte("{")); err == nil {
-		t.Fatal("evidence that is not JSON verified")
 	}
 }

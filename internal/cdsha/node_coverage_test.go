@@ -90,7 +90,7 @@ func soloConfig(t *testing.T, name, addr string, opPub []byte, ds DecreeSource) 
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { al.Close() })
-	return Config{ClusterID: testCluster, NodeName: name, Bind: addr, Advertise: addr, Attestor: testAttestor{"m1"},
+	return Config{ClusterID: testCluster, NodeName: name, Bind: addr, Advertise: addr, Attestor: MockAttestor{"m1"},
 		BakedPins: []string{"m1"}, OperatorPubKey: opPub, Seats: 1, MaxNonVoters: 8, Decrees: ds, Timing: testTiming,
 		Peers:     func(context.Context) ([]string, error) { return nil, nil },
 		Allowlist: &al, Secrets: secrets.NewMemoryStore(64, 8, 4096), Ledger: sandboxledger.New(time.Hour, 100), Logger: slog.New(slog.DiscardHandler)}

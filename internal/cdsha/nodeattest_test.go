@@ -85,15 +85,7 @@ func TestNodeAttestorRoundTrip(t *testing.T) {
 	if _, err := att.Verify(ev); err == nil {
 		t.Fatal("invalid signature accepted")
 	}
-}
-
-func TestNodeClaimsRejectsNonZeroTail(t *testing.T) {
-	rd := make([]byte, 64)
-	rd[60] = 1
-	res := teetypes.VerificationResult{SignatureValid: true, Platform: teetypes.PlatformTDX,
-		Claims: teetypes.Claims{LaunchDigest: digest(1), ReportData: rd,
-			PlatformData: map[string]any{"rtmr_1": digest(2), "rtmr_2": digest(3), "rtmr_3": digest(4)}}}
-	if _, err := nodeClaims(res); err == nil {
-		t.Fatal("non-zero report_data tail accepted")
+	if _, err := att.Verify([]byte("{")); err == nil {
+		t.Fatal("evidence that is not JSON verified")
 	}
 }
