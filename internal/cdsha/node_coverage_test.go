@@ -343,10 +343,12 @@ func TestPendingBootstrapDecreesUnusable(t *testing.T) {
 func TestNewNodeAndStartErrors(t *testing.T) {
 	_, pub := operatorKey(t)
 	cfg := soloConfig(t, "n0", freeAddr(t), pub, nil)
-	cfg.Timing = Timing{Heartbeat: time.Second}
+	cfg.Timing = Timing{Heartbeat: 2 * time.Second}
+	want := DefaultTiming
+	want.Heartbeat = 2 * time.Second
 	n, err := NewNode(cfg)
-	if err != nil || n.cfg.Timing.Backup != DefaultTiming.Backup {
-		t.Fatalf("backup period not defaulted: %v", err)
+	if err != nil || n.cfg.Timing != want {
+		t.Fatalf("unset timers not defaulted: %+v, %v", n.cfg.Timing, err)
 	}
 	p384, _ := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
 	bad := soloConfig(t, "n0", freeAddr(t), pub, nil)
