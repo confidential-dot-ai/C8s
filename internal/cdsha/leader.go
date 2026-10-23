@@ -50,7 +50,7 @@ func (n *Node) recover(ctx context.Context, p PendingDecree) {
 	defer al.Close()
 	scratch := n.recoveryFSM(&al)
 	// snapStore ignores the transport RecoverCluster passes it.
-	if err := raft.RecoverCluster(n.rcfg, scratch, n.logs, n.stable, n.snaps, nil, n.solo()); err != nil {
+	if err := raft.RecoverCluster(n.rcfg, scratch, recoveryLogStore{LogStore: n.logs, scratch: scratch}, n.stable, n.snaps, nil, n.solo()); err != nil {
 		n.log.Error("recover: RecoverCluster", "err", err)
 		return
 	}
