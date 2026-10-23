@@ -138,13 +138,17 @@ func TestHAStatusCLI(t *testing.T) {
 	b := serve(cdsha.Status{Epoch: 2, CAFingerprint: "aa", Serving: true}, http.StatusOK)
 	stale := serve(cdsha.Status{Epoch: 1, CAFingerprint: "bb", Serving: true}, http.StatusOK)
 	broken := serve(cdsha.Status{}, http.StatusInternalServerError)
-	if out, err := runHA(t, "status", a.URL, b.URL); err != nil || !strings.Contains(out, "epoch=2") {
+	if out, err := runHA(t, "status", "--insecure", a.URL, b.URL); err != nil || !strings.Contains(out, "epoch=2") {
 		t.Fatalf("agreeing replicas: %v %q", err, out)
 	}
-	if _, err := runHA(t, "status", a.URL, stale.URL); err == nil {
+	// A replica serves armTLS: plaintext is refused unless asked for.
+	if out, err := runHA(t, "status", a.URL); err == nil || !strings.Contains(out, "refusing plaintext") {
+		t.Fatalf("plaintext status without --insecure: %v %q", err, out)
+	}
+	if _, err := runHA(t, "status", "--insecure", a.URL, stale.URL); err == nil {
 		t.Fatal("diverging replicas reported as healthy")
 	}
-	if out, err := runHA(t, "status", a.URL, broken.URL); err == nil || !strings.Contains(out, "ERROR") {
+	if out, err := runHA(t, "status", "--insecure", a.URL, broken.URL); err == nil || !strings.Contains(out, "ERROR") {
 		t.Fatalf("unreachable replica: %v %q", err, out)
 	}
 	if err := reportDivergence([]cdsha.Status{{Epoch: 1, CAFingerprint: "a"}}, 1); err == nil {
