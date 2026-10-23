@@ -1593,10 +1593,14 @@ func TestChartRendersRouterPublicTLSAndDiscovery(t *testing.T) {
 	cfg.location(t, "exact", "/.well-known/mesh-ca.pem").assertDirective(t, "alias", "/etc/c8s/certs/ca.crt")
 	// Locations that hold no attest-lb binding close the connection after the
 	// response, so a binding cannot lapse under a connection they keep open.
-	for _, path := range []string{"/v1/discovery", "/.well-known/cds-cert.pem", "/.well-known/mesh-ca.pem", "/readyz", "/healthz", "/allowlist"} {
+	// Discovery and the allowlist keep a young connection open, so a CLI can
+	// read the allowlist on the connection whose leaf it attested.
+	for _, path := range []string{"/.well-known/cds-cert.pem", "/.well-known/mesh-ca.pem", "/readyz", "/healthz"} {
 		cfg.location(t, "exact", path).assertDirective(t, "keepalive_timeout", "0")
 	}
-	cfg.location(t, "prefix", "/allowlist/").assertDirective(t, "keepalive_timeout", "0")
+	cfg.location(t, "exact", "/v1/discovery").assertDirective(t, "keepalive_time", "1m")
+	cfg.location(t, "exact", "/allowlist").assertDirective(t, "keepalive_time", "1m")
+	cfg.location(t, "prefix", "/allowlist/").assertDirective(t, "keepalive_time", "1m")
 	cfg.location(t, "named", "@tunnel_busy").assertDirective(t, "keepalive_timeout", "0")
 	cfg.location(t, "exact", "/readyz").assertDirective(t, "proxy_set_header", "X-C8s-Connection", "$pid.$connection")
 	// The public TLS mode changes only what nginx serves: application
@@ -4579,9 +4583,11 @@ func Example_routerConfig() {
 	//                 return 204;
 	//             }
 	//             add_header Access-Control-Allow-Origin "*" always;
-	//             # A request here holds no attest-lb binding; the connection closes after
-	//             # it so a binding cannot lapse under a connection kept open this way (E7).
-	//             keepalive_timeout 0;
+	//             # A request here holds no attest-lb binding. The connection stays open
+	//             # for the next request only while it is younger than keepalive_time, so
+	//             # a binding cannot lapse under a connection kept open this way (E7), and
+	//             # a client can read the allowlist on the connection it attested.
+	//             keepalive_time 1m;
 	//             # These run before nginx collapses callers onto the loopback proxy source.
 	//             # Each zone's map key is empty for the methods it does not cover, so
 	//             # mutations count per client and in aggregate, reads per client only.
@@ -4611,9 +4617,11 @@ func Example_routerConfig() {
 	//                 return 204;
 	//             }
 	//             add_header Access-Control-Allow-Origin "*" always;
-	//             # A request here holds no attest-lb binding; the connection closes after
-	//             # it so a binding cannot lapse under a connection kept open this way (E7).
-	//             keepalive_timeout 0;
+	//             # A request here holds no attest-lb binding. The connection stays open
+	//             # for the next request only while it is younger than keepalive_time, so
+	//             # a binding cannot lapse under a connection kept open this way (E7), and
+	//             # a client can read the allowlist on the connection it attested.
+	//             keepalive_time 1m;
 	//             # These run before nginx collapses callers onto the loopback proxy source.
 	//             # Each zone's map key is empty for the methods it does not cover, so
 	//             # mutations count per client and in aggregate, reads per client only.

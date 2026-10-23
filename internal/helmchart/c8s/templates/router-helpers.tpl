@@ -91,9 +91,11 @@ location{{ if .exact }} ={{ end }} {{ .path }} {
     {{- else if eq (include "router.protocolCorsEnabled" $root) "true" }}
     {{- include "router.protocolCorsLocationDirectives" $root | nindent 4 }}
     {{- end }}
-    # A request here holds no attest-lb binding; the connection closes after
-    # it so a binding cannot lapse under a connection kept open this way (E7).
-    keepalive_timeout 0;
+    # A request here holds no attest-lb binding. The connection stays open
+    # for the next request only while it is younger than keepalive_time, so
+    # a binding cannot lapse under a connection kept open this way (E7), and
+    # a client can read the allowlist on the connection it attested.
+    keepalive_time 1m;
     # These run before nginx collapses callers onto the loopback proxy source.
     # Each zone's map key is empty for the methods it does not cover, so
     # mutations count per client and in aggregate, reads per client only.

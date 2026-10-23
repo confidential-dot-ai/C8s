@@ -264,9 +264,11 @@ data:
                 {{- else if eq (include "router.protocolCorsEnabled" .) "true" }}
                 {{- include "router.protocolCorsLocationDirectives" . | nindent 16 }}
                 {{- end }}
-                # A request here holds no attest-lb binding; the connection closes after
-                # it so a binding cannot lapse under a connection kept open this way (E7).
-                keepalive_timeout 0;
+                # A request here holds no attest-lb binding. The connection stays open
+                # for the next request only while it is younger than keepalive_time, so
+                # a binding cannot lapse under a connection kept open this way (E7), and
+                # a client can read the allowlist on the connection it attested.
+                keepalive_time 1m;
                 access_log off;
                 default_type application/json;
                 add_header Cache-Control "no-store" always;
