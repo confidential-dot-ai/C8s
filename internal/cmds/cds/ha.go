@@ -55,7 +55,6 @@ type haConfig struct {
 	recoveryKeyPEM []byte // from --ha-config or --ha-recovery-key: backups are sealed to it
 	seats          int
 	maxNonVoters   int
-	tdxTCB         []string
 	timing         cdsha.Timing
 }
 
@@ -69,8 +68,7 @@ func bindHAFlags(flags *pflag.FlagSet, c *haConfig) {
 	flags.StringVar(&c.advertiseIP, "ha-advertise-ip", os.Getenv("POD_IP"), "address the other replicas reach this one at (default $POD_IP)")
 	flags.IntVar(&c.port, "ha-port", 9443, "port of the replica-to-replica channel (mutually attested TLS; Raft and control)")
 	flags.StringVar(&c.nodeName, "ha-node-name", os.Getenv("NODE_NAME"), "the node this replica runs on: one voter seat per node, and a Genesis decree names its bootstrap node")
-	flags.StringVar(&c.attestor, "ha-attestor", "node", "peer attestor: node (the node attestation-api at --attestation-api-url; TDX and SEV-SNP), tdx (DCAP quotes read in-process, inside a TD), or mock in c8s_dev builds")
-	flags.StringSliceVar(&c.tdxTCB, "ha-tdx-tcb-statuses", cdsha.DefaultTDXTCBStatuses, "Intel TCB statuses a peer platform may report (PCS spelling, e.g. UpToDate,SWHardeningNeeded,OutOfDate)")
+	flags.StringVar(&c.attestor, "ha-attestor", "node", "peer attestor: node (the node attestation-api at --attestation-api-url; TDX and SEV-SNP), or mock in c8s_dev builds")
 	flags.StringVar(&c.measurement, "ha-measurement", "", "this replica's measurement as reported by the mock attestor")
 	flags.StringSliceVar(&c.pins, "ha-replica-pins", nil, "replica measurement pins; the Genesis replica makes them the cluster's first pin set")
 	flags.StringVar(&c.operatorKey, "ha-operator-key", "", "PEM P-256 public key authorizing HA decrees, including Genesis (REQUIRED with --ha-cluster-id)")
@@ -186,7 +184,6 @@ func newHANode(cfg config, st haStores) (*cdsha.Node, error) {
 	}
 	att, err := newHAAttestor(h.attestor, cdsha.AttestorOptions{
 		MockMeasurement:   h.measurement,
-		TDXTCBStatuses:    h.tdxTCB,
 		AttestationAPIURL: cfg.attestationApiURL, // the node's attestation-api, as every CDS path uses
 		Timeout:           cfg.requestTimeout,
 	})
