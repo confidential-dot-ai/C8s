@@ -183,7 +183,9 @@ var _ raft.SnapshotSink = (*memSink)(nil)
 func newTestFSM(t *testing.T, pub []byte) *FSM {
 	t.Helper()
 	al, sec, led := testStores(t)
-	return NewFSM(PreGenesis(testCluster, pub), al, sec, led)
+	f := NewFSM(PreGenesis(testCluster, pub), al, sec, led)
+	f.core.Policy = f.LocalPolicy()
+	return f
 }
 
 // applyAt applies e to f as log entry i.
