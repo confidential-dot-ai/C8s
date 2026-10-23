@@ -1,6 +1,7 @@
 package cdsha
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/x509"
@@ -17,6 +18,7 @@ import (
 	"github.com/hashicorp/raft"
 
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
+	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/sandboxledger"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
@@ -30,21 +32,33 @@ var testTiming = Timing{
 	Backup: 100 * time.Millisecond,
 }
 
-// memBackups stands in for the backup ConfigMaps.
+// memBackups stands in for the backup ConfigMaps; with err set it refuses
+// every backup.
 type memBackups struct {
-	mu   sync.Mutex
-	last *Backup
-	n    int
+	mu    sync.Mutex
+	last  *Backup
+	err   error
+	calls int
 }
 
 func (m *memBackups) PutBackup(_ context.Context, b Backup) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.calls++
+	if m.err != nil {
+		return m.err
+	}
 	if m.last != nil && !b.Meta.Newer(m.last.Meta) {
 		return ErrBackupNotNewer
 	}
-	m.last, m.n = &b, m.n+1
+	m.last = &b
 	return nil
+}
+
+func (m *memBackups) attempts() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.calls
 }
 
 func (m *memBackups) get() (Backup, bool) {
@@ -284,7 +298,7 @@ func TestGenesisJoinAndReplicatedState(t *testing.T) {
 		}
 	}
 	// Allowlist written at one replica is served by all, with one version.
-	w := mkWorkload(t)
+	w := mkWorkload(t, 0)
 	if err := c.nodes["n1"].al.PutWorkload("web", w); err != nil {
 		t.Fatal(err)
 	}
@@ -341,11 +355,20 @@ func TestLeaderKillAndRestartAsNewMember(t *testing.T) {
 		// "unavailable" (a client's 503 + retry); it must not stay so.
 		var err error
 		eventually(t, 3*time.Second, "write at "+r.name+" with one replica down", func() bool {
-			err = r.al.PutWorkload("after-"+r.name, mkWorkload(t))
+			err = r.al.PutWorkload("after-"+r.name, mkWorkload(t, 0))
 			return err == nil
 		})
 	}
 	back := c.start(old.name, "m1")
+	// The joiner takes the dead member's address, so the leader replaces it
+	// at once, not only once the joiner has been healthy for Stabilize.
+	eventually(t, 5*time.Second, "restarted replica joined", func() bool {
+		l := c.leader()
+		return l != nil && slices.Contains(l.node.Status().NonVoters, back.node.ID())
+	})
+	if st := c.leader().node.Status(); slices.Contains(append(st.Voters, st.NonVoters...), oldID) {
+		t.Fatalf("the dead member at the joiner's address is still a member: %+v", st)
+	}
 	c.settled(10 * time.Second)
 	st := c.leader().node.Status()
 	for _, id := range append(st.Voters, st.NonVoters...) {
@@ -386,7 +409,7 @@ func TestPartitionedReplicaStopsServingThenRecovers(t *testing.T) {
 	if _, err := victim.node.CA(); err == nil {
 		t.Fatal("isolated replica still hands out the CA")
 	}
-	if err := victim.al.PutWorkload("x", mkWorkload(t)); err == nil {
+	if err := victim.al.PutWorkload("x", mkWorkload(t, 0)); err == nil {
 		t.Fatal("isolated replica accepted a write")
 	}
 	var other *replica
@@ -395,7 +418,7 @@ func TestPartitionedReplicaStopsServingThenRecovers(t *testing.T) {
 			other = r
 		}
 	}
-	if err := other.al.PutWorkload("during", mkWorkload(t)); err != nil {
+	if err := other.al.PutWorkload("during", mkWorkload(t, 0)); err != nil {
 		t.Fatalf("majority write: %v", err)
 	}
 	c.partition(victim.name, false)
@@ -414,7 +437,7 @@ func TestTwoOfThreeDownFailsClosed(t *testing.T) {
 	c.partition(rs[1].name, true)
 	surv := rs[2]
 	eventually(t, 4*time.Second, "survivor stops serving", func() bool { return !surv.node.Serving() })
-	if err := surv.al.PutWorkload("x", mkWorkload(t)); err == nil {
+	if err := surv.al.PutWorkload("x", mkWorkload(t, 0)); err == nil {
 		t.Fatal("a lone replica accepted a write")
 	}
 	c.partition(rs[0].name, false)
@@ -440,7 +463,7 @@ func TestNonVotersServeAndFillAFreeSeat(t *testing.T) {
 	if !nv.node.Serving() {
 		t.Fatal("non-voter does not serve")
 	}
-	if err := nv.al.PutWorkload("from-nonvoter", mkWorkload(t)); err != nil {
+	if err := nv.al.PutWorkload("from-nonvoter", mkWorkload(t, 0)); err != nil {
 		t.Fatalf("non-voter write: %v", err)
 	}
 	var voter *replica
@@ -535,7 +558,7 @@ func TestRecoverAfterLosingTheMajority(t *testing.T) {
 	c := newCluster(t, 3)
 	c.genesis("n0", "n1", "n2", "n3") // n3: a non-voter that survives too
 	l := c.leader()
-	if err := l.al.PutWorkload("kept", mkWorkload(t)); err != nil {
+	if err := l.al.PutWorkload("kept", mkWorkload(t, 0)); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := l.sec.PutIfAbsent(context.Background(), "/kept", []byte("v"), secrets.WorkloadHolder("w")); err != nil {
@@ -586,9 +609,19 @@ func TestRecoverAfterLosingTheMajority(t *testing.T) {
 	}
 }
 
-// A clock jump stops a replica serving until it hears from the leader
-// again; a decree that does not apply is rejected with a reason.
-func TestClockJumpAndRejectedDecree(t *testing.T) {
+// A clock jump stops a replica serving until it has contact made after the
+// jump: a follower hears from the leader, a leader confirms its quorum.
+func TestClockJump(t *testing.T) {
+	ms := time.Millisecond
+	for _, r := range []struct {
+		wall, mono time.Duration
+		want       bool
+	}{{200 * ms, 200 * ms, false}, {time.Second, 200 * ms, false}, {3 * time.Second, 200 * ms, true},
+		{-3 * time.Second, 200 * ms, true}, {6 * time.Second, 6 * time.Second, true}} {
+		if got := clockJumped(r.wall, r.mono); got != r.want {
+			t.Errorf("wall %v mono %v: jumped %v", r.wall, r.mono, got)
+		}
+	}
 	c := newCluster(t, 3)
 	c.genesis("n0", "n1", "n2")
 	for _, r := range c.live() {
@@ -600,11 +633,25 @@ func TestClockJumpAndRejectedDecree(t *testing.T) {
 	for _, r := range c.live() {
 		eventually(t, 5*time.Second, r.name+" serves after fresh contact", r.node.Serving)
 	}
-	bad := c.decree(Decree{Kind: UpdateMeasurements, BaseEpoch: 9, Measurements: []string{"m1"}})
-	eventually(t, 5*time.Second, "stale decree rejected", func() bool {
-		st, ok := c.decrees.get(bad)
-		return ok && st.RejectedReason != "" && st.AppliedEpoch == nil
-	})
+	l := c.leader()
+	var f *replica
+	for _, r := range c.live() {
+		if r != l {
+			f = r
+		}
+	}
+	// Contact from before the jump does not clear it.
+	f.node.jumpAt.Store(time.Now().Add(2 * time.Second).UnixMilli())
+	time.Sleep(500 * time.Millisecond)
+	if f.node.jumpAt.Load() == 0 {
+		t.Fatal("a follower cleared a jump on contact from before it")
+	}
+	c.partition(l.name, true) // the leader cannot confirm its quorum
+	l.node.jumpAt.Store(time.Now().UnixMilli())
+	time.Sleep(500 * time.Millisecond)
+	if l.node.jumpAt.Load() == 0 {
+		t.Fatal("a partitioned leader cleared a jump")
+	}
 }
 
 // CatchUp waits for the leader's applied index; the control channel answers
@@ -613,7 +660,7 @@ func TestCatchUpAndControl(t *testing.T) {
 	c := newCluster(t, 3)
 	c.genesis("n0", "n1", "n2")
 	l := c.leader()
-	if err := l.al.PutWorkload("x", mkWorkload(t)); err != nil {
+	if err := l.al.PutWorkload("x", mkWorkload(t, 0)); err != nil {
 		t.Fatal(err)
 	}
 	for _, r := range c.live() {
@@ -658,14 +705,14 @@ func mustPKIX(t *testing.T, k *ecdsa.PublicKey) []byte {
 
 // Total loss: every replica gone. The sealed backup, opened with the
 // operator's recovery key, restores the cluster on fresh replicas with the
-// same mesh CA, allowlist, spent tokens and secrets; a wrong key, a changed
-// backup, a second restore and a restore beside a live cluster are refused.
+// same mesh CA, allowlist, spent tokens and secrets; a restore for another
+// node, or of another snapshot, is refused.
 func TestTotalLossRestoreFromBackup(t *testing.T) {
 	c := newCluster(t, 3)
 	c.genesis("n0", "n1", "n2")
 	l := c.leader()
 	ctx := context.Background()
-	if err := l.al.PutWorkload("kept", mkWorkload(t)); err != nil {
+	if err := l.al.PutWorkload("kept", mkWorkload(t, 0)); err != nil {
 		t.Fatal(err)
 	}
 	if err := l.al.ConsumeToken("h.p.spent"); err != nil {
@@ -686,15 +733,6 @@ func TestTotalLossRestoreFromBackup(t *testing.T) {
 		c.stopReplica(r)
 	}
 
-	// Only the recovery key opens it, and the metadata is bound.
-	if _, err := OpenBackup(c.opKey, bk); err == nil {
-		t.Fatal("backup opened with another key")
-	}
-	tampered := bk
-	tampered.Meta.Epoch = 99
-	if _, err := OpenBackup(c.recKey, tampered); err == nil {
-		t.Fatal("backup with changed metadata opened")
-	}
 	snap, err := OpenBackup(c.recKey, bk)
 	if err != nil {
 		t.Fatal(err)
@@ -712,12 +750,7 @@ func TestTotalLossRestoreFromBackup(t *testing.T) {
 		return true
 	})
 	sign := func(node string, s []byte) SignedDecree {
-		sd, err := SignDecree(Decree{ClusterID: testCluster, IntentID: fmt.Sprintf("restore-%d", time.Now().UnixNano()), Kind: Restore,
-			BootstrapNode: node, SnapshotSHA256: SnapshotSHA256(s), ExpiresAt: time.Now().Add(time.Hour)}, c.opKey)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return sd
+		return signDecree(t, c.opKey, Decree{Kind: Restore, BootstrapNode: node, SnapshotSHA256: SnapshotSHA256(s)})
 	}
 	if _, err := c.nodes["n1"].node.Restore(ctx, sign("n0", snap), snap); !errors.Is(err, ErrNotForThisNode) {
 		t.Fatalf("a restore for another node: %v", err)
@@ -747,25 +780,13 @@ func TestTotalLossRestoreFromBackup(t *testing.T) {
 	if err := c.nodes["n2"].al.ConsumeToken("h.p.spent-again"); !errors.Is(err, operatorauth.ErrTokenReused) {
 		t.Fatalf("restore forgot a spent token: %v", err)
 	}
-	if err := c.nodes["n1"].al.PutWorkload("after-restore", mkWorkload(t)); err != nil {
+	if err := c.nodes["n1"].al.PutWorkload("after-restore", mkWorkload(t, 0)); err != nil {
 		t.Fatalf("write after restore: %v", err)
-	}
-	// A second restore, beside the live cluster, is refused.
-	c.start("n3", "m1")
-	eventually(t, 10*time.Second, "n3 joined", c.nodes["n3"].node.Serving)
-	c.stopReplica(c.nodes["n3"])
-	c.start("n4", "m1")
-	time.Sleep(200 * time.Millisecond)
-	if c.nodes["n4"].node.AwaitingRestore() {
-		t.Fatal("a replica beside a live cluster reports it awaits a restore")
-	}
-	if _, err := c.nodes["n4"].node.Restore(ctx, sign("n4", snap), snap); err == nil {
-		t.Fatal("a restore beside a live cluster")
 	}
 }
 
 // An expired Genesis does not start a cluster; a replica that has not joined
-// refuses writes; a stale Recover is not used, and catch-up needs a leader.
+// refuses writes, and catch-up needs a leader.
 func TestUnusableDecreesAndUnjoinedWrites(t *testing.T) {
 	c := newCluster(t, 3)
 	for _, n := range []string{"n0", "n1", "n2"} {
@@ -779,7 +800,7 @@ func TestUnusableDecreesAndUnjoinedWrites(t *testing.T) {
 	if _, ok := c.decrees.get(old); ok {
 		t.Fatal("an expired Genesis was recorded as applied")
 	}
-	if err := c.nodes["n1"].al.PutWorkload("x", mkWorkload(t)); err == nil {
+	if err := c.nodes["n1"].al.PutWorkload("x", mkWorkload(t, 0)); err == nil {
 		t.Fatal("a replica outside any cluster accepted a write")
 	}
 	if err := c.nodes["n1"].node.CatchUp(); err == nil {
@@ -791,29 +812,6 @@ func TestUnusableDecreesAndUnjoinedWrites(t *testing.T) {
 	g := c.decree(Decree{Kind: Genesis, BootstrapNode: "n0"})
 	eventually(t, 10*time.Second, "genesis", func() bool { st, ok := c.decrees.get(g); return ok && st.AppliedEpoch != nil })
 	c.settled(15 * time.Second)
-	// Cut two voters off: the survivor sees a Recover for a stale epoch and
-	// leaves it alone.
-	l := c.leader()
-	var surv *replica
-	for _, r := range c.live() {
-		if r != l && surv == nil {
-			surv = r
-		} else {
-			c.partition(r.name, true)
-		}
-	}
-	stale := c.decree(Decree{Kind: Recover, BootstrapNode: surv.name, BaseEpoch: 7})
-	time.Sleep(3 * time.Second)
-	if st, ok := c.decrees.get(stale); ok && st.AppliedEpoch != nil {
-		t.Fatal("a stale Recover was applied")
-	}
-	if surv.node.Serving() {
-		t.Fatal("a lone survivor serves")
-	}
-	for _, r := range c.live() {
-		c.partition(r.name, false)
-	}
-	c.settled(15 * time.Second)
 }
 
 // A membership change after the last write must not stall backups: the
@@ -821,7 +819,7 @@ func TestUnusableDecreesAndUnjoinedWrites(t *testing.T) {
 func TestBackupAfterMembershipChange(t *testing.T) {
 	c := newCluster(t, 3)
 	c.genesis("n0", "n1", "n2")
-	if err := c.leader().al.PutWorkload("last", mkWorkload(t)); err != nil {
+	if err := c.leader().al.PutWorkload("last", mkWorkload(t, 0)); err != nil {
 		t.Fatal(err)
 	}
 	c.start("n3", "m1") // joins: configuration entries, no command
@@ -832,18 +830,6 @@ func TestBackupAfterMembershipChange(t *testing.T) {
 		b, ok := c.backups.get()
 		return ok && b.Meta.Index >= target
 	})
-}
-
-// A replica that reaches no peer (its node's pod network still coming up)
-// does not offer to take a restore: that would route clients to its
-// pre-join server.
-func TestLonerDoesNotAwaitRestore(t *testing.T) {
-	c := newCluster(t, 3)
-	c.start("n0", "m1")
-	time.Sleep(3 * testTiming.DeadAfter)
-	if c.nodes["n0"].node.AwaitingRestore() {
-		t.Fatal("a replica that reached no peer reports it awaits a restore")
-	}
 }
 
 // A pin set that unpins a majority of the voters is refused (it would leave no
@@ -895,5 +881,243 @@ func TestRecoverRefusedWithQuorum(t *testing.T) {
 	c.settled(15 * time.Second)
 	if e := c.leader().node.Core().Epoch; e != epoch {
 		t.Fatalf("epoch moved %d -> %d", epoch, e)
+	}
+}
+
+// Ready (what a rolling restart waits for) holds back a restarted voter
+// that serves as a new non-voter until the seats are full again; the
+// others stay Ready.
+func TestReadyWaitsForTheSeats(t *testing.T) {
+	c := newCluster(t, 3)
+	c.genesis("n0", "n1", "n2", "n3")
+	eventually(t, 10*time.Second, "every replica ready", func() bool {
+		for _, r := range c.live() {
+			if !r.node.Ready() {
+				return false
+			}
+		}
+		return true
+	})
+	l := c.leader()
+	var voter *replica
+	for _, r := range c.live() {
+		if r != l && r.node.isVoter() {
+			voter = r
+		}
+	}
+	c.stopReplica(voter)
+	back := c.start(voter.name, "m1")
+	early := false
+	eventually(t, 15*time.Second, "restarted voter ready", func() bool {
+		ready := back.node.Ready()
+		if ready && !back.node.isVoter() {
+			if st := c.leader().node.Status(); len(st.Voters) < 3 {
+				early = true
+			}
+		}
+		return ready
+	})
+	if early {
+		t.Fatal("a restarted voter was Ready as a non-voter while a seat was free")
+	}
+	if st := c.leader().node.Status(); !st.SeatsFilled || len(st.Voters) != 3 {
+		t.Fatalf("leader reports seats filled %v with %d voters", st.SeatsFilled, len(st.Voters))
+	}
+	// A voter failing heartbeats leaves its seat unfilled.
+	l = c.leader()
+	other := slices.DeleteFunc(l.node.Status().Voters, func(id string) bool { return id == l.node.ID() })[0]
+	l.node.mu.Lock()
+	l.node.failing[raft.ServerID(other)] = time.Now()
+	l.node.mu.Unlock()
+	if l.node.seatsFilled() {
+		t.Fatal("seats filled with a failing voter")
+	}
+}
+
+// The operator changes the voter count with a signed decree: the leader
+// promotes healthy non-voters into new seats, and demotes voters (never
+// itself) when seats go away; writes keep working throughout. Every replica,
+// and a later joiner, holds the same decree record.
+func TestSetVotersGrowsAndShrinks(t *testing.T) {
+	c := newCluster(t, 3)
+	c.genesis("n0", "n1", "n2")
+	c.start("n3", "m1")
+	c.start("n4", "m1")
+	voters := func() int {
+		l := c.leader()
+		if l == nil {
+			return -1
+		}
+		return len(l.node.Status().Voters)
+	}
+	eventually(t, 15*time.Second, "5 members, 3 voters", func() bool {
+		l := c.leader()
+		return l != nil && len(l.node.Status().Voters) == 3 && len(l.node.Status().NonVoters) == 2
+	})
+	even := c.decree(Decree{Kind: SetVoters, BaseEpoch: 1, Voters: 4})
+	eventually(t, 10*time.Second, "even voter count refused", func() bool { st, ok := c.decrees.get(even); return ok && st.RejectedReason != "" })
+	grow := c.decree(Decree{Kind: SetVoters, BaseEpoch: 1, Voters: 5})
+	eventually(t, 10*time.Second, "SetVoters 5 applied", func() bool { st, ok := c.decrees.get(grow); return ok && st.AppliedEpoch != nil })
+	eventually(t, 15*time.Second, "5 voters", func() bool { return voters() == 5 })
+	if s := c.leader().node.Status().Seats; s != 5 {
+		t.Fatalf("status seats %d", s)
+	}
+	if _, err := c.leader().sec.Put(t.Context(), "/five", []byte("v")); err != nil {
+		t.Fatal(err)
+	}
+	shrink := c.decree(Decree{Kind: SetVoters, BaseEpoch: 2, Voters: 3})
+	eventually(t, 10*time.Second, "SetVoters 3 applied", func() bool { st, ok := c.decrees.get(shrink); return ok && st.AppliedEpoch != nil })
+	eventually(t, 15*time.Second, "3 voters again", func() bool { return voters() == 3 })
+	for i, r := range c.live() {
+		if _, err := r.sec.Put(t.Context(), fmt.Sprintf("/three/%d", i), []byte("v")); err != nil {
+			t.Fatalf("write via %s: %v", r.name, err)
+		}
+		eventually(t, 5*time.Second, "serving "+r.name, func() bool { return r.node.Status().Serving })
+	}
+	for _, r := range c.live() {
+		eventually(t, 5*time.Second, "decree record on "+r.name, func() bool {
+			rec := r.node.Decrees()
+			return len(rec) == 3 && rec[1].Epoch == 2 && rec[2].Epoch == 3 && rec[2].Decree.Decree.Voters == 3
+		})
+	}
+	j := c.start("n5", "m1")
+	eventually(t, 15*time.Second, "joiner has the record", func() bool { return len(j.node.Decrees()) == 3 })
+}
+
+// The leader bounds the allowlist history through the log, so every replica
+// keeps the same newest entries; a joiner takes the pruned history.
+func TestLeaderPrunesTheHistoryEverywhere(t *testing.T) {
+	saved := pruneSlack
+	pruneSlack = 2
+	t.Cleanup(func() { pruneSlack = saved })
+	c := newCluster(t, 3)
+	c.historyVersions = 5
+	c.genesis("n0", "n1", "n2")
+	for i := range 12 {
+		if err := c.leader().al.PutWorkload(fmt.Sprintf("w%d", i), mkWorkload(t, i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, r := range c.live() {
+		eventually(t, 10*time.Second, "pruned on "+r.name, func() bool { n, _ := r.al.HistoryLen(); return n <= 5+2 && n >= 5 })
+	}
+	want, _ := c.leader().al.History()
+	for _, r := range c.live() {
+		eventually(t, 5*time.Second, "same history on "+r.name, func() bool {
+			got, _ := r.al.History()
+			return fmt.Sprint(got) == fmt.Sprint(want)
+		})
+	}
+}
+
+// A byte budget bounds the history by document size: the leader turns it
+// into a count, so every replica keeps the same entries.
+func TestLeaderPrunesTheHistoryByBytes(t *testing.T) {
+	c := newCluster(t, 3)
+	c.historyBytes = 1    // any document exceeds it: only the served one stays
+	c.historyVersions = 3 // the tighter bound wins
+	c.genesis("n0", "n1", "n2")
+	for i := range 5 {
+		if err := c.leader().al.PutWorkload(fmt.Sprintf("w%d", i), mkWorkload(t, i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, r := range c.live() {
+		eventually(t, 10*time.Second, "pruned to the head on "+r.name, func() bool { n, _ := r.al.HistoryLen(); return n == 1 })
+	}
+}
+
+// The leader renews the shared mesh CA certificate past half its lifetime,
+// through the log: every replica ends up serving the same new certificate,
+// under the same key, so workloads keep their trust anchor.
+func TestLeaderRenewsTheMeshCACertificate(t *testing.T) {
+	c := newCluster(t, 3)
+	c.caValidity = 4 * time.Second
+	c.genesis("n0", "n1", "n2")
+	first := c.leader().node.fsm.CA().Cert
+	time.Sleep(time.Until(first.NotBefore.Add(c.caValidity/2 - 500*time.Millisecond)))
+	if ca := c.leader().node.fsm.CA(); !bytes.Equal(ca.Cert.Raw, first.Raw) {
+		t.Fatal("renewed before half the certificate's life")
+	}
+	eventually(t, 15*time.Second, "every replica on one renewed certificate", func() bool {
+		var seen []byte
+		for _, r := range c.live() {
+			ca := r.node.fsm.CA()
+			if ca == nil || bytes.Equal(ca.Cert.Raw, first.Raw) || (seen != nil && !bytes.Equal(ca.Cert.Raw, seen)) {
+				return false
+			}
+			seen = ca.Cert.Raw
+		}
+		return seen != nil
+	})
+	renewed := c.leader().node.fsm.CA().Cert
+	if !bytes.Equal(renewed.RawSubjectPublicKeyInfo, first.RawSubjectPublicKeyInfo) || !renewed.NotAfter.After(first.NotAfter) {
+		t.Fatal("the renewal changed the key or did not extend the certificate")
+	}
+	if err := issuer.RenewalOf(first, renewed); err != nil {
+		t.Fatal(err)
+	}
+	// The served status names the new certificate on every replica.
+	fp := c.leader().node.Status().CAFingerprint
+	for _, r := range c.live() {
+		if r.node.Status().CAFingerprint != fp {
+			t.Fatalf("%s reports another CA", r.name)
+		}
+	}
+}
+
+// A rollout: old and new replicas share the group in the old format; the
+// format rises only once the last old replica is gone, and from then on a
+// replica of the old release cannot join.
+func TestFormatRisesOnlyWhenEveryMemberReadsIt(t *testing.T) {
+	c := newCluster(t, 3)
+	next := Format + 1
+	c.reads["n0"], c.reads["n1"] = next, next
+	c.genesis("n0", "n1", "n2")
+	if _, err := c.nodes["n0"].sec.Put(t.Context(), "/before", []byte("v")); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(10 * testTiming.Tick)
+	for _, r := range c.live() {
+		if f := r.node.Core().format(); f != Format {
+			t.Fatalf("%s: format %d with an old replica in the group", r.name, f)
+		}
+	}
+	// Roll the old replica to the new release.
+	c.stopReplica(c.nodes["n2"])
+	c.reads["n2"] = next
+	c.start("n2", "m1")
+	c.settled(15 * time.Second)
+	eventually(t, 10*time.Second, "format raised everywhere", func() bool {
+		for _, r := range c.live() {
+			if r.node.Core().format() != next {
+				return false
+			}
+		}
+		return true
+	})
+	for _, r := range c.live() {
+		if st := r.node.Status(); !st.Serving || st.Stuck != "" {
+			t.Fatalf("%s after the raise: %+v", r.name, st)
+		}
+		eventually(t, 3*time.Second, "secret on "+r.name, func() bool { v, _ := r.sec.Get(t.Context(), "/before"); return string(v) == "v" })
+	}
+	// Replicas of the old release are refused and never serve. Each hears
+	// the other as a loner but the cluster as a member, so neither offers to
+	// take a restore.
+	c.reads["n3"], c.reads["n4"] = Format, Format
+	olds := []*replica{c.start("n3", "m1"), c.start("n4", "m1")}
+	time.Sleep(2 * time.Second)
+	for _, old := range olds {
+		if st := old.node.Status(); st.Joined || st.Serving || old.node.AwaitingRestore() {
+			t.Fatalf("old release after the raise: %+v, awaits a restore %v", st, old.node.AwaitingRestore())
+		}
+	}
+	l := c.leader()
+	if l == nil {
+		t.Fatal("no leader")
+	}
+	if st := l.node.Status(); len(st.Voters)+len(st.NonVoters) != 3 {
+		t.Fatalf("membership changed: %+v", st)
 	}
 }

@@ -7,7 +7,7 @@ import (
 
 // MockAttestor is UNSAFE: its "evidence" is an unsigned JSON claim, so
 // anyone can forge it. It lets the protocol run without TEEs: in tests, and
-// in c8s_dev builds, the only ones where NewAttestor offers it.
+// in c8s_dev builds, the only ones where cmds/cds offers it.
 type MockAttestor struct{ Measurement string }
 
 type mockEvidence struct {

@@ -1,6 +1,7 @@
 package cdsha
 
 import (
+	"cmp"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -21,6 +22,7 @@ import (
 
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/raft"
+	"k8s.io/apimachinery/pkg/util/cache"
 	"k8s.io/apimachinery/pkg/util/wait"
 
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
@@ -135,7 +137,7 @@ type Node struct {
 	lastMember  atomic.Int64 // Unix ms a reachable peer last reported membership (or this start)
 	lastLoner   atomic.Int64 // Unix ms a reachable peer last answered that it holds no cluster either
 	joinLogged  bool
-	certs       *certHolder
+	cert        atomic.Pointer[tls.Certificate] // the peer certificate; renewPeerCert replaces it
 	tls         *tls.Config
 	verifier    peerVerifier
 	measurement string
@@ -155,7 +157,7 @@ type Node struct {
 	addedAt  map[raft.ServerID]time.Time // leader: when this leader added a member (handleJoin)
 	reads    map[raft.ServerID]uint32    // leader: the newest format each member reads
 
-	joinRefusedLog logEvery // peer + reason
+	joinRefusedLog *cache.LRUExpireCache // peer + reason
 
 	backupAt    time.Time // leader: last backup attempt
 	pruneAt     time.Time // leader: last history prune check
@@ -213,32 +215,33 @@ func NewNode(cfg Config) (*Node, error) {
 			*f[0] = *f[1]
 		}
 	}
-	if cfg.Logger == nil {
-		cfg.Logger = slog.Default()
-	}
-	if cfg.CACommonName == "" {
-		cfg.CACommonName = issuer.DefaultCACommonName
-	}
+	cfg.Logger = cmp.Or(cfg.Logger, slog.Default())
+	cfg.CACommonName = cmp.Or(cfg.CACommonName, issuer.DefaultCACommonName)
 	if cfg.CAValidity <= 0 {
 		cfg.CAValidity = issuer.DefaultCAValidity
 	}
-	own, err := ownClaims(cfg.Attestor)
+	ev, err := cfg.Attestor.Evidence([48]byte{})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("own evidence: %w", err)
+	}
+	own, err := cfg.Attestor.Verify(ev) // our measurement and launch-key anchor
+	if err != nil {
+		return nil, fmt.Errorf("own evidence does not verify: %w", err)
 	}
 	var rnd [6]byte
 	if _, err := rand.Read(rnd[:]); err != nil {
 		return nil, err
 	}
 	n := &Node{
-		cfg:         cfg,
-		id:          raft.ServerID(cfg.NodeName + "/" + strconv.FormatInt(time.Now().UnixMilli(), 10) + "-" + hex.EncodeToString(rnd[:])),
-		measurement: own.Measurement,
-		log:         cfg.Logger.With("component", "cds-ha"),
-		failing:     map[raft.ServerID]time.Time{},
-		joinedAt:    map[raft.ServerID]time.Time{},
-		addedAt:     map[raft.ServerID]time.Time{},
-		reads:       map[raft.ServerID]uint32{},
+		cfg:            cfg,
+		id:             raft.ServerID(cfg.NodeName + "/" + strconv.FormatInt(time.Now().UnixMilli(), 10) + "-" + hex.EncodeToString(rnd[:])),
+		measurement:    own.Measurement,
+		log:            cfg.Logger.With("component", "cds-ha"),
+		failing:        map[raft.ServerID]time.Time{},
+		joinedAt:       map[raft.ServerID]time.Time{},
+		addedAt:        map[raft.ServerID]time.Time{},
+		reads:          map[raft.ServerID]uint32{},
+		joinRefusedLog: newLogOnce(),
 	}
 	if len(cfg.RecoveryKey) > 0 {
 		k, err := x509.ParsePKIXPublicKey(cfg.RecoveryKey)
@@ -253,26 +256,32 @@ func NewNode(cfg Config) (*Node, error) {
 		n.fsm.readable = cfg.Format
 	}
 	n.lastMember.Store(time.Now().UnixMilli())
-	if n.certs, err = newCertHolder(func() (tls.Certificate, error) { return newPeerCert(cfg.ClusterID, cfg.Attestor) }); err != nil {
+	cert, err := newPeerCert(cfg.ClusterID, cfg.Attestor, time.Now().Add(peerCertLife))
+	if err != nil {
 		return nil, err
 	}
+	n.cert.Store(&cert)
 	n.verifier = peerVerifier{clusterID: cfg.ClusterID, att: cfg.Attestor, anchor: own.Anchor, pins: n.peerPins}
-	n.tls = peerTLSConfig(n.certs)
+	n.tls = peerTLSConfig(n.cert.Load)
 	return n, nil
 }
 
-// ownClaims verifies the replica's own evidence once, for its measurement
-// and launch-key anchor.
-func ownClaims(att Attestor) (Claims, error) {
-	ev, err := att.Evidence([48]byte{})
-	if err != nil {
-		return Claims{}, fmt.Errorf("own evidence: %w", err)
+// peerCertLife is how long a peer certificate lasts; renewPeerCert
+// replaces it after a quarter of that.
+const peerCertLife = 24 * time.Hour
+
+// renewPeerCert replaces an aging peer certificate with fresh evidence over
+// a new key. A failure is retried on the next tick.
+func (n *Node) renewPeerCert() {
+	if time.Since(n.cert.Load().Leaf.NotBefore) < peerCertLife/4 {
+		return
 	}
-	c, err := att.Verify(ev)
+	c, err := newPeerCert(n.cfg.ClusterID, n.cfg.Attestor, time.Now().Add(peerCertLife))
 	if err != nil {
-		return Claims{}, fmt.Errorf("own evidence does not verify: %w", err)
+		n.log.Warn("renew peer certificate", "err", err)
+		return
 	}
-	return c, nil
+	n.cert.Store(&c)
 }
 
 // peerPins is the pin set peers are checked against: the agreed one once
@@ -372,11 +381,7 @@ func (n *Node) Run(ctx context.Context) error {
 			return nil
 		case <-t.C:
 		}
-		if n.certs.age() > 6*time.Hour {
-			if err := n.certs.renew(); err != nil {
-				n.log.Warn("renew peer certificate", "err", err)
-			}
-		}
+		n.renewPeerCert()
 		if !n.member() {
 			n.joinOrBootstrap(ctx)
 			continue
@@ -387,7 +392,7 @@ func (n *Node) Run(ctx context.Context) error {
 			n.mux.Load().recheck() // the pin set may have changed
 		}
 		switch addr, _ := n.r().LeaderWithID(); {
-		case n.r().State() == raft.Leader:
+		case n.leading():
 			n.noLeader = time.Time{}
 			n.reconcile()
 			n.applyDecrees(ctx)
@@ -444,13 +449,11 @@ func (n *Node) handleControl(peer Claims, req controlRequest) controlResponse {
 	default:
 		return controlResponse{Err: "unknown control op"}
 	}
-	if n.r().State() != raft.Leader {
-		addr, _ := n.r().LeaderWithID()
-		if addr == "" {
-			return controlResponse{Member: member, Err: "no leader"}
+	if !n.leading() {
+		if hp := n.leaderHostPort(); hp != "" {
+			return controlResponse{Member: member, Leader: hp, Err: "not the leader"}
 		}
-		hp, _ := splitRaftAddr(string(addr))
-		return controlResponse{Member: member, Leader: hp, Err: "not the leader"}
+		return controlResponse{Member: member, Err: "no leader"}
 	}
 	core := n.fsm.Core()
 	if !core.Joined() {
@@ -508,18 +511,17 @@ func (n *Node) propose(e Entry) (json.RawMessage, error) {
 	if !n.fsm.Core().Joined() {
 		return nil, errors.New("cds-ha: this replica has not joined the cluster")
 	}
-	if n.r().State() == raft.Leader {
+	if n.leading() {
 		_, resp, err := n.applyLocal(raw)
 		if err != nil {
 			return nil, err
 		}
 		return json.Marshal(resp)
 	}
-	addr, _ := n.r().LeaderWithID()
-	if addr == "" {
+	hp := n.leaderHostPort()
+	if hp == "" {
 		return nil, errors.New("cds-ha: no leader (fewer than a majority of replicas reachable)")
 	}
-	hp, _ := splitRaftAddr(string(addr))
 	resp, err := n.call(hp, n.cfg.Timing.Apply, controlRequest{Op: ctlApply, Entry: raw})
 	if err != nil {
 		return nil, err
@@ -565,7 +567,7 @@ func (n *Node) ReplicateBinding(cmd sandboxledger.Command) (bool, error) {
 // CatchUp implements sandboxledger.Replicator: it waits until this replica
 // has applied everything the leader had applied when asked.
 func (n *Node) CatchUp() error {
-	if n.r().State() == raft.Leader {
+	if n.leading() {
 		return nil
 	}
 	addr, _ := n.r().LeaderWithID()
@@ -596,7 +598,7 @@ func (n *Node) Serving() bool {
 	if n.jumpAt.Load() != 0 || n.fsm.Stuck() != "" {
 		return false
 	}
-	if n.r().State() == raft.Leader {
+	if n.leading() {
 		return true
 	}
 	lc := n.r().LastContact()
@@ -634,8 +636,7 @@ func (n *Node) Status() Status {
 	}
 	st.State = n.r().State().String()
 	st.Serving = n.Serving()
-	addr, _ := n.r().LeaderWithID()
-	st.Leader, _ = splitRaftAddr(string(addr))
+	st.Leader = n.leaderHostPort()
 	if lc := n.r().LastContact(); !lc.IsZero() {
 		st.LastContactMS = time.Since(lc).Milliseconds()
 	}
@@ -646,7 +647,7 @@ func (n *Node) Status() Status {
 			st.NonVoters = append(st.NonVoters, string(s.ID))
 		}
 	}
-	if n.r().State() == raft.Leader {
+	if n.leading() {
 		st.SeatsFilled = n.seatsFilled()
 	}
 	return st
@@ -665,7 +666,7 @@ func (n *Node) Ready() bool {
 	if n.isVoter() {
 		return true
 	}
-	if n.r().State() == raft.Leader {
+	if n.leading() {
 		return n.seatsFilled()
 	}
 	at := n.seatsOKAt.Load()
@@ -687,14 +688,20 @@ func (n *Node) watchClock(ctx context.Context) {
 			return
 		case now := <-t.C:
 			mono := now.Sub(last)
-			wall := now.Round(0).Sub(last.Round(0))
-			if d := wall - mono; d > 2*time.Second || d < -2*time.Second || mono > 5*time.Second {
+			if wall := now.Round(0).Sub(last.Round(0)); clockJumped(wall, mono) {
 				n.jumpAt.Store(now.UnixMilli())
-				n.log.Warn("clock jump: not serving until the leader is heard again", "wall_minus_mono", d, "tick", mono)
+				n.log.Warn("clock jump: not serving until the leader is heard again", "wall_minus_mono", wall-mono, "tick", mono)
 			}
 			last = now
 		}
 	}
+}
+
+// clockJumped reports a wall clock that moved more than 2 s apart from the
+// monotonic one over a tick, or a tick that took over 5 s (a suspended VM).
+func clockJumped(wall, mono time.Duration) bool {
+	d := wall - mono
+	return d > 2*time.Second || d < -2*time.Second || mono > 5*time.Second
 }
 
 // clearJumpIfFresh ends a clock-jump stop once the replica has fresh
@@ -705,18 +712,26 @@ func (n *Node) clearJumpIfFresh() {
 	if at == 0 {
 		return
 	}
-	if n.r().State() == raft.Leader {
+	if n.leading() {
 		if n.r().VerifyLeader().Error() == nil {
 			n.jumpAt.CompareAndSwap(at, 0)
 		}
 		return
 	}
-	if lc := n.r().LastContact(); lc.UnixMilli() > at {
+	// A known leader: raft also sets LastContact when a leader steps down.
+	if lc := n.r().LastContact(); lc.UnixMilli() > at && n.leaderHostPort() != "" {
 		n.jumpAt.CompareAndSwap(at, 0)
 	}
 }
 
 func (n *Node) leading() bool { return n.r().State() == raft.Leader }
+
+// leaderHostPort is the leader's peer address, or "" when there is none.
+func (n *Node) leaderHostPort() string {
+	addr, _ := n.r().LeaderWithID()
+	hp, _ := splitRaftAddr(string(addr))
+	return hp
+}
 
 // waitFor polls cond until it holds or timeout passes.
 func (n *Node) waitFor(timeout time.Duration, cond func() bool) bool {
