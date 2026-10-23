@@ -214,22 +214,46 @@ and the cleanup receipt for three days. A complete diagnostic run requires
 `captureComplete: true` and cleanup `complete: true`; neither means the Pod
 workload passed. Cleanup always runs, and `keep_cvm` does not apply.
 
-### Diagnosing historical mixed-source Pod boots
+### Diagnosing a Pod boot on a commit's dev image
 
-The manual `tdx-metal-e2e.yml` input `pod_diagnostic: true` reproduces historical
-build `39943645155`, which mixed `4774df9e` components with the node-only image
-profile from `main` at `00f43aca`. Its matching component CLI signs the Pod fixture.
-The serial logs identify the scratch-enforcement shutdown before Pod role setup;
-this mixed image does not contain the Pod profile being developed.
+The manual `tdx-metal-e2e.yml` input `pod_diagnostic: true` boots the
+`rke2-tdx-dev` image published for one commit (root autologin on the serial
+console, its own measurement) with the Pod fixture signed by the CLI built from
+that same commit, so the serial log shows which unit or admission step stops a
+Pod that the production image only reports as Pending. `pod_image_source`
+names that commit by full SHA; empty means the dispatched commit. The lane
+resolves `rke2-tdx-dev-<sha7>` and `rke2-tdx-dev-cdi-<sha7>` from the registry
+at run time and fails by naming the missing tag, with the manual image build
+command that publishes it. The fixture Pod carries no mesh endpoint; the guest
+injects the measured one.
+The job builds the paired CLI from `pod_image_source` and the lane tool
+(`test/poddiag`) from the dispatched commit with the source commit's Go toolchain,
+so the dispatched tree's `go` directive must not exceed the source's.
 It uses the existing TDX launcher, a private root import and run-owned VM and
 launch Secret. Cleanup always runs; `keep_cvm` does not retain diagnostic VMs.
-The `pod-boot-diagnostic-<run>-<attempt>` artifact contains bounded serial and
-launcher logs, image identity, native status and the cleanup receipt. It omits
+The `pod-boot-diagnostic-<run>-<attempt>` artifact contains the first and last
+256 KiB of the serial log per sample (`NNN-serial`, `NNN-serial-tail`; a dev
+image forwards its journal to ttyS0, so the tail carries the latest service
+output), bounded launcher logs, image identity, native status and the cleanup
+receipt. It omits
 private signing keys and expires after seven days.
 
 ```sh
+gh workflow run c8s-image-manual.yml --repo confidential-dot-ai/C8s \
+  --ref <branch at the commit> -f dev=true -f c8s_ref=<sha7>
 gh workflow run tdx-metal-e2e.yml --repo confidential-dot-ai/C8s \
-  --ref podcvm/no-mesh-gate -f pod_diagnostic=true
+  --ref <branch with this lane> -f pod_diagnostic=true -f pod_image_source=<full sha>
+```
+
+This mode diagnoses boot only. It deliberately uses an unavailable CDS and a
+separately measured development image; it does not establish production-image,
+mesh, internet or DNS acceptance. The normal node lane and automatic exact-image
+acceptance keep their existing validation.
+
+## Running it
+
+```sh
+make test-integration-cluster
 ```
 
 This mode diagnoses boot only. It deliberately uses an unavailable CDS and a

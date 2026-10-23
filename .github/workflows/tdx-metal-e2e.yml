@@ -48,10 +48,15 @@ on:
         type: boolean
         default: false
       pod_diagnostic:
-        description: 'Capture historical mixed-source Pod boot logs; always clean up'
+        description: 'Boot the paired rke2-tdx-dev image of pod_image_source and capture its serial log; always clean up'
         required: false
         type: boolean
         default: false
+      pod_image_source:
+        description: 'With pod_diagnostic: full SHA of the commit whose dev image to boot (rke2-tdx-dev-<sha7> must be published). Empty = this commit.'
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -113,11 +118,22 @@ jobs:
           persist-credentials: false
           ref: ${{ github.sha }}
 
-      - name: Check out the CLI matching diagnostic build 39943645155
+      - name: Select the diagnostic image's source commit
+        id: source
+        env:
+          SOURCE_INPUT: ${{ inputs.pod_image_source }}
+        run: |
+          set -euo pipefail
+          source=${SOURCE_INPUT:-$GITHUB_SHA}
+          [[ "$source" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::pod_image_source must be a full 40-hex commit SHA"; exit 1; }
+          echo "sha=$source" >> "$GITHUB_OUTPUT"
+          echo "diagnostic image: rke2-tdx-dev-${source:0:7}, CLI from \`$source\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Check out the CLI source paired with the diagnostic image
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          ref: 4774df9ebc1bd186765b8997f5356005510b9342
+          ref: ${{ steps.source.outputs.sha }}
           path: diagnostic-source
 
       - uses: ./.github/actions/setup-go-c8s
@@ -128,12 +144,14 @@ jobs:
       - name: Prepare the paired CLI and launcher tools
         timeout-minutes: 10
         shell: bash
+        env:
+          POD_DIAGNOSTIC_SOURCE: ${{ steps.source.outputs.sha }}
         run: |
           set -euo pipefail
           umask 077
           POD_DIAGNOSTIC_DIR="$RUNNER_TEMP/pod-diagnostic"
           mkdir -p "$POD_DIAGNOSTIC_DIR/private" "$POD_DIAGNOSTIC_DIR/evidence" "$RUNNER_TEMP/pod-diagnostic-bin"
-          test "$(git -C diagnostic-source rev-parse HEAD)" = 4774df9ebc1bd186765b8997f5356005510b9342
+          test "$(git -C diagnostic-source rev-parse HEAD)" = "$POD_DIAGNOSTIC_SOURCE"
           test -z "$(git -C diagnostic-source status --porcelain)"
           (cd diagnostic-source && go build -o "$POD_DIAGNOSTIC_DIR/private/c8s" ./cmd/c8s)
           if ! command -v kubectl >/dev/null; then
@@ -145,18 +163,20 @@ jobs:
             chmod +x "$RUNNER_TEMP/pod-diagnostic-bin/kubectl"
             echo "$RUNNER_TEMP/pod-diagnostic-bin" >> "$GITHUB_PATH"
           fi
-          python3 .github/scripts/tests/test_tdx_pod_diagnostic.py
+          go test ./test/poddiag/
+          go build -o "$RUNNER_TEMP/pod-diagnostic-bin/poddiag" ./test/poddiag
 
       - name: Run the owned diagnostic VM
         timeout-minutes: 38
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 .github/scripts/tdx-pod-diagnostic.py run
+          POD_DIAGNOSTIC_SOURCE: ${{ steps.source.outputs.sha }}
+        run: "\"$RUNNER_TEMP/pod-diagnostic-bin/poddiag\" run"
 
       - name: Remove this run's VM, launch Secret and private import
         if: always()
         timeout-minutes: 10
-        run: python3 .github/scripts/tdx-pod-diagnostic.py cleanup
+        run: "\"$RUNNER_TEMP/pod-diagnostic-bin/poddiag\" cleanup"
 
       - name: Retain bounded boot evidence only
         if: always()
@@ -166,6 +186,7 @@ jobs:
           path: ${{ runner.temp }}/pod-diagnostic/evidence
           if-no-files-found: warn
           retention-days: 7
+
 
   pod-acceptance:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.pod_acceptance && !inputs.pod_diagnostic && !inputs.pod_runtime_diagnostic }}
