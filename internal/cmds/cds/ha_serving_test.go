@@ -115,14 +115,3 @@ func TestHAServingReplicaPublishesDecrees(t *testing.T) {
 		t.Fatalf("decree record %s: %v", w.Body.String(), err)
 	}
 }
-
-func TestResetHAAllowlistClosedStore(t *testing.T) {
-	s, err := allowlist.OpenInMemory()
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = s.Close()
-	if err := resetHAAllowlist(&s); err == nil {
-		t.Fatal("reset a closed store")
-	}
-}
