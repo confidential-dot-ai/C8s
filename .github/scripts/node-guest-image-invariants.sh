@@ -522,6 +522,14 @@ if ! grep -qE '^address: 127[.]0[.]0[.]1$' "$ngi/c8s/mkosi.extra/usr/lib/c8s/pod
   echo "::error::the pod-role kubelet must listen on loopback only; pod-status is its external reader"
   exit 1
 fi
+# The enforcer verifies that the guest's root network namespace holds only its
+# own packet table before it admits a container. The kubelet's iptables util
+# chains (a canary in filter, nat and mangle for both families) would be six
+# foreign tables, and every container of the pod would be refused.
+if ! grep -qxF 'makeIPTablesUtilChains: false' "$ngi/c8s/mkosi.extra/usr/lib/c8s/pod-runtime/kubelet.yaml"; then
+  echo "::error::the pod-role kubelet must not create iptables util chains; the enforcer owns the guest's packet rules"
+  exit 1
+fi
 for service in podcvm-containerd podcvm-kubelet podcvm-status; do
   if ! grep -qxF "ConditionPathExists=/run/confos/role-pod" "$units/$service.service" \
      || ! grep -qxF "enable $service.service" "$preset"; then
