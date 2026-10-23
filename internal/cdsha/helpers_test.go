@@ -19,8 +19,6 @@ import (
 	"time"
 
 	"github.com/hashicorp/raft"
-	"k8s.io/apimachinery/pkg/runtime"
-	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/sandboxledger"
@@ -31,9 +29,10 @@ import (
 
 // Shared test helpers and fakes.
 
-func mkWorkload(t *testing.T) pkgallowlist.Workload {
+// mkWorkload is a one-container workload; i picks its digest.
+func mkWorkload(t *testing.T, i int) pkgallowlist.Workload {
 	t.Helper()
-	d, err := types.ParseDigest("sha256:a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2")
+	d, err := types.ParseDigest(fmt.Sprintf("sha256:%064x", i+1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,15 +148,6 @@ func freeAddr(t *testing.T) string {
 	}
 	defer l.Close()
 	return l.Addr().String()
-}
-
-func failOn(verb string, match func(k8stesting.Action) bool) k8stesting.ReactionFunc {
-	return func(a k8stesting.Action) (bool, runtime.Object, error) {
-		if a.GetVerb() == verb && (match == nil || match(a)) {
-			return true, nil, errors.New("api down")
-		}
-		return false, nil, nil
-	}
 }
 
 func testStores(t *testing.T) (*allowlist.Store, *secrets.MemoryStore, *sandboxledger.Ledger) {

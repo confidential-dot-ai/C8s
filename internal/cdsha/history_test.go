@@ -4,19 +4,7 @@ import (
 	"fmt"
 	"testing"
 	"time"
-
-	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
-
-func historyWorkload(t *testing.T, i int) pkgallowlist.Workload {
-	t.Helper()
-	d, err := types.ParseDigest(fmt.Sprintf("sha256:%064x", i+1))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return pkgallowlist.Workload{Containers: []pkgallowlist.Container{{Digest: d}}}
-}
 
 // The leader bounds the allowlist history through the log, so every replica
 // keeps the same newest entries; a joiner takes the pruned history.
@@ -28,7 +16,7 @@ func TestLeaderPrunesTheHistoryEverywhere(t *testing.T) {
 	c.historyVersions = 5
 	c.genesis("n0", "n1", "n2")
 	for i := range 12 {
-		if err := c.leader().al.PutWorkload(fmt.Sprintf("w%d", i), historyWorkload(t, i)); err != nil {
+		if err := c.leader().al.PutWorkload(fmt.Sprintf("w%d", i), mkWorkload(t, i)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -52,7 +40,7 @@ func TestLeaderPrunesTheHistoryByBytes(t *testing.T) {
 	c.historyVersions = 3 // the tighter bound wins
 	c.genesis("n0", "n1", "n2")
 	for i := range 5 {
-		if err := c.leader().al.PutWorkload(fmt.Sprintf("w%d", i), historyWorkload(t, i)); err != nil {
+		if err := c.leader().al.PutWorkload(fmt.Sprintf("w%d", i), mkWorkload(t, i)); err != nil {
 			t.Fatal(err)
 		}
 	}

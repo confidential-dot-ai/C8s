@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"net"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -20,26 +19,6 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/sandboxledger"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
 )
-
-// failingBackups refuses every backup with err.
-type failingBackups struct {
-	err   error
-	mu    sync.Mutex
-	calls int
-}
-
-func (f *failingBackups) PutBackup(context.Context, Backup) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.calls++
-	return f.err
-}
-
-func (f *failingBackups) n() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.calls
-}
 
 // solo is a one-seat cluster built without the cluster helper, so a test
 // can choose the replica's configuration.
@@ -154,21 +133,21 @@ func TestBackupFailuresAndRetries(t *testing.T) {
 		"store fails": {errors.New("api down"), true},
 	} {
 		t.Run(name, func(t *testing.T) {
-			b := &failingBackups{err: c.err}
+			b := &memBackups{err: c.err}
 			s := newSolo(t, func(cfg *Config) { cfg.RecoveryKey, cfg.Backups = mustPKIX(t, &rk.PublicKey), b })
-			eventually(t, 5*time.Second, "a backup attempt", func() bool { return b.n() > 0 })
+			eventually(t, 5*time.Second, "a backup attempt", func() bool { return b.attempts() > 0 })
 			time.Sleep(10 * testTiming.Backup)
-			if got := b.n(); (got > 1) != c.retry {
+			if got := b.attempts(); (got > 1) != c.retry {
 				t.Fatalf("%d attempts, retry %v", got, c.retry)
 			}
 			if c.retry {
 				return
 			}
-			before := b.n()
-			if err := s.node.cfg.Allowlist.PutWorkload("w", mkWorkload(t)); err != nil {
+			before := b.attempts()
+			if err := s.node.cfg.Allowlist.PutWorkload("w", mkWorkload(t, 0)); err != nil {
 				t.Fatal(err)
 			}
-			eventually(t, 5*time.Second, "a backup of the new state", func() bool { return b.n() > before })
+			eventually(t, 5*time.Second, "a backup of the new state", func() bool { return b.attempts() > before })
 		})
 	}
 }

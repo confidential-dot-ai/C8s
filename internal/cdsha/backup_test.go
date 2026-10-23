@@ -312,7 +312,9 @@ func TestBackupRefusesOtherCurves(t *testing.T) {
 func TestDecreeStoreListErrors(t *testing.T) {
 	ctx := context.Background()
 	kube := fake.NewClientset()
-	kube.PrependReactor("list", "configmaps", failOn("list", nil))
+	kube.PrependReactor("list", "configmaps", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, errors.New("api down")
+	})
 	st := KubeDecrees{Client: kube, Namespace: "decrees", ClusterID: testCluster}
 	if _, err := st.GetBackup(ctx); err == nil {
 		t.Fatal("a backup read through a failing API")
