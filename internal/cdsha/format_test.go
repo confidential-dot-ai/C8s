@@ -32,10 +32,13 @@ func TestFSMStopsOnEntryItCannotRead(t *testing.T) {
 			}
 		})
 	}
-	// An entry it reads is not a reason to stop, nor is a secret store refusal.
+	// An entry it reads is not a reason to stop, nor is a refused one.
 	f := newTestFSM(t, opPub)
 	if res := applyAt(f, 1, Entry{Kind: KindFormat, SetFormat: Format}); res != nil || f.Stuck() != "" {
 		t.Fatalf("current format: %v, stuck %q", res, f.Stuck())
+	}
+	if res := applyAt(f, 2, Entry{Kind: KindRenewCA, RenewCA: &RenewCAEntry{}}); res == nil || f.Stuck() != "" {
+		t.Fatalf("refused CA renewal: %v, stuck %q", res, f.Stuck())
 	}
 }
 
@@ -97,12 +100,16 @@ func TestFormatRisesOnlyWhenEveryMemberReadsIt(t *testing.T) {
 		}
 		eventually(t, 3*time.Second, "secret on "+r.name, func() bool { v, _ := r.sec.Get(t.Context(), "/before"); return string(v) == "v" })
 	}
-	// A replica of the old release is refused and never serves.
-	c.reads["n3"] = Format
-	old := c.start("n3", "m1")
+	// Replicas of the old release are refused and never serve. Each hears
+	// the other as a loner but the cluster as a member, so neither offers to
+	// take a restore.
+	c.reads["n3"], c.reads["n4"] = Format, Format
+	olds := []*replica{c.start("n3", "m1"), c.start("n4", "m1")}
 	time.Sleep(2 * time.Second)
-	if st := old.node.Status(); st.Joined || st.Serving {
-		t.Fatalf("old release joined after the raise: %+v", st)
+	for _, old := range olds {
+		if st := old.node.Status(); st.Joined || st.Serving || old.node.AwaitingRestore() {
+			t.Fatalf("old release after the raise: %+v, awaits a restore %v", st, old.node.AwaitingRestore())
+		}
 	}
 	l := c.leader()
 	if l == nil {

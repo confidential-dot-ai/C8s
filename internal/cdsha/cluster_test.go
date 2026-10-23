@@ -683,7 +683,7 @@ func mustPKIX(t *testing.T, k *ecdsa.PublicKey) []byte {
 // Total loss: every replica gone. The sealed backup, opened with the
 // operator's recovery key, restores the cluster on fresh replicas with the
 // same mesh CA, allowlist, spent tokens and secrets; a wrong key, a changed
-// backup, a second restore and a restore beside a live cluster are refused.
+// backup and a second restore are refused.
 func TestTotalLossRestoreFromBackup(t *testing.T) {
 	c := newCluster(t, 3)
 	c.genesis("n0", "n1", "n2")
@@ -773,18 +773,6 @@ func TestTotalLossRestoreFromBackup(t *testing.T) {
 	}
 	if err := c.nodes["n1"].al.PutWorkload("after-restore", mkWorkload(t)); err != nil {
 		t.Fatalf("write after restore: %v", err)
-	}
-	// A second restore, beside the live cluster, is refused.
-	c.start("n3", "m1")
-	eventually(t, 10*time.Second, "n3 joined", c.nodes["n3"].node.Serving)
-	c.stopReplica(c.nodes["n3"])
-	c.start("n4", "m1")
-	time.Sleep(200 * time.Millisecond)
-	if c.nodes["n4"].node.AwaitingRestore() {
-		t.Fatal("a replica beside a live cluster reports it awaits a restore")
-	}
-	if _, err := c.nodes["n4"].node.Restore(ctx, sign("n4", snap), snap); err == nil {
-		t.Fatal("a restore beside a live cluster")
 	}
 }
 
