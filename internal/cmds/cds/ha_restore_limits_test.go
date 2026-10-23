@@ -5,14 +5,16 @@ package cds
 import (
 	"context"
 	"encoding/json"
-	"github.com/confidential-dot-ai/c8s/internal/cdsha"
 	"io"
-	"k8s.io/apimachinery/pkg/util/wait"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"k8s.io/apimachinery/pkg/util/wait"
+
+	"github.com/confidential-dot-ai/c8s/internal/cdsha"
 )
 
 type r3CountingReader struct {
