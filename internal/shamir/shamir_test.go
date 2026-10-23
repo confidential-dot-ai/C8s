@@ -63,7 +63,7 @@ func TestRefusals(t *testing.T) {
 
 func TestField(t *testing.T) {
 	for a := 1; a < 256; a++ {
-		if mul(byte(a), div(1, byte(a))) != 1 {
+		if mul(byte(a), inv(byte(a))) != 1 {
 			t.Fatalf("no inverse for %d", a)
 		}
 	}
