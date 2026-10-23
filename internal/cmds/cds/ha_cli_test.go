@@ -313,11 +313,12 @@ func TestHAHandlersBeforeJoin(t *testing.T) {
 func TestHAStartWiring(t *testing.T) {
 	origKube, origAtt := newInClusterKubeClientset, newHAAttestor
 	t.Cleanup(func() { newInClusterKubeClientset, newHAAttestor = origKube, origAtt })
-	newHAAttestor = func(name string, o cdsha.AttestorOptions) (cdsha.Attestor, error) {
-		if name == "fake" {
+	nodeAttestor := newHAAttestor
+	newHAAttestor = func(cfg config) (cdsha.Attestor, error) {
+		if cfg.ha.attestor == "fake" {
 			return fakeAttestor{"m1"}, nil
 		}
-		return cdsha.NewAttestor(name, o)
+		return nodeAttestor(cfg)
 	}
 	al, _ := allowlist.OpenInMemory()
 	defer al.Close()

@@ -20,7 +20,10 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 
+	"github.com/spf13/pflag"
+
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
+	"github.com/confidential-dot-ai/c8s/internal/cdsha"
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
 )
@@ -29,6 +32,8 @@ import (
 // (test/integration/cdsha). They exist only in c8s_dev builds, which already
 // run without a TEE (mock attestor, plain HTTP); a release build has neither.
 //
+//   - --ha-attestor=mock with --ha-measurement, and the Raft timing flags
+//     (--ha-heartbeat ... --ha-tick), which only the harness sets.
 //   - C8S_DEV_KUBE_DIR=<dir>: the "Kubernetes API" is a directory of ConfigMap
 //     JSON files shared by every replica process (decrees, their status and
 //     the sealed backups), since an in-process fake client cannot span
@@ -37,6 +42,24 @@ import (
 //     only), and GET /dev/ha/secrets, which dumps this replica's secret store
 //     so the test can compare replicas.
 func init() {
+	bindDevHAFlags = func(flags *pflag.FlagSet, c *haConfig) {
+		flags.StringVar(&c.measurement, "ha-measurement", "", "this replica's measurement as reported by the mock attestor")
+		flags.DurationVar(&c.timing.Heartbeat, "ha-heartbeat", c.timing.Heartbeat, "Raft heartbeat timeout")
+		flags.DurationVar(&c.timing.Election, "ha-election", c.timing.Election, "Raft election timeout")
+		flags.DurationVar(&c.timing.Lease, "ha-lease", c.timing.Lease, "a follower stops issuing and releasing this long after it last heard from the leader")
+		flags.DurationVar(&c.timing.DeadAfter, "ha-dead-after", c.timing.DeadAfter, "the leader removes a member that failed heartbeats this long")
+		flags.DurationVar(&c.timing.Stabilize, "ha-stabilize", c.timing.Stabilize, "a non-voter must be healthy this long before it takes a seat")
+		flags.DurationVar(&c.timing.Apply, "ha-apply-timeout", c.timing.Apply, "bound on one replicated write")
+		flags.DurationVar(&c.timing.Backup, "ha-backup-interval", c.timing.Backup, "the leader seals and stores a backup of changed state at most this often")
+		flags.DurationVar(&c.timing.Tick, "ha-tick", c.timing.Tick, "membership and decree loop period")
+	}
+	nodeAttestor := newHAAttestor
+	newHAAttestor = func(cfg config) (cdsha.Attestor, error) {
+		if cfg.ha.attestor == "mock" {
+			return cdsha.MockAttestor{Measurement: cfg.ha.measurement}, nil
+		}
+		return nodeAttestor(cfg)
+	}
 	if dir := os.Getenv("C8S_DEV_KUBE_DIR"); dir != "" {
 		newInClusterKubeClientset = func() (kubernetes.Interface, error) { return dirKube(dir), nil }
 	}
