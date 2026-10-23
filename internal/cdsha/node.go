@@ -157,6 +157,10 @@ type Node struct {
 
 	seatsOKAt atomic.Pointer[time.Time] // monotonic time of the last full-seat report (non-voters)
 
+	readOK    atomic.Pointer[barrierMark] // leader: the last read barrier that succeeded
+	barrierMS atomic.Int64                // leader: how long the last successful read barrier took
+	slow      slowLeader                  // leader: slow-leader check state; protected by mu
+
 	// blocked, in tests only, refuses connections to and from addresses as a
 	// network partition would.
 	blocked func(addr string) bool
@@ -173,6 +177,11 @@ type Node struct {
 	pruneAt     time.Time // leader: last history prune check
 	renewAt     time.Time // leader: last mesh CA renewal attempt
 	backupIndex uint64    // leader: applied index of the last stored backup
+	// backupFails counts consecutive backups that failed on a size bound;
+	// the next waits backupDelay. backupErr is the last one, for Status.
+	backupFails int
+	backupSince time.Time
+	backupErr   atomic.Pointer[string]
 	recovery    *ecdsa.PublicKey
 }
 
@@ -204,6 +213,15 @@ type Status struct {
 	// Term is this replica's current Raft term: election churn shows as it
 	// climbing.
 	Term uint64 `json:"term,omitempty"`
+	// ApplyLag is how far this replica's applied index trails the commit
+	// index it knows (read barriers in flight count too); ReadBarrierMS
+	// (leader) is how long its last successful read barrier took.
+	ApplyLag      uint64 `json:"apply_lag,omitempty"`
+	ReadBarrierMS int64  `json:"read_barrier_ms,omitempty"`
+
+	// BackupError (leader) says backups are failing because the state is
+	// over a snapshot size bound: no backup is stored until it shrinks.
+	BackupError string `json:"backup_error,omitempty"`
 }
 
 // NewNode prepares a replica. Every start is a new Raft member: the log
@@ -395,19 +413,36 @@ func (n *Node) Run(ctx context.Context) error {
 	defer n.shutdown()
 	workerCtx, stopWorkers := context.WithCancel(ctx)
 	var workers sync.WaitGroup
-	workers.Add(2)
+	workers.Add(3)
 	go func() { defer workers.Done(); n.watchClock(workerCtx) }()
 	go func() { defer workers.Done(); n.refreshReads(workerCtx) }()
-	// Stop and join read/clock workers before shutdown and caller store close.
+	go func() { defer workers.Done(); n.watchSlowLeader(workerCtx) }()
+	// Stop and join read/clock/slow-leader workers before shutdown and caller store close.
 	defer func() { stopWorkers(); workers.Wait() }()
 	t := time.NewTicker(n.cfg.Timing.Tick)
 	defer t.Stop()
 	var lastEpoch uint64
+	var stuckAt time.Time
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-t.C:
+		}
+		if reason := n.fsm.Stuck(); reason != "" {
+			// A stuck replica serves nothing, and only a restart, which
+			// replays the log from the cluster, brings it back. A transient
+			// fault (a disk that filled and was freed, descriptors exhausted
+			// for a moment) must not take it out for good, and its peer
+			// port stays open, so no TCP liveness check notices. A leader
+			// first hands off leadership (reconcile); return once it has,
+			// or after DeadAfter, so the process exits and is restarted.
+			if stuckAt.IsZero() {
+				stuckAt = time.Now()
+			}
+			if since := time.Since(stuckAt); (!n.leading() && since >= n.cfg.Timing.Lease) || since >= n.cfg.Timing.DeadAfter {
+				return fmt.Errorf("%w: %s", ErrStuck, reason)
+			}
 		}
 		n.renewPeerCert()
 		if !n.member() {
@@ -529,6 +564,11 @@ func (n *Node) handleControl(peer Claims, req controlRequest) controlResponse {
 	if req.Op == ctlJoin {
 		return n.handleJoin(req)
 	}
+	// The forwarding replica checked the cap against its own copy; the
+	// leader's check is the one that holds for every proposer.
+	if err := n.fsm.admitRaw(req.Entry); err != nil {
+		return controlResponse{Member: true, Err: err.Error()}
+	}
 	idx, resp, err := n.applyLocal(req.Entry)
 	var body json.RawMessage
 	if err == nil {
@@ -574,6 +614,9 @@ func (n *Node) propose(e Entry) (json.RawMessage, error) {
 	if !n.fsm.Core().Joined() {
 		return nil, errors.New("cds-ha: this replica has not joined the cluster")
 	}
+	if err := n.fsm.admit(e, len(raw), n.leading()); err != nil {
+		return nil, err
+	}
 	if n.leading() {
 		_, resp, err := n.applyLocal(raw)
 		if err != nil {
@@ -590,6 +633,9 @@ func (n *Node) propose(e Entry) (json.RawMessage, error) {
 		return nil, err
 	}
 	if resp.Err != "" {
+		if err := capacityErr(resp.Err); err != nil {
+			return nil, err
+		}
 		return nil, errors.New("cds-ha: " + resp.Err)
 	}
 	if !n.waitFor(n.cfg.Timing.Apply, func() bool { return n.fsm.AppliedIndex() >= resp.Index }) {
@@ -598,12 +644,29 @@ func (n *Node) propose(e Entry) (json.RawMessage, error) {
 	return resp.Response, nil
 }
 
+// CheckCapacity refuses (ErrCapacity) while the replicated state is at the
+// admission cap, so a handler can refuse a write that would grow it before
+// spending its token: a spent token is a replicated row too. secret says
+// the write would grow the secrets (the snapshot header) rather than the
+// allowlist. It is the cap propose applies, for a write of no size.
+func (n *Node) CheckCapacity(secret bool) error {
+	return n.fsm.capacity(secret, 0, n.r() != nil && n.leading())
+}
+
 // replicate proposes e and decodes the FSM's answer. A failed proposal
-// wraps unavailable, if set, so the store reports the cluster unavailable.
-func replicate[R any](n *Node, e Entry, unavailable error) (R, error) {
+// wraps unavailable, if set, so the store reports the cluster unavailable;
+// one refused by the admission cap wraps full instead (a write the cluster
+// will not take, not one it could not commit).
+func replicate[R any](n *Node, e Entry, unavailable, full error) (R, error) {
 	var res R
 	raw, err := n.propose(e)
 	if err != nil {
+		if errors.Is(err, ErrCapacity) {
+			if full != nil {
+				err = fmt.Errorf("%w: %w", full, err)
+			}
+			return res, err
+		}
 		if unavailable != nil {
 			err = fmt.Errorf("%w: %w", unavailable, err)
 		}
@@ -614,17 +677,17 @@ func replicate[R any](n *Node, e Entry, unavailable error) (R, error) {
 
 // Replicate implements allowlist.Replicator.
 func (n *Node) Replicate(cmd allowlist.Command) (allowlist.Result, error) {
-	return replicate[allowlist.Result](n, Entry{Kind: KindAllowlist, Allowlist: &cmd}, allowlist.ErrUnavailable)
+	return replicate[allowlist.Result](n, Entry{Kind: KindAllowlist, Allowlist: &cmd}, allowlist.ErrUnavailable, allowlist.ErrCapacity)
 }
 
 // ReplicateSecret implements secrets.Replicator.
 func (n *Node) ReplicateSecret(cmd secrets.Command) (secrets.Result, error) {
-	return replicate[secrets.Result](n, Entry{Kind: KindSecret, Secret: &cmd}, secrets.ErrUnavailable)
+	return replicate[secrets.Result](n, Entry{Kind: KindSecret, Secret: &cmd}, secrets.ErrUnavailable, secrets.ErrCapacity)
 }
 
 // ReplicateBinding implements sandboxledger.Replicator.
 func (n *Node) ReplicateBinding(cmd sandboxledger.Command) (bool, error) {
-	return replicate[bool](n, Entry{Kind: KindBinding, Binding: &cmd}, nil)
+	return replicate[bool](n, Entry{Kind: KindBinding, Binding: &cmd}, nil, nil)
 }
 
 // readCertificate is a quorum-confirmed watermark applied on this replica.
@@ -656,7 +719,8 @@ func (n *Node) readBarrier(r *raft.Raft, timeout time.Duration) (uint64, error) 
 	if r == nil || r != n.r() || n.stoppingReads.Load() == r {
 		return 0, errors.New("cds-ha: read instance stopping or replaced")
 	}
-	deadline := time.Now().Add(timeout)
+	start := time.Now()
+	deadline := start.Add(timeout)
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	// Keep the token until the Raft future actually completes, not merely
@@ -688,6 +752,11 @@ func (n *Node) readBarrier(r *raft.Raft, timeout time.Duration) (uint64, error) 
 		currentLeader, currentID := r.LeaderWithID()
 		if err == nil && (r != n.r() || n.stoppingReads.Load() == r || r.State() != raft.Leader || r.CurrentTerm() != term || currentLeader != leader || currentID != id || n.fsm.Stuck() != "") {
 			err = errors.New("cds-ha: read leader or state changed")
+		}
+		if err == nil {
+			// Certificates from this barrier date from before start.
+			n.readOK.Store(&barrierMark{raft: r, term: term, start: start})
+			n.barrierMS.Store(time.Since(start).Milliseconds())
 		}
 		done <- result{index: n.fsm.AppliedIndex(), err: err}
 	}()
@@ -829,6 +898,10 @@ func (n *Node) Serving() bool {
 	return n.validReadCertificate(cert) && n.fsm.AppliedIndex() >= cert.index
 }
 
+// ErrStuck ends Run: this replica stopped following the log (see FSM.stop)
+// and must be restarted to rejoin with the cluster's state.
+var ErrStuck = errors.New("cds-ha: replica stopped following the log; restart to rejoin")
+
 // ErrNotServing means the replica cannot currently admit a mesh CA read.
 // Callers must not use a cached CA to bypass this refusal.
 var ErrNotServing = errors.New("cds-ha: replica is not serving (not joined, not pinned, or not fresh)")
@@ -856,6 +929,9 @@ func (n *Node) Status() Status {
 	st := Status{ClusterID: n.cfg.ClusterID, NodeName: n.cfg.NodeName, ID: string(n.id), Joined: core.Joined(),
 		Epoch: core.Epoch, Measurement: n.measurement, AppliedIndex: n.fsm.AppliedIndex(),
 		Format: core.format(), Reads: n.fsm.readable, Stuck: n.fsm.Stuck(), Seats: n.seats()}
+	if p := n.backupErr.Load(); p != nil && n.r() != nil && n.leading() {
+		st.BackupError = *p
+	}
 	if core.Joined() {
 		st.CAFingerprint = certutil.CertFingerprint(core.RootCert)
 	}
@@ -865,6 +941,9 @@ func (n *Node) Status() Status {
 	st.State = n.r().State().String()
 	st.Term = n.r().CurrentTerm()
 	st.Serving = n.Serving()
+	if c := n.r().CommitIndex(); c > st.AppliedIndex {
+		st.ApplyLag = c - st.AppliedIndex
+	}
 	st.Leader = n.leaderHostPort()
 	if lc := n.r().LastContact(); !lc.IsZero() {
 		st.LastContactMS = time.Since(lc).Milliseconds()
@@ -878,6 +957,7 @@ func (n *Node) Status() Status {
 	}
 	if n.leading() {
 		st.SeatsFilled = n.seatsFilled()
+		st.ReadBarrierMS = n.barrierMS.Load()
 	}
 	return st
 }

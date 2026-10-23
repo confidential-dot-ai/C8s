@@ -29,6 +29,10 @@ type Handler struct {
 	// Full, when set, refuses writes while it returns an error: the store's
 	// volume is too full to take more history (HA: see allowlistFullGuard).
 	Full func() error
+	// Capacity, when set, refuses writes that grow the state (every write
+	// but a DELETE) while it returns an error wrapping ErrCapacity: the HA
+	// state is at its snapshot capacity (cdsha Node.CheckCapacity).
+	Capacity func() error
 }
 
 // WriteAuthorizer authorizes a mutation given the raw request body, so the
@@ -157,6 +161,11 @@ func writeStoreError(w http.ResponseWriter, err error) {
 		httputil.WriteUnavailable(w, ErrUnavailable)
 		return
 	}
+	if errors.Is(err, ErrCapacity) {
+		slog.Warn("allowlist write refused: the replicated state is at its snapshot capacity", "err", err)
+		http.Error(w, err.Error(), http.StatusInsufficientStorage)
+		return
+	}
 	if storeFull(err) {
 		// The history keeps every document, so a store on a size-limited
 		// volume fills up; writes then fail until the operator acts.
@@ -185,6 +194,14 @@ func (h Handler) authorize(w http.ResponseWriter, r *http.Request) ([]byte, bool
 			return nil, false
 		}
 	}
+	if h.Capacity != nil && r.Method != http.MethodDelete {
+		// Also before the token is spent: a spent token is a replicated row,
+		// so refusing only after it would grow the state with every retry.
+		if err := h.Capacity(); err != nil {
+			writeStoreError(w, err)
+			return nil, false
+		}
+	}
 	cap := h.MaxWriteBodyBytes
 	if cap <= 0 {
 		cap = DefaultMaxWriteBodyBytes
@@ -206,7 +223,7 @@ func (a WriteAuthorizer) ReadAuthorized(w http.ResponseWriter, r *http.Request, 
 	}
 	if err := a(r, body); err != nil {
 		slog.Warn("write rejected", "method", r.Method, "path", r.URL.Path, "remote", r.RemoteAddr, "reason", err)
-		if errors.Is(err, ErrUnavailable) || storeFull(err) {
+		if errors.Is(err, ErrUnavailable) || errors.Is(err, ErrCapacity) || storeFull(err) {
 			// Spending the token is a write too; that failing is not a bad key.
 			writeStoreError(w, err)
 			return nil, false

@@ -3,8 +3,11 @@
 package cdsha_test
 
 import (
+	"context"
 	"math/rand/v2"
+	"net/http"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,7 +22,12 @@ type scenario struct {
 	writers              int
 	productionRaftTiming bool // RTT availability scenarios use the deployed election/lease margin
 	pause                time.Duration
-	run                  func(t *testing.T, c *Cluster, k *Checker)
+	args                 []string // extra replica flags
+	// capacityRefusals: the scenario drives the state to the HA admission
+	// cap, so a 507 naming the snapshot capacity is an expected, definite
+	// refusal there (counted, not bad5xx). Everywhere else it stays bad5xx.
+	capacityRefusals bool
+	run              func(t *testing.T, c *Cluster, k *Checker)
 }
 
 func runScenarios(t *testing.T, list []scenario) {
@@ -32,7 +40,7 @@ func runScenarios(t *testing.T, list []scenario) {
 			if sc.productionRaftTiming {
 				heartbeat, election = cdsha.DefaultTiming.Heartbeat, cdsha.DefaultTiming.Election
 			}
-			c := newClusterWithRaftTiming(t, heartbeat, election)
+			c := newClusterWithRaftTiming(t, heartbeat, election, sc.args...)
 			c.WaitVoters(seats, 30*time.Second)
 			if sc.writers == 0 {
 				sc.writers = 4
@@ -41,6 +49,7 @@ func runScenarios(t *testing.T, list []scenario) {
 				sc.pause = 20 * time.Millisecond
 			}
 			k := NewChecker(c, sc.writers, sc.pause)
+			k.capacityOK = sc.capacityRefusals
 			k.Start()
 			time.Sleep(time.Second)
 			start := time.Now()
@@ -252,7 +261,14 @@ func TestProcessFaults(t *testing.T) {
 			c.WaitAllServing(60 * time.Second)
 			c.WaitVoters(3, 60*time.Second)
 		}},
-		{name: "B5-repeated-leader-kills-during-write-burst", short: true, writers: 32, pause: time.Millisecond, run: func(t *testing.T, c *Cluster, _ *Checker) {
+		// B5 tests leader kills under a write burst, not capacity: 32 writers
+		// with the harness's unbounded history grow the state past what a
+		// snapshot holds within about a minute, and the admission cap would
+		// then refuse writes (507). Bound the history as a deployment does
+		// (TestBigState uses 64Mi; B5 writes faster between the leader's
+		// prunes, so half that) to keep it a leader-kill test. The cap
+		// itself is CAP1's.
+		{name: "B5-repeated-leader-kills-during-write-burst", short: true, writers: 32, pause: time.Millisecond, args: []string{"--allowlist-history-bytes", "32Mi"}, run: func(t *testing.T, c *Cluster, _ *Checker) {
 			kills := 6
 			if testing.Short() {
 				kills = 3
@@ -296,8 +312,56 @@ func TestProcessFaults(t *testing.T) {
 
 func TestLoad(t *testing.T) {
 	runScenarios(t, []scenario{
-		{name: "C1-write-storm", writers: 50, pause: time.Millisecond, run: func(t *testing.T, _ *Cluster, _ *Checker) {
+		// C1 tests throughput and safety under 50 writers, not capacity: with
+		// the harness's unbounded history they grow the state to the
+		// admission cap within a minute, and every write after is refused
+		// (507). Bound the history as a deployment does (like B5); the cap
+		// itself is TestCapacity's.
+		{name: "C1-write-storm", writers: 50, pause: time.Millisecond, args: []string{"--allowlist-history-bytes", "32Mi"}, run: func(t *testing.T, _ *Cluster, _ *Checker) {
 			hold(60 * time.Second)
+		}},
+	})
+}
+
+// TestCapacity drives the state to the HA admission cap (75% of what a
+// snapshot holds) with the harness's unbounded history, as B5 did before
+// the cap existed (backups then failed every second and leaders stepped
+// down). At the cap the cluster must refuse growth with 507 naming the
+// snapshot capacity (never 500/503), keep serving reads, keep storing
+// backups, keep its leader, and take shrinking writes.
+func TestCapacity(t *testing.T) {
+	if testing.Short() {
+		t.Skip("not in the -short subset")
+	}
+	runScenarios(t, []scenario{
+		{name: "CAP1-growth-refused-at-snapshot-capacity", writers: 32, pause: time.Millisecond, capacityRefusals: true, run: func(t *testing.T, c *Cluster, k *Checker) {
+			probe := []byte(`{"label":"ghcr.io/it/cap-probe:v1","containers":[{"digest":"sha256:` + strings.Repeat("c", 64) + `","command":{"policy":"any"},"args":{"policy":"any"}}]}`)
+			if r := c.Do(context.Background(), c.WaitLeader(30*time.Second), http.MethodPut, "/allowlist/workloads/cap-probe", probe, true); r.Code != http.StatusNoContent {
+				t.Fatalf("probe entry: %d %s", r.Code, r.Body)
+			}
+			start := time.Now()
+			c.waitFor(5*time.Minute, func() bool { return k.Capacity() > 0 }, func() string { return "no capacity refusal yet: " + c.StatusAll() })
+			c.Logf("cap reached after %s", time.Since(start).Round(time.Second))
+			l := c.WaitLeader(30 * time.Second)
+			lst, _ := c.Status(l)
+			hold(20 * time.Second) // writers keep pressing at the cap
+			// The same leader, still serving, and every replica serves.
+			if now, ok := c.Status(l); !ok || now.State != "Leader" || !now.Serving {
+				t.Errorf("leader %s lost its lease at the cap: %+v (was %+v)", c.Replicas[l].Node, now, lst)
+			}
+			c.WaitAllServing(30 * time.Second)
+			// Backups keep being stored, and the leader reports no failure.
+			requireFreshBackup(t, c)
+			if st, _ := c.Status(c.WaitLeader(30 * time.Second)); st.BackupError != "" {
+				t.Errorf("backups failing at the cap: %s", st.BackupError)
+			}
+			// A shrinking write is taken at the cap, through any replica.
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			if r := c.Do(ctx, others(c, l)[0], http.MethodDelete, "/allowlist/workloads/cap-probe", nil, true); r.Code != http.StatusNoContent {
+				t.Errorf("delete at the cap: %d %s", r.Code, r.Body)
+			}
+			c.Logf("capacity refusals so far: %d", k.Capacity())
 		}},
 	})
 }

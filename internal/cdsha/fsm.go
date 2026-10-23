@@ -174,6 +174,17 @@ type FSM struct {
 	// met an entry it could not apply, and keeps it from serving.
 	readable uint32
 	stuck    atomic.Pointer[string]
+
+	// applyDelay is a test seam (set only from tests, zero otherwise): it
+	// slows every command apply, as a slow local disk does.
+	applyDelay atomic.Int64
+
+	// base caches the header size of core and decrees for the admission
+	// cap (snapshotEstimate); f.mu guards it.
+	base headerBase
+	// measure is the last snapshot this replica encoded, for the admission
+	// cap's compressed estimate.
+	measure atomic.Pointer[sizeMeasure]
 }
 
 // NewFSM builds the state machine over the replica's local stores. pre is
@@ -213,6 +224,9 @@ func (f *FSM) Apply(l *raft.Log) any {
 	if l.Type != raft.LogCommand {
 		return nil
 	}
+	if d := f.applyDelay.Load(); d > 0 {
+		time.Sleep(time.Duration(d))
+	}
 	var e Entry
 	if err := json.Unmarshal(l.Data, &e); err != nil {
 		return f.stop(fmt.Errorf("decode log entry %d: %w", l.Index, err))
@@ -242,7 +256,7 @@ var errMalformed = errors.New("malformed log entry")
 func (f *FSM) stop(err error) error {
 	msg := err.Error()
 	if f.stuck.CompareAndSwap(nil, &msg) {
-		slog.Error("cds-ha: this replica can no longer follow the log; it stops serving until replaced or restarted", "reason", msg)
+		slog.Error("cds-ha: this replica can no longer follow the log; it stops serving and exits to rejoin", "reason", msg)
 	}
 	return err
 }
@@ -469,7 +483,12 @@ func (f *FSM) Snapshot() (raft.FSMSnapshot, error) {
 		return nil, err
 	}
 	sn.Allowlist, sn.Secrets, sn.Bindings = al, f.secrets.Dump(), f.ledger.Dump()
-	return &fsmSnapshot{sn: sn}, nil
+	// Raft calls Snapshot between applies, so the estimate is of this state.
+	decoded := int64(-1)
+	if header, image, err := f.snapshotEstimate(); err == nil {
+		decoded = header + image
+	}
+	return &fsmSnapshot{sn: sn, fsm: f, decoded: decoded}, nil
 }
 
 // Restore implements raft.FSM: a joining replica takes the leader's state.
@@ -508,7 +527,7 @@ func encodeSnapshot(w io.Writer, sn snapshot) error {
 		return err
 	}
 	if len(header)+1 > maxSnapshotHeader || len(sn.Allowlist) > maxSnapshotImage {
-		return errors.New("snapshot exceeds supported decoded size")
+		return errSnapshotTooLarge
 	}
 	zw, err := zstd.NewWriter(&snapshotLimitWriter{w: w, remaining: MaxSnapshotBytes}, zstd.WithWindowSize(snapshotWindow), zstd.WithEncoderConcurrency(1))
 	if err != nil {
@@ -523,6 +542,9 @@ func encodeSnapshot(w io.Writer, sn snapshot) error {
 	}
 	return zw.Close()
 }
+
+// errSnapshotTooLarge is a state too large to snapshot (see admitTotalBytes).
+var errSnapshotTooLarge = errors.New("snapshot exceeds supported decoded size")
 
 // snapshotWindow is the zstd window of a snapshot: enough to reach
 // the previous version of allowlist documents of several MiB, small enough
@@ -613,12 +635,22 @@ func (f *FSM) restore(sn snapshot) error {
 	return nil
 }
 
-type fsmSnapshot struct{ sn snapshot }
+type fsmSnapshot struct {
+	sn snapshot
+	// fsm and decoded (its estimate of this state, or -1) record the
+	// compressed size once encoded, for the admission cap.
+	fsm     *FSM
+	decoded int64
+}
 
 func (s *fsmSnapshot) Persist(sink raft.SnapshotSink) error {
-	if err := encodeSnapshot(sink, s.sn); err != nil {
+	cw := &countWriter{w: sink}
+	if err := encodeSnapshot(cw, s.sn); err != nil {
 		_ = sink.Cancel()
 		return err
+	}
+	if s.fsm != nil && s.decoded >= 0 {
+		s.fsm.measure.Store(&sizeMeasure{decoded: s.decoded, compressed: cw.n})
 	}
 	return sink.Close()
 }
