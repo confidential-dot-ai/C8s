@@ -162,6 +162,10 @@ func renderNodeImage(ctx context.Context, cfg nodeImageRenderConfig) error {
 		// Always on: the value is part of the measured image, and
 		// c8s verify --operator-keys reads the publication.
 		"--set", "router.routePublication.enabled=true",
+		// A platform add-on whose Service address the measured mesh policy
+		// names as every member pod's exit (image-policy.yaml.in mesh.exits).
+		"--set", "kubeStateMetrics.enabled=true",
+		"--set-string", "kubeStateMetrics.image.pullPolicy=Never",
 	)
 	for _, input := range cfg.images() {
 		args = append(args, "--set-string", input.valuePath+".pullPolicy=Never")
@@ -251,6 +255,7 @@ func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
 		"Deployment/c8s-operator": false,
 		"Deployment/c8s-cds":      false,
 		"Deployment/c8s-router":   false,
+		kubeStateMetricsKey:       false,
 		// The namespace the measured mesh policy names for the router role.
 		"Namespace/" + workloadclaims.RouterNamespace:                    false,
 		"CustomResourceDefinition/confidentialworkloads.confidential.ai": false,
@@ -375,14 +380,21 @@ func seedContainers(seed *pkgallowlist.Allowlist) map[string][]pkgallowlist.Cont
 // resources, whose pods serve the router role's ports from the namespace the
 // measured mesh policy names.
 var nodeImageResourceNamespaces = map[string]string{
-	"Deployment/c8s-operator":          nodeImageNamespace,
-	"Deployment/c8s-cds":               nodeImageNamespace,
-	"ConfigMap/c8s-cds-allowlist-seed": nodeImageNamespace,
-	routerWorkloadKey:                  workloadclaims.RouterNamespace,
-	"Service/c8s-router":               workloadclaims.RouterNamespace,
-	"ConfigMap/c8s-router-nginx":       workloadclaims.RouterNamespace,
-	"NetworkPolicy/c8s-router-ingress": workloadclaims.RouterNamespace,
+	"Deployment/c8s-operator":           nodeImageNamespace,
+	"Deployment/c8s-cds":                nodeImageNamespace,
+	"ConfigMap/c8s-cds-allowlist-seed":  nodeImageNamespace,
+	routerWorkloadKey:                   workloadclaims.RouterNamespace,
+	"Service/c8s-router":                workloadclaims.RouterNamespace,
+	"ConfigMap/c8s-router-nginx":        workloadclaims.RouterNamespace,
+	"NetworkPolicy/c8s-router-ingress":  workloadclaims.RouterNamespace,
+	kubeStateMetricsKey:                 "kube-system",
+	"Service/kube-state-metrics":        "kube-system",
+	"ServiceAccount/kube-state-metrics": "kube-system",
 }
+
+// kubeStateMetricsKey is the platform add-on that runs beside the RKE2
+// system components, outside the mesh.
+const kubeStateMetricsKey = "Deployment/kube-state-metrics"
 
 // requireNodeImageNamespace rejects a namespaced resource the chart placed
 // anywhere but its own namespace, and a cluster-scoped kind carrying a
