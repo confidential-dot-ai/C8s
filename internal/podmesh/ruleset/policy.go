@@ -1,15 +1,19 @@
 //go:build linux
 
 // Package ruleset builds, installs and verifies the nftables ruleset that
-// protects one mesh member pod.
+// protects mesh member and standalone Pods.
 //
-// The ruleset comes from trusted policy alone and carries no pod address, so
+// The node-member ruleset comes from trusted policy alone and carries no pod address, so
 // one expected ruleset covers every member pod on a node: a host-side caller
 // holding the pod's network namespace path installs it before any container of
 // that pod runs. Application TCP is redirected to the pod's own mesh
 // listeners; everything else is denied in both directions, apart from
 // loopback, pod-local addresses, neighbour discovery, the resolver trusted
 // policy names, and the destinations each platform role is bound to.
+//
+// Standalone Pods capture exact signed peer TCP tuples and admit other
+// IPv4 TCP/UDP egress. Guest rules route and masquerade that egress while
+// excluding guest-local services and IPv4 link-local destinations.
 package ruleset
 
 import (
@@ -43,8 +47,9 @@ type Policy struct {
 	// ports and its egress identity's ports pass the pod boundary in the
 	// clear.
 	Server ServerRole
-	// Pod restricts a standalone Pod to signed peer tuples, with no node-role
-	// or resolver exceptions. Nil preserves the cluster member policy.
+	// Pod captures signed peer tuples while permitting other IPv4 TCP/UDP
+	// egress. The guest denies its own services and IPv4 link-local.
+	// Nil preserves the cluster member policy.
 	Pod *PodPolicy
 }
 

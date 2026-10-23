@@ -74,6 +74,7 @@ func captureInbound(p Policy) chain {
 // listener. Pod-local destinations, queries to an approved resolver and
 // platform-role sockets stay uncaptured; the resolver port elsewhere is
 // captured like every other destination.
+// Standalone Pods instead capture only their signed peer TCP tuples.
 func captureOutbound(p Policy) chain {
 	rules := []rule{
 		{"pod-local", withVerdict(matchLocalDestination(), expr.VerdictReturn)},
@@ -119,13 +120,22 @@ func filterInput(p Policy) chain {
 // destination it is bound to. No member pod process runs as root, so a
 // root-owned socket here entered the namespace from outside, as port-forward
 // does.
+// Standalone Pods additionally admit ordinary IPv4 TCP/UDP egress.
 func filterOutput(p Policy) chain {
 	if p.Pod != nil {
 		rules := slices.Concat([]rule{
 			{"namespace-entrant", withVerdict(matchSocketUID(0), expr.VerdictDrop)},
+			{"deny-link-local", withVerdict(matchDestinationRange(netip.MustParsePrefix("169.254.0.0/16")), expr.VerdictDrop)},
 		}, listenerOwnerRules(p), replyAndControlRules(), []rule{
 			{"pod-local", withVerdict(matchLocalDestination(), expr.VerdictAccept)},
-		}, roleDestinationRules(Role{UID: p.MeshUID, Destinations: p.Pod.Peers}))
+		})
+		// Signed peer TCP has already been captured. The endpoint's socket
+		// carries it over armTLS; every other IPv4 TCP/UDP flow is ordinary
+		// egress. The guest independently denies its own local services.
+		for _, protocol := range []uint8{unix.IPPROTO_TCP, unix.IPPROTO_UDP} {
+			match := slices.Concat([]expr.Any{meta(expr.MetaKeyNFPROTO), compare([]byte{unix.NFPROTO_IPV4})}, matchProtocol(protocol))
+			rules = append(rules, rule{fmt.Sprintf("pod-egress-%d", protocol), withVerdict(match, expr.VerdictAccept)})
+		}
 		return denyChain("filter-output", *nftables.ChainHookOutput, rules)
 	}
 	resolverUDP := fmt.Sprintf("resolver-%s-udp", p.Resolver)

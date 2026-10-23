@@ -381,6 +381,13 @@ not current liveness or exclusive assignment. This path creates no node inventor
 binding and does not enable the existing secret-release protocol. See
 [operator setup](operator.md) for Pod trust, peer destinations and probe handling.
 
+Standalone Pod CVMs capture only the signed IPv4 TCP peer tuples. Other IPv4
+TCP/UDP traffic, including DNS to the guest's upstream resolvers, leaves with
+the CVM's source address. A peer authentication failure cannot turn that tuple
+into ordinary egress. Pod and guest rules exclude IPv4 link-local and prevent
+container-initiated access to guest-local services, including from the measured
+endpoint. Node-member Pod routing uses its existing cluster policy.
+
 ## What armTLS guarantees — and what it does not
 
 Direct evidence verification against a pinned policy establishes the claims
