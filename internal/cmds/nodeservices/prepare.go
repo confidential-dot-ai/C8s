@@ -384,9 +384,6 @@ func readPolicy(path, platform string, wantImages int) ([]byte, error) {
 	return data, nil
 }
 
-// policyMatchesPlatform reports whether the policy targets the booted TEE
-// family and pins the number of images the role permits: at least one, and
-// exactly one when the policy is server-only.
 // policyMatchesPlatform checks the family and, when wantImages > 0, that
 // the policy holds exactly that many image pins.
 func policyMatchesPlatform(pins refvalues.ReferenceValues, platform string, wantImages int) bool {
@@ -485,9 +482,6 @@ type CDSHAConfig struct {
 // server's operator key and allowlist seed (as on the server; CDS serves the
 // same policy), the TLS SAN, and the HA configuration.
 func cdsOutputs(d *launchconfig.Document, bakedData []byte) (map[string][]byte, error) {
-	if d.CDSHA == nil {
-		return nil, fmt.Errorf("cds role without cdsHA")
-	}
 	pub := []byte(d.Server.OperatorPublicKey)
 	if _, err := operatorauth.ParsePublicKeysPEM(pub); err != nil {
 		return nil, fmt.Errorf("staged server operator key: %w", err)
