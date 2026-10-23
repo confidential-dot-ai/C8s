@@ -108,7 +108,9 @@ func TestSpentTokensArePruned(t *testing.T) {
 	if n := len(spent(t, s)); n != 3 {
 		t.Fatalf("refused token recorded: %d rows", n)
 	}
-	// An earlier iat does not lower the bar.
+	// A token issued before the newest is still accepted, and does not prune
+	// the newest. (No row can hold an exp below the watermark less the
+	// margin, so max(watermark, iat) and iat prune alike; see consumeToken.)
 	if err := s.ConsumeToken(tokenAt(t0+60+1, "behind")); err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +120,7 @@ func TestSpentTokensArePruned(t *testing.T) {
 }
 
 // Records without a window (an earlier release, a group below cdsha.Format
-// 3, or a token whose claims do not parse) are kept; such tokens prune
+// 2, or a token whose claims do not parse) are kept; such tokens prune
 // nothing and do not panic.
 func TestSpentTokensWithoutWindowAreKept(t *testing.T) {
 	s := openJournaled(t)

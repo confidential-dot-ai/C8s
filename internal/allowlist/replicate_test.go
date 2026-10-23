@@ -181,3 +181,23 @@ func TestReplicatedWholeDocumentAndMalformed(t *testing.T) {
 		t.Fatal("a bare sentinel must come back as itself")
 	}
 }
+
+func TestSnapshotUnmarshalRejectsBadCells(t *testing.T) {
+	var sn Snapshot
+	for name, raw := range map[string]string{
+		"not JSON":          `{`,
+		"fractional number": `{"t":[{"c":{"v":1.5}}]}`,
+		"not a scalar":      `{"t":[{"c":{"v":{"x":1}}}]}`,
+	} {
+		if err := sn.UnmarshalJSON([]byte(raw)); err == nil {
+			t.Errorf("%s accepted", name)
+		}
+	}
+	if err := sn.UnmarshalJSON([]byte(`{"t":[{"c":{},"d":{"v":"s"},"e":{"v":7}}]}`)); err != nil {
+		t.Fatal(err)
+	}
+	row := sn["t"][0]
+	if row["c"] != nil || row["d"] != "s" || row["e"] != int64(7) {
+		t.Fatalf("row %#v", row)
+	}
+}
