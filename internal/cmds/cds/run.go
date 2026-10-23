@@ -258,7 +258,7 @@ func run(cfg config) error {
 		case haNode != nil:
 			// Spent tokens are replicated and outlive any replica; only tokens
 			// from before the cluster was born could have been spent unseen.
-			started = haGenesis(haNode)
+			started = time.UnixMilli(haNode.Core().GenesisAtMS)
 		case !cfg.allowlistPersistent:
 			started = time.Now()
 		}

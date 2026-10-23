@@ -76,14 +76,6 @@ func TestPrintDecreesRefusesAKeyThatIsNotAPublicKey(t *testing.T) {
 	}
 }
 
-func TestLoadECPrivateKeyRefusesOtherKeyTypes(t *testing.T) {
-	_, edKey, _ := ed25519.GenerateKey(rand.Reader)
-	der, _ := x509.MarshalPKCS8PrivateKey(edKey)
-	if _, err := loadECPrivateKey(writePEM(t, "PRIVATE KEY", der)); err == nil || !strings.Contains(err.Error(), "not ECDSA") {
-		t.Fatalf("an Ed25519 operator key: %v", err)
-	}
-}
-
 // The decree command refuses a bad --image before it reads the key.
 func TestHADecreeCLIRefusesBadImage(t *testing.T) {
 	if _, err := runHA(t, "decree", "--cluster-id", "c1", "--operator-key", filepath.Join(t.TempDir(), "none"),

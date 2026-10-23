@@ -2,7 +2,6 @@ package cds
 
 import (
 	"context"
-	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/hkdf"
 	"crypto/sha256"
@@ -29,6 +28,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/sandboxledger"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
+	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
 // allowPlainHTTP is true only in c8s_dev builds (plainhttp_dev.go), where CDS
@@ -333,18 +333,14 @@ func loadHAOperatorKey(path string, raw []byte) ([]byte, error) {
 			return nil, fmt.Errorf("--ha-operator-key: %w", err)
 		}
 	}
-	block, _ := pem.Decode(raw)
-	if block == nil {
-		return nil, errors.New("--ha-operator-key: no PEM block")
-	}
-	pub, err := x509.ParsePKIXPublicKey(block.Bytes)
+	keys, err := operatorauth.ParsePublicKeysPEM(raw)
 	if err != nil {
 		return nil, fmt.Errorf("--ha-operator-key: %w", err)
 	}
-	if k, ok := pub.(*ecdsa.PublicKey); !ok || k.Curve != elliptic.P256() {
-		return nil, errors.New("--ha-operator-key: want an ECDSA P-256 public key")
+	if len(keys) != 1 || keys[0].Curve != elliptic.P256() {
+		return nil, errors.New("--ha-operator-key: want one ECDSA P-256 public key")
 	}
-	return block.Bytes, nil
+	return x509.MarshalPKIXPublicKey(keys[0])
 }
 
 // followMeshCA makes client-certificate verification (the /secrets leaf
@@ -395,7 +391,7 @@ func haStatus(node *cdsha.Node) http.HandlerFunc {
 // they can trust any replica, and check the operator's signature themselves.
 func haPins(node *cdsha.Node) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
-		sd := node.PinsDecree()
+		sd := node.Core().PinsDecree
 		if sd == nil {
 			http.Error(w, "cds-ha: the pin set came from Genesis; the launch document's is current", http.StatusNotFound)
 			return
@@ -536,9 +532,4 @@ func restoreServer(cfg config) func(*cdsha.Node) func() {
 			<-done
 		}
 	}
-}
-
-// haGenesis is when the cluster was born: the cutoff for single-use tokens.
-func haGenesis(node *cdsha.Node) time.Time {
-	return time.UnixMilli(node.Core().GenesisAtMS)
 }
