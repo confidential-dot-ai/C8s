@@ -328,7 +328,8 @@ func collectNodeImageArtifacts(rendered []byte, components map[string]bool) (*no
 			if _, expected := required[key]; !expected && !optional[key] {
 				return nil, fmt.Errorf("unexpected node-image workload %s", key)
 			}
-			if err := collectWorkloadImages(object, key, images); err != nil {
+			containers, err := collectWorkloadImages(object, key, images)
+			if err != nil {
 				return nil, err
 			}
 			if key == "Deployment/c8s-operator" {
@@ -348,10 +349,6 @@ func collectNodeImageArtifacts(rendered []byte, components map[string]bool) (*no
 				artifacts.routerImage = image
 			}
 			if kind == "DaemonSet" {
-				containers, err := podContainers(object, key)
-				if err != nil {
-					return nil, err
-				}
 				cdsNode = append(cdsNode, containers...)
 				// Every node must run the components its own measured
 				// image carries, not the server image's.
@@ -470,31 +467,6 @@ func cdsFlavour(object unstructured.Unstructured) string {
 		return "ha"
 	}
 	return ""
-}
-
-// podContainers lists a workload's containers with their pinned digests.
-func podContainers(object unstructured.Unstructured, key string) ([]cdsFloorContainer, error) {
-	pod, _, err := unstructured.NestedMap(object.Object, "spec", "template", "spec")
-	if err != nil {
-		return nil, fmt.Errorf("node-image workload %s: %w", key, err)
-	}
-	var spec corev1.PodSpec
-	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(pod, &spec); err != nil {
-		return nil, fmt.Errorf("decode node-image workload %s: %w", key, err)
-	}
-	var out []cdsFloorContainer
-	for _, c := range append(spec.InitContainers, spec.Containers...) {
-		ref, err := reference.ParseDockerRef(c.Image)
-		if err != nil {
-			return nil, err
-		}
-		pinned, ok := ref.(reference.Canonical)
-		if !ok {
-			return nil, fmt.Errorf("node-image workload %s container %q is not digest-pinned", key, c.Name)
-		}
-		out = append(out, cdsFloorContainer{key: key, container: c, digest: pinned.Digest().String()})
-	}
-	return out, nil
 }
 
 // buildCDSFloor derives the cds-role NRI floor from the seed. DaemonSet
@@ -879,39 +851,41 @@ func frontDoorImage(object unstructured.Unstructured) (string, error) {
 const frontDoorContainerName = "nginx"
 
 // collectWorkloadImages records every container image a baked workload runs,
-// keyed by reference. The rootfs preloads exactly these, so an unpinned or
+// keyed by reference, and returns the workload's containers with their
+// digests. The rootfs preloads exactly these images, so an unpinned or
 // tag-only image would leave the node pulling at boot: reject it here.
-func collectWorkloadImages(object unstructured.Unstructured, key string, images map[string]*bakedImage) error {
+func collectWorkloadImages(object unstructured.Unstructured, key string, images map[string]*bakedImage) ([]cdsFloorContainer, error) {
 	pod, found, err := unstructured.NestedMap(object.Object, "spec", "template", "spec")
 	if err != nil || !found {
-		return fmt.Errorf("node-image workload %s lacks a valid pod spec", key)
+		return nil, fmt.Errorf("node-image workload %s lacks a valid pod spec", key)
 	}
 	var spec corev1.PodSpec
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(pod, &spec); err != nil {
-		return fmt.Errorf("decode node-image workload %s: %w", key, err)
+		return nil, fmt.Errorf("decode node-image workload %s: %w", key, err)
 	}
 	if len(spec.Containers) == 0 || len(spec.EphemeralContainers) != 0 {
-		return fmt.Errorf("node-image workload %s requires containers and no ephemeral containers", key)
+		return nil, fmt.Errorf("node-image workload %s requires containers and no ephemeral containers", key)
 	}
 	volumes := make(map[string]corev1.Volume, len(spec.Volumes))
 	for _, v := range spec.Volumes {
 		volumes[v.Name] = v
 	}
+	var out []cdsFloorContainer
 	for _, c := range append(spec.InitContainers, spec.Containers...) {
 		baked, err := recordPinnedImage(c.Image, key, c.Name, images)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if err := collectInjectedImages(c, key, images); err != nil {
-			return err
+			return nil, err
 		}
 		command, err := kubeletArgv(c.Command)
 		if err != nil {
-			return fmt.Errorf("node-image workload %s container %q command: %w", key, c.Name, err)
+			return nil, fmt.Errorf("node-image workload %s container %q command: %w", key, c.Name, err)
 		}
 		args, err := kubeletArgv(c.Args)
 		if err != nil {
-			return fmt.Errorf("node-image workload %s container %q args: %w", key, c.Name, err)
+			return nil, fmt.Errorf("node-image workload %s container %q args: %w", key, c.Name, err)
 		}
 		k := bakedContainer{name: c.Name, command: command, args: args, envFrom: len(c.EnvFrom) > 0, serviceLinks: spec.EnableServiceLinks == nil || *spec.EnableServiceLinks}
 		for _, e := range c.Env {
@@ -920,13 +894,14 @@ func collectWorkloadImages(object unstructured.Unstructured, key string, images 
 		for _, m := range c.VolumeMounts {
 			rule, err := mountRule(m, volumes)
 			if err != nil {
-				return fmt.Errorf("node-image workload %s container %q: %w", key, c.Name, err)
+				return nil, fmt.Errorf("node-image workload %s container %q: %w", key, c.Name, err)
 			}
 			k.mounts = append(k.mounts, rule)
 		}
 		baked.containers = append(baked.containers, k)
+		out = append(out, cdsFloorContainer{key: key, container: c, digest: baked.digest})
 	}
-	return nil
+	return out, nil
 }
 
 // kubeletArgv is the argv the kubelet hands the runtime for a manifest's
@@ -1068,10 +1043,10 @@ func (cfg nodeImageRenderConfig) componentDigests() map[string]bool {
 func localizeDaemonSet(object *unstructured.Unstructured, components map[string]bool, names map[string]string) error {
 	for _, field := range []string{"initContainers", "containers"} {
 		list, found, err := unstructured.NestedSlice(object.Object, "spec", "template", "spec", field)
-		if err != nil || !found {
-			if err != nil {
-				return err
-			}
+		if err != nil {
+			return err
+		}
+		if !found {
 			continue
 		}
 		for i, item := range list {
@@ -1080,15 +1055,13 @@ func localizeDaemonSet(object *unstructured.Unstructured, components map[string]
 				return fmt.Errorf("%s[%d] is not an object", field, i)
 			}
 			image, _ := c["image"].(string)
-			ref, err := reference.ParseDockerRef(image)
+			local, ok, err := localName(image, components)
 			if err != nil {
 				return err
 			}
-			pinned, ok := ref.(reference.Canonical)
-			if !ok || !components[pinned.Digest().String()] {
+			if !ok {
 				continue
 			}
-			local := reference.TrimNamed(ref).Name() + ":" + nodeLocalTag
 			if prev, dup := names[image]; dup && prev != local {
 				return fmt.Errorf("image %s has two local names", image)
 			}
@@ -1131,15 +1104,13 @@ func localizeInjectedImages(object *unstructured.Unstructured, components map[st
 				if !ok {
 					continue
 				}
-				ref, err := reference.ParseDockerRef(image)
+				local, ok, err := localName(image, components)
 				if err != nil {
 					return fmt.Errorf("%s: %w", flag, err)
 				}
-				pinned, ok := ref.(reference.Canonical)
-				if !ok || !components[pinned.Digest().String()] {
+				if !ok {
 					continue
 				}
-				local := reference.TrimNamed(ref).Name() + ":" + nodeLocalTag
 				names[image] = local
 				args[j] = flag + local
 			}
@@ -1150,6 +1121,20 @@ func localizeInjectedImages(object *unstructured.Unstructured, components map[st
 		}
 	}
 	return unstructured.SetNestedSlice(object.Object, list, "spec", "template", "spec", "containers")
+}
+
+// localName is the node-local name of image, and false when image is not
+// one of the build's component images.
+func localName(image string, components map[string]bool) (string, bool, error) {
+	ref, err := reference.ParseDockerRef(image)
+	if err != nil {
+		return "", false, err
+	}
+	pinned, ok := ref.(reference.Canonical)
+	if !ok || !components[pinned.Digest().String()] {
+		return "", false, nil
+	}
+	return reference.TrimNamed(ref).Name() + ":" + nodeLocalTag, true, nil
 }
 
 func localNamesFile(names map[string]string) []byte {
