@@ -381,8 +381,8 @@ func TestNewBundleWithCDSNodes(t *testing.T) {
 		t.Fatalf("server.json must pin the server and the cds launch keys: %+v", policy.Images)
 	}
 	if err := runBundleCmd(t, "new", "--out", dir+"-one", "--cluster-id", "demo", "--image-manifest", writeManifest(t, "tdx"),
-		"--server-address", "10.0.0.10", "--cds-node", "lonely"); err == nil {
-		t.Fatal("one cds node accepted")
+		"--server-address", "10.0.0.10", "--cds-node", "cds-a", "--cds-node", "cds-b"); err == nil {
+		t.Fatal("an even voter set accepted")
 	}
 }
 
@@ -392,7 +392,7 @@ func TestNewBundleWithCDSNodes(t *testing.T) {
 func TestAddCDSNodeOnANewImage(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "bundle")
 	if err := runBundleCmd(t, "new", "--out", dir, "--cluster-id", "demo", "--image-manifest", writeManifest(t, "tdx"),
-		"--server-address", "10.0.0.10", "--cds-node", "demo-cds-1", "--cds-node", "demo-cds-2"); err != nil {
+		"--server-address", "10.0.0.10", "--cds-node", "demo-cds-0", "--cds-node", "demo-cds-1", "--cds-node", "demo-cds-2"); err != nil {
 		t.Fatal(err)
 	}
 	b := filepath.Join(t.TempDir(), "manifest-b.json")
@@ -479,7 +479,7 @@ func TestPeerImagesValidation(t *testing.T) {
 func TestAddNodeWithAPinFloor(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "bundle")
 	if err := runBundleCmd(t, "new", "--out", dir, "--cluster-id", "demo", "--image-manifest", writeManifest(t, "tdx"),
-		"--server-address", "10.0.0.10", "--cds-node", "demo-cds-1", "--cds-node", "demo-cds-2"); err != nil {
+		"--server-address", "10.0.0.10", "--cds-node", "demo-cds-0", "--cds-node", "demo-cds-1", "--cds-node", "demo-cds-2"); err != nil {
 		t.Fatal(err)
 	}
 	for _, cmd := range []string{"add-cds-node", "add-agent"} {
@@ -514,7 +514,7 @@ func TestAddNodeWithAPinFloor(t *testing.T) {
 func TestPeerImagesSharingAMeasurement(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "bundle")
 	if err := runBundleCmd(t, "new", "--out", dir, "--cluster-id", "demo", "--image-manifest", writeManifest(t, "tdx"),
-		"--server-address", "10.0.0.10", "--cds-node", "demo-cds-1", "--cds-node", "demo-cds-2"); err != nil {
+		"--server-address", "10.0.0.10", "--cds-node", "demo-cds-0", "--cds-node", "demo-cds-1", "--cds-node", "demo-cds-2"); err != nil {
 		t.Fatal(err)
 	}
 	doc, _ := readBundleDocument(t, dir, serverDir)

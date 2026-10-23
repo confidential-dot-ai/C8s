@@ -20,6 +20,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
+	"github.com/confidential-dot-ai/c8s/internal/cdsha"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
@@ -84,8 +85,8 @@ func NewBundle(opts BundleOptions) (err error) {
 	if (len(opts.Agents) > 0 || len(opts.CDSNodes) > 0) && opts.ServerAddress == "" {
 		return errors.New("--server-address is required when the bundle has agents or cds nodes: they must be told where the server is")
 	}
-	if len(opts.CDSNodes) == 1 {
-		return errors.New("a highly available CDS needs at least two --cds-node")
+	if n := len(opts.CDSNodes); n > 0 && (n < 3 || n%2 == 0 || n > cdsha.MaxVoters) {
+		return fmt.Errorf("a highly available CDS needs an odd number of --cds-node, 3 to %d (each is a voter)", cdsha.MaxVoters)
 	}
 	image, err := imageFromManifest(opts.ManifestPath, opts.VCPUs)
 	if err != nil {

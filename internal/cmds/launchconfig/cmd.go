@@ -78,7 +78,7 @@ HOST_DATA to SHA-256 of that node's pubkey file. See docs/operator.md,
 	f.StringVar(&opts.ServerName, "server-name", "", "server node name (default <cluster-id>-server)")
 	f.StringVar(&opts.ServerAddress, "server-address", "", "server IPv4 address every node can reach; required with agents, otherwise the server autodetects it")
 	f.StringArrayVar(&opts.Agents, "agent", nil, "agent node name; repeatable")
-	f.StringArrayVar(&opts.CDSNodes, "cds-node", nil, "cds-role node name for a highly available CDS; repeatable, at least two. Generates cds.key (their launch key) and decree.key (signs HA decrees)")
+	f.StringArrayVar(&opts.CDSNodes, "cds-node", nil, "cds-role node name for a highly available CDS; repeatable, an odd number from 3 to 9. Generates cds.key (their launch key) and decree.key (signs HA decrees)")
 	f.StringVar(&opts.TLSSAN, "tls-san", "", "DNS name for the front-door certificate (default c8s.local)")
 	f.StringVar(&opts.WorkloadsPath, "workloads", "", "optional c8s.allowlist/v1 JSON file applied as the initial workload allowlist")
 	f.StringArrayVar(&opts.Router.Hostnames, "router-hostname", nil, "public DNS name the router serves with an ACME certificate; repeatable")
