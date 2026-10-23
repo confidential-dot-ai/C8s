@@ -19,16 +19,15 @@
 # RKE2 pins: bump RKE2_VERSION and the three sha256s together, from
 # sha256sum-amd64.txt at
 #   https://github.com/rancher/rke2/releases/tag/<RKE2_VERSION>
-# then regenerate the system images in image-policy.yaml.in (the bundles are
-# in mkosi.pkgcache/c8s after a build):
-#   go run ./node-guest-image/c8s/systemfloor -write \
-#     -template node-guest-image/c8s/image-policy.yaml.in \
+# then update the system images in image-policy.yaml.in: each entry's image
+# reference and the digest systemfloor reports for it (the bundles are in
+# mkosi.pkgcache/c8s after a build), adding an entry for an image the node
+# now runs as a container:
+#   go run ./node-guest-image/c8s/systemfloor \
 #     -bundle <core bundle> -bundle <cilium bundle> \
 #     -manifest node-guest-image/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/local-path-storage.yaml \
 #     -manifest node-guest-image/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/nvidia-device-plugin.yaml \
-#     -exclude-ref busybox
-# -exclude-ref omits busybox from the node's baked base;
-# the chart supplies its argv-pinned entry through the served allowlist.
+#     node-guest-image/c8s/image-policy.yaml.in
 # rke2's own containerd base template imports config-v3.toml.d/*.toml since
 # v1.36 (k3s b51167a9), which is where the NRI drop-in lives, so this profile
 # bakes no config-v3.toml.tmpl: one that added the import produced a duplicate
