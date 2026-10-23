@@ -119,14 +119,14 @@ func TestSpentTokensArePruned(t *testing.T) {
 	}
 }
 
-// Records without a window (an earlier release, a group below cdsha.Format
-// 2, or a token whose claims do not parse) are kept; such tokens prune
+// Records without a window (a row migrated from a release before token
+// expiry, or a token whose claims do not parse) are kept; such tokens prune
 // nothing and do not panic.
 func TestSpentTokensWithoutWindowAreKept(t *testing.T) {
 	s := openJournaled(t)
 	legacy := tokenAt(t0, "legacy")
-	if r := s.ApplyWith(Command{Op: OpConsumeToken, Token: legacy}, ApplyOptions{}); r.Err != "" {
-		t.Fatal(r.Err)
+	if _, err := s.db.Exec("INSERT INTO used_token (digest) VALUES (?)", tokenDigest(legacy)); err != nil {
+		t.Fatal(err)
 	}
 	old := tokenAt(t0, "old")
 	if err := s.ConsumeToken(old); err != nil {
@@ -201,9 +201,8 @@ func TestSpentTokenPruningIsDeterministic(t *testing.T) {
 	}
 }
 
-// Rows with a window round-trip through Dump, the JSON encoding and Restore;
-// rows without the columns (a snapshot of an earlier release) restore as 0s
-// and are kept; StripTokenExpiry makes such a snapshot.
+// Rows with and without a window round-trip through Dump, the JSON encoding
+// and Restore, and stay spent.
 func TestSpentTokenSnapshotRoundTrip(t *testing.T) {
 	src := openJournaled(t)
 	toks := []string{tokenAt(t0, "a"), tokenAt(t0+30, "b"), "h.p.legacy"}
@@ -233,35 +232,10 @@ func TestSpentTokenSnapshotRoundTrip(t *testing.T) {
 		t.Fatalf("restored %v, want %v", got, want)
 	}
 
-	back.StripTokenExpiry()
-	for _, row := range back["used_token"] {
-		if len(row) != 1 {
-			t.Fatalf("stripped row %v", row)
-		}
-	}
-	old := openJournaled(t)
-	if err := old.Restore(back); err != nil {
-		t.Fatal(err)
-	}
-	got := spent(t, old)
-	if len(got) != len(want) {
-		t.Fatalf("restored %d rows", len(got))
-	}
-	for d, w := range got {
-		if w != [2]int64{} {
-			t.Fatalf("%s restored with %v", d, w)
-		}
-	}
 	for _, tok := range toks {
-		if err := old.ConsumeToken(tok); !errors.Is(err, operatorauth.ErrTokenReused) {
+		if err := dst.ConsumeToken(tok); !errors.Is(err, operatorauth.ErrTokenReused) {
 			t.Fatalf("replay after restore: %v", err)
 		}
-	}
-	if err := old.ConsumeToken(tokenAt(t0+10*margin, "later")); err != nil {
-		t.Fatal(err)
-	}
-	if n := len(spent(t, old)); n != len(want)+1 {
-		t.Fatalf("rows without a window pruned: %d", n)
 	}
 }
 

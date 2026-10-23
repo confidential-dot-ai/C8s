@@ -44,15 +44,11 @@ CREATE TABLE IF NOT EXISTS used_token (
 );
 `
 
-// usedTokenColumns are the used_token columns later releases added, which a
-// database created earlier lacks.
-var usedTokenColumns = []string{"exp_unix", "iat_unix"}
-
-// migrateJournal brings a database created by an earlier release to
-// journalSQL: it adds the used_token columns it lacks (rows it held keep 0,
-// which is never pruned) and their indexes.
+// migrateJournal brings a singleton database created by a release before
+// spent-token expiry to journalSQL: it adds the used_token columns it lacks
+// (rows it held keep 0, which is never pruned) and their indexes.
 func migrateJournal(db *sql.DB) error {
-	for _, c := range usedTokenColumns {
+	for _, c := range []string{"exp_unix", "iat_unix"} {
 		var have bool
 		if err := db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('used_token') WHERE name = ?", c).Scan(&have); err != nil {
 			return err
@@ -274,17 +270,14 @@ const spentTokenMargin = time.Hour
 // operatorauth.ErrTokenReused if it or another encoding of it already did. Stored
 // signatures make write tokens public, so each must authorize one request only.
 //
-// With expiry (every store from cdsha.Format 2; a replicated group of an
-// earlier format leaves it off so it agrees with replicas that predate it),
-// it also records the token's iat and exp and prunes by spentTokenMargin.
+// It also records the token's iat and exp and prunes by spentTokenMargin.
 // A token whose claims do not parse is recorded with 0s and kept, and
-// prunes nothing. Records written without expiry are kept too.
-func (s *Store) consumeToken(token string, expiry bool) error {
+// prunes nothing. Rows a migrated database held (see migrateJournal) are 0s
+// and kept too.
+func (s *Store) consumeToken(token string) error {
 	var iat, exp int64
-	if expiry {
-		if i, e, err := operatorauth.UnverifiedTimes(token); err == nil {
-			iat, exp = i.Unix(), e.Unix()
-		}
+	if i, e, err := operatorauth.UnverifiedTimes(token); err == nil {
+		iat, exp = i.Unix(), e.Unix()
 	}
 	// Key on the signed header.payload: the signature segment has several
 	// encodings that all verify (non-strict base64 padding bits, ECDSA (r, n-s)).

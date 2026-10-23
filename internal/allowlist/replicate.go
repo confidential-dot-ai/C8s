@@ -39,10 +39,7 @@ const (
 	OpConsumeToken   Op = "consume_token"
 	OpReplaceRoutes  Op = "replace_routes"
 	OpStartJournal   Op = "start_journal"
-	// OpPruneHistory keeps the newest Keep entries of the history. A
-	// replica of a release without it would answer an error and keep its
-	// history, so the leader proposes it only in a format every member reads
-	// (cdsha.Format 2).
+	// OpPruneHistory keeps the newest Keep entries of the history.
 	OpPruneHistory Op = "prune_history"
 )
 
@@ -108,23 +105,14 @@ func (r Result) Error() error {
 	}
 }
 
-// ApplyOptions are the behaviors a replicated group turns on only once every
-// member has them, so replicas of two releases apply a command alike.
-type ApplyOptions struct {
-	// TokenExpiry records each spent token's iat and exp and prunes the
-	// records of long-expired ones (see consumeToken); cdsha.Format 2.
-	TokenExpiry bool
-}
-
-// ApplyWith runs one replicated command against the local database. Replicas
-// apply the same commands in the same order, with the same options, so they
-// hold the same store.
-func (s *Store) ApplyWith(cmd Command, opts ApplyOptions) Result {
-	r, err := s.apply(cmd, opts.TokenExpiry)
+// Apply runs one replicated command against the local database. Replicas
+// apply the same commands in the same order, so they hold the same store.
+func (s *Store) Apply(cmd Command) Result {
+	r, err := s.apply(cmd)
 	return r.with(err)
 }
 
-func (s *Store) apply(cmd Command, tokenExpiry bool) (r Result, err error) {
+func (s *Store) apply(cmd Command) (r Result, err error) {
 	s.at.Store(cmd.AtMS)
 	defer s.at.Store(0)
 	switch cmd.Op {
@@ -142,7 +130,7 @@ func (s *Store) apply(cmd Command, tokenExpiry bool) (r Result, err error) {
 	case OpSignPolicy:
 		err = s.signPolicy(cmd.Body, cmd.Token)
 	case OpConsumeToken:
-		err = s.consumeToken(cmd.Token, tokenExpiry)
+		err = s.consumeToken(cmd.Token)
 	case OpReplaceRoutes:
 		if cmd.Routes == nil {
 			return r, errors.New("replace_routes without a manifest")
@@ -161,7 +149,7 @@ func (s *Store) apply(cmd Command, tokenExpiry bool) (r Result, err error) {
 // write runs cmd here, or through the log when the store is replicated.
 func (s *Store) write(cmd Command) (Result, error) {
 	if s.repl == nil {
-		return s.apply(cmd, true)
+		return s.apply(cmd)
 	}
 	cmd.AtMS = time.Now().UnixMilli()
 	res, err := s.repl.Replicate(cmd)
@@ -245,18 +233,6 @@ var snapshotTables = []string{
 // recovers. Columns are kept by name; a row that lacks a column restores
 // with the column's default.
 type Snapshot map[string][]map[string]any
-
-// StripTokenExpiry drops the used_token columns a release before
-// ApplyOptions.TokenExpiry cannot restore. A group that has not turned
-// TokenExpiry on holds only 0s in them, which is what restoring without
-// them writes.
-func (sn Snapshot) StripTokenExpiry() {
-	for _, row := range sn["used_token"] {
-		for _, c := range usedTokenColumns {
-			delete(row, c)
-		}
-	}
-}
 
 // Dump returns every row of every table.
 func (s *Store) Dump() (Snapshot, error) {
