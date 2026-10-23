@@ -574,6 +574,14 @@ CDS answers 304 while nothing changed, so an idle poll is cheap. Strict
 clients recover without a router restart within one poll interval, plus up to
 half an interval of jitter, plus one issuance.
 
+Workload routes fail closed across that window. The router forwards to a
+workload backend only when the backend's leaf carries the allowlist digest on
+its own leaf. The router and each backend re-issue on their own watch ticks,
+so after an allowlist write a workload route can answer 502 until both carry
+the new digest; `--ca-watch-interval` (`router.certProvisioning.caWatchInterval`
+on the router) bounds that window. A router whose leaf carries no stamp
+answers 503 on every workload route.
+
 CDS renews its mesh CA certificate at half its configured lifetime under the
 same process-lifetime key. Workloads pick up the current certificate on their
 next `/ca` refresh, and the continuity check accepts its signature under the

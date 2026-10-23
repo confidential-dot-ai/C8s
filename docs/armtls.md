@@ -822,6 +822,9 @@ transcript.
   That is the contract: on those connections nothing vouches for the stamp.
   A caller that needs the name on such a hop must verify the leaf against the
   mesh CA itself and use `MatchedWorkloadFromCert`, not weaken the check.
+- The router reads the stamp off each workload backend's verified leaf
+  (`armtls.Peer`) and requires the route's name and an allowlist digest equal
+  to the one on its own mesh leaf.
 
 A compromised mesh CA can mint any name — the stamp is CA-vouched, not
 hardware-bound.
