@@ -447,7 +447,7 @@ func TestHARecoverCLIErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 	keyDER, _ := x509.MarshalPKCS8PrivateKey(k)
-	header, _ := json.Marshal(map[string]any{"format": cdsha.Format, "index": 5, "core": cdsha.Core{ClusterID: "c1", Epoch: 1, RootCert: cert.Raw}, "key": keyDER})
+	header, _ := json.Marshal(map[string]any{"format": cdsha.Format, "index": 5, "core": cdsha.Core{Policy: cdsha.FSMPolicy{Version: 1, LedgerTTLNS: int64(time.Hour), LedgerMax: 100, SecretsMaxPaths: 64, SecretsMaxPerHolder: 8, SecretsMaxValue: 4096}, ClusterID: "c1", Epoch: 1, RootCert: cert.Raw}, "key": keyDER})
 	var encoded bytes.Buffer
 	zw, _ := zstd.NewWriter(&encoded)
 	_, _ = zw.Write(append(header, '\n'))
@@ -474,6 +474,47 @@ func TestHARecoverCLIErrors(t *testing.T) {
 		cmd.SetArgs(append([]string{"--cluster-id", "c1", "--bootstrap-node", "n0", "--url", "http://127.0.0.1:1", "--insecure",
 			"--trusted-ca-sha256", pin, "--min-epoch", "0", "--min-index", "0", "--attempts", "1"}, args...))
 		return cmd.ExecuteContext(context.Background())
+	}
+	// Authentic backups with absent/unknown policy must fail before even loading
+	// the operator key. A missing decree-key file makes that ordering observable.
+	for name, policy := range map[string]cdsha.FSMPolicy{"missing": {}, "unknown": {Version: 2}} {
+		t.Run("policy-"+name, func(t *testing.T) {
+			header, _ := json.Marshal(map[string]any{"format": cdsha.Format, "index": 5, "core": cdsha.Core{Policy: policy, ClusterID: "c1", Epoch: 1, RootCert: cert.Raw}, "key": keyDER})
+			var encoded bytes.Buffer
+			zw, err := zstd.NewWriter(&encoded)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := zw.Write(append(header, '\n')); err != nil {
+				t.Fatal(err)
+			}
+			if err := zw.Close(); err != nil {
+				t.Fatal(err)
+			}
+			bad, err := cdsha.SealAuthenticatedBackup(&k.PublicKey, b.Meta, encoded.Bytes(), cert.Raw, keyDER)
+			if err != nil {
+				t.Fatal(err)
+			}
+			kc := fake.NewClientset()
+			if err := (cdsha.KubeDecrees{Client: kc, Namespace: "ns", ClusterID: "c1"}).PutBackup(context.Background(), bad); err != nil {
+				t.Fatal(err)
+			}
+			list, err := kc.CoreV1().ConfigMaps("ns").List(context.Background(), metav1.ListOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := json.Marshal(list)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(dir, "policy-"+name+".json")
+			if err := os.WriteFile(path, raw, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := run("--backup-file", path, "--recovery-key", keyPath, "--decree-key", filepath.Join(dir, "missing-decree-key")); err == nil || !strings.Contains(err.Error(), "snapshot policy") {
+				t.Fatalf("invalid policy reached operator key/signing: %v", err)
+			}
+		})
 	}
 	none := filepath.Join(dir, "none")
 	other, _ := testKeyPEM(t)

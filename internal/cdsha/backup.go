@@ -309,6 +309,10 @@ func ValidateRecoverySnapshot(body []byte, meta BackupMeta, minEpoch, minIndex u
 	if err != nil {
 		return err
 	}
+	if err := sn.Core.Policy.Validate(); err != nil {
+		return fmt.Errorf("snapshot policy: %w", err)
+	}
+
 	if sn.Core.ClusterID != meta.ClusterID || sn.Core.Epoch != meta.Epoch || sn.Index != meta.Index ||
 		certutil.CertFingerprint(sn.Core.RootCert) != meta.CAFingerprint || !slices.Equal(sn.Core.AppliedDecrees, meta.AppliedDecrees) {
 		return errors.New("backup metadata differs from snapshot")
