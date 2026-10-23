@@ -73,13 +73,13 @@ func TestPruneHistoryIsDeterministic(t *testing.T) {
 		w := pruneWorkload(t, i)
 		cmd.Workload = &w
 		for _, s := range []*Store{a, b} {
-			if res := s.Apply(cmd); res.Err != "" {
+			if res := s.ApplyWith(cmd, ApplyOptions{TokenExpiry: true}); res.Err != "" {
 				t.Fatal(res.Err)
 			}
 		}
 	}
 	for _, s := range []*Store{a, b} {
-		if res := s.Apply(Command{Op: OpPruneHistory, Keep: 3}); res.Err != "" || res.Retired != 4 {
+		if res := s.ApplyWith(Command{Op: OpPruneHistory, Keep: 3}, ApplyOptions{TokenExpiry: true}); res.Err != "" || res.Retired != 4 {
 			t.Fatalf("%+v", res)
 		}
 	}

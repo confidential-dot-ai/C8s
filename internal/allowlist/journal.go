@@ -364,12 +364,13 @@ func (s *Store) HistoryLen() (int, error) {
 	return n, err
 }
 
-// pruneHistory keeps the newest keep entries of the history and drops the
+// PruneHistory keeps the newest keep entries of the history and drops the
 // documents and signatures no remaining entry names. The served document is
 // the head, which always remains, and spent tokens are left to consumeToken
-// (a token must never be spendable again). It depends only on the store's contents, so
-// every replica applying it prunes the same entries.
-func (s *Store) pruneHistory(keep int) (int, error) {
+// (a token must never be spendable again). It depends only on the store's
+// contents, so every replica applying it prunes the same entries. It prunes
+// this store only: an HA leader proposes OpPruneHistory instead.
+func (s *Store) PruneHistory(keep int) (int, error) {
 	if keep < 1 {
 		return 0, errors.New("allowlist: a history must keep at least one entry")
 	}
@@ -408,16 +409,6 @@ func (s *Store) pruneHistory(keep int) (int, error) {
 	}
 	s.gen++
 	return int(dropped), nil
-}
-
-// PruneHistory keeps the newest keep entries of the history (see
-// pruneHistory); with a replicator, every replica prunes through the log.
-func (s *Store) PruneHistory(keep int) (int, error) {
-	if s.repl == nil {
-		return s.pruneHistory(keep)
-	}
-	res, err := s.replicate(Command{Op: OpPruneHistory, Keep: keep})
-	return res.Retired, err
 }
 
 // LiveBytes is the space the store's data takes: its pages less the free
