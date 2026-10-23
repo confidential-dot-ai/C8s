@@ -717,59 +717,6 @@ func TestRunRoutingListenerBeforeFirstApply(t *testing.T) {
 	}
 }
 
-// The router serves cluster workloads only, so a manifest naming an address
-// backend is refused when it is fetched, before anything applies it.
-func TestClusterWorkloadRoutesRefusesAnAddressBackend(t *testing.T) {
-	manifest := func(backend map[string]string) []byte {
-		t.Helper()
-		b, err := json.Marshal(map[string]any{
-			"schema": routes.Schema, "revision": 1, "notBefore": "2020-01-01T00:00:00Z", "maxAgeSeconds": 3600,
-			"hosts": map[string]any{"app.example": map[string]any{"routes": []any{
-				map[string]any{"path": "/", "match": "prefix", "backend": backend},
-			}}},
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		return b
-	}
-	workload := clusterWorkloadRoutes{routes: fetchedRoutes{env: routes.Envelope{
-		Manifest: manifest(map[string]string{"address": "web.adopted.svc:8080", "workload": "web"}),
-	}}}
-	if _, err := workload.Routes(t.Context()); err != nil {
-		t.Fatalf("Routes() with a workload backend = %v, want nil", err)
-	}
-	external := clusterWorkloadRoutes{routes: fetchedRoutes{env: routes.Envelope{
-		Manifest: manifest(map[string]string{"address": "admin.ops.example:443", "serverName": "admin.ops.example", "ca": testAnchorPEM(t)}),
-	}}}
-	_, err := external.Routes(t.Context())
-	if err == nil {
-		t.Fatal("Routes() with an address backend = nil, want a refusal")
-	}
-	if !strings.Contains(err.Error(), "the router serves cluster workloads only") {
-		t.Fatalf("Routes() = %v, want the cluster-workloads refusal", err)
-	}
-}
-
-// fetchedRoutes serves one envelope, standing in for the verified CDS.
-type fetchedRoutes struct {
-	env routes.Envelope
-}
-
-func (f fetchedRoutes) Routes(context.Context) (routes.Envelope, error) {
-	return f.env, nil
-}
-
-// testAnchorPEM is a certificate an address backend's ca member can hold.
-func testAnchorPEM(t *testing.T) string {
-	t.Helper()
-	ca, err := issuer.NewCA("external", time.Hour)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(certutil.EncodeCertPEM(ca.Cert.Raw))
-}
-
 // The hop to a member backend takes its identity and its trust root from the
 // credential generation on this pod's own volume: the paths are compiled, so
 // no argument redirects them to a CA the control plane chose.

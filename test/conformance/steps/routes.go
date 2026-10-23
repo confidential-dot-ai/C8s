@@ -17,6 +17,7 @@ import (
 	"math/big"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -200,9 +201,8 @@ func closedBackend() map[string]any {
 	return map[string]any{"address": "127.0.0.1:1", "serverName": "closed.c8s.test", "ca": unrelatedCA()}
 }
 
-// closedWorkload is the same address as a workload backend, for a manifest
-// the router must apply: a router in a member pod rejects any manifest with
-// an address backend (A8).
+// closedWorkload is the same address as a workload backend, for a route a
+// scenario only has to see applied.
 func closedWorkload() map[string]any {
 	return map[string]any{"address": "127.0.0.1:1", "workload": "conformance-closed"}
 }
@@ -342,11 +342,20 @@ func routerApplied(ctx context.Context, path, host string) error {
 	return w.applyRoutes(map[string]any{w.routeHost(host): prefixRoute(path, closedWorkload())})
 }
 
-// routerAppliedUnrelatedCA: the chart's router namespace is not exempt from
-// the mesh, and a router in a member pod applies no manifest with an address
-// backend (A8), so B3 is out of reach.
-func routerAppliedUnrelatedCA(context.Context, string, string) error {
-	return skipf("the router's pod is a mesh member, which applies no manifest with an address backend (A8)")
+// routerAppliedUnrelatedCA routes to the CDS as an address backend whose ca
+// is a CA that issued no certificate, so the dial's verification fails (B3).
+func routerAppliedUnrelatedCA(ctx context.Context, path, host string) error {
+	w := getWorld(ctx)
+	url, err := w.be.call("cds_pod_url")
+	if err != nil {
+		return err
+	}
+	backend := map[string]any{
+		"address":    strings.TrimPrefix(url, "https://"),
+		"serverName": "cds.c8s.test",
+		"ca":         unrelatedCA(),
+	}
+	return w.applyRoutes(map[string]any{w.routeHost(host): prefixRoute(path, backend)})
 }
 
 func (w *world) routerAnswered(status int, what string) error {
