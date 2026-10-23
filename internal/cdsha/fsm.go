@@ -2,6 +2,7 @@ package cdsha
 
 import (
 	"bytes"
+	"crypto/ecdsa"
 	"crypto/x509"
 	"encoding/json"
 	"errors"
@@ -15,8 +16,6 @@ import (
 
 	"github.com/hashicorp/raft"
 	"github.com/klauspost/compress/zstd"
-
-	"crypto/ecdsa"
 
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"

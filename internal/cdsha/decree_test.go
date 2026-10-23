@@ -2,18 +2,17 @@ package cdsha
 
 import (
 	"cmp"
+	"context"
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
-
-	"context"
-	"errors"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
