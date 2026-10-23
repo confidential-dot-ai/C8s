@@ -73,7 +73,7 @@ func TestNodeImageRender(t *testing.T) {
 				"CustomResourceDefinition/confidentialworkloads.confidential.ai",
 				"Deployment/c8s-operator", "Deployment/c8s-cds", "Deployment/c8s-router",
 				"Deployment/kube-state-metrics", "Service/kube-state-metrics", "ServiceAccount/kube-state-metrics",
-				"ClusterRole/c8s-kube-state-metrics", "ClusterRoleBinding/c8s-kube-state-metrics",
+				"ClusterRole/c8s-kube-state-metrics", "ClusterRoleBinding/c8s-kube-state-metrics", "NetworkPolicy/kube-state-metrics",
 				"ConfigMap/c8s-cds-allowlist-seed", "MutatingWebhookConfiguration/c8s-pod-injector",
 				"ValidatingWebhookConfiguration/c8s-pod-validator",
 				"ValidatingAdmissionPolicy/c8s-deny-host-namespaces", "ValidatingAdmissionPolicyBinding/c8s-deny-host-namespaces",
