@@ -663,7 +663,7 @@ func TestB9UnnamedRouter(t *testing.T) {
 				t.Fatalf("GET / = %d %q, want %d", w.Code, w.Body.String(), tc.want)
 			}
 			sealedHost := []types.HeaderField{{Name: "Host", Value: testHost}}
-			if resp, err := f.proxy.Forward(outerRequest(testHost), types.TunnelRequest{Path: "/", Headers: sealedHost}); err != nil || resp.Status != tc.want {
+			if resp, err := f.proxy.Forward(outerRequest(testHost), types.TunnelRequest{Path: "/", Headers: sealedHost}, f.bound()); err != nil || resp.Status != tc.want {
 				t.Fatalf("Forward(/) = %d, %v, want %d, nil", resp.Status, err, tc.want)
 			}
 			if tc.want != http.StatusOK {

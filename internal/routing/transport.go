@@ -413,8 +413,13 @@ func (t *Transports) retire(cred MeshCredential, err error) error {
 		h.Write(ca.Raw)
 	}
 	h.Sum(caDigest[:0])
-	// An unstamped router tracks the empty digest (B9).
-	routerDigest, _ := t.routerDigestOf(cred)
+	// An unstamped router tracks the empty digest (B9). A damaged stamp
+	// tracks a value no leaf can carry, so it retires the pools and the next
+	// good read counts as a change.
+	routerDigest, derr := t.routerDigestOf(cred)
+	if derr != nil {
+		routerDigest = []byte(damagedRouterStamp)
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.tracked = true
