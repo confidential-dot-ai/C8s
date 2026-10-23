@@ -119,6 +119,14 @@ func (n *Node) askJoin(p string) (controlResponse, error) {
 }
 
 func (n *Node) handleJoin(req controlRequest) controlResponse {
+	r := n.r()
+	n.membershipMu.Lock()
+	defer n.membershipMu.Unlock()
+	// Admission may have waited behind recovery or another membership change.
+	// Never apply an old request's decision to a replacement Raft generation.
+	if r == nil || r != n.r() || n.stoppingReads.Load() == r || r.State() != raft.Leader {
+		return controlResponse{Member: n.member(), Err: "join leader or generation changed"}
+	}
 	var policy FSMPolicy
 	if err := json.Unmarshal(req.Entry, &policy); err != nil {
 		return controlResponse{Member: true, Err: "join application policy missing or invalid"}
@@ -139,7 +147,7 @@ func (n *Node) handleJoin(req controlRequest) controlResponse {
 		// It could not apply the log it would receive.
 		return controlResponse{Member: true, Err: fmt.Sprintf("replica reads format %d, the cluster writes %d", req.Reads, agreed)}
 	}
-	f := n.r().GetConfiguration()
+	f := r.GetConfiguration()
 	if err := f.Error(); err != nil {
 		return controlResponse{Member: true, Err: err.Error()}
 	}
@@ -151,7 +159,7 @@ func (n *Node) handleJoin(req controlRequest) controlResponse {
 		if hp, _ := splitRaftAddr(string(s.Address)); hp == hostport && s.ID != n.id {
 			// Only one process listens on an address: the member there is a
 			// dead earlier incarnation, and its seat is the joiner's.
-			if err := n.r().RemoveServer(s.ID, 0, n.cfg.Timing.Apply).Error(); err != nil {
+			if err := r.RemoveServer(s.ID, 0, n.cfg.Timing.Apply).Error(); err != nil {
 				return controlResponse{Member: true, Err: err.Error()}
 			}
 			n.log.Info("member replaced at its address", "old", s.ID, "new", id)
@@ -164,7 +172,7 @@ func (n *Node) handleJoin(req controlRequest) controlResponse {
 	if max := n.cfg.MaxNonVoters; max > 0 && nonVoters >= max {
 		return controlResponse{Member: true, Err: "no room for another replica"}
 	}
-	if err := n.r().AddNonvoter(id, raft.ServerAddress(req.Address), 0, n.cfg.Timing.Apply).Error(); err != nil {
+	if err := r.AddNonvoter(id, raft.ServerAddress(req.Address), 0, n.cfg.Timing.Apply).Error(); err != nil {
 		return controlResponse{Member: true, Err: err.Error()}
 	}
 	n.mu.Lock()
@@ -273,12 +281,24 @@ func (n *Node) noteFailure(id raft.ServerID, lastContact, now time.Time) {
 // it removes members that are dead or were replaced by a restart of the
 // same node, and promotes stable non-voters into free seats.
 func (n *Node) reconcile() {
+	r := n.r()
 	servers := n.servers()
 	if servers == nil {
 		return
 	}
+	// Reachability probes may wait on the network. Do not block admission
+	// during them, and never use their configuration sample for mutations.
+	n.clearReachable(servers, time.Now())
+	n.membershipMu.Lock()
+	defer n.membershipMu.Unlock()
+	if r == nil || r != n.r() || n.stoppingReads.Load() == r || r.State() != raft.Leader {
+		return
+	}
+	servers = n.servers()
+	if servers == nil {
+		return
+	}
 	now := time.Now()
-	n.clearReachable(servers, now)
 	n.mu.Lock()
 	failingSince := func(id raft.ServerID) (time.Time, bool) { t, ok := n.failing[id]; return t, ok }
 	healthy := func(id raft.ServerID) bool {
@@ -333,7 +353,7 @@ func (n *Node) reconcile() {
 	}
 	n.mu.Unlock()
 	for _, id := range remove {
-		if err := n.r().RemoveServer(id, 0, n.cfg.Timing.Apply).Error(); err != nil {
+		if err := r.RemoveServer(id, 0, n.cfg.Timing.Apply).Error(); err != nil {
 			n.log.Warn("remove member", "id", id, "err", err)
 			continue
 		}
@@ -346,7 +366,7 @@ func (n *Node) reconcile() {
 		n.log.Info("member removed", "id", id)
 	}
 	for _, s := range promote {
-		if err := n.r().AddVoter(s.ID, s.Address, 0, n.cfg.Timing.Apply).Error(); err != nil {
+		if err := r.AddVoter(s.ID, s.Address, 0, n.cfg.Timing.Apply).Error(); err != nil {
 			n.log.Warn("promote member", "id", s.ID, "err", err)
 			continue
 		}
@@ -360,8 +380,8 @@ func (n *Node) reconcile() {
 	}
 }
 
-// demoteExtraVoter (leader) demotes one voter when there are more voters than
-// seats: a failing one first, never itself. One per pass, so the group never
+// demoteExtraVoter is called with membershipMu held. It demotes one voter
+// when there are more voters than seats: a failing one first, never itself. One per pass, so the group never
 // loses more than one vote at a time.
 func (n *Node) demoteExtraVoter(servers []raft.Server) {
 	var voters []raft.ServerID
@@ -397,8 +417,8 @@ func (n *Node) demoteExtraVoter(servers []raft.Server) {
 	n.log.Info("voter demoted: more voters than seats", "id", pick, "seats", n.seats())
 }
 
-// raiseFormat (leader): once every voter seat is filled and every member
-// reads a newer format than the agreed one, the cluster agrees on it, so the
+// raiseFormat is called with membershipMu held: once every voter seat is
+// filled and every member reads a newer format than the agreed one, the cluster agrees on it, so the
 // new encoding is only written after the last old replica left. Waiting for
 // the seats keeps a group that shrank to new replicas (an old one crashed
 // mid-rollout) from locking the old release out before the operator chose to

@@ -124,7 +124,11 @@ type Config struct {
 
 // Node is one CDS replica.
 type Node struct {
+	// Lock order: eligibilityMu -> membershipMu -> stopRaftMu. Never hold mu
+	// across blocking network/Raft waits or observer join. Membership decisions and
+	// generation replacement share membershipMu; observer bookkeeping does not.
 	eligibilityMu sync.Mutex         // serialize fresh-node join/bootstrap and Restore
+	membershipMu  sync.Mutex         // serialize local configuration decisions and replacement
 	observer      *heartbeatObserver // protected by stopRaftMu
 	cfg           Config
 	id            raft.ServerID
@@ -321,6 +325,8 @@ func (n *Node) ID() string { return string(n.id) }
 
 // Start opens the peer port and starts Raft. Run drives it.
 func (n *Node) Start() error {
+	n.membershipMu.Lock()
+	defer n.membershipMu.Unlock()
 	n.logs, n.stable, n.snaps = raft.NewInmemStore(), raft.NewInmemStore(), &snapStore{}
 	rc := raft.DefaultConfig()
 	rc.LocalID = n.id
@@ -464,6 +470,8 @@ func (n *Node) stopRaft(r *raft.Raft) error {
 }
 
 func (n *Node) shutdown() {
+	n.membershipMu.Lock()
+	defer n.membershipMu.Unlock()
 	if r := n.r(); r != nil {
 		_ = n.stopRaft(r)
 	}
