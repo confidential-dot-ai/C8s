@@ -54,11 +54,11 @@ func handshake(t *testing.T, cfg *tls.Config, cert tls.Certificate) error {
 	go func() {
 		srv := tls.Server(s, cfg)
 		errc <- srv.HandshakeContext(ctx)
-		srv.Close()
+		s.Close() // the raw end: a TLS close_notify on net.Pipe blocks until the deadline
 	}()
 	cli := tls.Client(c, &tls.Config{InsecureSkipVerify: true, Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12, MaxVersion: tls.VersionTLS12})
 	_ = cli.HandshakeContext(ctx)
-	cli.Close()
+	c.Close()
 	return <-errc
 }
 

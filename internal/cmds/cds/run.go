@@ -227,8 +227,9 @@ func run(cfg config) error {
 		// Any replica may answer the second request of a challenge exchange:
 		// challenges are MACed under a key every replica derives from the
 		// shared mesh CA key (a rotation invalidates outstanding ones).
-		challengeStore.SetSharedKey(haChallengeKey(haNode, "issuance"))
-		secretsChallenges.SetSharedKey(haChallengeKey(haNode, "secrets"))
+		for purpose, s := range map[string]*attestation.ChallengeStore{"issuance": &challengeStore, "secrets": &secretsChallenges} {
+			s.SetSharedKey(haChallengeKey(haNode, purpose))
+		}
 	}
 	checker := readiness.NewChecker(asClient, cfg.readinessInterval)
 
