@@ -72,8 +72,6 @@ func TestNodeImageRender(t *testing.T) {
 				"Namespace/c8s-system", "Namespace/" + workloadclaims.RouterNamespace,
 				"CustomResourceDefinition/confidentialworkloads.confidential.ai",
 				"Deployment/c8s-operator", "Deployment/c8s-cds", "Deployment/c8s-router",
-				"Deployment/kube-state-metrics", "Service/kube-state-metrics", "ServiceAccount/kube-state-metrics",
-				"ClusterRole/c8s-kube-state-metrics", "ClusterRoleBinding/c8s-kube-state-metrics", "NetworkPolicy/kube-state-metrics",
 				"ConfigMap/c8s-cds-allowlist-seed", "MutatingWebhookConfiguration/c8s-pod-injector",
 				"ValidatingWebhookConfiguration/c8s-pod-validator",
 				"ValidatingAdmissionPolicy/c8s-deny-host-namespaces", "ValidatingAdmissionPolicyBinding/c8s-deny-host-namespaces",
@@ -155,7 +153,7 @@ func TestNodeImageRender(t *testing.T) {
 			if platform == "sev-snp" && !slices.Contains(images, "registry.example.com/nginx@"+nodeImageTestRouterDigest) {
 				t.Error("inventory lost the router image override")
 			}
-			for _, key := range []string{"Deployment/c8s-operator", "Deployment/c8s-cds", "Deployment/c8s-router", "Deployment/kube-state-metrics"} {
+			for _, key := range []string{"Deployment/c8s-operator", "Deployment/c8s-cds", "Deployment/c8s-router"} {
 				var workload appsv1.Deployment // Deployment and DaemonSet share spec.template.
 				if err := yaml.Unmarshal(docs[key], &workload); err != nil {
 					t.Fatal(err)

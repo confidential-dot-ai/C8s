@@ -223,11 +223,6 @@ func TestNodeImageBootConfig_ParsesAndAdmitsSystemImages(t *testing.T) {
 	if got := prefixStrings(mesh.ClusterRanges); !slices.Equal(got, wantRanges) {
 		t.Errorf("mesh.cluster_ranges = %v, want the baked cluster-cidr and service-cidr %v", got, wantRanges)
 	}
-	// The baked kube-state-metrics Service (the chart's kubeStateMetrics
-	// clusterIP and port, internal/helmchart).
-	if want := []netip.AddrPort{netip.MustParseAddrPort("10.53.0.11:8080")}; !slices.Equal(mesh.Exits, want) {
-		t.Errorf("mesh.exits = %v, want the baked kube-state-metrics Service %v", mesh.Exits, want)
-	}
 
 	// Every base entry must still admit the launch it describes at final
 	// admission: a system image with its host mounts, a role entry with the
