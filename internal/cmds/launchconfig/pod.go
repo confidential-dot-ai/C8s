@@ -1,8 +1,10 @@
 package launchconfig
 
 import (
+	"errors"
 	"fmt"
 
+	"github.com/distribution/reference"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/yaml"
@@ -55,6 +57,9 @@ func (p *PodSpec) validate() error {
 		}
 	}
 	for _, c := range append(append([]corev1.Container{}, s.InitContainers...), s.Containers...) {
+		if err := pinnedImage(c.Image); err != nil {
+			return fmt.Errorf("pod.manifest container %q image %q: %w", c.Name, c.Image, err)
+		}
 		for _, port := range c.Ports {
 			if port.HostIP != "" {
 				return fmt.Errorf("pod.manifest container %q must not set a hostIP", c.Name)
@@ -66,6 +71,27 @@ func (p *PodSpec) validate() error {
 		if sc := c.SecurityContext; sc != nil && sc.Privileged != nil && *sc.Privileged {
 			return fmt.Errorf("pod.manifest container %q must not be privileged", c.Name)
 		}
+	}
+	return nil
+}
+
+// pinnedImage accepts only an image reference that names its digest. A tag
+// resolves through the image store at the time of the check, so a tag-only
+// reference does not identify the image the pod CVM admits, measures and
+// runs; a reference with a digest does, whatever tag it also carries.
+func pinnedImage(image string) error {
+	ref, err := reference.ParseNormalizedNamed(image)
+	if err != nil {
+		return err
+	}
+	canonical, ok := ref.(reference.Canonical)
+	if !ok {
+		return errors.New("must pin the image by digest (name@sha256:<hex>)")
+	}
+	// The measured list, the allowlist and the journal carry sha256 digests
+	// only, so refuse another algorithm here rather than at admission.
+	if canonical.Digest().Algorithm() != "sha256" {
+		return fmt.Errorf("digest algorithm %s is not sha256", canonical.Digest().Algorithm())
 	}
 	return nil
 }

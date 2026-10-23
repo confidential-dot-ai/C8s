@@ -199,8 +199,9 @@ A pod CVM boots the same image as one pod, with no RKE2:
 `c8s node launch-config new-pod --out pod1 --cluster-id demo --image-manifest manifest.json
 --pod-manifest pod.json --workloads workloads.json` writes a `role: pod` document
 signed by a pod launch key (`pod1/pod.key`, or `--launch-key`). It carries the
-pod manifest (`metadata.uid` required; only `emptyDir` volumes, no host
-namespaces, `hostIP` or privileged containers) and the workloads allowlist,
+pod manifest (`metadata.uid` required; every container image pinned by
+digest; only `emptyDir` volumes, no host namespaces, `hostIP` or privileged
+containers) and the workloads allowlist,
 which is the complete set of images the pod CVM admits. It carries no RKE2
 tokens. The image runs containerd and a standalone kubelet
 (`podcvm-containerd`, `podcvm-kubelet`) instead of RKE2, and does not require

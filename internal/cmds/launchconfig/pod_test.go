@@ -118,6 +118,21 @@ func TestValidatePodRole(t *testing.T) {
 		{"not a pod", func(d *Document) { d.Pod.Manifest = strings.Replace(d.Pod.Manifest, `"Pod"`, `"Deployment"`, 1) }, "v1 Pod"},
 		{"unknown field", func(d *Document) { d.Pod.Manifest = testPodManifest(`,"bogus":true`) }, "pod.manifest"},
 		{"host network", func(d *Document) { d.Pod.Manifest = testPodManifest(`,"hostNetwork":true`) }, "host namespaces"},
+		{"tag-only image", func(d *Document) {
+			d.Pod.Manifest = strings.Replace(testPodManifest(""), `"image":"busybox@sha256:`+strings.Repeat("a", 64)+`"`, `"image":"busybox:1.36"`, 1)
+		}, "pin the image by digest"},
+		{"tag-only init image", func(d *Document) {
+			d.Pod.Manifest = testPodManifest(`,"initContainers":[{"name":"init","image":"busybox"}]`)
+		}, "pin the image by digest"},
+		{"bare digest image", func(d *Document) {
+			d.Pod.Manifest = strings.Replace(testPodManifest(""), `"image":"busybox@sha256:`+strings.Repeat("a", 64)+`"`, `"image":"sha256:`+strings.Repeat("a", 64)+`"`, 1)
+		}, "pin the image by digest"},
+		{"sha512 digest", func(d *Document) {
+			d.Pod.Manifest = strings.Replace(testPodManifest(""), "sha256:"+strings.Repeat("a", 64), "sha512:"+strings.Repeat("a", 128), 1)
+		}, "not sha256"},
+		{"short digest", func(d *Document) {
+			d.Pod.Manifest = strings.Replace(testPodManifest(""), strings.Repeat("a", 64), strings.Repeat("a", 63), 1)
+		}, "image"},
 		{"host path", func(d *Document) {
 			d.Pod.Manifest = testPodManifest(`,"volumes":[{"name":"h","hostPath":{"path":"/"}}]`)
 		}, "only emptyDir"},
