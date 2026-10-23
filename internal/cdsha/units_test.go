@@ -324,7 +324,7 @@ func TestSnapshotKeepsAllowlistHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"a", "b", "c"} {
-		if err := al.PutWorkload(name, mkWorkload(t)); err != nil {
+		if err := al.PutWorkload(name, mkWorkload(t, 0)); err != nil {
 			t.Fatal(err)
 		}
 	}

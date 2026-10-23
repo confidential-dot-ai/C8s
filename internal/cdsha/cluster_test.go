@@ -30,21 +30,33 @@ var testTiming = Timing{
 	Backup: 100 * time.Millisecond,
 }
 
-// memBackups stands in for the backup ConfigMaps.
+// memBackups stands in for the backup ConfigMaps; with err set it refuses
+// every backup.
 type memBackups struct {
-	mu   sync.Mutex
-	last *Backup
-	n    int
+	mu    sync.Mutex
+	last  *Backup
+	err   error
+	calls int
 }
 
 func (m *memBackups) PutBackup(_ context.Context, b Backup) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.calls++
+	if m.err != nil {
+		return m.err
+	}
 	if m.last != nil && !b.Meta.Newer(m.last.Meta) {
 		return ErrBackupNotNewer
 	}
-	m.last, m.n = &b, m.n+1
+	m.last = &b
 	return nil
+}
+
+func (m *memBackups) attempts() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.calls
 }
 
 func (m *memBackups) get() (Backup, bool) {
@@ -284,7 +296,7 @@ func TestGenesisJoinAndReplicatedState(t *testing.T) {
 		}
 	}
 	// Allowlist written at one replica is served by all, with one version.
-	w := mkWorkload(t)
+	w := mkWorkload(t, 0)
 	if err := c.nodes["n1"].al.PutWorkload("web", w); err != nil {
 		t.Fatal(err)
 	}
@@ -341,7 +353,7 @@ func TestLeaderKillAndRestartAsNewMember(t *testing.T) {
 		// "unavailable" (a client's 503 + retry); it must not stay so.
 		var err error
 		eventually(t, 3*time.Second, "write at "+r.name+" with one replica down", func() bool {
-			err = r.al.PutWorkload("after-"+r.name, mkWorkload(t))
+			err = r.al.PutWorkload("after-"+r.name, mkWorkload(t, 0))
 			return err == nil
 		})
 	}
@@ -386,7 +398,7 @@ func TestPartitionedReplicaStopsServingThenRecovers(t *testing.T) {
 	if _, err := victim.node.CA(); err == nil {
 		t.Fatal("isolated replica still hands out the CA")
 	}
-	if err := victim.al.PutWorkload("x", mkWorkload(t)); err == nil {
+	if err := victim.al.PutWorkload("x", mkWorkload(t, 0)); err == nil {
 		t.Fatal("isolated replica accepted a write")
 	}
 	var other *replica
@@ -395,7 +407,7 @@ func TestPartitionedReplicaStopsServingThenRecovers(t *testing.T) {
 			other = r
 		}
 	}
-	if err := other.al.PutWorkload("during", mkWorkload(t)); err != nil {
+	if err := other.al.PutWorkload("during", mkWorkload(t, 0)); err != nil {
 		t.Fatalf("majority write: %v", err)
 	}
 	c.partition(victim.name, false)
@@ -414,7 +426,7 @@ func TestTwoOfThreeDownFailsClosed(t *testing.T) {
 	c.partition(rs[1].name, true)
 	surv := rs[2]
 	eventually(t, 4*time.Second, "survivor stops serving", func() bool { return !surv.node.Serving() })
-	if err := surv.al.PutWorkload("x", mkWorkload(t)); err == nil {
+	if err := surv.al.PutWorkload("x", mkWorkload(t, 0)); err == nil {
 		t.Fatal("a lone replica accepted a write")
 	}
 	c.partition(rs[0].name, false)
@@ -440,7 +452,7 @@ func TestNonVotersServeAndFillAFreeSeat(t *testing.T) {
 	if !nv.node.Serving() {
 		t.Fatal("non-voter does not serve")
 	}
-	if err := nv.al.PutWorkload("from-nonvoter", mkWorkload(t)); err != nil {
+	if err := nv.al.PutWorkload("from-nonvoter", mkWorkload(t, 0)); err != nil {
 		t.Fatalf("non-voter write: %v", err)
 	}
 	var voter *replica
@@ -535,7 +547,7 @@ func TestRecoverAfterLosingTheMajority(t *testing.T) {
 	c := newCluster(t, 3)
 	c.genesis("n0", "n1", "n2", "n3") // n3: a non-voter that survives too
 	l := c.leader()
-	if err := l.al.PutWorkload("kept", mkWorkload(t)); err != nil {
+	if err := l.al.PutWorkload("kept", mkWorkload(t, 0)); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := l.sec.PutIfAbsent(context.Background(), "/kept", []byte("v"), secrets.WorkloadHolder("w")); err != nil {
@@ -637,7 +649,7 @@ func TestCatchUpAndControl(t *testing.T) {
 	c := newCluster(t, 3)
 	c.genesis("n0", "n1", "n2")
 	l := c.leader()
-	if err := l.al.PutWorkload("x", mkWorkload(t)); err != nil {
+	if err := l.al.PutWorkload("x", mkWorkload(t, 0)); err != nil {
 		t.Fatal(err)
 	}
 	for _, r := range c.live() {
@@ -689,7 +701,7 @@ func TestTotalLossRestoreFromBackup(t *testing.T) {
 	c.genesis("n0", "n1", "n2")
 	l := c.leader()
 	ctx := context.Background()
-	if err := l.al.PutWorkload("kept", mkWorkload(t)); err != nil {
+	if err := l.al.PutWorkload("kept", mkWorkload(t, 0)); err != nil {
 		t.Fatal(err)
 	}
 	if err := l.al.ConsumeToken("h.p.spent"); err != nil {
@@ -757,7 +769,7 @@ func TestTotalLossRestoreFromBackup(t *testing.T) {
 	if err := c.nodes["n2"].al.ConsumeToken("h.p.spent-again"); !errors.Is(err, operatorauth.ErrTokenReused) {
 		t.Fatalf("restore forgot a spent token: %v", err)
 	}
-	if err := c.nodes["n1"].al.PutWorkload("after-restore", mkWorkload(t)); err != nil {
+	if err := c.nodes["n1"].al.PutWorkload("after-restore", mkWorkload(t, 0)); err != nil {
 		t.Fatalf("write after restore: %v", err)
 	}
 }
@@ -777,7 +789,7 @@ func TestUnusableDecreesAndUnjoinedWrites(t *testing.T) {
 	if _, ok := c.decrees.get(old); ok {
 		t.Fatal("an expired Genesis was recorded as applied")
 	}
-	if err := c.nodes["n1"].al.PutWorkload("x", mkWorkload(t)); err == nil {
+	if err := c.nodes["n1"].al.PutWorkload("x", mkWorkload(t, 0)); err == nil {
 		t.Fatal("a replica outside any cluster accepted a write")
 	}
 	if err := c.nodes["n1"].node.CatchUp(); err == nil {
@@ -796,7 +808,7 @@ func TestUnusableDecreesAndUnjoinedWrites(t *testing.T) {
 func TestBackupAfterMembershipChange(t *testing.T) {
 	c := newCluster(t, 3)
 	c.genesis("n0", "n1", "n2")
-	if err := c.leader().al.PutWorkload("last", mkWorkload(t)); err != nil {
+	if err := c.leader().al.PutWorkload("last", mkWorkload(t, 0)); err != nil {
 		t.Fatal(err)
 	}
 	c.start("n3", "m1") // joins: configuration entries, no command
