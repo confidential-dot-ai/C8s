@@ -27,53 +27,15 @@ const (
 	maxControlBytes  = 8 << 20
 )
 
-// certHolder serves the replica's current peer certificate and replaces it
-// before it expires. Each certificate carries fresh evidence over a new key.
-type certHolder struct {
-	mu   sync.RWMutex
-	cert tls.Certificate
-	made time.Time
-	mint func() (tls.Certificate, error)
-}
-
-func newCertHolder(mint func() (tls.Certificate, error)) (*certHolder, error) {
-	h := &certHolder{mint: mint}
-	return h, h.renew()
-}
-
-func (h *certHolder) renew() error {
-	c, err := h.mint()
-	if err != nil {
-		return err
-	}
-	h.mu.Lock()
-	h.cert, h.made = c, time.Now()
-	h.mu.Unlock()
-	return nil
-}
-
-func (h *certHolder) current() *tls.Certificate {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	c := h.cert
-	return &c
-}
-
-func (h *certHolder) age() time.Duration {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	return time.Since(h.made)
-}
-
 // peerTLSConfig is used for both directions. It checks no chain: the
 // caller checks the peer's evidence with peerVerifier.peer.
-func peerTLSConfig(h *certHolder) *tls.Config {
+func peerTLSConfig(cert func() *tls.Certificate) *tls.Config {
 	return &tls.Config{
 		MinVersion:           tls.VersionTLS13,
 		ClientAuth:           tls.RequireAnyClientCert,
 		InsecureSkipVerify:   true, //nolint:gosec // attestation, not PKI, authenticates the peer (peerVerifier.peer)
-		GetCertificate:       func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return h.current(), nil },
-		GetClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) { return h.current(), nil },
+		GetCertificate:       func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return cert(), nil },
+		GetClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) { return cert(), nil },
 	}
 }
 

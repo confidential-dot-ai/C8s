@@ -3,7 +3,6 @@ package cdsha
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"errors"
 	"log/slog"
 	"strings"
@@ -110,6 +109,19 @@ func TestLeaderProbesSuspectsAndDemotesExtraVoters(t *testing.T) {
 	}
 }
 
+// flakyAttestor fails its first Evidence call.
+type flakyAttestor struct {
+	Attestor
+	calls atomic.Int32
+}
+
+func (a *flakyAttestor) Evidence(rd [48]byte) ([]byte, error) {
+	if a.calls.Add(1) == 1 {
+		return nil, errors.New("no TEE right now")
+	}
+	return a.Attestor.Evidence(rd)
+}
+
 // A peer certificate past its age is renewed, and a failed renewal is
 // retried on the next tick.
 func TestPeerCertificateRenewal(t *testing.T) {
@@ -118,21 +130,17 @@ func TestPeerCertificateRenewal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var calls atomic.Int32
-	mint := n.certs.mint
-	n.certs.mint = func() (tls.Certificate, error) {
-		if calls.Add(1) == 1 {
-			return tls.Certificate{}, errors.New("no TEE right now")
-		}
-		return mint()
-	}
-	n.certs.mu.Lock()
-	n.certs.made = time.Now().Add(-7 * time.Hour)
-	n.certs.mu.Unlock()
+	flaky := &flakyAttestor{Attestor: n.cfg.Attestor}
+	n.cfg.Attestor = flaky
+	aged := *n.cert.Load()
+	leaf := *aged.Leaf
+	leaf.NotBefore = time.Now().Add(-7 * time.Hour)
+	aged.Leaf = &leaf
+	n.cert.Store(&aged)
 	runNode(t, n)
-	eventually(t, 5*time.Second, "certificate renewed", func() bool { return n.certs.age() < time.Hour })
-	if calls.Load() < 2 {
-		t.Fatalf("renewed after %d mints", calls.Load())
+	eventually(t, 5*time.Second, "certificate renewed", func() bool { return time.Since(n.cert.Load().Leaf.NotBefore) < time.Hour })
+	if calls := flaky.calls.Load(); calls < 2 {
+		t.Fatalf("renewed after %d mints", calls)
 	}
 }
 
