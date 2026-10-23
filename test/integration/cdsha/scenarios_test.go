@@ -7,16 +7,19 @@ import (
 	"slices"
 	"testing"
 	"time"
+
+	"github.com/confidential-dot-ai/c8s/internal/cdsha"
 )
 
 // scenario is one row of the fault matrix, run with the checker's writers
 // and readers going.
 type scenario struct {
-	name    string
-	short   bool // part of the -short subset
-	writers int
-	pause   time.Duration
-	run     func(t *testing.T, c *Cluster, k *Checker)
+	name                 string
+	short                bool // part of the -short subset
+	writers              int
+	productionRaftTiming bool // RTT availability scenarios use the deployed election/lease margin
+	pause                time.Duration
+	run                  func(t *testing.T, c *Cluster, k *Checker)
 }
 
 func runScenarios(t *testing.T, list []scenario) {
@@ -25,7 +28,11 @@ func runScenarios(t *testing.T, list []scenario) {
 			if testing.Short() && !sc.short {
 				t.Skip("not in the -short subset")
 			}
-			c := NewCluster(t)
+			heartbeat, election := timing.heartbeat, timing.election
+			if sc.productionRaftTiming {
+				heartbeat, election = cdsha.DefaultTiming.Heartbeat, cdsha.DefaultTiming.Election
+			}
+			c := newClusterWithRaftTiming(t, heartbeat, election)
 			c.WaitVoters(seats, 30*time.Second)
 			if sc.writers == 0 {
 				sc.writers = 4
@@ -195,7 +202,10 @@ func asymmetric(name string, send bool) scenario {
 // degraded holds link l on every pair; every replica must still serve
 // under it.
 func degraded(name string, l Link) scenario {
-	return scenario{name: name, run: func(t *testing.T, c *Cluster, _ *Checker) {
+	// Raft's leader lease is heartbeat/2. The fast harness's 250ms lease
+	// cannot sustain the 300–360ms RTT row. Production's 500ms lease can;
+	// use its heartbeat/election rather than weakening quorum checks.
+	return scenario{name: name, productionRaftTiming: true, run: func(t *testing.T, c *Cluster, _ *Checker) {
 		setAll(c, l)
 		hold(30 * time.Second)
 		c.WaitAllServing(5 * time.Second)

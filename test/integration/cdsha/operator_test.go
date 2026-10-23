@@ -10,6 +10,7 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -244,6 +245,19 @@ func TestRestore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Retain trust from the live cluster, before exporting backups or losing
+	// every member. The local harness uses trusted loopback plus operator auth;
+	// production operators must authenticate the server with armTLS.
+	leader := c.WaitLeader(30 * time.Second)
+	pinResponse := c.Do(context.Background(), leader, http.MethodGet, "/ha/status", nil, true)
+	var trusted cdsha.Status
+	if pinResponse.Err != nil || pinResponse.Code != http.StatusOK || json.Unmarshal(pinResponse.Body, &trusted) != nil {
+		t.Fatalf("authenticated pre-loss status: %d %v %s", pinResponse.Code, pinResponse.Err, pinResponse.Body)
+	}
+	pin, err := hex.DecodeString(trusted.CAFingerprint)
+	if err != nil || len(pin) != 32 || len(trusted.CAFingerprint) != 64 || !trusted.Serving || trusted.ClusterID != clusterID {
+		t.Fatalf("invalid pre-loss recovery identity: %+v", trusted)
+	}
 	newest := requireFreshBackup(t, c)
 	raw, _ := json.Marshal(corev1.ConfigMapList{Items: c.Backups()})
 	newFile := filepath.Join(c.Dir, "backup.json")
@@ -266,6 +280,7 @@ func TestRestore(t *testing.T) {
 	defer cancel()
 	out, err := exec.CommandContext(ctx, binPath, "cds", "ha", "recover", "--backup-file", newFile,
 		"--recovery-key", c.RecKeyPath, "--decree-key", c.OpKeyPath, "--cluster-id", clusterID,
+		"--trusted-ca-sha256", trusted.CAFingerprint,
 		"--bootstrap-node", c.Replicas[2].Node, "--url", c.Replicas[2].Base, "--insecure",
 		"--min-epoch", strconv.FormatUint(newest.Meta.Epoch, 10), "--min-index", strconv.FormatUint(newest.Meta.Index, 10)).CombinedOutput()
 	if err != nil {
@@ -296,7 +311,12 @@ func TestBigState(t *testing.T) {
 	if testing.Short() {
 		t.Skip("not in the -short subset")
 	}
-	c := NewCluster(t)
+	// This tests live state size, not unbounded quadratic document history.
+	// Keep the existing production pruning and store guard enabled. The hard
+	// snapshot capacity contract needs separate admission tests; these knobs
+	// alone do not prove admission safety for arbitrary workloads.
+	c := newClusterWithRaftTiming(t, timing.heartbeat, timing.election,
+		"--allowlist-history-bytes", "64Mi", "--allowlist-max-bytes", "256Mi")
 	c.WaitVoters(3, 30*time.Second)
 	start := time.Now()
 	var wg sync.WaitGroup

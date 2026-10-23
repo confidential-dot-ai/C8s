@@ -109,14 +109,16 @@ type Replica struct {
 
 // Cluster is five replica slots, the fault net, and the operator's keys.
 type Cluster struct {
-	t        *testing.T
-	Replicas []*Replica
-	Net      *faultNet
-	Dir      string
-	KubeDir  string
-	LogDir   string
-	HTTPPort int
-	PeerPort int
+	t                   *testing.T
+	Replicas            []*Replica
+	Net                 *faultNet
+	Dir                 string
+	KubeDir             string
+	LogDir              string
+	HTTPPort            int
+	PeerPort            int
+	heartbeat, election time.Duration
+	extraArgs           []string
 
 	OpKey      *ecdsa.PrivateKey
 	OpKeyPath  string // private, for the CLI
@@ -192,8 +194,13 @@ func newKeyPair(t *testing.T, dir, name string) (k *ecdsa.PrivateKey, privPEM []
 // cluster born from a Genesis decree naming n1.
 func NewCluster(t *testing.T) *Cluster {
 	t.Helper()
+	return newClusterWithRaftTiming(t, timing.heartbeat, timing.election)
+}
+
+func newClusterWithRaftTiming(t *testing.T, heartbeat, election time.Duration, extraArgs ...string) *Cluster {
+	t.Helper()
 	dir := t.TempDir()
-	c := &Cluster{t: t, Net: newFaultNet(), Dir: dir, KubeDir: filepath.Join(dir, "kube"),
+	c := &Cluster{t: t, extraArgs: extraArgs, heartbeat: heartbeat, election: election, Net: newFaultNet(), Dir: dir, KubeDir: filepath.Join(dir, "kube"),
 		LogDir:   filepath.Join(logRoot, strings.ReplaceAll(t.Name(), "/", "_")),
 		HTTPPort: freePortOn(t, replicas), PeerPort: freePortOn(t, replicas),
 		client: &http.Client{Timeout: 15 * time.Second, Transport: &http.Transport{MaxIdleConnsPerHost: 64}}}
@@ -289,11 +296,12 @@ func (c *Cluster) Start(i int, keepDB bool) {
 		"--ha-node-name", r.Node, "--ha-attestor", "mock", "--ha-measurement", measurement, "--ha-replica-pins", measurement,
 		"--ha-operator-key", c.OpPubPath, "--ha-recovery-key", c.RecPubPath,
 		"--ha-seats", strconv.Itoa(seats),
-		"--ha-heartbeat", timing.heartbeat.String(), "--ha-election", timing.election.String(),
+		"--ha-heartbeat", c.heartbeat.String(), "--ha-election", c.election.String(),
 		"--ha-lease", timing.lease.String(), "--ha-dead-after", timing.deadAfter.String(),
 		"--ha-stabilize", timing.stabilize.String(), "--ha-apply-timeout", timing.apply.String(),
 		"--ha-tick", timing.tick.String(), "--ha-backup-interval", timing.backup.String(),
 	}
+	args = append(args, c.extraArgs...)
 	cmd := exec.Command(binPath, args...)
 	cmd.Env = append(os.Environ(), "C8S_DEV_KUBE_DIR="+c.KubeDir, "C8S_DEV_TEST_ROUTES=1")
 	logf, err := os.Create(filepath.Join(c.LogDir, fmt.Sprintf("%s.%d.log", r.Node, r.inc)))
