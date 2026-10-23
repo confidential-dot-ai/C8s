@@ -61,7 +61,7 @@ type haConfig struct {
 
 func bindHAFlags(flags *pflag.FlagSet, c *haConfig) {
 	flags.StringVar(&c.yieldFile, "ha-yield-file", "", "baked singleton: path of the node's public cds-mode file; when it says \"ha\" (the signed launch document declares cdsHA), this singleton exits so the HA replicas on cds-role nodes are the only CDS")
-	flags.StringVar(&c.configFile, "ha-config", "", "baked nodes: path of cds-ha.json published from the signed launch document (cluster id, decree key, seats, image pins); it overrides --ha-cluster-id, --ha-operator-key, --ha-replica-pins and --ha-seats, so none of those trust roots is a pod flag")
+	flags.StringVar(&c.configFile, "ha-config", "", "baked nodes: path of cds-ha.json published from the signed launch document (cluster id, decree and recovery keys, seats, image pins); it excludes --ha-cluster-id, --ha-operator-key, --ha-recovery-key, --ha-replica-pins and --ha-measurement, so none of those trust roots is a pod flag, and its seat count overrides --ha-seats")
 	flags.StringVar(&c.clusterID, "ha-cluster-id", "", "enable CDS high availability for this cluster id (dev/test; baked nodes use --ha-config); replicas with the same id form one Raft group and share one mesh CA (empty = singleton CDS)")
 	flags.StringVar(&c.decreeNS, "ha-decree-namespace", os.Getenv("POD_NAMESPACE"), "namespace where operators write CDS decree objects (on a locked node image the CDS namespace is privileged, so use one the operator credential can write)")
 	flags.StringVar(&c.peersDNS, "ha-peers-dns", "", "headless Service DNS name resolving to every CDS replica")
@@ -282,8 +282,8 @@ func yieldIfHA(path string) error {
 func loadHAConfigFile(h *haConfig) error {
 	// The launch document is the only source of trust roots: refuse flags
 	// that would add to or replace them.
-	if h.clusterID != "" || len(h.pins) > 0 || h.operatorKey != "" || h.measurement != "" {
-		return errors.New("--ha-config excludes --ha-cluster-id, --ha-replica-pins, --ha-operator-key and --ha-measurement")
+	if h.clusterID != "" || len(h.pins) > 0 || h.operatorKey != "" || len(h.recoveryKeyPEM) > 0 || h.measurement != "" {
+		return errors.New("--ha-config excludes --ha-cluster-id, --ha-replica-pins, --ha-operator-key, --ha-recovery-key and --ha-measurement")
 	}
 	raw, err := os.ReadFile(h.configFile)
 	if err != nil {
