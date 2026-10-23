@@ -41,6 +41,20 @@ func writePEM(t *testing.T, typ string, der []byte) string {
 	return p
 }
 
+// testKeyPEM returns a P-256 key and its PEM public key.
+func testKeyPEM(t *testing.T) (*ecdsa.PrivateKey, []byte) {
+	t.Helper()
+	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.MarshalPKIXPublicKey(&k.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return k, pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})
+}
+
 func runHA(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 	cmd := newHACmd()
@@ -292,46 +306,52 @@ func TestHAHandlersBeforeJoin(t *testing.T) {
 	}
 }
 
-// newHANode and haStart wire the flags; errors surface before anything serves.
+// newHANode and haStart wire the flags: the base config builds a replica, and
+// each missing or bad input fails with its own error before anything serves.
 func TestHAStartWiring(t *testing.T) {
-	orig := newInClusterKubeClientset
-	t.Cleanup(func() { newInClusterKubeClientset = orig })
-	pub := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: func() []byte {
-		k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-		der, _ := x509.MarshalPKIXPublicKey(&k.PublicKey)
-		return der
-	}()})
+	origKube, origAtt := newInClusterKubeClientset, newHAAttestor
+	t.Cleanup(func() { newInClusterKubeClientset, newHAAttestor = origKube, origAtt })
+	newHAAttestor = func(name string, o cdsha.AttestorOptions) (cdsha.Attestor, error) {
+		if name == "fake" {
+			return fakeAttestor{"m1"}, nil
+		}
+		return cdsha.NewAttestor(name, o)
+	}
 	al, _ := allowlist.OpenInMemory()
 	defer al.Close()
 	st := haStores{allowlist: &al, secrets: secrets.NewMemoryStore(4, 2, 64), ledger: sandboxledger.New(time.Hour, 4)}
-	base := config{attestationApiURL: "http://127.0.0.1:1", requestTimeout: time.Second, ha: haConfig{
-		clusterID: "c1", decreeNS: "ns", peersDNS: "peers.invalid", advertiseIP: "127.0.0.1", port: 0, nodeName: "n0", attestor: "node",
+	_, pub := testKeyPEM(t)
+	base := config{requestTimeout: time.Second, ha: haConfig{
+		clusterID: "c1", decreeNS: "ns", peersDNS: "peers.invalid", advertiseIP: "127.0.0.1", nodeName: "n0", attestor: "fake",
 		pins: []string{"m1"}, operatorKeyPEM: pub, seats: 3, timing: cdsha.DefaultTiming}}
-	for name, mutate := range map[string]func(c *config){
-		"no peers dns":     func(c *config) { c.ha.peersDNS = "" },
-		"no node name":     func(c *config) { c.ha.nodeName = "" },
-		"unknown attestor": func(c *config) { c.ha.attestor = "nope" },
-		"no operator key":  func(c *config) { c.ha.operatorKeyPEM = nil },
-		"no kube client": func(c *config) {
+	for name, c := range map[string]struct {
+		mutate func(c *config)
+		want   string // "" builds the replica
+	}{
+		"base":             {func(*config) {}, ""},
+		"static peers":     {func(c *config) { c.ha.peersDNS, c.ha.peers = "", []string{"127.0.0.2:1"} }, ""},
+		"no peers":         {func(c *config) { c.ha.peersDNS = "" }, "are required with --ha-cluster-id"},
+		"no node name":     {func(c *config) { c.ha.nodeName = "" }, "are required with --ha-cluster-id"},
+		"unknown attestor": {func(c *config) { c.ha.attestor = "nope" }, `attestor "nope" not available`},
+		"no operator key":  {func(c *config) { c.ha.operatorKeyPEM = nil }, "--ha-operator-key is required"},
+		"no kube client": {func(*config) {
 			newInClusterKubeClientset = func() (kubernetes.Interface, error) { return nil, errors.New("no cluster") }
-		},
-		"attestation-api down": func(c *config) {},
+		}, "no cluster"},
+		"no advertise address": {func(c *config) { c.ha.advertiseIP = "" }, "--ha-advertise-ip"},
+		"recovery key not PEM": {func(c *config) { c.ha.recoveryKeyPEM = []byte("not pem") }, "recovery key: no PEM block"},
 	} {
 		newInClusterKubeClientset = func() (kubernetes.Interface, error) { return fake.NewClientset(), nil }
-		c := base
-		mutate(&c)
-		if _, err := newHANode(c, st); err == nil {
-			t.Errorf("%s: replica built", name)
+		cfg := base
+		c.mutate(&cfg)
+		_, err := newHANode(cfg, st)
+		if c.want == "" && err != nil {
+			t.Errorf("%s: %v", name, err)
+		} else if c.want != "" && (err == nil || !strings.Contains(err.Error(), c.want)) {
+			t.Errorf("%s: got %v, want %q", name, err, c.want)
 		}
 	}
-	c := base
-	c.ha.attestor = "nope"
-	if _, err := haStart(context.Background(), c, st, nil); err == nil {
-		t.Fatal("haStart built a replica with an unknown attestor")
-	}
-	c = config{ha: haConfig{configFile: filepath.Join(t.TempDir(), "none")}}
-	if _, err := haStart(context.Background(), c, st, nil); err == nil {
-		t.Fatal("haStart without its --ha-config file")
+	if _, err := haStart(context.Background(), config{ha: haConfig{configFile: filepath.Join(t.TempDir(), "none")}}, st, nil); err == nil || !strings.Contains(err.Error(), "--ha-config") {
+		t.Fatalf("haStart without its --ha-config file: %v", err)
 	}
 	if n, err := haStart(context.Background(), config{}, st, nil); err != nil || n != nil {
 		t.Fatalf("singleton: %v", err)
@@ -442,7 +462,7 @@ func TestHARecoverCLIErrors(t *testing.T) {
 }
 
 // The HA flags and cds-ha.json fill the replica's recovery key and seats.
-func TestHARecoveryKeyAndSeatsWiring(t *testing.T) {
+func TestHARecoveryKeyAndSeatsFlags(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "rec.pem")
 	_ = os.WriteFile(p, []byte("PEM"), 0o600)
@@ -462,36 +482,6 @@ func TestHARecoveryKeyAndSeatsWiring(t *testing.T) {
 	hc := haConfig{configFile: cf, seats: 3}
 	if err := loadHAConfigFile(&hc); err != nil || hc.seats != 5 || string(hc.recoveryKeyPEM) != "REC" {
 		t.Fatalf("cds-ha.json: %v %+v", err, hc)
-	}
-	al, _ := allowlist.OpenInMemory()
-	defer al.Close()
-	st := haStores{allowlist: &al, secrets: secrets.NewMemoryStore(4, 2, 64), ledger: sandboxledger.New(time.Hour, 4)}
-	orig := newInClusterKubeClientset
-	t.Cleanup(func() { newInClusterKubeClientset = orig })
-	newInClusterKubeClientset = func() (kubernetes.Interface, error) { return fake.NewClientset(), nil }
-	base := config{attestationApiURL: "http://127.0.0.1:1", requestTimeout: time.Second, ha: haConfig{
-		clusterID: "c1", decreeNS: "ns", peersDNS: "p.invalid", port: 0, nodeName: "n0", attestor: "node",
-		pins: []string{"m1"}, operatorKeyPEM: pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: func() []byte {
-			k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-			d, _ := x509.MarshalPKIXPublicKey(&k.PublicKey)
-			return d
-		}()}), seats: 3, timing: cdsha.DefaultTiming}}
-	origAtt := newHAAttestor
-	t.Cleanup(func() { newHAAttestor = origAtt })
-	newHAAttestor = func(string, cdsha.AttestorOptions) (cdsha.Attestor, error) { return fakeAttestor{"m1"}, nil }
-	noIP := base
-	if _, err := newHANode(noIP, st); err == nil {
-		t.Fatal("a replica without an advertise address")
-	}
-	badRec := base
-	badRec.ha.advertiseIP, badRec.ha.recoveryKeyPEM = "127.0.0.1", []byte("not pem")
-	if _, err := newHANode(badRec, st); err == nil {
-		t.Fatal("a recovery key that is not PEM")
-	}
-	staticPeers := base
-	staticPeers.ha.advertiseIP, staticPeers.ha.peersDNS, staticPeers.ha.peers = "127.0.0.1", "", []string{"127.0.0.2:1"}
-	if _, err := newHANode(staticPeers, st); err != nil {
-		t.Fatalf("static peers: %v", err)
 	}
 }
 
