@@ -149,16 +149,13 @@ func (s *ChallengeStore) Consume(challenge []byte) bool {
 	defer s.mu.Unlock()
 
 	created, ok := s.challenges[key]
-	if !ok {
+	delete(s.challenges, key)
+	if s.sharedKey != nil {
+		// Issuers and other replicas use the same current-key and expiry
+		// checks. A local hit must not survive key rotation or key loss.
 		return s.consumeShared(key)
 	}
-	delete(s.challenges, key)
-	if s.redeemed != nil {
-		// A self-verifying challenge stays valid by MAC: mark it used here too.
-		s.redeemed.Set(key, nil, s.ttl)
-	}
-
-	return time.Since(created) < s.ttl
+	return ok && time.Since(created) < s.ttl
 }
 
 // consumeShared accepts a self-verifying challenge another replica issued:

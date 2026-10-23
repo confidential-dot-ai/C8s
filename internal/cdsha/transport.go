@@ -117,19 +117,30 @@ func newMux(bind string, advertise, id string, cfg *tls.Config, v peerVerifier, 
 }
 
 // track registers a verified connection, so recheck can cut it later.
-func (m *mux) track(c *tls.Conn, claims Claims) *peerConn {
+func (m *mux) track(c *tls.Conn, claims Claims) (*peerConn, error) {
 	pc := &peerConn{Conn: c, m: m, claims: claims}
 	m.connMu.Lock()
+	defer m.connMu.Unlock()
+	select {
+	case <-m.done:
+		return nil, errors.New("cds-ha transport closed")
+	default:
+	}
+	// Serialize this final pin snapshot and registration with recheck.
+	// Verification may have completed before the latest epoch's sweep.
+	pins := m.verifier.pins()
+	if (pins != nil && !slices.Contains(pins, claims.Measurement)) || (m.blocked != nil && m.blocked(c.RemoteAddr().String())) {
+		return nil, errors.New("peer no longer admitted")
+	}
 	m.conns[pc] = struct{}{}
-	m.connMu.Unlock()
-	return pc
+	return pc, nil
 }
 
 // recheck closes every connection whose peer is no longer admitted: its
 // measurement left the pin set, or (in tests) it is partitioned away.
 func (m *mux) recheck() {
-	pins := m.verifier.pins()
 	m.connMu.Lock()
+	pins := m.verifier.pins()
 	var drop []*peerConn
 	for c := range m.conns {
 		if (pins != nil && !slices.Contains(pins, c.claims.Measurement)) || (m.blocked != nil && m.blocked(c.RemoteAddr().String())) {
@@ -205,7 +216,12 @@ func (m *mux) route(raw net.Conn) {
 		return
 	}
 	_ = c.SetDeadline(time.Time{})
-	pc := m.track(c, claims)
+	pc, err := m.track(c, claims)
+	if err != nil {
+		m.refuse(raw.RemoteAddr(), "peer admission", err)
+		c.Close()
+		return
+	}
 	switch kind[0] {
 	case muxRaft:
 		// The member this connection is for; anything else is refused.
@@ -275,7 +291,12 @@ func (m *mux) Dial(address raft.ServerAddress, timeout time.Duration) (net.Conn,
 		c.Close()
 		return nil, err
 	}
-	return m.track(c, claims), nil
+	pc, err := m.track(c, claims)
+	if err != nil {
+		c.Close()
+		return nil, err
+	}
+	return pc, nil
 }
 
 // dialKind opens an attested connection of one kind and verifies the peer
