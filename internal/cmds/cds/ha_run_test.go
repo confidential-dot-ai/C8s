@@ -314,14 +314,18 @@ func waitServed(t *testing.T, base string, ok func(int, http.Header, []byte) boo
 // An HA replica refuses writes once its allowlist volume is too full for a
 // replacement replica to copy the store.
 func TestRunHAFullStoreRefusesWrites(t *testing.T) {
-	c := newHATestCluster(t, []string{"127.0.3.20"})
+	// Genesis requires known peers to answer as non-members. An unreachable
+	// localhost placeholder is uncertain discovery, not proof of an empty cluster.
+	// Use real peers with identical policy; the volume guard is local to each.
+	c := newHATestCluster(t, []string{"127.0.3.20", "127.0.3.21", "127.0.3.22"})
 	c.tweak = func(cfg *config) { cfg.allowlistMaxBytes = resource.QuantityValue{Quantity: resource.MustParse("1Ki")} }
 	ha := c.haTemplate(cdsha.DefaultTiming)
-	ha.seats, ha.peersDNS = 1, "localhost" // no other replica answers
 	errs, bases := c.start(ha)
 	t.Cleanup(func() { c.stop(errs) })
 	waitServing(t, bases, true)
-	if code, body := c.firstWrite(bases[0], "/allowlist", []byte(anySeed(map[string]string{"web": digestA}))); code != http.StatusInsufficientStorage {
-		t.Fatalf("a write to a full store: %d %s", code, body)
+	for _, base := range bases {
+		if code, body := c.firstWrite(base, "/allowlist", []byte(anySeed(map[string]string{"web": digestA}))); code != http.StatusInsufficientStorage {
+			t.Fatalf("%s: a write to a full store: %d %s", base, code, body)
+		}
 	}
 }
