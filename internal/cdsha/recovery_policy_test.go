@@ -27,7 +27,11 @@ func TestRecoveryReplayPreservesPolicy(t *testing.T) {
 			n := &Node{cfg: Config{ClusterID: testCluster, Ledger: led, Secrets: sec}}
 			live := NewFSM(PreGenesis(testCluster, nil), &al, sec, led)
 			live.core.Policy = live.LocalPolicy()
+			n.fsm = live
 			scratch := n.recoveryFSM(&replayAL)
+			if scratch.readable != live.readable {
+				t.Fatal("recovery changed readable format")
+			}
 			scratch.core.Policy = live.Core().Policy
 			at := int64(1700000000000)
 			entries := []Entry{
