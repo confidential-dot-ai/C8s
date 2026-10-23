@@ -410,12 +410,10 @@ func run(cfg config) error {
 	if haNode != nil {
 		// Issuance follows the replica through mesh (haMeshCA): it stops while
 		// the replica is not serving and follows renewals and rotations.
-		deps.HAStatus = serveJSON(haNode.Status)
-		deps.HAPins = haPins(haNode)
-		deps.HADecrees = serveJSON(haNode.Decrees)
+		deps.HA = haNode
 		// Ready also waits for the voter seats to be full again (see
 		// cdsha.Node.Ready), so a rolling restart never takes the majority.
-		ready := readinessFn(checker.Ready, mesh, cfg.minCAValidity)
+		ready := deps.ReadyFn
 		deps.ReadyFn = func() bool { return haNode.Ready() && ready() }
 		router = haGate(haNode.Serving, devHARoutes(newRouter(deps), secretsStore, secretsMem, writeAuthorizer, deps.SecretsOperator == nil))
 	} else {
