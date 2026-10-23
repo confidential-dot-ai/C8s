@@ -21,6 +21,8 @@ spec.loader.exec_module(acceptance)
 
 WRAPPER = "bypassed-by-60-dev-runc.toml"
 MAX_TRANSCRIPT = 262144
+# Complete terminal controls only; never erase printable prefixes or partial sequences.
+TERMINAL_CONTROL = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b\r\n]*(?:\x07|\x1b\\)")
 UNITS = ("rke2-role.service", "nri-node-ip.service", "containerd-data-disk.service", "podcvm-containerd.service", "podcvm-kubelet.service", "podcvm-status.service")
 # Journal records matching these patterns are omitted entirely, never partially exposed.
 SENSITIVE = re.compile(r"private.?key|-----BEGIN|secret|password|passwd|token|authorization|bearer|credential|kubeconfig|launch\.yaml|\benv(?:ironment|s)?\b|config\s*[=:]", re.I)
@@ -43,7 +45,7 @@ expect {
 send -- "$env(C8S_DIAG_COMMAND)\r"
 set timeout 90
 expect {
-    -re "\r?\n$env(C8S_DIAG_END)\r?\n" {}
+    -re "\r*\n$env(C8S_DIAG_END)\r*\n" {}
     timeout {exit 15}
     eof {exit 16}
 }
@@ -81,24 +83,50 @@ def console_payload(marker):
     return f'''export HISTFILE=/dev/null
 set +e
 set -o pipefail
-printf '__C8S_%s_BEGIN__\\n' '{marker}'
-timeout 10 systemctl show --no-pager -p Id -p LoadState -p ActiveState -p SubState -p Result -p ExecMainCode -p ExecMainStatus {units} 2>/dev/null | jq -cRs '{{kind:"units",text:.}}'
+printf '\\n__C8S_%s_BEGIN__\\n' '{marker}'
+timeout 10 systemctl show --no-pager -p Id -p LoadState -p ActiveState -p SubState -p Result -p ExecMainCode -p ExecMainStatus {units} 2>/dev/null | jq -McRs '{{kind:"units",text:.}}'
 printf '{{"kind":"command","name":"units","exit":%s}}\\n' "$?"
-timeout 15 journalctl -b --no-pager -o json -n 160 {' '.join('-u '+unit for unit in UNITS)} 2>/dev/null | jq -c '{JOURNAL_PROJECTION}'
+timeout 15 journalctl -b --no-pager -o json -n 160 {' '.join('-u '+unit for unit in UNITS)} 2>/dev/null | jq -Mc '{JOURNAL_PROJECTION}'
 printf '{{"kind":"command","name":"journal","exit":%s}}\\n' "$?"
-timeout 15 /usr/lib/c8s/pod-runtime/bin/crictl --runtime-endpoint unix:///run/k3s/containerd/containerd.sock pods -o json 2>/dev/null | jq -c '.items[]?|{{kind:"sandbox",id:.id,name:.metadata.name,state:.state,createdAt:.createdAt}}'
+timeout 15 /usr/lib/c8s/pod-runtime/bin/crictl --runtime-endpoint unix:///run/k3s/containerd/containerd.sock pods -o json 2>/dev/null | jq -Mc '.items[]?|{{kind:"sandbox",id:.id,name:.metadata.name,state:.state,createdAt:.createdAt}}'
 printf '{{"kind":"command","name":"sandboxes","exit":%s}}\\n' "$?"
-timeout 15 /usr/lib/c8s/pod-runtime/bin/crictl --runtime-endpoint unix:///run/k3s/containerd/containerd.sock ps -a -o json 2>/dev/null | jq -c '.containers[]?|{{kind:"container",id:.id,name:.metadata.name,state:.state,imageRef:.imageRef,createdAt:.createdAt}}'
+timeout 15 /usr/lib/c8s/pod-runtime/bin/crictl --runtime-endpoint unix:///run/k3s/containerd/containerd.sock ps -a -o json 2>/dev/null | jq -Mc '.containers[]?|{{kind:"container",id:.id,name:.metadata.name,state:.state,imageRef:.imageRef,createdAt:.createdAt}}'
 printf '{{"kind":"command","name":"containers","exit":%s}}\\n' "$?"
-timeout 10 /usr/lib/c8s/pod-runtime/bin/ctr --address /run/k3s/containerd/containerd.sock plugins ls 2>/dev/null | head -70 | jq -cRs '{{kind:"plugins",text:.}}'
+timeout 10 /usr/lib/c8s/pod-runtime/bin/ctr --address /run/k3s/containerd/containerd.sock plugins ls 2>/dev/null | head -70 | jq -McRs '{{kind:"plugins",text:.}}'
 printf '{{"kind":"command","name":"plugins","exit":%s}}\\n' "$?"
 printf '__C8S_%s_END__\\n' '{marker}'
 '''
 
 
-def public_records(raw, marker):
+def console_lines(raw):
     require(len(raw) <= MAX_TRANSCRIPT, "oversized console transcript")
-    lines = raw.decode(errors="replace").replace("\r", "").splitlines()
+    text = raw.decode(errors="replace")
+    return TERMINAL_CONTROL.sub("", text).replace("\r", "").splitlines()
+
+
+def frame_diagnostics(raw, marker):
+    # Counts only: never publish an unparsed line, tail, marker value or terminal payload.
+    require(len(raw) <= MAX_TRANSCRIPT, "oversized console transcript")
+    text = raw.decode(errors="replace")
+    original = text.replace("\r", "").splitlines()
+    lines = console_lines(raw)
+    start, end = "__C8S_" + marker + "_BEGIN__", "__C8S_" + marker + "_END__"
+    objects = 0
+    for line in lines:
+        try:
+            objects += isinstance(json.loads(line), dict)
+        except ValueError:
+            pass
+    return {"bytes": len(raw), "lines": len(lines), "controlSequences": len(TERMINAL_CONTROL.findall(text)),
+            "rawBeginLines": original.count(start), "rawEndLines": original.count(end),
+            "beginLines": lines.count(start), "endLines": lines.count(end),
+            "beginOccurrences": text.count(start), "endOccurrences": text.count(end),
+            "beginIndex": lines.index(start) if start in lines else -1,
+            "endIndex": lines.index(end) if end in lines else -1, "jsonObjects": objects}
+
+
+def public_records(raw, marker):
+    lines = console_lines(raw)
     start, end = "__C8S_" + marker + "_BEGIN__", "__C8S_" + marker + "_END__"
     require(lines.count(start) == 1 and lines.count(end) == 1, "console frame missing or duplicated")
     a, b = lines.index(start), lines.index(end)
@@ -185,6 +213,13 @@ class RuntimeDiagnostic(acceptance.Acceptance):
         result["labels"]["ci.confidential.ai/resource"] = "pod-runtime-diagnostic"
         return result
 
+    def vm(self, side):
+        require(side in acceptance.SIDES, "unexpected diagnostic VM side")
+        spec = super().vm(side)
+        domain = spec["spec"]["template"]["spec"]["domain"]
+        domain["resources"]["requests"]["cpu"] = str(domain["cpu"]["cores"])
+        return spec
+
     def validate_image(self, raw=None):
         validate_diagnostic_pins(self.pins)
         if raw is not None:
@@ -244,7 +279,7 @@ class RuntimeDiagnostic(acceptance.Acceptance):
         # Revalidate the persisted VM UID and held VMI UID before publishing any observation.
         after = self.instance(side, deadline)
         require(after.get("metadata", {}).get("uid") == uid, "diagnostic VMI replaced during console")
-        write(self.evidence / (side + "-console-status.json"), {**self.scope(), "vmiUID": uid, "driverError": error})
+        write(self.evidence / (side + "-console-status.json"), {**self.scope(), "vmiUID": uid, "driverError": error, "frame": frame_diagnostics(raw, marker)})
         require(error is None, error or "console failed")
         report = {**self.scope(), "vmiUID": uid, **public_records(raw, marker)}
         write(self.evidence / (side + "-runtime.json"), report)
@@ -255,7 +290,7 @@ class RuntimeDiagnostic(acceptance.Acceptance):
         for side in acceptance.SIDES:
             self.connect(side, 30808 if side == "server" else 8443)
         deadline = self.deadline(300)
-        for _ in range(3):
+        for _ in range(9):
             if time.monotonic() >= deadline:
                 break
             try:

@@ -59,8 +59,8 @@ permissions:
   packages: read # The acme check reads the component images.
 
 concurrency:
-  # One at a time: the lane boots a CVM off a shared RWO rootdisk PVC.
-  group: tdx-metal-e2e
+  # Preserve the shared-root lane; owned runtime diagnostics have their own fixed queue.
+  group: ${{ github.event_name == 'workflow_dispatch' && inputs.pod_runtime_diagnostic && !inputs.pod_diagnostic && !inputs.pod_acceptance && 'tdx-pod-runtime-diagnostic' || 'tdx-metal-e2e' }}
   cancel-in-progress: false
 
 env:

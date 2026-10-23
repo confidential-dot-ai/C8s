@@ -195,6 +195,12 @@ console transcripts are not uploaded; public evidence contains fixed projections
 with sensitive records omitted. UID checks bind observations and cleanup to the
 resources created by that run.
 
+Runtime diagnostics use their own serialized workflow queue and request eight
+CPUs and 32 GiB of guest memory, plus virtualization overhead. Scheduling is
+bounded; unavailable capacity fails the run and triggers cleanup. Terminal
+control sequences are removed before parsing the projected console records;
+framing failures retain counts only, without publishing raw console text.
+
 ```sh
 gh workflow run tdx-metal-e2e.yml --repo confidential-dot-ai/C8s \
   --ref podcvm/no-mesh-gate -f pod_runtime_diagnostic=true

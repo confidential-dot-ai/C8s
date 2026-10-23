@@ -81,6 +81,36 @@ class DiagnosticTests(unittest.TestCase):
         for raw in (transcript().replace(b"_END__", b"_BAD__"), transcript() + transcript(), b"x" * (diagnostic.MAX_TRANSCRIPT + 1)):
             with self.assertRaises(RuntimeError): diagnostic.public_records(raw, MARKER)
 
+    def test_frame_controls_are_normalized_without_accepting_printable_prefixes(self):
+        plain = transcript()
+        for prefix in (b"\x1b[?2004l\r", b"\x1b]3008;context=private-canary\x07",
+                       b"\x1b]3008;context=private-canary\x1b\\", b"\x1b[0m\x1b]3008;context=private-canary\x1b\\"):
+            raw = plain.replace(b"__C8S_" + MARKER.encode() + b"_BEGIN__", prefix + b"__C8S_" + MARKER.encode() + b"_BEGIN__")
+            report = diagnostic.public_records(raw, MARKER)
+            self.assertEqual(len(report["records"]), 5)
+            counts = diagnostic.frame_diagnostics(raw, MARKER)
+            self.assertEqual(counts["rawBeginLines"], 0)
+            self.assertEqual(counts["beginLines"], 1)
+            self.assertEqual(counts["endLines"], 1)
+            self.assertGreater(counts["controlSequences"], 0)
+            self.assertTrue(all(type(value) is int for value in counts.values()))
+            self.assertNotIn("canary", json.dumps(report) + json.dumps(counts))
+        for prefix in (b"printable-prefix ", b"\x1b]3008;unterminated "):
+            raw = plain.replace(b"__C8S_" + MARKER.encode() + b"_BEGIN__", prefix + b"__C8S_" + MARKER.encode() + b"_BEGIN__")
+            with self.assertRaises(RuntimeError): diagnostic.public_records(raw, MARKER)
+        with self.assertRaises(RuntimeError): diagnostic.public_records(plain + plain, MARKER)
+        counts = diagnostic.frame_diagnostics(plain.replace(b"_BEGIN__", b"_MISSING__"), MARKER)
+        self.assertEqual(counts["beginLines"], 0)
+        self.assertEqual(counts["beginIndex"], -1)
+        self.assertEqual(counts["jsonObjects"], 5)
+
+    def test_diagnostic_reserves_its_vcpu_count_without_changing_production_vm(self):
+        production = diagnostic.acceptance.Acceptance(Path(self.temp.name) / "production", "123", "1", "confidential-dot-ai/C8s")
+        for side, expected in (("server", "4"), ("a", "2"), ("b", "2")):
+            vm = self.task.vm(side)
+            self.assertEqual(vm["spec"]["template"]["spec"]["domain"]["resources"]["requests"]["cpu"], expected)
+            self.assertNotIn("cpu", production.vm(side)["spec"]["template"]["spec"]["domain"]["resources"]["requests"])
+
     def test_journal_filters_late_secret_marker_before_truncation(self):
         for message, exposed in (("early canary " + "x" * 1700 + " Authorization: Bearer confidential", False),
                                  ("ordinary runtime failure " + "x" * 1700, True)):
@@ -99,6 +129,8 @@ class DiagnosticTests(unittest.TestCase):
             self.assertNotIn(forbidden, payload)
         self.assertIn("--runtime-endpoint unix:///run/k3s/containerd/containerd.sock", payload)
         self.assertIn("-n 160", payload)
+        self.assertIn("printf '\\n__C8S_%s_BEGIN__", payload)
+        self.assertNotIn("jq -c", payload)
         self.assertLess(len(base64.b64encode(payload.encode())) + 45, 3500)
         with self.assertRaises(RuntimeError): diagnostic.console_payload("; echo arbitrary")
 
@@ -111,7 +143,8 @@ class DiagnosticTests(unittest.TestCase):
     def test_expect_pty_delivers_payload_and_receives_complete_frame(self):
         # A local console surrogate exercises expect itself; it never invokes guest commands.
         binary = Path(self.temp.name) / "virtctl"
-        binary.write_text("#!" + sys.executable + "\nimport os,sys\nprint('Successfully connected',flush=True)\nsys.stdin.readline()\nprint('root# ',end='',flush=True)\nsys.stdin.readline()\nprint('\\n'+os.environ['C8S_DIAG_END'],flush=True)\nsys.stdin.read(1)\n")
+        framed = transcript().replace(b"__C8S_" + MARKER.encode() + b"_BEGIN__", b"\x1b[?2004l\x1b]3008;context=private-canary\x1b\\__C8S_" + MARKER.encode() + b"_BEGIN__")
+        binary.write_text("#!" + sys.executable + "\nimport sys\nprint('Successfully connected',flush=True)\nsys.stdin.readline()\nprint('root# ',end='',flush=True)\nsys.stdin.readline()\nprint(" + repr(framed.decode()) + ",end='',flush=True)\nsys.stdin.read(1)\n")
         binary.chmod(0o700)
         script = Path(self.temp.name) / "console.exp"
         script.write_text(diagnostic.EXPECT)
@@ -119,6 +152,9 @@ class DiagnosticTests(unittest.TestCase):
         raw, error = diagnostic.bounded_process(["expect", str(script)], env, time.monotonic() + 5)
         self.assertIsNone(error, raw.decode(errors="replace"))
         self.assertIn(env["C8S_DIAG_END"].encode(), raw)
+        report = diagnostic.public_records(raw, MARKER)
+        self.assertEqual(len(report["records"]), 5)
+        self.assertNotIn("canary", json.dumps(report))
 
     def test_console_subprocess_is_byte_and_time_bounded(self):
         env = {"PATH": os.environ["PATH"]}
