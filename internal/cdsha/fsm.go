@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -223,6 +224,11 @@ func (f *FSM) Apply(l *raft.Log) any {
 	if err, ok := res.(error); ok && errors.Is(err, errMalformed) {
 		return f.stop(fmt.Errorf("log entry %d: %w", l.Index, err))
 	}
+	// The entry is committed, and replicas whose disks took it hold it. One
+	// that could not write it here must not mark it applied and serve on.
+	if r, ok := res.(allowlist.Result); ok && r.LocalStoreFault() {
+		return f.stop(fmt.Errorf("log entry %d: local allowlist store: %w", l.Index, r.Error()))
+	}
 	return res
 }
 
@@ -235,7 +241,9 @@ var errMalformed = errors.New("malformed log entry")
 // It stops serving instead, and is replaced by one that reads the log.
 func (f *FSM) stop(err error) error {
 	msg := err.Error()
-	f.stuck.CompareAndSwap(nil, &msg)
+	if f.stuck.CompareAndSwap(nil, &msg) {
+		slog.Error("cds-ha: this replica can no longer follow the log; it stops serving until replaced or restarted", "reason", msg)
+	}
 	return err
 }
 

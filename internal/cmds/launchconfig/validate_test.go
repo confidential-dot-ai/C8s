@@ -347,11 +347,12 @@ func TestStageCommandFailsClosed(t *testing.T) {
 		t.Fatalf("missing required flag: %v", err)
 	}
 
-	cmd = NewCmd()
-	cmd.SetArgs([]string{"stage", "--platform", "sgx", "--config", cfg.DocumentPath, "--signature", cfg.SignaturePath})
-	cmd.SetOut(&bytes.Buffer{})
-	cmd.SetErr(&bytes.Buffer{})
-	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "platform") {
+	// The stage command has no root override: Execute would clear the real
+	// /etc/rancher and /run/confos outputs before rejecting the platform.
+	// Exercise the same Stage path rebased under the test root instead.
+	sgx := cfg
+	sgx.Platform = "sgx"
+	if err := Stage(context.Background(), sgx); err == nil || !strings.Contains(err.Error(), "platform") {
 		t.Fatalf("unsupported platform: %v", err)
 	}
 }
