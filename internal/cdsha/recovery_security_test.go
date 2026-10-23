@@ -4,11 +4,12 @@ import (
 	"bytes"
 	"crypto/x509"
 	"encoding/json"
-	"github.com/confidential-dot-ai/c8s/internal/issuer"
-	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/confidential-dot-ai/c8s/internal/issuer"
+	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 )
 
 func TestRecoveryAuthentication(t *testing.T) {
