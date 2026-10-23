@@ -905,15 +905,30 @@ confidentiality.)
   that one address and port (`mesh.exits`); kube-state-metrics itself runs in
   `kube-system`, outside the mesh, as a stock image the seed pins to its
   exact argv, mounts and environment. It serves plain HTTP and exports the
-  metadata of cluster objects: names, namespaces, owners, phases, conditions,
-  restart counts, images, node and pod addresses, resource requests and
-  limits, replica counts and job status, for pods, nodes, namespaces,
-  Services, PersistentVolumes and their claims, Deployments, ReplicaSets,
-  StatefulSets, DaemonSets, Jobs, CronJobs and PodDisruptionBudgets. Its RBAC
-  is list and watch on those kinds alone, so it reads no Secret or ConfigMap,
-  and it exports no labels or annotations, no environment, arguments or
-  container output, and nothing a workload processes. Any member pod can read
-  that metadata about every other pod of the cluster. Like DNS, it is an
+  metadata of pods, nodes, namespaces, Services, PersistentVolumes and their
+  claims, Deployments, ReplicaSets, StatefulSets, DaemonSets, Jobs, CronJobs
+  and PodDisruptionBudgets:
+  - names, namespaces, owners, service accounts, creation and deletion times;
+  - phases, conditions, reasons, exit codes, restart counts, and start,
+    scheduled and ready times;
+  - container images with their `image_id` and `container_id`;
+  - pod IPs, the node each pod runs on with its host IP, node addresses and
+    pod CIDRs, Service types and ClusterIPs;
+  - resource requests, limits, capacity and allocatable figures, replica
+    counts and job status, CronJob schedules;
+  - PersistentVolume and claim names, storage classes, capacities, access
+    modes and claim bindings.
+
+  Its RBAC is list and watch on those kinds alone, so it reads no Secret or
+  ConfigMap. Its argv turns off the series that describe the host rather than
+  the workloads (`kube_node_info`: system UUID, provider ID, kernel and OS
+  image; `kube_node_spec_taint` and `kube_pod_tolerations`: taint keys and
+  values; `kube_persistentvolume_info`: host and local paths and volume
+  handles; `kube_service_spec_external_ip`). It exports no labels or
+  annotations, no environment, arguments or container output, and nothing a
+  workload processes. Any member pod can read that metadata about every other
+  pod of the cluster, including restart counts and replica numbers that move
+  with another workload's activity. Like DNS, it is an
   address and port, not a payload filter.
 
 ## Which certificate is used where
