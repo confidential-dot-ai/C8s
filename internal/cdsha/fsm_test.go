@@ -94,15 +94,31 @@ func TestFSMEdges(t *testing.T) {
 	key, _ := x509.MarshalPKCS8PrivateKey(ca.Key)
 	sign := func(d Decree) SignedDecree { return signDecree(t, opKey, d) }
 	now := time.Now().UnixMilli()
-	for name, de := range map[string]DecreeEntry{
-		"genesis without pins":   {Decree: sign(Decree{IntentID: "g0", Kind: Genesis, BootstrapNode: "n0"}), AtMS: now, RootCert: ca.Cert.Raw, Key: key},
-		"genesis with a bad key": {Decree: sign(Decree{IntentID: "g1", Kind: Genesis, BootstrapNode: "n0"}), AtMS: now, Pins: []string{"m1"}, RootCert: ca.Cert.Raw, Key: []byte("x")},
-		"genesis key mismatch":   {Decree: sign(Decree{IntentID: "g2", Kind: Genesis, BootstrapNode: "n0"}), AtMS: now, Pins: []string{"m1"}, RootCert: mustCA(t).Cert.Raw, Key: key},
-		"expired at entry time":  {Decree: sign(Decree{IntentID: "g3", Kind: Genesis, BootstrapNode: "n0"}), AtMS: time.Now().Add(2 * time.Hour).UnixMilli(), Pins: []string{"m1"}, RootCert: ca.Cert.Raw, Key: key},
+	for _, tc := range []struct {
+		name string
+		de   DecreeEntry
+		want string
+	}{
+		{"genesis without pins", DecreeEntry{Decree: sign(Decree{IntentID: "g0", Kind: Genesis, BootstrapNode: "n0"}), AtMS: now, RootCert: ca.Cert.Raw, Key: key}, "genesis without the bootstrap replica's pins"},
+		{"genesis with a bad key", DecreeEntry{Decree: sign(Decree{IntentID: "g1", Kind: Genesis, BootstrapNode: "n0"}), AtMS: now, Pins: []string{"m1"}, RootCert: ca.Cert.Raw, Key: []byte("x")}, "mesh CA key:"},
+		{"genesis key mismatch", DecreeEntry{Decree: sign(Decree{IntentID: "g2", Kind: Genesis, BootstrapNode: "n0"}), AtMS: now, Pins: []string{"m1"}, RootCert: mustCA(t).Cert.Raw, Key: key}, "mesh CA key does not match its certificate"},
+		{"expired at entry time", DecreeEntry{Decree: sign(Decree{IntentID: "g3", Kind: Genesis, BootstrapNode: "n0"}), AtMS: time.Now().Add(2 * time.Hour).UnixMilli(), Pins: []string{"m1"}, RootCert: ca.Cert.Raw, Key: key}, "decree expired"},
 	} {
-		if res := apply(Entry{Kind: KindDecree, Decree: &de}).(DecreeResult); res.Err == "" {
-			t.Errorf("%s applied", name)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			// Ordinary decree refusals must reach their own validation, not
+			// stop the FSM at the independent policy compatibility guard.
+			tc.de.Policy = f.LocalPolicy()
+			res := apply(Entry{Kind: KindDecree, Decree: &tc.de}).(DecreeResult)
+			if !strings.Contains(res.Err, tc.want) {
+				t.Fatalf("refusal: %q, want %q", res.Err, tc.want)
+			}
+			if stuck := f.Stuck(); stuck != "" {
+				t.Fatalf("ordinary decree refusal stopped FSM: %s", stuck)
+			}
+			if f.Core().Joined() || f.Core().Epoch != 0 || f.CA() != nil {
+				t.Fatal("refused Genesis changed cluster state")
+			}
+		})
 	}
 	g := DecreeEntry{Policy: f.LocalPolicy(), Decree: sign(Decree{IntentID: "g", Kind: Genesis, BootstrapNode: "n0"}), AtMS: now, Pins: []string{"m1"}, RootCert: ca.Cert.Raw, Key: key}
 	if res := apply(Entry{Kind: KindDecree, Decree: &g}).(DecreeResult); res.Err != "" || res.Epoch != 1 {
