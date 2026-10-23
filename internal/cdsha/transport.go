@@ -24,8 +24,9 @@ const (
 	muxRaft    byte = 'R'
 	muxControl byte = 'C'
 
-	handshakeTimeout = 10 * time.Second
-	maxControlBytes  = 8 << 20
+	handshakeTimeout      = 10 * time.Second
+	maxControlBytes       = 8 << 20
+	maxInboundConnections = 64
 )
 
 // peerTLSConfig is used for both directions. It checks no chain: the
@@ -56,9 +57,48 @@ type mux struct {
 	done     chan struct{}
 	once     sync.Once
 
+	inbound map[*inboundConn]struct{}
 	connMu  sync.Mutex
 	conns   map[*peerConn]struct{}
 	refused *cache.LRUExpireCache // remote host + stage
+}
+
+// inboundConn owns an accepted socket from admission through protocol close.
+// Closing the raw socket avoids blocking shutdown on TLS close_notify.
+type inboundConn struct {
+	net.Conn
+	m    *mux
+	once sync.Once
+}
+
+func (c *inboundConn) Close() error {
+	c.once.Do(func() {
+		c.m.connMu.Lock()
+		delete(c.m.inbound, c)
+		c.m.connMu.Unlock()
+	})
+	return c.Conn.Close()
+}
+
+func (m *mux) admit(raw net.Conn) *inboundConn {
+	m.connMu.Lock()
+	defer m.connMu.Unlock()
+	select {
+	case <-m.done:
+		raw.Close()
+		return nil
+	default:
+	}
+	if len(m.inbound) >= maxInboundConnections {
+		raw.Close()
+		return nil
+	}
+	if m.inbound == nil {
+		m.inbound = make(map[*inboundConn]struct{})
+	}
+	c := &inboundConn{Conn: raw, m: m}
+	m.inbound[c] = struct{}{}
+	return c
 }
 
 // peerConn is a live attested connection and what its peer attested. TLS
@@ -177,11 +217,20 @@ func (m *mux) serve() {
 			time.Sleep(50 * time.Millisecond)
 			continue
 		}
-		go m.route(c)
+		if owned := m.admit(c); owned != nil {
+			go m.route(owned)
+		}
 	}
 }
 
 func (m *mux) route(raw net.Conn) {
+	if _, ok := raw.(*inboundConn); !ok {
+		owned := m.admit(raw)
+		if owned == nil {
+			return
+		}
+		raw = owned
+	}
 	if m.blocked != nil && m.blocked(raw.RemoteAddr().String()) {
 		raw.Close()
 		return
@@ -204,7 +253,6 @@ func (m *mux) route(raw net.Conn) {
 		c.Close()
 		return
 	}
-	_ = c.SetDeadline(time.Time{})
 	pc := m.track(c, claims)
 	switch kind[0] {
 	case muxRaft:
@@ -220,6 +268,7 @@ func (m *mux) route(raw net.Conn) {
 			pc.Close()
 			return
 		}
+		_ = c.SetDeadline(time.Time{})
 		select {
 		case m.raftConn <- pc:
 		case <-m.done:
@@ -252,7 +301,25 @@ func (m *mux) Accept() (net.Conn, error) {
 }
 
 func (m *mux) Close() error {
-	m.once.Do(func() { close(m.done) })
+	m.once.Do(func() {
+		m.connMu.Lock()
+		close(m.done)
+		raw := make([]*inboundConn, 0, len(m.inbound))
+		for c := range m.inbound {
+			raw = append(raw, c)
+		}
+		peers := make([]*peerConn, 0, len(m.conns))
+		for c := range m.conns {
+			peers = append(peers, c)
+		}
+		m.connMu.Unlock()
+		for _, c := range raw {
+			_ = c.Close()
+		}
+		for _, c := range peers {
+			_ = c.Close()
+		}
+	})
 	return m.ln.Close()
 }
 

@@ -160,7 +160,26 @@ func restoreApplied(ctx context.Context, hc *http.Client, base, intent string) b
 }
 
 func postRestore(hc *http.Client, url string, body []byte) (int, string, error) {
-	resp, err := hc.Post(url, "application/json", bytes.NewReader(body))
+	var envelope struct {
+		Decree cdsha.SignedDecree `json:"decree"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return 0, "", err
+	}
+	decree, err := json.Marshal(envelope.Decree)
+	if err != nil {
+		return 0, "", err
+	}
+	if len(decree) > maxRestoreDecreeBytes {
+		return 0, "", errors.New("restore decree exceeds header limit")
+	}
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return 0, "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(restoreDecreeHeader, string(decree))
+	resp, err := hc.Do(req)
 	if err != nil {
 		return 0, "", err
 	}
