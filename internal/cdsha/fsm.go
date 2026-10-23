@@ -251,7 +251,7 @@ func (f *FSM) applyRestore(re RestoreEntry) DecreeResult {
 	if SnapshotSHA256(re.Snapshot) != re.Decree.Decree.SnapshotSHA256 {
 		return fail(errors.New("snapshot differs from the one the decree names"))
 	}
-	sn, err := decodeSnapshot(bytes.NewReader(re.Snapshot), f.readable)
+	sn, err := decodeSnapshot(bytes.NewReader(re.Snapshot), f.readable, false)
 	if err != nil {
 		return fail(err)
 	}
@@ -368,7 +368,7 @@ func (f *FSM) Snapshot() (raft.FSMSnapshot, error) {
 // Restore implements raft.FSM: a joining replica takes the leader's state.
 func (f *FSM) Restore(rc io.ReadCloser) error {
 	defer rc.Close()
-	sn, err := decodeSnapshot(rc, f.readable)
+	sn, err := decodeSnapshot(rc, f.readable, false)
 	if err != nil {
 		return err
 	}
@@ -425,7 +425,8 @@ func encodeSnapshot(w io.Writer, sn snapshot) error {
 const snapshotWindow = 16 << 20
 
 // decodeSnapshot reads a snapshot in a format from baseFormat to readable.
-func decodeSnapshot(r io.Reader, readable uint32) (snapshot, error) {
+// With headOnly it stops after the header line, without the allowlist rows.
+func decodeSnapshot(r io.Reader, readable uint32, headOnly bool) (snapshot, error) {
 	d, err := zstd.NewReader(r, zstd.WithDecoderMaxWindow(snapshotWindow), zstd.WithDecoderConcurrency(1))
 	if err != nil {
 		return snapshot{}, fmt.Errorf("decode snapshot: %w", err)
@@ -441,6 +442,9 @@ func decodeSnapshot(r io.Reader, readable uint32) (snapshot, error) {
 		return snapshot{}, fmt.Errorf("%w: snapshot format %d, cluster format %d, this replica reads up to %d", ErrNewerFormat, v, c, readable)
 	case v < baseFormat || c < baseFormat:
 		return snapshot{}, fmt.Errorf("cds-ha: snapshot format %d, cluster format %d: older than this release reads (%d)", v, c, baseFormat)
+	}
+	if headOnly {
+		return sn, nil
 	}
 	sn.Allowlist = allowlist.Snapshot{}
 	for {
