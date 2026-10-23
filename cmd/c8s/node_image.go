@@ -457,8 +457,8 @@ func seedContainers(seed *pkgallowlist.Allowlist) map[string][]pkgallowlist.Cont
 }
 
 // cdsFlavour assigns the objects only one CDS flavour uses: the singleton
-// Deployment, and everything the HA chart template renders (labelled
-// c8s.confidential.ai/cds-ha, or named after it). Shared objects return "".
+// Deployment, and everything the HA chart template renders, matched by
+// kind and name. Shared objects return "".
 func cdsFlavour(object unstructured.Unstructured) string {
 	switch object.GetKind() + "/" + object.GetName() {
 	case "Deployment/c8s-cds":
