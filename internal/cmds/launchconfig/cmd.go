@@ -11,10 +11,11 @@ import (
 )
 
 // NewCmd returns the authenticated launch configuration command group: the
-// operator-side bundle generator and the guest-side stage.
+// operator-side bundle generator, the guest-side stage, and a managed node's
+// enrollment.
 func NewCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "launch-config", Short: "Create, extend and stage a measured node's signed launch configuration"}
-	cmd.AddCommand(newBundleCmd(), newAddAgentCmd(), newStageCmd())
+	cmd.AddCommand(newBundleCmd(), newAddAgentCmd(), newStageCmd(), newEnrollCmd())
 	return cmd
 }
 
@@ -159,4 +160,32 @@ func newStageCmd() *cobra.Command {
 		_ = stage.MarkFlagRequired(name)
 	}
 	return stage
+}
+
+func newEnrollCmd() *cobra.Command {
+	var cfg EnrollConfig
+	enroll := &cobra.Command{
+		Use:   "enroll",
+		Short: "Enroll a staged managed node with its management cluster and stage its RKE2 role",
+		Long: `After 'stage' accepts a c8s-launch/v2 document, fetch this Machine's RKE2
+role material from the enrollment service the document names, over armTLS
+to a management image it pins, with evidence bound to a fresh challenge.
+The material must hash to the document's managed.bootstrapDigest. The role
+marker is written last, so RKE2 starts only after enrollment succeeds.`,
+		Args: cobra.NoArgs, SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := Enroll(cmd.Context(), cfg); err != nil {
+				return err
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), "managed node enrolled")
+			return nil
+		},
+	}
+	f := enroll.Flags()
+	f.StringVar(&cfg.Platform, "platform", "", "image TEE platform: tdx or snp (required)")
+	f.StringVar(&cfg.AttestationAPIURL, "attestation-api-url", DefaultAttestationAPIURL, "trusted node-local attestation API")
+	f.StringVar(&cfg.MeasuredPoliciesFile, "measured-policies-file", armtls.NodeJournal, "the node's journal of allowlist policies extended into TDX RTMR[3], listed in the enrollment certificate")
+	f.DurationVar(&cfg.Timeout, "timeout", 0, "give up after this long, retries included (default 15m)")
+	_ = enroll.MarkFlagRequired("platform")
+	return enroll
 }

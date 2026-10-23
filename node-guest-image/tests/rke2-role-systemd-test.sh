@@ -41,6 +41,7 @@ UNITDIR=/usr/local/lib/systemd/system
 mkdir -p "$UNITDIR" /dev/disk/by-label
 
 for p in etc/systemd/system/rke2-role.service \
+         etc/systemd/system/c8s-enroll.service \
          etc/systemd/system/apparmor-enforce.service \
          etc/systemd/system/rke2-server.service.d/no-modprobe.conf \
          etc/systemd/system/rke2-agent.service.d/no-modprobe.conf \
@@ -53,6 +54,11 @@ done
 install -D -m755 "$EXTRA/usr/local/bin/rke2-role.sh" /usr/local/bin/rke2-role.sh
 install_launch_stubs /usr/local/bin
 install -D -m644 /dev/stdin /etc/systemd/system/rke2-role.service.d/90-test.conf <<EOF
+[Service]
+Environment=CRED_PLATFORM=tdx
+Environment=C8S_ROLE_FIXTURE=$C8S_ROLE_FIXTURE
+EOF
+install -D -m644 /dev/stdin /etc/systemd/system/c8s-enroll.service.d/90-test.conf <<EOF
 [Service]
 Environment=CRED_PLATFORM=tdx
 Environment=C8S_ROLE_FIXTURE=$C8S_ROLE_FIXTURE
@@ -116,7 +122,7 @@ not_active() { ! active "$1"; }
 cond_skipped() { [[ $(systemctl show -p ConditionResult --value "$1") == no ]]; }
 boot_roles() { systemctl start "${payload_units[@]}"; }
 scenario_reset() {
-    systemctl stop "${payload_units[@]}" rke2-role.service attestation-api.service apparmor-enforce.service >/dev/null 2>&1 || true
+    systemctl stop "${payload_units[@]}" rke2-role.service c8s-enroll.service attestation-api.service apparmor-enforce.service >/dev/null 2>&1 || true
     systemctl reset-failed >/dev/null 2>&1 || true
     reset_launch_fixture
     rm -f /dev/disk/by-label/opkeydata /run/apparmor-enforce-test-fail
@@ -129,8 +135,8 @@ scenario_reset() {
 
 CASE=presets
 systemctl enable apparmor.service >/dev/null 2>&1
-ok "production preset applies" systemctl preset rke2-role.service apparmor-enforce.service apparmor.service "${payload_units[@]}"
-for unit in rke2-role.service apparmor-enforce.service "${payload_units[@]}"; do
+ok "production preset applies" systemctl preset rke2-role.service c8s-enroll.service apparmor-enforce.service apparmor.service "${payload_units[@]}"
+for unit in rke2-role.service c8s-enroll.service apparmor-enforce.service "${payload_units[@]}"; do
     ok "$unit enabled" systemctl is-enabled --quiet "$unit"
 done
 
@@ -163,6 +169,37 @@ for role in server agent; do
         fi
     done
 done
+
+for role in server agent; do
+    CASE="boot-managed-$role"
+    scenario_reset
+    launch_media "managed-$role"
+    : > /dev/disk/by-label/opkeydata
+    ok "managed role boots after enrollment" boot_roles
+    ok "enrollment is active" active c8s-enroll.service
+    selected=rke2-server.service; skipped=rke2-agent.service
+    if [[ $role == agent ]]; then selected=rke2-agent.service; skipped=rke2-server.service; fi
+    ok "$selected active" active "$selected"
+    ok "$skipped condition skipped" cond_skipped "$skipped"
+done
+
+CASE=boot-managed-refused
+scenario_reset
+launch_media managed-server
+: > /dev/disk/by-label/opkeydata
+boot_roles_refused() { : > "$C8S_ROLE_FIXTURE/enroll-refused"; boot_roles || true; }
+boot_roles_refused
+ok "refused enrollment is visible" systemctl is-failed --quiet c8s-enroll.service
+ok "no role authorized" no_launch_markers
+ok "server stays down" not_active rke2-server.service
+ok "agent stays down" not_active rke2-agent.service
+
+CASE=boot-unmanaged-skips-enrollment
+scenario_reset
+launch_media server
+: > /dev/disk/by-label/opkeydata
+ok "unmanaged role boots" boot_roles
+ok "enrollment condition skipped" cond_skipped c8s-enroll.service
 
 for scenario in missing-launch invalid-signature prepare-failure; do
     CASE="boot-$scenario"
