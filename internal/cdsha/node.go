@@ -50,8 +50,8 @@ type Timing struct {
 	// Heartbeat and Election are Raft's heartbeat and election timeouts.
 	Heartbeat time.Duration
 	Election  time.Duration
-	// Lease is how long a follower keeps serving after it last heard from
-	// the leader. Past it, an isolated replica stops issuing and releasing,
+	// Lease bounds the age of quorum-confirmed, locally applied read state.
+	// Past it, a replica stops issuing and releasing,
 	// so it cannot keep admitting what a decree just evicted.
 	Lease time.Duration
 	// DeadAfter is how long a member fails heartbeats before the leader
@@ -143,7 +143,9 @@ type Node struct {
 	measurement string
 	log         *slog.Logger
 
-	jumpAt atomic.Int64 // Unix ms of the last clock jump not yet cleared by fresh contact
+	jumpAt      atomic.Int64 // Unix ms of the last clock jump not yet cleared by fresh contact
+	readCert    atomic.Pointer[readCertificate]
+	barrierGate chan struct{} // one pending Barrier, including timed-out callers
 
 	seatsOKAt atomic.Int64 // Unix ms the leader last reported every seat filled (non-voters)
 
@@ -234,6 +236,7 @@ func NewNode(cfg Config) (*Node, error) {
 	}
 	n := &Node{
 		cfg:            cfg,
+		barrierGate:    make(chan struct{}, 1),
 		id:             raft.ServerID(cfg.NodeName + "/" + strconv.FormatInt(time.Now().UnixMilli(), 10) + "-" + hex.EncodeToString(rnd[:])),
 		measurement:    own.Measurement,
 		log:            cfg.Logger.With("component", "cds-ha"),
@@ -371,7 +374,13 @@ func (n *Node) Run(ctx context.Context) error {
 		}
 	}
 	defer n.shutdown()
-	go n.watchClock(ctx)
+	workerCtx, stopWorkers := context.WithCancel(ctx)
+	var workers sync.WaitGroup
+	workers.Add(2)
+	go func() { defer workers.Done(); n.watchClock(workerCtx) }()
+	go func() { defer workers.Done(); n.refreshReads(workerCtx) }()
+	// Stop and join read/clock workers before shutdown and caller store close.
+	defer func() { stopWorkers(); workers.Wait() }()
 	t := time.NewTicker(n.cfg.Timing.Tick)
 	defer t.Stop()
 	var lastEpoch uint64
@@ -386,7 +395,6 @@ func (n *Node) Run(ctx context.Context) error {
 			n.joinOrBootstrap(ctx)
 			continue
 		}
-		n.clearJumpIfFresh()
 		if e := n.fsm.Core().Epoch; e != lastEpoch {
 			lastEpoch = e
 			n.mux.Load().recheck() // the pin set may have changed
@@ -445,7 +453,7 @@ func (n *Node) handleControl(peer Claims, req controlRequest) controlResponse {
 	case ctlStatus:
 		st := n.Status()
 		return controlResponse{Member: member, Status: &st}
-	case ctlJoin, ctlApply:
+	case ctlJoin, ctlApply, ctlReadBarrier:
 	default:
 		return controlResponse{Err: "unknown control op"}
 	}
@@ -462,6 +470,13 @@ func (n *Node) handleControl(peer Claims, req controlRequest) controlResponse {
 	if !core.Pins(peer.Measurement) {
 		// TLS already checks this; the join is where it matters most.
 		return controlResponse{Member: true, Err: "peer measurement is not pinned"}
+	}
+	if req.Op == ctlReadBarrier {
+		idx, err := n.readBarrier(n.r(), min(n.cfg.Timing.Apply, n.cfg.Timing.Lease))
+		if err != nil {
+			return controlResponse{Member: true, Err: err.Error()}
+		}
+		return controlResponse{Member: true, Index: idx}
 	}
 	if req.Op == ctlJoin {
 		return n.handleJoin(req)
@@ -564,32 +579,155 @@ func (n *Node) ReplicateBinding(cmd sandboxledger.Command) (bool, error) {
 	return replicate[bool](n, Entry{Kind: KindBinding, Binding: &cmd}, nil)
 }
 
-// CatchUp implements sandboxledger.Replicator: it waits until this replica
-// has applied everything the leader had applied when asked.
-func (n *Node) CatchUp() error {
-	if n.leading() {
-		return nil
-	}
-	addr, _ := n.r().LeaderWithID()
-	if addr == "" {
-		return errors.New("cds-ha: no leader")
-	}
-	st, err := n.peerStatus(addr, 2*time.Second)
-	if err != nil {
-		return err
-	}
-	if !n.waitFor(2*time.Second, func() bool { return n.fsm.AppliedIndex() >= st.AppliedIndex }) {
-		return errors.New("cds-ha: not caught up with the leader")
-	}
-	return nil
+// readCertificate is a quorum-confirmed watermark applied on this replica.
+// at is the request start, not completion: network/apply delay cannot extend it.
+const ctlReadBarrier = "read_barrier"
+
+type readCertificate struct {
+	raft     *raft.Raft
+	leader   raft.ServerAddress
+	leaderID raft.ServerID
+	term     uint64
+	epoch    uint64
+	at       time.Time
+	index    uint64
 }
 
-// Serving reports whether this replica may issue certificates and release
-// secrets: it holds the cluster's mesh CA, its own image is pinned, and it
-// is fresh. The leader is fresh while it keeps its quorum lease; any other
-// replica while it heard from the leader within the lease and since the last
-// clock jump. An isolated replica stops serving, so it cannot keep admitting
-// what a decree it has not seen evicted.
+func (n *Node) validReadCertificate(cert *readCertificate) bool {
+	if cert == nil || cert.raft != n.r() || time.Since(cert.at) >= n.cfg.Timing.Lease {
+		return false
+	}
+	leader, id := cert.raft.LeaderWithID()
+	return leader != "" && leader == cert.leader && id == cert.leaderID && cert.raft.CurrentTerm() == cert.term && n.fsm.Core().Epoch == cert.epoch
+}
+
+// readBarrier confirms a quorum and waits for the leader's FSM to apply all
+// preceding commands. Raft's Barrier timeout only bounds enqueueing, so also
+// bound the wait for completion.
+func (n *Node) readBarrier(r *raft.Raft, timeout time.Duration) (uint64, error) {
+	deadline := time.Now().Add(timeout)
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	// Keep the token until the Raft future actually completes, not merely
+	// until this caller times out. A stalled FSM cannot accumulate waiters.
+	select {
+	case n.barrierGate <- struct{}{}:
+	case <-timer.C:
+		return 0, errors.New("cds-ha: read barrier busy")
+	}
+	type result struct {
+		index uint64
+		err   error
+	}
+	done := make(chan result, 1)
+	term := r.CurrentTerm()
+	leader, id := r.LeaderWithID()
+	go func() {
+		defer func() { <-n.barrierGate }()
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			done <- result{err: errors.New("cds-ha: read barrier timed out")}
+			return
+		}
+		err := r.Barrier(remaining).Error()
+		currentLeader, currentID := r.LeaderWithID()
+		if err == nil && (r != n.r() || r.State() != raft.Leader || r.CurrentTerm() != term || currentLeader != leader || currentID != id || n.fsm.Stuck() != "") {
+			err = errors.New("cds-ha: read leader or state changed")
+		}
+		done <- result{index: n.fsm.AppliedIndex(), err: err}
+	}()
+	select {
+	case res := <-done:
+		return res.index, res.err
+	case <-timer.C:
+		return 0, errors.New("cds-ha: read barrier timed out")
+	}
+}
+
+func (n *Node) confirmRead(timeout time.Duration) (*readCertificate, error) {
+	at, r := time.Now(), n.r()
+	if r == nil || !n.fsm.Core().Joined() {
+		return nil, errors.New("cds-ha: not joined")
+	}
+	leader, leaderID := r.LeaderWithID()
+	epoch, term := n.fsm.Core().Epoch, r.CurrentTerm()
+	var index uint64
+	if r.State() == raft.Leader {
+		var err error
+		index, err = n.readBarrier(r, timeout)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		hp := n.leaderHostPort()
+		if hp == "" {
+			return nil, errors.New("cds-ha: no leader")
+		}
+		resp, err := n.call(hp, timeout, controlRequest{Op: ctlReadBarrier})
+		if err != nil {
+			return nil, err
+		}
+		if resp.Err != "" {
+			return nil, errors.New("cds-ha: " + resp.Err)
+		}
+		if resp.Index == 0 {
+			return nil, errors.New("cds-ha: missing read watermark")
+		}
+		index = resp.Index
+	}
+	remaining := timeout - time.Since(at)
+	if remaining <= 0 || !n.waitFor(remaining, func() bool { return n.fsm.AppliedIndex() >= index }) {
+		return nil, errors.New("cds-ha: not caught up with quorum watermark")
+	}
+	if n.r() != r || n.fsm.Stuck() != "" {
+		return nil, errors.New("cds-ha: read state changed or stuck")
+	}
+	cert := &readCertificate{raft: r, leader: leader, leaderID: leaderID, epoch: epoch, term: term, at: at, index: index}
+	currentLeader, currentID := r.LeaderWithID()
+	if leader == "" || currentLeader != leader || currentID != leaderID || r.CurrentTerm() != term || n.fsm.Core().Epoch != epoch {
+		return nil, errors.New("cds-ha: read leader or epoch changed")
+	}
+	return cert, nil
+}
+
+// CatchUp always obtains a new quorum barrier, including on the leader.
+func (n *Node) CatchUp() error {
+	_, err := n.confirmRead(n.cfg.Timing.Apply)
+	return err
+}
+
+// refreshReads runs independently of membership and status handling. Serving
+// never makes a network call, and a failed refresh cannot renew an old lease.
+func (n *Node) refreshReads(ctx context.Context) {
+	period := min(n.cfg.Timing.Tick, n.cfg.Timing.Lease/3)
+	t := time.NewTicker(period)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		cert := n.readCert.Load()
+		if n.validReadCertificate(cert) && time.Since(cert.at) < n.cfg.Timing.Lease/3 && n.jumpAt.Load() == 0 {
+			continue
+		}
+		jump := n.jumpAt.Load()
+		fresh, err := n.confirmRead(min(n.cfg.Timing.Apply, n.cfg.Timing.Lease))
+		if err != nil {
+			n.readCert.Store(nil)
+			continue
+		}
+		// A barrier started after the observed jump proves state freshness.
+		n.readCert.Store(fresh)
+		if fresh.at.UnixMilli() > jump {
+			n.jumpAt.CompareAndSwap(jump, 0)
+		}
+	}
+}
+
+// Serving permits bounded-stale reads only after a quorum-confirmed watermark
+// has applied locally. Independent Raft heartbeats cannot renew this lease.
 func (n *Node) Serving() bool {
 	core := n.fsm.Core()
 	if !core.Joined() || !core.Pins(n.measurement) || n.r() == nil {
@@ -598,11 +736,8 @@ func (n *Node) Serving() bool {
 	if n.jumpAt.Load() != 0 || n.fsm.Stuck() != "" {
 		return false
 	}
-	if n.leading() {
-		return true
-	}
-	lc := n.r().LastContact()
-	return !lc.IsZero() && time.Since(lc) < n.cfg.Timing.Lease
+	cert := n.readCert.Load()
+	return n.validReadCertificate(cert) && n.fsm.AppliedIndex() >= cert.index
 }
 
 // CA is the mesh CA to issue with, while serving.
@@ -702,26 +837,6 @@ func (n *Node) watchClock(ctx context.Context) {
 func clockJumped(wall, mono time.Duration) bool {
 	d := wall - mono
 	return d > 2*time.Second || d < -2*time.Second || mono > 5*time.Second
-}
-
-// clearJumpIfFresh ends a clock-jump stop once the replica has fresh
-// contact: a leader that confirms its quorum, or a follower that heard from
-// the leader after the jump.
-func (n *Node) clearJumpIfFresh() {
-	at := n.jumpAt.Load()
-	if at == 0 {
-		return
-	}
-	if n.leading() {
-		if n.r().VerifyLeader().Error() == nil {
-			n.jumpAt.CompareAndSwap(at, 0)
-		}
-		return
-	}
-	// A known leader: raft also sets LastContact when a leader steps down.
-	if lc := n.r().LastContact(); lc.UnixMilli() > at && n.leaderHostPort() != "" {
-		n.jumpAt.CompareAndSwap(at, 0)
-	}
 }
 
 func (n *Node) leading() bool { return n.r().State() == raft.Leader }

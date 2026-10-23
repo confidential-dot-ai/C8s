@@ -258,7 +258,7 @@ func run(cfg config) error {
 		return err
 	}
 
-	if err := allowlistStore.StartJournal(); err != nil {
+	if err := startJournal(ctx, &allowlistStore); err != nil {
 		return fmt.Errorf("start allowlist history: %w", err)
 	}
 	operatorAuthorizer := writeAuthorizer
@@ -459,6 +459,31 @@ func run(cfg config) error {
 		return cmdsutil.NodeIPChanged(ctx, err)
 	}
 	return cmdsutil.NodeIPChanged(ctx, nil)
+}
+
+// startJournal retries only this idempotent startup operation. ErrUnavailable
+// can mean the command committed but this replica has not applied it yet.
+// Keep Raft alive and do not expose the full API until history is verified.
+func startJournal(ctx context.Context, store *allowlist.Store) error {
+	backoff := 100 * time.Millisecond
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		err := store.StartJournal()
+		if err == nil || !errors.Is(err, allowlist.ErrUnavailable) ||
+			errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
+		timer := time.NewTimer(backoff)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+		backoff = min(2*backoff, time.Second)
+	}
 }
 
 // armtlsServerTLS is the attested serving configuration of the CDS port,

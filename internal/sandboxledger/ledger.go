@@ -152,3 +152,14 @@ func (l *Ledger) EvictionLoop(done <-chan struct{}, interval time.Duration) {
 		}
 	}
 }
+
+// EmptyClone returns an empty ledger with identical application policy.
+// Recovery must replay commands with the same TTL and capacity as live Apply.
+func (l *Ledger) EmptyClone() *Ledger {
+	return New(l.ttl, l.max)
+}
+
+// Policy returns the ledger's immutable application settings.
+func (l *Ledger) Policy() (ttl time.Duration, max int) {
+	return l.ttl, l.max
+}

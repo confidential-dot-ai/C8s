@@ -3,6 +3,7 @@ package cdsha
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -25,21 +26,25 @@ func (n *Node) member() bool {
 
 // joinOrBootstrap asks the replicas it can reach to add it. A replica named
 // by a pending Genesis decree starts the group instead, but only when no
-// reachable replica already belongs to one.
+// reachable replica already belongs to one. Discovery or contact failure
+// cannot establish absence and therefore blocks Genesis fallback.
 func (n *Node) joinOrBootstrap(ctx context.Context) {
 	peers, err := n.cfg.Peers(ctx)
 	switch {
 	case err != nil:
 		// A replica that cannot find its peers can never join: say so.
 		n.joinRefused("peer discovery", err)
+		return
 	case len(peers) == 0:
 		n.joinRefused("peer discovery", errors.New("no other replica found"))
 	}
 	anyMember := false
+	uncertain := false
 	for _, p := range peers {
 		resp, err := n.askJoin(p)
 		switch {
 		case err != nil:
+			uncertain = true
 		case resp.Err == "":
 			if !n.joinLogged {
 				n.log.Info("joined the CDS cluster", "via", p, "id", n.id)
@@ -58,6 +63,9 @@ func (n *Node) joinOrBootstrap(ctx context.Context) {
 	}
 	if anyMember {
 		n.lastMember.Store(time.Now().UnixMilli())
+		return
+	}
+	if uncertain || n.fsm.Core().Joined() || n.member() {
 		return
 	}
 	if g, ok := n.pendingDecree(ctx, Genesis); ok {
@@ -88,7 +96,8 @@ func (n *Node) rejoin(ctx context.Context) {
 // askJoin asks peer p to add this replica, following one redirect to the
 // leader.
 func (n *Node) askJoin(p string) (controlResponse, error) {
-	req := controlRequest{Op: ctlJoin, ID: string(n.id), Address: string(n.raftAddress()), Reads: n.fsm.readable}
+	policy, _ := json.Marshal(n.fsm.LocalPolicy())
+	req := controlRequest{Entry: policy, Op: ctlJoin, ID: string(n.id), Address: string(n.raftAddress()), Reads: n.fsm.readable}
 	resp, err := n.call(p, 5*time.Second, req)
 	if err != nil || resp.Leader == "" || resp.Leader == p || resp.Leader == n.cfg.Advertise {
 		return resp, err
@@ -105,6 +114,17 @@ func (n *Node) askJoin(p string) (controlResponse, error) {
 }
 
 func (n *Node) handleJoin(req controlRequest) controlResponse {
+	var policy FSMPolicy
+	if err := json.Unmarshal(req.Entry, &policy); err != nil {
+		return controlResponse{Member: true, Err: "join application policy missing or invalid"}
+	}
+	if err := n.fsm.ValidatePolicy(n.fsm.Core().Policy); err != nil {
+		return controlResponse{Member: true, Err: err.Error()}
+	}
+	if err := policy.Validate(); err != nil || policy != n.fsm.Core().Policy {
+		return controlResponse{Member: true, Err: "join application policy differs from cluster"}
+	}
+
 	id := raft.ServerID(req.ID)
 	hostport, addrID := splitRaftAddr(req.Address)
 	if nodeOf(id) == "" || hostport == "" || addrID != req.ID {
