@@ -351,3 +351,21 @@ func TestReplicateFailureIsUnavailable(t *testing.T) {
 		t.Errorf("secrets: %v", err)
 	}
 }
+
+// A replica that reaches no peer (its node's pod network still coming up)
+// does not offer to take a restore: that would route clients to its
+// pre-join server.
+func TestLonerDoesNotAwaitRestore(t *testing.T) {
+	_, pub := operatorKey(t)
+	cfg := soloConfig(t, "n0", freeAddr(t), pub, nil)
+	cfg.Timing.DeadAfter = 300 * time.Millisecond
+	n, err := NewNode(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runNode(t, n)
+	time.Sleep(3 * cfg.Timing.DeadAfter)
+	if n.AwaitingRestore() {
+		t.Fatal("a replica that reached no peer reports it awaits a restore")
+	}
+}
