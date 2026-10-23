@@ -277,7 +277,7 @@ func (f *FSM) applyDecree(de DecreeEntry) DecreeResult {
 	defer f.mu.Unlock()
 	if de.Decree.Decree.Kind == Genesis {
 		if err := f.ValidatePolicy(de.Policy); err != nil {
-			f.stop(err)
+			err = f.stop(err)
 			return DecreeResult{Epoch: f.core.Epoch, Err: err.Error()}
 		}
 	}
@@ -344,6 +344,9 @@ func (f *FSM) applyRestore(re RestoreEntry) DecreeResult {
 		return fail(errors.New("snapshot names another operator key"))
 	case !sn.Core.Joined():
 		return fail(errors.New("snapshot holds no mesh CA"))
+	}
+	if sn.Core.Epoch == ^uint64(0) {
+		return fail(errors.New("snapshot epoch overflows on restore"))
 	}
 	sn.Core.Epoch++
 	sn.Core.AppliedDecrees = append(sn.Core.AppliedDecrees, re.Decree.Decree.IntentID)
@@ -434,6 +437,10 @@ var _ raft.ConfigurationStore = (*FSM)(nil)
 // state captured here is one point of the log. Encoding happens in Persist,
 // as a stream, so the state is held once, not once per encoding stage.
 func (f *FSM) Snapshot() (raft.FSMSnapshot, error) {
+	if reason := f.Stuck(); reason != "" {
+		return nil, fmt.Errorf("cds-ha: cannot snapshot stopped FSM: %s", reason)
+	}
+
 	f.mu.RLock()
 	sn := snapshot{Index: f.applied.Load(), Core: f.core.clone(), Decrees: slices.Clone(f.decrees)}
 	sn.Format = sn.Core.format() // what every member reads, not what this one could write

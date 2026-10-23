@@ -2,10 +2,11 @@ package cdsha
 
 import (
 	"encoding/json"
-	"github.com/confidential-dot-ai/c8s/internal/sandboxledger"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/confidential-dot-ai/c8s/internal/sandboxledger"
 )
 
 func TestJoinRejectsPolicyBeforeMembershipMutation(t *testing.T) {
