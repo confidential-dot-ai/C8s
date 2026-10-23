@@ -2,6 +2,7 @@ package cdsha
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"errors"
 	"log/slog"
@@ -152,5 +153,32 @@ func TestPeerCertificateRenewal(t *testing.T) {
 	eventually(t, 5*time.Second, "certificate renewed", func() bool { return n.certs.age() < time.Hour })
 	if calls.Load() < 2 {
 		t.Fatalf("renewed after %d mints", calls.Load())
+	}
+}
+
+// A replica that cannot find its peers says so (it can never join), at Info,
+// rate-limited like a refused join: found on TDX, where a rebooted node's pod
+// network was down and the replica waited silently.
+func TestJoinReportsFailedPeerDiscovery(t *testing.T) {
+	_, pub := operatorKey(t)
+	for name, peers := range map[string]func(context.Context) ([]string, error){
+		"lookup error": func(context.Context) ([]string, error) { return nil, errors.New("lookup c8s-cds-peers: no such host") },
+		"no peers":     func(context.Context) ([]string, error) { return nil, nil },
+	} {
+		t.Run(name, func(t *testing.T) {
+			logs := &syncBuffer{}
+			cfg := soloConfig(t, "n1", freeAddr(t), pub, nil)
+			cfg.Peers = peers
+			cfg.Logger = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
+			n, err := NewNode(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			n.joinOrBootstrap(context.Background())
+			n.joinOrBootstrap(context.Background()) // rate-limited: logged once
+			if got := strings.Count(logs.String(), "peer discovery"); got != 1 {
+				t.Fatalf("peer discovery logged %d times:\n%s", got, logs.String())
+			}
+		})
 	}
 }

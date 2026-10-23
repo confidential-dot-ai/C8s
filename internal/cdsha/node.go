@@ -500,8 +500,12 @@ func (n *Node) member() bool {
 // reachable replica already belongs to one.
 func (n *Node) joinOrBootstrap(ctx context.Context) {
 	peers, err := n.cfg.Peers(ctx)
-	if err != nil {
-		n.log.Debug("peer discovery", "err", err)
+	switch {
+	case err != nil:
+		// A replica that cannot find its peers can never join: say so.
+		n.joinRefused("peer discovery", err)
+	case len(peers) == 0:
+		n.joinRefused("peer discovery", errors.New("no other replica found"))
 	}
 	anyMember := false
 	for _, p := range peers {
