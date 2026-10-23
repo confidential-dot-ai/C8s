@@ -111,6 +111,22 @@ jobs:
           path: c8s
           sparse-checkout: .github
 
+      - name: Require matching manual image sources
+        if: github.event_name == 'workflow_dispatch' && inputs.gate != true
+        env:
+          PROFILE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          C8S_REF_INPUT: ${{ inputs.c8s_ref }}
+        run: |
+          set -euo pipefail
+          [[ "$PROFILE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          if [ -n "$C8S_REF_INPUT" ] &&
+             { [[ ! "$C8S_REF_INPUT" =~ ^[0-9a-f]{7,40}$ ]] ||
+               [[ "$PROFILE_SHA" != "$C8S_REF_INPUT"* ]]; }; then
+            echo "::error::c8s_ref must be a SHA prefix of the dispatched image-profile commit ($PROFILE_SHA)."
+            echo "::error::Dispatch with --ref <source-branch-or-tag> and its matching published c8s_ref for commit-scoped image tags."
+            exit 1
+          fi
+
       - name: Load measured-build pins
         id: pins
         env:
@@ -291,13 +307,17 @@ jobs:
             exit 1
           fi
           if [ "${{ inputs.dev }}" = "true" ]; then
-            echo "VARIANT=rke2-${{ matrix.platform }}-dev${{ inputs.ssh && '-ssh' || '' }}" >> "$GITHUB_ENV"
-            echo "KERNEL_FLAVOR=rke2-dev" >> "$GITHUB_ENV"
-            echo "C8S_DEV=1" >> "$GITHUB_ENV"
+            {
+              echo "VARIANT=rke2-${{ matrix.platform }}-dev${{ inputs.ssh && '-ssh' || '' }}"
+              echo "KERNEL_FLAVOR=rke2-dev"
+              echo "C8S_DEV=1"
+            } >> "$GITHUB_ENV"
           else
-            echo "VARIANT=rke2-${{ matrix.platform }}" >> "$GITHUB_ENV"
-            echo "KERNEL_FLAVOR=rke2" >> "$GITHUB_ENV"
-            echo "C8S_DEV=0" >> "$GITHUB_ENV"
+            {
+              echo "VARIANT=rke2-${{ matrix.platform }}"
+              echo "KERNEL_FLAVOR=rke2"
+              echo "C8S_DEV=0"
+            } >> "$GITHUB_ENV"
           fi
 
       - name: Setup Rust
@@ -775,8 +795,11 @@ jobs:
         env:
           C8S_REF_INPUT: ${{ inputs.c8s_ref }}
         run: |
+          profile_sha=$(git -C c8s rev-parse HEAD)
           {
             echo "### ${VARIANT} confidential node image"
+            echo "- image profile source: \`$profile_sha\`"
+            echo "- components ref: \`${C8S_REF_INPUT:-${profile_sha:0:7}}\`"
             echo "- CDI image: \`${IMAGE}:${VARIANT}-cdi${C8S_REF_INPUT:+-$C8S_REF_INPUT}\`"
             echo "- artifact: \`${IMAGE}:${VARIANT}${C8S_REF_INPUT:+-$C8S_REF_INPUT}\`"
             echo "- confos ref: \`${CONFOS_REF}\`"
