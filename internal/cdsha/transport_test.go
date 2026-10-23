@@ -65,6 +65,11 @@ func TestMuxRefusals(t *testing.T) {
 	}
 	closedByPeer(t, tc, "unknown kind")
 	tc.Close()
+	m.connMu.Lock()
+	if len(m.conns) != 0 {
+		t.Errorf("%d refused connections still tracked", len(m.conns))
+	}
+	m.connMu.Unlock()
 	// A control request when the mux has no handler: closed without answer.
 	if _, err := callControl(addr, b.tls, v, time.Second, controlRequest{Op: ctlStatus}, nil); err == nil {
 		t.Fatal("a control answer without a handler")
