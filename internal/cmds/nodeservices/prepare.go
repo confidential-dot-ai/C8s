@@ -36,6 +36,9 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 		}
 		outputs[name] = data
 	}
+	if d.Role == launchconfig.Pod {
+		return preparePod(rootDir, d, outputs)
+	}
 	bakedData, err := os.ReadFile(path("/usr/lib/c8s/allowlist-seed.json"))
 	if err != nil {
 		return err
@@ -54,17 +57,9 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 		}
 	}
 
-	data, err := os.ReadFile(path("/usr/lib/c8s/image-policy.yaml"))
+	floor, a, err := loadFloor(rootDir)
 	if err != nil {
 		return err
-	}
-	var floor map[string]any
-	if err := yaml.Unmarshal(data, &floor); err != nil {
-		return fmt.Errorf("baked NRI policy: %w", err)
-	}
-	a, ok := floor["allowlist"].(map[string]any)
-	if !ok {
-		return fmt.Errorf("baked NRI policy missing allowlist")
 	}
 	pull, ok := a["pull"].(map[string]any)
 	if !ok {
@@ -97,39 +92,63 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 	if err := appendCredentialRole(policy, address); err != nil {
 		return err
 	}
-	data, err = yaml.Marshal(floor)
+	data, err := yaml.Marshal(floor)
 	if err != nil {
 		return err
 	}
 
 	// Validate every input before publishing anything. RKE2 only starts after
 	// this preparation succeeds, so pods never observe partially staged input.
-	publicPath := path(PublicDir)
+	if err := publishPublic(path(PublicDir), outputs, d.Role == launchconfig.Agent); err != nil {
+		return err
+	}
+	return writeFile(path(nriPolicyPath), data, 0600)
+}
+
+const nriPolicyPath = "/etc/nri/conf.d/image-policy.yaml"
+
+// loadFloor reads the NRI policy baked into the image, returning the whole
+// document and its allowlist section for the caller to edit.
+func loadFloor(rootDir string) (floor, allowlistSection map[string]any, err error) {
+	data, err := os.ReadFile(filepath.Join(rootDir, "/usr/lib/c8s/image-policy.yaml"))
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := yaml.Unmarshal(data, &floor); err != nil {
+		return nil, nil, fmt.Errorf("baked NRI policy: %w", err)
+	}
+	allowlistSection, ok := floor["allowlist"].(map[string]any)
+	if !ok {
+		return nil, nil, fmt.Errorf("baked NRI policy missing allowlist")
+	}
+	return floor, allowlistSection, nil
+}
+
+func publishPublic(publicPath string, outputs map[string][]byte, clearServer bool) error {
 	if err := os.MkdirAll(publicPath, 0755); err != nil {
 		return err
 	}
 	if err := os.Chmod(publicPath, 0755); err != nil {
 		return err
 	}
-	if d.Role == launchconfig.Agent {
+	if clearServer {
 		if err := removeServerOutputs(publicPath); err != nil {
 			return err
 		}
 	}
 	for name, data := range outputs {
-		dst := filepath.Join(publicPath, name)
-		if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
-			return err
-		}
-		if err := fileutil.WriteAtomic(dst, data, 0644); err != nil {
+		if err := writeFile(filepath.Join(publicPath, name), data, 0644); err != nil {
 			return err
 		}
 	}
-	policyPath := path("/etc/nri/conf.d/image-policy.yaml")
-	if err := os.MkdirAll(filepath.Dir(policyPath), 0755); err != nil {
+	return nil
+}
+
+func writeFile(path string, data []byte, mode os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
 	}
-	return fileutil.WriteAtomic(policyPath, data, 0600)
+	return fileutil.WriteAtomic(path, data, mode)
 }
 
 // bakedBase decodes the measured base out of the boot config it is written in.

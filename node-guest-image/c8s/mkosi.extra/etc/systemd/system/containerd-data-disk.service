@@ -27,7 +27,7 @@
 Description=Back containerd data dir with a LABEL=containerd disk (encrypted) or tmpfs
 DefaultDependencies=no
 Conflicts=umount.target
-Before=local-fs.target rke2-server.service rke2-agent.service
+Before=local-fs.target rke2-server.service rke2-agent.service podcvm-containerd.service
 After=systemd-udevd.service
 # Order After=systemd-udevd so udevd is at least started before we touch dm. We
 # still do NOT hard-Require it nor wait for udev-settle (deprecated / may be

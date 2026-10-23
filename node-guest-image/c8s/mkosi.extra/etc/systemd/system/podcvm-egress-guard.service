@@ -1,0 +1,19 @@
+# Pod role only: the pod routes through the c8spod0 bridge so replies to
+# published ports leave the VM, but it may not open connections through it.
+[Unit]
+Description=Pod-role egress guard
+ConditionPathExists=/run/confos/role-pod
+Requires=rke2-role.service
+After=rke2-role.service
+Before=podcvm-containerd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=PATH=/usr/sbin:/usr/bin:/sbin:/bin
+Environment="RULE=FORWARD -i c8spod0 -m conntrack ! --ctstate ESTABLISHED,RELATED -j DROP"
+ExecStart=/bin/sh -c 'iptables -w -C $$RULE 2>/dev/null || iptables -w -I $$RULE'
+
+[Install]
+WantedBy=multi-user.target
+RequiredBy=podcvm-containerd.service

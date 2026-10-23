@@ -53,6 +53,8 @@ type Role string
 const (
 	Server Role = "server"
 	Agent  Role = "agent"
+	// Pod runs one static pod under a standalone kubelet; RKE2 never starts.
+	Pod Role = "pod"
 )
 
 // Valid reports whether r is a role this image can boot.
@@ -72,12 +74,16 @@ const (
 )
 
 // roleRules keeps each role's document rules in one place, so validate,
-// and authorizeKey ask the role instead of testing for it
+// authorizeKey and referenceValues ask the role instead of testing for it
 // inline. Adding a role means adding an entry, not new branches; every entry
 // sets every field.
 type roleRules struct {
-	serverToken presence // rke2.serverToken, distinct from rke2.agentToken
-	agentKeys   presence // agentOperatorPublicKeys
+	// joinsCluster requires rke2.agentToken; a role that joins no cluster
+	// must carry neither token. optional is not meaningful here.
+	joinsCluster bool
+	serverToken  presence // rke2.serverToken, distinct from rke2.agentToken
+	agentKeys    presence // agentOperatorPublicKeys
+	pod          presence // the pod section, which then requires workloads
 	// namesServer requires server.address in the signed document; otherwise
 	// it is checked only when present.
 	namesServer bool
@@ -89,24 +95,45 @@ type roleRules struct {
 	// otherwise the launch key must be listed in agentOperatorPublicKeys and
 	// differ from the server's.
 	ownLaunchKey bool
+	// anchorPin names the reference value anchored at
+	// server.operatorPublicKey, which a pod uses for its own key.
+	anchorPin string
 }
 
 var roles = map[Role]roleRules{
 	Server: {
+		joinsCluster:  true,
 		serverToken:   required,
 		agentKeys:     optional,
+		pod:           forbidden,
 		namesServer:   false,
 		stagedAddress: true,
 		router:        true,
 		ownLaunchKey:  true,
+		anchorPin:     "server",
 	},
 	Agent: {
+		joinsCluster:  true,
 		serverToken:   forbidden,
 		agentKeys:     required,
+		pod:           forbidden,
 		namesServer:   true,
 		stagedAddress: true,
 		router:        false,
 		ownLaunchKey:  false,
+		anchorPin:     "server",
+	},
+	Pod: {
+		joinsCluster:  false,
+		serverToken:   forbidden,
+		agentKeys:     forbidden,
+		pod:           required,
+		namesServer:   false,
+		stagedAddress: false,
+		router:        false,
+		// A pod document carries its own launch key in server.operatorPublicKey.
+		ownLaunchKey: true,
+		anchorPin:    "pod",
 	},
 }
 
@@ -141,6 +168,9 @@ type Document struct {
 	// public certificate. Image references stay digest-pinned, so a mirror
 	// cannot change what a node runs.
 	RegistryMirrors map[string]string `yaml:"registryMirrors,omitempty" json:"registry_mirrors,omitempty"`
+
+	// Pod is the one static pod a pod-role boot runs; forbidden otherwise.
+	Pod *PodSpec `yaml:"pod,omitempty" json:"pod,omitempty"`
 
 	serverTokenPresent bool
 }
@@ -237,6 +267,9 @@ type Image struct {
 // "tdx" inline. Adding a platform means adding an entry, not new branches.
 type imagePlatform struct {
 	family teetypes.Family
+	// runtimeRegister is set when the platform has a register the guest can
+	// extend after launch (RTMR[3]), into which a pod measures its workloads.
+	runtimeRegister bool
 	// validateRegisters rejects a register map that does not match what this
 	// platform measures. Its error names the platform's own rule.
 	validateRegisters func(rtmrs map[int]string) error
@@ -244,7 +277,8 @@ type imagePlatform struct {
 
 var imagePlatforms = map[string]imagePlatform{
 	"tdx": {
-		family: teetypes.FamilyTDX,
+		family:          teetypes.FamilyTDX,
+		runtimeRegister: true,
 		validateRegisters: func(rtmrs map[int]string) error {
 			if len(rtmrs) != 2 || !registerHex(rtmrs[1]) || !registerHex(rtmrs[2]) {
 				return fmt.Errorf("TDX image must pin exactly RTMR[1] and RTMR[2]")
@@ -268,6 +302,13 @@ var imagePlatforms = map[string]imagePlatform{
 func (i Image) platform() (imagePlatform, bool) {
 	p, ok := imagePlatforms[i.Platform]
 	return p, ok
+}
+
+// HasRuntimeRegister reports whether the image's platform can measure
+// workloads after launch.
+func (i Image) HasRuntimeRegister() bool {
+	p, _ := i.platform()
+	return p.runtimeRegister
 }
 
 type Node struct {
@@ -410,7 +451,7 @@ func (d *Document) validate() error {
 		return fmt.Errorf("node.name must be an RFC1123 label")
 	}
 	if !d.Role.Valid() {
-		return fmt.Errorf("role must be server or agent")
+		return fmt.Errorf("role must be server, agent or pod")
 	}
 	rules := d.rules()
 	platform, ok := d.Image.platform()
@@ -441,7 +482,11 @@ func (d *Document) validate() error {
 			return fmt.Errorf("node.externalIP: %w", err)
 		}
 	}
-	if !tokenRE.MatchString(d.RKE2.AgentToken) {
+	if !rules.joinsCluster {
+		if d.RKE2.AgentToken != "" || d.RKE2.ServerToken != "" || d.serverTokenPresent {
+			return fmt.Errorf("%s must not carry rke2 tokens", d.Role)
+		}
+	} else if !tokenRE.MatchString(d.RKE2.AgentToken) {
 		return fmt.Errorf("rke2.agentToken must be 64 lowercase hex characters")
 	}
 	switch rules.serverToken {
@@ -507,6 +552,22 @@ func (d *Document) validate() error {
 		}
 		if err := d.Router.validate(); err != nil {
 			return err
+		}
+	}
+	switch rules.pod {
+	case required:
+		if d.Pod == nil {
+			return fmt.Errorf("%s requires a pod section", d.Role)
+		}
+		if d.Workloads == "" {
+			return fmt.Errorf("%s requires workloads: they are its only admitted images", d.Role)
+		}
+		if err := d.Pod.validate(); err != nil {
+			return err
+		}
+	case forbidden:
+		if d.Pod != nil {
+			return fmt.Errorf("pod section requires role pod")
 		}
 	}
 	if d.Workloads != "" {
@@ -637,7 +698,7 @@ func (d *Document) referenceValues() (refvalues.ReferenceValues, error) {
 	pins := refvalues.ReferenceValues{Family: platform.family}
 	keys := append([]string{d.Server.OperatorPublicKey}, d.AgentOperatorPublicKeys...)
 	for i, pub := range keys {
-		name := "server"
+		name := d.rules().anchorPin
 		if i > 0 {
 			name = fmt.Sprintf("agent-%d", i)
 		}

@@ -4,6 +4,7 @@ Requires=rke2-role.service attestation-api.service
 After=rke2-role.service attestation-api.service nri-node-ip.service
 ConditionPathExists=|/run/confos/role-server
 ConditionPathExists=|/run/confos/role-agent
+ConditionPathExists=|/run/confos/role-pod
 StartLimitIntervalSec=0
 
 [Service]
