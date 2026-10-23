@@ -123,10 +123,13 @@ func secretBody(value string) []byte {
 	return b
 }
 
-// converged heals, waits for every replica to serve and agree, and returns
-// one replica's (allowlist, secrets) bodies per running replica.
-func converged(t *testing.T, c *Cluster) map[int][2][]byte {
+// converged heals, pauses the checker's writers (agreement needs a quiet
+// cluster), waits for every replica to serve and agree, and returns each
+// running replica's (allowlist, secrets) bodies.
+func converged(t *testing.T, c *Cluster, k *Checker) map[int][2][]byte {
 	t.Helper()
+	k.Pause()
+	defer k.Resume()
 	c.Heal()
 	c.WaitAllServing(60 * time.Second)
 	if _, _, err := c.Converge(90 * time.Second); err != nil {
@@ -238,7 +241,7 @@ func hotKey(t *testing.T, c *Cluster, k *Checker) {
 	hold(20 * time.Second)
 	close(stop)
 	wg.Wait()
-	snaps := converged(t, c)
+	snaps := converged(t, c, k)
 	for _, kind := range []string{"allow", "secret"} {
 		ops := allowOps
 		if kind == "secret" {
@@ -355,7 +358,7 @@ func largeBodies(t *testing.T, c *Cluster, k *Checker) {
 		t.Error("no large allowlist document accepted")
 	}
 	verify := func(when string) {
-		snaps := converged(t, c)
+		snaps := converged(t, c, k)
 		for i, s := range snaps {
 			m, _ := parseAllowPrefix(s[0], "lb-")
 			for name, want := range accepted {
@@ -459,7 +462,7 @@ func wideKeyspace(t *testing.T, c *Cluster, k *Checker) {
 	c.Restart(c.NonVoterIDs()[0], false)
 	c.Logf("restarted members serving after %s", c.WaitAllServing(120*time.Second))
 	c.WaitVoters(seats, 60*time.Second)
-	snaps := converged(t, c)
+	snaps := converged(t, c, k)
 	for i, s := range snaps {
 		al, err := parseAllowPrefix(s[0], "wk-")
 		if err != nil {
@@ -596,7 +599,7 @@ func deleteMix(t *testing.T, c *Cluster, k *Checker) {
 	hold(20 * time.Second)
 	close(stop)
 	wg.Wait()
-	snaps := converged(t, c)
+	snaps := converged(t, c, k)
 	for i, s := range snaps {
 		m, err := parseAllowPrefix(s[0], "")
 		if err != nil {
