@@ -265,7 +265,7 @@ func bumpVersionTx(tx *sql.Tx) error {
 	return err
 }
 
-// SeedWorkloads adds every workload entry whose name is not already present
+// seedWorkloads adds every workload entry whose name is not already present
 // and retires each stored entry the seed replaces (retiredBySeed), in a single
 // transaction, and returns the numbers added and retired. Additive for
 // everything else and idempotent: an existing entry is left untouched and the
@@ -381,7 +381,7 @@ func seedWorkloadsTx(tx *sql.Tx, workloads map[string]pkgallowlist.Workload) (in
 	return added, nil
 }
 
-// PutWorkload upserts one named workload entry and rebuilds its digest index in
+// putWorkload upserts one named workload entry and rebuilds its digest index in
 // a single transaction, then bumps the version. The name and containers are
 // validated against the frozen allowlist rules; a rejection wraps
 // ErrInvalidWorkload.
@@ -408,7 +408,7 @@ func (s *Store) putWorkload(name string, w pkgallowlist.Workload) error {
 	return s.commitTx(tx)
 }
 
-// DeleteWorkload removes one named entry and its index rows, bumping the version
+// deleteWorkload removes one named entry and its index rows, bumping the version
 // only when the entry existed. Returns false if absent.
 func (s *Store) deleteWorkload(name string) (bool, error) {
 	s.mu.Lock()
@@ -440,7 +440,7 @@ func (s *Store) deleteWorkload(name string) (bool, error) {
 	return true, s.commitTx(tx)
 }
 
-// ReplaceAll atomically swaps the entire allowlist for the given document and
+// replaceAll atomically swaps the entire allowlist for the given document and
 // bumps the version. An empty document clears everything.
 func (s *Store) replaceAll(al *pkgallowlist.Allowlist) error {
 	if al == nil {

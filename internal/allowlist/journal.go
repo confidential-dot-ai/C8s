@@ -92,7 +92,7 @@ func objectDigest(b []byte) string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
-// StartJournal checks that every journaled document still hashes to its
+// startJournal checks that every journaled document still hashes to its
 // digest, then journals the document the store serves now if it is not
 // already the head, so a fresh database starts its history with it. CDS calls
 // it before serving; an error means the store is corrupt and CDS must not
@@ -215,7 +215,7 @@ func (s *Store) Object(digest string) ([]byte, bool, error) {
 	return b, true, nil
 }
 
-// SignPolicy stores token, the operator write token that authorized a
+// signPolicy stores token, the operator write token that authorized a
 // whole-document write of body, as the signature of that document. It stores
 // nothing unless body is byte for byte a journaled document: the token's pbh
 // claim binds body, so only then does it sign what verifiers fetch.
@@ -267,7 +267,7 @@ func (s *Store) Signature(digest string) (string, bool, error) {
 // The table keeps the tokens spent in the last margin plus MaxTokenValidity.
 const spentTokenMargin = time.Hour
 
-// ConsumeToken records that the JWT token authorized a request, or returns
+// consumeToken records that the JWT token authorized a request, or returns
 // operatorauth.ErrTokenReused if it or another encoding of it already did. Stored
 // signatures make write tokens public, so each must authorize one request only.
 //
@@ -328,13 +328,12 @@ func (s *Store) HistoryLen() (int, error) {
 	return n, err
 }
 
-// PruneHistory keeps the newest keep entries of the history and drops the
+// pruneHistory keeps the newest keep entries of the history and drops the
 // documents and signatures no remaining entry names. The served document is
 // the head, which always remains, and spent tokens are left to consumeToken
 // (a token must never be spendable again). It depends only on the store's
-// contents, so every replica applying it prunes the same entries. It prunes
-// this store only: an HA leader proposes OpPruneHistory instead.
-func (s *Store) PruneHistory(keep int) (int, error) {
+// contents, so every replica applying OpPruneHistory prunes the same entries.
+func (s *Store) pruneHistory(keep int) (int, error) {
 	if keep < 1 {
 		return 0, errors.New("allowlist: a history must keep at least one entry")
 	}

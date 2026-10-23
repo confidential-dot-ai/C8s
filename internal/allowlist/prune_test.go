@@ -30,10 +30,10 @@ func TestPruneHistoryKeepsTheNewest(t *testing.T) {
 	if len(before) != 11 { // the start document plus ten writes
 		t.Fatalf("history %d", len(before))
 	}
-	if _, err := store.PruneHistory(0); err == nil {
+	if _, err := store.pruneHistory(0); err == nil {
 		t.Fatal("keeping nothing accepted")
 	}
-	dropped, err := store.PruneHistory(4)
+	dropped, err := store.pruneHistory(4)
 	if err != nil || dropped != 7 {
 		t.Fatalf("dropped %d: %v", dropped, err)
 	}
@@ -56,7 +56,7 @@ func TestPruneHistoryKeepsTheNewest(t *testing.T) {
 	if n, _ := store.HistoryLen(); n != 4 {
 		t.Fatalf("HistoryLen %d", n)
 	}
-	if dropped, err := store.PruneHistory(4); dropped != 0 || err != nil {
+	if dropped, err := store.pruneHistory(4); dropped != 0 || err != nil {
 		t.Fatalf("second prune: %d %v", dropped, err)
 	}
 	// The journal still verifies at the next start.
@@ -114,7 +114,7 @@ func TestHistoryKeepForBytesAndLiveBytes(t *testing.T) {
 	if err != nil || before <= 0 {
 		t.Fatalf("live bytes: %d %v", before, err)
 	}
-	if _, err := store.PruneHistory(1); err != nil {
+	if _, err := store.pruneHistory(1); err != nil {
 		t.Fatal(err)
 	}
 	if after, _ := store.LiveBytes(); after >= before {
