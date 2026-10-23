@@ -27,7 +27,7 @@ const (
 func exitsAllowlist(t *testing.T, extra string) *allowlist.Allowlist {
 	t.Helper()
 	any := func(digest string) string {
-		return `{"digest":"` + digest + `","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}`
+		return `{"digest":"` + digest + `","command":{"policy":"exact","argv":["/run"]},"args":{"policy":"deny"}}`
 	}
 	doc := `{"schema":"c8s.allowlist/v1","workloads":{
 		"collector":{"initContainers":[` + any(collectorInit) + `],"containers":[` + any(collectorDigest) + `],"egress":[{"cidr":"203.0.113.7/32","port":443}]},
@@ -73,6 +73,10 @@ func TestDecideExits(t *testing.T) {
 		{
 			name: "so its pods run without exits or refusals", running: []string{collectorDigest, sidecarDigest},
 			extra: `,"with-sidecar":{"containers":[COLLECTOR,SIDECAR]}`, shadowed: true,
+		},
+		{
+			name: "an unpinned entry claims nothing", running: []string{sidecarDigest},
+			extra: `,"loose":{"containers":[{"digest":"` + sidecarDigest + `","command":{"policy":"exact","argv":["/run"]},"args":{"policy":"any"}}],"egress":[{"cidr":"198.51.100.7/32","port":443}]}`, shadowed: true,
 		},
 		{
 			name: "two entries with exits in one pod are refused", running: []string{collectorDigest, sidecarDigest},
