@@ -201,10 +201,12 @@ func TestOperatorScopePolicyServiceAddresses(t *testing.T) {
 		{"empty externalIPs", op, svc(map[string]any{"externalIPs": []any{}}), true},
 		{"no spec", op, map[string]any{}, true},
 		{"delete (null object)", op, nil, true},
+		{"server-side dry-run placeholder", op, svc(map[string]any{"clusterIP": "10.53.0.0", "clusterIPs": []any{"10.53.0.0"}}), true},
 		{"externalIPs on the exit", op, svc(map[string]any{"externalIPs": []any{"10.53.0.11"}}), false},
 		{"externalIPs anywhere", op, svc(map[string]any{"externalIPs": []any{"192.0.2.1"}}), false},
 		{"ClusterIP of the exit", op, svc(map[string]any{"clusterIP": "10.53.0.11"}), false},
 		{"other static-band ClusterIP", op, svc(map[string]any{"clusterIP": "10.53.0.200"}), false},
+		{"first static-band ClusterIP", op, svc(map[string]any{"clusterIP": "10.53.0.1"}), false},
 		{"static band in clusterIPs only", op, svc(map[string]any{"clusterIPs": []any{"10.53.0.12"}}), false},
 		{"system:masters keeps the band", sys, svc(map[string]any{"clusterIP": "10.53.0.11", "externalIPs": []any{"10.53.0.11"}}), true},
 	} {
