@@ -1,19 +1,25 @@
 package cdsha
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/hpke"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/confidential-dot-ai/c8s/pkg/certutil"
+	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -25,7 +31,9 @@ import (
 // DHKEM(P-256) + HKDF-SHA256 + AES-256-GCM) to the operator's offline
 // recovery key. Only that key opens it, so it can sit in the untrusted
 // control plane; its metadata is authenticated (bound into the HPKE info),
-// not secret. The snapshot is already zstd-compressed.
+// not secret. HPKE Base mode does NOT authenticate the producer: anyone with
+// the public key can replace the entire backup. Recovery requires an independently
+// trusted CA certificate fingerprint and source signature. The snapshot is already zstd-compressed.
 
 const backupInfo = "c8s-cds-ha-backup-v2\n"
 
@@ -46,6 +54,8 @@ type BackupMeta struct {
 type Backup struct {
 	Meta       BackupMeta `json:"meta"`
 	Ciphertext []byte     `json:"ciphertext"`
+	SourceCert []byte     `json:"source_cert,omitempty"`
+	Signature  string     `json:"signature,omitempty"`
 }
 
 // info binds the metadata into the HPKE key schedule.
@@ -56,6 +66,9 @@ func (m BackupMeta) info() ([]byte, error) {
 
 // SealBackup encrypts a snapshot to the recovery public key (P-256).
 func SealBackup(recovery *ecdsa.PublicKey, meta BackupMeta, snapshot []byte) (Backup, error) {
+	if len(snapshot) > MaxSnapshotBytes {
+		return Backup{}, errors.New("snapshot exceeds compressed size limit")
+	}
 	if recovery.Curve != elliptic.P256() {
 		return Backup{}, errors.New("recovery key must be ECDSA P-256")
 	}
@@ -78,9 +91,12 @@ func SealBackup(recovery *ecdsa.PublicKey, meta BackupMeta, snapshot []byte) (Ba
 	return Backup{Meta: meta, Ciphertext: ct}, nil
 }
 
-// OpenBackup decrypts a backup with the recovery private key. The metadata is
-// authenticated: changing it fails decryption.
+// OpenBackup only decrypts a backup. Metadata is bound to this ciphertext, but
+// the producer is NOT authenticated. Call VerifyBackupSource first for recovery.
 func OpenBackup(recovery *ecdsa.PrivateKey, b Backup) ([]byte, error) {
+	if len(b.Ciphertext) > MaxSnapshotBytes+1024 {
+		return nil, errors.New("backup exceeds compressed size limit")
+	}
 	rec, err := recovery.ECDH()
 	if err != nil {
 		return nil, fmt.Errorf("recovery key: %w", err)
@@ -120,10 +136,12 @@ const (
 func BackupName(clusterID string) string { return "cds-backup-" + clusterID }
 
 type backupManifest struct {
-	Meta   BackupMeta `json:"meta"`
-	Parts  int        `json:"parts"`
-	SHA256 string     `json:"sha256"`
-	Gen    string     `json:"gen"` // names this backup's parts: <manifest>-<gen>-<i>
+	Meta       BackupMeta `json:"meta"`
+	Parts      int        `json:"parts"`
+	SHA256     string     `json:"sha256"`
+	SourceCert []byte     `json:"source_cert,omitempty"`
+	Signature  string     `json:"signature,omitempty"`
+	Gen        string     `json:"gen"` // names this backup's parts: <manifest>-<gen>-<i>
 }
 
 func (m backupManifest) partName(clusterID string, i int) string {
@@ -174,7 +192,7 @@ func (s KubeDecrees) PutBackup(ctx context.Context, b Backup) error {
 		return err
 	}
 	sum := sha256.Sum256(b.Ciphertext)
-	man := backupManifest{Meta: b.Meta, SHA256: hex.EncodeToString(sum[:]),
+	man := backupManifest{Meta: b.Meta, SourceCert: b.SourceCert, Signature: b.Signature, SHA256: hex.EncodeToString(sum[:]),
 		Gen: fmt.Sprintf("e%d-i%d-%s", b.Meta.Epoch, b.Meta.Index, hex.EncodeToString(nonce[:]))}
 	labels := map[string]string{LabelBackup: s.ClusterID}
 	for off := 0; off < len(b.Ciphertext); off += backupPartBytes {
@@ -261,12 +279,15 @@ func BackupFromConfigMaps(clusterID string, cms []corev1.ConfigMap) (Backup, err
 		if !ok {
 			return Backup{}, fmt.Errorf("backup part %d is missing", i)
 		}
+		if len(p.BinaryData[keyPart]) > MaxSnapshotBytes+1024-len(ct) {
+			return Backup{}, errors.New("backup exceeds compressed size limit")
+		}
 		ct = append(ct, p.BinaryData[keyPart]...)
 	}
 	if sum := sha256.Sum256(ct); hex.EncodeToString(sum[:]) != man.SHA256 {
 		return Backup{}, errors.New("backup parts do not match their manifest (a write in progress, or tampering)")
 	}
-	return Backup{Meta: man.Meta, Ciphertext: ct}, nil
+	return Backup{Meta: man.Meta, Ciphertext: ct, SourceCert: man.SourceCert, Signature: man.Signature}, nil
 }
 
 // GetBackup reads the stored backup.
@@ -276,4 +297,106 @@ func (s KubeDecrees) GetBackup(ctx context.Context) (Backup, error) {
 		return Backup{}, err
 	}
 	return BackupFromConfigMaps(s.ClusterID, list.Items)
+}
+
+// ValidateRecoverySnapshot checks the inner state against signed metadata and
+// the operator floor. Call VerifyBackupSource before decrypting this snapshot.
+func ValidateRecoverySnapshot(body []byte, meta BackupMeta, minEpoch, minIndex uint64) error {
+	if len(body) > MaxSnapshotBytes {
+		return errors.New("snapshot exceeds compressed size limit")
+	}
+	sn, err := decodeSnapshot(bytes.NewReader(body), Format, false)
+	if err != nil {
+		return err
+	}
+	if sn.Core.ClusterID != meta.ClusterID || sn.Core.Epoch != meta.Epoch || sn.Index != meta.Index ||
+		certutil.CertFingerprint(sn.Core.RootCert) != meta.CAFingerprint || !slices.Equal(sn.Core.AppliedDecrees, meta.AppliedDecrees) {
+		return errors.New("backup metadata differs from snapshot")
+	}
+	if sn.Core.Epoch < minEpoch || (sn.Core.Epoch == minEpoch && sn.Index < minIndex) {
+		return errors.New("snapshot is older than the recovery floor")
+	}
+	if sn.Core.Epoch == math.MaxUint64 {
+		return errors.New("snapshot epoch cannot be incremented")
+	}
+	return nil
+}
+
+const backupSourceDomain = "c8s-cds-ha-backup-source-v1\n"
+
+// sourceMessage uses the same typed JSON + domain signing convention as decrees.
+// Hashing the exact ciphertext binds the encapsulated key and snapshot bytes.
+func (b Backup) sourceMessage() ([]byte, error) {
+	body, err := json.Marshal(struct {
+		Version          int        `json:"version"`
+		Meta             BackupMeta `json:"meta"`
+		CiphertextSHA256 string     `json:"ciphertext_sha256"`
+	}{1, b.Meta, SnapshotSHA256(b.Ciphertext)})
+	return append([]byte(backupSourceDomain), body...), err
+}
+
+// SealAuthenticatedBackup signs with the CA from this exact snapshot, not a
+// concurrently renewed live CA. Encryption alone does not authenticate a source.
+func SealAuthenticatedBackup(recovery *ecdsa.PublicKey, meta BackupMeta, body, certDER, keyDER []byte) (Backup, error) {
+	sn, err := decodeSnapshot(bytes.NewReader(body), Format, true)
+	if err != nil {
+		return Backup{}, err
+	}
+	if !bytes.Equal(sn.Core.RootCert, certDER) || !bytes.Equal(sn.Key, keyDER) {
+		return Backup{}, errors.New("backup signer differs from snapshot")
+	}
+	ca, err := caFromDER(certDER, keyDER)
+	if err != nil {
+		return Backup{}, err
+	}
+	if certutil.CertFingerprint(certDER) != meta.CAFingerprint {
+		return Backup{}, errors.New("backup signer differs from metadata")
+	}
+	b, err := SealBackup(recovery, meta, body)
+	if err != nil {
+		return Backup{}, err
+	}
+	b.SourceCert = slices.Clone(certDER)
+	msg, err := b.sourceMessage()
+	if err != nil {
+		return Backup{}, err
+	}
+	b.Signature, err = operatorauth.SignDetached(ca.Key, msg)
+	return b, err
+}
+
+// VerifyBackupSource authenticates a backup against a CA certificate fingerprint
+// retained independently from an attested cluster BEFORE the loss. Never use a
+// pin copied from this backup. Unsigned backups have no automatic fallback.
+func VerifyBackupSource(b Backup, trustedCA string) error {
+	if len(b.SourceCert) > 16<<10 || len(b.Signature) > 1024 || len(b.Ciphertext) > MaxSnapshotBytes+1024 {
+		return errors.New("backup authentication fields exceed size limit")
+	}
+	pin, err := hex.DecodeString(trustedCA)
+	if err != nil || len(pin) != sha256.Size {
+		return errors.New("trusted CA SHA-256 must be 64 hex characters")
+	}
+	sum := sha256.Sum256(b.SourceCert)
+	if !bytes.Equal(pin, sum[:]) || b.Meta.CAFingerprint != hex.EncodeToString(sum[:]) {
+		return errors.New("backup source does not match independently trusted CA")
+	}
+	cert, err := x509.ParseCertificate(b.SourceCert)
+	if err != nil {
+		return fmt.Errorf("backup source certificate: %w", err)
+	}
+	if !cert.IsCA || cert.KeyUsage&x509.KeyUsageCertSign == 0 {
+		return errors.New("backup source is not a CA")
+	}
+	pub, ok := cert.PublicKey.(*ecdsa.PublicKey)
+	if !ok {
+		return errors.New("backup source must use ECDSA")
+	}
+	msg, err := b.sourceMessage()
+	if err != nil {
+		return err
+	}
+	if err := operatorauth.VerifyDetached([]*ecdsa.PublicKey{pub}, msg, b.Signature); err != nil {
+		return fmt.Errorf("backup source signature: %w", err)
+	}
+	return nil
 }

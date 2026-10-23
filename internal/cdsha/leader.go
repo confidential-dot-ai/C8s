@@ -120,8 +120,8 @@ func (n *Node) maybeBackup(ctx context.Context) {
 		n.log.Warn("backup: decode snapshot", "err", err)
 		return
 	}
-	b, err := SealBackup(n.recovery, BackupMeta{ClusterID: sn.Core.ClusterID, Epoch: sn.Core.Epoch, Index: meta.Index,
-		AppliedDecrees: sn.Core.AppliedDecrees, TakenAtMS: time.Now().UnixMilli(), CAFingerprint: certutil.CertFingerprint(sn.Core.RootCert)}, body)
+	b, err := SealAuthenticatedBackup(n.recovery, BackupMeta{ClusterID: sn.Core.ClusterID, Epoch: sn.Core.Epoch, Index: meta.Index,
+		AppliedDecrees: sn.Core.AppliedDecrees, TakenAtMS: time.Now().UnixMilli(), CAFingerprint: certutil.CertFingerprint(sn.Core.RootCert)}, body, sn.Core.RootCert, sn.Key)
 	if err != nil {
 		n.log.Warn("backup: seal", "err", err)
 		return

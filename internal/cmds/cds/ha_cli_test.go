@@ -28,9 +28,12 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cdsha"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/nodeservices"
+	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/sandboxledger"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/certutil"
+	"github.com/klauspost/compress/zstd"
 )
 
 func writePEM(t *testing.T, typ string, der []byte) string {
@@ -439,7 +442,21 @@ func TestHARecoverCLIErrors(t *testing.T) {
 	empty := filepath.Join(dir, "empty.json")
 	_ = os.WriteFile(empty, []byte(`{"items":[]}`), 0o600)
 	// A real backup sealed to k, so the key paths are what fails.
-	b, _ := cdsha.SealBackup(&k.PublicKey, cdsha.BackupMeta{ClusterID: "c1", Epoch: 1, Index: 5}, []byte("{}"))
+	cert, err := issuer.SelfSignCA(k, "test", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyDER, _ := x509.MarshalPKCS8PrivateKey(k)
+	header, _ := json.Marshal(map[string]any{"format": cdsha.Format, "index": 5, "core": cdsha.Core{ClusterID: "c1", Epoch: 1, RootCert: cert.Raw}, "key": keyDER})
+	var encoded bytes.Buffer
+	zw, _ := zstd.NewWriter(&encoded)
+	_, _ = zw.Write(append(header, '\n'))
+	_ = zw.Close()
+	pin := certutil.CertFingerprint(cert.Raw)
+	b, err := cdsha.SealAuthenticatedBackup(&k.PublicKey, cdsha.BackupMeta{ClusterID: "c1", Epoch: 1, Index: 5, CAFingerprint: pin}, encoded.Bytes(), cert.Raw, keyDER)
+	if err != nil {
+		t.Fatal(err)
+	}
 	kube := fake.NewClientset()
 	if err := (cdsha.KubeDecrees{Client: kube, Namespace: "ns", ClusterID: "c1"}).PutBackup(context.Background(), b); err != nil {
 		t.Fatal(err)
@@ -448,12 +465,14 @@ func TestHARecoverCLIErrors(t *testing.T) {
 	raw, _ := json.Marshal(list)
 	good := filepath.Join(dir, "backup.json")
 	_ = os.WriteFile(good, raw, 0o600)
+	unsigned := filepath.Join(dir, "unsigned.json")
+	_ = os.WriteFile(unsigned, bytes.ReplaceAll(raw, []byte(b.Signature), []byte("")), 0o600)
 	run := func(args ...string) error {
 		cmd := newHARecoverCmd()
 		cmd.SetOut(io.Discard)
 		cmd.SetErr(io.Discard)
 		cmd.SetArgs(append([]string{"--cluster-id", "c1", "--bootstrap-node", "n0", "--url", "http://127.0.0.1:1", "--insecure",
-			"--min-epoch", "0", "--min-index", "0", "--attempts", "1"}, args...))
+			"--trusted-ca-sha256", pin, "--min-epoch", "0", "--min-index", "0", "--attempts", "1"}, args...))
 		return cmd.ExecuteContext(context.Background())
 	}
 	none := filepath.Join(dir, "none")
@@ -462,13 +481,15 @@ func TestHARecoverCLIErrors(t *testing.T) {
 		args []string
 		want string
 	}{
-		"missing backup file": {[]string{"--backup-file", none, "--recovery-key", keyPath, "--decree-key", keyPath}, "no such file"},
-		"garbage backup file": {[]string{"--backup-file", garbage, "--recovery-key", keyPath, "--decree-key", keyPath}, "--backup-file"},
-		"no backup in file":   {[]string{"--backup-file", empty, "--recovery-key", keyPath, "--decree-key", keyPath}, "no backup manifest"},
-		"no recovery key":     {[]string{"--backup-file", good, "--recovery-key", none, "--decree-key", keyPath}, "recovery key: read"},
-		"wrong recovery key":  {[]string{"--backup-file", good, "--recovery-key", writeKey(t, other), "--decree-key", keyPath}, "recovery key"},
-		"no decree key":       {[]string{"--backup-file", good, "--recovery-key", keyPath, "--decree-key", none}, "--decree-key"},
-		"nobody answers":      {[]string{"--backup-file", good, "--recovery-key", keyPath, "--decree-key", keyPath}, "no answer"},
+		"unsigned replacement": {[]string{"--backup-file", unsigned, "--recovery-key", keyPath, "--decree-key", keyPath}, "source signature"},
+		"wrong trusted pin":    {[]string{"--backup-file", good, "--recovery-key", keyPath, "--decree-key", keyPath, "--trusted-ca-sha256", strings.Repeat("0", 64)}, "independently trusted CA"},
+		"missing backup file":  {[]string{"--backup-file", none, "--recovery-key", keyPath, "--decree-key", keyPath}, "no such file"},
+		"garbage backup file":  {[]string{"--backup-file", garbage, "--recovery-key", keyPath, "--decree-key", keyPath}, "--backup-file"},
+		"no backup in file":    {[]string{"--backup-file", empty, "--recovery-key", keyPath, "--decree-key", keyPath}, "no backup manifest"},
+		"no recovery key":      {[]string{"--backup-file", good, "--recovery-key", none, "--decree-key", keyPath}, "recovery key: read"},
+		"wrong recovery key":   {[]string{"--backup-file", good, "--recovery-key", writeKey(t, other), "--decree-key", keyPath}, "recovery key"},
+		"no decree key":        {[]string{"--backup-file", good, "--recovery-key", keyPath, "--decree-key", none}, "--decree-key"},
+		"nobody answers":       {[]string{"--backup-file", good, "--recovery-key", keyPath, "--decree-key", keyPath}, "no answer"},
 	} {
 		if err := run(c.args...); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: got %v, want %q", name, err, c.want)

@@ -17,12 +17,12 @@ import (
 //     cannot join;
 //   - a replica that meets an entry or a snapshot newer than it reads stops
 //     serving: skipping an entry would silently diverge from the group.
-const Format uint32 = 2
+const Format uint32 = 3
 
 // baseFormat is the oldest format this release reads: a new cluster starts
-// at it, and a format left unset (zero) means it. Earlier formats belong to
-// unreleased builds and are refused.
-const baseFormat uint32 = 2
+// at it, and a format left unset (zero) means it. Formats 1 and 2 are incompatible and refused. This is a clean-redeploy
+// boundary, not a rolling upgrade; see docs/cds-ha.md.
+const baseFormat uint32 = 3
 
 // ErrNewerFormat is a log entry or snapshot this replica cannot read.
 var ErrNewerFormat = errors.New("cds-ha: log entry or snapshot in a newer format than this replica reads")

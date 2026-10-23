@@ -3,7 +3,8 @@
 "Workload policy" below is what the API and CLI call the allowlist.
 
 These notes cover running CDS as several replicas that share one mesh CA
-(`launch-config new --cds-node`). Each step below was run on TDX hardware.
+(`launch-config new --cds-node`). Earlier workflows were run on TDX hardware. The format-3/authenticated-backup
+changes below have local tests only; they are not a validated TDX rollout.
 
 ## Starting an HA cluster
 
@@ -13,7 +14,26 @@ bundle with `c8s node launch-config new --cds-node <name>` (repeat the flag:
 an odd number, 3 to 9), launch every node, and apply the Genesis decree. Then move
 workloads and re-apply the workload policy (`c8s allowlist apply`) and secrets.
 
+## Compatibility boundary: format 3 and peer binding v2
+
+This release reads and writes state format **3** (SQLite snapshot images).
+Format 2 previously named incompatible JSON-row and SQLite encodings. Neither
+format-2 variant is supported here. Old backups are refused, not migrated.
+Peer binding v2 also differs from the earlier v1 certificate binding; changing
+measurement pins does not make those protocols interoperable.
+
+**Do not roll an existing format-2/v1 deployment (including v25 test clusters)
+into this release.** Retain its exact old image and recovery tools with its old
+backups. This boundary requires a clean deployment: a new CA and replicated
+state, followed by deliberate workload, policy and secret migration. Clean
+redeploy is not state preservation. A state-preserving bridge release and
+old-backup compatibility have not been implemented or tested.
+
 ## Rolling CDS to a new image
+
+The procedure below applies ONLY when both releases explicitly support the
+same peer binding and overlapping state formats. It does not cross the above
+boundary.
 
 1. Sign and apply an `UpdateMeasurements` decree that pins both images
    (`c8s cds ha decree --image <old> --image <new>`). Nodes and pods follow
@@ -74,9 +94,9 @@ the recovery key, so you can store the export anywhere:
     kubectl get configmaps -n c8s-cds-decrees \
       -l c8s.confidential.ai/cds-backup=<cluster-id> -o json > cds-backup-$(date +%s).json
 
-Also record the epoch and index the backup shows (`c8s cds ha recover`
-prints them, and so does the backup manifest). Recovery refuses a backup
-older than the `--min-epoch`/`--min-index` you give it.
+Retain the CA fingerprint and epoch/index independently from attested live
+status, as described below. A manifest alone is not a trusted recovery record.
+Recovery refuses a backup older than the `--min-epoch`/`--min-index` you give it.
 
 ## Splitting the recovery key
 
@@ -91,7 +111,7 @@ Use this when every replica lost its state:
 
     c8s cds ha recover --url <cds url> --image-policy-file server.json --operator-key server.key \
       --backup-file cds-backup.json --cluster-id <id> --bootstrap-node <a fresh cds node> \
-      --decree-key decree.key --min-epoch <E> --min-index <I> \
+      --decree-key decree.key --trusted-ca-sha256 <recorded-CA-fingerprint> --min-epoch <E> --min-index <I> \
       --recovery-key-share share-1.json --recovery-key-share share-3.json --recovery-key-share share-4.json
 
 Fewer shares than the threshold are refused. The restored cluster keeps its
@@ -121,3 +141,52 @@ Raft target framing share a 10-second deadline; control I/O has a 30-second
 deadline. Mux shutdown closes all accepted sockets, including incomplete
 handshakes and stalled target reads. These are availability bounds, not a
 substitute for peer attestation or network policy.
+
+## Backup provenance and recovery limits
+
+HPKE Base encryption protects confidentiality, not sender identity. Anyone with
+its public key can encrypt replacement state. New backups therefore carry an
+ECDSA source signature from the snapshot's mesh CA. It covers a versioned,
+domain-separated typed JSON message containing all backup metadata and SHA-256
+of the exact ciphertext (including its HPKE encapsulated key). The CLI verifies
+that signature against an **independently retained CA certificate fingerprint**
+before decrypting, checking inner metadata/floors, or signing a Restore decree.
+There is no unsigned-backup fallback.
+
+Before loss:
+1. Use `c8s cds ha status --image-policy-file server.json https://<node>:30808`
+   over the attested channel. Retain the full `ca_fingerprint`, cluster identity,
+   epoch and applied index in an access-controlled offline recovery record.
+   Do not use `--insecure` in this workflow.
+2. Retain the CA pin for each backup generation you keep. CA certificate renewal
+   changes its certificate fingerprint even if the key stays the same. Record
+   the new fingerprint through the attested channel after renewal. Keep old pins
+   with old backups. A key rotation likewise requires a new trusted record.
+3. Export backup ConfigMaps as before. Export contents and displayed metadata
+   are not trusted records. Never copy the expected pin from that export.
+
+On total loss add `--trusted-ca-sha256 <recorded-full-64-hex-CA-fingerprint>`
+to `c8s cds ha recover --backup-file backup.json ... --min-epoch <recorded-epoch>
+--min-index <recorded-index>`. Select the independently recorded pin for that
+backup. If no trusted pin was retained, stop: this CLI cannot authenticate the
+backup and provides no trust-on-first-use bypass. Historical certificate expiry
+alone does not reject recovery: a retained pin and valid signature authenticate
+historical state; deciding to restore it remains an operator action. This is
+not live TLS certificate validation.
+
+Supported snapshot limits are 128 MiB compressed, 16 MiB JSON header (including
+its newline), and 256 MiB SQLite image. Both snapshot creation and decoding
+reject larger state. The limits are operational budgets, not guarantees that
+all machines have enough memory: restoring SQLite and stores holds several
+copies, and concurrent operations add memory. Size the instance accordingly
+and prune retained history before reaching these limits. Size limits do not
+make arbitrary SQLite images trusted. Source certificates are limited to 16 KiB
+and signatures to 1 KiB before signature verification.
+
+PeerBinding v2 checks certificate expiry at the handshake. Renewal and expiry do
+not terminate established streams. Current-image pin removals cut tracked peer
+streams on epoch recheck; final admission is serialized against the sweep. This
+release does not add hard stream lifetime timers. Shared challenge redemption
+also checks the current key and signed TTL at the issuer; a missing key fails
+closed. Single-use tracking remains per replica. Use distinct operator keys
+per cluster (see `docs/operator.md`).
