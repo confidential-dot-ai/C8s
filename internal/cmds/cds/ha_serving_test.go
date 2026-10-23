@@ -109,7 +109,7 @@ func TestHAServingReplicaPublishesDecrees(t *testing.T) {
 		t.Fatalf("served pin decree does not verify: %v", err)
 	}
 	var records []cdsha.DecreeRecord
-	w = get(haDecrees(node))
+	w = get(serveJSON(node.Decrees))
 	if err := json.Unmarshal(w.Body.Bytes(), &records); err != nil || len(records) == 0 ||
 		records[len(records)-1].Decree.Decree.IntentID != "u" || records[len(records)-1].Epoch != 2 {
 		t.Fatalf("decree record %s: %v", w.Body.String(), err)

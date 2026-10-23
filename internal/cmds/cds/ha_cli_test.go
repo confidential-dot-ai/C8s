@@ -264,7 +264,7 @@ func TestHAHandlersBeforeJoin(t *testing.T) {
 		t.Fatal("a replica that has not joined serves key material")
 	}
 	w := httptest.NewRecorder()
-	haStatus(node)(w, httptest.NewRequest(http.MethodGet, "/ha/status", nil))
+	serveJSON(node.Status)(w, httptest.NewRequest(http.MethodGet, "/ha/status", nil))
 	var st cdsha.Status
 	if err := json.NewDecoder(w.Body).Decode(&st); err != nil || st.Serving || st.Joined {
 		t.Fatalf("status %+v: %v", st, err)
