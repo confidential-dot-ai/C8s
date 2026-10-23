@@ -149,3 +149,10 @@ func RenewalOf(current, renewed *x509.Certificate) error {
 	}
 	return nil
 }
+
+// PastHalfLife is the mesh CA renewal trigger: half the certificate's
+// lifetime, which --ca-cert-validity guarantees leaves room for renewal to
+// retry in before readiness fails.
+func PastHalfLife(cert *x509.Certificate, now time.Time) bool {
+	return now.After(cert.NotBefore.Add(cert.NotAfter.Sub(cert.NotBefore) / 2))
+}

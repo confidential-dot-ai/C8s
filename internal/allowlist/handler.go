@@ -9,8 +9,6 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
-	"modernc.org/sqlite"
-	sqlite3 "modernc.org/sqlite/lib"
 
 	"github.com/confidential-dot-ai/c8s/internal/httputil"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
@@ -29,7 +27,7 @@ type Handler struct {
 	// DefaultMaxWriteBodyBytes; a non-positive value clamps to the default.
 	MaxWriteBodyBytes int64
 	// Full, when set, refuses writes while it returns an error: the store's
-	// volume is too full to take more history (see cds --allowlist-max-fill).
+	// volume is too full to take more history (HA: see allowlistFullGuard).
 	Full func() error
 }
 
@@ -153,17 +151,10 @@ func (h Handler) HandleDeleteWorkload(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// WriteUnavailable answers a write the replicated store could not commit:
-// 503, retryable, never 401 or 500.
-func WriteUnavailable(w http.ResponseWriter) {
-	w.Header().Set("Retry-After", "1")
-	http.Error(w, ErrUnavailable.Error(), http.StatusServiceUnavailable)
-}
-
 // writeStoreError answers a failed store write.
 func writeStoreError(w http.ResponseWriter, err error) {
 	if errors.Is(err, ErrUnavailable) {
-		WriteUnavailable(w)
+		httputil.WriteUnavailable(w, ErrUnavailable)
 		return
 	}
 	if storeFull(err) {
@@ -177,11 +168,10 @@ func writeStoreError(w http.ResponseWriter, err error) {
 	http.Error(w, "internal server error", http.StatusInternalServerError)
 }
 
-// storeFull reports SQLite's SQLITE_FULL. In HA the error comes back from
-// the replicated state machine as text, hence the message match.
+// storeFull reports SQLite's SQLITE_FULL by its message: in HA the error
+// comes back from the replicated state machine as text only.
 func storeFull(err error) bool {
-	var se *sqlite.Error
-	return (errors.As(err, &se) && se.Code()&0xff == sqlite3.SQLITE_FULL) || strings.Contains(err.Error(), "database or disk is full")
+	return strings.Contains(err.Error(), "database or disk is full")
 }
 
 // authorize reads the body (capped) and runs the configured authorizer.

@@ -3,6 +3,7 @@ package allowlist
 import (
 	"bytes"
 	"cmp"
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -47,20 +48,20 @@ CREATE TABLE IF NOT EXISTS used_token (
 // migrateJournal brings a singleton database created by a release before
 // spent-token expiry to journalSQL: it adds the used_token columns it lacks
 // (rows it held keep 0, which is never pruned) and their indexes.
-func migrateJournal(db *sql.DB) error {
+func migrateJournal(ctx context.Context, db dbConn) error {
 	for _, c := range []string{"exp_unix", "iat_unix"} {
 		var have bool
-		if err := db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('used_token') WHERE name = ?", c).Scan(&have); err != nil {
+		if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM pragma_table_info('used_token') WHERE name = ?", c).Scan(&have); err != nil {
 			return err
 		}
 		if have {
 			continue
 		}
-		if _, err := db.Exec("ALTER TABLE used_token ADD COLUMN " + c + " INTEGER NOT NULL DEFAULT 0"); err != nil {
+		if _, err := db.ExecContext(ctx, "ALTER TABLE used_token ADD COLUMN "+c+" INTEGER NOT NULL DEFAULT 0"); err != nil {
 			return fmt.Errorf("add used_token.%s: %w", c, err)
 		}
 	}
-	_, err := db.Exec(`
+	_, err := db.ExecContext(ctx, `
 CREATE INDEX IF NOT EXISTS used_token_exp ON used_token (exp_unix);
 CREATE INDEX IF NOT EXISTS used_token_iat ON used_token (iat_unix);
 `)
@@ -91,7 +92,7 @@ func objectDigest(b []byte) string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
-// StartJournal checks that every journaled document still hashes to its
+// startJournal checks that every journaled document still hashes to its
 // digest, then journals the document the store serves now if it is not
 // already the head, so a fresh database starts its history with it. CDS calls
 // it before serving; an error means the store is corrupt and CDS must not
@@ -214,7 +215,7 @@ func (s *Store) Object(digest string) ([]byte, bool, error) {
 	return b, true, nil
 }
 
-// SignPolicy stores token, the operator write token that authorized a
+// signPolicy stores token, the operator write token that authorized a
 // whole-document write of body, as the signature of that document. It stores
 // nothing unless body is byte for byte a journaled document: the token's pbh
 // claim binds body, so only then does it sign what verifiers fetch.
@@ -266,7 +267,7 @@ func (s *Store) Signature(digest string) (string, bool, error) {
 // The table keeps the tokens spent in the last margin plus MaxTokenValidity.
 const spentTokenMargin = time.Hour
 
-// ConsumeToken records that the JWT token authorized a request, or returns
+// consumeToken records that the JWT token authorized a request, or returns
 // operatorauth.ErrTokenReused if it or another encoding of it already did. Stored
 // signatures make write tokens public, so each must authorize one request only.
 //
@@ -327,13 +328,12 @@ func (s *Store) HistoryLen() (int, error) {
 	return n, err
 }
 
-// PruneHistory keeps the newest keep entries of the history and drops the
+// pruneHistory keeps the newest keep entries of the history and drops the
 // documents and signatures no remaining entry names. The served document is
 // the head, which always remains, and spent tokens are left to consumeToken
 // (a token must never be spendable again). It depends only on the store's
-// contents, so every replica applying it prunes the same entries. It prunes
-// this store only: an HA leader proposes OpPruneHistory instead.
-func (s *Store) PruneHistory(keep int) (int, error) {
+// contents, so every replica applying OpPruneHistory prunes the same entries.
+func (s *Store) pruneHistory(keep int) (int, error) {
 	if keep < 1 {
 		return 0, errors.New("allowlist: a history must keep at least one entry")
 	}
@@ -381,13 +381,9 @@ func (s *Store) PruneHistory(keep int) (int, error) {
 func (s *Store) LiveBytes() (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var pageSize, pages, free int64
-	for q, v := range map[string]*int64{"PRAGMA page_size": &pageSize, "PRAGMA page_count": &pages, "PRAGMA freelist_count": &free} {
-		if err := s.db.QueryRow(q).Scan(v); err != nil {
-			return 0, err
-		}
-	}
-	return (pages - free) * pageSize, nil
+	var n int64
+	err := s.db.QueryRow("SELECT (page_count - freelist_count) * page_size FROM pragma_page_count, pragma_freelist_count, pragma_page_size").Scan(&n)
+	return n, err
 }
 
 // HistoryKeepForBytes is how many of the newest history entries fit in

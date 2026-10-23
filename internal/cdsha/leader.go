@@ -197,7 +197,7 @@ func (n *Node) maybeRenewCA() {
 		return
 	}
 	cert := ca.Cert
-	if time.Now().Before(cert.NotBefore.Add(cert.NotAfter.Sub(cert.NotBefore) / 2)) {
+	if !issuer.PastHalfLife(cert, time.Now()) {
 		return
 	}
 	n.renewAt = time.Now()

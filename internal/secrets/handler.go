@@ -237,7 +237,7 @@ func (h Handler) servePost(ctx context.Context, w http.ResponseWriter, g grant, 
 	}
 	if errors.Is(err, ErrUnavailable) {
 		h.logger().Warn("secret create not committed", "path", path, "workload", g.workload, "error", err)
-		writeUnavailable(w)
+		httputil.WriteUnavailable(w, ErrUnavailable)
 		return
 	}
 	if err != nil {
@@ -277,13 +277,6 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 
 // censusHolders is how many holders the full-store log line names.
 const censusHolders = 5
-
-// writeUnavailable answers a write the replicated store could not commit:
-// 503, retryable.
-func writeUnavailable(w http.ResponseWriter) {
-	w.Header().Set("Retry-After", "1")
-	http.Error(w, ErrUnavailable.Error(), http.StatusServiceUnavailable)
-}
 
 // requestPath returns the canonical store path a request names.
 //

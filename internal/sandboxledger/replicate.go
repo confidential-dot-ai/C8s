@@ -75,8 +75,8 @@ type Binding struct {
 	ExpiresMS int64  `json:"expires_ms"`
 }
 
-// Dump returns every binding, expired ones included: dropping them is a local
-// matter that never changes an answer.
+// Dump returns every binding, expired ones included. A replica drops them only
+// in Apply, at a command's time, so every replica holds the same set.
 func (l *Ledger) Dump() []Binding {
 	l.mu.Lock()
 	defer l.mu.Unlock()
