@@ -109,8 +109,10 @@ check_pvc() {
 
 # A run-owned pod that fetches the IGVM layer anonymously (the artifact is
 # public) into the PVC and verifies its digest before it is named; a second
-# run finds the file and exits. Inputs reach the script as environment, never
-# as shell text.
+# run finds the file and exits. The lane's concurrency group does not span
+# repositories, so callers elsewhere can stage the same digest at once: each
+# pod writes its own temporary file and only the rename is shared. Inputs reach
+# the script as environment, never as shell text.
 igvm_pod() {
   local name=$1 ns=$2 pvc=$3 file=$4 digest=$5 run=$6 repo=$7
   name_ok "$name" || fail 'invalid pod name'
@@ -121,13 +123,14 @@ igvm_pod() {
   local script
   script=$(cat <<'SH'
 set -eu
-f=/igvm/$IGVM_FILE
+f=/igvm/$IGVM_FILE; t=$f.$FETCH_POD.tmp
+trap 'rm -f "$t"' EXIT
 if [ -f "$f" ] && [ "$(sha256sum "$f" | cut -d' ' -f1)" = "$IGVM_SHA256" ]; then echo "already staged: $f"; exit 0; fi
 tok=$(curl -fsSL --retry 3 --max-time 20 "https://ghcr.io/token?scope=repository:$OCI_REPO:pull" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
 [ -n "$tok" ] || { echo "no registry token"; exit 1; }
-curl -fsSL --retry 3 --max-time "$FETCH_MAX_TIME" -H "Authorization: Bearer $tok" -o "$f.tmp" "https://ghcr.io/v2/$OCI_REPO/blobs/sha256:$IGVM_SHA256"
-[ "$(sha256sum "$f.tmp" | cut -d' ' -f1)" = "$IGVM_SHA256" ] || { rm -f "$f.tmp"; echo "fetched IGVM does not hash to the published digest"; exit 1; }
-chmod 0444 "$f.tmp"; mv "$f.tmp" "$f"; echo "staged: $f"
+curl -fsSL --retry 3 --max-time "$FETCH_MAX_TIME" -H "Authorization: Bearer $tok" -o "$t" "https://ghcr.io/v2/$OCI_REPO/blobs/sha256:$IGVM_SHA256"
+[ "$(sha256sum "$t" | cut -d' ' -f1)" = "$IGVM_SHA256" ] || { echo "fetched IGVM does not hash to the published digest"; exit 1; }
+chmod 0444 "$t"; mv -f "$t" "$f"; echo "staged: $f"
 SH
 )
   jq -n --arg name "$name" --arg ns "$ns" --arg pvc "$pvc" --arg file "$file" --arg digest "${digest#sha256:}" \
@@ -141,7 +144,7 @@ SH
     spec: {restartPolicy: "Never", activeDeadlineSeconds: $deadline,
       securityContext: {runAsNonRoot: true, runAsUser: 100, runAsGroup: 101, fsGroup: 101, seccompProfile: {type: "RuntimeDefault"}},
       containers: [{name: "fetch", image: $image, command: ["/bin/sh", "-c", $script],
-        env: [{name: "IGVM_FILE", value: $file}, {name: "IGVM_SHA256", value: $digest}, {name: "OCI_REPO", value: $oci},
+        env: [{name: "IGVM_FILE", value: $file}, {name: "FETCH_POD", value: $name}, {name: "IGVM_SHA256", value: $digest}, {name: "OCI_REPO", value: $oci},
           {name: "FETCH_MAX_TIME", value: (($deadline - 60) | tostring)}],
         securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: ["ALL"]}},
         resources: {requests: {cpu: "100m", memory: "64Mi"}, limits: {memory: "256Mi"}},

@@ -301,13 +301,14 @@ jobs:
           # A CDI registry import into a claim named by image digest, shared
           # read-only by every run of this image; immediate binding, so no
           # binder pod is needed on this single-node host. API errors abort,
-          # and an existing claim must have imported this exact image.
+          # and an existing claim must have imported this exact image. A
+          # caller outside this lane's concurrency group can create the claim
+          # between the get and the create; that one is checked the same way.
           existing=$(kubectl -n "$NS" get pvc "$rootPvc" --ignore-not-found -o json)
-          if [ -n "$existing" ]; then
-            bash .github/scripts/snp-node-image.sh check-root-pvc "$image" <<<"$existing"
-          else
-            bash .github/scripts/snp-node-image.sh root-pvc "$image" "$NS" | kubectl create -f -
+          if [ -z "$existing" ] && ! bash .github/scripts/snp-node-image.sh root-pvc "$image" "$NS" | kubectl create -f -; then
+            existing=$(kubectl -n "$NS" get pvc "$rootPvc" -o json)
           fi
+          [ -z "$existing" ] || bash .github/scripts/snp-node-image.sh check-root-pvc "$image" <<<"$existing"
           for i in $(seq 1 120); do
             phase=$(kubectl -n "$NS" get pvc "$rootPvc" -o jsonpath='{.metadata.annotations.cdi\.kubevirt\.io/storage\.pod\.phase}' 2>/dev/null || true)
             case "$phase" in
@@ -324,13 +325,14 @@ jobs:
           # The hook sidecar mounts a claim into the compute container and
           # boots the IGVM from it, so the file lives in one named by its
           # digest, filled once by a run-owned pod that verifies the hash
-          # against the published manifest before naming the file.
+          # against the published manifest before naming the file. A claim
+          # another caller creates between the get and the create is checked
+          # as an existing one.
           existing=$(kubectl -n "$NS" get pvc "$igvmPvc" --ignore-not-found -o json)
-          if [ -n "$existing" ]; then
-            bash .github/scripts/snp-node-image.sh check-igvm-pvc "$igvmDigest" <<<"$existing"
-          else
-            bash .github/scripts/snp-node-image.sh igvm-pvc "$NS" "$igvmDigest" | kubectl create -f -
+          if [ -z "$existing" ] && ! bash .github/scripts/snp-node-image.sh igvm-pvc "$NS" "$igvmDigest" | kubectl create -f -; then
+            existing=$(kubectl -n "$NS" get pvc "$igvmPvc" -o json)
           fi
+          [ -z "$existing" ] || bash .github/scripts/snp-node-image.sh check-igvm-pvc "$igvmDigest" <<<"$existing"
           # The pod bounds itself (activeDeadlineSeconds); this loop reports.
           bash .github/scripts/snp-node-image.sh igvm-pod "$VM-igvm" "$NS" "$igvmPvc" "$igvmFile" "$igvmDigest" "$GITHUB_RUN_ID" "$GITHUB_REPOSITORY" | kubectl create -f -
           for i in $(seq 1 66); do
