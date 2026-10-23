@@ -131,6 +131,25 @@ func haStart(ctx context.Context, cfg config, st haStores) (node *cdsha.Node, st
 		}
 	}()
 	stop = func() { cancel(); <-done }
+	// Run ends a stuck replica, but only from its own loop. Watch
+	// independently, so a loop blocked behind the fault (a call on a
+	// starved store or network) cannot keep a replica that serves nothing
+	// alive while its open peer port passes a TCP liveness check.
+	go func() {
+		t := time.NewTicker(time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-runCtx.Done():
+				return
+			case <-t.C:
+			}
+			if reason := node.StuckOverdue(); reason != "" {
+				slog.Error("cds-ha replica stuck and its loop did not end it; exiting", "reason", reason)
+				os.Exit(1)
+			}
+		}
+	}()
 	slog.Info("cds-ha: waiting to join the cluster", "cluster_id", cfg.ha.clusterID, "id", node.ID())
 	// Until it joins, the replica serves only health, status and the
 	// operator's restore of a backup, on the CDS port.

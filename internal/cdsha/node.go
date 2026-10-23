@@ -902,6 +902,17 @@ func (n *Node) Serving() bool {
 // and must be restarted to rejoin with the cluster's state.
 var ErrStuck = errors.New("cds-ha: replica stopped following the log; restart to rejoin")
 
+// StuckOverdue is the stuck reason once this replica has been stuck longer
+// than Run allows (DeadAfter, plus a Lease of slack), "" otherwise. Run ends
+// a stuck replica itself; a caller that watches StuckOverdue independently
+// still ends a replica whose Run loop is blocked and never gets there.
+func (n *Node) StuckOverdue() string {
+	if d := n.fsm.stuckFor(); d > n.cfg.Timing.DeadAfter+n.cfg.Timing.Lease {
+		return n.fsm.Stuck()
+	}
+	return ""
+}
+
 // ErrNotServing means the replica cannot currently admit a mesh CA read.
 // Callers must not use a cached CA to bypass this refusal.
 var ErrNotServing = errors.New("cds-ha: replica is not serving (not joined, not pinned, or not fresh)")
