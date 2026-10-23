@@ -3,12 +3,9 @@ package cds
 import (
 	"bytes"
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"crypto/x509"
 	"encoding/json"
-	"net"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -25,8 +22,7 @@ import (
 )
 
 // A serving one-seat replica publishes its decree record and, once a decree
-// with images set the pins, the signed decree behind them. (Genesis is
-// applied before the cluster agrees on the format that keeps the record.)
+// with images set the pins, the signed decree behind them.
 func TestHAServingReplicaPublishesDecrees(t *testing.T) {
 	ctx := context.Background()
 	h := func(c string) string { return strings.Repeat(c, 96) }
@@ -35,7 +31,7 @@ func TestHAServingReplicaPublishesDecrees(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	key, _ := testKeyPEM(t)
 	pub, _ := x509.MarshalPKIXPublicKey(&key.PublicKey)
 	kube := fake.NewClientset()
 	src := cdsha.KubeDecrees{Client: kube, Namespace: "ns", ClusterID: "c1"}
@@ -51,12 +47,7 @@ func TestHAServingReplicaPublishesDecrees(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := l.Addr().String()
-	l.Close()
+	addr := fmt.Sprintf("127.0.0.1:%d", freePort(t))
 	al, _ := allowlist.OpenInMemory()
 	t.Cleanup(func() { al.Close() })
 	timing := cdsha.Timing{Heartbeat: 150 * time.Millisecond, Election: 150 * time.Millisecond, Lease: time.Second,
@@ -77,17 +68,10 @@ func TestHAServingReplicaPublishesDecrees(t *testing.T) {
 	t.Cleanup(func() { cancel(); <-done })
 	settled := func(what string) {
 		t.Helper()
-		deadline := time.Now().Add(10 * time.Second)
-		for {
+		eventually(t, 10*time.Second, what+": decrees applied and serving", func() bool {
 			pending, err := src.PendingDecrees(ctx)
-			if err == nil && len(pending) == 0 && node.Serving() {
-				return
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("%s: pending %v, serving %v", what, pending, node.Serving())
-			}
-			time.Sleep(20 * time.Millisecond)
-		}
+			return err == nil && len(pending) == 0 && node.Serving()
+		})
 	}
 	put(cdsha.Decree{IntentID: "g", Kind: cdsha.Genesis, BootstrapNode: "n0"})
 	settled("genesis")
@@ -115,8 +99,8 @@ func TestHAServingReplicaPublishesDecrees(t *testing.T) {
 	}
 	var records []cdsha.DecreeRecord
 	w = get(serveJSON(node.Decrees))
-	if err := json.Unmarshal(w.Body.Bytes(), &records); err != nil || len(records) == 0 ||
-		records[len(records)-1].Decree.Decree.IntentID != "u" || records[len(records)-1].Epoch != 2 {
+	if err := json.Unmarshal(w.Body.Bytes(), &records); err != nil || len(records) != 2 || records[0].Decree.Decree.Kind != cdsha.Genesis ||
+		records[1].Decree.Decree.IntentID != "u" || records[1].Epoch != 2 {
 		t.Fatalf("decree record %s: %v", w.Body.String(), err)
 	}
 }

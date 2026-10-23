@@ -353,6 +353,7 @@ func TestRun_ServesAndShutsDownOnSIGTERM(t *testing.T) {
 	cfg.operatorKeys = writeOperatorKeysPEM(t)
 	cfg.allowlistSeed = seedPath
 	cfg.sanValidation = true
+	evictions := countEvictions(t)
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- run(cfg) }()
@@ -380,6 +381,9 @@ func TestRun_ServesAndShutsDownOnSIGTERM(t *testing.T) {
 	}
 	if !up {
 		t.Fatal("cds never became healthy")
+	}
+	if evictions.Load() != 1 {
+		t.Error("a singleton does not evict expired sandbox bindings")
 	}
 
 	// The seeded allowlist must be served before shutdown.

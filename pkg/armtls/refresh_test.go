@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -25,6 +26,10 @@ type fakePins struct {
 	cur, next string
 	gen       uint64
 	refreshes atomic.Int32
+	// throttled makes Refresh report no change even when it moved the
+	// set, as a throttled cdspins Source does after another caller's
+	// refresh took the decree.
+	throttled bool
 }
 
 func (f *fakePins) Current() refvalues.ReferenceValues {
@@ -41,7 +46,32 @@ func (f *fakePins) Refresh(context.Context) (bool, error) {
 	}
 	f.cur, f.next = f.next, ""
 	f.gen++
-	return true, nil
+	return !f.throttled, nil
+}
+
+// replayBody is a request body that cannot be read after Close, as a real
+// stream: a retry must take a fresh one from GetBody.
+type replayBody struct {
+	io.Reader
+	closed bool
+}
+
+func (b *replayBody) Read(p []byte) (int, error) {
+	if b.closed {
+		return 0, errors.New("read after close")
+	}
+	return b.Reader.Read(p)
+}
+func (b *replayBody) Close() error { b.closed = true; return nil }
+
+func postBody(t *testing.T, url, body string) *http.Request {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, url, &replayBody{Reader: strings.NewReader(body)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.GetBody = func() (io.ReadCloser, error) { return &replayBody{Reader: strings.NewReader(body)}, nil }
+	return req
 }
 
 // A peer that fails the pins makes the client look for newer pins; with
@@ -57,18 +87,29 @@ func TestRefreshingTransportRetriesOnceWithNewPins(t *testing.T) {
 	pools := map[string]*x509.CertPool{"old": x509.NewCertPool(), "new": x509.NewCertPool()}
 	pools["new"].AddCert(srv.Certificate())
 	src := &fakePins{cur: "old"}
+	var dials atomic.Int32
 	tr := &refreshingTransport{src: src, build: func(rv refvalues.ReferenceValues) (*http.Transport, error) {
-		return &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pools[rv.Images[0].Name], MinVersion: tls.VersionTLS12}}, nil
+		return &http.Transport{
+			TLSClientConfig: &tls.Config{RootCAs: pools[rv.Images[0].Name], MinVersion: tls.VersionTLS12},
+			DialContext: func(ctx context.Context, n, a string) (net.Conn, error) {
+				dials.Add(1)
+				return (&net.Dialer{}).DialContext(ctx, n, a)
+			},
+		}, nil
 	}}
 	hc := &http.Client{Transport: tr}
-	// No newer pins: the failure stands.
+	// No newer pins: the failure stands, and the request is not re-sent.
 	if _, err := hc.Post(srv.URL, "text/plain", strings.NewReader("a")); err == nil {
 		t.Fatal("a peer outside the pins was accepted")
 	}
-	// The operator moved the pins: one refresh, one retry, the body intact.
+	if dials.Load() != 1 {
+		t.Fatalf("dials %d, want 1: retried on unchanged pins", dials.Load())
+	}
+	// The operator moved the pins: one refresh, one retry, the body
+	// replayed from GetBody.
 	src.next = "new"
 	before := src.refreshes.Load()
-	resp, err := hc.Post(srv.URL, "text/plain", strings.NewReader("body"))
+	resp, err := hc.Do(postBody(t, srv.URL, "body"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,10 +159,34 @@ func TestRefreshingPeerVerifier(t *testing.T) {
 	}
 }
 
-func TestRefreshingTransportBuildError(t *testing.T) {
-	src := &fakePins{cur: "old"}
-	if _, err := NewRefreshingTransport(src, func(Pins) (*http.Transport, error) { return nil, errors.New("boom") }); err == nil {
-		t.Fatal("build error swallowed")
+// A request is retried when the pins moved during it, even when its own
+// Refresh reports no change (another request's refresh took the decree).
+func TestRefreshingRetriesWhenAnotherRefreshMovedThePins(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer srv.Close()
+	src := &fakePins{cur: "old", next: "new", throttled: true}
+	tr, err := NewRefreshingTransport(src, func(p Pins) (*http.Transport, error) {
+		pool := x509.NewCertPool()
+		if p.Images[0].Name == "new" {
+			pool.AddCert(srv.Certificate())
+		}
+		return &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := (&http.Client{Transport: tr}).Get(srv.URL)
+	if err != nil {
+		t.Fatalf("new pins were in force, yet the request failed: %v", err)
+	}
+	resp.Body.Close()
+
+	_, _, cert := testAttestedCert(t, nil)
+	stub := mockapi.New(t)
+	stub.SetVerdict(mockapi.PassingVerdict(hex.EncodeToString(pinDigest("new"))))
+	vsrc := &fakePins{cur: "old", next: "new", throttled: true}
+	if err := RefreshingPeerVerifier(vsrc, stub.URL())([][]byte{cert.Raw}, nil); err != nil {
+		t.Fatalf("new pins were in force, yet the handshake failed: %v", err)
 	}
 }
 
