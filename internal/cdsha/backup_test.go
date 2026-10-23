@@ -144,12 +144,11 @@ func TestApplyRestoreRefusals(t *testing.T) {
 		return b.Bytes()
 	}
 	sign := func(kind DecreeKind, s []byte) SignedDecree {
-		d := Decree{ClusterID: testCluster, IntentID: "r" + string(kind), Kind: kind, BootstrapNode: "n0", ExpiresAt: time.Now().Add(time.Hour)}
+		d := Decree{IntentID: "r" + string(kind), Kind: kind, BootstrapNode: "n0"}
 		if kind == Restore {
 			d.SnapshotSHA256 = SnapshotSHA256(s)
 		}
-		sd, _ := SignDecree(d, opKey)
-		return sd
+		return signDecree(t, opKey, d)
 	}
 	now := time.Now().UnixMilli()
 	other := good
@@ -158,17 +157,22 @@ func TestApplyRestoreRefusals(t *testing.T) {
 	otherOp.Core.OperatorPubKey = []byte("k")
 	noCA := good
 	noCA.Core.RootCert = nil
-	for name, re := range map[string]RestoreEntry{
-		"not a Restore decree": {Decree: sign(Genesis, nil), AtMS: now, Snapshot: enc(good)},
-		"snapshot mismatch":    {Decree: sign(Restore, enc(good)), AtMS: now, Snapshot: enc(noCA)},
-		"garbage snapshot":     {Decree: sign(Restore, []byte("{")), AtMS: now, Snapshot: []byte("{")},
-		"other cluster":        {Decree: sign(Restore, enc(other)), AtMS: now, Snapshot: enc(other)},
-		"other operator":       {Decree: sign(Restore, enc(otherOp)), AtMS: now, Snapshot: enc(otherOp)},
-		"no mesh CA":           {Decree: sign(Restore, enc(noCA)), AtMS: now, Snapshot: enc(noCA)},
-		"expired":              {Decree: sign(Restore, enc(good)), AtMS: time.Now().Add(2 * time.Hour).UnixMilli(), Snapshot: enc(good)},
+	later := good // valid, but not the one signed
+	later.Core.Epoch = 9
+	for name, c := range map[string]struct {
+		re   RestoreEntry
+		want string
+	}{
+		"not a Restore decree": {RestoreEntry{Decree: sign(Genesis, nil), AtMS: now, Snapshot: enc(good)}, "without a Restore decree"},
+		"snapshot mismatch":    {RestoreEntry{Decree: sign(Restore, enc(good)), AtMS: now, Snapshot: enc(later)}, "differs from the one the decree names"},
+		"garbage snapshot":     {RestoreEntry{Decree: sign(Restore, []byte("{")), AtMS: now, Snapshot: []byte("{")}, "snapshot"},
+		"other cluster":        {RestoreEntry{Decree: sign(Restore, enc(other)), AtMS: now, Snapshot: enc(other)}, `of cluster "other"`},
+		"other operator":       {RestoreEntry{Decree: sign(Restore, enc(otherOp)), AtMS: now, Snapshot: enc(otherOp)}, "another operator key"},
+		"no mesh CA":           {RestoreEntry{Decree: sign(Restore, enc(noCA)), AtMS: now, Snapshot: enc(noCA)}, "no mesh CA"},
+		"expired":              {RestoreEntry{Decree: sign(Restore, enc(good)), AtMS: time.Now().Add(2 * time.Hour).UnixMilli(), Snapshot: enc(good)}, "expired"},
 	} {
-		if res := f.applyRestore(re); res.Err == "" {
-			t.Errorf("%s restored", name)
+		if res := f.applyRestore(c.re); !strings.Contains(res.Err, c.want) || res.Err == "" {
+			t.Errorf("%s: %q, want %q", name, res.Err, c.want)
 		}
 	}
 	res := f.applyRestore(RestoreEntry{Decree: sign(Restore, enc(good)), AtMS: now, Snapshot: enc(good)})
