@@ -3,15 +3,11 @@
 // everything a CDS holds: the mesh CA, the allowlist store, the secret store
 // and the sandbox ledger.
 //
-//   - attest.go, nodeattest.go, tdxattest.go: peer evidence and its checks.
-//   - transport.go: Raft and a control channel on one attested port; Raft
-//     addresses name the member, and live connections follow the pin set.
-//   - fsm.go, core.go: the replicated state machine and the agreed core.
-//   - node.go: bootstrap from a Genesis decree, join, voter seats and
-//     non-voters, forwarded writes, freshness (lease, clock jumps), decrees,
-//     Recover, sealed backups and Restore.
-//   - decree.go, decrees.go: operator decrees and their ConfigMaps.
-//   - backup.go: backups sealed to the operator's offline recovery key.
+//   - node.go, members.go, leader.go: the replica, its membership and seats,
+//     and the leader's tasks (decrees, Recover and Restore, backups).
+//   - fsm.go, format.go, decree.go: the replicated state and operator decrees.
+//   - transport.go, attest.go, nodeattest.go: the attested peer port.
+//   - kubedecrees.go, backup.go: decree and backup ConfigMaps.
 //
 // The proposal and its rules are in the CDS-HA spec section (cds-ha-v2).
 package cdsha

@@ -29,6 +29,7 @@ func newHARecoverCmd() *cobra.Command {
 	var (
 		conn               cdsconn.Options
 		backupFile         string
+		trustedCA          string
 		recoveryKey        string
 		recoveryShares     []string
 		decreeKey          string
@@ -68,12 +69,18 @@ func newHARecoverCmd() *cobra.Command {
 			if m.Epoch < minEpoch || (m.Epoch == minEpoch && m.Index < minIndex) {
 				return fmt.Errorf("backup (epoch %d, index %d) is older than --min-epoch %d --min-index %d: refusing to roll the cluster back", m.Epoch, m.Index, minEpoch, minIndex)
 			}
+			if err := cdsha.VerifyBackupSource(b, trustedCA); err != nil {
+				return err
+			}
 			rk, err := loadRecoveryKey(recoveryKey, recoveryShares)
 			if err != nil {
 				return fmt.Errorf("recovery key: %w", err)
 			}
 			snap, err := cdsha.OpenBackup(rk, b)
 			if err != nil {
+				return err
+			}
+			if err := cdsha.ValidateRecoverySnapshot(snap, m, minEpoch, minIndex); err != nil {
 				return err
 			}
 			dk, err := certutil.LoadECPrivateKeyFile(decreeKey)
@@ -125,6 +132,7 @@ func newHARecoverCmd() *cobra.Command {
 	}
 	cdsconn.BindFlags(cmd.Flags(), &conn)
 	f := cmd.Flags()
+	f.StringVar(&trustedCA, "trusted-ca-sha256", "", "CA certificate SHA-256 retained independently from the attested live cluster; NEVER copy from the backup")
 	f.StringVar(&backupFile, "backup-file", "", "JSON list of the backup ConfigMaps (kubectl get configmaps -l "+cdsha.LabelBackup+"=<cluster> -o json)")
 	f.StringVar(&recoveryKey, "recovery-key", "", "PEM EC private key the backups are sealed to (bundle recovery.key)")
 	f.StringArrayVar(&recoveryShares, "recovery-key-share", nil, "a custodian's share of the recovery key (c8s cds ha recovery-key split); repeat for at least the threshold. Excludes --recovery-key")
@@ -135,7 +143,7 @@ func newHARecoverCmd() *cobra.Command {
 	f.Uint64Var(&minIndex, "min-index", 0, "with --min-epoch: refuse a backup below this index in that epoch (required)")
 	f.DurationVar(&expiresIn, "expires-in", 10*time.Minute, "Restore decree lifetime")
 	f.IntVar(&attempts, "attempts", 30, "requests before giving up, each to whichever replica the address reaches")
-	for _, r := range []string{"backup-file", "decree-key", "cluster-id", "bootstrap-node", "url"} {
+	for _, r := range []string{"trusted-ca-sha256", "backup-file", "decree-key", "cluster-id", "bootstrap-node", "url"} {
 		_ = cmd.MarkFlagRequired(r)
 	}
 	// The whole key, or custodians' shares of it: exactly one.
@@ -160,7 +168,26 @@ func restoreApplied(ctx context.Context, hc *http.Client, base, intent string) b
 }
 
 func postRestore(hc *http.Client, url string, body []byte) (int, string, error) {
-	resp, err := hc.Post(url, "application/json", bytes.NewReader(body))
+	var envelope struct {
+		Decree cdsha.SignedDecree `json:"decree"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return 0, "", err
+	}
+	decree, err := json.Marshal(envelope.Decree)
+	if err != nil {
+		return 0, "", err
+	}
+	if len(decree) > maxRestoreDecreeBytes {
+		return 0, "", errors.New("restore decree exceeds header limit")
+	}
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return 0, "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(restoreDecreeHeader, string(decree))
+	resp, err := hc.Do(req)
 	if err != nil {
 		return 0, "", err
 	}

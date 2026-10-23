@@ -2,7 +2,8 @@ package cds
 
 import (
 	"fmt"
-	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 // haAllowlistMaxFill is how full an HA replica's allowlist volume may get. A
@@ -38,8 +39,8 @@ func allowlistFullGuard(dir string, limit int64, live func() (int64, error)) fun
 
 // volumeUsage is the used and total bytes of the filesystem holding dir.
 func volumeUsage(dir string) (used, size uint64, err error) {
-	var st syscall.Statfs_t
-	if err := syscall.Statfs(dir, &st); err != nil {
+	var st unix.Statfs_t
+	if err := unix.Statfs(dir, &st); err != nil {
 		return 0, 0, err
 	}
 	bs := uint64(st.Bsize) //nolint:gosec // block size is positive

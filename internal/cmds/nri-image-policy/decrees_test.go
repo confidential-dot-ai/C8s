@@ -1,12 +1,12 @@
 package nriimagepolicy
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
-	"encoding/json"
 	"encoding/pem"
 	"log/slog"
 	"os"
@@ -41,16 +41,15 @@ func testImage(c string) cdsha.DecreeImage {
 func TestFollowedDecreesRewriteTheMountedPolicyInPlace(t *testing.T) {
 	k, pub := decreeKey(t)
 	dir := t.TempDir()
-	info, _ := json.Marshal(map[string]string{"cluster_id": "c1", "decree_key": pub})
-	decreesFile := filepath.Join(dir, "cds-decrees.json")
-	if err := os.WriteFile(decreesFile, info, 0o600); err != nil {
-		t.Fatal(err)
-	}
 	cfg := pullConfig{URL: "https://cds:30808", AttestationApiURL: "http://127.0.0.1:1", CDSMeasurementsConfig: "../../testdata/node-identities.json"}
 	if src, err := cfg.cdsDecrees("tdx", slog.Default()); src != nil || err != nil {
 		t.Fatalf("off: %v %v", src, err)
 	}
-	cfg.CDSDecreesFile = decreesFile
+	cfg.CDSDecrees = &cdsDecreesInfo{ClusterID: "c1", DecreeKey: "junk"}
+	if _, err := cfg.cdsDecrees("tdx", slog.Default()); err == nil {
+		t.Fatal("a bad decree key accepted")
+	}
+	cfg.CDSDecrees.DecreeKey = pub
 	src, err := cfg.cdsDecrees("tdx", slog.Default())
 	if err != nil || src == nil {
 		t.Fatalf("on: %v %v", src, err)
@@ -81,7 +80,7 @@ func TestFollowedDecreesRewriteTheMountedPolicyInPlace(t *testing.T) {
 	}
 	var before syscall.Stat_t
 	_ = syscall.Stat(mounted, &before)
-	src.mirrorTo(mounted)
+	src.mounted = mounted
 	if changed, err := src.Refresh(t.Context()); !changed || err != nil {
 		t.Fatalf("decree not taken: %v %v", changed, err)
 	}
@@ -91,18 +90,15 @@ func TestFollowedDecreesRewriteTheMountedPolicyInPlace(t *testing.T) {
 		t.Fatal("the mounted policy was replaced, not rewritten: running pods keep the old inode")
 	}
 	got, err := refvalues.Load(mounted)
-	if err != nil || len(got.Images) == 0 || got.Images[0].Registers[1] == nil {
-		t.Fatalf("mounted policy: %v", err)
+	if err != nil || len(got.Images) == 0 || !bytes.Equal(got.Images[0].Digest, bytes.Repeat([]byte{0xee}, 48)) {
+		t.Fatalf("mounted policy does not pin the decreed image: %v", err)
 	}
-	if set, _ := cfg.pinsSet("tdx"); len(set.Images) != len(got.Images) {
+	if set, _ := cfg.pinsSet("tdx"); len(set.Images) == 0 || !bytes.Equal(set.Images[0].Digest, got.Images[0].Digest) {
 		t.Fatal("the plugin's own set does not follow the decree")
 	}
 
 	cfg.CDSMeasurementsConfig = ""
 	if _, err := cfg.cdsDecrees("tdx", slog.Default()); err == nil {
 		t.Fatal("decrees without a CDS policy accepted")
-	}
-	if err := rewriteInPlace(filepath.Join(dir, "absent"), nil); err == nil {
-		t.Fatal("rewriting an absent file succeeded")
 	}
 }

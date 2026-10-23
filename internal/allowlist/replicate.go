@@ -1,13 +1,14 @@
 package allowlist
 
 import (
-	"encoding/json"
+	"context"
+	"database/sql"
 	"errors"
 	"fmt"
-	"regexp"
-	"slices"
-	"strings"
+	"sync/atomic"
 	"time"
+
+	"modernc.org/sqlite"
 
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
@@ -90,20 +91,23 @@ func (r Result) with(err error) Result {
 	return r
 }
 
-// Error rebuilds the error Apply returned, wrapping its sentinel.
+// Error rebuilds the error Apply returned: its message, and its sentinel
+// for errors.Is.
 func (r Result) Error() error {
-	switch {
-	case r.ErrKind == "":
+	if r.ErrKind == "" {
 		return nil
-	case sentinels[r.ErrKind] != nil:
-		if r.Err == sentinels[r.ErrKind].Error() {
-			return sentinels[r.ErrKind]
-		}
-		return fmt.Errorf("%w (%s)", sentinels[r.ErrKind], r.Err)
-	default:
-		return errors.New(r.Err)
 	}
+	return wireErr{r.Err, sentinels[r.ErrKind]}
 }
+
+// wireErr is an error that crossed the log: the text, and the sentinel.
+type wireErr struct {
+	msg string
+	is  error
+}
+
+func (e wireErr) Error() string { return e.msg }
+func (e wireErr) Unwrap() error { return e.is }
 
 // Apply runs one replicated command against the local database. Replicas
 // apply the same commands in the same order, so they hold the same store.
@@ -139,7 +143,7 @@ func (s *Store) apply(cmd Command) (r Result, err error) {
 	case OpStartJournal:
 		err = s.startJournal()
 	case OpPruneHistory:
-		r.Retired, err = s.PruneHistory(cmd.Keep)
+		r.Retired, err = s.pruneHistory(cmd.Keep)
 	default:
 		err = fmt.Errorf("unknown allowlist command %q", cmd.Op)
 	}
@@ -183,9 +187,6 @@ func (s *Store) DeleteWorkload(name string) (bool, error) {
 
 // ReplaceAll swaps the entire allowlist (see replaceAll).
 func (s *Store) ReplaceAll(al *pkgallowlist.Allowlist) error {
-	if al == nil {
-		return s.replaceAll(al) // refused before it reaches the log
-	}
 	_, err := s.write(Command{Op: OpReplaceAll, Allowlist: al})
 	return err
 }
@@ -206,10 +207,6 @@ func (s *Store) ConsumeToken(token string) error {
 
 // ReplaceRoutes stores a signed route manifest (see replaceRoutes).
 func (s *Store) ReplaceRoutes(env routes.Envelope, ifMatch string) error {
-	// Refuse what routes.Parse refuses before it reaches the log.
-	if _, err := routes.Parse(env.Manifest); err != nil {
-		return err
-	}
 	_, err := s.write(Command{Op: OpReplaceRoutes, Routes: &env, IfMatch: ifMatch})
 	return err
 }
@@ -221,160 +218,94 @@ func (s *Store) StartJournal() error {
 	return err
 }
 
-var columnRE = regexp.MustCompile(`^[a-z_]{1,64}$`)
-
-// snapshotTables are every table a snapshot carries, in restore order.
-var snapshotTables = []string{
-	"allowlist_version", "workload_entry", "workload_entry_digest", "route_manifest",
-	"journal_object", "journal_event", "journal_signature", "used_token",
+// imageConn is the modernc.org/sqlite connection API a database image needs.
+type imageConn interface {
+	Serialize() ([]byte, error)
+	Deserialize([]byte) error
+	NewBackup(dstURI string) (*sqlite.Backup, error)
 }
 
-// Snapshot is the whole database as rows, for a replica that joins or
-// recovers. Columns are kept by name; a row that lacks a column restores
-// with the column's default.
-type Snapshot map[string][]map[string]any
+// memdbSeq names the in-memory databases of this process (see memdbURI).
+var memdbSeq atomic.Uint64
 
-// Dump returns every row of every table.
-func (s *Store) Dump() (Snapshot, error) {
+// memdbURI names a new in-memory database. Unlike ":memory:", every
+// connection that opens the name shares it, until the last one closes.
+func memdbURI(use string) string {
+	return fmt.Sprintf("file:/c8s-allowlist-%s-%d?vfs=memdb", use, memdbSeq.Add(1))
+}
+
+// Dump returns the whole database as a SQLite database image, for a replica
+// that joins or recovers. VACUUM INTO leaves out free pages (and the deleted
+// rows they still hold) and keeps rowids. Two replicas with the same rows may
+// still produce different bytes: compare stores by content, not by image.
+func (s *Store) Dump() ([]byte, error) {
+	ctx := context.Background()
+	uri := memdbURI("dump")
+	dst, err := sql.Open("sqlite", uri)
+	if err != nil {
+		return nil, err
+	}
+	defer dst.Close()
+	conn, err := dst.Conn(ctx) // keeps the database alive until it is read
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := Snapshot{}
-	for _, t := range snapshotTables {
-		rows, err := s.db.Query("SELECT * FROM " + t) //nolint:gosec // fixed table names
-		if err != nil {
-			return nil, err
-		}
-		cols, err := rows.Columns()
-		if err != nil {
-			rows.Close()
-			return nil, err
-		}
-		for rows.Next() {
-			vals := make([]any, len(cols))
-			ptrs := make([]any, len(cols))
-			for i := range vals {
-				ptrs[i] = &vals[i]
-			}
-			if err := rows.Scan(ptrs...); err != nil {
-				rows.Close()
-				return nil, err
-			}
-			row := map[string]any{}
-			for i, c := range cols {
-				row[c] = vals[i]
-			}
-			out[t] = append(out[t], row)
-		}
-		err = rows.Err()
-		rows.Close()
-		if err != nil {
-			return nil, err
-		}
+	_, err = s.db.Exec("VACUUM INTO ?", uri)
+	s.mu.Unlock()
+	if err != nil {
+		return nil, fmt.Errorf("dump allowlist: %w", err)
 	}
-	return out, nil
-}
-
-// MarshalJSON keeps BLOB columns distinct from TEXT ones across the wire.
-func (sn Snapshot) MarshalJSON() ([]byte, error) {
-	type cell struct {
-		B []byte `json:"b,omitempty"`
-		V any    `json:"v,omitempty"`
-	}
-	out := map[string][]map[string]cell{}
-	for t, rows := range sn {
-		for _, row := range rows {
-			r := map[string]cell{}
-			for c, v := range row {
-				if b, ok := v.([]byte); ok {
-					r[c] = cell{B: b}
-				} else {
-					r[c] = cell{V: v}
-				}
-			}
-			out[t] = append(out[t], r)
-		}
-	}
-	return json.Marshal(out)
-}
-
-// UnmarshalJSON is the inverse of MarshalJSON. Integers come back as int64.
-func (sn *Snapshot) UnmarshalJSON(b []byte) error {
-	type cell struct {
-		B []byte          `json:"b,omitempty"`
-		V json.RawMessage `json:"v,omitempty"`
-	}
-	var in map[string][]map[string]cell
-	if err := json.Unmarshal(b, &in); err != nil {
+	var image []byte
+	err = conn.Raw(func(dc any) error {
+		image, err = dc.(imageConn).Serialize()
 		return err
-	}
-	out := Snapshot{}
-	for t, rows := range in {
-		for _, row := range rows {
-			r := map[string]any{}
-			for c, v := range row {
-				switch {
-				case v.B != nil:
-					r[c] = v.B
-				case len(v.V) == 0:
-					r[c] = nil
-				default:
-					var n json.Number
-					if json.Unmarshal(v.V, &n) == nil {
-						i, err := n.Int64()
-						if err != nil {
-							return fmt.Errorf("snapshot %s.%s: %w", t, c, err)
-						}
-						r[c] = i
-						continue
-					}
-					var str string
-					if err := json.Unmarshal(v.V, &str); err != nil {
-						return fmt.Errorf("snapshot %s.%s: %w", t, c, err)
-					}
-					r[c] = str
-				}
-			}
-			out[t] = append(out[t], r)
-		}
-	}
-	*sn = out
-	return nil
+	})
+	return image, err
 }
 
-// Restore replaces the whole database with a snapshot, in one transaction.
-func (s *Store) Restore(sn Snapshot) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	tx, err := s.db.Begin()
+// Restore replaces the whole database with an image from Dump. The image is
+// checked and migrated on a scratch connection first, then copied in with
+// the SQLite backup API in one step, so a bad image leaves the store as it
+// was.
+func (s *Store) Restore(image []byte) error {
+	ctx := context.Background()
+	scratch, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
-	for _, t := range snapshotTables {
-		if _, err := tx.Exec("DELETE FROM " + t); err != nil { //nolint:gosec // fixed table names
+	defer scratch.Close()
+	conn, err := scratch.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if err := conn.Raw(func(dc any) error { return dc.(imageConn).Deserialize(image) }); err != nil {
+		return fmt.Errorf("restore allowlist: %w", err)
+	}
+	var check string
+	if err := conn.QueryRowContext(ctx, "PRAGMA quick_check").Scan(&check); err != nil || check != "ok" {
+		return fmt.Errorf("restore allowlist: not a sound database image (%s): %v", check, err)
+	}
+	if err := initDB(ctx, conn); err != nil {
+		return fmt.Errorf("restore allowlist: %w", err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	err = conn.Raw(func(dc any) error {
+		b, err := dc.(imageConn).NewBackup(s.uri)
+		if err != nil {
 			return err
 		}
-		for _, row := range sn[t] {
-			cols := make([]string, 0, len(row))
-			for c := range row {
-				if !columnRE.MatchString(c) {
-					return fmt.Errorf("restore %s: bad column name %q", t, c)
-				}
-				cols = append(cols, c)
-			}
-			slices.Sort(cols)
-			args := make([]any, len(cols))
-			for i, c := range cols {
-				args[i] = row[c]
-			}
-			q := "INSERT INTO " + t + " (" + strings.Join(cols, ", ") + ") VALUES (" + strings.TrimSuffix(strings.Repeat("?, ", len(cols)), ", ") + ")"
-			if _, err := tx.Exec(q, args...); err != nil { //nolint:gosec // fixed table names; column names checked against columnRE
-				return fmt.Errorf("restore %s: %w", t, err)
-			}
+		if _, err := b.Step(-1); err != nil {
+			_ = b.Finish()
+			return err
 		}
-	}
-	if err := tx.Commit(); err != nil {
-		return err
+		return b.Finish()
+	})
+	if err != nil {
+		return fmt.Errorf("restore allowlist: %w", err)
 	}
 	s.gen++
 	return nil

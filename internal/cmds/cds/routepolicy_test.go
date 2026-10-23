@@ -27,14 +27,15 @@ import (
 )
 
 type routeFixture struct {
-	router   http.Handler
-	store    *allowlist.Store
-	signer   *operatorauth.Signer
-	rogue    *operatorauth.Signer
-	key      *ecdsa.PublicKey
-	meshCA   *x509.Certificate
-	meshPEM  string
-	otherPEM string
+	router     http.Handler
+	store      *allowlist.Store
+	signer     *operatorauth.Signer
+	rogue      *operatorauth.Signer
+	key        *ecdsa.PublicKey
+	meshCA     *x509.Certificate
+	meshSource meshCA
+	meshPEM    string
+	otherPEM   string
 }
 
 func operatorSigner(t *testing.T) (*operatorauth.Signer, *ecdsa.PublicKey) {
@@ -69,20 +70,21 @@ func newRouteFixture(t *testing.T, store *allowlist.Store) *routeFixture {
 	authorize := operatorauth.Verifier{Keys: []*ecdsa.PublicKey{key}, ClockSkew: 30 * time.Second}.Authorize
 	return &routeFixture{
 		router: newRouter(dependencies{
-			Routes:           routeHandler{Store: store, Authorize: authorize, MeshCA: meshCert},
+			Routes:           routeHandler{Store: store, Authorize: authorize, MeshCA: mesh},
 			ReadyFn:          func() bool { return true },
 			MeshCA:           mesh,
 			RateLimiter:      newTestRateLimiter(t),
 			ChallengeLimiter: newTestRateLimiter(t),
 			MaxRequestSize:   65536,
 		}),
-		store:    store,
-		signer:   signer,
-		rogue:    rogue,
-		key:      key,
-		meshCA:   meshCert,
-		meshPEM:  string(certutil.EncodeCertPEM(meshCert.Raw)),
-		otherPEM: string(certutil.EncodeCertPEM(other.Cert.Raw)),
+		store:      store,
+		signer:     signer,
+		rogue:      rogue,
+		key:        key,
+		meshCA:     meshCert,
+		meshSource: mesh,
+		meshPEM:    string(certutil.EncodeCertPEM(meshCert.Raw)),
+		otherPEM:   string(certutil.EncodeCertPEM(other.Cert.Raw)),
 	}
 }
 
@@ -296,7 +298,7 @@ func TestRoutePutWithoutOperatorKeys(t *testing.T) {
 		"disabled": operatorauth.Verifier{}.Authorize,
 	} {
 		t.Run(name, func(t *testing.T) {
-			h := routeHandler{Store: store, Authorize: authorize, MeshCA: f.meshCA}
+			h := routeHandler{Store: store, Authorize: authorize, MeshCA: f.meshSource}
 			req := httptest.NewRequest(http.MethodPut, routes.Path, bytes.NewReader(b))
 			req.Header.Set("Authorization", auth)
 			w := httptest.NewRecorder()
@@ -462,7 +464,7 @@ func TestRoutePutUnavailableIs503(t *testing.T) {
 	store := inMemoryStore(t)
 	f := newRouteFixture(t, store)
 	store.SetReplicator(downReplicator{})
-	h := routeHandler{Store: store, Authorize: func(*http.Request, []byte) error { return nil }, MeshCA: f.meshCA}
+	h := routeHandler{Store: store, Authorize: func(*http.Request, []byte) error { return nil }, MeshCA: f.meshSource}
 	b := manifest(t, 1, f.otherPEM)
 	w := httptest.NewRecorder()
 	h.handlePut(w, httptest.NewRequest(http.MethodPut, routes.Path, bytes.NewReader(b)))

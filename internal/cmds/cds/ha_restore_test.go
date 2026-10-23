@@ -44,6 +44,7 @@ func TestRunHARestoreAfterTotalLoss(t *testing.T) {
 	recKeyPath := writeFile("recovery.key", rkPEM)
 	timing := cdsha.DefaultTiming
 	timing.Backup = 200 * time.Millisecond
+	timing.DeadAfter = 2 * time.Second // /readyz waits for the dead replicas to be removed
 	ha := c.haTemplate(timing)
 	ha.recoveryKeyPEM = recPub
 
@@ -55,26 +56,25 @@ func TestRunHARestoreAfterTotalLoss(t *testing.T) {
 	}
 	_, h0, _ := do(t, http.MethodGet, bases[0]+"/allowlist", "", nil)
 	var applied uint64
+	var trustedCA string
 	for _, b := range bases {
 		_, _, raw := do(t, http.MethodGet, b+"/ha/status", "", nil)
 		var st cdsha.Status
 		_ = json.Unmarshal(raw, &st)
 		applied = max(applied, st.AppliedIndex)
+		trustedCA = st.CAFingerprint
 	}
 	_, _, ca := do(t, http.MethodGet, bases[0]+"/ca", "", nil)
 	var backups []corev1.ConfigMap
-	deadline := time.Now().Add(45 * time.Second)
-	for {
+	eventually(t, 45*time.Second, "a backup of the written state", func() bool {
 		list, _ := c.kube.CoreV1().ConfigMaps("ns").List(context.Background(), metav1.ListOptions{LabelSelector: cdsha.LabelBackup + "=c1"})
-		if b, err := cdsha.BackupFromConfigMaps("c1", list.Items); err == nil && b.Meta.Index >= applied {
-			backups = list.Items
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("no backup of the written state")
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+		b, err := cdsha.BackupFromConfigMaps("c1", list.Items)
+		backups = list.Items
+		return err == nil && b.Meta.Index >= applied
+	})
+	// Signed now and spent only after the restore: spent tokens are part
+	// of the replicated state, so only tokens from before Genesis are cut off.
+	unspent := c.auth(http.MethodPut, "/allowlist", doc)
 	c.stop(errs)
 
 	// Total loss: fresh replicas, and the Genesis decree long since used.
@@ -83,13 +83,10 @@ func TestRunHARestoreAfterTotalLoss(t *testing.T) {
 	waitServing(t, bases, false)
 	// A replica that waits for a restore is ready, so the operator reaches
 	// it through the Service.
-	deadline = time.Now().Add(40 * time.Second)
-	for code, _, _ := do(t, http.MethodGet, bases[2]+"/readyz", "", nil); code != http.StatusOK; code, _, _ = do(t, http.MethodGet, bases[2]+"/readyz", "", nil) {
-		if time.Now().After(deadline) {
-			t.Fatalf("a replica awaiting a restore is not ready: %d", code)
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+	eventually(t, 40*time.Second, "a replica awaiting a restore is ready", func() bool {
+		code, _, _ := do(t, http.MethodGet, bases[2]+"/readyz", "", nil)
+		return code == http.StatusOK
+	})
 	raw, _ := json.Marshal(corev1.ConfigMapList{Items: backups})
 	backupFile := filepath.Join(dir, "backup.json")
 	_ = os.WriteFile(backupFile, raw, 0o600)
@@ -112,7 +109,7 @@ func TestRunHARestoreAfterTotalLoss(t *testing.T) {
 		cmd.SetOut(&out)
 		cmd.SetErr(&out)
 		args := append([]string{"--backup-file", backupFile, "--decree-key", decreeKeyPath,
-			"--cluster-id", "c1", "--url", bases[2], "--insecure"}, key...)
+			"--trusted-ca-sha256", trustedCA, "--cluster-id", "c1", "--url", bases[2], "--insecure"}, key...)
 		cmd.SetArgs(append(args, extra...))
 		err := cmd.ExecuteContext(context.Background())
 		return out.String(), err
@@ -153,6 +150,9 @@ func TestRunHARestoreAfterTotalLoss(t *testing.T) {
 		if h.Get("ETag") != h0.Get("ETag") || !bytes.Equal(c, ca) {
 			t.Fatalf("%s after restore: etag %q want %q, same CA %v", b, h.Get("ETag"), h0.Get("ETag"), bytes.Equal(c, ca))
 		}
+	}
+	if code, _, body := do(t, http.MethodPut, bases[0]+"/allowlist", unspent, doc); code != http.StatusNoContent {
+		t.Fatalf("a token signed after Genesis, before the loss, refused after the restore: %d %s", code, body)
 	}
 }
 

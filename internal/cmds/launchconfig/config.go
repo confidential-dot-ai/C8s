@@ -30,6 +30,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
+	"github.com/confidential-dot-ai/c8s/internal/cdsha"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/credrelease"
 	"github.com/confidential-dot-ai/c8s/internal/readutil"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
@@ -45,7 +46,6 @@ const (
 	MaxDocumentSize   = 1024 * 1024
 	maxSignatureSize  = 4096
 	maxAgentKeys      = 128
-	maxCDSReplicas    = 128
 	defaultTLSSAN     = "c8s.local"
 )
 
@@ -561,8 +561,10 @@ func (d *Document) validate() error {
 		if _, err := parseLaunchKey(d.CDSHA.DecreeKey); err != nil {
 			return fmt.Errorf("cdsHA.decreeKey: %w", err)
 		}
-		if d.CDSHA.Replicas < 2 || d.CDSHA.Replicas > maxCDSReplicas {
-			return fmt.Errorf("cdsHA.replicas must be between 2 and %d", maxCDSReplicas)
+		// Replicas is the cdsha voter seat count: odd (an even set tolerates
+		// no more loss than one fewer) and at most cdsha.MaxVoters.
+		if r := d.CDSHA.Replicas; r < 3 || r%2 == 0 || r > cdsha.MaxVoters {
+			return fmt.Errorf("cdsHA.replicas must be odd, between 3 and %d", cdsha.MaxVoters)
 		}
 	}
 	if d.TLSSAN == "" {
@@ -688,7 +690,7 @@ func (d *Document) referenceValues() (refvalues.ReferenceValues, error) {
 		keys = append(keys, named{fmt.Sprintf("agent-%d", i+1), pub})
 	}
 	for _, k := range keys {
-		for i, img := range d.images() {
+		for i, img := range append([]Image{d.Image}, d.PeerImages...) {
 			name := k.name
 			if i > 0 {
 				// Images of one firmware share their measurement: name a
@@ -735,9 +737,6 @@ const maxPeerImages = 4
 func sameImage(a, b Image) bool {
 	return a.Platform == b.Platform && a.Measurement == b.Measurement && maps.Equal(a.RTMRs, b.RTMRs)
 }
-
-// images is the node's own image first, then its peer images.
-func (d *Document) images() []Image { return append([]Image{d.Image}, d.PeerImages...) }
 
 // CDSURL is derived from the signed server address and the image's fixed port.
 func (d *Document) CDSURL() string {

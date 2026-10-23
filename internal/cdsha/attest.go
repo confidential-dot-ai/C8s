@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"math/big"
@@ -20,13 +21,13 @@ import (
 // certificate. PROTOTYPE: not allocated in the c8s OID arc.
 var OIDPeerEvidence = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 66378, 1, 90}
 
-const peerBindingDomain = "c8s-cds-ha-peer-v1\n"
+const peerBindingDomain = "c8s-cds-ha-peer-v2\n"
 
 // Claims are the verified contents of a peer's evidence.
 type Claims struct {
 	Measurement string   // the image: what the pin set lists
 	Anchor      string   // the launch-key binding (TDX RTMR3, SNP HOST_DATA); "" if the platform has none
-	ReportData  [48]byte // binds cluster_id and the TLS key (SHA-384, the armTLS REPORT_DATA size)
+	ReportData  [48]byte // binds cluster_id, the TLS key and its NotAfter (SHA-384, the armTLS REPORT_DATA size)
 }
 
 // Attestor produces and verifies TEE evidence. Verify MUST check the
@@ -36,15 +37,19 @@ type Attestor interface {
 	Verify(evidence []byte) (Claims, error)
 }
 
-// PeerBinding is the report data a replica must attest: it binds the TLS key
-// and the cluster_id (CI1). A peer in another cluster produces a different
-// value, so CI2 holds whatever its measurement. 48 bytes: the SNP REPORT_DATA
-// size, which the attestation-api path sends as is; TDX zero-pads to 64.
-func PeerBinding(clusterID string, spki []byte) [48]byte {
+// PeerBinding is the report data a replica must attest: it binds the TLS key,
+// the certificate's NotAfter and the cluster_id (CI1). A peer in another
+// cluster produces a different value, so CI2 holds whatever its measurement.
+// Binding NotAfter makes the expiry attested: whoever holds a leaked key
+// cannot re-sign its certificate with a later date. 48 bytes: the SNP
+// REPORT_DATA size, which the attestation-api path sends as is; TDX
+// zero-pads to 64.
+func PeerBinding(clusterID string, spki []byte, notAfter time.Time) [48]byte {
 	h := sha512.New384()
 	h.Write([]byte(peerBindingDomain))
 	h.Write([]byte(clusterID))
 	h.Write([]byte{0})
+	h.Write(binary.BigEndian.AppendUint64(nil, uint64(notAfter.Unix())))
 	h.Write(spki)
 	var out [48]byte
 	copy(out[:], h.Sum(nil))
@@ -52,8 +57,9 @@ func PeerBinding(clusterID string, spki []byte) [48]byte {
 }
 
 // newPeerCert makes the replica's ephemeral self-signed peer certificate with
-// its evidence embedded.
-func newPeerCert(clusterID string, att Attestor) (tls.Certificate, error) {
+// its evidence embedded. x509 keeps whole seconds, so notAfter is truncated
+// to them before it is bound.
+func newPeerCert(clusterID string, att Attestor, notAfter time.Time) (tls.Certificate, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return tls.Certificate{}, err
@@ -62,7 +68,8 @@ func newPeerCert(clusterID string, att Attestor) (tls.Certificate, error) {
 	if err != nil {
 		return tls.Certificate{}, err
 	}
-	ev, err := att.Evidence(PeerBinding(clusterID, spki))
+	notAfter = notAfter.Truncate(time.Second)
+	ev, err := att.Evidence(PeerBinding(clusterID, spki, notAfter))
 	if err != nil {
 		return tls.Certificate{}, fmt.Errorf("peer evidence: %w", err)
 	}
@@ -70,7 +77,7 @@ func newPeerCert(clusterID string, att Attestor) (tls.Certificate, error) {
 		SerialNumber:    big.NewInt(1),
 		Subject:         pkix.Name{CommonName: "c8s-cds-ha-peer"},
 		NotBefore:       time.Now().Add(-time.Minute),
-		NotAfter:        time.Now().Add(24 * time.Hour),
+		NotAfter:        notAfter,
 		ExtKeyUsage:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
 		ExtraExtensions: []pkix.Extension{{Id: OIDPeerEvidence, Value: ev}},
 	}
@@ -78,7 +85,8 @@ func newPeerCert(clusterID string, att Attestor) (tls.Certificate, error) {
 	if err != nil {
 		return tls.Certificate{}, err
 	}
-	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}, nil
+	leaf, err := x509.ParseCertificate(der)
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key, Leaf: leaf}, err
 }
 
 // peerVerifier checks a peer certificate: evidence verifies, binds this
@@ -111,8 +119,9 @@ func (v peerVerifier) claims(der []byte) (Claims, error) {
 		return Claims{}, errors.New("peer certificate has no evidence")
 	}
 	// A replica renews its certificate every few hours: an expired one is
-	// an old key, perhaps a leaked one. (NotBefore is not checked: a peer
-	// clock a little ahead would refuse fresh certificates.)
+	// an old key, perhaps a leaked one. NotAfter is bound into the evidence
+	// (PeerBinding). NotBefore is not checked: a peer clock a little ahead
+	// would refuse fresh certificates.
 	if time.Now().After(cert.NotAfter) {
 		return Claims{}, fmt.Errorf("peer certificate expired at %s", cert.NotAfter.Format(time.RFC3339))
 	}
@@ -120,8 +129,8 @@ func (v peerVerifier) claims(der []byte) (Claims, error) {
 	if err != nil {
 		return Claims{}, fmt.Errorf("peer evidence: %w", err)
 	}
-	if c.ReportData != PeerBinding(v.clusterID, cert.RawSubjectPublicKeyInfo) {
-		return Claims{}, errors.New("peer evidence not bound to this cluster and TLS key")
+	if c.ReportData != PeerBinding(v.clusterID, cert.RawSubjectPublicKeyInfo, cert.NotAfter) {
+		return Claims{}, errors.New("peer evidence not bound to this cluster, TLS key and expiry")
 	}
 	if pins := v.pins(); pins != nil && !slices.Contains(pins, c.Measurement) {
 		return Claims{}, fmt.Errorf("peer measurement %q not in the replica pin set", c.Measurement)

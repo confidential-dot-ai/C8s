@@ -1,4 +1,4 @@
-//go:build integration
+//go:build integration && linux
 
 package cdsha_test
 
@@ -76,20 +76,22 @@ type Checker struct {
 	regress []string                  // monotonic-read violations within one incarnation
 	reads   atomic.Int64
 
-	stop     chan struct{}
-	wg       sync.WaitGroup
-	paused   atomic.Bool
-	inflight atomic.Int64
+	stop   chan struct{}
+	wg     sync.WaitGroup
+	gate   sync.RWMutex // writers hold it shared; Pause holds it
+	paused bool         // set and read by the test goroutine only
 }
 
-// Pause stops new writes (in-flight ones finish); Resume restarts them.
+// Pause waits for in-flight writes and blocks new ones; Resume lets them go.
 func (k *Checker) Pause() {
-	k.paused.Store(true)
-	for k.inflight.Load() > 0 {
-		time.Sleep(20 * time.Millisecond)
-	}
+	k.gate.Lock()
+	k.paused = true
 }
-func (k *Checker) Resume() { k.paused.Store(false) }
+
+func (k *Checker) Resume() {
+	k.paused = false
+	k.gate.Unlock()
+}
 
 // badStatus: a 5xx that is not a retryable 503 (freshness gate, or a write
 // the cluster could not commit).
@@ -122,6 +124,9 @@ func (k *Checker) Start() {
 // Stop ends the load and waits for in-flight requests.
 func (k *Checker) Stop() {
 	close(k.stop)
+	if k.paused {
+		k.Resume()
+	}
 	k.wg.Wait()
 }
 
@@ -147,16 +152,15 @@ func (k *Checker) writer(w int) {
 			if k.stopped() {
 				return
 			}
-			k.inflight.Add(1)
-			if k.paused.Load() {
-				k.inflight.Add(-1)
-				time.Sleep(50 * time.Millisecond)
-				continue
+			k.gate.RLock()
+			if k.stopped() {
+				k.gate.RUnlock()
+				return
 			}
 			seq++
 			key := fmt.Sprintf("w%dg%d", w, gen[kind])
 			op := k.write(kind, key, seq)
-			k.inflight.Add(-1)
+			k.gate.RUnlock()
 			if !op.Acked() && !op.Definite() {
 				gen[kind]++
 			}
@@ -175,8 +179,6 @@ func allowBody(key string, seq int) []byte {
 	return []byte(fmt.Sprintf(`{"label":"ghcr.io/it/%s:v1","containers":[{"digest":"sha256:%064x","command":{"policy":"any"},"args":{"policy":"any"}}]}`, key, seq))
 }
 
-func secretValue(key string, seq int) string { return key + ":" + strconv.Itoa(seq) }
-
 func (k *Checker) write(kind, key string, seq int) Op {
 	running := k.c.RunningIDs()
 	if len(running) == 0 {
@@ -190,7 +192,7 @@ func (k *Checker) write(kind, key string, seq int) Op {
 		path, body = "/allowlist/workloads/it-"+key, allowBody(key, seq)
 	} else {
 		path = "/secrets/it/" + key
-		body, _ = json.Marshal(map[string]any{"value": base64.StdEncoding.EncodeToString([]byte(secretValue(key, seq))), "overwrite": true})
+		body, _ = json.Marshal(map[string]any{"value": base64.StdEncoding.EncodeToString([]byte(key + ":" + strconv.Itoa(seq))), "overwrite": true})
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -319,12 +321,6 @@ func parseAllow(body []byte) (map[string]int, error) {
 	return out, nil
 }
 
-// SecretEntry is one entry of GET /dev/ha/secrets.
-type SecretEntry struct {
-	Path  string `json:"path"`
-	Value []byte `json:"value"`
-}
-
 func (k *Checker) readSecrets(i int) (map[string]int, bool) {
 	r := k.c.Get(i, "/dev/ha/secrets")
 	k.note5xx(i, "/dev/ha/secrets", r)
@@ -336,7 +332,10 @@ func (k *Checker) readSecrets(i int) (map[string]int, bool) {
 }
 
 func parseSecrets(body []byte) (map[string]int, error) {
-	var ents []SecretEntry
+	var ents []struct {
+		Path  string `json:"path"`
+		Value []byte `json:"value"`
+	}
 	if err := json.Unmarshal(body, &ents); err != nil {
 		return nil, err
 	}
@@ -367,15 +366,15 @@ type Snapshot struct {
 	Secrets string // canonical dump of the whole secret store
 }
 
-func (k *Checker) snapshot(i int) (Snapshot, error) {
-	st, ok := k.c.Status(i)
+func (c *Cluster) snapshot(i int) (Snapshot, error) {
+	st, ok := c.Status(i)
 	if !ok || !st.Serving {
-		return Snapshot{}, fmt.Errorf("%s not serving", k.c.Replicas[i].Node)
+		return Snapshot{}, fmt.Errorf("%s not serving", c.Replicas[i].Node)
 	}
-	a := k.c.Get(i, "/allowlist")
-	s := k.c.Get(i, "/dev/ha/secrets")
+	a := c.Get(i, "/allowlist")
+	s := c.Get(i, "/dev/ha/secrets")
 	if a.Code != http.StatusOK || s.Code != http.StatusOK {
-		return Snapshot{}, fmt.Errorf("%s: allowlist %d secrets %d", k.c.Replicas[i].Node, a.Code, s.Code)
+		return Snapshot{}, fmt.Errorf("%s: allowlist %d secrets %d", c.Replicas[i].Node, a.Code, s.Code)
 	}
 	vals, err := parseAllow(a.Body)
 	if err != nil {
@@ -393,14 +392,14 @@ func (k *Checker) snapshot(i int) (Snapshot, error) {
 
 // Converge waits until every running replica serves the same CA, allowlist
 // ETag and secret store; it returns the time it took.
-func (k *Checker) Converge(timeout time.Duration) (map[int]Snapshot, time.Duration, error) {
+func (c *Cluster) Converge(timeout time.Duration) (map[int]Snapshot, time.Duration, error) {
 	start := time.Now()
 	var snaps map[int]Snapshot
 	var last error
 	err := wait.PollUntilContextTimeout(context.Background(), 200*time.Millisecond, timeout, true, func(context.Context) (bool, error) {
 		snaps, last = map[int]Snapshot{}, nil
-		for _, i := range k.c.RunningIDs() {
-			s, err := k.snapshot(i)
+		for _, i := range c.RunningIDs() {
+			s, err := c.snapshot(i)
 			if err != nil {
 				last = err
 				return false, nil
@@ -408,7 +407,7 @@ func (k *Checker) Converge(timeout time.Duration) (map[int]Snapshot, time.Durati
 			snaps[i] = s
 		}
 		if len(snaps) > 0 {
-			last = sameSnapshots(k.c, snaps)
+			last = sameSnapshots(c, snaps)
 		}
 		return len(snaps) > 0 && last == nil, nil
 	})
@@ -462,7 +461,7 @@ func (r Report) String() string {
 func (k *Checker) Check(convergeTimeout time.Duration) Report {
 	k.Stop()
 	var rep Report
-	snaps, d, err := k.Converge(convergeTimeout)
+	snaps, d, err := k.c.Converge(convergeTimeout)
 	rep.ConvergeIn, rep.ConvergeErr = d, err
 	k.mu.Lock()
 	defer k.mu.Unlock()

@@ -7,15 +7,17 @@ import (
 	"encoding/binary"
 	"sync"
 	"time"
+
+	"k8s.io/apimachinery/pkg/util/cache"
 )
 
 // ChallengeStore holds short-lived attestation challenges. Each challenge can
 // only be consumed once, preventing replay attacks.
 //
 // Challenges are stored in memory and lost on restart; HA replicas share
-// them through SetSharedKey. One TTL governs every challenge, so insertion order is expiry order: issued
-// holds the keys oldest-first, and a consumed key stays there until it reaches
-// the front.
+// them through SetSharedKey. One TTL governs every challenge, so insertion
+// order is expiry order: issued holds the keys oldest-first, and a consumed key
+// stays there until it reaches the front.
 type ChallengeStore struct {
 	mu         sync.Mutex
 	challenges map[[32]byte]time.Time
@@ -28,7 +30,7 @@ type ChallengeStore struct {
 	sharedKey func() []byte
 	// redeemed holds self-verifying challenges this replica accepted, for
 	// single use here; another replica may accept the same one once.
-	redeemed map[[32]byte]time.Time
+	redeemed *cache.Expiring
 }
 
 // SetSharedKey switches the store to self-verifying challenges: expiry (8
@@ -36,7 +38,7 @@ type ChallengeStore struct {
 // all, the size clients already send back. Call before serving.
 func (s *ChallengeStore) SetSharedKey(key func() []byte) {
 	s.sharedKey = key
-	s.redeemed = make(map[[32]byte]time.Time)
+	s.redeemed = cache.NewExpiring()
 }
 
 func challengeMAC(key []byte, head []byte) []byte {
@@ -147,16 +149,13 @@ func (s *ChallengeStore) Consume(challenge []byte) bool {
 	defer s.mu.Unlock()
 
 	created, ok := s.challenges[key]
-	if !ok {
+	delete(s.challenges, key)
+	if s.sharedKey != nil {
+		// Issuers and other replicas use the same current-key and expiry
+		// checks. A local hit must not survive key rotation or key loss.
 		return s.consumeShared(key)
 	}
-	delete(s.challenges, key)
-	if s.redeemed != nil {
-		// A self-verifying challenge stays valid by MAC: mark it used here too.
-		s.redeemed[key] = created.Add(s.ttl)
-	}
-
-	return time.Since(created) < s.ttl
+	return ok && time.Since(created) < s.ttl
 }
 
 // consumeShared accepts a self-verifying challenge another replica issued:
@@ -175,14 +174,13 @@ func (s *ChallengeStore) consumeShared(c [32]byte) bool {
 	if !now.Before(expiry) || expiry.Sub(now) > s.ttl {
 		return false
 	}
-	for k, exp := range s.redeemed {
-		if now.After(exp) {
-			delete(s.redeemed, k)
-		}
-	}
-	if _, used := s.redeemed[c]; used || len(s.redeemed) >= maxChallenges {
+	if _, used := s.redeemed.Get(c); used {
 		return false
 	}
-	s.redeemed[c] = expiry
+	s.redeemed.Set(c, nil, expiry.Sub(now)) // also drops expired entries
+	if s.redeemed.Len() > maxChallenges {
+		s.redeemed.Delete(c)
+		return false
+	}
 	return true
 }
