@@ -86,6 +86,11 @@ type HistoryEntry struct {
 // before it). It is retryable, so handlers answer 503.
 var ErrUnavailable = errors.New("allowlist: replicated store unavailable (no leader or no quorum); retry")
 
+// ErrCapacity wraps a write an HA cluster refused because its replicated
+// state is near what a snapshot can hold. Handlers answer 507; it clears
+// when the state shrinks (history pruned, entries deleted).
+var ErrCapacity = errors.New("allowlist: replicated state at capacity")
+
 // objectDigest is "sha256:<hex>" of b, the name history gives a document.
 func objectDigest(b []byte) string {
 	sum := sha256.Sum256(b)

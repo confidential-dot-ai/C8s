@@ -137,6 +137,9 @@ func (h OperatorHandler) writeFailed(w http.ResponseWriter, path string, err err
 	case errors.Is(err, ErrStoreFull):
 		h.logger().Warn("operator secret write refused", "path", path, "error", err)
 		writeError(w, http.StatusInsufficientStorage, types.ErrorCodeSecretStoreFull, "secret storage limit reached")
+	case errors.Is(err, ErrCapacity):
+		h.logger().Warn("operator secret write refused", "path", path, "error", err)
+		writeError(w, http.StatusInsufficientStorage, types.ErrorCodeStateCapacity, capacityMessage)
 	case errors.Is(err, ErrUnavailable):
 		h.logger().Warn("operator secret write not committed", "path", path, "error", err)
 		httputil.WriteUnavailable(w, ErrUnavailable)
@@ -180,3 +183,6 @@ func writeResult(w http.ResponseWriter, status int, resp PutResponse) {
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(resp)
 }
+
+// capacityMessage answers a write refused by the HA admission cap.
+const capacityMessage = "CDS state is at its snapshot capacity: writes that grow it are refused until it shrinks; retry later"

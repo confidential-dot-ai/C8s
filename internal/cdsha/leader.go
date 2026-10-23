@@ -119,9 +119,12 @@ func (n *Node) bootstrap(ctx context.Context, g PendingDecree) {
 }
 
 // maybeBackup seals and stores the state when it changed since the last
-// stored backup, at most every Timing.Backup (leader only).
+// stored backup, at most every Timing.Backup (leader only). A state over a
+// snapshot size bound fails every attempt, and each attempt dumps and
+// encodes the whole state: those failures back off (backupDelay), and each
+// is logged as an error and kept in Status.BackupError.
 func (n *Node) maybeBackup(ctx context.Context) {
-	if n.recovery == nil || n.cfg.Backups == nil || time.Since(n.backupAt) < n.cfg.Timing.Backup {
+	if n.recovery == nil || n.cfg.Backups == nil || time.Since(n.backupAt) < backupDelay(n.cfg.Timing.Backup, n.backupFails) {
 		return
 	}
 	core := n.fsm.Core()
@@ -134,7 +137,7 @@ func (n *Node) maybeBackup(ctx context.Context) {
 	n.backupAt = time.Now()
 	f := n.r().Snapshot()
 	if err := f.Error(); err != nil {
-		n.log.Warn("backup: snapshot", "err", err)
+		n.backupFailed("snapshot", err)
 		return
 	}
 	_, rc, err := f.Open()
@@ -150,14 +153,14 @@ func (n *Node) maybeBackup(ctx context.Context) {
 	}
 	sn, err := decodeSnapshot(bytes.NewReader(body), n.fsm.readable, true)
 	if err != nil {
-		n.log.Warn("backup: decode snapshot", "err", err)
+		n.backupFailed("decode snapshot", err)
 		return
 	}
 	// Export the application state watermark, not Raft's barrier-only suffix.
 	b, err := SealAuthenticatedBackup(n.recovery, BackupMeta{ClusterID: sn.Core.ClusterID, Epoch: sn.Core.Epoch, Index: sn.Index,
 		AppliedDecrees: sn.Core.AppliedDecrees, TakenAtMS: time.Now().UnixMilli(), CAFingerprint: certutil.CertFingerprint(sn.Core.RootCert)}, body, sn.Core.RootCert, sn.Key)
 	if err != nil {
-		n.log.Warn("backup: seal", "err", err)
+		n.backupFailed("seal", err)
 		return
 	}
 	if err := n.cfg.Backups.PutBackup(ctx, b); err != nil {
@@ -172,7 +175,32 @@ func (n *Node) maybeBackup(ctx context.Context) {
 		return
 	}
 	n.backupIndex = applied
+	if n.backupFails > 0 {
+		n.log.Info("backups resumed", "after_failures", n.backupFails)
+	}
+	n.backupFails = 0
+	n.backupErr.Store(nil)
 	n.log.Info("backup stored", "epoch", b.Meta.Epoch, "index", b.Meta.Index, "bytes", len(b.Ciphertext))
+}
+
+// backupFailed reports a backup that failed at stage. A failure on a size
+// bound will repeat until the state shrinks: it is an error, it backs off,
+// and Status carries it. Others are retried at the usual interval.
+func (n *Node) backupFailed(stage string, err error) {
+	if !tooLarge(err) {
+		n.log.Warn("backup: "+stage, "err", err)
+		return
+	}
+	if n.backupFails == 0 {
+		n.backupSince = time.Now()
+	}
+	n.backupFails++
+	retry := backupDelay(n.cfg.Timing.Backup, n.backupFails)
+	msg := fmt.Sprintf("backup failing since %s (%d attempts): the replicated state exceeds the snapshot size limit (%s: %v); no backup is stored until it shrinks",
+		n.backupSince.UTC().Format(time.RFC3339), n.backupFails, stage, err)
+	n.backupErr.Store(&msg)
+	n.log.Error("backup failed: the replicated state exceeds the snapshot size limit; no backup is stored until it shrinks (delete allowlist entries or lower --allowlist-history-bytes/--allowlist-history-versions)",
+		"stage", stage, "err", err, "consecutive_failures", n.backupFails, "next_attempt_in", retry)
 }
 
 // pruneSlack lets the history grow this far past HistoryVersions before the

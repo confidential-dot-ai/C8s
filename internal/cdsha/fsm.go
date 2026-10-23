@@ -174,6 +174,10 @@ type FSM struct {
 	// met an entry it could not apply, and keeps it from serving.
 	readable uint32
 	stuck    atomic.Pointer[string]
+
+	// base caches the header size of core and decrees for the admission
+	// cap (snapshotEstimate); f.mu guards it.
+	base headerBase
 }
 
 // NewFSM builds the state machine over the replica's local stores. pre is
@@ -508,7 +512,7 @@ func encodeSnapshot(w io.Writer, sn snapshot) error {
 		return err
 	}
 	if len(header)+1 > maxSnapshotHeader || len(sn.Allowlist) > maxSnapshotImage {
-		return errors.New("snapshot exceeds supported decoded size")
+		return errSnapshotTooLarge
 	}
 	zw, err := zstd.NewWriter(&snapshotLimitWriter{w: w, remaining: MaxSnapshotBytes}, zstd.WithWindowSize(snapshotWindow), zstd.WithEncoderConcurrency(1))
 	if err != nil {
@@ -523,6 +527,9 @@ func encodeSnapshot(w io.Writer, sn snapshot) error {
 	}
 	return zw.Close()
 }
+
+// errSnapshotTooLarge is a state too large to snapshot (see admitTotalBytes).
+var errSnapshotTooLarge = errors.New("snapshot exceeds supported decoded size")
 
 // snapshotWindow is the zstd window of a snapshot: enough to reach
 // the previous version of allowlist documents of several MiB, small enough

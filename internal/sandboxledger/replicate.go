@@ -92,7 +92,8 @@ func (l *Ledger) Restore(bs []Binding) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.bindings = make(map[string]binding, len(bs))
+	l.bytes = 0
 	for _, b := range bs {
-		l.bindings[b.SandboxID] = binding{host: b.Host, expires: time.UnixMilli(b.ExpiresMS)}
+		l.setLocked(b.SandboxID, binding{host: b.Host, expires: time.UnixMilli(b.ExpiresMS)})
 	}
 }
