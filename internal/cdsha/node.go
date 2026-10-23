@@ -129,7 +129,7 @@ type Node struct {
 	id          raft.ServerID
 	fsm         *FSM
 	rft         atomic.Pointer[raft.Raft]
-	mux         *mux
+	mux         atomic.Pointer[mux] // replaced by a recovery
 	rcfg        *raft.Config
 	logs        *raft.InmemStore
 	stable      *raft.InmemStore
@@ -208,11 +208,13 @@ func NewNode(cfg Config) (*Node, error) {
 	case strings.Contains(cfg.NodeName, "/"):
 		return nil, errors.New("cds-ha: node name must not contain '/'")
 	}
-	if cfg.Timing == (Timing{}) {
-		cfg.Timing = DefaultTiming
-	}
-	if cfg.Timing.Backup == 0 {
-		cfg.Timing.Backup = DefaultTiming.Backup
+	t, def := &cfg.Timing, DefaultTiming
+	for _, f := range [][2]*time.Duration{{&t.Heartbeat, &def.Heartbeat}, {&t.Election, &def.Election},
+		{&t.Lease, &def.Lease}, {&t.DeadAfter, &def.DeadAfter}, {&t.Stabilize, &def.Stabilize},
+		{&t.Apply, &def.Apply}, {&t.Tick, &def.Tick}, {&t.Backup, &def.Backup}} {
+		if *f[0] <= 0 {
+			*f[0] = *f[1]
+		}
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
@@ -315,7 +317,8 @@ func (n *Node) Start() error {
 	rc.CommitTimeout = 20 * time.Millisecond
 	rc.SnapshotThreshold = 512
 	rc.TrailingLogs = 256
-	rc.Logger = hclog.New(&hclog.LoggerOptions{Name: "raft", Level: hclog.Warn, Output: slogWriter{n.log}})
+	rc.Logger = hclog.New(&hclog.LoggerOptions{Name: "raft", Level: hclog.Warn, DisableTime: true,
+		Output: slog.NewLogLogger(n.log.Handler(), slog.LevelWarn).Writer()})
 	n.rcfg = rc
 	return n.startRaft()
 }
@@ -349,7 +352,7 @@ func (n *Node) transport() (*raft.NetworkTransport, error) {
 	if err != nil {
 		return nil, err
 	}
-	n.mux = m
+	n.mux.Store(m)
 	return raft.NewNetworkTransportWithConfig(&raft.NetworkTransportConfig{Stream: m, MaxPool: 3, Timeout: 10 * time.Second, Logger: n.rcfg.Logger}), nil
 }
 
@@ -360,7 +363,7 @@ func (n *Node) recover(ctx context.Context, p PendingDecree) {
 	if err := n.r().Shutdown().Error(); err != nil {
 		n.log.Error("recover: shut down raft", "err", err)
 	}
-	_ = n.mux.Close()
+	_ = n.mux.Load().Close()
 	// RecoverCluster replays the log into the FSM it is given; use a
 	// scratch one, and let NewRaft restore the real one from the snapshot.
 	al, err := allowlist.OpenInMemory()
@@ -379,7 +382,7 @@ func (n *Node) recover(ctx context.Context, p PendingDecree) {
 		n.log.Error("recover: RecoverCluster", "err", err)
 	}
 	_ = trans.Close()
-	_ = n.mux.Close()
+	_ = n.mux.Load().Close()
 	if err := n.startRaft(); err != nil {
 		n.log.Error("recover: restart raft", "err", err)
 		return
@@ -442,7 +445,7 @@ func (n *Node) Run(ctx context.Context) error {
 		n.clearJumpIfFresh()
 		if e := n.fsm.Core().Epoch; e != lastEpoch {
 			lastEpoch = e
-			n.mux.recheck() // the pin set may have changed
+			n.mux.Load().recheck() // the pin set may have changed
 		}
 		switch addr, _ := n.r().LeaderWithID(); {
 		case n.r().State() == raft.Leader:
@@ -475,8 +478,8 @@ func (n *Node) shutdown() {
 	if n.r() != nil {
 		_ = n.r().Shutdown().Error()
 	}
-	if n.mux != nil {
-		_ = n.mux.Close()
+	if m := n.mux.Load(); m != nil {
+		_ = m.Close()
 	}
 }
 
@@ -585,8 +588,8 @@ func (n *Node) call(addr string, timeout time.Duration, req controlRequest) (con
 		return controlResponse{}, errors.New("partitioned")
 	}
 	var local net.Addr
-	if n.mux != nil {
-		local = n.mux.advert.tcp
+	if m := n.mux.Load(); m != nil {
+		local = m.advert.tcp
 	}
 	return callControl(addr, n.tls, timeout, req, local)
 }
@@ -1563,13 +1566,6 @@ func (n *Node) clearJumpIfFresh() {
 	if lc := n.r().LastContact(); lc.UnixMilli() > at {
 		n.jumpAt.CompareAndSwap(at, 0)
 	}
-}
-
-type slogWriter struct{ l *slog.Logger }
-
-func (w slogWriter) Write(p []byte) (int, error) {
-	w.l.Info(strings.TrimSpace(string(p)), "source", "raft")
-	return len(p), nil
 }
 
 func (n *Node) leading() bool { return n.r().State() == raft.Leader }

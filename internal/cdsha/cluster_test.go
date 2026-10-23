@@ -258,7 +258,7 @@ func (c *cluster) partition(name string, on bool) {
 	c.cut[c.ipOf[name]] = on
 	c.mu.Unlock()
 	for _, r := range c.live() {
-		r.node.mux.recheck() // cut the connections that are open now
+		r.node.mux.Load().recheck() // cut the connections that are open now
 	}
 }
 
