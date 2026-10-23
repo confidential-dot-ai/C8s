@@ -32,6 +32,7 @@ func Parse(data []byte) (*Document, error) {
 		return nil, fmt.Errorf("decode launch configuration: %w", err)
 	}
 	doc.serverTokenPresent = yamlPathPresent(&tree, "rke2", "serverToken")
+	doc.rke2Present = yamlPathPresent(&tree, "rke2")
 	if err := doc.validate(); err != nil {
 		return nil, err
 	}

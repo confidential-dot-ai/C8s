@@ -108,6 +108,7 @@ case "$PLATFORM" in
 esac
 mkdir -p "$STAGE_DIR/etc/systemd/system/cred-release.service.d" \
          "$STAGE_DIR/etc/systemd/system/rke2-role.service.d" \
+         "$STAGE_DIR/etc/systemd/system/c8s-enroll.service.d" \
          "$STAGE_DIR/etc/rancher/rke2/config.yaml.d"
 printf '[Service]\nEnvironment=CRED_PLATFORM=%s\n' "$PLATFORM" \
     > "$STAGE_DIR/etc/systemd/system/cred-release.service.d/10-platform.conf"
@@ -115,6 +116,9 @@ printf '[Service]\nEnvironment=CRED_PLATFORM=%s\n' "$PLATFORM" \
 # before publishing any launch settings or role marker.
 printf '[Service]\nEnvironment=CRED_PLATFORM=%s\n' "$PLATFORM" \
     > "$STAGE_DIR/etc/systemd/system/rke2-role.service.d/10-platform.conf"
+# A managed node's enrollment certificate carries this platform's evidence.
+printf '[Service]\nEnvironment=CRED_PLATFORM=%s\n' "$PLATFORM" \
+    > "$STAGE_DIR/etc/systemd/system/c8s-enroll.service.d/10-platform.conf"
 printf '# Self-label so c8s install --hardware-platform %s finds this node.\nnode-label:\n  - confidential.ai/%s=true\n' "$LABEL_PLATFORM" "$LABEL_PLATFORM" \
     > "$STAGE_DIR/etc/rancher/rke2/config.yaml.d/50-platform.yaml"
 

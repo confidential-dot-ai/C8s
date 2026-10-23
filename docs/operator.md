@@ -316,6 +316,59 @@ current 64-hex tokens use RKE2's short-token format, which does not pin the
 cluster CA during initial enrollment. The signed server address alone does not
 authenticate that CA. See [RKE2 token formats](https://docs.rke2.io/security/token#token-format).
 
+#### Managed launches (`c8s-launch/v2`)
+
+A node of a managed cluster, one whose machines a Cluster API management
+cluster creates, boots with a `c8s-launch/v2` document instead. It has the v1
+fields except `rke2`, which it must not carry, and adds a required `managed`
+section:
+
+```yaml
+schemaVersion: c8s-launch/v2
+# clusterID, role, image, node, server, agentOperatorPublicKeys, tlsSAN as in v1
+managed:
+  pool: control-plane            # RFC1123 label
+  machineName: circle-cp-x7k2p   # must equal node.name
+  machineUID: 0f9e3a52-6c1d-4b8e-9a77-2d5c0e4f1b63
+  policy: {digest: "sha256:<hex>", epoch: 1}
+  bootstrapDigest: "sha256:<hex>"
+  enrollment:
+    url: https://10.0.0.9:8444   # https, IPv4 and port only
+    management:                  # 1 to 8 images
+      - platform: tdx
+        measurement: <96 hex>
+        rtmrs: {1: <96 hex>, 2: <96 hex>}
+        launchKey: |
+          -----BEGIN PUBLIC KEY-----
+          ...
+```
+
+`launch-config stage` verifies it as it does v1, then writes no token and no
+role marker. It leaves `/run/confos/enroll-pending`, which starts
+`c8s-enroll.service` (`c8s launch-config enroll`):
+
+1. Over armTLS, the node checks that the enrollment service's evidence matches
+   one `management` entry, image and launch key together, and asks
+   `POST /v1/challenge` for a nonce.
+2. It makes a fresh key and a self-signed armTLS certificate whose evidence
+   binds that key and the nonce, and sends it with `POST /v1/enroll`.
+3. The service releases the Machine's role material once per Machine UID, with
+   the provider ID `cc://<instance id>`. The node refuses material whose exact
+   bytes do not hash to `bootstrapDigest`, or whose role is not the document's.
+4. It writes the RKE2 settings to `/etc/rancher/rke2/config.yaml.d/60-managed.yaml`,
+   appending list settings (`tls-san+`, `kubelet-arg+` and so on) to the
+   image's. A setting the image fixes, such as `cni` or the address ranges, may
+   only repeat the image's value. Component flags that would load code or keys
+   from outside the image, or set the provider ID, are refused. A control-plane
+   member also receives the RKE2 server CA files, and only those.
+5. It writes the role marker last, so the matching RKE2 unit starts only after
+   all of that.
+
+Enrollment retries an unreachable service for 15 minutes and stops at once on a
+refusal (403 or 409); the Machine is then left to its health check. A rebooted
+managed node enrolls again, and the service refuses a second grant for the same
+Machine UID, so a reboot replaces the Machine.
+
 ### Chart-managed defaults
 
 - The chart renders webhook, attestation-api, and CDS together.

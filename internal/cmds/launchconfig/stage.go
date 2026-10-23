@@ -17,8 +17,12 @@ import (
 )
 
 const (
-	serverMarker     = "/run/confos/role-server"
-	agentMarker      = "/run/confos/role-agent"
+	serverMarker = "/run/confos/role-server"
+	agentMarker  = "/run/confos/role-agent"
+	// enrollMarker is a managed launch's verdict in place of a role marker:
+	// the node may enroll, and enrollment writes the role marker.
+	enrollMarker     = "/run/confos/enroll-pending"
+	managedFragment  = "/etc/rancher/rke2/config.yaml.d/60-managed.yaml"
 	serverTokenPath  = "/run/confos/rke2-server-token"
 	agentTokenPath   = "/run/confos/rke2-agent-token"
 	rke2FragmentPath = "/etc/rancher/rke2/config.yaml.d/50-role.yaml"
@@ -60,7 +64,7 @@ func clearOutputs(cfg Config) error {
 	// output fails. Collect errors so a blocked first marker never prevents
 	// attempting to remove the other.
 	var errs []error
-	paths := []string{serverMarker, agentMarker, serverTokenPath, agentTokenPath, rke2FragmentPath, nodePasswordPath, rke2RegistriesPath}
+	paths := []string{serverMarker, agentMarker, enrollMarker, serverTokenPath, agentTokenPath, rke2FragmentPath, managedFragment, nodePasswordPath, rke2RegistriesPath}
 	for _, name := range []string{"peers.json", "cds.json", "operator-pubkey", "config.json", "workloads.json"} {
 		paths = append(paths, Dir+"/"+name)
 	}
@@ -115,8 +119,10 @@ func stageVerified(cfg Config, v *Verified) error {
 		{Dir + "/cds.json", cds},
 		{Dir + "/operator-pubkey", v.operatorPub},
 		{Dir + "/config.json", append(encoded, '\n')},
-		{agentTokenPath, []byte(doc.RKE2.AgentToken)},
 		{rke2FragmentPath, fragment},
+	}
+	if !doc.IsManaged() {
+		outputs = append(outputs, outputFile{agentTokenPath, []byte(doc.RKE2.AgentToken)})
 	}
 	if doc.RKE2.NodePassword != "" {
 		// Without one (an older bundle), RKE2 generates its own per boot.
@@ -133,7 +139,10 @@ func stageVerified(cfg Config, v *Verified) error {
 		outputs = append(outputs, outputFile{rke2RegistriesPath, registries})
 	}
 	marker := agentMarker
-	if doc.Role == Server {
+	switch {
+	case doc.IsManaged():
+		marker = enrollMarker
+	case doc.Role == Server:
 		outputs = append(outputs,
 			outputFile{serverTokenPath, []byte(doc.RKE2.ServerToken)},
 		)
@@ -155,7 +164,7 @@ func stageVerified(cfg Config, v *Verified) error {
 }
 
 type roleFragment struct {
-	TokenFile      string `yaml:"token-file"`
+	TokenFile      string `yaml:"token-file,omitempty"`
 	AgentTokenFile string `yaml:"agent-token-file,omitempty"`
 	Server         string `yaml:"server,omitempty"`
 	NodeName       string `yaml:"node-name"`
@@ -182,7 +191,12 @@ func registriesFile(doc *Document) rke2Registries {
 }
 
 func rke2Fragment(doc *Document) roleFragment {
-	out := roleFragment{TokenFile: agentTokenPath, NodeName: doc.Node.Name, NodeIP: doc.Node.IP, NodeExternalIP: doc.Node.ExternalIP}
+	out := roleFragment{NodeName: doc.Node.Name, NodeIP: doc.Node.IP, NodeExternalIP: doc.Node.ExternalIP}
+	if doc.IsManaged() {
+		// The token and server come from enrollment (60-managed.yaml).
+		return out
+	}
+	out.TokenFile = agentTokenPath
 	if doc.Role == Server {
 		out.TokenFile = serverTokenPath
 		out.AgentTokenFile = agentTokenPath

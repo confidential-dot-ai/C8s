@@ -37,6 +37,10 @@ type SelfSignedProvider struct {
 	Opts       *CertOptions
 	// MeasuredPolicies is the journal a TDX certificate lists; nil lists none.
 	MeasuredPolicies *Journal
+	// Nonce, when set, is bound into the evidence with the key, as
+	// REPORTDATA = hash(pubkey || nonce), for a verifier that issued it as a
+	// challenge (VerifyPolicy.Nonce). Nil binds the key alone.
+	Nonce []byte
 }
 
 var _ CertProvider = (*SelfSignedProvider)(nil)
@@ -54,7 +58,7 @@ func (p *SelfSignedProvider) Provision(ctx context.Context) (*tls.Certificate, t
 		return nil, 0, fmt.Errorf("%w: %v", ErrUnsupportedTEE, err)
 	}
 
-	reportData, err := ReportDataForKey(&key.PublicKey, nil)
+	reportData, err := ReportDataForKey(&key.PublicKey, p.Nonce)
 	if err != nil {
 		return nil, 0, err
 	}

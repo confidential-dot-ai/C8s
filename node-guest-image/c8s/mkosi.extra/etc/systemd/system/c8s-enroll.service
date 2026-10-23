@@ -1,0 +1,22 @@
+[Unit]
+Description=Enroll a managed node with its management cluster
+Documentation=https://github.com/confidential-dot-ai/c8s
+# Only a managed (c8s-launch/v2) launch leaves this verdict. Enrollment
+# writes the role marker last, so the RKE2 unit that matches it starts only
+# after the released material is checked and staged.
+ConditionPathExists=/run/confos/enroll-pending
+Requires=rke2-role.service attestation-api.service
+After=rke2-role.service attestation-api.service network-online.target
+Wants=network-online.target
+Before=rke2-server.service rke2-agent.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=PATH=/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/usr/local/bin/c8s launch-config enroll --platform=${CRED_PLATFORM}
+# The command retries for up to 15 minutes and stops at once on a refusal.
+TimeoutStartSec=20min
+
+[Install]
+WantedBy=multi-user.target

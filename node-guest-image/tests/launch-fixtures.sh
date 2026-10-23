@@ -61,16 +61,24 @@ case "$1 $2" in
     signature=${5#--signature=}
     [[ -f "$config" && -f "$signature" ]]
     [[ $(cat "$signature") == valid-test-signature ]]
-    rm -f /run/confos/role-server /run/confos/role-agent
+    rm -f /run/confos/role-server /run/confos/role-agent /run/confos/enroll-pending
     case "$(cat "$config")" in
         server) : > /run/confos/role-server ;;
         agent) : > /run/confos/role-agent ;;
+        # A managed launch leaves the role to enrollment.
+        managed-server|managed-agent) cat "$config" > /run/confos/enroll-pending ;;
         *) exit 31 ;;
     esac
     ;;
+'launch-config enroll')
+    [[ $# == 3 && $3 == --platform=tdx || $# == 3 && $3 == --platform=snp ]]
+    [[ -f /run/confos/enroll-pending ]]
+    [[ ! -e "$C8S_ROLE_FIXTURE/enroll-refused" ]] || exit 33
+    : > "/run/confos/role-$(sed 's/^managed-//' /run/confos/enroll-pending)"
+    ;;
 'node-services prepare')
     [[ $# == 2 ]]
-    [[ -f /run/confos/role-server || -f /run/confos/role-agent ]]
+    [[ -f /run/confos/role-server || -f /run/confos/role-agent || -f /run/confos/enroll-pending ]]
     [[ ! -e "$C8S_ROLE_FIXTURE/prepare-fails" ]]
     : > "$C8S_ROLE_FIXTURE/prepared"
     ;;
