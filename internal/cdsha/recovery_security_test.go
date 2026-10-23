@@ -16,7 +16,7 @@ func TestRecoveryAuthentication(t *testing.T) {
 	ca := mustCA(t)
 	other := mustCA(t)
 	key, _ := x509.MarshalPKCS8PrivateKey(ca.Key)
-	sn := snapshot{Format: Format, Index: 12, Core: Core{ClusterID: testCluster, Epoch: 4, RootCert: ca.Cert.Raw}, Key: key, Allowlist: []byte("image")}
+	sn := snapshot{Format: Format, Index: 12, Core: Core{Policy: FSMPolicy{Version: 1, LedgerTTLNS: int64(time.Hour), LedgerMax: 8, SecretsMaxPaths: 8, SecretsMaxPerHolder: 4, SecretsMaxValue: 64}, ClusterID: testCluster, Epoch: 4, RootCert: ca.Cert.Raw}, Key: key, Allowlist: []byte("image")}
 	var buf bytes.Buffer
 	if err := encodeSnapshot(&buf, sn); err != nil {
 		t.Fatal(err)
