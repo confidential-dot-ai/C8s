@@ -12,39 +12,65 @@ import (
 
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
+	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
 // historySnapshot is a snapshot whose allowlist history holds versions near
 // copies of one ~70 KiB document, as a cluster's does, and the size of
 // those documents.
-func historySnapshot(format uint32, versions int) (snapshot, int) {
+func historySnapshot(t *testing.T, format uint32, versions int) (snapshot, int) {
+	t.Helper()
 	rng := rand.New(rand.NewPCG(3, 4))
-	doc := map[string]string{}
-	for i := range 900 {
-		doc[fmt.Sprintf("w%03d", i)] = fmt.Sprintf("sha256:%064x", rng.Uint64())
+	al, err := allowlist.OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
 	}
-	var rows []map[string]any
+	defer al.Close()
+	if err := al.StartJournal(); err != nil {
+		t.Fatal(err)
+	}
+	ws := map[string]pkgallowlist.Workload{}
+	for i := range 300 {
+		ws[fmt.Sprintf("w%03d", i)] = digestWorkload(t, rng)
+	}
 	size := 0
 	for v := range versions {
-		doc[fmt.Sprintf("w%03d", v%900)] = fmt.Sprintf("sha256:%064x", rng.Uint64())
+		ws[fmt.Sprintf("w%03d", v%300)] = digestWorkload(t, rng)
+		doc := &pkgallowlist.Allowlist{Workloads: ws}
 		b, _ := json.Marshal(doc)
 		size += len(b)
-		rows = append(rows, map[string]any{"digest": fmt.Sprintf("d%d", v), "body": b})
+		if err := al.ReplaceAll(doc); err != nil {
+			t.Fatal(err)
+		}
 	}
-	return snapshot{Core: Core{ClusterID: testCluster, Format: format}, Allowlist: allowlist.Snapshot{"journal_object": rows}}, size
+	image, err := al.Dump()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return snapshot{Core: Core{ClusterID: testCluster, Format: format}, Allowlist: image}, size
+}
+
+func digestWorkload(t *testing.T, rng *rand.Rand) pkgallowlist.Workload {
+	t.Helper()
+	d, err := types.ParseDigest(fmt.Sprintf("sha256:%016x%016x%016x%016x", rng.Uint64(), rng.Uint64(), rng.Uint64(), rng.Uint64()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pkgallowlist.Workload{Containers: []pkgallowlist.Container{{Digest: d}}}
 }
 
 // Snapshots share the history's repeats (zstd, long window), and a replica
 // refuses one in a format it does not read.
 func TestSnapshotCompression(t *testing.T) {
-	sn, size := historySnapshot(Format, 300)
+	sn, size := historySnapshot(t, Format, 300)
 	var buf bytes.Buffer
 	if err := encodeSnapshot(&buf, sn); err != nil {
 		t.Fatal(err)
 	}
 	got, err := decodeSnapshot(bytes.NewReader(buf.Bytes()), Format, false)
-	if err != nil || len(got.Allowlist["journal_object"]) != 300 {
-		t.Fatalf("round trip: %v (%d rows)", err, len(got.Allowlist["journal_object"]))
+	if err != nil || !bytes.Equal(got.Allowlist, sn.Allowlist) {
+		t.Fatalf("round trip: %v", err)
 	}
 	if head, err := decodeSnapshot(bytes.NewReader(buf.Bytes()), Format, true); err != nil || len(head.Allowlist) != 0 || head.Core.ClusterID != testCluster {
 		t.Fatalf("header only: %v, %+v", err, head.Core)
@@ -54,7 +80,7 @@ func TestSnapshotCompression(t *testing.T) {
 	}
 	for _, format := range []uint32{Format + 1, baseFormat - 1} {
 		buf.Reset()
-		sn, _ := historySnapshot(format, 2)
+		sn, _ := historySnapshot(t, format, 2)
 		_ = encodeSnapshot(&buf, sn)
 		if _, err := decodeSnapshot(bytes.NewReader(buf.Bytes()), Format, false); err == nil {
 			t.Fatalf("took a format %d snapshot", format)

@@ -1,6 +1,7 @@
 package cdsha
 
 import (
+	"database/sql"
 	"encoding/base64"
 	"fmt"
 	"reflect"
@@ -37,15 +38,7 @@ func TestSpentTokenExpiry(t *testing.T) {
 		if err := restoreCopy(t, f, g); err != nil {
 			t.Fatal(err)
 		}
-		a, err := f.allowlist.Dump()
-		if err != nil {
-			t.Fatal(err)
-		}
-		b, err := g.allowlist.Dump()
-		if err != nil {
-			t.Fatal(err)
-		}
-		return a["used_token"], b["used_token"]
+		return usedTokens(t, f.allowlist), usedTokens(t, g.allowlist)
 	}
 	const t0, hour = int64(1_800_000_000), int64(3600)
 
@@ -72,4 +65,42 @@ func TestSpentTokenExpiry(t *testing.T) {
 	if windows != 1 {
 		t.Fatalf("%d rows with a window", windows)
 	}
+}
+
+// usedTokens reads the used_token rows of a store through its own image.
+func usedTokens(t *testing.T, s *allowlist.Store) []map[string]any {
+	t.Helper()
+	image, err := s.Dump()
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", "file:/used-tokens-"+t.Name()+"?vfs=memdb")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	conn, err := db.Conn(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := conn.Raw(func(dc any) error { return dc.(interface{ Deserialize([]byte) error }).Deserialize(image) }); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := conn.QueryContext(t.Context(), "SELECT digest, exp_unix, iat_unix FROM used_token ORDER BY digest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var out []map[string]any
+	for rows.Next() {
+		var d string
+		var exp, iat int64
+		if err := rows.Scan(&d, &exp, &iat); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, map[string]any{"digest": d, "exp_unix": exp, "iat_unix": iat})
+	}
+	return out
 }
