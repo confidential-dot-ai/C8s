@@ -156,7 +156,10 @@ func (p *Proxy) Current() *Applied { return p.state.Current() }
 // pools under the previous digest are retired before the renewed leaf is
 // presented (B10).
 func (p *Proxy) SyncRouterDigest(leaf string) (string, error) {
-	if current := p.transports.RouterDigest(); current == leaf || p.transports == nil {
+	if p.transports == nil {
+		return "", nil
+	}
+	if current := p.transports.RouterDigest(); current == leaf {
 		return current, nil
 	}
 	if err := p.transports.dropMeshPools(); err != nil {
