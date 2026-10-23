@@ -17,6 +17,8 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+
+	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
 // resolverPort is the only destination port the resolver exception permits.
@@ -139,21 +141,6 @@ func (p Policy) validate() error {
 	return p.Server.validate()
 }
 
-// localRanges hold the addresses an exit must not reach: they are the pod's
-// own, local to its link, or match more than one host.
-var localRanges = []netip.Prefix{
-	netip.MustParsePrefix("0.0.0.0/8"),
-	netip.MustParsePrefix("127.0.0.0/8"),
-	netip.MustParsePrefix("169.254.0.0/16"),
-	netip.MustParsePrefix("224.0.0.0/3"),
-	netip.MustParsePrefix("::/127"),
-	netip.MustParsePrefix("::ffff:0:0/96"),
-	netip.MustParsePrefix("64:ff9b::/96"),
-	netip.MustParsePrefix("2002::/16"),
-	netip.MustParsePrefix("fe80::/10"),
-	netip.MustParsePrefix("ff00::/8"),
-}
-
 // validate requires an exit one rule can match, to hosts outside the pod.
 func (e Exit) validate() error {
 	switch {
@@ -164,10 +151,8 @@ func (e Exit) validate() error {
 	case e.Port == 0:
 		return fmt.Errorf("%w: exit %s has no port", ErrPolicy, e.Range)
 	}
-	for _, local := range localRanges {
-		if e.Range.Overlaps(local) {
-			return fmt.Errorf("%w: exit range %s overlaps %s", ErrPolicy, e.Range, local)
-		}
+	if special, overlaps := allowlist.NonUnicastOverlap(e.Range); overlaps {
+		return fmt.Errorf("%w: exit range %s overlaps %s", ErrPolicy, e.Range, special)
 	}
 	return nil
 }

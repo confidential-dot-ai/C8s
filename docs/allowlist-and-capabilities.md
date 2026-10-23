@@ -486,8 +486,7 @@ On the measured image this holds even though the bytes are encrypted: CDS's
 entry pins `/mnt/c8s-data/cds` with an exact `data` rule, and a local-path
 volume observes as `host`, so the rule refuses it by kind before storage is
 considered. CDS's store is therefore a memory `emptyDir`, and every new CDS
-pod starts with an empty store beside the image's seed layer (see
-[Bootstrap](#bootstrap)) and its version counter reset. Each
+pod starts the allowlist from the seed with its version counter reset. Each
 node's plugin keeps the highest version it applied (see
 [Refresh and anti-rollback](#refresh-and-anti-rollback)), so after a CDS
 restart a plugin that had applied version N ignores the restarted CDS's
@@ -537,9 +536,9 @@ install still setting the per-container `paths` field needs
 
 ## Declared exits (`egress`)
 
-A pod in the mesh sends TCP out of the pod only through its mesh endpoint,
-to the cluster resolver, or to its node's CDS (which serves the allowlist and
-the other public routes without authentication). An entry may declare
+A workload in a mesh pod sends TCP out of the pod only through its mesh
+endpoint or to the cluster resolver; the pod's injected credential clients
+reach only the CDS they are bound to. An entry may declare
 `egress`: up to 8 exits, each a CIDR range and one TCP port, that a pod this
 entry matches reaches directly, uncaptured.
 
@@ -562,10 +561,16 @@ entry matches reaches directly, uncaptured.
 - A single address (`/32`, `/128`) is the expected exit, for example one
   relay the operator controls. A range may be no broader than `/16` (IPv4)
   or `/48` (IPv6).
-- Write-time validation also refuses ranges that are not unicast hosts: `/0`, loopback, link-local, multicast, reserved and
-  broadcast, unspecified, and the IPv6 forms that stand for IPv4 addresses
-  (IPv4-mapped, NAT64, 6to4). The range is stored in its canonical text
-  (RFC 5952 for IPv6: lower case, zeros compressed).
+- Write-time validation also refuses ranges that are not unicast hosts: `/0`,
+  loopback, link-local, multicast, reserved and broadcast, unspecified, and
+  the IPv6 forms that stand for or embed IPv4 addresses (IPv4-compatible,
+  IPv4-mapped, SIIT, NAT64 including `64:ff9b:1::/48`, Teredo, 6to4). The
+  range is stored in its canonical text (RFC 5952 for IPv6: lower case, zeros
+  compressed).
+- An exit has exactly the members `cidr` (a string) and `port` (a number).
+  A write with any other member or type is refused. A node reading a served
+  document drops such an `egress` list, so the entry grants no exit, and
+  keeps the rest of the document.
 - The node decides a pod's exits from the set of its workload containers (the
   injected mesh and credential containers are left out), so the outcome does
   not depend on the order they start in. An entry with exits claims a pod once
@@ -586,7 +591,8 @@ entry matches reaches directly, uncaptured.
   from its measured mesh policy, contains the node's own address, the
   resolver, CDS or any other address a platform role is bound to (on any
   port), or a loopback, link-local or multicast range. A node that cannot name
-  its cluster ranges or its own address grants no exit. The container whose
+  its own address, or a cluster range of the exit's address family (an IPv6
+  exit needs an IPv6 cluster range), grants no exit. The container whose
   start would have granted the exit is refused with the reason. These checks
   apply in audit mode too.
 - An exit is a way out of the TEE for whatever the workload sends. It is not
@@ -1061,33 +1067,11 @@ c8s allowlist upload next.json
 `OVERRIDE` is the override's entry name. The filter cuts its image segment to
 the 41 characters a generated shape keeps. Pods that still run the narrowed-away
 launch keep running, but cannot restart under it. A CDS that seeds the
-override at start retires those entries itself.
+override, at start or while following its seed, retires those entries itself.
 
-On a measured node image (`node.baked`), the seed is the file the image
-holds, the same baked seed the node's image policy plugin enforces through its
-base allowlist. CDS reads it once at start and keeps it as a fixed layer
-beside the store (`--seed-layer`, which the chart sets only there). The
-launch document's signed `workloads`, if any, are seeded into the store at
-start instead (`--allowlist-seed`): they are served like any stored entry,
-and the first upload replaces them.
-
-- The seed never enters the store. `GET /allowlist` serves the stored
-  document alone, byte for byte the one an operator signed, and names the
-  seed in a `C8s-Allowlist-Seed: sha256:<hex>` header. An upload replaces the
-  stored document only, so it may carry application entries alone and cannot
-  drop C8s's own. `c8s allowlist upload` skips its core-component check when
-  CDS names a seed.
-- `/attest` and `/secrets` decide on both layers. On a name both hold, the
-  seed's entry wins, as the node's base allowlist admits it too.
-- A leaf whose pod matched a seed entry is stamped with the seed's digest
-  (SHA-256 of its canonical bytes) and the store version. CDS serves the
-  seed's canonical bytes at `/allowlist/objects/sha256/<hex>`. The seed is
-  not in the allowlist history and carries no operator signature. get-cert
-  does not renew a leaf stamped with the seed on an upload.
-- The seed changes only with a new node image.
-
-The steps above that publish the seed with `apply` are for chart-managed
-installs; on a measured node image there is nothing to publish.
+On a measured node image (`node.baked`), the seed is a file the image holds,
+so CDS follows it: it rereads the file every 30 seconds and seeds it again
+when it changed. The chart sets `--follow-seed` only there.
 
 Known limitations:
 
