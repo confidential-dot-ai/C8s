@@ -69,7 +69,7 @@ func (n *Node) joinOrBootstrap(ctx context.Context) {
 // minute per peer and reason: a replica that can never join (a release too
 // old for the cluster's format, an image not pinned) must say so.
 func (n *Node) joinRefused(peer string, err error) {
-	if n.joinRefusedLog.ok(peer+" "+err.Error(), time.Now()) {
+	if logOnce(n.joinRefusedLog, peer+" "+err.Error()) {
 		n.log.Info("join refused", "peer", peer, "err", err)
 	}
 }

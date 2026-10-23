@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/raft"
+	"k8s.io/apimachinery/pkg/util/cache"
 )
 
 // One attested TLS port carries two protocols, told apart by the first byte
@@ -57,7 +58,7 @@ type mux struct {
 
 	connMu  sync.Mutex
 	conns   map[*peerConn]struct{}
-	refused logEvery // remote host + stage
+	refused *cache.LRUExpireCache // remote host + stage
 }
 
 // peerConn is a live attested connection and what its peer attested. TLS
@@ -110,7 +111,7 @@ func newMux(bind string, advertise, id string, cfg *tls.Config, v peerVerifier, 
 	}
 	adv := raftAddr{tcp: tcp, id: id}
 	m := &mux{ln: ln, tls: cfg, verifier: v, advert: adv, control: control, blocked: blocked,
-		raftConn: make(chan net.Conn), done: make(chan struct{}), conns: map[*peerConn]struct{}{}}
+		raftConn: make(chan net.Conn), done: make(chan struct{}), conns: map[*peerConn]struct{}{}, refused: newLogOnce()}
 	go m.serve()
 	return m, nil
 }
@@ -141,32 +142,25 @@ func (m *mux) recheck() {
 	}
 }
 
-// logEvery allows one log line a minute per key: a peer refused for good
-// (a new image not yet pinned, a foreign cluster) must show in the logs,
-// but not on every retry.
-type logEvery struct {
-	mu sync.Mutex
-	at map[string]time.Time
-}
-
-func (l *logEvery) ok(key string, now time.Time) bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if last, seen := l.at[key]; seen && now.Sub(last) < time.Minute {
+// logOnce reports whether key was not logged in the last minute: a peer
+// refused for good (a new image not yet pinned, a foreign cluster) must show
+// in the logs, but not on every retry. The cache is bounded, because a
+// handshake failure's key is the remote host, which anyone can vary.
+func logOnce(seen *cache.LRUExpireCache, key string) bool {
+	if _, ok := seen.Get(key); ok {
 		return false
 	}
-	if l.at == nil {
-		l.at = map[string]time.Time{}
-	}
-	l.at[key] = now
+	seen.Add(key, nil, time.Minute)
 	return true
 }
+
+func newLogOnce() *cache.LRUExpireCache { return cache.NewLRUExpireCache(1024) }
 
 // refuse logs why a peer connection was closed, which would otherwise show
 // only as resets on the other side.
 func (m *mux) refuse(remote net.Addr, stage string, err error) {
 	host, _, _ := net.SplitHostPort(remote.String())
-	if m.refused.ok(host+" "+stage, time.Now()) {
+	if logOnce(m.refused, host+" "+stage) {
 		slog.Info("cds-ha: peer connection refused", "component", "cds-ha", "remote", host, "stage", stage, "err", err)
 	}
 }
