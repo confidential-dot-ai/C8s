@@ -421,7 +421,7 @@ type haMeshCA struct{ node *cdsha.Node }
 
 func (h haMeshCA) Current() issuer.CurrentCA {
 	ca, err := h.node.CA()
-	if err != nil || ca == nil || ca.Cert == nil {
+	if err != nil {
 		return issuer.CurrentCA{}
 	}
 	return issuer.CurrentCA{CA: ca, CertPEM: certutil.EncodeCertPEM(ca.Cert.Raw)}

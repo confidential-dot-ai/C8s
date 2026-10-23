@@ -152,10 +152,13 @@ func run(cfg config) error {
 	if err != nil {
 		return fmt.Errorf("cds-ha: %w", err)
 	}
+	// startCA is the mesh CA at startup. It is read once: an HA replica can
+	// stop serving (lease lapse) between two reads, and mesh then reads empty.
 	var mesh meshCA
 	var singletonCA *issuer.MeshCA
+	var startCA *issuer.CA
 	if haNode != nil {
-		if _, err := haNode.CA(); err != nil {
+		if startCA, err = haNode.CA(); err != nil {
 			return fmt.Errorf("mesh CA: %w", err)
 		}
 		mesh = haMeshCA{node: haNode}
@@ -164,12 +167,12 @@ func run(cfg config) error {
 			return err
 		}
 		mesh = singletonCA
+		startCA = singletonCA.Current().CA
 	}
-	current := mesh.Current()
 	slog.Info("in-memory mesh CA",
-		"key_id", caKeyID(current.CA.Cert),
-		"fingerprint", certutil.CertFingerprint(current.CA.Cert.Raw),
-		"not_after", current.CA.Cert.NotAfter.Format(time.RFC3339),
+		"key_id", caKeyID(startCA.Cert),
+		"fingerprint", certutil.CertFingerprint(startCA.Cert.Raw),
+		"not_after", startCA.Cert.NotAfter.Format(time.RFC3339),
 	)
 
 	measurements := parseReferenceDigests(cfg.measurements)
@@ -375,7 +378,7 @@ func run(cfg config) error {
 		Routes: routeHandler{
 			Store:     &allowlistStore,
 			Authorize: operatorAuthorizer,
-			MeshCA:    mesh.Current().CA.Cert,
+			MeshCA:    startCA.Cert,
 		},
 		ReadyFn:           readinessFn(checker.Ready, mesh, cfg.minCAValidity),
 		MeshCA:            mesh,
@@ -420,7 +423,7 @@ func run(cfg config) error {
 	serve := srv.ListenAndServe
 	var meshPeers *armtls.CertManager
 	if cfg.armtlsPlatform != "" {
-		tlsCfg, certMgr, err := armtlsServerTLS(ctx, cfg, current.CA.Cert)
+		tlsCfg, certMgr, err := armtlsServerTLS(ctx, cfg, startCA.Cert)
 		if err != nil {
 			return err
 		}
