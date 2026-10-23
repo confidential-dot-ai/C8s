@@ -10,7 +10,7 @@ import (
 
 // A snapshot is visible only once complete, and readers never see it grow.
 func TestSnapStorePublishesOnClose(t *testing.T) {
-	s := newSnapStore()
+	s := &snapStore{}
 	k, err := s.Create(1, 10, 1, raft.Configuration{}, 1, nil)
 	if err != nil {
 		t.Fatal(err)

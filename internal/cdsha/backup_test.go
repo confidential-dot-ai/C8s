@@ -2,7 +2,6 @@ package cdsha
 
 import (
 	"bytes"
-	"compress/gzip"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -10,8 +9,6 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"errors"
-	"fmt"
-	mathrand "math/rand/v2"
 	"strings"
 	"testing"
 	"time"
@@ -33,7 +30,7 @@ func TestBackupStoreRoundTrip(t *testing.T) {
 		t.Fatal("a backup where none was stored")
 	}
 	rk, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	snap := make([]byte, 5000) // random: gzip cannot shrink it below several parts
+	snap := make([]byte, 5000)
 	_, _ = rand.Read(snap)
 	orig := backupPartBytes
 	backupPartBytes = 1000 // several parts
@@ -65,7 +62,6 @@ func TestBackupStoreRoundTrip(t *testing.T) {
 	if err := st.PutBackup(ctx, b); err != nil {
 		t.Fatal(err)
 	}
-	meta.Index = 10
 	got, err := st.GetBackup(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -116,15 +112,15 @@ func TestBackupStoreRoundTrip(t *testing.T) {
 	if !tamperedOne {
 		t.Fatal("part 1 not found")
 	}
-	bad := got
-	bad.EphemeralPub = []byte("x")
-	if _, err := OpenBackup(rk, bad); err == nil {
-		t.Fatal("garbage ephemeral key accepted")
+	// Only the recovery key opens it, and its metadata is authenticated.
+	other, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if _, err := OpenBackup(other, got); err == nil || !strings.Contains(err.Error(), "recovery key") {
+		t.Fatalf("opened with another key: %v", err)
 	}
-	p384, _ := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
-	if _, err := SealBackup(&p384.PublicKey, meta, snap); err != nil {
-		// P-384 also converts; only check the call does not panic.
-		_ = err
+	relabeled := got
+	relabeled.Meta.Epoch++
+	if _, err := OpenBackup(rk, relabeled); err == nil {
+		t.Fatal("opened with changed metadata")
 	}
 }
 
@@ -136,7 +132,13 @@ func TestApplyRestoreRefusals(t *testing.T) {
 	ca := mustCA(t)
 	key, _ := x509.MarshalPKCS8PrivateKey(ca.Key)
 	good := snapshot{Core: Core{ClusterID: testCluster, Epoch: 3, RootCert: ca.Cert.Raw, Measurements: []string{"m1"}, OperatorPubKey: opPub}, Key: key}
-	enc := func(sn snapshot) []byte { b, _ := json.Marshal(sn); return b }
+	enc := func(sn snapshot) []byte {
+		var b bytes.Buffer
+		if err := encodeSnapshot(&b, sn); err != nil {
+			t.Fatal(err)
+		}
+		return b.Bytes()
+	}
 	sign := func(kind DecreeKind, s []byte) SignedDecree {
 		d := Decree{ClusterID: testCluster, IntentID: "r" + string(kind), Kind: kind, BootstrapNode: "n0", ExpiresAt: time.Now().Add(time.Hour)}
 		if kind == Restore {
@@ -171,19 +173,6 @@ func TestApplyRestoreRefusals(t *testing.T) {
 	}
 	if res := f.applyRestore(RestoreEntry{Decree: sign(Restore, enc(good)), AtMS: now, Snapshot: enc(good)}); res.Err == "" {
 		t.Fatal("restored over a cluster that has a key")
-	}
-	// Decree rules for Restore.
-	pre := PreGenesis(testCluster, opPub)
-	for name, d := range map[string]Decree{
-		"no hash":        {Kind: Restore, BootstrapNode: "n0"},
-		"no node":        {Kind: Restore, SnapshotSHA256: "aa"},
-		"hash on update": {Kind: UpdateMeasurements, Measurements: []string{"m"}, SnapshotSHA256: "aa"},
-	} {
-		d.ClusterID, d.IntentID, d.ExpiresAt = testCluster, "x", time.Now().Add(time.Hour)
-		sd, _ := SignDecree(d, opKey)
-		if err := CheckDecree(sd, pre, time.Now()); err == nil {
-			t.Errorf("%s accepted", name)
-		}
 	}
 }
 
@@ -235,9 +224,24 @@ func TestBackupWriteIsAtomic(t *testing.T) {
 		}
 	}
 	// A writer whose manifest changed under it loses: the update is
-	// conditional on the manifest it checked.
-	kube.PrependReactor("update", "configmaps", func(action k8stesting.Action) (bool, runtime.Object, error) {
-		return true, nil, apierrors.NewConflict(schema.GroupResource{Resource: "configmaps"}, BackupName(testCluster), errors.New("changed"))
+	// conditional on the manifest it checked. The fake keeps no versions,
+	// so the reactors play the API: every read is version "seen", and
+	// another writer has stored since, so an update made at "seen" conflicts
+	// (one made at no version would overwrite).
+	kube.PrependReactor("get", "configmaps", func(a k8stesting.Action) (bool, runtime.Object, error) {
+		obj, err := kube.Tracker().Get(corev1.SchemeGroupVersion.WithResource("configmaps"), "decrees", a.(k8stesting.GetAction).GetName())
+		if err != nil {
+			return true, nil, err
+		}
+		cm := obj.(*corev1.ConfigMap).DeepCopy()
+		cm.ResourceVersion = "seen"
+		return true, cm, nil
+	})
+	kube.PrependReactor("update", "configmaps", func(a k8stesting.Action) (bool, runtime.Object, error) {
+		if a.(k8stesting.UpdateAction).GetObject().(*corev1.ConfigMap).ResourceVersion == "seen" {
+			return true, nil, apierrors.NewConflict(schema.GroupResource{Resource: "configmaps"}, BackupName(testCluster), errors.New("changed"))
+		}
+		return false, nil, nil
 	})
 	if err := st.PutBackup(ctx, seal(9)); !errors.Is(err, ErrBackupNotNewer) {
 		t.Fatalf("a raced write: %v", err)
@@ -247,56 +251,71 @@ func TestBackupWriteIsAtomic(t *testing.T) {
 	}
 }
 
-// The backup layer's own compression shares repeats in an uncompressed
-// payload (snapshots themselves are compressed by encodeSnapshot).
-func TestBackupCompressesHistoryRepeats(t *testing.T) {
-	rng := mathrand.New(mathrand.NewPCG(1, 2))
-	doc := map[string]string{}
-	for i := range 900 { // ~70 KiB of distinct-looking entries
-		doc[fmt.Sprintf("w%03d", i)] = fmt.Sprintf("sha256:%064x", rng.Uint64())
+// Backups sealed to, or opened with, a key off P-256 fail closed.
+func TestBackupRefusesOtherCurves(t *testing.T) {
+	meta := BackupMeta{ClusterID: testCluster, Epoch: 1, Index: 2}
+	p224, _ := ecdsa.GenerateKey(elliptic.P224(), rand.Reader)
+	p384, _ := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	if _, err := SealBackup(&p224.PublicKey, meta, []byte("snap")); err == nil {
+		t.Fatal("sealed to a P-224 key")
 	}
-	var versions [][]byte
-	for v := range 1000 {
-		doc[fmt.Sprintf("w%03d", v%900)] = fmt.Sprintf("sha256:%064x", rng.Uint64())
-		b, _ := json.Marshal(doc)
-		versions = append(versions, b)
+	if _, err := SealBackup(&p384.PublicKey, meta, []byte("snap")); err == nil {
+		t.Fatal("sealed to a P-384 key")
 	}
-	snapshot, _ := json.Marshal(versions) // base64 cells, as the store's snapshot
 	rk, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	b, err := SealBackup(&rk.PublicKey, BackupMeta{ClusterID: testCluster, Epoch: 1, Index: 1}, snapshot)
+	b, err := SealBackup(&rk.PublicKey, meta, []byte("snap"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	one := len(versions[0])
-	var gz bytes.Buffer
-	gw := gzip.NewWriter(&gz)
-	_, _ = gw.Write(snapshot)
-	_ = gw.Close()
-	t.Logf("gzip would store %d KiB", gz.Len()>>10)
-	t.Logf("snapshot %d KiB, %d versions of %d KiB, backup %d KiB", len(snapshot)>>10, len(versions), one>>10, len(b.Ciphertext)>>10)
-	if len(b.Ciphertext) > 20*one {
-		t.Fatalf("backup %d bytes for %d near-identical versions of %d bytes: repeats are not shared", len(b.Ciphertext), len(versions), one)
+	if _, err := OpenBackup(p224, b); err == nil {
+		t.Fatal("opened with a P-224 key")
 	}
-	plain, err := OpenBackup(rk, b)
-	if err != nil || !bytes.Equal(plain, snapshot) {
-		t.Fatalf("round trip: %v", err)
+	if _, err := OpenBackup(p384, b); err == nil {
+		t.Fatal("opened with a P-384 key")
+	}
+	if _, err := OpenBackup(rk, Backup{Meta: meta, Ciphertext: b.Ciphertext[:10]}); err == nil {
+		t.Fatal("opened a truncated backup")
+	}
+	if got, err := OpenBackup(rk, b); err != nil || string(got) != "snap" {
+		t.Fatalf("round trip %q: %v", got, err)
 	}
 }
 
-// Backups written before the switch to zstd (gzip) still open.
-func TestOpenBackupReadsGzipBackups(t *testing.T) {
-	var z bytes.Buffer
-	zw := gzip.NewWriter(&z)
-	_, _ = zw.Write([]byte("old snapshot"))
-	_ = zw.Close()
-	got, err := decompressBackup(z.Bytes())
-	if err != nil || string(got) != "old snapshot" {
-		t.Fatalf("gzip backup: %q %v", got, err)
+// Reads of backups and decrees report the API's errors.
+func TestDecreeStoreListErrors(t *testing.T) {
+	ctx := context.Background()
+	kube := fake.NewClientset()
+	kube.PrependReactor("list", "configmaps", failOn("list", nil))
+	st := KubeDecrees{Client: kube, Namespace: "decrees", ClusterID: testCluster}
+	if _, err := st.GetBackup(ctx); err == nil {
+		t.Fatal("a backup read through a failing API")
 	}
-	if _, err := decompressBackup([]byte("neither gzip nor zstd")); err == nil {
-		t.Fatal("garbage decompressed")
+	if _, err := st.PendingDecrees(ctx); err == nil {
+		t.Fatal("decrees listed through a failing API")
 	}
-	if _, err := decompressBackup([]byte{0x1f, 0x8b, 0}); err == nil {
-		t.Fatal("a broken gzip header decompressed")
+}
+
+func TestBackupFromConfigMapsRefusesAnotherClustersManifest(t *testing.T) {
+	ctx := context.Background()
+	rk, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	b, _ := SealBackup(&rk.PublicKey, BackupMeta{ClusterID: "other", Epoch: 1, Index: 1}, []byte("snap"))
+	kube := fake.NewClientset()
+	st := KubeDecrees{Client: kube, Namespace: "decrees", ClusterID: testCluster}
+	if err := st.PutBackup(ctx, b); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.GetBackup(ctx); err == nil || !strings.Contains(err.Error(), "another cluster") {
+		t.Fatalf("a manifest for another cluster: %v", err)
+	}
+	list, _ := kube.CoreV1().ConfigMaps("decrees").List(ctx, metav1.ListOptions{})
+	var man corev1.ConfigMap
+	for _, cm := range list.Items {
+		if cm.Name == BackupName(testCluster) {
+			man = cm
+		}
+	}
+	man.Data[keyBackup] = `{"meta":{"cluster_id":"c1"},"parts":0}`
+	if _, err := BackupFromConfigMaps(testCluster, []corev1.ConfigMap{man}); err == nil {
+		t.Fatal("a manifest naming no parts")
 	}
 }

@@ -1,5 +1,3 @@
-//go:build c8s_dev
-
 package cdsha
 
 import (
@@ -7,9 +5,9 @@ import (
 	"errors"
 )
 
-// MockAttestor is UNSAFE and exists only in c8s_dev builds. Its "evidence" is
-// an unsigned JSON claim, so anyone can forge it. It lets the protocol run in
-// a cluster without TEEs.
+// MockAttestor is UNSAFE: its "evidence" is an unsigned JSON claim, so
+// anyone can forge it. It lets the protocol run without TEEs: in tests, and
+// in c8s_dev builds, the only ones where NewAttestor offers it.
 type MockAttestor struct{ Measurement string }
 
 type mockEvidence struct {
@@ -32,10 +30,4 @@ func (MockAttestor) Verify(ev []byte) (Claims, error) {
 		return Claims{}, errors.New("mock evidence without measurement")
 	}
 	return Claims{Measurement: e.Measurement, ReportData: e.ReportData}, nil
-}
-
-func init() {
-	devAttestors["mock"] = func(o AttestorOptions) (Attestor, error) {
-		return MockAttestor{Measurement: o.MockMeasurement}, nil
-	}
 }

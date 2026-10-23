@@ -41,10 +41,7 @@ func TestReadyWaitsForTheSeats(t *testing.T) {
 	if early {
 		t.Fatal("a restarted voter was Ready as a non-voter while a seat was free")
 	}
-	if !c.leader().node.Status().SeatsFilled {
-		t.Fatal("leader does not report the seats filled")
-	}
-	if c.leader().node.Status().SeatsFilled && len(c.leader().node.Status().Voters) != 3 {
-		t.Fatal("seats filled with fewer voters than seats")
+	if st := c.leader().node.Status(); !st.SeatsFilled || len(st.Voters) != 3 {
+		t.Fatalf("leader reports seats filled %v with %d voters", st.SeatsFilled, len(st.Voters))
 	}
 }
