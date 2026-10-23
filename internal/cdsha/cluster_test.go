@@ -118,6 +118,7 @@ type cluster struct {
 	historyVersions int           // Config.HistoryVersions of every replica started
 	historyBytes    int64         // Config.HistoryBytes of every replica started
 	caValidity      time.Duration // Config.CAValidity of every replica started
+	secretLimits    [3]int        // secrets.NewMemoryStore limits of every replica started; zero: 64, 8, 4096
 }
 
 // clusterSeq gives every test cluster its own loopback range, so one
@@ -202,6 +203,9 @@ func (c *cluster) startWithControl(name, measurement string, wrap func(controlHa
 		c.t.Fatal(err)
 	}
 	mem := secrets.NewMemoryStore(64, 8, 4096)
+	if l := c.secretLimits; l != [3]int{} {
+		mem = secrets.NewMemoryStore(l[0], l[1], l[2])
+	}
 	led := sandboxledger.New(time.Hour, 100)
 	n, err := NewNode(Config{
 		ClusterID: testCluster, NodeName: name, Bind: fmt.Sprintf("%s:%d", ip, c.port), Advertise: fmt.Sprintf("%s:%d", ip, c.port),

@@ -157,6 +157,11 @@ func writeStoreError(w http.ResponseWriter, err error) {
 		httputil.WriteUnavailable(w, ErrUnavailable)
 		return
 	}
+	if errors.Is(err, ErrCapacity) {
+		slog.Warn("allowlist write refused: the replicated state is at its snapshot capacity", "err", err)
+		http.Error(w, err.Error(), http.StatusInsufficientStorage)
+		return
+	}
 	if storeFull(err) {
 		// The history keeps every document, so a store on a size-limited
 		// volume fills up; writes then fail until the operator acts.
@@ -206,7 +211,7 @@ func (a WriteAuthorizer) ReadAuthorized(w http.ResponseWriter, r *http.Request, 
 	}
 	if err := a(r, body); err != nil {
 		slog.Warn("write rejected", "method", r.Method, "path", r.URL.Path, "remote", r.RemoteAddr, "reason", err)
-		if errors.Is(err, ErrUnavailable) || storeFull(err) {
+		if errors.Is(err, ErrUnavailable) || errors.Is(err, ErrCapacity) || storeFull(err) {
 			// Spending the token is a write too; that failing is not a bad key.
 			writeStoreError(w, err)
 			return nil, false
