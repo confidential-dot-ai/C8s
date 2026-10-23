@@ -1248,6 +1248,49 @@ c8s verify https://app.example.com --mode attest-lb \
   --trust-operator --trust-operator-keys operator-keys.pem
 ```
 
+### Check who signed the leaf's allowlist
+
+CDS stamps each mesh leaf it issues with the digest of the allowlist it
+matched the pod against. `--operator-key` checks that an operator you trust
+signed that allowlist. It does not need a measured policy history or
+`--operator-pkey`:
+
+1. `verify` reads the stamped digest from the target's leaf.
+2. It fetches `<target>/allowlist/objects/sha256/<hex>` and
+   `.../signature`. A router proxies both to CDS.
+3. It checks the document hashes to the stamped digest
+   (`allowlist_digest_mismatch` otherwise).
+4. It checks the stored write token with `operatorauth.VerifyStored`, under
+   each `--operator-key`.
+5. It reports the signer's fingerprint as `allowlist signer:`
+   (`allowlist_signer` in JSON).
+
+Each `--operator-key` is a PEM file of one or more operator public keys, or a
+key fingerprint: `sha256:<hex>` (or bare `<hex>`) of the SHA-256 of the key's
+SPKI DER, the form `verify` prints for operator keys
+(`openssl pkey -pubin -outform DER < operator.pub | sha256sum`). The flag is
+repeatable. A fingerprint needs the key itself, so `verify` looks it up in the
+target's `GET /operator-keys`. A router does not serve that path, so pass the
+PEM file when the target is a router.
+
+| Failure | Cause |
+|---|---|
+| `allowlist_unstamped` | The evidence carries no leaf, or the leaf's stamp cannot be read. |
+| `allowlist_fetch_failed` | The document or its signature could not be fetched. A fetch that times out or cannot connect exits 3. |
+| `allowlist_digest_mismatch` | The served document does not hash to the stamped digest. |
+| `allowlist_unsigned` | The document has no stored write token. Only a document uploaded whole with a signed `PUT /allowlist` has one. A per-workload edit gives an unsigned document. |
+| `allowlist_signer_not_pinned` | The token does not verify under any `--operator-key`, or no fingerprint resolved to a key. |
+| `allowlist_signature_invalid` | The token is malformed, or a pinned key signed it but it does not bind `PUT /allowlist` and this document. |
+
+A leaf without a stamp leaves the verdict partial. The stamp is CA-vouched, so
+without `--mesh-ca` the verdict also stays partial. `--operator-key` needs a
+live target; it is refused with `--from-file`.
+
+```sh
+c8s verify https://app.example.com --mode attest-pq \
+  --route-digest <hex> --mesh-ca mesh-ca.pem --operator-key operator.pub
+```
+
 ### Complete measured identity policies
 
 Image policy files preserve each image measurement, its TDX RTMR tuple and

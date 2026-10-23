@@ -140,6 +140,7 @@ type config struct {
 	trustOperator      bool
 	trustOperatorKeys  string
 	fetchAllowlists    string
+	operatorKey        []string
 
 	output       string
 	showEvidence bool
@@ -259,6 +260,7 @@ responder chose).`,
 	f.BoolVar(&cfg.trustOperator, "trust-operator", false, "accept every policy in the node's replayed history, and the policy the leaf was issued under, only when it carries a valid operator signature: each one is fetched from <target>/allowlist/objects/sha256/<hex>, re-hashed, and its stored write token checked against --trust-operator-keys. Only a document uploaded whole with a signed PUT /allowlist carries a token; a per-workload edit yields an unsigned policy. The leaf's stamp counts as proven only with --mesh-ca; without it the verdict stays partial. Requires --operator-pkey or an --image-policy-file image pinning an approver_key, and --trust-operator-keys")
 	f.StringVar(&cfg.trustOperatorKeys, "trust-operator-keys", "", "PEM bundle of the operator public keys --trust-operator accepts signatures from. Requires --trust-operator; --operator-keys does not feed it")
 	f.StringVar(&cfg.fetchAllowlists, "fetch-allowlists", "", "directory to save each policy in the node's replayed history to, as <hex>.json, after checking it hashes to its digest. A failed fetch or write fails the verdict (allowlist_fetch_failed). Requires --operator-pkey or an --image-policy-file image pinning an approver_key")
+	f.StringSliceVar(&cfg.operatorKey, "operator-key", nil, "operator public key the allowlist the target's leaf is stamped with must be signed by: a PEM file of one or more keys, or a key fingerprint [sha256:]<hex of SHA-256 of its SPKI DER> (repeatable / comma-separated). verify fetches <target>/allowlist/objects/sha256/<stamped hex> and its /signature, checks the document hashes to the stamped digest and the stored write token verifies under one of these keys, and reports the signer's fingerprint. A fingerprint is resolved against the target's /operator-keys, which a router does not serve: pass the PEM there. The stamp counts as proven only with --mesh-ca; without it the verdict stays partial")
 	f.StringVar(&cfg.expectedRDHex, "expected-report-data", "", "hex REPORTDATA / TPM-nonce anchor override for bare evidence files (1–64 bytes, exactly as bound by the producer); refused in --mode attest-pq and attest-lb")
 
 	f.StringVarP(&cfg.output, "output", "o", "text", "output format: text or json")
@@ -425,6 +427,7 @@ func verifyEvidence(ctx context.Context, cfg config, plan *verifyPlan, ev *evide
 	// The history check gets its own --timeout budget, not what the
 	// verification left of it.
 	unreachable := checkPolicyHistory(ctx, &oc, cfg, ev, plan.trustKeys)
+	unreachable = checkAllowlistSigner(ctx, &oc, cfg, ev, plan.signers) || unreachable
 	// The route note describes a check that passed, so a failed verdict
 	// carries none.
 	if ev.route != nil && oc.Error == "" {
@@ -573,6 +576,8 @@ type verifyPlan struct {
 	routes *routeCheck
 	// trustKeys is the parsed --trust-operator-keys bundle, nil when unset.
 	trustKeys []*ecdsa.PublicKey
+	// signers is the parsed --operator-key set, nil when unset.
+	signers *signerPins
 }
 
 // servedSet pairs the policy the target must serve and enforce at
@@ -720,6 +725,10 @@ func buildPolicy(cfg config) (*verifyPlan, error) {
 	if err != nil {
 		return nil, err
 	}
+	signers, err := parseSignerPins(cfg)
+	if err != nil {
+		return nil, err
+	}
 
 	return &verifyPlan{
 		// RTMRs is still set: it is what enforces the pin if this policy is
@@ -738,6 +747,7 @@ func buildPolicy(cfg config) (*verifyPlan, error) {
 		served:       served,
 		routes:       routes,
 		trustKeys:    trustKeys,
+		signers:      signers,
 	}, nil
 }
 
@@ -1230,6 +1240,12 @@ type Outcome struct {
 	// --pin-policy and --trust-operator at partial. True does not mean the
 	// stamp was authenticated: that takes --mesh-ca (see WorkloadNote).
 	LeafStamped *bool `json:"leaf_stamped,omitempty"`
+
+	// AllowlistSigner is the hex SHA-256 SPKI fingerprint of the --operator-key
+	// whose stored write token signs the allowlist the leaf is stamped with.
+	// --operator-key failures land in Error (allowlist_unsigned,
+	// allowlist_signer_not_pinned, allowlist_signature_invalid, ...).
+	AllowlistSigner string `json:"allowlist_signer,omitempty"`
 }
 
 // applySandboxPolicy surfaces the leaf's sandbox ID and enforces --sandbox-id /
@@ -1883,6 +1899,9 @@ func renderText(cfg config, oc Outcome, out io.Writer) {
 	if oc.Workload != "" {
 		fmt.Fprintf(out, "  workload:     %s  (allowlist version %s, digest %s)\n", oc.Workload, oc.WorkloadAllowlistVersion, oc.WorkloadAllowlistDigest)
 		fmt.Fprintf(out, "                %s\n", oc.WorkloadNote)
+	}
+	if oc.AllowlistSigner != "" {
+		fmt.Fprintf(out, "  allowlist signer: sha256(SPKI DER):%s (the --operator-key that signed the leaf's allowlist)\n", oc.AllowlistSigner)
 	}
 	if len(oc.OperatorKeys) > 0 {
 		label := "operator keys (allowlist writes; CDS-reported config, NOT covered by the measurement):"
