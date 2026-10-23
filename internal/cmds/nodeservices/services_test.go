@@ -564,8 +564,12 @@ func TestPrepareHACluster(t *testing.T) {
 	}
 	t.Run("server", func(t *testing.T) {
 		root := haRoot(t, 2)
+		writeInput(t, root, PublicDir+"/"+cdsHAFile, []byte("{}"))
 		if err := Prepare(root, haDoc(launchconfig.Server)); err != nil {
 			t.Fatal(err)
+		}
+		if _, err := os.Stat(filepath.Join(root, PublicDir, cdsHAFile)); !os.IsNotExist(err) {
+			t.Fatal("a server kept a stale cds-ha.json")
 		}
 		mode, _ := os.ReadFile(filepath.Join(root, PublicDir, CDSModeFile))
 		if string(mode) != "ha\n" {

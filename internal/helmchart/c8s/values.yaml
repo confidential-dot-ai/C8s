@@ -204,7 +204,6 @@ cds:
   ## ConfigMaps in decreeNamespace.
   ha:
     enabled: false
-    replicas: 3
     peerPort: 9443
     decreeNamespace: c8s-cds-decrees
     ## HA replicas run alone on dedicated cds nodes (sized for ~8 GiB), so they

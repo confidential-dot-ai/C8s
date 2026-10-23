@@ -41,6 +41,20 @@ func writePEM(t *testing.T, typ string, der []byte) string {
 	return p
 }
 
+// testKeyPEM returns a P-256 key and its PEM public key.
+func testKeyPEM(t *testing.T) (*ecdsa.PrivateKey, []byte) {
+	t.Helper()
+	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.MarshalPKIXPublicKey(&k.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return k, pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})
+}
+
 func runHA(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 	cmd := newHACmd()
@@ -138,13 +152,17 @@ func TestHAStatusCLI(t *testing.T) {
 	b := serve(cdsha.Status{Epoch: 2, CAFingerprint: "aa", Serving: true}, http.StatusOK)
 	stale := serve(cdsha.Status{Epoch: 1, CAFingerprint: "bb", Serving: true}, http.StatusOK)
 	broken := serve(cdsha.Status{}, http.StatusInternalServerError)
-	if out, err := runHA(t, "status", a.URL, b.URL); err != nil || !strings.Contains(out, "epoch=2") {
+	if out, err := runHA(t, "status", "--insecure", a.URL, b.URL); err != nil || !strings.Contains(out, "epoch=2") {
 		t.Fatalf("agreeing replicas: %v %q", err, out)
 	}
-	if _, err := runHA(t, "status", a.URL, stale.URL); err == nil {
+	// A replica serves armTLS: plaintext is refused unless asked for.
+	if out, err := runHA(t, "status", a.URL); err == nil || !strings.Contains(out, "refusing plaintext") {
+		t.Fatalf("plaintext status without --insecure: %v %q", err, out)
+	}
+	if _, err := runHA(t, "status", "--insecure", a.URL, stale.URL); err == nil {
 		t.Fatal("diverging replicas reported as healthy")
 	}
-	if out, err := runHA(t, "status", a.URL, broken.URL); err == nil || !strings.Contains(out, "ERROR") {
+	if out, err := runHA(t, "status", "--insecure", a.URL, broken.URL); err == nil || !strings.Contains(out, "ERROR") {
 		t.Fatalf("unreachable replica: %v %q", err, out)
 	}
 	if err := reportDivergence([]cdsha.Status{{Epoch: 1, CAFingerprint: "a"}}, 1); err == nil {
@@ -260,7 +278,7 @@ func TestHAHandlersBeforeJoin(t *testing.T) {
 		t.Fatal("a replica that has not joined serves key material")
 	}
 	w := httptest.NewRecorder()
-	haStatus(node)(w, httptest.NewRequest(http.MethodGet, "/ha/status", nil))
+	serveJSON(node.Status)(w, httptest.NewRequest(http.MethodGet, "/ha/status", nil))
 	var st cdsha.Status
 	if err := json.NewDecoder(w.Body).Decode(&st); err != nil || st.Serving || st.Joined {
 		t.Fatalf("status %+v: %v", st, err)
@@ -288,46 +306,52 @@ func TestHAHandlersBeforeJoin(t *testing.T) {
 	}
 }
 
-// newHANode and haStart wire the flags; errors surface before anything serves.
+// newHANode and haStart wire the flags: the base config builds a replica, and
+// each missing or bad input fails with its own error before anything serves.
 func TestHAStartWiring(t *testing.T) {
-	orig := newInClusterKubeClientset
-	t.Cleanup(func() { newInClusterKubeClientset = orig })
-	pub := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: func() []byte {
-		k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-		der, _ := x509.MarshalPKIXPublicKey(&k.PublicKey)
-		return der
-	}()})
+	origKube, origAtt := newInClusterKubeClientset, newHAAttestor
+	t.Cleanup(func() { newInClusterKubeClientset, newHAAttestor = origKube, origAtt })
+	newHAAttestor = func(name string, o cdsha.AttestorOptions) (cdsha.Attestor, error) {
+		if name == "fake" {
+			return fakeAttestor{"m1"}, nil
+		}
+		return cdsha.NewAttestor(name, o)
+	}
 	al, _ := allowlist.OpenInMemory()
 	defer al.Close()
 	st := haStores{allowlist: &al, secrets: secrets.NewMemoryStore(4, 2, 64), ledger: sandboxledger.New(time.Hour, 4)}
-	base := config{attestationApiURL: "http://127.0.0.1:1", requestTimeout: time.Second, ha: haConfig{
-		clusterID: "c1", decreeNS: "ns", peersDNS: "peers.invalid", advertiseIP: "127.0.0.1", port: 0, nodeName: "n0", attestor: "node",
+	_, pub := testKeyPEM(t)
+	base := config{requestTimeout: time.Second, ha: haConfig{
+		clusterID: "c1", decreeNS: "ns", peersDNS: "peers.invalid", advertiseIP: "127.0.0.1", nodeName: "n0", attestor: "fake",
 		pins: []string{"m1"}, operatorKeyPEM: pub, seats: 3, timing: cdsha.DefaultTiming}}
-	for name, mutate := range map[string]func(c *config){
-		"no peers dns":     func(c *config) { c.ha.peersDNS = "" },
-		"no node name":     func(c *config) { c.ha.nodeName = "" },
-		"unknown attestor": func(c *config) { c.ha.attestor = "nope" },
-		"no operator key":  func(c *config) { c.ha.operatorKeyPEM = nil },
-		"no kube client": func(c *config) {
+	for name, c := range map[string]struct {
+		mutate func(c *config)
+		want   string // "" builds the replica
+	}{
+		"base":             {func(*config) {}, ""},
+		"static peers":     {func(c *config) { c.ha.peersDNS, c.ha.peers = "", []string{"127.0.0.2:1"} }, ""},
+		"no peers":         {func(c *config) { c.ha.peersDNS = "" }, "are required with --ha-cluster-id"},
+		"no node name":     {func(c *config) { c.ha.nodeName = "" }, "are required with --ha-cluster-id"},
+		"unknown attestor": {func(c *config) { c.ha.attestor = "nope" }, `attestor "nope" not available`},
+		"no operator key":  {func(c *config) { c.ha.operatorKeyPEM = nil }, "--ha-operator-key is required"},
+		"no kube client": {func(*config) {
 			newInClusterKubeClientset = func() (kubernetes.Interface, error) { return nil, errors.New("no cluster") }
-		},
-		"attestation-api down": func(c *config) {},
+		}, "no cluster"},
+		"no advertise address": {func(c *config) { c.ha.advertiseIP = "" }, "--ha-advertise-ip"},
+		"recovery key not PEM": {func(c *config) { c.ha.recoveryKeyPEM = []byte("not pem") }, "recovery key: no PEM block"},
 	} {
 		newInClusterKubeClientset = func() (kubernetes.Interface, error) { return fake.NewClientset(), nil }
-		c := base
-		mutate(&c)
-		if _, err := newHANode(c, st); err == nil {
-			t.Errorf("%s: replica built", name)
+		cfg := base
+		c.mutate(&cfg)
+		_, err := newHANode(cfg, st)
+		if c.want == "" && err != nil {
+			t.Errorf("%s: %v", name, err)
+		} else if c.want != "" && (err == nil || !strings.Contains(err.Error(), c.want)) {
+			t.Errorf("%s: got %v, want %q", name, err, c.want)
 		}
 	}
-	c := base
-	c.ha.attestor = "nope"
-	if _, err := haStart(context.Background(), c, st, nil); err == nil {
-		t.Fatal("haStart built a replica with an unknown attestor")
-	}
-	c = config{ha: haConfig{configFile: filepath.Join(t.TempDir(), "none")}}
-	if _, err := haStart(context.Background(), c, st, nil); err == nil {
-		t.Fatal("haStart without its --ha-config file")
+	if _, err := haStart(context.Background(), config{ha: haConfig{configFile: filepath.Join(t.TempDir(), "none")}}, st, nil); err == nil || !strings.Contains(err.Error(), "--ha-config") {
+		t.Fatalf("haStart without its --ha-config file: %v", err)
 	}
 	if n, err := haStart(context.Background(), config{}, st, nil); err != nil || n != nil {
 		t.Fatalf("singleton: %v", err)
@@ -418,27 +442,28 @@ func TestHARecoverCLIErrors(t *testing.T) {
 		return cmd.ExecuteContext(context.Background())
 	}
 	none := filepath.Join(dir, "none")
-	for name, args := range map[string][]string{
-		"missing backup file": {"--backup-file", none, "--recovery-key", keyPath, "--decree-key", keyPath},
-		"garbage backup file": {"--backup-file", garbage, "--recovery-key", keyPath, "--decree-key", keyPath},
-		"no backup in file":   {"--backup-file", empty, "--recovery-key", keyPath, "--decree-key", keyPath},
-		"no recovery key":     {"--backup-file", good, "--recovery-key", none, "--decree-key", keyPath},
-		"wrong recovery key": {"--backup-file", good, "--recovery-key", writePEM(t, "EC PRIVATE KEY", func() []byte {
-			o, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-			d, _ := x509.MarshalECPrivateKey(o)
-			return d
-		}()), "--decree-key", keyPath},
-		"no decree key":  {"--backup-file", good, "--recovery-key", keyPath, "--decree-key", none},
-		"nobody answers": {"--backup-file", good, "--recovery-key", keyPath, "--decree-key", keyPath},
+	other, _ := testKeyPEM(t)
+	otherDER, _ := x509.MarshalECPrivateKey(other)
+	for name, c := range map[string]struct {
+		args []string
+		want string
+	}{
+		"missing backup file": {[]string{"--backup-file", none, "--recovery-key", keyPath, "--decree-key", keyPath}, "no such file"},
+		"garbage backup file": {[]string{"--backup-file", garbage, "--recovery-key", keyPath, "--decree-key", keyPath}, "--backup-file"},
+		"no backup in file":   {[]string{"--backup-file", empty, "--recovery-key", keyPath, "--decree-key", keyPath}, "no backup manifest"},
+		"no recovery key":     {[]string{"--backup-file", good, "--recovery-key", none, "--decree-key", keyPath}, "recovery key: read"},
+		"wrong recovery key":  {[]string{"--backup-file", good, "--recovery-key", writePEM(t, "EC PRIVATE KEY", otherDER), "--decree-key", keyPath}, "recovery key"},
+		"no decree key":       {[]string{"--backup-file", good, "--recovery-key", keyPath, "--decree-key", none}, "--decree-key"},
+		"nobody answers":      {[]string{"--backup-file", good, "--recovery-key", keyPath, "--decree-key", keyPath}, "no answer"},
 	} {
-		if err := run(args...); err == nil {
-			t.Errorf("%s: recover succeeded", name)
+		if err := run(c.args...); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: got %v, want %q", name, err, c.want)
 		}
 	}
 }
 
 // The HA flags and cds-ha.json fill the replica's recovery key and seats.
-func TestHARecoveryKeyAndSeatsWiring(t *testing.T) {
+func TestHARecoveryKeyAndSeatsFlags(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "rec.pem")
 	_ = os.WriteFile(p, []byte("PEM"), 0o600)
@@ -458,36 +483,6 @@ func TestHARecoveryKeyAndSeatsWiring(t *testing.T) {
 	hc := haConfig{configFile: cf, seats: 3}
 	if err := loadHAConfigFile(&hc); err != nil || hc.seats != 5 || string(hc.recoveryKeyPEM) != "REC" {
 		t.Fatalf("cds-ha.json: %v %+v", err, hc)
-	}
-	al, _ := allowlist.OpenInMemory()
-	defer al.Close()
-	st := haStores{allowlist: &al, secrets: secrets.NewMemoryStore(4, 2, 64), ledger: sandboxledger.New(time.Hour, 4)}
-	orig := newInClusterKubeClientset
-	t.Cleanup(func() { newInClusterKubeClientset = orig })
-	newInClusterKubeClientset = func() (kubernetes.Interface, error) { return fake.NewClientset(), nil }
-	base := config{attestationApiURL: "http://127.0.0.1:1", requestTimeout: time.Second, ha: haConfig{
-		clusterID: "c1", decreeNS: "ns", peersDNS: "p.invalid", port: 0, nodeName: "n0", attestor: "node",
-		pins: []string{"m1"}, operatorKeyPEM: pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: func() []byte {
-			k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-			d, _ := x509.MarshalPKIXPublicKey(&k.PublicKey)
-			return d
-		}()}), seats: 3, timing: cdsha.DefaultTiming}}
-	origAtt := newHAAttestor
-	t.Cleanup(func() { newHAAttestor = origAtt })
-	newHAAttestor = func(string, cdsha.AttestorOptions) (cdsha.Attestor, error) { return fakeAttestor{"m1"}, nil }
-	noIP := base
-	if _, err := newHANode(noIP, st); err == nil {
-		t.Fatal("a replica without an advertise address")
-	}
-	badRec := base
-	badRec.ha.advertiseIP, badRec.ha.recoveryKeyPEM = "127.0.0.1", []byte("not pem")
-	if _, err := newHANode(badRec, st); err == nil {
-		t.Fatal("a recovery key that is not PEM")
-	}
-	staticPeers := base
-	staticPeers.ha.advertiseIP, staticPeers.ha.peersDNS, staticPeers.ha.peers = "127.0.0.1", "", []string{"127.0.0.2:1"}
-	if _, err := newHANode(staticPeers, st); err != nil {
-		t.Fatalf("static peers: %v", err)
 	}
 }
 
@@ -552,5 +547,48 @@ func TestPrintDecrees(t *testing.T) {
 	}
 	if err := printDecrees(io.Discard, records, filepath.Join(t.TempDir(), "absent"), false); err == nil {
 		t.Fatal("absent key file accepted")
+	}
+}
+
+// decrees reads the applied record from a replica and refuses what it cannot
+// trust or decode.
+func TestHADecreesCLI(t *testing.T) {
+	k, _ := testKeyPEM(t)
+	h := strings.Repeat("a", 96)
+	sd, err := cdsha.SignDecree(cdsha.Decree{ClusterID: "c1", IntentID: "g1", Kind: cdsha.Genesis, BootstrapNode: "n0",
+		Images: []cdsha.DecreeImage{{MRTD: h, RTMR1: h, RTMR2: h}}}, k)
+	if err != nil {
+		t.Fatal(err)
+	}
+	records := []cdsha.DecreeRecord{{Decree: sd, AtMS: 1, Epoch: 1}}
+	serve := func(code int, body string) string {
+		s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/ha/decrees" {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			w.WriteHeader(code)
+			_, _ = io.WriteString(w, body)
+		}))
+		t.Cleanup(s.Close)
+		return s.URL
+	}
+	raw, _ := json.Marshal(records)
+	good := serve(http.StatusOK, string(raw))
+	out, err := runHA(t, "decrees", "--url", good+"/", "--insecure")
+	if err != nil || !strings.Contains(out, "Genesis") || !strings.Contains(out, "images=1") || !strings.Contains(out, "node=n0") {
+		t.Fatalf("decrees: %v %q", err, out)
+	}
+	if _, err := runHA(t, "decrees", "--url", good); err == nil {
+		t.Fatal("plaintext http without --insecure accepted")
+	}
+	for name, url := range map[string]string{
+		"server error":  serve(http.StatusInternalServerError, "boom"),
+		"not JSON":      serve(http.StatusOK, "{"),
+		"nobody serves": "http://127.0.0.1:1",
+	} {
+		if _, err := runHA(t, "decrees", "--url", url, "--insecure"); err == nil {
+			t.Errorf("%s: decrees succeeded", name)
+		}
 	}
 }

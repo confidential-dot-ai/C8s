@@ -78,7 +78,6 @@
           "additionalProperties": false,
           "properties": {
             "enabled": {},
-            "replicas": {},
             "peerPort": {},
             "decreeNamespace": {},
             "goMemLimit": {},

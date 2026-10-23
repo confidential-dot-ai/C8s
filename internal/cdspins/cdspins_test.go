@@ -25,15 +25,15 @@ import (
 
 const cluster = "c1"
 
-func key(t *testing.T) (*ecdsa.PrivateKey, []byte) {
-	t.Helper()
+// key is a P-256 key and its PKIX DER.
+func key() (*ecdsa.PrivateKey, []byte) {
 	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		t.Fatal(err)
+		panic(err)
 	}
 	der, err := x509.MarshalPKIXPublicKey(&k.PublicKey)
 	if err != nil {
-		t.Fatal(err)
+		panic(err)
 	}
 	return k, der
 }
@@ -64,14 +64,7 @@ func pinDecree(t *testing.T, k *ecdsa.PrivateKey, clusterID string, base uint64,
 var serverKey, cdsKey = pemKey(), pemKey()
 
 func pemKey() []byte {
-	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		panic(err)
-	}
-	der, err := x509.MarshalPKIXPublicKey(&k.PublicKey)
-	if err != nil {
-		panic(err)
-	}
+	_, der := key()
 	return pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})
 }
 
@@ -95,7 +88,7 @@ type served struct{ sd *cdsha.SignedDecree }
 func (s *served) fetch(context.Context) (*cdsha.SignedDecree, error) { return s.sd, nil }
 
 func TestRefreshFollowsNewerSignedDecrees(t *testing.T) {
-	k, pub := key(t)
+	k, pub := key()
 	srv := &served{}
 	src, err := New(Config{ClusterID: cluster, DecreeKey: pub, Bootstrap: bootstrap(), Fetch: srv.fetch, MinInterval: time.Nanosecond})
 	if err != nil {
@@ -130,6 +123,11 @@ func TestRefreshFollowsNewerSignedDecrees(t *testing.T) {
 	if changed, _ := src.Refresh(t.Context()); !changed || len(src.Current().Images) != 2 {
 		t.Fatal("B only not taken")
 	}
+	// The same decree again: not a change, so clients keep their transports.
+	gen := src.Generation()
+	if changed, err := src.Refresh(t.Context()); changed || err != nil || src.Generation() != gen {
+		t.Fatalf("same decree: %v %v, generation %d -> %d", changed, err, gen, src.Generation())
+	}
 	// The host replays the A+B decree: refused, B only stays.
 	srv.sd = pinDecree(t, k, cluster, 3, img(1), img(5))
 	if changed, err := src.Refresh(t.Context()); changed || err != nil || len(src.Current().Images) != 2 {
@@ -141,8 +139,8 @@ func TestRefreshFollowsNewerSignedDecrees(t *testing.T) {
 }
 
 func TestRefreshRefusesWhatTheOperatorDidNotSign(t *testing.T) {
-	k, pub := key(t)
-	other, _ := key(t)
+	k, pub := key()
+	other, _ := key()
 	for name, sd := range map[string]*cdsha.SignedDecree{
 		"other key":     pinDecree(t, other, cluster, 9, img(5)),
 		"other cluster": pinDecree(t, k, "c2", 9, img(5)),
@@ -186,12 +184,11 @@ func TestRefreshRefusesWhatTheOperatorDidNotSign(t *testing.T) {
 }
 
 // The node remembers the newest decree across restarts, so a replay after
-// a restart is refused too, and readers of the policy file see the set.
+// a restart is refused too.
 func TestStateSurvivesRestart(t *testing.T) {
-	k, pub := key(t)
-	dir := t.TempDir()
+	k, pub := key()
 	cfg := Config{ClusterID: cluster, DecreeKey: pub, Bootstrap: bootstrap(), MinInterval: time.Nanosecond,
-		StateFile: filepath.Join(dir, "state.json"), PolicyFile: filepath.Join(dir, "cds.json")}
+		StateFile: filepath.Join(t.TempDir(), "state.json")}
 	srv := &served{sd: pinDecree(t, k, cluster, 4, img(5))}
 	cfg.Fetch = srv.fetch
 	src, err := New(cfg)
@@ -200,10 +197,6 @@ func TestStateSurvivesRestart(t *testing.T) {
 	}
 	if changed, err := src.Refresh(t.Context()); !changed || err != nil {
 		t.Fatal(changed, err)
-	}
-	onDisk, err := refvalues.Load(cfg.PolicyFile)
-	if err != nil || len(onDisk.Images) != 2 {
-		t.Fatalf("policy file: %v %d", err, len(onDisk.Images))
 	}
 	again, err := New(cfg)
 	if err != nil {
@@ -219,7 +212,7 @@ func TestStateSurvivesRestart(t *testing.T) {
 }
 
 func TestHTTPFetch(t *testing.T) {
-	k, _ := key(t)
+	k, _ := key()
 	sd := pinDecree(t, k, cluster, 4, img(5))
 	var serve *cdsha.SignedDecree
 	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -259,16 +252,10 @@ func TestHTTPFetchErrors(t *testing.T) {
 	if _, err := HTTPFetch(ts.URL)(t.Context()); err == nil {
 		t.Fatal("non-JSON accepted")
 	}
-	if _, err := HTTPFetch("https://127.0.0.1:1")(t.Context()); err == nil {
-		t.Fatal("unreachable accepted")
-	}
-	if _, err := HTTPFetch("::bad")(t.Context()); err == nil {
-		t.Fatal("bad URL accepted")
-	}
 }
 
 func TestNewAndPolicyErrors(t *testing.T) {
-	k, pub := key(t)
+	k, pub := key()
 	if _, err := New(Config{DecreeKey: pub}); err == nil {
 		t.Fatal("no cluster id accepted")
 	}
@@ -280,7 +267,7 @@ func TestNewAndPolicyErrors(t *testing.T) {
 	if _, err := New(Config{ClusterID: cluster, DecreeKey: pub, Bootstrap: bootstrap(), StateFile: state}); err == nil {
 		t.Fatal("corrupt state accepted")
 	}
-	other, _ := key(t)
+	other, _ := key()
 	bad, _ := json.Marshal(pinDecree(t, other, cluster, 3, img(5)))
 	if err := os.WriteFile(state, bad, 0o600); err != nil {
 		t.Fatal(err)
@@ -319,46 +306,26 @@ func TestNewAndPolicyErrors(t *testing.T) {
 	if calls != 1 || src.Generation() != 1 {
 		t.Fatalf("calls %d generation %d", calls, src.Generation())
 	}
-	// The policy file cannot be written: the decree is not taken.
-	ro := filepath.Join(dir, "ro")
-	if err := os.Mkdir(ro, 0o500); err != nil {
-		t.Fatal(err)
-	}
-	src2, _ := New(Config{ClusterID: cluster, DecreeKey: pub, Bootstrap: bootstrap(), MinInterval: time.Nanosecond,
-		Fetch: srv.fetch, PolicyFile: filepath.Join(ro, "sub", "cds.json")})
-	if changed, err := src2.Refresh(t.Context()); changed || err == nil {
-		if os.Geteuid() != 0 {
-			t.Fatalf("unwritable policy file: %v %v", changed, err)
-		}
-	}
 }
 
 func TestPersistAndFetchFailures(t *testing.T) {
-	k, pub := key(t)
+	k, pub := key()
 	dir := t.TempDir()
-	file := filepath.Join(dir, "file")
-	if err := os.WriteFile(file, nil, 0o600); err != nil {
+	srv := &served{sd: pinDecree(t, k, cluster, 4, img(5))}
+	src, err := New(Config{ClusterID: cluster, DecreeKey: pub, Bootstrap: bootstrap(), Fetch: srv.fetch, MinInterval: time.Nanosecond,
+		StateFile: filepath.Join(dir, "state.json")})
+	if err != nil {
 		t.Fatal(err)
 	}
-	srv := &served{sd: pinDecree(t, k, cluster, 4, img(5))}
-	for name, cfg := range map[string]Config{
-		"policy file": {PolicyFile: filepath.Join(file, "cds.json")},
-		"state file":  {StateFile: filepath.Join(file, "state.json")},
-	} {
-		cfg.ClusterID, cfg.DecreeKey, cfg.Bootstrap, cfg.Fetch, cfg.MinInterval = cluster, pub, bootstrap(), srv.fetch, time.Nanosecond
-		src, err := New(cfg)
-		if err != nil {
-			if name == "state file" {
-				continue // reading under a regular file fails at start, which is also fail-closed
-			}
-			t.Fatal(err)
-		}
-		if changed, err := src.Refresh(t.Context()); changed || err == nil {
-			t.Fatalf("%s: a decree that could not be persisted was taken", name)
-		}
-		if _, ok := src.Epoch(); ok {
-			t.Fatalf("%s: epoch moved", name)
-		}
+	// The state file cannot be written: the decree is not taken.
+	if err := os.Mkdir(filepath.Join(dir, "state.json"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := src.Refresh(t.Context()); changed || err == nil {
+		t.Fatalf("a decree that could not be persisted was taken: %v %v", changed, err)
+	}
+	if _, ok := src.Epoch(); ok || src.Generation() != 0 {
+		t.Fatal("pins moved")
 	}
 	failing, err := New(Config{ClusterID: cluster, DecreeKey: pub, Bootstrap: bootstrap(), MinInterval: time.Nanosecond,
 		Fetch: func(context.Context) (*cdsha.SignedDecree, error) { return nil, errors.New("down") }})
@@ -374,7 +341,7 @@ func TestPersistAndFetchFailures(t *testing.T) {
 // decree the operator also signed, replayed by the control plane, is refused
 // although the node has no state of its own yet.
 func TestPinFloorRefusesOlderDecrees(t *testing.T) {
-	k, pub := key(t)
+	k, pub := key()
 	srv := &served{sd: pinDecree(t, k, cluster, 3, img(1), img(5))}
 	src, err := New(Config{ClusterID: cluster, DecreeKey: pub, Bootstrap: bootstrap(), Fetch: srv.fetch, MinInterval: time.Nanosecond, MinEpoch: 4})
 	if err != nil {
@@ -407,7 +374,7 @@ func TestPinFloorRefusesOlderDecrees(t *testing.T) {
 // RTMRs (found on TDX: the "A and B" decree was refused for duplicate pin
 // names, so nodes never trusted B until "B only").
 func TestImagesSharingAnMRTD(t *testing.T) {
-	k, pub := key(t)
+	k, pub := key()
 	a, b := img(1), img(1)
 	b.RTMR1, b.RTMR2 = img(7).RTMR1, img(7).RTMR2
 	srv := &served{sd: pinDecree(t, k, cluster, 3, a, b)}

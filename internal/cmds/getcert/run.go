@@ -215,14 +215,17 @@ func cdsHTTPClient(cfg config) (*http.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	client, err := armtls.NewVerifyingHTTPClient(pins, cfg.AttestationApiURL)
-	if mounted, merr := cmdsutil.NodeMountsPins(workloadclaims.CDSPinsPath); merr == nil && mounted {
-		// The node's policy follows the operator's CDS pin decrees; re-read
-		// it on a pin miss, so renewals continue across a CDS image rollout.
-		var node *cmdsutil.NodePins
-		if node, err = cmdsutil.NewNodePins(workloadclaims.CDSPinsPath); err == nil {
-			client, err = armtls.NewRefreshingHTTPClient(node, cfg.AttestationApiURL)
-		}
+	// The node's policy follows the operator's CDS pin decrees; re-read it
+	// on a pin miss, so renewals continue across a CDS image rollout.
+	node, err := cmdsutil.FollowNodePins(nodePinsPath)
+	if err != nil {
+		return nil, err
+	}
+	var client *http.Client
+	if node != nil {
+		client, err = armtls.NewRefreshingHTTPClient(node, cfg.AttestationApiURL)
+	} else {
+		client, err = armtls.NewVerifyingHTTPClient(pins, cfg.AttestationApiURL)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("cds armTLS client: %w", err)
@@ -230,8 +233,12 @@ func cdsHTTPClient(cfg config) (*http.Client, error) {
 	return client, nil
 }
 
+// nodePinsPath is where the enforcer mounts the node's CDS policy; a var so
+// tests can point it elsewhere.
+var nodePinsPath = workloadclaims.CDSPinsPath
+
 func cdsPins(cfg config) (armtls.Pins, error) {
-	policy, fromNode, err := cmdsutil.ResolveCDSPins(workloadclaims.CDSPinsPath,
+	policy, fromNode, err := cmdsutil.ResolveCDSPins(nodePinsPath,
 		cmdsutil.ImagePolicySource{
 			File: cfg.MeasurementsConfig,
 			JSON: cfg.MeasurementsConfigJSON,
@@ -878,7 +885,7 @@ func validateConfig(cfg config) error {
 	if err := cmdsutil.ValidateAttestationAPIURL("--attestation-api-url", cfg.AttestationApiURL); err != nil {
 		return err
 	}
-	if err := cmdsutil.RequireNodeVerifier(workloadclaims.CDSPinsPath, workloadclaims.AttestationAPISocket, cfg.AttestationApiURL); err != nil {
+	if err := cmdsutil.RequireNodeVerifier(nodePinsPath, workloadclaims.AttestationAPISocket, cfg.AttestationApiURL); err != nil {
 		return err
 	}
 	if cfg.SAN != "" {

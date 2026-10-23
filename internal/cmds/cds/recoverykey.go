@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/confidential-dot-ai/c8s/internal/shamir"
+	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 )
 
 // RecoveryKeyShare is one custodian's share of the CDS recovery key: the key
@@ -120,21 +121,16 @@ func loadRecoveryShares(paths []string) ([]RecoveryKeyShare, error) {
 }
 
 // loadRecoveryKey reads the recovery key from its file, or rebuilds it from
-// custodians' shares; exactly one of the two.
+// custodians' shares; cobra makes the two flags exclusive and requires one.
 func loadRecoveryKey(path string, sharePaths []string) (*ecdsa.PrivateKey, error) {
-	switch {
-	case path != "" && len(sharePaths) > 0:
-		return nil, errors.New("--recovery-key and --recovery-key-share exclude each other")
-	case path != "":
-		return loadECPrivateKey(path)
-	case len(sharePaths) > 0:
-		shares, err := loadRecoveryShares(sharePaths)
-		if err != nil {
-			return nil, err
-		}
-		return CombineRecoveryKey(shares)
+	if path != "" {
+		return certutil.LoadECPrivateKeyFile(path)
 	}
-	return nil, errors.New("--recovery-key or --recovery-key-share is required")
+	shares, err := loadRecoveryShares(sharePaths)
+	if err != nil {
+		return nil, err
+	}
+	return CombineRecoveryKey(shares)
 }
 
 // newHARecoveryKeyCmd splits the recovery key among custodians.
@@ -152,7 +148,7 @@ func newHARecoveryKeyCmd() *cobra.Command {
 			"person can restore every secret onto a CDS of their choosing.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			key, err := loadECPrivateKey(keyPath)
+			key, err := certutil.LoadECPrivateKeyFile(keyPath)
 			if err != nil {
 				return err
 			}
