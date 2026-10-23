@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	sigsyaml "sigs.k8s.io/yaml"
 
@@ -55,6 +56,21 @@ func TestChartBakedKubeStateMetrics(t *testing.T) {
 	service := renderedService(t, out, "kube-state-metrics")
 	if service.Namespace != "kube-system" || service.Spec.ClusterIP != ksm.ClusterIP || len(service.Spec.Ports) != 1 || service.Spec.Ports[0].Port != int32(ksm.Port) {
 		t.Errorf("kube-state-metrics Service = %s/%s %s %+v, want kube-system %s:%d alone", service.Namespace, service.Name, service.Spec.ClusterIP, service.Spec.Ports, ksm.ClusterIP, ksm.Port)
+	}
+
+	// RKE2's default policy admits kube-system ingress from kube-system
+	// alone; the member pods' exit reaches the metrics port from any
+	// namespace, and nothing else.
+	var policy networkingv1.NetworkPolicy
+	if !findDoc(t, out, "NetworkPolicy", "kube-state-metrics", &policy) {
+		t.Fatal("kube-state-metrics NetworkPolicy missing")
+	}
+	ingress := policy.Spec.Ingress
+	if policy.Namespace != "kube-system" || policy.Spec.PodSelector.MatchLabels["app.kubernetes.io/name"] != "kube-state-metrics" ||
+		len(ingress) != 1 || len(ingress[0].From) != 1 || ingress[0].From[0].NamespaceSelector == nil ||
+		len(ingress[0].From[0].NamespaceSelector.MatchLabels)+len(ingress[0].From[0].NamespaceSelector.MatchExpressions) != 0 ||
+		len(ingress[0].Ports) != 1 || ingress[0].Ports[0].Port == nil || ingress[0].Ports[0].Port.String() != "http-metrics" {
+		t.Errorf("kube-state-metrics NetworkPolicy %+v must admit its metrics port from every namespace alone", policy.Spec)
 	}
 
 	var role rbacv1.ClusterRole
