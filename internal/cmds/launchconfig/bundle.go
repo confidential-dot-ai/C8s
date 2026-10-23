@@ -84,7 +84,7 @@ func NewBundle(opts BundleOptions) (err error) {
 	if (len(opts.Agents) > 0 || len(opts.CDSNodes) > 0) && opts.ServerAddress == "" {
 		return errors.New("--server-address is required when the bundle has agents or cds nodes: they must be told where the server is")
 	}
-	if n := len(opts.CDSNodes); n == 1 {
+	if len(opts.CDSNodes) == 1 {
 		return errors.New("a highly available CDS needs at least two --cds-node")
 	}
 	image, err := imageFromManifest(opts.ManifestPath, opts.VCPUs)
@@ -186,22 +186,16 @@ func NewBundle(opts BundleOptions) (err error) {
 		return err
 	}
 	for _, name := range opts.Agents {
-		if err := AddAgent(opts.Dir, name, opts.ServerAddress); err != nil {
+		if err := AddNode(opts.Dir, Agent, JoinOptions{Name: name, ServerAddress: opts.ServerAddress}); err != nil {
 			return err
 		}
 	}
 	for _, name := range opts.CDSNodes {
-		if err := AddCDSNode(opts.Dir, name, opts.ServerAddress); err != nil {
+		if err := AddNode(opts.Dir, CDS, JoinOptions{Name: name, ServerAddress: opts.ServerAddress}); err != nil {
 			return err
 		}
 	}
 	return nil
-}
-
-// AddCDSNode is AddAgent for the cds role: the document is signed with the
-// bundle's cds key, which only cds-role documents accept.
-func AddCDSNode(dir, name, serverAddress string) error {
-	return AddNode(dir, CDS, JoinOptions{Name: name, ServerAddress: serverAddress})
 }
 
 // JoinOptions describe a node added to a bundle.
@@ -217,8 +211,14 @@ type JoinOptions struct {
 	PinFloor uint64
 }
 
-// AddNode adds a signed agent or cds document to the bundle.
-func AddNode(dir string, role Role, o JoinOptions) error {
+// AddNode derives an agent or cds document from the bundle's server
+// document (same cluster, image, agent token, keys and SAN; never the server
+// token or the server-only router block), signs it with the bundle's agent
+// or cds key and writes <dir>/<name>. It works on a bundle created earlier,
+// so a cluster can grow without regenerating or re-signing anything the
+// server already booted with. With o.Image set the node boots that image (a
+// rollout) and still accepts the server's images as peer images.
+func AddNode(dir string, role Role, o JoinOptions) (err error) {
 	keyFile := agentKeyFile
 	switch role {
 	case Agent:
@@ -227,39 +227,11 @@ func AddNode(dir string, role Role, o JoinOptions) error {
 	default:
 		return fmt.Errorf("cannot add a %s node to a bundle", role)
 	}
-	return addJoiningNode(dir, role, keyFile, o)
-}
-
-// AddCDSNodeOnImage is AddCDSNode for a node that boots image instead of
-// the server's: a rollout. The document accepts the server's image (and
-// the images it already accepts) as peer images, so the new node trusts the
-// nodes not yet rolled.
-func AddCDSNodeOnImage(dir, name, serverAddress string, image Image) error {
-	return AddNode(dir, CDS, JoinOptions{Name: name, ServerAddress: serverAddress, Image: &image})
-}
-
-// AddAgentOnImage is AddCDSNodeOnImage for an agent.
-func AddAgentOnImage(dir, name, serverAddress string, image Image) error {
-	return AddNode(dir, Agent, JoinOptions{Name: name, ServerAddress: serverAddress, Image: &image})
-}
-
-// AddAgent derives an agent document from the bundle's server document
-// (same cluster, image, agent token, keys and SAN; never the server token or
-// the server-only router block),
-// signs it with the bundle's agent key and writes <dir>/<name>. It works
-// on a bundle created earlier, so a cluster can grow without regenerating or
-// re-signing anything the server already booted with.
-func AddAgent(dir, name, serverAddress string) error {
-	return AddNode(dir, Agent, JoinOptions{Name: name, ServerAddress: serverAddress})
-}
-
-func addJoiningNode(dir string, role Role, keyFile string, o JoinOptions) (err error) {
-	name, serverAddress, image := o.Name, o.ServerAddress, o.Image
-	if !dnsLabel(name) {
-		return fmt.Errorf("%s name %q must be an RFC1123 label", role, name)
+	if !dnsLabel(o.Name) {
+		return fmt.Errorf("%s name %q must be an RFC1123 label", role, o.Name)
 	}
-	if name == serverDir {
-		return fmt.Errorf("agent name %q is reserved for the server", name)
+	if o.Name == serverDir {
+		return fmt.Errorf("agent name %q is reserved for the server", o.Name)
 	}
 	serverData, err := readBounded(filepath.Join(dir, serverDir, documentFile), MaxDocumentSize)
 	if err != nil {
@@ -272,8 +244,8 @@ func addJoiningNode(dir string, role Role, keyFile string, o JoinOptions) (err e
 	if server.Role != Server {
 		return errors.New("bundle server document does not carry the server role")
 	}
-	if name == server.Node.Name {
-		return fmt.Errorf("agent name %q is the server's node name", name)
+	if o.Name == server.Node.Name {
+		return fmt.Errorf("agent name %q is the server's node name", o.Name)
 	}
 	if role == CDS && server.CDSHA == nil {
 		return errors.New("bundle was created without --cds-node: the server document declares no cdsHA")
@@ -286,27 +258,27 @@ func addJoiningNode(dir string, role Role, keyFile string, o JoinOptions) (err e
 	if err != nil {
 		return err
 	}
-	if serverAddress == "" {
+	if o.ServerAddress == "" {
 		if server.Server.Address == "" {
 			return errors.New("--server-address is required: the server document leaves its address to autodetection, and an agent must be told where its server is")
 		}
-		serverAddress = server.Server.Address
+		o.ServerAddress = server.Server.Address
 	}
 	agent := *server
 	agent.Role = role
-	agent.Node = Node{Name: name}
+	agent.Node = Node{Name: o.Name}
 	password, err := newToken()
 	if err != nil {
 		return err
 	}
 	agent.RKE2 = RKE2{AgentToken: server.RKE2.AgentToken, NodePassword: password}
-	agent.Server.Address = serverAddress
+	agent.Server.Address = o.ServerAddress
 	agent.Router = nil
-	if image != nil && !sameImage(*image, server.Image) {
-		agent.Image = *image
+	if o.Image != nil && !sameImage(*o.Image, server.Image) {
+		agent.Image = *o.Image
 		agent.PeerImages = nil
 		for _, img := range server.images() {
-			if !sameImage(img, *image) {
+			if !sameImage(img, *o.Image) {
 				agent.PeerImages = append(agent.PeerImages, img)
 			}
 		}
@@ -319,7 +291,7 @@ func addJoiningNode(dir string, role Role, keyFile string, o JoinOptions) (err e
 		ha.PinFloor = o.PinFloor
 		agent.CDSHA = &ha
 	}
-	return writeSignedDocument(filepath.Join(dir, name), agent, key, pub)
+	return writeSignedDocument(filepath.Join(dir, o.Name), agent, key, pub)
 }
 
 // imageFromManifest turns the build's provenanced manifest into the launch

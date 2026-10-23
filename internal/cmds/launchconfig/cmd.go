@@ -13,7 +13,17 @@ import (
 // operator-side bundle generator and the guest-side stage.
 func NewCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "launch-config", Short: "Create, extend and stage a measured node's signed launch configuration"}
-	cmd.AddCommand(newBundleCmd(), newAddAgentCmd(), newAddCDSNodeCmd(), newStageCmd())
+	cmd.AddCommand(newBundleCmd(), newAddNodeCmd(Agent, "add-agent", "Add a signed agent document to an existing launch bundle",
+		`Derive an agent launch.yaml from the bundle's server document (same
+cluster, image, agent token and keys, never the server token), sign it with
+the bundle's agent key and write <bundle>/<name>. Nothing the server
+already booted with changes.`),
+		newAddNodeCmd(CDS, "add-cds-node", "Add a signed cds-role document to an existing launch bundle",
+			`Derive a cds-role launch.yaml from the bundle's server document, sign it
+with the bundle's cds key and write <bundle>/<name>. The bundle must have
+been created with --cds-node. Use it to add a replica or to replace one: a
+rebooted node cannot rejoin RKE2 under its old name.`),
+		newStageCmd())
 	return cmd
 }
 
@@ -80,49 +90,6 @@ HOST_DATA to SHA-256 of that node's pubkey file. See docs/operator.md,
 	return cmd
 }
 
-func newAddAgentCmd() *cobra.Command {
-	var (
-		dir, name, serverAddress, manifest string
-		pinFloor                           uint64
-	)
-	cmd := &cobra.Command{
-		Use:   "add-agent",
-		Short: "Add a signed agent document to an existing launch bundle",
-		Long: `Derive an agent launch.yaml from the bundle's server document (same
-cluster, image, agent token and keys, never the server token), sign it with
-the bundle's agent key and write <bundle>/<name>. Nothing the server
-already booted with changes.`,
-		Args:         cobra.NoArgs,
-		SilenceUsage: true,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			o := JoinOptions{Name: name, ServerAddress: serverAddress, PinFloor: pinFloor}
-			if manifest != "" {
-				image, err := imageFromManifest(manifest, 0)
-				if err != nil {
-					return err
-				}
-				o.Image = &image
-			}
-			err := AddNode(dir, Agent, o)
-			if err != nil {
-				return err
-			}
-			fmt.Fprintf(cmd.OutOrStdout(), "wrote %s\n", filepath.Join(dir, name))
-			return nil
-		},
-	}
-	f := cmd.Flags()
-	f.StringVar(&dir, "bundle", "", "bundle directory created by 'launch-config new'")
-	f.StringVar(&name, "name", "", "agent node name, an RFC1123 label")
-	f.StringVar(&serverAddress, "server-address", "", "server IPv4 address (default: the server document's, which must then be explicit)")
-	f.Uint64Var(&pinFloor, "pin-floor", 0, "HA CDS: the lowest CDS pin decree base epoch the node accepts; set it to base_epoch of the decree in force (GET /ha/pins)")
-	f.StringVar(&manifest, "image-manifest", "", "boot this image instead of the server's (a rollout): the build's manifest.json. The document still accepts the server's image for its peers")
-	for _, flag := range []string{"bundle", "name"} {
-		_ = cmd.MarkFlagRequired(flag)
-	}
-	return cmd
-}
-
 func newStageCmd() *cobra.Command {
 	var cfg Config
 	stage := &cobra.Command{
@@ -148,22 +115,21 @@ func newStageCmd() *cobra.Command {
 	return stage
 }
 
-func newAddCDSNodeCmd() *cobra.Command {
+// newAddNodeCmd is add-agent or add-cds-node: both derive a document of
+// role from the bundle's server document (AddNode).
+func newAddNodeCmd(role Role, use, short, long string) *cobra.Command {
 	var (
-		dir, name, serverAddress, manifest string
-		pinFloor                           uint64
+		o        JoinOptions
+		dir      string
+		manifest string
 	)
 	cmd := &cobra.Command{
-		Use:   "add-cds-node",
-		Short: "Add a signed cds-role document to an existing launch bundle",
-		Long: `Derive a cds-role launch.yaml from the bundle's server document, sign it
-with the bundle's cds key and write <bundle>/<name>. The bundle must have
-been created with --cds-node. Use it to add a replica or to replace one: a
-rebooted node cannot rejoin RKE2 under its old name.`,
+		Use:          use,
+		Short:        short,
+		Long:         long,
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			o := JoinOptions{Name: name, ServerAddress: serverAddress, PinFloor: pinFloor}
 			if manifest != "" {
 				image, err := imageFromManifest(manifest, 0)
 				if err != nil {
@@ -171,20 +137,19 @@ rebooted node cannot rejoin RKE2 under its old name.`,
 				}
 				o.Image = &image
 			}
-			err := AddNode(dir, CDS, o)
-			if err != nil {
+			if err := AddNode(dir, role, o); err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "wrote %s\n", filepath.Join(dir, name))
+			fmt.Fprintf(cmd.OutOrStdout(), "wrote %s\n", filepath.Join(dir, o.Name))
 			return nil
 		},
 	}
 	f := cmd.Flags()
-	f.StringVar(&dir, "bundle", "", "bundle directory created by 'launch-config new --cds-node'")
-	f.StringVar(&name, "name", "", "cds node name, an RFC1123 label")
-	f.StringVar(&serverAddress, "server-address", "", "server IPv4 address (default: the server document's)")
-	f.Uint64Var(&pinFloor, "pin-floor", 0, "the lowest CDS pin decree base epoch the node accepts; set it to base_epoch of the decree in force (GET /ha/pins)")
-	f.StringVar(&manifest, "image-manifest", "", "boot this image instead of the server's (a CDS rollout): the build's manifest.json. The document still accepts the server's image for its peers; follow with a signed pin decree for the new image")
+	f.StringVar(&dir, "bundle", "", "bundle directory created by 'launch-config new' (with --cds-node for a cds node)")
+	f.StringVar(&o.Name, "name", "", string(role)+" node name, an RFC1123 label")
+	f.StringVar(&o.ServerAddress, "server-address", "", "server IPv4 address (default: the server document's, which must then be explicit)")
+	f.Uint64Var(&o.PinFloor, "pin-floor", 0, "HA CDS: the lowest CDS pin decree base epoch the node accepts; set it to base_epoch of the decree in force (GET /ha/pins)")
+	f.StringVar(&manifest, "image-manifest", "", "boot this image instead of the server's (a rollout): the build's manifest.json. The document still accepts the server's image for its peers; for a cds node, follow with a signed pin decree for the new image")
 	for _, flag := range []string{"bundle", "name"} {
 		_ = cmd.MarkFlagRequired(flag)
 	}
