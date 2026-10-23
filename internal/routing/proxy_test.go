@@ -633,56 +633,92 @@ func countingListener(t *testing.T) (addr string, accepted *atomic.Int64) {
 	return ln.Addr().String(), accepted
 }
 
-// TestB9UnnamedRouter: a router whose own leaf carries no stamp refuses every
-// workload route with 503 before dialling, and still serves address routes.
+// TestB9UnnamedRouter: a router whose own leaf carries no stamp, or a damaged
+// one, refuses every workload route with 503 before dialling, and still
+// serves address routes.
 func TestB9UnnamedRouter(t *testing.T) {
-	f := newFixture(t)
-	f.renew(t, issueLeaf(t, f.mesh, ""))
-	addr, accepted := countingListener(t)
-	external := newCA(t, "external")
-	admin := startBackend(t, "admin", issueLeaf(t, external, "", "admin.ops.svc"), webPKI)
-	f.apply(t, manifestSpec{revision: 1, hosts: map[string][]route{testHost: {
-		workloadRoute("/", "prefix", addr, "web"),
-		addressRoute("/admin", "prefix", admin.addr(), "admin.ops.svc", caPEM(external)),
-	}}})
+	tests := []struct {
+		name string
+		leaf func(*fixture) tls.Certificate
+	}{
+		{"B9 no stamp", func(f *fixture) tls.Certificate { return issueLeaf(t, f.mesh, "") }},
+		{"B9 damaged stamp", func(*fixture) tls.Certificate { return damagedStampLeaf(t) }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			f.renew(t, tc.leaf(f))
+			addr, accepted := countingListener(t)
+			external := newCA(t, "external")
+			admin := startBackend(t, "admin", issueLeaf(t, external, "", "admin.ops.svc"), webPKI)
+			f.apply(t, manifestSpec{revision: 1, hosts: map[string][]route{testHost: {
+				workloadRoute("/", "prefix", addr, "web"),
+				addressRoute("/admin", "prefix", admin.addr(), "admin.ops.svc", caPEM(external)),
+			}}})
 
-	w := f.get("/")
-	if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), noPolicyIdentity) {
-		t.Fatalf("GET / = %d %q, want %d %q", w.Code, w.Body.String(), http.StatusServiceUnavailable, noPolicyIdentity)
-	}
-	sealedHost := []types.HeaderField{{Name: "Host", Value: testHost}}
-	resp, err := f.proxy.Forward(outerRequest(testHost), types.TunnelRequest{Path: "/", Headers: sealedHost})
-	if err != nil || resp.Status != http.StatusServiceUnavailable {
-		t.Fatalf("Forward(/) = %d, %v, want %d, nil", resp.Status, err, http.StatusServiceUnavailable)
-	}
-	if n := accepted.Load(); n != 0 {
-		t.Fatalf("workload backend accepted %d connections, want 0", n)
-	}
-	if got := f.get("/admin").Code; got != http.StatusOK {
-		t.Fatalf("GET /admin = %d, want %d (B3 unaffected)", got, http.StatusOK)
+			w := f.get("/")
+			if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), noPolicyIdentity) {
+				t.Fatalf("GET / = %d %q, want %d %q", w.Code, w.Body.String(), http.StatusServiceUnavailable, noPolicyIdentity)
+			}
+			sealedHost := []types.HeaderField{{Name: "Host", Value: testHost}}
+			resp, err := f.proxy.Forward(outerRequest(testHost), types.TunnelRequest{Path: "/", Headers: sealedHost})
+			if err != nil || resp.Status != http.StatusServiceUnavailable {
+				t.Fatalf("Forward(/) = %d, %v, want %d, nil", resp.Status, err, http.StatusServiceUnavailable)
+			}
+			if n := accepted.Load(); n != 0 {
+				t.Fatalf("workload backend accepted %d connections, want 0", n)
+			}
+			if got := f.get("/admin").Code; got != http.StatusOK {
+				t.Fatalf("GET /admin = %d, want %d (B3 unaffected)", got, http.StatusOK)
+			}
+		})
 	}
 }
 
-// TestB10RenewedRouterLeafRetiresPools: a connection pooled under the
-// router's previous digest is not reused once its leaf renews under another.
+// TestB10RenewedRouterLeafRetiresPools: once the router's leaf renews under
+// another digest, the next poll retires the workload connection pooled under
+// the old one and keeps the address backend's.
 func TestB10RenewedRouterLeafRetiresPools(t *testing.T) {
 	f := newFixture(t)
 	old := startBackend(t, "old", issueLeaf(t, f.mesh, "web"))
-	f.apply(t, simpleManifest(1, old.addr()))
-	if got := f.get("/").Code; got != http.StatusOK {
-		t.Fatalf("GET / = %d, want %d", got, http.StatusOK)
+	external := newCA(t, "external")
+	admin := startBackend(t, "admin", issueLeaf(t, external, "", "admin.ops.svc"), webPKI)
+	adminRoute := addressRoute("/admin", "prefix", admin.addr(), "admin.ops.svc", caPEM(external))
+	f.apply(t, manifestSpec{revision: 1, hosts: map[string][]route{testHost: {
+		workloadRoute("/", "prefix", old.addr(), "web"), adminRoute,
+	}}})
+	if err := f.transports.dropMeshPools(); err != nil { // records the bundle and digest
+		t.Fatal(err)
 	}
+	for _, path := range []string{"/", "/admin"} {
+		if got := f.get(path).Code; got != http.StatusOK {
+			t.Fatalf("GET %s = %d, want %d", path, got, http.StatusOK)
+		}
+	}
+	adminBackend := f.state.Current().Manifest.Hosts[testHost].Routes[1].Backend
+	adminTransport := f.transports.For(adminBackend)
 
 	f.renew(t, issueStampedLeaf(t, f.mesh, "router", 0x43))
+	if err := f.transports.dropMeshPools(); err != nil {
+		t.Fatal(err)
+	}
 	if got := f.get("/").Code; got != http.StatusBadGateway {
 		t.Fatalf("GET / after the router renewed under another digest = %d, want %d", got, http.StatusBadGateway)
 	}
 	if n := old.hits.Load(); n != 1 {
 		t.Fatalf("backend under the old digest served %d requests, want 1", n)
 	}
+	if f.transports.For(adminBackend) != adminTransport {
+		t.Fatal("router digest renewal retired the address backend's transport, want it kept")
+	}
+	if got := f.get("/admin").Code; got != http.StatusOK {
+		t.Fatalf("GET /admin after the router renewed = %d, want %d", got, http.StatusOK)
+	}
 
 	renewed := startBackend(t, "renewed", issueStampedLeaf(t, f.mesh, "web", 0x43))
-	f.apply(t, simpleManifest(2, renewed.addr()))
+	f.apply(t, manifestSpec{revision: 2, hosts: map[string][]route{testHost: {
+		workloadRoute("/", "prefix", renewed.addr(), "web"), adminRoute,
+	}}})
 	if got := f.get("/").Code; got != http.StatusOK {
 		t.Fatalf("GET / to a backend under the router's new digest = %d, want %d", got, http.StatusOK)
 	}

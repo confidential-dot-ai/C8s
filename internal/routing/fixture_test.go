@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -110,7 +111,8 @@ func issueLeaf(t testing.TB, ca *issuer.CA, workload string, dnsNames ...string)
 	return issueStampedLeaf(t, ca, workload, testDigest, dnsNames...)
 }
 
-// issueStampedLeaf is issueLeaf under an allowlist digest of 32 digest bytes.
+// issueStampedLeaf is issueLeaf with the allowlist digest set to digest
+// repeated 32 times.
 func issueStampedLeaf(t testing.TB, ca *issuer.CA, workload string, digest byte, dnsNames ...string) tls.Certificate {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -385,6 +387,28 @@ func newFixture(t testing.TB) *fixture {
 	f.transports = NewTransports(TransportConfig{MeshIdentity: identity.Credential})
 	f.proxy = NewProxy(ProxyConfig{State: f.state, Transports: f.transports, Timeout: 10 * time.Second})
 	return f
+}
+
+// damagedStampLeaf is a self-signed leaf whose matched-workload extension
+// does not parse.
+func damagedStampLeaf(t testing.TB) tls.Certificate {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:    big.NewInt(1),
+		Subject:         pkix.Name{CommonName: "router"},
+		NotBefore:       time.Now().Add(-time.Minute),
+		NotAfter:        time.Now().Add(time.Hour),
+		ExtraExtensions: []pkix.Extension{{Id: armtls.OIDMatchedWorkload, Value: []byte{0x05, 0x00}}},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
 }
 
 // renew publishes leaf as the router's own, with the fixture's mesh CA.
