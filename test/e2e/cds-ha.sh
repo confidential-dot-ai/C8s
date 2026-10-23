@@ -62,37 +62,32 @@ status() {
   done | sed -nE 's/.*"node_name":"([^"]*)".*"state":"([^"]*)".*"serving":(true|false).*"ca_fingerprint":"(.{12})[^"]*".*"applied_index":([0-9]+).*/\1 \2 \3 \4 \5/p' \
     | awk '{last[$1]=$0} END {for (n in last) print last[n]}'
 }
-# converge waits until $1 replicas serve with one CA, each having applied at
-# least index $2 (optional), and prints the highest applied index seen.
-converge() {
-  local want=$1 min=${2:-0} deadline=$((SECONDS + TIMEOUT)) s
-  while [ $SECONDS -lt $deadline ]; do
-    s=$(status)
-    if [ "$(echo "$s" | awk -v m="$min" '$3=="true" && $5>=m' | wc -l)" -ge "$want" ] \
-      && [ "$(echo "$s" | awk '$3=="true"{print $4}' | sort -u | wc -l)" -eq 1 ]; then
-      echo "$s" | awk 'BEGIN{x=0} $5>x{x=$5} END{print x}'
-      return 0
-    fi
+# retry runs a command every 2 s until it succeeds, for up to TIMEOUT s.
+retry() {
+  local deadline=$((SECONDS + TIMEOUT))
+  until "$@"; do
+    [ $SECONDS -lt $deadline ] || return 1
     sleep 2
   done
-  echo "$s" >&2
-  return 1
 }
+# converged: $1 replicas serve with one CA, each having applied at least
+# index $2 (optional).
+converged() {
+  local s
+  s=$(status)
+  [ "$(echo "$s" | awk -v m="${2:-0}" '$3=="true" && $5>=m' | wc -l)" -ge "$1" ] \
+    && [ "$(echo "$s" | awk '$3=="true"{print $4}' | sort -u | wc -l)" -eq 1 ]
+}
+converge() { retry converged "$@" || { status >&2; return 1; }; }
 leader() { status | awk '$2=="Leader"{print $1; exit}'; }
-# leader_index prints the applied index of the leader, sampling until a
-# Leader line is seen (other replicas may lag behind it).
-leader_index() {
-  local deadline=$((SECONDS + TIMEOUT)) x
-  while [ $SECONDS -lt $deadline ]; do
-    x=$(status | awk '$2=="Leader"{print $5; exit}')
-    if [ -n "$x" ]; then echo "$x"; return 0; fi
-    sleep 2
-  done
-  return 1
-}
+# leader_index prints the leader's applied index (other replicas may lag).
+leader_index() { status | awk '$2=="Leader"{print $5; f=1; exit} END{exit !f}'; }
+not_serving() { ! status | awk -v n="$1" '$1==n && $3=="true"' | grep -q .; }
+# new_leader sets L2 to the leader and checks it is not $1.
+new_leader() { L2=$(leader); [ -n "$L2" ] && [ "$L2" != "$1" ]; }
 
 echo "1. $expected replicas serve one state"
-converge "$expected" >/dev/null || fail "replicas did not converge"
+converge "$expected" || fail "replicas did not converge"
 [ "$(status | awk '$2=="Leader"' | wc -l)" -eq 1 ] || fail "not exactly one leader"
 
 echo "2. writes reach every replica"
@@ -106,8 +101,8 @@ EOF
 cli allowlist apply "$work/wl.json" >/dev/null || fail "allowlist write"
 # The write is committed when apply returns, so the leader has applied it:
 # the leader's index is at or past it, and every replica must reach it.
-written=$(leader_index) || fail "no leader seen after the allowlist write"
-converge "$expected" "$written" >/dev/null || fail "allowlist write did not reach every replica"
+written=$(retry leader_index) || fail "no leader seen after the allowlist write"
+converge "$expected" "$written" || fail "allowlist write did not reach every replica"
 curl -sk "$C8S_CDS_URL/ca" >"$work/ca.pem"
 put_secret() { printf '%s' "$1" | cli secrets put /e2e-ha/v --overwrite --mesh-ca "$work/ca.pem" >/dev/null; }
 put_secret one || fail "secret write"
@@ -129,14 +124,9 @@ spec:
     command: ["sh", "-c", $(printf '%s' "$script" | json)]
     securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}
 EOF
-  local deadline=$((SECONDS + TIMEOUT))
-  while [ $SECONDS -lt $deadline ]; do
-    if kubectl -n "$NS" logs "$1" -c c 2>/dev/null | grep -qx "V=$2"; then return 0; fi
-    sleep 2
-  done
-  kubectl -n "$NS" describe pod "$1" >&2 || true
-  return 1
+  retry released "$1" "$2" || { kubectl -n "$NS" describe pod "$1" >&2 || true; return 1; }
 }
+released() { kubectl -n "$NS" logs "$1" -c c 2>/dev/null | grep -qx "V=$2"; }
 echo "3. secret release"
 consume consumer-1 one || fail "secret not released"
 
@@ -147,25 +137,16 @@ if [ -n "${E2E_HA_STOP_NODE:-}" ] && [ -n "${E2E_HA_START_NODE:-}" ]; then
   # Whatever happens next, start the node again.
   trap '$E2E_HA_START_NODE "$L" >/dev/null 2>&1 || true; cleanup' EXIT
   start=$SECONDS
-  deadline=$((SECONDS + TIMEOUT))
-  while status | awk -v n="$L" '$1==n && $3=="true"' | grep -q .; do
-    [ $SECONDS -lt $deadline ] || fail "$L still serving after the stop command"
-    sleep 2
-  done
+  retry not_serving "$L" || fail "$L still serving after the stop command"
   # Followers keep serving for the lease after their last contact, so wait
   # for the new leader itself, then for a serving majority under it.
-  L2=
-  while [ -z "$L2" ] || [ "$L2" = "$L" ]; do
-    [ $SECONDS -lt $deadline ] || fail "no new leader (had $L, now '$L2')"
-    sleep 2
-    L2=$(leader)
-  done
-  converge $((expected - 1)) >/dev/null || fail "no serving majority after losing the leader"
+  retry new_leader "$L" || fail "no new leader (had $L, now '${L2:-}')"
+  converge $((expected - 1)) || fail "no serving majority after losing the leader"
   echo "   new leader $L2 after $((SECONDS - start)) s"
   put_secret two || fail "secret write after leader loss"
   consume consumer-2 two || fail "secret not released after leader loss"
   $E2E_HA_START_NODE "$L"
-  converge "$expected" >/dev/null || fail "stopped node's replica did not rejoin"
+  converge "$expected" || fail "stopped node's replica did not rejoin"
   echo "   $L rejoined after $((SECONDS - start)) s"
 fi
 echo "PASS: CDS-HA"
