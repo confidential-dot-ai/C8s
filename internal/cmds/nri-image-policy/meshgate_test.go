@@ -433,7 +433,7 @@ func TestMeshGateRefusesSandboxesItDidNotProtect(t *testing.T) {
 // namespace is refused, and the refusal says why (C8s#1000).
 func TestMeshGateRefusesAnIdentityToAnExemptPod(t *testing.T) {
 	pod := meshPod("kube-system", "router", testNetNS)
-	gate := newMeshGate(*meshRoles(), discardLogger())
+	gate := newMeshGate(meshRoles(), discardLogger())
 	if err := gate.protect(pod); err != nil {
 		t.Fatalf("protect an exempt pod: %v", err)
 	}

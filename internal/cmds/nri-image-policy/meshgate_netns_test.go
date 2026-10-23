@@ -121,7 +121,7 @@ func TestVerifyRejectsAReplacedNamespaceInTheNamespace(t *testing.T) {
 		path: sandboxNetNSPath(other),
 		id:   proven.id,
 	}
-	err = verifyPodRuleset(replaced, *meshRoles(), "default", nil)
+	err = verifyPodRuleset(replaced, *meshRoles(), "default")
 	if err == nil || !strings.Contains(err.Error(), "was replaced") {
 		t.Fatalf("error = %v, want the replaced-namespace refusal", err)
 	}

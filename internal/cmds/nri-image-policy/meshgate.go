@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/netip"
 	"slices"
 	"sync"
 
@@ -35,16 +34,6 @@ type protectedPod struct {
 	workloadCreated bool
 	kubeNamespace   string
 	roleLaunches    []roleLaunch
-	// exitEntry is the allowlist entry whose exits the pod was granted, and
-	// exits those exits: fixed for the pod's life once granted.
-	exitEntry string
-	exits     []exit
-}
-
-// exit is one range and TCP port a pod reaches uncaptured.
-type exit struct {
-	Range netip.Prefix
-	Port  uint16
 }
 
 // roleLaunch is a platform-role container this gate admitted in a sandbox: a
@@ -195,78 +184,10 @@ func (g *meshGate) admit(pod *api.PodSandbox, ctr *api.Container, launch gatedCo
 	if err != nil {
 		return fmt.Errorf("mesh gate: container %s of pod %s/%s: %w", ctr.GetName(), pod.GetNamespace(), pod.GetName(), err)
 	}
-	if err := verifyPodRuleset(netns, g.policy, kubeNamespace, g.grantedExits(pod.GetId())); err != nil {
+	if err := verifyPodRuleset(netns, g.policy, kubeNamespace); err != nil {
 		return fmt.Errorf("mesh gate: container %s of pod %s/%s: %w", ctr.GetName(), pod.GetNamespace(), pod.GetName(), err)
 	}
 	g.noteLaunched(pod.GetId(), launch)
-	return nil
-}
-
-// grantedExits are the exits a protected sandbox was granted. A grant happens
-// once and only adds, so a ruleset verified with what this reads is the pod's.
-func (g *meshGate) grantedExits(sandboxID string) []exit {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if state := g.pods[sandboxID]; state != nil {
-		return state.exits
-	}
-	return nil
-}
-
-// bindEntry runs before a workload container of a protected pod starts, with
-// the allowlist entry the pod's workload containers, that one included, match
-// ("" for none or several) and that entry's exits. The first match that
-// declares exits grants them; from then on every workload container must keep
-// that match, so a pod holds exits only while all it runs is that entry. The
-// exits are fixed for the pod's life: an allowlist change applies to the next
-// pod.
-func (g *meshGate) bindEntry(pod *api.PodSandbox, entry string, exits []exit) error {
-	if !g.hosts(pod) {
-		return nil
-	}
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	// A sandbox off the record or refused is the startup gate's to refuse; it
-	// holds no exit to grant or keep.
-	state := g.pods[pod.GetId()]
-	if state == nil || state.refusal != nil {
-		return nil
-	}
-	if state.exitEntry != "" {
-		if entry != state.exitEntry {
-			return fmt.Errorf("the pod holds the exits of allowlist entry %q, and with this container it no longer matches that entry", state.exitEntry)
-		}
-		return nil
-	}
-	if len(exits) == 0 {
-		return nil
-	}
-	if err := g.policy.requireOutsideCluster(exits); err != nil {
-		return fmt.Errorf("allowlist entry %q: %w", entry, err)
-	}
-	if err := extendPodRuleset(state.netns, g.policy, state.kubeNamespace, exits); err != nil {
-		return fmt.Errorf("grant the exits of allowlist entry %q: %w", entry, err)
-	}
-	state.exitEntry, state.exits = entry, exits
-	g.logger.Info("granted the pod its allowlist entry's exits",
-		"namespace", pod.GetNamespace(), "pod", pod.GetName(), "entry", entry, "exits", exits)
-	return nil
-}
-
-// requireOutsideCluster refuses an exit into this cluster's pod or Service
-// ranges: a connection to a member leaves the pod through the mesh or not at
-// all. A policy naming no ranges cannot show any exit stays outside them.
-func (p meshPolicy) requireOutsideCluster(exits []exit) error {
-	if len(p.ClusterRanges) == 0 {
-		return errors.New("trusted mesh policy names no cluster ranges, so no exit can be shown to stay outside the cluster")
-	}
-	for _, e := range exits {
-		for _, in := range p.ClusterRanges {
-			if e.Range.Overlaps(in) {
-				return fmt.Errorf("exit %s port %d overlaps the cluster range %s", e.Range, e.Port, in)
-			}
-		}
-	}
 	return nil
 }
 
@@ -323,7 +244,7 @@ func (g *meshGate) verifyMemberRuleset(sandboxID string) error {
 	if err != nil {
 		return err
 	}
-	return verifyPodRuleset(netns, g.policy, kubeNamespace, g.grantedExits(sandboxID))
+	return verifyPodRuleset(netns, g.policy, kubeNamespace)
 }
 
 // memberNamespace is the network namespace of a protected sandbox whose

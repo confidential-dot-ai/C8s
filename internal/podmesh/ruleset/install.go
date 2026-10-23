@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"runtime"
-	"slices"
 	"strings"
 
 	"github.com/google/nftables"
@@ -49,38 +48,6 @@ func Install(netnsPath string, p Policy) error {
 		queueRuleset(conn, expected)
 		if err := conn.Flush(); err != nil {
 			return fmt.Errorf("install pod ruleset: %w", err)
-		}
-		return nil
-	})
-}
-
-// Extend adds exits to the ruleset current defines in the pod network
-// namespace at netnsPath. The live ruleset must be exactly current's; the
-// table is then replaced in a single netlink transaction, so the namespace is
-// protected throughout. It only widens what the pod carries, so no flow
-// admitted before it outlives the rules that admitted it.
-func Extend(netnsPath string, current Policy, exits []Exit) error {
-	next := current
-	next.Exits = slices.Concat(current.Exits, exits)
-	if err := next.validate(); err != nil {
-		return err
-	}
-	if err := Verify(netnsPath, current); err != nil {
-		return err
-	}
-	expected := build(next)
-	return inNetNS(netnsPath, func() error {
-		conn, err := nftables.New()
-		if err != nil {
-			return fmt.Errorf("open nftables: %w", err)
-		}
-		conn.DelTable(&nftables.Table{
-			Family: nftables.TableFamilyINet,
-			Name:   tableName,
-		})
-		queueRuleset(conn, expected)
-		if err := conn.Flush(); err != nil {
-			return fmt.Errorf("extend pod ruleset: %w", err)
 		}
 		return nil
 	})

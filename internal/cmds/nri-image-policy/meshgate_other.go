@@ -13,10 +13,6 @@ func installPodRuleset(podNamespace, meshPolicy, string) error {
 	return errNoPodRuleset
 }
 
-func verifyPodRuleset(podNamespace, meshPolicy, string, []exit) error {
-	return errNoPodRuleset
-}
-
-func extendPodRuleset(podNamespace, meshPolicy, string, []exit) error {
+func verifyPodRuleset(podNamespace, meshPolicy, string) error {
 	return errNoPodRuleset
 }

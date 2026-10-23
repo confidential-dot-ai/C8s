@@ -84,30 +84,6 @@ func TestBuildMatchesTheGoldenRuleset(t *testing.T) {
 	}
 }
 
-// A pod granted exits carries one accept per exit, before the capture, in
-// both chains; a range is compared under its mask.
-func TestBuildWithGrantedExitsMatchesTheGoldenRuleset(t *testing.T) {
-	const golden = "testdata/ruleset-exits.golden"
-	policy := testPolicy()
-	policy.Exits = append(policy.Exits,
-		Exit{netip.MustParsePrefix("203.0.113.0/24"), 443},
-		Exit{netip.MustParsePrefix("2001:db8::/32"), 4317},
-	)
-	got := renderRuleset(build(policy))
-	if *update {
-		if err := os.WriteFile(golden, []byte(got), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	want, err := os.ReadFile(golden)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != string(want) {
-		t.Fatalf("ruleset =\n%s\nwant\n%s", got, want)
-	}
-}
-
 // The mesh listeners belong to the mesh endpoint: a process that takes one
 // over once the endpoint is gone must not be able to answer on it, so the
 // ruleset drops what leaves a listener port from another socket owner before

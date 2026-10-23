@@ -41,10 +41,7 @@ const (
 // last-applied CDS pull, tagged with that pull's version (the ETag counter).
 // Swapped as a unit; policyStore checks the base allowlist ahead of it.
 type policySnapshot struct {
-	index *allowlist.Index
-	// pulled is the served document the index was built from: a pod's
-	// workload match, and so its exits, are read from its entries.
-	pulled  *allowlist.Allowlist
+	index   *allowlist.Index
 	version uint64
 }
 
@@ -143,7 +140,7 @@ func (s *policyStore) apply(pulled *allowlist.Allowlist, version uint64) bool {
 	if s.rolledBack(version) {
 		return false
 	}
-	s.snap.Store(&policySnapshot{index: pulled.BuildIndex(), pulled: pulled, version: version})
+	s.snap.Store(&policySnapshot{index: pulled.BuildIndex(), version: version})
 	return true
 }
 
@@ -1136,9 +1133,6 @@ func (p *plugin) StartContainer(ctx context.Context, pod *api.PodSandbox, ctr *a
 	verdict, reason := p.checkContainer(ctx, cfg, pod, ctr, imageRef)
 	if verdict == verdictDeny && cfg.Policy.Mode != ModeAudit {
 		return p.denyContainer(pod.GetId(), fmt.Errorf("%s", reason))
-	}
-	if err := p.bindExits(ctx, pod, ctr, imageRef); err != nil {
-		return p.denyContainer(pod.GetId(), fmt.Errorf("mesh gate: container %s of pod %s/%s: %w", ctr.GetName(), pod.GetNamespace(), pod.GetName(), err))
 	}
 	p.noteMeshStarted(ctx, pod, ctr, imageRef)
 	p.recordForInventory(ctx, pod, ctr, imageRef)
