@@ -95,6 +95,7 @@ cds_request() {
 # cds_pod_request <method> <route> [body-file] [authorization] [client-cert] [client-key] [header...]
 cds_pod_request() { local url; url="$(cds_node_url)" || return; http_request "$url" "$@"; }
 cds_pod_url() { cds_node_url; }
+cds_service_url() { cds_node_url; }
 # The guest's address from the allowlist URL, with the CDS Service's node port.
 cds_node_url() {
     local host port
