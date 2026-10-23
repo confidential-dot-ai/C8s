@@ -47,9 +47,15 @@ func (p *PodSpec) validate() error {
 	if len(s.EphemeralContainers) != 0 {
 		return fmt.Errorf("pod.manifest must not carry ephemeral containers")
 	}
+	// A default-medium emptyDir lives under the kubelet's state, which the
+	// scratch disk backs when one is attached. medium Memory keeps the
+	// pod's writable state in VM memory on every boot.
 	for _, v := range s.Volumes {
 		if v.EmptyDir == nil {
 			return fmt.Errorf("pod.manifest volume %q: only emptyDir volumes are supported", v.Name)
+		}
+		if v.EmptyDir.Medium != corev1.StorageMediumMemory {
+			return fmt.Errorf("pod.manifest volume %q: emptyDir must set medium: Memory", v.Name)
 		}
 	}
 	for _, c := range append(append([]corev1.Container{}, s.InitContainers...), s.Containers...) {
