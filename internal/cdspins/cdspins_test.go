@@ -6,6 +6,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -108,15 +109,18 @@ func TestRefreshFollowsNewerSignedDecrees(t *testing.T) {
 	if len(cur.Images) != 4 {
 		t.Fatalf("A+B under two keys: %d pins", len(cur.Images))
 	}
-	anchors := map[string]int{}
-	for _, p := range cur.Images {
-		anchors[string(p.Anchor)]++
-		if len(p.Registers) != 2 {
-			t.Fatalf("pin %s registers %v", p.Name, p.Registers)
+	// Each launch key pins each image's own MRTD, RTMR1 and RTMR2.
+	want := map[string]bool{}
+	for _, i := range []cdsha.DecreeImage{img(1), img(5)} {
+		for _, a := range [][]byte{serverKey, cdsKey} {
+			want[string(a)+i.MRTD+i.RTMR1+i.RTMR2] = true
 		}
 	}
-	if anchors[string(serverKey)] != 2 || anchors[string(cdsKey)] != 2 {
-		t.Fatalf("anchors %v", anchors)
+	for _, p := range cur.Images {
+		delete(want, string(p.Anchor)+hex.EncodeToString(p.Digest)+hex.EncodeToString(p.Registers[1])+hex.EncodeToString(p.Registers[2]))
+	}
+	if len(want) != 0 {
+		t.Fatalf("%d of 4 anchor/image pins missing or wrong", len(want))
 	}
 	// B only.
 	srv.sd = pinDecree(t, k, cluster, 4, img(5))
