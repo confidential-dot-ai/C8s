@@ -684,9 +684,10 @@ follows these rules:
 - An attested session routes only by the manifest and router digest its
   handshake bound. After a route change or an allowlist change that renews
   the router's leaf, the router answers that session's requests with 503
-  `route_digest_changed` or `router_digest_changed` and ends it; clients
-  reconnect and attest again, and no traffic moves to the new routes
-  unattested. At 65536 attest-lb bindings per replica, new attest-lb
+  `route_digest_changed` or `router_digest_changed`. It ends an attest-pq
+  session. An attest-lb connection stays open and every request on it gets
+  the same 503 until the client reconnects or attests again on it. No
+  traffic moves to the new routes unattested. At 65536 attest-lb bindings per replica, new attest-lb
   handshakes get 503 `sessions_busy`. See
   [Route evidence](routes-evidence.md#server).
 - The router serves cluster workloads only: it refuses a polled manifest that
