@@ -416,3 +416,46 @@ func TestEnrollNeedsAStagedManagedLaunch(t *testing.T) {
 		t.Fatalf("Enroll error = %v", err)
 	}
 }
+
+// testdata/provider-v2 is what Confidential Cloud's Cluster API provider
+// renders for a first control-plane member from CAPRKE2's real bootstrap data,
+// with the material's keys and token replaced. It pins the wire contract
+// between the two: the document parses, and the material is accepted as is.
+func TestProviderDocumentAndMaterialAreAccepted(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "provider-v2", "launch.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := Parse(data)
+	if err != nil {
+		t.Fatalf("the provider's document: %v", err)
+	}
+	if !doc.IsManaged() || doc.Role != Server || doc.Managed.MachineName != doc.Node.Name {
+		t.Fatalf("parsed %+v", doc)
+	}
+	raw, err := os.ReadFile(filepath.Join("testdata", "provider-v2", "material.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	var m Material
+	if err := dec.Decode(&m); err != nil {
+		t.Fatal(err)
+	}
+	base, err := readBaseConfig(filepath.Join("..", "..", "..", "node-guest-image", "c8s", "mkosi.extra", "etc", "rancher", "rke2", "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := managedConfig(base, m, "cc://i-0a1b2c3d"); err != nil {
+		t.Fatalf("the provider's material: %v", err)
+	}
+	for _, f := range m.Files {
+		if err := checkMaterialFile(doc.Role, f); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if m.Role != doc.Role || len(m.Files) != 8 {
+		t.Fatalf("material for %s with %d files", m.Role, len(m.Files))
+	}
+}

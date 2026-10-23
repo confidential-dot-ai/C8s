@@ -1,0 +1,48 @@
+{
+ "config": {
+  "cluster-cidr": "10.52.0.0/16",
+  "cni": [
+   "cilium"
+  ],
+  "service-cidr": "10.53.0.0/16",
+  "tls-san": [
+   "198.51.100.10"
+  ],
+  "token": "test-token"
+ },
+ "files": [
+  {
+   "content": "dGVzdCBjZXJ0aWZpY2F0ZQ==",
+   "path": "/var/lib/rancher/rke2/server/tls/server-ca.crt"
+  },
+  {
+   "content": "dGVzdCBrZXk=",
+   "path": "/var/lib/rancher/rke2/server/tls/server-ca.key"
+  },
+  {
+   "content": "dGVzdCBjZXJ0aWZpY2F0ZQ==",
+   "path": "/var/lib/rancher/rke2/server/tls/client-ca.crt"
+  },
+  {
+   "content": "dGVzdCBrZXk=",
+   "path": "/var/lib/rancher/rke2/server/tls/client-ca.key"
+  },
+  {
+   "content": "dGVzdCBjZXJ0aWZpY2F0ZQ==",
+   "path": "/var/lib/rancher/rke2/server/tls/etcd/peer-ca.crt"
+  },
+  {
+   "content": "dGVzdCBrZXk=",
+   "path": "/var/lib/rancher/rke2/server/tls/etcd/peer-ca.key"
+  },
+  {
+   "content": "dGVzdCBjZXJ0aWZpY2F0ZQ==",
+   "path": "/var/lib/rancher/rke2/server/tls/etcd/server-ca.crt"
+  },
+  {
+   "content": "dGVzdCBrZXk=",
+   "path": "/var/lib/rancher/rke2/server/tls/etcd/server-ca.key"
+  }
+ ],
+ "role": "server"
+}
