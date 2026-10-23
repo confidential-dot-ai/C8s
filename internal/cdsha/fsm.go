@@ -1,6 +1,7 @@
 package cdsha
 
 import (
+	"bufio"
 	"bytes"
 	"cmp"
 	"crypto/ecdsa"
@@ -460,11 +461,19 @@ var ErrStaleSnapshot = errors.New("cds-ha: refusing a snapshot older than the ap
 // the zstd window reaches back past the previous version, so each near-copy
 // of a document is stored as a reference.
 func encodeSnapshot(w io.Writer, sn snapshot) error {
-	zw, err := zstd.NewWriter(w, zstd.WithWindowSize(snapshotWindow), zstd.WithEncoderConcurrency(1))
+	header, err := json.Marshal(sn)
 	if err != nil {
 		return err
 	}
-	if err := json.NewEncoder(zw).Encode(sn); err != nil {
+	if len(header)+1 > maxSnapshotHeader || len(sn.Allowlist) > maxSnapshotImage {
+		return errors.New("snapshot exceeds supported decoded size")
+	}
+	zw, err := zstd.NewWriter(&snapshotLimitWriter{w: w, remaining: MaxSnapshotBytes}, zstd.WithWindowSize(snapshotWindow), zstd.WithEncoderConcurrency(1))
+	if err != nil {
+		return err
+	}
+	defer zw.Close()
+	if _, err := zw.Write(append(header, '\n')); err != nil {
 		return err
 	}
 	if _, err := zw.Write(sn.Allowlist); err != nil {
@@ -478,17 +487,40 @@ func encodeSnapshot(w io.Writer, sn snapshot) error {
 // to keep encoder and decoder memory modest.
 const snapshotWindow = 16 << 20
 
+// Operational limits bound allocations before JSON/SQLite validation. Creation
+// uses the same limits as restore. SQLite restore may hold several image copies.
+const maxSnapshotHeader = 16 << 20
+const maxSnapshotImage = 256 << 20
+
+// MaxSnapshotBytes bounds compressed snapshots, including backups and transport.
+const MaxSnapshotBytes = 128 << 20
+
 // decodeSnapshot reads a snapshot in a format from baseFormat to readable.
 // With headOnly it stops after the header line, without the allowlist.
 func decodeSnapshot(r io.Reader, readable uint32, headOnly bool) (snapshot, error) {
-	d, err := zstd.NewReader(r, zstd.WithDecoderMaxWindow(snapshotWindow), zstd.WithDecoderConcurrency(1))
+	compressed := &io.LimitedReader{R: r, N: MaxSnapshotBytes + 1}
+	d, err := zstd.NewReader(compressed, zstd.WithDecoderMaxWindow(snapshotWindow), zstd.WithDecoderConcurrency(1))
 	if err != nil {
 		return snapshot{}, fmt.Errorf("decode snapshot: %w", err)
 	}
 	defer d.Close()
+	sn, err := decodeSnapshotBody(d, readable, headOnly, maxSnapshotHeader, maxSnapshotImage)
+	if compressed.N <= 0 {
+		return snapshot{}, errors.New("snapshot exceeds compressed size limit")
+	}
+	return sn, err
+}
+
+func decodeSnapshotBody(r io.Reader, readable uint32, headOnly bool, headerLimit, imageLimit int64) (snapshot, error) {
+	// Read the newline-delimited header through a limit before unmarshalling;
+	// json.Decoder alone can allocate arbitrarily before returning a value.
+	br := bufio.NewReader(io.LimitReader(r, headerLimit+1))
+	header, err := br.ReadBytes('\n')
+	if err != nil || int64(len(header)) > headerLimit {
+		return snapshot{}, errors.New("decode snapshot: missing or oversized header")
+	}
 	var sn snapshot
-	dec := json.NewDecoder(d)
-	if err := dec.Decode(&sn); err != nil {
+	if err := json.Unmarshal(header, &sn); err != nil {
 		return snapshot{}, fmt.Errorf("decode snapshot: %w", err)
 	}
 	switch v, c := cmp.Or(sn.Format, baseFormat), sn.Core.format(); {
@@ -500,14 +532,13 @@ func decodeSnapshot(r io.Reader, readable uint32, headOnly bool) (snapshot, erro
 	if headOnly {
 		return sn, nil
 	}
-	// The encoder ends the header with a newline; the image starts after it.
-	rest := io.MultiReader(dec.Buffered(), d)
-	var nl [1]byte
-	if _, err := io.ReadFull(rest, nl[:]); err != nil || nl[0] != '\n' {
-		return snapshot{}, errors.New("decode snapshot: no allowlist image after the header")
-	}
-	if sn.Allowlist, err = io.ReadAll(rest); err != nil {
+	// Recover bytes prefetched through the header limit, then the original stream.
+	rest := io.MultiReader(br, r)
+	if sn.Allowlist, err = io.ReadAll(io.LimitReader(rest, imageLimit+1)); err != nil {
 		return snapshot{}, fmt.Errorf("decode snapshot: %w", err)
+	}
+	if int64(len(sn.Allowlist)) > imageLimit {
+		return snapshot{}, errors.New("decode snapshot: oversized allowlist image")
 	}
 	return sn, nil
 }
@@ -562,4 +593,18 @@ func (f *FSM) applyRenewCA(re RenewCAEntry) error {
 	f.core.RootCert = slices.Clone(re.RootCert)
 	f.ca = &issuer.CA{Cert: cert, Key: f.ca.Key}
 	return nil
+}
+
+type snapshotLimitWriter struct {
+	w         io.Writer
+	remaining int
+}
+
+func (w *snapshotLimitWriter) Write(p []byte) (int, error) {
+	if len(p) > w.remaining {
+		return 0, errors.New("snapshot exceeds compressed size limit")
+	}
+	n, err := w.w.Write(p)
+	w.remaining -= n
+	return n, err
 }

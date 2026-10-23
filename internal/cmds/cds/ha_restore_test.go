@@ -56,11 +56,13 @@ func TestRunHARestoreAfterTotalLoss(t *testing.T) {
 	}
 	_, h0, _ := do(t, http.MethodGet, bases[0]+"/allowlist", "", nil)
 	var applied uint64
+	var trustedCA string
 	for _, b := range bases {
 		_, _, raw := do(t, http.MethodGet, b+"/ha/status", "", nil)
 		var st cdsha.Status
 		_ = json.Unmarshal(raw, &st)
 		applied = max(applied, st.AppliedIndex)
+		trustedCA = st.CAFingerprint
 	}
 	_, _, ca := do(t, http.MethodGet, bases[0]+"/ca", "", nil)
 	var backups []corev1.ConfigMap
@@ -107,7 +109,7 @@ func TestRunHARestoreAfterTotalLoss(t *testing.T) {
 		cmd.SetOut(&out)
 		cmd.SetErr(&out)
 		args := append([]string{"--backup-file", backupFile, "--decree-key", decreeKeyPath,
-			"--cluster-id", "c1", "--url", bases[2], "--insecure"}, key...)
+			"--trusted-ca-sha256", trustedCA, "--cluster-id", "c1", "--url", bases[2], "--insecure"}, key...)
 		cmd.SetArgs(append(args, extra...))
 		err := cmd.ExecuteContext(context.Background())
 		return out.String(), err
