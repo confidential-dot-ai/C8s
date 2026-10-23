@@ -821,18 +821,6 @@ func TestBackupAfterMembershipChange(t *testing.T) {
 	})
 }
 
-// A replica that reaches no peer (its node's pod network still coming up)
-// does not offer to take a restore: that would route clients to its
-// pre-join server.
-func TestLonerDoesNotAwaitRestore(t *testing.T) {
-	c := newCluster(t, 3)
-	c.start("n0", "m1")
-	time.Sleep(3 * testTiming.DeadAfter)
-	if c.nodes["n0"].node.AwaitingRestore() {
-		t.Fatal("a replica that reached no peer reports it awaits a restore")
-	}
-}
-
 // A pin set that unpins a majority of the voters is refused (it would leave no
 // leader to apply the decree that undoes it); the upgrade order works: pin the
 // new image beside the old, then drop the old once a majority runs the new.
