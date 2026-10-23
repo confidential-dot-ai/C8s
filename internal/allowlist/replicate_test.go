@@ -24,7 +24,7 @@ func (f *fanout) Replicate(cmd Command) (Result, error) {
 	defer f.mu.Unlock()
 	var mine Result
 	for i, s := range f.stores {
-		r := s.ApplyWith(cmd, ApplyOptions{TokenExpiry: true})
+		r := s.Apply(cmd)
 		if i == f.self {
 			mine = r
 		}
@@ -173,7 +173,7 @@ func TestReplicatedWholeDocumentAndMalformed(t *testing.T) {
 		"put without entry": {Op: OpPutWorkload, Name: "x"},
 		"routes without":    {Op: OpReplaceRoutes},
 	} {
-		if r := st[0].ApplyWith(cmd, ApplyOptions{TokenExpiry: true}); r.Error() == nil {
+		if r := st[0].Apply(cmd); r.Error() == nil {
 			t.Errorf("%s applied", name)
 		}
 	}
