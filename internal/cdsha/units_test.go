@@ -130,27 +130,32 @@ func (failingAttestor) Verify([]byte) (Claims, error)     { return Claims{}, err
 // peerVerifier refuses every peer that is not a replica of this cluster.
 func TestPeerVerifier(t *testing.T) {
 	v := peerVerifier{clusterID: testCluster, att: MockAttestor{}, pins: func() []string { return []string{"m1"} }}
-	good, err := newPeerCert(testCluster, MockAttestor{Measurement: "m1"})
+	m1 := MockAttestor{Measurement: "m1"}
+	day := time.Now().Add(24 * time.Hour)
+	good, err := newPeerCert(testCluster, m1, day)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := v.claims(good.Certificate[0]); err != nil {
 		t.Fatal(err)
 	}
-	unpinned, _ := newPeerCert(testCluster, MockAttestor{Measurement: "m9"})
-	otherCluster, _ := newPeerCert("tenant-b", MockAttestor{Measurement: "m1"})
+	unpinned, _ := newPeerCert(testCluster, MockAttestor{Measurement: "m9"}, day)
+	otherCluster, _ := newPeerCert("tenant-b", m1, day)
+	expired, _ := newPeerCert(testCluster, m1, time.Now().Add(-time.Hour))
 	plain := mustCA(t).Cert.Raw // no evidence extension
-	// The good certificate's key and evidence, but expired.
-	gc, _ := x509.ParseCertificate(good.Certificate[0])
-	gc.NotBefore, gc.NotAfter = time.Now().Add(-48*time.Hour), time.Now().Add(-time.Hour)
+	// A leaked key re-signs the expired certificate, evidence and all, with
+	// a later NotAfter.
+	gc, _ := x509.ParseCertificate(expired.Certificate[0])
+	gc.NotAfter = time.Now().Add(365 * 24 * time.Hour)
 	gc.ExtraExtensions = gc.Extensions
-	key := good.PrivateKey.(*ecdsa.PrivateKey)
-	expired, err := x509.CreateCertificate(rand.Reader, gc, gc, &key.PublicKey, key)
+	key := expired.PrivateKey.(*ecdsa.PrivateKey)
+	extended, err := x509.CreateCertificate(rand.Reader, gc, gc, &key.PublicKey, key)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for name, der := range map[string][]byte{
-		"expired":              expired,
+		"expired":              expired.Certificate[0],
+		"re-signed later":      extended,
 		"unpinned measurement": unpinned.Certificate[0],
 		"other cluster":        otherCluster.Certificate[0],
 		"no evidence":          plain,
@@ -244,7 +249,7 @@ func TestNewNodeRejectsIncompleteConfig(t *testing.T) {
 			t.Errorf("%s: accepted", name)
 		}
 	}
-	if _, err := newPeerCert(testCluster, failingAttestor{}); err == nil {
+	if _, err := newPeerCert(testCluster, failingAttestor{}, time.Now()); err == nil {
 		t.Error("peer certificate without evidence")
 	}
 	if nodeOf("no-slash") != "" || bornOf("n0/notanumber-x") != 0 {

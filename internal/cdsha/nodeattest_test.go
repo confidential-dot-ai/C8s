@@ -58,7 +58,7 @@ func TestNodeAttestorRoundTrip(t *testing.T) {
 	defer srv.Close()
 	att := NewNodeAttestor(srv.URL, 2*time.Second)
 
-	rd := PeerBinding("tenant-a", []byte("spki"))
+	rd := PeerBinding("tenant-a", []byte("spki"), time.Unix(1, 0))
 	ev, err := att.Evidence(rd)
 	if err != nil {
 		t.Fatal(err)

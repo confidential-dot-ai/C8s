@@ -254,7 +254,9 @@ func NewNode(cfg Config) (*Node, error) {
 		n.fsm.readable = cfg.Format
 	}
 	n.lastMember.Store(time.Now().UnixMilli())
-	if n.certs, err = newCertHolder(func() (tls.Certificate, error) { return newPeerCert(cfg.ClusterID, cfg.Attestor) }); err != nil {
+	if n.certs, err = newCertHolder(func() (tls.Certificate, error) {
+		return newPeerCert(cfg.ClusterID, cfg.Attestor, time.Now().Add(24*time.Hour))
+	}); err != nil {
 		return nil, err
 	}
 	n.verifier = peerVerifier{clusterID: cfg.ClusterID, att: cfg.Attestor, anchor: own.Anchor, pins: n.peerPins}
