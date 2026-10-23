@@ -350,10 +350,10 @@ func TestHAStartWiring(t *testing.T) {
 			t.Errorf("%s: got %v, want %q", name, err, c.want)
 		}
 	}
-	if _, err := haStart(context.Background(), config{ha: haConfig{configFile: filepath.Join(t.TempDir(), "none")}}, st, nil); err == nil || !strings.Contains(err.Error(), "--ha-config") {
+	if _, _, err := haStart(context.Background(), config{ha: haConfig{configFile: filepath.Join(t.TempDir(), "none")}}, st); err == nil || !strings.Contains(err.Error(), "--ha-config") {
 		t.Fatalf("haStart without its --ha-config file: %v", err)
 	}
-	if n, err := haStart(context.Background(), config{}, st, nil); err != nil || n != nil {
+	if n, _, err := haStart(context.Background(), config{}, st); err != nil || n != nil {
 		t.Fatalf("singleton: %v", err)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 
 	"github.com/confidential-dot-ai/c8s/internal/cdsha"
+	"github.com/confidential-dot-ai/c8s/internal/sandboxledger"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
@@ -38,6 +40,15 @@ func do(t *testing.T, method, url, auth string, body []byte) (int, http.Header, 
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(resp.Body)
 	return resp.StatusCode, resp.Header, b
+}
+
+// countEvictions replaces evictBindings for the test and counts its starts.
+func countEvictions(t *testing.T) *atomic.Int32 {
+	var n atomic.Int32
+	orig := evictBindings
+	t.Cleanup(func() { evictBindings = orig })
+	evictBindings = func(*sandboxledger.Ledger, <-chan struct{}, time.Duration) { n.Add(1) }
+	return &n
 }
 
 // haTestCluster is three CDS processes (run) in HA mode on loopback hosts,
@@ -184,9 +195,14 @@ func (c *haTestCluster) firstWrite(base, path string, body []byte) (int, []byte)
 // at one replica served by all, with its single-use token spent everywhere.
 func TestRunHAReplicasServeOneState(t *testing.T) {
 	c := newHATestCluster(t, []string{"127.0.3.10", "127.0.3.11", "127.0.3.12"})
+	evictions := countEvictions(t)
 	errs, bases := c.start(c.haTemplate(cdsha.DefaultTiming))
 	t.Cleanup(func() { c.stop(errs) })
 	waitServing(t, bases, true)
+	// Bindings are evicted at each command's time only, never by a local clock.
+	if n := evictions.Load(); n != 0 {
+		t.Fatalf("%d replicas run the local binding eviction loop", n)
+	}
 
 	// One mesh CA, served by every replica.
 	var ca []byte
