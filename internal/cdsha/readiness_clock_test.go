@@ -50,7 +50,8 @@ func TestReadinessSeatReportMonotonicExpiry(t *testing.T) {
 	eventually(t, 3*time.Second, "nonvoter initially ready", nv.Ready)
 	nv.refreshSeats()
 	recorded := nv.seatsOKAt.Load()
-	if recorded == nil || *recorded == recorded.Round(0) {
+	// Compare representation: Time.Equal ignores whether monotonic data was retained.
+	if recorded == nil || *recorded == recorded.Round(0) { //nolint:staticcheck // QF1009 would erase the property under test.
 		t.Fatal("seat report discarded monotonic clock")
 	}
 	// A failed status fetch retains a still-young report: do not turn a
