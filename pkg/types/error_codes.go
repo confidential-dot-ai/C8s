@@ -55,6 +55,10 @@ const (
 	// it may, for this client or in all, so it refuses the handshake rather
 	// than drop one (route policy E7). Retry shortly.
 	ErrorCodeSessionsBusy = "sessions_busy"
+	// ErrorCodeBindingExpired: the attest-lb binding of this connection lapsed
+	// before the request, so the router no longer vouches for what the
+	// connection attested (route policy E7). Attest again.
+	ErrorCodeBindingExpired = "binding_expired"
 )
 
 // ErrorResponse is the body a C8s service returns with a non-2xx status: one

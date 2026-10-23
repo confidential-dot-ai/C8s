@@ -211,11 +211,15 @@ func TestE7BindingCapRefusesHandshakes(t *testing.T) {
 		}
 	}
 	clock.Advance(lbBindingIdle + time.Second)
+	if code := errorCode(t, attestLB(t, rs.ts.URL, "1.2")); code != types.ErrorCodeSessionsBusy {
+		t.Fatalf("attest-lb while a lapsed binding holds its room = %q, want %q", code, types.ErrorCodeSessionsBusy)
+	}
+	clock.Advance(lbBindingLife)
 	if code := errorCode(t, attestLB(t, rs.ts.URL, "1.2")); code != "" {
-		t.Fatalf("attest-lb once the binding expired = %q, want success", code)
+		t.Fatalf("attest-lb once the binding's connection is gone = %q, want success", code)
 	}
 	if _, ok := rs.bindings.entries["1.1"]; ok {
-		t.Fatal("expired binding survived a handshake at the cap")
+		t.Fatal("gone binding survived a handshake at the cap")
 	}
 }
 
@@ -303,12 +307,21 @@ func TestE7BindingIdleLifetime(t *testing.T) {
 	if _, ok := b.entries["1.1"]; !ok {
 		t.Fatal("used binding expired, want it kept")
 	}
-	if _, ok := b.entries["1.2"]; ok {
-		t.Fatal("idle binding survived prune")
+	if e, ok := b.entries["1.2"]; !ok || e.refused != types.ErrorCodeBindingExpired || e.client != "" {
+		t.Fatalf("idle binding after prune = %+v, %v, want it lapsed to %s and charged to no client", e, ok, types.ErrorCodeBindingExpired)
+	}
+	if n := b.perClient["c"]; n != 1 {
+		t.Fatalf("client charge after a lapse = %d, want 1", n)
 	}
 	clock.Advance(lbBindingIdle + time.Second)
+	if _, refused, _, release, ok := b.Hold("1.1"); !ok || refused != types.ErrorCodeBindingExpired {
+		t.Fatalf("Hold() of an idle binding = %q, %v, want %q, true: a lapse fails closed", refused, ok, types.ErrorCodeBindingExpired)
+	} else {
+		release()
+	}
+	clock.Advance(lbBindingLife + time.Second)
 	if _, _, _, _, ok := b.Hold("1.1"); ok {
-		t.Fatal("Hold() of an idle binding = true, want it expired")
+		t.Fatal("Hold() past the connection's life = true, want the binding dropped")
 	}
 }
 
@@ -357,8 +370,15 @@ func TestE7InsertPrunesExpiredBindings(t *testing.T) {
 	if err := b.bind("1.2", "c", routing.Binding{}); err != nil {
 		t.Fatal(err)
 	}
+	if e, ok := b.entries["1.1"]; !ok || e.refused != types.ErrorCodeBindingExpired {
+		t.Fatalf("idle binding after an insert = %+v, %v, want it lapsed", e, ok)
+	}
+	clock.Advance(lbBindingLife)
+	if err := b.bind("1.3", "c", routing.Binding{}); err != nil {
+		t.Fatal(err)
+	}
 	if _, ok := b.entries["1.1"]; ok {
-		t.Fatal("expired binding survived an insert")
+		t.Fatal("gone binding survived an insert")
 	}
 }
 

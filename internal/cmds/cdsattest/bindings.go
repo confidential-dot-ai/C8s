@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/c8s/internal/routing"
+	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
 var (
@@ -16,16 +17,19 @@ var (
 // Bindings records, per public connection, what the attest-lb handshake that
 // arrived on it bound (E5). nginx names the connection (E8) and never reuses
 // a name while the connection is open, but the store does not see the close:
-// a binding outlives its connection by up to the idle lifetime, which is why
-// the lifetime slides on use and expired bindings are pruned. A binding with a
-// request in flight never expires: the routing location allows a request far
-// longer than the idle lifetime (E7). The routing
-// listener reads it through routing.Bindings. It is safe for concurrent use.
+// a binding outlives its connection, which is why the lifetime slides on use.
+// A binding idle past lbBindingIdle lapses: it stays, refusing the
+// connection with binding_expired and charged to no client, until nginx must
+// have closed the connection (lbBindingLife), so a lapse never fails open. A
+// binding with a request in flight never lapses: the routing location allows
+// a request far longer than the idle lifetime (E7). The routing listener
+// reads it through routing.Bindings. It is safe for concurrent use.
 type Bindings struct {
 	mu        sync.Mutex
 	entries   map[string]lbBinding
 	perClient map[string]int // client key -> its live bindings
 	idle      time.Duration
+	life      time.Duration
 	max       int
 	maxClient int
 	gen       uint64
@@ -41,13 +45,13 @@ type lbBinding struct {
 	inFlight int
 }
 
-func (e lbBinding) expired(now time.Time, idle time.Duration) bool {
-	return e.inFlight == 0 && now.Sub(e.lastUsed) > idle
+func (e lbBinding) idleFor(now time.Time, d time.Duration) bool {
+	return e.inFlight == 0 && now.Sub(e.lastUsed) > d
 }
 
 // NewBindings returns an empty store.
 func NewBindings() *Bindings {
-	return &Bindings{entries: map[string]lbBinding{}, perClient: map[string]int{}, idle: lbBindingIdle, max: maxLBBindings, maxClient: maxLBBindingsPerClient, now: time.Now}
+	return &Bindings{entries: map[string]lbBinding{}, perClient: map[string]int{}, idle: lbBindingIdle, life: lbBindingLife, max: maxLBBindings, maxClient: maxLBBindingsPerClient, now: time.Now}
 }
 
 // Hold returns the live binding of connection, the code a request on it was
@@ -60,10 +64,11 @@ func (b *Bindings) Hold(connection string) (bound routing.Binding, refused strin
 	if !ok {
 		return routing.Binding{}, "", 0, nil, false
 	}
-	if entry.expired(b.now(), b.idle) {
+	if entry.idleFor(b.now(), b.life) {
 		b.dropLocked(connection, entry)
 		return routing.Binding{}, "", 0, nil, false
 	}
+	entry = b.lapseLocked(connection, entry)
 	entry.inFlight++
 	entry.lastUsed = b.now()
 	b.entries[connection] = entry
@@ -111,10 +116,7 @@ func (b *Bindings) bind(connection, client string, binding routing.Binding) erro
 		return err
 	}
 	if old, ok := b.entries[connection]; ok {
-		b.perClient[old.client]--
-		if b.perClient[old.client] == 0 {
-			delete(b.perClient, old.client)
-		}
+		b.unchargeLocked(old.client)
 	}
 	b.perClient[client]++
 	b.gen++
@@ -126,10 +128,38 @@ func (b *Bindings) bind(connection, client string, binding routing.Binding) erro
 // holds b.mu.
 func (b *Bindings) dropLocked(connection string, entry lbBinding) {
 	delete(b.entries, connection)
-	b.perClient[entry.client]--
-	if b.perClient[entry.client] <= 0 {
-		delete(b.perClient, entry.client)
+	b.unchargeLocked(entry.client)
+}
+
+func (b *Bindings) unchargeLocked(client string) {
+	if client == "" {
+		return
 	}
+	if b.perClient[client]--; b.perClient[client] <= 0 {
+		delete(b.perClient, client)
+	}
+}
+
+// lapseLocked turns a binding idle past its lifetime into one that refuses
+// its connection with binding_expired and is charged to no client. It returns
+// the entry as stored. The caller holds b.mu.
+func (b *Bindings) lapseLocked(connection string, entry lbBinding) lbBinding {
+	if entry.refused != "" || !entry.idleFor(b.now(), b.idle) {
+		return entry
+	}
+	b.unchargeLocked(entry.client)
+	entry.client, entry.refused = "", types.ErrorCodeBindingExpired
+	b.entries[connection] = entry
+	return entry
+}
+
+// sweepLocked lapses or drops entry as its age requires. The caller holds b.mu.
+func (b *Bindings) sweepLocked(connection string, entry lbBinding) {
+	if entry.idleFor(b.now(), b.life) {
+		b.dropLocked(connection, entry)
+		return
+	}
+	b.lapseLocked(connection, entry)
 }
 
 // pruneOnInsert is how many entries an insert checks for expiry. Map order
@@ -137,14 +167,12 @@ func (b *Bindings) dropLocked(connection string, entry lbBinding) {
 const pruneOnInsert = 4
 
 func (b *Bindings) pruneSomeLocked() {
-	now, checked := b.now(), 0
+	checked := 0
 	for connection, entry := range b.entries {
 		if checked++; checked > pruneOnInsert {
 			return
 		}
-		if entry.expired(now, b.idle) {
-			b.dropLocked(connection, entry)
-		}
+		b.sweepLocked(connection, entry)
 	}
 }
 
@@ -176,7 +204,8 @@ func (b *Bindings) roomLocked(connection, client string) error {
 	return nil
 }
 
-// prune drops the bindings idle past their lifetime.
+// prune lapses the bindings idle past their lifetime and drops those whose
+// connection nginx has closed.
 func (b *Bindings) prune() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -184,10 +213,7 @@ func (b *Bindings) prune() {
 }
 
 func (b *Bindings) pruneLocked() {
-	now := b.now()
 	for connection, entry := range b.entries {
-		if entry.expired(now, b.idle) {
-			b.dropLocked(connection, entry)
-		}
+		b.sweepLocked(connection, entry)
 	}
 }

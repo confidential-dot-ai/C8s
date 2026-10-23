@@ -4500,6 +4500,9 @@ func Example_routerConfig() {
 	//
 	//     sendfile on;
 	//     keepalive_timeout 65;
+	//     # cds-attest keeps a lapsed attest-lb binding until a connection this
+	//     # old is closed (E7); change both together.
+	//     keepalive_time 1h;
 	//
 	//     # Pass a client's WebSocket upgrade (e.g. socket.io) through location /;
 	//     # other requests keep Connection: close to the routing listener.

@@ -95,11 +95,16 @@ const (
 	// sweepInterval paces the background eviction of idle and over-age
 	// sessions. Both conditions are also checked on use.
 	sweepInterval = 10 * time.Second
-	// lbBindingIdle is how long an attest-lb binding outlives the last
-	// request on its connection. It exceeds the router chart's nginx
-	// keepalive_timeout (65s), so no binding expires while nginx keeps its
-	// connection open (E7).
+	// lbBindingIdle is how long an attest-lb binding stays live after the
+	// last request on its connection. It exceeds the router chart's nginx
+	// keepalive_timeout (65s). A slow client or response can stretch the gap
+	// between requests past it, so a lapsed binding does not fail open: it
+	// refuses with binding_expired (E7) until the connection is gone.
 	lbBindingIdle = 2 * time.Minute
+	// lbBindingLife is when a lapsed binding is dropped: past the router
+	// chart's nginx keepalive_time (1h), measured from the connection's
+	// start, nginx has closed the connection, so nothing can reach the entry.
+	lbBindingLife = 65 * time.Minute
 	// maxLBBindings bounds the attest-lb bindings. At the bound a handshake is
 	// refused, never a binding dropped (E7).
 	maxLBBindings = 1 << 16

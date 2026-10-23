@@ -691,7 +691,9 @@ follows these rules:
   [Route evidence](routes-evidence.md#server).
 - Each router replica holds at most 65536 attest-lb bindings, and one
   client address prefix at most 512 of them. At either limit, new attest-lb
-  handshakes from that client get 503 `sessions_busy`.
+  handshakes from that client get 503 `sessions_busy`. A binding idle for
+  2 minutes lapses and refuses its connection with 503 `binding_expired`
+  until the client attests again.
 - The router serves cluster workloads only: it refuses a polled manifest that
   names an address backend (`serverName`, `ca`), keeps the applied one, and
   logs `the router serves cluster workloads only` with the host and path.
