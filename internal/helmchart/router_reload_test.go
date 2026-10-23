@@ -260,3 +260,101 @@ func scriptLog(t *testing.T, path string) string {
 	}
 	return string(data)
 }
+
+// A baked node takes its front-door mode from the launch file at runtime, so
+// the entrypoint adds the ACME certificate and key to the watch when that mode
+// is acme: issuance then reloads nginx instead of waiting for the next mesh
+// leaf renewal.
+func TestChartBakedRouterReloadWatchesTheACMECertificate(t *testing.T) {
+	out, err := helmTemplate(t, bakedArgs...)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	script := renderedConfigMap(t, out, "c8s-router-nginx").Data["reload.sh"]
+	for _, line := range []string{
+		`if [ "$(cat /run/c8s-node/router/front-door-mode)" = acme ]; then`,
+		`watched="$watched /etc/c8s-acme-tls/cert.pem /etc/c8s-acme-key/key.pem"`,
+	} {
+		if !strings.Contains(script, line) {
+			t.Errorf("baked reload.sh does not carry the line %s:\n%s", line, script)
+		}
+	}
+}
+
+// Running the baked script in both front-door modes: in acme mode a new ACME
+// pair reloads nginx; in cds mode the standby sidecar writes no ACME files and
+// nginx keeps serving, reloading on a mesh leaf change.
+func TestBakedRouterReloadFollowsTheFrontDoorMode(t *testing.T) {
+	out, err := helmTemplate(t, bakedArgs...)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	shipped := renderedConfigMap(t, out, "c8s-router-nginx").Data["reload.sh"]
+
+	for _, mode := range []string{"acme", "cds"} {
+		t.Run(mode, func(t *testing.T) {
+			dir := t.TempDir()
+			meshDir, acmeDir, launchDir := filepath.Join(dir, "mesh"), filepath.Join(dir, "acme"), filepath.Join(dir, "launch")
+			for _, d := range []string{meshDir, acmeDir, launchDir} {
+				if err := os.MkdirAll(d, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			writeAtomic(t, filepath.Join(launchDir, "front-door-mode"), mode)
+			for _, name := range []string{"tls.crt", "tls.key", "ca.crt"} {
+				writeAtomic(t, filepath.Join(meshDir, name), "mesh-1")
+			}
+			if mode == "acme" {
+				// The sidecar's bootstrap placeholder, present before nginx starts.
+				writeAtomic(t, filepath.Join(acmeDir, "cert.pem"), "placeholder")
+				writeAtomic(t, filepath.Join(acmeDir, "key.pem"), "placeholder")
+			}
+
+			body := strings.NewReplacer(
+				"/etc/c8s/certs/", meshDir+"/",
+				"/etc/c8s-acme-tls/", acmeDir+"/",
+				"/etc/c8s-acme-key/", acmeDir+"/",
+				"/run/c8s-node/router/", launchDir+"/",
+			).Replace(shipped)
+			script := filepath.Join(dir, "reload.sh")
+			if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			ready := filepath.Join(dir, "ready")
+			reloads := filepath.Join(dir, "reloads")
+			stubNginx(t, dir, acmeDir, ready, reloads)
+
+			logPath := filepath.Join(dir, "reload.log")
+			logFile, err := os.Create(logPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer logFile.Close()
+			cmd := exec.Command("/bin/sh", script)
+			cmd.Env = append(os.Environ(), "PATH="+filepath.Join(dir, "bin")+":"+os.Getenv("PATH"))
+			cmd.Stdout = logFile
+			cmd.Stderr = logFile
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				_ = cmd.Process.Signal(syscall.SIGTERM)
+				_ = cmd.Wait()
+			})
+			waitForFile(t, ready, "the entrypoint never started nginx", logPath)
+
+			if mode == "acme" {
+				// Issuance replaces the placeholder; the mesh leaf is unchanged.
+				writeAtomic(t, filepath.Join(acmeDir, "key.pem"), "issued")
+				writeAtomic(t, filepath.Join(acmeDir, "cert.pem"), "issued")
+				waitForFile(t, reloads, "nginx was never reloaded after ACME issuance", logPath)
+				return
+			}
+			writeAtomic(t, filepath.Join(meshDir, "tls.crt"), "mesh-2")
+			waitForFile(t, reloads, "nginx was never reloaded after a mesh leaf renewal", logPath)
+			if cmd.ProcessState != nil || strings.Contains(scriptLog(t, logPath), "is not readable") {
+				t.Errorf("the entrypoint treated the absent standby ACME files as withdrawn:\n%s", scriptLog(t, logPath))
+			}
+		})
+	}
+}

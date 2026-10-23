@@ -213,9 +213,9 @@ func TestFloorRefusals(t *testing.T) {
 				// Only the sandbox's own bundle carries its id as its own
 				// container id; a workload claiming the type is still covered.
 				s.Annotations[annotationContainerType] = containerTypeSandbox
-				s.Process.Terminal = true
+				s.Process.Capabilities.Effective = append(s.Process.Capabilities.Effective, "CAP_SYS_ADMIN")
 			},
-			wants: "asks for a terminal",
+			wants: "effective capability CAP_SYS_ADMIN",
 		},
 		{
 			name: "a user namespace",
@@ -280,7 +280,7 @@ func TestFloorRefusals(t *testing.T) {
 			bundle: func(s *specs.Spec) {
 				s.Process = nil
 			},
-			wants: "no Linux process",
+			wants: "describes no process",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -327,7 +327,6 @@ func TestFloorLeavesExemptContainersUntouched(t *testing.T) {
 	cilium := workloadBundle()
 	cilium.Annotations[annotationSandboxNamespace] = "kube-system"
 	cilium.Process.User = specs.User{}
-	cilium.Process.Terminal = true
 	cilium.Process.NoNewPrivileges = false
 	cilium.Process.Capabilities.Effective = append(cilium.Process.Capabilities.Effective, "CAP_NET_ADMIN", "CAP_SYS_ADMIN")
 	if err := requireFloor(cilium, "ctr", nil, testFloor()); err != nil {
@@ -344,9 +343,55 @@ func TestFloorLeavesExemptContainersUntouched(t *testing.T) {
 	// A container of a pod in no namespace is covered, not exempt.
 	unnamed := workloadBundle()
 	delete(unnamed.Annotations, annotationSandboxNamespace)
-	unnamed.Process.Terminal = true
+	unnamed.Process.NoNewPrivileges = false
 	if err := requireFloor(unnamed, "ctr", nil, testFloor()); err == nil {
 		t.Fatal("a container naming no namespace escaped the floor")
+	}
+}
+
+// Attachability is refused for every container the wrapper creates, including
+// the ones the floor exempts: an exempt namespace's container and the pod's
+// own sandbox.
+func TestNoContainerIsCreatedAttachable(t *testing.T) {
+	pipeRead, pipeWrite, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		pipeRead.Close()
+		pipeWrite.Close()
+	})
+
+	exempt := func() *specs.Spec {
+		bundle := workloadBundle()
+		bundle.Annotations[annotationSandboxNamespace] = "kube-system"
+		return bundle
+	}
+	sandbox := func() *specs.Spec {
+		bundle := workloadBundle()
+		bundle.Annotations[annotationContainerType] = containerTypeSandbox
+		return bundle
+	}
+	for _, tc := range []struct {
+		name        string
+		bundle      func() *specs.Spec
+		containerID string
+	}{
+		{name: "an exempt namespace's container", bundle: exempt, containerID: "ctr"},
+		{name: "the pod's own sandbox", bundle: sandbox, containerID: "sandbox-1"},
+	} {
+		t.Run(tc.name+" with a terminal", func(t *testing.T) {
+			bundle := tc.bundle()
+			bundle.Process.Terminal = true
+			if err := requireFloor(bundle, tc.containerID, nil, testFloor()); err == nil {
+				t.Fatalf("%s was created with a terminal", tc.name)
+			}
+		})
+		t.Run(tc.name+" carrying standard input", func(t *testing.T) {
+			if err := requireFloor(tc.bundle(), tc.containerID, pipeRead, testFloor()); err == nil {
+				t.Fatalf("%s was created with the container's standard input", tc.name)
+			}
+		})
 	}
 }
 

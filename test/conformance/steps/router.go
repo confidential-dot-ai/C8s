@@ -102,8 +102,8 @@ func (w *world) routerConf() (*nginxConf, error) {
 
 // published is the exact location serving a mounted file as contentType,
 // and, when file is given, a file of that name: the discovery document
-// (application/json) or the CDS-issued certificate (cert.pem, beside the
-// mesh CA's ca.pem, both application/x-pem-file).
+// (application/json) or the CDS-issued certificate (tls.crt, beside the
+// mesh CA's ca.crt, both application/x-pem-file).
 func (c *nginxConf) published(contentType, file string) string {
 	for path, block := range c.exact {
 		alias := aliasRE.FindStringSubmatch(block)
@@ -334,7 +334,7 @@ func presentsCDSCertificate(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	path := c.published("application/x-pem-file", "cert.pem")
+	path := c.published("application/x-pem-file", "tls.crt")
 	if path == "" {
 		return errors.New("the router publishes no CDS-issued certificate")
 	}
