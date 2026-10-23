@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -386,10 +385,12 @@ type snapshot struct {
 	// Format is the encoding of the snapshot (0 is baseFormat).
 	Format uint32 `json:"format,omitempty"`
 	// Decrees is the decree record.
-	Decrees   []DecreeRecord          `json:"decrees,omitempty"`
-	Core      Core                    `json:"core"`
-	Key       []byte                  `json:"key,omitempty"`
-	Allowlist allowlist.Snapshot      `json:"allowlist"`
+	Decrees []DecreeRecord `json:"decrees,omitempty"`
+	Core    Core           `json:"core"`
+	Key     []byte         `json:"key,omitempty"`
+	// Allowlist is the allowlist database image (allowlist.Store.Dump). It
+	// follows the header line as raw bytes, not inside it.
+	Allowlist []byte                  `json:"-"`
 	Secrets   []secrets.SnapshotEntry `json:"secrets"`
 	Bindings  []sandboxledger.Binding `json:"bindings"`
 }
@@ -453,31 +454,21 @@ func (f *FSM) Restore(rc io.ReadCloser) error {
 // ErrStaleSnapshot refuses a snapshot older than the state already applied.
 var ErrStaleSnapshot = errors.New("cds-ha: refusing a snapshot older than the applied state")
 
-// A snapshot is zstd-compressed JSON lines: a header line with everything
-// but the allowlist tables, then one line per allowlist row (a one-row
-// allowlist.Snapshot, which keeps BLOB columns apart). The allowlist history
-// keeps a whole document per version, so it is most of the state; lines keep
-// encoding and decoding to one row at a time, and the zstd window reaches
-// back past the previous version, so each near-copy of a document is stored
-// as a reference.
+// A snapshot is zstd-compressed: a JSON header line with everything but the
+// allowlist, then the allowlist database image as raw bytes. The allowlist
+// history keeps a whole document per version, so it is most of the state;
+// the zstd window reaches back past the previous version, so each near-copy
+// of a document is stored as a reference.
 func encodeSnapshot(w io.Writer, sn snapshot) error {
 	zw, err := zstd.NewWriter(w, zstd.WithWindowSize(snapshotWindow), zstd.WithEncoderConcurrency(1))
 	if err != nil {
 		return err
 	}
-	enc := json.NewEncoder(zw)
-	head := sn
-	head.Allowlist = nil
-	if err := enc.Encode(head); err != nil {
+	if err := json.NewEncoder(zw).Encode(sn); err != nil {
 		return err
 	}
-	tables := slices.Sorted(maps.Keys(sn.Allowlist))
-	for _, t := range tables {
-		for _, row := range sn.Allowlist[t] {
-			if err := enc.Encode(allowlist.Snapshot{t: {row}}); err != nil {
-				return err
-			}
-		}
+	if _, err := zw.Write(sn.Allowlist); err != nil {
+		return err
 	}
 	return zw.Close()
 }
@@ -488,7 +479,7 @@ func encodeSnapshot(w io.Writer, sn snapshot) error {
 const snapshotWindow = 16 << 20
 
 // decodeSnapshot reads a snapshot in a format from baseFormat to readable.
-// With headOnly it stops after the header line, without the allowlist rows.
+// With headOnly it stops after the header line, without the allowlist.
 func decodeSnapshot(r io.Reader, readable uint32, headOnly bool) (snapshot, error) {
 	d, err := zstd.NewReader(r, zstd.WithDecoderMaxWindow(snapshotWindow), zstd.WithDecoderConcurrency(1))
 	if err != nil {
@@ -509,20 +500,16 @@ func decodeSnapshot(r io.Reader, readable uint32, headOnly bool) (snapshot, erro
 	if headOnly {
 		return sn, nil
 	}
-	sn.Allowlist = allowlist.Snapshot{}
-	for {
-		var rows allowlist.Snapshot
-		err := dec.Decode(&rows)
-		if errors.Is(err, io.EOF) {
-			return sn, nil
-		}
-		if err != nil {
-			return snapshot{}, fmt.Errorf("decode snapshot: %w", err)
-		}
-		for t, rs := range rows {
-			sn.Allowlist[t] = append(sn.Allowlist[t], rs...)
-		}
+	// The encoder ends the header with a newline; the image starts after it.
+	rest := io.MultiReader(dec.Buffered(), d)
+	var nl [1]byte
+	if _, err := io.ReadFull(rest, nl[:]); err != nil || nl[0] != '\n' {
+		return snapshot{}, errors.New("decode snapshot: no allowlist image after the header")
 	}
+	if sn.Allowlist, err = io.ReadAll(rest); err != nil {
+		return snapshot{}, fmt.Errorf("decode snapshot: %w", err)
+	}
+	return sn, nil
 }
 
 func (f *FSM) restore(sn snapshot) error {
