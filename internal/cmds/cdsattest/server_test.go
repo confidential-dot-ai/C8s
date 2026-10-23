@@ -37,8 +37,8 @@ func (f backendFunc) Forward(outer *http.Request, req types.TunnelRequest, _ rou
 
 func (backendFunc) Acquire(string, int64) (func(), bool) { return func() {}, true }
 
-// RouterDigest is that of the unstamped test mesh identities.
-func (backendFunc) RouterDigest() (string, error) { return "", nil }
+// SyncRouterDigest is that of the unstamped test mesh identities.
+func (backendFunc) SyncRouterDigest(string) (string, error) { return "", nil }
 
 // echoBackend reflects the request, for tests of the channel rather than of
 // routing.

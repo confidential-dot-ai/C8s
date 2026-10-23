@@ -211,7 +211,7 @@ func TestE7BindingCapRefusesHandshakes(t *testing.T) {
 	if code := errorCode(t, attestLB(t, rs.ts.URL, "1.2")); code != "" {
 		t.Fatalf("attest-lb once the binding expired = %q, want success", code)
 	}
-	if _, ok := rs.bindings.Lookup("1.1"); ok {
+	if _, _, ok := rs.bindings.Lookup("1.1"); ok {
 		t.Fatal("expired binding survived a handshake at the cap")
 	}
 }
@@ -230,7 +230,7 @@ func TestE7BindingIdleLifetime(t *testing.T) {
 	b.Touch("1.1")
 	clock.Advance(2 * time.Second)
 	b.prune()
-	if _, ok := b.Lookup("1.1"); !ok {
+	if _, _, ok := b.Lookup("1.1"); !ok {
 		t.Fatal("touched binding expired, want it kept")
 	}
 	if _, ok := b.entries["1.2"]; ok {
@@ -248,7 +248,65 @@ func TestE5HandshakeWaitsForTheRouterDigest(t *testing.T) {
 		cfg.MeshIdentityCertFile, cfg.MeshIdentityKeyFile, cfg.MeshIdentityCAFile = unstamped.certFile, unstamped.keyFile, unstamped.caFile
 	})
 	rs.apply(t, 1, time.Hour)
+	rs.poll(t)
 	if pq, lb := rs.handshakeCodes(t); pq != types.ErrorCodeBindingUnavailable || lb != types.ErrorCodeBindingUnavailable {
 		t.Fatalf("handshakes with a leaf the router does not hold = %q, %q, want %q", pq, lb, types.ErrorCodeBindingUnavailable)
+	}
+}
+
+// TestE6RefusalOutlivesItsCause: a connection refused once stays refused when
+// the router digest changes back, until a handshake on it binds again.
+func TestE6RefusalOutlivesItsCause(t *testing.T) {
+	rs := newRoutedServer(t)
+	listener := httptest.NewServer(rs.proxy)
+	t.Cleanup(listener.Close)
+	rs.apply(t, 1, time.Hour)
+	if code := errorCode(t, attestLB(t, rs.ts.URL, "3.1")); code != "" {
+		t.Fatalf("attest-lb = %q, want success", code)
+	}
+	original := namedLeaf(t, rs.ca, "router")
+	publishLeaf(t, rs.meshDir, namedLeafUnder(t, rs.ca, "router", bytes.Repeat([]byte{0x43}, 32)), rs.ca)
+	rs.poll(t)
+	if status, body := routedGet(t, listener.URL, "3.1"); status != http.StatusServiceUnavailable || body != types.ErrorCodeRouterDigestChanged {
+		t.Fatalf("GET after the router renewed = %d %q, want 503 %q", status, body, types.ErrorCodeRouterDigestChanged)
+	}
+	publishLeaf(t, rs.meshDir, original, rs.ca)
+	rs.poll(t)
+	if status, body := routedGet(t, listener.URL, "3.1"); status != http.StatusServiceUnavailable || body != types.ErrorCodeRouterDigestChanged {
+		t.Fatalf("GET after the router digest changed back = %d %q, want 503 %q", status, body, types.ErrorCodeRouterDigestChanged)
+	}
+	if len(rs.lastHost) != 0 {
+		t.Fatal("a refused request reached the backend")
+	}
+	if code := errorCode(t, attestLB(t, rs.ts.URL, "3.1")); code != "" {
+		t.Fatalf("attest-lb again = %q, want success", code)
+	}
+	if status, body := routedGet(t, listener.URL, "3.1"); status != http.StatusOK {
+		t.Fatalf("GET after attesting again = %d %q, want 200", status, body)
+	}
+}
+
+// TestB10HandshakeRetiresPoolsOfARenewedLeaf: a handshake presenting a leaf
+// renewed under another digest retires the connections pooled under the old
+// one first, without waiting for a poll.
+func TestB10HandshakeRetiresPoolsOfARenewedLeaf(t *testing.T) {
+	rs := newRoutedServer(t)
+	listener := httptest.NewServer(rs.proxy)
+	t.Cleanup(listener.Close)
+	rs.apply(t, 1, time.Hour)
+	rs.poll(t)
+	if status, body := routedGet(t, listener.URL, ""); status != http.StatusOK {
+		t.Fatalf("GET = %d %q, want 200", status, body)
+	}
+	<-rs.lastHost
+
+	// The backend stays stamped under the old digest: a fresh dial fails B8,
+	// a pooled connection would not.
+	publishLeaf(t, rs.meshDir, namedLeafUnder(t, rs.ca, "router", bytes.Repeat([]byte{0x43}, 32)), rs.ca)
+	if code := errorCode(t, attestLB(t, rs.ts.URL, "")); code != "" {
+		t.Fatalf("attest-lb with the renewed leaf = %q, want success", code)
+	}
+	if status, body := routedGet(t, listener.URL, ""); status != http.StatusBadGateway || !strings.Contains(body, "backend_digest_mismatch") {
+		t.Fatalf("GET after the handshake = %d %q, want 502 backend_digest_mismatch: the old pool must be retired", status, body)
 	}
 }

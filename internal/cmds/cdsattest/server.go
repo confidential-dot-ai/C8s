@@ -145,8 +145,9 @@ var (
 //
 // Session gates a new attested session (A2, F2) and returns the manifest whose
 // digest it binds (E1). Current is the applied manifest the publication serves.
-// RouterDigest refreshes and returns the router digest bound sessions are
-// checked against (E6).
+// SyncRouterDigest returns the router digest bound sessions are checked
+// against (E6), rereading the router's credential first when it differs from
+// leaf (B10).
 // Acquire reserves tunnel budget for a record of recordBytes from client.
 // Forward routes a request decrypted from the tunnel of a session bound to
 // bound; outer is the tunnel request itself. A *routing.BindingChangedError
@@ -154,7 +155,7 @@ var (
 type Router interface {
 	Session() (*routing.Applied, error)
 	Current() *routing.Applied
-	RouterDigest() (string, error)
+	SyncRouterDigest(leaf string) (string, error)
 	Acquire(client string, recordBytes int64) (release func(), ok bool)
 	Forward(outer *http.Request, req types.TunnelRequest, bound routing.Binding) (types.TunnelResponse, error)
 }
@@ -702,13 +703,13 @@ func (s *Server) routesAdmit(w http.ResponseWriter) (*routing.Applied, bool) {
 	return applied, true
 }
 
-// routerDigest returns the router digest of identity's leaf (E5), or refuses
-// the handshake while the router checks requests against another one: a leaf
-// renewed since the router last read its credential would bind a digest every
-// request of the session is then refused on (E6).
+// routerDigest returns the router digest of identity's leaf (E5) once the
+// router checks requests against it, syncing the router to a renewed leaf
+// first (B10). While the two still differ it refuses the handshake: every
+// request of the session would be refused (E6).
 func (s *Server) routerDigest(w http.ResponseWriter, identity *meshIdentity) (string, bool) {
 	leaf := identity.routerDigest()
-	current, err := s.routes.RouterDigest()
+	current, err := s.routes.SyncRouterDigest(leaf)
 	if err != nil || current != leaf {
 		s.log.Warn("router digest differs from the attested mesh leaf's", "error", err)
 		writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeBindingUnavailable, "the router's mesh identity is renewing; retry shortly")

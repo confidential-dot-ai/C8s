@@ -344,8 +344,12 @@ func (t *Transports) refuseMeshAnchor(cs tls.ConnectionState) error {
 }
 
 // RouterDigest is the router stamp's allowlist digest as of the last poll,
-// empty for none (B10). A bound session is checked against it (E6).
+// empty for none (B10). A bound session is checked against it (E6). A nil
+// Transports, which dials no workload, has none.
 func (t *Transports) RouterDigest() string {
+	if t == nil {
+		return ""
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.routerDigest

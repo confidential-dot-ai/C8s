@@ -15,14 +15,23 @@ import (
 type fakeBindings struct {
 	mu      sync.Mutex
 	entries map[string]Binding
+	refused map[string]string
 	touched map[string]int
 }
 
-func (b *fakeBindings) Lookup(connection string) (Binding, bool) {
+func (b *fakeBindings) Lookup(connection string) (Binding, string, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	bound, ok := b.entries[connection]
-	return bound, ok
+	return bound, b.refused[connection], ok
+}
+
+func (b *fakeBindings) Refuse(connection, code string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.refused[connection] == "" {
+		b.refused[connection] = code
+	}
 }
 
 func (b *fakeBindings) Touch(connection string) {
@@ -54,7 +63,7 @@ func TestE6ListenerRefusesAChangedBinding(t *testing.T) {
 	if err := f.transports.dropMeshPools(); err != nil { // records the router digest
 		t.Fatal(err)
 	}
-	bindings := &fakeBindings{entries: map[string]Binding{"1.1": f.bound()}, touched: map[string]int{}}
+	bindings := &fakeBindings{entries: map[string]Binding{"1.1": f.bound()}, refused: map[string]string{}, touched: map[string]int{}}
 	f.proxy = NewProxy(ProxyConfig{State: f.state, Transports: f.transports, Bindings: bindings})
 
 	if w := f.getOn("1.1"); w.Code != http.StatusOK {
@@ -79,7 +88,12 @@ func TestE6ListenerRefusesAChangedBinding(t *testing.T) {
 		}
 	}
 
+	// The binding stays refused once its digests hold again (E6).
 	bindings.entries["1.1"] = f.bound()
+	if w := f.getOn("1.1"); w.Code != http.StatusServiceUnavailable || strings.TrimSpace(w.Body.String()) != types.ErrorCodeRouteDigestChanged {
+		t.Fatalf("GET / on a refused connection whose digests hold again = %d %q, want 503 %q", w.Code, w.Body.String(), types.ErrorCodeRouteDigestChanged)
+	}
+	delete(bindings.refused, "1.1")
 	f.renew(t, issueStampedLeaf(t, f.mesh, "router", digestOf(0x43)))
 	if err := f.transports.dropMeshPools(); err != nil {
 		t.Fatal(err)

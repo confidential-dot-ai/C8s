@@ -11,7 +11,10 @@ import (
 var errBindingsFull = errors.New("too many attest-lb connections are bound; retry shortly")
 
 // Bindings records, per public connection, what the attest-lb handshake that
-// arrived on it bound (E5). nginx names the connection (E8). The routing
+// arrived on it bound (E5). nginx names the connection (E8) and never reuses
+// a name while the connection is open, but the store does not see the close:
+// a binding outlives its connection by up to the idle lifetime, which is why
+// the lifetime slides on use and expired bindings are pruned. The routing
 // listener reads it through routing.Bindings. It is safe for concurrent use.
 type Bindings struct {
 	mu      sync.Mutex
@@ -23,6 +26,7 @@ type Bindings struct {
 
 type lbBinding struct {
 	routing.Binding
+	refused  string // the code a request on the connection was refused with
 	lastUsed time.Time
 }
 
@@ -31,19 +35,31 @@ func NewBindings() *Bindings {
 	return &Bindings{entries: map[string]lbBinding{}, idle: lbBindingIdle, max: maxLBBindings, now: time.Now}
 }
 
-// Lookup returns the live binding of connection.
-func (b *Bindings) Lookup(connection string) (routing.Binding, bool) {
+// Lookup returns the live binding of connection and the code a request on it
+// was refused with.
+func (b *Bindings) Lookup(connection string) (bound routing.Binding, refused string, ok bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	entry, ok := b.entries[connection]
 	if !ok {
-		return routing.Binding{}, false
+		return routing.Binding{}, "", false
 	}
 	if b.now().Sub(entry.lastUsed) > b.idle {
 		delete(b.entries, connection)
-		return routing.Binding{}, false
+		return routing.Binding{}, "", false
 	}
-	return entry.Binding, true
+	return entry.Binding, entry.refused, true
+}
+
+// Refuse records that a request on connection was refused with code; only a
+// new handshake on the connection clears it (E6).
+func (b *Bindings) Refuse(connection, code string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if entry, ok := b.entries[connection]; ok && entry.refused == "" {
+		entry.refused = code
+		b.entries[connection] = entry
+	}
 }
 
 // Touch restarts the idle lifetime of connection's binding.

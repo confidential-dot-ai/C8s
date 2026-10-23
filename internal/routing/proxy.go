@@ -68,10 +68,12 @@ type Binding struct {
 }
 
 // Bindings holds the attest-lb bindings by connection identifier. Lookup
-// reports the binding of connection and whether it has one; Touch restarts its
-// idle lifetime (E7).
+// reports the binding of connection, the code a request on it was refused
+// with ("" for none), and whether it has one. Refuse records that refusal, so
+// the connection stays refused (E6). Touch restarts its idle lifetime (E7).
 type Bindings interface {
-	Lookup(connection string) (Binding, bool)
+	Lookup(connection string) (bound Binding, refused string, ok bool)
+	Refuse(connection, code string)
 	Touch(connection string)
 }
 
@@ -148,10 +150,15 @@ func (p *Proxy) Session() (*Applied, error) { return p.state.Session() }
 // Current returns the applied manifest, or nil before the first apply.
 func (p *Proxy) Current() *Applied { return p.state.Current() }
 
-// RouterDigest rereads the router's mesh credential as a poll does (B10) and
-// returns the router digest requests are then checked against (E6), so a
-// handshake binds the digest its session is checked against.
-func (p *Proxy) RouterDigest() (string, error) {
+// SyncRouterDigest returns the router digest requests are checked against
+// (E6). When it differs from leaf, the digest of the leaf a handshake is about
+// to present, it first rereads the router's credential as a poll does, so the
+// pools under the previous digest are retired before the renewed leaf is
+// presented (B10).
+func (p *Proxy) SyncRouterDigest(leaf string) (string, error) {
+	if current := p.transports.RouterDigest(); current == leaf || p.transports == nil {
+		return current, nil
+	}
 	if err := p.transports.dropMeshPools(); err != nil {
 		return "", err
 	}
@@ -195,13 +202,19 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if p.bindings != nil && connection != "" {
-		if bound, ok := p.bindings.Lookup(connection); ok {
+		if bound, refused, ok := p.bindings.Lookup(connection); ok {
 			// Refused requests slide the lifetime too, so the connection stays
 			// refused while nginx keeps it open; the deferred touch covers a
 			// request that outlasts it (E7).
 			p.bindings.Touch(connection)
 			defer p.bindings.Touch(connection)
-			if code := p.changed(bound, applied); code != "" {
+			code := refused
+			if code == "" {
+				code = p.changed(bound, applied)
+			}
+			if code != "" {
+				// A digest changing back does not route the connection again (E6).
+				p.bindings.Refuse(connection, code)
 				p.log.Debug("bound request refused", "code", code, "host", r.Host)
 				http.Error(w, code, http.StatusServiceUnavailable)
 				return
