@@ -76,32 +76,30 @@ func TestVerifyPinDecree(t *testing.T) {
 	pinA, _ := a.Pin()
 	pinB, _ := b.Pin()
 	sign := func(key *ecdsa.PrivateKey, d Decree) SignedDecree {
-		t.Helper()
-		d.IntentID, d.ExpiresAt = "i", time.Now().Add(-time.Hour) // expired: clients ignore expiry
-		sd, err := SignDecree(d, key)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return sd
+		d.ExpiresAt = time.Now().Add(-time.Hour) // expired: clients ignore expiry
+		return signDecree(t, key, d)
 	}
 	good := sign(k, Decree{ClusterID: testCluster, BaseEpoch: 4, Kind: UpdateMeasurements, Measurements: []string{pinA, pinB}, Images: []DecreeImage{a, b}})
 	if err := VerifyPinDecree(good, testCluster, pub); err != nil {
 		t.Fatal(err)
 	}
-	for name, sd := range map[string]SignedDecree{
-		"other cluster":   good,
-		"other key":       sign(other, good.Decree),
-		"no images":       sign(k, Decree{ClusterID: testCluster, BaseEpoch: 4, Kind: UpdateMeasurements, Measurements: []string{pinA}}),
-		"genesis":         sign(k, Decree{ClusterID: testCluster, Kind: Genesis, BootstrapNode: "n0", Images: []DecreeImage{a}}),
-		"pins not images": sign(k, Decree{ClusterID: testCluster, BaseEpoch: 4, Kind: UpdateMeasurements, Measurements: []string{pinA}, Images: []DecreeImage{b}}),
-		"bad image":       sign(k, Decree{ClusterID: testCluster, BaseEpoch: 4, Kind: UpdateMeasurements, Measurements: []string{"x"}, Images: []DecreeImage{{MRTD: "zz"}}}),
+	for name, c := range map[string]struct {
+		sd   SignedDecree
+		want string
+	}{
+		"other cluster":   {good, "cluster"},
+		"other key":       {sign(other, good.Decree), "signature"},
+		"no images":       {sign(k, Decree{ClusterID: testCluster, BaseEpoch: 4, Kind: UpdateMeasurements, Measurements: []string{pinA}}), "no images"},
+		"genesis":         {sign(k, Decree{ClusterID: testCluster, Kind: Genesis, BootstrapNode: "n0", Images: []DecreeImage{a}}), "not exactly the pins"},
+		"pins not images": {sign(k, Decree{ClusterID: testCluster, BaseEpoch: 4, Kind: UpdateMeasurements, Measurements: []string{pinA}, Images: []DecreeImage{b}}), "not exactly the pins"},
+		"bad image":       {sign(k, Decree{ClusterID: testCluster, BaseEpoch: 4, Kind: UpdateMeasurements, Measurements: []string{"x"}, Images: []DecreeImage{{MRTD: "zz"}}}), "lowercase hex"},
 	} {
 		cluster := testCluster
 		if name == "other cluster" {
 			cluster = "elsewhere"
 		}
-		if err := VerifyPinDecree(sd, cluster, pub); err == nil {
-			t.Fatalf("%s: accepted", name)
+		if err := VerifyPinDecree(c.sd, cluster, pub); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: %v, want %q", name, err, c.want)
 		}
 	}
 }
