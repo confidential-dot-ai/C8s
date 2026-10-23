@@ -681,6 +681,14 @@ follows these rules:
   `--no-workload-claims`, the router binds no policy digest and checks
   workload backends by name alone; a client pinning the router's allowlist
   digest fails closed on the absent stamp.
+- An attested session routes only by the manifest and router digest its
+  handshake bound. After a route change or an allowlist change that renews
+  the router's leaf, the router answers that session's requests with 503
+  `route_digest_changed` or `router_digest_changed` and ends it; clients
+  reconnect and attest again, and no traffic moves to the new routes
+  unattested. At 65536 attest-lb bindings per replica, new attest-lb
+  handshakes get 503 `sessions_busy`. See
+  [Route evidence](routes-evidence.md#server).
 - The router serves cluster workloads only: it refuses a polled manifest that
   names an address backend (`serverName`, `ca`), keeps the applied one, and
   logs `the router serves cluster workloads only` with the host and path.
