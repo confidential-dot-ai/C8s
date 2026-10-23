@@ -1,11 +1,11 @@
 {
   "schema": 1,
-  "source": "3eddfb9ed4909133cfc0844ad4913b3b02d6a9fe",
-  "profileSource": "3eddfb9ed4909133cfc0844ad4913b3b02d6a9fe",
-  "buildRun": "39983734836",
-  "image": "ghcr.io/confidential-dot-ai/node-guest-base@sha256:627227387ec5d2f6fac223206aa248fe2487714b3ca8715531470b164fa74270",
-  "artifact": "ghcr.io/confidential-dot-ai/node-guest-base@sha256:c193dbc2354cc73d2825f66835ab4dce25b00536b53bb1f6727a938cb1bfd615",
-  "manifestSHA256": "ca07045681fe27b252c5d10eb1b063099b45f50bffa30948072a597a475185ed",
-  "diskSHA256": "aba9ed27d13084d3fb98dd92ad56dd0151fa85be669cc5f8808eddd5bf3cae6c",
-  "meshImage": "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:da3ff7d995a62ae63da59688eadbd323071e1c57ea9ef227adf8ad5a542c2642"
+  "source": "c7cf2f38de3b035fbce00fe22d2451e77cdcefa0",
+  "profileSource": "c7cf2f38de3b035fbce00fe22d2451e77cdcefa0",
+  "buildRun": "40009495268",
+  "image": "ghcr.io/confidential-dot-ai/node-guest-base@sha256:dc1352d9575053edb7245659b20b612d9cd3b903fb06a075749c630bfea2a9e0",
+  "artifact": "ghcr.io/confidential-dot-ai/node-guest-base@sha256:bc1007cbc3c5509a57387f3213d28302a7217cd547b826a0fec1de47dbfae516",
+  "manifestSHA256": "83960cf29e799a0ced9d145e056ae909be3d05b885fe5d755c471a5eace31bea",
+  "diskSHA256": "dad538e217013b0a09eb4471fff50c8f81aa668e7df1b0b364c2c7cc6555255a",
+  "meshImage": "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:461f7d916f0e3d0de24482ce6dda5e8eae948da743a0b4fd09bf14c3eb8ad5f2"
 }
