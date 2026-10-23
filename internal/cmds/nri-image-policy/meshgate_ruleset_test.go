@@ -119,7 +119,7 @@ func TestPodRulesetGivesEveryMemberThePolicyExits(t *testing.T) {
 		{Range: netip.MustParsePrefix("10.53.0.11/32"), Port: 8080},
 	}
 	for _, namespace := range []string{"default", routerNamespace} {
-		if got := policy.podRuleset(namespace).Exits; !slices.Equal(got, want) {
+		if got := policy.podRuleset(namespace, nil).Exits; !slices.Equal(got, want) {
 			t.Fatalf("exits of a pod in %s = %+v, want the CDS port and the policy's exit", namespace, got)
 		}
 	}
