@@ -149,7 +149,8 @@ container and matching CLI source are pinned in
 and component sources must agree. Update the complete pin set together after
 a paired production image build; the harness does not accept a development
 image or substitute a fake CDS. The lane tool (`test/tdxpod`) and the paired
-CLI build with the dispatched commit's Go toolchain.
+CLI build with the dispatched commit's Go toolchain, so the pinned source's
+`go` directive must not exceed the dispatched tree's.
 
 ```sh
 gh workflow run tdx-metal-e2e.yml --repo confidential-dot-ai/C8s \
