@@ -43,7 +43,9 @@ cleanup() {
 trap cleanup EXIT
 cw_namespace "$NS" || fail "create namespace $NS"
 
-expected=${E2E_HA_REPLICAS:-$(kubectl get nodes -l c8s.confidential.ai/role=cds --no-headers | wc -l)}
+# Ready cds nodes only: a rollout replaces cds nodes under new names, and the
+# old Node objects stay NotReady until someone deletes them.
+expected=${E2E_HA_REPLICAS:-$(kubectl get nodes -l c8s.confidential.ai/role=cds --no-headers | awk '$2=="Ready"' | wc -l)}
 [ "$expected" -ge 3 ] || fail "need at least 3 cds nodes, have $expected"
 
 json() { python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))'; }
