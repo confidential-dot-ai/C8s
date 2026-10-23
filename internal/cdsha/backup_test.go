@@ -200,28 +200,50 @@ func TestBackupWriteIsAtomic(t *testing.T) {
 	if err := st.PutBackup(ctx, first); err != nil {
 		t.Fatal(err)
 	}
-	// A crashed writer: its parts are there, its manifest never was.
+	// A crashed writer: its parts are there, its manifest never was. And a
+	// newer writer (a new leader) still writing its parts.
 	crashed := backupManifest{Gen: "e1-i6-dead", Parts: 2}
-	for i := range crashed.Parts {
-		cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: crashed.partName(testCluster, i), Namespace: "decrees",
-			Labels: map[string]string{LabelBackup: testCluster}}, BinaryData: map[string][]byte{keyPart: []byte("junk")}}
-		if _, err := kube.CoreV1().ConfigMaps("decrees").Create(ctx, cm, metav1.CreateOptions{}); err != nil {
-			t.Fatal(err)
+	newer := backupManifest{Gen: "e1-i9-cccc", Parts: 1}
+	for _, m := range []backupManifest{crashed, newer} {
+		for i := range m.Parts {
+			cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: m.partName(testCluster, i), Namespace: "decrees",
+				Labels: map[string]string{LabelBackup: testCluster}}, BinaryData: map[string][]byte{keyPart: []byte("junk")}}
+			if _, err := kube.CoreV1().ConfigMaps("decrees").Create(ctx, cm, metav1.CreateOptions{}); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 	got, err := st.GetBackup(ctx)
 	if err != nil || got.Meta.Index != 5 {
 		t.Fatalf("the stored backup broke under a crashed write: %v", err)
 	}
-	// The next backup goes in and sweeps the crashed parts.
+	// The next backup goes in and sweeps the crashed parts, not the newer
+	// writer's, which may still switch the manifest to them.
 	if err := st.PutBackup(ctx, seal(7)); err != nil {
 		t.Fatal(err)
 	}
-	list, _ := kube.CoreV1().ConfigMaps("decrees").List(ctx, metav1.ListOptions{})
-	for _, cm := range list.Items {
-		if strings.Contains(cm.Name, crashed.Gen) {
-			t.Fatalf("crashed part %s left behind", cm.Name)
+	parts := func() (names []string) {
+		list, _ := kube.CoreV1().ConfigMaps("decrees").List(ctx, metav1.ListOptions{})
+		for _, cm := range list.Items {
+			names = append(names, cm.Name)
 		}
+		return names
+	}
+	if names := strings.Join(parts(), " "); strings.Contains(names, crashed.Gen) || !strings.Contains(names, newer.Gen) {
+		t.Fatalf("after the sweep: %s", names)
+	}
+	// A write that fails part way deletes its own parts and only those.
+	failing := true
+	kube.PrependReactor("create", "configmaps", func(a k8stesting.Action) (bool, runtime.Object, error) {
+		name := a.(k8stesting.CreateAction).GetObject().(*corev1.ConfigMap).Name
+		return failing && strings.HasSuffix(name, "-1"), nil, errors.New("api down")
+	})
+	if err := st.PutBackup(ctx, seal(8)); err == nil {
+		t.Fatal("a failed part write succeeded")
+	}
+	failing = false
+	if names := strings.Join(parts(), " "); strings.Contains(names, "-e1-i8-") || !strings.Contains(names, newer.Gen) {
+		t.Fatalf("after a failed write: %s", names)
 	}
 	// A writer whose manifest changed under it loses: the update is
 	// conditional on the manifest it checked. The fake keeps no versions,
