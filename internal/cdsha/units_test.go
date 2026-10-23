@@ -3,6 +3,8 @@ package cdsha
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -145,7 +147,17 @@ func TestPeerVerifier(t *testing.T) {
 	unpinned, _ := newPeerCert(testCluster, MockAttestor{Measurement: "m9"})
 	otherCluster, _ := newPeerCert("tenant-b", MockAttestor{Measurement: "m1"})
 	plain := mustCA(t).Cert.Raw // no evidence extension
+	// The good certificate's key and evidence, but expired.
+	gc, _ := x509.ParseCertificate(good.Certificate[0])
+	gc.NotBefore, gc.NotAfter = time.Now().Add(-48*time.Hour), time.Now().Add(-time.Hour)
+	gc.ExtraExtensions = gc.Extensions
+	key := good.PrivateKey.(*ecdsa.PrivateKey)
+	expired, err := x509.CreateCertificate(rand.Reader, gc, gc, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for name, der := range map[string][]byte{
+		"expired":              expired,
 		"unpinned measurement": unpinned.Certificate[0],
 		"other cluster":        otherCluster.Certificate[0],
 		"no evidence":          plain,

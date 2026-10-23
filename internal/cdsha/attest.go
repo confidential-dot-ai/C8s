@@ -110,6 +110,12 @@ func (v peerVerifier) claims(der []byte) (Claims, error) {
 	if ev == nil {
 		return Claims{}, errors.New("peer certificate has no evidence")
 	}
+	// A replica renews its certificate every few hours: an expired one is
+	// an old key, perhaps a leaked one. (NotBefore is not checked: a peer
+	// clock a little ahead would refuse fresh certificates.)
+	if time.Now().After(cert.NotAfter) {
+		return Claims{}, fmt.Errorf("peer certificate expired at %s", cert.NotAfter.Format(time.RFC3339))
+	}
 	c, err := v.att.Verify(ev)
 	if err != nil {
 		return Claims{}, fmt.Errorf("peer evidence: %w", err)
