@@ -1,7 +1,6 @@
 package cdsha
 
 import (
-	"bufio"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -377,11 +376,7 @@ func callControl(addr string, cfg *tls.Config, v peerVerifier, timeout time.Dura
 	}
 	defer c.Close()
 	_ = c.SetDeadline(time.Now().Add(timeout))
-	w := bufio.NewWriter(c)
-	if err := json.NewEncoder(w).Encode(req); err != nil {
-		return controlResponse{}, err
-	}
-	if err := w.Flush(); err != nil {
+	if err := json.NewEncoder(c).Encode(req); err != nil { // one Write
 		return controlResponse{}, err
 	}
 	var resp controlResponse

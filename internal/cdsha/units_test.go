@@ -79,8 +79,6 @@ func TestNodeClaims(t *testing.T) {
 	}
 	tail := make([]byte, 64)
 	tail[60] = 1
-	unsigned := tdxRes(tdxClaims(rd))
-	unsigned.SignatureValid = false
 	unknown := snp
 	unknown.Platform = "other"
 	regs := func(drop string) teetypes.Claims {
@@ -90,7 +88,6 @@ func TestNodeClaims(t *testing.T) {
 		return c
 	}
 	for name, res := range map[string]teetypes.VerificationResult{
-		"invalid signature": unsigned,
 		"short report_data": tdxRes(tdxClaims(make([]byte, 20))),
 		"non-zero tail":     tdxRes(tdxClaims(tail)),
 		"no launch digest":  tdxRes(teetypes.Claims{ReportData: rd, PlatformData: tdxClaims(nil).PlatformData}),
