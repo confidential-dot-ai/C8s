@@ -27,9 +27,8 @@ type exitDecision struct {
 	undecided error
 	// version is the served allowlist the decision was read from.
 	version uint64
-	// shadowed are entries with exits never granted to this pod: their launch
-	// is not pinned, or the pod completes them and another entry also admits
-	// their containers.
+	// shadowed are entries with exits whose containers the pod completes, and
+	// which another entry also admits: their exits are never granted.
 	shadowed []string
 }
 
@@ -96,12 +95,6 @@ func decideExits(served *allowlist.Allowlist, running []allowlist.RunningContain
 		}
 		own := admittedBy(entry, running)
 		if len(own) == 0 || len(entry.Diff(own).MissingMains) > 0 {
-			continue
-		}
-		if err := entry.PinnedForEgress(); err != nil {
-			// A served document the strict rule did not check: the entry
-			// claims nothing and grants nothing.
-			shadowed = append(shadowed, fmt.Sprintf("%s (%v)", name, err))
 			continue
 		}
 		if shadow := otherAdmitting(served, name, own); shadow != "" {

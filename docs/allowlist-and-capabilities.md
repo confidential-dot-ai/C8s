@@ -553,14 +553,6 @@ entry matches reaches directly, uncaptured.
   exit is listed once. The exits are part of the signed canonical document,
   so they are visible to anyone reading `GET /allowlist`. An entry without
   exits carries no `egress` key, so its bytes and digest do not change.
-- An entry with exits must pin its launch exactly as a secrets grant must:
-  every container's `command` and `args` are `exact` or `deny`, and its
-  `mounts` are `deny`, or `exact` without host rules (read-only
-  `nodeRootFile` rules are allowed). CDS refuses an unpinned entry with
-  exits, and a node grants no exit for one it reads from a served document.
-- A single address (`/32`, `/128`) is the expected exit, for example one
-  relay the operator controls. A range may be no broader than `/16` (IPv4)
-  or `/48` (IPv6).
 - Write-time validation also refuses ranges that are not unicast hosts: `/0`, loopback, link-local, multicast, reserved and
   broadcast, unspecified, and the IPv6 forms that stand for IPv4 addresses
   (IPv4-mapped, NAT64, 6to4). The range is stored in its canonical text
@@ -575,9 +567,8 @@ entry matches reaches directly, uncaptured.
   claimed pod with nothing foreign is the entry's unique match, by the same
   rule secret release uses.
 - If another entry also admits an exit entry's containers (for example the
-  same image in a "collector + sidecar" entry), or the entry is not pinned,
-  that pod is never claimed: it gets no exits and nothing is refused. The
-  node logs it.
+  same image in a "collector + sidecar" entry), that pod is never claimed: it
+  gets no exits and nothing is refused. The node logs it.
 - The exits are fixed for the pod's life, and they follow the allowlist
   version the node had pulled when the pod was claimed (logged with the
   grant). A changed or removed exit applies when the pod is recreated.

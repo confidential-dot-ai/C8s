@@ -71,13 +71,6 @@ type Workload struct {
 	Egress []Egress `json:"egress,omitempty" yaml:"egress,omitempty"`
 }
 
-// minEgressBits4 and minEgressBits6 are the broadest range an exit may name.
-// A single address (/32, /128) is the expected use.
-const (
-	minEgressBits4 = 16
-	minEgressBits6 = 48
-)
-
 // MaxEgress bounds an entry's exits: each is a way out of the TEE that a
 // relying party has to weigh, and one rule per exit in every chain.
 const MaxEgress = 8
@@ -289,9 +282,6 @@ func ParseWorkloadJSON(data []byte) (*Workload, error) {
 	if err := normalizeEgress(&w.Egress); err != nil {
 		return nil, fmt.Errorf("entry egress: %w", err)
 	}
-	if err := w.PinnedForEgress(); err != nil {
-		return nil, fmt.Errorf("entry: %w", err)
-	}
 	sortContainers(w.InitContainers)
 	sortContainers(w.Containers)
 	return &w, nil
@@ -369,19 +359,6 @@ func (w Workload) PinnedForGrant() error {
 	}
 	if !w.MountsPinned() {
 		return errGrantUnpinnedMounts
-	}
-	return nil
-}
-
-// PinnedForEgress reports why declared exits on w would carry out of the TEE
-// whatever a launch the host shaped sends, or nil when the entry declares
-// none or pins its argv and mounts as a secrets grant must.
-func (w Workload) PinnedForEgress() error {
-	if len(w.Egress) == 0 {
-		return nil
-	}
-	if err := w.PinnedForGrant(); err != nil {
-		return fmt.Errorf("declared egress needs the launch pinned as a secrets grant does: %w", err)
 	}
 	return nil
 }
@@ -514,9 +491,6 @@ func (a *Allowlist) normalize(strict bool) error {
 				"name", name, "error", err)
 			w.Egress = nil
 		}
-		if err := w.PinnedForEgress(); strict && err != nil {
-			return fmt.Errorf("workload %q: %w", name, err)
-		}
 		sortContainers(w.InitContainers)
 		sortContainers(w.Containers)
 		a.Workloads[name] = w
@@ -561,9 +535,6 @@ func normalizeEgress(exits *[]Egress) error {
 			return fmt.Errorf("cidr %s carries host bits (did you mean %s?)", e.CIDR, e.CIDR.Masked())
 		case e.Port == 0:
 			return fmt.Errorf("exit %s needs a TCP port", e.CIDR)
-		case e.CIDR.Addr().Is4() && e.CIDR.Bits() < minEgressBits4,
-			e.CIDR.Addr().Is6() && e.CIDR.Bits() < minEgressBits6:
-			return fmt.Errorf("cidr %s is broader than /%d (IPv4) or /%d (IPv6); an exit names a relay, usually one address", e.CIDR, minEgressBits4, minEgressBits6)
 		}
 		for _, special := range nonUnicastRanges {
 			if e.CIDR.Overlaps(special) {

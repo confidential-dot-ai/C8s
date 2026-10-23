@@ -275,7 +275,7 @@ func (g *meshGate) bindEntry(pod *api.PodSandbox, decision exitDecision) error {
 	}
 	if decision.entry == "" {
 		if len(decision.shadowed) > 0 {
-			g.logger.Warn("no exits granted: each allowlist entry with exits is unpinned or shares its containers with another entry",
+			g.logger.Warn("no exits granted: another allowlist entry also admits the containers of each entry with exits this pod completes",
 				"namespace", pod.GetNamespace(), "pod", pod.GetName(), "entries", decision.shadowed, "allowlist_version", decision.version)
 		}
 		return nil
