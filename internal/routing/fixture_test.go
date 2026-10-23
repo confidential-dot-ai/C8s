@@ -114,8 +114,10 @@ type fakeAllowlists struct {
 	current string
 	version int
 	docs    map[string]*allowlist.Allowlist
-	fetches int
-	fail    error
+	fetches int   // history fetches
+	reads   int   // reads of the current allowlist
+	fail    error // fails history fetches
+	down    error // fails reads of the current allowlist
 }
 
 // labelled is an allowlist whose entries are told apart by label alone.
@@ -151,6 +153,10 @@ func (a *fakeAllowlists) serve(digest []byte, al *allowlist.Allowlist) {
 func (a *fakeAllowlists) FetchServed(_ context.Context, ifNoneMatch string) (allowlistclient.Served, bool, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.reads++
+	if a.down != nil {
+		return allowlistclient.Served{}, false, a.down
+	}
 	etag := fmt.Sprintf("W/%q", strconv.Itoa(a.version))
 	if ifNoneMatch == etag {
 		return allowlistclient.Served{}, true, nil
@@ -176,6 +182,12 @@ func (a *fakeAllowlists) fetched() int {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.fetches
+}
+
+func (a *fakeAllowlists) read() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.reads
 }
 
 // digestOf returns an allowlist digest of b repeated 32 times.

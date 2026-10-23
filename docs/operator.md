@@ -581,6 +581,9 @@ entry named in the backend leaf's stamp is in the current allowlist with the
 same canonical content as in the document the leaf was stamped under. It
 fetches that document from CDS's allowlist history
 (`GET /allowlist/objects/sha256/<digest>`) and caches the last 16 by digest.
+A leaf can be stamped under a document newer than the router's last poll, so
+a failed check under another digest rereads the current allowlist first, at
+most once every 5 seconds.
 A write that removes or redefines an entry cuts that entry's backends off at
 the router's next route poll: their pooled connections retire and new
 connections get 502 `backend_entry_changed` until the backend re-issues under

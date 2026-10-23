@@ -129,7 +129,7 @@ func newRoutedServer(t *testing.T, opts ...func(*routing.ProxyConfig, *Config)) 
 	rs.allowlists = &testAllowlists{docs: map[string]*allowlist.Allowlist{}}
 	rs.allowlists.serve(testDigest, testAllowlist("v1"))
 	entries := routing.NewEntries(rs.allowlists)
-	if _, err := entries.Refresh(t.Context()); err != nil {
+	if err := entries.Refresh(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	rs.transports = routing.NewTransports(routing.TransportConfig{MeshIdentity: routerIdentity.Credential, Entries: entries})

@@ -11,10 +11,14 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
 )
+
+// defaultRefreshGap is Entries.refreshGap.
+const defaultRefreshGap = 5 * time.Second
 
 // historyCacheSize bounds the allowlist documents Entries keeps by digest.
 // Leaves stamped under older documents than these cost one fetch each.
@@ -59,12 +63,20 @@ func newAllowlistDoc(digest string, al *allowlist.Allowlist) (*allowlistDoc, err
 // entry is unchanged in the current one (B8). It is safe for concurrent use.
 type Entries struct {
 	src AllowlistSource
+	// refreshGap is the least time between the rereads of the current
+	// allowlist that a failed check triggers.
+	refreshGap time.Duration
 
-	mu      sync.Mutex
-	current *allowlistDoc
-	etag    string
-	history map[string]*allowlistDoc
-	order   []string // history digests, oldest first
+	// refresh serializes Refresh, so an older answer never replaces a newer.
+	refresh sync.Mutex
+
+	mu         sync.Mutex
+	current    *allowlistDoc
+	etag       string
+	refreshed  time.Time     // the last Refresh attempt
+	reconciled *allowlistDoc // the document Changed last compared against
+	history    map[string]*allowlistDoc
+	order      []string // history digests, oldest first
 
 	// fetch serializes history fetches, so a burst of dials under one old
 	// digest costs one.
@@ -74,38 +86,49 @@ type Entries struct {
 // NewEntries returns Entries reading from src. Until the first Refresh it
 // has no current allowlist and every check fails.
 func NewEntries(src AllowlistSource) *Entries {
-	return &Entries{src: src, history: map[string]*allowlistDoc{}}
+	return &Entries{src: src, refreshGap: defaultRefreshGap, history: map[string]*allowlistDoc{}}
 }
 
-// Refresh fetches the current allowlist. It returns the entries the new
-// document removed or redefined against the previous current one; a failed
-// fetch keeps the previous one.
-func (e *Entries) Refresh(ctx context.Context) ([]string, error) {
+// Refresh fetches the current allowlist; a failed fetch keeps the previous
+// one.
+func (e *Entries) Refresh(ctx context.Context) error {
+	e.refresh.Lock()
+	defer e.refresh.Unlock()
 	e.mu.Lock()
 	etag := e.etag
+	e.refreshed = time.Now()
 	e.mu.Unlock()
 	served, notModified, err := e.src.FetchServed(ctx, etag)
 	if err != nil {
-		return nil, fmt.Errorf("allowlist: %w", err)
+		return fmt.Errorf("allowlist: %w", err)
 	}
 	if notModified {
-		return nil, nil
+		return nil
 	}
 	digest, ok := cutSHA256(served.Digest)
 	if !ok {
-		return nil, fmt.Errorf("allowlist: malformed digest %q", served.Digest)
+		return fmt.Errorf("allowlist: malformed digest %q", served.Digest)
 	}
 	next, err := newAllowlistDoc(digest, served.Allowlist)
 	if err != nil {
-		return nil, fmt.Errorf("allowlist: %w", err)
+		return fmt.Errorf("allowlist: %w", err)
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	prev := e.current
 	e.current, e.etag = next, served.ETag
 	e.remember(next)
-	if prev == nil || prev.digest == next.digest {
-		return nil, nil
+	return nil
+}
+
+// Changed returns the entries the current allowlist removed or redefined
+// since the document the previous call saw, none on the first call.
+func (e *Entries) Changed() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	prev, next := e.reconciled, e.current
+	e.reconciled = next
+	if prev == nil || next == nil || prev.digest == next.digest {
+		return nil
 	}
 	var changed []string
 	for name, old := range prev.entries {
@@ -114,7 +137,7 @@ func (e *Entries) Refresh(ctx context.Context) ([]string, error) {
 		}
 	}
 	slices.Sort(changed)
-	return changed, nil
+	return changed
 }
 
 // Digest is the current allowlist's digest, empty before the first Refresh.
@@ -131,11 +154,30 @@ func (e *Entries) Digest() string {
 // same canonical content as in the document whose digest is stamped. When
 // stamped is the current digest nothing is fetched; otherwise the stamped
 // document comes from the CDS's allowlist history, and a failed fetch fails
-// the check.
+// the check. A leaf can be stamped under a document newer than the one the
+// router last read, so a failed check under another digest rereads the
+// current allowlist, at most once per refreshGap, and checks again.
 func (e *Entries) Check(ctx context.Context, stamped, name string) error {
 	if e == nil {
 		return fmt.Errorf("%w: the router reads no allowlist", errEntryChanged)
 	}
+	err := e.check(ctx, stamped, name)
+	if err == nil || e.Digest() == stamped || !e.refreshDue() {
+		return err
+	}
+	if rerr := e.Refresh(ctx); rerr != nil {
+		return err
+	}
+	return e.check(ctx, stamped, name)
+}
+
+func (e *Entries) refreshDue() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return time.Since(e.refreshed) >= e.refreshGap
+}
+
+func (e *Entries) check(ctx context.Context, stamped, name string) error {
 	e.mu.Lock()
 	current := e.current
 	e.mu.Unlock()

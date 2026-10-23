@@ -70,22 +70,21 @@ func (p *Poller) Run(ctx context.Context) {
 	}
 }
 
-// refreshEntries reads the current allowlist. A failed read keeps the one
-// already read and is no route poll failure: routes and the allowlist are
-// separate documents.
+// refreshEntries reads the current allowlist and retires the pools of the
+// workloads whose entry changed since the last poll, including changes a
+// dial's reread found. A failed read keeps the allowlist already read and is
+// no route poll failure: routes and the allowlist are separate documents.
 func (p *Poller) refreshEntries(ctx context.Context, t *Transports) {
-	if t.cfg.Entries == nil {
+	entries := t.cfg.Entries
+	if entries == nil {
 		return
 	}
-	before := t.cfg.Entries.Digest()
-	changed, err := t.cfg.Entries.Refresh(ctx)
-	if err != nil {
-		if ctx.Err() == nil {
-			p.log.Warn("allowlist poll failed; keeping the allowlist already read", "error", err, "read", before != "")
-		}
-		return
+	before := entries.Digest()
+	if err := entries.Refresh(ctx); err != nil && ctx.Err() == nil {
+		p.log.Warn("allowlist poll failed; keeping the allowlist already read", "error", err, "read", before != "")
 	}
-	if after := t.cfg.Entries.Digest(); after != before {
+	changed := entries.Changed()
+	if after := entries.Digest(); after != before || len(changed) > 0 {
 		p.log.Info("allowlist read", "digest", hex.EncodeToString([]byte(after)), "entries_changed", changed)
 	}
 	t.RetireWorkloads(changed)

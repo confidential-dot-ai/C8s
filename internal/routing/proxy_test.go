@@ -657,9 +657,11 @@ func TestB8EntryRemoved(t *testing.T) {
 }
 
 // TestB8NoCurrentAllowlist: until the router has read an allowlist, it
-// refuses every workload backend and still serves address backends.
+// refuses every workload backend and still serves address backends; a dial
+// once the CDS answers reads it.
 func TestB8NoCurrentAllowlist(t *testing.T) {
 	f := newFixture(t)
+	f.allowlists.down = errors.New("CDS unreachable")
 	f.entries = NewEntries(f.allowlists)
 	f.transports = NewTransports(TransportConfig{MeshIdentity: f.identity.Credential, Entries: f.entries})
 	f.proxy = NewProxy(ProxyConfig{State: f.state, Transports: f.transports})
@@ -676,9 +678,12 @@ func TestB8NoCurrentAllowlist(t *testing.T) {
 	if got := f.get("/admin").Code; got != http.StatusOK {
 		t.Fatalf("GET /admin before any allowlist read = %d, want %d", got, http.StatusOK)
 	}
-	f.refresh(t)
+	f.allowlists.mu.Lock()
+	f.allowlists.down = nil
+	f.allowlists.mu.Unlock()
+	f.entries.refreshGap = 0
 	if got := f.get("/").Code; got != http.StatusOK {
-		t.Fatalf("GET / once the allowlist is read = %d, want %d", got, http.StatusOK)
+		t.Fatalf("GET / once the CDS answers = %d, want %d", got, http.StatusOK)
 	}
 }
 
@@ -704,6 +709,33 @@ func TestB8RouterStampIsNotCompared(t *testing.T) {
 		if got := f.get("/unnamed").Code; got != http.StatusBadGateway {
 			t.Fatalf("GET /unnamed = %d, want %d (B1 requires a name)", got, http.StatusBadGateway)
 		}
+	}
+}
+
+// TestB8RouterBehindTheCDS: a backend stamped under an allowlist newer than
+// the one the router last read is accepted once a reread finds its entry, and
+// a backend that keeps failing rereads at most once per gap.
+func TestB8RouterBehindTheCDS(t *testing.T) {
+	f := newFixture(t)
+	f.entries.refreshGap = 0
+	f.allowlists.serve(digestOf(0x43), labelled(map[string]string{"web": "v1", "admin": "v1", "router": "v1", "new": "v1"}))
+	b := startBackend(t, "new", issueStampedLeaf(t, f.mesh, "new", digestOf(0x43)))
+	f.apply(t, manifestSpec{revision: 1, hosts: map[string][]route{testHost: {workloadRoute("/", "prefix", b.addr(), "new")}}})
+	if w := f.get("/"); w.Code != http.StatusOK {
+		t.Fatalf("GET / to a backend stamped under an allowlist the router had not read = %d %q, want 200", w.Code, w.Body.String())
+	}
+
+	f.entries.refreshGap = time.Hour
+	stale := startBackend(t, "new", issueStampedLeaf(t, f.mesh, "new", digestOf(0x45)))
+	f.apply(t, manifestSpec{revision: 2, hosts: map[string][]route{testHost: {workloadRoute("/", "prefix", stale.addr(), "new")}}})
+	reads := f.allowlists.read()
+	for range 3 {
+		if got := f.get("/").Code; got != http.StatusBadGateway {
+			t.Fatalf("GET / to a backend under an unknown allowlist = %d, want %d", got, http.StatusBadGateway)
+		}
+	}
+	if n := f.allowlists.read() - reads; n != 0 {
+		t.Fatalf("failed checks reread the allowlist %d times within the gap, want 0", n)
 	}
 }
 
