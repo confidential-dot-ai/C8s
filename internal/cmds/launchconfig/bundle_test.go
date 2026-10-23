@@ -448,34 +448,6 @@ func TestAddCDSNodeOnANewImage(t *testing.T) {
 	}
 }
 
-// A bundle can accept a planned image from the start: every document boots
-// the bundle's image and lists the planned one as a peer image.
-func TestNewBundleWithAPeerImage(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "bundle")
-	b := filepath.Join(t.TempDir(), "manifest-b.json")
-	body := `{"version":1,"build":{"platform":"tdx"},"tdx":{"mrtd":"` + strings.Repeat("66", 48) +
-		`","rtmr1":"` + strings.Repeat("77", 48) + `","rtmr2":"` + strings.Repeat("88", 48) + `"}}`
-	if err := os.WriteFile(b, []byte(body), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	a := writeManifest(t, "tdx")
-	if err := runBundleCmd(t, "new", "--out", dir, "--cluster-id", "demo", "--image-manifest", a, "--peer-image-manifest", b,
-		"--peer-image-manifest", a, "--server-address", "10.0.0.10", "--agent", "demo-f1", "--cds-node", "demo-cds-1", "--cds-node", "demo-cds-2"); err != nil {
-		t.Fatal(err)
-	}
-	for _, node := range []string{serverDir, "demo-f1", "demo-cds-1"} {
-		doc, _ := readBundleDocument(t, dir, node)
-		if doc.Image.Measurement != strings.Repeat("11", 48) || len(doc.PeerImages) != 1 || doc.PeerImages[0].Measurement != strings.Repeat("66", 48) {
-			t.Fatalf("%s: image %s peers %+v", node, doc.Image.Measurement[:4], doc.PeerImages)
-		}
-		stageBundleNode(t, dir, node)
-	}
-	policy, err := refvalues.Load(filepath.Join(dir, serverPolicy))
-	if err != nil || len(policy.Images) != 4 {
-		t.Fatalf("server.json: %v, %d pins", err, len(policy.Images))
-	}
-}
-
 func TestPeerImagesValidation(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "bundle")
 	if err := runBundleCmd(t, "new", "--out", dir, "--cluster-id", "demo", "--image-manifest", writeManifest(t, "tdx")); err != nil {
@@ -496,9 +468,6 @@ func TestPeerImagesValidation(t *testing.T) {
 		if err := d.validate(); err == nil {
 			t.Fatalf("%s validated", name)
 		}
-	}
-	if err := runBundleCmd(t, "new", "--out", dir+"-2", "--cluster-id", "demo", "--image-manifest", writeManifest(t, "tdx"), "--peer-image-manifest", "/nonexistent"); err == nil {
-		t.Fatal("a missing peer manifest accepted")
 	}
 	if err := runBundleCmd(t, "add-cds-node", "--bundle", dir, "--name", "x", "--image-manifest", "/nonexistent"); err == nil {
 		t.Fatal("a missing image manifest accepted")

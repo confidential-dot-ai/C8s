@@ -64,7 +64,6 @@ HOST_DATA to SHA-256 of that node's pubkey file. See docs/operator.md,
 	f.StringVar(&opts.Dir, "out", "", "bundle directory to create (must not exist)")
 	f.StringVar(&opts.ClusterID, "cluster-id", "", "cluster name, an RFC1123 label")
 	f.StringVar(&opts.ManifestPath, "image-manifest", "", "manifest.json published with the exact node image to boot")
-	f.StringArrayVar(&opts.PeerImageManifests, "peer-image-manifest", nil, "manifest.json of another image every node accepts for its peers and CDS (a planned rollout); repeatable")
 	f.IntVar(&opts.VCPUs, "vcpus", 0, "SNP only: the VM's vCPU count, selecting its launch digest from the manifest")
 	f.StringVar(&opts.ServerName, "server-name", "", "server node name (default <cluster-id>-server)")
 	f.StringVar(&opts.ServerAddress, "server-address", "", "server IPv4 address every node can reach; required with agents, otherwise the server autodetects it")
