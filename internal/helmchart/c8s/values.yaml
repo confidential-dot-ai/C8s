@@ -222,8 +222,13 @@ cds:
     historyVersions: 1000
     ## ...and only as many as fit in this size of documents: an allowlist
     ## document can be hundreds of KiB, so a count alone can fill the store.
-    ## Keep it well below 45% of storeSizeLimit (the write guard).
-    historyBytes: 512Mi
+    ## The store takes about 1.5x this (indexes, pages, live state, tokens),
+    ## and writes that grow the replicated state are refused once its
+    ## snapshot would pass 75% of the snapshot bounds (an image of about
+    ## 192 MiB): keep it well below that, or the leader never prunes before
+    ## the cap and the cluster refuses every growing write. Also keep it well
+    ## below 45% of storeSizeLimit (the write guard).
+    historyBytes: 64Mi
     resources:
       requests:
         cpu: 100m
