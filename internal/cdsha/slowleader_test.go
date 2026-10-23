@@ -124,3 +124,44 @@ func TestUniformlySlowClusterKeepsLeader(t *testing.T) {
 		t.Fatal("the leader never fell behind: the test did not exercise a slow cluster")
 	}
 }
+
+// The leader loop can sit in a backup that waits on the slow disk (Raft takes
+// the snapshot behind the apply backlog). The slow-leader check does not run
+// in that loop, so it still hands leadership over.
+func TestSlowLeaderTransfersWhileItsLoopIsBlocked(t *testing.T) {
+	c := newCluster(t, 3)
+	c.genesis("n0", "n1", "n2")
+	old := c.leader()
+	if old == nil {
+		t.Fatal("no leader")
+	}
+	rs := c.live()
+	hold := make(chan struct{})
+	c.backups.mu.Lock()
+	c.backups.hold = hold
+	c.backups.mu.Unlock()
+	var once sync.Once
+	release := func() { once.Do(func() { close(hold) }) }
+	t.Cleanup(release)
+	stop := writeLoad(t, rs)
+	eventually(t, 10*time.Second, "the leader loop waits in a backup", func() bool {
+		c.backups.mu.Lock()
+		defer c.backups.mu.Unlock()
+		return c.backups.held > 0
+	})
+	slowApply(t, 2*testTiming.Lease, old)
+	eventually(t, 10*testTiming.Lease, "a replica with a fast disk leads and every other replica serves", func() bool {
+		l := c.leader()
+		if l == nil || l == old {
+			return false
+		}
+		for _, r := range rs {
+			if r != old && !r.node.Serving() {
+				return false
+			}
+		}
+		return true
+	})
+	stop()
+	release()
+}

@@ -289,20 +289,9 @@ func (n *Node) reconcile() {
 	// Reachability probes may wait on the network. Do not block admission
 	// during them, and never use their configuration sample for mutations.
 	n.clearReachable(servers, time.Now())
-	target, slowAttrs := n.slowLeaderTarget(r, servers, time.Now())
 	n.membershipMu.Lock()
 	defer n.membershipMu.Unlock()
 	if r == nil || r != n.r() || n.stoppingReads.Load() == r || r.State() != raft.Leader {
-		return
-	}
-	if target != nil && n.fsm.Stuck() == "" {
-		// A leader whose own disk is slow still holds leadership (heartbeats
-		// do not touch the disk) but certifies no reads: hand the log to a
-		// replica that applies it. Its own seat is left alone.
-		n.log.Warn("slow leader: transferring leadership", slowAttrs...)
-		if err := r.LeadershipTransferToServer(target.ID, target.Address).Error(); err != nil {
-			n.log.Warn("slow leader: leadership transfer", "target", target.ID, "err", err)
-		}
 		return
 	}
 	if reason := n.fsm.Stuck(); reason != "" {
@@ -616,9 +605,6 @@ func (n *Node) slowLeaderTarget(r *raft.Raft, servers []raft.Server, now time.Ti
 		if err != nil || st.ID != string(s.ID) || st.Stuck != "" || st.AppliedIndex <= applied {
 			continue
 		}
-		n.mu.Lock()
-		n.slow.tried = now
-		n.mu.Unlock()
 		return &s, append(attrs, "target", s.ID, "target_applied", st.AppliedIndex, "leader_applied", applied)
 	}
 	n.mu.Lock()
@@ -629,4 +615,51 @@ func (n *Node) slowLeaderTarget(r *raft.Raft, servers []raft.Server, now time.Ti
 		n.log.Warn("slow leader: no caught-up follower; keeping leadership", attrs...)
 	}
 	return nil, nil
+}
+
+// watchSlowLeader runs the slow-leader check on its own: the leader loop can
+// sit in a backup snapshot that waits behind the very apply backlog a slow
+// disk builds. It never waits on the disk or for membershipMu; a tick that
+// finds the lock held is skipped.
+func (n *Node) watchSlowLeader(ctx context.Context) {
+	t := time.NewTicker(n.cfg.Timing.Tick)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		r := n.r()
+		if r == nil || r.State() != raft.Leader {
+			continue
+		}
+		servers := n.servers()
+		if servers == nil {
+			continue
+		}
+		target, attrs := n.slowLeaderTarget(r, servers, time.Now())
+		if target == nil || !n.membershipMu.TryLock() {
+			continue
+		}
+		n.transferSlowLeader(r, target, attrs)
+		n.membershipMu.Unlock()
+	}
+}
+
+// transferSlowLeader is called with membershipMu held. A leader whose own
+// disk is slow still holds leadership (heartbeats do not touch the disk) but
+// certifies no reads: it hands the log to a replica that applies it. Its own
+// seat is left alone. A stuck leader is left to reconcile.
+func (n *Node) transferSlowLeader(r *raft.Raft, target *raft.Server, attrs []any) {
+	if r != n.r() || n.stoppingReads.Load() == r || r.State() != raft.Leader || n.fsm.Stuck() != "" {
+		return
+	}
+	n.mu.Lock()
+	n.slow.tried = time.Now()
+	n.mu.Unlock()
+	n.log.Warn("slow leader: transferring leadership", attrs...)
+	if err := r.LeadershipTransferToServer(target.ID, target.Address).Error(); err != nil {
+		n.log.Warn("slow leader: leadership transfer", "target", target.ID, "err", err)
+	}
 }

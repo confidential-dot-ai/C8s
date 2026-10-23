@@ -401,10 +401,11 @@ func (n *Node) Run(ctx context.Context) error {
 	defer n.shutdown()
 	workerCtx, stopWorkers := context.WithCancel(ctx)
 	var workers sync.WaitGroup
-	workers.Add(2)
+	workers.Add(3)
 	go func() { defer workers.Done(); n.watchClock(workerCtx) }()
 	go func() { defer workers.Done(); n.refreshReads(workerCtx) }()
-	// Stop and join read/clock workers before shutdown and caller store close.
+	go func() { defer workers.Done(); n.watchSlowLeader(workerCtx) }()
+	// Stop and join read/clock/slow-leader workers before shutdown and caller store close.
 	defer func() { stopWorkers(); workers.Wait() }()
 	t := time.NewTicker(n.cfg.Timing.Tick)
 	defer t.Stop()

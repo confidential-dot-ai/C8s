@@ -39,10 +39,24 @@ type memBackups struct {
 	last  *Backup
 	err   error
 	calls int
+	// hold, if set, keeps every backup waiting until it closes or the
+	// caller gives up, as a store on a stalled disk would; held counts them.
+	hold chan struct{}
+	held int
 }
 
-func (m *memBackups) PutBackup(_ context.Context, b Backup) error {
+func (m *memBackups) PutBackup(ctx context.Context, b Backup) error {
 	m.mu.Lock()
+	if hold := m.hold; hold != nil {
+		m.held++
+		m.mu.Unlock()
+		select {
+		case <-hold:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		m.mu.Lock()
+	}
 	defer m.mu.Unlock()
 	m.calls++
 	if m.err != nil {
