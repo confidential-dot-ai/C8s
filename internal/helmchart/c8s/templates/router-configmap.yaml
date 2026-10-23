@@ -256,6 +256,9 @@ data:
                 {{- else if eq (include "router.protocolCorsEnabled" .) "true" }}
                 {{- include "router.protocolCorsLocationDirectives" . | nindent 16 }}
                 {{- end }}
+                # A request here holds no attest-lb binding; the connection closes after
+                # it so a binding cannot lapse under a connection kept open this way (E7).
+                keepalive_timeout 0;
                 access_log off;
                 default_type application/json;
                 add_header Cache-Control "no-store" always;
@@ -268,6 +271,9 @@ data:
                 {{- else if eq (include "router.protocolCorsEnabled" .) "true" }}
                 {{- include "router.protocolCorsLocationDirectives" . | nindent 16 }}
                 {{- end }}
+                # A request here holds no attest-lb binding; the connection closes after
+                # it so a binding cannot lapse under a connection kept open this way (E7).
+                keepalive_timeout 0;
                 access_log off;
                 default_type application/x-pem-file;
                 add_header Cache-Control "no-store" always;
@@ -281,6 +287,9 @@ data:
                 {{- else if eq (include "router.protocolCorsEnabled" .) "true" }}
                 {{- include "router.protocolCorsLocationDirectives" . | nindent 16 }}
                 {{- end }}
+                # A request here holds no attest-lb binding; the connection closes after
+                # it so a binding cannot lapse under a connection kept open this way (E7).
+                keepalive_timeout 0;
                 access_log off;
                 default_type application/x-pem-file;
                 add_header Cache-Control "no-store" always;
@@ -295,6 +304,9 @@ data:
             # published on the pod IP). So the probe rides the front door:
             # exact-match, ahead of location /.
             location = /readyz {
+                # A request here holds no attest-lb binding; the connection closes after
+                # it so a binding cannot lapse under a connection kept open this way (E7).
+                keepalive_timeout 0;
                 access_log off;
                 proxy_pass http://127.0.0.1:{{ .Values.router.attest.port }};
                 proxy_set_header Host $host;
@@ -340,6 +352,9 @@ data:
             # The per-address cap answers like the cds-attest bounds (A7).
             location @tunnel_busy {
                 {{- include "router.wellKnownCorsDirectives" . | nindent 16 }}
+                # A request here holds no attest-lb binding; the connection closes after
+                # it so a binding cannot lapse under a connection kept open this way (E7).
+                keepalive_timeout 0;
                 default_type application/json;
                 return 503 '{"error":"tunnel_busy","message":"too many tunnelled requests from this client"}';
             }

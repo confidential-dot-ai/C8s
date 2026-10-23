@@ -1591,6 +1591,11 @@ func TestChartRendersRouterPublicTLSAndDiscovery(t *testing.T) {
 	cfg.location(t, "exact", "/v1/discovery").assertDirective(t, "alias", "/discovery/discovery.json")
 	cfg.location(t, "exact", "/.well-known/cds-cert.pem").assertDirective(t, "alias", "/etc/c8s/certs/tls.crt")
 	cfg.location(t, "exact", "/.well-known/mesh-ca.pem").assertDirective(t, "alias", "/etc/c8s/certs/ca.crt")
+	// Locations that hold no attest-lb binding close the connection after the
+	// response, so a binding cannot lapse under a connection they keep open.
+	for _, path := range []string{"/v1/discovery", "/.well-known/cds-cert.pem", "/.well-known/mesh-ca.pem", "/readyz"} {
+		cfg.location(t, "exact", path).assertDirective(t, "keepalive_timeout", "0")
+	}
 	// The public TLS mode changes only what nginx serves: application
 	// requests still go to the routing listener, which dials backends itself.
 	app := cfg.location(t, "prefix", "/")
@@ -4571,6 +4576,9 @@ func Example_routerConfig() {
 	//                 return 204;
 	//             }
 	//             add_header Access-Control-Allow-Origin "*" always;
+	//             # A request here holds no attest-lb binding; the connection closes after
+	//             # it so a binding cannot lapse under a connection kept open this way (E7).
+	//             keepalive_timeout 0;
 	//             # These run before nginx collapses callers onto the loopback proxy source.
 	//             # Each zone's map key is empty for the methods it does not cover, so
 	//             # mutations count per client and in aggregate, reads per client only.
@@ -4600,6 +4608,9 @@ func Example_routerConfig() {
 	//                 return 204;
 	//             }
 	//             add_header Access-Control-Allow-Origin "*" always;
+	//             # A request here holds no attest-lb binding; the connection closes after
+	//             # it so a binding cannot lapse under a connection kept open this way (E7).
+	//             keepalive_timeout 0;
 	//             # These run before nginx collapses callers onto the loopback proxy source.
 	//             # Each zone's map key is empty for the methods it does not cover, so
 	//             # mutations count per client and in aggregate, reads per client only.
@@ -4620,6 +4631,9 @@ func Example_routerConfig() {
 	//         # published on the pod IP). So the probe rides the front door:
 	//         # exact-match, ahead of location /.
 	//         location = /readyz {
+	//             # A request here holds no attest-lb binding; the connection closes after
+	//             # it so a binding cannot lapse under a connection kept open this way (E7).
+	//             keepalive_timeout 0;
 	//             access_log off;
 	//             proxy_pass http://127.0.0.1:8800;
 	//             proxy_set_header Host $host;
