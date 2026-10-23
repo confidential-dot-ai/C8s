@@ -2,11 +2,8 @@ package cdsha
 
 import (
 	"bytes"
-	"encoding/json"
 	"testing"
 	"time"
-
-	"github.com/hashicorp/raft"
 
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 )
@@ -18,7 +15,6 @@ func TestLeaderRenewsTheMeshCACertificate(t *testing.T) {
 	c := newCluster(t, 3)
 	c.caValidity = 3 * time.Second
 	c.genesis("n0", "n1", "n2")
-	eventually(t, 10*time.Second, "format 2", func() bool { return c.leader() != nil && c.leader().node.Core().format() >= 2 })
 	first := c.leader().node.fsm.CA().Cert
 	eventually(t, 15*time.Second, "every replica on one renewed certificate", func() bool {
 		var seen []byte
@@ -48,15 +44,11 @@ func TestLeaderRenewsTheMeshCACertificate(t *testing.T) {
 }
 
 // A renewal entry is adopted only when it renews the current certificate:
-// at format 2, self-signed under the same key, same subject, a later expiry.
+// self-signed under the same key, same subject, a later expiry.
 func TestApplyRenewCARefusals(t *testing.T) {
-	al, sec, led := testStores(t)
 	_, opPub := operatorKey(t)
-	f := NewFSM(PreGenesis(testCluster, opPub), al, sec, led)
-	apply := func(i uint64, e Entry) any {
-		raw, _ := json.Marshal(e)
-		return f.Apply(&raft.Log{Index: i, Type: raft.LogCommand, Data: raw})
-	}
+	f := newTestFSM(t, opPub)
+	apply := func(i uint64, e Entry) any { return applyAt(f, i, e) }
 	mesh, err := issuer.NewMeshCA("c8s-mesh-ca", time.Hour)
 	if err != nil {
 		t.Fatal(err)
@@ -72,10 +64,6 @@ func TestApplyRenewCARefusals(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err, _ := apply(2, Entry{Kind: KindRenewCA, RenewCA: &RenewCAEntry{RootCert: good.Raw}}).(error); err == nil {
-		t.Fatal("renewed at format 1")
-	}
-	apply(3, Entry{Kind: KindFormat, SetFormat: 2})
 	other, _ := issuer.NewMeshCA("c8s-mesh-ca", 3*time.Hour)
 	renamed, _ := issuer.SelfSignCA(ca.Key, "another-ca", 3*time.Hour)
 	shorter, _ := issuer.SelfSignCA(ca.Key, "c8s-mesh-ca", time.Minute)
@@ -89,7 +77,7 @@ func TestApplyRenewCARefusals(t *testing.T) {
 			t.Fatalf("%s replaced the CA", name)
 		}
 	}
-	if res := apply(5, Entry{Kind: KindRenewCA, Format: 2, RenewCA: &RenewCAEntry{RootCert: good.Raw}}); res != nil {
+	if res := apply(5, Entry{Kind: KindRenewCA, RenewCA: &RenewCAEntry{RootCert: good.Raw}}); res != nil {
 		t.Fatalf("a valid renewal: %v", res)
 	}
 	if !bytes.Equal(f.CA().Cert.Raw, good.Raw) || !bytes.Equal(f.Core().RootCert, good.Raw) || f.CA().Key != ca.Key {

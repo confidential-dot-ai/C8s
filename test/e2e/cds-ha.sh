@@ -48,7 +48,7 @@ cw_namespace "$NS" || fail "create namespace $NS"
 expected=${E2E_HA_REPLICAS:-$(kubectl get nodes -l c8s.confidential.ai/role=cds --no-headers | awk '$2=="Ready"' | wc -l)}
 [ "$expected" -ge 3 ] || fail "need at least 3 cds nodes, have $expected"
 
-json() { python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))'; }
+json() { jq -Rs .; }
 
 # status samples GET /ha/status through the CDS front door, which spreads
 # requests over the replicas, and prints the latest line per replica: node
@@ -79,6 +79,17 @@ converge() {
   return 1
 }
 leader() { status | awk '$2=="Leader"{print $1; exit}'; }
+# leader_index prints the applied index of the leader, sampling until a
+# Leader line is seen (other replicas may lag behind it).
+leader_index() {
+  local deadline=$((SECONDS + TIMEOUT)) x
+  while [ $SECONDS -lt $deadline ]; do
+    x=$(status | awk '$2=="Leader"{print $5; exit}')
+    if [ -n "$x" ]; then echo "$x"; return 0; fi
+    sleep 2
+  done
+  return 1
+}
 
 echo "1. $expected replicas serve one state"
 converge "$expected" >/dev/null || fail "replicas did not converge"
@@ -94,8 +105,8 @@ cat >"$work/wl.json" <<EOF
 EOF
 cli allowlist apply "$work/wl.json" >/dev/null || fail "allowlist write"
 # The write is committed when apply returns, so the leader has applied it:
-# the highest index seen now is at or past it, and every replica must reach it.
-written=$(status | awk 'BEGIN{x=0} $5>x{x=$5} END{print x}')
+# the leader's index is at or past it, and every replica must reach it.
+written=$(leader_index) || fail "no leader seen after the allowlist write"
 converge "$expected" "$written" >/dev/null || fail "allowlist write did not reach every replica"
 curl -sk "$C8S_CDS_URL/ca" >"$work/ca.pem"
 put_secret() { printf '%s' "$1" | cli secrets put /e2e-ha/v --overwrite --mesh-ca "$work/ca.pem" >/dev/null; }

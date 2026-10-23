@@ -2,8 +2,6 @@ package cdsha
 
 import (
 	"crypto/ecdsa"
-	"crypto/rand"
-	"crypto/sha256"
 	"crypto/sha512"
 	"crypto/x509"
 	"encoding/hex"
@@ -13,6 +11,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
 const decreeDomain = "c8s-cds-ha-decree-v1\n"
@@ -107,10 +107,11 @@ func imagePins(images []DecreeImage) ([]string, error) {
 	return normalizePins(pins), nil
 }
 
-// SignedDecree carries the operator's ECDSA signature over the decree.
+// SignedDecree carries the operator's signature over the decree:
+// operatorauth.SignDetached over decreeDomain and the decree's JSON.
 type SignedDecree struct {
 	Decree    Decree `json:"decree"`
-	Signature []byte `json:"signature"`
+	Signature string `json:"signature"`
 }
 
 func (d Decree) signedBytes() ([]byte, error) {
@@ -128,8 +129,7 @@ func SignDecree(d Decree, key *ecdsa.PrivateKey) (SignedDecree, error) {
 	if err != nil {
 		return SignedDecree{}, err
 	}
-	h := sha256.Sum256(msg)
-	sig, err := ecdsa.SignASN1(rand.Reader, key, h[:])
+	sig, err := operatorauth.SignDetached(key, msg)
 	if err != nil {
 		return SignedDecree{}, err
 	}
@@ -164,21 +164,8 @@ func verifyDecree(sd SignedDecree, tail Core) error {
 	if len(tail.OperatorPubKey) == 0 {
 		return ErrNoOperatorKey
 	}
-	pubAny, err := x509.ParsePKIXPublicKey(tail.OperatorPubKey)
-	if err != nil {
-		return fmt.Errorf("operator key: %w", err)
-	}
-	pub, ok := pubAny.(*ecdsa.PublicKey)
-	if !ok {
-		return errors.New("operator key is not ECDSA")
-	}
-	msg, err := sd.Decree.signedBytes()
-	if err != nil {
+	if err := VerifyDecreeSignature(sd, tail.OperatorPubKey); err != nil {
 		return err
-	}
-	h := sha256.Sum256(msg)
-	if !ecdsa.VerifyASN1(pub, h[:], sd.Signature) {
-		return errors.New("bad operator signature")
 	}
 	d := sd.Decree
 	switch {
@@ -212,9 +199,9 @@ func verifyDecree(sd SignedDecree, tail Core) error {
 		return errors.New("a SetVoters decree applies to a cluster with a key, and carries no measurements")
 	case !slices.Equal(d.Measurements, normalizePins(d.Measurements)):
 		return errors.New("measurements not in canonical form")
-	case len(d.Images) > 0 && d.Kind != UpdateMeasurements && d.Kind != RotateKey:
-		return errors.New("only UpdateMeasurements and RotateKey decrees carry images")
 	}
+	// Images force Measurements to their pins, which every kind but
+	// UpdateMeasurements and RotateKey refuses above.
 	if len(d.Images) > 0 {
 		pins, err := imagePins(d.Images)
 		if err != nil {
@@ -230,12 +217,11 @@ func verifyDecree(sd SignedDecree, tail Core) error {
 // VerifyDecreeSignature checks only the operator's signature over a decree
 // with decreeKey (PKIX DER): what an auditor of the decree record checks.
 func VerifyDecreeSignature(sd SignedDecree, decreeKey []byte) error {
-	tail := Core{ClusterID: sd.Decree.ClusterID, OperatorPubKey: decreeKey}
-	pubAny, err := x509.ParsePKIXPublicKey(tail.OperatorPubKey)
+	k, err := x509.ParsePKIXPublicKey(decreeKey)
 	if err != nil {
 		return fmt.Errorf("decree key: %w", err)
 	}
-	pub, ok := pubAny.(*ecdsa.PublicKey)
+	pub, ok := k.(*ecdsa.PublicKey)
 	if !ok {
 		return errors.New("decree key is not ECDSA")
 	}
@@ -243,9 +229,8 @@ func VerifyDecreeSignature(sd SignedDecree, decreeKey []byte) error {
 	if err != nil {
 		return err
 	}
-	h := sha256.Sum256(msg)
-	if !ecdsa.VerifyASN1(pub, h[:], sd.Signature) {
-		return errors.New("bad operator signature")
+	if err := operatorauth.VerifyDetached([]*ecdsa.PublicKey{pub}, msg, sd.Signature); err != nil {
+		return fmt.Errorf("bad operator signature: %w", err)
 	}
 	return nil
 }

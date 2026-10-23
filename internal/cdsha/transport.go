@@ -66,12 +66,16 @@ func (h *certHolder) age() time.Duration {
 	return time.Since(h.made)
 }
 
-func peerTLSConfig(v peerVerifier, h *certHolder) *tls.Config {
-	cfg := v.tlsConfig(tls.Certificate{})
-	cfg.Certificates = nil
-	cfg.GetCertificate = func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return h.current(), nil }
-	cfg.GetClientCertificate = func(*tls.CertificateRequestInfo) (*tls.Certificate, error) { return h.current(), nil }
-	return cfg
+// peerTLSConfig is used for both directions. It checks no chain: the
+// caller checks the peer's evidence with peerVerifier.peer.
+func peerTLSConfig(h *certHolder) *tls.Config {
+	return &tls.Config{
+		MinVersion:           tls.VersionTLS13,
+		ClientAuth:           tls.RequireAnyClientCert,
+		InsecureSkipVerify:   true, //nolint:gosec // attestation, not PKI, authenticates the peer (peerVerifier.peer)
+		GetCertificate:       func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return h.current(), nil },
+		GetClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) { return h.current(), nil },
+	}
 }
 
 // controlHandler answers one control request from an attested peer.
@@ -90,9 +94,9 @@ type mux struct {
 	done     chan struct{}
 	once     sync.Once
 
-	connMu    sync.Mutex
-	conns     map[*peerConn]struct{}
-	refusedAt map[string]time.Time // remote host + stage -> last logged
+	connMu  sync.Mutex
+	conns   map[*peerConn]struct{}
+	refused logEvery // remote host + stage
 }
 
 // peerConn is a live attested connection and what its peer attested. TLS
@@ -150,20 +154,13 @@ func newMux(bind string, advertise, id string, cfg *tls.Config, v peerVerifier, 
 	return m, nil
 }
 
-func (m *mux) track(c *tls.Conn) (*peerConn, error) {
-	cs := c.ConnectionState()
-	if len(cs.PeerCertificates) == 0 {
-		return nil, errors.New("no peer certificate")
-	}
-	claims, err := m.verifier.claims(cs.PeerCertificates[0].Raw)
-	if err != nil {
-		return nil, err
-	}
+// track registers a verified connection, so recheck can cut it later.
+func (m *mux) track(c *tls.Conn, claims Claims) *peerConn {
 	pc := &peerConn{Conn: c, m: m, claims: claims}
 	m.connMu.Lock()
 	m.conns[pc] = struct{}{}
 	m.connMu.Unlock()
-	return pc, nil
+	return pc
 }
 
 // recheck closes every connection whose peer is no longer admitted: its
@@ -183,26 +180,34 @@ func (m *mux) recheck() {
 	}
 }
 
-// refused logs why a peer connection was closed, at most once a minute per
-// remote host and reason: a peer that is refused for good (a new image not
-// yet pinned, a foreign cluster) would otherwise only show as resets on the
-// other side.
-func (m *mux) refused(remote net.Addr, stage string, err error) {
+// logEvery allows one log line a minute per key: a peer refused for good
+// (a new image not yet pinned, a foreign cluster) must show in the logs,
+// but not on every retry.
+type logEvery struct {
+	mu sync.Mutex
+	at map[string]time.Time
+}
+
+func (l *logEvery) ok(key string, now time.Time) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if last, seen := l.at[key]; seen && now.Sub(last) < time.Minute {
+		return false
+	}
+	if l.at == nil {
+		l.at = map[string]time.Time{}
+	}
+	l.at[key] = now
+	return true
+}
+
+// refuse logs why a peer connection was closed, which would otherwise show
+// only as resets on the other side.
+func (m *mux) refuse(remote net.Addr, stage string, err error) {
 	host, _, _ := net.SplitHostPort(remote.String())
-	key := host + " " + stage
-	now := time.Now()
-	m.connMu.Lock()
-	if m.refusedAt == nil {
-		m.refusedAt = map[string]time.Time{}
+	if m.refused.ok(host+" "+stage, time.Now()) {
+		slog.Info("cds-ha: peer connection refused", "component", "cds-ha", "remote", host, "stage", stage, "err", err)
 	}
-	last, seen := m.refusedAt[key]
-	if seen && now.Sub(last) < time.Minute {
-		m.connMu.Unlock()
-		return
-	}
-	m.refusedAt[key] = now
-	m.connMu.Unlock()
-	slog.Info("cds-ha: peer connection refused", "component", "cds-ha", "remote", host, "stage", stage, "err", err)
 }
 
 func (m *mux) serve() {
@@ -229,7 +234,13 @@ func (m *mux) route(raw net.Conn) {
 	c := tls.Server(raw, m.tls)
 	_ = c.SetDeadline(time.Now().Add(handshakeTimeout))
 	if err := c.Handshake(); err != nil {
-		m.refused(raw.RemoteAddr(), "handshake", err)
+		m.refuse(raw.RemoteAddr(), "handshake", err)
+		c.Close()
+		return
+	}
+	claims, err := m.verifier.peer(c)
+	if err != nil {
+		m.refuse(raw.RemoteAddr(), "peer identity", err)
 		c.Close()
 		return
 	}
@@ -239,12 +250,7 @@ func (m *mux) route(raw net.Conn) {
 		return
 	}
 	_ = c.SetDeadline(time.Time{})
-	pc, err := m.track(c)
-	if err != nil {
-		m.refused(raw.RemoteAddr(), "peer identity", err)
-		c.Close()
-		return
-	}
+	pc := m.track(c, claims)
 	switch kind[0] {
 	case muxRaft:
 		// The member this connection is for; anything else is refused.
@@ -255,7 +261,7 @@ func (m *mux) route(raw net.Conn) {
 		}
 		target := make([]byte, n[0])
 		if _, err := io.ReadFull(pc, target); err != nil || string(target) != m.advert.id {
-			m.refused(raw.RemoteAddr(), "raft target", fmt.Errorf("for member %q, this is %q (%v)", target, m.advert.id, err))
+			m.refuse(raw.RemoteAddr(), "raft target", fmt.Errorf("for member %q, this is %q (%v)", target, m.advert.id, err))
 			pc.Close()
 			return
 		}
@@ -266,7 +272,6 @@ func (m *mux) route(raw net.Conn) {
 		}
 	case muxControl:
 		defer pc.Close()
-		claims := pc.claims
 		if m.control == nil {
 			return
 		}
@@ -307,7 +312,7 @@ func (m *mux) Dial(address raft.ServerAddress, timeout time.Duration) (net.Conn,
 	if id == "" || len(id) > 255 {
 		return nil, fmt.Errorf("raft address %q names no member", address)
 	}
-	c, err := dialKind(hostport, timeout, m.tls, muxRaft, m.advert.tcp)
+	c, claims, err := dialKind(hostport, timeout, m.tls, m.verifier, muxRaft, m.advert.tcp)
 	if err != nil {
 		return nil, err
 	}
@@ -315,30 +320,30 @@ func (m *mux) Dial(address raft.ServerAddress, timeout time.Duration) (net.Conn,
 		c.Close()
 		return nil, err
 	}
-	pc, err := m.track(c)
-	if err != nil {
-		c.Close()
-		return nil, err
-	}
-	return pc, nil
+	return m.track(c, claims), nil
 }
 
-// dialKind opens an attested connection of one kind. Connections leave from
-// the advertised address, so peers see the address they know us by.
-func dialKind(addr string, timeout time.Duration, cfg *tls.Config, kind byte, local net.Addr) (*tls.Conn, error) {
+// dialKind opens an attested connection of one kind and verifies the peer
+// before it sends anything. Connections leave from the advertised address,
+// so peers see the address they know us by.
+func dialKind(addr string, timeout time.Duration, cfg *tls.Config, v peerVerifier, kind byte, local net.Addr) (*tls.Conn, Claims, error) {
 	d := &net.Dialer{Timeout: timeout}
 	if a, ok := local.(*net.TCPAddr); ok && a != nil {
 		d.LocalAddr = &net.TCPAddr{IP: a.IP}
 	}
 	c, err := tls.DialWithDialer(d, "tcp", addr, cfg)
 	if err != nil {
-		return nil, err
+		return nil, Claims{}, err
 	}
-	if _, err := c.Write([]byte{kind}); err != nil {
+	claims, err := v.peer(c)
+	if err == nil {
+		_, err = c.Write([]byte{kind})
+	}
+	if err != nil {
 		c.Close()
-		return nil, err
+		return nil, Claims{}, err
 	}
-	return c, nil
+	return c, claims, nil
 }
 
 // Control requests.
@@ -365,8 +370,8 @@ type controlResponse struct {
 	Status   *Status         `json:"status,omitempty"`
 }
 
-func callControl(addr string, cfg *tls.Config, timeout time.Duration, req controlRequest, local net.Addr) (controlResponse, error) {
-	c, err := dialKind(addr, timeout, cfg, muxControl, local)
+func callControl(addr string, cfg *tls.Config, v peerVerifier, timeout time.Duration, req controlRequest, local net.Addr) (controlResponse, error) {
+	c, _, err := dialKind(addr, timeout, cfg, v, muxControl, local)
 	if err != nil {
 		return controlResponse{}, err
 	}

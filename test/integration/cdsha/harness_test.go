@@ -1,9 +1,9 @@
 //go:build integration
 
-// Package cdsha_test is the multi-process integration test of CDS-HA v2:
-// five real `c8s cds` processes on loopback addresses, a fault-injecting
-// proxy between every pair of peers, and a history checker. Run it with
-// test/integration/cdsha/run.sh or
+// Package cdsha_test is the multi-process integration test of CDS-HA
+// (docs/cds-ha.md): five real `c8s cds` processes on loopback addresses, a
+// fault-injecting proxy between every pair of peers, and a history checker.
+// Run it with test/integration/cdsha/run.sh or
 //
 //	go test -tags integration ./test/integration/cdsha/...
 package cdsha_test
@@ -14,9 +14,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/sha256"
 	"crypto/x509"
-	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -28,6 +26,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -35,10 +34,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/util/wait"
 
 	"github.com/confidential-dot-ai/c8s/internal/cdsha"
+	"github.com/confidential-dot-ai/c8s/pkg/certutil"
+	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
 const (
@@ -49,6 +50,8 @@ const (
 	// fault proxy listens there) and really listen on 127.0.78.N.
 	advertiseNet = "127.0.77."
 	bindNet      = "127.0.78."
+	// replicas processes, seats of them voters.
+	replicas, seats = 5, 3
 )
 
 // Timing, about half the defaults, so faults resolve quickly.
@@ -124,8 +127,6 @@ type Replica struct {
 // Cluster is five replica slots, the fault net, and the operator's keys.
 type Cluster struct {
 	t        *testing.T
-	N        int
-	Seats    int
 	Replicas []*Replica
 	Net      *faultNet
 	Dir      string
@@ -137,18 +138,11 @@ type Cluster struct {
 	OpKey      *ecdsa.PrivateKey
 	OpKeyPath  string // private, for the CLI
 	OpPubPath  string
-	RecKey     *ecdsa.PrivateKey
 	RecKeyPath string
 	RecPubPath string
 	attestAPI  *httptest.Server
-	ExtraFlags []string
-	genesisAt  time.Time
+	signer     *operatorauth.Signer // the CLI's operator token minter
 	client     *http.Client
-}
-
-type clusterOpts struct {
-	n, seats  int
-	noGenesis bool
 }
 
 func freePort(t *testing.T) int {
@@ -185,52 +179,56 @@ func freePortOn(t *testing.T, n int) int {
 	return 0
 }
 
-func writePEM(t *testing.T, path, typ string, der []byte) {
-	t.Helper()
-	if err := os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: typ, Bytes: der}), 0o600); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func newKeyPair(t *testing.T, dir, name string) (*ecdsa.PrivateKey, string, string) {
+// newKeyPair writes a P-256 key pair as dir/name.key (PKCS#8) and
+// dir/name.pub; it returns the key, the private PEM and both paths.
+func newKeyPair(t *testing.T, dir, name string) (k *ecdsa.PrivateKey, privPEM []byte, priv, pubp string) {
 	t.Helper()
 	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	der, _ := x509.MarshalECPrivateKey(k)
-	pub, _ := x509.MarshalPKIXPublicKey(&k.PublicKey)
-	priv := filepath.Join(dir, name+".key")
-	pubp := filepath.Join(dir, name+".pub")
-	writePEM(t, priv, "EC PRIVATE KEY", der)
-	writePEM(t, pubp, "PUBLIC KEY", pub)
-	return k, priv, pubp
+	privPEM, err = certutil.MarshalECKeyPEM(k)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub, err := x509.MarshalPKIXPublicKey(&k.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	priv, pubp = filepath.Join(dir, name+".key"), filepath.Join(dir, name+".pub")
+	if err := os.WriteFile(priv, privPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pubp, pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pub}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return k, privPEM, priv, pubp
 }
 
-// NewCluster starts n replica processes (seats voters) and waits for all to
-// serve one cluster born from a Genesis decree naming n1.
-func NewCluster(t *testing.T, o clusterOpts) *Cluster {
+// NewCluster starts the replica processes and waits for all to serve one
+// cluster born from a Genesis decree naming n1.
+func NewCluster(t *testing.T) *Cluster {
 	t.Helper()
-	if o.n == 0 {
-		o.n = 5
-	}
-	if o.seats == 0 {
-		o.seats = 3
-	}
 	dir := t.TempDir()
-	c := &Cluster{t: t, N: o.n, Seats: o.seats, Net: newFaultNet(), Dir: dir, KubeDir: filepath.Join(dir, "kube"),
+	c := &Cluster{t: t, Net: newFaultNet(), Dir: dir, KubeDir: filepath.Join(dir, "kube"),
 		LogDir:   filepath.Join(logRoot, strings.ReplaceAll(t.Name(), "/", "_")),
-		HTTPPort: freePortOn(t, o.n), PeerPort: freePortOn(t, o.n),
-		client: &http.Client{Timeout: 15 * time.Second, Transport: &http.Transport{MaxIdleConnsPerHost: 64, DisableKeepAlives: false}}}
+		HTTPPort: freePortOn(t, replicas), PeerPort: freePortOn(t, replicas),
+		client: &http.Client{Timeout: 15 * time.Second, Transport: &http.Transport{MaxIdleConnsPerHost: 64}}}
 	for c.PeerPort == c.HTTPPort {
-		c.PeerPort = freePortOn(t, o.n)
+		c.PeerPort = freePortOn(t, replicas)
 	}
 	_ = os.RemoveAll(c.LogDir)
 	if err := os.MkdirAll(c.LogDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	c.OpKey, c.OpKeyPath, c.OpPubPath = newKeyPair(t, dir, "decree")
-	c.RecKey, c.RecKeyPath, c.RecPubPath = newKeyPair(t, dir, "recovery")
+	var opPEM []byte
+	c.OpKey, opPEM, c.OpKeyPath, c.OpPubPath = newKeyPair(t, dir, "decree")
+	_, _, c.RecKeyPath, c.RecPubPath = newKeyPair(t, dir, "recovery")
+	signer, err := operatorauth.NewSignerFromKeyPEM(opPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.signer = signer
 	c.attestAPI = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
@@ -238,13 +236,13 @@ func NewCluster(t *testing.T, o clusterOpts) *Cluster {
 	t.Cleanup(c.attestAPI.Close)
 	srcOf := func(ip string) int {
 		if s, ok := strings.CutPrefix(ip, advertiseNet); ok {
-			if i, err := strconv.Atoi(s); err == nil && i >= 1 && i <= o.n {
+			if i, err := strconv.Atoi(s); err == nil && i >= 1 && i <= replicas {
 				return i - 1
 			}
 		}
 		return -1
 	}
-	for i := 0; i < o.n; i++ {
+	for i := range replicas {
 		r := &Replica{Idx: i, Node: fmt.Sprintf("n%d", i+1),
 			Advertise: fmt.Sprintf("%s%d", advertiseNet, i+1), Bind: fmt.Sprintf("%s%d", bindNet, i+1)}
 		r.Base = fmt.Sprintf("http://%s:%d", r.Bind, c.HTTPPort)
@@ -263,20 +261,15 @@ func NewCluster(t *testing.T, o clusterOpts) *Cluster {
 			t.Logf("replica logs: %s", c.LogDir)
 		}
 	})
-	if !o.noGenesis {
-		c.PutDecree(cdsha.Decree{ClusterID: clusterID, IntentID: "genesis", Kind: cdsha.Genesis,
-			BootstrapNode: "n1", ExpiresAt: time.Now().Add(time.Hour)}, nil)
-	}
+	c.PutDecree(cdsha.Decree{ClusterID: clusterID, IntentID: "genesis", Kind: cdsha.Genesis,
+		BootstrapNode: "n1", ExpiresAt: time.Now().Add(time.Hour)}, nil)
 	for i := range c.Replicas {
 		c.Start(i, false)
 	}
-	if !o.noGenesis {
-		c.WaitAllServing(60 * time.Second)
-		c.genesisAt = time.Now()
-		// Operator tokens are refused until the clock skew (1 s) has passed
-		// since Genesis.
-		time.Sleep(1500 * time.Millisecond)
-	}
+	c.WaitAllServing(60 * time.Second)
+	// Operator tokens are refused until the clock skew (1 s) has passed
+	// since Genesis.
+	time.Sleep(1500 * time.Millisecond)
 	return c
 }
 
@@ -312,13 +305,12 @@ func (c *Cluster) Start(i int, keepDB bool) {
 		"--ha-peers", strings.Join(peers, ","), "--ha-advertise-ip", r.Advertise, "--ha-port", strconv.Itoa(c.PeerPort),
 		"--ha-node-name", r.Node, "--ha-attestor", "mock", "--ha-measurement", measurement, "--ha-replica-pins", measurement,
 		"--ha-operator-key", c.OpPubPath, "--ha-recovery-key", c.RecPubPath,
-		"--ha-seats", strconv.Itoa(c.Seats), "--ha-max-non-voters", "8",
+		"--ha-seats", strconv.Itoa(seats),
 		"--ha-heartbeat", timing.heartbeat.String(), "--ha-election", timing.election.String(),
 		"--ha-lease", timing.lease.String(), "--ha-dead-after", timing.deadAfter.String(),
 		"--ha-stabilize", timing.stabilize.String(), "--ha-apply-timeout", timing.apply.String(),
 		"--ha-tick", timing.tick.String(), "--ha-backup-interval", timing.backup.String(),
 	}
-	args = append(args, c.ExtraFlags...)
 	cmd := exec.Command(binPath, args...)
 	cmd.Env = append(os.Environ(), "C8S_DEV_KUBE_DIR="+c.KubeDir, "C8S_DEV_TEST_ROUTES=1")
 	logf, err := os.Create(filepath.Join(c.LogDir, fmt.Sprintf("%s.%d.log", r.Node, r.inc)))
@@ -491,38 +483,26 @@ func (c *Cluster) DecreeStatus(name string) (cdsha.DecreeStatus, bool) {
 	return st, true
 }
 
+// waitFor polls cond every 100 ms until it holds and returns the time it
+// took; after timeout it fails the test with what().
+func (c *Cluster) waitFor(timeout time.Duration, cond func() bool, what func() string) time.Duration {
+	c.t.Helper()
+	start := time.Now()
+	err := wait.PollUntilContextTimeout(context.Background(), 100*time.Millisecond, timeout, true,
+		func(context.Context) (bool, error) { return cond(), nil })
+	if err != nil {
+		c.t.Fatalf("after %s: %s", timeout, what())
+	}
+	return time.Since(start)
+}
+
 // WaitDecreeStatus waits until the decree has a status.
 func (c *Cluster) WaitDecreeStatus(name string, timeout time.Duration) cdsha.DecreeStatus {
 	c.t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if st, ok := c.DecreeStatus(name); ok {
-			return st
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	c.t.Fatalf("decree %s got no status in %s", name, timeout)
-	return cdsha.DecreeStatus{}
-}
-
-// Token is a single-use operator token for one request.
-func (c *Cluster) Token(method, path string, body []byte) string {
-	sum := sha256.Sum256(body)
-	tok, err := jwt.NewWithClaims(jwt.SigningMethodES256, jwt.MapClaims{
-		"iat": time.Now().Unix(), "exp": time.Now().Add(time.Minute).Unix(),
-		"htm": method, "htu": path, "pbh": base64.RawURLEncoding.EncodeToString(sum[:]),
-		"jti": randHex(8),
-	}).SignedString(c.OpKey)
-	if err != nil {
-		panic(err)
-	}
-	return tok
-}
-
-func randHex(n int) string {
-	b := make([]byte, n)
-	_, _ = rand.Read(b)
-	return fmt.Sprintf("%x", b)
+	var st cdsha.DecreeStatus
+	c.waitFor(timeout, func() (ok bool) { st, ok = c.DecreeStatus(name); return ok },
+		func() string { return "decree " + name + " got no status" })
+	return st
 }
 
 // Response is one HTTP exchange; Err is set when there was no response.
@@ -533,17 +513,19 @@ type Response struct {
 	Err    error
 }
 
-// Do sends one request to replica i. token "" sends none; "op" mints one.
-func (c *Cluster) Do(ctx context.Context, i int, method, path string, body []byte, token string) Response {
-	if token == "op" {
-		token = c.Token(method, path, body)
-	}
+// Do sends one request to replica i; op signs it with the operator key
+// through operatorauth.Signer, as the CLI does.
+func (c *Cluster) Do(ctx context.Context, i int, method, path string, body []byte, op bool) Response {
 	req, err := http.NewRequestWithContext(ctx, method, c.Replicas[i].Base+path, bytes.NewReader(body))
 	if err != nil {
 		return Response{Err: err}
 	}
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
+	if op {
+		auth, err := c.signer.Authorization(method, path, body)
+		if err != nil {
+			return Response{Err: err}
+		}
+		req.Header.Set("Authorization", auth)
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -561,7 +543,7 @@ func (c *Cluster) Do(ctx context.Context, i int, method, path string, body []byt
 func (c *Cluster) Get(i int, path string) Response {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	return c.Do(ctx, i, http.MethodGet, path, nil, "")
+	return c.Do(ctx, i, http.MethodGet, path, nil, false)
 }
 
 // Status is replica i's /ha/status (ok=false when unreachable).
@@ -588,31 +570,20 @@ func (c *Cluster) FullyServing(i int) bool {
 // a DaemonSet's readiness probe sees).
 func (c *Cluster) WaitReady(i int, timeout time.Duration) time.Duration {
 	c.t.Helper()
-	start := time.Now()
-	for {
-		if c.FullyServing(i) && c.Get(i, "/readyz").Code == http.StatusOK {
-			return time.Since(start)
-		}
-		if time.Since(start) > timeout {
-			c.t.Fatalf("%s not ready after %s: %s", c.Replicas[i].Node, timeout, c.StatusAll())
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+	return c.waitFor(timeout, func() bool { return c.FullyServing(i) && c.Get(i, "/readyz").Code == http.StatusOK },
+		func() string { return c.Replicas[i].Node + " not ready:" + c.StatusAll() })
 }
 
-// WaitServing waits for the listed replicas to serve.
+// WaitServing waits for the listed replicas to serve, one after another.
 func (c *Cluster) WaitServing(ids []int, timeout time.Duration) time.Duration {
 	c.t.Helper()
-	start := time.Now()
-	for _, i := range ids {
-		for !c.FullyServing(i) {
-			if time.Since(start) > timeout {
-				c.t.Fatalf("%s not serving after %s (status %s)", c.Replicas[i].Node, timeout, c.StatusLine(i))
-			}
-			time.Sleep(100 * time.Millisecond)
+	pending := ids
+	return c.waitFor(timeout, func() bool {
+		for len(pending) > 0 && c.FullyServing(pending[0]) {
+			pending = pending[1:]
 		}
-	}
-	return time.Since(start)
+		return len(pending) == 0
+	}, func() string { return "not serving: " + c.StatusLine(pending[0]) })
 }
 
 // WaitAllServing waits for every running replica to serve.
@@ -635,23 +606,15 @@ func (c *Cluster) RunningIDs() []int {
 // WaitNotServing waits until replica i reports serving=false (or is down).
 func (c *Cluster) WaitNotServing(i int, timeout time.Duration) time.Duration {
 	c.t.Helper()
-	start := time.Now()
-	for {
-		st, ok := c.Status(i)
-		if !ok || !st.Serving {
-			return time.Since(start)
-		}
-		if time.Since(start) > timeout {
-			c.t.Fatalf("%s still serving after %s: %s", c.Replicas[i].Node, timeout, c.StatusLine(i))
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+	return c.waitFor(timeout, func() bool { st, ok := c.Status(i); return !ok || !st.Serving },
+		func() string { return "still serving: " + c.StatusLine(i) })
 }
 
-// Leader is the index of the replica that reports itself leader, or -1.
-func (c *Cluster) Leader() int {
+// Leader is the index of a running replica, other than the excluded ones,
+// that reports itself a serving leader, or -1.
+func (c *Cluster) Leader(exclude ...int) int {
 	for i := range c.Replicas {
-		if !c.Running(i) {
+		if slices.Contains(exclude, i) || !c.Running(i) {
 			continue
 		}
 		if st, ok := c.Status(i); ok && st.State == "Leader" && st.Serving {
@@ -664,20 +627,10 @@ func (c *Cluster) Leader() int {
 // WaitLeader waits for a serving leader other than the excluded replicas.
 func (c *Cluster) WaitLeader(timeout time.Duration, exclude ...int) int {
 	c.t.Helper()
-	start := time.Now()
-	for time.Since(start) < timeout {
-		for i := range c.Replicas {
-			if contains(exclude, i) || !c.Running(i) {
-				continue
-			}
-			if st, ok := c.Status(i); ok && st.State == "Leader" && st.Serving {
-				return i
-			}
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	c.t.Fatalf("no leader (excluding %v) after %s: %s", exclude, timeout, c.StatusAll())
-	return -1
+	l := -1
+	c.waitFor(timeout, func() bool { l = c.Leader(exclude...); return l >= 0 },
+		func() string { return fmt.Sprintf("no leader (excluding %v):%s", exclude, c.StatusAll()) })
+	return l
 }
 
 // Voters are the replica indexes whose current member is a voter, in the
@@ -705,7 +658,7 @@ func (c *Cluster) NonVoterIDs() []int {
 	v := c.Voters()
 	var out []int
 	for _, i := range c.RunningIDs() {
-		if !contains(v, i) {
+		if !slices.Contains(v, i) {
 			out = append(out, i)
 		}
 	}
@@ -716,28 +669,10 @@ func (c *Cluster) NonVoterIDs() []int {
 // replica.
 func (c *Cluster) WaitVoters(n int, timeout time.Duration) {
 	c.t.Helper()
-	start := time.Now()
-	for time.Since(start) < timeout {
+	c.waitFor(timeout, func() bool {
 		v := c.Voters()
-		ok := len(v) == n
-		for _, i := range v {
-			ok = ok && c.Running(i)
-		}
-		if ok {
-			return
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-	c.t.Fatalf("voters never reached %d: %s", n, c.StatusAll())
-}
-
-func contains(s []int, v int) bool {
-	for _, x := range s {
-		if x == v {
-			return true
-		}
-	}
-	return false
+		return len(v) == n && !slices.ContainsFunc(v, func(i int) bool { return !c.Running(i) })
+	}, func() string { return fmt.Sprintf("voters never reached %d:%s", n, c.StatusAll()) })
 }
 
 func (c *Cluster) StatusLine(i int) string {

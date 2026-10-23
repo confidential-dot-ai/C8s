@@ -3,10 +3,8 @@ package cmdsutil
 import (
 	"bytes"
 	"context"
-	"crypto/ecdsa"
 	"crypto/x509"
 	"encoding/json"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"os"
@@ -14,6 +12,7 @@ import (
 	"sync"
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
+	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/internal/cdspins"
 )
 
@@ -48,28 +47,17 @@ func LoadCDSDecreesInfo(path string) (info CDSDecreesInfo, ok bool, err error) {
 	return info, true, nil
 }
 
-// decreeKeyDER accepts a PEM ECDSA public key and returns its PKIX DER.
-func decreeKeyDER(s string) ([]byte, error) {
-	b, _ := pem.Decode([]byte(strings.TrimSpace(s)))
-	if b == nil || b.Type != "PUBLIC KEY" {
-		return nil, errors.New("decree key must be a PEM PUBLIC KEY")
-	}
-	k, err := x509.ParsePKIXPublicKey(b.Bytes)
-	if err != nil {
-		return nil, fmt.Errorf("decree key: %w", err)
-	}
-	if _, ok := k.(*ecdsa.PublicKey); !ok {
-		return nil, errors.New("decree key is not an ECDSA key")
-	}
-	return b.Bytes, nil
-}
-
 // CDSDecreeSource follows the operator's signed CDS pin decrees from the
 // bootstrap set (the node's launch-document CDS policy), fetching them from
 // cdsURL (GET /ha/pins). state, if set, keeps the newest decree across
 // restarts.
 func CDSDecreeSource(info CDSDecreesInfo, bootstrap refvalues.ReferenceValues, cdsURL, state string) (*cdspins.Source, error) {
-	der, err := decreeKeyDER(info.DecreeKey)
+	// The launch document's decree key, which launchconfig holds to P-256.
+	key, err := runtimemeasure.ParsePublicKeyPEM([]byte(info.DecreeKey))
+	if err != nil {
+		return nil, fmt.Errorf("decree key: %w", err)
+	}
+	der, err := x509.MarshalPKIXPublicKey(key)
 	if err != nil {
 		return nil, err
 	}
@@ -97,9 +85,6 @@ func NewNodePins(path string) (*NodePins, error) {
 	n := &NodePins{path: path}
 	if _, err := n.Refresh(context.Background()); err != nil {
 		return nil, err
-	}
-	if n.gen == 0 {
-		return nil, fmt.Errorf("%s: no CDS policy", path)
 	}
 	return n, nil
 }
@@ -138,5 +123,12 @@ func (n *NodePins) Refresh(context.Context) (bool, error) {
 	return n.gen > 1, nil
 }
 
-// NodeMountsPins reports whether the node mounts its CDS policy at path.
-func NodeMountsPins(path string) (bool, error) { return nodeProvides(path) }
+// FollowNodePins is NewNodePins where the node mounts its CDS policy at
+// path, and nil, nil where it mounts none. A stat error other than absent
+// fails.
+func FollowNodePins(path string) (*NodePins, error) {
+	if mounted, err := nodeProvides(path); !mounted || err != nil {
+		return nil, err
+	}
+	return NewNodePins(path)
+}

@@ -31,12 +31,9 @@ type faultNet struct {
 	links map[[2]int]Link // [from, to]
 	conns map[*proxyConn]struct{}
 	lns   []net.Listener
-	// garbage counts connections from addresses that are no replica.
-	foreign int
 }
 
 type proxyConn struct {
-	from, to  int
 	down, up  net.Conn // down: from the dialing replica; up: to the target
 	closeOnce sync.Once
 }
@@ -121,34 +118,13 @@ func (f *faultNet) HealAll() {
 	f.mu.Unlock()
 }
 
-// ResetPair closes the live connections between a and b (both directions),
-// as a peer process dying or a NAT dropping state would.
-func (f *faultNet) ResetPair(a, b int) {
-	f.mu.Lock()
-	var drop []*proxyConn
-	for c := range f.conns {
-		if (c.from == a && c.to == b) || (c.from == b && c.to == a) {
-			drop = append(drop, c)
-		}
-	}
-	f.mu.Unlock()
-	for _, c := range drop {
-		c.close()
-	}
-}
-
 func (f *faultNet) handle(down net.Conn, from, to int, target string) {
-	if from < 0 {
-		f.mu.Lock()
-		f.foreign++
-		f.mu.Unlock()
-	}
 	up, err := net.DialTimeout("tcp", target, 2*time.Second)
 	if err != nil {
 		down.Close()
 		return
 	}
-	pc := &proxyConn{from: from, to: to, down: down, up: up}
+	pc := &proxyConn{down: down, up: up}
 	f.mu.Lock()
 	f.conns[pc] = struct{}{}
 	f.mu.Unlock()

@@ -3,7 +3,7 @@ package cds
 import (
 	"bytes"
 	"context"
-	"crypto/ecdsa"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +18,7 @@ import (
 
 	"github.com/confidential-dot-ai/c8s/internal/cdsha"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsconn"
+	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 )
 
 // newHARecoverCmd restores a cluster that lost every replica from a sealed
@@ -75,11 +76,12 @@ func newHARecoverCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			dk, err := loadECPrivateKey(decreeKey)
+			dk, err := certutil.LoadECPrivateKeyFile(decreeKey)
 			if err != nil {
 				return fmt.Errorf("--decree-key: %w", err)
 			}
-			sd, err := signRestore(dk, clusterID, node, snap, expiresIn)
+			sd, err := cdsha.SignDecree(cdsha.Decree{ClusterID: clusterID, IntentID: "restore-" + rand.Text(), Kind: cdsha.Restore,
+				BootstrapNode: node, SnapshotSHA256: cdsha.SnapshotSHA256(snap), ExpiresAt: time.Now().Add(expiresIn).UTC().Truncate(time.Second)}, dk)
 			if err != nil {
 				return err
 			}
@@ -140,11 +142,6 @@ func newHARecoverCmd() *cobra.Command {
 	cmd.MarkFlagsOneRequired("recovery-key", "recovery-key-share")
 	cmd.MarkFlagsMutuallyExclusive("recovery-key", "recovery-key-share")
 	return cmd
-}
-
-func signRestore(key *ecdsa.PrivateKey, clusterID, node string, snap []byte, expiresIn time.Duration) (cdsha.SignedDecree, error) {
-	return cdsha.SignDecree(cdsha.Decree{ClusterID: clusterID, IntentID: "restore-" + randomID(), Kind: cdsha.Restore,
-		BootstrapNode: node, SnapshotSHA256: cdsha.SnapshotSHA256(snap), ExpiresAt: time.Now().Add(expiresIn).UTC().Truncate(time.Second)}, key)
 }
 
 // restoreApplied reports whether the cluster's decree record holds the

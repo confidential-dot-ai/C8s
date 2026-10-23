@@ -162,7 +162,7 @@ func newHandler(cfg config, logger *slog.Logger) (http.Handler, error) {
 	if len(resolved.pins.Measurements) == 0 && len(resolved.pins.Images) == 0 {
 		logger.Warn("no CDS measurements pinned; accepting any armTLS-attested CDS (unsafe outside development)")
 	}
-	httpClient, err := armtls.NewVerifyingHTTPClient(armtls.Pins(resolved.pins), cfg.attestationAPIURL)
+	var httpClient *http.Client
 	if resolved.fromNode {
 		// The node's policy follows the operator's CDS pin decrees; re-read
 		// it on a pin miss.
@@ -170,6 +170,8 @@ func newHandler(cfg config, logger *slog.Logger) (http.Handler, error) {
 		if node, err = cmdsutil.NewNodePins(nodePinsPath); err == nil {
 			httpClient, err = armtls.NewRefreshingHTTPClient(node, cfg.attestationAPIURL)
 		}
+	} else {
+		httpClient, err = armtls.NewVerifyingHTTPClient(armtls.Pins(resolved.pins), cfg.attestationAPIURL)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("CDS armTLS client: %w", err)

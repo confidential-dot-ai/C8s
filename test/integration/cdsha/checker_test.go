@@ -7,14 +7,17 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math/rand/v2"
 	"net/http"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"k8s.io/apimachinery/pkg/util/wait"
 )
 
 // gateMsg is the body of the freshness gate's 503 (ha.go haGate);
@@ -29,16 +32,13 @@ const (
 
 // Op is one operator write and its outcome.
 type Op struct {
-	Writer  int
-	Kind    string // "allow" or "secret"
-	Key     string
-	Seq     int
-	Replica int
-	Start   time.Time
-	End     time.Time
-	Code    int
-	Err     string
-	Body    string
+	Kind string // "allow" or "secret"
+	Key  string
+	Seq  int
+	End  time.Time
+	Code int
+	Err  string
+	Body string
 }
 
 // Acked: the write returned success.
@@ -61,30 +61,20 @@ func (o Op) Definite() bool {
 	return o.Code >= 400 && o.Code < 500
 }
 
-// Obs is one read of one key at one replica.
-type Obs struct {
-	Replica, Inc int
-	Key          string
-	Seq          int
-	At           time.Time
-}
-
 // Checker runs writers and readers against a cluster and checks the
-// history (docs: v2-battle-test.md, "The checker").
+// history: no acked write lost, no value nobody wrote, monotonic reads.
 type Checker struct {
 	c       *Cluster
 	writers int
 	pause   time.Duration
 
-	mu       sync.Mutex
-	ops      []Op
-	bad5xx   []string                  // 5xx that is not the freshness gate
-	bad4xx   []string                  // a valid write refused as unauthorized or a replay
-	obs      map[[2]int]map[string]int // [replica, inc] -> key -> highest seq seen
-	regress  []string                  // monotonic-read violations within one incarnation
-	crossInc []string                  // a restarted replica served older values than its predecessor
-	lastSeen map[int]map[string]int    // replica (any incarnation) -> key -> highest seq
-	reads    atomic.Int64
+	mu      sync.Mutex
+	ops     []Op
+	bad5xx  []string                  // 5xx that is not the freshness gate
+	bad4xx  []string                  // a valid write refused as unauthorized or a replay
+	obs     map[[2]int]map[string]int // [replica, inc] -> key -> highest seq seen
+	regress []string                  // monotonic-read violations within one incarnation
+	reads   atomic.Int64
 
 	stop     chan struct{}
 	wg       sync.WaitGroup
@@ -114,7 +104,7 @@ func badStatus(code int, body string) bool {
 // NewChecker prepares writers concurrent writers; each sleeps pause
 // between writes.
 func NewChecker(c *Cluster, writers int, pause time.Duration) *Checker {
-	return &Checker{c: c, writers: writers, pause: pause, obs: map[[2]int]map[string]int{}, lastSeen: map[int]map[string]int{}, stop: make(chan struct{})}
+	return &Checker{c: c, writers: writers, pause: pause, obs: map[[2]int]map[string]int{}, stop: make(chan struct{})}
 }
 
 // Start launches writers and one reader per replica.
@@ -165,7 +155,7 @@ func (k *Checker) writer(w int) {
 			}
 			seq++
 			key := fmt.Sprintf("w%dg%d", w, gen[kind])
-			op := k.write(w, kind, key, seq)
+			op := k.write(kind, key, seq)
 			k.inflight.Add(-1)
 			if !op.Acked() && !op.Definite() {
 				gen[kind]++
@@ -187,11 +177,11 @@ func allowBody(key string, seq int) []byte {
 
 func secretValue(key string, seq int) string { return key + ":" + strconv.Itoa(seq) }
 
-func (k *Checker) write(w int, kind, key string, seq int) Op {
+func (k *Checker) write(kind, key string, seq int) Op {
 	running := k.c.RunningIDs()
 	if len(running) == 0 {
 		time.Sleep(100 * time.Millisecond)
-		return Op{Writer: w, Kind: kind, Key: key, Seq: seq, Replica: -1, Err: "no replica running"}
+		return Op{Kind: kind, Key: key, Seq: seq, Err: "no replica running"}
 	}
 	i := running[rand.IntN(len(running))]
 	var path string
@@ -204,8 +194,8 @@ func (k *Checker) write(w int, kind, key string, seq int) Op {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	op := Op{Writer: w, Kind: kind, Key: key, Seq: seq, Replica: i, Start: time.Now()}
-	r := k.c.Do(ctx, i, http.MethodPut, path, body, "op")
+	op := Op{Kind: kind, Key: key, Seq: seq}
+	r := k.c.Do(ctx, i, http.MethodPut, path, body, true)
 	op.End, op.Code = time.Now(), r.Code
 	if r.Err != nil {
 		op.Err = r.Err.Error()
@@ -270,19 +260,11 @@ func (k *Checker) readOnce(i int) {
 		seen = map[string]int{}
 		k.obs[id] = seen
 	}
-	last := k.lastSeen[i]
-	if last == nil {
-		last = map[string]int{}
-		k.lastSeen[i] = last
-	}
 	for key, v := range vals {
 		if prev, had := seen[key]; had && v < prev {
 			k.regress = append(k.regress, fmt.Sprintf("%s %s inc %d: %s went %d -> %d", now.Format("15:04:05.000"), k.c.Replicas[i].Node, inc, key, prev, v))
-		} else if prevAny, had := last[key]; had && v < prevAny && len(k.crossInc) < 50 {
-			k.crossInc = append(k.crossInc, fmt.Sprintf("%s %s inc %d: %s went %d -> %d (earlier incarnation)", now.Format("15:04:05.000"), k.c.Replicas[i].Node, inc, key, prevAny, v))
 		}
 		seen[key] = max(seen[key], v)
-		last[key] = max(last[key], v)
 	}
 }
 
@@ -413,38 +395,33 @@ func (k *Checker) snapshot(i int) (Snapshot, error) {
 // ETag and secret store; it returns the time it took.
 func (k *Checker) Converge(timeout time.Duration) (map[int]Snapshot, time.Duration, error) {
 	start := time.Now()
+	var snaps map[int]Snapshot
 	var last error
-	for time.Since(start) < timeout {
-		snaps := map[int]Snapshot{}
-		var err error
+	err := wait.PollUntilContextTimeout(context.Background(), 200*time.Millisecond, timeout, true, func(context.Context) (bool, error) {
+		snaps, last = map[int]Snapshot{}, nil
 		for _, i := range k.c.RunningIDs() {
-			var s Snapshot
-			if s, err = k.snapshot(i); err != nil {
-				break
+			s, err := k.snapshot(i)
+			if err != nil {
+				last = err
+				return false, nil
 			}
 			snaps[i] = s
 		}
-		if err == nil && len(snaps) > 0 {
-			err = sameSnapshots(k.c, snaps)
-			if err == nil {
-				return snaps, time.Since(start), nil
-			}
+		if len(snaps) > 0 {
+			last = sameSnapshots(k.c, snaps)
 		}
-		last = err
-		time.Sleep(200 * time.Millisecond)
+		return len(snaps) > 0 && last == nil, nil
+	})
+	if err != nil {
+		return nil, time.Since(start), fmt.Errorf("no convergence in %s: %v", timeout, last)
 	}
-	return nil, time.Since(start), fmt.Errorf("no convergence in %s: %v", timeout, last)
+	return snaps, time.Since(start), nil
 }
 
 func sameSnapshots(c *Cluster, snaps map[int]Snapshot) error {
 	var ref *Snapshot
 	refIdx := -1
-	ids := make([]int, 0, len(snaps))
-	for i := range snaps {
-		ids = append(ids, i)
-	}
-	sort.Ints(ids)
-	for _, i := range ids {
+	for _, i := range slices.Sorted(maps.Keys(snaps)) {
 		s := snaps[i]
 		if ref == nil {
 			ref, refIdx = &s, i
@@ -469,17 +446,15 @@ type Report struct {
 	Lost                                   []string
 	Invented                               []string
 	Regress                                []string
-	CrossIncarnation                       []string
 	Bad5xx                                 []string
 	Bad4xx                                 []string
 	ConvergeIn                             time.Duration
 	ConvergeErr                            error
-	LongestWriteGap                        time.Duration
 }
 
 func (r Report) String() string {
-	return fmt.Sprintf("writes=%d acked=%d definite-fail=%d indeterminate=%d reads=%d lost=%d invented=%d regress=%d cross-incarnation=%d bad5xx=%d bad4xx=%d converge=%s longest-write-gap=%s",
-		r.Writes, r.Acked, r.Definite, r.Indeterminate, r.Reads, len(r.Lost), len(r.Invented), len(r.Regress), len(r.CrossIncarnation), len(r.Bad5xx), len(r.Bad4xx), r.ConvergeIn.Round(time.Millisecond), r.LongestWriteGap.Round(time.Millisecond))
+	return fmt.Sprintf("writes=%d acked=%d definite-fail=%d indeterminate=%d reads=%d lost=%d invented=%d regress=%d bad5xx=%d bad4xx=%d converge=%s",
+		r.Writes, r.Acked, r.Definite, r.Indeterminate, r.Reads, len(r.Lost), len(r.Invented), len(r.Regress), len(r.Bad5xx), len(r.Bad4xx), r.ConvergeIn.Round(time.Millisecond))
 }
 
 // Check stops the load, waits for convergence and checks the history. The
@@ -493,12 +468,10 @@ func (k *Checker) Check(convergeTimeout time.Duration) Report {
 	defer k.mu.Unlock()
 	rep.Reads = k.reads.Load()
 	rep.Regress = append(rep.Regress, k.regress...)
-	rep.CrossIncarnation = append(rep.CrossIncarnation, k.crossInc...)
 	rep.Bad5xx = append(rep.Bad5xx, k.bad5xx...)
 	rep.Bad4xx = append(rep.Bad4xx, k.bad4xx...)
 	maxAcked := map[string]int{}
 	maxTried := map[string]int{}
-	var ackTimes []time.Time
 	for _, op := range k.ops {
 		rep.Writes++
 		key := op.Kind + "/" + op.Key
@@ -506,7 +479,6 @@ func (k *Checker) Check(convergeTimeout time.Duration) Report {
 		case op.Acked():
 			rep.Acked++
 			maxAcked[key] = max(maxAcked[key], op.Seq)
-			ackTimes = append(ackTimes, op.End)
 		case op.Definite():
 			rep.Definite++
 		default:
@@ -515,10 +487,6 @@ func (k *Checker) Check(convergeTimeout time.Duration) Report {
 		if !op.Definite() {
 			maxTried[key] = max(maxTried[key], op.Seq)
 		}
-	}
-	sort.Slice(ackTimes, func(i, j int) bool { return ackTimes[i].Before(ackTimes[j]) })
-	for i := 1; i < len(ackTimes); i++ {
-		rep.LongestWriteGap = max(rep.LongestWriteGap, ackTimes[i].Sub(ackTimes[i-1]))
 	}
 	for i, s := range snaps {
 		for key, want := range maxAcked {
@@ -540,19 +508,16 @@ func (k *Checker) Require(rep Report) {
 	t := k.c.t
 	t.Helper()
 	t.Logf("checker: %s", rep)
-	fail := false
 	show := func(name string, xs []string) {
 		if len(xs) == 0 {
 			return
 		}
-		fail = true
 		if len(xs) > 10 {
 			xs = append(xs[:10:10], fmt.Sprintf("... and %d more", len(xs)-10))
 		}
 		t.Errorf("%s:\n  %s", name, strings.Join(xs, "\n  "))
 	}
 	if rep.ConvergeErr != nil {
-		fail = true
 		t.Errorf("convergence: %v\n%s", rep.ConvergeErr, k.c.StatusAll())
 	}
 	show("acknowledged writes lost", rep.Lost)
@@ -560,12 +525,7 @@ func (k *Checker) Require(rep Report) {
 	show("non-monotonic reads at one replica", rep.Regress)
 	show("5xx other than a retryable 503", rep.Bad5xx)
 	show("valid writes refused with 401/409", rep.Bad4xx)
-	if len(rep.CrossIncarnation) > 0 {
-		t.Logf("note: a restarted replica served older values than its previous incarnation (allowed: a new member):\n  %s", strings.Join(rep.CrossIncarnation, "\n  "))
-	}
 	if rep.Acked == 0 {
-		fail = true
 		t.Error("no write was acknowledged")
 	}
-	_ = fail
 }

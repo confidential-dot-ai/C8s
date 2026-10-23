@@ -1,16 +1,10 @@
 package cdsha
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
-	"io"
-	"log/slog"
-	"net"
 	"testing"
 	"time"
-
-	"github.com/hashicorp/raft"
 
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
 )
@@ -20,17 +14,16 @@ import (
 // rest of the group does not have.
 func TestFSMStopsOnEntryItCannotRead(t *testing.T) {
 	_, opPub := operatorKey(t)
-	for name, e := range map[string]Entry{
-		"newer format": {Kind: KindSecret, Format: Format + 1, Secret: &secrets.Command{Op: secrets.OpPut, Path: "/p", Value: []byte("v")}},
-		"unknown kind": {Kind: "from-the-future"},
-		"newer agreed": {Kind: KindFormat, SetFormat: Format + 1},
-		"no payload":   {Kind: KindSecret},
+	for name, e := range map[string]any{
+		"newer format": Entry{Kind: KindSecret, Format: Format + 1, Secret: &secrets.Command{Op: secrets.OpPut, Path: "/p", Value: []byte("v")}},
+		"unknown kind": Entry{Kind: "from-the-future"},
+		"newer agreed": Entry{Kind: KindFormat, SetFormat: Format + 1},
+		"no payload":   Entry{Kind: KindSecret},
+		"undecodable":  json.RawMessage("[1]"),
 	} {
 		t.Run(name, func(t *testing.T) {
-			al, sec, led := testStores(t)
-			f := NewFSM(PreGenesis(testCluster, opPub), al, sec, led)
-			raw, _ := json.Marshal(e)
-			res := f.Apply(&raft.Log{Index: 3, Type: raft.LogCommand, Data: raw})
+			f := newTestFSM(t, opPub)
+			res := applyAt(f, 3, e)
 			if _, ok := res.(error); !ok || f.Stuck() == "" {
 				t.Fatalf("applied %v, stuck %q", res, f.Stuck())
 			}
@@ -40,10 +33,8 @@ func TestFSMStopsOnEntryItCannotRead(t *testing.T) {
 		})
 	}
 	// An entry it reads is not a reason to stop, nor is a secret store refusal.
-	al, sec, led := testStores(t)
-	f := NewFSM(PreGenesis(testCluster, opPub), al, sec, led)
-	raw, _ := json.Marshal(Entry{Kind: KindFormat, SetFormat: Format})
-	if res := f.Apply(&raft.Log{Index: 1, Type: raft.LogCommand, Data: raw}); res != nil || f.Stuck() != "" {
+	f := newTestFSM(t, opPub)
+	if res := applyAt(f, 1, Entry{Kind: KindFormat, SetFormat: Format}); res != nil || f.Stuck() != "" {
 		t.Fatalf("current format: %v, stuck %q", res, f.Stuck())
 	}
 }
@@ -53,38 +44,19 @@ func TestFSMStopsOnEntryItCannotRead(t *testing.T) {
 // follow.
 func TestSnapshotInANewerFormatIsRefused(t *testing.T) {
 	_, opPub := operatorKey(t)
-	al, sec, led := testStores(t)
-	f := NewFSM(PreGenesis(testCluster, opPub), al, sec, led)
+	f := newTestFSM(t, opPub)
 	f.readable = Format + 1
-	apply := func(i uint64, e Entry) {
-		t.Helper()
-		raw, _ := json.Marshal(e)
-		if res := f.Apply(&raft.Log{Index: i, Type: raft.LogCommand, Data: raw}); res != nil {
-			t.Fatalf("entry %d: %v", i, res)
-		}
-	}
-	apply(1, Entry{Kind: KindFormat, SetFormat: Format + 1})
-	apply(2, Entry{Kind: KindFormat, SetFormat: Format}) // never lowers
+	applyAt(f, 1, Entry{Kind: KindFormat, SetFormat: Format + 1})
+	applyAt(f, 2, Entry{Kind: KindFormat, SetFormat: Format}) // never lowers
 	if got := f.Core().format(); got != Format+1 {
 		t.Fatalf("agreed format %d", got)
 	}
-	s, err := f.Snapshot()
-	if err != nil {
-		t.Fatal(err)
-	}
-	var buf bytes.Buffer
-	if err := s.Persist(&memSink{Buffer: &buf}); err != nil {
-		t.Fatal(err)
-	}
-	al2, sec2, led2 := testStores(t)
-	old := NewFSM(PreGenesis(testCluster, opPub), al2, sec2, led2)
-	if err := old.Restore(io.NopCloser(bytes.NewReader(buf.Bytes()))); !errors.Is(err, ErrNewerFormat) {
+	if err := restoreCopy(t, f, newTestFSM(t, opPub)); !errors.Is(err, ErrNewerFormat) {
 		t.Fatalf("older replica installed a newer snapshot: %v", err)
 	}
-	al3, sec3, led3 := testStores(t)
-	same := NewFSM(PreGenesis(testCluster, opPub), al3, sec3, led3)
+	same := newTestFSM(t, opPub)
 	same.readable = Format + 1
-	if err := same.Restore(io.NopCloser(bytes.NewReader(buf.Bytes()))); err != nil || same.Core().format() != Format+1 {
+	if err := restoreCopy(t, f, same); err != nil || same.Core().format() != Format+1 {
 		t.Fatalf("same release: %v, format %d", err, same.Core().format())
 	}
 }
@@ -138,41 +110,5 @@ func TestFormatRisesOnlyWhenEveryMemberReadsIt(t *testing.T) {
 	}
 	if st := l.node.Status(); len(st.Voters)+len(st.NonVoters) != 3 {
 		t.Fatalf("membership changed: %+v", st)
-	}
-}
-
-// An entry that does not decode stops the replica too.
-func TestFSMStopsOnUndecodableEntry(t *testing.T) {
-	_, opPub := operatorKey(t)
-	al, sec, led := testStores(t)
-	f := NewFSM(PreGenesis(testCluster, opPub), al, sec, led)
-	if _, ok := f.Apply(&raft.Log{Index: 1, Type: raft.LogCommand, Data: []byte("{")}).(error); !ok || f.Stuck() == "" {
-		t.Fatal("undecodable entry did not stop the replica")
-	}
-	// Non-command entries (configuration, barriers) are not the FSM's.
-	g := NewFSM(PreGenesis(testCluster, opPub), al, sec, led)
-	if res := g.Apply(&raft.Log{Index: 2, Type: raft.LogConfiguration}); res != nil || g.Stuck() != "" || g.AppliedIndex() != 2 {
-		t.Fatalf("configuration entry: %v %q", res, g.Stuck())
-	}
-}
-
-// Refusals are logged once a minute per peer and reason, not per attempt.
-func TestRefusalLoggingIsRateLimited(t *testing.T) {
-	m := &mux{}
-	addr := &net.TCPAddr{IP: net.IPv4(10, 0, 0, 1), Port: 9443}
-	for range 3 {
-		m.refused(addr, "handshake", errors.New("x"))
-	}
-	m.refused(addr, "peer identity", errors.New("y"))
-	if len(m.refusedAt) != 2 {
-		t.Fatalf("logged keys %v", m.refusedAt)
-	}
-	n := &Node{log: slog.Default()}
-	for range 3 {
-		n.joinRefused("10.0.0.2:9443", errors.New("replica reads format 1, the cluster writes 2"))
-	}
-	n.joinRefused("10.0.0.2:9443", errors.New("no leader"))
-	if len(n.joinRefusedAt) != 2 {
-		t.Fatalf("join refusals logged %v", n.joinRefusedAt)
 	}
 }

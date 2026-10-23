@@ -27,7 +27,6 @@ func TestLeaderPrunesTheHistoryEverywhere(t *testing.T) {
 	c := newCluster(t, 3)
 	c.historyVersions = 5
 	c.genesis("n0", "n1", "n2")
-	eventually(t, 10*time.Second, "format 2", func() bool { return c.leader() != nil && c.leader().node.Core().format() >= 2 })
 	for i := range 12 {
 		if err := c.leader().al.PutWorkload(fmt.Sprintf("w%d", i), historyWorkload(t, i)); err != nil {
 			t.Fatal(err)
@@ -45,34 +44,12 @@ func TestLeaderPrunesTheHistoryEverywhere(t *testing.T) {
 	}
 }
 
-// At format 1 (a group still running a release without the prune command)
-// the leader does not prune.
-func TestNoPruneBeforeEveryMemberReadsIt(t *testing.T) {
-	saved := pruneSlack
-	pruneSlack = 2
-	t.Cleanup(func() { pruneSlack = saved })
-	c := newCluster(t, 3)
-	c.historyVersions = 3
-	c.reads["n2"] = 1
-	c.genesis("n0", "n1", "n2")
-	for i := range 10 {
-		if err := c.leader().al.PutWorkload(fmt.Sprintf("w%d", i), historyWorkload(t, i)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	time.Sleep(5 * testTiming.Backup)
-	if n, _ := c.leader().al.HistoryLen(); n < 10 {
-		t.Fatalf("pruned to %d at format 1", n)
-	}
-}
-
 // A byte budget bounds the history by document size: the leader turns it
 // into a count, so every replica keeps the same entries.
 func TestLeaderPrunesTheHistoryByBytes(t *testing.T) {
 	c := newCluster(t, 3)
 	c.historyBytes = 1 // any document exceeds it: only the served one stays
 	c.genesis("n0", "n1", "n2")
-	eventually(t, 10*time.Second, "format 2", func() bool { return c.leader() != nil && c.leader().node.Core().format() >= 2 })
 	for i := range 5 {
 		if err := c.leader().al.PutWorkload(fmt.Sprintf("w%d", i), historyWorkload(t, i)); err != nil {
 			t.Fatal(err)

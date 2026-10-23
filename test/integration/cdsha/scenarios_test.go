@@ -4,18 +4,18 @@ package cdsha_test
 
 import (
 	"math/rand/v2"
+	"slices"
 	"testing"
 	"time"
 )
 
-// scenario is one row of the matrix (docs v2-battle-test.md), run with the
-// checker's writers and readers going.
+// scenario is one row of the fault matrix, run with the checker's writers
+// and readers going.
 type scenario struct {
 	name    string
 	short   bool // part of the -short subset
 	writers int
 	pause   time.Duration
-	opts    clusterOpts
 	run     func(t *testing.T, c *Cluster, k *Checker)
 }
 
@@ -25,8 +25,8 @@ func runScenarios(t *testing.T, list []scenario) {
 			if testing.Short() && !sc.short {
 				t.Skip("not in the -short subset")
 			}
-			c := NewCluster(t, sc.opts)
-			c.WaitVoters(c.Seats, 30*time.Second)
+			c := NewCluster(t)
+			c.WaitVoters(seats, 30*time.Second)
 			if sc.writers == 0 {
 				sc.writers = 4
 			}
@@ -57,7 +57,7 @@ func hold(d time.Duration) {
 func others(c *Cluster, not ...int) []int {
 	var out []int
 	for i := range c.Replicas {
-		if !contains(not, i) {
+		if !slices.Contains(not, i) {
 			out = append(out, i)
 		}
 	}
@@ -233,12 +233,10 @@ func TestProcessFaults(t *testing.T) {
 			// a kill lands during or right after one.
 			for range 3 {
 				l := c.WaitLeader(30 * time.Second)
-				before := len(c.Backups())
 				time.Sleep(time.Duration(800+rand.IntN(400)) * time.Millisecond)
 				c.Kill(l)
 				c.WaitLeader(30*time.Second, l)
 				c.Start(l, false)
-				c.Logf("backup objects before %d", before)
 				c.WaitAllServing(60 * time.Second)
 				c.WaitVoters(3, 60*time.Second)
 			}

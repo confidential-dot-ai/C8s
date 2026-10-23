@@ -45,6 +45,7 @@ const (
 	MaxDocumentSize   = 1024 * 1024
 	maxSignatureSize  = 4096
 	maxAgentKeys      = 128
+	maxCDSReplicas    = 128
 	defaultTLSSAN     = "c8s.local"
 )
 
@@ -560,8 +561,8 @@ func (d *Document) validate() error {
 		if _, err := parseLaunchKey(d.CDSHA.DecreeKey); err != nil {
 			return fmt.Errorf("cdsHA.decreeKey: %w", err)
 		}
-		if d.CDSHA.Replicas < 2 || d.CDSHA.Replicas > maxAgentKeys {
-			return fmt.Errorf("cdsHA.replicas must be between 2 and %d", maxAgentKeys)
+		if d.CDSHA.Replicas < 2 || d.CDSHA.Replicas > maxCDSReplicas {
+			return fmt.Errorf("cdsHA.replicas must be between 2 and %d", maxCDSReplicas)
 		}
 	}
 	if d.TLSSAN == "" {
