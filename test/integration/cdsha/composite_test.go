@@ -238,8 +238,15 @@ func frozenLeader(name string, freezeFor time.Duration) scenario {
 		c.Freeze(l)
 		nl := c.WaitLeader(timing.lease+timing.election+20*time.Second, l)
 		c.Logf("frozen leader %s; new leader %s after %s", c.Replicas[l].Node, c.Replicas[nl].Node, time.Since(frozeAt).Round(time.Millisecond))
-		// The new leader commits under its own term before the thaw.
-		c.waitAckProgress(k, 20, 20*time.Second)
+		// The new leader commits under its own term before the thaw: writes
+		// straight to it, so writers stuck on the frozen replica do not
+		// stretch the freeze.
+		for n := range 4 {
+			op := k.writeAt(nl, []string{"allow", "secret"}[n%2], fmt.Sprintf("g1nl%d", n), 1)
+			if !op.Acked() {
+				c.Logf("write %d through new leader %s not acked: %d %q %q", n, c.Replicas[nl].Node, op.Code, op.Err, op.Body)
+			}
+		}
 		if d := freezeFor - time.Since(frozeAt); d > 0 {
 			time.Sleep(d)
 		}
@@ -248,7 +255,10 @@ func frozenLeader(name string, freezeFor time.Duration) scenario {
 		thawAt := time.Now()
 		acked := k.ackedBefore(thawAt)
 		c.Thaw(l)
-		c.Logf("%s frozen %s", c.Replicas[l].Node, thawAt.Sub(frozeAt).Round(time.Millisecond))
+		c.Logf("%s frozen %s (target %s; dead_after %s)", c.Replicas[l].Node, thawAt.Sub(frozeAt).Round(time.Millisecond), freezeFor, timing.deadAfter)
+		if freezeFor < timing.deadAfter && thawAt.Sub(frozeAt) >= timing.deadAfter {
+			t.Fatalf("harness: freeze meant to stay under dead_after lasted %s", thawAt.Sub(frozeAt))
+		}
 		// Writes straight through the thawed old leader: the oracle checks
 		// each (a fresh key each, so an ack is exact).
 		var wwg sync.WaitGroup
