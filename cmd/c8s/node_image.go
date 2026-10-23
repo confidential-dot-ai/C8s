@@ -390,6 +390,7 @@ var nodeImageResourceNamespaces = map[string]string{
 	kubeStateMetricsKey:                 "kube-system",
 	"Service/kube-state-metrics":        "kube-system",
 	"ServiceAccount/kube-state-metrics": "kube-system",
+	"NetworkPolicy/kube-state-metrics":  "kube-system",
 }
 
 // kubeStateMetricsKey is the platform add-on that runs beside the RKE2
