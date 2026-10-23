@@ -232,7 +232,7 @@ func AddNode(dir string, role Role, o JoinOptions) (err error) {
 		return fmt.Errorf("%s name %q must be an RFC1123 label", role, o.Name)
 	}
 	if o.Name == serverDir {
-		return fmt.Errorf("agent name %q is reserved for the server", o.Name)
+		return fmt.Errorf("%s name %q is reserved for the server", role, o.Name)
 	}
 	serverData, err := readBounded(filepath.Join(dir, serverDir, documentFile), MaxDocumentSize)
 	if err != nil {
@@ -246,7 +246,7 @@ func AddNode(dir string, role Role, o JoinOptions) (err error) {
 		return errors.New("bundle server document does not carry the server role")
 	}
 	if o.Name == server.Node.Name {
-		return fmt.Errorf("agent name %q is the server's node name", o.Name)
+		return fmt.Errorf("%s name %q is the server's node name", role, o.Name)
 	}
 	if role == CDS && server.CDSHA == nil {
 		return errors.New("bundle was created without --cds-node: the server document declares no cdsHA")
@@ -275,14 +275,10 @@ func AddNode(dir string, role Role, o JoinOptions) (err error) {
 	agent.RKE2 = RKE2{AgentToken: server.RKE2.AgentToken, NodePassword: password}
 	agent.Server.Address = o.ServerAddress
 	agent.Router = nil
+	// A bundle's server document has no peer images (only AddNode writes
+	// them), so a node on another image accepts exactly the server's.
 	if o.Image != nil && !sameImage(*o.Image, server.Image) {
-		agent.Image = *o.Image
-		agent.PeerImages = nil
-		for _, img := range server.images() {
-			if !sameImage(img, *o.Image) {
-				agent.PeerImages = append(agent.PeerImages, img)
-			}
-		}
+		agent.Image, agent.PeerImages = *o.Image, []Image{server.Image}
 	}
 	if o.PinFloor > 0 {
 		if server.CDSHA == nil {

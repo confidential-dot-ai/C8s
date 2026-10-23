@@ -690,7 +690,7 @@ func (d *Document) referenceValues() (refvalues.ReferenceValues, error) {
 		keys = append(keys, named{fmt.Sprintf("agent-%d", i+1), pub})
 	}
 	for _, k := range keys {
-		for i, img := range d.images() {
+		for i, img := range append([]Image{d.Image}, d.PeerImages...) {
 			name := k.name
 			if i > 0 {
 				// Images of one firmware share their measurement: name a
@@ -737,9 +737,6 @@ const maxPeerImages = 4
 func sameImage(a, b Image) bool {
 	return a.Platform == b.Platform && a.Measurement == b.Measurement && maps.Equal(a.RTMRs, b.RTMRs)
 }
-
-// images is the node's own image first, then its peer images.
-func (d *Document) images() []Image { return append([]Image{d.Image}, d.PeerImages...) }
 
 // CDSURL is derived from the signed server address and the image's fixed port.
 func (d *Document) CDSURL() string {
