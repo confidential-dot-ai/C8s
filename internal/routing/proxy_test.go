@@ -594,8 +594,8 @@ func TestB8WorkloadBackendDigest(t *testing.T) {
 		want int
 	}{
 		{"B8 equal digest and name", issueLeaf(t, f.mesh, "web"), http.StatusOK},
-		{"B8 equal name, other digest", issueStampedLeaf(t, f.mesh, "web", 0x43), http.StatusBadGateway},
-		{"B8 backend unnamed", issueLeaf(t, f.mesh, "", "web.default.svc"), http.StatusBadGateway},
+		{"B8 equal name, other digest", issueStampedLeaf(t, f.mesh, "web", digestOf(0x43)), http.StatusBadGateway},
+		{"B8 equal name, digest differing in the last byte", issueStampedLeaf(t, f.mesh, "web", append(testDigest[:31:31], 0x43)), http.StatusBadGateway},
 	}
 	for i, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -639,15 +639,15 @@ func countingListener(t *testing.T) (addr string, accepted *atomic.Int64) {
 func TestB9UnnamedRouter(t *testing.T) {
 	tests := []struct {
 		name string
-		leaf func(*fixture) tls.Certificate
+		leaf func(testing.TB, *fixture) tls.Certificate
 	}{
-		{"B9 no stamp", func(f *fixture) tls.Certificate { return issueLeaf(t, f.mesh, "") }},
-		{"B9 damaged stamp", func(*fixture) tls.Certificate { return damagedStampLeaf(t) }},
+		{"B9 no stamp", func(t testing.TB, f *fixture) tls.Certificate { return issueLeaf(t, f.mesh, "") }},
+		{"B9 damaged stamp", func(t testing.TB, _ *fixture) tls.Certificate { return damagedStampLeaf(t) }},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFixture(t)
-			f.renew(t, tc.leaf(f))
+			f.renew(t, tc.leaf(t, f))
 			addr, accepted := countingListener(t)
 			external := newCA(t, "external")
 			admin := startBackend(t, "admin", issueLeaf(t, external, "", "admin.ops.svc"), webPKI)
@@ -698,7 +698,7 @@ func TestB10RenewedRouterLeafRetiresPools(t *testing.T) {
 	adminBackend := f.state.Current().Manifest.Hosts[testHost].Routes[1].Backend
 	adminTransport := f.transports.For(adminBackend)
 
-	f.renew(t, issueStampedLeaf(t, f.mesh, "router", 0x43))
+	f.renew(t, issueStampedLeaf(t, f.mesh, "router", digestOf(0x43)))
 	if err := f.transports.dropMeshPools(); err != nil {
 		t.Fatal(err)
 	}
@@ -715,7 +715,7 @@ func TestB10RenewedRouterLeafRetiresPools(t *testing.T) {
 		t.Fatalf("GET /admin after the router renewed = %d, want %d", got, http.StatusOK)
 	}
 
-	renewed := startBackend(t, "renewed", issueStampedLeaf(t, f.mesh, "web", 0x43))
+	renewed := startBackend(t, "renewed", issueStampedLeaf(t, f.mesh, "web", digestOf(0x43)))
 	f.apply(t, manifestSpec{revision: 2, hosts: map[string][]route{testHost: {
 		workloadRoute("/", "prefix", renewed.addr(), "web"), adminRoute,
 	}}})

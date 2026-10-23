@@ -102,7 +102,10 @@ const testSandboxID = "8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1
 
 // testDigest is the allowlist digest issueLeaf stamps, the router's own
 // unless a test renews it.
-const testDigest = 0x42
+var testDigest = digestOf(0x42)
+
+// digestOf returns an allowlist digest of b repeated 32 times.
+func digestOf(b byte) []byte { return bytes.Repeat([]byte{b}, 32) }
 
 // issueLeaf mints a leaf the way CDS does, carrying the matched workload
 // extension when workload is non-empty.
@@ -111,9 +114,8 @@ func issueLeaf(t testing.TB, ca *issuer.CA, workload string, dnsNames ...string)
 	return issueStampedLeaf(t, ca, workload, testDigest, dnsNames...)
 }
 
-// issueStampedLeaf is issueLeaf with the allowlist digest set to digest
-// repeated 32 times.
-func issueStampedLeaf(t testing.TB, ca *issuer.CA, workload string, digest byte, dnsNames ...string) tls.Certificate {
+// issueStampedLeaf is issueLeaf with the allowlist digest set to digest.
+func issueStampedLeaf(t testing.TB, ca *issuer.CA, workload string, digest []byte, dnsNames ...string) tls.Certificate {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -135,7 +137,7 @@ func issueStampedLeaf(t testing.TB, ca *issuer.CA, workload string, digest byte,
 		params.MatchedWorkload = &armtls.MatchedWorkload{
 			Name:             workload,
 			AllowlistVersion: "1",
-			AllowlistDigest:  bytes.Repeat([]byte{digest}, 32),
+			AllowlistDigest:  digest,
 		}
 	}
 	certPEM, _, err := ca.SignCSR(params)
