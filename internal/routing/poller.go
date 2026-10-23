@@ -36,6 +36,8 @@ type Poller struct {
 	cfg     PollerConfig
 	log     *slog.Logger
 	keyHash string
+	// allowlist is the digest of the allowlist last logged as read.
+	allowlist string
 }
 
 // NewPoller returns a Poller. It does not start polling; call Run.
@@ -79,13 +81,13 @@ func (p *Poller) refreshEntries(ctx context.Context, t *Transports) {
 	if entries == nil {
 		return
 	}
-	before := entries.Digest()
 	if err := entries.Refresh(ctx); err != nil && ctx.Err() == nil {
-		p.log.Warn("allowlist poll failed; keeping the allowlist already read", "error", err, "read", before != "")
+		p.log.Warn("allowlist poll failed; keeping the allowlist already read", "error", err, "read", entries.Digest() != "")
 	}
 	changed := entries.Changed()
-	if after := entries.Digest(); after != before || len(changed) > 0 {
-		p.log.Info("allowlist read", "digest", hex.EncodeToString([]byte(after)), "entries_changed", changed)
+	if digest := entries.Digest(); digest != p.allowlist {
+		p.log.Info("allowlist read", "digest", hex.EncodeToString([]byte(digest)), "entries_changed", changed)
+		p.allowlist = digest
 	}
 	t.RetireWorkloads(changed)
 }
