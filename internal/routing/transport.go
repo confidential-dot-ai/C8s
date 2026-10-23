@@ -393,36 +393,34 @@ func (t *Transports) syncRouterDigest() error {
 	return t.retire(cred, nil)
 }
 
-// retire is dropMeshPools on cred, read with err. A failed read keeps the
-// tracked router digest: the credential did not change, so bound sessions
-// must not be refused for it, and dials fail on the read anyway.
+// retire is dropMeshPools on cred, read with err. A failed read tracks no
+// router digest and keeps the one already tracked: the credential did not
+// change, so bound sessions must not be refused for it, and dials fail on the
+// read anyway.
 func (t *Transports) retire(cred MeshCredential, err error) error {
-	var caDigest [sha256.Size]byte
-	var routerDigest []byte
-	if err == nil {
-		h := sha256.New()
-		for _, ca := range cred.MeshCAs {
-			h.Write(ca.Raw)
-		}
-		h.Sum(caDigest[:0])
-		// An unstamped router tracks the empty digest (B9). A damaged stamp
-		// tracks a value no leaf can carry, so it retires the pools and the
-		// next good read counts as a change.
-		var derr error
-		if routerDigest, derr = t.routerDigestOf(cred); derr != nil {
-			routerDigest = []byte(damagedRouterStamp)
-		}
+	if err != nil {
+		t.mu.Lock()
+		defer t.mu.Unlock()
+		t.caDigest = [sha256.Size]byte{} // the next good read differs
+		t.retireLocked(false)
+		return err
 	}
+	var caDigest [sha256.Size]byte
+	h := sha256.New()
+	for _, ca := range cred.MeshCAs {
+		h.Write(ca.Raw)
+	}
+	h.Sum(caDigest[:0])
+	// An unstamped router tracks the empty digest (B9).
+	routerDigest, _ := t.routerDigestOf(cred)
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.tracked = true
-	if err != nil || caDigest != t.caDigest {
-		t.caDigest = caDigest // zero after a failed read: the next good read differs
-		if err == nil {
-			t.routerDigest = string(routerDigest)
-		}
+	if caDigest != t.caDigest {
+		t.caDigest = caDigest
+		t.routerDigest = string(routerDigest)
 		t.retireLocked(false)
-		return err
+		return nil
 	}
 	if string(routerDigest) != t.routerDigest {
 		t.routerDigest = string(routerDigest)

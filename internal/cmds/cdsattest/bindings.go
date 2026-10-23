@@ -100,7 +100,6 @@ func (b *Bindings) bind(connection string, binding routing.Binding) error {
 	if !b.roomLocked(connection) {
 		return errBindingsFull
 	}
-	b.pruneSomeLocked()
 	b.entries[connection] = lbBinding{Binding: binding, lastUsed: b.now(), inFlight: b.entries[connection].inFlight}
 	return nil
 }
@@ -121,10 +120,12 @@ func (b *Bindings) pruneSomeLocked() {
 	}
 }
 
-// roomLocked prunes fully only at the bound: a full sweep per handshake would
-// cost more than the periodic one. The caller holds b.mu.
+// roomLocked prunes once: a few entries below the bound, fully only at it,
+// since a full sweep per handshake would cost more than the periodic one. The
+// caller holds b.mu.
 func (b *Bindings) roomLocked(connection string) bool {
 	if _, ok := b.entries[connection]; ok || len(b.entries) < b.max {
+		b.pruneSomeLocked()
 		return true
 	}
 	b.pruneLocked()

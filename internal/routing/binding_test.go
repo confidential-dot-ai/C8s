@@ -271,3 +271,20 @@ func TestE6UnreadableCredentialKeepsTheRouterDigest(t *testing.T) {
 		t.Fatalf("refusals = %v, want none", bindings.refused)
 	}
 }
+
+// TestE6FirstReadFailureTracksNoDigest: a first poll that cannot read the
+// credential tracks no router digest, so the stamped leaf published after it
+// is no renewal.
+func TestE6FirstReadFailureTracksNoDigest(t *testing.T) {
+	f := newFixture(t)
+	web := startBackend(t, "web", issueLeaf(t, f.mesh, "web"))
+	f.apply(t, simpleManifest(1, web.addr()))
+	f.publish(t, "garbage")
+	if err := f.transports.dropMeshPools(); err == nil {
+		t.Fatal("dropMeshPools() with an unreadable bundle = nil, want an error")
+	}
+	f.publish(t, caPEM(f.mesh))
+	if w := f.getOn(""); w.Code != http.StatusOK {
+		t.Fatalf("GET / once a stamped leaf is published = %d %q, want 200", w.Code, w.Body.String())
+	}
+}
