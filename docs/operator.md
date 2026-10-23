@@ -671,8 +671,8 @@ follows these rules:
 - A workload backend (`workload`) is reached as a mesh client of the member
   behind it: `cds-attest` presents the router's mesh certificate and requires
   a peer certificate chaining to the mesh CA whose matched workload name
-  equals `workload`. A failed handshake gets 502; no backend is reached in
-  plaintext.
+  equals `workload`, stamped under the allowlist digest on the router's own
+  leaf. A failed handshake gets 502; no backend is reached in plaintext.
 - The router serves cluster workloads only: it refuses a polled manifest that
   names an address backend (`serverName`, `ca`), keeps the applied one, and
   logs `the router serves cluster workloads only` with the host and path.
