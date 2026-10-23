@@ -143,7 +143,7 @@ func (s *Store) apply(cmd Command) (r Result, err error) {
 	case OpStartJournal:
 		err = s.startJournal()
 	case OpPruneHistory:
-		r.Retired, err = s.PruneHistory(cmd.Keep)
+		r.Retired, err = s.pruneHistory(cmd.Keep)
 	default:
 		err = fmt.Errorf("unknown allowlist command %q", cmd.Op)
 	}
