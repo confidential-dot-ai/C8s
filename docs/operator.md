@@ -167,12 +167,26 @@ The bundle directory is created new and never reused:
 
 | Path | Purpose |
 |---|---|
-| `demo/server.key` | server launch key; also the operator key for `c8s get-kubeconfig --operator-key` and signed CDS writes |
+| `demo/server.key` | server launch key; also the operator key for `c8s get-kubeconfig --operator-key` and signed CDS writes (not written with `--operator-key`) |
 | `demo/agent.key` | the agent launch key every agent boots with |
 | `demo/server.json` | `C8S_MEASUREMENTS_CONFIG` for clients of this cluster |
 | `demo/peers.json` | every launch identity CDS admits and serves; `c8s cds verify --served-policy-file` |
 | `demo/server/` | `pubkey`, `launch.yaml`, `launch.yaml.sig`: the server's opkeydata |
 | `demo/<agent>/` | the same three files for each agent |
+
+To keep an operator key that clients already pin across clusters, pass it
+with `--operator-key op.key` (an ECDSA P-256 key) instead of letting the
+command generate one. It becomes the server launch key and stays where it is:
+the bundle has no `server.key`, so use `op.key` wherever this guide says
+`demo/server.key`. Add `--operator-pubkey op.pub` (the file
+`c8s keys new --pub-out` wrote) to refuse a key that does not match it byte
+for byte: on SNP, HOST_DATA hashes those bytes. The agent key is always
+generated.
+
+Node evidence and client pins name the server key and the image, not the
+cluster. Clusters that share an operator key and an image therefore look the
+same to a client that pins them, and a host can boot one cluster's server with
+the other's signed server document. Use a distinct key where that matters.
 
 An agent can be added to a running cluster without touching the server:
 `c8s node launch-config add-agent --bundle demo --name demo-agent-3` derives
