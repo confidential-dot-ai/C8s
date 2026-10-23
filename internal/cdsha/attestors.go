@@ -4,8 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"time"
-
-	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 )
 
 // devAttestors is filled only by c8s_dev builds, so a production binary
@@ -17,15 +15,7 @@ type AttestorOptions struct {
 	MockMeasurement   string        // mock: the measurement to claim
 	AttestationAPIURL string        // node: the node attestation-api (unix:// socket or http URL)
 	Timeout           time.Duration // node: per-call timeout
-
-	// TDXTCBStatuses is unused: the in-process TDX attestor is gone. It
-	// stays until the --ha-tdx-tcb-statuses flag that sets it is removed.
-	TDXTCBStatuses []string
 }
-
-// DefaultTDXTCBStatuses is unused; it stays until the
-// --ha-tdx-tcb-statuses flag that defaults to it is removed.
-var DefaultTDXTCBStatuses = []string{string(teetypes.TdxUpToDate), string(teetypes.TdxSWHardeningNeeded)}
 
 // NewAttestor resolves an attestor by name ("node", or "mock" in dev builds).
 func NewAttestor(name string, o AttestorOptions) (Attestor, error) {

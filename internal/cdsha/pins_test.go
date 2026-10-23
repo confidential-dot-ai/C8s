@@ -30,7 +30,7 @@ func TestPinDecreeIsAgreedState(t *testing.T) {
 	eventually(t, 10*time.Second, "genesis", func() bool { st, ok := c.decrees.get(g); return ok && st.AppliedEpoch != nil })
 	c.settled(15 * time.Second)
 	for _, r := range c.live() {
-		if r.node.PinsDecree() != nil {
+		if r.node.Core().PinsDecree != nil {
 			t.Fatal("a pin decree before any was applied")
 		}
 	}
@@ -41,14 +41,14 @@ func TestPinDecreeIsAgreedState(t *testing.T) {
 	eventually(t, 10*time.Second, "A+B applied", func() bool { st, ok := c.decrees.get(ab); return ok && st.AppliedEpoch != nil })
 	for _, r := range c.live() {
 		eventually(t, 3*time.Second, "pin decree on "+r.name, func() bool {
-			sd := r.node.PinsDecree()
+			sd := r.node.Core().PinsDecree
 			return sd != nil && sd.Decree.BaseEpoch == 1 && len(sd.Decree.Images) == 2
 		})
 	}
 	bare := c.decree(Decree{Kind: UpdateMeasurements, BaseEpoch: 2, Measurements: normalizePins([]string{pinA, pinB, "ee"})})
 	eventually(t, 10*time.Second, "bare set applied", func() bool { st, ok := c.decrees.get(bare); return ok && st.AppliedEpoch != nil })
 	for _, r := range c.live() {
-		eventually(t, 3*time.Second, "pin decree dropped on "+r.name, func() bool { return r.node.PinsDecree() == nil })
+		eventually(t, 3*time.Second, "pin decree dropped on "+r.name, func() bool { return r.node.Core().PinsDecree == nil })
 	}
 }
 
