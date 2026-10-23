@@ -159,7 +159,8 @@ func TestBindEntryWithoutExitsHeld(t *testing.T) {
 
 // An exit into the cluster, onto this node, or to any service a platform role
 // is bound to (CDS on every port) is refused before the ruleset is touched,
-// and so is every exit where the node cannot name what is off limits.
+// and so is every exit where the node cannot name what is off limits,
+// including an exit of an address family with no trusted cluster range.
 func TestBindEntryRefusesAnExitIntoTheClusterOrOntoTheNode(t *testing.T) {
 	for _, tc := range []struct {
 		exit  string
@@ -170,6 +171,7 @@ func TestBindEntryRefusesAnExitIntoTheClusterOrOntoTheNode(t *testing.T) {
 		{"10.0.2.15/32", "reaches 10.0.2.15"},
 		{"10.43.0.5/32", "reaches 10.43.0.5"},
 		{"10.43.0.4/30", "reaches 10.43.0.5"},
+		{"2001:db8::7/128", "names no IPv6 cluster range"},
 	} {
 		gate, state, extended := exitsGate(t)
 		pod := meshPod("default", "collector", testNetNS)
@@ -191,7 +193,7 @@ func TestBindEntryRefusesAnExitIntoTheClusterOrOntoTheNode(t *testing.T) {
 	}
 	gate.nodeAddress = func() (netip.Addr, error) { return netip.MustParseAddr("10.0.2.15"), nil }
 	gate.policy.ClusterRanges = nil
-	if err := gate.bindEntry(pod, exitDecision{entry: "collector", exits: relayExit}); err == nil || !strings.Contains(err.Error(), "names no cluster ranges") {
+	if err := gate.bindEntry(pod, exitDecision{entry: "collector", exits: relayExit}); err == nil || !strings.Contains(err.Error(), "names no IPv4 cluster range") {
 		t.Fatalf("err = %v, want a refusal without cluster ranges", err)
 	}
 }

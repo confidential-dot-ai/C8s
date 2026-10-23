@@ -561,10 +561,16 @@ entry matches reaches directly, uncaptured.
 - A single address (`/32`, `/128`) is the expected exit, for example one
   relay the operator controls. A range may be no broader than `/16` (IPv4)
   or `/48` (IPv6).
-- Write-time validation also refuses ranges that are not unicast hosts: `/0`, loopback, link-local, multicast, reserved and
-  broadcast, unspecified, and the IPv6 forms that stand for IPv4 addresses
-  (IPv4-mapped, NAT64, 6to4). The range is stored in its canonical text
-  (RFC 5952 for IPv6: lower case, zeros compressed).
+- Write-time validation also refuses ranges that are not unicast hosts: `/0`,
+  loopback, link-local, multicast, reserved and broadcast, unspecified, and
+  the IPv6 forms that stand for or embed IPv4 addresses (IPv4-compatible,
+  IPv4-mapped, SIIT, NAT64 including `64:ff9b:1::/48`, Teredo, 6to4). The
+  range is stored in its canonical text (RFC 5952 for IPv6: lower case, zeros
+  compressed).
+- An exit has exactly the members `cidr` (a string) and `port` (a number).
+  A write with any other member or type is refused. A node reading a served
+  document drops such an `egress` list, so the entry grants no exit, and
+  keeps the rest of the document.
 - The node decides a pod's exits from the set of its workload containers (the
   injected mesh and credential containers are left out), so the outcome does
   not depend on the order they start in. An entry with exits claims a pod once
@@ -585,7 +591,8 @@ entry matches reaches directly, uncaptured.
   from its measured mesh policy, contains the node's own address, the
   resolver, CDS or any other address a platform role is bound to (on any
   port), or a loopback, link-local or multicast range. A node that cannot name
-  its cluster ranges or its own address grants no exit. The container whose
+  its own address, or a cluster range of the exit's address family (an IPv6
+  exit needs an IPv6 cluster range), grants no exit. The container whose
   start would have granted the exit is refused with the reason. These checks
   apply in audit mode too.
 - An exit is a way out of the TEE for whatever the workload sends. It is not
