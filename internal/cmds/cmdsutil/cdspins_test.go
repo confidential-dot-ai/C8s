@@ -78,14 +78,21 @@ func TestNodePinsFollowsTheMountedPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(t.TempDir(), "cds-pins.json")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cds-pins.json")
+	if n, err := FollowNodePins(path); n != nil || err != nil {
+		t.Fatalf("absent policy: %v %v", n, err)
+	}
 	if _, err := NewNodePins(path); err == nil {
 		t.Fatal("absent policy accepted")
 	}
 	if err := os.WriteFile(path, src, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	n, err := NewNodePins(path)
+	if _, err := FollowNodePins(filepath.Join(path, "x")); err == nil {
+		t.Fatal("a stat error other than absent ignored")
+	}
+	n, err := FollowNodePins(path)
 	if err != nil || n.Generation() != 1 || len(n.Current().Images) != len(set.Images) {
 		t.Fatalf("start: %v", err)
 	}
@@ -109,8 +116,5 @@ func TestNodePinsFollowsTheMountedPolicy(t *testing.T) {
 	}
 	if changed, err := n.Refresh(t.Context()); !changed || err != nil || n.Generation() != 2 || len(n.Current().Images) != 1 {
 		t.Fatalf("rewritten: %v %v", changed, err)
-	}
-	if ok, err := NodeMountsPins(path); !ok || err != nil {
-		t.Fatalf("mounted: %v %v", ok, err)
 	}
 }
