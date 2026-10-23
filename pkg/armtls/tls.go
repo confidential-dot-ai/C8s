@@ -872,6 +872,10 @@ type Peer struct {
 	// WorkloadName is the allowlist entry the leaf's attested container set
 	// matched at issuance, empty where CDS stamped none.
 	WorkloadName string
+	// AllowlistVersion and AllowlistDigest name the allowlist snapshot that
+	// match was decided under, empty with WorkloadName.
+	AllowlistVersion string
+	AllowlistDigest  []byte
 	// Purpose is the TLS purpose the peer's role required of it:
 	// serverAuth for the peer a mesh client reached, clientAuth for the peer
 	// a mesh server accepted.
@@ -963,6 +967,8 @@ func chainVerifyPeerCallback(meshCA *x509.Certificate, peerPurpose x509.ExtKeyUs
 		}
 		if matched != nil {
 			peer.WorkloadName = matched.Name
+			peer.AllowlistVersion = matched.AllowlistVersion
+			peer.AllowlistDigest = matched.AllowlistDigest
 		}
 		return acceptPeer(peer)
 	}
