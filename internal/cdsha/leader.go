@@ -238,21 +238,31 @@ var ErrNotForThisNode = errors.New("cds-ha: the Restore decree names another nod
 // Restore starts a cluster from an operator backup on this replica, which
 // must hold no cluster and be the node the decree names. No replica it can
 // reach may belong to a cluster: a restore never forks a live one.
-func (n *Node) Restore(ctx context.Context, sd SignedDecree, snapshot []byte) (DecreeResult, error) {
+// CheckRestore checks authorization and local eligibility without reading snapshot bytes.
+// Restore repeats this check because state may change during an upload.
+func (n *Node) CheckRestore(sd SignedDecree) error {
 	d := sd.Decree
 	switch {
 	case n.r() == nil:
-		return DecreeResult{}, errors.New("cds-ha: replica not started")
+		return errors.New("cds-ha: replica not started")
 	case d.Kind != Restore:
-		return DecreeResult{}, errors.New("cds-ha: not a Restore decree")
+		return errors.New("cds-ha: not a Restore decree")
 	case d.BootstrapNode != n.cfg.NodeName:
-		return DecreeResult{}, ErrNotForThisNode
+		return ErrNotForThisNode
 	case n.member() || n.fsm.Core().Joined():
-		return DecreeResult{}, errors.New("cds-ha: this replica already belongs to a cluster")
+		return errors.New("cds-ha: this replica already belongs to a cluster")
 	}
 	if err := CheckDecree(sd, n.fsm.Core(), time.Now()); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (n *Node) Restore(ctx context.Context, sd SignedDecree, snapshot []byte) (DecreeResult, error) {
+	if err := n.CheckRestore(sd); err != nil {
 		return DecreeResult{}, err
 	}
+	d := sd.Decree
 	if SnapshotSHA256(snapshot) != d.SnapshotSHA256 {
 		return DecreeResult{}, errors.New("cds-ha: snapshot differs from the one the decree names")
 	}

@@ -98,3 +98,26 @@ Fewer shares than the threshold are refused. The restored cluster keeps its
 mesh CA, secrets, workload policy and decree record, and the other replicas join it.
 If an attempt's answer times out while the replica restores, `recover` checks
 the decree record and reports success when its own Restore is there.
+
+### Restore and peer resource limits
+
+Pre-join `/ha/restore` accepts one restore request at a time per process
+(concurrent requests get HTTP 429). Upload reads have a 30-second deadline.
+Legacy JSON requests without `X-CDS-Restore-Decree` are limited to 1 MiB of
+wire data. For larger restores, use the updated `c8s cds ha recover` client:
+it sends the signed decree as JSON in this header before the unchanged JSON
+body. The server authenticates the decree and checks local restore eligibility
+before reading a large body. The header is limited to 16 KiB; pre-join total
+HTTP headers are limited to 20 KiB (plus net/http's fixed parsing allowance).
+Authenticated JSON bodies are limited to 256 MiB including base64 encoding.
+The body decree must match the header and the decoded snapshot must match its
+signed SHA-256. These bounds apply even to replayed valid decrees. Old clients
+must upgrade or send the header to restore backups above the legacy cap.
+Snapshot decoded-size and compressed-size limits apply separately.
+
+The peer mux admits at most 64 inbound sockets, including TLS handshakes,
+control requests and Raft streams. Excess sockets close immediately. TLS and
+Raft target framing share a 10-second deadline; control I/O has a 30-second
+deadline. Mux shutdown closes all accepted sockets, including incomplete
+handshakes and stalled target reads. These are availability bounds, not a
+substitute for peer attestation or network policy.
