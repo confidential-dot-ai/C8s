@@ -1036,6 +1036,12 @@ func TestLocalizeDaemonSet(t *testing.T) {
 	if string(localNamesFile(names)) != comp+" registry.example.com/cds:c8s-node\n" {
 		t.Fatalf("names %v", names)
 	}
+	// A second digest of the same repository would share the local name,
+	// which local-names.txt can map back to only one image.
+	twin := "registry.example.com/cds@" + nodeImageTestUnseededDigest
+	if err := localizeDaemonSet(ds(twin), map[string]bool{nodeImageTestUnseededDigest: true}, names); err == nil {
+		t.Fatal("two images under one local name accepted")
+	}
 	if err := localizeDaemonSet(ds("not a ref!"), nil, names); err == nil {
 		t.Fatal("bad image reference accepted")
 	}
