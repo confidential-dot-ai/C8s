@@ -76,20 +76,22 @@ type Checker struct {
 	regress []string                  // monotonic-read violations within one incarnation
 	reads   atomic.Int64
 
-	stop     chan struct{}
-	wg       sync.WaitGroup
-	paused   atomic.Bool
-	inflight atomic.Int64
+	stop   chan struct{}
+	wg     sync.WaitGroup
+	gate   sync.RWMutex // writers hold it shared; Pause holds it
+	paused bool         // set and read by the test goroutine only
 }
 
-// Pause stops new writes (in-flight ones finish); Resume restarts them.
+// Pause waits for in-flight writes and blocks new ones; Resume lets them go.
 func (k *Checker) Pause() {
-	k.paused.Store(true)
-	for k.inflight.Load() > 0 {
-		time.Sleep(20 * time.Millisecond)
-	}
+	k.gate.Lock()
+	k.paused = true
 }
-func (k *Checker) Resume() { k.paused.Store(false) }
+
+func (k *Checker) Resume() {
+	k.paused = false
+	k.gate.Unlock()
+}
 
 // badStatus: a 5xx that is not a retryable 503 (freshness gate, or a write
 // the cluster could not commit).
@@ -122,6 +124,9 @@ func (k *Checker) Start() {
 // Stop ends the load and waits for in-flight requests.
 func (k *Checker) Stop() {
 	close(k.stop)
+	if k.paused {
+		k.Resume()
+	}
 	k.wg.Wait()
 }
 
@@ -147,16 +152,15 @@ func (k *Checker) writer(w int) {
 			if k.stopped() {
 				return
 			}
-			k.inflight.Add(1)
-			if k.paused.Load() {
-				k.inflight.Add(-1)
-				time.Sleep(50 * time.Millisecond)
-				continue
+			k.gate.RLock()
+			if k.stopped() {
+				k.gate.RUnlock()
+				return
 			}
 			seq++
 			key := fmt.Sprintf("w%dg%d", w, gen[kind])
 			op := k.write(kind, key, seq)
-			k.inflight.Add(-1)
+			k.gate.RUnlock()
 			if !op.Acked() && !op.Definite() {
 				gen[kind]++
 			}
