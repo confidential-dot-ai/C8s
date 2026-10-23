@@ -31,6 +31,9 @@ env:
   RELEASE_MAJOR: "0"
   RELEASE_WAIT_ATTEMPTS: "60"
   RELEASE_WAIT_INTERVAL: 15s
+  # Node-image platforms whose allowlist seed is a release asset. Both formats
+  # of a platform that c8s-image.yml publishes bake that seed.
+  RELEASE_SEED_PLATFORMS: tdx snp
 
 jobs:
   calculate:
@@ -327,6 +330,77 @@ jobs:
           retention-days: 1
           compression-level: 0
 
+  # The allowlist seed each node-image platform bakes, rendered from the staging
+  # digests that publish promotes and the node image later resolves. The sign
+  # job lists these assets in the statement; the node build checks its image
+  # against them before it publishes.
+  seeds:
+    name: Render release allowlist seeds
+    needs: [calculate, images]
+    if: needs.calculate.outputs.publish == 'true' && needs.images.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.target-sha }}
+
+      - uses: ./.github/actions/setup-go-c8s
+
+      # The version node-guest-image/c8s/mkosi.sync renders with.
+      - name: Setup Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v3.14.4
+
+      - name: Setup ORAS
+        uses: oras-project/setup-oras@005458ad77f1c8facd38a094e4af2e69e5607ff4 # v2.0.2
+        with:
+          version: ${{ env.ORAS_VERSION }}
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Render allowlist seeds
+        env:
+          RELEASE_TAG: ${{ needs.calculate.outputs.tag }}
+          TARGET_SHA: ${{ inputs.target-sha }}
+        run: |
+          set -euo pipefail
+
+          digest() {
+            local d
+            d="$(oras resolve "ghcr.io/confidential-dot-ai/$1:release-$TARGET_SHA")"
+            [[ "$d" =~ ^sha256:[0-9a-f]{64}$ ]]
+            echo "$d"
+          }
+          operator="$(digest c8s-operator)"
+          cds="$(digest cds)"
+          mesh="$(digest armtls-mesh)"
+          make build-c8s VERSION="$RELEASE_TAG"
+          # shellcheck disable=SC2086 # one argument per platform
+          bash .github/scripts/release-seeds.sh render build/c8s dist \
+            "$operator" "$cds" "$mesh" $RELEASE_SEED_PLATFORMS
+          (cd dist && sha256sum allowlist-seed-*.json)
+
+      - name: Upload allowlist seeds
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: c8s-release-seeds-${{ inputs.target-sha }}
+          path: dist/allowlist-seed-*.json
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
   publish:
     name: Publish release
     needs: [calculate, images, chart]
@@ -594,13 +668,13 @@ jobs:
           cmp "dist/c8s-$VERSION.tgz" \
             "$RUNNER_TEMP/chart-verify/c8s-$VERSION.tgz"
 
-  # A keyless Sigstore signature over {repository, tag, commit} lets
-  # downstream automation trust a tag without trusting everyone who can push
-  # tags. Only this job holds an OIDC token. It neither checks out nor runs
-  # repository source.
+  # A keyless Sigstore signature over {repository, tag, commit} and the
+  # sha256 of each allowlist seed asset lets downstream automation trust a
+  # tag without trusting everyone who can push tags. Only this job holds an
+  # OIDC token. It neither checks out nor runs repository source.
   sign:
     name: Sign release tag
-    needs: [calculate, publish]
+    needs: [calculate, publish, seeds]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -631,6 +705,12 @@ jobs:
           chmod +x "$binary"
           "$binary" version --json | jq -e --arg v "v$COSIGN_VERSION" '.gitVersion == $v' > /dev/null
           echo "COSIGN_BIN=$binary" >> "$GITHUB_ENV"
+
+      - name: Download allowlist seeds
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: c8s-release-seeds-${{ inputs.target-sha }}
+          path: seeds
 
       # The statement names the commit that the published tag object points
       # at, read back from GitHub rather than taken from the caller. In a
@@ -678,11 +758,28 @@ jobs:
           test "$target_type" = commit
           test "$target_sha" = "$TARGET_SHA"
 
+          expected="$(for platform in $RELEASE_SEED_PLATFORMS; do
+            echo "seeds/allowlist-seed-$platform.json"
+          done | sort)"
+          if [ "$(find seeds -mindepth 1 -print | sort)" != "$expected" ] || \
+             find seeds -mindepth 1 ! -type f -print | grep -q .; then
+            echo "::error::release seed payload is not exactly one regular file per platform"
+            exit 1
+          fi
+          allowlist_seeds="$(for platform in $RELEASE_SEED_PLATFORMS; do
+            asset="allowlist-seed-$platform.json"
+            jq -e 'type == "object"' "seeds/$asset" > /dev/null
+            sha="$(sha256sum < "seeds/$asset")"
+            jq -n --arg platform "$platform" --arg asset "$asset" --arg sha256 "${sha%% *}" \
+              '{key: $platform, value: {asset: $asset, sha256: $sha256}}'
+          done | jq -cs from_entries)"
+
           jq -cnS \
             --arg repository "$GITHUB_REPOSITORY" \
             --arg tag "$RELEASE_TAG" \
             --arg commit "$TARGET_SHA" \
-            '{repository: $repository, tag: $tag, commit: $commit}' \
+            --argjson allowlistSeeds "$allowlist_seeds" \
+            '{repository: $repository, tag: $tag, commit: $commit, allowlistSeeds: $allowlistSeeds}' \
             > "$STATEMENT"
           cat "$STATEMENT"
 
@@ -719,32 +816,52 @@ jobs:
             release_exists=false
           fi
 
-          if grep -Fxq -- "$STATEMENT" <<< "$assets" && grep -Fxq -- "$BUNDLE" <<< "$assets"; then
+          seeds=()
+          for platform in $RELEASE_SEED_PLATFORMS; do
+            seeds+=("allowlist-seed-$platform.json")
+          done
+          payload=("$STATEMENT" "$BUNDLE" "${seeds[@]}")
+          present=0
+          patterns=()
+          for asset in "${payload[@]}"; do
+            if grep -Fxq -- "$asset" <<< "$assets"; then
+              present=$((present + 1))
+            fi
+            patterns+=(--pattern "$asset")
+          done
+
+          if [ "$present" = "${#payload[@]}" ]; then
             mkdir published
-            gh_release download "$RELEASE_TAG" \
-              --dir published --pattern "$STATEMENT" --pattern "$BUNDLE"
+            gh_release download "$RELEASE_TAG" --dir published "${patterns[@]}"
             cmp "$STATEMENT" "published/$STATEMENT"
+            for seed in "${seeds[@]}"; do
+              cmp "seeds/$seed" "published/$seed"
+            done
             cp "published/$BUNDLE" "$BUNDLE"
             verify
             echo "existing release statement for $RELEASE_TAG verified"
             exit 0
           fi
-          if grep -Fxq -e "$STATEMENT" -e "$BUNDLE" <<< "$assets"; then
-            echo "::error::release $RELEASE_TAG has only part of its signed statement; delete that asset and rerun"
+          if [ "$present" != 0 ]; then
+            echo "::error::release $RELEASE_TAG has only part of its signed statement and seeds; delete those assets and rerun"
             exit 1
           fi
 
           "$COSIGN_BIN" sign-blob --yes --bundle "$BUNDLE" "$STATEMENT"
           verify
 
+          files=("$STATEMENT" "$BUNDLE")
+          for seed in "${seeds[@]}"; do
+            files+=("seeds/$seed")
+          done
           if [ "$release_exists" = true ]; then
-            gh_release upload "$RELEASE_TAG" "$STATEMENT" "$BUNDLE"
+            gh_release upload "$RELEASE_TAG" "${files[@]}"
           else
             gh_release create "$RELEASE_TAG" \
               --verify-tag \
               --latest="$UPDATE_LATEST" \
               --prerelease="$prerelease" \
               --title "$RELEASE_TAG" \
-              --notes "Release $RELEASE_TAG from $TARGET_SHA. See docs/releases.md to verify $STATEMENT." \
-              "$STATEMENT" "$BUNDLE"
+              --notes "Release $RELEASE_TAG from $TARGET_SHA. See docs/releases.md to verify $STATEMENT and the allowlist seeds it lists." \
+              "${files[@]}"
           fi
