@@ -282,7 +282,7 @@ func (m *mux) route(raw net.Conn) {
 		}
 		_ = json.NewEncoder(c).Encode(m.control(claims, req))
 	default:
-		c.Close()
+		pc.Close()
 	}
 }
 
