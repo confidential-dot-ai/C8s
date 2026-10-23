@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 
 	"github.com/confidential-dot-ai/c8s/internal/httputil"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
@@ -178,8 +180,8 @@ func writeStoreError(w http.ResponseWriter, err error) {
 // storeFull reports SQLite's SQLITE_FULL. In HA the error comes back from
 // the replicated state machine as text, hence the message match.
 func storeFull(err error) bool {
-	var coded interface{ Code() int }
-	return (errors.As(err, &coded) && coded.Code()&0xff == 13) || strings.Contains(err.Error(), "database or disk is full")
+	var se *sqlite.Error
+	return (errors.As(err, &se) && se.Code()&0xff == sqlite3.SQLITE_FULL) || strings.Contains(err.Error(), "database or disk is full")
 }
 
 // authorize reads the body (capped) and runs the configured authorizer.
@@ -214,12 +216,8 @@ func (a WriteAuthorizer) ReadAuthorized(w http.ResponseWriter, r *http.Request, 
 	}
 	if err := a(r, body); err != nil {
 		slog.Warn("write rejected", "method", r.Method, "path", r.URL.Path, "remote", r.RemoteAddr, "reason", err)
-		if errors.Is(err, ErrUnavailable) {
-			WriteUnavailable(w)
-			return nil, false
-		}
-		if storeFull(err) {
-			// Spending the token is a write too; a full store is not a bad key.
+		if errors.Is(err, ErrUnavailable) || storeFull(err) {
+			// Spending the token is a write too; that failing is not a bad key.
 			writeStoreError(w, err)
 			return nil, false
 		}
