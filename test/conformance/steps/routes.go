@@ -17,6 +17,7 @@ import (
 	"math/big"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -30,12 +31,16 @@ import (
 const routesApplyTimeout = 3 * time.Minute
 
 // routesState is whether the manifest stored before the scenario is saved
-// for the undo, the manifest the scenario sent last, and the hosts of the
-// manifest it is describing, to apply.
+// for the undo, the manifest the scenario sent last, the hosts of the
+// manifest it is describing, to apply, and the route of one the router must
+// refuse.
 type routesState struct {
 	saved   bool
 	sent    []byte
 	pending map[string]any
+	// refused is the path and host of the route a stored manifest names
+	// at an address backend, which the router must not apply.
+	refused []string
 }
 
 // routesRead is the CDS's stored manifest as a step read it, and the
@@ -79,6 +84,62 @@ func registerRoutes(sc *godog.ScenarioContext) {
 	sc.Step(`^the router answers that the backend is unavailable$`, func(ctx context.Context) error {
 		return getWorld(ctx).routerAnswered(http.StatusBadGateway, "backend unavailable")
 	})
+	sc.Step(`^the operator writes a route manifest routing path "([^"]*)" on host "([^"]*)" to an address backend$`, operatorWritesAddressBackend)
+	sc.Step(`^the router has not applied that route manifest after its next fetch$`, routerKeptApplied)
+	sc.Step(`^the router still routes path "([^"]*)" on host "([^"]*)" by the route manifest it applied$`, func(ctx context.Context, path, host string) error {
+		w := getWorld(ctx)
+		if err := w.routerGet(path, "Host: "+w.routeHost(host)); err != nil {
+			return err
+		}
+		// routerApplied routes to a closed workload backend, so a route
+		// still applied answers 502 where a replaced manifest answers 404.
+		return w.routerAnswered(http.StatusBadGateway, "the applied route's closed backend")
+	})
+}
+
+// routesPollInterval is how often the router refetches an applied manifest,
+// the chart's default.
+const routesPollInterval = 30 * time.Second
+
+// operatorWritesAddressBackend stores a manifest whose one route names an
+// address backend; the CDS accepts one, and a member router refuses it (A8).
+func operatorWritesAddressBackend(ctx context.Context, path, host string) error {
+	w := getWorld(ctx)
+	r, err := w.readRoutes()
+	if err != nil {
+		return err
+	}
+	h := w.routeHost(host)
+	if err := w.operatorWrite(w.routesWrite(mustJSON(manifest(r.next, map[string]any{h: prefixRoute(path, closedBackend())})), "")); err != nil {
+		return err
+	}
+	if err := w.cdsAnswered(http.StatusNoContent, "the route manifest naming an address backend"); err != nil {
+		return err
+	}
+	w.routes.refused = []string{path, h}
+	return nil
+}
+
+// routerKeptApplied asks the router for the refused manifest's route until
+// it has fetched that manifest at least once: applied, the route would
+// answer 502 from its closed backend; refused, no route matches it.
+func routerKeptApplied(ctx context.Context) error {
+	w := getWorld(ctx)
+	if w.routes.refused == nil {
+		return errors.New("the scenario has written no route manifest naming an address backend")
+	}
+	path, host := w.routes.refused[0], w.routes.refused[1]
+	_, err := pollEvery(5*time.Second, 2*routesPollInterval+10*time.Second, func() (bool, error) {
+		a, err := w.httpRequest("router_request", http.MethodGet, path, nil, "", "", "", "Host: "+host)
+		if err != nil {
+			return false, err
+		}
+		if a.status != http.StatusNotFound {
+			return false, fmt.Errorf("the router answered %d for %s on %s, not 404: it applied the route manifest naming an address backend", a.status, path, host)
+		}
+		return false, nil
+	})
+	return err
 }
 
 // routeHost is the DNS name a logical host stands for, under the scenario's
@@ -200,9 +261,8 @@ func closedBackend() map[string]any {
 	return map[string]any{"address": "127.0.0.1:1", "serverName": "closed.c8s.test", "ca": unrelatedCA()}
 }
 
-// closedWorkload is the same address as a workload backend, for a manifest
-// the router must apply: a router in a member pod rejects any manifest with
-// an address backend (A8).
+// closedWorkload is the same address as a workload backend, for a route a
+// scenario only has to see applied.
 func closedWorkload() map[string]any {
 	return map[string]any{"address": "127.0.0.1:1", "workload": "conformance-closed"}
 }
@@ -342,11 +402,20 @@ func routerApplied(ctx context.Context, path, host string) error {
 	return w.applyRoutes(map[string]any{w.routeHost(host): prefixRoute(path, closedWorkload())})
 }
 
-// routerAppliedUnrelatedCA: the chart's router namespace is not exempt from
-// the mesh, and a router in a member pod applies no manifest with an address
-// backend (A8), so B3 is out of reach.
-func routerAppliedUnrelatedCA(context.Context, string, string) error {
-	return skipf("the router's pod is a mesh member, which applies no manifest with an address backend (A8)")
+// routerAppliedUnrelatedCA routes to the CDS as an address backend whose ca
+// is a CA that issued no certificate, so the dial's verification fails (B3).
+func routerAppliedUnrelatedCA(ctx context.Context, path, host string) error {
+	w := getWorld(ctx)
+	url, err := w.be.call("cds_pod_url")
+	if err != nil {
+		return err
+	}
+	backend := map[string]any{
+		"address":    strings.TrimPrefix(url, "https://"),
+		"serverName": "cds.c8s.test",
+		"ca":         unrelatedCA(),
+	}
+	return w.applyRoutes(map[string]any{w.routeHost(host): prefixRoute(path, backend)})
 }
 
 func (w *world) routerAnswered(status int, what string) error {

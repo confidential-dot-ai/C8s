@@ -129,7 +129,9 @@ For scenarios about issuance, the backend renders two more pods: one carrying
 a workload ID, whose requester the webhook injects and which the steps watch
 through the files of its certificate volume and its requester's log, and a
 requester the steps drive themselves, a pod that relays HTTP from inside the
-cluster so the CDS sees the pod's own source address, and that can reach the
+cluster to the node port an injected client dials, or, while IP SAN binding
+is on, to the CDS Service, where the CDS sees the pod's own source address
+rather than the node's. The requester can also reach the
 node's sandbox inventory and local attestation service over the socket
 directory the admission plugin binds into it. The backend also fetches
 evidence over chosen report data, and says whether the CDS checks its

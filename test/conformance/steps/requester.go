@@ -185,7 +185,7 @@ func requesterOnNode(ctx context.Context, name, node string) error {
 	}
 	r := &requester{pod: p, node: node, addr: strings.TrimSpace(addr)}
 	w.issuance.requesters[name] = r
-	url, err := w.be.call("cds_pod_url")
+	url, err := w.requesterCDSURL()
 	if err != nil {
 		return err
 	}
@@ -251,7 +251,7 @@ func requestsChallenge(ctx context.Context, issued, requested string) error {
 	if err != nil {
 		return err
 	}
-	url, err := w.be.call("cds_pod_url")
+	url, err := w.requesterCDSURL()
 	if err != nil {
 		return err
 	}
@@ -586,9 +586,19 @@ func requestsLeaf(ctx context.Context, name, withToken string) error {
 	return w.attest(r, body)
 }
 
+// requesterCDSURL is where a requester dials the CDS: the address an
+// injected client dials, unless IP SAN binding needs the requester's own
+// address as the request's source.
+func (w *world) requesterCDSURL() (string, error) {
+	if w.issuance.sourceBound {
+		return w.be.call("cds_service_url")
+	}
+	return w.be.call("cds_pod_url")
+}
+
 // attest sends an attest body and records what the CDS answered.
 func (w *world) attest(r *requester, body []byte) error {
-	url, err := w.be.call("cds_pod_url")
+	url, err := w.requesterCDSURL()
 	if err != nil {
 		return err
 	}
