@@ -93,6 +93,9 @@ type issuanceState struct {
 	// forger is the requester that signed a sandbox token of its own.
 	forger  *requester
 	relying relyingParty
+	// sourceBound: IP SAN binding is on, so a requester must dial where its
+	// own address is the request's source (N3).
+	sourceBound bool
 	// read is the leaf "is read" named, for the sentences that follow it.
 	read *leaf
 }
@@ -893,6 +896,7 @@ func cdsEmptyPins(ctx context.Context) error {
 func ipSANBinding(ctx context.Context, state string) error {
 	w := getWorld(ctx)
 	want := strconv.FormatBool(state == "on")
+	w.issuance.sourceBound = state == "on"
 	current, err := w.be.call("cds_arg", "san-validation")
 	if err != nil {
 		return err

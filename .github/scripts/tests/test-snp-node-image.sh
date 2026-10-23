@@ -111,7 +111,7 @@ jq -e --arg d "$igvm_hex" '
   (.spec.activeDeadlineSeconds | type == "number") and
   (.spec.containers[0].image | test("^docker[.]io/curlimages/curl@sha256:[0-9a-f]{64}$")) and
   (.spec.containers[0].env | map({(.name): .value}) | add) ==
-    {IGVM_FILE: "guest-smp4.igvm", IGVM_SHA256: $d, OCI_REPO: "confidential-dot-ai/node-guest-base",
+    {IGVM_FILE: "guest-smp4.igvm", FETCH_POD: "c8s-snp-123-1-igvm", IGVM_SHA256: $d, OCI_REPO: "confidential-dot-ai/node-guest-base",
      FETCH_MAX_TIME: ((.spec.activeDeadlineSeconds - 60) | tostring)} and
   (.spec.containers[0].command[2] | contains($d) | not) and
   .spec.securityContext.runAsNonRoot == true and

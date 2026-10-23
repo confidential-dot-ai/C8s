@@ -11,7 +11,7 @@ on:
   workflow_call:
     inputs:
       c8s_ref:
-        description: 'CLI/test ref; its published node image rke2-snp-cdi-<sha> boots. Empty tests this checkout.'
+        description: 'CLI/test ref; its published node image <image_variant>-cdi-<sha> boots. Empty tests this checkout.'
         required: false
         type: string
         default: ''
@@ -20,6 +20,11 @@ on:
         required: false
         type: boolean
         default: false
+      image_variant:
+        description: 'which build of c8s_ref boots: rke2-snp (default), or rke2-snp-dev[-ssh] from c8s-image-manual to read the serial console of a boot that hangs'
+        required: false
+        type: string
+        default: 'rke2-snp'
       suite_artifact:
         description: 'optional extra suite: an artifact of the calling run, see .github/actions/extra-suite'
         required: false
@@ -33,7 +38,7 @@ on:
   workflow_dispatch:
     inputs:
       c8s_ref:
-        description: 'CLI/test ref; its published node image rke2-snp-cdi-<sha> boots. Empty tests this checkout.'
+        description: 'CLI/test ref; its published node image <image_variant>-cdi-<sha> boots. Empty tests this checkout.'
         required: false
         default: ''
       keep_cvm:
@@ -41,6 +46,11 @@ on:
         required: false
         type: boolean
         default: false
+      image_variant:
+        description: 'which build of c8s_ref boots: rke2-snp (default), or rke2-snp-dev[-ssh] from c8s-image-manual to read the serial console of a boot that hangs'
+        required: false
+        type: string
+        default: 'rke2-snp'
 
 permissions:
   contents: read
@@ -60,6 +70,10 @@ env:
   # The vCPU count selects the measured IGVM variant; the launch digest
   # differs per count.
   SMP: "4"
+  # Which build of the commit boots: rke2-snp, or rke2-snp-dev[-ssh] from
+  # c8s-image-manual, whose kernel has a serial console and whose measurement
+  # differs. The dev variants are for reading a boot that hangs; never ship.
+  IMAGE_VARIANT: ${{ inputs.image_variant || 'rke2-snp' }}
   # KubeVirt hook sidecar that boots the IGVM and sets HOST_DATA from the
   # launch public key (confidential-metal images/igvm-hook-sidecar,
   # :snp-hostdata). Pinned here: the measured guest does not depend on it,
@@ -265,35 +279,36 @@ jobs:
         run: |
           set -euo pipefail
           # Only the pair built from one commit works: the image's measured base
-          # pins its own build's CDS digest. c8s-image publishes rke2-snp-cdi-<sha>
-          # (the CDI disk) and rke2-snp-<sha> (an ORAS artifact: the IGVMs and
+          # pins its own build's CDS digest. c8s-image publishes <variant>-cdi-<sha>
+          # (the CDI disk) and <variant>-<sha> (an ORAS artifact: the IGVMs and
           # manifest.json; what the lane trusts from it is in snp-node-image.sh).
           . "$GITHUB_WORKSPACE/bin/retry.sh"
           [[ "$c8sRef" =~ ^[0-9a-f]{7}$ ]] || { echo "::error::invalid image source ref"; exit 1; }
+          [[ "$IMAGE_VARIANT" =~ ^rke2-snp(-dev(-ssh)?)?$ ]] || { echo "::error::invalid image_variant '$IMAGE_VARIANT'"; exit 1; }
           oci=${IMAGE_REPO#ghcr.io/}
           tok=$(retry curl -fsSL --max-time 20 "https://ghcr.io/token?scope=repository:${oci}:pull" | jq -er .token)
           accept='application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json'
           IMG_DIGEST=""; code=""
           for attempt in 1 2 3 4; do
             hdr=$(curl -sI --max-time 20 -H "Authorization: Bearer $tok" -H "Accept: $accept" \
-              "https://ghcr.io/v2/${oci}/manifests/rke2-snp-cdi-${c8sRef}" | tr -d '\r')
+              "https://ghcr.io/v2/${oci}/manifests/${IMAGE_VARIANT}-cdi-${c8sRef}" | tr -d '\r')
             code=$(awk 'NR==1{print $2}' <<<"$hdr")
             case "$code" in
               200) IMG_DIGEST=$(awk 'tolower($1)=="docker-content-digest:"{print $2}' <<<"$hdr"); break ;;
-              404) echo "::error::no node image for the commit under test: ${IMAGE_REPO}:rke2-snp-cdi-${c8sRef} is not published. The lane needs the exact pair; wait for this commit's c8s-image run, or dispatch with a c8s_ref whose image exists"; exit 1 ;;
+              404) echo "::error::no node image for the commit under test: ${IMAGE_REPO}:${IMAGE_VARIANT}-cdi-${c8sRef} is not published. The lane needs the exact pair; wait for this commit's c8s-image run, or dispatch with a c8s_ref whose image exists"; exit 1 ;;
               *)   sleep $((attempt * 3)) ;;
             esac
           done
-          [[ "$IMG_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::ghcr answered ${code:-none} for rke2-snp-cdi-${c8sRef} on 4 attempts"; exit 1; }
+          [[ "$IMG_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::ghcr answered ${code:-none} for ${IMAGE_VARIANT}-cdi-${c8sRef} on 4 attempts"; exit 1; }
           retry curl -fsSL --max-time 60 -H "Authorization: Bearer $tok" -H "Accept: $accept" \
-            "https://ghcr.io/v2/${oci}/manifests/rke2-snp-${c8sRef}" -o /tmp/image-oras.json
+            "https://ghcr.io/v2/${oci}/manifests/${IMAGE_VARIANT}-${c8sRef}" -o /tmp/image-oras.json
           mlayer=$(bash .github/scripts/snp-node-image.sh manifest-layer /tmp/image-oras.json)
           retry curl -fsSL --max-time 60 -H "Authorization: Bearer $tok" "https://ghcr.io/v2/${oci}/blobs/$mlayer" -o /tmp/image-manifest.json
           # Refuses anything but one smp=$SMP variant whose IGVM is a layer of
           # the artifact; names the digest-keyed claims the stages below share.
           resolved=$(bash .github/scripts/snp-node-image.sh env /tmp/image-oras.json /tmp/image-manifest.json "$IMG_DIGEST" "$SMP")
           printf '%s\n' "$resolved" >> "$GITHUB_ENV"
-          echo "c8s under test ${c8sRef} on its own node image rke2-snp-cdi-${c8sRef} (${IMG_DIGEST:0:19}...), launch digest $(sed -n 's/^snpLaunchDigest=\(.\{16\}\).*/\1/p' <<<"$resolved")..."
+          echo "c8s under test ${c8sRef} on its own node image ${IMAGE_VARIANT}-cdi-${c8sRef} (${IMG_DIGEST:0:19}...), launch digest $(sed -n 's/^snpLaunchDigest=\(.\{16\}\).*/\1/p' <<<"$resolved")..."
 
       - name: stage the root disk on the launcher (no-op when already staged)
         run: |
@@ -301,13 +316,14 @@ jobs:
           # A CDI registry import into a claim named by image digest, shared
           # read-only by every run of this image; immediate binding, so no
           # binder pod is needed on this single-node host. API errors abort,
-          # and an existing claim must have imported this exact image.
+          # and an existing claim must have imported this exact image. A
+          # caller outside this lane's concurrency group can create the claim
+          # between the get and the create; that one is checked the same way.
           existing=$(kubectl -n "$NS" get pvc "$rootPvc" --ignore-not-found -o json)
-          if [ -n "$existing" ]; then
-            bash .github/scripts/snp-node-image.sh check-root-pvc "$image" <<<"$existing"
-          else
-            bash .github/scripts/snp-node-image.sh root-pvc "$image" "$NS" | kubectl create -f -
+          if [ -z "$existing" ] && ! bash .github/scripts/snp-node-image.sh root-pvc "$image" "$NS" | kubectl create -f -; then
+            existing=$(kubectl -n "$NS" get pvc "$rootPvc" -o json)
           fi
+          [ -z "$existing" ] || bash .github/scripts/snp-node-image.sh check-root-pvc "$image" <<<"$existing"
           for i in $(seq 1 120); do
             phase=$(kubectl -n "$NS" get pvc "$rootPvc" -o jsonpath='{.metadata.annotations.cdi\.kubevirt\.io/storage\.pod\.phase}' 2>/dev/null || true)
             case "$phase" in
@@ -324,13 +340,14 @@ jobs:
           # The hook sidecar mounts a claim into the compute container and
           # boots the IGVM from it, so the file lives in one named by its
           # digest, filled once by a run-owned pod that verifies the hash
-          # against the published manifest before naming the file.
+          # against the published manifest before naming the file. A claim
+          # another caller creates between the get and the create is checked
+          # as an existing one.
           existing=$(kubectl -n "$NS" get pvc "$igvmPvc" --ignore-not-found -o json)
-          if [ -n "$existing" ]; then
-            bash .github/scripts/snp-node-image.sh check-igvm-pvc "$igvmDigest" <<<"$existing"
-          else
-            bash .github/scripts/snp-node-image.sh igvm-pvc "$NS" "$igvmDigest" | kubectl create -f -
+          if [ -z "$existing" ] && ! bash .github/scripts/snp-node-image.sh igvm-pvc "$NS" "$igvmDigest" | kubectl create -f -; then
+            existing=$(kubectl -n "$NS" get pvc "$igvmPvc" -o json)
           fi
+          [ -z "$existing" ] || bash .github/scripts/snp-node-image.sh check-igvm-pvc "$igvmDigest" <<<"$existing"
           # The pod bounds itself (activeDeadlineSeconds); this loop reports.
           bash .github/scripts/snp-node-image.sh igvm-pod "$VM-igvm" "$NS" "$igvmPvc" "$igvmFile" "$igvmDigest" "$GITHUB_RUN_ID" "$GITHUB_REPOSITORY" | kubectl create -f -
           for i in $(seq 1 66); do
@@ -599,11 +616,18 @@ jobs:
           [ -n "$POD" ] && kubectl -n "$NS" logs "$POD" --all-containers --tail=40 2>&1 | grep -iE 'igvm|host-data|hostData|sev|error' | tail -20
           echo "::endgroup::"
           # The guest's serial console is read-only here (no autologin), but its
-          # boot log names the unit that did not come up.
+          # boot log names the unit that did not come up. Only a dev image
+          # writes one: the production kernel has no serial driver, so these
+          # groups are empty for it and say nothing about how far it booted.
+          console() {
+            kubectl -n "$NS" logs "$POD" -c guest-console-log --tail=400 2>/dev/null \
+              | tr -cd '[:print:]\n' | sed -e 's/\x1b\[[0-9;?]*[A-Za-z]//g'
+          }
           echo "::group::guest console (systemd units, cred-release, psa-ready, initrd)"
-          [ -n "$POD" ] && kubectl -n "$NS" logs "$POD" -c guest-console-log --tail=400 2>/dev/null \
-            | tr -cd '[:print:]\n' | sed -e 's/\x1b\[[0-9;?]*[A-Za-z]//g' \
-            | grep -iE 'initrd|opkey|HOSTDATA|cred-release|psa-ready|rke2|Failed|failed|error' | tail -40
+          [ -n "$POD" ] && console | grep -iE 'initrd|opkey|HOSTDATA|cred-release|psa-ready|rke2|Failed|failed|error' | tail -40
+          echo "::endgroup::"
+          echo "::group::guest console, last 80 lines"
+          [ -n "$POD" ] && console | tail -80
           echo "::endgroup::"
           # Guest-side state exists only once the attested kubeconfig was issued.
           [ -s /tmp/guest.kubeconfig ] || exit 0

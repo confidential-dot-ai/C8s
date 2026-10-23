@@ -108,6 +108,8 @@
 #                                    prints the status (000 when nothing
 #                                    answered), then the body
 #   cds_pod_url                      the CDS address a pod's requester dials
+#   cds_service_url                  the CDS address a requester dials with its
+#                                    own address as the request's source
 #   cds_arg <flag>                   the value of --<flag>= the CDS runs with,
 #                                    empty when it is not set
 #   evidence <ns> <pod> <report-data-base64>
@@ -167,7 +169,8 @@
 #                                    the router's allowlist relay cannot reach
 #                                    the CDS, and undo it; each returns once
 #                                    the Service's endpoints say so
-# node_name, image_ref, image_digest, pull_interval, cds_pod_url, cert_paths,
+# node_name, image_ref, image_digest, pull_interval, cds_pod_url,
+# cds_service_url, cert_paths,
 # pod_exec, exempt_namespace and api_service_name answer the same for a whole
 # run; callers may cache them. The
 # allowlist is state: served_allowlist answers for the moment of the call.
@@ -342,6 +345,18 @@ cds_pod_url() {
         return 1
     fi
     echo "https://${host%% *}:$port"
+}
+
+# The CDS Service's cluster address: a requester, outside the mesh, keeps its
+# own address as the source there, which the node port translates away.
+cds_service_url() {
+    local port
+    port="$(kubectl -n "$NS" get svc c8s-cds -o jsonpath='{.spec.ports[0].port}')" || return
+    if [ -z "$port" ]; then
+        echo "backend: the CDS Service has no port" >&2
+        return 1
+    fi
+    echo "https://c8s-cds.$NS.svc:$port"
 }
 
 # The CDS keeps its allowlist and version counter in its data volume; a
