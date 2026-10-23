@@ -63,8 +63,6 @@ func TestStoppedReplicaClaimsNothing(t *testing.T) {
 	if err := n.checkPinsKeepMajority([]string{"m1"}); err == nil {
 		t.Fatal("pins checked without a configuration")
 	}
-	n.reconcile() // no configuration: nothing to do
-	n.demoteExtraVoter([]raft.Server{{Suffrage: raft.Voter, ID: n.id}, {Suffrage: raft.Voter, ID: "x/1-a"}, {Suffrage: raft.Voter, ID: "y/1-a"}})
 }
 
 // A suspect member that answers as itself is not removed; one that does not

@@ -13,9 +13,13 @@ import (
 // under the same key, so workloads keep their trust anchor.
 func TestLeaderRenewsTheMeshCACertificate(t *testing.T) {
 	c := newCluster(t, 3)
-	c.caValidity = 3 * time.Second
+	c.caValidity = 4 * time.Second
 	c.genesis("n0", "n1", "n2")
 	first := c.leader().node.fsm.CA().Cert
+	time.Sleep(time.Until(first.NotBefore.Add(c.caValidity/2 - 500*time.Millisecond)))
+	if ca := c.leader().node.fsm.CA(); !bytes.Equal(ca.Cert.Raw, first.Raw) {
+		t.Fatal("renewed before half the certificate's life")
+	}
 	eventually(t, 15*time.Second, "every replica on one renewed certificate", func() bool {
 		var seen []byte
 		for _, r := range c.live() {
@@ -65,11 +69,8 @@ func TestApplyRenewCARefusals(t *testing.T) {
 		t.Fatal(err)
 	}
 	other, _ := issuer.NewMeshCA("c8s-mesh-ca", 3*time.Hour)
-	renamed, _ := issuer.SelfSignCA(ca.Key, "another-ca", 3*time.Hour)
-	shorter, _ := issuer.SelfSignCA(ca.Key, "c8s-mesh-ca", time.Minute)
-	for name, der := range map[string][]byte{
-		"another key": other.Current().CA.Cert.Raw, "another subject": renamed.Raw, "a shorter life": shorter.Raw, "garbage": []byte("x"),
-	} {
+	// issuer.TestRenewalOf covers the other refusals; one proves it is called.
+	for name, der := range map[string][]byte{"another key": other.Current().CA.Cert.Raw, "garbage": []byte("x")} {
 		if err, _ := apply(4, Entry{Kind: KindRenewCA, RenewCA: &RenewCAEntry{RootCert: der}}).(error); err == nil {
 			t.Fatalf("adopted %s", name)
 		}
