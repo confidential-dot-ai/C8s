@@ -222,10 +222,9 @@ func TestMajorityLoss(t *testing.T) {
 	})
 }
 
-// TestRestore: total loss and `c8s cds ha recover` from the sealed backup;
-// an older backup than the operator's record is refused, and a live replica
-// refuses any restore. Wrong keys, tampered parts and other clusters'
-// backups are unit tests (backup_test.go, ha_restore_test.go).
+// TestRestore: total loss and `c8s cds ha recover` from the sealed backup.
+// Refusals (older backup, live replica, wrong keys, tampered parts, other
+// clusters) are unit tests (backup_test.go, ha_restore_test.go).
 func TestRestore(t *testing.T) {
 	if testing.Short() {
 		t.Skip("not in the -short subset")
@@ -236,44 +235,15 @@ func TestRestore(t *testing.T) {
 	k.Start()
 	time.Sleep(3 * time.Second)
 	k.Pause()
-	old := requireFreshBackup(t, c)
-	oldList := c.Backups()
-	k.Resume()
-	time.Sleep(3 * time.Second)
-	k.Pause()
 	snaps, _, err := c.Converge(30 * time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
 	newest := requireFreshBackup(t, c)
-	newList := c.Backups()
-	c.Logf("old backup index %d, newest %d", old.Meta.Index, newest.Meta.Index)
-	if newest.Meta.Index <= old.Meta.Index {
-		t.Fatal("no newer backup")
-	}
-	write := func(name string, cms []corev1.ConfigMap) string {
-		raw, _ := json.Marshal(corev1.ConfigMapList{Items: cms})
-		p := filepath.Join(c.Dir, name)
-		if err := os.WriteFile(p, raw, 0o600); err != nil {
-			t.Fatal(err)
-		}
-		return p
-	}
-	oldFile, newFile := write("old.json", oldList), write("new.json", newList)
-	recoverCLI := func(file string, node int, minEpoch, minIndex uint64, extra ...string) (string, error) {
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-		defer cancel()
-		args := append([]string{"cds", "ha", "recover", "--backup-file", file, "--recovery-key", c.RecKeyPath, "--decree-key", c.OpKeyPath,
-			"--cluster-id", clusterID, "--bootstrap-node", c.Replicas[node].Node, "--url", c.Replicas[node].Base, "--insecure",
-			"--min-epoch", strconv.FormatUint(minEpoch, 10), "--min-index", strconv.FormatUint(minIndex, 10)}, extra...)
-		out, err := exec.CommandContext(ctx, binPath, args...).CombinedOutput()
-		return string(out), err
-	}
-	// A live replica refuses a restore.
-	if out, err := recoverCLI(newFile, 0, 1, 0, "--attempts", "1"); err == nil {
-		t.Fatalf("a live replica took a restore: %s", out)
-	} else {
-		c.Logf("live replica refused the restore: %s", strings.TrimSpace(out))
+	raw, _ := json.Marshal(corev1.ConfigMapList{Items: c.Backups()})
+	newFile := filepath.Join(c.Dir, "backup.json")
+	if err := os.WriteFile(newFile, raw, 0o600); err != nil {
+		t.Fatal(err)
 	}
 	k.Stop()
 	// Total loss.
@@ -283,15 +253,17 @@ func TestRestore(t *testing.T) {
 	for i := range c.Replicas {
 		c.Start(i, false)
 	}
-	// D3: the old backup is refused against the operator's newer record.
-	if out, err := recoverCLI(oldFile, 2, newest.Meta.Epoch, newest.Meta.Index); err == nil || !strings.Contains(out, "older than") {
-		t.Fatalf("an older backup was restored: %v %s", err, out)
-	}
 	// The pre-join server is ready once the replica awaits a restore.
 	c.waitFor(timing.deadAfter+30*time.Second, func() bool { return c.Get(2, "/readyz").Code == http.StatusOK },
 		func() string { return "n3 does not await a restore: " + c.StatusLine(2) })
 	start := time.Now()
-	if out, err := recoverCLI(newFile, 2, newest.Meta.Epoch, newest.Meta.Index); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, binPath, "cds", "ha", "recover", "--backup-file", newFile,
+		"--recovery-key", c.RecKeyPath, "--decree-key", c.OpKeyPath, "--cluster-id", clusterID,
+		"--bootstrap-node", c.Replicas[2].Node, "--url", c.Replicas[2].Base, "--insecure",
+		"--min-epoch", strconv.FormatUint(newest.Meta.Epoch, 10), "--min-index", strconv.FormatUint(newest.Meta.Index, 10)).CombinedOutput()
+	if err != nil {
 		t.Fatalf("recover: %v\n%s", err, out)
 	}
 	c.WaitAllServing(60 * time.Second)
@@ -312,9 +284,9 @@ func TestRestore(t *testing.T) {
 	}
 }
 
-// TestBigState: C3 (2,000 allowlist entries + 500 secrets, then a new member
-// installs the snapshot; backup and restore sizes) and C4 (a secret of the
-// maximum size through a follower).
+// TestBigState: C3 (2,000 allowlist entries + 500 secrets, then a restarted
+// non-voter installs the snapshot) and C4 (a max-size secret through a
+// non-voter).
 func TestBigState(t *testing.T) {
 	if testing.Short() {
 		t.Skip("not in the -short subset")
