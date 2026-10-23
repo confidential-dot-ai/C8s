@@ -177,8 +177,9 @@ func TestReplicatedWholeDocumentAndMalformed(t *testing.T) {
 			t.Errorf("%s applied", name)
 		}
 	}
-	if (Result{ErrKind: "token_reused", Err: operatorauth.ErrTokenReused.Error()}).Error() != operatorauth.ErrTokenReused {
-		t.Fatal("a bare sentinel must come back as itself")
+	msg := "operator token already used: it expired"
+	if err := (Result{ErrKind: "token_reused", Err: msg}).Error(); !errors.Is(err, operatorauth.ErrTokenReused) || err.Error() != msg {
+		t.Fatalf("error across the log: %v", err)
 	}
 }
 
