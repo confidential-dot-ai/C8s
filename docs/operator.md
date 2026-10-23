@@ -694,9 +694,6 @@ follows these rules:
   handshakes from that client get 503 `sessions_busy`. A binding idle for
   2 minutes lapses and refuses its connection with 503 `binding_expired`
   until the client attests again.
-- The router serves cluster workloads only: it refuses a polled manifest that
-  names an address backend (`serverName`, `ca`), keeps the applied one, and
-  logs `the router serves cluster workloads only` with the host and path.
 - `router.routing.readTimeout` bounds nginx's wait between reads, and
   `router.routing.backendTimeout` (default 1h) how long a routed request, or
   a WebSocket, may go with no data moving; a tunnelled request gets that long

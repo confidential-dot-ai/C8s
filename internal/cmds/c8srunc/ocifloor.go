@@ -55,18 +55,22 @@ var kernelFSTypes = []string{
 
 // requireFloor refuses a bundle that would start a container of a member pod
 // with privileges the pod's protection cannot survive. A role's container
-// holds no capabilities.
+// holds no capabilities. Attachability is refused for every container the
+// wrapper creates, whether or not the floor covers it.
 func requireFloor(spec *specs.Spec, containerID string, stdin *os.File, floor nriimagepolicy.MeshFloor) error {
+	if err := requireNotAttachable(spec, stdin); err != nil {
+		return fmt.Errorf("no container on this node may be attachable: %w", err)
+	}
 	if !floorApplies(spec, containerID, floor) {
 		return nil
 	}
-	if err := floorChecks(spec, stdin, floor); err != nil {
+	if err := floorChecks(spec, floor); err != nil {
 		return fmt.Errorf("the measured privilege floor refuses this container: %w", err)
 	}
 	return nil
 }
 
-func floorChecks(spec *specs.Spec, stdin *os.File, floor nriimagepolicy.MeshFloor) error {
+func floorChecks(spec *specs.Spec, floor nriimagepolicy.MeshFloor) error {
 	if spec.Process == nil || spec.Linux == nil {
 		return errors.New("the bundle describes no Linux process to confine")
 	}
@@ -89,8 +93,14 @@ func floorChecks(spec *specs.Spec, stdin *os.File, floor nriimagepolicy.MeshFloo
 	if err := requireOwnNamespaces(spec.Linux); err != nil {
 		return err
 	}
-	if err := requireUnreservedIdentity(user, floor, role); err != nil {
-		return err
+	return requireUnreservedIdentity(user, floor, role)
+}
+
+// requireNotAttachable refuses the two halves of what an attach session would
+// write into: a terminal, and the container's standard input.
+func requireNotAttachable(spec *specs.Spec, stdin *os.File) error {
+	if spec.Process == nil {
+		return errors.New("the bundle describes no process")
 	}
 	if err := requireNoTerminal(spec.Process); err != nil {
 		return err
@@ -252,8 +262,6 @@ func requireUnreservedIdentity(user specs.User, floor nriimagepolicy.MeshFloor, 
 	return nil
 }
 
-// requireNoTerminal refuses a terminal, which is half of what an attach
-// session would write into.
 func requireNoTerminal(process *specs.Process) error {
 	if process.Terminal {
 		return errors.New("the container asks for a terminal")
@@ -261,9 +269,9 @@ func requireNoTerminal(process *specs.Process) error {
 	return nil
 }
 
-// requireNoStdin refuses a create whose own standard input is a pipe, which
-// is the other half. The shim gives runc the container's stdin pipe only
-// for a container asked to keep stdin open (containerd
+// requireNoStdin refuses a create whose own standard input is a pipe. The
+// shim gives runc the container's stdin pipe only for a container asked to
+// keep stdin open (containerd
 // cmd/containerd-shim-runc-v2 createIO and withConditionalIO, go-runc
 // pipeIO.Set and nullIO.Set).
 func requireNoStdin(stdin *os.File) error {

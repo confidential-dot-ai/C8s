@@ -734,7 +734,9 @@ func argvHelperMode(ctx context.Context) error {
 	if w.lastPod == nil {
 		return errors.New("no container has been described yet")
 	}
-	w.lastPod.last().command = []string{"/c8s", "probe-file", "--wait", "/run/c8s/never-written"}
+	c := w.lastPod.last()
+	c.command = []string{"/c8s", "probe-file", "--wait", "/run/c8s/never-written"}
+	c.helper = true
 	return nil
 }
 

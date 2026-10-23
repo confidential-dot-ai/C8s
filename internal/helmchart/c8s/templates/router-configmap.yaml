@@ -83,6 +83,14 @@ data:
     # long after a renewal.
     interval=5
     watched="{{ include "router.filesNginxLoads" . }}"
+    {{- if $launchDriven }}
+    # The launch file's front-door mode picks what tls.conf loads. In cds mode
+    # the acme sidecar stands by and writes no ACME files, so watching them
+    # would read as a withdrawal.
+    if [ "$(cat {{ include "router.launchDir" . }}/front-door-mode)" = acme ]; then
+        watched="$watched {{ include "router.acmeCertDir" . }}/cert.pem {{ include "router.acmeKeyDir" . }}/key.pem"
+    fi
+    {{- end }}
 
     # A publication relinks the leaf and its key one file at a time, so a tick
     # can land on a leaf whose key has not arrived yet. nginx tests what it

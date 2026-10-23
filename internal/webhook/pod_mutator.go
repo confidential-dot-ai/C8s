@@ -121,7 +121,8 @@ const reservedSecretContainerName = workloadclaims.SecretContainerName
 const (
 	// CertVolumeName is the injected memory-backed credential volume.
 	CertVolumeName = "c8s-certs"
-	// CertDir is where every container of an injected pod mounts it.
+	// CertDir is where the injected containers mount it; no other container
+	// may (rejectCredentialMounts).
 	CertDir  = workloadclaims.MemberCertDir
 	certFile = "tls.crt"
 	keyFile  = "tls.key"

@@ -5,14 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"maps"
 	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -160,7 +158,6 @@ func newRoutingEngine(cfg config, bindings *Bindings, logger *slog.Logger) (*rou
 	if err != nil {
 		return nil, fmt.Errorf("--cds-url: %w", err)
 	}
-	fetcher := clusterWorkloadRoutes{routes: cds}
 	keys, err := operatorKeySource(r, cdsPinned, cds, logger)
 	if err != nil {
 		return nil, err
@@ -178,7 +175,7 @@ func newRoutingEngine(cfg config, bindings *Bindings, logger *slog.Logger) (*rou
 			State: state, Transports: transports, Bindings: bindings, Timeout: r.backendTimeout, TunnelBudget: tunnelBudget(r.tunnelBudget, cgroupMemoryMax, logger), Logger: logger,
 		}),
 		poller: routing.NewPoller(routing.PollerConfig{
-			State: state, Fetcher: fetcher, Keys: keys, Transports: transports, Interval: r.pollInterval, Logger: logger,
+			State: state, Fetcher: cds, Keys: keys, Transports: transports, Interval: r.pollInterval, Logger: logger,
 		}),
 	}, nil
 }
@@ -278,36 +275,6 @@ func memberCredentials() (*routing.MeshIdentity, error) {
 		return nil, fmt.Errorf("mesh identity for backends: %w", err)
 	}
 	return identity, nil
-}
-
-// clusterWorkloadRoutes refuses a fetched manifest this router cannot serve,
-// so the refusal arrives with the manifest that names it rather than at dial
-// time. Every route must name a cluster workload: this pod reaches a backend
-// as the mesh client of the workload its route names, and its ruleset leaves
-// it nothing else to reach. Nothing is applied either way, so reading the
-// manifest here, before Accept verifies its signature, decides nothing but
-// the diagnostic.
-type clusterWorkloadRoutes struct {
-	routes routing.Fetcher
-}
-
-func (c clusterWorkloadRoutes) Routes(ctx context.Context) (routes.Envelope, error) {
-	env, err := c.routes.Routes(ctx)
-	if err != nil {
-		return routes.Envelope{}, err
-	}
-	manifest, err := routes.Parse(env.Manifest)
-	if err != nil {
-		return routes.Envelope{}, err
-	}
-	for _, host := range slices.Sorted(maps.Keys(manifest.Hosts)) {
-		for _, route := range manifest.Hosts[host].Routes {
-			if route.Backend.Workload == "" {
-				return routes.Envelope{}, fmt.Errorf("host %q route %q names the address backend %s: the router serves cluster workloads only", host, route.Path, route.Backend.Address)
-			}
-		}
-	}
-	return env, nil
 }
 
 // operatorKeySource implements W6: the node's signed launch configuration
