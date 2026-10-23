@@ -150,8 +150,8 @@ func newHAStatusCmd() *cobra.Command {
 					continue
 				}
 				seen = append(seen, hb)
-				fmt.Fprintf(cmd.OutOrStdout(), "%-40s node=%s state=%s epoch=%d serving=%t ca=%.16s voters=%d non_voters=%d applied=%d\n",
-					u, hb.NodeName, hb.State, hb.Epoch, hb.Serving, hb.CAFingerprint, len(hb.Voters), len(hb.NonVoters), hb.AppliedIndex)
+				fmt.Fprintf(cmd.OutOrStdout(), "%-40s cluster=%s node=%s state=%s epoch=%d serving=%t ca=%s voters=%d non_voters=%d applied=%d\n",
+					u, hb.ClusterID, hb.NodeName, hb.State, hb.Epoch, hb.Serving, hb.CAFingerprint, len(hb.Voters), len(hb.NonVoters), hb.AppliedIndex)
 			}
 			return reportDivergence(seen, len(urls))
 		},
