@@ -19,6 +19,7 @@ FIXTURE = Path(__file__).resolve().parent / "fixtures/pod-connected"
 PAUSE = "docker.io/rancher/mirrored-pause:3.10.2@sha256:f548e0e8e3dc1896ca956272154dde3314e8cc4fde0a57577ee9fa1c63f5baf4"
 SIDES = ("server", "a", "b")
 SOAK = 65 * 60
+MESH_CONTAINER_NAME = "c8s-mesh"
 READ_COMMANDS = {"cds-ca": ("cds", "ca"), "pod-status": ("pod-status", "get"),
                  "pod-attest": ("pod-attest",), "pod-attest-observed": ("pod-attest",), "pod-mesh": ()}
 
@@ -29,7 +30,7 @@ def progress(phase, side="all", status="started", **fields):
     return event
 
 
-def validate_pins(pins):
+def validate_pin_structure(pins):
     require(pins.get("schema") == 1 and re.fullmatch(r"[0-9a-f]{40}", pins.get("source", "")), "invalid production source pin")
     require(pins.get("profileSource") == pins["source"], "image profile and components must match")
     require(re.fullmatch(r"[1-9][0-9]*", pins.get("buildRun", "")), "invalid image build run")
@@ -40,8 +41,19 @@ def validate_pins(pins):
     require(re.fullmatch(r"ghcr.io/confidential-dot-ai/armtls-mesh@sha256:[0-9a-f]{64}", pins.get("meshImage", "")), "unbound mesh image")
 
 
+def validate_pins(pins):
+    validate_pin_structure(pins)
+    require(not any(key in pins for key in ("diagnosticOnly", "developmentProfile", "runtimeWrapper")),
+            "development image pins cannot enter production acceptance")
+
+
 def validate_manifest(raw, pins):
     validate_pins(pins)
+    return validate_manifest_structure(raw, pins)
+
+
+def validate_manifest_structure(raw, pins):
+    validate_pin_structure(pins)
     require(len(raw) <= 65536 and hashlib.sha256(raw).hexdigest() == pins["manifestSHA256"], "production manifest digest differs")
     data = json.loads(raw)
     require(data.get("build", {}).get("platform") == "tdx", "production manifest is not TDX")
@@ -51,6 +63,13 @@ def validate_manifest(raw, pins):
     return data
 
 
+def validate_source_contract(source):
+    # Fail before provisioning if a future paired image changes its injected sidecar name.
+    declarations = re.findall(r'^const MeshContainerName = "([^"\n]+)"$',
+                              (source / "pkg/workloadclaims/workloadclaims.go").read_text(), re.MULTILINE)
+    require(declarations == [MESH_CONTAINER_NAME], "paired source mesh container name differs from the acceptance contract")
+
+
 def pod_state(status, uid):
     require(status.get("metadata", {}).get("uid") == uid, "attested Pod UID differs")
     states = {item["name"]: item for item in status.get("status", {}).get("containerStatuses", [])}
@@ -58,15 +77,15 @@ def pod_state(status, uid):
         return {"ready": False, "complete": False, "running": False, "starts": {}}
     require(set(states) == {"app", "checker"}, "unexpected signed workload container")
     endpoints = {item["name"]: item for item in status.get("status", {}).get("initContainerStatuses", [])}
-    require(set(endpoints) == {"c8s-mesh-endpoint"}, "expected measured mesh endpoint is missing")
+    require(set(endpoints) == {MESH_CONTAINER_NAME}, "expected measured mesh endpoint is missing")
     states.update(endpoints)
     require(all(item.get("restartCount", 0) == 0 for item in states.values()), "workload restarted")
-    require(all("terminated" not in states[name].get("state", {}) for name in ("app", "c8s-mesh-endpoint")), "application or mesh endpoint exited")
+    require(all("terminated" not in states[name].get("state", {}) for name in ("app", MESH_CONTAINER_NAME)), "application or mesh endpoint exited")
     ended = states["checker"].get("state", {}).get("terminated")
     require(ended is None or ended.get("exitCode") == 0, "network acceptance checker failed")
     starts = {name: (item.get("state", {}).get("running") or item.get("state", {}).get("terminated") or {}).get("startedAt") for name, item in states.items()}
     running = all("running" in item.get("state", {}) and starts[name] for name, item in states.items())
-    return {"ready": all(states[name].get("ready", False) and "running" in states[name].get("state", {}) for name in ("app", "c8s-mesh-endpoint")), "complete": ended is not None, "running": bool(running), "starts": starts}
+    return {"ready": all(states[name].get("ready", False) and "running" in states[name].get("state", {}) for name in ("app", MESH_CONTAINER_NAME)), "complete": ended is not None, "running": bool(running), "starts": starts}
 
 
 def renewed(initial, current):
@@ -148,11 +167,18 @@ class Acceptance(OwnedResources):
         self.observation_error(phase, side, failure)
         raise failure from None
 
+    def validate_image(self, raw=None):
+        if raw is None:
+            validate_pins(self.pins)
+        else:
+            return validate_manifest(raw, self.pins)
+
     def prepare(self):
-        validate_pins(self.pins)
+        self.validate_image()
         source = Path(os.environ["POD_ACCEPTANCE_SOURCE"])
         require(command(["git", "-C", source, "rev-parse", "HEAD"]).decode().strip() == self.pins["source"], "CLI source does not match production image")
         require(not command(["git", "-C", source, "status", "--porcelain"]).strip(), "paired CLI checkout is dirty")
+        validate_source_contract(source)
         headers = {}
         token = os.environ.get("GH_TOKEN")
         if token:
@@ -164,7 +190,7 @@ class Acceptance(OwnedResources):
         url = "https://ghcr.io/v2/confidential-dot-ai/node-guest-base/blobs/sha256:" + self.pins["manifestSHA256"]
         with urllib.request.urlopen(urllib.request.Request(url, headers={"Authorization": "Bearer " + bearer}), timeout=60) as response:
             raw = response.read(65537)
-        validate_manifest(raw, self.pins)
+        self.validate_image(raw)
         write(self.private / "manifest.json", raw)
         write(self.evidence / "manifest.json", raw)
         write(self.evidence / "image.json", self.pins)

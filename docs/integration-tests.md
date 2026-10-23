@@ -178,12 +178,35 @@ include bounded CLI errors and separately labeled diagnostic attestations;
 those diagnostic reports cannot satisfy acceptance. Completion requires
 `result.json` with `passed: true` and `cleanup.json` with `complete: true`, plus
 a successful workflow. Cleanup always removes owned resources; `keep_cvm` does
-not apply. Do not enable `pod_diagnostic` in the same dispatch.
+not apply. Select exactly one Pod mode per dispatch.
 
 This lane validates static Pods on native KubeVirt TDX hardware. Cloud API
 provisioning and Kubernetes provider assignment, discovery and deletion remain
 separate acceptance work. Guest exclusion checks observe connection denial;
 the privileged Linux suite supplies controlled listener and source-NAT checks.
+
+### Diagnosing Pod runtime startup on TDX
+
+The manual input `pod_runtime_diagnostic: true` uses separate immutable pins in
+`.github/scripts/fixtures/pod-connected/development-image.json` and the same real
+CDS/two-Pod provisioning. It collects bounded systemd unit, journal, CRI and
+containerd-plugin observations through the run-owned Pod consoles. Private raw
+console transcripts are not uploaded; public evidence contains fixed projections
+with sensitive records omitted. UID checks bind observations and cleanup to the
+resources created by that run.
+
+```sh
+gh workflow run tdx-metal-e2e.yml --repo confidential-dot-ai/C8s \
+  --ref podcvm/no-mesh-gate -f pod_runtime_diagnostic=true
+```
+
+The development image has different measurements and bypasses `c8s-runc` through
+`60-dev-runc.toml`. Its outcome is diagnostic-only and cannot satisfy production
+acceptance. The runner does not perform the timed acceptance observations.
+The `pod-runtime-diagnostic-<run>-<attempt>` artifact retains public observations
+and the cleanup receipt for three days. A complete diagnostic run requires
+`captureComplete: true` and cleanup `complete: true`; neither means the Pod
+workload passed. Cleanup always runs, and `keep_cvm` does not apply.
 
 ### Diagnosing historical mixed-source Pod boots
 

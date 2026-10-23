@@ -147,8 +147,20 @@ class HarnessTests(unittest.TestCase):
         self.assertTrue(acceptance.renewal_event(early, timed, 3300))
         self.assertFalse(acceptance.renewal_event(early, dict(timed, notAfter=early["notAfter"]), 3300))
 
+    def test_expected_mesh_name_matches_real_source_and_rejects_changed_contract(self):
+        acceptance.validate_source_contract(SCRIPTS.parents[1])
+        source = Path(self.temp.name) / "paired-source"
+        path = source / "pkg/workloadclaims/workloadclaims.go"
+        path.parent.mkdir(parents=True)
+        for declaration in ('const MeshContainerName = "c8s-mesh-endpoint"', '',
+                            'const MeshContainerName = "c8s-mesh"\nconst MeshContainerName = "another"'):
+            path.write_text(declaration)
+            with self.assertRaises(RuntimeError): acceptance.validate_source_contract(source)
+        path.write_text('const MeshContainerName = "c8s-mesh"\n')
+        acceptance.validate_source_contract(source)
+
     def test_receipt_requires_correct_uid_no_restart_and_zero_checker_exit(self):
-        status = {"metadata": {"uid": "pod"}, "status": {"initContainerStatuses": [{"name": "c8s-mesh-endpoint", "ready": True, "restartCount": 0, "state": {"running": {"startedAt": "2026-10-23T10:00:00Z"}}}], "containerStatuses": [
+        status = {"metadata": {"uid": "pod"}, "status": {"initContainerStatuses": [{"name": "c8s-mesh", "ready": True, "restartCount": 0, "state": {"running": {"startedAt": "2026-10-23T10:00:00Z"}}}], "containerStatuses": [
             {"name": "app", "ready": True, "restartCount": 0, "state": {"running": {"startedAt": "2026-10-23T10:00:00Z"}}},
             {"name": "checker", "restartCount": 0, "state": {"terminated": {"exitCode": 0, "startedAt": "2026-10-23T10:00:00Z"}}}]}}
         self.assertTrue(acceptance.pod_state(status, "pod")["complete"])

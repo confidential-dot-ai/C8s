@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "source": "3eddfb9ed4909133cfc0844ad4913b3b02d6a9fe",
+  "profileSource": "3eddfb9ed4909133cfc0844ad4913b3b02d6a9fe",
+  "buildRun": "39992126675",
+  "image": "ghcr.io/confidential-dot-ai/node-guest-base@sha256:0c759bb76d4265a70ea7b268c6f894dbe46c4517a03f8da76602b9361f39fa25",
+  "artifact": "ghcr.io/confidential-dot-ai/node-guest-base@sha256:2fe11e79de8597956a91bc7b14d071a5c8aeca0529d87649ed726862e4ec7e22",
+  "manifestSHA256": "3cbae502c88e859741ac5d8617d4be21ab8c72af1951fe4c89fd1f5fa8a61bc4",
+  "diskSHA256": "6029b52940d8635175e6255716465f5c6beba8291d3ba803cdb2c80bf341aed4",
+  "meshImage": "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:da3ff7d995a62ae63da59688eadbd323071e1c57ea9ef227adf8ad5a542c2642",
+  "diagnosticOnly": true,
+  "developmentProfile": true,
+  "runtimeWrapper": "bypassed-by-60-dev-runc.toml"
+}
