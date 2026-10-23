@@ -243,7 +243,7 @@ func newHANode(cfg config, st haStores) (*cdsha.Node, error) {
 		Ledger:          st.ledger,
 		Logger:          slog.Default(),
 		HistoryVersions: cfg.allowlistHistoryVersions,
-		HistoryBytes:    cfg.allowlistHistoryBytes,
+		HistoryBytes:    cfg.allowlistHistoryBytes.Value(),
 	})
 }
 

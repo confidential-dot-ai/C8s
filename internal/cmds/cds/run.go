@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"syscall"
@@ -144,13 +145,13 @@ func run(cfg config) error {
 	// by the Genesis replica and handed only to attested replicas, and every
 	// write is replicated through the Raft log; the leader renews the CA
 	// certificate under the same key through the log too (cdsha).
-	fullGuard, err := allowlistFullGuard(cfg, allowlistStore.LiveBytes)
-	if err != nil {
-		return err
-	}
 	haNode, err := haStart(ctx, cfg, haStores{allowlist: &allowlistStore, secrets: secretsMem, ledger: sandboxBindings}, restoreServer(cfg))
 	if err != nil {
 		return fmt.Errorf("cds-ha: %w", err)
+	}
+	var fullGuard func() error
+	if haNode != nil {
+		fullGuard = allowlistFullGuard(filepath.Dir(cfg.allowlistDB), cfg.allowlistMaxBytes.Value(), allowlistStore.LiveBytes)
 	}
 	// startCA is the mesh CA at startup. It is read once: an HA replica can
 	// stop serving (lease lapse) between two reads, and mesh then reads empty.
@@ -413,9 +414,6 @@ func run(cfg config) error {
 	}
 
 	go checker.Run(ctx)
-	if haNode == nil && (cfg.allowlistHistoryVersions > 0 || cfg.allowlistHistoryBytes > 0) {
-		go pruneHistoryLoop(ctx, &allowlistStore, cfg.allowlistHistoryVersions, cfg.allowlistHistoryBytes)
-	}
 
 	addr := fmt.Sprintf("%s:%d", cfg.host, cfg.port)
 	srv := newHTTPServer(addr, router, cfg)
@@ -622,6 +620,9 @@ func validateConfig(cfg config) error {
 	if cfg.maxHeaderBytes < 0 {
 		return fmt.Errorf("--max-header-bytes must be non-negative")
 	}
+	if cfg.allowlistHistoryBytes.Sign() < 0 || cfg.allowlistMaxBytes.Sign() < 0 {
+		return fmt.Errorf("--allowlist-history-bytes and --allowlist-max-bytes must be non-negative")
+	}
 	// Not "0 disables": this is the stale-identity bound for a named leaf, and
 	// 0 is the disable idiom elsewhere in the chart, so a zero here would read
 	// as "no bound" while silently meaning issuer.MaxNamedLeafTTL.
@@ -748,33 +749,6 @@ func readinessFn(svcReady func() bool, mesh meshCA, minCAValidity time.Duration)
 			return false
 		}
 		return true
-	}
-}
-
-// pruneHistoryLoop bounds a singleton's allowlist history (an HA replica's
-// leader prunes through the log instead, cdsha.Node.maybePruneHistory).
-func pruneHistoryLoop(ctx context.Context, store *allowlist.Store, versions int, budget int64) {
-	t := time.NewTicker(time.Minute)
-	defer t.Stop()
-	for {
-		keep := versions
-		if budget > 0 {
-			if fit, err := store.HistoryKeepForBytes(budget); err == nil && (keep <= 0 || fit < keep) {
-				keep = fit
-			}
-		}
-		if n, err := store.HistoryLen(); err == nil && keep > 0 && n > keep {
-			if dropped, err := store.PruneHistory(keep); err != nil {
-				slog.Warn("prune allowlist history", "err", err)
-			} else if dropped > 0 {
-				slog.Info("allowlist history pruned", "dropped", dropped, "kept", keep)
-			}
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-		}
 	}
 }
 

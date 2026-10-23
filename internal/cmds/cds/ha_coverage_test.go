@@ -2,14 +2,12 @@ package cds
 
 import (
 	"bytes"
-	"context"
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -18,11 +16,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/cdsha"
 	"github.com/confidential-dot-ai/c8s/internal/shamir"
-	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
 // decrees reads the applied record from a replica and refuses what it cannot
@@ -94,67 +89,6 @@ func TestHADecreeCLIRefusesBadImage(t *testing.T) {
 	if _, err := runHA(t, "decree", "--cluster-id", "c1", "--operator-key", filepath.Join(t.TempDir(), "none"),
 		"--kind", "UpdateMeasurements", "--base-epoch", "1", "--image", "aa:bb"); err == nil || !strings.Contains(err.Error(), "--image") {
 		t.Fatalf("bad --image: %v", err)
-	}
-}
-
-func TestBytesFlag(t *testing.T) {
-	if s := (bytesFlag{}).String(); s != "0" {
-		t.Fatalf("unset flag prints %q", s)
-	}
-	var v int64
-	f := newBytesFlag(&v)
-	if f.Type() != "quantity" {
-		t.Fatalf("type %q", f.Type())
-	}
-	if err := f.Set("512Mi"); err != nil || v != 512<<20 || f.String() != fmt.Sprint(512<<20) {
-		t.Fatalf("512Mi: %v %d %s", err, v, f.String())
-	}
-	for _, bad := range []string{"lots", "-1Ki"} {
-		if err := f.Set(bad); err == nil {
-			t.Errorf("%q accepted", bad)
-		}
-	}
-	if v != 512<<20 {
-		t.Fatalf("a refused value changed the flag: %d", v)
-	}
-}
-
-// pruneHistoryLoop prunes once at start, to the tighter of the version and
-// byte bounds, and stops with its context.
-func TestPruneHistoryLoop(t *testing.T) {
-	for name, c := range map[string]struct {
-		versions int
-		budget   int64
-		want     int
-	}{
-		"versions":          {versions: 3, want: 3},
-		"bytes are tighter": {versions: 5, budget: 1, want: 1},
-		"bytes only":        {budget: 1, want: 1},
-		"nothing to prune":  {versions: 100, want: 7},
-		"no bound":          {want: 7},
-	} {
-		t.Run(name, func(t *testing.T) {
-			s, err := allowlist.OpenInMemory()
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _ = s.Close() })
-			if err := s.StartJournal(); err != nil {
-				t.Fatal(err)
-			}
-			for i := range 6 {
-				d, _ := types.ParseDigest(fmt.Sprintf("sha256:%064x", i+1))
-				if err := s.PutWorkload(fmt.Sprintf("w%d", i), pkgallowlist.Workload{Containers: []pkgallowlist.Container{{Digest: d}}}); err != nil {
-					t.Fatal(err)
-				}
-			}
-			ctx, cancel := context.WithCancel(context.Background())
-			cancel()
-			pruneHistoryLoop(ctx, &s, c.versions, c.budget)
-			if n, _ := s.HistoryLen(); n != c.want {
-				t.Fatalf("history %d, want %d", n, c.want)
-			}
-		})
 	}
 }
 
