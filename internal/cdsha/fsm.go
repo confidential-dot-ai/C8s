@@ -256,7 +256,7 @@ var errMalformed = errors.New("malformed log entry")
 func (f *FSM) stop(err error) error {
 	msg := err.Error()
 	if f.stuck.CompareAndSwap(nil, &msg) {
-		slog.Error("cds-ha: this replica can no longer follow the log; it stops serving until replaced or restarted", "reason", msg)
+		slog.Error("cds-ha: this replica can no longer follow the log; it stops serving and exits to rejoin", "reason", msg)
 	}
 	return err
 }
