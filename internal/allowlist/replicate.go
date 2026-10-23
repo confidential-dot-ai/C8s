@@ -90,20 +90,23 @@ func (r Result) with(err error) Result {
 	return r
 }
 
-// Error rebuilds the error Apply returned, wrapping its sentinel.
+// Error rebuilds the error Apply returned: its message, and its sentinel
+// for errors.Is.
 func (r Result) Error() error {
-	switch {
-	case r.ErrKind == "":
+	if r.ErrKind == "" {
 		return nil
-	case sentinels[r.ErrKind] != nil:
-		if r.Err == sentinels[r.ErrKind].Error() {
-			return sentinels[r.ErrKind]
-		}
-		return fmt.Errorf("%w (%s)", sentinels[r.ErrKind], r.Err)
-	default:
-		return errors.New(r.Err)
 	}
+	return wireErr{r.Err, sentinels[r.ErrKind]}
 }
+
+// wireErr is an error that crossed the log: the text, and the sentinel.
+type wireErr struct {
+	msg string
+	is  error
+}
+
+func (e wireErr) Error() string { return e.msg }
+func (e wireErr) Unwrap() error { return e.is }
 
 // Apply runs one replicated command against the local database. Replicas
 // apply the same commands in the same order, so they hold the same store.
@@ -183,9 +186,6 @@ func (s *Store) DeleteWorkload(name string) (bool, error) {
 
 // ReplaceAll swaps the entire allowlist (see replaceAll).
 func (s *Store) ReplaceAll(al *pkgallowlist.Allowlist) error {
-	if al == nil {
-		return s.replaceAll(al) // refused before it reaches the log
-	}
 	_, err := s.write(Command{Op: OpReplaceAll, Allowlist: al})
 	return err
 }
@@ -206,10 +206,6 @@ func (s *Store) ConsumeToken(token string) error {
 
 // ReplaceRoutes stores a signed route manifest (see replaceRoutes).
 func (s *Store) ReplaceRoutes(env routes.Envelope, ifMatch string) error {
-	// Refuse what routes.Parse refuses before it reaches the log.
-	if _, err := routes.Parse(env.Manifest); err != nil {
-		return err
-	}
 	_, err := s.write(Command{Op: OpReplaceRoutes, Routes: &env, IfMatch: ifMatch})
 	return err
 }
