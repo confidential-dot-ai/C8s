@@ -2,19 +2,25 @@ package routing
 
 import (
 	"bufio"
+	"bytes"
+	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/confidential-dot-ai/c8s/pkg/routes"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
@@ -237,7 +243,7 @@ func TestA7M1TunnelHost(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			resp, err := f.proxy.Forward(outerRequest(tc.outerHost), types.TunnelRequest{Method: "GET", Path: "/x?q=1", Headers: tc.headers})
+			resp, err := f.proxy.Forward(outerRequest(tc.outerHost), types.TunnelRequest{Method: "GET", Path: "/x?q=1", Headers: tc.headers}, f.bound())
 			if err != nil {
 				t.Fatalf("Forward() = %v, want nil", err)
 			}
@@ -260,15 +266,15 @@ func TestA7M1TunnelHost(t *testing.T) {
 func TestA7TunnelPaths(t *testing.T) {
 	f := newFixture(t)
 	sealedHost := []types.HeaderField{{Name: "Host", Value: testHost}}
-	if resp, err := f.proxy.Forward(outerRequest(testHost), types.TunnelRequest{Path: "/", Headers: sealedHost}); err != nil || resp.Status != http.StatusServiceUnavailable {
+	if resp, err := f.proxy.Forward(outerRequest(testHost), types.TunnelRequest{Path: "/", Headers: sealedHost}, f.bound()); err != nil || resp.Status != http.StatusServiceUnavailable {
 		t.Fatalf("Forward() before the first apply = %d, %v, want %d, nil (A2)", resp.Status, err, http.StatusServiceUnavailable)
 	}
 	bad := startBackend(t, "bad", issueLeaf(t, f.mesh, "impostor"))
 	f.apply(t, simpleManifest(1, bad.addr()))
-	if _, err := f.proxy.Forward(outerRequest(testHost), types.TunnelRequest{Path: "/", Headers: sealedHost}); err == nil {
+	if _, err := f.proxy.Forward(outerRequest(testHost), types.TunnelRequest{Path: "/", Headers: sealedHost}, f.bound()); err == nil {
 		t.Fatal("Forward() to a backend failing B1 = nil error, want one (B5)")
 	}
-	resp, err := f.proxy.Forward(outerRequest(testHost), types.TunnelRequest{Path: "/x|%2F..%2Fadmin", Headers: sealedHost})
+	resp, err := f.proxy.Forward(outerRequest(testHost), types.TunnelRequest{Path: "/x|%2F..%2Fadmin", Headers: sealedHost}, f.bound())
 	if err != nil || resp.Status != http.StatusNotFound {
 		t.Fatalf("Forward(/x|%%2F..%%2Fadmin) = %d, %v, want %d, nil (M4)", resp.Status, err, http.StatusNotFound)
 	}
@@ -356,7 +362,7 @@ func TestA7TunnelSealedHeaders(t *testing.T) {
 	f.apply(t, simpleManifest(1, web.addr()))
 	forward := func(headers ...types.HeaderField) types.TunnelResponse {
 		t.Helper()
-		resp, err := f.proxy.Forward(outerRequest(testHost), types.TunnelRequest{Method: "GET", Path: "/", Headers: headers})
+		resp, err := f.proxy.Forward(outerRequest(testHost), types.TunnelRequest{Method: "GET", Path: "/", Headers: headers}, f.bound())
 		if err != nil {
 			t.Fatalf("Forward() = %v, want nil", err)
 		}
@@ -582,5 +588,246 @@ func TestListenerUpgradeIsIdle(t *testing.T) {
 	}
 	if elapsed := time.Since(quiet); elapsed < timeout {
 		t.Fatalf("quiet upgraded connection closed after %v, want at least %v", elapsed, timeout)
+	}
+}
+
+// TestB8WorkloadBackendEntry: a workload backend stamped under another
+// allowlist passes while its entry is unchanged in the current one, and is
+// refused with backend_entry_changed when the entry was redefined or the
+// stamped document cannot be fetched.
+func TestB8WorkloadBackendEntry(t *testing.T) {
+	f := newFixture(t)
+	f.allowlists.store(digestOf(0x43), testAllowlist())
+	f.allowlists.store(digestOf(0x44), labelled(map[string]string{"web": "v0"}))
+	tests := []struct {
+		name     string
+		digest   []byte
+		want     int
+		wantBody string
+	}{
+		{"B8 current digest", testDigest, http.StatusOK, ""},
+		{"B8 older digest, entry unchanged", digestOf(0x43), http.StatusOK, ""},
+		{"B8 older digest, entry redefined", digestOf(0x44), http.StatusBadGateway, backendEntryChanged},
+		{"B8 digest not in the history", digestOf(0x45), http.StatusBadGateway, backendEntryChanged},
+	}
+	for i, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			b := startBackend(t, "web", issueStampedLeaf(t, f.mesh, "web", tc.digest))
+			f.apply(t, simpleManifest(uint64(i+1), b.addr()))
+			w := f.get("/")
+			if w.Code != tc.want || !strings.Contains(w.Body.String(), tc.wantBody) {
+				t.Fatalf("GET / = %d %q, want %d %q", w.Code, w.Body.String(), tc.want, tc.wantBody)
+			}
+			if tc.want == http.StatusOK {
+				return
+			}
+			var logs bytes.Buffer
+			f.proxy.log = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
+			sealedHost := []types.HeaderField{{Name: "Host", Value: testHost}}
+			resp, err := f.proxy.Forward(outerRequest(testHost), types.TunnelRequest{Path: "/", Headers: sealedHost}, f.bound())
+			if err != nil || resp.Status != tc.want || !strings.Contains(string(resp.Body), tc.wantBody) {
+				t.Fatalf("Forward(/) = %d %q, %v, want %d %q, nil", resp.Status, resp.Body, err, tc.want, tc.wantBody)
+			}
+			// The listener and the tunnel log a refusal at Info: it is
+			// expected for a backend not yet renewed after an allowlist write.
+			if !strings.Contains(logs.String(), "backend request refused") || strings.Contains(logs.String(), "level=WARN") {
+				t.Fatalf("tunnelled B8 refusal logged %q, want a backend request refused line at Info", logs.String())
+			}
+			if n := b.hits.Load(); n != 0 {
+				t.Fatalf("backend saw %d requests after a refusal, want 0", n)
+			}
+		})
+	}
+}
+
+// TestB8EntryRemoved: a backend whose entry the current allowlist no longer
+// holds is refused, under its stamped digest or the current one.
+func TestB8EntryRemoved(t *testing.T) {
+	f := newFixture(t)
+	b := startBackend(t, "web", issueLeaf(t, f.mesh, "web"))
+	f.apply(t, simpleManifest(1, b.addr()))
+	f.allowlists.serve(digestOf(0x43), labelled(map[string]string{"admin": "v1"}))
+	f.refresh(t)
+	if w := f.get("/"); w.Code != http.StatusBadGateway || !strings.Contains(w.Body.String(), backendEntryChanged) {
+		t.Fatalf("GET / to a removed entry = %d %q, want 502 %q", w.Code, w.Body.String(), backendEntryChanged)
+	}
+	if n := b.hits.Load(); n != 0 {
+		t.Fatalf("backend of a removed entry served %d requests, want 0", n)
+	}
+}
+
+// TestB8NoCurrentAllowlist: until the router has read an allowlist, it
+// refuses every workload backend and still serves address backends; a dial
+// once the CDS answers reads it.
+func TestB8NoCurrentAllowlist(t *testing.T) {
+	f := newFixture(t)
+	f.allowlists.down = errors.New("CDS unreachable")
+	f.entries = NewEntries(f.allowlists)
+	f.transports = NewTransports(TransportConfig{MeshIdentity: f.identity.Credential, Entries: f.entries})
+	f.proxy = NewProxy(ProxyConfig{State: f.state, Transports: f.transports})
+	web := startBackend(t, "web", issueLeaf(t, f.mesh, "web"))
+	external := newCA(t, "external")
+	admin := startBackend(t, "admin", issueLeaf(t, external, "", "admin.ops.svc"), webPKI)
+	f.apply(t, manifestSpec{revision: 1, hosts: map[string][]route{testHost: {
+		workloadRoute("/", "prefix", web.addr(), "web"),
+		addressRoute("/admin", "prefix", admin.addr(), "admin.ops.svc", caPEM(external)),
+	}}})
+	if w := f.get("/"); w.Code != http.StatusBadGateway || !strings.Contains(w.Body.String(), backendEntryChanged) {
+		t.Fatalf("GET / before any allowlist read = %d %q, want 502 %q", w.Code, w.Body.String(), backendEntryChanged)
+	}
+	if got := f.get("/admin").Code; got != http.StatusOK {
+		t.Fatalf("GET /admin before any allowlist read = %d, want %d", got, http.StatusOK)
+	}
+	f.allowlists.mu.Lock()
+	f.allowlists.down = nil
+	f.allowlists.mu.Unlock()
+	f.entries.refreshGap = 0
+	if got := f.get("/").Code; got != http.StatusOK {
+		t.Fatalf("GET / once the CDS answers = %d, want %d", got, http.StatusOK)
+	}
+}
+
+// TestB8RouterStampIsNotCompared: the router's own leaf, unstamped or
+// stamped under any digest, does not decide the backend check; B1 still
+// requires the route's workload name.
+func TestB8RouterStampIsNotCompared(t *testing.T) {
+	f := newFixture(t)
+	b := startBackend(t, "web", issueLeaf(t, f.mesh, "web"))
+	unnamed := startBackend(t, "web", issueLeaf(t, f.mesh, "", "web.default.svc"))
+	f.apply(t, manifestSpec{revision: 1, hosts: map[string][]route{testHost: {
+		workloadRoute("/", "prefix", b.addr(), "web"),
+		workloadRoute("/unnamed", "prefix", unnamed.addr(), "web"),
+	}}})
+	for _, leaf := range []tls.Certificate{issueLeaf(t, f.mesh, ""), issueStampedLeaf(t, f.mesh, "router", digestOf(0x43))} {
+		f.renew(t, leaf)
+		if err := f.transports.dropMeshPools(); err != nil {
+			t.Fatal(err)
+		}
+		if got := f.get("/").Code; got != http.StatusOK {
+			t.Fatalf("GET / = %d, want %d", got, http.StatusOK)
+		}
+		if got := f.get("/unnamed").Code; got != http.StatusBadGateway {
+			t.Fatalf("GET /unnamed = %d, want %d (B1 requires a name)", got, http.StatusBadGateway)
+		}
+	}
+}
+
+// TestB8RouterBehindTheCDS: a backend stamped under an allowlist newer than
+// the one the router last read is accepted once a reread finds its entry, and
+// a backend that keeps failing rereads at most once per gap.
+func TestB8RouterBehindTheCDS(t *testing.T) {
+	f := newFixture(t)
+	f.entries.refreshGap = 0
+	f.allowlists.serve(digestOf(0x43), labelled(map[string]string{"web": "v1", "admin": "v1", "router": "v1", "new": "v1"}))
+	b := startBackend(t, "new", issueStampedLeaf(t, f.mesh, "new", digestOf(0x43)))
+	f.apply(t, manifestSpec{revision: 1, hosts: map[string][]route{testHost: {workloadRoute("/", "prefix", b.addr(), "new")}}})
+	if w := f.get("/"); w.Code != http.StatusOK {
+		t.Fatalf("GET / to a backend stamped under an allowlist the router had not read = %d %q, want 200", w.Code, w.Body.String())
+	}
+
+	f.entries.refreshGap = time.Hour
+	stale := startBackend(t, "new", issueStampedLeaf(t, f.mesh, "new", digestOf(0x45)))
+	f.apply(t, manifestSpec{revision: 2, hosts: map[string][]route{testHost: {workloadRoute("/", "prefix", stale.addr(), "new")}}})
+	reads := f.allowlists.read()
+	for range 3 {
+		if got := f.get("/").Code; got != http.StatusBadGateway {
+			t.Fatalf("GET / to a backend under an unknown allowlist = %d, want %d", got, http.StatusBadGateway)
+		}
+	}
+	if n := f.allowlists.read() - reads; n != 0 {
+		t.Fatalf("failed checks reread the allowlist %d times within the gap, want 0", n)
+	}
+}
+
+// TestB8HistoryCache: a stamped document is fetched once however many
+// connections present it, and the bounded cache refetches one it evicted.
+func TestB8HistoryCache(t *testing.T) {
+	f := newFixture(t)
+	f.allowlists.store(digestOf(0x43), testAllowlist())
+	b := startBackend(t, "web", issueStampedLeaf(t, f.mesh, "web", digestOf(0x43)))
+	f.apply(t, simpleManifest(1, b.addr()))
+	for range 3 {
+		if got := f.get("/").Code; got != http.StatusOK {
+			t.Fatalf("GET / = %d, want %d", got, http.StatusOK)
+		}
+		f.transports.Retain(&routes.Manifest{}) // a fresh connection each time
+	}
+	if n := f.allowlists.fetched(); n != 1 {
+		t.Fatalf("history fetches = %d, want 1", n)
+	}
+
+	ctx := context.Background()
+	for i := range historyCacheSize {
+		digest := digestOf(byte(0x50 + i))
+		f.allowlists.store(digest, testAllowlist())
+		if err := f.entries.Check(ctx, string(digest), "web"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fetched := f.allowlists.fetched()
+	if err := f.entries.Check(ctx, string(digestOf(0x50)), "web"); err != nil {
+		t.Fatal(err)
+	}
+	if n := f.allowlists.fetched(); n != fetched {
+		t.Fatalf("a cached document was fetched again (%d fetches, want %d)", n, fetched)
+	}
+	if err := f.entries.Check(ctx, string(digestOf(0x43)), "web"); err != nil {
+		t.Fatal(err)
+	}
+	if n := f.allowlists.fetched(); n != fetched+1 {
+		t.Fatalf("an evicted document took %d fetches, want 1", n-fetched)
+	}
+
+	f.allowlists.fail = errors.New("CDS unreachable")
+	if err := f.entries.Check(ctx, string(digestOf(0x46)), "web"); !errors.Is(err, errEntryChanged) {
+		t.Fatalf("Check() with the history unreachable = %v, want %v", err, errEntryChanged)
+	}
+}
+
+// TestB10ChangedEntryRetiresPools: an allowlist write retires, at the next
+// poll, the pools of the workloads whose entry it redefined or removed, and
+// keeps the others and the address backends'.
+func TestB10ChangedEntryRetiresPools(t *testing.T) {
+	f := newFixture(t)
+	web := startBackend(t, "web", issueLeaf(t, f.mesh, "web"))
+	admin := startBackend(t, "admin", issueLeaf(t, f.mesh, "admin"))
+	external := newCA(t, "external")
+	ext := startBackend(t, "ext", issueLeaf(t, external, "", "ext.ops.svc"), webPKI)
+	f.apply(t, manifestSpec{revision: 1, hosts: map[string][]route{testHost: {
+		workloadRoute("/", "prefix", web.addr(), "web"),
+		workloadRoute("/admin", "prefix", admin.addr(), "admin"),
+		addressRoute("/ext", "prefix", ext.addr(), "ext.ops.svc", caPEM(external)),
+	}}})
+	for _, path := range []string{"/", "/admin", "/ext"} {
+		if got := f.get(path).Code; got != http.StatusOK {
+			t.Fatalf("GET %s = %d, want %d", path, got, http.StatusOK)
+		}
+	}
+	backends := f.state.Current().Manifest.Hosts[testHost].Routes
+	before := map[string]*http.Transport{}
+	for _, r := range backends {
+		before[r.Path] = f.transports.For(r.Backend)
+	}
+
+	f.allowlists.serve(digestOf(0x43), labelled(map[string]string{"web": "v2", "admin": "v1", "router": "v1"}))
+	f.refresh(t)
+	for _, r := range backends {
+		if kept := f.transports.For(r.Backend) == before[r.Path]; kept != (r.Path != "/") {
+			t.Fatalf("transport of %s kept = %v after only web was redefined", r.Path, kept)
+		}
+	}
+	if w := f.get("/"); w.Code != http.StatusBadGateway || !strings.Contains(w.Body.String(), backendEntryChanged) {
+		t.Fatalf("GET / after web was redefined = %d %q, want 502 %q", w.Code, w.Body.String(), backendEntryChanged)
+	}
+	if got := f.get("/admin").Code; got != http.StatusOK {
+		t.Fatalf("GET /admin after an unrelated write = %d, want %d", got, http.StatusOK)
+	}
+
+	renewed := startBackend(t, "renewed", issueStampedLeaf(t, f.mesh, "web", digestOf(0x43)))
+	f.apply(t, manifestSpec{revision: 2, hosts: map[string][]route{testHost: {
+		workloadRoute("/", "prefix", renewed.addr(), "web"),
+	}}})
+	if got := f.get("/").Code; got != http.StatusOK {
+		t.Fatalf("GET / to a backend renewed under the new allowlist = %d, want %d", got, http.StatusOK)
 	}
 }

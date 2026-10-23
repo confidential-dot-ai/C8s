@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -103,6 +104,11 @@ func checkRoutingFlags(cfg config) error {
 	if !cfg.attestOff && (cfg.meshIdentityCertFile == "" || cfg.meshIdentityKeyFile == "" || cfg.meshIdentityCAFile == "") {
 		return errors.New("--attest-endpoints=true requires --mesh-identity-cert-file, --mesh-identity-key-file and --mesh-identity-ca-file: the attestation endpoints bind their evidence to that leaf")
 	}
+	// The handshakes bind the router digest of the flags' leaf: it must be
+	// the leaf the router presents to backends (B4).
+	if !cfg.attestOff && (filepath.Clean(cfg.meshIdentityCertFile) != memberCertPath || filepath.Clean(cfg.meshIdentityKeyFile) != memberKeyPath || filepath.Clean(cfg.meshIdentityCAFile) != workloadclaims.MemberCAPath) {
+		return fmt.Errorf("--mesh-identity-cert-file, --mesh-identity-key-file and --mesh-identity-ca-file must be %s, %s and %s: the router reaches backends with that credential", memberCertPath, memberKeyPath, workloadclaims.MemberCAPath)
+	}
 	if r.pollInterval <= 0 {
 		return errors.New("--routes-poll-interval must be positive")
 	}
@@ -130,7 +136,9 @@ type routingEngine struct {
 	poller *routing.Poller
 }
 
-func newRoutingEngine(cfg config, logger *slog.Logger) (*routingEngine, error) {
+// newRoutingEngine builds the engine; its routing listener refuses requests on
+// connections whose binding in bindings no longer holds (E6).
+func newRoutingEngine(cfg config, bindings *Bindings, logger *slog.Logger) (*routingEngine, error) {
 	r := cfg.routing
 	policy, err := (cmdsutil.ImagePolicySource{File: r.imagePolicyFile}).Load(
 		cmdsutil.MeasurementPins{Measurements: r.cdsMeasurements, Registers: r.cdsRTMRs, Prefix: "cds-"})
@@ -158,12 +166,12 @@ func newRoutingEngine(cfg config, logger *slog.Logger) (*routingEngine, error) {
 		return nil, err
 	}
 	state := routing.NewState(routing.StateConfig{Reserved: r.reservedPaths, MeshCAs: identity.MeshCAs})
-	transports := routing.NewTransports(routing.TransportConfig{MeshIdentity: identity.Credential})
+	transports := routing.NewTransports(routing.TransportConfig{MeshIdentity: identity.Credential, Entries: routing.NewEntries(cds)})
 	return &routingEngine{
 		cfg: r,
 		log: logger,
 		proxy: routing.NewProxy(routing.ProxyConfig{
-			State: state, Transports: transports, Timeout: r.backendTimeout, TunnelBudget: tunnelBudget(r.tunnelBudget, cgroupMemoryMax, logger), Logger: logger,
+			State: state, Transports: transports, Bindings: bindings, Timeout: r.backendTimeout, TunnelBudget: tunnelBudget(r.tunnelBudget, cgroupMemoryMax, logger), Logger: logger,
 		}),
 		poller: routing.NewPoller(routing.PollerConfig{
 			State: state, Fetcher: cds, Keys: keys, Transports: transports, Interval: r.pollInterval, Logger: logger,

@@ -43,6 +43,22 @@ const (
 	// automated ingress service refuses new attested sessions (route policy
 	// F2).
 	ErrorCodeRoutesStale = "routes_stale"
+	// ErrorCodeRouteDigestChanged: a manifest other than the one the
+	// session's handshake bound is applied, so the session's request is
+	// refused (route policy E6). Attest again.
+	ErrorCodeRouteDigestChanged = "route_digest_changed"
+	// ErrorCodeRouteEntryChanged: an allowlist entry a workload route of the
+	// session's manifest names was removed or redefined since the allowlist
+	// the session's handshake bound (route policy E6). Attest again.
+	ErrorCodeRouteEntryChanged = "route_entry_changed"
+	// ErrorCodeSessionsBusy: the router holds as many attest-lb bindings as
+	// it may, for this client or in all, so it refuses the handshake rather
+	// than drop one (route policy E7). Retry shortly.
+	ErrorCodeSessionsBusy = "sessions_busy"
+	// ErrorCodeBindingExpired: the attest-lb binding of this connection lapsed
+	// before the request, so the router no longer vouches for what the
+	// connection attested (route policy E7). Attest again.
+	ErrorCodeBindingExpired = "binding_expired"
 )
 
 // ErrorResponse is the body a C8s service returns with a non-2xx status: one
