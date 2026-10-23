@@ -619,15 +619,15 @@ jobs:
           # boot log names the unit that did not come up. Only a dev image
           # writes one: the production kernel has no serial driver, so these
           # groups are empty for it and say nothing about how far it booted.
-          console() {
-            kubectl -n "$NS" logs "$POD" -c guest-console-log --tail=400 2>/dev/null \
-              | tr -cd '[:print:]\n' | sed -e 's/\x1b\[[0-9;?]*[A-Za-z]//g'
-          }
+          # The whole log (firmware output included) is kept for the artifact
+          # uploaded by the next step; the groups show its tail.
+          [ -n "$POD" ] && kubectl -n "$NS" logs "$POD" -c guest-console-log 2>/dev/null \
+            | tr -cd '[:print:]\n' | sed -e 's/\x1b\[[0-9;?]*[A-Za-z]//g' > /tmp/guest-console.log
           echo "::group::guest console (systemd units, cred-release, psa-ready, initrd)"
-          [ -n "$POD" ] && console | grep -iE 'initrd|opkey|HOSTDATA|cred-release|psa-ready|rke2|Failed|failed|error' | tail -40
+          [ -s /tmp/guest-console.log ] && grep -iE 'initrd|opkey|HOSTDATA|cred-release|psa-ready|rke2|Failed|failed|error' /tmp/guest-console.log | tail -40
           echo "::endgroup::"
           echo "::group::guest console, last 80 lines"
-          [ -n "$POD" ] && console | tail -80
+          [ -s /tmp/guest-console.log ] && tail -80 /tmp/guest-console.log
           echo "::endgroup::"
           # Guest-side state exists only once the attested kubeconfig was issued.
           [ -s /tmp/guest.kubeconfig ] || exit 0
@@ -647,6 +647,15 @@ jobs:
             echo "::endgroup::"
           done
           exit 0
+
+      - name: guest console log
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: snp-guest-console-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /tmp/guest-console.log
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: summary
         if: always()
