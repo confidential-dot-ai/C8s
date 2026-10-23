@@ -1,7 +1,6 @@
 package cdsha
 
 import (
-	"bufio"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -15,6 +14,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/raft"
+	"k8s.io/apimachinery/pkg/util/cache"
 )
 
 // One attested TLS port carries two protocols, told apart by the first byte
@@ -28,53 +28,15 @@ const (
 	maxControlBytes  = 8 << 20
 )
 
-// certHolder serves the replica's current peer certificate and replaces it
-// before it expires. Each certificate carries fresh evidence over a new key.
-type certHolder struct {
-	mu   sync.RWMutex
-	cert tls.Certificate
-	made time.Time
-	mint func() (tls.Certificate, error)
-}
-
-func newCertHolder(mint func() (tls.Certificate, error)) (*certHolder, error) {
-	h := &certHolder{mint: mint}
-	return h, h.renew()
-}
-
-func (h *certHolder) renew() error {
-	c, err := h.mint()
-	if err != nil {
-		return err
-	}
-	h.mu.Lock()
-	h.cert, h.made = c, time.Now()
-	h.mu.Unlock()
-	return nil
-}
-
-func (h *certHolder) current() *tls.Certificate {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	c := h.cert
-	return &c
-}
-
-func (h *certHolder) age() time.Duration {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	return time.Since(h.made)
-}
-
 // peerTLSConfig is used for both directions. It checks no chain: the
 // caller checks the peer's evidence with peerVerifier.peer.
-func peerTLSConfig(h *certHolder) *tls.Config {
+func peerTLSConfig(cert func() *tls.Certificate) *tls.Config {
 	return &tls.Config{
 		MinVersion:           tls.VersionTLS13,
 		ClientAuth:           tls.RequireAnyClientCert,
 		InsecureSkipVerify:   true, //nolint:gosec // attestation, not PKI, authenticates the peer (peerVerifier.peer)
-		GetCertificate:       func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return h.current(), nil },
-		GetClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) { return h.current(), nil },
+		GetCertificate:       func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return cert(), nil },
+		GetClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) { return cert(), nil },
 	}
 }
 
@@ -96,7 +58,7 @@ type mux struct {
 
 	connMu  sync.Mutex
 	conns   map[*peerConn]struct{}
-	refused logEvery // remote host + stage
+	refused *cache.LRUExpireCache // remote host + stage
 }
 
 // peerConn is a live attested connection and what its peer attested. TLS
@@ -149,7 +111,7 @@ func newMux(bind string, advertise, id string, cfg *tls.Config, v peerVerifier, 
 	}
 	adv := raftAddr{tcp: tcp, id: id}
 	m := &mux{ln: ln, tls: cfg, verifier: v, advert: adv, control: control, blocked: blocked,
-		raftConn: make(chan net.Conn), done: make(chan struct{}), conns: map[*peerConn]struct{}{}}
+		raftConn: make(chan net.Conn), done: make(chan struct{}), conns: map[*peerConn]struct{}{}, refused: newLogOnce()}
 	go m.serve()
 	return m, nil
 }
@@ -180,32 +142,25 @@ func (m *mux) recheck() {
 	}
 }
 
-// logEvery allows one log line a minute per key: a peer refused for good
-// (a new image not yet pinned, a foreign cluster) must show in the logs,
-// but not on every retry.
-type logEvery struct {
-	mu sync.Mutex
-	at map[string]time.Time
-}
-
-func (l *logEvery) ok(key string, now time.Time) bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if last, seen := l.at[key]; seen && now.Sub(last) < time.Minute {
+// logOnce reports whether key was not logged in the last minute: a peer
+// refused for good (a new image not yet pinned, a foreign cluster) must show
+// in the logs, but not on every retry. The cache is bounded, because a
+// handshake failure's key is the remote host, which anyone can vary.
+func logOnce(seen *cache.LRUExpireCache, key string) bool {
+	if _, ok := seen.Get(key); ok {
 		return false
 	}
-	if l.at == nil {
-		l.at = map[string]time.Time{}
-	}
-	l.at[key] = now
+	seen.Add(key, nil, time.Minute)
 	return true
 }
+
+func newLogOnce() *cache.LRUExpireCache { return cache.NewLRUExpireCache(1024) }
 
 // refuse logs why a peer connection was closed, which would otherwise show
 // only as resets on the other side.
 func (m *mux) refuse(remote net.Addr, stage string, err error) {
 	host, _, _ := net.SplitHostPort(remote.String())
-	if m.refused.ok(host+" "+stage, time.Now()) {
+	if logOnce(m.refused, host+" "+stage) {
 		slog.Info("cds-ha: peer connection refused", "component", "cds-ha", "remote", host, "stage", stage, "err", err)
 	}
 }
@@ -282,7 +237,7 @@ func (m *mux) route(raw net.Conn) {
 		}
 		_ = json.NewEncoder(c).Encode(m.control(claims, req))
 	default:
-		c.Close()
+		pc.Close()
 	}
 }
 
@@ -377,11 +332,7 @@ func callControl(addr string, cfg *tls.Config, v peerVerifier, timeout time.Dura
 	}
 	defer c.Close()
 	_ = c.SetDeadline(time.Now().Add(timeout))
-	w := bufio.NewWriter(c)
-	if err := json.NewEncoder(w).Encode(req); err != nil {
-		return controlResponse{}, err
-	}
-	if err := w.Flush(); err != nil {
+	if err := json.NewEncoder(c).Encode(req); err != nil { // one Write
 		return controlResponse{}, err
 	}
 	var resp controlResponse

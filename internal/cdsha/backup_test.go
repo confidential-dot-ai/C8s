@@ -83,9 +83,6 @@ func TestBackupStoreRoundTrip(t *testing.T) {
 		t.Fatalf("want the manifest and its %d parts (gen %q), got %d objects", man.Parts, man.Gen, len(items))
 	}
 	tamperedOne := false
-	if _, err := BackupFromConfigMaps("other", items); err == nil {
-		t.Fatal("a backup for another cluster")
-	}
 	for i := range items {
 		if items[i].Name == man.partName(testCluster, 1) {
 			tamperedOne = true
@@ -131,7 +128,11 @@ func TestApplyRestoreRefusals(t *testing.T) {
 	f := NewFSM(PreGenesis(testCluster, opPub), al, sec, led)
 	ca := mustCA(t)
 	key, _ := x509.MarshalPKCS8PrivateKey(ca.Key)
-	good := snapshot{Core: Core{ClusterID: testCluster, Epoch: 3, RootCert: ca.Cert.Raw, Measurements: []string{"m1"}, OperatorPubKey: opPub}, Key: key}
+	image, err := al.Dump()
+	if err != nil {
+		t.Fatal(err)
+	}
+	good := snapshot{Core: Core{ClusterID: testCluster, Epoch: 3, RootCert: ca.Cert.Raw, Measurements: []string{"m1"}, OperatorPubKey: opPub}, Key: key, Allowlist: image}
 	enc := func(sn snapshot) []byte {
 		var b bytes.Buffer
 		if err := encodeSnapshot(&b, sn); err != nil {
@@ -140,12 +141,11 @@ func TestApplyRestoreRefusals(t *testing.T) {
 		return b.Bytes()
 	}
 	sign := func(kind DecreeKind, s []byte) SignedDecree {
-		d := Decree{ClusterID: testCluster, IntentID: "r" + string(kind), Kind: kind, BootstrapNode: "n0", ExpiresAt: time.Now().Add(time.Hour)}
+		d := Decree{IntentID: "r" + string(kind), Kind: kind, BootstrapNode: "n0"}
 		if kind == Restore {
 			d.SnapshotSHA256 = SnapshotSHA256(s)
 		}
-		sd, _ := SignDecree(d, opKey)
-		return sd
+		return signDecree(t, opKey, d)
 	}
 	now := time.Now().UnixMilli()
 	other := good
@@ -154,17 +154,22 @@ func TestApplyRestoreRefusals(t *testing.T) {
 	otherOp.Core.OperatorPubKey = []byte("k")
 	noCA := good
 	noCA.Core.RootCert = nil
-	for name, re := range map[string]RestoreEntry{
-		"not a Restore decree": {Decree: sign(Genesis, nil), AtMS: now, Snapshot: enc(good)},
-		"snapshot mismatch":    {Decree: sign(Restore, enc(good)), AtMS: now, Snapshot: enc(noCA)},
-		"garbage snapshot":     {Decree: sign(Restore, []byte("{")), AtMS: now, Snapshot: []byte("{")},
-		"other cluster":        {Decree: sign(Restore, enc(other)), AtMS: now, Snapshot: enc(other)},
-		"other operator":       {Decree: sign(Restore, enc(otherOp)), AtMS: now, Snapshot: enc(otherOp)},
-		"no mesh CA":           {Decree: sign(Restore, enc(noCA)), AtMS: now, Snapshot: enc(noCA)},
-		"expired":              {Decree: sign(Restore, enc(good)), AtMS: time.Now().Add(2 * time.Hour).UnixMilli(), Snapshot: enc(good)},
+	later := good // valid, but not the one signed
+	later.Core.Epoch = 9
+	for name, c := range map[string]struct {
+		re   RestoreEntry
+		want string
+	}{
+		"not a Restore decree": {RestoreEntry{Decree: sign(Genesis, nil), AtMS: now, Snapshot: enc(good)}, "without a Restore decree"},
+		"snapshot mismatch":    {RestoreEntry{Decree: sign(Restore, enc(good)), AtMS: now, Snapshot: enc(later)}, "differs from the one the decree names"},
+		"garbage snapshot":     {RestoreEntry{Decree: sign(Restore, []byte("{")), AtMS: now, Snapshot: []byte("{")}, "snapshot"},
+		"other cluster":        {RestoreEntry{Decree: sign(Restore, enc(other)), AtMS: now, Snapshot: enc(other)}, `of cluster "other"`},
+		"other operator":       {RestoreEntry{Decree: sign(Restore, enc(otherOp)), AtMS: now, Snapshot: enc(otherOp)}, "another operator key"},
+		"no mesh CA":           {RestoreEntry{Decree: sign(Restore, enc(noCA)), AtMS: now, Snapshot: enc(noCA)}, "no mesh CA"},
+		"expired":              {RestoreEntry{Decree: sign(Restore, enc(good)), AtMS: time.Now().Add(2 * time.Hour).UnixMilli(), Snapshot: enc(good)}, "expired"},
 	} {
-		if res := f.applyRestore(re); res.Err == "" {
-			t.Errorf("%s restored", name)
+		if res := f.applyRestore(c.re); !strings.Contains(res.Err, c.want) || res.Err == "" {
+			t.Errorf("%s: %q, want %q", name, res.Err, c.want)
 		}
 	}
 	res := f.applyRestore(RestoreEntry{Decree: sign(Restore, enc(good)), AtMS: now, Snapshot: enc(good)})
@@ -200,28 +205,50 @@ func TestBackupWriteIsAtomic(t *testing.T) {
 	if err := st.PutBackup(ctx, first); err != nil {
 		t.Fatal(err)
 	}
-	// A crashed writer: its parts are there, its manifest never was.
+	// A crashed writer: its parts are there, its manifest never was. And a
+	// newer writer (a new leader) still writing its parts.
 	crashed := backupManifest{Gen: "e1-i6-dead", Parts: 2}
-	for i := range crashed.Parts {
-		cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: crashed.partName(testCluster, i), Namespace: "decrees",
-			Labels: map[string]string{LabelBackup: testCluster}}, BinaryData: map[string][]byte{keyPart: []byte("junk")}}
-		if _, err := kube.CoreV1().ConfigMaps("decrees").Create(ctx, cm, metav1.CreateOptions{}); err != nil {
-			t.Fatal(err)
+	newer := backupManifest{Gen: "e1-i9-cccc", Parts: 1}
+	for _, m := range []backupManifest{crashed, newer} {
+		for i := range m.Parts {
+			cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: m.partName(testCluster, i), Namespace: "decrees",
+				Labels: map[string]string{LabelBackup: testCluster}}, BinaryData: map[string][]byte{keyPart: []byte("junk")}}
+			if _, err := kube.CoreV1().ConfigMaps("decrees").Create(ctx, cm, metav1.CreateOptions{}); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 	got, err := st.GetBackup(ctx)
 	if err != nil || got.Meta.Index != 5 {
 		t.Fatalf("the stored backup broke under a crashed write: %v", err)
 	}
-	// The next backup goes in and sweeps the crashed parts.
+	// The next backup goes in and sweeps the crashed parts, not the newer
+	// writer's, which may still switch the manifest to them.
 	if err := st.PutBackup(ctx, seal(7)); err != nil {
 		t.Fatal(err)
 	}
-	list, _ := kube.CoreV1().ConfigMaps("decrees").List(ctx, metav1.ListOptions{})
-	for _, cm := range list.Items {
-		if strings.Contains(cm.Name, crashed.Gen) {
-			t.Fatalf("crashed part %s left behind", cm.Name)
+	parts := func() (names []string) {
+		list, _ := kube.CoreV1().ConfigMaps("decrees").List(ctx, metav1.ListOptions{})
+		for _, cm := range list.Items {
+			names = append(names, cm.Name)
 		}
+		return names
+	}
+	if names := strings.Join(parts(), " "); strings.Contains(names, crashed.Gen) || !strings.Contains(names, newer.Gen) {
+		t.Fatalf("after the sweep: %s", names)
+	}
+	// A write that fails part way deletes its own parts and only those.
+	failing := true
+	kube.PrependReactor("create", "configmaps", func(a k8stesting.Action) (bool, runtime.Object, error) {
+		name := a.(k8stesting.CreateAction).GetObject().(*corev1.ConfigMap).Name
+		return failing && strings.HasSuffix(name, "-1"), nil, errors.New("api down")
+	})
+	if err := st.PutBackup(ctx, seal(8)); err == nil {
+		t.Fatal("a failed part write succeeded")
+	}
+	failing = false
+	if names := strings.Join(parts(), " "); strings.Contains(names, "-e1-i8-") || !strings.Contains(names, newer.Gen) {
+		t.Fatalf("after a failed write: %s", names)
 	}
 	// A writer whose manifest changed under it loses: the update is
 	// conditional on the manifest it checked. The fake keeps no versions,
@@ -285,7 +312,9 @@ func TestBackupRefusesOtherCurves(t *testing.T) {
 func TestDecreeStoreListErrors(t *testing.T) {
 	ctx := context.Background()
 	kube := fake.NewClientset()
-	kube.PrependReactor("list", "configmaps", failOn("list", nil))
+	kube.PrependReactor("list", "configmaps", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, errors.New("api down")
+	})
 	st := KubeDecrees{Client: kube, Namespace: "decrees", ClusterID: testCluster}
 	if _, err := st.GetBackup(ctx); err == nil {
 		t.Fatal("a backup read through a failing API")

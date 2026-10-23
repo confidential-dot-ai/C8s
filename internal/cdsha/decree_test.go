@@ -194,3 +194,115 @@ func TestSetDecreeStatusEdges(t *testing.T) {
 		t.Fatal("a conflicting update reported as written")
 	}
 }
+
+func TestKubeDecrees(t *testing.T) {
+	ctx := context.Background()
+	kube := fake.NewClientset()
+	st := KubeDecrees{Client: kube, Namespace: "decrees", ClusterID: testCluster}
+	if err := st.SetDecreeStatus(ctx, "missing", DecreeStatus{RejectedReason: "x"}); err == nil {
+		t.Fatal("status written to a missing decree")
+	}
+	k, _ := operatorKey(t)
+	sd := signDecree(t, k, Decree{IntentID: "g", Kind: Genesis, BootstrapNode: "n0"})
+	good, err := DecreeConfigMap("decrees", sd)
+	if err != nil || good.Name != DecreeName(testCluster, "g") || good.Labels[LabelDecree] != testCluster {
+		t.Fatalf("decree object %+v: %v", good, err)
+	}
+	bad, _ := DecreeConfigMap("decrees", SignedDecree{Decree: Decree{ClusterID: testCluster, IntentID: "bad"}})
+	bad.Data[keyDecree] = "{not json"
+	if _, err := kube.CoreV1().ConfigMaps("decrees").Create(ctx, good, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := kube.CoreV1().ConfigMaps("decrees").Create(ctx, bad, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := st.PendingDecrees(ctx)
+	if err != nil || len(pending) != 2 {
+		t.Fatalf("pending %+v: %v", pending, err)
+	}
+	for _, p := range pending {
+		if (p.Name == bad.Name) != (p.Err != nil) {
+			t.Fatalf("%s: parse error %v", p.Name, p.Err)
+		}
+	}
+	epoch := uint64(1)
+	if err := st.SetDecreeStatus(ctx, good.Name, DecreeStatus{AppliedEpoch: &epoch}); err != nil {
+		t.Fatal(err)
+	}
+	if pending, _ := st.PendingDecrees(ctx); len(pending) != 1 || pending[0].Name != bad.Name {
+		t.Fatalf("a decree with a status is still pending: %+v", pending)
+	}
+}
+
+func testImage(b byte) DecreeImage {
+	h := func(c byte) string { return strings.Repeat(string("0123456789abcdef"[c%16]), 96) }
+	return DecreeImage{MRTD: h(b), RTMR1: h(b + 1), RTMR2: h(b + 2)}
+}
+
+// A decree that names images is kept in the agreed state, for clients
+// outside the group (GET /ha/pins); a later set without images drops it,
+// so those clients are never told a set that is no longer in force.
+func TestPinDecreeIsAgreedState(t *testing.T) {
+	a, b := testImage(1), testImage(5)
+	pinA, _ := a.Pin()
+	pinB, _ := b.Pin()
+	opKey, opPub := operatorKey(t)
+	f := newTestFSM(t, opPub)
+	ca := mustCA(t)
+	key, _ := x509.MarshalPKCS8PrivateKey(ca.Key)
+	apply := func(i uint64, de DecreeEntry) {
+		t.Helper()
+		de.AtMS = time.Now().UnixMilli()
+		if res := applyAt(f, i, Entry{Kind: KindDecree, Decree: &de}).(DecreeResult); res.Err != "" {
+			t.Fatalf("entry %d: %s", i, res.Err)
+		}
+	}
+	apply(1, DecreeEntry{Decree: signDecree(t, opKey, Decree{Kind: Genesis, BootstrapNode: "n0"}), Pins: []string{pinA}, RootCert: ca.Cert.Raw, Key: key})
+	if f.Core().PinsDecree != nil {
+		t.Fatal("a pin decree before any was applied")
+	}
+	ab := signDecree(t, opKey, Decree{Kind: UpdateMeasurements, BaseEpoch: 1, Measurements: normalizePins([]string{pinA, pinB}), Images: []DecreeImage{a, b}})
+	apply(2, DecreeEntry{Decree: ab})
+	if sd := f.Core().PinsDecree; sd == nil || sd.Decree.IntentID != ab.Decree.IntentID {
+		t.Fatalf("pin decree %+v", sd)
+	}
+	apply(3, DecreeEntry{Decree: signDecree(t, opKey, Decree{Kind: UpdateMeasurements, BaseEpoch: 2, Measurements: normalizePins([]string{pinA, pinB, "ee"})})})
+	if f.Core().PinsDecree != nil {
+		t.Fatal("a set without images kept the pin decree")
+	}
+}
+
+func TestVerifyPinDecree(t *testing.T) {
+	k, pub := operatorKey(t)
+	other, _ := operatorKey(t)
+	a, b := testImage(1), testImage(5)
+	pinA, _ := a.Pin()
+	pinB, _ := b.Pin()
+	sign := func(key *ecdsa.PrivateKey, d Decree) SignedDecree {
+		d.ExpiresAt = time.Now().Add(-time.Hour) // expired: clients ignore expiry
+		return signDecree(t, key, d)
+	}
+	good := sign(k, Decree{ClusterID: testCluster, BaseEpoch: 4, Kind: UpdateMeasurements, Measurements: []string{pinA, pinB}, Images: []DecreeImage{a, b}})
+	if err := VerifyPinDecree(good, testCluster, pub); err != nil {
+		t.Fatal(err)
+	}
+	for name, c := range map[string]struct {
+		sd   SignedDecree
+		want string
+	}{
+		"other cluster":   {good, "cluster"},
+		"other key":       {sign(other, good.Decree), "signature"},
+		"no images":       {sign(k, Decree{ClusterID: testCluster, BaseEpoch: 4, Kind: UpdateMeasurements, Measurements: []string{pinA}}), "no images"},
+		"genesis":         {sign(k, Decree{ClusterID: testCluster, Kind: Genesis, BootstrapNode: "n0", Images: []DecreeImage{a}}), "not exactly the pins"},
+		"pins not images": {sign(k, Decree{ClusterID: testCluster, BaseEpoch: 4, Kind: UpdateMeasurements, Measurements: []string{pinA}, Images: []DecreeImage{b}}), "not exactly the pins"},
+		"bad image":       {sign(k, Decree{ClusterID: testCluster, BaseEpoch: 4, Kind: UpdateMeasurements, Measurements: []string{"x"}, Images: []DecreeImage{{MRTD: "zz"}}}), "lowercase hex"},
+	} {
+		cluster := testCluster
+		if name == "other cluster" {
+			cluster = "elsewhere"
+		}
+		if err := VerifyPinDecree(c.sd, cluster, pub); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: %v, want %q", name, err, c.want)
+		}
+	}
+}

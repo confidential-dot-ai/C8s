@@ -3,9 +3,7 @@ package cdsha
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"crypto/x509"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -41,16 +39,10 @@ func (n *Node) recover(ctx context.Context, p PendingDecree) {
 	}
 	defer al.Close()
 	scratch := NewFSM(PreGenesis(n.cfg.ClusterID, n.cfg.OperatorPubKey), &al, secrets.NewMemoryStore(1<<20, 1<<19, 1<<20), sandboxledger.New(time.Hour, 1<<20))
-	trans, err := n.transport()
-	if err != nil {
-		n.log.Error("recover: transport", "err", err)
-		return
-	}
-	if err := raft.RecoverCluster(n.rcfg, scratch, n.logs, n.stable, n.snaps, trans, n.solo()); err != nil {
+	// snapStore ignores the transport RecoverCluster passes it.
+	if err := raft.RecoverCluster(n.rcfg, scratch, n.logs, n.stable, n.snaps, nil, n.solo()); err != nil {
 		n.log.Error("recover: RecoverCluster", "err", err)
 	}
-	_ = trans.Close()
-	_ = n.mux.Load().Close()
 	if err := n.startRaft(); err != nil {
 		n.log.Error("recover: restart raft", "err", err)
 		return
@@ -181,7 +173,7 @@ func (n *Node) maybePruneHistory() {
 		return
 	}
 	if _, err := n.applyEntry(Entry{Kind: KindAllowlist,
-		Allowlist: &allowlist.Command{Op: allowlist.OpPruneHistory, Keep: keep, AtMS: time.Now().UnixMilli()}}); err != nil {
+		Allowlist: &allowlist.Command{Op: allowlist.OpPruneHistory, Keep: keep}}); err != nil {
 		n.log.Warn("prune allowlist history", "err", err)
 		return
 	}
@@ -210,9 +202,8 @@ func (n *Node) maybeRenewCA() {
 		n.log.Warn("renew mesh CA certificate", "err", err)
 		return
 	}
-	keyID := sha256.Sum256(renewed.RawSubjectPublicKeyInfo)
 	n.log.Info("renewed mesh CA certificate", "audit", true,
-		"key_id", hex.EncodeToString(keyID[:]), "not_after", renewed.NotAfter.Format(time.RFC3339))
+		"key_id", certutil.CertFingerprint(renewed.RawSubjectPublicKeyInfo), "not_after", renewed.NotAfter.Format(time.RFC3339))
 }
 
 // AwaitingRestore reports a replica that holds no cluster and has not seen
@@ -320,12 +311,8 @@ func (n *Node) applyDecrees(ctx context.Context) {
 // upgrade adds the new image's pin first and drops the old one once a
 // majority of voters run the new image.
 func (n *Node) checkPinsKeepMajority(pins []string) error {
-	f := n.r().GetConfiguration()
-	if err := f.Error(); err != nil {
-		return err
-	}
-	voters, pinned := 0, 0
-	for _, s := range f.Configuration().Servers {
+	voters, pinned := 0, 0 // no configuration: 0 of 0, refused
+	for _, s := range n.servers() {
 		if s.Suffrage != raft.Voter {
 			continue
 		}
