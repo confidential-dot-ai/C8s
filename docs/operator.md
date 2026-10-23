@@ -674,10 +674,11 @@ follows these rules:
   behind it: `cds-attest` presents the router's mesh certificate and requires
   a peer certificate chaining to the mesh CA whose matched workload name
   equals `workload`, stamped under the allowlist digest on the router's own
-  leaf. A failed handshake gets 502; no backend is reached in plaintext.
+  leaf. A failed handshake gets 502, `backend_digest_mismatch` when the
+  stamped digests differ; no backend is reached in plaintext.
   While the router's own leaf carries no stamp, as under get-cert's
   `--no-workload-claims`, every workload route gets 503
-  `router has no policy identity` without a dial.
+  `router_digest_unavailable` without a dial.
 - The router serves cluster workloads only: it refuses a polled manifest that
   names an address backend (`serverName`, `ca`), keeps the applied one, and
   logs `the router serves cluster workloads only` with the host and path.

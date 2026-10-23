@@ -591,20 +591,29 @@ func TestListenerUpgradeIsIdle(t *testing.T) {
 func TestB8WorkloadBackendDigest(t *testing.T) {
 	f := newFixture(t)
 	tests := []struct {
-		name string
-		leaf tls.Certificate
-		want int
+		name     string
+		leaf     tls.Certificate
+		want     int
+		wantBody string
 	}{
-		{"B8 equal digest and name", issueLeaf(t, f.mesh, "web"), http.StatusOK},
-		{"B8 equal name, other digest", issueStampedLeaf(t, f.mesh, "web", digestOf(0x43)), http.StatusBadGateway},
-		{"B8 equal name, digest differing in the last byte", issueStampedLeaf(t, f.mesh, "web", append(testDigest[:31:31], 0x43)), http.StatusBadGateway},
+		{"B8 equal digest and name", issueLeaf(t, f.mesh, "web"), http.StatusOK, ""},
+		{"B8 equal name, other digest", issueStampedLeaf(t, f.mesh, "web", digestOf(0x43)), http.StatusBadGateway, backendDigestMismatch},
+		{"B8 equal name, digest differing in the last byte", issueStampedLeaf(t, f.mesh, "web", append(testDigest[:31:31], 0x43)), http.StatusBadGateway, backendDigestMismatch},
 	}
 	for i, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			b := startBackend(t, "web", tc.leaf)
 			f.apply(t, simpleManifest(uint64(i+1), b.addr()))
-			if got := f.get("/").Code; got != tc.want {
-				t.Fatalf("GET / = %d, want %d", got, tc.want)
+			w := f.get("/")
+			if w.Code != tc.want || !strings.Contains(w.Body.String(), tc.wantBody) {
+				t.Fatalf("GET / = %d %q, want %d %q", w.Code, w.Body.String(), tc.want, tc.wantBody)
+			}
+			if tc.want != http.StatusOK {
+				sealedHost := []types.HeaderField{{Name: "Host", Value: testHost}}
+				resp, err := f.proxy.Forward(outerRequest(testHost), types.TunnelRequest{Path: "/", Headers: sealedHost})
+				if err != nil || resp.Status != tc.want || !strings.Contains(string(resp.Body), tc.wantBody) {
+					t.Fatalf("Forward(/) = %d %q, %v, want %d %q, nil", resp.Status, resp.Body, err, tc.want, tc.wantBody)
+				}
 			}
 			if tc.want != http.StatusOK && b.hits.Load() != 0 {
 				t.Fatalf("backend saw %d requests after a failed verification, want 0", b.hits.Load())
@@ -661,8 +670,8 @@ func TestB9UnnamedRouter(t *testing.T) {
 			}}})
 
 			w := f.get("/")
-			if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), noPolicyIdentity) {
-				t.Fatalf("GET / = %d %q, want %d %q", w.Code, w.Body.String(), http.StatusServiceUnavailable, noPolicyIdentity)
+			if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), routerDigestUnavailable) {
+				t.Fatalf("GET / = %d %q, want %d %q", w.Code, w.Body.String(), http.StatusServiceUnavailable, routerDigestUnavailable)
 			}
 			sealedHost := []types.HeaderField{{Name: "Host", Value: testHost}}
 			resp, err := f.proxy.Forward(outerRequest(testHost), types.TunnelRequest{Path: "/", Headers: sealedHost})

@@ -44,9 +44,13 @@ func TunnelReservation(recordBytes int64) int64 {
 	return recordCopies*recordBytes + responseCopies*MaxTunnelResponseBytes
 }
 
-// noPolicyIdentity is the body of the 503 a workload route gets while the
-// router's leaf carries no stamp (B9).
-const noPolicyIdentity = "router has no policy identity"
+// Response bodies of the route policy's error codes: the 503 a workload route
+// gets while the router's leaf carries no stamp (B9), and the 502 for a
+// backend stamped under another allowlist (B8).
+const (
+	routerDigestUnavailable = "router_digest_unavailable"
+	backendDigestMismatch   = "backend_digest_mismatch"
+)
 
 // ExporterHeader carries the tunnel's channel-binding exporter to backends.
 // Only the tunnel may set it: the routing listener drops a client's value.
@@ -158,11 +162,15 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, errNoPolicyIdentity) {
 			// The backend was never dialled; Debug keeps an unnamed router's
 			// steady 503s from flooding the log with backend blame.
-			p.log.Debug(noPolicyIdentity, "host", r.Host, "path", target.RawPath, "error", err)
-			http.Error(w, noPolicyIdentity, http.StatusServiceUnavailable) // B9
+			p.log.Debug(routerDigestUnavailable, "host", r.Host, "path", target.RawPath, "error", err)
+			http.Error(w, routerDigestUnavailable, http.StatusServiceUnavailable) // B9
 			return
 		}
 		p.log.Warn("backend request failed", "host", r.Host, "path", target.RawPath, "backend", route.Backend.Address, "error", err)
+		if errors.Is(err, errBackendDigestMismatch) {
+			http.Error(w, backendDigestMismatch, http.StatusBadGateway) // B8
+			return
+		}
 		http.Error(w, "backend unavailable", http.StatusBadGateway) // B5
 	}).ServeHTTP(w, r)
 }
@@ -275,7 +283,10 @@ func (p *Proxy) Forward(outer *http.Request, req types.TunnelRequest) (types.Tun
 	rec := &capture{header: http.Header{}}
 	rp.ServeHTTP(rec, in)
 	if errors.Is(backendErr, errNoPolicyIdentity) {
-		return textResponse(http.StatusServiceUnavailable, noPolicyIdentity), nil
+		return textResponse(http.StatusServiceUnavailable, routerDigestUnavailable), nil
+	}
+	if errors.Is(backendErr, errBackendDigestMismatch) {
+		return textResponse(http.StatusBadGateway, backendDigestMismatch), nil
 	}
 	if backendErr != nil {
 		return types.TunnelResponse{}, fmt.Errorf("backend %s: %w", route.Backend.Address, backendErr)

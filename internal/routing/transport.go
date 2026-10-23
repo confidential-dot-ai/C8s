@@ -69,6 +69,10 @@ type pooled struct {
 // carries no matched-workload stamp (B9).
 var errNoPolicyIdentity = errors.New("routing: router leaf carries no matched-workload stamp")
 
+// errBackendDigestMismatch fails a workload handshake whose leaf was stamped
+// under another allowlist than the router's (B8).
+var errBackendDigestMismatch = errors.New("routing: backend allowlist digest differs from the router's")
+
 // stampCache holds the router stamp of the last leaf it parsed, so an
 // unchanged leaf is parsed once.
 type stampCache struct {
@@ -103,7 +107,7 @@ func (c *stampCache) of(cert *tls.Certificate) (*armtls.MatchedWorkload, error) 
 }
 
 // routerDigestOf is the allowlist digest of the router stamp on cred's leaf.
-// Any leaf that does not carry a well-formed stamp has no policy identity.
+// Any leaf that does not carry a well-formed stamp has no router digest.
 func (t *Transports) routerDigestOf(cred MeshCredential) ([]byte, error) {
 	stamp, err := t.stamp.of(cred.Certificate)
 	if err != nil {
@@ -279,7 +283,7 @@ func acceptWorkload(workload string, routerDigest []byte) func(armtls.Peer) erro
 			return fmt.Errorf("routing: backend leaf names workload %q under allowlist digest %x, and this route names %q under router allowlist digest %x", peer.WorkloadName, peer.AllowlistDigest, workload, routerDigest)
 		}
 		if !bytes.Equal(peer.AllowlistDigest, routerDigest) {
-			return fmt.Errorf("routing: backend leaf for workload %q is stamped under allowlist digest %x, and the router's is %x", workload, peer.AllowlistDigest, routerDigest)
+			return fmt.Errorf("%w: workload %q is stamped under %x, and the router's is %x", errBackendDigestMismatch, workload, peer.AllowlistDigest, routerDigest)
 		}
 		return nil
 	}
