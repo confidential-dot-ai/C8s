@@ -177,11 +177,11 @@ var followedRouterPins = workloadclaims.RouterCDSPinsPath
 // as it stands after the operator's decrees. Elsewhere the flags decide.
 func routeSourceClient(r routingConfig, attestationAPIURL string, logger *slog.Logger) (*http.Client, bool, error) {
 	if r.imagePolicyFile != "" {
-		if _, err := os.Stat(followedRouterPins); err == nil {
-			node, err := cmdsutil.NewNodePins(followedRouterPins)
-			if err != nil {
-				return nil, false, fmt.Errorf("the node's followed CDS pins: %w", err)
-			}
+		node, err := cmdsutil.FollowNodePins(followedRouterPins)
+		if err != nil {
+			return nil, false, fmt.Errorf("the node's followed CDS pins: %w", err)
+		}
+		if node != nil {
 			hc, err := armtls.NewRefreshingHTTPClient(node, attestationAPIURL)
 			if err != nil {
 				return nil, false, fmt.Errorf("CDS armTLS client: %w", err)

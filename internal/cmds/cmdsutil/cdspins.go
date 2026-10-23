@@ -98,9 +98,6 @@ func NewNodePins(path string) (*NodePins, error) {
 	if _, err := n.Refresh(context.Background()); err != nil {
 		return nil, err
 	}
-	if n.gen == 0 {
-		return nil, fmt.Errorf("%s: no CDS policy", path)
-	}
 	return n, nil
 }
 
@@ -138,5 +135,12 @@ func (n *NodePins) Refresh(context.Context) (bool, error) {
 	return n.gen > 1, nil
 }
 
-// NodeMountsPins reports whether the node mounts its CDS policy at path.
-func NodeMountsPins(path string) (bool, error) { return nodeProvides(path) }
+// FollowNodePins is NewNodePins where the node mounts its CDS policy at
+// path, and nil, nil where it mounts none. A stat error other than absent
+// fails.
+func FollowNodePins(path string) (*NodePins, error) {
+	if mounted, err := nodeProvides(path); !mounted || err != nil {
+		return nil, err
+	}
+	return NewNodePins(path)
+}
