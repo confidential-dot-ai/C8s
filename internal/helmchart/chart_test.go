@@ -2255,6 +2255,7 @@ func TestChartRendersRouterAttestSidecar(t *testing.T) {
 		loc.assertDirective(t, "proxy_max_temp_file_size", "0")
 		loc.assertDirective(t, "proxy_read_timeout", "3630s")
 		loc.assertDirective(t, "proxy_set_header", "X-Real-IP", "$remote_addr")
+		loc.assertDirective(t, "proxy_set_header", "X-C8s-Connection", "$pid.$connection")
 	}
 	protocol.assertNoDirective(t, "limit_conn")
 	protocol.assertDirective(t, "client_max_body_size", "16k")
@@ -3620,6 +3621,7 @@ func assertRouterRoutingLocation(t *testing.T, route *nginxBlock, port, readTime
 	route.assertDirective(t, "proxy_set_header", "X-Real-IP", "$remote_addr")
 	route.assertDirective(t, "proxy_set_header", "X-Forwarded-For", "$proxy_add_x_forwarded_for")
 	route.assertDirective(t, "proxy_set_header", "X-Forwarded-Proto", "$scheme")
+	route.assertDirective(t, "proxy_set_header", "X-C8s-Connection", "$pid.$connection")
 }
 
 func TestChartRouterRoutingLocation(t *testing.T) {
@@ -4637,6 +4639,9 @@ func Example_routerConfig() {
 	//             proxy_set_header X-Real-IP $remote_addr;
 	//             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 	//             proxy_set_header X-Forwarded-Proto $scheme;
+	//             # Pairs the request with an attest-lb handshake on the same
+	//             # connection; replaces any client value (route policy E8).
+	//             proxy_set_header X-C8s-Connection $pid.$connection;
 	//             proxy_set_header Upgrade $http_upgrade;
 	//             proxy_set_header Connection $connection_upgrade;
 	//             client_max_body_size 1048576;

@@ -360,6 +360,9 @@ data:
                 proxy_set_header X-Real-IP $remote_addr;
                 proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
                 proxy_set_header X-Forwarded-Proto $scheme;
+                # Pairs the request with an attest-lb handshake on the same
+                # connection; replaces any client value (route policy E8).
+                proxy_set_header X-C8s-Connection $pid.$connection;
                 proxy_set_header Upgrade $http_upgrade;
                 proxy_set_header Connection $connection_upgrade;
                 {{- if $launchDriven }}
