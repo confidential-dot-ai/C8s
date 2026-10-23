@@ -11,6 +11,7 @@ func TestHAConfigFileRefusesFlagTrustRoots(t *testing.T) {
 		{configFile: "/x", pins: []string{"evil"}},
 		{configFile: "/x", operatorKey: "/evil.pem"},
 		{configFile: "/x", measurement: "evil"},
+		{configFile: "/x", recoveryKeyPEM: []byte("evil")},
 	} {
 		if err := loadHAConfigFile(&h); err == nil || !strings.Contains(err.Error(), "excludes") {
 			t.Errorf("%+v: %v", h, err)
