@@ -288,30 +288,45 @@
      the webhook's defaults, which pods can no longer move. Takes root, digest,
      image and imageEnv. */ -}}
 {{- define "c8s.injectedShapes" -}}
-{{- $certs := dict "destination" "/etc/c8s/certs" "kind" "emptyDir" -}}
-{{- $discovery := dict "destination" "/run/c8s/discovery" "kind" "emptyDir" -}}
-{{- $secrets := dict "destination" "/run/c8s/secrets" "kind" "emptyDir" -}}
+{{- $tables := include "c8s.injectedMountTables" . | fromJson -}}
 {{- $podEnv := list -}}
 {{- range $name := list "C8S_WORKLOAD_ID" "C8S_POD_NAME" "C8S_POD_UID" "HOST_IP" -}}
 {{- $podEnv = append $podEnv (dict "name" $name "valueFrom" (dict "fieldRef" dict)) -}}
 {{- end -}}
-{{- $sidecars := list
-      (dict "mode" "get-cert" "fixed" (list $certs) "optional" (list $discovery) "env" $podEnv)
-      (dict "mode" "probe-file" "fixed" (list $certs) "optional" (list $discovery) "env" list)
-      (dict "mode" "get-secret" "fixed" (list $certs $secrets) "optional" (list $discovery) "env" $podEnv)
-      (dict "mode" "get-volume" "fixed" (list $certs) "optional" (list $discovery) "env" $podEnv) -}}
+{{- $envs := dict "get-cert" $podEnv "probe-file" list "get-secret" $podEnv "get-volume" $podEnv -}}
 {{- $out := list -}}
-{{- range $s := $sidecars -}}
-{{- $tables := list (get $s "fixed") -}}
-{{- range $m := get $s "optional" -}}
-{{- $grown := list -}}
-{{- range $t := $tables -}}{{- $grown = append (append $grown $t) (append $t $m) -}}{{- end -}}
-{{- $tables = $grown -}}
+{{- range $mode := include "c8s.injectedModes" . | fromJsonArray -}}
+{{- $env := include "c8s.componentEnv" (dict "imageEnv" $.imageEnv "container" (dict "env" (get $envs $mode)) "where" (printf "injected %s" $mode)) | fromJson -}}
+{{- range $t := get $tables $mode -}}
+{{- $out = append $out (dict "digest" $.digest "image" $.image "command" (dict "policy" "exact" "argv" (list "/c8s" $mode)) "args" (dict "policy" "any") "mounts" (dict "policy" "exact" "rules" $t) "env" $env) -}}
 {{- end -}}
-{{- $env := include "c8s.componentEnv" (dict "imageEnv" $.imageEnv "container" (dict "env" (get $s "env")) "where" (printf "injected %s" (get $s "mode"))) | fromJson -}}
-{{- range $t := $tables -}}
-{{- $out = append $out (dict "digest" $.digest "image" $.image "command" (dict "policy" "exact" "argv" (list "/c8s" (get $s "mode"))) "args" (dict "policy" "any") "mounts" (dict "policy" "exact" "rules" $t) "env" $env) -}}
 {{- end -}}
+{{ $out | toJson }}
+{{- end -}}
+
+{{/* The invocations the webhook injects from the C8s image, in the order
+     their shapes are rendered. */ -}}
+{{- define "c8s.injectedModes" -}}
+{{ list "get-cert" "probe-file" "get-secret" "get-volume" | toJson }}
+{{- end -}}
+
+{{/* The mount tables of the credential clients the webhook injects, as JSON
+     mode -> list of tables: the fixed destinations each one mounts
+     (internal/webhook getCertVolumeMounts, secretContainer), without and
+     with the optional discovery mount. Every declaration that grants the
+     credentials role to one of these invocations pins one of its tables,
+     whether the digest reaches the base as a component shape
+     (c8s.injectedShapes) or through the open-args floor
+     (c8s.roleFloorWorkloads): a pod's own container running the invocation
+     with a mount of its choosing then holds no role, so it stays in the
+     workload match instead of being dropped as a platform helper. */ -}}
+{{- define "c8s.injectedMountTables" -}}
+{{- $certs := dict "destination" "/etc/c8s/certs" "kind" "emptyDir" -}}
+{{- $discovery := dict "destination" "/run/c8s/discovery" "kind" "emptyDir" -}}
+{{- $secrets := dict "destination" "/run/c8s/secrets" "kind" "emptyDir" -}}
+{{- $out := dict -}}
+{{- range $mode, $fixed := dict "get-cert" (list $certs) "probe-file" (list $certs) "get-secret" (list $certs $secrets) "get-volume" (list $certs) -}}
+{{- $_ := set $out $mode (list $fixed (append $fixed $discovery)) -}}
 {{- end -}}
 {{ $out | toJson }}
 {{- end -}}
@@ -631,18 +646,34 @@ null
 {{- if eq $repository (include "c8s.imageRepository" $root.Values.armtlsMesh.image.repository) -}}
 {{- $argvs = list (dict "role" "mesh" "container" "c8s-mesh" "argv" (list "/app/c8s" "armtls-mesh")) -}}
 {{- else if eq $repository (include "c8s.imageRepository" $root.Values.image.repository) -}}
-{{- range $mode := list "get-cert" "probe-file" "get-secret" "get-volume" "allowlist-proxy" -}}
-{{- $argvs = append $argvs (dict "role" "credentials" "container" (get (dict "get-cert" "c8s-cert" "probe-file" "c8s-cert-wait" "allowlist-proxy" "allowlist-proxy") $mode | default "") "argv" (list "/c8s" $mode)) -}}
+{{- /* The credentials role is dropped from the workload match, so it is
+       granted only with the mount table the webhook gives the invocation;
+       the router pod's allowlist proxy runs under its pinned entry alone. */ -}}
+{{- $tables := include "c8s.injectedMountTables" $root | fromJson -}}
+{{- range $mode := include "c8s.injectedModes" $root | fromJsonArray -}}
+{{- $argvs = append $argvs (dict "role" "credentials" "container" (get (dict "get-cert" "c8s-cert" "probe-file" "c8s-cert-wait") $mode | default "") "argv" (list "/c8s" $mode) "mounts" (get $tables $mode)) -}}
 {{- end -}}
+{{- $argvs = append $argvs (dict "role" "credentials" "container" "allowlist-proxy" "argv" (list "/c8s" "allowlist-proxy") "mounts" list) -}}
 {{- $argvs = append $argvs (dict "role" "upstream" "container" "cds-attest" "argv" (list "/c8s" "cds-attest")) -}}
 {{- $argvs = append $argvs (dict "role" "acme" "container" "acme" "argv" (list "/c8s" "acme")) -}}
 {{- else if eq $repository (include "c8s.imageRepository" $root.Values.router.nginx.image.repository) -}}
 {{- $argvs = list (dict "role" "router" "container" "nginx" "argv" (include "c8s.routerNginxArgv" $root | fromJsonArray)) -}}
 {{- end -}}
 {{- range $a := $argvs -}}
-{{- $containers := list (dict "digest" $digest "image" $image "role" (get $a "role") "command" (dict "policy" "exact" "argv" (get $a "argv")) "args" (dict "policy" "any") "mounts" (dict "policy" "any")) -}}
 {{- $name := printf "c8s-role-%s-%s" (last (get $a "argv") | base) (trimPrefix "sha256:" $digest | lower | trunc 12) -}}
+{{- /* "mounts" lists the tables the role is granted with, one container
+       each; absent, the role leaves mounts to the pod. */ -}}
+{{- $containers := list -}}
+{{- if hasKey $a "mounts" -}}
+{{- range $t := get $a "mounts" -}}
+{{- $containers = append $containers (dict "digest" $digest "image" $image "role" (get $a "role") "command" (dict "policy" "exact" "argv" (get $a "argv")) "args" (dict "policy" "any") "mounts" (dict "policy" "exact" "rules" $t)) -}}
+{{- end -}}
+{{- else -}}
+{{- $containers = list (dict "digest" $digest "image" $image "role" (get $a "role") "command" (dict "policy" "exact" "argv" (get $a "argv")) "args" (dict "policy" "any") "mounts" (dict "policy" "any")) -}}
+{{- end -}}
+{{- if $containers -}}
 {{- $_ := set $entries $name (dict "label" $image "initContainers" list "containers" $containers) -}}
+{{- end -}}
 {{- /* A pod of the router's namespace runs a role container only under a
        declaration that pins its mounts, so the rendered pod's own mount set
        is named beside the open floor entry. */ -}}

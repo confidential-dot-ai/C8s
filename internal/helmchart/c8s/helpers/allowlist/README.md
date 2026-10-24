@@ -135,14 +135,28 @@ allowlist container:
   so no per-Service variables join the set.
 
 `c8s.injectedShapes` adds the sidecars the webhook injects to the C8s image's
-entry: `get-cert`, `probe-file`, `get-secret` and `get-volume`, each pinned to
-its invocation with `args: any`, its env matched as above over the variables
-the webhook's `getCertEnv` sets (`present`, since they differ per pod; none
-for `probe-file`), and one container per combination of the optional
-discovery mount. No shape names the inventory socket mount:
-the NRI plugin adds it and observes it as a platform mount, which exact rules
-never match. The webhook turns service links off in every pod it injects into.
-The destinations match the webhook's fixed ones (`internal/webhook`).
+entry: `get-cert`, `probe-file`, `get-secret` and `get-volume`
+(`c8s.injectedModes`), each pinned to its invocation with `args: any`, its env
+matched as above over the variables the webhook's `getCertEnv` sets
+(`present`, since they differ per pod; none for `probe-file`), and one
+container per mount table of `c8s.injectedMountTables`: the destinations the
+webhook mounts for that mode, without and with the optional discovery mount.
+No table names the inventory socket mount: the NRI plugin adds it and observes
+it as a platform mount, which exact rules never match. The webhook turns
+service links off in every pod it injects into. The destinations match the
+webhook's fixed ones (`internal/webhook`).
+
+`c8s.roleFloorWorkloads` renders the role entries for a digest the base admits
+only through an open-args floor entry (the cluster lane's image-store scan),
+which pins nothing but the image's executable: one `c8s-role-<mode>-<digest>`
+entry per role invocation, with `args: any`. The credentials role is dropped
+from the workload match, so its invocations are granted it only under the
+`c8s.injectedMountTables` of their mode, one container per table, and the
+router pod's `allowlist-proxy` only under its `-pinned` entry; the
+`upstream`, `acme`, `mesh` and `router` invocations keep `mounts: any`. Beside
+each entry, a `-pinned` one names the rendered router pod's own mount set for
+that container (`c8s.routerContainerMounts`), since a pod of the router's
+namespace runs a role container only under a declaration that pins its mounts.
 
 `c8s.meshShapes` adds the pod mesh endpoint to the endpoint image's entry,
 pinned to its entrypoint, arguments and credential mount, with one container

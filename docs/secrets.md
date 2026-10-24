@@ -374,7 +374,11 @@ What this rests on: a role is a local fact of the node's boot configuration.
 `role:` is YAML-only, so the document CDS serves cannot carry one, and no pod
 spec, annotation or container name can claim one. A container the base names no
 role for is a workload container, whatever image it runs and whatever its
-command line looks like.
+command line looks like. The base grants the credentials role to an injected
+invocation only with the mount table the webhook gives it, so a pod's own
+container running `/c8s probe-file` or another client mode with a volume of its
+choosing holds no role, stays in the match, and blocks a release the entry does
+not admit it for.
 
 ## The grant
 

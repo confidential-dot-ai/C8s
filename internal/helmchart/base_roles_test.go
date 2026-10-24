@@ -86,6 +86,39 @@ func TestChartBaseGrantsInjectedRoles(t *testing.T) {
 				}
 			}
 
+			// The credentials role is dropped from the workload match, so it
+			// is granted only with the mount table the webhook gives the
+			// invocation: a pod's own container running one with a mount of
+			// its choosing holds no role and stays in the match.
+			for name, w := range base.Workloads {
+				for i, c := range w.Containers {
+					if c.Role == "credentials" && c.Mounts.Policy != pkgallowlist.PolicyExact {
+						t.Errorf("container %d of %s grants the credentials role with mounts %q, want exact", i, name, c.Mounts.Policy)
+					}
+				}
+			}
+			if name != "bootstrap floor digests" {
+				// A component shape pins the environment too
+				// (component_mounts_test.go); the floor's role entries pin
+				// the mounts alone, so they are checked here.
+				return
+			}
+			certs := pkgallowlist.ObservedMount{Destination: "/etc/c8s/certs", Volume: "c8s-certs", Class: pkgallowlist.MountEmptyDir, Storage: pkgallowlist.MountMemory}
+			scratch := pkgallowlist.ObservedMount{Destination: "/scratch", Volume: "scratch", Class: pkgallowlist.MountEmptyDir, Storage: pkgallowlist.MountUnknown}
+			probe := pkgallowlist.RunningContainer{
+				Digest: roleOperatorDigest,
+				Argv:   []string{"/c8s", "probe-file", "--wait", "/run/c8s/never-written"},
+				Mounts: []pkgallowlist.ObservedMount{certs},
+			}
+			index := base.BuildIndex()
+			if got := index.RoleOf(probe); got != "credentials" {
+				t.Errorf("probe-file with the webhook's mounts holds the role %q, want credentials", got)
+			}
+			probe.Mounts = append(probe.Mounts, scratch)
+			if got := index.RoleOf(probe); got != "" {
+				t.Errorf("probe-file with a disk volume of the pod's own holds the role %q, want none", got)
+			}
+
 			// A role never travels on the wire (pkg/allowlist drops it from
 			// JSON), so no served entry carries one.
 			for name, w := range renderedSeed(t, out).Workloads {

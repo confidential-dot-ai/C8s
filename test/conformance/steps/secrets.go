@@ -728,15 +728,16 @@ func secretClientConfigured(ctx context.Context, name, logical string) error {
 // argvHelperMode gives the container the argv of a helper the webhook
 // injects, as far as the match looks: the helper binary, then a mode. The
 // probe-file mode waits for a file nothing writes, so the container runs as
-// long as the pod.
+// long as the pod. The container is otherwise the pod's own: it runs as the
+// image's user, since the credentials role is granted only with the mount
+// table the webhook gives the invocation, and a container running as that
+// role's identity without the role is refused.
 func argvHelperMode(ctx context.Context) error {
 	w := getWorld(ctx)
 	if w.lastPod == nil {
 		return errors.New("no container has been described yet")
 	}
-	c := w.lastPod.last()
-	c.command = []string{"/c8s", "probe-file", "--wait", "/run/c8s/never-written"}
-	c.helper = true
+	w.lastPod.last().command = []string{"/c8s", "probe-file", "--wait", "/run/c8s/never-written"}
 	return nil
 }
 
