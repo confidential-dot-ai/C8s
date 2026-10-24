@@ -37,7 +37,7 @@ func testPodDocument(t *testing.T, platform string) (Document, *ecdsa.PrivateKey
 }
 
 func TestStagePodRole(t *testing.T) {
-	for _, platform := range []string{"snp", "tdx"} {
+	for _, platform := range []string{"tdx"} {
 		t.Run(platform, func(t *testing.T) {
 			doc, key, pub := testPodDocument(t, platform)
 			testLoader(t, doc, pub)
@@ -87,7 +87,7 @@ func TestStagePodRole(t *testing.T) {
 }
 
 func TestVerifyRejectsPodSignedByAnotherKey(t *testing.T) {
-	doc, _, _ := testPodDocument(t, "snp")
+	doc, _, _ := testPodDocument(t, "tdx")
 	other, otherPub := testKey(t)
 	testLoader(t, doc, otherPub)
 	cfg := testConfig(t, doc, other)
@@ -110,6 +110,7 @@ func TestValidatePodRole(t *testing.T) {
 		{"agent keys", func(d *Document) { d.AgentOperatorPublicKeys = []string{agentPub} }, "agentOperatorPublicKeys"},
 		{"router", func(d *Document) { d.Router = &Router{} }, "server-only"},
 		{"no pod", func(d *Document) { d.Pod = nil }, "requires a pod section"},
+		{"no runtime register", func(d *Document) { d.Image.Platform = "snp"; d.Image.RTMRs = nil }, "runtime register"},
 		{"no workloads", func(d *Document) { d.Workloads = "" }, "requires workloads"},
 		{"bad uid", func(d *Document) { d.Pod.UID = "Not A UID" }, "pod.uid"},
 		{"bad namespace", func(d *Document) { d.Pod.Namespace = "Tenant" }, "pod.namespace"},
@@ -133,6 +134,9 @@ func TestValidatePodRole(t *testing.T) {
 		{"short digest", func(d *Document) {
 			d.Pod.Manifest = strings.Replace(testPodManifest(""), strings.Repeat("a", 64), strings.Repeat("a", 63), 1)
 		}, "image"},
+		{"disk emptyDir", func(d *Document) {
+			d.Pod.Manifest = testPodManifest(`,"volumes":[{"name":"d","emptyDir":{}}]`)
+		}, "medium: Memory"},
 		{"host path", func(d *Document) {
 			d.Pod.Manifest = testPodManifest(`,"volumes":[{"name":"h","hostPath":{"path":"/"}}]`)
 		}, "only emptyDir"},
@@ -148,7 +152,7 @@ func TestValidatePodRole(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			doc, _, _ := testPodDocument(t, "snp")
+			doc, _, _ := testPodDocument(t, "tdx")
 			tc.change(&doc)
 			data, err := yaml.Marshal(doc)
 			if err != nil {
@@ -160,12 +164,40 @@ func TestValidatePodRole(t *testing.T) {
 			}
 		})
 	}
-	doc, _, _ := testDocument(t, "snp", Server)
+	doc, _, _ := testPodDocument(t, "tdx")
+	doc.Pod.Manifest = testPodManifest(`,"volumes":[{"name":"m","emptyDir":{"medium":"Memory","sizeLimit":"64Mi"}}]`)
+	data, err := yaml.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Parse(data); err != nil {
+		t.Fatalf("memory emptyDir refused: %v", err)
+	}
+	doc, _, _ = testDocument(t, "tdx", Server)
 	doc.Pod = &PodSpec{}
-	data, _ := yaml.Marshal(doc)
+	data, _ = yaml.Marshal(doc)
 	if _, err := Parse(data); err == nil || !strings.Contains(err.Error(), "requires role pod") {
 		t.Fatalf("server with pod section: %v", err)
 	}
+}
+
+func TestNewPodBundleRefusesAnSNPImage(t *testing.T) {
+	in := t.TempDir()
+	manifest := filepath.Join(in, "pod.json")
+	workloads := filepath.Join(in, "workloads.json")
+	if err := os.WriteFile(manifest, []byte(testPodManifest("")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(workloads, []byte(testPodWorkloads), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(t.TempDir(), "bundle")
+	err := runBundleCmd(t, "new-pod", "--out", dir, "--cluster-id", "cluster-one", "--image-manifest", writeManifest(t, "snp"),
+		"--vcpus", "8", "--pod-manifest", manifest, "--workloads", workloads)
+	if err == nil || !strings.Contains(err.Error(), "runtime register") {
+		t.Fatalf("got %v, want a runtime register refusal", err)
+	}
+	requireAbsent(t, filepath.Join(dir, podDir))
 }
 
 func TestNewPodBundleStages(t *testing.T) {
