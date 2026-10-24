@@ -28,7 +28,7 @@ func (m *memLog) StoreLogs(logs []*raft.Log) error {
 		// An index stored again (a follower truncating a conflicting
 		// suffix) replaces the entry there.
 		var old raft.Log
-		if m.InmemStore.GetLog(l.Index, &old) == nil {
+		if m.GetLog(l.Index, &old) == nil {
 			m.bytes -= logEntryBytes(&old)
 		}
 	}
@@ -47,7 +47,7 @@ func (m *memLog) DeleteRange(min, max uint64) error {
 	var freed int64
 	for i := min; i <= max && i >= min; i++ {
 		var l raft.Log
-		if m.InmemStore.GetLog(i, &l) == nil {
+		if m.GetLog(i, &l) == nil {
 			freed += logEntryBytes(&l)
 		}
 	}
@@ -62,8 +62,8 @@ func (m *memLog) DeleteRange(min, max uint64) error {
 func (m *memLog) usage() (entries uint64, bytes int64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	first, _ := m.InmemStore.FirstIndex()
-	last, _ := m.InmemStore.LastIndex()
+	first, _ := m.FirstIndex()
+	last, _ := m.LastIndex()
 	if last >= first && last > 0 {
 		entries = last - first + 1
 	}
