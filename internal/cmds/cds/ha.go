@@ -386,6 +386,12 @@ func followMeshCA(base *tls.Config, current func() (*issuer.CA, error)) *tls.Con
 	return out
 }
 
+// devUngated names c8s_dev diagnostic routes that stay reachable while the
+// replica is not serving (devha_dev.go): a replica that has stopped serving
+// is the one whose goroutines and memory need looking at. Release builds
+// gate every route but the ones haGate lists.
+var devUngated = func(string) bool { return false }
+
 // haGate answers 503 on every route but liveness, metrics and /ha/status
 // while the replica is not serving: an isolated or stale replica must not
 // issue, release, or hand out policy it may no longer hold.
@@ -394,7 +400,7 @@ func haGate(serving func() bool, next http.Handler) http.Handler {
 		switch r.URL.Path {
 		case "/healthz", "/readyz", "/metrics", "/ha/status", "/ha/pins":
 		default:
-			if !serving() {
+			if !serving() && !devUngated(r.URL.Path) {
 				http.Error(w, "cds-ha: this replica is not serving (not joined, not pinned, or out of contact with the cluster)", http.StatusServiceUnavailable)
 				return
 			}

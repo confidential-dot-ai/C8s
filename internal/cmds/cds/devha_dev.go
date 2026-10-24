@@ -70,7 +70,14 @@ func init() {
 	}
 	if os.Getenv("C8S_DEV_TEST_ROUTES") == "1" {
 		devHARoutes = devTestRoutes
+		devUngated = devDiagnosticPath
 	}
+}
+
+// devDiagnosticPath names the diagnostic test routes that a replica serves
+// even while it is not serving (see devUngated).
+func devDiagnosticPath(path string) bool {
+	return strings.HasPrefix(path, "/dev/pprof/") || path == "/dev/memstats"
 }
 
 // devTestRoutes adds the test routes in front of the CDS router.
