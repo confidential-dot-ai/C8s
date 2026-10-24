@@ -274,7 +274,13 @@ guest's upstream resolvers, rather than the guest-local DNS stub or a cluster
 DNS address. Pod preparation sets `dnsPolicy: Default` and removes `dnsConfig`
 overrides so every container receives those upstreams. Its
 `makeIPTablesUtilChains: false` setting leaves guest packet-rule management to
-NRI.
+NRI. Before containerd starts, preparation stages the baked CNI template under
+`/run/c8s-pod/cni`, setting bridge and veth MTU to the smallest of 1500, the
+guest's default-route interface MTU and any explicit default-route MTU cap.
+The route must be an unambiguous, live IPv4 main-table unicast default;
+unavailable or invalid network information stops Pod preparation. This is a
+startup snapshot of the guest network, not destination path-MTU discovery.
+Smaller bottlenecks beyond the guest still require working PMTUD.
 
 The pod manifest requires `metadata.uid` and digest-pinned container images.
 Volumes must be `emptyDir` with `medium: Memory`, so pod state stays in VM
