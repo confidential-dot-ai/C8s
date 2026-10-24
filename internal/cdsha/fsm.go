@@ -516,10 +516,19 @@ func (f *FSM) Restore(rc io.ReadCloser) error {
 	if applied := f.applied.Load(); sn.Index < applied {
 		return fmt.Errorf("%w: snapshot at index %d, applied %d", ErrStaleSnapshot, sn.Index, applied)
 	}
+	start, before := time.Now(), f.applied.Load()
 	if err := f.restore(sn); err != nil {
+		// A snapshot this replica's own database cannot take leaves it behind
+		// for good: Raft retries the install while the replica, still a voter
+		// with healthy heartbeats, serves nothing. Stop like on an entry the
+		// store cannot take, so the replica exits and rejoins.
+		if allowlist.IsLocalStoreFault(err) {
+			return f.stop(fmt.Errorf("restore snapshot at index %d: local allowlist store: %w", sn.Index, err))
+		}
 		return err
 	}
 	f.applied.Store(sn.Index)
+	slog.Info("cds-ha: snapshot restored", "index", sn.Index, "applied_before", before, "took", time.Since(start).Round(time.Millisecond))
 	return nil
 }
 
