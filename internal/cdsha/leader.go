@@ -208,10 +208,15 @@ func (n *Node) backupFailed(stage string, err error) {
 var pruneSlack = 64 // a var so tests can prune small histories
 
 // maybePruneHistory (leader) bounds the allowlist history through the log,
-// so every replica drops the same entries.
+// so every replica drops the same entries. It checks every Tick and prunes
+// only a history over its bound, so an idle cluster writes nothing. Once
+// per Timing.Backup was too slow: every write journals a whole document,
+// so with documents of a MiB or more the history overshot its byte bound
+// by over 100 MiB within the interval and the admission cap refused most
+// writes until the next prune.
 func (n *Node) maybePruneHistory() {
 	keep := n.cfg.HistoryVersions
-	if (keep <= 0 && n.cfg.HistoryBytes <= 0) || n.cfg.Allowlist == nil || time.Since(n.pruneAt) < n.cfg.Timing.Backup {
+	if (keep <= 0 && n.cfg.HistoryBytes <= 0) || n.cfg.Allowlist == nil || time.Since(n.pruneAt) < n.cfg.Timing.Tick {
 		return
 	}
 	n.pruneAt = time.Now()
@@ -239,6 +244,7 @@ func (n *Node) maybePruneHistory() {
 		n.log.Warn("prune allowlist history", "err", err)
 		return
 	}
+	n.prunes.Add(1)
 	n.log.Info("allowlist history pruned", "kept", keep, "had", have)
 }
 

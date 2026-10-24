@@ -118,7 +118,15 @@ type cluster struct {
 	historyVersions int           // Config.HistoryVersions of every replica started
 	historyBytes    int64         // Config.HistoryBytes of every replica started
 	caValidity      time.Duration // Config.CAValidity of every replica started
+	timing          *Timing       // Config.Timing of every replica started; nil: testTiming
 	secretLimits    [3]int        // secrets.NewMemoryStore limits of every replica started; zero: 64, 8, 4096
+}
+
+func (c *cluster) timingOr() Timing {
+	if c.timing != nil {
+		return *c.timing
+	}
+	return testTiming
 }
 
 // clusterSeq gives every test cluster its own loopback range, so one
@@ -210,7 +218,7 @@ func (c *cluster) startWithControl(name, measurement string, wrap func(controlHa
 	n, err := NewNode(Config{
 		ClusterID: testCluster, NodeName: name, Bind: fmt.Sprintf("%s:%d", ip, c.port), Advertise: fmt.Sprintf("%s:%d", ip, c.port),
 		Attestor: MockAttestor{measurement}, BakedPins: []string{measurement}, OperatorPubKey: c.opPub,
-		Seats: c.seats, MaxNonVoters: 8, Peers: c.peers(ip), Decrees: c.decrees, Timing: testTiming,
+		Seats: c.seats, MaxNonVoters: 8, Peers: c.peers(ip), Decrees: c.decrees, Timing: c.timingOr(),
 		RecoveryKey: mustPKIX(c.t, &c.recKey.PublicKey), Backups: c.backups,
 		Allowlist: &al, Secrets: mem, Ledger: led, Format: reads, HistoryVersions: c.historyVersions, HistoryBytes: c.historyBytes, CAValidity: c.caValidity,
 	})
