@@ -513,16 +513,11 @@ func TestComposite(t *testing.T) {
 				c.WaitVoters(seats, 60*time.Second)
 			}
 		}},
-		{name: "G4-rolling-restart-under-loss", productionRaftTiming: true, run: func(t *testing.T, c *Cluster, _ *Checker) {
-			setAllLinks(c, Link{Loss: 0.1})
-			hold(5 * time.Second)
-			for i := range c.Replicas {
-				c.Restart(i, false)
-				c.Logf("%s ready after %s; voters now %v", c.Replicas[i].Node, c.WaitReady(i, 60*time.Second), c.Voters())
-			}
-			c.WaitAllServing(60 * time.Second)
-			c.WaitVoters(seats, 60*time.Second)
-		}},
+		{name: "G4-rolling-restart-under-loss", productionRaftTiming: true, run: rollingUnderLoss},
+		// The same under the harness's short read lease (the row's own flag
+		// wins over the deployed lease runScenarios adds).
+		{name: "G4-rolling-restart-under-loss-harness-lease", productionRaftTiming: true,
+			args: []string{"--ha-lease", timing.lease.String()}, run: rollingUnderLoss},
 		{name: "G5-rotate-key-during-follower-restart-write-storm", writers: 32, pause: time.Millisecond, run: func(t *testing.T, c *Cluster, _ *Checker) {
 			for round := range 2 {
 				l := c.WaitLeader(30 * time.Second)
@@ -549,6 +544,44 @@ func TestComposite(t *testing.T) {
 		// 10-minute soak fills the 96 MiB admission cap with history.
 		{name: "G6-random-nemesis", writers: 8, args: historyBound, run: randomNemesis},
 	})
+}
+
+// rollingUnderLoss: B3's readiness-gated rolling restart while every link
+// loses 10%. It logs each replica's retiring_voters (/ha/status, raw: older
+// Status types lack the field) after each restart and at the end; a
+// retirement still pending at the end is reported (metric, not asserted).
+func rollingUnderLoss(t *testing.T, c *Cluster, _ *Checker) {
+	setAllLinks(c, Link{Loss: 0.1})
+	hold(5 * time.Second)
+	for i := range c.Replicas {
+		c.Restart(i, false)
+		c.Logf("%s ready after %s; voters now %v; retiring %s", c.Replicas[i].Node, c.WaitReady(i, 60*time.Second), c.Voters(), c.retiringVoters())
+	}
+	c.WaitAllServing(60 * time.Second)
+	c.WaitVoters(seats, 60*time.Second)
+	c.Logf("end: retiring %s", c.retiringVoters())
+}
+
+// retiringVoters is each running replica's /ha/status retiring_voters.
+func (c *Cluster) retiringVoters() string {
+	var b strings.Builder
+	for _, i := range c.RunningIDs() {
+		r := c.Get(i, "/ha/status")
+		var st struct {
+			State          string   `json:"state"`
+			RetiringVoters []string `json:"retiring_voters"`
+		}
+		if r.Err != nil || json.Unmarshal(r.Body, &st) != nil {
+			continue
+		}
+		if len(st.RetiringVoters) > 0 {
+			fmt.Fprintf(&b, " %s(%s)=%v", c.Replicas[i].Node, st.State, st.RetiringVoters)
+		}
+	}
+	if b.Len() == 0 {
+		return "none"
+	}
+	return b.String()
 }
 
 // --- G6: random nemesis -----------------------------------------------------
