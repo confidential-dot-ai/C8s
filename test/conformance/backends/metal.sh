@@ -95,7 +95,9 @@ cds_request() {
 # cds_pod_request <method> <route> [body-file] [authorization] [client-cert] [client-key] [header...]
 cds_pod_request() { local url; url="$(cds_node_url)" || return; http_request "$url" "$@"; }
 cds_pod_url() { cds_node_url; }
-cds_service_url() { cds_node_url; }
+# A member requester's CDS requests leave from here (requester_request), so
+# no address lets the CDS see the pod's own as the source.
+cds_service_url() { return "$UNSUPPORTED"; }
 # The guest's address from the allowlist URL, with the CDS Service's node port.
 cds_node_url() {
     local host port
@@ -202,11 +204,18 @@ AGENT_SCRIPT='last=0; while :; do s=$(cat '"$AGENT_DIR"'/seq 2>/dev/null); if [ 
 
 manifest_filter() { agent_wrap; }
 
-# Sent by curl in the requester through its agent.
+# The requester is a mesh member here (exempt_namespace below): a request to
+# one of the node's sockets is sent by curl in the pod through its agent, and
+# any other, which the steps send only to the CDS, from here to its URL,
+# since the node drops a member pod's own TCP to the CDS (cds_request above).
+# A backend with no exempt namespace must send the requester's CDS requests
+# this way.
 requester_request() {
-    local -a opts=()
-    [ -z "${6:-}" ] || opts+=(--unix-socket "$6")
-    agent_curl "$1" "$2" "$REQUESTER_CONTAINER" "${5:-}" "" "" -X "$3" ${opts[@]+"${opts[@]}"} "$4"
+    if [ -z "${6:-}" ]; then
+        http_request "$4" "$3" "" "${5:-}"
+        return
+    fi
+    agent_curl "$1" "$2" "$REQUESTER_CONTAINER" "${5:-}" "" "" -X "$3" --unix-socket "$6" "$4"
 }
 
 # agent_curl <ns> <pod> <container> <body-file> <client-cert> <client-key> <curl args...>:
@@ -400,7 +409,9 @@ node_containers() { return $UNSUPPORTED; }
 
 # The node image's confos-operator-scope policy denies the operator every
 # write in kube-system, local-path-storage and c8s-system, the namespaces
-# the webhook exempts that admit the harness's pods.
+# the webhook exempts that admit the harness's pods. So the requester the
+# steps drive runs as a mesh member, and a scenario that needs a pod outside
+# the mesh skips.
 exempt_namespace() { return "$UNSUPPORTED"; }
 
 # No shell on the node, so its plugin cannot be stopped or started; and

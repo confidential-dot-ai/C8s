@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -30,8 +31,9 @@ import (
 // the steps: to the CDS, to the node's sandbox inventory over its socket,
 // and (on a TEE) to the node's local attestation service. The key, the CSR,
 // the attest body and any forged token are built here, so the requester can
-// present what a well-behaved one never would. Its own pod address is the
-// source address the CDS sees.
+// present what a well-behaved one never would. Outside the mesh its own pod
+// address is the source address the CDS sees; as a mesh member
+// (requester.member) its CDS requests leave from the backend instead.
 func registerRequester(sc *godog.ScenarioContext) {
 	sc.Step(`^a requester "([^"]*)" on node "([^"]*)"$`, requesterOnNode)
 	sc.Step(`^"([^"]*)" holds a key$`, requesterHoldsAKey)
@@ -83,7 +85,12 @@ type requester struct {
 	pod  *pod
 	node string
 	addr string
-	key  *ecdsa.PrivateKey
+	// member: the backend has no namespace the mesh exempts, so the pod is a
+	// mesh member in the scenario's namespace, whose inventory signs for it
+	// and whose CDS requests the backend sends from outside the pod; otherwise
+	// it is outside the mesh and sends them itself.
+	member bool
+	key    *ecdsa.PrivateKey
 	// The current challenge and the one before it, raw bytes.
 	challenge, previous []byte
 	// A token the inventory signed, or one the requester forged.
@@ -138,7 +145,8 @@ func (w *world) requester(name string) (*requester, error) {
 // that it can reach the CDS, so a scenario fails here, with the pod's view,
 // rather than at its first request. A member pod reaches the CDS only from
 // its credential client, so the requester runs in a namespace the mesh
-// exempts, and is unsupported where none is open to the harness.
+// exempts where the backend has one, and as a member where it has none
+// (requester.member).
 func requesterOnNode(ctx context.Context, name, node string) error {
 	w := getWorld(ctx)
 	if _, ok := w.issuance.requesters[name]; ok {
@@ -161,7 +169,9 @@ func requesterOnNode(ctx context.Context, name, node string) error {
 		return err
 	}
 	p := w.describe(name, ref)
-	if err := w.elsewhere(p, "exempt_namespace"); err != nil {
+	err = w.elsewhere(p, "exempt_namespace")
+	member := errors.Is(err, godog.ErrSkip)
+	if err != nil && !member {
 		return err
 	}
 	manifest, err := w.be.call("requester_manifest", p.name, p.namespace, k8sNode)
@@ -177,13 +187,19 @@ func requesterOnNode(ctx context.Context, name, node string) error {
 		return err
 	}
 	if len(st) == 0 || !st[0].running {
-		return fmt.Errorf("the requester %q is not running after %s; denials: %s", name, observe, denials(st))
+		// A member's container waits on the injected credential client's
+		// first leaf, so what the CDS told that client is the likely cause.
+		msg := fmt.Sprintf("the requester %q is not running after %s; denials: %s; its containers: %+v", name, observe, denials(st), st)
+		if member {
+			msg += "; its credential client logged: " + tail(w.certLog(p), 5)
+		}
+		return errors.New(msg)
 	}
 	addr, err := kubectl(nil, "-n", p.namespace, "get", "pod", p.name, "-o", "jsonpath={.status.podIP}")
 	if err != nil {
 		return err
 	}
-	r := &requester{pod: p, node: node, addr: strings.TrimSpace(addr)}
+	r := &requester{pod: p, node: node, addr: strings.TrimSpace(addr), member: member}
 	w.issuance.requesters[name] = r
 	url, err := w.requesterCDSURL()
 	if err != nil {
@@ -194,13 +210,23 @@ func requesterOnNode(ctx context.Context, name, node string) error {
 		return err
 	}
 	if status != 200 {
-		sockets, _ := w.podExec(p, "", "ls", "-la", "/run/c8s/workload-claims")
-		return fmt.Errorf("harness: the requester %q got %d from %s/healthz; its socket directory holds:\n%s", name, status, url, sockets)
+		return fmt.Errorf("harness: the requester %q got %d from %s/healthz", name, status, url)
+	}
+	// The pod's own view, which a member's healthz, sent from the backend,
+	// does not give: the node's sockets are bound into it.
+	sockets, err := w.podExec(p, "", "ls", filepath.Dir(inventorySocket))
+	if err != nil {
+		return err
+	}
+	if !strings.Contains(sockets, filepath.Base(inventorySocket)) {
+		return fmt.Errorf("harness: the socket directory of the requester %q holds no %s:\n%s", name, filepath.Base(inventorySocket), sockets)
 	}
 	return nil
 }
 
-// relay sends a request from inside the requester's pod.
+// relay sends a request as the requester: from inside its pod, or, for a
+// member's requests to the CDS, from where the backend reaches the CDS
+// (requester_request).
 func (w *world) relay(r *requester, method, url string, body []byte, socket string) (int, []byte, error) {
 	var out string
 	send := func(bodyFile string) (err error) {
@@ -704,8 +730,9 @@ func holdsInventoryToken(ctx context.Context, name, node, otherKey string) error
 		return err
 	}
 	// The inventory asserts only for a mesh member (workload identity B4),
-	// which the requester is not.
-	if status == 403 && strings.Contains(string(resp), "no assertion for this caller") {
+	// which a requester outside the mesh is not; a member's refusal is the
+	// inventory's verdict on it.
+	if !r.member && status == 403 && strings.Contains(string(resp), "no assertion for this caller") {
 		return skipf("the inventory asserts no sandbox outside the mesh, where the requester runs: %s", resp)
 	}
 	if status != 200 {
