@@ -37,10 +37,18 @@ func runScenarios(t *testing.T, list []scenario) {
 				t.Skip("not in the -short subset")
 			}
 			heartbeat, election := timing.heartbeat, timing.election
+			args := sc.args
 			if sc.productionRaftTiming {
 				heartbeat, election = cdsha.DefaultTiming.Heartbeat, cdsha.DefaultTiming.Election
+				// The deployed read lease too. A row that claims production
+				// timing but keeps the harness's 2.5s lease cannot keep reads
+				// certified at 300-360ms RTT (followers 81-89% not serving;
+				// 0-4% under the deployed 5s lease, TestAvailabilityRTT), so
+				// it would test a configuration nobody deploys. A row's own
+				// --ha-lease in args still wins: it comes later.
+				args = append([]string{"--ha-lease", cdsha.DefaultTiming.Lease.String()}, sc.args...)
 			}
-			c := newClusterWithRaftTiming(t, heartbeat, election, sc.args...)
+			c := newClusterWithRaftTiming(t, heartbeat, election, args...)
 			c.WaitVoters(seats, 30*time.Second)
 			if sc.writers == 0 {
 				sc.writers = 4
