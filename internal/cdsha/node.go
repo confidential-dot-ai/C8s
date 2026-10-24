@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -357,10 +358,19 @@ func (n *Node) Start() error {
 	rc.CommitTimeout = 20 * time.Millisecond
 	rc.SnapshotThreshold = 512
 	rc.TrailingLogs = 256
-	rc.Logger = hclog.New(&hclog.LoggerOptions{Name: "raft", Level: hclog.Warn, DisableTime: true,
-		Output: slog.NewLogLogger(n.log.Handler(), slog.LevelWarn).Writer()})
+	rc.Logger = hclog.New(&hclog.LoggerOptions{Name: "raft", Level: hclog.Info, DisableTime: true,
+		Output: slog.NewLogLogger(n.log.Handler(), slog.LevelWarn).Writer(), Exclude: raftQuiet})
 	n.rcfg = rc
 	return n.startRaft()
+}
+
+// raftSnapshotInfo are the Raft info lines kept: a snapshot sent to or
+// installed on a replica replaces its state, which an operator must be able
+// to see. Raft's other info lines stay out of the log.
+var raftSnapshotInfo = []string{"installing snapshot on", "copied to local snapshot", "Installed remote snapshot", "restored user snapshot"}
+
+func raftQuiet(level hclog.Level, msg string, _ ...any) bool {
+	return level < hclog.Warn && !slices.Contains(raftSnapshotInfo, msg)
 }
 
 // startRaft opens the transport and starts Raft on the node's stores.
