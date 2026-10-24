@@ -156,7 +156,7 @@ func TestJournalFiltersLateSecretMarkerBeforeTruncation(t *testing.T) {
 		exposed bool
 	}{{"early canary " + strings.Repeat("x", 1700) + " Authorization: Bearer confidential", false}, {"ordinary runtime failure " + strings.Repeat("x", 1700), true}} {
 		record, _ := json.Marshal(map[string]string{"_SYSTEMD_UNIT": units[0], "__REALTIME_TIMESTAMP": "1", "MESSAGE": c.message})
-		cmd := exec.Command("jq", "-c", journalProjection)
+		cmd := exec.Command("jq", "-c", "--arg", "pat", sensitivePat, journalProjection)
 		cmd.Stdin = strings.NewReader(string(record))
 		out, err := cmd.Output()
 		if err != nil {
@@ -191,7 +191,7 @@ func TestShellWordPreservesJournalAndRejectsInterpretation(t *testing.T) {
 		t.Fatal("quoted argument executed a command")
 	}
 	payload, err := consolePayload(marker)
-	if err != nil || !strings.Contains(payload, "jq -Mc "+shellWord(journalProjection)+"\n") {
+	if err != nil || !strings.Contains(payload, "jq -Mc --arg pat "+shellWord(sensitivePat)+" "+shellWord(journalProjection)+"\n") {
 		t.Fatal("console payload must quote the journal projection as one shell word")
 	}
 }

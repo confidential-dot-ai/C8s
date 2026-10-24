@@ -42,11 +42,11 @@ var sensitive = regexp.MustCompile("(?i)" + sensitivePat)
 
 var hexMarker = regexp.MustCompile(`^[0-9a-f]{32}$`)
 
-var journalProjection = func() string {
-	pattern, _ := json.Marshal(sensitivePat)
-	return `select((.MESSAGE|tostring|test(` + string(pattern) + `;"i"))|not) | ` +
-		`{kind:"journal",unit:._SYSTEMD_UNIT,time:.__REALTIME_TIMESTAMP,message:(.MESSAGE|tostring|.[0:1536])}`
-}()
+// journalProjection keeps the fields the diagnostic reads and drops every
+// record whose message matches $pat. The sensitive pattern reaches jq as a
+// separate --arg, never spliced into the program text.
+const journalProjection = `select((.MESSAGE|tostring|test($pat;"i"))|not) | ` +
+	`{kind:"journal",unit:._SYSTEMD_UNIT,time:.__REALTIME_TIMESTAMP,message:(.MESSAGE|tostring|.[0:1536])}`
 
 const expectScript = `log_user 1
 set timeout 30
@@ -126,7 +126,7 @@ func consolePayload(marker string) (string, error) {
 		"printf '\\n__C8S_%s_BEGIN__\\n' '" + marker + "'\n" +
 		"timeout 10 systemctl show --no-pager -p Id -p LoadState -p ActiveState -p SubState -p Result -p ExecMainCode -p ExecMainStatus " + strings.Join(units, " ") + " 2>/dev/null | jq -McRs '{kind:\"units\",text:.}'\n" +
 		"printf '{\"kind\":\"command\",\"name\":\"units\",\"exit\":%s}\\n' \"$?\"\n" +
-		"timeout 15 journalctl -b --no-pager -o json -n 160 " + strings.Join(journalUnits, " ") + " 2>/dev/null | jq -Mc " + shellWord(journalProjection) + "\n" +
+		"timeout 15 journalctl -b --no-pager -o json -n 160 " + strings.Join(journalUnits, " ") + " 2>/dev/null | jq -Mc --arg pat " + shellWord(sensitivePat) + " " + shellWord(journalProjection) + "\n" +
 		"printf '{\"kind\":\"command\",\"name\":\"journal\",\"exit\":%s}\\n' \"$?\"\n" +
 		crictl + " pods -o json 2>/dev/null | jq -Mc '.items[]?|{kind:\"sandbox\",id:.id,name:.metadata.name,state:.state,createdAt:.createdAt}'\n" +
 		"printf '{\"kind\":\"command\",\"name\":\"sandboxes\",\"exit\":%s}\\n' \"$?\"\n" +
