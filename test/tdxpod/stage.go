@@ -70,7 +70,7 @@ func allocated(services []*object, name string) (map[string]endpoint, error) {
 	result := map[string]endpoint{}
 	for _, service := range services {
 		if service.Metadata.Namespace != namespace || service.Metadata.UID == "" {
-			return nil, errors.New("Service namespace/UID is missing or different")
+			return nil, errors.New("service namespace/UID is missing or different")
 		}
 		side := ""
 		for _, s := range sides {
@@ -82,15 +82,15 @@ func allocated(services []*object, name string) (map[string]endpoint, error) {
 			return nil, errors.New("unexpected or duplicate Service")
 		}
 		if len(service.Spec.Selector) != 1 || service.Spec.Selector["kubevirt.io/domain"] != name+"-"+side {
-			return nil, errors.New("Service selector differs")
+			return nil, errors.New("service selector differs")
 		}
 		address, err := netip.ParseAddr(service.Spec.ClusterIP)
 		if err != nil || !address.Is4() || address.IsLoopback() || address.IsUnspecified() {
-			return nil, errors.New("Service IP overlaps a guest or excluded network")
+			return nil, errors.New("service IP overlaps a guest or excluded network")
 		}
 		for _, network := range excludedNetworks {
 			if network.Contains(address) {
-				return nil, errors.New("Service IP overlaps a guest or excluded network")
+				return nil, errors.New("service IP overlaps a guest or excluded network")
 			}
 		}
 		required := map[int]int{8080: 8080, 8443: 8443}
@@ -104,11 +104,11 @@ func allocated(services []*object, name string) (map[string]endpoint, error) {
 			}
 		}
 		if len(actual) != len(required) {
-			return nil, errors.New("Service ports differ")
+			return nil, errors.New("service ports differ")
 		}
 		for port, target := range required {
 			if actual[port] != target {
-				return nil, errors.New("Service ports differ")
+				return nil, errors.New("service ports differ")
 			}
 		}
 		result[side] = endpoint{IP: address.String(), UID: service.Metadata.UID}

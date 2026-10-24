@@ -166,7 +166,8 @@ hidden transitions between ready samples and further withdrawals after recovery.
 A successful checker exit may withdraw aggregate Pod readiness once while the
 app and mesh stay ready. Each verdict and its authenticated status are saved
 before certificate probes or a readiness failure, including the final status
-after the negative probes. Public mesh leaves must rotate late in
+after the negative probes. Polling does not establish continuous readiness between
+observations. Public mesh leaves must rotate late in
 the observation window, with new serials and keys, stable Pod identities and
 CA, and no application, checker or endpoint restarts. Certless, wrong-CA and
 plaintext requests must be rejected, followed by fresh healthy Pod status.

@@ -87,7 +87,7 @@ func readyCondition(status json.RawMessage) (*readinessCondition, time.Time, err
 		return nil, time.Time{}, errors.New("readiness condition timestamp is malformed")
 	}
 	at, err := time.Parse(time.RFC3339Nano, stamp)
-	if err != nil {
+	if err != nil || at.Year() < 1 {
 		return nil, time.Time{}, errors.New("readiness condition timestamp is malformed")
 	}
 	return &readinessCondition{Status: state, LastTransitionTime: stamp}, at, nil
@@ -155,11 +155,26 @@ func (r *readinessTracker) verdict(status json.RawMessage, state podState, recov
 	return current, at, nil
 }
 
+// parseReadinessStatus retains an authenticated response even when Pod identity,
+// restarts or container exits prevent the readiness tracker from accepting it.
+func (a *acceptance) parseReadinessStatus(status json.RawMessage, name string) (podState, error) {
+	state, err := podStateOf(status, a.name)
+	if err != nil {
+		o := readinessObservation{UID: a.name, Failure: err.Error()}
+		return state, errors.Join(err, a.writeReadiness(status, o, name))
+	}
+	return state, nil
+}
+
+func (a *acceptance) writeReadiness(status json.RawMessage, o readinessObservation, name string) error {
+	return write(filepath.Join(a.evidence, name+".json"), map[string]any{"status": status, "observation": o})
+}
+
 // recordReadiness keeps the authenticated response and its verdict as
 // evidence even when the tracker refuses the sample.
 func (a *acceptance) recordReadiness(r *readinessTracker, status json.RawMessage, state podState, recovered bool, name string) error {
 	o := r.observe(status, state, recovered)
-	if err := write(filepath.Join(a.evidence, name+".json"), map[string]any{"status": status, "observation": o}); err != nil {
+	if err := a.writeReadiness(status, o, name); err != nil {
 		return err
 	}
 	if !o.Accepted {

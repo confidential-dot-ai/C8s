@@ -23,7 +23,7 @@ func readinessDocument(condition, timestamp string, o readinessOptions) map[stri
 		o.uid = "pod"
 	}
 	container := func(name string) map[string]any {
-		return map[string]any{"name": name, "ready": !(o.unready && name == "app"), "restartCount": 0,
+		return map[string]any{"name": name, "ready": !o.unready || name != "app", "restartCount": 0,
 			"state": map[string]any{"running": map[string]any{"startedAt": "2026-01-01T00:00:00Z"}}}
 	}
 	app, checker, mesh := container("app"), container("checker"), container(meshContainerName)
@@ -206,6 +206,38 @@ func TestReadinessTrackerConditionsAndIdentityFailClosed(t *testing.T) {
 	}
 }
 
+func TestReadyConditionRejectsYearZero(t *testing.T) {
+	status := readinessStatus(t, "True", "0000-01-01T00:00:00Z", readinessOptions{})
+	if _, _, err := readyCondition(status); err == nil {
+		t.Fatal("accepted a timestamp outside the Ready condition date range")
+	}
+}
+
+// rejectedReadinessStatus changes the authenticated fields checked before the
+// condition tracker. These failures must also preserve the original response.
+func rejectedReadinessStatus(t *testing.T, raw json.RawMessage, kind string) json.RawMessage {
+	t.Helper()
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	containers := doc["status"].(map[string]any)["containerStatuses"].([]any)
+	switch kind {
+	case "uid":
+		doc["metadata"].(map[string]any)["uid"] = "other-pod"
+	case "restart":
+		containers[0].(map[string]any)["restartCount"] = 1
+	case "checker", "app":
+		index, code := 0, 0
+		if kind == "checker" {
+			index, code = 1, 1
+		}
+		containers[index].(map[string]any)["state"] = map[string]any{"terminated": map[string]any{
+			"exitCode": code, "startedAt": "2026-01-01T00:00:00Z"}}
+	}
+	return rawDocument(t, doc)
+}
+
 func TestRecordReadinessSavesFailedVerdictBeforeFailing(t *testing.T) {
 	a := newAcceptanceTask(t)
 	status := readinessStatus(t, "True", "2026-01-01T00:11:00Z", readinessOptions{})
@@ -234,7 +266,7 @@ func TestRecordReadinessSavesFailedVerdictBeforeFailing(t *testing.T) {
 }
 
 func TestObserveSavesReadinessBeforeRejectionOrLeafFailure(t *testing.T) {
-	for _, hidden := range []bool{false, true} {
+	for _, kind := range []string{"leaf", "condition", "uid", "restart", "checker", "app"} {
 		a := newAcceptanceTask(t)
 		a.runDeadline = now().Add(10 * time.Hour)
 		if err := write(filepath.Join(a.evidence, "mesh-ca.pem"), []byte("public CA")); err != nil {
@@ -242,10 +274,10 @@ func TestObserveSavesReadinessBeforeRejectionOrLeafFailure(t *testing.T) {
 		}
 		baseline := readinessStatus(t, "True", "2026-01-01T00:10:00Z", readinessOptions{uid: a.name})
 		timestamp := "2026-01-01T00:10:00Z"
-		if hidden {
+		if kind == "condition" {
 			timestamp = "2026-01-01T00:11:00Z"
 		}
-		observed := readinessStatus(t, "True", timestamp, readinessOptions{uid: a.name})
+		observed := rejectedReadinessStatus(t, readinessStatus(t, "True", timestamp, readinessOptions{uid: a.name}), kind)
 		a.connectFn = func(string, int) error { return nil }
 		a.instanceFn = func(string, time.Time) (*object, error) { return nil, nil }
 		a.warmupRoundFn = func(_ time.Time, traces map[string][]bool, states map[string]podState) (map[string]*leaf, map[string]json.RawMessage, error) {
@@ -264,12 +296,10 @@ func TestObserveSavesReadinessBeforeRejectionOrLeafFailure(t *testing.T) {
 		leafCalls := 0
 		a.leafFn = func(string, string) (*leaf, error) { leafCalls++; return nil, errors.New("leaf unavailable") }
 		err := a.observe()
-		want := "leaf unavailable"
-		if hidden {
-			want = "between True samples"
-		}
+		want := map[string]string{"leaf": "leaf unavailable", "condition": "between True samples",
+			"uid": "UID", "restart": "restart", "checker": "checker", "app": "app"}[kind]
 		if err == nil || !strings.Contains(err.Error(), want) {
-			t.Fatalf("hidden=%v: err = %v", hidden, err)
+			t.Fatalf("kind=%s: err = %v", kind, err)
 		}
 		var record struct {
 			Status      json.RawMessage      `json:"status"`
@@ -278,14 +308,88 @@ func TestObserveSavesReadinessBeforeRejectionOrLeafFailure(t *testing.T) {
 		if err := json.Unmarshal([]byte(readFile(t, filepath.Join(a.evidence, "readiness-001-a.json"))), &record); err != nil {
 			t.Fatal(err)
 		}
-		if !sameJSON(t, record.Status, observed) || record.Observation.Accepted == hidden {
-			t.Fatalf("hidden=%v: record %+v", hidden, record.Observation)
+		if !sameJSON(t, record.Status, observed) || record.Observation.Accepted != (kind == "leaf") {
+			t.Fatalf("kind=%s: record %+v", kind, record.Observation)
 		}
-		if want := map[bool]int{false: 1, true: 0}[hidden]; leafCalls != want {
-			t.Fatalf("hidden=%v: leaf calls = %d, want %d", hidden, leafCalls, want)
+		if want := map[bool]int{true: 1, false: 0}[kind == "leaf"]; leafCalls != want {
+			t.Fatalf("kind=%s: leaf calls = %d, want %d", kind, leafCalls, want)
 		}
 		if !exists(filepath.Join(a.evidence, "readiness-baseline-a.json")) || exists(filepath.Join(a.evidence, "result.json")) {
-			t.Fatalf("hidden=%v: evidence set differs", hidden)
+			t.Fatalf("kind=%s: evidence set differs", kind)
 		}
+	}
+}
+
+func TestReadinessGuardRemainsActiveAfterNegativeProbes(t *testing.T) {
+	for _, kind := range []string{"stable", "condition", "uid"} {
+		t.Run(kind, func(t *testing.T) {
+			a := newAcceptanceTask(t)
+			start := time.Date(2026, 10, 24, 18, 30, 0, 0, time.UTC)
+			clock := start
+			now = func() time.Time { return clock }
+			sleep = func(d time.Duration) {
+				if d == 20*time.Second {
+					d = 10 * time.Minute
+				}
+				clock = clock.Add(d)
+			}
+			t.Cleanup(func() { now, sleep = time.Now, time.Sleep })
+			a.runDeadline = start.Add(2 * time.Hour)
+			a.connectFn = func(string, int) error { return nil }
+			a.instanceFn = func(string, time.Time) (*object, error) { return &object{}, nil }
+			a.caFn = func(path string, _ time.Time) error { return write(path, []byte("fixture CA")) }
+			negativeStarted := false
+			reads := map[string]int{}
+			a.cliReadFn = func(side string, mode []string, _ time.Time, _ bool) (json.RawMessage, error) {
+				if mode[0] == "pod-attest" {
+					return json.RawMessage(`{}`), nil
+				}
+				reads[side]++
+				ready, stamp := true, start.Add(20*time.Minute)
+				switch reads[side] {
+				case 1:
+					ready, stamp = false, start
+				case 2:
+					stamp = start
+				case 3:
+					ready, stamp = false, start.Add(10*time.Minute)
+				}
+				condition, complete := "True", clock.Sub(start) >= soak
+				if !ready {
+					condition = "False"
+				}
+				if complete {
+					condition, stamp = "False", start.Add(70*time.Minute)
+				}
+				if negativeStarted && kind == "condition" {
+					stamp = clock
+				}
+				raw := readinessStatus(t, condition, stamp.Format(time.RFC3339), readinessOptions{uid: a.name, unready: !ready, complete: complete})
+				if negativeStarted {
+					raw = rejectedReadinessStatus(t, raw, kind)
+				}
+				return raw, nil
+			}
+			a.leafFn = func(side, mode string) (*leaf, error) {
+				negativeStarted = negativeStarted || mode != "certless"
+				serial, before := "initial", start
+				if clock.Sub(start) >= 40*time.Minute {
+					serial, before = "renewed", start.Add(40*time.Minute)
+				}
+				return &leaf{SandboxID: side, Workload: "connected", Denied: true, Serial: serial, SPKI: serial,
+					NotBefore: before.Format(time.RFC3339), NotAfter: before.Add(time.Hour).Format(time.RFC3339), raw: json.RawMessage(`{}`)}, nil
+			}
+			err := a.observe()
+			if (err != nil) != (kind != "stable") || !negativeStarted {
+				t.Fatalf("final gate: error=%v negatives=%v", err, negativeStarted)
+			}
+			var receipt struct{ Observation readinessObservation }
+			if err := json.Unmarshal([]byte(readFile(t, filepath.Join(a.evidence, "readiness-final-a.json"))), &receipt); err != nil {
+				t.Fatal(err)
+			}
+			if receipt.Observation.Accepted != (kind == "stable") || exists(filepath.Join(a.evidence, "result.json")) != (kind == "stable") {
+				t.Fatalf("post-negative transition verdict differs: %+v", receipt)
+			}
+		})
 	}
 }

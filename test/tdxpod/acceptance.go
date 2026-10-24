@@ -164,7 +164,7 @@ func parseLeaf(raw []byte) (*leaf, error) {
 
 func renewed(initial, current *leaf) (bool, error) {
 	if initial.SandboxID != current.SandboxID {
-		return false, errors.New("Pod identity changed during renewal")
+		return false, errors.New("pod identity changed during renewal")
 	}
 	if current.Workload != "connected" || !current.Denied {
 		return false, errors.New("named leaf missing or certless access succeeded")
@@ -838,13 +838,14 @@ func (a *acceptance) observe() error {
 			if err != nil {
 				return err
 			}
-			state, err := podStateOf(status, a.name)
+			readinessName := fmt.Sprintf("readiness-%03d-%s", index, side)
+			state, err := a.parseReadinessStatus(status, readinessName)
 			if err != nil {
 				return err
 			}
 			states[side] = state
 			traces[side] = append(traces[side], state.Ready)
-			if err := a.recordReadiness(conditions[side], status, state, readinessCycle(traces[side]), fmt.Sprintf("readiness-%03d-%s", index, side)); err != nil {
+			if err := a.recordReadiness(conditions[side], status, state, readinessCycle(traces[side]), readinessName); err != nil {
 				return err
 			}
 			l, err := a.leafFn(side, "certless")
@@ -904,11 +905,12 @@ func (a *acceptance) observe() error {
 		if err != nil {
 			return err
 		}
-		state, err := podStateOf(status, a.name)
+		readinessName := "readiness-final-" + side
+		state, err := a.parseReadinessStatus(status, readinessName)
 		if err != nil {
 			return err
 		}
-		if err := a.recordReadiness(conditions[side], status, state, true, "readiness-final-"+side); err != nil {
+		if err := a.recordReadiness(conditions[side], status, state, true, readinessName); err != nil {
 			return err
 		}
 		if !state.Ready || !state.Complete || !sameStarts(state.Starts, baseline[side]) {

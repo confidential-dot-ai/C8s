@@ -318,11 +318,12 @@ func runBounded(argv, env []string, deadline time.Time) ([]byte, string) {
 	waited := make(chan error, 1)
 	go func() { waited <- cmd.Wait() }()
 	exited := false
+	var waitErr error
 	// awaitExit reports whether the driver has exited within d.
 	awaitExit := func(d time.Duration) bool {
 		if !exited {
 			select {
-			case <-waited:
+			case waitErr = <-waited:
 				exited = true
 			case <-time.After(d):
 			}
@@ -341,10 +342,12 @@ func runBounded(argv, env []string, deadline time.Time) ([]byte, string) {
 		case chunk, ok := <-chunks:
 			if !ok {
 				switch {
-				case !awaitExit(5 * time.Second):
+				case !awaitExit(5*time.Second) || cmd.ProcessState == nil:
 					reason = "console driver exit -1"
 				case cmd.ProcessState.ExitCode() != 0:
 					reason = fmt.Sprintf("console driver exit %d", cmd.ProcessState.ExitCode())
+				case waitErr != nil:
+					reason = "console driver wait failed"
 				default:
 					reason = "ok"
 				}
