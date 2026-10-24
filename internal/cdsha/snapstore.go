@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"time"
 
 	"github.com/hashicorp/raft"
 )
@@ -19,6 +20,17 @@ type snapStore struct {
 	meta   raft.SnapshotMeta
 	body   []byte
 	exists bool
+	at     time.Time // when the latest was published
+}
+
+// latest is the index, size and time (Unix ms) of the latest snapshot.
+func (s *snapStore) latest() (index uint64, size int64, atMS int64) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if !s.exists {
+		return 0, 0, 0
+	}
+	return s.meta.Index, int64(len(s.body)), s.at.UnixMilli()
 }
 
 func (s *snapStore) Create(version raft.SnapshotVersion, index, term uint64, configuration raft.Configuration,
@@ -72,6 +84,6 @@ func (k *snapSink) Close() error {
 	if k.store.exists && k.meta.Index < k.store.meta.Index {
 		return nil // an older snapshot finished last: keep the newer one
 	}
-	k.store.meta, k.store.body, k.store.exists = k.meta, k.buf.Bytes(), true
+	k.store.meta, k.store.body, k.store.exists, k.store.at = k.meta, k.buf.Bytes(), true, time.Now()
 	return nil
 }

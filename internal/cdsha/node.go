@@ -136,7 +136,7 @@ type Node struct {
 	rft           atomic.Pointer[raft.Raft]
 	mux           atomic.Pointer[mux] // replaced by a recovery
 	rcfg          *raft.Config
-	logs          *raft.InmemStore
+	logs          *memLog
 	stable        *raft.InmemStore
 	snaps         *snapStore
 	noLeader      time.Time    // since when a member has seen no leader
@@ -185,6 +185,10 @@ type Node struct {
 	recovery    *ecdsa.PublicKey
 }
 
+// snapshotInterval is Raft's snapshot check period; a var so tests can
+// shorten it.
+var snapshotInterval = 30 * time.Second
+
 // Status is a replica's view, served at /ha/status.
 type Status struct {
 	ClusterID     string   `json:"cluster_id"`
@@ -222,6 +226,15 @@ type Status struct {
 	// BackupError (leader) says backups are failing because the state is
 	// over a snapshot size bound: no backup is stored until it shrinks.
 	BackupError string `json:"backup_error,omitempty"`
+	// LogEntries and LogBytes are the in-memory Raft log: entries kept
+	// until a snapshot compacts them, and the bytes they hold.
+	LogEntries uint64 `json:"log_entries,omitempty"`
+	LogBytes   int64  `json:"log_bytes,omitempty"`
+	// SnapshotIndex, SnapshotBytes and SnapshotAtMS are the latest Raft
+	// snapshot this replica holds (taken or installed).
+	SnapshotIndex uint64 `json:"snapshot_index,omitempty"`
+	SnapshotBytes int64  `json:"snapshot_bytes,omitempty"`
+	SnapshotAtMS  int64  `json:"snapshot_at_ms,omitempty"`
 }
 
 // NewNode prepares a replica. Every start is a new Raft member: the log
@@ -348,7 +361,7 @@ func (n *Node) ID() string { return string(n.id) }
 func (n *Node) Start() error {
 	n.membershipMu.Lock()
 	defer n.membershipMu.Unlock()
-	n.logs, n.stable, n.snaps = raft.NewInmemStore(), raft.NewInmemStore(), &snapStore{}
+	n.logs, n.stable, n.snaps = newMemLog(), raft.NewInmemStore(), &snapStore{}
 	rc := raft.DefaultConfig()
 	rc.LocalID = n.id
 	rc.HeartbeatTimeout = n.cfg.Timing.Heartbeat
@@ -357,6 +370,14 @@ func (n *Node) Start() error {
 	rc.CommitTimeout = 20 * time.Millisecond
 	rc.SnapshotThreshold = 512
 	rc.TrailingLogs = 256
+	// The log is in memory until a snapshot compacts it, and Raft checks
+	// the threshold only every SnapshotInterval (a random 1-2x of it). The
+	// leader also compacts at each backup; a follower only here. At Raft's
+	// default 120 s a follower under large-document writes held over 2,500
+	// entries (190 MiB) between checks; 30 s keeps it to about
+	// threshold + trailing + rate x 60 s. Snapshots still need 512 new
+	// entries, so an idle cluster takes none.
+	rc.SnapshotInterval = snapshotInterval
 	rc.Logger = hclog.New(&hclog.LoggerOptions{Name: "raft", Level: hclog.Warn, DisableTime: true,
 		Output: slog.NewLogLogger(n.log.Handler(), slog.LevelWarn).Writer()})
 	n.rcfg = rc
@@ -949,6 +970,9 @@ func (n *Node) Status() Status {
 	if n.r() == nil {
 		return st
 	}
+	// Set before Raft started (n.r() is published after them).
+	st.LogEntries, st.LogBytes = n.logs.usage()
+	st.SnapshotIndex, st.SnapshotBytes, st.SnapshotAtMS = n.snaps.latest()
 	st.State = n.r().State().String()
 	st.Term = n.r().CurrentTerm()
 	st.Serving = n.Serving()

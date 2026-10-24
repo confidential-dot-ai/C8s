@@ -5,12 +5,16 @@ package cds
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/http/pprof"
 	"os"
 	"path/filepath"
+	"runtime/metrics"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/spf13/pflag"
 	corev1 "k8s.io/api/core/v1"
@@ -39,7 +43,9 @@ import (
 //     processes.
 //   - C8S_DEV_TEST_ROUTES=1: PUT /secrets/* without armTLS (operator writes
 //     only), and GET /dev/ha/secrets, which dumps this replica's secret store
-//     so the test can compare replicas.
+//     so the test can compare replicas; GET /dev/pprof/<profile> (heap,
+//     allocs, goroutine) and GET /dev/memstats (Go memory classes and the
+//     process RSS), for the memory tests.
 func init() {
 	bindDevHAFlags = func(flags *pflag.FlagSet, c *haConfig) {
 		flags.StringVar(&c.measurement, "ha-measurement", "", "this replica's measurement as reported by the mock attestor")
@@ -77,6 +83,12 @@ func devTestRoutes(next http.Handler, store secrets.Store, mem *secrets.MemorySt
 			sort.Slice(dump, func(i, j int) bool { return dump[i].Path < dump[j].Path })
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(dump)
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/dev/pprof/"):
+			// Profiles for the memory soak (heap, allocs, goroutine, ...).
+			pprof.Handler(strings.TrimPrefix(r.URL.Path, "/dev/pprof/")).ServeHTTP(w, r)
+		case r.Method == http.MethodGet && r.URL.Path == "/dev/memstats":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(devMemStats())
 		case mountPut && r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/secrets/"):
 			put.ServeHTTP(w, r)
 		default:
@@ -85,13 +97,58 @@ func devTestRoutes(next http.Handler, store secrets.Store, mem *secrets.MemorySt
 	})
 }
 
+// devMemStats is the Go runtime's memory classes and the process's RSS,
+// so a test can tell Go heap from memory outside it (SQLite's allocator).
+func devMemStats() map[string]uint64 {
+	var samples []metrics.Sample
+	for _, d := range metrics.All() {
+		if strings.HasPrefix(d.Name, "/memory/classes/") || d.Name == "/gc/heap/goal:bytes" || d.Name == "/gc/gomemlimit:bytes" {
+			samples = append(samples, metrics.Sample{Name: d.Name})
+		}
+	}
+	metrics.Read(samples)
+	out := map[string]uint64{}
+	for _, s := range samples {
+		if s.Value.Kind() == metrics.KindUint64 {
+			out[s.Name] = s.Value.Uint64()
+		}
+	}
+	if b, err := os.ReadFile("/proc/self/status"); err == nil {
+		for _, line := range strings.Split(string(b), "\n") {
+			if k, v, ok := strings.Cut(line, ":"); ok && (k == "VmRSS" || k == "VmHWM" || k == "RssAnon") {
+				var kb uint64
+				if _, err := fmt.Sscanf(strings.TrimSpace(v), "%d kB", &kb); err == nil {
+					out["/proc/"+k+":bytes"] = kb << 10
+				}
+			}
+		}
+	}
+	return out
+}
+
 // dirKube is a fake clientset whose ConfigMaps live in dir/<namespace>/<name>.json.
 func dirKube(dir string) kubernetes.Interface {
 	cs := fake.NewClientset()
 	d := &cmDir{root: dir}
 	cs.PrependReactor("*", "configmaps", d.react)
+	// Dev only: client-go's testing.Fake keeps a deep copy of every action
+	// it handles, for tests that inspect them, and never drops one. A replica
+	// runs for hours and writes every backup through here (multi-MB every
+	// backup interval), so the record grew without bound (GiBs of heap in the
+	// chaos soak). Nothing reads it; drop it periodically. It cannot be
+	// dropped from the reactor: Invokes holds the Fake's lock around it.
+	every := dirKubeClearEvery
+	go func() {
+		for range time.Tick(every) {
+			cs.ClearActions()
+		}
+	}()
 	return cs
 }
+
+// dirKubeClearEvery is how often dirKube drops the fake's action record; a
+// var so the test can shorten it.
+var dirKubeClearEvery = 10 * time.Second
 
 type cmDir struct {
 	root string
