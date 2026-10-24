@@ -175,6 +175,8 @@ type Node struct {
 	reads    map[raft.ServerID]uint32    // leader: the newest format each member reads
 
 	joinRefusedLog *cache.LRUExpireCache // peer + reason
+	retireLog      *cache.LRUExpireCache // retiring voter + what it waits for
+	retiring       []raft.ServerID       // leader: voters waiting to retire (reconcile); protected by mu
 
 	backupAt    time.Time    // leader: last backup attempt
 	pruneAt     time.Time    // leader: last history prune check
@@ -213,6 +215,9 @@ type Status struct {
 	// heartbeats succeed. Seats is the voter seat count in force.
 	SeatsFilled bool `json:"seats_filled,omitempty"`
 	Seats       int  `json:"seats,omitempty"`
+	// RetiringVoters (leader): dead or replaced voters that keep their vote
+	// until their replacement is a voter that every staying voter reports.
+	RetiringVoters []string `json:"retiring_voters,omitempty"`
 	// Format is the cluster's agreed encoding format; Reads the newest this
 	// replica reads. Stuck says why it stopped following the log.
 	Format uint32 `json:"format,omitempty"`
@@ -291,6 +296,7 @@ func NewNode(cfg Config) (*Node, error) {
 		addedAt:        map[raft.ServerID]time.Time{},
 		reads:          map[raft.ServerID]uint32{},
 		joinRefusedLog: newLogOnce(),
+		retireLog:      newLogOnce(),
 	}
 	if len(cfg.RecoveryKey) > 0 {
 		k, err := x509.ParsePKIXPublicKey(cfg.RecoveryKey)
@@ -1050,6 +1056,11 @@ func (n *Node) Status() Status {
 	}
 	if n.leading() {
 		st.SeatsFilled = n.seatsFilled()
+		n.mu.Lock()
+		for _, id := range n.retiring {
+			st.RetiringVoters = append(st.RetiringVoters, string(id))
+		}
+		n.mu.Unlock()
 		st.ReadBarrierMS = n.barrierMS.Load()
 	}
 	return st
@@ -1066,7 +1077,9 @@ func (n *Node) Ready() bool {
 		return false
 	}
 	if n.isVoter() {
-		return true
+		// A seat more than the seats: a dead or replaced voter still counts
+		// for the quorum until it retires, so the next restart must wait.
+		return n.voterCount() <= n.seats()
 	}
 	if n.leading() {
 		return n.seatsFilled()

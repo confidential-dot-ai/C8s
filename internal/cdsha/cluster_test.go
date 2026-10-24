@@ -395,15 +395,29 @@ func TestLeaderKillAndRestartAsNewMember(t *testing.T) {
 		})
 	}
 	back := c.start(old.name, "m1")
-	// The joiner takes the dead member's address, so the leader replaces it
-	// at once, not only once the joiner has been healthy for Stabilize.
 	eventually(t, 5*time.Second, "restarted replica joined", func() bool {
 		l := c.leader()
 		return l != nil && slices.Contains(l.node.Status().NonVoters, back.node.ID())
 	})
-	if st := c.leader().node.Status(); slices.Contains(append(st.Voters, st.NonVoters...), oldID) {
-		t.Fatalf("the dead member at the joiner's address is still a member: %+v", st)
+	// The dead member at the joiner's address keeps its vote until the
+	// joiner holds one, so the add of the joiner commits with every live
+	// voter (F9).
+	if st := c.leader().node.Status(); !slices.Contains(st.Voters, oldID) {
+		t.Fatalf("the dead voter at the joiner's address lost its vote before the joiner got one: %+v", st)
 	}
+	// It retires once the joiner has been healthy for Stabilize, the next
+	// reconcile (a Tick) has promoted it, and the voters that stay have
+	// answered a status probe each (at most Lease/2 apiece): within
+	// Stabilize + Lease + 20 Ticks, which leaves the commits room too.
+	bound := testTiming.Stabilize + testTiming.Lease + 20*testTiming.Tick
+	eventually(t, bound, "the dead voter retired", func() bool {
+		l := c.leader()
+		if l == nil {
+			return false
+		}
+		st := l.node.Status()
+		return !slices.Contains(append(st.Voters, st.NonVoters...), oldID) && slices.Contains(st.Voters, back.node.ID())
+	})
 	c.settled(10 * time.Second)
 	st := c.leader().node.Status()
 	for _, id := range append(st.Voters, st.NonVoters...) {

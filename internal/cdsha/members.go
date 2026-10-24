@@ -158,7 +158,12 @@ func (n *Node) handleJoin(req controlRequest) controlResponse {
 		}
 		if hp, _ := splitRaftAddr(string(s.Address)); hp == hostport && s.ID != n.id {
 			// Only one process listens on an address: the member there is a
-			// dead earlier incarnation, and its seat is the joiner's.
+			// dead earlier incarnation, and its seat is the joiner's. A
+			// voter keeps its vote until the joiner holds one (reconcile).
+			if s.Suffrage == raft.Voter {
+				n.log.Info("member replaced at its address; it votes until the new member is a voter", "old", s.ID, "new", id)
+				continue
+			}
 			if err := r.RemoveServer(s.ID, 0, n.cfg.Timing.Apply).Error(); err != nil {
 				return controlResponse{Member: true, Err: err.Error()}
 			}
@@ -343,9 +348,26 @@ func (n *Node) reconcile() {
 			remove = append(remove, s.ID) // restarted: the new member takes over
 		}
 	}
+	// A dead or replaced voter keeps its vote until a replacement is a
+	// voter and every voter that stays has learned so (retireVoters).
+	// Removed first, it would leave a configuration in which the add of the
+	// replacement commits without a live voter, which then refuses the new
+	// voter's votes once the leader is gone (soak F9).
+	var retiring []raft.ServerID
+	isVoter := map[raft.ServerID]bool{}
+	for _, s := range servers {
+		isVoter[s.ID] = s.Suffrage == raft.Voter
+	}
+	remove = slices.DeleteFunc(remove, func(id raft.ServerID) bool {
+		if isVoter[id] {
+			retiring = append(retiring, id)
+			return true
+		}
+		return false
+	})
 	voters, voterNodes := 0, map[string]bool{}
 	for _, s := range servers {
-		if s.Suffrage == raft.Voter && !slices.Contains(remove, s.ID) {
+		if s.Suffrage == raft.Voter && !slices.Contains(retiring, s.ID) {
 			voters++
 			voterNodes[nodeOf(s.ID)] = true
 		}
@@ -361,19 +383,17 @@ func (n *Node) reconcile() {
 		voterNodes[nodeOf(s.ID)] = true
 		promote = append(promote, s)
 	}
+	for _, id := range n.retiring {
+		if !slices.Contains(retiring, id) && slices.ContainsFunc(servers, func(s raft.Server) bool { return s.ID == id }) {
+			// Its heartbeats came back (or it answered the probe): it keeps
+			// its seat. retiring is decided afresh every pass.
+			n.log.Info("retiring voter: cancelled, it answers again", "id", id)
+		}
+	}
+	n.retiring = retiring
 	n.mu.Unlock()
 	for _, id := range remove {
-		if err := r.RemoveServer(id, 0, n.cfg.Timing.Apply).Error(); err != nil {
-			n.log.Warn("remove member", "id", id, "err", err)
-			continue
-		}
-		n.mu.Lock()
-		delete(n.failing, id)
-		delete(n.joinedAt, id)
-		delete(n.addedAt, id)
-		delete(n.reads, id)
-		n.mu.Unlock()
-		n.log.Info("member removed", "id", id)
+		n.removeMember(r, id)
 	}
 	for _, s := range promote {
 		if err := r.AddVoter(s.ID, s.Address, 0, n.cfg.Timing.Apply).Error(); err != nil {
@@ -382,12 +402,91 @@ func (n *Node) reconcile() {
 		}
 		n.log.Info("member promoted to voter", "id", s.ID)
 	}
-	if len(remove) == 0 && len(promote) == 0 {
+	n.retireVoters(r, retiring)
+	if len(remove) == 0 && len(promote) == 0 && len(retiring) == 0 {
 		n.demoteExtraVoter(servers)
 	}
-	if len(remove) == 0 {
+	if len(remove) == 0 && len(retiring) == 0 {
 		n.raiseFormat(servers)
 	}
+}
+
+// removeMember removes id from the configuration and forgets it.
+func (n *Node) removeMember(r *raft.Raft, id raft.ServerID) bool {
+	if err := r.RemoveServer(id, 0, n.cfg.Timing.Apply).Error(); err != nil {
+		n.log.Warn("remove member", "id", id, "err", err)
+		return false
+	}
+	n.mu.Lock()
+	delete(n.failing, id)
+	delete(n.joinedAt, id)
+	delete(n.addedAt, id)
+	delete(n.reads, id)
+	n.mu.Unlock()
+	n.log.Info("member removed", "id", id)
+	return true
+}
+
+// retireVoters is called with membershipMu held. It removes a dead or
+// replaced voter once the voters that stay fill the seats and every one of
+// them but this leader reports them all as voters: none can then hold a
+// configuration in which another one is no voter, whichever survives this
+// leader. Until then the voter stays, and the cluster runs with a seat more.
+// It reports whether it removed one.
+func (n *Node) retireVoters(r *raft.Raft, retiring []raft.ServerID) bool {
+	if len(retiring) == 0 {
+		return false
+	}
+	servers := n.servers()
+	var stay []raft.Server
+	for _, s := range servers {
+		if s.Suffrage == raft.Voter && !slices.Contains(retiring, s.ID) {
+			stay = append(stay, s)
+		}
+	}
+	wait := func(id raft.ServerID, why string, args ...any) {
+		if n.retireLog == nil || logOnce(n.retireLog, string(id)+" "+why) {
+			n.log.Info("retiring voter: waiting", append([]any{"id", id, "for", why}, args...)...)
+		}
+	}
+	if len(stay) < n.seats() {
+		for _, id := range retiring {
+			wait(id, "a replacement", "voters", len(stay), "seats", n.seats())
+		}
+		return false
+	}
+	want := make([]string, 0, len(stay))
+	for _, s := range stay {
+		want = append(want, string(s.ID))
+	}
+	for _, s := range stay {
+		if s.ID == n.id {
+			continue
+		}
+		st, err := n.peerStatus(s.Address, min(time.Second, n.cfg.Timing.Lease/2))
+		if err != nil || st.ID != string(s.ID) {
+			for _, id := range retiring {
+				wait(id, string(s.ID)+" to answer")
+			}
+			return false
+		}
+		for _, v := range want {
+			if !slices.Contains(st.Voters, v) {
+				for _, id := range retiring {
+					wait(id, string(s.ID)+" to report "+v+" as a voter")
+				}
+				return false
+			}
+		}
+	}
+	retired := false
+	for _, id := range retiring {
+		if n.removeMember(r, id) {
+			n.log.Info("retired voter", "id", id, "voters", want)
+			retired = true
+		}
+	}
+	return retired
 }
 
 // demoteExtraVoter is called with membershipMu held. It demotes one voter
@@ -506,6 +605,17 @@ func (n *Node) seatsFilledLocked() bool {
 // set it, the launch configuration's before.
 func (n *Node) seats() int {
 	return cmp.Or(n.fsm.Core().Seats, n.cfg.Seats)
+}
+
+// voterCount is the number of voters in this member's latest configuration.
+func (n *Node) voterCount() int {
+	c := 0
+	for _, s := range n.servers() {
+		if s.Suffrage == raft.Voter {
+			c++
+		}
+	}
+	return c
 }
 
 // isVoter reports whether this member holds a voter seat.
