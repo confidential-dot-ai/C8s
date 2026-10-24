@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"net"
 	"os"
@@ -550,5 +551,28 @@ func TestVMShapesShareReadonlyRootButOnlyServerHasScratch(t *testing.T) {
 		if scratch != (side == "server") {
 			t.Fatalf("%s scratch: %v", side, scratch)
 		}
+	}
+}
+
+func TestPhaseFailuresReachEvidenceRedacted(t *testing.T) {
+	a := newAcceptanceTask(t)
+	leak := fmt.Errorf("c8s command failed: open %s/bundle/pod/launch.yaml: \x01no such file", a.private)
+	a.captureFn = func() error { return errors.New("capture read " + a.private + "/manifest.json") }
+	a.stopForwardsFn = func() error { return nil }
+	err := runPhases(a, [][2]any{{"prepare", func() error { return leak }}}, a.recordFailure)
+	wantError(t, err, "c8s command failed")
+	for _, name := range []string{"failure.json", "capture-error.json"} {
+		text := readFile(t, filepath.Join(a.evidence, name))
+		if strings.Contains(text, a.private) || !strings.Contains(text, "private-run-directory") {
+			t.Fatalf("%s leaks the private directory: %s", name, text)
+		}
+	}
+	if text := readFile(t, filepath.Join(a.evidence, "failure.json")); !strings.Contains(text, "?no such file") || !strings.Contains(text, `"type": "errorString"`) {
+		t.Fatalf("failure.json: %s", text)
+	}
+	d := newBootTask(t)
+	d.recordFailure(fmt.Errorf("resolved image pins: %s/pins.json", d.private))
+	if text := readFile(t, filepath.Join(d.evidence, "failure.json")); strings.Contains(text, d.private) || !strings.Contains(text, "private-run-directory") {
+		t.Fatalf("boot failure.json leaks the private directory: %s", text)
 	}
 }

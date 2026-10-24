@@ -495,7 +495,7 @@ func runBoot(mode string) error {
 		err = d.observe()
 	}
 	if err != nil {
-		_ = write(filepath.Join(d.evidence, "failure.json"), map[string]string{"error": err.Error(), "type": errorClass(err)})
+		d.recordFailure(err)
 		if d.hasVM() {
 			if _, captureErr := d.capture(999, now().Add(60*time.Second)); captureErr != nil {
 				_ = write(filepath.Join(d.evidence, "failure-capture.json"), map[string]string{"error": captureErr.Error()})
@@ -505,6 +505,12 @@ func runBoot(mode string) error {
 	}
 	fmt.Fprintln(progressOut, "Boot evidence captured; this diagnostic does not establish image or Pod connectivity acceptance.")
 	return nil
+}
+
+// recordFailure writes the diagnostic.s failure as public evidence: the Go
+// error type and the redacted message, never a private path or raw output.
+func (d *bootDiagnostic) recordFailure(err error) {
+	_ = write(filepath.Join(d.evidence, "failure.json"), map[string]string{"error": d.redact(err.Error()), "type": errorClass(err)})
 }
 
 // errorClass names an error's Go type without package or pointer.

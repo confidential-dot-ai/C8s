@@ -269,10 +269,6 @@ func (a *acceptance) validateProductionImage(raw []byte) error {
 	return err
 }
 
-func (a *acceptance) redact(message string) string {
-	return printable(strings.ReplaceAll(message, a.private, "<private-run-directory>"))
-}
-
 // observationError records a failed read-only observation: only static
 // labels and bounded, redacted errors reach evidence.
 func (a *acceptance) observationError(phase, side string, err error) error {
@@ -1021,15 +1017,18 @@ func runAcceptance(mode string) error {
 	if len(entries) != 0 {
 		return errors.New("acceptance already owns resources")
 	}
-	err = runPhases(task, [][2]any{{"prepare", task.prepareFn}, {"provision", task.provisionFn}, {"observe", task.observeFn}},
-		func(phase string, err error) error {
-			return write(filepath.Join(task.evidence, "failure.json"), map[string]string{"error": err.Error(), "type": errorClass(err)})
-		})
+	err = runPhases(task, [][2]any{{"prepare", task.prepareFn}, {"provision", task.provisionFn}, {"observe", task.observeFn}}, task.recordFailure)
 	if err != nil {
 		return err
 	}
 	fmt.Fprintln(progressOut, "Native TDX connected acceptance passed; this is not Cloud API acceptance.")
 	return nil
+}
+
+// recordFailure writes the first phase failure as public evidence: the Go
+// error type and the redacted message, never a private path or raw output.
+func (a *acceptance) recordFailure(_ string, err error) error {
+	return write(filepath.Join(a.evidence, "failure.json"), map[string]string{"error": a.redact(err.Error()), "type": errorClass(err)})
 }
 
 // runPhases runs the lane's phases with progress events, records the first
@@ -1041,7 +1040,7 @@ func runPhases(task *acceptance, phases [][2]any, onFailure func(phase string, e
 			action func() error
 		}{{"capture", task.captureFn}, {"forward-cleanup", task.stopForwardsFn}} {
 			if finalErr := final.action(); finalErr != nil {
-				_ = write(filepath.Join(task.evidence, final.name+"-error.json"), map[string]string{"error": finalErr.Error()})
+				_ = write(filepath.Join(task.evidence, final.name+"-error.json"), map[string]string{"error": task.redact(finalErr.Error())})
 			}
 		}
 	}()

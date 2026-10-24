@@ -658,3 +658,10 @@ func tail(data []byte, n int) string {
 }
 
 func restrictUmask() { umask(0o077) }
+
+// redact makes an error message safe for public evidence: the private run
+// directory becomes a placeholder and non-printable bytes are replaced, so
+// paths and raw tool output from the private tree never leave it.
+func (o *owned) redact(message string) string {
+	return printable(strings.ReplaceAll(message, o.private, "<private-run-directory>"))
+}
