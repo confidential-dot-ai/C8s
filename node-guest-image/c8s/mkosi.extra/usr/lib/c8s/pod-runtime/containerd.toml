@@ -1,0 +1,46 @@
+# Pod-role containerd config: RKE2's rendered base template (containerdcheck
+# rke2-base-v3.toml.tmpl) with the values RKE2 fills in on this image, so the
+# same baked drop-ins (c8s-runc, NRI) apply and every path c8s-runc and the
+# NRI plugin hard-code is unchanged. Pod-role differences: CNI from the
+# image, and the sandbox image pinned by digest (pulled; no airgap import).
+version = 3
+imports = ["/var/lib/rancher/rke2/agent/etc/containerd/config-v3.toml.d/*.toml"]
+root = "/var/lib/rancher/rke2/agent/containerd"
+state = "/run/k3s/containerd"
+
+[grpc]
+  address = "/run/k3s/containerd/containerd.sock"
+
+[plugins.'io.containerd.internal.v1.opt']
+  path = "/var/lib/rancher/rke2/agent/containerd"
+
+[plugins.'io.containerd.grpc.v1.cri']
+  stream_server_address = "127.0.0.1"
+  stream_server_port = "10010"
+
+[plugins.'io.containerd.cri.v1.runtime']
+  enable_selinux = false
+  enable_unprivileged_ports = true
+  enable_unprivileged_icmp = true
+  device_ownership_from_security_context = false
+
+[plugins.'io.containerd.cri.v1.images']
+  snapshotter = "overlayfs"
+  disable_snapshot_annotations = true
+  use_local_image_pull = true
+
+[plugins.'io.containerd.cri.v1.images'.pinned_images]
+  sandbox = "docker.io/rancher/mirrored-pause:3.10.2@sha256:f548e0e8e3dc1896ca956272154dde3314e8cc4fde0a57577ee9fa1c63f5baf4"
+
+[plugins.'io.containerd.cri.v1.runtime'.cni]
+  bin_dirs = ["/usr/lib/c8s/cni"]
+  conf_dir = "/usr/lib/c8s/pod-runtime/cni"
+
+[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc]
+  runtime_type = "io.containerd.runc.v2"
+
+[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc.options]
+  SystemdCgroup = true
+
+[plugins.'io.containerd.cri.v1.images'.registry]
+  config_path = "/var/lib/rancher/rke2/agent/etc/containerd/certs.d"

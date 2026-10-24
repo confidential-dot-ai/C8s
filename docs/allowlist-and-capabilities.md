@@ -884,6 +884,14 @@ verifier trusts it only as far as it replays against a quote's RTMR[3]:
 - **cred-release.** It accepts its own binding as the seed followed by a
   prefix of the list, and carries the list in its armTLS certificate and in
   its `/attest` response.
+- **pod-status.** In the `pod` launch role the plugin measures each admitted
+  image digest instead of policies (`measure.rtmr3`, which excludes
+  `allowlist.pull.measure_policies`: a boot has one RTMR[3] writer), into the
+  same journal, seeded with the launch key the initrd staged. `c8s pod-status
+  serve` lists that journal in its armTLS certificate the way cred-release
+  lists the node's, and `c8s pod-attest` accepts the certificate's binding as
+  the seed followed by a prefix of the list, then requires the list it read on
+  both sides of a fresh quote to replay in full.
 - **`c8s get-kubeconfig`.** On TDX it takes the list from the verified
   cred-release certificate, whose self-signature under the attested key
   covers it, and for the fresh report from the `/attest` response on that
