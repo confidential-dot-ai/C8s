@@ -1,9 +1,11 @@
 package cds
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
@@ -55,7 +57,7 @@ func TestSeedStore_AddsAllEntries(t *testing.T) {
 	defer store.Close()
 
 	path := writeSeed(t, anySeed(map[string]string{"cds": digestA, "as": digestB}))
-	if err := seedStore(&store, path); err != nil {
+	if _, err := seedStore(&store, path); err != nil {
 		t.Fatalf("seedStore: %v", err)
 	}
 
@@ -88,7 +90,7 @@ func TestSeedStore_IdempotentDoesNotBumpVersion(t *testing.T) {
 	defer store.Close()
 
 	path := writeSeed(t, anySeed(map[string]string{"cds": digestA}))
-	if err := seedStore(&store, path); err != nil {
+	if _, err := seedStore(&store, path); err != nil {
 		t.Fatalf("first seed: %v", err)
 	}
 	_, v1, err := store.LoadAll()
@@ -96,7 +98,7 @@ func TestSeedStore_IdempotentDoesNotBumpVersion(t *testing.T) {
 		t.Fatalf("LoadAll: %v", err)
 	}
 
-	if err := seedStore(&store, path); err != nil {
+	if _, err := seedStore(&store, path); err != nil {
 		t.Fatalf("second seed: %v", err)
 	}
 	_, v2, err := store.LoadAll()
@@ -123,7 +125,7 @@ func TestSeedStore_PreservesExistingEntries(t *testing.T) {
 	}
 
 	path := writeSeed(t, anySeed(map[string]string{"cds": digestA, "runtime": digestA}))
-	if err := seedStore(&store, path); err != nil {
+	if _, err := seedStore(&store, path); err != nil {
 		t.Fatalf("seedStore: %v", err)
 	}
 
@@ -148,7 +150,7 @@ func TestSeedStore_FailsClosedOnBadDigest(t *testing.T) {
 
 	// "sha256:bad" fails ParseJSON's digest validation.
 	path := writeSeed(t, anySeed(map[string]string{"cds": "sha256:bad"}))
-	if err := seedStore(&store, path); err == nil {
+	if _, err := seedStore(&store, path); err == nil {
 		t.Fatal("seedStore accepted a malformed digest; want fail-closed error")
 	}
 }
@@ -160,7 +162,7 @@ func TestSeedStore_FailsClosedOnMissingFile(t *testing.T) {
 	}
 	defer store.Close()
 
-	if err := seedStore(&store, filepath.Join(t.TempDir(), "does-not-exist.json")); err == nil {
+	if _, err := seedStore(&store, filepath.Join(t.TempDir(), "does-not-exist.json")); err == nil {
 		t.Fatal("seedStore accepted a missing seed file; want fail-closed error")
 	}
 }
@@ -174,81 +176,131 @@ func TestSeedStore_FailsClosedOnStoreError(t *testing.T) {
 	_ = store.Close()
 
 	path := writeSeed(t, anySeed(map[string]string{"cds": digestA}))
-	if err := seedStore(&store, path); err == nil {
+	if _, err := seedStore(&store, path); err == nil {
 		t.Fatal("seedStore succeeded on a closed store; want fail-closed error")
 	}
 }
 
-// A seed layer never enters the store, while --allowlist-seed does: an upload
-// replaces the stored document only, decisions still hold the seed layer, and
-// a seed entry wins a name both layers hold.
-func TestOpenSeedLayerSurvivesUpload(t *testing.T) {
+// A chart upgrade rewrites the mounted seed while CDS runs: the new entries
+// reach the store without a restart, and an entry deleted while the seed is
+// unchanged stays deleted.
+func TestFollowSeedAppliesChangedSeed(t *testing.T) {
 	store, err := allowlist.OpenInMemory()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	launch := writeSeed(t, anySeed(map[string]string{"launch": digestB}))
-	layers, err := openSeed(&store, launch, writeSeed(t, anySeed(map[string]string{"cds": digestA})))
+	path := writeSeed(t, anySeed(map[string]string{"cds": digestA}))
+	applied, err := seedStore(&store, path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stored, _, err := store.LoadAll(); err != nil || len(stored.Workloads) != 1 || stored.Workloads["launch"].Label == "" {
-		t.Fatalf("store holds %v, %v; want the launch workloads alone, not the seed layer", stored.Workloads, err)
+	if ok, err := store.DeleteWorkload("cds"); err != nil || !ok {
+		t.Fatalf("DeleteWorkload(cds) = %t, %v", ok, err)
 	}
-	upload, err := pkgallowlist.ParseJSON([]byte(anySeed(map[string]string{"app": digestB, "cds": digestB})))
+	ctx, cancel := context.WithCancel(context.Background())
+	tick := make(chan time.Time)
+	done := make(chan struct{})
+	go func() { followSeed(ctx, &store, path, applied, tick); close(done) }()
+	t.Cleanup(func() { cancel(); <-done })
+	// tick is unbuffered: a send returns only once the previous check is done.
+	check := func() { tick <- time.Time{}; tick <- time.Time{} }
+
+	check()
+	if doc, _, err := store.LoadAll(); err != nil || len(doc.Workloads) != 0 {
+		t.Fatalf("unchanged seed reapplied: %v, %v", doc.Workloads, err)
+	}
+	if err := os.WriteFile(path, []byte(anySeed(map[string]string{"cds": digestA, "operator-v2": digestB})), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	check()
+	doc, _, err := store.LoadAll()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.ReplaceAll(upload); err != nil {
-		t.Fatal(err)
-	}
-	decided, version, err := layers.LoadAll()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := decided.Workloads["app"]; !ok || len(decided.Workloads) != 2 {
-		t.Fatalf("decisions hold %v, want app and cds", decided.Workloads)
-	}
-	if got := decided.Workloads["cds"].Containers[0].Digest.String(); got != digestA {
-		t.Errorf("cds decides on %s, want the seed's %s", got, digestA)
-	}
-	if stored, current, err := store.LoadAll(); err != nil || current != version || len(stored.Workloads) != 2 {
-		t.Errorf("store holds %v at %s, want the upload at the layered version %s (%v)", stored.Workloads, current, version, err)
-	}
-	if layers.SeedDigest() == "" {
-		t.Error("no seed digest")
+	if _, ok := doc.Workloads["operator-v2"]; !ok {
+		t.Fatalf("changed seed not applied: %v", doc.Workloads)
 	}
 }
 
-// Without --seed-layer the seed is merged into the store and there is no
-// layer.
-func TestOpenSeedWithoutLayerSeedsTheStore(t *testing.T) {
-	store, err := allowlist.OpenInMemory()
+// Without --follow-seed a changed seed is not published: editing the seed's
+// ConfigMap is no substitute for an operator token. A following store on the
+// same file shows when the change would have been applied.
+func TestStartSeedWithoutFollowIgnoresChanges(t *testing.T) {
+	orig := seedRecheckInterval
+	seedRecheckInterval = time.Millisecond
+	t.Cleanup(func() { seedRecheckInterval = orig })
+	open := func() *allowlist.Store {
+		store, err := allowlist.OpenInMemory()
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = store.Close() })
+		return &store
+	}
+	fixed, following := open(), open()
+	path := writeSeed(t, anySeed(map[string]string{"cds": digestA}))
+	ctx, cancel := context.WithCancel(context.Background())
+	fixedDone, err := startSeed(ctx, fixed, path, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
-	layers, err := openSeed(&store, writeSeed(t, anySeed(map[string]string{"cds": digestA})), "")
+	followingDone, err := startSeed(ctx, following, path, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if layers.SeedDigest() != "" {
-		t.Errorf("seed layer %s without --seed-layer", layers.SeedDigest())
+	t.Cleanup(func() {
+		cancel()
+		<-fixedDone
+		<-followingDone
+	})
+	_, before, err := fixed.LoadAll()
+	if err != nil {
+		t.Fatal(err)
 	}
-	if stored, _, err := store.LoadAll(); err != nil || len(stored.Workloads) != 1 {
-		t.Fatalf("store holds %v, %v; want the seed", stored.Workloads, err)
+	if err := os.WriteFile(path, []byte(anySeed(map[string]string{"cds": digestA, "intruder": digestB})), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		doc, _, err := following.LoadAll()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := doc.Workloads["intruder"]; ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the following store never applied the change")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	doc, after, err := fixed.LoadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := doc.Workloads["intruder"]; ok || after != before {
+		t.Errorf("without --follow-seed: workloads %v at version %s, want no intruder at version %s", doc.Workloads, after, before)
 	}
 }
 
-// A seed layer fails closed on a bad seed, as seeding the store does.
-func TestOpenSeedLayerFailsClosed(t *testing.T) {
+// startSeed's channel closes once a cancelled follower returns, so a caller
+// waiting on it may then close the store.
+func TestStartSeedDoneClosesOnCancel(t *testing.T) {
 	store, err := allowlist.OpenInMemory()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	if _, err := openSeed(&store, "", writeSeed(t, `{"schema":"c8s.allowlist/v1","workloads":{"x":{}}`)); err == nil {
-		t.Fatal("openSeed accepted a malformed seed")
+	ctx, cancel := context.WithCancel(context.Background())
+	done, err := startSeed(ctx, &store, writeSeed(t, anySeed(map[string]string{"cds": digestA})), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the follower did not stop after its context was cancelled")
 	}
 }

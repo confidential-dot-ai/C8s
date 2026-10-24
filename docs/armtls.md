@@ -311,11 +311,13 @@ A failed chain is never retried against the leaf's embedded evidence, so a
 self-signed peer and a peer from another mesh CA both fail.
 
 Either role may also set `AcceptPeer`, which runs on the identity the chain
-path read — the sandbox ID, the CA-vouched matched workload name and the
-purpose required — once that verification passed and before any application
-byte moves. An error there fails the handshake. The router's routing sidecar
-sets it: the backend of a route must be the workload the signed manifest
-names, and a leaf CDS stamped no workload on names none.
+path read — the sandbox ID, the CA-vouched matched workload name with its
+allowlist version and digest, and the purpose required — once that
+verification passed and before any application byte moves. An error there
+fails the handshake. The router's routing sidecar sets it: the backend of a
+route must be the workload the signed manifest names, and a leaf CDS stamped
+no workload on names none. Once the handshake completes, the router also
+requires that entry to be unchanged in the allowlist CDS serves now.
 
 This profile authenticates member-to-member traffic only: a credential client
 reaches CDS on the evidence path, and the router is itself a member. Its
@@ -708,7 +710,7 @@ MatchedWorkload ::= SEQUENCE {
     formatVersion    INTEGER,           -- exactly 1
     name             IA5String,         -- 1..63 bytes; allowlist workload-name grammar
     allowlistVersion IA5String,         -- 1..20 ASCII decimal digits, no leading zero
-    allowlistDigest  OCTET STRING (32)  -- SHA-256(Allowlist.Canonical()) of that document, or of the seed layer
+    allowlistDigest  OCTET STRING (32)  -- SHA-256(Allowlist.Canonical()) of that document
 }
 ```
 
@@ -743,13 +745,7 @@ verify, CDS makes one unified inventory decision
 6. run `allowlist.MatchWorkload` — argv-aware, "nothing foreign, every main
    present" — once against the snapshot.
 
-A unique match stamps `(name, snapshot version, snapshot digest)`. On a
-measured node image CDS keeps the image's allowlist seed as a fixed layer
-beside the stored document (`--seed-layer`): steps 3 to 6 run on both layers,
-a seed entry wins a name both hold, and a match on a seed entry stamps the
-seed's digest in place of the snapshot digest. CDS serves the seed's bytes at
-`/allowlist/objects/sha256/<hex>` and names it in the `C8s-Allowlist-Seed`
-header of `GET /allowlist`. Everything
+A unique match stamps `(name, snapshot version, snapshot digest)`. Everything
 else — an old inventory with no containers view, a malformed answer, no match
 mid-lifecycle, an ambiguous match — issues the existing **membership-only
 (unnamed) leaf**: incomplete pods need a mesh certificate to bootstrap, so the
@@ -828,6 +824,10 @@ transcript.
   That is the contract: on those connections nothing vouches for the stamp.
   A caller that needs the name on such a hop must verify the leaf against the
   mesh CA itself and use `MatchedWorkloadFromCert`, not weaken the check.
+- The router reads the stamp off each workload backend's verified leaf
+  (`armtls.Peer`). It requires the route's name, and that the entry of that
+  name in the stamped allowlist document has the same canonical content in
+  the allowlist CDS serves now. The router's own stamp plays no part.
 
 A compromised mesh CA can mint any name — the stamp is CA-vouched, not
 hardware-bound.
@@ -905,20 +905,37 @@ confidentiality.)
   it can do at the network layer regardless. The carve-out is scoped to the
   cw pod ipset and to UDP/53; every other non-TCP from a cw pod still
   drops.
-- **CDS public reads.** Every non-root socket of a member pod may open TCP to
-  the one CDS endpoint its node binds the credential clients to, uncaptured, so a
-  workload can read what CDS serves without authentication (`GET /allowlist`,
-  its history and objects, the route manifest, `/ca`, `/operator-keys`,
-  `/measurements`). The connection is armTLS to CDS, and every other CDS route
-  still requires what it requires from any caller: an operator-signed token
-  to write, attestation evidence for a certificate, a mesh leaf and sandbox
-  token for a secret. Like DNS, it is an address and port, not a payload
-  filter: a workload can send arbitrary bytes to that port, so it is not an
-  exfiltration barrier. It also lets every member pod load CDS with
-  unauthenticated requests, which before only the credential clients could. The endpoint is the address in
-  `/run/c8s/cds-address` of the pod's credential clients: the server
-  address and port 30808 on a baked node, the node's own address and the
-  CDS node port on an install.
+- **Cluster metrics.** On a baked node, every non-root socket of a member pod
+  may open TCP to the kube-state-metrics Service, `10.53.0.11:8080`,
+  uncaptured, and read `GET /metrics` there. The measured mesh policy names
+  that one address and port (`mesh.exits`); kube-state-metrics itself runs in
+  `kube-system`, outside the mesh, as a stock image the seed pins to its
+  exact argv, mounts and environment. It serves plain HTTP and exports the
+  metadata of pods, nodes, namespaces, Services, PersistentVolumes and their
+  claims, Deployments, ReplicaSets, StatefulSets, DaemonSets, Jobs, CronJobs
+  and PodDisruptionBudgets:
+  - names, namespaces, owners, service accounts, creation and deletion times;
+  - phases, conditions, reasons, exit codes, restart counts, and start,
+    scheduled and ready times;
+  - container images with their `image_id` and `container_id`;
+  - pod IPs, the node each pod runs on with its host IP, node addresses and
+    pod CIDRs, Service types and ClusterIPs;
+  - resource requests, limits, capacity and allocatable figures, replica
+    counts and job status, CronJob schedules;
+  - PersistentVolume and claim names, storage classes, capacities, access
+    modes and claim bindings.
+
+  Its RBAC is list and watch on those kinds alone, so it reads no Secret or
+  ConfigMap. Its argv turns off the series that describe the host rather than
+  the workloads (`kube_node_info`: system UUID, provider ID, kernel and OS
+  image; `kube_node_spec_taint` and `kube_pod_tolerations`: taint keys and
+  values; `kube_persistentvolume_info`: host and local paths and volume
+  handles; `kube_service_spec_external_ip`). It exports no labels or
+  annotations, no environment, arguments or container output, and nothing a
+  workload processes. Any member pod can read that metadata about every other
+  pod of the cluster, including restart counts and replica numbers that move
+  with another workload's activity. Like DNS, it is an
+  address and port, not a payload filter.
 
 ## Which certificate is used where
 

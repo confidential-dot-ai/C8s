@@ -132,10 +132,6 @@ measured image runs volumed as a host service, so encrypted volumes
 router always publishes the applied route manifest
 ([Route manifest](#route-manifest)).
 
-An optional `models: {writable: true, rootOwner: "UID:GID"}` lets the node
-format a blank `confai-models` disk and mount it read-write
-([node-guest-image/README.md](../node-guest-image/README.md)).
-
 Use **distinct launch keys for server and agent roles, and new keys for
 each cluster**. `clusterID` is a descriptive RFC1123 label; the distinct
 launch keys establish cluster separation during peer verification. Keep one
@@ -578,6 +574,24 @@ CDS answers 304 while nothing changed, so an idle poll is cheap. Strict
 clients recover without a router restart within one poll interval, plus up to
 half an interval of jitter, plus one issuance.
 
+An allowlist write does not interrupt workload routes whose entry it leaves
+unchanged. The router reads the current allowlist from CDS on every route
+poll (`--routes-poll-interval`). It forwards to a workload backend when the
+entry named in the backend leaf's stamp is in the current allowlist with the
+same canonical content as in the document the leaf was stamped under. It
+fetches that document from CDS's allowlist history
+(`GET /allowlist/objects/sha256/<digest>`) and caches the last 16 by digest.
+A leaf can be stamped under a document newer than the router's last poll, so
+a failed check under another digest rereads the current allowlist first, at
+most once every 5 seconds.
+A write that removes or redefines an entry cuts that entry's backends off at
+the router's next route poll: their pooled connections retire and new
+connections get 502 `backend_entry_changed` until the backend re-issues under
+the current allowlist (one `--ca-watch-interval`, plus half an interval of
+jitter, plus one issuance). The check fails closed: a stamped document CDS
+can no longer serve, as after a CDS reset, is refused the same way until the
+backend re-issues.
+
 CDS renews its mesh CA certificate at half its configured lifetime under the
 same process-lifetime key. Workloads pick up the current certificate on their
 next `/ca` refresh, and the continuity check accepts its signature under the
@@ -599,10 +613,9 @@ With CDS a singleton:
 
 For the measured node image, CDS stores its database at `/mnt/c8s-data/cds/allowlist.db`
 in the Pod's `emptyDir`. A container restart preserves that directory; Pod
-recreation or a VM reboot loses it. The baked component seed is a fixed seed
-layer beside the store, which no upload drops; the optional signed `workloads`
-document initializes the new store, and the first upload replaces it. Reapply
-any later operator changes. The CA signing key is in process memory and changes on
+recreation or a VM reboot loses it. The baked component seed and optional
+signed `workloads` document initialize the new store; reapply any later
+operator changes. The CA signing key is in process memory and changes on
 any CDS process restart, so plan for certificate re-bootstrap even when the
 database survives. This image does not expose a persistent-volume switch in
 launch configuration.
@@ -668,8 +681,25 @@ follows these rules:
 - A workload backend (`workload`) is reached as a mesh client of the member
   behind it: `cds-attest` presents the router's mesh certificate and requires
   a peer certificate chaining to the mesh CA whose matched workload name
-  equals `workload`. A failed handshake gets 502; no backend is reached in
-  plaintext.
+  equals `workload`, and whose stamped entry is unchanged in the allowlist
+  CDS serves now. A failed handshake gets 502, `backend_entry_changed` when
+  the entry was removed or redefined or its stamped document cannot be
+  fetched; no backend is reached in plaintext.
+- An attested session routes only by the manifest its handshake bound, and a
+  request on it only while the entry its route names is unchanged from the
+  allowlist on the router leaf the handshake bound. After a route change, or
+  an allowlist change that removes or redefines that entry, the router
+  answers with 503 `route_digest_changed` or `route_entry_changed`. Other allowlist writes, and the router's renewal
+  under them, do not refuse the session. It ends an attest-pq
+  session. An attest-lb connection stays open and every request on it gets
+  the same 503 until the client reconnects or attests again on it. No
+  traffic moves to the new routes unattested. See
+  [Route evidence](routes-evidence.md#server).
+- Each router replica holds at most 65536 attest-lb bindings, and one
+  client address prefix at most 512 of them. At either limit, new attest-lb
+  handshakes from that client get 503 `sessions_busy`. A binding idle for
+  2 minutes lapses and refuses its connection with 503 `binding_expired`
+  until the client attests again.
 - `router.routing.readTimeout` bounds nginx's wait between reads, and
   `router.routing.backendTimeout` (default 1h) how long a routed request, or
   a WebSocket, may go with no data moving; a tunnelled request gets that long
@@ -899,7 +929,7 @@ The chart sets these flags from `router.routing` and the CDS pins.
 | `--tunnel-io-timeout` | `30s` | How long a tunnel upload, or the download of its sealed response, may make no progress. Must be positive. |
 | `--tunnel-budget` | 75% of the container memory limit, else `32Gi` | Bytes the tunnelled requests in flight in one replica may buffer, as a quantity such as `64Gi`. Each request reserves three copies of its record and four of the largest response (32 MiB); one client (by `X-Real-IP`) holds at most a quarter. Must cover one full-size request, 152 MiB. Set by `router.routing.tunnelBudget`. |
 | `--reserved-paths` | the router's own endpoints | Paths no manifest route can match. Each entry must be a normalized path. |
-| `--attest-endpoints` | `true` | `false` serves only the routing listener and probes. Requires `--routing-port`. `true` requires the three `--mesh-identity-*` files, whose leaf the attestation endpoints bind to. |
+| `--attest-endpoints` | `true` | `false` serves only the routing listener and probes. Requires `--routing-port`. `true` requires the three `--mesh-identity-*` files, whose leaf the attestation endpoints bind to; they must name `/etc/c8s/certs/tls.crt`, `tls.key` and `ca.crt`, the credential the router reaches backends with. |
 | `--publish-routes` | `false` | Serves the applied signed manifest at `/.well-known/c8s/routes`. Requires `--cds-url` and `--attest-endpoints=true`. Set by `router.routePublication.enabled`. |
 
 `cds-attest` takes the operator keys from the node's launch configuration,
@@ -1455,9 +1485,12 @@ enforce that:
   are PodSecurity-exempt, and `c8s-system`, labelled privileged for the
   baked operator), where a pod, an edited DaemonSet, a HelmChart or a
   service-account token secret is root on the node; and none of the
-  cluster-scoped resources listed above. Its match condition selects the
-  `c8s:` groups before any validation runs, so system components and the
-  in-guest `rke2.yaml` are unaffected.
+  cluster-scoped resources listed above. It also refuses a Service with
+  `externalIPs` or with a ClusterIP in `10.53.0.0/24`, the band holding the
+  resolver and kube-state-metrics addresses that member pods reach
+  uncaptured, so no Service can take those addresses over. Its match
+  condition selects the `c8s:` groups before any validation runs, so system
+  components and the in-guest `rke2.yaml` are unaffected.
 
 The role therefore cannot lower a namespace below restricted, cannot exec,
 cannot write where PodSecurity does not apply, cannot mount the host through

@@ -49,7 +49,7 @@ func requireSameNamespace(netns podNamespace) error {
 }
 
 func rulesetExits(exits []exit) []ruleset.Exit {
-	out := make([]ruleset.Exit, 0, len(exits))
+	var out []ruleset.Exit
 	for _, e := range exits {
 		out = append(out, ruleset.Exit{Range: e.Range, Port: e.Port})
 	}
@@ -59,36 +59,33 @@ func rulesetExits(exits []exit) []ruleset.Exit {
 // podRuleset is the ruleset a member pod of that Kubernetes namespace
 // carries: the mesh endpoint's reserved UID owns the capture ports, every
 // dialing role reaches only what its binding names, every container reaches
-// this node's CDS and the exits the pod was granted, and a pod of the
-// router's namespace also answers the router's external listeners.
+// the platform services the policy names and the exits the pod was granted,
+// and a pod of the router's namespace also answers the router's external
+// listeners.
 func (p meshPolicy) podRuleset(kubeNamespace string, granted []exit) ruleset.Policy {
 	endpoint, _ := p.role(meshRole)
 	return ruleset.Policy{
 		Resolver: p.Resolver,
 		Capture:  ruleset.CapturePorts(p.Capture),
 		MeshUID:  endpoint.UID,
-		Exits:    slices.Concat(p.cdsExit(), rulesetExits(granted)),
+		Exits:    slices.Concat(p.serviceExits(), rulesetExits(granted)),
 		Server:   p.servedPorts(kubeNamespace),
 		Roles:    p.dialingRoles(),
 	}
 }
 
-// cdsExit lets every container of a member pod reach the one CDS this node's
-// credential clients are bound to, so a workload reads what CDS publishes
-// without authentication: the allowlist, its history and objects, the route
-// manifest, the CA, the operator keys and the measurements. That connection
-// is armTLS to CDS, and every other route there still needs what it needs
-// from any caller: an operator-signed token to write, attestation evidence for
-// a certificate, a mesh leaf and sandbox token for a secret.
-func (p meshPolicy) cdsExit() []ruleset.Exit {
-	cds, bound := p.boundCDS()
-	if !bound {
-		return nil
+// serviceExits are the platform services trusted policy names for every
+// member pod, each one address and port: the baked kube-state-metrics
+// Service, which serves cluster object metadata in plain HTTP.
+func (p meshPolicy) serviceExits() []ruleset.Exit {
+	exits := make([]ruleset.Exit, 0, len(p.Exits))
+	for _, exit := range p.Exits {
+		exits = append(exits, ruleset.Exit{
+			Range: netip.PrefixFrom(exit.Addr(), exit.Addr().BitLen()),
+			Port:  exit.Port(),
+		})
 	}
-	return []ruleset.Exit{{
-		Range: netip.PrefixFrom(cds.Addr, cds.Addr.BitLen()),
-		Port:  cds.Port,
-	}}
+	return exits
 }
 
 // servedPorts is the server role the ruleset of a pod of the router's

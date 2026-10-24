@@ -72,8 +72,8 @@ func captureInbound(p Policy) chain {
 
 // captureOutbound redirects application TCP leaving the pod to the outbound
 // listener. Pod-local destinations, queries to an approved resolver, the
-// pod's exits and platform-role sockets stay uncaptured; the resolver port elsewhere is
-// captured like every other destination.
+// pod's exits and platform-role sockets stay uncaptured; the resolver port
+// elsewhere is captured like every other destination.
 func captureOutbound(p Policy) chain {
 	rules := []rule{
 		{"pod-local", withVerdict(matchLocalDestination(), expr.VerdictReturn)},
@@ -110,9 +110,9 @@ func filterInput(p Policy) chain {
 // filterOutput denies traffic leaving the pod unless it is a reply, bound for
 // a pod-local address, neighbour discovery, an approved resolver query, TCP
 // from the mesh endpoint's own sockets or to one of the pod's exits, or sent
-// by a platform role to a destination it is bound to. No member pod process runs as root, so a
-// root-owned socket here entered the namespace from outside, as port-forward
-// does.
+// by a platform role to a destination it is bound to. No member pod process
+// runs as root, so a root-owned socket here entered the namespace from
+// outside, as port-forward does.
 func filterOutput(p Policy) chain {
 	resolverUDP := fmt.Sprintf("resolver-%s-udp", p.Resolver)
 	resolverTCP := fmt.Sprintf("resolver-%s-tcp", p.Resolver)

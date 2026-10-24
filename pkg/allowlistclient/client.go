@@ -78,9 +78,6 @@ type Served struct {
 	// Allowlist.Canonical, so this is the policy digest it stamps into
 	// workload certificates and nodes measure into RTMR[3].
 	Digest string
-	// Seed is the digest of the seed layer CDS names in
-	// allowlist.SeedHeader, "" without one.
-	Seed string
 }
 
 // FetchServed is Fetch that also returns the digest of the served bytes.
@@ -140,7 +137,34 @@ func (c Client) fetch(ctx context.Context, ifNoneMatch string, raw *[]byte) (Ser
 		*raw = body
 	}
 	sum := sha256.Sum256(body)
-	return Served{Allowlist: al, ETag: resp.Header.Get("ETag"), Digest: "sha256:" + hex.EncodeToString(sum[:]), Seed: resp.Header.Get(allowlist.SeedHeader)}, false, nil
+	return Served{Allowlist: al, ETag: resp.Header.Get("ETag"), Digest: "sha256:" + hex.EncodeToString(sum[:])}, false, nil
+}
+
+// Object returns the allowlist document of the CDS's history whose digest is
+// digest (GET /allowlist/objects/sha256/<hex>). It refuses bytes that hash to
+// anything else, so the caller needs no trust in the store for them.
+func (c Client) Object(ctx context.Context, digest [sha256.Size]byte) (*allowlist.Allowlist, error) {
+	path := "/allowlist/objects/sha256/" + hex.EncodeToString(digest[:])
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch %s: %w", path, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, operatorauth.ResponseError(resp)
+	}
+	body, err := readCapped(resp.Body, maxAllowlistResponseBytes)
+	if err != nil {
+		return nil, err
+	}
+	if sha256.Sum256(body) != digest {
+		return nil, fmt.Errorf("fetch %s: the body hashes to another digest", path)
+	}
+	return allowlist.ParseServedJSON(body)
 }
 
 // ReplaceAll atomically replaces the entire allowlist. CDS assigns the new

@@ -470,6 +470,39 @@ rke2:
       repository: busybox
       digest: "sha256:fd8d9aa63ba2f0982b5304e1ee8d3b90a210bc1ffb5314d980eb6962f1a9715d"
 
+## kube-state-metrics: cluster object metadata as Prometheus metrics, a
+## platform add-on of the measured node image (node.baked only). It runs in
+## kube-system, outside the mesh, with read-only RBAC that excludes Secrets
+## and ConfigMaps, and serves plain HTTP on a fixed Service address that the
+## measured mesh policy gives every member pod as an exit
+## (node-guest-image/c8s/image-policy.yaml.in mesh.exits).
+kubeStateMetrics:
+  enabled: false
+  image:
+    repository: registry.k8s.io/kube-state-metrics/kube-state-metrics
+    # Resolve registry.k8s.io/kube-state-metrics/kube-state-metrics:v2.20.0 to bump this digest.
+    digest: "sha256:42cfe3723a5f058171c627537fb57a3ea0f26e4380fa18555a95cb1a1b4cfc5b"
+    tag: ""
+    pullPolicy: IfNotPresent
+  # The image's executable, which the seeded entry pins. Bump with the image.
+  entrypoint: ["/kube-state-metrics"]
+  # The image config's Env, which the seeded entry's env match pins. Bump
+  # with the image.
+  imageEnv:
+    PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
+  # INVARIANT: equal to the measured mesh policy's exit. Inside service-cidr,
+  # beside the cluster DNS address, in the low band the apiserver hands out
+  # only on request.
+  clusterIP: 10.53.0.11
+  port: 8080
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
 nriImagePolicy:
   ## The mesh policy of an installed (unmeasured) node: the pods of this
   ## release's namespace and kube-system host no member pods, and the pod
@@ -1044,7 +1077,9 @@ router:
     #    - when the router requests workload claims (node.baked or
     #      router.attest.expectedWorkload), the allowlist policy CDS serves no
     #      longer matches the snapshot stamped in the leaf, which strict
-    #      clients reject: renews after up to half an interval of jitter.
+    #      clients reject, and, for a backend whose entry the write removed
+    #      or redefined, that the router refuses (502 `backend_entry_changed`):
+    #      renews after up to half an interval of jitter.
     #    Without it both last until the next scheduled renewal. "0" disables
     #    the watch; otherwise the minimum is 1s.
     caWatchInterval: "1m"

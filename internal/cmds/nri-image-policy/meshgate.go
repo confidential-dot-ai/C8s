@@ -323,19 +323,32 @@ func (g *meshGate) requireOffLimits(exits []exit) error {
 
 // requireOutsideCluster refuses an exit into this cluster's pod or Service
 // ranges: a connection to a member leaves the pod through the mesh or not at
-// all. A policy naming no ranges cannot show any exit stays outside them.
+// all. A policy naming no range of an exit's address family cannot show that
+// exit stays outside them.
 func (p meshPolicy) requireOutsideCluster(exits []exit) error {
-	if len(p.ClusterRanges) == 0 {
-		return errors.New("trusted mesh policy names no cluster ranges, so no exit can be shown to stay outside the cluster")
-	}
 	for _, e := range exits {
+		family := false
 		for _, in := range p.ClusterRanges {
+			if in.Addr().Is4() != e.Range.Addr().Is4() {
+				continue
+			}
+			family = true
 			if e.Range.Overlaps(in) {
 				return fmt.Errorf("exit %s port %d overlaps the cluster range %s", e.Range, e.Port, in)
 			}
 		}
+		if !family {
+			return fmt.Errorf("trusted mesh policy names no %s cluster range, so exit %s cannot be shown to stay outside the cluster", ipFamily(e.Range), e.Range)
+		}
 	}
 	return nil
+}
+
+func ipFamily(p netip.Prefix) string {
+	if p.Addr().Is4() {
+		return "IPv4"
+	}
+	return "IPv6"
 }
 
 // admissible answers from the enforcer's record, and returns the namespace
@@ -400,9 +413,6 @@ func (g *meshGate) verifyMemberRuleset(sandboxID string) error {
 func (g *meshGate) memberNamespace(sandboxID string) (podNamespace, string, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.pods[sandboxID] == nil {
-		return podNamespace{}, "", fmt.Errorf("sandbox %s is no mesh member, and only a member asserts a workload identity: this enforcer protects no pod in an exempt namespace %v or on the node's network", sandboxID, g.policy.ExemptNamespaces)
-	}
 	state, err := g.state(sandboxID)
 	if err != nil {
 		return podNamespace{}, "", err

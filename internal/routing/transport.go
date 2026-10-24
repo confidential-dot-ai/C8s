@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +31,9 @@ type TransportConfig struct {
 	// the CAs anchoring workload backends. A mesh dial takes both from one
 	// resolution; an address backend resolves them separately.
 	MeshIdentity CredentialSource
+	// Entries is the allowlist a workload backend's entry is checked against
+	// (B8). Without it every workload dial fails.
+	Entries *Entries
 }
 
 // routerLeaf hands one generation's leaf to a mesh handshake. Renewal is
@@ -49,14 +53,25 @@ type Transports struct {
 	cfg TransportConfig
 
 	mu    sync.Mutex
-	cache map[string]*http.Transport
+	cache map[string]pooled
 	// caDigest identifies the mesh CA bundle last seen by dropMeshPools.
 	caDigest [sha256.Size]byte
 }
 
+// pooled is a cached transport and the workload it reaches, empty for an
+// address backend.
+type pooled struct {
+	*http.Transport
+	workload string
+}
+
+// errBackendEntryChanged fails a workload handshake whose leaf was stamped
+// under an allowlist entry the current allowlist removed or redefined (B8).
+var errBackendEntryChanged = errors.New("routing: backend allowlist entry changed")
+
 // NewTransports returns an empty cache.
 func NewTransports(cfg TransportConfig) *Transports {
-	return &Transports{cfg: cfg, cache: map[string]*http.Transport{}}
+	return &Transports{cfg: cfg, cache: map[string]pooled{}}
 }
 
 // For returns the transport for b, building it on first use.
@@ -64,12 +79,29 @@ func (t *Transports) For(b routes.Backend) *http.Transport {
 	key := backendKey(b)
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if tr, ok := t.cache[key]; ok {
-		return tr
+	if p, ok := t.cache[key]; ok {
+		return p.Transport
 	}
 	tr := t.build(b)
-	t.cache[key] = tr
+	t.cache[key] = pooled{Transport: tr, workload: b.Workload}
 	return tr
+}
+
+// RetireWorkloads drops the transports of the workloads named and closes
+// their idle connections, so the next request dials and checks the backend's
+// entry again (B10). A request in flight completes on its connection.
+func (t *Transports) RetireWorkloads(names []string) {
+	if len(names) == 0 {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for key, p := range t.cache {
+		if p.workload != "" && slices.Contains(names, p.workload) {
+			p.CloseIdleConnections()
+			delete(t.cache, key)
+		}
+	}
 }
 
 // Retain drops the transports of backends m does not name and closes their
@@ -84,9 +116,9 @@ func (t *Transports) Retain(m *routes.Manifest) {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	for key, tr := range t.cache {
+	for key, p := range t.cache {
 		if !keep[key] {
-			tr.CloseIdleConnections()
+			p.CloseIdleConnections()
 			delete(t.cache, key)
 		}
 	}
@@ -132,15 +164,17 @@ func (t *Transports) build(b routes.Backend) *http.Transport {
 
 // dialWorkload reaches a workload backend as a mesh client of the member
 // behind it: the mesh profile's chain path authenticates the peer against the
-// published mesh CA, and the route's workload name is required of it before
-// any request is written. The pod's ruleset leaves this identity's
+// published mesh CA, the route's workload name is required of it (B1), and
+// its stamped entry must be unchanged in the current allowlist (B8), all
+// before any request is written. The pod's ruleset leaves this identity's
 // connections into the cluster uncaptured, so this handshake is the one that
 // crosses the pod boundary.
 func (t *Transports) dialWorkload(workload string, dialer *net.Dialer) func(context.Context, string, string) (net.Conn, error) {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		// Per connection: one resolution of what get-cert publishes, and a
 		// backend is dialled far less often than it is used.
-		cfg, err := t.meshClientConfig(workload)
+		var stamped string
+		cfg, err := t.meshClientConfig(workload, func(peer armtls.Peer) { stamped = string(peer.AllowlistDigest) })
 		if err != nil {
 			return nil, err
 		}
@@ -155,14 +189,19 @@ func (t *Transports) dialWorkload(workload string, dialer *net.Dialer) func(cont
 			conn.Close()
 			return nil, err
 		}
+		if err := t.cfg.Entries.Check(handshake, stamped, workload); err != nil {
+			mesh.Close()
+			return nil, fmt.Errorf("%w: %w", errBackendEntryChanged, err)
+		}
 		return mesh, nil
 	}
 }
 
 // meshClientConfig is the armTLS mesh client configuration for one workload
 // backend, built on one published generation: the leaf it presents and the CA
-// it trusts are the ones published together.
-func (t *Transports) meshClientConfig(workload string) (*tls.Config, error) {
+// it trusts are the ones published together. accepted sees the peer B1
+// accepted.
+func (t *Transports) meshClientConfig(workload string, accepted func(armtls.Peer)) (*tls.Config, error) {
 	cred, err := t.cfg.MeshIdentity()
 	if err != nil {
 		return nil, fmt.Errorf("routing: mesh credential: %w", err)
@@ -174,7 +213,7 @@ func (t *Transports) meshClientConfig(workload string) (*tls.Config, error) {
 	cfg, _, err := armtls.NewMeshClientTLSConfig(&armtls.MeshConfig{
 		CertProvider: routerLeaf{cert: cred.Certificate},
 		MeshCA:       cred.MeshCAs[0],
-		AcceptPeer:   acceptWorkload(workload),
+		AcceptPeer:   acceptWorkload(workload, accepted),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("routing: mesh client for workload %q: %w", workload, err)
@@ -202,9 +241,10 @@ func (t *Transports) meshCAs() ([]*x509.Certificate, error) {
 }
 
 // acceptWorkload fails the handshake unless the peer the chain path
-// authenticated is the workload the signed route names. A leaf CDS stamped no
-// workload on names none, and is refused with the rest.
-func acceptWorkload(workload string) func(armtls.Peer) error {
+// authenticated is the workload the signed route names, and hands an accepted
+// peer to accepted. A leaf CDS stamped no workload on names none, and is
+// refused with the rest.
+func acceptWorkload(workload string, accepted func(armtls.Peer)) func(armtls.Peer) error {
 	return func(peer armtls.Peer) error {
 		if peer.WorkloadName == "" {
 			return fmt.Errorf("routing: backend leaf names no workload, and this route names %q", workload)
@@ -212,6 +252,7 @@ func acceptWorkload(workload string) func(armtls.Peer) error {
 		if peer.WorkloadName != workload {
 			return fmt.Errorf("routing: backend leaf names workload %q, and this route names %q", peer.WorkloadName, workload)
 		}
+		accepted(peer)
 		return nil
 	}
 }
@@ -257,9 +298,9 @@ func (t *Transports) dropMeshPools() error {
 		return nil
 	}
 	t.caDigest = digest // zero after a failed read: the next good read differs
-	for _, tr := range t.cache {
-		tr.CloseIdleConnections()
+	for _, p := range t.cache {
+		p.CloseIdleConnections()
 	}
-	t.cache = map[string]*http.Transport{}
+	t.cache = map[string]pooled{}
 	return err
 }

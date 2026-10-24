@@ -71,6 +71,16 @@ func TestEgressRefusesWhatARuleCannotExpress(t *testing.T) {
 		"IPv6 loopback":   `[{"cidr":"::1/128","port":443}]`,
 		"IPv6 link-local": `[{"cidr":"fe80::/64","port":443}]`,
 		"NAT64":           `[{"cidr":"64:ff9b::a00:1/128","port":443}]`,
+		"local NAT64":     `[{"cidr":"64:ff9b:1::/48","port":443}]`,
+		"IPv4-compatible": `[{"cidr":"::10.0.2.15/128","port":443}]`,
+		"SIIT":            `[{"cidr":"::ffff:0:a00:20f/128","port":443}]`,
+		"Teredo":          `[{"cidr":"2001:0:a00:1::/64","port":443}]`,
+		"hostname cidr":   `[{"cidr":"relay.example.com","port":443}]`,
+		"numeric cidr":    `[{"cidr":17,"port":443}]`,
+		"negative port":   `[{"cidr":"203.0.113.7/32","port":-1}]`,
+		"string port":     `[{"cidr":"203.0.113.7/32","port":"443"}]`,
+		"not a list":      `{"cidr":"203.0.113.7/32","port":443}`,
+		"null exit":       `[null]`,
 		"broad IPv4":      `[{"cidr":"10.0.0.0/8","port":443}]`,
 		"just over /16":   `[{"cidr":"10.0.0.0/15","port":443}]`,
 		"all global IPv6": `[{"cidr":"2000::/3","port":443}]`,
@@ -89,15 +99,35 @@ func TestEgressRefusesWhatARuleCannotExpress(t *testing.T) {
 	}
 }
 
-// A node reading a served document drops exits it cannot validate rather than
-// every entry with them: the entry then grants no exit.
+// A node reading a served document drops exits it cannot validate or decode
+// rather than every entry with them, or the document: the entry then grants no
+// exit. An exit with a member this version does not know is dropped too, since
+// that member may narrow it.
 func TestServedEgressItCannotValidateIsDropped(t *testing.T) {
-	al, err := ParseServedJSON(egressDocument(`,"egress":[{"cidr":"203.0.113.7/24","port":443}]`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := al.Workloads["w"].Egress; got != nil {
-		t.Fatalf("egress = %v, want it dropped", got)
+	for name, egress := range map[string]string{
+		"host bits":      `[{"cidr":"203.0.113.7/24","port":443}]`,
+		"hostname cidr":  `[{"cidr":"relay.example.com","port":443}]`,
+		"numeric cidr":   `[{"cidr":17,"port":443}]`,
+		"port too large": `[{"cidr":"203.0.113.7/32","port":70000}]`,
+		"negative port":  `[{"cidr":"203.0.113.7/32","port":-1}]`,
+		"string port":    `[{"cidr":"203.0.113.7/32","port":"443"}]`,
+		"not a list":     `{"cidr":"203.0.113.7/32","port":443}`,
+		"unknown member": `[{"cidr":"203.0.113.7/32","port":443,"protocol":"udp"}]`,
+		"one bad exit":   `[{"cidr":"198.51.100.7/32","port":443},{"cidr":"203.0.113.7/32","port":"443"}]`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			al, err := ParseServedJSON(egressDocument(`,"egress":` + egress))
+			if err != nil {
+				t.Fatalf("ParseServedJSON = %v, want the document kept", err)
+			}
+			w, ok := al.Workloads["w"]
+			if !ok {
+				t.Fatal("the entry was dropped, want only its egress dropped")
+			}
+			if w.Egress != nil {
+				t.Fatalf("egress = %v, want it dropped", w.Egress)
+			}
+		})
 	}
 }
 

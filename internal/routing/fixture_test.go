@@ -6,9 +6,11 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,6 +27,8 @@ import (
 
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/testutil"
+	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
@@ -99,9 +103,105 @@ func caPEM(cas ...*issuer.CA) string {
 // testSandboxID is the workload instance a member leaf names.
 const testSandboxID = "8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a0e8d9f"
 
+// testDigest is the allowlist digest issueLeaf stamps, the digest of the
+// fixture's current allowlist unless a test serves another.
+var testDigest = digestOf(0x42)
+
+// fakeAllowlists is an AllowlistSource serving documents under the digests a
+// test assigns them; the real source hashes the bytes it fetched.
+type fakeAllowlists struct {
+	mu      sync.Mutex
+	current string
+	version int
+	docs    map[string]*allowlist.Allowlist
+	fetches int   // history fetches
+	reads   int   // reads of the current allowlist
+	fail    error // fails history fetches
+	down    error // fails reads of the current allowlist
+}
+
+// labelled is an allowlist whose entries are told apart by label alone.
+func labelled(labels map[string]string) *allowlist.Allowlist {
+	al := &allowlist.Allowlist{Schema: allowlist.Schema, Workloads: map[string]allowlist.Workload{}}
+	for name, label := range labels {
+		al.Workloads[name] = allowlist.Workload{Label: label}
+	}
+	return al
+}
+
+// testAllowlist is the fixture's current allowlist under testDigest.
+func testAllowlist() *allowlist.Allowlist {
+	return labelled(map[string]string{"web": "v1", "admin": "v1", "router": "v1"})
+}
+
+// store records al in the history under digest.
+func (a *fakeAllowlists) store(digest []byte, al *allowlist.Allowlist) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.docs[string(digest)] = al
+}
+
+// serve stores al under digest and makes it the current allowlist.
+func (a *fakeAllowlists) serve(digest []byte, al *allowlist.Allowlist) {
+	a.store(digest, al)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.current = string(digest)
+	a.version++
+}
+
+func (a *fakeAllowlists) FetchServed(_ context.Context, ifNoneMatch string) (allowlistclient.Served, bool, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.reads++
+	if a.down != nil {
+		return allowlistclient.Served{}, false, a.down
+	}
+	etag := fmt.Sprintf("W/%q", strconv.Itoa(a.version))
+	if ifNoneMatch == etag {
+		return allowlistclient.Served{}, true, nil
+	}
+	return allowlistclient.Served{Allowlist: a.docs[a.current], ETag: etag, Digest: "sha256:" + hex.EncodeToString([]byte(a.current))}, false, nil
+}
+
+func (a *fakeAllowlists) Object(_ context.Context, digest [sha256.Size]byte) (*allowlist.Allowlist, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.fetches++
+	if a.fail != nil {
+		return nil, a.fail
+	}
+	al, ok := a.docs[string(digest[:])]
+	if !ok {
+		return nil, errors.New("404 not found")
+	}
+	return al, nil
+}
+
+func (a *fakeAllowlists) fetched() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.fetches
+}
+
+func (a *fakeAllowlists) read() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.reads
+}
+
+// digestOf returns an allowlist digest of b repeated 32 times.
+func digestOf(b byte) []byte { return bytes.Repeat([]byte{b}, 32) }
+
 // issueLeaf mints a leaf the way CDS does, carrying the matched workload
 // extension when workload is non-empty.
 func issueLeaf(t testing.TB, ca *issuer.CA, workload string, dnsNames ...string) tls.Certificate {
+	t.Helper()
+	return issueStampedLeaf(t, ca, workload, testDigest, dnsNames...)
+}
+
+// issueStampedLeaf is issueLeaf with the allowlist digest set to digest.
+func issueStampedLeaf(t testing.TB, ca *issuer.CA, workload string, digest []byte, dnsNames ...string) tls.Certificate {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -123,7 +223,7 @@ func issueLeaf(t testing.TB, ca *issuer.CA, workload string, dnsNames ...string)
 		params.MatchedWorkload = &armtls.MatchedWorkload{
 			Name:             workload,
 			AllowlistVersion: "1",
-			AllowlistDigest:  bytes.Repeat([]byte{0x42}, 32),
+			AllowlistDigest:  digest,
 		}
 	}
 	certPEM, _, err := ca.SignCSR(params)
@@ -350,6 +450,8 @@ type fixture struct {
 	identity   *MeshIdentity
 	op         operator
 	clock      *fakeClock
+	allowlists *fakeAllowlists
+	entries    *Entries
 	state      *State
 	transports *Transports
 	proxy      *Proxy
@@ -358,10 +460,11 @@ type fixture struct {
 func newFixture(t testing.TB) *fixture {
 	t.Helper()
 	f := &fixture{
-		mesh:   newCA(t, "mesh"),
-		volume: t.TempDir(),
-		op:     newOperator(t),
-		clock:  &fakeClock{now: time.Now()},
+		mesh:       newCA(t, "mesh"),
+		volume:     t.TempDir(),
+		op:         newOperator(t),
+		clock:      &fakeClock{now: time.Now()},
+		allowlists: &fakeAllowlists{docs: map[string]*allowlist.Allowlist{}},
 	}
 	f.routerLeaf = issueLeaf(t, f.mesh, "router")
 	f.publish(t, caPEM(f.mesh))
@@ -371,10 +474,27 @@ func newFixture(t testing.TB) *fixture {
 		t.Fatal(err)
 	}
 	f.identity = identity
+	f.allowlists.serve(testDigest, testAllowlist())
+	f.entries = NewEntries(f.allowlists)
 	f.state = NewState(StateConfig{Reserved: testReserved, MeshCAs: identity.MeshCAs, Now: f.clock.Now})
-	f.transports = NewTransports(TransportConfig{MeshIdentity: identity.Credential})
+	f.transports = NewTransports(TransportConfig{MeshIdentity: identity.Credential, Entries: f.entries})
 	f.proxy = NewProxy(ProxyConfig{State: f.state, Transports: f.transports, Timeout: 10 * time.Second})
+	f.refresh(t)
 	return f
+}
+
+// refresh reads the current allowlist as a route poll does, retiring the
+// pools of entries it changed.
+func (f *fixture) refresh(t testing.TB) {
+	t.Helper()
+	NewPoller(PollerConfig{}).refreshEntries(context.Background(), f.transports)
+}
+
+// renew publishes leaf as the router's own, with the fixture's mesh CA.
+func (f *fixture) renew(t testing.TB, leaf tls.Certificate) {
+	t.Helper()
+	f.routerLeaf = leaf
+	f.publish(t, caPEM(f.mesh))
 }
 
 // publish publishes a generation holding the router's leaf and bundle as its
@@ -445,4 +565,19 @@ func (f *fixture) get(target string) *httptest.ResponseRecorder {
 	w := httptest.NewRecorder()
 	f.proxy.ServeHTTP(w, r)
 	return w
+}
+
+// bound is the binding of a session admitted now: the applied manifest's
+// digest, zero before the first apply, and the router leaf's digest.
+func (f *fixture) bound() Binding {
+	var b Binding
+	if leaf, err := x509.ParseCertificate(f.routerLeaf.Certificate[0]); err == nil {
+		if stamp, err := armtls.MatchedWorkloadFromCert(leaf); err == nil && stamp != nil {
+			b.RouterDigest = string(stamp.AllowlistDigest)
+		}
+	}
+	if applied := f.state.Current(); applied != nil {
+		b.RouteDigest = applied.Signed.Digest()
+	}
+	return b
 }
