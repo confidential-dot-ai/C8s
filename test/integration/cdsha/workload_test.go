@@ -313,7 +313,7 @@ func bigAllowBody(name string, seq, size int) []byte {
 }
 
 func largeBodies(t *testing.T, c *Cluster, k *Checker) {
-	const cap = 1 << 20 // allowlistWriteBodyCap (routes.go)
+	const cap = 1 << 20   // allowlistWriteBodyCap (routes.go)
 	const maxValue = 4096 // --secrets-max-value-bytes default (cmd.go)
 	nv := c.NonVoterIDs()[0]
 	l := c.WaitLeader(10 * time.Second)
@@ -515,11 +515,11 @@ func wideKeyspace(t *testing.T, c *Cluster, k *Checker) {
 
 // dmState is a key's state: absent (-1) or present with seq.
 type dmKey struct {
-	name     string
-	state    int  // after the last acked op; -1 absent
-	abandon  bool // last op indeterminate
-	alt      int  // the state that op would leave
-	touched  bool
+	name    string
+	state   int  // after the last acked op; -1 absent
+	abandon bool // last op indeterminate
+	alt     int  // the state that op would leave
+	touched bool
 }
 
 func deleteMix(t *testing.T, c *Cluster, k *Checker) {
@@ -713,7 +713,7 @@ func readHeavy(t *testing.T, c *Cluster, k *Checker) {
 	k.mu.Unlock()
 	type stat struct {
 		Samples, Unseen, BeforeAck int
-		P50, P99, Max      time.Duration
+		P50, P99, Max              time.Duration
 	}
 	out := map[string]stat{}
 	for _, r := range c.Replicas {
@@ -753,8 +753,8 @@ func readHeavy(t *testing.T, c *Cluster, k *Checker) {
 func TestWorkload(t *testing.T) {
 	runScenarios(t, []scenario{
 		{name: "W1-hot-key", run: hotKey},
-		{name: "W2-large-bodies", extraArgs: historyBound, run: largeBodies},
-		{name: "W3-wide-keyspace", extraArgs: historyBound, run: wideKeyspace},
+		{name: "W2-large-bodies", args: historyBound, run: largeBodies},
+		{name: "W3-wide-keyspace", args: historyBound, run: wideKeyspace},
 		{name: "W4-delete-overwrite-mix", run: deleteMix},
 		{name: "W5-read-heavy-staleness", writers: 1, run: readHeavy},
 	})

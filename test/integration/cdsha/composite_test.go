@@ -539,7 +539,7 @@ func TestComposite(t *testing.T) {
 		// Deployment config, not an oracle change: a bounded allowlist
 		// history, as the chart sets it. Unbounded (the flag default), a
 		// 10-minute soak fills the 96 MiB admission cap with history.
-		{name: "G6-random-nemesis", writers: 8, extraArgs: historyBound, run: randomNemesis},
+		{name: "G6-random-nemesis", writers: 8, args: historyBound, run: randomNemesis},
 	})
 }
 
