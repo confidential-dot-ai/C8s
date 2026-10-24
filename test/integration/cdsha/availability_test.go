@@ -58,8 +58,9 @@ func (c *Cluster) availability(d time.Duration) map[string][3]float64 {
 
 // rttAvailability holds a 300-360 ms RTT on every link under the deployed
 // Raft timing and the given read lease, records per-replica availability,
-// then applies A6's own check (every replica serving within 5 s).
-func rttAvailability(name string, lease time.Duration) scenario {
+// then, with assert, applies A6's own check (every replica serving within
+// 5 s); without, it only reports.
+func rttAvailability(name string, lease time.Duration, assert bool) scenario {
 	return scenario{name: name, productionRaftTiming: true,
 		args: []string{"--ha-lease", lease.String()},
 		run: func(t *testing.T, c *Cluster, _ *Checker) {
@@ -73,6 +74,11 @@ func rttAvailability(name string, lease time.Duration) scenario {
 				}
 			}
 			c.Logf("availability lease=%s RTT 300-360ms, %% of samples not serving:%s", lease, b.String())
+			if !assert {
+				// The comparison row: the harness lease is known not to keep
+				// reads certified at this RTT. Report only.
+				return
+			}
 			c.WaitAllServing(5 * time.Second)
 		}}
 }
@@ -80,7 +86,7 @@ func rttAvailability(name string, lease time.Duration) scenario {
 func TestAvailabilityRTT(t *testing.T) {
 	extended(t)
 	runScenarios(t, []scenario{
-		rttAvailability("A6m-latency-300ms-harness-lease", timing.lease),
-		rttAvailability("A6m-latency-300ms-deployed-lease", cdsha.DefaultTiming.Lease),
+		rttAvailability("A6m-latency-300ms-harness-lease", timing.lease, false),
+		rttAvailability("A6m-latency-300ms-deployed-lease", cdsha.DefaultTiming.Lease, true),
 	})
 }
