@@ -107,6 +107,10 @@ const storageKind = "storage"
 // no longer holds the replicated state.
 func (r Result) LocalStoreFault() bool { return r.ErrKind == storageKind }
 
+// IsLocalStoreFault reports that err is a failure of this replica's own
+// database (see Result.LocalStoreFault), not of what was asked of it.
+func IsLocalStoreFault(err error) bool { return localStoreFault(err) }
+
 // localStoreFault reports a SQLite failure of the database itself. Results a
 // command produces identically everywhere (a constraint it violates, a value
 // over a fixed limit) are not faults of the store.
