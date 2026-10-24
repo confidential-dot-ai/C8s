@@ -57,7 +57,7 @@ func (h Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 
 	doc, version, err := h.Store.LoadAll()
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		readFailed(w, err)
 		return
 	}
 
@@ -70,6 +70,20 @@ func (h Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(body)
+}
+
+// readFailed answers a read the store could not serve. A fault of this
+// replica's own database (it is about to stop serving and exit) is the same
+// retryable 503 as an unavailable store, so a client tries another replica;
+// anything else is a server error.
+func readFailed(w http.ResponseWriter, err error) {
+	if IsLocalStoreFault(err) {
+		slog.Warn("allowlist read failed on the local store", "err", err)
+		httputil.WriteUnavailable(w, ErrUnavailable)
+		return
+	}
+	slog.Error("allowlist read failed", "err", err)
+	http.Error(w, "internal server error", http.StatusInternalServerError)
 }
 
 // HandleReplaceAll handles PUT /allowlist: validate the full document and swap
@@ -239,7 +253,7 @@ func (a WriteAuthorizer) ReadAuthorized(w http.ResponseWriter, r *http.Request, 
 func (h Handler) HandleHistory(w http.ResponseWriter, _ *http.Request) {
 	entries, err := h.Store.History()
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		readFailed(w, err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -275,7 +289,7 @@ func (h Handler) serveByDigest(w http.ResponseWriter, r *http.Request, contentTy
 	}
 	body, ok, err := lookup("sha256:" + hex)
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		readFailed(w, err)
 		return
 	}
 	if !ok {
