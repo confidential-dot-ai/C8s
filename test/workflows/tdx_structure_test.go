@@ -20,6 +20,7 @@ const (
 type workflowStep struct {
 	Name, ID, Uses, Run, Shell, If string
 	With, Env                      map[string]string
+	WorkingDirectory               string `yaml:"working-directory"`
 }
 
 type workflowDocument struct {

@@ -105,6 +105,11 @@ func validateDiagnosticPins(p pins) error {
 	return require(p.str("runtimeWrapper") == wrapper, "development wrapper bypass must be declared")
 }
 
+// shellWord encodes one POSIX shell argument without interpreting its contents.
+func shellWord(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
+}
+
 // consolePayload is the fixed, read-only projection one console session
 // runs between two marker lines. No inspect, environment, launch or key
 // reads.
@@ -121,7 +126,7 @@ func consolePayload(marker string) (string, error) {
 		"printf '\\n__C8S_%s_BEGIN__\\n' '" + marker + "'\n" +
 		"timeout 10 systemctl show --no-pager -p Id -p LoadState -p ActiveState -p SubState -p Result -p ExecMainCode -p ExecMainStatus " + strings.Join(units, " ") + " 2>/dev/null | jq -McRs '{kind:\"units\",text:.}'\n" +
 		"printf '{\"kind\":\"command\",\"name\":\"units\",\"exit\":%s}\\n' \"$?\"\n" +
-		"timeout 15 journalctl -b --no-pager -o json -n 160 " + strings.Join(journalUnits, " ") + " 2>/dev/null | jq -Mc '" + journalProjection + "'\n" +
+		"timeout 15 journalctl -b --no-pager -o json -n 160 " + strings.Join(journalUnits, " ") + " 2>/dev/null | jq -Mc " + shellWord(journalProjection) + "\n" +
 		"printf '{\"kind\":\"command\",\"name\":\"journal\",\"exit\":%s}\\n' \"$?\"\n" +
 		crictl + " pods -o json 2>/dev/null | jq -Mc '.items[]?|{kind:\"sandbox\",id:.id,name:.metadata.name,state:.state,createdAt:.createdAt}'\n" +
 		"printf '{\"kind\":\"command\",\"name\":\"sandboxes\",\"exit\":%s}\\n' \"$?\"\n" +

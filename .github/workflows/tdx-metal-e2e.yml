@@ -120,23 +120,30 @@ jobs:
           persist-credentials: false
           ref: ${{ github.sha }}
 
-      - name: Select the diagnostic image's source commit
+      - name: Check out the dispatched source before selecting the paired CLI
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          path: diagnostic-source
+
+      - name: Verify and select the diagnostic image's source commit
         id: source
+        shell: bash
+        working-directory: diagnostic-source
         env:
           SOURCE_INPUT: ${{ inputs.pod_image_source }}
         run: |
           set -euo pipefail
           source=${SOURCE_INPUT:-$GITHUB_SHA}
           [[ "$source" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::pod_image_source must be a full 40-hex commit SHA"; exit 1; }
+          test "$(git rev-parse --verify "$source^{commit}")" = "$source"
+          git merge-base --is-ancestor "$source" "$GITHUB_SHA" || { echo "::error::pod_image_source must belong to the dispatched commit's history; dispatch its matching ref for another branch"; exit 1; }
+          git -c advice.detachedHead=false checkout --detach "$source"
+          test "$(git rev-parse HEAD)" = "$source"
           echo "sha=$source" >> "$GITHUB_OUTPUT"
           echo "diagnostic image: rke2-tdx-dev-${source:0:7}, CLI from \`$source\`" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Check out the CLI source paired with the diagnostic image
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          ref: ${{ steps.source.outputs.sha }}
-          path: diagnostic-source
 
       - uses: ./.github/actions/setup-go-c8s
         with:

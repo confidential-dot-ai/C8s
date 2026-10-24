@@ -175,6 +175,27 @@ func TestJournalFiltersLateSecretMarkerBeforeTruncation(t *testing.T) {
 	}
 }
 
+func TestShellWordPreservesJournalAndRejectsInterpretation(t *testing.T) {
+	needTool(t, "sh")
+	dir := t.TempDir()
+	for _, value := range []string{journalProjection, "", "an apostrophe's value", "a\nsecond line",
+		"'; touch injected; #", "$(touch injected)", "`touch injected`"} {
+		cmd := exec.CommandContext(t.Context(), "sh", "-c", "printf '%s' "+shellWord(value))
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil || string(out) != value {
+			t.Fatalf("shell argument changed: want=%q got=%q err=%v", value, out, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "injected")); !os.IsNotExist(err) {
+		t.Fatal("quoted argument executed a command")
+	}
+	payload, err := consolePayload(marker)
+	if err != nil || !strings.Contains(payload, "jq -Mc "+shellWord(journalProjection)+"\n") {
+		t.Fatal("console payload must quote the journal projection as one shell word")
+	}
+}
+
 func TestPayloadHasFixedReadOnlyProjectionAndValidShell(t *testing.T) {
 	needTool(t, "bash")
 	payload, err := consolePayload(marker)

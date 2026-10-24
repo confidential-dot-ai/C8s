@@ -230,8 +230,11 @@ The manual `tdx-metal-e2e.yml` input `pod_diagnostic: true` boots the
 console, its own measurement) with the Pod fixture signed by the CLI built from
 that same commit, so the serial log shows which unit or admission step stops a
 Pod that the production image only reports as Pending. `pod_image_source`
-names that commit by full SHA; empty means the dispatched commit. The lane
-resolves `rke2-tdx-dev-<sha7>` and `rke2-tdx-dev-cdi-<sha7>` from the registry
+names that commit by full SHA; empty means the dispatched commit. The source
+must be that commit or one of its ancestors, checked before toolchain setup or
+building the paired CLI. For another lineage, dispatch a matching branch or
+historical workflow ref that contains this lane. The lane resolves
+`rke2-tdx-dev-<sha7>` and `rke2-tdx-dev-cdi-<sha7>` from the registry
 at run time and fails by naming the missing tag, with the manual image build
 command that publishes it. The fixture Pod carries no mesh endpoint; the guest
 injects the measured one.
