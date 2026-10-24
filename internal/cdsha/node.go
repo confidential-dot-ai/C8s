@@ -174,10 +174,11 @@ type Node struct {
 
 	joinRefusedLog *cache.LRUExpireCache // peer + reason
 
-	backupAt    time.Time // leader: last backup attempt
-	pruneAt     time.Time // leader: last history prune check
-	renewAt     time.Time // leader: last mesh CA renewal attempt
-	backupIndex uint64    // leader: applied index of the last stored backup
+	backupAt    time.Time    // leader: last backup attempt
+	pruneAt     time.Time    // leader: last history prune check
+	prunes      atomic.Int64 // history prune entries this replica proposed (for tests)
+	renewAt     time.Time    // leader: last mesh CA renewal attempt
+	backupIndex uint64       // leader: applied index of the last stored backup
 	// backupFails counts consecutive backups that failed on a size bound;
 	// the next waits backupDelay. backupErr is the last one, for Status.
 	backupFails int
