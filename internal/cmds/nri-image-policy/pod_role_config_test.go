@@ -3,6 +3,7 @@ package nriimagepolicy_test
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -42,6 +43,12 @@ const podImageDigest = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 // given platform under a fresh root, as the initrd leaves them for Prepare.
 func podRoleInputs(t *testing.T, platform string) (string, *launchconfig.Document) {
 	t.Helper()
+	// Successful guest preparation reads the Linux uplink's route and MTU.
+	// Keep these integration tests on that real path; pure rendering and
+	// invalid-network cases are covered by the node-services unit tests.
+	if platform == "tdx" && runtime.GOOS != "linux" {
+		t.Skip("Pod guest preparation requires Linux network discovery")
+	}
 	root := t.TempDir()
 	write := func(name string, data []byte) {
 		t.Helper()
@@ -59,6 +66,11 @@ func podRoleInputs(t *testing.T, platform string) (string, *launchconfig.Documen
 	}
 	baked = strings.Replace(baked, `platform: "snp"`, `platform: "`+platform+`"`, 1)
 	write("usr/lib/c8s/image-policy.yaml", []byte(baked))
+	cni, err := os.ReadFile("../../../node-guest-image/c8s/mkosi.extra/usr/lib/c8s/pod-runtime/cni/10-c8s-pod.conflist")
+	if err != nil {
+		t.Fatal(err)
+	}
+	write("usr/lib/c8s/pod-runtime/cni/10-c8s-pod.conflist", cni)
 	pins, err := refvalues.Load("../../../internal/testdata/node-identities.json")
 	if err != nil {
 		t.Fatal(err)
