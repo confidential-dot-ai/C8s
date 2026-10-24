@@ -24,6 +24,10 @@ import (
 // verified launch document loaded by LoadStaged. rootDir rebases paths for tests.
 // The root bootstrap service owns these files; pods mount them read-only.
 func Prepare(rootDir string, d *launchconfig.Document) error {
+	return prepare(rootDir, d, discoverPodMTU)
+}
+
+func prepare(rootDir string, d *launchconfig.Document, resolveMTU func() (int, error)) error {
 	if err := validateRole(d); err != nil {
 		return err
 	}
@@ -37,7 +41,7 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 		outputs[name] = data
 	}
 	if d.Role == launchconfig.Pod {
-		return preparePod(rootDir, d, outputs)
+		return preparePod(rootDir, d, outputs, resolveMTU)
 	}
 	bakedData, err := os.ReadFile(path("/usr/lib/c8s/allowlist-seed.json"))
 	if err != nil {

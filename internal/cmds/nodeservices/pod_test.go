@@ -44,7 +44,16 @@ func preparePodRoot(t *testing.T) string {
 	t.Helper()
 	root := prepareRoot(t)
 	writeInput(t, root, "/usr/lib/c8s/image-policy.yaml", []byte(podFloor))
+	data, err := os.ReadFile("../../../node-guest-image/c8s/mkosi.extra" + bakedPodCNIPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeInput(t, root, bakedPodCNIPath, data)
 	return root
+}
+
+func preparePodFixture(root string, doc *launchconfig.Document) error {
+	return prepare(root, doc, func() (int, error) { return podDefaultMTU, nil })
 }
 
 func podDocument(t *testing.T) *launchconfig.Document {
@@ -64,7 +73,7 @@ func TestPreparePodRefusesAPlatformWithoutARuntimeRegister(t *testing.T) {
 	doc.Image.Platform = "snp"
 	// Prepare checks the staged pins' family first; the pod step is what
 	// must refuse, so call it as Prepare would.
-	err := preparePod(root, doc, map[string][]byte{})
+	err := preparePod(root, doc, map[string][]byte{}, func() (int, error) { return podDefaultMTU, nil })
 	if err == nil || !strings.Contains(err.Error(), "runtime register") {
 		t.Fatalf("got %v, want a runtime register refusal", err)
 	}
@@ -79,7 +88,7 @@ func TestPreparePodBindsCDSPullAndKeepsOnlyMeasuredMeshAndSignedBase(t *testing.
 	// A server boot earlier must not leave its inputs to the pod.
 	writeInput(t, root, PublicDir+"/allowlist-seed.json", []byte(seed))
 	doc := podDocument(t)
-	if err := Prepare(root, doc); err != nil {
+	if err := preparePodFixture(root, doc); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(filepath.Join(root, nriPolicyPath))
@@ -177,7 +186,7 @@ func TestPreparePodUsesGuestUpstreamDNS(t *testing.T) {
 			root := preparePodRoot(t)
 			doc := podDocument(t)
 			doc.Pod.Manifest = strings.Replace(doc.Pod.Manifest, `"spec":{`, `"spec":{`+tc.dns, 1)
-			if err := Prepare(root, doc); err != nil {
+			if err := preparePodFixture(root, doc); err != nil {
 				t.Fatal(err)
 			}
 			manifest, err := os.ReadFile(filepath.Join(root, podManifestPath))
@@ -214,7 +223,7 @@ func TestPreparePodFailsClosed(t *testing.T) {
 			root := preparePodRoot(t)
 			doc := podDocument(t)
 			tc.change(doc)
-			err := Prepare(root, doc)
+			err := preparePodFixture(root, doc)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("got %v, want %q", err, tc.want)
 			}
@@ -228,7 +237,7 @@ func TestPreparePodFailsClosed(t *testing.T) {
 func TestPreparePodRejectsCompetingPolicyMeasurementsBeforePublication(t *testing.T) {
 	root := preparePodRoot(t)
 	writeInput(t, root, "/usr/lib/c8s/image-policy.yaml", []byte(strings.Replace(podFloor, "    timeout: 30s", "    timeout: 30s\n    measure_policies: true", 1)))
-	if err := Prepare(root, podDocument(t)); !errors.Is(err, nriimagepolicy.ErrPodRoleMeasurePolicies) {
+	if err := preparePodFixture(root, podDocument(t)); !errors.Is(err, nriimagepolicy.ErrPodRoleMeasurePolicies) {
 		t.Fatalf("got %v, want the competing RTMR writer refusal", err)
 	}
 	for _, path := range []string{nriPolicyPath, podManifestPath, PublicDir + "/cds.json"} {
@@ -258,7 +267,7 @@ func TestPreparePodRequiresTheBakedMeshEndpoint(t *testing.T) {
 			writeInput(t, root, "/usr/lib/c8s/image-policy.yaml", []byte(tc.floor))
 			doc := podDocument(t)
 			tc.change(doc)
-			if err := Prepare(root, doc); err == nil || !strings.Contains(err.Error(), tc.want) {
+			if err := preparePodFixture(root, doc); err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("got %v, want %q", err, tc.want)
 			}
 			if _, err := os.Stat(filepath.Join(root, nriPolicyPath)); !os.IsNotExist(err) {
