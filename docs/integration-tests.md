@@ -160,7 +160,13 @@ gh workflow run tdx-metal-e2e.yml --repo confidential-dot-ai/C8s \
 The two signed workloads test authenticated peer traffic, IPv4 HTTPS, system
 DNS, TCP/UDP DNS, and guest/link-local connection denials. Authenticated Pod
 status must show readiness withdrawing and recovering, followed by successful
-checker exits after at least 65 minutes. Public mesh leaves must rotate late in
+checker exits after at least 65 minutes. The tool tracks the authenticated
+`Ready` condition's `lastTransitionTime` beside app and mesh readiness, rejecting
+hidden transitions between ready samples and further withdrawals after recovery.
+A successful checker exit may withdraw aggregate Pod readiness once while the
+app and mesh stay ready. Each verdict and its authenticated status are saved
+before certificate probes or a readiness failure, including the final status
+after the negative probes. Public mesh leaves must rotate late in
 the observation window, with new serials and keys, stable Pod identities and
 CA, and no application, checker or endpoint restarts. Certless, wrong-CA and
 plaintext requests must be rejected, followed by fresh healthy Pod status.

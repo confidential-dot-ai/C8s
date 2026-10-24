@@ -368,7 +368,7 @@ func TestWarmupSavesStatusAndDiagnosticAttestationWithoutBypassingGate(t *testin
 	t.Cleanup(func() { podStateOf = podStateFrom })
 	a.leafFn = func(string, string) (*leaf, error) { return &leaf{Workload: "connected"}, nil }
 	traces, states := map[string][]bool{"a": {}, "b": {}}, map[string]podState{}
-	initial, err := a.warmupRound(time.Time{}, traces, states)
+	initial, _, err := a.warmupRound(time.Time{}, traces, states)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -409,7 +409,7 @@ func TestCDSAndFirstPodFailuresDoNotHideOtherPodObservations(t *testing.T) {
 	}
 	podStateOf = func(json.RawMessage, string) (podState, error) { return podState{Running: true}, nil }
 	t.Cleanup(func() { podStateOf = podStateFrom })
-	initial, err := a.warmupRound(time.Time{}, map[string][]bool{"a": {}, "b": {}}, map[string]podState{})
+	initial, _, err := a.warmupRound(time.Time{}, map[string][]bool{"a": {}, "b": {}}, map[string]podState{})
 	if err != nil || len(initial) != 0 {
 		t.Fatalf("initial: %v, %v", initial, err)
 	}

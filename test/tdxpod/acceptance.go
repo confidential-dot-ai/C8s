@@ -226,6 +226,7 @@ type acceptance struct {
 	cliReadFn                 func(side string, mode []string, deadline time.Time, exact bool) (json.RawMessage, error)
 	leafFn                    func(side, mode string) (*leaf, error)
 	instanceFn                func(side string, deadline time.Time) (*object, error)
+	warmupRoundFn             func(deadline time.Time, traces map[string][]bool, states map[string]podState) (map[string]*leaf, map[string]json.RawMessage, error)
 	connectFn                 func(side string, port int) error
 	vmFn                      func(side string) map[string]any
 	prepareFn, provisionFn    func() error
@@ -250,6 +251,7 @@ func newAcceptanceWith(root, run, attempt, repo, prefix, label string, pinData [
 		bundle: filepath.Join(o.private, "bundle"), connections: map[string]string{}, vmiUIDs: map[string]string{}, runDeadline: now().Add(budget)}
 	a.validateImage = a.validateProductionImage
 	a.caFn, a.cliReadFn, a.leafFn, a.instanceFn, a.connectFn, a.vmFn = a.ca, a.cliRead, a.leaf, a.instance, a.connect, a.vm
+	a.warmupRoundFn = a.warmupRound
 	a.prepareFn, a.provisionFn, a.observeFn, a.captureFn, a.stopForwardsFn = a.prepare, a.provision, a.observe, a.capture, a.stopForwards
 	return a, nil
 }
@@ -678,9 +680,9 @@ func (a *acceptance) ca(path string, deadline time.Time) error {
 }
 
 // warmupPod reads one Pod's status and attestation, keeps every observation
-// as evidence, and returns its named leaf once the exact gate, a running
-// workload and the CDS CA all hold.
-func (a *acceptance) warmupPod(side string, deadline time.Time, traces map[string][]bool, states map[string]podState, caReady bool) (*leaf, error) {
+// as evidence, and returns its named leaf and the status it parsed once the
+// exact gate, a running workload and the CDS CA all hold.
+func (a *acceptance) warmupPod(side string, deadline time.Time, traces map[string][]bool, states map[string]podState, caReady bool) (*leaf, json.RawMessage, error) {
 	var state *podState
 	exact := false
 	status, err := a.cliReadFn(side, []string{"pod-status", "get"}, deadline, true)
@@ -697,18 +699,18 @@ func (a *acceptance) warmupPod(side string, deadline time.Time, traces map[strin
 	}
 	if err != nil {
 		if err := a.observationError("pod-state", side, err); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	report, err := a.cliReadFn(side, []string{"pod-attest"}, deadline, true)
 	if err == nil {
 		if err := write(filepath.Join(a.evidence, side+"-initial-attestation.json"), []byte(report)); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		exact = true
 	} else {
 		if err := a.observationError("pod-attest", side, err); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		observed, err := a.cliReadFn(side, []string{"pod-attest"}, deadline, false)
 		if err == nil {
@@ -717,7 +719,7 @@ func (a *acceptance) warmupPod(side string, deadline time.Time, traces map[strin
 		}
 		if err != nil {
 			if err := a.observationError("pod-attest-observed", side, err); err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 		}
 	}
@@ -725,34 +727,34 @@ func (a *acceptance) warmupPod(side string, deadline time.Time, traces map[strin
 		candidate, err := a.leafFn(side, "certless")
 		if err != nil {
 			if err := a.observationError("pod-mesh", side, err); err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 		} else if exact && state != nil && state.Running && candidate.Workload == "connected" {
-			return candidate, nil
+			return candidate, status, nil
 		}
 	}
-	return nil, nil
+	return nil, nil, nil
 }
 
-func (a *acceptance) warmupRound(deadline time.Time, traces map[string][]bool, states map[string]podState) (map[string]*leaf, error) {
-	initial := map[string]*leaf{}
+func (a *acceptance) warmupRound(deadline time.Time, traces map[string][]bool, states map[string]podState) (map[string]*leaf, map[string]json.RawMessage, error) {
+	initial, statuses := map[string]*leaf{}, map[string]json.RawMessage{}
 	caReady := true
 	if err := a.caFn(filepath.Join(a.evidence, "mesh-ca.pem"), deadline); err != nil {
 		caReady = false
 		if err := a.observationError("cds-ca", "server", err); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	for _, side := range []string{"a", "b"} {
-		candidate, err := a.warmupPod(side, deadline, traces, states, caReady)
+		candidate, status, err := a.warmupPod(side, deadline, traces, states, caReady)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if candidate != nil {
-			initial[side] = candidate
+			initial[side], statuses[side] = candidate, status
 		}
 	}
-	return initial, nil
+	return initial, statuses, nil
 }
 
 func rawLeaves(leaves map[string]*leaf) map[string]json.RawMessage {
@@ -784,10 +786,11 @@ func (a *acceptance) observe() error {
 	}
 	deadline := a.deadline(1200 * time.Second)
 	initial, traces, states := map[string]*leaf{}, map[string][]bool{"a": {}, "b": {}}, map[string]podState{}
+	var initialStatus map[string]json.RawMessage
 	for now().Before(deadline) {
 		progress("warmup", "all", "polling", nil)
 		var err error
-		if initial, err = a.warmupRound(deadline, traces, states); err != nil {
+		if initial, initialStatus, err = a.warmupRoundFn(deadline, traces, states); err != nil {
 			return err
 		}
 		if initial["a"] != nil && initial["b"] != nil {
@@ -814,6 +817,13 @@ func (a *acceptance) observe() error {
 	}
 	deadline = a.deadline(soak + 600*time.Second)
 	baseline := map[string]map[string]string{"a": states["a"].Starts, "b": states["b"].Starts}
+	conditions := map[string]*readinessTracker{}
+	for _, side := range []string{"a", "b"} {
+		conditions[side] = newReadinessTracker(a.name, baseline[side])
+		if err := a.recordReadiness(conditions[side], initialStatus[side], states[side], readinessCycle(traces[side]), "readiness-baseline-"+side); err != nil {
+			return err
+		}
+	}
 	previous := map[string]*leaf{"a": initial["a"], "b": initial["b"]}
 	rotations := map[string]bool{"a": false, "b": false}
 	elapsed := func() time.Duration { return now().Sub(start) }
@@ -834,14 +844,14 @@ func (a *acceptance) observe() error {
 			}
 			states[side] = state
 			traces[side] = append(traces[side], state.Ready)
+			if err := a.recordReadiness(conditions[side], status, state, readinessCycle(traces[side]), fmt.Sprintf("readiness-%03d-%s", index, side)); err != nil {
+				return err
+			}
 			l, err := a.leafFn(side, "certless")
 			if err != nil {
 				return err
 			}
 			// A checker exit can itself refresh claims; it is not timed renewal.
-			if !sameStarts(state.Starts, baseline[side]) {
-				return errors.New("attested container start identity changed")
-			}
 			rotation, err := renewalEvent(previous[side], l, elapsed())
 			if err != nil {
 				return err
@@ -896,6 +906,9 @@ func (a *acceptance) observe() error {
 		}
 		state, err := podStateOf(status, a.name)
 		if err != nil {
+			return err
+		}
+		if err := a.recordReadiness(conditions[side], status, state, true, "readiness-final-"+side); err != nil {
 			return err
 		}
 		if !state.Ready || !state.Complete || !sameStarts(state.Starts, baseline[side]) {
