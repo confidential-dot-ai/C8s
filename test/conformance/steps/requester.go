@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -30,8 +31,9 @@ import (
 // the steps: to the CDS, to the node's sandbox inventory over its socket,
 // and (on a TEE) to the node's local attestation service. The key, the CSR,
 // the attest body and any forged token are built here, so the requester can
-// present what a well-behaved one never would. Its own pod address is the
-// source address the CDS sees.
+// present what a well-behaved one never would. Outside the mesh its own pod
+// address is the source address the CDS sees; as a mesh member
+// (requester.member) its CDS requests leave from the backend instead.
 func registerRequester(sc *godog.ScenarioContext) {
 	sc.Step(`^a requester "([^"]*)" on node "([^"]*)"$`, requesterOnNode)
 	sc.Step(`^"([^"]*)" holds a key$`, requesterHoldsAKey)
@@ -185,7 +187,13 @@ func requesterOnNode(ctx context.Context, name, node string) error {
 		return err
 	}
 	if len(st) == 0 || !st[0].running {
-		return fmt.Errorf("the requester %q is not running after %s; denials: %s", name, observe, denials(st))
+		// A member's container waits on the injected credential client's
+		// first leaf, so what the CDS told that client is the likely cause.
+		msg := fmt.Sprintf("the requester %q is not running after %s; denials: %s; its containers: %+v", name, observe, denials(st), st)
+		if member {
+			msg += "; its credential client logged: " + tail(w.certLog(p), 5)
+		}
+		return errors.New(msg)
 	}
 	addr, err := kubectl(nil, "-n", p.namespace, "get", "pod", p.name, "-o", "jsonpath={.status.podIP}")
 	if err != nil {
@@ -202,13 +210,23 @@ func requesterOnNode(ctx context.Context, name, node string) error {
 		return err
 	}
 	if status != 200 {
-		sockets, _ := w.podExec(p, "", "ls", "-la", "/run/c8s/workload-claims")
-		return fmt.Errorf("harness: the requester %q got %d from %s/healthz; its socket directory holds:\n%s", name, status, url, sockets)
+		return fmt.Errorf("harness: the requester %q got %d from %s/healthz", name, status, url)
+	}
+	// The pod's own view, which a member's healthz, sent from the backend,
+	// does not give: the node's sockets are bound into it.
+	sockets, err := w.podExec(p, "", "ls", filepath.Dir(inventorySocket))
+	if err != nil {
+		return err
+	}
+	if !strings.Contains(sockets, filepath.Base(inventorySocket)) {
+		return fmt.Errorf("harness: the socket directory of the requester %q holds no %s:\n%s", name, filepath.Base(inventorySocket), sockets)
 	}
 	return nil
 }
 
-// relay sends a request from inside the requester's pod.
+// relay sends a request as the requester: from inside its pod, or, for a
+// member's requests to the CDS, from where the backend reaches the CDS
+// (requester_request).
 func (w *world) relay(r *requester, method, url string, body []byte, socket string) (int, []byte, error) {
 	var out string
 	send := func(bodyFile string) (err error) {

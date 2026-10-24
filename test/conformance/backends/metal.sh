@@ -206,9 +206,10 @@ manifest_filter() { agent_wrap; }
 
 # The requester is a mesh member here (exempt_namespace below): a request to
 # one of the node's sockets is sent by curl in the pod through its agent, and
-# one to the CDS from here to the node URL, since the node drops a member
-# pod's own TCP to the CDS (cds_request above). A backend with no exempt
-# namespace must send the requester's CDS requests this way.
+# any other, which the steps send only to the CDS, from here to its URL,
+# since the node drops a member pod's own TCP to the CDS (cds_request above).
+# A backend with no exempt namespace must send the requester's CDS requests
+# this way.
 requester_request() {
     if [ -z "${6:-}" ]; then
         http_request "$4" "$3" "" "${5:-}"
