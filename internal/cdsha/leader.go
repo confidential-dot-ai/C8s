@@ -37,6 +37,13 @@ func (n *Node) recover(ctx context.Context, p PendingDecree) {
 	n.log.Warn("RECOVER: forcing a one-voter configuration with this replica's state", "decree", p.Name, "id", n.id)
 	n.readCert.Store(nil) // recovery stops read admission before shutting Raft down
 	if err := n.stopRaft(r); err != nil {
+		if errors.Is(err, errShutdownTimeout) {
+			// Its goroutines may still run over the stores and the log:
+			// no new generation over them. Stuck, the replica exits (Run)
+			// and its restart rejoins; the decree stays pending.
+			_ = n.fsm.stop(fmt.Errorf("recover: %w", err))
+			return
+		}
 		n.log.Error("recover: shut down raft", "err", err)
 	}
 	_ = n.mux.Load().Close()
