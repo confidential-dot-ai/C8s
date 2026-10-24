@@ -95,7 +95,9 @@ cds_request() {
 # cds_pod_request <method> <route> [body-file] [authorization] [client-cert] [client-key] [header...]
 cds_pod_request() { local url; url="$(cds_node_url)" || return; http_request "$url" "$@"; }
 cds_pod_url() { cds_node_url; }
-cds_service_url() { cds_node_url; }
+# A member requester's CDS requests leave from here (requester_request), so
+# no address lets the CDS see the pod's own as the source.
+cds_service_url() { return "$UNSUPPORTED"; }
 # The guest's address from the allowlist URL, with the CDS Service's node port.
 cds_node_url() {
     local host port
@@ -202,12 +204,11 @@ AGENT_SCRIPT='last=0; while :; do s=$(cat '"$AGENT_DIR"'/seq 2>/dev/null); if [ 
 
 manifest_filter() { agent_wrap; }
 
-# The requester is a mesh member here (no exempt namespace is open to the
-# operator, see exempt_namespace): a request to one of the node's sockets is
-# sent by curl in the pod through its agent, and one to the CDS from here to
-# the node URL, since the node drops a member pod's own TCP to the CDS
-# (cds_request above).
-requester_mode() { echo member; }
+# The requester is a mesh member here (exempt_namespace below): a request to
+# one of the node's sockets is sent by curl in the pod through its agent, and
+# one to the CDS from here to the node URL, since the node drops a member
+# pod's own TCP to the CDS (cds_request above). A backend with no exempt
+# namespace must send the requester's CDS requests this way.
 requester_request() {
     if [ -z "${6:-}" ]; then
         http_request "$4" "$3" "" "${5:-}"
@@ -408,8 +409,8 @@ node_containers() { return $UNSUPPORTED; }
 # The node image's confos-operator-scope policy denies the operator every
 # write in kube-system, local-path-storage and c8s-system, the namespaces
 # the webhook exempts that admit the harness's pods. So the requester the
-# steps drive runs as a mesh member (requester_mode), and a scenario that
-# needs a pod outside the mesh skips.
+# steps drive runs as a mesh member, and a scenario that needs a pod outside
+# the mesh skips.
 exempt_namespace() { return "$UNSUPPORTED"; }
 
 # No shell on the node, so its plugin cannot be stopped or started; and
