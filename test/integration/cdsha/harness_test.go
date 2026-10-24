@@ -684,14 +684,34 @@ func (c *Cluster) NonVoterIDs() []int {
 	return out
 }
 
-// WaitVoters waits until the leader reports n voters, each on a running
-// replica.
+// WaitVoters waits until the leader reports n voters, each the member of
+// a running replica's current incarnation. A voter left behind by a killed
+// incarnation of the same node (its member ID differs) does not count: it
+// holds a seat no live process can vote with.
 func (c *Cluster) WaitVoters(n int, timeout time.Duration) {
 	c.t.Helper()
 	c.waitFor(timeout, func() bool {
-		v := c.Voters()
-		return len(v) == n && !slices.ContainsFunc(v, func(i int) bool { return !c.Running(i) })
-	}, func() string { return fmt.Sprintf("voters never reached %d:%s", n, c.StatusAll()) })
+		l := c.Leader()
+		if l < 0 {
+			return false
+		}
+		st, _ := c.Status(l)
+		if len(st.Voters) != n {
+			return false
+		}
+		for _, v := range st.Voters {
+			node, _, _ := strings.Cut(v, "/")
+			idx := slices.IndexFunc(c.Replicas, func(r *Replica) bool { return r.Node == node })
+			if idx < 0 || !c.Running(idx) {
+				return false
+			}
+			cur, ok := c.Status(idx)
+			if !ok || cur.ID != v {
+				return false
+			}
+		}
+		return true
+	}, func() string { return fmt.Sprintf("voters never reached %d live current members:%s", n, c.StatusAll()) })
 }
 
 func (c *Cluster) StatusLine(i int) string {
