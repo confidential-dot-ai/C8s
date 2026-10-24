@@ -133,7 +133,13 @@ cluster to the node port an injected client dials, or, while IP SAN binding
 is on, to the CDS Service, where the CDS sees the pod's own source address
 rather than the node's. The requester can also reach the
 node's sandbox inventory and local attestation service over the socket
-directory the admission plugin binds into it. The backend also fetches
+directory the admission plugin binds into it. Where the backend has a
+namespace the mesh exempts (`requester_mode` exempt), the requester runs
+there, outside the mesh, and the inventory signs no token for it; where it
+has none (member), the requester runs in the scenario's namespace as a mesh
+member, the inventory signs for its sandbox, and the backend sends its CDS
+requests from outside the pod, since the node drops a member pod's own TCP to
+the CDS. The backend also fetches
 evidence over chosen report data, and says whether the CDS checks its
 signature: the steps edit its launch measurement into evidence that does not
 verify, or, where the attestation is mocked, into evidence for another
@@ -211,8 +217,11 @@ for a precondition the environment lacks. Pod exec is closed too, so `pod_exec` 
 steps mark `c8s-conformance/harness-argv`, because they chose its first
 container's argv, runs an agent there in place of that argv, and `agent_exec`
 reaches it. Pods whose argv a scenario pins are read from a reporter image's
-log instead. [`metal.sh`](backends/metal.sh) gives each function's answer and
-its reason beside the function.
+log instead. No namespace the mesh exempts is open to the operator, so
+`exempt_namespace` answers unsupported: the requester the steps drive runs as
+a mesh member (`requester_mode` member) and the scenarios that need a pod
+outside the mesh skip. [`metal.sh`](backends/metal.sh) gives each function's
+answer and its reason beside the function.
 
 ## What is a coordinated change
 

@@ -202,11 +202,18 @@ AGENT_SCRIPT='last=0; while :; do s=$(cat '"$AGENT_DIR"'/seq 2>/dev/null); if [ 
 
 manifest_filter() { agent_wrap; }
 
-# Sent by curl in the requester through its agent.
+# The requester is a mesh member here (no exempt namespace is open to the
+# operator, see exempt_namespace): a request to one of the node's sockets is
+# sent by curl in the pod through its agent, and one to the CDS from here to
+# the node URL, since the node drops a member pod's own TCP to the CDS
+# (cds_request above).
+requester_mode() { echo member; }
 requester_request() {
-    local -a opts=()
-    [ -z "${6:-}" ] || opts+=(--unix-socket "$6")
-    agent_curl "$1" "$2" "$REQUESTER_CONTAINER" "${5:-}" "" "" -X "$3" ${opts[@]+"${opts[@]}"} "$4"
+    if [ -z "${6:-}" ]; then
+        http_request "$4" "$3" "" "${5:-}"
+        return
+    fi
+    agent_curl "$1" "$2" "$REQUESTER_CONTAINER" "${5:-}" "" "" -X "$3" --unix-socket "$6" "$4"
 }
 
 # agent_curl <ns> <pod> <container> <body-file> <client-cert> <client-key> <curl args...>:
@@ -400,7 +407,9 @@ node_containers() { return $UNSUPPORTED; }
 
 # The node image's confos-operator-scope policy denies the operator every
 # write in kube-system, local-path-storage and c8s-system, the namespaces
-# the webhook exempts that admit the harness's pods.
+# the webhook exempts that admit the harness's pods. So the requester the
+# steps drive runs as a mesh member (requester_mode), and a scenario that
+# needs a pod outside the mesh skips.
 exempt_namespace() { return "$UNSUPPORTED"; }
 
 # No shell on the node, so its plugin cannot be stopped or started; and

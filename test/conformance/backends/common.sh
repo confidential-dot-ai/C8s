@@ -113,10 +113,18 @@
 #                                    a pod on node that relays HTTP for the
 #                                    steps and can reach the node's sandbox
 #                                    inventory and its local attestation service
+#   requester_mode                   exempt: the requester deploys in
+#                                    exempt_namespace, outside the mesh, and
+#                                    every request leaves its pod; member: it
+#                                    deploys in the scenario's namespace as a
+#                                    mesh member, whose own TCP to the CDS the
+#                                    node drops, so a request naming no socket
+#                                    is sent from here
 #   requester_request <ns> <pod> <method> <url> [body-file] [unix-socket]
-#                                    send the request from inside the pod;
-#                                    prints the status (000 when nothing
-#                                    answered), then the body
+#                                    send the request as the requester: from
+#                                    inside the pod, or from here where
+#                                    requester_mode says so; prints the status
+#                                    (000 when nothing answered), then the body
 #   cds_pod_url                      the CDS address a pod's requester dials
 #   cds_service_url                  the CDS address a requester dials with its
 #                                    own address as the request's source
@@ -180,8 +188,8 @@
 #                                    the CDS, and undo it; each returns once
 #                                    the Service's endpoints say so
 # node_name, image_ref, image_digest, pull_interval, cds_pod_url,
-# cds_service_url, cert_paths,
-# pod_exec, exempt_namespace and api_service_name answer the same for a whole
+# cds_service_url, cert_paths, pod_exec, exempt_namespace, requester_mode and
+# api_service_name answer the same for a whole
 # run; callers may cache them. The
 # allowlist is state: served_allowlist answers for the moment of the call.
 #
@@ -262,9 +270,12 @@ manifest_filter() { cat; }
 # The node's admission plugin binds its socket directory into a container
 # named as a sidecar an application may run itself (cds-attest) in a pod
 # marked injected; the sockets are group-owned by 65532
-# (workloadclaims.AttestContainerName and InventorySocketGID). Nothing else
-# about the pod is c8s's, so the webhook leaves it alone.
+# (workloadclaims.AttestContainerName and InventorySocketGID). In exempt mode
+# nothing else about the pod is c8s's, so the webhook leaves it alone; in
+# member mode the webhook injects the pod's endpoint and credential client
+# beside the container, which keeps the socket mount.
 REQUESTER_CONTAINER=cds-attest
+requester_mode() { echo exempt; }
 requester_manifest() {
     local image
     image="$(image_ref requester)" || return

@@ -83,7 +83,11 @@ type requester struct {
 	pod  *pod
 	node string
 	addr string
-	key  *ecdsa.PrivateKey
+	// member: the pod is a mesh member in the scenario's namespace, whose
+	// inventory signs for it and whose CDS requests the backend sends from
+	// outside the pod; otherwise it is outside the mesh and sends them itself.
+	member bool
+	key    *ecdsa.PrivateKey
 	// The current challenge and the one before it, raw bytes.
 	challenge, previous []byte
 	// A token the inventory signed, or one the requester forged.
@@ -137,8 +141,11 @@ func (w *world) requester(name string) (*requester, error) {
 // requesterOnNode admits the requester's image, deploys the pod and checks
 // that it can reach the CDS, so a scenario fails here, with the pod's view,
 // rather than at its first request. A member pod reaches the CDS only from
-// its credential client, so the requester runs in a namespace the mesh
-// exempts, and is unsupported where none is open to the harness.
+// its credential client, so where the backend has a namespace the mesh
+// exempts (requester_mode exempt) the requester runs there and sends every
+// request itself; where it has none (member) the requester runs in the
+// scenario's namespace as a member, whose inventory signs for it, and the
+// backend sends its CDS requests from outside the pod.
 func requesterOnNode(ctx context.Context, name, node string) error {
 	w := getWorld(ctx)
 	if _, ok := w.issuance.requesters[name]; ok {
@@ -161,8 +168,18 @@ func requesterOnNode(ctx context.Context, name, node string) error {
 		return err
 	}
 	p := w.describe(name, ref)
-	if err := w.elsewhere(p, "exempt_namespace"); err != nil {
+	mode, err := w.be.call("requester_mode")
+	if err != nil {
 		return err
+	}
+	switch mode {
+	case "exempt":
+		if err := w.elsewhere(p, "exempt_namespace"); err != nil {
+			return err
+		}
+	case "member":
+	default:
+		return fmt.Errorf("the backend answers requester_mode %q, not exempt or member", mode)
 	}
 	manifest, err := w.be.call("requester_manifest", p.name, p.namespace, k8sNode)
 	if err != nil {
@@ -183,9 +200,9 @@ func requesterOnNode(ctx context.Context, name, node string) error {
 	if err != nil {
 		return err
 	}
-	r := &requester{pod: p, node: node, addr: strings.TrimSpace(addr)}
+	r := &requester{pod: p, node: node, addr: strings.TrimSpace(addr), member: mode == "member"}
 	w.issuance.requesters[name] = r
-	url, err := w.requesterCDSURL()
+	url, err := w.requesterCDSURL(r)
 	if err != nil {
 		return err
 	}
@@ -251,7 +268,7 @@ func requestsChallenge(ctx context.Context, issued, requested string) error {
 	if err != nil {
 		return err
 	}
-	url, err := w.requesterCDSURL()
+	url, err := w.requesterCDSURL(r)
 	if err != nil {
 		return err
 	}
@@ -588,17 +605,21 @@ func requestsLeaf(ctx context.Context, name, withToken string) error {
 
 // requesterCDSURL is where a requester dials the CDS: the address an
 // injected client dials, unless IP SAN binding needs the requester's own
-// address as the request's source.
-func (w *world) requesterCDSURL() (string, error) {
-	if w.issuance.sourceBound {
-		return w.be.call("cds_service_url")
+// address as the request's source, which a member requester, whose CDS
+// requests the backend sends from outside its pod, cannot give.
+func (w *world) requesterCDSURL(r *requester) (string, error) {
+	if !w.issuance.sourceBound {
+		return w.be.call("cds_pod_url")
 	}
-	return w.be.call("cds_pod_url")
+	if r.member {
+		return "", skipf("the requester %q is a mesh member, so its CDS requests leave from the backend's address, not its own", r.pod.name)
+	}
+	return w.be.call("cds_service_url")
 }
 
 // attest sends an attest body and records what the CDS answered.
 func (w *world) attest(r *requester, body []byte) error {
-	url, err := w.requesterCDSURL()
+	url, err := w.requesterCDSURL(r)
 	if err != nil {
 		return err
 	}
@@ -704,8 +725,9 @@ func holdsInventoryToken(ctx context.Context, name, node, otherKey string) error
 		return err
 	}
 	// The inventory asserts only for a mesh member (workload identity B4),
-	// which the requester is not.
-	if status == 403 && strings.Contains(string(resp), "no assertion for this caller") {
+	// which a requester outside the mesh is not; a member's refusal is the
+	// inventory's verdict on it.
+	if !r.member && status == 403 && strings.Contains(string(resp), "no assertion for this caller") {
 		return skipf("the inventory asserts no sandbox outside the mesh, where the requester runs: %s", resp)
 	}
 	if status != 200 {
