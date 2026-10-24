@@ -552,16 +552,33 @@ type slowLeader struct {
 	since  time.Time // when reconcile first saw this node lead this term
 	tried  time.Time // the last slow-leader transfer attempt (kept across terms)
 	logged bool      // this episode's "no caught-up follower" was logged
+	ahead  int       // consecutive checks that found a follower ahead
 }
+
+// slowLeaderMargin is how many entries a follower's state machine must be
+// ahead of the leader's before the leader counts as the slow one. Equally
+// slow replicas differ by one: the leader's state machine also takes the
+// backup snapshots, which delay its next apply, so a follower can start the
+// next entry first. A leader behind on its own disk lags by every write in
+// flight, each waiting for it to apply (several, under any load). A slow
+// leader with at most one write in flight never lags by more, so it is not
+// handed off: its reads still fail closed.
+const slowLeaderMargin = 1
+
+// slowLeaderChecks is how many consecutive checks, a Tick apart, must find
+// a follower ahead by more than the margin: one sample can catch a moment.
+const slowLeaderChecks = 2
 
 // slowLeaderTarget returns a voter to hand leadership to when this leader's
 // own state machine is too slow for any replica to serve: it has led for a
 // lease, no read barrier started within the last lease succeeded (so no
 // replica holds a valid read certificate), and a voter with healthy
-// heartbeats has applied further than this leader's own state machine, which
-// is then what holds the reads up. That last condition keeps a uniformly slow
-// cluster, where followers apply no faster than the leader, from passing
-// leadership around; a node also waits DeadAfter between attempts. Peers are probed only when the rest
+// heartbeats has applied further than this leader's own state machine, by
+// more than slowLeaderMargin on slowLeaderChecks checks in a row: the
+// leader's state machine is then what holds the reads up. That last
+// condition keeps a uniformly slow cluster, where followers apply no faster
+// than the leader, from passing leadership around; a node also waits
+// DeadAfter between attempts. Peers are probed only when the rest
 // holds, and without membershipMu.
 func (n *Node) slowLeaderTarget(r *raft.Raft, servers []raft.Server, now time.Time) (*raft.Server, []any) {
 	if r == nil || r != n.r() || r.State() != raft.Leader {
@@ -581,10 +598,14 @@ func (n *Node) slowLeaderTarget(r *raft.Raft, servers []raft.Server, now time.Ti
 	if now.Sub(ref) < lease {
 		n.mu.Lock()
 		n.slow.logged = false // reads certified again: the episode ended
+		n.slow.ahead = 0
 		n.mu.Unlock()
 		return nil, nil
 	}
 	if now.Sub(since) < lease || (!tried.IsZero() && now.Sub(tried) < n.cfg.Timing.DeadAfter) {
+		n.mu.Lock()
+		n.slow.ahead = 0
+		n.mu.Unlock()
 		return nil, nil
 	}
 	attrs := []any{"no_read_for", now.Sub(ref).Round(time.Millisecond), "last_barrier_ms", n.barrierMS.Load(),
@@ -602,14 +623,22 @@ func (n *Node) slowLeaderTarget(r *raft.Raft, servers []raft.Server, now time.Ti
 		// Sampled after the answer: a follower ahead of it has applied a
 		// committed entry this leader's state machine has not reached.
 		applied := n.fsm.AppliedIndex()
-		if err != nil || st.ID != string(s.ID) || st.Stuck != "" || st.AppliedIndex <= applied {
+		if err != nil || st.ID != string(s.ID) || st.Stuck != "" || st.AppliedIndex <= applied+slowLeaderMargin {
 			continue
+		}
+		n.mu.Lock()
+		n.slow.ahead++
+		ahead := n.slow.ahead
+		n.mu.Unlock()
+		if ahead < slowLeaderChecks {
+			return nil, nil
 		}
 		return &s, append(attrs, "target", s.ID, "target_applied", st.AppliedIndex, "leader_applied", applied)
 	}
 	n.mu.Lock()
 	first := !n.slow.logged
 	n.slow.logged = true
+	n.slow.ahead = 0
 	n.mu.Unlock()
 	if first {
 		n.log.Warn("slow leader: no caught-up follower; keeping leadership", attrs...)
