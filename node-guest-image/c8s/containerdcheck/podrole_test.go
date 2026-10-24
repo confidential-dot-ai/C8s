@@ -29,6 +29,17 @@ func TestPodRoleKubeletLeavesPacketRulesToNRI(t *testing.T) {
 	}
 }
 
+func TestPodRoleUsesPreparedCNI(t *testing.T) {
+	data, err := os.ReadFile(podRoleConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := flattenTOML(t, podRoleConfig, data)
+	if got := config["plugins/io.containerd.cri.v1.runtime/cni/conf_dir"]; got != "/run/c8s-pod/cni" {
+		t.Fatalf("Pod CNI directory = %v, want the prepared runtime directory", got)
+	}
+}
+
 // podRoleConfig is the pod role's hand-written containerd config.
 const podRoleConfig = "../mkosi.extra/usr/lib/c8s/pod-runtime/containerd.toml"
 
@@ -42,7 +53,7 @@ var podRoleDifferences = map[string]string{
 		"podcvm-containerd imports from pause.tar at start; renderData carries k3s's default, not RKE2's",
 	"plugins/io.containerd.cri.v1.runtime/cni/bin_dirs": "the CNI plugins mkosi.sync stages into the image; " +
 		"/opt/cni/bin is filled by Canal, which never runs in a pod boot",
-	"plugins/io.containerd.cri.v1.runtime/cni/conf_dir": "the image's baked pod network, not Canal's",
+	"plugins/io.containerd.cri.v1.runtime/cni/conf_dir": "node-services stages the baked Pod CNI template with the guest uplink MTU before containerd starts",
 	"plugins/io.containerd.cri.v1.runtime/containerd/runtimes/runhcs-wcow-process/runtime_type": "Windows-only " +
 		"handler with no binary on Linux; the pod role enables no handler it cannot run",
 }

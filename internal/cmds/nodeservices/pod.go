@@ -18,8 +18,8 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
-// Pod-role outputs. The kubelet, containerd and CNI configs are static and
-// baked under /usr/lib/c8s/pod-runtime; only per-launch inputs land here.
+// Pod-role outputs. Kubelet and containerd configs stay baked; preparation
+// stages the signed workload and the CNI template with the guest uplink MTU.
 const (
 	PodDir             = "/run/c8s-pod"
 	podManifestPath    = PodDir + "/manifests/pod.yaml"
@@ -30,7 +30,7 @@ const (
 
 // preparePod admits the signed base and the authenticated CDS allowlist.
 // Only the baked mesh endpoint joins the signed base; nothing is node TCB.
-func preparePod(rootDir string, d *launchconfig.Document, outputs map[string][]byte) error {
+func preparePod(rootDir string, d *launchconfig.Document, outputs map[string][]byte, resolveMTU func() (int, error)) error {
 	path := func(name string) string { return filepath.Join(rootDir, name) }
 	if d.Pod == nil || d.Workloads == "" {
 		return fmt.Errorf("staged pod role requires a pod and its workloads")
@@ -123,6 +123,11 @@ func preparePod(rootDir string, d *launchconfig.Document, outputs map[string][]b
 		return err
 	}
 
+	cni, err := preparePodNetwork(rootDir, resolveMTU)
+	if err != nil {
+		return err
+	}
+
 	if err := publishPublic(path(PublicDir), outputs, true); err != nil {
 		return err
 	}
@@ -135,6 +140,7 @@ func preparePod(rootDir string, d *launchconfig.Document, outputs map[string][]b
 		{podManifestPath, manifest, 0600},
 		{podKubeletEnvPath, []byte("KUBELET_HOSTNAME=" + d.Node.Name + "\n"), 0644},
 		{podUnmanagedLinks, []byte(podUnmanagedConfig), 0644},
+		{podCNIPath, cni, 0644},
 	}
 	for _, f := range files {
 		if err := writeFile(path(f.path), f.data, f.mode); err != nil {

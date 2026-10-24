@@ -1,9 +1,10 @@
 # Pod-role containerd config: RKE2's rendered base template (containerdcheck
 # rke2-base-v3.toml.tmpl) with the values RKE2 fills in on this image, so the
 # same baked drop-ins (c8s-runc, NRI) apply and every path c8s-runc and the
-# NRI plugin hard-code is unchanged. Pod-role differences: CNI from the
-# image, the sandbox image pinned by digest (podcvm-containerd imports it
-# from pause.tar), and no Windows runhcs handler. containerdcheck's
+# NRI plugin hard-code is unchanged. Pod-role differences: the image's CNI
+# template staged with the guest uplink MTU, the sandbox image pinned by
+# digest (podcvm-containerd imports it from pause.tar), and no Windows runhcs
+# handler. containerdcheck's
 # TestPodRoleConfigFollowsRKE2Base fails on any other key that differs.
 version = 3
 imports = ["/var/lib/rancher/rke2/agent/etc/containerd/config-v3.toml.d/*.toml"]
@@ -36,7 +37,7 @@ state = "/run/k3s/containerd"
 
 [plugins.'io.containerd.cri.v1.runtime'.cni]
   bin_dirs = ["/usr/lib/c8s/cni"]
-  conf_dir = "/usr/lib/c8s/pod-runtime/cni"
+  conf_dir = "/run/c8s-pod/cni"
 
 [plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc]
   runtime_type = "io.containerd.runc.v2"
