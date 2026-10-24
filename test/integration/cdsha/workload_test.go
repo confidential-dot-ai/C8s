@@ -751,6 +751,7 @@ func readHeavy(t *testing.T, c *Cluster, k *Checker) {
 }
 
 func TestWorkload(t *testing.T) {
+	extended(t)
 	runScenarios(t, []scenario{
 		{name: "W1-hot-key", run: hotKey},
 		{name: "W2-large-bodies", args: historyBound, run: largeBodies},

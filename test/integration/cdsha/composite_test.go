@@ -434,6 +434,7 @@ func (c *Cluster) reportMajorityWatch(ex int, thawAt time.Time, w majorityWatch)
 func setAllLinks(c *Cluster, l Link) { setAll(c, l) }
 
 func TestComposite(t *testing.T) {
+	extended(t)
 	runScenarios(t, []scenario{
 		frozenLeader("G1-frozen-leader", timing.lease+timing.election+3*time.Second, false),
 		frozenLeader("G1-frozen-leader-past-dead-after", timing.deadAfter+6*time.Second, true),
@@ -696,4 +697,14 @@ func randomNemesis(t *testing.T, c *Cluster, k *Checker) {
 		}
 	}
 	logS("steps=%d steps-without-a-leader-before-next-fault=%d", len(recoveries), nolead)
+}
+
+// extended skips t unless CDSHA_IT_EXTENDED=1: the composite, workload and
+// availability rows (about 25 minutes, including a 10-minute nemesis) are
+// opt-in, so the default integration suite keeps its length.
+func extended(t *testing.T) {
+	t.Helper()
+	if os.Getenv("CDSHA_IT_EXTENDED") != "1" {
+		t.Skip("extended row: set CDSHA_IT_EXTENDED=1 to run it (e.g. CDSHA_IT_EXTENDED=1 go test -tags integration -run '^TestComposite$' ./test/integration/cdsha/)")
+	}
 }

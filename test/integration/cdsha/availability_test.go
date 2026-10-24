@@ -78,6 +78,7 @@ func rttAvailability(name string, lease time.Duration) scenario {
 }
 
 func TestAvailabilityRTT(t *testing.T) {
+	extended(t)
 	runScenarios(t, []scenario{
 		rttAvailability("A6m-latency-300ms-harness-lease", timing.lease),
 		rttAvailability("A6m-latency-300ms-deployed-lease", cdsha.DefaultTiming.Lease),
