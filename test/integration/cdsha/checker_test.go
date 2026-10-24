@@ -224,7 +224,12 @@ func (k *Checker) write(kind, key string, seq int) Op {
 		time.Sleep(100 * time.Millisecond)
 		return Op{Kind: kind, Key: key, Seq: seq, Err: "no replica running"}
 	}
-	i := running[rand.IntN(len(running))]
+	return k.writeAt(running[rand.IntN(len(running))], kind, key, seq)
+}
+
+// writeAt is write through replica i. It records the outcome in the same
+// history, so the oracle checks it like every other write.
+func (k *Checker) writeAt(i int, kind, key string, seq int) Op {
 	var path string
 	var body []byte
 	if kind == "allow" {

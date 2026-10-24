@@ -307,7 +307,7 @@ func TestHAHandlersBeforeJoin(t *testing.T) {
 	}
 	ok := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	gated := haGate(node.Serving, ok)
-	for path, want := range map[string]int{"/attest": 503, "/secrets/x": 503, "/allowlist": 503, "/ca": 503, "/healthz": 200, "/ha/status": 200, "/ha/pins": 200, "/metrics": 200} {
+	for path, want := range map[string]int{"/attest": 503, "/secrets/x": 503, "/allowlist": 503, "/ca": 503, "/healthz": 200, "/ha/status": 200, "/ha/pins": 200, "/metrics": 200, "/dev/pprof/goroutine": 503, "/dev/memstats": 503} {
 		w := httptest.NewRecorder()
 		gated.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
 		if w.Code != want {
