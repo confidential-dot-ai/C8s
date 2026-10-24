@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Manual connected native TDX acceptance; never Cloud API/provider conformance."""
 import base64
+import copy
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -108,6 +109,61 @@ def readiness_cycle(values):
     if transitions and transitions[0] is False:
         transitions = transitions[1:]
     return transitions == [True, False, True]
+
+
+class ReadinessConditions:
+    """Retain authenticated transitions that boolean polling can miss."""
+    def __init__(self, uid, starts):
+        self.uid, self.starts = uid, copy.deepcopy(starts)
+        self.previous, self.previous_time = None, None
+        self.recovered, self.completion_withdrawal = False, False
+
+    def observe(self, status, parsed, recovered):
+        observation = {"uid": self.uid, "previous": self.previous,
+                       "appMeshReady": parsed["ready"], "checkerComplete": parsed["complete"],
+                       "expectedCycleRecovered": recovered, "accepted": False}
+        try:
+            require(status.get("metadata", {}).get("uid") == self.uid, "readiness Pod UID changed")
+            require(parsed["starts"] == self.starts, "readiness container starts changed")
+            conditions = status.get("status", {}).get("conditions")
+            require(isinstance(conditions, list) and all(isinstance(c, dict) for c in conditions),
+                    "readiness conditions are malformed")
+            ready = [c for c in conditions if c.get("type") == "Ready"]
+            require(len(ready) == 1, "readiness requires exactly one Ready condition")
+            condition, timestamp = ready[0].get("status"), ready[0].get("lastTransitionTime")
+            require(condition in ("True", "False", "Unknown"), "readiness condition status is malformed")
+            require(isinstance(timestamp, str) and re.fullmatch(
+                r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z", timestamp),
+                "readiness condition timestamp is malformed")
+            try:
+                transition_time = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+            except ValueError:
+                raise RuntimeError("readiness condition timestamp is malformed") from None
+            current = {"status": condition, "lastTransitionTime": timestamp}
+            observation["current"] = current
+            if self.previous is not None:
+                require(transition_time >= self.previous_time, "readiness condition timestamp moved backwards")
+                require(not (self.previous["status"] == condition == "True"
+                             and transition_time > self.previous_time),
+                        "unexpected readiness condition transition between True samples")
+            if self.recovered:
+                require(parsed["ready"], "unexpected readiness withdrawal after recovery")
+                if current != self.previous:
+                    # A successful checker exit may withdraw aggregate Pod Ready later
+                    # than its container status; app and mesh must remain ready.
+                    completion = (parsed["complete"] and not self.completion_withdrawal
+                                  and self.previous["status"] == "True" and condition == "False")
+                    require(completion, "unexpected readiness condition transition after recovery")
+                    self.completion_withdrawal = True
+                    observation["checkerCompletionWithdrawal"] = True
+            elif recovered:
+                require(condition == "True" and parsed["ready"], "readiness recovery condition differs")
+                self.recovered = True
+            self.previous, self.previous_time = current, transition_time
+            observation["accepted"] = True
+        except RuntimeError as error:
+            observation["failure"] = str(error)
+        return observation
 
 
 class Acceptance(OwnedResources):
@@ -401,13 +457,13 @@ class Acceptance(OwnedResources):
             try:
                 candidate = self.leaf(side)
                 if exact and state and state["running"] and candidate["workload"] == "connected":
-                    return candidate
+                    return candidate, status
             except (RuntimeError, subprocess.TimeoutExpired, OSError, ValueError) as error:
                 self.observation_error("pod-mesh", side, error)
         return None
 
     def warmup_round(self, deadline, traces, states):
-        ca_ready, initial = False, {}
+        ca_ready, initial, statuses = False, {}, {}
         try:
             self.ca(self.evidence / "mesh-ca.pem", deadline)
             ca_ready = True
@@ -416,8 +472,14 @@ class Acceptance(OwnedResources):
         for side in ("a", "b"):
             candidate = self.warmup_pod(side, deadline, traces, states, ca_ready)
             if candidate is not None:
-                initial[side] = candidate
-        return initial
+                initial[side], statuses[side] = candidate
+        return initial, statuses
+
+    def record_readiness(self, tracker, status, parsed, recovered, name):
+        observation = tracker.observe(status, parsed, recovered)
+        # Keep the authenticated response and verdict even when the gate refuses it.
+        write(self.evidence / (name + ".json"), {"status": status, "observation": observation})
+        require(observation["accepted"], observation.get("failure", "readiness condition rejected"))
 
     def observe(self):
         for side in SIDES:
@@ -429,7 +491,7 @@ class Acceptance(OwnedResources):
         initial, traces, states = {}, {"a": [], "b": []}, {}
         while time.monotonic() < deadline:
             progress("warmup", status="polling")
-            initial = self.warmup_round(deadline, traces, states)
+            initial, initial_status = self.warmup_round(deadline, traces, states)
             if set(initial) == {"a", "b"}:
                 break
             pause(deadline, 10)
@@ -441,6 +503,10 @@ class Acceptance(OwnedResources):
         require(self.run_deadline - start >= SOAK + 360, "insufficient budget for full renewal observation")
         deadline = self.deadline(SOAK + 600)
         baseline_starts = {side: states[side]["starts"] for side in ("a", "b")}
+        conditions = {side: ReadinessConditions(self.name, baseline_starts[side]) for side in ("a", "b")}
+        for side in ("a", "b"):
+            self.record_readiness(conditions[side], initial_status[side], states[side],
+                                  readiness_cycle(traces[side]), "readiness-baseline-" + side)
         previous = dict(initial)
         rotations = {"a": False, "b": False}
         index = 0
@@ -454,9 +520,10 @@ class Acceptance(OwnedResources):
                 state = pod_state(status, self.name)
                 states[side] = state
                 traces[side].append(state["ready"])
+                self.record_readiness(conditions[side], status, state, readiness_cycle(traces[side]),
+                                      f"readiness-{index:03}-{side}")
                 leaf = self.leaf(side)
                 # A checker exit can itself refresh claims; it is not timed renewal.
-                require(state["starts"] == baseline_starts[side], "attested container start identity changed")
                 rotation = renewal_event(previous[side], leaf, time.monotonic() - start)
                 rotations[side] |= rotation and state["running"]
                 previous[side] = leaf
@@ -477,6 +544,7 @@ class Acceptance(OwnedResources):
         for side in ("a", "b"):
             final_status = self.cli_read(side, ["pod-status", "get"], deadline)
             final_state = pod_state(final_status, self.name)
+            self.record_readiness(conditions[side], final_status, final_state, True, "readiness-final-" + side)
             require(final_state["ready"] and final_state["complete"] and final_state["starts"] == baseline_starts[side], "post-negative authenticated workload health failed")
             write(self.evidence / (side + "-final-status.json"), final_status)
         self.ca(self.private / "final-ca.pem", deadline)

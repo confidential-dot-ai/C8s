@@ -277,12 +277,13 @@ class HarnessTests(unittest.TestCase):
             calls.append((side, mode, kwargs))
             if side == "a" and mode == ["pod-attest"] and kwargs.get("exact_digests", True):
                 raise RuntimeError("measured digest mismatch")
-            return {"side": side, "measured_digests": ["observed"]}
+            return {"side": side, "mode": mode, "measured_digests": ["observed"]}
         state = {"ready": True, "running": True}
         traces, states = {"a": [], "b": []}, {}
         with patch.object(task, "ca"), patch.object(task, "cli_read", side_effect=read), patch.object(acceptance, "pod_state", return_value=state), patch.object(task, "leaf", return_value={"workload": "connected"}), contextlib.redirect_stdout(io.StringIO()):
-            initial = task.warmup_round(None, traces, states)
+            initial, statuses = task.warmup_round(None, traces, states)
         self.assertEqual(set(initial), {"b"})
+        self.assertEqual(statuses, {"b": json.loads((task.evidence / "b-initial-status.json").read_text())})
         self.assertEqual(calls[0][:2], ("a", ["pod-status", "get"]))
         self.assertEqual(calls[3][:2], ("b", ["pod-status", "get"]))
         self.assertTrue((task.evidence / "a-initial-status.json").exists())
@@ -301,8 +302,8 @@ class HarnessTests(unittest.TestCase):
             if side == "a": raise RuntimeError("guest unavailable")
             return {"side": side}
         with patch.object(task, "ca", side_effect=RuntimeError("CDS unavailable")), patch.object(task, "cli_read", side_effect=read), patch.object(acceptance, "pod_state", return_value={"ready": False, "running": True}), contextlib.redirect_stdout(io.StringIO()):
-            initial = task.warmup_round(None, {"a": [], "b": []}, {})
-        self.assertEqual(initial, {})
+            initial, statuses = task.warmup_round(None, {"a": [], "b": []}, {})
+        self.assertEqual((initial, statuses), ({}, {}))
         self.assertIn(("b", ["pod-status", "get"]), calls)
         self.assertIn(("b", ["pod-attest"]), calls)
         self.assertTrue((task.evidence / "server-cds-ca-last-error.json").exists())
@@ -352,6 +353,171 @@ class HarnessTests(unittest.TestCase):
             self.assertTrue(disks[0]["disk"]["readonly"])
             self.assertEqual(spec["volumes"][0]["persistentVolumeClaim"]["claimName"], task.name + "-root")
             self.assertEqual(any(d.get("serial") == "confai-scratch" for d in disks), side == "server")
+
+
+def readiness_status(condition="True", timestamp="2026-01-01T00:10:00Z", *, uid="pod", complete=False, ready=True):
+    def container(name):
+        return {"name": name, "ready": ready if name == "app" else True, "restartCount": 0,
+                "state": {"running": {"startedAt": "2026-01-01T00:00:00Z"}}}
+    app, checker, mesh = [container(name) for name in ("app", "checker", acceptance.MESH_CONTAINER_NAME)]
+    if complete:
+        checker.update(ready=False, state={"terminated": {"exitCode": 0,
+                       "startedAt": "2026-01-01T00:00:00Z", "finishedAt": timestamp}})
+    return {"metadata": {"uid": uid}, "status": {
+        "conditions": [{"type": "Ready", "status": condition, "lastTransitionTime": timestamp}],
+        "containerStatuses": [app, checker], "initContainerStatuses": [mesh]}}
+
+
+class ReadinessTests(unittest.TestCase):
+    def tracker(self, status=None, recovered=True):
+        status = status or readiness_status()
+        parsed = acceptance.pod_state(status, status["metadata"]["uid"])
+        tracker = acceptance.ReadinessConditions(status["metadata"]["uid"], parsed["starts"])
+        self.assertTrue(tracker.observe(status, parsed, recovered)["accepted"])
+        return tracker
+
+    def observation(self, tracker, status, recovered=True):
+        return tracker.observe(status, acceptance.pod_state(status, status["metadata"]["uid"]), recovered)
+
+    def test_expected_cycle_and_stable_samples_pass(self):
+        tracker = self.tracker(readiness_status("False", "2026-01-01T00:00:00Z", ready=False), False)
+        traces = [False]
+        for condition, minute in (("False", 0), ("True", 2), ("True", 2), ("False", 5), ("True", 8), ("True", 8)):
+            status = readiness_status(condition, f"2026-01-01T00:{minute:02}:00Z", ready=condition == "True")
+            traces.append(condition == "True")
+            self.assertTrue(self.observation(tracker, status, acceptance.readiness_cycle(traces))["accepted"])
+        self.assertTrue(tracker.recovered)
+
+    def test_hidden_true_transition_is_rejected_before_and_after_recovery(self):
+        for recovered in (False, True):
+            with self.subTest(recovered=recovered):
+                tracker = self.tracker(recovered=recovered)
+                verdict = self.observation(tracker, readiness_status(timestamp="2026-01-01T00:11:00Z"), recovered)
+                self.assertFalse(verdict["accepted"])
+                self.assertIn("between True samples", verdict["failure"])
+                self.assertEqual(verdict["previous"]["status"], verdict["current"]["status"])
+
+    def test_successful_checker_withdrawal_may_be_delayed_but_is_allowed_only_once(self):
+        for delayed in (False, True):
+            with self.subTest(delayed=delayed):
+                tracker = self.tracker()
+                if delayed:
+                    self.assertTrue(self.observation(tracker, readiness_status(complete=True))["accepted"])
+                ended = readiness_status("False", "2026-01-01T01:10:00Z", complete=True)
+                verdict = self.observation(tracker, ended)
+                self.assertTrue(verdict["accepted"])
+                self.assertTrue(verdict["checkerCompletionWithdrawal"])
+                self.assertTrue(self.observation(tracker, ended)["accepted"])
+                for condition in ("False", "True", "Unknown"):
+                    extra = readiness_status(condition, "2026-01-01T01:11:00Z", complete=True)
+                    self.assertFalse(self.observation(tracker, extra)["accepted"])
+
+    def test_completion_cannot_hide_app_or_mesh_failure(self):
+        for complete in (False, True):
+            for failed in ("app", "mesh", "condition"):
+                with self.subTest(complete=complete, failed=failed):
+                    status = readiness_status("False", "2026-01-01T01:10:00Z", complete=complete)
+                    if failed == "app": status["status"]["containerStatuses"][0]["ready"] = False
+                    if failed == "mesh": status["status"]["initContainerStatuses"][0]["ready"] = False
+                    if failed == "condition" and complete: continue
+                    self.assertFalse(self.observation(self.tracker(), status)["accepted"])
+
+    def test_conditions_and_identity_fail_closed(self):
+        baseline = readiness_status()
+        bad = []
+        for value in (None, [], [None], baseline["status"]["conditions"] * 2):
+            status = copy.deepcopy(baseline)
+            status["status"]["conditions"] = value
+            bad.append(status)
+        for key, value in (("type", "ContainersReady"), ("status", True), ("status", "invalid"),
+                           ("lastTransitionTime", None), ("lastTransitionTime", "invalid"),
+                           ("lastTransitionTime", "2026-13-01T00:10:00Z"),
+                           ("lastTransitionTime", "2026-01-01T00:10:00+00:00"),
+                           ("lastTransitionTime", "2026-01-01T00:09:00Z")):
+            status = copy.deepcopy(baseline)
+            status["status"]["conditions"][0][key] = value
+            bad.append(status)
+        status = copy.deepcopy(baseline)
+        status["metadata"]["uid"] = "another-pod"
+        bad.append(status)
+        for key in ("containerStatuses", "initContainerStatuses"):
+            status = copy.deepcopy(baseline)
+            status["status"][key][0]["state"]["running"]["startedAt"] = "2026-01-01T00:01:00Z"
+            bad.append(status)
+        for status in bad:
+            with self.subTest(status=status):
+                self.assertFalse(self.observation(self.tracker(), status)["accepted"])
+
+    def test_failed_verdict_is_saved_privately_before_raising(self):
+        with tempfile.TemporaryDirectory() as directory:
+            task = acceptance.Acceptance(Path(directory), "123", "2", "confidential-dot-ai/C8s")
+            status = readiness_status(timestamp="2026-01-01T00:11:00Z")
+            with self.assertRaisesRegex(RuntimeError, "between True samples"):
+                task.record_readiness(self.tracker(), status, acceptance.pod_state(status, "pod"), True, "rejected")
+            path = task.evidence / "rejected.json"
+            record = json.loads(path.read_text())
+            self.assertEqual(record["status"], status)
+            self.assertFalse(record["observation"]["accepted"])
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+    def test_observer_saves_readiness_before_rejection_or_leaf_failure(self):
+        for hidden in (False, True):
+            with self.subTest(hidden=hidden), tempfile.TemporaryDirectory() as directory:
+                task = acceptance.Acceptance(Path(directory), "123", "2", "confidential-dot-ai/C8s")
+                task.run_deadline = 10000
+                resources.write(task.evidence / "mesh-ca.pem", b"public CA")
+                baseline = readiness_status(uid=task.name)
+                observed = readiness_status(uid=task.name, timestamp="2026-01-01T00:11:00Z" if hidden else "2026-01-01T00:10:00Z")
+                def warmup(deadline, traces, states):
+                    for side in ("a", "b"):
+                        traces[side].extend([True, False, True])
+                        states[side] = acceptance.pod_state(baseline, task.name)
+                    return ({side: {"sandboxID": side} for side in ("a", "b")}, {side: baseline for side in ("a", "b")})
+                with patch.object(task, "connect"), patch.object(task, "instance"), patch.object(task, "warmup_round", side_effect=warmup), \
+                     patch.object(task, "cli_read", return_value=observed), patch.object(task, "leaf", side_effect=RuntimeError("leaf unavailable")) as leaf, \
+                     patch.object(acceptance.time, "monotonic", return_value=100), contextlib.redirect_stdout(io.StringIO()):
+                    with self.assertRaisesRegex(RuntimeError, "between True samples" if hidden else "leaf unavailable"):
+                        task.observe()
+                record = json.loads((task.evidence / "readiness-001-a.json").read_text())
+                self.assertEqual(record["status"], observed)
+                self.assertEqual(record["observation"]["accepted"], not hidden)
+                self.assertEqual(leaf.call_count, 0 if hidden else 1)
+                self.assertFalse((task.evidence / "result.json").exists())
+
+    def test_post_negative_timestamp_change_cannot_satisfy_acceptance(self):
+        for extra in (False, True):
+            with self.subTest(extra=extra), tempfile.TemporaryDirectory() as directory:
+                task = acceptance.Acceptance(Path(directory), "123", "2", "confidential-dot-ai/C8s")
+                task.run_deadline = 10000
+                resources.write(task.evidence / "mesh-ca.pem", b"public CA")
+                baseline = readiness_status(uid=task.name)
+                completed = readiness_status("False", "2026-01-01T01:10:00Z", uid=task.name, complete=True)
+                final = readiness_status("False", "2026-01-01T01:11:00Z", uid=task.name, complete=True) if extra else completed
+                reads = iter([baseline, baseline, completed, completed, final, final])
+                clock = [0]
+                def warmup(deadline, traces, states):
+                    for side in ("a", "b"):
+                        traces[side].extend([True, False, True])
+                        states[side] = acceptance.pod_state(baseline, task.name)
+                    return ({side: {"sandboxID": side} for side in ("a", "b")}, {side: baseline for side in ("a", "b")})
+                def read(side, mode, deadline):
+                    return next(reads) if mode == ["pod-status", "get"] else {}
+                def pause(deadline, seconds):
+                    clock[0] += seconds
+                with patch.object(task, "connect"), patch.object(task, "instance"), patch.object(task, "warmup_round", side_effect=warmup), \
+                     patch.object(task, "cli_read", side_effect=read), patch.object(task, "leaf", return_value={}), \
+                     patch.object(task, "ca", side_effect=lambda path, deadline: resources.write(path, b"public CA")), \
+                     patch.object(acceptance, "renewal_event", return_value=True), patch.object(acceptance, "SOAK", 0), \
+                     patch.object(acceptance, "pause", side_effect=pause), patch.object(acceptance.time, "monotonic", side_effect=lambda: clock[0]), \
+                     contextlib.redirect_stdout(io.StringIO()):
+                    if extra:
+                        with self.assertRaisesRegex(RuntimeError, "transition after recovery"): task.observe()
+                    else:
+                        task.observe()
+                self.assertEqual((task.evidence / "result.json").exists(), not extra)
+                record = json.loads((task.evidence / "readiness-final-a.json").read_text())
+                self.assertEqual(record["status"], final)
+                self.assertEqual(record["observation"]["accepted"], not extra)
 
 
 if __name__ == "__main__":
