@@ -278,3 +278,32 @@ func TestOneSeatReplacementAndReadiness(t *testing.T) {
 		t.Fatalf("voters %v", vs)
 	}
 }
+
+// A voter cut off past DeadAfter, with no non-voter to replace it, waits to
+// retire; once its heartbeats come back it keeps its seat (same member) and
+// no longer counts as retiring (A3: a minority-side voter after the heal).
+func TestRetiringVoterThatComesBackKeepsItsSeat(t *testing.T) {
+	c := newCluster(t, 3)
+	c.genesis("n0", "n1", "n2")
+	l := c.leader()
+	v := c.others(l)[0]
+	id := string(v.node.id)
+	c.partition(v.name, true)
+	eventually(t, testTiming.DeadAfter+5*time.Second, "the cut-off voter waits to retire", func() bool {
+		return slices.Contains(l.node.Status().RetiringVoters, id)
+	})
+	c.partition(v.name, false)
+	eventually(t, 10*time.Second, "no voter retiring after the heal", func() bool {
+		return len(l.node.Status().RetiringVoters) == 0
+	})
+	// And it stays so: the voter keeps its seat under the same member ID.
+	for end := time.Now().Add(testTiming.DeadAfter); time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
+		st := l.node.Status()
+		if !slices.Contains(st.Voters, id) || len(st.RetiringVoters) > 0 {
+			t.Fatalf("after the heal: voters %v, retiring %v", st.Voters, st.RetiringVoters)
+		}
+	}
+	eventually(t, 10*time.Second, "the voter serves and the seats are filled", func() bool {
+		return v.node.Serving() && l.node.Status().SeatsFilled
+	})
+}

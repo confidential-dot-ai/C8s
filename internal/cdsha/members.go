@@ -383,6 +383,13 @@ func (n *Node) reconcile() {
 		voterNodes[nodeOf(s.ID)] = true
 		promote = append(promote, s)
 	}
+	for _, id := range n.retiring {
+		if !slices.Contains(retiring, id) && slices.ContainsFunc(servers, func(s raft.Server) bool { return s.ID == id }) {
+			// Its heartbeats came back (or it answered the probe): it keeps
+			// its seat. retiring is decided afresh every pass.
+			n.log.Info("retiring voter: cancelled, it answers again", "id", id)
+		}
+	}
 	n.retiring = retiring
 	n.mu.Unlock()
 	for _, id := range remove {
