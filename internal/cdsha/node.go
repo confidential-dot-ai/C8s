@@ -156,6 +156,8 @@ type Node struct {
 	stoppingReads atomic.Pointer[raft.Raft] // admission closes before draining this instance
 	stopRaftMu    sync.Mutex                // serialize shutdowns, including stale instance callers
 
+	shutdownPending *pendingShutdown // protected by stopRaftMu
+
 	seatsOKAt atomic.Pointer[time.Time] // monotonic time of the last full-seat report (non-voters)
 
 	readOK    atomic.Pointer[barrierMark] // leader: the last read barrier that succeeded
@@ -431,7 +433,18 @@ func (n *Node) transport() (*raft.NetworkTransport, error) {
 		return nil, err
 	}
 	n.mux.Store(m)
-	return raft.NewNetworkTransportWithConfig(&raft.NetworkTransportConfig{Stream: m, MaxPool: 3, Timeout: 10 * time.Second, Logger: n.rcfg.Logger}), nil
+	return raft.NewNetworkTransportWithConfig(raftTransportConfig(m, n.rcfg.Logger)), nil
+}
+
+// raftTransportConfig is the peer transport's configuration. Pipelining is
+// off (MaxRPCsInFlight 1, Raft's documented switch: AppendEntriesPipeline
+// then reports ErrPipelineReplicationNotSupported and replication sends one
+// AppendEntries at a time). Raft v1.8's pipeline deadlocks once a follower
+// stops answering: its response decoder quits on the first failure while the
+// transport still hands it results, the sender then waits on the transport
+// forever, and Raft can never shut down.
+func raftTransportConfig(stream raft.StreamLayer, logger hclog.Logger) *raft.NetworkTransportConfig {
+	return &raft.NetworkTransportConfig{Stream: stream, MaxPool: 3, Timeout: 10 * time.Second, Logger: logger, MaxRPCsInFlight: 1}
 }
 
 // Run drives the replica until ctx ends: join or bootstrap, then as leader
@@ -536,7 +549,41 @@ func (n *Node) stopRaft(r *raft.Raft) error {
 		<-worker.done
 		n.observer = nil
 	}
-	return r.Shutdown().Error()
+	return n.awaitShutdown(r)
+}
+
+// errShutdownTimeout: Raft did not shut down within Timing.Apply; its
+// goroutines may still run. Nothing may start a new Raft generation over it.
+var errShutdownTimeout = errors.New("cds-ha: raft did not shut down in time")
+
+// pendingShutdown is a Raft instance's shutdown, which may outlive one wait.
+type pendingShutdown struct {
+	raft *raft.Raft
+	done chan struct{}
+	err  error
+}
+
+// awaitShutdown shuts r down and waits for it, at most Timing.Apply, so a
+// Raft goroutine that never returns cannot keep the process from exiting.
+// Callers hold stopRaftMu. A later call for the same instance waits on the
+// same shutdown again: Raft answers a second Shutdown at once, whether or
+// not the first finished.
+func (n *Node) awaitShutdown(r *raft.Raft) error {
+	p := n.shutdownPending
+	if p == nil || p.raft != r {
+		p = &pendingShutdown{raft: r, done: make(chan struct{})}
+		n.shutdownPending = p
+		go func() { p.err = r.Shutdown().Error(); close(p.done) }()
+	}
+	t := time.NewTimer(n.cfg.Timing.Apply)
+	defer t.Stop()
+	select {
+	case <-p.done:
+		return p.err
+	case <-t.C:
+		n.log.Error("raft did not shut down; its goroutines are left running", "waited", n.cfg.Timing.Apply)
+		return errShutdownTimeout
+	}
 }
 
 func (n *Node) shutdown() {
