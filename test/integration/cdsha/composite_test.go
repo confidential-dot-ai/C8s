@@ -442,7 +442,15 @@ func TestComposite(t *testing.T) {
 			f := followerVoter(t, c, l)
 			c.Freeze(f)
 			c.WaitServing(others(c, f), 20*time.Second)
-			c.waitAckProgress(k, 20, 20*time.Second)
+			// Writes straight through the leader: the checker's writers also
+			// pick the frozen replica, and each such write blocks for its
+			// 15 s timeout, so their ack rate says nothing here.
+			for n := range 4 {
+				ld := c.WaitLeader(10*time.Second, f)
+				if op := k.writeAt(ld, []string{"allow", "secret"}[n%2], fmt.Sprintf("g1f%d", n), 1); !op.Acked() {
+					t.Errorf("write %d through leader %s while %s is frozen: %d %q %q", n, c.Replicas[ld].Node, c.Replicas[f].Node, op.Code, op.Err, op.Body)
+				}
+			}
 			hold(timing.lease + timing.election + 3*time.Second)
 			wait := c.probeFirstReads(f, time.Now().Add(60*time.Second))
 			time.Sleep(300 * time.Millisecond)
