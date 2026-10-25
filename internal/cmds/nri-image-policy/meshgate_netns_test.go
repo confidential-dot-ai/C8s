@@ -192,6 +192,65 @@ func TestProtectAndGateAPodInTheNamespace(t *testing.T) {
 	}
 }
 
+// An enforcer connecting to a node with member pods running takes each back
+// under the gate from what the sandbox itself shows: the proven namespace, the
+// ruleset live in it, and the containers the runtime lists. A sandbox that
+// holds no ruleset is refused for its life.
+func TestRecoverAProtectedPodInTheNamespace(t *testing.T) {
+	pid := sandboxProcess(t)
+	pod := meshPod("default", "pod", sandboxNetNSPath(pid))
+	pod.Pid = pid
+	before := newMeshGate(*meshRoles(), discardLogger())
+	if err := before.protect(pod); err != nil {
+		t.Fatalf("protect: %v", err)
+	}
+	mesh := gateCtr("c8s-mesh", testMeshUID)
+	meshLaunch := gatedContainer{role: meshRole, digest: digestOther, argv: []string{"/app/c8s", "armtls-mesh"}}
+	if err := before.admit(pod, mesh, meshLaunch); err != nil {
+		t.Fatalf("admit the mesh endpoint: %v", err)
+	}
+	before.noteMeshStarted(pod.GetId())
+	workload := gateCtr("app", testWorkloadUID)
+	if err := before.admit(pod, workload, gatedContainer{}); err != nil {
+		t.Fatalf("admit the workload: %v", err)
+	}
+
+	// The enforcer restarts: a new gate reads the sandbox back.
+	after := newMeshGate(*meshRoles(), discardLogger())
+	err := after.recoverPod(pod, []recoveredContainer{
+		{ctr: mesh, launch: meshLaunch, running: true},
+		{ctr: workload, running: true},
+	})
+	if err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if err := after.verifyMember(pod.GetId()); err != nil {
+		t.Fatalf("a recovered member pod was refused an assertion: %v", err)
+	}
+	later := gateCtr("sidecar", testWorkloadUID)
+	if err := after.admit(pod, later, gatedContainer{}); err != nil {
+		t.Fatalf("a container joining a recovered pod was refused: %v", err)
+	}
+	// The crashed endpoint's replacement is the launch on record, nothing else.
+	if err := after.admit(pod, mesh, meshLaunch); err != nil {
+		t.Fatalf("the recorded mesh launch was refused a restart: %v", err)
+	}
+	if err := after.admit(pod, gateCtr("c8s-cert", testCertUID), gatedContainer{role: testCertRole}); err == nil {
+		t.Fatal("a platform role this gate never saw joined a recovered pod behind its workload")
+	}
+
+	// A sandbox nothing protected shows no ruleset to read back.
+	bare := sandboxProcess(t)
+	unprotected := meshPod("default", "bare", sandboxNetNSPath(bare))
+	unprotected.Pid = bare
+	if err := after.recoverPod(unprotected, nil); err == nil {
+		t.Fatal("a sandbox holding no ruleset was taken under the gate")
+	}
+	if err := after.verifyMember(unprotected.GetId()); err == nil || !strings.Contains(err.Error(), "before this enforcer connected") {
+		t.Fatalf("error = %v, want the pre-existing sandbox refusal", err)
+	}
+}
+
 // waitForNamespaceGone waits for a killed sandbox's namespace handle to
 // disappear, which the kernel does once the process is reaped.
 func waitForNamespaceGone(path string) error {

@@ -954,7 +954,7 @@ func (p *plugin) Synchronize(ctx context.Context, pods []*api.PodSandbox, ctrs [
 		}
 		p.inventory.awaitRecovery()
 	}
-	p.mesh.refuseExisting(pods)
+	p.recoverExisting(ctx, pods, ctrs)
 
 	// Ahead of every other decision: on a node image a container that already
 	// exists means admission was not in place when it started The
@@ -1006,6 +1006,41 @@ func (p *plugin) trackRunning(pods []*api.PodSandbox, ctrs []*api.Container) {
 			continue
 		}
 		p.running.add(pod, ctr)
+	}
+}
+
+// recoverExisting takes every sandbox running when this enforcer connected
+// back under the mesh gate, from the containers the runtime lists in it, as
+// each is read for a role at its own start (noteMeshStarted). A sandbox the
+// gate cannot take back is refused for its life, and logged here once.
+func (p *plugin) recoverExisting(ctx context.Context, pods []*api.PodSandbox, ctrs []*api.Container) {
+	podByID := make(map[string]*api.PodSandbox, len(pods))
+	for _, pod := range pods {
+		podByID[pod.GetId()] = pod
+	}
+	bySandbox := map[string][]recoveredContainer{}
+	for _, ctr := range ctrs {
+		pod := podByID[ctr.GetPodSandboxId()]
+		if pod == nil || !p.mesh.hosts(pod) {
+			continue
+		}
+		launch := p.observedLaunch(ctx, ctr, ctr.GetAnnotations()[annotationImageName], containerEnv(ctr), p.observedMounts(pod, ctr))
+		role := p.roleOf(launch)
+		bySandbox[pod.GetId()] = append(bySandbox[pod.GetId()], recoveredContainer{
+			ctr: ctr,
+			launch: gatedContainer{
+				role:         role,
+				mountsPinned: p.bindsRoleMounts(launch, role),
+				digest:       launch.Digest,
+				argv:         launch.Argv,
+			},
+			running: ctr.GetState() == api.ContainerState_CONTAINER_RUNNING,
+		})
+	}
+	for _, pod := range pods {
+		if err := p.mesh.recoverPod(pod, bySandbox[pod.GetId()]); err != nil {
+			p.logger.Warn("a pod running before this enforcer connected was not taken under the mesh gate", "error", err)
+		}
 	}
 }
 

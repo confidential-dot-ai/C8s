@@ -110,7 +110,11 @@ Y* ([armtls.md](armtls.md#matched-workload)).
 - **A plugin restart empties the inventory, and the startup check refills it.**
   NRI replays the full container list whenever the plugin connects, whatever the
   kill knob says. Until it completes, a callback gets a 404 or an empty set,
-  which CDS refuses; a partial set still issues a membership-only leaf.
+  which CDS refuses; a partial set still issues a membership-only leaf. The same
+  replay takes each running member pod back under the mesh gate: the gate proves
+  the namespace the runtime reports is the sandbox's own, verifies the ruleset
+  live in it, and re-checks each listed container; a pod any of that fails for is
+  refused for its life, and a member's renewal otherwise survives the restart.
 
 ## Corner 5 — the inventory is not control-plane-redirectable, at either end
 

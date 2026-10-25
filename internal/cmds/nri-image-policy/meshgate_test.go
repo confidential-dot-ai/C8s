@@ -407,24 +407,118 @@ func TestMeshGateRefusesASharedPIDNamespace(t *testing.T) {
 	}
 }
 
-// A sandbox that was running before this enforcer connected is refused for its
-// life: its containers ran unchecked by it. Its record also stands, so a later
-// sandbox event cannot replace it with a fresh one.
-func TestMeshGateRefusesSandboxesItDidNotProtect(t *testing.T) {
+// A sandbox that was running before this enforcer connected, whose namespace
+// the enforcer cannot prove, is refused for its life. Its record also stands,
+// so a later sandbox event cannot replace it with a fresh one. A sandbox in
+// the node's network is not the gate's, before the restart or after.
+func TestMeshGateRefusesSandboxesItCannotRecover(t *testing.T) {
 	pod := meshPod("default", "pod", testNetNS)
 	gate := newMeshGate(*meshRoles(), discardLogger())
-	gate.refuseExisting([]*api.PodSandbox{pod, makePod("default", "host-network")})
+	err := gate.recoverPod(pod, nil)
+	if err == nil || !strings.Contains(err.Error(), testNetNS) {
+		t.Fatalf("error = %v, want the namespace proof to fail on %s", err, testNetNS)
+	}
+	if err := gate.recoverPod(makePod("default", "host-network"), nil); err != nil {
+		t.Fatalf("a pod in the node's network was taken under the gate: %v", err)
+	}
 
 	workload := gateCtr("app", testWorkloadUID)
-	_, _, err := gate.admissible(pod, workload, gatedContainer{})
+	_, _, err = gate.admissible(pod, workload, gatedContainer{})
 	if err == nil || !strings.Contains(err.Error(), "before this enforcer connected") {
 		t.Fatalf("error = %v, want the pre-existing sandbox refusal", err)
 	}
 	if err := gate.protect(pod); err == nil || !strings.Contains(err.Error(), "on record already") {
 		t.Fatalf("protect replaced the record of a refused sandbox: %v", err)
 	}
+	if err := gate.recoverPod(pod, nil); err == nil || !strings.Contains(err.Error(), "on record already") {
+		t.Fatalf("recover replaced the record of a refused sandbox: %v", err)
+	}
 	if err := gate.verifyMember(pod.GetId()); err == nil {
 		t.Fatal("a sandbox this enforcer never protected was verified as a member")
+	}
+}
+
+// A recovered sandbox's containers are recorded as a create records them,
+// after the checks that read a container alone: a running mesh endpoint opens
+// the gate, a role runs as its reserved identity, a stopped endpoint opens
+// nothing, and the router's namespace holds pinned roles only.
+func TestProtectedPodRestoresTheContainersItFinds(t *testing.T) {
+	mesh := recoveredContainer{
+		ctr:     gateCtr("c8s-mesh", testMeshUID),
+		launch:  gatedContainer{role: meshRole, mountsPinned: true, digest: digestOther, argv: []string{"/app/c8s", "armtls-mesh"}},
+		running: true,
+	}
+	app := recoveredContainer{ctr: gateCtr("app", testWorkloadUID), running: true}
+
+	_, state := gateWithPod(meshPod("default", "pod", testNetNS))
+	for _, c := range []recoveredContainer{app, mesh} {
+		if err := state.restore(*meshRoles(), c); err != nil {
+			t.Fatalf("restore %s: %v", c.ctr.GetName(), err)
+		}
+	}
+	if !state.meshStarted || !state.workloadCreated || !state.admittedBefore(mesh.launch) {
+		t.Fatalf("state = %+v, want the mesh running, the workload created and the mesh launch on record", state)
+	}
+
+	stopped := mesh
+	stopped.running = false
+	_, state = gateWithPod(meshPod("default", "pod", testNetNS))
+	if err := state.restore(*meshRoles(), stopped); err != nil {
+		t.Fatalf("restore a stopped mesh endpoint: %v", err)
+	}
+	if state.meshStarted {
+		t.Fatal("a mesh endpoint that is not running opened the gate")
+	}
+
+	for name, tc := range map[string]struct {
+		pod   *api.PodSandbox
+		ctr   recoveredContainer
+		wants string
+	}{
+		"a reserved identity outside its role": {
+			pod:   meshPod("default", "pod", testNetNS),
+			ctr:   recoveredContainer{ctr: gateCtr("app", testMeshUID), running: true},
+			wants: "reserved for the mesh role",
+		},
+		"a role on another identity": {
+			pod:   meshPod("default", "pod", testNetNS),
+			ctr:   recoveredContainer{ctr: gateCtr("c8s-mesh", testWorkloadUID), launch: gatedContainer{role: meshRole}, running: true},
+			wants: "runs as uid",
+		},
+		"a shared pid namespace": {
+			pod: meshPod("default", "pod", testNetNS),
+			ctr: recoveredContainer{ctr: &api.Container{
+				Name:  "app",
+				User:  &api.User{Uid: testWorkloadUID},
+				Linux: &api.LinuxContainer{Namespaces: []*api.LinuxNamespace{{Type: pidNamespace, Path: "/proc/4242/ns/pid"}}},
+			}, running: true},
+			wants: "pid namespace",
+		},
+		"another network namespace": {
+			pod: meshPod("default", "pod", testNetNS),
+			ctr: recoveredContainer{ctr: &api.Container{
+				Name: "app",
+				User: &api.User{Uid: testWorkloadUID},
+				Linux: &api.LinuxContainer{Namespaces: []*api.LinuxNamespace{
+					{Type: pidNamespace},
+					{Type: "network", Path: "/run/netns/other"},
+				}},
+			}, running: true},
+			wants: "not the sandbox's",
+		},
+		"a workload in the router's namespace": {
+			pod:   meshPod(routerNamespace, "router", testNetNS),
+			ctr:   app,
+			wants: "only its platform roles",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, state := gateWithPod(tc.pod)
+			err := state.restore(*meshRoles(), tc.ctr)
+			if err == nil || !strings.Contains(err.Error(), tc.wants) {
+				t.Fatalf("error = %v, want it to name %q", err, tc.wants)
+			}
+		})
 	}
 }
 
