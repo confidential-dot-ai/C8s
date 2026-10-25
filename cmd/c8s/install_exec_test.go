@@ -728,6 +728,58 @@ func TestPrintAttestVerifyHint(t *testing.T) {
 	if !strings.Contains(out, "pinned to --measurements") || strings.Contains(out, "UNPINNED") {
 		t.Errorf("with measurements: want the pinned hint only, got %q", out)
 	}
+
+	buf.Reset()
+	installMeasurements = nil
+	withInstallFlags(t, "policy.json", nil, nil)
+	printAttestVerifyHint(&buf, true)
+	out = buf.String()
+	if !strings.Contains(out, "pinned to --image-policy-file") || strings.Contains(out, "UNPINNED") {
+		t.Errorf("with --image-policy-file: want the pinned hint only, got %q", out)
+	}
+}
+
+// A TDX install with --image-policy-file pins the mesh, and warns about missing
+// RTMR pins only when the file has none.
+func TestInstallImagePolicyFileCountsAsPinned(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		rtmr     string
+		wantWarn bool
+	}{
+		{name: "rtmrs pinned", rtmr: `,"rtmr":[null,"` + pinReg1 + `","` + pinReg2 + `"]`},
+		{name: "mrtd only", wantWarn: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			policy := writePinConfig(t, `{"schema_version":"1","tee":"tdx","measurements":[
+				{"name":"a","mrtd":"00`+pinDigestA+`"`+tt.rtmr+`}]}`)
+			installWithPolicyFile(t, policy, tt.wantWarn)
+		})
+	}
+}
+
+func installWithPolicyFile(t *testing.T, policy string, wantWarn bool) {
+	t.Helper()
+	var stdout, stderr string
+	var err error
+	stderr = captureStderr(t, func() {
+		stdout = captureStdout(t, func() {
+			s := newInstallStubs(t, "", false)
+			s.f.tool(t, "kubectl", clusterKubectl(s.applied, `"get nodes -l confidential.ai/tdx=true -o name") echo node/node-a ;;
+`))
+			err = runC8s(t, "install", "--cvm-mode=bare-metal", "--hardware-platform=tdx",
+				"--image-policy-file="+policy, "--wait=false", "--force")
+		})
+	})
+	if err != nil {
+		t.Fatalf("install: %v\nstderr:\n%s", err, stderr)
+	}
+	if got := strings.Contains(stderr, "TDX with no --rtmrs"); got != wantWarn {
+		t.Errorf("stderr warns about missing RTMR pins = %v, want %v:\n%s", got, wantWarn, stderr)
+	}
+	if strings.Contains(stdout, "UNPINNED") || !strings.Contains(stdout, "pinned to --image-policy-file") {
+		t.Errorf("stdout = %q, want the --image-policy-file pinned hint", stdout)
+	}
 }
 
 // installStubs wires stub helm/kubectl/crane for full `c8s install` runs

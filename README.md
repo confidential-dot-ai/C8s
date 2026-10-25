@@ -498,8 +498,8 @@ than let you discover them:
 - **The image allowlist gates digest and command line, not the rest of the
   pod spec.** Each container's `command` prefix and `args` remainder are
   enforced against the effective argv, env values are enforced by both backends,
-  and bind-mount destinations are enforceable in the guest; capabilities and the
-  remaining pod-spec fields are not. Nothing enforces which images run
+  and an `exact` mount policy pins each bind mount's destination and source
+  class; capabilities and the remaining pod-spec fields are not. Nothing enforces which images run
   *together* — every running image must be allowlisted, but no gate requires
   the set in one pod to match a single workload entry.
 
@@ -513,10 +513,7 @@ than let you discover them:
   injected fetcher is a native sidecar for this reason: it is the one entry in
   `initContainers` that keeps running alongside the workload.
 
-- **Encrypted volumes are attached at node boot, and a force-deleted volume
-  pod leaks its dm stack.** A volume reaches a node-as-CVM node as a block
-  device declared in the VM spec; adding one to a running node is not
-  supported (it is a VM spec change and a node reboot). `volumed` tears a
+- **A force-deleted volume pod leaks its dm stack.** `volumed` tears a
   volume down only when the pod's cgroup empties; a `kubectl delete pod
   --force --grace-period=0` that leaves it populated leaves the
   dm-crypt/dm-verity targets and the mount behind, with the volume key

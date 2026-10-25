@@ -14,10 +14,9 @@ StartLimitBurst=5
 After=network-online.target rke2-role.service rke2-server.service attestation-api.service
 Wants=network-online.target
 Requires=rke2-role.service attestation-api.service
-# Only run on operator boots. A VM launched without --operator-key has no
-# opkeydata disk; the condition makes systemd SKIP the unit (not fail it), so
-# there's no restart-loop on non-operator nodes. The launcher attaches the
-# disk with ISO label "opkeydata".
+# Every boot carries the opkeydata disk (ISO label "opkeydata") and
+# rke2-role.service refuses to start without it; the condition makes systemd
+# skip the unit, not fail it, should the disk be absent.
 ConditionPathExists=/dev/disk/by-label/opkeydata
 # Server role only: agent nodes have no client CA to sign with.
 ConditionPathExists=/run/confos/role-server
@@ -29,7 +28,6 @@ Type=simple
 # as HOSTDATA); the service verifies the on-disk pubkey against that binding
 # via the local attestation-api and refuses (exits non-zero) if it was
 # substituted.
-# Non-operator boots never reach here (ConditionPathExists skips the unit).
 # Waits bounded (10 min) rather than failing fast: on a slow first boot the
 # CA can take minutes to appear, and 5 quick ExecStartPre failures 10s apart
 # would exhaust StartLimitBurst in under a minute and give up until reboot.

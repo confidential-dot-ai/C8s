@@ -1,5 +1,7 @@
 // Package operatorauth implements the operator-credential scheme that
-// authorizes C8s allowlist mutations (PUT/DELETE under /allowlist).
+// authorizes C8s operator requests: CDS allowlist writes (PUT/DELETE under
+// /allowlist), route writes (PUT /routes), secret writes (PUT /secrets/*) and
+// secret explain (GET /secrets-explain/*), and the node's cred-release.
 //
 // STOP-GAP DESIGN — pinned public keys. CDS is configured with a set of trusted
 // operator EC public keys. For each write the client mints a short-lived
@@ -16,7 +18,7 @@
 // x5c header), giving delegated issuance and CA-based revocation instead of
 // editing a pinned-key list, plus single-file (cert+key) operator credentials.
 //
-// Either way this is the sole authorization path for allowlist writes.
+// Either way this is the sole authorization path for those requests.
 //
 // ErrTokenReused, ErrTokenBeforeStart and ErrTokenNotRecorded are shared
 // sentinels for CDS's single-use token layer; Verifier never returns them.
