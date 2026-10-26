@@ -51,6 +51,51 @@ node (CVM)                         CDS                          tenant API serve
    signs the kubelet's client certificate, and `NodeRestriction` limits the
    node to its own objects.
 
+## On the node
+
+`c8s node-credential` is the kubelet's exec credential plugin. The bootstrap
+kubeconfig names it as its user, with `provideClusterInfo` so the plugin sees
+the server and CA the kubelet is about to trust:
+
+```yaml
+users:
+- name: node
+  user:
+    exec:
+      apiVersion: client.authentication.k8s.io/v1
+      command: /usr/bin/c8s
+      args:
+      - node-credential
+      - --cds-url=https://cds.cl-0123456789abcdef.example:8443
+      - --cds-measurements=<sha384 hex>
+      - --cds-rtmrs=1=<sha384 hex>,2=<sha384 hex>
+      - --attestation-api-url=http://127.0.0.1:8400
+      - --api-server=cl-0123456789abcdef.k8s.example
+      - --api-ca-sha256=<sha256 hex of the cluster CA>
+      provideClusterInfo: true
+      interactiveMode: Never
+```
+
+Before it attests, the plugin refuses anything but `https://<api-server>` on
+443, verified, with exactly the one CA whose SHA-256 is pinned. It also
+refuses a CDS not pinned to a whole image (image pins, or
+`--cds-measurements` with `--cds-rtmrs`): the token is a bearer credential,
+and a same-firmware impostor could relay the node's evidence and keep it. The kubeconfig's server and CA are join data the host
+can rewrite, so these checks keep the host from sending the kubelet, and the
+token, to another server. On a node image, the pins come from the pool's
+signed policy, not from the join data.
+
+The node key is made on first use at `--node-key` (default
+`/var/lib/c8s/node-credential/node-key.pem`, mode 0600) and kept, because the
+node's name is derived from it. It must live on the node's encrypted,
+integrity-protected state: a host that could copy one node's key to another
+could have the second node join under the first's name. The token is not
+bound to the key (it carries no `cnf`), so it is a bearer credential for its
+five minutes. `c8s node-credential --print-node-name` prints
+that name for the kubelet's `--hostname-override`, since the API server only
+lets a node act as the name in its token. The kubelet runs the plugin again
+when the token expires, so every certificate renewal attests again.
+
 ## Configuring the API server
 
 The API server reads the token with its own structured JWT authenticator, as
