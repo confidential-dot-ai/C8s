@@ -1617,7 +1617,9 @@ The mode is a trust statement, not plumbing: the attestation sidecar commits
 it into the attest-pq and attest-lb report_data transcripts and echoes it as
 `front_door_mode`, and attest-lb — the transport binding to the exact serving
 leaf — is served only for the TEE-held-key modes, `cds` and `acme`; `webpki`
-is attest-pq-only.
+is attest-pq-only. attest-lb refuses with 503 `serving_leaf_rejected` when
+the serving leaf cannot be bound: in `cds` mode it is not the mesh identity
+leaf, in `acme` mode it is outside its validity window.
 
 When `cds-attest --measured-policies-file` names the node's measured-policy
 journal, both bundles also carry `measured_policies`: the policy digests the
