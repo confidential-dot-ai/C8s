@@ -123,8 +123,8 @@ func (m *meshIdentity) bind(mode types.FrontDoorMode, xwingEK, xwingCT, sessionI
 // serving leaf alongside the mesh identity and signs that transcript. No
 // session key exists on this path — the TLS handshake itself proves possession
 // of the serving-leaf key.
-func (m *meshIdentity) bindServingLeaf(mode types.FrontDoorMode, servingLeafDER, nonce, routeDigest []byte) ([]byte, *types.MeshIdentityProof, error) {
-	transcriptHash, err := overenc.LBTranscriptHash(mode, nonce, servingLeafDER, m.leaf.Raw, m.ca.Raw, routeDigest)
+func (m *meshIdentity) bindServingLeaf(mode types.FrontDoorMode, serving *x509.Certificate, nonce, routeDigest []byte) ([]byte, *types.MeshIdentityProof, error) {
+	transcriptHash, err := overenc.LBTranscriptHash(mode, nonce, serving.Raw, m.leaf.Raw, m.ca.Raw, routeDigest)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -133,6 +133,16 @@ func (m *meshIdentity) bindServingLeaf(mode types.FrontDoorMode, servingLeafDER,
 		return nil, nil, err
 	}
 	return transcriptHash, proof, nil
+}
+
+// checkACMEServingLeaf admits a serving leaf read from --serving-cert-file.
+// An acme leaf is a distinct CA-issued certificate whose key the sidecar never
+// sees, so only its validity window can be checked here.
+func checkACMEServingLeaf(serving *x509.Certificate) error {
+	if err := certutil.CheckValidity(serving, time.Now()); err != nil {
+		return fmt.Errorf("acme serving leaf: %w", err)
+	}
+	return nil
 }
 
 // prove signs a transcript hash with the mesh leaf key. The transcript's

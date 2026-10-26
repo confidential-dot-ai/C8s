@@ -30,6 +30,12 @@ const (
 	// WebPKI Secret), so there is no TEE-held serving key to bind; that
 	// deployment shape is attest-pq-only.
 	ErrorCodeExternalTLS = "external_tls"
+	// ErrorCodeServingLeafRejected: attest-lb refuses (503) an acme
+	// front door's serving leaf that loads but is outside its validity
+	// window. Unreadable or unparsable serving leaves get
+	// ErrorCodeBindingUnavailable. A cds front door binds the mesh identity
+	// leaf and never returns this code.
+	ErrorCodeServingLeafRejected = "serving_leaf_rejected"
 	// ErrorCodeSecretHolderQuota: the caller is at --secrets-max-paths-per-workload.
 	ErrorCodeSecretHolderQuota = "secret_holder_quota"
 	// ErrorCodeSecretStoreFull: the store is at --secrets-max-paths.

@@ -441,12 +441,11 @@ func writeExpiredCAMeshIdentity(t *testing.T) testMeshIdentity {
 // the served binding — must get a loud 400 invalid_request on every route.
 func TestAttestationRejectsQuerySelectors(t *testing.T) {
 	identity := writeTestMeshIdentity(t)
-	certPath, _ := writeTestServingLeaf(t)
 	srv := NewServer(Config{
 		Routes:               testRoutes(t),
 		Evidence:             &capturingProvider{},
 		FrontDoorMode:        types.FrontDoorModeCDS,
-		ServingCertFile:      certPath,
+		ServingCertFile:      identity.certFile,
 		MeshIdentityCertFile: identity.certFile,
 		MeshIdentityKeyFile:  identity.keyFile,
 		MeshIdentityCAFile:   identity.caFile,

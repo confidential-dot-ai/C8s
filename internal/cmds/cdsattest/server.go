@@ -155,10 +155,11 @@ type Config struct {
 	// binding for a host-visible key.
 	FrontDoorMode types.FrontDoorMode
 	// ServingCertFile is the path to the LB serving-leaf PEM (the cert nginx
-	// presents on the wire). In cds front-door mode, GET .../attest-lb binds
-	// report_data to this exact leaf DER plus the mesh identity. Re-read per
-	// request so a get-cert renewal (which SIGHUPs nginx to a new leaf) is
-	// picked up without restarting the sidecar.
+	// presents on the wire). Only acme front-door mode reads it: GET
+	// .../attest-lb binds report_data to this exact leaf DER, refused outside
+	// its validity window, plus the mesh identity. A cds front door serves the
+	// mesh identity leaf, which attest-lb binds directly. Re-read per request
+	// so a renewal is picked up without restarting the sidecar.
 	ServingCertFile string
 	// MeshIdentity* are the TEE-held mesh leaf, matching private key, and CA
 	// bundle whose possession both attestation endpoints prove. They are
@@ -581,21 +582,34 @@ func (s *Server) handleAttestLB(w http.ResponseWriter, r *http.Request) {
 			"attest-lb requires a TEE-held serving key (public_tls.mode=cds or acme); this front door is attest-pq-only")
 		return
 	}
-	servingLeafDER, err := s.servingLeafDER()
-	if err != nil {
-		s.log.Error("attest-lb binding unavailable", "error", err)
-		writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeBindingUnavailable,
-			"the serving certificate is unavailable; attest-lb cannot bind this connection")
-		return
-	}
 	identity, err := s.meshIdentity()
 	if err != nil {
 		s.log.Error("mesh identity binding unavailable", "error", err)
 		writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeBindingUnavailable, "mesh identity credentials are temporarily unavailable")
 		return
 	}
+	// A cds front door serves the mesh identity leaf itself: binding it from
+	// the one credential load cannot race a get-cert rotation.
+	serving := identity.leaf
+	if s.cfg.FrontDoorMode == types.FrontDoorModeACME {
+		// Warn, not Error: both failures repeat on every request until
+		// renewal recovers, and a missing cert.pem is normal before the
+		// first ACME order completes. Renewal monitoring alerts on them.
+		if serving, err = s.servingLeaf(); err != nil {
+			s.log.Warn("attest-lb binding unavailable", "error", err)
+			writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeBindingUnavailable,
+				"the serving certificate is unavailable; attest-lb cannot bind this connection")
+			return
+		}
+		if err := checkACMEServingLeaf(serving); err != nil {
+			s.log.Warn("attest-lb serving leaf rejected", "error", err, "not_after", serving.NotAfter)
+			writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeServingLeafRejected,
+				"the serving certificate is not one this front door may bind; attest-lb cannot bind this connection")
+			return
+		}
+	}
 
-	reportData, proof, err := identity.bindServingLeaf(s.cfg.FrontDoorMode, servingLeafDER, nonce, digest[:])
+	reportData, proof, err := identity.bindServingLeaf(s.cfg.FrontDoorMode, serving, nonce, digest[:])
 	if err != nil {
 		s.log.Error("bind serving leaf", "error", err)
 		writeErr(w, http.StatusInternalServerError, types.ErrorCodeInternal, "serving-leaf binding failed")
@@ -609,7 +623,7 @@ func (s *Server) handleAttestLB(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	servingLeafHash := sha256.Sum256(servingLeafDER)
+	servingLeafHash := sha256.Sum256(serving.Raw)
 	writeJSON(w, http.StatusOK, types.AttestationBundle{
 		Version:           types.BindingAttestLB,
 		Platform:          platform,
@@ -649,12 +663,12 @@ func (s *Server) meshIdentity() (*meshIdentity, error) {
 	return loadMeshIdentity(s.cfg.MeshIdentityCertFile, s.cfg.MeshIdentityKeyFile, s.cfg.MeshIdentityCAFile)
 }
 
-// servingLeafDER reads the LB serving-leaf PEM and returns the whole leaf DER.
-// It is read per request so a get-cert renewal (which SIGHUPs nginx to a new
-// leaf) is picked up without restarting the sidecar. Exactly one certificate
-// is committed; per-SNI or multi-certificate serving is unsupported and fails
-// the client's exact-DER comparison closed.
-func (s *Server) servingLeafDER() ([]byte, error) {
+// servingLeaf reads and parses the acme serving-leaf PEM. It is read per
+// request so a get-cert renewal (which SIGHUPs nginx to a new leaf) is picked
+// up without restarting the sidecar. Exactly one certificate is committed;
+// per-SNI or multi-certificate serving is unsupported and fails the client's
+// exact-DER comparison closed.
+func (s *Server) servingLeaf() (*x509.Certificate, error) {
 	if s.cfg.ServingCertFile == "" {
 		return nil, fmt.Errorf("no --serving-cert-file configured")
 	}
@@ -670,7 +684,7 @@ func (s *Server) servingLeafDER() ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse serving cert: %w", err)
 	}
-	return cert.Raw, nil
+	return cert, nil
 }
 
 // handleReadyz gates readiness on the committed mesh identity, not the outer

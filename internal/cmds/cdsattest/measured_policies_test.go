@@ -58,7 +58,6 @@ func TestBundlesCarryMeasuredPolicies(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			identity := writeTestMeshIdentity(t)
-			certPath, _ := writeTestServingLeaf(t)
 			journal := filepath.Join(t.TempDir(), "measured-policies")
 			if err := os.WriteFile(journal, []byte(p+"\n"), 0o644); err != nil {
 				t.Fatal(err)
@@ -68,7 +67,7 @@ func TestBundlesCarryMeasuredPolicies(t *testing.T) {
 				Routes:               testRoutes(t),
 				Evidence:             prov,
 				FrontDoorMode:        types.FrontDoorModeCDS,
-				ServingCertFile:      certPath,
+				ServingCertFile:      identity.certFile,
 				MeshIdentityCertFile: identity.certFile,
 				MeshIdentityKeyFile:  identity.keyFile,
 				MeshIdentityCAFile:   identity.caFile,

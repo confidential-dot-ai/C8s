@@ -3,16 +3,11 @@ package verify
 import (
 	"bytes"
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
-	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
-	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -57,26 +52,6 @@ func writePEM(t *testing.T, name, blockType string, der []byte) string {
 	return path
 }
 
-// servingCert is a self-signed TLS credential and the PEM file of its leaf.
-func servingCert(t *testing.T) (tls.Certificate, string) {
-	t.Helper()
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		Subject:      pkix.Name{CommonName: "c8s-router.c8s-system.svc"},
-		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().Add(time.Hour),
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}, writePEM(t, "serving.pem", "CERTIFICATE", der)
-}
-
 // productionRouter serves the production cds-attest handler over TLS with the
 // manifest at revision 1 applied and published. afterResponse, when set, runs
 // after each response.
@@ -97,13 +72,14 @@ func productionRouter(t *testing.T, operator operatorSigner, afterResponse func(
 	if err != nil {
 		t.Fatal(err)
 	}
-	cert, certFile := servingCert(t)
+	// A cds front door serves the mesh identity leaf itself.
+	meshCertFile := writePEM(t, "mesh.pem", "CERTIFICATE", id.leaf.Raw)
 	prov := &recordingProvider{}
 	handler := cdsattest.NewServer(cdsattest.Config{
 		Evidence:             prov,
 		FrontDoorMode:        types.FrontDoorModeCDS,
-		ServingCertFile:      certFile,
-		MeshIdentityCertFile: writePEM(t, "mesh.pem", "CERTIFICATE", id.leaf.Raw),
+		ServingCertFile:      meshCertFile,
+		MeshIdentityCertFile: meshCertFile,
 		MeshIdentityKeyFile:  writePEM(t, "mesh-key.pem", "EC PRIVATE KEY", keyDER),
 		MeshIdentityCAFile:   writePEM(t, "mesh-ca.pem", "CERTIFICATE", id.ca.Raw),
 		Routes:               routing.NewProxy(routing.ProxyConfig{State: state}),
@@ -115,7 +91,7 @@ func productionRouter(t *testing.T, operator operatorSigner, afterResponse func(
 			afterResponse(state)
 		}
 	}))
-	ts.TLS = &tls.Config{Certificates: []tls.Certificate{cert}}
+	ts.TLS = &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{id.leaf.Raw}, PrivateKey: id.key}}}
 	ts.StartTLS()
 	t.Cleanup(ts.Close)
 	return ts.URL, prov, digest

@@ -514,8 +514,9 @@ router.cdsAttestArgs takes (dict "root" $ "expectedWorkload" <name>).
 {{- else -}}
 {{- $args = append $args (printf "--front-door-mode=%s" (include "router.publicTLSMode" $root)) -}}
 {{- end -}}
-{{- /* The exact leaf nginx presents, so attest-lb report_data commits to the
-       DER a direct-TLS client sees. Re-read per request. */ -}}
+{{- /* The exact leaf nginx presents. Only acme mode reads it: attest-lb
+       report_data commits to the DER a direct-TLS client sees. In cds mode
+       attest-lb binds the mesh identity leaf, the same tls.crt. */ -}}
 {{- $args = append $args (printf "--serving-cert-file=%s" (include "router.publicCertPath" $root)) -}}
 {{- if $launchDriven -}}
 {{- $args = append $args (printf "--acme-serving-cert-file=%s/cert.pem" (include "router.acmeCertDir" $root)) -}}

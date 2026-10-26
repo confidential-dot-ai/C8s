@@ -118,12 +118,11 @@ func newRoutedServer(t *testing.T, opts ...func(*routing.ProxyConfig, *Config)) 
 		State:      rs.state,
 		Transports: routing.NewTransports(routing.TransportConfig{MeshIdentity: routerIdentity.Credential}),
 	}
-	certPath, _ := writeTestServingLeaf(t)
 	srvCfg := Config{
 		Logger:               slog.New(slog.DiscardHandler),
 		Evidence:             FixtureEvidenceProvider{Raw: json.RawMessage(`{"attestation_report":"AAAA","cert_chain":{"vcek":"BBBB"}}`), Platform: "snp", Generation: "genoa"},
 		FrontDoorMode:        types.FrontDoorModeCDS,
-		ServingCertFile:      certPath,
+		ServingCertFile:      identity.certFile,
 		MeshIdentityCertFile: identity.certFile,
 		MeshIdentityKeyFile:  identity.keyFile,
 		MeshIdentityCAFile:   identity.caFile,
