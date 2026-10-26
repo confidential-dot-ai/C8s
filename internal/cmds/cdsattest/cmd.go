@@ -77,7 +77,7 @@ func NewCmd() *cobra.Command {
 	f.IntVarP(&cfg.port, "port", "p", 8800, "listen port")
 	f.StringVar(&cfg.logLevel, "log-level", "info", "log level: debug, info, warn, error")
 	f.StringVar((*string)(&cfg.frontDoorMode), "front-door-mode", "", "REQUIRED: which credential terminates public TLS in front of this sidecar: cds (TEE-held mesh-issued serving key; attest-lb served), acme (TEE-held in-guest ACME serving key; attest-lb served), or webpki (host-visible Secret; attest-lb refused with external_tls)")
-	f.StringVar(&cfg.servingCertFile, "serving-cert-file", "", "path to the LB serving-leaf PEM (the cert nginx presents). In cds front-door mode, GET /.well-known/c8s/attest-lb binds report_data to this exact leaf DER. Re-read per request to follow get-cert rotation.")
+	f.StringVar(&cfg.servingCertFile, "serving-cert-file", "", "path to the LB serving-leaf PEM (the cert nginx presents). In acme front-door mode, GET /.well-known/c8s/attest-lb binds report_data to this exact leaf DER and refuses it outside its validity window; cds mode binds the mesh identity leaf and ignores this file. Re-read per request to follow renewal.")
 	f.StringVar(&cfg.meshIdentityCertFile, "mesh-identity-cert-file", "", "TEE-held mesh leaf PEM whose possession both attestation endpoints prove (re-read per request)")
 	f.StringVar(&cfg.meshIdentityKeyFile, "mesh-identity-key-file", "", "TEE-held mesh leaf private key matching --mesh-identity-cert-file (re-read per request)")
 	f.StringVar(&cfg.meshIdentityCAFile, "mesh-identity-ca-file", "", "mesh CA bundle that issued the identity leaf (re-read per request)")

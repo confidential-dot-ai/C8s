@@ -14,6 +14,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"io"
 	"math/big"
 	"net/http"
@@ -160,9 +161,9 @@ func TestAttestLBBindsServingLeafAndMeshIdentity(t *testing.T) {
 	}
 }
 
-// attest-lb commits only a serving leaf the front-door mode admits: in cds
-// mode the mesh identity leaf itself, in acme mode a leaf inside its validity
-// window. Anything else is refused before evidence is requested.
+// attest-lb commits the mesh identity leaf in cds mode, whatever
+// --serving-cert-file names, and in acme mode the leaf that file names, only
+// inside its validity window. A refusal requests no evidence.
 func TestAttestLBServingLeafAdmission(t *testing.T) {
 	now := time.Now()
 	meshLeaf := func(_ *testing.T, identity testMeshIdentity) string { return identity.certFile }
@@ -193,8 +194,8 @@ func TestAttestLBServingLeafAdmission(t *testing.T) {
 		wantErr string
 	}{
 		{name: "cds mesh leaf", mode: types.FrontDoorModeCDS, serving: meshLeaf},
-		{name: "cds other leaf", mode: types.FrontDoorModeCDS, serving: otherLeaf, wantErr: types.ErrorCodeServingLeafRejected},
-		{name: "cds expired mesh copy", mode: types.FrontDoorModeCDS, serving: expiredMeshCopy, wantErr: types.ErrorCodeServingLeafRejected},
+		{name: "cds ignores other leaf", mode: types.FrontDoorModeCDS, serving: otherLeaf},
+		{name: "cds ignores expired mesh copy", mode: types.FrontDoorModeCDS, serving: expiredMeshCopy},
 		{name: "acme valid leaf", mode: types.FrontDoorModeACME, serving: otherLeaf},
 		{name: "acme expired leaf", mode: types.FrontDoorModeACME, serving: expiredLeaf, wantErr: types.ErrorCodeServingLeafRejected},
 	} {
@@ -237,7 +238,10 @@ func TestAttestLBServingLeafAdmission(t *testing.T) {
 				body, _ := io.ReadAll(resp.Body)
 				t.Fatalf("status = %d, want 200: %s", resp.StatusCode, body)
 			}
-			servingDER := readTestCertDER(t, servingFile)
+			servingDER := identity.leaf.Raw
+			if tc.mode == types.FrontDoorModeACME {
+				servingDER = readTestCertDER(t, servingFile)
+			}
 			want, err := overenc.LBTranscriptHash(tc.mode, nonce, servingDER, identity.leaf.Raw, identity.ca.Raw, testRouteDigest[:])
 			if err != nil {
 				t.Fatal(err)
@@ -246,6 +250,17 @@ func TestAttestLBServingLeafAdmission(t *testing.T) {
 				t.Fatal("report_data does not commit the served leaf")
 			}
 		})
+	}
+}
+
+// Only acme mode reads a separate serving leaf; any other mode reaching the
+// check fails closed.
+func TestCheckServingLeafRefusesNonACMEMode(t *testing.T) {
+	identity := writeTestMeshIdentity(t)
+	for _, mode := range []types.FrontDoorMode{types.FrontDoorModeCDS, types.FrontDoorModeWebPKI, "other", ""} {
+		if err := checkServingLeaf(mode, identity.leaf); !errors.Is(err, errServingLeafRejected) {
+			t.Errorf("checkServingLeaf(%q, leaf) = %v, want errServingLeafRejected", mode, err)
+		}
 	}
 }
 
@@ -331,9 +346,18 @@ func TestAttestLBRefusedOnWebPKIFrontDoor(t *testing.T) {
 
 func TestAttestLBMissingServingCertFailsClosed(t *testing.T) {
 	identity := writeTestMeshIdentity(t)
-	// No ServingCertFile: attest-lb must fail closed rather than silently
-	// bind something else.
-	ts, _ := newAttestLBServer(t, identity, "")
+	// No ServingCertFile on an acme front door: attest-lb must fail closed
+	// rather than silently bind something else.
+	srv := NewServer(Config{
+		Routes:               testRoutes(t),
+		Evidence:             &capturingProvider{},
+		FrontDoorMode:        types.FrontDoorModeACME,
+		MeshIdentityCertFile: identity.certFile,
+		MeshIdentityKeyFile:  identity.keyFile,
+		MeshIdentityCAFile:   identity.caFile,
+	})
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
 
 	resp, err := http.Get(ts.URL + "/.well-known/c8s/attest-lb?nonce=" + b64url(make([]byte, 32)))
 	if err != nil {

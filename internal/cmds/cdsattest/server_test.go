@@ -670,9 +670,18 @@ func TestServingLeafErrors(t *testing.T) {
 	}
 	nonce := make([]byte, 32)
 	rand.Read(nonce)
+	identity := writeTestMeshIdentity(t)
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			srv := NewServer(Config{Routes: testRoutes(t), Evidence: &capturingProvider{}, FrontDoorMode: types.FrontDoorModeCDS, ServingCertFile: tc.file})
+			srv := NewServer(Config{
+				Routes:               testRoutes(t),
+				Evidence:             &capturingProvider{},
+				FrontDoorMode:        types.FrontDoorModeACME,
+				ServingCertFile:      tc.file,
+				MeshIdentityCertFile: identity.certFile,
+				MeshIdentityKeyFile:  identity.keyFile,
+				MeshIdentityCAFile:   identity.caFile,
+			})
 			ts := httptest.NewServer(srv.Handler())
 			defer ts.Close()
 			resp, err := http.Get(ts.URL + "/.well-known/c8s/attest-lb?nonce=" + b64url(nonce))

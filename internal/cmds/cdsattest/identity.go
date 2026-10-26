@@ -1,7 +1,6 @@
 package cdsattest
 
 import (
-	"bytes"
 	"crypto/ecdsa"
 	"crypto/rand"
 	"crypto/sha256"
@@ -128,12 +127,8 @@ var errServingLeafRejected = errors.New("serving leaf rejected")
 // bindServingLeaf is the attest-lb sibling of bind: it commits the exact outer
 // serving leaf alongside the mesh identity and signs that transcript. No
 // session key exists on this path — the TLS handshake itself proves possession
-// of the serving-leaf key. A leaf the mode does not admit fails with
-// errServingLeafRejected and commits nothing.
+// of the serving-leaf key.
 func (m *meshIdentity) bindServingLeaf(mode types.FrontDoorMode, serving *x509.Certificate, nonce, routeDigest []byte) ([]byte, *types.MeshIdentityProof, error) {
-	if err := m.checkServingLeaf(mode, serving); err != nil {
-		return nil, nil, err
-	}
 	transcriptHash, err := overenc.LBTranscriptHash(mode, nonce, serving.Raw, m.leaf.Raw, m.ca.Raw, routeDigest)
 	if err != nil {
 		return nil, nil, err
@@ -145,22 +140,16 @@ func (m *meshIdentity) bindServingLeaf(mode types.FrontDoorMode, serving *x509.C
 	return transcriptHash, proof, nil
 }
 
-// checkServingLeaf admits, in cds mode, only the mesh leaf itself (whose
-// chain and validity parseMeshIdentity already checked). An acme leaf is a
-// distinct CA-issued certificate whose key the sidecar never sees, so only
-// its validity window can be checked here.
-func (m *meshIdentity) checkServingLeaf(mode types.FrontDoorMode, serving *x509.Certificate) error {
-	switch mode {
-	case types.FrontDoorModeCDS:
-		if !bytes.Equal(serving.Raw, m.leaf.Raw) {
-			return fmt.Errorf("%w: cds front door serves a leaf other than the mesh identity leaf", errServingLeafRejected)
-		}
-	case types.FrontDoorModeACME:
-		if err := certutil.CheckValidity(serving, time.Now()); err != nil {
-			return fmt.Errorf("%w: acme serving leaf: %w", errServingLeafRejected, err)
-		}
-	default:
-		return fmt.Errorf("%w: front-door mode %q has no TEE-held serving leaf", errServingLeafRejected, mode)
+// checkServingLeaf admits a serving leaf read from --serving-cert-file. Only
+// acme mode reads one: its leaf is a distinct CA-issued certificate whose key
+// the sidecar never sees, so only its validity window can be checked here.
+// A cds front door binds the mesh identity leaf and never calls this.
+func checkServingLeaf(mode types.FrontDoorMode, serving *x509.Certificate) error {
+	if mode != types.FrontDoorModeACME {
+		return fmt.Errorf("%w: front-door mode %q admits no separate serving leaf", errServingLeafRejected, mode)
+	}
+	if err := certutil.CheckValidity(serving, time.Now()); err != nil {
+		return fmt.Errorf("%w: acme serving leaf: %w", errServingLeafRejected, err)
 	}
 	return nil
 }
