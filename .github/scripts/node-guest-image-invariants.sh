@@ -52,8 +52,8 @@ if grep -qx 'CONFIG_MODULES=y' "$ngi/kernel/c8s.config"; then
     echo "::error::$preset must enable c8s-modules-latch.service; an unenabled latch never runs"
     exit 1
   fi
-  if ! grep -qx 'RequiredBy=rke2-server.service rke2-agent.service podcvm-containerd.service' "$latch"; then
-    echo "::error::$latch must be RequiredBy the rke2 pair and the pod-role containerd so no runtime starts with modules still loadable"
+  if ! grep -qx 'RequiredBy=rke2-server.service rke2-agent.service podcvm-containerd.service worker-containerd.service' "$latch"; then
+    echo "::error::$latch must be RequiredBy the rke2 pair and the pod- and worker-role containerd so no runtime starts with modules still loadable"
     exit 1
   fi
 fi
