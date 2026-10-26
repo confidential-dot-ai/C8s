@@ -2,7 +2,6 @@ package getkubeconfig
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"io"
 	"net/http"
@@ -172,14 +171,12 @@ func TestNewCmdEndToEnd(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, want := range []string{
-				"current-context: testctx",
-				"server: https://node:6443",
-				"client-certificate-data: " + base64.StdEncoding.EncodeToString([]byte("CERTPEM")),
-			} {
-				if !strings.Contains(string(kc), want) {
-					t.Errorf("kubeconfig missing %q", want)
-				}
+			cluster, user := loadKubeconfig(t, kc, "testctx")
+			if cluster.Server != "https://node:6443" {
+				t.Errorf("server = %q, want https://node:6443", cluster.Server)
+			}
+			if string(user.ClientCertificateData) != "CERTPEM" {
+				t.Errorf("client-certificate-data = %q, want CERTPEM", user.ClientCertificateData)
 			}
 		})
 	}
