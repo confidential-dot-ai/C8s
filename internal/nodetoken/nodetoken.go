@@ -185,33 +185,47 @@ func (i *Issuer) Discovery() ([]byte, error) {
 
 // Keys is the issuer's JSON Web Key Set: its one current public key.
 func (i *Issuer) Keys() ([]byte, error) {
-	pub := &i.key.PublicKey
+	x, y, err := coordinates(&i.key.PublicKey)
+	if err != nil {
+		return nil, err
+	}
 	return json.Marshal(map[string]any{"keys": []map[string]string{{
 		"kty": "EC",
 		"crv": "P-256",
-		"x":   coordinate(pub.X.Bytes()),
-		"y":   coordinate(pub.Y.Bytes()),
+		"x":   x,
+		"y":   y,
 		"alg": "ES256",
 		"use": "sig",
 		"kid": i.kid,
 	}}})
 }
 
-// coordinate is a P-256 coordinate as JWK encodes it: 32 bytes, base64url.
-func coordinate(b []byte) string {
-	padded := make([]byte, 32)
-	copy(padded[32-len(b):], b)
-	return base64.RawURLEncoding.EncodeToString(padded)
+// coordinates are a P-256 key's x and y as JWK encodes them: 32 bytes each,
+// base64url, read from the key's uncompressed encoding.
+func coordinates(pub *ecdsa.PublicKey) (string, string, error) {
+	point, err := pub.Bytes()
+	if err != nil {
+		return "", "", err
+	}
+	if len(point) != 65 || point[0] != 4 {
+		return "", "", errors.New("node token key is not an uncompressed P-256 point")
+	}
+	enc := base64.RawURLEncoding.EncodeToString
+	return enc(point[1:33]), enc(point[33:]), nil
 }
 
 // thumbprint is the RFC 7638 thumbprint of an EC key, its key id.
 func thumbprint(pub *ecdsa.PublicKey) (string, error) {
+	x, y, err := coordinates(pub)
+	if err != nil {
+		return "", err
+	}
 	canonical, err := json.Marshal(struct {
 		Crv string `json:"crv"`
 		Kty string `json:"kty"`
 		X   string `json:"x"`
 		Y   string `json:"y"`
-	}{"P-256", "EC", coordinate(pub.X.Bytes()), coordinate(pub.Y.Bytes())})
+	}{"P-256", "EC", x, y})
 	if err != nil {
 		return "", err
 	}

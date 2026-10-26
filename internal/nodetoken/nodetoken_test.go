@@ -7,7 +7,6 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
-	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -93,14 +92,19 @@ func jwksKey(t *testing.T, i *Issuer) (string, *ecdsa.PublicKey) {
 		t.Fatalf("JWKS has %d keys, want 1", len(set.Keys))
 	}
 	k := set.Keys[0]
-	coord := func(s string) *big.Int {
+	coord := func(s string) []byte {
 		b, err := base64.RawURLEncoding.DecodeString(s)
 		if err != nil || len(b) != 32 {
 			t.Fatalf("bad coordinate %q", s)
 		}
-		return new(big.Int).SetBytes(b)
+		return b
 	}
-	return k["kid"], &ecdsa.PublicKey{Curve: elliptic.P256(), X: coord(k["x"]), Y: coord(k["y"])}
+	point := append(append([]byte{4}, coord(k["x"])...), coord(k["y"])...)
+	pub, err := ecdsa.ParseUncompressedPublicKey(elliptic.P256(), point)
+	if err != nil {
+		t.Fatalf("JWKS key is not a P-256 point: %v", err)
+	}
+	return k["kid"], pub
 }
 
 func TestMint_VerifiesAgainstPublishedKeys(t *testing.T) {
@@ -250,5 +254,18 @@ func TestServing_RenewsLeafUnderSameCA(t *testing.T) {
 	}
 	if err := renewed.Leaf.CheckSignatureFrom(s.ca); err != nil {
 		t.Fatalf("renewed leaf not signed by the pinned CA: %v", err)
+	}
+}
+
+func TestServing_CAConstraints(t *testing.T) {
+	s, err := NewServing("cds.cl-1.example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(s.ca.ExcludedIPRanges) != 2 {
+		t.Fatalf("CA excludes %v, want every IPv4 and IPv6 address", s.ca.ExcludedIPRanges)
+	}
+	if len(s.ca.ExtKeyUsage) != 1 || s.ca.ExtKeyUsage[0] != x509.ExtKeyUsageServerAuth {
+		t.Fatalf("CA EKU %v, want serverAuth only", s.ca.ExtKeyUsage)
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"encoding/pem"
 	"fmt"
+	"net"
 	"sync"
 	"time"
 
@@ -65,9 +66,15 @@ func NewServing(host string) (*Serving, error) {
 		BasicConstraintsValid: true,
 		IsCA:                  true,
 		MaxPathLenZero:        true,
-		// The CA can only ever name the issuer's host.
+		// The CA can only ever name the issuer's host, never an address, and
+		// only ever serve.
 		PermittedDNSDomainsCritical: true,
 		PermittedDNSDomains:         []string{host},
+		ExcludedIPRanges: []*net.IPNet{
+			{IP: net.IPv4zero, Mask: net.CIDRMask(0, 32)},
+			{IP: net.IPv6zero, Mask: net.CIDRMask(0, 128)},
+		},
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	if err != nil {
