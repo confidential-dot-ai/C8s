@@ -398,23 +398,11 @@ actually released.
   runs whatever command line the host chose, and the value would be released
   to it.
 - A grant also requires every container to pin its mounts: `mounts` is `deny`
-  or `exact` with no `host` rule. Under `any` the host can add a volume over
-  what the pinned command reads, and a `host` rule commits to a node path
-  whose content the host chooses. A `data` rule is allowed: its content
-  (a ConfigMap, a PVC) is still the cluster's, but only at a destination
-  under `/mnt/c8s-data/` the entry declares.
-- A read-only `nodeRootFile` rule is allowed. The node proves the file is on
-  its measured dm-verity root, and read-only removes the write channel, so the
-  host chooses neither what the container reads nor where it writes. This is
-  how a GPU worker holds a grant beside the NVIDIA CDI driver files of the
-  node image.
-- A `host` rule stays refused, read-only or writable. This includes
-  `/run/nvidia-persistenced/socket` from the NVIDIA CDI set: a socket has no
-  content to prove, and it is a channel to whatever process the host runs
-  behind it. The c8s node image's device plugin does not inject it (it runs
-  with `CDI_FEATURE_FLAGS=disable-ipc-discoverer`), and it serves the driver
-  files and GSP firmware from their canonical `/usr` paths, so a GPU worker's
-  CDI mounts are all `nodeRootFile` rules.
+  or `exact`. Exact `host` rules authorize the named source, destination and
+  access mode, including writable sockets. They grant access to the contents
+  at that node path; they do not authenticate those contents or a socket's peer.
+  `nodeRootFile` additionally requires measured-root provenance. A `data` rule
+  admits cluster-supplied content only below `/mnt/c8s-data/`.
 - The write path refuses an entry that breaks either rule, and release refuses
   one stored before it did. `env` is not required yet: `exact` fingerprints
   the whole environment, including the pod's `HOSTNAME`, so no policy pins it
@@ -451,7 +439,7 @@ admits platform mounts alone and so refuses the pod at container creation.
 
 The workload-claims socket directory that the node policy bind-mounts into the
 sidecars and an application's `cds-attest` container is a platform mount: no
-rule names it, and a `host` rule for it would refuse the grant.
+rule names it.
 
 It is a memory-backed `emptyDir`, so an `exact` policy names it by
 destination:

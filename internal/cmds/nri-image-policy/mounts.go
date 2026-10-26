@@ -97,9 +97,9 @@ func isBindMount(m *api.Mount) bool {
 // source. Anything else, such as an overlay's lowerdir, fails closed.
 var bindOptions = []string{"bind", "rbind", "ro", "rw", "nosuid", "nodev", "noexec", "private", "rprivate", "slave", "rslave", "shared", "rshared"}
 
-// fileBind reports whether m binds its source unchanged, the only mount whose
+// isSupportedBindMount reports whether m binds its source unchanged, the only mount whose
 // bytes provenance evidence about the source describes.
-func fileBind(m *api.Mount) bool {
+func isSupportedBindMount(m *api.Mount) bool {
 	if m == nil || !slices.Contains([]string{"bind", "none", ""}, m.GetType()) || !isBindMount(m) {
 		return false
 	}
@@ -290,12 +290,15 @@ func observeHostMount(m *api.Mount) allowlist.ObservedMount {
 			return mount
 		}
 	}
+	if !isSupportedBindMount(m) {
+		return mount
+	}
 	digest, err := allowlist.HostSourceDigest(m.GetSource())
 	if err != nil {
 		return mount
 	}
 	mount.HostSourceDigest = digest
-	if mount.ReadOnly && fileBind(m) && nodeRootEvidence(m.GetSource()) {
+	if mount.ReadOnly && nodeRootEvidence(m.GetSource()) {
 		mount.Provenance = allowlist.ProvenanceNodeRoot
 	}
 	return mount

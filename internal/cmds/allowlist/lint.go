@@ -450,7 +450,7 @@ func searchPathFindings(al *pkgallowlist.Allowlist) []finding {
 					continue
 				}
 				for _, rule := range c.Mounts.Rules {
-					if searchPathLoadsMountedContent(value, rule) {
+					if searchPathLoadsDataMount(value, rule) {
 						out = append(out, errorf("workload %q container %s pins %s to a search path overlapping %s mount %q; operator-supplied content could be loaded as code", name, c.Digest.String(), variable, rule.Kind, rule.Destination))
 					}
 				}
@@ -460,11 +460,8 @@ func searchPathFindings(al *pkgallowlist.Allowlist) []finding {
 	return out
 }
 
-func searchPathLoadsMountedContent(value string, rule pkgallowlist.MountRule) bool {
-	// A nodeRootFile rule requires evidence that the bytes come from the
-	// measured node image, so it is not operator-supplied.
-	operatorSupplied := rule.Kind == pkgallowlist.MountData || rule.Kind == pkgallowlist.MountHost
-	return operatorSupplied && searchPathReachesMount(value, rule.Destination)
+func searchPathLoadsDataMount(value string, rule pkgallowlist.MountRule) bool {
+	return rule.Kind == pkgallowlist.MountData && searchPathReachesMount(value, rule.Destination)
 }
 
 func searchPathReachesMount(value, destination string) bool {

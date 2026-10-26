@@ -90,12 +90,17 @@ func TestExactHostMountAdmissionUsesFinalStartSpec(t *testing.T) {
 		{"NUL source", "/etc/service\x00", "/config", []string{"ro"}, true, false},
 		{"recursive read-only", "/etc/service", "/config", []string{"rro", "ro"}, true, false},
 		{"recursive writable", "/etc/service", "/config", []string{"rrw", "rw"}, false, false},
+		{"overlay options", "/etc/service", "/config", []string{"bind", "lowerdir=/other", "ro"}, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			al := workloadAllowlist(t, pushDigestA, pushDigestB, []string{"/bin/app"})
 			al.Workloads["w"].Containers[0].Mounts = allowlist.MountPolicy{Policy: allowlist.PolicyExact, Rules: []allowlist.MountRule{
 				{Destination: "/config", Kind: allowlist.MountHost, Source: "/etc/service", ReadOnly: tc.policyReadOnly},
 			}}
+			workload := al.Workloads["w"]
+			workload.Containers[0].Args = allowlist.ArgvPolicy{Policy: allowlist.PolicyExact, Argv: []string{"--serve"}}
+			workload.Secrets = &allowlist.SecretsPolicy{Policy: allowlist.PolicyAllow, Read: []string{"/model-key"}}
+			al.Workloads["w"] = workload
 			if err := al.Normalize(); err != nil {
 				t.Fatal(err)
 			}

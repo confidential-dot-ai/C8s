@@ -270,7 +270,7 @@ func ParseWorkloadJSON(data []byte) (*Workload, error) {
 
 var (
 	errGrantUnpinnedArgv   = fmt.Errorf("a secrets grant requires every container's command and args policy to be exact or deny")
-	errGrantUnpinnedMounts = fmt.Errorf("a secrets grant requires every container's mounts policy to be deny, or exact without host rules (read-only nodeRootFile rules are allowed)")
+	errGrantUnpinnedMounts = fmt.Errorf("a secrets grant requires every container's mounts policy to be deny or exact")
 )
 
 // Digests returns every container digest in the workload (init and main), for
@@ -316,24 +316,17 @@ func (w Workload) ArgvPinned() bool {
 	return true
 }
 
-// MountsPinned reports whether every container's mounts policy is deny, or
-// exact with no host rule other than a read-only nodeRootFile, so the host adds
-// no mount and chooses no content. A data rule still mounts content the cluster
-// chooses (a ConfigMap, a PVC) at a destination the entry declares. A secrets
-// grant requires it (docs/secrets.md).
+// MountsPinned reports whether every container has a valid deny or exact mount policy.
 func (w Workload) MountsPinned() bool {
 	for _, c := range w.containers() {
-		if !(mountConstraint{policy: &c.Mounts}).grantPinned() {
+		if !(mountConstraint{policy: &c.Mounts}).pinsMountTable() {
 			return false
 		}
 	}
 	return true
 }
 
-// PinnedForGrant reports why a secrets grant on w would release a value to a
-// launch the host shaped, or nil when the entry pins its argv and mounts. Env
-// is not required until a policy can pin it on a real pod: exact fingerprints
-// the whole environment, including the pod-specific HOSTNAME.
+// PinnedForGrant requires every container's argv and mount table to be pinned.
 func (w Workload) PinnedForGrant() error {
 	if !w.ArgvPinned() {
 		return errGrantUnpinnedArgv
