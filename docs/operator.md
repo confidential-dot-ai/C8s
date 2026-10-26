@@ -1358,7 +1358,7 @@ c8s get-kubeconfig --node "$SERVER_IP" \
 ```
 
 For SSH tunnels or non-default ports, supply `--release-url` and
-`--apiserver-url` instead of `--node`. Release URLs must use HTTPS, and
+`--apiserver-url` instead of `--node`. Both URLs must use HTTPS, and
 signed requests never follow redirects. `--release-wait` retries refused
 connections while the service starts; attestation and authorization failures
 stop the flow. An explicit `--attest-url` retains the separate nonce check

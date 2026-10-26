@@ -68,9 +68,12 @@ type Config struct {
 func Run(ctx context.Context, cfg Config) error {
 	// Signed requests must always pass through the armTLS verifier. An HTTP
 	// URL would bypass TLS entirely, even with VerifyConnection installed.
-	releaseURL, err := url.Parse(cfg.ReleaseBaseURL)
-	if err != nil || releaseURL.Scheme != "https" || releaseURL.Host == "" || releaseURL.User != nil || releaseURL.RawQuery != "" || releaseURL.Fragment != "" {
-		return fmt.Errorf("--release-url must be an absolute HTTPS URL without userinfo, query or fragment")
+	releaseURL, err := parseHTTPSURL("--release-url", cfg.ReleaseBaseURL)
+	if err != nil {
+		return err
+	}
+	if _, err := parseHTTPSURL("--apiserver-url", cfg.APIServerURL); err != nil {
+		return err
 	}
 	cfg.ReleaseBaseURL = strings.TrimRight(cfg.ReleaseBaseURL, "/")
 	role, err := credrelease.ParseRole(cfg.Role)
@@ -165,6 +168,16 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 	fmt.Fprintf(os.Stderr, "wrote %s (context %q, role %s) — attested: image tuple + operator-key chain verified\n", cfg.OutPath, cfg.ContextName, role)
 	return nil
+}
+
+// parseHTTPSURL parses raw as an absolute HTTPS URL with a host and no
+// userinfo, query or fragment. flag names the source in the error.
+func parseHTTPSURL(flag, raw string) (*url.URL, error) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return nil, fmt.Errorf("%s must be an absolute HTTPS URL without userinfo, query or fragment", flag)
+	}
+	return u, nil
 }
 
 // publicKeyPEMFromPrivate derives the PKIX PEM public key from an ECDSA
