@@ -59,6 +59,11 @@ const (
 	// before the request, so the router no longer vouches for what the
 	// connection attested (route policy E7). Attest again.
 	ErrorCodeBindingExpired = "binding_expired"
+	// ErrorCodeBindingMissing: the request requires an attest-lb binding
+	// (X-C8s-Require-Binding) and the router holds none for its connection,
+	// for example after cds-attest restarted, so it is not routed unbound
+	// (route policy E7). Attest again.
+	ErrorCodeBindingMissing = "binding_missing"
 )
 
 // ErrorResponse is the body a C8s service returns with a non-2xx status: one

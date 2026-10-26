@@ -171,6 +171,37 @@ func (e *Entries) Check(ctx context.Context, stamped, name string) error {
 	return e.check(ctx, stamped, name)
 }
 
+// Bound returns the canonical content of entry name in the document whose
+// digest a session bound, once Check found it unchanged in the current
+// allowlist (E6). A backend serving the session must match it (B8).
+func (e *Entries) Bound(ctx context.Context, bound, name string) ([]byte, error) {
+	if err := e.Check(ctx, bound, name); err != nil {
+		return nil, err
+	}
+	doc, err := e.document(ctx, bound)
+	if err != nil {
+		return nil, fmt.Errorf("%w: allowlist %x: %w", errEntryChanged, bound, err)
+	}
+	return doc.entries[name], nil
+}
+
+// Matches returns nil when entry name in the document whose digest is
+// stamped has the canonical content want, which Bound returned. It compares
+// the two documents directly: the current allowlist does not decide it.
+func (e *Entries) Matches(ctx context.Context, stamped, name string, want []byte) error {
+	if e == nil {
+		return fmt.Errorf("%w: the router reads no allowlist", errEntryChanged)
+	}
+	doc, err := e.document(ctx, stamped)
+	if err != nil {
+		return fmt.Errorf("%w: allowlist %x: %w", errEntryChanged, stamped, err)
+	}
+	if got, ok := doc.entries[name]; !ok || !bytes.Equal(got, want) {
+		return fmt.Errorf("%w: entry %q under allowlist %x differs from the session's bound allowlist", errEntryChanged, name, stamped)
+	}
+	return nil
+}
+
 func (e *Entries) refreshDue() bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()

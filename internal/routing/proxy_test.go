@@ -806,13 +806,13 @@ func TestB10ChangedEntryRetiresPools(t *testing.T) {
 	backends := f.state.Current().Manifest.Hosts[testHost].Routes
 	before := map[string]*http.Transport{}
 	for _, r := range backends {
-		before[r.Path] = f.transports.For(r.Backend)
+		before[r.Path] = f.transports.For(r.Backend, nil)
 	}
 
 	f.allowlists.serve(digestOf(0x43), labelled(map[string]string{"web": "v2", "admin": "v1", "router": "v1"}))
 	f.refresh(t)
 	for _, r := range backends {
-		if kept := f.transports.For(r.Backend) == before[r.Path]; kept != (r.Path != "/") {
+		if kept := f.transports.For(r.Backend, nil) == before[r.Path]; kept != (r.Path != "/") {
 			t.Fatalf("transport of %s kept = %v after only web was redefined", r.Path, kept)
 		}
 	}
