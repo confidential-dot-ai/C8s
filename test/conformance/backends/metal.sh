@@ -202,7 +202,29 @@ AGENT_DIR=/run/c8s-conformance-agent
 # shellcheck disable=SC2016  # expands in the pod
 AGENT_SCRIPT='last=0; while :; do s=$(cat '"$AGENT_DIR"'/seq 2>/dev/null); if [ -n "$s" ] && [ "$s" != 0 ] && [ "$s" != "$last" ]; then last=$s; sh '"$AGENT_DIR"'/cmd > /tmp/.agent-out 2>&1; rc=$?; echo "agent $s $rc $(base64 < /tmp/.agent-out | tr -d "\n")"; fi; /bin/sleep 1; done'
 
-manifest_filter() { agent_wrap; }
+manifest_filter() { agent_wrap | discovery_wrap; }
+
+# A pod carrying a workload ID whose first container the agent runs in also
+# asks its credential client for the discovery document (the webhook's
+# c8s-discovery annotations), which carries the leaf, and mounts the volume
+# the client writes it into, so pod_cert_file can read the leaf of a pod
+# whose certificate volume no readable container may mount. The volume is a
+# memory-backed emptyDir, the one kind the client's pinned mount table admits
+# there; the URL the document names is not served, as nothing reads it.
+DISCOVERY_VOLUME=c8s-conformance-discovery
+DISCOVERY_MOUNT=/run/c8s-conformance-discovery
+discovery_wrap() {
+    jq -c --arg a "$AGENT" --arg v "$DISCOVERY_VOLUME" --arg dir "$DISCOVERY_MOUNT" '
+        if .metadata.annotations[$a] == "yes" and .metadata.annotations["confidential.ai/cw"] != null then
+            .metadata.annotations += {
+                "confidential.ai/c8s-discovery-volume": $v,
+                "confidential.ai/c8s-discovery-out": "/run/c8s/discovery/discovery.json",
+                "confidential.ai/c8s-discovery-cds-cert-url": "/.well-known/c8s/cds.pem",
+                "confidential.ai/c8s-discovery-public-tls-mode": "cds"}
+            | .spec.containers[0].volumeMounts += [{name: $v, mountPath: $dir, readOnly: true}]
+            | .spec.volumes += [{name: $v, emptyDir: {medium: "Memory"}}]
+        else . end'
+}
 
 # The requester is a mesh member here (exempt_namespace below): a request to
 # one of the node's sockets is sent by curl in the pod through its agent, and
@@ -326,18 +348,21 @@ pod_read() {
 pod_file() { pod_read "$1" "$2" "$3" file "$4"; }
 pod_fstype() { pod_read "$1" "$2" "$3" fstype "$4"; }
 
-# Nothing while the file is absent, as pod_cert_file answers elsewhere. Only
-# the platform containers mount the credential volume (the webhook's
-# rejectCredentialMounts), so a pod whose readable container does not is
-# unsupported.
+# Only the platform containers mount the credential volume (the webhook's
+# rejectCredentialMounts), so the chain is read from the discovery document
+# the credential client writes for a pod discovery_wrap shaped, through the
+# agent in its first container: tls.crt alone, and from that container
+# alone; nothing while the document is absent, as pod_cert_file answers
+# elsewhere. The key never leaves the pod.
 pod_cert_file() {
     local out rc=0
+    [ "$3" = tls.crt ] && [ -z "${4:-}" ] || return "$UNSUPPORTED"
     kubectl -n "$1" get pod "$2" -o json 2>/dev/null |
-        jq -e --arg d "$CERT_VOLUME_PATH" '.spec.containers[0].volumeMounts // [] | any(.mountPath == $d)' >/dev/null ||
+        jq -e --arg d "$DISCOVERY_MOUNT" '.spec.containers[0].volumeMounts // [] | any(.mountPath == $d)' >/dev/null ||
         return "$UNSUPPORTED"
-    out="$(pod_file "$1" "$2" "" "$CERT_VOLUME_PATH/$3" 2>/dev/null)" || rc=$?
+    out="$(pod_file "$1" "$2" "" "$DISCOVERY_MOUNT/discovery.json" 2>/dev/null)" || rc=$?
     case "$rc" in
-        0) base64 -d <<<"$out" ;;
+        0) base64 -d <<<"$out" | jq -r '.cds_tls.certificate_pem // empty' ;;
         "$UNSUPPORTED") return "$UNSUPPORTED" ;;
     esac
 }

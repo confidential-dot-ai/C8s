@@ -216,7 +216,10 @@ for a precondition the environment lacks. Pod exec is closed too, so `pod_exec` 
 steps mark `c8s-conformance/harness-argv`, because they chose its first
 container's argv, runs an agent there in place of that argv, and `agent_exec`
 reaches it. Pods whose argv a scenario pins are read from a reporter image's
-log instead. No namespace the mesh exempts is open to the operator, so the
+log instead. A pod the agent runs in that carries a workload ID also asks its
+credential client for the discovery document and mounts the volume the client
+writes it into, so `pod_cert_file` reads the pod's leaf from there; the key,
+and the leaf as another container sees it, stay out of reach. No namespace the mesh exempts is open to the operator, so the
 requester the steps drive runs as a mesh member and the scenarios that need a
 pod outside the mesh skip. [`metal.sh`](backends/metal.sh) gives each
 function's answer and its reason beside the function.
