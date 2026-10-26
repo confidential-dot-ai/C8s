@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/internal/attestation"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
@@ -192,42 +193,10 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	verifyReq := remote.NewVerifyRequest(req.Evidence, &remote.VerifyParams{
-		ExpectedReportData: expectedReportData[:sha512.Size384],
-	}, false)
-	verifyResp, err := h.AttestationClient.VerifyEnforced(ctx, verifyReq)
-	if err != nil {
-		status, code, msg := classifyVerifyError(err)
-		slog.Warn("attestation verification failed", "status", status, "error", err, "remote_addr", r.RemoteAddr)
-		attestation.WriteError(w, status, code, msg)
+	launchDigest, refused := h.verifyNode(ctx, r, req.Evidence, req.RuntimeExtensions, expectedReportData[:sha512.Size384])
+	if refused != nil {
+		attestation.WriteError(w, refused.status, refused.code, refused.message)
 		return
-	}
-
-	// Read outside the pinning branch: with h.Measurements empty every
-	// measurement is admitted, so the digest a leaf was issued against is the
-	// only record of what actually attested.
-	launchDigest := strings.ToLower(verifyResp.Result.Claims.LaunchDigest)
-	if len(h.Images) > 0 {
-		if err := armtls.EnforceImages(verifyResp, h.Images, req.Evidence.Platform, req.RuntimeExtensions); err != nil {
-			slog.Warn("node identity does not match policy", "error", err, "remote_addr", r.RemoteAddr)
-			attestation.WriteError(w, http.StatusForbidden, types.ErrorCodeMeasurementDenied, "node identity not allowed")
-			return
-		}
-	} else {
-		if len(h.Measurements) > 0 {
-			if !h.Measurements[launchDigest] {
-				slog.Warn("measurement does not match any reference value", "launch_digest", launchDigest, "remote_addr", r.RemoteAddr)
-				attestation.WriteError(w, http.StatusForbidden, types.ErrorCodeMeasurementDenied, "launch measurement not allowed")
-				return
-			}
-		}
-		if req.Evidence.Platform.HasRegisters() {
-			if err := remote.EnforceRTMRs(verifyResp, h.RTMRs); err != nil {
-				slog.Warn("RTMR pin not satisfied", "launch_digest", launchDigest, "error", err, "remote_addr", r.RemoteAddr)
-				attestation.WriteError(w, http.StatusForbidden, types.ErrorCodeMeasurementDenied, "TDX runtime measurement registers not allowed")
-				return
-			}
-		}
 	}
 
 	policy := h.Policy
@@ -338,6 +307,52 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 	slog.Info("certificate issued (in-process)", issued...)
 	w.Header().Set("Content-Type", "application/x-pem-file")
 	w.Write(slices.Concat(certPEM, signing.CertPEM))
+}
+
+// refusal is how a node check answers a request it refuses.
+type refusal struct {
+	status        int
+	code, message string
+}
+
+// verifyNode verifies TEE evidence bound to reportData and checks it against
+// the node pins: the image pins when configured, else the launch measurements
+// and the TDX RTMRs. It returns the verified launch digest. /attest and
+// /node-token both admit a node through it, so a node a token is minted for
+// passed exactly the checks a mesh leaf would have.
+func (h AttestHandler) verifyNode(ctx context.Context, r *http.Request, evidence teetypes.AttestationEvidence, runtimeExtensions []string, reportData []byte) (string, *refusal) {
+	verifyReq := remote.NewVerifyRequest(evidence, &remote.VerifyParams{
+		ExpectedReportData: reportData,
+	}, false)
+	verifyResp, err := h.AttestationClient.VerifyEnforced(ctx, verifyReq)
+	if err != nil {
+		status, code, msg := classifyVerifyError(err)
+		slog.Warn("attestation verification failed", "status", status, "error", err, "remote_addr", r.RemoteAddr)
+		return "", &refusal{status, code, msg}
+	}
+
+	// Read outside the pinning branch: with h.Measurements empty every
+	// measurement is admitted, so the digest a leaf was issued against is the
+	// only record of what actually attested.
+	launchDigest := strings.ToLower(verifyResp.Result.Claims.LaunchDigest)
+	if len(h.Images) > 0 {
+		if err := armtls.EnforceImages(verifyResp, h.Images, evidence.Platform, runtimeExtensions); err != nil {
+			slog.Warn("node identity does not match policy", "error", err, "remote_addr", r.RemoteAddr)
+			return "", &refusal{http.StatusForbidden, types.ErrorCodeMeasurementDenied, "node identity not allowed"}
+		}
+		return launchDigest, nil
+	}
+	if len(h.Measurements) > 0 && !h.Measurements[launchDigest] {
+		slog.Warn("measurement does not match any reference value", "launch_digest", launchDigest, "remote_addr", r.RemoteAddr)
+		return "", &refusal{http.StatusForbidden, types.ErrorCodeMeasurementDenied, "launch measurement not allowed"}
+	}
+	if evidence.Platform.HasRegisters() {
+		if err := remote.EnforceRTMRs(verifyResp, h.RTMRs); err != nil {
+			slog.Warn("RTMR pin not satisfied", "launch_digest", launchDigest, "error", err, "remote_addr", r.RemoteAddr)
+			return "", &refusal{http.StatusForbidden, types.ErrorCodeMeasurementDenied, "TDX runtime measurement registers not allowed"}
+		}
+	}
+	return launchDigest, nil
 }
 
 // serialHex renders a certificate serial the way `openssl x509 -serial` does,

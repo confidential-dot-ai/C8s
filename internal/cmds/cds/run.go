@@ -308,6 +308,15 @@ func run(cfg config) error {
 		slog.Warn("NOT serving /secrets: any workload depending on a secret will fail to start", "reason", why)
 	}
 
+	nodeTokens, nodeTokenServing, err := newNodeTokenIssuer(cfg)
+	if err != nil {
+		return err
+	}
+	var nodeTokenCA []byte
+	if nodeTokenServing != nil {
+		nodeTokenCA = nodeTokenServing.CAPEM()
+	}
+
 	deps := dependencies{
 		AttestHandler: AttestHandler{
 			Challenges:        &challengeStore,
@@ -348,6 +357,8 @@ func run(cfg config) error {
 		SecretsChallenges: &secretsChallenges,
 		SecretsOperator:   secretsOperator,
 		SecretsExplain:    secretsExplain,
+		NodeTokens:        nodeTokens,
+		NodeTokenCA:       nodeTokenCA,
 	}
 	go rateLimiter.EvictionLoop(ctx, cfg.rateLimiterEvictInterval, cfg.rateLimiterIdleTimeout)
 	go challengeLimiter.EvictionLoop(ctx, cfg.rateLimiterEvictInterval, cfg.rateLimiterIdleTimeout)
@@ -384,6 +395,12 @@ func run(cfg config) error {
 		slog.Info("cds serving armTLS", "platform", cfg.armtlsPlatform)
 	} else {
 		slog.Warn("armTLS disabled (--armtls-platform empty); serving plain HTTP. UNSAFE outside tests.")
+	}
+
+	if nodeTokens != nil {
+		if err := serveNodeTokenDiscovery(ctx, cfg, nodeTokens, nodeTokenServing); err != nil {
+			return err
+		}
 	}
 
 	go cmdsutil.ShutdownOnDone(ctx, srv, 5*time.Second)
