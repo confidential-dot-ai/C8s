@@ -103,13 +103,12 @@ type roleBinding struct {
 // CVM's. Trusted policy reserves that number as both a UID and a GID
 // (internal/cmds/c8srunc).
 type MeshFloor struct {
-	// Pod requires a live one-use permission before the runtime starts a workload.
-	Pod              bool
 	ExemptNamespaces []string
 	ReservedIDs      map[uint32]RoleFloor
 	// PodRole marks the policy of a pod CVM, which runs one pod: its floor
 	// admits a root user outside every role, since no other tenant shares
-	// the kernel. validatePod ties mesh.pod to the pod role's other markers.
+	// the kernel, and every workload start requires a live admission permission.
+	// validatePod ties mesh.pod to the pod role's other markers.
 	PodRole bool
 }
 
@@ -154,7 +153,6 @@ func LoadMeshFloor(configPath string) (MeshFloor, error) {
 // floor is the policy as its identity floor.
 func (p meshPolicy) floor() MeshFloor {
 	floor := MeshFloor{
-		Pod:              p.Pod != nil,
 		ExemptNamespaces: p.ExemptNamespaces,
 		ReservedIDs:      map[uint32]RoleFloor{},
 		PodRole:          p.Pod != nil,

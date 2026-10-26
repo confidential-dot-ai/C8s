@@ -21,7 +21,7 @@ func (w Wrapper) requirePodStart(g globals) error {
 	if w.FloorError != nil {
 		return fmt.Errorf("read measured runtime policy: %w", w.FloorError)
 	}
-	if !w.Floor.Pod {
+	if !w.Floor.PodRole {
 		return nil
 	}
 	args := g.rest

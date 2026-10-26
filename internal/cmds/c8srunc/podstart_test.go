@@ -25,7 +25,7 @@ func createdPodState() specs.State {
 
 func podWrapper(rec *recorder, stderr *bytes.Buffer) Wrapper {
 	w := lockedWrapper(rec, stderr)
-	w.Floor.Pod = true
+	w.Floor.PodRole = true
 	w.State = func(context.Context, string, []string) (specs.State, error) { return createdPodState(), nil }
 	w.ConsumeStart = func(context.Context, string, podstart.Request) error { return errors.New("no permission") }
 	return w
@@ -72,7 +72,7 @@ func TestPodStartRefusalsNeverExecute(t *testing.T) {
 		{"timeout", func(w *Wrapper) {
 			w.ConsumeStart = func(context.Context, string, podstart.Request) error { return context.DeadlineExceeded }
 		}, []string{"start", "ctr"}},
-		{"unknown role", func(w *Wrapper) { w.FloorError = errors.New("unreadable config"); w.Floor.Pod = false }, []string{"start", "ctr"}},
+		{"unknown role", func(w *Wrapper) { w.FloorError = errors.New("unreadable config"); w.Floor.PodRole = false }, []string{"start", "ctr"}},
 		{"missing client", func(w *Wrapper) { w.ConsumeStart = nil }, []string{"start", "ctr"}},
 		{"missing state query", func(w *Wrapper) { w.State = nil }, []string{"start", "ctr"}},
 		{"failed state", func(w *Wrapper) {
@@ -226,18 +226,18 @@ func TestPodCreateRefusesEveryRuntimeHookBeforeSandboxExemption(t *testing.T) {
 					t.Fatal(err)
 				}
 				floor := testFloor()
-				floor.Pod = true
+				floor.PodRole = true
 				if err := requireFloor(spec, "ctr", nil, floor); err == nil {
 					t.Fatal("Pod hook admitted")
 				}
-				floor.Pod = false
+				floor.PodRole = false
 				if err := requireFloor(spec, "ctr", nil, floor); err != nil {
 					t.Fatalf("node behavior changed: %v", err)
 				}
 				if err := json.Unmarshal([]byte(`{"`+stage+`":[]}`), &spec.Hooks); err != nil {
 					t.Fatal(err)
 				}
-				floor.Pod = true
+				floor.PodRole = true
 				if err := requireFloor(spec, "ctr", nil, floor); err != nil {
 					t.Fatalf("empty hook denied: %v", err)
 				}

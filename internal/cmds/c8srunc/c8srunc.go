@@ -134,7 +134,7 @@ func (w Wrapper) Run(argv []string) int {
 	if g.verb == restoreVerb {
 		return w.deny(g, fmt.Sprintf("%s: %s is denied on this node: what it starts is in a checkpoint, not in the bundle the floor reads", programName, g.verb))
 	}
-	if g.verb == "run" && w.Floor.Pod {
+	if g.verb == "run" && w.Floor.PodRole {
 		return w.deny(g, programName+": Pod containers require separate create and admitted start")
 	}
 	// The privilege floor holds in every mode: the exec posture is about
