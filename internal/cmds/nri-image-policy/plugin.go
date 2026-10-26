@@ -1207,18 +1207,19 @@ func (p *plugin) credentialMounts(ctx context.Context, pod *api.PodSandbox, ctr 
 		return nil, fmt.Errorf("container %q runs as the credentials identity (uid %d) but this node's measured base grants it no %s role, so it would reach CDS unpinned",
 			ctr.GetName(), workloadclaims.CredentialsUID, CredentialRole)
 	}
+	socketDir := ""
+	if servesInventory := p.inventory != nil; servesInventory {
+		socketDir = p.cfg.WorkloadClaims.SocketDir
+	}
 	var mounts []*api.Mount
-	// Only a socket consumer takes the socket directory: the node observes it
-	// as a platform mount there alone (isInjectedNodeMount), and another
-	// credential client, like the certificate gate, has no use for it.
-	if servesInventory := p.inventory != nil; servesInventory && injected {
-		mounts = append(mounts, readOnlyBind(p.cfg.WorkloadClaims.SocketDir, workloadclaims.SidecarSocketDir))
-	}
-	if pinsCDS := p.cdsPins != ""; pinsCDS {
-		mounts = append(mounts, readOnlyBind(p.cdsPins, workloadclaims.CDSPinsPath))
-	}
-	if p.cdsAddress != "" {
-		mounts = append(mounts, readOnlyBind(p.cdsAddress, workloadclaims.CDSAddressPath))
+	for _, bind := range []struct{ source, destination string }{
+		{socketDir, workloadclaims.SidecarSocketDir},
+		{p.cdsPins, workloadclaims.CDSPinsPath},
+		{p.cdsAddress, workloadclaims.CDSAddressPath},
+	} {
+		if bind.source != "" && takesNodeMount(pod, ctr, bind.destination) {
+			mounts = append(mounts, readOnlyBind(bind.source, bind.destination))
+		}
 	}
 	if len(mounts) == 0 {
 		return nil, nil

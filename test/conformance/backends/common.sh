@@ -495,12 +495,13 @@ write_token() {
 # serves. Empty where the backend cannot name the sandbox, so a step adds it
 # to a failure it did not expect without failing on its absence.
 secrets_explain() {
-    local id token url
+    local id token answer
     id="$(pod_sandbox_id "$1" "$2" 2>/dev/null)" || return 0
     [ -n "$id" ] || return 0
     token="$(write_token operator GET "/secrets-explain/$id" /dev/null)" || return 0
-    url="$(cds_url)" || return 0
-    curl -sk --max-time 20 -H "Authorization: $token" "$url/secrets-explain/$id" 2>/dev/null || true
+    answer="$(cds_request GET "/secrets-explain/$id" "" "$token" 2>/dev/null)" || return 0
+    [ "${answer%%$'\n'*}" = 200 ] || return 0
+    printf '%s' "${answer#*$'\n'}"
 }
 
 # Raw reads, so the steps see the document the CDS serves, as served.

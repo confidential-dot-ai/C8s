@@ -162,10 +162,11 @@ that container (`c8s.routerContainerMounts`), since a pod of the router's
 namespace runs a role container only under a declaration that pins its mounts.
 
 Every credentials grant in the base names the volume behind its certificate and
-secrets mounts: `c8s.bindInjectedVolumes` for the webhook's `c8s-certs` and
-`c8s-secrets`, which `c8s.baseWorkloads` applies to the role-tagged shapes and
-the floor to its entries, and `c8s.mountRules` with `bind` for the router pod's
-own volumes. The webhook refuses a pod's own mount of its reserved volumes but
+secrets mounts. `c8s.injectedMountTables` with `bind` names the webhook's
+`c8s-certs` and `c8s-secrets`: the floor pins those bound tables, and
+`c8s.baseWorkloads` binds the role-tagged shapes through
+`c8s.bindInjectedVolumes`, which reads the names from them. `c8s.mountRules`
+with `bind` names the router pod's own volumes. The webhook refuses a pod's own mount of its reserved volumes but
 not another memory volume at the same destination, which the node would
 otherwise admit under an unbound rule. The seed carries the same tables
 unbound, since a served entry binds no volume.

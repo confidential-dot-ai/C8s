@@ -374,15 +374,13 @@ func testPlugin(t *testing.T, cfg *config) *plugin {
 	return p
 }
 
-// mustCredentialMounts is the adjustment the node adds for one container, for
-// the cases where it must not be a refusal.
 // The certificate gate holds the credentials identity but is no socket
 // consumer: it takes the CDS policy and no socket directory, so the mounts the
 // node observes for it are the webhook's alone and its exact entry holds.
 func TestCertGateTakesNoSocketDirectory(t *testing.T) {
 	dir := t.TempDir()
 	renderInTempDir(t)
-	certs := allowlist.MountRule{Destination: "/etc/c8s/certs", Kind: allowlist.MountEmptyDir, Source: "c8s-certs"}
+	certs := allowlist.MountRule{Destination: workloadclaims.MemberCertDir, Kind: allowlist.MountEmptyDir, Source: "c8s-certs"}
 	base := &allowlist.Allowlist{
 		Schema: allowlist.Schema,
 		Workloads: map[string]allowlist.Workload{
@@ -416,11 +414,11 @@ func TestCertGateTakesNoSocketDirectory(t *testing.T) {
 		Name:         workloadclaims.CertWaitContainerName,
 		PodSandboxId: "sandbox",
 		Annotations:  map[string]string{annotationImageName: "registry/c8s@" + pushDigestA},
-		Args:         []string{"/c8s", "probe-file", "--wait", "/etc/c8s/certs/tls.crt"},
+		Args:         []string{"/c8s", "probe-file", "--wait", workloadclaims.MemberCertDir + "/tls.crt"},
 		User:         &api.User{Uid: workloadclaims.CredentialsUID},
 		Mounts: []*api.Mount{{
-			Source:      "/var/lib/kubelet/pods/uid/volumes/" + emptyDirPlugin + "/c8s-certs",
-			Destination: "/etc/c8s/certs",
+			Source:      kubeletRoot + "/pods/uid/volumes/" + emptyDirPlugin + "/c8s-certs",
+			Destination: workloadclaims.MemberCertDir,
 			Type:        "bind",
 			Options:     []string{"rbind", "rw"},
 		}},
@@ -438,6 +436,8 @@ func TestCertGateTakesNoSocketDirectory(t *testing.T) {
 	}
 }
 
+// mustCredentialMounts is the adjustment the node adds for one container, for
+// the cases where it must not be a refusal.
 func mustCredentialMounts(t *testing.T, p *plugin, pod *api.PodSandbox, ctr *api.Container) *api.ContainerAdjustment {
 	t.Helper()
 	adjustment, err := p.credentialMounts(context.Background(), pod, ctr)

@@ -239,21 +239,29 @@ type nodeMounts struct {
 	cdsAddress string
 }
 
+// takesNodeMount reports whether ctr takes the node's own bind at destination:
+// the one rule credentialMounts adds by and isInjectedNodeMount accepts by.
+func takesNodeMount(pod *api.PodSandbox, ctr *api.Container, destination string) bool {
+	injected := injectedCredentialSidecar(pod, ctr)
+	switch destination {
+	case workloadclaims.SidecarSocketDir:
+		return injected
+	case workloadclaims.CDSPinsPath:
+		return injected || holdsCredentialsIdentity(ctr)
+	case workloadclaims.CDSAddressPath:
+		return injected || holdsCredentialsIdentity(ctr) || fetchesRouteManifest(pod, ctr)
+	}
+	return false
+}
+
 // isInjectedNodeMount requires a credential client's read-only bind from the node's own source.
 func isInjectedNodeMount(pod *api.PodSandbox, ctr *api.Container, m *api.Mount, own nodeMounts) bool {
-	source := ""
-	eligible := injectedCredentialSidecar(pod, ctr)
-	switch m.GetDestination() {
-	case workloadclaims.SidecarSocketDir:
-		source = own.socketDir
-	case workloadclaims.CDSPinsPath:
-		source = own.cdsPins
-		eligible = eligible || holdsCredentialsIdentity(ctr)
-	case workloadclaims.CDSAddressPath:
-		source = own.cdsAddress
-		eligible = eligible || holdsCredentialsIdentity(ctr) || fetchesRouteManifest(pod, ctr)
-	}
-	return eligible && source != "" && m.GetSource() == source && endsReadOnly(m)
+	source := map[string]string{
+		workloadclaims.SidecarSocketDir: own.socketDir,
+		workloadclaims.CDSPinsPath:      own.cdsPins,
+		workloadclaims.CDSAddressPath:   own.cdsAddress,
+	}[m.GetDestination()]
+	return source != "" && m.GetSource() == source && endsReadOnly(m) && takesNodeMount(pod, ctr, m.GetDestination())
 }
 
 // endsReadOnly reports whether m is read-only once runc has applied its

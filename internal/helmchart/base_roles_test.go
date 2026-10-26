@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 // The reserved uids of the injected platform roles carry no identity of their
@@ -97,34 +98,11 @@ func TestChartBaseGrantsInjectedRoles(t *testing.T) {
 					}
 				}
 			}
-			if name != "bootstrap floor digests" {
-				// A component shape pins the environment too
-				// (component_mounts_test.go); the floor's role entries pin
-				// the mounts alone, so they are checked here.
-				return
-			}
-			certs := pkgallowlist.ObservedMount{Destination: "/etc/c8s/certs", Volume: "c8s-certs", Class: pkgallowlist.MountEmptyDir, Storage: pkgallowlist.MountMemory}
-			scratch := pkgallowlist.ObservedMount{Destination: "/scratch", Volume: "scratch", Class: pkgallowlist.MountEmptyDir, Storage: pkgallowlist.MountUnknown}
-			gate := []string{"/c8s", "probe-file", "--wait", "--timeout=3m0s", "/etc/c8s/certs/tls.crt"}
-			// The webhook refuses a pod's own mount of c8s-certs, not of
-			// another memory volume at the same destination, so the grant
-			// names the volume.
-			own := pkgallowlist.ObservedMount{Destination: "/etc/c8s/certs", Volume: "own", Class: pkgallowlist.MountEmptyDir, Storage: pkgallowlist.MountMemory}
-			index := base.BuildIndex()
-			for _, tc := range []struct {
-				name   string
-				argv   []string
-				mounts []pkgallowlist.ObservedMount
-				want   string
-			}{
-				{"the webhook's gate", gate, []pkgallowlist.ObservedMount{certs}, "credentials"},
-				{"a disk volume of the pod's own beside", gate, []pkgallowlist.ObservedMount{certs, scratch}, ""},
-				{"a memory volume of the pod's own at the certificate destination", gate, []pkgallowlist.ObservedMount{own}, ""},
-			} {
-				probe := pkgallowlist.RunningContainer{Digest: roleOperatorDigest, Argv: tc.argv, Mounts: tc.mounts}
-				if got := index.RoleOf(probe); got != tc.want {
-					t.Errorf("probe-file with %s holds the role %q, want %q", tc.name, got, tc.want)
-				}
+			// A component shape pins the environment too
+			// (component_mounts_test.go); the floor's role entries pin the
+			// mounts alone, so they are checked here.
+			if name == "bootstrap floor digests" {
+				checkFloorGateMounts(t, base)
 			}
 
 			// A role never travels on the wire (pkg/allowlist drops it from
@@ -137,6 +115,35 @@ func TestChartBaseGrantsInjectedRoles(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// checkFloorGateMounts checks the floor grants the cert-wait gate the
+// credentials role under the webhook's volume alone.
+func checkFloorGateMounts(t *testing.T, base pkgallowlist.Allowlist) {
+	t.Helper()
+	certs := pkgallowlist.ObservedMount{Destination: workloadclaims.MemberCertDir, Volume: "c8s-certs", Class: pkgallowlist.MountEmptyDir, Storage: pkgallowlist.MountMemory}
+	scratch := pkgallowlist.ObservedMount{Destination: "/scratch", Volume: "scratch", Class: pkgallowlist.MountEmptyDir, Storage: pkgallowlist.MountUnknown}
+	gate := []string{"/c8s", "probe-file", "--wait", "--timeout=3m0s", workloadclaims.MemberCertDir + "/tls.crt"}
+	// The webhook refuses a pod's own mount of c8s-certs, not of
+	// another memory volume at the same destination, so the grant
+	// names the volume.
+	own := pkgallowlist.ObservedMount{Destination: workloadclaims.MemberCertDir, Volume: "own", Class: pkgallowlist.MountEmptyDir, Storage: pkgallowlist.MountMemory}
+	index := base.BuildIndex()
+	for _, tc := range []struct {
+		name   string
+		argv   []string
+		mounts []pkgallowlist.ObservedMount
+		want   string
+	}{
+		{"the webhook's gate", gate, []pkgallowlist.ObservedMount{certs}, "credentials"},
+		{"a disk volume of the pod's own beside", gate, []pkgallowlist.ObservedMount{certs, scratch}, ""},
+		{"a memory volume of the pod's own at the certificate destination", gate, []pkgallowlist.ObservedMount{own}, ""},
+	} {
+		probe := pkgallowlist.RunningContainer{Digest: roleOperatorDigest, Argv: tc.argv, Mounts: tc.mounts}
+		if got := index.RoleOf(probe); got != tc.want {
+			t.Errorf("probe-file with %s holds the role %q, want %q", tc.name, got, tc.want)
+		}
 	}
 }
 
