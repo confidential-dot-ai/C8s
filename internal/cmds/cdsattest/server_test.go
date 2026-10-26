@@ -502,13 +502,12 @@ func TestCDSCertRouteAbsentWithoutCert(t *testing.T) {
 // An evidence provider that cannot produce a quote is a 502 with the versioned
 // unavailable code on both split endpoints.
 func TestAttestationEvidenceUnavailable(t *testing.T) {
-	certPath, _ := writeTestServingLeaf(t)
 	identity := writeTestMeshIdentity(t)
 	srv := NewServer(Config{
 		Routes:               testRoutes(t),
 		Evidence:             failingProvider{},
 		FrontDoorMode:        types.FrontDoorModeCDS,
-		ServingCertFile:      certPath,
+		ServingCertFile:      identity.certFile,
 		MeshIdentityCertFile: identity.certFile,
 		MeshIdentityKeyFile:  identity.keyFile,
 		MeshIdentityCAFile:   identity.caFile,

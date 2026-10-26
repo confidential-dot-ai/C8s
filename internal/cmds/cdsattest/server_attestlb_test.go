@@ -39,9 +39,15 @@ func (p *capturingProvider) Evidence(_ context.Context, reportData []byte) (json
 	return json.RawMessage(`{"attestation_report":"AAAA","cert_chain":{"vcek":"BBBB"}}`), "snp", "genoa", nil
 }
 
-// writeTestServingLeaf writes a self-signed leaf PEM to a temp file and
-// returns the path plus the cert's exact DER.
+// writeTestServingLeaf writes a currently valid self-signed leaf PEM to a
+// temp file and returns the path plus the cert's exact DER.
 func writeTestServingLeaf(t *testing.T) (path string, der []byte) {
+	t.Helper()
+	now := time.Now()
+	return writeTestServingLeafWithValidity(t, now.Add(-time.Hour), now.Add(time.Hour))
+}
+
+func writeTestServingLeafWithValidity(t *testing.T, notBefore, notAfter time.Time) (path string, der []byte) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -50,6 +56,8 @@ func writeTestServingLeaf(t *testing.T) (path string, der []byte) {
 	tmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(1),
 		Subject:      pkix.Name{CommonName: "c8s-router.c8s-system.svc"},
+		NotBefore:    notBefore,
+		NotAfter:     notAfter,
 	}
 	der, err = x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	if err != nil {
@@ -79,8 +87,8 @@ func newAttestLBServer(t *testing.T, identity testMeshIdentity, servingCertFile 
 
 func TestAttestLBBindsServingLeafAndMeshIdentity(t *testing.T) {
 	identity := writeTestMeshIdentity(t)
-	certPath, servingDER := writeTestServingLeaf(t)
-	ts, prov := newAttestLBServer(t, identity, certPath)
+	servingDER := identity.leaf.Raw
+	ts, prov := newAttestLBServer(t, identity, identity.certFile)
 
 	nonce := make([]byte, 32)
 	if _, err := rand.Read(nonce); err != nil {

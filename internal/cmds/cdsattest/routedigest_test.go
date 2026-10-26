@@ -122,12 +122,11 @@ type digestServer struct {
 func newDigestServer(t *testing.T, router Router) *digestServer {
 	t.Helper()
 	identity := writeTestMeshIdentity(t)
-	certPath, servingDER := writeTestServingLeaf(t)
 	prov := &capturingProvider{}
 	srv := NewServer(Config{
 		Evidence:             prov,
 		FrontDoorMode:        types.FrontDoorModeCDS,
-		ServingCertFile:      certPath,
+		ServingCertFile:      identity.certFile,
 		MeshIdentityCertFile: identity.certFile,
 		MeshIdentityKeyFile:  identity.keyFile,
 		MeshIdentityCAFile:   identity.caFile,
@@ -135,7 +134,7 @@ func newDigestServer(t *testing.T, router Router) *digestServer {
 	})
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
-	return &digestServer{url: ts.URL, prov: prov, identity: identity, servingDER: servingDER}
+	return &digestServer{url: ts.URL, prov: prov, identity: identity, servingDER: identity.leaf.Raw}
 }
 
 // pqDigestBound runs attest-pq and requires report_data and the bundle's
