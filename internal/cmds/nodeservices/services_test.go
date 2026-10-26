@@ -12,6 +12,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/join"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
@@ -64,7 +65,7 @@ func prepareRoot(t *testing.T) string {
 		}
 		writeInput(t, root, launchDir+name, data)
 	}
-	writeInput(t, root, launchDir+"config.json", []byte(`{"rke2":{"serverToken":"SECRET-SERVER-TOKEN","agentToken":"SECRET-AGENT-TOKEN"}}`))
+	writeInput(t, root, launchDir+"config.json", []byte(`{"private":"SECRET-PRIVATE-CONFIG"}`))
 	return root
 }
 
@@ -536,3 +537,20 @@ const meshPolicy = `mesh:
 
 // meshFloor is the baked config of a node, as the image always writes one.
 const meshFloor = floor + meshPolicy
+
+func TestJoinConfigIsAgentOnlyAndPinsTheDesignatedServer(t *testing.T) {
+	if _, err := JoinConfig(document(t, launchconfig.Server)); err == nil {
+		t.Fatal("server can run agent enrollment")
+	}
+	cfg, err := JoinConfig(document(t, launchconfig.Agent))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := join.JoinConfig{ServerAddr: "192.0.2.10:8444", AttestationAPIURL: launchconfig.DefaultAttestationAPIURL,
+		Platform: "tdx", MeasurementsConfig: launchDir + "cds.json", TokenOut: "/run/confos/rke2-agent-token", Timeout: join.DefaultTimeout,
+		DocumentPath: launchDir + "launch.yaml", SignaturePath: launchDir + "launch.sig", NodePasswordOut: "/etc/rancher/node/password",
+		MeasuredPoliciesFile: "/run/nri-image-policy/measured-policies"}
+	if cfg != want {
+		t.Fatalf("enrollment config = %+v, want %+v", cfg, want)
+	}
+}

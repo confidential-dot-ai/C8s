@@ -76,17 +76,23 @@ at its root:
   `/etc/confai/operator-pubkey`, and binds them into TDX RTMR[3]. An SNP
   launcher must set HOST_DATA to the SHA-256 of
   those same bytes.
-- `launch.yaml`: the strict `c8s-launch/v1` document selecting `server` or
-  `agent`, the image measurements, cluster/node identity, join tokens,
+- `launch.yaml`: the strict `c8s-launch/v2` document selecting `server` or
+  `agent`, the image measurements, cluster/node identity,
   trusted role keys and TLS SAN.
 - `launch.yaml.sig`: the detached signature over those exact bytes.
 
 `c8s node launch-config new` writes all three for a server and its agents,
-with distinct server and agent keys and fresh tokens per cluster
+with distinct server and agent keys per cluster
 (`c8s node launch-config add-agent` extends a bundle later; `c8s keys
 sign-launch` re-signs a hand-edited document). The private keys stay with
-the operator. Agents receive only the
-RKE2 agent token; their documents must omit the server token entirely.
+the operator. Launch documents contain no credentials: the `rke2` field is
+rejected, even if empty. Existing v1 bundles need that field removed, the
+v2 schema version, and a new signature. The server generates its separate
+agent credential inside the guest; RKE2 generates its own server token.
+Agents receive only the agent credential with its CA pin, and the RKE2 node
+password for the name in their signed document, through mutually attested
+enrollment ([docs/operator.md](../docs/operator.md) explains the password
+derivation and what the server cannot check).
 There is no diskless/default-server boot. Missing or invalid signed input
 fails the role gate before RKE2 or core services can start.
 
@@ -140,7 +146,8 @@ application services:
 | Signed launch verification and policy staging | systemd oneshot | Every node, before RKE2 |
 | Local attestation API and Unix-socket proxy | systemd services | Every node |
 | NRI image admission | Required containerd plugin | Every node, before pods |
-| RKE2 | systemd service | Authenticated server or agent role |
+| RKE2 | systemd service | Authenticated server, or agent after enrollment |
+| Attested agent enrollment | systemd services | Server releases if agents are authorized; agent enrolls before RKE2 |
 | armTLS mesh and iptables reconciliation | DaemonSet with native sidecars | Every node |
 | CDS | Singleton Deployment | Server |
 | Router, certificate renewal and attestation helpers | Singleton Deployment | Server |
@@ -151,11 +158,20 @@ application services:
 role starts. The local attester must precede this gate because launch
 verification uses it. The host attester listens on `127.0.0.1:8400`;
 pods access its Unix socket in the admission-inventory directory. CDS uses
-its Kubernetes Service and server NodePort `30808`; agents join RKE2 at
-`9345`; the router exposes the server's port `443`. Cilium's VXLAN
-runs on UDP `8473`, not the kernel default `8472`: a nested guest's outer
-host often runs its own VXLAN on `8472` and drops the inner overlay. Open
-UDP `8473` between nodes in any firewall or security group.
+its Kubernetes Service and server NodePort `30808`; attested enrollment
+listens on `8444`; agents join RKE2 at `9345`; the router exposes the
+server's port `443`. Cilium's VXLAN runs on UDP `8473`, not the kernel default
+`8472`: a nested guest's outer host often runs its own VXLAN on `8472` and
+drops the inner overlay. Open UDP `8473` between nodes in any firewall or
+security group. An agent requires its designated server's full image/key
+policy, and the server accepts only a launch document signed by a key in its
+staged `agents.json`, from a peer attesting under that same key. An empty agent
+list disables the enrollment listener. `c8s-join.service` retries unavailable
+servers and blocks RKE2 agent startup until it stages
+`/run/confos/rke2-agent-token` and the node password the server derives for
+the document's name. It depends only on verified launch staging and local
+attestation, so enrollment can run before the mesh or kubelet exists. Routed
+connectivity is required across datacenters.
 
 `c8s/mkosi.sync` resolves the c8s binary and core image digests from `C8S_REF`,
 then runs `c8s node-image render` with the checksum-pinned build-time Helm
@@ -232,7 +248,7 @@ sidecar that sets HOST_DATA from the launch public key, and stages the CDI
 disk and the IGVM on the launcher in digest-named claims that later runs of
 the same image reuse (`.github/scripts/snp-node-image.sh`). Changing the
 attester requires a new measured image. Automatic TDX acceptance reads the
-image identity and `launch_config_version=c8s-launch/v1` from the publication
+image identity and `launch_config_version=c8s-launch/v2` from the publication
 run's validated evidence.
 
 Before either platform boots, the lane builds the paired CLI and generates
@@ -422,7 +438,7 @@ Automatic main-push publication in `c8s-image-publish.yml` calls the separate
 automatic publisher can call exact-image acceptance; neither workflow has a
 manual-dispatch trigger. It consumes the same run and attempt's
 immutable evidence: the source SHA, CDI and ORAS digests, the published
-manifest, and `launch_config_version=c8s-launch/v1`. Evidence validation
+manifest, and `launch_config_version=c8s-launch/v2`. Evidence validation
 binds these to the publication run and attempt and rejects a missing or
 incompatible launch version. Disk and UKI hashes plus MRTD/RTMR1/RTMR2 must
 match the fresh build; a differing nonmeasured build timestamp is not a
