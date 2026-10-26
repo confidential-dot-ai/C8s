@@ -313,8 +313,8 @@ guest's packet rules, and a kubelet utility chain would make it refuse the pod.
 A worker joins a Kubernetes cluster whose control plane runs outside the
 CVM, such as a hosted control plane, as a node of that cluster. It boots the
 same image on the pod role's runtime (containerd and the upstream kubelet,
-no RKE2) and keeps an agent's NRI floor, CDS policy pull and runtime wrapper.
-One signed document serves every node of a pool:
+no RKE2) and keeps an agent's CDS policy pull and runtime wrapper. One signed
+document serves every node of a pool:
 
 ```sh
 c8s node launch-config new-worker --out pool1 --cluster-id demo \
@@ -349,6 +349,16 @@ boundary, the kubelet turns its debugging handlers off, which closes `exec`,
 authorizes every request through the API server. Collect logs from inside the
 cluster instead. `worker-node-name` publishes the node key's name for the
 kubelet's `--hostname-override`.
+
+The control plane writes every pod spec in every namespace, so a worker's NRI
+floor is a pod CVM's, not an agent's: it exempts no namespace, its measured
+base holds only the mesh endpoint and the document's signed `workloads` (no
+RKE2 or chart entry), nothing is node TCB, and host privilege (host namespaces
+and mounts, devices, privileged containers) is enforced. A privileged add-on,
+such as a CNI agent or a CSI node plugin, is refused: admitting one takes an
+entry that pins its digest, arguments and mounts, which this role has no way
+to carry yet. The kubelet also
+refuses swap and gives every pod the runtime's default seccomp profile.
 
 The cluster's CNI installs its plugin and conflist on the default directories,
 `/opt/cni/bin` and `/etc/cni/net.d`, as RKE2's bundled Cilium does on an agent.

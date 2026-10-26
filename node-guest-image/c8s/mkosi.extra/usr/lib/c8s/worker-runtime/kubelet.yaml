@@ -24,6 +24,11 @@ cgroupDriver: systemd
 containerRuntimeEndpoint: unix:///run/k3s/containerd/containerd.sock
 # Use resolved's upstreams, not its guest-local loopback stub.
 resolvConf: /run/systemd/resolve/resolv.conf
-failSwapOn: false
+# Swapped pages would leave the CVM's encrypted memory, so the kubelet
+# refuses to start if any swap is on.
+failSwapOn: true
+# The control plane writes every pod spec, so a pod that names no seccomp
+# profile still gets the runtime's default.
+seccompDefault: true
 maxPods: 200
 serializeImagePulls: false

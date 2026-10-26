@@ -56,9 +56,11 @@ func TestWorkerKubeletClosesTheAPIServersReach(t *testing.T) {
 			Anonymous struct{ Enabled *bool } `json:"anonymous"`
 			Webhook   struct{ Enabled *bool } `json:"webhook"`
 		} `json:"authentication"`
-		Authorization struct{ Mode string } `json:"authorization"`
-		ReadOnlyPort  *int                  `json:"readOnlyPort"`
-		StaticPodPath *string               `json:"staticPodPath"`
+		Authorization  struct{ Mode string } `json:"authorization"`
+		ReadOnlyPort   *int                  `json:"readOnlyPort"`
+		StaticPodPath  *string               `json:"staticPodPath"`
+		FailSwapOn     *bool                 `json:"failSwapOn"`
+		SeccompDefault *bool                 `json:"seccompDefault"`
 	}
 	if err := yaml.Unmarshal(data, &config); err != nil {
 		t.Fatal(err)
@@ -77,5 +79,11 @@ func TestWorkerKubeletClosesTheAPIServersReach(t *testing.T) {
 	}
 	if config.StaticPodPath == nil || *config.StaticPodPath != "" {
 		t.Error("worker kubelet must run no static pods")
+	}
+	if config.FailSwapOn == nil || !*config.FailSwapOn {
+		t.Error("worker kubelet must refuse to run with swap on")
+	}
+	if config.SeccompDefault == nil || !*config.SeccompDefault {
+		t.Error("worker kubelet must give every pod the runtime's default seccomp profile")
 	}
 }

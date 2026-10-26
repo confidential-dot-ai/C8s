@@ -40,8 +40,11 @@ func prepare(rootDir string, d *launchconfig.Document, resolveMTU func() (int, e
 		}
 		outputs[name] = data
 	}
-	if d.Role == launchconfig.Pod {
+	switch d.Role {
+	case launchconfig.Pod:
 		return preparePod(rootDir, d, outputs, resolveMTU)
+	case launchconfig.Worker:
+		return prepareWorker(rootDir, d, outputs)
 	}
 	bakedData, err := os.ReadFile(path("/usr/lib/c8s/allowlist-seed.json"))
 	if err != nil {
@@ -90,9 +93,6 @@ func prepare(rootDir string, d *launchconfig.Document, resolveMTU func() (int, e
 	}
 	if err := appendCredentialRole(policy, address); err != nil {
 		return err
-	}
-	if d.Role == launchconfig.Worker {
-		bindClusterNetwork(policy, d.Kubernetes)
 	}
 	data, err := yaml.Marshal(floor)
 	if err != nil {
