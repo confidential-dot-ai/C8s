@@ -22,9 +22,9 @@ var (
 
 	// ErrPolicyViolation indicates that the verified claims do not satisfy a
 	// [VerifyPolicy] pin: launch measurement, TDX registers, image anchor,
-	// vTPM PCR, init-data hash, verified platform, a TCB floor set for a
-	// family that has none, or a sandbox or workload pin. Debug and TCB-floor
-	// verdicts are the attestation-api's; it refuses them with a 4xx, which
+	// vTPM PCR, init-data hash, a TCB floor set for a family that has none,
+	// or a sandbox or workload pin. Debug and TCB-floor verdicts are the
+	// attestation-api's; it refuses them with a 400, 415 or 422, which
 	// surfaces as [ErrInvalidReport].
 	ErrPolicyViolation = errors.New("armtls: attestation policy check failed")
 

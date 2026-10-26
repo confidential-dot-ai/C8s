@@ -67,7 +67,7 @@ func TestMapVerifyError(t *testing.T) {
 		{"min TCB not allowed", remote.ErrMinTcbNotAllowed, ErrPolicyViolation},
 		{"PCR not allowed", remote.ErrPCRNotAllowed, ErrPolicyViolation},
 		{"init data mismatch", remote.ErrInitDataMismatch, ErrPolicyViolation},
-		{"platform mismatch", remote.ErrPlatformMismatch, ErrPolicyViolation},
+		{"platform mismatch", remote.ErrPlatformMismatch, nil},
 		{"unsupported platform", remote.ErrUnsupportedPlatform, ErrUnsupportedTEE},
 		{"invalid launch digest", remote.ErrInvalidLaunchDigest, ErrInvalidReport},
 		{"api 400", &remote.APIError{Status: 400}, ErrInvalidReport},

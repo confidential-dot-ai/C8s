@@ -239,9 +239,11 @@ func mapVerifyError(family TEEType, err error) error {
 	case errors.Is(err, remote.ErrReportDataMismatch):
 		return fmt.Errorf("%w — key was not generated in this TEE", ErrKeyBinding)
 	case errors.Is(err, remote.ErrMeasurementNotAllowed), errors.Is(err, remote.ErrRegistersNotAllowed), errors.Is(err, remote.ErrAnchorNotAllowed),
-		errors.Is(err, remote.ErrMinTcbNotAllowed), errors.Is(err, remote.ErrPCRNotAllowed), errors.Is(err, remote.ErrInitDataMismatch),
-		errors.Is(err, remote.ErrPlatformMismatch):
+		errors.Is(err, remote.ErrMinTcbNotAllowed), errors.Is(err, remote.ErrPCRNotAllowed), errors.Is(err, remote.ErrInitDataMismatch):
 		return fmt.Errorf("%w: %v", ErrPolicyViolation, err)
+	// ErrPlatformMismatch is the verifier answering for another platform than
+	// the evidence named: a fault in its response, not a pin the peer failed,
+	// so it stays unwrapped.
 	case errors.Is(err, remote.ErrUnsupportedPlatform):
 		return fmt.Errorf("%w: %v", ErrUnsupportedTEE, err)
 	case errors.Is(err, remote.ErrInvalidLaunchDigest):
