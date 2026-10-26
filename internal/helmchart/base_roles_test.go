@@ -87,14 +87,14 @@ func TestChartBaseGrantsInjectedRoles(t *testing.T) {
 				}
 			}
 
-			// The credentials role is dropped from the workload match, so it
-			// is granted only with the mount table the webhook gives the
-			// invocation: a pod's own container running one with a mount of
-			// its choosing holds no role and stays in the match.
+			// The credentials and mesh roles are dropped from the workload
+			// match, so they are granted only with the mount table the
+			// webhook gives the invocation: a pod's own container running one
+			// with a mount of its choosing holds no role and stays in the match.
 			for name, w := range base.Workloads {
 				for i, c := range w.Containers {
-					if c.Role == "credentials" && c.Mounts.Policy != pkgallowlist.PolicyExact {
-						t.Errorf("container %d of %s grants the credentials role with mounts %q, want exact", i, name, c.Mounts.Policy)
+					if (c.Role == "credentials" || c.Role == "mesh") && c.Mounts.Policy != pkgallowlist.PolicyExact {
+						t.Errorf("container %d of %s grants the %s role with mounts %q, want exact", i, name, c.Role, c.Mounts.Policy)
 					}
 				}
 			}
@@ -118,10 +118,12 @@ func TestChartBaseGrantsInjectedRoles(t *testing.T) {
 	}
 }
 
-// checkFloorGateMounts checks the floor grants the cert-wait gate the
-// credentials role under the webhook's volume alone.
+// checkFloorGateMounts checks the floor grants the cert-wait gate and the
+// mesh endpoint their roles under the webhook's volume alone.
 func checkFloorGateMounts(t *testing.T, base pkgallowlist.Allowlist) {
 	t.Helper()
+	dir := workloadclaims.MemberCertDir
+	mesh := []string{"/app/c8s", "armtls-mesh", "--cert-path=" + dir + "/tls.crt", "--key-path=" + dir + "/tls.key", "--ca-path=" + dir + "/ca.crt"}
 	certs := pkgallowlist.ObservedMount{Destination: workloadclaims.MemberCertDir, Volume: "c8s-certs", Class: pkgallowlist.MountEmptyDir, Storage: pkgallowlist.MountMemory}
 	scratch := pkgallowlist.ObservedMount{Destination: "/scratch", Volume: "scratch", Class: pkgallowlist.MountEmptyDir, Storage: pkgallowlist.MountUnknown}
 	gate := []string{"/c8s", "probe-file", "--wait", "--timeout=3m0s", workloadclaims.MemberCertDir + "/tls.crt"}
@@ -132,17 +134,21 @@ func checkFloorGateMounts(t *testing.T, base pkgallowlist.Allowlist) {
 	index := base.BuildIndex()
 	for _, tc := range []struct {
 		name   string
+		digest string
 		argv   []string
 		mounts []pkgallowlist.ObservedMount
 		want   string
 	}{
-		{"the webhook's gate", gate, []pkgallowlist.ObservedMount{certs}, "credentials"},
-		{"a disk volume of the pod's own beside", gate, []pkgallowlist.ObservedMount{certs, scratch}, ""},
-		{"a memory volume of the pod's own at the certificate destination", gate, []pkgallowlist.ObservedMount{own}, ""},
+		{"the webhook's gate", roleOperatorDigest, gate, []pkgallowlist.ObservedMount{certs}, "credentials"},
+		{"the gate with a disk volume of the pod's own beside", roleOperatorDigest, gate, []pkgallowlist.ObservedMount{certs, scratch}, ""},
+		{"the gate with a memory volume of the pod's own at the certificate destination", roleOperatorDigest, gate, []pkgallowlist.ObservedMount{own}, ""},
+		{"the webhook's mesh endpoint", roleMeshDigest, mesh, []pkgallowlist.ObservedMount{certs}, "mesh"},
+		{"the mesh endpoint with a disk volume of the pod's own beside", roleMeshDigest, mesh, []pkgallowlist.ObservedMount{certs, scratch}, ""},
+		{"the mesh endpoint with a memory volume of the pod's own at the certificate destination", roleMeshDigest, mesh, []pkgallowlist.ObservedMount{own}, ""},
 	} {
-		probe := pkgallowlist.RunningContainer{Digest: roleOperatorDigest, Argv: tc.argv, Mounts: tc.mounts}
+		probe := pkgallowlist.RunningContainer{Digest: tc.digest, Argv: tc.argv, Mounts: tc.mounts}
 		if got := index.RoleOf(probe); got != tc.want {
-			t.Errorf("probe-file with %s holds the role %q, want %q", tc.name, got, tc.want)
+			t.Errorf("%s holds the role %q, want %q", tc.name, got, tc.want)
 		}
 	}
 }

@@ -377,9 +377,11 @@ role for is a workload container, whatever image it runs and whatever its
 command line looks like. The base grants the credentials role to an injected
 invocation only with the mount table the webhook gives it, naming the webhook's
 certificate and secrets volumes, and the cert-wait gate only with its own
-arguments. The webhook refuses a pod's own mount of those volumes, so a pod's
-own container running `/c8s probe-file` or another client mode holds no role,
-stays in the match, and blocks a release the entry does not admit it for.
+arguments; it grants the mesh role to the mesh endpoint only with the
+webhook's arguments and certificate volume. The webhook refuses a pod's own
+mount of those volumes, so a pod's own container running `/c8s probe-file`,
+another client mode or the mesh endpoint holds no role, stays in the match,
+and blocks a release the entry does not admit it for.
 
 ## The grant
 

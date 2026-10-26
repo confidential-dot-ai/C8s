@@ -151,18 +151,19 @@ webhook's fixed ones (`internal/webhook`).
 `c8s.roleFloorWorkloads` renders the role entries for a digest the base admits
 only through an open-args floor entry (the cluster lane's image-store scan),
 which pins nothing but the image's executable: one `c8s-role-<mode>-<digest>`
-entry per role invocation, with `args: any`. The credentials role is dropped
-from the workload match, so its invocations are granted it only under the
-`c8s.injectedArgs` and `c8s.injectedMountTables` of their mode, one container
-per table, and the
-router pod's `allowlist-proxy` only under its `-pinned` entry; the
-`upstream`, `acme`, `mesh` and `router` invocations keep `mounts: any`. Beside
+entry per role invocation, with `args: any`. The credentials and mesh roles are
+dropped from the workload match, so the credential clients are granted theirs
+only under the `c8s.injectedArgs` and `c8s.injectedMountTables` of their mode,
+one container per table, the mesh endpoint only under `c8s.meshArgs` and the
+bound certificate volume, and the router pod's `allowlist-proxy` only under
+its `-pinned` entry; the `upstream`, `acme` and `router` invocations keep
+`mounts: any`. Beside
 each entry, a `-pinned` one names the rendered router pod's own mount set for
 that container (`c8s.routerContainerMounts`), since a pod of the router's
 namespace runs a role container only under a declaration that pins its mounts.
 
-Every credentials grant in the base names the volume behind its certificate and
-secrets mounts. `c8s.injectedMountTables` with `bind` names the webhook's
+Every credentials and mesh grant in the base names the volume behind its
+certificate and secrets mounts. `c8s.injectedMountTables` with `bind` names the webhook's
 `c8s-certs` and `c8s-secrets`: the floor pins those bound tables, and
 `c8s.baseWorkloads` binds the role-tagged shapes through
 `c8s.bindInjectedVolumes`, which reads the names from them. `c8s.mountRules`
@@ -172,7 +173,7 @@ otherwise admit under an unbound rule. The seed carries the same tables
 unbound, since a served entry binds no volume.
 
 `c8s.meshShapes` adds the pod mesh endpoint to the endpoint image's entry,
-pinned to its entrypoint, arguments and credential mount, with one container
+pinned to its entrypoint, arguments (`c8s.meshArgs`) and credential mount, with one container
 per combination of the optional probe variable.
 
 `c8s.componentShapes` collects them per digest, tagging each shape the node

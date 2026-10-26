@@ -397,7 +397,7 @@
        sidecars, so no chart container names it. */ -}}
 {{- $mesh := default "" .Values.armtlsMesh.image.digest -}}
 {{- if hasKey $components $mesh -}}
-{{- $endpoint := include "c8s.meshShapes" (dict "digest" $mesh "image" (get $refs $mesh) "imageEnv" (get $envs $mesh) "entrypoint" (get $pins $mesh)) | fromJsonArray -}}
+{{- $endpoint := include "c8s.meshShapes" (dict "root" . "digest" $mesh "image" (get $refs $mesh) "imageEnv" (get $envs $mesh) "entrypoint" (get $pins $mesh)) | fromJsonArray -}}
 {{- $_ := set $shapes $mesh (concat (get $shapes $mesh | default list) $endpoint) -}}
 {{- end -}}
 {{- $out := dict -}}
@@ -558,7 +558,7 @@
 {{- range $c := (get $entry "containers") -}}
 {{- with include "c8s.platformRole" (dict "root" $ "argv" (concat (get (get $c "command") "argv" | default list) (get (get $c "args") "argv" | default list))) -}}
 {{- $c = merge (dict "role" .) $c -}}
-{{- if and (eq . "credentials") (eq (get (get $c "mounts") "policy") "exact") -}}
+{{- if and (has . (list "credentials" "mesh")) (eq (get (get $c "mounts") "policy") "exact") -}}
 {{- $c = merge (dict "mounts" (dict "policy" "exact" "rules" (include "c8s.bindInjectedVolumes" (dict "root" $ "rules" (get (get $c "mounts") "rules")) | fromJsonArray))) $c -}}
 {{- end -}}
 {{- end -}}
@@ -606,17 +606,23 @@
 {{/* The mesh endpoint shape the webhook injects into every covered pod: the
      image's entrypoint, the three credential paths it reads, the credential
      volume it mounts read-only, and the probe variable a pod with forwarded
-     probes carries (internal/webhook/pod_mutator.go). Takes digest, image,
-     imageEnv and entrypoint. */ -}}
+     probes carries (internal/webhook/pod_mutator.go). Takes root, digest,
+     image, imageEnv and entrypoint. */ -}}
 {{- define "c8s.meshShapes" -}}
-{{- $certs := dict "destination" "/etc/c8s/certs" "kind" "emptyDir" -}}
-{{- $args := list "--cert-path=/etc/c8s/certs/tls.crt" "--key-path=/etc/c8s/certs/tls.key" "--ca-path=/etc/c8s/certs/ca.crt" -}}
+{{- $certs := first (first (get (include "c8s.injectedMountTables" (dict "root" .root) | fromJson) "get-cert")) -}}
+{{- $args := include "c8s.meshArgs" .root | fromJsonArray -}}
 {{- $out := list -}}
 {{- range $env := list (list) (list (dict "name" "C8S_MESH_PROBES" "valueFrom" (dict "fieldRef" dict))) -}}
 {{- $matched := include "c8s.componentEnv" (dict "imageEnv" $.imageEnv "container" (dict "env" $env) "where" "injected mesh endpoint") | fromJson -}}
 {{- $out = append $out (dict "digest" $.digest "image" $.image "command" (dict "policy" "exact" "argv" $.entrypoint) "args" (dict "policy" "exact" "argv" $args) "mounts" (dict "policy" "exact" "rules" (list $certs)) "env" $matched) -}}
 {{- end -}}
 {{ $out | toJson }}
+{{- end -}}
+
+{{/* The credential paths the webhook passes the mesh endpoint
+     (internal/webhook/pod_mutator.go), as JSON. Takes the chart context. */ -}}
+{{- define "c8s.meshArgs" -}}
+{{ list (printf "--cert-path=%s" (include "c8s.certFile" .)) (printf "--key-path=%s" (include "c8s.keyFile" .)) (printf "--ca-path=%s" (include "c8s.caFile" .)) | toJson }}
 {{- end -}}
 
 {{/* The platform role the enforcer grants a base container, by the
@@ -686,7 +692,9 @@ null
 {{- $repository := include "c8s.imageRepository" $image -}}
 {{- $argvs := list -}}
 {{- if eq $repository (include "c8s.imageRepository" $root.Values.armtlsMesh.image.repository) -}}
-{{- $argvs = list (dict "role" "mesh" "container" "c8s-mesh" "argv" (list "/app/c8s" "armtls-mesh")) -}}
+{{- /* Mesh, dropped from the match too: the webhook's arguments and bound
+       certificate volume. */ -}}
+{{- $argvs = list (dict "role" "mesh" "container" "c8s-mesh" "argv" (list "/app/c8s" "armtls-mesh") "args" (dict "policy" "exact" "argv" (include "c8s.meshArgs" $root | fromJsonArray)) "mounts" (list (first (get $tables "get-cert")))) -}}
 {{- else if eq $repository (include "c8s.imageRepository" $root.Values.image.repository) -}}
 {{- /* Credentials: only the webhook's arguments and bound mount tables;
        the router pod's allowlist proxy under its pinned entry alone. */ -}}
