@@ -4,7 +4,10 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"errors"
+	"fmt"
 	"testing"
+
+	"github.com/confidential-dot-ai/attestation-go/remote"
 )
 
 // Both evidence paths require an attestation-api: there is no in-process verifier,
@@ -45,4 +48,56 @@ func certWithSandboxID(t *testing.T, id string) (*x509.Certificate, error) {
 		return nil, err
 	}
 	return &x509.Certificate{Extensions: []pkix.Extension{ext}}, nil
+}
+
+// A 4xx refusal is terminal; 408, 429, 5xx and transport failures are
+// retryable and must not carry a terminal sentinel.
+func TestMapVerifyError(t *testing.T) {
+	sentinels := []error{ErrSignatureInvalid, ErrKeyBinding, ErrPolicyViolation, ErrInvalidReport}
+	tests := []struct {
+		name string
+		err  error
+		want error // nil: no sentinel
+	}{
+		{"signature invalid", remote.ErrSignatureInvalid, ErrSignatureInvalid},
+		{"report data mismatch", remote.ErrReportDataMismatch, ErrKeyBinding},
+		{"measurement not allowed", remote.ErrMeasurementNotAllowed, ErrPolicyViolation},
+		{"registers not allowed", remote.ErrRegistersNotAllowed, ErrPolicyViolation},
+		{"anchor not allowed", remote.ErrAnchorNotAllowed, ErrPolicyViolation},
+		{"invalid launch digest", remote.ErrInvalidLaunchDigest, ErrInvalidReport},
+		{"api 400", &remote.APIError{Status: 400}, ErrInvalidReport},
+		{"api 422", &remote.APIError{Status: 422}, ErrInvalidReport},
+		{"wrapped api 422", fmt.Errorf("verify: %w", &remote.APIError{Status: 422}), ErrInvalidReport},
+		{"api 408", &remote.APIError{Status: 408}, nil},
+		{"api 429", &remote.APIError{Status: 429}, nil},
+		{"api 503", &remote.APIError{Status: 503}, nil},
+		{"unexpected 422 with body", &remote.UnexpectedError{Status: 422, Text: "bad json"}, ErrInvalidReport},
+		{"unexpected 400 without body", &remote.UnexpectedError{Status: 400}, nil},
+		{"unexpected 404 with body", &remote.UnexpectedError{Status: 404, Text: "not found"}, nil},
+		{"unexpected 502 with body", &remote.UnexpectedError{Status: 502, Text: "bad gateway"}, nil},
+		{"transport", &remote.RequestError{Err: errors.New("connection refused")}, nil},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := mapVerifyError(TEETypeTDX, tc.err)
+			for _, s := range sentinels {
+				if is := errors.Is(got, s); is != (s == tc.want) {
+					t.Errorf("errors.Is(mapVerifyError(%v), %v) = %t, want %t", tc.err, s, is, !is)
+				}
+			}
+			// Response and transport errors stay reachable for errors.As.
+			if !isRemoteSentinel(tc.err) && !errors.Is(got, tc.err) {
+				t.Errorf("mapVerifyError(%v) = %v, want it to wrap the original error", tc.err, got)
+			}
+		})
+	}
+}
+
+func isRemoteSentinel(err error) bool {
+	for _, s := range []error{remote.ErrSignatureInvalid, remote.ErrReportDataMismatch, remote.ErrMeasurementNotAllowed, remote.ErrRegistersNotAllowed, remote.ErrAnchorNotAllowed, remote.ErrInvalidLaunchDigest} {
+		if errors.Is(err, s) {
+			return true
+		}
+	}
+	return false
 }
