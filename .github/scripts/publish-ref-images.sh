@@ -87,7 +87,9 @@ if [ -n "$confos_ref" ] && [[ ! "$confos_ref" =~ ^[0-9A-Za-z][0-9A-Za-z._/-]{0,2
 fi
 short="${sha:0:7}"
 branch="${branch:-build/$short}"
-[[ "$branch" =~ ^[0-9A-Za-z][0-9A-Za-z._/-]{0,254}$ ]] && [[ "$branch" != *..* ]] || die "--branch is not a safe branch name"
+if [[ ! "$branch" =~ ^[0-9A-Za-z][0-9A-Za-z._/-]{0,254}$ ]] || [[ "$branch" == *..* ]]; then
+  die "--branch is not a safe branch name"
+fi
 
 for tool in gh curl jq; do
   command -v "$tool" >/dev/null || die "$tool is required"
