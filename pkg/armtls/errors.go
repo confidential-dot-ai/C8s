@@ -22,8 +22,8 @@ var (
 
 	// ErrPolicyViolation indicates that the verified launch measurement is not
 	// in the [VerifyPolicy] reference values. Debug and minimum-TCB policy are
-	// enforced by the attestation-api; those rejections surface as the
-	// attestation-api error or [ErrSignatureInvalid], not this sentinel.
+	// enforced by the attestation-api; those rejections surface as
+	// [ErrInvalidReport] or [ErrSignatureInvalid], not this sentinel.
 	ErrPolicyViolation = errors.New("armtls: attestation policy check failed")
 
 	// ErrCertValidity indicates the certificate is outside its validity
@@ -39,6 +39,9 @@ var (
 	ErrUnsupportedTEE = agarmtls.ErrUnsupportedTEE
 
 	// ErrInvalidReport indicates a structurally invalid attestation report
-	// (e.g., wrong size for the platform, truncated, or corrupt).
+	// (e.g., wrong size for the platform, truncated, or corrupt), or evidence
+	// the attestation-api refused with a 4xx other than 408 and 429. Either is
+	// terminal: resending the same evidence cannot succeed. Its refusals do not
+	// say which check failed, so they cannot claim [ErrPolicyViolation].
 	ErrInvalidReport = agarmtls.ErrInvalidReport
 )

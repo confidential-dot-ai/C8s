@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
 	agarmtls "github.com/confidential-dot-ai/attestation-go/armtls"
@@ -226,8 +227,12 @@ func verifyOnline(att *Attestation, pub crypto.PublicKey, policy *VerifyPolicy, 
 }
 
 // mapVerifyError translates remote verdict sentinels onto this package's error
-// surface, which callers match with errors.Is.
+// surface, which callers match with errors.Is. An attestation-api refusal of
+// the evidence is terminal and maps to [ErrInvalidReport]; transport failures,
+// 408, 429 and 5xx stay unwrapped because retrying them can succeed.
 func mapVerifyError(family TEEType, err error) error {
+	var apiErr *remote.APIError
+	var unexpected *remote.UnexpectedError
 	switch {
 	case errors.Is(err, remote.ErrSignatureInvalid):
 		return ErrSignatureInvalid
@@ -237,9 +242,31 @@ func mapVerifyError(family TEEType, err error) error {
 		return fmt.Errorf("%w: %v", ErrPolicyViolation, err)
 	case errors.Is(err, remote.ErrInvalidLaunchDigest):
 		return fmt.Errorf("%w: %v", ErrInvalidReport, err)
+	case errors.As(err, &apiErr) && refusesEvidence(apiErr.Status):
+		return fmt.Errorf("%w: attestation-api refused the evidence (%d): %w", ErrInvalidReport, apiErr.Status, err)
+	// The api answers its own refusals in the JSON envelope, so a non-JSON body
+	// names the request rather than the evidence, and only where there is a
+	// body to have named it.
+	case errors.As(err, &unexpected) && rejectsRequest(unexpected.Status) && unexpected.Text != "":
+		return fmt.Errorf("%w: attestation-api rejected the request (%d): %w", ErrInvalidReport, unexpected.Status, err)
 	default:
 		return fmt.Errorf("armtls: online %s attestation verify: %w", family, err)
 	}
+}
+
+// refusesEvidence reports whether a status names the evidence rather than the
+// service; 408 and 429 are availability.
+func refusesEvidence(status int) bool {
+	return status >= 400 && status < 500 &&
+		status != http.StatusRequestTimeout && status != http.StatusTooManyRequests
+}
+
+// rejectsRequest reports whether a status names what was sent. These are the
+// statuses axum's extractors reject a body with, outside the JSON envelope.
+func rejectsRequest(status int) bool {
+	return status == http.StatusBadRequest ||
+		status == http.StatusUnsupportedMediaType ||
+		status == http.StatusUnprocessableEntity
 }
 
 // checkPeerKeyType accepts ECDSA P-256 or P-384 on either verification path.
