@@ -14,7 +14,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
-	"errors"
 	"io"
 	"math/big"
 	"net/http"
@@ -255,15 +254,6 @@ func TestAttestLBServingLeafAdmission(t *testing.T) {
 
 // Only acme mode reads a separate serving leaf; any other mode reaching the
 // check fails closed.
-func TestCheckServingLeafRefusesNonACMEMode(t *testing.T) {
-	identity := writeTestMeshIdentity(t)
-	for _, mode := range []types.FrontDoorMode{types.FrontDoorModeCDS, types.FrontDoorModeWebPKI, "other", ""} {
-		if err := checkServingLeaf(mode, identity.leaf); !errors.Is(err, errServingLeafRejected) {
-			t.Errorf("checkServingLeaf(%q, leaf) = %v, want errServingLeafRejected", mode, err)
-		}
-	}
-}
-
 func readTestCertDER(t *testing.T, path string) []byte {
 	t.Helper()
 	data, err := os.ReadFile(path)

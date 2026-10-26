@@ -598,8 +598,10 @@ func (s *Server) handleAttestLB(w http.ResponseWriter, r *http.Request) {
 				"the serving certificate is unavailable; attest-lb cannot bind this connection")
 			return
 		}
-		if err := checkServingLeaf(s.cfg.FrontDoorMode, serving); err != nil {
-			s.log.Error("attest-lb serving leaf rejected", "error", err)
+		if err := checkACMEServingLeaf(serving); err != nil {
+			// Warn, not Error: an expired leaf repeats on every request
+			// until renewal recovers, and renewal monitoring alerts on it.
+			s.log.Warn("attest-lb serving leaf rejected", "error", err, "not_after", serving.NotAfter)
 			writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeServingLeafRejected,
 				"the serving certificate is not one this front door may bind; attest-lb cannot bind this connection")
 			return

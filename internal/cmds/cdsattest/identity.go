@@ -140,14 +140,10 @@ func (m *meshIdentity) bindServingLeaf(mode types.FrontDoorMode, serving *x509.C
 	return transcriptHash, proof, nil
 }
 
-// checkServingLeaf admits a serving leaf read from --serving-cert-file. Only
-// acme mode reads one: its leaf is a distinct CA-issued certificate whose key
-// the sidecar never sees, so only its validity window can be checked here.
-// A cds front door binds the mesh identity leaf and never calls this.
-func checkServingLeaf(mode types.FrontDoorMode, serving *x509.Certificate) error {
-	if mode != types.FrontDoorModeACME {
-		return fmt.Errorf("%w: front-door mode %q admits no separate serving leaf", errServingLeafRejected, mode)
-	}
+// checkACMEServingLeaf admits a serving leaf read from --serving-cert-file.
+// An acme leaf is a distinct CA-issued certificate whose key the sidecar never
+// sees, so only its validity window can be checked here.
+func checkACMEServingLeaf(serving *x509.Certificate) error {
 	if err := certutil.CheckValidity(serving, time.Now()); err != nil {
 		return fmt.Errorf("%w: acme serving leaf: %w", errServingLeafRejected, err)
 	}
