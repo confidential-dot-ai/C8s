@@ -135,6 +135,13 @@ func testNodeImagePodRoleConfig(t *testing.T, platform string) {
 	if cfg.Mesh.Roles[0].Name != workloadclaims.MeshRole || cfg.Mesh.Roles[0].UID != workloadclaims.MeshUID {
 		t.Fatalf("mesh role = %+v", cfg.Mesh.Roles)
 	}
+	floor, err := nriimagepolicy.LoadMeshFloor(filepath.Join(root, "etc/nri/conf.d/image-policy.yaml"))
+	if err != nil {
+		t.Fatalf("pod-role floor does not load: %v", err)
+	}
+	if !floor.PodRole {
+		t.Fatal("the runtime wrapper would read the pod-role policy as a node's and refuse root")
+	}
 	base := cfg.Allowlist.Base.Workloads
 	endpoint := base["c8s-mesh-endpoint"].Containers
 	if len(base) != 2 || base["app"].Containers[0].Role != "" || len(endpoint) != 1 || endpoint[0].Role != workloadclaims.MeshRole || endpoint[0].Digest.String() != nriimagepolicy.MeshImageDigest {

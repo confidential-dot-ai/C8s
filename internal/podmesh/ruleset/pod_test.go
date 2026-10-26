@@ -43,8 +43,9 @@ func TestStandalonePodCapturesPeersAndAdmitsInternetInTheNamespace(t *testing.T)
 			{workloadUID, "tcp", address(resolver, 53), admitted},
 			{meshUID, "udp", address(resolver, 53), admitted},
 			{meshUID, "tcp", address(service, servicePort), admitted},
-			{0, "tcp", address(unapproved, 53), denied},
-			{0, "udp", address(resolver, 53), denied},
+			{0, "tcp", address(unapproved, 8080), captured},
+			{0, "tcp", address(unapproved, 53), admitted},
+			{0, "udp", address(resolver, 53), admitted},
 			{workloadUID, "tcp", address(unapproved6, 8080), denied},
 			{meshUID, "udp", address(unapproved6, 53), denied},
 		}

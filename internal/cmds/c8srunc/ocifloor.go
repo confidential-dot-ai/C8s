@@ -247,11 +247,15 @@ func joinedNamespace(linux *specs.Linux, kind specs.LinuxNamespaceType) string {
 	return linux.Namespaces[i].Path
 }
 
-// requireUnreservedIdentity requires a container outside every role to run as
-// a non-root user, and every container to claim no id reserved for another
-// role: trusted policy reserves the number as both a UID and a GID.
+// requireUnreservedIdentity requires every container to claim no id reserved
+// for another role, as trusted policy reserves the number as both a UID and a
+// GID, and on a node a container outside every role to run as a non-root user.
+// A pod CVM runs one pod, so its floor admits root there: what root can do is
+// bounded by the capability, no_new_privs and namespace rules above, and
+// SETUID and SETGID stay out of workloadCapabilities, so it cannot take a
+// reserved socket identity.
 func requireUnreservedIdentity(user specs.User, floor nriimagepolicy.MeshFloor, role string) error {
-	if role == "" && user.UID == 0 {
+	if role == "" && user.UID == 0 && !floor.PodRole {
 		return errors.New("a container outside every platform role runs as root")
 	}
 	for _, id := range append([]uint32{user.GID}, user.AdditionalGids...) {

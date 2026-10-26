@@ -98,12 +98,16 @@ type roleBinding struct {
 }
 
 // MeshFloor is the measured mesh policy as the node's runtime wrapper reads
-// it: the namespaces that host no member pods, and what the role behind each
-// reserved id may hold. Trusted policy reserves that number as both a UID and
-// a GID (internal/cmds/c8srunc).
+// it: the namespaces that host no member pods, what the role behind each
+// reserved id may hold, and whether the policy is a pod CVM's. Trusted policy
+// reserves that number as both a UID and a GID (internal/cmds/c8srunc).
 type MeshFloor struct {
 	ExemptNamespaces []string
 	ReservedIDs      map[uint32]RoleFloor
+	// PodRole marks the policy of a pod CVM, which runs one pod: its floor
+	// admits a root user outside every role, since no other tenant shares
+	// the kernel. validatePod ties mesh.pod to the pod role's other markers.
+	PodRole bool
 }
 
 // RoleFloor is one platform role as the floor reads it.
@@ -121,6 +125,7 @@ func LoadMeshFloor(configPath string) (MeshFloor, error) {
 	floor := MeshFloor{
 		ExemptNamespaces: cfg.Mesh.ExemptNamespaces,
 		ReservedIDs:      map[uint32]RoleFloor{},
+		PodRole:          cfg.Mesh.Pod != nil,
 	}
 	for _, role := range cfg.Mesh.Roles {
 		floor.ReservedIDs[role.UID] = RoleFloor{Name: role.Name}

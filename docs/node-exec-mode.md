@@ -108,8 +108,11 @@ The floor, and why each item is in it:
 - **Namespaces** — no id mapping or user namespace, because the ruleset
   matches the socket UID in the initial user namespace; a PID namespace of the
   container's own, so neither the node's nor the pod's shared one.
-- **Identity** — no root user outside a role, and no id reserved for another
-  role, as a group or a supplementary group.
+- **Identity** — no id reserved for another role, as a group or a
+  supplementary group, and on a node no root user outside a role. A pod CVM
+  runs one pod, so its floor admits root: the capability bound above still
+  holds, and without `SETUID` and `SETGID` root cannot take a reserved
+  socket identity.
 
 A role's container holds no capabilities at all: the enforcer installs the pod
 ruleset, and a role only speaks on it. The role is read from the reserved id in
@@ -121,8 +124,9 @@ their privileges, as does the pod's own sandbox container — the one whose own
 container id is the sandbox's, which no other bundle can claim. A measured
 policy that cannot be read, or that carries no `mesh` policy, denies the
 create. A pod CVM's policy keeps the node's with the mesh role alone and no
-exempt namespace, so the floor covers every container of its pod. The floor is
-independent of the exec mode above.
+exempt namespace, so the floor covers every container of its pod; its `mesh.pod`
+section is what marks the policy as a pod CVM's. The floor is independent of
+the exec mode above.
 
 Attachability is refused outside the floor, for every container the wrapper
 creates: a terminal is refused, and so is a create whose own `fd 0` is a pipe —

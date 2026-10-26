@@ -32,6 +32,17 @@ func testFloor() nriimagepolicy.MeshFloor {
 	}
 }
 
+// podFloor is the measured floor of a pod CVM: the mesh endpoint alone, no
+// exempt namespace, and the pod role's allowance for a root user.
+func podFloor() nriimagepolicy.MeshFloor {
+	return nriimagepolicy.MeshFloor{
+		PodRole: true,
+		ReservedIDs: map[uint32]nriimagepolicy.RoleFloor{
+			testMeshUID: {Name: "mesh"},
+		},
+	}
+}
+
 // workloadBundle is the OCI configuration containerd writes for an ordinary
 // member-pod container: the runtime's default capabilities less the three the
 // floor removes, a non-root non-reserved user, and its own namespaces.
@@ -90,6 +101,72 @@ func workloadBundle() *specs.Spec {
 				{Type: specs.CgroupNamespace},
 			},
 		},
+	}
+}
+
+// A pod CVM's floor admits a root user: the CVM runs one pod, so root is no
+// other tenant's problem, and what root can do stays bounded by the same
+// capability, no_new_privs and namespace rules. SETUID and SETGID stay out,
+// since the pod ruleset grants traffic by socket owner, and reserved ids stay
+// refused.
+func TestPodFloorAdmitsRoot(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		bundle func(*specs.Spec)
+		wants  string
+	}{
+		{
+			name: "a root workload",
+			bundle: func(s *specs.Spec) {
+				s.Process.User.UID = 0
+				s.Process.User.GID = 0
+			},
+		},
+		{
+			name: "a root workload holding CAP_SETUID",
+			bundle: func(s *specs.Spec) {
+				s.Process.User.UID = 0
+				s.Process.User.GID = 0
+				s.Process.Capabilities.Effective = append(s.Process.Capabilities.Effective, "CAP_SETUID")
+			},
+			wants: "effective capability CAP_SETUID",
+		},
+		{
+			name: "a root workload holding CAP_SETGID in the bounding set",
+			bundle: func(s *specs.Spec) {
+				s.Process.User.UID = 0
+				s.Process.Capabilities.Bounding = append(s.Process.Capabilities.Bounding, "CAP_SETGID")
+			},
+			wants: "bounding capability CAP_SETGID",
+		},
+		{
+			name:   "a root workload in the mesh endpoint's group",
+			bundle: func(s *specs.Spec) { s.Process.User.UID = 0; s.Process.User.GID = testMeshUID },
+			wants:  "gid 1337 is reserved for the mesh role",
+		},
+		{
+			name: "a workload claiming the mesh endpoint's uid",
+			bundle: func(s *specs.Spec) {
+				s.Process.User.UID = testMeshUID
+				s.Process.User.GID = testMeshUID
+			},
+			wants: "capability",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bundle := workloadBundle()
+			tc.bundle(bundle)
+			err := requireFloor(bundle, "ctr", nil, podFloor())
+			switch {
+			case tc.wants == "" && err != nil:
+				t.Fatalf("the pod floor refused %s: %v", tc.name, err)
+			case tc.wants == "":
+			case err == nil:
+				t.Fatalf("the pod floor admitted %s", tc.name)
+			case !strings.Contains(err.Error(), tc.wants):
+				t.Fatalf("error = %v, want it to name %q", err, tc.wants)
+			}
+		})
 	}
 }
 
@@ -434,6 +511,23 @@ mesh:
 		t.Fatal(err)
 	}
 	return path
+}
+
+// A node's measured policy is not a pod CVM's: root stays refused there.
+func TestNodeFloorRefusesRoot(t *testing.T) {
+	floor, err := nriimagepolicy.LoadMeshFloor(measuredConfig(t, true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if floor.PodRole {
+		t.Fatal("a node policy without mesh.pod loaded as a pod CVM's")
+	}
+	bundle := workloadBundle()
+	bundle.Process.User.UID = 0
+	bundle.Process.User.GID = 0
+	if err := requireFloor(bundle, "ctr", nil, floor); err == nil || !strings.Contains(err.Error(), "runs as root") {
+		t.Fatalf("error = %v, want the root refusal", err)
+	}
 }
 
 // bundleDirWith writes an OCI bundle the way containerd stages one.
