@@ -233,7 +233,6 @@ func verifyOnline(att *Attestation, pub crypto.PublicKey, policy *VerifyPolicy, 
 // a deployment fault that is not the peer's.
 func mapVerifyError(family TEEType, err error) error {
 	var apiErr *remote.APIError
-	var unexpected *remote.UnexpectedError
 	switch {
 	case errors.Is(err, remote.ErrSignatureInvalid):
 		return ErrSignatureInvalid
@@ -247,13 +246,10 @@ func mapVerifyError(family TEEType, err error) error {
 		return fmt.Errorf("%w: %v", ErrUnsupportedTEE, err)
 	case errors.Is(err, remote.ErrInvalidLaunchDigest):
 		return fmt.Errorf("%w: %v", ErrInvalidReport, err)
+	// The api answers its own refusals in the JSON envelope; a non-JSON 4xx
+	// comes from something in front of it and stays a deployment fault.
 	case errors.As(err, &apiErr) && rejectsRequest(apiErr.Status):
 		return fmt.Errorf("%w: attestation-api refused the evidence (%d): %w", ErrInvalidReport, apiErr.Status, err)
-	// The api answers its own refusals in the JSON envelope, so a non-JSON body
-	// names the request rather than the evidence, and only where there is a
-	// body to have named it.
-	case errors.As(err, &unexpected) && rejectsRequest(unexpected.Status) && unexpected.Text != "":
-		return fmt.Errorf("%w: attestation-api rejected the request (%d): %w", ErrInvalidReport, unexpected.Status, err)
 	default:
 		return fmt.Errorf("armtls: online %s attestation verify: %w", family, err)
 	}
