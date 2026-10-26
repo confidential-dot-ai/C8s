@@ -220,7 +220,6 @@ pool's launch key as a node (its agent keys). See docs/operator.md, "Worker".`,
 	f.StringVar(&opts.Kubernetes.ClusterDomain, "cluster-domain", defaultClusterDomain, "the cluster's DNS domain")
 	f.StringVar(&opts.Kubernetes.PodCIDR, "pod-cidr", "", "the cluster's pod range")
 	f.StringVar(&opts.Kubernetes.ServiceCIDR, "service-cidr", "", "the cluster's Service range")
-	f.StringVar(&opts.WorkloadsPath, "workloads", "", "optional c8s.allowlist/v1 JSON base admitted before CDS is available")
 	for _, name := range []string{"out", "cluster-id", "image-manifest", "server-address", "server-public-key", "api-server", "api-ca", "cluster-dns", "pod-cidr", "service-cidr"} {
 		_ = cmd.MarkFlagRequired(name)
 	}

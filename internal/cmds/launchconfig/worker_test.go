@@ -232,6 +232,9 @@ func TestValidateWorkerRole(t *testing.T) {
 		{"no CDS address", func(d *Document) { d.Server.Address = "" }, "server.address"},
 		{"router", func(d *Document) { d.Router = &Router{} }, "router is server-only"},
 		{"pod", func(d *Document) { d.Pod = &PodSpec{} }, "pod section requires role pod"},
+		// Whoever runs the cluster signs the pool's document, so it may not
+		// add to what CDS's policy admits.
+		{"workloads", func(d *Document) { d.Workloads = `{"version":"c8s.allowlist/v1","workloads":{}}` }, "takes no workloads"},
 		{"api server URL", func(d *Document) { d.Kubernetes.APIServer = "https://c-0123.k8s.example" }, "kubernetes.apiServer"},
 		{"api server IP", func(d *Document) { d.Kubernetes.APIServer = "192.0.2.1" }, "kubernetes.apiServer"},
 		{"two CAs", func(d *Document) { d.Kubernetes.CACertificate += testCAPEM(t, true) }, "exactly one PEM certificate"},

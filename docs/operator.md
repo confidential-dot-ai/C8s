@@ -352,8 +352,7 @@ kubelet's `--hostname-override`.
 
 The control plane writes every pod spec in every namespace, so a worker's NRI
 floor is a pod CVM's, not an agent's: it exempts no namespace, its measured
-base holds only the mesh endpoint and the document's signed `workloads` (no
-RKE2 or chart entry), nothing is node TCB, and host privilege (host namespaces
+base holds only the mesh endpoint (no RKE2 or chart entry), nothing is node TCB, and host privilege (host namespaces
 and mounts, devices, privileged containers) is enforced. A privileged add-on,
 such as a CNI agent or a CSI node plugin, is refused: admitting one takes an
 entry that pins its digest, arguments and mounts, which this role has no way

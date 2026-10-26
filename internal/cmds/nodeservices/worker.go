@@ -7,16 +7,16 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
 // prepareWorker stages the NRI floor of a node joined to an outside control
 // plane. That control plane writes every pod spec in every namespace, so the
 // floor trusts no namespace name and no RKE2 image: as in a pod CVM, nothing
-// is exempt, only the measured mesh endpoint and the signed workloads form
-// the base, nothing is node TCB, and host privilege is enforced, not audited.
-// A privileged add-on runs only once an entry pins its digest, arguments and
-// mounts; until then it is refused, closed.
+// is exempt, only the measured mesh endpoint forms the base, nothing is node
+// TCB, and host privilege is enforced, not audited. Every workload comes from
+// CDS's policy, which the document cannot add to. A privileged add-on runs
+// only once an entry pins its digest, arguments and mounts; until then it is
+// refused, closed.
 func prepareWorker(rootDir string, d *launchconfig.Document, outputs map[string][]byte) error {
 	path := func(name string) string { return filepath.Join(rootDir, name) }
 	floor, a, err := loadFloor(rootDir)
@@ -34,15 +34,6 @@ func prepareWorker(rootDir string, d *launchconfig.Document, outputs map[string]
 	base, _, err := podMeshBase(a["base"])
 	if err != nil {
 		return err
-	}
-	if d.Workloads != "" {
-		workloads, err := allowlist.ParseJSON([]byte(d.Workloads))
-		if err != nil {
-			return fmt.Errorf("launch workloads: %w", err)
-		}
-		if err := mergeWorkloads(base, workloads, false); err != nil {
-			return err
-		}
 	}
 	a["base"] = base
 	a["node_tcb"] = false

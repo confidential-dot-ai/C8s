@@ -32,7 +32,6 @@ type WorkerBundleOptions struct {
 	ServerPublicKeyPath string
 	Kubernetes          Kubernetes
 	CAPath              string
-	WorkloadsPath       string
 }
 
 // NewWorkerBundle writes a signed role-worker document. Dir must not exist;
@@ -61,12 +60,6 @@ func NewWorkerBundle(opts WorkerBundleOptions) (err error) {
 	}
 	k := opts.Kubernetes
 	k.CACertificate = string(ca)
-	var workloads []byte
-	if opts.WorkloadsPath != "" {
-		if workloads, err = readBounded(opts.WorkloadsPath, MaxDocumentSize); err != nil {
-			return err
-		}
-	}
 	if err := os.Mkdir(opts.Dir, 0o700); err != nil {
 		return fmt.Errorf("create bundle directory: %w", err)
 	}
@@ -86,7 +79,6 @@ func NewWorkerBundle(opts WorkerBundleOptions) (err error) {
 		Image:                   image,
 		Server:                  ServerConfig{Address: opts.ServerAddress, OperatorPublicKey: string(serverPub)},
 		AgentOperatorPublicKeys: []string{pub},
-		Workloads:               string(workloads),
 		Kubernetes:              &k,
 	}
 	return writeSignedDocument(filepath.Join(opts.Dir, workerDir), doc, key, pub)

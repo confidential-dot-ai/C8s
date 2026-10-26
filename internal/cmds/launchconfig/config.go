@@ -90,6 +90,10 @@ type roleRules struct {
 	agentKeys    presence // agentOperatorPublicKeys
 	podKey       presence // podOperatorPublicKey
 	pod          presence // the pod section, which then requires workloads
+	// workloads is the document's c8s.allowlist/v1 base. A role whose
+	// document is signed for a whole pool by its cluster's operator, not the
+	// workload's owner, takes none: its workloads come from CDS's policy.
+	workloads presence
 	// measuresWorkloads requires a platform with a runtime register: the
 	// role measures what it runs after launch, and without the register no
 	// evidence could carry those measurements.
@@ -118,6 +122,7 @@ var roles = map[Role]roleRules{
 		agentKeys:     optional,
 		podKey:        forbidden,
 		pod:           forbidden,
+		workloads:     optional,
 		namesServer:   false,
 		stagedAddress: true,
 		router:        true,
@@ -131,6 +136,7 @@ var roles = map[Role]roleRules{
 		agentKeys:     required,
 		podKey:        forbidden,
 		pod:           forbidden,
+		workloads:     optional,
 		namesServer:   true,
 		stagedAddress: true,
 		router:        false,
@@ -144,6 +150,7 @@ var roles = map[Role]roleRules{
 		agentKeys:         forbidden,
 		podKey:            required,
 		pod:               required,
+		workloads:         required,
 		measuresWorkloads: true,
 		namesServer:       true,
 		stagedAddress:     true,
@@ -153,13 +160,16 @@ var roles = map[Role]roleRules{
 		kubernetes:        forbidden,
 	},
 	// A worker's launch key is listed in agentOperatorPublicKeys, as an
-	// agent's is: CDS admits the same keys to its node issuer.
+	// agent's is: CDS admits the same keys to its node issuer. Its pool's
+	// document is signed by whoever runs the cluster, so it names no
+	// workloads: what a worker runs is only what CDS's policy admits.
 	Worker: {
 		joinsCluster:  false,
 		serverToken:   forbidden,
 		agentKeys:     required,
 		podKey:        forbidden,
 		pod:           forbidden,
+		workloads:     forbidden,
 		namesServer:   true,
 		stagedAddress: true,
 		router:        false,
@@ -656,6 +666,9 @@ func (d *Document) validate() error {
 		if d.Pod != nil {
 			return fmt.Errorf("pod section requires role pod")
 		}
+	}
+	if rules.workloads == forbidden && d.Workloads != "" {
+		return fmt.Errorf("%s takes no workloads: what it runs comes from CDS's policy", d.Role)
 	}
 	if d.Workloads != "" {
 		if !json.Valid([]byte(d.Workloads)) {

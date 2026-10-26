@@ -85,7 +85,6 @@ func TestPrepareWorkerBindsItsClusterNetwork(t *testing.T) {
 func TestPrepareWorkerTrustsNoNamespaceOrOpenEntry(t *testing.T) {
 	root := prepareWorkerRoot(t)
 	doc := workerDocument(t)
-	doc.Workloads = podWorkloads
 	if err := Prepare(root, doc); err != nil {
 		t.Fatal(err)
 	}
@@ -126,9 +125,10 @@ func TestPrepareWorkerTrustsNoNamespaceOrOpenEntry(t *testing.T) {
 			}
 		}
 	}
-	// Only the measured mesh endpoint and the signed workloads: the baked
-	// system entry, the open credential client and the chart seed are gone.
-	if len(base.Workloads) != 2 || base.Workloads["c8s-mesh-endpoint"].Containers == nil || base.Workloads["app"].Containers == nil {
-		t.Fatalf("worker base %v, want the mesh endpoint and the signed app", names)
+	// Only the measured mesh endpoint: the baked system entry, the open
+	// credential client and the chart seed are gone, and every workload
+	// comes from CDS's policy.
+	if len(base.Workloads) != 1 || base.Workloads["c8s-mesh-endpoint"].Containers == nil {
+		t.Fatalf("worker base %v, want the mesh endpoint alone", names)
 	}
 }
