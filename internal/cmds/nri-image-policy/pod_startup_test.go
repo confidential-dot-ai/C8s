@@ -36,7 +36,7 @@ import (
 // separately, while this test controls outages and exercises real NRI RPCs.
 func assertPodBootstrap(t *testing.T, cfg *config, root string, podKey []byte, baseDigest string) {
 	t.Helper()
-	for _, scenario := range []string{"workload before endpoint", "wrong endpoint argv", "complete bootstrap"} {
+	for _, scenario := range []string{"workload before endpoint", "wrong endpoint argv", "forged container names", "complete bootstrap"} {
 		t.Run(scenario, func(t *testing.T) {
 			local := *cfg
 			runPodBootstrap(t, &local, root, podKey, baseDigest, scenario)
@@ -60,6 +60,24 @@ func runPodBootstrap(t *testing.T, cfg *config, root string, podKey []byte, base
 	cfg.Allowlist.Pull.Timeout = 5 * time.Second
 	cfg.Allowlist.Pull.Interval = 20 * time.Millisecond
 	pod, credentialSource := preparePodBootstrapRuntime(t, cfg, dir)
+	var selected sync.Map
+	oldResolver := newContainerdResolver
+	newContainerdResolver = func(socket, namespace string) (containerdConnection, error) {
+		if socket != cfg.Containerd.Socket || namespace != cfg.Containerd.Namespace {
+			return nil, fmt.Errorf("unexpected containerd resolver %s/%s", socket, namespace)
+		}
+		return &fakeContainerd{verify: func(ctx context.Context, containerID, sandboxID, digest string) error {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			actual, exists := selected.Load(containerID)
+			if sandboxID != pod.Id || !exists || actual != digest {
+				return fmt.Errorf("selected image mismatch for %s/%s", sandboxID, containerID)
+			}
+			return nil
+		}}, nil
+	}
+	t.Cleanup(func() { newContainerdResolver = oldResolver })
 	if !cfg.Measure.RTMR3 || cfg.Allowlist.Pull.MeasurePolicies || !cfg.PullEnabled() {
 		t.Fatal("prepared policy must measure workloads and poll CDS")
 	}
@@ -187,6 +205,9 @@ func runPodBootstrap(t *testing.T, cfg *config, root string, podKey []byte, base
 		if len(response.GetAdjust().GetMounts()) != 0 {
 			t.Fatalf("container %s received guest service mounts: %v", ctr.Name, response.GetAdjust().GetMounts())
 		}
+		// The NRI runtime fixture commits the selected image before Start.
+		// Containerd content/snapshot verification has separate RPC coverage.
+		selected.Store(ctr.Id, extractDigest(ctr.Annotations[annotationImageName]))
 		if err := nri.StartContainer(ctx, &api.StartContainerRequest{Pod: pod, Container: ctr}); err != nil {
 			t.Fatalf("start %s: %v", ctr.Name, err)
 		}
@@ -232,15 +253,28 @@ func runPodBootstrap(t *testing.T, cfg *config, root string, podKey []byte, base
 	if err := guest.Commit(first, func() error { return nil }); err != nil {
 		t.Fatal(err)
 	}
+	if scenario == "forged container names" {
+		for i, name := range []string{workloadclaims.CertContainerName, workloadclaims.SecretContainerName, workloadclaims.VolumeContainerName, workloadclaims.AttestContainerName} {
+			ctr := podBootstrapContainer(pod, fmt.Sprintf("forged-%d", i), name, baseDigest)
+			if _, err := nri.CreateContainer(ctx, &api.CreateContainerRequest{Pod: pod, Container: ctr}); err == nil {
+				t.Fatalf("undeclared container %s obtained guest admission", name)
+			}
+		}
+		if _, err := guest.Snapshot(ctx); err == nil {
+			t.Fatal("broker asserted identity after an undeclared container request")
+		}
+		return
+	}
 	// This start completes while the first pull is still blocked.
 	create("base", "app", baseDigest)
 	published := false
 	if err := guest.Commit(first, func() error { published = true; return nil }); err == nil || published {
 		t.Fatal("credential publication accepted the snapshot from before workload admission")
 	}
-	unknown := podBootstrapContainer(pod, "unknown", "unknown", pushDigestC)
+	unknown := podBootstrapContainer(pod, "unknown", "unknown", baseDigest)
+	unknown.Mounts = append(unknown.Mounts, readOnlyBind("/unlisted-host-content", "/unlisted"))
 	if _, err := nri.CreateContainer(ctx, &api.CreateContainerRequest{Pod: pod, Container: unknown}); err == nil {
-		t.Fatal("unlisted workload admitted during first pull")
+		t.Fatal("undeclared host mount admitted during first pull")
 	}
 	if _, err := guest.Snapshot(ctx); err == nil {
 		t.Fatal("bootstrap broker asserted identity with an unresolved pre-ready creation refusal")
@@ -248,6 +282,9 @@ func runPodBootstrap(t *testing.T, cfg *config, root string, podKey []byte, base
 	create("unknown-initial-retry", "unknown", baseDigest)
 	if _, err := guest.Snapshot(ctx); err != nil {
 		t.Fatalf("bootstrap broker did not recover after that same name was admitted: %v", err)
+	}
+	if _, err := nri.CreateContainer(ctx, &api.CreateContainerRequest{Pod: pod, Container: podBootstrapContainer(pod, "served-before-pull", "served", pushDigestB)}); err == nil {
+		t.Fatal("a staged image pin bypassed the allowlist before its first pull")
 	}
 	release()
 	healthClient := unixHealthClient(filepath.Join(dir, "health.sock"))
@@ -265,11 +302,8 @@ func runPodBootstrap(t *testing.T, cfg *config, root string, podKey []byte, base
 		})
 	}
 	waitHealth(0)
-	for i, name := range []string{workloadclaims.CertContainerName, workloadclaims.SecretContainerName, workloadclaims.VolumeContainerName, workloadclaims.AttestContainerName} {
-		create(fmt.Sprintf("forged-%d", i), name, baseDigest)
-	}
 	for _, destination := range []string{workloadclaims.SidecarSocketDir, workloadclaims.CDSPinsPath, workloadclaims.CDSAddressPath} {
-		ctr := podBootstrapContainer(pod, "forged-mount", workloadclaims.CertContainerName, baseDigest)
+		ctr := podBootstrapContainer(pod, "forged-mount", "app", baseDigest)
 		ctr.Mounts = append(ctr.Mounts, readOnlyBind(cfg.WorkloadClaims.SocketDir, destination))
 		if _, err := nri.CreateContainer(ctx, &api.CreateContainerRequest{Pod: pod, Container: ctr}); err == nil {
 			t.Fatalf("forged container gained a guest bind at %s", destination)
@@ -289,7 +323,7 @@ func runPodBootstrap(t *testing.T, cfg *config, root string, podKey []byte, base
 	create("cached", "cached", pushDigestB)
 	create("base-after-pull", "app", baseDigest)
 	// A transient Create refusal is lifted only by admitting that same name.
-	create("mount-now-admitted", workloadclaims.CertContainerName, baseDigest)
+	create("mount-now-admitted", "app", baseDigest)
 	claims, err := guest.Snapshot(ctx)
 	if err != nil || len(claims.Containers) < 3 || !slices.Equal(claims.RuntimeExtensions, []string{meshDigest, baseDigest, pushDigestB}) {
 		t.Fatalf("complete broker snapshot = %+v, %v", claims, err)

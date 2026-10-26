@@ -908,6 +908,20 @@ verifier trusts it only as far as it replays against a quote's RTMR[3]:
 The list is read after the quote is produced, so it may hold extends the
 quote does not. Verifiers use the longest prefix that replays.
 
+### Pod image binding
+
+Guest preparation stages each init and application container's pinned image
+digest from the signed Pod, together with the injected endpoint's measured
+pin, keyed by container name. Pod admission uses this map without resolving
+mutable image names. On every NRI start callback, before measurement or an
+admission record, the plugin reads the pinned manifest or index by digest and
+checks containerd's saved CRI configuration digest and active snapshot's parent
+layer chain against it. This binds the selected configuration and filesystem
+to the staged pin. Verification has a five-second deadline and bounded
+metadata and content reads; missing, malformed, mismatched or over-limit
+evidence returns an admission error without measurement or a new history
+entry.
+
 ## Bootstrap
 
 The chart renders the seed (`--allowlist-seed`) from the resolved component

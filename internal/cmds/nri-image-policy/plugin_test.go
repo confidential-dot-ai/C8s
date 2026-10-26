@@ -74,8 +74,18 @@ func TestCredentialMountRefusalBlocksIdentityUntilSameNameAdmission(t *testing.T
 // test that reaches containerd without arranging for it names the call it made.
 type fakeContainerd struct {
 	resolve func(ctx context.Context, imageRef string) (string, error)
+	verify  func(ctx context.Context, containerID, sandboxID, digest string) error
 	stop    func(ctx context.Context, containerID string) error
 }
+
+func (f *fakeContainerd) VerifyContainerImage(ctx context.Context, containerID, sandboxID, digest string) error {
+	if f.verify == nil {
+		panic("unexpected container image verification")
+	}
+	return f.verify(ctx, containerID, sandboxID, digest)
+}
+
+func (f *fakeContainerd) Close() error { return nil }
 
 func (f *fakeContainerd) Resolve(ctx context.Context, imageRef string) (string, error) {
 	if f.resolve == nil {

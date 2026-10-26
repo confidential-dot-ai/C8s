@@ -1,6 +1,7 @@
 package nriimagepolicy_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -89,6 +90,13 @@ func podRoleInputs(t *testing.T, platform string) (string, *launchconfig.Documen
 	}
 	write(launchconfig.Dir+"/peers.json", policy)
 	write(launchconfig.Dir+"/cds.json", policy)
+	containers := []string{}
+	for _, name := range []string{"app", "unknown"} {
+		containers = append(containers, fmt.Sprintf(`{"name":%q,"image":"busybox@%s"}`, name, podImageDigest))
+	}
+	for _, name := range []string{"served", "cached"} {
+		containers = append(containers, fmt.Sprintf(`{"name":%q,"image":"busybox@%s"}`, name, nriimagepolicy.PodBootstrapServedDigest))
+	}
 	doc := &launchconfig.Document{
 		Role:                 launchconfig.Pod,
 		Server:               launchconfig.ServerConfig{Address: "10.1.2.3", OperatorPublicKey: serverKey},
@@ -97,7 +105,7 @@ func podRoleInputs(t *testing.T, platform string) (string, *launchconfig.Documen
 		Node:                 launchconfig.Node{Name: "p-pod"},
 		Workloads:            `{"schema":"c8s.allowlist/v1","workloads":{"app":{"containers":[{"digest":"` + podImageDigest + `","command":{"policy":"any"},"args":{"policy":"any"}}]}}}`,
 		Pod: &launchconfig.PodSpec{UID: "u1", Namespace: "tenant", Name: "app",
-			Manifest: `{"apiVersion":"v1","kind":"Pod","metadata":{"name":"app","namespace":"tenant","uid":"u1"},"spec":{"containers":[{"name":"app","image":"busybox"}]}}`},
+			Manifest: `{"apiVersion":"v1","kind":"Pod","metadata":{"name":"app","namespace":"tenant","uid":"u1"},"spec":{"containers":[` + strings.Join(containers, ",") + `]}}`},
 	}
 	return root, doc
 }

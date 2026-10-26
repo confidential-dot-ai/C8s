@@ -21,6 +21,8 @@ var (
 // MeshImageDigest is the mesh endpoint image the rendered fixture bakes.
 const MeshImageDigest = meshImageDigest
 
+const PodBootstrapServedDigest = pushDigestB
+
 func SandboxModeOf(c *config) sandboxMode { return c.sandboxMode() }
 
 // AdmitsCreation runs the creation hook of a plugin built from cfg for an
@@ -42,6 +44,9 @@ func AdmitsCreation(cfg *config, namespace, image, digest string) error {
 	p.SetReady()
 	pod := sandboxedPod()
 	pod.Namespace = namespace
+	if cfg.Pod != nil {
+		pod.Name = cfg.Pod.Name
+	}
 	// A pod CVM's static pod carries no service account token, and a
 	// workload entry without a mounts policy admits platform mounts only.
 	ctr := sandboxedContainer()

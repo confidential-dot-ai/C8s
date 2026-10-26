@@ -63,7 +63,7 @@ func podDocument(t *testing.T) *launchconfig.Document {
 	doc.Node.Name = "p-pod"
 	doc.Workloads = podWorkloads
 	doc.Pod = &launchconfig.PodSpec{UID: "u1", Namespace: "tenant", Name: "app",
-		Manifest: `{"apiVersion":"v1","kind":"Pod","metadata":{"name":"app","namespace":"tenant","uid":"u1"},"spec":{"containers":[{"name":"app","image":"busybox"}]}}`}
+		Manifest: `{"apiVersion":"v1","kind":"Pod","metadata":{"name":"app","namespace":"tenant","uid":"u1"},"spec":{"containers":[{"name":"app","image":"busybox@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]}}`}
 	return doc
 }
 
@@ -199,6 +199,64 @@ func TestPreparePodUsesGuestUpstreamDNS(t *testing.T) {
 			}
 			if pod.Spec.DNSPolicy != corev1.DNSDefault || pod.Spec.DNSConfig != nil {
 				t.Fatalf("prepared DNS policy = %q, config = %+v", pod.Spec.DNSPolicy, pod.Spec.DNSConfig)
+			}
+		})
+	}
+}
+
+func TestPreparePodStagesImagesForInitSidecarsAndApplications(t *testing.T) {
+	root := preparePodRoot(t)
+	doc := podDocument(t)
+	initPin := "sha256:" + strings.Repeat("c", 64)
+	sidecarPin := "sha256:" + strings.Repeat("a", 64)
+	doc.Pod.Manifest = strings.Replace(doc.Pod.Manifest, `"containers":[`,
+		`"initContainers":[{"name":"setup","image":"repo@`+initPin+`"},{"name":"native-sidecar","image":"repo@`+sidecarPin+`","restartPolicy":"Always"}],"containers":[`, 1)
+	if err := preparePodFixture(root, doc); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, nriPolicyPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var staged struct {
+		Pod struct {
+			Images map[string]string `yaml:"images"`
+		} `yaml:"pod"`
+	}
+	if err := yaml.Unmarshal(data, &staged); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"app":                            "sha256:" + strings.Repeat("b", 64),
+		"setup":                          initPin,
+		"native-sidecar":                 sidecarPin,
+		workloadclaims.MeshContainerName: "sha256:" + strings.Repeat("d", 64),
+	}
+	if !reflect.DeepEqual(staged.Pod.Images, want) {
+		t.Fatalf("staged image pins = %v, want %v", staged.Pod.Images, want)
+	}
+}
+
+func TestPreparePodRefusesIncompleteImageBindingsBeforePublication(t *testing.T) {
+	for _, tc := range []struct{ name, containers string }{
+		{"missing name", `{"image":"repo@sha256:` + strings.Repeat("b", 64) + `"}`},
+		{"invalid name", `{"name":"../app","image":"repo@sha256:` + strings.Repeat("b", 64) + `"}`},
+		{"duplicate name", `{"name":"app","image":"repo@sha256:` + strings.Repeat("b", 64) + `"},{"name":"app","image":"repo@sha256:` + strings.Repeat("c", 64) + `"}`},
+		{"mutable tag", `{"name":"app","image":"repo:latest"}`},
+		{"missing image", `{"name":"app"}`},
+		{"noncanonical digest", `{"name":"app","image":"repo@sha256:` + strings.Repeat("A", 64) + `"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := preparePodRoot(t)
+			doc := podDocument(t)
+			doc.Pod.Manifest = `{"apiVersion":"v1","kind":"Pod","metadata":{"name":"app","namespace":"tenant","uid":"u1"},"spec":{"containers":[` + tc.containers + `]}}`
+			if err := preparePodFixture(root, doc); err == nil {
+				t.Fatal("incomplete image identity was staged")
+			}
+			for _, name := range []string{nriPolicyPath, podManifestPath} {
+				if _, err := os.Stat(filepath.Join(root, name)); !os.IsNotExist(err) {
+					t.Fatalf("published %s from an incomplete image binding: %v", name, err)
+				}
 			}
 		})
 	}

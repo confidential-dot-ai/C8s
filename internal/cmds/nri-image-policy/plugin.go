@@ -155,6 +155,7 @@ func (s *policyStore) rolledBack(version uint64) bool {
 // *Resolver satisfies it.
 type containerdOps interface {
 	Resolve(ctx context.Context, imageRef string) (string, error)
+	VerifyContainerImage(ctx context.Context, containerID, sandboxID, digest string) error
 	StopContainer(ctx context.Context, containerID string) error
 }
 
@@ -1051,18 +1052,27 @@ func (p *plugin) checkExisting(ctx context.Context, cfg *config, pods []*api.Pod
 	}
 	var killed, failed int
 	for _, ctr := range ctrs {
-		// Recorded ahead of the lookup that can skip it; the record needs no pod.
 		imageRef := ctr.GetAnnotations()[annotationImageName]
 		pod := podByID[ctr.GetPodSandboxId()]
-		if p.inventory != nil && ctr.GetState() == api.ContainerState_CONTAINER_STOPPED {
-			p.inventory.stop(ctr.GetId())
+		unreconstructable := cfg.Pod != nil
+		if cfg.Pod != nil {
+			// Current runtime metadata cannot reconstruct the complete history
+			// required by a Pod identity after a plugin restart.
+			_ = p.denyContainer(ctr.GetPodSandboxId(), errors.New("cannot reconstruct Pod admission history from existing containers"))
+		} else {
+			// Node inventory records even containers without a known sandbox.
+			if p.inventory != nil && ctr.GetState() == api.ContainerState_CONTAINER_STOPPED {
+				p.inventory.stop(ctr.GetId())
+			}
+			p.recordForInventory(ctx, pod, ctr, imageRef)
 		}
-		p.recordForInventory(ctx, pod, ctr, imageRef)
 		if pod == nil {
 			continue
 		}
-		if verdict, _ := p.checkContainer(ctx, cfg, pod, ctr, imageRef); verdict != verdictDeny {
-			continue
+		if !unreconstructable {
+			if verdict, _ := p.checkContainer(ctx, cfg, pod, ctr, imageRef); verdict != verdictDeny {
+				continue
+			}
 		}
 		// A running container in an exempt namespace is never killed: stopping a
 		// platform container (kube-proxy, CoreDNS) can cut the node. A snapshot
@@ -1099,6 +1109,7 @@ func (p *plugin) checkExisting(ctx context.Context, cfg *config, pods []*api.Pod
 // RunDeferredCheck checks the pods/containers that were seen during Synchronize
 // before the plugin was ready. Should be called after SetReady and CDS init.
 func (p *plugin) RunDeferredCheck(ctx context.Context) {
+	defer p.lockPodAdmission()()
 	cfg := p.cfg
 
 	if !p.shouldCheckExisting() {
@@ -1153,7 +1164,11 @@ func (p *plugin) admitWhileInitializing(ctx context.Context, cfg *config, pod *a
 // Nothing is added to the admission history until that final check.
 func (p *plugin) CreateContainer(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) (*api.ContainerAdjustment, []*api.ContainerUpdate, error) {
 	defer p.lockPodAdmission()()
-	verdict, reason := p.checkContainerPhase(ctx, p.cfg, pod, ctr, ctr.GetAnnotations()[annotationImageName], launchPreliminary)
+	imageRef, err := p.containerImage(pod, ctr)
+	if err != nil {
+		return nil, nil, p.denyContainerCreation(pod.GetId(), ctr.GetName(), err)
+	}
+	verdict, reason := p.checkContainerPhase(ctx, p.cfg, pod, ctr, imageRef, launchPreliminary)
 	if verdict == verdictDeny && p.cfg.Policy.Mode != ModeAudit {
 		if !p.Ready() {
 			refusal := fmt.Errorf("image policy plugin initializing: %s", reason)
@@ -1179,9 +1194,15 @@ func (p *plugin) StartContainer(ctx context.Context, pod *api.PodSandbox, ctr *a
 	defer p.lockPodAdmission()()
 	ctx = withResolved(ctx)
 	cfg := p.cfg
-	imageRef := ctr.GetAnnotations()[annotationImageName]
+	imageRef, err := p.containerImage(pod, ctr)
+	if err != nil {
+		return p.denyContainer(pod.GetId(), err)
+	}
 	var credentialSource string
 	if cfg.Pod != nil {
+		if err := p.containerd.VerifyContainerImage(ctx, ctr.GetId(), pod.GetId(), imageRef); err != nil {
+			return p.denyContainer(pod.GetId(), fmt.Errorf("verify selected Pod image: %w", err))
+		}
 		mounts := p.observedMounts(pod, ctr)
 		launch := p.observedLaunch(ctx, ctr, imageRef, containerEnv(ctr), mounts)
 		role := p.roleOf(launch)
@@ -1366,7 +1387,10 @@ func injectedCredentialSidecar(pod *api.PodSandbox, ctr *api.Container) bool {
 // classifies them, so a declaration that pins a mount set is matched here too.
 // StartContainer re-reads the same fields from the final spec.
 func (p *plugin) measuredRole(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) string {
-	imageRef := ctr.GetAnnotations()[annotationImageName]
+	imageRef, err := p.containerImage(pod, ctr)
+	if err != nil {
+		return ""
+	}
 	return p.roleOf(p.observedLaunch(ctx, ctr, imageRef, containerEnv(ctr), p.observedMounts(pod, ctr)))
 }
 

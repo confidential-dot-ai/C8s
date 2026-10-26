@@ -47,6 +47,15 @@ var (
 	allowlistApiInitialDelay = 2 * time.Second
 )
 
+type containerdConnection interface {
+	containerdOps
+	Close() error
+}
+
+var newContainerdResolver = func(socket, namespace string) (containerdConnection, error) {
+	return ctrdresolver.NewResolver(socket, namespace)
+}
+
 var (
 	errInitialAllowlistNotModified = errors.New("initial allowlist fetch returned not modified without a cached CDS allowlist")
 	errInitialAllowlistNil         = errors.New("initial allowlist fetch returned nil allowlist")
@@ -127,7 +136,7 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 		"socket", cfg.Containerd.Socket,
 		"namespace", cfg.Containerd.Namespace,
 	)
-	resolver, err := ctrdresolver.NewResolver(cfg.Containerd.Socket, cfg.Containerd.Namespace)
+	resolver, err := newContainerdResolver(cfg.Containerd.Socket, cfg.Containerd.Namespace)
 	if err != nil {
 		return fmt.Errorf("create containerd resolver: %w", err)
 	}

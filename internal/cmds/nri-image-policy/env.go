@@ -22,13 +22,17 @@ func (p *plugin) ValidateContainerAdjustment(ctx context.Context, req *api.Valid
 		return fmt.Errorf("missing container or sandbox in NRI validation")
 	}
 	ctr, env := adjustedLaunchContainer(req)
+	imageRef, err := p.containerImage(req.GetPod(), ctr)
+	if err != nil {
+		return p.denyContainerCreation(req.GetPod().GetId(), ctr.GetName(), err)
+	}
 	mounts := p.adjustedMounts(req, ctr)
 	// The gate runs ahead of the admission check and independently of
 	// policy.mode: a protected pod's container runs only once it is verified.
 	if err := p.gateMesh(ctx, req, ctr, env, mounts); err != nil {
 		return p.denyContainer(req.GetPod().GetId(), err)
 	}
-	verdict, reason := p.checkContainerObserved(ctx, p.cfg, req.GetPod(), ctr, ctr.GetAnnotations()[annotationImageName], launchFinal, env, mounts)
+	verdict, reason := p.checkContainerObserved(ctx, p.cfg, req.GetPod(), ctr, imageRef, launchFinal, env, mounts)
 	if verdict == verdictDeny && p.cfg.Policy.Mode != ModeAudit {
 		return p.denyContainerCreation(req.GetPod().GetId(), ctr.GetName(), fmt.Errorf("%s", reason))
 	}
@@ -45,7 +49,11 @@ func (p *plugin) gateMesh(ctx context.Context, req *api.ValidateContainerAdjustm
 	if !p.mesh.hosts(pod) {
 		return nil
 	}
-	launch := p.observedLaunch(ctx, ctr, ctr.GetAnnotations()[annotationImageName], env, mounts)
+	imageRef, err := p.containerImage(pod, ctr)
+	if err != nil {
+		return err
+	}
+	launch := p.observedLaunch(ctx, ctr, imageRef, env, mounts)
 	adjusted := req.GetAdjust().GetLinux()
 	// The role, and the mount set a declaration pins, are read from the mounts
 	// the pod itself asks for: a credential client of any pod also carries the

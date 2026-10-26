@@ -44,9 +44,10 @@ type config struct {
 // podConfig is the signed identity the guest preparation stages. Runtime UID
 // and sandbox identity come independently from NRI, never from this document.
 type podConfig struct {
-	UID       string `yaml:"uid"`
-	Namespace string `yaml:"namespace"`
-	Name      string `yaml:"name"`
+	UID       string            `yaml:"uid"`
+	Namespace string            `yaml:"namespace"`
+	Name      string            `yaml:"name"`
+	Images    map[string]string `yaml:"images"`
 }
 
 // measureConfig extends each started workload's image digest into RTMR[3]
@@ -508,7 +509,7 @@ func (c *config) validatePod() error {
 	if len(c.Mesh.Roles) != 1 || c.Mesh.Roles[0].Name != meshRole || c.Mesh.Roles[0].UID != workloadclaims.MeshUID || len(c.Mesh.Roles[0].Destinations) != 0 || c.Mesh.CredentialAttestationPort != 0 || c.WorkloadClaims.CDSNodePort != 0 {
 		return fmt.Errorf("the Pod broker requires only the mesh role and no Pod credential-client bypass")
 	}
-	return nil
+	return c.validatePodImages()
 }
 
 // validateMesh requires a mesh policy this node can enforce.

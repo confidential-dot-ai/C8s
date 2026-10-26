@@ -228,6 +228,11 @@ leave the last applied CDS policy in force. Neither source receives a node-TCB
 exemption. The pod role measures started images only and refuses a baked
 configuration that also enables `allowlist.pull.measure_policies`.
 
+Every init and application image in `pod.json` must pin a canonical SHA-256
+digest. The guest stages these pins by container name; see
+[Pod image binding](allowlist-and-capabilities.md#pod-image-binding) for the
+checks against containerd's selected image content.
+
 Every pod includes the image's measured mesh endpoint as its first native init
 sidecar. Admission requires the baked mesh policy and verified packet capture;
 omitting that policy cannot disable these checks. A guest-owned broker obtains

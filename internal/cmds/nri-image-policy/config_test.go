@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 // meshYAML is the mesh policy every enforcer configuration carries.
@@ -654,7 +655,8 @@ func TestPodRoleRefusesMeasurePolicies(t *testing.T) {
 	cfg.Allowlist.Pull.MeasurePolicies = false
 	cfg.Platform = "tdx"
 	cfg.Allowlist.Pull.CDSMeasurementsConfig = "/run/c8s-launch/cds.json"
-	cfg.Pod = &podConfig{UID: "assigned", Namespace: "tenant", Name: "app"}
+	cfg.Pod = &podConfig{UID: "assigned", Namespace: "tenant", Name: "app", Images: map[string]string{workloadclaims.MeshContainerName: pushDigestB, "app": pushDigestA}}
+	cfg.Allowlist.Base = roleBase(t, pushDigestB, meshRole, []string{"/mesh"})
 	cfg.Mesh.Pod = &podMeshPolicy{}
 	cfg.Mesh.Roles = cfg.Mesh.Roles[:1]
 	cfg.Mesh.ExemptNamespaces = nil

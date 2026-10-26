@@ -7,14 +7,17 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/distribution/reference"
 	"gopkg.in/yaml.v3"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/util/validation"
 	kubeyaml "sigs.k8s.io/yaml"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
 	"github.com/confidential-dot-ai/c8s/internal/podmesh"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/types"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
@@ -68,6 +71,10 @@ func preparePod(rootDir string, d *launchconfig.Document, outputs map[string][]b
 	if err := podmesh.InjectEndpoint(pod, image); err != nil {
 		return fmt.Errorf("pod mesh endpoint: %w", err)
 	}
+	images, err := podImagePins(pod)
+	if err != nil {
+		return err
+	}
 	// Standalone Pods use the guest's upstream resolver configuration; they
 	// have no cluster DNS. Workload overrides cannot replace this measured
 	// networking contract or direct DNS to a guest-local service.
@@ -108,7 +115,7 @@ func preparePod(rootDir string, d *launchconfig.Document, outputs map[string][]b
 	policy["exempt_namespaces"] = []string{}
 	delete(policy, "exempt_snapshot_path")
 	// Kubelet suffixes a static Pod's name with its signed guest hostname.
-	floor["pod"] = map[string]any{"uid": d.Pod.UID, "namespace": d.Pod.Namespace, "name": d.Pod.Name + "-" + d.Node.Name}
+	floor["pod"] = map[string]any{"uid": d.Pod.UID, "namespace": d.Pod.Namespace, "name": d.Pod.Name + "-" + d.Node.Name, "images": images}
 	policy["sandbox"] = "enforce"
 	// Measure every started workload into RTMR[3], on top of the launch-key
 	// seed the initrd extended from operator-pubkey's exact bytes, into the
@@ -148,6 +155,33 @@ func preparePod(rootDir string, d *launchconfig.Document, outputs map[string][]b
 		}
 	}
 	return nil
+}
+
+// podImagePins binds every runtime container name to its signed or baked image.
+func podImagePins(pod *corev1.Pod) (map[string]string, error) {
+	images := make(map[string]string, len(pod.Spec.InitContainers)+len(pod.Spec.Containers))
+	for _, container := range slices.Concat(pod.Spec.InitContainers, pod.Spec.Containers) {
+		if len(validation.IsDNS1123Label(container.Name)) != 0 {
+			return nil, fmt.Errorf("pod container %q has no valid name", container.Name)
+		}
+		if _, exists := images[container.Name]; exists {
+			return nil, fmt.Errorf("pod container name %q is duplicated", container.Name)
+		}
+		named, err := reference.ParseNormalizedNamed(container.Image)
+		if err != nil {
+			return nil, fmt.Errorf("pod container %q image: %w", container.Name, err)
+		}
+		canonical, ok := named.(reference.Canonical)
+		if !ok {
+			return nil, fmt.Errorf("pod container %q image must pin a canonical digest", container.Name)
+		}
+		digest, err := types.ParseDigest(canonical.Digest().String())
+		if err != nil || digest.String() != canonical.Digest().String() {
+			return nil, fmt.Errorf("pod container %q image must pin a canonical sha256 digest", container.Name)
+		}
+		images[container.Name] = digest.String()
+	}
+	return images, nil
 }
 
 // podMeshPolicy keeps the measured mesh binding and packet-capture inputs.
