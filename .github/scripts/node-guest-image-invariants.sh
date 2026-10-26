@@ -534,10 +534,11 @@ if grep -qE 'joindata|defaulting to server|set_legacy_server_role' "$role_sh"; t
   exit 1
 fi
 
-# Only attestation access, node inventory, credential release and volume
-# opening remain host services. Core application lifecycle belongs to the
-# baked Kubernetes chart, which refuses the volumed DaemonSet on a baked node.
-for service in attest-proxy nri-node-ip cred-release volumed; do
+# Only attestation access, node inventory, credential release, volume opening
+# and attested enrollment remain host services. Core application lifecycle
+# belongs to the baked Kubernetes chart, which refuses the volumed DaemonSet on
+# a baked node.
+for service in attest-proxy nri-node-ip cred-release volumed c8s-join c8s-join-release; do
   require_launch_dependency "$units/$service.service"
   if ! grep -qxF "enable $service.service" "$preset"; then
     echo "::error::$preset must enable $service.service"
@@ -556,6 +557,58 @@ if ! grep -qF 'ExecStart=/usr/local/bin/c8s volumed --socket-dir=/run/nri-image-
 fi
 if ! grep -qF 'ExecStart=/usr/local/bin/c8s attest-proxy ' "$units/attest-proxy.service"; then
   echo "::error::host attestation access must retain its fixed proxy entrypoint"
+  exit 1
+fi
+
+# Attested enrollment replaces launch-media join credentials: the agent unit
+# gates rke2-agent on a released token, the release unit serves only agents
+# the signed document authorizes, and neither may depend on the mesh or
+# kubelet, which need RKE2 first.
+join_unit="$units/c8s-join.service"
+release_unit="$units/c8s-join-release.service"
+for setting in 'ConditionPathExists=/run/confos/role-agent' 'Type=oneshot' \
+               'RemainAfterExit=yes' 'StartLimitIntervalSec=0' \
+               'Restart=on-failure' 'RestartSec=5' \
+               'ExecStart=/usr/local/bin/c8s node-services join'; do
+  grep -qxF "$setting" "$join_unit" || { echo "::error::$join_unit lost enrollment gate: $setting"; exit 1; }
+done
+if ! grep -qE '^Requires=.*c8s-join[.]service' "$units/rke2-agent.service.d/20-role.conf" \
+   || ! grep -qE '^After=.*c8s-join[.]service' "$units/rke2-agent.service.d/20-role.conf"; then
+  echo "::error::RKE2 agent must require and start after the enabled enrollment gate"
+  exit 1
+fi
+for enrollment_unit in "$join_unit" "$release_unit"; do
+  if ! grep -qE '^Requires=.*attestation-api[.]service' "$enrollment_unit" \
+     || ! grep -qE '^After=.*attestation-api[.]service' "$enrollment_unit"; then
+    echo "::error::$enrollment_unit must require and start after local attestation"
+    exit 1
+  fi
+  if grep -qE '^(After|Requires|Wants)=.*(armtls-mesh|cds[.]|kubelet)' "$enrollment_unit"; then
+    echo "::error::$enrollment_unit must be independent of the mesh, CDS and kubelet"
+    exit 1
+  fi
+done
+if ! grep -qxF 'ConditionPathExists=/run/confos/launch/agents.json' "$release_unit" \
+   || ! grep -qxF 'ExecStart=/usr/local/bin/c8s join-release \' "$release_unit" \
+   || ! grep -qF -- '--platform=${CRED_PLATFORM}' "$release_unit" \
+   || ! grep -qF -- '--measurements-config /run/confos/launch/agents.json' "$release_unit" \
+   || ! grep -qF -- '--measured-policies-file /run/nri-image-policy/measured-policies' "$release_unit" \
+   || ! grep -qF -- '--launch-config /run/confos/launch/config.json' "$release_unit" \
+   || ! grep -qF -- '--node-password-key /run/confos/rke2-node-password-key' "$release_unit" \
+   || ! grep -qF 'c8s-join-release.service.d/10-platform.conf' "$ngi/c8s/mkosi.sync" \
+   || ! grep -qE '^After=.*rke2-server[.]service' "$release_unit"; then
+  echo "::error::join release must wait for the server and require authorized agents"
+  exit 1
+fi
+# The agent stages the released node password where RKE2 reads it.
+if ! grep -qE '^ReadWritePaths=.*/etc/rancher( |$)' "$join_unit"; then
+  echo "::error::$join_unit must be able to stage the node password under /etc/rancher"
+  exit 1
+fi
+# Launch media is public policy: nothing under the profile may stage or
+# expect an RKE2 credential from the signed document.
+if grep -rqE 'serverToken|agentToken|nodePassword|rke2-server-token' "$ngi/c8s/mkosi.extra" "$role_sh"; then
+  echo "::error::the measured image must not consume RKE2 credentials from launch media"
   exit 1
 fi
 

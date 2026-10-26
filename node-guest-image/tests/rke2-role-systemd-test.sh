@@ -93,8 +93,11 @@ EOF
 done
 
 # Application services are Kubernetes workloads. These host services retain
-# the authenticated launch dependency before any pod can start.
-core_units=(attest-proxy.service cred-release.service nri-node-ip.service)
+# the authenticated launch dependency before any pod can start. Attested
+# enrollment gates the agent on a released credential and the server on an
+# authorized agent policy, both selected by launch staging, not the media.
+core_units=(attest-proxy.service cred-release.service nri-node-ip.service
+    c8s-join.service c8s-join-release.service)
 
 for unit in "${core_units[@]}"; do
     install -D -m644 "$SOURCE_UNITS/$unit" "/etc/systemd/system/$unit"
@@ -114,6 +117,12 @@ payload_units=(rke2-server.service rke2-agent.service "${core_units[@]}")
 active() { systemctl is-active --quiet "$1"; }
 not_active() { ! active "$1"; }
 cond_skipped() { [[ $(systemctl show -p ConditionResult --value "$1") == no ]]; }
+# Host services each role must run; every other core unit must be skipped by
+# its own condition. Stated here rather than derived from the units under test.
+declare -A role_units=(
+    [server]="attest-proxy.service cred-release.service nri-node-ip.service c8s-join-release.service"
+    [agent]="attest-proxy.service nri-node-ip.service c8s-join.service"
+)
 boot_roles() { systemctl start "${payload_units[@]}"; }
 scenario_reset() {
     systemctl stop "${payload_units[@]}" rke2-role.service attestation-api.service apparmor-enforce.service >/dev/null 2>&1 || true
@@ -155,14 +164,34 @@ for role in server agent; do
     ok "$skipped inactive" not_active "$skipped"
     ok "$skipped condition skipped" cond_skipped "$skipped"
     for unit in "${core_units[@]}"; do
-        if [[ $role == agent ]] && grep -qF 'ConditionPathExists=/run/confos/role-server' "$SOURCE_UNITS/$unit"; then
-            ok "$unit inactive on agent" not_active "$unit"
-            ok "$unit condition skipped on agent" cond_skipped "$unit"
-        else
+        if [[ " ${role_units[$role]} " == *" $unit "* ]]; then
             ok "$unit active on $role" active "$unit"
+        else
+            ok "$unit inactive on $role" not_active "$unit"
+            ok "$unit condition skipped on $role" cond_skipped "$unit"
         fi
     done
 done
+
+CASE=boot-server-no-agents
+scenario_reset
+launch_media server
+: > "$C8S_ROLE_FIXTURE/no-agents"
+: > /dev/disk/by-label/opkeydata
+ok "server without authorized agents boots" boot_roles
+ok "no agent policy staged" test ! -e /run/confos/launch/agents.json
+ok "join release inactive without agents" not_active c8s-join-release.service
+ok "join release condition skipped" cond_skipped c8s-join-release.service
+ok "server still active" active rke2-server.service
+
+CASE=agent-enrollment-gate
+scenario_reset
+launch_media agent
+: > /dev/disk/by-label/opkeydata
+ok "agent boots" boot_roles
+ok "enrollment active" active c8s-join.service
+systemctl stop c8s-join.service
+ok "agent stops with its enrollment gate" not_active rke2-agent.service
 
 for scenario in missing-launch invalid-signature prepare-failure; do
     CASE="boot-$scenario"

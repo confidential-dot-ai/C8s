@@ -11,6 +11,8 @@ enable gpu-cc-enforce.service
 enable scratch-enforce.service
 enable c8s-modules-latch.service
 enable rke2-role.service
+enable c8s-join-release.service
+enable c8s-join.service
 enable rke2-server.service
 enable rke2-agent.service
 enable systemd-timesyncd.service

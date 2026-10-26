@@ -8,7 +8,7 @@ func TestNodeServicesOnlyExposesBootstrapCommands(t *testing.T) {
 		t.Fatalf("node-services command: %v", err)
 	}
 	children := cmd.Commands()
-	if len(children) != 2 || children[0].Name() != "node-ip" || children[1].Name() != "prepare" {
+	if len(children) != 3 || children[0].Name() != "join" || children[1].Name() != "node-ip" || children[2].Name() != "prepare" {
 		t.Fatalf("unexpected node-service dispatch: %v", children)
 	}
 	for _, child := range children {
