@@ -37,6 +37,9 @@ func NewCmd() *cobra.Command {
 			if err := validateARMTLSPlatformFlag(cfg.armtlsPlatform); err != nil {
 				return err
 			}
+			if err := validateNodeTokenFlags(cmd.Flags(), cfg); err != nil {
+				return err
+			}
 			return run(cfg)
 		},
 	}

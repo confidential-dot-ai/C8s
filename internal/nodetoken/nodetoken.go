@@ -26,6 +26,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -76,8 +77,12 @@ type Issuer struct {
 // New validates cfg and generates the issuer's signing key.
 func New(cfg Config) (*Issuer, error) {
 	u, err := url.Parse(cfg.URL)
-	if err != nil || u.Scheme != "https" || u.Host == "" || u.RawQuery != "" || u.Fragment != "" || u.User != nil {
-		return nil, fmt.Errorf("node token issuer %q must be an https URL with a host and no query, fragment or user", cfg.URL)
+	// The discovery document and keys are served at the root, and the serving
+	// certificate carries only a DNS name, so a path (even "/", which would
+	// double the slash in jwks_uri) or an IP-literal host leaves the API server
+	// unable to check the tokens.
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.Path != "" || u.RawPath != "" || u.RawQuery != "" || u.Fragment != "" || u.User != nil || net.ParseIP(u.Hostname()) != nil {
+		return nil, fmt.Errorf("node token issuer %q must be an https URL with a DNS host and no path, query, fragment or user", cfg.URL)
 	}
 	if len(cfg.Audiences) == 0 {
 		return nil, errors.New("node token issuer needs at least one audience")

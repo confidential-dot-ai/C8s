@@ -16,11 +16,13 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/c8s/internal/attestation"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/nodetoken"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/spf13/pflag"
 )
 
 // NodeTokenHandler serves POST /node-token: a node of a hosted cluster proves
@@ -53,6 +55,13 @@ func (h NodeTokenHandler) HandleNodeToken(w http.ResponseWriter, r *http.Request
 	if len(req.RuntimeExtensions) > 0 && !req.Evidence.Platform.HasRegisters() {
 		attestation.WriteError(w, http.StatusUnprocessableEntity, types.ErrorCodeInvalidRequest,
 			"runtime_extensions requires evidence from a platform with runtime measurement registers")
+		return
+	}
+	if !h.pinsWholeImage(req.Evidence.Platform) {
+		// The node's launch measurement pins only its firmware here, so any
+		// image on it would pass; refused before the challenge is spent.
+		attestation.WriteError(w, http.StatusForbidden, types.ErrorCodeMeasurementDenied,
+			"node tokens for TDX nodes need an image policy or --rtmrs on this CDS")
 		return
 	}
 	nodeKey, err := parseNodeKey(req.NodeKey)
@@ -107,6 +116,17 @@ func (h NodeTokenHandler) HandleNodeToken(w http.ResponseWriter, r *http.Request
 	json.NewEncoder(w).Encode(types.NodeTokenResponse{Token: token, ExpiresAt: expires})
 }
 
+// pinsWholeImage says whether the node pins hold a node on platform to its
+// whole image: image pins always do, and launch measurements do on a platform
+// without runtime measurement registers. On TDX a measurement covers only the
+// firmware, so RTMR pins must cover the kernel and command line.
+func (h NodeTokenHandler) pinsWholeImage(platform teetypes.PlatformType) bool {
+	if len(h.Attest.Images) > 0 {
+		return true
+	}
+	return !platform.HasRegisters() || len(h.Attest.RTMRs) > 0
+}
+
 // parseNodeKey reads a node key: a P-256 ECDSA public key, PKIX DER in base64.
 func parseNodeKey(s string) (*ecdsa.PublicKey, error) {
 	der, err := base64.StdEncoding.DecodeString(s)
@@ -124,11 +144,31 @@ func parseNodeKey(s string) (*ecdsa.PublicKey, error) {
 	return key, nil
 }
 
+// nodeTokenIssuerFlags are the flags that only mean something with
+// --node-token-issuer.
+var nodeTokenIssuerFlags = []string{"node-token-audience", "node-token-cluster", "node-token-ttl", "node-token-listen"}
+
+// validateNodeTokenFlags refuses a --node-token-* flag set without
+// --node-token-issuer: CDS would start with /node-token unrouted and log
+// nothing about it.
+func validateNodeTokenFlags(flags *pflag.FlagSet, cfg config) error {
+	if cfg.nodeTokenIssuer != "" {
+		return nil
+	}
+	for _, name := range nodeTokenIssuerFlags {
+		if flags.Changed(name) {
+			return fmt.Errorf("--%s requires --node-token-issuer", name)
+		}
+	}
+	return nil
+}
+
 // newNodeTokenIssuer builds the node token issuer and its discovery listener's
 // TLS identity from the --node-token-* flags, or nothing when
-// --node-token-issuer is empty. nodesPinned says whether /attest's node pins
-// hold a node to a whole image: image pins, or launch measurements with RTMR
-// pins, since on TDX a measurement alone pins only the firmware.
+// --node-token-issuer is empty. nodesPinned says whether /attest pins nodes at
+// all: image pins or launch measurements. On TDX a measurement alone pins only
+// the firmware, so HandleNodeToken also refuses a TDX node unless RTMR pins
+// are set; SNP's measurement covers the whole image.
 func newNodeTokenIssuer(cfg config, nodesPinned bool) (*nodetoken.Issuer, *nodetoken.Serving, error) {
 	if cfg.nodeTokenIssuer == "" {
 		return nil, nil, nil
@@ -142,7 +182,7 @@ func newNodeTokenIssuer(cfg config, nodesPinned bool) (*nodetoken.Issuer, *nodet
 		// /attest tolerates unpinned nodes in development; a node token makes
 		// its holder a node of the cluster, which schedules workloads on it,
 		// so any genuine TEE running any image must not get one.
-		return nil, nil, errors.New("--node-token-issuer requires node pins: an image policy, or --measurements with --rtmrs")
+		return nil, nil, errors.New("--node-token-issuer requires node pins: an image policy or --measurements (with --rtmrs for TDX nodes)")
 	}
 	issuer, err := nodetoken.New(nodetoken.Config{
 		URL:       cfg.nodeTokenIssuer,

@@ -311,7 +311,7 @@ func run(cfg config) error {
 		slog.Warn("NOT serving /secrets: any workload depending on a secret will fail to start", "reason", why)
 	}
 
-	nodesPinned := len(pinned.Images) > 0 || (len(measurements) > 0 && len(rtmrPins) > 0)
+	nodesPinned := len(pinned.Images) > 0 || len(measurements) > 0
 	nodeTokens, nodeTokenServing, err := newNodeTokenIssuer(cfg, nodesPinned)
 	if err != nil {
 		return err
