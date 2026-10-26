@@ -228,7 +228,7 @@ func verifyOnline(att *Attestation, pub crypto.PublicKey, policy *VerifyPolicy, 
 
 // mapVerifyError translates remote verdict sentinels onto this package's error
 // surface, which callers match with errors.Is. An attestation-api refusal of
-// the evidence (400, 413, 415, 422) is terminal and maps to [ErrInvalidReport];
+// the evidence (400, 415, 422) is terminal and maps to [ErrInvalidReport];
 // transport failures and every other status stay unwrapped, as retryable or as
 // a deployment fault that is not the peer's.
 func mapVerifyError(family TEEType, err error) error {
@@ -257,10 +257,10 @@ func mapVerifyError(family TEEType, err error) error {
 
 // rejectsRequest reports whether a status names what was sent: the
 // attestation-api answers evidence verdicts and body rejections with these
-// alone. 401, 403 and 404 point at the deployment, not the peer.
+// alone. 401, 403 and 404 point at the deployment, not the peer, and so does
+// 413, which an ingress body limit answers in JSON too.
 func rejectsRequest(status int) bool {
 	return status == http.StatusBadRequest ||
-		status == http.StatusRequestEntityTooLarge ||
 		status == http.StatusUnsupportedMediaType ||
 		status == http.StatusUnprocessableEntity
 }

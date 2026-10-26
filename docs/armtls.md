@@ -210,7 +210,7 @@ Verification failures map to typed sentinels (`errors.go`):
 the key was not generated in that TEE), `ErrPolicyViolation` (a policy pin not
 met), `ErrNoAttestation`, `ErrInvalidReport`, `ErrUnsupportedTEE` — the
 last three re-exported from attestation-go/armtls. An attestation-api refusal of
-the evidence (a 400, 413, 415 or 422 in its JSON envelope) maps to
+the evidence (a 400, 415 or 422 in its JSON envelope) maps to
 `ErrInvalidReport` and is terminal; every other status, a non-JSON body and
 transport errors stay unwrapped, as retryable or as a verifier deployment
 fault.

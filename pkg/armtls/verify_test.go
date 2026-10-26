@@ -73,7 +73,7 @@ func TestMapVerifyError(t *testing.T) {
 		{"api 400", &remote.APIError{Status: 400}, ErrInvalidReport},
 		{"api 422", &remote.APIError{Status: 422}, ErrInvalidReport},
 		{"wrapped api 422", fmt.Errorf("verify: %w", &remote.APIError{Status: 422}), ErrInvalidReport},
-		{"api 413", &remote.APIError{Status: 413}, ErrInvalidReport},
+		{"api 413", &remote.APIError{Status: 413}, nil},
 		{"api 415", &remote.APIError{Status: 415}, ErrInvalidReport},
 		{"api 401", &remote.APIError{Status: 401}, nil},
 		{"api 403", &remote.APIError{Status: 403}, nil},

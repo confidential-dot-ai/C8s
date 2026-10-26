@@ -42,7 +42,7 @@ var (
 
 	// ErrInvalidReport indicates a structurally invalid attestation report
 	// (e.g., wrong size for the platform, truncated, or corrupt), or evidence
-	// the attestation-api refused with 400, 413, 415 or 422. Either is
+	// the attestation-api refused with 400, 415 or 422. Either is
 	// terminal: resending the same evidence cannot succeed. Its refusals do not
 	// say which check failed, so they cannot claim [ErrPolicyViolation].
 	ErrInvalidReport = agarmtls.ErrInvalidReport
