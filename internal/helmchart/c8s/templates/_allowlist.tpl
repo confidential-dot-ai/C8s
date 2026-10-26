@@ -243,7 +243,8 @@
 {{/* The exact mount rules for one container. containerd resolves symlinks
      in a hostPath source, so a source under /var/run, a symlink to /run on
      some nodes and not on others, has no single spelling the node reports:
-     host paths must name /run. */ -}}
+     host paths must name /run. With bind, an emptyDir or data rule names
+     the pod volume behind it, which only a measured base may carry. */ -}}
 {{- define "c8s.mountRules" -}}
 {{- $rules := list -}}
 {{- $seen := dict -}}
@@ -265,11 +266,13 @@
 {{- if $m.readOnly -}}{{- $_ := set $rule "readOnly" true -}}{{- end -}}
 {{- else if hasKey $v "emptyDir" -}}
 {{- $rule = dict "destination" $dest "kind" "emptyDir" -}}
+{{- if $.bind -}}{{- $_ := set $rule "source" (toString $m.name) -}}{{- end -}}
 {{- else if or (hasKey $v "configMap") (hasKey $v "secret") (hasKey $v "projected") (hasKey $v "downwardAPI") (hasKey $v "persistentVolumeClaim") -}}
 {{- if not (hasPrefix "/mnt/c8s-data/" $dest) -}}
 {{- fail (printf "%s mounts a ConfigMap, Secret or PVC at %q: data volumes must sit under /mnt/c8s-data/" $where $dest) -}}
 {{- end -}}
 {{- $rule = dict "destination" $dest "kind" "data" -}}
+{{- if $.bind -}}{{- $_ := set $rule "source" (toString $m.name) -}}{{- end -}}
 {{- else -}}
 {{- fail (printf "%s has a volume source the allowlist cannot pin" $where) -}}
 {{- end -}}
@@ -279,8 +282,8 @@
 {{- end -}}
 
 {{/* The shapes of the sidecars the webhook injects with the C8s image
-     (internal/webhook): each pinned to its invocation with args open, since
-     the SAN and file paths are per pod, to a fixed mount table, and to the
+     (internal/webhook): each pinned to its invocation with the arguments of
+     c8s.injectedArgs, to a fixed mount table, and to the
      env names getCertEnv gives it, matched present since they differ per
      pod. The discovery mount is optional, so each combination is its own
      shape. The plugin's own inventory socket mount
@@ -298,7 +301,7 @@
 {{- range $mode := include "c8s.injectedModes" . | fromJsonArray -}}
 {{- $env := include "c8s.componentEnv" (dict "imageEnv" $.imageEnv "container" (dict "env" (get $envs $mode)) "where" (printf "injected %s" $mode)) | fromJson -}}
 {{- range $t := get $tables $mode -}}
-{{- $out = append $out (dict "digest" $.digest "image" $.image "command" (dict "policy" "exact" "argv" (list "/c8s" $mode)) "args" (dict "policy" "any") "mounts" (dict "policy" "exact" "rules" $t) "env" $env) -}}
+{{- $out = append $out (dict "digest" $.digest "image" $.image "command" (dict "policy" "exact" "argv" (list "/c8s" $mode)) "args" (get (include "c8s.injectedArgs" $ | fromJson) $mode) "mounts" (dict "policy" "exact" "rules" $t) "env" $env) -}}
 {{- end -}}
 {{- end -}}
 {{ $out | toJson }}
@@ -308,6 +311,33 @@
      their shapes are rendered. */ -}}
 {{- define "c8s.injectedModes" -}}
 {{ list "get-cert" "probe-file" "get-secret" "get-volume" | toJson }}
+{{- end -}}
+
+{{/* The argument rules of the credential clients the webhook injects, as
+     JSON mode -> rule. The cert-wait gate's arguments are the webhook's
+     constant (internal/webhook certWaitContainer); the clients carry the
+     pod's SAN, secrets and volumes, so their arguments are open. */ -}}
+{{- define "c8s.injectedArgs" -}}
+{{- $any := dict "policy" "any" -}}
+{{ dict "get-cert" $any "probe-file" (dict "policy" "exact" "argv" (list "--wait" "--timeout=3m0s" "/etc/c8s/certs/tls.crt")) "get-secret" $any "get-volume" $any | toJson }}
+{{- end -}}
+
+{{/* The rules of a role container's exact mount table with the webhook's
+     own volume named at its certificate and secrets destinations
+     (internal/webhook CertVolumeName, secretsVolume), as JSON. The webhook
+     refuses a pod's own mount of those volumes, not another memory volume at
+     the same destination, so only the base's role grants name them: a served
+     entry binds no volume. Takes the rules. */ -}}
+{{- define "c8s.bindInjectedVolumes" -}}
+{{- $volumes := dict "/etc/c8s/certs" "c8s-certs" "/run/c8s/secrets" "c8s-secrets" -}}
+{{- $out := list -}}
+{{- range $r := . -}}
+{{- with get $volumes (get $r "destination") -}}
+{{- $r = merge (dict "source" .) $r -}}
+{{- end -}}
+{{- $out = append $out $r -}}
+{{- end -}}
+{{ $out | toJson }}
 {{- end -}}
 
 {{/* The mount tables of the credential clients the webhook injects, as JSON
@@ -522,6 +552,9 @@
 {{- range $c := (get $entry "containers") -}}
 {{- with include "c8s.platformRole" (dict "root" $ "argv" (concat (get (get $c "command") "argv" | default list) (get (get $c "args") "argv" | default list))) -}}
 {{- $c = merge (dict "role" .) $c -}}
+{{- if and (eq . "credentials") (eq (get (get $c "mounts") "policy") "exact") -}}
+{{- $c = merge (dict "mounts" (dict "policy" "exact" "rules" (include "c8s.bindInjectedVolumes" (get (get $c "mounts") "rules") | fromJsonArray))) $c -}}
+{{- end -}}
 {{- end -}}
 {{- $tagged = append $tagged $c -}}
 {{- end -}}
@@ -647,11 +680,12 @@ null
 {{- $argvs = list (dict "role" "mesh" "container" "c8s-mesh" "argv" (list "/app/c8s" "armtls-mesh")) -}}
 {{- else if eq $repository (include "c8s.imageRepository" $root.Values.image.repository) -}}
 {{- /* The credentials role is dropped from the workload match, so it is
-       granted only with the mount table the webhook gives the invocation;
+       granted only with the arguments and mount table the webhook gives the
+       invocation, its volumes named (c8s.bindInjectedVolumes);
        the router pod's allowlist proxy runs under its pinned entry alone. */ -}}
 {{- $tables := include "c8s.injectedMountTables" $root | fromJson -}}
 {{- range $mode := include "c8s.injectedModes" $root | fromJsonArray -}}
-{{- $argvs = append $argvs (dict "role" "credentials" "container" (get (dict "get-cert" "c8s-cert" "probe-file" "c8s-cert-wait") $mode | default "") "argv" (list "/c8s" $mode) "mounts" (get $tables $mode)) -}}
+{{- $argvs = append $argvs (dict "role" "credentials" "container" (get (dict "get-cert" "c8s-cert" "probe-file" "c8s-cert-wait") $mode | default "") "argv" (list "/c8s" $mode) "args" (get (include "c8s.injectedArgs" $root | fromJson) $mode) "mounts" (get $tables $mode)) -}}
 {{- end -}}
 {{- $argvs = append $argvs (dict "role" "credentials" "container" "allowlist-proxy" "argv" (list "/c8s" "allowlist-proxy") "mounts" list) -}}
 {{- $argvs = append $argvs (dict "role" "upstream" "container" "cds-attest" "argv" (list "/c8s" "cds-attest")) -}}
@@ -666,7 +700,7 @@ null
 {{- $containers := list -}}
 {{- if hasKey $a "mounts" -}}
 {{- range $t := get $a "mounts" -}}
-{{- $containers = append $containers (dict "digest" $digest "image" $image "role" (get $a "role") "command" (dict "policy" "exact" "argv" (get $a "argv")) "args" (dict "policy" "any") "mounts" (dict "policy" "exact" "rules" $t)) -}}
+{{- $containers = append $containers (dict "digest" $digest "image" $image "role" (get $a "role") "command" (dict "policy" "exact" "argv" (get $a "argv")) "args" (get $a "args" | default (dict "policy" "any")) "mounts" (dict "policy" "exact" "rules" (include "c8s.bindInjectedVolumes" $t | fromJsonArray))) -}}
 {{- end -}}
 {{- else -}}
 {{- $containers = list (dict "digest" $digest "image" $image "role" (get $a "role") "command" (dict "policy" "exact" "argv" (get $a "argv")) "args" (dict "policy" "any") "mounts" (dict "policy" "any")) -}}
@@ -701,7 +735,7 @@ null
 {{- end -}}
 {{- range $c := concat (default list $spec.initContainers) (default list $spec.containers) -}}
 {{- if eq (toString $c.name) $name -}}
-{{- include "c8s.mountRules" (dict "mounts" (default list $c.volumeMounts) "volumes" $volumes "where" (printf "router container %s" $name)) -}}
+{{- include "c8s.mountRules" (dict "mounts" (default list $c.volumeMounts) "volumes" $volumes "where" (printf "router container %s" $name) "bind" true) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}

@@ -105,18 +105,26 @@ func TestChartBaseGrantsInjectedRoles(t *testing.T) {
 			}
 			certs := pkgallowlist.ObservedMount{Destination: "/etc/c8s/certs", Volume: "c8s-certs", Class: pkgallowlist.MountEmptyDir, Storage: pkgallowlist.MountMemory}
 			scratch := pkgallowlist.ObservedMount{Destination: "/scratch", Volume: "scratch", Class: pkgallowlist.MountEmptyDir, Storage: pkgallowlist.MountUnknown}
-			probe := pkgallowlist.RunningContainer{
-				Digest: roleOperatorDigest,
-				Argv:   []string{"/c8s", "probe-file", "--wait", "/run/c8s/never-written"},
-				Mounts: []pkgallowlist.ObservedMount{certs},
-			}
+			gate := []string{"/c8s", "probe-file", "--wait", "--timeout=3m0s", "/etc/c8s/certs/tls.crt"}
+			// The webhook refuses a pod's own mount of c8s-certs, not of
+			// another memory volume at the same destination, so the grant
+			// names the volume.
+			own := pkgallowlist.ObservedMount{Destination: "/etc/c8s/certs", Volume: "own", Class: pkgallowlist.MountEmptyDir, Storage: pkgallowlist.MountMemory}
 			index := base.BuildIndex()
-			if got := index.RoleOf(probe); got != "credentials" {
-				t.Errorf("probe-file with the webhook's mounts holds the role %q, want credentials", got)
-			}
-			probe.Mounts = append(probe.Mounts, scratch)
-			if got := index.RoleOf(probe); got != "" {
-				t.Errorf("probe-file with a disk volume of the pod's own holds the role %q, want none", got)
+			for _, tc := range []struct {
+				name   string
+				argv   []string
+				mounts []pkgallowlist.ObservedMount
+				want   string
+			}{
+				{"the webhook's gate", gate, []pkgallowlist.ObservedMount{certs}, "credentials"},
+				{"a disk volume of the pod's own beside", gate, []pkgallowlist.ObservedMount{certs, scratch}, ""},
+				{"a memory volume of the pod's own at the certificate destination", gate, []pkgallowlist.ObservedMount{own}, ""},
+			} {
+				probe := pkgallowlist.RunningContainer{Digest: roleOperatorDigest, Argv: tc.argv, Mounts: tc.mounts}
+				if got := index.RoleOf(probe); got != tc.want {
+					t.Errorf("probe-file with %s holds the role %q, want %q", tc.name, got, tc.want)
+				}
 			}
 
 			// A role never travels on the wire (pkg/allowlist drops it from
