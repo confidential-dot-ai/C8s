@@ -101,6 +101,26 @@ func TestNewCmdValidation(t *testing.T) {
 		}
 	})
 
+	t.Run("hostile node is refused", func(t *testing.T) {
+		err := execCmd(t,
+			"--node", "10.0.0.5:6443\n    insecure-skip-tls-verify: true",
+			"--operator-key", "k.pem", "--image-manifest", "m.json", "--out", "kc")
+		if err == nil || !strings.Contains(err.Error(), "is not an IP or host name") {
+			t.Fatalf("want --node refusal, got %v", err)
+		}
+	})
+
+	t.Run("IPv6 node fills URLs", func(t *testing.T) {
+		err := execCmd(t,
+			"--node", "::1",
+			"--operator-key", filepath.Join(t.TempDir(), "nope.key"),
+			"--image-manifest", filepath.Join(t.TempDir(), "m.json"),
+			"--out", filepath.Join(t.TempDir(), "kc"))
+		if err == nil || !strings.Contains(err.Error(), "read operator key") {
+			t.Fatalf("want read-key error from Run, got %v", err)
+		}
+	})
+
 	t.Run("node fills URLs", func(t *testing.T) {
 		// A nonexistent operator key makes Run fail at its first step, which
 		// proves --node satisfied the URL validation and Run was reached.
@@ -160,6 +180,39 @@ func TestNewCmdEndToEnd(t *testing.T) {
 				if !strings.Contains(string(kc), want) {
 					t.Errorf("kubeconfig missing %q", want)
 				}
+			}
+		})
+	}
+}
+
+func TestURLHost(t *testing.T) {
+	for _, tc := range []struct {
+		name, node, want string
+		wantErr          bool
+	}{
+		{name: "IPv4", node: "10.0.0.5", want: "10.0.0.5"},
+		{name: "IPv6", node: "fd00::5", want: "fd00::5"},
+		{name: "bracketed IPv6", node: "[fd00::5]", want: "fd00::5"},
+		{name: "host name", node: "cvm.example", want: "cvm.example"},
+		{name: "port", node: "cvm.example:6443", wantErr: true},
+		{name: "empty port", node: "cvm.example:", wantErr: true},
+		{name: "path", node: "cvm.example/x", wantErr: true},
+		{name: "userinfo", node: "u@cvm.example", wantErr: true},
+		{name: "query", node: "cvm.example?x", wantErr: true},
+		{name: "escape", node: "cvm%2eexample", wantErr: true},
+		{name: "newline", node: "10.0.0.5\n  insecure-skip-tls-verify: true", wantErr: true},
+		{name: "space", node: "cvm example", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := urlHost(tc.node)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("urlHost(%q) = %q, want error", tc.node, got)
+				}
+				return
+			}
+			if err != nil || got != tc.want {
+				t.Fatalf("urlHost(%q) = %q, %v; want %q", tc.node, got, err, tc.want)
 			}
 		})
 	}
