@@ -114,9 +114,14 @@
 #                                    steps and can reach the node's sandbox
 #                                    inventory and its local attestation service
 #   requester_request <ns> <pod> <method> <url> [body-file] [unix-socket]
-#                                    send the request as the requester; prints
-#                                    the status (000 when nothing answered),
-#                                    then the body
+#                                    send the request from inside the
+#                                    requester's pod; prints the status (000
+#                                    when nothing answered), then the body
+#   cds_pod_request <method> <route> [body-file] [authorization] [client-cert] [client-key] [header...]
+#                                    send the request to the CDS from here on
+#                                    a member requester's behalf, whose own
+#                                    TCP to the CDS the node drops; as
+#                                    cds_request prints
 #   cds_pod_url                      the CDS address a pod's requester dials
 #   cds_service_url                  the CDS address a requester dials with its
 #                                    own address as the request's source
@@ -526,6 +531,8 @@ cds_request() {
     url="$(cds_url)" || return
     http_request "$url" "$@"
 }
+# The same address serves a member requester's requests from here.
+cds_pod_request() { cds_request "$@"; }
 
 router_request() {
     local url

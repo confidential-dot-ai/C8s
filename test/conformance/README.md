@@ -136,8 +136,9 @@ node's sandbox inventory and local attestation service over the socket
 directory the admission plugin binds into it. It runs in the namespace the
 mesh exempts where the backend has one (`exempt_namespace`), outside the
 mesh, where the inventory signs no token for it; where the backend has none,
-it runs in the scenario's namespace as a mesh member, the inventory signs for
-its sandbox, and the backend sends its CDS requests from outside the pod,
+or once a scenario asks the inventory for a token, it runs in the scenario's
+namespace as a mesh member, the inventory signs for its sandbox, and the
+backend sends its CDS requests from outside the pod (`cds_pod_request`),
 since the node drops a member pod's own TCP to the CDS. The backend also fetches
 evidence over chosen report data, and says whether the CDS checks its
 signature: the steps edit its launch measurement into evidence that does not

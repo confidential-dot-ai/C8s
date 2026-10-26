@@ -33,7 +33,8 @@ import (
 // the attest body and any forged token are built here, so the requester can
 // present what a well-behaved one never would. Outside the mesh its own pod
 // address is the source address the CDS sees; as a mesh member
-// (requester.member) its CDS requests leave from the backend instead.
+// (requester.member), which the node's inventory signs a sandbox token for,
+// its CDS requests leave from the backend instead.
 func registerRequester(sc *godog.ScenarioContext) {
 	sc.Step(`^a requester "([^"]*)" on node "([^"]*)"$`, requesterOnNode)
 	sc.Step(`^"([^"]*)" holds a key$`, requesterHoldsAKey)
@@ -85,10 +86,12 @@ type requester struct {
 	pod  *pod
 	node string
 	addr string
-	// member: the backend has no namespace the mesh exempts, so the pod is a
-	// mesh member in the scenario's namespace, whose inventory signs for it
-	// and whose CDS requests the backend sends from outside the pod; otherwise
-	// it is outside the mesh and sends them itself.
+	// member: the pod is a mesh member in the scenario's namespace, because
+	// the backend has no namespace the mesh exempts or because the scenario
+	// asked the node's inventory for a token, which it signs for a member
+	// alone; its CDS requests the backend sends from outside the pod.
+	// Otherwise it is outside the mesh and sends them itself, so its own
+	// address is the source the CDS sees.
 	member bool
 	key    *ecdsa.PrivateKey
 	// The current challenge and the one before it, raw bytes.
@@ -143,17 +146,16 @@ func (w *world) requester(name string) (*requester, error) {
 
 // requesterOnNode admits the requester's image, deploys the pod and checks
 // that it can reach the CDS, so a scenario fails here, with the pod's view,
-// rather than at its first request. A member pod reaches the CDS only from
-// its credential client, so the requester runs in a namespace the mesh
-// exempts where the backend has one, and as a member where it has none
+// rather than at its first request. The requester runs in a namespace the
+// mesh exempts where the backend has one, so that its own address is the
+// source the CDS sees, and as a mesh member where it has none
 // (requester.member).
 func requesterOnNode(ctx context.Context, name, node string) error {
 	w := getWorld(ctx)
 	if _, ok := w.issuance.requesters[name]; ok {
 		return fmt.Errorf("a requester %q is already on a node", name)
 	}
-	k8sNode, err := w.node(node)
-	if err != nil {
+	if _, err := w.node(node); err != nil {
 		return err
 	}
 	if _, ok := w.entries["requester"]; !ok {
@@ -168,10 +170,22 @@ func requesterOnNode(ctx context.Context, name, node string) error {
 	if err != nil {
 		return err
 	}
-	p := w.describe(name, ref)
-	err = w.elsewhere(p, "exempt_namespace")
-	member := errors.Is(err, godog.ErrSkip)
-	if err != nil && !member {
+	r := &requester{pod: w.describe(name, ref), node: node}
+	err = w.elsewhere(r.pod, "exempt_namespace")
+	r.member = errors.Is(err, godog.ErrSkip)
+	if err != nil && !r.member {
+		return err
+	}
+	w.issuance.requesters[name] = r
+	return w.deployRequester(r)
+}
+
+// deployRequester applies the requester's pod where it is placed, waits for
+// it to run and checks that it reaches the CDS and holds the node's sockets.
+func (w *world) deployRequester(r *requester) error {
+	p := r.pod
+	k8sNode, err := w.node(r.node)
+	if err != nil {
 		return err
 	}
 	manifest, err := w.be.call("requester_manifest", p.name, p.namespace, k8sNode)
@@ -189,8 +203,8 @@ func requesterOnNode(ctx context.Context, name, node string) error {
 	if len(st) == 0 || !st[0].running {
 		// A member's container waits on the injected credential client's
 		// first leaf, so what the CDS told that client is the likely cause.
-		msg := fmt.Sprintf("the requester %q is not running after %s; denials: %s; its containers: %+v", name, observe, denials(st), st)
-		if member {
+		msg := fmt.Sprintf("the requester %q is not running after %s; denials: %s; its containers: %+v", p.name, observe, denials(st), st)
+		if r.member {
 			msg += "; its credential client logged: " + tail(w.certLog(p), 5)
 		}
 		return errors.New(msg)
@@ -199,18 +213,13 @@ func requesterOnNode(ctx context.Context, name, node string) error {
 	if err != nil {
 		return err
 	}
-	r := &requester{pod: p, node: node, addr: strings.TrimSpace(addr), member: member}
-	w.issuance.requesters[name] = r
-	url, err := w.requesterCDSURL()
-	if err != nil {
-		return err
-	}
-	status, _, err := w.relay(r, "GET", url+"/healthz", nil, "")
+	r.addr = strings.TrimSpace(addr)
+	status, _, err := w.relay(r, "GET", "/healthz", nil, "")
 	if err != nil {
 		return err
 	}
 	if status != 200 {
-		return fmt.Errorf("harness: the requester %q got %d from %s/healthz", name, status, url)
+		return fmt.Errorf("harness: the requester %q got %d from the CDS's /healthz", p.name, status)
 	}
 	// The pod's own view, which a member's healthz, sent from the backend,
 	// does not give: the node's sockets are bound into it.
@@ -219,18 +228,46 @@ func requesterOnNode(ctx context.Context, name, node string) error {
 		return err
 	}
 	if !strings.Contains(sockets, filepath.Base(inventorySocket)) {
-		return fmt.Errorf("harness: the socket directory of the requester %q holds no %s:\n%s", name, filepath.Base(inventorySocket), sockets)
+		return fmt.Errorf("harness: the socket directory of the requester %q holds no %s:\n%s", p.name, filepath.Base(inventorySocket), sockets)
 	}
 	return nil
 }
 
-// relay sends a request as the requester: from inside its pod, or, for a
-// member's requests to the CDS, from where the backend reaches the CDS
-// (requester_request).
-func (w *world) relay(r *requester, method, url string, body []byte, socket string) (int, []byte, error) {
+// joinMesh redeploys a requester that stands outside the mesh as a member,
+// in the scenario's namespace, where the node's inventory asserts for it.
+// Its key and challenge stay: the challenge is the CDS's, bound to no pod.
+func (w *world) joinMesh(r *requester) error {
+	p := r.pod
+	if _, err := kubectl(nil, "-n", p.namespace, "delete", "pod", p.name, "--ignore-not-found", "--wait=false"); err != nil {
+		return err
+	}
+	p.namespace, p.name, p.deployed = w.namespace, strings.TrimSuffix(p.name, "-"+w.suffix()), false
+	r.member = true
+	return w.deployRequester(r)
+}
+
+// relay sends a request as the requester: to a node socket, from inside its
+// pod; to a CDS route, from inside its pod at the address a requester dials
+// or, for a member, whose own TCP to the CDS the node drops, from where the
+// backend reaches the CDS (cds_pod_request).
+func (w *world) relay(r *requester, method, route string, body []byte, socket string) (int, []byte, error) {
 	var out string
 	send := func(bodyFile string) (err error) {
-		args := []string{r.pod.namespace, r.pod.name, method, url}
+		if socket == "" && r.member {
+			args := []string{method, route}
+			if bodyFile != "" {
+				args = append(args, bodyFile)
+			}
+			out, err = w.be.call("cds_pod_request", args...)
+			return err
+		}
+		url := "http://localhost"
+		if socket == "" {
+			if url, err = w.requesterCDSURL(); err != nil {
+				return err
+			}
+		}
+		args := []string{r.pod.namespace, r.pod.name, method, url + route}
 		if bodyFile != "" {
 			args = append(args, bodyFile)
 		}
@@ -251,7 +288,7 @@ func (w *world) relay(r *requester, method, url string, body []byte, socket stri
 	}
 	status, _, resp, err := statusLine(out)
 	if err != nil {
-		return 0, nil, fmt.Errorf("the requester %q could not send %s %s: %q", r.pod.name, method, url, out)
+		return 0, nil, fmt.Errorf("the requester %q could not send %s %s: %q", r.pod.name, method, route, out)
 	}
 	return status, resp, nil
 }
@@ -277,11 +314,7 @@ func requestsChallenge(ctx context.Context, issued, requested string) error {
 	if err != nil {
 		return err
 	}
-	url, err := w.requesterCDSURL()
-	if err != nil {
-		return err
-	}
-	status, body, err := w.relay(r, "POST", url+"/authenticate", []byte("{}"), "")
+	status, body, err := w.relay(r, "POST", "/authenticate", []byte("{}"), "")
 	if err != nil {
 		return err
 	}
@@ -612,9 +645,9 @@ func requestsLeaf(ctx context.Context, name, withToken string) error {
 	return w.attest(r, body)
 }
 
-// requesterCDSURL is where a requester dials the CDS: the address an
-// injected client dials, unless IP SAN binding needs the requester's own
-// address as the request's source.
+// requesterCDSURL is where a requester outside the mesh dials the CDS: the
+// address an injected client dials, unless IP SAN binding needs the
+// requester's own address as the request's source.
 func (w *world) requesterCDSURL() (string, error) {
 	if w.issuance.sourceBound {
 		return w.be.call("cds_service_url")
@@ -624,11 +657,7 @@ func (w *world) requesterCDSURL() (string, error) {
 
 // attest sends an attest body and records what the CDS answered.
 func (w *world) attest(r *requester, body []byte) error {
-	url, err := w.requesterCDSURL()
-	if err != nil {
-		return err
-	}
-	status, resp, err := w.relay(r, "POST", url+"/attest", body, "")
+	status, resp, err := w.relay(r, "POST", "/attest", body, "")
 	if err != nil {
 		return err
 	}
@@ -725,15 +754,17 @@ func holdsInventoryToken(ctx context.Context, name, node, otherKey string) error
 	if err != nil {
 		return err
 	}
-	status, resp, err := w.relay(r, "POST", "http://localhost/sandbox", body, inventorySocket)
+	// The inventory asserts only for a mesh member (workload identity B4),
+	// so a requester outside the mesh joins it first; its refusal is then
+	// the inventory's verdict on a member.
+	if !r.member {
+		if err := w.joinMesh(r); err != nil {
+			return err
+		}
+	}
+	status, resp, err := w.relay(r, "POST", "/sandbox", body, inventorySocket)
 	if err != nil {
 		return err
-	}
-	// The inventory asserts only for a mesh member (workload identity B4),
-	// which a requester outside the mesh is not; a member's refusal is the
-	// inventory's verdict on it.
-	if !r.member && status == 403 && strings.Contains(string(resp), "no assertion for this caller") {
-		return skipf("the inventory asserts no sandbox outside the mesh, where the requester runs: %s", resp)
 	}
 	if status != 200 {
 		return fmt.Errorf("the sandbox inventory answered %d: %s", status, resp)
