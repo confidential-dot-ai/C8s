@@ -228,8 +228,9 @@ func verifyOnline(att *Attestation, pub crypto.PublicKey, policy *VerifyPolicy, 
 
 // mapVerifyError translates remote verdict sentinels onto this package's error
 // surface, which callers match with errors.Is. An attestation-api refusal of
-// the evidence is terminal and maps to [ErrInvalidReport]; transport failures,
-// 408, 429 and 5xx stay unwrapped because retrying them can succeed.
+// the evidence (400, 413, 415, 422) is terminal and maps to [ErrInvalidReport];
+// transport failures and every other status stay unwrapped, as retryable or as
+// a deployment fault that is not the peer's.
 func mapVerifyError(family TEEType, err error) error {
 	var apiErr *remote.APIError
 	var unexpected *remote.UnexpectedError
@@ -238,11 +239,15 @@ func mapVerifyError(family TEEType, err error) error {
 		return ErrSignatureInvalid
 	case errors.Is(err, remote.ErrReportDataMismatch):
 		return fmt.Errorf("%w — key was not generated in this TEE", ErrKeyBinding)
-	case errors.Is(err, remote.ErrMeasurementNotAllowed), errors.Is(err, remote.ErrRegistersNotAllowed), errors.Is(err, remote.ErrAnchorNotAllowed):
+	case errors.Is(err, remote.ErrMeasurementNotAllowed), errors.Is(err, remote.ErrRegistersNotAllowed), errors.Is(err, remote.ErrAnchorNotAllowed),
+		errors.Is(err, remote.ErrMinTcbNotAllowed), errors.Is(err, remote.ErrPCRNotAllowed), errors.Is(err, remote.ErrInitDataMismatch),
+		errors.Is(err, remote.ErrPlatformMismatch):
 		return fmt.Errorf("%w: %v", ErrPolicyViolation, err)
+	case errors.Is(err, remote.ErrUnsupportedPlatform):
+		return fmt.Errorf("%w: %v", ErrUnsupportedTEE, err)
 	case errors.Is(err, remote.ErrInvalidLaunchDigest):
 		return fmt.Errorf("%w: %v", ErrInvalidReport, err)
-	case errors.As(err, &apiErr) && refusesEvidence(apiErr.Status):
+	case errors.As(err, &apiErr) && rejectsRequest(apiErr.Status):
 		return fmt.Errorf("%w: attestation-api refused the evidence (%d): %w", ErrInvalidReport, apiErr.Status, err)
 	// The api answers its own refusals in the JSON envelope, so a non-JSON body
 	// names the request rather than the evidence, and only where there is a
@@ -254,17 +259,12 @@ func mapVerifyError(family TEEType, err error) error {
 	}
 }
 
-// refusesEvidence reports whether a status names the evidence rather than the
-// service; 408 and 429 are availability.
-func refusesEvidence(status int) bool {
-	return status >= 400 && status < 500 &&
-		status != http.StatusRequestTimeout && status != http.StatusTooManyRequests
-}
-
-// rejectsRequest reports whether a status names what was sent. These are the
-// statuses axum's extractors reject a body with, outside the JSON envelope.
+// rejectsRequest reports whether a status names what was sent: the
+// attestation-api answers evidence verdicts and body rejections with these
+// alone. 401, 403 and 404 point at the deployment, not the peer.
 func rejectsRequest(status int) bool {
 	return status == http.StatusBadRequest ||
+		status == http.StatusRequestEntityTooLarge ||
 		status == http.StatusUnsupportedMediaType ||
 		status == http.StatusUnprocessableEntity
 }

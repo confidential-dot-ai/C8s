@@ -207,9 +207,11 @@ Step by step:
 
 Verification failures map to typed sentinels (`errors.go`):
 `ErrSignatureInvalid` (hardware chain), `ErrKeyBinding` (REPORTDATA mismatch —
-the key was not generated in that TEE), `ErrPolicyViolation` (measurement not
-allowlisted), `ErrNoAttestation`, `ErrInvalidReport`, `ErrUnsupportedTEE` — the
-last three re-exported from attestation-go/armtls.
+the key was not generated in that TEE), `ErrPolicyViolation` (a policy pin not
+met), `ErrNoAttestation`, `ErrInvalidReport`, `ErrUnsupportedTEE` — the
+last three re-exported from attestation-go/armtls. An attestation-api refusal of
+the evidence maps to `ErrInvalidReport` and is terminal; 408, 429, 5xx and
+transport errors stay unwrapped and retryable.
 
 ## The chain path: CDS issuance
 
