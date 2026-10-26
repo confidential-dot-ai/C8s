@@ -3,6 +3,8 @@ package getkubeconfig
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/url"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -59,11 +61,15 @@ func NewCmd() *cobra.Command {
 				node = addr
 			}
 			if node != "" {
+				host, err := urlHost(node)
+				if err != nil {
+					return err
+				}
 				if cfg.ReleaseBaseURL == "" {
-					cfg.ReleaseBaseURL = fmt.Sprintf("https://%s:8443", node)
+					cfg.ReleaseBaseURL = "https://" + net.JoinHostPort(host, "8443")
 				}
 				if cfg.APIServerURL == "" {
-					cfg.APIServerURL = fmt.Sprintf("https://%s:6443", node)
+					cfg.APIServerURL = "https://" + net.JoinHostPort(host, "6443")
 				}
 			}
 			if cfg.ReleaseBaseURL == "" || cfg.APIServerURL == "" {
@@ -89,4 +95,18 @@ func NewCmd() *cobra.Command {
 	f.DurationVar(&cfg.ReleaseWait, "release-wait", 2*time.Minute, "how long to retry refused connections to cred-release during attestation and credential release; 0 fails on the first refused dial")
 	cmd.MarkFlagsMutuallyExclusive("node", "vmi")
 	return cmd
+}
+
+// urlHost returns node as a bare host for net.JoinHostPort: an IP, a
+// bracketed IPv6 literal, or a name a URL carries unchanged. A port, path,
+// userinfo or escape would otherwise be spliced into both default URLs.
+func urlHost(node string) (string, error) {
+	if net.ParseIP(node) != nil {
+		return node, nil
+	}
+	u, err := url.Parse("https://" + node)
+	if err != nil || u.Hostname() == "" || (node != u.Hostname() && node != "["+u.Hostname()+"]") {
+		return "", fmt.Errorf("--node %q is not an IP or host name", node)
+	}
+	return u.Hostname(), nil
 }
