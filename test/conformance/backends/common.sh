@@ -150,6 +150,9 @@
 #                                    the filesystem type of the directory, as
 #                                    stat -f names it; fails while it is absent
 #   pod_sandbox_id <ns> <pod>        the runtime's sandbox ID of the pod
+#   secrets_explain <ns> <pod>       the CDS's account of a release decision for
+#                                    the pod's sandbox, as served; empty where
+#                                    the sandbox cannot be named
 #   relying_party <leaf-file> <ca-file> [verify flags...]
 #                                    the operator's verifier on a saved leaf;
 #                                    prints accepts or rejects, then on a
@@ -485,6 +488,19 @@ write_token() {
     shift
     bin="$(optoken_bin)" || return
     "$bin" "$key" "$@"
+}
+
+# The CDS's own account of a release decision for the pod's sandbox
+# (GET /secrets-explain/<id>, answered to the operator key), as the JSON it
+# serves. Empty where the backend cannot name the sandbox, so a step adds it
+# to a failure it did not expect without failing on its absence.
+secrets_explain() {
+    local id token url
+    id="$(pod_sandbox_id "$1" "$2" 2>/dev/null)" || return 0
+    [ -n "$id" ] || return 0
+    token="$(write_token operator GET "/secrets-explain/$id" /dev/null)" || return 0
+    url="$(cds_url)" || return 0
+    curl -sk --max-time 20 -H "Authorization: $token" "$url/secrets-explain/$id" 2>/dev/null || true
 }
 
 # Raw reads, so the steps see the document the CDS serves, as served.
