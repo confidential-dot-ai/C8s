@@ -215,3 +215,58 @@ func TestNewNodeTokenIssuer(t *testing.T) {
 		t.Fatal("issuer not built from the flags")
 	}
 }
+
+func TestNodeToken_TDXNeedsRTMRPinsWithoutImagePolicy(t *testing.T) {
+	stub := newStubAttestationApi(t, "deadbeef")
+	h := newTestNodeTokenHandler(t, stub.URL())
+	h.Attest.Measurements = map[string]bool{"deadbeef": true}
+	_, key := generateCSR(t)
+	challenge := issueChallenge(t, h.Attest)
+	tdx := teetypes.AttestationEvidence{Platform: "tdx", Evidence: json.RawMessage(`{"test":true}`)}
+
+	// A TDX launch measurement pins only the firmware, so the request is
+	// refused before the challenge is spent or the verifier called.
+	wantRefusal(t, postNodeToken(t, h, types.NodeTokenRequestBody{
+		Challenge: challenge, NodeKey: nodeKeyB64(t, key), Audience: testNodeTokenAudience, Evidence: tdx,
+	}), http.StatusForbidden, types.ErrorCodeMeasurementDenied)
+	if n := len(stub.VerifyRequests()); n != 0 {
+		t.Fatalf("/verify called %d times for a TDX node with no RTMR pins", n)
+	}
+	raw, err := base64.StdEncoding.DecodeString(challenge)
+	if err != nil || !h.Attest.Challenges.Consume(raw) {
+		t.Fatal("challenge spent on a refused TDX request")
+	}
+
+	// SEV-SNP's launch measurement covers the whole image.
+	if !h.pinsWholeImage("snp") {
+		t.Fatal("SNP node refused with launch measurement pins")
+	}
+	h.Attest.RTMRs = map[int][]byte{1: make([]byte, 48)}
+	if !h.pinsWholeImage("tdx") {
+		t.Fatal("TDX node refused with RTMR pins")
+	}
+}
+
+func TestValidateNodeTokenFlags(t *testing.T) {
+	for _, name := range nodeTokenIssuerFlags {
+		t.Run(name, func(t *testing.T) {
+			cmd := NewCmd()
+			value := "x"
+			if name == "node-token-ttl" {
+				value = "1m"
+			}
+			if err := cmd.Flags().Set(name, value); err != nil {
+				t.Fatal(err)
+			}
+			if err := validateNodeTokenFlags(cmd.Flags(), config{}); err == nil {
+				t.Fatalf("--%s accepted without --node-token-issuer", name)
+			}
+			if err := validateNodeTokenFlags(cmd.Flags(), config{nodeTokenIssuer: "https://cds.cl-1.example.test"}); err != nil {
+				t.Fatalf("--%s refused with --node-token-issuer: %v", name, err)
+			}
+		})
+	}
+	if err := validateNodeTokenFlags(NewCmd().Flags(), config{}); err != nil {
+		t.Fatalf("defaults refused: %v", err)
+	}
+}
