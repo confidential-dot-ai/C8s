@@ -9,7 +9,6 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/pem"
-	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -120,10 +119,6 @@ func (m *meshIdentity) bind(mode types.FrontDoorMode, xwingEK, xwingCT, sessionI
 	return transcriptHash, proof, nil
 }
 
-// errServingLeafRejected marks a serving leaf that parses but is not one this
-// front door may bind.
-var errServingLeafRejected = errors.New("serving leaf rejected")
-
 // bindServingLeaf is the attest-lb sibling of bind: it commits the exact outer
 // serving leaf alongside the mesh identity and signs that transcript. No
 // session key exists on this path — the TLS handshake itself proves possession
@@ -145,7 +140,7 @@ func (m *meshIdentity) bindServingLeaf(mode types.FrontDoorMode, serving *x509.C
 // sees, so only its validity window can be checked here.
 func checkACMEServingLeaf(serving *x509.Certificate) error {
 	if err := certutil.CheckValidity(serving, time.Now()); err != nil {
-		return fmt.Errorf("%w: acme serving leaf: %w", errServingLeafRejected, err)
+		return fmt.Errorf("acme serving leaf: %w", err)
 	}
 	return nil
 }

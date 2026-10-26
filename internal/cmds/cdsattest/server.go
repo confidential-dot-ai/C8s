@@ -592,15 +592,16 @@ func (s *Server) handleAttestLB(w http.ResponseWriter, r *http.Request) {
 	// the one credential load cannot race a get-cert rotation.
 	serving := identity.leaf
 	if s.cfg.FrontDoorMode == types.FrontDoorModeACME {
+		// Warn, not Error: both failures repeat on every request until
+		// renewal recovers, and a missing cert.pem is normal before the
+		// first ACME order completes. Renewal monitoring alerts on them.
 		if serving, err = s.servingLeaf(); err != nil {
-			s.log.Error("attest-lb binding unavailable", "error", err)
+			s.log.Warn("attest-lb binding unavailable", "error", err)
 			writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeBindingUnavailable,
 				"the serving certificate is unavailable; attest-lb cannot bind this connection")
 			return
 		}
 		if err := checkACMEServingLeaf(serving); err != nil {
-			// Warn, not Error: an expired leaf repeats on every request
-			// until renewal recovers, and renewal monitoring alerts on it.
 			s.log.Warn("attest-lb serving leaf rejected", "error", err, "not_after", serving.NotAfter)
 			writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeServingLeafRejected,
 				"the serving certificate is not one this front door may bind; attest-lb cannot bind this connection")

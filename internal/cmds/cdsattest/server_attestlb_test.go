@@ -170,6 +170,11 @@ func TestAttestLBServingLeafAdmission(t *testing.T) {
 		path, _ := writeTestServingLeaf(t)
 		return path
 	}
+	// Two hours ahead keeps NotBefore past LeafValiditySkew.
+	futureLeaf := func(t *testing.T, _ testMeshIdentity) string {
+		path, _ := writeTestServingLeafWithValidity(t, now.Add(2*time.Hour), now.Add(3*time.Hour))
+		return path
+	}
 	expiredLeaf := func(t *testing.T, _ testMeshIdentity) string {
 		path, _ := writeTestServingLeafWithValidity(t, now.Add(-2*time.Hour), now.Add(-time.Hour))
 		return path
@@ -197,6 +202,7 @@ func TestAttestLBServingLeafAdmission(t *testing.T) {
 		{name: "cds ignores expired mesh copy", mode: types.FrontDoorModeCDS, serving: expiredMeshCopy},
 		{name: "acme valid leaf", mode: types.FrontDoorModeACME, serving: otherLeaf},
 		{name: "acme expired leaf", mode: types.FrontDoorModeACME, serving: expiredLeaf, wantErr: types.ErrorCodeServingLeafRejected},
+		{name: "acme not-yet-valid leaf", mode: types.FrontDoorModeACME, serving: futureLeaf, wantErr: types.ErrorCodeServingLeafRejected},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			identity := writeTestMeshIdentity(t)
@@ -252,8 +258,7 @@ func TestAttestLBServingLeafAdmission(t *testing.T) {
 	}
 }
 
-// Only acme mode reads a separate serving leaf; any other mode reaching the
-// check fails closed.
+// readTestCertDER returns the DER of the first PEM block in path.
 func readTestCertDER(t *testing.T, path string) []byte {
 	t.Helper()
 	data, err := os.ReadFile(path)
