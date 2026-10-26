@@ -1208,7 +1208,10 @@ func (p *plugin) credentialMounts(ctx context.Context, pod *api.PodSandbox, ctr 
 			ctr.GetName(), workloadclaims.CredentialsUID, CredentialRole)
 	}
 	var mounts []*api.Mount
-	if servesInventory := p.inventory != nil; servesInventory {
+	// Only a socket consumer takes the socket directory: the node observes it
+	// as a platform mount there alone (isInjectedNodeMount), and another
+	// credential client, like the certificate gate, has no use for it.
+	if servesInventory := p.inventory != nil; servesInventory && injected {
 		mounts = append(mounts, readOnlyBind(p.cfg.WorkloadClaims.SocketDir, workloadclaims.SidecarSocketDir))
 	}
 	if pinsCDS := p.cdsPins != ""; pinsCDS {
