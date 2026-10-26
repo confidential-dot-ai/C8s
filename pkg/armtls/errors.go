@@ -24,8 +24,7 @@ var (
 	// [VerifyPolicy] pin: launch measurement, TDX registers, image anchor,
 	// vTPM PCR, init-data hash, a TCB floor set for a family that has none,
 	// or a sandbox or workload pin. Debug and TCB-floor verdicts are the
-	// attestation-api's; it refuses them with a 400, 415 or 422, which
-	// surfaces as [ErrInvalidReport].
+	// attestation-api's; its refusal surfaces as [ErrInvalidReport].
 	ErrPolicyViolation = errors.New("armtls: attestation policy check failed")
 
 	// ErrCertValidity indicates the certificate is outside its validity
@@ -44,6 +43,8 @@ var (
 	// (e.g., wrong size for the platform, truncated, or corrupt), or evidence
 	// the attestation-api refused with 400, 415 or 422. Either is
 	// terminal: resending the same evidence cannot succeed. Its refusals do not
-	// say which check failed, so they cannot claim [ErrPolicyViolation].
+	// say which check failed, so they cannot claim [ErrPolicyViolation]. An
+	// unset attestation-api URL also returns it: no verifier can judge the
+	// report.
 	ErrInvalidReport = agarmtls.ErrInvalidReport
 )
