@@ -668,6 +668,9 @@
           ],
           "additionalProperties": false,
           "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
             "image": {
               "type": [
                 "object",

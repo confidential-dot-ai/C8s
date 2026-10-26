@@ -207,9 +207,7 @@ jobs:
             -template node-guest-image/c8s/image-policy.yaml.in \
             -bundle core.tar.zst \
             -bundle cilium.tar.zst \
-            -manifest "$manifests/local-path-storage.yaml" \
-            -manifest "$manifests/nvidia-device-plugin.yaml" \
-            -exclude-ref busybox
+            -manifest "$manifests/nvidia-device-plugin.yaml"
 
   containerd-runtime-handlers:
     name: every pod runtime reaches the measured wrapper

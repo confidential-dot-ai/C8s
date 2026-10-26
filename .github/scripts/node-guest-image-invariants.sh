@@ -58,12 +58,15 @@ if grep -qx 'CONFIG_MODULES=y' "$ngi/kernel/c8s.config"; then
   fi
 fi
 
-# The baked NRI template contains only the generated RKE2 system floor.
+# The baked NRI template contains only the generated RKE2 system floor and the
+# optional local-path provisioner (pinned to its manifest by a Go test).
 # The complete chart component seed is merged into it before containerd starts;
 # duplicating component digests here would drift from the rendered workloads.
 policy="$ngi/c8s/image-policy.yaml.in"
 [ -f "$policy" ] || { echo "::error::NRI base template $policy not found"; exit 1; }
-if sed '/# BEGIN rke2 system images/,/# END rke2 system images/d' "$policy"               | grep -qE 'sha256:[a-f0-9]{64}'; then
+if sed -e '/# BEGIN rke2 system images/,/# END rke2 system images/d' \
+       -e '/# BEGIN local-path/,/# END local-path/d' "$policy" \
+   | grep -qE 'sha256:[a-f0-9]{64}'; then
   echo "::error::$policy has a hardcoded base digest outside the generated system base; derive core component pins from the build-time chart seed"
   exit 1
 fi
@@ -338,6 +341,7 @@ writes=$( {
     | awk '{print $2}' | grep -E '^/(etc|opt|usr|srv|boot)/' || true
   grep -hoE '(path: *|"paths":\[")/(etc|opt|usr|srv|boot)/[A-Za-z0-9_./-]+' \
        "$ngi"/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/*.yaml \
+       "$ngi"/c8s/local-path/*.yaml \
     | grep -oE '/(etc|opt|usr|srv|boot)/.*' || true
 } | sort -u )
 for w in $writes; do

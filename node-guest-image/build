@@ -40,6 +40,12 @@
 #                      work). Different measurement, root
 #                      shell on the host-visible serial socket — never ship.
 #                      Default name: c8s-dev.
+#   C8S_LOCAL_PATH=1   bake the rancher local-path provisioner (default
+#                      StorageClass `local-path`) and its helper's seed
+#                      entry. Off by default (#872): the helper runs a
+#                      ConfigMap script with a host mount, and a pod using
+#                      one of its volumes holds a host bind mount. Different
+#                      measurement.
 #   C8S_NAME=...       output name (default c8s → output/c8s/)
 #   C8S_MEMORY=...     default-memory recorded in the manifest / used by
 #                      `confos run` (default 16G — etcd OOMs at the 4G default)
@@ -154,6 +160,7 @@ exec bin/confos build "${C8S_NAME:-c8s}" \
     --sync-input "c8s-binary=${C8S_BINARY:+1}" \
     --sync-input "c8s-images=${C8S_IMAGES_DIR:+1}" \
     --sync-input "dev=${C8S_DEV:-0}" \
+    --sync-input "local-path=${C8S_LOCAL_PATH:-0}" \
     --kernel-config-fragment "$FRAGMENT" \
     --kernel-builder-package "$KB_PKGS" \
     --platform "$C8S_PLATFORM" \

@@ -24,11 +24,10 @@
 #   go run ./node-guest-image/c8s/systemfloor -write \
 #     -template node-guest-image/c8s/image-policy.yaml.in \
 #     -bundle <core bundle> -bundle <cilium bundle> \
-#     -manifest node-guest-image/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/local-path-storage.yaml \
-#     -manifest node-guest-image/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/nvidia-device-plugin.yaml \
-#     -exclude-ref busybox
-# -exclude-ref omits busybox from the node's baked base;
-# the chart supplies its argv-pinned entry through the served allowlist.
+#     -manifest node-guest-image/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/nvidia-device-plugin.yaml
+# The optional local-path provisioner (C8S_LOCAL_PATH=1, below) keeps its own
+# base entry between the template's local-path markers; bump it with
+# local-path/local-path-storage.yaml (a repo test pins the pair).
 # rke2's own containerd base template imports config-v3.toml.d/*.toml since
 # v1.36 (k3s b51167a9), which is where the NRI drop-in lives, so this profile
 # bakes no config-v3.toml.tmpl: one that added the import produced a duplicate
@@ -137,6 +136,15 @@ GUARDS="psa-level-policy pod-exec-policy operator-scope-policy cred-release-rbac
 GUARDS_SRC="$SRCDIR/mkosi.profiles/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests"
 GUARDS_DST="$STAGE_DIR/usr/lib/confai/guards"
 DEV=$(cat "$SYNC_INPUTS/dev" 2>/dev/null || true)
+# C8S_LOCAL_PATH=1 bakes the local-path provisioner, its base entry, its
+# namespace's mesh exemption and its helper's seed entry. Off by default
+# (#872): the helper runs a ConfigMap script with a host mount, and a pod
+# consuming one of its volumes holds a host bind mount.
+LOCAL_PATH=$(cat "$SYNC_INPUTS/local-path" 2>/dev/null || true)
+case "${LOCAL_PATH:-0}" in
+    0|1) ;;
+    *) echo "c8s sync: FATAL local-path sync-input must be 0 or 1, got '${LOCAL_PATH}'" >&2; exit 1 ;;
+esac
 for guard in $GUARDS; do
     [ -f "$GUARDS_SRC/$guard.yaml" ] || { echo "c8s sync: FATAL guard AddOn $GUARDS_SRC/$guard.yaml missing" >&2; exit 1; }
     if [ "$DEV" = 1 ] && [ "$guard" = pod-exec-policy ]; then
@@ -257,13 +265,24 @@ render_nri_base() {  # <front-door-image>: repository@digest
         *) echo "c8s sync: FATAL front-door image '$router_image' is not repository@sha256:..." >&2; exit 1 ;;
     esac
     mkdir -p "$(dirname "$dst")"
-    sed -e "s|@PLATFORM@|${PLATFORM}|g" \
+    # The local-path blocks: a C8S_LOCAL_PATH=1 build drops only the marker
+    # lines, every other build the blocks themselves.
+    local local_path='/# BEGIN local-path/,/# END local-path/d'
+    if [ "${LOCAL_PATH:-0}" = 1 ]; then
+        local_path='/# \(BEGIN\|END\) local-path/d'
+    fi
+    sed -e "$local_path" \
+        -e "s|@PLATFORM@|${PLATFORM}|g" \
         -e "s|@MESH_REPO@|${MESH_REPO}|g" \
         -e "s|@MESH_DIGEST@|${MESH_DIGEST}|g" \
         -e "s|@OPERATOR_REPO@|${OPERATOR_REPO}|g" \
         -e "s|@OPERATOR_DIGEST@|${OPERATOR_DIGEST}|g" \
         -e "s|@ROUTER_REPO@|${router_image%@*}|g" \
         -e "s|@ROUTER_DIGEST@|${router_image##*@}|g" "$tmpl" > "$dst"
+    if [ "${LOCAL_PATH:-0}" != 1 ] && grep -q 'local-path' "$dst"; then
+        echo "c8s sync: FATAL $dst still names local-path outside the local-path markers" >&2
+        exit 1
+    fi
     echo "c8s sync: NRI system base allowlist rendered"
 }
 
@@ -278,6 +297,12 @@ render_node_integration() {
     mkdir -p "$helm_dir"
     tar -xzf "$helm_archive" -C "$helm_dir" linux-amd64/helm
     chmod 0755 "$helm_dir/linux-amd64/helm"
+    local optional=()
+    if [ "${LOCAL_PATH:-0}" = 1 ]; then
+        optional+=(--local-path)
+        install -D -m 0644 "$SRCDIR/mkosi.profiles/c8s/local-path/local-path-storage.yaml" \
+            "$STAGE_DIR/var/lib/rancher/rke2/server/manifests/local-path-storage.yaml"
+    fi
     if ! PATH="$helm_dir/linux-amd64:$PATH" "$C8S_TARGET" node-image render \
         --hardware-platform "$LABEL_PLATFORM" \
         --kube-version "${RKE2_VERSION%%+*}" \
@@ -287,6 +312,7 @@ render_node_integration() {
         --cds-image-digest "$CDS_DIGEST" \
         --armtls-mesh-image-repository "$MESH_REPO" \
         --armtls-mesh-image-digest "$MESH_DIGEST" \
+        ${optional[@]+"${optional[@]}"} \
         --output-dir "$out"; then
         echo "c8s sync: FATAL ${C8S_REF} must provide a working 'c8s node-image render'; publish this branch's images and select that C8S_REF" >&2
         exit 1
