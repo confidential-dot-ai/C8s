@@ -624,7 +624,10 @@ func TestB8WorkloadBackendEntry(t *testing.T) {
 			var logs bytes.Buffer
 			f.proxy.log = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
 			sealedHost := []types.HeaderField{{Name: "Host", Value: testHost}}
-			resp, err := f.proxy.Forward(outerRequest(testHost), types.TunnelRequest{Path: "/", Headers: sealedHost}, f.bound())
+			// A session bound with no router digest holds no entry: the
+			// backend gets the unbound check and its 502.
+			unstamped := Binding{RouteDigest: f.bound().RouteDigest}
+			resp, err := f.proxy.Forward(outerRequest(testHost), types.TunnelRequest{Path: "/", Headers: sealedHost}, unstamped)
 			if err != nil || resp.Status != tc.want || !strings.Contains(string(resp.Body), tc.wantBody) {
 				t.Fatalf("Forward(/) = %d %q, %v, want %d %q, nil", resp.Status, resp.Body, err, tc.want, tc.wantBody)
 			}

@@ -248,6 +248,13 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		defer stop()
 	}
 	p.reverseProxy(route, target, expected, func(err error) {
+		if expected != nil && errors.Is(err, errBackendEntryChanged) {
+			// The backend's entry differs from the session's bound one: the
+			// client must attest again (E6).
+			p.log.Info("bound request refused", "host", r.Host, "error", err)
+			refuse(types.ErrorCodeRouteEntryChanged)
+			return
+		}
 		status, body := p.refusal(err, r.Host, target.RawPath, route.Backend.Address)
 		http.Error(w, body, status)
 	}).ServeHTTP(w, r)
@@ -280,8 +287,9 @@ func (p *Proxy) boundEntry(ctx context.Context, b Binding, route routes.Route) (
 	return expected, ""
 }
 
-// refusal logs a failed backend exchange and returns the response it gets:
-// 502 backend_entry_changed (B8) or the plain 502 of B5. A changed entry is
+// refusal logs a failed backend exchange of a request bound to no entry and
+// returns the response it gets: 502 backend_entry_changed (B8) or the plain
+// 502 of B5. A changed entry is
 // expected for a backend not yet renewed after an allowlist write, so it logs
 // at Info.
 func (p *Proxy) refusal(err error, host, path, backend string) (int, string) {
@@ -411,6 +419,10 @@ func (p *Proxy) Forward(outer *http.Request, req types.TunnelRequest, bound Bind
 	}
 	rec := &capture{header: http.Header{}}
 	rp.ServeHTTP(rec, in)
+	if expected != nil && errors.Is(backendErr, errBackendEntryChanged) {
+		p.log.Info("bound request refused", "host", in.Host, "error", backendErr)
+		return types.TunnelResponse{}, &BindingChangedError{Code: types.ErrorCodeRouteEntryChanged}
+	}
 	if errors.Is(backendErr, errBackendEntryChanged) {
 		status, msg := p.refusal(backendErr, in.Host, target.RawPath, route.Backend.Address)
 		return textResponse(status, msg), nil
