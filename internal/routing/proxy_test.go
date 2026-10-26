@@ -624,7 +624,10 @@ func TestB8WorkloadBackendEntry(t *testing.T) {
 			var logs bytes.Buffer
 			f.proxy.log = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
 			sealedHost := []types.HeaderField{{Name: "Host", Value: testHost}}
-			resp, err := f.proxy.Forward(outerRequest(testHost), types.TunnelRequest{Path: "/", Headers: sealedHost}, f.bound())
+			// A session bound with no router digest holds no entry: the
+			// backend gets the unbound check and its 502.
+			unstamped := Binding{RouteDigest: f.bound().RouteDigest}
+			resp, err := f.proxy.Forward(outerRequest(testHost), types.TunnelRequest{Path: "/", Headers: sealedHost}, unstamped)
 			if err != nil || resp.Status != tc.want || !strings.Contains(string(resp.Body), tc.wantBody) {
 				t.Fatalf("Forward(/) = %d %q, %v, want %d %q, nil", resp.Status, resp.Body, err, tc.want, tc.wantBody)
 			}
@@ -806,13 +809,13 @@ func TestB10ChangedEntryRetiresPools(t *testing.T) {
 	backends := f.state.Current().Manifest.Hosts[testHost].Routes
 	before := map[string]*http.Transport{}
 	for _, r := range backends {
-		before[r.Path] = f.transports.For(r.Backend)
+		before[r.Path] = f.transports.For(r.Backend, nil)
 	}
 
 	f.allowlists.serve(digestOf(0x43), labelled(map[string]string{"web": "v2", "admin": "v1", "router": "v1"}))
 	f.refresh(t)
 	for _, r := range backends {
-		if kept := f.transports.For(r.Backend) == before[r.Path]; kept != (r.Path != "/") {
+		if kept := f.transports.For(r.Backend, nil) == before[r.Path]; kept != (r.Path != "/") {
 			t.Fatalf("transport of %s kept = %v after only web was redefined", r.Path, kept)
 		}
 	}

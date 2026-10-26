@@ -58,10 +58,11 @@ type Transports struct {
 	caDigest [sha256.Size]byte
 }
 
-// pooled is a cached transport and the workload it reaches, empty for an
-// address backend.
+// pooled is a cached transport, the backend it reaches and that backend's
+// workload, empty for an address backend.
 type pooled struct {
 	*http.Transport
+	backend  string
 	workload string
 }
 
@@ -74,16 +75,24 @@ func NewTransports(cfg TransportConfig) *Transports {
 	return &Transports{cfg: cfg, cache: map[string]pooled{}}
 }
 
-// For returns the transport for b, building it on first use.
-func (t *Transports) For(b routes.Backend) *http.Transport {
-	key := backendKey(b)
+// For returns the transport for b, building it on first use. expected is the
+// canonical entry a bound session requires of a workload backend (Entries.Bound),
+// nil for a request bound to no entry. Each expected entry has its own pool,
+// so a session never rides a connection admitted under another entry (B8).
+func (t *Transports) For(b routes.Backend, expected []byte) *http.Transport {
+	backend := backendKey(b)
+	key := backend
+	if expected != nil {
+		sum := sha256.Sum256(expected)
+		key += "\x00" + string(sum[:])
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if p, ok := t.cache[key]; ok {
 		return p.Transport
 	}
-	tr := t.build(b)
-	t.cache[key] = pooled{Transport: tr, workload: b.Workload}
+	tr := t.build(b, expected)
+	t.cache[key] = pooled{Transport: tr, backend: backend, workload: b.Workload}
 	return tr
 }
 
@@ -117,7 +126,7 @@ func (t *Transports) Retain(m *routes.Manifest) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	for key, p := range t.cache {
-		if !keep[key] {
+		if !keep[p.backend] {
 			p.CloseIdleConnections()
 			delete(t.cache, key)
 		}
@@ -128,7 +137,7 @@ func backendKey(b routes.Backend) string {
 	return strings.Join([]string{b.Address, b.Workload, b.ServerName, b.CA}, "\x00")
 }
 
-func (t *Transports) build(b routes.Backend) *http.Transport {
+func (t *Transports) build(b routes.Backend, expected []byte) *http.Transport {
 	dialer := &net.Dialer{
 		Timeout:   dialTimeout,
 		KeepAlive: 30 * time.Second,
@@ -142,7 +151,7 @@ func (t *Transports) build(b routes.Backend) *http.Transport {
 		// headers only when generation ends. The proxy bounds the request.
 	}
 	if b.Workload != "" {
-		transport.DialTLSContext = t.dialWorkload(b.Workload, dialer)
+		transport.DialTLSContext = t.dialWorkload(b.Workload, expected, dialer)
 		return transport
 	}
 	// A fresh pool, never nil: a nil RootCAs means the system roots.
@@ -165,11 +174,11 @@ func (t *Transports) build(b routes.Backend) *http.Transport {
 // dialWorkload reaches a workload backend as a mesh client of the member
 // behind it: the mesh profile's chain path authenticates the peer against the
 // published mesh CA, the route's workload name is required of it (B1), and
-// its stamped entry must be unchanged in the current allowlist (B8), all
-// before any request is written. The pod's ruleset leaves this identity's
+// its stamped entry must be unchanged in the current allowlist (B8), or equal
+// expected when a bound session set it, all before any request is written. The pod's ruleset leaves this identity's
 // connections into the cluster uncaptured, so this handshake is the one that
 // crosses the pod boundary.
-func (t *Transports) dialWorkload(workload string, dialer *net.Dialer) func(context.Context, string, string) (net.Conn, error) {
+func (t *Transports) dialWorkload(workload string, expected []byte, dialer *net.Dialer) func(context.Context, string, string) (net.Conn, error) {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		// Per connection: one resolution of what get-cert publishes, and a
 		// backend is dialled far less often than it is used.
@@ -189,7 +198,12 @@ func (t *Transports) dialWorkload(workload string, dialer *net.Dialer) func(cont
 			conn.Close()
 			return nil, err
 		}
-		if err := t.cfg.Entries.Check(handshake, stamped, workload); err != nil {
+		if expected == nil {
+			err = t.cfg.Entries.Check(handshake, stamped, workload)
+		} else {
+			err = t.cfg.Entries.Matches(handshake, stamped, workload, expected)
+		}
+		if err != nil {
 			mesh.Close()
 			return nil, fmt.Errorf("%w: %w", errBackendEntryChanged, err)
 		}

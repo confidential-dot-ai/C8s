@@ -49,7 +49,8 @@ const (
 	ErrorCodeRouteDigestChanged = "route_digest_changed"
 	// ErrorCodeRouteEntryChanged: an allowlist entry a workload route of the
 	// session's manifest names was removed or redefined since the allowlist
-	// the session's handshake bound (route policy E6). Attest again.
+	// the session's handshake bound, or the backend reached was admitted
+	// under another definition of it (route policy E6). Attest again.
 	ErrorCodeRouteEntryChanged = "route_entry_changed"
 	// ErrorCodeSessionsBusy: the router holds as many attest-lb bindings as
 	// it may, for this client or in all, so it refuses the handshake rather
@@ -59,6 +60,11 @@ const (
 	// before the request, so the router no longer vouches for what the
 	// connection attested (route policy E7). Attest again.
 	ErrorCodeBindingExpired = "binding_expired"
+	// ErrorCodeBindingMissing: the request requires an attest-lb binding
+	// (X-C8s-Require-Binding) and the router holds none for its connection,
+	// for example after cds-attest restarted, so it is not routed unbound
+	// (route policy E7). Attest again.
+	ErrorCodeBindingMissing = "binding_missing"
 )
 
 // ErrorResponse is the body a C8s service returns with a non-2xx status: one

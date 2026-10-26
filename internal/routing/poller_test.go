@@ -237,7 +237,7 @@ func TestPollRetainsOnUnchanged(t *testing.T) {
 		t.Fatalf("Poll() = %v, want nil", err)
 	}
 	gone := routes.Backend{Address: "127.0.0.1:2", Workload: "gone"}
-	f.transports.For(gone)
+	f.transports.For(gone, nil)
 	if err := p.Poll(context.Background()); err != nil {
 		t.Fatalf("Poll() unchanged = %v, want nil", err)
 	}

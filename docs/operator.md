@@ -690,7 +690,10 @@ follows these rules:
   allowlist on the router leaf the handshake bound. After a route change, or
   an allowlist change that removes or redefines that entry, the router
   answers with 503 `route_digest_changed` or `route_entry_changed`. Other allowlist writes, and the router's renewal
-  under them, do not refuse the session. It ends an attest-pq
+  under them, do not refuse the session. The backend of a bound request must
+  be stamped under an entry equal to the session's bound one (503
+  `route_entry_changed` otherwise), and bound requests never share pooled
+  connections admitted under another entry. It ends an attest-pq
   session. An attest-lb connection stays open and every request on it gets
   the same 503 until the client reconnects or attests again on it. No
   traffic moves to the new routes unattested. See
@@ -699,7 +702,10 @@ follows these rules:
   client address prefix at most 512 of them. At either limit, new attest-lb
   handshakes from that client get 503 `sessions_busy`. A binding idle for
   2 minutes lapses and refuses its connection with 503 `binding_expired`
-  until the client attests again.
+  until the client attests again. Attested clients should send
+  `X-C8s-Require-Binding: 1` on every request: on a connection with no
+  binding, as after a `cds-attest` restart, such a request gets 503
+  `binding_missing` instead of routing unbound.
 - `router.routing.readTimeout` bounds nginx's wait between reads, and
   `router.routing.backendTimeout` (default 1h) how long a routed request, or
   a WebSocket, may go with no data moving; a tunnelled request gets that long

@@ -119,10 +119,17 @@ func attestLB(t *testing.T, base, connection string) *http.Response {
 // connection and returns the status and body.
 func routedGet(t *testing.T, listener, connection string) (int, string) {
 	t.Helper()
+	return routedGetWith(t, listener, connection, http.Header{})
+}
+
+// routedGetWith is routedGet sending header too.
+func routedGetWith(t *testing.T, listener, connection string, header http.Header) (int, string) {
+	t.Helper()
 	req, err := http.NewRequest(http.MethodGet, listener+"/", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	req.Header = header
 	req.Host = "app.example"
 	if connection != "" {
 		req.Header.Set(routing.ConnectionHeader, connection)
@@ -174,6 +181,34 @@ func TestE6ListenerRefusesABoundConnection(t *testing.T) {
 	}
 	if status, body := routedGet(t, listener.URL, "7.1"); status != http.StatusOK {
 		t.Fatalf("GET after attesting again = %d %q, want 200", status, body)
+	}
+}
+
+// TestE7RequiredBindingLostByTheStore: a connection that requires its
+// binding is refused with binding_missing once the store lost it, as after a
+// cds-attest restart, instead of being routed unbound.
+func TestE7RequiredBindingLostByTheStore(t *testing.T) {
+	rs := newRoutedServer(t)
+	listener := httptest.NewServer(rs.proxy)
+	t.Cleanup(listener.Close)
+	rs.apply(t, 1, time.Hour)
+	if code := errorCode(t, attestLB(t, rs.ts.URL, "7.1")); code != "" {
+		t.Fatalf("attest-lb = %q, want success", code)
+	}
+	require := func() http.Header { return http.Header{routing.RequireBindingHeader: {"1"}} }
+	if status, body := routedGetWith(t, listener.URL, "7.1", require()); status != http.StatusOK {
+		t.Fatalf("GET requiring the binding it holds = %d %q, want 200", status, body)
+	}
+	<-rs.lastHost
+
+	rs.bindings.mu.Lock()
+	rs.bindings.entries, rs.bindings.perClient = map[string]lbBinding{}, map[string]int{}
+	rs.bindings.mu.Unlock()
+	if status, body := routedGetWith(t, listener.URL, "7.1", require()); status != http.StatusServiceUnavailable || body != types.ErrorCodeBindingMissing {
+		t.Fatalf("GET requiring a binding the store lost = %d %q, want 503 %q", status, body, types.ErrorCodeBindingMissing)
+	}
+	if len(rs.lastHost) != 0 {
+		t.Fatal("a request whose binding is missing reached the backend")
 	}
 }
 

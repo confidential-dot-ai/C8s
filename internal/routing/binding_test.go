@@ -174,8 +174,8 @@ func TestE6UnstampedBindingHoldsTheManifestAlone(t *testing.T) {
 	f.allowlists.serve(digestOf(0x43), labelled(map[string]string{"web": "v2"}))
 	f.refresh(t)
 	route := f.state.Current().Manifest.Hosts[testHost].Routes[0]
-	if code := f.proxy.entryChanged(context.Background(), unbound, route); code != "" {
-		t.Fatalf("entryChanged(no router digest) after the route's entry changed = %q, want none", code)
+	if expected, code := f.proxy.boundEntry(context.Background(), unbound, route); code != "" || expected != nil {
+		t.Fatalf("boundEntry(no router digest) after the route's entry changed = %q, %q, want none", expected, code)
 	}
 }
 
