@@ -23,10 +23,13 @@ func newBundleCmd() *cobra.Command {
 	var mirrors []string
 	cmd := &cobra.Command{
 		Use:   "new",
-		Short: "Create a cluster's launch bundle: keys, tokens and signed server/agent documents",
+		Short: "Create a cluster's launch bundle: keys and signed server/agent documents",
 		Long: `Create everything one cluster needs to boot from the measured node image:
-a server launch key and an agent launch key, fresh RKE2 join tokens, a
-signed launch.yaml per node and the client policy that pins the server.
+a server launch key and an agent launch key, a signed launch.yaml per node
+and the client policy that pins the server. Documents carry no credentials:
+the server mints the RKE2 agent token and node passwords in RAM and releases
+them only to agents that attest as one of the bundle's signed image and key
+tuples, each with the password for the name its signed document carries.
 
   <out>/server.key    server launch key; also the operator key for
                       'c8s get-kubeconfig --operator-key' and signed CDS writes.
@@ -113,7 +116,7 @@ func newAddAgentCmd() *cobra.Command {
 		Use:   "add-agent",
 		Short: "Add a signed agent document to an existing launch bundle",
 		Long: `Derive an agent launch.yaml from the bundle's server document (same
-cluster, image, agent token and keys, never the server token), sign it with
+cluster, image and keys; documents carry no credentials), sign it with
 the bundle's agent key and write <bundle>/<name>. Nothing the server
 already booted with changes.`,
 		Args:         cobra.NoArgs,

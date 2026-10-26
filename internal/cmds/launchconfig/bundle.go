@@ -70,9 +70,9 @@ type BundleOptions struct {
 }
 
 // NewBundle generates the cluster's launch keys (or takes the server key from
-// OperatorKeyPath) and join tokens, writes and signs the server document plus
-// one agent document per name, and emits the client policy. A reused server
-// key stays where it is; only a generated one is written to the bundle. Dir must not exist; a failed run removes it so a
+// OperatorKeyPath), writes and signs the server document plus one agent
+// document per name, and emits the client policy. A reused server key stays
+// where it is; only a generated one is written to the bundle. Dir must not exist; a failed run removes it so a
 // half-written bundle can never be attached.
 func NewBundle(opts BundleOptions) (err error) {
 	if opts.Dir == "" || opts.ClusterID == "" || opts.ManifestPath == "" {
@@ -131,25 +131,12 @@ func NewBundle(opts BundleOptions) (err error) {
 	if err != nil {
 		return err
 	}
-	serverToken, err := newToken()
-	if err != nil {
-		return err
-	}
-	agentToken, err := newToken()
-	if err != nil {
-		return err
-	}
-	serverPassword, err := newToken()
-	if err != nil {
-		return err
-	}
 	server := Document{
 		SchemaVersion:           SchemaVersion,
 		ClusterID:               opts.ClusterID,
 		Role:                    Server,
 		Image:                   image,
 		Node:                    Node{Name: opts.ServerName},
-		RKE2:                    RKE2{ServerToken: serverToken, AgentToken: agentToken, NodePassword: serverPassword},
 		Server:                  ServerConfig{Address: opts.ServerAddress, OperatorPublicKey: serverPub},
 		AgentOperatorPublicKeys: []string{agentPub},
 		TLSSAN:                  opts.TLSSAN,
@@ -197,8 +184,8 @@ func NewBundle(opts BundleOptions) (err error) {
 }
 
 // AddAgent derives an agent document from the bundle's server document
-// (same cluster, image, agent token, keys and SAN; never the server token or
-// the server-only router block),
+// (same cluster, image, keys and SAN; never the server-only router block;
+// the document carries no credentials),
 // signs it with the bundle's agent key and writes <dir>/<name>. It works
 // on a bundle created earlier, so a cluster can grow without regenerating or
 // re-signing anything the server already booted with.
@@ -240,11 +227,6 @@ func AddAgent(dir, name, serverAddress string) (err error) {
 	agent := *server
 	agent.Role = Agent
 	agent.Node = Node{Name: name}
-	password, err := newToken()
-	if err != nil {
-		return err
-	}
-	agent.RKE2 = RKE2{AgentToken: server.RKE2.AgentToken, NodePassword: password}
 	agent.Server.Address = serverAddress
 	agent.Router = nil
 	return writeSignedDocument(filepath.Join(dir, name), agent, key, pub)
@@ -321,7 +303,8 @@ func writeSignedDocument(dir string, doc Document, key *ecdsa.PrivateKey, pub st
 	if err := writeNew(filepath.Join(dir, pubkeyFile), []byte(pub), 0o644); err != nil {
 		return err
 	}
-	// The document carries the join tokens: operator-readable only.
+	// The document is public policy; keep it operator-only anyway so a
+	// bundle directory never hands out more than its ISO must.
 	if err := writeNew(filepath.Join(dir, documentFile), data, 0o600); err != nil {
 		return err
 	}
@@ -390,14 +373,6 @@ func publicKeyPEM(key *ecdsa.PrivateKey) (string, error) {
 		return "", fmt.Errorf("encode launch public key: %w", err)
 	}
 	return string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})), nil
-}
-
-func newToken() (string, error) {
-	var b [32]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "", fmt.Errorf("generate join token: %w", err)
-	}
-	return hex.EncodeToString(b[:]), nil
 }
 
 func writeNew(path string, data []byte, mode os.FileMode) error {

@@ -18,7 +18,6 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
-	"regexp"
 	"strconv"
 	"strings"
 
@@ -35,7 +34,7 @@ import (
 )
 
 const (
-	SchemaVersion            = "c8s-launch/v1"
+	SchemaVersion            = "c8s-launch/v2"
 	DefaultAttestationAPIURL = "http://127.0.0.1:8400"
 	// Dir holds the root-only artifacts Stage writes for the node services.
 	Dir               = "/run/confos/launch"
@@ -76,8 +75,7 @@ const (
 // inline. Adding a role means adding an entry, not new branches; every entry
 // sets every field.
 type roleRules struct {
-	serverToken presence // rke2.serverToken, distinct from rke2.agentToken
-	agentKeys   presence // agentOperatorPublicKeys
+	agentKeys presence // agentOperatorPublicKeys
 	// namesServer requires server.address in the signed document; otherwise
 	// it is checked only when present.
 	namesServer bool
@@ -93,7 +91,6 @@ type roleRules struct {
 
 var roles = map[Role]roleRules{
 	Server: {
-		serverToken:   required,
 		agentKeys:     optional,
 		namesServer:   false,
 		stagedAddress: true,
@@ -101,7 +98,6 @@ var roles = map[Role]roleRules{
 		ownLaunchKey:  true,
 	},
 	Agent: {
-		serverToken:   forbidden,
 		agentKeys:     required,
 		namesServer:   true,
 		stagedAddress: true,
@@ -114,15 +110,16 @@ var roles = map[Role]roleRules{
 // which rejects any role without an entry in roles.
 func (d *Document) rules() roleRules { return roles[d.Role] }
 
-// Document is the signed launch.yaml wire contract. All secrets are boot
-// inputs; agent documents must never carry the control-plane server token.
+// Document is the public signed launch.yaml wire contract. Join credentials
+// are generated inside the guest and never accepted from launch media: the
+// server mints its agent token and node passwords in RAM and RKE2 generates
+// its own server token, so no field here carries a secret.
 type Document struct {
 	SchemaVersion           string       `yaml:"schemaVersion" json:"schema_version"`
 	ClusterID               string       `yaml:"clusterID" json:"cluster_id"`
 	Role                    Role         `yaml:"role" json:"role"`
 	Image                   Image        `yaml:"image" json:"image"`
 	Node                    Node         `yaml:"node" json:"node"`
-	RKE2                    RKE2         `yaml:"rke2" json:"rke2"`
 	Server                  ServerConfig `yaml:"server" json:"server"`
 	AgentOperatorPublicKeys []string     `yaml:"agentOperatorPublicKeys" json:"agent_operator_public_keys"`
 	TLSSAN                  string       `yaml:"tlsSAN,omitempty" json:"tls_san"`
@@ -141,8 +138,6 @@ type Document struct {
 	// public certificate. Image references stay digest-pinned, so a mirror
 	// cannot change what a node runs.
 	RegistryMirrors map[string]string `yaml:"registryMirrors,omitempty" json:"registry_mirrors,omitempty"`
-
-	serverTokenPresent bool
 }
 
 // Router selects the router's public hostnames and front-door limits. All
@@ -276,17 +271,6 @@ type Node struct {
 	ExternalIP string `yaml:"externalIP,omitempty" json:"external_ip,omitempty"`
 }
 
-type RKE2 struct {
-	ServerToken string `yaml:"serverToken,omitempty" json:"server_token,omitempty"`
-	AgentToken  string `yaml:"agentToken" json:"agent_token"`
-	// NodePassword is this node's RKE2 node password, random per node and
-	// carried only in its own document. /etc/rancher is per-boot scratch, so
-	// without it RKE2 makes a new password at every boot and the server
-	// refuses a rebooted node's name. Per node, so holding the shared agent
-	// token, or one node's document, does not open another node's name.
-	NodePassword string `yaml:"nodePassword,omitempty" json:"node_password,omitempty"`
-}
-
 type ServerConfig struct {
 	// Address may be omitted only for a server; Stage resolves its own IP.
 	Address string `yaml:"address,omitempty" json:"address"`
@@ -318,6 +302,9 @@ type Verified struct {
 	operatorPub []byte
 	pins        refvalues.ReferenceValues
 	cdsPins     refvalues.ReferenceValues
+	// raw and signature are the authenticated launch bytes, kept so an agent
+	// can present them to its server at enrollment.
+	raw, signature []byte
 }
 
 // Verify checks the signature before parsing host input and compares all image
@@ -392,12 +379,10 @@ func Verify(ctx context.Context, cfg Config) (*Verified, error) {
 		return nil, err
 	}
 	return &Verified{
-		document: *doc, operatorPub: pub, pins: pins,
+		document: *doc, operatorPub: pub, pins: pins, raw: data, signature: signature,
 		cdsPins: refvalues.ReferenceValues{Family: pins.Family, Images: pins.Images[:1]},
 	}, nil
 }
-
-var tokenRE = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 func (d *Document) validate() error {
 	if d.SchemaVersion != SchemaVersion {
@@ -439,30 +424,6 @@ func (d *Document) validate() error {
 	if d.Node.ExternalIP != "" {
 		if err := ValidateIPv4(d.Node.ExternalIP, true); err != nil {
 			return fmt.Errorf("node.externalIP: %w", err)
-		}
-	}
-	if !tokenRE.MatchString(d.RKE2.AgentToken) {
-		return fmt.Errorf("rke2.agentToken must be 64 lowercase hex characters")
-	}
-	switch rules.serverToken {
-	case required:
-		if !tokenRE.MatchString(d.RKE2.ServerToken) {
-			return fmt.Errorf("%s requires a 64-character lowercase hex rke2.serverToken", d.Role)
-		}
-		if d.RKE2.ServerToken == d.RKE2.AgentToken {
-			return fmt.Errorf("server and agent tokens must differ")
-		}
-	case forbidden:
-		if d.RKE2.ServerToken != "" || d.serverTokenPresent {
-			return fmt.Errorf("%s must not carry rke2.serverToken", d.Role)
-		}
-	}
-	if p := d.RKE2.NodePassword; p != "" {
-		if !tokenRE.MatchString(p) {
-			return fmt.Errorf("rke2.nodePassword must be 64 lowercase hex characters")
-		}
-		if p == d.RKE2.AgentToken || p == d.RKE2.ServerToken {
-			return fmt.Errorf("rke2.nodePassword must differ from the join tokens")
 		}
 	}
 	server, err := parseLaunchKey(d.Server.OperatorPublicKey)
