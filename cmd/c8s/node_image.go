@@ -820,8 +820,16 @@ func collectConfigMapArtifact(object unstructured.Unstructured, key, name string
 		return fmt.Errorf("decode chart ConfigMap %q: %w", name, err)
 	}
 	if name == "c8s-cds-allowlist-seed" {
-		artifacts.seed = []byte(cm.Data["allowlist-seed.json"])
-		return nil
+		// Baked and published in canonical bytes, so the release asset of
+		// each variant (docs/releases.md) is byte for byte the measured file.
+		seed, err := pkgallowlist.ParseJSON([]byte(cm.Data["allowlist-seed.json"]))
+		if err != nil {
+			return fmt.Errorf("decode node-image bootstrap seed: %w", err)
+		}
+		if artifacts.seed, err = seed.Canonical(); err != nil {
+			return fmt.Errorf("encode node-image bootstrap seed: %w", err)
+		}
+		return unstructured.SetNestedField(object.Object, string(artifacts.seed), "data", "allowlist-seed.json")
 	}
 	if len(cm.Data) != len(routerNginxFiles) {
 		return fmt.Errorf("rendered nginx ConfigMap has keys %v, want %v", slices.Sorted(maps.Keys(cm.Data)), routerNginxFiles)
