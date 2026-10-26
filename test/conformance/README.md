@@ -133,7 +133,13 @@ cluster to the node port an injected client dials, or, while IP SAN binding
 is on, to the CDS Service, where the CDS sees the pod's own source address
 rather than the node's. The requester can also reach the
 node's sandbox inventory and local attestation service over the socket
-directory the admission plugin binds into it. The backend also fetches
+directory the admission plugin binds into it. It runs in the namespace the
+mesh exempts where the backend has one (`exempt_namespace`), outside the
+mesh, where the inventory signs no token for it; where the backend has none,
+or once a scenario asks the inventory for a token, it runs in the scenario's
+namespace as a mesh member, the inventory signs for its sandbox, and the
+backend sends its CDS requests from outside the pod (`cds_pod_request`),
+since the node drops a member pod's own TCP to the CDS. The backend also fetches
 evidence over chosen report data, and says whether the CDS checks its
 signature: the steps edit its launch measurement into evidence that does not
 verify, or, where the attestation is mocked, into evidence for another
@@ -211,8 +217,13 @@ for a precondition the environment lacks. Pod exec is closed too, so `pod_exec` 
 steps mark `c8s-conformance/harness-argv`, because they chose its first
 container's argv, runs an agent there in place of that argv, and `agent_exec`
 reaches it. Pods whose argv a scenario pins are read from a reporter image's
-log instead. [`metal.sh`](backends/metal.sh) gives each function's answer and
-its reason beside the function.
+log instead. A pod the agent runs in that carries a workload ID also asks its
+credential client for the discovery document and mounts the volume the client
+writes it into, so `pod_cert_file` reads the pod's leaf from there; the key,
+and the leaf as another container sees it, stay out of reach. No namespace the mesh exempts is open to the operator, so the
+requester the steps drive runs as a mesh member and the scenarios that need a
+pod outside the mesh skip. [`metal.sh`](backends/metal.sh) gives each
+function's answer and its reason beside the function.
 
 ## What is a coordinated change
 

@@ -12,6 +12,6 @@ RUN CGO_ENABLED=0 go build -C test/mock-inventory -ldflags="-s -w" -o /mock-inve
 # busybox rather than the sibling mocks' distroless: the lane's readiness probe
 # is `test -S` on the inventory socket.
 # Bump: crane digest busybox:1.37
-FROM busybox:1.37@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
+FROM busybox:1.38@sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e
 COPY --from=builder /mock-inventory /mock-inventory
 ENTRYPOINT ["/mock-inventory"]

@@ -114,9 +114,14 @@
 #                                    steps and can reach the node's sandbox
 #                                    inventory and its local attestation service
 #   requester_request <ns> <pod> <method> <url> [body-file] [unix-socket]
-#                                    send the request from inside the pod;
-#                                    prints the status (000 when nothing
-#                                    answered), then the body
+#                                    send the request from inside the
+#                                    requester's pod; prints the status (000
+#                                    when nothing answered), then the body
+#   cds_pod_request <method> <route> [body-file] [authorization] [client-cert] [client-key] [header...]
+#                                    send the request to the CDS from here on
+#                                    a member requester's behalf, whose own
+#                                    TCP to the CDS the node drops; as
+#                                    cds_request prints
 #   cds_pod_url                      the CDS address a pod's requester dials
 #   cds_service_url                  the CDS address a requester dials with its
 #                                    own address as the request's source
@@ -262,8 +267,10 @@ manifest_filter() { cat; }
 # The node's admission plugin binds its socket directory into a container
 # named as a sidecar an application may run itself (cds-attest) in a pod
 # marked injected; the sockets are group-owned by 65532
-# (workloadclaims.AttestContainerName and InventorySocketGID). Nothing else
-# about the pod is c8s's, so the webhook leaves it alone.
+# (workloadclaims.AttestContainerName and InventorySocketGID). In a namespace
+# the mesh exempts nothing else about the pod is c8s's, so the webhook leaves
+# it alone; elsewhere the webhook injects the pod's endpoint and credential
+# client beside the container, which keeps the socket mount.
 REQUESTER_CONTAINER=cds-attest
 requester_manifest() {
     local image
@@ -524,6 +531,8 @@ cds_request() {
     url="$(cds_url)" || return
     http_request "$url" "$@"
 }
+# The same address serves a member requester's requests from here.
+cds_pod_request() { cds_request "$@"; }
 
 router_request() {
     local url

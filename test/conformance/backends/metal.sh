@@ -95,7 +95,9 @@ cds_request() {
 # cds_pod_request <method> <route> [body-file] [authorization] [client-cert] [client-key] [header...]
 cds_pod_request() { local url; url="$(cds_node_url)" || return; http_request "$url" "$@"; }
 cds_pod_url() { cds_node_url; }
-cds_service_url() { cds_node_url; }
+# A member requester's CDS requests leave from here (cds_pod_request), so
+# no address lets the CDS see the pod's own as the source.
+cds_service_url() { return "$UNSUPPORTED"; }
 # The guest's address from the allowlist URL, with the CDS Service's node port.
 cds_node_url() {
     local host port
@@ -200,13 +202,35 @@ AGENT_DIR=/run/c8s-conformance-agent
 # shellcheck disable=SC2016  # expands in the pod
 AGENT_SCRIPT='last=0; while :; do s=$(cat '"$AGENT_DIR"'/seq 2>/dev/null); if [ -n "$s" ] && [ "$s" != 0 ] && [ "$s" != "$last" ]; then last=$s; sh '"$AGENT_DIR"'/cmd > /tmp/.agent-out 2>&1; rc=$?; echo "agent $s $rc $(base64 < /tmp/.agent-out | tr -d "\n")"; fi; /bin/sleep 1; done'
 
-manifest_filter() { agent_wrap; }
+manifest_filter() { agent_wrap | discovery_wrap; }
 
-# Sent by curl in the requester through its agent.
+# A pod carrying a workload ID whose first container the agent runs in also
+# asks its credential client for the discovery document (the webhook's
+# c8s-discovery annotations), which carries the leaf, and mounts the volume
+# the client writes it into, so pod_cert_file can read the leaf of a pod
+# whose certificate volume no readable container may mount. The volume is a
+# memory-backed emptyDir, the one kind the client's pinned mount table admits
+# there; the URL the document names is not served, as nothing reads it.
+DISCOVERY_VOLUME=c8s-conformance-discovery
+DISCOVERY_MOUNT=/run/c8s-conformance-discovery
+discovery_wrap() {
+    jq -c --arg a "$AGENT" --arg v "$DISCOVERY_VOLUME" --arg dir "$DISCOVERY_MOUNT" '
+        if .metadata.annotations[$a] == "yes" and .metadata.annotations["confidential.ai/cw"] != null then
+            .metadata.annotations += {
+                "confidential.ai/c8s-discovery-volume": $v,
+                "confidential.ai/c8s-discovery-out": "/run/c8s/discovery/discovery.json",
+                "confidential.ai/c8s-discovery-cds-cert-url": "/.well-known/c8s/cds.pem",
+                "confidential.ai/c8s-discovery-public-tls-mode": "cds"}
+            | .spec.containers[0].volumeMounts += [{name: $v, mountPath: $dir, readOnly: true}]
+            | .spec.volumes += [{name: $v, emptyDir: {medium: "Memory"}}]
+        else . end'
+}
+
+# The requester is a mesh member here (exempt_namespace below), so the steps
+# send only its requests to the node's sockets from inside the pod, by curl
+# through its agent; its CDS requests leave from here (cds_pod_request).
 requester_request() {
-    local -a opts=()
-    [ -z "${6:-}" ] || opts+=(--unix-socket "$6")
-    agent_curl "$1" "$2" "$REQUESTER_CONTAINER" "${5:-}" "" "" -X "$3" ${opts[@]+"${opts[@]}"} "$4"
+    agent_curl "$1" "$2" "$REQUESTER_CONTAINER" "${5:-}" "" "" -X "$3" ${6:+--unix-socket "$6"} "$4"
 }
 
 # agent_curl <ns> <pod> <container> <body-file> <client-cert> <client-key> <curl args...>:
@@ -317,18 +341,21 @@ pod_read() {
 pod_file() { pod_read "$1" "$2" "$3" file "$4"; }
 pod_fstype() { pod_read "$1" "$2" "$3" fstype "$4"; }
 
-# Nothing while the file is absent, as pod_cert_file answers elsewhere. Only
-# the platform containers mount the credential volume (the webhook's
-# rejectCredentialMounts), so a pod whose readable container does not is
-# unsupported.
+# Only the platform containers mount the credential volume (the webhook's
+# rejectCredentialMounts), so the chain is read from the discovery document
+# the credential client writes for a pod discovery_wrap shaped, through the
+# agent in its first container: tls.crt alone, and from that container
+# alone; nothing while the document is absent, as pod_cert_file answers
+# elsewhere. The key never leaves the pod.
 pod_cert_file() {
     local out rc=0
+    [ "$3" = tls.crt ] && [ -z "${4:-}" ] || return "$UNSUPPORTED"
     kubectl -n "$1" get pod "$2" -o json 2>/dev/null |
-        jq -e --arg d "$CERT_VOLUME_PATH" '.spec.containers[0].volumeMounts // [] | any(.mountPath == $d)' >/dev/null ||
+        jq -e --arg d "$DISCOVERY_MOUNT" '.spec.containers[0].volumeMounts // [] | any(.mountPath == $d)' >/dev/null ||
         return "$UNSUPPORTED"
-    out="$(pod_file "$1" "$2" "" "$CERT_VOLUME_PATH/$3" 2>/dev/null)" || rc=$?
+    out="$(pod_file "$1" "$2" "" "$DISCOVERY_MOUNT/discovery.json" 2>/dev/null)" || rc=$?
     case "$rc" in
-        0) base64 -d <<<"$out" ;;
+        0) base64 -d <<<"$out" | jq -r '.cds_tls.certificate_pem // empty' ;;
         "$UNSUPPORTED") return "$UNSUPPORTED" ;;
     esac
 }
@@ -400,7 +427,9 @@ node_containers() { return $UNSUPPORTED; }
 
 # The node image's confos-operator-scope policy denies the operator every
 # write in kube-system, local-path-storage and c8s-system, the namespaces
-# the webhook exempts that admit the harness's pods.
+# the webhook exempts that admit the harness's pods. So the requester the
+# steps drive runs as a mesh member, and a scenario that needs a pod outside
+# the mesh skips.
 exempt_namespace() { return "$UNSUPPORTED"; }
 
 # No shell on the node, so its plugin cannot be stopped or started; and

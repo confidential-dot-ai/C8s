@@ -478,7 +478,12 @@ current attempt has no artifact; there is no fallback to older evidence.
 For manual image builds, dispatch `c8s-image-manual.yml` (Actions name:
 `c8s-image manual`), with the existing `dev`, `c8s_ref`, `confos_ref` and
 `gate` inputs. It builds through the same reusable builder but cannot call
-exact acceptance or promote stable aliases. `tdx-metal-e2e.yml` remains
+exact acceptance or promote stable aliases. To build the images of one
+commit without pairing it with another commit's profile or components, run
+`.github/scripts/publish-ref-images.sh --sha <full-sha> [--dev] [--confos-ref <sha>]`:
+it points a build branch at the commit, publishes the component tags through
+`docker.yml` if `:<short-sha>` is missing, then dispatches this workflow with
+the matching `c8s_ref`, and prints the resulting tags. `tdx-metal-e2e.yml` remains
 manually dispatchable for published-image regression and `keep_cvm` debugging.
 
 ### Post-start exec
