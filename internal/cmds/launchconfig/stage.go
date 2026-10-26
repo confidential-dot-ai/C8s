@@ -47,30 +47,7 @@ func Stage(ctx context.Context, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	providerID, err := readProviderID(cfg, verified.document.Role)
-	if err != nil {
-		return err
-	}
-	return stageVerified(cfg, verified, providerID)
-}
-
-// readProviderID reads the worker's unsigned provider ID. Any other role
-// refuses one, so a host cannot hand a document to the wrong role unnoticed.
-func readProviderID(cfg Config, role Role) (string, error) {
-	if role != Worker {
-		if cfg.ProviderIDPath != "" {
-			return "", fmt.Errorf("a provider ID is for role worker only")
-		}
-		return "", nil
-	}
-	if cfg.ProviderIDPath == "" {
-		return "", fmt.Errorf("role worker requires a provider ID")
-	}
-	data, err := readBounded(cfg.ProviderIDPath, MaxProviderIDSize)
-	if err != nil {
-		return "", err
-	}
-	return ParseProviderID(data)
+	return stageVerified(cfg, verified)
 }
 
 func (c Config) path(absolute string) string {
@@ -86,7 +63,7 @@ func clearOutputs(cfg Config) error {
 	// attempting to remove the other.
 	var errs []error
 	paths := []string{serverMarker, agentMarker, podMarker, workerMarker, serverTokenPath, agentTokenPath, rke2FragmentPath, nodePasswordPath, rke2RegistriesPath,
-		workerBootstrapKubeconfig, workerCA, workerKubeletDropIn, workerKubeletEnv}
+		workerBootstrapKubeconfig, workerCA, workerKubeletDropIn}
 	for _, name := range []string{"peers.json", "cds.json", "pods.json", "operator-pubkey", "config.json", "workloads.json"} {
 		paths = append(paths, Dir+"/"+name)
 	}
@@ -103,7 +80,7 @@ type outputFile struct {
 	data []byte
 }
 
-func stageVerified(cfg Config, v *Verified, providerID string) error {
+func stageVerified(cfg Config, v *Verified) error {
 	doc := &v.document
 	if doc.Role == Server && doc.Server.Address == "" {
 		address := doc.Node.IP
@@ -164,7 +141,7 @@ func stageVerified(cfg Config, v *Verified, providerID string) error {
 	if doc.Role == Worker {
 		// No RKE2 token or fragment: the kubelet joins with the node's own
 		// attestation, through the credential plugin its kubeconfig names.
-		worker, err := workerOutputs(doc, providerID)
+		worker, err := workerOutputs(doc)
 		if err != nil {
 			return err
 		}

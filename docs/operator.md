@@ -332,10 +332,10 @@ the API server's hostname (reached on 443), the one CA it chains to, the
 cluster DNS address and the pod and Service ranges. The ranges and DNS address
 replace the baked mesh policy's `cluster_ranges` and `resolver`.
 
-Each node's opkeydata also carries `provider-id`, unsigned: the Cluster API
-provider ID of the Machine it is, `<provider>://<id>` in `[A-Za-z0-9._/-]`.
-Staging requires it for a worker and refuses it for every other role. It names
-which Machine a node is, not what may run on it.
+The kubelet runs with `--cloud-provider=external`: it registers its Node with
+the `node.cloudprovider.kubernetes.io/uninitialized` taint, and the cluster's
+cloud controller manager sets the node's provider ID and clears the taint.
+Nothing on the node or its opkeydata names the Machine it is.
 
 Staging writes the kubelet's bootstrap kubeconfig under `/run/c8s-worker`: the
 signed server and CA, with `c8s node-credential` as its exec user, pinned to the

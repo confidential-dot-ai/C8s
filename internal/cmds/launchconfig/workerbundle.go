@@ -14,8 +14,6 @@ import (
 //
 //	<dir>/worker.key  the pool's launch key (unless --launch-key names one)
 //	<dir>/worker/     pubkey, launch.yaml, launch.yaml.sig: each node's opkeydata
-//
-// Each node's opkeydata also carries its own unsigned provider-id.
 const (
 	workerKeyFile = "worker.key"
 	workerDir     = "worker"

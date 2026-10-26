@@ -8,8 +8,6 @@ import (
 	"encoding/pem"
 	"fmt"
 	"net/netip"
-	"regexp"
-	"strings"
 
 	clientcmdv1 "k8s.io/client-go/tools/clientcmd/api/v1"
 	"sigs.k8s.io/yaml"
@@ -124,7 +122,6 @@ const (
 	workerBootstrapKubeconfig = WorkerDir + "/bootstrap-kubeconfig"
 	workerCA                  = WorkerDir + "/ca.crt"
 	workerKubeletDropIn       = WorkerDir + "/kubelet.conf.d/50-cluster.conf"
-	workerKubeletEnv          = WorkerDir + "/kubelet.env"
 	// credentialPlugin is the measured binary the bootstrap kubeconfig runs.
 	credentialPlugin = "/usr/local/bin/c8s"
 )
@@ -183,26 +180,7 @@ func kubeletDropIn(doc *Document) ([]byte, error) {
 	})
 }
 
-// MaxProviderIDSize bounds the unsigned provider ID file.
-const MaxProviderIDSize = 256
-
-// providerIDRE is a Cluster API provider ID, <provider>://<id>, in
-// characters a systemd environment file and the kubelet's flag take as is.
-var providerIDRE = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}://[A-Za-z0-9][A-Za-z0-9._/-]{0,200}$`)
-
-// ParseProviderID checks the provider ID that comes beside the signed
-// document, unsigned: it names the Machine this node is, which is not a
-// confidentiality decision, so the host may supply it, but it must not
-// smuggle anything else into the kubelet's environment.
-func ParseProviderID(data []byte) (string, error) {
-	id := strings.TrimSuffix(string(data), "\n")
-	if !providerIDRE.MatchString(id) {
-		return "", fmt.Errorf("provider ID must be <provider>://<id> in [A-Za-z0-9._/-]")
-	}
-	return id, nil
-}
-
-func workerOutputs(doc *Document, providerID string) ([]outputFile, error) {
+func workerOutputs(doc *Document) ([]outputFile, error) {
 	kubeconfig, err := bootstrapKubeconfig(doc)
 	if err != nil {
 		return nil, fmt.Errorf("encode bootstrap kubeconfig: %w", err)
@@ -215,6 +193,5 @@ func workerOutputs(doc *Document, providerID string) ([]outputFile, error) {
 		{workerBootstrapKubeconfig, kubeconfig},
 		{workerCA, []byte(doc.Kubernetes.CACertificate)},
 		{workerKubeletDropIn, dropIn},
-		{workerKubeletEnv, []byte("KUBELET_PROVIDER_ID=" + providerID + "\n")},
 	}, nil
 }

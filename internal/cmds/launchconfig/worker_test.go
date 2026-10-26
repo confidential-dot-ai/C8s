@@ -24,8 +24,6 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
-const testProviderID = "confidential://i-0123456789abcdef"
-
 func testCAPEM(t *testing.T, isCA bool) string {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -59,22 +57,12 @@ func testWorkerDocument(t *testing.T, platform string) (Document, *ecdsa.Private
 	return doc, key, pub
 }
 
-func testWorkerConfig(t *testing.T, doc Document, key *ecdsa.PrivateKey, providerID string) Config {
-	t.Helper()
-	cfg := testConfig(t, doc, key)
-	cfg.ProviderIDPath = filepath.Join(t.TempDir(), "provider-id")
-	if err := os.WriteFile(cfg.ProviderIDPath, []byte(providerID), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	return cfg
-}
-
 func TestStageWorkerRole(t *testing.T) {
 	for _, platform := range []string{"snp", "tdx"} {
 		t.Run(platform, func(t *testing.T) {
 			doc, key, pub := testWorkerDocument(t, platform)
 			testLoader(t, doc, pub)
-			cfg := testWorkerConfig(t, doc, key, testProviderID+"\n")
+			cfg := testConfig(t, doc, key)
 			// A stale marker from another role must not survive restaging.
 			if err := os.MkdirAll(cfg.path("/run/confos"), 0o700); err != nil {
 				t.Fatal(err)
@@ -146,52 +134,8 @@ func TestStageWorkerRole(t *testing.T) {
 			if len(kubelet) != 5 || kubelet["authentication"].(map[string]any)["x509"].(map[string]any)["clientCAFile"] != workerCA {
 				t.Fatalf("kubelet drop-in %s", dropIn)
 			}
-			env, err := os.ReadFile(cfg.path(workerKubeletEnv))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if string(env) != "KUBELET_PROVIDER_ID="+testProviderID+"\n" {
-				t.Fatalf("kubelet env %q", env)
-			}
 		})
 	}
-}
-
-func TestStageWorkerProviderID(t *testing.T) {
-	for _, tc := range []struct{ name, id, want string }{
-		{"newline injection", testProviderID + "\nKUBELET_EXTRA=--anonymous-auth", "provider ID"},
-		{"spaces", "confidential://a b", "provider ID"},
-		{"no scheme", "i-0123", "provider ID"},
-		{"shell", "confidential://$(id)", "provider ID"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			doc, key, pub := testWorkerDocument(t, "tdx")
-			testLoader(t, doc, pub)
-			cfg := testWorkerConfig(t, doc, key, tc.id)
-			if err := Stage(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("Stage = %v, want %q", err, tc.want)
-			}
-			requireAbsent(t, cfg.path(workerMarker))
-		})
-	}
-	t.Run("missing", func(t *testing.T) {
-		doc, key, pub := testWorkerDocument(t, "tdx")
-		testLoader(t, doc, pub)
-		cfg := testConfig(t, doc, key)
-		if err := Stage(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "requires a provider ID") {
-			t.Fatalf("Stage = %v", err)
-		}
-		requireAbsent(t, cfg.path(workerMarker))
-	})
-	t.Run("another role", func(t *testing.T) {
-		doc, key, pub := testDocument(t, "tdx", Agent)
-		testLoader(t, doc, pub)
-		cfg := testWorkerConfig(t, doc, key, testProviderID)
-		if err := Stage(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "role worker only") {
-			t.Fatalf("Stage = %v", err)
-		}
-		requireAbsent(t, cfg.path(agentMarker))
-	})
 }
 
 // A worker's launch key is one of the pool keys CDS admits as nodes, and
@@ -209,7 +153,7 @@ func TestVerifyWorkerLaunchKey(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			testLoader(t, doc, signer.pub)
-			cfg := testWorkerConfig(t, doc, signer.key, testProviderID)
+			cfg := testConfig(t, doc, signer.key)
 			if err := Stage(context.Background(), cfg); err == nil {
 				t.Fatal("a worker staged under a launch key its pool does not list")
 			}
@@ -298,16 +242,12 @@ func TestNewWorkerBundleStages(t *testing.T) {
 	}
 	requirePresent(t, filepath.Join(dir, workerKeyFile))
 
-	// Every node of the pool stages the one document with its own provider ID.
+	// Every node of the pool stages the one document as it is.
 	testLoader(t, *doc, string(pub))
 	cfg := Config{
 		Platform: "tdx", RootDir: t.TempDir(),
-		DocumentPath:   filepath.Join(dir, workerDir, documentFile),
-		SignaturePath:  filepath.Join(dir, workerDir, signatureFile),
-		ProviderIDPath: filepath.Join(in, "provider-id"),
-	}
-	if err := os.WriteFile(cfg.ProviderIDPath, []byte(testProviderID), 0o644); err != nil {
-		t.Fatal(err)
+		DocumentPath:  filepath.Join(dir, workerDir, documentFile),
+		SignaturePath: filepath.Join(dir, workerDir, signatureFile),
 	}
 	if err := Stage(context.Background(), cfg); err != nil {
 		t.Fatalf("stage the pool's document: %v", err)

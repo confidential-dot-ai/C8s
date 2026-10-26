@@ -397,10 +397,7 @@ type Config struct {
 	// MeasuredPoliciesFile is the node's measured-policy journal, as
 	// cred-release's --measured-policies-file. Empty replays none.
 	MeasuredPoliciesFile string
-	// ProviderIDPath is the worker's unsigned provider ID beside the signed
-	// document (ParseProviderID); a worker requires it, other roles refuse it.
-	ProviderIDPath string
-	RootDir        string
+	RootDir              string
 }
 
 var loadMeasuredIdentity = credrelease.LoadMeasuredIdentity

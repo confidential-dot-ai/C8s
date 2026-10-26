@@ -36,14 +36,7 @@ timeout 10 mount -t iso9660 -o ro,nodev,nosuid,noexec "$device" "$mount_dir"
 mounted=1
 # C8s authenticates the exact bytes before strict parsing and writes the
 # selected role marker only after every launch output has been staged.
-# A worker's opkeydata also carries its unsigned provider ID; stage requires
-# it for role worker and refuses it for every other role.
-provider_id=
-if [ -e "$mount_dir/provider-id" ]; then
-    provider_id="--provider-id-file=$mount_dir/provider-id"
-fi
 c8s launch-config stage --platform="$CRED_PLATFORM" \
-    --config="$mount_dir/launch.yaml" --signature="$mount_dir/launch.yaml.sig" \
-    ${provider_id:+"$provider_id"}
+    --config="$mount_dir/launch.yaml" --signature="$mount_dir/launch.yaml.sig"
 c8s node-services prepare
 complete=1

@@ -193,9 +193,10 @@ token (c8s node-credential), and the node's name comes from its own key.
   <out>/worker.key  the pool's launch key (not written with --launch-key)
   <out>/worker/     pubkey, launch.yaml, launch.yaml.sig: each node's opkeydata
 
-Each node's opkeydata also carries a provider-id file, unsigned, naming the
-Cluster API Machine the node is. CDS at --server-address must admit the
-pool's launch key as a node (its agent keys). See docs/operator.md, "Worker".`,
+The kubelet runs with an external cloud provider: the cluster's cloud
+controller manager sets the node's provider ID. CDS at --server-address must
+admit the pool's launch key as a node (its agent keys). See docs/operator.md,
+"Worker".`,
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -244,7 +245,6 @@ func newStageCmd() *cobra.Command {
 	f.StringVar(&cfg.AttestationAPIURL, "attestation-api-url", DefaultAttestationAPIURL, "trusted node-local attestation API")
 	f.StringVar(&cfg.DocumentPath, "config", "", "required signed launch.yaml")
 	f.StringVar(&cfg.SignaturePath, "signature", "", "required detached launch.yaml.sig")
-	f.StringVar(&cfg.ProviderIDPath, "provider-id-file", "", "a worker's unsigned provider ID; required for role worker, refused for every other role")
 	f.StringVar(&cfg.MeasuredPoliciesFile, "measured-policies-file", armtls.NodeJournal, "the node's journal of allowlist policies extended into TDX RTMR[3]; the operator-key binding check replays it, as cred-release's flag of the same name. Empty replays none")
 	for _, name := range []string{"platform", "config", "signature"} {
 		_ = stage.MarkFlagRequired(name)
