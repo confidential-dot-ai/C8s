@@ -31,10 +31,10 @@ jq -n --arg m "$measurement" '{tdx: {mrtd: $m, rtmr1: $m, rtmr2: $m}}' > "$fixtu
 manifest_sha=$(sha256sum "$fixture/evidence/manifest.json" | cut -d ' ' -f1)
 jq -n --arg source "$source_sha" --arg run "$run" --arg image "$image" --arg hash "$manifest_sha" \
   '{schema: 1, source_sha: $source, run_id: $run, build_attempt: "2", c8s_ref: $source[0:7],
-    variant: "rke2-tdx", launch_config_version: "c8s-launch/v1", image: $image, artifact: $image, manifest_sha256: $hash}' > "$fixture/good.json"
+    variant: "rke2-tdx", launch_config_version: "c8s-launch/v2", image: $image, artifact: $image, manifest_sha256: $hash}' > "$fixture/good.json"
 cp "$fixture/good.json" "$fixture/evidence/acceptance.json"
 output=$(bash "$script" validate "$fixture/evidence" "$source_sha" "$run")
-[[ $output == *"image=$image"* && $output == *'c8sRef=aaaaaaa'* && $output == *'launchConfigVersion=c8s-launch/v1'* && $output == *"rtmr2=$measurement"* ]] || fail 'missing validated environment'
+[[ $output == *"image=$image"* && $output == *'c8sRef=aaaaaaa'* && $output == *'launchConfigVersion=c8s-launch/v2'* && $output == *"rtmr2=$measurement"* ]] || fail 'missing validated environment'
 pass
 for mutation in \
   '.source_sha = "cccccccccccccccccccccccccccccccccccccccc"' \
@@ -43,6 +43,7 @@ for mutation in \
   'del(.build_attempt)' \
   '.schema = 2' \
   '.launch_config_version = "legacy"' \
+  '.launch_config_version = "c8s-launch/v1"' \
   'del(.launch_config_version)' \
   '.variant = "rke2-tdx-dev"' \
   '.variant = "rke2-snp"' \
