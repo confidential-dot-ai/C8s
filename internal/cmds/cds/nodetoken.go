@@ -126,8 +126,10 @@ func parseNodeKey(s string) (*ecdsa.PublicKey, error) {
 
 // newNodeTokenIssuer builds the node token issuer and its discovery listener's
 // TLS identity from the --node-token-* flags, or nothing when
-// --node-token-issuer is empty.
-func newNodeTokenIssuer(cfg config) (*nodetoken.Issuer, *nodetoken.Serving, error) {
+// --node-token-issuer is empty. nodesPinned says whether /attest's node pins
+// hold a node to a whole image: image pins, or launch measurements with RTMR
+// pins, since on TDX a measurement alone pins only the firmware.
+func newNodeTokenIssuer(cfg config, nodesPinned bool) (*nodetoken.Issuer, *nodetoken.Serving, error) {
 	if cfg.nodeTokenIssuer == "" {
 		return nil, nil, nil
 	}
@@ -135,6 +137,12 @@ func newNodeTokenIssuer(cfg config) (*nodetoken.Issuer, *nodetoken.Serving, erro
 		// The token endpoint is only safe behind armTLS: the node must have
 		// checked CDS before it hands over evidence for its join.
 		return nil, nil, errors.New("--node-token-issuer requires --armtls-platform")
+	}
+	if !nodesPinned {
+		// /attest tolerates unpinned nodes in development; a node token makes
+		// its holder a node of the cluster, which schedules workloads on it,
+		// so any genuine TEE running any image must not get one.
+		return nil, nil, errors.New("--node-token-issuer requires node pins: an image policy, or --measurements with --rtmrs")
 	}
 	issuer, err := nodetoken.New(nodetoken.Config{
 		URL:       cfg.nodeTokenIssuer,
@@ -156,10 +164,14 @@ func newNodeTokenIssuer(cfg config) (*nodetoken.Issuer, *nodetoken.Serving, erro
 	return issuer, serving, nil
 }
 
+// errListenerFailed ends CDS when a listener it cannot do without stops.
+var errListenerFailed = errors.New("listener failed")
+
 // serveNodeTokenDiscovery serves the issuer's discovery document and keys on
 // their own plain-TLS listener, which an API server's JWT authenticator can
-// read: it pins the issuer's CA, and has no armTLS verifier.
-func serveNodeTokenDiscovery(ctx context.Context, cfg config, issuer *nodetoken.Issuer, serving *nodetoken.Serving) error {
+// read: it pins the issuer's CA, and has no armTLS verifier. If the listener
+// stops, fail ends CDS rather than leave it minting tokens nobody can check.
+func serveNodeTokenDiscovery(ctx context.Context, fail context.CancelCauseFunc, cfg config, issuer *nodetoken.Issuer, serving *nodetoken.Serving) error {
 	handler, err := issuer.Handler()
 	if err != nil {
 		return err
@@ -174,6 +186,7 @@ func serveNodeTokenDiscovery(ctx context.Context, cfg config, issuer *nodetoken.
 	go func() {
 		if err := srv.ServeTLS(ln, "", ""); err != nil && err != http.ErrServerClosed {
 			slog.Error("node token discovery listener stopped", "error", err)
+			fail(fmt.Errorf("%w: node token discovery: %w", errListenerFailed, err))
 		}
 	}()
 	slog.Info("node token issuer serving discovery", "addr", ln.Addr().String(),

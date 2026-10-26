@@ -36,7 +36,10 @@ node (CVM)                         CDS                          tenant API serve
    or calls the verifier. Otherwise the request goes through exactly the checks
    `/attest` makes for a mesh leaf: the challenge is single use, and the
    verifier, the launch-digest pins, the RTMR pins and the runtime extensions
-   all apply. A node `/attest` would refuse gets no token.
+   all apply. A node `/attest` would refuse gets no token. Unlike `/attest`,
+   the issuer will not start without node pins that fix the whole image: a
+   node token makes its holder a node that runs workloads, and on TDX a
+   launch measurement alone pins only the firmware.
 4. The token is signed with ES256 and lives at most five minutes. It carries
    `iss`, `aud`, `sub`, `cluster`, `tee`, `launch_digest`, `iat`, `nbf`, `exp` and `jti`.
    `sub` is `n-` and the first 8 bytes of SHA-256 over the node key, in hex. It
@@ -127,8 +130,9 @@ check a token, not mint one.
 
 That listener's certificate comes from a CA of its own, never the mesh CA, so
 nothing it signs can pass as a mesh identity. The CA is name-constrained to the
-issuer's host and signs only serverAuth leaves, which last 30 days and are
-renewed a third of their life before they end. Read the CA from
+issuer's host, excludes every IP address, and signs only serverAuth leaves, which last 30 days and are
+renewed a third of their life before they end. If the listener stops, CDS
+exits rather than keep minting tokens nobody can check. Read the CA from
 `GET /node-token/ca` over armTLS, where CDS's attestation vouches for it, and
 pin its fingerprint, which CDS also logs at start, in the pool's policy.
 
@@ -136,7 +140,7 @@ pin its fingerprint, which CDS also logs at start, in the pool's policy.
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--node-token-issuer` | empty (off) | The issuer URL, as the API server names it. Setting it routes `/node-token` and `/node-token/ca` and starts the discovery listener. Needs `--armtls-platform`. |
+| `--node-token-issuer` | empty (off) | The issuer URL, as the API server names it. Setting it routes `/node-token` and `/node-token/ca` and starts the discovery listener. Needs `--armtls-platform` and node pins: an image policy, or `--measurements` with `--rtmrs`. |
 | `--node-token-audience` | none | The hostname of an API server tokens are minted for (repeatable, required). |
 | `--node-token-cluster` | none | The cluster id carried in every token (required). |
 | `--node-token-ttl` | `5m` | Token lifetime, at most 5m. |

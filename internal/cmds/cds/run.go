@@ -49,6 +49,9 @@ func run(cfg config) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	// A listener CDS cannot do without ends the run with its error.
+	ctx, fail := context.WithCancelCause(ctx)
+	defer fail(nil)
 
 	attestationURL, err := cmdsutil.ExpandHostIP(cfg.attestationApiURL)
 	if err != nil {
@@ -308,7 +311,8 @@ func run(cfg config) error {
 		slog.Warn("NOT serving /secrets: any workload depending on a secret will fail to start", "reason", why)
 	}
 
-	nodeTokens, nodeTokenServing, err := newNodeTokenIssuer(cfg)
+	nodesPinned := len(pinned.Images) > 0 || (len(measurements) > 0 && len(rtmrPins) > 0)
+	nodeTokens, nodeTokenServing, err := newNodeTokenIssuer(cfg, nodesPinned)
 	if err != nil {
 		return err
 	}
@@ -398,7 +402,7 @@ func run(cfg config) error {
 	}
 
 	if nodeTokens != nil {
-		if err := serveNodeTokenDiscovery(ctx, cfg, nodeTokens, nodeTokenServing); err != nil {
+		if err := serveNodeTokenDiscovery(ctx, fail, cfg, nodeTokens, nodeTokenServing); err != nil {
 			return err
 		}
 	}
@@ -409,6 +413,9 @@ func run(cfg config) error {
 	slog.Info("cds listening", "addr", addr)
 	if err := serve(); err != http.ErrServerClosed {
 		return cmdsutil.NodeIPChanged(ctx, err)
+	}
+	if cause := context.Cause(ctx); errors.Is(cause, errListenerFailed) {
+		return cause
 	}
 	return cmdsutil.NodeIPChanged(ctx, nil)
 }

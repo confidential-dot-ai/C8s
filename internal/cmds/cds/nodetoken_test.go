@@ -13,12 +13,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
+
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
 	"github.com/confidential-dot-ai/c8s/internal/nodetoken"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
-	"github.com/golang-jwt/jwt/v5"
 )
 
 const testNodeTokenAudience = "cl-1.k8s.example.test"
@@ -190,7 +191,7 @@ func TestNodeToken_RefusesBadRequests(t *testing.T) {
 }
 
 func TestNewNodeTokenIssuer(t *testing.T) {
-	if tokens, serving, err := newNodeTokenIssuer(config{}); tokens != nil || serving != nil || err != nil {
+	if tokens, serving, err := newNodeTokenIssuer(config{}, false); tokens != nil || serving != nil || err != nil {
 		t.Fatalf("off by default: got %v %v %v", tokens, serving, err)
 	}
 	cfg := config{
@@ -199,11 +200,14 @@ func TestNewNodeTokenIssuer(t *testing.T) {
 		nodeTokenCluster:   "cl-1",
 		nodeTokenTTL:       nodetoken.MaxTTL,
 	}
-	if _, _, err := newNodeTokenIssuer(cfg); err == nil {
+	if _, _, err := newNodeTokenIssuer(cfg, true); err == nil {
 		t.Fatal("issuer started without armTLS in front of /node-token")
 	}
 	cfg.armtlsPlatform = "snp"
-	tokens, serving, err := newNodeTokenIssuer(cfg)
+	if _, _, err := newNodeTokenIssuer(cfg, false); err == nil {
+		t.Fatal("issuer started without node pins, so any attested TEE would get a node token")
+	}
+	tokens, serving, err := newNodeTokenIssuer(cfg, true)
 	if err != nil {
 		t.Fatal(err)
 	}
