@@ -162,7 +162,10 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 
 	// 4. Assemble + write the kubeconfig.
-	kc := buildKubeconfig(cfg.APIServerURL, cfg.ContextName, cfg.TLSServerName, []byte(resp.CertPEM), id.keyPEM, []byte(resp.CAPEM))
+	kc, err := buildKubeconfig(cfg.APIServerURL, cfg.ContextName, cfg.TLSServerName, []byte(resp.CertPEM), id.keyPEM, []byte(resp.CAPEM))
+	if err != nil {
+		return fmt.Errorf("build kubeconfig: %w", err)
+	}
 	if err := os.WriteFile(cfg.OutPath, kc, 0o600); err != nil {
 		return fmt.Errorf("write kubeconfig: %w", err)
 	}
