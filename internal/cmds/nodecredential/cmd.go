@@ -77,8 +77,8 @@ See docs/node-tokens.md.`,
 	flags := cmd.Flags()
 	cmdsutil.BindImagePolicyFlags(flags, &cfg.measurementsConfig, &cfg.measurementsConfigJSON, "pins CDS; excludes --cds-measurements and --cds-rtmrs")
 	flags.StringVar(&cfg.cdsURL, "cds-url", "", "https URL of the cluster's CDS, reached over armTLS")
-	flags.StringVar(&cfg.cdsMeasurements, "cds-measurements", "", "comma-separated SHA-384 hex launch measurements CDS must present (required unless a measurements config pins CDS)")
-	flags.StringVar(&cfg.cdsRTMRs, "cds-rtmrs", "", "comma-separated TDX RTMR pins <index>=<sha384-hex> CDS must additionally satisfy")
+	flags.StringVar(&cfg.cdsMeasurements, "cds-measurements", "", "comma-separated SHA-384 hex launch measurements CDS must present; with --cds-rtmrs, required unless a measurements config pins CDS's images")
+	flags.StringVar(&cfg.cdsRTMRs, "cds-rtmrs", "", "comma-separated TDX RTMR pins <index>=<sha384-hex> CDS must additionally satisfy; required with --cds-measurements")
 	flags.StringVar(&cfg.attestationApiURL, "attestation-api-url", "", "URL of the node-local attestation-api (http://127.0.0.1:8400, or unix:// plus its socket path)")
 	flags.StringVar(&cfg.nodeKeyPath, "node-key", DefaultNodeKeyPath, "path of the node key, made on first use with mode 0600")
 	flags.StringVar(&cfg.apiServer, "api-server", "", "hostname of the cluster's API server, which the token is minted for")
@@ -109,10 +109,12 @@ func newObtain(cfg config) (obtainFunc, error) {
 	if err != nil {
 		return nil, err
 	}
-	// A node hands CDS its evidence and takes back its join credential, so an
-	// unpinned CDS is never acceptable here, unlike for a pod's leaf.
-	if len(policy.Measurements)+len(policy.Images) == 0 {
-		return nil, errors.New("CDS is unpinned: set --cds-measurements or a measurements config")
+	// A node hands CDS its evidence and takes back a bearer join credential,
+	// so CDS must be pinned to a whole image, unlike for a pod's leaf: on TDX a
+	// launch measurement alone pins only the firmware, and a same-firmware
+	// impostor could relay the node's evidence and keep the token.
+	if len(policy.Images) == 0 && (len(policy.Measurements) == 0 || len(policy.Registers) == 0) {
+		return nil, errors.New("CDS is not pinned to a whole image: set a measurements config with images, or --cds-measurements with --cds-rtmrs")
 	}
 	httpClient, err := armtls.NewVerifyingHTTPClient(armtls.Pins(policy), cfg.attestationApiURL)
 	if err != nil {

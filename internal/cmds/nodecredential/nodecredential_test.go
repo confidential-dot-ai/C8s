@@ -188,6 +188,7 @@ func TestNewObtain_RefusesUnpinnedConfig(t *testing.T) {
 	base := config{
 		cdsURL: "https://cds.example.test", attestationApiURL: "http://127.0.0.1:8400",
 		apiServer: testHost, apiCASHA256: fp, cdsMeasurements: strings.Repeat("ab", 48),
+		cdsRTMRs: "1=" + strings.Repeat("cd", 48) + ",2=" + strings.Repeat("ef", 48),
 	}
 	cases := map[string]func(*config){
 		"no api server": func(c *config) { c.apiServer = "" },
