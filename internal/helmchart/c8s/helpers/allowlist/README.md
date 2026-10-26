@@ -32,8 +32,9 @@ containerd-prep images are seeded through `c8s.argvPinnedEntries`.
 With `node.baked=true`, the same derivation covers the operator/get-cert,
 CDS, mesh and nginx images rendered into the measured guest. The host stages
 this seed merged with signed workload entries for CDS; the image also admits
-the core images in its NRI bootstrap floor. The local-path helper remains
-argv-pinned in the seed for baked nodes.
+the core images in its NRI bootstrap floor. The local-path helper is seeded,
+argv-pinned, only with `rke2.localPathHelper.enabled` (`c8s node-image render
+--local-path`, a `C8S_LOCAL_PATH=1` image).
 
 `c8s.openArgsEntries` extracts workload digests whose args, environment and
 mount policies are unconstrained and whose command is `any` or `exact`, as
@@ -166,7 +167,7 @@ entry names to workload policies for these platform images:
 |---|---|---|
 | NRI installer | `nriImagePolicy.enabled` | Install script (pins script when baked), optional uninstall script, `sleep infinity`, the `plugin-ready` readiness endpoint (`nri-image-policy.pluginReadyScript`), and the `c8s uninstall` host-sweep script with its `/bin/sleep 2147483647` pause |
 | NRI containerd-prep | NRI enabled, RKE2, and not baked | Containerd-prep script |
-| Local-path helper | `attestationApi.cvmMode=bare-metal`, helper digest configured | `/bin/sh /script/setup` or `/bin/sh /script/teardown`; args accept per-PVC flags |
+| Local-path helper | `attestationApi.cvmMode=bare-metal`, `rke2.localPathHelper.enabled`, helper digest configured | `/bin/sh /script/setup` or `/bin/sh /script/teardown`; args accept per-PVC flags |
 
 Script argv comes from the same includes/files as the DaemonSets. Trailing
 newlines collapse to one, matching YAML block-scalar clipping. Image

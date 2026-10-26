@@ -464,8 +464,14 @@ rke2:
   # busybox as `/bin/sh /script/{setup,teardown}` with per-PVC flags. The seed
   # pins exactly those two command prefixes — a busybox floor entry would
   # admit any command line on any pod. The digest must match the node image's
-  # baked local-path-storage.yaml (a repo test pins the pair in lockstep).
+  # local-path-storage.yaml (a repo test pins the pair in lockstep).
+  #
+  # Off by default (#872): the entry leaves the helper's args, env and mounts
+  # to the pod, so any pod running this digest supplies its own script with a
+  # host mount. Enable it only on a node image built with C8S_LOCAL_PATH=1,
+  # the build that bakes the provisioner.
   localPathHelper:
+    enabled: false
     image:
       repository: busybox
       digest: "sha256:fd8d9aa63ba2f0982b5304e1ee8d3b90a210bc1ffb5314d980eb6962f1a9715d"
