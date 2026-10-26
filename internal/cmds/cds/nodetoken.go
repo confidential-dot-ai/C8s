@@ -16,13 +16,14 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/spf13/pflag"
+
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/c8s/internal/attestation"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/nodetoken"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
-	"github.com/spf13/pflag"
 )
 
 // NodeTokenHandler serves POST /node-token: a node of a hosted cluster proves
