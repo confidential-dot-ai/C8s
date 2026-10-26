@@ -117,6 +117,7 @@ func (p *plugin) podChanged() {
 }
 
 func (p *plugin) endPodIdentity(reason error) {
+	clear(p.podStarts)
 	if b := p.podBroker; b != nil {
 		if b.terminal == nil {
 			b.terminal = reason

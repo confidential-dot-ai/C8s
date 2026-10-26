@@ -656,14 +656,13 @@ func TestFloorFailsClosedOnTheMeasuredConfig(t *testing.T) {
 	}
 }
 
-// Only the verbs that start a container from a bundle read one: a start or a
-// delete is handed over whatever the bundle says.
+// Cleanup does not require readable policy; starts must establish their role.
 func TestOtherVerbsReadNoBundle(t *testing.T) {
 	rec := &recorder{}
 	stderr := &bytes.Buffer{}
 	w := floorWrapper(rec, stderr, filepath.Join(t.TempDir(), "absent.yaml"))
-	if code := w.Run([]string{"c8s-runc", "start", "ctr"}); !rec.called {
-		t.Fatalf("start was denied by the floor (code %d): %s", code, stderr.String())
+	if code := w.Run([]string{"c8s-runc", "delete", "ctr"}); !rec.called {
+		t.Fatalf("delete was denied by the floor (code %d): %s", code, stderr.String())
 	}
 }
 

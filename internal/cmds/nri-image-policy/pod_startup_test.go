@@ -27,6 +27,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/getcert"
 	"github.com/confidential-dot-ai/c8s/internal/podmesh"
+	"github.com/confidential-dot-ai/c8s/internal/podstart"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
@@ -56,6 +57,10 @@ func runPodBootstrap(t *testing.T, cfg *config, root string, podKey []byte, base
 	cfg.Policy.BootMarkerPath = filepath.Join(dir, "registered")
 	cfg.Containerd.Socket = filepath.Join(dir, "containerd.sock")
 	cfg.Plugin.HealthAddr = "unix://" + filepath.Join(dir, "health.sock")
+	startSocket := filepath.Join(dir, "start.sock")
+	oldListen := listenPodStarts
+	listenPodStarts = func() (net.Listener, error) { return podstart.Listen(startSocket) }
+	t.Cleanup(func() { listenPodStarts = oldListen })
 	cfg.Allowlist.Pull.CDSMeasurementsConfig = filepath.Join(root, cfg.Allowlist.Pull.CDSMeasurementsConfig)
 	cfg.Allowlist.Pull.Timeout = 5 * time.Second
 	cfg.Allowlist.Pull.Interval = 20 * time.Millisecond
@@ -208,8 +213,16 @@ func runPodBootstrap(t *testing.T, cfg *config, root string, podKey []byte, base
 		// The NRI runtime fixture commits the selected image before Start.
 		// Containerd content/snapshot verification has separate RPC coverage.
 		selected.Store(ctr.Id, extractDigest(ctr.Annotations[annotationImageName]))
+		ctr.Pid = uint32(os.Getpid())
 		if err := nri.StartContainer(ctx, &api.StartContainerRequest{Pod: pod, Container: ctr}); err != nil {
 			t.Fatalf("start %s: %v", ctr.Name, err)
+		}
+		permission := podstart.Request{ContainerID: ctr.Id, SandboxID: pod.Id, PID: ctr.Pid}
+		if err := podstart.Consume(ctx, startSocket, permission); err != nil {
+			t.Fatalf("runtime start %s: %v", ctr.Name, err)
+		}
+		if err := podstart.Consume(ctx, startSocket, permission); err == nil {
+			t.Fatalf("runtime reused %s admission", ctr.Name)
 		}
 		return ctr
 	}

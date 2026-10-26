@@ -190,8 +190,10 @@ type plugin struct {
 	// measure.rtmr3. Pause sandboxes never reach StartContainer.
 	measurer workloadMeasurer
 	// Pod admission and credential publication share one ordering boundary.
-	podMu     sync.Mutex
-	podBroker *podCredentialBroker
+	podMu                sync.Mutex
+	podBroker            *podCredentialBroker
+	podStarts            map[string]podStartGrant
+	podStartDisconnected atomic.Bool
 
 	// cdsPins is the node-side path of the CDS attestation policy handed to
 	// the injected credential clients, or "" when the node pins nothing.
@@ -254,6 +256,9 @@ func newPlugin(
 	isPreInstalled := os.Getenv("NRI_PLUGIN_NAME") != ""
 
 	var opts []stub.Option
+	if cfg.Pod != nil {
+		opts = append(opts, stub.WithOnClose(p.disconnectPodStarts))
+	}
 	if !isPreInstalled {
 		// Only set name/idx for external plugins - pre-installed plugins
 		// get these from environment variables set by containerd
@@ -297,6 +302,9 @@ func (p *plugin) AppliedAllowlistVersion() uint64 {
 
 // Run starts the plugin and blocks until context is cancelled.
 func (p *plugin) Run(ctx context.Context) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	defer p.disconnectPodStarts()
 	go func() {
 		<-ctx.Done()
 		p.stub.Stop()
@@ -334,6 +342,7 @@ func (p *plugin) Configure(ctx context.Context, config, runtime, version string)
 // Configure).
 func (p *plugin) StopContainer(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) ([]*api.ContainerUpdate, error) {
 	defer p.lockPodAdmission()()
+	delete(p.podStarts, ctr.GetId())
 	if p.inventory != nil {
 		p.inventory.stop(ctr.GetId())
 	}
@@ -346,6 +355,7 @@ func (p *plugin) StopContainer(ctx context.Context, pod *api.PodSandbox, ctr *ap
 // inventory is enabled (see Configure).
 func (p *plugin) RemoveContainer(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) error {
 	defer p.lockPodAdmission()()
+	delete(p.podStarts, ctr.GetId())
 	if p.inventory != nil {
 		p.inventory.remove(ctr.GetId())
 	}
@@ -988,6 +998,7 @@ func (p *plugin) captureExempt(ctx context.Context, pods []*api.PodSandbox, ctrs
 // enforce_existing is set.
 func (p *plugin) Synchronize(ctx context.Context, pods []*api.PodSandbox, ctrs []*api.Container) ([]*api.ContainerUpdate, error) {
 	defer p.lockPodAdmission()()
+	clear(p.podStarts)
 	cfg := p.cfg
 
 	// Seed the inventory's sandbox set now, even when the container check is
@@ -1192,6 +1203,7 @@ func (p *plugin) CreateContainer(ctx context.Context, pod *api.PodSandbox, ctr *
 // argv/env. Failed checks leave no admitted-container evidence.
 func (p *plugin) StartContainer(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) error {
 	defer p.lockPodAdmission()()
+	delete(p.podStarts, ctr.GetId())
 	ctx = withResolved(ctx)
 	cfg := p.cfg
 	imageRef, err := p.containerImage(pod, ctr)
@@ -1200,6 +1212,9 @@ func (p *plugin) StartContainer(ctx context.Context, pod *api.PodSandbox, ctr *a
 	}
 	var credentialSource string
 	if cfg.Pod != nil {
+		if p.measurer == nil {
+			return p.denyContainer(pod.GetId(), errors.New("pod start requires the runtime measurement journal"))
+		}
 		if err := p.containerd.VerifyContainerImage(ctx, ctr.GetId(), pod.GetId(), imageRef); err != nil {
 			return p.denyContainer(pod.GetId(), fmt.Errorf("verify selected Pod image: %w", err))
 		}
@@ -1231,7 +1246,7 @@ func (p *plugin) StartContainer(ctx context.Context, pod *api.PodSandbox, ctr *a
 		// brings up with CDS.
 		p.noteMeshStarted(ctx, pod, ctr, imageRef)
 		p.recordForInventory(ctx, pod, ctr, imageRef)
-		return p.afterPodStart(pod, credentialSource)
+		return p.finishPodStart(ctx, pod, ctr, credentialSource)
 	}
 	verdict, reason := p.checkContainer(ctx, cfg, pod, ctr, imageRef)
 	if verdict == verdictDeny && cfg.Policy.Mode != ModeAudit {
@@ -1242,7 +1257,7 @@ func (p *plugin) StartContainer(ctx context.Context, pod *api.PodSandbox, ctr *a
 	}
 	p.noteMeshStarted(ctx, pod, ctr, imageRef)
 	p.recordForInventory(ctx, pod, ctr, imageRef)
-	return p.afterPodStart(pod, credentialSource)
+	return p.finishPodStart(ctx, pod, ctr, credentialSource)
 }
 
 // transientRefusal returns a start refusal a node does not record, so a

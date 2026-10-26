@@ -16,19 +16,19 @@ because every one of those paths ends in the same `runc exec`.
 `internal/cmds/c8srunc` is a dispatcher in front of runc:
 
 ```text
-if build == locked && subcommand == exec:
-    exit non-zero, never reach runc
-else:
-    execve the real runc with the original argv, environment and file descriptors
+reject exec in locked builds and restore in every mode
+check the measured privilege policy before create/run
+in the Pod role, reject run and require admission before start
+execve the real runc with the original argv, environment and file descriptors
 ```
 
 It parses runc's global options — `--debug`, `--log`, `--log-format`, `--root`,
 `--systemd-cgroup`, `--rootless`, in every spelling Go's flag package accepts,
 including after a `--` — only to find the subcommand. An option it does not
 recognise is a denial, not a guess: a token modelled wrongly shifts which
-argument the subcommand is. It has no allowlist, reads no configuration, and
-takes its posture from a build-time constant, so nothing on a running node can
-change it.
+argument the subcommand is. The exec posture comes from a build-time constant.
+The privilege floor and Pod start gate use the measured role policy described
+below; a policy read failure denies creation and start.
 
 A denial also lands in the file named by `--log`, in the format `--log-format`
 asks for. containerd builds the error it returns to the kubelet from that file,
@@ -83,6 +83,31 @@ RKE2's base template is vendored at
 `node-guest-image/c8s/containerdcheck/rke2-base-v3.toml.tmpl`. Its header
 records the RKE2 version it came from, and the invariants gate compares that to
 `mkosi.sync`'s `RKE2_VERSION`: a pin bump must re-vendor.
+
+## Pod admission before start
+
+In the Pod role, `create` prepares the process without executing its workload.
+Before `start`, the NRI plugin verifies the selected image, admits the final
+runtime configuration, records its measurement and validates the Pod inventory
+and credential broker. Only then does it grant permission for that container's
+created process to start.
+
+The wrapper reads the persisted runc state using the same global options,
+including `--root`, and consumes that permission over
+`/run/c8s-pod/start.sock`. The socket accepts local root only. Each permission
+binds the container ID, sandbox ID and created PID, can be consumed once, and
+expires after 30 seconds. Missing authority, timeout, mismatch, replay or
+permission expiry denies the start. NRI disconnection, identity loss, container
+removal and plugin shutdown invalidate pending permissions.
+
+The sandbox pause process is exempt only when its persisted sandbox annotation
+matches its own container ID. Pod `run` is refused because it combines creation
+and execution without this separate start boundary. Pod OCI hooks are refused
+at creation, including on the sandbox. A plugin restart requires replacing the
+Pod CVM; it does not restore old start permissions.
+
+This gate applies to the Pod role. The node role retains its existing NRI
+admission path.
 
 ## The privilege floor
 
@@ -158,10 +183,10 @@ preference:
 
 ## Known limits
 
-- The wrapper covers post-start exec, not container creation. Whoever can
-  create a pod can put the command in its initial process; the image policy
-  plugin (`internal/cmds/nri-image-policy`) is what restricts that.
-- `runc checkpoint` and `restore` are not aliases of `exec` and pass through.
+- The image policy plugin (`internal/cmds/nri-image-policy`) restricts the
+  initial process. In the Pod role, the wrapper also requires its one-use
+  admission permission before starting that process.
+- `runc checkpoint` passes through; `restore` is refused in every mode.
 - RKE2's runc stays reachable by name on containerd's `PATH`, because RKE2 puts
   its own data directory there. No enabled handler resolves it, but the wrapper
   is not the only path to that binary for a process already running as root on

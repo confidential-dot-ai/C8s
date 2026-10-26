@@ -93,7 +93,11 @@ func TestPodStartVerifiesEverySelectionBeforeMeasuringAndRecording(t *testing.T)
 	p.inventory = newAdmissionInventory(t.TempDir())
 	p.inventory.recordSandbox(pod.Id)
 	ctr := makeCtrWithImageArgs(pod.Id, "app", "repo:latest", []string{"/app"})
+	ctr.Pid = 1234
 	ctr.Env = []string{}
+	brokerCtx, stopBroker := context.WithCancel(t.Context())
+	t.Cleanup(stopBroker)
+	p.podBroker = &podCredentialBroker{ctx: brokerCtx, cancel: stopBroker, pod: pod}
 	checks := 0
 	p.containerd = &fakeContainerd{verify: func(_ context.Context, containerID, sandboxID, digest string) error {
 		checks++

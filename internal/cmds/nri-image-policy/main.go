@@ -204,8 +204,12 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 	}
 
 	pluginErrCh := make(chan error, 1)
+	startListener, err := plugin.listenPodStarts()
+	if err != nil {
+		return fmt.Errorf("start Pod runtime admission: %w", err)
+	}
 	go func() {
-		pluginErrCh <- plugin.Run(ctx)
+		pluginErrCh <- plugin.runWithPodStarts(ctx, startListener)
 	}()
 
 	if cfg.injectsCredentialClients() {

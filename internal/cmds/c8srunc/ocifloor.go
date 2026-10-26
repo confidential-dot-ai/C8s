@@ -58,6 +58,13 @@ var kernelFSTypes = []string{
 // holds no capabilities. Attachability is refused for every container the
 // wrapper creates, whether or not the floor covers it.
 func requireFloor(spec *specs.Spec, containerID string, stdin *os.File, floor nriimagepolicy.MeshFloor) error {
+	if floor.Pod && spec.Hooks != nil {
+		// Include legacy hook stages: none may execute before Pod admission.
+		hooks, err := json.Marshal(spec.Hooks)
+		if err != nil || string(hooks) != "{}" {
+			return errors.New("pod runtime hooks are not permitted")
+		}
+	}
 	if err := requireNotAttachable(spec, stdin); err != nil {
 		return fmt.Errorf("no container on this node may be attachable: %w", err)
 	}

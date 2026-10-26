@@ -140,8 +140,14 @@ The host NRI plugin gates container start and observes the container's
 **effective argv**: the OCI
 `process.args`, which is the already-merged result of the image config and any
 pod-spec `command`/`args` override. They do not see the override as an override,
-and they do not fetch the image config. Policy is matched against that effective
-argv:
+and they do not fetch the image config.
+
+For the Pod role, the selected image is also verified against containerd's
+content and unpacked rootfs identity before measurement. The runtime wrapper
+requires a one-use permission from the live NRI plugin before executing that
+created process; see [Pod admission before start](node-exec-mode.md#pod-admission-before-start).
+
+Policy is matched against the effective argv:
 
 - **`command`** is matched as an exact **prefix** of the argv (it may be several
   tokens — `/docker-entrypoint.sh nginx`, `/bin/sh -c`, `python3`).
