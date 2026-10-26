@@ -95,7 +95,7 @@ cds_request() {
 # cds_pod_request <method> <route> [body-file] [authorization] [client-cert] [client-key] [header...]
 cds_pod_request() { local url; url="$(cds_node_url)" || return; http_request "$url" "$@"; }
 cds_pod_url() { cds_node_url; }
-# A member requester's CDS requests leave from here (requester_request), so
+# A member requester's CDS requests leave from here (cds_pod_request), so
 # no address lets the CDS see the pod's own as the source.
 cds_service_url() { return "$UNSUPPORTED"; }
 # The guest's address from the allowlist URL, with the CDS Service's node port.
@@ -226,18 +226,11 @@ discovery_wrap() {
         else . end'
 }
 
-# The requester is a mesh member here (exempt_namespace below): a request to
-# one of the node's sockets is sent by curl in the pod through its agent, and
-# any other, which the steps send only to the CDS, from here to its URL,
-# since the node drops a member pod's own TCP to the CDS (cds_request above).
-# A backend with no exempt namespace must send the requester's CDS requests
-# this way.
+# The requester is a mesh member here (exempt_namespace below), so the steps
+# send only its requests to the node's sockets from inside the pod, by curl
+# through its agent; its CDS requests leave from here (cds_pod_request).
 requester_request() {
-    if [ -z "${6:-}" ]; then
-        http_request "$4" "$3" "" "${5:-}"
-        return
-    fi
-    agent_curl "$1" "$2" "$REQUESTER_CONTAINER" "${5:-}" "" "" -X "$3" --unix-socket "$6" "$4"
+    agent_curl "$1" "$2" "$REQUESTER_CONTAINER" "${5:-}" "" "" -X "$3" ${6:+--unix-socket "$6"} "$4"
 }
 
 # agent_curl <ns> <pod> <container> <body-file> <client-cert> <client-key> <curl args...>:
