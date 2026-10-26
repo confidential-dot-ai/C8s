@@ -161,8 +161,6 @@
 #                                    rejection the verifier's reason
 #   exempt_namespace                 a namespace the webhook exempts from the mesh, which
 #                                    the harness may deploy into, or unsupported
-#   cert_paths                       the certificate and key paths of a pod
-#                                    carrying a workload ID, one per line
 #   cds_request <method> <route> [body-file] [authorization] [client-cert] [client-key] [header...]
 #                                    send the request to the CDS from here, as
 #                                    given (empty arguments are omitted; each
@@ -185,8 +183,7 @@
 #                                    the CDS, and undo it; each returns once
 #                                    the Service's endpoints say so
 # node_name, image_ref, image_digest, pull_interval, cds_pod_url,
-# cds_service_url, cert_paths,
-# pod_exec, exempt_namespace and api_service_name answer the same for a whole
+# cds_service_url, pod_exec, exempt_namespace and api_service_name answer the same for a whole
 # run; callers may cache them. The
 # allowlist is state: served_allowlist answers for the moment of the call.
 #
@@ -225,10 +222,14 @@ kubeconfig() { echo "$KUBECONFIG"; }
 # out of the harness's reach answers unsupported from injected_image. The
 # suite's own images (images/, built by conformance-images.yml) stand in for
 # the logical images CONFORMANCE_IMAGES names, for every backend: tenant-app,
-# Alpine's python with the programs the steps run in it; a backend adds its own.
+# Alpine's python with the programs the steps run in it, and model-server,
+# Debian with the reporter as its sleep (images/reporter), whose log a backend
+# without pod exec reads; both carry the curl the steps run in a pod carrying
+# a workload ID to reach the node's sockets. A backend adds its own.
 CONFORMANCE_REPO=ghcr.io/confidential-dot-ai/c8s-conformance-
 declare -A CONFORMANCE_IMAGES=(
     [tenant-app]=sha256:e1c7fc0eef8212a8a5beaf993ed804e518f80cce32d858c3c7e9c1339bdb3938
+    [model-server]=sha256:a4f2d2cbfc58d3ce1305472844e9cda80bd13d01087571169cf0db7600c62f07
 )
 image_ref() {
     [ -z "${CONFORMANCE_IMAGES[$1]:-}" ] || { echo "$CONFORMANCE_REPO$1@${CONFORMANCE_IMAGES[$1]}"; return; }
@@ -236,7 +237,6 @@ image_ref() {
         rogue) echo "docker.io/$CURL_IMAGE" ;;
         nginx) echo "docker.io/${NGINX_IMAGE:-$WORKLOAD_IMAGE}" ;;
         job-runner) echo "docker.io/library/alpine:3.20" ;;
-        model-server) echo "docker.io/library/debian:bookworm-slim" ;;
         model-loader) echo "docker.io/library/busybox:1.35.0" ;;
         requester) echo "docker.io/curlimages/curl:8.11.0" ;;
         secret-client) injected_image ;;
@@ -742,8 +742,6 @@ exempt_namespace() { echo kube-system; }
 # The fully qualified name of the cluster's API Service, which every
 # cluster's DNS answers.
 api_service_name() { echo kubernetes.default.svc.cluster.local; }
-
-cert_paths() { printf '%s/tls.crt\n%s/tls.key\n' "$CERT_VOLUME_PATH" "$CERT_VOLUME_PATH"; }
 
 # dispatch <function> <args...>: an unknown name is a harness error, not a skip.
 dispatch() {

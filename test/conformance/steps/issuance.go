@@ -196,7 +196,10 @@ func carriesWorkloadID(ctx context.Context, name string) error {
 	if p.deployed {
 		return fmt.Errorf("%q is already deployed", name)
 	}
-	p.workloadID = true
+	// Its first container is named as the sidecar an application may run
+	// itself, so the node binds the inventory's socket directory into it and
+	// the steps can redeem tokens for the pod's sandbox there (credentialOf).
+	p.workloadID, p.first = true, attestContainer
 	return nil
 }
 

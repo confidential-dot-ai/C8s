@@ -68,10 +68,6 @@ image_alias() { return $UNSUPPORTED; }
 # The node image's own c8s image is not pullable from the harness host.
 injected_image() { return $UNSUPPORTED; }
 
-# model-server's reporter image (images/reporter), whose log the steps read
-# in place of an exec (pod_read).
-CONFORMANCE_IMAGES[model-server]=sha256:a4f2d2cbfc58d3ce1305472844e9cda80bd13d01087571169cf0db7600c62f07
-
 # The node image keeps its state on encrypted scratch (docs/node-image.md).
 scratch_encrypted() { echo yes; }
 

@@ -2,9 +2,7 @@
 // get-volume sidecars: the config they render from the webhook, the mTLS
 // client bound to the pod's leaf, the challenge/sandbox-token dance around
 // each store request, and the retry loop that waits out "not released yet".
-// The two commands differ only in what they do with the released bytes. The
-// conformance probe (internal/cmds/secretprobe) uses the dance's pieces one at
-// a time, with the sidecar's choices handed to its caller.
+// The two commands differ only in what they do with the released bytes.
 package sidecar
 
 import (

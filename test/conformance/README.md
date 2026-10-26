@@ -26,35 +26,28 @@ sentences needs no change in this repo.
 godog's own flags are bound under `--godog.`: `--godog.format=cucumber:report.json`
 writes the report the runner records, `--godog.tags=@area:enforcement` selects.
 
-## Probes the steps exec
+## The secret requester
 
-Where a scenario needs the cluster to see a request no well-behaved client
-sends, the steps exec a probe built into the `c8s` binary that is already in
-the pod. `c8s secret-probe` (`internal/cmds/secretprobe`) is hidden from
-`c8s --help` because it is a test instrument, not a client for applications:
-run with `kubectl exec -c c8s-cert <pod> -- /c8s secret-probe --cds-url URL
---attestation-api-url URL --cert FILE --key FILE <action>` inside the injected
-certificate sidecar, it performs one workload secret request with every input
-under the caller's control. It verifies the CDS as the sidecars do, through
-armTLS against the pins it is given; the steps give it the attestation API and
-pins the webhook gave that container. `challenge` fetches a fresh CDS challenge and prints it base64;
-`token` redeems a sandbox token for the pod's sandbox from the node's
-inventory socket, bound to the leaf's key and to a given challenge, and prints
-the JSON the Authorization header carries; `request <GET|POST> <path>` sends the
-request with `<path>` verbatim, a fresh or given challenge or none, and a fresh
-or given token or none, then prints one line with the HTTP status (`000`
-when nothing answered, a CDS that issued no challenge included) and the
-challenge and token it sent, base64 or `-` for a header it omitted, and the
-body after it, exactly as received. It exits 0 whenever an answer was printed
-and 2 when it could not ask, so a scenario about a missing or replayed
-challenge, another pod's token, or a non-canonical path reads the CDS's
-verdict rather than a sidecar's refusal to send it, and "that request's"
-challenge is known without a separate fetch. `c8s secret-probe --help` has
-the flags.
+Where a scenario needs the CDS to see a secret request no well-behaved client
+sends, the harness is the requester. The leaf and key a pod carrying a
+workload ID holds are its platform containers' alone, so the harness obtains a
+leaf of its own for the pod's sandbox (`credentialOf` in
+[`steps/secrets.go`](steps/secrets.go)) as a requester in the pod would: a key
+it generates, an issuance challenge, a sandbox token the node's inventory signs
+for the pod's sandbox, redeemed through the pod's first container, which is
+named `cds-attest` so the node binds the socket directory into it, and
+evidence from the pod's node; the CDS binds that leaf to the pod's sandbox as
+it binds the pod's own. Each secret request then leaves the harness host with
+that leaf as its client certificate (`cds_pod_request`), the challenge in the
+`X-C8s-Challenge` header and the token in the `Authorization` header, each
+fresh, given or omitted as the scenario shaped it, so a scenario about a
+missing or replayed challenge, another pod's token or a non-canonical path
+reads the CDS's verdict rather than a client's refusal to send it, and "that
+request's" challenge and token are known without a separate fetch. The pod's
+first container runs curl for the socket requests; the suite's images carry
+it.
 
-An instrument that must run inside a container c8s owns (the certificate
-sidecar's image is the c8s image, with nothing else in it) is a hidden `c8s`
-subcommand; one that is a peer in a pod of its own is an image under
+An instrument that is a peer in a pod of its own is an image under
 [`tools/`](tools).
 
 Where a backend cannot exec into a pod whose argv and mounts a scenario pins,
@@ -159,9 +152,10 @@ For scenarios about secret release, the backend sends one request to the CDS
 as the scenario shaped it (`cds_request`: a method, a route, a body, an
 Authorization and a client certificate, each only when given), which carries
 the operator's secret writes under the write tokens `write_token` mints and a
-self-signed requester's read. The workload requester is `c8s secret-probe`,
-exec'd by the steps in the pod's certificate container (below); the secret
-client's files are read through the pod's first container. Secret paths are
+self-signed requester's read. The workload requester is the harness itself,
+with a leaf it obtained for the pod's sandbox ([above](#the-secret-requester)),
+whose requests leave through `cds_pod_request`; the secret client's files are
+read through the pod's first container. Secret paths are
 logical: a scenario's `/models/key` lives under a per-scenario prefix, since
 the store has no delete and outlives the scenario. A pod carrying a workload
 ID that a secrets scenario (one tagged `@area:secrets`) deploys renews its

@@ -1,6 +1,6 @@
 #!/bin/sh
 # The conformance reporter, as this image's sleep: test/conformance/README.md
-# ("Probes the steps exec"). The paths are CERT_VOLUME_PATH and the steps'
+# ("The secret requester"). The paths are CERT_VOLUME_PATH and the steps'
 # secretClientDir.
 /bin/sleep "$@" &
 pid=$!

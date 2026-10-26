@@ -192,6 +192,13 @@ func deployOnNode(ctx context.Context, name, node string) error {
 		return err
 	}
 	args := append([]string(nil), p.opts...)
+	args = append(args, "--container-name", p.first)
+	if p.workloadID {
+		// The first container of a pod carrying a workload ID is the socket
+		// consumer the node binds the inventory's socket directory into
+		// (carriesWorkloadID), and joins the group that may connect there.
+		args = append(args, "--supplemental-group", inventorySocketGroup)
+	}
 	for _, variable := range p.containers[0].env {
 		args = append(args, "--env", variable)
 	}

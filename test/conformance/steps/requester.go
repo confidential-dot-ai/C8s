@@ -314,19 +314,24 @@ func requestsChallenge(ctx context.Context, issued, requested string) error {
 	if err != nil {
 		return err
 	}
-	status, body, err := w.relay(r, "POST", "/authenticate", []byte("{}"), "")
-	if err != nil {
-		return err
-	}
-	if status != 200 {
-		return fmt.Errorf("the CDS answered %d to a challenge request: %s", status, body)
-	}
-	challenge, err := parseChallenge(body)
+	challenge, err := w.issuanceChallenge(r)
 	if err != nil {
 		return err
 	}
 	r.previous, r.challenge = r.challenge, challenge
 	return nil
+}
+
+// issuanceChallenge fetches an issuance challenge as the requester.
+func (w *world) issuanceChallenge(r *requester) ([]byte, error) {
+	status, body, err := w.relay(r, "POST", "/authenticate", []byte("{}"), "")
+	if err != nil {
+		return nil, err
+	}
+	if status != 200 {
+		return nil, fmt.Errorf("the CDS answered %d to a challenge request: %s", status, body)
+	}
+	return parseChallenge(body)
 }
 
 // parseChallenge is the challenge bytes of a CDS challenge response.
@@ -597,8 +602,14 @@ func requestsLeaf(ctx context.Context, name, withToken string) error {
 	if err != nil {
 		return err
 	}
+	return w.requestLeaf(r, withToken != "")
+}
+
+// requestLeaf is the attest request of a requester as prepared, with its
+// sandbox token when asked.
+func (w *world) requestLeaf(r *requester, withToken bool) error {
 	if r.challenge == nil {
-		return fmt.Errorf("%q holds no challenge", name)
+		return fmt.Errorf("%q holds no challenge", r.pod.name)
 	}
 	csrPEM, err := w.buildCSR(r)
 	if err != nil {
@@ -614,7 +625,7 @@ func requestsLeaf(ctx context.Context, name, withToken string) error {
 		key = &other.PublicKey
 	case evidenceEarlierChallenge:
 		if r.previous == nil {
-			return fmt.Errorf("%q received no earlier challenge", name)
+			return fmt.Errorf("%q received no earlier challenge", r.pod.name)
 		}
 		nonce = r.previous
 	}
@@ -631,7 +642,7 @@ func requestsLeaf(ctx context.Context, name, withToken string) error {
 		"evidence":  evidence,
 		"csr":       string(csrPEM),
 	}
-	if withToken != "" {
+	if withToken {
 		token, err := r.sandboxToken()
 		if err != nil {
 			return err
@@ -746,14 +757,6 @@ func holdsInventoryToken(ctx context.Context, name, node, otherKey string) error
 			return err
 		}
 	}
-	pub, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
-	if err != nil {
-		return err
-	}
-	body, err := json.Marshal(map[string][]byte{"public_key": pub, "nonce": r.challenge})
-	if err != nil {
-		return err
-	}
 	// The inventory asserts only for a mesh member (workload identity B4),
 	// so a requester outside the mesh joins it first; its refusal is then
 	// the inventory's verdict on a member.
@@ -762,18 +765,33 @@ func holdsInventoryToken(ctx context.Context, name, node, otherKey string) error
 			return err
 		}
 	}
+	r.token, err = w.inventoryToken(r, &key.PublicKey, r.challenge)
+	r.forged = nil
+	return err
+}
+
+// inventoryToken asks the inventory of the requester's node, over the socket
+// bound into its pod, for a token binding pub and nonce to its sandbox.
+func (w *world) inventoryToken(r *requester, pub crypto.PublicKey, nonce []byte) (json.RawMessage, error) {
+	pubDER, err := x509.MarshalPKIXPublicKey(pub)
+	if err != nil {
+		return nil, err
+	}
+	body, err := json.Marshal(map[string][]byte{"public_key": pubDER, "nonce": nonce})
+	if err != nil {
+		return nil, err
+	}
 	status, resp, err := w.relay(r, "POST", "/sandbox", body, inventorySocket)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if status != 200 {
-		return fmt.Errorf("the sandbox inventory answered %d: %s", status, resp)
+		return nil, fmt.Errorf("the sandbox inventory answered %d: %s", status, resp)
 	}
 	if !json.Valid(resp) {
-		return fmt.Errorf("the sandbox token is not JSON: %s", resp)
+		return nil, fmt.Errorf("the sandbox token is not JSON: %s", resp)
 	}
-	r.token, r.forged = json.RawMessage(resp), nil
-	return nil
+	return json.RawMessage(resp), nil
 }
 
 func signsOwnToken(ctx context.Context, name string) error {

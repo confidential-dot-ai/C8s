@@ -25,10 +25,10 @@ import (
 
 // Sentences about secret release: the grant an entry carries, the values the
 // operator supplies through the write-token path, and what the CDS answers a
-// workload requester. The requester is `c8s secret-probe`, exec'd in the
-// pod's injected certificate container, which holds the leaf, the key and the
-// node's inventory socket; each of the request's inputs (challenge, token,
-// path) is the scenario's to shape. Secret paths are logical: the scenario's
+// workload requester. The requester is the harness itself, holding a leaf
+// the CDS issued it for the pod's sandbox (credential) and redeeming tokens
+// through the pod's first container; each of the request's inputs (challenge,
+// token, path) is the scenario's to shape. Secret paths are logical: the scenario's
 // "/models/key" is stored under a per-scenario prefix, since the store has no
 // delete and outlives the scenario.
 func registerSecrets(sc *godog.ScenarioContext) {
@@ -172,6 +172,8 @@ type secretReq struct {
 	answers map[string]*answer
 	// files read from the secret client's output directory.
 	files map[string][]byte
+	// the leaf the harness holds for the pod's sandbox, once obtained.
+	cred *credential
 }
 
 // pendingWrite is a write the operator signed but has not sent.
@@ -899,165 +901,185 @@ func (w *world) awaitReady(p *pod) error {
 	return nil
 }
 
-// certPaths is where a pod carrying a workload ID holds its leaf and key.
-func (w *world) certPaths() (certFile, keyFile string, err error) {
-	paths, err := w.be.call("cert_paths")
-	if err != nil {
-		return "", "", err
-	}
-	files := strings.Fields(paths)
-	if len(files) != 2 {
-		return "", "", fmt.Errorf("the backend named %d certificate paths, not two", len(files))
-	}
-	return files[0], files[1], nil
+// attestContainer is the name of the first container of a pod carrying a
+// workload ID: the sidecar name an application may run itself, which the node
+// binds the inventory's socket directory into (workloadclaims
+// .AttestContainerName), so the steps redeem tokens for the pod's sandbox from
+// it. inventorySocketGroup is the group that may connect there
+// (workloadclaims.InventorySocketGID).
+const (
+	attestContainer      = "cds-attest"
+	inventorySocketGroup = "65532"
+)
+
+// The header a secret request carries its challenge in, and the scheme of the
+// Authorization header carrying its sandbox token, as the CDS reads them
+// (internal/secrets ChallengeHeader, AuthScheme).
+const (
+	challengeHeader = "X-C8s-Challenge"
+	tokenScheme     = "SandboxToken "
+)
+
+// credential is the leaf the harness holds for a pod's sandbox, with its key,
+// in files the backend's curl presents to the CDS. The harness obtains it as a
+// requester in the pod would: a key of its own, an issuance challenge, the
+// inventory's token redeemed through the pod's first container and evidence
+// from the pod's node, so the CDS binds the leaf to the pod's sandbox as it
+// binds the one the pod's own credential client holds. The pod's own leaf and
+// key are the platform containers' alone, and secret requests present this
+// one from the harness host, where every backend reaches the CDS.
+type credential struct {
+	r                 *requester // the harness as a requester in the pod's sandbox
+	leaf              *leaf
+	certFile, keyFile string
 }
 
-// probe runs `c8s secret-probe` in the pod's certificate container.
-func (w *world) probe(p *pod, args ...string) (string, error) {
+// credentialOf obtains the pod's credential once. The pod's own leaf exists
+// before the workload container does (the cert-wait init container gates on
+// it), and until every main container has been admitted the inventory reports
+// no workload containers, so the CDS denies by design; the real client
+// retries through that window (internal/cmds/sidecar Retry). The harness
+// waits for the pod to be Ready once instead. A pod the scenario gave an init
+// container asks while that container runs, which is the point of its
+// scenario, so it is not waited for.
+func (w *world) credentialOf(p *pod) (*credential, error) {
 	if !p.deployed || !p.workloadID {
-		return "", fmt.Errorf("%q is not a deployed pod carrying a workload ID", p.name)
+		return nil, fmt.Errorf("%q is not a deployed pod carrying a workload ID", p.name)
 	}
-	// The leaf exists before the workload container does (the cert-wait init
-	// container gates on it), and until every main container has been
-	// admitted the inventory reports no workload containers, so the CDS
-	// denies by design; the real client retries through that window
-	// (internal/cmds/sidecar Retry). The probe makes one request, so it
-	// waits for the pod to be Ready once instead. A pod the scenario gave
-	// an init container asks while that container runs, which is the point
-	// of its scenario, so it is not waited for.
+	s := w.secretState(p)
+	if s.cred != nil {
+		return s.cred, nil
+	}
 	if p.init == nil {
 		if err := w.awaitReady(p); err != nil {
-			return "", err
+			return nil, err
 		}
 	}
-	url, err := w.be.call("cds_pod_url")
-	if err != nil {
-		return "", err
+	// The requester's view of the pod: the leaf its attest request is issued
+	// lands on the view, while the pod keeps the leaf it holds itself.
+	view := *p
+	r := &requester{pod: &view, member: true}
+	var err error
+	if r.key, err = generateKey(); err != nil {
+		return nil, err
 	}
-	certFile, keyFile, err := w.certPaths()
-	if err != nil {
-		return "", err
+	if r.challenge, err = w.issuanceChallenge(r); err != nil {
+		return nil, err
 	}
-	verify, err := w.cdsVerification(p)
-	if err != nil {
-		return "", err
+	if r.token, err = w.inventoryToken(r, &r.key.PublicKey, r.challenge); err != nil {
+		return nil, err
 	}
-	cmd := append([]string{"/c8s", "secret-probe", "--cds-url", url, "--cert", certFile, "--key", keyFile}, verify...)
-	return w.podExec(p, certContainer, append(cmd, args...)...)
-}
-
-// cdsVerification is how the pod's certificate container verifies the CDS,
-// as the probe's flags: the webhook's attestation API and pins, with the
-// one $(HOST_IP) reference the kubelet expands resolved to the pod's node.
-func (w *world) cdsVerification(p *pod) ([]string, error) {
-	if p.verifyCDS != nil {
-		return p.verifyCDS, nil
+	if err := w.requestLeaf(r, true); err != nil {
+		return nil, err
 	}
-	out, err := kubectl(nil, "-n", p.namespace, "get", "pod", p.name, "-o",
-		`jsonpath={.status.hostIP}{"\n"}{range .spec.initContainers[?(@.name=="`+certContainer+`")].args[*]}{@}{"\n"}{end}`)
+	if r.refusal != nil {
+		return nil, fmt.Errorf("the CDS refused the harness a leaf for the sandbox of %q: %s", p.name, r.answer())
+	}
+	keyDER, err := x509.MarshalECPrivateKey(r.key)
 	if err != nil {
 		return nil, err
 	}
-	hostIP, rest, _ := strings.Cut(out, "\n")
-	flags := []string{}
-	for _, arg := range strings.Split(rest, "\n") {
-		name, value, _ := strings.Cut(arg, "=")
-		switch name {
-		case "--attestation-api-url", "--image-policy-json":
-		case "--cds-measurements":
-			name = "--measurements"
-		case "--cds-rtmrs":
-			name = "--rtmrs"
-		default:
-			continue
-		}
-		value = strings.ReplaceAll(value, "$(HOST_IP)", hostIP)
-		if strings.Contains(value, "$(") {
-			return nil, fmt.Errorf("the %s container of %q passes %s with a reference the steps do not expand: %s", certContainer, p.name, name, value)
-		}
-		flags = append(flags, name+"="+value)
+	certFile, err := w.writeFile(p.name+"-sandbox.crt", view.leaf.raw)
+	if err != nil {
+		return nil, err
 	}
-	if len(flags) == 0 {
-		return nil, fmt.Errorf("the %s container of %q names no attestation API to verify the CDS through", certContainer, p.name)
+	keyFile, err := w.writeFile(p.name+"-sandbox.key", pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}))
+	if err != nil {
+		return nil, err
 	}
-	p.verifyCDS = flags
-	return flags, nil
+	s.cred = &credential{r: r, leaf: view.leaf, certFile: certFile, keyFile: keyFile}
+	return s.cred, nil
 }
 
+// fetchChallenge fetches a release challenge as the pod.
 func (w *world) fetchChallenge(p *pod) ([]byte, error) {
-	out, err := w.probe(p, "challenge")
+	cred, err := w.credentialOf(p)
 	if err != nil {
 		return nil, err
 	}
-	c, err := base64.StdEncoding.DecodeString(strings.TrimSpace(out))
+	a, err := w.httpRequest("cds_pod_request", http.MethodPost, secretsRoute, nil, "", cred.certFile, cred.keyFile)
 	if err != nil {
-		return nil, fmt.Errorf("the challenge %q fetched is not base64: %w", p.name, err)
+		return nil, err
 	}
-	return c, nil
+	if !a.ok() {
+		return nil, fmt.Errorf("the CDS answered %s to a release challenge request as %q", a, p.name)
+	}
+	return parseChallenge(a.body)
 }
 
+// redeemToken redeems a sandbox token for the pod's sandbox, bound to the
+// pod's credential key and to challenge; to 32 random bytes when none is
+// given, since the inventory refuses an empty nonce and a challenge the
+// request then omits would be consumed for nothing.
 func (w *world) redeemToken(p *pod, challenge []byte) ([]byte, error) {
-	args := []string{"token"}
-	if challenge != nil {
-		args = append(args, "--challenge", base64.StdEncoding.EncodeToString(challenge))
-	}
-	out, err := w.probe(p, args...)
+	cred, err := w.credentialOf(p)
 	if err != nil {
 		return nil, err
 	}
-	tok := []byte(strings.TrimSpace(out))
-	if !json.Valid(tok) {
-		return nil, fmt.Errorf("the sandbox token %q redeemed is not JSON: %s", p.name, out)
+	nonce := challenge
+	if nonce == nil {
+		nonce = make([]byte, 32)
+		if _, err := rand.Read(nonce); err != nil {
+			return nil, err
+		}
 	}
-	return tok, nil
+	return w.inventoryToken(cred.r, &cred.r.key.PublicKey, nonce)
 }
 
 // request sends the pod's next request as the scenario shaped it and
-// records the answer. What the scenario did not shape, the probe obtains as
-// a well-behaved requester would: a fresh challenge and a token bound to it,
-// and it names both on its first line so "that request" can refer to them.
-// The challenge is spent by the request, the token with it; the next request
-// starts fresh unless a sentence says otherwise.
+// records the answer. What the scenario did not shape, the harness obtains as
+// a well-behaved requester would: a fresh challenge and a token bound to it;
+// it keeps both so "that request" can refer to them. The challenge is spent
+// by the request, the token with it; the next request starts fresh unless a
+// sentence says otherwise. A request that omits the challenge still binds its
+// token, to random bytes.
 func (w *world) request(p *pod, method, logical string) (*answer, error) {
+	cred, err := w.credentialOf(p)
+	if err != nil {
+		return nil, err
+	}
 	s := w.secretState(p)
-	args := []string{"request", method, w.secretPath(logical)}
+	var challenge []byte
 	switch {
 	case s.noChallenge:
-		args = append(args, "--no-challenge")
 	case s.challenge != nil:
-		args = append(args, "--challenge", base64.StdEncoding.EncodeToString(s.challenge))
+		challenge = s.challenge
+	default:
+		if challenge, err = w.fetchChallenge(p); err != nil {
+			return nil, err
+		}
 	}
+	token := s.token
 	switch {
 	case s.noToken:
-		args = append(args, "--no-token")
-	case s.token != nil:
-		args = append(args, "--token", string(s.token))
+		token = nil
+	case token == nil:
+		if token, err = w.redeemToken(p, challenge); err != nil {
+			return nil, err
+		}
+	}
+	var auth string
+	if token != nil {
+		auth = tokenScheme + base64.StdEncoding.EncodeToString(token)
+	}
+	var headers []string
+	if challenge != nil {
+		headers = append(headers, challengeHeader+": "+base64.StdEncoding.EncodeToString(challenge))
 	}
 	// The CDS meters the workload secret routes per sandbox (cds
 	// --rate-limit, 10 a second by default); a scenario that asks many
 	// times in a row, such as filling the holder quota, is paced by the
 	// limiter, not judged by it, so a 429 is retried after a pause.
-	var status int
-	var sent string
-	var body []byte
+	var a *answer
 	for attempt := 0; ; attempt++ {
-		out, err := w.probe(p, args...)
-		if err != nil {
+		if a, err = w.httpRequest("cds_pod_request", method, secretsRoute+w.secretPath(logical), nil, auth, cred.certFile, cred.keyFile, headers...); err != nil {
 			return nil, err
 		}
-		if status, sent, body, err = statusLine(out); err != nil {
-			return nil, fmt.Errorf("the probe in %q printed no answer: %q", p.name, out)
-		}
-		if status != http.StatusTooManyRequests || attempt == 5 {
+		if a.status != http.StatusTooManyRequests || attempt == 5 {
 			break
 		}
 		time.Sleep(time.Second)
 	}
-	challenge, token, err := sentCredentials(sent)
-	if err != nil {
-		return nil, fmt.Errorf("the probe in %q: %w", p.name, err)
-	}
-	a := &answer{status: status, body: body}
 	s.lastChallenge, s.lastToken, s.lastPath, s.last = challenge, token, logical, a
 	s.answers[logical] = a
 	s.challenge, s.token, s.noChallenge, s.noToken = nil, nil, false, false
@@ -1066,32 +1088,6 @@ func (w *world) request(p *pod, method, logical string) (*answer, error) {
 	}
 	w.secrets.last = p
 	return a, nil
-}
-
-// sentCredentials decodes the probe's "<challenge> <token>", base64 each or
-// - for a header the request omitted.
-func sentCredentials(fields string) (challenge, token []byte, err error) {
-	parts := strings.Fields(fields)
-	if len(parts) != 2 {
-		return nil, nil, fmt.Errorf("named %d credentials, not two: %q", len(parts), fields)
-	}
-	decode := func(what, v string) ([]byte, error) {
-		if v == "-" {
-			return nil, nil
-		}
-		b, err := base64.StdEncoding.DecodeString(v)
-		if err != nil {
-			return nil, fmt.Errorf("the %s sent is not base64: %w", what, err)
-		}
-		return b, nil
-	}
-	if challenge, err = decode("challenge", parts[0]); err != nil {
-		return nil, nil, err
-	}
-	if token, err = decode("token", parts[1]); err != nil {
-		return nil, nil, err
-	}
-	return challenge, token, nil
 }
 
 func holdsChallenge(ctx context.Context, name string) error {
@@ -1281,8 +1277,9 @@ func holdsSpentToken(ctx context.Context, name string) error {
 // token parses and the host comparison, not its validity, decides.
 const otherInventoryHost = "192.0.2.1"
 
-// holdsForeignHostToken forges a token over the pod's own key and sandbox
-// ID, signed by a key of the scenario's, naming another inventory host.
+// holdsForeignHostToken forges a token over the key and sandbox ID of the
+// pod's credential, signed by a key of the scenario's, naming another
+// inventory host.
 func holdsForeignHostToken(ctx context.Context, name string) error {
 	w := getWorld(ctx)
 	p, err := w.injectedPod(name)
@@ -1295,10 +1292,11 @@ func holdsForeignHostToken(ctx context.Context, name string) error {
 			return err
 		}
 	}
-	if p.leaf == nil {
-		return fmt.Errorf("the scenario has not established that %q obtained a leaf", name)
+	cred, err := w.credentialOf(p)
+	if err != nil {
+		return err
 	}
-	id, err := p.leaf.sandboxID()
+	id, err := cred.leaf.sandboxID()
 	if err != nil {
 		return err
 	}
@@ -1306,7 +1304,7 @@ func holdsForeignHostToken(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
-	s.token, err = signSandboxToken(signer, id, p.leaf.cert.PublicKey, s.challenge, otherInventoryHost)
+	s.token, err = signSandboxToken(signer, id, &cred.r.key.PublicKey, s.challenge, otherInventoryHost)
 	s.noToken = false
 	return err
 }

@@ -68,14 +68,13 @@ type pod struct {
 	leaf       *leaf
 	renewed    bool
 	refusal    *refusal
-	// How the pod is rendered: pod_manifest options, its namespace, the name
-	// of its first container, and how its certificate container verifies the
-	// CDS; and the port of its hello API and its datagram listener, and the
-	// container whose log shows the datagrams received.
+	// How the pod is rendered: pod_manifest options, its namespace and the
+	// name of its first container; and the port of its hello API and its
+	// datagram listener, and the container whose log shows the datagrams
+	// received.
 	opts      []string
 	namespace string
 	first     string
-	verifyCDS []string // as the probe's flags
 	hello     int
 	datagram  int
 	listener  string
