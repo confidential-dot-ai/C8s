@@ -656,10 +656,11 @@ func (s *Server) meshIdentity() (*meshIdentity, error) {
 	return loadMeshIdentity(s.cfg.MeshIdentityCertFile, s.cfg.MeshIdentityKeyFile, s.cfg.MeshIdentityCAFile)
 }
 
-// servingLeaf reads and parses the LB serving-leaf PEM. It is read per request so a get-cert renewal (which SIGHUPs nginx to a new
-// leaf) is picked up without restarting the sidecar. Exactly one certificate
-// is committed; per-SNI or multi-certificate serving is unsupported and fails
-// the client's exact-DER comparison closed.
+// servingLeaf reads and parses the LB serving-leaf PEM. It is read per
+// request so a get-cert renewal (which SIGHUPs nginx to a new leaf) is picked
+// up without restarting the sidecar. Exactly one certificate is committed;
+// per-SNI or multi-certificate serving is unsupported and fails the client's
+// exact-DER comparison closed.
 func (s *Server) servingLeaf() (*x509.Certificate, error) {
 	if s.cfg.ServingCertFile == "" {
 		return nil, fmt.Errorf("no --serving-cert-file configured")
