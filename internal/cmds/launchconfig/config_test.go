@@ -332,7 +332,7 @@ func TestWriteFailureCannotPublishRole(t *testing.T) {
 	if err := os.WriteFile(cfg.path("/etc/rancher/rke2/config.yaml.d"), []byte("not a directory"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := stageVerified(cfg, verified); err == nil {
+	if err := stageVerified(cfg, verified, ""); err == nil {
 		t.Fatal("expected RKE2 configuration output failure")
 	}
 	requireAbsent(t, cfg.path(serverMarker))

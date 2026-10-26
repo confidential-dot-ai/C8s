@@ -14,7 +14,7 @@ import (
 // operator-side bundle generator and the guest-side stage.
 func NewCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "launch-config", Short: "Create, extend and stage a measured node's signed launch configuration"}
-	cmd.AddCommand(newBundleCmd(), newAddAgentCmd(), newPodBundleCmd(), newStageCmd())
+	cmd.AddCommand(newBundleCmd(), newAddAgentCmd(), newPodBundleCmd(), newWorkerBundleCmd(), newStageCmd())
 	return cmd
 }
 
@@ -180,6 +180,53 @@ pins. The server public key must differ from the pod launch key.`,
 	return cmd
 }
 
+func newWorkerBundleCmd() *cobra.Command {
+	var opts WorkerBundleOptions
+	cmd := &cobra.Command{
+		Use:   "new-worker",
+		Short: "Create a worker pool's signed launch document",
+		Long: `Create the one signed launch document every node of a worker pool boots
+with. A worker joins a Kubernetes cluster whose control plane runs elsewhere:
+its kubelet attests the node to the cluster's CDS for a minutes-long join
+token (c8s node-credential), and the node's name comes from its own key.
+
+  <out>/worker.key  the pool's launch key (not written with --launch-key)
+  <out>/worker/     pubkey, launch.yaml, launch.yaml.sig: each node's opkeydata
+
+Each node's opkeydata also carries a provider-id file, unsigned, naming the
+Cluster API Machine the node is. CDS at --server-address must admit the
+pool's launch key as a node (its agent keys). See docs/operator.md, "Worker".`,
+		Args:         cobra.NoArgs,
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := NewWorkerBundle(opts); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "wrote worker launch bundle %s\n", filepath.Join(opts.Dir, workerDir))
+			return nil
+		},
+	}
+	f := cmd.Flags()
+	f.StringVar(&opts.Dir, "out", "", "bundle directory to create (must not exist)")
+	f.StringVar(&opts.ClusterID, "cluster-id", "", "cluster name, an RFC1123 label")
+	f.StringVar(&opts.ManifestPath, "image-manifest", "", "manifest.json published with the exact node image to boot")
+	f.IntVar(&opts.VCPUs, "vcpus", 0, "SNP only: the VM's vCPU count, selecting its launch digest from the manifest")
+	f.StringVar(&opts.LaunchKeyPath, "launch-key", "", "existing pool launch key PEM (default: generate <out>/worker.key)")
+	f.StringVar(&opts.ServerAddress, "server-address", "", "IPv4 address of the cluster's CDS")
+	f.StringVar(&opts.ServerPublicKeyPath, "server-public-key", "", "CDS's launch public key PEM file")
+	f.StringVar(&opts.Kubernetes.APIServer, "api-server", "", "hostname of the cluster's API server, on 443")
+	f.StringVar(&opts.CAPath, "api-ca", "", "PEM file of the one CA the API server chains to")
+	f.StringVar(&opts.Kubernetes.ClusterDNS, "cluster-dns", "", "the cluster DNS Service's IPv4 address")
+	f.StringVar(&opts.Kubernetes.ClusterDomain, "cluster-domain", defaultClusterDomain, "the cluster's DNS domain")
+	f.StringVar(&opts.Kubernetes.PodCIDR, "pod-cidr", "", "the cluster's pod range")
+	f.StringVar(&opts.Kubernetes.ServiceCIDR, "service-cidr", "", "the cluster's Service range")
+	f.StringVar(&opts.WorkloadsPath, "workloads", "", "optional c8s.allowlist/v1 JSON base admitted before CDS is available")
+	for _, name := range []string{"out", "cluster-id", "image-manifest", "server-address", "server-public-key", "api-server", "api-ca", "cluster-dns", "pod-cidr", "service-cidr"} {
+		_ = cmd.MarkFlagRequired(name)
+	}
+	return cmd
+}
+
 func newStageCmd() *cobra.Command {
 	var cfg Config
 	stage := &cobra.Command{
@@ -198,6 +245,7 @@ func newStageCmd() *cobra.Command {
 	f.StringVar(&cfg.AttestationAPIURL, "attestation-api-url", DefaultAttestationAPIURL, "trusted node-local attestation API")
 	f.StringVar(&cfg.DocumentPath, "config", "", "required signed launch.yaml")
 	f.StringVar(&cfg.SignaturePath, "signature", "", "required detached launch.yaml.sig")
+	f.StringVar(&cfg.ProviderIDPath, "provider-id-file", "", "a worker's unsigned provider ID; required for role worker, refused for every other role")
 	f.StringVar(&cfg.MeasuredPoliciesFile, "measured-policies-file", armtls.NodeJournal, "the node's journal of allowlist policies extended into TDX RTMR[3]; the operator-key binding check replays it, as cred-release's flag of the same name. Empty replays none")
 	for _, name := range []string{"platform", "config", "signature"} {
 		_ = stage.MarkFlagRequired(name)

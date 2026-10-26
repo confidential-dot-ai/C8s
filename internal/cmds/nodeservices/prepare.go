@@ -91,6 +91,9 @@ func prepare(rootDir string, d *launchconfig.Document, resolveMTU func() (int, e
 	if err := appendCredentialRole(policy, address); err != nil {
 		return err
 	}
+	if d.Role == launchconfig.Worker {
+		bindClusterNetwork(policy, d.Kubernetes)
+	}
 	data, err := yaml.Marshal(floor)
 	if err != nil {
 		return err
@@ -98,7 +101,7 @@ func prepare(rootDir string, d *launchconfig.Document, resolveMTU func() (int, e
 
 	// Validate every input before publishing anything. RKE2 only starts after
 	// this preparation succeeds, so pods never observe partially staged input.
-	if err := publishPublic(path(PublicDir), outputs, d.Role == launchconfig.Agent); err != nil {
+	if err := publishPublic(path(PublicDir), outputs, d.Role != launchconfig.Server); err != nil {
 		return err
 	}
 	return writeFile(path(nriPolicyPath), data, 0600)
@@ -218,6 +221,19 @@ func appendCredentialRole(policy map[string]any, address netip.AddrPort) error {
 		"destinations": []any{address.String()},
 	})
 	return nil
+}
+
+// bindClusterNetwork replaces the baked mesh policy's cluster network, which
+// is the image's own RKE2 cluster's, with the one the worker's signed document
+// names: the cluster's DNS Service is the resolver, and its pod and Service
+// ranges are the members.
+func bindClusterNetwork(policy map[string]any, k *launchconfig.Kubernetes) {
+	var ranges []any
+	for _, prefix := range k.ClusterRanges() {
+		ranges = append(ranges, prefix.String())
+	}
+	policy["resolver"] = k.ClusterDNS
+	policy["cluster_ranges"] = ranges
 }
 
 // serverConfig holds the inputs only a server publishes. An agent must never

@@ -2,7 +2,7 @@
 Description=Publish the authenticated node address for admission inventory
 Requires=rke2-role.service
 After=rke2-role.service
-Before=rke2-server.service rke2-agent.service podcvm-containerd.service
+Before=rke2-server.service rke2-agent.service podcvm-containerd.service worker-containerd.service
 
 [Service]
 Type=oneshot
@@ -12,4 +12,4 @@ TimeoutStartSec=30
 
 [Install]
 WantedBy=multi-user.target
-RequiredBy=rke2-server.service rke2-agent.service podcvm-containerd.service
+RequiredBy=rke2-server.service rke2-agent.service podcvm-containerd.service worker-containerd.service

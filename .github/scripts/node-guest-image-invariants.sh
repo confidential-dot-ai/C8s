@@ -543,6 +543,30 @@ for service in apparmor-enforce c8s-modules-latch nri-node-ip scratch-enforce gp
     exit 1
   fi
 done
+# The worker role's runtime gates on its own verdict and on the same boot
+# enforcement units, and its kubelet keeps the API server out of containers.
+require_launch_dependency "$units/worker-containerd.service"
+require_launch_dependency "$units/worker-node-name.service"
+for service in worker-containerd worker-node-name worker-kubelet; do
+  if ! grep -qxF "ConditionPathExists=/run/confos/role-worker" "$units/$service.service" \
+     || ! grep -qxF "enable $service.service" "$preset"; then
+    echo "::error::$service.service must be enabled and gate on the authenticated worker verdict"
+    exit 1
+  fi
+done
+for service in apparmor-enforce c8s-modules-latch nri-node-ip scratch-enforce gpu-cc-enforce; do
+  if ! grep -qE '^RequiredBy=.*worker-containerd[.]service' "$units/$service.service"; then
+    echo "::error::$service.service must be RequiredBy worker-containerd.service"
+    exit 1
+  fi
+done
+worker_kubelet="$ngi/c8s/mkosi.extra/usr/lib/c8s/worker-runtime/kubelet.yaml"
+for line in 'enableDebuggingHandlers: false' 'authorization: {mode: Webhook}' 'readOnlyPort: 0' 'staticPodPath: ""'; do
+  if ! grep -qxF "$line" "$worker_kubelet"; then
+    echo "::error::the worker-role kubelet lost '$line'; its API server is outside the trust boundary"
+    exit 1
+  fi
+done
 
 if ! grep -qE '^Requires=.*attestation-api[.]service' "$role" \
    || ! grep -qE '^After=.*attestation-api[.]service' "$role"; then

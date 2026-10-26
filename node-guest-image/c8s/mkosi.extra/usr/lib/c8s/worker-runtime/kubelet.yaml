@@ -1,0 +1,29 @@
+# Worker role kubelet: joined to a cluster whose API server runs outside the
+# CVM and outside C8s's trust. Everything that decides what that API server
+# may do on this node is here, measured; the signed launch document adds only
+# the cluster's DNS and CA (/run/c8s-worker/kubelet.conf.d), and the kubelet
+# never takes configuration from the cluster.
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+# The debugging handlers back exec, attach, port-forward and logs. In a C8s
+# cluster the API server's own admission closes the first three; here the API
+# server is the party they would serve, so the kubelet closes all four, as
+# docs/node-exec-mode.md asks of a node under an untrusted control plane.
+enableDebuggingHandlers: false
+authentication:
+  anonymous: {enabled: false}
+  webhook: {enabled: true}
+authorization: {mode: Webhook}
+readOnlyPort: 0
+# Client certificates come from the bootstrap kubeconfig's credential plugin,
+# which attests the node to CDS; the cluster refuses to renew one without it.
+rotateCertificates: true
+# No static pods: every pod comes from the API server and passes NRI.
+staticPodPath: ""
+cgroupDriver: systemd
+containerRuntimeEndpoint: unix:///run/k3s/containerd/containerd.sock
+# Use resolved's upstreams, not its guest-local loopback stub.
+resolvConf: /run/systemd/resolve/resolv.conf
+failSwapOn: false
+maxPods: 200
+serializeImagePulls: false

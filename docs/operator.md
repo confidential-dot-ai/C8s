@@ -308,6 +308,52 @@ are refused. Locked images also refuse exec probes through the runtime wrapper.
 The kubelet sets `makeIPTablesUtilChains: false`: the admission plugin owns the
 guest's packet rules, and a kubelet utility chain would make it refuse the pod.
 
+#### Worker
+
+A worker joins a Kubernetes cluster whose control plane runs outside the
+CVM, such as a hosted control plane, as a node of that cluster. It boots the
+same image on the pod role's runtime (containerd and the upstream kubelet,
+no RKE2) and keeps an agent's NRI floor, CDS policy pull and runtime wrapper.
+One signed document serves every node of a pool:
+
+```sh
+c8s node launch-config new-worker --out pool1 --cluster-id demo \
+  --image-manifest manifest.json \
+  --server-address 10.0.0.10 --server-public-key demo/server/pubkey \
+  --api-server c-0123.k8s.example --api-ca ca.crt \
+  --cluster-dns 10.96.0.10 --pod-cidr 10.244.0.0/16 --service-cidr 10.96.0.0/12
+```
+
+The document lists the pool's launch key in `agentOperatorPublicKeys`, as an
+agent's does, and pins CDS with `server.address` and `server.operatorPublicKey`.
+It carries no `node` section and no RKE2 tokens: the node's name comes from its
+node key, and it joins with its own attestation. The `kubernetes` section names
+the API server's hostname (reached on 443), the one CA it chains to, the
+cluster DNS address and the pod and Service ranges. The ranges and DNS address
+replace the baked mesh policy's `cluster_ranges` and `resolver`.
+
+Each node's opkeydata also carries `provider-id`, unsigned: the Cluster API
+provider ID of the Machine it is, `<provider>://<id>` in `[A-Za-z0-9._/-]`.
+Staging requires it for a worker and refuses it for every other role. It names
+which Machine a node is, not what may run on it.
+
+Staging writes the kubelet's bootstrap kubeconfig under `/run/c8s-worker`: the
+signed server and CA, with `c8s node-credential` as its exec user, pinned to the
+same server, CA and CDS ([node tokens](node-tokens.md#on-the-node)). The kubelet
+(`worker-kubelet`) runs on the baked, measured
+`/usr/lib/c8s/worker-runtime/kubelet.yaml`; the signed document adds only the
+cluster's DNS and CA through `--config-dir`, and the kubelet takes no
+configuration from the cluster. Because the API server is outside the trust
+boundary, the kubelet turns its debugging handlers off, which closes `exec`,
+`attach`, `port-forward` and `logs` through it, and authenticates and
+authorizes every request through the API server. Collect logs from inside the
+cluster instead. `worker-node-name` publishes the node key's name for the
+kubelet's `--hostname-override`.
+
+The cluster's CNI installs its plugin and conflist on the default directories,
+`/opt/cni/bin` and `/etc/cni/net.d`, as RKE2's bundled Cilium does on an agent.
+A worker needs the scratch disk, as an agent does.
+
 Manual edits require a new signature from that document's launch key. For a
 server document, run
 `c8s keys sign-launch --key demo/server.key --force demo/server/launch.yaml`.
@@ -324,8 +370,8 @@ pins firmware, not the guest kernel and verity root. Do not put RTMR[0] or
 RTMR[3] in the image pins: RTMR[3] is checked against each role's launch key.
 
 For a server, `server.address` may be omitted: staging uses `node.ip`, or
-selects the primary IPv4 address if that is also omitted. Agent and pod
-documents must always carry their server's reachable IPv4 address. `node.ip` is optional
+selects the primary IPv4 address if that is also omitted. Agent, pod and
+worker documents must always carry their server's reachable IPv4 address. `node.ip` is optional
 (`0.0.0.0` means autodetect); `node.externalIP` is an optional explicit unicast
 IPv4 address. `node.name` must be unique within the cluster. `tlsSAN` defaults
 to `c8s.local` and must be a lowercase DNS hostname. Arbitrary routes and CORS

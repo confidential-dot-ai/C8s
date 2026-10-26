@@ -1,0 +1,47 @@
+# Worker-role containerd config: the pod role's (../pod-runtime), RKE2's
+# rendered base with the values RKE2 fills in on this image, so the same baked
+# drop-ins (c8s-runc, NRI) apply. The one difference from the pod role is CNI:
+# the cluster's Cilium installs its plugin and conflist on the default dirs,
+# as RKE2's bundled Cilium does on an agent. containerdcheck's
+# TestWorkerRoleConfigFollowsPodRole fails on any other key that differs.
+version = 3
+imports = ["/var/lib/rancher/rke2/agent/etc/containerd/config-v3.toml.d/*.toml"]
+root = "/var/lib/rancher/rke2/agent/containerd"
+state = "/run/k3s/containerd"
+
+[grpc]
+  address = "/run/k3s/containerd/containerd.sock"
+
+[plugins.'io.containerd.internal.v1.opt']
+  path = "/var/lib/rancher/rke2/agent/containerd"
+
+[plugins.'io.containerd.grpc.v1.cri']
+  stream_server_address = "127.0.0.1"
+  stream_server_port = "10010"
+
+[plugins.'io.containerd.cri.v1.runtime']
+  enable_selinux = false
+  enable_unprivileged_ports = true
+  enable_unprivileged_icmp = true
+  device_ownership_from_security_context = false
+
+[plugins.'io.containerd.cri.v1.images']
+  snapshotter = "overlayfs"
+  disable_snapshot_annotations = true
+  use_local_image_pull = true
+
+[plugins.'io.containerd.cri.v1.images'.pinned_images]
+  sandbox = "docker.io/rancher/mirrored-pause:3.10.2@sha256:f548e0e8e3dc1896ca956272154dde3314e8cc4fde0a57577ee9fa1c63f5baf4"
+
+[plugins.'io.containerd.cri.v1.runtime'.cni]
+  bin_dirs = ["/opt/cni/bin"]
+  conf_dir = "/etc/cni/net.d"
+
+[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc]
+  runtime_type = "io.containerd.runc.v2"
+
+[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc.options]
+  SystemdCgroup = true
+
+[plugins.'io.containerd.cri.v1.images'.registry]
+  config_path = "/var/lib/rancher/rke2/agent/etc/containerd/certs.d"

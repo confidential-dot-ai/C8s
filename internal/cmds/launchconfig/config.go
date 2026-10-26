@@ -57,6 +57,9 @@ const (
 	Agent  Role = "agent"
 	// Pod runs one static pod under a standalone kubelet; RKE2 never starts.
 	Pod Role = "pod"
+	// Worker joins a cluster whose control plane runs elsewhere, on the pod
+	// role's runtime with a joined kubelet; RKE2 never starts.
+	Worker Role = "worker"
 )
 
 // Valid reports whether r is a role this image can boot.
@@ -98,6 +101,10 @@ type roleRules struct {
 	// which Stage resolves for a server that omitted it.
 	stagedAddress bool
 	router        bool // may carry a router block
+	// node is the node section: a per-node document names its node, and a
+	// worker's per-pool one names none, since its name comes from its key.
+	node       presence
+	kubernetes presence // the kubernetes section a worker joins
 	// ownLaunchKey authorizes the exact server.operatorPublicKey bytes;
 	// otherwise the launch key must be listed in agentOperatorPublicKeys and
 	// differ from the server's. A podKey authorizes its own exact bytes.
@@ -115,6 +122,8 @@ var roles = map[Role]roleRules{
 		stagedAddress: true,
 		router:        true,
 		ownLaunchKey:  true,
+		node:          required,
+		kubernetes:    forbidden,
 	},
 	Agent: {
 		joinsCluster:  true,
@@ -126,6 +135,8 @@ var roles = map[Role]roleRules{
 		stagedAddress: true,
 		router:        false,
 		ownLaunchKey:  false,
+		node:          required,
+		kubernetes:    forbidden,
 	},
 	Pod: {
 		joinsCluster:      false,
@@ -138,6 +149,23 @@ var roles = map[Role]roleRules{
 		stagedAddress:     true,
 		router:            false,
 		ownLaunchKey:      false,
+		node:              required,
+		kubernetes:        forbidden,
+	},
+	// A worker's launch key is listed in agentOperatorPublicKeys, as an
+	// agent's is: CDS admits the same keys to its node issuer.
+	Worker: {
+		joinsCluster:  false,
+		serverToken:   forbidden,
+		agentKeys:     required,
+		podKey:        forbidden,
+		pod:           forbidden,
+		namesServer:   true,
+		stagedAddress: true,
+		router:        false,
+		ownLaunchKey:  false,
+		node:          forbidden,
+		kubernetes:    required,
 	},
 }
 
@@ -152,7 +180,7 @@ type Document struct {
 	ClusterID               string       `yaml:"clusterID" json:"cluster_id"`
 	Role                    Role         `yaml:"role" json:"role"`
 	Image                   Image        `yaml:"image" json:"image"`
-	Node                    Node         `yaml:"node" json:"node"`
+	Node                    Node         `yaml:"node,omitempty" json:"node"`
 	RKE2                    RKE2         `yaml:"rke2" json:"rke2"`
 	Server                  ServerConfig `yaml:"server" json:"server"`
 	AgentOperatorPublicKeys []string     `yaml:"agentOperatorPublicKeys" json:"agent_operator_public_keys"`
@@ -181,6 +209,9 @@ type Document struct {
 
 	// Pod is the one static pod a pod-role boot runs; forbidden otherwise.
 	Pod *PodSpec `yaml:"pod,omitempty" json:"pod,omitempty"`
+
+	// Kubernetes is the cluster a worker joins; forbidden otherwise.
+	Kubernetes *Kubernetes `yaml:"kubernetes,omitempty" json:"kubernetes,omitempty"`
 
 	serverTokenPresent bool
 }
@@ -356,7 +387,10 @@ type Config struct {
 	// MeasuredPoliciesFile is the node's measured-policy journal, as
 	// cred-release's --measured-policies-file. Empty replays none.
 	MeasuredPoliciesFile string
-	RootDir              string
+	// ProviderIDPath is the worker's unsigned provider ID beside the signed
+	// document (ParseProviderID); a worker requires it, other roles refuse it.
+	ProviderIDPath string
+	RootDir        string
 }
 
 var loadMeasuredIdentity = credrelease.LoadMeasuredIdentity
@@ -457,13 +491,33 @@ func (d *Document) validate() error {
 	if !dnsLabel(d.ClusterID) {
 		return fmt.Errorf("clusterID must be an RFC1123 label")
 	}
-	if !dnsLabel(d.Node.Name) {
-		return fmt.Errorf("node.name must be an RFC1123 label")
-	}
 	if !d.Role.Valid() {
-		return fmt.Errorf("role must be server, agent or pod")
+		return fmt.Errorf("role must be server, agent, pod or worker")
 	}
 	rules := d.rules()
+	switch rules.node {
+	case required:
+		if !dnsLabel(d.Node.Name) {
+			return fmt.Errorf("node.name must be an RFC1123 label")
+		}
+	case forbidden:
+		if d.Node != (Node{}) {
+			return fmt.Errorf("%s must not carry a node section: its name comes from its node key", d.Role)
+		}
+	}
+	switch rules.kubernetes {
+	case required:
+		if d.Kubernetes == nil {
+			return fmt.Errorf("%s requires a kubernetes section", d.Role)
+		}
+		if err := d.Kubernetes.validate(); err != nil {
+			return err
+		}
+	case forbidden:
+		if d.Kubernetes != nil {
+			return fmt.Errorf("kubernetes section requires role worker")
+		}
+	}
 	platform, ok := d.Image.platform()
 	if !ok {
 		return fmt.Errorf("image.platform must be tdx or snp")
@@ -516,6 +570,9 @@ func (d *Document) validate() error {
 		}
 	}
 	if p := d.RKE2.NodePassword; p != "" {
+		if !rules.joinsCluster {
+			return fmt.Errorf("%s must not carry rke2.nodePassword", d.Role)
+		}
 		if !tokenRE.MatchString(p) {
 			return fmt.Errorf("rke2.nodePassword must be 64 lowercase hex characters")
 		}

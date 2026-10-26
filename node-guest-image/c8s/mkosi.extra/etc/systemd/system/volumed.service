@@ -7,6 +7,7 @@ Requires=rke2-role.service
 After=rke2-role.service
 ConditionPathExists=|/run/confos/role-server
 ConditionPathExists=|/run/confos/role-agent
+ConditionPathExists=|/run/confos/role-worker
 StartLimitIntervalSec=0
 
 [Service]

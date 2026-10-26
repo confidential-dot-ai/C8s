@@ -1,0 +1,16 @@
+# Worker role only: the kubelet's node name is derived from the node key
+# (c8s node-credential), which CDS signs into the join token; the API server
+# lets a node act only as that name.
+[Unit]
+Description=Worker-role node name from the node key
+ConditionPathExists=/run/confos/role-worker
+Requires=rke2-role.service
+After=rke2-role.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/worker-node-name.sh
+
+[Install]
+WantedBy=multi-user.target

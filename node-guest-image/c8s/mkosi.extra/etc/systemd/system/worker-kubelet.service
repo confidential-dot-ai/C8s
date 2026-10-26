@@ -1,0 +1,29 @@
+# Worker role only: a kubelet joined to the cluster the signed launch document
+# names. It bootstraps through c8s node-credential, which attests the node to
+# CDS, and runs on the measured configuration in /usr/lib/c8s/worker-runtime.
+[Unit]
+Description=Worker-role kubelet
+ConditionPathExists=/run/confos/role-worker
+Requires=worker-containerd.service worker-node-name.service attestation-api.service
+After=worker-containerd.service worker-node-name.service attestation-api.service
+
+[Service]
+Type=simple
+Environment=PATH=/var/lib/rancher/rke2/bin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# KUBELET_PROVIDER_ID is the unsigned provider ID (c8s launch-config stage).
+EnvironmentFile=/run/c8s-worker/kubelet.env
+# KUBELET_HOSTNAME is the node key's name (worker-node-name.service).
+EnvironmentFile=/run/c8s-worker/node-name.env
+ExecStart=/var/lib/rancher/rke2/bin/kubelet \
+    --config=/usr/lib/c8s/worker-runtime/kubelet.yaml \
+    --config-dir=/run/c8s-worker/kubelet.conf.d \
+    --bootstrap-kubeconfig=/run/c8s-worker/bootstrap-kubeconfig \
+    --kubeconfig=/var/lib/kubelet/kubeconfig \
+    --cert-dir=/var/lib/kubelet/pki \
+    --hostname-override=${KUBELET_HOSTNAME} \
+    --provider-id=${KUBELET_PROVIDER_ID}
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

@@ -20,6 +20,7 @@ const (
 	serverMarker     = "/run/confos/role-server"
 	agentMarker      = "/run/confos/role-agent"
 	podMarker        = "/run/confos/role-pod"
+	workerMarker     = "/run/confos/role-worker"
 	serverTokenPath  = "/run/confos/rke2-server-token"
 	agentTokenPath   = "/run/confos/rke2-agent-token"
 	rke2FragmentPath = "/etc/rancher/rke2/config.yaml.d/50-role.yaml"
@@ -46,7 +47,30 @@ func Stage(ctx context.Context, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	return stageVerified(cfg, verified)
+	providerID, err := readProviderID(cfg, verified.document.Role)
+	if err != nil {
+		return err
+	}
+	return stageVerified(cfg, verified, providerID)
+}
+
+// readProviderID reads the worker's unsigned provider ID. Any other role
+// refuses one, so a host cannot hand a document to the wrong role unnoticed.
+func readProviderID(cfg Config, role Role) (string, error) {
+	if role != Worker {
+		if cfg.ProviderIDPath != "" {
+			return "", fmt.Errorf("a provider ID is for role worker only")
+		}
+		return "", nil
+	}
+	if cfg.ProviderIDPath == "" {
+		return "", fmt.Errorf("role worker requires a provider ID")
+	}
+	data, err := readBounded(cfg.ProviderIDPath, MaxProviderIDSize)
+	if err != nil {
+		return "", err
+	}
+	return ParseProviderID(data)
 }
 
 func (c Config) path(absolute string) string {
@@ -61,7 +85,8 @@ func clearOutputs(cfg Config) error {
 	// output fails. Collect errors so a blocked first marker never prevents
 	// attempting to remove the other.
 	var errs []error
-	paths := []string{serverMarker, agentMarker, podMarker, serverTokenPath, agentTokenPath, rke2FragmentPath, nodePasswordPath, rke2RegistriesPath}
+	paths := []string{serverMarker, agentMarker, podMarker, workerMarker, serverTokenPath, agentTokenPath, rke2FragmentPath, nodePasswordPath, rke2RegistriesPath,
+		workerBootstrapKubeconfig, workerCA, workerKubeletDropIn, workerKubeletEnv}
 	for _, name := range []string{"peers.json", "cds.json", "pods.json", "operator-pubkey", "config.json", "workloads.json"} {
 		paths = append(paths, Dir+"/"+name)
 	}
@@ -78,7 +103,7 @@ type outputFile struct {
 	data []byte
 }
 
-func stageVerified(cfg Config, v *Verified) error {
+func stageVerified(cfg Config, v *Verified, providerID string) error {
 	doc := &v.document
 	if doc.Role == Server && doc.Server.Address == "" {
 		address := doc.Node.IP
@@ -135,6 +160,15 @@ func stageVerified(cfg Config, v *Verified) error {
 		// No RKE2 token or fragment: nothing in a pod boot joins a cluster.
 		// nodeservices writes the static pod from config.json.
 		return publish(cfg, outputs, podMarker)
+	}
+	if doc.Role == Worker {
+		// No RKE2 token or fragment: the kubelet joins with the node's own
+		// attestation, through the credential plugin its kubeconfig names.
+		worker, err := workerOutputs(doc, providerID)
+		if err != nil {
+			return err
+		}
+		return publish(cfg, append(outputs, worker...), workerMarker)
 	}
 	fragment, err := yaml.Marshal(rke2Fragment(doc))
 	if err != nil {

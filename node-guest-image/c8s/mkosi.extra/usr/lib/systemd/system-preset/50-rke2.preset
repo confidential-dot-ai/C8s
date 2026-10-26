@@ -17,6 +17,10 @@ enable rke2-agent.service
 enable podcvm-containerd.service
 enable podcvm-kubelet.service
 enable podcvm-status.service
+# Worker role: containerd and a joined kubelet, gated on /run/confos/role-worker.
+enable worker-containerd.service
+enable worker-node-name.service
+enable worker-kubelet.service
 enable systemd-timesyncd.service
 # Makes time-sync.target block until the clock is actually synchronised.
 # gpu-cc-enforce no longer orders after it; it waits for NTPSynchronized
@@ -24,7 +28,7 @@ enable systemd-timesyncd.service
 enable systemd-time-wait-sync.service
 enable cred-release.service
 enable attest-proxy.service
-# Opens C8s encrypted volumes for workload sidecars on both roles.
+# Opens C8s encrypted volumes for workload sidecars on every joined node.
 enable volumed.service
 # Check the running LSM and exercise a real policy before RKE2 can start.
 enable apparmor-enforce.service

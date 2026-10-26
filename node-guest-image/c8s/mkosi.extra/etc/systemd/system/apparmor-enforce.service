@@ -1,7 +1,7 @@
 [Unit]
 Description=Verify AppArmor enforcement before starting the node
 After=apparmor.service
-Before=rke2-server.service rke2-agent.service podcvm-containerd.service
+Before=rke2-server.service rke2-agent.service podcvm-containerd.service worker-containerd.service
 FailureAction=poweroff-force
 
 [Service]
@@ -14,4 +14,4 @@ RestrictAddressFamilies=AF_UNIX
 
 [Install]
 WantedBy=multi-user.target
-RequiredBy=rke2-server.service rke2-agent.service podcvm-containerd.service
+RequiredBy=rke2-server.service rke2-agent.service podcvm-containerd.service worker-containerd.service

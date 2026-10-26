@@ -77,7 +77,11 @@ The pod role runs containerd without RKE2, from the baked
 with `-base` against the same drop-ins, and `containerdcheck`'s
 `TestPodRoleConfigFollowsRKE2Base` compares it key by key with RKE2's rendered
 base. Only the keys listed in `podRoleDifferences`, each with its reason, may
-differ.
+differ. The worker role's `mkosi.extra/usr/lib/c8s/worker-runtime/containerd.toml`
+follows the pod role's, and `TestWorkerRoleConfigFollowsPodRole` allows it only
+the CNI directories. The worker's kubelet runs with its debugging handlers off
+(`worker-runtime/kubelet.yaml`): its API server is outside the trust boundary,
+so no admission policy there can close exec, attach or port-forward for it.
 
 RKE2's base template is vendored at
 `node-guest-image/c8s/containerdcheck/rke2-base-v3.toml.tmpl`. Its header

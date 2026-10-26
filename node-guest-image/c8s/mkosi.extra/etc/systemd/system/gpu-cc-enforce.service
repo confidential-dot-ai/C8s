@@ -16,7 +16,7 @@ Description=Refuse to start the node unless every NVIDIA GPU is in confidential-
 # (~11 s) on every GPU-less boot's critical path, pod CVMs included.
 After=nvidia-persistenced.service attestation-api.service network-online.target
 Wants=nvidia-persistenced.service attestation-api.service network-online.target
-Before=nvidia-cc-ready.service rke2-server.service rke2-agent.service podcvm-containerd.service
+Before=nvidia-cc-ready.service rke2-server.service rke2-agent.service podcvm-containerd.service worker-containerd.service
 
 [Service]
 # Once per boot covers every GPU only while the guest kernel has PCI hotplug
@@ -39,4 +39,4 @@ RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 WantedBy=multi-user.target
 # Preset creates the .requires links, so neither the Ready-state flip nor
 # rke2 can start while this unit is failing or has not run.
-RequiredBy=nvidia-cc-ready.service rke2-server.service rke2-agent.service podcvm-containerd.service
+RequiredBy=nvidia-cc-ready.service rke2-server.service rke2-agent.service podcvm-containerd.service worker-containerd.service
