@@ -13,6 +13,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"io"
 	"math/big"
 	"net/http"
@@ -157,6 +158,108 @@ func TestAttestLBBindsServingLeafAndMeshIdentity(t *testing.T) {
 	if !strings.Contains(b.CDSCertPEM, "CERTIFICATE") {
 		t.Fatalf("bundle carries no mesh chain: %q", b.CDSCertPEM)
 	}
+}
+
+// attest-lb commits only a serving leaf the front-door mode admits: in cds
+// mode the mesh identity leaf itself, in acme mode a leaf inside its validity
+// window. Anything else is refused before evidence is requested.
+func TestAttestLBServingLeafAdmission(t *testing.T) {
+	now := time.Now()
+	meshLeaf := func(_ *testing.T, identity testMeshIdentity) string { return identity.certFile }
+	otherLeaf := func(t *testing.T, _ testMeshIdentity) string {
+		path, _ := writeTestServingLeaf(t)
+		return path
+	}
+	expiredLeaf := func(t *testing.T, _ testMeshIdentity) string {
+		path, _ := writeTestServingLeafWithValidity(t, now.Add(-2*time.Hour), now.Add(-time.Hour))
+		return path
+	}
+	// Same subject and key as the mesh leaf, but expired and self-signed.
+	expiredMeshCopy := func(t *testing.T, identity testMeshIdentity) string {
+		tmpl := *identity.leaf
+		tmpl.NotBefore, tmpl.NotAfter = now.Add(-2*time.Hour), now.Add(-time.Hour)
+		der, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &identity.key.PublicKey, identity.key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(t.TempDir(), "expired-mesh.pem")
+		writeTestPEM(t, path, "CERTIFICATE", der)
+		return path
+	}
+	for _, tc := range []struct {
+		name    string
+		mode    types.FrontDoorMode
+		serving func(*testing.T, testMeshIdentity) string
+		wantErr string
+	}{
+		{name: "cds mesh leaf", mode: types.FrontDoorModeCDS, serving: meshLeaf},
+		{name: "cds other leaf", mode: types.FrontDoorModeCDS, serving: otherLeaf, wantErr: types.ErrorCodeServingLeafRejected},
+		{name: "cds expired mesh copy", mode: types.FrontDoorModeCDS, serving: expiredMeshCopy, wantErr: types.ErrorCodeServingLeafRejected},
+		{name: "acme valid leaf", mode: types.FrontDoorModeACME, serving: otherLeaf},
+		{name: "acme expired leaf", mode: types.FrontDoorModeACME, serving: expiredLeaf, wantErr: types.ErrorCodeServingLeafRejected},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			identity := writeTestMeshIdentity(t)
+			servingFile := tc.serving(t, identity)
+			prov := &capturingProvider{}
+			srv := NewServer(Config{
+				Routes:               testRoutes(t),
+				Evidence:             prov,
+				FrontDoorMode:        tc.mode,
+				ServingCertFile:      servingFile,
+				MeshIdentityCertFile: identity.certFile,
+				MeshIdentityKeyFile:  identity.keyFile,
+				MeshIdentityCAFile:   identity.caFile,
+			})
+			ts := httptest.NewServer(srv.Handler())
+			defer ts.Close()
+
+			nonce := bytes.Repeat([]byte{0x5a}, 32)
+			resp, err := http.Get(ts.URL + "/.well-known/c8s/attest-lb?nonce=" + b64url(nonce))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantErr != "" {
+				if resp.StatusCode != http.StatusServiceUnavailable {
+					resp.Body.Close()
+					t.Fatalf("status = %d, want 503", resp.StatusCode)
+				}
+				if e := decodeErr(t, resp); e.Error != tc.wantErr {
+					t.Fatalf("error code = %q, want %q", e.Error, tc.wantErr)
+				}
+				if prov.lastReportData != nil {
+					t.Fatal("evidence was requested for a rejected serving leaf")
+				}
+				return
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				body, _ := io.ReadAll(resp.Body)
+				t.Fatalf("status = %d, want 200: %s", resp.StatusCode, body)
+			}
+			servingDER := readTestCertDER(t, servingFile)
+			want, err := overenc.LBTranscriptHash(tc.mode, nonce, servingDER, identity.leaf.Raw, identity.ca.Raw, testRouteDigest[:])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(prov.lastReportData, want) {
+				t.Fatal("report_data does not commit the served leaf")
+			}
+		})
+	}
+}
+
+func readTestCertDER(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, _ := pem.Decode(data)
+	if block == nil {
+		t.Fatalf("%s holds no PEM block", path)
+	}
+	return block.Bytes
 }
 
 // A pq-transcript signature must never verify against the lb transcript for
