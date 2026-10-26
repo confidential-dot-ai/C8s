@@ -112,7 +112,8 @@ The floor, and why each item is in it:
   supplementary group, and on a node no root user outside a role. A pod CVM
   runs one pod, so its floor admits root: the capability bound above still
   holds, and without `SETUID` and `SETGID` root cannot take a reserved
-  socket identity.
+  socket identity. The admission plugin's mesh gate applies the same verdict
+  before a container is created.
 
 A role's container holds no capabilities at all: the enforcer installs the pod
 ruleset, and a role only speaks on it. The role is read from the reserved id in

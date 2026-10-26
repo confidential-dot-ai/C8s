@@ -37,7 +37,7 @@ var errPodImageLimit = errors.New("pod image verification limit exceeded")
 // the container's actual rootfs. Image names and mutable image-store entries
 // are not evidence of either selection.
 func (r *Resolver) VerifyContainerImage(ctx context.Context, containerID, sandboxID, pin string) error {
-	if !canonicalImageDigest(pin) || containerID == "" || sandboxID == "" {
+	if !types.IsCanonicalDigest(pin) || containerID == "" || sandboxID == "" {
 		return errors.New("pod image verification requires a container, sandbox and canonical image digest")
 	}
 	ctx, cancel := context.WithTimeout(namespaces.WithNamespace(ctx, r.namespace), podImageTimeout)
@@ -88,15 +88,10 @@ func selectedConfigDigest(extension typeurl.Any, containerID, sandboxID string) 
 	if saved.Version != "v1" && saved.Version != "v2" {
 		return "", errors.New("unsupported CRI container metadata version")
 	}
-	if saved.Metadata.ID != containerID || saved.Metadata.SandboxID != sandboxID || !canonicalImageDigest(saved.Metadata.ImageRef) {
+	if saved.Metadata.ID != containerID || saved.Metadata.SandboxID != sandboxID || !types.IsCanonicalDigest(saved.Metadata.ImageRef) {
 		return "", errors.New("CRI container metadata does not bind this container, sandbox and image configuration")
 	}
 	return saved.Metadata.ImageRef, nil
-}
-
-func canonicalImageDigest(value string) bool {
-	d, err := types.ParseDigest(value)
-	return err == nil && d.String() == value
 }
 
 type podImageProof struct {
@@ -107,7 +102,7 @@ type podImageProof struct {
 }
 
 func (p *podImageProof) read(ctx context.Context, desc ocispec.Descriptor) ([]byte, error) {
-	if !canonicalImageDigest(desc.Digest.String()) || desc.Size < 0 || desc.Size > podImageDocumentLimit {
+	if !types.IsCanonicalDigest(desc.Digest.String()) || desc.Size < 0 || desc.Size > podImageDocumentLimit {
 		return nil, errors.New("invalid pinned image content descriptor")
 	}
 	if p.objects >= podImageObjectLimit {
@@ -205,7 +200,7 @@ func (d *podImageDocument) validate(expectedType string) error {
 			return errPodImageLimit
 		}
 		for _, child := range d.Manifests {
-			if !canonicalImageDigest(child.Digest.String()) || child.Size <= 0 || child.Size > podImageDocumentLimit || (!images.IsManifestType(child.MediaType) && !images.IsIndexType(child.MediaType)) {
+			if !types.IsCanonicalDigest(child.Digest.String()) || child.Size <= 0 || child.Size > podImageDocumentLimit || (!images.IsManifestType(child.MediaType) && !images.IsIndexType(child.MediaType)) {
 				return errors.New("invalid pinned image index descriptor")
 			}
 		}
@@ -235,7 +230,7 @@ func (p *podImageProof) manifestConfig(ctx context.Context, manifest podImageDoc
 	}
 	for i, diffID := range config.RootFS.DiffIDs {
 		layer := manifest.Layers[i]
-		if !canonicalImageDigest(diffID.String()) || !canonicalImageDigest(layer.Digest.String()) || layer.Size < 0 || !images.IsLayerType(layer.MediaType) {
+		if !types.IsCanonicalDigest(diffID.String()) || !types.IsCanonicalDigest(layer.Digest.String()) || layer.Size < 0 || !images.IsLayerType(layer.MediaType) {
 			return nil, errors.New("invalid pinned image rootfs descriptor")
 		}
 	}

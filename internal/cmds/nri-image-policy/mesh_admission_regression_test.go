@@ -2,6 +2,7 @@ package nriimagepolicy
 
 import (
 	"context"
+	"log/slog"
 	"net/netip"
 	"strings"
 	"testing"
@@ -53,6 +54,47 @@ func TestMeshGateRequiresNonrootContainers(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// A pod CVM runs one pod, so its gate admits a root workload container. A
+// role's container still runs as its reserved uid, and no container claims
+// an identity reserved for a role it does not hold.
+func TestPodGateAdmitsRootWorkloads(t *testing.T) {
+	policy := *meshRoles()
+	policy.Pod = &podMeshPolicy{}
+	pod := meshPod("default", "pod", testNetNS)
+	gate := newMeshGate(policy, slog.Default())
+	gate.pods[pod.GetId()] = &protectedPod{
+		netns:         testNamespace(),
+		kubeNamespace: pod.GetNamespace(),
+		meshStarted:   true,
+	}
+	for _, tc := range []struct {
+		name     string
+		role     string
+		user     *api.User
+		admitted bool
+	}{
+		{name: "root app", user: &api.User{Uid: 0}, admitted: true},
+		{name: "root app in the mesh group", user: &api.User{Uid: 0, Gid: testMeshUID}},
+		{name: "app claiming the mesh uid", user: &api.User{Uid: testMeshUID}},
+		{name: "root endpoint", role: meshRole, user: &api.User{Uid: 0}},
+		{name: "endpoint", role: meshRole, user: &api.User{Uid: testMeshUID}, admitted: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctr := &api.Container{
+				Name: tc.name,
+				User: tc.user,
+				Linux: &api.LinuxContainer{
+					Namespaces: []*api.LinuxNamespace{{Type: pidNamespace}},
+				},
+			}
+			_, _, err := gate.admissible(pod, ctr, gatedContainer{role: tc.role})
+			if (err == nil) != tc.admitted {
+				t.Fatalf("admission error = %v, want admitted %v", err, tc.admitted)
+			}
+		})
 	}
 }
 

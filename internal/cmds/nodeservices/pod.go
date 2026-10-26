@@ -175,11 +175,11 @@ func podImagePins(pod *corev1.Pod) (map[string]string, error) {
 		if !ok {
 			return nil, fmt.Errorf("pod container %q image must pin a canonical digest", container.Name)
 		}
-		digest, err := types.ParseDigest(canonical.Digest().String())
-		if err != nil || digest.String() != canonical.Digest().String() {
+		digest := canonical.Digest().String()
+		if !types.IsCanonicalDigest(digest) {
 			return nil, fmt.Errorf("pod container %q image must pin a canonical sha256 digest", container.Name)
 		}
-		images[container.Name] = digest.String()
+		images[container.Name] = digest
 	}
 	return images, nil
 }

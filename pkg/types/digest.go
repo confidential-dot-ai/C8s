@@ -32,6 +32,14 @@ func ParseDigest(s string) (Digest, error) {
 	return Digest{value: "sha256:" + strings.ToLower(hex)}, nil
 }
 
+// IsCanonicalDigest reports whether s is a digest exactly as ParseDigest
+// renders it: "sha256:" and 64 lowercase hex characters, with no other form
+// that would parse to the same value.
+func IsCanonicalDigest(s string) bool {
+	d, err := ParseDigest(s)
+	return err == nil && d.String() == s
+}
+
 func isHexDigit(b byte) bool {
 	return (b >= '0' && b <= '9') || (b >= 'a' && b <= 'f') || (b >= 'A' && b <= 'F')
 }

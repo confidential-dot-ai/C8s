@@ -19,7 +19,7 @@ func (c *config) validatePodImages() error {
 		if len(validation.IsDNS1123Label(name)) != 0 {
 			return fmt.Errorf("pod.images has invalid container name %q", name)
 		}
-		if !canonicalPodDigest(pin) {
+		if !types.IsCanonicalDigest(pin) {
 			return fmt.Errorf("pod.images[%q] must be a canonical sha256 digest", name)
 		}
 	}
@@ -43,11 +43,6 @@ func (c *config) validatePodImages() error {
 	return nil
 }
 
-func canonicalPodDigest(value string) bool {
-	digest, err := types.ParseDigest(value)
-	return err == nil && digest.String() == value
-}
-
 // containerImage chooses Pod identity only from the staged manifest. The CRI
 // image-name annotation may name a mutable alias even for a pinned request.
 func (p *plugin) containerImage(pod *api.PodSandbox, ctr *api.Container) (string, error) {
@@ -60,7 +55,7 @@ func (p *plugin) containerImage(pod *api.PodSandbox, ctr *api.Container) (string
 		return "", fmt.Errorf("container does not belong to the assigned Pod")
 	}
 	digest, exists := assigned.Images[ctr.GetName()]
-	if !exists || !canonicalPodDigest(digest) {
+	if !exists || !types.IsCanonicalDigest(digest) {
 		return "", fmt.Errorf("container %q has no staged image pin", ctr.GetName())
 	}
 	return digest, nil

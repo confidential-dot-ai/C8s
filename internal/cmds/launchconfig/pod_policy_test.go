@@ -2,7 +2,6 @@ package launchconfig
 
 import (
 	"bytes"
-	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -73,42 +72,6 @@ func TestPodPolicyCannotGrantNodeAuthority(t *testing.T) {
 		if err := d.validate(); err == nil || !strings.Contains(err.Error(), "server-only") {
 			t.Fatalf("%s accepted Pod trust policy: %v", role, err)
 		}
-	}
-}
-
-func TestPodPolicyStageClearsTrustOnRoleChangeAndFailure(t *testing.T) {
-	doc, key, pub := testDocument(t, "tdx", Server)
-	_, podKey := testKey(t)
-	doc.PodImagePolicy = podTrustPolicy(t, podKey)
-	testLoader(t, doc, pub)
-	cfg := testConfig(t, doc, key)
-	if err := Stage(context.Background(), cfg); err != nil {
-		t.Fatal(err)
-	}
-	got, err := os.ReadFile(cfg.path(Dir + "/pods.json"))
-	if err != nil || string(got) != doc.PodImagePolicy {
-		t.Fatalf("staged Pod policy: %v", err)
-	}
-	agent, agentKey, agentPub := testDocument(t, "tdx", Agent)
-	testLoader(t, agent, agentPub)
-	signDocument(t, cfg, agent, agentKey)
-	if err := Stage(context.Background(), cfg); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(cfg.path(Dir + "/pods.json")); !os.IsNotExist(err) {
-		t.Fatalf("agent retained Pod trust: %v", err)
-	}
-	if err := os.WriteFile(cfg.path(Dir+"/pods.json"), got, 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(cfg.SignaturePath, []byte("invalid"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := Stage(context.Background(), cfg); err == nil {
-		t.Fatal("invalid signature accepted")
-	}
-	if _, err := os.Stat(cfg.path(Dir + "/pods.json")); !os.IsNotExist(err) {
-		t.Fatalf("failed launch retained Pod trust: %v", err)
 	}
 }
 

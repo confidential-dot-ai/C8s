@@ -29,7 +29,7 @@ func (p *plugin) ValidateContainerAdjustment(ctx context.Context, req *api.Valid
 	mounts := p.adjustedMounts(req, ctr)
 	// The gate runs ahead of the admission check and independently of
 	// policy.mode: a protected pod's container runs only once it is verified.
-	if err := p.gateMesh(ctx, req, ctr, env, mounts); err != nil {
+	if err := p.gateMesh(ctx, req, ctr, imageRef, env, mounts); err != nil {
 		return p.denyContainer(req.GetPod().GetId(), err)
 	}
 	verdict, reason := p.checkContainerObserved(ctx, p.cfg, req.GetPod(), ctr, imageRef, launchFinal, env, mounts)
@@ -44,14 +44,10 @@ func (p *plugin) ValidateContainerAdjustment(ctx context.Context, req *api.Valid
 // gateMesh applies the mesh startup gate at the one hook whose error always
 // rejects a creation: a create notification can time out and a closed plugin
 // lets the create proceed, while a validator's refusal is the answer.
-func (p *plugin) gateMesh(ctx context.Context, req *api.ValidateContainerAdjustmentRequest, ctr *api.Container, env *allowlist.EnvObservation, mounts []allowlist.ObservedMount) error {
+func (p *plugin) gateMesh(ctx context.Context, req *api.ValidateContainerAdjustmentRequest, ctr *api.Container, imageRef string, env *allowlist.EnvObservation, mounts []allowlist.ObservedMount) error {
 	pod := req.GetPod()
 	if !p.mesh.hosts(pod) {
 		return nil
-	}
-	imageRef, err := p.containerImage(pod, ctr)
-	if err != nil {
-		return err
 	}
 	launch := p.observedLaunch(ctx, ctr, imageRef, env, mounts)
 	adjusted := req.GetAdjust().GetLinux()

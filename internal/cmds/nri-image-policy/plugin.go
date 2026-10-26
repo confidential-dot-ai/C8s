@@ -1055,7 +1055,7 @@ func (p *plugin) checkExisting(ctx context.Context, cfg *config, pods []*api.Pod
 		imageRef := ctr.GetAnnotations()[annotationImageName]
 		pod := podByID[ctr.GetPodSandboxId()]
 		unreconstructable := cfg.Pod != nil
-		if cfg.Pod != nil {
+		if unreconstructable {
 			// Current runtime metadata cannot reconstruct the complete history
 			// required by a Pod identity after a plugin restart.
 			_ = p.denyContainer(ctr.GetPodSandboxId(), errors.New("cannot reconstruct Pod admission history from existing containers"))
@@ -1217,16 +1217,10 @@ func (p *plugin) StartContainer(ctx context.Context, pod *api.PodSandbox, ctr *a
 	}
 	if !p.Ready() {
 		if err := p.admitWhileInitializing(ctx, cfg, pod, ctr, imageRef); err != nil {
-			if cfg.Pod != nil {
-				return p.denyContainer(pod.GetId(), err)
-			}
-			return err
+			return p.transientRefusal(pod, err)
 		}
 		if err := p.measureStarted(ctx, imageRef); err != nil {
-			if cfg.Pod != nil {
-				return p.denyContainer(pod.GetId(), err)
-			}
-			return err
+			return p.transientRefusal(pod, err)
 		}
 		// INVARIANT: the gate holds a member pod whether or not the first
 		// pull has settled, so the start that opens it is recorded on both
@@ -1244,14 +1238,22 @@ func (p *plugin) StartContainer(ctx context.Context, pod *api.PodSandbox, ctr *a
 		return p.denyContainer(pod.GetId(), fmt.Errorf("%s", reason))
 	}
 	if err := p.measureStarted(ctx, imageRef); err != nil {
-		if cfg.Pod != nil {
-			return p.denyContainer(pod.GetId(), err)
-		}
-		return err
+		return p.transientRefusal(pod, err)
 	}
 	p.noteMeshStarted(ctx, pod, ctr, imageRef)
 	p.recordForInventory(ctx, pod, ctr, imageRef)
 	return p.afterPodStart(pod, credentialSource)
+}
+
+// transientRefusal returns a start refusal a node does not record, so a
+// container retried once the plugin is ready or the journal settles is not
+// held against its sandbox; a pod CVM records it, since every refusal there
+// ends the pod's identity (denyContainer).
+func (p *plugin) transientRefusal(pod *api.PodSandbox, refusal error) error {
+	if p.cfg.Pod != nil {
+		return p.denyContainer(pod.GetId(), refusal)
+	}
+	return refusal
 }
 
 // noteMeshStarted tells the gate a pod's mesh endpoint is running, the start
