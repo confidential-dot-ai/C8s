@@ -557,10 +557,15 @@ runs:
     # through the c8s-operator admission webhook, so run it after the
     # components converge.
     # Keep on re-vendor; the source workflow does not ship this script.
-    env:
-      KUBECONFIG: /tmp/guest.kubeconfig
+    # Its probe image is admitted by a signed allowlist entry.
     shell: bash
-    run: bash node-guest-image/tests/apparmor-runtime-test.sh
+    run: |
+      set -euo pipefail
+      export KUBECONFIG=/tmp/guest.kubeconfig
+      export C8S_ALLOWLIST_URL="https://$GUEST_IP:443"
+      export C8S_MEASUREMENTS_CONFIG=/tmp/launch-data/server.json
+      export C8S_OPERATOR_KEY=/tmp/launch-data/server.key
+      bash node-guest-image/tests/apparmor-runtime-test.sh
 
   - name: assert the image floor denies, then opens to a signed write
     # Baked nginx fronts /allowlist; clients pin the complete image tuple
