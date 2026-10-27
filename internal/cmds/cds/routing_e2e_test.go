@@ -20,6 +20,7 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsattest"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/routing"
 	"github.com/confidential-dot-ai/c8s/internal/testutil"
@@ -131,7 +132,7 @@ func newE2ERouter(t *testing.T, stub *mockapi.Stub, cdsURL string, pin []byte, m
 		poller: routing.NewPoller(routing.PollerConfig{
 			State: state, Fetcher: cds, Keys: cds, Transports: transports, Interval: time.Hour,
 		}),
-		proxy: routing.NewProxy(routing.ProxyConfig{State: state, Transports: transports, Timeout: 10 * time.Second}),
+		proxy: routing.NewProxy(routing.ProxyConfig{State: state, Transports: transports, Bindings: cdsattest.NewBindings(), Timeout: 10 * time.Second}),
 	}
 }
 

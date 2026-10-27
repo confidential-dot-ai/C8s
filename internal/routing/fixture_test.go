@@ -388,7 +388,7 @@ func newFixture(t testing.TB) *fixture {
 	f.identity = identity
 	f.state = NewState(StateConfig{Reserved: testReserved, MeshCAs: identity.MeshCAs, Now: f.clock.Now})
 	f.transports = NewTransports(TransportConfig{MeshIdentity: identity.Credential, Logger: slog.New(slog.NewTextHandler(&f.transportLogs, nil))})
-	f.proxy = NewProxy(ProxyConfig{State: f.state, Transports: f.transports, Timeout: 10 * time.Second})
+	f.proxy = NewProxy(ProxyConfig{State: f.state, Transports: f.transports, Bindings: newFakeBindings(nil), Timeout: 10 * time.Second})
 	return f
 }
 
@@ -489,4 +489,14 @@ func (f *fixture) get(target string) *httptest.ResponseRecorder {
 	w := httptest.NewRecorder()
 	f.proxy.ServeHTTP(w, r)
 	return w
+}
+
+// bound is the binding of a session admitted now: the applied manifest's
+// digest, zero before the first apply, and the router digest last polled.
+func (f *fixture) bound() Binding {
+	b := Binding{RouterDigest: f.transports.RouterDigest()}
+	if applied := f.state.Current(); applied != nil {
+		b.RouteDigest = applied.Signed.Digest()
+	}
+	return b
 }

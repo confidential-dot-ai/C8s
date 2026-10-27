@@ -91,6 +91,7 @@ location{{ if .exact }} ={{ end }} {{ .path }} {
     {{- else if eq (include "router.protocolCorsEnabled" $root) "true" }}
     {{- include "router.protocolCorsLocationDirectives" $root | nindent 4 }}
     {{- end }}
+    keepalive_timeout 0;
     # These run before nginx collapses callers onto the loopback proxy source.
     # Each zone's map key is empty for the methods it does not cover, so
     # mutations count per client and in aggregate, reads per client only.
@@ -530,11 +531,6 @@ router.cdsAttestArgs takes (dict "root" $ "expectedWorkload" <name>).
 {{- if and $v.attest.enabled (include "c8s.attestationApiSocketPresent" $root) -}}
 {{- $args = append $args (printf "--measured-policies-file=%s/measured-policies" $root.Values.nriImagePolicy.hostPaths.runtimeDir) -}}
 {{- end -}}
-{{- /* The identity-bound PQ flow uses the TEE-held mesh credential, never the
-       optional publicTLS Secret. */ -}}
-{{- $args = append $args (printf "--mesh-identity-cert-file=%s" (include "c8s.certFile" $root)) -}}
-{{- $args = append $args (printf "--mesh-identity-key-file=%s" (include "c8s.keyFile" $root)) -}}
-{{- $args = append $args (printf "--mesh-identity-ca-file=%s" (include "c8s.caFile" $root)) -}}
 {{- /* Route by the operator-signed manifest polled from the verified CDS:
        application requests from nginx on --routing-port, and requests
        decrypted from the tunnel. The enforcer mounts the one CDS endpoint
@@ -801,8 +797,9 @@ trust the same CDS.
 {{/*
 router.wellKnownProxyDirectives renders the directives every
 /.well-known/c8s/ location shares: CORS, the proxy to cds-attest with
-buffering on and no temp-file spill, and the forwarded headers. Inputs: root
-(the chart context) and readTimeout.
+buffering on and no temp-file spill, and the forwarded headers, including
+the connection identifier attest-lb binds. Inputs: root (the chart context)
+and readTimeout.
 */}}
 {{- define "router.wellKnownCorsDirectives" -}}
 {{- if default false .Values.router.cors.enabled -}}
@@ -824,6 +821,7 @@ proxy_set_header Host $host;
 proxy_set_header X-Real-IP $remote_addr;
 proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 proxy_set_header X-Forwarded-Proto $scheme;
+proxy_set_header X-C8s-Connection $pid.$connection;
 
 
 {{- end -}}
