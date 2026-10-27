@@ -77,14 +77,14 @@ containers:
   - name: nginx
     image: {{ include "c8s-common.image" .Values.router.nginx.image }}
     imagePullPolicy: {{ .Values.router.nginx.image.pullPolicy }}
-    {{- /* nginx runs as the child of reload.sh, which reloads it when a file
-           an nginx directive loads changes (router-configmap.yaml). The
+    {{- /* nginx runs as the child of serve.sh, which stops it when the
+           front-door certificate is withdrawn (router-configmap.yaml). The
            allowlist pins this argv exactly and admits no argument beside it,
            so nothing a pod adds (-g load_module, another -c) runs under the
            nginx entry. */}}
     command:
       - /bin/sh
-      - {{ include "router.configDir" . }}/reload.sh
+      - {{ include "router.configDir" . }}/serve.sh
     ports:
       - name: https
         containerPort: {{ .Values.router.nginx.httpsPort }}

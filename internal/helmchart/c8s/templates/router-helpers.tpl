@@ -673,8 +673,8 @@ true
 
 {{/*
 c8s-cert native sidecar (restartPolicy: Always): obtains the leaf on startup
-and renews it on a ticker. nginx's own entrypoint reloads on the renewal, so
-this sidecar signals nothing. Caller nindents into the Pod spec's initContainers
+and renews it on a ticker. nginx reads the renewed leaf on its next TLS
+handshake, so this sidecar signals nothing. Caller nindents into the Pod spec's initContainers
 list.
 */}}
 {{- define "router.getCertContainers" -}}
@@ -821,24 +821,19 @@ proxy_set_header Host $host;
 proxy_set_header X-Real-IP $remote_addr;
 proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 proxy_set_header X-Forwarded-Proto $scheme;
-proxy_set_header X-C8s-Connection $pid.$connection;
+proxy_set_header X-C8s-Connection $nginx_start.$pid.$connection;
 
 
 {{- end -}}
 
 {{/*
-router.filesNginxLoads — every file an nginx directive loads: the leaf and key
-get-cert publishes, the mesh CA it proxies upstream with, and the public
-certificate and key of whichever TLS mode serves the front door. One
-space-separated list, read by reload.sh.
+router.servedCredentials — the credential files the router serves from: the
+leaf, key and CA get-cert publishes, and the front door's own certificate and
+key in webpki and acme mode. One space-separated list, read by serve.sh.
 */}}
-{{- define "router.filesNginxLoads" -}}
+{{- define "router.servedCredentials" -}}
 {{- $paths := list (include "c8s.certFile" .) (include "c8s.keyFile" .) (include "c8s.caFile" .) -}}
-{{- if eq (include "router.publicTLSMode" .) "webpki" -}}
-{{- $paths = append $paths (include "router.publicCertPath" .) -}}
-{{- $paths = append $paths (include "router.publicKeyPath" .) -}}
-{{- end -}}
-{{- if eq (include "router.publicTLSMode" .) "acme" -}}
+{{- if has (include "router.publicTLSMode" .) (list "webpki" "acme") -}}
 {{- $paths = append $paths (include "router.publicCertPath" .) -}}
 {{- $paths = append $paths (include "router.publicKeyPath" .) -}}
 {{- end -}}

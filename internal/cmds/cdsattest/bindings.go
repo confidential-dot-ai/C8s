@@ -1,6 +1,7 @@
 package cdsattest
 
 import (
+	"crypto/sha256"
 	"errors"
 	"sync"
 	"time"
@@ -30,8 +31,16 @@ type Bindings struct {
 	now       func() time.Time
 }
 
+// lbHandshake is what an attest-lb handshake bound its connection to.
+type lbHandshake struct {
+	bound routing.Binding
+	// servingLeaf is the SHA-256 of the serving leaf the handshake attested,
+	// which the connection presents for as long as it stays open.
+	servingLeaf [sha256.Size]byte
+}
+
 type lbBinding struct {
-	routing.Binding
+	lbHandshake
 	client   string // "" is charged to no client
 	gen      uint64 // distinguishes successive bindings of one connection
 	refused  string // the code the connection's requests are refused with
@@ -82,7 +91,7 @@ func (b *Bindings) Hold(connection string) *routing.HeldBinding {
 	entry.lastUsed = b.now()
 	b.entries[connection] = entry
 	return &routing.HeldBinding{
-		Binding:     entry.Binding,
+		Binding:     entry.bound,
 		RefusedWith: entry.refused,
 		Refuse:      func(code string) { b.refuse(connection, entry.gen, code) },
 		Release:     sync.OnceFunc(func() { b.release(connection) }),
@@ -116,6 +125,15 @@ func (b *Bindings) refuse(connection string, gen uint64, code string) {
 	b.entries[connection] = entry
 }
 
+// servingLeaf returns the SHA-256 of the serving leaf connection's binding
+// was attested with, lapsed or not.
+func (b *Bindings) servingLeaf(connection string) ([sha256.Size]byte, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	entry, ok := b.entries[connection]
+	return entry.servingLeaf, ok
+}
+
 // room reports whether bind would take connection for client.
 func (b *Bindings) room(connection, client string) error {
 	b.mu.Lock()
@@ -123,15 +141,15 @@ func (b *Bindings) room(connection, client string) error {
 	return b.roomLocked(connection, client)
 }
 
-// bind records binding for connection, replacing any earlier one on it.
-func (b *Bindings) bind(connection, client string, binding routing.Binding) error {
+// bind records handshake for connection, replacing any earlier one on it.
+func (b *Bindings) bind(connection, client string, handshake lbHandshake) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if err := b.roomLocked(connection, client); err != nil {
 		return err
 	}
 	b.gen++
-	entry := lbBinding{Binding: binding, client: client, gen: b.gen, lastUsed: b.now()}
+	entry := lbBinding{lbHandshake: handshake, client: client, gen: b.gen, lastUsed: b.now()}
 	if old, rebind := b.entries[connection]; rebind {
 		b.unchargeLocked(old.client)
 		entry.inFlight = old.inFlight

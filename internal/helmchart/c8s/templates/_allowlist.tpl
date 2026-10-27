@@ -667,10 +667,10 @@ true
 {{- end -}}
 {{- end -}}
 
-{{/* The front door's argv as JSON: the shell reading the reload script out of
+{{/* The front door's argv as JSON: the shell reading the serve script out of
      the configuration directory it mounts (router-deployment.yaml). */ -}}
 {{- define "c8s.routerNginxArgv" -}}
-{{- list "/bin/sh" (printf "%s/reload.sh" (include "router.configDir" .)) | toJson -}}
+{{- list "/bin/sh" (printf "%s/serve.sh" (include "router.configDir" .)) | toJson -}}
 {{- end -}}
 
 {{/* The mesh image's entrypoint as JSON, or "null" where no mesh digest

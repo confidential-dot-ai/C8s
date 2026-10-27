@@ -4,13 +4,23 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -179,6 +189,105 @@ func TestListenerRefusesABoundConnection(t *testing.T) {
 	}
 }
 
+// nginx reads its certificate per TLS handshake, so a connection opened
+// before a renewal keeps presenting its leaf: a handshake on it attests that
+// leaf, and one on a new connection the renewed leaf.
+func TestAttestLBAttestsTheLeafItsConnectionPresents(t *testing.T) {
+	var servingCert string
+	rs := newRoutedServer(t, func(_ *routing.ProxyConfig, c *Config) { servingCert = c.ServingCertFile })
+	rs.apply(t, 1, time.Hour)
+	opened := attestedServingLeaf(t, rs.ts.URL, "7.1")
+
+	_, renewed := writeTestServingLeaf(t)
+	writeTestPEM(t, servingCert, "CERTIFICATE", renewed)
+
+	if got := attestedServingLeaf(t, rs.ts.URL, "7.1"); got != opened {
+		t.Fatalf("attest-lb on the connection opened before the renewal attests %s, want its own leaf %s", got, opened)
+	}
+	sum := sha256.Sum256(renewed)
+	if got, want := attestedServingLeaf(t, rs.ts.URL, "7.2"), base64.RawURLEncoding.EncodeToString(sum[:]); got != want {
+		t.Fatalf("attest-lb on a new connection attests %s, want the renewed leaf %s", got, want)
+	}
+}
+
+// attestedServingLeaf runs attest-lb on connection and returns the serving
+// leaf digest its bundle attests.
+func attestedServingLeaf(t *testing.T, base, connection string) string {
+	t.Helper()
+	resp := attestLB(t, base, connection)
+	defer resp.Body.Close()
+	var bundle types.AttestationBundle
+	if err := json.NewDecoder(resp.Body).Decode(&bundle); err != nil {
+		t.Fatal(err)
+	}
+	if bundle.ServingLeafSHA256 == "" {
+		t.Fatalf("attest-lb on %q = %d with no serving leaf, want a bundle", connection, resp.StatusCode)
+	}
+	return bundle.ServingLeafSHA256
+}
+
+// servedLeaves keeps the last maxServedLeaves unexpired leaves: an older or
+// expired one is not found, and a connection bound to it is attested with the
+// leaf on disk, which its client then refuses.
+func TestServedLeavesKeepsTheLastFew(t *testing.T) {
+	var l servedLeaves
+	now := time.Now()
+	var hashes [][sha256.Size]byte
+	for i := range maxServedLeaves + 1 {
+		leaf := servedLeaf{der: []byte{byte(i)}, expires: now.Add(time.Hour)}
+		l.remember(leaf)
+		l.remember(servedLeaf{der: []byte{byte(i)}, expires: leaf.expires}) // read twice, kept once
+		hashes = append(hashes, sha256.Sum256(leaf.der))
+	}
+	if _, kept := l.find(hashes[0], now); kept {
+		t.Fatal("find(oldest) after maxServedLeaves newer leaves = kept, want evicted")
+	}
+	for i, hash := range hashes[1:] {
+		if der, kept := l.find(hash, now); !kept || der[0] != byte(i+1) {
+			t.Fatalf("find(leaf %d) = %v, %v, want it kept", i+1, der, kept)
+		}
+	}
+	if _, kept := l.find(hashes[1], now.Add(2*time.Hour)); kept {
+		t.Fatal("find(leaf) past its chain's expiry = kept, want an expired leaf refused")
+	}
+}
+
+// A served leaf expires with the first certificate of its chain to expire, as
+// get-cert expires a generation when its CA does.
+func TestServingLeafExpiresWithItsChain(t *testing.T) {
+	_, leafDER := writeTestServingLeaf(t)
+	ca := &x509.Certificate{
+		SerialNumber: big.NewInt(2),
+		Subject:      pkix.Name{CommonName: "mesh"},
+		NotBefore:    time.Now().Add(-time.Minute),
+		NotAfter:     time.Now().Add(time.Minute),
+	}
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, ca, ca, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "chain.pem")
+	chain := append(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leafDER}), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER})...)
+	if err := os.WriteFile(path, chain, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{cfg: Config{ServingCertFile: path}}
+	leaf, err := s.servingLeaf()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(leaf.der, leafDER) {
+		t.Fatal("servingLeaf() committed another certificate than the chain's first")
+	}
+	if !leaf.expires.Equal(ca.NotAfter.Truncate(time.Second)) {
+		t.Fatalf("servingLeaf() expires %v, want the CA's earlier NotAfter %v", leaf.expires, ca.NotAfter)
+	}
+}
+
 func TestAttestLBBindsOnlyARelayedConnection(t *testing.T) {
 	rs := newRoutedServer(t)
 	rs.apply(t, 1, time.Hour)
@@ -230,29 +339,29 @@ func TestPerClientBindingCap(t *testing.T) {
 	clock := &testClock{now: time.Now()}
 	b := NewBindings()
 	b.now, b.maxClient = clock.Now, 1
-	if err := b.bind("1.1", "client:a", routing.Binding{}); err != nil {
+	if err := b.bind("1.1", "client:a", lbHandshake{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := b.bind("1.2", "client:a", routing.Binding{}); !errors.Is(err, errClientBindingsFull) {
+	if err := b.bind("1.2", "client:a", lbHandshake{}); !errors.Is(err, errClientBindingsFull) {
 		t.Fatalf("second binding for one client = %v, want %v", err, errClientBindingsFull)
 	}
-	if err := b.bind("1.1", "client:a", routing.Binding{}); err != nil {
+	if err := b.bind("1.1", "client:a", lbHandshake{}); err != nil {
 		t.Fatalf("rebind at the client's share = %v, want nil", err)
 	}
-	if err := b.bind("1.3", "client:b", routing.Binding{}); err != nil {
+	if err := b.bind("1.3", "client:b", lbHandshake{}); err != nil {
 		t.Fatalf("another client's binding = %v, want nil", err)
 	}
 	b.max = 2 // the store is full: 1.1 and 1.3
-	if err := b.bind("1.1", "client:c", routing.Binding{}); err != nil {
+	if err := b.bind("1.1", "client:c", lbHandshake{}); err != nil {
 		t.Fatalf("rebind under another client at the global bound = %v, want nil", err)
 	}
-	if err := b.bind("1.1", "client:b", routing.Binding{}); !errors.Is(err, errClientBindingsFull) {
+	if err := b.bind("1.1", "client:b", lbHandshake{}); !errors.Is(err, errClientBindingsFull) {
 		t.Fatalf("rebind under a client at its share = %v, want %v", err, errClientBindingsFull)
 	}
 	b.max = maxLBBindings
 	clock.Advance(lbBindingLife + time.Second)
 	b.prune()
-	if err := b.bind("1.2", "client:a", routing.Binding{}); err != nil {
+	if err := b.bind("1.2", "client:a", lbHandshake{}); err != nil {
 		t.Fatalf("binding after the client's other binding dropped = %v, want nil", err)
 	}
 }
@@ -264,20 +373,20 @@ func TestLapsedBindingsKeepTheirClientShare(t *testing.T) {
 	clock := &testClock{now: time.Now()}
 	b := NewBindings()
 	b.now, b.maxClient = clock.Now, 1
-	if err := b.bind("1.1", "client:a", routing.Binding{}); err != nil {
+	if err := b.bind("1.1", "client:a", lbHandshake{}); err != nil {
 		t.Fatal(err)
 	}
 	clock.Advance(lbBindingIdle + time.Second)
-	if err := b.bind("1.2", "client:a", routing.Binding{}); !errors.Is(err, errClientBindingsFull) {
+	if err := b.bind("1.2", "client:a", lbHandshake{}); !errors.Is(err, errClientBindingsFull) {
 		t.Fatalf("bind after the client's binding lapsed = %v, want %v", err, errClientBindingsFull)
 	}
 	for _, c := range []string{"2.1", "2.2", "2.3"} {
-		if err := b.bind(c, "", routing.Binding{}); err != nil {
+		if err := b.bind(c, "", lbHandshake{}); err != nil {
 			t.Fatalf("bind %s with no client key = %v, want nil", c, err)
 		}
 	}
 	clock.Advance(lbBindingLife)
-	if err := b.bind("1.2", "client:a", routing.Binding{}); err != nil {
+	if err := b.bind("1.2", "client:a", lbHandshake{}); err != nil {
 		t.Fatalf("bind once the lapsed binding's connection is gone = %v, want nil", err)
 	}
 	if n := len(b.perClient); n != 1 {
@@ -292,7 +401,7 @@ func TestWellKnownRequestHoldsTheBinding(t *testing.T) {
 	clock := &testClock{now: time.Now()}
 	b := NewBindings()
 	b.now = clock.Now
-	if err := b.bind("7.1", "c", routing.Binding{}); err != nil {
+	if err := b.bind("7.1", "c", lbHandshake{}); err != nil {
 		t.Fatal(err)
 	}
 	s := &Server{bindings: b}
@@ -332,8 +441,8 @@ func TestWellKnownRequestHoldsTheBinding(t *testing.T) {
 // same connection installed meanwhile.
 func TestRefuseSkipsAReplacedBinding(t *testing.T) {
 	b := NewBindings()
-	first := routing.Binding{RouterDigest: "a"}
-	second := routing.Binding{RouterDigest: "b"}
+	first := lbHandshake{bound: routing.Binding{RouterDigest: "a"}}
+	second := lbHandshake{bound: routing.Binding{RouterDigest: "b"}}
 	if err := b.bind("1.1", "c", first); err != nil {
 		t.Fatal(err)
 	}
@@ -374,7 +483,7 @@ func holdRefusal(t *testing.T, b *Bindings, connection string) string {
 func TestRefuseSurvivesAnotherConnectionsHandshake(t *testing.T) {
 	b := NewBindings()
 	for _, c := range []string{"1.1", "1.2"} {
-		if err := b.bind(c, "c", routing.Binding{}); err != nil {
+		if err := b.bind(c, "c", lbHandshake{}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -382,7 +491,7 @@ func TestRefuseSurvivesAnotherConnectionsHandshake(t *testing.T) {
 	if held == nil {
 		t.Fatal("Hold() = nil, want the binding")
 	}
-	if err := b.bind("1.3", "c", routing.Binding{}); err != nil {
+	if err := b.bind("1.3", "c", lbHandshake{}); err != nil {
 		t.Fatal(err)
 	}
 	held.Refuse(types.ErrorCodeRouteDigestChanged)
@@ -398,7 +507,7 @@ func TestReleaseIsIdempotent(t *testing.T) {
 	clock := &testClock{now: time.Now()}
 	b := NewBindings()
 	b.now = clock.Now
-	if err := b.bind("1.1", "c", routing.Binding{}); err != nil {
+	if err := b.bind("1.1", "c", lbHandshake{}); err != nil {
 		t.Fatal(err)
 	}
 	held := b.Hold("1.1")
@@ -420,10 +529,10 @@ func TestBindingIdleLifetime(t *testing.T) {
 	clock := &testClock{now: time.Now()}
 	b := NewBindings()
 	b.now = clock.Now
-	if err := b.bind("1.1", "c", routing.Binding{}); err != nil {
+	if err := b.bind("1.1", "c", lbHandshake{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := b.bind("1.2", "c", routing.Binding{}); err != nil {
+	if err := b.bind("1.2", "c", lbHandshake{}); err != nil {
 		t.Fatal(err)
 	}
 	clock.Advance(lbBindingIdle - time.Second)
@@ -461,7 +570,7 @@ func TestBindingHeldByARequestInFlight(t *testing.T) {
 	clock := &testClock{now: time.Now()}
 	b := NewBindings()
 	b.now = clock.Now
-	if err := b.bind("1.1", "c", routing.Binding{RouterDigest: "D"}); err != nil {
+	if err := b.bind("1.1", "c", lbHandshake{bound: routing.Binding{RouterDigest: "D"}}); err != nil {
 		t.Fatal(err)
 	}
 	held := b.Hold("1.1")
@@ -470,7 +579,7 @@ func TestBindingHeldByARequestInFlight(t *testing.T) {
 	}
 	clock.Advance(3 * lbBindingIdle)
 	b.prune()
-	if err := b.bind("1.2", "c", routing.Binding{}); err != nil { // prunes on insert
+	if err := b.bind("1.2", "c", lbHandshake{}); err != nil { // prunes on insert
 		t.Fatal(err)
 	}
 	if again := b.Hold("1.1"); again == nil || again.RouterDigest != "D" {
@@ -493,18 +602,18 @@ func TestInsertPrunesExpiredBindings(t *testing.T) {
 	clock := &testClock{now: time.Now()}
 	b := NewBindings()
 	b.now = clock.Now
-	if err := b.bind("1.1", "c", routing.Binding{}); err != nil {
+	if err := b.bind("1.1", "c", lbHandshake{}); err != nil {
 		t.Fatal(err)
 	}
 	clock.Advance(lbBindingIdle + time.Second)
-	if err := b.bind("1.2", "c", routing.Binding{}); err != nil {
+	if err := b.bind("1.2", "c", lbHandshake{}); err != nil {
 		t.Fatal(err)
 	}
 	if e, ok := b.entries["1.1"]; !ok || e.refused != types.ErrorCodeBindingExpired {
 		t.Fatalf("idle binding after an insert = %+v, %v, want it lapsed", e, ok)
 	}
 	clock.Advance(lbBindingLife)
-	if err := b.bind("1.3", "c", routing.Binding{}); err != nil {
+	if err := b.bind("1.3", "c", lbHandshake{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := b.entries["1.1"]; ok {
@@ -520,29 +629,29 @@ func TestInsertAtTheBoundPrunesFully(t *testing.T) {
 	clock := &testClock{now: time.Now()}
 	b := NewBindings()
 	b.now, b.max = clock.Now, live+1
-	if err := b.bind("gone", "", routing.Binding{}); err != nil {
+	if err := b.bind("gone", "", lbHandshake{}); err != nil {
 		t.Fatal(err)
 	}
 	clock.Advance(lbBindingLife - time.Minute)
 	for i := range live {
-		if err := b.bind(fmt.Sprint("live.", i), "", routing.Binding{}); err != nil {
+		if err := b.bind(fmt.Sprint("live.", i), "", lbHandshake{}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	clock.Advance(2 * time.Minute) // "gone" is past its life, the rest are not
-	if err := b.bind("new", "", routing.Binding{}); err != nil {
+	if err := b.bind("new", "", lbHandshake{}); err != nil {
 		t.Fatalf("bind at the bound with a binding past its life = %v, want nil", err)
 	}
 
 	below := NewBindings()
 	below.now = clock.Now
 	for i := range 8 {
-		if err := below.bind(fmt.Sprint("old.", i), "", routing.Binding{}); err != nil {
+		if err := below.bind(fmt.Sprint("old.", i), "", lbHandshake{}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	clock.Advance(lbBindingLife + time.Second)
-	if err := below.bind("new", "", routing.Binding{}); err != nil {
+	if err := below.bind("new", "", lbHandshake{}); err != nil {
 		t.Fatal(err)
 	}
 	if n, want := len(below.entries), 8-pruneOnInsert+1; n != want {

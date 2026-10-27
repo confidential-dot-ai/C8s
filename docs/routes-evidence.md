@@ -51,6 +51,11 @@ attest-pq session, whose later requests get 401 `channel_error`, while an
 attest-lb connection keeps answering 503. The check runs as a request is
 admitted, so a response already streaming runs to its end.
 
+A renewal of the router's certificate reaches new connections only: nginx
+reads it on each TLS handshake and resumes no TLS session. A handshake on an
+attest-lb connection that is already bound attests the serving leaf that
+connection presents, the one its binding was attested with.
+
 A handshake is refused with 503 `routes_unavailable` before the first manifest
 is applied, `routes_stale` once the applied one is older than its
 `maxAgeSeconds` without a refresh, and `sessions_busy` while a replica, or this

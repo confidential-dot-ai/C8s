@@ -12,6 +12,7 @@
 {{- $launchDriven := eq (include "router.launchDriven" .) "true" -}}
 {{- $acmeSidecar := eq (include "router.acmeSidecar" .) "true" -}}
 {{- $defaultMeshCAPath := include "c8s.caFile" . -}}
+{{- $startConf := "/tmp/nginx-start.conf" -}}
 {{- $routingPort := include "router.routingPort" . -}}
 {{- $maxRequestBodyBytes := include "c8s.int" .Values.router.routing.maxRequestBodyBytes | int64 -}}
 {{- if lt $maxRequestBodyBytes 1 -}}
@@ -76,82 +77,52 @@ metadata:
     {{- include "router.labels" . | nindent 4 }}
 data:
   # INVARIANT: nginx is this script's child, so no process namespace is shared.
-  reload.sh: |
+  serve.sh: |
     #!/bin/sh
     set -eu
-    # Fixed: the front door serves the previous certificate for at most this
-    # long after a renewal.
+    # nginx reads its certificate on every TLS handshake, so a renewal needs
+    # no signal. This script stops nginx once a credential the router serves
+    # is withdrawn: serving on would serve a certificate C8s took back.
     interval=5
-    watched="{{ include "router.filesNginxLoads" . }}"
+    watched="{{ include "router.servedCredentials" . }}"
     {{- if $launchDriven }}
-    # The launch file's front-door mode picks what tls.conf loads. In cds mode
-    # the acme sidecar stands by and writes no ACME files, so watching them
-    # would read as a withdrawal.
+    # The launch file's front-door mode picks the certificate tls.conf names.
+    # In cds mode the acme sidecar stands by and writes no ACME files.
     if [ "$(cat {{ include "router.launchDir" . }}/front-door-mode)" = acme ]; then
         watched="$watched {{ include "router.acmeCertDir" . }}/cert.pem {{ include "router.acmeKeyDir" . }}/key.pem"
     fi
     {{- end }}
 
-    # A publication relinks the leaf and its key one file at a time, so a tick
-    # can land on a leaf whose key has not arrived yet. nginx tests what it
-    # would load, and nothing is signalled until that test passes.
-    load_attempts=5
-    load_delay=1
-
-    # Exit 2 says a file nginx loads is gone: the generation was withdrawn, and
-    # serving on would serve a certificate C8s took back. Any other failure is
-    # a read straddling a publication, which the next tick sees whole.
-    fingerprint() {
+    withdrawn() {
         for file in $watched; do
             if [ ! -r "$file" ]; then
                 echo "router: $file is not readable" >&2
-                return 2
-            fi
-            md5sum "$file" || return 1
-        done
-    }
-
-    # loadable waits out a publication in progress: a leaf and a key that do
-    # not belong together are the one state that passes the fingerprint and
-    # fails the load.
-    loadable() {
-        attempt=1
-        while [ "$attempt" -le "$load_attempts" ]; do
-            if nginx -c {{ include "router.configDir" . }}/nginx.conf -t; then
                 return 0
             fi
-            echo "router: nginx will not load the watched files; retrying" >&2
-            sleep "$load_delay"
-            attempt=$((attempt + 1))
         done
         return 1
     }
 
-    previous="$(fingerprint)"
+    if withdrawn; then exit 1; fi
+    # Worker PIDs and $connection restart from the same numbers, so each
+    # start names itself in the connection identifier.
+    start="$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
+    if [ "${#start}" -ne 16 ]; then
+        echo "router: cannot name this nginx start" >&2
+        exit 1
+    fi
+    printf 'map $pid $nginx_start {\n    default "%s";\n}\n' "$start" > {{ $startConf }}
     nginx -c {{ include "router.configDir" . }}/nginx.conf -g 'daemon off;' &
     nginx_pid=$!
     trap 'kill -TERM "$nginx_pid" 2>/dev/null; exit 0' TERM INT
     trap 'kill -QUIT "$nginx_pid" 2>/dev/null; exit 0' QUIT
 
-    nginx_alive() { kill -0 "$nginx_pid" 2>/dev/null; }
-
-    while nginx_alive; do
+    while kill -0 "$nginx_pid" 2>/dev/null; do
         sleep "$interval"
-        current="$(fingerprint)" && status=0 || status=$?
-        case "$status" in
-            0)
-                if [ "$current" != "$previous" ]; then
-                    if loadable; then
-                        kill -HUP "$nginx_pid"
-                        previous="$current"
-                    else
-                        echo "router: keeping the running configuration; retrying next tick" >&2
-                    fi
-                fi
-                ;;
-            2) exit 1 ;;
-            *) echo "router: certificates unread this tick; retrying" >&2 ;;
-        esac
+        if withdrawn; then
+            kill -TERM "$nginx_pid" 2>/dev/null
+            exit 1
+        fi
     done
     wait "$nginx_pid"
   nginx.conf: |
@@ -183,6 +154,14 @@ data:
         keepalive_timeout 65;
         client_header_timeout 60s;
         send_timeout 60s;
+
+        # Always empty. A certificate path naming a variable is read on every
+        # TLS handshake, so a renewal reaches new connections without a reload.
+        map $ssl_server_name $per_handshake {
+            default "";
+        }
+        # $nginx_start, which serve.sh writes at each start.
+        include {{ $startConf }};
 
         # Pass a client's WebSocket upgrade (e.g. socket.io) through location /;
         # other requests keep Connection: close to the routing listener.
@@ -236,15 +215,17 @@ data:
             include {{ include "router.launchDir" . }}/tls.conf;
             {{- else }}
 
-            ssl_certificate     {{ include "router.publicCertPath" . }};
-            ssl_certificate_key {{ include "router.publicKeyPath" . }};
+            ssl_certificate     {{ include "router.publicCertPath" . }}$per_handshake;
+            ssl_certificate_key {{ include "router.publicKeyPath" . }}$per_handshake;
             {{- end }}
 
             ssl_protocols TLSv1.2 TLSv1.3;
             ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-RSA-CHACHA20-POLY1305;
             ssl_prefer_server_ciphers on;
-            ssl_session_cache shared:SSL:10m;
-            ssl_session_timeout 1d;
+            # A resumed session keeps the leaf it began with, which a renewal
+            # replaces on disk and attest-lb would attest.
+            ssl_session_cache off;
+            ssl_session_tickets off;
 
             # Headroom for upstream responses with large headers.
             proxy_buffer_size 16k;
@@ -307,7 +288,7 @@ data:
             # published on the pod IP). So the probe rides the front door:
             # exact-match, ahead of location /.
             location = /readyz {
-                proxy_set_header X-C8s-Connection $pid.$connection;
+                proxy_set_header X-C8s-Connection $nginx_start.$pid.$connection;
                 keepalive_timeout 0;
                 access_log off;
                 proxy_pass http://127.0.0.1:{{ .Values.router.attest.port }};
@@ -381,7 +362,7 @@ data:
                 proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
                 proxy_set_header X-Forwarded-Proto $scheme;
                 # Replaces any client value.
-                proxy_set_header X-C8s-Connection $pid.$connection;
+                proxy_set_header X-C8s-Connection $nginx_start.$pid.$connection;
                 proxy_set_header Upgrade $http_upgrade;
                 proxy_set_header Connection $connection_upgrade;
                 {{- if $launchDriven }}
@@ -455,10 +436,10 @@ data:
     }
   {{- if $launchDriven }}
   tls-cds.conf: |-
-    ssl_certificate     {{ include "c8s.certFile" . }};
-    ssl_certificate_key {{ include "c8s.keyFile" . }};
+    ssl_certificate     {{ include "c8s.certFile" . }}$per_handshake;
+    ssl_certificate_key {{ include "c8s.keyFile" . }}$per_handshake;
   tls-acme.conf: |-
-    ssl_certificate     {{ include "router.acmeCertDir" . }}/cert.pem;
-    ssl_certificate_key {{ include "router.acmeKeyDir" . }}/key.pem;
+    ssl_certificate     {{ include "router.acmeCertDir" . }}/cert.pem$per_handshake;
+    ssl_certificate_key {{ include "router.acmeKeyDir" . }}/key.pem$per_handshake;
   {{- end }}
 {{- end }}

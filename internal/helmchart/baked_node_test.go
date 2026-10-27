@@ -174,8 +174,8 @@ func TestChartBakedRouterReadsLaunchFiles(t *testing.T) {
 
 	snippets := renderedConfigMap(t, out, "c8s-router-nginx").Data
 	for key, want := range map[string]string{
-		"tls-cds.conf":  "ssl_certificate     /etc/c8s/certs/tls.crt;\nssl_certificate_key /etc/c8s/certs/tls.key;",
-		"tls-acme.conf": "ssl_certificate     /etc/c8s-acme-tls/cert.pem;\nssl_certificate_key /etc/c8s-acme-key/key.pem;",
+		"tls-cds.conf":  "ssl_certificate     /etc/c8s/certs/tls.crt$per_handshake;\nssl_certificate_key /etc/c8s/certs/tls.key$per_handshake;",
+		"tls-acme.conf": "ssl_certificate     /etc/c8s-acme-tls/cert.pem$per_handshake;\nssl_certificate_key /etc/c8s-acme-key/key.pem$per_handshake;",
 	} {
 		if snippets[key] != want {
 			t.Errorf("%s = %q, want %q", key, snippets[key], want)

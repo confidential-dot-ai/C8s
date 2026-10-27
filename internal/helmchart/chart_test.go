@@ -1616,8 +1616,8 @@ func TestChartRendersRouterPublicTLSAndDiscovery(t *testing.T) {
 	}
 	cfg := renderedRouterNginxConfig(t, out)
 	server := cfg.server(t)
-	server.assertDirective(t, "ssl_certificate", "/mnt/c8s-data/edge-tls/public.crt")
-	server.assertDirective(t, "ssl_certificate_key", "/mnt/c8s-data/edge-tls/public.key")
+	server.assertDirective(t, "ssl_certificate", "/mnt/c8s-data/edge-tls/public.crt$per_handshake")
+	server.assertDirective(t, "ssl_certificate_key", "/mnt/c8s-data/edge-tls/public.key$per_handshake")
 	ciphers := server.directives["ssl_ciphers"]
 	if len(ciphers) != 1 || len(ciphers[0]) != 1 ||
 		!slices.Contains(strings.Split(ciphers[0][0], ":"), "ECDHE-RSA-AES128-GCM-SHA256") {
@@ -1633,7 +1633,7 @@ func TestChartRendersRouterPublicTLSAndDiscovery(t *testing.T) {
 	}
 	cfg.location(t, "prefix", "/allowlist/").assertDirective(t, "keepalive_timeout", "0")
 	cfg.location(t, "named", "@tunnel_busy").assertDirective(t, "keepalive_timeout", "0")
-	cfg.location(t, "exact", "/readyz").assertDirective(t, "proxy_set_header", "X-C8s-Connection", "$pid.$connection")
+	cfg.location(t, "exact", "/readyz").assertDirective(t, "proxy_set_header", "X-C8s-Connection", "$nginx_start.$pid.$connection")
 	// The public TLS mode changes only what nginx serves: application
 	// requests still go to the routing listener, which dials backends itself.
 	app := cfg.location(t, "prefix", "/")
@@ -1675,8 +1675,8 @@ func TestChartRendersRouterPublicTLSAndDiscovery(t *testing.T) {
 	// key cannot support attest-lb's transport binding.
 	attest := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")
 	assertContainerArgs(t, attest, "--front-door-mode=webpki")
-	// nginx reloads itself from its own entrypoint, so the pod shares no
-	// process namespace (router_reload_test.go).
+	// nginx is its own entrypoint's child, so the pod shares no process
+	// namespace (router_serve_test.go).
 	deployment := renderedDeployment(t, out, "c8s-router")
 	if got := deployment.Spec.Template.Spec.ShareProcessNamespace; got != nil && *got {
 		t.Fatalf("router shareProcessNamespace = %v, want it unset", *got)
@@ -1886,8 +1886,8 @@ func TestChartRouterACMEMode(t *testing.T) {
 	if len(cfg.servers) != 2 {
 		t.Fatalf("nginx config has %d server blocks, want the :443 and :80 pair", len(cfg.servers))
 	}
-	cfg.servers[0].assertDirective(t, "ssl_certificate", "/etc/c8s-acme-tls/cert.pem")
-	cfg.servers[0].assertDirective(t, "ssl_certificate_key", "/etc/c8s-acme-key/key.pem")
+	cfg.servers[0].assertDirective(t, "ssl_certificate", "/etc/c8s-acme-tls/cert.pem$per_handshake")
+	cfg.servers[0].assertDirective(t, "ssl_certificate_key", "/etc/c8s-acme-key/key.pem$per_handshake")
 	cfg.servers[1].assertDirective(t, "listen", "8080")
 	cfg.location(t, "prefix", "/.well-known/acme-challenge/").
 		assertDirective(t, "proxy_pass", "http://127.0.0.1:8402")
@@ -2290,7 +2290,7 @@ func TestChartRendersRouterAttestSidecar(t *testing.T) {
 		loc.assertDirective(t, "proxy_max_temp_file_size", "0")
 		loc.assertDirective(t, "proxy_read_timeout", "3630s")
 		loc.assertDirective(t, "proxy_set_header", "X-Real-IP", "$remote_addr")
-		loc.assertDirective(t, "proxy_set_header", "X-C8s-Connection", "$pid.$connection")
+		loc.assertDirective(t, "proxy_set_header", "X-C8s-Connection", "$nginx_start.$pid.$connection")
 	}
 	protocol.assertNoDirective(t, "limit_conn")
 	protocol.assertDirective(t, "client_max_body_size", "16k")
@@ -3692,7 +3692,7 @@ func assertRouterRoutingLocation(t *testing.T, route *nginxBlock, port, readTime
 	route.assertDirective(t, "proxy_set_header", "X-Real-IP", "$remote_addr")
 	route.assertDirective(t, "proxy_set_header", "X-Forwarded-For", "$proxy_add_x_forwarded_for")
 	route.assertDirective(t, "proxy_set_header", "X-Forwarded-Proto", "$scheme")
-	route.assertDirective(t, "proxy_set_header", "X-C8s-Connection", "$pid.$connection")
+	route.assertDirective(t, "proxy_set_header", "X-C8s-Connection", "$nginx_start.$pid.$connection")
 }
 
 func TestChartRouterRoutingLocation(t *testing.T) {
@@ -4578,6 +4578,14 @@ func Example_routerConfig() {
 	//     client_header_timeout 60s;
 	//     send_timeout 60s;
 	//
+	//     # Always empty. A certificate path naming a variable is read on every
+	//     # TLS handshake, so a renewal reaches new connections without a reload.
+	//     map $ssl_server_name $per_handshake {
+	//         default "";
+	//     }
+	//     # $nginx_start, which serve.sh writes at each start.
+	//     include /tmp/nginx-start.conf;
+	//
 	//     # Pass a client's WebSocket upgrade (e.g. socket.io) through location /;
 	//     # other requests keep Connection: close to the routing listener.
 	//     map $http_upgrade $connection_upgrade {
@@ -4614,14 +4622,16 @@ func Example_routerConfig() {
 	//         listen 8443 ssl;
 	//         server_name c8s-router.c8s-router.svc;
 	//
-	//         ssl_certificate     /etc/c8s/certs/tls.crt;
-	//         ssl_certificate_key /etc/c8s/certs/tls.key;
+	//         ssl_certificate     /etc/c8s/certs/tls.crt$per_handshake;
+	//         ssl_certificate_key /etc/c8s/certs/tls.key$per_handshake;
 	//
 	//         ssl_protocols TLSv1.2 TLSv1.3;
 	//         ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-RSA-CHACHA20-POLY1305;
 	//         ssl_prefer_server_ciphers on;
-	//         ssl_session_cache shared:SSL:10m;
-	//         ssl_session_timeout 1d;
+	//         # A resumed session keeps the leaf it began with, which a renewal
+	//         # replaces on disk and attest-lb would attest.
+	//         ssl_session_cache off;
+	//         ssl_session_tickets off;
 	//
 	//         # Headroom for upstream responses with large headers.
 	//         proxy_buffer_size 16k;
@@ -4694,7 +4704,7 @@ func Example_routerConfig() {
 	//         # published on the pod IP). So the probe rides the front door:
 	//         # exact-match, ahead of location /.
 	//         location = /readyz {
-	//             proxy_set_header X-C8s-Connection $pid.$connection;
+	//             proxy_set_header X-C8s-Connection $nginx_start.$pid.$connection;
 	//             keepalive_timeout 0;
 	//             access_log off;
 	//             proxy_pass http://127.0.0.1:8800;
@@ -4721,7 +4731,7 @@ func Example_routerConfig() {
 	//             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 	//             proxy_set_header X-Forwarded-Proto $scheme;
 	//             # Replaces any client value.
-	//             proxy_set_header X-C8s-Connection $pid.$connection;
+	//             proxy_set_header X-C8s-Connection $nginx_start.$pid.$connection;
 	//             proxy_set_header Upgrade $http_upgrade;
 	//             proxy_set_header Connection $connection_upgrade;
 	//             client_max_body_size 1048576;
