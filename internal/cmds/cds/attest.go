@@ -257,12 +257,6 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Every other gate has passed, so this sandbox is about to be named on a
-	// leaf: bind it to the inventory that vouched for it. Recorded here rather
-	// than at token verification so a request that then fails the measurement
-	// or workload check cannot claim a sandbox ID it never got a cert for.
-	h.recordSandboxBinding(sandbox)
-
 	// The leaf's OID .1.1 armTLS extension is copied from the client's CSR
 	// (see issuer.SignCSR): the client embeds evidence bound to
 	// SHA-384(pubkey) with no nonce, which is the only form downstream
@@ -290,18 +284,25 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 	}
 	// One read: the certificate that signs the leaf is the chain returned with it.
 	signing := h.MeshCA.Current()
-	certPEM, serial, err := signing.CA.SignCSR(issuer.SignCSRParams{
+	certPEM, leafCN, serial, err := signing.CA.SignCSR(issuer.SignCSRParams{
 		CSR:             csr,
 		TTL:             ttl,
 		Evidence:        evidenceJSON,
 		SandboxID:       sandbox.SandboxID,
 		MatchedWorkload: matched,
 	})
+	if errors.Is(err, issuer.ErrSubjectDenied) {
+		slog.Warn("leaf subject denied", "error", err, "remote_addr", r.RemoteAddr)
+		attestation.WriteError(w, http.StatusForbidden, types.ErrorCodeCSRDenied, err.Error())
+		return
+	}
 	if err != nil {
 		slog.Error("in-process sign failed", "error", err)
 		attestation.WriteError(w, http.StatusInternalServerError, types.ErrorCodeSignFailed, err.Error())
 		return
 	}
+
+	h.recordSandboxBinding(sandbox)
 
 	// The issuance record is the audit-relevant event: a mesh identity is only
 	// as accountable as what was written down when it was granted, and a leaf
@@ -314,7 +315,7 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 	// version it matched under, and the sandbox that vouched, so a disputed
 	// name reconstructs from the log alone.
 	issued := []any{
-		"cn", csr.Subject.CommonName,
+		"cn", leafCN,
 		"sans", csr.DNSNames,
 		"serial", serialHex(serial),
 		"ttl", ttl,

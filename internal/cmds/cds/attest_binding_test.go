@@ -3,6 +3,10 @@ package cds
 import (
 	"net/http"
 	"testing"
+	"time"
+
+	"github.com/confidential-dot-ai/c8s/internal/sandboxledger"
+	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
 // recordingBinder captures what issuance binds, so a test can tell a written
@@ -25,7 +29,7 @@ func TestAttest_BindsSandboxToInventoryOnSuccess(t *testing.T) {
 	h, signer := newSandboxTestEnv(t, stub.URL())
 	binder := &recordingBinder{}
 	h.SandboxBindings = binder
-	csrPEM, _ := generateCSR(t)
+	csrPEM := sandboxCSR(t)
 
 	challenge := issueChallenge(t, h)
 	if w := postAttestSandbox(t, h, challenge, csrPEM, signedSandboxToken(t, signer, csrPEM, challenge, testSandboxID)); w.Code != http.StatusOK {
@@ -49,7 +53,7 @@ func TestAttest_ConflictingBindingStillIssues(t *testing.T) {
 	stub := newStubAttestationApi(t, testLaunchDigest)
 	h, signer := newSandboxTestEnv(t, stub.URL())
 	h.SandboxBindings = &recordingBinder{refuse: true}
-	csrPEM, _ := generateCSR(t)
+	csrPEM := sandboxCSR(t)
 
 	challenge := issueChallenge(t, h)
 	if w := postAttestSandbox(t, h, challenge, csrPEM, signedSandboxToken(t, signer, csrPEM, challenge, testSandboxID)); w.Code != http.StatusOK {
@@ -64,6 +68,7 @@ func TestAttest_NoTokenBindsNothing(t *testing.T) {
 	h, _ := newSandboxTestEnv(t, stub.URL())
 	binder := &recordingBinder{}
 	h.SandboxBindings = binder
+	// No token, so the CSR names the leaf itself.
 	csrPEM, _ := generateCSR(t)
 
 	if w := postAttest(t, h, issueChallenge(t, h), csrPEM); w.Code != http.StatusOK {
@@ -84,7 +89,7 @@ func TestAttest_FailedIssuanceBindsNothing(t *testing.T) {
 	// Pin a measurement the stub does not report, so the request fails after
 	// the sandbox token has been verified.
 	h.Measurements = map[string]bool{"00": true}
-	csrPEM, _ := generateCSR(t)
+	csrPEM := sandboxCSR(t)
 
 	challenge := issueChallenge(t, h)
 	if w := postAttestSandbox(t, h, challenge, csrPEM, signedSandboxToken(t, signer, csrPEM, challenge, testSandboxID)); w.Code == http.StatusOK {
@@ -92,5 +97,48 @@ func TestAttest_FailedIssuanceBindsNothing(t *testing.T) {
 	}
 	if len(binder.calls) != 0 {
 		t.Fatalf("Record called %d times for a failed issuance, want 0", len(binder.calls))
+	}
+}
+
+func TestAttest_SubjectDeniedDoesNotBindSandbox(t *testing.T) {
+	stub := newStubAttestationApi(t, testLaunchDigest)
+	h, signer := newSandboxTestEnv(t, stub.URL())
+	ledger := sandboxledger.New(time.Hour, 10)
+	h.SandboxBindings = ledger
+	csrPEM, _ := generateCSR(t)
+	challenge := issueChallenge(t, h)
+	w := postAttestSandbox(t, h, challenge, csrPEM, signedSandboxToken(t, signer, csrPEM, challenge, testSandboxID))
+	if w.Code != http.StatusForbidden || errorCode(t, w.Body.Bytes()) != types.ErrorCodeCSRDenied {
+		t.Fatalf("status %d, body=%s; want 403 csr_denied", w.Code, w.Body.String())
+	}
+	if host, bound := ledger.Lookup(testSandboxID); bound {
+		t.Fatalf("denied subject bound sandbox to %q", host)
+	}
+
+	csrPEM = sandboxCSR(t)
+	challenge = issueChallenge(t, h)
+	w = postAttestSandbox(t, h, challenge, csrPEM, signedSandboxToken(t, signer, csrPEM, challenge, testSandboxID))
+	if w.Code != http.StatusOK {
+		t.Fatalf("valid retry: status %d, body=%s", w.Code, w.Body.String())
+	}
+	if host, bound := ledger.Lookup(testSandboxID); !bound || host != testInventoryHost {
+		t.Fatalf("valid retry bound sandbox to %q, %v; want %q", host, bound, testInventoryHost)
+	}
+}
+
+func TestAttest_SigningFailureDoesNotBindSandbox(t *testing.T) {
+	stub := newStubAttestationApi(t, testLaunchDigest)
+	h, signer := newSandboxTestEnv(t, stub.URL())
+	ledger := sandboxledger.New(time.Hour, 10)
+	h.SandboxBindings = ledger
+	h.MeshCA.Current().CA.Key = nil
+	csrPEM := sandboxCSR(t)
+	challenge := issueChallenge(t, h)
+	w := postAttestSandbox(t, h, challenge, csrPEM, signedSandboxToken(t, signer, csrPEM, challenge, testSandboxID))
+	if w.Code != http.StatusInternalServerError || errorCode(t, w.Body.Bytes()) != types.ErrorCodeSignFailed {
+		t.Fatalf("status %d, body=%s; want 500 sign_failed", w.Code, w.Body.String())
+	}
+	if host, bound := ledger.Lookup(testSandboxID); bound {
+		t.Fatalf("signing failure bound sandbox to %q", host)
 	}
 }

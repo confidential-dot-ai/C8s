@@ -442,6 +442,14 @@ SandboxID ::= UTF8String    -- e.g. containerd's 64-hex sandbox ID
 A leaf carries exactly one `…1.4`: one DER UTF8String whose value matches
 `[A-Za-z0-9._-]{1,128}`.
 
+For `get-cert --no-san`, CDS sets the leaf's common name to the lowercase hex
+SHA-256 of the verified sandbox ID. Such a CSR must have an empty common name.
+A leaf with DNS or IP SANs keeps the CSR common name, as does a CN-only request
+without a sandbox token. A request with none of these names receives
+`403 csr_denied`; URI and email SANs are omitted from issued leaves.
+Sandbox authorization uses the signed sandbox-ID extension. CDS records the
+inventory binding after signing succeeds.
+
 The **inventory** is the component that admitted the pod's containers —
 nri-image-policy on node-CVM — so it is
 the arbiter of both which sandbox a process belongs to and what runs in that

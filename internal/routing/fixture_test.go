@@ -8,7 +8,6 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
-	"crypto/x509/pkix"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -108,7 +107,6 @@ func issueLeaf(t testing.TB, ca *issuer.CA, workload string, dnsNames ...string)
 		t.Fatal(err)
 	}
 	csrDER, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
-		Subject:  pkix.Name{CommonName: "leaf"},
 		DNSNames: dnsNames,
 	}, key)
 	if err != nil {
@@ -126,7 +124,7 @@ func issueLeaf(t testing.TB, ca *issuer.CA, workload string, dnsNames ...string)
 			AllowlistDigest:  bytes.Repeat([]byte{0x42}, 32),
 		}
 	}
-	certPEM, _, err := ca.SignCSR(params)
+	certPEM, _, _, err := ca.SignCSR(params)
 	if err != nil {
 		t.Fatal(err)
 	}

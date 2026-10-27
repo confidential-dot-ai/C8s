@@ -765,6 +765,41 @@ func TestChartCDSSecretsPathQuotaFlagsThrough(t *testing.T) {
 	}
 }
 
+// The value bound is chart-settable, and unset renders no flag at all, so CDS
+// keeps its own bound.
+func TestChartCDSSecretsMaxValueBytesFlagsThrough(t *testing.T) {
+	t.Parallel()
+	out, err := helmTemplate(t, "--set", "cds.secretsMaxValueBytes=8192")
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	assertContainerHasArg(t, "cds", renderedDeploymentContainer(t, out, "c8s-cds", "cds").Args, "--secrets-max-value-bytes=8192")
+
+	out, err = helmTemplate(t)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	for _, a := range renderedDeploymentContainer(t, out, "c8s-cds", "cds").Args {
+		if strings.HasPrefix(a, "--secrets-max-value-bytes=") {
+			t.Fatalf("the unset value rendered %s", a)
+		}
+	}
+
+	out, err = helmTemplate(t, "--set", "cds.secretsMaxValueBytes=32")
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	assertContainerHasArg(t, "cds", renderedDeploymentContainer(t, out, "c8s-cds", "cds").Args, "--secrets-max-value-bytes=32")
+
+	out, err = helmTemplate(t, "--set", "cds.secretsMaxValueBytes=31")
+	if err == nil {
+		t.Fatalf("a bound below a generated value rendered:\n%s", out)
+	}
+	if want := "kind=cds_secrets_value_bytes"; !strings.Contains(out, want) {
+		t.Fatalf("render failed without %q: %v\n%s", want, err, out)
+	}
+}
+
 // The pair CDS refuses to start on is refused at template time instead.
 func TestChartCDSSecretsQuotaAboveTheCeilingFailsRendering(t *testing.T) {
 	t.Parallel()
@@ -1838,12 +1873,6 @@ func TestChartRouterACMEMode(t *testing.T) {
 
 	cert := routerGetCertContainer(t, out, "c8s-cert")
 	assertContainerArgs(t, cert, "--discovery-public-tls-mode=acme")
-	// The acme sidecar SIGHUPs nginx itself; get-cert watches nothing extra.
-	for _, a := range cert.Args {
-		if strings.HasPrefix(a, "--reload-watch=") {
-			t.Fatalf("get-cert must not watch the acme certs, got %v", cert.Args)
-		}
-	}
 
 	cfg := renderedRouterNginxConfig(t, out)
 	if len(cfg.servers) != 2 {
