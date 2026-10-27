@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 )
@@ -16,14 +17,24 @@ import (
 // image; Refresh re-reads it, so a long-lived client (get-cert's renewal
 // loop) follows a CDS rollout without a pod restart. A file read halfway
 // through a rewrite does not parse, and leaves the set unchanged.
+//
+// Generation also re-reads the file once nodePinsRecheck has passed since the
+// last read, so a client whose requests keep succeeding still drops a CDS
+// image the operator removed: the refreshing transport rebuilds on the new
+// generation and never reuses a connection made under the old set.
 type NodePins struct {
 	path string
 
-	mu  sync.Mutex
-	raw []byte
-	cur refvalues.ReferenceValues
-	gen uint64
+	mu   sync.Mutex
+	raw  []byte
+	cur  refvalues.ReferenceValues
+	gen  uint64
+	read time.Time
 }
+
+// nodePinsRecheck bounds how long a client keeps using a CDS that the
+// enforcer's rewritten policy no longer pins (a var so tests can shorten it).
+var nodePinsRecheck = 5 * time.Second
 
 // NewNodePins reads the node's policy at path.
 func NewNodePins(path string) (*NodePins, error) {
@@ -41,8 +52,15 @@ func (n *NodePins) Current() refvalues.ReferenceValues {
 	return n.cur
 }
 
-// Generation changes with Current.
+// Generation changes with Current. It re-reads the file when the last read
+// is older than nodePinsRecheck; a read that fails keeps the set.
 func (n *NodePins) Generation() uint64 {
+	n.mu.Lock()
+	stale := time.Since(n.read) >= nodePinsRecheck
+	n.mu.Unlock()
+	if stale {
+		_, _ = n.Refresh(context.Background())
+	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	return n.gen
@@ -50,6 +68,9 @@ func (n *NodePins) Generation() uint64 {
 
 // Refresh re-reads the file and reports whether the set changed.
 func (n *NodePins) Refresh(context.Context) (bool, error) {
+	n.mu.Lock()
+	n.read = time.Now()
+	n.mu.Unlock()
 	data, err := os.ReadFile(n.path)
 	if err != nil {
 		return false, err
