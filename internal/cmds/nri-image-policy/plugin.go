@@ -915,10 +915,7 @@ func (p *plugin) initExempt(ctx context.Context, pods []*api.PodSandbox, ctrs []
 func (p *plugin) captureExempt(ctx context.Context, pods []*api.PodSandbox, ctrs []*api.Container) *exemptSnapshot {
 	snap := newExemptSnapshot(p.cfg.Policy.ExemptNamespaces)
 
-	podByID := make(map[string]*api.PodSandbox, len(pods))
-	for _, pod := range pods {
-		podByID[pod.GetId()] = pod
-	}
+	podByID := podsByID(pods)
 	for _, ctr := range ctrs {
 		pod := podByID[ctr.GetPodSandboxId()]
 		if pod == nil {
@@ -994,14 +991,21 @@ func (p *plugin) Synchronize(ctx context.Context, pods []*api.PodSandbox, ctrs [
 	return nil, nil
 }
 
+// podsByID indexes the sandboxes the runtime reported by their sandbox ID, so
+// a container can be matched to its pod by GetPodSandboxId.
+func podsByID(pods []*api.PodSandbox) map[string]*api.PodSandbox {
+	byID := make(map[string]*api.PodSandbox, len(pods))
+	for _, pod := range pods {
+		byID[pod.GetId()] = pod
+	}
+	return byID
+}
+
 // trackRunning adds every running container whose pod sandbox the runtime
 // reported at registration to the running set: the containers the startup check
 // can judge.
 func (p *plugin) trackRunning(pods []*api.PodSandbox, ctrs []*api.Container) {
-	podByID := make(map[string]*api.PodSandbox, len(pods))
-	for _, pod := range pods {
-		podByID[pod.GetId()] = pod
-	}
+	podByID := podsByID(pods)
 	for _, ctr := range ctrs {
 		pod := podByID[ctr.GetPodSandboxId()]
 		if pod == nil || ctr.GetState() != api.ContainerState_CONTAINER_RUNNING {
@@ -1014,10 +1018,7 @@ func (p *plugin) trackRunning(pods []*api.PodSandbox, ctrs []*api.Container) {
 // recoverExisting takes every sandbox running when this enforcer connected
 // back under the mesh gate, or refuses it for its life.
 func (p *plugin) recoverExisting(ctx context.Context, pods []*api.PodSandbox, ctrs []*api.Container) {
-	podByID := make(map[string]*api.PodSandbox, len(pods))
-	for _, pod := range pods {
-		podByID[pod.GetId()] = pod
-	}
+	podByID := podsByID(pods)
 	bySandbox := map[string][]recoveredContainer{}
 	workloads := map[string][]workloadclaims.SandboxContainer{}
 	for _, ctr := range ctrs {
@@ -1073,11 +1074,7 @@ func (p *plugin) checkExisting(ctx context.Context, cfg *config, pods []*api.Pod
 	p.logger.Info("checking existing containers",
 		"pods", len(pods), "containers", len(ctrs), "enforcing", cfg.Policy.EnforceExisting)
 
-	// Build pod lookup by sandbox ID
-	podByID := make(map[string]*api.PodSandbox, len(pods))
-	for _, pod := range pods {
-		podByID[pod.GetId()] = pod
-	}
+	podByID := podsByID(pods)
 
 	if p.inventory != nil {
 		defer p.inventory.recovered()

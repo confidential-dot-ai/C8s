@@ -68,6 +68,15 @@ func sandboxNetNSPath(pid uint32) string {
 	return fmt.Sprintf("/proc/%d/ns/net", pid)
 }
 
+// sandboxPod starts a sandbox process and returns a pod whose reported netns
+// path and Pid are that live process, ready to protect or recover.
+func sandboxPod(t *testing.T, namespace, name string) *api.PodSandbox {
+	pid := sandboxProcess(t)
+	pod := meshPod(namespace, name, sandboxNetNSPath(pid))
+	pod.Pid = pid
+	return pod
+}
+
 // The ruleset is installed into the pod's own namespace only when the path the
 // runtime reports is proven to be that sandbox's: anything else would protect
 // a namespace that carries none of the pod's traffic.
@@ -135,9 +144,7 @@ func TestVerifyRejectsAReplacedNamespaceInTheNamespace(t *testing.T) {
 // an assertion needs the live ruleset, and a namespace that is gone refuses
 // everything.
 func TestProtectAndGateAPodInTheNamespace(t *testing.T) {
-	pid := sandboxProcess(t)
-	pod := meshPod("default", "pod", sandboxNetNSPath(pid))
-	pod.Pid = pid
+	pod := sandboxPod(t, "default", "pod")
 	gate := newMeshGate(*meshRoles(), discardLogger())
 
 	if err := gate.protect(pod); err != nil {
@@ -175,16 +182,16 @@ func TestProtectAndGateAPodInTheNamespace(t *testing.T) {
 
 	// A second install into the same namespace is refused, so the pod's
 	// protection cannot be replaced under a running container.
-	if err := installPodRuleset(podNamespace{path: sandboxNetNSPath(pid)}, gate.policy, "default"); !errors.Is(err, ruleset.ErrForeignRules) {
+	if err := installPodRuleset(podNamespace{path: sandboxNetNSPath(pod.GetPid())}, gate.policy, "default"); !errors.Is(err, ruleset.ErrForeignRules) {
 		t.Fatalf("second install = %v, want ErrForeignRules", err)
 	}
 
 	// The namespace is gone once the sandbox process is: every answer about it
 	// is then a refusal.
-	if err := unix.Kill(int(pid), unix.SIGKILL); err != nil {
+	if err := unix.Kill(int(pod.GetPid()), unix.SIGKILL); err != nil {
 		t.Fatal(err)
 	}
-	if err := waitForNamespaceGone(sandboxNetNSPath(pid)); err != nil {
+	if err := waitForNamespaceGone(sandboxNetNSPath(pod.GetPid())); err != nil {
 		t.Fatal(err)
 	}
 	if err := gate.admit(pod, workload, gatedContainer{}); err == nil {
@@ -198,9 +205,7 @@ func TestProtectAndGateAPodInTheNamespace(t *testing.T) {
 // A restarted enforcer takes a protected pod back under the gate; a sandbox
 // holding no ruleset is refused for its life.
 func TestRecoverAProtectedPodInTheNamespace(t *testing.T) {
-	pid := sandboxProcess(t)
-	pod := meshPod("default", "pod", sandboxNetNSPath(pid))
-	pod.Pid = pid
+	pod := sandboxPod(t, "default", "pod")
 	before := newMeshGate(*meshRoles(), discardLogger())
 	if err := before.protect(pod); err != nil {
 		t.Fatalf("protect: %v", err)
@@ -259,9 +264,7 @@ func TestRecoverAPodHoldingExitsInTheNamespace(t *testing.T) {
 	mesh := gateCtr("c8s-mesh", testMeshUID)
 	meshLaunch := gatedContainer{role: meshRole, digest: digestOther, argv: []string{"/app/c8s", "armtls-mesh"}}
 
-	pid := sandboxProcess(t)
-	p := meshPod("default", "pod", sandboxNetNSPath(pid))
-	p.Pid = pid
+	p := sandboxPod(t, "default", "pod")
 	before := newMeshGate(*meshRoles(), discardLogger())
 	if err := before.protect(p); err != nil {
 		t.Fatalf("protect: %v", err)
