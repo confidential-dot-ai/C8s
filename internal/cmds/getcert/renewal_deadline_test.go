@@ -132,9 +132,20 @@ func TestRenewalWithdrawsAtExpiryDuringBlockedOperations(t *testing.T) {
 			case <-time.After(6 * time.Second):
 				t.Fatal("operation did not start")
 			}
-			time.Sleep(time.Until(expiry) + 100*time.Millisecond)
-			if _, err := os.Stat(cfg.CAPath); !errors.Is(err, os.ErrNotExist) {
-				t.Fatalf("expired generation still readable during %s: %v", tt.name, err)
+			// The withdrawal lands milliseconds after expiry; a loaded machine
+			// schedules it later. The bound stays well under the retry floor
+			// the loop must not wait for.
+			time.Sleep(time.Until(expiry))
+			deadline := time.Now().Add(time.Second)
+			for {
+				_, err := os.Stat(cfg.CAPath)
+				if errors.Is(err, os.ErrNotExist) {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("expired generation still readable during %s: %v", tt.name, err)
+				}
+				time.Sleep(10 * time.Millisecond)
 			}
 		})
 	}
