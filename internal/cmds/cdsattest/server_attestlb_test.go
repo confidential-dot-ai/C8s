@@ -71,6 +71,7 @@ func newAttestLBServer(t *testing.T, identity testMeshIdentity, servingCertFile 
 		MeshIdentityCertFile: identity.certFile,
 		MeshIdentityKeyFile:  identity.keyFile,
 		MeshIdentityCAFile:   identity.caFile,
+		Bindings:             NewBindings(),
 	})
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
@@ -183,6 +184,7 @@ func TestAttestLBRefusedOnWebPKIFrontDoor(t *testing.T) {
 		MeshIdentityCertFile: identity.certFile,
 		MeshIdentityKeyFile:  identity.keyFile,
 		MeshIdentityCAFile:   identity.caFile,
+		Bindings:             NewBindings(),
 	})
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -326,6 +328,7 @@ func TestReadyzGatesOnMatchedWorkloadStamp(t *testing.T) {
 			MeshIdentityKeyFile:  identity.keyFile,
 			MeshIdentityCAFile:   identity.caFile,
 			ExpectedWorkload:     expected,
+			Bindings:             NewBindings(),
 		})
 		ts := httptest.NewServer(srv.Handler())
 		t.Cleanup(ts.Close)

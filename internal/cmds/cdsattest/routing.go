@@ -98,9 +98,6 @@ func checkRoutingFlags(cfg config) error {
 	if cfg.attestationAPIURL == "" {
 		return errors.New("--cds-url requires --attestation-api-url to verify the CDS")
 	}
-	if !cfg.attestOff && (cfg.meshIdentityCertFile == "" || cfg.meshIdentityKeyFile == "" || cfg.meshIdentityCAFile == "") {
-		return errors.New("--attest-endpoints=true requires --mesh-identity-cert-file, --mesh-identity-key-file and --mesh-identity-ca-file: the attestation endpoints bind their evidence to that leaf")
-	}
 	if r.pollInterval <= 0 {
 		return errors.New("--routes-poll-interval must be positive")
 	}
@@ -128,7 +125,9 @@ type routingEngine struct {
 	poller *routing.Poller
 }
 
-func newRoutingEngine(cfg config, logger *slog.Logger) (*routingEngine, error) {
+// newRoutingEngine builds the engine; its routing listener refuses requests on
+// connections whose binding in bindings no longer holds.
+func newRoutingEngine(cfg config, bindings *Bindings, logger *slog.Logger) (*routingEngine, error) {
 	r := cfg.routing
 	policy, err := (cmdsutil.ImagePolicySource{File: r.imagePolicyFile}).Load(
 		cmdsutil.MeasurementPins{Measurements: r.cdsMeasurements, Registers: r.cdsRTMRs, Prefix: "cds-"})
@@ -157,10 +156,20 @@ func newRoutingEngine(cfg config, logger *slog.Logger) (*routingEngine, error) {
 		cfg: r,
 		log: logger,
 		proxy: routing.NewProxy(routing.ProxyConfig{
-			State: state, Transports: transports, Timeout: r.backendTimeout, TunnelBudget: tunnelBudget(r.tunnelBudget, cgroupMemoryMax, logger), Logger: logger,
+			State:        state,
+			Transports:   transports,
+			Bindings:     bindings,
+			Timeout:      r.backendTimeout,
+			TunnelBudget: tunnelBudget(r.tunnelBudget, cgroupMemoryMax, logger),
+			Logger:       logger,
 		}),
 		poller: routing.NewPoller(routing.PollerConfig{
-			State: state, Fetcher: cds, Keys: keys, Transports: transports, Interval: r.pollInterval, Logger: logger,
+			State:      state,
+			Fetcher:    cds,
+			Keys:       keys,
+			Transports: transports,
+			Interval:   r.pollInterval,
+			Logger:     logger,
 		}),
 	}, nil
 }

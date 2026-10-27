@@ -132,6 +132,7 @@ func newDigestServer(t *testing.T, router Router) *digestServer {
 		MeshIdentityKeyFile:  identity.keyFile,
 		MeshIdentityCAFile:   identity.caFile,
 		Routes:               router,
+		Bindings:             NewBindings(),
 	})
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)

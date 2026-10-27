@@ -62,20 +62,25 @@ func (c *testClock) Advance(d time.Duration) {
 // with a workload backend "web" holding a named leaf from the mesh CA. Its
 // /big answers with bigResponseBytes.
 type routedServer struct {
-	ts       *httptest.Server
-	state    *routing.State
-	clock    *testClock
-	signer   *operatorauth.Signer
-	keys     []*ecdsa.PublicKey
-	backend  string
-	lastHost chan string
+	ts         *httptest.Server
+	proxy      *routing.Proxy
+	transports *routing.Transports
+	bindings   *Bindings
+	env        routes.Envelope // the last envelope apply accepted
+	ca         *issuer.CA
+	meshDir    string // the router's credential volume
+	state      *routing.State
+	clock      *testClock
+	signer     *operatorauth.Signer
+	keys       []*ecdsa.PublicKey
+	backend    string
+	lastHost   chan string
 }
 
 const bigResponseBytes = 24 << 20
 
 func newRoutedServer(t *testing.T, opts ...func(*routing.ProxyConfig, *Config)) *routedServer {
 	t.Helper()
-	identity := writeTestMeshIdentity(t)
 	// The engine's own mesh CA: the test identity's CA key is not kept.
 	ca, err := issuer.NewCA("mesh", time.Hour)
 	if err != nil {
@@ -112,26 +117,34 @@ func newRoutedServer(t *testing.T, opts ...func(*routing.ProxyConfig, *Config)) 
 	}
 	rs.keys = []*ecdsa.PublicKey{&opKey.PublicKey}
 
-	routerIdentity := publishedMeshIdentity(t, routerLeaf, ca)
+	routerIdentity, meshDir := publishedMeshIdentity(t, routerLeaf, ca)
+	rs.ca, rs.meshDir = ca, meshDir
 	rs.state = routing.NewState(routing.StateConfig{Reserved: defaultReservedPaths, MeshCAs: routerIdentity.MeshCAs, Now: rs.clock.Now})
+	rs.transports = routing.NewTransports(routing.TransportConfig{MeshIdentity: routerIdentity.Credential})
+	rs.bindings = NewBindings()
 	proxyCfg := routing.ProxyConfig{
 		State:      rs.state,
-		Transports: routing.NewTransports(routing.TransportConfig{MeshIdentity: routerIdentity.Credential}),
+		Transports: rs.transports,
+		Bindings:   rs.bindings,
 	}
 	certPath, _ := writeTestServingLeaf(t)
 	srvCfg := Config{
-		Logger:               slog.New(slog.DiscardHandler),
-		Evidence:             FixtureEvidenceProvider{Raw: json.RawMessage(`{"attestation_report":"AAAA","cert_chain":{"vcek":"BBBB"}}`), Platform: "snp", Generation: "genoa"},
-		FrontDoorMode:        types.FrontDoorModeCDS,
-		ServingCertFile:      certPath,
-		MeshIdentityCertFile: identity.certFile,
-		MeshIdentityKeyFile:  identity.keyFile,
-		MeshIdentityCAFile:   identity.caFile,
+		Logger:          slog.New(slog.DiscardHandler),
+		Evidence:        FixtureEvidenceProvider{Raw: json.RawMessage(`{"attestation_report":"AAAA","cert_chain":{"vcek":"BBBB"}}`), Platform: "snp", Generation: "genoa"},
+		FrontDoorMode:   types.FrontDoorModeCDS,
+		ServingCertFile: certPath,
+		// The attestation endpoints bind the leaf the router dials with, as
+		// the chart mounts one credential for both.
+		MeshIdentityCertFile: volumeFile(meshDir, "tls.crt"),
+		MeshIdentityKeyFile:  volumeFile(meshDir, "tls.key"),
+		MeshIdentityCAFile:   volumeFile(meshDir, "ca.crt"),
+		Bindings:             rs.bindings,
 	}
 	for _, opt := range opts {
 		opt(&proxyCfg, &srvCfg)
 	}
-	srvCfg.Routes = routing.NewProxy(proxyCfg)
+	rs.proxy = routing.NewProxy(proxyCfg)
+	srvCfg.Routes = rs.proxy
 	rs.ts = httptest.NewServer(NewServer(srvCfg).Handler())
 	t.Cleanup(rs.ts.Close)
 	return rs
@@ -141,6 +154,12 @@ func newRoutedServer(t *testing.T, opts ...func(*routing.ProxyConfig, *Config)) 
 const testSandboxID = "8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a0e8d9f"
 
 func namedLeaf(t *testing.T, ca *issuer.CA, workload string) tls.Certificate {
+	t.Helper()
+	return namedLeafUnder(t, ca, workload, bytes.Repeat([]byte{0x42}, 32))
+}
+
+// namedLeafUnder is namedLeaf stamped under allowlist digest.
+func namedLeafUnder(t *testing.T, ca *issuer.CA, workload string, digest []byte) tls.Certificate {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -155,7 +174,7 @@ func namedLeaf(t *testing.T, ca *issuer.CA, workload string) tls.Certificate {
 		t.Fatal(err)
 	}
 	certPEM, _, _, err := ca.SignCSR(issuer.SignCSRParams{CSR: csr, TTL: 30 * time.Minute, SandboxID: testSandboxID, MatchedWorkload: &armtls.MatchedWorkload{
-		Name: workload, AllowlistVersion: "1", AllowlistDigest: bytes.Repeat([]byte{0x42}, 32),
+		Name: workload, AllowlistVersion: "1", AllowlistDigest: digest,
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -173,8 +192,24 @@ func namedLeaf(t *testing.T, ca *issuer.CA, workload string) tls.Certificate {
 
 // publishedMeshIdentity publishes leaf and its CA as one credential generation
 // on a credential volume, the way get-cert does, and returns the router's
-// identity read from it.
-func publishedMeshIdentity(t *testing.T, leaf tls.Certificate, ca *issuer.CA) *routing.MeshIdentity {
+// identity read from it and the volume directory.
+func publishedMeshIdentity(t *testing.T, leaf tls.Certificate, ca *issuer.CA) (*routing.MeshIdentity, string) {
+	t.Helper()
+	dir := t.TempDir()
+	publishLeaf(t, dir, leaf, ca)
+	identity, err := routing.NewMeshIdentity(volumeFile(dir, "tls.crt"), volumeFile(dir, "tls.key"), volumeFile(dir, "ca.crt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return identity, dir
+}
+
+func volumeFile(dir, name string) string { return filepath.Join(dir, name) }
+
+// publishLeaf writes leaf and ca as the next generation of the credential
+// volume in dir and flips the pointer onto it, replacing the stable reader
+// paths beside it.
+func publishLeaf(t *testing.T, dir string, leaf tls.Certificate, ca *issuer.CA) {
 	t.Helper()
 	key, ok := leaf.PrivateKey.(*ecdsa.PrivateKey)
 	if !ok {
@@ -184,8 +219,11 @@ func publishedMeshIdentity(t *testing.T, leaf tls.Certificate, ca *issuer.CA) *r
 	if err != nil {
 		t.Fatal(err)
 	}
-	dir := t.TempDir()
-	generation := filepath.Join("generations", "1")
+	entries, err := os.ReadDir(filepath.Join(dir, "generations"))
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	generation := filepath.Join("generations", strconv.Itoa(len(entries)+1))
 	if err := os.MkdirAll(filepath.Join(dir, generation), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -194,22 +232,19 @@ func publishedMeshIdentity(t *testing.T, leaf tls.Certificate, ca *issuer.CA) *r
 		"tls.key": keyPEM,
 		"ca.crt":  certutil.EncodeCertPEM(ca.Cert.Raw),
 	} {
-		if err := os.WriteFile(filepath.Join(dir, generation, name), data, 0o600); err != nil {
-			t.Fatal(err)
+		for _, path := range []string{filepath.Join(dir, generation, name), filepath.Join(dir, name)} {
+			if err := os.WriteFile(path, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
-	if err := os.Symlink(generation, filepath.Join(dir, "current")); err != nil {
+	pointer := filepath.Join(dir, "current")
+	if err := os.Symlink(generation, pointer+".next"); err != nil {
 		t.Fatal(err)
 	}
-	identity, err := routing.NewMeshIdentity(
-		filepath.Join(dir, "tls.crt"),
-		filepath.Join(dir, "tls.key"),
-		filepath.Join(dir, "ca.crt"),
-	)
-	if err != nil {
+	if err := os.Rename(pointer+".next", pointer); err != nil {
 		t.Fatal(err)
 	}
-	return identity
 }
 
 // apply signs a manifest routing app.example to the web backend.
@@ -235,6 +270,7 @@ func (rs *routedServer) apply(t *testing.T, revision uint64, maxAge time.Duratio
 	if _, err := rs.state.Accept(env, rs.keys); err != nil {
 		t.Fatalf("Accept(revision %d) = %v, want nil", revision, err)
 	}
+	rs.env = env
 }
 
 // handshakeCodes returns the error code each attested handshake answers with,
@@ -499,7 +535,7 @@ func TestTunnelBudgetNeedsSession(t *testing.T) {
 }
 
 func TestAttestEndpointsDisabled(t *testing.T) {
-	srv := NewServer(Config{Routes: testRoutes(t), DisableAttestEndpoints: true})
+	srv := NewServer(Config{Routes: testRoutes(t), DisableAttestEndpoints: true, Bindings: NewBindings()})
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	for _, path := range []string{"/.well-known/c8s/attest-lb", "/.well-known/c8s/tunnel"} {
@@ -523,9 +559,9 @@ func TestAttestEndpointsDisabled(t *testing.T) {
 }
 
 func TestCheckRoutingFlags(t *testing.T) {
-	mesh := config{meshIdentityCertFile: "c", meshIdentityKeyFile: "k", meshIdentityCAFile: "ca", attestationAPIURL: "http://127.0.0.1:9"}
+	base := config{attestationAPIURL: "http://127.0.0.1:9"}
 	routed := func(edit func(*config)) config {
-		c := mesh
+		c := base
 		c.routing = routingConfig{cdsURL: "https://cds:8443", pollInterval: time.Second, backendTimeout: time.Hour, host: "127.0.0.1"}
 		if edit != nil {
 			edit(&c)
@@ -541,12 +577,6 @@ func TestCheckRoutingFlags(t *testing.T) {
 		{"no cds", routed(func(c *config) { c.routing.cdsURL = "" }), "--cds-url is required"},
 		{"tunnel budget under one request", routed(func(c *config) { c.routing.tunnelBudget = quantityFlag{bytes: oneRequestBudget - 1, set: true} }), "--tunnel-budget"},
 		{"cds without attestation api", routed(func(c *config) { c.attestationAPIURL = "" }), "--attestation-api-url"},
-		{"attest endpoints without mesh identity", routed(func(c *config) { c.meshIdentityKeyFile = "" }), "--mesh-identity"},
-		{"attest off without mesh identity", routed(func(c *config) {
-			c.attestOff = true
-			c.routing.port = 8802
-			c.meshIdentityKeyFile = ""
-		}), ""},
 		{"non-loopback routing host", routed(func(c *config) { c.routing.port = 8802; c.routing.host = "0.0.0.0" }), "loopback"},
 		{"non-loopback routing host without port", routed(func(c *config) { c.routing.host = "0.0.0.0" }), "loopback"},
 		{"zero poll interval", routed(func(c *config) { c.routing.pollInterval = 0 }), "--routes-poll-interval"},
@@ -644,7 +674,7 @@ func TestW6OperatorKeySource(t *testing.T) {
 func TestRoutingRefusesAnUnpinnedCDS(t *testing.T) {
 	cfg := routedRunConfig(t, freePort(t))
 	cfg.routing.cdsMeasurements = nil
-	if _, err := newRoutingEngine(cfg, slog.New(slog.DiscardHandler)); !errors.Is(err, armtls.ErrUnpinned) {
+	if _, err := newRoutingEngine(cfg, NewBindings(), slog.New(slog.DiscardHandler)); !errors.Is(err, armtls.ErrUnpinned) {
 		t.Fatalf("newRoutingEngine() = %v, want errors.Is armtls.ErrUnpinned", err)
 	}
 }

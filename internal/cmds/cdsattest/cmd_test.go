@@ -36,6 +36,17 @@ func TestNewCmdDurationDefaults(t *testing.T) {
 	}
 }
 
+// TestNewCmdHasNoMeshIdentityFlags: no flag points the attestation endpoints
+// at a credential other than the member one the router dials with.
+func TestNewCmdHasNoMeshIdentityFlags(t *testing.T) {
+	flags := NewCmd().Flags()
+	for _, name := range []string{"mesh-identity-cert-file", "mesh-identity-key-file", "mesh-identity-ca-file"} {
+		if flags.Lookup(name) != nil {
+			t.Fatalf("--%s is defined, want no such flag", name)
+		}
+	}
+}
+
 func writeFixtureFile(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "evidence.json")
@@ -106,18 +117,14 @@ const testCDSMeasurement = "1111111111111111111111111111111111111111111111111111
 // polling a CDS that cannot be reached.
 func routedRunConfig(t *testing.T, port int) config {
 	t.Helper()
-	identity := writeTestMeshIdentity(t)
 	return config{
-		host:                 "127.0.0.1",
-		port:                 port,
-		logLevel:             "error",
-		meshIdentityCertFile: identity.certFile,
-		meshIdentityKeyFile:  identity.keyFile,
-		meshIdentityCAFile:   identity.caFile,
-		attestationAPIURL:    "http://127.0.0.1:9",
-		readHeaderTimeout:    time.Second,
-		tunnelIOTimeout:      defaultTunnelIOTimeout,
-		attestOff:            true,
+		host:              "127.0.0.1",
+		port:              port,
+		logLevel:          "error",
+		attestationAPIURL: "http://127.0.0.1:9",
+		readHeaderTimeout: time.Second,
+		tunnelIOTimeout:   defaultTunnelIOTimeout,
+		attestOff:         true,
 		routing: routingConfig{
 			cdsURL:          "https://127.0.0.1:9",
 			cdsMeasurements: []string{testCDSMeasurement},
