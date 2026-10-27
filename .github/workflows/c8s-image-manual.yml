@@ -16,7 +16,7 @@ on:
         type: boolean
         default: false
       c8s_ref:
-        description: "Bake c8s components from this published commit (short SHA) instead of the triggering commit. Rebuilds a release against the current CONFOS_REF; pushes only the :<variant>[-cdi]-<ref> tags, leaving the floating tags alone."
+        description: "Published component SHA (7–40 hex characters), matching the selected workflow branch/tag commit. Dispatch with --ref for that source. A nonempty ref publishes only :<variant>[-cdi]-<ref> tags; confos_ref can override the builder pin."
         required: false
         type: string
         default: ""

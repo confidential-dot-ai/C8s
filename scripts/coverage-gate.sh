@@ -10,17 +10,32 @@
 # The profile is produced with -coverpkg=./... so packages without their own
 # test files are still measured (a brand-new untested package counts as 0%,
 # not "absent"). CI compares the PR's total against the base branch's total
-# and fails if it decreased. Workflow tests execute shell/YAML fixtures, not
-# production Go, so they run in the normal test job rather than this measurement.
+# and fails if it decreased. Acceptance programs are not production Go:
+# test/workflows executes shell/YAML fixtures, test/tdxpod drives TDX metal,
+# internal/podcvmtest holds its shared predicates, and the Pod runtime marker
+# is the disposable execution fixture. They stay out of the measurement.
+# Their tests run in the normal test job (the Makefile's `work` covers every
+# workspace package); here their tests are not run and their statements are
+# dropped from the table and the total, including the records the kernel and
+# privileged profiles add with -coverpkg=./....
 # Use this same script for both head and base to keep the totals comparable.
 set -euo pipefail
 
 cmd="${1:-}"
 profile="${2:-coverage.out}"
 
+# Regular expression (no anchors) matching the import paths left out of the
+# measurement; see the header.
+unmeasured_pattern() {
+  local module
+  module=$(GOWORK=off go list -m)
+  printf '%s' "(${module}/test/workflows|${module}/test/tdxpod|${module}/internal/podcvmtest|${module}/test/integration/pod-runtime/workload)"
+}
+
 percent() { # per-package coverage table from a coverprofile: "<pct> <stmts> <pkg>"
-  awk -F'[ :]' '
+  awk -F'[ :]' -v skip="^$(unmeasured_pattern)/" '
     NR==1 {next}
+    $1 ~ skip {next}
     {
       key=$1":"$2; stmts[key]=$3; if ($4>0) covered[key]=1;
     }
@@ -40,11 +55,10 @@ percent() { # per-package coverage table from a coverprofile: "<pct> <stmts> <pk
 
 case "$cmd" in
 run)
-  module=$(GOWORK=off go list -m)
   packages=$(go list ./...)
   test_packages=()
   while IFS= read -r package; do
-    [ "$package" = "$module/test/workflows" ] || test_packages+=("$package")
+    [[ "$package" =~ ^$(unmeasured_pattern)$ ]] || test_packages+=("$package")
   done <<< "$packages"
   [ "${#test_packages[@]}" -gt 0 ] || { echo "no Go packages to measure" >&2; exit 1; }
   go test "${test_packages[@]}" -count=1 -coverprofile="$profile" -coverpkg=./...

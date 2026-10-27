@@ -1,11 +1,15 @@
 # Run the integration tests
 
-Exercise C8s on a plain Linux or macOS host with no TEE hardware, so nothing
-here proves a confidential property. Two harnesses: docker-compose, for the
-armTLS certificate flow (armTLS is C8s's mutual TLS whose certificates carry
-TEE evidence), and kind, for a whole cluster. CI runs both as the
-**Integration** and **Integration (cluster)** jobs; terms are defined in
+Exercise C8s on a plain Linux or macOS host with no TEE hardware, so neither of
+the first two harnesses proves a confidential property: docker-compose, for the
+armTLS certificate flow (armTLS is C8s's mutual TLS whose certificates carry TEE
+evidence), and kind, for a whole cluster. CI runs both as the **Integration**
+and **Integration (cluster)** jobs; terms are defined in
 [glossary.md](glossary.md).
+
+The Pod CVM lanes at the end of this page add scheduler and runtime harnesses
+to ordinary CI, plus explicit acceptance runs on Cloud and metal TDX, which do
+prove hardware properties.
 
 Prerequisites:
 
@@ -96,3 +100,243 @@ Delete the cluster with `kind delete cluster --name c8s-it`.
   `node_exec ctr -n k8s.io images pull` block near the top of `run.sh`.
 - The mock-attestation Deployment is `Recreate` on purpose: two host-network
   pods cannot both bind `:8400` on a single-node cluster.
+
+## Pod scheduler and runtime CI
+
+The scheduler lane needs Go, Docker and kind. It creates a disposable cluster
+with a private kubeconfig and runs the production admission webhook, provider
+and virtual Node controller against the real API server, scheduler and
+controller-manager. It checks normal scheduling, Node leases, frozen launch
+intent before creation, lost-response recovery, verified readiness projection,
+foreign-UID refusal, immutable workloads, controller restart, delayed deletion
+and recreation with a new UID. Cloud and authenticated guest responses are test
+adapters; this lane makes no hardware claim. The job also runs offline ownership
+and recovery tests for the live Cloud runner.
+
+Both scheduler and Cloud harnesses constrain kind's `kindnet` and `kube-proxy`
+DaemonSets to the existing physical control-plane node before registering the
+virtual node. Existing node selectors are preserved. Scheduler CI advertises
+two Pod slots and verifies that two opted-in workloads can run concurrently,
+with infrastructure DaemonSets excluded from those slots.
+
+The runtime lane needs Go, Python 3 and Docker with privileged containers. It
+uses digest-pinned RKE2 registry release binaries on the Docker daemon's native
+architecture, the production `c8s-runc`, and an offline workload. One workload
+executes only after its exact NRI container, sandbox and process identity is
+consumed once. Seven cases reject execution: missing authority, policy denial,
+measurement failure, callback timeout, lost socket, plugin disconnect and replay.
+Measurement registers and the credential broker are simulated, and containerd
+uses its native snapshotter. Registry runtime provenance does not establish
+byte equivalence with the guest airgap archive or validate the guest's systemd,
+overlay filesystem or TDX attestation.
+
+Both lanes require complete fresh result receipts and fail when prerequisites
+or required assertions are missing. They remove only their owned local resources.
+Set `C8S_PODPROVIDER_ARTIFACTS` or `C8S_POD_RUNTIME_ARTIFACTS` to a new evidence
+directory to retain bounded logs and receipts. CI retains those artifacts for
+seven days. The runtime container has no host mounts or network access.
+
+## Pod Cloud acceptance
+
+The live lane needs Go, Docker, kind, jq, Python 3 and GNU timeout, an authorized Cloud
+credential, and an admitted matching production Pod/CDS image pair. Supply an
+absolute JSON input path with these fields:
+
+```json
+{
+  "source": "<40-character production source commit>",
+  "cloudURL": "https://api.cloud.confidential.ai",
+  "tokenFile": "/private/path/cloud-token",
+  "image": "c8s-pod@<version>",
+  "cdsImage": "c8s-pod-cds@<same-version>",
+  "manifestFile": "/private/path/manifest.json",
+  "manifestDigest": "sha256:<manifest digest>",
+  "diskDigest": "sha256:<raw disk digest>",
+  "cliFile": "/private/path/matching-linux-c8s",
+  "cliSHA256": "<64-character digest>",
+  "probeFile": "/private/path/linux-pod-mesh-probe",
+  "probeSHA256": "<64-character digest>",
+  "meshImage": "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:<digest>",
+  "size": "s1.2x",
+  "location": "us-west-1",
+  "vCPUs": 2,
+  "memoryMiB": 8192
+}
+```
+
+Build the CLI from the production image's source and the probe from
+`.github/scripts/pod-mesh-probe`, both for the Docker daemon's Linux architecture.
+The manifest, raw disk, mesh image and source must come from the same paired
+production publication. The runner checks file digests and catalog identity;
+the caller supplies the publication provenance.
+
+The new state directory must be under a host path shared with the Docker
+daemon. For Colima or another Docker VM, use a path configured in that VM's
+mounts, such as a shared checkout's `target/` directory; `/private/tmp` is not
+necessarily shared. The runner compares a fresh host nonce and the runner's
+SHA256 inside the container before starting any Cloud work. A failed mount
+check leaves only local setup, which the cleanup command can remove.
+
+```sh
+export C8S_PODCLOUD_LIVE=1
+export C8S_PODCLOUD_INPUT=/private/path/input.json
+export C8S_PODCLOUD_STATE=/absolute/docker-shared-checkout/target/new-run
+make test-integration-pod-cloud
+```
+
+The runner creates a private local kind cluster, one CDS guest and two Pod
+guests. It starts production provider `Setup` compiled from the checkout; the
+provider creates the Pod guests after normal Kubernetes scheduling. Acceptance
+checks exact measured workloads, authenticated status,
+readiness withdrawal and recovery, peer mesh traffic, HTTPS and DNS egress,
+certificate renewal over at least 65 minutes, rejected unauthenticated traffic,
+and deletion through the production provider. It reuses the connected native
+lane's acceptance predicates. The run requires at least six Cloud vCPUs and
+24 GiB of memory plus a CDS scratch disk; provisioning and cleanup add time to
+the observation window.
+
+Infrastructure DaemonSets in a real cluster must also exclude Pod-CVM virtual
+nodes. Broad `Exists` tolerations can bypass their `NoSchedule` taint; critical
+DaemonSet Pods can then preempt tenant Pods before the provider rejects their
+missing opt-in. Apply node placement constraints to networking, kube-proxy and
+host installers, including relevant C8s DaemonSets. The harness's kind-specific
+hostname constraint is test setup, not automatic production configuration.
+The live runner stops boot polling promptly if the submitted Pod disappears,
+is replaced, is disrupted or deleted, or its provider record becomes terminal;
+the private `boot-failed-<side>.json` preserves the bounded failure reason.
+
+The state directory contains credentials and signed launch material. Keep it
+private and never upload it as a CI artifact. Ownership is persisted before
+Cloud creates. On interruption, retain the directory and resume cleanup:
+
+```sh
+export C8S_PODCLOUD_LIVE=1
+export C8S_PODCLOUD_STATE=/absolute/docker-shared-checkout/target/existing-run
+make cleanup-integration-pod-cloud
+```
+
+Cleanup uses the recorded identities and never starts another Cloud run. A
+successful acceptance requires `result.json` with `passed: true` and a ledger
+with `complete: true`; cleanup success alone does not prove acceptance.
+
+## Connected Pod acceptance on TDX
+
+The manual `tdx-metal-e2e.yml` input `pod_acceptance: true` starts a real CDS
+server and two standalone Pod guests. The image, image manifest, disk, mesh
+container and matching CLI source are pinned in
+`test/tdxpod/fixtures/pod-connected/production-image.json`. Image profile
+and component sources must agree. Update the complete pin set together after
+a paired production image build; the harness does not accept a development
+image or substitute a fake CDS. The lane tool (`test/tdxpod`) and the paired
+CLI build with the dispatched commit's Go toolchain, so the pinned source's
+`go` directive must not exceed the dispatched tree's.
+
+```sh
+gh workflow run tdx-metal-e2e.yml --repo confidential-dot-ai/C8s \
+  --ref podcvm/no-mesh-gate -f pod_acceptance=true
+```
+
+The two signed workloads test authenticated peer traffic, IPv4 HTTPS, system
+DNS, TCP/UDP DNS, and guest/link-local connection denials. Authenticated Pod
+status must show readiness withdrawing and recovering, followed by successful
+checker exits after at least 65 minutes. The tool tracks the authenticated
+`Ready` condition's `lastTransitionTime` beside app and mesh readiness, rejecting
+hidden transitions between ready samples and further withdrawals after recovery.
+A successful checker exit may withdraw aggregate Pod readiness once while the
+app and mesh stay ready. Each verdict and its authenticated status are saved
+before certificate probes or a readiness failure, including the final status
+after the negative probes. Polling does not establish continuous readiness between
+observations. Public mesh leaves must rotate late in
+the observation window, with new serials and keys, stable Pod identities and
+CA, and no application, checker or endpoint restarts. Certless, wrong-CA and
+plaintext requests must be rejected, followed by fresh healthy Pod status.
+
+Three run-owned Services allocate the addresses signed into the launch inputs.
+Guest-to-guest traffic uses those Services. If runner network policy prevents
+direct observations, the runner uses owned VMI port-forwards for attestation,
+status and certificate probes. Keys remain in the private runner directory or
+their intended guest. The test uses one shared read-only root import, a private
+server scratch disk, and approximately 8 vCPUs and 32 GiB of guest memory.
+
+The `pod-connected-acceptance-<run>-<attempt>` artifact retains image identity,
+authenticated attestations/status, public certificates, negative-probe receipts,
+bounded boot logs and cleanup results for seven days. Acceptance requires both
+the exact expected-digest checks and the timed observations. Failure artifacts
+include bounded CLI errors and separately labeled diagnostic attestations;
+those diagnostic reports cannot satisfy acceptance. Completion requires
+`result.json` with `passed: true` and `cleanup.json` with `complete: true`, plus
+a successful workflow. Cleanup always removes owned resources; `keep_cvm` does
+not apply. Select exactly one Pod mode per dispatch.
+
+This lane validates static Pods on native KubeVirt TDX hardware. Cloud API
+provisioning and Kubernetes provider assignment, discovery and deletion remain
+separate acceptance work. Guest exclusion checks observe connection denial;
+the privileged Linux suite supplies controlled listener and source-NAT checks.
+
+## Diagnosing Pod runtime startup on TDX
+
+The manual input `pod_runtime_diagnostic: true` uses separate immutable pins in
+`test/tdxpod/fixtures/pod-connected/development-image.json` and the same lane
+tool, real CDS and two-Pod provisioning. It collects bounded systemd unit,
+journal, CRI and containerd-plugin observations through the run-owned Pod
+consoles. Private raw console transcripts are not uploaded; public evidence
+contains fixed projections with sensitive records omitted. UID checks bind
+observations and cleanup to the resources created by that run.
+
+Runtime diagnostics use their own serialized workflow queue and request eight
+CPUs and 32 GiB of guest memory, plus virtualization overhead. Scheduling is
+bounded; unavailable capacity fails the run and triggers cleanup. Terminal
+control sequences are removed before parsing the projected console records;
+framing failures retain counts only, without publishing raw console text.
+
+```sh
+gh workflow run tdx-metal-e2e.yml --repo confidential-dot-ai/C8s \
+  --ref podcvm/no-mesh-gate -f pod_runtime_diagnostic=true
+```
+
+The development image has different measurements and bypasses `c8s-runc` through
+`60-dev-runc.toml`. Its outcome is diagnostic-only and cannot satisfy production
+acceptance. The runner does not perform the timed acceptance observations.
+The `pod-runtime-diagnostic-<run>-<attempt>` artifact retains public observations
+and the cleanup receipt for three days. A complete diagnostic run requires
+`captureComplete: true` and cleanup `complete: true`; neither means the Pod
+workload passed. Cleanup always runs, and `keep_cvm` does not apply.
+
+## Diagnosing a Pod boot on a commit's dev image
+
+The manual `tdx-metal-e2e.yml` input `pod_diagnostic: true` boots the
+`rke2-tdx-dev` image published for one commit (root autologin on the serial
+console, its own measurement) with the Pod fixture signed by the CLI built from
+that same commit, so the serial log shows which unit or admission step stops a
+Pod that the production image only reports as Pending. `pod_image_source`
+names that commit by full SHA; empty means the dispatched commit. The source
+must be that commit or one of its ancestors, checked before toolchain setup or
+building the paired CLI. For another lineage, dispatch a matching branch or
+historical workflow ref that contains this lane. The lane resolves
+`rke2-tdx-dev-<sha7>` and `rke2-tdx-dev-cdi-<sha7>` from the registry
+at run time and fails by naming the missing tag, with the manual image build
+command that publishes it. The fixture Pod carries no mesh endpoint; the guest
+injects the measured one.
+The job builds the paired CLI from `pod_image_source` and the lane tool
+(`test/tdxpod`) from the dispatched commit with the source commit's Go toolchain,
+so the dispatched tree's `go` directive must not exceed the source's.
+It uses the existing TDX launcher, a private root import and run-owned VM and
+launch Secret. Cleanup always runs; `keep_cvm` does not retain diagnostic VMs.
+The `pod-boot-diagnostic-<run>-<attempt>` artifact contains the first and last
+256 KiB of the serial log per sample (`NNN-serial`, `NNN-serial-tail`; a dev
+image forwards its journal to ttyS0, so the tail carries the latest service
+output), bounded launcher logs, image identity, native status and the cleanup
+receipt. It omits
+private signing keys and expires after seven days.
+
+```sh
+gh workflow run c8s-image-manual.yml --repo confidential-dot-ai/C8s \
+  --ref <branch at the commit> -f dev=true -f c8s_ref=<sha7>
+gh workflow run tdx-metal-e2e.yml --repo confidential-dot-ai/C8s \
+  --ref <branch with this lane> -f pod_diagnostic=true -f pod_image_source=<full sha>
+```
+
+This mode diagnoses boot only. It deliberately uses an unavailable CDS and a
+separately measured development image; it does not establish production-image,
+mesh, internet or DNS acceptance. The normal node lane and automatic exact-image
+acceptance keep their existing validation.

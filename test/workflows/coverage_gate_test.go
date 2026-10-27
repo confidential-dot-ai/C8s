@@ -11,6 +11,34 @@ import (
 	"time"
 )
 
+func TestCoverageTotalExcludesAcceptancePrograms(t *testing.T) {
+	script, err := filepath.Abs("../../scripts/coverage-gate.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture := t.TempDir()
+	if err := os.WriteFile(filepath.Join(fixture, "go.mod"), []byte("module fixture.invalid/coverage\n\ngo 1.22\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	profile := "mode: set\n" +
+		"fixture.invalid/coverage/production/value.go:1.1,1.2 1 1\n" +
+		"fixture.invalid/coverage/internal/podcvmtest-production/value.go:1.1,1.2 1 0\n"
+	for _, pkg := range []string{"test/workflows", "test/tdxpod", "internal/podcvmtest", "test/integration/pod-runtime/workload"} {
+		profile += "fixture.invalid/coverage/" + pkg + "/main.go:1.1,1.2 100 0\n"
+	}
+	path := filepath.Join(fixture, "profile.out")
+	if err := os.WriteFile(path, []byte(profile), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.CommandContext(t.Context(), "bash", script, "total", path)
+	cmd.Dir = fixture
+	cmd.Env = append(os.Environ(), "GOWORK=off")
+	out, err := cmd.CombinedOutput()
+	if err != nil || strings.TrimSpace(string(out)) != "50.00" {
+		t.Fatalf("acceptance statements changed the production denominator: %v %s", err, out)
+	}
+}
+
 func TestCoverageGateMeasuresGoExecution(t *testing.T) {
 	script, err := filepath.Abs("../../scripts/coverage-gate.sh")
 	if err != nil {
