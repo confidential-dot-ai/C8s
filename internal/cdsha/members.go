@@ -199,6 +199,18 @@ func nodeOf(id raft.ServerID) string {
 	return node
 }
 
+// newestPerNode maps each node to its latest-started member in servers.
+func newestPerNode(servers []raft.Server) map[string]raft.ServerID {
+	newest := map[string]raft.ServerID{}
+	for _, s := range servers {
+		node := nodeOf(s.ID)
+		if cur, ok := newest[node]; !ok || bornOf(s.ID) > bornOf(cur) {
+			newest[node] = s.ID
+		}
+	}
+	return newest
+}
+
 // bornOf orders two members of one node: the later start replaces the other.
 func bornOf(id raft.ServerID) int64 {
 	_, rest, _ := strings.Cut(string(id), "/")
@@ -329,12 +341,10 @@ func (n *Node) reconcile() {
 		return !bad && now.Sub(j) >= n.cfg.Timing.Stabilize
 	}
 	var remove []raft.ServerID
-	newest := map[string]raft.ServerID{}
+	newest := newestPerNode(servers)
+	isVoter := map[raft.ServerID]bool{}
 	for _, s := range servers {
-		node := nodeOf(s.ID)
-		if cur, ok := newest[node]; !ok || bornOf(s.ID) > bornOf(cur) {
-			newest[node] = s.ID
-		}
+		isVoter[s.ID] = s.Suffrage == raft.Voter
 	}
 	for _, s := range servers {
 		if s.ID == n.id {
@@ -344,8 +354,13 @@ func (n *Node) reconcile() {
 			remove = append(remove, s.ID)
 			continue
 		}
-		if nw := newest[nodeOf(s.ID)]; nw != s.ID && nw != n.id && healthy(nw) {
-			remove = append(remove, s.ID) // restarted: the new member takes over
+		// Restarted: the new member takes over. A voter whose replacement
+		// already votes (this leader, or a voter new to it) holds a surplus
+		// seat at once; it still leaves only through retireVoters.
+		nw := newest[nodeOf(s.ID)]
+		_, nwFailing := failingSince(nw)
+		if nw != s.ID && (healthy(nw) || isVoter[s.ID] && isVoter[nw] && !nwFailing) {
+			remove = append(remove, s.ID)
 		}
 	}
 	// A dead or replaced voter keeps its vote until a replacement is a
@@ -354,10 +369,6 @@ func (n *Node) reconcile() {
 	// replacement commits without a live voter, which then refuses the new
 	// voter's votes once the leader is gone (soak F9).
 	var retiring []raft.ServerID
-	isVoter := map[raft.ServerID]bool{}
-	for _, s := range servers {
-		isVoter[s.ID] = s.Suffrage == raft.Voter
-	}
 	remove = slices.DeleteFunc(remove, func(id raft.ServerID) bool {
 		if isVoter[id] {
 			retiring = append(retiring, id)
@@ -491,11 +502,17 @@ func (n *Node) retireVoters(r *raft.Raft, retiring []raft.ServerID) bool {
 
 // demoteExtraVoter is called with membershipMu held. It demotes one voter
 // when there are more voters than seats: a failing one first, never itself. One per pass, so the group never
-// loses more than one vote at a time.
+// loses more than one vote at a time. While a voter is superseded by a newer
+// member of its node it demotes none: that voter is the surplus, and it
+// leaves only through retireVoters, once its gate is met.
 func (n *Node) demoteExtraVoter(servers []raft.Server) {
+	newest := newestPerNode(servers)
 	var voters []raft.ServerID
 	for _, s := range servers {
 		if s.Suffrage == raft.Voter {
+			if newest[nodeOf(s.ID)] != s.ID {
+				return
+			}
 			voters = append(voters, s.ID)
 		}
 	}
