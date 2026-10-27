@@ -258,6 +258,42 @@ func TestRestoreRefusals(t *testing.T) {
 	if fresh.member() {
 		t.Fatal("the refused restore bootstrapped a cluster")
 	}
+	// Absence is never inferred: a discovery error, a discovered replica that
+	// does not answer, or an empty answer the decree does not call alone
+	// leaves it unknown whether a live cluster exists.
+	for name, peers := range map[string]func(context.Context) ([]string, error){
+		"discovery error":   func(context.Context) ([]string, error) { return nil, errors.New("dns down") },
+		"unanswering peer":  func(context.Context) ([]string, error) { return []string{freeAddr(t)}, nil },
+		"nobody discovered": func(context.Context) ([]string, error) { return nil, nil },
+	} {
+		cfg := soloConfig(t, "n1", freeAddr(t), s.node.cfg.OperatorPubKey, nil)
+		cfg.Peers = peers
+		n, err := NewNode(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := n.Start(); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(n.shutdown)
+		if _, err := n.Restore(ctx, restore(n), snap); err == nil || n.member() {
+			t.Errorf("%s: restore bootstrapped a cluster (%v)", name, err)
+		}
+	}
+	// The operator's word that no other replica exists lets it restore.
+	cfg = soloConfig(t, "n1", freeAddr(t), s.node.cfg.OperatorPubKey, nil)
+	alone, err := NewNode(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := alone.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(alone.shutdown)
+	sd := signDecree(t, s.opKey, Decree{Kind: Restore, BootstrapNode: "n1", TargetMember: alone.ID(), SnapshotSHA256: SnapshotSHA256(snap), Alone: true})
+	if _, err := alone.Restore(ctx, sd, snap); err != nil || !alone.member() {
+		t.Fatalf("alone restore with no replica discovered: %v", err)
+	}
 }
 
 // Recover and Genesis decrees a replica cannot use, or cannot read, do not start it.

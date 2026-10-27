@@ -189,7 +189,8 @@ func TestRestoredOldBackupCannotTakeBackupSlot(t *testing.T) {
 	c.selfOnlyDNS("n2", true)
 	fresh := c.start("n2", "m1")
 	time.Sleep(time.Second)
-	rd := signDecree(t, c.opKey, Decree{Kind: Restore, BootstrapNode: "n2", TargetMember: fresh.node.ID(), SnapshotSHA256: SnapshotSHA256(snap)})
+	// The mistake: the operator says alone, and the host's DNS agrees.
+	rd := signDecree(t, c.opKey, Decree{Kind: Restore, BootstrapNode: "n2", TargetMember: fresh.node.ID(), SnapshotSHA256: SnapshotSHA256(snap), Alone: true})
 	if _, err := fresh.node.Restore(context.Background(), rd, snap); err != nil {
 		t.Fatalf("restore: %v", err)
 	}

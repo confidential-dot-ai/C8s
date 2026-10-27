@@ -246,6 +246,15 @@ so use your latest export.
    process. The default 30 attempts cover retries. `recover` sends the
    decrypted state only to a replica that `--image-policy-file` pins in full
    (`$POL`); it refuses `--measurements` alone and plaintext `http://`.
+
+   The replica restores only when peer discovery works and every replica it
+   finds answers that it holds no cluster. A replica that does not answer
+   blocks the Restore: find out why (delete a wedged pod) and retry. If
+   discovery finds no other replica at all, the Restore is refused unless you
+   add `--alone`. Add it only when you have confirmed outside the host that
+   no other replica of this cluster runs, for example after a host loss that
+   left one cds node. The host answers discovery, so it can hide a live
+   cluster; `--alone` is your statement that there is none.
 5. Check: `ha_sample` shows every replica serving one CA, and
    `c8s cds ha decrees $POL --url $CDS` lists the Restore. Write a new recovery
    record.

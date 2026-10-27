@@ -393,8 +393,12 @@ const lonerAfter = 5 * time.Minute
 var ErrNotForThisNode = errors.New("cds-ha: the decree names another node or replica process")
 
 // Restore starts a cluster from an operator backup on this replica, which
-// must hold no cluster and be the node the decree names. No replica it can
-// reach may belong to a cluster: a restore never forks a live one.
+// must hold no cluster and be the node the decree names. As for Genesis,
+// absence is never inferred: discovery must succeed and every discovered
+// replica must answer that it holds no cluster. An empty discovery answer,
+// which the host's DNS can give at will, needs a decree that says alone.
+// Discovery is still the host's: the operator's check that every other
+// replica is gone stays the gate against a cluster the host hides.
 // CheckRestore checks authorization and local eligibility without reading snapshot bytes.
 // Restore repeats this check because state may change during an upload.
 func (n *Node) CheckRestore(sd SignedDecree) error {
@@ -437,9 +441,19 @@ func (n *Node) Restore(ctx context.Context, sd SignedDecree, snapshot []byte) (D
 	if result.Err != "" {
 		return result, fmt.Errorf("cds-ha: restore preflight: %s", result.Err)
 	}
-	peers, _ := n.cfg.Peers(ctx)
+	peers, err := n.cfg.Peers(ctx)
+	if err != nil {
+		return DecreeResult{}, fmt.Errorf("cds-ha: peer discovery: %w; cannot tell whether a cluster is live", err)
+	}
+	if len(peers) == 0 && !d.Alone {
+		return DecreeResult{}, errors.New("cds-ha: peer discovery found no other replica and the Restore decree does not say alone")
+	}
 	for _, p := range peers {
-		if resp, err := n.call(p, 3*time.Second, controlRequest{Op: ctlStatus}); err == nil && resp.Member {
+		resp, err := n.call(p, 3*time.Second, controlRequest{Op: ctlStatus})
+		switch {
+		case err != nil:
+			return DecreeResult{}, fmt.Errorf("cds-ha: replica %s does not answer, so it may belong to a live cluster: %w", p, err)
+		case resp.Member:
 			return DecreeResult{}, fmt.Errorf("cds-ha: replica %s belongs to a cluster; join it instead of restoring", p)
 		}
 	}

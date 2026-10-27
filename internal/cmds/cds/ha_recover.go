@@ -40,6 +40,7 @@ func newHARecoverCmd() *cobra.Command {
 		minEpoch, minIndex uint64
 		expiresIn          time.Duration
 		attempts           int
+		alone              bool
 	)
 	cmd := &cobra.Command{
 		Use:   "recover",
@@ -128,7 +129,7 @@ func newHARecoverCmd() *cobra.Command {
 					return errors.New("restore refused: the replica is serving; a Restore only goes to a fresh replica after a total loss (c8s cds ha status shows the cluster)")
 				}
 				sd, err := cdsha.SignDecree(cdsha.Decree{ClusterID: clusterID, IntentID: intent, Kind: cdsha.Restore, BootstrapNode: node,
-					TargetMember: st.ID, SnapshotSHA256: cdsha.SnapshotSHA256(snap), ExpiresAt: expires}, dk)
+					TargetMember: st.ID, SnapshotSHA256: cdsha.SnapshotSHA256(snap), ExpiresAt: expires, Alone: alone}, dk)
 				if err != nil {
 					return err
 				}
@@ -172,6 +173,7 @@ func newHARecoverCmd() *cobra.Command {
 	f.Uint64Var(&minIndex, "min-index", 0, "with --min-epoch: refuse a backup below this index in that epoch (required)")
 	f.DurationVar(&expiresIn, "expires-in", 10*time.Minute, "Restore decree lifetime")
 	f.IntVar(&attempts, "attempts", 30, "requests before giving up, each to whichever replica the address reaches")
+	f.BoolVar(&alone, "alone", false, "restore even if the replica discovers no other replica; only when you have confirmed outside the host that no other replica of the cluster exists")
 	for _, r := range []string{"trusted-ca-sha256", "backup-file", "decree-key", "cluster-id", "bootstrap-node", "url"} {
 		_ = cmd.MarkFlagRequired(r)
 	}

@@ -70,9 +70,10 @@ type Decree struct {
 	// mints a new ID, so a recorded decree can never act again, whatever the
 	// guest clock or the host's decree objects say.
 	TargetMember string `json:"target_member,omitempty"`
-	// Alone lets a Genesis decree start the cluster when peer discovery finds
-	// no other replica (a one-replica cluster). Without it, Genesis waits for
-	// at least one other replica to answer that it holds no cluster.
+	// Alone lets a Genesis or Restore decree start the cluster when peer
+	// discovery finds no other replica: the operator asserts that no other
+	// replica exists. Without it, both wait for at least one other replica
+	// to answer that it holds no cluster.
 	Alone bool `json:"alone,omitempty"`
 	// SnapshotSHA256 names the backup a Restore decree restores (hex).
 	SnapshotSHA256 string `json:"snapshot_sha256,omitempty"`
@@ -203,8 +204,8 @@ func verifyDecree(sd SignedDecree, tail Core) error {
 		return fmt.Errorf("a %s decree must name its target_member (the replica's id from /ha/status): decrees signed before target_member existed are refused, re-sign it", d.Kind)
 	case d.TargetMember != "" && nodeOf(raft.ServerID(d.TargetMember)) != d.BootstrapNode:
 		return errors.New("target_member is not a member of bootstrap_node")
-	case d.Kind != Genesis && d.Alone:
-		return errors.New("only a Genesis decree may say alone")
+	case d.Kind != Genesis && d.Kind != Restore && d.Alone:
+		return errors.New("only a Genesis or Restore decree may say alone")
 	case d.Kind == Recover && (len(tail.RootCert) == 0 || len(d.Measurements) != 0):
 		return errors.New("a Recover decree applies to a cluster with a key, and carries no measurements")
 	case d.Kind != UpdateMeasurements && d.Kind != RotateKey && d.Kind != Genesis && d.Kind != Recover && d.Kind != Restore && d.Kind != SetVoters:

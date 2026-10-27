@@ -93,7 +93,7 @@ func TestRestorePreflightPreservesFreshTarget(t *testing.T) {
 			if mode == "compressed" {
 				body = []byte("not zstd")
 			}
-			sd := signDecree(t, key, Decree{Kind: Restore, BootstrapNode: "n0", TargetMember: n.ID(), SnapshotSHA256: SnapshotSHA256(body)})
+			sd := signDecree(t, key, Decree{Kind: Restore, BootstrapNode: "n0", TargetMember: n.ID(), SnapshotSHA256: SnapshotSHA256(body), Alone: true})
 			if mode == "hash" {
 				body = append(body, 0)
 			}
@@ -123,7 +123,7 @@ func TestRestorePreflightPreservesFreshTarget(t *testing.T) {
 				t.Fatal("refused restore changed membership, log, core or application stores")
 			}
 			validBody := encode(good)
-			valid := signDecree(t, key, Decree{Kind: Restore, BootstrapNode: "n0", TargetMember: n.ID(), SnapshotSHA256: SnapshotSHA256(validBody)})
+			valid := signDecree(t, key, Decree{Kind: Restore, BootstrapNode: "n0", TargetMember: n.ID(), SnapshotSHA256: SnapshotSHA256(validBody), Alone: true})
 			result, err := n.Restore(context.Background(), valid, validBody)
 			if err != nil || result.Err != "" || !n.member() || !n.Core().Joined() || n.Core().Epoch != good.Core.Epoch+1 {
 				t.Fatalf("same fresh target cannot restore valid backup: result=%+v err=%v core=%+v", result, err, n.Core())

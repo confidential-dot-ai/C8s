@@ -118,11 +118,11 @@ quorum confirmation stalls, replicas stop admitting reads when evidence expires.
 This is an admission-time guarantee, not an atomic transaction around an entire
 HTTP handler that was already admitted.
 
-Genesis fallback fails closed on discovery errors and unreachable discovered
-peers, and never replaces locally known cluster state. An **empty** discovery
-result also blocks it, unless the decree says `alone`. Genesis, Recover and
-Restore decrees name the member ID of one replica process (`target_member`),
-and only that process acts on them. A restarted replica has a new member ID,
+Genesis fallback and Restore fail closed on discovery errors and unreachable
+discovered peers, and never replace locally known cluster state. An **empty**
+discovery result also blocks them, unless the decree says `alone`. Genesis,
+Recover and Restore decrees name the member ID of one replica process
+(`target_member`), and only that process acts on them. A restarted replica has a new member ID,
 so a recorded decree cannot be replayed to it, whatever the decree objects in
 Kubernetes or the guest clock say. `expires_at` only bounds how long a
 decree waits; it is not the replay protection.
