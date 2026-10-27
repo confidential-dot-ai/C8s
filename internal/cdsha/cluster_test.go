@@ -677,6 +677,10 @@ func TestRecoverAfterLosingTheMajority(t *testing.T) {
 	rec := c.decree(Decree{Kind: Recover, BootstrapNode: surv.name, BaseEpoch: epoch})
 	eventually(t, testTiming.DeadAfter+testTiming.recoverHold()+5*time.Second, "recover applied", func() bool { st, ok := c.decrees.get(rec); return ok && st.AppliedEpoch != nil })
 	eventually(t, 5*time.Second, "survivor serves again", surv.node.Serving)
+	// The replica that recovered never judged its own decree.
+	if rj := c.decrees.rejections(rec); len(rj) > 0 {
+		t.Fatalf("the applied Recover decree was also rejected: %q", rj)
+	}
 	if surv.node.Status().CAFingerprint != fp {
 		t.Fatal("recovery changed the mesh CA")
 	}
@@ -1291,5 +1295,41 @@ func (c *cluster) setListDown(down bool, names ...string) {
 	defer c.mu.Unlock()
 	for _, n := range names {
 		c.listDown[n] = down
+	}
+}
+
+// While a replica runs recover, decree cycles wait; afterwards each decree
+// that arrived meanwhile is still applied or judged.
+func TestDecreesWaitWhileRecovering(t *testing.T) {
+	c := newCluster(t, 3)
+	c.genesis("n0", "n1", "n2")
+	l := c.leader()
+	var cut *replica
+	for _, r := range c.live() {
+		if r != l && cut == nil {
+			cut = r
+		}
+	}
+	c.partition(cut.name, true)
+	eventually(t, 4*time.Second, "cut-off replica stops serving", func() bool { return !cut.node.Serving() })
+	for _, r := range c.live() {
+		r.node.recovering.Store(true)
+	}
+	epoch := l.node.Core().Epoch
+	pins := c.decree(Decree{Kind: UpdateMeasurements, BaseEpoch: epoch, Measurements: []string{"m1", "m2"}})
+	rec := c.decree(Decree{Kind: Recover, BootstrapNode: cut.name, BaseEpoch: epoch})
+	time.Sleep(10 * testTiming.Tick)
+	for _, name := range []string{pins, rec} {
+		if st, ok := c.decrees.get(name); ok {
+			t.Fatalf("decree %s judged while recovering: %+v", name, st)
+		}
+	}
+	for _, r := range c.live() {
+		r.node.recovering.Store(false)
+	}
+	eventually(t, 5*time.Second, "pin set applied after recover", func() bool { st, ok := c.decrees.get(pins); return ok && st.AppliedEpoch != nil })
+	eventually(t, 5*time.Second, "Recover judged after recover", func() bool { _, ok := c.decrees.get(rec); return ok })
+	if st, _ := c.decrees.get(rec); st.AppliedEpoch != nil || st.RejectedReason != ErrRecoverWithQuorum.Error() {
+		t.Fatalf("Recover with a quorum, judged after recover: %+v", st)
 	}
 }

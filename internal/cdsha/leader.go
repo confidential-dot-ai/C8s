@@ -34,6 +34,8 @@ func (n *Node) recover(ctx context.Context, p PendingDecree) {
 		n.log.Error("recover: application policy", "err", err)
 		return
 	}
+	n.recovering.Store(true)
+	defer n.recovering.Store(false)
 	n.log.Warn("RECOVER: forcing a one-voter configuration with this replica's state", "decree", p.Name, "id", n.id)
 	n.readCert.Store(nil) // recovery stops read admission before shutting Raft down
 	if err := n.stopRaft(r); err != nil {
@@ -450,6 +452,12 @@ func (n *Node) applyDecrees(ctx context.Context) {
 	ds, err := n.cfg.Decrees.ListDecrees(ctx)
 	if err != nil {
 		n.log.Debug("list decrees", "err", err)
+		return
+	}
+	// The new leader of a Recover takes leadership before recover has
+	// committed the decree: judged now, that decree would look pending and
+	// late. Every decree waits for the next cycle.
+	if n.recovering.Load() {
 		return
 	}
 	// Recover decrees first: the decree view is fresh once they are judged

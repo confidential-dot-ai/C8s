@@ -201,6 +201,9 @@ type Node struct {
 	fencedSince  atomic.Int64                   // leader: Unix ms the current fence began, 0 if none
 	fenceLog     *cache.LRUExpireCache
 	recoverSeen  recoverSighting // the Run loop's Recover hold
+	// recovering is set while recover runs: it records the Recover decree
+	// itself, and decree cycles wait until it has (applyDecrees).
+	recovering atomic.Bool
 
 	backupAt    time.Time    // leader: last backup attempt
 	pruneAt     time.Time    // leader: last history prune check

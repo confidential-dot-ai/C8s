@@ -81,6 +81,7 @@ type memDecrees struct {
 	mu         sync.Mutex
 	items      map[string]SignedDecree
 	status     map[string]DecreeStatus
+	written    map[string][]DecreeStatus // every status write, in order
 	failList   atomic.Bool
 	failStatus atomic.Bool
 	statusErrs atomic.Int32
@@ -91,7 +92,7 @@ type memDecrees struct {
 }
 
 func newMemDecrees() *memDecrees {
-	return &memDecrees{items: map[string]SignedDecree{}, status: map[string]DecreeStatus{}}
+	return &memDecrees{items: map[string]SignedDecree{}, status: map[string]DecreeStatus{}, written: map[string][]DecreeStatus{}}
 }
 
 // put stores a decree object and returns its name.
@@ -144,6 +145,7 @@ func (m *memDecrees) SetDecreeStatus(_ context.Context, name string, st DecreeSt
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.status[name] = st
+	m.written[name] = append(m.written[name], st)
 	return nil
 }
 
@@ -152,6 +154,19 @@ func (m *memDecrees) get(name string) (DecreeStatus, bool) {
 	defer m.mu.Unlock()
 	st, ok := m.status[name]
 	return st, ok
+}
+
+// rejections are the RejectedReason values ever written for name.
+func (m *memDecrees) rejections(name string) []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []string
+	for _, st := range m.written[name] {
+		if st.RejectedReason != "" {
+			out = append(out, st.RejectedReason)
+		}
+	}
+	return out
 }
 
 func eventually(t *testing.T, within time.Duration, what string, ok func() bool) {
