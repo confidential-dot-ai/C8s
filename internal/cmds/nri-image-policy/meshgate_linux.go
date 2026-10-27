@@ -12,13 +12,30 @@ import (
 // installPodRuleset puts the ruleset trusted policy defines for a pod of that
 // Kubernetes namespace into the network namespace the enforcer proved.
 func installPodRuleset(netns podNamespace, policy meshPolicy, namespace string) error {
-	return ruleset.Install(netns.path, policy.podRuleset(namespace))
+	return ruleset.Install(netns.path, policy.podRuleset(namespace, nil))
 }
 
 // verifyPodRuleset requires the live ruleset of that same namespace to be the
-// one trusted policy defines. A path the runtime re-pointed names another
-// namespace, whose rules say nothing about this pod.
-func verifyPodRuleset(netns podNamespace, policy meshPolicy, namespace string) error {
+// one trusted policy defines, with the exits the pod was granted. A path the
+// runtime re-pointed names another namespace, whose rules say nothing about
+// this pod.
+func verifyPodRuleset(netns podNamespace, policy meshPolicy, namespace string, exits []exit) error {
+	if err := requireSameNamespace(netns); err != nil {
+		return err
+	}
+	return ruleset.Verify(netns.path, policy.podRuleset(namespace, exits))
+}
+
+// extendPodRuleset adds a pod's granted exits to the ruleset it was protected
+// with.
+func extendPodRuleset(netns podNamespace, policy meshPolicy, namespace string, exits []exit) error {
+	if err := requireSameNamespace(netns); err != nil {
+		return err
+	}
+	return ruleset.Extend(netns.path, policy.podRuleset(namespace, nil), rulesetExits(exits))
+}
+
+func requireSameNamespace(netns podNamespace) error {
 	current, err := namespaceFile(netns.path)
 	if err != nil {
 		return err
@@ -26,19 +43,29 @@ func verifyPodRuleset(netns podNamespace, policy meshPolicy, namespace string) e
 	if current.id != netns.id {
 		return fmt.Errorf("the network namespace at %s was replaced", netns.path)
 	}
-	return ruleset.Verify(netns.path, policy.podRuleset(namespace))
+	return nil
+}
+
+func rulesetExits(exits []exit) []ruleset.Exit {
+	var out []ruleset.Exit
+	for _, e := range exits {
+		out = append(out, ruleset.Exit{Range: e.Range, Port: e.Port})
+	}
+	return out
 }
 
 // podRuleset is the ruleset a member pod of that Kubernetes namespace
 // carries: the mesh endpoint's reserved UID owns the capture ports, every
-// dialing role reaches only what its binding names, and a pod of the
-// router's namespace also answers the router's external listeners.
-func (p meshPolicy) podRuleset(kubeNamespace string) ruleset.Policy {
+// dialing role reaches only what its binding names, every container reaches
+// the exits the pod was granted, and a pod of the router's namespace also
+// answers the router's external listeners.
+func (p meshPolicy) podRuleset(kubeNamespace string, granted []exit) ruleset.Policy {
 	endpoint, _ := p.role(meshRole)
 	return ruleset.Policy{
 		Resolver: p.Resolver,
 		Capture:  ruleset.CapturePorts(p.Capture),
 		MeshUID:  endpoint.UID,
+		Exits:    rulesetExits(granted),
 		Server:   p.servedPorts(kubeNamespace),
 		Roles:    p.dialingRoles(),
 	}
