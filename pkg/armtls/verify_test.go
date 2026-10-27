@@ -10,7 +10,7 @@ import (
 // Both evidence paths require an attestation-api: there is no in-process verifier,
 // so without one they must fail rather than accept unverified evidence.
 func TestVerifyRequiresAttestationApi(t *testing.T) {
-	if _, err := VerifyAttestation(nil, &Attestation{Family: TEETypeSEVSNP}, &VerifyPolicy{}, nil); err == nil {
+	if _, err := VerifyAttestation(nil, &Attestation{Family: TEETypeSEVSNP}, pinnedPolicy(""), nil); err == nil {
 		t.Fatal("VerifyAttestation ran with no attestation-api URL")
 	} else if !errors.Is(err, ErrInvalidReport) {
 		t.Fatalf("err = %v, want ErrInvalidReport", err)

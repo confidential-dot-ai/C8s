@@ -185,7 +185,7 @@ openssl ec -in operator.key -pubout -out operator.pub
 # router verifies; install prints the `c8s routes add` commands that store the
 # route
 c8s install --cvm-mode=bare-metal --hardware-platform=sev-snp --namespace c8s-system \
-  --operator-keys operator.pub \
+  --operator-keys operator.pub --measurements <node image manifest.json launch digest> \
   --workload-ref vllm=vllm/deployment/serving:8443 \
   --upstream vllm
 ```
@@ -221,9 +221,10 @@ pod's `c8s-certs` volume, which the mesh endpoint reads at `/etc/c8s/certs`.
 
 ### Production notes
 
-- **Pin measurements.** The chart's armTLS handshakes accept any TEE-attested
-  peer until you pin `cds.measurements` and `armtlsMesh.measurements` to the
-  expected launch digests. Leave them empty only on a trusted network.
+- **Pin measurements.** `cds.measurements` is required: the chart refuses to
+  render without it, and CDS refuses to start without it. Pass the node image's
+  launch digest as `c8s install --measurements <launch-digest>`, or name the
+  images with `--image-policy-file`.
 
 - **Pin operator keys.** Pass `--operator-keys` at install time or allowlist
   writes stay disabled. Leaving writes disabled and re-deploying CDS on every
@@ -368,11 +369,10 @@ to. For the default public route, use the router launch digest; the CLI reads
 router's discovery document and verifies its attestation automatically.
 Direct CDS URLs remain supported, in which case pin the CDS launch digest.
 
-An empty set accepts any attested endpoint. Reads run with a warning; anything
-that signs with the operator key — every `c8s allowlist` write and
-`c8s secrets put`/`explain` — is **refused**, because the credential and its
-payload would go to whatever answered. A plaintext `--insecure` dev endpoint is
-exempt: it already declares that nothing about it is attested.
+An empty set is **refused**, reads included: the request, and any operator
+credential signing it, would go to whatever answered. A plaintext `--insecure`
+dev endpoint is exempt: it already declares that nothing about it is
+attested.
 
 Do not point this CLI at router when `router.publicTLS.secretName` is set. That
 front door uses WebPKI (`public_tls.mode=webpki`), and its public certificate is
@@ -470,10 +470,6 @@ evidence verification service, which is built and published from
 
 C8s is built around a strong threat model, and we would rather list the holes
 than let you discover them:
-
-- **Measurements are not pinned by default.** Until `cds.measurements` and
-  `armtlsMesh.measurements` are set, the mesh accepts any attested peer. Fine
-  for demos, mandatory homework for production.
 
 - **CDS is a singleton.** The mesh CA key lives only in CDS process
   memory; a restart mints a new CA and workloads re-bootstrap.

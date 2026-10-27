@@ -190,8 +190,8 @@ type plugin struct {
 	mesh *meshGate
 
 	// cdsPins is the node-side path of the CDS attestation policy handed to
-	// the injected credential clients, or "" when the node pins nothing.
-	// prepareCDSPins sets it before any container can be created (cdspins.go).
+	// the injected credential clients, or "" when no pod of this node is
+	// injected. prepareCDSPins sets it before any container can be created (cdspins.go).
 	cdsPins string
 
 	// cdsAddress is the node-side path of the CDS endpoint handed to those
