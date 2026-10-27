@@ -318,16 +318,22 @@ logging:
   level: error
 `+meshYAML, dir, dir, pushDigestA, strings.Repeat("ab", 48), dir)
 	err := runWithDeadline(t, 10*time.Second, []string{"-config", writeConfigYAML(t, cfgYAML)})
-	if err == nil || !strings.Contains(err.Error(), "start admission inventory") {
-		t.Fatalf("err = %v, want an admission-inventory start failure", err)
+	if err == nil || !strings.Contains(err.Error(), "start admission inventory") || !errors.Is(err, syscall.EADDRINUSE) {
+		t.Fatalf("err = %v, want an admission-inventory listen failure", err)
 	}
 }
 
-// occupySocketPath puts a directory where the inventory's socket belongs, so
-// the listen fails and nothing else does.
+// occupySocketPath puts a non-empty directory where the inventory's socket
+// belongs, so the listen fails and nothing else does. An empty one would not
+// do: the listener unlinks whatever is at the path first, and os.Remove takes
+// an empty directory.
 func occupySocketPath(t *testing.T, socketDir string) {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Join(socketDir, workloadclaims.SocketName), 0o755); err != nil {
+	dir := filepath.Join(socketDir, workloadclaims.SocketName)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "occupied"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
