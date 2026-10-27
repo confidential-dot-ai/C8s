@@ -92,7 +92,10 @@ func readFailed(w http.ResponseWriter, err error) {
 // If-Match makes the swap conditional on the version: the strong tag "N"
 // matches version N, the version the ETag W/"N" of GET names. If-Match uses
 // strong comparison (RFC 9110 13.1.1), so a weak tag never matches; a version
-// names exactly one stored document, so "N" is a strong validator. A refused
+// names exactly one stored document, so "N" is a strong validator. That holds
+// across an HA cluster's restarts too (Genesis, Restore, Recover raise the
+// version past their start time, cdsha FSM.raiseVersion), while the leader's
+// clock at the restart is not behind the earlier life's writes. A refused
 // precondition is 412 and changes nothing. "*" or no If-Match swaps
 // unconditionally.
 func (h Handler) HandleReplaceAll(w http.ResponseWriter, r *http.Request) {

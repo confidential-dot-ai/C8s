@@ -270,6 +270,34 @@ func bumpVersionTx(tx *sql.Tx) error {
 	return err
 }
 
+// RaiseVersion sets the version to the larger of the next version and floor,
+// and returns it. The replicated state machine calls it when the cluster
+// starts again (Genesis, Restore, Recover), with the start's log-entry time in
+// Unix ms, so the version stays above every version an earlier life of the
+// cluster served (see docs/allowlist-and-capabilities.md). The document does
+// not change, so nothing is journaled.
+func (s *Store) RaiseVersion(floor int64) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+	var version string
+	if err := tx.QueryRow(
+		"UPDATE allowlist_version SET version = CAST(MAX(CAST(version AS INTEGER) + 1, ?) AS TEXT) RETURNING version", floor,
+	).Scan(&version); err != nil {
+		return "", fmt.Errorf("raise allowlist version: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return "", err
+	}
+	s.gen++
+	return version, nil
+}
+
 // seedWorkloads adds every workload entry whose name is not already present
 // and retires each stored entry the seed replaces (retiredBySeed), in a single
 // transaction, and returns the numbers added and retired. Additive for

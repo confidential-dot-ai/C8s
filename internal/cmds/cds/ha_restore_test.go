@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +19,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/confidential-dot-ai/c8s/internal/cdsha"
+	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 )
 
@@ -160,11 +162,20 @@ func TestRunHARestoreAfterTotalLoss(t *testing.T) {
 	if out, err := recover(ok...); err == nil {
 		t.Fatalf("a second restore over a serving cluster succeeded: %q", out)
 	}
+	// The restored version is above the one served before the loss, so
+	// node enforcers take the restored document and later writes; every
+	// replica serves the same one.
+	_, h1, _ := do(t, http.MethodGet, bases[0]+"/allowlist", "", nil)
+	before, _ := strconv.ParseUint(allowlistclient.VersionFromETag(h0.Get("ETag")), 10, 64)
+	after, _ := strconv.ParseUint(allowlistclient.VersionFromETag(h1.Get("ETag")), 10, 64)
+	if before == 0 || after <= before {
+		t.Fatalf("allowlist version after restore %q, not above %q before the loss", h1.Get("ETag"), h0.Get("ETag"))
+	}
 	for _, b := range bases {
 		_, h, _ := do(t, http.MethodGet, b+"/allowlist", "", nil)
 		_, _, c := do(t, http.MethodGet, b+"/ca", "", nil)
-		if h.Get("ETag") != h0.Get("ETag") || !bytes.Equal(c, ca) {
-			t.Fatalf("%s after restore: etag %q want %q, same CA %v", b, h.Get("ETag"), h0.Get("ETag"), bytes.Equal(c, ca))
+		if h.Get("ETag") != h1.Get("ETag") || !bytes.Equal(c, ca) {
+			t.Fatalf("%s after restore: etag %q want %q, same CA %v", b, h.Get("ETag"), h1.Get("ETag"), bytes.Equal(c, ca))
 		}
 	}
 	if code, _, body := do(t, http.MethodPut, bases[0]+"/allowlist", unspent, doc); code != http.StatusNoContent {

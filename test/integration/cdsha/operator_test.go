@@ -13,6 +13,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net"
 	"net/http"
 	"os"
@@ -301,11 +302,27 @@ func TestRestore(t *testing.T) {
 		ref = s
 		break
 	}
+	// The restore serves the same allowlist under a higher version, so nodes
+	// take the writes re-applied after it (the version never goes back).
+	before := etagVersion(t, ref.ETag)
 	for i, s := range got {
-		if s.CA != ref.CA || s.ETag != ref.ETag || s.Secrets != ref.Secrets {
-			t.Errorf("%s after restore differs from before the loss (CA %v, ETag %v, secrets %v)", c.Replicas[i].Node, s.CA == ref.CA, s.ETag == ref.ETag, s.Secrets == ref.Secrets)
+		if s.CA != ref.CA || !maps.Equal(s.Values, ref.Values) || s.Secrets != ref.Secrets {
+			t.Errorf("%s after restore differs from before the loss (CA %v, allowlist %v, secrets %v)", c.Replicas[i].Node, s.CA == ref.CA, maps.Equal(s.Values, ref.Values), s.Secrets == ref.Secrets)
+		}
+		if after := etagVersion(t, s.ETag); after <= before {
+			t.Errorf("%s serves allowlist version %d after the restore, want above %d", c.Replicas[i].Node, after, before)
 		}
 	}
+}
+
+// etagVersion is the allowlist version of an ETag (W/"N").
+func etagVersion(t *testing.T, etag string) uint64 {
+	t.Helper()
+	v, err := strconv.ParseUint(strings.TrimSuffix(strings.TrimPrefix(etag, `W/"`), `"`), 10, 64)
+	if err != nil {
+		t.Fatalf("ETag %q: %v", etag, err)
+	}
+	return v
 }
 
 // TestBigState: C3 (2,000 allowlist entries + 500 secrets, then a restarted

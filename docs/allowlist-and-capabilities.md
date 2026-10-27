@@ -204,6 +204,16 @@ expired that long before the newest spent one. The comparison uses only the
 tokens' own iat and exp, so every HA replica forgets the same records, and a
 host that turns CDS's clock back cannot make a forgotten token valid again.
 
+Node enforcers order documents by the version: they ignore a version below the
+one they applied, and `If-None-Match` on an equal one is answered 304. With CDS
+HA, an event that starts the cluster again (Genesis, Restore of a backup,
+Recover on a survivor) therefore raises the version to at least its start time
+in Unix milliseconds, as stamped by the leader. Later writes add one each, so
+writes applied again after a Restore reach the nodes. This holds while the
+leader's clock at that event is not behind the time of the last version nodes
+saw. If it is behind, nodes keep the last allowlist they applied, entries
+revoked since included, until the version passes theirs.
+
 `PUT /allowlist` takes `If-Match: "N"`, the strong tag of version N, the N of
 the ETag `W/"N"` that `GET /allowlist` serves. CDS replaces the document only
 while the version is still N, and answers 412 otherwise, leaving the allowlist

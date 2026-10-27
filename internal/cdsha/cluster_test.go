@@ -887,6 +887,10 @@ func TestTotalLossRestoreFromBackup(t *testing.T) {
 		t.Fatalf("restore: %v %+v", err, res)
 	}
 	c.settled(15 * time.Second)
+	restoredVer, _ := c.nodes["n0"].al.Version()
+	if a, b := mustUint(t, restoredVer), mustUint(t, ver); a <= b {
+		t.Fatalf("restored allowlist version %d, not above %d served before the loss", a, b)
+	}
 	for _, r := range c.live() {
 		if r.node.AwaitingRestore() {
 			t.Fatalf("%s still awaits a restore", r.name)
@@ -897,8 +901,8 @@ func TestTotalLossRestoreFromBackup(t *testing.T) {
 		if v, err := r.sec.Get(ctx, "/kept"); err != nil || string(v) != "secret-v" {
 			t.Fatalf("%s lost a secret: %v", r.name, err)
 		}
-		if v, _ := r.al.Version(); v != ver {
-			t.Fatalf("%s allowlist version %s, want %s", r.name, v, ver)
+		if v, _ := r.al.Version(); v != restoredVer {
+			t.Fatalf("%s allowlist version %s, want %s", r.name, v, restoredVer)
 		}
 	}
 	if err := c.nodes["n2"].al.ConsumeToken("h.p.spent-again"); !errors.Is(err, operatorauth.ErrTokenReused) {

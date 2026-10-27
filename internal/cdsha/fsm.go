@@ -424,6 +424,11 @@ func (f *FSM) applyDecree(de DecreeEntry) DecreeResult {
 	if err != nil {
 		return DecreeResult{Epoch: f.core.Epoch, Err: err.Error()}
 	}
+	if k := de.Decree.Decree.Kind; k == Genesis || k == Recover {
+		if err := f.raiseVersion(de.AtMS); err != nil {
+			return DecreeResult{Epoch: f.core.Epoch, Err: err.Error()}
+		}
+	}
 	f.record(de.Decree, de.AtMS, next.Epoch)
 	f.core = next
 	if ca != nil {
@@ -488,10 +493,37 @@ func (f *FSM) applyRestore(re RestoreEntry) DecreeResult {
 	if err := f.restore(sn); err != nil {
 		return fail(err)
 	}
+	if err := f.raiseVersion(re.AtMS); err != nil {
+		return fail(err)
+	}
 	f.mu.Lock()
 	f.record(re.Decree, re.AtMS, sn.Core.Epoch)
 	f.mu.Unlock()
 	return DecreeResult{Epoch: sn.Core.Epoch}
+}
+
+// raiseVersion moves the allowlist version of a cluster that starts again
+// (Genesis, Restore, Recover) to at least atMS, the start entry's
+// leader-stamped time. Node enforcers ignore a version below the one they
+// applied and answer an equal one from cache, so a version that went back with
+// the restored or surviving state would keep every later write, revocations
+// included, from the nodes.
+//
+// INVARIANT: the served version never decreases across a restart, provided
+// the stamping leader's clock is not behind the time of the highest version
+// the earlier life served (its start time plus its writes, each a single-use
+// operator token). If it is behind, nodes keep the last allowlist they
+// applied until the version passes theirs.
+//
+// The input is the logged entry, so every replica sets the same version. A
+// failure is this replica's store: it stops and rejoins.
+func (f *FSM) raiseVersion(atMS int64) error {
+	v, err := f.allowlist.RaiseVersion(atMS)
+	if err != nil {
+		return f.stopLocal(fmt.Errorf("allowlist version at the cluster's start: %w", err))
+	}
+	slog.Info("cds-ha: the cluster starts again; allowlist version raised", "version", v, "at_ms", atMS)
+	return nil
 }
 
 // nextCore is the state after decree entry de, applied on the state at
