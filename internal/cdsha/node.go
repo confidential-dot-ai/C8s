@@ -855,6 +855,15 @@ func (n *Node) handleControl(peer Claims, req controlRequest) controlResponse {
 	if err != nil {
 		return controlResponse{Member: true, Err: err.Error()}
 	}
+	// INVARIANT: a committed binding or allowlist time is the leader's
+	// clock, never the forwarding replica's (the leader's own writes carry
+	// its clock already). Binding expiry and first-write-wins trust the
+	// leader's clock, as the single-replica CDS trusted its own.
+	if now := time.Now().UnixMilli(); e.Binding != nil {
+		e.Binding.AtMS = now
+	} else if e.Allowlist != nil {
+		e.Allowlist.AtMS = now
+	}
 	// The leader commits the entry it checked, encoded by itself.
 	raw, err := json.Marshal(e)
 	if err != nil {

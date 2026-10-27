@@ -22,7 +22,10 @@ type Replicator interface {
 // SetReplicator makes every later binding a replicated command.
 func (l *Ledger) SetReplicator(r Replicator) { l.repl = r }
 
-// Command records one binding at a time every replica uses alike.
+// Command records one binding at a time every replica uses alike. With CDS
+// HA the leader sets AtMS from its own clock, and a command never applies
+// before one already applied: expiry trusts the leader's wall clock, as the
+// single-replica CDS trusted its own.
 type Command struct {
 	SandboxID string `json:"sandbox_id"`
 	Host      string `json:"host"`

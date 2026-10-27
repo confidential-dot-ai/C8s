@@ -104,6 +104,11 @@ is separate from snapshot format. The format-3 release requires a clean
 redeploy; it does not infer policy for old clusters or support format-2 restore
 or rolling conversion.
 
+Sandbox bindings expire at the leader's clock: the leader stamps the time
+on every binding and allowlist write, and the replicated time never goes
+back. A host that sets the leader's clock forward can expire bindings early,
+as it could with one CDS replica; a follower's clock does not matter.
+
 Local authorization reads are **bounded stale, not linearizable**. Each replica
 periodically asks the leader for a Raft barrier, then waits until its own FSM
 has applied the returned watermark. The read certificate expires one Lease

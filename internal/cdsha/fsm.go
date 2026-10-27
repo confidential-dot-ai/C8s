@@ -59,6 +59,9 @@ type Core struct {
 	// PinsDecree is the signed decree that set Measurements, when it named
 	// their images: what clients outside the group pin CDS to (/ha/pins).
 	PinsDecree *SignedDecree `json:"pins_decree,omitempty"`
+	// ClockMS is the latest time an allowlist or binding command applied
+	// at (advanceClock).
+	ClockMS int64 `json:"clock_ms,omitempty"`
 }
 
 // Joined reports whether the cluster has a mesh CA (Genesis applied).
@@ -417,11 +420,15 @@ func (f *FSM) apply(e Entry) any {
 		}
 		return nil
 	case e.Kind == KindAllowlist && e.Allowlist != nil:
-		return f.allowlist.Apply(*e.Allowlist)
+		cmd := *e.Allowlist
+		cmd.AtMS = f.advanceClock(cmd.AtMS)
+		return f.allowlist.Apply(cmd)
 	case e.Kind == KindSecret && e.Secret != nil:
 		return f.secrets.Apply(*e.Secret)
 	case e.Kind == KindBinding && e.Binding != nil:
-		return f.ledger.Apply(*e.Binding)
+		cmd := *e.Binding
+		cmd.AtMS = f.advanceClock(cmd.AtMS)
+		return f.ledger.Apply(cmd)
 	case e.Kind == KindDecree && e.Decree != nil:
 		return f.applyDecree(*e.Decree)
 	case e.Kind == KindRestore && e.Restore != nil:
@@ -430,6 +437,17 @@ func (f *FSM) apply(e Entry) any {
 		return f.applyRenewCA(*e.RenewCA)
 	}
 	return fmt.Errorf("%w of kind %q", errMalformed, e.Kind)
+}
+
+// advanceClock is the time a command the leader stamped atMS applies at:
+// never before a command already applied. A new leader whose clock is
+// behind the old one's cannot shorten a binding or date the journal back.
+// Core.ClockMS is replicated state, so every replica decides alike.
+func (f *FSM) advanceClock(atMS int64) int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.core.ClockMS = max(f.core.ClockMS, atMS)
+	return f.core.ClockMS
 }
 
 func (f *FSM) applyDecree(de DecreeEntry) DecreeResult {
