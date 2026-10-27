@@ -2,45 +2,16 @@ package credrelease
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
 	"log/slog"
 	"net"
-	"net/http"
 	"strings"
 	"time"
-
-	"golang.org/x/net/netutil"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
 )
-
-// maxConcurrentConns caps accepted sockets. cred-release is the external
-// credential choke point and binds every interface, so an unbounded accept
-// loop lets any peer that can route to the guest spend its memory and its
-// attestation-api budget on handshakes alone.
-const maxConcurrentConns = 64
-
-// newServer builds the release HTTP server. The resource bounds live here so
-// they are stated once and can be asserted: none of them changes how the
-// service answers a legitimate request, so a regression is otherwise silent.
-func newServer(addr string, handler http.Handler, tlsCfg *tls.Config) *http.Server {
-	return &http.Server{
-		Addr:              addr,
-		Handler:           handler,
-		TLSConfig:         tlsCfg,
-		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       10 * time.Second,
-		// Allow the bounded body read, attestation, and response write.
-		WriteTimeout: attestTimeout + 20*time.Second,
-		IdleTimeout:  30 * time.Second,
-		// Go's 1MiB default lets one unauthenticated request buy far more
-		// memory than any real CSR needs.
-		MaxHeaderBytes: 16 << 10,
-	}
-}
 
 // Config is the release service configuration.
 type Config struct {
@@ -132,59 +103,16 @@ func Run(ctx context.Context, cfg Config) error {
 	attestationClient := attestclient.NewClient("")
 	handler.attester = localEvidenceGenerator{client: attestationClient, apiURL: cfg.AttestationAPIURL}
 	handler.measuredPolicies = armtls.NewJournal(cfg.MeasuredPoliciesFile)
-
-	// armTLS serving config: the presented cert embeds a fresh TDX quote
-	// bound to its own public key, so the operator's armTLS client verifies
-	// it's talking to a genuine, correctly-measured guest before sending the
-	// CSR or trusting the returned cert. AttestFunc fetches the quote from the
-	// local attestation-api (platform-generic despite the SNP name — it reads
-	// resp.Platform, so it yields a TDX quote here); same pattern as cds.
-	attestFunc := attestclient.MakeSNPARMTLSAttestFunc(attestationClient, cfg.AttestationAPIURL)
-	tlsCfg, certMgr, err := armtls.NewServerTLSConfig(&armtls.ServerConfig{
+	// The self-signed serving cert embeds a fresh quote whose report data
+	// binds the cert's own key, so a client verifying it (getkubeconfig)
+	// knows the channel ends in the measured guest. The attest func reads
+	// resp.Platform, so it yields a TDX quote on TDX despite its SNP name.
+	// cfg.listener, when set, is served instead of binding ListenAddr.
+	return armtls.ServeListener(ctx, cfg.listener, cfg.ListenAddr, handler, &armtls.ServerConfig{
 		Platform:   cfg.Platform,
-		AttestFunc: attestFunc,
+		AttestFunc: attestclient.MakeSNPARMTLSAttestFunc(attestationClient, cfg.AttestationAPIURL),
 		Logger:     slog.Default(),
 
 		MeasuredPoliciesFile: cfg.MeasuredPoliciesFile,
 	})
-	if err != nil {
-		return fmt.Errorf("build armTLS config: %w", err)
-	}
-	// Provision the serving cert (and its quote) before accepting traffic, so
-	// the first request doesn't race a cold cert manager.
-	warmCtx, cancelWarm := context.WithTimeout(ctx, 30*time.Second)
-	err = certMgr.WarmUp(warmCtx)
-	cancelWarm()
-	if err != nil {
-		return fmt.Errorf("warm up armTLS serving cert: %w", err)
-	}
-
-	go certMgr.RunRotation(ctx)
-
-	srv := newServer(cfg.ListenAddr, handler, tlsCfg)
-
-	// Bind explicitly so the accepted sockets can be capped: every connection
-	// costs an armTLS handshake before the operator token is ever checked.
-	ln := cfg.listener
-	if ln == nil {
-		ln, err = net.Listen("tcp", cfg.ListenAddr)
-		if err != nil {
-			return fmt.Errorf("listen %s: %w", cfg.ListenAddr, err)
-		}
-	}
-
-	errCh := make(chan error, 1)
-	go func() {
-		// certs come from tlsCfg (armTLS), so no cert/key files.
-		errCh <- srv.ServeTLS(netutil.LimitListener(ln, maxConcurrentConns), "", "")
-	}()
-
-	select {
-	case <-ctx.Done():
-		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		return srv.Shutdown(shutCtx)
-	case err := <-errCh:
-		return err
-	}
 }
