@@ -43,10 +43,17 @@ func newApplyCmd(o *options) *cobra.Command {
 	var dryRun bool
 	cmd := &cobra.Command{
 		Use:   "apply <file|->",
-		Short: "Upsert entries from a file (whole-entry replace)",
+		Short: "Upsert entries from a file (whole-entry replace, one atomic write)",
 		Long: `Upsert each entry in <file> (or stdin with '-'). The file is either a full or
 partial allowlist document or a name-keyed map of entries. Each entry is
-replaced whole — this never field-merges into a live entry.`,
+replaced whole — this never field-merges into a live entry.
+
+apply reads the live allowlist, puts the entries into it, and writes the
+result back as one whole-document write: every entry lands or none does. The
+write is signed by the operator key like an upload, so the key signs the whole
+resulting document, not only the entries in <file>. It is conditional on the
+version apply read: if another write landed since, CDS refuses it and nothing
+changes; run apply again to re-read and re-merge.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := o.validate(); err != nil {
@@ -68,7 +75,7 @@ replaced whole — this never field-merges into a live entry.`,
 			if err != nil {
 				return err
 			}
-			live, _, err := c.List(ctx(cmd))
+			live, version, err := readForWrite(ctx(cmd), c)
 			if err != nil {
 				return err
 			}
@@ -109,10 +116,19 @@ replaced whole — this never field-merges into a live entry.`,
 			if err != nil {
 				return err
 			}
-			for _, name := range names {
-				if err := c.PutWorkload(ctx(cmd), name, entries[name], signer); err != nil {
-					return fmt.Errorf("put workload %q: %w", name, err)
+			merged := maps.Clone(live.Workloads)
+			if merged == nil {
+				merged = map[string]pkgallowlist.Workload{}
+			}
+			maps.Copy(merged, entries)
+			doc := &pkgallowlist.Allowlist{Schema: pkgallowlist.Schema, Workloads: merged}
+			if err := replaceIfUnchanged(ctx(cmd), c, doc, version, signer); err != nil {
+				if errors.Is(err, errAllowlistChanged) {
+					return fmt.Errorf("nothing was applied: %w", err)
 				}
+				return fmt.Errorf("apply %d entr(ies) in one write, so all of them or none landed: %w", len(entries), err)
+			}
+			for _, name := range names {
 				fmt.Fprintf(cmd.OutOrStdout(), "applied %s\n", name)
 			}
 			return nil
@@ -187,13 +203,16 @@ func newDeleteCmd(o *options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			for _, name := range args {
+			for i, name := range args {
 				if err := c.DeleteWorkload(ctx(cmd), name, signer); err != nil {
 					var se *operatorauth.StatusError
 					if errors.As(err, &se) && se.Status == 404 {
-						return fmt.Errorf("no workload entry named %q", name)
+						err = fmt.Errorf("no workload entry named %q", name)
 					}
-					return err
+					if len(args) == 1 {
+						return err
+					}
+					return fmt.Errorf("%w (deleted: %v; not deleted: %v)", err, args[:i], args[i:])
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "deleted %s\n", name)
 			}
@@ -239,6 +258,27 @@ func collisionsWithLive(entries map[string]pkgallowlist.Workload, live *pkgallow
 }
 
 // --- shared helpers ---
+
+// readForWrite reads the live allowlist a whole-document write is built from,
+// and the version that write is made conditional on.
+//
+// INVARIANT: every entry the write does not name goes back with all of its
+// fields. The served parse is lenient: it drops fields this c8s does not know
+// and entries no longer valid (an over-long legacy name). The write path's
+// strict parse refuses both instead, so nothing is lost by writing back.
+func readForWrite(ctx context.Context, c allowlistclient.Client) (*pkgallowlist.Allowlist, string, error) {
+	raw, version, err := c.CanonicalBytes(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	live, err := pkgallowlist.ParseJSON(raw)
+	if err != nil {
+		return nil, "", fmt.Errorf("the served allowlist holds content this c8s cannot write back unchanged "+
+			"(a field it does not know, or an entry no longer valid such as a name over 63 bytes); "+
+			"use a c8s as new as CDS, or delete the invalid entry first: %w", err)
+	}
+	return live, version, nil
+}
 
 // parseWorkloadEntries accepts either a full/partial allowlist document or a
 // bare name-keyed map of workload entries. The bare map is wrapped into a

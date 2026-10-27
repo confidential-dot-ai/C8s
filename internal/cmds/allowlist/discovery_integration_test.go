@@ -14,10 +14,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"io"
 	"maps"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -91,6 +93,46 @@ func routerServer(t *testing.T, measurementChallenge []byte) (*httptest.Server, 
 		written.mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
 	})
+	// A whole-document write, conditional on the served version, writes the
+	// entries it adds, changes or drops relative to the served document.
+	seededDoc := seededAllowlist(t)
+	seededBody, err := seededDoc.Canonical()
+	if err != nil {
+		t.Fatal(err)
+	}
+	seeded, err := pkgallowlist.ParseJSON(seededBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux.HandleFunc("PUT /allowlist", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("If-Match") != `"1"` {
+			http.Error(w, "the allowlist changed since it was read", http.StatusPreconditionFailed)
+			return
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		doc, err := pkgallowlist.ParseJSON(body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+			return
+		}
+		written.mu.Lock()
+		defer written.mu.Unlock()
+		for name, wl := range doc.Workloads {
+			if old, ok := seeded.Workloads[name]; !ok || !reflect.DeepEqual(old, wl) {
+				written.names[name] = true
+			}
+		}
+		for name := range seeded.Workloads {
+			if _, ok := doc.Workloads[name]; !ok {
+				written.names[name] = true
+			}
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
 
 	srv := httptest.NewUnstartedServer(testutil.CloseEveryResponse(mux))
 	srv.TLS = &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}}}
@@ -99,14 +141,20 @@ func routerServer(t *testing.T, measurementChallenge []byte) (*httptest.Server, 
 	return srv, written
 }
 
+// seededAllowlist is the document seededAllowlistHandler serves.
+func seededAllowlist(t *testing.T) pkgallowlist.Allowlist {
+	t.Helper()
+	return pkgallowlist.Allowlist{
+		Schema:    pkgallowlist.Schema,
+		Workloads: anyWorkloads(t, map[string]string{digA: "registry/c8s/cds@" + digA}),
+	}
+}
+
 // seededAllowlistHandler serves a canonical allowlist (one entry admitting
 // digA) as CDS's read endpoint would.
 func seededAllowlistHandler(t *testing.T) http.HandlerFunc {
 	t.Helper()
-	al := pkgallowlist.Allowlist{
-		Schema:    pkgallowlist.Schema,
-		Workloads: anyWorkloads(t, map[string]string{digA: "registry/c8s/cds@" + digA}),
-	}
+	al := seededAllowlist(t)
 	body, err := al.Canonical()
 	if err != nil {
 		t.Fatalf("canonical: %v", err)
@@ -169,8 +217,8 @@ func TestListThroughRouter(t *testing.T) {
 }
 
 // TestApplyThroughRouter proves `c8s allowlist apply` writes every entry
-// through a front door that closes every response: the live read and each
-// entry's write ride their own redial.
+// through a front door that closes every response: the live read and the
+// conditional whole-document write ride their own redial.
 func TestApplyThroughRouter(t *testing.T) {
 	measurement := bytes.Repeat([]byte{0x42}, armtls.SNPMeasurementSize)
 	lb, written := routerServer(t, []byte("issuance-challenge"))

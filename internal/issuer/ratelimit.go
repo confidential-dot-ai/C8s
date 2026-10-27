@@ -4,8 +4,10 @@ import (
 	"container/list"
 	"context"
 	"fmt"
+	"math"
 	"net"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -91,6 +93,16 @@ func (rl *IPRateLimiter) allow(key string) bool {
 	return entry.limiter.Allow()
 }
 
+// retryAfter is the Retry-After of a refusal, in whole seconds: the time one
+// request's worth of allowance takes to refill, and at least one second.
+func (rl *IPRateLimiter) retryAfter() string {
+	secs := 1.0
+	if rl.rate > 0 && rl.rate < 1 {
+		secs = math.Ceil(1 / float64(rl.rate))
+	}
+	return strconv.FormatFloat(secs, 'f', 0, 64)
+}
+
 // Len reports how many callers the limiter is metering, for metrics and tests.
 func (rl *IPRateLimiter) Len() int {
 	rl.mu.Lock()
@@ -137,7 +149,7 @@ func (rl *IPRateLimiter) evict(idleTimeout time.Duration) {
 type KeyFunc func(*http.Request) string
 
 // RateLimitMiddleware wraps next with per-source-IP rate limiting against rl.
-// On reject it returns 429 and increments the rejection counter.
+// On reject it returns 429 with a Retry-After and increments the rejection counter.
 func RateLimitMiddleware(rl *IPRateLimiter, next http.Handler) http.Handler {
 	return RateLimitBy(rl, nil, next)
 }
@@ -158,6 +170,7 @@ func RateLimitBy(rl *IPRateLimiter, key KeyFunc, next http.Handler) http.Handler
 		}
 		if !rl.allow(bucket) {
 			rateLimitRejectionsTotal.Inc()
+			w.Header().Set("Retry-After", rl.retryAfter())
 			http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
 			return
 		}

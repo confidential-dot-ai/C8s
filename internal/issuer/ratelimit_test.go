@@ -140,6 +140,29 @@ func TestRateLimitMiddlewareAllowsThenRejects(t *testing.T) {
 	}
 }
 
+// A refusal says when to come back: the time one request's allowance takes to
+// refill, never less than a second.
+func TestRateLimitMiddlewareSetsRetryAfter(t *testing.T) {
+	for _, tt := range []struct {
+		rate rate.Limit
+		want string
+	}{{10, "1"}, {1, "1"}, {0.25, "4"}} {
+		rl, err := NewIPRateLimiter(tt.rate, 1, 10)
+		if err != nil {
+			t.Fatalf("NewIPRateLimiter: %v", err)
+		}
+		h := RateLimitMiddleware(rl, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
+		req := httptest.NewRequest(http.MethodPut, "/", nil)
+		req.RemoteAddr = "10.1.2.3:5555"
+		h.ServeHTTP(httptest.NewRecorder(), req)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusTooManyRequests || rec.Header().Get("Retry-After") != tt.want {
+			t.Errorf("rate %v: code %d, Retry-After %q, want 429 and %q", tt.rate, rec.Code, rec.Header().Get("Retry-After"), tt.want)
+		}
+	}
+}
+
 func TestRateLimitMiddlewareHandlesPortlessRemoteAddr(t *testing.T) {
 	rl, err := NewIPRateLimiter(rate.Limit(100), 10, 10)
 	if err != nil {

@@ -47,6 +47,12 @@ type fakeCDS struct {
 	al       pkgallowlist.Allowlist
 	version  int
 	verifier operatorauth.Verifier
+	// beforeReplace, when set, runs once a whole-document write is
+	// authorized and before it is applied: a write racing it.
+	beforeReplace func()
+	// lost503 answers this many committed whole-document writes 503, as an
+	// HA CDS does when the reply is lost after the commit.
+	lost503 int
 }
 
 func newFakeCDS(pinned []*ecdsa.PublicKey) *fakeCDS {
@@ -102,13 +108,27 @@ func (f *fakeCDS) handleReplace(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
+	if hook := f.beforeReplace; hook != nil {
+		f.beforeReplace = nil
+		hook()
+	}
 	f.mu.Lock()
+	defer f.mu.Unlock()
+	if ifMatch := r.Header.Get("If-Match"); ifMatch != "" && ifMatch != `"`+strconv.Itoa(f.version)+`"` {
+		http.Error(w, "the allowlist changed since it was read", http.StatusPreconditionFailed)
+		return
+	}
 	f.al = *parsed
 	if f.al.Workloads == nil {
 		f.al.Workloads = map[string]pkgallowlist.Workload{}
 	}
 	f.version++
-	f.mu.Unlock()
+	if f.lost503 > 0 {
+		f.lost503--
+		w.Header().Set("Retry-After", "0")
+		http.Error(w, "replicated store unavailable", http.StatusServiceUnavailable)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -156,6 +176,20 @@ func (f *fakeCDS) workload(name string) (pkgallowlist.Workload, bool) {
 	defer f.mu.Unlock()
 	wl, ok := f.al.Workloads[name]
 	return wl, ok
+}
+
+// put writes an entry as another operator's write would: a new version.
+func (f *fakeCDS) put(name string, w pkgallowlist.Workload) {
+	f.mu.Lock()
+	f.al.Workloads[name] = w
+	f.version++
+	f.mu.Unlock()
+}
+
+func (f *fakeCDS) currentVersion() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.version
 }
 
 func (f *fakeCDS) seedWorkload(name string, w pkgallowlist.Workload) {

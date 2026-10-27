@@ -204,6 +204,24 @@ expired that long before the newest spent one. The comparison uses only the
 tokens' own iat and exp, so every HA replica forgets the same records, and a
 host that turns CDS's clock back cannot make a forgotten token valid again.
 
+`PUT /allowlist` takes `If-Match: "N"`, the strong tag of version N, the N of
+the ETag `W/"N"` that `GET /allowlist` serves. CDS replaces the document only
+while the version is still N, and answers 412 otherwise, leaving the allowlist
+unchanged. A weak tag never matches (If-Match uses strong comparison) and is
+answered 412 too. Without `If-Match`, or with `*`, the replace is
+unconditional. `upload` and `apply` make their write conditional on the version
+they read and diffed, so neither overwrites a write that landed in between:
+they fail with "nothing was uploaded" or "nothing was applied", and running
+them again re-reads the allowlist. `apply` puts all of its entries in in one
+write, so they all land or none do.
+
+Writes are metered per source address (`cds --rate-limit`, `--rate-burst`). A
+refused write is answered 429 with a `Retry-After`. While an HA CDS has no
+leader, a write is answered 503 with a `Retry-After`. The CLI sends a write
+again on either, up to six attempts, each with a new token. If CDS committed a
+whole-document write but its answer was lost, the retry is refused with 412;
+the CLI then finds its document already served and reports success.
+
 ## Refresh and anti-rollback
 
 Every node polls `GET /allowlist` on `nriImagePolicy.refresh.interval` (5s by
@@ -270,8 +288,13 @@ differs from the head. A policy digest is `sha256:<hex>` of the exact bytes
 | `GET /allowlist/objects/sha256/<hex>/signature` | its operator signature as `text/plain`; 404 when unsigned |
 
 A document's signature is the write token of a `PUT /allowlist` whose body is
-exactly its canonical bytes, so `c8s allowlist upload` signs what it writes
-while a per-workload write signs nothing.
+exactly its canonical bytes, so `c8s allowlist upload` and `c8s allowlist
+apply` sign what they write, while a per-workload write (`add`, `edit`,
+`delete`) signs nothing. `apply` writes the whole resulting document, the live
+entries with the file's entries put in, so the operator key signs every entry
+in it, not only the ones in the file: before applying, read the diff `apply`
+prints and check the live document with `c8s allowlist list` or `c8s allowlist
+diff`.
 
 ## Measured policy history
 
