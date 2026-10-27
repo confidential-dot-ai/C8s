@@ -22,6 +22,10 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
+// record is the durable authority for one Pod UID's Cloud side effects. Keep
+// versioned launch fields stable across upgrades: retrying must preserve the
+// original signature, request and account binding. It deliberately has no Pod
+// owner reference, so forced Pod deletion cannot garbage-collect cleanup intent.
 type record struct {
 	Version         int               `json:"version"`
 	ProviderID      string            `json:"providerID"`
