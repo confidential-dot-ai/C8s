@@ -99,11 +99,11 @@ cds_pod_url() { cds_node_url; }
 # no address lets the CDS see the pod's own as the source.
 cds_service_url() { return "$UNSUPPORTED"; }
 # The guest's address from the allowlist URL, with the CDS Service's node port.
-# Not on the SNP lane: its guest hangs off a bridge interface, and a port
-# Kubernetes routes on the guest never answers the harness host, so the
-# routes behind the node port are out of its reach; answered before a dial
-# that would cost its 30 s timeout. Masquerade does not change it (run
-# 40565629411: the guest boots and :8443 answers, the router's :443 does not).
+# Not on the SNP lane: its guest hangs off a bridge interface and its node
+# port never answers the harness host (run 40547124565: every write to it
+# timed out on SNP while the TDX lane of the same run passed them), so the
+# routes behind it are out of reach there; answered before a dial that
+# would cost its 30 s timeout.
 cds_node_url() {
     local host port
     [ "$PLATFORM" != snp-metal ] || return "$UNSUPPORTED"
