@@ -485,10 +485,8 @@ Two things this rests on that attestation does not enforce:
   sidecars receive the read-only inventory socket directory through NRI below the Pod
   spec. The policies exempt the release namespace, `kube-system`,
   `local-path-storage`, and explicitly configured
-  `hostNamespacePolicy.exemptNamespaces`. In `local-path-storage` RBAC grants
-  pod verbs to the local-path provisioner's service account alone, whose
-  hostPath helper pods are the reason for the exemption — any RoleBinding
-  widening pod creation there widens the exemption with it.
+  `hostNamespacePolicy.exemptNamespaces`. The `local-path-storage` exemption
+  applies to Helm installs on external clusters.
 - privileged node DaemonSets — CNI, CSI, the NVIDIA GPU operator — *can* bind
   the port. They are already root inside the node CVM and can read another
   pod's memory directly, so they are effectively part of the node's TCB;

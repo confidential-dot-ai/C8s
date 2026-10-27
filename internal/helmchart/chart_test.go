@@ -7184,6 +7184,9 @@ func TestChartRendersPodValidatorFailClosed(t *testing.T) {
 	// The operator is told the injector's name and derives this one, so the
 	// two must stay named beside each other.
 	args := renderedOperatorArgs(t, out)
+	if !slices.Contains(args, "--exclude-namespaces=local-path-storage") {
+		t.Error("external storage namespace must also be excluded from reinjection")
+	}
 	if !slices.Contains(args, "--webhook-config-name=c8s-pod-injector") {
 		t.Errorf("operator args missing --webhook-config-name=c8s-pod-injector\n%v", args)
 	}

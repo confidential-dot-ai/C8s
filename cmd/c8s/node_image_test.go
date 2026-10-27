@@ -24,6 +24,7 @@ import (
 	k8syaml "k8s.io/apimachinery/pkg/util/yaml"
 	"sigs.k8s.io/yaml"
 
+	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/nodeservices"
@@ -80,6 +81,16 @@ func TestNodeImageRender(t *testing.T) {
 			} {
 				if docs[key] == nil {
 					t.Errorf("missing %s", key)
+				}
+			}
+			for _, key := range []string{
+				"Deployment/c8s-operator", "MutatingWebhookConfiguration/c8s-pod-injector",
+				"ValidatingWebhookConfiguration/c8s-pod-validator",
+				"ValidatingAdmissionPolicy/c8s-deny-host-namespaces",
+				"ValidatingAdmissionPolicy/c8s-deny-host-namespaces-ephemeral",
+			} {
+				if bytes.Contains(docs[key], []byte("local-path-storage")) {
+					t.Errorf("%s retains the removed addon exemption", key)
 				}
 			}
 			if !bytes.Contains(docs["Deployment/c8s-router"], []byte("--publish-routes")) {
@@ -208,15 +219,13 @@ func TestNodeImageRender(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if platform == "tdx" {
-				testNodeImageBootstrap(t, seed)
-			}
+			testNodeImageBootstrap(t, seed, platform)
 			allowlist, err := pkgallowlist.ParseJSON(seed)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(allowlist.Workloads) != 7 {
-				t.Errorf("seed has %d workloads, want four core images, kube-state-metrics, the local-path helper and the router pod", len(allowlist.Workloads))
+			if len(allowlist.Workloads) != 6 {
+				t.Errorf("seed has %d workloads, want four core images, kube-state-metrics and the router pod", len(allowlist.Workloads))
 			}
 			routerEntry := false
 			for name := range allowlist.Workloads {
@@ -225,32 +234,7 @@ func TestNodeImageRender(t *testing.T) {
 			if !routerEntry {
 				t.Error("router pod entry missing from the baked CDS seed")
 			}
-			var helperDigest string
-			for _, workload := range allowlist.Workloads {
-				for _, c := range workload.Containers {
-					if strings.HasPrefix(c.Image, "busybox@") {
-						helperDigest = c.Digest.String()
-					}
-				}
-			}
-			if helperDigest == "" {
-				t.Fatal("local-path helper missing from the baked CDS seed")
-			}
-			index := allowlist.BuildIndex()
-			for _, script := range []string{"/script/setup", "/script/teardown"} {
-				if !index.AdmitsContainer(pkgallowlist.RunningContainer{
-					Digest: helperDigest,
-					Argv:   []string{"/bin/sh", script, "-p", "/opt/local-path-provisioner/pvc-123"},
-				}) {
-					t.Errorf("seed denies local-path helper %s", script)
-				}
-			}
-			if index.AdmitsContainer(pkgallowlist.RunningContainer{
-				Digest: helperDigest,
-				Argv:   []string{"/bin/sh", "-c", "echo arbitrary command"},
-			}) {
-				t.Error("seed admits arbitrary busybox commands")
-			}
+			assertLocalPathDenied(t, allowlist)
 		})
 	}
 }
@@ -668,7 +652,7 @@ func TestNodeImageCollectCanonicalizesPreloadReferences(t *testing.T) {
 
 // Exercise the actual build-to-boot contract, including all system-floor and
 // chart entries. Unit fixtures alone cannot catch collisions between the two.
-func testNodeImageBootstrap(t *testing.T, seed []byte) {
+func testNodeImageBootstrap(t *testing.T, seed []byte, platform string) {
 	t.Helper()
 	floor, err := os.ReadFile(filepath.Join("..", "..", "node-guest-image", "c8s", "image-policy.yaml.in"))
 	if err != nil {
@@ -676,7 +660,7 @@ func testNodeImageBootstrap(t *testing.T, seed []byte) {
 	}
 	// The placeholders mkosi.sync substitutes at image build.
 	for placeholder, value := range map[string]string{
-		"@PLATFORM@":        "tdx",
+		"@PLATFORM@":        map[string]string{"tdx": "tdx", "sev-snp": "snp"}[platform],
 		"@MESH_REPO@":       "ghcr.io/confidential-dot-ai/armtls-mesh",
 		"@MESH_DIGEST@":     "sha256:" + strings.Repeat("1b", 32),
 		"@OPERATOR_REPO@":   "ghcr.io/confidential-dot-ai/c8s-operator",
@@ -689,6 +673,12 @@ func testNodeImageBootstrap(t *testing.T, seed []byte) {
 	pins, err := refvalues.Load(filepath.Join("..", "..", "internal", "testdata", "node-identities.json"))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if platform == "sev-snp" {
+		pins.Family = teetypes.FamilySNP
+		for i := range pins.Images {
+			pins.Images[i].Registers = nil
+		}
 	}
 	peers, err := refvalues.Format(pins)
 	if err != nil {
@@ -722,7 +712,7 @@ func testNodeImageBootstrap(t *testing.T, seed []byte) {
 			}
 			doc := &launchconfig.Document{
 				Role:   role,
-				Image:  launchconfig.Image{Platform: "tdx"},
+				Image:  launchconfig.Image{Platform: platform},
 				Server: launchconfig.ServerConfig{Address: "192.0.2.10", OperatorPublicKey: string(pins.Images[0].Anchor)},
 				TLSSAN: "c8s.local",
 			}
@@ -744,6 +734,7 @@ func testNodeImageBootstrap(t *testing.T, seed []byte) {
 			if err := policy.Allowlist.Base.Normalize(); err != nil {
 				t.Fatal(err)
 			}
+			assertLocalPathDenied(t, &policy.Allowlist.Base)
 			for name, workload := range components.Workloads {
 				got := policy.Allowlist.Base.Workloads[name]
 				// YAML omits empty initContainers; treat nil and [] identically.
@@ -962,5 +953,25 @@ func TestNodeImageCollectMatchedEnv(t *testing.T) {
 				t.Fatalf("collectNodeImageArtifacts() error = %v, want ok %v", err, tc.ok)
 			}
 		})
+	}
+}
+
+func assertLocalPathDenied(t *testing.T, policy *pkgallowlist.Allowlist) {
+	t.Helper()
+	index := policy.BuildIndex()
+	for _, tc := range []struct {
+		digest string
+		argv   []string
+	}{
+		{"sha256:fd8d9aa63ba2f0982b5304e1ee8d3b90a210bc1ffb5314d980eb6962f1a9715d", []string{"/bin/sh", "/script/setup", "-p", "/arbitrary-host-root"}},
+		{"sha256:fd8d9aa63ba2f0982b5304e1ee8d3b90a210bc1ffb5314d980eb6962f1a9715d", []string{"/bin/sh", "/script/teardown", "-p", "/arbitrary-host-root"}},
+		{"sha256:1eba82e9c386038b4af6d69cca7519fac738c28c42735ed48ce70c882ad0d80f", []string{"/bin/sh", "-c", "id"}},
+	} {
+		if index.AdmitsContainer(pkgallowlist.RunningContainer{Digest: tc.digest, Argv: tc.argv, Mounts: []pkgallowlist.ObservedMount{
+			{Destination: "/script", Source: "/var/lib/kubelet/pods/controlled/volumes/kubernetes.io~configmap/script", Class: pkgallowlist.MountData, Storage: pkgallowlist.MountUnknown, ReadOnly: true},
+			{Destination: "/arbitrary-host-root", Source: "/", Class: pkgallowlist.MountHost, Storage: pkgallowlist.MountUnknown},
+		}}) {
+			t.Errorf("policy admits removed local-path container %s: %v", tc.digest, tc.argv)
+		}
 	}
 }

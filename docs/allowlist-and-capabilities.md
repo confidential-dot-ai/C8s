@@ -472,21 +472,14 @@ backs every component volume with tmpfs: `medium: Memory` `emptyDir`s, and
 its ConfigMaps as projected volumes. Its component entries then hold on any
 node.
 
-The baked local-path provisioner creates `hostPath` persistent volumes under
-`/var/lib/local-path-provisioner`. Their bytes sit on the same encrypted
-overlay, but the container's mount source is the volume's host path, not the
-pod's volume directory, so it observes as `host` with a per-claim source no
-rule can name. A CSI volume (a GCE PD, an Azure Disk, an EBS volume) is its
-own block device, so it observes as `unknown`. A component entry therefore
+A CSI volume (a GCE PD, an Azure Disk, an EBS volume) is its own block device,
+so it observes as `unknown`. A component entry therefore
 cannot admit `cds.persistence` on any supported node, and the chart refuses
 `cds.persistence.enabled=true` unless the image policy runs in `audit` mode.
 The chart's defaults use no persistent volume.
 
-On the measured image this holds even though the bytes are encrypted: CDS's
-entry pins `/mnt/c8s-data/cds` with an exact `data` rule, and a local-path
-volume observes as `host`, so the rule refuses it by kind before storage is
-considered. CDS's store is therefore a memory `emptyDir`, and every new CDS
-pod starts the allowlist from the seed with its version counter reset. Each
+CDS's entry pins `/mnt/c8s-data/cds` with an exact `data` rule. Its store is
+a memory `emptyDir`, and every new CDS pod starts the allowlist from the seed with its version counter reset. Each
 node's plugin keeps the highest version it applied (see
 [Refresh and anti-rollback](#refresh-and-anti-rollback)), so after a CDS
 restart a plugin that had applied version N ignores the restarted CDS's
@@ -710,12 +703,8 @@ it loads code that no argument names
 ([#871](https://github.com/confidential-dot-ai/C8s/issues/871)). A node image
 ships `nginx.conf` and the TLS snippets read-only in
 `/usr/lib/c8s/router-nginx`, and its seed pins nginx to that host mount, so a
-ConfigMap mounted in their place is refused. The
-local-path helper runs `/bin/sh /script/setup` from a `/script` ConfigMap with
-args and mounts `any`, so any pod running the helper digest can supply its own
-script ([#872](https://github.com/confidential-dot-ai/C8s/issues/872)). Both
-content residuals need the content pinned, or an image that carries the file. The node image's generated RKE2 system
-entries still admit their digests under `command`, `args` and `mounts` of
+ConfigMap mounted in their place is refused. The node image's generated RKE2
+system entries still admit their digests under `command`, `args` and `mounts` of
 `any`, so the control plane can restage one of those images — several ship a
 shell — as a privileged tenant pod and the base admits it. Closing that means
 pinning argv in the generated entries, which is systemfloor's to do; the

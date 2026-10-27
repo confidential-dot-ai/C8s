@@ -651,35 +651,6 @@
         "port": {},
         "resources": {}
       }
-    },
-    "rke2": {
-      "type": [
-        "object",
-        "null"
-      ],
-      "additionalProperties": false,
-      "properties": {
-        "localPathHelper": {
-          "type": [
-            "object",
-            "null"
-          ],
-          "additionalProperties": false,
-          "properties": {
-            "image": {
-              "type": [
-                "object",
-                "null"
-              ],
-              "additionalProperties": false,
-              "properties": {
-                "digest": {},
-                "repository": {}
-              }
-            }
-          }
-        }
-      }
     }
   },
   "additionalProperties": false

@@ -157,7 +157,7 @@ statusMirror:
 hostNamespacePolicy:
   enabled: true
   ## Namespaces exempt in addition to the release namespace, kube-system, and
-  ## the node image's trusted local-path-storage platform namespace.
+  ## trusted external storage namespaces on Helm installs.
   exemptNamespaces: []
 
 ## Mutating admission webhook that injects get-cert containers into pods
@@ -462,17 +462,6 @@ armtlsMesh:
     tag: ""
     digest: ""
     pullPolicy: IfNotPresent
-
-rke2:
-  # local-path-provisioner helper pods: the node image's baked manifest runs
-  # busybox as `/bin/sh /script/{setup,teardown}` with per-PVC flags. The seed
-  # pins exactly those two command prefixes — a busybox floor entry would
-  # admit any command line on any pod. The digest must match the node image's
-  # baked local-path-storage.yaml (a repo test pins the pair in lockstep).
-  localPathHelper:
-    image:
-      repository: busybox
-      digest: "sha256:fd8d9aa63ba2f0982b5304e1ee8d3b90a210bc1ffb5314d980eb6962f1a9715d"
 
 ## kube-state-metrics: cluster object metadata as Prometheus metrics, a
 ## platform add-on of the measured node image (node.baked only). It runs in

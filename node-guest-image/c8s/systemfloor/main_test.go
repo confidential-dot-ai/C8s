@@ -171,8 +171,7 @@ func TestRender_ParsesAsBaseWorkloads(t *testing.T) {
 }
 
 func TestRender_ExcludesRefs(t *testing.T) {
-	// The local-path helper's busybox is argv-pinned by the served allowlist;
-	// floor-listing it would admit any command line on any pod.
+	// Argv-pinned images must stay out of the system floor.
 	out, err := render([]entry{
 		{digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", ref: "busybox:1.38.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
 		{digest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", ref: "rancher/local-path-provisioner:v0.0.36@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},

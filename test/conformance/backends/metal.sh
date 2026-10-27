@@ -425,11 +425,7 @@ plugin_ready() {
 
 node_containers() { return $UNSUPPORTED; }
 
-# The node image's confos-operator-scope policy denies the operator every
-# write in kube-system, local-path-storage and c8s-system, the namespaces
-# the webhook exempts that admit the harness's pods. So the requester the
-# steps drive runs as a mesh member, and a scenario that needs a pod outside
-# the mesh skips.
+# Operator scope forbids exempt namespaces.
 exempt_namespace() { return "$UNSUPPORTED"; }
 
 # No shell on the node, so its plugin cannot be stopped or started; and

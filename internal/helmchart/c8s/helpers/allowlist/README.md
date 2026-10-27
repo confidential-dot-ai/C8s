@@ -32,8 +32,7 @@ containerd-prep images are seeded through `c8s.argvPinnedEntries`.
 With `node.baked=true`, the same derivation covers the operator/get-cert,
 CDS, mesh and nginx images rendered into the measured guest. The host stages
 this seed merged with signed workload entries for CDS; the image also admits
-the core images in its NRI bootstrap floor. The local-path helper remains
-argv-pinned in the seed for baked nodes.
+the core images in its NRI bootstrap floor.
 
 `c8s.openArgsEntries` extracts workload digests whose args, environment and
 mount policies are unconstrained and whose command is `any` or `exact`, as
@@ -200,7 +199,7 @@ Script argv comes from the same includes/files as the DaemonSets. Trailing
 newlines collapse to one, matching YAML block-scalar clipping. Image
 references are digest-pinned.
 
-Install, uninstall, containerd-prep, and local-path helper entries explicitly
+Install, uninstall, and containerd-prep entries explicitly
 set `mounts: {policy: any}` because these platform scripts require host mounts,
 which exact workload mount rules do not support. Their command/args pins still
 apply. The pause and `plugin-ready` containers have no workload mounts and

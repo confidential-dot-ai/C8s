@@ -858,18 +858,6 @@ null
 {{- $_ := set $entries $name (dict "label" $ref "initContainers" list "containers" (list $container)) -}}
 {{- end -}}
 {{- end -}}
-{{- if eq .Values.attestationApi.cvmMode "bare-metal" -}}
-{{- $img := .Values.rke2.localPathHelper.image -}}
-{{- if $img.digest -}}
-{{- $ref := printf "%s@%s" $img.repository $img.digest -}}
-{{- $containers := list -}}
-{{- range $path := list "/script/setup" "/script/teardown" -}}
-{{- $containers = append $containers (dict "digest" $img.digest "image" $ref "mounts" (dict "policy" "any") "command" (dict "policy" "exact" "argv" (list "/bin/sh" $path)) "args" (dict "policy" "any")) -}}
-{{- end -}}
-{{- $name := include "c8s.shapeWorkloadName" (dict "digest" $img.digest "image" $ref "containers" $containers) -}}
-{{- $_ := set $entries $name (dict "label" $ref "initContainers" list "containers" $containers) -}}
-{{- end -}}
-{{- end -}}
 {{ $entries | toJson }}
 {{- end -}}
 
@@ -881,9 +869,6 @@ null
 {{- if and (eq .Values.nriImagePolicy.distro "rke2") (not .Values.nriImagePolicy.baked) .Values.nriImagePolicy.containerdPrep.image.digest -}}
 {{- $digests = append $digests .Values.nriImagePolicy.containerdPrep.image.digest -}}
 {{- end -}}
-{{- end -}}
-{{- if and (eq .Values.attestationApi.cvmMode "bare-metal") .Values.rke2.localPathHelper.image.digest -}}
-{{- $digests = append $digests .Values.rke2.localPathHelper.image.digest -}}
 {{- end -}}
 {{ $digests | toJson }}
 {{- end -}}
