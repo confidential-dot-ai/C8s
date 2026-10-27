@@ -5,7 +5,7 @@ umask 077
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
-for tool in go docker kind; do
+for tool in go docker kind python3; do
     command -v "$tool" >/dev/null || { echo "required tool missing: $tool" >&2; exit 1; }
 done
 if command -v timeout >/dev/null; then
@@ -53,7 +53,9 @@ cleanup() {
                 -n tenant get pods -o wide > "$artifacts/pods.txt" 2>&1 || true
             "$deadline" 15 docker exec "$node" kubectl --kubeconfig=/etc/kubernetes/admin.conf \
                 -n tenant get events --sort-by=.lastTimestamp 2>&1 | tail -100 > "$artifacts/events.txt" || true
-            "$deadline" 15 docker cp "$node:/podprovider-test/artifacts/result.json" "$artifacts/result.json" 2>/dev/null || true
+            for receipt in result.json lifecycle-result.json; do
+                "$deadline" 15 docker cp "$node:/podprovider-test/artifacts/$receipt" "$artifacts/$receipt" 2>/dev/null || true
+            done
         fi
         if ! "$deadline" 60 kind delete cluster --name "$cluster"; then
             echo "failed to clean up owned kind cluster $cluster" >&2
@@ -90,14 +92,39 @@ fi
 "$deadline" 15 docker exec "$node" mkdir -p /podprovider-test/artifacts
 "$deadline" 15 docker cp "$scratch/provider.test" "$node:/podprovider-test/provider.test"
 printf 'kind image: %s\ncluster: %s\nCloud and guest attestation: explicit test fakes\n' "$node_image" "$cluster" > "$artifacts/scope.txt"
-"$deadline" 300 docker exec \
+# The same selected test now also spends a real 30-second verification window
+# and checks warm claims, manager restart and delayed orphan termination.
+"$deadline" 600 docker exec \
     -e C8S_PODPROVIDER_KUBECONFIG=/etc/kubernetes/admin.conf \
     -e C8S_PODPROVIDER_ARTIFACTS=/podprovider-test/artifacts \
-    "$node" timeout 285 /podprovider-test/provider.test \
-    -test.v -test.count=1 -test.timeout=270s -test.run '^Test(PodProviderControlPlane|KindInfrastructureSelectorPreservesExistingScheduling)$' \
+    "$node" timeout 585 /podprovider-test/provider.test \
+    -test.v -test.count=1 -test.timeout=570s -test.run '^Test(PodProviderControlPlane|KindInfrastructureSelectorPreservesExistingScheduling)$' \
     2>&1 | tee "$artifacts/run.log"
-"$deadline" 15 docker cp "$node:/podprovider-test/artifacts/result.json" "$artifacts/result.json"
-if ! grep -q '"result": "PASS"' "$artifacts/result.json"; then
-    echo 'the required scheduler integration test did not produce a passing receipt' >&2
-    exit 1
-fi
+for receipt in result.json lifecycle-result.json; do
+    "$deadline" 15 docker cp "$node:/podprovider-test/artifacts/$receipt" "$artifacts/$receipt"
+done
+python3 - "$artifacts/result.json" "$artifacts/lifecycle-result.json" <<'PY'
+import json
+import sys
+
+for path in sys.argv[1:]:
+    with open(path, encoding="utf-8") as stream:
+        receipt = json.load(stream)
+    if receipt.get("result") != "PASS" or receipt.get("ownedFakeVMsRemaining") != 0:
+        raise SystemExit("scheduler integration did not produce a passing, cleaned-up receipt")
+    if receipt.get("scheduler") != "real kind control plane" or not receipt.get("cloud", "").startswith("explicit fake"):
+        raise SystemExit("scheduler receipt has an unexpected execution scope")
+
+with open(sys.argv[2], encoding="utf-8") as stream:
+    lifecycle = json.load(stream)
+required = (
+    "verificationDeadlineSurvivesManagerRestart", "lateStatusCannotReviveFailedPod",
+    "terminalCleanupWaitsForTermination", "genericIdleBootHasNoPodAuthority",
+    "twoScheduledPodsClaimDistinctSlots", "assignmentIntentPrecedesPOST",
+    "lostAssignmentReplySurvivesManagerRestart", "staleClaimWriteRejectedByAPI",
+    "forcedPodDeletionRetainsAllocationBudget", "newPodUIDGetsNewAllocationGeneration",
+    "poolDisabledAndDrained",
+)
+if any(lifecycle.get(name) is not True for name in required):
+    raise SystemExit("required scheduler lifecycle assertion is absent or did not pass")
+PY

@@ -57,22 +57,7 @@ func TestPodProviderControlPlane(t *testing.T) {
 	var guestMode atomic.Int32
 	guest := controlPlaneGuest(&guestMode)
 	start := func() {
-		h.startManager(t, func(mgr ctrl.Manager, name string) error {
-			r := &Reconciler{client: h.client, cfg: cfg, cloud: cloud, guest: guest, now: time.Now}
-			if err := ctrl.NewControllerManagedBy(mgr).Named(name).For(&corev1.Pod{}).
-				WithEventFilter(predicate.NewPredicateFuncs(func(obj client.Object) bool {
-					pod, ok := obj.(*corev1.Pod)
-					return ok && pod.Spec.NodeName == cfg.NodeName
-				})).Complete(r); err != nil {
-				return err
-			}
-			node := &virtualNode{cfg: cfg, cloud: cloud, kube: h.kube, node: nodeObject(cfg)}
-			r.ownsNode = node.checkOwnership
-			if err := mgr.Add(node); err != nil {
-				return err
-			}
-			return mgr.Add(&orphanWorker{reconciler: r})
-		})
+		h.startProvider(t, cloud, guest, nil)
 	}
 	start()
 	h.installWebhooks(t)
@@ -198,6 +183,7 @@ func TestPodProviderControlPlane(t *testing.T) {
 		t.Fatal("test left an owned fake Cloud VM behind")
 	}
 	h.manager.stop(t)
+	h.runLifecycleScenarios(t)
 	if t.Failed() {
 		return
 	}
@@ -220,7 +206,29 @@ type providerControlPlane struct {
 
 func newProviderControlPlane(t *testing.T, cfg *Config) *providerControlPlane {
 	t.Helper()
-	return newProviderControlPlaneWithTimeout(t, cfg, 240*time.Second)
+	return newProviderControlPlaneWithTimeout(t, cfg, 480*time.Second)
+}
+
+// startProvider is shared by the static and generic lifecycle scenarios. Each
+// invocation starts a new elected manager over the same real API objects.
+func (h *providerControlPlane) startProvider(t *testing.T, cloud cloudAPI, guest guestReader, assignment assignmentVerifier) {
+	t.Helper()
+	h.startManager(t, func(mgr ctrl.Manager, name string) error {
+		r := &Reconciler{client: h.client, cfg: h.cfg, cloud: cloud, guest: guest, assignment: assignment, now: time.Now}
+		if err := ctrl.NewControllerManagedBy(mgr).Named(name).For(&corev1.Pod{}).
+			WithEventFilter(predicate.NewPredicateFuncs(func(obj client.Object) bool {
+				pod, ok := obj.(*corev1.Pod)
+				return ok && pod.Spec.NodeName == h.cfg.NodeName
+			})).Complete(r); err != nil {
+			return err
+		}
+		node := &virtualNode{cfg: h.cfg, cloud: cloud, kube: h.kube, node: nodeObject(h.cfg)}
+		r.ownsNode = node.checkOwnership
+		if err := mgr.Add(node); err != nil {
+			return err
+		}
+		return mgr.Add(&orphanWorker{reconciler: r})
+	})
 }
 
 func newProviderControlPlaneWithTimeout(t *testing.T, cfg *Config, timeout time.Duration) *providerControlPlane {
@@ -565,6 +573,7 @@ func (f *controlPlaneCloud) Create(ctx context.Context, key string, req createRe
 	}
 	f.creates++
 	in := instanceFor(req)
+	in.Network.Ingress = slices.Clone(req.Network.Ingress)
 	in.ID = fmt.Sprintf("i-controlplane-%d", f.creates)
 	in.Compute.VCPUs, in.Compute.MemoryGiB = f.cfg.VCPUs, f.cfg.MemoryMiB/1024
 	f.instances[in.ID], f.keys[key], f.requests[key] = in, in.ID, proposed
@@ -576,6 +585,17 @@ func (f *controlPlaneCloud) Create(ctx context.Context, key string, req createRe
 }
 
 func (f *controlPlaneCloud) requireDurableIntent(ctx context.Context, key string, proposed []byte) error {
+	var request createRequest
+	if err := json.Unmarshal(proposed, &request); err != nil {
+		return err
+	}
+	doc, err := launchconfig.Parse(request.Trust.InitData.Document)
+	if err != nil {
+		return err
+	}
+	if doc.Pod == nil {
+		return f.requireDurablePoolIntent(ctx, key, proposed)
+	}
 	secret := &corev1.Secret{}
 	if err := f.client.Get(ctx, client.ObjectKey{Namespace: f.cfg.Namespace, Name: key}, secret); err != nil {
 		return errors.New("test fake Cloud: launch has no durable record")
@@ -588,7 +608,7 @@ func (f *controlPlaneCloud) requireDurableIntent(ctx context.Context, key string
 	if err != nil || !bytes.Equal(frozen, proposed) {
 		return errors.New("test fake Cloud: launch differs from its frozen request")
 	}
-	doc, err := rec.document()
+	doc, err = rec.document()
 	if err != nil {
 		return err
 	}
@@ -654,5 +674,6 @@ func cloneControlPlaneInstance(in *instance) *instance {
 	}
 	copy := *in
 	copy.Labels, copy.Endpoints = maps.Clone(in.Labels), slices.Clone(in.Endpoints)
+	copy.Network.Ingress = slices.Clone(in.Network.Ingress)
 	return &copy
 }
