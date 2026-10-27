@@ -117,7 +117,9 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 	if d.Role == launchconfig.CDS {
 		// A cds node admits only the measured floor: no served allowlist, so
 		// no allowlisted image can land beside a replica and share its quote.
-		delete(a, "pull")
+		// It still injects credential clients, so it keeps the CDS pins
+		// they are handed: the plugin refuses to start without them.
+		a["pull"] = map[string]any{"cds_measurements_config": launchDir + "cds.json"}
 	} else {
 		pull["url"] = d.CDSURL()
 		pull["cds_measurements_config"] = launchDir + "cds.json"

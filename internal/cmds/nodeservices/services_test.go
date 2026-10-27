@@ -540,7 +540,7 @@ const meshFloor = floor + meshPolicy
 
 // TestPrepareHACluster: with cdsHA, cds.json pins the server and the cds
 // launch key; the server publishes cds-mode=ha; a cds node gets cds-ha.json
-// and an NRI policy without the served-allowlist pull.
+// and an NRI policy that pins CDS but pulls no served allowlist.
 func TestPrepareHACluster(t *testing.T) {
 	pins := testPins(t)
 	if len(pins.Images) < 2 {
@@ -634,8 +634,21 @@ func TestPrepareHACluster(t *testing.T) {
 			t.Fatalf("cds-ha.json: %s %v", raw, err)
 		}
 		policy, err := os.ReadFile(filepath.Join(root, "/etc/nri/conf.d/image-policy.yaml"))
-		if err != nil || bytes.Contains(policy, []byte("pull:")) {
-			t.Fatalf("cds node NRI policy must not pull the served allowlist:\n%s", policy)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// No served allowlist and no decree fetch, only the launch CDS pins
+		// its injected credential clients are handed.
+		var staged struct {
+			Allowlist struct {
+				Pull map[string]any `yaml:"pull"`
+			} `yaml:"allowlist"`
+		}
+		if err := yaml.Unmarshal(policy, &staged); err != nil {
+			t.Fatal(err)
+		}
+		if want := map[string]any{"cds_measurements_config": launchDir + "cds.json"}; !reflect.DeepEqual(staged.Allowlist.Pull, want) {
+			t.Fatalf("cds node NRI pull = %v, want only %v:\n%s", staged.Allowlist.Pull, want, policy)
 		}
 		// The cds floor replaces the chart seed: the replica entry is in, the
 		// operator image (same c8s binary, any argv) is out.
