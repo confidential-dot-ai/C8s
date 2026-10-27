@@ -45,10 +45,12 @@ func seedVictim(t *testing.T, l *replica) string {
 
 // rotUnder changes the victim's digest in r's database file through a
 // connection of its own: the store's hooks never see it, as with memory or
-// disk corruption.
+// disk corruption. The replica keeps running (backups, checkpoints), so the
+// connection waits for the store's transaction to end rather than failing
+// with SQLITE_BUSY.
 func rotUnder(t *testing.T, r *replica, good string) {
 	t.Helper()
-	raw, err := sql.Open("sqlite", r.alPath)
+	raw, err := sql.Open("sqlite", "file:"+r.alPath+"?_pragma=busy_timeout(10000)")
 	if err != nil {
 		t.Fatal(err)
 	}
