@@ -51,55 +51,264 @@ allowlist:
       # clustermesh-apiserver, hubble and cloud-specific operator images (off
       # in rke2-cilium-config.yaml and the chart's defaults). Turning one on
       # needs an entry here.
+      #
+      # The static pods' argv and mounts are what RKE2 derives from
+      # etc/rancher/rke2/config.yaml, as captured from booted nodes
+      # (internal/cmds/nodeservices/testdata/rke2-system-pods). Boot
+      # preparation fills ${NODE_NAME} and ${NODE_ADVERTISE_ADDRESS} with this
+      # node's launch values. What each entry leaves open, and why:
+      # docs/allowlist-and-capabilities.md, "Host privilege".
 
       # RKE2 static pod (servers).
       kube-apiserver:
         containers:
           - digest: "sha256:c8e5263407ac439de1dcdde98c7623efb9e17050715a80259d8bd5e81b5a9289"
             image: "docker.io/rancher/hardened-kubernetes:v1.36.4-rke2r1-build20260821"
-            command: {policy: any}
-            args: {policy: any}
-            mounts: {policy: any}
+            command: {policy: exact, argv: ["kube-apiserver"]}
+            args:
+              policy: exact
+              argv:
+                - "--admission-control-config-file=/etc/rancher/rke2/psa-config.yaml"
+                - "--audit-policy-file=/etc/rancher/rke2/audit-policy.yaml"
+                - "--audit-log-maxage=30"
+                - "--audit-log-maxbackup=10"
+                - "--audit-log-maxsize=100"
+                - "--service-account-extend-token-expiration=false"
+                - "--advertise-address=${NODE_ADVERTISE_ADDRESS}"
+                - "--allow-privileged=true"
+                - "--anonymous-auth=false"
+                - "--api-audiences=https://kubernetes.default.svc.cluster.local,rke2"
+                - "--audit-log-maxage=30"
+                - "--audit-log-maxbackup=10"
+                - "--audit-log-maxsize=100"
+                - "--audit-log-path=/var/log/kube-audit/audit.log"
+                - "--audit-policy-file=/etc/rancher/rke2/audit-policy.yaml"
+                - "--authorization-mode=Node,RBAC"
+                - "--bind-address=0.0.0.0"
+                - "--cert-dir=/var/lib/rancher/rke2/server/tls/temporary-certs"
+                - "--client-ca-file=/var/lib/rancher/rke2/server/tls/client-ca.crt"
+                - "--egress-selector-config-file=/var/lib/rancher/rke2/server/etc/egress-selector-config.yaml"
+                - "--enable-admission-plugins=NodeRestriction"
+                - "--enable-aggregator-routing=true"
+                - "--enable-bootstrap-token-auth=true"
+                - "--encryption-provider-config=/var/lib/rancher/rke2/server/cred/encryption-config.json"
+                - "--encryption-provider-config-automatic-reload=true"
+                - "--etcd-cafile=/var/lib/rancher/rke2/server/tls/etcd/server-ca.crt"
+                - "--etcd-certfile=/var/lib/rancher/rke2/server/tls/etcd/client.crt"
+                - "--etcd-keyfile=/var/lib/rancher/rke2/server/tls/etcd/client.key"
+                - "--etcd-servers=https://127.0.0.1:2379"
+                - "--kubelet-certificate-authority=/var/lib/rancher/rke2/server/tls/server-ca.crt"
+                - "--kubelet-client-certificate=/var/lib/rancher/rke2/server/tls/client-kube-apiserver.crt"
+                - "--kubelet-client-key=/var/lib/rancher/rke2/server/tls/client-kube-apiserver.key"
+                - "--kubelet-preferred-address-types=InternalIP,ExternalIP,Hostname"
+                - "--profiling=false"
+                - "--proxy-client-cert-file=/var/lib/rancher/rke2/server/tls/client-auth-proxy.crt"
+                - "--proxy-client-key-file=/var/lib/rancher/rke2/server/tls/client-auth-proxy.key"
+                - "--requestheader-allowed-names=system:auth-proxy"
+                - "--requestheader-client-ca-file=/var/lib/rancher/rke2/server/tls/request-header-ca.crt"
+                - "--requestheader-extra-headers-prefix=X-Remote-Extra-"
+                - "--requestheader-group-headers=X-Remote-Group"
+                - "--requestheader-username-headers=X-Remote-User"
+                - "--secure-port=6443"
+                - "--service-account-issuer=https://kubernetes.default.svc.cluster.local"
+                - "--service-account-key-file=/var/lib/rancher/rke2/server/tls/service.key"
+                - "--service-account-signing-key-file=/var/lib/rancher/rke2/server/tls/service.current.key"
+                - "--service-cluster-ip-range=10.53.0.0/16"
+                - "--service-node-port-range=30000-32767"
+                - "--storage-backend=etcd3"
+                - "--tls-cert-file=/var/lib/rancher/rke2/server/tls/serving-kube-apiserver.crt"
+                - "--tls-cipher-suites=TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305"
+                - "--tls-private-key-file=/var/lib/rancher/rke2/server/tls/serving-kube-apiserver.key"
+            mounts:
+              policy: exact
+              rules:
+                - {destination: "/etc/ca-certificates", kind: host, source: "/etc/ca-certificates"}
+                - {destination: "/etc/rancher/rke2/audit-policy.yaml", kind: host, source: "/etc/rancher/rke2/audit-policy.yaml", readOnly: true}
+                - {destination: "/etc/rancher/rke2/psa-config.yaml", kind: host, source: "/etc/rancher/rke2/psa-config.yaml", readOnly: true}
+                - {destination: "/etc/ssl/certs", kind: host, source: "/etc/ssl/certs"}
+                - {destination: "/usr/local/share/ca-certificates", kind: host, source: "/usr/local/share/ca-certificates"}
+                - {destination: "/usr/share/ca-certificates", kind: host, source: "/usr/share/ca-certificates"}
+                - {destination: "/var/lib/rancher/rke2/server", kind: host, source: "/var/lib/rancher/rke2/server"}
+                - {destination: "/var/lib/rancher/rke2/server/db/etcd/name", kind: host, source: "/var/lib/rancher/rke2/server/db/etcd/name", readOnly: true}
+                - {destination: "/var/lib/rancher/rke2/server/etc/egress-selector-config.yaml", kind: host, source: "/var/lib/rancher/rke2/server/etc/egress-selector-config.yaml", readOnly: true}
+                - {destination: "/var/lib/rancher/rke2/server/tls/client-auth-proxy.crt", kind: host, source: "/var/lib/rancher/rke2/server/tls/client-auth-proxy.crt", readOnly: true}
+                - {destination: "/var/lib/rancher/rke2/server/tls/client-auth-proxy.key", kind: host, source: "/var/lib/rancher/rke2/server/tls/client-auth-proxy.key", readOnly: true}
+                - {destination: "/var/lib/rancher/rke2/server/tls/client-ca.crt", kind: host, source: "/var/lib/rancher/rke2/server/tls/client-ca.crt", readOnly: true}
+                - {destination: "/var/lib/rancher/rke2/server/tls/client-kube-apiserver.crt", kind: host, source: "/var/lib/rancher/rke2/server/tls/client-kube-apiserver.crt", readOnly: true}
+                - {destination: "/var/lib/rancher/rke2/server/tls/client-kube-apiserver.key", kind: host, source: "/var/lib/rancher/rke2/server/tls/client-kube-apiserver.key", readOnly: true}
+                - {destination: "/var/lib/rancher/rke2/server/tls/etcd/client.crt", kind: host, source: "/var/lib/rancher/rke2/server/tls/etcd/client.crt", readOnly: true}
+                - {destination: "/var/lib/rancher/rke2/server/tls/etcd/client.key", kind: host, source: "/var/lib/rancher/rke2/server/tls/etcd/client.key", readOnly: true}
+                - {destination: "/var/lib/rancher/rke2/server/tls/etcd/server-ca.crt", kind: host, source: "/var/lib/rancher/rke2/server/tls/etcd/server-ca.crt", readOnly: true}
+                - {destination: "/var/lib/rancher/rke2/server/tls/request-header-ca.crt", kind: host, source: "/var/lib/rancher/rke2/server/tls/request-header-ca.crt", readOnly: true}
+                - {destination: "/var/lib/rancher/rke2/server/tls/server-ca.crt", kind: host, source: "/var/lib/rancher/rke2/server/tls/server-ca.crt", readOnly: true}
+                - {destination: "/var/lib/rancher/rke2/server/tls/service.current.key", kind: host, source: "/var/lib/rancher/rke2/server/tls/service.current.key", readOnly: true}
+                - {destination: "/var/lib/rancher/rke2/server/tls/service.key", kind: host, source: "/var/lib/rancher/rke2/server/tls/service.key", readOnly: true}
+                - {destination: "/var/lib/rancher/rke2/server/tls/serving-kube-apiserver.crt", kind: host, source: "/var/lib/rancher/rke2/server/tls/serving-kube-apiserver.crt", readOnly: true}
+                - {destination: "/var/lib/rancher/rke2/server/tls/serving-kube-apiserver.key", kind: host, source: "/var/lib/rancher/rke2/server/tls/serving-kube-apiserver.key", readOnly: true}
+                - {destination: "/var/log/kube-audit", kind: host, source: "/var/log/kube-audit"}
       # RKE2 static pod (servers).
       kube-controller-manager:
         containers:
           - digest: "sha256:c8e5263407ac439de1dcdde98c7623efb9e17050715a80259d8bd5e81b5a9289"
             image: "docker.io/rancher/hardened-kubernetes:v1.36.4-rke2r1-build20260821"
-            command: {policy: any}
-            args: {policy: any}
-            mounts: {policy: any}
+            command: {policy: exact, argv: ["kube-controller-manager"]}
+            args:
+              policy: exact
+              argv:
+                - "--permit-port-sharing=true"
+                - "--flex-volume-plugin-dir=/var/lib/kubelet/volumeplugins"
+                - "--terminated-pod-gc-threshold=1000"
+                - "--allocate-node-cidrs=true"
+                - "--authentication-kubeconfig=/var/lib/rancher/rke2/server/cred/controller.kubeconfig"
+                - "--authorization-kubeconfig=/var/lib/rancher/rke2/server/cred/controller.kubeconfig"
+                - "--bind-address=127.0.0.1"
+                - "--cluster-cidr=10.52.0.0/16"
+                - "--cluster-signing-kube-apiserver-client-cert-file=/var/lib/rancher/rke2/server/tls/client-ca.nochain.crt"
+                - "--cluster-signing-kube-apiserver-client-key-file=/var/lib/rancher/rke2/server/tls/client-ca.key"
+                - "--cluster-signing-kubelet-client-cert-file=/var/lib/rancher/rke2/server/tls/client-ca.nochain.crt"
+                - "--cluster-signing-kubelet-client-key-file=/var/lib/rancher/rke2/server/tls/client-ca.key"
+                - "--cluster-signing-kubelet-serving-cert-file=/var/lib/rancher/rke2/server/tls/server-ca.nochain.crt"
+                - "--cluster-signing-kubelet-serving-key-file=/var/lib/rancher/rke2/server/tls/server-ca.key"
+                - "--cluster-signing-legacy-unknown-cert-file=/var/lib/rancher/rke2/server/tls/server-ca.nochain.crt"
+                - "--cluster-signing-legacy-unknown-key-file=/var/lib/rancher/rke2/server/tls/server-ca.key"
+                - "--configure-cloud-routes=false"
+                - "--controllers=*,tokencleaner,-service,-route,-cloud-node-lifecycle"
+                - "--kubeconfig=/var/lib/rancher/rke2/server/cred/controller.kubeconfig"
+                - "--profiling=false"
+                - "--root-ca-file=/var/lib/rancher/rke2/server/tls/server-ca.crt"
+                - "--secure-port=10257"
+                - "--service-account-private-key-file=/var/lib/rancher/rke2/server/tls/service.current.key"
+                - "--service-cluster-ip-range=10.53.0.0/16"
+                - "--tls-cert-file=/var/lib/rancher/rke2/server/tls/kube-controller-manager/kube-controller-manager.crt"
+                - "--tls-private-key-file=/var/lib/rancher/rke2/server/tls/kube-controller-manager/kube-controller-manager.key"
+                - "--use-service-account-credentials=true"
+            mounts:
+              policy: exact
+              rules:
+                - {destination: "/etc/ca-certificates", kind: host, source: "/etc/ca-certificates"}
+                - {destination: "/etc/ssl/certs", kind: host, source: "/etc/ssl/certs"}
+                - {destination: "/usr/local/share/ca-certificates", kind: host, source: "/usr/local/share/ca-certificates"}
+                - {destination: "/usr/share/ca-certificates", kind: host, source: "/usr/share/ca-certificates"}
+                - {destination: "/var/lib/rancher/rke2/server/cred/controller.kubeconfig", kind: host, source: "/var/lib/rancher/rke2/server/cred/controller.kubeconfig", readOnly: true}
+                - {destination: "/var/lib/rancher/rke2/server/db/etcd/name", kind: host, source: "/var/lib/rancher/rke2/server/db/etcd/name", readOnly: true}
+                - {destination: "/var/lib/rancher/rke2/server/tls/client-ca.key", kind: host, source: "/var/lib/rancher/rke2/server/tls/client-ca.key", readOnly: true}
+                - {destination: "/var/lib/rancher/rke2/server/tls/client-ca.nochain.crt", kind: host, source: "/var/lib/rancher/rke2/server/tls/client-ca.nochain.crt", readOnly: true}
+                - {destination: "/var/lib/rancher/rke2/server/tls/client-controller.crt", kind: host, source: "/var/lib/rancher/rke2/server/tls/client-controller.crt", readOnly: true}
+                - {destination: "/var/lib/rancher/rke2/server/tls/client-controller.key", kind: host, source: "/var/lib/rancher/rke2/server/tls/client-controller.key", readOnly: true}
+                - {destination: "/var/lib/rancher/rke2/server/tls/kube-controller-manager/kube-controller-manager.crt", kind: host, source: "/var/lib/rancher/rke2/server/tls/kube-controller-manager/kube-controller-manager.crt", readOnly: true}
+                - {destination: "/var/lib/rancher/rke2/server/tls/kube-controller-manager/kube-controller-manager.key", kind: host, source: "/var/lib/rancher/rke2/server/tls/kube-controller-manager/kube-controller-manager.key", readOnly: true}
+                - {destination: "/var/lib/rancher/rke2/server/tls/server-ca.crt", kind: host, source: "/var/lib/rancher/rke2/server/tls/server-ca.crt", readOnly: true}
+                - {destination: "/var/lib/rancher/rke2/server/tls/server-ca.key", kind: host, source: "/var/lib/rancher/rke2/server/tls/server-ca.key", readOnly: true}
+                - {destination: "/var/lib/rancher/rke2/server/tls/server-ca.nochain.crt", kind: host, source: "/var/lib/rancher/rke2/server/tls/server-ca.nochain.crt", readOnly: true}
+                - {destination: "/var/lib/rancher/rke2/server/tls/service.current.key", kind: host, source: "/var/lib/rancher/rke2/server/tls/service.current.key", readOnly: true}
       # RKE2 static pod (servers).
       kube-scheduler:
         containers:
           - digest: "sha256:c8e5263407ac439de1dcdde98c7623efb9e17050715a80259d8bd5e81b5a9289"
             image: "docker.io/rancher/hardened-kubernetes:v1.36.4-rke2r1-build20260821"
-            command: {policy: any}
-            args: {policy: any}
-            mounts: {policy: any}
+            command: {policy: exact, argv: ["kube-scheduler"]}
+            args:
+              policy: exact
+              argv:
+                - "--permit-port-sharing=true"
+                - "--authentication-kubeconfig=/var/lib/rancher/rke2/server/cred/scheduler.kubeconfig"
+                - "--authorization-kubeconfig=/var/lib/rancher/rke2/server/cred/scheduler.kubeconfig"
+                - "--bind-address=127.0.0.1"
+                - "--kubeconfig=/var/lib/rancher/rke2/server/cred/scheduler.kubeconfig"
+                - "--profiling=false"
+                - "--secure-port=10259"
+                - "--tls-cert-file=/var/lib/rancher/rke2/server/tls/kube-scheduler/kube-scheduler.crt"
+                - "--tls-private-key-file=/var/lib/rancher/rke2/server/tls/kube-scheduler/kube-scheduler.key"
+            mounts:
+              policy: exact
+              rules:
+                - {destination: "/var/lib/rancher/rke2/server/cred/scheduler.kubeconfig", kind: host, source: "/var/lib/rancher/rke2/server/cred/scheduler.kubeconfig", readOnly: true}
+                - {destination: "/var/lib/rancher/rke2/server/db/etcd/name", kind: host, source: "/var/lib/rancher/rke2/server/db/etcd/name", readOnly: true}
+                - {destination: "/var/lib/rancher/rke2/server/tls/client-scheduler.crt", kind: host, source: "/var/lib/rancher/rke2/server/tls/client-scheduler.crt", readOnly: true}
+                - {destination: "/var/lib/rancher/rke2/server/tls/client-scheduler.key", kind: host, source: "/var/lib/rancher/rke2/server/tls/client-scheduler.key", readOnly: true}
+                - {destination: "/var/lib/rancher/rke2/server/tls/kube-scheduler/kube-scheduler.crt", kind: host, source: "/var/lib/rancher/rke2/server/tls/kube-scheduler/kube-scheduler.crt", readOnly: true}
+                - {destination: "/var/lib/rancher/rke2/server/tls/kube-scheduler/kube-scheduler.key", kind: host, source: "/var/lib/rancher/rke2/server/tls/kube-scheduler/kube-scheduler.key", readOnly: true}
+                - {destination: "/var/lib/rancher/rke2/server/tls/server-ca.crt", kind: host, source: "/var/lib/rancher/rke2/server/tls/server-ca.crt", readOnly: true}
       # RKE2 static pod (servers).
       cloud-controller-manager:
         containers:
           - digest: "sha256:95a33533d97b10502be19e4f3e60e7ce9c30f4879084709af96259a01253f044"
             image: "docker.io/rancher/rke2-cloud-provider:v1.36.4-0.20260817193921-a2fc9574e060-build20260820"
-            command: {policy: any}
-            args: {policy: any}
-            mounts: {policy: any}
+            command: {policy: exact, argv: ["cloud-controller-manager"]}
+            args:
+              policy: exact
+              argv:
+                - "--allocate-node-cidrs=true"
+                - "--authentication-kubeconfig=/var/lib/rancher/rke2/server/cred/cloud-controller.kubeconfig"
+                - "--authorization-kubeconfig=/var/lib/rancher/rke2/server/cred/cloud-controller.kubeconfig"
+                - "--bind-address=127.0.0.1"
+                - "--cloud-config=/var/lib/rancher/rke2/server/etc/cloud-config.yaml"
+                - "--cloud-provider=rke2"
+                - "--cluster-cidr=10.52.0.0/16"
+                - "--configure-cloud-routes=false"
+                - "--controllers=*,-route,-service"
+                - "--kubeconfig=/var/lib/rancher/rke2/server/cred/cloud-controller.kubeconfig"
+                - "--leader-elect-resource-name=rke2-cloud-controller-manager"
+                - "--node-status-update-frequency=1m0s"
+                - "--profiling=false"
+            mounts:
+              policy: exact
+              rules:
+                - {destination: "/etc/ca-certificates", kind: host, source: "/etc/ca-certificates"}
+                - {destination: "/etc/ssl/certs", kind: host, source: "/etc/ssl/certs"}
+                - {destination: "/usr/local/share/ca-certificates", kind: host, source: "/usr/local/share/ca-certificates"}
+                - {destination: "/usr/share/ca-certificates", kind: host, source: "/usr/share/ca-certificates"}
+                - {destination: "/var/lib/rancher/rke2/server/cred/cloud-controller.kubeconfig", kind: host, source: "/var/lib/rancher/rke2/server/cred/cloud-controller.kubeconfig", readOnly: true}
+                - {destination: "/var/lib/rancher/rke2/server/etc/cloud-config.yaml", kind: host, source: "/var/lib/rancher/rke2/server/etc/cloud-config.yaml", readOnly: true}
+                - {destination: "/var/lib/rancher/rke2/server/tls/client-rke2-cloud-controller.crt", kind: host, source: "/var/lib/rancher/rke2/server/tls/client-rke2-cloud-controller.crt", readOnly: true}
+                - {destination: "/var/lib/rancher/rke2/server/tls/client-rke2-cloud-controller.key", kind: host, source: "/var/lib/rancher/rke2/server/tls/client-rke2-cloud-controller.key", readOnly: true}
+                - {destination: "/var/lib/rancher/rke2/server/tls/server-ca.crt", kind: host, source: "/var/lib/rancher/rke2/server/tls/server-ca.crt", readOnly: true}
       # RKE2 static pod (servers).
       etcd:
         containers:
           - digest: "sha256:4f7ffbb3399c9f8137f5d0dd3ca0eddc7909e5d0155b35f1b0449baf96d61bfa"
             image: "docker.io/rancher/hardened-etcd:v3.6.14-k3s1-build20260819"
-            command: {policy: any}
-            args: {policy: any}
-            mounts: {policy: any}
+            command: {policy: exact, argv: ["etcd"]}
+            args:
+              policy: exact
+              argv:
+                - "--config-file=/var/lib/rancher/rke2/server/db/etcd/config"
+            mounts:
+              policy: exact
+              rules:
+                - {destination: "/var/lib/rancher/rke2/server/db/etcd", kind: host, source: "/var/lib/rancher/rke2/server/db/etcd"}
+                - {destination: "/var/lib/rancher/rke2/server/db/etcd/config", kind: host, source: "/var/lib/rancher/rke2/server/db/etcd/config", readOnly: true}
+                - {destination: "/var/lib/rancher/rke2/server/tls/etcd/peer-ca.crt", kind: host, source: "/var/lib/rancher/rke2/server/tls/etcd/peer-ca.crt", readOnly: true}
+                - {destination: "/var/lib/rancher/rke2/server/tls/etcd/peer-server-client.crt", kind: host, source: "/var/lib/rancher/rke2/server/tls/etcd/peer-server-client.crt", readOnly: true}
+                - {destination: "/var/lib/rancher/rke2/server/tls/etcd/peer-server-client.key", kind: host, source: "/var/lib/rancher/rke2/server/tls/etcd/peer-server-client.key", readOnly: true}
+                - {destination: "/var/lib/rancher/rke2/server/tls/etcd/server-ca.crt", kind: host, source: "/var/lib/rancher/rke2/server/tls/etcd/server-ca.crt", readOnly: true}
+                - {destination: "/var/lib/rancher/rke2/server/tls/etcd/server-client.crt", kind: host, source: "/var/lib/rancher/rke2/server/tls/etcd/server-client.crt", readOnly: true}
+                - {destination: "/var/lib/rancher/rke2/server/tls/etcd/server-client.key", kind: host, source: "/var/lib/rancher/rke2/server/tls/etcd/server-client.key", readOnly: true}
       # RKE2 static pod (every node).
       kube-proxy:
         containers:
           - digest: "sha256:c8e5263407ac439de1dcdde98c7623efb9e17050715a80259d8bd5e81b5a9289"
             image: "docker.io/rancher/hardened-kubernetes:v1.36.4-rke2r1-build20260821"
-            command: {policy: any}
-            args: {policy: any}
-            mounts: {policy: any}
+            command: {policy: exact, argv: ["kube-proxy"]}
+            args:
+              policy: exact
+              argv:
+                - "--cluster-cidr=10.52.0.0/16"
+                - "--conntrack-max-per-core=0"
+                - "--conntrack-tcp-timeout-close-wait=0s"
+                - "--conntrack-tcp-timeout-established=0s"
+                - "--healthz-bind-address=127.0.0.1"
+                - "--hostname-override=${NODE_NAME}"
+                - "--iptables-localhost-nodeports=false"
+                - "--kubeconfig=/var/lib/rancher/rke2/agent/kubeproxy.kubeconfig"
+                - "--proxy-mode=iptables"
+            mounts:
+              policy: exact
+              rules:
+                - {destination: "/var/lib/rancher/rke2/agent/client-kube-proxy.crt", kind: host, source: "/var/lib/rancher/rke2/agent/client-kube-proxy.crt", readOnly: true}
+                - {destination: "/var/lib/rancher/rke2/agent/client-kube-proxy.key", kind: host, source: "/var/lib/rancher/rke2/agent/client-kube-proxy.key", readOnly: true}
+                - {destination: "/var/lib/rancher/rke2/agent/kubeproxy.kubeconfig", kind: host, source: "/var/lib/rancher/rke2/agent/kubeproxy.kubeconfig", readOnly: true}
+                - {destination: "/var/lib/rancher/rke2/agent/server-ca.crt", kind: host, source: "/var/lib/rancher/rke2/agent/server-ca.crt", readOnly: true}
       # The Cilium agent DaemonSet: its init containers and the agent.
       cilium:
         initContainers:
