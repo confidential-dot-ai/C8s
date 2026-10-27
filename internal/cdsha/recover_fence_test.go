@@ -275,6 +275,59 @@ func TestAPIOutageWithHealthyMembersKeepsServing(t *testing.T) {
 	}
 }
 
+// An election during an API outage with every member healthy: the new
+// leader has no decree view in its term, but every member reports it as
+// their leader, so it serves.
+func TestElectionDuringAPIOutageKeepsServing(t *testing.T) {
+	c := newCluster(t, 3)
+	c.genesis("n0", "n1", "n2")
+	c.settled(15 * time.Second)
+	c.setListDown(true, "n0", "n1", "n2")
+	old := c.leader()
+	if err := old.node.r().LeadershipTransfer().Error(); err != nil {
+		t.Fatal(err)
+	}
+	var nl *replica
+	eventually(t, 5*time.Second, "a new leader", func() bool {
+		nl = c.leader()
+		return nl != nil && nl != old
+	})
+	eventually(t, 5*time.Second, "the new leader serves without a decree view", func() bool {
+		v := nl.node.decreeView.Load()
+		return nl.node.leading() && (v == nil || v.term != nl.node.r().CurrentTerm()) && nl.node.Status().Fenced == nil && nl.node.Serving()
+	})
+	if err := nl.al.PutWorkload("w", mkWorkload(t, 1)); err != nil {
+		t.Fatalf("write after the election: %v", err)
+	}
+	for _, r := range c.live() {
+		eventually(t, 5*time.Second, r.name+" serves", r.node.Serving)
+	}
+}
+
+// The same election with a member cut off: the new leader is fenced at
+// once, as the cut-off member may be holding a Recover.
+func TestElectionDuringAPIOutageWithCutOffMemberFences(t *testing.T) {
+	c, l, s, majority := cutOff(t)
+	c.setListDown(true, majority...)
+	if err := l.node.r().LeadershipTransfer().Error(); err != nil {
+		t.Fatal(err)
+	}
+	var nl *replica
+	eventually(t, 5*time.Second, "a new majority leader", func() bool {
+		nl = majorityLeader(c, s)
+		return nl != nil && nl != l
+	})
+	eventually(t, 5*time.Second, "the new leader is fenced", func() bool { return nl.node.Status().Fenced != nil })
+	eventually(t, testTiming.Lease+time.Second, "the majority stops serving", func() bool {
+		for _, r := range c.live() {
+			if r != s && r.node.Serving() {
+				return false
+			}
+		}
+		return true
+	})
+}
+
 // The operator deletes the decree a fenced majority doubts: it serves again.
 func TestDeletingTheDoubtedDecreeUnfences(t *testing.T) {
 	c, l, s, majority := cutOff(t)

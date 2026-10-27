@@ -120,6 +120,10 @@ func supersededVoterAfterLeaderChange(t *testing.T, toReplacement bool) {
 		t.Fatalf("voters %v, want %v: a live voter lost its seat instead of the superseded %s", got, want, oldID)
 	}
 	target.node.r().RegisterObserver(obs.observer)
+	select {
+	case target.node.leaderNow <- struct{}{}:
+	default:
+	}
 	// The rollout's next restart.
 	c.stopReplica(l)
 	eventually(t, 15*time.Second, "the survivors elect a leader and serve", c.servesWithALeader)

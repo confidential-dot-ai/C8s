@@ -118,11 +118,22 @@ func (n *Node) fence() *Fence {
 	n.mu.Unlock()
 	v := n.decreeView.Load()
 	fresh := v != nil && v.term == term && now.Sub(v.at) < n.cfg.Timing.decreeLease()
-	// With no other member, no other replica can be named by a Recover.
-	if f == nil && !fresh && (len(cut) > 0 || (v == nil || v.term != term) && len(servers) > 1) {
+	// Without a view in this term, only members that have reported this
+	// leader in this term (noteAcks) are known not to be acting alone.
+	var unacked []string
+	if v == nil || v.term != term {
+		n.mu.Lock()
+		for _, s := range servers {
+			if s.ID != n.id && n.acked[s.ID] != term {
+				unacked = append(unacked, string(s.ID))
+			}
+		}
+		n.mu.Unlock()
+	}
+	if f == nil && !fresh && (len(cut) > 0 || len(unacked) > 0) {
 		f = &Fence{Reason: fmt.Sprintf("this leader has not seen the decree objects for %s while members are cut off (a Recover decree may be pending); restore the leader's API access or the cut-off members", n.cfg.Timing.decreeLease())}
-		if v == nil || v.term != term {
-			f.Reason = "this leader has not yet seen the decree objects in its term; restore its API access"
+		if len(cut) == 0 {
+			f.Reason = fmt.Sprintf("this leader has not yet seen the decree objects in its term and members %v have not yet reported it as their leader; restore its API access", unacked)
 		}
 	}
 	if f == nil {
@@ -237,11 +248,48 @@ func (n *Node) dropSuspects() {
 	}
 }
 
+// noteAcks (leader, Run loop) records the members that report this leader
+// in this term over an attested status probe, while this leader has no
+// decree view in its term. Such a member had a leader when it answered, so
+// its Recover hold starts over (recoverReady); were it cut off since, its
+// heartbeats fail long before that hold ends, and it counts as cut off.
+func (n *Node) noteAcks() {
+	r := n.r()
+	if n.cfg.Decrees == nil || r == nil || r.State() != raft.Leader {
+		return
+	}
+	term := r.CurrentTerm()
+	if v := n.decreeView.Load(); v != nil && v.term == term {
+		return
+	}
+	for _, s := range n.servers() {
+		n.mu.Lock()
+		_, bad := n.failing[s.ID]
+		done := n.acked[s.ID] == term
+		n.mu.Unlock()
+		if s.ID == n.id || bad || done {
+			continue
+		}
+		st, err := n.peerStatus(s.Address, min(time.Second, n.cfg.Timing.Lease/2))
+		if err != nil || st.ID != string(s.ID) || st.Term != term || st.Leader != n.cfg.Advertise {
+			continue
+		}
+		n.mu.Lock()
+		n.acked[s.ID] = term
+		n.mu.Unlock()
+	}
+}
+
 // recoverReady (the named replica, leaderless) reports whether Recover p may
 // act now: seen pending for recoverHold, and no member of the last
 // configuration answers with a leader.
 func (n *Node) recoverReady(p PendingDecree) bool {
 	intent, now := p.Decree.Decree.IntentID, time.Now()
+	// Any contact from a leader since the sighting starts the hold over:
+	// Run's ticks alone can miss a short one.
+	if lc := n.r().LastContact(); n.recoverSeen.intent == intent && lc.After(n.recoverSeen.at) {
+		n.recoverSeen = recoverSighting{}
+	}
 	if n.recoverSeen.intent != intent {
 		n.recoverSeen = recoverSighting{intent: intent, at: now}
 		n.log.Warn("Recover decree names this replica: acting after the hold unless the cluster rejects it or answers", "decree", p.Name, "hold", n.cfg.Timing.recoverHold())

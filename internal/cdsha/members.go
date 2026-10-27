@@ -249,6 +249,13 @@ func (n *Node) observe(ctx context.Context, generation *raft.Raft, ch <-chan raf
 					n.noteFailure(d.PeerID, d.LastContact, time.Now())
 				case raft.ResumedHeartbeatObservation:
 					delete(n.failing, d.PeerID)
+				case raft.LeaderObservation:
+					if d.LeaderID == n.id {
+						select {
+						case n.leaderNow <- struct{}{}:
+						default:
+						}
+					}
 				}
 			}
 			n.mu.Unlock()
@@ -461,6 +468,7 @@ func (n *Node) removeMember(r *raft.Raft, id raft.ServerID) bool {
 	delete(n.addedAt, id)
 	delete(n.known, id)
 	delete(n.reads, id)
+	delete(n.acked, id)
 	n.mu.Unlock()
 	n.log.Info("member removed", "id", id)
 	return true

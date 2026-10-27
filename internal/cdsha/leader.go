@@ -487,16 +487,21 @@ func (n *Node) runDecrees(ctx context.Context) {
 	t := time.NewTicker(n.cfg.Timing.Tick)
 	defer t.Stop()
 	for {
+		backup := true
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+		case <-n.leaderNow: // a new leader has no decree view yet (fence.go)
+			backup = false
 		}
 		if r := n.r(); r == nil || r.State() != raft.Leader {
 			continue
 		}
 		n.applyDecrees(ctx)
-		n.maybeBackup(ctx)
+		if backup {
+			n.maybeBackup(ctx)
+		}
 	}
 }
 

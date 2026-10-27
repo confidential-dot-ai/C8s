@@ -192,6 +192,8 @@ type Node struct {
 	decreeView   atomic.Pointer[decreeView]     // leader: the last fresh decree cycle
 	doubts       atomic.Pointer[[]recoverDoubt] // leader: Recover decrees not rejected in time
 	blindRemoved map[raft.ServerID]struct{}     // leader: removed while the decree view was stale; protected by mu
+	acked        map[raft.ServerID]uint64       // leader: the term in which a member last reported this leader (noteAcks); protected by mu
+	leaderNow    chan struct{}                  // signalled when this replica takes leadership: runDecrees lists at once
 	fencedSince  atomic.Int64                   // leader: Unix ms the current fence began, 0 if none
 	fenceLog     *cache.LRUExpireCache
 	recoverSeen  recoverSighting // the Run loop's Recover hold
@@ -350,6 +352,8 @@ func NewNode(cfg Config) (*Node, error) {
 		joinRefusedLog: newLogOnce(),
 		retireLog:      newLogOnce(),
 		blindRemoved:   map[raft.ServerID]struct{}{},
+		acked:          map[raft.ServerID]uint64{},
+		leaderNow:      make(chan struct{}, 1),
 		fenceLog:       newLogOnce(),
 	}
 	if len(cfg.RecoveryKey) > 0 {
@@ -474,7 +478,7 @@ func (n *Node) startRaft() error {
 	obs := make(chan raft.Observation, 256)
 	observer := raft.NewObserver(obs, false, func(o *raft.Observation) bool {
 		switch o.Data.(type) {
-		case raft.FailedHeartbeatObservation, raft.ResumedHeartbeatObservation:
+		case raft.FailedHeartbeatObservation, raft.ResumedHeartbeatObservation, raft.LeaderObservation:
 			return true
 		}
 		return false
@@ -580,6 +584,7 @@ func (n *Node) Run(ctx context.Context) error {
 				return err
 			}
 			// Decrees and backups wait on the API server: runDecrees.
+			n.noteAcks()
 			n.reconcile()
 			n.dropSuspects()
 			if n.fsm.Stuck() == "" { // both derive their entries from this replica's state
