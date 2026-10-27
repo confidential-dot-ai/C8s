@@ -314,9 +314,12 @@ allowlist:
         initContainers:
           - digest: "sha256:0d26512c90d935db3180f47a7a716e3dfac0847ec29076fb5487e535125a86a8"
             image: "docker.io/rancher/hardened-cni-plugins:v1.9.1-build20260717"
-            command: {policy: any}
-            args: {policy: any}
-            mounts: {policy: any}
+            command: {policy: exact, argv: ["./install-cnis.sh"]}
+            args: {policy: deny}
+            mounts:
+              policy: exact
+              rules:
+                - {destination: "/host/opt/cni/bin", kind: host, source: "/opt/cni/bin"}
           - digest: "sha256:134ab48d00e67bed72fa43e0492adf2f0c78383e21da7ee1aeb5b7aa8ef2e7ee"
             image: "docker.io/rancher/mirrored-cilium-cilium:v1.19.6"
             command: {policy: any}
@@ -339,32 +342,55 @@ allowlist:
         containers:
           - digest: "sha256:e9435ef6526a98e8d01d98a85d23770859ca49028ebd282912ae5e76f92c0166"
             image: "docker.io/rancher/hardened-coredns:v1.14.7-build20260819"
-            command: {policy: any}
-            args: {policy: any}
+            command: {policy: exact, argv: ["/coredns"]}
+            args: {policy: exact, argv: ["-conf", "/etc/coredns/Corefile"]}
             mounts: {policy: any}
       # CoreDNS's replica autoscaler.
       coredns-autoscaler:
         containers:
           - digest: "sha256:c9b9b027e4d2cf1731311f9714f4aa633d37d7b0a72c9d3e6fc7a0594350d27c"
             image: "docker.io/rancher/hardened-cluster-autoscaler:v1.10.3-build20260819"
-            command: {policy: any}
-            args: {policy: any}
-            mounts: {policy: any}
+            command: {policy: exact, argv: ["/cluster-proportional-autoscaler"]}
+            args:
+              policy: exact
+              argv:
+                - "--namespace=kube-system"
+                - "--configmap=rke2-coredns-rke2-coredns-autoscaler"
+                - "--target=Deployment/rke2-coredns-rke2-coredns"
+                - "--logtostderr=true"
+                - "--v=2"
+            mounts: {policy: deny}
       metrics-server:
         containers:
           - digest: "sha256:4935e86e846d75591113f64ad4e0402718a1eda08f6900a9325d54f1df64945c"
             image: "docker.io/rancher/hardened-k8s-metrics-server:v0.9.0-build20260819"
-            command: {policy: any}
-            args: {policy: any}
-            mounts: {policy: any}
+            command: {policy: exact, argv: ["/metrics-server"]}
+            args:
+              policy: exact
+              argv:
+                - "--secure-port=10250"
+                - "--cert-dir=/tmp"
+                - "--kubelet-preferred-address-types=InternalIP,ExternalIP,Hostname"
+                - "--kubelet-use-node-status-port"
+                - "--metric-resolution=15s"
+            mounts:
+              policy: exact
+              rules:
+                - {destination: "/tmp", kind: emptyDir, source: "tmp"}
       # The volume snapshot controller.
       snapshot-controller:
         containers:
           - digest: "sha256:8d5872d767f93393273cb1ecad81e4bc08af65311d206bc31ee8f48bc58e51c4"
             image: "docker.io/rancher/hardened-snapshot-controller:v8.6.0-build20260819"
-            command: {policy: any}
-            args: {policy: any}
-            mounts: {policy: any}
+            command: {policy: exact, argv: ["/snapshot-controller"]}
+            args:
+              policy: exact
+              argv:
+                - "--feature-gates=CSIVolumeGroupSnapshot=true"
+                - "--http-endpoint=:8080"
+                - "--leader-election=true"
+                - "--leader-election-namespace=kube-system"
+            mounts: {policy: deny}
       # The jobs that install RKE2's charts.
       helm-install:
         containers:

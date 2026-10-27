@@ -228,10 +228,6 @@ func TestNodeImageBootConfig_ParsesAndAdmitsSystemImages(t *testing.T) {
 		"docker.io/rancher/mirrored-cilium-operator-generic:v1.19.6":                                                       true,
 		"docker.io/rancher/klipper-helm:v0.13.3-build20260820":                                                             true,
 		"docker.io/rancher/hardened-coredns:v1.14.7-build20260819":                                                         true,
-		"docker.io/rancher/hardened-cluster-autoscaler:v1.10.3-build20260819":                                              true,
-		"docker.io/rancher/hardened-k8s-metrics-server:v0.9.0-build20260819":                                               true,
-		"docker.io/rancher/hardened-snapshot-controller:v8.6.0-build20260819":                                              true,
-		"docker.io/rancher/hardened-cni-plugins:v1.9.1-build20260717":                                                      true,
 		"rancher/local-path-provisioner:v0.0.36@sha256:1eba82e9c386038b4af6d69cca7519fac738c28c42735ed48ce70c882ad0d80f":   true,
 		"nvcr.io/nvidia/k8s-device-plugin:v0.19.3@sha256:25cc340fe6fd53c101e16fc452f503e7a92c219c64a80ed5381784b522dbbf77": true,
 	}
@@ -242,6 +238,26 @@ func TestNodeImageBootConfig_ParsesAndAdmitsSystemImages(t *testing.T) {
 				t.Errorf("base entry %q leaves the launch of %s open", name, c.Image)
 			}
 		}
+	}
+}
+
+// CoreDNS's mounts stay open, so what keeps its pinned binary its own is the
+// plugin refusing a mount over an absolute executable.
+func TestNodeImageBaseRefusesAMountOverCoreDNS(t *testing.T) {
+	cfg, err := parseConfig([]byte(renderNodeImagePolicy(t)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	coredns := cfg.Allowlist.Base.Workloads["coredns"].Containers[0]
+	launch := containerLaunch(coredns)
+	launch.Mounts = []allowlist.ObservedMount{{Destination: "/etc/coredns", Volume: "config-volume", Class: allowlist.MountData, Storage: allowlist.MountEncrypted}}
+	store := newPolicyStore(cfg.Allowlist.Base)
+	if !store.baseAdmits(launch, launchFinal) {
+		t.Fatalf("the base refuses CoreDNS as RKE2 runs it: %+v", launch)
+	}
+	launch.Mounts = append(launch.Mounts, allowlist.ObservedMount{Destination: "/coredns", Volume: "binary", Class: allowlist.MountData, Storage: allowlist.MountEncrypted})
+	if store.baseAdmits(launch, launchFinal) {
+		t.Fatal("the base admits CoreDNS with a mount over its executable")
 	}
 }
 
@@ -449,22 +465,30 @@ func containerLaunch(c allowlist.Container) allowlist.RunningContainer {
 	}
 }
 
-// entryMounts is mount evidence the policy admits: the mounts it pins, or a
-// host mount where it pins none.
+// entryMounts is mount evidence the policy admits: the mounts it pins, a host
+// mount where it leaves them open, and none where it denies them.
 func entryMounts(p allowlist.MountPolicy) []allowlist.ObservedMount {
-	if p.Policy != allowlist.PolicyExact {
+	switch p.Policy {
+	case allowlist.PolicyExact:
+		mounts := make([]allowlist.ObservedMount, 0, len(p.Rules))
+		for _, rule := range p.Rules {
+			mounts = append(mounts, ruleMount(rule))
+		}
+		return mounts
+	case allowlist.PolicyAny:
 		return []allowlist.ObservedMount{{
 			Destination: "/host",
 			Class:       allowlist.MountHost,
 			Storage:     allowlist.MountUnknown,
 		}}
+	default:
+		return observedNoMounts
 	}
-	mounts := make([]allowlist.ObservedMount, 0, len(p.Rules))
-	for _, rule := range p.Rules {
-		mounts = append(mounts, ruleMount(rule))
-	}
-	return mounts
 }
+
+// observedNoMounts is evidence of a launch with no bind mounts; nil would be
+// no evidence at all.
+var observedNoMounts = []allowlist.ObservedMount{}
 
 // ruleMount is the mount evidence a rule describes, as the node reports it: a
 // kubelet volume's source ends in the pod volume's name, and a host mount
