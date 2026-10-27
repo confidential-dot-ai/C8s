@@ -284,11 +284,18 @@ allowlist:
                 - destination: "/etc/c8s/certs"
                   kind: "emptyDir"
                   source: "c8s-certs"
-      # The credential clients come in two shapes: the injected one, whose
-      # volumes are the pod's own business, and the router pod's, whose mount
-      # set is pinned because a pod of that namespace runs a role container
-      # only under a declaration that pins it (the credentials of that pod are
-      # separated by mount set alone).
+      # The credential clients come in two shapes: the injected one, which
+      # mounts the webhook's certificate volume and, when the pod asks for
+      # discovery files, the pod's discovery volume at the webhook's fixed
+      # destination; and the router pod's, whose mount set is the rendered
+      # pod's, because a pod of that namespace runs a role container only
+      # under a declaration that pins it (the credentials of that pod are
+      # separated by mount set alone). The credentials role is dropped from
+      # the workload match, so no declaration grants it under mounts the pod
+      # chooses: a pod's own container running one of these invocations with
+      # a mount of its own holds no role and stays in the match
+      # (internal/webhook getCertVolumeMounts, the chart's
+      # c8s.injectedMountTables).
       c8s-get-cert:
         label: "c8s get-cert"
         containers:
@@ -298,7 +305,27 @@ allowlist:
             command: {policy: exact, argv: ["/c8s", "get-cert"]}
             # Per pod: the SAN it requests and the discovery files it writes.
             args: {policy: any}
-            mounts: {policy: any}
+            mounts:
+              policy: exact
+              rules:
+                - destination: "/etc/c8s/certs"
+                  kind: "emptyDir"
+                  source: "c8s-certs"
+          # The same client in a pod that asks for discovery files, mounted
+          # from the volume the pod's annotation names.
+          - digest: "@OPERATOR_DIGEST@"
+            image: "@OPERATOR_REPO@@@OPERATOR_DIGEST@"
+            role: "credentials"
+            command: {policy: exact, argv: ["/c8s", "get-cert"]}
+            args: {policy: any}
+            mounts:
+              policy: exact
+              rules:
+                - destination: "/etc/c8s/certs"
+                  kind: "emptyDir"
+                  source: "c8s-certs"
+                - destination: "/run/c8s/discovery"
+                  kind: "emptyDir"
           # The router pod's certificate sidecar: the member credential it
           # writes, the discovery file it publishes, the launch-signed SAN it
           # reads and the node inventory it redeems its token at.
@@ -359,8 +386,26 @@ allowlist:
             role: "credentials"
             command: {policy: exact, argv: ["/c8s", "probe-file"]}
             args: {policy: exact, argv: ["--wait", "--timeout=3m0s", "/etc/c8s/certs/tls.crt"]}
-            # Per pod: the discovery volume get-cert writes.
-            mounts: {policy: any}
+            mounts:
+              policy: exact
+              rules:
+                - destination: "/etc/c8s/certs"
+                  kind: "emptyDir"
+                  source: "c8s-certs"
+          # The same gate in a pod that asks for discovery files.
+          - digest: "@OPERATOR_DIGEST@"
+            image: "@OPERATOR_REPO@@@OPERATOR_DIGEST@"
+            role: "credentials"
+            command: {policy: exact, argv: ["/c8s", "probe-file"]}
+            args: {policy: exact, argv: ["--wait", "--timeout=3m0s", "/etc/c8s/certs/tls.crt"]}
+            mounts:
+              policy: exact
+              rules:
+                - destination: "/etc/c8s/certs"
+                  kind: "emptyDir"
+                  source: "c8s-certs"
+                - destination: "/run/c8s/discovery"
+                  kind: "emptyDir"
           # The router pod's gate waits on the member credential and holds
           # nothing else.
           - digest: "@OPERATOR_DIGEST@"
@@ -381,9 +426,34 @@ allowlist:
             image: "@OPERATOR_REPO@@@OPERATOR_DIGEST@"
             role: "credentials"
             command: {policy: exact, argv: ["/c8s", "get-secret"]}
-            # Per pod: the secrets it fetches and where they land.
+            # Per pod: the secrets it fetches. They land in the webhook's
+            # secrets volume, the one mount beside the credential it reads.
             args: {policy: any}
-            mounts: {policy: any}
+            mounts:
+              policy: exact
+              rules:
+                - destination: "/etc/c8s/certs"
+                  kind: "emptyDir"
+                  source: "c8s-certs"
+                - destination: "/run/c8s/secrets"
+                  kind: "emptyDir"
+                  source: "c8s-secrets"
+          - digest: "@OPERATOR_DIGEST@"
+            image: "@OPERATOR_REPO@@@OPERATOR_DIGEST@"
+            role: "credentials"
+            command: {policy: exact, argv: ["/c8s", "get-secret"]}
+            args: {policy: any}
+            mounts:
+              policy: exact
+              rules:
+                - destination: "/etc/c8s/certs"
+                  kind: "emptyDir"
+                  source: "c8s-certs"
+                - destination: "/run/c8s/secrets"
+                  kind: "emptyDir"
+                  source: "c8s-secrets"
+                - destination: "/run/c8s/discovery"
+                  kind: "emptyDir"
       c8s-get-volume:
         label: "c8s get-volume"
         containers:
@@ -391,9 +461,28 @@ allowlist:
             image: "@OPERATOR_REPO@@@OPERATOR_DIGEST@"
             role: "credentials"
             command: {policy: exact, argv: ["/c8s", "get-volume"]}
-            # Per pod: the volumes it opens and where they are mounted.
+            # Per pod: the volumes it opens. They are mounted into the
+            # workload, not into this client, which holds the credential alone.
             args: {policy: any}
-            mounts: {policy: any}
+            mounts:
+              policy: exact
+              rules:
+                - destination: "/etc/c8s/certs"
+                  kind: "emptyDir"
+                  source: "c8s-certs"
+          - digest: "@OPERATOR_DIGEST@"
+            image: "@OPERATOR_REPO@@@OPERATOR_DIGEST@"
+            role: "credentials"
+            command: {policy: exact, argv: ["/c8s", "get-volume"]}
+            args: {policy: any}
+            mounts:
+              policy: exact
+              rules:
+                - destination: "/etc/c8s/certs"
+                  kind: "emptyDir"
+                  source: "c8s-certs"
+                - destination: "/run/c8s/discovery"
+                  kind: "emptyDir"
       # The router's own containers. The chart renders its pod itself, and
       # every pod of the router namespace holds platform-role containers
       # only, so each of them takes a role from here. The router
@@ -606,6 +695,12 @@ mesh:
   # INVARIANT: equal to cluster-cidr and service-cidr in
   # etc/rancher/rke2/config.yaml.
   cluster_ranges: ["10.52.0.0/16", "10.53.0.0/16"]
+  # Platform services every member pod reaches over TCP uncaptured: the
+  # baked kube-state-metrics Service, which serves cluster object metadata
+  # (docs/armtls.md, "Cluster metrics").
+  #
+  # INVARIANT: equal to the chart's kubeStateMetrics.clusterIP and port.
+  exits: ["10.53.0.11:8080"]
   # INVARIANT: equal to the ports the injected endpoint binds
   # (pkg/workloadclaims.Mesh*Port).
   capture:
