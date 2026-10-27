@@ -1,10 +1,11 @@
 # Releases
 
-C8s releases as one unit. A `vX.Y.Z` tag versions the `c8s` CLI, the component
-images, the Helm chart, and the measured node images — the guest images a node
-boots — together, all built from one commit. Releases are automatic:
-maintainers do not calculate or push release tags. Terms are defined in
-[glossary.md](glossary.md).
+C8s releases as one unit.
+
+A `vX.Y.Z` tag versions the `c8s` CLI, the component images, the Helm chart, and
+the measured node images — the guest images a node boots — together, all built
+from one commit. Releases are automatic: maintainers do not calculate or push
+release tags. Terms are defined in [glossary.md](glossary.md).
 
 ## Version rules
 

@@ -1,9 +1,16 @@
 # Allowlist and capabilities
 
-Why a container may start on a C8s node, and what it may hold once it does. The
-allowlist is the operator's policy of workload entries: named container sets,
-each binding an image digest to the command line, environment, and mounts that
-image may run with. Every field: [allowlist-entries.md](allowlist-entries.md).
+Under the fail-closed image policy, a container starts on a C8s node only where
+an allowlist entry names its image digest and the launch that digest is given.
+
+Guarantee:
+[Only allowlisted code runs](guarantees.md#only-allowlisted-code-runs),
+[No privileged way in](guarantees.md#no-privileged-way-in).
+
+The allowlist is the operator's policy of workload entries: named container
+sets, each binding an image digest to the command line, environment, and mounts
+that image may run with. Every field:
+[allowlist-entries.md](allowlist-entries.md).
 
 The image reference a pod presents is chosen by the untrusted host and is not
 bound to the image that runs. The digest is. So no admission decision reads the
@@ -233,20 +240,18 @@ while a per-workload write signs nothing.
 
 ## Measured policy history
 
-On a TDX node the plugin can extend RTMR[3] with each allowlist it pulls, before
-applying it. RTMR[3] is a hardware register the node extends in order and
-reports in its evidence, so it ends up holding the operator-key seed followed by
-the digest of every policy the node enforced since boot. A document the node
-fails to measure is not applied; the plugin journals the digests in extend
-order, and components that attest themselves carry that list with their
-evidence, which a verifier trusts only as far as it replays against the
-register: proof of what the node enforced, not that it was acceptable. Set
+On a TDX node the plugin can extend RTMR[3] — a runtime measurement register
+the node reports in its evidence — with each allowlist it pulls, before applying
+it, so a verifier can replay what the node enforced since boot: proof of what it
+enforced, not that it was acceptable. A document the node fails to measure is
+not applied. How the register is seeded, journalled, and replayed is
+[measurements.md](measurements.md#policy-history). Set
 `nriImagePolicy.measurePolicies: true` to turn measuring on.
 
-It is off by default because checks that expect the bare operator-key seed
-reject a node that measures: armTLS verifiers built before runtime extensions,
-a pin on one fixed RTMR[3] value, and `c8s verify --image-policy-file` with an
-approver key. It is a no-op on SEV-SNP, which has no runtime register. A node
-that cannot measure keeps enforcing the policy it holds — at startup, the base
-allowlist alone — and after 256 policies, the most a certificate carries, it
-takes no further policy until it reboots.
+It is off by default because checks that expect the bare seed reject a node
+that measures: armTLS verifiers built before runtime extensions, a pin on one
+fixed RTMR[3] value, and `c8s verify --image-policy-file` with an approver key.
+It is a no-op on SEV-SNP, which has no runtime register. A node that cannot
+measure keeps enforcing the policy it holds — at startup, the base allowlist
+alone — and once it reaches the register's per-boot extend cap it takes no
+further policy until it reboots.

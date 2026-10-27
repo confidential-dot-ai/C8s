@@ -1,9 +1,13 @@
 # Node exec mode
 
 The measured node image starts no new process inside a container that is already
-running, for any principal. There is no debug shell on a confidential node, so a
-tenant's memory and volume plaintext are not reachable that way; the logs stay
-whatever the workload writes.
+running, for any principal.
+
+Guarantee: [No privileged way in](guarantees.md#no-privileged-way-in).
+
+There is no debug shell on a confidential node, so a tenant's memory and volume
+plaintext are not reachable that way; the logs stay whatever the workload
+writes.
 
 ## What is closed, and where
 
@@ -29,12 +33,12 @@ That leaves the paths no API-server policy covers — CRI `ExecSync`, an exec
 probe, a lifecycle exec hook, a direct call to containerd — and they, like the
 proxy paths, end in the same `runc exec`. So the node image puts a measured
 wrapper, `c8s-runc`, in front of runc and points containerd's runc handler at
-it. In a locked build the wrapper denies the `exec` verb outright and never
-reaches the real runtime; every other verb is handed to the real runc unchanged,
-by absolute path, and a `restore` is denied in every build, because what it
-starts lives in a checkpoint no bundle describes. A denial is written to the log
-file runc was told to use, so the pod event names it instead of an empty runtime
-error.
+it. A release node image is built in locked exec mode: the wrapper denies the
+`exec` verb outright and never reaches the real runtime; every other verb is
+handed to the real runc unchanged, by absolute path, and a `restore` is denied
+in every build, because what it starts lives in a checkpoint no bundle
+describes. A denial is written to the log file runc was told to use, so the pod
+event names it instead of an empty runtime error.
 
 Both layers are the measured node image's; the chart installs neither on its
 other lanes, which keep the ordinary exec path. A development image

@@ -1,11 +1,16 @@
 # Encrypted volumes
 
+On a confidential node, a volume's plaintext exists only inside that node's CVM,
+and CDS releases its key only to a pod whose containers match an entitled
+allowlist entry; every pod on the node shares that boundary.
+
+Guarantee: [Data stays in the TEE](guarantees.md#data-stays-in-the-tee),
+[Only allowlisted code runs](guarantees.md#only-allowlisted-code-runs).
+
 An encrypted volume is data too large to be a secret — model weights above all —
-encrypted at rest on storage the host can read and write, and decrypted only
-inside the node's confidential VM for a workload the allowlist names. A volume's
-key is a secret in CDS — the Certificate Distribution Service, the one
-in-cluster pod holding C8s policy and the secret store — released by the
-machinery in [secrets.md](secrets.md). Steps are in
+encrypted at rest on storage the host can read and write. Its key is a secret in
+CDS, the Certificate Distribution Service holding C8s policy and the secret
+store, released by the machinery in [secrets.md](secrets.md). Steps are in
 [workloads.md](workloads.md), names in [glossary.md](glossary.md).
 
 ## Why a volume is different from a secret
@@ -78,13 +83,16 @@ pinned there, with the `nodeSelector` that `c8s volume create --node` prints.
 ### Attaching the image
 
 Three ways present the image to a node, and which ones are open is fixed at VM
-launch. Cold-plug virtio-blk attaches the disk when the VM starts, and is the
-only way to add a virtio-blk device at all: PCI hotplug is compiled out of the
-C8s node image's kernel. Hot-attach `scsi-hd` adds a disk to a running VM, on
-the node image too, but only onto a virtio-scsi controller provisioned at
-launch. Where no hypervisor can set the serial, `c8s volume attach` builds a
-local disk through the kernel's SCSI target subsystem (LIO), which the C8s node
-image leaves out. The commands are in [workloads.md](workloads.md).
+launch. The commands are in [workloads.md](workloads.md).
+
+- **Cold-plug virtio-blk**: attaches the disk when the VM starts, and is the
+  only way to add a virtio-blk device at all, since PCI hotplug is compiled out
+  of the C8s node image's kernel.
+- **Hot-attach `scsi-hd`**: adds a disk to a running VM, on the node image too,
+  but only onto a virtio-scsi controller provisioned at launch.
+- **`c8s volume attach`**: builds a local disk through the kernel's SCSI target
+  subsystem (LIO), which the C8s node image leaves out, where no hypervisor can
+  set the serial.
 
 ## The mount policy
 

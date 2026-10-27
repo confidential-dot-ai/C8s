@@ -1,11 +1,14 @@
 # Run the integration tests
 
 Exercise C8s on a plain Linux or macOS host with no TEE hardware, so nothing
-here proves a confidential property. Two harnesses: docker-compose, for the
-armTLS certificate flow (armTLS is C8s's mutual TLS whose certificates carry
-TEE evidence), and kind, for a whole cluster. CI runs both as the
-**Integration** and **Integration (cluster)** jobs; terms are defined in
-[glossary.md](glossary.md).
+here proves a confidential property. Two harnesses:
+
+- **docker-compose**: the armTLS certificate flow, where armTLS is C8s's mutual
+  TLS whose certificates carry TEE evidence.
+- **kind**: a whole cluster.
+
+CI runs both as the Integration and Integration (cluster) jobs; terms are
+defined in [glossary.md](glossary.md).
 
 Prerequisites:
 

@@ -1,13 +1,20 @@
 # Route evidence
 
-How a client proves which routes the router serves. The router's `cds-attest`
-sidecar binds the digest of the route manifest it routes by into the evidence of
-both attested handshakes — attest-pq, which runs an X-Wing key exchange so a
-client can over-encrypt its requests inside ordinary TLS, and attest-lb, which
-binds the exact serving leaf of the connection a client is already on — so a
-verifier learns which manifest the router applied when it admitted the session,
-and the session routes by that manifest alone. Attestation authenticates it;
-backend TLS authenticates the destinations it names. The operator side is
+A client learns which route manifest the router applied, by digest, from the
+router's own attested handshake, and a bound session then routes by that
+manifest alone.
+
+Guarantee:
+[Routes are what the operator signed](guarantees.md#routes-are-what-the-operator-signed),
+[Anyone can verify it](guarantees.md#anyone-can-verify-it).
+
+The router's `cds-attest` sidecar binds the digest of the route manifest it
+routes by into the evidence of both attested handshakes — attest-pq, which runs
+an X-Wing key exchange so a client can over-encrypt its requests inside ordinary
+TLS, and attest-lb, which binds the exact serving leaf of the connection a
+client is already on — so a verifier learns which manifest the router applied
+when it admitted the session. Attestation authenticates it; backend TLS
+authenticates the destinations it names. The operator side is
 [operator.md](operator.md#route-manifest), the checks [verify.md](verify.md).
 
 ## What the evidence proves

@@ -112,15 +112,15 @@ CDS pins to the baked plugin.
 What the flags above do, with the semantics in
 [operator.md](operator.md#what-an-install-deploys):
 
-- `--operator-keys` pins the public keys CDS accepts writes from; the install
+- `--operator-keys`: pins the public keys CDS accepts writes from; the install
   refuses without it, unless a `-f` file sets `cds.operatorKeys`.
-- `--force` installs regardless, with allowlist writes disabled and no route
+- `--force`: installs regardless, with allowlist writes disabled and no route
   manifest, so cluster policy cannot change and the router answers 503.
-- `--resolve-digests` is on by default: each component image tag is resolved to
-  its registry digest and pinned, because the admission plugin admits C8s
+- `--resolve-digests`: on by default, resolving each component image tag to its
+  registry digest and pinning it, because the admission plugin admits C8s
   components by digest. Pass `--resolve-digests=false` with a `-f values.yaml`
   to supply the digests yourself.
-- `--wait` is on by default, so the command returns once the release is ready.
+- `--wait`: on by default, so the command returns once the release is ready.
 
 ## 4. Confirm the platform pods
 

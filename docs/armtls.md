@@ -1,9 +1,15 @@
 # armTLS
 
+A peer is admitted on hardware evidence of what it booted: at each handshake on
+the evidence path, at issuance on the chain path, never on a name.
+
+Guarantee:
+[Identity comes from hardware evidence](guarantees.md#identity-comes-from-hardware-evidence),
+[Data stays in the TEE](guarantees.md#data-stays-in-the-tee).
+
 armTLS is the mutual TLS C8s components authenticate each other with. A peer's
-certificate carries hardware attestation evidence — a report a CPU key signs
-over what the guest booted — so a handshake checks what the peer is, not a name
-someone signed for it. Terms left undefined here are in
+certificate carries hardware attestation evidence: a report a CPU key signs over
+what the guest booted. Terms left undefined here are in
 [glossary.md](glossary.md). Every connection runs one of two paths, never both:
 the **evidence path**, where the peer presents a self-issued certificate with
 its evidence embedded, and the **chain path**, where it presents a leaf signed
@@ -31,28 +37,21 @@ REPORTDATA. C8s generates an ECDSA P-256 key in process memory and puts
 unless an issuance supplies one — so the report states with the silicon vendor's
 authority that this measured guest holds this key.
 
-The evidence travels in a non-critical X.509 extension under
-`1.3.6.1.4.1.66378.1.1`: the TEE type (`1` = SEV-SNP, `2` = TDX), the report —
-raw bytes for SEV-SNP, an evidence envelope elsewhere — a collateral field C8s
-leaves empty, since an envelope carries its own, and an optional
-`runtimeExtensions` list. The type comes from the evidence, not from the
-component's configured platform. `runtimeExtensions` is TDX-only: it lists the
-allowlist policy digests the node extended into RTMR[3], one of the TDX runtime
-measurement registers a guest can extend after boot, at most 256 per boot, so a
-verifier can replay the register. Weighing those digests is an external
-verifier's job
-([allowlist-and-capabilities.md](allowlist-and-capabilities.md#measured-policy-history)).
+That report rides a non-critical X.509 extension, so a certificate carries
+evidence for the key it certifies. Which certificate carries which extension,
+and the bytes of each, is
+[certificate-extensions.md](certificate-extensions.md).
 
-A certificate's embedded evidence commits to its key alone, with no challenge:
-possession of that key in the handshake and the certificate's validity window
-are the freshness bound there. A challenge appears at one moment only, in the
-evidence an issuance request carries, and no certificate embeds that evidence —
-what CDS copies onto a leaf is the challenge-free extension the CSR carried.
-Certificates live 24 hours by default and rotate at half their lifetime. Every
-leaf CDS signs also carries `…1.2`, a digest of the evidence it was issued on;
-it carries `…1.4`, the [sandbox ID](#sandbox-identity), when the request proved
-a sandbox, and `…1.5`, the [matched workload](#matched-workload), when exactly
-one entry matched.
+What the extension proves depends on when its evidence was made. Evidence
+embedded in a certificate commits to that key alone, so possession of the key in
+the handshake and the certificate's validity window are the freshness bound
+there. A challenge binds only the evidence an issuance request carries, which no
+certificate embeds, so a leaf proves measurement at issuance. On TDX the
+evidence also carries the allowlist policy digests the node extended into
+RTMR[3], for a verifier to replay
+([measurements.md](measurements.md#policy-history)); weighing those policies is
+an external verifier's job
+([allowlist-and-capabilities.md](allowlist-and-capabilities.md#measured-policy-history)).
 
 ## The handshake and pin checks
 
@@ -125,14 +124,20 @@ outbound, 15006 inbound and 15021 for probes.
 
 A member pod's application TCP is redirected into those listeners in both
 directions, so it crosses the pod boundary over armTLS. The node's packet rules
-leave five kinds of traffic uncaptured and deny everything else in both
-directions: resolver queries to the single address trusted policy names (port
-53), the probes the mesh endpoint forwards to the pod's own address on port
-15021, the sockets of platform roles (the credential clients that reach CDS, and
-the endpoint itself), the platform services the measured mesh policy names for
-every member pod (see [Cluster metrics](#cluster-metrics)), and the egress the
-pod's workload entry declares once the pod matches that entry
-([allowlist-entries.md](allowlist-entries.md)). Loopback stays reachable.
+deny everything else in both directions and leave five kinds of traffic
+uncaptured:
+
+- **Resolver queries**: to the single address trusted policy names, on port 53.
+- **Probes**: the ones the mesh endpoint forwards to the pod's own address on
+  port 15021.
+- **Platform-role sockets**: the credential clients that reach CDS, and the
+  endpoint itself.
+- **Platform services**: the ones the measured mesh policy names for every
+  member pod (see [Cluster metrics](#cluster-metrics)).
+- **Declared egress**: what the pod's workload entry declares, once the pod
+  matches that entry ([allowlist-entries.md](allowlist-entries.md)).
+
+Loopback stays reachable.
 
 ### Cluster metrics
 
@@ -193,7 +198,8 @@ and what enumerates cannot mint:
 
 Port 1019 is compiled in, not configured, and privileged. Answering on it at the
 node's address needs host networking or a host port, and the chart's
-`deny-host-namespaces` policy withholds both from tenant pods — that, not
+`<release>-deny-host-namespaces` policy withholds both from tenant pods — that,
+not
 measurement, separates the inventory from any other pod on the node.
 
 get-cert asks the inventory for a sandbox token, which binds the sandbox ID, a

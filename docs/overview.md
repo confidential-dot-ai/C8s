@@ -4,6 +4,8 @@ C8s runs Kubernetes workloads inside confidential VMs, so a tenant's weights,
 prompts, and responses stay in Trusted Execution Environment (TEE) memory on
 hardware the tenant does not own.
 
+Guarantee: all six — [guarantees.md](guarantees.md).
+
 Three things carry that:
 
 - Every node is a confidential VM (CVM): a VM whose memory the CPU encrypts and
@@ -59,15 +61,16 @@ API server — below the layer the adversary controls.
   launches, not a pod. It admits or denies every container and installs each
   member pod's packet rules —
   [allowlist-and-capabilities.md](allowlist-and-capabilities.md).
-- The **admission inventory** is the same process answering on a privileged
-  port. It records every container a pod has run, signs tokens naming the
-  sandbox a caller is in, and answers CDS's callback about that sandbox —
+- The **admission inventory** is the same process, answering pods on a
+  node-local Unix socket and CDS's sandbox callback on a privileged port. It
+  records every container a pod has run, signs tokens naming the sandbox a
+  caller is in, and answers that callback —
   [armtls.md](armtls.md#sandbox-identity).
 - **`attestation-api`** produces and checks this node's hardware evidence over a
   node-local socket.
-- In the measured node image, **`c8s-runc`** replaces the low-level runtime: it
-  enforces the privilege floor and refuses exec into a running container. The
-  chart lanes install no wrapper — [node-exec-mode.md](node-exec-mode.md).
+- On a measured node, **`c8s-runc`** replaces the low-level runtime: it
+  enforces the privilege floor and refuses exec into a running container —
+  [node-exec-mode.md](node-exec-mode.md).
 - The **`c8s operator`** pod runs the controllers and the two admission
   webhooks, `pod-injector` and `pod-validator`, that give a pod its C8s shape.
   The **router** pod in `c8s-router` is the front door for application traffic —
@@ -75,9 +78,7 @@ API server — below the layer the adversary controls.
 - Every member pod carries its own mesh endpoint (`c8s-mesh`) and get-cert
   (`c8s-cert`), plus `c8s-secret` or `c8s-volume` when it asks for a secret or a
   volume.
-- **volumed** is the node agent that opens an entitled pod's encrypted volumes,
-  and it is off by default: `volumed.service` on the measured node image, a
-  DaemonSet enabled by `c8s install --volumes` elsewhere —
+- **volumed** is the node agent that opens an entitled pod's encrypted volumes —
   [volumes.md](volumes.md).
 - On the measured node image, **kube-state-metrics** runs in `kube-system`
   outside the mesh, and the measured mesh policy lets every member pod reach its
@@ -106,29 +107,42 @@ API server — below the layer the adversary controls.
 ## CVM modes and hardware platforms
 
 `c8s install` requires two orthogonal choices. `--cvm-mode` is the deployment
-shape; all three shapes are node-as-CVM.
+shape; all three are node-as-CVM, and this table is the one place they differ.
 
-| `--cvm-mode` | The node is | Node services | Evidence |
+| | `bare-metal` | `gke` | `aks` |
 |---|---|---|---|
-| `bare-metal` | the C8s measured node image | baked into the image | the CPU TEE directly |
-| `gke` | a GKE confidential VM | deployed by the chart | the CPU TEE directly |
-| `aks` | an AKS confidential VM | deployed by the chart | the Azure vTPM (`az-snp`, `az-tdx`) |
+| The node is | the C8s measured node image | a GKE confidential VM | an AKS confidential VM |
+| Node services | baked into the image (a chart DaemonSet writes the release's CDS pins into the baked config) | deployed by the chart | deployed by the chart |
+| Base allowlist | a baked file, measured with the image | chart values | chart values |
+| Privilege floor | `c8s-runc`, measured | none | none |
+| Exec, attach, port-forward | denied by a baked policy | the ordinary path | the ordinary path |
+| Evidence | the CPU TEE directly | the CPU TEE directly | the Azure vTPM (`az-snp`, `az-tdx`) |
+| volumed | `volumed.service` | chart DaemonSet, `--volumes` | chart DaemonSet, `--volumes` |
+| Launch configuration | signed `launch.yaml` | none | none |
+
+Node services are `attestation-api` and the admission plugin; the base
+allowlist is the set of entries each plugin holds itself
+([allowlist-and-capabilities.md](allowlist-and-capabilities.md#bootstrap)); the
+privilege floor and the exec denial are
+[node-exec-mode.md](node-exec-mode.md); the launch configuration fixes a
+measured node's role, identity, and image pins
+([operator.md](operator.md#authenticated-launch-configuration), with every
+field in [launch-configuration.md](launch-configuration.md)).
 
 Only the measured node image carries the baked policy that refuses host
-privilege and the `c8s-runc` wrapper. On the chart lanes the plugin's own
-configuration comes from chart values, which the cluster administrator can also
-write, so what holds host namespaces off there is the chart's
-`c8s-deny-host-namespaces` cluster policy —
+privilege. On the chart lanes the plugin's own configuration comes from chart
+values, which the cluster administrator can also write, so what holds host
+namespaces off there is the chart's `<release>-deny-host-namespaces` cluster
+policy —
 [allowlist-and-capabilities.md](allowlist-and-capabilities.md#host-privilege).
 
 `--hardware-platform` is the CPU TEE: `sev-snp` or `tdx`. Under `aks` it selects
 which vTPM report shape to ask for rather than a guest device. On TDX, pinning
 the launch measurement alone covers the firmware; pinning the guest needs the
-image manifest published with the node image — [verify.md](verify.md).
+image manifest published with the node image — [verify.md](verify.md),
+[measurements.md](measurements.md).
 
-What goes into a node's measurement, and how an operator signs its role and
-settings, is [operator.md](operator.md#authenticated-launch-configuration); how
-the image is built is `../node-guest-image/README.md`.
+How the node image is built is `../node-guest-image/README.md`.
 
 ## The life of a confidential pod
 
@@ -155,7 +169,8 @@ the image is built is `../node-guest-image/README.md`.
    naming this pod run and, when exactly one entry matches, that entry —
    [armtls.md](armtls.md#matched-workload).
 6. The mesh endpoint adopts the leaf and carries the pod's captured TCP over
-   armTLS. Without credentials or rules it carries nothing —
+   armTLS. Without credentials or rules it carries no application traffic; its
+   health port still answers the node's probes —
    [armtls.md](armtls.md#the-mesh-endpoint-profile).
 7. `c8s-secret` or `c8s-volume` redeems a fresh token and asks CDS, which
    re-reads the pod's containers and requires a grant that still matches. Files
@@ -170,22 +185,5 @@ the image is built is `../node-guest-image/README.md`.
 
 ## Design intentions
 
-- Guarantees rest on hardware evidence, not on cluster configuration the
-  adversary can edit.
-- Identity is earned per boot and per pod: keys are made inside the TEE and
-  certified only against fresh, challenge-bound evidence.
-- Keys are made where they are used. C8s generates pod keys and the mesh CA
-  inside the TEE; the one key it does not make is the `webpki` public-TLS
-  certificate, which comes from an operator Secret the host can see —
-  [operator.md](operator.md).
-- A workload is its image digests plus command, arguments, mounts, and
-  environment — not a Kubernetes principal.
-- Policy writes bind to one method, path, and body, so a captured token
-  authorizes nothing else.
-- Narrow named exceptions (the resolver, probes, credential paths, egress
-  entries) replace general bypasses.
-- The router owns no routes. An operator-signed manifest does, and its digest is
-  bound into what a client attests.
-- Operators choose their own pins. Measurement covers boot state, except on a
-  TDX node measuring the allowlist policies it applies, so later state is for
-  the relying party to check — [verify.md](verify.md).
+The reasoning behind the six promises is
+[guarantees.md](guarantees.md#design-intentions).
