@@ -298,7 +298,10 @@ its log, logs `ALARM` every minute and shows `stuck_local` true. Once the
 cause is fixed, restart the stuck replicas one at a time: wait until the
 restarted one is a voter (`/ha/status` of the leader lists it in `voters`
 and no longer lists the old member) before the next. The stuck ones keep
-voting, so the majority holds throughout. Any other entry it cannot apply
+voting, so the majority holds throughout. A replica that has been applying
+one entry for `dead_after + apply` (a store lock that is never released, a write
+that never returns) stops the same way; a Restore is not timed. Any other
+entry it cannot apply
 (an unknown or malformed entry, a newer format, a panic while applying) would
 fail the same way on every replica of the image. Such a replica does **not**
 exit, because the log lives only in memory: it serves nothing, refuses writes,

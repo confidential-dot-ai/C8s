@@ -36,7 +36,8 @@ func busyFollower(t *testing.T, c *cluster) (l, f, g *replica, fServer raft.Serv
 			fServer = s
 		}
 	}
-	slowApply(t, 30*time.Second, f)
+	// Slow, not hung: each apply ends before watchApply would stop F.
+	slowApply(t, testTiming.DeadAfter+testTiming.Apply/2, f)
 	for i := 0; i < 300; i++ {
 		if err := l.al.PutWorkload(fmt.Sprintf("w%d", i%4), mkWorkload(t, i)); err != nil {
 			t.Fatalf("write %d: %v", i, err)

@@ -633,7 +633,8 @@ func (n *Node) Run(ctx context.Context) error {
 	defer n.shutdown()
 	workerCtx, stopWorkers := context.WithCancel(ctx)
 	var workers sync.WaitGroup
-	workers.Add(4)
+	workers.Add(5)
+	go func() { defer workers.Done(); n.watchApply(workerCtx) }()
 	go func() { defer workers.Done(); n.watchClock(workerCtx) }()
 	go func() { defer workers.Done(); n.refreshReads(workerCtx) }()
 	go func() { defer workers.Done(); n.watchSlowLeader(workerCtx) }()
@@ -736,7 +737,9 @@ func (n *Node) Run(ctx context.Context) error {
 // stopRaft drains the one genuine read future while Raft can still resolve it.
 // Raft v1.8 Barrier futures have no shutdown channel; shutting down first can
 // strand a committed future in the FSM queue. Keep the gate through shutdown.
-// As with Raft shutdown itself, a permanently blocked FSM must be released.
+// A future behind a blocked FSM may never resolve: after Timing.Apply Raft is
+// shut down without the gate, and errShutdownTimeout says that the future
+// (and the FSM) may still be held, so no new generation starts over them.
 func (n *Node) stopRaft(r *raft.Raft) error {
 	if r == nil {
 		return nil
@@ -747,8 +750,19 @@ func (n *Node) stopRaft(r *raft.Raft) error {
 		n.stoppingReads.Store(r)
 		n.readCert.Store(nil)
 	}
-	n.barrierGate <- struct{}{}
-	defer func() { <-n.barrierGate }()
+	drained := true
+	// Once r's shutdown started, no barrier of r can be drained any more.
+	if p := n.shutdownPending; p == nil || p.raft != r {
+		gate := time.NewTimer(n.cfg.Timing.Apply)
+		defer gate.Stop()
+		select {
+		case n.barrierGate <- struct{}{}:
+			defer func() { <-n.barrierGate }()
+		case <-gate.C:
+			drained = false
+			n.log.Error("a read barrier did not finish; shutting raft down without it", "waited", n.cfg.Timing.Apply)
+		}
+	}
 	// Never close the observation channel: Raft owns sends. Deregister,
 	// cancel and join before stores or generation bookkeeping can be retired.
 	if worker := n.observer; worker != nil && worker.raft == r {
@@ -757,7 +771,10 @@ func (n *Node) stopRaft(r *raft.Raft) error {
 		<-worker.done
 		n.observer = nil
 	}
-	return n.awaitShutdown(r)
+	if err := n.awaitShutdown(r); err != nil || drained {
+		return err
+	}
+	return errShutdownTimeout
 }
 
 // errShutdownTimeout: Raft did not shut down within Timing.Apply; its
@@ -1374,6 +1391,11 @@ func (n *Node) StuckOverdue() string {
 // so several of them stopped at once (a passed entry, or a store fault every
 // replica hit) do not all leave together.
 func (n *Node) leaveKeepsQuorum() bool {
+	// A Raft shut down for good (a recover that could not stop it) takes
+	// no part in the quorum, and no new generation may start over it.
+	if n.r().State() == raft.Shutdown {
+		return true
+	}
 	servers := n.servers()
 	if servers == nil {
 		return false
@@ -1511,6 +1533,28 @@ func (n *Node) Ready() bool {
 	}
 	age := time.Since(*at)
 	return age >= 0 && age < 3*n.cfg.Timing.Tick+time.Second
+}
+
+// watchApply stops a replica whose state machine has been on one command
+// for DeadAfter plus Apply, the longest a caller waits on a command (a
+// store lock never released, a stalled write). Raft keeps
+// answering its heartbeats, so without this it would keep its vote and
+// count as a filled seat while it applies nothing. The stop is local: it
+// exits once the others keep a majority without it (Run, StuckOverdue).
+// It runs apart from the Run loop, which the same fault may block.
+func (n *Node) watchApply(ctx context.Context) {
+	t := time.NewTicker(n.cfg.Timing.Tick)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		if d := n.fsm.applyingFor(); d >= n.cfg.Timing.DeadAfter+n.cfg.Timing.Apply {
+			_ = n.fsm.stopLocal(fmt.Errorf("applying log entry %d has not finished after %s", n.fsm.applying.Load(), d.Round(time.Second)))
+		}
+	}
 }
 
 // watchClock notices the wall clock moving apart from the monotonic one: a

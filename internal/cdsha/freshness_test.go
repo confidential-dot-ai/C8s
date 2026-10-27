@@ -2,6 +2,7 @@ package cdsha
 
 import (
 	"context"
+	"errors"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -267,8 +268,8 @@ func TestReadCertificateRejectsDelayedOldLeaderResponse(t *testing.T) {
 }
 
 // Timed-out reads must leave only one pending Barrier future, even when the
-// leader FSM cannot finish applying a command. Releasing it must allow clean
-// cancellation and shutdown (including the periodic read worker).
+// leader FSM cannot finish applying a command. Shutdown waits on it a bounded
+// time; releasing it lets the read worker, Raft and the future finish.
 func TestReadBarrierStalledFSMBoundsWaitersAndShutsDown(t *testing.T) {
 	key, pub := operatorKey(t)
 	ds := newMemDecrees()
@@ -329,10 +330,10 @@ func TestReadBarrierStalledFSMBoundsWaitersAndShutsDown(t *testing.T) {
 	if got := runtime.NumGoroutine(); got > baseline+4 {
 		t.Fatalf("timed-out barriers accumulated goroutines: before=%d after=%d", baseline, got)
 	}
-	// Concurrent production shutdowns close admission and drain the real
+	// A concurrent shutdown closes admission and tries to drain the real
 	// future before Raft is stopped. A late caller must not enqueue work.
-	stopped := make(chan struct{})
-	go func() { n.shutdown(); close(stopped) }()
+	stopped := make(chan error, 1)
+	go func() { stopped <- n.stopRaft(r) }()
 	eventually(t, time.Second, "shutdown closes read admission", func() bool { return n.stoppingReads.Load() == r })
 	// Simulate an already-completed refresh publishing late during drain.
 	n.readCert.Store(cert)
@@ -348,18 +349,19 @@ func TestReadBarrierStalledFSMBoundsWaitersAndShutsDown(t *testing.T) {
 	if r.LastIndex() != lastIndex {
 		t.Fatal("late admission enqueued a barrier")
 	}
+	// A future behind an FSM that never finishes cannot hold the shutdown:
+	// at most Timing.Apply for the barrier gate, then Timing.Apply for Raft.
+	// It says the future may be stranded, so no new generation starts.
 	select {
-	case <-stopped:
-		t.Fatal("shutdown abandoned the held barrier future")
-	default:
+	case err := <-stopped:
+		if !errors.Is(err, errShutdownTimeout) {
+			t.Fatalf("shutdown past a held barrier: %v, want errShutdownTimeout", err)
+		}
+	case <-time.After(2*n.cfg.Timing.Apply + 2*time.Second):
+		t.Fatal("shutdown waited on the held barrier future without bound")
 	}
 	cancel()
 	release.Do(func() { close(held.release) })
-	select {
-	case <-stopped:
-	case <-time.After(3 * time.Second):
-		t.Fatal("production shutdown did not drain barrier")
-	}
 	select {
 	case <-done:
 	case <-time.After(3 * time.Second):
@@ -370,5 +372,4 @@ func TestReadBarrierStalledFSMBoundsWaitersAndShutsDown(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("command future did not finish")
 	}
-	eventually(t, time.Second, "pending barrier releases token", func() bool { return len(n.barrierGate) == 0 })
 }

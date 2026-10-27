@@ -199,6 +199,9 @@ type FSM struct {
 	passed atomic.Bool
 	// applying is the index of the entry Apply is on, for stop.
 	applying atomic.Uint64
+	// applyStart is when the command Apply is on started (UnixNano), 0
+	// between commands and during a Restore (Node.watchApply).
+	applyStart atomic.Int64
 
 	// applyDelay is a test seam (set only from tests, zero otherwise): it
 	// slows every command apply, as a slow local disk does.
@@ -264,6 +267,15 @@ func (f *FSM) stuckPassed() bool {
 	return p != nil && !p.local && f.passed.Load()
 }
 
+// applyingFor is how long the command Apply is on has run, or 0 between
+// commands.
+func (f *FSM) applyingFor() time.Duration {
+	if at := f.applyStart.Load(); at != 0 {
+		return time.Since(time.Unix(0, at))
+	}
+	return 0
+}
+
 // stuckFor is how long ago the replica got stuck, or 0 if it is not.
 func (f *FSM) stuckFor() time.Duration {
 	if at := f.stuckAt.Load(); at != 0 {
@@ -295,12 +307,14 @@ func (f *FSM) Apply(l *raft.Log) any {
 	if l.Type != raft.LogCommand {
 		return nil
 	}
+	f.applyStart.Store(time.Now().UnixNano())
+	defer f.applyStart.Store(0)
 	point := f.dig.next(l)
 	defer func() { f.dig.record(point) }()
+	f.applying.Store(l.Index)
 	if d := f.applyDelay.Load(); d > 0 {
 		time.Sleep(time.Duration(d))
 	}
-	f.applying.Store(l.Index)
 	var e Entry
 	if err := decodeStrict(l.Data, &e); err != nil {
 		return f.stop(fmt.Errorf("decode log entry %d: %w", l.Index, err))
@@ -311,6 +325,11 @@ func (f *FSM) Apply(l *raft.Log) any {
 	if e.Kind == KindCheckpoint {
 		point.State = f.stateDigest(point.Index)
 		return nil
+	}
+	if e.Kind == KindRestore {
+		// It replaces the whole state from a backup, which takes as long
+		// as the backup is large: not watched (Node.watchApply).
+		f.applyStart.Store(0)
 	}
 	res := f.applyRecovering(l.Index, e)
 	if err, ok := res.(error); ok && errors.Is(err, errMalformed) {
