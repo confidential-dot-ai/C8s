@@ -96,68 +96,15 @@ func newHARecoverCmd() *cobra.Command {
 			}
 			intent := "restore-" + cdsha.NewIntentID()
 			expires := time.Now().Add(expiresIn).UTC().Truncate(time.Second)
-			url := strings.TrimRight(conn.URL, "/") + "/ha/restore"
-			for i := 0; i < attempts; i++ {
-				if i > 0 {
-					time.Sleep(time.Second)
-				}
-				// A fresh attested connection each time: behind a Service the
-				// request lands on any replica, and only the named one restores.
-				hc, err := conn.HTTPClient(cmd.Context())
-				if err != nil {
-					return err
-				}
-				// The decree names the process this connection reaches:
-				// every request of hc goes to the one attested peer its first
-				// handshake verified (cdsconn), so the member ID comes from it.
-				var st cdsha.Status
-				if err := getJSON(cmd.Context(), hc, conn.URL, "/ha/status", 1<<16, &st); err != nil {
-					fmt.Fprintf(cmd.ErrOrStderr(), "attempt %d: %v\n", i+1, err)
-					continue
-				}
-				if st.ClusterID != clusterID || st.NodeName != node {
-					continue // another replica answered
-				}
-				if st.Joined {
-					// An earlier attempt may have restored the cluster after
-					// its request timed out. The decree record says whether
-					// ours applied.
-					if restoreApplied(cmd.Context(), hc, conn.URL, intent) {
-						fmt.Fprintf(cmd.OutOrStdout(), "restored on %s (the decree record holds %s)\n", node, intent)
-						return nil
-					}
-					return errors.New("restore refused: the replica is serving; a Restore only goes to a fresh replica after a total loss (c8s cds ha status shows the cluster)")
-				}
+			sign := func(member string) ([]byte, error) {
 				sd, err := cdsha.SignDecree(cdsha.Decree{ClusterID: clusterID, IntentID: intent, Kind: cdsha.Restore, BootstrapNode: node,
-					TargetMember: st.ID, SnapshotSHA256: cdsha.SnapshotSHA256(snap), ExpiresAt: expires, Alone: alone}, dk)
+					TargetMember: member, SnapshotSHA256: cdsha.SnapshotSHA256(snap), ExpiresAt: expires, Alone: alone}, dk)
 				if err != nil {
-					return err
+					return nil, err
 				}
-				body, err := json.Marshal(RestoreRequest{Decree: sd, Snapshot: snap})
-				if err != nil {
-					return err
-				}
-				code, msg, err := postRestore(hc, url, body)
-				switch {
-				case err != nil:
-					fmt.Fprintf(cmd.ErrOrStderr(), "attempt %d: %v\n", i+1, err)
-				case code == http.StatusOK:
-					fmt.Fprintf(cmd.OutOrStdout(), "restored on %s (member %s): %s", node, st.ID, msg)
-					return nil
-				case code == http.StatusMisdirectedRequest:
-					// The process restarted since its status: a new member ID.
-				default:
-					if restoreApplied(cmd.Context(), hc, conn.URL, intent) {
-						fmt.Fprintf(cmd.OutOrStdout(), "restored on %s (the decree record holds %s)\n", node, intent)
-						return nil
-					}
-					if code == http.StatusNotFound {
-						return errors.New("restore refused: the replica is serving; a Restore only goes to a fresh replica after a total loss (c8s cds ha status shows the cluster)")
-					}
-					return fmt.Errorf("restore refused (%d): %s", code, strings.TrimSpace(msg))
-				}
+				return json.Marshal(RestoreRequest{Decree: sd, Snapshot: snap})
 			}
-			return fmt.Errorf("no answer from the replica on %s after %d attempts", node, attempts)
+			return deliverRestore(cmd.Context(), conn, cmd.OutOrStdout(), cmd.ErrOrStderr(), restoreTarget{clusterID: clusterID, node: node, intent: intent, attempts: attempts}, sign)
 		},
 	}
 	cdsconn.BindFlags(cmd.Flags(), &conn)
@@ -219,19 +166,118 @@ func checkRecoverEndpoint(conn cdsconn.Options) error {
 	return nil
 }
 
+// restoreTimeout bounds one restore end to end: the replica's write deadline
+// for POST /ha/restore (handleRestore), how long recover waits for that
+// answer, and how long it keeps reading the outcome after a request that may
+// have started a restore. Node.Restore checks the backup twice (preflight and
+// apply), probes each peer and waits for leadership, which can take well over
+// the other requests' timeouts.
+const restoreTimeout = 5 * time.Minute
+
+// restoreTarget is the replica a recover restores and the decree it signs.
+type restoreTarget struct {
+	clusterID, node, intent string
+	attempts                int
+}
+
+// deliverRestore hands the Restore to the fresh replica on t.node. sign
+// returns the request body for the member ID the replica reports.
+//
+// INVARIANT: success means the POST answered 200 or the replica's decree
+// record holds t.intent. After a request that may have started the restore
+// (no answer, 429, or the replica joined since), recover reads the status and
+// the decree record until one says how it ended, for up to restoreTimeout,
+// instead of reporting a refusal for a restore that is still running.
+func deliverRestore(ctx context.Context, conn cdsconn.Options, out, errOut io.Writer, t restoreTarget, sign func(member string) ([]byte, error)) error {
+	url := strings.TrimRight(conn.URL, "/") + "/ha/restore"
+	var waitUntil time.Time // set once a request may have started a restore
+	for i := 0; i < t.attempts || time.Now().Before(waitUntil); i++ {
+		if i > 0 {
+			time.Sleep(time.Second)
+		}
+		// A fresh attested connection each time: behind a Service the
+		// request lands on any replica, and only the named one restores.
+		hc, err := conn.HTTPClient(ctx)
+		if err != nil {
+			return err
+		}
+		// The decree names the process this connection reaches: every
+		// request of hc goes to the one attested peer its first handshake
+		// verified (cdsconn), so the member ID comes from it.
+		var st cdsha.Status
+		if err := getJSON(ctx, hc, conn.URL, "/ha/status", 1<<16, &st); err != nil {
+			fmt.Fprintf(errOut, "attempt %d: %v\n", i+1, err)
+			continue
+		}
+		if st.ClusterID != t.clusterID || st.NodeName != t.node {
+			fmt.Fprintf(errOut, "attempt %d: reached the replica of cluster %q on node %q\n", i+1, st.ClusterID, st.NodeName)
+			continue
+		}
+		if st.Joined {
+			applied, err := restoreApplied(ctx, hc, conn.URL, t.intent)
+			switch {
+			case applied:
+				fmt.Fprintf(out, "restored on %s (the decree record holds %s)\n", t.node, t.intent)
+				return nil
+			case err == nil:
+				return errors.New("restore refused: the replica is serving; a Restore only goes to a fresh replica after a total loss (c8s cds ha status shows the cluster)")
+			}
+			// Joined, but its full server does not serve the record yet.
+			fmt.Fprintf(errOut, "attempt %d: the replica on %s holds a cluster; waiting for its decree record: %v\n", i+1, t.node, err)
+			continue
+		}
+		body, err := sign(st.ID)
+		if err != nil {
+			return err
+		}
+		post := *hc
+		post.Timeout = restoreTimeout
+		code, msg, err := postRestore(&post, url, body)
+		switch {
+		case err == nil && code == http.StatusOK:
+			fmt.Fprintf(out, "restored on %s (member %s): %s", t.node, st.ID, msg)
+			return nil
+		case err == nil && code == http.StatusMisdirectedRequest:
+			// The process restarted since its status: a new member ID.
+		case err != nil || code == http.StatusTooManyRequests || code == http.StatusNotFound || code == http.StatusServiceUnavailable:
+			// No answer, a restore in progress, or the full server: the
+			// restore may be running or done. Read how it ended.
+			waitUntil = time.Now().Add(restoreTimeout)
+			fmt.Fprintf(errOut, "attempt %d: %s; reading the outcome\n", i+1, postOutcome(code, msg, err))
+		default:
+			// A refusal, unless the replica restored in between (409:
+			// it belongs to a cluster now).
+			var now cdsha.Status
+			if getJSON(ctx, hc, conn.URL, "/ha/status", 1<<16, &now) == nil && now.Joined {
+				waitUntil = time.Now().Add(restoreTimeout)
+				continue
+			}
+			return fmt.Errorf("restore refused (%d): %s", code, strings.TrimSpace(msg))
+		}
+	}
+	return fmt.Errorf("no answer from the replica on %s after %d attempts", t.node, t.attempts)
+}
+
+func postOutcome(code int, msg string, err error) string {
+	if err != nil {
+		return err.Error()
+	}
+	return fmt.Sprintf("%d %s", code, strings.TrimSpace(msg))
+}
+
 // restoreApplied reports whether the cluster's decree record holds the
-// Restore decree with this intent.
-func restoreApplied(ctx context.Context, hc *http.Client, base, intent string) bool {
+// Restore decree with this intent, or why the record could not be read.
+func restoreApplied(ctx context.Context, hc *http.Client, base, intent string) (bool, error) {
 	records, err := fetchDecreeRecord(ctx, hc, base)
 	if err != nil {
-		return false
+		return false, err
 	}
 	for _, r := range records {
 		if r.Decree.Decree.Kind == cdsha.Restore && r.Decree.Decree.IntentID == intent {
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
 func postRestore(hc *http.Client, url string, body []byte) (int, string, error) {

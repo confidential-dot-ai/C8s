@@ -508,7 +508,11 @@ func handleRestore(node *cdsha.Node) http.HandlerFunc {
 		}
 		// The server also bounds request reads. Set an explicit handler deadline
 		// so a slow upload cannot retain the restore admission slot indefinitely.
-		_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(30 * time.Second))
+		// The answer may take up to restoreTimeout: the server's WriteTimeout
+		// would cut it off while the restore goes on.
+		rc := http.NewResponseController(w)
+		_ = rc.SetReadDeadline(time.Now().Add(30 * time.Second))
+		_ = rc.SetWriteDeadline(time.Now().Add(restoreTimeout))
 		limit := int64(maxLegacyRestoreBytes)
 		if header := r.Header.Get(restoreDecreeHeader); header != "" {
 			var sd cdsha.SignedDecree

@@ -310,8 +310,10 @@ written after the backup are not in it.
 
 Fewer shares than the threshold are refused. The restored cluster keeps its
 mesh CA, secrets, workload policy and decree record, and the other replicas join it.
-If an attempt's answer times out while the replica restores, `recover` checks
-the decree record and reports success when its own Restore is there.
+A restore can take minutes for a large backup. When an attempt gets no answer,
+or meets the restore already in progress, `recover` keeps reading the
+replica's status and decree record (for up to 5 minutes) and reports success
+only when its own Restore is in the record.
 
 ### Restoring an older backup on purpose (rollback)
 

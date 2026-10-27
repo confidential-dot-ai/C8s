@@ -197,13 +197,15 @@ func TestRestoreAppliedReadsTheDecreeRecord(t *testing.T) {
 	}))
 	defer srv.Close()
 	ctx := context.Background()
-	if !restoreApplied(ctx, srv.Client(), srv.URL, "restore-1") {
-		t.Fatal("the recorded Restore was not found")
+	if ok, err := restoreApplied(ctx, srv.Client(), srv.URL, "restore-1"); !ok || err != nil {
+		t.Fatalf("the recorded Restore was not found: %v", err)
 	}
-	if restoreApplied(ctx, srv.Client(), srv.URL, "restore-2") || restoreApplied(ctx, srv.Client(), srv.URL, "restore-3") {
-		t.Fatal("another decree kind or an unknown intent counted as the Restore")
+	for _, intent := range []string{"restore-2", "restore-3"} {
+		if ok, err := restoreApplied(ctx, srv.Client(), srv.URL, intent); ok || err != nil {
+			t.Fatalf("%s: another decree kind or an unknown intent counted as the Restore (%v)", intent, err)
+		}
 	}
-	if restoreApplied(ctx, srv.Client(), srv.URL+"/nowhere", "restore-1") {
-		t.Fatal("an unreadable record counted as applied")
+	if ok, err := restoreApplied(ctx, srv.Client(), srv.URL+"/nowhere", "restore-1"); ok || err == nil {
+		t.Fatal("an unreadable record counted as applied, or as read")
 	}
 }
