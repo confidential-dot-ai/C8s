@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/containerd/nri/pkg/api"
 	"golang.org/x/sys/unix"
 
 	"github.com/confidential-dot-ai/c8s/internal/podmesh/ruleset"
@@ -320,6 +321,59 @@ func TestRecoverAPodHoldingExitsInTheNamespace(t *testing.T) {
 	}
 	if err := baseGate.verifyMember(base.GetId()); err != nil {
 		t.Fatalf("a recovered base-ruleset pod was refused an assertion: %v", err)
+	}
+}
+
+// A container's network namespace is recognised as the sandbox's by kernel
+// identity, not by the path string the runtime happens to use: at a Synchronize
+// replay the runtime reports a /proc/<pid>/ns/net handle for the same namespace
+// the sandbox was proven at under its CNI path, and recovery must not read that
+// relabelling as a move. A path naming a different namespace is still refused.
+func TestRecoverMatchesTheSandboxNamespaceByIdentity(t *testing.T) {
+	requireNetNS(t)
+	// The test process's own network namespace, named two ways: the sandbox was
+	// proven at one, the container reports the other, both the same file.
+	proven, err := namespaceFile("/proc/self/ns/net")
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := &protectedPod{netns: proven, kubeNamespace: "default"}
+	relabelled := fmt.Sprintf("/proc/%d/ns/net", os.Getpid())
+
+	ctr := &api.Container{
+		Name:  "app",
+		Linux: &api.LinuxContainer{Namespaces: []*api.LinuxNamespace{{Type: "network", Path: relabelled}}},
+	}
+	if err := state.requireSandboxNetwork(ctr, true); err != nil {
+		t.Fatalf("a running container reported the sandbox namespace under another path and was refused: %v", err)
+	}
+
+	// A stopped container has no live /proc handle to resolve; it moves no
+	// packets, so its namespace is not checked even when the path is gone.
+	gone := &api.Container{
+		Name:  "exited",
+		Linux: &api.LinuxContainer{Namespaces: []*api.LinuxNamespace{{Type: "network", Path: "/proc/2147483647/ns/net"}}},
+	}
+	if err := state.requireSandboxNetwork(gone, false); err != nil {
+		t.Fatalf("a stopped container's missing namespace handle was refused: %v", err)
+	}
+
+	// A container reported running at Synchronize can exit before recovery runs
+	// on the deferred path: its /proc handle is then gone. It moves no packets,
+	// so the missing handle is not a refusal.
+	if err := state.requireSandboxNetwork(gone, true); err != nil {
+		t.Fatalf("a running container whose /proc handle is gone was refused: %v", err)
+	}
+
+	// A path that resolves to a genuinely different namespace is a move: a
+	// process cloned into its own network namespace is not the test's.
+	elsewhere := sandboxProcess(t)
+	moved := &api.Container{
+		Name:  "moved",
+		Linux: &api.LinuxContainer{Namespaces: []*api.LinuxNamespace{{Type: "network", Path: sandboxNetNSPath(elsewhere)}}},
+	}
+	if err := state.requireSandboxNetwork(moved, true); err == nil {
+		t.Fatal("a container in another network namespace was taken as the sandbox's")
 	}
 }
 

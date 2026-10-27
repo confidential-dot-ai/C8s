@@ -8,9 +8,11 @@ package nriimagepolicy
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/netip"
 	"slices"
+	"strings"
 	"sync"
 
 	"github.com/containerd/nri/pkg/api"
@@ -246,7 +248,7 @@ func (g *meshGate) recovered(pod *api.PodSandbox, ctrs []recoveredContainer, exi
 func (s *protectedPod) restore(policy meshPolicy, c recoveredContainer) error {
 	for _, check := range []func() error{
 		func() error { return s.requireContainerAlone(policy, c.ctr, c.launch) },
-		func() error { return s.requireSandboxNetwork(c.ctr) },
+		func() error { return s.requireSandboxNetwork(c.ctr, c.running) },
 	} {
 		if err := check(); err != nil {
 			return err
@@ -279,10 +281,37 @@ func (s *protectedPod) requireContainerAlone(policy meshPolicy, ctr *api.Contain
 
 // requireSandboxNetwork requires a container's network namespace, where its
 // bundle names one, to be the sandbox's: the ruleset verified there says
-// nothing about a container running in another.
-func (s *protectedPod) requireSandboxNetwork(ctr *api.Container) error {
+// nothing about a container running in another. The runtime labels the same
+// namespace differently at different times — the sandbox's own CNI path at
+// creation, a /proc/<pid>/ns/net handle in a Synchronize replay — so the two
+// are compared by the kernel identity (device and inode) of the files they
+// name, not as path strings. A container that is not running has no live
+// /proc handle to resolve and, being stopped, moves no packets, so its
+// namespace is not checked.
+func (s *protectedPod) requireSandboxNetwork(ctr *api.Container, running bool) error {
+	if !running {
+		return nil
+	}
 	for _, ns := range ctr.GetLinux().GetNamespaces() {
-		if ns.GetType() == "network" && ns.GetPath() != "" && ns.GetPath() != s.netns.path {
+		if ns.GetType() != "network" || ns.GetPath() == "" || ns.GetPath() == s.netns.path {
+			continue
+		}
+		described, err := namespaceFile(ns.GetPath())
+		if err != nil {
+			// A /proc/<pid>/ns/net handle the Synchronize snapshot named can be
+			// gone by the time recovery runs on the deferred path: the process
+			// exited in that window, so the container moves no packets and — as
+			// with one already reported not running — its namespace is not
+			// checked. Any other unresolvable path (a CNI bind mount whose label
+			// is gone while a namespace it named may still hold a running
+			// container) cannot be shown to be the sandbox's, so it is refused
+			// fail-closed, with the read error as the cause.
+			if strings.HasPrefix(ns.GetPath(), "/proc/") && errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			return fmt.Errorf("the container runs in the network namespace %s, not the sandbox's %s: %w", ns.GetPath(), s.netns.path, err)
+		}
+		if described.id != s.netns.id {
 			return fmt.Errorf("the container runs in the network namespace %s, not the sandbox's %s", ns.GetPath(), s.netns.path)
 		}
 	}
