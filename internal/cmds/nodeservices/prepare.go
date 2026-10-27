@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 
@@ -72,6 +73,9 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 	}
 	base, err := bakedBase(a["base"])
 	if err != nil {
+		return err
+	}
+	if err := fillNodeValues(base, d.Node); err != nil {
 		return err
 	}
 	if err := mergeWorkloads(base, bakedSeed, true); err != nil {
@@ -151,6 +155,76 @@ func bakedBase(declared any) (*allowlist.Allowlist, error) {
 		return nil, fmt.Errorf("baked NRI base: %w", err)
 	}
 	return &base, nil
+}
+
+// The measured floor writes a static-pod flag whose value RKE2 takes from
+// this node's launch document as "<flag>=<placeholder>"
+// (node-guest-image/c8s/image-policy.yaml.in).
+const (
+	nodeNamePlaceholder             = "${NODE_NAME}"
+	nodeAdvertiseAddressPlaceholder = "${NODE_ADVERTISE_ADDRESS}"
+)
+
+// fillNodeValues gives each placeholder flag in the base's argv pins this
+// node's value.
+func fillNodeValues(base *allowlist.Allowlist, node launchconfig.Node) error {
+	values := map[string]string{
+		nodeNamePlaceholder:             node.Name,
+		nodeAdvertiseAddressPlaceholder: node.AdvertiseAddress(),
+	}
+	for name, w := range base.Workloads {
+		for i := range w.InitContainers {
+			if err := fillContainer(&w.InitContainers[i], values); err != nil {
+				return fmt.Errorf("baked NRI base workload %q: %w", name, err)
+			}
+		}
+		for i := range w.Containers {
+			if err := fillContainer(&w.Containers[i], values); err != nil {
+				return fmt.Errorf("baked NRI base workload %q: %w", name, err)
+			}
+		}
+		base.Workloads[name] = w
+	}
+	return nil
+}
+
+func fillContainer(c *allowlist.Container, values map[string]string) error {
+	for _, policy := range []*allowlist.ArgvPolicy{&c.Command, &c.Args} {
+		argv, err := argvWithNodeValues(policy.Argv, values)
+		if err != nil {
+			return err
+		}
+		policy.Argv = argv
+	}
+	return nil
+}
+
+// argvWithNodeValues is argv with each "<flag>=<placeholder>" element given
+// the node's value, and left out where the node has none, as RKE2 then
+// passes no such flag. An element that names a placeholder in any other way,
+// or a flag set to a placeholder the floor does not define, is an error. Any
+// other "${" is literal: a pinned shell script expands its own variables.
+func argvWithNodeValues(argv []string, values map[string]string) ([]string, error) {
+	filled := make([]string, 0, len(argv))
+	for _, element := range argv {
+		flag, placeholder, isFlag := strings.Cut(element, "=")
+		namesPlaceholder := isFlag && strings.HasPrefix(flag, "-") && strings.HasPrefix(placeholder, "${")
+		for p := range values {
+			namesPlaceholder = namesPlaceholder || strings.Contains(element, p)
+		}
+		if !namesPlaceholder {
+			filled = append(filled, element)
+			continue
+		}
+		value, defined := values[placeholder]
+		if !isFlag || !defined {
+			return nil, fmt.Errorf("argv element %q is not a flag set to a placeholder the floor defines", element)
+		}
+		if value != "" {
+			filled = append(filled, flag+"="+value)
+		}
+	}
+	return filled, nil
 }
 
 // appendCredentialRole completes the measured mesh policy with the one binding

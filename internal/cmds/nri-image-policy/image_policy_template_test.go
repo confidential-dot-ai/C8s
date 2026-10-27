@@ -85,57 +85,41 @@ func TestNodeImageBootConfig_ParsesAndAdmitsSystemImages(t *testing.T) {
 		t.Errorf("policy.boot_marker_path = %q, want a path under /run (tmpfs, cleared by a reboot)", cfg.Policy.BootMarkerPath)
 	}
 
-	// The full RKE2 system set: every digest systemfloor derives from the
-	// pinned airgap bundles and baked manifests. A regen for an RKE2 pin bump
-	// rewrites these — update the pins with it. Pinning the whole set, not a
-	// boot-critical subset, makes a dropped or corrupted entry fail here
-	// instead of at node boot. The local-path helper's busybox is NOT here:
-	// systemfloor drops it (-exclude-ref) and the chart seeds it argv-pinned.
+	// The RKE2 system set: every image the node runs as a container, at the
+	// digest systemfloor holds it to. An RKE2 pin bump updates these with the
+	// floor. Pinning the whole set, not a boot-critical subset, makes a dropped
+	// or corrupted entry fail here instead of at node boot. The local-path
+	// helper's busybox is NOT here: the chart seeds it argv-pinned.
 	systemImages := map[string]string{
 		"sha256:0d26512c90d935db3180f47a7a716e3dfac0847ec29076fb5487e535125a86a8": "docker.io/rancher/hardened-cni-plugins:v1.9.1-build20260717",
-		"sha256:10b602130d98d8de3c40213f938430a962b14ccf4b405cdbcb2af62ba52dd0e6": "docker.io/rancher/mirrored-cilium-operator-azure:v1.19.6",
 		"sha256:134ab48d00e67bed72fa43e0492adf2f0c78383e21da7ee1aeb5b7aa8ef2e7ee": "docker.io/rancher/mirrored-cilium-cilium:v1.19.6",
-		"sha256:1d3cd7f07e11e451683002b925a25ccba74d9aed2fc2e454a7173d260a2d11bd": "docker.io/rancher/mirrored-cilium-hubble-relay:v1.19.6",
 		"sha256:1eba82e9c386038b4af6d69cca7519fac738c28c42735ed48ce70c882ad0d80f": "rancher/local-path-provisioner:v0.0.36@sha256:1eba82e9c386038b4af6d69cca7519fac738c28c42735ed48ce70c882ad0d80f",
 		"sha256:25cc340fe6fd53c101e16fc452f503e7a92c219c64a80ed5381784b522dbbf77": "nvcr.io/nvidia/k8s-device-plugin:v0.19.3@sha256:25cc340fe6fd53c101e16fc452f503e7a92c219c64a80ed5381784b522dbbf77",
-		"sha256:26446592541d6e37333850b37bd59cccec69f6f2f02fd50a8588d3f1a136717f": "docker.io/rancher/mirrored-cilium-hubble-ui-backend:v0.13.5",
-		"sha256:2f28e344b83ac28bf9a561b666dd3e935c7238d8d4be4d2c840053e178718945": "docker.io/rancher/mirrored-cilium-operator-aws:v1.19.6",
-		"sha256:30df3131622e08f3051b171af68cd7997609aa19f7bd692b70b5b6bd6fcd659e": "docker.io/rancher/mirrored-cilium-certgen:v0.4.6",
 		"sha256:4935e86e846d75591113f64ad4e0402718a1eda08f6900a9325d54f1df64945c": "docker.io/rancher/hardened-k8s-metrics-server:v0.9.0-build20260819",
 		"sha256:4f7ffbb3399c9f8137f5d0dd3ca0eddc7909e5d0155b35f1b0449baf96d61bfa": "docker.io/rancher/hardened-etcd:v3.6.14-k3s1-build20260819",
-		"sha256:54a53cb983d47579a8e7cdcd9ae38bc58ff85c28c63fd26de02ce332d5f988ee": "docker.io/rancher/hardened-dns-node-cache:1.26.8-build20260819",
-		"sha256:59ab31ea62509b1596e1dfd436e781f5e7549a15aea82aab05e29657ac099f43": "docker.io/rancher/mirrored-cilium-clustermesh-apiserver:v1.19.6",
-		"sha256:5f804f48df0c42c66aeff3252f36277ecbfd4e968bf3ec81b0717323355e7add": "docker.io/rancher/mirrored-cilium-cilium-envoy:v1.36.9-1782267392-edeb3f2af56c37c407efa1f63f0b32f595399bbc",
-		"sha256:7956a28b1ebd803f58341ba88fed4c8bc878ec13226c2e55959ba5a88c21341e": "docker.io/rancher/rke2-runtime:v1.36.4-rke2r1",
-		"sha256:8026310fc44d985bf7c02434ad11d5f826a1aa1567606eea121b24ba9b3b0590": "docker.io/rancher/hardened-addon-resizer:1.8.23-build20260819",
 		"sha256:8d5872d767f93393273cb1ecad81e4bc08af65311d206bc31ee8f48bc58e51c4": "docker.io/rancher/hardened-snapshot-controller:v8.6.0-build20260819",
-		"sha256:910944bb0bd94f060a82a56ca1ea1c577d3e49b3473a093a47a985f32e92d94a": "docker.io/rancher/klipper-lb:v0.4.17",
 		"sha256:95a33533d97b10502be19e4f3e60e7ce9c30f4879084709af96259a01253f044": "docker.io/rancher/rke2-cloud-provider:v1.36.4-0.20260817193921-a2fc9574e060-build20260820",
-		"sha256:9906c0b60c9d65c467ccc541154728ad00886a3f8012fe7b53e88404f06babaa": "docker.io/rancher/mirrored-cilium-hubble-ui:v0.13.5",
 		"sha256:aadc3b1a2b8b682f5b4f7b01e182eeeac16f1177af0561b07825abab1d654b2b": "docker.io/rancher/mirrored-cilium-operator-generic:v1.19.6",
 		"sha256:ba922718d919920b6b6168e3f55f8effa85032a38bf44d8cc5f4df79a2fe405d": "docker.io/rancher/klipper-helm:v0.13.3-build20260820",
 		"sha256:c8e5263407ac439de1dcdde98c7623efb9e17050715a80259d8bd5e81b5a9289": "docker.io/rancher/hardened-kubernetes:v1.36.4-rke2r1-build20260821",
 		"sha256:c9b9b027e4d2cf1731311f9714f4aa633d37d7b0a72c9d3e6fc7a0594350d27c": "docker.io/rancher/hardened-cluster-autoscaler:v1.10.3-build20260819",
-		"sha256:dff360a22c8a28c2af3e78b2b4cf09a6c8edc199e27eb9f7c417bfc1ac41078e": "docker.io/rancher/hardened-traefik:v3.7.11-build20260819",
 		"sha256:e9435ef6526a98e8d01d98a85d23770859ca49028ebd282912ae5e76f92c0166": "docker.io/rancher/hardened-coredns:v1.14.7-build20260819",
-		"sha256:f548e0e8e3dc1896ca956272154dde3314e8cc4fde0a57577ee9fa1c63f5baf4": "docker.io/rancher/mirrored-pause:3.10.2",
 	}
-	// The base allowlist carries one any-argv entry per admitted image;
-	// index it by digest for the lookups below.
-	baseEntries := map[string]string{}
+	// The image each base digest is listed under, for the lookups below.
+	baseImages := map[string]string{}
 	for _, w := range cfg.Allowlist.Base.Workloads {
-		for _, d := range w.Digests() {
-			baseEntries[d.String()] = w.Label
+		for _, c := range slices.Concat(w.InitContainers, w.Containers) {
+			baseImages[c.Digest.String()] = c.Image
 		}
 	}
 	for digest, ref := range systemImages {
-		if _, ok := baseEntries[digest]; !ok {
+		if _, ok := baseImages[digest]; !ok {
 			t.Errorf("%s (%s) missing from the baked base allowlist — the node cannot boot its system components", ref, digest)
 		}
 	}
 
-	// Every entry is either one of the generated system images or one of the
-	// role entries, so an entry a regen adds or drops fails here. Boot
+	// Every entry is either one of the system images or one of the role
+	// entries, so an entry added to or dropped from the floor fails here. Boot
 	// preparation adds the separately rendered chart component seed before
 	// containerd starts.
 	entries := roleEntries()
@@ -144,8 +128,8 @@ func TestNodeImageBootConfig_ParsesAndAdmitsSystemImages(t *testing.T) {
 			continue
 		}
 		for _, d := range w.Digests() {
-			if _, generated := systemImages[d.String()]; !generated {
-				t.Errorf("base entry %q is neither a generated system image nor a role entry", name)
+			if _, system := systemImages[d.String()]; !system {
+				t.Errorf("base entry %q is neither a system image nor a role entry", name)
 			}
 		}
 	}
@@ -163,7 +147,7 @@ func TestNodeImageBootConfig_ParsesAndAdmitsSystemImages(t *testing.T) {
 			t.Errorf("the baked base carries no %q entry, so that component holds no role", name)
 			continue
 		}
-		if got := roles.base.RoleOf(entryLaunch(entry)); got != want {
+		if got := roles.base.RoleOf(containerLaunch(t, entry.Containers[0])); got != want {
 			t.Errorf("the base grants the %q launch the role %q, want %q", name, got, want)
 		}
 	}
@@ -183,8 +167,8 @@ func TestNodeImageBootConfig_ParsesAndAdmitsSystemImages(t *testing.T) {
 			t.Errorf("%s running %v took the %q role, want none", launch.digest, launch.argv, got)
 		}
 	}
-	for digest := range baseEntries {
-		if strings.Contains(baseEntries[digest], "busybox") {
+	for digest, image := range baseImages {
+		if strings.Contains(image, "busybox") {
 			t.Errorf("busybox %s must not return to the permissive base allowlist; it is seeded argv-pinned", digest)
 		}
 	}
@@ -224,15 +208,61 @@ func TestNodeImageBootConfig_ParsesAndAdmitsSystemImages(t *testing.T) {
 		t.Errorf("mesh.cluster_ranges = %v, want the baked cluster-cidr and service-cidr %v", got, wantRanges)
 	}
 
-	// Every base entry must still admit the launch it describes at final
-	// admission: a system image with its host mounts, a role entry with the
-	// argv and mounts it pins.
+	// Every base container must still admit the launch it describes at final
+	// admission: an open system image with a host mount, a pinned one or a
+	// role entry with the argv and mounts it pins.
 	store := newPolicyStore(cfg.Allowlist.Base)
 	for name, w := range cfg.Allowlist.Base.Workloads {
-		if !store.baseAdmits(entryLaunch(w), launchFinal) {
-			t.Errorf("base entry %q does not admit the launch it describes", name)
+		for _, c := range slices.Concat(w.InitContainers, w.Containers) {
+			if !store.baseAdmits(containerLaunch(t, c), launchFinal) {
+				t.Errorf("base entry %q does not admit the launch its %s container describes", name, c.Image)
+			}
 		}
 	}
+
+	// Every system container, in any entry, pins its command, args and mounts,
+	// except those of the images named here, whose launch stays open for the
+	// reasons docs/allowlist-and-capabilities.md ("Host privilege") gives.
+	openSystemImages := map[string]bool{
+		"docker.io/rancher/mirrored-cilium-cilium:v1.19.6":           true,
+		"docker.io/rancher/mirrored-cilium-operator-generic:v1.19.6": true,
+		"docker.io/rancher/klipper-helm:v0.13.3-build20260820":       true,
+		"docker.io/rancher/hardened-coredns:v1.14.7-build20260819":   true,
+	}
+	for name, w := range cfg.Allowlist.Base.Workloads {
+		for _, c := range slices.Concat(w.InitContainers, w.Containers) {
+			image, system := systemImages[c.Digest.String()]
+			if system && !openSystemImages[image] && !pinsArgvAndMounts(c) {
+				t.Errorf("base entry %q leaves the launch of %s open", name, c.Image)
+			}
+		}
+	}
+}
+
+// CoreDNS's mounts stay open, so what keeps its pinned binary its own is the
+// plugin refusing a mount over an absolute executable.
+func TestNodeImageBaseRefusesAMountOverCoreDNS(t *testing.T) {
+	cfg, err := parseConfig([]byte(renderNodeImagePolicy(t)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	coredns := cfg.Allowlist.Base.Workloads["coredns"].Containers[0]
+	launch := containerLaunch(t, coredns)
+	launch.Mounts = []allowlist.ObservedMount{{Destination: "/etc/coredns", Volume: "config-volume", Class: allowlist.MountData, Storage: allowlist.MountEncrypted}}
+	store := newPolicyStore(cfg.Allowlist.Base)
+	if !store.baseAdmits(launch, launchFinal) {
+		t.Fatalf("the base refuses CoreDNS as RKE2 runs it: %+v", launch)
+	}
+	launch.Mounts = append(launch.Mounts, allowlist.ObservedMount{Destination: "/coredns", Volume: "binary", Class: allowlist.MountData, Storage: allowlist.MountEncrypted})
+	if store.baseAdmits(launch, launchFinal) {
+		t.Fatal("the base admits CoreDNS with a mount over its executable")
+	}
+}
+
+// pinsArgvAndMounts reports whether c leaves none of its command, args and
+// mounts open.
+func pinsArgvAndMounts(c allowlist.Container) bool {
+	return c.Command.Policy != allowlist.PolicyAny && c.Args.Policy != allowlist.PolicyAny && c.Mounts.Policy != allowlist.PolicyAny
 }
 
 // A baked node takes its front-door mode from the launch file, so the base
@@ -418,33 +448,69 @@ func (l launchEvidence) container() allowlist.RunningContainer {
 	}
 }
 
-// entryLaunch is the launch an entry describes: the argv it pins, and the
-// mounts it pins where it pins any.
-func entryLaunch(w allowlist.Workload) allowlist.RunningContainer {
-	c := w.Containers[0]
+// containerLaunch is the launch a container describes: the argv it pins, the
+// mounts it pins where it pins any, and the environment it matches.
+func containerLaunch(t *testing.T, c allowlist.Container) allowlist.RunningContainer {
 	return allowlist.RunningContainer{
 		Digest: c.Digest.String(),
 		Argv:   append(slices.Clone(c.Command.Argv), c.Args.Argv...),
 		Mounts: entryMounts(c.Mounts),
+		Env:    entryEnv(t, c.Env),
 	}
 }
 
-// entryMounts is mount evidence the policy admits: the mounts it pins, or a
-// host mount where it pins none.
+// entryEnv is environment evidence a match policy admits: each variable at
+// its pinned value, or at presentValue where it need only be set. It is nil,
+// no evidence, for a policy that leaves the environment open.
+func entryEnv(t *testing.T, p allowlist.EnvPolicy) *allowlist.EnvObservation {
+	t.Helper()
+	if p.Policy != allowlist.PolicyMatch {
+		return nil
+	}
+	exact := p.ExactValues()
+	entries := make([]string, 0, len(p.Variables))
+	for name := range p.Variables {
+		value, pinned := exact[name]
+		if !pinned {
+			value = presentValue
+		}
+		entries = append(entries, name+"="+value)
+	}
+	env, err := allowlist.ObserveEnv(entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return env
+}
+
+// presentValue stands for the value of a variable a match policy requires
+// only to be set.
+const presentValue = "set"
+
+// entryMounts is mount evidence the policy admits: the mounts it pins, a host
+// mount where it leaves them open, and none where it denies them.
 func entryMounts(p allowlist.MountPolicy) []allowlist.ObservedMount {
-	if p.Policy != allowlist.PolicyExact {
+	switch p.Policy {
+	case allowlist.PolicyExact:
+		mounts := make([]allowlist.ObservedMount, 0, len(p.Rules))
+		for _, rule := range p.Rules {
+			mounts = append(mounts, ruleMount(rule))
+		}
+		return mounts
+	case allowlist.PolicyAny:
 		return []allowlist.ObservedMount{{
 			Destination: "/host",
 			Class:       allowlist.MountHost,
 			Storage:     allowlist.MountUnknown,
 		}}
+	default:
+		return observedNoMounts
 	}
-	mounts := make([]allowlist.ObservedMount, 0, len(p.Rules))
-	for _, rule := range p.Rules {
-		mounts = append(mounts, ruleMount(rule))
-	}
-	return mounts
 }
+
+// observedNoMounts is evidence of a launch with no bind mounts; nil would be
+// no evidence at all.
+var observedNoMounts = []allowlist.ObservedMount{}
 
 // ruleMount is the mount evidence a rule describes, as the node reports it: a
 // kubelet volume's source ends in the pod volume's name, and a host mount

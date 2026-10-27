@@ -58,8 +58,8 @@ if grep -qx 'CONFIG_MODULES=y' "$ngi/kernel/c8s.config"; then
   fi
 fi
 
-# The baked NRI template contains only the generated RKE2 system floor and the
-# optional local-path provisioner (pinned to its manifest by a Go test).
+# The baked NRI template's only digests are the RKE2 system floor's and the
+# optional local-path provisioner's (pinned to its manifest by a Go test).
 # The complete chart component seed is merged into it before containerd starts;
 # duplicating component digests here would drift from the rendered workloads.
 policy="$ngi/c8s/image-policy.yaml.in"

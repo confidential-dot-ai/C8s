@@ -19,12 +19,22 @@
 # RKE2 pins: bump RKE2_VERSION and the three sha256s together, from
 # sha256sum-amd64.txt at
 #   https://github.com/rancher/rke2/releases/tag/<RKE2_VERSION>
-# then regenerate the system images in image-policy.yaml.in (the bundles are
-# in mkosi.pkgcache/c8s after a build):
-#   go run ./node-guest-image/c8s/systemfloor -write \
-#     -template node-guest-image/c8s/image-policy.yaml.in \
+# then update the system images in image-policy.yaml.in: each entry's image
+# reference and the digest systemfloor reports for it (the bundles are in
+# mkosi.pkgcache/c8s after a build), adding an entry for an image the node
+# now runs as a container:
+#   go run ./node-guest-image/c8s/systemfloor \
 #     -bundle <core bundle> -bundle <cilium bundle> \
-#     -manifest node-guest-image/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/nvidia-device-plugin.yaml
+#     -manifest node-guest-image/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/nvidia-device-plugin.yaml \
+#     node-guest-image/c8s/image-policy.yaml.in
+# then capture the system pods of the new image into
+# internal/cmds/nodeservices/testdata/rke2-system-pods/ from a server and an
+# agent, from a server whose launch document leaves its address to
+# autodetection, and from one that names an external IP:
+#   kubectl get pods -n kube-system -o json | jq -f capture.jq > <capture>.json
+# with image-entrypoints.json from `crane config` of each image that runs
+# without a command. TestPreparedFloorAdmitsTheCapturedSystemPods names each
+# launch whose argv or mounts the floor must follow.
 # The optional local-path provisioner (C8S_LOCAL_PATH=1, below) keeps its own
 # base entry between the template's local-path markers; bump it with
 # local-path/local-path-storage.yaml (a repo test pins the pair).

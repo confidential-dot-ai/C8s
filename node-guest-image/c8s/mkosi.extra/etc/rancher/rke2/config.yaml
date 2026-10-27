@@ -4,6 +4,10 @@
 # starts at boot. Per-host overrides (cluster join token, alternate
 # encryption key, registries auth) belong in /etc/rancher/rke2/config.yaml.d/
 # at runtime — rke2 merges drop-ins from that dir on top of this file.
+#
+# INVARIANT: the measured base pins the argv and mounts RKE2 gives its static
+# pods from this file (c8s/image-policy.yaml.in), so a setting that changes
+# them, here or in a drop-in, changes the floor with it.
 
 # CNI: Cilium (VXLAN tunnel, BPF datapath, kube-proxy left in place).
 # Overrides live in var/lib/rancher/rke2/server/manifests/rke2-cilium-config.yaml.
@@ -24,8 +28,9 @@ kube-proxy-arg:
 # cluster. Do not reuse RKE2's 10.42.0.0/16 pod and 10.43.0.0/16 service
 # defaults: KubeVirt masquerade preserves the outer client source address, so
 # overlapping routes make the guest send replies into its own pod network
-# after the CNI starts. Cilium takes its pool from cluster-cidr. Deployments
-# that need different ranges can override all three values in config.yaml.d/.
+# after the CNI starts. Cilium takes its pool from cluster-cidr. Changing
+# cluster-cidr or service-cidr, here or in a drop-in, needs the floor's
+# control-plane argv changed with it (INVARIANT above).
 cluster-cidr: 10.52.0.0/16
 service-cidr: 10.53.0.0/16
 cluster-dns: 10.53.0.10
@@ -35,7 +40,8 @@ cluster-dns: 10.53.0.10
 # `c8s install` preflights this exact conflict). RKE2 <= v1.35 bundles
 # rke2-ingress-nginx; v1.36+ bundles rke2-traefik — disable both so the image
 # works across versions. The node image's external surface is router, not a
-# generic ingress.
+# generic ingress. Re-enabling one needs a measured base entry for its image
+# (node-guest-image/c8s/image-policy.yaml.in).
 disable:
   - rke2-ingress-nginx
   - rke2-traefik

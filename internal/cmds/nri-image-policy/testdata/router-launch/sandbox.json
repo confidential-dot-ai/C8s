@@ -1,0 +1,42 @@
+{
+  "status": {
+    "id": "1244be4041ba58b80bca1695ef6b111126c977c05f7d4c5b109f7221279b539e",
+    "labels": {
+      "app.kubernetes.io/instance": "c8s",
+      "app.kubernetes.io/name": "router",
+      "io.kubernetes.pod.name": "c8s-router-bcd6744bd-ksv6w",
+      "io.kubernetes.pod.namespace": "c8s-router",
+      "io.kubernetes.pod.uid": "e37fe9f4-0b35-4d7e-aa4c-8e7d4a1e457d",
+      "pod-template-hash": "bcd6744bd"
+    },
+    "annotations": {
+      "checksum/nginx-config": "35a88fca62c32ef285cbe0142c04066a952d54eaee6f1637b0014c190c817c57",
+      "kubernetes.io/config.seen": "2026-10-22T22:53:45.437690977Z",
+      "kubernetes.io/config.source": "api"
+    }
+  },
+  "info": {
+    "runtimeSpec": {
+      "linux": {
+        "namespaces": [
+          {
+            "type": "pid"
+          },
+          {
+            "type": "ipc"
+          },
+          {
+            "type": "uts"
+          },
+          {
+            "type": "mount"
+          },
+          {
+            "path": "/var/run/netns/cni-0d065d1b-6102-c364-e356-b2e66bae0cbb",
+            "type": "network"
+          }
+        ]
+      }
+    }
+  }
+}

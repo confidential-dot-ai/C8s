@@ -3,10 +3,11 @@ package nriimagepolicy
 import (
 	"os"
 	"regexp"
-	"strings"
 	"testing"
 
 	"github.com/containerd/nri/pkg/api"
+
+	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
 // localPathManifest is the optional provisioner manifest a C8S_LOCAL_PATH=1
@@ -38,17 +39,6 @@ func TestLocalPathMeshExemptionKeepsImageAndLaunchAdmission(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var provisionerImage string
-	for _, workload := range cfg.Allowlist.Base.Workloads {
-		for _, container := range workload.Containers {
-			if strings.HasPrefix(container.Image, "rancher/local-path-provisioner:") {
-				provisionerImage = container.Image
-			}
-		}
-	}
-	if provisionerImage == "" {
-		t.Fatal("measured base has no local-path provisioner")
-	}
 	helperArgv := []string{"/bin/sh", "/script/setup"}
 	cfg.Allowlist.Base.Workloads["local-path-helper-test"] = workloadAllowlist(t, pushDigestA, pushDigestB, helperArgv).Workloads["w"]
 
@@ -63,11 +53,6 @@ func TestLocalPathMeshExemptionKeepsImageAndLaunchAdmission(t *testing.T) {
 			image:   "registry/repo@" + pushDigestC,
 			argv:    helperArgv,
 			wantErr: true,
-		},
-		{
-			name:  "measured provisioner",
-			image: provisionerImage,
-			argv:  []string{"local-path-provisioner", "--debug", "start", "--config", "/etc/config/config.json"},
 		},
 		{
 			name:  "exact helper launch",
@@ -86,7 +71,9 @@ func TestLocalPathMeshExemptionKeepsImageAndLaunchAdmission(t *testing.T) {
 			p.mesh = newMeshGate(*cfg.Mesh, discardLogger())
 			p.SetReady()
 			pod := meshPod("local-path-storage", "helper", testNetNS)
+			pod.Linux.Namespaces = append(pod.Linux.Namespaces, &api.LinuxNamespace{Type: "ipc"}, &api.LinuxNamespace{Type: "uts"})
 			ctr := makeCtrWithImageArgs(pod.Id, "helper", tc.image, tc.argv)
+			ctr.Linux = &api.LinuxContainer{Namespaces: []*api.LinuxNamespace{{Type: cgroupNamespace}}}
 			ctr.User = &api.User{Uid: 0}
 			if p.mesh.hosts(pod) {
 				t.Fatal("local-path-storage is covered by the mesh gate")
@@ -97,4 +84,19 @@ func TestLocalPathMeshExemptionKeepsImageAndLaunchAdmission(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("measured provisioner", func(t *testing.T) {
+		p := newTestPlugin(cfg)
+		p.mesh = newMeshGate(*cfg.Mesh, discardLogger())
+		p.mountStorage = fixedStorage(allowlist.MountEncrypted)
+		p.SetReady()
+		pod := meshPod("local-path-storage", "provisioner", testNetNS)
+		pod.Uid = "5a1d-pod"
+		spec := bakedWorkloads(t, "local-path/local-path-storage.yaml")[0].Spec.Template.Spec
+		c := spec.Containers[0]
+		ctr := bakedLaunch(t, pod, spec, c, launchEnv(t, pod, c, bakedManifestImageEnv(t)[digestOf(c.Image)]))
+		if _, _, err := createAndStart(p, t.Context(), pod, ctr); err != nil {
+			t.Fatalf("the measured provisioner is refused: %v", err)
+		}
+	})
 }

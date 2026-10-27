@@ -101,6 +101,11 @@ spec:
         app: local-path-provisioner
     spec:
       serviceAccountName: local-path-provisioner-service-account
+      # The measured base pins this container's whole launch, environment
+      # included (c8s/image-policy.yaml.in): of the Service variables, only the
+      # kubernetes Service's, and the ConfigMap under /mnt/c8s-data/, the one
+      # place a data mount rule may name.
+      enableServiceLinks: false
       containers:
         - name: local-path-provisioner
           image: rancher/local-path-provisioner:v0.0.36@sha256:1eba82e9c386038b4af6d69cca7519fac738c28c42735ed48ce70c882ad0d80f
@@ -110,17 +115,17 @@ spec:
             - --debug
             - start
             - --config
-            - /etc/config/config.json
+            - /mnt/c8s-data/local-path-config/config.json
           volumeMounts:
             - name: config-volume
-              mountPath: /etc/config/
+              mountPath: /mnt/c8s-data/local-path-config
           env:
             - name: POD_NAMESPACE
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
             - name: CONFIG_MOUNT_PATH
-              value: /etc/config/
+              value: /mnt/c8s-data/local-path-config
       volumes:
         - name: config-volume
           configMap:
