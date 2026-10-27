@@ -57,7 +57,7 @@ func TestReinjectSweepDeletesOnlyOwnedUninjectedWorkloadPods(t *testing.T) {
 	}
 
 	c := fake.NewClientBuilder().WithObjects(pods...).Build()
-	excluded := excludedNamespaceSet("c8s-system", []string{"skip-me"})
+	excluded := excludedNamespaceSet("c8s-system", []string{"skip-me", "local-path-storage"})
 
 	if err := reinjectSweep(context.Background(), c, excluded); err != nil {
 		t.Fatalf("reinjectSweep: %v", err)
@@ -151,7 +151,7 @@ func TestReinjectSweepReportsCounts(t *testing.T) {
 func TestExcludedNamespaceSetManyExtras(t *testing.T) {
 	got := excludedNamespaceSet("rel", []string{"a", "b", "c", "d", "e", " f ", ""})
 	want := map[string]struct{}{
-		"rel": {}, "kube-system": {}, "kube-public": {}, "kube-node-lease": {}, "local-path-storage": {},
+		"rel": {}, "kube-system": {}, "kube-public": {}, "kube-node-lease": {},
 		"a": {}, "b": {}, "c": {}, "d": {}, "e": {}, "f": {},
 	}
 	if !maps.Equal(got, want) {

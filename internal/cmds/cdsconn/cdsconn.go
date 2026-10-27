@@ -66,7 +66,7 @@ func BindFlags(pf *pflag.FlagSet, o *Options) {
 		pinHelp = "use the CDS value"
 	}
 	pf.StringVar(&o.URL, "url", "", urlHelp)
-	pf.StringSliceVar(&o.Measurements, "measurements", nil, "trusted endpoint build ID(s) (repeatable/comma-separated); "+pinHelp+"; empty trusts any attested build (UNSAFE)")
+	pf.StringSliceVar(&o.Measurements, "measurements", nil, "trusted endpoint build ID(s) (repeatable/comma-separated); "+pinHelp+"; an https --url requires a pin")
 	pf.StringVar(&o.MeasurementsFile, "measurements-file", "", "text file of trusted endpoint SHA-384 hex digests, one per line; use --image-policy-file for complete JSON policies")
 	cmdsutil.BindImagePolicyFlags(pf, &o.MeasurementsConfig, nil, "pins the endpoint; excludes --measurements and --measurements-file")
 	pf.DurationVar(&o.Timeout, "timeout", 15*time.Second, "per-request timeout")
@@ -99,9 +99,6 @@ func (o *Options) HTTPClient(ctx context.Context) (*http.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	if pins.Empty() {
-		fmt.Fprintln(os.Stderr, "warning: no --measurements set; accepting any attested endpoint build (UNSAFE)")
-	}
 	hc, err := o.httpsClient(ctx, pins)
 	if err != nil {
 		return nil, err
@@ -131,8 +128,12 @@ func (o *Options) endpoint() (*url.URL, error) {
 			return nil, fmt.Errorf("refusing plaintext http:// for CDS (no attestation): use https:// (armTLS), or pass --insecure for a dev/test endpoint")
 		}
 	case "https":
-		if _, err := o.loadPins(); err != nil {
+		pins, err := o.loadPins()
+		if err != nil {
 			return nil, err
+		}
+		if pins.Empty() {
+			return nil, fmt.Errorf("refusing an unpinned endpoint: any attested build would be accepted. Pass --image-policy-file <policy.json>, --measurements <endpoint build ID>, or --measurements-file")
 		}
 	default:
 		return nil, fmt.Errorf("--url scheme must be http or https, got %q", u.Scheme)
@@ -227,8 +228,8 @@ func (o *Options) Signer() (*operatorauth.Signer, error) {
 // build is not pinned. armTLS proves the peer is *a* TEE, not that it is the CDS
 // this operator meant; with no --measurements, `c8s secrets put` hands a secret,
 // and `c8s allowlist` a policy change, to whatever attested thing answered the
-// URL. Reads stay a warning (HTTPClient): they carry no credential and no
-// payload, and refusing them would break discovery against a fresh cluster.
+// URL. It refuses before the command builds its payload; HTTPClient refuses
+// an unpinned https endpoint for every command.
 //
 // A plaintext endpoint is left to HTTPClient, which refuses it outright without
 // --insecure and announces it with; adding a pinning complaint on top would only

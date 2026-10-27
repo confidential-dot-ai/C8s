@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -381,7 +382,8 @@ func TestRequestDoesNotTrustAnUnverifiedCDS(t *testing.T) {
 	t.Cleanup(srv.Close)
 	h := newHarnessAt(t, cds, srv.URL)
 	code, out, errOut := executeWith(t, sidecar.NewClient,
-		append(append([]string{}, h.common...), "request", "GET", "/api/db", "--no-challenge", "--no-token")...)
+		append(append([]string{}, h.common...), "--measurements", strings.Repeat("ab", 48),
+			"request", "GET", "/api/db", "--no-challenge", "--no-token")...)
 	if code != 0 || out != "000 - -\n" {
 		t.Fatalf("exit %d, stdout %q, stderr %q; want 0 and 000", code, out, errOut)
 	}
@@ -511,4 +513,62 @@ func (f *fakeCDS) fetched() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.challenges
+}
+
+// writeNodePins mounts the node's CDS pins where the probe reads them, for
+// the test's duration.
+func writeNodePins(t *testing.T) string {
+	t.Helper()
+	document, err := os.ReadFile("../../../internal/testdata/node-identities.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "cds-pins.json")
+	if err := os.WriteFile(path, document, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	previous := nodePinsPath
+	nodePinsPath = path
+	t.Cleanup(func() { nodePinsPath = previous })
+	return path
+}
+
+// The probe runs in the certificate container, where the enforcer mounts the
+// node's CDS pins. Like the sidecars it stands in for, it holds CDS to those
+// pins, so a node that passes its clients no --measurements still names the
+// CDS the probe dials.
+func TestProbeFollowsTheNodePins(t *testing.T) {
+	path := writeNodePins(t)
+	cds := newFakeCDS(http.StatusOK, "secret")
+	h := newHarness(t, cds)
+	var got armtls.Pins
+	capture := func(cfg sidecar.Config, pins armtls.Pins) (*http.Client, crypto.PublicKey, error) {
+		got = pins
+		return trusting(h.roots)(cfg, pins)
+	}
+	code, out, errOut := executeWith(t, capture, append(append([]string{}, h.common...), "challenge")...)
+	if code != 0 {
+		t.Fatalf("exit %d, stdout %q, stderr %q", code, out, errOut)
+	}
+	if len(got.Measurements)+len(got.Images) == 0 {
+		t.Fatalf("the probe handed its client no pins while the node mounts %s", path)
+	}
+}
+
+// The steps read the probe's stdout and stderr as one stream and parse the
+// answer out of it, so resolving the pins must log nothing.
+func TestProbeResolvesPinsSilently(t *testing.T) {
+	writeNodePins(t)
+	var logged bytes.Buffer
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	cds := newFakeCDS(http.StatusOK, "secret")
+	h := newHarness(t, cds)
+	code, out, errOut := h.run(t, "challenge")
+	if code != 0 {
+		t.Fatalf("exit %d, stdout %q, stderr %q", code, out, errOut)
+	}
+	if logged.Len() != 0 {
+		t.Fatalf("the probe logged while resolving its pins:\n%s", logged.String())
+	}
 }

@@ -21,6 +21,9 @@ jobs:
       - name: Test repro-gate change classification
         run: bash .github/scripts/tests/test-repro-gate-changes.sh
 
+      - name: Test the one-command image publisher
+        run: bash .github/scripts/tests/test-publish-ref-images.sh
+
       - name: Install actionlint (checksum-pinned)
         env:
           # SHA256 from the v1.7.12 release's checksums.txt (linux_amd64).
@@ -67,4 +70,6 @@ jobs:
             .github/scripts/repro-gate-changes \
             .github/scripts/build-gate-images.sh \
             .github/scripts/tests/test-pin-manifest.sh \
-            .github/scripts/tests/test-repro-gate-changes.sh
+            .github/scripts/tests/test-repro-gate-changes.sh \
+            .github/scripts/publish-ref-images.sh \
+            .github/scripts/tests/test-publish-ref-images.sh

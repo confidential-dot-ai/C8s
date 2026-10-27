@@ -2,8 +2,8 @@
   "schema_version": 1,
   "builds": {
     "node-image": {
-      "confos_ref": "af8cef0e937e4cc300ddd30c85af6ccd8cb9be91",
-      "attestation_rs_ref": "212f98f42e6824569a1beb41ddd7016dee6f3ccb",
+      "confos_ref": "8fe5aa3326f67aef0bb1d6462e3e89e0e2662fdd",
+      "attestation_rs_ref": "5e6f31cf0f4a90ff347f37f5274437545ef12a7a",
       "mkosi_ref": "4736cd836108a97772142c461c49f1ddb4172348",
       "mkosi_version": "v27"
     }

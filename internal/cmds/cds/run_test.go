@@ -203,6 +203,7 @@ func validRunConfig(t *testing.T, attestationURL string) config {
 		rateLimiterEvictInterval:   time.Minute,
 		rateLimiterIdleTimeout:     5 * time.Minute,
 		armtlsPlatform:             "",
+		measurements:               []string{strings.Repeat("ab", 48)},
 	}
 }
 
@@ -319,6 +320,11 @@ func TestRun_ErrorPaths(t *testing.T) {
 			mutate:  func(_ *testing.T, cfg *config) { cfg.armtlsPlatform = "bogus-platform" },
 			wantSub: "unsupported TEE platform",
 		},
+		{
+			name:    "no measurements",
+			mutate:  func(_ *testing.T, cfg *config) { cfg.measurements = nil },
+			wantSub: "--measurements",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := validRunConfig(t, api.URL)
@@ -347,7 +353,6 @@ func TestRun_ServesAndShutsDownOnSIGTERM(t *testing.T) {
 
 	cfg := validRunConfig(t, api.URL)
 	cfg.port = freePort(t)
-	cfg.measurements = []string{strings.Repeat("ab", 48)}
 	cfg.dnsSANPatterns = []string{`^[a-z.-]+$`}
 	cfg.allowedCNPattern = `^.*$`
 	cfg.operatorKeys = writeOperatorKeysPEM(t)
@@ -781,7 +786,6 @@ func armTLSRunConfig(t *testing.T) config {
 	cfg := validRunConfig(t, mockapi.New(t).URL())
 	cfg.port = freePort(t)
 	cfg.armtlsPlatform = "sev-snp"
-	cfg.measurements = []string{strings.Repeat("ab", 48)}
 	cfg.operatorKeys = writeOperatorKeysPEM(t)
 	cfg.allowlistSeed = seedPath
 	return cfg

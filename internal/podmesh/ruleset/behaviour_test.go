@@ -95,6 +95,7 @@ func TestTheRulesetCarriesOnlyPermittedTrafficInTheNamespace(t *testing.T) {
 			{"the mesh endpoint sends nothing outside TCP", meshUID, "udp", address(unapproved, 8080), denied},
 			{"a credential role reaches its service", credentialUID, "tcp", address(service, servicePort), admitted},
 			{"a credential role reaches nothing else", credentialUID, "tcp", address(unapproved, 8080), denied},
+			{"a workload connection to a role's service is captured", workloadUID, "tcp", address(service, servicePort), captured},
 			{"a resolver query is admitted", workloadUID, "udp", address(resolver, 53), admitted},
 			{"a resolver query over TCP is admitted", workloadUID, "tcp", address(resolver, 53), admitted},
 			{"port 53 elsewhere is captured, not exempted", workloadUID, "tcp", address(unapproved, 53), captured},

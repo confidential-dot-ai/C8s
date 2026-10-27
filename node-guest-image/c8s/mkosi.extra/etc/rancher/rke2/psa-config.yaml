@@ -1,8 +1,7 @@
 # PodSecurity admission config applied via
 # /etc/rancher/rke2/config.yaml: pod-security-admission-config-file=...
 #
-# Restricted enforcement by default. kube-system and local-path-storage are
-# exempt (they ship privileged daemonsets / hostPath helpers); add more
+# Restricted enforcement by default. kube-system is exempt for privileged daemonsets; add more
 # namespaces here for any privileged platform component you deploy. Every
 # other namespace, `default` included, inherits restricted. The baked
 # ../../../var/lib/rancher/rke2/server/manifests/psa-level-policy.yaml stops
@@ -31,4 +30,3 @@ plugins:
         runtimeClasses: []
         namespaces:
           - kube-system
-          - local-path-storage
