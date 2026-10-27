@@ -10,10 +10,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 
+	"github.com/openbao/openbao/sdk/v2/helper/shamir"
 	"github.com/spf13/cobra"
 
-	"github.com/confidential-dot-ai/c8s/internal/shamir"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 )
 
@@ -54,13 +55,15 @@ func SplitRecoveryKey(key *ecdsa.PrivateKey, n, k int) ([]RecoveryKeyShare, erro
 	if err != nil {
 		return nil, err
 	}
+	// Each part is the y bytes followed by the x coordinate.
 	parts, err := shamir.Split(der, n, k)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]RecoveryKeyShare, len(parts))
 	for i, p := range parts {
-		out[i] = RecoveryKeyShare{Kind: recoveryShareKind, Version: 1, X: p.X, Threshold: k, Shares: n, PublicKeySHA256: fp, Y: p.Y}
+		last := len(p) - 1
+		out[i] = RecoveryKeyShare{Kind: recoveryShareKind, Version: 1, X: p[last], Threshold: k, Shares: n, PublicKeySHA256: fp, Y: p[:last:last]}
 	}
 	return out, nil
 }
@@ -72,7 +75,7 @@ func CombineRecoveryKey(shares []RecoveryKeyShare) (*ecdsa.PrivateKey, error) {
 		return nil, errors.New("no recovery key shares")
 	}
 	first := shares[0]
-	parts := make([]shamir.Share, 0, len(shares))
+	parts := make([][]byte, 0, len(shares))
 	for _, s := range shares {
 		switch {
 		case s.Kind != recoveryShareKind || s.Version != 1:
@@ -80,7 +83,7 @@ func CombineRecoveryKey(shares []RecoveryKeyShare) (*ecdsa.PrivateKey, error) {
 		case s.PublicKeySHA256 != first.PublicKeySHA256 || s.Threshold != first.Threshold:
 			return nil, errors.New("shares of different recovery keys")
 		}
-		parts = append(parts, shamir.Share{X: s.X, Y: s.Y})
+		parts = append(parts, append(slices.Clip(s.Y), s.X))
 	}
 	if len(parts) < first.Threshold {
 		return nil, fmt.Errorf("%d recovery key shares, the key needs %d", len(parts), first.Threshold)
@@ -143,8 +146,8 @@ func newHARecoveryKeyCmd() *cobra.Command {
 	split := &cobra.Command{
 		Use:   "split",
 		Short: "Split the recovery key into n shares, any k of which restore",
-		Long: "Writes share-<x>.json files, one per custodian. c8s cds ha recover --recovery-key-share takes\n" +
-			"any k of them. Hand each share to a different person, then destroy the key file: with it, one\n" +
+		Long: "Writes share-<i>.json files (i = 1..n), one per custodian. c8s cds ha recover\n" +
+			"--recovery-key-share takes any k of them. Hand each share to a different person, then destroy the key file: with it, one\n" +
 			"person can restore every secret onto a CDS of their choosing.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -159,12 +162,12 @@ func newHARecoveryKeyCmd() *cobra.Command {
 			if err := os.MkdirAll(outDir, 0o700); err != nil {
 				return err
 			}
-			for _, s := range shares {
+			for i, s := range shares {
 				raw, err := json.MarshalIndent(s, "", "  ")
 				if err != nil {
 					return err
 				}
-				path := filepath.Join(outDir, fmt.Sprintf("share-%d.json", s.X))
+				path := filepath.Join(outDir, fmt.Sprintf("share-%d.json", i+1))
 				f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 				if err != nil {
 					return err
