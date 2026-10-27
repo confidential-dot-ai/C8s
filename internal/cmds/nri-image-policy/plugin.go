@@ -89,6 +89,15 @@ func (s *policyStore) baseAdmits(r allowlist.RunningContainer, phase launchPhase
 	return s.base.AdmitsContainer(r)
 }
 
+// baseAdmitsPinned is the final baseAdmits restricted to entries that pin the
+// launch (allowlist.Container.LaunchPinned).
+func (s *policyStore) baseAdmitsPinned(r allowlist.RunningContainer) bool {
+	if s == nil {
+		return false
+	}
+	return s.base.AdmitsContainerWhere(r, allowlist.Container.LaunchPinned)
+}
+
 // admitsNodeRoot reports whether the base or applied allowlist admits r with
 // an exact nodeRootFile rule for m (allowlist.Index.AdmitsNodeRoot).
 func (s *policyStore) admitsNodeRoot(r allowlist.RunningContainer, m allowlist.ObservedMount) bool {
@@ -773,14 +782,12 @@ func (p *plugin) exemptNamespace(ctx context.Context, cfg *config, pod *api.PodS
 // hook or the marks of a privileged container. The allowlist bounds which bytes
 // run; this bounds what those bytes are handed.
 //
-// Two exemptions apply. The first is a node-TCB entry: only the MEASURED base
+// Two exemptions apply. The first is the node TCB: only the MEASURED base
 // allowlist, and only when the node config claims it as the node TCB
 // (allowlist.node_tcb). A CDS-served entry never is, because the cluster admin
-// this policy defends against authors that document. The exemption is the
-// whole base entry — digest, argv, env and mounts — not the digest alone: the
-// control plane picks the image a pod runs, so a TCB image restaged with
-// another entrypoint is a tenant container, and an entry with a pinned argv
-// refuses it. An entry left at `any` exempts every launch of its digest; see
+// this policy defends against authors that document. The control plane picks
+// the image a pod runs, so a base digest alone proves nothing about the launch;
+// nodeTCBExempt says how much a base entry excuses. See
 // docs/allowlist-and-capabilities.md.
 //
 // The second exempts a single bind, not the container: one whose mount
@@ -827,7 +834,7 @@ func (p *plugin) checkSandbox(ctx context.Context, cfg *config, pod *api.PodSand
 			digest = p.resolveDigest(ctx, imageRef)
 		}
 		rc := allowlist.RunningContainer{Digest: digest, Argv: ctr.GetArgs(), Env: env, Mounts: mounts}
-		if p.policy.baseAdmits(rc, launchFinal) {
+		if p.nodeTCBExempt(pod, rc, violations) {
 			return verdictAllow, ""
 		}
 	}
@@ -865,6 +872,34 @@ func (p *plugin) checkSandbox(ctx context.Context, cfg *config, pod *api.PodSand
 		Image:     imageRef,
 	})
 	return verdictDeny, fmt.Sprintf("container is not part of the node TCB and requests host privilege: %s", strings.Join(violations, ", "))
+}
+
+// The kubelet sets kubernetes.io/config.source on every pod it runs,
+// overwriting whatever the API object carries, and passes it to the runtime as
+// a sandbox annotation: "file" for a pod read from its manifest directory,
+// "api" for one created through the API server.
+const (
+	configSourceAnnotation = "kubernetes.io/config.source"
+	staticPodSource        = "file"
+)
+
+// nodeTCBExempt reports whether the measured base excuses a launch holding
+// violations, in three steps:
+//   - a kubelet static pod whose launch the base admits: its manifest is
+//     written only by RKE2 on the node, from the measured config and the signed
+//     launch document;
+//   - host network alone, for any launch the base admits, an open entry
+//     included;
+//   - anything more only for a launch a base entry pins
+//     (allowlist.Container.LaunchPinned).
+//
+// An open entry (command, args or mounts any) therefore admits its image but
+// never hands it more than the host network.
+func (p *plugin) nodeTCBExempt(pod *api.PodSandbox, rc allowlist.RunningContainer, violations []string) bool {
+	if pod.GetAnnotations()[configSourceAnnotation] == staticPodSource || hostNetworkOnly(violations) {
+		return p.policy.baseAdmits(rc, launchFinal)
+	}
+	return p.policy.baseAdmitsPinned(rc)
 }
 
 // shouldCheckExisting reports whether the startup check has work — enforcement,

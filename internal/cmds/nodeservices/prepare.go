@@ -201,15 +201,21 @@ func fillContainer(c *allowlist.Container, values map[string]string) error {
 
 // argvWithNodeValues is argv with each "<flag>=<placeholder>" element given
 // the node's value, and left out where the node has none, as RKE2 then
-// passes no such flag. Any other element naming a placeholder is an error.
+// passes no such flag. An element that names a placeholder in any other way,
+// or a flag set to a placeholder the floor does not define, is an error. Any
+// other "${" is literal: a pinned shell script expands its own variables.
 func argvWithNodeValues(argv []string, values map[string]string) ([]string, error) {
 	filled := make([]string, 0, len(argv))
 	for _, element := range argv {
-		if !strings.Contains(element, "${") {
+		flag, placeholder, isFlag := strings.Cut(element, "=")
+		namesPlaceholder := isFlag && strings.HasPrefix(flag, "-") && strings.HasPrefix(placeholder, "${")
+		for p := range values {
+			namesPlaceholder = namesPlaceholder || strings.Contains(element, p)
+		}
+		if !namesPlaceholder {
 			filled = append(filled, element)
 			continue
 		}
-		flag, placeholder, isFlag := strings.Cut(element, "=")
 		value, defined := values[placeholder]
 		if !isFlag || !defined {
 			return nil, fmt.Errorf("argv element %q is not a flag set to a placeholder the floor defines", element)

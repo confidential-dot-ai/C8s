@@ -160,6 +160,17 @@ func (o sandboxObservation) violations() []string {
 	return out
 }
 
+// hostNetworkOnly reports whether violations are only what a pod's
+// hostNetwork gives it: the node's network and uts namespaces.
+func hostNetworkOnly(violations []string) bool {
+	for _, v := range violations {
+		if v != "host network namespace" && v != "host uts namespace" {
+			return false
+		}
+	}
+	return len(violations) > 0
+}
+
 // logAttrs renders the observation as slog key/value pairs.
 func (o sandboxObservation) logAttrs() []any {
 	return []any{
