@@ -41,8 +41,8 @@ func TestFSMStopsOnEntryItCannotRead(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			f := newTestFSM(t, opPub)
 			res := applyAt(f, 3, e)
-			if _, ok := res.(error); !ok || f.Stuck() == "" {
-				t.Fatalf("applied %v, stuck %q", res, f.Stuck())
+			if _, ok := res.(error); !ok || f.Stuck() == "" || f.StuckLocal() {
+				t.Fatalf("applied %v, stuck %q, local %v", res, f.Stuck(), f.StuckLocal())
 			}
 			if f.AppliedIndex() != 3 {
 				t.Fatal("the index still moves: Raft has moved on")

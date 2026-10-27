@@ -41,7 +41,7 @@ func (n *Node) recover(ctx context.Context, p PendingDecree) {
 			// Its goroutines may still run over the stores and the log:
 			// no new generation over them. Stuck, the replica exits (Run)
 			// and its restart rejoins; the decree stays pending.
-			_ = n.fsm.stop(fmt.Errorf("recover: %w", err))
+			_ = n.fsm.stopLocal(fmt.Errorf("recover: %w", err))
 			return
 		}
 		n.log.Error("recover: shut down raft", "err", err)
@@ -142,12 +142,17 @@ func (n *Node) bootstrap(ctx context.Context, g PendingDecree) {
 }
 
 // maybeBackup seals and stores the state when it changed since the last
-// stored backup, at most every Timing.Backup (leader only). A state over a
-// snapshot size bound fails every attempt, and each attempt dumps and
-// encodes the whole state: those failures back off (backupDelay), and each
-// is logged as an error and kept in Status.BackupError.
+// stored backup, at most every Timing.Backup (leader only). Every failure is
+// kept in Status.BackupError; a streak of them is logged as an error
+// (backupFailed). A state over a snapshot size bound fails every attempt,
+// and each attempt dumps and encodes the whole state: after such a failure
+// the next attempt backs off (backupDelay).
 func (n *Node) maybeBackup(ctx context.Context) {
-	if n.recovery == nil || n.cfg.Backups == nil || time.Since(n.backupAt) < backupDelay(n.cfg.Timing.Backup, n.backupFails) {
+	wait := n.cfg.Timing.Backup
+	if n.backupTooLarge {
+		wait = backupDelay(wait, n.backupFails)
+	}
+	if n.recovery == nil || n.cfg.Backups == nil || time.Since(n.backupAt) < wait {
 		return
 	}
 	core := n.fsm.Core()
@@ -165,13 +170,13 @@ func (n *Node) maybeBackup(ctx context.Context) {
 	}
 	_, rc, err := f.Open()
 	if err != nil {
-		n.log.Warn("backup: open snapshot", "err", err)
+		n.backupFailed("open snapshot", err)
 		return
 	}
 	defer rc.Close()
 	body, err := io.ReadAll(rc)
 	if err != nil {
-		n.log.Warn("backup: read snapshot", "err", err)
+		n.backupFailed("read snapshot", err)
 		return
 	}
 	sn, err := decodeSnapshot(bytes.NewReader(body), n.fsm.readable, true)
@@ -190,43 +195,63 @@ func (n *Node) maybeBackup(ctx context.Context) {
 		if errors.Is(err, ErrBackupNotNewer) {
 			// Another leader stored later state (this one is deposed or was
 			// cut off), or the stored backup is of another history: leave
-			// it, and say so in Status until a backup is stored again.
-			n.log.Warn("backup: not stored, the stored one is newer or of another cluster history", "err", err)
-			msg := "backup refused: " + err.Error()
-			n.backupErr.Store(&msg)
+			// it, and wait for the next write. Still a failure, shown in
+			// Status as "backup refused" until a backup is stored again: a
+			// stored manifest is the host's word, and one that keeps
+			// claiming newer state blocks every backup.
 			n.backupIndex = applied
+			n.backupFailed("backup refused", err)
 			return
 		}
-		n.log.Warn("backup: store", "err", err)
+		n.backupFailed("store", err)
 		return
 	}
 	n.backupIndex = applied
 	if n.backupFails > 0 {
 		n.log.Info("backups resumed", "after_failures", n.backupFails)
 	}
-	n.backupFails = 0
+	n.backupFails, n.backupTooLarge = 0, false
 	n.backupErr.Store(nil)
+	n.lastBackup.Store(&storedBackup{BackupStatus: BackupStatus{Index: b.Meta.Index, Epoch: b.Meta.Epoch, AtMS: b.Meta.TakenAtMS}, at: time.Now()})
 	n.log.Info("backup stored", "epoch", b.Meta.Epoch, "index", b.Meta.Index, "bytes", len(b.Ciphertext))
 }
 
-// backupFailed reports a backup that failed at stage. A failure on a size
-// bound will repeat until the state shrinks: it is an error, it backs off,
-// and Status carries it. Others are retried at the usual interval.
+// A streak of backup failures is an error once it reaches
+// backupAlarmFailures attempts or lasts backupAlarmPeriods x Timing.Backup:
+// a total loss would now restore older state than the cluster holds.
+const (
+	backupAlarmFailures = 3
+	backupAlarmPeriods  = 3
+)
+
+// backupFailed reports a backup that failed at stage: in Status.BackupError
+// always, as a warning until the streak reaches the alarm, then as an
+// error. A failure on a size bound will repeat until the state shrinks: it
+// is an error at once, and the next attempt backs off.
 func (n *Node) backupFailed(stage string, err error) {
-	if !tooLarge(err) {
-		n.log.Warn("backup: "+stage, "err", err)
-		return
-	}
 	if n.backupFails == 0 {
 		n.backupSince = time.Now()
 	}
 	n.backupFails++
-	retry := backupDelay(n.cfg.Timing.Backup, n.backupFails)
-	msg := fmt.Sprintf("backup failing since %s (%d attempts): the replicated state exceeds the snapshot size limit (%s: %v); no backup is stored until it shrinks",
-		n.backupSince.UTC().Format(time.RFC3339), n.backupFails, stage, err)
+	n.backupTooLarge = tooLarge(err)
+	since := n.backupSince.UTC().Format(time.RFC3339)
+	if n.backupTooLarge {
+		retry := backupDelay(n.cfg.Timing.Backup, n.backupFails)
+		msg := fmt.Sprintf("backup failing since %s (%d attempts): the replicated state exceeds the snapshot size limit (%s: %v); no backup is stored until it shrinks",
+			since, n.backupFails, stage, err)
+		n.backupErr.Store(&msg)
+		n.log.Error("backup failed: the replicated state exceeds the snapshot size limit; no backup is stored until it shrinks (delete allowlist entries or lower --allowlist-history-bytes/--allowlist-history-versions)",
+			"stage", stage, "err", err, "consecutive_failures", n.backupFails, "next_attempt_in", retry)
+		return
+	}
+	msg := fmt.Sprintf("backup failing since %s (%d attempts): %s: %v", since, n.backupFails, stage, err)
 	n.backupErr.Store(&msg)
-	n.log.Error("backup failed: the replicated state exceeds the snapshot size limit; no backup is stored until it shrinks (delete allowlist entries or lower --allowlist-history-bytes/--allowlist-history-versions)",
-		"stage", stage, "err", err, "consecutive_failures", n.backupFails, "next_attempt_in", retry)
+	if n.backupFails >= backupAlarmFailures || time.Since(n.backupSince) >= backupAlarmPeriods*n.cfg.Timing.Backup {
+		n.log.Error("backups failing: no new backup is stored, so a total loss would restore older state", "stage", stage, "err", err,
+			"consecutive_failures", n.backupFails, "failing_for", time.Since(n.backupSince).Round(time.Second))
+		return
+	}
+	n.log.Warn("backup: "+stage, "err", err, "consecutive_failures", n.backupFails)
 }
 
 // pruneSlack lets the history grow this far past HistoryVersions before the

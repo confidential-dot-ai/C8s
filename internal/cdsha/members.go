@@ -313,6 +313,10 @@ func (n *Node) reconcile() {
 	// Reachability probes may wait on the network. Do not block admission
 	// during them, and never use their configuration sample for mutations.
 	n.clearReachable(servers, time.Now())
+	var target *raft.Server
+	if n.fsm.Stuck() != "" {
+		target = n.stuckTransferTarget(r, servers)
+	}
 	n.membershipMu.Lock()
 	defer n.membershipMu.Unlock()
 	if r == nil || r != n.r() || n.stoppingReads.Load() == r || r.State() != raft.Leader {
@@ -321,12 +325,20 @@ func (n *Node) reconcile() {
 	if reason := n.fsm.Stuck(); reason != "" {
 		// A leader that cannot follow its own log certifies no reads and
 		// applies no writes, for anyone: hand the log to a replica that can.
-		// Its own seat is left alone; a restart replays the log.
-		n.log.Warn("stuck leader: transferring leadership", "reason", reason)
-		if err := r.LeadershipTransfer().Error(); err != nil {
-			n.log.Warn("stuck leader: leadership transfer", "err", err)
+		// Its own seat is left alone.
+		if target != nil {
+			n.log.Warn("stuck leader: transferring leadership", "reason", reason, "target", target.ID)
+			if err := r.LeadershipTransferToServer(target.ID, target.Address).Error(); err != nil {
+				n.log.Warn("stuck leader: leadership transfer", "target", target.ID, "err", err)
+			}
+			return
 		}
-		return
+		if n.fsm.StuckLocal() {
+			return // Run ends it after DeadAfter; a restart replays the log
+		}
+		// No replica applies the log: keep leading, and keeping the
+		// membership, so that replicas of an image that applies the entry
+		// can join, take seats and then the lead (FSM.stop).
 	}
 	servers = n.servers()
 	if servers == nil {
@@ -432,6 +444,35 @@ func (n *Node) reconcile() {
 	if len(remove) == 0 && len(retiring) == 0 {
 		n.raiseFormat(servers)
 	}
+}
+
+// stuckTransferTarget is a voter to hand leadership to while this leader is
+// stuck: one with healthy heartbeats that answers as itself, is not stuck
+// and has applied at least the commit index sampled before the probe, the
+// most applied of them; nil if none. Peers are probed without membershipMu.
+func (n *Node) stuckTransferTarget(r *raft.Raft, servers []raft.Server) *raft.Server {
+	if r == nil {
+		return nil
+	}
+	commit := r.CommitIndex()
+	n.mu.Lock()
+	var candidates []raft.Server
+	for _, s := range servers {
+		if _, bad := n.failing[s.ID]; s.ID != n.id && s.Suffrage == raft.Voter && !bad {
+			candidates = append(candidates, s)
+		}
+	}
+	n.mu.Unlock()
+	var best *raft.Server
+	var bestApplied uint64
+	for _, s := range candidates {
+		st, err := n.peerStatus(s.Address, min(time.Second, n.cfg.Timing.Lease/2))
+		if err != nil || st.ID != string(s.ID) || st.Stuck != "" || st.AppliedIndex < commit || (best != nil && st.AppliedIndex <= bestApplied) {
+			continue
+		}
+		best, bestApplied = &s, st.AppliedIndex
+	}
+	return best
 }
 
 // removeMember removes id from the configuration and forgets it.

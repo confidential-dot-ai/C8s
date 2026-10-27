@@ -22,7 +22,7 @@ func TestStuckFollowerEndsRun(t *testing.T) {
 			break
 		}
 	}
-	f.node.fsm.stop(errors.New("test: local store fault"))
+	f.node.fsm.stopLocal(errors.New("test: local store fault"))
 	select {
 	case <-f.done:
 	case <-time.After(testTiming.Lease + 5*testTiming.Tick + 2*time.Second):
@@ -38,7 +38,7 @@ func TestStuckLeaderHandsOffThenEndsRun(t *testing.T) {
 	if old == nil {
 		t.Fatal("no leader")
 	}
-	old.node.fsm.stop(errors.New("test: local store fault"))
+	old.node.fsm.stopLocal(errors.New("test: local store fault"))
 	handedOff := false
 	deadline := time.After(testTiming.DeadAfter + 5*testTiming.Tick + 2*time.Second)
 	for {

@@ -185,12 +185,16 @@ type Node struct {
 	prunes      atomic.Int64 // history prune entries this replica proposed (for tests)
 	renewAt     time.Time    // leader: last mesh CA renewal attempt
 	backupIndex uint64       // leader: applied index of the last stored backup
-	// backupFails counts consecutive backups that failed on a size bound;
-	// the next waits backupDelay. backupErr is the last one, for Status.
-	backupFails int
-	backupSince time.Time
-	backupErr   atomic.Pointer[string]
-	recovery    *ecdsa.PublicKey
+	// backupFails counts consecutive failed backups, since backupSince;
+	// after one on a size bound (backupTooLarge) the next waits backupDelay.
+	// backupErr is the last failure and lastBackup the last stored backup,
+	// for Status.
+	backupFails    int
+	backupTooLarge bool
+	backupSince    time.Time
+	backupErr      atomic.Pointer[string]
+	lastBackup     atomic.Pointer[storedBackup]
+	recovery       *ecdsa.PublicKey
 }
 
 // snapshotInterval is Raft's snapshot check period; a var so tests can
@@ -224,10 +228,14 @@ type Status struct {
 	// voters. A promoted voter is Ready only once it is listed.
 	KnownVoters []string `json:"known_voters,omitempty"`
 	// Format is the cluster's agreed encoding format; Reads the newest this
-	// replica reads. Stuck says why it stopped following the log.
-	Format uint32 `json:"format,omitempty"`
-	Reads  uint32 `json:"reads,omitempty"`
-	Stuck  string `json:"stuck,omitempty"`
+	// replica reads. Stuck says why it stopped following the log;
+	// StuckLocal that the cause is its own (it exits and rejoins). A stop
+	// that is not local is the same on every replica on this code: the
+	// replica stays up with its log and waits for an operator.
+	Format     uint32 `json:"format,omitempty"`
+	Reads      uint32 `json:"reads,omitempty"`
+	Stuck      string `json:"stuck,omitempty"`
+	StuckLocal bool   `json:"stuck_local,omitempty"`
 	// Term is this replica's current Raft term: election churn shows as it
 	// climbing.
 	Term uint64 `json:"term,omitempty"`
@@ -237,10 +245,13 @@ type Status struct {
 	ApplyLag      uint64 `json:"apply_lag,omitempty"`
 	ReadBarrierMS int64  `json:"read_barrier_ms,omitempty"`
 
-	// BackupError (leader) says backups are failing: the state is over a
-	// snapshot size bound (no backup is stored until it shrinks), or the
-	// stored backup is newer or of another cluster history (ErrBackupNotNewer).
-	BackupError string `json:"backup_error,omitempty"`
+	// BackupError (leader) says backups are failing, since when and why:
+	// for example the state is over a snapshot size bound (no backup is
+	// stored until it shrinks), or the stored backup is newer or of another
+	// cluster history ("backup refused", ErrBackupNotNewer). LastBackup
+	// (leader) is the last backup this replica stored.
+	BackupError string        `json:"backup_error,omitempty"`
+	LastBackup  *BackupStatus `json:"last_backup,omitempty"`
 	// LogEntries and LogBytes are the in-memory Raft log: entries kept
 	// until a snapshot compacts them, and the bytes they hold.
 	LogEntries uint64 `json:"log_entries,omitempty"`
@@ -250,6 +261,20 @@ type Status struct {
 	SnapshotIndex uint64 `json:"snapshot_index,omitempty"`
 	SnapshotBytes int64  `json:"snapshot_bytes,omitempty"`
 	SnapshotAtMS  int64  `json:"snapshot_at_ms,omitempty"`
+}
+
+// BackupStatus is a stored backup: the state it holds, when it was taken
+// (the leader's wall clock) and how long ago it was stored.
+type BackupStatus struct {
+	Index uint64 `json:"index"`
+	Epoch uint64 `json:"epoch"`
+	AtMS  int64  `json:"at_ms"`
+	AgeMS int64  `json:"age_ms"`
+}
+
+type storedBackup struct {
+	BackupStatus
+	at time.Time
 }
 
 // NewNode prepares a replica. Every start is a new Raft member: the log
@@ -480,7 +505,7 @@ func (n *Node) Run(ctx context.Context) error {
 	t := time.NewTicker(n.cfg.Timing.Tick)
 	defer t.Stop()
 	var lastEpoch uint64
-	var stuckAt time.Time
+	var stuckAt, alarmAt time.Time
 	for {
 		select {
 		case <-ctx.Done():
@@ -488,17 +513,28 @@ func (n *Node) Run(ctx context.Context) error {
 		case <-t.C:
 		}
 		if reason := n.fsm.Stuck(); reason != "" {
-			// A stuck replica serves nothing, and only a restart, which
-			// replays the log from the cluster, brings it back. A transient
-			// fault (a disk that filled and was freed, descriptors exhausted
-			// for a moment) must not take it out for good, and its peer
-			// port stays open, so no TCP liveness check notices. A leader
-			// first hands off leadership (reconcile); return once it has,
-			// or after DeadAfter, so the process exits and is restarted.
+			// A stuck replica serves nothing. After a local fault only a
+			// restart, which replays the log from the cluster, brings it
+			// back. A transient fault (a disk that filled and was freed,
+			// descriptors exhausted for a moment) must not take it out for
+			// good, and its peer port stays open, so no TCP liveness check
+			// notices. A leader first hands off leadership (reconcile);
+			// return once it has, or after DeadAfter, so the process exits
+			// and is restarted. A deterministic stop exits only once the
+			// cluster is past it, and the voters that follow the log keep a
+			// majority without this one (leaveKeepsQuorum); until then the
+			// process keeps the log and raises the alarm.
 			if stuckAt.IsZero() {
-				stuckAt = time.Now()
+				stuckAt, alarmAt = time.Now(), time.Now()
 			}
-			if since := time.Since(stuckAt); (!n.leading() && since >= n.cfg.Timing.Lease) || since >= n.cfg.Timing.DeadAfter {
+			since := time.Since(stuckAt)
+			switch {
+			case !n.fsm.StuckLocal() && (!n.fsm.stuckPassed() || !n.leaveKeepsQuorum()):
+				if time.Since(alarmAt) >= haltAlarmEvery {
+					alarmAt = time.Now()
+					n.log.Error("cds-ha: ALARM: halted at a log entry no replica could apply; serving nothing, keeping the log; deploy an image that applies it, or Restore", "reason", reason, "for", since.Round(time.Second))
+				}
+			case (!n.leading() && since >= n.cfg.Timing.Lease) || since >= n.cfg.Timing.DeadAfter:
 				return fmt.Errorf("%w: %s", ErrStuck, reason)
 			}
 		}
@@ -517,8 +553,10 @@ func (n *Node) Run(ctx context.Context) error {
 			n.reconcile()
 			n.applyDecrees(ctx)
 			n.maybeBackup(ctx)
-			n.maybePruneHistory()
-			n.maybeRenewCA()
+			if n.fsm.Stuck() == "" { // both derive their entries from this replica's state
+				n.maybePruneHistory()
+				n.maybeRenewCA()
+			}
 		case addr != "":
 			n.noLeader = time.Time{}
 			n.refreshSeats()
@@ -656,6 +694,10 @@ func (n *Node) handleControl(peer Claims, req controlRequest) controlResponse {
 	if req.Op == ctlJoin {
 		return n.handleJoin(req)
 	}
+	// Its answer would come from a state that skipped an entry.
+	if reason := n.fsm.Stuck(); reason != "" {
+		return controlResponse{Member: true, Err: "leader stopped following the log: " + reason}
+	}
 	// The forwarding replica checked the cap against its own copy; the
 	// leader's check is the one that holds for every proposer.
 	if err := n.fsm.admitRaw(req.Entry); err != nil {
@@ -705,6 +747,9 @@ func (n *Node) propose(e Entry) (json.RawMessage, error) {
 	}
 	if !n.fsm.Core().Joined() {
 		return nil, errors.New("cds-ha: this replica has not joined the cluster")
+	}
+	if reason := n.fsm.Stuck(); reason != "" {
+		return nil, errors.New("cds-ha: this replica stopped following the log: " + reason)
 	}
 	if err := n.fsm.admit(e, len(raw), n.leading()); err != nil {
 		return nil, err
@@ -811,6 +856,11 @@ func (n *Node) readBarrier(r *raft.Raft, timeout time.Duration) (uint64, error) 
 	if r == nil || r != n.r() || n.stoppingReads.Load() == r {
 		return 0, errors.New("cds-ha: read instance stopping or replaced")
 	}
+	// A stuck leader certifies nothing; a Barrier would only grow a log
+	// that no snapshot compacts while it is stuck.
+	if reason := n.fsm.Stuck(); reason != "" {
+		return 0, errors.New("cds-ha: leader stopped following the log: " + reason)
+	}
 	start := time.Now()
 	deadline := start.Add(timeout)
 	timer := time.NewTimer(timeout)
@@ -890,6 +940,7 @@ func (n *Node) confirmRead(timeout time.Duration) (*readCertificate, error) {
 			return nil, errors.New("cds-ha: missing read watermark")
 		}
 		index = resp.Index
+		n.fsm.passedBy(index)
 	}
 	remaining := timeout - time.Since(at)
 	if remaining <= 0 || !n.waitFor(remaining, func() bool { return n.fsm.AppliedIndex() >= index }) {
@@ -990,19 +1041,51 @@ func (n *Node) Serving() bool {
 	return n.validReadCertificate(cert) && n.fsm.AppliedIndex() >= cert.index
 }
 
-// ErrStuck ends Run: this replica stopped following the log (see FSM.stop)
-// and must be restarted to rejoin with the cluster's state.
+// ErrStuck ends Run: this replica stopped following the log for a reason of
+// its own (a local fault, or an entry the cluster applies and it cannot) and
+// must be restarted to rejoin with the cluster's state.
 var ErrStuck = errors.New("cds-ha: replica stopped following the log; restart to rejoin")
 
-// StuckOverdue is the stuck reason once this replica has been stuck longer
-// than Run allows (DeadAfter, plus a Lease of slack), "" otherwise. Run ends
-// a stuck replica itself; a caller that watches StuckOverdue independently
-// still ends a replica whose Run loop is blocked and never gets there.
+// haltAlarmEvery is how often Run repeats the alarm of a deterministic stop.
+const haltAlarmEvery = time.Minute
+
+// StuckOverdue is the stuck reason once this replica has been stuck on a
+// local fault longer than Run allows (DeadAfter, plus a Lease of slack), ""
+// otherwise. Run ends such a replica itself; a caller that watches
+// StuckOverdue independently still ends a replica whose Run loop is blocked
+// behind the fault and never gets there. A deterministic stop is never
+// overdue: exiting would lose the log (FSM.stop).
 func (n *Node) StuckOverdue() string {
-	if d := n.fsm.stuckFor(); d > n.cfg.Timing.DeadAfter+n.cfg.Timing.Lease {
+	if d := n.fsm.stuckFor(); d > n.cfg.Timing.DeadAfter+n.cfg.Timing.Lease && n.fsm.StuckLocal() {
 		return n.fsm.Stuck()
 	}
 	return ""
+}
+
+// leaveKeepsQuorum reports that this replica can exit without costing the
+// cluster its majority: it is not a voter, or the other voters that answer
+// and are not stuck are a majority of the voters. Stuck voters never count,
+// so several of them that were passed at once do not all leave together.
+func (n *Node) leaveKeepsQuorum() bool {
+	servers := n.servers()
+	if servers == nil {
+		return false
+	}
+	voters, following, self := 0, 0, false
+	for _, s := range servers {
+		if s.Suffrage != raft.Voter {
+			continue
+		}
+		voters++
+		if s.ID == n.id {
+			self = true
+			continue
+		}
+		if st, err := n.peerStatus(s.Address, min(time.Second, n.cfg.Timing.Lease/2)); err == nil && st.ID == string(s.ID) && st.Stuck == "" {
+			following++
+		}
+	}
+	return !self || following > voters/2
 }
 
 // ErrNotServing means the replica cannot currently admit a mesh CA read.
@@ -1031,9 +1114,16 @@ func (n *Node) Status() Status {
 	core := n.fsm.Core()
 	st := Status{ClusterID: n.cfg.ClusterID, NodeName: n.cfg.NodeName, ID: string(n.id), Joined: core.Joined(),
 		Epoch: core.Epoch, Measurement: n.measurement, AppliedIndex: n.fsm.AppliedIndex(),
-		Format: core.format(), Reads: n.fsm.readable, Stuck: n.fsm.Stuck(), Seats: n.seats()}
-	if p := n.backupErr.Load(); p != nil && n.r() != nil && n.leading() {
-		st.BackupError = *p
+		Format: core.format(), Reads: n.fsm.readable, Stuck: n.fsm.Stuck(), StuckLocal: n.fsm.StuckLocal(), Seats: n.seats()}
+	if n.r() != nil && n.leading() {
+		if p := n.backupErr.Load(); p != nil {
+			st.BackupError = *p
+		}
+		if b := n.lastBackup.Load(); b != nil {
+			bs := b.BackupStatus
+			bs.AgeMS = time.Since(b.at).Milliseconds()
+			st.LastBackup = &bs
+		}
 	}
 	if core.Joined() {
 		st.CAFingerprint = certutil.CertFingerprint(core.RootCert)

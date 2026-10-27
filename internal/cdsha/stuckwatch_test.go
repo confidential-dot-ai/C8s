@@ -27,7 +27,7 @@ func TestStuckOverdueWithoutRun(t *testing.T) {
 	if reason := f.node.StuckOverdue(); reason != "" {
 		t.Fatalf("not stuck, overdue = %q", reason)
 	}
-	f.node.fsm.stop(errors.New("test: local store fault"))
+	f.node.fsm.stopLocal(errors.New("test: local store fault"))
 	if reason := f.node.StuckOverdue(); reason != "" {
 		t.Fatalf("just stuck, overdue = %q before the grace", reason)
 	}

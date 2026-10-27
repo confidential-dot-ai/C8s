@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"runtime/debug"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -179,8 +180,13 @@ type FSM struct {
 	// readable is the newest format this replica reads; stuck is set once it
 	// met an entry it could not apply, and keeps it from serving.
 	readable uint32
-	stuck    atomic.Pointer[string]
+	stuck    atomic.Pointer[stopReason]
 	stuckAt  atomic.Int64 // unix nanoseconds when stuck was set
+	// passed is set once the serving leader certified a read past a
+	// deterministic stop's entry (passedBy).
+	passed atomic.Bool
+	// applying is the index of the entry Apply is on, for stop.
+	applying atomic.Uint64
 
 	// applyDelay is a test seam (set only from tests, zero otherwise): it
 	// slows every command apply, as a slow local disk does.
@@ -200,12 +206,45 @@ func NewFSM(pre Core, al *allowlist.Store, sec *secrets.MemoryStore, led *sandbo
 	return &FSM{core: pre, allowlist: al, secrets: sec, ledger: led, readable: Format}
 }
 
+// stopReason is why a replica stopped following the log. A local stop
+// (this replica's store or process) is cured by a restart. Any other stop is
+// deterministic: every replica on this code stops at the same entry, so a
+// restart would only throw the in-memory log away; index is that entry.
+type stopReason struct {
+	msg   string
+	local bool
+	index uint64
+}
+
 // Stuck is why this replica stopped applying the log, or "".
 func (f *FSM) Stuck() string {
 	if p := f.stuck.Load(); p != nil {
-		return *p
+		return p.msg
 	}
 	return ""
+}
+
+// StuckLocal reports a stop caused by this replica's own store or process.
+func (f *FSM) StuckLocal() bool {
+	p := f.stuck.Load()
+	return p != nil && p.local
+}
+
+// passedBy records that the serving leader certified a read at index: its
+// state machine applied every entry up to index and is not stuck. At or
+// past a deterministic stop's entry, it proves that the cluster applies the
+// entry and only this replica cannot (an older binary, a local bug): the
+// stop is this replica's own after all.
+func (f *FSM) passedBy(index uint64) {
+	if p := f.stuck.Load(); p != nil && !p.local && index >= p.index {
+		f.passed.Store(true)
+	}
+}
+
+// stuckPassed reports a deterministic stop that the cluster has passed.
+func (f *FSM) stuckPassed() bool {
+	p := f.stuck.Load()
+	return p != nil && !p.local && f.passed.Load()
 }
 
 // stuckFor is how long ago the replica got stuck, or 0 if it is not.
@@ -242,6 +281,7 @@ func (f *FSM) Apply(l *raft.Log) any {
 	if d := f.applyDelay.Load(); d > 0 {
 		time.Sleep(time.Duration(d))
 	}
+	f.applying.Store(l.Index)
 	var e Entry
 	if err := json.Unmarshal(l.Data, &e); err != nil {
 		return f.stop(fmt.Errorf("decode log entry %d: %w", l.Index, err))
@@ -249,16 +289,28 @@ func (f *FSM) Apply(l *raft.Log) any {
 	if cmp.Or(e.Format, baseFormat) > f.readable {
 		return f.stop(fmt.Errorf("%w: entry %d needs format %d, this replica reads up to %d", ErrNewerFormat, l.Index, e.Format, f.readable))
 	}
-	res := f.apply(e)
+	res := f.applyRecovering(l.Index, e)
 	if err, ok := res.(error); ok && errors.Is(err, errMalformed) {
 		return f.stop(fmt.Errorf("log entry %d: %w", l.Index, err))
 	}
 	// The entry is committed, and replicas whose disks took it hold it. One
 	// that could not write it here must not mark it applied and serve on.
 	if r, ok := res.(allowlist.Result); ok && r.LocalStoreFault() {
-		return f.stop(fmt.Errorf("log entry %d: local allowlist store: %w", l.Index, r.Error()))
+		return f.stopLocal(fmt.Errorf("log entry %d: local allowlist store: %w", l.Index, r.Error()))
 	}
 	return res
+}
+
+// applyRecovering applies e, turning a panic into a deterministic stop: the
+// same entry panics on every replica, and a crash would end them all.
+func (f *FSM) applyRecovering(index uint64, e Entry) (res any) {
+	defer func() {
+		if p := recover(); p != nil {
+			slog.Error("cds-ha: panic applying a log entry", "index", index, "kind", e.Kind, "panic", p, "stack", string(debug.Stack()))
+			res = f.stop(fmt.Errorf("log entry %d of kind %q: panic: %v", index, e.Kind, p))
+		}
+	}()
+	return f.apply(e)
 }
 
 // errMalformed is an entry this replica does not understand.
@@ -267,12 +319,35 @@ var errMalformed = errors.New("malformed log entry")
 // stop records that this replica can no longer follow the log. Raft treats
 // Apply's result as the entry's answer and moves on, so a replica that
 // skipped an entry would serve state the rest of the group does not have.
-// It stops serving instead, and is replaced by one that reads the log.
+// It stops serving instead.
+//
+// stop is for a deterministic reason (an entry this code cannot apply):
+// every replica on the same code stops at the same entry, and since the log
+// lives only in memory, exiting would lose the cluster. The replica keeps
+// running, with its log, until the cluster is seen past the entry (passedBy)
+// or an operator acts: an image that applies the entry, or a Restore.
 func (f *FSM) stop(err error) error {
-	msg := err.Error()
-	if f.stuck.CompareAndSwap(nil, &msg) {
+	return f.halt(err, false)
+}
+
+// stopLocal is stop for a fault of this replica's own (its store, its
+// process): it exits and rejoins with the cluster's state.
+func (f *FSM) stopLocal(err error) error {
+	return f.halt(err, true)
+}
+
+func (f *FSM) halt(err error, local bool) error {
+	r := &stopReason{msg: err.Error(), local: local}
+	if !local {
+		r.index = f.applying.Load()
+	}
+	if f.stuck.CompareAndSwap(nil, r) {
 		f.stuckAt.Store(time.Now().UnixNano())
-		slog.Error("cds-ha: this replica can no longer follow the log; it stops serving and exits to rejoin", "reason", msg)
+		if local {
+			slog.Error("cds-ha: this replica can no longer follow the log (local fault); it stops serving and exits to rejoin", "reason", r.msg)
+		} else {
+			slog.Error("cds-ha: ALARM: this replica cannot apply a committed log entry; it stops serving and keeps its log for an operator (an image that applies the entry, or a Restore)", "reason", r.msg, "index", r.index)
+		}
 	}
 	return err
 }
@@ -532,7 +607,7 @@ func (f *FSM) Restore(rc io.ReadCloser) error {
 		// with healthy heartbeats, serves nothing. Stop like on an entry the
 		// store cannot take, so the replica exits and rejoins.
 		if allowlist.IsLocalStoreFault(err) {
-			return f.stop(fmt.Errorf("restore snapshot at index %d: local allowlist store: %w", sn.Index, err))
+			return f.stopLocal(fmt.Errorf("restore snapshot at index %d: local allowlist store: %w", sn.Index, err))
 		}
 		return err
 	}
