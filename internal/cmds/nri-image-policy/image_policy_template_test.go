@@ -208,15 +208,47 @@ func TestNodeImageBootConfig_ParsesAndAdmitsSystemImages(t *testing.T) {
 		t.Errorf("mesh.cluster_ranges = %v, want the baked cluster-cidr and service-cidr %v", got, wantRanges)
 	}
 
-	// Every base entry must still admit the launch it describes at final
-	// admission: a system image with its host mounts, a role entry with the
-	// argv and mounts it pins.
+	// Every base container must still admit the launch it describes at final
+	// admission: an open system image with a host mount, a pinned one or a
+	// role entry with the argv and mounts it pins.
 	store := newPolicyStore(cfg.Allowlist.Base)
 	for name, w := range cfg.Allowlist.Base.Workloads {
-		if !store.baseAdmits(entryLaunch(w), launchFinal) {
-			t.Errorf("base entry %q does not admit the launch it describes", name)
+		for _, c := range slices.Concat(w.InitContainers, w.Containers) {
+			if !store.baseAdmits(containerLaunch(c), launchFinal) {
+				t.Errorf("base entry %q does not admit the launch its %s container describes", name, c.Image)
+			}
 		}
 	}
+
+	// Every system container, in any entry, pins its command, args and mounts,
+	// except those of the images named here, whose launch stays open for the
+	// reasons docs/allowlist-and-capabilities.md ("Host privilege") gives.
+	openSystemImages := map[string]bool{
+		"docker.io/rancher/mirrored-cilium-cilium:v1.19.6":                                                                 true,
+		"docker.io/rancher/mirrored-cilium-operator-generic:v1.19.6":                                                       true,
+		"docker.io/rancher/klipper-helm:v0.13.3-build20260820":                                                             true,
+		"docker.io/rancher/hardened-coredns:v1.14.7-build20260819":                                                         true,
+		"docker.io/rancher/hardened-cluster-autoscaler:v1.10.3-build20260819":                                              true,
+		"docker.io/rancher/hardened-k8s-metrics-server:v0.9.0-build20260819":                                               true,
+		"docker.io/rancher/hardened-snapshot-controller:v8.6.0-build20260819":                                              true,
+		"docker.io/rancher/hardened-cni-plugins:v1.9.1-build20260717":                                                      true,
+		"rancher/local-path-provisioner:v0.0.36@sha256:1eba82e9c386038b4af6d69cca7519fac738c28c42735ed48ce70c882ad0d80f":   true,
+		"nvcr.io/nvidia/k8s-device-plugin:v0.19.3@sha256:25cc340fe6fd53c101e16fc452f503e7a92c219c64a80ed5381784b522dbbf77": true,
+	}
+	for name, w := range cfg.Allowlist.Base.Workloads {
+		for _, c := range slices.Concat(w.InitContainers, w.Containers) {
+			image, system := systemImages[c.Digest.String()]
+			if system && !openSystemImages[image] && !pinsArgvAndMounts(c) {
+				t.Errorf("base entry %q leaves the launch of %s open", name, c.Image)
+			}
+		}
+	}
+}
+
+// pinsArgvAndMounts reports whether c leaves none of its command, args and
+// mounts open.
+func pinsArgvAndMounts(c allowlist.Container) bool {
+	return c.Command.Policy != allowlist.PolicyAny && c.Args.Policy != allowlist.PolicyAny && c.Mounts.Policy != allowlist.PolicyAny
 }
 
 // A baked node takes its front-door mode from the launch file, so the base
@@ -402,10 +434,14 @@ func (l launchEvidence) container() allowlist.RunningContainer {
 	}
 }
 
-// entryLaunch is the launch an entry describes: the argv it pins, and the
-// mounts it pins where it pins any.
+// entryLaunch is the launch an entry's first container describes.
 func entryLaunch(w allowlist.Workload) allowlist.RunningContainer {
-	c := w.Containers[0]
+	return containerLaunch(w.Containers[0])
+}
+
+// containerLaunch is the launch a container describes: the argv it pins, and
+// the mounts it pins where it pins any.
+func containerLaunch(c allowlist.Container) allowlist.RunningContainer {
 	return allowlist.RunningContainer{
 		Digest: c.Digest.String(),
 		Argv:   append(slices.Clone(c.Command.Argv), c.Args.Argv...),

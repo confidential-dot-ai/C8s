@@ -716,13 +716,27 @@ args and mounts `any`, so any pod running the helper digest can supply its own
 script ([#872](https://github.com/confidential-dot-ai/C8s/issues/872)); its
 entry is seeded only on an image that opts into the provisioner
 (`rke2.localPathHelper.enabled`, `C8S_LOCAL_PATH=1`). Both
-content residuals need the content pinned, or an image that carries the file. The node image's RKE2 system entries
-(one per system pod the node runs) still admit their digests
-under `command`, `args` and `mounts` of `any`, so the control plane can
-restage one of those images — several ship a shell — as a privileged tenant
-pod and the base admits it. Closing that means pinning argv in those entries;
-the plugin already matches the whole entry, so a pin takes effect as soon as
-it is measured.
+content residuals need the content pinned, or an image that carries the file. The node image's RKE2 system entries, one per system pod, pin the control
+plane: each static pod's command, arguments and mounts are what RKE2 derives
+from the image's RKE2 configuration, captured from booted nodes, so a change to
+that configuration that reaches those flags (cluster ranges, audit or Pod
+Security settings) changes the floor with it. RKE2 writes two per-node values
+into that argv, kube-proxy's node name and kube-apiserver's advertised address;
+the floor names them by placeholder and boot preparation fills them in from
+the launch document, dropping the address flag when the node has none, as RKE2
+does. Their environment stays `any`, as it carries per-cluster values and the
+namespace's Service variables. That holds only while the pinned binaries are
+static and the host directories their mounts name are written by node
+components alone: a container able to write one (a residual below, or a host
+mount a served entry grants) could plant an executable that `PATH` selects. A
+pinned launch bounds the process a container starts, not what it is handed:
+the exemption still covers a pinned shape restaged with host namespaces,
+devices or a privileged security context, and the runtime's locked exec
+([node-exec-mode.md](node-exec-mode.md)) is what keeps that from becoming a
+shell. The other RKE2 system entries still
+admit their digests under `command`, `args` and `mounts` of `any`, so the
+control plane can restage one of those images — several ship a shell — as a
+privileged tenant pod and the base admits it.
 
 ## Where it's enforced
 
@@ -850,8 +864,8 @@ Both sources check argv at preliminary admission, then argv, environment, and
 mounts at final admission; unavailable evidence fails constrained policies.
 The chart's component entries carry the same exact argv and mount pins in the
 base as in the served seed, leaving only the environment open, so the platform
-can start before CDS is reachable; the node image's RKE2 system entries
-leave command and args open.
+can start before CDS is reachable; the node image's RKE2 system entries pin
+the control plane's argv and mounts and leave the rest open.
 
 ### Allowlist history
 
