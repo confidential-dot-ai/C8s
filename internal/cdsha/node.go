@@ -91,7 +91,11 @@ type Config struct {
 	Attestor  Attestor
 	// BakedPins are the measurements this replica's launch configuration
 	// pins; the Genesis replica makes them the first pin set.
-	BakedPins      []string
+	BakedPins []string
+	// PeerPins are the launch document's peer images: those of an
+	// unfinished rollout. Before it joins, a replica admits only peers on
+	// BakedPins or PeerPins.
+	PeerPins       []string
 	OperatorPubKey []byte // PKIX DER
 	// Seats is the voter count, from the signed launch configuration. More
 	// replicas than seats join as non-voters: they serve reads, issuance and
@@ -152,6 +156,7 @@ type Node struct {
 	cert          atomic.Pointer[tls.Certificate] // the peer certificate; renewPeerCert replaces it
 	tls           *tls.Config
 	verifier      peerVerifier
+	launchPins    []string // BakedPins and PeerPins: the peers admitted before joining
 	measurement   string
 	log           *slog.Logger
 
@@ -397,6 +402,7 @@ func NewNode(cfg Config) (*Node, error) {
 		return nil, err
 	}
 	n.cert.Store(&cert)
+	n.launchPins = slices.Concat(cfg.BakedPins, cfg.PeerPins)
 	n.verifier = peerVerifier{clusterID: cfg.ClusterID, att: cfg.Attestor, anchor: own.Anchor, pins: n.peerPins}
 	n.tls = peerTLSConfig(n.cert.Load)
 	return n, nil
@@ -421,13 +427,13 @@ func (n *Node) renewPeerCert() {
 }
 
 // peerPins is the pin set peers are checked against: the agreed one once
-// the cluster exists. Before that (a replica that has not joined yet) any
-// measurement passes the TLS layer with our launch-key anchor; what a
-// joiner then accepts is decided by the leader of a real majority.
+// the cluster exists. Before that, the images the signed launch document
+// names: a replica that has not joined takes its whole state from the peer
+// it joins, so that peer must run an image the operator signed for it.
 func (n *Node) peerPins() []string {
 	c := n.fsm.Core()
 	if !c.Joined() {
-		return nil
+		return n.launchPins
 	}
 	return c.Measurements
 }

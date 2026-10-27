@@ -166,6 +166,9 @@ type FSM struct {
 	mu   sync.RWMutex
 	core Core
 	ca   *issuer.CA
+	// launch is the cluster id and operator key this replica was launched
+	// with. No state of another cluster or operator ever replaces them.
+	launch Core
 
 	allowlist *allowlist.Store
 	secrets   *secrets.MemoryStore
@@ -208,7 +211,8 @@ type FSM struct {
 // NewFSM builds the state machine over the replica's local stores. pre is
 // the pre-Genesis state from the replica's launch configuration.
 func NewFSM(pre Core, al *allowlist.Store, sec *secrets.MemoryStore, led *sandboxledger.Ledger) *FSM {
-	return &FSM{core: pre, allowlist: al, secrets: sec, ledger: led, readable: Format}
+	launch := Core{ClusterID: pre.ClusterID, OperatorPubKey: bytes.Clone(pre.OperatorPubKey)}
+	return &FSM{core: pre, launch: launch, allowlist: al, secrets: sec, ledger: led, readable: Format}
 }
 
 // stopReason is why a replica stopped following the log. A local stop
@@ -472,12 +476,7 @@ func (f *FSM) applyRestore(re RestoreEntry) DecreeResult {
 	if err != nil {
 		return fail(err)
 	}
-	switch {
-	case sn.Core.ClusterID != cur.ClusterID:
-		return fail(fmt.Errorf("snapshot is of cluster %q", sn.Core.ClusterID))
-	case !bytes.Equal(sn.Core.OperatorPubKey, cur.OperatorPubKey):
-		return fail(errors.New("snapshot names another operator key"))
-	case !sn.Core.Joined():
+	if !sn.Core.Joined() {
 		return fail(errors.New("snapshot holds no mesh CA"))
 	}
 	if sn.Core.Epoch == ^uint64(0) {
@@ -775,6 +774,14 @@ func (f *FSM) restore(sn snapshot) error {
 	// snapshot policy from this process's launch configuration.
 	if err := f.ValidatePolicy(sn.Core.Policy); err != nil {
 		return err
+	}
+	// INVARIANT: Core.ClusterID and Core.OperatorPubKey are the launch
+	// values. A snapshot is not signed: whoever sent it chose them.
+	switch {
+	case sn.Core.ClusterID != f.launch.ClusterID:
+		return fmt.Errorf("snapshot is of cluster %q", sn.Core.ClusterID)
+	case !bytes.Equal(sn.Core.OperatorPubKey, f.launch.OperatorPubKey):
+		return errors.New("snapshot names another operator key")
 	}
 	cur := f.Core()
 	if cur.Policy != (FSMPolicy{}) && cur.Policy != sn.Core.Policy {

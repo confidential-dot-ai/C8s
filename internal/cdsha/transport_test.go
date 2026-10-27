@@ -25,20 +25,20 @@ func closedByPeer(t *testing.T, c net.Conn, what string) {
 }
 
 // muxPeers are two replicas' TLS configs and a mux for the first, with
-// verifier v (no pins, empty anchor) and control handler control.
+// verifier v (pins m1, empty anchor) and control handler control.
 func muxPeers(t *testing.T, control controlHandler) (a, b *Node, v peerVerifier, m *mux) {
 	t.Helper()
 	al, sec, led := testStores(t)
 	mk := func(name string) *Node {
 		n, err := NewNode(Config{ClusterID: testCluster, NodeName: name, Bind: "127.0.0.1:0", Advertise: "127.0.0.1:1",
-			Attestor: MockAttestor{"m1"}, Seats: 3, Allowlist: al, Secrets: sec, Ledger: led})
+			Attestor: MockAttestor{"m1"}, BakedPins: []string{"m1"}, Seats: 3, Allowlist: al, Secrets: sec, Ledger: led})
 		if err != nil {
 			t.Fatal(err)
 		}
 		return n
 	}
 	a, b = mk("a"), mk("b")
-	v = peerVerifier{clusterID: testCluster, att: MockAttestor{}, anchor: "", pins: func() []string { return nil }}
+	v = peerVerifier{clusterID: testCluster, att: MockAttestor{}, anchor: "", pins: func() []string { return []string{"m1"} }}
 	m, err := newMux("127.0.0.1:0", "127.0.0.1:1", string(a.id), a.tls, v, control, nil)
 	if err != nil {
 		t.Fatal(err)

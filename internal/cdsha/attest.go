@@ -91,16 +91,14 @@ func newPeerCert(clusterID string, att Attestor, notAfter time.Time) (tls.Certif
 
 // peerVerifier checks a peer certificate: evidence verifies, binds this
 // cluster and the certificate key, carries our launch-key anchor, and the
-// measurement is in the current pin set (L2). A cold replica (no chain yet)
-// has no current pin set: it admits any measurement at the TLS layer, and
-// syncFrom accepts an offer only if the offered, operator-decreed chain pins
-// both the source and this replica. That lets a replica on a new node image,
-// which the operator added with UpdateMeasurements, join from replicas on
-// the old one; its baked pins name only its own image.
+// measurement is in the current pin set (L2). Before a replica joins, that
+// set is its launch document's images (Node.peerPins): a replica on a new
+// node image joins from replicas on the old one when its launch document
+// lists the old image among its peer images.
 type peerVerifier struct {
 	clusterID string
 	att       Attestor
-	pins      func() []string // nil: cold, see above
+	pins      func() []string // empty admits nobody
 	anchor    string          // our own Anchor; a peer's must be equal (same role launch key)
 }
 
@@ -132,7 +130,7 @@ func (v peerVerifier) claims(der []byte) (Claims, error) {
 	if c.ReportData != PeerBinding(v.clusterID, cert.RawSubjectPublicKeyInfo, cert.NotAfter) {
 		return Claims{}, errors.New("peer evidence not bound to this cluster, TLS key and expiry")
 	}
-	if pins := v.pins(); pins != nil && !slices.Contains(pins, c.Measurement) {
+	if !slices.Contains(v.pins(), c.Measurement) {
 		return Claims{}, fmt.Errorf("peer measurement %q not in the replica pin set", c.Measurement)
 	}
 	if c.Anchor != v.anchor {

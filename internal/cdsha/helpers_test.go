@@ -223,8 +223,14 @@ var _ raft.SnapshotSink = (*memSink)(nil)
 // pub, over fresh stores.
 func newTestFSM(t *testing.T, pub []byte) *FSM {
 	t.Helper()
+	return newTestFSMIn(t, testCluster, pub)
+}
+
+// newTestFSMIn is a pre-Genesis FSM of cluster, with operator key pub.
+func newTestFSMIn(t *testing.T, cluster string, pub []byte) *FSM {
+	t.Helper()
 	al, sec, led := testStores(t)
-	f := NewFSM(PreGenesis(testCluster, pub), al, sec, led)
+	f := NewFSM(PreGenesis(cluster, pub), al, sec, led)
 	f.core.Policy = f.LocalPolicy()
 	return f
 }

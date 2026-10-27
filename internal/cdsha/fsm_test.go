@@ -457,3 +457,34 @@ func TestFSMRefusesOlderSnapshot(t *testing.T) {
 		t.Fatalf("snapshot at the applied index: %v", err)
 	}
 }
+
+// A replica installs a snapshot only of the cluster and operator key it was
+// launched with: the snapshot is not signed, so a peer could otherwise hand a
+// replica that has not joined yet another operator key and a mesh CA of its
+// choosing.
+func TestFSMRestoreKeepsLaunchIdentity(t *testing.T) {
+	opKey, opPub := operatorKey(t)
+	_, otherPub := operatorKey(t)
+	f := newTestFSM(t, opPub)
+	ca := mustCA(t)
+	key, _ := x509.MarshalPKCS8PrivateKey(ca.Key)
+	g := DecreeEntry{Policy: f.LocalPolicy(), Decree: signDecree(t, opKey, Decree{IntentID: "g", Kind: Genesis, BootstrapNode: "n0"}),
+		AtMS: time.Now().UnixMilli(), Pins: []string{"m1"}, RootCert: ca.Cert.Raw, Key: key}
+	if res := applyAt(f, 1, Entry{Kind: KindDecree, Decree: &g}).(DecreeResult); res.Err != "" {
+		t.Fatalf("genesis: %+v", res)
+	}
+	for name, to := range map[string]*FSM{
+		"another operator key": newTestFSMIn(t, testCluster, otherPub),
+		"another cluster":      newTestFSMIn(t, "other-cluster", opPub),
+	} {
+		if err := restoreCopy(t, f, to); err == nil {
+			t.Errorf("%s: snapshot installed", name)
+		}
+		if c := to.Core(); c.Joined() || to.CA() != nil || to.AppliedIndex() != 0 {
+			t.Errorf("%s: refused snapshot changed the state", name)
+		}
+	}
+	if err := restoreCopy(t, f, newTestFSM(t, opPub)); err != nil {
+		t.Fatalf("same launch identity: %v", err)
+	}
+}

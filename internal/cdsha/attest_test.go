@@ -223,9 +223,11 @@ func TestPeerVerifier(t *testing.T) {
 	if _, err := other.claims(good.Certificate[0]); err == nil {
 		t.Error("peer with another launch-key anchor accepted")
 	}
-	cold := v
-	cold.pins = func() []string { return nil }
-	if _, err := cold.claims(unpinned.Certificate[0]); err != nil {
-		t.Errorf("a cold replica must defer the pin check to the offered chain: %v", err)
+	// No pin set admits nobody: a replica that has not joined checks its
+	// launch document's images (Node.peerPins), never "any".
+	none := v
+	none.pins = func() []string { return nil }
+	if _, err := none.claims(good.Certificate[0]); err == nil {
+		t.Error("an empty pin set admitted a peer")
 	}
 }

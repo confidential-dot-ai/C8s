@@ -670,6 +670,7 @@ func TestCDSOutputs(t *testing.T) {
 	d := &launchconfig.Document{ClusterID: "c1", TLSSAN: "cds.example",
 		Server: launchconfig.ServerConfig{OperatorPublicKey: string(pins.Images[0].Anchor)},
 		CDSHA:  &launchconfig.CDSHA{DecreeKey: string(pins.Images[0].Anchor), Replicas: 3, RecoveryKey: string(pins.Images[1].Anchor)}}
+	d.PeerImages = []launchconfig.Image{{Platform: "tdx", Measurement: strings.Repeat("44", 48)}}
 	seed := []byte(`{"schema":"c8s.allowlist/v1","workloads":{}}`)
 	out, err := cdsOutputs(d, seed)
 	if err != nil {
@@ -678,6 +679,11 @@ func TestCDSOutputs(t *testing.T) {
 	var c CDSHAConfig
 	if err := json.Unmarshal(out[cdsHAFile], &c); err != nil || c.RecoveryKey != d.CDSHA.RecoveryKey {
 		t.Fatalf("cds-ha.json recovery key %q: %v", c.RecoveryKey, err)
+	}
+	// The replica's cold pin set: without the peer images, a replica on a
+	// rolled image could not join the replicas not yet rolled.
+	if len(c.PeerImages) != 1 || c.PeerImages[0].Measurement != d.PeerImages[0].Measurement {
+		t.Fatalf("cds-ha.json peer images %+v", c.PeerImages)
 	}
 	if string(out["tls-san"]) != "cds.example\n" || string(out["operator-pubkey"]) != d.Server.OperatorPublicKey {
 		t.Fatal("cds node outputs")

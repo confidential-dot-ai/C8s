@@ -50,6 +50,7 @@ type haConfig struct {
 	attestor       string
 	measurement    string
 	pins           []string
+	peerPins       []string // --ha-config: the launch document's peer images
 	operatorKey    string
 	operatorKeyPEM []byte // set from --ha-config instead of a file
 	recoveryKeyPEM []byte // from --ha-config or --ha-recovery-key: backups are sealed to it
@@ -237,6 +238,7 @@ func newHANode(cfg config, st haStores) (*cdsha.Node, error) {
 		Advertise:       net.JoinHostPort(podIP, strconv.Itoa(h.port)),
 		Attestor:        att,
 		BakedPins:       h.pins,
+		PeerPins:        h.peerPins,
 		OperatorPubKey:  opKey,
 		Seats:           h.seats,
 		MaxNonVoters:    16,
@@ -325,6 +327,13 @@ func loadHAConfigFile(h *haConfig) error {
 		return fmt.Errorf("--ha-config image: %w", err)
 	}
 	h.clusterID, h.pins = c.ClusterID, []string{pin}
+	for _, img := range c.PeerImages {
+		peer, err := cdsha.ImagePin(img.Platform, img.Measurement, img.RTMRs)
+		if err != nil {
+			return fmt.Errorf("--ha-config peer image: %w", err)
+		}
+		h.peerPins = append(h.peerPins, peer)
+	}
 	h.operatorKeyPEM = []byte(c.DecreeKey)
 	h.recoveryKeyPEM = []byte(c.RecoveryKey)
 	h.seats = c.Replicas // launchconfig refuses fewer than 2

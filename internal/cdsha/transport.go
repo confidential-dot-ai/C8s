@@ -170,7 +170,7 @@ func (m *mux) track(c *tls.Conn, claims Claims) (*peerConn, error) {
 	// Serialize this final pin snapshot and registration with recheck.
 	// Verification may have completed before the latest epoch's sweep.
 	pins := m.verifier.pins()
-	if (pins != nil && !slices.Contains(pins, claims.Measurement)) || (m.blocked != nil && m.blocked(c.RemoteAddr().String())) {
+	if !slices.Contains(pins, claims.Measurement) || (m.blocked != nil && m.blocked(c.RemoteAddr().String())) {
 		return nil, errors.New("peer no longer admitted")
 	}
 	m.conns[pc] = struct{}{}
@@ -184,7 +184,7 @@ func (m *mux) recheck() {
 	pins := m.verifier.pins()
 	var drop []*peerConn
 	for c := range m.conns {
-		if (pins != nil && !slices.Contains(pins, c.claims.Measurement)) || (m.blocked != nil && m.blocked(c.RemoteAddr().String())) {
+		if !slices.Contains(pins, c.claims.Measurement) || (m.blocked != nil && m.blocked(c.RemoteAddr().String())) {
 			drop = append(drop, c)
 		}
 	}

@@ -130,6 +130,9 @@ type cluster struct {
 	secretLimits    [3]int        // secrets.NewMemoryStore limits of every replica started; zero: 64, 8, 4096
 	fileStores      bool          // allowlist databases in files (replica.alPath), not in memory
 	noBackups       bool          // replicas run without a backup store
+	// peerImages: node name -> the launch document's peer images (PeerPins)
+	// of the replicas started there; guarded by mu.
+	peerImages map[string][]string
 }
 
 func (c *cluster) timingOr() Timing {
@@ -205,6 +208,18 @@ func (c *cluster) start(name, measurement string) *replica {
 	return c.startWithControl(name, measurement, nil)
 }
 
+// startRolled starts a replica on a new image whose launch document lists
+// peerImages, the images of the rollout it joins.
+func (c *cluster) startRolled(name, measurement string, peerImages ...string) *replica {
+	c.mu.Lock()
+	if c.peerImages == nil {
+		c.peerImages = map[string][]string{}
+	}
+	c.peerImages[name] = peerImages
+	c.mu.Unlock()
+	return c.start(name, measurement)
+}
+
 // startWithControl installs a test control wrapper before peers can discover
 // the listener. It permits a delayed response without a data race on the mux.
 func (c *cluster) startWithControl(name, measurement string, wrap func(controlHandler) controlHandler) *replica {
@@ -218,6 +233,7 @@ func (c *cluster) startWithControl(name, measurement string, wrap func(controlHa
 	}
 	c.meas[name] = measurement
 	reads := c.reads[name]
+	peerPins := c.peerImages[name]
 	c.mu.Unlock()
 	var alPath string
 	open := allowlist.OpenInMemory
@@ -236,7 +252,7 @@ func (c *cluster) startWithControl(name, measurement string, wrap func(controlHa
 	led := sandboxledger.New(time.Hour, 100)
 	n, err := NewNode(Config{
 		ClusterID: testCluster, NodeName: name, Bind: fmt.Sprintf("%s:%d", ip, c.port), Advertise: fmt.Sprintf("%s:%d", ip, c.port),
-		Attestor: MockAttestor{measurement}, BakedPins: []string{measurement}, OperatorPubKey: c.opPub,
+		Attestor: MockAttestor{measurement}, BakedPins: []string{measurement}, PeerPins: peerPins, OperatorPubKey: c.opPub,
 		Seats: c.seats, MaxNonVoters: 8, Peers: c.peers(ip), Decrees: nodeDecrees{c, name}, Timing: c.timingOr(),
 		RecoveryKey: mustPKIX(c.t, &c.recKey.PublicKey), Backups: c.backupSink(),
 		Allowlist: &al, Secrets: mem, Ledger: led, Format: reads, HistoryVersions: c.historyVersions, HistoryBytes: c.historyBytes, CAValidity: c.caValidity,
@@ -588,7 +604,7 @@ func TestEvictedImageIsCutOff(t *testing.T) {
 	if _, err := c.nodes["n0"].sec.Put(t.Context(), "/before", []byte("v")); err != nil {
 		t.Fatal(err)
 	}
-	c.start("n3", "m2") // a new image, not yet pinned: refused
+	c.startRolled("n3", "m2", "m1") // a new image, not yet pinned: refused
 	time.Sleep(time.Second)
 	if c.nodes["n3"].node.Serving() || c.nodes["n3"].node.member() {
 		t.Fatal("an unpinned image joined")
@@ -1376,4 +1392,26 @@ func TestLeaderCompactsWithoutBackups(t *testing.T) {
 	if idx, _, _ := n.node.snaps.latest(); idx == 0 {
 		t.Fatal("the restarted replica replayed the whole log: it installed no snapshot")
 	}
+}
+
+// A replica that has not joined admits only the images its launch document
+// names. A cluster on another image (one the operator dropped, relaunched by
+// the host from an old launch document with the same key and cluster id)
+// cannot become its source of state, even if that cluster's own pin set
+// names the replica's image.
+func TestColdReplicaAdmitsOnlyLaunchImages(t *testing.T) {
+	c := newCluster(t, 3)
+	c.start("n0", "revoked")
+	g := c.decree(Decree{Kind: Genesis, BootstrapNode: "n0", Alone: true})
+	eventually(t, 10*time.Second, "genesis applied", func() bool { st, ok := c.decrees.get(g); return ok && st.AppliedEpoch != nil })
+	up := c.decree(Decree{Kind: UpdateMeasurements, BaseEpoch: 1, Measurements: []string{"good", "revoked"}})
+	eventually(t, 5*time.Second, "pin set names the new image", func() bool { st, ok := c.decrees.get(up); return ok && st.AppliedEpoch != nil })
+	cold := c.start("n1", "good")
+	time.Sleep(3 * time.Second)
+	if cold.node.Serving() || cold.node.member() || cold.node.Core().Joined() {
+		t.Fatal("a replica joined a cluster on an image its launch document does not name")
+	}
+	// The same image, launched to roll from "revoked", joins.
+	rolled := c.startRolled("n2", "good", "revoked")
+	eventually(t, 8*time.Second, "a replica whose launch document names the cluster's image joined", func() bool { return rolled.node.Serving() })
 }

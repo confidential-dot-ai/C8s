@@ -70,7 +70,10 @@ boundary. The step-by-step version, with the readiness gate, is runbook 3 in
 2. Replace the cds nodes one at a time, the leader last. Each replacement
    gets a **new name** (`c8s node launch-config add-cds-node --image-manifest
    <new manifest.json>`). Wait until the new replica serves before you remove
-   the old node.
+   the old node. Until it joins, a replica admits only peers on its own
+   image and on the launch document's peer images, which `add-cds-node`
+   sets to the bundle server document's image. A replica whose launch
+   document names neither the image the cluster runs cannot join it.
 3. Sign and apply a decree that pins only the new image.
 4. Remove the old image's workload policy entries. They stay until you do.
 
