@@ -414,11 +414,11 @@ func TestMeshGateRefusesASharedPIDNamespace(t *testing.T) {
 func TestMeshGateRefusesSandboxesItCannotRecover(t *testing.T) {
 	pod := meshPod("default", "pod", testNetNS)
 	gate := newMeshGate(*meshRoles(), discardLogger())
-	err := gate.recoverPod(pod, nil)
+	err := gate.recoverPod(pod, nil, recoveredExits{})
 	if err == nil || !strings.Contains(err.Error(), testNetNS) {
 		t.Fatalf("error = %v, want the namespace proof to fail on %s", err, testNetNS)
 	}
-	if err := gate.recoverPod(makePod("default", "host-network"), nil); err != nil {
+	if err := gate.recoverPod(makePod("default", "host-network"), nil, recoveredExits{}); err != nil {
 		t.Fatalf("a pod in the node's network was taken under the gate: %v", err)
 	}
 
@@ -430,7 +430,7 @@ func TestMeshGateRefusesSandboxesItCannotRecover(t *testing.T) {
 	if err := gate.protect(pod); err == nil || !strings.Contains(err.Error(), "on record already") {
 		t.Fatalf("protect replaced the record of a refused sandbox: %v", err)
 	}
-	if err := gate.recoverPod(pod, nil); err == nil || !strings.Contains(err.Error(), "on record already") {
+	if err := gate.recoverPod(pod, nil, recoveredExits{}); err == nil || !strings.Contains(err.Error(), "on record already") {
 		t.Fatalf("recover replaced the record of a refused sandbox: %v", err)
 	}
 	if err := gate.verifyMember(pod.GetId()); err == nil {

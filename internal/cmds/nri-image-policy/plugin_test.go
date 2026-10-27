@@ -237,7 +237,12 @@ func TestSynchronize_NotReady_Defers(t *testing.T) {
 	}
 }
 
-func TestSynchronize_NotReady_EnforceExistingDisabled_NoDeferral(t *testing.T) {
+// Even with the startup check off and no inventory, a not-ready Synchronize
+// defers its batch: the mesh gate recovers running member pods on a restart
+// regardless of the check, and recovery runs from the deferred path once a
+// served allowlist has applied. RunDeferredCheck then consumes the batch
+// without the startup check and without panicking on the nil inventory.
+func TestSynchronize_NotReady_EnforceExistingDisabled_DefersForRecovery(t *testing.T) {
 	p := newTestPlugin(&config{
 		Policy: policyConfig{
 			Mode:            "fail-closed",
@@ -248,15 +253,84 @@ func TestSynchronize_NotReady_EnforceExistingDisabled_NoDeferral(t *testing.T) {
 	pods := []*api.PodSandbox{makePod("default", "pod1")}
 	ctrs := []*api.Container{makeCtr(pods[0].Id, "ctr1")}
 
-	_, err := p.Synchronize(context.Background(), pods, ctrs)
-	if err != nil {
+	if _, err := p.Synchronize(context.Background(), pods, ctrs); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	p.deferredMu.Lock()
+	deferred := len(p.deferredPods)
+	p.deferredMu.Unlock()
+	if deferred != 1 {
+		t.Fatalf("expected the batch deferred for recovery, got %d deferred pods", deferred)
+	}
+
+	p.SetReady()
+	p.RunDeferredCheck(context.Background())
 
 	p.deferredMu.Lock()
 	defer p.deferredMu.Unlock()
-	if len(p.deferredPods) != 0 {
-		t.Fatalf("expected no deferred pods, got %d", len(p.deferredPods))
+	if len(p.deferredPods) != 0 || len(p.deferredCtrs) != 0 {
+		t.Fatal("RunDeferredCheck did not consume the deferred batch")
+	}
+}
+
+// Recovery runs from the deferred path, not at connect, when the plugin is not
+// ready: a member pod reported at a not-ready Synchronize is on the gate's
+// record only after RunDeferredCheck, so the exits it holds are decided against
+// a served allowlist rather than the empty one a restart starts with. A real
+// recoverPod runs — the refusal recorded for the unprovable test namespace is
+// how we see it reached the namespace proof. When the plugin is ready at
+// connect, recovery runs inline; with the startup check off it still runs.
+func TestRecoveryRunsFromTheDeferredPath(t *testing.T) {
+	newReady := func(ready, check bool) *plugin {
+		cfg := &config{Policy: policyConfig{Mode: ModeFailClosed, EnforceExisting: check}}
+		p, _ := newCachedPlugin(cfg, exitsAllowlist(t, ""))
+		if !check {
+			p = newTestPlugin(cfg) // no inventory: shouldCheckExisting() is false
+			p.policy.apply(exitsAllowlist(t, ""), 1)
+		}
+		if ready {
+			p.SetReady()
+		}
+		return p
+	}
+	pod := meshPod("default", "pod", testNetNS)
+
+	// Not ready at connect: on record only after the deferred path runs.
+	p := newReady(false, true)
+	if _, err := p.Synchronize(context.Background(), []*api.PodSandbox{pod}, nil); err != nil {
+		t.Fatalf("Synchronize: %v", err)
+	}
+	if p.mesh.pods[pod.GetId()] != nil {
+		t.Fatal("a member pod was recovered before the plugin was ready")
+	}
+	p.SetReady()
+	p.RunDeferredCheck(context.Background())
+	state := p.mesh.pods[pod.GetId()]
+	if state == nil {
+		t.Fatal("recovery did not run from the deferred path")
+	}
+	if state.refusal == nil || !strings.Contains(state.refusal.Error(), testNetNS) {
+		t.Fatalf("recovered-pod refusal = %v, want the namespace proof to have run on %s", state.refusal, testNetNS)
+	}
+
+	// Ready at connect: recovered inline by Synchronize.
+	ready := newReady(true, true)
+	if _, err := ready.Synchronize(context.Background(), []*api.PodSandbox{pod}, nil); err != nil {
+		t.Fatalf("Synchronize: %v", err)
+	}
+	if ready.mesh.pods[pod.GetId()] == nil {
+		t.Fatal("a ready plugin did not recover a member pod at connect")
+	}
+
+	// Startup check off (no inventory): recovery still runs from the deferred path.
+	off := newReady(false, false)
+	if _, err := off.Synchronize(context.Background(), []*api.PodSandbox{pod}, nil); err != nil {
+		t.Fatalf("Synchronize: %v", err)
+	}
+	off.SetReady()
+	off.RunDeferredCheck(context.Background())
+	if off.mesh.pods[pod.GetId()] == nil {
+		t.Fatal("recovery did not run with the startup check off")
 	}
 }
 
@@ -1053,7 +1127,12 @@ func TestRunDeferredCheck_OrphanContainer_Skipped(t *testing.T) {
 	assertDeferredCleared(t, p)
 }
 
-func TestRunDeferredCheck_EnforceExistingDisabled_NoOp(t *testing.T) {
+// With the startup check off but no inventory, RunDeferredCheck still consumes
+// the deferred batch to run mesh-gate recovery, and skips the container check
+// (fakeContainerd would panic on a StopContainer). Recovery runs regardless of
+// the check because a running member pod off the gate's record is refused for
+// its life.
+func TestRunDeferredCheck_EnforceExistingDisabled_RecoversThenSkipsCheck(t *testing.T) {
 	p, _ := newCachedPlugin(&config{
 		Allowlist: allowlistConfig{Base: anyAllowlist(map[string]string{pushDigestA: "image-a"})},
 		Policy:    policyConfig{Mode: ModeFailClosed, EnforceExisting: false},
@@ -1067,12 +1146,11 @@ func TestRunDeferredCheck_EnforceExistingDisabled_NoOp(t *testing.T) {
 	p.deferredCtrs = []*api.Container{ctr}
 	p.deferredMu.Unlock()
 
-	// EnforceExisting=false → early return before clearing deferred state.
 	p.RunDeferredCheck(context.Background())
 	p.deferredMu.Lock()
 	defer p.deferredMu.Unlock()
-	if len(p.deferredCtrs) != 1 || len(p.deferredPods) != 1 {
-		t.Fatal("disabled check must leave deferred state untouched")
+	if len(p.deferredCtrs) != 0 || len(p.deferredPods) != 0 {
+		t.Fatal("recovery must consume the deferred batch even with the check off")
 	}
 }
 
@@ -1168,7 +1246,7 @@ func TestSynchronize_ReadyWhileDeferring_ChecksBatch(t *testing.T) {
 		Policy:    policyConfig{Mode: ModeFailClosed},
 	}, anyAllowlist(map[string]string{pushDigestA: "image-a"}))
 	p.inventory = newAdmissionInventory("/proc")
-	p.logger = slog.New(onLog{message: "plugin not ready, deferring startup check", hook: func() {
+	p.logger = slog.New(onLog{message: "plugin not ready, deferring recovery and the startup check", hook: func() {
 		p.SetReady()
 		p.RunDeferredCheck(context.Background())
 	}})

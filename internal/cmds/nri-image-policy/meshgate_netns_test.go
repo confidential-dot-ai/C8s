@@ -5,8 +5,10 @@ package nriimagepolicy
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 
@@ -220,7 +222,7 @@ func TestRecoverAProtectedPodInTheNamespace(t *testing.T) {
 	err := after.recoverPod(pod, []recoveredContainer{
 		{ctr: mesh, launch: meshLaunch, running: true},
 		{ctr: workload, running: true},
-	})
+	}, recoveredExits{})
 	if err != nil {
 		t.Fatalf("recover: %v", err)
 	}
@@ -243,11 +245,81 @@ func TestRecoverAProtectedPodInTheNamespace(t *testing.T) {
 	bare := sandboxProcess(t)
 	unprotected := meshPod("default", "bare", sandboxNetNSPath(bare))
 	unprotected.Pid = bare
-	if err := after.recoverPod(unprotected, nil); err == nil {
+	if err := after.recoverPod(unprotected, nil, recoveredExits{}); err == nil {
 		t.Fatal("a sandbox holding no ruleset was taken under the gate")
 	}
 	if err := after.verifyMember(unprotected.GetId()); err == nil || !strings.Contains(err.Error(), "before this enforcer connected") {
 		t.Fatalf("error = %v, want the pre-existing sandbox refusal", err)
+	}
+}
+
+// A member pod the earlier enforcer granted exits holds them in its live
+// ruleset, so recovery must verify against the base mesh ruleset plus those
+// exits: given the grant it reads back, the pod is a member again; given none,
+// the exits in the live ruleset read as foreign and the pod is refused for
+// life. This is the restart path that the plugin's recoveredExits decision
+// feeds — here exercised directly against a real namespace.
+func TestRecoverAPodHoldingExitsInTheNamespace(t *testing.T) {
+	exits := []exit{{Range: netip.MustParsePrefix("203.0.113.7/32"), Port: 443}}
+	mesh := gateCtr("c8s-mesh", testMeshUID)
+	meshLaunch := gatedContainer{role: meshRole, digest: digestOther, argv: []string{"/app/c8s", "armtls-mesh"}}
+	// verifyMember needs the pod's mesh endpoint running, so every recovery is
+	// handed it on record and running — the start the rest of the pod waited on.
+
+	pid := sandboxProcess(t)
+	p := meshPod("default", "pod", sandboxNetNSPath(pid))
+	p.Pid = pid
+	before := newMeshGate(*meshRoles(), discardLogger())
+	if err := before.protect(p); err != nil {
+		t.Fatalf("protect: %v", err)
+	}
+	// The earlier enforcer granted the pod its entry's exit, so the live
+	// ruleset carries the base mesh rules plus that exit.
+	if err := extendPodRuleset(before.pods[p.GetId()].netns, before.policy, "default", exits); err != nil {
+		t.Fatalf("extend the ruleset with the granted exit: %v", err)
+	}
+	ran := []recoveredContainer{{ctr: mesh, launch: meshLaunch, running: true}}
+
+	// Recovery that reads the grant back: the pod is a member again.
+	granted := newMeshGate(*meshRoles(), discardLogger())
+	if err := granted.recoverPod(p, ran, recoveredExits{entry: "collector", exits: exits}); err != nil {
+		t.Fatalf("recover a pod holding its granted exit: %v", err)
+	}
+	if err := granted.verifyMember(p.GetId()); err != nil {
+		t.Fatalf("a recovered pod holding its granted exit was refused an assertion: %v", err)
+	}
+	if held := granted.grantedExits(p.GetId()); !slices.Equal(held, exits) {
+		t.Fatalf("recovered exits = %v, want %v", held, exits)
+	}
+
+	// Recovery that reads no grant (no served allowlist, or a refused match)
+	// verifies the base ruleset alone, so the exit still live in the namespace
+	// reads as foreign and the pod is refused for its life — by the carried
+	// cause, not a bare ruleset mismatch.
+	ungranted := newMeshGate(*meshRoles(), discardLogger())
+	err := ungranted.recoverPod(p, ran, recoveredExits{cause: errors.New("no served allowlist on this node yet")})
+	if err == nil || !strings.Contains(err.Error(), "granted no exits") {
+		t.Fatalf("error = %v, want a refusal naming the undecided cause", err)
+	}
+	if err := ungranted.verifyMember(p.GetId()); err == nil {
+		t.Fatal("a pod refused on recovery was verified as a member")
+	}
+
+	// A pod whose live ruleset is exactly the base mesh ruleset recovers even
+	// with no grant and a carried cause: the empty grant accounts for it.
+	bpid := sandboxProcess(t)
+	base := meshPod("default", "base", sandboxNetNSPath(bpid))
+	base.Pid = bpid
+	beforeBase := newMeshGate(*meshRoles(), discardLogger())
+	if err := beforeBase.protect(base); err != nil {
+		t.Fatalf("protect base pod: %v", err)
+	}
+	baseGate := newMeshGate(*meshRoles(), discardLogger())
+	if err := baseGate.recoverPod(base, ran, recoveredExits{cause: errors.New("no served allowlist on this node yet")}); err != nil {
+		t.Fatalf("a base-ruleset pod with an undecided grant was refused: %v", err)
+	}
+	if err := baseGate.verifyMember(base.GetId()); err != nil {
+		t.Fatalf("a recovered base-ruleset pod was refused an assertion: %v", err)
 	}
 }
 

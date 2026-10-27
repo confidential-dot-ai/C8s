@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 var relayExit = []exit{{Range: netip.MustParsePrefix("203.0.113.7/32"), Port: 443}}
@@ -201,6 +202,60 @@ func TestBindEntryRefusesAnExitIntoTheClusterOrOntoTheNode(t *testing.T) {
 // Through StartContainer with a real inventory: a pod's outcome depends on the
 // set of containers it runs, not on the order they start in, and a restart or
 // a declared init container keeps the match.
+// recovered builds the workload-container view of launches a sandbox runs, the
+// way sandboxContainer does from what the runtime reports at connect: the
+// digest and the exact argv the exits allowlist is written against.
+func recovered(digests ...string) []workloadclaims.SandboxContainer {
+	out := make([]workloadclaims.SandboxContainer, 0, len(digests))
+	for _, d := range digests {
+		out = append(out, workloadclaims.SandboxContainer{Digest: d, Argv: []string{"/run"}, Mounts: []allowlist.ObservedMount{}})
+	}
+	return out
+}
+
+// recoveredExits reconstructs a running sandbox's exit grant from the served
+// allowlist and the launches this enforcer read back for it — not the
+// inventory, which a restarted process has not repopulated yet. A sandbox
+// running the collector entry alone holds its declared exit; one running a
+// foreign container too holds none; and a sandbox with no served allowlist
+// cannot be decided, so recovery is told to refuse it by that cause rather than
+// verify it against a ruleset it may not match.
+func TestRecoveredExitsReconstructsTheGrant(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		running   []string // digests the runtime reports for the sandbox
+		wantEntry string
+		wantExits []exit
+		wantCause bool // the match refused the pod, so the empty grant carries a cause
+	}{
+		{"collector alone", []string{collectorDigest}, "collector", relayExit, false},
+		{"collector with a foreign container", []string{collectorDigest, appDigest}, "", nil, true},
+		{"app alone", []string{appDigest}, "", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, _ := newCachedPlugin(&config{Policy: policyConfig{Mode: ModeFailClosed}}, exitsAllowlist(t, ""))
+			p.SetReady()
+
+			got := p.recoveredExits(recovered(tc.running...))
+			if (got.cause != nil) != tc.wantCause {
+				t.Fatalf("recoveredExits cause = %v, want a cause: %v", got.cause, tc.wantCause)
+			}
+			if got.entry != tc.wantEntry || !slices.Equal(got.exits, tc.wantExits) {
+				t.Fatalf("recoveredExits = {entry:%q exits:%v}, want {entry:%q exits:%v}", got.entry, got.exits, tc.wantEntry, tc.wantExits)
+			}
+		})
+	}
+
+	// No served allowlist yet: the exits a pod holds cannot be decided, so the
+	// grant is empty and carries the cause. recoverPod then verifies the base
+	// ruleset — recovering a base-only pod and refusing, by this cause, one
+	// whose ruleset still holds exits — rather than granting silently.
+	p := &plugin{policy: newPolicyStore(nil), mesh: newMeshGate(*meshRoles(), discardLogger())}
+	if got := p.recoveredExits(recovered(collectorDigest)); got.cause == nil || got.exits != nil || got.entry != "" {
+		t.Fatalf("recoveredExits with no served allowlist = %+v, want an empty grant with a cause", got)
+	}
+}
+
 func TestStartContainerDecidesExitsWhateverTheStartOrder(t *testing.T) {
 	type start struct {
 		digest string

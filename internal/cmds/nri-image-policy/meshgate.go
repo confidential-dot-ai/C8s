@@ -168,7 +168,7 @@ type recoveredContainer struct {
 // first boot (policy.fatal_existing, checked in Synchronize). The order of the
 // list says nothing about what started first, so the order rules are not
 // re-read.
-func (g *meshGate) recoverPod(pod *api.PodSandbox, ctrs []recoveredContainer) error {
+func (g *meshGate) recoverPod(pod *api.PodSandbox, ctrs []recoveredContainer, exits recoveredExits) error {
 	if !g.hosts(pod) {
 		return nil
 	}
@@ -177,7 +177,7 @@ func (g *meshGate) recoverPod(pod *api.PodSandbox, ctrs []recoveredContainer) er
 	if _, onRecord := g.pods[pod.GetId()]; onRecord {
 		return fmt.Errorf("sandbox %s is on record already", pod.GetId())
 	}
-	state, err := g.recovered(pod, ctrs)
+	state, err := g.recovered(pod, ctrs, exits)
 	if err != nil {
 		g.pods[pod.GetId()] = &protectedPod{
 			refusal:       fmt.Errorf("the sandbox was running before this enforcer connected, and %w", err),
@@ -188,22 +188,49 @@ func (g *meshGate) recoverPod(pod *api.PodSandbox, ctrs []recoveredContainer) er
 	g.pods[pod.GetId()] = state
 	g.logger.Info("recovered the protection of a running pod",
 		"namespace", pod.GetNamespace(), "pod", pod.GetName(), "netns", state.netns.path,
-		"containers", len(ctrs), "mesh_running", state.meshStarted)
+		"containers", len(ctrs), "mesh_running", state.meshStarted, "exit_entry", state.exitEntry)
 	return nil
 }
 
+// recoveredExits is the exit grant the gate reads back for a running sandbox:
+// the entry whose exits it holds and those exits, as the admit path would have
+// granted them. A sandbox holds exits only while it matches that entry, so the
+// ruleset the gate verifies is the base mesh ruleset plus these exits.
+//
+// cause is why no grant was read — the pod's workload match could not be
+// decided (no served allowlist yet) or the match refused it. A pod whose live
+// ruleset is exactly the base mesh ruleset still recovers with no exits and no
+// cause; only one whose ruleset holds exits the empty grant cannot account for
+// fails verification, and then cause explains why the grant was empty so an
+// operator does not read the base-ruleset mismatch as tampering.
+type recoveredExits struct {
+	entry string
+	exits []exit
+	cause error
+}
+
 // recovered is the record of a running sandbox whose protection reads back.
-func (g *meshGate) recovered(pod *api.PodSandbox, ctrs []recoveredContainer) (*protectedPod, error) {
+func (g *meshGate) recovered(pod *api.PodSandbox, ctrs []recoveredContainer, exits recoveredExits) (*protectedPod, error) {
 	netns, err := proveSandboxNamespace(podNetworkNamespace(pod), pod.GetPid())
 	if err != nil {
 		return nil, err
 	}
-	if err := verifyPodRuleset(netns, g.policy, pod.GetNamespace()); err != nil {
+	// The live ruleset holds the base mesh rules plus whatever exits the pod
+	// was granted, so verify against that combined ruleset, not the base alone.
+	// A pod with no grant whose ruleset is the base alone passes; one whose
+	// ruleset holds exits the empty grant cannot account for fails here, and the
+	// undecided/refused cause, when there is one, names why the grant was empty.
+	if err := verifyPodRuleset(netns, g.policy, pod.GetNamespace(), exits.exits); err != nil {
+		if exits.cause != nil {
+			return nil, fmt.Errorf("%w; the pod was granted no exits: %v", err, exits.cause)
+		}
 		return nil, err
 	}
 	state := &protectedPod{
 		netns:         netns,
 		kubeNamespace: pod.GetNamespace(),
+		exitEntry:     exits.entry,
+		exits:         exits.exits,
 	}
 	for _, c := range ctrs {
 		if err := state.restore(g.policy, c); err != nil {
