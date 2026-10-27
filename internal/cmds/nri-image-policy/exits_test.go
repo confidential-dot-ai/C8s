@@ -243,3 +243,26 @@ func TestStartContainerDecidesExitsWhateverTheStartOrder(t *testing.T) {
 		})
 	}
 }
+
+// A pod CVM's egress is its ruleset's own: an entry's exits are neither
+// granted nor held against it, so the node's off-limits checks, which name
+// cluster ranges and a node address the CVM has none of, never refuse its
+// containers.
+func TestBindEntryGrantsNoExitInAPodCVM(t *testing.T) {
+	gate, state, extended := exitsGate(t)
+	gate.policy.Pod = &podMeshPolicy{}
+	gate.policy.ClusterRanges = nil
+	pod := meshPod("default", "collector", testNetNS)
+	for name, decision := range map[string]exitDecision{
+		"entry with exits": {entry: "collector", exits: relayExit},
+		"refused outright": {refusal: errors.New("foreign")},
+		"unreadable pod":   {undecided: errors.New("no allowlist yet")},
+	} {
+		if err := gate.bindEntry(pod, decision); err != nil {
+			t.Fatalf("%s: bindEntry = %v", name, err)
+		}
+	}
+	if state.exitEntry != "" || len(*extended) != 0 || len(gate.grantedExits(pod.GetId())) != 0 {
+		t.Fatalf("pod holds %q after %d extensions, want nothing", state.exitEntry, len(*extended))
+	}
+}
