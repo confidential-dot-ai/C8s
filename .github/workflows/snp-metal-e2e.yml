@@ -473,7 +473,13 @@ jobs:
                         disk: {bus: virtio}
                       - name: cloudinit
                         disk: {bus: virtio}
-                    interfaces: [{name: default, bridge: {}}]
+                    # EXPERIMENT (snp-masquerade-probe): does masquerade work
+                    # on SNP now? bridge was chosen with the bare note
+                    # "masquerade is broken under SNP" (no recorded reason) and
+                    # never revisited. masquerade forwards all ports into the
+                    # VM, so the CDS NodePort becomes reachable from the runner
+                    # as on TDX. Revert to bridge if :8443 never answers.
+                    interfaces: [{name: default, masquerade: {}}]
                     rng: {}
                   firmware: {bootloader: {efi: {secureBoot: false}}}
                   launchSecurity: {snp: {}}
@@ -597,6 +603,26 @@ jobs:
           set -euo pipefail
           export KUBECONFIG=/tmp/guest.kubeconfig
           bash "$C8S_SOURCE_DIR"/test/e2e/cw-label-policy.sh
+
+      - name: EXPERIMENT (snp-masquerade-probe) — probe the CDS NodePort from the runner
+        # Proves whether masquerade made the guest's CDS NodePort reachable from
+        # the runner (the exact dial the conformance operator-write makes via
+        # cds_pod_request). Never fails the job; reports only. Remove with the
+        # interface change when the experiment concludes.
+        run: |
+          set +e
+          export KUBECONFIG=/tmp/guest.kubeconfig
+          port=$(kubectl -n c8s-system get svc c8s-cds -o jsonpath='{.spec.ports[0].nodePort}')
+          echo "c8s-cds nodePort=$port  GUEST_IP=$GUEST_IP"
+          echo "== svc / endpoints =="
+          kubectl -n c8s-system get svc c8s-cds -o wide
+          kubectl -n c8s-system get endpoints c8s-cds -o wide
+          echo "== runner -> NodePort =="
+          curl -sk --connect-timeout 4 --max-time 10 -o /dev/null \
+            -w 'connect=%{time_connect} http=%{http_code}\n' \
+            "https://$GUEST_IP:$port/"
+          echo "rc=$? (http=000 + nonzero rc = still unreachable; any TCP connect = masquerade fixed it)"
+          true
 
       - name: extra suite
         if: inputs.suite_run != ''
