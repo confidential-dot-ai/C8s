@@ -21,7 +21,7 @@ metadata:
 rules:
   # Tenant workloads and their plumbing, cluster-wide; confos-operator-scope
   # denies every write in the privileged namespaces (kube-system,
-  # local-path-storage, c8s-system).
+  # c8s-system, c8s-router).
   - apiGroups: [""]
     resources:
       - pods

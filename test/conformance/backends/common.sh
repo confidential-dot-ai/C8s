@@ -114,9 +114,14 @@
 #                                    steps and can reach the node's sandbox
 #                                    inventory and its local attestation service
 #   requester_request <ns> <pod> <method> <url> [body-file] [unix-socket]
-#                                    send the request as the requester; prints
-#                                    the status (000 when nothing answered),
-#                                    then the body
+#                                    send the request from inside the
+#                                    requester's pod; prints the status (000
+#                                    when nothing answered), then the body
+#   cds_pod_request <method> <route> [body-file] [authorization] [client-cert] [client-key] [header...]
+#                                    send the request to the CDS from here on
+#                                    a member requester's behalf, whose own
+#                                    TCP to the CDS the node drops; as
+#                                    cds_request prints
 #   cds_pod_url                      the CDS address a pod's requester dials
 #   cds_service_url                  the CDS address a requester dials with its
 #                                    own address as the request's source
@@ -150,6 +155,9 @@
 #                                    the filesystem type of the directory, as
 #                                    stat -f names it; fails while it is absent
 #   pod_sandbox_id <ns> <pod>        the runtime's sandbox ID of the pod
+#   secrets_explain <ns> <pod>       the CDS's account of a release decision for
+#                                    the pod's sandbox, as served; empty where
+#                                    the sandbox cannot be named
 #   relying_party <leaf-file> <ca-file> [verify flags...]
 #                                    the operator's verifier on a saved leaf;
 #                                    prints accepts or rejects, then on a
@@ -487,6 +495,20 @@ write_token() {
     "$bin" "$key" "$@"
 }
 
+# The CDS's own account of a release decision for the pod's sandbox
+# (GET /secrets-explain/<id>, answered to the operator key), as the JSON it
+# serves. Empty where the backend cannot name the sandbox, so a step adds it
+# to a failure it did not expect without failing on its absence.
+secrets_explain() {
+    local id token answer
+    id="$(pod_sandbox_id "$1" "$2" 2>/dev/null)" || return 0
+    [ -n "$id" ] || return 0
+    token="$(write_token operator GET "/secrets-explain/$id" /dev/null)" || return 0
+    answer="$(cds_request GET "/secrets-explain/$id" "" "$token" 2>/dev/null)" || return 0
+    [ "${answer%%$'\n'*}" = 200 ] || return 0
+    printf '%s' "${answer#*$'\n'}"
+}
+
 # Raw reads, so the steps see the document the CDS serves, as served.
 served_allowlist() { curl -sSfk "$(cds_url)/allowlist"; }
 served_version() { allowlist_get "" | awk 'NR == 1 {print $2}'; }
@@ -526,6 +548,8 @@ cds_request() {
     url="$(cds_url)" || return
     http_request "$url" "$@"
 }
+# The same address serves a member requester's requests from here.
+cds_pod_request() { cds_request "$@"; }
 
 router_request() {
     local url

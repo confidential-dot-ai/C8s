@@ -162,6 +162,10 @@ func renderNodeImage(ctx context.Context, cfg nodeImageRenderConfig) error {
 		// Always on: the value is part of the measured image, and
 		// c8s verify --operator-keys reads the publication.
 		"--set", "router.routePublication.enabled=true",
+		// A platform add-on whose Service address the measured mesh policy
+		// names as every member pod's exit (image-policy.yaml.in mesh.exits).
+		"--set", "kubeStateMetrics.enabled=true",
+		"--set-string", "kubeStateMetrics.image.pullPolicy=Never",
 	)
 	for _, input := range cfg.images() {
 		args = append(args, "--set-string", input.valuePath+".pullPolicy=Never")
@@ -222,7 +226,7 @@ type nodeImageArtifacts struct {
 // routerNginxFiles are the c8s-router-nginx ConfigMap keys the image installs
 // in /usr/lib/c8s/router-nginx (the chart's router.bakedNginxDir), where the
 // baked router mounts them instead of the ConfigMap.
-var routerNginxFiles = []string{"nginx.conf", "reload.sh", "tls-cds.conf", "tls-acme.conf"}
+var routerNginxFiles = []string{"nginx.conf", "serve.sh", "tls-cds.conf", "tls-acme.conf"}
 
 // collectNodeImageArtifacts retains complete chart resources and copies the seed
 // for host NRI bootstrap. Every workload image must be pinned and present in the
@@ -251,6 +255,7 @@ func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
 		"Deployment/c8s-operator": false,
 		"Deployment/c8s-cds":      false,
 		"Deployment/c8s-router":   false,
+		kubeStateMetricsKey:       false,
 		// The namespace the measured mesh policy names for the router role.
 		"Namespace/" + workloadclaims.RouterNamespace:                    false,
 		"CustomResourceDefinition/confidentialworkloads.confidential.ai": false,
@@ -375,14 +380,22 @@ func seedContainers(seed *pkgallowlist.Allowlist) map[string][]pkgallowlist.Cont
 // resources, whose pods serve the router role's ports from the namespace the
 // measured mesh policy names.
 var nodeImageResourceNamespaces = map[string]string{
-	"Deployment/c8s-operator":          nodeImageNamespace,
-	"Deployment/c8s-cds":               nodeImageNamespace,
-	"ConfigMap/c8s-cds-allowlist-seed": nodeImageNamespace,
-	routerWorkloadKey:                  workloadclaims.RouterNamespace,
-	"Service/c8s-router":               workloadclaims.RouterNamespace,
-	"ConfigMap/c8s-router-nginx":       workloadclaims.RouterNamespace,
-	"NetworkPolicy/c8s-router-ingress": workloadclaims.RouterNamespace,
+	"Deployment/c8s-operator":           nodeImageNamespace,
+	"Deployment/c8s-cds":                nodeImageNamespace,
+	"ConfigMap/c8s-cds-allowlist-seed":  nodeImageNamespace,
+	routerWorkloadKey:                   workloadclaims.RouterNamespace,
+	"Service/c8s-router":                workloadclaims.RouterNamespace,
+	"ConfigMap/c8s-router-nginx":        workloadclaims.RouterNamespace,
+	"NetworkPolicy/c8s-router-ingress":  workloadclaims.RouterNamespace,
+	kubeStateMetricsKey:                 "kube-system",
+	"Service/kube-state-metrics":        "kube-system",
+	"ServiceAccount/kube-state-metrics": "kube-system",
+	"NetworkPolicy/kube-state-metrics":  "kube-system",
 }
+
+// kubeStateMetricsKey is the platform add-on that runs beside the RKE2
+// system components, outside the mesh.
+const kubeStateMetricsKey = "Deployment/kube-state-metrics"
 
 // requireNodeImageNamespace rejects a namespaced resource the chart placed
 // anywhere but its own namespace, and a cluster-scoped kind carrying a
@@ -820,8 +833,16 @@ func collectConfigMapArtifact(object unstructured.Unstructured, key, name string
 		return fmt.Errorf("decode chart ConfigMap %q: %w", name, err)
 	}
 	if name == "c8s-cds-allowlist-seed" {
-		artifacts.seed = []byte(cm.Data["allowlist-seed.json"])
-		return nil
+		// Baked and published in canonical bytes, so the release asset of
+		// each variant (docs/releases.md) is byte for byte the measured file.
+		seed, err := pkgallowlist.ParseJSON([]byte(cm.Data["allowlist-seed.json"]))
+		if err != nil {
+			return fmt.Errorf("decode node-image bootstrap seed: %w", err)
+		}
+		if artifacts.seed, err = seed.Canonical(); err != nil {
+			return fmt.Errorf("encode node-image bootstrap seed: %w", err)
+		}
+		return unstructured.SetNestedField(object.Object, string(artifacts.seed), "data", "allowlist-seed.json")
 	}
 	if len(cm.Data) != len(routerNginxFiles) {
 		return fmt.Errorf("rendered nginx ConfigMap has keys %v, want %v", slices.Sorted(maps.Keys(cm.Data)), routerNginxFiles)

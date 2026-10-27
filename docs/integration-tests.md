@@ -1,188 +1,98 @@
-# Integration tests
+# Run the integration tests
 
-Two harnesses run in CI on plain GitHub-hosted runners (no TEE hardware), plus
-live-cluster scripts that run on the metal lanes. This doc maps what each
-covers and why the kind harness is shaped the way it is.
+Exercise C8s on a plain Linux or macOS host with no TEE hardware, so nothing
+here proves a confidential property. Two harnesses: docker-compose, for the
+armTLS certificate flow (armTLS is C8s's mutual TLS whose certificates carry
+TEE evidence), and kind, for a whole cluster. CI runs both as the
+**Integration** and **Integration (cluster)** jobs; terms are defined in
+[glossary.md](glossary.md).
 
-| Harness | Entrypoint | CI job | Subject |
-| --- | --- | --- | --- |
-| docker-compose | `make test-integration` | Integration | get-cert's armTLS flow against mock CDS + mock attestation-api, nginx serving the issued leaf |
-| kind cluster | `make test-integration-cluster` | Integration (cluster) | the full bare-metal-mode control plane and workload path (below) |
-| live-cluster scripts | `test/e2e/*.sh` | snp/tdx-metal-e2e | cw-label policy, mesh enforcement, allowlist enforcement, control-plane convergence on real TEEs |
+Prerequisites:
 
-## The kind harness
+- Both harnesses: docker with Compose v2 (`docker compose`), make, OpenSSL
+  (macOS LibreSSL lacks `x509 -ext`), and curl.
+- The kind harness also: kind, kubectl, helm, go, and python3 with PyYAML.
+  Podman works as kind's provider with `KIND_EXPERIMENTAL_PROVIDER=podman`, but
+  `docker` must stay on PATH: the harness builds images and reaches into the
+  node with it. CI pins helm and kind in
+  `.github/actions/setup-kind-harness`.
 
-`test/integration/cluster/run.sh` boots a single-node kind cluster, builds the
-component images from the checkout, and runs the real `c8s install
---cvm-mode=bare-metal`. The TEE is substituted at exactly one point: **evidence
-generation**. `test/mock-attestation` serves synthetic SNP reports (launch
-digest all-zero) on the node IP :8400 — the address bare-metal-mode consumers dial
-for the node-baked api — and an `attest-proxy` sidecar publishes it on the
-hostPath unix socket the host plugin uses. Every component that delegates
-verification to the attestation-api (get-cert, CDS, armtls-mesh, the NRI
-plugin) works unchanged against it. The all-zero digest is pinned via
-`--measurements`, so every armTLS hop is verified exactly as in production.
-
-The NRI image-policy plugin runs for real: the harness renders the chart's
-full installer DaemonSet and applies it out-of-band (bare-metal mode renders only
-the baked pins patcher, and the kind node bakes no plugin for it to pin). The
-installer patches the node's containerd config and restarts it, which kind
-survives. The install-time bootstrap entries are generated from the node
-containerd's image store, because `policy.enforceExisting` checks
-already-running containers against them.
-
-Tenant fixtures satisfy the Restricted controls: workload and adoption
-Deployments use digest-pinned `nginxinc/nginx-unprivileged` on port 8080, and
-the adopted one serves TLS on 8443 with its get-cert leaf once adopted;
-curl Pods run as UID 1000. All use non-root execution, RuntimeDefault seccomp,
-no privilege escalation, and dropped ALL capabilities. `pod-fixture.py` is the
-shared JSON renderer used by the shell harness and Go admission regression tests,
-so negative fixtures violate only their intended label or host-network rule.
-Workload pre-pulls, the allowlist floor, mesh probes, Service target ports, and
-adoption routing use the same image and backend-port settings.
-
-Two operator-facing commands verify evidence **in-process** with real hardware
-cryptography, which synthetic evidence cannot pass: `c8s verify` and the `c8s
-allowlist` and `c8s routes` CLIs. Those stay on the metal lanes. The harness still exercises the
-allowlist write path server-side: writes are signed with the production
-`pkg/operatorauth` signer (`optoken/`) and CDS performs its full token
-verification — only the client-side evidence check is skipped (curl `-k` over
-a port-forward).
-
-## Covered scenarios
-
-- `c8s install` end-to-end: preflights, helm install, CRDs, RBAC,
-  MutatingWebhookConfiguration, ValidatingAdmissionPolicies.
-- Control-plane readiness: operator, CDS (armTLS serving cert via the mock
-  api), router (mesh cert from CDS), armtls-mesh DaemonSet.
-- NRI plugin: installer writes the binary + config, patches containerd,
-  restarts it, registers, serves the admission inventory socket.
-- Allowlist authorization: unsigned writes and wrong-key writes are 401; a
-  write signed by the pinned operator key lands, is served, and deletes.
-- Route API: before any manifest is stored the front door answers 503;
-  unsigned and wrong-key `PUT /routes` are 401, a manifest
-  anchored on the mesh CA is 422, a signed write is 204 and the same revision
-  again 409; `GET /routes` serves the PUT bytes with a token whose `pbh` is
-  their digest.
-- Webhook injection: `confidential.ai/cw` pods gain the get-cert sidecar, the
-  wait gate, and the cw label; the operator provisions the `c8s-<id>` headless
-  Service.
-- Workload identity: get-cert redeems a sandbox token from the NRI admission
-  inventory, CDS calls the digests endpoint back, and the issued leaf carries
-  the workload's in-cluster DNS SAN.
-- Image admission, fail-closed: a non-allowlisted image is denied at
-  container creation; a signed allowlist write flips the same pod to Running
-  after the plugin's next pull.
-- Admission rejections: cw label/annotation mismatch (webhook) and
-  hostNetwork tenant pods (host-namespace policy).
-- Dynamic provisioning: a PVC on kind's default (local-path) class binds and
-  is writable — the provisioner's hostPath helper admits in the VAP-exempt
-  `local-path-storage` namespace (issue #210's regression).
-- Mesh: a pod-IP dial to a cw workload is wrapped (the inbound counter
-  moves); a dial from a mesh-excluded namespace hits the FORWARD guard and
-  DROPs, and a Service-VIP dial is either dropped or mesh-wrapped — never
-  plaintext — proven by the drop/wrap counters (rule ordering between
-  kube-proxy and the mesh is not stable). Mirrors
-  `test/e2e/mesh-cw-enforcement.sh`.
-- router front door: HTTPS verified against the CDS mesh CA, from a pod of an
-  exempt namespace — the in-cluster stand-in for the external clients it
-  serves, because a member's dial would be captured into armTLS.
-- Route publication: `/.well-known/c8s/routes` through the front door is 404
-  at the chart default. The adoption install sets
-  `router.routePublication.enabled`; the path then serves the CDS `GET /routes`
-  envelope of the applied revision byte for byte, with
-  `Cache-Control: no-store`. No lane verifies the transcripts that bind the
-  route digest. Instead, `TestProductionRouterAgainstVerifier` in
-  `internal/cmds/verify` runs the production `cds-attest` handler against the
-  verifier's gather path in both attested modes with both route checks,
-  including a route update between publication and admission. Other
-  implementations interoperate through the `pkg/overenc/testdata` vectors
-  ([Upgrade from the earlier layout](routes-evidence.md#upgrade-from-the-earlier-layout)).
-- Workload adoption: `c8s install --workload-ref` patches a running
-  deployment, its rollout goes through injection, and the status mirror
-  reports `kubectl get cwl`.
-- Routing by the route manifest: `c8s install --upstream` writes a new
-  manifest to `--routes-out`, which the harness stores with `optoken`, naming
-  the floor entry that describes the adopted pod (`--resolve-digests=false`
-  writes no `web` entry). The adopted nginx reloads on each `get-cert`
-  renewal, and the harness waits until the leaf it serves carries that entry's
-  name. Through a router port-forward with `Host` set to the manifest
-  host, `/` reaches the workload over TLS (200); an unknown host and a path
-  with an empty segment get 404; a revision naming a workload name the
-  backend's leaf does not carry gets 502, and an unrouted path 404. CDS
-  refuses an address backend anchored on the mesh CA (422). The harness sets
-  `router.routing.pollInterval=2s` so each write applies within seconds.
-  The harness never runs the default adoption path, so unit tests cover its
-  model instead: the entry install writes for the fixture
-  (`test/integration/cluster/testdata/adopt-me-entry.json`) must match what
-  the webhook injects (`internal/webhook`) and what the NRI plugin observes of
-  the injected container (`internal/cmds/nri-image-policy`). Install's signed
-  delivery (`--operator-key`, which reads the served allowlist) verifies CDS
-  in-process, so only a metal lane can cover it.
-- `c8s uninstall`: release, webhook, and admission policies are removed.
-
-## Deliberately out of scope
-
-No TEE properties are asserted: hardware verification, measurements that mean
-anything, encrypted volumes (volumed needs device-mapper control
-of the node kernel), `get-kubeconfig` (SNP-gated), and the
-`c8s allowlist`/`c8s verify` CLIs (in-process hardware verification, above).
-The metal lanes (snp-metal-e2e, tdx-metal-e2e, cvm-e2e) own those.
-
-### An extra suite on the metal lanes
-
-`snp-metal-e2e.yml` and `tdx-metal-e2e.yml` take `suite_artifact` and
-`suite_run` from a calling workflow. After their own asserts pass, they
-download that artifact of the same run onto the launcher and run the command
-against the attested guest with the e2e scripts' environment
-(`.github/actions/extra-suite` lists it); whatever the command writes to
-`$SUITE_RESULTS` is uploaded as `<artifact>-results-<lane>`. The lane holds
-no credential for the suite. Called from another repository, the SNP lane
-still takes its scripts and actions from this one, at the default branch.
-
-## Running it
+Run both from the repository root:
 
 ```sh
+make test-integration
 make test-integration-cluster
 ```
 
-Needs docker (or podman with `KIND_EXPERIMENTAL_PROVIDER=podman`), kind,
-kubectl, helm, go, OpenSSL (macOS's LibreSSL lacks `x509 -ext`), curl, and
-python3 with PyYAML. It runs on Linux and macOS hosts: the component images
-get a Linux build of c8s, the install a host build. The kind node image is
-pinned by digest in run.sh; bump it with the kind release. CI installs helm
-and kind with `.github/actions/setup-kind-harness` (kind pinned by sha256). Custom node images
-must provide NRI `ValidateContainerAdjustment` support (the pinned image uses
-containerd 2.3.4 / NRI 0.12.0); older runtimes reject the env-enforcing plugin
-at registration.
+The first starts a mock CDS — the service that verifies evidence and signs
+workload certificates — and a mock attestation-api, the node-local service that
+produces hardware evidence for CDS and every other component. It runs get-cert,
+the sidecar that obtains a pod's certificate, through the real armTLS flow, and
+checks that nginx serves HTTPS with the issued certificate. The second boots a
+kind cluster, builds the component images, and runs
+`c8s install --cvm-mode=bare-metal`. Each ends with its check count:
 
-### Keeping the cluster for another driver
+```text
+=== All <N> integration checks passed ===
+=== All <N> cluster integration checks passed ===
+```
+
+## What the kind harness substitutes
+
+The TEE is replaced at exactly one point: evidence generation.
+`test/mock-attestation` serves synthetic SNP reports with an all-zero launch
+measurement on the node IP `:8400`, the address `bare-metal` consumers dial for
+the node-baked attestation-api. It answers verification requests too, so no hop
+proves a hardware property; what matches production is the pinning — that
+measurement is the pinned CDS measurement, compared exactly as in production —
+and every component delegating verification to the attestation-api works
+unchanged.
+
+The rest is real: the admission webhook and validating admission policies in a
+real API server, the admission plugin registered against the node's containerd,
+certificate issuance with sandbox identity, the armTLS mesh, workload adoption,
+and uninstall. Allowlist and route writes are signed with the production
+operator-token signer and verified by CDS; only the client-side evidence check
+is skipped, so they travel plain `curl`.
+
+The kind node image is pinned by digest in `test/integration/cluster/lib.sh`;
+bump it with the kind release. A replacement needs a containerd whose NRI
+supports `ValidateContainerAdjustment`, the call the plugin's environment and
+mount enforcement runs in.
+
+## What it does not cover
+
+No TEE property is asserted. Hardware verification, measurements that mean
+anything, encrypted volumes (`volumed` needs the node kernel's device mapper),
+`c8s get-kubeconfig`, and the `c8s verify`, `c8s allowlist` and `c8s routes`
+CLIs stay on the hardware CI lanes (`snp-metal-e2e`, `tdx-metal-e2e`,
+`cvm-e2e`): those verify evidence in process with real hardware cryptography,
+which synthetic evidence cannot pass.
+
+## Keep the cluster for another driver
 
 ```sh
 C8S_IT_KEEP=1 C8S_IT_SETUP_ONLY=1 C8S_IT_WORKDIR=/tmp/c8s-it ./test/integration/cluster/run.sh
 ```
 
-`C8S_IT_SETUP_ONLY=1` stops once the stack is installed, before the checks;
+`C8S_IT_SETUP_ONLY=1` stops once the stack is installed, before the checks.
 `C8S_IT_KEEP=1` leaves the kind cluster and the work directory (operator key,
-`optoken`, floor scan) in place. The run writes `$C8S_IT_WORKDIR/env`, which exports a `KUBECONFIG` for
-the kept cluster whatever kubectl's current context is; source
-`test/integration/cluster/lib.sh` and then that file to drive the cluster
-with the harness's own helpers (`cds_write`, `node_exec`, `run_pod`,
-`mesh_metric`, …). The CDS port-forward they open is shared through
-`$C8S_IT_WORKDIR/cds-pf.pid` across processes; `cds_pf_stop` ends it. Delete
-the cluster with `kind delete cluster --name c8s-it`.
+`optoken`, image-store scan) in place, at `C8S_IT_WORKDIR`.
 
-A driver that should not depend on those helpers directly, such as the
-conformance steps in `test/conformance/steps`, uses the fixed question-and-answer interface of
-[`test/conformance/backends/kind.sh`](../test/conformance/README.md) instead;
-the metal lanes offer the same interface through `metal.sh`.
+The run writes `$C8S_IT_WORKDIR/env`, which exports a `KUBECONFIG` for the kept
+cluster whatever kubectl's current context is. Source
+`test/integration/cluster/lib.sh` and then that file to drive the cluster with
+the harness's own helpers (`cds_write`, `cds_get`, `node_exec`, `run_pod`, and
+the rest). They open the shared CDS port-forward on demand with `cds_pf_start`,
+record its pid in `$C8S_IT_WORKDIR/cds-pf.pid`, and `cds_pf_stop` ends it.
+Delete the cluster with `kind delete cluster --name c8s-it`.
 
-### Failure notes
+## When a run fails
 
-- A pod stuck `CreateContainerError` with `image not in allowlist` is the NRI
-  plugin doing its job: the image's containerd store digest has no bootstrap
-  entry. The entries are written from the node's image store before install,
-  so an image first pulled *during* the run lands here — pre-pull it next to
-  the other fixtures in run.sh.
-- The mock-attestation deployment is `Recreate` on purpose: two hostNetwork
-  pods cannot both bind :8400 on a single-node cluster.
+- A pod stuck in `CreateContainerError` with `image not in allowlist` is the
+  admission plugin doing its job: the image's containerd store digest is absent
+  from the install-time allowlist, which the harness writes from the node's
+  image store before install. Pre-pull the image in the
+  `node_exec ctr -n k8s.io images pull` block near the top of `run.sh`.
+- The mock-attestation Deployment is `Recreate` on purpose: two host-network
+  pods cannot both bind `:8400` on a single-node cluster.

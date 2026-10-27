@@ -50,6 +50,8 @@ func writeTestServingLeaf(t *testing.T) (path string, der []byte) {
 	tmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(1),
 		Subject:      pkix.Name{CommonName: "c8s-router.c8s-system.svc"},
+		NotBefore:    time.Now().Add(-time.Minute),
+		NotAfter:     time.Now().Add(time.Hour),
 	}
 	der, err = x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	if err != nil {
@@ -71,6 +73,7 @@ func newAttestLBServer(t *testing.T, identity testMeshIdentity, servingCertFile 
 		MeshIdentityCertFile: identity.certFile,
 		MeshIdentityKeyFile:  identity.keyFile,
 		MeshIdentityCAFile:   identity.caFile,
+		Bindings:             NewBindings(),
 	})
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
@@ -183,6 +186,7 @@ func TestAttestLBRefusedOnWebPKIFrontDoor(t *testing.T) {
 		MeshIdentityCertFile: identity.certFile,
 		MeshIdentityKeyFile:  identity.keyFile,
 		MeshIdentityCAFile:   identity.caFile,
+		Bindings:             NewBindings(),
 	})
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -326,6 +330,7 @@ func TestReadyzGatesOnMatchedWorkloadStamp(t *testing.T) {
 			MeshIdentityKeyFile:  identity.keyFile,
 			MeshIdentityCAFile:   identity.caFile,
 			ExpectedWorkload:     expected,
+			Bindings:             NewBindings(),
 		})
 		ts := httptest.NewServer(srv.Handler())
 		t.Cleanup(ts.Close)

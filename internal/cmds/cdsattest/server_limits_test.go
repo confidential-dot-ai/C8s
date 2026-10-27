@@ -78,6 +78,7 @@ func newTestServerWith(t *testing.T, tune func(*Server)) (*Server, *httptest.Ser
 		MeshIdentityCertFile: identity.certFile,
 		MeshIdentityKeyFile:  identity.keyFile,
 		MeshIdentityCAFile:   identity.caFile,
+		Bindings:             NewBindings(),
 	})
 	tune(srv)
 	ts := httptest.NewServer(srv.Handler())
@@ -193,6 +194,7 @@ func TestAttestLBIsMetered(t *testing.T) {
 		MeshIdentityCertFile: identity.certFile,
 		MeshIdentityKeyFile:  identity.keyFile,
 		MeshIdentityCAFile:   identity.caFile,
+		Bindings:             NewBindings(),
 	})
 	srv.establishLimiter = newLimiter(0.001, 1, clientBuckets)
 	ts := httptest.NewServer(srv.Handler())
@@ -1044,6 +1046,7 @@ func TestReadyzIsCached(t *testing.T) {
 		MeshIdentityCertFile: identity.certFile,
 		MeshIdentityKeyFile:  identity.keyFile,
 		MeshIdentityCAFile:   identity.caFile,
+		Bindings:             NewBindings(),
 	})
 	handler := srv.Handler()
 

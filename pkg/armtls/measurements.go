@@ -11,6 +11,16 @@ import (
 // Pins carries the shared evidence policy to C8s peer verifiers.
 type Pins remote.Policy
 
+// requirePins refuses a policy that names no guest. An empty set proves only
+// that the peer is some TEE; registers and a TCB floor narrow a guest that a
+// launch measurement or image pin already names.
+func requirePins(p remote.Policy) error {
+	if len(p.Measurements) == 0 && len(p.Images) == 0 {
+		return ErrUnpinned
+	}
+	return nil
+}
+
 // VerifyPolicy adds the local attestation service to the shared policy.
 func (p Pins) VerifyPolicy(url string) *VerifyPolicy {
 	return &VerifyPolicy{

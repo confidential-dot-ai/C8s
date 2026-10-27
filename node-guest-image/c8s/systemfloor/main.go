@@ -12,7 +12,6 @@
 //
 //	systemfloor -bundle rke2-images-core.linux-amd64.tar.zst \
 //	    -bundle rke2-images-cilium.linux-amd64.tar.zst \
-//	    -manifest .../server/manifests/local-path-storage.yaml \
 //	    -manifest .../server/manifests/nvidia-device-plugin.yaml \
 //	    node-guest-image/c8s/image-policy.yaml.in
 //
@@ -117,8 +116,7 @@ func importEntries(r io.Reader) ([]entry, error) {
 var imageRefRE = regexp.MustCompile(`\bimage:\s*"?([^\s"]+@(sha256:[0-9a-f]{64}))"?`)
 
 // manifestEntries scans a YAML manifest for digest-pinned image references;
-// indented blocks (the local-path helper pod template inside a ConfigMap)
-// match the same way.
+// indented blocks match the same way.
 func manifestEntries(path string) ([]entry, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {

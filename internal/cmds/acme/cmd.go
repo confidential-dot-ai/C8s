@@ -70,8 +70,8 @@ Unavailable domains do not block issuance for reachable domains. They are
 added when their challenge paths become reachable.
 Issuance uses ACME HTTP-01; nginx's :80 server proxies
 /.well-known/acme-challenge/ to the loopback challenge listener. The
-certificate is renewed at 2/3 of its lifetime, and nginx's own entrypoint
-reloads it after each install. On start, a
+certificate is renewed at 2/3 of its lifetime, and nginx reads it on the next
+TLS handshake after each install. On start, a
 self-signed placeholder is written when no certificate exists, so nginx —
 whose config names both files — can start and serve the challenge proxy the
 first issuance needs.

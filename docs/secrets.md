@@ -1,629 +1,175 @@
 # Secret release
 
-How a workload is authorized to read a secret, and what the allowlist and the
-admission inventory contribute to that decision.
+A secret is a value CDS keeps in its own memory, addressed by a store path. CDS
+— the Certificate Distribution Service, the one in-cluster pod that verifies TEE
+evidence, signs the certificate each pod run gets, and holds C8s policy —
+releases it only to a pod whose containers match a workload entry whose grant
+covers that path. A workload entry is one named set of container images with the
+command, mounts, and environment each may run; its grant lists the store paths
+that entry may read or write. Both are allowlist policy: fields in
+[allowlist-entries.md](allowlist-entries.md), steps in
+[workloads.md](workloads.md), names in [glossary.md](glossary.md). A secret is
+not a Kubernetes Secret: nothing is written to the API server.
 
 ## When it is served
 
-Release is gated on an allowlist entry carrying a grant, which is operator-signed
-and changeable without a restart. An entry without one releases nothing, so
-writing a grant is what turns release on.
+CDS serves the secrets endpoint only when it can establish what a pod runs. It
+needs its own `--armtls-platform` (the chart's `cds.armtlsPlatform`, which
+`c8s install --hardware-platform` sets), `--measurements`, and node addresses
+bounding its callback to a node's admission inventory — the node service that
+records which containers each pod has run (`--sandbox-inventory-cidr`, or host
+routes from the live node list). Miss one and CDS logs a warning naming it and
+serves nothing, so a pod asking for a secret retries until that is fixed. Where
+the operator has no node inventory at all, such a pod is refused at admission.
 
-Serving the endpoint at all needs what sandbox identity already requires —
-`--armtls-platform`, `--measurements`, and node addresses to bound the inventory
-callback (`--sandbox-inventory-cidr`, or the live node list it derives when that
-is unset). Miss any and CDS logs a warning naming the one it is missing, and
-does not serve `/secrets`.
+Release is gated on a `secrets` grant in the workload entry. An entry without
+one releases nothing, so writing the grant is what turns release on; it is
+operator-signed policy and takes effect without a restart —
+[allowlist-and-capabilities.md](allowlist-and-capabilities.md).
 
-Sizing: `--secrets-max-paths-per-workload` (default 64, chart
-`cds.secretsMaxPathsPerWorkload`) bounds the paths one allowlist entry may hold,
-and is checked before the ceiling. A workload, for this bound, is one allowlist
-entry — which the store calls a holder. `--secrets-max-paths` (default 1024,
-chart `cds.secretsMaxPaths`) is the store's memory ceiling; size it above the
-number of entries carrying a grant times the per-workload quota, or entries that
-arrive late find the store full. The quota must stay below the ceiling: CDS
-refuses to start otherwise, and the chart refuses to render
-(`VALIDATION_ERROR kind=cds_secrets_path_budget`), so raise the two together.
-Operator values count against the ceiling only. Also `--secrets-max-value-bytes`
-(at least 32, the size of every value CDS generates) and
-`--sandbox-ledger-max-entries`. CDS is a single in-memory process holding the
-mesh CA, so a workload able to grow the store without limit could OOM it and
-take every certificate in the cluster with it.
+The store is bounded per entry (`--secrets-max-paths-per-workload`, default 64)
+and overall (`--secrets-max-paths`, default 1024); the chart sets both. One
+value is bounded by `--secrets-max-value-bytes`, default 4096 and never below
+32, which the chart leaves unset. An operator-written path counts against the
+store bound only, never against an entry's. A path bound refuses the write and
+evicts nothing — a path holds the only copy of its value — and names the bound
+that stopped it. Raising one needs a restart, which empties the store — see
+[Restarts](#restarts).
 
-**Both bounds refuse the write; nothing is ever evicted.** A path holds the only
-copy of its value, so a store at either bound answers `507` and keeps what it
-has, carrying `secret_holder_quota` or `secret_store_full` as the error code so
-a caller can tell which bound refused it. Raising a bound needs a restart, which
-empties the store; see "Restarts".
+## What CDS checks
 
-The quota bounds one entry, not the store: enough entries one path apiece still
-reach the ceiling. What it buys is that the refusal lands on the entry that
-caused it rather than on the next one to ask.
+Every request carries three things: the pod's leaf, the short-lived certificate
+CDS issued for this pod run with its sandbox ID — the identifier of that one run
+— stamped in; a single-use challenge CDS issued for this request; and a fresh
+sandbox token, the admission inventory's signed statement binding the pod's key
+and that challenge to that sandbox ([armtls.md](armtls.md#sandbox-identity)). A
+release therefore binds to one caller. CDS then checks, in order:
 
-The fetcher redeems its sandbox token from the mounted nri-image-policy
-socket. The webhook rejects `confidential.ai/c8s-secrets` when the operator
-has no inventory socket configured, rather than admitting a pod whose fetcher
-would CrashLoop while the workload waits for a file that never lands.
+1. The TLS stack verifies that the client certificate chains to the mesh CA, the
+   CA CDS generates in its own memory and signs pod certificates with. A
+   self-issued certificate is not enough here: its sandbox ID is peer-chosen.
+2. The sandbox ID comes from that verified certificate.
+3. The sandbox token verifies against the inventory CDS bound to that sandbox at
+   certificate issuance — so nothing else answering on the inventory port can
+   vouch for it — carries this request's challenge, and names the same sandbox.
+4. That inventory reports what the sandbox has run.
+5. The reported set, minus the containers C8s injects, matches exactly one
+   workload entry — whole-entry matching, not membership, and the rule itself is
+   in [allowlist-and-capabilities.md](allowlist-and-capabilities.md).
+6. That entry's grant covers the requested path.
 
-## Asking for a secret
+Any failure refuses: an unreachable inventory, an unknown sandbox, an empty
+container set, an ambiguous match, an entry with no grant. The client learns
+only that it was refused; the reason goes to the CDS log. An ungranted path
+answers `404`, as one holding nothing does, so the API cannot enumerate it.
 
-Annotate the pod alongside `confidential.ai/cw`:
+The containers C8s injects are the sidecars the pod-injector webhook adds to
+every confidential pod ([Fixed sidecar mounts](#fixed-sidecar-mounts)). They are
+dropped before matching, so an entry never enumerates them. One is dropped only
+when the node that admitted it reports a platform role, and only the node's base
+allowlist — the entries it holds itself, not any CDS serves — binds one: to an
+injected invocation together with the exact mount table the webhook gives it,
+and to the mesh endpoint together with the webhook's arguments and credential
+volume. A pod's own container running an injected invocation with mounts of its
+own holds no role, stays in the match, and blocks a release the entry does not
+admit it for.
 
-| Annotation | |
-|---|---|
-| `confidential.ai/c8s-secrets` | comma-separated `NAME=/store/path`; `NAME` is the file each value is written to under `/run/c8s/secrets` |
+The grant belongs to the entry, not to a container, because the released file
+lands on a volume every container in the pod can read. An entry holding a grant
+must therefore pin every container's command line and mounts: left loose, the
+host could change what a container runs and the pod would still match the entry
+that holds the grant — [allowlist-entries.md](allowlist-entries.md). Where the
+file lands inside the pod is not policy; only the store path is.
 
-```yaml
-annotations:
-  confidential.ai/cw: api
-  confidential.ai/c8s-secrets: "DB=/tenant-a/db,HF=/tenant-a/hf-token"
-```
+## The file appears after your container starts
 
-The files land in `/run/c8s/secrets`. The directory is fixed; see
-[Fixed sidecar mounts](#fixed-sidecar-mounts).
-
-The webhook injects a `c8s-secret` sidecar and a memory-backed volume. Every
-container in the pod mounts that volume **read-only**; only the fetcher may
-write it. The volume and the container name are reserved — a pod declaring
-either is rejected, since a `hostPath` there would write a released secret to
-host-visible storage, and an ephemeral container mounting it would read one out
-of a running pod. For the same reason, an ephemeral container on an injected pod
-may not set a target container: it would share that container's process
-namespace and could read its files.
-
-### The file appears after your container starts
-
-This is the part to design around. CDS releases only once **every** main
-container is running, because that is when the sandbox matches a whole workload
-entry. The fetcher therefore starts alongside the workload, is refused while the
-set is incomplete, and writes when it completes. A consumer must wait for its
-file rather than read it at startup:
+CDS releases only once every main container is running, because that is when the
+sandbox matches a whole workload entry. The fetcher is therefore a sidecar: it
+starts alongside the workload, is refused while the set is incomplete, and
+writes when it completes. An init container would be asking before its siblings
+exist and would deadlock the pod it gates. So a consumer waits for its file:
 
 ```sh
 until [ -f /run/c8s/secrets/DB ]; do sleep 1; done
 ```
 
-Nothing can remove this. An init container would be asking before its siblings
-exist and would deadlock the pod it gates. The consequence is that a terminal
-fetch failure leaves a `Running` pod with no secret and an
-`Init:CrashLoopBackOff` sub-status — there is no fail-closed delivery gate to be
-had under combination gating.
-
-A workload that finds its path empty creates it, so the first pod of a workload
-to ask defines the value.
-
-## The API
-
-The injected fetcher speaks this; a workload does not have to. Every request
-needs a single-use challenge and a fresh sandbox token, so a release is bound to
-one caller and cannot be replayed.
-
-```
-POST /secrets                      → {"challenge": "<base64>"}
-GET  /secrets/<store path>         → 200 {"value": "<base64>"} | 404 | 403
-POST /secrets/<store path>         → 201 {"value": "<base64>"} | 409 | 403
-                                   → 507 {"error": "secret_holder_quota"|"secret_store_full"}
-```
-
-`PUT` on the same paths is the operator's, authorized by the operator key
-instead — see "Operator-supplied values".
-
-`POST /secrets` is the challenge route; the wildcard can never match it, so no
-store path is shadowed by it — a secret at `/challenge` still resolves.
-
-A request carries:
-
-| | |
-|---|---|
-| client certificate | the pod's mesh leaf, mTLS. Its CDS-stamped sandbox ID is the identity |
-| `X-C8s-Challenge` | base64 of the challenge, consumed before anything else happens |
-| `Authorization: SandboxToken <base64>` | the inventory-signed token, in a header so it is bounded and never logged |
-
-The token is obtained from the admission inventory at `POST /sandbox` — the
-node's inventory — bound to the leaf's key and
-that challenge, the same route and the same envelope `get-cert` uses at
-issuance.
-
-**`POST` never carries a value.** CDS generates it, so no caller chooses what
-another caller will later read. On a path that already exists it answers `409`
-with **no body**: returning the value would make a write grant a read grant. A
-caller holding `read` recovers with `GET`, which is how the replica that loses
-a create race gets the value.
-
-A path that is not granted is `404`, indistinguishable from one that does not
-exist — otherwise the API enumerates the store. Denials are opaque to the
-client; the reason goes to the CDS log.
-
-**These routes are rate-limited per sandbox**, keyed on the ID in the verified
-client certificate. Pods reach CDS through a NodePort and the host-network mesh
-proxy, so every pod on a node arrives from the node's address: bounded on that,
-one pod could spend the budget its co-tenants share and hold their fetchers in a
-CrashLoop. A request whose certificate is absent or unverified is bounded by
-address instead — it is refused by the handler regardless, and a caller cannot
-opt out of the limit by withholding an identity.
-
-Paths must arrive already canonical: absolute, clean, no trailing slash, and no
-percent-encoding. They are rejected rather than repaired, so the bytes matched
-against a grant and the bytes used as a store key are the bytes the client
-sent.
-
-## Operator-supplied values
-
-CDS generates a value it is asked for and finds missing, which covers a session
-key but not an API token, a database password, or a wrapped key. Those come from
-an operator:
-
-```sh
-c8s secrets put /tenant-a/hf-token --url "$CDS" --measurements "$M" \
-  --mesh-ca mesh-ca.pem --operator-key operator.key < token.txt
-```
-
-The value is read from stdin or `--from-file`, and the bytes are stored exactly
-as read — a trailing newline is part of the value. The byte count is printed to
-confirm which one was sent.
-
-### Naming the CDS you are writing to
-
-`--mesh-ca` takes the CA bundle you hold out of band, the same anchor
-`c8s verify --mesh-ca` takes. Before the write, the CLI reads the mesh CA CDS
-serves at `GET /ca` over the attested connection and refuses unless it is one
-you pinned.
-
-`$CDS` is CDS itself: its NodePort (`https://<node>:30808`,
-`cds.service.nodePort`) or a port-forward to `svc/c8s-cds`, pinned with the CDS
-launch digest. A router front door relays `/allowlist` but not `/ca` or
-`/secrets`, so `c8s secrets put`, `c8s volume create` and `c8s cds ca` refuse
-it before requesting `/ca` or sending a value.
-
-The write goes to the peer whose CA was read. A connection the CLI has to
-reopen must present the same serving certificate as the first one, or the write
-is refused before anything is sent: a fresh handshake proves only an attested
-build at `$M`, which another CDS can match.
-
-`--measurements` alone does not cover this. It proves the peer is an attested
-build at a pinned launch measurement — but nodes can boot the same image,
-so that measurement does not identify a particular CDS instance. The mesh CA key is generated per CDS, so it is what tells your CDS from
-another one at the same measurement, and it is the anchor your workloads
-already trust.
-
-The write is refused with no `--mesh-ca`. `--force` writes without the check
-and says so on stderr; it governs the CA check only, and is unrelated to
-`--overwrite`, which governs replacing a value already at the path.
-
-`c8s volume create` writes a volume key into the same store and carries the
-same `--mesh-ca` and `--force` (see [volumes.md](volumes.md), "Naming the CDS
-the key goes to"). `c8s secrets explain` and `c8s allowlist` sign with the same
-operator key against the same endpoint but do not check the mesh CA.
-
-### Reading the mesh CA bundle
-
-`c8s cds ca` reads the bundle over the same attested connection the write uses:
-
-```sh
-c8s cds ca --url "$CDS" --measurements "$M" --out mesh-ca.pem
-```
-
-Endpoint pins are required: use `--image-policy-file` for a complete image
-policy, or `--measurements` / `--measurements-file` for launch digests, and pin
-CDS: `--url` is CDS itself, as for the write. The SHA-256 of each certificate
-goes to stderr.
-Record it. The read proves an attested build at `$M` served these bytes, which
-is the bound the gate has too: comparing that digest against an earlier read, or
-against a copy taken another way, is what separates your CDS from another one at
-the same measurement.
-
-`GET /ca` carries every CA CDS still signs leaves against, newest first, and the
-gate wants all of them — so pin the whole bundle. Without `--out` it goes to
-stdout instead.
-
-CDS generates its mesh CA in process and a restart replaces it (see
-[operator.md](operator.md), "CDS is a singleton"), so read the bundle once CDS
-has settled. A bundle captured before a restart reads afterwards as the CDS
-serving a mesh CA that is not in `--mesh-ca` — the same refusal as the wrong
-CDS.
-
-```
-PUT /secrets/<store path>   {"value": "<base64>", "overwrite": <bool>}
-                            → 201 {"created": true}
-                            → 409 {"existing": "workload"|"operator"}
-                            → 200 {"existing": "workload"|"operator"}
-                            → 507 {"error": "secret_store_full"} the ceiling refused it
-```
-
-Authorization is the operator key that CDS already pins for allowlist writes
-(`cds --operator-keys`) — the same key the `secrets` grants are rooted in. Its
-token binds the method, path, and body, so a captured one cannot be replayed
-against a different path or a different value. `overwrite` travels in the body
-for that reason: a query parameter is outside what the token covers.
-
-CDS spends each token once, as for allowlist writes, including on
-`GET /secrets-explain`. A token is spent once it verifies, before CDS checks the
-request it carries, so a retry mints a fresh token. Reusing a spent token
-answers `409` with a plain-text error. CDS answers `503` when it verifies a token
-but cannot record it as spent; nothing ran, so retry with a fresh token. Each
-CDS keeps its own record of spent tokens and never prunes it: every request adds
-a row, explain reads included, and without persistence that record counts
-toward `cds.persistence.memorySizeLimit`. Writes count too: when the path
-already holds a value, `c8s secrets put --overwrite` spends two tokens, one for
-the create attempt and one for the overwrite. Do not poll explain.
-Without `cds.persistence.enabled`, CDS also refuses every token issued before
-its start plus `--jwt-clock-skew` (`cds.jwtClockSkew`, 30 seconds by default)
-with `401`; wait that long after a restart.
-
-### Replacing a value
-
-A path that already holds a value answers `409` and names what put it there —
-a workload that found the path empty, or an earlier operator write. Nothing is
-written. `--overwrite` replaces it, and the CLI prints what it is replacing
-before it does:
-
-```
-$ c8s secrets put /tenant-a/db --overwrite < db.txt
-~ /tenant-a/db (replaces a workload-generated value)
-wrote 24 bytes to /tenant-a/db
-```
-
-The store has no versioning and no delete, so a displaced value is gone.
-
-**A workload reads its secret into a file once, at startup.** Replacing a value
-reaches a pod when that pod next restarts, so a Deployment holding the old value
-keeps it until it is rolled. Replacing a path a workload created is worth
-pausing over for that reason: the pods that generated the value go on using it.
-
-Revoking a value means restarting CDS, which empties the whole store — see
-"Restarts".
-
-## Diagnosing a refusal
-
-A refused pod is told only that it was refused, and the set that decides the
-matter — what the sandbox is running — is visible only to CDS. `explain` is
-where that is read:
-
-```sh
-c8s secrets explain --sandbox "$ID" --url "$CDS" --measurements "$M" \
-  --operator-key operator.key
-```
-
-```
-sandbox    0123456789abcdef…
-inventory  10.0.0.7
-reported   3 container(s)
-dropped    1 injected by c8s
-candidates 2
-    sha256:1111…  [/serve]
-  - sha256:9999…  [/c8s get-secret]
-    sha256:8888…  [sh -c sleep 1]
-
-vllm-llama  NEAR MISS
-  foreign  sha256:8888…  [sh -c sleep 1]
-           no container in this entry declares it
-
-nothing is released: no entry describes the candidate set
-```
-
-The sandbox ID is on the pod's certificate; `c8s verify` prints it. `--json`
-emits the report as it arrives.
-
-It reads the same inventory, binding and allowlist the release path reads, and
-measures entries with the same matcher, so it reports the decision rather than a
-reconstruction of it. It answers to the operator key, since it describes a pod
-the caller may not own. The report carries grant paths; a value never appears in
-it.
-
-`GET /secrets-explain/{sandboxID}` is a sibling of `/secrets`, not a path under
-it: a literal segment beats the wildcard in routing, so mounting it below
-`/secrets` would make every secret stored under that prefix unreachable.
-
-## What CDS checks
-
-1. The client certificate chains to the mesh CA — verified by crypto/tls, not
-   by the handler. Embedded-evidence verification of a self-signed certificate
-   is insufficient here: its sandbox-ID extension is peer-chosen.
-2. The sandbox ID comes from that verified leaf.
-3. The sandbox token verifies against the inventory **bound to that sandbox**,
-   carries this request's challenge, and names the same sandbox as the leaf.
-4. That inventory reports what the sandbox has run.
-5. The reported set, minus injected containers, matches exactly one workload
-   entry.
-6. That entry's grant covers the requested path.
-
-Any failure refuses. So does an unreachable inventory, an unknown sandbox, an
-empty container set, an ambiguous match, or an entry with no grant.
-
-### Which inventory is asked
-
-The binding is CDS's, not the requester's. At issuance — where the token has
-already been verified — CDS records `sandbox ID → inventory host`,
-**first-write-wins**, and the secrets path dials *that* host. The token must
-name the same one.
-
-This matters because a token is signable by anything that can answer on the
-inventory port inside the configured CIDRs. Taking the host from the request
-would let such a thing sign a token for someone else's sandbox, be believed
-about what that sandbox runs, and have the answer used to release its secrets.
-
-A conflicting binding does **not** refuse a certificate. `get-cert` has no
-token-less retry, so denying at issuance would let one pre-claim wedge a pod for
-a whole certificate lifetime — worse than what it prevents. The sandbox is
-instead unusable for secrets, which costs one workload rather than every pod on
-the node.
-
-### Service links are off in injected pods
-
-The webhook sets `enableServiceLinks: false` on every pod it injects into. The
-kubelet then adds only the `KUBERNETES_*` variables for the API server, not the
-`<SERVICE>_SERVICE_HOST` and `<SERVICE>_PORT_*` set for each Service in the
-namespace. The injected sidecars are admitted with an `env: match` policy that
-lists every variable by name, so a set that changes whenever a Service is added
-would deny them. A workload that reads service-link variables must resolve the
-Service by DNS instead (`<service>.<namespace>.svc`).
-
-### The platform drop set
-
-C8s injects its own containers into every confidential pod. They are not part of
-a workload's declared set, so they are removed before matching — an entry never
-has to enumerate C8s's own containers.
-
-A container is dropped when the node that admitted it reports a **platform
-role** for it: the mesh endpoint, the credential clients and the front door each
-run on a reserved identity that only the node's measured base allowlist grants
-(`role:` on a base entry). The role travels per container on the digests
-channel, which is a mutually attested connection to that node's inventory.
-
-What this rests on: a role is a local fact of the node's boot configuration.
-`role:` is YAML-only, so the document CDS serves cannot carry one, and no pod
-spec, annotation or container name can claim one. A container the base names no
-role for is a workload container, whatever image it runs and whatever its
-command line looks like.
-
-## The grant
-
-A secret grant belongs to a **workload entry**, not a container:
-
-```json
-"vllm-llama": {
-  "containers": [ { "digest": "sha256:…", "command": {…}, "args": {…} } ],
-  "secrets": { "policy": "allow", "read": ["/tenant-a/**"], "write": ["/tenant-a/session"] }
-}
-```
-
-The subject is the entry because the value is delivered on a volume every
-container in the pod can read — a per-container grant would not describe what is
-actually released.
-
-- `policy` is `allow` or `deny`. There is deliberately **no `any`**: an unbounded
-  secret grant is never what an operator means.
-- A grant requires every container in the entry — init and main — to pin its
-  argv: `command` and `args` both `exact` or `deny`. A container under `any`
-  runs whatever command line the host chose, and the value would be released
-  to it.
-- A grant also requires every container to pin its mounts: `mounts` is `deny`
-  or `exact` with no `host` rule. Under `any` the host can add a volume over
-  what the pinned command reads, and a `host` rule commits to a node path
-  whose content the host chooses. A `data` rule is allowed: its content
-  (a ConfigMap, a PVC) is still the cluster's, but only at a destination
-  under `/mnt/c8s-data/` the entry declares.
-- A read-only `nodeRootFile` rule is allowed. The node proves the file is on
-  its measured dm-verity root, and read-only removes the write channel, so the
-  host chooses neither what the container reads nor where it writes. This is
-  how a GPU worker holds a grant beside the NVIDIA CDI driver files of the
-  node image.
-- A `host` rule stays refused, read-only or writable. This includes
-  `/run/nvidia-persistenced/socket` from the NVIDIA CDI set: a socket has no
-  content to prove, and it is a channel to whatever process the host runs
-  behind it. The c8s node image's device plugin does not inject it (it runs
-  with `CDI_FEATURE_FLAGS=disable-ipc-discoverer`), and it serves the driver
-  files and GSP firmware from their canonical `/usr` paths, so a GPU worker's
-  CDI mounts are all `nodeRootFile` rules.
-- The write path refuses an entry that breaks either rule, and release refuses
-  one stored before it did. `env` is not required yet: `exact` fingerprints
-  the whole environment, including the pod's `HOSTNAME`, so no policy pins it
-  on a real pod; `lint` warns instead.
-- Paths are absolute, clean, and the only wildcard is a trailing `/**`, which
-  matches strictly beneath its base — `/a/**` does not grant `/a`.
-- `write` requires `read`. The only client creates with `POST`, then re-reads;
-  a write-only grant would strand every replica that loses the create race.
-- A grant that releases nothing is **omitted** from the canonical document, so an
-  entry without one carries no `secrets` key and a consumer that does not know
-  the field never sees it.
-
-The in-pod destination of a secret is **not** an authorization boundary — the
-workload owns its own filesystem once the value is inside it — so only the store
-path is policy.
-
-### Upgrading
-
-CDS parses its seed with unknown fields rejected and fails closed, so a values
-file still carrying per-container `paths` would stop CDS booting. The chart
-rejects it at `helm upgrade` (`VALIDATION_ERROR kind=allowlist_container_paths`).
-Move the grant up to the entry; a `deny` grant is simply dropped.
-
-Serving the field is safe ahead of the consumers: `secrets` appears only once an
-operator writes a real grant, and the pull path
-(`allowlist.ParseServedJSON`) ignores fields it does not know. Strict parsing is
-kept for operator-authored input, where an unknown field is a typo.
-
-## The mount policy
-
-Every container in the entry also needs a `mounts` policy admitting what the
-webhook injects: the secret directory. An absent policy is `deny`, which
-admits platform mounts alone and so refuses the pod at container creation.
-
-The workload-claims socket directory that the node policy bind-mounts into the
-sidecars and an application's `cds-attest` container is a platform mount: no
-rule names it, and a `host` rule for it would refuse the grant.
-
-It is a memory-backed `emptyDir`, so an `exact` policy names it by
-destination:
-
-```json
-"mounts": {"policy": "exact", "rules": [
-  {"destination": "/run/c8s/secrets", "kind": "emptyDir"}
-]}
-```
-
-These destinations are fixed. The credential volume is mounted into the
-injected containers alone, which this entry does not describe. `exact` is set
-equality, so the rules also cover every other non-platform mount the pod
-declares; a configMap, projected or PVC source classes as `data`, whose
-destination sits below `/mnt/c8s-data/`.
-
-`{"policy": "any"}` admits any mount table, leaving the host free to add one.
-The chart seeds C8s's own components with `exact` instead, and an entry with a
-grant may not use it. See
-[`allowlist-and-capabilities.md`](allowlist-and-capabilities.md#mount-policy-mounts).
-
-### Fixed sidecar mounts
-
-The C8s image's component entry pins each injected sidecar's mount table
-exactly, so the webhook mounts at fixed destinations. The inventory socket
-directory the NRI plugin adds at `/run/c8s/workload-claims` is a platform
-mount and is not in the table:
-
-| Mount | Destination | Sidecars |
+Retries back off from 5 to 30 seconds and never stop by default: a large image
+pull can delay the main containers for many minutes.
+
+The first pod to ask for a store path that holds no value has CDS generate one
+there and then, provided the entry's grant covers that path for write, so no
+caller ever chooses what another will later read. Under a read-only grant the
+request answers `404` until an operator writes the value. Values CDS cannot
+invent — an API token, a database password, a wrapped key — an operator writes
+with `c8s secrets put`. A measurement pin proves only that the peer is an
+attested build, and several instances can share one, so such a write also pins
+the mesh CA you hold out of band: that is what tells your CDS from another at
+the same measurement — [workloads.md](workloads.md).
+
+## Fixed sidecar mounts
+
+The C8s image's entry pins the sidecar mount tables; destinations are fixed:
+
+| Mount | Destination | Mounted into |
 |---|---|---|
-| cert volume | `/etc/c8s/certs` | all four, and the pod's mesh endpoint read-only |
-| secrets volume | `/run/c8s/secrets` | `c8s-secret`, and every workload container read-only |
-| discovery volume (`confidential.ai/c8s-discovery-volume`) | `/run/c8s/discovery` | `c8s-cert`, `c8s-cert-wait`, `c8s-secret`, `c8s-volume` |
-| reload-watch volume (`confidential.ai/c8s-reload-watch-volume`) | `/mnt/c8s-data/c8s-reload-watch` | `c8s-cert` |
+| credential volume | `/etc/c8s/certs` | the injected containers only |
+| secrets volume | `/run/c8s/secrets` | `c8s-secret` read-write, every other container read-only |
+| discovery volume | `/run/c8s/discovery` | the injected containers that use it |
 
-The annotations that used to move these mounts —
-`confidential.ai/c8s-cert-dir`, `confidential.ai/c8s-secret-dir`,
-`confidential.ai/c8s-discovery-mount-path` and
-`confidential.ai/c8s-reload-watch-mount-path` — are refused at admission
-unless they name the fixed destination. To migrate a pod, remove the
-annotation and read the files at the fixed path.
-`confidential.ai/c8s-discovery-out` must name a file directly in the fixed
-discovery destination, not in a subdirectory, and
-`confidential.ai/c8s-reload-watch-paths` must name files below the fixed
-reload-watch destination, or the webhook refuses the pod. The discovery
-volume must be a volume of its own: the webhook refuses one that is also the
-cert, secrets or an encrypted volume, since get-cert writes into it. Back the discovery and reload-watch volumes
-with tmpfs unless the node has encrypted scratch; see
-[The injected drop set](#the-injected-drop-set). A pod admitted before
-the upgrade keeps its old mounts until a sidecar restarts or the pod is
-recreated; from then on the node refuses its sidecars, and the webhook refuses
-the pod until the annotation is gone.
+`confidential.ai/c8s-cert-dir`, `confidential.ai/c8s-secret-dir`, and
+`confidential.ai/c8s-discovery-mount-path` are refused unless they name these.
+
+The secrets volume is memory-backed. A pod may declare it only as a
+memory-backed `emptyDir`, and may not use the `c8s-secret` container name at
+all: a `hostPath` there would write a released value to host-visible storage.
+For the same reason an ephemeral container may not mount C8s material or target
+a container of an injected pod. The inventory socket directory
+`/run/c8s/workload-claims` is a platform mount no entry rule names.
 
 ## What the inventory reports
 
-`GET /digests/{sandboxID}` answers with two views of the same sandbox:
+The admission inventory answers with two views of one sandbox: `digests`, the
+image digests that certificate issuance gates on, and `containers`, each
+distinct launch — digest with its `argv`, environment evidence, and observed
+mounts — which release matches against. Both omit duplicates. `argv` is the
+effective command line a container ran, so release holds a sandbox to what its
+images were told to do, not only to which images ran.
 
-| field | contents | used by |
-|---|---|---|
-| `digests` | image digests | cert issuance (membership) |
-| `containers` | image digest and launch evidence: `argv`, `env`, `mounts` | secret release |
+Mount evidence records each destination's class and storage, never the node
+path. `mounts: []` means no bind mounts were seen; a missing or null field means
+the evidence is unavailable, on which `exact` and `deny` mount policies fail
+closed. Environment evidence is bounded, and a container whose share of it is
+missing or evicted fails an `env: match` policy; recovery depends on the cause —
+waiting until the node applies the policy version, or recreating the pod — and
+`c8s secrets explain` names which applies.
 
-Both views omit duplicates. An image appears once in `digests`, but can have
-multiple records in `containers` if it ran with different launch evidence.
-
-`argv` is the effective OCI `process.args` a container runs, so release can hold
-a sandbox to the `(digest, argv)` pairs that ran in it rather than to a digest
-set that says nothing about what those images were told to run.
-Without it, two entries differing only in argv are indistinguishable, and the
-argv admission enforces is a **union across every entry listing the digest** — so
-an entry that pins `command: exact` gives no guarantee at release time if another
-entry widens the same digest.
-
-The mount evidence records each destination's observed class and storage. Its
-node-local source path is deliberately omitted from the inventory response;
-host mounts carry a source commitment and read-only mode.
-`mounts: []` means no bind mounts were observed. `mounts: null` or a missing
-`mounts` field means mount evidence is unavailable; exact and deny mount
-policies fail closed in that case. Inventory responses retain the `mounts` field
-even for an empty set so consumers can preserve this distinction.
-
-The env evidence always carries the aggregate digest of the whole environment.
-Per-variable digests (`variableDigests`) are bounded so they take at most half
-of CDS's 1 MiB response limit:
-
-- The node keeps them for every environment of at most 128 variables and 4 KiB
-  of names, and serves them only for an image a `match` env policy lists in its
-  current base or applied allowlist. It decides when it answers, so a container
-  recorded before the node applied that policy is still served its digests once
-  it does.
-- A sandbox keeps at most 512 KiB of serialized per-variable digests. Past
-  that, the node evicts them in this order: unlisted images' stopped
-  containers, unlisted images' running containers, listed images' stopped
-  containers, then listed images' running containers, the oldest first within
-  each. An image is listed when a `match` policy in the node's current
-  allowlist names it. A stopped init container of a listed image therefore
-  keeps its digests while unlisted images hold any. An image whose `match`
-  policy the node has not applied yet, for example after a failed initial
-  pull, counts as unlisted, so its running containers still keep their digests
-  ahead of stopped ones. An evicted record keeps its aggregate digest and reports
-  `variableDigestsEvicted: true`. Admitting the same environment again restores
-  its digests.
-- `derive`, `lint` and `apply` reject a workload whose containers of
-  `match`-listed images could together need more than 512 KiB, whatever each
-  container's own env policy. Any declaration of the same image whose argv
-  could also satisfy a `match` declaration is charged at that declaration's
-  size, since the `match` declaration can admit the container in its place. A
-  container at both per-record limits needs about 13 KB, so 40 such containers
-  fit. A workload that passes keeps every declared container's evidence in a
-  fresh sandbox.
-
-The authoring check covers each declared container once. It does not cover:
-
-- Records of stopped containers. A container restarted with a new
-  environment, for example a `present` variable that changes on each start,
-  adds a record every time. Once those records pass 512 KiB, the oldest lose
-  their digests, fail `match`, and block secret release until the pod is
-  recreated.
-- Containers whose image only another workload's `match` policy lists. The
-  node retains their evidence at the same priority as this workload's.
-
-The 512 KiB bound covers per-variable digests only. Aggregate-only records,
-argv and mounts have no per-sandbox cap, so a sandbox with large argv or many
-mounts on top of the variable evidence can still exceed 1 MiB, and CDS then
-cannot read its inventory. Capping the whole response is a tracked follow-up.
-
-A record without per-variable digests fails a `match` policy.
-`c8s secrets explain` names which case occurred for each rejected container:
-
-| Case | Cause | Recovery |
-| --- | --- | --- |
-| `env evidence unavailable` | The node reported no environment: the container had no OCI process args, or its CDI edits were deferred. | Waiting does not help. Fix the launch, then recreate the pod. |
-| `env evidence missing` | The node has not applied an allowlist version with a `match` policy for the image, the node recorded the container with software older than per-variable digests, or the environment exceeds 128 variables or 4 KiB of names. | The diagnosis cannot tell these causes apart; apply each remedy that fits. (1) Wait until the node logs the version ([rollout](allowlist-and-capabilities.md#environment-policy-env)); no pod restart is needed. (2) Recreate a pod whose container the node recorded with older software. (3) Shrink an oversized environment, for example with `enableServiceLinks: false`, then recreate the pod. |
-| `env evidence evicted` | Stopped containers, restarts with new environments, or images outside the workload pushed the sandbox past 512 KiB. | Recreate the pod, and stop the churn that changes the environment on each restart. |
-| `env evidence mismatch` | The digests are present and the environment does not satisfy the policy. | Fix the environment or the policy. |
-
-`containers` is absent on an inventory older than the field. A consumer that
-needs it must treat that as "cannot answer" rather than "no containers"
-(`RequireContainers`).
+`c8s secrets explain --sandbox <SANDBOX_ID>` reports the decision as CDS makes
+it: what the inventory says is running, what was dropped, how each entry
+measures against the rest, and why a container was rejected. It answers to the
+operator key — the operator's signing key whose public half CDS pins for policy
+writes — and never carries a value. The sandbox ID is on the pod's certificate,
+and `c8s verify` prints it.
 
 ### The report is a high-water mark
 
-Both views describe every container **ever admitted** in the sandbox, not those
-running now. The inventory is otherwise "created and not yet removed", and
-kubelet removes and recreates a container across a `CrashLoopBackOff` — so a live
-snapshot lets a pod arrange for a container to be absent at the moment it is
-asked and present a set it does not have. A pod could then declare a victim
-entry's containers plus one extra image that exits immediately, be handed the
-secret during a backoff window, and read it when the extra container restarts.
-
-Admission is monotone, so membership here is too. A container that stops leaves
-caller resolution — a stopped container must not bind a caller — but stays in the
-sandbox's record until the sandbox itself is torn down.
-
-The cost is that a pod which ever ran an image outside its entry never receives a
-secret, even after that image is gone. That is the correct direction for a
-release decision.
+Both views describe every container ever admitted in the sandbox, not those
+running now. A live snapshot would let a pod hide a container at the moment it
+is asked — kubelet removes and recreates one across a `CrashLoopBackOff` — and
+so present a set it does not have: a victim entry's containers plus an extra
+image that exits, the secret collected in that window and read when it restarts.
+The cost is that a pod which ever ran an image outside its entry never receives
+a secret, which is the correct direction for a release decision.
 
 ## Restarts
 
-**A CDS restart destroys every secret, and requires rolling every workload that
-holds one.**
+A CDS restart destroys every secret, and you must roll every workload that holds
+one: the store is process memory and there is no persistence. For an entry with
+a write grant the failure mode is worse than losing the values — a pod recreated
+after the restart finds its path empty and is given a new value while its
+siblings hold the old one, and nothing reports the split. A read-only consumer
+instead stays refused until the value is written back.
 
-The store is process memory and there is no persistence. Worse than losing it:
-a pod recreated after the restart calls `POST`, finds the path empty, and is
-given a **new** value — while its siblings still hold the old one. Nothing
-reports this. A partially-rolled Deployment ends up with two different values
-for one path.
-
-So after a CDS restart, restart every secret-consuming workload rather than
-letting them recover piecemeal — a rolling restart of each Deployment. Treat a released value as ephemeral for the
-lifetime of the CDS process; nothing durable may be keyed on one.
-
-The sandbox ledger is process memory too, so a leaf that outlives a restart has
-no binding until its next renewal and is refused meanwhile.
+Treat a released value as ephemeral for the life of the CDS process. The
+sandbox-to-inventory bindings go with it, so a certificate that outlives a
+restart has none until its next renewal and is refused meanwhile.
+[operator.md](operator.md) lists everything else a restart drops.

@@ -765,6 +765,41 @@ func TestChartCDSSecretsPathQuotaFlagsThrough(t *testing.T) {
 	}
 }
 
+// The value bound is chart-settable, and unset renders no flag at all, so CDS
+// keeps its own bound.
+func TestChartCDSSecretsMaxValueBytesFlagsThrough(t *testing.T) {
+	t.Parallel()
+	out, err := helmTemplate(t, "--set", "cds.secretsMaxValueBytes=8192")
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	assertContainerHasArg(t, "cds", renderedDeploymentContainer(t, out, "c8s-cds", "cds").Args, "--secrets-max-value-bytes=8192")
+
+	out, err = helmTemplate(t)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	for _, a := range renderedDeploymentContainer(t, out, "c8s-cds", "cds").Args {
+		if strings.HasPrefix(a, "--secrets-max-value-bytes=") {
+			t.Fatalf("the unset value rendered %s", a)
+		}
+	}
+
+	out, err = helmTemplate(t, "--set", "cds.secretsMaxValueBytes=32")
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	assertContainerHasArg(t, "cds", renderedDeploymentContainer(t, out, "c8s-cds", "cds").Args, "--secrets-max-value-bytes=32")
+
+	out, err = helmTemplate(t, "--set", "cds.secretsMaxValueBytes=31")
+	if err == nil {
+		t.Fatalf("a bound below a generated value rendered:\n%s", out)
+	}
+	if want := "kind=cds_secrets_value_bytes"; !strings.Contains(out, want) {
+		t.Fatalf("render failed without %q: %v\n%s", want, err, out)
+	}
+}
+
 // The pair CDS refuses to start on is refused at template time instead.
 func TestChartCDSSecretsQuotaAboveTheCeilingFailsRendering(t *testing.T) {
 	t.Parallel()
@@ -1581,8 +1616,8 @@ func TestChartRendersRouterPublicTLSAndDiscovery(t *testing.T) {
 	}
 	cfg := renderedRouterNginxConfig(t, out)
 	server := cfg.server(t)
-	server.assertDirective(t, "ssl_certificate", "/mnt/c8s-data/edge-tls/public.crt")
-	server.assertDirective(t, "ssl_certificate_key", "/mnt/c8s-data/edge-tls/public.key")
+	server.assertDirective(t, "ssl_certificate", "/mnt/c8s-data/edge-tls/public.crt$per_handshake")
+	server.assertDirective(t, "ssl_certificate_key", "/mnt/c8s-data/edge-tls/public.key$per_handshake")
 	ciphers := server.directives["ssl_ciphers"]
 	if len(ciphers) != 1 || len(ciphers[0]) != 1 ||
 		!slices.Contains(strings.Split(ciphers[0][0], ":"), "ECDHE-RSA-AES128-GCM-SHA256") {
@@ -1591,6 +1626,14 @@ func TestChartRendersRouterPublicTLSAndDiscovery(t *testing.T) {
 	cfg.location(t, "exact", "/v1/discovery").assertDirective(t, "alias", "/discovery/discovery.json")
 	cfg.location(t, "exact", "/.well-known/cds-cert.pem").assertDirective(t, "alias", "/etc/c8s/certs/tls.crt")
 	cfg.location(t, "exact", "/.well-known/mesh-ca.pem").assertDirective(t, "alias", "/etc/c8s/certs/ca.crt")
+	// Locations that hold no attest-lb binding close the connection after the
+	// response, so a binding cannot lapse under a connection they keep open.
+	for _, path := range []string{"/v1/discovery", "/.well-known/cds-cert.pem", "/.well-known/mesh-ca.pem", "/readyz", "/healthz", "/allowlist"} {
+		cfg.location(t, "exact", path).assertDirective(t, "keepalive_timeout", "0")
+	}
+	cfg.location(t, "prefix", "/allowlist/").assertDirective(t, "keepalive_timeout", "0")
+	cfg.location(t, "named", "@tunnel_busy").assertDirective(t, "keepalive_timeout", "0")
+	cfg.location(t, "exact", "/readyz").assertDirective(t, "proxy_set_header", "X-C8s-Connection", "$nginx_start.$pid.$connection")
 	// The public TLS mode changes only what nginx serves: application
 	// requests still go to the routing listener, which dials backends itself.
 	app := cfg.location(t, "prefix", "/")
@@ -1632,8 +1675,8 @@ func TestChartRendersRouterPublicTLSAndDiscovery(t *testing.T) {
 	// key cannot support attest-lb's transport binding.
 	attest := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")
 	assertContainerArgs(t, attest, "--front-door-mode=webpki")
-	// nginx reloads itself from its own entrypoint, so the pod shares no
-	// process namespace (router_reload_test.go).
+	// nginx is its own entrypoint's child, so the pod shares no process
+	// namespace (router_serve_test.go).
 	deployment := renderedDeployment(t, out, "c8s-router")
 	if got := deployment.Spec.Template.Spec.ShareProcessNamespace; got != nil && *got {
 		t.Fatalf("router shareProcessNamespace = %v, want it unset", *got)
@@ -1838,19 +1881,13 @@ func TestChartRouterACMEMode(t *testing.T) {
 
 	cert := routerGetCertContainer(t, out, "c8s-cert")
 	assertContainerArgs(t, cert, "--discovery-public-tls-mode=acme")
-	// The acme sidecar SIGHUPs nginx itself; get-cert watches nothing extra.
-	for _, a := range cert.Args {
-		if strings.HasPrefix(a, "--reload-watch=") {
-			t.Fatalf("get-cert must not watch the acme certs, got %v", cert.Args)
-		}
-	}
 
 	cfg := renderedRouterNginxConfig(t, out)
 	if len(cfg.servers) != 2 {
 		t.Fatalf("nginx config has %d server blocks, want the :443 and :80 pair", len(cfg.servers))
 	}
-	cfg.servers[0].assertDirective(t, "ssl_certificate", "/etc/c8s-acme-tls/cert.pem")
-	cfg.servers[0].assertDirective(t, "ssl_certificate_key", "/etc/c8s-acme-key/key.pem")
+	cfg.servers[0].assertDirective(t, "ssl_certificate", "/etc/c8s-acme-tls/cert.pem$per_handshake")
+	cfg.servers[0].assertDirective(t, "ssl_certificate_key", "/etc/c8s-acme-key/key.pem$per_handshake")
 	cfg.servers[1].assertDirective(t, "listen", "8080")
 	cfg.location(t, "prefix", "/.well-known/acme-challenge/").
 		assertDirective(t, "proxy_pass", "http://127.0.0.1:8402")
@@ -2226,16 +2263,14 @@ func TestChartRendersRouterAttestSidecar(t *testing.T) {
 		"--host=127.0.0.1",
 		"--port=8800",
 		"--generation=milan",
-		"--mesh-identity-cert-file=/etc/c8s/certs/tls.crt",
-		"--mesh-identity-key-file=/etc/c8s/certs/tls.key",
-		"--mesh-identity-ca-file=/etc/c8s/certs/ca.crt",
 	}, routerRoutingArgs...)...)
 	assertContainerHasArgPrefix(t, "cds-attest", sidecar.Args, "--attestation-api-url=unix:///run/nri-image-policy/attestation-api.sock")
 	// --cds-url among them: the enforcer mounts the one CDS endpoint this
 	// node admits for the router role, and cds-attest reads it there.
-	for _, banned := range []string{"--upstream", "--attest-endpoints", "--operator-keys-file", "--image-policy-file", "--cds-measurements", "--cds-rtmrs", "--publish-routes", "--cds-url"} {
+	for _, banned := range []string{"--upstream", "--attest-endpoints", "--operator-keys-file", "--image-policy-file", "--cds-rtmrs", "--publish-routes", "--cds-url", "--mesh-identity-"} {
 		assertContainerNoArgPrefix(t, "cds-attest", sidecar.Args, banned)
 	}
+	assertContainerHasArg(t, "cds-attest", sidecar.Args, "--cds-measurements="+baseCDSDigest)
 	if got := len(deployment.Spec.Template.Spec.Containers); got != 3 {
 		t.Fatalf("router should have nginx + cds-attest + allowlist-proxy, got %d containers", got)
 	}
@@ -2255,6 +2290,7 @@ func TestChartRendersRouterAttestSidecar(t *testing.T) {
 		loc.assertDirective(t, "proxy_max_temp_file_size", "0")
 		loc.assertDirective(t, "proxy_read_timeout", "3630s")
 		loc.assertDirective(t, "proxy_set_header", "X-Real-IP", "$remote_addr")
+		loc.assertDirective(t, "proxy_set_header", "X-C8s-Connection", "$nginx_start.$pid.$connection")
 	}
 	protocol.assertNoDirective(t, "limit_conn")
 	protocol.assertDirective(t, "client_max_body_size", "16k")
@@ -2386,22 +2422,18 @@ func TestChartRouterCDSPins(t *testing.T) {
 	}
 }
 
-// TestChartRouterUnpinnedCDS pins the router's operator-key source off a baked
-// node: cds.operatorKeys when set, else CDS, which needs a CDS pin or
-// router.routing.allowUnpinnedCDS. The test helpers set the opt-in.
-func TestChartRouterUnpinnedCDS(t *testing.T) {
+// TestChartRouterOperatorKeySource pins the router's operator-key source off a
+// baked node: cds.operatorKeys when set, else CDS itself.
+func TestChartRouterOperatorKeySource(t *testing.T) {
 	t.Parallel()
-	optOut := []string{"--set", "router.routing.allowUnpinnedCDS=false"}
-	pinned := append([]string{"--set-string", "cds.measurements[0]=" + strings.Repeat("ab", armtls.SNPMeasurementSize)}, optOut...)
-	keys := append([]string{"--set-string", "cds.operatorKeys=-----BEGIN PUBLIC KEY-----\nMFkw\n-----END PUBLIC KEY-----\n"}, optOut...)
+	keys := []string{"--set-string", "cds.operatorKeys=-----BEGIN PUBLIC KEY-----\nMFkw\n-----END PUBLIC KEY-----\n"}
 	const keysArg = "--operator-keys-file=/mnt/c8s-data/operator-keys/keys.pem"
 	for _, tc := range []struct {
-		name               string
-		args               []string
-		wantFlag, wantKeys bool
+		name     string
+		args     []string
+		wantKeys bool
 	}{
-		{name: "opt-in", wantFlag: true},
-		{name: "pinned CDS", args: pinned},
+		{name: "pinned CDS"},
 		{name: "pinned keys", args: keys, wantKeys: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2410,9 +2442,6 @@ func TestChartRouterUnpinnedCDS(t *testing.T) {
 				t.Fatalf("helm template: %v\n%s", err, out)
 			}
 			c := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")
-			if got := slices.Contains(c.Args, "--allow-unpinned-cds"); got != tc.wantFlag {
-				t.Errorf("cds-attest has --allow-unpinned-cds = %v, want %v", got, tc.wantFlag)
-			}
 			if got := slices.Contains(c.Args, keysArg); got != tc.wantKeys {
 				t.Errorf("cds-attest has %s = %v, want %v", keysArg, got, tc.wantKeys)
 			}
@@ -2421,12 +2450,35 @@ func TestChartRouterUnpinnedCDS(t *testing.T) {
 			}
 		})
 	}
-	out, err := helmTemplate(t, optOut...)
-	if err == nil {
-		t.Fatalf("helm template accepted an unpinned CDS without the opt-in\n%s", out)
+}
+
+// TestChartRefusesUnpinnedCDS renders each pin source that names this
+// cluster's CDS — cds.measurements, cds.measurementsConfig, a baked node's
+// measured launch config — and the default values, which name none.
+func TestChartRefusesUnpinnedCDS(t *testing.T) {
+	t.Parallel()
+	policy := writeChartImagePolicy(t, chartTDXPolicy(chartTDXImage("first", chartDigestA, `[null,"`+chartDigestB+`"]`)))
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{name: "cds.measurements", args: []string{"--set-string", baseCDSPin}},
+		{name: "cds.measurementsConfig", args: []string{"--set", "nriImagePolicy.enabled=false", "--set-file", "cds.measurementsConfig=" + policy}},
+		{name: "node.baked", args: bakedArgs},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := helmTemplateUnpinned(t, ".", tc.args...)
+			if err != nil {
+				t.Fatalf("helm template: %v\n%s", err, out)
+			}
+		})
 	}
-	if got := parseValidationErrorKind(out); got != "unpinned_route_source" {
-		t.Fatalf("validation kind = %q, want unpinned_route_source\n%s", got, out)
+	out, err := helmTemplateUnpinned(t, ".")
+	if err == nil {
+		t.Fatalf("helm template accepted the default values, which pin no CDS\n%s", out)
+	}
+	if got := parseValidationErrorKind(out); got != "cds_pins_required" {
+		t.Fatalf("validation kind = %q, want cds_pins_required\n%s", got, out)
 	}
 }
 
@@ -3538,6 +3590,12 @@ func hostPathVolume(t *testing.T, ds appsv1.DaemonSet, name string) string {
 // the seed admits it argv-pinned, so the default fail-closed render is valid.
 const baseNRIDigest = "sha256:aaaa000000000000000000000000000000000000000000000000000000000000"
 
+// baseCDSDigest is the placeholder CDS launch digest the shared harness pins:
+// the chart refuses a release naming no CDS guest (kind=cds_pins_required).
+var baseCDSDigest = strings.Repeat("ab", armtls.SNPMeasurementSize)
+
+var baseCDSPin = "cds.measurements[0]=" + baseCDSDigest
+
 // helmOutput keeps warnings outside the YAML. Failed commands keep diagnostics.
 func helmOutput(cmd *exec.Cmd) ([]byte, error) {
 	var diagnostics bytes.Buffer
@@ -3554,8 +3612,24 @@ func helmTemplate(t *testing.T, args ...string) (string, error) {
 	return helmTemplateIn(t, ".", args...)
 }
 
-// helmTemplateIn is helmTemplate on the chart directory c8s under dir.
+// helmTemplateIn is helmTemplate on the chart directory c8s under dir, under a
+// placeholder CDS pin unless the caller brings its own pin source: the chart
+// refuses a release naming no CDS guest (kind=cds_pins_required).
 func helmTemplateIn(t *testing.T, dir string, args ...string) (string, error) {
+	t.Helper()
+	pinned := slices.ContainsFunc(args, func(arg string) bool {
+		return strings.HasPrefix(arg, "cds.measurements") || strings.HasPrefix(arg, "node.baked")
+	})
+	if !pinned {
+		args = append([]string{"--set-string", baseCDSPin}, args...)
+	}
+	return helmTemplateUnpinned(t, dir, args...)
+}
+
+// helmTemplateUnpinned is helmTemplateIn without the harness CDS pin, for the
+// tests that drive the chart's cds_pins_required refusal and the pin sources
+// that satisfy it.
+func helmTemplateUnpinned(t *testing.T, dir string, args ...string) (string, error) {
 	t.Helper()
 	if _, err := exec.LookPath("helm"); err != nil {
 		t.Skip("helm CLI not found")
@@ -3571,8 +3645,6 @@ func helmTemplateIn(t *testing.T, dir string, args ...string) (string, error) {
 		"--set", "attestationApi.image.tag=dev",
 		"--set", "cds.image.tag=dev",
 		"--set", "armtlsMesh.image.tag=dev",
-		// The default install pins no CDS; see TestChartRouterUnpinnedCDS.
-		"--set", "router.routing.allowUnpinnedCDS=true",
 		"--set", "nriImagePolicy.image.tag=dev",
 		// volumed is off by default, so its image is unused unless a test
 		// enables it; set the tag here so those tests need not repeat it (its
@@ -3620,6 +3692,7 @@ func assertRouterRoutingLocation(t *testing.T, route *nginxBlock, port, readTime
 	route.assertDirective(t, "proxy_set_header", "X-Real-IP", "$remote_addr")
 	route.assertDirective(t, "proxy_set_header", "X-Forwarded-For", "$proxy_add_x_forwarded_for")
 	route.assertDirective(t, "proxy_set_header", "X-Forwarded-Proto", "$scheme")
+	route.assertDirective(t, "proxy_set_header", "X-C8s-Connection", "$nginx_start.$pid.$connection")
 }
 
 func TestChartRouterRoutingLocation(t *testing.T) {
@@ -4429,7 +4502,7 @@ func helmTemplateRouter(t *testing.T, args ...string) (string, error) {
 		"--set", "image.tag=dev",
 		"--set", "attestationApi.image.tag=dev",
 		"--set", "cds.image.tag=dev",
-		"--set", "router.routing.allowUnpinnedCDS=true",
+		"--set-string", baseCDSPin,
 		"--set", "armtlsMesh.image.tag=dev",
 		"--set-string", "nriImagePolicy.mesh.clusterRanges[0]=10.42.0.0/16",
 		"--set-string", "nriImagePolicy.mesh.resolver=10.43.0.10",
@@ -4497,7 +4570,21 @@ func Example_routerConfig() {
 	//     access_log /var/log/nginx/access.log main;
 	//
 	//     sendfile on;
+	//     # cds-attest drops a lapsed attest-lb binding once these three timeouts
+	//     # must have closed its connection (lbBindingLife); change them together.
+	//     # Locations that hold no binding set keepalive_timeout 0, so a binding
+	//     # cannot lapse under a connection they keep open.
 	//     keepalive_timeout 65;
+	//     client_header_timeout 60s;
+	//     send_timeout 60s;
+	//
+	//     # Always empty. A certificate path naming a variable is read on every
+	//     # TLS handshake, so a renewal reaches new connections without a reload.
+	//     map $ssl_server_name $per_handshake {
+	//         default "";
+	//     }
+	//     # $nginx_start, which serve.sh writes at each start.
+	//     include /tmp/nginx-start.conf;
 	//
 	//     # Pass a client's WebSocket upgrade (e.g. socket.io) through location /;
 	//     # other requests keep Connection: close to the routing listener.
@@ -4535,14 +4622,16 @@ func Example_routerConfig() {
 	//         listen 8443 ssl;
 	//         server_name c8s-router.c8s-router.svc;
 	//
-	//         ssl_certificate     /etc/c8s/certs/tls.crt;
-	//         ssl_certificate_key /etc/c8s/certs/tls.key;
+	//         ssl_certificate     /etc/c8s/certs/tls.crt$per_handshake;
+	//         ssl_certificate_key /etc/c8s/certs/tls.key$per_handshake;
 	//
 	//         ssl_protocols TLSv1.2 TLSv1.3;
 	//         ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-RSA-CHACHA20-POLY1305;
 	//         ssl_prefer_server_ciphers on;
-	//         ssl_session_cache shared:SSL:10m;
-	//         ssl_session_timeout 1d;
+	//         # A resumed session keeps the leaf it began with, which a renewal
+	//         # replaces on disk and attest-lb would attest.
+	//         ssl_session_cache off;
+	//         ssl_session_tickets off;
 	//
 	//         # Headroom for upstream responses with large headers.
 	//         proxy_buffer_size 16k;
@@ -4564,6 +4653,7 @@ func Example_routerConfig() {
 	//                 return 204;
 	//             }
 	//             add_header Access-Control-Allow-Origin "*" always;
+	//             keepalive_timeout 0;
 	//             # These run before nginx collapses callers onto the loopback proxy source.
 	//             # Each zone's map key is empty for the methods it does not cover, so
 	//             # mutations count per client and in aggregate, reads per client only.
@@ -4593,6 +4683,7 @@ func Example_routerConfig() {
 	//                 return 204;
 	//             }
 	//             add_header Access-Control-Allow-Origin "*" always;
+	//             keepalive_timeout 0;
 	//             # These run before nginx collapses callers onto the loopback proxy source.
 	//             # Each zone's map key is empty for the methods it does not cover, so
 	//             # mutations count per client and in aggregate, reads per client only.
@@ -4613,6 +4704,8 @@ func Example_routerConfig() {
 	//         # published on the pod IP). So the probe rides the front door:
 	//         # exact-match, ahead of location /.
 	//         location = /readyz {
+	//             proxy_set_header X-C8s-Connection $nginx_start.$pid.$connection;
+	//             keepalive_timeout 0;
 	//             access_log off;
 	//             proxy_pass http://127.0.0.1:8800;
 	//             proxy_set_header Host $host;
@@ -4637,6 +4730,8 @@ func Example_routerConfig() {
 	//             proxy_set_header X-Real-IP $remote_addr;
 	//             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 	//             proxy_set_header X-Forwarded-Proto $scheme;
+	//             # Replaces any client value.
+	//             proxy_set_header X-C8s-Connection $nginx_start.$pid.$connection;
 	//             proxy_set_header Upgrade $http_upgrade;
 	//             proxy_set_header Connection $connection_upgrade;
 	//             client_max_body_size 1048576;
@@ -4657,6 +4752,7 @@ func Example_routerConfig() {
 	//         # Exact: a prefix match would also claim manifest paths such as
 	//         # /healthz-ui.
 	//         location = /healthz {
+	//             keepalive_timeout 0;
 	//             access_log off;
 	//             return 200 "ok\n";
 	//             add_header Content-Type text/plain;
@@ -5162,13 +5258,9 @@ func TestChartComponentArgsDoNotRepeatTheEntrypointSubcommand(t *testing.T) {
 	}
 }
 
-// TestChartPinsCDSInBareMetalMode guards the node-as-CVM pin path. The node image
-// bakes the plugin with empty cds_measurements, and the chart is the only thing
-// that knows this release's pins — so an install that does not carry them into
-// the baked config leaves the component deciding which images may run on the
-// node willing to take its allowlist from ANY armTLS-attested CDS, and its
-// sandbox-digests endpoint willing to answer any of them. Regression for a
-// bare-metal run that found exactly that (2026-08-26).
+// TestChartPinsCDSInBareMetalMode guards the node-as-CVM pin path: the chart is
+// the only thing that knows this release's flat CDS pins, so an install must
+// carry them into the baked plugin config.
 func TestChartPinsCDSInBareMetalMode(t *testing.T) {
 	t.Parallel()
 	const (
@@ -5646,7 +5738,7 @@ func renderExampleRouterNginxConf() string {
 		"--set", "image.tag=dev",
 		"--set", "attestationApi.image.tag=dev",
 		"--set", "cds.image.tag=dev",
-		"--set", "router.routing.allowUnpinnedCDS=true",
+		"--set-string", baseCDSPin,
 		"--set", "armtlsMesh.image.tag=dev",
 		"--set-string", "nriImagePolicy.mesh.clusterRanges[0]=10.42.0.0/16",
 		"--set-string", "nriImagePolicy.mesh.resolver=10.43.0.10",
@@ -7122,6 +7214,9 @@ func TestChartRendersPodValidatorFailClosed(t *testing.T) {
 	// The operator is told the injector's name and derives this one, so the
 	// two must stay named beside each other.
 	args := renderedOperatorArgs(t, out)
+	if !slices.Contains(args, "--exclude-namespaces=local-path-storage") {
+		t.Error("external storage namespace must also be excluded from reinjection")
+	}
 	if !slices.Contains(args, "--webhook-config-name=c8s-pod-injector") {
 		t.Errorf("operator args missing --webhook-config-name=c8s-pod-injector\n%v", args)
 	}

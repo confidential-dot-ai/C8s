@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run against a disposable, single-node C8s image. Requires kubectl + jq. No
 # exec/logs endpoint, external test image or allowlist change: reuse the baked
-# local-path-provisioner image (Alpine + BusyBox).
+# kube-proxy image.
 # Admission and the runtime labels are proven from a Restricted pod in this
 # test's own namespace, which the bounded operator credential may create. The
 # mount-denial control needs Unconfined with SYS_ADMIN in the exempt system
@@ -15,9 +15,9 @@ k() { kubectl --request-timeout=30s "$@"; }
 nodes=$(k get nodes -o json)
 [ "$(jq '.items | length' <<<"$nodes")" = 1 ] || fail "requires a disposable single-node cluster"
 node=$(jq -er '.items[0].metadata.name' <<<"$nodes")
-image=$(k -n local-path-storage get deployment local-path-provisioner \
-    -o jsonpath='{.spec.template.spec.containers[0].image}')
-[ -n "$image" ] || fail "local-path-provisioner image is missing"
+image=$(k -n kube-system get pods -l component=kube-proxy \
+    -o jsonpath='{.items[0].spec.containers[0].image}')
+[ -n "$image" ] || fail "kube-proxy image is missing"
 
 # Let the API allocate unique names; only delete resources this invocation made.
 ns=""
