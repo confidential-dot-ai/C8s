@@ -1,7 +1,6 @@
 package cds
 
 import (
-	"bytes"
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
@@ -11,9 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/klauspost/compress/zstd"
-
-	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/cdsha"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
@@ -32,40 +28,18 @@ func TestHAStatusRecoveryPinRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	pin := certutil.CertFingerprint(cert.Raw)
-	al, err := allowlist.OpenInMemory()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer al.Close()
-	image, err := al.Dump()
-	if err != nil {
-		t.Fatal(err)
-	}
-	header, err := json.Marshal(map[string]any{
+	body := testSnapshot(t, map[string]any{
 		"format": cdsha.Format, "index": 5,
 		"core": cdsha.Core{ClusterID: "c1", Epoch: 1, RootCert: cert.Raw,
 			Policy: cdsha.FSMPolicy{Version: 1, LedgerTTLNS: int64(time.Hour), LedgerMax: 100, SecretsMaxPaths: 64, SecretsMaxPerHolder: 8, SecretsMaxValue: 4096}},
 		"key": key,
 	})
+	digests, err := cdsha.ContentDigests(body)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var encoded bytes.Buffer
-	zw, err := zstd.NewWriter(&encoded)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := zw.Write(append(header, '\n')); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := zw.Write(image); err != nil {
-		t.Fatal(err)
-	}
-	if err := zw.Close(); err != nil {
-		t.Fatal(err)
-	}
-	meta := cdsha.BackupMeta{ClusterID: "c1", Epoch: 1, Index: 5, CAFingerprint: pin}
-	backup, err := cdsha.SealAuthenticatedBackup(&k.PublicKey, meta, encoded.Bytes(), cert.Raw, key)
+	meta := cdsha.BackupMeta{ClusterID: "c1", Epoch: 1, Index: 5, CAFingerprint: pin, StateDigest: digests.State}
+	backup, err := cdsha.SealAuthenticatedBackup(&k.PublicKey, meta, body, cert.Raw, key)
 	if err != nil {
 		t.Fatal(err)
 	}

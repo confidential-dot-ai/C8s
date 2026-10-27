@@ -69,13 +69,17 @@ type Timing struct {
 	// Backup is how often the leader writes a sealed state backup, when the
 	// state changed since the last one.
 	Backup time.Duration
+	// Checkpoint is how often the leader asks every replica to record its
+	// state digest, when the state changed since the last checkpoint
+	// (divergence.go).
+	Checkpoint time.Duration
 }
 
 // DefaultTiming suits replicas on one site.
 var DefaultTiming = Timing{
 	Heartbeat: time.Second, Election: time.Second, Lease: 5 * time.Second,
 	DeadAfter: 20 * time.Second, Stabilize: 3 * time.Second, Apply: 10 * time.Second, Tick: time.Second,
-	Backup: time.Minute,
+	Backup: time.Minute, Checkpoint: 10 * time.Second,
 }
 
 // Config configures a replica.
@@ -213,6 +217,8 @@ type Node struct {
 	backupErr      atomic.Pointer[string]
 	lastBackup     atomic.Pointer[storedBackup]
 	recovery       *ecdsa.PublicKey
+
+	div divergence // leader: the replicas' digests (divergence.go)
 }
 
 // snapshotInterval is Raft's snapshot check period; a var so tests can
@@ -283,6 +289,15 @@ type Status struct {
 	SnapshotIndex uint64 `json:"snapshot_index,omitempty"`
 	SnapshotBytes int64  `json:"snapshot_bytes,omitempty"`
 	SnapshotAtMS  int64  `json:"snapshot_at_ms,omitempty"`
+
+	// Chain is this replica's chain after the last command it applied, and
+	// Checkpoint its latest state digest (digest.go): replicas that agree
+	// report the same at the same index. Divergence (leader) is an
+	// unresolved disagreement, or the last replicas found to differ from
+	// the majority (divergence.go).
+	Chain      *Point `json:"chain,omitempty"`
+	Checkpoint *Point `json:"checkpoint,omitempty"`
+	Divergence string `json:"divergence,omitempty"`
 }
 
 // BackupStatus is a stored backup: the state it holds, when it was taken
@@ -316,7 +331,7 @@ func NewNode(cfg Config) (*Node, error) {
 	t, def := &cfg.Timing, DefaultTiming
 	for _, f := range [][2]*time.Duration{{&t.Heartbeat, &def.Heartbeat}, {&t.Election, &def.Election},
 		{&t.Lease, &def.Lease}, {&t.DeadAfter, &def.DeadAfter}, {&t.Stabilize, &def.Stabilize},
-		{&t.Apply, &def.Apply}, {&t.Tick, &def.Tick}, {&t.Backup, &def.Backup}} {
+		{&t.Apply, &def.Apply}, {&t.Tick, &def.Tick}, {&t.Backup, &def.Backup}, {&t.Checkpoint, &def.Checkpoint}} {
 		if *f[0] <= 0 {
 			*f[0] = *f[1]
 		}
@@ -474,6 +489,7 @@ func (n *Node) startRaft() error {
 		_ = trans.Close()
 		return err
 	}
+	trans.raft.Store(r)
 	n.rft.Store(r)
 	obs := make(chan raft.Observation, 256)
 	observer := raft.NewObserver(obs, false, func(o *raft.Observation) bool {
@@ -491,13 +507,87 @@ func (n *Node) startRaft() error {
 	return nil
 }
 
-func (n *Node) transport() (*raft.NetworkTransport, error) {
+func (n *Node) transport() (*termSafeHeartbeats, error) {
 	m, err := newMux(n.cfg.Bind, n.cfg.Advertise, string(n.id), n.tls, n.verifier, n.handleControl, n.blocked)
 	if err != nil {
 		return nil, err
 	}
 	n.mux.Store(m)
-	return raft.NewNetworkTransportWithConfig(raftTransportConfig(m, n.rcfg.Logger)), nil
+	return newTermSafeHeartbeats(raft.NewNetworkTransportWithConfig(raftTransportConfig(m, n.rcfg.Logger))), nil
+}
+
+// termSafeHeartbeats is the peer transport with Raft's heartbeat fast path
+// kept only for heartbeats that cannot change this node's term or role.
+// NetworkTransport runs a heartbeat's AppendEntries on its own goroutine, so
+// that heartbeats are answered while the main thread is busy (a full FSM
+// queue, a slow disk). A heartbeat with a newer term, or one that reaches a
+// leader or candidate, steps the node down there, concurrently with the main
+// thread: a leader that then stamps a client write with the newer term
+// writes an entry the new leader never had at the same index and term, and
+// replicas diverge (hashicorp/raft #695, open in v1.8.0). Those heartbeats go
+// to the main loop like every other RPC, so the term and role change only
+// there; a follower's heartbeat at its own term (all but the first of each
+// term) keeps the fast path.
+type termSafeHeartbeats struct {
+	*raft.NetworkTransport
+	// raft is the instance using the transport; until it is set, every
+	// heartbeat goes to the main loop.
+	raft     atomic.Pointer[raft.Raft]
+	consumer chan raft.RPC
+	done     chan struct{}
+	once     sync.Once
+}
+
+func newTermSafeHeartbeats(t *raft.NetworkTransport) *termSafeHeartbeats {
+	s := &termSafeHeartbeats{NetworkTransport: t, consumer: make(chan raft.RPC), done: make(chan struct{})}
+	go func() {
+		for {
+			select {
+			case rpc := <-t.Consumer():
+				select {
+				case s.consumer <- rpc:
+				case <-s.done:
+					return
+				}
+			case <-s.done:
+				return
+			}
+		}
+	}()
+	return s
+}
+
+// Consumer carries every RPC for the main loop: the transport's, and the
+// heartbeats the fast path must not handle.
+func (s *termSafeHeartbeats) Consumer() <-chan raft.RPC { return s.consumer }
+
+// SetHeartbeatHandler installs Raft's fast path behind the term check.
+func (s *termSafeHeartbeats) SetHeartbeatHandler(fast func(raft.RPC)) {
+	if fast == nil {
+		s.NetworkTransport.SetHeartbeatHandler(nil)
+		return
+	}
+	s.NetworkTransport.SetHeartbeatHandler(func(rpc raft.RPC) {
+		// A check of term and role here cannot race into #695: once it
+		// passed, a later change on the main thread raises the term, and
+		// appendEntries then refuses this older heartbeat.
+		req, ok := rpc.Command.(*raft.AppendEntriesRequest)
+		if r := s.raft.Load(); ok && r != nil && r.State() == raft.Follower && req.Term <= r.CurrentTerm() {
+			fast(rpc)
+			return
+		}
+		select {
+		case s.consumer <- rpc: // the main loop answers it
+		case <-s.done:
+			rpc.Respond(nil, raft.ErrTransportShutdown)
+		}
+	})
+}
+
+// Close stops the forwarding to the main loop and closes the transport.
+func (s *termSafeHeartbeats) Close() error {
+	s.once.Do(func() { close(s.done) })
+	return s.NetworkTransport.Close()
 }
 
 // raftTransportConfig is the peer transport's configuration. Pipelining is
@@ -587,6 +677,8 @@ func (n *Node) Run(ctx context.Context) error {
 			n.noteAcks()
 			n.reconcile()
 			n.dropSuspects()
+			n.checkDivergence()
+			n.maybeCheckpoint()
 			if n.fsm.Stuck() == "" { // both derive their entries from this replica's state
 				n.maybePruneHistory()
 				n.maybeRenewCA()
@@ -725,9 +817,15 @@ func (n *Node) handleControl(peer Claims, req controlRequest) controlResponse {
 		return controlResponse{Member: true, Err: "peer measurement is not pinned"}
 	}
 	if req.Op == ctlReadBarrier {
+		// The barrier applies everything up to last here; the follower's
+		// digests are compared with that (divergence.go).
+		last := n.r().LastIndex()
 		idx, err := n.readBarrier(n.r(), min(n.cfg.Timing.Apply, n.cfg.Timing.Lease))
 		if err != nil {
 			return controlResponse{Member: true, Err: err.Error()}
+		}
+		if why := n.observeReport(raft.ServerID(req.ID), req.Digests, last); why != "" {
+			return controlResponse{Member: true, Err: "diverged: " + why, Diverged: why}
 		}
 		return controlResponse{Member: true, Index: idx}
 	}
@@ -1036,9 +1134,14 @@ func (n *Node) confirmRead(timeout time.Duration) (*readCertificate, error) {
 		if hp == "" {
 			return nil, errors.New("cds-ha: no leader")
 		}
-		resp, err := n.call(hp, timeout, controlRequest{Op: ctlReadBarrier})
+		resp, err := n.call(hp, timeout, controlRequest{Op: ctlReadBarrier, ID: string(n.id), Digests: n.fsm.dig.report()})
 		if err != nil {
 			return nil, err
+		}
+		if resp.Diverged != "" {
+			// The leader of a majority holds other state at the same index:
+			// stop serving, and restart to take its state (FSM.stopLocal).
+			return nil, n.fsm.stopLocal(fmt.Errorf("%w: %s", ErrDiverged, resp.Diverged))
 		}
 		if resp.Err != "" {
 			return nil, errors.New("cds-ha: " + resp.Err)
@@ -1235,6 +1338,11 @@ func (n *Node) Status() Status {
 	if core.Joined() {
 		st.CAFingerprint = certutil.CertFingerprint(core.RootCert)
 	}
+	chain := n.fsm.dig.latest()
+	st.Chain = &chain
+	if cps := n.fsm.dig.checkpointsCopy(); len(cps) > 0 {
+		st.Checkpoint = &cps[len(cps)-1]
+	}
 	if n.r() == nil {
 		return st
 	}
@@ -1272,6 +1380,7 @@ func (n *Node) Status() Status {
 		}
 		n.mu.Unlock()
 		st.ReadBarrierMS = n.barrierMS.Load()
+		st.Divergence = n.div.status()
 	}
 	return st
 }

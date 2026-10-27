@@ -107,6 +107,20 @@ func TestLenEvictsExpired(t *testing.T) {
 	}
 }
 
+// Len counts without evicting: a replica that dropped expired bindings by
+// its own clock would hold other state than the rest of the cluster.
+func TestLenDoesNotChangeTheLedger(t *testing.T) {
+	l, clock := testLedger(t, time.Hour, 10)
+	l.Record("a", "10.0.0.1")
+	*clock = clock.Add(time.Hour + time.Second)
+	if got := l.Len(); got != 0 {
+		t.Fatalf("Len after expiry = %d, want 0", got)
+	}
+	if got := len(l.Dump()); got != 1 {
+		t.Fatalf("Len evicted: the ledger holds %d bindings, want 1", got)
+	}
+}
+
 func TestEvictionLoopStops(t *testing.T) {
 	l := New(time.Millisecond, 10)
 	l.Record("a", "10.0.0.1")

@@ -136,7 +136,7 @@ func TestApplyRestoreRefusals(t *testing.T) {
 	good := snapshot{Core: Core{Policy: f.LocalPolicy(), ClusterID: testCluster, Epoch: 3, RootCert: ca.Cert.Raw, Measurements: []string{"m1"}, OperatorPubKey: opPub}, Key: key, Allowlist: image}
 	enc := func(sn snapshot) []byte {
 		var b bytes.Buffer
-		if err := encodeSnapshot(&b, sn); err != nil {
+		if err := encodeSnapshot(&b, withDigests(t, sn)); err != nil {
 			t.Fatal(err)
 		}
 		return b.Bytes()

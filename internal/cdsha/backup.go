@@ -22,6 +22,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
@@ -35,7 +36,7 @@ import (
 // the public key can replace the entire backup. Recovery requires an independently
 // trusted CA certificate fingerprint and source signature. The snapshot is already zstd-compressed.
 
-const backupInfo = "c8s-cds-ha-backup-v3\n" // v3: meta carries epoch_from
+const backupInfo = "c8s-cds-ha-backup-v3\n" // v3: meta carries epoch_from and state_digest
 
 // BackupMeta says which state a backup holds. The operator compares it with
 // their own record before restoring: an older backup would roll back
@@ -48,6 +49,9 @@ type BackupMeta struct {
 	EpochFrom      []uint64 `json:"epoch_from"` // Core.EpochFrom
 	TakenAtMS      int64    `json:"taken_at_ms"`
 	CAFingerprint  string   `json:"ca_fingerprint"`
+	// StateDigest is the state digest of the snapshot (Digests.State): what
+	// /ha/status reports at a checkpoint of the same state.
+	StateDigest string `json:"state_digest"`
 }
 
 // Backup is one sealed backup. Ciphertext is the HPKE encapsulated key
@@ -334,8 +338,11 @@ func ValidateRecoverySnapshot(body []byte, meta BackupMeta, minEpoch, minIndex u
 
 	if sn.Core.ClusterID != meta.ClusterID || sn.Core.Epoch != meta.Epoch || sn.Index != meta.Index ||
 		certutil.CertFingerprint(sn.Core.RootCert) != meta.CAFingerprint || !slices.Equal(sn.Core.AppliedDecrees, meta.AppliedDecrees) ||
-		!slices.Equal(sn.Core.EpochFrom, meta.EpochFrom) {
+		!slices.Equal(sn.Core.EpochFrom, meta.EpochFrom) || sn.Digests.State != meta.StateDigest {
 		return errors.New("backup metadata differs from snapshot")
+	}
+	if got, err := contentDigests(sn, allowlist.ImageDigest); err != nil || got != sn.Digests {
+		return fmt.Errorf("%w: allowlist (%v)", ErrSnapshotDigest, err)
 	}
 	if sn.Core.Epoch < minEpoch || (sn.Core.Epoch == minEpoch && sn.Index < minIndex) {
 		return errors.New("snapshot is older than the recovery floor")

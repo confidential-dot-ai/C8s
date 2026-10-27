@@ -18,6 +18,8 @@ package sandboxledger
 import (
 	"sync"
 	"time"
+
+	"github.com/confidential-dot-ai/c8s/internal/lthash"
 )
 
 // binding is what the ledger holds for one sandbox: the node address whose
@@ -47,6 +49,9 @@ type Ledger struct {
 	// bytes is the snapshot size of bindings (bindingBytes summed), kept as
 	// the map changes so the HA admission cap reads it in O(1).
 	bytes int64
+	// digest is the multiset hash of the bindings, kept as the map changes
+	// (Digest).
+	digest lthash.Hash
 }
 
 // New builds a ledger. ttl should be the maximum leaf lifetime: a binding is
@@ -105,9 +110,11 @@ func (l *Ledger) recordAt(now time.Time, sandboxID, inventoryHost string) bool {
 func (l *Ledger) setLocked(sandboxID string, b binding) {
 	if prior, ok := l.bindings[sandboxID]; ok {
 		l.bytes -= bindingBytes(sandboxID, prior.host)
+		l.digest.Remove(bindingDigest(sandboxID, prior.host, prior.expires.UnixMilli()))
 	}
 	l.bindings[sandboxID] = b
 	l.bytes += bindingBytes(sandboxID, b.host)
+	l.digest.Add(bindingDigest(sandboxID, b.host, b.expires.UnixMilli()))
 }
 
 // bindingBytes bounds the JSON size of one Binding in a snapshot.
@@ -144,12 +151,20 @@ func (l *Ledger) lookupLocal(sandboxID string) (string, bool) {
 	return b.host, true
 }
 
-// Len reports the number of live bindings, for metrics and tests.
+// Len reports the number of live bindings, for metrics and tests. It only
+// counts: a replicated ledger changes through Apply alone, judged at each
+// command's time, and dropping bindings by this replica's clock would make
+// its state differ from every other replica's.
 func (l *Ledger) Len() int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.evictExpiredLocked(l.now())
-	return len(l.bindings)
+	now, live := l.now(), 0
+	for _, b := range l.bindings {
+		if now.Before(b.expires) {
+			live++
+		}
+	}
+	return live
 }
 
 func (l *Ledger) evictExpiredLocked(now time.Time) {
@@ -157,6 +172,7 @@ func (l *Ledger) evictExpiredLocked(now time.Time) {
 		if !now.Before(b.expires) {
 			delete(l.bindings, id)
 			l.bytes -= bindingBytes(id, b.host)
+			l.digest.Remove(bindingDigest(id, b.host, b.expires.UnixMilli()))
 		}
 	}
 }

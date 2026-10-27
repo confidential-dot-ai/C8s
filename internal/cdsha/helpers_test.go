@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -240,4 +241,35 @@ func mustCA(t *testing.T) *issuer.CA {
 		t.Fatal(err)
 	}
 	return mesh.Current().CA
+}
+
+// withDigests gives a hand-built snapshot the digests and chain a replica
+// writes, so it is refused only for what a test changed. An image that is
+// not a database gets a zero allowlist digest (its restore fails anyway).
+func withDigests(t *testing.T, sn snapshot) snapshot {
+	t.Helper()
+	d, err := contentDigests(sn, func(image []byte) ([32]byte, error) {
+		sum, err := allowlist.ImageDigest(image)
+		if err != nil {
+			return [32]byte{}, nil
+		}
+		return sum, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sn.Digests = d
+	sn.Chain = Point{Index: sn.Index, Chain: strings.Repeat("0", 64)}
+	return sn
+}
+
+// emptyImage is the database image of an empty allowlist.
+func emptyImage(t *testing.T) []byte {
+	t.Helper()
+	al, _, _ := testStores(t)
+	image, err := al.Dump()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return image
 }

@@ -20,7 +20,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/klauspost/compress/zstd"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
@@ -233,18 +232,29 @@ func TestHAStatusCLI(t *testing.T) {
 	}
 }
 
-// Two replicas on one epoch with different CAs is a split cluster.
+func withCheckpoint(st cdsha.Status, index uint64, state string) cdsha.Status {
+	st.Checkpoint = &cdsha.Point{Index: index, State: state}
+	return st
+}
+
+// Two replicas on one epoch with different CAs is a split cluster, and so
+// are two that hold different state at one checkpoint.
 func TestReportDivergence(t *testing.T) {
 	ok := cdsha.Status{Epoch: 2, CAFingerprint: "aa", Serving: true}
 	for name, c := range map[string]struct {
 		seen []cdsha.Status
 		bad  bool
 	}{
-		"agree":       {[]cdsha.Status{ok, ok}, false},
-		"epoch":       {[]cdsha.Status{ok, {Epoch: 1, CAFingerprint: "aa", Serving: true}}, true},
-		"CA":          {[]cdsha.Status{ok, {Epoch: 2, CAFingerprint: "bb", Serving: true}}, true},
-		"not serving": {[]cdsha.Status{ok, {Epoch: 2, CAFingerprint: "aa"}}, true},
-		"unreachable": {[]cdsha.Status{ok}, true},
+		"agree":             {[]cdsha.Status{ok, ok}, false},
+		"epoch":             {[]cdsha.Status{ok, {Epoch: 1, CAFingerprint: "aa", Serving: true}}, true},
+		"CA":                {[]cdsha.Status{ok, {Epoch: 2, CAFingerprint: "bb", Serving: true}}, true},
+		"not serving":       {[]cdsha.Status{ok, {Epoch: 2, CAFingerprint: "aa"}}, true},
+		"unreachable":       {[]cdsha.Status{ok}, true},
+		"same checkpoint":   {[]cdsha.Status{withCheckpoint(ok, 7, "s1"), withCheckpoint(ok, 7, "s1")}, false},
+		"other checkpoints": {[]cdsha.Status{withCheckpoint(ok, 7, "s1"), withCheckpoint(ok, 9, "s2")}, false},
+		"state differs":     {[]cdsha.Status{withCheckpoint(ok, 7, "s1"), withCheckpoint(ok, 7, "s2")}, true},
+		"leader alarm":      {[]cdsha.Status{ok, {Epoch: 2, CAFingerprint: "aa", Serving: true, Divergence: "no majority: checkpoint 7"}}, true},
+		"settled verdict":   {[]cdsha.Status{ok, {Epoch: 2, CAFingerprint: "aa", Serving: true, Divergence: "stopped diverged replicas: checkpoint 7"}}, false},
 	} {
 		if err := reportDivergence(c.seen, 2); (err != nil) != c.bad {
 			t.Errorf("%s: %v", name, err)
@@ -520,13 +530,13 @@ func TestHARecoverCLIErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 	keyDER, _ := x509.MarshalPKCS8PrivateKey(k)
-	header, _ := json.Marshal(map[string]any{"format": cdsha.Format, "index": 5, "core": cdsha.Core{Policy: cdsha.FSMPolicy{Version: 1, LedgerTTLNS: int64(time.Hour), LedgerMax: 100, SecretsMaxPaths: 64, SecretsMaxPerHolder: 8, SecretsMaxValue: 4096}, ClusterID: "c1", Epoch: 1, RootCert: cert.Raw}, "key": keyDER})
-	var encoded bytes.Buffer
-	zw, _ := zstd.NewWriter(&encoded)
-	_, _ = zw.Write(append(header, '\n'))
-	_ = zw.Close()
+	body := testSnapshot(t, map[string]any{"format": cdsha.Format, "index": 5, "core": cdsha.Core{Policy: cdsha.FSMPolicy{Version: 1, LedgerTTLNS: int64(time.Hour), LedgerMax: 100, SecretsMaxPaths: 64, SecretsMaxPerHolder: 8, SecretsMaxValue: 4096}, ClusterID: "c1", Epoch: 1, RootCert: cert.Raw}, "key": keyDER})
+	digests, err := cdsha.ContentDigests(body)
+	if err != nil {
+		t.Fatal(err)
+	}
 	pin := certutil.CertFingerprint(cert.Raw)
-	b, err := cdsha.SealAuthenticatedBackup(&k.PublicKey, cdsha.BackupMeta{ClusterID: "c1", Epoch: 1, Index: 5, CAFingerprint: pin}, encoded.Bytes(), cert.Raw, keyDER)
+	b, err := cdsha.SealAuthenticatedBackup(&k.PublicKey, cdsha.BackupMeta{ClusterID: "c1", Epoch: 1, Index: 5, CAFingerprint: pin, StateDigest: digests.State}, body, cert.Raw, keyDER)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -552,19 +562,8 @@ func TestHARecoverCLIErrors(t *testing.T) {
 	// the operator key. A missing decree-key file makes that ordering observable.
 	for name, policy := range map[string]cdsha.FSMPolicy{"missing": {}, "unknown": {Version: 2}} {
 		t.Run("policy-"+name, func(t *testing.T) {
-			header, _ := json.Marshal(map[string]any{"format": cdsha.Format, "index": 5, "core": cdsha.Core{Policy: policy, ClusterID: "c1", Epoch: 1, RootCert: cert.Raw}, "key": keyDER})
-			var encoded bytes.Buffer
-			zw, err := zstd.NewWriter(&encoded)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := zw.Write(append(header, '\n')); err != nil {
-				t.Fatal(err)
-			}
-			if err := zw.Close(); err != nil {
-				t.Fatal(err)
-			}
-			bad, err := cdsha.SealAuthenticatedBackup(&k.PublicKey, b.Meta, encoded.Bytes(), cert.Raw, keyDER)
+			body := testSnapshot(t, map[string]any{"format": cdsha.Format, "index": 5, "core": cdsha.Core{Policy: policy, ClusterID: "c1", Epoch: 1, RootCert: cert.Raw}, "key": keyDER})
+			bad, err := cdsha.SealAuthenticatedBackup(&k.PublicKey, b.Meta, body, cert.Raw, keyDER)
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -222,11 +222,18 @@ func newHAStatusCmd() *cobra.Command {
 					continue
 				}
 				seen = append(seen, hb)
-				fmt.Fprintf(cmd.OutOrStdout(), "%-40s cluster=%s node=%s id=%s state=%s joined=%t epoch=%d serving=%t ca=%s voters=%d non_voters=%d applied=%d term=%d\n",
-					u, hb.ClusterID, hb.NodeName, hb.ID, hb.State, hb.Joined, hb.Epoch, hb.Serving, hb.CAFingerprint, len(hb.Voters), len(hb.NonVoters), hb.AppliedIndex, hb.Term)
+				cp := "-"
+				if hb.Checkpoint != nil {
+					cp = fmt.Sprintf("%d:%.16s", hb.Checkpoint.Index, hb.Checkpoint.State)
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "%-40s cluster=%s node=%s id=%s state=%s joined=%t epoch=%d serving=%t ca=%s voters=%d non_voters=%d applied=%d term=%d checkpoint=%s\n",
+					u, hb.ClusterID, hb.NodeName, hb.ID, hb.State, hb.Joined, hb.Epoch, hb.Serving, hb.CAFingerprint, len(hb.Voters), len(hb.NonVoters), hb.AppliedIndex, hb.Term, cp)
 				if f := hb.Fenced; f != nil {
 					fmt.Fprintf(cmd.OutOrStdout(), "%-40s FENCED since=%s stale_for=%s cut_off=%v decree=%s member=%s: %s\n", u,
 						time.UnixMilli(f.SinceMS).UTC().Format(time.RFC3339), time.Duration(f.StaleForMS)*time.Millisecond, f.CutOffVoters, f.Decree, f.Member, f.Reason)
+				}
+				if hb.Divergence != "" {
+					fmt.Fprintf(cmd.OutOrStdout(), "%-40s divergence: %s\n", u, hb.Divergence)
 				}
 			}
 			return reportDivergence(seen, len(urls))
@@ -248,9 +255,19 @@ func reportDivergence(seen []cdsha.Status, want int) error {
 	if len(seen) != want {
 		return fmt.Errorf("%d of %d replicas unreachable", want-len(seen), want)
 	}
+	at := map[uint64]string{} // checkpoint index -> state digest
 	for _, hb := range seen {
 		if hb.Epoch != seen[0].Epoch || hb.CAFingerprint != seen[0].CAFingerprint || !hb.Serving {
 			return errors.New("replicas disagree or are not serving")
+		}
+		if p := hb.Checkpoint; p != nil {
+			if s, ok := at[p.Index]; ok && s != p.State {
+				return fmt.Errorf("replicas hold different state at checkpoint %d", p.Index)
+			}
+			at[p.Index] = p.State
+		}
+		if strings.HasPrefix(hb.Divergence, "no majority") || strings.HasPrefix(hb.Divergence, "this leader") {
+			return errors.New("the leader reports an unresolved divergence")
 		}
 	}
 	return nil

@@ -162,6 +162,14 @@ func (n *Node) maybeBackup(ctx context.Context) {
 	if !core.Joined() || applied == n.backupIndex {
 		return
 	}
+	// Seal only state a majority vouched for: the latest checkpoint matched
+	// at a majority of voters, and no divergence is unresolved
+	// (divergence.go). A stuck leader proposes no checkpoint, so it goes on
+	// to the snapshot, which refuses, and the failure shows in Status.
+	if why := n.backupBlocked(); why != "" && n.fsm.Stuck() == "" {
+		n.log.Debug("backup: waiting", "for", why)
+		return
+	}
 	n.backupAt = time.Now()
 	f := n.r().Snapshot()
 	if err := f.Error(); err != nil {
@@ -186,7 +194,8 @@ func (n *Node) maybeBackup(ctx context.Context) {
 	}
 	// Export the application state watermark, not Raft's barrier-only suffix.
 	b, err := SealAuthenticatedBackup(n.recovery, BackupMeta{ClusterID: sn.Core.ClusterID, Epoch: sn.Core.Epoch, Index: sn.Index,
-		AppliedDecrees: sn.Core.AppliedDecrees, EpochFrom: sn.Core.EpochFrom, TakenAtMS: time.Now().UnixMilli(), CAFingerprint: certutil.CertFingerprint(sn.Core.RootCert)}, body, sn.Core.RootCert, sn.Key)
+		AppliedDecrees: sn.Core.AppliedDecrees, EpochFrom: sn.Core.EpochFrom, TakenAtMS: time.Now().UnixMilli(), CAFingerprint: certutil.CertFingerprint(sn.Core.RootCert),
+		StateDigest: sn.Digests.State}, body, sn.Core.RootCert, sn.Key)
 	if err != nil {
 		n.backupFailed("seal", err)
 		return

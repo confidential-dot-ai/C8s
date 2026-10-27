@@ -6,6 +6,7 @@ import (
 	"cmp"
 	"crypto/ecdsa"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -198,6 +199,10 @@ type FSM struct {
 	// measure is the last snapshot this replica encoded, for the admission
 	// cap's compressed estimate.
 	measure atomic.Pointer[sizeMeasure]
+
+	// dig is the chain and checkpoints of what this replica applied
+	// (digest.go).
+	dig digestLog
 }
 
 // NewFSM builds the state machine over the replica's local stores. pre is
@@ -278,6 +283,8 @@ func (f *FSM) Apply(l *raft.Log) any {
 	if l.Type != raft.LogCommand {
 		return nil
 	}
+	point := f.dig.next(l)
+	defer func() { f.dig.record(point) }()
 	if d := f.applyDelay.Load(); d > 0 {
 		time.Sleep(time.Duration(d))
 	}
@@ -288,6 +295,10 @@ func (f *FSM) Apply(l *raft.Log) any {
 	}
 	if cmp.Or(e.Format, baseFormat) > f.readable {
 		return f.stop(fmt.Errorf("%w: entry %d needs format %d, this replica reads up to %d", ErrNewerFormat, l.Index, e.Format, f.readable))
+	}
+	if e.Kind == KindCheckpoint {
+		point.State = f.stateDigest(point.Index)
+		return nil
 	}
 	res := f.applyRecovering(l.Index, e)
 	if err, ok := res.(error); ok && errors.Is(err, errMalformed) {
@@ -311,6 +322,17 @@ func (f *FSM) applyRecovering(index uint64, e Entry) (res any) {
 		}
 	}()
 	return f.apply(e)
+}
+
+// stateDigest is the state digest at a checkpoint entry. It reads the
+// stores' running digests, so it costs the same at any state size.
+func (f *FSM) stateDigest(index uint64) string {
+	d, err := f.liveDigests(f.allowlist.Digest())
+	if err != nil {
+		_ = f.stopLocal(fmt.Errorf("state digest at %d: %w", index, err))
+		return ""
+	}
+	return d.State
 }
 
 // errMalformed is an entry this replica does not understand.
@@ -540,6 +562,11 @@ type snapshot struct {
 	Allowlist []byte                  `json:"-"`
 	Secrets   []secrets.SnapshotEntry `json:"secrets"`
 	Bindings  []sandboxledger.Binding `json:"bindings"`
+	// Chain is the chain of the commands applied up to Index, and Digests
+	// the digests of the content (digest.go). Persist and restore check the
+	// content against Digests.
+	Chain   Point   `json:"chain"`
+	Digests Digests `json:"digests"`
 }
 
 // StoreConfiguration implements raft.ConfigurationStore. The state machine
@@ -572,11 +599,17 @@ func (f *FSM) Snapshot() (raft.FSMSnapshot, error) {
 		sn.Key = key
 	}
 	f.mu.RUnlock()
-	al, err := f.allowlist.Dump()
+	al, alSum, err := f.allowlist.DumpDigest()
 	if err != nil {
 		return nil, err
 	}
 	sn.Allowlist, sn.Secrets, sn.Bindings = al, f.secrets.Dump(), f.ledger.Dump()
+	// The digests the stores kept as they applied the log, not read from
+	// the copies: Persist compares the two.
+	if sn.Digests, err = f.liveDigests(alSum); err != nil {
+		return nil, err
+	}
+	sn.Chain = f.dig.latest()
 	// Raft calls Snapshot between applies, so the estimate is of this state.
 	decoded := int64(-1)
 	if header, image, err := f.snapshotEstimate(); err == nil {
@@ -610,6 +643,9 @@ func (f *FSM) Restore(rc io.ReadCloser) error {
 			return f.stopLocal(fmt.Errorf("restore snapshot at index %d: local allowlist store: %w", sn.Index, err))
 		}
 		return err
+	}
+	if err := f.dig.reset(sn.Chain); err != nil {
+		return f.stopLocal(fmt.Errorf("restore snapshot at index %d: %w", sn.Index, err))
 	}
 	f.applied.Store(sn.Index)
 	slog.Info("cds-ha: snapshot restored", "index", sn.Index, "applied_before", before, "took", time.Since(start).Round(time.Millisecond))
@@ -664,7 +700,31 @@ const MaxSnapshotBytes = 128 << 20
 
 // decodeSnapshot reads a snapshot in a format from baseFormat to readable.
 // With headOnly it stops after the header line, without the allowlist.
+// Otherwise it checks the header's digests against the content, except the
+// allowlist image's rows, which restore (allowlist.Store.RestoreDigest) and
+// ValidateRecoverySnapshot check: reading them costs a pass over the image.
 func decodeSnapshot(r io.Reader, readable uint32, headOnly bool) (snapshot, error) {
+	sn, err := decodeSnapshotRaw(r, readable, headOnly)
+	if err != nil || headOnly {
+		return sn, err
+	}
+	if _, err := sn.checkDigests(); err != nil {
+		return snapshot{}, err
+	}
+	return sn, nil
+}
+
+// ContentDigests decodes a snapshot without checking its digests and
+// computes them from its content: what its header must carry.
+func ContentDigests(body []byte) (Digests, error) {
+	sn, err := decodeSnapshotRaw(bytes.NewReader(body), Format, false)
+	if err != nil {
+		return Digests{}, err
+	}
+	return contentDigests(sn, allowlist.ImageDigest)
+}
+
+func decodeSnapshotRaw(r io.Reader, readable uint32, headOnly bool) (snapshot, error) {
 	compressed := &io.LimitedReader{R: r, N: MaxSnapshotBytes + 1}
 	d, err := zstd.NewReader(compressed, zstd.WithDecoderMaxWindow(snapshotWindow), zstd.WithDecoderConcurrency(1))
 	if err != nil {
@@ -727,7 +787,15 @@ func (f *FSM) restore(sn snapshot) error {
 			return fmt.Errorf("snapshot: %w", err)
 		}
 	}
-	if err := f.allowlist.Restore(sn.Allowlist); err != nil {
+	// decodeSnapshot checked the rest of the content against sn.Digests.
+	al, err := hex.DecodeString(sn.Digests.Allowlist)
+	if err != nil || len(al) != 32 {
+		return fmt.Errorf("%w: no allowlist digest", ErrSnapshotDigest)
+	}
+	if err := f.allowlist.RestoreDigest(sn.Allowlist, [32]byte(al)); err != nil {
+		if errors.Is(err, allowlist.ErrImageDigest) {
+			return fmt.Errorf("%w: allowlist", ErrSnapshotDigest)
+		}
 		return fmt.Errorf("snapshot allowlist: %w", err)
 	}
 	f.secrets.Restore(sn.Secrets)
@@ -736,6 +804,36 @@ func (f *FSM) restore(sn snapshot) error {
 	f.core, f.ca, f.decrees = sn.Core, ca, sn.Decrees
 	f.mu.Unlock()
 	return nil
+}
+
+// checkDigests checks the header's state digest and the secrets and
+// bindings against the content, before any store changes, and returns the
+// allowlist digest the image must have (allowlist.Store.RestoreDigest).
+func (sn snapshot) checkDigests() ([32]byte, error) {
+	var al [32]byte
+	d := sn.Digests
+	b, err := hex.DecodeString(d.Allowlist)
+	if err != nil || len(b) != len(al) {
+		return al, fmt.Errorf("%w: no allowlist digest", ErrSnapshotDigest)
+	}
+	al = [32]byte(b)
+	if _, err := hex.DecodeString(sn.Chain.Chain); err != nil || len(sn.Chain.Chain) != 64 {
+		return al, fmt.Errorf("%w: no chain", ErrSnapshotDigest)
+	}
+	c, err := coreDigest(sn.Core, sn.Key, sn.Decrees)
+	if err != nil {
+		return al, err
+	}
+	sec, led := secrets.DigestOf(sn.Secrets), sandboxledger.DigestOf(sn.Bindings)
+	switch {
+	case hexOf(sec) != d.Secrets:
+		return al, fmt.Errorf("%w: secrets", ErrSnapshotDigest)
+	case hexOf(led) != d.Ledger:
+		return al, fmt.Errorf("%w: bindings", ErrSnapshotDigest)
+	case hexOf(stateDigest(c, al, sec, led)) != d.State:
+		return al, fmt.Errorf("%w: state", ErrSnapshotDigest)
+	}
+	return al, nil
 }
 
 type fsmSnapshot struct {
@@ -747,6 +845,18 @@ type fsmSnapshot struct {
 }
 
 func (s *fsmSnapshot) Persist(sink raft.SnapshotSink) error {
+	// The content must still be what the replica applied: state that
+	// changed under it would otherwise reach a joining replica or a backup.
+	if got, err := contentDigests(s.sn, allowlist.ImageDigest); err != nil || got != s.sn.Digests {
+		_ = sink.Cancel()
+		if err == nil {
+			err = fmt.Errorf("local state no longer matches what this replica applied (digests %+v, applied %+v)", got, s.sn.Digests)
+		}
+		if s.fsm != nil {
+			return s.fsm.stopLocal(fmt.Errorf("snapshot at index %d: %w", s.sn.Index, err))
+		}
+		return err
+	}
 	cw := &countWriter{w: sink}
 	if err := encodeSnapshot(cw, s.sn); err != nil {
 		_ = sink.Cancel()

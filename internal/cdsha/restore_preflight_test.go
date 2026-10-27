@@ -42,7 +42,7 @@ func TestRestorePreflightPreservesFreshTarget(t *testing.T) {
 			encode := func(sn snapshot) []byte {
 				t.Helper()
 				var buf bytes.Buffer
-				if err := encodeSnapshot(&buf, sn); err != nil {
+				if err := encodeSnapshot(&buf, withDigests(t, sn)); err != nil {
 					t.Fatal(err)
 				}
 				return buf.Bytes()
@@ -74,7 +74,7 @@ func TestRestorePreflightPreservesFreshTarget(t *testing.T) {
 			// exactly as CLI recovery authenticates it, not a hash-only corruption.
 			if mode == "policy" {
 				recovery, _ := operatorKey(t)
-				meta := BackupMeta{ClusterID: testCluster, Epoch: bad.Core.Epoch, Index: bad.Index, CAFingerprint: certutil.CertFingerprint(ca.Cert.Raw)}
+				meta := BackupMeta{ClusterID: testCluster, Epoch: bad.Core.Epoch, Index: bad.Index, CAFingerprint: certutil.CertFingerprint(ca.Cert.Raw), StateDigest: withDigests(t, bad).Digests.State}
 				backup, err := SealAuthenticatedBackup(&recovery.PublicKey, meta, body, ca.Cert.Raw, der)
 				if err != nil {
 					t.Fatal(err)

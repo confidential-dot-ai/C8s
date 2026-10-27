@@ -1,0 +1,21 @@
+--- a/raft.go
++++ b/raft.go
+@@ -1246,6 +1246,9 @@
+ 	now := time.Now()
+ 	defer metrics.MeasureSince([]string{"raft", "leader", "dispatchLog"}, now)
+ 
++	if h := TestHookBeforeDispatchTerm; h != nil {
++		h(r.localID)
++	}
+ 	term := r.getCurrentTerm()
+ 	lastIndex := r.getLastIndex()
+ 
+@@ -2262,3 +2265,8 @@
+ 		return Configuration{}
+ 	}
+ }
++
++// TestHookBeforeDispatchTerm is test instrumentation (raft #695): it
++// runs on the leader's main thread just before dispatchLogs reads the term,
++// standing in for a preemption or GC pause there.
++var TestHookBeforeDispatchTerm func(localID ServerID)

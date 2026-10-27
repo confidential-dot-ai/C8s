@@ -64,8 +64,8 @@ func newHARecoverCmd() *cobra.Command {
 				return err
 			}
 			m := b.Meta
-			fmt.Fprintf(cmd.OutOrStdout(), "backup: cluster=%s epoch=%d index=%d taken=%s ca=%.16s decrees=%s\n", m.ClusterID, m.Epoch, m.Index,
-				time.UnixMilli(m.TakenAtMS).UTC().Format(time.RFC3339), m.CAFingerprint, strings.Join(m.AppliedDecrees, ","))
+			fmt.Fprintf(cmd.OutOrStdout(), "backup: cluster=%s epoch=%d index=%d taken=%s ca=%.16s decrees=%s state=%.16s\n", m.ClusterID, m.Epoch, m.Index,
+				time.UnixMilli(m.TakenAtMS).UTC().Format(time.RFC3339), m.CAFingerprint, strings.Join(m.AppliedDecrees, ","), m.StateDigest)
 			if m.Epoch < minEpoch || (m.Epoch == minEpoch && m.Index < minIndex) {
 				return fmt.Errorf("backup (epoch %d, index %d) is older than --min-epoch %d --min-index %d: refusing to roll the cluster back", m.Epoch, m.Index, minEpoch, minIndex)
 			}

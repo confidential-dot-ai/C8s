@@ -373,6 +373,7 @@ func digestWorkload(t *testing.T, rng *rand.Rand) pkgallowlist.Workload {
 // refuses one in a format it does not read.
 func TestSnapshotCompression(t *testing.T) {
 	sn, size := historySnapshot(t, Format, 300)
+	sn = withDigests(t, sn)
 	var buf bytes.Buffer
 	if err := encodeSnapshot(&buf, sn); err != nil {
 		t.Fatal(err)
@@ -390,7 +391,7 @@ func TestSnapshotCompression(t *testing.T) {
 	for _, format := range []uint32{Format + 1, baseFormat - 1} {
 		buf.Reset()
 		sn, _ := historySnapshot(t, format, 2)
-		_ = encodeSnapshot(&buf, sn)
+		_ = encodeSnapshot(&buf, withDigests(t, sn))
 		if _, err := decodeSnapshot(bytes.NewReader(buf.Bytes()), Format, false); err == nil {
 			t.Fatalf("took a format %d snapshot", format)
 		}

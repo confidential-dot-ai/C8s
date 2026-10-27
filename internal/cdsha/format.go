@@ -23,7 +23,8 @@ const Format uint32 = 4
 // at it, and a format left unset (zero) means it. Formats 1 to 3 are
 // incompatible and refused (format 4 added Core.EpochFrom and the one-shot
 // decrees' target_member and alone fields, which an older replica would
-// drop before it checks the operator's signature). This is a clean-redeploy
+// drop before it checks the operator's signature; snapshots carry state
+// digests, and KindCheckpoint is new). This is a clean-redeploy
 // boundary, not a rolling upgrade; see docs/cds-ha.md.
 const baseFormat uint32 = 4
 

@@ -43,6 +43,9 @@ type Store struct {
 	// history every replica journals is identical.
 	repl Replicator
 	at   atomic.Int64
+	// dig is the digest of the database's content, kept current by every
+	// write (digest.go).
+	dig *contentDigest
 }
 
 // roleInit / roleMain label the two container partitions in the digest index.
@@ -83,36 +86,38 @@ CREATE TABLE IF NOT EXISTS route_manifest (
 // OpenStore opens (or creates) a SQLite-backed allowlist store at the given path.
 func OpenStore(path string) (Store, error) {
 	_, err := os.Stat(path)
-	isNew := os.IsNotExist(err)
-
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		return Store{}, fmt.Errorf("open allowlist db: %w", err)
-	}
-
-	if isNew {
+	if os.IsNotExist(err) {
 		slog.Warn("allowlist db did not exist, creating", "path", path)
 	}
-
-	if err := initDB(context.Background(), db); err != nil {
-		db.Close()
-		return Store{}, fmt.Errorf("init allowlist schema: %w", err)
-	}
-	return Store{db: db, uri: path}, nil
+	return open(path)
 }
 
 // OpenInMemory opens an in-memory allowlist store, useful for testing.
 func OpenInMemory() (Store, error) {
-	uri := memdbURI("store")
-	db, err := sql.Open("sqlite", uri)
+	return open(memdbURI("store"))
+}
+
+// open opens the database at uri with the content digest kept on every
+// connection (digest.go), creates or migrates its tables, and computes the
+// digest of what it already holds.
+func open(uri string) (Store, error) {
+	dig := &contentDigest{}
+	db, err := dig.openDB(uri)
 	if err != nil {
-		return Store{}, err
+		return Store{}, fmt.Errorf("open allowlist db: %w", err)
 	}
-	if err := initDB(context.Background(), db); err != nil {
+	ctx := context.Background()
+	if err := initDB(ctx, db); err != nil {
 		db.Close()
-		return Store{}, err
+		return Store{}, fmt.Errorf("init allowlist schema: %w", err)
 	}
-	return Store{db: db, uri: uri}, nil
+	acc, err := scanDigest(ctx, db)
+	if err != nil {
+		db.Close()
+		return Store{}, fmt.Errorf("allowlist content digest: %w", err)
+	}
+	dig.reset(acc)
+	return Store{db: db, uri: uri, dig: dig}, nil
 }
 
 // dbConn is what initDB needs: an *sql.DB, or one connection of it.

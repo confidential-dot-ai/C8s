@@ -31,6 +31,11 @@ func TestBackupBarrierStateIndex(t *testing.T) {
 	if !n.Core().Joined() {
 		t.Fatal("Genesis did not commit")
 	}
+	// A backup seals state a checkpoint vouched for (divergence.go).
+	if _, err := n.applyEntry(Entry{Kind: KindCheckpoint}); err != nil {
+		t.Fatal(err)
+	}
+	n.checkDivergence()
 	state := n.fsm.AppliedIndex()
 	if n.Status().AppliedIndex != state {
 		t.Fatal("status is not the state watermark")

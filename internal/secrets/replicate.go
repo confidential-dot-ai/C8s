@@ -2,8 +2,12 @@ package secrets
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
+
+	"github.com/confidential-dot-ai/c8s/internal/lthash"
 )
 
 // Replicator carries a secret write to every CDS replica (CDS HA) and returns
@@ -153,9 +157,38 @@ func (s *MemoryStore) Restore(entries []SnapshotEntry) {
 	s.values = make(map[string]entry, len(entries))
 	s.holders = make(map[Holder]int)
 	s.bytes = 0
+	s.digest = lthash.Hash{}
 	for _, e := range entries {
 		s.storeLocked(e.Path, e.Value, Holder{origin: e.Origin, name: e.Name})
 	}
+}
+
+// Digest names the store's entries: equal stores have equal digests,
+// whatever order their writes came in.
+func (s *MemoryStore) Digest() [32]byte {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.digest.Sum()
+}
+
+// DigestOf is the Digest a store restored from entries has, computed from
+// the entries themselves.
+func DigestOf(entries []SnapshotEntry) [32]byte {
+	var h lthash.Hash
+	for _, e := range entries {
+		h.Add(entryDigest(e.Path, e.Value, e.Origin, e.Name))
+	}
+	return h.Sum()
+}
+
+// entryDigest is the SHA-256 of one entry, its fields length-prefixed.
+func entryDigest(path string, value []byte, origin Origin, name string) [32]byte {
+	h := sha256.New()
+	for _, f := range [][]byte{[]byte(path), value, []byte(origin), []byte(name)} {
+		_ = binary.Write(h, binary.BigEndian, uint64(len(f)))
+		h.Write(f)
+	}
+	return [32]byte(h.Sum(nil))
 }
 
 // entryBytes bounds the JSON size of one SnapshotEntry: the value in base64,

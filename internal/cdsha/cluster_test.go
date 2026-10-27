@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -29,7 +30,7 @@ const testCluster = "c1"
 var testTiming = Timing{
 	Heartbeat: 150 * time.Millisecond, Election: 150 * time.Millisecond, Lease: time.Second,
 	DeadAfter: 1500 * time.Millisecond, Stabilize: 200 * time.Millisecond, Apply: 3 * time.Second, Tick: 50 * time.Millisecond,
-	Backup: 100 * time.Millisecond,
+	Backup: 100 * time.Millisecond, Checkpoint: 100 * time.Millisecond,
 }
 
 // memBackups stands in for the backup ConfigMaps; with err set it refuses
@@ -90,6 +91,7 @@ type replica struct {
 	ip     string
 	node   *Node
 	al     *allowlist.Store
+	alPath string // the allowlist database file, with cluster.fileStores
 	sec    secrets.ReplicatedStore
 	led    *sandboxledger.Ledger
 	cancel context.CancelFunc
@@ -126,6 +128,7 @@ type cluster struct {
 	caValidity      time.Duration // Config.CAValidity of every replica started
 	timing          *Timing       // Config.Timing of every replica started; nil: testTiming
 	secretLimits    [3]int        // secrets.NewMemoryStore limits of every replica started; zero: 64, 8, 4096
+	fileStores      bool          // allowlist databases in files (replica.alPath), not in memory
 }
 
 func (c *cluster) timingOr() Timing {
@@ -215,7 +218,13 @@ func (c *cluster) startWithControl(name, measurement string, wrap func(controlHa
 	c.meas[name] = measurement
 	reads := c.reads[name]
 	c.mu.Unlock()
-	al, err := allowlist.OpenInMemory()
+	var alPath string
+	open := allowlist.OpenInMemory
+	if c.fileStores {
+		alPath = filepath.Join(c.t.TempDir(), name+".db")
+		open = func() (allowlist.Store, error) { return allowlist.OpenStore(alPath) }
+	}
+	al, err := open()
 	if err != nil {
 		c.t.Fatal(err)
 	}
@@ -244,7 +253,7 @@ func (c *cluster) startWithControl(name, measurement string, wrap func(controlHa
 		n.mux.Load().control = wrap(n.mux.Load().control)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	r := &replica{name: name, ip: ip, node: n, al: &al, sec: secrets.ReplicatedStore{MemoryStore: mem, Repl: n}, led: led, cancel: cancel, done: make(chan struct{})}
+	r := &replica{name: name, ip: ip, node: n, al: &al, alPath: alPath, sec: secrets.ReplicatedStore{MemoryStore: mem, Repl: n}, led: led, cancel: cancel, done: make(chan struct{})}
 	go func() { defer close(r.done); r.err = n.Run(ctx) }()
 	c.mu.Lock()
 	c.nodes[name] = r

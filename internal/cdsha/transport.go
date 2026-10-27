@@ -400,6 +400,8 @@ type controlRequest struct {
 	Address string          `json:"address,omitempty"`
 	Entry   json.RawMessage `json:"entry,omitempty"`
 	Reads   uint32          `json:"reads,omitempty"` // join: newest format the joiner reads
+	// Digests (read barrier) are the follower's chain and checkpoints.
+	Digests *DigestReport `json:"digests,omitempty"`
 }
 
 type controlResponse struct {
@@ -409,6 +411,9 @@ type controlResponse struct {
 	Index    uint64          `json:"index,omitempty"`
 	Response json.RawMessage `json:"response,omitempty"`
 	Status   *Status         `json:"status,omitempty"`
+	// Diverged (read barrier) says why the leader found the follower's
+	// state to differ from the majority's.
+	Diverged string `json:"diverged,omitempty"`
 }
 
 func callControl(addr string, cfg *tls.Config, v peerVerifier, timeout time.Duration, req controlRequest, local net.Addr) (controlResponse, error) {

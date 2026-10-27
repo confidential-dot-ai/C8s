@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"slices"
 	"sync"
+
+	"github.com/confidential-dot-ai/c8s/internal/lthash"
 )
 
 // ErrNotFound reports a path the store does not hold.
@@ -136,6 +138,9 @@ type MemoryStore struct {
 	// bytes is the snapshot size of values (entryBytes summed), kept as the
 	// map changes so the HA admission cap reads it in O(1).
 	bytes int64
+	// digest is the multiset hash of the entries, kept as the map changes
+	// (Digest).
+	digest lthash.Hash
 }
 
 type entry struct {
@@ -216,6 +221,7 @@ func (s *MemoryStore) checkValue(value []byte) error {
 func (s *MemoryStore) storeLocked(path string, value []byte, by Holder) {
 	if prior, ok := s.values[path]; ok {
 		s.bytes -= entryBytes(path, prior.value, prior.holder)
+		s.digest.Remove(entryDigest(path, prior.value, prior.holder.origin, prior.holder.name))
 		if s.holders[prior.holder] <= 1 {
 			delete(s.holders, prior.holder)
 		} else {
@@ -225,6 +231,7 @@ func (s *MemoryStore) storeLocked(path string, value []byte, by Holder) {
 	s.values[path] = entry{value: append([]byte(nil), value...), holder: by}
 	s.holders[by]++
 	s.bytes += entryBytes(path, value, by)
+	s.digest.Add(entryDigest(path, value, by.origin, by.name))
 }
 
 // checkRoomLocked guards the path bounds for a write that grows the map:
