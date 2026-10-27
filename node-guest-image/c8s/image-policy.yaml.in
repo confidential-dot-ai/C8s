@@ -404,9 +404,45 @@ allowlist:
         containers:
           - digest: "sha256:25cc340fe6fd53c101e16fc452f503e7a92c219c64a80ed5381784b522dbbf77"
             image: "nvcr.io/nvidia/k8s-device-plugin:v0.19.3@sha256:25cc340fe6fd53c101e16fc452f503e7a92c219c64a80ed5381784b522dbbf77"
-            command: {policy: any}
-            args: {policy: any}
-            mounts: {policy: any}
+            command: {policy: exact, argv: ["nvidia-device-plugin"]}
+            args: {policy: deny}
+            mounts:
+              policy: exact
+              rules:
+                - {destination: "/dev", kind: host, source: "/dev"}
+                - {destination: "/driver-root/etc", kind: host, source: "/etc", readOnly: true}
+                - {destination: "/driver-root/usr", kind: host, source: "/usr", readOnly: true}
+                - {destination: "/var/lib/kubelet/device-plugins", kind: host, source: "/var/lib/kubelet/device-plugins"}
+                - {destination: "/var/run/cdi", kind: host, source: "/var/run/cdi"}
+            env:
+              policy: match
+              variables:
+                # containerd's, and the kubelet's for the default namespace's kubernetes Service.
+                HOSTNAME: {present: true}
+                KUBERNETES_SERVICE_HOST: {present: true}
+                KUBERNETES_SERVICE_PORT: {exact: "443"}
+                KUBERNETES_SERVICE_PORT_HTTPS: {exact: "443"}
+                KUBERNETES_PORT: {present: true}
+                KUBERNETES_PORT_443_TCP: {present: true}
+                KUBERNETES_PORT_443_TCP_ADDR: {present: true}
+                KUBERNETES_PORT_443_TCP_PORT: {exact: "443"}
+                KUBERNETES_PORT_443_TCP_PROTO: {exact: "tcp"}
+                # The image's (`crane config` of the digest above).
+                PATH: {exact: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/busybox"}
+                SSL_CERT_FILE: {exact: "/etc/ssl/certs/ca-certificates.crt"}
+                OPENSSL_CONF: {exact: "/etc/ssl/openssl-nofips.cnf"}
+                OPENSSL_MODULES: {exact: "/usr/lib/x86_64-linux-gnu/ossl-modules/"}
+                LD_LIBRARY_PATH: {exact: "/lib/distroless/"}
+                NVIDIA_DISABLE_REQUIRE: {exact: "true"}
+                NVIDIA_DRIVER_CAPABILITIES: {exact: "compute,utility"}
+                # The manifest's, NVIDIA_VISIBLE_DEVICES replacing the image's.
+                NVIDIA_VISIBLE_DEVICES: {exact: "all"}
+                FAIL_ON_INIT_ERROR: {exact: "false"}
+                DEVICE_LIST_STRATEGY: {exact: "cdi-annotations"}
+                DEVICE_ID_STRATEGY: {exact: "uuid"}
+                NVIDIA_DRIVER_ROOT: {exact: "/"}
+                CONTAINER_DRIVER_ROOT: {exact: "/driver-root"}
+                CDI_FEATURE_FLAGS: {exact: "disable-ipc-discoverer"}
       # END rke2 system images
       # BEGIN local-path (kept only by a C8S_LOCAL_PATH=1 build; mkosi.sync deletes
       # this block otherwise). The provisioner of local-path/local-path-storage.yaml.
@@ -414,9 +450,33 @@ allowlist:
         containers:
           - digest: "sha256:1eba82e9c386038b4af6d69cca7519fac738c28c42735ed48ce70c882ad0d80f"
             image: "rancher/local-path-provisioner:v0.0.36@sha256:1eba82e9c386038b4af6d69cca7519fac738c28c42735ed48ce70c882ad0d80f"
-            command: {policy: any}
-            args: {policy: any}
-            mounts: {policy: any}
+            command: {policy: exact, argv: ["local-path-provisioner"]}
+            args: {policy: exact, argv: ["--debug", "start", "--config", "/mnt/c8s-data/local-path-config/config.json"]}
+            mounts:
+              policy: exact
+              rules:
+                - {destination: "/mnt/c8s-data/local-path-config", kind: data, source: "config-volume"}
+            env:
+              policy: match
+              variables:
+                # containerd's, and the kubelet's for the default namespace's kubernetes Service.
+                HOSTNAME: {present: true}
+                KUBERNETES_SERVICE_HOST: {present: true}
+                KUBERNETES_SERVICE_PORT: {exact: "443"}
+                KUBERNETES_SERVICE_PORT_HTTPS: {exact: "443"}
+                KUBERNETES_PORT: {present: true}
+                KUBERNETES_PORT_443_TCP: {present: true}
+                KUBERNETES_PORT_443_TCP_ADDR: {present: true}
+                KUBERNETES_PORT_443_TCP_PORT: {exact: "443"}
+                KUBERNETES_PORT_443_TCP_PROTO: {exact: "tcp"}
+                # The image's (`crane config` of the digest above).
+                PATH: {exact: "/go/bin:/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}
+                GOLANG_VERSION: {exact: "1.26.3"}
+                GOTOOLCHAIN: {exact: "local"}
+                GOPATH: {exact: "/go"}
+                # The manifest's.
+                POD_NAMESPACE: {present: true}
+                CONFIG_MOUNT_PATH: {exact: "/mnt/c8s-data/local-path-config"}
       # END local-path
       # The platform roles the enforcer grants inside a member pod. A role
       # comes from this measured base alone: the JSON ingest drops the field,
