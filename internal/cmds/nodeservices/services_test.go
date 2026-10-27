@@ -507,6 +507,7 @@ func stagedMeshPolicy(t *testing.T, root string) stagedMesh {
 
 type stagedMesh struct {
 	ExemptNamespaces []string      `yaml:"exempt_namespaces"`
+	Exits            []string      `yaml:"exits"`
 	Capture          stagedCapture `yaml:"capture"`
 	Roles            []stagedRole  `yaml:"roles"`
 }
@@ -528,6 +529,7 @@ type stagedRole struct {
 const meshPolicy = `mesh:
   exempt_namespaces: [kube-system]
   resolver: "10.53.0.10"
+  exits: ["10.53.0.11:8080"]
   capture: {outbound: 15001, inbound: 15006, health: 15021}
   roles:
     - name: mesh

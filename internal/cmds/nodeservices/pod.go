@@ -99,9 +99,11 @@ func preparePod(rootDir string, d *launchconfig.Document, outputs map[string][]b
 			return nriimagepolicy.ErrPodRoleMeasurePolicies
 		}
 	}
-	// A Pod boot has no node namespaces or in-Pod credential clients. Its
-	// guest broker reaches CDS outside the Pod network namespace.
+	// A Pod boot has no node namespaces, in-Pod credential clients or
+	// platform services: its guest broker reaches CDS outside the Pod
+	// network namespace, and its egress is the standalone ruleset's.
 	delete(mesh, "credential_attestation_port")
+	delete(mesh, "exits")
 	peers, err := d.Pod.PeerAddresses()
 	if err != nil {
 		return err

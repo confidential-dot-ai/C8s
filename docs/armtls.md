@@ -392,7 +392,8 @@ into ordinary egress. Pod and guest rules exclude IPv4 link-local and prevent
 container-initiated access to guest-local services, including from the measured
 endpoint. Node-member Pod routing uses its existing cluster policy, and an
 entry's [declared exits](allowlist-and-capabilities.md#declared-exits-egress)
-grant nothing in a pod CVM, whose egress needs none.
+and the node's platform exits (`mesh.exits`) grant nothing in a pod CVM, whose
+egress needs none.
 
 ## What armTLS guarantees — and what it does not
 

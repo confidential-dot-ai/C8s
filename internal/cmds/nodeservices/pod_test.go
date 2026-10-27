@@ -118,7 +118,9 @@ func TestPreparePodBindsCDSPullAndKeepsOnlyMeasuredMeshAndSignedBase(t *testing.
 		}
 	}
 	mesh := stagedMeshPolicy(t, root)
-	if len(mesh.ExemptNamespaces) != 0 || len(mesh.Roles) != 1 || mesh.Roles[0].Name != workloadclaims.MeshRole {
+	// A pod CVM reaches no platform service of a cluster: the baked exits
+	// are a node's.
+	if len(mesh.ExemptNamespaces) != 0 || len(mesh.Exits) != 0 || len(mesh.Roles) != 1 || mesh.Roles[0].Name != workloadclaims.MeshRole {
 		t.Fatalf("Pod mesh floor = %+v", mesh)
 	}
 	if !reflect.DeepEqual(mesh.Roles, []stagedRole{{Name: workloadclaims.MeshRole, UID: workloadclaims.MeshUID}}) || mesh.Capture != (stagedCapture{Outbound: 15001, Inbound: 15006, Health: 15021}) {

@@ -52,6 +52,10 @@ func TestPolicyRefusesWhatARuleCannotExpress(t *testing.T) {
 			},
 		},
 		{"pod-local destination", func(p *Policy) { p.Roles[0].Destinations[0].Addr = netip.MustParseAddr("127.0.0.1") }},
+		{"standalone pod with an exit", func(p *Policy) {
+			p.Roles, p.Pod = nil, &PodPolicy{}
+			p.Exits = []Exit{{netip.MustParsePrefix("10.53.0.11/32"), 8080}}
+		}},
 		{"exit without port", func(p *Policy) { p.Exits = []Exit{{netip.MustParsePrefix("203.0.113.7/32"), 0}} }},
 		{"unset exit range", func(p *Policy) { p.Exits = []Exit{{netip.Prefix{}, 443}} }},
 		{"exit range carrying host bits", func(p *Policy) { p.Exits = []Exit{{netip.MustParsePrefix("203.0.113.7/24"), 443}} }},

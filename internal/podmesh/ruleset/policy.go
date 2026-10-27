@@ -136,8 +136,8 @@ func (p Policy) validate() error {
 			return err
 		}
 	} else {
-		if len(p.Roles) != 0 || !reflect.DeepEqual(p.Server, ServerRole{}) {
-			return fmt.Errorf("%w: standalone Pod has platform-role exceptions", ErrPolicy)
+		if len(p.Roles) != 0 || len(p.Exits) != 0 || !reflect.DeepEqual(p.Server, ServerRole{}) {
+			return fmt.Errorf("%w: standalone Pod has platform exceptions", ErrPolicy)
 		}
 		if err := validatePeers(p.Pod.Peers); err != nil {
 			return err
