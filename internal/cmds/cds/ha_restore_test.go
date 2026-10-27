@@ -119,6 +119,10 @@ func TestRunHARestoreAfterTotalLoss(t *testing.T) {
 		args := append([]string{"--backup-file", backupFile, "--decree-key", decreeKeyPath,
 			"--trusted-ca-sha256", trustedCA, "--cluster-id", "c1", "--url", bases[2], "--insecure"}, key...)
 		cmd.SetArgs(append(args, extra...))
+		// The replicas here serve plain HTTP, as in a c8s_dev build; a release
+		// build's recover refuses it (TestHARecoverRefusesWeakPins).
+		defer func(v bool) { allowPlainHTTP = v }(allowPlainHTTP)
+		allowPlainHTTP = true
 		err := cmd.ExecuteContext(context.Background())
 		return out.String(), err
 	}

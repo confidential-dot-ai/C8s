@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -15,8 +16,10 @@ import (
 	"github.com/spf13/cobra"
 	corev1 "k8s.io/api/core/v1"
 
+	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/c8s/internal/cdsha"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsconn"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 )
 
@@ -48,6 +51,9 @@ func newHARecoverCmd() *cobra.Command {
 			"signs a Restore decree for that one process (target_member) with the decree key, and sends it with the\n" +
 			"snapshot on the same attested connection; the replica starts the cluster from it and the others join.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := checkRecoverEndpoint(conn); err != nil {
+				return err
+			}
 			if !cmd.Flags().Changed("min-epoch") || !cmd.Flags().Changed("min-index") {
 				return errors.New("--min-epoch and --min-index are required: the oldest state you accept, from your own record of the cluster")
 			}
@@ -173,6 +179,42 @@ func newHARecoverCmd() *cobra.Command {
 	cmd.MarkFlagsOneRequired("recovery-key", "recovery-key-share")
 	cmd.MarkFlagsMutuallyExclusive("recovery-key", "recovery-key-share")
 	return cmd
+}
+
+// checkRecoverEndpoint refuses an endpoint the decrypted state (mesh CA key,
+// every secret) may not go to. Outside c8s_dev builds that is anything but
+// armTLS to a replica whose whole image identity an image policy pins: the
+// launch digest alone (TDX: the firmware) admits any guest on that firmware.
+func checkRecoverEndpoint(conn cdsconn.Options) error {
+	u, err := url.Parse(conn.URL)
+	if err != nil {
+		return fmt.Errorf("invalid --url %q", conn.URL)
+	}
+	if u.Scheme != "https" {
+		if allowPlainHTTP {
+			return nil // c8s_dev: the integration harness serves plain HTTP
+		}
+		return errors.New("recover sends the decrypted cluster state: use an https --url pinned with --image-policy-file")
+	}
+	if conn.MeasurementsConfig == "" {
+		return errors.New("recover sends the decrypted cluster state: pin the replica's whole image with --image-policy-file; --measurements pins only its launch digest")
+	}
+	pins, err := cmdsutil.ImagePolicySource{File: conn.MeasurementsConfig}.LoadValues(cmdsutil.MeasurementPins{Measurements: conn.Measurements, MeasurementsFile: conn.MeasurementsFile})
+	if err != nil {
+		return err
+	}
+	if len(pins.Images) == 0 {
+		return errors.New("--image-policy-file pins no image")
+	}
+	for _, img := range pins.Images {
+		switch {
+		case len(img.Anchor) == 0:
+			return fmt.Errorf("--image-policy-file: image %q has no launch-key anchor", img.Name)
+		case pins.Family == teetypes.FamilyTDX && (len(img.Registers[1]) == 0 || len(img.Registers[2]) == 0):
+			return fmt.Errorf("--image-policy-file: TDX image %q does not pin RTMR1 and RTMR2", img.Name)
+		}
+	}
+	return nil
 }
 
 // restoreApplied reports whether the cluster's decree record holds the

@@ -243,7 +243,9 @@ so use your latest export.
          --recovery-key-share share-1.json --recovery-key-share share-3.json --recovery-key-share share-4.json
 
    Each attempt reads the replica's status and signs the decree for that
-   process. The default 30 attempts cover retries.
+   process. The default 30 attempts cover retries. `recover` sends the
+   decrypted state only to a replica that `--image-policy-file` pins in full
+   (`$POL`); it refuses `--measurements` alone and plaintext `http://`.
 5. Check: `ha_sample` shows every replica serving one CA, and
    `c8s cds ha decrees $POL --url $CDS` lists the Restore. Write a new recovery
    record.

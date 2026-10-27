@@ -517,6 +517,11 @@ func TestPreJoinRestoreHandler(t *testing.T) {
 
 // recover refuses what it cannot read before it reaches any replica.
 func TestHARecoverCLIErrors(t *testing.T) {
+	// Run as a c8s_dev build, over plain HTTP: these cases are about what
+	// recover checks before it connects. The release build's endpoint
+	// refusal is TestHARecoverRefusesWeakPins.
+	defer func(v bool) { allowPlainHTTP = v }(allowPlainHTTP)
+	allowPlainHTTP = true
 	dir := t.TempDir()
 	k, _ := testKeyPEM(t)
 	keyPath := writeKey(t, k)
