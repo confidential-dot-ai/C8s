@@ -260,8 +260,11 @@ so use your latest export.
    record.
 6. Wait `--jwt-clock-skew` (30 s by default) after the Restore, then apply
    again every policy change, revocation and secret written after the backup,
-   each with a freshly minted token (runbook 1, step 7). The backup holds at
-   most the state of one minute before the loss.
+   each with a freshly minted token. The restored cluster refuses every token
+   issued before the Restore plus that skew (401, runbook 1, step 7): it cannot
+   know which of them were spent after the backup. The backup holds at most
+   the state of one minute before the loss. The allowlist version restarts
+   above the one served before the loss, so nodes take these writes.
 
 **Restoring an older backup on purpose.** The restored
 cluster's backups are then refused (`backup refused` in `backup_error`). This

@@ -183,11 +183,17 @@ func TestMajorityLoss(t *testing.T) {
 				}
 				return ""
 			})
+			// The recovered cluster refuses operator tokens issued before the
+			// Recover plus --jwt-clock-skew (their spends may be lost), so the
+			// load pauses until a fresh token passes, as the runbook says.
+			k.Pause()
 			name := c.PutDecree(cdsha.Decree{ClusterID: clusterID, IntentID: "recover-1", Kind: cdsha.Recover, BaseEpoch: epoch,
 				BootstrapNode: c.Replicas[survivor].Node, TargetMember: c.MemberID(survivor), ExpiresAt: time.Now().Add(10 * time.Minute)}, nil)
 			start := time.Now()
 			c.WaitServing([]int{survivor}, 60*time.Second)
 			c.Logf("survivor %s serving %s after the Recover decree", c.Replicas[survivor].Node, time.Since(start))
+			time.Sleep(jwtClockSkew + 2*time.Second) // + JWT iat granularity (1 s) and margin
+			k.Resume()
 			if st := c.WaitDecreeStatus(name, 30*time.Second); st.AppliedEpoch == nil {
 				t.Errorf("Recover decree status: %+v", st)
 			}

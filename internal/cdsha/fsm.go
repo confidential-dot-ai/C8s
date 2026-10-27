@@ -45,9 +45,11 @@ type Core struct {
 	// A backup replaces a stored one only if it descends from it
 	// (BackupMeta.Follows).
 	EpochFrom []uint64 `json:"epoch_from,omitempty"`
-	// GenesisAtMS is when the cluster was born. Single-use operator tokens
-	// issued before it are refused: no replica can know whether they were
-	// spent in an earlier life of the cluster.
+	// GenesisAtMS is when the cluster last started: its Genesis, or the
+	// Restore or Recover since. Single-use operator tokens issued before it
+	// are refused: no replica can know whether they were spent in an earlier
+	// life of the cluster, or after the backup a Restore rolled back to, or
+	// by the replicas a Recover left behind.
 	GenesisAtMS int64 `json:"genesis_at_ms,omitempty"`
 	// Format is the encoding every replica writes (see Format). 0 is baseFormat.
 	Format uint32 `json:"format,omitempty"`
@@ -490,6 +492,7 @@ func (f *FSM) applyRestore(re RestoreEntry) DecreeResult {
 	sn.Core.Epoch++
 	sn.Core.AppliedDecrees = append(sn.Core.AppliedDecrees, re.Decree.Decree.IntentID)
 	sn.Core.EpochFrom = append(sn.Core.EpochFrom, sn.Index)
+	sn.Core.GenesisAtMS = re.AtMS
 	if err := f.restore(sn); err != nil {
 		return fail(err)
 	}
@@ -557,6 +560,8 @@ func nextCore(cur Core, de DecreeEntry, from uint64) (Core, *issuer.CA, error) {
 			return Core{}, nil, errors.New("genesis without the bootstrap replica's pins")
 		}
 		next.Measurements = pins
+		next.GenesisAtMS = de.AtMS
+	case Recover:
 		next.GenesisAtMS = de.AtMS
 	case SetVoters:
 		next.Seats = d.Voters

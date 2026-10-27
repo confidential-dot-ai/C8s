@@ -481,7 +481,9 @@ Do not reuse retired mesh keys for backend services.
   a survivor (runbook 4).
 - **Backups lag up to one interval.** The leader stores a backup at most once
   a minute, in one slot. Writes after the last backup are lost on restore;
-  apply them again. Export backups off the cluster on a schedule.
+  apply them again with tokens minted after the Restore (tokens from before
+  it are refused, since their spends may be lost too). Export backups off the
+  cluster on a schedule.
 - **Server-node reboot.** A server-node reboot starts a new, empty cluster
   until server HA is available. Keep an exported backup.
 - **Removing a CDS image survives no node reboot.** After a reboot a node

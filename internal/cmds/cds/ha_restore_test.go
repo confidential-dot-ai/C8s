@@ -74,8 +74,8 @@ func TestRunHARestoreAfterTotalLoss(t *testing.T) {
 		backups = list.Items
 		return err == nil && b.Meta.Index >= applied
 	})
-	// Signed now and spent only after the restore: spent tokens are part
-	// of the replicated state, so only tokens from before Genesis are cut off.
+	// Signed before the loss and never spent. The restored cluster cannot
+	// tell it from one spent after the backup was taken, so it is refused.
 	unspent := c.auth(http.MethodPut, "/allowlist", doc)
 	c.stop(errs)
 
@@ -178,8 +178,8 @@ func TestRunHARestoreAfterTotalLoss(t *testing.T) {
 			t.Fatalf("%s after restore: etag %q want %q, same CA %v", b, h.Get("ETag"), h1.Get("ETag"), bytes.Equal(c, ca))
 		}
 	}
-	if code, _, body := do(t, http.MethodPut, bases[0]+"/allowlist", unspent, doc); code != http.StatusNoContent {
-		t.Fatalf("a token signed after Genesis, before the loss, refused after the restore: %d %s", code, body)
+	if code, _, body := do(t, http.MethodPut, bases[0]+"/allowlist", unspent, doc); code != http.StatusUnauthorized || !strings.Contains(string(body), "too early") {
+		t.Fatalf("a token signed before the loss was not refused after the restore: %d %s", code, body)
 	}
 }
 

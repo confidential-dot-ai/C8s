@@ -59,6 +59,9 @@ var timing = struct {
 }{500 * time.Millisecond, 500 * time.Millisecond, 2500 * time.Millisecond, 8 * time.Second,
 	2 * time.Second, 5 * time.Second, 250 * time.Millisecond, time.Second}
 
+// jwtClockSkew is every replica's --jwt-clock-skew.
+const jwtClockSkew = time.Second
+
 var (
 	binPath string
 	logRoot string
@@ -305,7 +308,7 @@ func (c *Cluster) Start(i int, keepDB bool) {
 	args := []string{"cds",
 		"--armtls-platform", "", "--host", r.Bind, "--port", strconv.Itoa(c.HTTPPort), "--log-level", "info",
 		"--attestation-api-url", c.attestAPI.URL, "--allowlist-db", r.db,
-		"--operator-keys", c.OpPubPath, "--jwt-clock-skew", "1",
+		"--operator-keys", c.OpPubPath, "--jwt-clock-skew", strconv.Itoa(int(jwtClockSkew / time.Second)),
 		"--rate-limit", "100000", "--rate-burst", "100000",
 		"--secrets-max-paths", "200000", "--secrets-max-paths-per-workload", "100000",
 		"--sandbox-inventory-cidr", "127.0.0.0/8",

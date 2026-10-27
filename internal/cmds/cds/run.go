@@ -271,14 +271,16 @@ func run(cfg config) error {
 	}
 	operatorAuthorizer := writeAuthorizer
 	if cfg.operatorKeys != "" {
-		var started time.Time
+		var started func() time.Time
 		switch {
 		case haNode != nil:
 			// Spent tokens are replicated and outlive any replica; only tokens
-			// from before the cluster was born could have been spent unseen.
-			started = time.UnixMilli(haNode.Core().GenesisAtMS)
+			// from before the cluster last started (Genesis, Restore, Recover)
+			// could have been spent unseen.
+			started = func() time.Time { return time.UnixMilli(haNode.Core().GenesisAtMS) }
 		case !cfg.allowlistPersistent:
-			started = time.Now()
+			now := time.Now()
+			started = func() time.Time { return now }
 		}
 		operatorAuthorizer = singleUse(authorizeIssuedAt, &allowlistStore, started, time.Duration(cfg.jwtClockSkew)*time.Second)
 	}

@@ -55,7 +55,7 @@ func TestOperatorChangePolicyWorkflow(t *testing.T) {
 		AttestHandler: AttestHandler{CertTTL: time.Hour},
 		AllowlistHandler: allowlist.Handler{
 			Store:           &store,
-			WriteAuthorizer: singleUse(operatorauth.Verifier{Keys: keys, ClockSkew: time.Second}.AuthorizeIssuedAt, &store, time.Time{}, 0),
+			WriteAuthorizer: singleUse(operatorauth.Verifier{Keys: keys, ClockSkew: time.Second}.AuthorizeIssuedAt, &store, nil, 0),
 		},
 		ReadyFn:          func() bool { return true },
 		MeshCA:           mesh,
