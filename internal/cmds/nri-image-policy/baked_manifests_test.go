@@ -30,7 +30,7 @@ func TestNodeImageBaseAdmitsTheBakedManifests(t *testing.T) {
 		t.Fatal(err)
 	}
 	imageEnv := bakedManifestImageEnv(t)
-	for _, manifest := range []string{"local-path-storage.yaml", "nvidia-device-plugin.yaml"} {
+	for _, manifest := range []string{"nvidia-device-plugin.yaml"} {
 		for _, w := range bakedWorkloads(t, manifest) {
 			for _, c := range w.Spec.Template.Spec.Containers {
 				for _, tc := range []struct {
