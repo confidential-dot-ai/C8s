@@ -88,6 +88,13 @@ func readFailed(w http.ResponseWriter, err error) {
 
 // HandleReplaceAll handles PUT /allowlist: validate the full document and swap
 // it in atomically. CDS assigns the new version.
+//
+// If-Match makes the swap conditional on the version: the strong tag "N"
+// matches version N, the version the ETag W/"N" of GET names. If-Match uses
+// strong comparison (RFC 9110 13.1.1), so a weak tag never matches; a version
+// names exactly one stored document, so "N" is a strong validator. A refused
+// precondition is 412 and changes nothing. "*" or no If-Match swaps
+// unconditionally.
 func (h Handler) HandleReplaceAll(w http.ResponseWriter, r *http.Request) {
 	body, ok := h.authorize(w, r)
 	if !ok {
@@ -100,7 +107,19 @@ func (h Handler) HandleReplaceAll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.Store.ReplaceAll(al); err != nil {
+	ifMatch := r.Header.Get("If-Match")
+	if ifMatch == "*" {
+		ifMatch = ""
+	}
+	if strings.HasPrefix(ifMatch, "W/") {
+		http.Error(w, `If-Match takes the strong tag "N" of version N, not the weak ETag W/"N": a weak tag never matches`, http.StatusPreconditionFailed)
+		return
+	}
+	if err := h.Store.ReplaceAllIfMatch(al, ifMatch); err != nil {
+		if errors.Is(err, ErrVersionMismatch) {
+			http.Error(w, err.Error()+"; fetch it and apply the change again", http.StatusPreconditionFailed)
+			return
+		}
 		writeStoreError(w, err)
 		return
 	}

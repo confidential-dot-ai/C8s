@@ -77,6 +77,7 @@ var sentinels = map[string]error{
 	"token_reused":         operatorauth.ErrTokenReused,
 	"revision_not_greater": ErrRevisionNotGreater,
 	"digest_mismatch":      ErrDigestMismatch,
+	"version_mismatch":     ErrVersionMismatch,
 }
 
 // with records err in r for the trip back across the log.
@@ -166,7 +167,7 @@ func (s *Store) apply(cmd Command) (r Result, err error) {
 	case OpDeleteWorkload:
 		r.Found, err = s.deleteWorkload(cmd.Name)
 	case OpReplaceAll:
-		err = s.replaceAll(cmd.Allowlist)
+		err = s.replaceAll(cmd.Allowlist, cmd.IfMatch)
 	case OpSignPolicy:
 		err = s.signPolicy(cmd.Body, cmd.Token)
 	case OpConsumeToken:
@@ -223,7 +224,15 @@ func (s *Store) DeleteWorkload(name string) (bool, error) {
 
 // ReplaceAll swaps the entire allowlist (see replaceAll).
 func (s *Store) ReplaceAll(al *pkgallowlist.Allowlist) error {
-	_, err := s.write(Command{Op: OpReplaceAll, Allowlist: al})
+	return s.ReplaceAllIfMatch(al, "")
+}
+
+// ReplaceAllIfMatch swaps the entire allowlist if it is still at the version
+// the strong entity tag ifMatch names, else returns ErrVersionMismatch (see
+// replaceAll). Replicated, every replica checks the version it holds when it
+// applies the command, which is the same one at every replica.
+func (s *Store) ReplaceAllIfMatch(al *pkgallowlist.Allowlist, ifMatch string) error {
+	_, err := s.write(Command{Op: OpReplaceAll, Allowlist: al, IfMatch: ifMatch})
 	return err
 }
 

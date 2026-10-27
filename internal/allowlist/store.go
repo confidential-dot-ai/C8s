@@ -445,9 +445,15 @@ func (s *Store) deleteWorkload(name string) (bool, error) {
 	return true, s.commitTx(tx)
 }
 
+// ErrVersionMismatch refuses a conditional whole-document write: the
+// allowlist is no longer at the version its If-Match names.
+var ErrVersionMismatch = errors.New("the allowlist changed since it was read (If-Match names an older version)")
+
 // replaceAll atomically swaps the entire allowlist for the given document and
-// bumps the version. An empty document clears everything.
-func (s *Store) replaceAll(al *pkgallowlist.Allowlist) error {
+// bumps the version. An empty document clears everything. A non-empty ifMatch
+// is a strong entity tag "N": the swap happens only while the version is N,
+// else it returns ErrVersionMismatch and changes nothing.
+func (s *Store) replaceAll(al *pkgallowlist.Allowlist, ifMatch string) error {
 	if al == nil {
 		return fmt.Errorf("allowlist is required")
 	}
@@ -461,6 +467,17 @@ func (s *Store) replaceAll(al *pkgallowlist.Allowlist) error {
 	}
 	defer tx.Rollback()
 
+	if ifMatch != "" {
+		// INVARIANT: read in the transaction that writes, so the check is of
+		// the version this write replaces.
+		var version string
+		if err := tx.QueryRow("SELECT version FROM allowlist_version LIMIT 1").Scan(&version); err != nil {
+			return fmt.Errorf("read allowlist version: %w", err)
+		}
+		if ifMatch != `"`+version+`"` {
+			return ErrVersionMismatch
+		}
+	}
 	if err := replaceContentsTx(tx, al); err != nil {
 		return err
 	}

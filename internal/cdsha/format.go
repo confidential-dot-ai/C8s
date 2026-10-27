@@ -24,7 +24,9 @@ const Format uint32 = 4
 // incompatible and refused (format 4 added Core.EpochFrom and the one-shot
 // decrees' target_member and alone fields, which an older replica would
 // drop before it checks the operator's signature; snapshots carry state
-// digests, and KindCheckpoint is new). This is a clean-redeploy
+// digests, and KindCheckpoint is new; an allowlist replace_all applies only
+// while the version matches its if_match, which an older replica would
+// ignore). This is a clean-redeploy
 // boundary, not a rolling upgrade; see docs/cds-ha.md.
 const baseFormat uint32 = 4
 
