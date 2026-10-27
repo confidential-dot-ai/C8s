@@ -14,6 +14,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/verify"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
+	"github.com/confidential-dot-ai/c8s/internal/nodetoken"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
@@ -34,6 +35,9 @@ func NewCmd() *cobra.Command {
 		Short: "Run the Certificate Distribution Service (CDS)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := validateARMTLSPlatformFlag(cfg.armtlsPlatform); err != nil {
+				return err
+			}
+			if err := validateNodeTokenFlags(cmd.Flags(), cfg); err != nil {
 				return err
 			}
 			return run(cfg)
@@ -93,6 +97,12 @@ func NewCmd() *cobra.Command {
 	flags.DurationVar(&cfg.armtlsCertTTL, "armtls-cert-ttl", 24*time.Hour, "")
 	flags.StringVar(&cfg.measuredPolicies, "measured-policies-file", armtls.NodeJournal, "the node's journal of allowlist policies extended into TDX RTMR[3]; the armTLS serving and sandbox-digests client certificates list it. Empty lists none")
 
+	flags.StringVar(&cfg.nodeTokenIssuer, "node-token-issuer", "", "https URL of this CDS's node token issuer, as a hosted cluster's API server names it (docs/node-tokens.md). Setting it routes POST /node-token and GET /node-token/ca and serves the issuer's discovery document and keys on --node-token-listen (empty disables)")
+	flags.StringSliceVar(&cfg.nodeTokenAudiences, "node-token-audience", nil, "hostname of an API server node tokens are minted for (repeatable; required with --node-token-issuer)")
+	flags.StringVar(&cfg.nodeTokenCluster, "node-token-cluster", "", "id of the cluster node tokens are minted for, carried in each token (required with --node-token-issuer)")
+	flags.DurationVar(&cfg.nodeTokenTTL, "node-token-ttl", nodetoken.MaxTTL, "lifetime of a node token, at most 5m")
+	flags.StringVar(&cfg.nodeTokenListen, "node-token-listen", ":8444", "address of the plain-TLS listener that serves the node token issuer's discovery document and keys")
+
 	_ = cmd.MarkFlagRequired("armtls-platform")
 	_ = cmd.MarkFlagRequired("attestation-api-url")
 	_ = cmd.MarkFlagRequired("allowlist-db")
@@ -118,6 +128,11 @@ func NewCmd() *cobra.Command {
 }
 
 type config struct {
+	nodeTokenIssuer     string
+	nodeTokenAudiences  []string
+	nodeTokenCluster    string
+	nodeTokenTTL        time.Duration
+	nodeTokenListen     string
 	host                string
 	port                int
 	logLevel            string

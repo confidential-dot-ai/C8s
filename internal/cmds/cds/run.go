@@ -49,6 +49,9 @@ func run(cfg config) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	// A listener CDS cannot do without ends the run with its error.
+	ctx, fail := context.WithCancelCause(ctx)
+	defer fail(nil)
 
 	attestationURL, err := cmdsutil.ExpandHostIP(cfg.attestationApiURL)
 	if err != nil {
@@ -308,6 +311,16 @@ func run(cfg config) error {
 		slog.Warn("NOT serving /secrets: any workload depending on a secret will fail to start", "reason", why)
 	}
 
+	nodesPinned := len(pinned.Images) > 0 || len(measurements) > 0
+	nodeTokens, nodeTokenServing, err := newNodeTokenIssuer(cfg, nodesPinned)
+	if err != nil {
+		return err
+	}
+	var nodeTokenCA []byte
+	if nodeTokenServing != nil {
+		nodeTokenCA = nodeTokenServing.CAPEM()
+	}
+
 	deps := dependencies{
 		AttestHandler: AttestHandler{
 			Challenges:        &challengeStore,
@@ -348,6 +361,8 @@ func run(cfg config) error {
 		SecretsChallenges: &secretsChallenges,
 		SecretsOperator:   secretsOperator,
 		SecretsExplain:    secretsExplain,
+		NodeTokens:        nodeTokens,
+		NodeTokenCA:       nodeTokenCA,
 	}
 	go rateLimiter.EvictionLoop(ctx, cfg.rateLimiterEvictInterval, cfg.rateLimiterIdleTimeout)
 	go challengeLimiter.EvictionLoop(ctx, cfg.rateLimiterEvictInterval, cfg.rateLimiterIdleTimeout)
@@ -386,12 +401,21 @@ func run(cfg config) error {
 		slog.Warn("armTLS disabled (--armtls-platform empty); serving plain HTTP. UNSAFE outside tests.")
 	}
 
+	if nodeTokens != nil {
+		if err := serveNodeTokenDiscovery(ctx, fail, cfg, nodeTokens, nodeTokenServing); err != nil {
+			return err
+		}
+	}
+
 	go cmdsutil.ShutdownOnDone(ctx, srv, 5*time.Second)
 	go renewMeshCAWhenDue(ctx, mesh, caRenewalCheckInterval, meshPeers)
 
 	slog.Info("cds listening", "addr", addr)
 	if err := serve(); err != http.ErrServerClosed {
 		return cmdsutil.NodeIPChanged(ctx, err)
+	}
+	if cause := context.Cause(ctx); errors.Is(cause, errListenerFailed) {
+		return cause
 	}
 	return cmdsutil.NodeIPChanged(ctx, nil)
 }

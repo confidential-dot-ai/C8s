@@ -9,6 +9,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/attestation"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
+	"github.com/confidential-dot-ai/c8s/internal/nodetoken"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	"github.com/confidential-dot-ai/c8s/internal/server"
 	"github.com/confidential-dot-ai/c8s/pkg/routes"
@@ -30,6 +31,8 @@ type dependencies struct {
 	SecretsChallenges *attestation.ChallengeStore
 	SecretsOperator   *secrets.OperatorHandler // operator-supplied values; routed with SecretsHandler
 	SecretsExplain    *secrets.ExplainHandler  // release diagnostic; routed with SecretsHandler
+	NodeTokens        *nodetoken.Issuer        // nil leaves /node-token unrouted (--node-token-issuer off)
+	NodeTokenCA       []byte                   // the issuer listener's CA, served at /node-token/ca with NodeTokens
 }
 
 func newRouter(deps dependencies) http.Handler {
@@ -90,6 +93,22 @@ func newRouter(deps dependencies) http.Handler {
 		r.Method(http.MethodPost, secrets.Route, deps.perSandbox(deps.SecretsHandler))
 		r.Method(http.MethodPut, secrets.Route, deps.allowlistWrite(deps.SecretsOperator))
 		r.Method(http.MethodGet, secrets.ExplainRoute, deps.allowlistWrite(deps.SecretsExplain))
+	}
+
+	// A hosted cluster's node asks here for its join token, over armTLS like
+	// /attest, so it has checked CDS before it asks (docs/node-tokens.md).
+	// The CA the issuer's discovery listener serves under is read here too,
+	// where CDS's attestation vouches for it.
+	if deps.NodeTokens != nil {
+		if len(deps.NodeTokenCA) == 0 {
+			panic("cds: dependencies.NodeTokenCA must be set alongside NodeTokens")
+		}
+		tokens := NodeTokenHandler{Attest: deps.AttestHandler, Issuer: deps.NodeTokens}
+		r.Method(http.MethodPost, "/node-token", deps.protected(http.HandlerFunc(tokens.HandleNodeToken)))
+		r.Get("/node-token/ca", func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/x-pem-file")
+			w.Write(deps.NodeTokenCA)
+		})
 	}
 
 	r.Get("/ca", handleCA(deps.MeshCA))

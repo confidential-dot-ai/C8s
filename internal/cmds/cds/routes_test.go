@@ -236,6 +236,9 @@ func TestRouter_RoutesMountedWithExpectedMethods(t *testing.T) {
 		{http.MethodGet, "/allowlist/objects/sha256/ABC", http.StatusBadRequest},
 		{http.MethodGet, "/does-not-exist", http.StatusNotFound},
 		{http.MethodPost, "/sign-csr", http.StatusNotFound},
+		// The node token issuer is off unless --node-token-issuer is set.
+		{http.MethodPost, "/node-token", http.StatusNotFound},
+		{http.MethodGet, "/node-token/ca", http.StatusNotFound},
 		{http.MethodPost, "/healthz", http.StatusMethodNotAllowed},
 	}
 
