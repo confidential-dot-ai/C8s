@@ -17,7 +17,15 @@ router_ns=c8s-router
 if [ "${C8S_NODE_IMAGE:-}" = 1 ]; then
   : "${C8S_MEASUREMENTS_CONFIG:?node-image checks require the full server policy}"
   : "${C8S_ALLOWLIST_URL:?node-image checks require the measured CDS front door}"
-  workloads=(deployment/c8s-operator deployment/c8s-cds)
+  # A highly available CDS runs as a DaemonSet on the cds-role nodes, a single
+  # CDS as a Deployment; both carry the same container, flags and mounts.
+  cds_name=c8s-cds
+  cds_workload=deployment/c8s-cds
+  if [ -n "$(kubectl get nodes -l c8s.confidential.ai/role=cds -o name 2>/dev/null)" ]; then
+    cds_name=c8s-cds-ha
+    cds_workload=daemonset/c8s-cds-ha
+  fi
+  workloads=(deployment/c8s-operator "$cds_workload")
   # The authenticated credential listener can become available before RKE2
   # has applied the complete AddOn. Require every core workload to exist.
   kubectl -n "$ns" wait --for=create "${workloads[@]}" --timeout=8m
@@ -31,7 +39,7 @@ if [ "${C8S_NODE_IMAGE:-}" = 1 ]; then
   # credential clients take the node's CDS endpoint and pins from the mount the
   # enforcer adds at admission, so the spec must set neither. The external
   # armTLS request below verifies the actual endpoint against the signed policy.
-  kubectl get deployments -A -l app.kubernetes.io/instance=c8s -o json | jq -e '
+  kubectl get deployments,daemonsets -A -l app.kubernetes.io/instance=c8s -o json | jq -e --arg cds "$cds_name" '
     def policy($workload; $container; $flag):
       any(.items[];
         .metadata.name == $workload and
@@ -50,7 +58,7 @@ if [ "${C8S_NODE_IMAGE:-}" = 1 ]; then
           .name == $container and
           all((.args // [])[];
             test("^--(cds-url|image-policy-file|image-policy-json|cds-measurements|cds-rtmrs)(=|$)") | not)));
-    policy("c8s-cds"; "cds"; "--image-policy-file=/run/c8s-node/peers.json") and
+    policy($cds; "cds"; "--image-policy-file=/run/c8s-node/peers.json") and
     policy("c8s-router"; "cds-attest"; "--image-policy-file=/run/c8s-node/cds.json") and
     nodepins("c8s-router"; "c8s-cert") and
     nodepins("c8s-router"; "allowlist-proxy") and
