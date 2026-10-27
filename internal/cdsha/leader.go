@@ -265,6 +265,33 @@ func (n *Node) backupFailed(stage string, err error) {
 	n.log.Warn("backup: "+stage, "err", err, "consecutive_failures", n.backupFails)
 }
 
+// maybeCompact (leader) has Raft snapshot, and so compact, its log once
+// SnapshotThreshold entries were applied since the last snapshot, at most
+// every Timing.Backup. Raft's own check runs only every SnapshotInterval,
+// and a backup, which also snapshots, waits for a confirmed checkpoint
+// (backupBlocked) and a backup store: meanwhile a replica that joins or
+// restarts would replay the whole log. TrailingLogs still lets a follower
+// a little behind catch up from the log, and Persist checks every snapshot
+// against the digests (fsmSnapshot.Persist). The snapshot runs off the Run
+// loop: it dumps and encodes the whole state.
+func (n *Node) maybeCompact() {
+	r := n.r()
+	if r == nil || time.Since(n.compactAt) < n.cfg.Timing.Backup || n.compacting.Load() {
+		return
+	}
+	if last, _, _ := n.snaps.latest(); n.fsm.AppliedIndex() < last+n.rcfg.SnapshotThreshold {
+		return
+	}
+	n.compactAt = time.Now()
+	n.compacting.Store(true)
+	go func() {
+		defer n.compacting.Store(false)
+		if err := r.Snapshot().Error(); err != nil {
+			n.log.Debug("compact log", "err", err)
+		}
+	}()
+}
+
 // pruneSlack lets the history grow this far past HistoryVersions before the
 // leader prunes, so pruning is one entry per batch of writes, not per write.
 var pruneSlack = 64 // a var so tests can prune small histories

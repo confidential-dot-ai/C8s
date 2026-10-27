@@ -206,6 +206,8 @@ type Node struct {
 	recovering atomic.Bool
 
 	backupAt    time.Time    // leader: last backup attempt
+	compactAt   time.Time    // leader: last log compaction (maybeCompact)
+	compacting  atomic.Bool  // a compaction snapshot is running
 	pruneAt     time.Time    // leader: last history prune check
 	prunes      atomic.Int64 // history prune entries this replica proposed (for tests)
 	renewAt     time.Time    // leader: last mesh CA renewal attempt
@@ -688,6 +690,7 @@ func (n *Node) Run(ctx context.Context) error {
 			if n.fsm.Stuck() == "" { // both derive their entries from this replica's state
 				n.maybePruneHistory()
 				n.maybeRenewCA()
+				n.maybeCompact()
 			}
 		case addr != "":
 			n.noLeader, n.recoverSeen = time.Time{}, recoverSighting{}

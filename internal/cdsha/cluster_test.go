@@ -129,6 +129,7 @@ type cluster struct {
 	timing          *Timing       // Config.Timing of every replica started; nil: testTiming
 	secretLimits    [3]int        // secrets.NewMemoryStore limits of every replica started; zero: 64, 8, 4096
 	fileStores      bool          // allowlist databases in files (replica.alPath), not in memory
+	noBackups       bool          // replicas run without a backup store
 }
 
 func (c *cluster) timingOr() Timing {
@@ -237,7 +238,7 @@ func (c *cluster) startWithControl(name, measurement string, wrap func(controlHa
 		ClusterID: testCluster, NodeName: name, Bind: fmt.Sprintf("%s:%d", ip, c.port), Advertise: fmt.Sprintf("%s:%d", ip, c.port),
 		Attestor: MockAttestor{measurement}, BakedPins: []string{measurement}, OperatorPubKey: c.opPub,
 		Seats: c.seats, MaxNonVoters: 8, Peers: c.peers(ip), Decrees: nodeDecrees{c, name}, Timing: c.timingOr(),
-		RecoveryKey: mustPKIX(c.t, &c.recKey.PublicKey), Backups: c.backups,
+		RecoveryKey: mustPKIX(c.t, &c.recKey.PublicKey), Backups: c.backupSink(),
 		Allowlist: &al, Secrets: mem, Ledger: led, Format: reads, HistoryVersions: c.historyVersions, HistoryBytes: c.historyBytes, CAValidity: c.caValidity,
 	})
 	if err != nil {
@@ -259,6 +260,14 @@ func (c *cluster) startWithControl(name, measurement string, wrap func(controlHa
 	c.nodes[name] = r
 	c.mu.Unlock()
 	return r
+}
+
+// backupSink is the replicas' backup store, nil with noBackups.
+func (c *cluster) backupSink() BackupSink {
+	if c.noBackups {
+		return nil
+	}
+	return c.backups
 }
 
 // stopReplica is a crash: the process and its memory are gone.
@@ -1331,5 +1340,40 @@ func TestDecreesWaitWhileRecovering(t *testing.T) {
 	eventually(t, 5*time.Second, "Recover judged after recover", func() bool { _, ok := c.decrees.get(rec); return ok })
 	if st, _ := c.decrees.get(rec); st.AppliedEpoch != nil || st.RejectedReason != ErrRecoverWithQuorum.Error() {
 		t.Fatalf("Recover with a quorum, judged after recover: %+v", st)
+	}
+}
+
+// The leader compacts its log without a backup to store (or one it may not
+// seal yet): a replica that restarts then installs a snapshot instead of
+// replaying the whole log, and Raft's own SnapshotInterval check (30 s or
+// more) has not run. Every snapshot still passes the Persist digest check
+// (TestPersistRefusesStateChangedUnderTheReplica).
+func TestLeaderCompactsWithoutBackups(t *testing.T) {
+	c := newCluster(t, 3)
+	c.noBackups = true
+	c.genesis("n0", "n1", "n2")
+	l := c.leader()
+	for i := range 700 {
+		if err := l.al.PutWorkload(fmt.Sprintf("w%d", i%50), mkWorkload(t, i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	applied := l.node.fsm.AppliedIndex()
+	eventually(t, 5*time.Second, "leader compacted its log", func() bool {
+		idx, _, _ := l.node.snaps.latest()
+		return idx > 0 && idx+l.node.rcfg.SnapshotThreshold > applied
+	})
+	var f *replica
+	for _, r := range c.live() {
+		if r != l {
+			f = r
+			break
+		}
+	}
+	c.stopReplica(f)
+	n := c.start(f.name, "m1")
+	eventually(t, 15*time.Second, "restarted replica serves", n.node.Serving)
+	if idx, _, _ := n.node.snaps.latest(); idx == 0 {
+		t.Fatal("the restarted replica replayed the whole log: it installed no snapshot")
 	}
 }
