@@ -26,6 +26,13 @@ type Handler struct {
 	// MaxWriteBodyBytes caps mutation request bodies. Zero means
 	// DefaultMaxWriteBodyBytes; a non-positive value clamps to the default.
 	MaxWriteBodyBytes int64
+	// Full, when set, refuses writes while it returns an error: the store's
+	// volume is too full to take more history (HA: see allowlistFullGuard).
+	Full func() error
+	// Capacity, when set, refuses writes that grow the state (every write
+	// but a DELETE) while it returns an error wrapping ErrCapacity: the HA
+	// state is at its snapshot capacity (cdsha Node.CheckCapacity).
+	Capacity func() error
 }
 
 // WriteAuthorizer authorizes a mutation given the raw request body, so the
@@ -50,7 +57,7 @@ func (h Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 
 	doc, version, err := h.Store.LoadAll()
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		readFailed(w, err)
 		return
 	}
 
@@ -63,6 +70,20 @@ func (h Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(body)
+}
+
+// readFailed answers a read the store could not serve. A fault of this
+// replica's own database (it is about to stop serving and exit) is the same
+// retryable 503 as an unavailable store, so a client tries another replica;
+// anything else is a server error.
+func readFailed(w http.ResponseWriter, err error) {
+	if IsLocalStoreFault(err) {
+		slog.Warn("allowlist read failed on the local store", "err", err)
+		httputil.WriteUnavailable(w, ErrUnavailable)
+		return
+	}
+	slog.Error("allowlist read failed", "err", err)
+	http.Error(w, "internal server error", http.StatusInternalServerError)
 }
 
 // HandleReplaceAll handles PUT /allowlist: validate the full document and swap
@@ -80,7 +101,7 @@ func (h Handler) HandleReplaceAll(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.Store.ReplaceAll(al); err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeStoreError(w, err)
 		return
 	}
 	// The token that wrote a canonical whole document is the operator's
@@ -118,7 +139,7 @@ func (h Handler) HandlePutWorkload(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 			return
 		}
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeStoreError(w, err)
 		return
 	}
 
@@ -136,7 +157,7 @@ func (h Handler) HandleDeleteWorkload(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 	found, err := h.Store.DeleteWorkload(name)
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeStoreError(w, err)
 		return
 	}
 	if !found {
@@ -148,9 +169,53 @@ func (h Handler) HandleDeleteWorkload(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// writeStoreError answers a failed store write.
+func writeStoreError(w http.ResponseWriter, err error) {
+	if errors.Is(err, ErrUnavailable) {
+		httputil.WriteUnavailable(w, ErrUnavailable)
+		return
+	}
+	if errors.Is(err, ErrCapacity) {
+		slog.Warn("allowlist write refused: the replicated state is at its snapshot capacity", "err", err)
+		http.Error(w, err.Error(), http.StatusInsufficientStorage)
+		return
+	}
+	if storeFull(err) {
+		// The history keeps every document, so a store on a size-limited
+		// volume fills up; writes then fail until the operator acts.
+		slog.Error("allowlist write refused: the store is full", "err", err)
+		http.Error(w, "allowlist store is full: the allowlist history has filled its volume", http.StatusInsufficientStorage)
+		return
+	}
+	slog.Error("allowlist write failed", "err", err)
+	http.Error(w, "internal server error", http.StatusInternalServerError)
+}
+
+// storeFull reports SQLite's SQLITE_FULL by its message: in HA the error
+// comes back from the replicated state machine as text only.
+func storeFull(err error) bool {
+	return strings.Contains(err.Error(), "database or disk is full")
+}
+
 // authorize reads the body (capped) and runs the configured authorizer.
 // On success returns the body for downstream decoding.
 func (h Handler) authorize(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
+	if h.Full != nil {
+		// Checked before the token is spent, which is a write too.
+		if err := h.Full(); err != nil {
+			slog.Warn("allowlist write refused", "reason", err)
+			http.Error(w, err.Error(), http.StatusInsufficientStorage)
+			return nil, false
+		}
+	}
+	if h.Capacity != nil && r.Method != http.MethodDelete {
+		// Also before the token is spent: a spent token is a replicated row,
+		// so refusing only after it would grow the state with every retry.
+		if err := h.Capacity(); err != nil {
+			writeStoreError(w, err)
+			return nil, false
+		}
+	}
 	cap := h.MaxWriteBodyBytes
 	if cap <= 0 {
 		cap = DefaultMaxWriteBodyBytes
@@ -172,6 +237,11 @@ func (a WriteAuthorizer) ReadAuthorized(w http.ResponseWriter, r *http.Request, 
 	}
 	if err := a(r, body); err != nil {
 		slog.Warn("write rejected", "method", r.Method, "path", r.URL.Path, "remote", r.RemoteAddr, "reason", err)
+		if errors.Is(err, ErrUnavailable) || errors.Is(err, ErrCapacity) || storeFull(err) {
+			// Spending the token is a write too; that failing is not a bad key.
+			writeStoreError(w, err)
+			return nil, false
+		}
 		httputil.RefuseOperatorToken(w, err)
 		return nil, false
 	}
@@ -183,7 +253,7 @@ func (a WriteAuthorizer) ReadAuthorized(w http.ResponseWriter, r *http.Request, 
 func (h Handler) HandleHistory(w http.ResponseWriter, _ *http.Request) {
 	entries, err := h.Store.History()
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		readFailed(w, err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -219,7 +289,7 @@ func (h Handler) serveByDigest(w http.ResponseWriter, r *http.Request, contentTy
 	}
 	body, ok, err := lookup("sha256:" + hex)
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		readFailed(w, err)
 		return
 	}
 	if !ok {

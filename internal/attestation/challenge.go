@@ -1,24 +1,51 @@
 package attestation
 
 import (
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/binary"
 	"sync"
 	"time"
+
+	"k8s.io/apimachinery/pkg/util/cache"
 )
 
 // ChallengeStore holds short-lived attestation challenges. Each challenge can
 // only be consumed once, preventing replay attacks.
 //
-// NOTE: challenges are stored in-memory and lost on restart. This is acceptable
-// for single-instance deployments but must be addressed for HA configurations.
-// One TTL governs every challenge, so insertion order is expiry order: issued
-// holds the keys oldest-first, and a consumed key stays there until it reaches
-// the front.
+// Challenges are stored in memory and lost on restart; HA replicas share
+// them through SetSharedKey. One TTL governs every challenge, so insertion
+// order is expiry order: issued holds the keys oldest-first, and a consumed key
+// stays there until it reaches the front.
 type ChallengeStore struct {
 	mu         sync.Mutex
 	challenges map[[32]byte]time.Time
 	issued     [][32]byte
 	ttl        time.Duration
+
+	// sharedKey, when set (HA CDS), makes challenges self-verifying, so a
+	// challenge issued by one replica is accepted by another holding the
+	// same key. It returns nil while no key is available.
+	sharedKey func() []byte
+	// redeemed holds self-verifying challenges this replica accepted, for
+	// single use here; another replica may accept the same one once.
+	redeemed *cache.Expiring
+}
+
+// SetSharedKey switches the store to self-verifying challenges: expiry (8
+// bytes), random (8 bytes) and a 16-byte HMAC-SHA256 under key(), 32 bytes in
+// all, the size clients already send back. Call before serving.
+func (s *ChallengeStore) SetSharedKey(key func() []byte) {
+	s.sharedKey = key
+	s.redeemed = cache.NewExpiring()
+}
+
+func challengeMAC(key []byte, head []byte) []byte {
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte("c8s-challenge-v1\x00"))
+	mac.Write(head)
+	return mac.Sum(nil)[:16]
 }
 
 // NewChallengeStore creates a new challenge store with the given TTL.
@@ -40,6 +67,13 @@ func (s *ChallengeStore) Create() [32]byte {
 	var challenge [32]byte
 	if _, err := rand.Read(challenge[:]); err != nil {
 		panic("crypto/rand failed: " + err.Error())
+	}
+
+	if s.sharedKey != nil {
+		if key := s.sharedKey(); key != nil {
+			binary.BigEndian.PutUint64(challenge[:8], uint64(time.Now().Add(s.ttl).UnixNano()))
+			copy(challenge[16:], challengeMAC(key, challenge[:16]))
+		}
 	}
 
 	s.mu.Lock()
@@ -115,10 +149,38 @@ func (s *ChallengeStore) Consume(challenge []byte) bool {
 	defer s.mu.Unlock()
 
 	created, ok := s.challenges[key]
-	if !ok {
+	delete(s.challenges, key)
+	if s.sharedKey != nil {
+		// Issuers and other replicas use the same current-key and expiry
+		// checks. A local hit must not survive key rotation or key loss.
+		return s.consumeShared(key)
+	}
+	return ok && time.Since(created) < s.ttl
+}
+
+// consumeShared accepts a self-verifying challenge another replica issued:
+// MAC under the current shared key, not expired, not yet redeemed here.
+// Caller holds s.mu.
+func (s *ChallengeStore) consumeShared(c [32]byte) bool {
+	if s.sharedKey == nil {
 		return false
 	}
-	delete(s.challenges, key)
-
-	return time.Since(created) < s.ttl
+	key := s.sharedKey()
+	if key == nil || !hmac.Equal(c[16:], challengeMAC(key, c[:16])) {
+		return false
+	}
+	now := time.Now()
+	expiry := time.Unix(0, int64(binary.BigEndian.Uint64(c[:8])))
+	if !now.Before(expiry) || expiry.Sub(now) > s.ttl {
+		return false
+	}
+	if _, used := s.redeemed.Get(c); used {
+		return false
+	}
+	s.redeemed.Set(c, nil, expiry.Sub(now)) // also drops expired entries
+	if s.redeemed.Len() > maxChallenges {
+		s.redeemed.Delete(c)
+		return false
+	}
+	return true
 }

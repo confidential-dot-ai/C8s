@@ -237,6 +237,15 @@ func (h Handler) servePost(ctx context.Context, w http.ResponseWriter, g grant, 
 		}
 		writeError(w, http.StatusInsufficientStorage, types.ErrorCodeSecretStoreFull, "secret storage limit reached")
 		return
+	case errors.Is(err, ErrCapacity):
+		h.logger().Warn("secret create refused", "path", path, "workload", g.workload, "error", err)
+		writeError(w, http.StatusInsufficientStorage, types.ErrorCodeStateCapacity, capacityMessage)
+		return
+	}
+	if errors.Is(err, ErrUnavailable) {
+		h.logger().Warn("secret create not committed", "path", path, "workload", g.workload, "error", err)
+		httputil.WriteUnavailable(w, ErrUnavailable)
+		return
 	}
 	if err != nil {
 		h.logger().Error("secret create failed", "path", path, "workload", g.workload, "error", err)

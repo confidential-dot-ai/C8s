@@ -2,6 +2,7 @@ package allowlist
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,8 @@ import (
 	"log/slog"
 	"os"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	_ "modernc.org/sqlite"
 
@@ -27,10 +30,19 @@ import (
 type Store struct {
 	mu sync.Mutex
 	db *sql.DB
+	// uri names the database for Restore, which writes it through a
+	// connection of its own.
+	uri string
 	// gen counts committed mutations in this process. It is the invalidation
 	// signal for a reader that memoizes a whole-document snapshot
 	// (internal/cmds/cds).
 	gen uint64
+	// repl, when set, makes every mutation a replicated command (CDS HA):
+	// the public write methods hand it to repl, and each replica applies it
+	// through Apply. at is the applying command's time (Unix ms), so the
+	// history every replica journals is identical.
+	repl Replicator
+	at   atomic.Int64
 }
 
 // roleInit / roleMain label the two container partitions in the digest index.
@@ -82,25 +94,39 @@ func OpenStore(path string) (Store, error) {
 		slog.Warn("allowlist db did not exist, creating", "path", path)
 	}
 
-	if _, err := db.Exec(initSQL + journalSQL); err != nil {
+	if err := initDB(context.Background(), db); err != nil {
 		db.Close()
 		return Store{}, fmt.Errorf("init allowlist schema: %w", err)
 	}
-
-	return Store{db: db}, nil
+	return Store{db: db, uri: path}, nil
 }
 
 // OpenInMemory opens an in-memory allowlist store, useful for testing.
 func OpenInMemory() (Store, error) {
-	db, err := sql.Open("sqlite", ":memory:")
+	uri := memdbURI("store")
+	db, err := sql.Open("sqlite", uri)
 	if err != nil {
 		return Store{}, err
 	}
-	if _, err := db.Exec(initSQL + journalSQL); err != nil {
+	if err := initDB(context.Background(), db); err != nil {
 		db.Close()
 		return Store{}, err
 	}
-	return Store{db: db}, nil
+	return Store{db: db, uri: uri}, nil
+}
+
+// dbConn is what initDB needs: an *sql.DB, or one connection of it.
+type dbConn interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// initDB creates the tables a store needs and migrates older ones.
+func initDB(ctx context.Context, db dbConn) error {
+	if _, err := db.ExecContext(ctx, initSQL+journalSQL); err != nil {
+		return err
+	}
+	return migrateJournal(ctx, db)
 }
 
 // Close closes the underlying database connection.
@@ -202,7 +228,7 @@ func (s *Store) Version() (string, error) {
 // records the mutation for snapshot-cache invalidation. Every write path goes
 // through it. Callers must hold s.mu.
 func (s *Store) commitTx(tx *sql.Tx) error {
-	if err := publishTx(tx); err != nil {
+	if err := publishTx(tx, s.now()); err != nil {
 		return fmt.Errorf("journal allowlist: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -210,6 +236,15 @@ func (s *Store) commitTx(tx *sql.Tx) error {
 	}
 	s.gen++
 	return nil
+}
+
+// now is the time a mutation is journaled at: the replicated command's when
+// one is being applied, the local clock otherwise.
+func (s *Store) now() time.Time {
+	if ms := s.at.Load(); ms != 0 {
+		return time.UnixMilli(ms)
+	}
+	return time.Now()
 }
 
 // Generation returns the number of mutations committed to this store in this
@@ -230,13 +265,13 @@ func bumpVersionTx(tx *sql.Tx) error {
 	return err
 }
 
-// SeedWorkloads adds every workload entry whose name is not already present
+// seedWorkloads adds every workload entry whose name is not already present
 // and retires each stored entry the seed replaces (retiredBySeed), in a single
 // transaction, and returns the numbers added and retired. Additive for
 // everything else and idempotent: an existing entry is left untouched and the
 // version is bumped at most once, only when the set changed, so a re-seed that
 // changes nothing does not force every worker to re-pull.
-func (s *Store) SeedWorkloads(workloads map[string]pkgallowlist.Workload) (added, retired int, err error) {
+func (s *Store) seedWorkloads(workloads map[string]pkgallowlist.Workload) (added, retired int, err error) {
 	if len(workloads) == 0 {
 		return 0, 0, nil
 	}
@@ -346,11 +381,11 @@ func seedWorkloadsTx(tx *sql.Tx, workloads map[string]pkgallowlist.Workload) (in
 	return added, nil
 }
 
-// PutWorkload upserts one named workload entry and rebuilds its digest index in
+// putWorkload upserts one named workload entry and rebuilds its digest index in
 // a single transaction, then bumps the version. The name and containers are
 // validated against the frozen allowlist rules; a rejection wraps
 // ErrInvalidWorkload.
-func (s *Store) PutWorkload(name string, w pkgallowlist.Workload) error {
+func (s *Store) putWorkload(name string, w pkgallowlist.Workload) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	norm, err := normalizeEntry(name, w)
@@ -373,9 +408,9 @@ func (s *Store) PutWorkload(name string, w pkgallowlist.Workload) error {
 	return s.commitTx(tx)
 }
 
-// DeleteWorkload removes one named entry and its index rows, bumping the version
+// deleteWorkload removes one named entry and its index rows, bumping the version
 // only when the entry existed. Returns false if absent.
-func (s *Store) DeleteWorkload(name string) (bool, error) {
+func (s *Store) deleteWorkload(name string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -405,9 +440,9 @@ func (s *Store) DeleteWorkload(name string) (bool, error) {
 	return true, s.commitTx(tx)
 }
 
-// ReplaceAll atomically swaps the entire allowlist for the given document and
+// replaceAll atomically swaps the entire allowlist for the given document and
 // bumps the version. An empty document clears everything.
-func (s *Store) ReplaceAll(al *pkgallowlist.Allowlist) error {
+func (s *Store) replaceAll(al *pkgallowlist.Allowlist) error {
 	if al == nil {
 		return fmt.Errorf("allowlist is required")
 	}

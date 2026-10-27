@@ -15,6 +15,16 @@ import (
 // ErrNotFound reports a path the store does not hold.
 var ErrNotFound = errors.New("secrets: no such path")
 
+// ErrUnavailable wraps a replication failure: an HA replica that has no
+// leader or lost its quorum could not commit the write. It is retryable, so
+// handlers answer 503.
+var ErrUnavailable = errors.New("secrets: replicated store unavailable (no leader or no quorum); retry")
+
+// ErrCapacity wraps a write an HA cluster refused because its replicated
+// state is near what a snapshot can hold. It clears when the state shrinks,
+// so handlers answer 507 with a retryable code.
+var ErrCapacity = errors.New("secrets: replicated state at capacity")
+
 // The two refusals a write that grows the path map can meet.
 var (
 	ErrHolderQuota = errors.New("secrets: holder path quota")
@@ -122,6 +132,10 @@ type MemoryStore struct {
 	maxPaths     int
 	maxPerHolder int
 	maxValue     int
+
+	// bytes is the snapshot size of values (entryBytes summed), kept as the
+	// map changes so the HA admission cap reads it in O(1).
+	bytes int64
 }
 
 type entry struct {
@@ -201,6 +215,7 @@ func (s *MemoryStore) checkValue(value []byte) error {
 // another holder's value returns that holder's quota.
 func (s *MemoryStore) storeLocked(path string, value []byte, by Holder) {
 	if prior, ok := s.values[path]; ok {
+		s.bytes -= entryBytes(path, prior.value, prior.holder)
 		if s.holders[prior.holder] <= 1 {
 			delete(s.holders, prior.holder)
 		} else {
@@ -209,6 +224,7 @@ func (s *MemoryStore) storeLocked(path string, value []byte, by Holder) {
 	}
 	s.values[path] = entry{value: append([]byte(nil), value...), holder: by}
 	s.holders[by]++
+	s.bytes += entryBytes(path, value, by)
 }
 
 // checkRoomLocked guards the path bounds for a write that grows the map:
@@ -255,4 +271,15 @@ func (s *MemoryStore) TopHolders(n int) []HolderPaths {
 		return cmp.Or(cmp.Compare(a.Holder.origin, b.Holder.origin), cmp.Compare(a.Holder.name, b.Holder.name))
 	})
 	return slices.Clip(out[:min(n, len(out))])
+}
+
+// EmptyClone returns an empty store with identical application limits.
+// Recovery replay must not change which logged writes succeed.
+func (s *MemoryStore) EmptyClone() *MemoryStore {
+	return NewMemoryStore(s.maxPaths, s.maxPerHolder, s.maxValue)
+}
+
+// Policy returns the store's immutable application settings.
+func (s *MemoryStore) Policy() (maxPaths, maxPerHolder, maxValue int) {
+	return s.maxPaths, s.maxPerHolder, s.maxValue
 }
