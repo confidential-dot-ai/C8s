@@ -78,6 +78,11 @@ store the file off the host:
 6. If the decree is not applied, the target replica probably restarted. Its
    member ID is gone, so the decree can never act. Run steps 3 and 4 again with
    a new decree. Do not edit or re-apply the old one.
+7. Wait `--jwt-clock-skew` (Helm `cds.jwtClockSkew`, 30 s by default) after
+   Genesis before the first signed operator write. CDS refuses an operator
+   token issued before Genesis plus that skew (401, "operator token issued too
+   early"), so a token minted earlier never becomes valid: mint a fresh one
+   after the wait.
 
 Never pass `--alone` when the cluster has more than one replica. It lets the
 replica start a cluster even when it finds no peers, so a replica that
@@ -242,8 +247,10 @@ so use your latest export.
 5. Check: `ha_sample` shows every replica serving one CA, and
    `c8s cds ha decrees $POL --url $CDS` lists the Restore. Write a new recovery
    record.
-6. Apply again every policy change, revocation and secret written after the
-   backup. The backup holds at most the state of one minute before the loss.
+6. Wait `--jwt-clock-skew` (30 s by default) after the Restore, then apply
+   again every policy change, revocation and secret written after the backup,
+   each with a freshly minted token (runbook 1, step 7). The backup holds at
+   most the state of one minute before the loss.
 
 **Restoring an older backup on purpose.** The restored
 cluster's backups are then refused (`backup refused` in `backup_error`). This
