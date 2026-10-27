@@ -110,11 +110,19 @@ func (p PodClaims) Canonical() ([]byte, error) {
 		return nil, err
 	}
 	wire := podWire(p)
-	slices.SortFunc(wire.Containers, func(a, b podContainerWire) int {
-		x, _ := json.Marshal(a)
-		y, _ := json.Marshal(b)
-		return bytes.Compare(x, y)
-	})
+	type keyedContainer struct {
+		key       []byte
+		container podContainerWire
+	}
+	keyed := make([]keyedContainer, len(wire.Containers))
+	for i, c := range wire.Containers {
+		key, _ := json.Marshal(c)
+		keyed[i] = keyedContainer{key: key, container: c}
+	}
+	slices.SortFunc(keyed, func(a, b keyedContainer) int { return bytes.Compare(a.key, b.key) })
+	for i := range keyed {
+		wire.Containers[i] = keyed[i].container
+	}
 	b, err := json.Marshal(wire)
 	if err != nil || len(b) > MaxPodClaimsBytes {
 		return nil, fmt.Errorf("invalid or oversized Pod claims")

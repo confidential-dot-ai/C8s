@@ -130,6 +130,15 @@ func (v credentialVolume) issuerPath() string {
 	return filepath.Join(v.dir, issuerRecordName)
 }
 
+// readPublished reads one file at the volume's top level: under the guest's
+// opened root where there is one, by path on a node.
+func (v credentialVolume) readPublished(name string) ([]byte, error) {
+	if v.root != nil {
+		return v.root.ReadFile(name)
+	}
+	return os.ReadFile(filepath.Join(v.dir, name))
+}
+
 func (v credentialVolume) generationsPath() string {
 	return filepath.Join(v.dir, generationsSubdir)
 }
@@ -493,13 +502,7 @@ func linkTempPath(path string) (string, error) {
 // loadIssuerRecord reads the CA key the pod is bound to. The record outlives
 // withdrawal, so errNoIssuerRecord means no generation was ever published here.
 func loadIssuerRecord(v credentialVolume) (issuerKeyID, error) {
-	var data []byte
-	var err error
-	if v.root != nil {
-		data, err = v.root.ReadFile(issuerRecordName)
-	} else {
-		data, err = os.ReadFile(v.issuerPath())
-	}
+	data, err := v.readPublished(issuerRecordName)
 	if errors.Is(err, os.ErrNotExist) {
 		return "", errNoIssuerRecord
 	}

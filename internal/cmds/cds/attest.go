@@ -142,18 +142,12 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 		attestation.WriteError(w, http.StatusUnprocessableEntity, types.ErrorCodeInvalidRequest, "invalid attestation request JSON")
 		return
 	}
+	// fields tells an absent runtime_extensions from an explicit null below;
+	// the strict decode that follows rejects any field the body does not name.
 	var fields map[string]json.RawMessage
 	if json.Unmarshal(raw, &fields) != nil || fields == nil {
 		attestation.WriteError(w, http.StatusUnprocessableEntity, types.ErrorCodeInvalidRequest, "invalid attestation request JSON")
 		return
-	}
-	for name := range fields {
-		switch name {
-		case "challenge", "evidence", "csr", "sandbox_token", "pod_claims", "runtime_extensions":
-		default:
-			attestation.WriteError(w, http.StatusUnprocessableEntity, types.ErrorCodeInvalidRequest, "unknown attestation request field")
-			return
-		}
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()

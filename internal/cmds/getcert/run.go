@@ -478,7 +478,7 @@ func renewLoop(ctx context.Context, cfg config, client attestclient.Client, poli
 			if creds.current == nil {
 				continue
 			}
-			stale, err := servedCAStale(operationCtx, client, cfg.CAPath, creds.issuer, creds.volume)
+			stale, err := servedCAStale(operationCtx, client, creds.issuer, creds.volume)
 			// On error, fall through: it may be local (an unreadable
 			// --ca-path), which must not mute the policy check.
 			if err != nil {
@@ -1104,8 +1104,9 @@ func caBundleFromChain(chainPEM []byte) ([]byte, error) {
 	return out, nil
 }
 
-// servedCAStale detects a renewed CA certificate under the pod's bound issuer key.
-func servedCAStale(ctx context.Context, client attestclient.Client, caPath string, bound issuerKeyID, volumes ...credentialVolume) (bool, error) {
+// servedCAStale detects a renewed CA certificate under the pod's bound issuer
+// key, comparing what CDS serves now with the CA the volume publishes.
+func servedCAStale(ctx context.Context, client attestclient.Client, bound issuerKeyID, volume credentialVolume) (bool, error) {
 	currentPEM, err := client.MeshCA(ctx)
 	if err != nil {
 		return false, fmt.Errorf("fetch current mesh CA from cds: %w", err)
@@ -1121,12 +1122,7 @@ func servedCAStale(ctx context.Context, client attestclient.Client, caPath strin
 	if issuer != bound {
 		return false, nil
 	}
-	var servedPEM []byte
-	if len(volumes) != 0 && volumes[0].root != nil {
-		servedPEM, err = volumes[0].root.ReadFile(volumes[0].caName)
-	} else {
-		servedPEM, err = os.ReadFile(caPath)
-	}
+	servedPEM, err := volume.readPublished(volume.caName)
 	if err != nil {
 		return false, fmt.Errorf("read served mesh CA: %w", err)
 	}
