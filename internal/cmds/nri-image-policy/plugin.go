@@ -165,13 +165,14 @@ type containerdOps interface {
 
 // plugin implements the NRI plugin interface for image policy enforcement.
 type plugin struct {
-	stub       stub.Stub
-	cfg        *config
-	policy     *policyStore
-	audit      *audit.Logger
-	logger     *slog.Logger
-	ready      atomic.Bool
-	containerd containerdOps
+	stub          stub.Stub
+	cfg           *config
+	policy        *policyStore
+	audit         *audit.Logger
+	logger        *slog.Logger
+	ready         atomic.Bool
+	podRegistered atomic.Bool
+	containerd    containerdOps
 
 	mountStorage mountStorageInspector
 
@@ -381,6 +382,9 @@ func (p *plugin) RemoveContainer(ctx context.Context, pod *api.PodSandbox, ctr *
 // refuses its containers (docs/armtls.md).
 func (p *plugin) RunPodSandbox(ctx context.Context, pod *api.PodSandbox) error {
 	defer p.lockPodAdmission()()
+	if p.cfg.podWaiting() {
+		return errors.New("pod guest is waiting for an assignment")
+	}
 	if p.inventory != nil {
 		p.inventory.recordSandbox(pod.GetId())
 	}
@@ -1026,7 +1030,7 @@ func (p *plugin) Synchronize(ctx context.Context, pods []*api.PodSandbox, ctrs [
 	// Ahead of every other decision: on a node image a container that already
 	// exists means admission was not in place when it started The
 	// call does not return when that is what happened.
-	if p.boot.check(ctx, p, pods, ctrs) {
+	if p.boot.check(ctx, p, pods, ctrs) && !p.emptyGenericAssignment(pods, ctrs, "/run/c8s-pod/manifests/pod.yaml") {
 		p.bootRestart.Store(true)
 		p.endPodIdentity(errors.New("pod inventory was reconstructed after a plugin restart"))
 	}
@@ -1036,6 +1040,7 @@ func (p *plugin) Synchronize(ctx context.Context, pods []*api.PodSandbox, ctrs [
 	p.initExempt(ctx, pods, ctrs)
 
 	p.trackRunning(pods, ctrs)
+	p.podRegistered.Store(p.cfg.podRole() && (p.cfg.podWaiting() || !p.bootRestart.Load()))
 
 	if !p.shouldCheckExisting() {
 		p.logger.Info("startup check disabled", "pods", len(pods), "containers", len(ctrs))

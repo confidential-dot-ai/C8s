@@ -488,6 +488,9 @@ type healthServerConfig struct {
 type healthResponse struct {
 	Status           string `json:"status"`
 	AllowlistVersion uint64 `json:"allowlist_version"` // plugin.AppliedAllowlistVersion
+	PodUID           string `json:"pod_uid,omitempty"`
+	PodWaiting       bool   `json:"pod_waiting,omitempty"`
+	PodRegistered    bool   `json:"pod_registered,omitempty"`
 }
 
 // startHealthServer starts an HTTP server for readiness/liveness probes.
@@ -497,6 +500,11 @@ func startHealthServer(ctx context.Context, cfg healthServerConfig) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		body := healthResponse{Status: "ok", AllowlistVersion: cfg.plugin.AppliedAllowlistVersion()}
+		if cfg.plugin.cfg.Pod != nil {
+			body.PodUID = cfg.plugin.cfg.Pod.UID
+			body.PodWaiting = cfg.plugin.cfg.Pod.Waiting
+			body.PodRegistered = cfg.plugin.podRegistered.Load() && !cfg.plugin.podStartDisconnected.Load()
+		}
 		code := http.StatusOK
 		if !cfg.plugin.Ready() {
 			body.Status = "not ready"

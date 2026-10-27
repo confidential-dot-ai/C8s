@@ -70,7 +70,7 @@ func (p *plugin) afterPodStart(pod *api.PodSandbox, source string) error {
 }
 
 func (p *plugin) preparePodBroker(ctx context.Context, client *http.Client) error {
-	if !p.cfg.podRole() {
+	if !p.cfg.podRole() || p.cfg.podWaiting() {
 		return nil
 	}
 	if client == nil {

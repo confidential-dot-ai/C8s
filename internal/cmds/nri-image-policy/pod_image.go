@@ -49,6 +49,9 @@ func (p *plugin) containerImage(pod *api.PodSandbox, ctr *api.Container) (string
 	if !p.cfg.podRole() {
 		return ctr.GetAnnotations()[annotationImageName], nil
 	}
+	if p.cfg.podWaiting() {
+		return "", fmt.Errorf("pod guest is waiting for an assignment")
+	}
 	assigned := p.cfg.Pod
 	if pod.GetId() == "" || ctr.GetId() == "" || ctr.GetPodSandboxId() != pod.GetId() ||
 		pod.GetNamespace() != assigned.Namespace || pod.GetName() != assigned.Name {

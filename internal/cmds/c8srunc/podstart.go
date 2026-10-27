@@ -24,6 +24,9 @@ func (w Wrapper) requirePodStart(g globals) error {
 	if !w.Floor.PodRole {
 		return nil
 	}
+	if w.Floor.PodWaiting {
+		return errors.New("pod guest is waiting for an assignment")
+	}
 	args := g.rest
 	if len(args) > 0 && args[0] == "--" {
 		args = args[1:]

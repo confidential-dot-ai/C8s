@@ -15,6 +15,7 @@ package c8srunc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -164,6 +165,9 @@ func (w Wrapper) Run(argv []string) int {
 func (w Wrapper) checkFloor(args []string) error {
 	if w.FloorError != nil {
 		return fmt.Errorf("read the measured mesh floor from %s: %w", w.MeshConfig, w.FloorError)
+	}
+	if w.Floor.PodWaiting {
+		return errors.New("pod guest is waiting for an assignment")
 	}
 	spec, containerID, err := readBundle(args)
 	if err != nil {

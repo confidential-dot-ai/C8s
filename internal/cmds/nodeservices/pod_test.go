@@ -270,9 +270,7 @@ func TestPreparePodFailsClosed(t *testing.T) {
 		change func(*launchconfig.Document)
 		want   string
 	}{
-		{"no pod", func(d *launchconfig.Document) { d.Pod = nil }, "requires a pod"},
-		{"no workloads", func(d *launchconfig.Document) { d.Workloads = "" }, "requires a pod"},
-		{"empty workloads", func(d *launchconfig.Document) { d.Workloads = `{"schema":"c8s.allowlist/v1","workloads":{}}` }, "nonempty workloads base"},
+		{"generic with workloads", func(d *launchconfig.Document) { d.Pod = nil }, "must not carry workloads"},
 		{"no CDS address", func(d *launchconfig.Document) { d.Server.Address = "" }, "server.address"},
 		{"invalid CDS address", func(d *launchconfig.Document) { d.Server.Address = "127.0.0.1" }, "server.address"},
 		{"bad workloads", func(d *launchconfig.Document) { d.Workloads = "{" }, "launch workloads"},
