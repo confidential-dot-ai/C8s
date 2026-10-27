@@ -195,6 +195,7 @@ func membershipModelLeader(t *testing.T) (*Node, *ecdsa.PrivateKey) {
 	if res, ok := resp.(DecreeResult); !ok || res.Err != "" {
 		t.Fatalf("genesis: %#v", resp)
 	}
+	n.applyDecrees(context.Background()) // Run's first decree cycle: the leader's decree view (fence.go)
 	return n, key
 }
 

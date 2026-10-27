@@ -225,6 +225,10 @@ func newHAStatusCmd() *cobra.Command {
 				seen = append(seen, hb)
 				fmt.Fprintf(cmd.OutOrStdout(), "%-40s cluster=%s node=%s id=%s state=%s joined=%t epoch=%d serving=%t ca=%s voters=%d non_voters=%d applied=%d\n",
 					u, hb.ClusterID, hb.NodeName, hb.ID, hb.State, hb.Joined, hb.Epoch, hb.Serving, hb.CAFingerprint, len(hb.Voters), len(hb.NonVoters), hb.AppliedIndex)
+				if f := hb.Fenced; f != nil {
+					fmt.Fprintf(cmd.OutOrStdout(), "%-40s FENCED since=%s stale_for=%s cut_off=%v decree=%s member=%s: %s\n", u,
+						time.UnixMilli(f.SinceMS).UTC().Format(time.RFC3339), time.Duration(f.StaleForMS)*time.Millisecond, f.CutOffVoters, f.Decree, f.Member, f.Reason)
+				}
 			}
 			return reportDivergence(seen, len(urls))
 		},

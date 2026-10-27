@@ -102,7 +102,7 @@ func (m *memDecrees) put(sd SignedDecree) string {
 	return name
 }
 
-func (m *memDecrees) PendingDecrees(ctx context.Context) ([]PendingDecree, error) {
+func (m *memDecrees) ListDecrees(ctx context.Context) ([]PendingDecree, error) {
 	if h := m.hang.Load(); h != nil {
 		m.hung.Add(1)
 		select {
@@ -118,11 +118,21 @@ func (m *memDecrees) PendingDecrees(ctx context.Context) ([]PendingDecree, error
 	defer m.mu.Unlock()
 	var out []PendingDecree
 	for name, sd := range m.items {
-		if _, done := m.status[name]; !done {
-			out = append(out, PendingDecree{Name: name, Decree: sd})
+		p := PendingDecree{Name: name, Decree: sd}
+		if st, done := m.status[name]; done {
+			p.Status = &st
 		}
+		out = append(out, p)
 	}
 	return out, nil
+}
+
+// del removes a decree object and its status, as an operator would.
+func (m *memDecrees) del(name string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.items, name)
+	delete(m.status, name)
 }
 
 func (m *memDecrees) SetDecreeStatus(_ context.Context, name string, st DecreeStatus) error {

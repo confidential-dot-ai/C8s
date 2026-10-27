@@ -36,7 +36,8 @@ import (
 // DecreeSource is where operator decrees arrive (Kubernetes objects). Its
 // contents are untrusted: every decree is checked against the operator key.
 type DecreeSource interface {
-	PendingDecrees(ctx context.Context) ([]PendingDecree, error)
+	// ListDecrees lists this cluster's decree objects, with their status.
+	ListDecrees(ctx context.Context) ([]PendingDecree, error)
 	SetDecreeStatus(ctx context.Context, name string, st DecreeStatus) error
 }
 
@@ -187,6 +188,14 @@ type Node struct {
 	retireLog      *cache.LRUExpireCache // retiring voter + what it waits for
 	retiring       []raft.ServerID       // leader: voters waiting to retire (reconcile); protected by mu
 
+	// Recover fencing (fence.go).
+	decreeView   atomic.Pointer[decreeView]     // leader: the last fresh decree cycle
+	doubts       atomic.Pointer[[]recoverDoubt] // leader: Recover decrees not rejected in time
+	blindRemoved map[raft.ServerID]struct{}     // leader: removed while the decree view was stale; protected by mu
+	fencedSince  atomic.Int64                   // leader: Unix ms the current fence began, 0 if none
+	fenceLog     *cache.LRUExpireCache
+	recoverSeen  recoverSighting // the Run loop's Recover hold
+
 	backupAt    time.Time    // leader: last backup attempt
 	pruneAt     time.Time    // leader: last history prune check
 	prunes      atomic.Int64 // history prune entries this replica proposed (for tests)
@@ -259,6 +268,10 @@ type Status struct {
 	// (leader) is the last backup this replica stored.
 	BackupError string        `json:"backup_error,omitempty"`
 	LastBackup  *BackupStatus `json:"last_backup,omitempty"`
+	// Fenced (leader) says why the cluster serves no reads or writes: its
+	// leader cannot see the decree objects while members are cut off, or a
+	// Recover decree may have forked it (see Fence).
+	Fenced *Fence `json:"fenced,omitempty"`
 	// LogEntries and LogBytes are the in-memory Raft log: entries kept
 	// until a snapshot compacts them, and the bytes they hold.
 	LogEntries uint64 `json:"log_entries,omitempty"`
@@ -336,6 +349,8 @@ func NewNode(cfg Config) (*Node, error) {
 		known:          map[raft.ServerID]bool{},
 		joinRefusedLog: newLogOnce(),
 		retireLog:      newLogOnce(),
+		blindRemoved:   map[raft.ServerID]struct{}{},
+		fenceLog:       newLogOnce(),
 	}
 	if len(cfg.RecoveryKey) > 0 {
 		k, err := x509.ParsePKIXPublicKey(cfg.RecoveryKey)
@@ -560,29 +575,36 @@ func (n *Node) Run(ctx context.Context) error {
 		}
 		switch addr, _ := n.r().LeaderWithID(); {
 		case n.leading():
-			n.noLeader = time.Time{}
+			n.noLeader, n.recoverSeen = time.Time{}, recoverSighting{}
 			if err := n.wedged(); err != nil {
 				return err
 			}
 			// Decrees and backups wait on the API server: runDecrees.
 			n.reconcile()
+			n.dropSuspects()
 			if n.fsm.Stuck() == "" { // both derive their entries from this replica's state
 				n.maybePruneHistory()
 				n.maybeRenewCA()
 			}
 		case addr != "":
-			n.noLeader = time.Time{}
+			n.noLeader, n.recoverSeen = time.Time{}, recoverSighting{}
 			n.refreshSeats()
 		case n.noLeader.IsZero():
 			n.noLeader = time.Now()
 		case time.Since(n.noLeader) > n.cfg.Timing.DeadAfter:
 			// No majority for a while: an operator Recover decree naming us
-			// makes us the only voter; otherwise the cluster may have been
-			// recovered around us, so ask to be added again.
-			if p, ok := n.pendingDecree(ctx, Recover); ok {
+			// makes us the only voter, once it has stayed pending for the
+			// hold and no member answers (fence.go); otherwise the cluster
+			// may have been recovered around us, so ask to be added again.
+			p, ok := n.pendingDecree(ctx, Recover)
+			switch {
+			case !ok:
+				n.recoverSeen = recoverSighting{}
+				n.rejoin(ctx)
+			case n.recoverReady(p):
 				n.recover(ctx, p)
-				n.noLeader = time.Time{}
-			} else {
+				n.noLeader, n.recoverSeen = time.Time{}, recoverSighting{}
+			default:
 				n.rejoin(ctx)
 			}
 		}
@@ -716,6 +738,9 @@ func (n *Node) handleControl(peer Claims, req controlRequest) controlResponse {
 	if err := n.fsm.admitRaw(req.Entry); err != nil {
 		return controlResponse{Member: true, Err: err.Error()}
 	}
+	if err := n.fenced(); err != nil {
+		return controlResponse{Member: true, Err: err.Error()}
+	}
 	idx, resp, err := n.applyLocal(req.Entry)
 	var body json.RawMessage
 	if err == nil {
@@ -768,6 +793,9 @@ func (n *Node) propose(e Entry) (json.RawMessage, error) {
 		return nil, err
 	}
 	if n.leading() {
+		if err := n.fenced(); err != nil {
+			return nil, err
+		}
 		_, resp, err := n.applyLocal(raw)
 		if err != nil {
 			return nil, err
@@ -873,6 +901,9 @@ func (n *Node) readBarrier(r *raft.Raft, timeout time.Duration) (uint64, error) 
 	// that no snapshot compacts while it is stuck.
 	if reason := n.fsm.Stuck(); reason != "" {
 		return 0, errors.New("cds-ha: leader stopped following the log: " + reason)
+	}
+	if err := n.fenced(); err != nil {
+		return 0, err
 	}
 	start := time.Now()
 	deadline := start.Add(timeout)
@@ -1223,6 +1254,7 @@ func (n *Node) Status() Status {
 		}
 	}
 	if n.leading() {
+		st.Fenced = n.fence()
 		st.SeatsFilled = n.seatsFilled()
 		n.mu.Lock()
 		for _, id := range n.retiring {

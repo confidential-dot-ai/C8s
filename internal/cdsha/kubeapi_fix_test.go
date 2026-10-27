@@ -99,7 +99,7 @@ func TestKubeDecreesRequestsHaveDeadline(t *testing.T) {
 	kd := KubeDecrees{Client: kc, Namespace: "ns", ClusterID: "c1"} // Timeout unset: DefaultTiming.Apply
 	bound := DefaultTiming.Apply
 	calls := map[string]func(context.Context) error{
-		"PendingDecrees":  func(ctx context.Context) error { _, err := kd.PendingDecrees(ctx); return err },
+		"ListDecrees":     func(ctx context.Context) error { _, err := kd.ListDecrees(ctx); return err },
 		"SetDecreeStatus": func(ctx context.Context) error { return kd.SetDecreeStatus(ctx, "x", DecreeStatus{}) },
 		"PutBackup":       func(ctx context.Context) error { return kd.PutBackup(ctx, Backup{Meta: BackupMeta{ClusterID: "c1"}}) },
 	}

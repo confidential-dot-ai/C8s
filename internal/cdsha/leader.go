@@ -90,12 +90,12 @@ func (n *Node) pendingDecree(ctx context.Context, kind DecreeKind) (PendingDecre
 	if n.cfg.Decrees == nil {
 		return PendingDecree{}, false
 	}
-	ds, err := n.cfg.Decrees.PendingDecrees(ctx)
+	ds, err := n.cfg.Decrees.ListDecrees(ctx)
 	if err != nil {
 		return PendingDecree{}, false
 	}
 	for _, d := range ds {
-		if d.Err != nil || d.Decree.Decree.Kind != kind || d.Decree.Decree.BootstrapNode != n.cfg.NodeName {
+		if d.Status != nil || d.Err != nil || d.Decree.Decree.Kind != kind || d.Decree.Decree.BootstrapNode != n.cfg.NodeName {
 			continue
 		}
 		err := CheckDecree(d.Decree, n.fsm.Core(), time.Now())
@@ -434,20 +434,31 @@ func (n *Node) applyDecrees(ctx context.Context) {
 	if n.cfg.Decrees == nil {
 		return
 	}
-	ds, err := n.cfg.Decrees.PendingDecrees(ctx)
+	r := n.r()
+	if r == nil {
+		return
+	}
+	term, start := r.CurrentTerm(), time.Now()
+	ds, err := n.cfg.Decrees.ListDecrees(ctx)
 	if err != nil {
 		n.log.Debug("list decrees", "err", err)
 		return
 	}
-	applied := n.fsm.Core().AppliedDecrees
+	// Recover decrees first: the decree view is fresh once they are judged
+	// (fence.go).
+	core := n.fsm.Core()
+	v := n.decreeView.Load()
+	fresh := v != nil && v.term == term && start.Sub(v.at) < n.cfg.Timing.decreeLease()
+	doubts, ok := n.judgeRecovers(ctx, ds, core, fresh)
+	n.doubts.Store(&doubts)
+	if ok && time.Since(start) < n.cfg.Timing.Apply {
+		n.decreeView.Store(&decreeView{term: term, at: start})
+		n.mu.Lock()
+		clear(n.blindRemoved)
+		n.mu.Unlock()
+	}
 	for _, d := range ds {
-		if d.Err == nil && d.Decree.Decree.Kind == Recover && !slices.Contains(applied, d.Decree.Decree.IntentID) {
-			// A leader holds a majority: nothing was lost for good. Applied
-			// here, the decree would only bump the epoch, and the replica it
-			// names, if merely cut off, would come back to an epoch it did
-			// not see.
-			n.log.Warn("Recover decree refused: the cluster has a leader with a majority", "decree", d.Name)
-			n.setStatus(ctx, d.Name, DecreeStatus{RejectedReason: ErrRecoverWithQuorum.Error()})
+		if d.Status != nil || d.Err == nil && d.Decree.Decree.Kind == Recover && !slices.Contains(core.AppliedDecrees, d.Decree.Decree.IntentID) {
 			continue
 		}
 		r := n.r()
@@ -592,8 +603,10 @@ func (n *Node) commitDecree(p PendingDecree) (DecreeStatus, bool) {
 	return DecreeStatus{AppliedEpoch: &res.Epoch}, true
 }
 
-func (n *Node) setStatus(ctx context.Context, name string, st DecreeStatus) {
+func (n *Node) setStatus(ctx context.Context, name string, st DecreeStatus) bool {
 	if err := n.cfg.Decrees.SetDecreeStatus(ctx, name, st); err != nil {
 		n.log.Warn("write decree status", "decree", name, "err", err)
+		return false
 	}
+	return true
 }

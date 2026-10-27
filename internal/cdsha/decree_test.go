@@ -230,7 +230,7 @@ func TestKubeDecrees(t *testing.T) {
 	if _, err := kube.CoreV1().ConfigMaps("decrees").Create(ctx, bad, metav1.CreateOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	pending, err := st.PendingDecrees(ctx)
+	pending, err := st.ListDecrees(ctx)
 	if err != nil || len(pending) != 2 {
 		t.Fatalf("pending %+v: %v", pending, err)
 	}
@@ -243,8 +243,14 @@ func TestKubeDecrees(t *testing.T) {
 	if err := st.SetDecreeStatus(ctx, good.Name, DecreeStatus{AppliedEpoch: &epoch}); err != nil {
 		t.Fatal(err)
 	}
-	if pending, _ := st.PendingDecrees(ctx); len(pending) != 1 || pending[0].Name != bad.Name {
-		t.Fatalf("a decree with a status is still pending: %+v", pending)
+	listed, _ := st.ListDecrees(ctx)
+	for _, p := range listed {
+		if (p.Status != nil) != (p.Name == good.Name) || p.Name == good.Name && (p.Status.AppliedEpoch == nil || *p.Status.AppliedEpoch != 1) {
+			t.Fatalf("%s: status %+v", p.Name, p.Status)
+		}
+	}
+	if len(listed) != 2 {
+		t.Fatalf("listed %+v", listed)
 	}
 }
 

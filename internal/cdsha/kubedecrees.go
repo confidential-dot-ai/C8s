@@ -30,11 +30,12 @@ type DecreeStatus struct {
 	RejectedReason string  `json:"rejected_reason,omitempty"`
 }
 
-// PendingDecree is a decree object without a status.
+// PendingDecree is a decree object; it is pending while it has no status.
 type PendingDecree struct {
 	Name   string
 	Decree SignedDecree
-	Err    error // set when the object does not parse
+	Err    error         // set when the object does not parse
+	Status *DecreeStatus // nil while pending
 }
 
 // KubeDecrees reads decrees from a namespace the operator credential may
@@ -91,18 +92,20 @@ func (c deadlineConfigMaps) Delete(ctx context.Context, name string, o metav1.De
 	return c.ConfigMapInterface.Delete(ctx, name, o)
 }
 
-// PendingDecrees lists this cluster's decree objects without a status.
-func (s KubeDecrees) PendingDecrees(ctx context.Context) ([]PendingDecree, error) {
+// ListDecrees lists this cluster's decree objects and their status.
+func (s KubeDecrees) ListDecrees(ctx context.Context) ([]PendingDecree, error) {
 	list, err := s.cms().List(ctx, metav1.ListOptions{LabelSelector: LabelDecree + "=" + s.ClusterID})
 	if err != nil {
 		return nil, err
 	}
 	var out []PendingDecree
 	for _, cm := range list.Items {
-		if cm.Data[keyStatus] != "" {
-			continue
-		}
 		p := PendingDecree{Name: cm.Name}
+		if raw := cm.Data[keyStatus]; raw != "" {
+			// An unreadable status still marks the decree used.
+			p.Status = &DecreeStatus{}
+			_ = json.Unmarshal([]byte(raw), p.Status)
+		}
 		p.Err = json.Unmarshal([]byte(cm.Data[keyDecree]), &p.Decree)
 		out = append(out, p)
 	}

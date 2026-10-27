@@ -320,7 +320,7 @@ func TestDecreeStoreListErrors(t *testing.T) {
 	if _, err := st.GetBackup(ctx); err == nil {
 		t.Fatal("a backup read through a failing API")
 	}
-	if _, err := st.PendingDecrees(ctx); err == nil {
+	if _, err := st.ListDecrees(ctx); err == nil {
 		t.Fatal("decrees listed through a failing API")
 	}
 }

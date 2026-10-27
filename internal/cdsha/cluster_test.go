@@ -118,6 +118,8 @@ type cluster struct {
 	// dnsSelfOnly: IPs whose peer discovery returns no other replica (the
 	// host's DNS answers only the replica's own address).
 	dnsSelfOnly map[string]bool
+	// listDown: node names whose decree List fails (their API path is down).
+	listDown map[string]bool
 
 	historyVersions int           // Config.HistoryVersions of every replica started
 	historyBytes    int64         // Config.HistoryBytes of every replica started
@@ -149,7 +151,7 @@ func newCluster(t *testing.T, seats int) *cluster {
 	rk, _ := operatorKey(t)
 	c := &cluster{t: t, opKey: k, opPub: pub, seats: seats, port: port, backups: &memBackups{}, recKey: rk,
 		decrees: newMemDecrees(),
-		nodes:   map[string]*replica{}, meas: map[string]string{}, cut: map[string]bool{}, nextIP: 2, ipOf: map[string]string{}, reads: map[string]uint32{}, dnsSelfOnly: map[string]bool{},
+		nodes:   map[string]*replica{}, meas: map[string]string{}, cut: map[string]bool{}, nextIP: 2, ipOf: map[string]string{}, reads: map[string]uint32{}, dnsSelfOnly: map[string]bool{}, listDown: map[string]bool{},
 		block: 1 + clusterSeq.Add(1)%250}
 	t.Cleanup(func() {
 		c.mu.Lock()
@@ -225,7 +227,7 @@ func (c *cluster) startWithControl(name, measurement string, wrap func(controlHa
 	n, err := NewNode(Config{
 		ClusterID: testCluster, NodeName: name, Bind: fmt.Sprintf("%s:%d", ip, c.port), Advertise: fmt.Sprintf("%s:%d", ip, c.port),
 		Attestor: MockAttestor{measurement}, BakedPins: []string{measurement}, OperatorPubKey: c.opPub,
-		Seats: c.seats, MaxNonVoters: 8, Peers: c.peers(ip), Decrees: c.decrees, Timing: c.timingOr(),
+		Seats: c.seats, MaxNonVoters: 8, Peers: c.peers(ip), Decrees: nodeDecrees{c, name}, Timing: c.timingOr(),
 		RecoveryKey: mustPKIX(c.t, &c.recKey.PublicKey), Backups: c.backups,
 		Allowlist: &al, Secrets: mem, Ledger: led, Format: reads, HistoryVersions: c.historyVersions, HistoryBytes: c.historyBytes, CAValidity: c.caValidity,
 	})
@@ -664,7 +666,7 @@ func TestRecoverAfterLosingTheMajority(t *testing.T) {
 	eventually(t, 4*time.Second, "survivor stops serving", func() bool { return !surv.node.Serving() })
 	epoch := surv.node.Core().Epoch
 	rec := c.decree(Decree{Kind: Recover, BootstrapNode: surv.name, BaseEpoch: epoch})
-	eventually(t, 10*time.Second, "recover applied", func() bool { st, ok := c.decrees.get(rec); return ok && st.AppliedEpoch != nil })
+	eventually(t, testTiming.DeadAfter+testTiming.recoverHold()+5*time.Second, "recover applied", func() bool { st, ok := c.decrees.get(rec); return ok && st.AppliedEpoch != nil })
 	eventually(t, 5*time.Second, "survivor serves again", surv.node.Serving)
 	if surv.node.Status().CAFingerprint != fp {
 		t.Fatal("recovery changed the mesh CA")
@@ -1245,5 +1247,40 @@ func TestFormatRisesOnlyWhenEveryMemberReadsIt(t *testing.T) {
 	}
 	if st := l.node.Status(); len(st.Voters)+len(st.NonVoters) != 3 {
 		t.Fatalf("membership changed: %+v", st)
+	}
+}
+
+// nodeDecrees is one replica's view of the shared decree objects.
+type nodeDecrees struct {
+	c    *cluster
+	name string
+}
+
+func (d nodeDecrees) ListDecrees(ctx context.Context) ([]PendingDecree, error) {
+	d.c.mu.Lock()
+	down := d.c.listDown[d.name]
+	d.c.mu.Unlock()
+	if down {
+		return nil, errors.New("api unreachable from this node")
+	}
+	return d.c.decrees.ListDecrees(ctx)
+}
+
+func (d nodeDecrees) SetDecreeStatus(ctx context.Context, name string, st DecreeStatus) error {
+	d.c.mu.Lock()
+	down := d.c.listDown[d.name]
+	d.c.mu.Unlock()
+	if down {
+		return errors.New("api unreachable from this node")
+	}
+	return d.c.decrees.SetDecreeStatus(ctx, name, st)
+}
+
+// setListDown cuts (or restores) the API path of the named replicas.
+func (c *cluster) setListDown(down bool, names ...string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, n := range names {
+		c.listDown[n] = down
 	}
 }
