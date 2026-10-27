@@ -117,6 +117,9 @@ const (
 type Entry struct {
 	Kind EntryKind `json:"kind"`
 	// Format is the oldest format that can apply the entry (0 is baseFormat).
+	// It stays 0 until a release changes what an existing field means; a new
+	// field needs no Format, since a replica that does not know it stops
+	// (decodeStrict).
 	Format    uint32                 `json:"format,omitempty"`
 	SetFormat uint32                 `json:"set_format,omitempty"` // KindFormat
 	Allowlist *allowlist.Command     `json:"allowlist,omitempty"`
@@ -296,7 +299,7 @@ func (f *FSM) Apply(l *raft.Log) any {
 	}
 	f.applying.Store(l.Index)
 	var e Entry
-	if err := json.Unmarshal(l.Data, &e); err != nil {
+	if err := decodeStrict(l.Data, &e); err != nil {
 		return f.stop(fmt.Errorf("decode log entry %d: %w", l.Index, err))
 	}
 	if cmp.Or(e.Format, baseFormat) > f.readable {
@@ -339,6 +342,22 @@ func (f *FSM) stateDigest(index uint64) string {
 		return ""
 	}
 	return d.State
+}
+
+// decodeStrict decodes data, which must be exactly one JSON value, into v,
+// refusing fields v does not have: an older replica that dropped a field
+// it does not know would apply something else than the replicas that know
+// it.
+func decodeStrict(data []byte, v any) error {
+	d := json.NewDecoder(bytes.NewReader(data))
+	d.DisallowUnknownFields()
+	if err := d.Decode(v); err != nil {
+		return err
+	}
+	if _, err := d.Token(); err != io.EOF {
+		return errors.New("data after the JSON value")
+	}
+	return nil
 }
 
 // errMalformed is an entry this replica does not understand.
@@ -788,7 +807,7 @@ func decodeSnapshotBody(r io.Reader, readable uint32, headOnly bool, headerLimit
 		return snapshot{}, errors.New("decode snapshot: missing or oversized header")
 	}
 	var sn snapshot
-	if err := json.Unmarshal(header, &sn); err != nil {
+	if err := decodeStrict(header, &sn); err != nil {
 		return snapshot{}, fmt.Errorf("decode snapshot: %w", err)
 	}
 	switch v, c := cmp.Or(sn.Format, baseFormat), sn.Core.format(); {
