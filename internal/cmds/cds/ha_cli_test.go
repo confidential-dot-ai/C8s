@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -729,6 +730,12 @@ func TestSetDecreeImages(t *testing.T) {
 	if err := setDecreeImages(&d, []string{spec}); err != nil {
 		t.Fatalf("matching --measurements refused: %v", err)
 	}
+	// An SNP image is its launch digest, one --image per accepted digest.
+	d = cdsha.Decree{Kind: cdsha.UpdateMeasurements}
+	if err := setDecreeImages(&d, []string{strings.ToUpper(h("d")), h("e")}); err != nil || len(d.Images) != 2 ||
+		d.Images[0].Measurement != h("d") || d.Images[0].MRTD != "" || !slices.Equal(d.Measurements, []string{h("d"), h("e")}) {
+		t.Fatalf("SNP images %+v measurements %v: %v", d.Images, d.Measurements, err)
+	}
 	for name, c := range map[string]struct {
 		kind  cdsha.DecreeKind
 		specs []string
@@ -736,6 +743,7 @@ func TestSetDecreeImages(t *testing.T) {
 	}{
 		"genesis":        {cdsha.Genesis, []string{spec}, nil},
 		"two parts":      {cdsha.UpdateMeasurements, []string{h("a") + ":" + h("b")}, nil},
+		"short digest":   {cdsha.UpdateMeasurements, []string{"dd"}, nil},
 		"short register": {cdsha.UpdateMeasurements, []string{"aa:bb:cc"}, nil},
 		"other pins":     {cdsha.UpdateMeasurements, []string{spec}, []string{"x"}},
 	} {

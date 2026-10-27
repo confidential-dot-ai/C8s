@@ -705,3 +705,32 @@ func TestNewLaunchKeyFile(t *testing.T) {
 		t.Fatal("overwrote an existing key file")
 	}
 }
+
+// An SNP rollout: add-cds-node takes --vcpus to pick the launch digest of a
+// multi-variant SNP manifest, as launch-config new does.
+func TestAddCDSNodeOnANewSNPImage(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "bundle")
+	if err := runBundleCmd(t, "new", "--out", dir, "--cluster-id", "demo", "--image-manifest", writeManifest(t, "snp"), "--vcpus", "4",
+		"--server-address", "10.0.0.10", "--cds-node", "demo-cds-0", "--cds-node", "demo-cds-1", "--cds-node", "demo-cds-2"); err != nil {
+		t.Fatal(err)
+	}
+	snp := writeManifest(t, "snp")
+	if err := runBundleCmd(t, "add-cds-node", "--bundle", dir, "--name", "demo-cds-3", "--image-manifest", snp); err == nil || !strings.Contains(err.Error(), "--vcpus is required") {
+		t.Fatalf("multi-variant manifest without --vcpus: %v", err)
+	}
+	if err := runBundleCmd(t, "add-cds-node", "--bundle", dir, "--name", "demo-cds-3", "--image-manifest", snp, "--vcpus", "8"); err != nil {
+		t.Fatal(err)
+	}
+	server, _ := readBundleDocument(t, dir, serverDir)
+	doc, _ := readBundleDocument(t, dir, "demo-cds-3")
+	if doc.Image.Platform != "snp" || doc.Image.Measurement != strings.Repeat("55", 48) || len(doc.PeerImages) != 1 || !sameImage(doc.PeerImages[0], server.Image) {
+		t.Fatalf("image %+v, peer images %+v", doc.Image, doc.PeerImages)
+	}
+	stageBundleNode(t, dir, "demo-cds-3")
+	if err := runBundleCmd(t, "add-agent", "--bundle", dir, "--name", "agent-8", "--image-manifest", snp, "--vcpus", "8"); err != nil {
+		t.Fatal(err)
+	}
+	if err := runBundleCmd(t, "add-agent", "--bundle", dir, "--name", "agent-x", "--vcpus", "8"); err == nil {
+		t.Fatal("--vcpus without --image-manifest accepted")
+	}
+}

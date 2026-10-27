@@ -133,24 +133,41 @@ type Decree struct {
 	Images []DecreeImage `json:"images,omitempty"`
 }
 
-// DecreeImage is one TDX launch identity: MRTD and RTMR[1..2], lowercase hex.
+// DecreeImage is one launch identity, lowercase hex: on TDX MRTD and
+// RTMR[1..2], on SEV-SNP the launch digest (Measurement). An image has
+// exactly one of the two shapes.
 type DecreeImage struct {
-	MRTD  string `json:"mrtd"`
-	RTMR1 string `json:"rtmr1"`
-	RTMR2 string `json:"rtmr2"`
+	MRTD  string `json:"mrtd,omitempty"`
+	RTMR1 string `json:"rtmr1,omitempty"`
+	RTMR2 string `json:"rtmr2,omitempty"`
+	// Measurement is the SNP launch digest, one per vCPU count the operator
+	// accepts.
+	Measurement string `json:"measurement,omitempty"`
 }
 
-// Pin is the replica pin of the image, as a TDX replica reports its own
-// (NodeAttestor, ImagePin): "mrtd:rtmr1:rtmr2".
+// SNP reports whether the image is an SEV-SNP launch digest.
+func (i DecreeImage) SNP() bool { return i.Measurement != "" }
+
+// Pin is the replica pin of the image, as a replica reports its own
+// (NodeAttestor, ImagePin): TDX "mrtd:rtmr1:rtmr2", SNP the launch digest.
 func (i DecreeImage) Pin() (string, error) {
-	rtmrs := map[int]string{1: i.RTMR1, 2: i.RTMR2}
-	for _, v := range []string{i.MRTD, i.RTMR1, i.RTMR2} {
+	registers := []string{i.MRTD, i.RTMR1, i.RTMR2}
+	if i.SNP() {
+		if i.MRTD != "" || i.RTMR1 != "" || i.RTMR2 != "" {
+			return "", errors.New("an image is either TDX (mrtd, rtmr1, rtmr2) or SNP (measurement), not both")
+		}
+		registers = []string{i.Measurement}
+	}
+	for _, v := range registers {
 		b, err := hex.DecodeString(v)
 		if err != nil || len(b) != sha512.Size384 || v != strings.ToLower(v) {
 			return "", fmt.Errorf("image register %q is not 48 bytes of lowercase hex", v)
 		}
 	}
-	return ImagePin("tdx", i.MRTD, rtmrs)
+	if i.SNP() {
+		return ImagePin("snp", i.Measurement, nil)
+	}
+	return ImagePin("tdx", i.MRTD, map[int]string{1: i.RTMR1, 2: i.RTMR2})
 }
 
 // imagePins are the replica pins of images, canonical.

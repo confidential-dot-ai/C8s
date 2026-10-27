@@ -141,7 +141,7 @@ func newHADecreeCmd() *cobra.Command {
 	f.StringVar(&kind, "kind", string(cdsha.UpdateMeasurements), "Genesis (mint the first key), UpdateMeasurements, RotateKey, SetVoters, or Recover (break-glass after losing a majority)")
 	f.IntVar(&d.Voters, "voters", 0, "SetVoters: the new voter seat count (odd); more replicas than seats serve as non-voters")
 	f.StringSliceVar(&d.Measurements, "measurements", nil, "complete new replica pin set; optional for RotateKey. Derived from --image when that is given")
-	f.StringArrayVar(&images, "image", nil, "a CDS launch identity, mrtd:rtmr1:rtmr2 in hex; repeat for each. Lets nodes and pods follow the pin set (GET /ha/pins), so a CDS image rollout needs no node relaunch")
+	f.StringArrayVar(&images, "image", nil, "a CDS launch identity in hex: TDX mrtd:rtmr1:rtmr2, SNP the launch digest (one per accepted vCPU count); repeat for each. Lets nodes and pods follow the pin set (GET /ha/pins), so a CDS image rollout needs no node relaunch")
 	f.StringVar(&d.IntentID, "intent-id", "", "decree nonce (default random)")
 	f.StringVar(&d.BootstrapNode, "bootstrap-node", "", "Genesis: the node whose replica starts the cluster; Recover: the surviving node (default: the --target-url replica's node)")
 	f.StringVar(&keyPath, "operator-key", "", "PEM EC private key matching the cluster's --ha-operator-key")
@@ -371,10 +371,15 @@ func setDecreeImages(d *cdsha.Decree, specs []string) error {
 	var pins []string
 	for _, spec := range specs {
 		parts := strings.Split(strings.ToLower(strings.TrimSpace(spec)), ":")
-		if len(parts) != 3 {
-			return fmt.Errorf("--image %q: want mrtd:rtmr1:rtmr2", spec)
+		var img cdsha.DecreeImage
+		switch len(parts) {
+		case 3:
+			img = cdsha.DecreeImage{MRTD: parts[0], RTMR1: parts[1], RTMR2: parts[2]}
+		case 1:
+			img = cdsha.DecreeImage{Measurement: parts[0]}
+		default:
+			return fmt.Errorf("--image %q: want mrtd:rtmr1:rtmr2 (TDX) or a launch digest (SNP)", spec)
 		}
-		img := cdsha.DecreeImage{MRTD: parts[0], RTMR1: parts[1], RTMR2: parts[2]}
 		pin, err := img.Pin()
 		if err != nil {
 			return fmt.Errorf("--image %q: %w", spec, err)

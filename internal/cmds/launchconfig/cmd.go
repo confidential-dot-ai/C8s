@@ -1,6 +1,7 @@
 package launchconfig
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -158,6 +159,7 @@ func newAddNodeCmd(role Role, use, short, long string) *cobra.Command {
 		o        JoinOptions
 		dir      string
 		manifest string
+		vcpus    int
 	)
 	cmd := &cobra.Command{
 		Use:          use,
@@ -166,8 +168,11 @@ func newAddNodeCmd(role Role, use, short, long string) *cobra.Command {
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if vcpus != 0 && manifest == "" {
+				return errors.New("--vcpus selects a launch digest of --image-manifest; it needs one")
+			}
 			if manifest != "" {
-				image, err := imageFromManifest(manifest, 0)
+				image, err := imageFromManifest(manifest, vcpus)
 				if err != nil {
 					return err
 				}
@@ -186,6 +191,7 @@ func newAddNodeCmd(role Role, use, short, long string) *cobra.Command {
 	f.StringVar(&o.ServerAddress, "server-address", "", "server IPv4 address (default: the server document's, which must then be explicit)")
 	f.Uint64Var(&o.PinFloor, "pin-floor", 0, "HA CDS: the lowest CDS pin decree base epoch the node accepts; set it to base_epoch of the decree in force, read from the attested 'c8s cds ha decrees'")
 	f.StringVar(&manifest, "image-manifest", "", "boot this image instead of the server's (a rollout): the build's manifest.json. The document still accepts the server's image for its peers; for a cds node, follow with a signed pin decree for the new image")
+	f.IntVar(&vcpus, "vcpus", 0, "SNP only: the VM's vCPU count, selecting its launch digest from --image-manifest")
 	for _, flag := range []string{"bundle", "name"} {
 		_ = cmd.MarkFlagRequired(flag)
 	}

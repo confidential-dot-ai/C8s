@@ -344,3 +344,45 @@ func TestVerifyPinDecree(t *testing.T) {
 		}
 	}
 }
+
+// An SNP image is its launch digest; it pins as the digest, which is what an
+// SNP replica reports. A TDX image keeps its JSON (and so its signed bytes)
+// exactly as before SNP images existed.
+func TestDecreeImageShapes(t *testing.T) {
+	h := func(c string) string { return strings.Repeat(c, 96) }
+	tdx := DecreeImage{MRTD: h("a"), RTMR1: h("b"), RTMR2: h("c")}
+	raw, err := json.Marshal(tdx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"mrtd":"` + h("a") + `","rtmr1":"` + h("b") + `","rtmr2":"` + h("c") + `"}`; string(raw) != want {
+		t.Fatalf("TDX image JSON changed: %s", raw)
+	}
+	snp := DecreeImage{Measurement: h("d")}
+	if pin, err := snp.Pin(); err != nil || pin != h("d") {
+		t.Fatalf("SNP pin %q: %v", pin, err)
+	}
+	if want, _ := ImagePin("snp", h("d"), nil); want != h("d") {
+		t.Fatalf("SNP replica pin %q", want)
+	}
+	for name, bad := range map[string]DecreeImage{
+		"both shapes":  {MRTD: h("a"), RTMR1: h("b"), RTMR2: h("c"), Measurement: h("d")},
+		"upper case":   {Measurement: strings.ToUpper(h("d"))},
+		"short digest": {Measurement: "dd"},
+		"partial TDX":  {MRTD: h("a"), Measurement: h("d")},
+	} {
+		if _, err := bad.Pin(); err == nil {
+			t.Errorf("%s: pinned", name)
+		}
+	}
+	// A pin decree of SNP images verifies like a TDX one.
+	k, pub := operatorKey(t)
+	sd, err := SignDecree(Decree{ClusterID: testCluster, IntentID: "i", BaseEpoch: 3, Kind: UpdateMeasurements,
+		ExpiresAt: time.Now().Add(time.Hour), Measurements: []string{h("d")}, Images: []DecreeImage{snp}}, k)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyPinDecree(sd, testCluster, pub); err != nil {
+		t.Fatalf("SNP pin decree refused: %v", err)
+	}
+}

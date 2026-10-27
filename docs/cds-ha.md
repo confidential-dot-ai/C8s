@@ -66,16 +66,18 @@ boundary. The step-by-step version, with the readiness gate, is runbook 3 in
 
 1. Sign and apply an `UpdateMeasurements` decree that pins both images
    (`c8s cds ha decree --image <old> --image <new>`). Nodes and pods follow
-   it. No node is relaunched for this.
+   it. No node is relaunched for this. On TDX an `--image` is
+   `mrtd:rtmr1:rtmr2`. On SEV-SNP it is a launch digest: give one `--image`
+   for each vCPU count a cds node may launch with.
 2. Replace the cds nodes one at a time, the leader last. Each replacement
    gets a **new name** (`c8s node launch-config add-cds-node --image-manifest
-   <new manifest.json>`). Wait until the new replica passes the readiness
-   gate (runbook 2) before you remove the old node. Serving alone is not
-   enough: a non-voter serves while a seat is still unfilled. Until it
-   joins, a replica admits only peers on its own image and on the launch
-   document's peer images, which `add-cds-node` sets to the bundle server
-   document's image. A replica whose launch document names neither the
-   image the cluster runs cannot join it.
+   <new manifest.json>`, plus `--vcpus <n>` on SEV-SNP). Wait until the new
+   replica passes the readiness gate (runbook 2) before you remove the old
+   node. Serving alone is not enough: a non-voter serves while a seat is
+   still unfilled. Until it joins, a replica admits only peers on its own
+   image and on the launch document's peer images, which `add-cds-node`
+   sets to the bundle server document's image. A replica whose launch
+   document names neither the image the cluster runs cannot join it.
 3. Sign and apply a decree that pins only the new image.
 4. Remove the old image's workload policy entries. They stay until you do.
 
