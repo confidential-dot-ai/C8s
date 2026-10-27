@@ -157,7 +157,7 @@ statusMirror:
 hostNamespacePolicy:
   enabled: true
   ## Namespaces exempt in addition to the release namespace, kube-system, and
-  ## the node image's trusted local-path-storage platform namespace.
+  ## trusted external storage namespaces on Helm installs.
   exemptNamespaces: []
 
 ## Mutating admission webhook that injects get-cert containers into pods
@@ -284,6 +284,9 @@ cds:
   # -- Max secret paths CDS holds in memory across every workload. Raise this
   # alongside secretsMaxPathsPerWorkload.
   secretsMaxPaths: 1024
+  # -- Max bytes in one secret value, never below the 32 bytes of a value CDS
+  # generates.
+  secretsMaxValueBytes:
   readinessInterval: 10s
   ## /attest CSRs arrive without a matching TCP source IP under chart routing,
   ## so leave sanValidation off and pin DNS SAN / CN patterns instead.
@@ -305,7 +308,8 @@ cds:
   ##   1. CDS admits these to call /attest.
   ##   2. The armtls-mesh daemonset and nri-image-policy plugin pin CDS's armTLS
   ##      serving cert against it when they dial CDS.
-  ## Empty = no pinning (UNSAFE outside dev).
+  ## Required unless node.baked or measurementsConfig pins whole images: CDS
+  ## refuses to start unpinned, and the chart refuses to render it.
   measurements: []
   ## TDX RTMR pins, each "<index>=<sha384-hex>", completing `measurements` on
   ## TDX: the launch digest (MRTD) covers TDVF firmware only, while RTMR[1]
@@ -459,16 +463,38 @@ armtlsMesh:
     digest: ""
     pullPolicy: IfNotPresent
 
-rke2:
-  # local-path-provisioner helper pods: the node image's baked manifest runs
-  # busybox as `/bin/sh /script/{setup,teardown}` with per-PVC flags. The seed
-  # pins exactly those two command prefixes — a busybox floor entry would
-  # admit any command line on any pod. The digest must match the node image's
-  # baked local-path-storage.yaml (a repo test pins the pair in lockstep).
-  localPathHelper:
-    image:
-      repository: busybox
-      digest: "sha256:fd8d9aa63ba2f0982b5304e1ee8d3b90a210bc1ffb5314d980eb6962f1a9715d"
+## kube-state-metrics: cluster object metadata as Prometheus metrics, a
+## platform add-on of the measured node image (node.baked only). It runs in
+## kube-system, outside the mesh, with read-only RBAC that excludes Secrets
+## and ConfigMaps, and serves plain HTTP on a fixed Service address that the
+## measured mesh policy gives every member pod as an exit
+## (node-guest-image/c8s/image-policy.yaml.in mesh.exits).
+kubeStateMetrics:
+  enabled: false
+  image:
+    repository: registry.k8s.io/kube-state-metrics/kube-state-metrics
+    # Resolve registry.k8s.io/kube-state-metrics/kube-state-metrics:v2.20.0 to bump this digest.
+    digest: "sha256:42cfe3723a5f058171c627537fb57a3ea0f26e4380fa18555a95cb1a1b4cfc5b"
+    tag: ""
+    pullPolicy: IfNotPresent
+  # The image's executable, which the seeded entry pins. Bump with the image.
+  entrypoint: ["/kube-state-metrics"]
+  # The image config's Env, which the seeded entry's env match pins. Bump
+  # with the image.
+  imageEnv:
+    PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
+  # INVARIANT: equal to the measured mesh policy's exit. Inside service-cidr,
+  # beside the cluster DNS address, in the low band the apiserver hands out
+  # only on request.
+  clusterIP: 10.53.0.11
+  port: 8080
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
 
 nriImagePolicy:
   ## The mesh policy of an installed (unmeasured) node: the pods of this
@@ -873,11 +899,6 @@ router:
     # Empty uses 75% of the cds-attest memory limit (router.attest.resources),
     # or 32Gi without one.
     tunnelBudget: ""
-    # -- Development only. With no CDS pin (cds.measurements,
-    # cds.measurementsConfig) and no cds.operatorKeys off a baked node, true
-    # lets any attested CDS supply both the route manifest and its keys;
-    # false fails the render.
-    allowUnpinnedCDS: false
 
   # -- Route publication. When enabled, cds-attest serves the applied signed
   # route manifest at /.well-known/c8s/routes (the CDS GET /routes envelope,
@@ -1044,7 +1065,9 @@ router:
     #    - when the router requests workload claims (node.baked or
     #      router.attest.expectedWorkload), the allowlist policy CDS serves no
     #      longer matches the snapshot stamped in the leaf, which strict
-    #      clients reject: renews after up to half an interval of jitter.
+    #      clients reject, and that the router requires of every workload
+    #      backend (502 `backend_digest_mismatch` until both match): renews
+    #      after up to half an interval of jitter.
     #    Without it both last until the next scheduled renewal. "0" disables
     #    the watch; otherwise the minimum is 1s.
     caWatchInterval: "1m"

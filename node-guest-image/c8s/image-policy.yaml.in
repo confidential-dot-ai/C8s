@@ -164,14 +164,6 @@ allowlist:
             command: {policy: any}
             args: {policy: any}
             mounts: {policy: any}
-      # From the baked server/manifests/local-path-storage.yaml.
-      local-path-provisioner:
-        containers:
-          - digest: "sha256:1eba82e9c386038b4af6d69cca7519fac738c28c42735ed48ce70c882ad0d80f"
-            image: "rancher/local-path-provisioner:v0.0.36@sha256:1eba82e9c386038b4af6d69cca7519fac738c28c42735ed48ce70c882ad0d80f"
-            command: {policy: any}
-            args: {policy: any}
-            mounts: {policy: any}
       # GPU nodes, from the baked server/manifests/nvidia-device-plugin.yaml.
       nvidia-device-plugin:
         containers:
@@ -208,11 +200,18 @@ allowlist:
                 - destination: "/etc/c8s/certs"
                   kind: "emptyDir"
                   source: "c8s-certs"
-      # The credential clients come in two shapes: the injected one, whose
-      # volumes are the pod's own business, and the router pod's, whose mount
-      # set is pinned because a pod of that namespace runs a role container
-      # only under a declaration that pins it (the credentials of that pod are
-      # separated by mount set alone).
+      # The credential clients come in two shapes: the injected one, which
+      # mounts the webhook's certificate volume and, when the pod asks for
+      # discovery files, the pod's discovery volume at the webhook's fixed
+      # destination; and the router pod's, whose mount set is the rendered
+      # pod's, because a pod of that namespace runs a role container only
+      # under a declaration that pins it (the credentials of that pod are
+      # separated by mount set alone). The credentials role is dropped from
+      # the workload match, so no declaration grants it under mounts the pod
+      # chooses: a pod's own container running one of these invocations with
+      # a mount of its own holds no role and stays in the match
+      # (internal/webhook getCertVolumeMounts, the chart's
+      # c8s.injectedMountTables).
       c8s-get-cert:
         label: "c8s get-cert"
         containers:
@@ -222,7 +221,27 @@ allowlist:
             command: {policy: exact, argv: ["/c8s", "get-cert"]}
             # Per pod: the SAN it requests and the discovery files it writes.
             args: {policy: any}
-            mounts: {policy: any}
+            mounts:
+              policy: exact
+              rules:
+                - destination: "/etc/c8s/certs"
+                  kind: "emptyDir"
+                  source: "c8s-certs"
+          # The same client in a pod that asks for discovery files, mounted
+          # from the volume the pod's annotation names.
+          - digest: "@OPERATOR_DIGEST@"
+            image: "@OPERATOR_REPO@@@OPERATOR_DIGEST@"
+            role: "credentials"
+            command: {policy: exact, argv: ["/c8s", "get-cert"]}
+            args: {policy: any}
+            mounts:
+              policy: exact
+              rules:
+                - destination: "/etc/c8s/certs"
+                  kind: "emptyDir"
+                  source: "c8s-certs"
+                - destination: "/run/c8s/discovery"
+                  kind: "emptyDir"
           # The router pod's certificate sidecar: the member credential it
           # writes, the discovery file it publishes, the launch-signed SAN it
           # reads and the node inventory it redeems its token at.
@@ -283,8 +302,26 @@ allowlist:
             role: "credentials"
             command: {policy: exact, argv: ["/c8s", "probe-file"]}
             args: {policy: exact, argv: ["--wait", "--timeout=3m0s", "/etc/c8s/certs/tls.crt"]}
-            # Per pod: the discovery volume get-cert writes.
-            mounts: {policy: any}
+            mounts:
+              policy: exact
+              rules:
+                - destination: "/etc/c8s/certs"
+                  kind: "emptyDir"
+                  source: "c8s-certs"
+          # The same gate in a pod that asks for discovery files.
+          - digest: "@OPERATOR_DIGEST@"
+            image: "@OPERATOR_REPO@@@OPERATOR_DIGEST@"
+            role: "credentials"
+            command: {policy: exact, argv: ["/c8s", "probe-file"]}
+            args: {policy: exact, argv: ["--wait", "--timeout=3m0s", "/etc/c8s/certs/tls.crt"]}
+            mounts:
+              policy: exact
+              rules:
+                - destination: "/etc/c8s/certs"
+                  kind: "emptyDir"
+                  source: "c8s-certs"
+                - destination: "/run/c8s/discovery"
+                  kind: "emptyDir"
           # The router pod's gate waits on the member credential and holds
           # nothing else.
           - digest: "@OPERATOR_DIGEST@"
@@ -305,9 +342,34 @@ allowlist:
             image: "@OPERATOR_REPO@@@OPERATOR_DIGEST@"
             role: "credentials"
             command: {policy: exact, argv: ["/c8s", "get-secret"]}
-            # Per pod: the secrets it fetches and where they land.
+            # Per pod: the secrets it fetches. They land in the webhook's
+            # secrets volume, the one mount beside the credential it reads.
             args: {policy: any}
-            mounts: {policy: any}
+            mounts:
+              policy: exact
+              rules:
+                - destination: "/etc/c8s/certs"
+                  kind: "emptyDir"
+                  source: "c8s-certs"
+                - destination: "/run/c8s/secrets"
+                  kind: "emptyDir"
+                  source: "c8s-secrets"
+          - digest: "@OPERATOR_DIGEST@"
+            image: "@OPERATOR_REPO@@@OPERATOR_DIGEST@"
+            role: "credentials"
+            command: {policy: exact, argv: ["/c8s", "get-secret"]}
+            args: {policy: any}
+            mounts:
+              policy: exact
+              rules:
+                - destination: "/etc/c8s/certs"
+                  kind: "emptyDir"
+                  source: "c8s-certs"
+                - destination: "/run/c8s/secrets"
+                  kind: "emptyDir"
+                  source: "c8s-secrets"
+                - destination: "/run/c8s/discovery"
+                  kind: "emptyDir"
       c8s-get-volume:
         label: "c8s get-volume"
         containers:
@@ -315,9 +377,28 @@ allowlist:
             image: "@OPERATOR_REPO@@@OPERATOR_DIGEST@"
             role: "credentials"
             command: {policy: exact, argv: ["/c8s", "get-volume"]}
-            # Per pod: the volumes it opens and where they are mounted.
+            # Per pod: the volumes it opens. They are mounted into the
+            # workload, not into this client, which holds the credential alone.
             args: {policy: any}
-            mounts: {policy: any}
+            mounts:
+              policy: exact
+              rules:
+                - destination: "/etc/c8s/certs"
+                  kind: "emptyDir"
+                  source: "c8s-certs"
+          - digest: "@OPERATOR_DIGEST@"
+            image: "@OPERATOR_REPO@@@OPERATOR_DIGEST@"
+            role: "credentials"
+            command: {policy: exact, argv: ["/c8s", "get-volume"]}
+            args: {policy: any}
+            mounts:
+              policy: exact
+              rules:
+                - destination: "/etc/c8s/certs"
+                  kind: "emptyDir"
+                  source: "c8s-certs"
+                - destination: "/run/c8s/discovery"
+                  kind: "emptyDir"
       # The router's own containers. The chart renders its pod itself, and
       # every pod of the router namespace holds platform-role containers
       # only, so each of them takes a role from here. The router
@@ -326,12 +407,12 @@ allowlist:
       # names; the acme role is the one that reaches outside the cluster in
       # the clear; the credentials role reaches the node's CDS.
       c8s-router-nginx:
-        label: "nginx reload"
+        label: "nginx front door"
         containers:
           - digest: "@ROUTER_DIGEST@"
             image: "@ROUTER_REPO@@@ROUTER_DIGEST@"
             role: "router"
-            command: {policy: exact, argv: ["/bin/sh", "/usr/lib/c8s/router-nginx/reload.sh"]}
+            command: {policy: exact, argv: ["/bin/sh", "/usr/lib/c8s/router-nginx/serve.sh"]}
             args: {policy: deny}
             # The credentials it serves, its measured configuration directory
             # and the scratch it writes. A front door mounting anything else
@@ -515,9 +596,6 @@ mesh:
   exempt_namespaces:
     - kube-system
     - c8s-system
-    # The baked RKE2 addon, whose helper pod writes a host path as root
-    # (mkosi.extra/var/lib/rancher/rke2/server/manifests/local-path-storage.yaml).
-    - local-path-storage
   # INVARIANT: equal to cluster-dns in etc/rancher/rke2/config.yaml. A
   # config.yaml.d drop-in that moves the cluster DNS breaks name resolution in
   # member pods closed, never open.
@@ -530,6 +608,12 @@ mesh:
   # INVARIANT: equal to cluster-cidr and service-cidr in
   # etc/rancher/rke2/config.yaml.
   cluster_ranges: ["10.52.0.0/16", "10.53.0.0/16"]
+  # Platform services every member pod reaches over TCP uncaptured: the
+  # baked kube-state-metrics Service, which serves cluster object metadata
+  # (docs/armtls.md, "Cluster metrics").
+  #
+  # INVARIANT: equal to the chart's kubeStateMetrics.clusterIP and port.
+  exits: ["10.53.0.11:8080"]
   # INVARIANT: equal to the ports the injected endpoint binds
   # (pkg/workloadclaims.Mesh*Port).
   capture:
@@ -568,15 +652,7 @@ policy:
   # Host privilege outside the node TCB: host namespaces, host bind mounts,
   # devices, CDI injection, OCI hooks and the marks of a privileged container
   # (see docs/allowlist-and-capabilities.md, "Host privilege").
-  #
-  # AUDIT, not enforce, and this is the one thing to flip: C8s's own node-level
-  # components (volumed, armtls-mesh, the attestation-api proxy, router, the
-  # nri-image-policy installer) legitimately use hostPath and hostNetwork, and
-  # they reach this plugin through the CDS-served document rather than through
-  # the base above, so enforcing today would deny them. Resolve their digests
-  # into the measured base the way boot preparation already merges the
-  # chart-derived component seed, then set this to "enforce".
-  sandbox: "audit"
+  sandbox: "enforce"
   label_rules: []
 
 logging:

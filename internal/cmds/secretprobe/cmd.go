@@ -104,8 +104,9 @@ missing or replayed challenge, another pod's token, a non-canonical path.
               as received
 
 CDS is verified as the pod's sidecars verify it: its armTLS certificate
-through --attestation-api-url, against the measurement or image-policy pins
-given (none pins nothing). Exit 0 whenever an answer was printed, a CDS that
+through --attestation-api-url, against the node's CDS pins where the enforcer
+mounts them, otherwise the measurement or image-policy pins given; with
+neither, every request fails. Exit 0 whenever an answer was printed, a CDS that
 issued no challenge included (status 000); 2 on a usage error, an unreadable
 file, or a token the inventory did not redeem, with the reason on stderr.`,
 		Args:          cobra.ArbitraryArgs,

@@ -390,8 +390,8 @@ vap="$manifests/psa-level-policy.yaml"
 psa_gate="$ngi/c8s/mkosi.extra/usr/local/bin/psa-ready.sh"
 cred_release="$ngi/c8s/mkosi.extra/etc/systemd/system/cred-release.service"
 exempt=$(sed -n '/^[[:space:]]*namespaces:/,/^[[:space:]]*[^[:space:]-]/s/^[[:space:]]*-[[:space:]]*//p' "$psa")
-if [ "$exempt" != "$(printf 'kube-system\nlocal-path-storage')" ]; then
-  echo "::error::$psa must exempt exactly kube-system and local-path-storage from restricted PodSecurity; got: $(echo "$exempt" | tr '\n' ' ')"
+if [ "$exempt" != "kube-system" ]; then
+  echo "::error::$psa must exempt exactly kube-system from restricted PodSecurity; got: $(echo "$exempt" | tr '\n' ' ')"
   exit 1
 fi
 if ! grep -q 'enforce: "restricted"' "$psa"; then

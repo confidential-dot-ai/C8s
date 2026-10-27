@@ -473,6 +473,9 @@ jobs:
                         disk: {bus: virtio}
                       - name: cloudinit
                         disk: {bus: virtio}
+                    # bridge, not masquerade: under masquerade the SNP guest boots and binds
+                    # :8443, but the ports Kubernetes routes on it (the router's :443, node
+                    # ports) never answer the runner (run 40565629411).
                     interfaces: [{name: default, bridge: {}}]
                     rng: {}
                   firmware: {bootloader: {efi: {secureBoot: false}}}

@@ -78,6 +78,9 @@ func TestNodeImageBootConfig_ParsesAndAdmitsSystemImages(t *testing.T) {
 	if !cfg.Policy.FatalExisting {
 		t.Error("the baked config must set policy.fatal_existing: a container predating the plugin means admission was not in place")
 	}
+	if cfg.sandboxMode() != SandboxEnforce {
+		t.Errorf("policy.sandbox = %q, want enforce: host privilege is exempt only through the measured base", cfg.sandboxMode())
+	}
 	if cfg.Logging.Syslog != "/dev/log" {
 		t.Errorf("logging.syslog = %q, want /dev/log: containerd discards a pre-installed plugin's stdout", cfg.Logging.Syslog)
 	}
@@ -88,12 +91,10 @@ func TestNodeImageBootConfig_ParsesAndAdmitsSystemImages(t *testing.T) {
 	// The RKE2 system set: every image the node runs as a container, at the
 	// digest systemfloor holds it to. An RKE2 pin bump updates these with the
 	// floor. Pinning the whole set, not a boot-critical subset, makes a dropped
-	// or corrupted entry fail here instead of at node boot. The local-path
-	// helper's busybox is NOT here: the chart seeds it argv-pinned.
+	// or corrupted entry fail here instead of at node boot.
 	systemImages := map[string]string{
 		"sha256:0d26512c90d935db3180f47a7a716e3dfac0847ec29076fb5487e535125a86a8": "docker.io/rancher/hardened-cni-plugins:v1.9.1-build20260717",
 		"sha256:134ab48d00e67bed72fa43e0492adf2f0c78383e21da7ee1aeb5b7aa8ef2e7ee": "docker.io/rancher/mirrored-cilium-cilium:v1.19.6",
-		"sha256:1eba82e9c386038b4af6d69cca7519fac738c28c42735ed48ce70c882ad0d80f": "rancher/local-path-provisioner:v0.0.36@sha256:1eba82e9c386038b4af6d69cca7519fac738c28c42735ed48ce70c882ad0d80f",
 		"sha256:25cc340fe6fd53c101e16fc452f503e7a92c219c64a80ed5381784b522dbbf77": "nvcr.io/nvidia/k8s-device-plugin:v0.19.3@sha256:25cc340fe6fd53c101e16fc452f503e7a92c219c64a80ed5381784b522dbbf77",
 		"sha256:4935e86e846d75591113f64ad4e0402718a1eda08f6900a9325d54f1df64945c": "docker.io/rancher/hardened-k8s-metrics-server:v0.9.0-build20260819",
 		"sha256:4f7ffbb3399c9f8137f5d0dd3ca0eddc7909e5d0155b35f1b0449baf96d61bfa": "docker.io/rancher/hardened-etcd:v3.6.14-k3s1-build20260819",
@@ -250,7 +251,10 @@ func TestNodeImageBaseGrantsTheFrontDoorShape(t *testing.T) {
 }
 
 // Every emptyDir rule of a role entry names the pod volume behind it, so two
-// destinations of one container cannot be fed from each other's volume.
+// destinations of one container cannot be fed from each other's volume. The
+// one exception is the injected clients' discovery mount: the webhook mounts
+// the volume the pod's annotation names there, so the rule pins the
+// destination and the storage alone.
 func TestNodeImageBaseBindsEveryRoleVolume(t *testing.T) {
 	cfg, err := parseConfig([]byte(renderNodeImagePolicy(t)))
 	if err != nil {
@@ -263,7 +267,7 @@ func TestNodeImageBaseBindsEveryRoleVolume(t *testing.T) {
 		}
 		for _, container := range entry.Containers {
 			for _, rule := range container.Mounts.Rules {
-				if rule.Kind != allowlist.MountEmptyDir {
+				if rule.Kind != allowlist.MountEmptyDir || rule.Destination == "/run/c8s/discovery" {
 					continue
 				}
 				if rule.Source == "" {

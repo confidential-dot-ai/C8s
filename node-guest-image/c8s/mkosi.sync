@@ -25,7 +25,6 @@
 # now runs as a container:
 #   go run ./node-guest-image/c8s/systemfloor \
 #     -bundle <core bundle> -bundle <cilium bundle> \
-#     -manifest node-guest-image/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/local-path-storage.yaml \
 #     -manifest node-guest-image/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/nvidia-device-plugin.yaml \
 #     node-guest-image/c8s/image-policy.yaml.in
 # rke2's own containerd base template imports config-v3.toml.d/*.toml since
@@ -290,6 +289,8 @@ render_node_integration() {
         echo "c8s sync: FATAL ${C8S_REF} must provide a working 'c8s node-image render'; publish this branch's images and select that C8S_REF" >&2
         exit 1
     fi
+    bash "$SRCDIR/mkosi.profiles/c8s/check-seed-images.sh" \
+        "$out/allowlist-seed.json" "$out/images.txt"
     # Both roles share this image. Only rke2-server applies server/manifests,
     # after authenticated launch staging selects the server role.
     install -D -m 0644 "$out/c8s-integration.yaml" \

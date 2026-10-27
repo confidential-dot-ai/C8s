@@ -223,6 +223,11 @@
 {{- fail (printf "VALIDATION_ERROR kind=router_allowlist_rate_budget: router.allowlist.rateLimit.totalBurst must be less than cds.rateBurst (%v), got: %d" .Values.cds.rateBurst $writeTotalBurst) -}}
 {{- end -}}
 {{- end -}}
+{{- /* A baked node image carries its pins in the measured launch config,
+       which the chart cannot see. */ -}}
+{{- if and (not .Values.node.baked) (not .Values.cds.measurementsConfig) (empty .Values.cds.measurements) -}}
+{{- fail "VALIDATION_ERROR kind=cds_pins_required: cds.measurements and cds.measurementsConfig are both empty, so nothing pins the guest identity of this cluster's CDS: CDS would refuse to start, and nothing dialing it could tell it from any other attested TEE. Pass `c8s install --measurements <launch-digest>` (the node image's manifest.json value) or --image-policy-file <policy.json>." -}}
+{{- end -}}
 {{- /*
   CDS refuses to start unless the per-workload secret quota is strictly below
   the store ceiling, so the pair is refused here instead.
@@ -231,6 +236,17 @@
 {{- $secretsQuota := int (include "c8s.positiveInt" (dict "value" .Values.cds.secretsMaxPathsPerWorkload "label" "cds.secretsMaxPathsPerWorkload")) -}}
 {{- if ge $secretsQuota $secretsCeiling -}}
 {{- fail (printf "VALIDATION_ERROR kind=cds_secrets_path_budget: cds.secretsMaxPathsPerWorkload must be below cds.secretsMaxPaths (%d), got: %d" $secretsCeiling $secretsQuota) -}}
+{{- end -}}
+{{- /*
+  CDS refuses to start on a value bound below the size of the values it
+  generates, so that is refused here instead. Bump the 32 with
+  secrets.GeneratedValueBytes.
+*/ -}}
+{{- if not (kindIs "invalid" .Values.cds.secretsMaxValueBytes) -}}
+{{- $secretsValueBytes := int (include "c8s.positiveInt" (dict "value" .Values.cds.secretsMaxValueBytes "label" "cds.secretsMaxValueBytes")) -}}
+{{- if lt $secretsValueBytes 32 -}}
+{{- fail (printf "VALIDATION_ERROR kind=cds_secrets_value_bytes: cds.secretsMaxValueBytes must be at least 32, the size of every value CDS generates, got: %d" $secretsValueBytes) -}}
+{{- end -}}
 {{- end -}}
 {{- /*
   Per-container `paths` was replaced by an entry-level `secrets` grant. CDS

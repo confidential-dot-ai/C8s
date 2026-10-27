@@ -628,6 +628,38 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      # A release image must bake the allowlist seed that the release statement
+      # lists for its platform (docs/releases.md). semver-tag.yml publishes both
+      # inside the parent Docker run, before this build starts. A statement
+      # from a commit without seed assets (an older commit, or beta before it
+      # has this change) lists none, so there is nothing to check.
+      - name: Check the baked allowlist seed against the release
+        if: inputs.gate != true && inputs.release_tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          PLATFORM: ${{ matrix.platform }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          release="$RUNNER_TEMP/release-seed"
+          mkdir -p "$release"
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir "$release" \
+            --pattern release-statement.json
+          jq -e --arg repository "$GITHUB_REPOSITORY" --arg tag "$RELEASE_TAG" --arg commit "$HEAD_SHA" \
+            '.repository == $repository and .tag == $tag and .commit == $commit' \
+            "$release/release-statement.json" > /dev/null
+          if ! jq -e 'has("allowlistSeeds")' "$release/release-statement.json" > /dev/null; then
+            echo "::notice::$RELEASE_TAG publishes no allowlist seed assets; skipping the seed check"
+            exit 0
+          fi
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir "$release" \
+            --pattern "allowlist-seed-$PLATFORM.json"
+          sudo bash c8s/.github/scripts/release-seeds.sh baked \
+            "confidential-os-builder/output/$VARIANT/disk.raw" "$release/baked.json"
+          # rke2-<platform>-cdi is the same disk.
+          bash c8s/.github/scripts/release-seeds.sh check "$release" "$PLATFORM" "$release/baked.json"
+
       - name: Check whether the rootfs changed
         if: inputs.gate != true
         # An unchanged roothash leaves the floating tags where they are. The
