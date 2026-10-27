@@ -62,7 +62,7 @@ func (m *memBackups) PutBackup(ctx context.Context, b Backup) error {
 	if m.err != nil {
 		return m.err
 	}
-	if m.last != nil && !b.Meta.Newer(m.last.Meta) {
+	if m.last != nil && !b.Meta.Follows(m.last.Meta) {
 		return ErrBackupNotNewer
 	}
 	m.last = &b
@@ -114,6 +114,9 @@ type cluster struct {
 	nextIP int
 	ipOf   map[string]string
 	reads  map[string]uint32 // node name -> newest format its next replica reads (0: Format)
+	// dnsSelfOnly: IPs whose peer discovery returns no other replica (the
+	// host's DNS answers only the replica's own address).
+	dnsSelfOnly map[string]bool
 
 	historyVersions int           // Config.HistoryVersions of every replica started
 	historyBytes    int64         // Config.HistoryBytes of every replica started
@@ -145,7 +148,7 @@ func newCluster(t *testing.T, seats int) *cluster {
 	rk, _ := operatorKey(t)
 	c := &cluster{t: t, opKey: k, opPub: pub, seats: seats, port: port, backups: &memBackups{}, recKey: rk,
 		decrees: newMemDecrees(),
-		nodes:   map[string]*replica{}, meas: map[string]string{}, cut: map[string]bool{}, nextIP: 2, ipOf: map[string]string{}, reads: map[string]uint32{},
+		nodes:   map[string]*replica{}, meas: map[string]string{}, cut: map[string]bool{}, nextIP: 2, ipOf: map[string]string{}, reads: map[string]uint32{}, dnsSelfOnly: map[string]bool{},
 		block: 1 + clusterSeq.Add(1)%250}
 	t.Cleanup(func() {
 		c.mu.Lock()
@@ -178,6 +181,9 @@ func (c *cluster) peers(self string) func(context.Context) ([]string, error) {
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		var out []string
+		if c.dnsSelfOnly[self] {
+			return out, nil
+		}
 		for _, r := range c.nodes {
 			if r.ip != self {
 				out = append(out, fmt.Sprintf("%s:%d", r.ip, c.port))
@@ -264,9 +270,24 @@ func (c *cluster) partition(name string, on bool) {
 	}
 }
 
+// decree signs and posts d. A one-shot decree without a target names the
+// running replica on its BootstrapNode.
 func (c *cluster) decree(d Decree) string {
 	c.t.Helper()
+	if d.TargetMember == "" && (d.Kind == Genesis || d.Kind == Recover || d.Kind == Restore) {
+		d.TargetMember = c.memberOf(d.BootstrapNode)
+	}
 	return c.decrees.put(signDecree(c.t, c.opKey, d))
+}
+
+// memberOf is the member ID of the replica running on node name.
+func (c *cluster) memberOf(name string) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if r := c.nodes[name]; r != nil {
+		return r.node.ID()
+	}
+	return name + "/0-none"
 }
 
 func (c *cluster) live() []*replica {
@@ -319,7 +340,7 @@ func (c *cluster) genesis(names ...string) {
 	for _, n := range names {
 		c.start(n, "m1")
 	}
-	g := c.decree(Decree{Kind: Genesis, BootstrapNode: names[0]})
+	g := c.decree(Decree{Kind: Genesis, BootstrapNode: names[0], Alone: len(names) == 1})
 	eventually(c.t, 10*time.Second, "genesis applied", func() bool { st, ok := c.decrees.get(g); return ok && st.AppliedEpoch != nil })
 	c.settled(15 * time.Second)
 }
@@ -812,7 +833,7 @@ func TestTotalLossRestoreFromBackup(t *testing.T) {
 		return true
 	})
 	sign := func(node string, s []byte) SignedDecree {
-		return signDecree(t, c.opKey, Decree{Kind: Restore, BootstrapNode: node, SnapshotSHA256: SnapshotSHA256(s)})
+		return signDecree(t, c.opKey, Decree{Kind: Restore, BootstrapNode: node, TargetMember: c.memberOf(node), SnapshotSHA256: SnapshotSHA256(s)})
 	}
 	if _, err := c.nodes["n1"].node.Restore(ctx, sign("n0", snap), snap); !errors.Is(err, ErrNotForThisNode) {
 		t.Fatalf("a restore for another node: %v", err)

@@ -27,7 +27,9 @@ func (n *Node) member() bool {
 // joinOrBootstrap asks the replicas it can reach to add it. A replica named
 // by a pending Genesis decree starts the group instead, but only when no
 // reachable replica already belongs to one. Discovery or contact failure
-// cannot establish absence and therefore blocks Genesis fallback.
+// cannot establish absence and therefore blocks Genesis fallback. Neither
+// can an empty discovery answer, which the host's DNS can give at will: it
+// blocks Genesis unless the decree says the replica is alone.
 func (n *Node) joinOrBootstrap(ctx context.Context) {
 	n.eligibilityMu.Lock()
 	defer n.eligibilityMu.Unlock()
@@ -73,7 +75,12 @@ func (n *Node) joinOrBootstrap(ctx context.Context) {
 	if uncertain || n.fsm.Core().Joined() || n.member() {
 		return
 	}
-	if g, ok := n.pendingDecree(ctx, Genesis); ok {
+	g, ok := n.pendingDecree(ctx, Genesis)
+	switch {
+	case !ok:
+	case len(peers) == 0 && !g.Decree.Decree.Alone:
+		n.joinRefused("genesis", errors.New("peer discovery found no other replica and the Genesis decree does not say alone"))
+	default:
 		n.bootstrap(ctx, g)
 	}
 }

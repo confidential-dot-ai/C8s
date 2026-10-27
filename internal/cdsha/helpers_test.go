@@ -64,6 +64,9 @@ func signDecree(t *testing.T, key *ecdsa.PrivateKey, d Decree) SignedDecree {
 	if d.ExpiresAt.IsZero() {
 		d.ExpiresAt = time.Now().Add(time.Hour)
 	}
+	if d.TargetMember == "" && (d.Kind == Genesis || d.Kind == Recover || d.Kind == Restore) {
+		d.TargetMember = d.BootstrapNode + "/0-unbound" // the tests that act on it name a real member
+	}
 	sd, err := SignDecree(d, key)
 	if err != nil {
 		t.Fatal(err)

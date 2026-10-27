@@ -57,7 +57,7 @@ func TestRecoveryConfigurationTailPreservesState(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer n.shutdown()
-			genesis := signDecree(t, key, Decree{Kind: Genesis, BootstrapNode: "n0"})
+			genesis := signDecree(t, key, Decree{Kind: Genesis, BootstrapNode: "n0", TargetMember: n.ID(), Alone: true})
 			n.bootstrap(context.Background(), PendingDecree{Name: "genesis", Decree: genesis})
 			if !n.Core().Joined() {
 				t.Fatal("genesis not applied")
@@ -86,7 +86,7 @@ func TestRecoveryConfigurationTailPreservesState(t *testing.T) {
 			if err := n.stopRaft(old); err != nil {
 				t.Fatal(err)
 			}
-			sd := signDecree(t, key, Decree{Kind: Recover, BootstrapNode: "n0", BaseEpoch: n.Core().Epoch})
+			sd := signDecree(t, key, Decree{Kind: Recover, BootstrapNode: "n0", TargetMember: n.ID(), BaseEpoch: n.Core().Epoch})
 			n.recover(context.Background(), PendingDecree{Name: "recover", Decree: sd})
 			if n.r() == old || n.Core().Epoch != 2 {
 				t.Fatal("recovery did not replace generation and apply decree")

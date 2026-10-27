@@ -32,7 +32,7 @@ func TestRecoveryFatalReplayDoesNotRestart(t *testing.T) {
 			done := make(chan struct{})
 			go func() { defer close(done); _ = n.Run(ctx) }()
 			t.Cleanup(func() { cancel(); <-done; n.shutdown() })
-			ds.put(signDecree(t, key, Decree{Kind: Genesis, BootstrapNode: "n0"}))
+			ds.put(signDecree(t, key, Decree{Kind: Genesis, BootstrapNode: "n0", TargetMember: n.ID(), Alone: true}))
 			eventually(t, 5*time.Second, "Genesis", n.Serving)
 			at := time.Now().UnixMilli()
 			if got, err := n.applyEntry(Entry{Kind: KindBinding, Binding: &sandboxledger.Command{SandboxID: "s", Host: "original", AtMS: at}}); err != nil || got != true {
@@ -56,7 +56,7 @@ func TestRecoveryFatalReplayDoesNotRestart(t *testing.T) {
 			if err := n.logs.StoreLog(&raft.Log{Index: index + 1, Term: old.CurrentTerm(), Type: raft.LogCommand, Data: raw}); err != nil {
 				t.Fatal(err)
 			}
-			decree := signDecree(t, key, Decree{Kind: Recover, BootstrapNode: "n0", BaseEpoch: n.Core().Epoch})
+			decree := signDecree(t, key, Decree{Kind: Recover, BootstrapNode: "n0", TargetMember: n.ID(), BaseEpoch: n.Core().Epoch})
 			n.recover(context.Background(), PendingDecree{Name: "recover-test", Decree: decree})
 			if fatal {
 				if n.r() != old || n.r().State() != raft.Shutdown || n.Serving() {

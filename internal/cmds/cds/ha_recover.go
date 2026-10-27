@@ -45,8 +45,9 @@ func newHARecoverCmd() *cobra.Command {
 		Long: "Reads the backup objects (kubectl get configmaps -n <decree namespace> -l " + cdsha.LabelBackup + "=<cluster> -o json),\n" +
 			"opens them with the offline recovery key, and refuses a backup older than --min-epoch/--min-index\n" +
 			"(compare with your own record: an older backup rolls back decrees, policy and secrets).\n" +
-			"Then signs a Restore decree with the decree key and sends it with the snapshot over armTLS to the\n" +
-			"fresh replica on --bootstrap-node, which starts the cluster from it; the other replicas join.",
+			"Then reads the member ID of the fresh replica on --bootstrap-node from its /ha/status over armTLS,\n" +
+			"signs a Restore decree for that one process (target_member) with the decree key, and sends it with the\n" +
+			"snapshot on the same attested connection; the replica starts the cluster from it and the others join.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if !cmd.Flags().Changed("min-epoch") || !cmd.Flags().Changed("min-index") {
 				return errors.New("--min-epoch and --min-index are required: the oldest state you accept, from your own record of the cluster")
@@ -87,20 +88,46 @@ func newHARecoverCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("--decree-key: %w", err)
 			}
-			sd, err := cdsha.SignDecree(cdsha.Decree{ClusterID: clusterID, IntentID: "restore-" + rand.Text(), Kind: cdsha.Restore,
-				BootstrapNode: node, SnapshotSHA256: cdsha.SnapshotSHA256(snap), ExpiresAt: time.Now().Add(expiresIn).UTC().Truncate(time.Second)}, dk)
-			if err != nil {
-				return err
-			}
-			body, err := json.Marshal(RestoreRequest{Decree: sd, Snapshot: snap})
-			if err != nil {
-				return err
-			}
+			intent := "restore-" + rand.Text()
+			expires := time.Now().Add(expiresIn).UTC().Truncate(time.Second)
 			url := strings.TrimRight(conn.URL, "/") + "/ha/restore"
 			for i := 0; i < attempts; i++ {
+				if i > 0 {
+					time.Sleep(time.Second)
+				}
 				// A fresh attested connection each time: behind a Service the
 				// request lands on any replica, and only the named one restores.
 				hc, err := conn.HTTPClient(cmd.Context())
+				if err != nil {
+					return err
+				}
+				// The decree names the process this connection reaches:
+				// every request of hc goes to the one attested peer its first
+				// handshake verified (cdsconn), so the member ID comes from it.
+				var st cdsha.Status
+				if err := getJSON(cmd.Context(), hc, conn.URL, "/ha/status", 1<<16, &st); err != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "attempt %d: %v\n", i+1, err)
+					continue
+				}
+				if st.ClusterID != clusterID || st.NodeName != node {
+					continue // another replica answered
+				}
+				if st.Joined {
+					// An earlier attempt may have restored the cluster after
+					// its request timed out. The decree record says whether
+					// ours applied.
+					if restoreApplied(cmd.Context(), hc, conn.URL, intent) {
+						fmt.Fprintf(cmd.OutOrStdout(), "restored on %s (the decree record holds %s)\n", node, intent)
+						return nil
+					}
+					return errors.New("restore refused: the replica is serving; a Restore only goes to a fresh replica after a total loss (c8s cds ha status shows the cluster)")
+				}
+				sd, err := cdsha.SignDecree(cdsha.Decree{ClusterID: clusterID, IntentID: intent, Kind: cdsha.Restore, BootstrapNode: node,
+					TargetMember: st.ID, SnapshotSHA256: cdsha.SnapshotSHA256(snap), ExpiresAt: expires}, dk)
+				if err != nil {
+					return err
+				}
+				body, err := json.Marshal(RestoreRequest{Decree: sd, Snapshot: snap})
 				if err != nil {
 					return err
 				}
@@ -109,15 +136,13 @@ func newHARecoverCmd() *cobra.Command {
 				case err != nil:
 					fmt.Fprintf(cmd.ErrOrStderr(), "attempt %d: %v\n", i+1, err)
 				case code == http.StatusOK:
-					fmt.Fprintf(cmd.OutOrStdout(), "restored on %s: %s", node, msg)
+					fmt.Fprintf(cmd.OutOrStdout(), "restored on %s (member %s): %s", node, st.ID, msg)
 					return nil
 				case code == http.StatusMisdirectedRequest:
+					// The process restarted since its status: a new member ID.
 				default:
-					// An earlier attempt may have restored the cluster after
-					// its request timed out: a serving replica no longer takes
-					// /ha/restore. The decree record says whether ours applied.
-					if restoreApplied(cmd.Context(), hc, conn.URL, sd.Decree.IntentID) {
-						fmt.Fprintf(cmd.OutOrStdout(), "restored on %s (the decree record holds %s)\n", node, sd.Decree.IntentID)
+					if restoreApplied(cmd.Context(), hc, conn.URL, intent) {
+						fmt.Fprintf(cmd.OutOrStdout(), "restored on %s (the decree record holds %s)\n", node, intent)
 						return nil
 					}
 					if code == http.StatusNotFound {
@@ -125,7 +150,6 @@ func newHARecoverCmd() *cobra.Command {
 					}
 					return fmt.Errorf("restore refused (%d): %s", code, strings.TrimSpace(msg))
 				}
-				time.Sleep(time.Second)
 			}
 			return fmt.Errorf("no answer from the replica on %s after %d attempts", node, attempts)
 		},

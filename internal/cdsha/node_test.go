@@ -81,7 +81,14 @@ func newSolo(t *testing.T, mutate func(*Config)) *solo {
 	return s
 }
 
-func (s *solo) decree(d Decree) string { return s.decrees.put(signDecree(s.t, s.opKey, d)) }
+// decree signs and posts d; a one-shot decree names the solo replica's
+// process, and a Genesis says alone (its discovery finds nobody).
+func (s *solo) decree(d Decree) string {
+	if d.Kind == Genesis || d.Kind == Recover || d.Kind == Restore {
+		d.TargetMember, d.Alone = s.node.ID(), d.Kind == Genesis
+	}
+	return s.decrees.put(signDecree(s.t, s.opKey, d))
+}
 
 func (s *solo) applied(name string, epoch uint64) {
 	s.t.Helper()
@@ -217,22 +224,22 @@ func TestRestoreRefusals(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	restore := func(node string) SignedDecree {
-		return signDecree(t, s.opKey, Decree{Kind: Restore, BootstrapNode: node, SnapshotSHA256: SnapshotSHA256(snap)})
+	restore := func(n *Node) SignedDecree {
+		return signDecree(t, s.opKey, Decree{Kind: Restore, BootstrapNode: n.cfg.NodeName, TargetMember: n.ID(), SnapshotSHA256: SnapshotSHA256(snap)})
 	}
 	_, pub := operatorKey(t)
 	cold, err := NewNode(soloConfig(t, "n1", freeAddr(t), pub, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := cold.Restore(ctx, restore("n1"), snap); err == nil || !strings.Contains(err.Error(), "not started") {
+	if _, err := cold.Restore(ctx, restore(cold), snap); err == nil || !strings.Contains(err.Error(), "not started") {
 		t.Fatalf("unstarted replica: %v", err)
 	}
 	if _, err := s.node.Restore(ctx, signDecree(t, s.opKey, Decree{Kind: UpdateMeasurements, BaseEpoch: 1, Measurements: []string{"m1"}}), snap); err == nil ||
 		!strings.Contains(err.Error(), "not a Restore") {
 		t.Fatalf("not a Restore decree: %v", err)
 	}
-	if _, err := s.node.Restore(ctx, restore("n0"), snap); err == nil || !strings.Contains(err.Error(), "already belongs") {
+	if _, err := s.node.Restore(ctx, restore(s.node), snap); err == nil || !strings.Contains(err.Error(), "already belongs") {
 		t.Fatalf("a member restoring: %v", err)
 	}
 	cfg := soloConfig(t, "n1", freeAddr(t), s.node.cfg.OperatorPubKey, nil)
@@ -245,7 +252,7 @@ func TestRestoreRefusals(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(fresh.shutdown)
-	if _, err := fresh.Restore(ctx, restore("n1"), snap); err == nil || !strings.Contains(err.Error(), "belongs to a cluster") {
+	if _, err := fresh.Restore(ctx, restore(fresh), snap); err == nil || !strings.Contains(err.Error(), "belongs to a cluster") {
 		t.Fatalf("restore beside a live cluster: %v", err)
 	}
 	if fresh.member() {
@@ -257,14 +264,14 @@ func TestRestoreRefusals(t *testing.T) {
 func TestPendingBootstrapDecreesUnusable(t *testing.T) {
 	k, pub := operatorKey(t)
 	ds := newMemDecrees()
-	expired := signDecree(t, k, Decree{IntentID: "r", Kind: Recover, BootstrapNode: "n0", ExpiresAt: time.Now().Add(-time.Minute)})
-	ds.items["r"] = expired
-	gen := signDecree(t, k, Decree{IntentID: "g", Kind: Genesis, BootstrapNode: "n0", ExpiresAt: time.Now().Add(-time.Minute)})
-	ds.items["g"] = gen
 	n, err := NewNode(soloConfig(t, "n0", freeAddr(t), pub, ds))
 	if err != nil {
 		t.Fatal(err)
 	}
+	expired := signDecree(t, k, Decree{IntentID: "r", Kind: Recover, BootstrapNode: "n0", TargetMember: n.ID(), ExpiresAt: time.Now().Add(-time.Minute)})
+	ds.items["r"] = expired
+	gen := signDecree(t, k, Decree{IntentID: "g", Kind: Genesis, BootstrapNode: "n0", TargetMember: n.ID(), ExpiresAt: time.Now().Add(-time.Minute)})
+	ds.items["g"] = gen
 	ctx := context.Background()
 	if _, ok := n.pendingDecree(ctx, Recover); ok {
 		t.Fatal("an expired Recover decree used")

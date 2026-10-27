@@ -60,6 +60,13 @@ func TestCheckDecree(t *testing.T) {
 		if d.ExpiresAt.IsZero() {
 			d.ExpiresAt = now.Add(time.Hour)
 		}
+		if d.TargetMember == "" && d.BootstrapNode != "" && (d.Kind == Genesis || d.Kind == Recover || d.Kind == Restore) {
+			d.TargetMember = d.BootstrapNode + "/1-a"
+		}
+		return signRaw(t, d, k)
+	}
+	untargeted := func(d Decree) SignedDecree {
+		d.ClusterID, d.BaseEpoch, d.IntentID, d.ExpiresAt = testCluster, 3, "i", now.Add(time.Hour)
 		return signRaw(t, d, k)
 	}
 	update := Decree{Kind: UpdateMeasurements, Measurements: []string{pin}, Images: []DecreeImage{img}}
@@ -100,6 +107,13 @@ func TestCheckDecree(t *testing.T) {
 		{"recover with a set", sign(Decree{Kind: Recover, BootstrapNode: "n0", Measurements: []string{pin}}), keyed, "a Recover decree"},
 		{"recover without a key", sign(Decree{Kind: Recover, BootstrapNode: "n0"}), bare, "a Recover decree"},
 		{"unknown kind", sign(Decree{Kind: "Nuke"}), keyed, "unknown kind"},
+		{"genesis without target", untargeted(Decree{Kind: Genesis, BootstrapNode: "n0"}), bare, "must name its target_member"},
+		{"restore without target", untargeted(Decree{Kind: Restore, BootstrapNode: "n0", SnapshotSHA256: "aa"}), bare, "must name its target_member"},
+		{"recover without target", untargeted(Decree{Kind: Recover, BootstrapNode: "n0"}), keyed, "must name its target_member"},
+		{"target on another node", sign(Decree{Kind: Genesis, BootstrapNode: "n0", TargetMember: "n1/1-a"}), bare, "not a member of bootstrap_node"},
+		{"target on rotate", sign(Decree{Kind: RotateKey, TargetMember: "n0/1-a"}), keyed, "not a member of bootstrap_node"},
+		{"alone genesis", sign(Decree{Kind: Genesis, BootstrapNode: "n0", Alone: true}), bare, ""},
+		{"alone restore", sign(Decree{Kind: Restore, BootstrapNode: "n0", SnapshotSHA256: "aa", Alone: true}), bare, "only a Genesis decree may say alone"},
 		{"voters on update", sign(Decree{Kind: UpdateMeasurements, Measurements: []string{pin}, Voters: 3}), keyed, "names a voter count"},
 		{"set voters without count", sign(Decree{Kind: SetVoters}), keyed, "names a voter count"},
 		{"even voters", sign(Decree{Kind: SetVoters, Voters: 2}), keyed, "voters must be odd"},

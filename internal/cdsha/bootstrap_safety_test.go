@@ -28,7 +28,7 @@ func TestGenesisDiscoveryFailureFailsClosed(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer n.shutdown()
-			ds.put(signDecree(t, key, Decree{Kind: Genesis, BootstrapNode: "n0"}))
+			ds.put(signDecree(t, key, Decree{Kind: Genesis, BootstrapNode: "n0", TargetMember: n.ID()}))
 			n.joinOrBootstrap(context.Background())
 			if n.fsm.Core().Joined() || n.member() {
 				t.Fatal("discovery error allowed Genesis bootstrap")

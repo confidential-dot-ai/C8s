@@ -38,6 +38,11 @@ type Core struct {
 	Measurements   []string  `json:"measurements,omitempty"` // replica pin set, sorted lowercase hex
 	OperatorPubKey []byte    `json:"operator_pubkey"`        // PKIX DER; nil means decrees are rejected
 	AppliedDecrees []string  `json:"applied_decrees,omitempty"`
+	// EpochFrom[k] is the applied index of the state epoch k+1 was made from:
+	// the index before its decree's entry, or the restored backup's index.
+	// A backup replaces a stored one only if it descends from it
+	// (BackupMeta.Follows).
+	EpochFrom []uint64 `json:"epoch_from,omitempty"`
 	// GenesisAtMS is when the cluster was born. Single-use operator tokens
 	// issued before it are refused: no replica can know whether they were
 	// spent in an earlier life of the cluster.
@@ -63,6 +68,7 @@ func (c Core) clone() Core {
 	c.Measurements = slices.Clone(c.Measurements)
 	c.OperatorPubKey = slices.Clone(c.OperatorPubKey)
 	c.AppliedDecrees = slices.Clone(c.AppliedDecrees)
+	c.EpochFrom = slices.Clone(c.EpochFrom)
 	return c
 }
 
@@ -313,7 +319,7 @@ func (f *FSM) applyDecree(de DecreeEntry) DecreeResult {
 			return DecreeResult{Epoch: f.core.Epoch, Err: err.Error()}
 		}
 	}
-	next, ca, err := nextCore(f.core, de)
+	next, ca, err := nextCore(f.core, de, f.applied.Load())
 	if err != nil {
 		return DecreeResult{Epoch: f.core.Epoch, Err: err.Error()}
 	}
@@ -382,6 +388,7 @@ func (f *FSM) applyRestore(re RestoreEntry) DecreeResult {
 	}
 	sn.Core.Epoch++
 	sn.Core.AppliedDecrees = append(sn.Core.AppliedDecrees, re.Decree.Decree.IntentID)
+	sn.Core.EpochFrom = append(sn.Core.EpochFrom, sn.Index)
 	if err := f.restore(sn); err != nil {
 		return fail(err)
 	}
@@ -391,8 +398,9 @@ func (f *FSM) applyRestore(re RestoreEntry) DecreeResult {
 	return DecreeResult{Epoch: sn.Core.Epoch}
 }
 
-// nextCore is the state after decree entry de, or why de does not apply.
-func nextCore(cur Core, de DecreeEntry) (Core, *issuer.CA, error) {
+// nextCore is the state after decree entry de, applied on the state at
+// index from, or why de does not apply.
+func nextCore(cur Core, de DecreeEntry, from uint64) (Core, *issuer.CA, error) {
 	if err := CheckDecree(de.Decree, cur, time.UnixMilli(de.AtMS)); err != nil {
 		return Core{}, nil, err
 	}
@@ -438,6 +446,7 @@ func nextCore(cur Core, de DecreeEntry) (Core, *issuer.CA, error) {
 	}
 	next.Epoch++
 	next.AppliedDecrees = append(next.AppliedDecrees, d.IntentID)
+	next.EpochFrom = append(next.EpochFrom, from)
 	return next, ca, nil
 }
 

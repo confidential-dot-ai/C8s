@@ -237,8 +237,9 @@ type Status struct {
 	ApplyLag      uint64 `json:"apply_lag,omitempty"`
 	ReadBarrierMS int64  `json:"read_barrier_ms,omitempty"`
 
-	// BackupError (leader) says backups are failing because the state is
-	// over a snapshot size bound: no backup is stored until it shrinks.
+	// BackupError (leader) says backups are failing: the state is over a
+	// snapshot size bound (no backup is stored until it shrinks), or the
+	// stored backup is newer or of another cluster history (ErrBackupNotNewer).
 	BackupError string `json:"backup_error,omitempty"`
 	// LogEntries and LogBytes are the in-memory Raft log: entries kept
 	// until a snapshot compacts them, and the bytes they hold.

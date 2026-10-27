@@ -26,7 +26,7 @@ func TestBackupBarrierStateIndex(t *testing.T) {
 	}
 	defer n.shutdown()
 	// No Run loop: only this test can request a backup or read barrier.
-	decree := signDecree(t, key, Decree{Kind: Genesis, BootstrapNode: "n0"})
+	decree := signDecree(t, key, Decree{Kind: Genesis, BootstrapNode: "n0", TargetMember: n.ID(), Alone: true})
 	n.bootstrap(context.Background(), PendingDecree{Name: "genesis", Decree: decree})
 	if !n.Core().Joined() {
 		t.Fatal("Genesis did not commit")

@@ -183,7 +183,7 @@ func TestMajorityLoss(t *testing.T) {
 				return ""
 			})
 			name := c.PutDecree(cdsha.Decree{ClusterID: clusterID, IntentID: "recover-1", Kind: cdsha.Recover, BaseEpoch: epoch,
-				BootstrapNode: c.Replicas[survivor].Node, ExpiresAt: time.Now().Add(10 * time.Minute)}, nil)
+				BootstrapNode: c.Replicas[survivor].Node, TargetMember: c.MemberID(survivor), ExpiresAt: time.Now().Add(10 * time.Minute)}, nil)
 			start := time.Now()
 			c.WaitServing([]int{survivor}, 60*time.Second)
 			c.Logf("survivor %s serving %s after the Recover decree", c.Replicas[survivor].Node, time.Since(start))
@@ -207,7 +207,7 @@ func TestMajorityLoss(t *testing.T) {
 			c.WaitNotServing(l, timing.lease+3*time.Second)
 			nl := c.WaitLeader(20*time.Second, l)
 			name := c.PutDecree(cdsha.Decree{ClusterID: clusterID, IntentID: "recover-wrong", Kind: cdsha.Recover, BaseEpoch: epoch,
-				BootstrapNode: c.Replicas[l].Node, ExpiresAt: time.Now().Add(10 * time.Minute)}, nil)
+				BootstrapNode: c.Replicas[l].Node, TargetMember: c.MemberID(l), ExpiresAt: time.Now().Add(10 * time.Minute)}, nil)
 			st := c.WaitDecreeStatus(name, 30*time.Second)
 			c.Logf("Recover naming the isolated %s while %s leads: status %+v", c.Replicas[l].Node, c.Replicas[nl].Node, st)
 			if st.AppliedEpoch != nil || !strings.Contains(st.RejectedReason, "majority") {

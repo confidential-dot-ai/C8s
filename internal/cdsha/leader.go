@@ -98,13 +98,29 @@ func (n *Node) pendingDecree(ctx context.Context, kind DecreeKind) (PendingDecre
 		if d.Err != nil || d.Decree.Decree.Kind != kind || d.Decree.Decree.BootstrapNode != n.cfg.NodeName {
 			continue
 		}
-		if err := CheckDecree(d.Decree, n.fsm.Core(), time.Now()); err != nil {
+		err := CheckDecree(d.Decree, n.fsm.Core(), time.Now())
+		if err == nil {
+			err = n.checkTarget(d.Decree)
+		}
+		if err != nil {
 			n.log.Info("decree not usable", "decree", d.Name, "kind", kind, "why", err)
 			continue
 		}
 		return d, true
 	}
 	return PendingDecree{}, false
+}
+
+// checkTarget refuses a one-shot decree meant for another process: its
+// target_member is the member ID this process minted at its start, never
+// one a restarted replica on the same node could hold. Only the replica
+// that acts on the decree checks it; the others apply the logged decree
+// under their own IDs.
+func (n *Node) checkTarget(sd SignedDecree) error {
+	if t := sd.Decree.TargetMember; t != string(n.id) {
+		return fmt.Errorf("%w: the decree names member %q, this replica is %q", ErrNotForThisNode, t, n.id)
+	}
+	return nil
 }
 
 // bootstrap starts a one-voter group with this replica and applies Genesis.
@@ -165,7 +181,7 @@ func (n *Node) maybeBackup(ctx context.Context) {
 	}
 	// Export the application state watermark, not Raft's barrier-only suffix.
 	b, err := SealAuthenticatedBackup(n.recovery, BackupMeta{ClusterID: sn.Core.ClusterID, Epoch: sn.Core.Epoch, Index: sn.Index,
-		AppliedDecrees: sn.Core.AppliedDecrees, TakenAtMS: time.Now().UnixMilli(), CAFingerprint: certutil.CertFingerprint(sn.Core.RootCert)}, body, sn.Core.RootCert, sn.Key)
+		AppliedDecrees: sn.Core.AppliedDecrees, EpochFrom: sn.Core.EpochFrom, TakenAtMS: time.Now().UnixMilli(), CAFingerprint: certutil.CertFingerprint(sn.Core.RootCert)}, body, sn.Core.RootCert, sn.Key)
 	if err != nil {
 		n.backupFailed("seal", err)
 		return
@@ -173,8 +189,11 @@ func (n *Node) maybeBackup(ctx context.Context) {
 	if err := n.cfg.Backups.PutBackup(ctx, b); err != nil {
 		if errors.Is(err, ErrBackupNotNewer) {
 			// Another leader stored later state (this one is deposed or was
-			// cut off): leave it.
-			n.log.Warn("backup: not stored, a newer one exists", "err", err)
+			// cut off), or the stored backup is of another history: leave
+			// it, and say so in Status until a backup is stored again.
+			n.log.Warn("backup: not stored, the stored one is newer or of another cluster history", "err", err)
+			msg := "backup refused: " + err.Error()
+			n.backupErr.Store(&msg)
 			n.backupIndex = applied
 			return
 		}
@@ -307,8 +326,9 @@ func (n *Node) AwaitingRestore() bool {
 // it offers to take a restore on its own.
 const lonerAfter = 5 * time.Minute
 
-// ErrNotForThisNode refuses a Restore decree that names another node.
-var ErrNotForThisNode = errors.New("cds-ha: the Restore decree names another node")
+// ErrNotForThisNode refuses a one-shot decree that names another node, or
+// another process (an earlier or later start) on this node.
+var ErrNotForThisNode = errors.New("cds-ha: the decree names another node or replica process")
 
 // Restore starts a cluster from an operator backup on this replica, which
 // must hold no cluster and be the node the decree names. No replica it can
@@ -330,7 +350,7 @@ func (n *Node) CheckRestore(sd SignedDecree) error {
 	if err := CheckDecree(sd, n.fsm.Core(), time.Now()); err != nil {
 		return err
 	}
-	return nil
+	return n.checkTarget(sd)
 }
 
 func (n *Node) Restore(ctx context.Context, sd SignedDecree, snapshot []byte) (DecreeResult, error) {

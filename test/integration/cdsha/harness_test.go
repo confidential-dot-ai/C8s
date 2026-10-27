@@ -267,11 +267,13 @@ func newClusterWithRaftTiming(t *testing.T, heartbeat, election time.Duration, e
 			t.Logf("replica logs: %s", c.LogDir)
 		}
 	})
-	c.PutDecree(cdsha.Decree{ClusterID: clusterID, IntentID: "genesis", Kind: cdsha.Genesis,
-		BootstrapNode: "n1", ExpiresAt: time.Now().Add(time.Hour)}, nil)
 	for i := range c.Replicas {
 		c.Start(i, false)
 	}
+	// The operator reads the bootstrap replica's member ID from its status
+	// and signs the Genesis decree for that process.
+	c.PutDecree(cdsha.Decree{ClusterID: clusterID, IntentID: "genesis", Kind: cdsha.Genesis,
+		BootstrapNode: "n1", TargetMember: c.MemberID(0), ExpiresAt: time.Now().Add(time.Hour)}, nil)
 	c.WaitAllServing(60 * time.Second)
 	// Operator tokens are refused until the clock skew (1 s) has passed
 	// since Genesis.
@@ -566,6 +568,19 @@ func (c *Cluster) Get(i int, path string) Response {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	return c.Do(ctx, i, http.MethodGet, path, nil, false)
+}
+
+// MemberID is the member ID replica i's process reports in /ha/status: what
+// a one-shot decree for it names.
+func (c *Cluster) MemberID(i int) string {
+	c.t.Helper()
+	var st cdsha.Status
+	c.waitFor(30*time.Second, func() bool {
+		var ok bool
+		st, ok = c.Status(i)
+		return ok && st.ID != ""
+	}, func() string { return c.Replicas[i].Node + " reports no member id" })
+	return st.ID
 }
 
 // Status is replica i's /ha/status (ok=false when unreachable).

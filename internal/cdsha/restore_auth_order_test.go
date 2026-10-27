@@ -20,7 +20,7 @@ func TestRestoreAuthorizationPrecedesInvalidEncoding(t *testing.T) {
 	defer n.shutdown()
 	other, _ := operatorKey(t)
 	body := []byte("ordinary invalid snapshot")
-	sd := signDecree(t, other, Decree{Kind: Restore, BootstrapNode: "n0", SnapshotSHA256: SnapshotSHA256(body)})
+	sd := signDecree(t, other, Decree{Kind: Restore, BootstrapNode: "n0", TargetMember: n.ID(), SnapshotSHA256: SnapshotSHA256(body)})
 	want := VerifyDecreeSignature(sd, pub)
 	if want == nil {
 		t.Fatal("fixture must have invalid authorization")

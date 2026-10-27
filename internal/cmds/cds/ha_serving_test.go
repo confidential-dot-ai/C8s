@@ -73,7 +73,7 @@ func TestHAServingReplicaPublishesDecrees(t *testing.T) {
 			return err == nil && len(pending) == 0 && node.Serving()
 		})
 	}
-	put(cdsha.Decree{IntentID: "g", Kind: cdsha.Genesis, BootstrapNode: "n0"})
+	put(cdsha.Decree{IntentID: "g", Kind: cdsha.Genesis, BootstrapNode: "n0", TargetMember: node.ID(), Alone: true})
 	settled("genesis")
 	// Issuance and /secrets challenges must not be redeemable against each other.
 	if iss := haChallengeKey(node, "issuance")(); iss == nil || bytes.Equal(iss, haChallengeKey(node, "secrets")()) {

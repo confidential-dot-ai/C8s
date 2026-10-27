@@ -39,6 +39,7 @@ func newHADecreeCmd() *cobra.Command {
 		ackFork    bool
 		ackRecover bool
 		images     []string
+		target     = cdsconn.Options{DirectCDS: true}
 	)
 	cmd := &cobra.Command{
 		Use:   "decree",
@@ -47,14 +48,20 @@ func newHADecreeCmd() *cobra.Command {
 			"decree object (a ConfigMap) as JSON. Apply it with kubectl; the leader replica\n" +
 			"applies it and every replica checks the signature. Re-sign with the current epoch\n" +
 			"if it is rejected for a base_epoch conflict.\n\n" +
-			"Genesis names the one node whose replica starts the cluster (--bootstrap-node) and\n" +
-			"expires after 10 minutes by default: a cluster is born once.",
+			"Genesis and Recover act on one replica process: the CLI reads its member ID from GET /ha/status\n" +
+			"of --target-url over armTLS (pin it with --target-image-policy-file or --target-measurements) and\n" +
+			"signs it into the decree (target_member). A restarted replica has a new ID, so the decree is then\n" +
+			"dead: read the ID again and re-sign. --bootstrap-node defaults to the target's node.\n" +
+			"They expire after 10 minutes by default.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			d.Kind = cdsha.DecreeKind(kind)
+			if d.Alone && d.Kind != cdsha.Genesis {
+				return errors.New("--alone is for Genesis only")
+			}
 			switch d.Kind {
 			case cdsha.Genesis, cdsha.Recover:
-				if d.BootstrapNode == "" {
-					return fmt.Errorf("a %s decree needs --bootstrap-node: the node whose replica starts (or carries on) the cluster", d.Kind)
+				if target.URL == "" {
+					return fmt.Errorf("a %s decree needs --target-url: the replica it is for (on --bootstrap-node), whose member ID is read over armTLS", d.Kind)
 				}
 				if !cmd.Flags().Changed("expires-in") {
 					expiresIn = 10 * time.Minute
@@ -66,8 +73,8 @@ func newHADecreeCmd() *cobra.Command {
 					fmt.Fprintln(cmd.ErrOrStderr(), "WARNING: follow Recover with a RotateKey decree, so any lost replica that comes back holds a retired key.")
 				}
 			default:
-				if d.BootstrapNode != "" {
-					return errors.New("--bootstrap-node is for Genesis and Recover only")
+				if d.BootstrapNode != "" || target.URL != "" {
+					return errors.New("--bootstrap-node and --target-url are for Genesis and Recover only")
 				}
 			}
 			if d.Kind != cdsha.Genesis && !cmd.Flags().Changed("base-epoch") {
@@ -89,6 +96,19 @@ func newHADecreeCmd() *cobra.Command {
 			key, err := certutil.LoadECPrivateKeyFile(keyPath)
 			if err != nil {
 				return err
+			}
+			if d.Kind == cdsha.Genesis || d.Kind == cdsha.Recover {
+				st, err := readTargetStatus(cmd.Context(), target)
+				if err != nil {
+					return fmt.Errorf("target replica status: %w", err)
+				}
+				if err := bindTarget(&d, st); err != nil {
+					return err
+				}
+				fmt.Fprintf(cmd.ErrOrStderr(), "decree for member %s on node %s\n", d.TargetMember, d.BootstrapNode)
+				if d.Alone {
+					fmt.Fprintln(cmd.ErrOrStderr(), "WARNING: --alone: the replica starts the cluster even if it finds no other replica. Use it only for a one-replica cluster: with more, a host that hides the others gets a cluster beside them.")
+				}
 			}
 			if d.IntentID == "" {
 				d.IntentID = rand.Text()
@@ -115,15 +135,68 @@ func newHADecreeCmd() *cobra.Command {
 	f.StringSliceVar(&d.Measurements, "measurements", nil, "complete new replica pin set (D6); optional for RotateKey (D14). Derived from --image when that is given")
 	f.StringArrayVar(&images, "image", nil, "a CDS launch identity, mrtd:rtmr1:rtmr2 in hex; repeat for each. Lets nodes and pods follow the pin set (GET /ha/pins), so a CDS image rollout needs no node relaunch")
 	f.StringVar(&d.IntentID, "intent-id", "", "decree nonce (default random)")
-	f.StringVar(&d.BootstrapNode, "bootstrap-node", "", "Genesis: the node whose replica starts the cluster; Recover: the surviving node")
+	f.StringVar(&d.BootstrapNode, "bootstrap-node", "", "Genesis: the node whose replica starts the cluster; Recover: the surviving node (default: the --target-url replica's node)")
 	f.StringVar(&keyPath, "operator-key", "", "PEM EC private key matching the cluster's --ha-operator-key")
 	f.StringVar(&namespace, "namespace", "c8s-cds-decrees", "namespace the decree object is written to (the replicas' --ha-decree-namespace)")
 	f.DurationVar(&expiresIn, "expires-in", time.Hour, "decree lifetime")
 	f.BoolVar(&ackFork, "i-understand-rotation-forks-the-cluster", false, "required for RotateKey")
 	f.BoolVar(&ackRecover, "i-understand-recover-is-break-glass", false, "required for Recover")
+	f.BoolVar(&d.Alone, "alone", false, "Genesis: start even if the replica finds no other replica (a one-replica cluster only)")
+	bindTargetFlags(f, &target)
 	_ = cmd.MarkFlagRequired("cluster-id")
 	_ = cmd.MarkFlagRequired("operator-key")
 	return cmd
+}
+
+// bindTargetFlags adds the connection flags of the replica a one-shot decree
+// is for, as "target-" flags: `ha decree` has its own --measurements and
+// --operator-key.
+func bindTargetFlags(f *pflag.FlagSet, o *cdsconn.Options) {
+	all := pflag.NewFlagSet("", pflag.ContinueOnError)
+	cdsconn.BindFlags(all, o)
+	all.VisitAll(func(fl *pflag.Flag) {
+		if fl.Name != "operator-key" {
+			fl.Name, fl.Shorthand = "target-"+fl.Name, ""
+			fl.Usage = "target replica: " + fl.Usage
+			f.AddFlag(fl)
+		}
+	})
+}
+
+// readTargetStatus reads a replica's own status over the attested channel
+// the connection options build (armTLS; plaintext only with --insecure).
+// Its member ID is what a one-shot decree binds to, so it must come from the
+// verified replica, never from an unauthenticated answer.
+func readTargetStatus(ctx context.Context, o cdsconn.Options) (cdsha.Status, error) {
+	var st cdsha.Status
+	hc, err := o.HTTPClient(ctx)
+	if err != nil {
+		return st, err
+	}
+	if err := getJSON(ctx, hc, o.URL, "/ha/status", 1<<16, &st); err != nil {
+		return st, err
+	}
+	return st, nil
+}
+
+// bindTarget names the target replica's process in a Genesis or Recover
+// decree: Genesis goes to a replica that holds no cluster, Recover to a
+// member of the cluster it carries on.
+func bindTarget(d *cdsha.Decree, st cdsha.Status) error {
+	switch {
+	case st.ClusterID != d.ClusterID:
+		return fmt.Errorf("the target replica is of cluster %q, not %q", st.ClusterID, d.ClusterID)
+	case d.BootstrapNode != "" && st.NodeName != d.BootstrapNode:
+		return fmt.Errorf("the target replica runs on node %q, not --bootstrap-node %q", st.NodeName, d.BootstrapNode)
+	case st.ID == "":
+		return errors.New("the target replica reports no member id")
+	case d.Kind == cdsha.Genesis && st.Joined:
+		return errors.New("the target replica already holds a cluster: Genesis is only for a cluster that was never started")
+	case d.Kind == cdsha.Recover && !st.Joined:
+		return errors.New("the target replica holds no cluster: Recover carries on a survivor's state (a total loss is `c8s cds ha recover`)")
+	}
+	d.BootstrapNode, d.TargetMember = st.NodeName, st.ID
+	return nil
 }
 
 // newHAStatusCmd reads each replica's view over armTLS, as `ha decrees` does.
@@ -150,8 +223,8 @@ func newHAStatusCmd() *cobra.Command {
 					continue
 				}
 				seen = append(seen, hb)
-				fmt.Fprintf(cmd.OutOrStdout(), "%-40s cluster=%s node=%s state=%s epoch=%d serving=%t ca=%s voters=%d non_voters=%d applied=%d\n",
-					u, hb.ClusterID, hb.NodeName, hb.State, hb.Epoch, hb.Serving, hb.CAFingerprint, len(hb.Voters), len(hb.NonVoters), hb.AppliedIndex)
+				fmt.Fprintf(cmd.OutOrStdout(), "%-40s cluster=%s node=%s id=%s state=%s joined=%t epoch=%d serving=%t ca=%s voters=%d non_voters=%d applied=%d\n",
+					u, hb.ClusterID, hb.NodeName, hb.ID, hb.State, hb.Joined, hb.Epoch, hb.Serving, hb.CAFingerprint, len(hb.Voters), len(hb.NonVoters), hb.AppliedIndex)
 			}
 			return reportDivergence(seen, len(urls))
 		},
