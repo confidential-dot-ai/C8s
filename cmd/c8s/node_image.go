@@ -226,7 +226,7 @@ type nodeImageArtifacts struct {
 // routerNginxFiles are the c8s-router-nginx ConfigMap keys the image installs
 // in /usr/lib/c8s/router-nginx (the chart's router.bakedNginxDir), where the
 // baked router mounts them instead of the ConfigMap.
-var routerNginxFiles = []string{"nginx.conf", "reload.sh", "tls-cds.conf", "tls-acme.conf"}
+var routerNginxFiles = []string{"nginx.conf", "serve.sh", "tls-cds.conf", "tls-acme.conf"}
 
 // collectNodeImageArtifacts retains complete chart resources and copies the seed
 // for host NRI bootstrap. Every workload image must be pinned and present in the

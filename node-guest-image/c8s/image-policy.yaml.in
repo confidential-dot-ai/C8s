@@ -483,12 +483,12 @@ allowlist:
       # names; the acme role is the one that reaches outside the cluster in
       # the clear; the credentials role reaches the node's CDS.
       c8s-router-nginx:
-        label: "nginx reload"
+        label: "nginx front door"
         containers:
           - digest: "@ROUTER_DIGEST@"
             image: "@ROUTER_REPO@@@ROUTER_DIGEST@"
             role: "router"
-            command: {policy: exact, argv: ["/bin/sh", "/usr/lib/c8s/router-nginx/reload.sh"]}
+            command: {policy: exact, argv: ["/bin/sh", "/usr/lib/c8s/router-nginx/serve.sh"]}
             args: {policy: deny}
             # The credentials it serves, its measured configuration directory
             # and the scratch it writes. A front door mounting anything else

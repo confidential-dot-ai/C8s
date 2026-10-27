@@ -108,8 +108,12 @@ const (
 	maxLBBindings          = 1 << 16
 	maxLBBindingsPerClient = maxSessionsPerClient
 	// maxConnectionIDBytes bounds the identifier nginx assigns
-	// ($pid.$connection), so a caller bypassing nginx cannot grow the store.
+	// ($nginx_start.$pid.$connection), so a caller bypassing nginx cannot grow
+	// the store.
 	maxConnectionIDBytes = 64
+	// maxServedLeaves bounds the serving leaves kept for connections opened
+	// before a renewal: one per renewal a connection may outlive.
+	maxServedLeaves = 8
 
 	// shutdownGrace bounds the wait for in-flight requests at shutdown.
 	shutdownGrace = 5 * time.Second
@@ -249,7 +253,8 @@ type Server struct {
 	bindings   *Bindings
 	// unboundOnce logs the first attest-lb handshake without a connection
 	// identifier.
-	unboundOnce sync.Once
+	unboundOnce  sync.Once
+	servedLeaves servedLeaves
 
 	sweepEvery time.Duration
 	evictEvery time.Duration
@@ -639,7 +644,7 @@ func (s *Server) handleAttestLB(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeSessionsBusy, err.Error())
 		return
 	}
-	servingLeafDER, err := s.servingLeafDER()
+	servingLeafDER, err := s.servingLeafOf(connection)
 	if err != nil {
 		s.log.Error("attest-lb binding unavailable", "error", err)
 		writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeBindingUnavailable,
@@ -671,12 +676,16 @@ func (s *Server) handleAttestLB(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.bindConnection(connection, clientKey(r), routing.Binding{RouteDigest: digest, RouterDigest: routerDigest}); err != nil {
+	servingLeafHash := sha256.Sum256(servingLeafDER)
+	handshake := lbHandshake{
+		bound:       routing.Binding{RouteDigest: digest, RouterDigest: routerDigest},
+		servingLeaf: servingLeafHash,
+	}
+	if err := s.bindConnection(connection, clientKey(r), handshake); err != nil {
 		writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeSessionsBusy, err.Error())
 		return
 	}
 
-	servingLeafHash := sha256.Sum256(servingLeafDER)
 	writeJSON(w, http.StatusOK, types.AttestationBundle{
 		Version:           types.BindingAttestLB,
 		Platform:          platform,
@@ -720,16 +729,16 @@ func (s *Server) connectionRoom(connection, client string) error {
 	return s.bindings.room(connection, client)
 }
 
-// bindConnection binds connection to bound. A handshake that did not come
+// bindConnection binds connection to handshake. A handshake that did not come
 // through nginx has no connection identifier and binds nothing.
-func (s *Server) bindConnection(connection, client string, bound routing.Binding) error {
+func (s *Server) bindConnection(connection, client string, handshake lbHandshake) error {
 	if connection == "" {
 		s.unboundOnce.Do(func() {
 			s.log.Warn("attest-lb handshake without " + routing.ConnectionHeader + ": its connection is not bound; binding needs the nginx relay to set the header")
 		})
 		return nil
 	}
-	return s.bindings.bind(connection, client, bound)
+	return s.bindings.bind(connection, client, handshake)
 }
 
 // routerDigest returns the router digest of identity's leaf, syncing the
@@ -755,28 +764,107 @@ func (s *Server) meshIdentity() (*meshIdentity, error) {
 	return loadMeshIdentity(s.cfg.MeshIdentityCertFile, s.cfg.MeshIdentityKeyFile, s.cfg.MeshIdentityCAFile)
 }
 
-// servingLeafDER reads the LB serving-leaf PEM and returns the whole leaf DER.
-// It is read per request so a get-cert renewal (which SIGHUPs nginx to a new
-// leaf) is picked up without restarting the sidecar. Exactly one certificate
-// is committed; per-SNI or multi-certificate serving is unsupported and fails
-// the client's exact-DER comparison closed.
-func (s *Server) servingLeafDER() ([]byte, error) {
+// servingLeafOf returns the serving leaf connection presents. nginx reads its
+// certificate per TLS handshake, so a connection keeps the leaf it opened
+// with across renewals: for a bound connection that is the leaf its binding
+// attested, while kept and unexpired; otherwise the leaf nginx serves new
+// connections now.
+func (s *Server) servingLeafOf(connection string) ([]byte, error) {
+	if hash, bound := s.bindings.servingLeaf(connection); bound {
+		if der, kept := s.servedLeaves.find(hash, time.Now()); kept {
+			return der, nil
+		}
+	}
+	leaf, err := s.servingLeaf()
+	if err != nil {
+		return nil, err
+	}
+	s.servedLeaves.remember(leaf)
+	return leaf.der, nil
+}
+
+// servedLeaf is a serving leaf and when the chain it was served with
+// expires: the first NotAfter in it, as get-cert expires a generation.
+type servedLeaf struct {
+	der     []byte
+	expires time.Time
+}
+
+// servedLeaves holds the last maxServedLeaves serving leaves attest-lb
+// attested, oldest first. Its zero value is empty and ready.
+type servedLeaves struct {
+	mu     sync.Mutex
+	leaves []servedLeaf
+}
+
+func (l *servedLeaves) remember(leaf servedLeaf) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if _, kept := l.findLocked(sha256.Sum256(leaf.der)); kept {
+		return
+	}
+	l.leaves = append(l.leaves, leaf)
+	if len(l.leaves) > maxServedLeaves {
+		l.leaves = l.leaves[1:]
+	}
+}
+
+// find returns the DER of the kept leaf whose SHA-256 is hash, unless its
+// chain has expired by now.
+func (l *servedLeaves) find(hash [sha256.Size]byte, now time.Time) ([]byte, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	leaf, kept := l.findLocked(hash)
+	if !kept || now.After(leaf.expires) {
+		return nil, false
+	}
+	return leaf.der, true
+}
+
+func (l *servedLeaves) findLocked(hash [sha256.Size]byte) (servedLeaf, bool) {
+	for _, leaf := range l.leaves {
+		if sha256.Sum256(leaf.der) == hash {
+			return leaf, true
+		}
+	}
+	return servedLeaf{}, false
+}
+
+// servingLeaf reads the LB serving-leaf PEM nginx serves new connections:
+// the leaf first, then the rest of its chain. It is read per request so a
+// get-cert renewal is picked up without restarting the sidecar. Exactly one
+// leaf is committed; per-SNI or multi-certificate serving is unsupported and
+// fails the client's exact-DER comparison closed.
+func (s *Server) servingLeaf() (servedLeaf, error) {
 	if s.cfg.ServingCertFile == "" {
-		return nil, fmt.Errorf("no --serving-cert-file configured")
+		return servedLeaf{}, fmt.Errorf("no --serving-cert-file configured")
 	}
 	pemBytes, err := os.ReadFile(s.cfg.ServingCertFile)
 	if err != nil {
-		return nil, fmt.Errorf("read serving cert: %w", err)
+		return servedLeaf{}, fmt.Errorf("read serving cert: %w", err)
 	}
-	block, _ := pem.Decode(pemBytes)
+	block, rest := pem.Decode(pemBytes)
 	if block == nil || block.Type != "CERTIFICATE" {
-		return nil, fmt.Errorf("serving cert %q is not a PEM certificate", s.cfg.ServingCertFile)
+		return servedLeaf{}, fmt.Errorf("serving cert %q is not a PEM certificate", s.cfg.ServingCertFile)
 	}
 	cert, err := x509.ParseCertificate(block.Bytes)
 	if err != nil {
-		return nil, fmt.Errorf("parse serving cert: %w", err)
+		return servedLeaf{}, fmt.Errorf("parse serving cert: %w", err)
 	}
-	return cert.Raw, nil
+	leaf := servedLeaf{der: cert.Raw, expires: cert.NotAfter}
+	for block, rest = pem.Decode(rest); block != nil; block, rest = pem.Decode(rest) {
+		if block.Type != "CERTIFICATE" {
+			continue
+		}
+		issuer, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			return servedLeaf{}, fmt.Errorf("parse serving cert chain: %w", err)
+		}
+		if issuer.NotAfter.Before(leaf.expires) {
+			leaf.expires = issuer.NotAfter
+		}
+	}
+	return leaf, nil
 }
 
 // handleReadyz gates readiness on the committed mesh identity, not the outer
