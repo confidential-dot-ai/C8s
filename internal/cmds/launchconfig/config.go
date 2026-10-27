@@ -35,7 +35,11 @@ import (
 )
 
 const (
-	SchemaVersion            = "c8s-launch/v1"
+	SchemaVersion = "c8s-launch/v1"
+	// SchemaVersionManaged is a managed cluster's launch document. It carries
+	// no RKE2 join material: the node enrolls with its management cluster
+	// for that (managed.go).
+	SchemaVersionManaged     = "c8s-launch/v2"
 	DefaultAttestationAPIURL = "http://127.0.0.1:8400"
 	// Dir holds the root-only artifacts Stage writes for the node services.
 	Dir               = "/run/confos/launch"
@@ -122,7 +126,7 @@ type Document struct {
 	Role                    Role         `yaml:"role" json:"role"`
 	Image                   Image        `yaml:"image" json:"image"`
 	Node                    Node         `yaml:"node" json:"node"`
-	RKE2                    RKE2         `yaml:"rke2" json:"rke2"`
+	RKE2                    RKE2         `yaml:"rke2,omitempty" json:"rke2"`
 	Server                  ServerConfig `yaml:"server" json:"server"`
 	AgentOperatorPublicKeys []string     `yaml:"agentOperatorPublicKeys" json:"agent_operator_public_keys"`
 	TLSSAN                  string       `yaml:"tlsSAN,omitempty" json:"tls_san"`
@@ -142,7 +146,12 @@ type Document struct {
 	// cannot change what a node runs.
 	RegistryMirrors map[string]string `yaml:"registryMirrors,omitempty" json:"registry_mirrors,omitempty"`
 
+	// Managed is a c8s-launch/v2 document's managed-cluster section, and
+	// is required there and refused in v1.
+	Managed *Managed `yaml:"managed,omitempty" json:"managed,omitempty"`
+
 	serverTokenPresent bool
+	rke2Present        bool
 }
 
 // Router selects the router's public hostnames and front-door limits. All
@@ -400,8 +409,8 @@ func Verify(ctx context.Context, cfg Config) (*Verified, error) {
 var tokenRE = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 func (d *Document) validate() error {
-	if d.SchemaVersion != SchemaVersion {
-		return fmt.Errorf("schemaVersion must be %s", SchemaVersion)
+	if d.SchemaVersion != SchemaVersion && d.SchemaVersion != SchemaVersionManaged {
+		return fmt.Errorf("schemaVersion must be %s or %s", SchemaVersion, SchemaVersionManaged)
 	}
 	if !dnsLabel(d.ClusterID) {
 		return fmt.Errorf("clusterID must be an RFC1123 label")
@@ -441,29 +450,8 @@ func (d *Document) validate() error {
 			return fmt.Errorf("node.externalIP: %w", err)
 		}
 	}
-	if !tokenRE.MatchString(d.RKE2.AgentToken) {
-		return fmt.Errorf("rke2.agentToken must be 64 lowercase hex characters")
-	}
-	switch rules.serverToken {
-	case required:
-		if !tokenRE.MatchString(d.RKE2.ServerToken) {
-			return fmt.Errorf("%s requires a 64-character lowercase hex rke2.serverToken", d.Role)
-		}
-		if d.RKE2.ServerToken == d.RKE2.AgentToken {
-			return fmt.Errorf("server and agent tokens must differ")
-		}
-	case forbidden:
-		if d.RKE2.ServerToken != "" || d.serverTokenPresent {
-			return fmt.Errorf("%s must not carry rke2.serverToken", d.Role)
-		}
-	}
-	if p := d.RKE2.NodePassword; p != "" {
-		if !tokenRE.MatchString(p) {
-			return fmt.Errorf("rke2.nodePassword must be 64 lowercase hex characters")
-		}
-		if p == d.RKE2.AgentToken || p == d.RKE2.ServerToken {
-			return fmt.Errorf("rke2.nodePassword must differ from the join tokens")
-		}
+	if err := d.validateJoin(rules); err != nil {
+		return err
 	}
 	server, err := parseLaunchKey(d.Server.OperatorPublicKey)
 	if err != nil {
@@ -518,6 +506,53 @@ func (d *Document) validate() error {
 		}
 	}
 	return validateRegistryMirrors(d.RegistryMirrors)
+}
+
+// IsManaged reports whether the document is a managed cluster's, whose node
+// enrolls for its RKE2 role material instead of carrying it.
+func (d *Document) IsManaged() bool { return d.SchemaVersion == SchemaVersionManaged }
+
+// validateJoin checks how the node gets its RKE2 join material: from the
+// document's rke2 block in v1, or from enrollment in v2, which must carry
+// none of it.
+func (d *Document) validateJoin(rules roleRules) error {
+	if d.IsManaged() {
+		if d.rke2Present || d.RKE2 != (RKE2{}) {
+			return fmt.Errorf("%s must not carry rke2: a managed node enrolls for its join material", SchemaVersionManaged)
+		}
+		if d.Managed == nil {
+			return fmt.Errorf("%s requires managed", SchemaVersionManaged)
+		}
+		return d.Managed.validate(d)
+	}
+	if d.Managed != nil {
+		return fmt.Errorf("managed requires schemaVersion %s", SchemaVersionManaged)
+	}
+	if !tokenRE.MatchString(d.RKE2.AgentToken) {
+		return fmt.Errorf("rke2.agentToken must be 64 lowercase hex characters")
+	}
+	switch rules.serverToken {
+	case required:
+		if !tokenRE.MatchString(d.RKE2.ServerToken) {
+			return fmt.Errorf("%s requires a 64-character lowercase hex rke2.serverToken", d.Role)
+		}
+		if d.RKE2.ServerToken == d.RKE2.AgentToken {
+			return fmt.Errorf("server and agent tokens must differ")
+		}
+	case forbidden:
+		if d.RKE2.ServerToken != "" || d.serverTokenPresent {
+			return fmt.Errorf("%s must not carry rke2.serverToken", d.Role)
+		}
+	}
+	if p := d.RKE2.NodePassword; p != "" {
+		if !tokenRE.MatchString(p) {
+			return fmt.Errorf("rke2.nodePassword must be 64 lowercase hex characters")
+		}
+		if p == d.RKE2.AgentToken || p == d.RKE2.ServerToken {
+			return fmt.Errorf("rke2.nodePassword must differ from the join tokens")
+		}
+	}
+	return nil
 }
 
 // validateRegistryMirrors accepts registry hosts (a lowercase DNS name with an

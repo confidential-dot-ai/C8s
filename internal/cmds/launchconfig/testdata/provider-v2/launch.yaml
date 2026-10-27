@@ -1,0 +1,45 @@
+schemaVersion: c8s-launch/v2
+clusterID: cl-0123456789abcdef
+role: server
+image:
+    platform: tdx
+    measurement: efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef
+    rtmrs:
+        1: "010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101"
+        2: "020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202"
+node:
+    name: cl-0123456789abcdef-control-plane-cqhq9
+server:
+    address: 198.51.100.10
+    operatorPublicKey: |
+        -----BEGIN PUBLIC KEY-----
+        MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE/c745n2rzQonl05h15pqQwLkOcG2
+        26fKLdgztGIh8iansE8ju1EUTHa0Ik5mNoCySG/EbEQlWzqVsVXlJzFYSg==
+        -----END PUBLIC KEY-----
+agentOperatorPublicKeys:
+    - |
+      -----BEGIN PUBLIC KEY-----
+      MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEHfupJ+FOy5F6RpUZeBWMkGrLZXsa
+      fPpiTdCcY9W1Su4BpJLV4Lyre772IrxmBRsLSeGXwNXKutCToO34zMwP/w==
+      -----END PUBLIC KEY-----
+managed:
+    pool: control-plane
+    machineName: cl-0123456789abcdef-control-plane-cqhq9
+    machineUID: 9320ca59-f233-4307-a5f8-cb8fd5687e3b
+    policy:
+        digest: sha256:abababababababababababababababababababababababababababababababab
+        epoch: 1
+    enrollment:
+        url: https://198.51.100.20:8444
+        management:
+            - platform: tdx
+              measurement: cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd
+              rtmrs:
+                1: "010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101"
+                2: "020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202"
+              launchKey: |
+                -----BEGIN PUBLIC KEY-----
+                MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE+jP0dlFXy+zJGQgdUcZQ9LgZdBSM
+                00cuespCAMH7U2qaDF3m5GM5S1tDlW11HnkPJiPoBYB1Y9MNu1qmQUpasw==
+                -----END PUBLIC KEY-----
+    bootstrapDigest: sha256:248e6d8fce17500e0dde8f92318c3087d0f3f8a83731f7a814a284301344f620
