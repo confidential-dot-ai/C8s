@@ -606,6 +606,12 @@ mesh:
   # INVARIANT: equal to cluster-cidr and service-cidr in
   # etc/rancher/rke2/config.yaml.
   cluster_ranges: ["10.52.0.0/16", "10.53.0.0/16"]
+  # Platform services every member pod reaches over TCP uncaptured: the
+  # baked kube-state-metrics Service, which serves cluster object metadata
+  # (docs/armtls.md, "Cluster metrics").
+  #
+  # INVARIANT: equal to the chart's kubeStateMetrics.clusterIP and port.
+  exits: ["10.53.0.11:8080"]
   # INVARIANT: equal to the ports the injected endpoint binds
   # (pkg/workloadclaims.Mesh*Port).
   capture:

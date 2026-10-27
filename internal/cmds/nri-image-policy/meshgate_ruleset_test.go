@@ -100,6 +100,40 @@ func TestPodRulesetCarriesOnlyTheGrantedExits(t *testing.T) {
 	}
 }
 
+// Every member pod reaches each platform service the policy names, on its
+// port alone, before the exits it was granted; the CDS its credential clients
+// are bound to stays theirs.
+func TestPodRulesetGivesEveryMemberThePolicyExits(t *testing.T) {
+	policy := meshRoles()
+	policy.Roles = append(policy.Roles, roleBinding{
+		Name:         CredentialRole,
+		UID:          workloadclaims.CredentialsUID,
+		Destinations: []netip.AddrPort{netip.MustParseAddrPort("172.18.0.2:30808")},
+	})
+	policy.Exits = []netip.AddrPort{netip.MustParseAddrPort("10.53.0.11:8080")}
+
+	want := []ruleset.Exit{{Range: netip.MustParsePrefix("10.53.0.11/32"), Port: 8080}}
+	for _, namespace := range []string{"default", routerNamespace} {
+		if got := policy.podRuleset(namespace, nil).Exits; !slices.Equal(got, want) {
+			t.Fatalf("exits of a pod in %s = %+v, want the policy's exit alone", namespace, got)
+		}
+	}
+	granted := []exit{{Range: netip.MustParsePrefix("203.0.113.7/32"), Port: 443}}
+	want = append(want, ruleset.Exit{Range: netip.MustParsePrefix("203.0.113.7/32"), Port: 443})
+	if got := policy.podRuleset("default", granted).Exits; !slices.Equal(got, want) {
+		t.Fatalf("exits = %+v, want the policy's exit and the granted exit", got)
+	}
+}
+
+// A policy exit must name one address and a port.
+func TestMeshPolicyRefusesAnExitWithoutAPort(t *testing.T) {
+	policy := meshRoles()
+	policy.Exits = []netip.AddrPort{netip.AddrPortFrom(netip.MustParseAddr("10.53.0.11"), 0)}
+	if err := policy.validate(); err == nil {
+		t.Fatal("mesh policy accepted an exit without a port")
+	}
+}
+
 // A policy that binds no CDS leaves the router role without one, as it leaves
 // the credential clients without one.
 func TestPodRulesetWithoutABoundCDSServesTheRouterRoleNone(t *testing.T) {
