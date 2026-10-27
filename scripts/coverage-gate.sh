@@ -42,11 +42,31 @@ run)
   module=$(GOWORK=off go list -m)
   packages=$(go list ./...)
   test_packages=()
+  cdsha=""
   while IFS= read -r package; do
-    [ "$package" = "$module/test/workflows" ] || test_packages+=("$package")
+    case "$package" in
+      "$module/test/workflows") ;;
+      "$module/internal/cdsha") cdsha=$package ;;
+      *) test_packages+=("$package") ;;
+    esac
   done <<< "$packages"
   [ "${#test_packages[@]}" -gt 0 ] || { echo "no Go packages to measure" >&2; exit 1; }
-  go test "${test_packages[@]}" -count=1 -coverprofile="$profile" -coverpkg=./...
+  # internal/cdsha runs longer than go test's default 10-minute package
+  # timeout here. It runs beside the other packages with its own timeout, and
+  # its profile is appended (percent() unions duplicate blocks), so the total
+  # is the same as from one run.
+  if [ -n "$cdsha" ]; then
+    go test "$cdsha" -count=1 -timeout=30m -coverprofile="$profile.cdsha" -coverpkg=./... &
+    cdsha_pid=$!
+  fi
+  rc=0
+  go test "${test_packages[@]}" -count=1 -coverprofile="$profile" -coverpkg=./... || rc=$?
+  if [ -n "$cdsha" ]; then
+    wait "$cdsha_pid" || rc=$?
+    [ ! -s "$profile.cdsha" ] || tail -n +2 "$profile.cdsha" >> "$profile"
+    rm -f "$profile.cdsha"
+  fi
+  exit "$rc"
   ;;
 kernel)
   # Older base revisions have no verity harness. Keep the same measurement

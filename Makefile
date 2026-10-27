@@ -81,8 +81,24 @@ build-nri-image-policy:
 # default keeps forced reruns.
 C8S_TEST_COUNT ?= -count=1
 # `work` covers every go.work module; ./... stops at the root module.
-test:
-	go test -race $(C8S_TEST_COUNT) -timeout=120s work
+# internal/cdsha runs for minutes under -race, past the per-package timeout,
+# so it has its own target (a sharded job in CI).
+CDSHA_PKG := github.com/confidential-dot-ai/c8s/internal/cdsha
+.PHONY: test-pkgs test-cdsha
+test: test-pkgs test-cdsha
+
+test-pkgs:
+	go test -race $(C8S_TEST_COUNT) -timeout=120s $$(go list work | grep -vxF $(CDSHA_PKG))
+
+# CDSHA_SHARDS=n CDSHA_SHARD=i runs every n-th top-level test starting at the
+# i-th (0-based), in `go test -list` order; the defaults run them all.
+CDSHA_SHARDS ?= 1
+CDSHA_SHARD ?= 0
+CDSHA_TIMEOUT ?= 20m
+test-cdsha:
+	@tests=$$(go test -race -list . $(CDSHA_PKG) | awk -v n=$(CDSHA_SHARDS) -v i=$(CDSHA_SHARD) '/^(Test|Example)/ && c++ % n == i' | paste -sd'|' -); \
+		[ -n "$$tests" ] || { echo "no tests in cdsha shard $(CDSHA_SHARD) of $(CDSHA_SHARDS)" >&2; exit 1; }; \
+		go test -race -count=1 -timeout=$(CDSHA_TIMEOUT) -run "^($$tests)$$" $(CDSHA_PKG)
 
 # The pod ruleset installs over netlink into a network namespace the test
 # creates, so it needs uid 0 there: the test binary runs under sudo unless this
