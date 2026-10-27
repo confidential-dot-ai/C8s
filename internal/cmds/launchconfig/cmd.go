@@ -141,7 +141,7 @@ func newPodBundleCmd() *cobra.Command {
 	var opts PodBundleOptions
 	cmd := &cobra.Command{
 		Use:   "new-pod",
-		Short: "Create a signed launch document that boots the node image as one pod",
+		Short: "Create a signed Pod CVM launch document",
 		Long: `Write a role-pod launch document for one pod CVM, signed with the pod
 launch key:
 
@@ -151,7 +151,10 @@ launch key:
 The pod's uid, namespace and name come from the manifest's metadata. The
 workloads allowlist supplies the cold-boot base. The guest also polls CDS
 at --server-address, authenticated with --server-public-key and the image
-pins. The server public key must differ from the pod launch key.`,
+pins. The server public key must differ from the pod launch key.
+
+Use --generic with --name to boot without a pod or workloads and wait for
+an authenticated assignment.`,
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -171,10 +174,11 @@ pins. The server public key must differ from the pod launch key.`,
 	f.StringVar(&opts.LaunchKeyPath, "launch-key", "", "existing pod launch key PEM (default: generate <out>/pod.key)")
 	f.StringVar(&opts.ServerAddress, "server-address", "", "server IPv4 address the pod CVM can reach for CDS")
 	f.StringVar(&opts.ServerPublicKeyPath, "server-public-key", "", "server launch public key PEM file, e.g. <cluster>/server/pubkey")
+	f.BoolVar(&opts.Generic, "generic", false, "boot without a Pod and wait for authenticated assignment (requires --name)")
 	f.StringVar(&opts.PodManifest, "pod-manifest", "", "v1 Pod manifest, YAML or JSON, with metadata.uid set")
-	f.StringVar(&opts.WorkloadsPath, "workloads", "", "nonempty c8s.allowlist/v1 JSON base admitted before CDS is available")
+	f.StringVar(&opts.WorkloadsPath, "workloads", "", "optional c8s.allowlist/v1 JSON base admitted before CDS is available")
 	f.StringArrayVar(&opts.MeshPeers, "mesh-peer", nil, "reachable mesh IPv4:port endpoint (repeatable; empty permits ingress only)")
-	for _, name := range []string{"out", "cluster-id", "image-manifest", "pod-manifest", "workloads", "server-address", "server-public-key"} {
+	for _, name := range []string{"out", "cluster-id", "image-manifest", "server-address", "server-public-key"} {
 		_ = cmd.MarkFlagRequired(name)
 	}
 	return cmd
