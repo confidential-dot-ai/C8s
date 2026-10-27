@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 
@@ -228,49 +227,9 @@ func deployOnNode(ctx context.Context, name, node string) error {
 	if err != nil {
 		return err
 	}
-	pod, err := leadWithHelpers(manifest, p)
-	if err != nil {
-		return err
-	}
 	p.deployed = true
-	_, err = kubectl(pod, "apply", "-f", "-")
+	_, err = kubectl([]byte(manifest), "apply", "-f", "-")
 	return err
-}
-
-// leadWithHelpers moves each main container running a helper mode to the
-// front of the pod, under the credentials role's identity. The mesh gate
-// starts that role only before every container outside a platform role, and
-// only as its reserved UID (pkg/workloadclaims.CredentialsUID).
-func leadWithHelpers(manifest string, p *pod) ([]byte, error) {
-	if !slices.ContainsFunc(p.containers, func(c *container) bool { return c.helper }) {
-		return []byte(manifest), nil
-	}
-	var obj map[string]any
-	if err := json.Unmarshal([]byte(manifest), &obj); err != nil {
-		return nil, fmt.Errorf("harness: the pod manifest is not JSON: %w", err)
-	}
-	spec, _ := obj["spec"].(map[string]any)
-	rendered, _ := spec["containers"].([]any)
-	if len(rendered) != len(p.containers) {
-		return nil, fmt.Errorf("harness: the manifest has %d containers, the scenario %d", len(rendered), len(p.containers))
-	}
-	var helpers, rest []any
-	for i, c := range rendered {
-		if !p.containers[i].helper {
-			rest = append(rest, c)
-			continue
-		}
-		ctr, _ := c.(map[string]any)
-		sc, _ := ctr["securityContext"].(map[string]any)
-		if sc == nil {
-			sc = map[string]any{}
-		}
-		sc["runAsUser"], sc["runAsGroup"] = workloadclaims.CredentialsUID, workloadclaims.CredentialsUID
-		ctr["securityContext"] = sc
-		helpers = append(helpers, ctr)
-	}
-	spec["containers"] = append(helpers, rest...)
-	return json.Marshal(obj)
 }
 
 // podRunning waits for the deployed pod to be Running with a pod address.

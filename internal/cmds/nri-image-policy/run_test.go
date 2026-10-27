@@ -97,9 +97,8 @@ func TestRemoveContainer_EvictsFromInventory(t *testing.T) {
 	}
 }
 
-func TestConfigure_InventoryAddsRemoveContainerMask(t *testing.T) {
+func TestConfigureEventMask(t *testing.T) {
 	p := newTestPlugin(&config{Policy: policyConfig{Mode: ModeFailClosed}})
-	p.inventory = newAdmissionInventory(t.TempDir())
 
 	mask, err := p.Configure(context.Background(), "", "containerd", "1.7")
 	if err != nil {

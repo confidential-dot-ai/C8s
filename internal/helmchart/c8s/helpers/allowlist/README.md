@@ -135,17 +135,45 @@ allowlist container:
   so no per-Service variables join the set.
 
 `c8s.injectedShapes` adds the sidecars the webhook injects to the C8s image's
-entry: `get-cert`, `probe-file`, `get-secret` and `get-volume`, each pinned to
-its invocation with `args: any`, its env matched as above over the variables
-the webhook's `getCertEnv` sets (`present`, since they differ per pod; none
-for `probe-file`), and one container per combination of the optional
-discovery mount. No shape names the inventory socket mount:
-the NRI plugin adds it and observes it as a platform mount, which exact rules
-never match. The webhook turns service links off in every pod it injects into.
-The destinations match the webhook's fixed ones (`internal/webhook`).
+entry: `get-cert`, `probe-file`, `get-secret` and `get-volume`
+(`c8s.injectedModes`), each pinned to its invocation with the argument rule of
+`c8s.injectedArgs` (the cert-wait gate's constant arguments, `any` for the
+clients, which carry per-pod SANs, secrets and volumes), its env
+matched as above over the variables the webhook's `getCertEnv` sets
+(`present`, since they differ per pod; none for `probe-file`), and one
+container per mount table of `c8s.injectedMountTables`: the destinations the
+webhook mounts for that mode, without and with the optional discovery mount.
+No table names the inventory socket mount: the NRI plugin adds it and observes
+it as a platform mount, which exact rules never match. The webhook turns
+service links off in every pod it injects into. The destinations match the
+webhook's fixed ones (`internal/webhook`).
+
+`c8s.roleFloorWorkloads` renders the role entries for a digest the base admits
+only through an open-args floor entry (the cluster lane's image-store scan),
+which pins nothing but the image's executable: one `c8s-role-<mode>-<digest>`
+entry per role invocation, with `args: any`. The credentials and mesh roles are
+dropped from the workload match, so the credential clients are granted theirs
+only under the `c8s.injectedArgs` and `c8s.injectedMountTables` of their mode,
+one container per table, the mesh endpoint only under `c8s.meshArgs` and the
+bound certificate volume, and the router pod's `allowlist-proxy` only under
+its `-pinned` entry; the `upstream`, `acme` and `router` invocations keep
+`mounts: any`. Beside
+each entry, a `-pinned` one names the rendered router pod's own mount set for
+that container (`c8s.routerContainerMounts`), since a pod of the router's
+namespace runs a role container only under a declaration that pins its mounts.
+
+Every credentials and mesh grant in the base names the volume behind its
+certificate and secrets mounts. `c8s.injectedMountTables` with `bind` names the webhook's
+`c8s-certs` and `c8s-secrets`: the floor pins those bound tables, and
+`c8s.baseWorkloads` binds the role-tagged shapes through
+`c8s.bindInjectedVolumes`, which reads the names from them. `c8s.mountRules`
+with `bind` names the router pod's own volumes. The webhook refuses a pod's own mount of its reserved volumes but
+not another memory volume at the same destination, which the node would
+otherwise admit under an unbound rule. The seed carries the same tables
+unbound, since a served entry binds no volume.
 
 `c8s.meshShapes` adds the pod mesh endpoint to the endpoint image's entry,
-pinned to its entrypoint, arguments and credential mount, with one container
+pinned to its entrypoint, arguments (`c8s.meshArgs`) and credential mount, with one container
 per combination of the optional probe variable.
 
 `c8s.componentShapes` collects them per digest, tagging each shape the node

@@ -73,6 +73,10 @@ type meshPolicy struct {
 	// inside them is a member, so the acme egress exception excludes them and
 	// that traffic is captured like any other application connection.
 	ClusterRanges []netip.Prefix `yaml:"cluster_ranges"`
+	// Exits are the platform services every container of a member pod
+	// reaches over TCP uncaptured, each one address and port: the baked
+	// kube-state-metrics Service.
+	Exits []netip.AddrPort `yaml:"exits"`
 	// Pod restricts a guest endpoint to the signed peer and ingress tuples.
 	Pod *podMeshPolicy `yaml:"pod,omitempty"`
 }
@@ -179,6 +183,11 @@ func (p meshPolicy) validate() error {
 	for _, in := range p.ClusterRanges {
 		if !in.IsValid() || in.Addr().Is4In6() || in != in.Masked() {
 			return fmt.Errorf("mesh.cluster_ranges %s is not a masked prefix of one address family", in)
+		}
+	}
+	for _, exit := range p.Exits {
+		if !exit.IsValid() || exit.Port() == 0 || exit.Addr().Is4In6() {
+			return fmt.Errorf("mesh.exits %s needs one address of one family and a nonzero port", exit)
 		}
 	}
 	if slices.Contains(p.ExemptNamespaces, routerNamespace) {

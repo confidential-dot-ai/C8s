@@ -206,31 +206,6 @@ func TestPodSandboxEventsFeedInventory(t *testing.T) {
 	}
 }
 
-// Pod-sandbox events carry the gate's protection, and the container
-// lifecycle the inventory needs is subscribed exactly when it is enabled.
-func TestConfigureSubscribesContainerLifecycleWithInventory(t *testing.T) {
-	p := newTestPlugin(&config{})
-	mask, err := p.Configure(context.Background(), "", "containerd", "2.0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !mask.IsSet(api.Event_RUN_POD_SANDBOX) || !mask.IsSet(api.Event_REMOVE_POD_SANDBOX) {
-		t.Fatal("pod-sandbox events not subscribed")
-	}
-	if mask.IsSet(api.Event_STOP_CONTAINER) || mask.IsSet(api.Event_REMOVE_CONTAINER) {
-		t.Fatal("container stop and removal subscribed without an inventory")
-	}
-
-	p.inventory = newAdmissionInventory(t.TempDir())
-	mask, err = p.Configure(context.Background(), "", "containerd", "2.0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !mask.IsSet(api.Event_STOP_CONTAINER) || !mask.IsSet(api.Event_REMOVE_CONTAINER) {
-		t.Fatal("container stop and removal not subscribed with the inventory enabled")
-	}
-}
-
 func TestCreateContainer_NotReady_DeniesNonBaseImage(t *testing.T) {
 	p := basePlugin(t)
 	// plugin is NOT ready (default zero value of atomic.Bool is false)
@@ -1717,26 +1692,6 @@ func TestCreateContainer_DeniedContainerIsNotRecorded(t *testing.T) {
 	}
 	if _, ok := p.inventory.containers[ctr.Id]; ok {
 		t.Fatal("a denied container must not be recorded in the inventory")
-	}
-}
-
-// --- Configure ---
-
-func TestConfigure_SetsCreateContainerMask(t *testing.T) {
-	p := newTestPlugin(&config{Policy: policyConfig{Mode: ModeFailClosed}})
-	mask, err := p.Configure(context.Background(), "", "containerd", "1.7")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	var want api.EventMask
-	want.Set(api.Event_CREATE_CONTAINER)
-	want.Set(api.Event_START_CONTAINER)
-	want.Set(api.Event_VALIDATE_CONTAINER_ADJUSTMENT)
-	want.Set(api.Event_RUN_POD_SANDBOX)
-	want.Set(api.Event_REMOVE_POD_SANDBOX)
-	want.Set(api.Event_UPDATE_CONTAINER)
-	if mask != want {
-		t.Fatalf("mask = %v, want %v", mask, want)
 	}
 }
 

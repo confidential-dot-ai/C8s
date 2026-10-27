@@ -176,7 +176,7 @@ type containerdConfig struct {
 // policyConfig contains policy enforcement settings.
 type policyConfig struct {
 	Mode                  string      `yaml:"mode"`                    // fail-closed, audit
-	EnforceExisting       bool        `yaml:"enforce_existing"`        // kill non-allowlisted containers on startup
+	EnforceExisting       bool        `yaml:"enforce_existing"`        // kill denied running containers on startup and after each applied allowlist
 	DenyMissingAnnotation bool        `yaml:"deny_missing_annotation"` // deny containers without image annotation
 	LabelRules            []labelRule `yaml:"label_rules"`
 
@@ -382,6 +382,16 @@ func (c *config) sandboxMode() sandboxMode {
 		return SandboxOff
 	}
 	return c.Policy.Sandbox
+}
+
+// allowlistRevokesRunning reports whether a running container the allowlist
+// no longer admits is killed.
+func (c *config) allowlistRevokesRunning() bool {
+	return c.Policy.Mode != ModeAudit && c.Policy.EnforceExisting
+}
+
+func (c *config) isExemptNamespace(namespace string) bool {
+	return slices.Contains(c.Policy.ExemptNamespaces, namespace)
 }
 
 // sandboxObserved reports whether the host-privilege observation runs at all.

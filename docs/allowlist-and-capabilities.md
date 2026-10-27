@@ -787,7 +787,11 @@ the invocation (`/c8s get-cert`) and `args: any`. Their mounts are `exact`:
 the webhook mounts at fixed destinations, and each optional mount (discovery,
 reload-watch) is a separate container of the entry, so admission is the union
 across them. The inventory socket the NRI plugin adds is a `platform` mount and
-needs no rule. Before
+needs no rule. The same tables pin the role everywhere it is granted: the role
+entries the chart renders beside an open-args floor entry and the node image's
+own base declare them too, so a pod's own container running an injected
+invocation with a mount of its choosing holds no role and stays in the
+workload match. Before
 matching, a container whose image is admitted with open args for its
 invocation and running one of the invocations the webhook injects is dropped
 from the candidate set
@@ -846,6 +850,11 @@ health socket, beside the readiness status) is at or above the one
 `c8s allowlist list` reports. The plugin also logs each refresh as
 `pull loop: allowlist refreshed` with that version. The reported version is the
 one applied, so a pull the anti-rollback check ignored does not move it.
+
+With `nriImagePolicy.policy.enforceExisting` in `fail-closed` mode, the plugin
+then kills every running container outside the exempt namespaces that the
+applied document no longer admits, as it does at startup. Removing or narrowing
+an entry therefore stops its containers on each node within one interval.
 
 The host NRI plugin also carries a **base enforcement allowlist** in
 `allowlist.base`, baked into its boot config and never changed by a pull.
@@ -1096,9 +1105,10 @@ c8s allowlist upload next.json
 ```
 
 `OVERRIDE` is the override's entry name. The filter cuts its image segment to
-the 41 characters a generated shape keeps. Pods that still run the narrowed-away
-launch keep running, but cannot restart under it. A CDS that seeds the
-override, at start or while following its seed, retires those entries itself.
+the 41 characters a generated shape keeps. With `enforceExisting`, each node
+kills the containers that still run the narrowed-away launch once it applies
+the write. A CDS that seeds the override, at start or while following its
+seed, retires those entries itself.
 
 On a measured node image (`node.baked`), the seed is a file the image holds,
 so CDS follows it: it rereads the file every 30 seconds and seeds it again
