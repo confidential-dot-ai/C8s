@@ -33,9 +33,22 @@ reads every replica, serving or not:
 
     c8s cds ha status $POL $(for ip in $CDS_NODES; do R $ip; done)
 
+Each replica gets one line of `key=value` fields: `cluster= node= id= state=
+joined= epoch= serving= ca= voters= non_voters= applied= term= checkpoint=`,
+then `seats= seats_filled= retiring_voters= known_voters= fenced= backup_error=
+last_backup= stuck= awaiting_restore= divergence=`. `voters=`, `non_voters=`,
+`retiring_voters=` and `known_voters=` are counts. `last_backup=` is
+`<index>:<epoch>:<age>`, or `-`. `stuck=` is `local`, `deterministic`, or `-`.
+The seat, fence and backup fields are set on the `state=Leader` line only. A
+replica with an alarm gets one more line per alarm, with the text: `FENCED ...:
+<reason>`, `divergence: ...`, `backup_error: ...`, `stuck (<kind>): ...`.
+`--json` prints every replica's full `/ha/status` instead (`.[].status`), with
+`.[].error` for a replica it could not read.
+
 It exits non-zero when a replica is unreachable, does not serve, or disagrees
-on the epoch or CA. In the recovery runbooks some replicas do not serve yet, so
-there a non-zero exit is expected: read the printed lines.
+on the epoch or CA, or when the leader reports an unresolved divergence. In the
+recovery runbooks some replicas do not serve yet, so there a non-zero exit is
+expected: read the printed lines.
 
 **Decree outcome.** The applied decrees are the attested record:
 
@@ -136,16 +149,16 @@ A new replica joins as a non-voter. It takes a voter seat when a seat is free.
 - the command exits 0: every replica answers, serves, and agrees on `epoch=`
   and `ca=`;
 - the new node's line is there;
-- on the `state=Leader` line, `voters=` equals the voter seat count (the
-  bundle's `cdsHA.replicas`, or the last `SetVoters`), and
-  `voters=` plus `non_voters=` equals the number of IPs in `CDS_NODES`. A
+- on the `state=Leader` line: `seats_filled=true`, `retiring_voters=0`,
+  `fenced=false`, `voters=` equals `seats=` (the voter seat count in force),
+  and `voters=` plus `non_voters=` equals the number of IPs in `CDS_NODES`. A
   higher sum means the configuration still holds a voter that is gone or
-  retiring.
+  retiring. A voter that the leader cut off stays in `voters=` until it
+  retires, and `seats_filled=false` until then.
 
-The pod's `Ready` condition and the `seats_filled` and `retiring_voters`
-fields of `ha_sample` (on the leader: `seats_filled: true`, no
-`retiring_voters`) should agree. They come through the host, so they can only
-hold you back: never go on because of them alone.
+`seats_filled=true` also means that every voter is in `known_voters=`. The
+pod's `Ready` condition should agree with the gate. It comes through the host,
+so it can only hold you back: never go on because of it alone.
 
 Never remove a second node while the gate fails. With 3 voters, two missing
 voters lose the majority. That needs runbook 4 or 5.
@@ -173,7 +186,7 @@ a clean redeploy: `cds-ha.md`, "Compatibility boundary").
    with the current epoch and a new intent.
 2. Replace the cds nodes one at a time, as in runbook 2, but add
    `--image-manifest new-manifest.json` to `add-cds-node`. Replace the
-   non-voters first and the leader (`state: Leader` in `ha_sample`) last.
+   non-voters first and the leader (`state=Leader` in attested status) last.
    Pass the readiness gate after each new node and after each removal.
 3. If new replicas exit or crash-loop, stop the rollout. The old replicas
    keep the cluster. Read the new pods' logs (`kubectl -n c8s-system logs <pod>`)
@@ -197,14 +210,15 @@ state. Writes the survivor did not get are lost.
   cluster's host: cloud console, VM power state, the host's own tools. The
   host can make a live majority look dead, by blocking its status or by cutting
   the survivor off.
-- a replica answers `state: Leader` with `serving: true`, or any leader shows
-  `fenced`. A fenced leader means the majority is alive but cannot read the
-  decree objects. Fix its API access instead (alerts table, `fenced`).
+- a replica shows `state=Leader` with `serving=true` in attested status, or
+  any leader shows `fenced=true`. A fenced leader means the majority is alive
+  but cannot read the decree objects. Fix its API access instead (alerts
+  table, `fenced`).
 - a Recover was refused with `the cluster has a leader with a majority`.
 - the survivor has restarted (`joined=false`). It holds no state. This is a
   total loss: use runbook 5.
-- the replicas show `stuck` (a halted cluster). The majority is not lost: use
-  runbook 6.
+- the replicas show `stuck=deterministic` (a halted cluster). The majority is
+  not lost: use runbook 6.
 
 Prefer Restore (runbook 5) unless the writes since the last
 backup matter more than the risk above.
@@ -250,20 +264,21 @@ Steps:
    `$CUR` is the running image (`mrtd:rtmr1:rtmr2`). Every workload gets new
    certificates under the new key.
 6. Add cds nodes (runbook 2) until every seat is filled.
-7. Write a new recovery record. If the leader's `backup_error` says `backup
+7. Write a new recovery record. If the leader's `backup_error:` line says `backup
    refused`, the slot holds a backup with writes the survivor lacks. Do the
    slot steps in runbook 5, "Restoring an older backup on purpose".
 
 ## 5. Total loss: Restore from a backup
 
-Use this when no replica holds state. Every line of `ha_sample` shows
-`joined: false`, and no line shows a leader. This also covers a server reboot
+Use this when no replica holds state. Every replica shows `joined=false` in
+attested status, and none shows `state=Leader`. This also covers a server reboot
 and a host loss. After a server reboot the in-cluster backup slot is gone too,
 so use your latest export.
 
-1. Do not use this for a halted cluster (`stuck` on the replicas). A halted
-   cluster still holds its log, and a Restore loses that log. Use runbook 6.
-   Wait until `ha_sample` shows `awaiting_restore: true` on the replicas. A
+1. Do not use this for a halted cluster (`stuck=deterministic` on the
+   replicas). A halted cluster still holds its log, and a Restore loses that
+   log. Use runbook 6. Wait until attested status shows `awaiting_restore=true`
+   on the replicas. A
    replica sets it once peers answer that they hold no cluster either, or at
    most 5 minutes after it starts when it reaches no peer. Attested status
    must show `joined=false` on every replica. The cds pods stay
@@ -315,20 +330,22 @@ so use your latest export.
    step 3), so nodes take the next pin decree too.
 
 **Restoring an older backup on purpose.** The restored
-cluster's backups are then refused (`backup refused` in `backup_error`). This
+cluster's backups are then refused (`backup refused` on the leader's
+`backup_error:` line). This
 keeps a fork from overwriting the live backup. To accept the rollback:
 
     kubectl get configmaps -n $NS -l c8s.confidential.ai/cds-backup=$ID -o json > slot-before-rollback.json
     # run step 4 with the older backup and a floor that admits it
     kubectl delete configmap -n $NS -l c8s.confidential.ai/cds-backup=$ID
 
-Then check that `backup_error` clears on the leader within about 2 minutes.
+Then check that attested status shows `backup_error=false` on the leader within
+about 2 minutes.
 
 ## 6. Halted cluster after a deterministic stop
 
 **Symptoms:** the logs show `cds-ha: ALARM: this replica cannot apply a
 committed log entry`, then `cds-ha: ALARM: halted at a log entry no replica
-could apply` once a minute. Replicas show `stuck` with `stuck_local: false`, nothing
+could apply` once a minute. Attested status shows `stuck=deterministic`, nothing
 serves, and writes are refused. The leader still applies decrees and keeps its
 membership.
 
@@ -350,7 +367,7 @@ Option A, no loss: roll a fixed image.
    the next one. Then replace the remaining old nodes as in runbook 3.
 
 Option B, lose the tail: reboot every cds VM, then do runbook 5 with the last
-backup. Check the leader's `last_backup.age_ms` first. The halted leader
+backup. Check the age in the leader's `last_backup=` first. The halted leader
 cannot take a snapshot, so the backup is from before the stop.
 
 Only one replica halted, and the others serve? It exits by itself once the
@@ -360,7 +377,8 @@ the current image.
 ## 7. Divergence alarm
 
 Every replica reports `chain` and `checkpoint`. The leader compares them at
-each checkpoint, about every 10 s. Read the leader's `divergence` field.
+each checkpoint, about every 10 s. Read the leader's `divergence:` line in
+attested status (`divergence=true` on its line).
 
 - `stopped diverged replicas: ...`: no action. The replicas that differ from
   the majority are stopped. They restart and copy the leader's state. If the
@@ -384,12 +402,15 @@ each checkpoint, about every 10 s. Read the leader's `divergence` field.
 
 ## 8. Backup failing, or backup too old
 
-`backup_error` reads `backup failing since <time> (<n> attempts): <stage>: <error>`.
+On the leader, attested status shows `backup_error=true` and a line
+`backup_error: backup failing since <time> (<n> attempts): <stage>: <error>`.
 Each failed attempt also logs a `Warn` line `backup: <stage>`.
 
-Alert when the leader shows `backup_error`, or when `last_backup.age_ms` is
-over 3 minutes while writes happen. A new leader shows no `last_backup`
-until its first backup, about 1 minute after it takes over.
+Alert when the leader shows `backup_error=true`, or when the age in its
+`last_backup=<index>:<epoch>:<age>` is over 3 minutes while writes happen. For
+a script, read `.status.backup_error` and `.status.last_backup.age_ms` from
+`--json`. A new leader shows `last_backup=-` until its first backup, about 1
+minute after it takes over.
 
 By the stage in `backup_error`:
 

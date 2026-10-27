@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -232,6 +233,92 @@ func TestHAStatusCLI(t *testing.T) {
 	}
 	if out, err := runHA(t, "status", "--insecure", a.URL, broken.URL); err == nil || !strings.Contains(out, "ERROR") {
 		t.Fatalf("unreachable replica: %v %q", err, out)
+	}
+}
+
+// The runbooks gate on the leader's seats, backups and alarms: status prints
+// them after the fields scripts already read, and --json gives the whole view.
+func TestHAStatusCLIPrintsSeatsBackupsAndAlarms(t *testing.T) {
+	leader := cdsha.Status{
+		ClusterID: "c1", NodeName: "n1", ID: "m1", State: "Leader", Joined: true, Epoch: 4, Serving: true, CAFingerprint: "aa",
+		Voters: []string{"m1", "m2", "m3"}, NonVoters: []string{"m4"}, AppliedIndex: 90, Term: 7,
+		Seats: 3, RetiringVoters: []string{"m0"}, KnownVoters: []string{"m1", "m2"},
+		BackupError: "backup failing since 2026-01-01T00:00:00Z (3 attempts): store: forbidden",
+		LastBackup:  &cdsha.BackupStatus{Index: 80, Epoch: 4, AgeMS: 125_400},
+		Fenced:      &cdsha.Fence{Reason: "not yet seen the decree objects in its term"},
+		Stuck:       "apply 85: bad entry",
+		Divergence:  "no majority: m2 differs",
+	}
+	follower := cdsha.Status{ClusterID: "c1", NodeName: "n2", ID: "m2", State: "Follower", Joined: true, Epoch: 4, Serving: true,
+		CAFingerprint: "aa", AwaitingRestore: true, Stuck: "disk full", StuckLocal: true}
+	serve := func(hb cdsha.Status) string {
+		s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewEncoder(w).Encode(hb)
+		}))
+		t.Cleanup(s.Close)
+		return s.URL
+	}
+	a, b := serve(leader), serve(follower)
+
+	out, err := runHA(t, "status", "--insecure", a, b)
+	if err == nil {
+		t.Fatalf("a leader with an unresolved divergence must fail the command: %q", out)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	fields := func(line string) map[string]string {
+		m := map[string]string{}
+		for _, f := range strings.Fields(line) {
+			if k, v, ok := strings.Cut(f, "="); ok {
+				m[k] = v
+			}
+		}
+		return m
+	}
+	want := map[string]map[string]string{
+		a: {"id": "m1", "joined": "true", "term": "7", "voters": "3", "non_voters": "1", "seats": "3", "seats_filled": "false",
+			"retiring_voters": "1", "known_voters": "2", "fenced": "true", "backup_error": "true", "last_backup": "80:4:2m5s",
+			"stuck": "deterministic", "awaiting_restore": "false", "divergence": "true"},
+		b: {"id": "m2", "seats": "0", "fenced": "false", "backup_error": "false", "last_backup": "-", "stuck": "local",
+			"awaiting_restore": "true", "divergence": "false"},
+	}
+	for u, kv := range want {
+		var got map[string]string
+		for _, l := range lines {
+			if strings.HasPrefix(l, u+" ") && strings.Contains(l, " cluster=") {
+				got = fields(l)
+			}
+		}
+		for k, v := range kv {
+			if got[k] != v {
+				t.Errorf("%s: %s=%q, want %q\n%s", u, k, got[k], v, out)
+			}
+		}
+	}
+	for _, alarm := range []string{
+		"FENCED", leader.Fenced.Reason, "divergence: " + leader.Divergence, "backup_error: " + leader.BackupError,
+		"stuck (deterministic): " + leader.Stuck, "stuck (local): " + follower.Stuck,
+	} {
+		if !strings.Contains(out, alarm) {
+			t.Errorf("output lacks %q:\n%s", alarm, out)
+		}
+	}
+
+	dead := httptest.NewServer(http.NotFoundHandler())
+	dead.Close()
+	out, err = runHA(t, "status", "--insecure", "--json", a, b, dead.URL)
+	if err == nil {
+		t.Fatalf("an unreachable replica must fail the command: %q", out)
+	}
+	var got []replicaStatus
+	// cobra appends the error after the JSON.
+	if jerr := json.NewDecoder(strings.NewReader(out)).Decode(&got); jerr != nil {
+		t.Fatalf("--json: %v\n%s", jerr, out)
+	}
+	if len(got) != 3 || got[0].URL != a || got[1].URL != b || got[2].Status != nil || got[2].Error == "" {
+		t.Fatalf("--json reports = %+v", got)
+	}
+	if !reflect.DeepEqual(*got[0].Status, leader) || !reflect.DeepEqual(*got[1].Status, follower) {
+		t.Fatalf("--json statuses differ from the replicas':\n%+v\n%+v", *got[0].Status, *got[1].Status)
 	}
 }
 

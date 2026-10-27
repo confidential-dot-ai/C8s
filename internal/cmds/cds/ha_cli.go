@@ -212,12 +212,21 @@ func bindTarget(d *cdsha.Decree, st cdsha.Status) error {
 // A status is the replica's own word; the command only compares them.
 func newHAStatusCmd() *cobra.Command {
 	conn := cdsconn.Options{DirectCDS: true}
+	var asJSON bool
 	cmd := &cobra.Command{
 		Use:   "status URL...",
-		Short: "Report each replica's role, epoch, mesh CA and freshness from GET /ha/status (over armTLS)",
-		Args:  cobra.MinimumNArgs(1),
+		Short: "Report each replica's role, epoch, mesh CA, seats, backups and alarms from GET /ha/status (over armTLS)",
+		Long: "Reads GET /ha/status from every replica over armTLS and prints one line per replica, then one line\n" +
+			"for each alarm it reports (FENCED, divergence, backup_error, stuck). Leader-only fields (seats,\n" +
+			"seats_filled, retiring_voters, known_voters, fenced, backup_error, last_backup) are zero on the\n" +
+			"other replicas. last_backup is index:epoch:age. --json prints every replica's full status instead.\n" +
+			"Exits non-zero when a replica is unreachable, does not serve, or the replicas disagree.",
+		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, urls []string) error {
-			var seen []cdsha.Status
+			var (
+				seen    []cdsha.Status
+				reports []replicaStatus
+			)
 			for _, u := range urls {
 				// One attested client per replica: one client reaches one peer (cdsconn).
 				var hb cdsha.Status
@@ -228,27 +237,29 @@ func newHAStatusCmd() *cobra.Command {
 					err = getJSON(cmd.Context(), hc, u, "/ha/status", 1<<16, &hb)
 				}
 				if err != nil {
-					fmt.Fprintf(cmd.OutOrStdout(), "%-40s ERROR %v\n", u, err)
+					reports = append(reports, replicaStatus{URL: u, Error: err.Error()})
+					if !asJSON {
+						fmt.Fprintf(cmd.OutOrStdout(), "%-40s ERROR %v\n", u, err)
+					}
 					continue
 				}
 				seen = append(seen, hb)
-				cp := "-"
-				if hb.Checkpoint != nil {
-					cp = fmt.Sprintf("%d:%.16s", hb.Checkpoint.Index, hb.Checkpoint.State)
+				reports = append(reports, replicaStatus{URL: u, Status: &hb})
+				if !asJSON {
+					printStatus(cmd.OutOrStdout(), u, hb)
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "%-40s cluster=%s node=%s id=%s state=%s joined=%t epoch=%d serving=%t ca=%s voters=%d non_voters=%d applied=%d term=%d checkpoint=%s\n",
-					u, hb.ClusterID, hb.NodeName, hb.ID, hb.State, hb.Joined, hb.Epoch, hb.Serving, hb.CAFingerprint, len(hb.Voters), len(hb.NonVoters), hb.AppliedIndex, hb.Term, cp)
-				if f := hb.Fenced; f != nil {
-					fmt.Fprintf(cmd.OutOrStdout(), "%-40s FENCED since=%s stale_for=%s cut_off=%v decree=%s member=%s: %s\n", u,
-						time.UnixMilli(f.SinceMS).UTC().Format(time.RFC3339), time.Duration(f.StaleForMS)*time.Millisecond, f.CutOffVoters, f.Decree, f.Member, f.Reason)
-				}
-				if hb.Divergence != "" {
-					fmt.Fprintf(cmd.OutOrStdout(), "%-40s divergence: %s\n", u, hb.Divergence)
+			}
+			if asJSON {
+				enc := json.NewEncoder(cmd.OutOrStdout())
+				enc.SetIndent("", "  ")
+				if err := enc.Encode(reports); err != nil {
+					return err
 				}
 			}
 			return reportDivergence(seen, len(urls))
 		},
 	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "print each replica's URL and full /ha/status (or its error) as a JSON array")
 	// The connection flags of every CDS CLI, but the replicas are the
 	// arguments and nothing is written.
 	all := pflag.NewFlagSet("", pflag.ContinueOnError)
@@ -259,6 +270,51 @@ func newHAStatusCmd() *cobra.Command {
 		}
 	})
 	return cmd
+}
+
+// replicaStatus is one replica in `ha status --json`.
+type replicaStatus struct {
+	URL    string        `json:"url"`
+	Status *cdsha.Status `json:"status,omitempty"`
+	Error  string        `json:"error,omitempty"`
+}
+
+// printStatus prints a replica's line, then a line per alarm. Scripts read
+// the line by key=: new keys are appended, and values never hold spaces, so
+// free text (reasons, errors) goes on the alarm lines only.
+func printStatus(w io.Writer, u string, hb cdsha.Status) {
+	cp := "-"
+	if hb.Checkpoint != nil {
+		cp = fmt.Sprintf("%d:%.16s", hb.Checkpoint.Index, hb.Checkpoint.State)
+	}
+	backup := "-"
+	if b := hb.LastBackup; b != nil {
+		backup = fmt.Sprintf("%d:%d:%s", b.Index, b.Epoch, (time.Duration(b.AgeMS) * time.Millisecond).Round(time.Second))
+	}
+	stuck := "-"
+	if hb.Stuck != "" {
+		stuck = "deterministic"
+		if hb.StuckLocal {
+			stuck = "local"
+		}
+	}
+	fmt.Fprintf(w, "%-40s cluster=%s node=%s id=%s state=%s joined=%t epoch=%d serving=%t ca=%s voters=%d non_voters=%d applied=%d term=%d checkpoint=%s"+
+		" seats=%d seats_filled=%t retiring_voters=%d known_voters=%d fenced=%t backup_error=%t last_backup=%s stuck=%s awaiting_restore=%t divergence=%t\n",
+		u, hb.ClusterID, hb.NodeName, hb.ID, hb.State, hb.Joined, hb.Epoch, hb.Serving, hb.CAFingerprint, len(hb.Voters), len(hb.NonVoters), hb.AppliedIndex, hb.Term, cp,
+		hb.Seats, hb.SeatsFilled, len(hb.RetiringVoters), len(hb.KnownVoters), hb.Fenced != nil, hb.BackupError != "", backup, stuck, hb.AwaitingRestore, hb.Divergence != "")
+	if f := hb.Fenced; f != nil {
+		fmt.Fprintf(w, "%-40s FENCED since=%s stale_for=%s cut_off=%v decree=%s member=%s: %s\n", u,
+			time.UnixMilli(f.SinceMS).UTC().Format(time.RFC3339), time.Duration(f.StaleForMS)*time.Millisecond, f.CutOffVoters, f.Decree, f.Member, f.Reason)
+	}
+	if hb.Divergence != "" {
+		fmt.Fprintf(w, "%-40s divergence: %s\n", u, hb.Divergence)
+	}
+	if hb.BackupError != "" {
+		fmt.Fprintf(w, "%-40s backup_error: %s\n", u, hb.BackupError)
+	}
+	if hb.Stuck != "" {
+		fmt.Fprintf(w, "%-40s stuck (%s): %s\n", u, stuck, hb.Stuck)
+	}
 }
 
 func reportDivergence(seen []cdsha.Status, want int) error {

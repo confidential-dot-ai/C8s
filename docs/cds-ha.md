@@ -160,8 +160,10 @@ hint, not proof of a total loss.
 
 `status` reads `GET /ha/status` from each replica over armTLS, with the same
 connection flags as the other `c8s cds` commands. It prints each replica's
-member ID (`id=`), role, epoch, mesh CA and applied index, and fails when a replica cannot be
-reached, is not serving, or disagrees on the epoch or mesh CA. A status is the
+member ID (`id=`), role, epoch, mesh CA and applied index, and on the leader
+its seats, fence and backups, then a line per alarm (`cds-ha-runbooks.md`
+lists the fields; `--json` prints the whole status). It fails when a replica
+cannot be reached, is not serving, or disagrees on the epoch or mesh CA. A status is the
 replica's own report; `c8s cds ha decrees` gives the agreed decree record.
 
 ## Replica divergence
@@ -397,9 +399,9 @@ replica's reads stop within `lease`) when:
   saw the decree only after such a gap (status `refused late: ...`), or another
   replica applied it (`applied_epoch`, a fork).
 
-`c8s cds ha status` on the leader shows `fenced` with `reason`, `since_ms`,
-`stale_for_ms`, `cut_off_voters`, and for a Recover decree `decree` and
-`member`; the leader logs `FENCED` at ERROR once a minute. A plain API outage
+`c8s cds ha status` on the leader shows `fenced=true` and a `FENCED` line
+with the reason, since, stale_for, cut_off voters, and for a Recover decree
+decree and member; the leader logs `FENCED` at ERROR once a minute. A plain API outage
 with every member healthy fences nothing, also across an election.
 
 What to do:
