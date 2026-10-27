@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
 	agarmtls "github.com/confidential-dot-ai/attestation-go/armtls"
@@ -226,20 +227,44 @@ func verifyOnline(att *Attestation, pub crypto.PublicKey, policy *VerifyPolicy, 
 }
 
 // mapVerifyError translates remote verdict sentinels onto this package's error
-// surface, which callers match with errors.Is.
+// surface, which callers match with errors.Is. An attestation-api refusal of
+// the evidence (400, 415, 422) is terminal and maps to [ErrInvalidReport];
+// transport failures and every other status stay unwrapped, as retryable or as
+// a deployment fault that is not the peer's.
 func mapVerifyError(family TEEType, err error) error {
+	var apiErr *remote.APIError
 	switch {
 	case errors.Is(err, remote.ErrSignatureInvalid):
 		return ErrSignatureInvalid
 	case errors.Is(err, remote.ErrReportDataMismatch):
 		return fmt.Errorf("%w — key was not generated in this TEE", ErrKeyBinding)
-	case errors.Is(err, remote.ErrMeasurementNotAllowed), errors.Is(err, remote.ErrRegistersNotAllowed), errors.Is(err, remote.ErrAnchorNotAllowed):
+	case errors.Is(err, remote.ErrMeasurementNotAllowed), errors.Is(err, remote.ErrRegistersNotAllowed), errors.Is(err, remote.ErrAnchorNotAllowed),
+		errors.Is(err, remote.ErrMinTcbNotAllowed), errors.Is(err, remote.ErrPCRNotAllowed), errors.Is(err, remote.ErrInitDataMismatch):
 		return fmt.Errorf("%w: %v", ErrPolicyViolation, err)
+	// ErrPlatformMismatch is the verifier answering for another platform than
+	// the evidence named: a fault in its response, not a pin the peer failed,
+	// so it stays unwrapped.
+	case errors.Is(err, remote.ErrUnsupportedPlatform):
+		return fmt.Errorf("%w: %v", ErrUnsupportedTEE, err)
 	case errors.Is(err, remote.ErrInvalidLaunchDigest):
 		return fmt.Errorf("%w: %v", ErrInvalidReport, err)
+	// The api answers its own refusals in the JSON envelope; a non-JSON 4xx
+	// comes from something in front of it and stays a deployment fault.
+	case errors.As(err, &apiErr) && rejectsRequest(apiErr.Status):
+		return fmt.Errorf("%w: attestation-api refused the evidence (%d): %w", ErrInvalidReport, apiErr.Status, err)
 	default:
 		return fmt.Errorf("armtls: online %s attestation verify: %w", family, err)
 	}
+}
+
+// rejectsRequest reports whether a status names what was sent: the
+// attestation-api answers evidence verdicts and body rejections with these
+// alone. 401, 403 and 404 point at the deployment, not the peer, and so does
+// 413, which an ingress body limit answers in JSON too.
+func rejectsRequest(status int) bool {
+	return status == http.StatusBadRequest ||
+		status == http.StatusUnsupportedMediaType ||
+		status == http.StatusUnprocessableEntity
 }
 
 // checkPeerKeyType accepts ECDSA P-256 or P-384 on either verification path.

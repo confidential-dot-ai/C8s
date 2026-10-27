@@ -20,10 +20,11 @@ var (
 	// (e.g., AMD VCEK → ASK → ARK).
 	ErrSignatureInvalid = errors.New("armtls: hardware signature verification failed")
 
-	// ErrPolicyViolation indicates that the verified launch measurement is not
-	// in the [VerifyPolicy] reference values. Debug and minimum-TCB policy are
-	// enforced by the attestation-api; those rejections surface as the
-	// attestation-api error or [ErrSignatureInvalid], not this sentinel.
+	// ErrPolicyViolation indicates that the verified claims do not satisfy a
+	// [VerifyPolicy] pin: launch measurement, TDX registers, image anchor,
+	// vTPM PCR, init-data hash, a TCB floor set for a family that has none,
+	// or a sandbox or workload pin. Debug and TCB-floor verdicts are the
+	// attestation-api's; its refusal surfaces as [ErrInvalidReport].
 	ErrPolicyViolation = errors.New("armtls: attestation policy check failed")
 
 	// ErrCertValidity indicates the certificate is outside its validity
@@ -39,6 +40,11 @@ var (
 	ErrUnsupportedTEE = agarmtls.ErrUnsupportedTEE
 
 	// ErrInvalidReport indicates a structurally invalid attestation report
-	// (e.g., wrong size for the platform, truncated, or corrupt).
+	// (e.g., wrong size for the platform, truncated, or corrupt), or evidence
+	// the attestation-api refused with 400, 415 or 422. Either is
+	// terminal: resending the same evidence cannot succeed. Its refusals do not
+	// say which check failed, so they cannot claim [ErrPolicyViolation]. An
+	// unset attestation-api URL also returns it: no verifier can judge the
+	// report.
 	ErrInvalidReport = agarmtls.ErrInvalidReport
 )
