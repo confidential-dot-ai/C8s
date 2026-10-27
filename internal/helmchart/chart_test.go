@@ -1628,10 +1628,15 @@ func TestChartRendersRouterPublicTLSAndDiscovery(t *testing.T) {
 	cfg.location(t, "exact", "/.well-known/mesh-ca.pem").assertDirective(t, "alias", "/etc/c8s/certs/ca.crt")
 	// Locations that hold no attest-lb binding close the connection after the
 	// response, so a binding cannot lapse under a connection they keep open.
-	for _, path := range []string{"/v1/discovery", "/.well-known/cds-cert.pem", "/.well-known/mesh-ca.pem", "/readyz", "/healthz", "/allowlist"} {
+	// Discovery and the allowlist keep a young connection open, so a client can
+	// read the allowlist on the connection whose leaf it attested.
+	for _, path := range []string{"/.well-known/cds-cert.pem", "/.well-known/mesh-ca.pem", "/readyz", "/healthz"} {
 		cfg.location(t, "exact", path).assertDirective(t, "keepalive_timeout", "0")
 	}
-	cfg.location(t, "prefix", "/allowlist/").assertDirective(t, "keepalive_timeout", "0")
+	for _, path := range []string{"/v1/discovery", "/allowlist"} {
+		cfg.location(t, "exact", path).assertDirective(t, "keepalive_time", "1m")
+	}
+	cfg.location(t, "prefix", "/allowlist/").assertDirective(t, "keepalive_time", "1m")
 	cfg.location(t, "named", "@tunnel_busy").assertDirective(t, "keepalive_timeout", "0")
 	cfg.location(t, "exact", "/readyz").assertDirective(t, "proxy_set_header", "X-C8s-Connection", "$nginx_start.$pid.$connection")
 	// The public TLS mode changes only what nginx serves: application
@@ -4572,8 +4577,10 @@ func Example_routerConfig() {
 	//     sendfile on;
 	//     # cds-attest drops a lapsed attest-lb binding once these three timeouts
 	//     # must have closed its connection (lbBindingLife); change them together.
-	//     # Locations that hold no binding set keepalive_timeout 0, so a binding
-	//     # cannot lapse under a connection they keep open.
+	//     # Locations that hold no binding set keepalive_timeout 0, or, where a
+	//     # client reads on the connection it attested (discovery, /allowlist),
+	//     # keepalive_time 1m, so a binding cannot lapse under a connection they
+	//     # keep open.
 	//     keepalive_timeout 65;
 	//     client_header_timeout 60s;
 	//     send_timeout 60s;
@@ -4653,7 +4660,9 @@ func Example_routerConfig() {
 	//                 return 204;
 	//             }
 	//             add_header Access-Control-Allow-Origin "*" always;
-	//             keepalive_timeout 0;
+	//             # Holds no attest-lb binding: the connection stays open only while it is
+	//             # younger than keepalive_time (see the discovery location).
+	//             keepalive_time 1m;
 	//             # These run before nginx collapses callers onto the loopback proxy source.
 	//             # Each zone's map key is empty for the methods it does not cover, so
 	//             # mutations count per client and in aggregate, reads per client only.
@@ -4683,7 +4692,9 @@ func Example_routerConfig() {
 	//                 return 204;
 	//             }
 	//             add_header Access-Control-Allow-Origin "*" always;
-	//             keepalive_timeout 0;
+	//             # Holds no attest-lb binding: the connection stays open only while it is
+	//             # younger than keepalive_time (see the discovery location).
+	//             keepalive_time 1m;
 	//             # These run before nginx collapses callers onto the loopback proxy source.
 	//             # Each zone's map key is empty for the methods it does not cover, so
 	//             # mutations count per client and in aggregate, reads per client only.
