@@ -54,21 +54,12 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 		}
 	}
 
-	data, err := os.ReadFile(path("/usr/lib/c8s/image-policy.yaml"))
+	floor, a, err := loadFloor(rootDir)
 	if err != nil {
 		return err
 	}
-	var floor map[string]any
-	if err := yaml.Unmarshal(data, &floor); err != nil {
-		return fmt.Errorf("baked NRI policy: %w", err)
-	}
-	a, ok := floor["allowlist"].(map[string]any)
-	if !ok {
-		return fmt.Errorf("baked NRI policy missing allowlist")
-	}
-	pull, ok := a["pull"].(map[string]any)
-	if !ok {
-		return fmt.Errorf("baked NRI policy missing pull")
+	if _, err := bindCDSPull(a, d); err != nil {
+		return err
 	}
 	base, err := bakedBase(a["base"])
 	if err != nil {
@@ -78,10 +69,6 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 		return fmt.Errorf("merge chart seed into NRI base: %w", err)
 	}
 	a["base"] = base
-	pull["url"] = d.CDSURL()
-	pull["cds_measurements_config"] = launchDir + "cds.json"
-	delete(pull, "cds_measurements")
-	delete(pull, "cds_rtmrs")
 	mesh, declared := floor["mesh"]
 	if !declared {
 		return fmt.Errorf("baked NRI policy missing mesh")
@@ -97,39 +84,79 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 	if err := appendCredentialRole(policy, address); err != nil {
 		return err
 	}
-	data, err = yaml.Marshal(floor)
+	data, err := yaml.Marshal(floor)
 	if err != nil {
 		return err
 	}
 
 	// Validate every input before publishing anything. RKE2 only starts after
 	// this preparation succeeds, so pods never observe partially staged input.
-	publicPath := path(PublicDir)
+	if err := publishPublic(path(PublicDir), outputs, d.Role == launchconfig.Agent); err != nil {
+		return err
+	}
+	return writeFile(path(nriPolicyPath), data, 0600)
+}
+
+const nriPolicyPath = "/etc/nri/conf.d/image-policy.yaml"
+
+// bindCDSPull applies the signed server endpoint and its separately staged pins.
+func bindCDSPull(a map[string]any, d *launchconfig.Document) (map[string]any, error) {
+	pull, ok := a["pull"].(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("baked NRI policy missing pull")
+	}
+	if err := launchconfig.ValidateIPv4(d.Server.Address, true); err != nil {
+		return nil, fmt.Errorf("staged server.address: %w", err)
+	}
+	pull["url"] = d.CDSURL()
+	pull["cds_measurements_config"] = launchDir + "cds.json"
+	delete(pull, "cds_measurements")
+	delete(pull, "cds_rtmrs")
+	return pull, nil
+}
+
+// loadFloor reads the NRI policy baked into the image, returning the whole
+// document and its allowlist section for the caller to edit.
+func loadFloor(rootDir string) (floor, allowlistSection map[string]any, err error) {
+	data, err := os.ReadFile(filepath.Join(rootDir, "/usr/lib/c8s/image-policy.yaml"))
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := yaml.Unmarshal(data, &floor); err != nil {
+		return nil, nil, fmt.Errorf("baked NRI policy: %w", err)
+	}
+	allowlistSection, ok := floor["allowlist"].(map[string]any)
+	if !ok {
+		return nil, nil, fmt.Errorf("baked NRI policy missing allowlist")
+	}
+	return floor, allowlistSection, nil
+}
+
+func publishPublic(publicPath string, outputs map[string][]byte, clearServer bool) error {
 	if err := os.MkdirAll(publicPath, 0755); err != nil {
 		return err
 	}
 	if err := os.Chmod(publicPath, 0755); err != nil {
 		return err
 	}
-	if d.Role == launchconfig.Agent {
+	if clearServer {
 		if err := removeServerOutputs(publicPath); err != nil {
 			return err
 		}
 	}
 	for name, data := range outputs {
-		dst := filepath.Join(publicPath, name)
-		if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
-			return err
-		}
-		if err := fileutil.WriteAtomic(dst, data, 0644); err != nil {
+		if err := writeFile(filepath.Join(publicPath, name), data, 0644); err != nil {
 			return err
 		}
 	}
-	policyPath := path("/etc/nri/conf.d/image-policy.yaml")
-	if err := os.MkdirAll(filepath.Dir(policyPath), 0755); err != nil {
+	return nil
+}
+
+func writeFile(path string, data []byte, mode os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
 	}
-	return fileutil.WriteAtomic(policyPath, data, 0600)
+	return fileutil.WriteAtomic(path, data, mode)
 }
 
 // bakedBase decodes the measured base out of the boot config it is written in.
@@ -192,6 +219,7 @@ func appendCredentialRole(policy map[string]any, address netip.AddrPort) error {
 type serverConfig struct {
 	operatorPubKey []byte
 	allowlistSeed  []byte
+	podImagePolicy []byte
 	tlsSAN         string
 	router         launchconfig.Router
 }
@@ -200,7 +228,7 @@ type serverConfig struct {
 // these, and an agent clears exactly these. The router files are always
 // written, empty when unset, so the router pod never waits on a missing file.
 var serverOutputNames = []string{
-	"operator-pubkey", "allowlist-seed.json", "tls-san",
+	"operator-pubkey", "allowlist-seed.json", "pods.json", "tls-san",
 	"router/tls.conf", "router/hostnames",
 	"router/acme-email", "router/acme-directory-url", "router/front-door-mode",
 	"router/request-body.conf",
@@ -232,6 +260,7 @@ func (c serverConfig) files() map[string][]byte {
 	files := map[string][]byte{
 		"operator-pubkey":     c.operatorPubKey,
 		"allowlist-seed.json": c.allowlistSeed,
+		"pods.json":           c.podImagePolicy,
 		"tls-san":             []byte(c.tlsSAN + "\n"),
 		// nginx includes this in its server block to pick the certificate.
 		"router/tls.conf":           []byte(fmt.Sprintf("include %s/tls-%s.conf;\n", RouterTLSSnippetDir, mode)),
@@ -270,6 +299,17 @@ func serverOutputs(d *launchconfig.Document, bakedData []byte) (serverConfig, er
 	if err != nil {
 		return serverConfig{}, err
 	}
+	podPolicy := []byte(d.PodImagePolicy)
+	if len(podPolicy) > 0 {
+		pins, err := workloadclaims.ParsePodImagePolicy(podPolicy)
+		if err != nil {
+			return serverConfig{}, fmt.Errorf("staged Pod image policy: %w", err)
+		}
+		podPolicy, err = refvalues.Format(pins)
+		if err != nil {
+			return serverConfig{}, fmt.Errorf("format Pod image policy: %w", err)
+		}
+	}
 	var router launchconfig.Router
 	if d.Router != nil {
 		router = *d.Router
@@ -281,7 +321,7 @@ func serverOutputs(d *launchconfig.Document, bakedData []byte) (serverConfig, er
 			return serverConfig{}, fmt.Errorf("staged router hostname: %w", err)
 		}
 	}
-	return serverConfig{operatorPubKey: pub, allowlistSeed: seed, tlsSAN: d.TLSSAN, router: router}, nil
+	return serverConfig{operatorPubKey: pub, allowlistSeed: seed, podImagePolicy: podPolicy, tlsSAN: d.TLSSAN, router: router}, nil
 }
 
 // removeServerOutputs clears the server-only inputs from an agent's public

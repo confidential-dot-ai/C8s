@@ -32,6 +32,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/readutil"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 const (
@@ -42,6 +43,7 @@ const (
 	DefaultStagedPath = Dir + "/config.json"
 	MaxDocumentSize   = 1024 * 1024
 	maxSignatureSize  = 4096
+	maxLaunchKeySize  = 8192
 	maxAgentKeys      = 128
 	maxMirrors        = 8
 	defaultTLSSAN     = "c8s.local"
@@ -53,6 +55,8 @@ type Role string
 const (
 	Server Role = "server"
 	Agent  Role = "agent"
+	// Pod runs one static pod under a standalone kubelet; RKE2 never starts.
+	Pod Role = "pod"
 )
 
 // Valid reports whether r is a role this image can boot.
@@ -72,12 +76,21 @@ const (
 )
 
 // roleRules keeps each role's document rules in one place, so validate,
-// and authorizeKey ask the role instead of testing for it
+// authorizeKey and referenceValues ask the role instead of testing for it
 // inline. Adding a role means adding an entry, not new branches; every entry
 // sets every field.
 type roleRules struct {
-	serverToken presence // rke2.serverToken, distinct from rke2.agentToken
-	agentKeys   presence // agentOperatorPublicKeys
+	// joinsCluster requires rke2.agentToken; a role that joins no cluster
+	// must carry neither token. optional is not meaningful here.
+	joinsCluster bool
+	serverToken  presence // rke2.serverToken, distinct from rke2.agentToken
+	agentKeys    presence // agentOperatorPublicKeys
+	podKey       presence // podOperatorPublicKey
+	pod          presence // the pod section, which then requires workloads
+	// measuresWorkloads requires a platform with a runtime register: the
+	// role measures what it runs after launch, and without the register no
+	// evidence could carry those measurements.
+	measuresWorkloads bool
 	// namesServer requires server.address in the signed document; otherwise
 	// it is checked only when present.
 	namesServer bool
@@ -87,26 +100,44 @@ type roleRules struct {
 	router        bool // may carry a router block
 	// ownLaunchKey authorizes the exact server.operatorPublicKey bytes;
 	// otherwise the launch key must be listed in agentOperatorPublicKeys and
-	// differ from the server's.
+	// differ from the server's. A podKey authorizes its own exact bytes.
 	ownLaunchKey bool
 }
 
 var roles = map[Role]roleRules{
 	Server: {
+		joinsCluster:  true,
 		serverToken:   required,
 		agentKeys:     optional,
+		podKey:        forbidden,
+		pod:           forbidden,
 		namesServer:   false,
 		stagedAddress: true,
 		router:        true,
 		ownLaunchKey:  true,
 	},
 	Agent: {
+		joinsCluster:  true,
 		serverToken:   forbidden,
 		agentKeys:     required,
+		podKey:        forbidden,
+		pod:           forbidden,
 		namesServer:   true,
 		stagedAddress: true,
 		router:        false,
 		ownLaunchKey:  false,
+	},
+	Pod: {
+		joinsCluster:      false,
+		serverToken:       forbidden,
+		agentKeys:         forbidden,
+		podKey:            required,
+		pod:               required,
+		measuresWorkloads: true,
+		namesServer:       true,
+		stagedAddress:     true,
+		router:            false,
+		ownLaunchKey:      false,
 	},
 }
 
@@ -125,11 +156,17 @@ type Document struct {
 	RKE2                    RKE2         `yaml:"rke2" json:"rke2"`
 	Server                  ServerConfig `yaml:"server" json:"server"`
 	AgentOperatorPublicKeys []string     `yaml:"agentOperatorPublicKeys" json:"agent_operator_public_keys"`
-	TLSSAN                  string       `yaml:"tlsSAN,omitempty" json:"tls_san"`
+	// PodOperatorPublicKey verifies pod documents; Server still pins CDS.
+	PodOperatorPublicKey string `yaml:"podOperatorPublicKey,omitempty" json:"pod_operator_public_key,omitempty"`
+	TLSSAN               string `yaml:"tlsSAN,omitempty" json:"tls_san"`
 
 	// Workloads is an optional strict c8s.allowlist/v1 JSON document. Keeping
 	// its existing wire schema avoids an independent YAML policy language.
 	Workloads string `yaml:"workloads,omitempty" json:"workloads,omitempty"`
+
+	// PodImagePolicy authorizes Pod workload issuance, separately from node
+	// peer trust. Only a signed server document may supply this JSON policy.
+	PodImagePolicy string `yaml:"podImagePolicy,omitempty" json:"pod_image_policy,omitempty"`
 
 	// Router is the server's front door. A baked image cannot know it at
 	// build time, so the signed launch file carries it.
@@ -141,6 +178,9 @@ type Document struct {
 	// public certificate. Image references stay digest-pinned, so a mirror
 	// cannot change what a node runs.
 	RegistryMirrors map[string]string `yaml:"registryMirrors,omitempty" json:"registry_mirrors,omitempty"`
+
+	// Pod is the one static pod a pod-role boot runs; forbidden otherwise.
+	Pod *PodSpec `yaml:"pod,omitempty" json:"pod,omitempty"`
 
 	serverTokenPresent bool
 }
@@ -237,6 +277,9 @@ type Image struct {
 // "tdx" inline. Adding a platform means adding an entry, not new branches.
 type imagePlatform struct {
 	family teetypes.Family
+	// runtimeRegister is set when the platform has a register the guest can
+	// extend after launch (RTMR[3]), into which a pod measures its workloads.
+	runtimeRegister bool
 	// validateRegisters rejects a register map that does not match what this
 	// platform measures. Its error names the platform's own rule.
 	validateRegisters func(rtmrs map[int]string) error
@@ -244,7 +287,8 @@ type imagePlatform struct {
 
 var imagePlatforms = map[string]imagePlatform{
 	"tdx": {
-		family: teetypes.FamilyTDX,
+		family:          teetypes.FamilyTDX,
+		runtimeRegister: true,
 		validateRegisters: func(rtmrs map[int]string) error {
 			if len(rtmrs) != 2 || !registerHex(rtmrs[1]) || !registerHex(rtmrs[2]) {
 				return fmt.Errorf("TDX image must pin exactly RTMR[1] and RTMR[2]")
@@ -268,6 +312,13 @@ var imagePlatforms = map[string]imagePlatform{
 func (i Image) platform() (imagePlatform, bool) {
 	p, ok := imagePlatforms[i.Platform]
 	return p, ok
+}
+
+// HasRuntimeRegister reports whether the image's platform can measure
+// workloads after launch.
+func (i Image) HasRuntimeRegister() bool {
+	p, _ := i.platform()
+	return p.runtimeRegister
 }
 
 type Node struct {
@@ -410,7 +461,7 @@ func (d *Document) validate() error {
 		return fmt.Errorf("node.name must be an RFC1123 label")
 	}
 	if !d.Role.Valid() {
-		return fmt.Errorf("role must be server or agent")
+		return fmt.Errorf("role must be server, agent or pod")
 	}
 	rules := d.rules()
 	platform, ok := d.Image.platform()
@@ -422,6 +473,9 @@ func (d *Document) validate() error {
 	}
 	if err := platform.validateRegisters(d.Image.RTMRs); err != nil {
 		return err
+	}
+	if rules.measuresWorkloads && !platform.runtimeRegister {
+		return fmt.Errorf("%s requires a platform with a runtime register to measure its workloads; %s has none", d.Role, d.Image.Platform)
 	}
 	if d.Server.Address != "" || rules.namesServer {
 		if err := ValidateIPv4(d.Server.Address, true); err != nil {
@@ -441,7 +495,11 @@ func (d *Document) validate() error {
 			return fmt.Errorf("node.externalIP: %w", err)
 		}
 	}
-	if !tokenRE.MatchString(d.RKE2.AgentToken) {
+	if !rules.joinsCluster {
+		if d.RKE2.AgentToken != "" || d.RKE2.ServerToken != "" || d.serverTokenPresent {
+			return fmt.Errorf("%s must not carry rke2 tokens", d.Role)
+		}
+	} else if !tokenRE.MatchString(d.RKE2.AgentToken) {
 		return fmt.Errorf("rke2.agentToken must be 64 lowercase hex characters")
 	}
 	switch rules.serverToken {
@@ -469,6 +527,20 @@ func (d *Document) validate() error {
 	if err != nil {
 		return fmt.Errorf("server.operatorPublicKey: %w", err)
 	}
+	switch rules.podKey {
+	case required:
+		podKey, err := parseLaunchKey(d.PodOperatorPublicKey)
+		if err != nil {
+			return fmt.Errorf("podOperatorPublicKey: %w", err)
+		}
+		if podKey.Equal(server) {
+			return fmt.Errorf("pod and server public keys must be distinct")
+		}
+	case forbidden:
+		if d.PodOperatorPublicKey != "" {
+			return fmt.Errorf("podOperatorPublicKey requires role pod")
+		}
+	}
 	if len(d.AgentOperatorPublicKeys) > maxAgentKeys {
 		return fmt.Errorf("too many agent operator keys")
 	}
@@ -495,6 +567,9 @@ func (d *Document) validate() error {
 		}
 		seen = append(seen, key)
 	}
+	if err := d.validatePodImagePolicy(seen); err != nil {
+		return err
+	}
 	if d.TLSSAN == "" {
 		d.TLSSAN = defaultTLSSAN
 	}
@@ -509,12 +584,32 @@ func (d *Document) validate() error {
 			return err
 		}
 	}
+	switch rules.pod {
+	case required:
+		if d.Pod == nil {
+			return fmt.Errorf("%s requires a pod section", d.Role)
+		}
+		if d.Workloads == "" {
+			return fmt.Errorf("%s requires workloads as its base allowlist", d.Role)
+		}
+		if err := d.Pod.validate(); err != nil {
+			return err
+		}
+	case forbidden:
+		if d.Pod != nil {
+			return fmt.Errorf("pod section requires role pod")
+		}
+	}
 	if d.Workloads != "" {
 		if !json.Valid([]byte(d.Workloads)) {
 			return fmt.Errorf("workloads must contain one valid JSON document")
 		}
-		if _, err := allowlist.ParseJSON([]byte(d.Workloads)); err != nil {
+		workloads, err := allowlist.ParseJSON([]byte(d.Workloads))
+		if err != nil {
 			return fmt.Errorf("workloads: %w", err)
+		}
+		if rules.pod == required && len(workloads.Workloads) == 0 {
+			return fmt.Errorf("%s requires workloads with at least one workload as its cold-boot base", d.Role)
 		}
 	}
 	return validateRegistryMirrors(d.RegistryMirrors)
@@ -552,7 +647,38 @@ func portNumber(s string) bool {
 	return err == nil && strconv.Itoa(p) == s && len(validation.IsValidPortNum(p)) == 0
 }
 
+func (d *Document) validatePodImagePolicy(nodeKeys []*ecdsa.PublicKey) error {
+	if d.PodImagePolicy == "" {
+		return nil
+	}
+	if d.Role != Server {
+		return fmt.Errorf("podImagePolicy is server-only")
+	}
+	pins, err := workloadclaims.ParsePodImagePolicy([]byte(d.PodImagePolicy))
+	if err != nil {
+		return fmt.Errorf("podImagePolicy: %w", err)
+	}
+	for _, pin := range pins.Images {
+		key, err := parseLaunchKey(string(pin.Anchor))
+		if err != nil {
+			return fmt.Errorf("podImagePolicy: %w", err)
+		}
+		for _, nodeKey := range nodeKeys {
+			if key.Equal(nodeKey) {
+				return fmt.Errorf("pod launch keys must differ from server and agent launch keys")
+			}
+		}
+	}
+	return nil
+}
+
 func (d *Document) authorizeKey(pub []byte, key *ecdsa.PublicKey) error {
+	if d.rules().podKey == required {
+		if !bytes.Equal(pub, []byte(d.PodOperatorPublicKey)) {
+			return fmt.Errorf("%s launch key does not match podOperatorPublicKey bytes", d.Role)
+		}
+		return nil
+	}
 	server, err := parseLaunchKey(d.Server.OperatorPublicKey)
 	if err != nil {
 		return fmt.Errorf("parse server operator public key: %w", err)
@@ -575,7 +701,7 @@ func (d *Document) authorizeKey(pub []byte, key *ecdsa.PublicKey) error {
 }
 
 func parseLaunchKey(raw string) (*ecdsa.PublicKey, error) {
-	if len(raw) > 8192 {
+	if len(raw) > maxLaunchKeySize {
 		return nil, fmt.Errorf("launch public key is too large")
 	}
 	return runtimemeasure.ParsePublicKeyPEM([]byte(raw))
@@ -635,13 +761,17 @@ func (d *Document) referenceValues() (refvalues.ReferenceValues, error) {
 		return refvalues.ReferenceValues{}, fmt.Errorf("image.platform must be tdx or snp")
 	}
 	pins := refvalues.ReferenceValues{Family: platform.family}
-	keys := append([]string{d.Server.OperatorPublicKey}, d.AgentOperatorPublicKeys...)
-	for i, pub := range keys {
-		name := "server"
-		if i > 0 {
-			name = fmt.Sprintf("agent-%d", i)
-		}
-		entry := remote.ImagePin{Name: name, Digest: mustDecodeHex(d.Image.Measurement), Anchor: []byte(pub)}
+	type identity struct{ name, publicKey string }
+	// The first pin is always the CDS server, independently of this boot's key.
+	keys := []identity{{"server", d.Server.OperatorPublicKey}}
+	for i, pub := range d.AgentOperatorPublicKeys {
+		keys = append(keys, identity{fmt.Sprintf("agent-%d", i+1), pub})
+	}
+	if d.PodOperatorPublicKey != "" {
+		keys = append(keys, identity{"pod", d.PodOperatorPublicKey})
+	}
+	for _, key := range keys {
+		entry := remote.ImagePin{Name: key.name, Digest: mustDecodeHex(d.Image.Measurement), Anchor: []byte(key.publicKey)}
 		if len(d.Image.RTMRs) > 0 {
 			entry.Registers = make(map[int][]byte, len(d.Image.RTMRs))
 			for idx, digest := range d.Image.RTMRs {

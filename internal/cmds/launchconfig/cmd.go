@@ -14,7 +14,7 @@ import (
 // operator-side bundle generator and the guest-side stage.
 func NewCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "launch-config", Short: "Create, extend and stage a measured node's signed launch configuration"}
-	cmd.AddCommand(newBundleCmd(), newAddAgentCmd(), newStageCmd())
+	cmd.AddCommand(newBundleCmd(), newAddAgentCmd(), newPodBundleCmd(), newStageCmd())
 	return cmd
 }
 
@@ -74,6 +74,7 @@ HOST_DATA to SHA-256 of that node's pubkey file. See docs/operator.md,
 	f.StringArrayVar(&opts.Agents, "agent", nil, "agent node name; repeatable")
 	f.StringVar(&opts.TLSSAN, "tls-san", "", "DNS name for the front-door certificate (default c8s.local)")
 	f.StringVar(&opts.WorkloadsPath, "workloads", "", "optional c8s.allowlist/v1 JSON file applied as the initial workload allowlist")
+	f.StringVar(&opts.PodImagePolicyPath, "pod-image-policy-file", "", "optional complete Pod image and launch-key policy; authorizes Pod issuance separately from node peers")
 	f.StringArrayVar(&opts.Router.Hostnames, "router-hostname", nil, "public DNS name the router serves with an ACME certificate; repeatable")
 	f.StringVar(&opts.Router.ACMEEmail, "acme-email", "", "contact email for the router's ACME account (requires --router-hostname)")
 	f.StringVar(&opts.Router.ACMEDirectoryURL, "acme-directory-url", "", "ACME directory URL, e.g. a staging directory for tests (requires --router-hostname; default Let's Encrypt)")
@@ -132,6 +133,48 @@ already booted with changes.`,
 	f.StringVar(&serverAddress, "server-address", "", "server IPv4 address (default: the server document's, which must then be explicit)")
 	for _, flag := range []string{"bundle", "name"} {
 		_ = cmd.MarkFlagRequired(flag)
+	}
+	return cmd
+}
+
+func newPodBundleCmd() *cobra.Command {
+	var opts PodBundleOptions
+	cmd := &cobra.Command{
+		Use:   "new-pod",
+		Short: "Create a signed launch document that boots the node image as one pod",
+		Long: `Write a role-pod launch document for one pod CVM, signed with the pod
+launch key:
+
+  <out>/pod.key   pod launch key (omitted when --launch-key is given)
+  <out>/pod/      pubkey, launch.yaml, launch.yaml.sig: the pod CVM's opkeydata
+
+The pod's uid, namespace and name come from the manifest's metadata. The
+workloads allowlist supplies the cold-boot base. The guest also polls CDS
+at --server-address, authenticated with --server-public-key and the image
+pins. The server public key must differ from the pod launch key.`,
+		Args:         cobra.NoArgs,
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := NewPodBundle(opts); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "wrote pod launch bundle %s\n", filepath.Join(opts.Dir, podDir))
+			return nil
+		},
+	}
+	f := cmd.Flags()
+	f.StringVar(&opts.Dir, "out", "", "bundle directory to create (must not exist)")
+	f.StringVar(&opts.ClusterID, "cluster-id", "", "cluster name, an RFC1123 label")
+	f.StringVar(&opts.ManifestPath, "image-manifest", "", "manifest.json published with the exact node image to boot")
+	f.IntVar(&opts.VCPUs, "vcpus", 0, "SNP only: the VM's vCPU count, selecting its launch digest from the manifest")
+	f.StringVar(&opts.NodeName, "name", "", "node name (default p-<pod uid>)")
+	f.StringVar(&opts.LaunchKeyPath, "launch-key", "", "existing pod launch key PEM (default: generate <out>/pod.key)")
+	f.StringVar(&opts.ServerAddress, "server-address", "", "server IPv4 address the pod CVM can reach for CDS")
+	f.StringVar(&opts.ServerPublicKeyPath, "server-public-key", "", "server launch public key PEM file, e.g. <cluster>/server/pubkey")
+	f.StringVar(&opts.PodManifest, "pod-manifest", "", "v1 Pod manifest, YAML or JSON, with metadata.uid set")
+	f.StringVar(&opts.WorkloadsPath, "workloads", "", "nonempty c8s.allowlist/v1 JSON base admitted before CDS is available")
+	for _, name := range []string{"out", "cluster-id", "image-manifest", "pod-manifest", "workloads", "server-address", "server-public-key"} {
+		_ = cmd.MarkFlagRequired(name)
 	}
 	return cmd
 }

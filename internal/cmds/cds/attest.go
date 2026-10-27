@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"maps"
 	"math/big"
@@ -23,6 +24,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/attestation"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
+	"github.com/confidential-dot-ai/c8s/internal/strictjson"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
@@ -58,6 +60,10 @@ type AttestHandler struct {
 
 	// Images binds each node image to an authorized launch key.
 	Images []remote.ImagePin
+
+	// PodImages grants only quote-bound Pod mesh issuance. It is never used
+	// for node callbacks, operator authorization, or node credential release.
+	PodImages []remote.ImagePin
 
 	// Policy enforces SAN/CN constraints on the CSR before signing. Without
 	// this, an attestation-passing workload could mint a leaf for any
@@ -131,7 +137,19 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req types.AttestRequestBody
-	dec := json.NewDecoder(r.Body)
+	raw, readErr := io.ReadAll(io.LimitReader(r.Body, (2<<20)+1))
+	if readErr != nil || len(raw) > 2<<20 || strictjson.Validate(raw) != nil {
+		attestation.WriteError(w, http.StatusUnprocessableEntity, types.ErrorCodeInvalidRequest, "invalid attestation request JSON")
+		return
+	}
+	// fields tells an absent runtime_extensions from an explicit null below;
+	// the strict decode that follows rejects any field the body does not name.
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil || fields == nil {
+		attestation.WriteError(w, http.StatusUnprocessableEntity, types.ErrorCodeInvalidRequest, "invalid attestation request JSON")
+		return
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
 		attestation.WriteError(w, http.StatusUnprocessableEntity, types.ErrorCodeInvalidRequest, err.Error())
@@ -157,6 +175,15 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		attestation.WriteError(w, http.StatusBadRequest, types.ErrorCodeInvalidCSR, err.Error())
 		return
+	}
+	var pod *workloadclaims.PodClaims
+	if len(req.PodClaims) > 0 {
+		claims, claimErr := workloadclaims.DecodePodClaims(req.PodClaims)
+		if claimErr != nil || len(req.SandboxToken) != 0 || fields["runtime_extensions"] != nil || !req.Evidence.Platform.IsTDX() || len(h.PodImages) == 0 || len(csr.Extensions) != 0 || csr.Subject.String() != "" {
+			attestation.WriteError(w, http.StatusForbidden, types.ErrorCodeCSRDenied, "Pod attestation profile not authorized")
+			return
+		}
+		pod = &claims
 	}
 	csrPubKey, err := attestation.ECDSAPublicKeyFromCSR(csr)
 	if err != nil {
@@ -184,6 +211,15 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 		attestation.WriteError(w, http.StatusBadRequest, types.ErrorCodeInvalidCSR, err.Error())
 		return
 	}
+	if pod != nil {
+		bound, bindErr := workloadclaims.PodReportData(csrPubKey, challengeBytes, req.PodClaims)
+		if bindErr != nil {
+			attestation.WriteError(w, http.StatusForbidden, types.ErrorCodeCSRDenied, "Pod attestation profile not authorized")
+			return
+		}
+		copy(expectedReportData[:], bound)
+		sandbox.SandboxID = pod.InstanceID()
+	}
 
 	evidenceJSON, err := json.Marshal(req.Evidence)
 	if err != nil {
@@ -204,7 +240,13 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	launchDigest := strings.ToLower(verifyResp.Result.Claims.LaunchDigest)
-	if len(h.Images) > 0 {
+	if pod != nil {
+		if err := enforcePodImages(verifyResp, h.PodImages, req.Evidence.Platform, pod.RuntimeExtensions); err != nil {
+			slog.Warn("Pod identity does not match policy", "error", err)
+			attestation.WriteError(w, http.StatusForbidden, types.ErrorCodeMeasurementDenied, "Pod identity not allowed")
+			return
+		}
+	} else if len(h.Images) > 0 {
 		if err := armtls.EnforceImages(verifyResp, h.Images, req.Evidence.Platform, req.RuntimeExtensions); err != nil {
 			slog.Warn("node identity does not match policy", "error", err, "remote_addr", r.RemoteAddr)
 			attestation.WriteError(w, http.StatusForbidden, types.ErrorCodeMeasurementDenied, "node identity not allowed")
@@ -240,7 +282,12 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 	// actually running (once), load one atomic policy snapshot, gate issuance
 	// on membership, and resolve the matched-workload stamp from the same two
 	// answers. The requester never gets a say in either.
-	matched, err := h.resolveSandboxWorkload(ctx, sandbox)
+	var matched *armtls.MatchedWorkload
+	if pod != nil {
+		matched, err = h.resolvePodWorkload(ctx, *pod)
+	} else {
+		matched, err = h.resolveSandboxWorkload(ctx, sandbox)
+	}
 	if err != nil {
 		// The detail stays in the log. A requester picks both the sandbox ID and
 		// the address CDS just dialled, so echoing what happened there would
@@ -302,7 +349,10 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.recordSandboxBinding(sandbox)
+	// A Pod identity binds no node inventory.
+	if pod == nil {
+		h.recordSandboxBinding(sandbox)
+	}
 
 	// The issuance record is the audit-relevant event: a mesh identity is only
 	// as accountable as what was written down when it was granted, and a leaf

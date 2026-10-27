@@ -51,6 +51,7 @@ func NewCmd() *cobra.Command {
 	flags.DurationVar(&cfg.caCertValidity, "ca-cert-validity", 8760*time.Hour, "validity period of each in-memory mesh CA certificate; past half of it CDS renews the certificate under the same key")
 	flags.StringSliceVar(&cfg.measurements, "measurements", nil, "SHA-384 hex launch measurements allowed to call /attest; required unless --image-policy-file names the images")
 	cmdsutil.BindImagePolicyFlags(flags, &cfg.measurementsConfig, nil, "pins complete client identities for /attest; excludes --measurements and --rtmrs")
+	flags.StringVar(&cfg.podImagePolicy, "pod-image-policy-file", "", "separate complete TDX image and launch-key policy for quote-bound Pod mesh issuance; absent or zero-byte file disables Pod issuance")
 	flags.StringSliceVar(&cfg.rtmrs, "rtmrs", nil, "TDX RTMR pins <index>=<sha384-hex> required of TDX callers on /attest (repeatable; RTMR[1] pins the guest kernel, RTMR[2] the command line carrying the dm-verity root hash). SNP evidence is unaffected. Empty = no RTMR pinning: on TDX the reference values then cover TDVF firmware only, UNSAFE")
 
 	flags.Int64Var(&cfg.jwtClockSkew, "jwt-clock-skew", 30, "operator JWT clock skew tolerance in seconds; without --allowlist-persistent, CDS also refuses operator-token requests (allowlist, routes, secrets) for this long after it starts")
@@ -126,6 +127,7 @@ type config struct {
 	caCertValidity      time.Duration
 	measurements        []string
 	measurementsConfig  string
+	podImagePolicy      string
 	rtmrs               []string
 	jwtClockSkew        int64
 	certTTL             time.Duration

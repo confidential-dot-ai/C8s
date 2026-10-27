@@ -93,6 +93,11 @@ containers:
       - --rtmrs={{ join "," . }}
       {{- end }}
       {{- end }}
+      {{- if .Values.node.baked }}
+      - --pod-image-policy-file=/run/c8s-node/pods.json
+      {{- else if .Values.cds.podImagePolicy }}
+      - --pod-image-policy-file=/mnt/c8s-data/pod-policy/pods.json
+      {{- end }}
       {{- with .Values.cds.sandboxInventoryCIDRs }}
       - --sandbox-inventory-cidr={{ join "," . }}
       {{- end }}
@@ -156,6 +161,11 @@ containers:
         mountPath: /mnt/c8s-data/measurements
         readOnly: true
       {{- end }}
+      {{- if .Values.cds.podImagePolicy }}
+      - name: pod-image-policy
+        mountPath: /mnt/c8s-data/pod-policy
+        readOnly: true
+      {{- end }}
       {{- end }}
     securityContext:
       allowPrivilegeEscalation: false
@@ -202,6 +212,13 @@ volumes:
         - configMap:
             name: {{ include "c8s.fullname" . }}-measurements
   {{- end }}
+  {{- if .Values.cds.podImagePolicy }}
+  - name: pod-image-policy
+    projected:
+      sources:
+        - configMap:
+            name: {{ include "c8s.cdsName" . }}-pod-image-policy
+  {{- end }}
   {{- end }}
 {{- end -}}
 
@@ -226,6 +243,19 @@ metadata:
 data:
   allowlist-seed.json: {{ include "c8s.allowlistSeedJSON" . | trim | quote }}
 ---
+{{- if and (not .Values.node.baked) .Values.cds.podImagePolicy }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "c8s.cdsName" . }}-pod-image-policy
+  namespace: {{ .Release.Namespace }}
+  labels:
+{{ include "c8s.commonLabels" . | indent 4 }}
+    app.kubernetes.io/component: cds
+data:
+  pods.json: {{ .Values.cds.podImagePolicy | quote }}
+---
+{{- end }}
 {{- if .Values.cds.operatorKeys }}
 {{- if not (contains "BEGIN PUBLIC KEY" .Values.cds.operatorKeys) }}
 {{- fail "cds.operatorKeys must be the PEM content of the operator public-key bundle, not a file path — use `c8s install --operator-keys <file>`, `c8s render-values --operator-keys <file>`, or helm --set-file cds.operatorKeys=<file>" }}
@@ -316,6 +346,9 @@ spec:
         app.kubernetes.io/component: cds
       annotations:
         confidential.ai/trust-root-mode: "inMemory"
+        {{- if .Values.cds.podImagePolicy }}
+        checksum/pod-image-policy: {{ .Values.cds.podImagePolicy | sha256sum }}
+        {{- end }}
         {{- if .Values.cds.measurementsConfig }}
         # Pins live in a ConfigMap, which no longer changes the pod template on
         # its own: without this a tightened pin would not roll the pod.

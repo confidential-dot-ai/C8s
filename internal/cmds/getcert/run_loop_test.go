@@ -351,13 +351,16 @@ func TestServedCAStale(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	writeServed := func(t *testing.T, content string) string {
+	servedIn := func(path string) credentialVolume {
+		return credentialVolume{dir: filepath.Dir(path), caName: filepath.Base(path)}
+	}
+	writeServed := func(t *testing.T, content string) credentialVolume {
 		t.Helper()
 		path := filepath.Join(t.TempDir(), "ca.pem")
 		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 			t.Fatal(err)
 		}
-		return path
+		return servedIn(path)
 	}
 
 	tests := []struct {
@@ -376,7 +379,7 @@ func TestServedCAStale(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			url := startFakeCAServer(t, func() string { return tt.cds })
-			stale, err := servedCAStale(context.Background(), plaintextCDSClient(url), writeServed(t, tt.served), bound)
+			stale, err := servedCAStale(context.Background(), plaintextCDSClient(url), bound, writeServed(t, tt.served))
 			if tt.wantErr != (err != nil) {
 				t.Fatalf("servedCAStale err = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -388,13 +391,13 @@ func TestServedCAStale(t *testing.T) {
 
 	t.Run("missing served file", func(t *testing.T) {
 		url := startFakeCAServer(t, func() string { return caA })
-		if _, err := servedCAStale(context.Background(), plaintextCDSClient(url), filepath.Join(t.TempDir(), "missing.pem"), bound); err == nil {
+		if _, err := servedCAStale(context.Background(), plaintextCDSClient(url), bound, servedIn(filepath.Join(t.TempDir(), "missing.pem"))); err == nil {
 			t.Fatal("servedCAStale succeeded, want read error")
 		}
 	})
 
 	t.Run("cds unreachable", func(t *testing.T) {
-		if _, err := servedCAStale(context.Background(), plaintextCDSClient("http://127.0.0.1:1"), writeServed(t, caA), bound); err == nil {
+		if _, err := servedCAStale(context.Background(), plaintextCDSClient("http://127.0.0.1:1"), bound, writeServed(t, caA)); err == nil {
 			t.Fatal("servedCAStale succeeded, want transport error")
 		}
 	})
