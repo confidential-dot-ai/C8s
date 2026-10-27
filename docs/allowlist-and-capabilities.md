@@ -222,8 +222,11 @@ answered 412 too. Without `If-Match`, or with `*`, the replace is
 unconditional. `upload` and `apply` make their write conditional on the version
 they read and diffed, so neither overwrites a write that landed in between:
 they fail with "nothing was uploaded" or "nothing was applied", and running
-them again re-reads the allowlist. `apply` puts all of its entries in in one
-write, so they all land or none do.
+them again re-reads the allowlist. `apply` writes the whole merged document
+in one write, so its entries all land or none do. Like every operator write,
+that body is limited to 1 MiB, so once the live allowlist is larger, `apply`
+is refused with 413 even for one entry; `edit` changes one existing entry in
+a write of its own.
 
 Writes are metered per source address (`cds --rate-limit`, `--rate-burst`). A
 refused write is answered 429 with a `Retry-After`. While an HA CDS has no

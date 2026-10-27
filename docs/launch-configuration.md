@@ -122,6 +122,8 @@ newly signed bytes.
 
 A failed verification (for example the boot's first quote, or SEV-SNP
 collateral that cannot be fetched) is retried up to 5 times with growing,
-jittered waits. If every attempt fails, the node logs which step failed and
-powers off (about 12 minutes at most) instead of staying up with no services;
-KubeVirt (runStrategy Always or RerunOnFailure) then relaunches the VM.
+jittered waits. If every attempt fails, the node writes which step failed to
+its own journal and powers off (about 12 minutes at most) instead of staying up
+with no services; KubeVirt (runStrategy Always or RerunOnFailure) then
+relaunches the VM. A production image gives no shell to read that journal, so
+the operator sees only the power-off and relaunch.

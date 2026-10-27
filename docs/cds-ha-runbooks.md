@@ -15,24 +15,36 @@ they mean are in `cds-ha-alerts.md`.
     NS=c8s-cds-decrees             # decree and backup namespace
 
 > **Two addresses.**
-> - `$CDS` is the `c8s-cds` Service, a NodePort with `externalTrafficPolicy: Cluster`. It answers from any **serving** replica, because a replica is Ready only while it serves. When no replica serves (before Genesis, after a total loss, or when the majority is lost), `$CDS` has no endpoints.
+> - `$CDS` is the `c8s-cds` Service, a NodePort with `externalTrafficPolicy: Cluster`. It answers from Ready replicas only. A replica is Ready only while it serves and its seat is settled: a voter while the cluster has no more voters than seats, a non-voter while the leader reports every seat held by a healthy voter. When no replica serves (before Genesis, after a total loss, or when the majority is lost), `$CDS` has no endpoints.
 > - `$(R <ip>)` is the `c8s-cds-replicas` Service (NodePort 30809, `externalTrafficPolicy: Local`, `publishNotReadyAddresses`). It answers from the replica on that node only, whether it serves or not.
 > - The operator credential cannot port-forward. Use `$(R ...)` for every step below that targets a replica that may not serve.
 
-**Sample every replica.** This is an unauthenticated read. Use it to watch
-the cluster. Never use it for the recovery record.
+**Sample every replica.** This is an unauthenticated read: the host can
+change the answer. Use it to watch the cluster. Never use it for the recovery
+record, for a value you sign, or to decide that a step is safe.
 
     ha_sample() { for ip in $CDS_NODES; do curl -sk -m 3 "$(R $ip)/ha/status"; echo; done |
       jq -s -c '.[] | {node_name, state, serving, joined, awaiting_restore, epoch,
         applied_index, voters: (.voters|length), seats_filled, retiring_voters, stuck,
         stuck_local, backup_error, last_backup, fenced, divergence}'; }
 
-**Attested status.** Use this for anything you record or sign. It reads every
-replica, serving or not:
+**Attested status.** Use this for anything you record, sign or gate on. It
+reads every replica, serving or not:
 
     c8s cds ha status $POL $(for ip in $CDS_NODES; do R $ip; done)
 
-**Decree outcome:**
+It exits non-zero when a replica is unreachable, does not serve, or disagrees
+on the epoch or CA. In the recovery runbooks some replicas do not serve yet, so
+there a non-zero exit is expected: read the printed lines.
+
+**Decree outcome.** The applied decrees are the attested record:
+
+    c8s cds ha decrees $POL --url $CDS
+
+A decree took effect only when this list shows its intent (the
+`intent_id` in the decree you applied: `jq -r '.data.decree|fromjson|.decree.intent_id' <file>`).
+The `status` key of the decree object is written through the host and is
+only a hint. Read it for the reason of a rejection:
 
     kubectl -n $NS get configmap -l c8s.confidential.ai/cds-decree=$ID \
       -o custom-columns=NAME:.metadata.name,STATUS:.data.status
@@ -73,9 +85,10 @@ store the file off the host:
 
    The CLI prints `decree for member <id> on node <node>` on stderr.
    `--bootstrap-node` defaults to the target's node.
-5. Check the result. The decree status must show `applied_epoch: 1`, and
-   `ha_sample` must show every replica `serving: true` with one leader. Then
-   write the recovery record.
+5. Check the result. `c8s cds ha decrees $POL --url $CDS` must list the
+   Genesis at `epoch=1`, and attested status must show every replica
+   `serving=true`, one `state=Leader`, and exit 0. Then write the recovery
+   record.
 6. If the decree is not applied, the target replica probably restarted. Its
    member ID is gone, so the decree can never act. Run steps 3 and 4 again with
    a new decree. Do not edit or re-apply the old one.
@@ -93,35 +106,52 @@ cannot reach the others starts a second cluster.
 
 A new replica joins as a non-voter. It takes a voter seat when a seat is free.
 
-1. Find the pin floor. On a cluster that never applied `UpdateMeasurements`,
-   `/ha/pins` answers 404: leave the flag out.
+1. Find the pin floor in the attested decree record. It is the `base_epoch`
+   of the decree behind the pin set in force: the newest `UpdateMeasurements`
+   or `RotateKey` that set measurements. If that decree named no images, or
+   there is none, no pin decree is in force: leave the flag out.
 
-       FLOOR=$(curl -sk $CDS/ha/pins | jq .decree.base_epoch)
+       FLOOR=$(c8s cds ha decrees $POL --url $CDS --json | jq -r '
+         [.[].decree.decree | select((.kind == "UpdateMeasurements" or .kind == "RotateKey")
+           and (.measurements | length) > 0)] | last | select(.images) | .base_epoch')
 
+   Never take the floor from `/ha/pins` or another unauthenticated read. A
+   host that serves an older decree there lowers the floor, and the new node
+   then accepts that older decree.
 2. Write the node's launch document under a **new** name:
 
-       c8s node launch-config add-cds-node --bundle $B --name <new-node> --pin-floor $FLOOR
+       c8s node launch-config add-cds-node --bundle $B --name <new-node> ${FLOOR:+--pin-floor $FLOOR}
 
 3. Launch the VM with `$B/<new-node>` as its opkeydata disk. Give it a stable
-   IP (see limitations, "Stable node IPs").
+   IP, and add it to `CDS_NODES`.
 4. Wait for the readiness gate (below).
-5. Replacing a node: delete the old VM only after the gate passes. Then wait
-   for the gate again. The dead voter retires after about 20 s
-   (`dead_after`), and the leader promotes a replacement.
+5. Replacing a node: delete the old VM only after the gate passes, and remove
+   its IP from `CDS_NODES`. Then wait for the gate again. After about 20 s
+   (`dead_after`) the leader treats the old voter as dead. It promotes a
+   non-voter into the seat, and only then retires the old voter.
 
-**Readiness gate.** Go on only when all three hold:
+**Readiness gate.** Go on only when attested status over every IP in
+`CDS_NODES` shows all of this:
 
-- the new pod is `Ready` (`kubectl -n c8s-system get pods -l c8s.confidential.ai/cds-ha=true -o wide`).
-  A replica is Ready only when it serves and the leader reports every voter
-  seat held by a healthy voter.
-- `ha_sample` shows the new node with `serving: true`;
-- on the leader line, `seats_filled: true` and no `retiring_voters`.
+- the command exits 0: every replica answers, serves, and agrees on `epoch=`
+  and `ca=`;
+- the new node's line is there;
+- on the `state=Leader` line, `voters=` equals the voter seat count (the
+  bundle's `cdsHA.replicas`, or the last `SetVoters`), and
+  `voters=` plus `non_voters=` equals the number of IPs in `CDS_NODES`. A
+  higher sum means the configuration still holds a voter that is gone or
+  retiring.
+
+The pod's `Ready` condition and the `seats_filled` and `retiring_voters`
+fields of `ha_sample` (on the leader: `seats_filled: true`, no
+`retiring_voters`) should agree. They come through the host, so they can only
+hold you back: never go on because of them alone.
 
 Never remove a second node while the gate fails. With 3 voters, two missing
 voters lose the majority. That needs runbook 4 or 5.
 
 The old Node object stays `NotReady`. The operator credential cannot delete
-it (see limitations).
+it.
 
 ## 3. Rolling upgrade to a new image (readiness-gated)
 
@@ -135,10 +165,12 @@ a clean redeploy: `cds-ha.md`, "Compatibility boundary").
        NEW=$(jq -r '.tdx | "\(.mrtd):\(.rtmr1):\(.rtmr2)"' new-manifest.json)
        c8s cds ha status $POL $CDS          # note epoch=
        c8s cds ha decree --kind UpdateMeasurements --cluster-id $ID --operator-key $B/decree.key \
-         --base-epoch <epoch> --image $OLD --image $NEW | kubectl apply -f -
+         --base-epoch <epoch> --image $OLD --image $NEW > pins.json
+       kubectl apply -f pins.json
 
-   Wait until the decree status shows `applied_epoch`. If it shows a
-   `base_epoch` conflict, sign it again with the current epoch.
+   Wait until `c8s cds ha decrees $POL --url $CDS` lists the decree's intent.
+   If the decree object's status shows a `base_epoch` conflict, sign it again
+   with the current epoch and a new intent.
 2. Replace the cds nodes one at a time, as in runbook 2, but add
    `--image-manifest new-manifest.json` to `add-cds-node`. Replace the
    non-voters first and the leader (`state: Leader` in `ha_sample`) last.
@@ -182,7 +214,8 @@ Steps:
 1. Confirm outside the host that the lost voters are destroyed.
 2. Read the survivor. It must show `joined=true`. Note its `epoch=`. A
    survivor without a majority does not serve, so `$CDS` does not reach it:
-   use its node's own address.
+   use its node's own address. The command exits non-zero because the
+   survivor does not serve.
 
        c8s cds ha status $POL $(R <survivor IP>)
 
@@ -204,8 +237,10 @@ Steps:
    wrong node: that replica holds no state.
 4. Wait. The survivor acts only after the decree stays pending for about 57 s,
    with no leader and no answer from its old members.
-   It logs `RECOVER: forcing a one-voter configuration`. If it refuses, read the
-   alerts table. Do not sign it again with a new intent.
+   It logs `RECOVER: forcing a one-voter configuration`. Confirm it with
+   attested status of the survivor: `state=Leader`, `serving=true`, and a
+   higher `epoch=`. If it refuses, read the alerts table. Do not sign it again
+   with a new intent.
 5. Rotate the key, so a lost replica that comes back holds a retired key:
 
        c8s cds ha decree --kind RotateKey --cluster-id $ID --operator-key $B/decree.key \
@@ -230,7 +265,8 @@ so use your latest export.
    cluster still holds its log, and a Restore loses that log. Use runbook 6.
    Wait until `ha_sample` shows `awaiting_restore: true` on the replicas. A
    replica sets it once peers answer that they hold no cluster either, or at
-   most 5 minutes after it starts when it reaches no peer. The cds pods stay
+   most 5 minutes after it starts when it reaches no peer. Attested status
+   must show `joined=false` on every replica. The cds pods stay
    **not Ready**: a replica is Ready only once it serves. `awaiting_restore`
    is a hint. A replica that is only cut off shows it too. Before you restore,
    confirm the total loss as described above.
@@ -243,12 +279,15 @@ so use your latest export.
    the epoch/index floor.
 4. Restore. Send it to the bootstrap node's own replica:
 
-       c8s cds ha recover --url $(R <bootstrap node IP>) $POL --operator-key $B/server.key \
+       c8s cds ha recover --url $(R <bootstrap node IP>) $POL \
          --backup-file cds-backup.json --cluster-id $ID --bootstrap-node <that node> \
          --decree-key $B/decree.key --trusted-ca-sha256 <recorded ca> \
          --min-epoch <E> --min-index <I> --resume-epoch <highest epoch> \
          --recovery-key-share share-1.json --recovery-key-share share-3.json --recovery-key-share share-4.json
 
+   `--bootstrap-node` is the Kubernetes node name, as `node=` in attested
+   status, not its IP. `recover` skips a replica on another node without a
+   message, so a wrong name shows only as running out of attempts.
    Each attempt reads the replica's status and signs the decree for that
    process. The default 30 attempts cover retries. `recover` sends the
    decrypted state only to a replica that `--image-policy-file` pins in full
@@ -262,7 +301,7 @@ so use your latest export.
    no other replica of this cluster runs, for example after a host loss that
    left one cds node. The host answers discovery, so it can hide a live
    cluster; `--alone` is your statement that there is none.
-5. Check: `ha_sample` shows every replica serving one CA, and
+5. Check: attested status exits 0 (every replica serves, with one `ca=`), and
    `c8s cds ha decrees $POL --url $CDS` lists the Restore. Write a new recovery
    record.
 6. Wait `--jwt-clock-skew` (30 s by default) after the Restore, then apply
@@ -307,8 +346,8 @@ Option A, no loss: roll a fixed image.
    and takes over leadership. Then the halted replicas see a serving leader
    past their stop index. Each one exits and rejoins, but only while the voters
    that follow the log keep a majority.
-4. Gate on `serving: true` for the new node before you add the next one. Then
-   replace the remaining old nodes as in runbook 3.
+4. Gate on `serving=true` for the new node in attested status before you add
+   the next one. Then replace the remaining old nodes as in runbook 3.
 
 Option B, lose the tail: reboot every cds VM, then do runbook 5 with the last
 backup. Check the leader's `last_backup.age_ms` first. The halted leader
@@ -332,9 +371,10 @@ each checkpoint, about every 10 s. Read the leader's `divergence` field.
   **Backups pause** until the alarm clears.
   1. Bring back missing voters, or wait for them. The next checkpoint usually
      decides.
-  2. If the alarm stays, read `checkpoint` on every replica (`ha_sample`, or
-     `curl -sk $CDS/ha/status | jq .checkpoint`). Read the allowlist from
-     each replica (`GET /allowlist`). Decide which state is right.
+  2. If the alarm stays, read `checkpoint=` on every replica from attested
+     status. Read the allowlist from each replica over armTLS
+     (`c8s allowlist export $POL --url $(R <ip>)`). Decide which state is
+     right.
   3. Restart the replicas with the wrong state one at a time, by rebooting
      their VMs. Restart the leader first if it is wrong. Never restart a
      majority at once.

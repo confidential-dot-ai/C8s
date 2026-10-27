@@ -6,7 +6,10 @@ from `cds-ha-runbooks.md` to read every replica. "Runbook N" refers to that
 file.
 
 `/ha/status` is the replica's own report. Fields marked "leader" are set only
-on the leader.
+on the leader. `ha_sample` reads it without authentication, so use it to
+notice a signal; before you act, confirm the values with attested
+`c8s cds ha status` where it prints them. Most optional fields, such as
+`seats_filled`, are left out when false or empty, so `jq` shows `null`.
 
 ## Cluster state
 
@@ -14,11 +17,11 @@ on the leader.
 |---|---|---|
 | `serving: false` on one replica, for less than 1 min | It lost contact with the leader, or the clock jumped | None. Look at it if it lasts. |
 | No `state: Leader` in `ha_sample` for more than 60 s | An election is running, or the majority is lost | Count the live replicas. If a majority of voters is gone: runbook 5, or runbook 4. |
-| `seats_filled: false`, or `retiring_voters` not empty for more than 1 min (leader) | A voter seat has no healthy voter. One more loss costs the majority. | Remove nothing. Add a cds node (runbook 2). |
+| `seats_filled` not `true`, or `retiring_voters` not empty, for more than 1 min (leader) | A voter seat has no healthy voter. One more loss costs the majority. | Remove nothing. Add a cds node (runbook 2). |
 | `term` climbs fast | Elections keep happening | Check the host network and CPU. |
 | `apply_lag` keeps growing, or `log_bytes` grows | A replica falls behind | Check the node's CPU and memory. Replace the node if it lasts. |
-| `epoch` or `ca` differ between replicas for more than 5 s | A decree or rotation is in progress, or a replica is behind | Wait one lease. If it lasts, read `c8s cds ha decrees`. |
-| `ca` changed, but you signed no RotateKey | Normal CA renewal at half the lifetime changes the fingerprint | Write the new `ca=` into the recovery record (from attested status). |
+| `epoch=` or `ca=` differ between replicas in attested status for more than 5 s | A decree or rotation is in progress, or a replica is behind | Wait one lease. If it lasts, read `c8s cds ha decrees`. |
+| `ca=` changed in attested status, but you signed no RotateKey | Normal CA renewal at half the lifetime changes the fingerprint | Write the new `ca=` into the recovery record (from attested status). |
 | `awaiting_restore: true` on one replica while another replica serves | That replica is partitioned (for example a node that came back with a stale IP) | Fix the network. Do not restore. |
 | `clock jump: not serving until the leader is heard again` | The VM was paused, or the host stepped the clock | None if it is rare. If it repeats, the host is at fault. |
 | `slow leader: transferring leadership` / `slow leader: no caught-up follower; keeping leadership` | The leader is slow (disk or CPU) | Watch. If it repeats, check the host. |
@@ -32,7 +35,10 @@ on the leader.
 | `cds-ha: ALARM: halted at a log entry no replica could apply`; `stuck` with `stuck_local: false` | A committed entry that no replica applies. The replicas keep the log. | Runbook 6. Do not restart the replicas. |
 | `leader wedged: raft refuses every barrier although a quorum answers heartbeats` | raft #696 stall. The leader exits, and another one takes over. | None. If it repeats, report it with the log line. |
 | Pod `OOMKilled` | Not enough memory | Size the cds nodes at about 8 GiB (limitations). Several at once lose the majority. |
-| `join refused` repeats on a new node | It cannot join. The line gives the reason. | Act on the reason. With a new IP after a reboot, suspect the Cilium stale-IP race: reboot the VM again. |
+| `join refused` repeats on a new node | It cannot join. The line gives the reason. | Act on the reason. With a new IP after a reboot, suspect the Cilium stale-IP race: the node restarts its Cilium agent by itself within about a minute or two. Do not reboot the VM for it. |
+| `cds-ha: pre-join server` (Error) | The replica could not open its operator port before it joined. It does not try again. Before Genesis or after a total loss, that replica cannot be read or restored. | Reboot that node's VM. |
+| `renew mesh CA certificate` (Error or Warn, leader) | The CA certificate renewal failed. The leader tries again every backup interval. | If it repeats, read the error. Every replica's `/readyz` fails once the certificate has less than `cds.ca.minValidity` (1 h) left. |
+| `prune allowlist history` (Warn, leader) | The history prune failed. | If it repeats, read the error. The state grows until writes get 507. |
 | `node list did not sync within 1m30s`, then a restart | Cluster networking was not up yet | None if it happens once. |
 | A node VM is up, but no ports answer and there are no pods | First quote after the host boot failed | Restart the VM. |
 
@@ -52,9 +58,9 @@ on the leader.
 
 | Signal | Meaning | Action |
 |---|---|---|
-| Decree status `rejected_reason: base_epoch ...` | Signed for an old epoch | Read `epoch=` again, and sign a new decree. |
+| Decree status `rejected_reason: base_epoch ...`, or the leader logs `decree rejected` with `why` | Signed for an old epoch | Read `epoch=` again, and sign a new decree with a new intent. |
 | Decree status `rejected_reason` says `target_member` | Signed without a target, or for a process that restarted | Sign again with `--target-url` (runbook 1 or 4). |
-| `decree object name "...": ...` from `c8s cds ha decree` | An `--intent-id` that is not a lowercase RFC 1123 name | Use lowercase letters, digits and `-`, or leave `--intent-id` out (the default is valid). |
+| `decree object name "...": ...` from `c8s cds ha decree` | An `--intent-id` that is not a lowercase RFC 1123 name | Use lowercase letters, digits and `-`, or leave `--intent-id` out (the default is valid). Never reuse an intent: the object keeps the old `status`, and the leader skips the new decree. |
 | `Recover decree refused: the cluster has a leader with a majority` | The majority is alive | Delete the decree object. Do not sign it again. |
 | `Recover decree names this replica: acting after the hold unless the cluster rejects it or answers` | A Recover is pending on this replica | Expected only during runbook 4. Otherwise delete the decree object now: the hold is about 57 s. |
 | `Recover refused: a member of the cluster answers and has a leader` | The old cluster is alive | Delete the decree object. Find out why the survivor looked cut off. |

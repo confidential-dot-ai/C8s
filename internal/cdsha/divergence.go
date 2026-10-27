@@ -255,7 +255,7 @@ func (n *Node) checkDivergence() {
 		_ = n.fsm.stopLocal(fmt.Errorf("%w: %s", ErrDiverged, detail))
 	default:
 		d.alarm = "no majority: " + detail
-		logOnce("no majority holds one state; nothing is stopped and backups wait (see the runbook in docs/cds-ha.md)")
+		logOnce("no majority holds one state; nothing is stopped and backups wait (see runbook 7 in docs/cds-ha-runbooks.md)")
 	}
 }
 

@@ -336,7 +336,7 @@ func loadHAConfigFile(h *haConfig) error {
 	}
 	h.operatorKeyPEM = []byte(c.DecreeKey)
 	h.recoveryKeyPEM = []byte(c.RecoveryKey)
-	h.seats = c.Replicas // launchconfig refuses fewer than 2
+	h.seats = c.Replicas // launchconfig refuses an even count or one outside 3..cdsha.MaxVoters
 	return nil
 }
 
@@ -435,7 +435,7 @@ func haPins(node *cdsha.Node) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		sd := node.Core().PinsDecree
 		if sd == nil {
-			http.Error(w, "cds-ha: the pin set came from Genesis; the launch document's is current", http.StatusNotFound)
+			http.Error(w, "cds-ha: no pin decree with images is in force", http.StatusNotFound)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")

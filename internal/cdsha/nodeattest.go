@@ -18,8 +18,10 @@ import (
 // NodeAttestor uses the node's attestation-api (the same service every c8s
 // component uses: attest-proxy socket or URL) to produce and verify TEE
 // evidence. Evidence is the service's self-describing envelope
-// {platform, evidence}. Verification is the service's /verify verdict,
-// enforced fail-closed by remote.EnforceVerdict, plus report_data equality.
+// {platform, evidence}. Verification is the service's /verify verdict plus
+// report_data equality. remote.EnforceVerdict is called without params, so
+// it checks the verdict's signature; refusing debug TDs is left to the
+// service's default.
 //
 // The replica measurement is the platform's image identity as c8s pins it:
 // TDX "mrtd:rtmr1:rtmr2" (RTMR0 varies with VM shape), SNP the launch

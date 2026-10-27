@@ -69,11 +69,13 @@ boundary. The step-by-step version, with the readiness gate, is runbook 3 in
    it. No node is relaunched for this.
 2. Replace the cds nodes one at a time, the leader last. Each replacement
    gets a **new name** (`c8s node launch-config add-cds-node --image-manifest
-   <new manifest.json>`). Wait until the new replica serves before you remove
-   the old node. Until it joins, a replica admits only peers on its own
-   image and on the launch document's peer images, which `add-cds-node`
-   sets to the bundle server document's image. A replica whose launch
-   document names neither the image the cluster runs cannot join it.
+   <new manifest.json>`). Wait until the new replica passes the readiness
+   gate (runbook 2) before you remove the old node. Serving alone is not
+   enough: a non-voter serves while a seat is still unfilled. Until it
+   joins, a replica admits only peers on its own image and on the launch
+   document's peer images, which `add-cds-node` sets to the bundle server
+   document's image. A replica whose launch document names neither the
+   image the cluster runs cannot join it.
 3. Sign and apply a decree that pins only the new image.
 4. Remove the old image's workload policy entries. They stay until you do.
 
@@ -137,8 +139,11 @@ decree waits; it is not the replay protection.
 Two NodePort Services lead to the replicas:
 
 * `c8s-cds` (`cds.service.nodePort`, 30808) is for clients. It carries only
-  Ready replicas, and a replica is Ready only while it serves. Any node's
-  address may answer from any serving replica.
+  Ready replicas. A replica is Ready only while it serves and its seat is
+  settled: a voter while the cluster has no more voters than seats and every
+  staying voter knows of its promotion, a non-voter while the leader reports
+  every seat held by a healthy voter. Any node's address may answer from any
+  Ready replica.
 * `c8s-cds-replicas` (`cds.ha.replicaNodePort`, 30809) is for the operator.
   `https://<node>:30809` answers from the replica on that node only, whether
   it serves or not. Use it for replicas that do not serve: a fresh replica
@@ -214,8 +219,9 @@ Replacing the key itself is the `RotateKey` decree, a break-glass step.
 ## Rebooting nodes
 
 * A rebooted cds or agent node rejoins under its own name. A rebooted voter
-  loses its state and comes back as a new member. The cluster gives its seat
-  to another replica.
+  loses its state and comes back as a new member, first as a non-voter. The
+  old member keeps its vote until a replacement (this one or another
+  replica) is a voter, then retires.
 * A rebooted node forgets the CDS pin decree it followed: node state does
   not survive a reboot. It trusts its launch document's CDS pins until its
   first decree fetch succeeds. The enforcer makes that fetch at start, before
@@ -501,7 +507,10 @@ Do not reuse retired mesh keys for backend services.
   SQLite. Size cds nodes for the chart's memory limit (`cds.ha.resources`,
   about 8 GiB nodes for the default 4Gi limit), and keep allowlist documents
   small.
-- **Replica count.** 3 to 9 cds nodes, an odd number.
+- **Voter seats.** 3 to 9 voter seats at launch, an odd number
+  (`cdsHA.replicas`: one per `--cds-node` of `launch-config new`); `SetVoters`
+  changes the count (odd, 1 to 9). Further cds nodes serve as non-voters, at
+  most 16 of them, and need not keep the total odd.
 - **Every component change is a new image.** It needs new launch documents;
   a rolling upgrade replaces every cds node.
 - **Launch CDS pins on cds nodes.** A cds node hands its injected credential

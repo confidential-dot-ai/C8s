@@ -478,8 +478,9 @@ func (n *Node) removeMember(r *raft.Raft, id raft.ServerID) bool {
 // voter that stays reports every voter as one. It asks them only while a
 // voter is not yet known to all of them (known), so a settled cluster sends
 // no probes. Raft counts a vote only from a candidate that is a voter in the
-// receiver's latest configuration. A promotion commits through the leader
-// and any one other voter, which can be the promoted member itself. Were the
+// receiver's latest configuration. A promotion commits once a majority of
+// the new configuration holds it, which can count the promoted member
+// itself (from a free seat: the leader and that member). Were the
 // leader lost before a staying voter holds the promotion, that voter would
 // refuse the new voter's vote requests, and the new voter its requests for
 // their shorter log: no leader until the old one is back. So nothing else is

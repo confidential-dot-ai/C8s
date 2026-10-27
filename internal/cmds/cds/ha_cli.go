@@ -43,7 +43,7 @@ func newHADecreeCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "decree",
 		Short: "Sign a decree and print it as a CDSDecree object for kubectl apply",
-		Long: "Signs a Genesis, UpdateMeasurements or RotateKey decree with the operator key and prints the\n" +
+		Long: "Signs a Genesis, UpdateMeasurements, RotateKey, SetVoters or Recover decree with the operator key and prints the\n" +
 			"decree object (a ConfigMap) as JSON. Apply it with kubectl; the leader replica\n" +
 			"applies it and every replica checks the signature. Re-sign with the current epoch\n" +
 			"if it is rejected for a base_epoch conflict.\n\n" +
@@ -51,7 +51,7 @@ func newHADecreeCmd() *cobra.Command {
 			"of --target-url over armTLS (pin it with --target-image-policy-file or --target-measurements) and\n" +
 			"signs it into the decree (target_member). A restarted replica has a new ID, so the decree is then\n" +
 			"dead: read the ID again and re-sign. --bootstrap-node defaults to the target's node.\n" +
-			"They expire after 10 minutes by default.",
+			"Genesis and Recover expire after 10 minutes by default, the other kinds after --expires-in.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			d.Kind = cdsha.DecreeKind(kind)
 			if d.Alone && d.Kind != cdsha.Genesis {
@@ -92,10 +92,10 @@ func newHADecreeCmd() *cobra.Command {
 			}
 			if d.Kind == cdsha.RotateKey {
 				if !ackFork {
-					return errors.New("RotateKey forks the mesh: every workload must be re-issued under the new key. Pass --i-understand-rotation-forks-the-cluster to continue (C4, D11)")
+					return errors.New("RotateKey forks the mesh: every workload must be re-issued under the new key. Pass --i-understand-rotation-forks-the-cluster to continue")
 				}
 				if len(d.Measurements) == 0 {
-					fmt.Fprintln(cmd.ErrOrStderr(), "WARNING: RotateKey without --measurements delivers the new key to the current pin set (D14). Prefer UpdateMeasurements first (D13).")
+					fmt.Fprintln(cmd.ErrOrStderr(), "WARNING: RotateKey without --measurements delivers the new key to the current pin set. Prefer UpdateMeasurements first.")
 				}
 			}
 			if err := setDecreeImages(&d, images); err != nil {
@@ -140,13 +140,13 @@ func newHADecreeCmd() *cobra.Command {
 	f.Uint64Var(&d.BaseEpoch, "base-epoch", 0, "the epoch you observed (c8s cds ha status)")
 	f.StringVar(&kind, "kind", string(cdsha.UpdateMeasurements), "Genesis (mint the first key), UpdateMeasurements, RotateKey, SetVoters, or Recover (break-glass after losing a majority)")
 	f.IntVar(&d.Voters, "voters", 0, "SetVoters: the new voter seat count (odd); more replicas than seats serve as non-voters")
-	f.StringSliceVar(&d.Measurements, "measurements", nil, "complete new replica pin set (D6); optional for RotateKey (D14). Derived from --image when that is given")
+	f.StringSliceVar(&d.Measurements, "measurements", nil, "complete new replica pin set; optional for RotateKey. Derived from --image when that is given")
 	f.StringArrayVar(&images, "image", nil, "a CDS launch identity, mrtd:rtmr1:rtmr2 in hex; repeat for each. Lets nodes and pods follow the pin set (GET /ha/pins), so a CDS image rollout needs no node relaunch")
 	f.StringVar(&d.IntentID, "intent-id", "", "decree nonce (default random)")
 	f.StringVar(&d.BootstrapNode, "bootstrap-node", "", "Genesis: the node whose replica starts the cluster; Recover: the surviving node (default: the --target-url replica's node)")
 	f.StringVar(&keyPath, "operator-key", "", "PEM EC private key matching the cluster's --ha-operator-key")
 	f.StringVar(&namespace, "namespace", "c8s-cds-decrees", "namespace the decree object is written to (the replicas' --ha-decree-namespace)")
-	f.DurationVar(&expiresIn, "expires-in", time.Hour, "decree lifetime")
+	f.DurationVar(&expiresIn, "expires-in", time.Hour, "decree lifetime (Genesis and Recover: 10m unless set)")
 	f.BoolVar(&ackFork, "i-understand-rotation-forks-the-cluster", false, "required for RotateKey")
 	f.BoolVar(&ackRecover, "i-understand-recover-is-break-glass", false, "required for Recover")
 	f.BoolVar(&d.Alone, "alone", false, "Genesis: start even if the replica finds no other replica (a one-replica cluster only)")

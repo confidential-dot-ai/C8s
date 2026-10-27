@@ -57,7 +57,8 @@ type Timing struct {
 	// so it cannot keep admitting what a decree just evicted.
 	Lease time.Duration
 	// DeadAfter is how long a member fails heartbeats before the leader
-	// removes it and frees its seat.
+	// treats it as dead. A dead non-voter is removed; a dead voter keeps its
+	// vote until a replacement is a voter (retireVoters).
 	DeadAfter time.Duration
 	// Stabilize is how long a non-voter must stay healthy before it is
 	// promoted into a free seat.
@@ -583,9 +584,11 @@ func (s *termSafeHeartbeats) SetHeartbeatHandler(fast func(raft.RPC)) {
 		return
 	}
 	s.NetworkTransport.SetHeartbeatHandler(func(rpc raft.RPC) {
-		// A check of term and role here cannot race into #695: once it
-		// passed, a later change on the main thread raises the term, and
-		// appendEntries then refuses this older heartbeat.
+		// A check of term and role here narrows #695: once it passed, an
+		// election on the main thread raises the term, and appendEntries
+		// then refuses this older heartbeat. A pre-vote candidacy keeps the
+		// term, so it is not covered: appendEntries may still step the node
+		// down and, racing an election, set its term back to the heartbeat's.
 		req, ok := rpc.Command.(*raft.AppendEntriesRequest)
 		if r := s.raft.Load(); ok && r != nil && r.State() == raft.Follower && req.Term <= r.CurrentTerm() {
 			fast(rpc)

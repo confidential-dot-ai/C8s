@@ -22,8 +22,9 @@ already booted with changes.`),
 		newAddNodeCmd(CDS, "add-cds-node", "Add a signed cds-role document to an existing launch bundle",
 			`Derive a cds-role launch.yaml from the bundle's server document, sign it
 with the bundle's cds key and write <bundle>/<name>. The bundle must have
-been created with --cds-node. Use it to add a replica or to replace one: a
-rebooted node cannot rejoin RKE2 under its old name.`),
+been created with --cds-node. Use it to add a replica or to replace a lost
+one under a new name. A rebooted node keeps its document and rejoins under
+its own name.`),
 		newStageCmd())
 	return cmd
 }
@@ -183,7 +184,7 @@ func newAddNodeCmd(role Role, use, short, long string) *cobra.Command {
 	f.StringVar(&dir, "bundle", "", "bundle directory created by 'launch-config new' (with --cds-node for a cds node)")
 	f.StringVar(&o.Name, "name", "", string(role)+" node name, an RFC1123 label")
 	f.StringVar(&o.ServerAddress, "server-address", "", "server IPv4 address (default: the server document's, which must then be explicit)")
-	f.Uint64Var(&o.PinFloor, "pin-floor", 0, "HA CDS: the lowest CDS pin decree base epoch the node accepts; set it to base_epoch of the decree in force (GET /ha/pins)")
+	f.Uint64Var(&o.PinFloor, "pin-floor", 0, "HA CDS: the lowest CDS pin decree base epoch the node accepts; set it to base_epoch of the decree in force, read from the attested 'c8s cds ha decrees'")
 	f.StringVar(&manifest, "image-manifest", "", "boot this image instead of the server's (a rollout): the build's manifest.json. The document still accepts the server's image for its peers; for a cds node, follow with a signed pin decree for the new image")
 	for _, flag := range []string{"bundle", "name"} {
 		_ = cmd.MarkFlagRequired(flag)
