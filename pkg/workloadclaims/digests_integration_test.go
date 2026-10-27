@@ -215,7 +215,7 @@ func TestStartDigestsEndpointServesDespiteWarmUpFailure(t *testing.T) {
 	}
 	err = StartDigestsEndpoint(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)),
 		&fakeResolver{sandboxID: "sandbox-1"}, signer.PublicKeyDER(),
-		"sev-snp", attest, "http://127.0.0.1:1", testPins(), "")
+		"sev-snp", attest, "http://127.0.0.1:1", testPins(), "", nil)
 	if err != nil {
 		t.Fatalf("StartDigestsEndpoint returned an error for a warm-up failure; it must degrade, not fail: %v", err)
 	}

@@ -17,6 +17,16 @@ import (
 	"time"
 )
 
+// standInEnv makes the test binary idle as a process with a chosen argv[0].
+const standInEnv = "NRI_IMAGE_POLICY_TEST_STANDIN"
+
+func init() {
+	if os.Getenv(standInEnv) == "1" {
+		time.Sleep(time.Minute)
+		os.Exit(0)
+	}
+}
+
 const testPluginPath = "/opt/nri/plugins/10-nri-image-policy"
 
 // fakeProcess is one /proc/<pid> entry.
@@ -276,12 +286,14 @@ func TestPluginRunningRejectsSpoofOnRealProc(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("needs procfs")
 	}
-	sleep, err := exec.LookPath("sleep")
+	// Re-exec this test binary as the stand-in: multicall tools (busybox,
+	// uutils coreutils) dispatch on argv[0] and exit at once under this name.
+	self, err := os.Executable()
 	if err != nil {
-		t.Skip("sleep not found")
+		t.Fatal(err)
 	}
 	argv0 := filepath.Join(t.TempDir(), "10-nri-image-policy")
-	cmd := &exec.Cmd{Path: sleep, Args: []string{argv0, "60"}}
+	cmd := &exec.Cmd{Path: self, Args: []string{argv0, "-test.run=^$"}, Env: append(os.Environ(), standInEnv+"=1")}
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}

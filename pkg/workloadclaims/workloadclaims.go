@@ -95,6 +95,14 @@ const (
 // itself, and keeps its own policy flag.
 const CDSPinsPath = "/run/c8s/cds-pins.json"
 
+// RouterCDSPinsPath is where the router's route manifest poller (cds-attest)
+// reads the node's CDS attestation policy: the same document as CDSPinsPath,
+// which the enforcer rewrites as it follows the operator's CDS pin decrees.
+// The router keeps its own path because it is not a credential client: it
+// answers to the chart's attestation-api, not the one RequireNodeVerifier
+// binds credential clients to.
+const RouterCDSPinsPath = "/run/c8s/router-cds-pins.json"
+
 // AttestationAPISocket is the node's own attestation-api as an injected
 // credential client sees it: the socket in the directory the NRI plugin
 // mounts. Compiled for the same reason as the paths above — the verifier

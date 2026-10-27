@@ -110,6 +110,18 @@ type pullConfig struct {
 	// runtime extensions, and flat RTMR[3] pins, still require the bare
 	// operator-key seed.
 	MeasurePolicies bool `yaml:"measure_policies"`
+	// CDSDecrees, on a node of an HA CDS cluster, makes the plugin follow
+	// the operator's signed CDS pin decrees across a CDS image rollout, for
+	// its own CDS clients and for the policy it mounts into credential
+	// clients. CDSDecreesState keeps the newest across restarts. Both need
+	// cds_measurements_config.
+	CDSDecrees      *cdsDecreesInfo `yaml:"cds_decrees"`
+	CDSDecreesState string          `yaml:"cds_decrees_state"`
+
+	// decrees is the pin source built from the above at start, shared by the
+	// pull client, the digests endpoint and the mounted policy; nil when the
+	// node follows no decrees.
+	decrees armtls.PinSource
 }
 
 // checkPolicySources rejects competing CDS identity policy sources, before any

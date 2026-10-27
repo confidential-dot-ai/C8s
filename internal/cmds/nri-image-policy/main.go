@@ -25,6 +25,7 @@ import (
 	"time"
 
 	utilnet "k8s.io/apimachinery/pkg/util/net"
+	"k8s.io/apimachinery/pkg/util/wait"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
@@ -124,6 +125,17 @@ func Run(args []string) error {
 
 	store := newPolicyStore(cfg.Allowlist.Base)
 
+	var decrees *followedPins
+	if cfg.PullEnabled() {
+		if decrees, err = cfg.Allowlist.Pull.cdsDecrees(cfg.NormalizedPlatform(), logger); err != nil {
+			return err
+		}
+		if decrees != nil {
+			cfg.Allowlist.Pull.decrees = decrees
+			logger.Info("following signed CDS pin decrees", "cds_url", cfg.Allowlist.Pull.URL)
+		}
+	}
+
 	var wlClient allowlistclient.Client
 	if cfg.PullEnabled() {
 		logger.Info("initializing allowlist client", "url", cfg.Allowlist.Pull.URL)
@@ -144,6 +156,9 @@ func Run(args []string) error {
 	if err := plugin.prepareCDSPins(); err != nil {
 		return fmt.Errorf("prepare the CDS pins handed to injected clients: %w", err)
 	}
+	if decrees != nil {
+		decrees.mounted = plugin.cdsPins
+	}
 	if err := plugin.prepareCDSAddress(); err != nil {
 		return fmt.Errorf("prepare the CDS address handed to injected clients: %w", err)
 	}
@@ -151,6 +166,11 @@ func Run(args []string) error {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	if decrees != nil {
+		// Clients also refresh on a pin miss; the poll moves a node that is
+		// not talking to CDS.
+		go wait.UntilWithContext(ctx, func(ctx context.Context) { _, _ = decrees.Refresh(ctx) }, decreePollInterval)
+	}
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -267,15 +287,25 @@ func Run(args []string) error {
 	return nil
 }
 
+// decreePollInterval is how often a node looks for a newer CDS pin decree
+// when no CDS connection prompted it.
+const decreePollInterval = time.Minute
+
 // allowlistPullHTTPClient builds the armTLS client for the CDS pull. The pull
 // URL is always https (enforced by config.Validate), so this always verifies
 // the CDS attestation handshake.
 func allowlistPullHTTPClient(cfg pullConfig, platform string) (*http.Client, error) {
-	set, err := cfg.policySet(platform)
+	set, err := cfg.pinsSet(platform)
 	if err != nil {
 		return nil, err
 	}
-	client, err := armtls.NewVerifyingHTTPClient(armtls.Pins(set.Policy()), cfg.AttestationApiURL)
+	var client *http.Client
+	if cfg.decrees != nil {
+		// A CDS on a newly decreed image: refresh the pins on a miss.
+		client, err = armtls.NewRefreshingHTTPClient(cfg.decrees, cfg.AttestationApiURL)
+	} else {
+		client, err = armtls.NewVerifyingHTTPClient(armtls.Pins(set.Policy()), cfg.AttestationApiURL)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("CDS armTLS client: %w", err)
 	}
@@ -805,7 +835,7 @@ func digestsAdvertiseHost(cfg *config) (string, error) {
 // startSandboxDigests serves the CDS-facing digests endpoint over
 // mutually-attested armTLS (docs/armtls.md, "Sandbox identity").
 func startSandboxDigests(ctx context.Context, logger *slog.Logger, cfg *config, resolver workloadclaims.SandboxResolver, signer *workloadclaims.SandboxTokenSigner) error {
-	set, err := cfg.Allowlist.Pull.policySet(cfg.NormalizedPlatform())
+	set, err := cfg.Allowlist.Pull.pinsSet(cfg.NormalizedPlatform())
 	if err != nil {
 		return err
 	}
@@ -819,7 +849,7 @@ func startSandboxDigests(ctx context.Context, logger *slog.Logger, cfg *config, 
 	return workloadclaims.StartDigestsEndpoint(ctx, logger, resolver, signer.PublicKeyDER(),
 		cfg.NormalizedPlatform(),
 		attestclient.MakeSNPARMTLSAttestFunc(attestclient.NewClient(""), attestationApiURL),
-		attestationApiURL, armtls.Pins(set.Policy()), journal)
+		attestationApiURL, armtls.Pins(set.Policy()), journal, cfg.Allowlist.Pull.decrees)
 }
 
 // startAdmissionInventory serves the node-CVM token socket (docs/armtls.md).

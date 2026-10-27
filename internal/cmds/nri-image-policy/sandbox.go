@@ -261,6 +261,8 @@ func takesNodeMount(pod *api.PodSandbox, ctr *api.Container, destination string)
 		return injected || holdsCredentialsIdentity(ctr)
 	case workloadclaims.CDSAddressPath:
 		return injected || holdsCredentialsIdentity(ctr) || fetchesRouteManifest(pod, ctr)
+	case workloadclaims.RouterCDSPinsPath:
+		return fetchesRouteManifest(pod, ctr)
 	}
 	return false
 }
@@ -268,9 +270,10 @@ func takesNodeMount(pod *api.PodSandbox, ctr *api.Container, destination string)
 // isInjectedNodeMount requires a credential client's read-only bind from the node's own source.
 func isInjectedNodeMount(pod *api.PodSandbox, ctr *api.Container, m *api.Mount, own nodeMounts) bool {
 	source := map[string]string{
-		workloadclaims.SidecarSocketDir: own.socketDir,
-		workloadclaims.CDSPinsPath:      own.cdsPins,
-		workloadclaims.CDSAddressPath:   own.cdsAddress,
+		workloadclaims.SidecarSocketDir:  own.socketDir,
+		workloadclaims.CDSPinsPath:       own.cdsPins,
+		workloadclaims.CDSAddressPath:    own.cdsAddress,
+		workloadclaims.RouterCDSPinsPath: own.cdsPins,
 	}[m.GetDestination()]
 	return source != "" && m.GetSource() == source && endsReadOnly(m) && takesNodeMount(pod, ctr, m.GetDestination())
 }
