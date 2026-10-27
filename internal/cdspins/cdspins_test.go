@@ -264,10 +264,16 @@ func TestNewAndPolicyErrors(t *testing.T) {
 	if _, err := Policy(bootstrap(), nil); err == nil {
 		t.Fatal("no images accepted")
 	}
-	// No anchors in the bootstrap: images are pinned without one.
-	pol, err := Policy(refvalues.ReferenceValues{Family: teetypes.FamilyTDX}, []cdsha.DecreeImage{img(1)})
-	if err != nil || len(pol.Images) != 1 || pol.Images[0].Anchor != nil {
-		t.Fatalf("anchorless: %+v %v", pol, err)
+	// Every pin carries a launch-key anchor: a bootstrap set without one,
+	// or with one image that has none, is refused rather than pinned
+	// without a launch-key check.
+	if pol, err := Policy(refvalues.ReferenceValues{Family: teetypes.FamilyTDX}, []cdsha.DecreeImage{img(1)}); err == nil {
+		t.Fatalf("anchorless bootstrap accepted: %+v", pol)
+	}
+	mixed := bootstrap()
+	mixed.Images = append(mixed.Images, remote.ImagePin{Name: "bare", Digest: mixed.Images[0].Digest, Registers: mixed.Images[0].Registers})
+	if pol, err := Policy(mixed, []cdsha.DecreeImage{img(1)}); err == nil {
+		t.Fatalf("bootstrap image without an anchor accepted: %+v", pol)
 	}
 	// Fetches are spaced: a burst of misses fetches once.
 	srv := &served{sd: pinDecree(t, k, cluster, 4, img(5))}

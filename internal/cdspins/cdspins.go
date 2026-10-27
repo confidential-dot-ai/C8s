@@ -196,14 +196,19 @@ func Policy(bootstrap refvalues.ReferenceValues, images []cdsha.DecreeImage) (re
 		name string
 		key  []byte
 	}
+	// INVARIANT: every pin carries a launch-key anchor. A nil anchor would
+	// admit a decreed image under any launch key.
 	var anchors []anchor
 	for _, img := range bootstrap.Images {
+		if len(img.Anchor) == 0 {
+			return refvalues.ReferenceValues{}, fmt.Errorf("cdspins: bootstrap image %q has no launch-key anchor", img.Name)
+		}
 		if !slices.ContainsFunc(anchors, func(a anchor) bool { return bytes.Equal(a.key, img.Anchor) }) {
 			anchors = append(anchors, anchor{name: img.Name, key: img.Anchor})
 		}
 	}
 	if len(anchors) == 0 {
-		anchors = []anchor{{name: "cds"}}
+		return refvalues.ReferenceValues{}, errors.New("cdspins: the bootstrap set pins no CDS image")
 	}
 	out := refvalues.ReferenceValues{Family: bootstrap.Family}
 	for _, a := range anchors {
