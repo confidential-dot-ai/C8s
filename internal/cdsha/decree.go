@@ -211,6 +211,11 @@ func CheckDecree(sd SignedDecree, tail Core, now time.Time) error {
 	if err := verifyDecree(sd, tail); err != nil {
 		return err
 	}
+	// Not in verifyDecree: VerifyPinDecree checks a decree without the
+	// cluster's state.
+	if k := sd.Decree.Kind; (k == RotateKey || k == UpdateMeasurements) && len(tail.RootCert) == 0 {
+		return fmt.Errorf("a %s decree applies to a cluster with a key", k)
+	}
 	if !now.Before(sd.Decree.ExpiresAt) {
 		return errors.New("decree expired")
 	}
