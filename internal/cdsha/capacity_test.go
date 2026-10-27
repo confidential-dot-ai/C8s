@@ -368,10 +368,13 @@ func TestBackupBacksOffOnOversizedState(t *testing.T) {
 	l := c.leader()
 	eventually(t, 10*time.Second, "first backup", func() bool { _, ok := c.backups.get(); return ok })
 	// About 17 MiB of base64 values in the snapshot header: over its 16 MiB.
+	// Every write goes through the log, like in production: a write to the
+	// local store alone could land between the snapshot's dump and its
+	// digests, and Persist would rightly stop the replica.
 	v := make([]byte, 4096)
 	for i := range 3200 {
 		_, _ = rand.Read(v)
-		if _, err := l.sec.MemoryStore.Put(context.Background(), "big/"+strconv.Itoa(i), v); err != nil {
+		if _, err := l.sec.Put(context.Background(), "big/"+strconv.Itoa(i), v); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -404,7 +407,11 @@ func TestBackupBacksOffOnOversizedState(t *testing.T) {
 		t.Fatalf("status does not say why backups fail: %q", st)
 	}
 	// The state shrinks: backups resume and the error clears.
-	l.sec.Restore(nil)
+	for i := range 3200 {
+		if _, err := l.sec.Put(context.Background(), "big/"+strconv.Itoa(i), nil); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := l.al.PutWorkload("w2", mkWorkload(t, 2)); err != nil {
 		t.Fatal(err)
 	}
