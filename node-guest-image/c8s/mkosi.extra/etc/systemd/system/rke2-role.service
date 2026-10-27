@@ -4,13 +4,19 @@ Requires=attestation-api.service
 After=network-online.target attestation-api.service
 Wants=network-online.target
 Before=rke2-server.service rke2-agent.service
+# Fail closed and visibly: a node that cannot authenticate its launch after
+# rke2-role.sh's retries powers off instead of idling with every dependent
+# failed. KubeVirt (runStrategy Always/RerunOnFailure) then relaunches it.
+FailureAction=poweroff-force
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
 Environment=PATH=/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=/usr/local/bin/rke2-role.sh
-TimeoutStartSec=180
+# Covers rke2-role.sh's bounded verification retries (at most ~12 min with
+# udev, launch disk and mount waits); a hang past it fails the unit too.
+TimeoutStartSec=900
 
 [Install]
 WantedBy=multi-user.target
