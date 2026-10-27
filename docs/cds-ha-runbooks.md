@@ -11,8 +11,9 @@ they mean are in `cds-ha-alerts.md`.
     CDS=https://<any cds node IP>:30808            # clients: serving replicas only
     R() { echo "https://$1:30809"; }                # one node's replica, Ready or not
     CDS_NODES="<ip-1> <ip-2> <ip-3> ..."            # every cds node IP
-    POL="--image-policy-file $B/server.json"
+    POL="--image-policy-file $B/server.json"   # after a rollout: the file runbook 3 writes
     NS=c8s-cds-decrees             # decree and backup namespace
+    openssl ec -in $B/decree.key -pubout -out $B/decree.pub 2>/dev/null   # once
 
 > **Two addresses.**
 > - `$CDS` is the `c8s-cds` Service, a NodePort with `externalTrafficPolicy: Cluster`. It answers from Ready replicas only. A replica is Ready only while it serves and its seat is settled: a voter while the cluster has no more voters than seats, a non-voter while the leader reports every seat held by a healthy voter. When no replica serves (before Genesis, after a total loss, or when the majority is lost), `$CDS` has no endpoints.
@@ -119,14 +120,13 @@ cannot reach the others starts a second cluster.
 
 A new replica joins as a non-voter. It takes a voter seat when a seat is free.
 
-1. Find the pin floor in the attested decree record. It is the `base_epoch`
-   of the decree behind the pin set in force: the newest `UpdateMeasurements`
-   or `RotateKey` that set measurements. If that decree named no images, or
-   there is none, no pin decree is in force: leave the flag out.
+1. Find the pin floor, the base epoch of the pin decree in force, read over
+   armTLS and checked against the decree key. On a cluster that never applied
+   an `UpdateMeasurements` with `--image`, the command says the replicas serve
+   no pin decree: leave the flag out.
 
-       FLOOR=$(c8s cds ha decrees $POL --url $CDS --json | jq -r '
-         [.[].decree.decree | select((.kind == "UpdateMeasurements" or .kind == "RotateKey")
-           and (.measurements | length) > 0)] | last | select(.images) | .base_epoch')
+       c8s cds ha pin-policy $POL --url $CDS --cluster-id $ID --decree-public-key $B/decree.pub
+       FLOOR=<base_epoch= from the line above>
 
    Never take the floor from `/ha/pins` or another unauthenticated read. A
    host that serves an older decree there lowers the floor, and the new node
@@ -174,27 +174,50 @@ a clean redeploy: `cds-ha.md`, "Compatibility boundary").
 
 1. Pin both images:
 
-       OLD=$(jq -r '.tdx | "\(.mrtd):\(.rtmr1):\(.rtmr2)"' old-manifest.json)
-       NEW=$(jq -r '.tdx | "\(.mrtd):\(.rtmr1):\(.rtmr2)"' new-manifest.json)
+       # TDX: mrtd:rtmr1:rtmr2
+       OLD="--image $(jq -r '.tdx | "\(.mrtd):\(.rtmr1):\(.rtmr2)"' old-manifest.json)"
+       NEW="--image $(jq -r '.tdx | "\(.mrtd):\(.rtmr1):\(.rtmr2)"' new-manifest.json)"
+       # SEV-SNP: one --image per launch digest (one per vCPU count)
+       OLD=$(jq -r '.snp_variants[].measurement.snp_launch_digest | "--image " + .' old-manifest.json)
+       NEW=$(jq -r '.snp_variants[].measurement.snp_launch_digest | "--image " + .' new-manifest.json)
        c8s cds ha status $POL $CDS          # note epoch=
        c8s cds ha decree --kind UpdateMeasurements --cluster-id $ID --operator-key $B/decree.key \
-         --base-epoch <epoch> --image $OLD --image $NEW > pins.json
+         --base-epoch <epoch> $OLD $NEW > pins.json
        kubectl apply -f pins.json
 
    Wait until `c8s cds ha decrees $POL --url $CDS` lists the decree's intent.
    If the decree object's status shows a `base_epoch` conflict, sign it again
-   with the current epoch and a new intent.
+   with the current epoch and a new intent. Then write the operator policy for
+   both images. It reads the applied decree over armTLS with the current
+   policy:
+
+       c8s cds ha pin-policy $POL --url $CDS --cluster-id $ID \
+         --decree-public-key $B/decree.pub --out $B/server-rollout.json
+       POL="--image-policy-file $B/server-rollout.json"
+
 2. Replace the cds nodes one at a time, as in runbook 2, but add
-   `--image-manifest new-manifest.json` to `add-cds-node`. Replace the
-   non-voters first and the leader (`state=Leader` in attested status) last.
+   `--image-manifest new-manifest.json` to `add-cds-node` (and
+   `--vcpus <n>` on SEV-SNP). Replace the non-voters first and the leader
+   (`state=Leader` in attested status) last.
    Pass the readiness gate after each new node and after each removal.
 3. If new replicas exit or crash-loop, stop the rollout. The old replicas
    keep the cluster. Read the new pods' logs (`kubectl -n c8s-system logs <pod>`)
    and the alerts table.
-4. When every node runs the new image, pin only the new one:
+4. When every node runs the new image, pin only the new one, then write the
+   policy for it and keep that file as the cluster's operator policy:
 
        c8s cds ha decree --kind UpdateMeasurements --cluster-id $ID --operator-key $B/decree.key \
-         --base-epoch <epoch> --image $NEW | kubectl apply -f -
+         --base-epoch <epoch> $NEW | kubectl apply -f -
+       c8s cds ha pin-policy $POL --url $CDS --cluster-id $ID \
+         --decree-public-key $B/decree.pub --out $B/server-<new image>.json
+       POL="--image-policy-file $B/server-<new image>.json"
+
+   Nodes rebooted later trust their launch-document CDS pins, which still
+   name the old image, until their first decree fetch succeeds. A node
+   relaunched with `--pin-floor` set to the `base_epoch` that `pin-policy`
+   printed refuses every older decree, but its launch document still pins the
+   server document's image until it takes a decree. Only a new bundle drops
+   that image from launch documents.
 
 5. Remove the old image's entries from the workload policy. They stay until
    you remove them.
