@@ -72,6 +72,7 @@ func TestBundlesCarryMeasuredPolicies(t *testing.T) {
 				MeshIdentityCertFile: identity.certFile,
 				MeshIdentityKeyFile:  identity.keyFile,
 				MeshIdentityCAFile:   identity.caFile,
+				Bindings:             NewBindings(),
 			}
 			if tc.configured {
 				cfg.MeasuredPoliciesFile = journal

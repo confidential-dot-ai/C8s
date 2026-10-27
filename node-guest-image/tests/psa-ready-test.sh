@@ -63,7 +63,7 @@ fi
 if [[ ${1:-} == create ]]; then
     body=$(cat)
     if grep -q 'kind: ConfigMap' <<<"$body"; then
-        scope_denial="Error from server (Invalid): ValidatingAdmissionPolicy 'confos-operator-scope' denied the request: c8s credentials may not write in the privileged namespaces (kube-system, local-path-storage, c8s-system)"
+        scope_denial="Error from server (Invalid): ValidatingAdmissionPolicy 'confos-operator-scope' denied the request: c8s credentials may not write in the privileged namespaces (kube-system, c8s-system)"
         case "$FAKE_MODE:$ns" in
             scope-fail-open:*) exit 0 ;;
             scope-over-denied:default) echo "$scope_denial" >&2; exit 1 ;;

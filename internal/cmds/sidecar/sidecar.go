@@ -60,7 +60,7 @@ func BindFlags(f *pflag.FlagSet, cfg *Config) {
 	cmdsutil.BindImagePolicyFlags(f, &cfg.MeasurementsConfig, &cfg.MeasurementsConfigJSON, "pins the CDS endpoint; excludes --measurements and --rtmrs")
 	f.StringVar(&cfg.CDSURL, "cds-url", "", "https base URL of CDS; refused in an injected sidecar, which dials the endpoint the node mounts")
 	f.StringVar(&cfg.AttestationApiURL, "attestation-api-url", "", "local attestation-api used to verify CDS's armTLS certificate")
-	f.StringSliceVar(&cfg.Measurements, "measurements", nil, "SHA-384 hex launch measurement(s) CDS must present (repeatable; empty pins none, UNSAFE)")
+	f.StringSliceVar(&cfg.Measurements, "measurements", nil, "SHA-384 hex launch measurement(s) CDS must present (repeatable); required unless the node or --image-policy-file pins CDS")
 	f.StringSliceVar(&cfg.RTMRs, "rtmrs", nil, "TDX RTMR pin(s) <index>=<sha384-hex> CDS must additionally satisfy (repeatable; ignored when CDS presents SNP evidence, empty pins no registers)")
 	f.StringVar(&cfg.CertPath, "cert", "/run/c8s/certs/tls.crt", "the pod's CDS-issued certificate, presented to CDS")
 	f.StringVar(&cfg.KeyPath, "key", "/run/c8s/certs/tls.key", "private key for --cert")
@@ -126,8 +126,6 @@ func (c *Config) ParsePins() (armtls.Pins, error) {
 		return armtls.Pins{}, err
 	}
 	slog.Info("CDS pins resolved", "from_node", fromNode)
-	cmdsutil.WarnIfCDSUnpinned(len(policy.Measurements)+len(policy.Images),
-		"--measurements empty: the CDS this sidecar hands its sandbox token to is not pinned to a launch measurement. UNSAFE outside development.")
 	return armtls.Pins(policy), nil
 }
 

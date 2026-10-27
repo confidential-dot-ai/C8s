@@ -711,6 +711,9 @@ func NewServerTLSConfig(cfg *ServerConfig) (*tls.Config, *CertManager, error) {
 		}
 		tlsCfg.GetConfigForClient = clientCAsPerHandshake(tlsCfg, clientCAs)
 	case cfg.ClientPolicy != nil:
+		if err := requirePins(cfg.ClientPolicy.Policy); err != nil {
+			return nil, nil, err
+		}
 		tlsCfg.ClientAuth = tls.RequireAnyClientCert
 		tlsCfg.VerifyPeerCertificate = verifyPeerCallback(cfg.ClientPolicy, x509.ExtKeyUsageClientAuth)
 	}
@@ -772,6 +775,9 @@ func NewClientTLSConfig(cfg *ClientConfig) (*tls.Config, *CertManager, error) {
 
 	if cfg.Policy == nil {
 		return nil, nil, fmt.Errorf("armtls: Policy is required: the client verifies the server's evidence against it on every handshake")
+	}
+	if err := requirePins(cfg.Policy.Policy); err != nil {
+		return nil, nil, err
 	}
 
 	tlsCfg := &tls.Config{
@@ -872,6 +878,10 @@ type Peer struct {
 	// WorkloadName is the allowlist entry the leaf's attested container set
 	// matched at issuance, empty where CDS stamped none.
 	WorkloadName string
+	// AllowlistVersion and AllowlistDigest name the allowlist snapshot that
+	// match was decided under, empty with WorkloadName.
+	AllowlistVersion string
+	AllowlistDigest  []byte
 	// Purpose is the TLS purpose the peer's role required of it:
 	// serverAuth for the peer a mesh client reached, clientAuth for the peer
 	// a mesh server accepted.
@@ -963,6 +973,8 @@ func chainVerifyPeerCallback(meshCA *x509.Certificate, peerPurpose x509.ExtKeyUs
 		}
 		if matched != nil {
 			peer.WorkloadName = matched.Name
+			peer.AllowlistVersion = matched.AllowlistVersion
+			peer.AllowlistDigest = matched.AllowlistDigest
 		}
 		return acceptPeer(peer)
 	}

@@ -122,6 +122,7 @@
         "sandboxInventoryCIDRs": {},
         "secretsMaxPaths": {},
         "secretsMaxPathsPerWorkload": {},
+        "secretsMaxValueBytes": {},
         "service": {
           "type": [
             "object",
@@ -538,9 +539,6 @@
           ],
           "additionalProperties": false,
           "properties": {
-            "allowUnpinnedCDS": {
-              "type": "boolean"
-            },
             "backendTimeout": {},
             "maxRequestBodyBytes": {},
             "pollInterval": {},
@@ -626,33 +624,32 @@
     "teeProxy": {
       "$comment": "Removed component, listed only so validations.yaml can answer with the migration message rather than a generic unknown-key refusal."
     },
-    "rke2": {
+    "kubeStateMetrics": {
       "type": [
         "object",
         "null"
       ],
       "additionalProperties": false,
       "properties": {
-        "localPathHelper": {
+        "clusterIP": {},
+        "enabled": {},
+        "entrypoint": {},
+        "image": {
           "type": [
             "object",
             "null"
           ],
           "additionalProperties": false,
           "properties": {
-            "image": {
-              "type": [
-                "object",
-                "null"
-              ],
-              "additionalProperties": false,
-              "properties": {
-                "digest": {},
-                "repository": {}
-              }
-            }
+            "digest": {},
+            "pullPolicy": {},
+            "repository": {},
+            "tag": {}
           }
-        }
+        },
+        "imageEnv": {},
+        "port": {},
+        "resources": {}
       }
     }
   },

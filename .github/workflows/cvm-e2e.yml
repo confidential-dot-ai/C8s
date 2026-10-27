@@ -254,7 +254,7 @@ jobs:
                           readonly: true
                     interfaces:
                       - name: default
-                        bridge: {}           # masquerade is broken under SNP
+                        bridge: {}  # masquerade boots under SNP, but ports Kubernetes routes never answer the runner (run 40565629411)
                     rng: {}
                 networks:
                   - name: default

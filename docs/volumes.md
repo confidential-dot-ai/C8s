@@ -1,577 +1,161 @@
 # Encrypted volumes
 
-Data too large to be a secret, encrypted at rest on host-visible storage, and
-decryptable only inside a TEE by a workload the allowlist names. Model weights
-are the case this is built for.
-
-This complements [`secrets.md`](secrets.md) — a volume key *is* a secret, stored
-and released by exactly the machinery described there. What is new is the
-artifact the key opens, and the fact that it persists.
-
-For plain unencrypted PVCs, the node image's default `local-path`
-StorageClass provisions dynamically — see
-[cluster storage](../node-guest-image/README.md#cluster-storage).
+An encrypted volume is data too large to be a secret — model weights above all —
+encrypted at rest on storage the host can read and write, and decrypted only
+inside the node's confidential VM for a workload the allowlist names. A volume's
+key is a secret in CDS — the Certificate Distribution Service, the one
+in-cluster pod holding C8s policy and the secret store — released by the
+machinery in [secrets.md](secrets.md). Steps are in
+[workloads.md](workloads.md), names in [glossary.md](glossary.md).
 
 ## Why a volume is different from a secret
 
 Every other value C8s protects is RAM-resident and dies with the pod. A volume
-does not: its ciphertext sits on storage the host reads and writes freely, and
-the host keeps it.
-
-That makes a leaked volume key **retroactive and permanent**. A leaked session
-key forges future connections; a leaked volume key decrypts a copy the adversary
-already has. Treat volume keys accordingly.
+does not: its ciphertext sits on storage the host keeps, so a leaked volume key
+is retroactive and permanent — it decrypts a copy the adversary already has. The
+key must also be in the store first: the fetcher only reads.
 
 ## The artifact
 
-An image built by `c8s volume create`, in two modes. Immutable is the default:
-the workload reads, and every read is verified. Mutable (`--mutable`) is for
-data the workload must write — the same encryption with no verification layer,
-because dm-verity cannot cover a writable device. The accepted trade-off: the
-host can flip bits or roll the volume back, and nothing detects it.
+`c8s volume create` builds an immutable image, or writable with `--mutable`.
 
 | | immutable (default) | mutable (`--mutable`) |
 |---|---|---|
 | filesystem | erofs, read-only by construction | ext4, read-write |
-| integrity | dm-verity, hash tree appended to the filesystem | none |
+| integrity | dm-verity, hash tree inside the encryption | none |
 | confidentiality | plain dm-crypt, `aes-xts-plain64`, 512-bit key, 512-byte sectors | same |
 
-**There is no LUKS header.** A LUKS2 header is on-disk metadata whose integrity
-is an unkeyed checksum the host can recompute, and it is parsed as root inside
-the TEE on every open. Plain dm-crypt has no on-disk metadata at all, so every
-parameter comes from the key blob, which only ever travels over the attested
-channel. What a header would buy — rotating the key via keyslots — is not real
-against a host that keeps a copy of the old header and can restore it.
+The pieces are the standard Linux ones: `dm-crypt` is the kernel's block-layer
+encryption and `aes-xts-plain64` its usual full-disk mode; `erofs` is a
+read-only filesystem; `dm-verity` is a kernel hash tree checking each block
+against a root hash.
 
-**The hash tree is inside the encryption** (immutable volumes). A hash tree is
-a fingerprint of the plaintext, so leaving it in the clear would let the host
-identify what a volume holds. Keeping it inside also means the root hash
-commits to the data rather than to one encryption of it.
+A mutable volume trades integrity away: dm-verity cannot cover a writable
+device, so the host can flip bits or roll it back undetected. On an immutable
+volume both are detected, but lazily: a modified block surfaces as an I/O error.
 
-**Sector size is 512.** For `aes-xts-plain64` the tweak is the sector index, but
-at a larger sector size dm-crypt's numbering depends on `iv_large_sectors` — and
-a writer and an opener that disagree produce a volume that decrypts to noise
-with nothing to say why.
+There is no LUKS header. Its on-disk metadata is protected only by a checksum
+the host can recompute, and the TEE would parse it with root privilege on every
+open. Every parameter comes from the key blob instead, and the hash tree sits
+inside the encryption because a tree in the clear fingerprints the plaintext.
 
 ### The key blob
 
-The value stored at the secret path. Everything needed to open the volume, and
-nothing taken from anywhere else:
+The key blob stored at the secret path holds all that opening the volume needs,
+and nothing else.
 
 ```json
-{ "type": "c8s.volume/v1",
-  "key": "<base64, 64 bytes>",
+{ "type": "c8s.volume/v1", "key": "<base64, 64 bytes>",
   "verity": { "root_hash": "<hex>", "salt": "<hex>",
               "data_blocks": 26214400, "hash_offset": 107374182400 } }
 ```
 
-The verity root hash rides here rather than in an annotation or the allowlist
-entry because it is the integrity anchor, and an anchor the host can edit
-anchors nothing. It is also a fingerprint naming which model a volume holds, and
-`GET /allowlist` is unauthenticated.
-
-A mutable blob carries the key and its mode, nothing else:
-
-```json
-{
-  "type": "c8s.volume/v1",
-  "key": "<base64, 64 bytes>",
-  "mutable": true
-}
-```
-
-There is no integrity anchor to carry — a volume the host can rewrite has
-nothing for an anchor to commit to. The mode and the tree are one invariant: a
-blob carrying both or neither is refused rather than disambiguated.
-
-## Creating a volume
-
-Immutable, the default — package a directory:
-
-```sh
-c8s volume create \
-  --name weights \
-  --source ./llama-3.1-8b \
-  --out ./weights.img \
-  --path /tenant-a/volumes/weights \
-  --escrow-out ./weights.escrow.json \
-  --node node-1 \
-  --url https://cds.example --measurements-file ./m.txt \
-  --mesh-ca ./mesh-ca.pem \
-  --operator-key ./operator.key
-```
-
-Mutable — preloaded from a directory, sized up front:
-
-```sh
-c8s volume create --mutable \
-  --name datasets \
-  --source ./imagenet \
-  --size 200Gi \
-  --out ./datasets.img \
-  --path /tenant-a/volumes/datasets \
-  --escrow-out ./datasets.escrow.json \
-  --node node-1 \
-  --url https://cds.example \
-  --measurements-file ./m.txt \
-  --mesh-ca ./mesh-ca.pem \
-  --operator-key ./operator.key
-```
-
-or empty, for scratch space the workload fills itself:
-
-```sh
-c8s volume create --mutable \
-  --name scratch \
-  --size 50Gi \
-  --out ./scratch.img \
-  --path /tenant-a/volumes/scratch \
-  --escrow-out ./scratch.escrow.json \
-  --node node-1 \
-  --url https://cds.example \
-  --measurements-file ./m.txt \
-  --mesh-ca ./mesh-ca.pem \
-  --operator-key ./operator.key
-```
-
-### Naming the CDS the key goes to
-
-`--mesh-ca` is the same gate `c8s secrets put` carries (see
-[secrets.md](secrets.md), "Naming the CDS you are writing to"): before the key is
-written, the CLI reads the mesh CA CDS serves at `GET /ca` over the attested
-connection and refuses unless it is in the bundle you pinned. `--measurements`
-alone proves an attested build, not your CDS, and a volume key unlocks a whole
-volume. Read the bundle with `c8s cds ca`.
-
-`--url` is CDS itself, as for `c8s secrets put`: a router front door does not
-relay `/secrets` or `/ca`.
-
-Everything that can be refused without a CDS response is refused before anything
-is built: a missing or unreadable `--mesh-ca`, a missing operator key, an
-unpinned endpoint, `http://` without `--insecure`, or a router front door that
-serves its discovery document. The
-CA comparison waits until the build is done, right before the key is sent. A CA
-that does not match is therefore found after the image
-and escrow exist; the key is withheld, and the escrow file can be stored later
-with `c8s secrets put <path> --from-file <escrow> --mesh-ca <bundle>`. `--force` writes
-without the check and says so on stderr. `--dry-run` never reaches CDS and needs
-neither, and a plaintext `--insecure` dev endpoint is exempt.
-
-### Ownership for a non-root consumer
-
-The consumer pod runs under the Restricted controls, so it declares a numeric
-UID (`runAsUser`, not a user name; the admission check cannot resolve names)
-and the volume's filesystem has to be usable by that UID already. `c8s volume
-create` copies the source tree's ownership and modes into the image unchanged
-(on a mutable volume the mount root takes the source directory's owner but
-always mode `0755`), and nothing on the node adjusts them at mount time:
-volumed mounts the device as it is, and `fsGroup` does not reach a mount that
-lands after the pod has started. So pick the UID first and prepare the tree for it. The simplest choice
-is the UID that owns the tree on the machine you build on (`id -u`); anything
-else needs `chown` as root, or the whole build run under `fakeroot`.
-
-```sh
-# Immutable: every file readable by the UID.
-chown -R 1000:1000 ./weights
-c8s volume create --name weights --source ./weights ...
-
-# Mutable: the UID must be able to create files at the mount root, so seed the
-# image from a directory that UID owns, even an empty one.
-mkdir scratch-seed && chown 1000:1000 scratch-seed
-c8s volume create --mutable --name scratch --source ./scratch-seed --size 50Gi ...
-```
-
-A mutable image built without `--source` has a root-owned `/`: a non-root pod
-can read it but cannot create anything at the mount root. The pod side is the
-usual Restricted shape, with the same UID:
-
-```yaml
-spec:
-  securityContext:
-    runAsNonRoot: true
-    runAsUser: 1000
-    runAsGroup: 1000
-    seccompProfile:
-      type: RuntimeDefault
-  containers:
-    - name: app
-      securityContext:
-        allowPrivilegeEscalation: false
-        capabilities:
-          drop: ["ALL"]
-```
-
-Do not make the pod root or privileged to get around volume permissions; the
-chart's `deny-host-namespaces` policy rejects both.
-
-`--size` takes a byte count or a quantity like `50Gi`. Omitted with a
-`--source`, it is inferred — the tree's bytes plus a block per entry, grown by
-half — and printed, so you can see what was chosen and pin it on the next run.
-It is rejected without `--mutable`: an immutable image sizes itself to its
-contents. Every byte of the image is encrypted at creation, free space
-included, so a `--size 200Gi` build writes a 200Gi file.
-
-Each form packages its input, generates a key, encrypts, and `PUT`s the blob.
-It prints the annotations, the `nodeSelector`, and the allowlist grant to
-apply; it does not modify any workload.
-
-The key is generated per volume and never taken from you. AES-XTS is
-deterministic, so re-encrypting a changed directory under a reused key would
-tell the host exactly which sectors changed between versions.
-
-`--name` is capped at 12 characters. The node selects the device by its disk
-serial, `VIRTIO_BLK_ID_BYTES` is 20, and `c8s-vol-` takes eight; a thirteenth
-character is silently dropped, so two volumes would be indistinguishable to the
-node.
-
-Creation needs `mkfs.erofs` and `veritysetup` on the machine running it —
-`mkfs.ext4` instead for a mutable volume. It does **not** need root, a loop
-device, or `cryptsetup`: the encryption is done in process.
+The root hash rides here rather than in an annotation or the entry because it is
+the integrity anchor, and an anchor the host can edit anchors nothing. A mutable
+blob carries `"mutable": true` and no tree; one with both or neither is refused.
 
 ### Keep the escrow file
 
-`--escrow-out` is required, written `0600`, and refuses to overwrite. It holds
-the key.
+`--escrow-out` is required, written `0600`, and refuses to overwrite. It is the
+only copy of the key outside CDS, which holds secrets in process memory, so a
+CDS restart makes every volume unopenable until its key is written back with
+`c8s secrets put <PATH> --from-file <ESCROW>` and that command's write flags —
+`--url`, a measurement pin, `--operator-key`, and the `--mesh-ca` bundle CDS
+must serve. Lose the escrow file and the ciphertext is gone for good. What else
+a restart drops is in [operator.md](operator.md).
 
-CDS keeps secrets in process memory and nowhere else, so **a CDS restart makes
-every volume in the cluster unopenable until its key is written again**, and the
-escrow file is what you write it back from, with `c8s secrets put <path>
---from-file <escrow>`. A restart also replaces the mesh CA, so read the bundle
-again with `c8s cds ca` for that write's `--mesh-ca`. Lose the escrow file and
-restart CDS and the ciphertext is unrecoverable — there is no other copy.
+### The device
 
-Keep escrow files somewhere durable and access-controlled. Their compromise is
-equivalent to handing over the plaintext, permanently.
+The image is ciphertext, so it travels by any means, including through the host.
+The node finds it as a raw block device whose disk serial is `c8s-vol-<name>`.
+That serial is a selector, not a trust input: the host chooses it, so the wrong
+device fails closed on the key or the root hash. A volume has to be a device
+rather than a file on the node's filesystem, because a node running the C8s node
+image — the measured guest image — keeps its writable state on an ephemeral disk
+that no reboot survives. The device is attached to one node, so the pod must be
+pinned there, with the `nodeSelector` that `c8s volume create --node` prints.
 
-## Placing the image on a node
+### Attaching the image
 
-The image is ciphertext. Copy it to storage accessible to the hypervisor,
-including on the untrusted host — that the host holds the bytes is the design
-premise, not a compromise of it.
-
-Attach it as a **raw block device** whose disk serial is `c8s-vol-<name>`. The
-node reads that serial from `<dev>/serial` (virtio-blk) or from VPD page 0x80 at
-`<dev>/device/vpd_pg80` (SCSI), so either transport serves.
-
-A confos node has no persistent writable storage — the root overlay is
-reformatted on every boot — so a volume must be its own device rather than a
-file on the node's filesystem.
-
-### QEMU/KVM: cold-plug at launch
-
-For a volume named `weights`, add these arguments to the VM's QEMU launch
-command. The image path is on the **hypervisor host**:
-
-```sh
--drive if=none,id=volweights,file=/srv/c8s/weights.img,format=raw \
--device virtio-blk-pci,drive=volweights,serial=c8s-vol-weights
-```
-
-This is **cold-plug only** on the C8s node image. Its kernel has PCI hotplug
-disabled, so `device_add virtio-blk-pci` cannot hot-attach a disk, even with a
-PCIe root port.
-
-### QEMU/KVM: hot-attach over virtio-scsi
-
-Provision a virtio-scsi controller **at VM launch** by adding:
-
-```sh
--device virtio-scsi-pci,id=scsi0
-```
-
-Then run these commands in the running VM's **QEMU human monitor (HMP)** on
-the hypervisor host, after copying the ciphertext there:
-
-```text
-drive_add 0 if=none,id=volweights,file=/srv/c8s/weights.img,format=raw
-device_add scsi-hd,id=weights,bus=scsi0.0,drive=volweights,serial=c8s-vol-weights
-```
-
-If the VM already has a virtio-scsi controller, use its bus in place of
-`scsi0.0`. The guest discovers the new SCSI disk on the existing controller;
-this does not require PCI hotplug or a guest shell. volumed reads its serial
-from VPD page 0x80. See QEMU's [virtio-scsi overview](https://www.qemu.org/2021/01/19/virtio-blk-scsi-configuration/)
-and [monitor reference](https://www.qemu.org/docs/master/system/monitor.html).
-If `device_add` fails after `drive_add` succeeds, remove the unused backend
-with `drive_del volweights` before retrying.
-
-### Other Linux nodes: LIO fallback
-
-Where the hypervisor cannot set the serial, `c8s volume attach <name> --image
-<path>` can create a local SCSI disk through LIO's loopback target. Run it as
-root **inside the node**, with the ciphertext at that guest path, configfs
-mounted, and the `target_core_mod`, `target_core_file`, and `tcm_loop` modules
-available. `c8s volume detach <name>` removes that disk, leaving the ciphertext
-and key where they are.
-
-**This fallback is unsupported on the C8s node image:** it omits LIO support
-(`CONFIG_TARGET_CORE`) and disables module loading after boot. Release images
-also provide no supported root shell for invoking it. Use the hypervisor
-attachment recipes above for C8s QEMU/KVM nodes.
-
-The serial is a **selector, not a trust input**. The host chooses it and answers
-the query per read. Pointing a pod at the wrong device fails closed: the wrong
-key produces noise — verity refuses it, or nothing will mount it.
-
-### Replacing an image
-
-First stop consuming workloads and let volumed release their mappings.
-For hypervisor-attached disks, disconnect the device and its backing image
-through the hypervisor before replacing the file, then reconnect it with the
-same serial. Shutting down the guest and exiting the QEMU process before
-replacement also releases the backing file; pausing the VM does not.
-`c8s volume detach` only manages LIO disks.
-
-On nodes using the LIO fallback, `attach` hands LIO the file, and the kernel
-resolves the path once. Replace an image with **`detach` → overwrite → `attach`**,
-never in place: a `kubectl cp`,
-or any `mv` into position, leaves a new file at the path while the device keeps
-serving the one the attach opened. `md5sum` on the node then matches the source
-while every read from the pod fails, because they are reading different files.
-`attach` refuses an already-attached volume and says so.
-
-Replacing a mutable volume's image discards what was on it: the new image is a
-fresh filesystem, and the old contents exist only in the old ciphertext. Update
-a mutable volume by writing through the mounted volume, not by rebuilding under
-it.
-
-Because the device is on one node, the pod must be scheduled there; `create`
-emits the matching `nodeSelector`.
-
-## The grant
-
-Release is gated on the workload entry's `secrets` grant, exactly as in
-[`secrets.md`](secrets.md#the-grant):
-
-```json
-"secrets": { "policy": "allow", "read": ["/tenant-a/volumes/weights"] }
-```
-
-**Name the exact path, not a subtree.** `/tenant-a/volumes/**` grants every
-volume beneath it, and the annotation naming which volume to open is
-host-written. `create` prints an exact-path grant for this reason.
-
-`read` only. Writability is a property of the volume, not the grant: a write
-grant says nothing about whether a workload may see the plaintext.
+Three ways present the image to a node, and which ones are open is fixed at VM
+launch. Cold-plug virtio-blk attaches the disk when the VM starts, and is the
+only way to add a virtio-blk device at all: PCI hotplug is compiled out of the
+C8s node image's kernel. Hot-attach `scsi-hd` adds a disk to a running VM, on
+the node image too, but only onto a virtio-scsi controller provisioned at
+launch. Where no hypervisor can set the serial, `c8s volume attach` builds a
+local disk through the kernel's SCSI target subsystem (LIO), which the C8s node
+image leaves out. The commands are in [workloads.md](workloads.md).
 
 ## The mount policy
 
-Every container in the entry also needs a `mounts` policy admitting what the
-webhook injects, exactly as in
-[`secrets.md`](secrets.md#the-mount-policy). A grant requires `exact` (or
-`deny`), so for a volume consumer the rules name each opened volume at
-`<volume-dir>/<NAME>`, which classes as a `data` mount. The credential volume
-is mounted into the injected containers alone, so no rule names it:
+A volume consumer's workload entry — the allowlist entry naming the images the
+pod may run — needs a `secrets` grant for the key's path and a mount rule for
+the opened volume. A grant requires every container's mount policy to be `exact`
+or `deny`: `exact` lists each mount the container may have, by destination and
+kind, and `deny` admits none. So a consumer carries one `data` rule per volume
+at `<volume-dir>/<NAME>`, by default `/mnt/c8s-data/c8s-volumes/<NAME>` and
+otherwise where `confidential.ai/c8s-volume-dir` points inside `/mnt/c8s-data/`,
+while a container that mounts nothing carries `deny`. Grant the exact path, not
+a subtree: the annotation naming which volume to open is host-written.
 
-```json
-"mounts": {"policy": "exact", "rules": [
-  {"destination": "/mnt/c8s-data/c8s-volumes/weights", "kind": "data"}
-]}
-```
+## Opening a volume
 
-`create` prints this policy for the volume it built. Add one `data` rule per
-further volume, and `{"destination": "/run/c8s/secrets", "kind": "emptyDir"}`
-if the pod also requests secrets.
+A pod names its volumes in `confidential.ai/c8s-volumes`, as `NAME=/store/path`
+pairs. The webhook injects the `c8s-volume` sidecar and a per-volume `emptyDir`
+the node's mount propagates into. The sidecar fetches the key over the attested
+secrets flow and posts it to volumed, the node agent, which opens the device and
+mounts it into that pod: read-only erofs under dm-verity, or read-write ext4.
 
-## Consuming a volume
+Three things decide whether a mount happens. CDS releases the blob to the pod's
+sandbox, on the checks in [secrets.md](secrets.md). volumed mounts into the
+calling pod's directory and no other: it takes the caller's identity from the
+kernel, by resolving the connecting process's cgroup, so a caller cannot name
+another pod and have the plaintext mounted there. And the device opens only if
+the key fits and, for an immutable volume, the root hash matches.
 
-A pod names its volumes in an annotation:
+So the volume appears after the workload starts, on the same gate as a secret.
+If one is already open under the pod, a second request must present the same
+key, mode, and root hash. Without that check the volume's name alone would open
+it, and the name is a label in an annotation the host writes.
 
-```yaml
-annotations:
-  confidential.ai/cw: llama-infer
-  confidential.ai/c8s-volumes: "weights=/tenant-a/volumes/weights"
-```
+One writer per device: two read-write mounts of one device corrupt the
+filesystem, so volumed refuses a device carrying a mutable mount, or a mutable
+open on one carrying any mount. Give a mutable consumer one replica or a
+`Recreate` strategy; immutable volumes share freely.
 
-Each entry is `NAME=/store/path`. `NAME` selects the node's device by its
-`c8s-vol-<NAME>` serial and names the directory the plaintext appears in under
-the volume dir, `/mnt/c8s-data/c8s-volumes` by default — above,
-`/mnt/c8s-data/c8s-volumes/weights`. `NAME` must be a DNS-1123 label of at most
-12 characters, because the serial holds no more. The annotation is the
-same for both modes; whether the plaintext is writable comes from the volume's
-key blob, not from the pod. Flipping the mode in a blob gets nothing: an
-immutable image is erofs and fails to mount as ext4, and a mutable image has
-no hash tree for verity to anchor.
+On a node running the C8s node image, volumed runs as the host service
+`volumed.service`, because the image fixes the paths it needs. Everywhere else
+it is a chart DaemonSet, off by default because it is privileged, with `hostPID`
+and a writable kubelet-directory bind; `--volumes` on `c8s install` turns it on.
 
-To mount elsewhere, set `confidential.ai/c8s-volume-dir` and change each
-volume's `data` rule destination to match. The webhook refuses a volume dir
-outside `/mnt/c8s-data/`, the only place a `data` rule can pin, and one inside
-`/mnt/c8s-data/c8s-reload-watch`.
+### Teardown
 
-The webhook injects a `c8s-volume` sidecar and, per volume, an `emptyDir` with
-`mountPropagation: HostToContainer`. The sidecar fetches the key over the
-attested `/secrets` flow and posts `{name, blob}` to `c8s volumed`, which opens
-the device and mounts it into that pod's `emptyDir` — read-only erofs for an
-immutable volume, read-write ext4 for a mutable one.
-
-**One writer per device.** Two read-write mounts of one device corrupt the
-filesystem, so the daemon refuses to open a device that already has a mutable
-mount (or to open mutable one that has any mount) and the sidecar surfaces the
-refusal. Schedule mutable consumers so only one pod opens a device at a time:
-one replica, or a `Recreate` strategy — a rolling update of a single-device
-workload briefly runs two pods against it. Immutable volumes share a device
-freely, as they always have.
-
-Volumed runs as a privileged DaemonSet on every node. The sidecar reaches it
-via a unix socket in the inventory's socket directory, and it mounts volumes
-into the pod's kubelet directory. The `emptyDir` medium is the default because
-volumed resolves the mount point with `RESOLVE_NO_XDEV`.
-
-The node-CVM DaemonSet is **off by default**: it runs privileged, with `hostPID`
-and a writable bind of the kubelet directory. Turn it on with
-`c8s install --volumes` where volumes are served, or `volumed.enabled=true` for a
-chart consumer. A measured node image instead runs volumed as the host service
-`volumed.service`, because it fixes the kubelet root, the cgroup layout and the
-inventory socket directory; the chart refuses the DaemonSet on a baked node. A pod requesting a volume without the node inventory socket
-configured is refused at admission rather than left waiting on a mount that
-can never land.
-
-What decides whether a mount happens, in order:
-
-1. CDS releases the blob to the pod's sandbox — verified mesh leaf, single-use
-   challenge, inventory-signed sandbox token, whole-container-set match against
-   one workload entry, grant covers the path.
-2. The daemon mounts into **the calling pod's directory and no other**. The pod
-   comes from the caller's cgroup via kernel peer credentials; the request has no
-   field naming it, and the mount target is built from the resolved UID.
-3. The device opens only if the key is right — and, for an immutable volume,
-   the verity root hash matches.
-
-A request naming a volume already open under that pod must present the same
-key, mode, and root hash. Without that the volume *name* — a label in a
-host-written annotation — would be the credential.
-
-The volume appears **after the workload starts**, because release is gated on
-the whole container set having been admitted. A consumer must wait for it rather
-than read it at startup.
-
-The key must already be in the store. Unlike a secret — where the first pod to
-ask is the one that defines the value — `get-volume` only ever reads, so a pod
-scheduled before `c8s volume create` has run keeps retrying until the key is
-there.
-
-Retries back off from `--retry-interval` (5s) to 30s and, by default, have no
-limit (`--attempts 0`): the sidecar cannot see when the main containers exist,
-and a multi-GB image pull can hold them back for tens of minutes. Each refused
-attempt is logged with its likely reason, at WARN once the sidecar has waited
-10 minutes. `--attempts N` sets a limit; because the waits back off, N attempts
-last longer than N x `--retry-interval` (60 attempts last about 28 minutes).
-
-Teardown is the sidecar's last act. Kubelet terminates sidecars only after the
-workload's containers have exited, so the close it posts lands while nothing
-holds the mount — and before kubelet's own emptyDir cleanup reaches the
-directory, which would otherwise delete every file straight through a live
-read-write mount. The cgroup reaper backstops pods that die without that
-graceful stop — a crashed sidecar, a force delete, a hard eviction — but it
-collects the mappings, not the data: only a graceful termination closes the
-volume before kubelet's cleanup can reach it.
+Releasing the volumes is the sidecar's last act: the kubelet stops sidecars only
+after the workload's containers exit, so the close lands while nothing holds the
+mount and before the kubelet's `emptyDir` cleanup could delete files through a
+live read-write mount. A cgroup reaper collects after pods that die without it.
 
 ### Possession of the blob is the authorization
 
-The daemon does not repeat CDS's release decision. It resolves who is calling
-only to decide where to mount, and checks nothing about what that caller is
-entitled to — any pod that reaches it presenting a well-formed blob has that
-volume opened into its own directory.
-
-What makes that sound is that the daemon's reach is confined to one tenant:
-node-CVM rests on the node being single-tenant. Every pod on it belongs to the
-same tenant, so a blob one of them can obtain is one they are all entitled to.
-
-A node shared between tenants breaks this assumption and needs a daemon-side check
-restored. That needs the caller's *sandbox*, which the node daemon cannot
-resolve for itself — the inventory's socket answers only for the process asking
-it — so the sandbox would have to arrive as an inventory-signed token bound to a
-nonce the daemon issued, because such a token is otherwise transferable between
-pods.
+volumed does not repeat CDS's release decision. It resolves who is calling only
+to decide where to mount: any pod reaching its socket with a well-formed blob
+has that volume opened into its own directory. That holds only while the
+daemon's reach is one tenant's — the node is the confidential VM, and every pod
+on it shares that boundary, so a blob one of them can obtain is one they are all
+entitled to. Run volume workloads on single-tenant nodes.
 
 ## Uninstalling, and what is left behind
 
 `c8s uninstall` refuses while a pod holds a volume, because volumed is the only
-thing that unmaps one. Scale those workloads to zero and let volumed tear the
-volumes down before uninstalling.
+thing that unmaps one. Scale those workloads to zero first. `--force` proceeds
+and names the pods it passed: their mappings stay open, since the chart's
+pre-delete hook cannot close a device a live mount namespace references, and an
+open mapping holds its backing disk open against the next install.
 
-`--force` proceeds and names the pods it is proceeding past. Their mappings
-stay: the chart's pre-delete hook unmounts on the host, but a running consumer
-holds the device open through its own mount namespace, so the close fails and
-the hook says which names it could not close. A mapping left open holds the
-backing disk open, so a volume it covers cannot be reopened.
+No shell on the node is needed: volumed sweeps the C8s mappings it finds at
+startup, so reinstalling reaps what an uninstall left; a reboot clears them.
 
-Nothing needs a shell on the node to clear it. volumed sweeps the C8s mappings
-it finds at startup, so **reinstalling C8s reaps whatever an uninstall left** —
-and the kernel refuses to close a mapping something still has mounted, so the
-sweep cannot take a volume from a workload that is still using it. A mapping
-still held after a reinstall means a pod is still holding it: delete the pod
-and volumed's reaper closes it within a sweep interval.
-
-Rebooting or replacing the node clears them too — device-mapper state does not
-survive a reboot.
-
-**On nodes using the LIO fallback, a leftover backstore is separate.**
-`c8s volume attach` is operator-driven and outside the release lifecycle, but
-`c8s uninstall`'s host sweep detaches the disks it built, so none outlives the
-release still serving its image and refusing the next attach of that name.
-That holds for releases installed from a chart carrying the step; for an
-older release the uninstall says so, and the disks need
-`c8s volume detach <name>`. The sweep leaves a disk that is still in use — held
-by a mapping the uninstall could not close, mounted, or swap — and names it. The two look alike on the node and
-are told apart by what lists them: a leaked mapping shows in `dmsetup ls` as
-`c8s-crypt-`/`c8s-verity-` names, an attached backstore in
-`/sys/kernel/config/target/core/fileio_0/`. Once the mapping is gone, remove
-the backstore with `c8s volume detach <name>`. A bare `helm uninstall` runs no
-sweep; `c8s uninstall --host-sweep-only` runs it afterwards.
-
-## What this defends
-
-An immutable volume:
-
-| Threat | |
-|---|---|
-| Host reads the volume at rest | prevented — AES-XTS, key never leaves the TEE |
-| Host tampers with the ciphertext | detected — dm-verity fails the affected read |
-| Host rolls the volume back | detected — the root hash covers the whole plaintext |
-| Host swaps in a different device | fails closed — wrong key, or wrong root hash |
-| A pod outside the grant reads it | refused — no grant, no key |
-| An allowlisted but different workload reads it | refused — whole-entry match |
-
-Tamper detection is **lazy**: `veritysetup open` checks the top of the tree, and
-a modified data block surfaces as an I/O error when it is read, not at open.
-
-A mutable volume:
-
-| Threat | |
-|---|---|
-| Host reads the volume at rest | prevented — AES-XTS, key never leaves the TEE |
-| Host tampers with the ciphertext | **not detected** — a flipped bit returns wrong data, a failed mount, or a read-only remount |
-| Host rolls the volume back | **not detected** — an earlier state is indistinguishable from the current one |
-| Host swaps in a different device | fails closed — wrong key decrypts to noise that will not mount |
-| A pod outside the grant reads it | refused — no grant, no key |
-| An allowlisted but different workload reads it | refused — whole-entry match |
-
-Per-sector authentication (AEAD) would restore tamper and rollback detection
-for mutable volumes and is planned for a future release; for now they are out
-of scope by decision, not by oversight.
-
-### What it does not
-
-- **Any pod on the node can open a volume whose blob it holds.** The daemon
-  authorizes on possession, not entitlement — see [Possession of the blob is the
-  authorization](#possession-of-the-blob-is-the-authorization). The blob still
-  only comes from CDS, and only to a pod the grant covers. For a mutable
-  volume, opening means writing too.
-- **Anyone with pod create or exec RBAC in the workload's namespace can read a
-  mounted volume.** This is a Kubernetes RBAC boundary, not an attested one —
-  the API server decides who holds it, and the control plane is untrusted in
-  every shape.
-- **Volume integrity is rooted in the operator keys CDS pins**, and CDS's
-  arguments are host-supplied. A host that restarts CDS under its own operator
-  key can write a matching grant and blob. This is detection rather than
-  prevention; the detection is
-  `c8s cds verify --operator-keys`, and running it continuously is a
-  precondition for trusting a volume.
-- **Access patterns are visible.** Which sectors are read, and when, leaks
-  structure. AES-XTS is deterministic, so for a mutable volume the host can
-  also tell when a sector returns to a value it has seen before — the standard
-  FDE trade-off (BitLocker and FileVault share it), with no IV space per
-  sector write to do better with.
-- **Availability.** The host can withhold or destroy the device.
-- **Whatever the workload does with the plaintext** once it has it.
+A disk built by `c8s volume attach` is separate state. The host sweep, on by
+default, removes the idle ones and names any still held; a release whose pinned
+sweep predates that step leaves them and the uninstall says so, and
+`c8s volume detach <name>` then removes one by hand.

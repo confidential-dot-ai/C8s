@@ -26,6 +26,9 @@ containers:
       - --webhook-service-name={{ include "c8s.operatorName" . }}
       - --webhook-service-namespace={{ .Release.Namespace }}
       - --attestation-api-url={{ include "c8s.sidecarAttestationApiURL" . }}
+      {{- if not .Values.node.baked }}
+      - --exclude-namespaces=local-path-storage
+      {{- end }}
       {{- range .Values.webhook.extraExcluded }}
       - --exclude-namespaces={{ . }}
       {{- end }}
