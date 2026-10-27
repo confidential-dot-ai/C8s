@@ -534,6 +534,74 @@ filesystem once a value is inside it — so a grant names store paths only. An
 install still setting the per-container `paths` field needs
 [`secrets.md`](secrets.md#upgrading).
 
+## Declared exits (`egress`)
+
+A workload in a mesh pod sends TCP out of the pod only through its mesh
+endpoint or to the cluster resolver; the pod's injected credential clients
+reach only the CDS they are bound to. An entry may declare
+`egress`: up to 8 exits, each a CIDR range and one TCP port, that a pod this
+entry matches reaches directly, uncaptured.
+
+```json
+"otel-collector": {
+  "containers": [{"digest": "sha256:…", "command": {"policy": "exact", "argv": ["/otelcol"]}, "args": {"policy": "deny"}}],
+  "egress": [{"cidr": "203.0.113.7/32", "port": 443}]
+}
+```
+
+- The protocol is always TCP. A `cidr` must have no host bits set, and an
+  exit is listed once. The exits are part of the signed canonical document,
+  so they are visible to anyone reading `GET /allowlist`. An entry without
+  exits carries no `egress` key, so its bytes and digest do not change.
+- An entry with exits must pin its launch exactly as a secrets grant must:
+  every container's `command` and `args` are `exact` or `deny`, and its
+  `mounts` are `deny`, or `exact` without host rules (read-only
+  `nodeRootFile` rules are allowed). CDS refuses an unpinned entry with
+  exits, and a node grants no exit for one it reads from a served document.
+- A single address (`/32`, `/128`) is the expected exit, for example one
+  relay the operator controls. A range may be no broader than `/16` (IPv4)
+  or `/48` (IPv6).
+- Write-time validation also refuses ranges that are not unicast hosts: `/0`,
+  loopback, link-local, multicast, reserved and broadcast, unspecified, and
+  the IPv6 forms that stand for or embed IPv4 addresses (IPv4-compatible,
+  IPv4-mapped, SIIT, NAT64 including `64:ff9b:1::/48`, Teredo, 6to4). The
+  range is stored in its canonical text (RFC 5952 for IPv6: lower case, zeros
+  compressed).
+- An exit has exactly the members `cidr` (a string) and `port` (a number).
+  A write with any other member or type is refused. A node reading a served
+  document drops such an `egress` list, so the entry grants no exit, and
+  keeps the rest of the document.
+- The node decides a pod's exits from the set of its workload containers (the
+  injected mesh and credential containers are left out), so the outcome does
+  not depend on the order they start in. An entry with exits claims a pod once
+  the pod runs all of that entry's main containers and no other entry admits
+  every container of the pod that this entry admits. A claimed pod gets the
+  entry's exits and must run that entry alone: a container the entry does not
+  declare is refused whenever it starts, before or after the entry's own. A
+  claimed pod with nothing foreign is the entry's unique match, by the same
+  rule secret release uses.
+- If another entry also admits an exit entry's containers (for example the
+  same image in a "collector + sidecar" entry), or the entry is not pinned,
+  that pod is never claimed: it gets no exits and nothing is refused. The
+  node logs it.
+- The exits are fixed for the pod's life, and they follow the allowlist
+  version the node had pulled when the pod was claimed (logged with the
+  grant). A changed or removed exit applies when the pod is recreated.
+- The node refuses an exit that overlaps the cluster's pod or Service ranges
+  from its measured mesh policy, contains the node's own address, the
+  resolver, CDS or any other address a platform role is bound to (on any
+  port), or a loopback, link-local or multicast range. A node that cannot name
+  its own address, or a cluster range of the exit's address family (an IPv6
+  exit needs an IPv6 cluster range), grants no exit. The container whose
+  start would have granted the exit is refused with the reason. These checks
+  apply in audit mode too.
+- An exit is a way out of the TEE for whatever the workload sends. It is not
+  inspected: whether its payload is acceptable (for example, telemetry with
+  no customer content, sent to a relay the operator controls) is for the
+  operator to decide and for relying parties to weigh.
+- Exits open when the pod is claimed, so an init container that runs before
+  every main container exists cannot use them.
+
 ## Host privilege
 
 The allowlist bounds which bytes run. It says nothing about what those bytes

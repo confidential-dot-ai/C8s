@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"slices"
 	"sync"
 
@@ -23,6 +24,10 @@ type meshGate struct {
 	logger *slog.Logger
 	mu     sync.Mutex
 	pods   map[string]*protectedPod
+	// nodeAddress is this node's own address, which no exit may reach.
+	nodeAddress func() (netip.Addr, error)
+	// extend adds granted exits to a pod's live ruleset.
+	extend func(podNamespace, meshPolicy, string, []exit) error
 }
 
 // protectedPod is one protected sandbox: a refusal holds for its life, and
@@ -34,6 +39,20 @@ type protectedPod struct {
 	workloadCreated bool
 	kubeNamespace   string
 	roleLaunches    []roleLaunch
+	// exitEntry is the allowlist entry whose exits the pod was granted, and
+	// exits those exits: fixed for the pod's life once granted.
+	exitEntry string
+	exits     []exit
+	// starts serializes a workload container's exit decision with its record
+	// in the inventory, so two starts cannot both decide on a set that lacks
+	// the other.
+	starts sync.Mutex
+}
+
+// exit is one range and TCP port a pod reaches uncaptured.
+type exit struct {
+	Range netip.Prefix
+	Port  uint16
 }
 
 // roleLaunch is a platform-role container this gate admitted in a sandbox: a
@@ -77,6 +96,10 @@ func newMeshGate(policy meshPolicy, logger *slog.Logger) *meshGate {
 		policy: policy,
 		logger: logger,
 		pods:   map[string]*protectedPod{},
+		nodeAddress: func() (netip.Addr, error) {
+			return netip.Addr{}, errors.New("this node's own address is unknown")
+		},
+		extend: extendPodRuleset,
 	}
 }
 
@@ -184,11 +207,148 @@ func (g *meshGate) admit(pod *api.PodSandbox, ctr *api.Container, launch gatedCo
 	if err != nil {
 		return fmt.Errorf("mesh gate: container %s of pod %s/%s: %w", ctr.GetName(), pod.GetNamespace(), pod.GetName(), err)
 	}
-	if err := verifyPodRuleset(netns, g.policy, kubeNamespace); err != nil {
+	if err := verifyPodRuleset(netns, g.policy, kubeNamespace, g.grantedExits(pod.GetId())); err != nil {
 		return fmt.Errorf("mesh gate: container %s of pod %s/%s: %w", ctr.GetName(), pod.GetNamespace(), pod.GetName(), err)
 	}
 	g.noteLaunched(pod.GetId(), launch)
 	return nil
+}
+
+// grantedExits are the exits a protected sandbox was granted. A grant happens
+// once and only adds, so a ruleset verified with what this reads is the pod's.
+func (g *meshGate) grantedExits(sandboxID string) []exit {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if state := g.pods[sandboxID]; state != nil {
+		return state.exits
+	}
+	return nil
+}
+
+// lockStarts holds a protected sandbox's container starts one at a time,
+// from the exit decision to the inventory record. A sandbox off the record
+// needs no lock: it holds no exit, and the startup gate refuses it.
+func (g *meshGate) lockStarts(pod *api.PodSandbox) func() {
+	g.mu.Lock()
+	state := g.pods[pod.GetId()]
+	g.mu.Unlock()
+	if state == nil {
+		return func() {}
+	}
+	state.starts.Lock()
+	return state.starts.Unlock
+}
+
+// bindEntry applies the exit decision for a workload container about to start
+// in a protected pod (decideExits): it refuses the container, grants the
+// entry's exits, or holds a pod with exits to the entry they came from. The
+// exits are fixed for the pod's life: an allowlist change applies to the next
+// pod.
+func (g *meshGate) bindEntry(pod *api.PodSandbox, decision exitDecision) error {
+	if !g.hosts(pod) {
+		return nil
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	// A sandbox off the record or refused is the startup gate's to refuse; it
+	// holds no exit to grant or keep.
+	state := g.pods[pod.GetId()]
+	if state == nil || state.refusal != nil {
+		return nil
+	}
+	if decision.undecided != nil {
+		if state.exitEntry != "" {
+			return fmt.Errorf("the pod holds the exits of allowlist entry %q, and whether it still matches that entry cannot be read: %w", state.exitEntry, decision.undecided)
+		}
+		g.logger.Warn("no exits granted: the pod's workload match cannot be read",
+			"namespace", pod.GetNamespace(), "pod", pod.GetName(), "error", decision.undecided)
+		return nil
+	}
+	if decision.refusal != nil {
+		return decision.refusal
+	}
+	if state.exitEntry != "" {
+		if decision.entry != state.exitEntry {
+			return fmt.Errorf("the pod holds the exits of allowlist entry %q, and with this container it no longer matches that entry", state.exitEntry)
+		}
+		return nil
+	}
+	if decision.entry == "" {
+		if len(decision.shadowed) > 0 {
+			g.logger.Warn("no exits granted: each allowlist entry with exits is unpinned or shares its containers with another entry",
+				"namespace", pod.GetNamespace(), "pod", pod.GetName(), "entries", decision.shadowed, "allowlist_version", decision.version)
+		}
+		return nil
+	}
+	if err := g.requireOffLimits(decision.exits); err != nil {
+		return fmt.Errorf("allowlist entry %q: %w", decision.entry, err)
+	}
+	if err := g.extend(state.netns, g.policy, state.kubeNamespace, decision.exits); err != nil {
+		return fmt.Errorf("grant the exits of allowlist entry %q: %w", decision.entry, err)
+	}
+	state.exitEntry, state.exits = decision.entry, decision.exits
+	g.logger.Info("granted the pod its allowlist entry's exits",
+		"namespace", pod.GetNamespace(), "pod", pod.GetName(), "entry", decision.entry,
+		"exits", decision.exits, "allowlist_version", decision.version)
+	return nil
+}
+
+// requireOffLimits refuses an exit into this cluster or onto this node: a
+// connection to a member leaves the pod through the mesh or not at all, and
+// the node's own services, its CDS and every service a platform role is bound
+// to are reached under their own rules or not at all, on any port.
+func (g *meshGate) requireOffLimits(exits []exit) error {
+	if err := g.policy.requireOutsideCluster(exits); err != nil {
+		return err
+	}
+	node, err := g.nodeAddress()
+	if err != nil {
+		return fmt.Errorf("no exit can be shown to stay off this node: %w", err)
+	}
+	offLimits := []netip.Addr{node, g.policy.Resolver}
+	for _, role := range g.policy.Roles {
+		for _, dst := range role.Destinations {
+			offLimits = append(offLimits, dst.Addr())
+		}
+	}
+	for _, e := range exits {
+		for _, addr := range offLimits {
+			if addr.IsValid() && e.Range.Contains(addr) {
+				return fmt.Errorf("exit %s port %d reaches %s, an address of this node or of a service a platform role is bound to", e.Range, e.Port, addr)
+			}
+		}
+	}
+	return nil
+}
+
+// requireOutsideCluster refuses an exit into this cluster's pod or Service
+// ranges: a connection to a member leaves the pod through the mesh or not at
+// all. A policy naming no range of an exit's address family cannot show that
+// exit stays outside them.
+func (p meshPolicy) requireOutsideCluster(exits []exit) error {
+	for _, e := range exits {
+		family := false
+		for _, in := range p.ClusterRanges {
+			if in.Addr().Is4() != e.Range.Addr().Is4() {
+				continue
+			}
+			family = true
+			if e.Range.Overlaps(in) {
+				return fmt.Errorf("exit %s port %d overlaps the cluster range %s", e.Range, e.Port, in)
+			}
+		}
+		if !family {
+			return fmt.Errorf("trusted mesh policy names no %s cluster range, so exit %s cannot be shown to stay outside the cluster", ipFamily(e.Range), e.Range)
+		}
+	}
+	return nil
+}
+
+func ipFamily(p netip.Prefix) string {
+	if p.Addr().Is4() {
+		return "IPv4"
+	}
+	return "IPv6"
 }
 
 // admissible answers from the enforcer's record, and returns the namespace
@@ -244,7 +404,7 @@ func (g *meshGate) verifyMemberRuleset(sandboxID string) error {
 	if err != nil {
 		return err
 	}
-	return verifyPodRuleset(netns, g.policy, kubeNamespace)
+	return verifyPodRuleset(netns, g.policy, kubeNamespace, g.grantedExits(sandboxID))
 }
 
 // memberNamespace is the network namespace of a protected sandbox whose

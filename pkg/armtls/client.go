@@ -10,9 +10,8 @@ import (
 
 // NewVerifyingHTTPClient returns an http.Client whose TLS handshake
 // verifies the peer's armTLS attestation extension against the supplied
-// pins (launch-measurement reference values plus any TDX RTMR pins). Zero pins
-// falls back to TOFU on the attestation extension — UNSAFE outside
-// development; the caller is expected to warn.
+// pins (launch-measurement reference values plus any TDX RTMR pins), which
+// must name the peer's guest ([ErrUnpinned]).
 //
 // attestationApiURL is the local attestation-api whose /verify endpoint
 // performs all peer evidence verification. Required: every handshake

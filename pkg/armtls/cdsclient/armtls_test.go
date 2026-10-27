@@ -167,3 +167,27 @@ func TestProviderARMTLSRejectsCDSWithUnpinnedMeasurement(t *testing.T) {
 		t.Fatalf("CDS handler reached %d time(s); the measurement pin must fail the handshake first", got)
 	}
 }
+
+// TestNewClientRefusesUnpinnedCDS holds the default transport to a policy that
+// names no guest: every handshake fails with ErrUnpinned before any request.
+func TestNewClientRefusesUnpinnedCDS(t *testing.T) {
+	var reached atomic.Int64
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		reached.Add(1)
+	}))
+	t.Cleanup(ts.Close)
+
+	c := NewClient(&Config{
+		CDSURL:            ts.URL,
+		CDSCAURL:          ts.URL,
+		AttestationApiURL: "http://127.0.0.1:9",
+		TEEType:           armtls.TEETypeSEVSNP,
+	})
+	_, err := c.fetchCACertPEM(context.Background())
+	if !errors.Is(err, armtls.ErrUnpinned) {
+		t.Fatalf("fetchCACertPEM error = %v, want ErrUnpinned", err)
+	}
+	if got := reached.Load(); got != 0 {
+		t.Fatalf("CDS handler reached %d time(s); the handshake must fail first", got)
+	}
+}

@@ -662,11 +662,8 @@ NodePort over loopback.
 containerd sets `required_plugins`, so a plugin exit takes container creation
 down node-wide, whereas a missing digests endpoint only degrades issuance.
 
-**Unpinned measurements do not disable the flow.** With an empty measurement
-allowlist both ends still require a hardware-attested armTLS peer but pin no
-measurement — any TEE can answer as the inventory, and any TEE that can reach
-the port can read what a node runs. Both log it as UNSAFE outside development;
-the allowlist gate still runs. A CDS with no `--armtls-platform` has no armTLS
+**Both ends require pins.** Each end refuses an empty pin set
+(`armtls.ErrUnpinned`), and CDS refuses to start without one. A CDS with no `--armtls-platform` has no armTLS
 identity to present, makes no callback, and **refuses** any request carrying a
 sandbox token. A `--measurements` entry that is not hex fails CDS startup rather
 than silently unpinning the callback; the same typo fails the plugin's

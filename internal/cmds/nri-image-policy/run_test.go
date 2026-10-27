@@ -26,6 +26,7 @@ import (
 	ctrdresolver "github.com/confidential-dot-ai/c8s/internal/containerd"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
@@ -306,6 +307,8 @@ allowlist:
             image: image-a
             command: {policy: any}
             args: {policy: any}
+  pull:
+    cds_measurements: ["%s"]
 policy:
   mode: fail-closed
   enforce_existing: false
@@ -314,7 +317,7 @@ workload_claims:
   cds_node_port: 30808
 logging:
   level: error
-`+meshYAML, dir, dir, pushDigestA, dir)
+`+meshYAML, dir, dir, pushDigestA, strings.Repeat("ab", 48), dir)
 	err := runWithDeadline(t, 10*time.Second, []string{"-config", writeConfigYAML(t, cfgYAML)})
 	if err == nil || !strings.Contains(err.Error(), "start admission inventory") {
 		t.Fatalf("err = %v, want an admission-inventory start failure", err)
@@ -492,15 +495,9 @@ func TestAllowlistPullHTTPClient_ValidMeasurements(t *testing.T) {
 	}
 }
 
-// The accept-any-measurement warning is a security signal: it must fire
-// exactly when no measurement is pinned.
-func TestAllowlistPullHTTPClient_WarnsOnlyWithoutPins(t *testing.T) {
-	const warning = "accepts any armTLS-attested CDS measurement"
-	var buf bytes.Buffer
-	orig := slog.Default()
-	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
-	defer slog.SetDefault(orig)
-
+// The plugin pulls its allowlist from a pinned CDS: with no measurement the
+// client is refused rather than built against any attested peer.
+func TestAllowlistPullHTTPClient_RefusesWithoutPins(t *testing.T) {
 	if _, err := allowlistPullHTTPClient(pullConfig{
 		CDSMeasurements:   []string{strings.Repeat("ab", 48)},
 		AttestationApiURL: "http://127.0.0.1:30840",
@@ -508,19 +505,13 @@ func TestAllowlistPullHTTPClient_WarnsOnlyWithoutPins(t *testing.T) {
 	}, "sev-snp"); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(buf.String(), warning) {
-		t.Fatal("pinned measurements must not warn about accepting any measurement")
-	}
 
-	buf.Reset()
-	if _, err := allowlistPullHTTPClient(pullConfig{
+	_, err := allowlistPullHTTPClient(pullConfig{
 		AttestationApiURL: "http://127.0.0.1:30840",
 		Timeout:           time.Second,
-	}, "sev-snp"); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(buf.String(), warning) {
-		t.Fatal("missing warning when no measurements are pinned")
+	}, "sev-snp")
+	if !errors.Is(err, armtls.ErrUnpinned) {
+		t.Fatalf("err = %v, want errors.Is armtls.ErrUnpinned", err)
 	}
 }
 
