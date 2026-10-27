@@ -49,7 +49,6 @@ type routingConfig struct {
 	imagePolicyFile  string
 	launchKeysFile   string // empty means nodeOperatorKeysFile; tests point it elsewhere
 	operatorKeysFile string
-	allowUnpinnedCDS bool
 	pollInterval     time.Duration
 	host             string
 	port             int
@@ -61,11 +60,10 @@ type routingConfig struct {
 
 func bindRoutingFlags(f *pflag.FlagSet, cfg *routingConfig) {
 	f.StringVar(&cfg.cdsURL, "cds-url", "", "CDS base URL (https, armTLS-verified) to poll the signed route manifest from; required unless this node's enforcer mounts the endpoint")
-	f.StringSliceVar(&cfg.cdsMeasurements, "cds-measurements", nil, "allowed CDS SHA-384 launch measurement(s), repeatable/comma-separated; empty accepts any attested CDS (unsafe)")
+	f.StringSliceVar(&cfg.cdsMeasurements, "cds-measurements", nil, "allowed CDS SHA-384 launch measurement(s), repeatable/comma-separated; required unless --image-policy-file pins CDS")
 	f.StringSliceVar(&cfg.cdsRTMRs, "cds-rtmrs", nil, "TDX RTMR pin(s) <index>=<sha384-hex> CDS must additionally satisfy, repeatable/comma-separated")
 	cmdsutil.BindImagePolicyFlags(f, &cfg.imagePolicyFile, nil, "pins the CDS endpoint; excludes --cds-measurements and --cds-rtmrs")
 	f.StringVar(&cfg.operatorKeysFile, "operator-keys-file", "", "PEM operator public keys a route manifest must be signed under, used when the node's launch configuration carries none; unset, the keys come from the verified CDS's GET /operator-keys")
-	f.BoolVar(&cfg.allowUnpinnedCDS, "allow-unpinned-cds", false, "development only: route with no CDS pin and the operator keys from that CDS, so any attested CDS chooses both the keys and the manifest")
 	f.DurationVar(&cfg.pollInterval, "routes-poll-interval", 30*time.Second, "how often to poll the CDS for the route manifest")
 	f.StringVar(&cfg.host, "routing-host", "127.0.0.1", "routing listener host (loopback: nginx proxies application requests to it)")
 	f.IntVar(&cfg.port, "routing-port", 0, "routing listener port; 0 disables the listener (the tunnel still routes by the applied manifest)")
@@ -137,10 +135,6 @@ func newRoutingEngine(cfg config, logger *slog.Logger) (*routingEngine, error) {
 	if err != nil {
 		return nil, err
 	}
-	cdsPinned := len(policy.Measurements) > 0 || len(policy.Images) > 0
-	if !cdsPinned {
-		logger.Warn("no CDS measurements pinned; accepting any armTLS-attested CDS as the route manifest source (unsafe outside development)")
-	}
 	httpClient, err := armtls.NewVerifyingHTTPClient(armtls.Pins(policy), cfg.attestationAPIURL) // A1
 	if err != nil {
 		return nil, fmt.Errorf("CDS armTLS client: %w", err)
@@ -149,7 +143,7 @@ func newRoutingEngine(cfg config, logger *slog.Logger) (*routingEngine, error) {
 	if err != nil {
 		return nil, fmt.Errorf("--cds-url: %w", err)
 	}
-	keys, err := operatorKeySource(r, cdsPinned, cds, logger)
+	keys, err := operatorKeySource(r, cds, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -270,9 +264,8 @@ func memberCredentials() (*routing.MeshIdentity, error) {
 
 // operatorKeySource implements W6: the node's signed launch configuration
 // when it carries the keys, else --operator-keys-file, else the verified CDS.
-// A set --operator-keys-file must exist. Keys from an unpinned CDS need
-// --allow-unpinned-cds: that CDS could be any attested TEE.
-func operatorKeySource(r routingConfig, cdsPinned bool, cds *routing.CDSClient, logger *slog.Logger) (routing.KeySource, error) {
+// A set --operator-keys-file must exist.
+func operatorKeySource(r routingConfig, cds *routing.CDSClient, logger *slog.Logger) (routing.KeySource, error) {
 	if r.launchKeysFile == "" {
 		r.launchKeysFile = nodeOperatorKeysFile
 	}
@@ -292,9 +285,6 @@ func operatorKeySource(r routingConfig, cdsPinned bool, cds *routing.CDSClient, 
 		}
 		logger.Info("route manifest operator keys from file", "path", r.operatorKeysFile)
 		return routing.KeyFile(r.operatorKeysFile), nil
-	}
-	if !cdsPinned && !r.allowUnpinnedCDS {
-		return nil, fmt.Errorf("refusing to route: no CDS pin and no operator keys in the launch configuration (%s) or --operator-keys-file, so any attested CDS would supply both the manifest and its keys; pin CDS with --cds-measurements or --image-policy-file, provide --operator-keys-file, or pass --allow-unpinned-cds in development", r.launchKeysFile)
 	}
 	logger.Warn("route manifest operator keys from the CDS (GET /operator-keys): control-plane configuration, so clients detect a substituted key but the router does not prevent it")
 	return cds, nil

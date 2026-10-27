@@ -544,17 +544,11 @@ router.cdsAttestArgs takes (dict "root" $ "expectedWorkload" <name>).
        naming it makes a missing file fatal, else cds.operatorKeys, else
        CDS's GET /operator-keys (route policy W6; docs/operator.md, Route
        manifest). cds-attest prefers the launch configuration whenever it
-       finds it. An unpinned CDS could be any attested TEE, so cds-attest
-       refuses that last source without the opt-in. */ -}}
+       finds it. */ -}}
 {{- if $root.Values.node.baked -}}
 {{- $args = append $args "--operator-keys-file=/run/c8s-node/operator-pubkey" -}}
 {{- else if $root.Values.cds.operatorKeys -}}
 {{- $args = append $args "--operator-keys-file=/mnt/c8s-data/operator-keys/keys.pem" -}}
-{{- else if not (or $root.Values.cds.measurements $root.Values.cds.measurementsConfig) -}}
-{{- if not $v.routing.allowUnpinnedCDS -}}
-{{- fail "VALIDATION_ERROR kind=unpinned_route_source: the router would take its operator keys from an unpinned CDS. Pin CDS with `c8s install --measurements` or `--image-policy-file`, pin the operator keys with `--operator-keys`, or, on a development cluster only, set router.routing.allowUnpinnedCDS=true." -}}
-{{- end -}}
-{{- $args = append $args "--allow-unpinned-cds" -}}
 {{- end -}}
 {{- $args = append $args (printf "--routes-poll-interval=%v" $v.routing.pollInterval) -}}
 {{- $args = append $args "--routing-host=127.0.0.1" -}}

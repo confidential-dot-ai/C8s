@@ -25,7 +25,7 @@ webhook, attestation-api, and CDS.
 
 ```sh
 c8s install --namespace c8s-system --cvm-mode=bare-metal --hardware-platform=sev-snp \
-  --operator-keys operator-pub.pem \
+  --operator-keys operator-pub.pem --measurements abababababababababababababababababababababababababababababababababababababababababababababababab \
   --workload-ref vllm=vllm/deployment/serving:8443 --upstream vllm
 ```
 
@@ -37,9 +37,10 @@ takes a PEM bundle of EC public keys that authorize
 without it the install refuses to proceed. `--force` installs with
 allowlist writes disabled, but CDS then stores no route manifest, so the
 router answers 503 to every application request until you set
-`cds.operatorKeys` and upgrade the release. Such an install also needs
-`--measurements` (or `--image-policy-file`) to pin CDS, or it refuses to
-render. Generate a key pair:
+`cds.operatorKeys` and upgrade the release. Every install needs `--measurements`
+(or `--image-policy-file`) to pin CDS, or it refuses to render; the digest above
+is a placeholder for the launch measurement in your node image's
+`manifest.json`. Generate a key pair:
 
 ```sh
 openssl ecparam -genkey -name prime256v1 -noout -out operator.key
@@ -90,7 +91,7 @@ To install without the advisory CRDs:
 
 ```sh
 c8s install --namespace c8s-system --cvm-mode=bare-metal --hardware-platform=sev-snp \
-  --operator-keys operator-pub.pem --install-crds=false \
+  --operator-keys operator-pub.pem --measurements abababababababababababababababababababababababababababababababababababababababababababababababab --install-crds=false \
   --workload-ref vllm=vllm/deployment/serving:8443 --upstream vllm
 ```
 
@@ -113,7 +114,7 @@ kubectl create secret docker-registry ghcr-pull-secret \
   --docker-password="$GITHUB_TOKEN"
 
 c8s install --namespace c8s-system --cvm-mode=bare-metal --hardware-platform=sev-snp \
-  --operator-keys operator-pub.pem \
+  --operator-keys operator-pub.pem --measurements abababababababababababababababababababababababababababababababababababababababababababababababab \
   --image-pull-secret ghcr-pull-secret \
   --workload-ref vllm=vllm/deployment/serving:8443 --upstream vllm
 ```
@@ -124,7 +125,7 @@ idempotently (re-run it to rotate the credential in place):
 ```sh
 IMAGE_PULL_SECRET=<ghcr-token> NAMESPACE=c8s-system ./scripts/deploy-image-pull-secret.sh
 c8s install --namespace c8s-system --cvm-mode=bare-metal --hardware-platform=sev-snp \
-  --operator-keys operator-pub.pem \
+  --operator-keys operator-pub.pem --measurements abababababababababababababababababababababababababababababababababababababababababababababababab \
   --image-pull-secret ghcr-pull-secret \
   --workload-ref vllm=vllm/deployment/serving:8443 --upstream vllm
 ```
@@ -160,9 +161,9 @@ for the singleton operational guidance. Run this chart inside the intended
 CVM trust boundary; the supported chart path no longer has external CDS
 URL values.
 
-The chart's armTLS handshakes accept any TEE-attested peer unless the
-operator pins `cds.measurements` and `armtlsMesh.measurements` to the
-expected launch digests. Leave these empty only on a trusted Pod network.
+Every armTLS handshake with CDS verifies it against `cds.measurements` (or
+`cds.measurementsConfig`), which `c8s install --measurements` sets: the chart
+refuses to render without one, and CDS refuses to start without one.
 
 ## Workload opt-in
 

@@ -98,6 +98,10 @@ func TestRunRequiresCDSURL(t *testing.T) {
 	}
 }
 
+// testCDSMeasurement is the launch measurement these tests pin the polled CDS
+// to, since armTLS refuses an unpinned endpoint.
+const testCDSMeasurement = "111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111"
+
 // routedRunConfig is a config run accepts with the attestation endpoints off,
 // polling a CDS that cannot be reached.
 func routedRunConfig(t *testing.T, port int) config {
@@ -115,14 +119,14 @@ func routedRunConfig(t *testing.T, port int) config {
 		tunnelIOTimeout:      defaultTunnelIOTimeout,
 		attestOff:            true,
 		routing: routingConfig{
-			cdsURL:           "https://127.0.0.1:9",
-			launchKeysFile:   filepath.Join(t.TempDir(), "absent"),
-			allowUnpinnedCDS: true,
-			pollInterval:     time.Hour,
-			backendTimeout:   time.Hour,
-			host:             "127.0.0.1",
-			reservedPaths:    defaultReservedPaths,
-			tunnelBudget:     quantityFlag{bytes: oneRequestBudget, set: true},
+			cdsURL:          "https://127.0.0.1:9",
+			cdsMeasurements: []string{testCDSMeasurement},
+			launchKeysFile:  filepath.Join(t.TempDir(), "absent"),
+			pollInterval:    time.Hour,
+			backendTimeout:  time.Hour,
+			host:            "127.0.0.1",
+			reservedPaths:   defaultReservedPaths,
+			tunnelBudget:    quantityFlag{bytes: oneRequestBudget, set: true},
 		},
 	}
 }

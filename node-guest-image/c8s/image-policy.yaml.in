@@ -644,15 +644,7 @@ policy:
   # Host privilege outside the node TCB: host namespaces, host bind mounts,
   # devices, CDI injection, OCI hooks and the marks of a privileged container
   # (see docs/allowlist-and-capabilities.md, "Host privilege").
-  #
-  # AUDIT, not enforce, and this is the one thing to flip: C8s's own node-level
-  # components (volumed, armtls-mesh, the attestation-api proxy, router, the
-  # nri-image-policy installer) legitimately use hostPath and hostNetwork, and
-  # they reach this plugin through the CDS-served document rather than through
-  # the base above, so enforcing today would deny them. Resolve their digests
-  # into the measured base the way boot preparation already merges the
-  # chart-derived component seed, then set this to "enforce".
-  sandbox: "audit"
+  sandbox: "enforce"
   label_rules: []
 
 logging:

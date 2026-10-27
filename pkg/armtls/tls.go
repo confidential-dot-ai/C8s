@@ -711,6 +711,9 @@ func NewServerTLSConfig(cfg *ServerConfig) (*tls.Config, *CertManager, error) {
 		}
 		tlsCfg.GetConfigForClient = clientCAsPerHandshake(tlsCfg, clientCAs)
 	case cfg.ClientPolicy != nil:
+		if err := requirePins(cfg.ClientPolicy.Policy); err != nil {
+			return nil, nil, err
+		}
 		tlsCfg.ClientAuth = tls.RequireAnyClientCert
 		tlsCfg.VerifyPeerCertificate = verifyPeerCallback(cfg.ClientPolicy, x509.ExtKeyUsageClientAuth)
 	}
@@ -772,6 +775,9 @@ func NewClientTLSConfig(cfg *ClientConfig) (*tls.Config, *CertManager, error) {
 
 	if cfg.Policy == nil {
 		return nil, nil, fmt.Errorf("armtls: Policy is required: the client verifies the server's evidence against it on every handshake")
+	}
+	if err := requirePins(cfg.Policy.Policy); err != nil {
+		return nil, nil, err
 	}
 
 	tlsCfg := &tls.Config{
