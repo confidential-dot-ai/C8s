@@ -3,7 +3,7 @@
   "builds": {
     "node-image": {
       "confos_ref": "e84b6091f24a5b621ae3e1467762115e44c9b06e",
-      "attestation_rs_ref": "5e6f31cf0f4a90ff347f37f5274437545ef12a7a",
+      "attestation_rs_ref": "c52cd8e3e42b348c6b7391d02168a4b6db467378",
       "mkosi_ref": "4736cd836108a97772142c461c49f1ddb4172348",
       "mkosi_version": "v27"
     }
