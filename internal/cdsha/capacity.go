@@ -201,17 +201,6 @@ func (f *FSM) compressedEstimate(decoded int64) (int64, bool) {
 	return m.compressed + max(0, decoded-m.decoded), true
 }
 
-// admitRaw is admit for an entry that arrived marshalled (a forwarded
-// write, judged by the leader). One that does not decode is left to Apply
-// to refuse.
-func (f *FSM) admitRaw(raw json.RawMessage) error {
-	var e Entry
-	if json.Unmarshal(raw, &e) != nil {
-		return nil
-	}
-	return f.admit(e, len(raw), true)
-}
-
 // countWriter counts the bytes written through it.
 type countWriter struct {
 	w io.Writer

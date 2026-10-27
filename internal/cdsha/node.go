@@ -851,15 +851,24 @@ func (n *Node) handleControl(peer Claims, req controlRequest) controlResponse {
 	if reason := n.fsm.Stuck(); reason != "" {
 		return controlResponse{Member: true, Err: "leader stopped following the log: " + reason}
 	}
+	e, err := forwardedEntry(req.Entry)
+	if err != nil {
+		return controlResponse{Member: true, Err: err.Error()}
+	}
+	// The leader commits the entry it checked, encoded by itself.
+	raw, err := json.Marshal(e)
+	if err != nil {
+		return controlResponse{Member: true, Err: err.Error()}
+	}
 	// The forwarding replica checked the cap against its own copy; the
 	// leader's check is the one that holds for every proposer.
-	if err := n.fsm.admitRaw(req.Entry); err != nil {
+	if err := n.fsm.admit(e, len(raw), true); err != nil {
 		return controlResponse{Member: true, Err: err.Error()}
 	}
 	if err := n.fenced(); err != nil {
 		return controlResponse{Member: true, Err: err.Error()}
 	}
-	idx, resp, err := n.applyLocal(req.Entry)
+	idx, resp, err := n.applyLocal(raw)
 	var body json.RawMessage
 	if err == nil {
 		body, err = json.Marshal(resp)
@@ -868,6 +877,27 @@ func (n *Node) handleControl(peer Claims, req controlRequest) controlResponse {
 		return controlResponse{Member: true, Err: err.Error()}
 	}
 	return controlResponse{Member: true, Index: idx, Response: body}
+}
+
+// forwardedEntry decodes an entry another replica forwarded to the leader
+// (ctlApply). Replicas forward only client writes (Replicate,
+// ReplicateSecret, ReplicateBinding): one allowlist, secret or binding
+// command and nothing else. Every other kind is the leader's own, and an
+// entry that does not decode would stop every replica once committed, so
+// both are refused before they reach the log.
+func forwardedEntry(raw json.RawMessage) (Entry, error) {
+	var e Entry
+	if err := decodeStrict(raw, &e); err != nil {
+		return Entry{}, fmt.Errorf("%w: forwarded entry: %w", errMalformed, err)
+	}
+	leaderOnly := e.Format != 0 || e.SetFormat != 0 || e.Decree != nil || e.Restore != nil || e.RenewCA != nil
+	allowlistWrite := e.Kind == KindAllowlist && e.Allowlist != nil && e.Secret == nil && e.Binding == nil
+	secretWrite := e.Kind == KindSecret && e.Secret != nil && e.Allowlist == nil && e.Binding == nil
+	bindingWrite := e.Kind == KindBinding && e.Binding != nil && e.Allowlist == nil && e.Secret == nil
+	if leaderOnly || !allowlistWrite && !secretWrite && !bindingWrite {
+		return Entry{}, fmt.Errorf("%w: a forwarded entry is one allowlist, secret or binding command, not this %q entry", errMalformed, e.Kind)
+	}
+	return e, nil
 }
 
 // applyEntry commits e through this replica, which must lead, and returns
