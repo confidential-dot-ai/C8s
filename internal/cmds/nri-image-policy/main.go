@@ -246,6 +246,8 @@ func Run(args []string) error {
 			timeout:  cfg.Allowlist.Pull.Timeout,
 			etag:     initialETag,
 			logger:   logger,
+
+			killRevoked: plugin.KillRevoked,
 		})
 	}
 
@@ -357,10 +359,14 @@ type pullLoopArgs struct {
 	timeout  time.Duration
 	etag     string
 	logger   *slog.Logger
+
+	// killRevoked runs after each applied document.
+	killRevoked func(context.Context)
 }
 
 // runPullLoop polls CDS with If-None-Match. 200 rebuilds the index from the
-// pulled document and advances the ETag — unless the pulled version is below the applied
+// pulled document, advances the ETag and kills the running containers it no
+// longer admits — unless the pulled version is below the applied
 // one (epoch rollback), which is ignored so the ETag keeps re-fetching until a
 // forward version arrives. 304 and errors leave the index untouched. A
 // version the measurer refuses for good also advances the ETag and is logged
@@ -432,6 +438,7 @@ func runPullLoop(ctx context.Context, args pullLoopArgs) {
 			"etag", etag,
 			"digest", served.Digest,
 		)
+		args.killRevoked(ctx)
 	}
 }
 

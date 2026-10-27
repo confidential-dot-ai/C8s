@@ -557,6 +557,16 @@ kubectl -n demo wait --for=condition=Ready pod/denied --timeout=360s \
     || fail "pod still blocked after its image was allowlisted"
 pass "signed allowlist write flips a denied pod to Running (plugin pulled the update)"
 
+code="$(cds_write DELETE /allowlist/workloads/curl "$WORKDIR/del.json")"
+[ "$code" = "204" ] || fail "signed allowlist delete of curl: want HTTP 204, got $code"
+kubectl -n demo wait --for=condition=Ready=false pod/denied --timeout=60s \
+    || fail "pod still Ready after its image left the allowlist"
+pass "signed allowlist delete kills the running container (plugin rechecked on apply)"
+# Later steps run the curl image again.
+kubectl -n demo delete pod denied --wait=false >/dev/null
+code="$(cds_write PUT /allowlist/workloads/curl "$WORKDIR/add-curl.json")"
+[ "$code" = "204" ] || fail "signed allowlist re-add of curl: want HTTP 204, got $code"
+
 log "Mesh"
 # Every pod of a covered namespace carries its own endpoint, and the pod's
 # credentials stay with the platform containers. The node enforcer installs
