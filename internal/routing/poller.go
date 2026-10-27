@@ -22,7 +22,9 @@ type PollerConfig struct {
 	Fetcher Fetcher
 	Keys    KeySource
 	// Transports, when set, is reset when the mesh CA bundle changes and
-	// pruned to the backends each applied manifest names.
+	// pruned to the backends each applied manifest names. Each poll also
+	// refreshes its Entries and retires the pools of workloads whose entry
+	// the new allowlist removed or redefined (B10).
 	Transports *Transports
 	Interval   time.Duration
 	Logger     *slog.Logger
@@ -34,6 +36,8 @@ type Poller struct {
 	cfg     PollerConfig
 	log     *slog.Logger
 	keyHash string
+	// allowlist is the digest of the allowlist last logged as read.
+	allowlist string
 }
 
 // NewPoller returns a Poller. It does not start polling; call Run.
@@ -68,6 +72,26 @@ func (p *Poller) Run(ctx context.Context) {
 	}
 }
 
+// refreshEntries reads the current allowlist and retires the pools of the
+// workloads whose entry changed since the last poll, including changes a
+// dial's reread found. A failed read keeps the allowlist already read and is
+// no route poll failure: routes and the allowlist are separate documents.
+func (p *Poller) refreshEntries(ctx context.Context, t *Transports) {
+	entries := t.cfg.Entries
+	if entries == nil {
+		return
+	}
+	if err := entries.Refresh(ctx); err != nil && ctx.Err() == nil {
+		p.log.Warn("allowlist poll failed; keeping the allowlist already read", "error", err, "read", entries.Digest() != "")
+	}
+	changed := entries.Changed()
+	if digest := entries.Digest(); digest != p.allowlist {
+		p.log.Info("allowlist read", "digest", hex.EncodeToString([]byte(digest)), "entries_changed", changed)
+		p.allowlist = digest
+	}
+	t.RetireWorkloads(changed)
+}
+
 // Poll fetches the signed manifest once and offers it to the State.
 func (p *Poller) Poll(ctx context.Context) (err error) {
 	if t := p.cfg.Transports; t != nil {
@@ -81,6 +105,7 @@ func (p *Poller) Poll(ctx context.Context) (err error) {
 				err = fmt.Errorf("mesh CAs: %w", dropErr)
 			}
 		}()
+		p.refreshEntries(ctx, t)
 	}
 	keys, err := p.cfg.Keys.OperatorKeys(ctx)
 	if err != nil {
