@@ -110,6 +110,11 @@ operator:
       memory: 512Mi
   podAnnotations: {}
   extraArgs: []
+  podCVMProvider:
+    enabled: false
+    # Trusted config.json plus the key, policy and measurement files it names.
+    # Create this Secret in the release namespace before enabling the provider.
+    existingSecret: ""
 
 ## Chart-wide image pull secrets, used by every component unless that component
 ## sets its own .imagePullSecrets. One entry here covers all C8s images.

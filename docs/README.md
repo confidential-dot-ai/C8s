@@ -37,6 +37,7 @@ description of how the parts fit together. The full manual is at
 | [allowlist-entries.md](allowlist-entries.md) | reference | Workload entry format and the `c8s allowlist` commands |
 | [releases.md](releases.md) | reference | Versioning, published artifacts, release verification |
 | [operator.md](operator.md) | reference | Running a cluster: install, CDS, router, credentials |
+| [pod-cvm-provider.md](pod-cvm-provider.md) | reference | Launching annotated Pods as Cloud pod CVMs |
 | [overview.md](overview.md) | explanation | Trust boundary, components, the life of a confidential pod |
 | [allowlist-and-capabilities.md](allowlist-and-capabilities.md) | explanation | What may run, and why |
 | [armtls.md](armtls.md) | explanation | Attested identity and the handshake |

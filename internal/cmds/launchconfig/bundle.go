@@ -269,6 +269,12 @@ func AddAgent(dir, name, serverAddress string) (err error) {
 // manifest carries one launch digest per vCPU count, so vcpus selects one
 // unless the manifest has only one.
 func imageFromManifest(path string, vcpus int) (Image, error) {
+	return ImageFromManifest(path, vcpus)
+}
+
+// ImageFromManifest derives launch pins from a measured image's manifest. The
+// provider and bundle CLI share the same platform and vCPU selection rules.
+func ImageFromManifest(path string, vcpus int) (Image, error) {
 	identity, err := runtimemeasure.LoadImageManifest(path)
 	if err != nil {
 		return Image{}, fmt.Errorf("--image-manifest: %w", err)

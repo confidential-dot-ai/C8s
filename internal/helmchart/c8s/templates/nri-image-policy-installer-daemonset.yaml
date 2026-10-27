@@ -1,6 +1,6 @@
 {{/*
-One pull-mode installer DaemonSet on every node. Each plugin polls the CDS it
-can reach (node-local NodePort), so operator `c8s allowlist add` writes reach
+One pull-mode installer DaemonSet on every eligible host node. Each plugin polls
+the CDS it can reach (node-local NodePort), so operator `c8s allowlist add` writes reach
 admission. CDS itself is pinned separately (cds.node.selector, in cds.yaml).
 The name keeps the historical `-worker` suffix to preserve DaemonSet identity
 across upgrade; there is no longer a `-cds` counterpart.
@@ -50,20 +50,7 @@ spec:
         - operator: "Exists"
           effect: "NoSchedule"
       affinity:
-        nodeAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-              - matchExpressions:
-                  - key: kubernetes.io/os
-                    operator: In
-                    values:
-                      - linux
-                  {{- range .Values.nriImagePolicy.nodeAffinity.excludeLabels }}
-                  - key: {{ .key }}
-                    operator: NotIn
-                    values:
-                      {{- toYaml .values | nindent 22 }}
-                  {{- end }}
+        {{- include "c8s.nriHostDaemonAffinity" . | nindent 8 }}
       initContainers:
         {{- if and (eq .Values.nriImagePolicy.distro "rke2") (not .Values.nriImagePolicy.baked) }}
         - name: containerd-prep
