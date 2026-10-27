@@ -372,3 +372,96 @@ func TestImagesSharingAnMRTD(t *testing.T) {
 		t.Fatalf("%d pins, want 2 images under 2 keys", n)
 	}
 }
+
+// A node takes the decree the replicas applied: it asks a replica it pins
+// first, and fetches unverified only when none answers. A decree taken
+// unverified that the replicas never applied (signed, then rejected) is
+// replaced by theirs at the next attested fetch, though both name one base
+// epoch; an unverified fetch never moves sideways or back.
+func TestRefreshPrefersTheReplicasDecree(t *testing.T) {
+	k, pub := key()
+	var (
+		attested   *cdsha.SignedDecree
+		attestErr  error
+		unverified = &served{}
+		asked      refvalues.ReferenceValues
+		fetches    int
+	)
+	src, err := New(Config{ClusterID: cluster, DecreeKey: pub, Bootstrap: bootstrap(), MinInterval: time.Nanosecond,
+		Attested: func(_ context.Context, pins refvalues.ReferenceValues) (*cdsha.SignedDecree, error) {
+			asked = pins
+			return attested, attestErr
+		},
+		Fetch: func(ctx context.Context) (*cdsha.SignedDecree, error) { fetches++; return unverified.fetch(ctx) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	held := pinDecree(t, k, cluster, 4, img(1))
+	attested = held
+	if changed, err := src.Refresh(t.Context()); !changed || err != nil || fetches != 0 {
+		t.Fatalf("attested decree: %v %v, unverified fetches %d", changed, err, fetches)
+	}
+	// No replica under the current pins answers: the unverified fetch
+	// serves a decree the replicas rejected. It is newer, so it is taken.
+	rejected := pinDecree(t, k, cluster, 5, img(9))
+	attested, attestErr, unverified.sd = nil, errors.New("handshake: not pinned"), rejected
+	if changed, err := src.Refresh(t.Context()); !changed || err != nil || fetches != 1 {
+		t.Fatalf("fallback: %v %v, fetches %d", changed, err, fetches)
+	}
+	// A replica under the taken pins answers with the decree it applied at
+	// the same base epoch: that one wins.
+	applied := pinDecree(t, k, cluster, 5, img(5))
+	attested, attestErr = applied, nil
+	if changed, err := src.Refresh(t.Context()); !changed || err != nil {
+		t.Fatalf("replicas' decree at the same epoch: %v %v", changed, err)
+	}
+	if len(asked.Images) != 2 || hex.EncodeToString(asked.Images[0].Digest) != img(9).MRTD {
+		t.Fatalf("attested fetch asked under %+v, want the taken decree's pins", asked.Images)
+	}
+	if cur := src.Current(); hex.EncodeToString(cur.Images[0].Digest) != img(5).MRTD {
+		t.Fatal("the replicas' decree is not in force")
+	}
+	// Negative controls.
+	gen := src.Generation()
+	for name, c := range map[string]struct {
+		attested  *cdsha.SignedDecree
+		attestErr error
+		served    *cdsha.SignedDecree
+	}{
+		"same decree again":                 {attested: applied},
+		"older decree from a replica":       {attested: held},
+		"replica serves none":               {attested: nil, served: pinDecree(t, k, cluster, 9, img(9))},
+		"unverified, same epoch, other one": {attestErr: errors.New("down"), served: rejected},
+		"unverified, older":                 {attestErr: errors.New("down"), served: held},
+	} {
+		attested, attestErr, unverified.sd = c.attested, c.attestErr, c.served
+		if changed, err := src.Refresh(t.Context()); changed || err != nil || src.Generation() != gen {
+			t.Fatalf("%s: changed %v, %v", name, changed, err)
+		}
+	}
+	// The floor holds on the attested path too.
+	floored, err := New(Config{ClusterID: cluster, DecreeKey: pub, Bootstrap: bootstrap(), MinInterval: time.Nanosecond, MinEpoch: 5,
+		Attested: func(context.Context, refvalues.ReferenceValues) (*cdsha.SignedDecree, error) { return held, nil },
+		Fetch:    unverified.fetch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := floored.Refresh(t.Context()); changed || !errors.Is(err, ErrBelowFloor) {
+		t.Fatalf("attested decree below the floor: %v %v", changed, err)
+	}
+}
+
+// The attested fetch takes no answer from a CDS that does not pass the
+// pins: a plain TLS server that the unverified fetch reads is refused.
+func TestAttestedHTTPFetchRefusesAnUnattestedCDS(t *testing.T) {
+	k, _ := key()
+	sd := pinDecree(t, k, cluster, 4, img(5))
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _ = json.NewEncoder(w).Encode(sd) }))
+	defer ts.Close()
+	if got, err := HTTPFetch(ts.URL)(t.Context()); err != nil || got == nil {
+		t.Fatalf("unverified fetch: %v %v", got, err)
+	}
+	if got, err := AttestedHTTPFetch(ts.URL, "http://127.0.0.1:1")(t.Context(), bootstrap()); err == nil || got != nil {
+		t.Fatalf("attested fetch took an unattested answer: %+v", got)
+	}
+}

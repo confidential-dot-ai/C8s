@@ -5,16 +5,22 @@
 // The operator changes which CDS images are accepted with a signed
 // UpdateMeasurements decree that names the images; the replicas commit it and
 // serve it at GET /ha/pins. When a client meets a CDS it does not recognise,
-// it fetches that decree from any replica, checks the operator's signature
-// with the decree key from its own launch document, and, if the decree is
-// newer than the one it holds, pins CDS to the decree's images. The
-// transport is untrusted: everything rests on the signature.
+// it fetches that decree, checks the operator's signature with the decree
+// key from its own launch document, and pins CDS to the decree's images.
 //
-// Ordering is by the decree's base epoch, so an older decree replayed by the
-// host is never taken. With a state file the newest decree survives a
-// restart of the client. There is no expiry: a host that withholds decrees
-// can only delay a client, and a fail-closed timer would turn that into an
-// outage.
+// It asks a replica it already pins first (Attested): that answer is the
+// decree the replicas applied, and is taken when it is newer than the one
+// held or at the same base epoch with other content. Only when no replica
+// under the current set answers does it fetch over an unverified channel
+// (Fetch), where everything rests on the signature and only a strictly newer
+// base epoch is taken, so an older decree replayed by the host is never
+// taken. A decree the replicas never applied, taken that way, is replaced at
+// the next attested fetch.
+//
+// With a state file the newest decree survives a restart of the client, not
+// a reboot of the node (/run). There is no expiry: a host that withholds
+// decrees can only delay a client, and a fail-closed timer would turn that
+// into an outage.
 package cdspins
 
 import (
@@ -39,6 +45,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cdsha"
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
 	"github.com/confidential-dot-ai/c8s/internal/readutil"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 // ErrBelowFloor refuses a decree older than the node's launch-time floor.
@@ -48,12 +55,18 @@ var ErrBelowFloor = errors.New("cdspins: pin decree older than this node's floor
 // still is the bootstrap one.
 type Fetcher func(ctx context.Context) (*cdsha.SignedDecree, error)
 
+// AttestedFetcher is a Fetcher whose answer comes from a CDS that passed
+// pins, the client's current set.
+type AttestedFetcher func(ctx context.Context, pins refvalues.ReferenceValues) (*cdsha.SignedDecree, error)
+
 // Config describes a Source.
 type Config struct {
 	ClusterID string
 	DecreeKey []byte // PKIX DER, from the launch document
 	Bootstrap refvalues.ReferenceValues
-	Fetch     Fetcher
+	// Attested, if set, is asked first; Fetch only when it fails.
+	Attested AttestedFetcher
+	Fetch    Fetcher
 	// StateFile, if set, keeps the decree in force across restarts.
 	StateFile string
 	// MinInterval spaces fetches; a burst of misses fetches once.
@@ -97,7 +110,7 @@ func New(cfg Config) (*Source, error) {
 			}
 			// A stored decree below a newer launch document's floor is
 			// simply outdated: start from the bootstrap set.
-			if _, err := s.take(&sd); err != nil && !errors.Is(err, ErrBelowFloor) {
+			if _, err := s.take(&sd, false); err != nil && !errors.Is(err, ErrBelowFloor) {
 				return nil, fmt.Errorf("cdspins: state: %w", err)
 			}
 		}
@@ -129,9 +142,9 @@ func (s *Source) Epoch() (uint64, bool) {
 	return s.decree.Decree.BaseEpoch, true
 }
 
-// Refresh fetches the replicas' pin decree and takes it if it is newer. It
-// reports whether the pin set changed. Call it when CDS fails the pin check,
-// and on a timer if the client is long-lived.
+// Refresh fetches the replicas' pin decree and takes it (see the package
+// doc for which one). It reports whether the pin set changed. Call it when
+// CDS fails the pin check, and on a timer if the client is long-lived.
 func (s *Source) Refresh(ctx context.Context) (bool, error) {
 	s.mu.Lock()
 	if time.Since(s.lastTry) < s.cfg.MinInterval {
@@ -139,17 +152,28 @@ func (s *Source) Refresh(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 	s.lastTry = time.Now()
+	cur := s.cur
 	s.mu.Unlock()
+	if s.cfg.Attested != nil {
+		sd, err := s.cfg.Attested(ctx, cur)
+		if err == nil {
+			if sd == nil {
+				return false, nil
+			}
+			return s.take(sd, true)
+		}
+	}
 	sd, err := s.cfg.Fetch(ctx)
 	if err != nil || sd == nil {
 		return false, err
 	}
-	return s.take(sd)
+	return s.take(sd, false)
 }
 
-// take verifies sd and makes it the pin set if it is newer than the one in
-// force.
-func (s *Source) take(sd *cdsha.SignedDecree) (bool, error) {
+// take verifies sd and makes it the pin set if it replaces the one in force:
+// a higher base epoch, or, from a replica the client pins (attested), the
+// same base epoch with other content.
+func (s *Source) take(sd *cdsha.SignedDecree, attested bool) (bool, error) {
 	if err := cdsha.VerifyPinDecree(*sd, s.cfg.ClusterID, s.cfg.DecreeKey); err != nil {
 		return false, err
 	}
@@ -162,8 +186,13 @@ func (s *Source) take(sd *cdsha.SignedDecree) (bool, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.decree != nil && sd.Decree.BaseEpoch <= s.decree.Decree.BaseEpoch {
-		return false, nil // the same decree, or an older one replayed
+	if s.decree != nil {
+		held := s.decree.Decree.BaseEpoch
+		replaces := sd.Decree.BaseEpoch > held ||
+			attested && sd.Decree.BaseEpoch == held && !sameDecree(sd.Decree, s.decree.Decree)
+		if !replaces {
+			return false, nil // the same decree, or an older one replayed
+		}
 	}
 	if s.cfg.StateFile != "" {
 		data, err := json.Marshal(sd)
@@ -235,6 +264,14 @@ func Policy(bootstrap refvalues.ReferenceValues, images []cdsha.DecreeImage) (re
 	return refvalues.Parse(data)
 }
 
+// sameDecree reports whether two decrees say the same thing (their
+// signatures may differ).
+func sameDecree(a, b cdsha.Decree) bool {
+	ja, errA := json.Marshal(a)
+	jb, errB := json.Marshal(b)
+	return errA == nil && errB == nil && bytes.Equal(ja, jb)
+}
+
 // HTTPFetch fetches GET <cdsURL>/ha/pins. The TLS peer is not verified: a
 // client calls this precisely because it no longer recognises the CDS, and
 // the decree carries the operator's signature.
@@ -243,30 +280,52 @@ func HTTPFetch(cdsURL string) Fetcher {
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // content is signature-verified
 	}}
 	return func(ctx context.Context) (*cdsha.SignedDecree, error) {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, cdsURL+"/ha/pins", nil)
-		if err != nil {
-			return nil, err
-		}
-		resp, err := hc.Do(req)
-		if err != nil {
-			return nil, err
-		}
-		defer resp.Body.Close()
-		switch resp.StatusCode {
-		case http.StatusOK:
-		case http.StatusNotFound:
-			return nil, nil
-		default:
-			return nil, fmt.Errorf("cdspins: GET /ha/pins: %s", resp.Status)
-		}
-		body, err := readutil.ReadAll(resp.Body, 1<<20)
-		if err != nil {
-			return nil, fmt.Errorf("cdspins: GET /ha/pins: %w", err)
-		}
-		var sd cdsha.SignedDecree
-		if err := json.Unmarshal(body, &sd); err != nil {
-			return nil, fmt.Errorf("cdspins: GET /ha/pins: %w", err)
-		}
-		return &sd, nil
+		return GetPins(ctx, hc, cdsURL)
 	}
+}
+
+// AttestedHTTPFetch fetches GET <cdsURL>/ha/pins over armTLS from a CDS
+// that passes the given pins, verified by the attestation-api at
+// attestationAPIURL.
+func AttestedHTTPFetch(cdsURL, attestationAPIURL string) AttestedFetcher {
+	return func(ctx context.Context, pins refvalues.ReferenceValues) (*cdsha.SignedDecree, error) {
+		hc, err := armtls.NewVerifyingHTTPClient(armtls.Pins(pins.Policy()), attestationAPIURL)
+		if err != nil {
+			return nil, err
+		}
+		defer hc.CloseIdleConnections()
+		hc.Timeout = 10 * time.Second
+		return GetPins(ctx, hc, cdsURL)
+	}
+}
+
+// GetPins reads GET <cdsURL>/ha/pins with hc: the signed decree behind the
+// replicas' pin set, or nil when they serve none (404). It does not verify
+// the decree.
+func GetPins(ctx context.Context, hc *http.Client, cdsURL string) (*cdsha.SignedDecree, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cdsURL+"/ha/pins", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := hc.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusOK:
+	case http.StatusNotFound:
+		return nil, nil
+	default:
+		return nil, fmt.Errorf("cdspins: GET /ha/pins: %s", resp.Status)
+	}
+	body, err := readutil.ReadAll(resp.Body, 1<<20)
+	if err != nil {
+		return nil, fmt.Errorf("cdspins: GET /ha/pins: %w", err)
+	}
+	var sd cdsha.SignedDecree
+	if err := json.Unmarshal(body, &sd); err != nil {
+		return nil, fmt.Errorf("cdspins: GET /ha/pins: %w", err)
+	}
+	return &sd, nil
 }

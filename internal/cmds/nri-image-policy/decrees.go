@@ -74,7 +74,8 @@ type cdsDecreesInfo struct {
 
 // cdsDecrees builds the node's decree-following pin source, or nil when the
 // config names no decrees (a cluster without HA CDS). It fetches decrees from
-// the CDS (GET /ha/pins), starting from the launch document's CDS policy.
+// the CDS (GET /ha/pins), starting from the launch document's CDS policy:
+// first from a CDS the node pins, unverified only when none answers.
 func (c pullConfig) cdsDecrees(platform string, logger *slog.Logger) (*followedPins, error) {
 	info := c.CDSDecrees
 	if info == nil {
@@ -95,8 +96,10 @@ func (c pullConfig) cdsDecrees(platform string, logger *slog.Logger) (*followedP
 	if err != nil {
 		return nil, err
 	}
+	url := strings.TrimRight(c.URL, "/")
 	src, err := cdspins.New(cdspins.Config{ClusterID: info.ClusterID, DecreeKey: der, Bootstrap: bootstrap,
-		Fetch: cdspins.HTTPFetch(strings.TrimRight(c.URL, "/")), StateFile: c.CDSDecreesState, MinEpoch: info.PinFloor})
+		Attested: cdspins.AttestedHTTPFetch(url, c.AttestationApiURL), Fetch: cdspins.HTTPFetch(url),
+		StateFile: c.CDSDecreesState, MinEpoch: info.PinFloor})
 	if err != nil {
 		return nil, fmt.Errorf("CDS pin decrees: %w", err)
 	}
