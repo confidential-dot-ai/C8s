@@ -94,6 +94,7 @@ type replica struct {
 	led    *sandboxledger.Ledger
 	cancel context.CancelFunc
 	done   chan struct{}
+	err    error // what Run returned; read after done
 }
 
 type cluster struct {
@@ -242,7 +243,7 @@ func (c *cluster) startWithControl(name, measurement string, wrap func(controlHa
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &replica{name: name, ip: ip, node: n, al: &al, sec: secrets.ReplicatedStore{MemoryStore: mem, Repl: n}, led: led, cancel: cancel, done: make(chan struct{})}
-	go func() { defer close(r.done); _ = n.Run(ctx) }()
+	go func() { defer close(r.done); r.err = n.Run(ctx) }()
 	c.mu.Lock()
 	c.nodes[name] = r
 	c.mu.Unlock()

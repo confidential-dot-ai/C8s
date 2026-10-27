@@ -164,6 +164,13 @@ type Node struct {
 	readOK    atomic.Pointer[barrierMark] // leader: the last read barrier that succeeded
 	barrierMS atomic.Int64                // leader: how long the last successful read barrier took
 	slow      slowLeader                  // leader: slow-leader check state; protected by mu
+	// lastTransfer is our last leadership transfer (transferLeadership);
+	// protected by mu.
+	lastTransfer struct {
+		to raft.ServerID
+		at time.Time
+	}
+	refused atomic.Pointer[barrierRefusal] // leader: Raft refuses its barriers (raft #696)
 
 	// blocked, in tests only, refuses connections to and from addresses as a
 	// network partition would.
@@ -482,8 +489,11 @@ func (n *Node) transport() (*raft.NetworkTransport, error) {
 // transport still hands it results, the sender then waits on the transport
 // forever, and Raft can never shut down.
 func raftTransportConfig(stream raft.StreamLayer, logger hclog.Logger) *raft.NetworkTransportConfig {
-	return &raft.NetworkTransportConfig{Stream: stream, MaxPool: 3, Timeout: 10 * time.Second, Logger: logger, MaxRPCsInFlight: 1}
+	return &raft.NetworkTransportConfig{Stream: stream, MaxPool: 3, Timeout: raftRPCTimeout, Logger: logger, MaxRPCsInFlight: 1}
 }
+
+// raftRPCTimeout bounds one Raft RPC to a peer that does not answer.
+const raftRPCTimeout = 10 * time.Second
 
 // Run drives the replica until ctx ends: join or bootstrap, then as leader
 // keep the seats filled and apply decrees.
@@ -496,11 +506,12 @@ func (n *Node) Run(ctx context.Context) error {
 	defer n.shutdown()
 	workerCtx, stopWorkers := context.WithCancel(ctx)
 	var workers sync.WaitGroup
-	workers.Add(3)
+	workers.Add(4)
 	go func() { defer workers.Done(); n.watchClock(workerCtx) }()
 	go func() { defer workers.Done(); n.refreshReads(workerCtx) }()
 	go func() { defer workers.Done(); n.watchSlowLeader(workerCtx) }()
-	// Stop and join read/clock/slow-leader workers before shutdown and caller store close.
+	go func() { defer workers.Done(); n.runDecrees(workerCtx) }()
+	// Stop and join read/clock/slow-leader/decree workers before shutdown and caller store close.
 	defer func() { stopWorkers(); workers.Wait() }()
 	t := time.NewTicker(n.cfg.Timing.Tick)
 	defer t.Stop()
@@ -550,9 +561,11 @@ func (n *Node) Run(ctx context.Context) error {
 		switch addr, _ := n.r().LeaderWithID(); {
 		case n.leading():
 			n.noLeader = time.Time{}
+			if err := n.wedged(); err != nil {
+				return err
+			}
+			// Decrees and backups wait on the API server: runDecrees.
 			n.reconcile()
-			n.applyDecrees(ctx)
-			n.maybeBackup(ctx)
 			if n.fsm.Stuck() == "" { // both derive their entries from this replica's state
 				n.maybePruneHistory()
 				n.maybeRenewCA()
@@ -895,6 +908,7 @@ func (n *Node) readBarrier(r *raft.Raft, timeout time.Duration) (uint64, error) 
 		if err == nil && (r != n.r() || n.stoppingReads.Load() == r || r.State() != raft.Leader || r.CurrentTerm() != term || currentLeader != leader || currentID != id || n.fsm.Stuck() != "") {
 			err = errors.New("cds-ha: read leader or state changed")
 		}
+		n.noteRefusal(r, term, err)
 		if err == nil {
 			// Certificates from this barrier date from before start.
 			n.readOK.Store(&barrierMark{raft: r, term: term, start: start})
@@ -908,6 +922,63 @@ func (n *Node) readBarrier(r *raft.Raft, timeout time.Duration) (uint64, error) 
 	case <-timer.C:
 		return 0, errors.New("cds-ha: read barrier timed out")
 	}
+}
+
+// barrierRefusal is a run of read barriers Raft refused outright with
+// ErrLeadershipTransferInProgress, in one term of one Raft instance.
+type barrierRefusal struct {
+	raft        *raft.Raft
+	term        uint64
+	since, last time.Time
+}
+
+// noteRefusal records a leader barrier's outcome: a refusal starts or extends
+// the run, a success ends it. Timeouts (a slow state machine) do neither.
+func (n *Node) noteRefusal(r *raft.Raft, term uint64, err error) {
+	switch {
+	case err == nil:
+		n.refused.Store(nil)
+	case errors.Is(err, raft.ErrLeadershipTransferInProgress):
+		now := time.Now()
+		run := barrierRefusal{raft: r, term: term, since: now, last: now}
+		if p := n.refused.Load(); p != nil && p.raft == r && p.term == term {
+			run.since = p.since
+		}
+		n.refused.Store(&run)
+	}
+}
+
+// ErrLeaderWedged ends Run: Raft refuses every write and read barrier of this
+// leader, though a quorum still answers its heartbeats (raft #696: a
+// leadership transfer that never finishes). Nothing short of a restart, which
+// rejoins as a new member, clears it.
+var ErrLeaderWedged = errors.New("cds-ha: raft refuses every barrier of this leader (leadership transfer stuck in progress); restart to rejoin")
+
+// wedged (leader) is ErrLeaderWedged once Raft has refused every barrier of
+// this term for DeadAfter, the last within a Lease. A transfer that Raft
+// finishes or times out holds the refusal for at most an election timeout.
+func (n *Node) wedged() error {
+	r := n.r()
+	p := n.refused.Load()
+	if p == nil || p.raft != r || p.term != r.CurrentTerm() || time.Since(p.last) > n.cfg.Timing.Lease {
+		return nil
+	}
+	refusedFor := time.Since(p.since)
+	if refusedFor <= n.cfg.Timing.DeadAfter {
+		return nil
+	}
+	var lastOK any = "never"
+	if m := n.readOK.Load(); m != nil && m.raft == r {
+		lastOK = time.Since(m.start).Round(time.Millisecond)
+	}
+	n.mu.Lock()
+	to, at := n.lastTransfer.to, n.lastTransfer.at
+	n.mu.Unlock()
+	n.log.Error("leader wedged: raft refuses every barrier although a quorum answers heartbeats; exiting so a new leader takes over",
+		"refused_for", refusedFor.Round(time.Millisecond), "term", p.term, "last_good_barrier_ago", lastOK,
+		"commit_index", r.CommitIndex(), "last_index", r.LastIndex(), "applied_index", n.fsm.AppliedIndex(),
+		"last_transfer_to", to, "last_transfer_at", at)
+	return fmt.Errorf("%w (refused for %v in term %d)", ErrLeaderWedged, refusedFor.Round(time.Millisecond), p.term)
 }
 
 func (n *Node) confirmRead(timeout time.Duration) (*readCertificate, error) {

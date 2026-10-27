@@ -1,8 +1,10 @@
 package cdsha
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -41,10 +43,52 @@ type KubeDecrees struct {
 	Client    kubernetes.Interface
 	Namespace string
 	ClusterID string
+	// Timeout bounds every API request (0: DefaultTiming.Apply). The leader
+	// must not wait without bound on an API server that accepts and never
+	// answers.
+	Timeout time.Duration
 }
 
 func (s KubeDecrees) cms() corev1client.ConfigMapInterface {
-	return s.Client.CoreV1().ConfigMaps(s.Namespace)
+	return deadlineConfigMaps{s.Client.CoreV1().ConfigMaps(s.Namespace), cmp.Or(s.Timeout, DefaultTiming.Apply)}
+}
+
+// deadlineConfigMaps gives each request KubeDecrees makes its own deadline.
+// rest.Config.Timeout would do the same, but the in-cluster clientset also
+// serves watches, which it would cut.
+type deadlineConfigMaps struct {
+	corev1client.ConfigMapInterface
+	timeout time.Duration
+}
+
+func (c deadlineConfigMaps) Get(ctx context.Context, name string, o metav1.GetOptions) (*corev1.ConfigMap, error) {
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+	return c.ConfigMapInterface.Get(ctx, name, o)
+}
+
+func (c deadlineConfigMaps) List(ctx context.Context, o metav1.ListOptions) (*corev1.ConfigMapList, error) {
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+	return c.ConfigMapInterface.List(ctx, o)
+}
+
+func (c deadlineConfigMaps) Create(ctx context.Context, cm *corev1.ConfigMap, o metav1.CreateOptions) (*corev1.ConfigMap, error) {
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+	return c.ConfigMapInterface.Create(ctx, cm, o)
+}
+
+func (c deadlineConfigMaps) Update(ctx context.Context, cm *corev1.ConfigMap, o metav1.UpdateOptions) (*corev1.ConfigMap, error) {
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+	return c.ConfigMapInterface.Update(ctx, cm, o)
+}
+
+func (c deadlineConfigMaps) Delete(ctx context.Context, name string, o metav1.DeleteOptions) error {
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+	return c.ConfigMapInterface.Delete(ctx, name, o)
 }
 
 // PendingDecrees lists this cluster's decree objects without a status.

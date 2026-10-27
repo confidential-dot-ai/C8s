@@ -229,7 +229,7 @@ func newHANode(cfg config, st haStores) (*cdsha.Node, error) {
 		}
 		recovery = block.Bytes
 	}
-	decrees := cdsha.KubeDecrees{Client: kube, Namespace: h.decreeNS, ClusterID: h.clusterID}
+	decrees := cdsha.KubeDecrees{Client: kube, Namespace: h.decreeNS, ClusterID: h.clusterID, Timeout: h.timing.Apply}
 	node, err := cdsha.NewNode(cdsha.Config{
 		ClusterID:       h.clusterID,
 		NodeName:        h.nodeName,

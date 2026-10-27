@@ -450,7 +450,42 @@ func (n *Node) applyDecrees(ctx context.Context) {
 			n.setStatus(ctx, d.Name, DecreeStatus{RejectedReason: ErrRecoverWithQuorum.Error()})
 			continue
 		}
-		n.applyDecree(ctx, d)
+		r := n.r()
+		n.membershipMu.Lock()
+		// A decree can change what reconcile decides from (seats, pins, the
+		// key): never apply one in the middle of a membership pass, nor
+		// after this replica stopped leading.
+		var st DecreeStatus
+		ok := false
+		if r == n.r() && n.stoppingReads.Load() != r && r.State() == raft.Leader {
+			st, ok = n.commitDecree(d)
+		}
+		n.membershipMu.Unlock()
+		if ok {
+			n.setStatus(ctx, d.Name, st) // the API server's wait holds no lock
+		}
+	}
+}
+
+// runDecrees applies operator decrees and stores backups while this
+// replica leads. Both wait on the API server, so they run here rather than
+// in Run's loop: a server that accepts and never answers must not hold up
+// seat repair, history pruning, CA renewal or a stuck leader's exit. One
+// goroutine keeps decrees in order and backups one at a time.
+func (n *Node) runDecrees(ctx context.Context) {
+	t := time.NewTicker(n.cfg.Timing.Tick)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		if r := n.r(); r == nil || r.State() != raft.Leader {
+			continue
+		}
+		n.applyDecrees(ctx)
+		n.maybeBackup(ctx)
 	}
 }
 
@@ -491,13 +526,23 @@ var ErrPinsLoseMajority = errors.New("refused: the new pin set leaves fewer than
 // leader, and so a majority of its voters.
 var ErrRecoverWithQuorum = errors.New("refused: the cluster has a leader with a majority of its voters; Recover is break-glass after losing the majority for good")
 
+// applyDecree applies one decree and records the outcome on its object.
+// Callers hold membershipMu.
 func (n *Node) applyDecree(ctx context.Context, p PendingDecree) {
+	if st, ok := n.commitDecree(p); ok {
+		n.setStatus(ctx, p.Name, st)
+	}
+}
+
+// commitDecree checks a decree and commits it through the log. It returns
+// the status to record on the decree object, if any: a failure to commit
+// leaves the decree pending. Callers hold membershipMu.
+func (n *Node) commitDecree(p PendingDecree) (DecreeStatus, bool) {
 	core := n.fsm.Core()
 	if p.Err == nil {
 		if i := slices.Index(core.AppliedDecrees, p.Decree.Decree.IntentID); i >= 0 {
 			epoch := uint64(i + 1)
-			n.setStatus(ctx, p.Name, DecreeStatus{AppliedEpoch: &epoch})
-			return
+			return DecreeStatus{AppliedEpoch: &epoch}, true
 		}
 	}
 	err := p.Err
@@ -513,8 +558,7 @@ func (n *Node) applyDecree(ctx context.Context, p PendingDecree) {
 	}
 	if err != nil {
 		n.log.Info("decree rejected", "decree", p.Name, "why", err)
-		n.setStatus(ctx, p.Name, DecreeStatus{RejectedReason: err.Error()})
-		return
+		return DecreeStatus{RejectedReason: err.Error()}, true
 	}
 	de := DecreeEntry{Decree: p.Decree, AtMS: time.Now().UnixMilli()}
 	if d.Kind == Genesis {
@@ -525,28 +569,27 @@ func (n *Node) applyDecree(ctx context.Context, p PendingDecree) {
 		minted, err := issuer.NewMeshCA(n.cfg.CACommonName, n.cfg.CAValidity)
 		if err != nil {
 			n.log.Error("mint mesh CA", "err", err)
-			return
+			return DecreeStatus{}, false
 		}
 		ca := minted.Current().CA
 		key, err := x509.MarshalPKCS8PrivateKey(ca.Key)
 		if err != nil {
 			n.log.Error("encode mesh CA key", "err", err)
-			return
+			return DecreeStatus{}, false
 		}
 		de.RootCert, de.Key = ca.Cert.Raw, key
 	}
 	resp, err := n.applyEntry(Entry{Kind: KindDecree, Decree: &de})
 	if err != nil {
 		n.log.Warn("apply decree", "decree", p.Name, "err", err)
-		return
+		return DecreeStatus{}, false
 	}
 	res, _ := resp.(DecreeResult)
 	if res.Err != "" {
-		n.setStatus(ctx, p.Name, DecreeStatus{RejectedReason: res.Err})
-		return
+		return DecreeStatus{RejectedReason: res.Err}, true
 	}
 	n.log.Info("decree applied", "decree", p.Name, "kind", d.Kind, "epoch", res.Epoch)
-	n.setStatus(ctx, p.Name, DecreeStatus{AppliedEpoch: &res.Epoch})
+	return DecreeStatus{AppliedEpoch: &res.Epoch}, true
 }
 
 func (n *Node) setStatus(ctx context.Context, name string, st DecreeStatus) {

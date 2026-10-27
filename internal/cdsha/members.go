@@ -325,16 +325,19 @@ func (n *Node) reconcile() {
 	if reason := n.fsm.Stuck(); reason != "" {
 		// A leader that cannot follow its own log certifies no reads and
 		// applies no writes, for anyone: hand the log to a replica that can.
-		// Its own seat is left alone.
+		// Its own seat is left alone; a restart replays the log.
 		if target != nil {
 			n.log.Warn("stuck leader: transferring leadership", "reason", reason, "target", target.ID)
-			if err := r.LeadershipTransferToServer(target.ID, target.Address).Error(); err != nil {
+			if err := n.transferLeadership(r, *target); err != nil {
 				n.log.Warn("stuck leader: leadership transfer", "target", target.ID, "err", err)
 			}
 			return
 		}
 		if n.fsm.StuckLocal() {
-			return // Run ends it after DeadAfter; a restart replays the log
+			// With no replica fit to take over, Run ends this one after
+			// DeadAfter; a restart replays the log.
+			n.log.Warn("stuck leader: no caught-up, responsive voter to hand leadership to", "reason", reason)
+			return
 		}
 		// No replica applies the log: keep leading, and keeping the
 		// membership, so that replicas of an image that applies the entry
@@ -444,35 +447,6 @@ func (n *Node) reconcile() {
 	if len(remove) == 0 && len(retiring) == 0 {
 		n.raiseFormat(servers)
 	}
-}
-
-// stuckTransferTarget is a voter to hand leadership to while this leader is
-// stuck: one with healthy heartbeats that answers as itself, is not stuck
-// and has applied at least the commit index sampled before the probe, the
-// most applied of them; nil if none. Peers are probed without membershipMu.
-func (n *Node) stuckTransferTarget(r *raft.Raft, servers []raft.Server) *raft.Server {
-	if r == nil {
-		return nil
-	}
-	commit := r.CommitIndex()
-	n.mu.Lock()
-	var candidates []raft.Server
-	for _, s := range servers {
-		if _, bad := n.failing[s.ID]; s.ID != n.id && s.Suffrage == raft.Voter && !bad {
-			candidates = append(candidates, s)
-		}
-	}
-	n.mu.Unlock()
-	var best *raft.Server
-	var bestApplied uint64
-	for _, s := range candidates {
-		st, err := n.peerStatus(s.Address, min(time.Second, n.cfg.Timing.Lease/2))
-		if err != nil || st.ID != string(s.ID) || st.Stuck != "" || st.AppliedIndex < commit || (best != nil && st.AppliedIndex <= bestApplied) {
-			continue
-		}
-		best, bestApplied = &s, st.AppliedIndex
-	}
-	return best
 }
 
 // removeMember removes id from the configuration and forgets it.
@@ -938,7 +912,81 @@ func (n *Node) transferSlowLeader(r *raft.Raft, target *raft.Server, attrs []any
 	n.slow.tried = time.Now()
 	n.mu.Unlock()
 	n.log.Warn("slow leader: transferring leadership", attrs...)
-	if err := r.LeadershipTransferToServer(target.ID, target.Address).Error(); err != nil {
+	if err := n.transferLeadership(r, *target); err != nil {
 		n.log.Warn("slow leader: leadership transfer", "target", target.ID, "err", err)
 	}
+}
+
+// errTransferCooldown refuses a transfer to the target of a recent one.
+var errTransferCooldown = errors.New("cds-ha: a transfer to this target may still be queued in raft; not repeating it yet")
+
+// transferLeadership is called with membershipMu held, so ours never
+// overlap. Raft v1.8 queues a transfer request in the target's replicator
+// (one slot) until the replicator's RPC in flight returns; a second
+// transfer to the same target meanwhile blocks Raft's transfer monitor, and
+// the leader refuses every write and barrier until the slot drains, for
+// good if it steps down first (hashicorp/raft#696). So a target gets one
+// transfer per transferCooldown: the longest that RPC can take, plus the
+// transfer's own timeout. Another target has a replicator of its own.
+func (n *Node) transferLeadership(r *raft.Raft, target raft.Server) error {
+	now := time.Now()
+	n.mu.Lock()
+	if n.lastTransfer.to == target.ID && now.Sub(n.lastTransfer.at) < n.transferCooldown() {
+		n.mu.Unlock()
+		return errTransferCooldown
+	}
+	prev := n.lastTransfer
+	n.lastTransfer.to, n.lastTransfer.at = target.ID, now
+	n.mu.Unlock()
+	err := r.LeadershipTransferToServer(target.ID, target.Address).Error()
+	if errors.Is(err, raft.ErrLeadershipTransferInProgress) {
+		// Refused before anything was queued for the target.
+		n.mu.Lock()
+		if n.lastTransfer.to == target.ID && n.lastTransfer.at.Equal(now) {
+			n.lastTransfer = prev
+		}
+		n.mu.Unlock()
+	}
+	return err
+}
+
+func (n *Node) transferCooldown() time.Duration { return raftRPCTimeout + n.cfg.Timing.Election }
+
+// stuckTransferTarget is the voter a stuck leader hands leadership to: not
+// failing heartbeats, answering status as itself and not stuck, past the
+// transfer cooldown, and caught up: it knows as committed (applied index
+// plus apply lag, its own commit index) at least what this leader had
+// committed before the probe. A replica whose log lags (its state machine
+// queue full, which blocks its Raft thread inside AppendEntries, or an
+// InstallSnapshot in progress) would leave the transfer queued in raft
+// (see transferLeadership). The most applied wins; nil when none is fit.
+// Probes run without membershipMu.
+func (n *Node) stuckTransferTarget(r *raft.Raft, servers []raft.Server) *raft.Server {
+	if r == nil || r != n.r() || r.State() != raft.Leader {
+		return nil
+	}
+	commit := r.CommitIndex()
+	now := time.Now()
+	var candidates []raft.Server
+	n.mu.Lock()
+	for _, s := range servers {
+		_, bad := n.failing[s.ID]
+		cooling := n.lastTransfer.to == s.ID && now.Sub(n.lastTransfer.at) < n.transferCooldown()
+		if s.ID != n.id && s.Suffrage == raft.Voter && !bad && !cooling {
+			candidates = append(candidates, s)
+		}
+	}
+	n.mu.Unlock()
+	var best *raft.Server
+	var bestApplied uint64
+	for _, s := range candidates {
+		st, err := n.peerStatus(s.Address, min(time.Second, n.cfg.Timing.Lease/2))
+		if err != nil || st.ID != string(s.ID) || st.Stuck != "" || st.AppliedIndex+st.ApplyLag < commit {
+			continue
+		}
+		if best == nil || st.AppliedIndex > bestApplied {
+			best, bestApplied = &s, st.AppliedIndex
+		}
+	}
+	return best
 }

@@ -83,6 +83,10 @@ type memDecrees struct {
 	failList   atomic.Bool
 	failStatus atomic.Bool
 	statusErrs atomic.Int32
+	// hang, when set, blocks every List until it closes or ctx ends, as a
+	// hung API server does.
+	hang atomic.Pointer[chan struct{}]
+	hung atomic.Int32
 }
 
 func newMemDecrees() *memDecrees {
@@ -98,7 +102,15 @@ func (m *memDecrees) put(sd SignedDecree) string {
 	return name
 }
 
-func (m *memDecrees) PendingDecrees(context.Context) ([]PendingDecree, error) {
+func (m *memDecrees) PendingDecrees(ctx context.Context) ([]PendingDecree, error) {
+	if h := m.hang.Load(); h != nil {
+		m.hung.Add(1)
+		select {
+		case <-*h:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	if m.failList.Load() {
 		return nil, errors.New("api down")
 	}
