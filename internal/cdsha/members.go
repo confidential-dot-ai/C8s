@@ -340,15 +340,12 @@ func (n *Node) reconcile() {
 			}
 			return
 		}
-		if n.fsm.StuckLocal() {
-			// With no replica fit to take over, Run ends this one after
-			// DeadAfter; a restart replays the log.
-			n.log.Warn("stuck leader: no caught-up, responsive voter to hand leadership to", "reason", reason)
-			return
-		}
-		// No replica applies the log: keep leading, and keeping the
-		// membership, so that replicas of an image that applies the entry
-		// can join, take seats and then the lead (FSM.stop).
+		// No replica fit to take over: keep leading, and keeping the
+		// membership, so that replicas that apply the log (an image that
+		// applies the entry, or restarts after a store fault every replica
+		// hit) can join, take seats and then the lead (FSM.stop). Run ends
+		// this one once the others keep a majority without it.
+		n.log.Warn("stuck leader: no caught-up, responsive voter to hand leadership to", "reason", reason)
 	}
 	servers = n.servers()
 	if servers == nil {

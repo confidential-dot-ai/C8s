@@ -658,22 +658,28 @@ func (n *Node) Run(ctx context.Context) error {
 			// good, and its peer port stays open, so no TCP liveness check
 			// notices. A leader first hands off leadership (reconcile);
 			// return once it has, or after DeadAfter, so the process exits
-			// and is restarted. A deterministic stop exits only once the
-			// cluster is past it, and the voters that follow the log keep a
-			// majority without this one (leaveKeepsQuorum); until then the
-			// process keeps the log and raises the alarm.
+			// and is restarted. A deterministic stop may leave only once the
+			// cluster is past it. Either leaves only while the voters that
+			// follow the log keep a majority without this one
+			// (leaveKeepsQuorum): a "local" fault can strike every replica
+			// at the same entry (the same state over the same store limit),
+			// and the log lives only in memory. Until then the process
+			// keeps the log and raises the alarm.
 			if stuckAt.IsZero() {
 				stuckAt, alarmAt = time.Now(), time.Now()
 			}
 			since := time.Since(stuckAt)
+			due := (!n.leading() && since >= n.cfg.Timing.Lease) || since >= n.cfg.Timing.DeadAfter
 			switch {
-			case !n.fsm.StuckLocal() && (!n.fsm.stuckPassed() || !n.leaveKeepsQuorum()):
-				if time.Since(alarmAt) >= haltAlarmEvery {
-					alarmAt = time.Now()
-					n.log.Error("cds-ha: ALARM: halted at a log entry no replica could apply; serving nothing, keeping the log; deploy an image that applies it, or Restore", "reason", reason, "for", since.Round(time.Second))
-				}
-			case (!n.leading() && since >= n.cfg.Timing.Lease) || since >= n.cfg.Timing.DeadAfter:
+			case due && (n.fsm.StuckLocal() || n.fsm.stuckPassed()) && n.leaveKeepsQuorum():
 				return fmt.Errorf("%w: %s", ErrStuck, reason)
+			case time.Since(alarmAt) < haltAlarmEvery:
+			case !n.fsm.StuckLocal() && !n.fsm.stuckPassed():
+				alarmAt = time.Now()
+				n.log.Error("cds-ha: ALARM: halted at a log entry no replica could apply; serving nothing, keeping the log; deploy an image that applies it, or Restore", "reason", reason, "for", since.Round(time.Second))
+			default:
+				alarmAt = time.Now()
+				n.log.Error("cds-ha: ALARM: stopped following the log, and the replicas that follow it are no majority without this one; serving nothing, keeping the log; restart the stuck replicas one at a time, or Restore", "reason", reason, "for", since.Round(time.Second))
 			}
 		}
 		n.renewPeerCert()
@@ -1318,13 +1324,14 @@ var ErrStuck = errors.New("cds-ha: replica stopped following the log; restart to
 const haltAlarmEvery = time.Minute
 
 // StuckOverdue is the stuck reason once this replica has been stuck on a
-// local fault longer than Run allows (DeadAfter, plus a Lease of slack), ""
-// otherwise. Run ends such a replica itself; a caller that watches
-// StuckOverdue independently still ends a replica whose Run loop is blocked
-// behind the fault and never gets there. A deterministic stop is never
-// overdue: exiting would lose the log (FSM.stop).
+// local fault longer than Run allows (DeadAfter, plus a Lease of slack) and
+// may leave (leaveKeepsQuorum), "" otherwise. Run ends such a replica
+// itself; a caller that watches StuckOverdue independently still ends a
+// replica whose Run loop is blocked behind the fault and never gets there.
+// A deterministic stop is never overdue: exiting would lose the log
+// (FSM.stop).
 func (n *Node) StuckOverdue() string {
-	if d := n.fsm.stuckFor(); d > n.cfg.Timing.DeadAfter+n.cfg.Timing.Lease && n.fsm.StuckLocal() {
+	if d := n.fsm.stuckFor(); d > n.cfg.Timing.DeadAfter+n.cfg.Timing.Lease && n.fsm.StuckLocal() && n.leaveKeepsQuorum() {
 		return n.fsm.Stuck()
 	}
 	return ""
@@ -1333,7 +1340,8 @@ func (n *Node) StuckOverdue() string {
 // leaveKeepsQuorum reports that this replica can exit without costing the
 // cluster its majority: it is not a voter, or the other voters that answer
 // and are not stuck are a majority of the voters. Stuck voters never count,
-// so several of them that were passed at once do not all leave together.
+// so several of them stopped at once (a passed entry, or a store fault every
+// replica hit) do not all leave together.
 func (n *Node) leaveKeepsQuorum() bool {
 	servers := n.servers()
 	if servers == nil {
