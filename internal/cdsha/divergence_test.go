@@ -2,6 +2,9 @@ package cdsha
 
 import (
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -370,4 +373,35 @@ func TestNoMajorityOnlyAlarms(t *testing.T) {
 	if l.node.fsm.Stuck() != "" {
 		t.Fatalf("leader stopped: %s", l.node.fsm.Stuck())
 	}
+}
+
+// A backup that asked for a checkpoint while one was already on its way
+// (the backup runs on the decree worker, checkpoints on the Run loop) is
+// answered by that one: it proposes no second checkpoint, and so no second
+// backup of the same state. A write after the backup still gets both.
+func TestStaleBackupRequestAddsNoCheckpoint(t *testing.T) {
+	rk, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	b := &memBackups{}
+	s := newSolo(t, func(cfg *Config) { cfg.RecoveryKey, cfg.Backups = mustPKIX(t, &rk.PublicKey), b })
+	n := s.node
+	backedUp := func(idx uint64) bool { got, ok := b.get(); return ok && got.Meta.Index >= idx }
+	eventually(t, 5*time.Second, "the state backed up", func() bool { return backedUp(n.fsm.AppliedIndex()) })
+	time.Sleep(5 * testTiming.Checkpoint)
+	applied, attempts := n.fsm.AppliedIndex(), b.attempts()
+	if !backedUp(applied) {
+		t.Fatalf("state at %d not backed up while idle", applied)
+	}
+	// What the race leaves: a request from before the latest checkpoint.
+	n.div.mu.Lock()
+	n.div.backupWait, n.div.backupAfter = true, lastCheckpoint(t, n.fsm).Index-1
+	n.div.mu.Unlock()
+	time.Sleep(10 * testTiming.Checkpoint)
+	if got, a := n.fsm.AppliedIndex(), b.attempts(); got != applied || a != attempts {
+		t.Fatalf("a stale backup request proposed a checkpoint or a backup: applied %d -> %d, attempts %d -> %d", applied, got, attempts, a)
+	}
+	if err := n.cfg.Allowlist.PutWorkload("w", mkWorkload(t, 0)); err != nil {
+		t.Fatal(err)
+	}
+	idx := n.fsm.AppliedIndex()
+	eventually(t, 5*time.Second, "a backup of the write", func() bool { return backedUp(idx) })
 }

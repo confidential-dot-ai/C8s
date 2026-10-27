@@ -55,9 +55,13 @@ type divergence struct {
 	alarm     string
 	last      string
 	episode   string
-	// soon asks for a checkpoint now (a chain mismatch, or a backup that
-	// waits for one). checkpointAt is when this leader last proposed one.
+	// soon asks for a checkpoint now (a chain mismatch, a joiner to judge).
+	// backupWait asks for one past backupAfter, the index of the last
+	// backup: one proposed meanwhile answers it. checkpointAt is when this
+	// leader last proposed one.
 	soon         bool
+	backupWait   bool
+	backupAfter  uint64
 	checkpointAt time.Time
 }
 
@@ -83,7 +87,7 @@ func (n *Node) backupBlocked() string {
 	case d.alarm != "":
 		return d.alarm
 	case latest == 0 || latest <= n.backupIndex:
-		d.soon = true
+		d.backupWait, d.backupAfter = true, n.backupIndex
 		return "a checkpoint since the last backup"
 	case d.confirmed != latest:
 		return fmt.Sprintf("checkpoint %d to be confirmed by a majority", latest)
@@ -134,9 +138,12 @@ func (n *Node) maybeCheckpoint() {
 	d := &n.div
 	d.mu.Lock()
 	since := time.Since(d.checkpointAt)
-	due := (d.soon && since >= n.cfg.Timing.Tick) || (n.fsm.AppliedIndex() > latest && since >= n.cfg.Timing.Checkpoint)
+	if d.backupWait && latest > d.backupAfter {
+		d.backupWait = false // the checkpoint it waited for, proposed before it asked
+	}
+	due := ((d.soon || d.backupWait) && since >= n.cfg.Timing.Tick) || (n.fsm.AppliedIndex() > latest && since >= n.cfg.Timing.Checkpoint)
 	if due {
-		d.checkpointAt, d.soon = time.Now(), false
+		d.checkpointAt, d.soon, d.backupWait = time.Now(), false, false
 	}
 	d.mu.Unlock()
 	if !due {
