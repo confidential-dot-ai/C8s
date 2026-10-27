@@ -84,6 +84,34 @@ spec:
     - name: peer
       port: {{ .Values.cds.ha.peerPort }}
 ---
+# The operator's way to one node's replica, Ready or not: a replica that has
+# not joined (a fresh one awaiting a Restore) or does not serve (a Recover
+# survivor) is never Ready, so the c8s-cds Service, which carries only
+# serving replicas, does not reach it. Local: https://<node>:<replicaNodePort>
+# answers from that node's replica only. Same port and armTLS as c8s-cds.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "c8s.cdsName" . }}-replicas
+  namespace: {{ .Release.Namespace }}
+  labels:
+{{ include "c8s.commonLabels" . | indent 4 }}
+    app.kubernetes.io/component: cds
+spec:
+  type: NodePort
+  externalTrafficPolicy: Local
+  publishNotReadyAddresses: true
+  selector:
+    app.kubernetes.io/name: c8s-operator
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: cds
+    c8s.confidential.ai/cds-ha: "true"
+  ports:
+    - name: https
+      port: {{ .Values.cds.port }}
+      targetPort: https
+      nodePort: {{ .Values.cds.ha.replicaNodePort }}
+---
 # Decrees: operators write them here (the baked operator credential may
 # write any non-privileged namespace); CDS reads them and records status, and
 # the leader stores sealed backups here for `c8s cds ha recover`.

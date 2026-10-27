@@ -550,15 +550,12 @@ func handleRestore(node *cdsha.Node) http.HandlerFunc {
 func preJoinMux(node *cdsha.Node) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
-	// Ready only while waiting for a restore, so the operator can reach a
-	// replica through the Service after every replica was lost; a replica
-	// joining a live cluster takes no client traffic.
+	// Never ready: Ready puts a replica in the client Service, and an
+	// unjoined one serves nothing. A replica cannot tell a total loss from
+	// its own partition, so waiting for a restore is no reason either; the
+	// operator reaches it through the per-node c8s-cds-replicas Service.
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) {
-		if !node.AwaitingRestore() {
-			http.Error(w, "joining", http.StatusServiceUnavailable)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
+		http.Error(w, "cds-ha: not joined", http.StatusServiceUnavailable)
 	})
 	mux.HandleFunc("GET /ha/status", serveJSON(node.Status))
 	mux.HandleFunc("POST /ha/restore", handleRestore(node))

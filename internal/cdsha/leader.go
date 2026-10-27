@@ -335,14 +335,13 @@ func (n *Node) maybeRenewCA() {
 }
 
 // AwaitingRestore reports a replica that holds no cluster and has not seen
-// one for dead_after: every replica was lost, and only an operator Restore
-// (or Genesis) can start one. It is how the pre-join server tells the Service
-// it may take the operator's restore; a replica on its way into a live
-// cluster is not ready.
+// one for dead_after: every replica may have been lost, and only an operator
+// Restore (or Genesis) can start one. /ha/status shows it to the operator.
+// It is advice, not readiness: a partitioned replica cannot tell its own
+// isolation from a total loss.
 //
 // Not hearing from a member is not enough: a replica on a node whose pod
-// network is still coming up hears from nobody, and taking client traffic
-// then would answer it from the pre-join server. It needs a peer that
+// network is still coming up hears from nobody. It needs a peer that
 // answered and holds no cluster either, or, for a lone survivor of a total
 // loss, no member for lonerAfter.
 func (n *Node) AwaitingRestore() bool {

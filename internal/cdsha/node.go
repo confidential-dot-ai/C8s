@@ -298,6 +298,9 @@ type Status struct {
 	Chain      *Point `json:"chain,omitempty"`
 	Checkpoint *Point `json:"checkpoint,omitempty"`
 	Divergence string `json:"divergence,omitempty"`
+	// AwaitingRestore: no cluster seen for DeadAfter (see AwaitingRestore).
+	// Advice for the operator only: a partitioned replica shows it too.
+	AwaitingRestore bool `json:"awaiting_restore,omitempty"`
 }
 
 // BackupStatus is a stored backup: the state it holds, when it was taken
@@ -1324,7 +1327,7 @@ func (n *Node) Status() Status {
 	core := n.fsm.Core()
 	st := Status{ClusterID: n.cfg.ClusterID, NodeName: n.cfg.NodeName, ID: string(n.id), Joined: core.Joined(),
 		Epoch: core.Epoch, Measurement: n.measurement, AppliedIndex: n.fsm.AppliedIndex(),
-		Format: core.format(), Reads: n.fsm.readable, Stuck: n.fsm.Stuck(), StuckLocal: n.fsm.StuckLocal(), Seats: n.seats()}
+		Format: core.format(), Reads: n.fsm.readable, Stuck: n.fsm.Stuck(), StuckLocal: n.fsm.StuckLocal(), Seats: n.seats(), AwaitingRestore: n.AwaitingRestore()}
 	if n.r() != nil && n.leading() {
 		if p := n.backupErr.Load(); p != nil {
 			st.BackupError = *p

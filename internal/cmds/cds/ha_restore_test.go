@@ -81,12 +81,20 @@ func TestRunHARestoreAfterTotalLoss(t *testing.T) {
 	errs, bases = c.start(ha)
 	t.Cleanup(func() { c.stop(errs) })
 	waitServing(t, bases, false)
-	// A replica that waits for a restore is ready, so the operator reaches
-	// it through the Service.
-	eventually(t, 40*time.Second, "a replica awaiting a restore is ready", func() bool {
-		code, _, _ := do(t, http.MethodGet, bases[2]+"/readyz", "", nil)
-		return code == http.StatusOK
+	// A replica that waits for a restore says so in its status but is not
+	// Ready: it serves nothing, and a partitioned replica looks the same. The
+	// operator reaches it by its own address (c8s-cds-replicas).
+	eventually(t, 40*time.Second, "a replica awaiting a restore", func() bool {
+		if code, _, body := do(t, http.MethodGet, bases[2]+"/readyz", "", nil); code != http.StatusServiceUnavailable {
+			t.Fatalf("an unjoined replica answered /readyz %d %s", code, body)
+		}
+		_, _, raw := do(t, http.MethodGet, bases[2]+"/ha/status", "", nil)
+		var st cdsha.Status
+		return json.Unmarshal(raw, &st) == nil && st.AwaitingRestore
 	})
+	if code, _, body := do(t, http.MethodGet, bases[2]+"/readyz", "", nil); code != http.StatusServiceUnavailable {
+		t.Fatalf("a replica awaiting a restore answered /readyz %d %s", code, body)
+	}
 	raw, _ := json.Marshal(corev1.ConfigMapList{Items: backups})
 	backupFile := filepath.Join(dir, "backup.json")
 	_ = os.WriteFile(backupFile, raw, 0o600)
@@ -139,6 +147,10 @@ func TestRunHARestoreAfterTotalLoss(t *testing.T) {
 		t.Fatalf("recover: %v\n%s", err, out)
 	}
 	waitServing(t, bases, true)
+	eventually(t, 30*time.Second, "the restored replica turns Ready", func() bool {
+		code, _, _ := do(t, http.MethodGet, bases[2]+"/readyz", "", nil)
+		return code == http.StatusOK
+	})
 	// A second recover over the serving cluster is refused: its new intent
 	// is not in the decree record.
 	if out, err := recover(ok...); err == nil {

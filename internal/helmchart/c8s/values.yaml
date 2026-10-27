@@ -205,6 +205,10 @@ cds:
   ha:
     enabled: false
     peerPort: 9443
+    ## NodePort of c8s-cds-replicas: https://<node>:<port> reaches that node's
+    ## replica even while it is not Ready (not joined, or not serving), for
+    ## `c8s cds ha status` and `c8s cds ha recover`. Clients use cds.service.
+    replicaNodePort: 30809
     decreeNamespace: c8s-cds-decrees
     ## HA replicas run alone on dedicated cds nodes (sized for ~8 GiB), so they
     ## get their own, larger budget than the singleton. The store is a memory

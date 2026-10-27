@@ -1,6 +1,7 @@
 package helmchart
 
 import (
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -410,5 +411,30 @@ func TestChartBakedNodeHoldsInjectionScopeToTheMeasuredExemptSet(t *testing.T) {
 				t.Fatalf("render failed for another reason, want %s:\n%s", tc.kind, out)
 			}
 		})
+	}
+}
+
+// HA replicas are Ready only while they serve, so the client Service never
+// carries an unjoined or out-of-contact replica. The
+// operator reaches each node's replica, Ready or not, on its own NodePort.
+func TestChartBakedCDSHAReplicasService(t *testing.T) {
+	t.Parallel()
+	out, err := helmTemplate(t, append(slices.Clone(bakedArgs), "--set", "cds.ha.enabled=true")...)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	ds := renderedDaemonSet(t, out, "c8s-cds-ha")
+	svc := renderedService(t, out, "c8s-cds-replicas")
+	if svc.Spec.Type != corev1.ServiceTypeNodePort || svc.Spec.ExternalTrafficPolicy != corev1.ServiceExternalTrafficPolicyLocal || !svc.Spec.PublishNotReadyAddresses {
+		t.Fatalf("c8s-cds-replicas must be a per-node NodePort that publishes not-ready replicas: %+v", svc.Spec)
+	}
+	if !maps.Equal(svc.Spec.Selector, ds.Spec.Selector.MatchLabels) {
+		t.Fatalf("c8s-cds-replicas selects %v, the replicas carry %v", svc.Spec.Selector, ds.Spec.Selector.MatchLabels)
+	}
+	if len(svc.Spec.Ports) != 1 || svc.Spec.Ports[0].TargetPort.StrVal != "https" || svc.Spec.Ports[0].NodePort != 30809 {
+		t.Fatalf("c8s-cds-replicas ports: %+v", svc.Spec.Ports)
+	}
+	if clients := renderedService(t, out, "c8s-cds"); clients.Spec.PublishNotReadyAddresses {
+		t.Fatal("the client Service c8s-cds must carry only Ready (serving) replicas")
 	}
 }

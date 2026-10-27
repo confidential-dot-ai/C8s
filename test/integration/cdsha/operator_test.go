@@ -272,9 +272,13 @@ func TestRestore(t *testing.T) {
 	for i := range c.Replicas {
 		c.Start(i, false)
 	}
-	// The pre-join server is ready once the replica awaits a restore.
-	c.waitFor(timing.deadAfter+30*time.Second, func() bool { return c.Get(2, "/readyz").Code == http.StatusOK },
+	// The replica reports that it awaits a restore; it is not Ready, because
+	// Ready means joined and serving.
+	c.waitFor(timing.deadAfter+30*time.Second, func() bool { st, ok := c.Status(2); return ok && st.AwaitingRestore && !st.Joined },
 		func() string { return "n3 does not await a restore: " + c.StatusLine(2) })
+	if code := c.Get(2, "/readyz").Code; code != http.StatusServiceUnavailable {
+		t.Fatalf("a replica awaiting a restore answered /readyz %d, want 503", code)
+	}
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()

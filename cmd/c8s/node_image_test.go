@@ -78,6 +78,11 @@ func TestNodeImageRender(t *testing.T) {
 				raw = append(raw, part...)
 			}
 			ha := parts["c8s-cds-ha.yaml"]
+			// The per-node operator Service exists only where HA replicas run.
+			if !bytes.Contains(ha, []byte("name: c8s-cds-replicas")) || bytes.Contains(parts["c8s-integration.yaml"], []byte("name: c8s-cds-replicas")) ||
+				bytes.Contains(parts["c8s-cds-singleton.yaml"], []byte("name: c8s-cds-replicas")) {
+				t.Fatal("Service c8s-cds-replicas is not in (only) the HA part")
+			}
 			for _, want := range []string{"name: GOMEMLIMIT", "memory: 4Gi", "sizeLimit: 2Gi", "--allowlist-max-bytes=2Gi"} {
 				if !bytes.Contains(ha, []byte(want)) {
 					t.Fatalf("HA replicas render without %q", want)
