@@ -9,13 +9,16 @@
 // that pod runs. Application TCP is redirected to the pod's own mesh
 // listeners; everything else is denied in both directions, apart from
 // loopback, pod-local addresses, neighbour discovery, the resolver trusted
-// policy names, and the destinations each platform role is bound to.
+// policy names, the pod's exits, and the destinations each platform role is
+// bound to.
 package ruleset
 
 import (
 	"errors"
 	"fmt"
 	"net/netip"
+
+	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
 // resolverPort is the only destination port the resolver exception permits.
@@ -34,6 +37,10 @@ type Policy struct {
 	// destination: the mesh endpoint authenticates its own peers.
 	MeshUID uint32
 	Roles   []Role
+	// Exits are the destinations every socket of the pod but root's reaches
+	// over TCP uncaptured. Each is a way out of the pod for whatever the
+	// application sends, so only trusted policy names one.
+	Exits []Exit
 	// Server is the platform role whose own ports this pod serves, where the
 	// caller builds it for a pod of the router's namespace. Its application
 	// traffic is captured like a workload's, and only its external listener
@@ -93,6 +100,12 @@ type Role struct {
 	Destinations []Destination
 }
 
+// Exit is one range and one TCP port the pod reaches uncaptured.
+type Exit struct {
+	Range netip.Prefix
+	Port  uint16
+}
+
 // Destination is one address and port a role may reach.
 type Destination struct {
 	Addr netip.Addr
@@ -120,7 +133,28 @@ func (p Policy) validate() error {
 			return err
 		}
 	}
+	for _, exit := range p.Exits {
+		if err := exit.validate(); err != nil {
+			return err
+		}
+	}
 	return p.Server.validate()
+}
+
+// validate requires an exit one rule can match, to hosts outside the pod.
+func (e Exit) validate() error {
+	switch {
+	case !e.Range.IsValid():
+		return fmt.Errorf("%w: invalid exit range", ErrPolicy)
+	case e.Range != e.Range.Masked():
+		return fmt.Errorf("%w: exit range %s carries host bits", ErrPolicy, e.Range)
+	case e.Port == 0:
+		return fmt.Errorf("%w: exit %s has no port", ErrPolicy, e.Range)
+	}
+	if special, overlaps := allowlist.NonUnicastOverlap(e.Range); overlaps {
+		return fmt.Errorf("%w: exit range %s overlaps %s", ErrPolicy, e.Range, special)
+	}
+	return nil
 }
 
 // validate rejects a server role no ruleset can carry. Its identities and its
