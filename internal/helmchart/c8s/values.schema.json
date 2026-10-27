@@ -125,6 +125,7 @@
         "sandboxInventoryCIDRs": {},
         "secretsMaxPaths": {},
         "secretsMaxPathsPerWorkload": {},
+        "secretsMaxValueBytes": {},
         "service": {
           "type": [
             "object",

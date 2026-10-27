@@ -66,6 +66,9 @@ containers:
       - --max-request-size={{ .Values.cds.maxRequestSize }}
       - --secrets-max-paths={{ include "c8s.positiveInt" (dict "value" .Values.cds.secretsMaxPaths "label" "cds.secretsMaxPaths") }}
       - --secrets-max-paths-per-workload={{ include "c8s.positiveInt" (dict "value" .Values.cds.secretsMaxPathsPerWorkload "label" "cds.secretsMaxPathsPerWorkload") }}
+      {{- if not (kindIs "invalid" .Values.cds.secretsMaxValueBytes) }}
+      - --secrets-max-value-bytes={{ include "c8s.positiveInt" (dict "value" .Values.cds.secretsMaxValueBytes "label" "cds.secretsMaxValueBytes") }}
+      {{- end }}
       - --readiness-interval={{ .Values.cds.readinessInterval }}
       - --san-validation={{ .Values.cds.sanValidation }}
       {{- /* Always allow in-cluster Service SANs so the mesh's own

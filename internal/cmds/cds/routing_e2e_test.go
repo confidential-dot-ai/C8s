@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
@@ -180,13 +181,13 @@ const e2eSandboxID = "8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a
 
 func e2eNamedLeaf(t *testing.T, ca *issuer.CA, workload string) tls.Certificate {
 	t.Helper()
-	csrPEM, key := generateCSR(t)
+	csrPEM, key := generateCSRWith(t, pkix.Name{}, nil, nil)
 	block, _ := pem.Decode([]byte(csrPEM))
 	csr, err := x509.ParseCertificateRequest(block.Bytes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	certPEM, _, err := ca.SignCSR(issuer.SignCSRParams{CSR: csr, TTL: 30 * time.Minute, SandboxID: e2eSandboxID, MatchedWorkload: &armtls.MatchedWorkload{
+	certPEM, _, _, err := ca.SignCSR(issuer.SignCSRParams{CSR: csr, TTL: 30 * time.Minute, SandboxID: e2eSandboxID, MatchedWorkload: &armtls.MatchedWorkload{
 		Name: workload, AllowlistVersion: "1", AllowlistDigest: bytes.Repeat([]byte{0x42}, 32),
 	}})
 	if err != nil {
