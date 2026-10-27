@@ -284,6 +284,9 @@ cds:
   # -- Max secret paths CDS holds in memory across every workload. Raise this
   # alongside secretsMaxPathsPerWorkload.
   secretsMaxPaths: 1024
+  # -- Max bytes in one secret value, never below the 32 bytes of a value CDS
+  # generates.
+  secretsMaxValueBytes:
   readinessInterval: 10s
   ## /attest CSRs arrive without a matching TCP source IP under chart routing,
   ## so leave sanValidation off and pin DNS SAN / CN patterns instead.
