@@ -45,6 +45,7 @@ and size placeholders with compatible Cloud values:
   "memoryMiB": 8192,
   "reservedMemoryMiB": 1024,
   "maxPods": 10,
+  "verificationTimeoutSeconds": 600,
   "publicIP": "shared",
   "meshPeers": []
 }
@@ -154,6 +155,30 @@ attested guest status, verifies its Pod identity and maps the application's
 container states back to the original Pod. It preserves the scheduler's
 `PodScheduled` condition and hides the guest-injected mesh endpoint. Failed
 verification withdraws readiness and advertised endpoints.
+
+`verificationTimeoutSeconds` defaults to 600 (10 minutes), with a permitted range
+of 30 to 86400 seconds. The initial window begins when the provider persists the
+Pod's launch intent, including Cloud provisioning and boot. A fresh, verified
+status projection matching the assigned Pod clears the window. Later loss of
+verification begins another window of the same frozen duration. A valid attested
+`Pending` Pod or a running Pod whose application is unready does not time out on
+this basis.
+
+At expiry, the provider persists `Failed` with reason `GuestVerificationTimedOut`,
+withdraws readiness and endpoints, and requests termination of that Pod's VM.
+A late successful response cannot revive the Pod; replacement requires a new
+Pod UID. Cloud termination is retried independently of status publication and
+retains the cleanup record until Cloud confirms termination.
+
+The timeout and active deadline are saved with the launch intent. Provider
+restarts and configuration changes do not extend an existing window. Records
+created before timeout support receive one persisted grace window on upgrade.
+Deadlines use the provider's trusted wall clock, not guest-reported time; keep
+the provider hosts' clocks synchronized. Provider downtime consumes the window:
+an expired record fails when reconciliation resumes. Status publication requires
+an available Kubernetes API, and termination may take longer during a Cloud
+outage. Waiting retries are scheduled within 10 seconds, shortened to the
+remaining budget; individual Cloud and guest calls are capped by that budget.
 
 Application ingress comes from declared TCP `containerPort` values. The provider
 also exposes the guest status port, 8443. Neither is a host readiness port:

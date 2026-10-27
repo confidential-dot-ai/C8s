@@ -40,26 +40,27 @@ const (
 // Config is trusted operator configuration. Paths name mounted files, never
 // tenant annotations. LoadConfig reads their contents once before registration.
 type Config struct {
-	ProviderID          string   `json:"providerID"`
-	NodeName            string   `json:"nodeName"`
-	Namespace           string   `json:"namespace"`
-	CloudURL            string   `json:"cloudURL"`
-	CloudTokenFile      string   `json:"cloudTokenFile"`
-	Image               string   `json:"image"`
-	ImageManifestFile   string   `json:"imageManifestFile"`
-	LaunchKeyFile       string   `json:"launchKeyFile"`
-	ServerAddress       string   `json:"serverAddress"`
-	ServerPublicKeyFile string   `json:"serverPublicKeyFile"`
-	WorkloadsFile       string   `json:"workloadsFile"`
-	ClusterID           string   `json:"clusterID"`
-	Size                string   `json:"size"`
-	Location            string   `json:"location"`
-	VCPUs               int64    `json:"vCPUs"`
-	MemoryMiB           int64    `json:"memoryMiB"`
-	ReservedMemoryMiB   int64    `json:"reservedMemoryMiB"`
-	MaxPods             int64    `json:"maxPods"`
-	MeshPeers           []string `json:"meshPeers,omitempty"`
-	PublicIP            string   `json:"publicIP,omitempty"`
+	ProviderID                 string   `json:"providerID"`
+	NodeName                   string   `json:"nodeName"`
+	Namespace                  string   `json:"namespace"`
+	CloudURL                   string   `json:"cloudURL"`
+	CloudTokenFile             string   `json:"cloudTokenFile"`
+	Image                      string   `json:"image"`
+	ImageManifestFile          string   `json:"imageManifestFile"`
+	LaunchKeyFile              string   `json:"launchKeyFile"`
+	ServerAddress              string   `json:"serverAddress"`
+	ServerPublicKeyFile        string   `json:"serverPublicKeyFile"`
+	WorkloadsFile              string   `json:"workloadsFile"`
+	ClusterID                  string   `json:"clusterID"`
+	Size                       string   `json:"size"`
+	Location                   string   `json:"location"`
+	VCPUs                      int64    `json:"vCPUs"`
+	MemoryMiB                  int64    `json:"memoryMiB"`
+	ReservedMemoryMiB          int64    `json:"reservedMemoryMiB"`
+	MaxPods                    int64    `json:"maxPods"`
+	MeshPeers                  []string `json:"meshPeers,omitempty"`
+	PublicIP                   string   `json:"publicIP,omitempty"`
+	VerificationTimeoutSeconds int64    `json:"verificationTimeoutSeconds,omitempty"`
 
 	token     string
 	key       *ecdsa.PrivateKey
@@ -103,6 +104,12 @@ func LoadConfig(path string) (*Config, error) {
 }
 
 func (c *Config) validate() error {
+	if c.VerificationTimeoutSeconds == 0 {
+		c.VerificationTimeoutSeconds = defaultVerificationTimeoutSeconds
+	}
+	if !validVerificationTimeout(c.VerificationTimeoutSeconds) {
+		return errors.New("verificationTimeoutSeconds must be between 30 and 86400")
+	}
 	for _, s := range []string{c.ProviderID, c.NodeName, c.Namespace} {
 		if len(validation.IsDNS1123Label(s)) != 0 {
 			return errors.New("providerID, nodeName and namespace must be DNS labels")

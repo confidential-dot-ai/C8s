@@ -17,7 +17,7 @@ import (
 )
 
 func TestPersistedIntentCorruptionNeverReachesCloud(t *testing.T) {
-	for _, kind := range []string{"foreign-secret", "invalid-json", "version", "origin", "node", "uid", "manifest", "signature", "signed-identity", "signed-document"} {
+	for _, kind := range []string{"foreign-secret", "invalid-json", "version", "origin", "node", "uid", "manifest", "signature", "signed-identity", "signed-document", "verification-timeout", "verification-short-timeout", "verification-long-timeout", "verification-zero-deadline", "verification-missing-policy"} {
 		t.Run(kind, func(t *testing.T) {
 			pod := fixturePod()
 			r, cloud := fixtureReconciler(t, pod)
@@ -44,6 +44,16 @@ func TestPersistedIntentCorruptionNeverReachesCloud(t *testing.T) {
 				rec.Name = "another-name"
 			case "signed-document":
 				rec.Request.Trust.InitData.Document = []byte("not a launch document")
+			case "verification-timeout":
+				rec.VerificationTimeoutSeconds = -1
+			case "verification-short-timeout":
+				rec.VerificationTimeoutSeconds = 29
+			case "verification-long-timeout":
+				rec.VerificationTimeoutSeconds = 86401
+			case "verification-zero-deadline":
+				rec.VerificationDeadline = new(time.Time)
+			case "verification-missing-policy":
+				rec.VerificationTimeoutSeconds = 0
 			}
 			secret.Data["state.json"], err = json.Marshal(rec)
 			if err != nil {
@@ -64,8 +74,12 @@ func TestPersistedIntentCorruptionNeverReachesCloud(t *testing.T) {
 			if err := r.sweep(context.Background()); err == nil && kind != "foreign-secret" {
 				t.Fatal("orphan sweep accepted corrupt owned record")
 			}
-			if err := r.client.Get(context.Background(), client.ObjectKeyFromObject(secret), &corev1.Secret{}); err != nil {
+			stored := &corev1.Secret{}
+			if err := r.client.Get(context.Background(), client.ObjectKeyFromObject(secret), stored); err != nil {
 				t.Fatal("corrupt cleanup evidence was discarded")
+			}
+			if !bytes.Equal(stored.Data["state.json"], secret.Data["state.json"]) {
+				t.Fatal("refused state changed its durable cleanup evidence")
 			}
 		})
 	}
@@ -149,7 +163,7 @@ func TestCloudRecoveryRefusesAmbiguousAndForeignInstances(t *testing.T) {
 				}
 			}
 			err := reconcile(t, r, pod)
-			if kind == "existing-gone" || kind == "image-mismatch" || kind == "endpoints-pending" {
+			if kind != "node-unowned" {
 				if err != nil {
 					t.Fatal(err)
 				}

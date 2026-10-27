@@ -216,8 +216,11 @@ func TestLaunchIntentPrecedesCloudAndSurvivesLostResponse(t *testing.T) {
 		cloud.in = instanceFor(req)
 		return nil, errors.New("response lost after committed create")
 	}
-	if err := reconcile(t, r, pod); err == nil {
-		t.Fatal("expected lost create response")
+	if err := reconcile(t, r, pod); err != nil {
+		t.Fatal(err)
+	}
+	if getPod(t, r, pod).Status.Reason != "CloudUnavailable" {
+		t.Fatal("lost create response was not retained as unavailable")
 	}
 	// An operator restart/config image upgrade must recover the old signed
 	// request and UID assignment, never produce a second randomized document.
@@ -257,8 +260,8 @@ func TestDeletionResolvesUncertainCreateBeforeReleasingFinalizer(t *testing.T) {
 		}
 		return nil, errors.New("idempotency_in_flight")
 	}
-	if err := reconcile(t, r, pod); err == nil {
-		t.Fatal("expected uncertain create")
+	if err := reconcile(t, r, pod); err != nil {
+		t.Fatal(err)
 	}
 	if err := r.client.Delete(context.Background(), getPod(t, r, pod)); err != nil {
 		t.Fatal(err)
@@ -394,8 +397,8 @@ func TestUnverifiedStatusWithdrawsReadinessAndEndpoints(t *testing.T) {
 				}
 				return p, nil
 			}
-			if err := reconcile(t, r, pod); err == nil {
-				t.Fatal("unverified guest status accepted")
+			if err := reconcile(t, r, pod); err != nil {
+				t.Fatal(err)
 			}
 			got := getPod(t, r, pod)
 			if got.Annotations[endpointsAnnotation] != "" {
@@ -417,8 +420,8 @@ func TestFrozenCredentialsAndOldUncertainIntentFailClosed(t *testing.T) {
 	pod := fixturePod()
 	r, cloud := fixtureReconciler(t, pod)
 	cloud.create = func(string, createRequest) (*instance, error) { return nil, errors.New("timeout") }
-	if err := reconcile(t, r, pod); err == nil {
-		t.Fatal("expected create error")
+	if err := reconcile(t, r, pod); err != nil {
+		t.Fatal(err)
 	}
 	r.cfg.token = "different-org-token"
 	if _, _, err := r.loadRecord(context.Background(), identityKey(r.cfg.ProviderID, string(pod.UID))); err == nil {

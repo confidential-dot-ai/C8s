@@ -54,13 +54,35 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if !pod.DeletionTimestamp.IsZero() {
 		return r.deletePod(ctx, pod)
 	}
-	if r.ownsNode != nil {
-		if err := r.ownsNode(ctx); err != nil {
-			return r.unavailable(ctx, pod, "ProviderNodeUnavailable", err)
-		}
-	}
 	if pod.UID == "" {
 		return ctrl.Result{}, errors.New("scheduled Pod has no UID")
+	}
+	rec, secret, err := r.loadRecord(ctx, identityKey(r.cfg.ProviderID, string(pod.UID)))
+	if err != nil && !apierrors.IsNotFound(err) {
+		return r.unavailable(ctx, pod, "LaunchRefused", err)
+	}
+	if rec != nil {
+		// Existing cleanup authority does not depend on a healthy virtual node.
+		if rec.TerminalStatus != nil || rec.DeleteRequested || rec.Deleted {
+			return r.finish(ctx, pod, rec, secret)
+		}
+		if err := r.ensureVerificationPolicy(ctx, rec, secret); err != nil {
+			return r.unavailable(ctx, pod, "ProviderStateUnavailable", err)
+		}
+		if r.verificationExpired(rec) {
+			return r.stop(ctx, pod, rec, secret, verificationTimeoutReason)
+		}
+	}
+	if r.ownsNode != nil {
+		callCtx, cancel := r.verificationContext(ctx, rec)
+		err := r.ownsNode(callCtx)
+		cancel()
+		if err != nil {
+			return r.unverified(ctx, pod, rec, secret, "ProviderNodeUnavailable", err)
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return ctrl.Result{}, err
 	}
 	if !controllerutil.ContainsFinalizer(pod, finalizer) {
 		before := pod.DeepCopy()
@@ -69,19 +91,35 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			return ctrl.Result{}, err
 		}
 	}
-	rec, secret, err := r.ensureRecord(ctx, pod)
-	if err != nil {
-		return r.unavailable(ctx, pod, "LaunchRefused", err)
+	if rec == nil {
+		rec, secret, err = r.ensureRecord(ctx, pod)
+		if err != nil {
+			return r.unavailable(ctx, pod, "LaunchRefused", err)
+		}
 	}
 	if rec.TerminalStatus != nil || rec.DeleteRequested || rec.Deleted {
 		return r.finish(ctx, pod, rec, secret)
 	}
-	if err := matchesPod(rec, pod); err != nil {
-		return r.unavailable(ctx, pod, "FrozenPodChanged", err)
+	if err := ctx.Err(); err != nil {
+		return ctrl.Result{}, err
 	}
-	in, err := r.ensureInstance(ctx, rec, secret)
+	if r.verificationExpired(rec) {
+		return r.stop(ctx, pod, rec, secret, verificationTimeoutReason)
+	}
+	if err := matchesPod(rec, pod); err != nil {
+		return r.unverified(ctx, pod, rec, secret, "FrozenPodChanged", err)
+	}
+	callCtx, cancel := r.verificationContext(ctx, rec)
+	in, err := r.ensureInstance(callCtx, rec, secret)
+	cancel()
+	if ctx.Err() != nil {
+		return ctrl.Result{}, ctx.Err()
+	}
+	if r.verificationExpired(rec) {
+		return r.stop(ctx, pod, rec, secret, verificationTimeoutReason)
+	}
 	if err != nil {
-		return r.unavailable(ctx, pod, "CloudUnavailable", err)
+		return r.unverified(ctx, pod, rec, secret, "CloudUnavailable", err)
 	}
 	if in == nil {
 		return r.stop(ctx, pod, rec, secret, "InstanceGone")
@@ -98,7 +136,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	case "running":
 		return r.running(ctx, pod, rec, secret, in)
 	default:
-		return r.unavailable(ctx, pod, "InstanceStarting", nil)
+		return r.unverified(ctx, pod, rec, secret, "InstanceStarting", nil)
 	}
 }
 
@@ -167,15 +205,26 @@ func (r *Reconciler) ensureInstance(ctx context.Context, rec *record, secret *co
 func (r *Reconciler) running(ctx context.Context, pod *corev1.Pod, rec *record, secret *corev1.Secret, in *instance) (ctrl.Result, error) {
 	address, apps, podIP, err := endpoints(rec, in)
 	if err != nil {
-		return r.unavailable(ctx, pod, "EndpointsPending", nil)
+		return r.unverified(ctx, pod, rec, secret, "EndpointsPending", nil)
 	}
-	projection, err := r.guest(ctx, rec, address)
+	callCtx, cancel := r.verificationContext(ctx, rec)
+	projection, err := r.guest(callCtx, rec, address)
+	cancel()
+	if ctx.Err() != nil {
+		return ctrl.Result{}, ctx.Err()
+	}
+	if r.verificationExpired(rec) {
+		return r.stop(ctx, pod, rec, secret, verificationTimeoutReason)
+	}
 	if err != nil {
-		return r.unavailable(ctx, pod, "AttestationUnavailable", err)
+		return r.unverified(ctx, pod, rec, secret, "AttestationUnavailable", err)
 	}
 	status, err := projectedStatus(rec, projection, pod, podIP)
 	if err != nil {
-		return r.unavailable(ctx, pod, "GuestStatusRefused", err)
+		return r.unverified(ctx, pod, rec, secret, "GuestStatusRefused", err)
+	}
+	if r.verificationExpired(rec) {
+		return r.stop(ctx, pod, rec, secret, verificationTimeoutReason)
 	}
 	if status.Phase == corev1.PodSucceeded || status.Phase == corev1.PodFailed {
 		rec.TerminalStatus = &status
@@ -183,6 +232,12 @@ func (r *Reconciler) running(ctx context.Context, pod *corev1.Pod, rec *record, 
 			return ctrl.Result{}, err
 		}
 		return r.finish(ctx, pod, rec, secret)
+	}
+	if rec.VerificationDeadline != nil {
+		rec.VerificationDeadline = nil
+		if err := r.save(ctx, rec, secret); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 	if err := r.publishEndpoints(ctx, pod, apps); err != nil {
 		return ctrl.Result{}, err
@@ -199,7 +254,13 @@ func (r *Reconciler) unavailable(ctx context.Context, pod *corev1.Pod, reason st
 }
 
 func (r *Reconciler) stop(ctx context.Context, pod *corev1.Pod, rec *record, secret *corev1.Secret, reason string) (ctrl.Result, error) {
+	if err := ctx.Err(); err != nil {
+		return ctrl.Result{}, err
+	}
 	status := failedStatus(pod, reason, r.now())
+	if reason == verificationTimeoutReason {
+		status.Message = "The Pod CVM could not be verified before its deadline; a new Pod UID is required for a new launch"
+	}
 	rec.TerminalStatus = &status
 	if err := r.save(ctx, rec, secret); err != nil {
 		return ctrl.Result{}, err
@@ -208,19 +269,18 @@ func (r *Reconciler) stop(ctx context.Context, pod *corev1.Pod, rec *record, sec
 }
 
 func (r *Reconciler) finish(ctx context.Context, pod *corev1.Pod, rec *record, secret *corev1.Secret) (ctrl.Result, error) {
+	var publicationErr error
 	if rec.TerminalStatus != nil {
-		if err := r.publishStatus(ctx, pod, *rec.TerminalStatus); err != nil {
-			return ctrl.Result{}, err
-		}
+		publicationErr = r.publishStatus(ctx, pod, *rec.TerminalStatus)
 	}
-	if err := r.publishEndpoints(ctx, pod, nil); err != nil {
-		return ctrl.Result{}, err
-	}
+	publicationErr = errors.Join(publicationErr, r.publishEndpoints(ctx, pod, nil))
+	// The durable terminal decision still requires cleanup when Kubernetes
+	// rejects a status/annotation patch. Keep retrying both independently.
 	done, err := r.removeInstance(ctx, rec, secret)
 	if err != nil || !done {
-		return ctrl.Result{RequeueAfter: pollInterval}, err
+		return ctrl.Result{RequeueAfter: pollInterval}, errors.Join(publicationErr, err)
 	}
-	return ctrl.Result{}, nil
+	return ctrl.Result{}, publicationErr
 }
 
 func (r *Reconciler) deletePod(ctx context.Context, pod *corev1.Pod) (ctrl.Result, error) {
@@ -290,23 +350,30 @@ func (r *Reconciler) removeInstance(ctx context.Context, rec *record, secret *co
 			return false, errors.New("create replay returned no instance")
 		}
 	}
-	if in == nil || in.Status == "terminated" {
+	if in == nil {
+		rec.Deleted = true
+		return true, r.save(ctx, rec, secret)
+	}
+	if in.ID == "" {
+		return false, errors.New("cloud returned no instance identity during deletion")
+	}
+	if rec.InstanceID != "" && in.ID != rec.InstanceID {
+		return false, errors.New("cloud get returned another instance during deletion")
+	}
+	for k, v := range rec.Request.Labels {
+		if in.Labels[k] != v {
+			return false, errors.New("refusing deletion of a foreign instance")
+		}
+	}
+	if in.Status == "terminated" {
 		rec.Deleted = true
 		return true, r.save(ctx, rec, secret)
 	}
 	if rec.InstanceID == "" {
-		for k, v := range rec.Request.Labels {
-			if in.Labels[k] != v {
-				return false, errors.New("refusing deletion of a foreign instance")
-			}
-		}
 		rec.InstanceID = in.ID
 		if err := r.save(ctx, rec, secret); err != nil {
 			return false, err
 		}
-	}
-	if in.ID != rec.InstanceID {
-		return false, errors.New("cloud get returned another instance during deletion")
 	}
 	if err := r.cloud.Delete(ctx, rec.InstanceID); err != nil {
 		return false, err

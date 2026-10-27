@@ -27,25 +27,27 @@ import (
 // original signature, request and account binding. It deliberately has no Pod
 // owner reference, so forced Pod deletion cannot garbage-collect cleanup intent.
 type record struct {
-	Version         int               `json:"version"`
-	ProviderID      string            `json:"providerID"`
-	CloudURL        string            `json:"cloudURL"`
-	CredentialHash  string            `json:"credentialHash"`
-	UID             types.UID         `json:"uid"`
-	Namespace       string            `json:"namespace"`
-	Name            string            `json:"name"`
-	NodeName        string            `json:"nodeName"`
-	Key             string            `json:"key"`
-	Request         createRequest     `json:"request"`
-	Manifest        []byte            `json:"manifest"`
-	VCPUs           int64             `json:"vCPUs"`
-	MemoryMiB       int64             `json:"memoryMiB"`
-	CreatedAt       time.Time         `json:"createdAt"`
-	CreateAttempted bool              `json:"createAttempted,omitempty"`
-	InstanceID      string            `json:"instanceID,omitempty"`
-	DeleteRequested bool              `json:"deleteRequested,omitempty"`
-	Deleted         bool              `json:"deleted,omitempty"`
-	TerminalStatus  *corev1.PodStatus `json:"terminalStatus,omitempty"`
+	Version                    int               `json:"version"`
+	ProviderID                 string            `json:"providerID"`
+	CloudURL                   string            `json:"cloudURL"`
+	CredentialHash             string            `json:"credentialHash"`
+	UID                        types.UID         `json:"uid"`
+	Namespace                  string            `json:"namespace"`
+	Name                       string            `json:"name"`
+	NodeName                   string            `json:"nodeName"`
+	Key                        string            `json:"key"`
+	Request                    createRequest     `json:"request"`
+	Manifest                   []byte            `json:"manifest"`
+	VCPUs                      int64             `json:"vCPUs"`
+	MemoryMiB                  int64             `json:"memoryMiB"`
+	CreatedAt                  time.Time         `json:"createdAt"`
+	CreateAttempted            bool              `json:"createAttempted,omitempty"`
+	InstanceID                 string            `json:"instanceID,omitempty"`
+	DeleteRequested            bool              `json:"deleteRequested,omitempty"`
+	Deleted                    bool              `json:"deleted,omitempty"`
+	TerminalStatus             *corev1.PodStatus `json:"terminalStatus,omitempty"`
+	VerificationTimeoutSeconds int64             `json:"verificationTimeoutSeconds,omitempty"`
+	VerificationDeadline       *time.Time        `json:"verificationDeadline,omitempty"`
 }
 
 func (r *record) document() (*launchconfig.Document, error) {
@@ -93,6 +95,9 @@ func (r *Reconciler) loadRecord(ctx context.Context, key string) (*record, *core
 	if rec.CredentialHash != credentialHash(r.cfg.token) {
 		return nil, nil, errors.New("cloud credential changed while provider records exist; drain with the original credential before rotating")
 	}
+	if (rec.VerificationTimeoutSeconds != 0 && !validVerificationTimeout(rec.VerificationTimeoutSeconds)) || (rec.VerificationDeadline != nil && (rec.VerificationTimeoutSeconds == 0 || rec.VerificationDeadline.IsZero())) {
+		return nil, nil, errors.New("provider record verification policy is invalid")
+	}
 	if _, err := rec.document(); err != nil {
 		return nil, nil, err
 	}
@@ -113,6 +118,9 @@ func (r *Reconciler) ensureRecord(ctx context.Context, pod *corev1.Pod) (*record
 		return nil, nil, fmt.Errorf("pod cannot be launched: %w", err)
 	}
 	rec = &record{Version: 1, ProviderID: r.cfg.ProviderID, CloudURL: r.cfg.CloudURL, CredentialHash: credentialHash(r.cfg.token), UID: pod.UID, Namespace: pod.Namespace, Name: pod.Name, NodeName: r.cfg.NodeName, Key: key, Request: req, Manifest: r.cfg.manifest, VCPUs: r.cfg.VCPUs, MemoryMiB: r.cfg.MemoryMiB, CreatedAt: r.now()}
+	rec.VerificationTimeoutSeconds = r.cfg.VerificationTimeoutSeconds
+	deadline := rec.CreatedAt.Add(time.Duration(rec.VerificationTimeoutSeconds) * time.Second)
+	rec.VerificationDeadline = &deadline
 	data, err := json.Marshal(rec)
 	if err != nil {
 		return nil, nil, err
