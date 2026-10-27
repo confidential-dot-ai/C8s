@@ -9,12 +9,15 @@
 // a pod-local emptyDir), so evidence fetched on one connection says nothing
 // about the leaf a *different* connection would be served — a scaled-out or
 // rolling Service can answer alternating handshakes with alternating certs.
-// This package therefore dials the front door exactly once, fetches and
-// verifies the document over that connection, requires the attested cert to
-// be the leaf that same handshake presented, and returns an HTTP client bound
-// to that one verified connection. The client never redials: a lost
-// connection fails closed with a re-run hint. Per-connection re-verification
-// is the eventual replacement for this single-connection model.
+// This package therefore dials the front door once, fetches and verifies the
+// document over that connection, requires the attested cert to be the leaf
+// that same handshake presented, and returns an HTTP client bound to that
+// attested leaf. When the connection is lost (the router closes the discovery
+// response's connection, idle eviction) the client redials the same host and
+// uses the new connection only if its handshake presents the attested leaf
+// again — a TLS 1.3 handshake proves possession of the leaf's key, so the
+// evidence covers the new connection exactly as it covered the first. A
+// redial that presents any other leaf fails closed with a re-run hint.
 //
 // Evidence verification runs in-process (internal/localverify).
 package routerdiscovery
@@ -34,7 +37,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"sync/atomic"
+	"sync"
 	"time"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
@@ -62,10 +65,10 @@ var ErrNoDiscovery = errors.New("routerdiscovery: target serves no discovery doc
 // verifies the embedded attestation evidence (launch measurement checked
 // against measurements — empty accepts any, UNSAFE), and requires the
 // attested serving certificate to be the leaf the connection's handshake
-// presented. The returned client is bound to that single verified connection
-// (requests are serialized over it) and only for base's host; it never
-// redials, so a lost connection fails closed — see the package comment for
-// why (per-replica serving certs).
+// presented. The returned client serializes requests over one connection to
+// base's host; a lost connection is redialed and accepted only when the new
+// handshake presents the attested leaf — see the package comment for why
+// (per-replica serving certs).
 //
 // verify is localverify.Verify in production, a stub in tests.
 //
@@ -90,7 +93,8 @@ func NewVerifiedHTTPClient(ctx context.Context, base string, measurements [][]by
 	if err != nil {
 		return nil, fmt.Errorf("%w: dial %s: %v", ErrNoDiscovery, u.Host, err)
 	}
-	client := newSingleConnClient(conn)
+	dialer := &attestedDialer{host: u.Host, conn: conn}
+	client := newAttestedClient(dialer)
 	verified := false
 	defer func() {
 		if !verified {
@@ -121,6 +125,7 @@ func NewVerifiedHTTPClient(ctx context.Context, base string, measurements [][]by
 			hex.EncodeToString(docSum[:]), hex.EncodeToString(connSum[:]))
 	}
 
+	dialer.attest(cert.Raw)
 	verified = true
 	return client, nil
 }
@@ -237,25 +242,65 @@ func verifyDocument(ctx context.Context, data []byte, verify localverify.VerifyF
 	return cert, nil
 }
 
-// newSingleConnClient returns an http.Client whose transport hands out exactly
-// conn (MaxConnsPerHost=1 serializes requests over it) and never dials again:
-// the attestation verified one handshake, and a new handshake could reach a
-// different router replica whose leaf that evidence does not cover. A lost
-// connection — server keepalive close, idle eviction, cert rotation — fails
-// closed with a re-run hint. Timeout knobs mirror armtls.NewVerifyingHTTPClient.
-// dialFrontDoor + this guard are a sibling of the verify CLI's dialFrontDoor +
-// singleConnClient (internal/cmds/verify/discovery.go) — port fixes both ways.
-func newSingleConnClient(conn *tls.Conn) *http.Client {
-	var used atomic.Bool
+// attestedDialer is the transport's dialer: it hands out the connection the
+// discovery document was fetched over, then redials host on demand and admits
+// a new connection only when its handshake presents the attested leaf. Until
+// NewVerifiedHTTPClient has attested a leaf, a lost connection fails closed.
+type attestedDialer struct {
+	host string
+
+	mu   sync.Mutex
+	conn *tls.Conn // the connection to hand out next; nil once handed out
+	leaf []byte    // DER of the attested serving cert; nil until attested
+}
+
+// attest records the leaf every later connection must present.
+func (d *attestedDialer) attest(leaf []byte) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.leaf = leaf
+}
+
+func (d *attestedDialer) dial(ctx context.Context, _, _ string) (net.Conn, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.conn != nil {
+		conn := d.conn
+		d.conn = nil
+		return conn, nil
+	}
+	if d.leaf == nil {
+		return nil, errors.New("routerdiscovery: the connection was lost before the discovery document was verified; re-run the command")
+	}
+	conn, err := dialFrontDoor(ctx, d.host)
+	if err != nil {
+		return nil, fmt.Errorf("routerdiscovery: redial %s: %w", d.host, err)
+	}
+	peers := conn.ConnectionState().PeerCertificates
+	if len(peers) == 0 || !bytes.Equal(peers[0].Raw, d.leaf) {
+		conn.Close()
+		presented := "no certificate"
+		if len(peers) > 0 {
+			sum := sha256.Sum256(peers[0].Raw)
+			presented = "serving cert sha256 " + hex.EncodeToString(sum[:])
+		}
+		attested := sha256.Sum256(d.leaf)
+		return nil, fmt.Errorf("routerdiscovery: the attested connection was lost and the redial presented %s, not the attested %s — a different router replica may have answered; re-run the command to attest a fresh connection",
+			presented, hex.EncodeToString(attested[:]))
+	}
+	return conn, nil
+}
+
+// newAttestedClient returns an http.Client whose transport dials through d
+// (MaxConnsPerHost=1 serializes requests over one connection). Timeout knobs
+// mirror armtls.NewVerifyingHTTPClient. dialFrontDoor + attestedDialer are a
+// sibling of the verify CLI's dialFrontDoor + singleConnClient
+// (internal/cmds/verify/discovery.go) — port fixes both ways.
+func newAttestedClient(d *attestedDialer) *http.Client {
 	return &http.Client{
 		Timeout: 30 * time.Second,
 		Transport: &http.Transport{
-			DialTLSContext: func(context.Context, string, string) (net.Conn, error) {
-				if used.Swap(true) {
-					return nil, errors.New("routerdiscovery: the attested connection was lost and redialing could reach a different router replica; re-run the command to attest a fresh connection")
-				}
-				return conn, nil
-			},
+			DialTLSContext:        d.dial,
 			ResponseHeaderTimeout: 10 * time.Second,
 			IdleConnTimeout:       90 * time.Second,
 			MaxIdleConns:          1,
