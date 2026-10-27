@@ -592,7 +592,8 @@ func nextCore(cur Core, de DecreeEntry, from uint64) (Core, *issuer.CA, error) {
 			return Core{}, nil, err
 		}
 		next.Policy = de.Policy
-		next.Format = Format
+		// Only the leader raises the format, once every member reads it.
+		next.Format = baseFormat
 		pins := normalizePins(de.Pins)
 		if len(pins) == 0 {
 			return Core{}, nil, errors.New("genesis without the bootstrap replica's pins")
