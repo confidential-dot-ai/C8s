@@ -1,0 +1,277 @@
+{
+  "status": {
+    "labels": {
+      "io.kubernetes.container.name": "c8s-cert",
+      "io.kubernetes.pod.name": "c8s-router-bcd6744bd-ksv6w",
+      "io.kubernetes.pod.namespace": "c8s-router",
+      "io.kubernetes.pod.uid": "e37fe9f4-0b35-4d7e-aa4c-8e7d4a1e457d"
+    },
+    "imageRef": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:4011628410b1479c4c123358b600e75f52b8c5de3833ac7a8170cd3817ca8109"
+  },
+  "info": {
+    "sandboxID": "1244be4041ba58b80bca1695ef6b111126c977c05f7d4c5b109f7221279b539e",
+    "runtimeSpec": {
+      "process": {
+        "args": [
+          "/c8s",
+          "get-cert",
+          "--attestation-api-url=unix:///run/c8s/workload-claims/attestation-api.sock",
+          "--san-file=/run/c8s-node/tls-san",
+          "--cert-path=/etc/c8s/certs/tls.crt",
+          "--key-path=/etc/c8s/certs/tls.key",
+          "--ca-path=/etc/c8s/certs/ca.crt",
+          "--initial-retry-timeout=2m",
+          "--renew-interval=1h",
+          "--continue-on-initial-error",
+          "--discovery-out=/discovery/discovery.json",
+          "--discovery-cds-cert-url=/.well-known/cds-cert.pem",
+          "--discovery-public-tls-mode-file=/run/c8s-node/router/front-door-mode",
+          "--discovery-public-tls-hostnames-file=/run/c8s-node/router/hostnames",
+          "--discovery-mesh-ca-url=/.well-known/mesh-ca.pem",
+          "--ca-watch-interval=1m",
+          "--expected-workload=c8s-router-cf7a52b9af6a"
+        ],
+        "env": [
+          "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+          "HOSTNAME=c8s-router-bcd6744bd-ksv6w",
+          "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
+          "KUBERNETES_SERVICE_HOST=10.53.0.1",
+          "KUBERNETES_SERVICE_PORT=443",
+          "KUBERNETES_SERVICE_PORT_HTTPS=443",
+          "KUBERNETES_PORT=tcp://10.53.0.1:443",
+          "KUBERNETES_PORT_443_TCP=tcp://10.53.0.1:443",
+          "KUBERNETES_PORT_443_TCP_PROTO=tcp",
+          "KUBERNETES_PORT_443_TCP_PORT=443",
+          "KUBERNETES_PORT_443_TCP_ADDR=10.53.0.1"
+        ],
+        "user": {
+          "uid": 1338,
+          "gid": 1338
+        }
+      },
+      "mounts": [
+        {
+          "destination": "/dev",
+          "options": [
+            "nosuid",
+            "strictatime",
+            "mode=755",
+            "size=65536k"
+          ],
+          "source": "tmpfs",
+          "type": "tmpfs"
+        },
+        {
+          "destination": "/discovery",
+          "options": [
+            "rbind",
+            "rprivate",
+            "rw"
+          ],
+          "source": "/var/lib/kubelet/pods/e37fe9f4-0b35-4d7e-aa4c-8e7d4a1e457d/volumes/kubernetes.io~empty-dir/discovery",
+          "type": "bind"
+        },
+        {
+          "destination": "/proc",
+          "options": [
+            "nosuid",
+            "noexec",
+            "nodev"
+          ],
+          "source": "proc",
+          "type": "proc"
+        },
+        {
+          "destination": "/sys",
+          "options": [
+            "nosuid",
+            "noexec",
+            "nodev",
+            "ro"
+          ],
+          "source": "sysfs",
+          "type": "sysfs"
+        },
+        {
+          "destination": "/dev/mqueue",
+          "options": [
+            "nosuid",
+            "noexec",
+            "nodev"
+          ],
+          "source": "mqueue",
+          "type": "mqueue"
+        },
+        {
+          "destination": "/dev/pts",
+          "options": [
+            "nosuid",
+            "noexec",
+            "newinstance",
+            "ptmxmode=0666",
+            "mode=0620",
+            "gid=5"
+          ],
+          "source": "devpts",
+          "type": "devpts"
+        },
+        {
+          "destination": "/dev/shm",
+          "options": [
+            "rbind",
+            "rprivate",
+            "rw"
+          ],
+          "source": "/run/k3s/containerd/io.containerd.grpc.v1.cri/sandboxes/1244be4041ba58b80bca1695ef6b111126c977c05f7d4c5b109f7221279b539e/shm",
+          "type": "bind"
+        },
+        {
+          "destination": "/dev/termination-log",
+          "options": [
+            "rbind",
+            "rprivate",
+            "rw"
+          ],
+          "source": "/var/lib/kubelet/pods/e37fe9f4-0b35-4d7e-aa4c-8e7d4a1e457d/containers/c8s-cert/881e296c",
+          "type": "bind"
+        },
+        {
+          "destination": "/etc/hostname",
+          "options": [
+            "rbind",
+            "rprivate",
+            "ro"
+          ],
+          "source": "/var/lib/rancher/rke2/agent/containerd/io.containerd.grpc.v1.cri/sandboxes/1244be4041ba58b80bca1695ef6b111126c977c05f7d4c5b109f7221279b539e/hostname",
+          "type": "bind"
+        },
+        {
+          "destination": "/etc/hosts",
+          "options": [
+            "rbind",
+            "rprivate",
+            "rw"
+          ],
+          "source": "/var/lib/kubelet/pods/e37fe9f4-0b35-4d7e-aa4c-8e7d4a1e457d/etc-hosts",
+          "type": "bind"
+        },
+        {
+          "destination": "/etc/resolv.conf",
+          "options": [
+            "rbind",
+            "rprivate",
+            "ro"
+          ],
+          "source": "/var/lib/rancher/rke2/agent/containerd/io.containerd.grpc.v1.cri/sandboxes/1244be4041ba58b80bca1695ef6b111126c977c05f7d4c5b109f7221279b539e/resolv.conf",
+          "type": "bind"
+        },
+        {
+          "destination": "/run/c8s-node",
+          "options": [
+            "rbind",
+            "rprivate",
+            "ro"
+          ],
+          "source": "/run/c8s-node",
+          "type": "bind"
+        },
+        {
+          "destination": "/etc/c8s/certs",
+          "options": [
+            "rbind",
+            "rprivate",
+            "rw"
+          ],
+          "source": "/var/lib/kubelet/pods/e37fe9f4-0b35-4d7e-aa4c-8e7d4a1e457d/volumes/kubernetes.io~empty-dir/c8s-certs",
+          "type": "bind"
+        },
+        {
+          "destination": "/run/c8s/cds-address",
+          "options": [
+            "rbind",
+            "ro",
+            "rprivate",
+            "nosuid",
+            "nodev",
+            "noexec"
+          ],
+          "source": "/run/c8s-enforcer/cds-address",
+          "type": "bind"
+        },
+        {
+          "destination": "/run/c8s/cds-pins.json",
+          "options": [
+            "rbind",
+            "ro",
+            "rprivate",
+            "nosuid",
+            "nodev",
+            "noexec"
+          ],
+          "source": "/run/c8s-enforcer/cds-pins.json",
+          "type": "bind"
+        },
+        {
+          "destination": "/run/c8s/workload-claims",
+          "options": [
+            "rbind",
+            "ro",
+            "rprivate",
+            "nosuid",
+            "nodev",
+            "noexec"
+          ],
+          "source": "/run/nri-image-policy",
+          "type": "bind"
+        },
+        {
+          "destination": "/sys/fs/cgroup",
+          "options": [
+            "nosuid",
+            "noexec",
+            "nodev",
+            "relatime",
+            "ro"
+          ],
+          "source": "cgroup",
+          "type": "cgroup"
+        },
+        {
+          "destination": "/var/run/secrets/kubernetes.io/serviceaccount",
+          "options": [
+            "rbind",
+            "rprivate",
+            "ro"
+          ],
+          "source": "/var/lib/kubelet/pods/e37fe9f4-0b35-4d7e-aa4c-8e7d4a1e457d/volumes/kubernetes.io~projected/kube-api-access-2q8vh",
+          "type": "bind"
+        }
+      ],
+      "linux": {
+        "namespaces": [
+          {
+            "type": "pid"
+          },
+          {
+            "path": "/proc/4453/ns/ipc",
+            "type": "ipc"
+          },
+          {
+            "path": "/proc/4453/ns/uts",
+            "type": "uts"
+          },
+          {
+            "type": "mount"
+          },
+          {
+            "path": "/proc/4453/ns/net",
+            "type": "network"
+          },
+          {
+            "type": "cgroup"
+          }
+        ]
+      }
+    }
+  }
+}

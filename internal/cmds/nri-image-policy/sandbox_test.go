@@ -417,25 +417,56 @@ func privilegedContainer() *api.Container {
 	return ctr
 }
 
-// tcbAllowlist is a base holding one entry for digest: argv pinned to
-// /floor when pinned, otherwise any, and mounts unconstrained — the shape the
-// node image's generated system entries have.
-func tcbAllowlist(digest string, pinned bool) *allowlist.Allowlist {
-	command := allowlist.ArgvPolicy{Policy: allowlist.PolicyAny}
-	args := allowlist.ArgvPolicy{Policy: allowlist.PolicyAny}
-	if pinned {
-		command = allowlist.ArgvPolicy{Policy: allowlist.PolicyExact, Argv: []string{"/floor"}}
-		args = allowlist.ArgvPolicy{Policy: allowlist.PolicyExact}
+// tcbAllowlist is a base holding one entry for digest. An open entry leaves
+// command, args and mounts at any, the shape of the node image's generated
+// system entries. argvPinned pins argv to /floor only; launchPinned also pins
+// the mounts to privilegedContainer's host bind and the environment.
+type tcbShape int
+
+const (
+	openEntry tcbShape = iota
+	argvPinnedEntry
+	launchPinnedEntry
+)
+
+func tcbAllowlist(digest string, shape tcbShape) *allowlist.Allowlist {
+	c := allowlist.Container{
+		Digest:  mustDigestOrPanic(digest),
+		Image:   "floor",
+		Command: allowlist.ArgvPolicy{Policy: allowlist.PolicyAny},
+		Args:    allowlist.ArgvPolicy{Policy: allowlist.PolicyAny},
+		Mounts:  allowlist.MountPolicy{Policy: allowlist.PolicyAny},
+	}
+	if shape != openEntry {
+		c.Command = allowlist.ArgvPolicy{Policy: allowlist.PolicyExact, Argv: []string{"/floor"}}
+		c.Args = allowlist.ArgvPolicy{Policy: allowlist.PolicyDeny}
+	}
+	if shape == launchPinnedEntry {
+		// Without a kubelet root the observer classes every bind as host,
+		// the kubelet's and containerd's own included.
+		var rules []allowlist.MountRule
+		for _, m := range privilegedContainer().Mounts {
+			if strings.HasPrefix(m.Source, "/") {
+				rules = append(rules, allowlist.MountRule{Destination: m.Destination, Kind: allowlist.MountHost, Source: m.Source})
+			}
+		}
+		c.Mounts = allowlist.MountPolicy{Policy: allowlist.PolicyExact, Rules: rules}
+		c.Env = allowlist.EnvPolicy{Policy: allowlist.PolicyMatch, Variables: map[string]allowlist.EnvMatcher{}}
 	}
 	return &allowlist.Allowlist{Schema: allowlist.Schema, Workloads: map[string]allowlist.Workload{
-		"floor": {Label: "floor", Containers: []allowlist.Container{{
-			Digest:  mustDigestOrPanic(digest),
-			Image:   "floor",
-			Command: command,
-			Args:    args,
-			Mounts:  allowlist.MountPolicy{Policy: allowlist.PolicyAny},
-		}}},
+		"floor": {Label: "floor", Containers: []allowlist.Container{c}},
 	}}
+}
+
+// hostNetworkPod shares the node's network (and with it uts) namespace and
+// nothing else.
+func hostNetworkPod() *api.PodSandbox {
+	pod := sandboxedPod()
+	pod.Linux.Namespaces = []*api.LinuxNamespace{
+		{Type: "ipc", Path: "/proc/42/ns/ipc"},
+		{Type: "pid", Path: "/proc/42/ns/pid"},
+	}
+	return pod
 }
 
 func TestCheckSandboxModes(t *testing.T) {
@@ -444,40 +475,73 @@ func TestCheckSandboxModes(t *testing.T) {
 		sandbox     sandboxMode
 		nodeTCB     bool
 		floorDigest string // digest in the base allowlist; empty means the base holds another image
-		pinned      bool   // the base entry pins argv to /floor
+		shape       tcbShape
 		argv        []string
+		pod         func() *api.PodSandbox
+		ctr         func() *api.Container
 		want        imageVerdict
+		wantReason  string
 	}{
 		{name: "off is not observed", sandbox: SandboxOff, want: verdictAllow},
 		{name: "audit admits", sandbox: SandboxAudit, want: verdictAllow},
 		{name: "enforce denies", sandbox: SandboxEnforce, want: verdictDeny},
 		{
 			name: "floor entry is denied without the node-TCB marker", sandbox: SandboxEnforce,
+			floorDigest: pushDigestA, shape: launchPinnedEntry, argv: []string{"/floor"}, want: verdictDeny,
+		},
+		{
+			name: "an open floor entry does not exempt a host bind", sandbox: SandboxEnforce, nodeTCB: true,
 			floorDigest: pushDigestA, want: verdictDeny,
 		},
 		{
-			name: "node TCB exempts a floor entry", sandbox: SandboxEnforce, nodeTCB: true,
-			floorDigest: pushDigestA, want: verdictAllow,
+			name: "an argv-only pin does not exempt a host bind", sandbox: SandboxEnforce, nodeTCB: true,
+			floorDigest: pushDigestA, shape: argvPinnedEntry, argv: []string{"/floor"}, want: verdictDeny,
 		},
 		{
 			name: "node TCB does not exempt a served entry", sandbox: SandboxEnforce, nodeTCB: true,
-			floorDigest: pushDigestB, want: verdictDeny,
+			floorDigest: pushDigestB, shape: launchPinnedEntry, argv: []string{"/floor"}, want: verdictDeny,
 		},
 		{
-			name: "node TCB exempts a pinned entry at its own argv", sandbox: SandboxEnforce, nodeTCB: true,
-			floorDigest: pushDigestA, pinned: true, argv: []string{"/floor"}, want: verdictAllow,
+			name: "node TCB exempts a pinned entry at its own launch", sandbox: SandboxEnforce, nodeTCB: true,
+			floorDigest: pushDigestA, shape: launchPinnedEntry, argv: []string{"/floor"}, want: verdictAllow,
 		},
 		{
 			name: "node TCB does not exempt a pinned entry restaged with a shell", sandbox: SandboxEnforce, nodeTCB: true,
-			floorDigest: pushDigestA, pinned: true, argv: []string{"/bin/sh", "-c", "id"}, want: verdictDeny,
+			floorDigest: pushDigestA, shape: launchPinnedEntry, argv: []string{"/bin/sh", "-c", "id"}, want: verdictDeny,
+		},
+		{
+			name: "an open floor entry exempts host network alone", sandbox: SandboxEnforce, nodeTCB: true,
+			floorDigest: pushDigestA, pod: hostNetworkPod, ctr: floorContainer, want: verdictAllow,
+		},
+		{
+			name: "host network alone needs a base entry", sandbox: SandboxEnforce, nodeTCB: true,
+			floorDigest: pushDigestB, pod: hostNetworkPod, ctr: floorContainer, want: verdictDeny,
+			wantReason: "host network namespace",
+		},
+		{
+			name: "an open floor entry does not exempt the host PID namespace", sandbox: SandboxEnforce, nodeTCB: true,
+			floorDigest: pushDigestA, ctr: floorContainer, want: verdictDeny, wantReason: "host pid namespace",
+			pod: func() *api.PodSandbox {
+				pod := hostNetworkPod()
+				pod.Linux.Namespaces = pod.Linux.Namespaces[:1]
+				return pod
+			},
+		},
+		{
+			name: "a static pod of a floor image is exempt", sandbox: SandboxEnforce, nodeTCB: true,
+			floorDigest: pushDigestA, pod: staticPod, want: verdictAllow,
+		},
+		{
+			name: "a static pod needs a base entry", sandbox: SandboxEnforce, nodeTCB: true,
+			floorDigest: pushDigestB, pod: staticPod, want: verdictDeny,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			floor := tcbAllowlist(pushDigestB, false)
+			floor := tcbAllowlist(pushDigestB, openEntry)
 			if tt.floorDigest != "" {
-				floor = tcbAllowlist(tt.floorDigest, tt.pinned)
+				floor = tcbAllowlist(tt.floorDigest, tt.shape)
 			}
 			cfg := &config{
 				Allowlist: allowlistConfig{Base: floor, NodeTCB: tt.nodeTCB},
@@ -487,6 +551,12 @@ func TestCheckSandboxModes(t *testing.T) {
 			p.policy = newPolicyStore(floor)
 
 			pod, ctr := sandboxedPod(), privilegedContainer()
+			if tt.pod != nil {
+				pod = tt.pod()
+			}
+			if tt.ctr != nil {
+				ctr = tt.ctr()
+			}
 			ctr.Args = tt.argv
 			verdict := verdictAllow
 			reason := ""
@@ -497,10 +567,45 @@ func TestCheckSandboxModes(t *testing.T) {
 			if verdict != tt.want {
 				t.Fatalf("checkSandbox(%s) = %d %q, want %d", tt.name, verdict, reason, tt.want)
 			}
-			if tt.want == verdictDeny && !strings.Contains(reason, "host path bind mount") {
-				t.Fatalf("checkSandbox(%s) reason = %q, want it to name the violation", tt.name, reason)
+			want := tt.wantReason
+			if want == "" && tt.ctr == nil {
+				want = "host path bind mount"
+			}
+			if tt.want == verdictDeny && !strings.Contains(reason, want) {
+				t.Fatalf("checkSandbox(%s) reason = %q, want it to name %q", tt.name, reason, want)
 			}
 		})
+	}
+}
+
+// floorContainer runs the floor image with no host privilege of its own.
+func floorContainer() *api.Container {
+	ctr := sandboxedContainer()
+	ctr.Annotations = map[string]string{annotationImageName: testFloorImage}
+	return ctr
+}
+
+// staticPod is a pod the kubelet read from its manifest directory.
+func staticPod() *api.PodSandbox {
+	pod := sandboxedPod()
+	pod.Annotations = map[string]string{configSourceAnnotation: staticPodSource}
+	return pod
+}
+
+// The kubelet's static-pod annotation is the provenance; any other value, or
+// an annotation on the pod object that the kubelet overwrote, is an API pod.
+func TestStaticPodNeedsTheKubeletSource(t *testing.T) {
+	floor := tcbAllowlist(pushDigestA, openEntry)
+	cfg := &config{
+		Allowlist: allowlistConfig{Base: floor, NodeTCB: true},
+		Policy:    policyConfig{Mode: ModeFailClosed, Sandbox: SandboxEnforce},
+	}
+	p := newTestPlugin(cfg)
+	pod, ctr := sandboxedPod(), privilegedContainer()
+	pod.Annotations = map[string]string{configSourceAnnotation: "api"}
+	mounts := newMountObserver(nil, nodeMounts{}).Observe(pod, ctr)
+	if verdict, _ := p.checkSandbox(context.Background(), cfg, pod, ctr, testFloorImage, containerEnv(ctr), mounts); verdict != verdictDeny {
+		t.Fatalf("checkSandbox(API pod) = %d, want deny", verdict)
 	}
 }
 

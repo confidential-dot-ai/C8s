@@ -5,9 +5,12 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/containerd/nri/pkg/api"
+
+	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
 // gpuSpec is the shape of the spec the NVIDIA device plugin writes to
@@ -210,21 +213,97 @@ func TestCDIExpansionFailsClosed(t *testing.T) {
 	}
 }
 
-// Under enforce, the GPU container is admitted with its injection and
-// refused once it carries anything more.
-func TestCheckSandboxAdmitsTrustedCDIInjection(t *testing.T) {
-	dirs := writeCDISpecs(t, map[string]string{"gpu.json": gpuSpec})
+// gpuAllowlist holds the GPU workload's entry: argv pinned when pinned,
+// otherwise open; mounts and env open.
+func gpuAllowlist(pinned bool) *allowlist.Allowlist {
+	c := allowlist.Container{
+		Digest:  mustDigestOrPanic(pushDigestA),
+		Image:   "gpu",
+		Command: allowlist.ArgvPolicy{Policy: allowlist.PolicyAny},
+		Args:    allowlist.ArgvPolicy{Policy: allowlist.PolicyAny},
+		Mounts:  allowlist.MountPolicy{Policy: allowlist.PolicyAny},
+	}
+	if pinned {
+		c.Command = allowlist.ArgvPolicy{Policy: allowlist.PolicyExact, Argv: []string{"/server"}}
+		c.Args = allowlist.ArgvPolicy{Policy: allowlist.PolicyDeny}
+	}
+	return &allowlist.Allowlist{Schema: allowlist.Schema, Workloads: map[string]allowlist.Workload{
+		"gpu": {Label: "gpu", Containers: []allowlist.Container{c}},
+	}}
+}
+
+func gpuPlugin(t *testing.T, served *allowlist.Allowlist) (*plugin, *config) {
+	t.Helper()
 	cfg := &config{Policy: policyConfig{Mode: ModeFailClosed, Sandbox: SandboxEnforce}}
 	p := newTestPlugin(cfg)
-	p.cdiSpecDirs = dirs
-	pod := sandboxedPod()
+	p.policy.apply(served, 1)
+	p.cdiSpecDirs = writeCDISpecs(t, map[string]string{"gpu.json": gpuSpec})
+	return p, cfg
+}
 
+func servedGPUContainer() *api.Container {
 	ctr := cdiGPUContainer()
-	if verdict, reason := p.checkSandbox(context.Background(), cfg, pod, ctr, "registry/repo:tag", nil, nil); verdict != verdictAllow {
+	ctr.Args = []string{"/server"}
+	ctr.Annotations[annotationImageName] = testFloorImage
+	return ctr
+}
+
+// Under enforce, a GPU container a served entry pins is admitted with its
+// injection and refused once it carries anything more.
+func TestCheckSandboxAdmitsTrustedCDIInjection(t *testing.T) {
+	p, cfg := gpuPlugin(t, gpuAllowlist(true))
+	pod, ctr := sandboxedPod(), servedGPUContainer()
+	if verdict, reason := p.checkSandbox(context.Background(), cfg, pod, ctr, testFloorImage, nil, nil); verdict != verdictAllow {
 		t.Fatalf("checkSandbox(GPU container) = %d %q, want allow", verdict, reason)
 	}
 	ctr.Linux.Devices = append(ctr.Linux.Devices, &api.LinuxDevice{Path: "/dev/mem"})
-	if verdict, _ := p.checkSandbox(context.Background(), cfg, pod, ctr, "registry/repo:tag", nil, nil); verdict != verdictDeny {
+	if verdict, _ := p.checkSandbox(context.Background(), cfg, pod, ctr, testFloorImage, nil, nil); verdict != verdictDeny {
 		t.Fatalf("checkSandbox(GPU container + /dev/mem) = %d, want deny", verdict)
 	}
+}
+
+// An entry that leaves the argv open never receives a GPU: an open floor
+// image restaged with a CDI annotation keeps its device nodes and hooks.
+func TestOpenEntryGetsNoCDIExpansion(t *testing.T) {
+	p, cfg := gpuPlugin(t, gpuAllowlist(false))
+	pod, ctr := sandboxedPod(), servedGPUContainer()
+	verdict, reason := p.checkSandbox(context.Background(), cfg, pod, ctr, testFloorImage, nil, nil)
+	if verdict != verdictDeny || !strings.Contains(reason, "host device node") {
+		t.Fatalf("checkSandbox(open entry with GPU) = %d %q, want a device-node denial", verdict, reason)
+	}
+}
+
+// Create-time hooks are judged at creation, before the runtime runs them.
+func TestCreateHooksAreCheckedAtCreation(t *testing.T) {
+	t.Run("trusted CDI hooks of a pinned launch", func(t *testing.T) {
+		p, cfg := gpuPlugin(t, gpuAllowlist(true))
+		if verdict, reason := p.checkCreateHooks(context.Background(), cfg, sandboxedPod(), servedGPUContainer(), testFloorImage); verdict != verdictAllow {
+			t.Fatalf("checkCreateHooks = %d %q, want allow", verdict, reason)
+		}
+	})
+	t.Run("an injected hook", func(t *testing.T) {
+		p, cfg := gpuPlugin(t, gpuAllowlist(true))
+		ctr := servedGPUContainer()
+		ctr.Hooks.CreateRuntime = []*api.Hook{{Path: "/bin/sh", Args: []string{"sh", "-c", "id"}}}
+		verdict, reason := p.checkCreateHooks(context.Background(), cfg, sandboxedPod(), ctr, testFloorImage)
+		if verdict != verdictDeny || !strings.Contains(reason, "OCI hook") {
+			t.Fatalf("checkCreateHooks = %d %q, want an OCI hook denial", verdict, reason)
+		}
+	})
+	t.Run("CDI hooks of an open entry", func(t *testing.T) {
+		p, cfg := gpuPlugin(t, gpuAllowlist(false))
+		if verdict, _ := p.checkCreateHooks(context.Background(), cfg, sandboxedPod(), servedGPUContainer(), testFloorImage); verdict != verdictDeny {
+			t.Fatalf("checkCreateHooks = %d, want deny", verdict)
+		}
+	})
+	t.Run("through CreateContainer", func(t *testing.T) {
+		p, _ := gpuPlugin(t, gpuAllowlist(true))
+		p.SetReady()
+		ctr := servedGPUContainer()
+		ctr.Hooks.Prestart = []*api.Hook{{Path: "/usr/bin/evil"}}
+		pod := sandboxedPod()
+		if _, _, err := p.CreateContainer(context.Background(), pod, ctr); err == nil || !strings.Contains(err.Error(), "OCI hook") {
+			t.Fatalf("CreateContainer(prestart hook) = %v, want an OCI hook refusal", err)
+		}
+	})
 }

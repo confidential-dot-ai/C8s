@@ -89,6 +89,37 @@ func (s *policyStore) baseAdmits(r allowlist.RunningContainer, phase launchPhase
 	return s.base.AdmitsContainer(r)
 }
 
+// baseAdmitsPinned is baseAdmits restricted to entries that pin the launch
+// (allowlist.Container.LaunchPinned).
+func (s *policyStore) baseAdmitsPinned(r allowlist.RunningContainer, phase launchPhase) bool {
+	if s == nil {
+		return false
+	}
+	if phase == launchPreliminary {
+		return s.base.AdmitsProcessWhere(r, allowlist.Container.LaunchPinned)
+	}
+	return s.base.AdmitsContainerWhere(r, allowlist.Container.LaunchPinned)
+}
+
+// admitsArgvPinned reports whether an entry of the base or the applied
+// allowlist that pins command and args admits r.
+func (s *policyStore) admitsArgvPinned(r allowlist.RunningContainer, phase launchPhase) bool {
+	if s == nil {
+		return false
+	}
+	indexes := []*allowlist.Index{s.base}
+	if snap := s.current(); snap != nil {
+		indexes = append(indexes, snap.index)
+	}
+	for _, index := range indexes {
+		if phase == launchPreliminary && index.AdmitsProcessWhere(r, allowlist.Container.ArgvPinned) ||
+			phase == launchFinal && index.AdmitsContainerWhere(r, allowlist.Container.ArgvPinned) {
+			return true
+		}
+	}
+	return false
+}
+
 // admitsNodeRoot reports whether the base or applied allowlist admits r with
 // an exact nodeRootFile rule for m (allowlist.Index.AdmitsNodeRoot).
 func (s *policyStore) admitsNodeRoot(r allowlist.RunningContainer, m allowlist.ObservedMount) bool {
@@ -684,6 +715,10 @@ func (p *plugin) checkContainer(ctx context.Context, cfg *config, pod *api.PodSa
 // plugins' adjustments, and the adjustment validator sees those edits applied
 // to a clone's env, argv and mounts alone (env.go, adjustedLaunchContainer).
 //
+// The one exception is OCI hooks: the runtime runs the create-time ones before
+// the container starts, so the preliminary phase checks them on the spec it
+// has, which already holds containerd's CDI edits (checkCreateHooks).
+//
 // A sandbox denial is never downgraded by exemptNamespace: the snapshot says
 // which digests ran in the namespace, and host privilege is a property of the
 // pod spec, not of the image. Only the measured node TCB excuses it.
@@ -693,7 +728,13 @@ func (p *plugin) checkContainerPhase(ctx context.Context, cfg *config, pod *api.
 		mounts = p.observedMounts(pod, ctr)
 	}
 	verdict, reason := p.checkContainerObserved(ctx, cfg, pod, ctr, imageRef, phase, containerEnv(ctr), mounts)
-	if verdict == verdictDeny || phase != launchFinal || !cfg.sandboxObserved() {
+	if verdict == verdictDeny || !cfg.sandboxObserved() {
+		return verdict, reason
+	}
+	if phase == launchPreliminary {
+		if v, r := p.checkCreateHooks(ctx, cfg, pod, ctr, imageRef); v == verdictDeny {
+			return v, r
+		}
 		return verdict, reason
 	}
 	if v, r := p.checkSandbox(ctx, cfg, pod, ctr, imageRef, containerEnv(ctr), mounts); v == verdictDeny {
@@ -764,65 +805,131 @@ func (p *plugin) exemptNamespace(ctx context.Context, cfg *config, pod *api.PodS
 // hook or the marks of a privileged container. The allowlist bounds which bytes
 // run; this bounds what those bytes are handed.
 //
-// Two exemptions apply. The first is a node-TCB entry: only the MEASURED base
-// allowlist, and only when the node config claims it as the node TCB
-// (allowlist.node_tcb). A CDS-served entry never is, because the cluster admin
-// this policy defends against authors that document. The exemption is the
-// whole base entry — digest, argv, env and mounts — not the digest alone: the
-// control plane picks the image a pod runs, so a TCB image restaged with
-// another entrypoint is a tenant container, and an entry with a pinned argv
-// refuses it. An entry left at `any` exempts every launch of its digest; see
-// docs/allowlist-and-capabilities.md.
+// Only the MEASURED base allowlist exempts a container, and only when the node
+// config claims it as the node TCB (allowlist.node_tcb). A CDS-served entry
+// never does, because the cluster admin this policy defends against authors
+// that document. The exemption has three levels (nodeTCBExempt): a kubelet
+// static pod whose digest the base admits; host network alone for any launch
+// the base admits, open entries included; anything more only for a launch a
+// base entry pins (command, args and mounts, with a constrained environment).
+// An open entry therefore admits its image but never hands it more than the
+// host network; see docs/allowlist-and-capabilities.md.
 //
-// The second exempts a single bind, not the container: one whose mount
-// evidence carries node-root provenance and that an exact `nodeRootFile` rule of
-// the base or the served allowlist admits at that destination and source. A
-// served rule is safe here because it can only name read-only bytes of the
-// measured node image, and strict clients verify the served policy byte for
-// byte.
+// Two narrower exemptions set aside parts of the observation instead. A bind
+// whose mount evidence carries node-root provenance and that an exact
+// `nodeRootFile` rule of the base or the served allowlist admits at that
+// destination and source is not a host bind: a served rule is safe here because
+// it can only name read-only bytes of the measured node image, and strict
+// clients verify the served policy byte for byte. And the device nodes, hooks
+// and binds of trusted CDI devices are not observed for a launch whose
+// admitting entry pins its command and args (cdi.go), so an open entry never
+// receives a GPU.
 //
 // The digest is resolved only when an exemption could apply, so an ordinary
 // container costs no containerd round-trip.
 func (p *plugin) checkSandbox(ctx context.Context, cfg *config, pod *api.PodSandbox, ctr *api.Container, imageRef string, env *allowlist.EnvObservation, mounts []allowlist.ObservedMount) (imageVerdict, string) {
-	cdi, err := expandCDI(ctr, p.cdiSpecDirs)
-	if err != nil {
-		p.logger.Warn("cannot expand the container's CDI devices; their edits count as host privilege",
-			"namespace", pod.GetNamespace(), "pod", pod.GetName(), "container", ctr.GetName(), "error", err)
-	}
-	obs := observeSandbox(pod, ctr, nodeMounts{
+	own := nodeMounts{
 		socketDir:  cfg.WorkloadClaims.SocketDir,
 		cdsPins:    p.cdsPins,
 		cdsAddress: p.cdsAddress,
-	}, mounts, nil, cdi)
+	}
+	digest := ""
+	launch := func() allowlist.RunningContainer {
+		if digest == "" {
+			digest = p.resolveDigest(ctx, imageRef)
+		}
+		return allowlist.RunningContainer{Digest: digest, Argv: ctr.GetArgs(), Env: env, Mounts: mounts}
+	}
+	cdi := cdiExpansion{}
+	if len(requestedCDIDevices(ctr)) > 0 && p.policy.admitsArgvPinned(launch(), launchFinal) {
+		cdi = p.expandCDI(pod, ctr)
+	}
+	obs := observeSandbox(pod, ctr, own, mounts, nil, cdi)
 	violations := obs.violations()
 	if len(violations) == 0 {
 		return verdictAllow, ""
 	}
-	digest := ""
 	if cfg.AllowlistEnabled() && len(obs.HostBinds) > 0 && slices.ContainsFunc(mounts, func(m allowlist.ObservedMount) bool { return m.Provenance != "" }) {
-		digest = p.resolveDigest(ctx, imageRef)
-		rc := allowlist.RunningContainer{Digest: digest, Argv: ctr.GetArgs(), Env: env, Mounts: mounts}
-		obs = observeSandbox(pod, ctr, nodeMounts{
-			socketDir:  cfg.WorkloadClaims.SocketDir,
-			cdsPins:    p.cdsPins,
-			cdsAddress: p.cdsAddress,
-		}, mounts, func(m allowlist.ObservedMount) bool {
+		rc := launch()
+		obs = observeSandbox(pod, ctr, own, mounts, func(m allowlist.ObservedMount) bool {
 			return p.policy.admitsNodeRoot(rc, m)
 		}, cdi)
 		if violations = obs.violations(); len(violations) == 0 {
 			return verdictAllow, ""
 		}
 	}
-	if cfg.Allowlist.NodeTCB {
-		if digest == "" {
-			digest = p.resolveDigest(ctx, imageRef)
-		}
-		rc := allowlist.RunningContainer{Digest: digest, Argv: ctr.GetArgs(), Env: env, Mounts: mounts}
-		if p.policy.baseAdmits(rc, launchFinal) {
-			return verdictAllow, ""
-		}
+	if cfg.Allowlist.NodeTCB && p.nodeTCBExempt(pod, launch(), violations, launchFinal) {
+		return verdictAllow, ""
 	}
+	return p.sandboxVerdict(cfg, pod, ctr, imageRef, digest, violations, obs.logAttrs())
+}
 
+// checkCreateHooks applies the hook rule of the sandbox policy at container
+// creation: the runtime runs createRuntime, createContainer and prestart hooks
+// while it creates the container, before the start-time check sees the final
+// spec, so a hook the policy refuses must be refused here. A hook is set aside
+// as at start: a trusted CDI device's hook for a launch whose admitting entry
+// pins command and args, or any hook of a launch the node TCB exempts. Only the
+// argv is known at creation, so the entries are matched on it; the start-time
+// check then judges the whole launch.
+func (p *plugin) checkCreateHooks(ctx context.Context, cfg *config, pod *api.PodSandbox, ctr *api.Container, imageRef string) (imageVerdict, string) {
+	if hookStages(ctr.GetHooks(), cdiExpansion{}) == nil {
+		return verdictAllow, ""
+	}
+	digest := p.resolveDigest(ctx, imageRef)
+	rc := allowlist.RunningContainer{Digest: digest, Argv: ctr.GetArgs()}
+	cdi := cdiExpansion{}
+	if len(requestedCDIDevices(ctr)) > 0 && p.policy.admitsArgvPinned(rc, launchPreliminary) {
+		cdi = p.expandCDI(pod, ctr)
+	}
+	stages := hookStages(ctr.GetHooks(), cdi)
+	if stages == nil {
+		return verdictAllow, ""
+	}
+	violations := []string{"OCI hook"}
+	if cfg.Allowlist.NodeTCB && p.nodeTCBExempt(pod, rc, violations, launchPreliminary) {
+		return verdictAllow, ""
+	}
+	return p.sandboxVerdict(cfg, pod, ctr, imageRef, digest, violations, []any{"hooks", stages})
+}
+
+// staticPodSource is the value the kubelet gives kubernetes.io/config.source
+// on a pod it reads from its manifest directory. The kubelet sets the
+// annotation on every pod it runs, overwriting whatever the API object
+// carries, and passes it to the runtime as a sandbox annotation, so a pod
+// created through the API reads "api" here.
+const (
+	configSourceAnnotation = "kubernetes.io/config.source"
+	staticPodSource        = "file"
+)
+
+// nodeTCBExempt reports whether the measured base exempts a launch holding
+// violations. A kubelet static pod is exempt when the base admits it: its
+// manifest is written only by RKE2 on the node, from the measured config and
+// the signed launch document. Host network alone is exempt for any launch the
+// base admits, an open entry included. Anything more needs an entry that pins
+// the launch (allowlist.Container.LaunchPinned).
+func (p *plugin) nodeTCBExempt(pod *api.PodSandbox, rc allowlist.RunningContainer, violations []string, phase launchPhase) bool {
+	if pod.GetAnnotations()[configSourceAnnotation] == staticPodSource || hostNetworkOnly(violations) {
+		return p.policy.baseAdmits(rc, phase)
+	}
+	return p.policy.baseAdmitsPinned(rc, phase)
+}
+
+// expandCDI expands the container's trusted CDI devices, logging and
+// expanding nothing when the node's specs do not define them once each.
+func (p *plugin) expandCDI(pod *api.PodSandbox, ctr *api.Container) cdiExpansion {
+	cdi, err := expandCDI(ctr, p.cdiSpecDirs)
+	if err != nil {
+		p.logger.Warn("cannot expand the container's CDI devices; their edits count as host privilege",
+			"namespace", pod.GetNamespace(), "pod", pod.GetName(), "container", ctr.GetName(), "error", err)
+	}
+	return cdi
+}
+
+// sandboxVerdict records a container the sandbox policy flags and returns
+// the verdict for the configured mode.
+func (p *plugin) sandboxVerdict(cfg *config, pod *api.PodSandbox, ctr *api.Container, imageRef, digest string, violations []string, observation []any) (imageVerdict, string) {
 	namespace, podName, ctrName := pod.GetNamespace(), pod.GetName(), ctr.GetName()
 	// INVARIANT: the log carries the whole observation so a reviewer can write
 	// the missing node-TCB rule from it; the returned reason reaches a
@@ -833,7 +940,7 @@ func (p *plugin) checkSandbox(ctx context.Context, cfg *config, pod *api.PodSand
 			"namespace", namespace, "pod", podName, "container", ctrName,
 			"image", imageRef, "digest", digest,
 			"violations", violations, "sandbox", cfg.sandboxMode(),
-		}, obs.logAttrs()...)...)
+		}, observation...)...)
 	if cfg.sandboxMode() == SandboxAudit {
 		p.audit.Log(audit.Event{
 			Action:    "allow",

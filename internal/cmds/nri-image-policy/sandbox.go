@@ -160,6 +160,17 @@ func (o sandboxObservation) violations() []string {
 	return out
 }
 
+// hostNetworkOnly reports whether violations are only what a pod's
+// hostNetwork gives it: the node's network and uts namespaces.
+func hostNetworkOnly(violations []string) bool {
+	for _, v := range violations {
+		if v != "host network namespace" && v != "host uts namespace" {
+			return false
+		}
+	}
+	return len(violations) > 0
+}
+
 // logAttrs renders the observation as slog key/value pairs.
 func (o sandboxObservation) logAttrs() []any {
 	return []any{
@@ -215,7 +226,7 @@ func hostBinds(pod *api.PodSandbox, ctr *api.Container, own nodeMounts, mounts [
 		if cleanAbsolute(src) && slices.ContainsFunc(owned, func(dir string) bool { return strings.HasPrefix(src, dir) }) {
 			continue
 		}
-		if isInjectedNodeMount(pod, ctr, m, own) || cdi.mount(m) {
+		if isInjectedNodeMount(pod, ctr, m, own) || credentialSocketBind(ctr, m, own) || cdi.mount(m) {
 			continue
 		}
 		if nodeRoot != nil && nodeRootBind(src, m.GetDestination(), mounts, nodeRoot) {
@@ -248,6 +259,17 @@ type nodeMounts struct {
 	socketDir  string
 	cdsPins    string
 	cdsAddress string
+}
+
+// credentialSocketBind reports the inventory socket bind credentialMounts adds
+// to a container running as the credentials identity, read-only from the
+// node's own socket directory. The mount observer leaves it a host mount, so
+// an entry that lists it still matches it as one; the sandbox policy does not
+// hold the plugin's own bind against the container, as with the other
+// credential binds (isInjectedNodeMount).
+func credentialSocketBind(ctr *api.Container, m *api.Mount, own nodeMounts) bool {
+	return holdsCredentialsIdentity(ctr) && own.socketDir != "" &&
+		m.GetDestination() == workloadclaims.SidecarSocketDir && m.GetSource() == own.socketDir && endsReadOnly(m)
 }
 
 // isInjectedNodeMount requires a credential client's read-only bind from the node's own source.
