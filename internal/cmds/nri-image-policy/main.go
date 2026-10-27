@@ -151,6 +151,11 @@ func Run(args []string) error {
 	if err != nil {
 		return fmt.Errorf("create plugin: %w", err)
 	}
+	if decrees != nil {
+		// A rebooted node holds no decree: take the replicas' one before
+		// any credential client is handed the launch document's pins.
+		takeFirstDecree(decrees, firstDecreeTimeout, logger)
+	}
 	// Before the plugin serves a single container creation: a pod admitted
 	// without this mount would read no pins at all.
 	if err := plugin.prepareCDSPins(); err != nil {
@@ -290,6 +295,22 @@ func Run(args []string) error {
 // decreePollInterval is how often a node looks for a newer CDS pin decree
 // when no CDS connection prompted it.
 const decreePollInterval = time.Minute
+
+// firstDecreeTimeout bounds the start-up decree fetch: a CDS that does not
+// answer must not keep the node's containers from starting.
+const firstDecreeTimeout = 10 * time.Second
+
+// takeFirstDecree fetches the pin decree once, within timeout, before the
+// plugin hands CDS pins to anyone. Until a fetch succeeds the node trusts its
+// launch document's CDS pins, which may include an image the operator has
+// since removed: that is worth an error.
+func takeFirstDecree(decrees *followedPins, timeout time.Duration, logger *slog.Logger) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	if _, err := decrees.Refresh(ctx); err != nil {
+		logger.Error("no CDS pin decree at start: trusting the launch document's CDS pins until a fetch succeeds", "error", err)
+	}
+}
 
 // allowlistPullHTTPClient builds the armTLS client for the CDS pull. The pull
 // URL is always https (enforced by config.Validate), so this always verifies

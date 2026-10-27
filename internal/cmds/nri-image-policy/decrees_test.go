@@ -102,3 +102,42 @@ func TestFollowedDecreesRewriteTheMountedPolicyInPlace(t *testing.T) {
 		t.Fatal("decrees without a CDS policy accepted")
 	}
 }
+
+// At start the enforcer takes the replicas' decree before it hands out any
+// pins, within a bound; a failed fetch is logged as an error and leaves the
+// launch document's pins.
+func TestTakeFirstDecree(t *testing.T) {
+	k, pub := decreeKey(t)
+	cfg := pullConfig{URL: "https://cds:30808", AttestationApiURL: "http://127.0.0.1:1", CDSMeasurementsConfig: "../../testdata/node-identities.json"}
+	launch, err := cfg.policySet("tdx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	img := testImage("e")
+	pin, _ := img.Pin()
+	sd, err := cdsha.SignDecree(cdsha.Decree{ClusterID: "c1", IntentID: "i", BaseEpoch: 3, Kind: cdsha.UpdateMeasurements,
+		Measurements: []string{pin}, Images: []cdsha.DecreeImage{img}, ExpiresAt: time.Now().Add(time.Hour)}, k)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, _ := pem.Decode([]byte(pub))
+	follow := func(fetch cdspins.Fetcher) (*followedPins, *bytes.Buffer) {
+		src, err := cdspins.New(cdspins.Config{ClusterID: "c1", DecreeKey: der.Bytes, Bootstrap: launch, Fetch: fetch})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var log bytes.Buffer
+		return &followedPins{Source: src, logger: slog.New(slog.NewTextHandler(&log, nil))}, &log
+	}
+	served, log := follow(func(context.Context) (*cdsha.SignedDecree, error) { return &sd, nil })
+	takeFirstDecree(served, time.Second, served.logger)
+	if e, ok := served.Epoch(); !ok || e != 3 || strings.Contains(log.String(), "ERROR") {
+		t.Fatalf("decree not taken at start: epoch %d %v, log %s", e, ok, log.String())
+	}
+	start := time.Now()
+	hung, log := follow(func(ctx context.Context) (*cdsha.SignedDecree, error) { <-ctx.Done(); return nil, ctx.Err() })
+	takeFirstDecree(hung, 50*time.Millisecond, hung.logger)
+	if _, ok := hung.Epoch(); ok || !strings.Contains(log.String(), "level=ERROR") || time.Since(start) > 5*time.Second {
+		t.Fatalf("unanswered fetch: log %s after %v", log.String(), time.Since(start))
+	}
+}
