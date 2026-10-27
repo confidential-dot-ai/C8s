@@ -197,17 +197,17 @@ jobs:
           echo "$CILIUM_SHA256  cilium.tar.zst" | sha256sum -c -
 
       - name: The baked base allowlist matches the pinned bundles
-        # systemfloor re-derives the system block from the pinned
-        # bundles; -check fails when image-policy.yaml.in is stale, so an RKE2
-        # pin bump without a regen cannot merge and wedge node boot.
+        # systemfloor holds every system image in image-policy.yaml.in to the
+        # digest containerd stores for it from the pinned bundles, so an RKE2
+        # pin bump without updating the floor cannot merge and wedge node boot.
         run: |
           set -euo pipefail
           manifests=node-guest-image/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests
-          go run ./node-guest-image/c8s/systemfloor -check \
-            -template node-guest-image/c8s/image-policy.yaml.in \
+          go run ./node-guest-image/c8s/systemfloor \
             -bundle core.tar.zst \
             -bundle cilium.tar.zst \
-            -manifest "$manifests/nvidia-device-plugin.yaml"
+            -manifest "$manifests/nvidia-device-plugin.yaml" \
+            node-guest-image/c8s/image-policy.yaml.in
 
   containerd-runtime-handlers:
     name: every pod runtime reaches the measured wrapper

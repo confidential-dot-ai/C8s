@@ -1,37 +1,39 @@
-// Command systemfloor regenerates the RKE2 system-image entries in
-// image-policy.yaml.in: the allowlist.base workloads that admit the node's
-// baked system components (rke2 static pods, Cilium, CoreDNS, the NVIDIA
-// device plugin) under any command line. The optional local-path provisioner
-// keeps its own entry outside this block (C8S_LOCAL_PATH=1).
+// Command systemfloor checks the RKE2 system images in image-policy.yaml.in:
+// every container of the allowlist.base workloads between the BEGIN/END
+// markers must name, for its image, the digest the node's containerd stores.
+// The optional local-path provisioner keeps its own entry outside these
+// markers (C8S_LOCAL_PATH=1).
 //
 // The digests are the ones containerd computes when it IMPORTS the airgap
 // bundles at rke2 boot, not the registry's: the bundles are docker-archive
 // tarballs and the import rebuilds each manifest, so the digest only exists
 // in the store. This tool runs the same code the daemon's import does
 // (images/archive.ImportIndex, vendored with the c8s module) against a
-// scratch content store, so the entries match what the plugin resolves at
-// runtime.
+// scratch content store, so the check matches what the plugin resolves at
+// runtime. Images the baked manifests pull keep their pinned registry digest.
 //
 //	systemfloor -bundle rke2-images-core.linux-amd64.tar.zst \
 //	    -bundle rke2-images-cilium.linux-amd64.tar.zst \
-//	    -manifest .../server/manifests/nvidia-device-plugin.yaml
+//	    -manifest .../server/manifests/nvidia-device-plugin.yaml \
+//	    node-guest-image/c8s/image-policy.yaml.in
 //
-// prints the block. With -template pointing at image-policy.yaml.in,
-// -check reports drift and -write rewrites the block between the BEGIN/END
-// markers in place.
+// exits non-zero naming each container whose digest is stale, with the digest
+// its image has in the inputs.
 package main
 
 import (
 	"context"
 	_ "crypto/sha256" // go-digest's canonical algorithm
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/containerd/containerd/v2/core/content"
@@ -40,12 +42,12 @@ import (
 	localcontent "github.com/containerd/containerd/v2/plugins/content/local"
 	"github.com/klauspost/compress/zstd"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"gopkg.in/yaml.v3"
 
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
-// entry is one base workload: a digest admitted under an image reference.
+// entry is one image a node stores: its digest under its image reference.
 type entry struct {
 	digest string
 	ref    string
@@ -130,68 +132,13 @@ func manifestEntries(path string) ([]entry, error) {
 	return out, nil
 }
 
-// render formats the entries as allowlist.base workloads at the template's
-// indent: one any-argv entry per digest, named the way pkg/allowlist
-// DigestEntryName names it, sorted by image reference.
-func render(entries []entry, excludes []string) (string, error) {
-	type baseEntry struct {
-		name   string
-		digest string
-		ref    string
-	}
-	base := make([]baseEntry, 0, len(entries))
-	seen := make(map[string]bool, len(entries))
-	for _, e := range entries {
-		if seen[e.digest] {
-			continue
-		}
-		excluded := false
-		for _, x := range excludes {
-			if strings.Contains(e.ref, x) {
-				excluded = true
-				break
-			}
-		}
-		if excluded {
-			continue
-		}
-		seen[e.digest] = true
-		d, err := types.ParseDigest(e.digest)
-		if err != nil {
-			return "", fmt.Errorf("%s: %w", e.ref, err)
-		}
-		base = append(base, baseEntry{name: allowlist.DigestEntryName(d, e.ref), digest: e.digest, ref: e.ref})
-	}
-	sort.Slice(base, func(i, j int) bool {
-		if base[i].ref != base[j].ref {
-			return base[i].ref < base[j].ref
-		}
-		return base[i].name < base[j].name
-	})
-
-	var b strings.Builder
-	for _, f := range base {
-		fmt.Fprintf(&b, `      %s:
-        label: %q
-        containers:
-          - digest: %q
-            image: %q
-            command: {policy: any}
-            args: {policy: any}
-            mounts: {policy: any}
-`, f.name, f.ref, f.digest, f.ref)
-	}
-	return b.String(), nil
-}
-
 const (
 	beginMarker = "# BEGIN rke2 system images"
 	endMarker   = "# END rke2 system images"
 )
 
-// splice returns the template with the lines between the marker lines
-// replaced by body.
-func splice(template, body string) (string, error) {
+// floorWorkloads decodes the base workloads between the marker lines.
+func floorWorkloads(template string) (map[string]allowlist.Workload, error) {
 	lines := strings.Split(template, "\n")
 	begin, end := -1, -1
 	for i, l := range lines {
@@ -203,15 +150,67 @@ func splice(template, body string) (string, error) {
 		}
 	}
 	if begin < 0 {
-		return "", fmt.Errorf("no %q marker in template", beginMarker)
+		return nil, fmt.Errorf("no %q marker in template", beginMarker)
 	}
 	if end < 0 || end <= begin {
-		return "", fmt.Errorf("no %q marker after the begin marker", endMarker)
+		return nil, fmt.Errorf("no %q marker after the begin marker", endMarker)
 	}
-	out := append([]string{}, lines[:begin+1]...)
-	out = append(out, strings.TrimSuffix(body, "\n"))
-	out = append(out, lines[end:]...)
-	return strings.Join(out, "\n"), nil
+	var doc struct {
+		Workloads map[string]allowlist.Workload `yaml:"workloads"`
+	}
+	block := "workloads:\n" + strings.Join(lines[begin+1:end], "\n")
+	if err := yaml.Unmarshal([]byte(block), &doc); err != nil {
+		return nil, fmt.Errorf("decode the system images: %w", err)
+	}
+	return doc.Workloads, nil
+}
+
+// storedDigests maps each image reference in the inputs to its digest on the
+// node.
+func storedDigests(bundles, manifests []string) (map[string]string, error) {
+	var entries []entry
+	for _, b := range bundles {
+		e, err := bundleEntries(b)
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, e...)
+	}
+	for _, m := range manifests {
+		e, err := manifestEntries(m)
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, e...)
+	}
+	stored := make(map[string]string, len(entries))
+	for _, e := range entries {
+		if digest, seen := stored[e.ref]; seen && digest != e.digest {
+			return nil, fmt.Errorf("%s is both %s and %s in the inputs", e.ref, digest, e.digest)
+		}
+		stored[e.ref] = e.digest
+	}
+	return stored, nil
+}
+
+// staleDigests names each floor container whose digest is not the one stored
+// for its image, or whose image no input carries.
+func staleDigests(floor map[string]allowlist.Workload, stored map[string]string) error {
+	var errs []error
+	for _, name := range slices.Sorted(maps.Keys(floor)) {
+		w := floor[name]
+		for _, c := range slices.Concat(w.InitContainers, w.Containers) {
+			want, carried := stored[c.Image]
+			if !carried {
+				errs = append(errs, fmt.Errorf("%s: %s is in none of the pinned bundles and baked manifests", name, c.Image))
+				continue
+			}
+			if c.Digest.String() != want {
+				errs = append(errs, fmt.Errorf("%s: %s is %s on the node, not %s", name, c.Image, want, c.Digest))
+			}
+		}
+	}
+	return errors.Join(errs...)
 }
 
 type stringList []string
@@ -223,78 +222,41 @@ func (l *stringList) Set(v string) error {
 }
 
 func main() {
-	if err := run(os.Args[1:], os.Stdout); err != nil {
+	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "systemfloor:", err)
 		os.Exit(1)
 	}
 }
 
-func run(args []string, stdout io.Writer) error {
+func run(args []string) error {
 	fs := flag.NewFlagSet("systemfloor", flag.ContinueOnError)
-	var bundles, manifests, excludes stringList
-	var templatePath string
-	var check, write bool
+	var bundles, manifests stringList
 	fs.Var(&bundles, "bundle", "RKE2 airgap image bundle (*.tar.zst); repeatable")
-	fs.Var(&manifests, "manifest", "YAML manifest to scan for digest-pinned image refs; repeatable")
-	fs.Var(&excludes, "exclude-ref", "drop entries whose image reference contains this substring (repeatable); use for interpreter-class images admitted argv-pinned elsewhere, e.g. busybox")
-	fs.StringVar(&templatePath, "template", "", "image-policy.yaml.in to splice the block into")
-	fs.BoolVar(&check, "check", false, "exit non-zero when the template block is stale")
-	fs.BoolVar(&write, "write", false, "rewrite the template block in place")
+	fs.Var(&manifests, "manifest", "baked YAML manifest to scan for digest-pinned image refs; repeatable")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if fs.NArg() != 1 {
+		return fmt.Errorf("usage: systemfloor [-bundle FILE]... [-manifest FILE]... image-policy.yaml.in")
+	}
+	templatePath := fs.Arg(0)
 	if len(bundles) == 0 && len(manifests) == 0 {
 		return fmt.Errorf("no inputs: pass -bundle and/or -manifest")
 	}
-
-	var entries []entry
-	for _, b := range bundles {
-		e, err := bundleEntries(b)
-		if err != nil {
-			return err
-		}
-		entries = append(entries, e...)
-	}
-	for _, m := range manifests {
-		e, err := manifestEntries(m)
-		if err != nil {
-			return err
-		}
-		entries = append(entries, e...)
-	}
-	if len(entries) == 0 {
-		return fmt.Errorf("no images found in the inputs")
-	}
-	block, err := render(entries, excludes)
+	stored, err := storedDigests(bundles, manifests)
 	if err != nil {
 		return err
 	}
-
-	if templatePath == "" {
-		_, err := io.WriteString(stdout, block)
-		return err
-	}
-
 	data, err := os.ReadFile(templatePath)
 	if err != nil {
 		return err
 	}
-	updated, err := splice(string(data), block)
+	floor, err := floorWorkloads(string(data))
 	if err != nil {
 		return err
 	}
-	switch {
-	case check:
-		if updated != string(data) {
-			return fmt.Errorf("%s: system images are stale; regenerate with systemfloor -write", templatePath)
-		}
-	case write:
-		if err := os.WriteFile(templatePath, []byte(updated), 0o644); err != nil {
-			return err
-		}
-	default:
-		_, err := io.WriteString(stdout, block)
-		return err
+	if err := staleDigests(floor, stored); err != nil {
+		return fmt.Errorf("%s: system images are stale:\n%w", templatePath, err)
 	}
 	return nil
 }
