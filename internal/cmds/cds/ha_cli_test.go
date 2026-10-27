@@ -218,10 +218,10 @@ func TestHAStatusCLI(t *testing.T) {
 		t.Cleanup(s.Close)
 		return s
 	}
-	a := serve(cdsha.Status{Epoch: 2, CAFingerprint: "aa", Serving: true}, http.StatusOK)
-	b := serve(cdsha.Status{Epoch: 2, CAFingerprint: "aa", Serving: true}, http.StatusOK)
+	a := serve(cdsha.Status{Epoch: 2, CAFingerprint: "aa", Serving: true, Term: 7}, http.StatusOK)
+	b := serve(cdsha.Status{Epoch: 2, CAFingerprint: "aa", Serving: true, Term: 7}, http.StatusOK)
 	broken := serve(cdsha.Status{}, http.StatusInternalServerError)
-	if out, err := runHA(t, "status", "--insecure", a.URL, b.URL); err != nil || !strings.Contains(out, "epoch=2") {
+	if out, err := runHA(t, "status", "--insecure", a.URL, b.URL); err != nil || !strings.Contains(out, "epoch=2") || !strings.Contains(out, "term=7") {
 		t.Fatalf("agreeing replicas: %v %q", err, out)
 	}
 	// A replica serves armTLS: plaintext is refused unless asked for.

@@ -18,6 +18,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 
@@ -206,6 +207,22 @@ func TestSetDecreeStatusEdges(t *testing.T) {
 	})
 	if err := st.SetDecreeStatus(ctx, "d", DecreeStatus{RejectedReason: "no"}); err == nil {
 		t.Fatal("a conflicting update reported as written")
+	}
+}
+
+// Decree objects must be valid ConfigMap names or kubectl apply refuses them.
+func TestDecreeConfigMapName(t *testing.T) {
+	for range 16 {
+		cm, err := DecreeConfigMap("decrees", SignedDecree{Decree: Decree{ClusterID: testCluster, IntentID: NewIntentID()}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if errs := validation.IsDNS1123Subdomain(cm.Name); len(errs) > 0 {
+			t.Fatalf("%s: %v", cm.Name, errs)
+		}
+	}
+	if _, err := DecreeConfigMap("decrees", SignedDecree{Decree: Decree{ClusterID: testCluster, IntentID: rand.Text()}}); err == nil {
+		t.Fatal("uppercase intent id accepted")
 	}
 }
 

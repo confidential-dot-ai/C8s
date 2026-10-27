@@ -3,7 +3,6 @@ package cds
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -88,7 +87,7 @@ func newHARecoverCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("--decree-key: %w", err)
 			}
-			intent := "restore-" + rand.Text()
+			intent := "restore-" + cdsha.NewIntentID()
 			expires := time.Now().Add(expiresIn).UTC().Truncate(time.Second)
 			url := strings.TrimRight(conn.URL, "/") + "/ha/restore"
 			for i := 0; i < attempts; i++ {

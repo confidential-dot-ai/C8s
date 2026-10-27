@@ -3,11 +3,15 @@ package cdsha
 import (
 	"cmp"
 	"context"
+	"crypto/rand"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/kubernetes"
 	corev1client "k8s.io/client-go/kubernetes/typed/core/v1"
 )
@@ -23,6 +27,10 @@ const (
 
 // DecreeName is the decree object for one intent.
 func DecreeName(clusterID, intentID string) string { return "cds-decree-" + clusterID + "-" + intentID }
+
+// NewIntentID is a random intent id; lowercase because it ends up in DecreeName,
+// which must be an RFC 1123 subdomain.
+func NewIntentID() string { return strings.ToLower(rand.Text()) }
 
 // DecreeStatus is written by the leader when it applies or rejects a decree.
 type DecreeStatus struct {
@@ -136,10 +144,14 @@ func DecreeConfigMap(namespace string, sd SignedDecree) (*corev1.ConfigMap, erro
 	if err != nil {
 		return nil, err
 	}
+	name := DecreeName(sd.Decree.ClusterID, sd.Decree.IntentID)
+	if errs := validation.IsDNS1123Subdomain(name); len(errs) > 0 {
+		return nil, fmt.Errorf("decree object name %q: %s", name, strings.Join(errs, "; "))
+	}
 	return &corev1.ConfigMap{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "ConfigMap"},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      DecreeName(sd.Decree.ClusterID, sd.Decree.IntentID),
+			Name:      name,
 			Namespace: namespace,
 			Labels:    map[string]string{LabelDecree: sd.Decree.ClusterID},
 		},
