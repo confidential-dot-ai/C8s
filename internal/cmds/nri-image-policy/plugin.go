@@ -1302,15 +1302,19 @@ func (p *plugin) credentialMounts(ctx context.Context, pod *api.PodSandbox, ctr 
 		return nil, fmt.Errorf("container %q runs as the credentials identity (uid %d) but this node's measured base grants it no %s role, so it would reach CDS unpinned",
 			ctr.GetName(), workloadclaims.CredentialsUID, CredentialRole)
 	}
-	var mounts []*api.Mount
+	socketDir := ""
 	if servesInventory := p.inventory != nil; servesInventory {
-		mounts = append(mounts, readOnlyBind(p.cfg.WorkloadClaims.SocketDir, workloadclaims.SidecarSocketDir))
+		socketDir = p.cfg.WorkloadClaims.SocketDir
 	}
-	if pinsCDS := p.cdsPins != ""; pinsCDS {
-		mounts = append(mounts, readOnlyBind(p.cdsPins, workloadclaims.CDSPinsPath))
-	}
-	if p.cdsAddress != "" {
-		mounts = append(mounts, readOnlyBind(p.cdsAddress, workloadclaims.CDSAddressPath))
+	var mounts []*api.Mount
+	for _, bind := range []struct{ source, destination string }{
+		{socketDir, workloadclaims.SidecarSocketDir},
+		{p.cdsPins, workloadclaims.CDSPinsPath},
+		{p.cdsAddress, workloadclaims.CDSAddressPath},
+	} {
+		if bind.source != "" && takesNodeMount(pod, ctr, bind.destination) {
+			mounts = append(mounts, readOnlyBind(bind.source, bind.destination))
+		}
 	}
 	if len(mounts) == 0 {
 		return nil, nil

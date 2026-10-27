@@ -269,7 +269,10 @@ func TestNodeImageBaseGrantsTheFrontDoorShape(t *testing.T) {
 }
 
 // Every emptyDir rule of a role entry names the pod volume behind it, so two
-// destinations of one container cannot be fed from each other's volume.
+// destinations of one container cannot be fed from each other's volume. The
+// one exception is the injected clients' discovery mount: the webhook mounts
+// the volume the pod's annotation names there, so the rule pins the
+// destination and the storage alone.
 func TestNodeImageBaseBindsEveryRoleVolume(t *testing.T) {
 	cfg, err := parseConfig([]byte(renderNodeImagePolicy(t)))
 	if err != nil {
@@ -282,7 +285,7 @@ func TestNodeImageBaseBindsEveryRoleVolume(t *testing.T) {
 		}
 		for _, container := range entry.Containers {
 			for _, rule := range container.Mounts.Rules {
-				if rule.Kind != allowlist.MountEmptyDir {
+				if rule.Kind != allowlist.MountEmptyDir || rule.Destination == "/run/c8s/discovery" {
 					continue
 				}
 				if rule.Source == "" {

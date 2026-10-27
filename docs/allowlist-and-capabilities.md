@@ -781,7 +781,11 @@ the invocation (`/c8s get-cert`) and `args: any`. Their mounts are `exact`:
 the webhook mounts at fixed destinations, and each optional mount (discovery,
 reload-watch) is a separate container of the entry, so admission is the union
 across them. The inventory socket the NRI plugin adds is a `platform` mount and
-needs no rule. Before
+needs no rule. The same tables pin the role everywhere it is granted: the role
+entries the chart renders beside an open-args floor entry and the node image's
+own base declare them too, so a pod's own container running an injected
+invocation with a mount of its choosing holds no role and stays in the
+workload match. Before
 matching, a container whose image is admitted with open args for its
 invocation and running one of the invocations the webhook injects is dropped
 from the candidate set
