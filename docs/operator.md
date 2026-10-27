@@ -1453,9 +1453,8 @@ enforce that:
   escalation check keeps them within the operator's own permissions.
 - **Admission.** `confos-operator-scope` re-checks the same exclusions for
   every principal in a `c8s:` group, whatever RBAC says: no write at all in
-  the privileged namespaces (`kube-system` and `local-path-storage`, which
-  are PodSecurity-exempt, and `c8s-system`, labelled privileged for the
-  baked operator), where a pod, an edited DaemonSet, a HelmChart or a
+  the privileged namespaces (`kube-system`, which is PodSecurity-exempt, and
+  `c8s-system`, labelled privileged for the baked operator), where a pod, an edited DaemonSet, a HelmChart or a
   service-account token secret is root on the node; and none of the
   cluster-scoped resources listed above. It also refuses a Service with
   `externalIPs` or with a ClusterIP in `10.53.0.0/24`, the band holding the

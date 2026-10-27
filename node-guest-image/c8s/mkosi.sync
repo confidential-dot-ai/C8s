@@ -24,11 +24,10 @@
 #   go run ./node-guest-image/c8s/systemfloor -write \
 #     -template node-guest-image/c8s/image-policy.yaml.in \
 #     -bundle <core bundle> -bundle <cilium bundle> \
-#     -manifest node-guest-image/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/local-path-storage.yaml \
 #     -manifest node-guest-image/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/nvidia-device-plugin.yaml \
 #     -exclude-ref busybox
 # -exclude-ref omits busybox from the node's baked base;
-# the chart supplies its argv-pinned entry through the served allowlist.
+# its containerd-prep launch is pinned by the Helm install seed.
 # rke2's own containerd base template imports config-v3.toml.d/*.toml since
 # v1.36 (k3s b51167a9), which is where the NRI drop-in lives, so this profile
 # bakes no config-v3.toml.tmpl: one that added the import produced a duplicate
@@ -291,6 +290,8 @@ render_node_integration() {
         echo "c8s sync: FATAL ${C8S_REF} must provide a working 'c8s node-image render'; publish this branch's images and select that C8S_REF" >&2
         exit 1
     fi
+    bash "$SRCDIR/mkosi.profiles/c8s/check-seed-images.sh" \
+        "$out/allowlist-seed.json" "$out/images.txt"
     # Both roles share this image. Only rke2-server applies server/manifests,
     # after authenticated launch staging selects the server role.
     install -D -m 0644 "$out/c8s-integration.yaml" \

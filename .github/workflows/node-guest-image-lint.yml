@@ -207,7 +207,6 @@ jobs:
             -template node-guest-image/c8s/image-policy.yaml.in \
             -bundle core.tar.zst \
             -bundle cilium.tar.zst \
-            -manifest "$manifests/local-path-storage.yaml" \
             -manifest "$manifests/nvidia-device-plugin.yaml" \
             -exclude-ref busybox
 
@@ -343,9 +342,10 @@ jobs:
       - uses: oras-project/setup-oras@005458ad77f1c8facd38a094e4af2e69e5607ff4 # v2.0.2
 
       - name: Check the image archiver and offline fixture
-        run: shellcheck node-guest-image/c8s/{image-source,airgap-images}.sh node-guest-image/tests/airgap-images-test.sh
+        run: shellcheck node-guest-image/c8s/{image-source,airgap-images,check-seed-images}.sh node-guest-image/tests/{airgap-images,check-seed-images}-test.sh
 
       - name: Validate complete workloads and preserved image pins
         run: |
           go test -count=1 ./cmd/c8s -run TestNodeImage
           make test-node-guest-image-airgap
+          bash node-guest-image/tests/check-seed-images-test.sh

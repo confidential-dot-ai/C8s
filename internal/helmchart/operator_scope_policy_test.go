@@ -142,7 +142,7 @@ func TestOperatorScopePolicyExpression(t *testing.T) {
 		{"operator pod log (not proxy)", scopeRequest{op, "tenant", "", "pods", "log"}, true},
 		// The guards and the host are out of reach.
 		{"operator pod in kube-system", scopeRequest{op, "kube-system", "", "pods", ""}, false},
-		{"operator configmap in local-path-storage", scopeRequest{op, "local-path-storage", "", "configmaps", ""}, false},
+		{"operator configmap in local-path-storage", scopeRequest{op, "local-path-storage", "", "configmaps", ""}, true},
 		{"operator pod in c8s-system", scopeRequest{op, "c8s-system", "", "pods", ""}, false},
 		{"operator token secret in c8s-system", scopeRequest{op, "c8s-system", "", "secrets", ""}, false},
 		{"operator delete c8s-system namespace", scopeRequest{op, "c8s-system", "", "namespaces", ""}, false},

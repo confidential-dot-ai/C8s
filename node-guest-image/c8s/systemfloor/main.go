@@ -1,7 +1,6 @@
 // Command systemfloor regenerates the RKE2 system-image entries in
 // image-policy.yaml.in: the allowlist.base workloads that admit the node's
-// baked system components (rke2 static pods, Cilium, CoreDNS,
-// local-path-storage) under any command line.
+// baked system components (rke2 static pods, Cilium, CoreDNS) under any command line.
 //
 // The digests are the ones containerd computes when it IMPORTS the airgap
 // bundles at rke2 boot, not the registry's: the bundles are docker-archive
@@ -13,7 +12,6 @@
 //
 //	systemfloor -bundle rke2-images-core.linux-amd64.tar.zst \
 //	    -bundle rke2-images-cilium.linux-amd64.tar.zst \
-//	    -manifest .../server/manifests/local-path-storage.yaml \
 //	    -manifest .../server/manifests/nvidia-device-plugin.yaml
 //
 // prints the block. With -template pointing at image-policy.yaml.in,
@@ -116,8 +114,7 @@ func importEntries(r io.Reader) ([]entry, error) {
 var imageRefRE = regexp.MustCompile(`\bimage:\s*"?([^\s"]+@(sha256:[0-9a-f]{64}))"?`)
 
 // manifestEntries scans a YAML manifest for digest-pinned image references;
-// indented blocks (the local-path helper pod template inside a ConfigMap)
-// match the same way.
+// indented blocks match the same way.
 func manifestEntries(path string) ([]entry, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {

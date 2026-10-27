@@ -92,14 +92,12 @@ func TestNodeImageBootConfig_ParsesAndAdmitsSystemImages(t *testing.T) {
 	// pinned airgap bundles and baked manifests. A regen for an RKE2 pin bump
 	// rewrites these — update the pins with it. Pinning the whole set, not a
 	// boot-critical subset, makes a dropped or corrupted entry fail here
-	// instead of at node boot. The local-path helper's busybox is NOT here:
-	// systemfloor drops it (-exclude-ref) and the chart seeds it argv-pinned.
+	// instead of at node boot.
 	systemImages := map[string]string{
 		"sha256:0d26512c90d935db3180f47a7a716e3dfac0847ec29076fb5487e535125a86a8": "docker.io/rancher/hardened-cni-plugins:v1.9.1-build20260717",
 		"sha256:10b602130d98d8de3c40213f938430a962b14ccf4b405cdbcb2af62ba52dd0e6": "docker.io/rancher/mirrored-cilium-operator-azure:v1.19.6",
 		"sha256:134ab48d00e67bed72fa43e0492adf2f0c78383e21da7ee1aeb5b7aa8ef2e7ee": "docker.io/rancher/mirrored-cilium-cilium:v1.19.6",
 		"sha256:1d3cd7f07e11e451683002b925a25ccba74d9aed2fc2e454a7173d260a2d11bd": "docker.io/rancher/mirrored-cilium-hubble-relay:v1.19.6",
-		"sha256:1eba82e9c386038b4af6d69cca7519fac738c28c42735ed48ce70c882ad0d80f": "rancher/local-path-provisioner:v0.0.36@sha256:1eba82e9c386038b4af6d69cca7519fac738c28c42735ed48ce70c882ad0d80f",
 		"sha256:25cc340fe6fd53c101e16fc452f503e7a92c219c64a80ed5381784b522dbbf77": "nvcr.io/nvidia/k8s-device-plugin:v0.19.3@sha256:25cc340fe6fd53c101e16fc452f503e7a92c219c64a80ed5381784b522dbbf77",
 		"sha256:26446592541d6e37333850b37bd59cccec69f6f2f02fd50a8588d3f1a136717f": "docker.io/rancher/mirrored-cilium-hubble-ui-backend:v0.13.5",
 		"sha256:2f28e344b83ac28bf9a561b666dd3e935c7238d8d4be4d2c840053e178718945": "docker.io/rancher/mirrored-cilium-operator-aws:v1.19.6",

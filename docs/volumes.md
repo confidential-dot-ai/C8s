@@ -8,10 +8,6 @@ This complements [`secrets.md`](secrets.md) — a volume key *is* a secret, stor
 and released by exactly the machinery described there. What is new is the
 artifact the key opens, and the fact that it persists.
 
-For plain unencrypted PVCs, the node image's default `local-path`
-StorageClass provisions dynamically — see
-[cluster storage](../node-guest-image/README.md#cluster-storage).
-
 ## Why a volume is different from a secret
 
 Every other value C8s protects is RAM-resident and dies with the pod. A volume

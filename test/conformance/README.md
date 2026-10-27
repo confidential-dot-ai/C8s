@@ -206,7 +206,7 @@ the same PR.
 
 On a metal lane the harness host has no node shell and no TEE, the
 operator's credential may neither exec, port-forward, write Node objects nor
-write in the privileged namespaces (kube-system, local-path-storage, c8s-system),
+write in the privileged namespaces (kube-system, c8s-system),
 the only ones admitting host-network and root pods, and the node image holds
 the seed and the router's configuration.
 A function the backend cannot answer some other way under those limits

@@ -248,14 +248,6 @@ allowlist:
             command: {policy: any}
             args: {policy: any}
             mounts: {policy: any}
-      local-path-provisioner-1eba82e9c386:
-        label: "rancher/local-path-provisioner:v0.0.36@sha256:1eba82e9c386038b4af6d69cca7519fac738c28c42735ed48ce70c882ad0d80f"
-        containers:
-          - digest: "sha256:1eba82e9c386038b4af6d69cca7519fac738c28c42735ed48ce70c882ad0d80f"
-            image: "rancher/local-path-provisioner:v0.0.36@sha256:1eba82e9c386038b4af6d69cca7519fac738c28c42735ed48ce70c882ad0d80f"
-            command: {policy: any}
-            args: {policy: any}
-            mounts: {policy: any}
       # END rke2 system images
       # The platform roles the enforcer grants inside a member pod. A role
       # comes from this measured base alone: the JSON ingest drops the field,
@@ -680,9 +672,6 @@ mesh:
   exempt_namespaces:
     - kube-system
     - c8s-system
-    # The baked RKE2 addon, whose helper pod writes a host path as root
-    # (mkosi.extra/var/lib/rancher/rke2/server/manifests/local-path-storage.yaml).
-    - local-path-storage
   # INVARIANT: equal to cluster-dns in etc/rancher/rke2/config.yaml. A
   # config.yaml.d drop-in that moves the cluster DNS breaks name resolution in
   # member pods closed, never open.

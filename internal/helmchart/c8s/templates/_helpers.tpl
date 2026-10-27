@@ -52,7 +52,9 @@ app.kubernetes.io/managed-by: Helm
     - kube-system
     - kube-public
     - kube-node-lease
+    {{- if not .Values.node.baked }}
     - local-path-storage
+    {{- end }}
     {{- range .Values.webhook.extraExcluded }}
     - {{ . }}
     {{- end }}
