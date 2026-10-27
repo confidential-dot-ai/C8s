@@ -1,13 +1,18 @@
 # Secret release
 
+A secret reaches a pod only when the containers running in it match one workload
+entry whose grant covers that secret's path.
+
+Guarantee: [Data stays in the TEE](guarantees.md#data-stays-in-the-tee),
+[Only allowlisted code runs](guarantees.md#only-allowlisted-code-runs).
+
 A secret is a value CDS keeps in its own memory, addressed by a store path. CDS
 — the Certificate Distribution Service, the one in-cluster pod that verifies TEE
 evidence, signs the certificate each pod run gets, and holds C8s policy —
-releases it only to a pod whose containers match a workload entry whose grant
-covers that path. A workload entry is one named set of container images with the
-command, mounts, and environment each may run; its grant lists the store paths
-that entry may read or write. Both are allowlist policy: fields in
-[allowlist-entries.md](allowlist-entries.md), steps in
+releases it only to such a pod. A workload entry is one named set of container
+images with the command, mounts, and environment each may run; its grant lists
+the store paths that entry may read or write. Both are allowlist policy: fields
+in [allowlist-entries.md](allowlist-entries.md), steps in
 [workloads.md](workloads.md), names in [glossary.md](glossary.md). A secret is
 not a Kubernetes Secret: nothing is written to the API server.
 
@@ -128,12 +133,15 @@ a container of an injected pod. The inventory socket directory
 
 ## What the inventory reports
 
-The admission inventory answers with two views of one sandbox: `digests`, the
-image digests that certificate issuance gates on, and `containers`, each
-distinct launch — digest with its `argv`, environment evidence, and observed
-mounts — which release matches against. Both omit duplicates. `argv` is the
-effective command line a container ran, so release holds a sandbox to what its
-images were told to do, not only to which images ran.
+The admission inventory answers with two views of one sandbox, both omitting
+duplicates:
+
+- `digests`: the image digests that certificate issuance gates on.
+- `containers`: each distinct launch — digest with its `argv`, environment
+  evidence, and observed mounts — which release matches against.
+
+`argv` is the effective command line a container ran, so release holds a
+sandbox to what its images were told to do, not only to which images ran.
 
 Mount evidence records each destination's class and storage, never the node
 path. `mounts: []` means no bind mounts were seen; a missing or null field means

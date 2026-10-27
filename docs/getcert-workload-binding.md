@@ -1,10 +1,15 @@
 # get-cert and the sandbox-identity binding
 
-This is how a pod's mesh certificate comes to name the pod sandbox it was issued
-to, and why the indirection that gets it there is safe: nothing the caller sends
-names its pod — the kernel and the node's admission record do. Certificate
-formats and verification rules live in [armtls.md](armtls.md); terms left
-undefined here are in [glossary.md](glossary.md).
+A pod's certificate names the pod sandbox it was issued to because the kernel
+and the node's admission record name it, never the caller.
+
+Guarantee:
+[Identity comes from hardware evidence](guarantees.md#identity-comes-from-hardware-evidence).
+
+That nothing the caller sends names its pod is what makes the indirection below
+safe. Certificate formats and verification rules live in
+[armtls.md](armtls.md); terms left undefined here are in
+[glossary.md](glossary.md).
 
 ## The actors
 
@@ -168,8 +173,9 @@ hardware-encrypted memory, so the hypervisor cannot read or swap anything in it,
 and a guest booted with a swapped plugin would not match the launch measurement.
 The residual is a co-tenant — a malicious allowlisted pod that could mount the
 directory read-write could swap the file first. The directory is root-owned,
-get-cert's mount is read-only, and the chart's `deny-host-namespaces` policy
-denies tenant `hostPath` volumes outright. Even
+get-cert's mount is read-only, and the chart's
+`<release>-deny-host-namespaces` policy denies tenant `hostPath` volumes
+outright. Even
 then a token CDS accepts must verify under a key fetched from port 1019 inside
 the node bound, so the worst a swap achieves is denying the pod its sandbox ID.
 

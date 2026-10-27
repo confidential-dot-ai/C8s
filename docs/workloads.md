@@ -1,7 +1,8 @@
 # Onboard a workload
 
-Take your own workload from a plain Deployment to a confidential one: a
-workload entry, the pod annotation, a secret, an encrypted volume, and a route.
+Take your own workload from a plain Deployment to a confidential one: a workload
+entry, the pod annotation, a secret, an encrypted volume, and a route.
+
 After step 3, do only the steps you need; terms left undefined here are in
 [glossary.md](glossary.md).
 
@@ -161,23 +162,24 @@ node — and the image is ciphertext, so copy it where the hypervisor can read i
 Which option applies to your nodes, and why, is in
 [volumes.md](volumes.md#attaching-the-image).
 
-A. Cold-plug at VM launch: add these to the VM's launch command, image path on
-the hypervisor host.
+A. **Cold-plug at VM launch**: add these to the VM's launch command, image path
+on the hypervisor host.
 
 ```sh
 -drive if=none,id=volweights,file=/srv/c8s/weights.img,format=raw \
 -device virtio-blk-pci,drive=volweights,serial=c8s-vol-weights
 ```
 
-B. Hot-attach from the QEMU monitor of a VM that was launched with a
-virtio-scsi controller (`-device virtio-scsi-pci,id=scsi0`).
+B. **Hot-attach `scsi-hd`**: from the QEMU monitor of a VM that was launched
+with a virtio-scsi controller (`-device virtio-scsi-pci,id=scsi0`).
 
 ```text
 drive_add 0 if=none,id=volweights,file=/srv/c8s/weights.img,format=raw
 device_add scsi-hd,id=weights,bus=scsi0.0,drive=volweights,serial=c8s-vol-weights
 ```
 
-C. Build a local SCSI disk through LIO, as root on the node holding the image.
+C. **`c8s volume attach`**: builds a local SCSI disk through LIO, as root on
+the node holding the image.
 
 ```sh
 c8s volume attach weights --image /srv/c8s/weights.img
