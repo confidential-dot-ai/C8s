@@ -364,8 +364,10 @@ provisioner's helper pods mount hostPath and run as root, which is what the
 live under `/var/lib/local-path-provisioner` on the writable state overlay
 and are local to the node; the helper creates them mode 0777, so a non-root
 consumer writes without an init container. The requested capacity is
-advisory — nothing enforces it. For encrypted, attested volumes see
-[../docs/volumes.md](../docs/volumes.md).
+advisory — nothing enforces it. A volume's source is a host directory, so the
+image policy refuses a workload container that mounts one (see
+[Host privilege](../docs/allowlist-and-capabilities.md#host-privilege)). For
+encrypted, attested volumes see [../docs/volumes.md](../docs/volumes.md).
 
 Ephemeral containers may inherit safe pod-level `runAsNonRoot` and seccomp
 settings when their own settings are absent. Explicit unsafe Pod settings,
