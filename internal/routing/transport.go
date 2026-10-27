@@ -31,6 +31,10 @@ type TransportConfig struct {
 	// the CAs anchoring workload backends. A mesh dial takes both from one
 	// resolution; an address backend resolves them separately.
 	MeshIdentity CredentialSource
+	// Allowlist, when set, lets a workload backend stamped under another
+	// allowlist than the router's pass when the entry its stamp names is the
+	// same in both documents (B8). nil requires equal digests.
+	Allowlist AllowlistHistory
 	// Logger reports a router leaf whose stamp does not parse, once per leaf.
 	// nil uses slog.Default.
 	Logger *slog.Logger
@@ -62,6 +66,9 @@ type Transports struct {
 	routerDigestKnown bool
 
 	stamp stampCache
+	// entries compares a backend's entry with the router's; nil without
+	// TransportConfig.Allowlist.
+	entries *entryDocs
 }
 
 // pooled is a cached transport, whether it reaches a workload backend, and
@@ -72,9 +79,9 @@ type pooled struct {
 	routerDigest string
 }
 
-// errBackendDigestMismatch fails a workload handshake whose leaf was stamped
-// under another allowlist than the router's (B8).
-var errBackendDigestMismatch = errors.New("routing: backend allowlist digest differs from the router's")
+// errBackendDigestMismatch fails a workload backend whose entry differs
+// between the allowlist its leaf was stamped under and the router's (B8).
+var errBackendDigestMismatch = errors.New("routing: backend allowlist entry differs from the router's")
 
 // damagedRouterStamp is the tracked digest of a leaf whose stamp fails to
 // parse: shorter than any real digest and never empty.
@@ -155,6 +162,9 @@ func NewTransports(cfg TransportConfig) *Transports {
 	}
 	t := &Transports{cfg: cfg, cache: map[string]pooled{}}
 	t.stamp.log = cfg.Logger
+	if cfg.Allowlist != nil {
+		t.entries = &entryDocs{src: cfg.Allowlist}
+	}
 	return t
 }
 
@@ -254,7 +264,8 @@ func (t *Transports) dialWorkload(workload, routerDigest string, digestKnown boo
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		// Per connection: one resolution of what get-cert publishes, and a
 		// backend is dialled far less often than it is used.
-		cfg, digest, err := t.meshClientConfig(workload)
+		var stamped []byte
+		cfg, digest, err := t.meshClientConfig(workload, &stamped)
 		if err != nil {
 			return nil, err
 		}
@@ -275,14 +286,22 @@ func (t *Transports) dialWorkload(workload, routerDigest string, digestKnown boo
 			conn.Close()
 			return nil, err
 		}
+		if stamped != nil {
+			if err := t.entries.sameEntry(handshake, workload, stamped, digest); err != nil {
+				mesh.Close()
+				return nil, fmt.Errorf("%w: %w", errBackendDigestMismatch, err)
+			}
+		}
 		return mesh, nil
 	}
 }
 
 // meshClientConfig is the armTLS mesh client configuration for one workload
 // backend, built on one published generation: the leaf it presents, the CA it
-// trusts and the allowlist digest it requires are the ones published together.
-func (t *Transports) meshClientConfig(workload string) (*tls.Config, []byte, error) {
+// trusts and the allowlist digest it checks against are the ones published
+// together. A peer stamped under another digest whose entry is left to compare
+// gets its digest written to stamped.
+func (t *Transports) meshClientConfig(workload string, stamped *[]byte) (*tls.Config, []byte, error) {
 	cred, err := t.cfg.MeshIdentity()
 	if err != nil {
 		return nil, nil, fmt.Errorf("routing: mesh credential: %w", err)
@@ -298,7 +317,7 @@ func (t *Transports) meshClientConfig(workload string) (*tls.Config, []byte, err
 	cfg, _, err := armtls.NewMeshClientTLSConfig(&armtls.MeshConfig{
 		CertProvider: routerLeaf{cert: cred.Certificate},
 		MeshCA:       cred.MeshCAs[0],
-		AcceptPeer:   acceptWorkload(workload, digest),
+		AcceptPeer:   t.acceptWorkload(workload, digest, stamped),
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("routing: mesh client for workload %q: %w", workload, err)
@@ -328,8 +347,11 @@ func (t *Transports) meshCAs() ([]*x509.Certificate, error) {
 // acceptWorkload fails the handshake unless the peer the chain path
 // authenticated is the workload the signed route names (B1), stamped under
 // the router's own allowlist digest (B8). A leaf CDS stamped no workload on
-// names none, and is refused with the rest.
-func acceptWorkload(workload string, routerDigest []byte) func(armtls.Peer) error {
+// names none, and is refused with the rest. With an allowlist history, a peer
+// stamped under another digest passes the handshake with its digest written to
+// stamped: the dial then compares its entry with the router's, which needs a
+// fetch the handshake callback cannot bound.
+func (t *Transports) acceptWorkload(workload string, routerDigest []byte, stamped *[]byte) func(armtls.Peer) error {
 	router := "with no router allowlist digest"
 	if routerDigest != nil {
 		router = fmt.Sprintf("under router allowlist digest %x", routerDigest)
@@ -344,9 +366,14 @@ func acceptWorkload(workload string, routerDigest []byte) func(armtls.Peer) erro
 		if routerDigest == nil {
 			return nil // B9: an unstamped router binds no policy digest
 		}
-		if !bytes.Equal(peer.AllowlistDigest, routerDigest) {
+		if bytes.Equal(peer.AllowlistDigest, routerDigest) {
+			return nil
+		}
+		if t.entries == nil {
 			return fmt.Errorf("%w: workload %q is stamped under %x, and the router's is %x", errBackendDigestMismatch, workload, peer.AllowlistDigest, routerDigest)
 		}
+		// Never nil, so an unstamped digest fails the entry check.
+		*stamped = append([]byte{}, peer.AllowlistDigest...)
 		return nil
 	}
 }
