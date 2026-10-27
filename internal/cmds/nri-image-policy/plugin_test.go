@@ -900,7 +900,7 @@ func TestCheckImage_DenialSeparatesUnlistedFromArgvMismatch(t *testing.T) {
 		Argv:      []string{"/bin/evil"},
 		Mounts:    []allowlist.ObservedMount{},
 	}, launchFinal)
-	if !strings.Contains(argvMismatch, "satisfies no workload entry's command, args, env or mounts policy") {
+	if !strings.Contains(argvMismatch, "satisfies no workload entry's command, args, env or mounts policy; the closest entry differs in command") {
 		t.Fatalf("a listed digest denied on argv should say so, got %q", argvMismatch)
 	}
 
@@ -914,6 +914,30 @@ func TestCheckImage_DenialSeparatesUnlistedFromArgvMismatch(t *testing.T) {
 	}, launchFinal)
 	if !strings.Contains(unlisted, "image not in allowlist") {
 		t.Fatalf("an unlisted digest should keep the not-in-allowlist denial, got %q", unlisted)
+	}
+}
+
+// An unobservable environment fails an env deny entry; the reason says which
+// variable made it unobservable, so the author need not guess.
+func TestCheckImage_DenialNamesTheUnobservableVariable(t *testing.T) {
+	al := workloadAllowlist(t, pushDigestA, pushDigestB, []string{"/bin/app"})
+	w := al.Workloads["w"]
+	w.Containers[0].Env = allowlist.EnvPolicy{Policy: allowlist.PolicyDeny}
+	al.Workloads["w"] = w
+	p, _ := newCachedPlugin(&config{Policy: policyConfig{Mode: ModeFailClosed}}, al)
+
+	_, envErr := observeEnv(&api.Container{Env: []string{"HOME=/tmp", "HOME=/root"}})
+	_, reason := p.checkImagePhase(context.Background(), p.cfg, imageCheck{
+		Namespace: "default",
+		PodName:   "pod",
+		Container: "ctr",
+		ImageRef:  "registry/repo@" + pushDigestB,
+		Argv:      []string{"/bin/app"},
+		EnvErr:    envErr,
+		Mounts:    []allowlist.ObservedMount{},
+	}, launchFinal)
+	if !strings.HasSuffix(reason, "; the closest entry differs in env (OCI environment sets HOME twice with different values)") {
+		t.Fatalf("reason = %q", reason)
 	}
 }
 

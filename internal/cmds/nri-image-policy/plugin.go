@@ -530,7 +530,10 @@ type imageCheck struct {
 	ImageRef  string
 	Argv      []string
 	Env       *allowlist.EnvObservation
-	Mounts    []allowlist.ObservedMount
+	// EnvErr says why Env is unavailable, when the OCI environment itself is
+	// the cause. It names at most a variable, never a value.
+	EnvErr error
+	Mounts []allowlist.ObservedMount
 }
 
 type launchPhase uint8
@@ -619,12 +622,18 @@ func (p *plugin) checkImagePhase(ctx context.Context, cfg *config, check imageCh
 	}
 	if !p.policy.baseAdmits(rc, phase) && !admitted {
 		// INVARIANT: the returned reason reaches a namespace-readable kubelet
-		// event, so it names only the image — argv can carry credentials and
-		// stays in the node-local log.
+		// event, so it names the image, policy fields and at most a variable
+		// name — argv and env values can carry credentials and stay out of it.
 		reason, denial := "not_in_allowlist", fmt.Sprintf("image not in allowlist: %s", check.ImageRef)
 		if listed := snap.index.AdmitsDigest(digest); listed {
 			reason = "launch_not_admitted"
 			denial = fmt.Sprintf("image %s is allowlisted, but its launch specification satisfies no workload entry's command, args, env or mounts policy", check.ImageRef)
+			if fields := snap.index.Mismatch(rc, phase == launchFinal); len(fields) > 0 {
+				denial += "; the closest entry differs in " + strings.Join(fields, ", ")
+				if check.EnvErr != nil && slices.Contains(fields, "env") {
+					denial += " (" + check.EnvErr.Error() + ")"
+				}
+			}
 		}
 		attrs := []any{"digest", digest, "argv", check.Argv, "reason", reason}
 		if missing := nodeRootMissing(check.Mounts); missing != "" && p.policy.declaresNodeRoot(digest) {
@@ -703,6 +712,7 @@ func (p *plugin) checkContainerObserved(ctx context.Context, cfg *config, pod *a
 			ImageRef:  imageRef,
 			Argv:      ctr.GetArgs(),
 			Env:       env,
+			EnvErr:    envError(ctr, env),
 			Mounts:    mounts,
 		}, phase)
 	}
@@ -1323,6 +1333,15 @@ func cdiInjected(ctr *api.Container) bool {
 // cdiAnnotationPrefix is the CRI annotation namespace kubelet uses to pass CDI
 // device references to the runtime.
 const cdiAnnotationPrefix = "cdi.k8s.io/"
+
+// envError is why the OCI environment left env unavailable, if it did.
+func envError(ctr *api.Container, env *allowlist.EnvObservation) error {
+	if env != nil {
+		return nil
+	}
+	_, err := observeEnv(ctr)
+	return err
+}
 
 // containerEnv refuses an incomplete OCI process. containerd can report an
 // empty spec after a failed spec read; that must not look like observed-empty.
