@@ -43,7 +43,7 @@ type podCredentialBroker struct {
 var runGuestCredentials = getcert.RunGuest
 
 func (p *plugin) lockPodAdmission() func() {
-	if p.cfg.Pod == nil {
+	if !p.cfg.podRole() {
 		return func() {}
 	}
 	p.podMu.Lock()
@@ -51,7 +51,7 @@ func (p *plugin) lockPodAdmission() func() {
 }
 
 func (p *plugin) afterPodStart(pod *api.PodSandbox, source string) error {
-	if p.cfg.Pod == nil {
+	if !p.cfg.podRole() {
 		return nil
 	}
 	if source != "" {
@@ -70,7 +70,7 @@ func (p *plugin) afterPodStart(pod *api.PodSandbox, source string) error {
 }
 
 func (p *plugin) preparePodBroker(ctx context.Context, client *http.Client) error {
-	if p.cfg.Pod == nil {
+	if !p.cfg.podRole() {
 		return nil
 	}
 	if client == nil {
@@ -127,6 +127,7 @@ func (p *plugin) podChanged() {
 }
 
 func (p *plugin) endPodIdentity(reason error) {
+	clear(p.podStarts)
 	if b := p.podBroker; b != nil {
 		if b.terminal == nil {
 			b.terminal = reason
@@ -220,13 +221,12 @@ func (p *plugin) podSnapshotLocked() (workloadclaims.PodClaims, error) {
 	if err != nil {
 		return p.podSnapshotLost(err)
 	}
-	journal, ok := p.measurer.(interface{ Digests() []string })
-	if !ok {
+	if p.measurer == nil {
 		return p.podSnapshotLost(errors.New("pod broker has no runtime journal"))
 	}
 	claims := workloadclaims.PodClaims{Version: 1, BootID: b.bootID, AssignedPodUID: p.cfg.Pod.UID,
 		RuntimePodUID: b.pod.GetUid(), SandboxID: b.pod.GetId(), Revision: revision,
-		RuntimeExtensions: journal.Digests(), Containers: containers}
+		RuntimeExtensions: p.measurer.Digests(), Containers: containers}
 	if _, err := claims.Canonical(); err != nil {
 		return p.podSnapshotLost(err)
 	}
@@ -257,7 +257,7 @@ func (p *plugin) commitPodCredentials(claims workloadclaims.PodClaims, publish f
 // podCredentialSource checks the final mount table independently of a tenant's
 // allowlist. A broad mounts policy must never hand it the platform's key.
 func (p *plugin) podCredentialSource(pod *api.PodSandbox, ctr *api.Container, role string, mounts []allowlist.ObservedMount) (string, error) {
-	if p.cfg.Pod == nil {
+	if !p.cfg.podRole() {
 		return "", nil
 	}
 	if pod.GetNamespace() != p.cfg.Pod.Namespace || pod.GetName() != p.cfg.Pod.Name || pod.GetUid() == "" || pod.GetId() == "" {
@@ -285,26 +285,21 @@ func (p *plugin) podCredentialSource(pod *api.PodSandbox, ctr *api.Container, ro
 		}
 		source = base
 	}
+	verified := false
 	for _, mount := range mounts {
-		if mount.Volume == podmesh.CertVolumeName {
-			if role != meshRole || mount.Destination != podmesh.CertDir || mount.Class != allowlist.MountEmptyDir || mount.Storage != allowlist.MountMemory || !mount.ReadOnly {
-				return "", errors.New("the mesh credential mount must be a read-only memory emptyDir")
-			}
+		if mount.Volume != podmesh.CertVolumeName {
+			continue
 		}
+		if role != meshRole || mount.Destination != podmesh.CertDir || mount.Class != allowlist.MountEmptyDir || mount.Storage != allowlist.MountMemory || !mount.ReadOnly {
+			return "", errors.New("the mesh credential mount must be a read-only memory emptyDir")
+		}
+		verified = true
 	}
 	if role == meshRole && source == "" {
 		return "", errors.New("the measured mesh endpoint has no private credential volume")
 	}
-	if source != "" {
-		verified := false
-		for _, mount := range mounts {
-			if mount.Volume == podmesh.CertVolumeName && mount.Destination == podmesh.CertDir && mount.Class == allowlist.MountEmptyDir && mount.Storage == allowlist.MountMemory && mount.ReadOnly {
-				verified = true
-			}
-		}
-		if !verified {
-			return "", errors.New("the credential volume has no verified memory-backed mount evidence")
-		}
+	if source != "" && !verified {
+		return "", errors.New("the credential volume has no verified memory-backed mount evidence")
 	}
 	return source, nil
 }

@@ -119,13 +119,14 @@ func filterInput(p Policy) chain {
 // a pod-local address, neighbour discovery, an approved resolver query, TCP
 // from the mesh endpoint's own sockets or to one of the pod's exits, or sent
 // by a platform role to a destination it is bound to. No member pod process
-// runs as root, so a root-owned socket here entered the namespace
+// on a node runs as root, so a root-owned socket there entered the namespace
 // from outside, as port-forward does.
-// Standalone Pods additionally admit ordinary IPv4 TCP/UDP egress.
+// Standalone Pods additionally admit ordinary IPv4 TCP/UDP egress, and admit
+// root: a pod CVM's containers may run as root, and nothing enters its pod
+// network namespace from outside the CVM.
 func filterOutput(p Policy) chain {
 	if p.Pod != nil {
 		rules := slices.Concat([]rule{
-			{"namespace-entrant", withVerdict(matchSocketUID(0), expr.VerdictDrop)},
 			{"deny-link-local", withVerdict(matchDestinationRange(netip.MustParsePrefix("169.254.0.0/16")), expr.VerdictDrop)},
 		}, listenerOwnerRules(p), replyAndControlRules(), []rule{
 			{"pod-local", withVerdict(matchLocalDestination(), expr.VerdictAccept)},

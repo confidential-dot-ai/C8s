@@ -44,9 +44,10 @@ type config struct {
 // podConfig is the signed identity the guest preparation stages. Runtime UID
 // and sandbox identity come independently from NRI, never from this document.
 type podConfig struct {
-	UID       string `yaml:"uid"`
-	Namespace string `yaml:"namespace"`
-	Name      string `yaml:"name"`
+	UID       string            `yaml:"uid"`
+	Namespace string            `yaml:"namespace"`
+	Name      string            `yaml:"name"`
+	Images    map[string]string `yaml:"images"`
 }
 
 // measureConfig extends each started workload's image digest into RTMR[3]
@@ -352,10 +353,17 @@ func (c *config) NormalizedPlatform() string {
 	return family.String()
 }
 
-// injectsCredentialClients excludes the Pod guest journal: recording measured
-// workloads does not grant containers access to node credential services.
+// podRole reports whether this boot is a pod CVM's: the signed pod section is
+// present, and validatePod ties it to measure.rtmr3 and mesh.pod, so the
+// plugin asks this one question wherever the two roles part.
+func (c *config) podRole() bool {
+	return c.Pod != nil
+}
+
+// injectsCredentialClients excludes a pod CVM: measuring its workloads does
+// not grant containers access to node credential services.
 func (c *config) injectsCredentialClients() bool {
-	return c.WorkloadClaims.SocketDir != "" && !c.Measure.RTMR3
+	return c.WorkloadClaims.SocketDir != "" && !c.podRole()
 }
 
 // PullEnabled reports whether the plugin should poll a remote CDS.
@@ -518,7 +526,7 @@ func (c *config) validatePod() error {
 	if len(c.Mesh.Roles) != 1 || c.Mesh.Roles[0].Name != meshRole || c.Mesh.Roles[0].UID != workloadclaims.MeshUID || len(c.Mesh.Roles[0].Destinations) != 0 || c.Mesh.CredentialAttestationPort != 0 || c.WorkloadClaims.CDSNodePort != 0 {
 		return fmt.Errorf("the Pod broker requires only the mesh role and no Pod credential-client bypass")
 	}
-	return nil
+	return c.validatePodImages()
 }
 
 // validateMesh requires a mesh policy this node can enforce.

@@ -194,10 +194,14 @@ measures started images only and refuses a baked configuration that also sets
 `allowlist.pull.measure_policies`.
 
 The pod manifest requires `metadata.uid` and a canonical SHA-256 digest on every
-init and application image. Volumes
+init and application image; the guest stages these pins by container name
+([Pod image binding](allowlist-and-capabilities.md#pod-image-binding)). Volumes
 must be `emptyDir` with `medium: Memory`, so pod state stays in VM memory
 whether or not a scratch disk is attached. Host namespaces, `hostPort`,
-`hostIP` and privileged containers are refused. The image runs
+`hostIP` and privileged containers are refused. Containers may run as root: the
+CVM runs this one pod, and the runtime's
+[privilege floor](node-exec-mode.md#the-privilege-floor) still bounds
+capabilities and grants neither `SETUID` nor `SETGID`. The image runs
 containerd and a standalone kubelet (`podcvm-containerd`, `podcvm-kubelet`)
 instead of RKE2 and does not require the scratch disk. The kubelet listens on
 loopback only, and sets `makeIPTablesUtilChains: false`: the admission plugin

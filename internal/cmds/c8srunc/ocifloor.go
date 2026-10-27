@@ -58,6 +58,13 @@ var kernelFSTypes = []string{
 // holds no capabilities. Attachability is refused for every container the
 // wrapper creates, whether or not the floor covers it.
 func requireFloor(spec *specs.Spec, containerID string, stdin *os.File, floor nriimagepolicy.MeshFloor) error {
+	if floor.PodRole && spec.Hooks != nil {
+		// Include legacy hook stages: none may execute before Pod admission.
+		hooks, err := json.Marshal(spec.Hooks)
+		if err != nil || string(hooks) != "{}" {
+			return errors.New("pod runtime hooks are not permitted")
+		}
+	}
 	if err := requireNotAttachable(spec, stdin); err != nil {
 		return fmt.Errorf("no container on this node may be attachable: %w", err)
 	}
@@ -93,7 +100,7 @@ func floorChecks(spec *specs.Spec, floor nriimagepolicy.MeshFloor) error {
 	if err := requireOwnNamespaces(spec.Linux); err != nil {
 		return err
 	}
-	return requireUnreservedIdentity(user, floor, role)
+	return floor.RequireUnreservedIdentity(user.UID, user.GID, user.AdditionalGids, role)
 }
 
 // requireNotAttachable refuses the two halves of what an attach session would
@@ -245,21 +252,6 @@ func joinedNamespace(linux *specs.Linux, kind specs.LinuxNamespaceType) string {
 		return ""
 	}
 	return linux.Namespaces[i].Path
-}
-
-// requireUnreservedIdentity requires a container outside every role to run as
-// a non-root user, and every container to claim no id reserved for another
-// role: trusted policy reserves the number as both a UID and a GID.
-func requireUnreservedIdentity(user specs.User, floor nriimagepolicy.MeshFloor, role string) error {
-	if role == "" && user.UID == 0 {
-		return errors.New("a container outside every platform role runs as root")
-	}
-	for _, id := range append([]uint32{user.GID}, user.AdditionalGids...) {
-		if owner, reserved := floor.ReservedIDs[id]; reserved && owner.Name != role {
-			return fmt.Errorf("gid %d is reserved for the %s role", id, owner.Name)
-		}
-	}
-	return nil
 }
 
 func requireNoTerminal(process *specs.Process) error {
