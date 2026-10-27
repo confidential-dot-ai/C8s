@@ -15,7 +15,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/sidecar"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
@@ -36,7 +35,7 @@ type probe struct {
 type clientFunc func(sidecar.Config, armtls.Pins) (*http.Client, crypto.PublicKey, error)
 
 // newProbe verifies CDS as the pod's sidecars do, through armTLS against the
-// pins it was given.
+// node's CDS pins where the enforcer mounts them, otherwise the pins given.
 func newProbe(o options) (*probe, error) {
 	cfg := sidecar.Config{
 		CDSURL:                 o.cdsURL,
@@ -49,12 +48,11 @@ func newProbe(o options) (*probe, error) {
 		KeyPath:                o.keyPath,
 		RequestTimeout:         o.timeout,
 	}
-	policy, err := (cmdsutil.ImagePolicySource{File: cfg.MeasurementsConfig, JSON: cfg.MeasurementsConfigJSON}).Load(
-		cmdsutil.MeasurementPins{Measurements: cfg.Measurements, Registers: cfg.RTMRs})
+	pins, err := cfg.ParsePins()
 	if err != nil {
 		return nil, err
 	}
-	client, pub, err := o.newClient(cfg, armtls.Pins(policy))
+	client, pub, err := o.newClient(cfg, pins)
 	if err != nil {
 		return nil, err
 	}

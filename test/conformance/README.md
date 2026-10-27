@@ -36,8 +36,9 @@ run with `kubectl exec -c c8s-cert <pod> -- /c8s secret-probe --cds-url URL
 --attestation-api-url URL --cert FILE --key FILE <action>` inside the injected
 certificate sidecar, it performs one workload secret request with every input
 under the caller's control. It verifies the CDS as the sidecars do, through
-armTLS against the pins it is given; the steps give it the attestation API and
-pins the webhook gave that container. `challenge` fetches a fresh CDS challenge and prints it base64;
+armTLS against the node's CDS pins where the enforcer mounts them, otherwise
+the pins it is given; the steps give it the attestation API and any pins the
+webhook gave that container. `challenge` fetches a fresh CDS challenge and prints it base64;
 `token` redeems a sandbox token for the pod's sandbox from the node's
 inventory socket, bound to the leaf's key and to a given challenge, and prints
 the JSON the Authorization header carries; `request <GET|POST> <path>` sends the
