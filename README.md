@@ -283,7 +283,7 @@ attestation and reports the operator keys it pins.
 | [`pkg/overenc`](pkg/overenc/) | Post-quantum over-encryption channel and its identity transcript |
 | [`pkg/operatorauth`](pkg/operatorauth/) | Operator-key signing and verification for allowlist and secret writes |
 | [`pkg/types`](pkg/types/) | Shared request/response types for the C8s protocols (the attestation-api wire types live in [attestation-go/remote](https://github.com/confidential-dot-ai/attestation-go)) |
-| [`pkg/runtimemeasure`](pkg/runtimemeasure/) | TDX image-pin manifests and RTMR[3] measurement replay |
+| [`attestation-go/runtimemeasure`](https://github.com/confidential-dot-ai/attestation-go/tree/main/runtimemeasure) | TDX image-pin manifests and RTMR[3] measurement replay, consumed from attestation-go |
 | [`pkg/certutil`](pkg/certutil/) | Certificate utility functions |
 
 ## Repository layout
