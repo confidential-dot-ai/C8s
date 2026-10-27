@@ -117,9 +117,13 @@
 {{- end -}}
 {{- if .Values.router.enabled -}}{{- $templates = append $templates (list "router" "router.podSpec") -}}{{- end -}}
 {{- if .Values.kubeStateMetrics.enabled -}}{{- $templates = append $templates (list "kube-state-metrics" "kube-state-metrics.podSpec") -}}{{- end -}}
+{{- /* The HA CDS replica (cds-ha.yaml) is the CDS pod spec with .ha set. */ -}}
+{{- if and .Values.node.baked .Values.cds.ha.enabled -}}{{- $templates = append $templates (list "cds-ha" "c8s.cdsPodSpec" true) -}}{{- end -}}
 {{- $pods := list -}}
 {{- range $t := $templates -}}
-{{- $spec := include (index $t 1) $ | fromYaml -}}
+{{- $ctx := $ -}}
+{{- if gt (len $t) 2 -}}{{- $ctx = merge (dict "ha" true) $ -}}{{- end -}}
+{{- $spec := include (index $t 1) $ctx | fromYaml -}}
 {{- if hasKey $spec "Error" -}}
 {{- fail (printf "%s pod spec does not parse: %s" (index $t 0) (get $spec "Error")) -}}
 {{- end -}}

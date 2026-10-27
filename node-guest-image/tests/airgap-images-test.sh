@@ -108,6 +108,21 @@ chmod -R u+w "$cached"
 echo '{"imageLayoutVersion":"9"}' > "$cached/oci-layout"
 bash "$script" "$work/images.txt" "$work/cache" "$work/layout"
 cmp "$work/first/c8s-0.tar" "$work/layout/c8s-0.tar"
+# A local name (the HA CDS image, by node-image render's local-names.txt)
+# adds a second name for the same digest; the blobs are unchanged.
+ref=$(head -1 "$work/images.txt")
+printf '%s %s\n' "$ref" "${ref%%@*}:c8s-node" > "$work/local-names.txt"
+bash "$script" "$work/images.txt" "$work/cache" "$work/named" "" ghcr.io/confidential-dot-ai "$work/local-names.txt"
+tar -xOf "$work/named/c8s-0.tar" index.json > "$work/named-index.json"
+[[ $(jq '.manifests | length' "$work/named-index.json") == 2 ]]
+[[ $(jq -r '[.manifests[].digest] | unique | length' "$work/named-index.json") == 1 ]]
+jq -e --arg n "${ref%%@*}:c8s-node" 'any(.manifests[]; .annotations["io.containerd.image.name"] == $n)' "$work/named-index.json" >/dev/null
+jq -e --arg n "$ref" 'any(.manifests[]; .annotations["io.containerd.image.name"] == $n)' "$work/named-index.json" >/dev/null
+[[ "$(tar -tf "$work/named/c8s-0.tar" | grep '^blobs/' | sort)" == "$(tar -tf "$work/first/c8s-0.tar" | grep '^blobs/' | sort)" ]]
+echo bad > "$work/bad-names.txt"
+if bash "$script" "$work/images.txt" "$work/cache" "$work/bad" "" ghcr.io/confidential-dot-ai "$work/bad-names.txt" 2>/dev/null; then
+    echo "accepted a malformed local name" >&2; exit 1
+fi
 # Layouts for digests no longer listed are pruned from the persisted cache.
 mkdir -p "$work/cache/oci-stale/blobs"
 bash "$script" "$work/images.txt" "$work/cache" "$work/pruned"

@@ -378,11 +378,12 @@ func TestStageCommandFailsClosed(t *testing.T) {
 		t.Fatalf("missing required flag: %v", err)
 	}
 
-	cmd = NewCmd()
-	cmd.SetArgs([]string{"stage", "--platform", "sgx", "--config", cfg.DocumentPath, "--signature", cfg.SignaturePath})
-	cmd.SetOut(&bytes.Buffer{})
-	cmd.SetErr(&bytes.Buffer{})
-	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "platform") {
+	// The stage command has no root override: Execute would clear the real
+	// /etc/rancher and /run/confos outputs before rejecting the platform.
+	// Exercise the same Stage path rebased under the test root instead.
+	sgx := cfg
+	sgx.Platform = "sgx"
+	if err := Stage(context.Background(), sgx); err == nil || !strings.Contains(err.Error(), "platform") {
 		t.Fatalf("unsupported platform: %v", err)
 	}
 }
@@ -449,7 +450,7 @@ func TestStageMeasuredPoliciesFileDefaultsToNodeJournal(t *testing.T) {
 }
 
 func TestRoleValidFollowsRoleTable(t *testing.T) {
-	for _, role := range []Role{Server, Agent} {
+	for _, role := range []Role{Server, Agent, CDS} {
 		if !role.Valid() {
 			t.Errorf("%s has no role table entry", role)
 		}
@@ -459,7 +460,7 @@ func TestRoleValidFollowsRoleTable(t *testing.T) {
 			t.Errorf("%q is accepted as a role", role)
 		}
 	}
-	if len(roles) != 2 {
+	if len(roles) != 3 {
 		t.Errorf("role table has %d entries; give each new role a constant and a case above", len(roles))
 	}
 }

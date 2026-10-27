@@ -6,6 +6,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -324,6 +325,214 @@ func TestNewBundleCarriesASignedServerRouter(t *testing.T) {
 	stageBundleNode(t, dir, "worker-1")
 }
 
+// TestNewBundleWithCDSNodes: --cds-node adds a third launch key, the cds
+// documents stage with the cds role, and server.json (what CDS clients pin)
+// covers the server and the cds key.
+func TestNewBundleWithCDSNodes(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "bundle")
+	err := runBundleCmd(t, "new", "--out", dir, "--cluster-id", "demo", "--image-manifest", writeManifest(t, "tdx"),
+		"--server-address", "10.0.0.10", "--agent", "demo-f1", "--cds-node", "demo-cds-1", "--cds-node", "demo-cds-2", "--cds-node", "demo-cds-3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, _ := readBundleDocument(t, dir, serverDir)
+	if server.CDSHA == nil || server.CDSHA.Replicas != 3 || len(server.CDSOperatorPublicKeys) != 1 {
+		t.Fatalf("server document lacks cdsHA: %+v", server)
+	}
+	cdsKey, err := certutil.LoadECPrivateKeyFile(filepath.Join(dir, cdsKeyFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cdsPub, _ := publicKeyPEM(cdsKey)
+	if cdsPub != server.CDSOperatorPublicKeys[0] {
+		t.Fatal("cds.key is not the cds launch key")
+	}
+	decreeKey, err := certutil.LoadECPrivateKeyFile(filepath.Join(dir, decreeKeyFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	recoveryKey, err := certutil.LoadECPrivateKeyFile(filepath.Join(dir, recoveryKeyFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recoveryPub, _ := publicKeyPEM(recoveryKey); recoveryPub != server.CDSHA.RecoveryKey || recoveryPub == server.CDSHA.DecreeKey {
+		t.Fatal("recovery.key is not the cdsHA.recoveryKey, or it is the decree key")
+	}
+	bad := *server
+	bad.CDSHA = &CDSHA{DecreeKey: server.CDSHA.DecreeKey, Replicas: 3, RecoveryKey: "junk"}
+	if err := bad.validate(); err == nil {
+		t.Fatal("a junk recovery key validated")
+	}
+	if decreePub, _ := publicKeyPEM(decreeKey); decreePub != server.CDSHA.DecreeKey {
+		t.Fatal("decree.key is not cdsHA.decreeKey")
+	}
+	for _, name := range []string{"demo-cds-1", "demo-cds-2", "demo-cds-3"} {
+		doc, data := readBundleDocument(t, dir, name)
+		if doc.Role != CDS || bytes.Contains(data, []byte("serverToken")) {
+			t.Fatalf("%s: role %q or carries the server token", name, doc.Role)
+		}
+		pub, _ := os.ReadFile(filepath.Join(dir, name, pubkeyFile))
+		if string(pub) != cdsPub {
+			t.Fatalf("%s pubkey is not the cds key", name)
+		}
+	}
+	for _, node := range []string{serverDir, "demo-f1", "demo-cds-1"} {
+		stageBundleNode(t, dir, node)
+	}
+	policy, err := refvalues.Load(filepath.Join(dir, serverPolicy))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(policy.Images) != 2 || string(policy.Images[0].Anchor) != server.Server.OperatorPublicKey || string(policy.Images[1].Anchor) != cdsPub {
+		t.Fatalf("server.json must pin the server and the cds launch keys: %+v", policy.Images)
+	}
+	if err := runBundleCmd(t, "new", "--out", dir+"-one", "--cluster-id", "demo", "--image-manifest", writeManifest(t, "tdx"),
+		"--server-address", "10.0.0.10", "--cds-node", "cds-a", "--cds-node", "cds-b"); err == nil {
+		t.Fatal("an even voter set accepted")
+	}
+}
+
+// A CDS rollout: a cds node launched on image B boots B only, and accepts
+// the server's image A for its peers and CDS, so it trusts every node not
+// yet rolled. Its CDS policy pins the server and cds launch keys on both.
+func TestAddCDSNodeOnANewImage(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "bundle")
+	if err := runBundleCmd(t, "new", "--out", dir, "--cluster-id", "demo", "--image-manifest", writeManifest(t, "tdx"),
+		"--server-address", "10.0.0.10", "--cds-node", "demo-cds-0", "--cds-node", "demo-cds-1", "--cds-node", "demo-cds-2"); err != nil {
+		t.Fatal(err)
+	}
+	b := filepath.Join(t.TempDir(), "manifest-b.json")
+	body := `{"version":1,"build":{"platform":"tdx"},"tdx":{"mrtd":"` + strings.Repeat("66", 48) +
+		`","rtmr1":"` + strings.Repeat("77", 48) + `","rtmr2":"` + strings.Repeat("88", 48) + `"}}`
+	if err := os.WriteFile(b, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := runBundleCmd(t, "add-cds-node", "--bundle", dir, "--name", "demo-cds-3", "--image-manifest", b); err != nil {
+		t.Fatal(err)
+	}
+	server, _ := readBundleDocument(t, dir, serverDir)
+	doc, _ := readBundleDocument(t, dir, "demo-cds-3")
+	if doc.Image.Measurement != strings.Repeat("66", 48) || len(doc.PeerImages) != 1 || !sameImage(doc.PeerImages[0], server.Image) {
+		t.Fatalf("image %s, peer images %+v", doc.Image.Measurement, doc.PeerImages)
+	}
+	stageBundleNode(t, dir, "demo-cds-3")
+	pins, err := doc.referenceValues()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cds := doc.cdsPins(pins)
+	if len(cds.Images) != 4 {
+		t.Fatalf("server and cds keys on A and B: %d pins", len(cds.Images))
+	}
+	seen := map[string]bool{}
+	for _, pin := range cds.Images {
+		seen[string(pin.Anchor)+hex.EncodeToString(pin.Digest)] = true
+	}
+	for _, key := range []string{server.Server.OperatorPublicKey, server.CDSOperatorPublicKeys[0]} {
+		for _, m := range []string{strings.Repeat("11", 48), strings.Repeat("66", 48)} {
+			if !seen[key+m] {
+				t.Fatalf("missing pin for image %s…", m[:6])
+			}
+		}
+	}
+	// Same image as the server: an ordinary document, no peer images.
+	if err := runBundleCmd(t, "add-cds-node", "--bundle", dir, "--name", "demo-cds-4", "--image-manifest", writeManifest(t, "tdx")); err != nil {
+		t.Fatal(err)
+	}
+	if same, _ := readBundleDocument(t, dir, "demo-cds-4"); len(same.PeerImages) != 0 {
+		t.Fatalf("peer images on the server's own image: %+v", same.PeerImages)
+	}
+	// A repeated or foreign peer image does not validate.
+	bad := *doc
+	bad.PeerImages = []Image{doc.Image}
+	if err := bad.validate(); err == nil {
+		t.Fatal("the node's own image as a peer image validated")
+	}
+	bad.PeerImages = []Image{{Platform: "snp", Measurement: strings.Repeat("44", 48)}}
+	if err := bad.validate(); err == nil {
+		t.Fatal("a peer image of another platform validated")
+	}
+}
+
+func TestPeerImagesValidation(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "bundle")
+	if err := runBundleCmd(t, "new", "--out", dir, "--cluster-id", "demo", "--image-manifest", writeManifest(t, "tdx")); err != nil {
+		t.Fatal(err)
+	}
+	doc, _ := readBundleDocument(t, dir, serverDir)
+	img := func(b string) Image {
+		return Image{Platform: "tdx", Measurement: strings.Repeat(b, 48), RTMRs: map[int]string{1: strings.Repeat(b, 48), 2: strings.Repeat(b, 48)}}
+	}
+	for name, peers := range map[string][]Image{
+		"too many":        {img("a1"), img("a2"), img("a3"), img("a4"), img("a5")},
+		"bad measurement": {{Platform: "tdx", Measurement: "zz", RTMRs: img("a1").RTMRs}},
+		"bad registers":   {{Platform: "tdx", Measurement: strings.Repeat("a1", 48)}},
+		"repeated":        {img("a1"), img("a1")},
+	} {
+		d := *doc
+		d.PeerImages = peers
+		if err := d.validate(); err == nil {
+			t.Fatalf("%s validated", name)
+		}
+	}
+	if err := runBundleCmd(t, "add-cds-node", "--bundle", dir, "--name", "x", "--image-manifest", "/nonexistent"); err == nil {
+		t.Fatal("a missing image manifest accepted")
+	}
+}
+
+// add-cds-node/add-agent --pin-floor record the floor in the new node's
+// signed document; a cluster without HA CDS refuses one.
+func TestAddNodeWithAPinFloor(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "bundle")
+	if err := runBundleCmd(t, "new", "--out", dir, "--cluster-id", "demo", "--image-manifest", writeManifest(t, "tdx"),
+		"--server-address", "10.0.0.10", "--cds-node", "demo-cds-0", "--cds-node", "demo-cds-1", "--cds-node", "demo-cds-2"); err != nil {
+		t.Fatal(err)
+	}
+	for _, cmd := range []string{"add-cds-node", "add-agent"} {
+		name := cmd + "-x"
+		if err := runBundleCmd(t, cmd, "--bundle", dir, "--name", name, "--pin-floor", "7"); err != nil {
+			t.Fatal(err)
+		}
+		doc, _ := readBundleDocument(t, dir, name)
+		if doc.CDSHA == nil || doc.CDSHA.PinFloor != 7 {
+			t.Fatalf("%s: %+v", cmd, doc.CDSHA)
+		}
+		stageBundleNode(t, dir, name)
+	}
+	server, _ := readBundleDocument(t, dir, serverDir)
+	if server.CDSHA.PinFloor != 0 {
+		t.Fatal("the floor leaked into the server document")
+	}
+	plain := filepath.Join(t.TempDir(), "plain")
+	if err := runBundleCmd(t, "new", "--out", plain, "--cluster-id", "demo", "--image-manifest", writeManifest(t, "tdx"), "--server-address", "10.0.0.10"); err != nil {
+		t.Fatal(err)
+	}
+	if err := runBundleCmd(t, "add-agent", "--bundle", plain, "--name", "a", "--pin-floor", "3"); err == nil {
+		t.Fatal("a pin floor on a cluster without HA CDS accepted")
+	}
+	if err := AddNode(dir, Server, JoinOptions{Name: "s2"}); err == nil {
+		t.Fatal("added a server")
+	}
+}
+
+// Peer images of one firmware share their measurement; the pins still get
+// distinct names (the shared parser refuses duplicates).
+func TestPeerImagesSharingAMeasurement(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "bundle")
+	if err := runBundleCmd(t, "new", "--out", dir, "--cluster-id", "demo", "--image-manifest", writeManifest(t, "tdx"),
+		"--server-address", "10.0.0.10", "--cds-node", "demo-cds-0", "--cds-node", "demo-cds-1", "--cds-node", "demo-cds-2"); err != nil {
+		t.Fatal(err)
+	}
+	doc, _ := readBundleDocument(t, dir, serverDir)
+	img := func(r string) Image {
+		return Image{Platform: "tdx", Measurement: strings.Repeat("ab", 48), RTMRs: map[int]string{1: strings.Repeat(r, 48), 2: strings.Repeat(r, 48)}}
+	}
+	doc.PeerImages = []Image{img("c1"), img("c2")}
+	if _, err := doc.referenceValues(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestNewBundleCarriesARouterBodyLimitAlone(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "bundle")
 	err := runBundleCmd(t, "new", "--out", dir, "--cluster-id", "demo", "--image-manifest", writeManifest(t, "tdx"),
@@ -464,5 +673,35 @@ func TestNewBundleRefusesAMismatchedOperatorPubkey(t *testing.T) {
 				t.Fatal("a refused bundle left its directory behind")
 			}
 		})
+	}
+}
+
+// newLaunchKeyFile writes a fresh P-256 key at mode 0600, returns its public
+// half, and never overwrites an existing file.
+func TestNewLaunchKeyFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "k.key")
+	pub, err := newLaunchKeyFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("mode %v", info.Mode().Perm())
+	}
+	key, err := certutil.LoadECPrivateKeyFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if key.Curve != elliptic.P256() {
+		t.Fatal("not a P-256 key")
+	}
+	if want, _ := publicKeyPEM(key); want != pub {
+		t.Fatal("returned public key is not the written key's")
+	}
+	if _, err := newLaunchKeyFile(path); err == nil {
+		t.Fatal("overwrote an existing key file")
 	}
 }

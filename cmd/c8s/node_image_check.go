@@ -56,8 +56,20 @@ func checkNodeImages(outputDir, layoutDir string) error {
 	if err != nil {
 		return err
 	}
+	names, err := os.ReadFile(filepath.Join(outputDir, "local-names.txt"))
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if rendered, err = resolveLocalNames(rendered, names); err != nil {
+		return err
+	}
 	rawSeed, err := os.ReadFile(filepath.Join(outputDir, "allowlist-seed.json"))
 	if err != nil {
+		return err
+	}
+	// The seed pins the operator's argv with the injected images' node-local
+	// names; compare it with the render mapped back to digests.
+	if rawSeed, err = resolveLocalNames(rawSeed, names); err != nil {
 		return err
 	}
 	seed, err := pkgallowlist.ParseJSON(rawSeed)
@@ -81,7 +93,7 @@ func checkNodeImages(outputDir, layoutDir string) error {
 			return fmt.Errorf("decode node integration resource: %w", err)
 		}
 		if kind := object.GetKind(); kind == "Deployment" || kind == "DaemonSet" {
-			if err := collectWorkloadImages(object, kind+"/"+object.GetName(), images); err != nil {
+			if _, err := collectWorkloadImages(object, kind+"/"+object.GetName(), images); err != nil {
 				return err
 			}
 		}
@@ -217,4 +229,25 @@ func readJSON(path string, v any) error {
 		return fmt.Errorf("decode %s: %w", path, err)
 	}
 	return nil
+}
+
+// resolveLocalNames maps node-local image names back to the digest-pinned
+// references they stand for (render's local-names.txt), so the checks see
+// the image every node actually runs.
+func resolveLocalNames(rendered, names []byte) ([]byte, error) {
+	for _, line := range strings.Split(strings.TrimSpace(string(names)), "\n") {
+		if line == "" {
+			continue
+		}
+		f := strings.Fields(line)
+		if len(f) != 2 {
+			return nil, fmt.Errorf("local-names.txt: bad line %q", line)
+		}
+		rendered = bytes.ReplaceAll(rendered, []byte("image: "+f[1]+"\n"), []byte("image: "+f[0]+"\n"))
+		// The operator's injected-image flags (--mesh-image=<name>).
+		for _, flag := range injectedImageFlags {
+			rendered = bytes.ReplaceAll(rendered, []byte(flag+f[1]), []byte(flag+f[0]))
+		}
+	}
+	return rendered, nil
 }

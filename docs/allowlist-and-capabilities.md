@@ -198,7 +198,11 @@ Writes are authorized by an operator EC key whose public half CDS pins: the CLI
 mints a short-lived token bound to the exact method, path, and body, so a
 captured token cannot be replayed against another method, path, or body, and
 each token authorizes one request, so it cannot be replayed at all (CDS answers
-a replay with 409).
+a replay with 409). CDS forgets a spent token once a token issued more than an
+hour after it expired is spent, and from then on refuses (409) every token that
+expired that long before the newest spent one. The comparison uses only the
+tokens' own iat and exp, so every HA replica forgets the same records, and a
+host that turns CDS's clock back cannot make a forgotten token valid again.
 
 ## Refresh and anti-rollback
 
