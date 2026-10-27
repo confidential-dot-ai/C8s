@@ -17,27 +17,29 @@ const lanes = 1024
 // Hash is a multiset of elements. The zero value is the empty set.
 type Hash struct{ l [lanes]uint16 }
 
-// element expands a collision-resistant digest of one element to the lanes.
-func element(d [32]byte) *Hash {
-	var buf [2 * lanes]byte
+// expand fills buf with the lanes of the element whose SHA-256 is d.
+func expand(d [32]byte, buf *[2 * lanes]byte) {
 	x := sha3.NewSHAKE128()
 	_, _ = x.Write(d[:])
 	_, _ = x.Read(buf[:])
-	e := new(Hash)
-	for i := range e.l {
-		e.l[i] = binary.LittleEndian.Uint16(buf[2*i:])
-	}
-	return e
 }
 
-// Add puts the element whose SHA-256 is d into the set.
-func (h *Hash) Add(d [32]byte) { h.Combine(element(d)) }
+// Add puts the element whose SHA-256 is d into the set. It expands into a
+// stack buffer: every row a store write changes costs one Add or Remove.
+func (h *Hash) Add(d [32]byte) {
+	var buf [2 * lanes]byte
+	expand(d, &buf)
+	for i := range h.l {
+		h.l[i] += binary.LittleEndian.Uint16(buf[2*i:])
+	}
+}
 
 // Remove takes the element whose SHA-256 is d out of the set.
 func (h *Hash) Remove(d [32]byte) {
-	e := element(d)
+	var buf [2 * lanes]byte
+	expand(d, &buf)
 	for i := range h.l {
-		h.l[i] -= e.l[i]
+		h.l[i] -= binary.LittleEndian.Uint16(buf[2*i:])
 	}
 }
 
