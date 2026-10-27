@@ -8,6 +8,7 @@ import (
 
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/attestation"
+	"github.com/confidential-dot-ai/c8s/internal/cdsha"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	"github.com/confidential-dot-ai/c8s/internal/server"
@@ -20,7 +21,8 @@ type dependencies struct {
 	AllowlistHandler  allowlist.Handler
 	Routes            routeHandler
 	ReadyFn           attestation.ReadinessFunc
-	MeshCA            *issuer.MeshCA        // the one current CA: served at /ca and signs every leaf
+	MeshCA            meshCA                // the one current CA: served at /ca and signs every leaf (HA: the replicated CA)
+	HA                *cdsha.Node           // HA mode: serves /ha/status, /ha/pins and /ha/decrees
 	OperatorKeysPEM   []byte                // pinned operator public keys; empty = /operator-keys 404s
 	MeasurementsDoc   []byte                // reference values being enforced, as served at /measurements
 	RateLimiter       *issuer.IPRateLimiter // per-source-IP limiter for attestation endpoints
@@ -93,6 +95,11 @@ func newRouter(deps dependencies) http.Handler {
 	}
 
 	r.Get("/ca", handleCA(deps.MeshCA))
+	if deps.HA != nil {
+		r.Get("/ha/status", serveJSON(deps.HA.Status))
+		r.Get("/ha/pins", haPins(deps.HA))
+		r.Get("/ha/decrees", serveJSON(deps.HA.Decrees))
+	}
 	r.Get("/operator-keys", handleOperatorKeys(deps.OperatorKeysPEM))
 	r.Get("/measurements", handleMeasurements(deps.MeasurementsDoc))
 
@@ -141,10 +148,17 @@ func capBody(max int64, next http.Handler) http.Handler {
 }
 
 // handleCA serves the one current mesh CA certificate; a renewal replaces it.
-func handleCA(mesh *issuer.MeshCA) http.HandlerFunc {
+// An HA replica that may not issue has none: fail, never answer 200 with an
+// empty bundle.
+func handleCA(mesh meshCA) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
+		current := mesh.Current()
+		if current.CA == nil {
+			http.Error(w, "mesh CA unavailable", http.StatusServiceUnavailable)
+			return
+		}
 		w.Header().Set("Content-Type", "application/x-pem-file")
-		w.Write(mesh.Current().CertPEM)
+		w.Write(current.CertPEM)
 	}
 }
 

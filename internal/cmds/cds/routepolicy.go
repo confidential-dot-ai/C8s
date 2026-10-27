@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
+	"github.com/confidential-dot-ai/c8s/internal/httputil"
 	"github.com/confidential-dot-ai/c8s/pkg/routes"
 )
 
@@ -19,8 +20,12 @@ type routeHandler struct {
 	Store *allowlist.Store
 	// Authorize is the allowlist write authorizer: same keys, same checks (W1).
 	Authorize allowlist.WriteAuthorizer
-	// MeshCA is this CDS's mesh CA, which no address backend may anchor on (C3).
-	MeshCA *x509.Certificate
+	// MeshCA supplies the currently trusted mesh CA at request time (C3).
+	// Retired keys are not retained here; consumers check their full trusted bundle.
+	MeshCA meshCA
+	// Capacity, when set (HA), refuses a PUT while the replicated state is
+	// at its snapshot capacity, before the token is spent.
+	Capacity func() error
 }
 
 // handleGet serves the stored signed manifest in the C1 envelope, or 404.
@@ -48,11 +53,25 @@ func (h routeHandler) handleGet(w http.ResponseWriter, _ *http.Request) {
 // order: read, authorize, validate, mesh-CA exclusion, revision, If-Match,
 // store.
 func (h routeHandler) handlePut(w http.ResponseWriter, r *http.Request) {
+	if h.Capacity != nil {
+		// Before the token is spent: a spent token is a replicated row too.
+		if err := h.Capacity(); err != nil {
+			slog.Warn("route manifest write refused", "err", err)
+			http.Error(w, err.Error(), http.StatusInsufficientStorage)
+			return
+		}
+	}
 	body, ok := h.Authorize.ReadAuthorized(w, r, allowlistWriteBodyCap)
 	if !ok {
 		return
 	}
-	if h.MeshCA == nil {
+	var excluded *x509.Certificate
+	if h.MeshCA != nil {
+		if current := h.MeshCA.Current(); current.CA != nil {
+			excluded = current.CA.Cert
+		}
+	}
+	if excluded == nil {
 		// Without it the C3 anchor check cannot run: fail closed.
 		slog.Error("route manifest write refused: no mesh CA wired")
 		http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -63,7 +82,7 @@ func (h routeHandler) handlePut(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
-	if err := m.CheckAnchorsExclude([]*x509.Certificate{h.MeshCA}); err != nil {
+	if err := m.CheckAnchorsExclude([]*x509.Certificate{excluded}); err != nil {
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
@@ -76,6 +95,15 @@ func (h routeHandler) handlePut(w http.ResponseWriter, r *http.Request) {
 	}
 	if errors.Is(err, allowlist.ErrDigestMismatch) {
 		http.Error(w, err.Error()+"; fetch the stored manifest and apply the change again", http.StatusPreconditionFailed)
+		return
+	}
+	if errors.Is(err, allowlist.ErrUnavailable) {
+		httputil.WriteUnavailable(w, allowlist.ErrUnavailable)
+		return
+	}
+	if errors.Is(err, allowlist.ErrCapacity) {
+		slog.Warn("route manifest write refused", "err", err)
+		http.Error(w, err.Error(), http.StatusInsufficientStorage)
 		return
 	}
 	if err != nil {
