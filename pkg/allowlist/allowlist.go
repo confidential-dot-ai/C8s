@@ -224,7 +224,7 @@ func ParseJSON(data []byte) (*Allowlist, error) {
 // ParseServedJSON decodes a document served by CDS, ignoring fields it does not
 // know. Its consumers pin a schema version in a launch measurement, so a strict
 // parse would make any newer field freeze their policy until a node-image
-// rebuild. See docs/secrets.md — "Upgrading".
+// rebuild.
 func ParseServedJSON(data []byte) (*Allowlist, error) {
 	return parseJSON(data, false)
 }

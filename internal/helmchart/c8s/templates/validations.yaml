@@ -238,6 +238,17 @@
 {{- fail (printf "VALIDATION_ERROR kind=cds_secrets_path_budget: cds.secretsMaxPathsPerWorkload must be below cds.secretsMaxPaths (%d), got: %d" $secretsCeiling $secretsQuota) -}}
 {{- end -}}
 {{- /*
+  CDS refuses to start on a value bound below the size of the values it
+  generates, so that is refused here instead. Bump the 32 with
+  secrets.GeneratedValueBytes.
+*/ -}}
+{{- if not (kindIs "invalid" .Values.cds.secretsMaxValueBytes) -}}
+{{- $secretsValueBytes := int (include "c8s.positiveInt" (dict "value" .Values.cds.secretsMaxValueBytes "label" "cds.secretsMaxValueBytes")) -}}
+{{- if lt $secretsValueBytes 32 -}}
+{{- fail (printf "VALIDATION_ERROR kind=cds_secrets_value_bytes: cds.secretsMaxValueBytes must be at least 32, the size of every value CDS generates, got: %d" $secretsValueBytes) -}}
+{{- end -}}
+{{- end -}}
+{{- /*
   Per-container `paths` was replaced by an entry-level `secrets` grant. CDS
   parses its seed with unknown fields rejected and fails closed on a parse
   error, so a values file carried over from a release that used `paths` would
