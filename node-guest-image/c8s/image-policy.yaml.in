@@ -309,28 +309,298 @@ allowlist:
                 - {destination: "/var/lib/rancher/rke2/agent/client-kube-proxy.key", kind: host, source: "/var/lib/rancher/rke2/agent/client-kube-proxy.key", readOnly: true}
                 - {destination: "/var/lib/rancher/rke2/agent/kubeproxy.kubeconfig", kind: host, source: "/var/lib/rancher/rke2/agent/kubeproxy.kubeconfig", readOnly: true}
                 - {destination: "/var/lib/rancher/rke2/agent/server-ca.crt", kind: host, source: "/var/lib/rancher/rke2/agent/server-ca.crt", readOnly: true}
-      # The Cilium agent DaemonSet: its init containers and the agent.
+      # The Cilium agent DaemonSet: its init containers and the agent. Each
+      # pins its whole launch, environment included, as a booted node runs it
+      # (crictl inspect), so the node TCB exempts its host privilege.
       cilium:
         initContainers:
           - digest: "sha256:0d26512c90d935db3180f47a7a716e3dfac0847ec29076fb5487e535125a86a8"
             image: "docker.io/rancher/hardened-cni-plugins:v1.9.1-build20260717"
-            command: {policy: exact, argv: ["./install-cnis.sh"]}
-            args: {policy: deny}
+            command:
+              policy: exact
+              argv:
+                - ./install-cnis.sh
+            args:
+              policy: deny
             mounts:
               policy: exact
               rules:
-                - {destination: "/host/opt/cni/bin", kind: host, source: "/opt/cni/bin"}
+                - destination: /host/opt/cni/bin
+                  kind: host
+                  source: /opt/cni/bin
+            env:
+              policy: match
+              variables:
+                HOSTNAME:
+                  present: true
+                PATH:
+                  exact: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+                SKIP_CNI_BINARIES:
+                  exact: bandwidth,bridge,dhcp,firewall,flannel,host-device,host-local,ipvlan,loopback,macvlan,ptp,sbr,static,tuning,vlan,vrf
+              serviceLinks: true
           - digest: "sha256:134ab48d00e67bed72fa43e0492adf2f0c78383e21da7ee1aeb5b7aa8ef2e7ee"
             image: "docker.io/rancher/mirrored-cilium-cilium:v1.19.6"
-            command: {policy: any}
-            args: {policy: any}
-            mounts: {policy: any}
+            command:
+              policy: exact
+              argv:
+                - cilium-dbg
+                - build-config
+            args:
+              policy: deny
+            mounts:
+              policy: exact
+              rules:
+                - destination: /tmp
+                  kind: emptyDir
+                  source: tmp
+            env:
+              policy: match
+              variables:
+                CILIUM_K8S_NAMESPACE:
+                  present: true
+                HOSTNAME:
+                  present: true
+                HUBBLE_SERVER:
+                  exact: unix:///var/run/cilium/hubble.sock
+                INITSYSTEM:
+                  exact: SYSTEMD
+                K8S_NODE_NAME:
+                  present: true
+                PATH:
+                  exact: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+              serviceLinks: true
+          - digest: "sha256:134ab48d00e67bed72fa43e0492adf2f0c78383e21da7ee1aeb5b7aa8ef2e7ee"
+            image: "docker.io/rancher/mirrored-cilium-cilium:v1.19.6"
+            command:
+              policy: exact
+              argv:
+                - bash
+                - -ec
+                - |
+                  cp /usr/bin/cilium-mount /hostbin/cilium-mount;
+                  nsenter --cgroup=/hostproc/1/ns/cgroup --mount=/hostproc/1/ns/mnt "${BIN_PATH}/cilium-mount" $CGROUP_ROOT;
+                  rm /hostbin/cilium-mount
+            args:
+              policy: deny
+            mounts:
+              policy: exact
+              rules:
+                - destination: /hostbin
+                  kind: host
+                  source: /opt/cni/bin
+                - destination: /hostproc
+                  kind: host
+                  source: /proc
+            env:
+              policy: match
+              variables:
+                BIN_PATH:
+                  exact: /opt/cni/bin
+                CGROUP_ROOT:
+                  exact: /run/cilium/cgroupv2
+                HOSTNAME:
+                  present: true
+                HUBBLE_SERVER:
+                  exact: unix:///var/run/cilium/hubble.sock
+                INITSYSTEM:
+                  exact: SYSTEMD
+                PATH:
+                  exact: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+              serviceLinks: true
+          - digest: "sha256:134ab48d00e67bed72fa43e0492adf2f0c78383e21da7ee1aeb5b7aa8ef2e7ee"
+            image: "docker.io/rancher/mirrored-cilium-cilium:v1.19.6"
+            command:
+              policy: exact
+              argv:
+                - bash
+                - -ec
+                - |
+                  cp /usr/bin/cilium-sysctlfix /hostbin/cilium-sysctlfix;
+                  nsenter --mount=/hostproc/1/ns/mnt "${BIN_PATH}/cilium-sysctlfix";
+                  rm /hostbin/cilium-sysctlfix
+            args:
+              policy: deny
+            mounts:
+              policy: exact
+              rules:
+                - destination: /hostbin
+                  kind: host
+                  source: /opt/cni/bin
+                - destination: /hostproc
+                  kind: host
+                  source: /proc
+            env:
+              policy: match
+              variables:
+                BIN_PATH:
+                  exact: /opt/cni/bin
+                HOSTNAME:
+                  present: true
+                HUBBLE_SERVER:
+                  exact: unix:///var/run/cilium/hubble.sock
+                INITSYSTEM:
+                  exact: SYSTEMD
+                PATH:
+                  exact: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+              serviceLinks: true
+          - digest: "sha256:134ab48d00e67bed72fa43e0492adf2f0c78383e21da7ee1aeb5b7aa8ef2e7ee"
+            image: "docker.io/rancher/mirrored-cilium-cilium:v1.19.6"
+            command:
+              policy: exact
+              argv:
+                - /bin/bash
+                - -c
+                - --
+                - mount | grep "/sys/fs/bpf type bpf" || mount -t bpf bpf /sys/fs/bpf
+            args:
+              policy: deny
+            mounts:
+              policy: exact
+              rules:
+                - destination: /sys/fs/bpf
+                  kind: host
+                  source: /sys/fs/bpf
+            env:
+              policy: match
+              variables:
+                HOSTNAME:
+                  present: true
+                HUBBLE_SERVER:
+                  exact: unix:///var/run/cilium/hubble.sock
+                INITSYSTEM:
+                  exact: SYSTEMD
+                PATH:
+                  exact: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+              serviceLinks: true
+          - digest: "sha256:134ab48d00e67bed72fa43e0492adf2f0c78383e21da7ee1aeb5b7aa8ef2e7ee"
+            image: "docker.io/rancher/mirrored-cilium-cilium:v1.19.6"
+            command:
+              policy: exact
+              argv:
+                - /init-container.sh
+            args:
+              policy: deny
+            mounts:
+              policy: exact
+              rules:
+                - destination: /run/cilium/cgroupv2
+                  kind: host
+                  source: /run/cilium/cgroupv2
+                - destination: /sys/fs/bpf
+                  kind: host
+                  source: /sys/fs/bpf
+                - destination: /var/run/cilium
+                  kind: host
+                  source: /var/run/cilium
+            env:
+              policy: match
+              variables:
+                HOSTNAME:
+                  present: true
+                HUBBLE_SERVER:
+                  exact: unix:///var/run/cilium/hubble.sock
+                INITSYSTEM:
+                  exact: SYSTEMD
+                PATH:
+                  exact: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+                WRITE_CNI_CONF_WHEN_READY:
+                  present: true
+              serviceLinks: true
+          - digest: "sha256:134ab48d00e67bed72fa43e0492adf2f0c78383e21da7ee1aeb5b7aa8ef2e7ee"
+            image: "docker.io/rancher/mirrored-cilium-cilium:v1.19.6"
+            command:
+              policy: exact
+              argv:
+                - /install-plugin.sh
+            args:
+              policy: deny
+            mounts:
+              policy: exact
+              rules:
+                - destination: /host/opt/cni/bin
+                  kind: host
+                  source: /opt/cni/bin
+            env:
+              policy: match
+              variables:
+                HOSTNAME:
+                  present: true
+                HUBBLE_SERVER:
+                  exact: unix:///var/run/cilium/hubble.sock
+                INITSYSTEM:
+                  exact: SYSTEMD
+                PATH:
+                  exact: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+              serviceLinks: true
         containers:
           - digest: "sha256:134ab48d00e67bed72fa43e0492adf2f0c78383e21da7ee1aeb5b7aa8ef2e7ee"
             image: "docker.io/rancher/mirrored-cilium-cilium:v1.19.6"
-            command: {policy: any}
-            args: {policy: any}
-            mounts: {policy: any}
+            command:
+              policy: exact
+              argv:
+                - cilium-agent
+                - --config-dir=/tmp/cilium/config-map
+            args:
+              policy: deny
+            mounts:
+              policy: exact
+              rules:
+                - destination: /host/etc/cni/net.d
+                  kind: host
+                  source: /etc/cni/net.d
+                - destination: /host/proc/sys/kernel
+                  kind: host
+                  source: /proc/sys/kernel
+                - destination: /host/proc/sys/net
+                  kind: host
+                  source: /proc/sys/net
+                - destination: /lib/modules
+                  kind: host
+                  source: /lib/modules
+                  readOnly: true
+                - destination: /run/xtables.lock
+                  kind: host
+                  source: /run/xtables.lock
+                - destination: /sys/fs/bpf
+                  kind: host
+                  source: /sys/fs/bpf
+                - destination: /tmp
+                  kind: emptyDir
+                  source: tmp
+                - destination: /var/lib/cilium/clustermesh
+                  kind: data
+                  source: clustermesh-secrets
+                  node: true
+                - destination: /var/run/cilium
+                  kind: host
+                  source: /var/run/cilium
+                - destination: /var/run/cilium/netns
+                  kind: host
+                  source: /var/run/netns
+            env:
+              policy: match
+              variables:
+                CILIUM_CLUSTERMESH_CONFIG:
+                  exact: /var/lib/cilium/clustermesh/
+                CILIUM_K8S_NAMESPACE:
+                  present: true
+                GOMEMLIMIT:
+                  present: true
+                HOSTNAME:
+                  present: true
+                HUBBLE_SERVER:
+                  exact: unix:///var/run/cilium/hubble.sock
+                INITSYSTEM:
+                  exact: SYSTEMD
+                K8S_NODE_NAME:
+                  present: true
+                KUBE_CLIENT_BACKOFF_BASE:
+                  exact: "1"
+                KUBE_CLIENT_BACKOFF_DURATION:
+                  exact: "120"
+                PATH:
+                  exact: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+              serviceLinks: true
       cilium-operator:
         containers:
           - digest: "sha256:aadc3b1a2b8b682f5b4f7b01e182eeeac16f1177af0561b07825abab1d654b2b"
@@ -872,16 +1142,12 @@ policy:
   #
   # Host privilege outside the node TCB: host namespaces, host bind mounts,
   # devices, CDI injection, OCI hooks and the marks of a privileged container
-  # (see docs/allowlist-and-capabilities.md, "Host privilege").
-  #
-  # AUDIT, not enforce, and this is the one thing to flip: C8s's own node-level
-  # components (volumed, armtls-mesh, the attestation-api proxy, router, the
-  # nri-image-policy installer) legitimately use hostPath and hostNetwork, and
-  # they reach this plugin through the CDS-served document rather than through
-  # the base above, so enforcing today would deny them. Resolve their digests
-  # into the measured base the way boot preparation already merges the
-  # chart-derived component seed, then set this to "enforce".
-  sandbox: "audit"
+  # (see docs/allowlist-and-capabilities.md, "Host privilege"). The base above
+  # exempts a launch in three steps: a kubelet static pod whose image it
+  # admits; host network alone for any launch it admits; anything more only
+  # for a launch one of its entries pins (the chart seed merged at boot, the
+  # Cilium agent and the node image's own add-ons).
+  sandbox: "enforce"
   label_rules: []
 
 logging:

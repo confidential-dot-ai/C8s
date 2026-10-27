@@ -1,0 +1,208 @@
+{
+  "status": {
+    "labels": {
+      "io.kubernetes.container.name": "clean-cilium-state",
+      "io.kubernetes.pod.name": "cilium-nw7db",
+      "io.kubernetes.pod.namespace": "kube-system",
+      "io.kubernetes.pod.uid": "905da202-c907-4d44-8e21-a0752a5eeea1"
+    },
+    "imageRef": "docker.io/rancher/mirrored-cilium-cilium@sha256:134ab48d00e67bed72fa43e0492adf2f0c78383e21da7ee1aeb5b7aa8ef2e7ee"
+  },
+  "info": {
+    "sandboxID": "3f1c3cb449768da2b437ceca864b7e24c5c37a9eba1b6a21f8e5b6ce2b5e2146",
+    "runtimeSpec": {
+      "process": {
+        "args": [
+          "/init-container.sh"
+        ],
+        "env": [
+          "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+          "HOSTNAME=c8s-node",
+          "HUBBLE_SERVER=unix:///var/run/cilium/hubble.sock",
+          "INITSYSTEM=SYSTEMD",
+          "WRITE_CNI_CONF_WHEN_READY=/host/etc/cni/net.d/05-cilium.conflist",
+          "RKE2_COREDNS_RKE2_COREDNS_SERVICE_HOST=10.53.0.10",
+          "RKE2_COREDNS_RKE2_COREDNS_SERVICE_PORT_UDP_53=53",
+          "RKE2_COREDNS_RKE2_COREDNS_SERVICE_PORT_TCP_53=53",
+          "KUBERNETES_PORT_443_TCP_PORT=443",
+          "KUBERNETES_PORT_443_TCP_ADDR=10.53.0.1",
+          "RKE2_COREDNS_RKE2_COREDNS_PORT_53_UDP=udp://10.53.0.10:53",
+          "RKE2_COREDNS_RKE2_COREDNS_PORT_53_UDP_PROTO=udp",
+          "RKE2_COREDNS_RKE2_COREDNS_PORT_53_UDP_PORT=53",
+          "RKE2_COREDNS_RKE2_COREDNS_PORT_53_TCP=tcp://10.53.0.10:53",
+          "RKE2_COREDNS_RKE2_COREDNS_PORT_53_TCP_PORT=53",
+          "KUBERNETES_SERVICE_PORT=443",
+          "KUBERNETES_SERVICE_PORT_HTTPS=443",
+          "RKE2_COREDNS_RKE2_COREDNS_PORT=udp://10.53.0.10:53",
+          "RKE2_COREDNS_RKE2_COREDNS_PORT_53_UDP_ADDR=10.53.0.10",
+          "RKE2_COREDNS_RKE2_COREDNS_PORT_53_TCP_ADDR=10.53.0.10",
+          "KUBERNETES_SERVICE_HOST=10.53.0.1",
+          "KUBERNETES_PORT=tcp://10.53.0.1:443",
+          "KUBERNETES_PORT_443_TCP=tcp://10.53.0.1:443",
+          "RKE2_COREDNS_RKE2_COREDNS_SERVICE_PORT=53",
+          "RKE2_COREDNS_RKE2_COREDNS_PORT_53_TCP_PROTO=tcp",
+          "KUBERNETES_PORT_443_TCP_PROTO=tcp"
+        ]
+      },
+      "mounts": [
+        {
+          "destination": "/proc",
+          "options": [
+            "nosuid",
+            "noexec",
+            "nodev"
+          ],
+          "source": "proc",
+          "type": "proc"
+        },
+        {
+          "destination": "/dev",
+          "options": [
+            "nosuid",
+            "strictatime",
+            "mode=755",
+            "size=65536k"
+          ],
+          "source": "tmpfs",
+          "type": "tmpfs"
+        },
+        {
+          "destination": "/dev/pts",
+          "options": [
+            "nosuid",
+            "noexec",
+            "newinstance",
+            "ptmxmode=0666",
+            "mode=0620",
+            "gid=5"
+          ],
+          "source": "devpts",
+          "type": "devpts"
+        },
+        {
+          "destination": "/dev/mqueue",
+          "options": [
+            "nosuid",
+            "noexec",
+            "nodev"
+          ],
+          "source": "mqueue",
+          "type": "mqueue"
+        },
+        {
+          "destination": "/sys",
+          "options": [
+            "nosuid",
+            "noexec",
+            "nodev",
+            "ro"
+          ],
+          "source": "sysfs",
+          "type": "sysfs"
+        },
+        {
+          "destination": "/sys/fs/cgroup",
+          "options": [
+            "nosuid",
+            "noexec",
+            "nodev",
+            "relatime",
+            "ro"
+          ],
+          "source": "cgroup",
+          "type": "cgroup"
+        },
+        {
+          "destination": "/etc/hosts",
+          "options": [
+            "rbind",
+            "rprivate",
+            "rw"
+          ],
+          "source": "/var/lib/kubelet/pods/905da202-c907-4d44-8e21-a0752a5eeea1/etc-hosts",
+          "type": "bind"
+        },
+        {
+          "destination": "/dev/termination-log",
+          "options": [
+            "rbind",
+            "rprivate",
+            "rw"
+          ],
+          "source": "/var/lib/kubelet/pods/905da202-c907-4d44-8e21-a0752a5eeea1/containers/clean-cilium-state/2def033d",
+          "type": "bind"
+        },
+        {
+          "destination": "/etc/hostname",
+          "options": [
+            "rbind",
+            "rprivate",
+            "rw"
+          ],
+          "source": "/var/lib/rancher/rke2/agent/containerd/io.containerd.grpc.v1.cri/sandboxes/3f1c3cb449768da2b437ceca864b7e24c5c37a9eba1b6a21f8e5b6ce2b5e2146/hostname",
+          "type": "bind"
+        },
+        {
+          "destination": "/etc/resolv.conf",
+          "options": [
+            "rbind",
+            "rprivate",
+            "rw"
+          ],
+          "source": "/var/lib/rancher/rke2/agent/containerd/io.containerd.grpc.v1.cri/sandboxes/3f1c3cb449768da2b437ceca864b7e24c5c37a9eba1b6a21f8e5b6ce2b5e2146/resolv.conf",
+          "type": "bind"
+        },
+        {
+          "destination": "/dev/shm",
+          "options": [
+            "rbind",
+            "rprivate",
+            "rw"
+          ],
+          "source": "/run/k3s/containerd/io.containerd.grpc.v1.cri/sandboxes/3f1c3cb449768da2b437ceca864b7e24c5c37a9eba1b6a21f8e5b6ce2b5e2146/shm",
+          "type": "bind"
+        },
+        {
+          "destination": "/sys/fs/bpf",
+          "options": [
+            "rbind",
+            "rprivate",
+            "rw"
+          ],
+          "source": "/sys/fs/bpf",
+          "type": "bind"
+        },
+        {
+          "destination": "/run/cilium/cgroupv2",
+          "options": [
+            "rbind",
+            "rslave",
+            "rw"
+          ],
+          "source": "/run/cilium/cgroupv2",
+          "type": "bind"
+        },
+        {
+          "destination": "/var/run/cilium",
+          "options": [
+            "rbind",
+            "rprivate",
+            "rw"
+          ],
+          "source": "/var/run/cilium",
+          "type": "bind"
+        },
+        {
+          "destination": "/var/run/secrets/kubernetes.io/serviceaccount",
+          "options": [
+            "rbind",
+            "rprivate",
+            "ro"
+          ],
+          "source": "/var/lib/kubelet/pods/905da202-c907-4d44-8e21-a0752a5eeea1/volumes/kubernetes.io~projected/kube-api-access-x2vmc",
+          "type": "bind"
+        }
+      ]
+    }
+  }
+}
