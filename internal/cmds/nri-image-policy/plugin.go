@@ -968,16 +968,10 @@ func (p *plugin) Synchronize(ctx context.Context, pods []*api.PodSandbox, ctrs [
 
 	p.trackRunning(pods, ctrs)
 
-	// If not ready yet, defer both the mesh-gate recovery and the startup check
-	// until CDS init completes: a member pod's exits are declared in a served
-	// allowlist, which has not applied yet, so recovery must wait for one too.
-	// The gate for a recovered member pod stays unestablished in this window, so
-	// a token request for it is refused transiently and retried — not refused
-	// for life, as it would be were it recovered against no allowlist. Ready is
+	// If not ready yet, defer recovery and the startup check until CDS init
+	// completes: recovery needs the served allowlist to decide exits. Ready is
 	// read under deferredMu so RunDeferredCheck cannot run between it and the
-	// store and leave the batch unhandled. Deferral happens regardless of
-	// shouldCheckExisting, because recovery must run on a restart however the
-	// startup check is configured.
+	// store and leave the batch unhandled.
 	p.deferredMu.Lock()
 	if !p.Ready() {
 		p.deferredPods = pods
@@ -989,9 +983,6 @@ func (p *plugin) Synchronize(ctx context.Context, pods []*api.PodSandbox, ctrs [
 	}
 	p.deferredMu.Unlock()
 
-	// Recovery takes running member pods back under the mesh gate from what the
-	// sandbox itself shows. It runs regardless of shouldCheckExisting: a pod off
-	// the gate's record is refused an attestation for its life.
 	p.recoverExisting(ctx, pods, ctrs)
 
 	if !p.shouldCheckExisting() {
@@ -1021,9 +1012,7 @@ func (p *plugin) trackRunning(pods []*api.PodSandbox, ctrs []*api.Container) {
 }
 
 // recoverExisting takes every sandbox running when this enforcer connected
-// back under the mesh gate, from the containers the runtime lists in it, as
-// each is read for a role at its own start (noteMeshStarted). A sandbox the
-// gate cannot take back is refused for its life, and logged here once.
+// back under the mesh gate, or refuses it for its life.
 func (p *plugin) recoverExisting(ctx context.Context, pods []*api.PodSandbox, ctrs []*api.Container) {
 	podByID := make(map[string]*api.PodSandbox, len(pods))
 	for _, pod := range pods {
@@ -1049,14 +1038,7 @@ func (p *plugin) recoverExisting(ctx context.Context, pods []*api.PodSandbox, ct
 			},
 			running: running,
 		})
-		// The exit decision matches the same workload-container view secret
-		// release does, built from the launch this enforcer just read back: the
-		// inventory a restarted process holds is empty until the startup check
-		// records it, so recovery decides from the runtime's list, not the
-		// inventory. A CREATED container that was refused at its own start and
-		// never ran is not part of the match — admission never counted it, and
-		// counting it here could make a member pod look foreign — so only a
-		// container that ran (RUNNING or STOPPED) is weighed.
+		// A container that never ran was never counted by admission.
 		if ctr.GetState() != api.ContainerState_CONTAINER_CREATED {
 			workloads[pod.GetId()] = append(workloads[pod.GetId()], p.sandboxContainer(launch))
 		}
@@ -1065,12 +1047,6 @@ func (p *plugin) recoverExisting(ctx context.Context, pods []*api.PodSandbox, ct
 		if !p.mesh.hosts(pod) {
 			continue
 		}
-		// The exits the pod holds are decided from the same served allowlist
-		// and workload containers as at admission. A decision that cannot be
-		// read grants none: recoverPod then verifies the base mesh ruleset
-		// alone, so a pod whose live ruleset is exactly that is recovered, and
-		// only one still holding exits is refused — by the carried cause, which
-		// names why the grant was empty.
 		exits := p.recoveredExits(workloads[pod.GetId()])
 		if err := p.mesh.recoverPod(pod, bySandbox[pod.GetId()], exits); err != nil {
 			p.logger.Warn("a pod running before this enforcer connected was not taken under the mesh gate", "error", err)
@@ -1078,15 +1054,8 @@ func (p *plugin) recoverExisting(ctx context.Context, pods []*api.PodSandbox, ct
 	}
 }
 
-// recoveredExits reads back the exit grant a running sandbox holds, from the
-// node's served allowlist and the launches this enforcer read back at connect.
-// A pod whose match cannot be decided (no served allowlist has applied yet) or
-// is refused (its containers complete more than one egress entry, or run a
-// container foreign to the one they complete) is granted no exit: recoverPod
-// then verifies the base mesh ruleset, which recovers a pod whose ruleset is
-// exactly that and refuses, fail-closed, one whose ruleset still holds exits.
-// The cause travels with the empty grant so that refusal is explained rather
-// than read as a tampered ruleset.
+// recoveredExits reads back the exit grant a running sandbox holds. An
+// undecided or refused match grants none and carries the cause.
 func (p *plugin) recoveredExits(containers []workloadclaims.SandboxContainer) recoveredExits {
 	decision := p.recoveredExitDecision(containers)
 	if decision.undecided != nil {
@@ -1200,10 +1169,9 @@ func (p *plugin) killRunning(ctx context.Context, pod *api.PodSandbox, ctr *api.
 	return true
 }
 
-// RunDeferredCheck recovers the running member pods and checks the
-// pods/containers that were seen during Synchronize before the plugin was
-// ready. Should be called after SetReady and CDS init, so a served allowlist
-// has applied and the exits a recovered pod holds can be decided.
+// RunDeferredCheck recovers and checks the pods/containers that were seen
+// during Synchronize before the plugin was ready. Should be called after
+// SetReady and CDS init.
 func (p *plugin) RunDeferredCheck(ctx context.Context) {
 	cfg := p.cfg
 
@@ -1214,10 +1182,8 @@ func (p *plugin) RunDeferredCheck(ctx context.Context) {
 	p.deferredCtrs = nil
 	p.deferredMu.Unlock()
 
-	// Recovery runs regardless of shouldCheckExisting and whether any container
-	// was deferred: a running member pod off the gate's record is refused an
-	// attestation for its life, and a sandbox with a ruleset but no containers
-	// still has to be on record for its later creates.
+	// Recovery runs even with the check off: a pod off the gate's record is
+	// refused for its life.
 	p.recoverExisting(ctx, pods, ctrs)
 
 	if !p.shouldCheckExisting() {

@@ -195,10 +195,8 @@ func TestProtectAndGateAPodInTheNamespace(t *testing.T) {
 	}
 }
 
-// An enforcer connecting to a node with member pods running takes each back
-// under the gate from what the sandbox itself shows: the proven namespace, the
-// ruleset live in it, and the containers the runtime lists. A sandbox that
-// holds no ruleset is refused for its life.
+// A restarted enforcer takes a protected pod back under the gate; a sandbox
+// holding no ruleset is refused for its life.
 func TestRecoverAProtectedPodInTheNamespace(t *testing.T) {
 	pid := sandboxProcess(t)
 	pod := meshPod("default", "pod", sandboxNetNSPath(pid))
@@ -254,18 +252,12 @@ func TestRecoverAProtectedPodInTheNamespace(t *testing.T) {
 	}
 }
 
-// A member pod the earlier enforcer granted exits holds them in its live
-// ruleset, so recovery must verify against the base mesh ruleset plus those
-// exits: given the grant it reads back, the pod is a member again; given none,
-// the exits in the live ruleset read as foreign and the pod is refused for
-// life. This is the restart path that the plugin's recoveredExits decision
-// feeds — here exercised directly against a real namespace.
+// Recovery verifies the live ruleset against the base plus the granted exits:
+// with the grant the pod recovers, without it the held exits are refused.
 func TestRecoverAPodHoldingExitsInTheNamespace(t *testing.T) {
 	exits := []exit{{Range: netip.MustParsePrefix("203.0.113.7/32"), Port: 443}}
 	mesh := gateCtr("c8s-mesh", testMeshUID)
 	meshLaunch := gatedContainer{role: meshRole, digest: digestOther, argv: []string{"/app/c8s", "armtls-mesh"}}
-	// verifyMember needs the pod's mesh endpoint running, so every recovery is
-	// handed it on record and running — the start the rest of the pod waited on.
 
 	pid := sandboxProcess(t)
 	p := meshPod("default", "pod", sandboxNetNSPath(pid))
@@ -274,14 +266,11 @@ func TestRecoverAPodHoldingExitsInTheNamespace(t *testing.T) {
 	if err := before.protect(p); err != nil {
 		t.Fatalf("protect: %v", err)
 	}
-	// The earlier enforcer granted the pod its entry's exit, so the live
-	// ruleset carries the base mesh rules plus that exit.
 	if err := extendPodRuleset(before.pods[p.GetId()].netns, before.policy, "default", exits); err != nil {
 		t.Fatalf("extend the ruleset with the granted exit: %v", err)
 	}
 	ran := []recoveredContainer{{ctr: mesh, launch: meshLaunch, running: true}}
 
-	// Recovery that reads the grant back: the pod is a member again.
 	granted := newMeshGate(*meshRoles(), discardLogger())
 	if err := granted.recoverPod(p, ran, recoveredExits{entry: "collector", exits: exits}); err != nil {
 		t.Fatalf("recover a pod holding its granted exit: %v", err)
@@ -293,10 +282,7 @@ func TestRecoverAPodHoldingExitsInTheNamespace(t *testing.T) {
 		t.Fatalf("recovered exits = %v, want %v", held, exits)
 	}
 
-	// Recovery that reads no grant (no served allowlist, or a refused match)
-	// verifies the base ruleset alone, so the exit still live in the namespace
-	// reads as foreign and the pod is refused for its life — by the carried
-	// cause, not a bare ruleset mismatch.
+	// No grant: the exit still live in the namespace is refused, naming the cause.
 	ungranted := newMeshGate(*meshRoles(), discardLogger())
 	err := ungranted.recoverPod(p, ran, recoveredExits{cause: errors.New("no served allowlist on this node yet")})
 	if err == nil || !strings.Contains(err.Error(), "granted no exits") {
@@ -306,8 +292,7 @@ func TestRecoverAPodHoldingExitsInTheNamespace(t *testing.T) {
 		t.Fatal("a pod refused on recovery was verified as a member")
 	}
 
-	// A pod whose live ruleset is exactly the base mesh ruleset recovers even
-	// with no grant and a carried cause: the empty grant accounts for it.
+	// A base-only ruleset recovers with no grant.
 	bpid := sandboxProcess(t)
 	base := meshPod("default", "base", sandboxNetNSPath(bpid))
 	base.Pid = bpid
@@ -324,15 +309,11 @@ func TestRecoverAPodHoldingExitsInTheNamespace(t *testing.T) {
 	}
 }
 
-// A container's network namespace is recognised as the sandbox's by kernel
-// identity, not by the path string the runtime happens to use: at a Synchronize
-// replay the runtime reports a /proc/<pid>/ns/net handle for the same namespace
-// the sandbox was proven at under its CNI path, and recovery must not read that
-// relabelling as a move. A path naming a different namespace is still refused.
+// A container's network namespace is matched to the sandbox's by kernel
+// identity, not path; a different namespace is refused.
 func TestRecoverMatchesTheSandboxNamespaceByIdentity(t *testing.T) {
 	requireNetNS(t)
-	// The test process's own network namespace, named two ways: the sandbox was
-	// proven at one, the container reports the other, both the same file.
+	// The test's own namespace, named two ways.
 	proven, err := namespaceFile("/proc/self/ns/net")
 	if err != nil {
 		t.Fatal(err)
@@ -348,8 +329,7 @@ func TestRecoverMatchesTheSandboxNamespaceByIdentity(t *testing.T) {
 		t.Fatalf("a running container reported the sandbox namespace under another path and was refused: %v", err)
 	}
 
-	// A stopped container has no live /proc handle to resolve; it moves no
-	// packets, so its namespace is not checked even when the path is gone.
+	// A stopped container is not checked.
 	gone := &api.Container{
 		Name:  "exited",
 		Linux: &api.LinuxContainer{Namespaces: []*api.LinuxNamespace{{Type: "network", Path: "/proc/2147483647/ns/net"}}},
@@ -358,15 +338,11 @@ func TestRecoverMatchesTheSandboxNamespaceByIdentity(t *testing.T) {
 		t.Fatalf("a stopped container's missing namespace handle was refused: %v", err)
 	}
 
-	// A container reported running at Synchronize can exit before recovery runs
-	// on the deferred path: its /proc handle is then gone. It moves no packets,
-	// so the missing handle is not a refusal.
+	// A running container whose /proc handle has since vanished has exited.
 	if err := state.requireSandboxNetwork(gone, true); err != nil {
 		t.Fatalf("a running container whose /proc handle is gone was refused: %v", err)
 	}
 
-	// A path that resolves to a genuinely different namespace is a move: a
-	// process cloned into its own network namespace is not the test's.
 	elsewhere := sandboxProcess(t)
 	moved := &api.Container{
 		Name:  "moved",

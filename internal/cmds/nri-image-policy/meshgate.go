@@ -160,16 +160,10 @@ type recoveredContainer struct {
 }
 
 // recoverPod takes a sandbox that was running before this enforcer connected
-// back under the gate, or refuses it for its life. What an earlier enforcer
-// protected is read back from the sandbox itself, from evidence still live in
-// it rather than any claim the pod makes: the namespace the runtime reports is
-// proven the sandbox's own, the ruleset live in it is the one trusted policy
-// defines (its real anchor, re-verified here, which is installed once in a
-// namespace's life), and each container passes the checks that read a container
-// alone. A measured node image separately aborts if any container exists at
-// first boot (policy.fatal_existing, checked in Synchronize). The order of the
-// list says nothing about what started first, so the order rules are not
-// re-read.
+// back under the gate, or refuses it for its life. Protection is read from the
+// sandbox, not the pod's claims: its proven namespace, the ruleset live there,
+// and the per-container checks. The list's order says nothing about start
+// order, so the order rules are not re-read.
 func (g *meshGate) recoverPod(pod *api.PodSandbox, ctrs []recoveredContainer, exits recoveredExits) error {
 	if !g.hosts(pod) {
 		return nil
@@ -194,17 +188,10 @@ func (g *meshGate) recoverPod(pod *api.PodSandbox, ctrs []recoveredContainer, ex
 	return nil
 }
 
-// recoveredExits is the exit grant the gate reads back for a running sandbox:
-// the entry whose exits it holds and those exits, as the admit path would have
-// granted them. A sandbox holds exits only while it matches that entry, so the
-// ruleset the gate verifies is the base mesh ruleset plus these exits.
-//
-// cause is why no grant was read — the pod's workload match could not be
-// decided (no served allowlist yet) or the match refused it. A pod whose live
-// ruleset is exactly the base mesh ruleset still recovers with no exits and no
-// cause; only one whose ruleset holds exits the empty grant cannot account for
-// fails verification, and then cause explains why the grant was empty so an
-// operator does not read the base-ruleset mismatch as tampering.
+// recoveredExits is the exit grant read back for a running sandbox; its live
+// ruleset must be the base mesh ruleset plus exactly these exits. cause, when
+// set, is why the grant is empty (match undecided or refused) and is reported
+// if the ruleset then fails to verify.
 type recoveredExits struct {
 	entry string
 	exits []exit
@@ -217,11 +204,6 @@ func (g *meshGate) recovered(pod *api.PodSandbox, ctrs []recoveredContainer, exi
 	if err != nil {
 		return nil, err
 	}
-	// The live ruleset holds the base mesh rules plus whatever exits the pod
-	// was granted, so verify against that combined ruleset, not the base alone.
-	// A pod with no grant whose ruleset is the base alone passes; one whose
-	// ruleset holds exits the empty grant cannot account for fails here, and the
-	// undecided/refused cause, when there is one, names why the grant was empty.
 	if err := verifyPodRuleset(netns, g.policy, pod.GetNamespace(), exits.exits); err != nil {
 		if exits.cause != nil {
 			return nil, fmt.Errorf("%w; the pod was granted no exits: %v", err, exits.cause)
@@ -242,17 +224,14 @@ func (g *meshGate) recovered(pod *api.PodSandbox, ctrs []recoveredContainer, exi
 	return state, nil
 }
 
-// restore records a container found running in a recovered sandbox, after the
-// checks of a create that read the container alone. A mesh endpoint found
-// running is the start the rest of the pod waits on.
+// restore records a container found in a recovered sandbox. A running mesh
+// endpoint counts as started.
 func (s *protectedPod) restore(policy meshPolicy, c recoveredContainer) error {
-	for _, check := range []func() error{
-		func() error { return s.requireContainerAlone(policy, c.ctr, c.launch) },
-		func() error { return s.requireSandboxNetwork(c.ctr, c.running) },
-	} {
-		if err := check(); err != nil {
-			return err
-		}
+	if err := s.requireContainerAlone(policy, c.ctr, c.launch); err != nil {
+		return err
+	}
+	if err := s.requireSandboxNetwork(c.ctr, c.running); err != nil {
+		return err
 	}
 	s.recordLaunch(c.launch)
 	if c.running && c.launch.role == meshRole {
@@ -261,33 +240,21 @@ func (s *protectedPod) restore(policy meshPolicy, c recoveredContainer) error {
 	return nil
 }
 
-// requireContainerAlone runs the checks a create makes from a container on its
-// own, with no bearing on the order it started in or the rest of the pod: its
-// role may run only where its pod admits it, it runs as the identity its role
-// reserves, and it keeps its own PID namespace. Both admission (admissible) and
-// recovery (restore) make these; each adds the checks its path alone can make.
+// requireContainerAlone runs the create checks that need only the container,
+// shared by admission and recovery.
 func (s *protectedPod) requireContainerAlone(policy meshPolicy, ctr *api.Container, launch gatedContainer) error {
-	for _, check := range []func() error{
-		func() error { return s.requireRoleOnlyPod(launch) },
-		func() error { return policy.requireRoleIdentity(ctr, launch.role) },
-		func() error { return requirePrivatePIDNamespace(ctr) },
-	} {
-		if err := check(); err != nil {
-			return err
-		}
+	if err := s.requireRoleOnlyPod(launch); err != nil {
+		return err
 	}
-	return nil
+	if err := policy.requireRoleIdentity(ctr, launch.role); err != nil {
+		return err
+	}
+	return requirePrivatePIDNamespace(ctr)
 }
 
-// requireSandboxNetwork requires a container's network namespace, where its
-// bundle names one, to be the sandbox's: the ruleset verified there says
-// nothing about a container running in another. The runtime labels the same
-// namespace differently at different times — the sandbox's own CNI path at
-// creation, a /proc/<pid>/ns/net handle in a Synchronize replay — so the two
-// are compared by the kernel identity (device and inode) of the files they
-// name, not as path strings. A container that is not running has no live
-// /proc handle to resolve and, being stopped, moves no packets, so its
-// namespace is not checked.
+// requireSandboxNetwork requires a running container's network namespace to be
+// the sandbox's. The runtime may name it by CNI path or by /proc/<pid>/ns/net,
+// so namespaces are compared by kernel identity, not path.
 func (s *protectedPod) requireSandboxNetwork(ctr *api.Container, running bool) error {
 	if !running {
 		return nil
@@ -298,14 +265,8 @@ func (s *protectedPod) requireSandboxNetwork(ctr *api.Container, running bool) e
 		}
 		described, err := namespaceFile(ns.GetPath())
 		if err != nil {
-			// A /proc/<pid>/ns/net handle the Synchronize snapshot named can be
-			// gone by the time recovery runs on the deferred path: the process
-			// exited in that window, so the container moves no packets and — as
-			// with one already reported not running — its namespace is not
-			// checked. Any other unresolvable path (a CNI bind mount whose label
-			// is gone while a namespace it named may still hold a running
-			// container) cannot be shown to be the sandbox's, so it is refused
-			// fail-closed, with the read error as the cause.
+			// A vanished /proc handle means the process exited and moves no
+			// packets; any other unresolvable path is refused.
 			if strings.HasPrefix(ns.GetPath(), "/proc/") && errors.Is(err, fs.ErrNotExist) {
 				continue
 			}

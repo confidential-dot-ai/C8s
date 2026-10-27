@@ -407,10 +407,8 @@ func TestMeshGateRefusesASharedPIDNamespace(t *testing.T) {
 	}
 }
 
-// A sandbox that was running before this enforcer connected, whose namespace
-// the enforcer cannot prove, is refused for its life. Its record also stands,
-// so a later sandbox event cannot replace it with a fresh one. A sandbox in
-// the node's network is not the gate's, before the restart or after.
+// A pre-existing sandbox whose namespace cannot be proven is refused for its
+// life, and its record cannot be replaced. A host-network pod is not the gate's.
 func TestMeshGateRefusesSandboxesItCannotRecover(t *testing.T) {
 	pod := meshPod("default", "pod", testNetNS)
 	gate := newMeshGate(*meshRoles(), discardLogger())
@@ -438,10 +436,8 @@ func TestMeshGateRefusesSandboxesItCannotRecover(t *testing.T) {
 	}
 }
 
-// A recovered sandbox's containers are recorded as a create records them,
-// after the checks that read a container alone: a running mesh endpoint opens
-// the gate, a role runs as its reserved identity, a stopped endpoint opens
-// nothing, and the router's namespace holds pinned roles only.
+// A recovered sandbox's containers pass the per-container create checks and
+// are recorded; only a running mesh endpoint counts as started.
 func TestProtectedPodRestoresTheContainersItFinds(t *testing.T) {
 	mesh := recoveredContainer{
 		ctr:     gateCtr("c8s-mesh", testMeshUID),

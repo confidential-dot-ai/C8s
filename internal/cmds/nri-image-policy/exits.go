@@ -48,10 +48,8 @@ func (p *plugin) bindExits(ctx context.Context, pod *api.PodSandbox, ctr *api.Co
 	return p.mesh.bindEntry(pod, p.exitDecision(pod.GetId(), starting))
 }
 
-// sandboxContainer is the workload-match view of a launch the node observed:
-// the bytes, arguments and environment, with the role the measured base binds
-// to it. It is what secret release and the exit decision match a served
-// allowlist against.
+// sandboxContainer is the view of an observed launch that secret release and
+// the exit decision match a served allowlist against.
 func (p *plugin) sandboxContainer(launch allowlist.RunningContainer) workloadclaims.SandboxContainer {
 	return workloadclaims.SandboxContainer{
 		Digest: launch.Digest,
@@ -82,15 +80,8 @@ func (p *plugin) exitDecision(sandboxID string, starting workloadclaims.SandboxC
 	return decision
 }
 
-// recoveredExitDecision decides the exits a sandbox already running holds, from
-// the launches this enforcer read back from the runtime at connect — not the
-// inventory, which the restarted process has not yet repopulated. Every
-// container the sandbox runs is in containers, so none is added. A node with no
-// served allowlist yet cannot decide: a served allowlist is where egress is
-// declared, so until one applies the pod's exits are undecided — recovery then
-// grants none and lets the live ruleset decide whether the pod is still a
-// member, carrying this cause so a refusal is explained rather than read as
-// tampering.
+// recoveredExitDecision decides a running sandbox's exits from the containers
+// the runtime lists for it, on the node's current served allowlist.
 func (p *plugin) recoveredExitDecision(containers []workloadclaims.SandboxContainer) exitDecision {
 	snap := p.policy.current()
 	if snap == nil || snap.pulled == nil {

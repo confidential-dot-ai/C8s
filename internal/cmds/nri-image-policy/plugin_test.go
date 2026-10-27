@@ -237,11 +237,8 @@ func TestSynchronize_NotReady_Defers(t *testing.T) {
 	}
 }
 
-// Even with the startup check off and no inventory, a not-ready Synchronize
-// defers its batch: the mesh gate recovers running member pods on a restart
-// regardless of the check, and recovery runs from the deferred path once a
-// served allowlist has applied. RunDeferredCheck then consumes the batch
-// without the startup check and without panicking on the nil inventory.
+// With the startup check off and no inventory, a not-ready Synchronize still
+// defers its batch for recovery, and RunDeferredCheck consumes it.
 func TestSynchronize_NotReady_EnforceExistingDisabled_DefersForRecovery(t *testing.T) {
 	p := newTestPlugin(&config{
 		Policy: policyConfig{
@@ -273,13 +270,9 @@ func TestSynchronize_NotReady_EnforceExistingDisabled_DefersForRecovery(t *testi
 	}
 }
 
-// Recovery runs from the deferred path, not at connect, when the plugin is not
-// ready: a member pod reported at a not-ready Synchronize is on the gate's
-// record only after RunDeferredCheck, so the exits it holds are decided against
-// a served allowlist rather than the empty one a restart starts with. A real
-// recoverPod runs — the refusal recorded for the unprovable test namespace is
-// how we see it reached the namespace proof. When the plugin is ready at
-// connect, recovery runs inline; with the startup check off it still runs.
+// Recovery runs from the deferred path when not ready at connect, inline when
+// ready, and with the startup check off. The refusal recorded for the
+// unprovable test namespace shows recoverPod ran.
 func TestRecoveryRunsFromTheDeferredPath(t *testing.T) {
 	newReady := func(ready, check bool) *plugin {
 		cfg := &config{Policy: policyConfig{Mode: ModeFailClosed, EnforceExisting: check}}
@@ -1127,11 +1120,8 @@ func TestRunDeferredCheck_OrphanContainer_Skipped(t *testing.T) {
 	assertDeferredCleared(t, p)
 }
 
-// With the startup check off but no inventory, RunDeferredCheck still consumes
-// the deferred batch to run mesh-gate recovery, and skips the container check
-// (fakeContainerd would panic on a StopContainer). Recovery runs regardless of
-// the check because a running member pod off the gate's record is refused for
-// its life.
+// With the startup check off, RunDeferredCheck consumes the batch for recovery
+// and skips the container check.
 func TestRunDeferredCheck_EnforceExistingDisabled_RecoversThenSkipsCheck(t *testing.T) {
 	p, _ := newCachedPlugin(&config{
 		Allowlist: allowlistConfig{Base: anyAllowlist(map[string]string{pushDigestA: "image-a"})},
