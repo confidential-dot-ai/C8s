@@ -59,7 +59,7 @@ func NewCmd() *cobra.Command {
 	flags.DurationVar(&cfg.namedCertTTL, "named-cert-ttl", issuer.MaxNamedLeafTTL, "upper bound on the TTL of a leaf carrying a matched-workload stamp — the documented stale-identity bound for a named leaf (never applied to membership-only leaves). Must be positive and may only shorten the built-in ceiling, never raise it")
 	flags.DurationVar(&cfg.challengeTTL, "challenge-ttl", 60*time.Second, "")
 	flags.DurationVar(&cfg.requestTimeout, "request-timeout", 5*time.Second, "per-request /attest timeout (0 disables)")
-	flags.Int64Var(&cfg.maxRequestSize, "max-request-size", 65536, "max request body bytes on write endpoints")
+	flags.Int64Var(&cfg.maxRequestSize, "max-request-size", 65536, fmt.Sprintf("max request body bytes on /attest, /authenticate and the workload secret routes; operator writes (allowlist, routes, operator secrets) have a fixed %d KiB cap", allowlistWriteBodyCap>>10))
 	flags.DurationVar(&cfg.readTimeout, "read-timeout", defaultHTTPReadTimeout, "HTTP server read timeout")
 	flags.DurationVar(&cfg.readHeaderTimeout, "read-header-timeout", defaultHTTPReadHeaderTimeout, "HTTP server read-header timeout")
 	flags.DurationVar(&cfg.writeTimeout, "write-timeout", defaultHTTPWriteTimeout, "HTTP server write timeout")
