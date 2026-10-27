@@ -55,8 +55,14 @@ func (p *plugin) afterPodStart(pod *api.PodSandbox, source string) error {
 		return nil
 	}
 	if source != "" {
+		claiming := p.podBroker != nil && p.podBroker.pod == nil
 		if err := p.startPodCredentials(pod, source); err != nil {
 			return p.denyContainer(pod.GetId(), err)
+		}
+		if claiming {
+			// The worker's first issuance reads the snapshot this start is
+			// already in.
+			return nil
 		}
 	}
 	p.podChanged()
@@ -107,6 +113,10 @@ func (p *plugin) closePodBroker() {
 }
 
 // podChanged is called under podMu after an admission or lifecycle change.
+// podChanged wakes the broker to issue from a new snapshot. Its callers are
+// the events that change the claims or end the identity: an admitted start,
+// a denial and the sandbox's removal. A stop or a removal of a container
+// changes no claim (the history keeps the admission), so neither wakes it.
 func (p *plugin) podChanged() {
 	if b := p.podBroker; b != nil {
 		select {

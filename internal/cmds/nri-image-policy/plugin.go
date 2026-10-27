@@ -346,7 +346,6 @@ func (p *plugin) StopContainer(ctx context.Context, pod *api.PodSandbox, ctr *ap
 	if p.inventory != nil {
 		p.inventory.stop(ctr.GetId())
 	}
-	p.podChanged()
 	return nil, nil
 }
 
@@ -359,7 +358,6 @@ func (p *plugin) RemoveContainer(ctx context.Context, pod *api.PodSandbox, ctr *
 	if p.inventory != nil {
 		p.inventory.remove(ctr.GetId())
 	}
-	p.podChanged()
 	return nil
 }
 

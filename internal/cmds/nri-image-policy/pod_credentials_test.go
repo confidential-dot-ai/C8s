@@ -121,3 +121,56 @@ func TestPodSnapshotRetainsStoppedAndRemovedLaunches(t *testing.T) {
 		t.Fatal("removed sandbox supplied a complete snapshot")
 	}
 }
+
+// The revision stales an issuance in flight, as the armTLS rotation guard
+// does: it moves when the retained history gains an observation or the
+// sandbox's identity ends, not on a stop or removal, which change no claim.
+func TestPodSnapshotRevisionMovesWithObservationsOnly(t *testing.T) {
+	inv := newAdmissionInventory(t.TempDir())
+	inv.recordSandbox("pod")
+	env, err := allowlist.ObserveLaunchEnv(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inv.recordObserved("first", "pod", "app", pushDigestA, "", []string{"/app"}, env, nil)
+	_, observed, err := inv.podSnapshot("pod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	inv.stop("first")
+	inv.remove("first")
+	inv.recordSandbox("other")
+	if _, unchanged, err := inv.podSnapshot("pod"); err != nil || unchanged != observed {
+		t.Fatalf("revision %d -> %d after a stop, a removal and another sandbox, %v", observed, unchanged, err)
+	}
+	inv.recordObserved("second", "pod", "app", pushDigestA, "", []string{"/app"}, env, nil)
+	_, grown, err := inv.podSnapshot("pod")
+	if err != nil || grown <= observed {
+		t.Fatalf("revision %d -> %d after an observation, %v", observed, grown, err)
+	}
+	inv.denyOnRecord("pod", "", errors.New("refused"))
+	if _, denied, err := inv.podSnapshot("pod"); err != nil || denied <= grown {
+		t.Fatalf("revision %d -> %d after a denial, %v", grown, denied, err)
+	}
+}
+
+// A stop or removal changes no claim, so it does not wake the broker; a
+// change does.
+func TestStopAndRemovalDoNotWakeThePodBroker(t *testing.T) {
+	p := &plugin{cfg: &config{Pod: &podConfig{}}, podBroker: &podCredentialBroker{changes: make(chan struct{}, 1)}, logger: discardLogger()}
+	pod := sandboxedPod()
+	ctr := &api.Container{Id: "ctr", PodSandboxId: pod.GetId()}
+	if _, err := p.StopContainer(t.Context(), pod, ctr); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.RemoveContainer(t.Context(), pod, ctr); err != nil {
+		t.Fatal(err)
+	}
+	if len(p.podBroker.changes) != 0 {
+		t.Fatal("a stop or removal woke the broker")
+	}
+	p.podChanged()
+	if len(p.podBroker.changes) != 1 {
+		t.Fatal("a change did not wake the broker")
+	}
+}

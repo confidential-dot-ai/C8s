@@ -81,18 +81,7 @@ func TestPodBrokerRefusesReconstructedOrReusedBootHistory(t *testing.T) {
 	if err := os.Mkdir(source, 0700); err != nil {
 		t.Fatal(err)
 	}
-	oldOpen, oldRun := openPodCredentialRoot, runGuestCredentials
-	openPodCredentialRoot = func(source string) (*os.Root, error) { return openPodCredentialRootBeneath(base, source) }
-	runGuestCredentials = func(ctx context.Context, _ getcert.GuestConfig) error { <-ctx.Done(); return nil }
-	t.Cleanup(func() { openPodCredentialRoot, runGuestCredentials = oldOpen, oldRun })
-	newBroker := func() *plugin {
-		p := &plugin{cfg: &config{Platform: "tdx", Pod: &podConfig{}, Allowlist: allowlistConfig{Pull: pullConfig{CDSMeasurementsConfig: identityPolicyFile}}, WorkloadClaims: workloadClaimsConfig{SocketDir: base}}, logger: discardLogger()}
-		if err := p.preparePodBroker(t.Context(), &http.Client{}); err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(p.closePodBroker)
-		return p
-	}
+	newBroker := podBrokerPlugins(t, base)
 	pod := sandboxedPod()
 	reconstructed := newBroker()
 	reconstructed.bootRestart.Store(true)
@@ -106,5 +95,49 @@ func TestPodBrokerRefusesReconstructedOrReusedBootHistory(t *testing.T) {
 	restarted := newBroker()
 	if err := restarted.startPodCredentials(pod, source); err == nil {
 		t.Fatal("restart reused a claimed boot identity")
+	}
+}
+
+// podBrokerPlugins returns a constructor of pod-role plugins whose broker
+// opens its credential root beneath base and whose worker idles until closed.
+func podBrokerPlugins(t *testing.T, base string) func() *plugin {
+	t.Helper()
+	oldOpen, oldRun := openPodCredentialRoot, runGuestCredentials
+	openPodCredentialRoot = func(source string) (*os.Root, error) { return openPodCredentialRootBeneath(base, source) }
+	runGuestCredentials = func(ctx context.Context, _ getcert.GuestConfig) error { <-ctx.Done(); return nil }
+	t.Cleanup(func() { openPodCredentialRoot, runGuestCredentials = oldOpen, oldRun })
+	return func() *plugin {
+		p := &plugin{cfg: &config{Platform: "tdx", Pod: &podConfig{}, Allowlist: allowlistConfig{Pull: pullConfig{CDSMeasurementsConfig: identityPolicyFile}}, WorkloadClaims: workloadClaimsConfig{SocketDir: base}}, logger: discardLogger()}
+		if err := p.preparePodBroker(t.Context(), &http.Client{}); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(p.closePodBroker)
+		return p
+	}
+}
+
+// The start that claims the boot identity is in the snapshot the worker's
+// first issuance reads, so it sends no change; a later start does.
+func TestEndpointStartWakesTheBrokerOnlyAfterItsFirstIssuance(t *testing.T) {
+	requireNetNS(t)
+	base := t.TempDir()
+	mountPodTestRAM(t, base)
+	source := filepath.Join(base, "certs")
+	if err := os.Mkdir(source, 0700); err != nil {
+		t.Fatal(err)
+	}
+	p := podBrokerPlugins(t, base)()
+	pod := sandboxedPod()
+	if err := p.afterPodStart(pod, source); err != nil {
+		t.Fatal(err)
+	}
+	if len(p.podBroker.changes) != 0 {
+		t.Fatal("the first issuance was asked for twice")
+	}
+	if err := p.afterPodStart(pod, source); err != nil {
+		t.Fatal(err)
+	}
+	if len(p.podBroker.changes) != 1 {
+		t.Fatal("a later endpoint start did not wake the broker")
 	}
 }

@@ -369,11 +369,14 @@ inventory token can substitute for this profile.
 
 The guest publishes complete credential generations to a verified RAM-backed
 volume mounted read-only by the endpoint alone. Publication rechecks the retained
-revision, sandbox and packet protection. Renewal uses fresh evidence and the
-current policy. Loss of retained history or protection ends issuance and removes
-locally published credentials; a plugin restart cannot reconstruct history from
-the remaining processes. A copied leaf can remain usable until expiry, and an
-abrupt process failure cannot guarantee immediate local removal.
+revision, sandbox and packet protection; the revision moves when the history
+gains an observation or the sandbox's identity ends, not when a container stops
+or is removed, so neither of those restarts issuance. Renewal uses fresh
+evidence and the current policy. Loss of retained history or protection ends
+issuance and removes locally published credentials; a plugin restart cannot
+reconstruct history from the remaining processes. A copied leaf can remain
+usable until expiry, and an abrupt process failure cannot guarantee immediate
+local removal.
 
 These are ordinary mesh leaves: they do not expose the claims or distinguish the
 issuance profile to a relying party. A named leaf records authorization at issuance,

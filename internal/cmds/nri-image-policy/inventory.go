@@ -29,7 +29,11 @@ type admissionInventory struct {
 	denied     map[string]sandboxDenial            // sandboxID -> why it asserts no identity
 	sandboxes  map[string]struct{}                 // live pod sandbox IDs
 	procRoot   string
-	revision   uint64
+	// revision stales a pod credential issuance in flight (commitPodCredentials).
+	// It moves when a sandbox's retained history gains an observation or its
+	// identity ends in a denial or removal, not on a container's stop or
+	// removal, which the history keeps as admitted.
+	revision uint64
 
 	// needsVariableEvidence reports whether a current match env policy lists
 	// a digest; records of other images are served without per-variable
@@ -113,7 +117,6 @@ func (b *admissionInventory) recordObserved(containerID, sandboxID, name, digest
 func (b *admissionInventory) stop(containerID string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.revision++
 	b.noteExit(containerID, false)
 	b.exited(containerID)
 }
@@ -126,7 +129,6 @@ func (b *admissionInventory) stop(containerID string) {
 func (b *admissionInventory) remove(containerID string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.revision++
 	b.noteExit(containerID, true)
 	b.exited(containerID)
 	delete(b.containers, containerID)
@@ -176,7 +178,6 @@ func (b *admissionInventory) recordSandbox(sandboxID string) {
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.revision++
 	b.sandboxes[sandboxID] = struct{}{}
 }
 
