@@ -70,6 +70,9 @@ found them. Attachability is refused for every container the wrapper creates —
 terminal, and a create carrying the container's standard input — so an attach
 session has no way in even there.
 
+A pod CVM's measured policy is the node's with the mesh role alone and no exempt
+namespace, so the floor covers every container of its pod.
+
 ## What this means for debugging a workload
 
 Logs are the interface: `kubectl logs` works for every kubeconfig holder, and

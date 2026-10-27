@@ -77,6 +77,13 @@ type meshPolicy struct {
 	// reaches over TCP uncaptured, each one address and port: the baked
 	// kube-state-metrics Service.
 	Exits []netip.AddrPort `yaml:"exits"`
+	// Pod restricts a guest endpoint to the signed peer and ingress tuples.
+	Pod *podMeshPolicy `yaml:"pod,omitempty"`
+}
+
+type podMeshPolicy struct {
+	Peers        []netip.AddrPort `yaml:"peers"`
+	IngressPorts []uint16         `yaml:"ingress_ports"`
 }
 
 type capturePorts struct {

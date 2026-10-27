@@ -251,7 +251,9 @@ allowlist:
       # END rke2 system images
       # The platform roles the enforcer grants inside a member pod. A role
       # comes from this measured base alone: the JSON ingest drops the field,
-      # so a document CDS serves can never claim one (pkg/allowlist).
+      # so a document CDS serves can never claim one (pkg/allowlist). A pod
+      # CVM keeps the mesh endpoint's entry of these alone, beside its signed
+      # workloads (internal/cmds/nodeservices).
       #
       # INVARIANT: every command, and every exact args and mounts policy, is
       # what the injector builds for that container over the image's
@@ -698,8 +700,9 @@ mesh:
     health: 15021
   # The mesh endpoint holds no capabilities: the enforcer installs the pod
   # ruleset, so the endpoint only proxies. Boot preparation adds the
-  # credential role, whose destination is the staged CDS address
-  # (internal/cmds/nodeservices).
+  # credential role, whose destination is the staged CDS address; a pod CVM
+  # keeps this one role and exempts no namespace, because its one pod is a
+  # member (internal/cmds/nodeservices).
   roles:
     - name: mesh
       uid: 1337

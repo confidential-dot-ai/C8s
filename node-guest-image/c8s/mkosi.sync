@@ -105,15 +105,14 @@ case "$PLATFORM" in
     snp) LABEL_PLATFORM=sev-snp ;;
     *)   LABEL_PLATFORM=$PLATFORM ;;
 esac
-mkdir -p "$STAGE_DIR/etc/systemd/system/cred-release.service.d" \
-         "$STAGE_DIR/etc/systemd/system/rke2-role.service.d" \
-         "$STAGE_DIR/etc/rancher/rke2/config.yaml.d"
-printf '[Service]\nEnvironment=CRED_PLATFORM=%s\n' "$PLATFORM" \
-    > "$STAGE_DIR/etc/systemd/system/cred-release.service.d/10-platform.conf"
-# Authenticated role staging verifies the boot evidence for this platform
-# before publishing any launch settings or role marker.
-printf '[Service]\nEnvironment=CRED_PLATFORM=%s\n' "$PLATFORM" \
-    > "$STAGE_DIR/etc/systemd/system/rke2-role.service.d/10-platform.conf"
+# Authenticated role staging (rke2-role) verifies the boot evidence for this
+# platform before publishing any launch settings or role marker.
+for unit in cred-release rke2-role podcvm-status; do
+    mkdir -p "$STAGE_DIR/etc/systemd/system/$unit.service.d"
+    printf '[Service]\nEnvironment=CRED_PLATFORM=%s\n' "$PLATFORM" \
+        > "$STAGE_DIR/etc/systemd/system/$unit.service.d/10-platform.conf"
+done
+mkdir -p "$STAGE_DIR/etc/rancher/rke2/config.yaml.d"
 printf '# Self-label so c8s install --hardware-platform %s finds this node.\nnode-label:\n  - confidential.ai/%s=true\n' "$LABEL_PLATFORM" "$LABEL_PLATFORM" \
     > "$STAGE_DIR/etc/rancher/rke2/config.yaml.d/50-platform.yaml"
 
@@ -386,6 +385,76 @@ stage "$CACHE_DIR/rke2-images-core-${CACHE_VER}.tar.zst" \
 stage "$CACHE_DIR/rke2-images-cilium-${CACHE_VER}.tar.zst" \
       "$AIRGAP_DIR/rke2-images-cilium.linux-amd64.tar.zst"
 
+# --- 4. Pod-role runtime --------------------------------------------------
+
+# The pod role runs containerd and kubelet without RKE2 (launchconfig role
+# pod), so it needs at build time what rke2 extracts at first start. Every
+# byte comes from the two sha256-pinned airgap bundles above:
+#   usr/lib/c8s/pod-runtime/bin/   rke2-runtime's bin/ (kubelet, containerd,
+#                                  containerd-shim-runc-v2, runc, crictl, ctr);
+#                                  podcvm-containerd links REAL_RUNC's dir here
+#   usr/lib/c8s/pod-runtime/pause.tar  the sandbox image, imported at boot
+#   usr/lib/c8s/cni/               bridge, host-local, loopback from
+#                                  hardened-cni-plugins in the Cilium bundle
+#                                  (installed at runtime on a node, never in
+#                                  a pod boot)
+POD_RUNTIME_BINS="kubelet containerd containerd-shim-runc-v2 runc crictl ctr"
+CNI_PLUGINS="bridge host-local loopback"
+
+# <bundle dir> <repo:tag prefix> -> the image's manifest entry, or null.
+# Bundles disagree on the docker.io/ prefix (core omits it, others keep it),
+# so tags and the wanted prefix are compared without it.
+bundle_entry() {
+    jq -c --arg ref "${2#docker.io/}" \
+        '[.[] | select(any(.RepoTags[]?; ltrimstr("docker.io/") | startswith($ref)))][0]' "$1/manifest.json"
+}
+
+# <bundle dir> <repo:tag prefix> -> the image's layer paths, in order.
+bundle_layers() {
+    bundle_entry "$1" "$2" | jq -r '.Layers[]?'
+}
+
+# <bundle dir> <repo:tag prefix> <rootfs> flattens the image into rootfs.
+extract_bundle_image() {
+    local layers layer
+    layers=$(bundle_layers "$1" "$2")
+    [ -n "$layers" ] || { echo "c8s sync: FATAL no $2 image in ${1##*/}" >&2; exit 1; }
+    mkdir -p "$3"
+    for layer in $layers; do
+        tar -xf "$1/$layer" -C "$3" || true
+    done
+}
+
+stage_pod_runtime() {
+    local work="$TMP/pod-runtime" dst="$STAGE_DIR/usr/lib/c8s" name pause
+    mkdir -p "$work/core" "$work/cilium" "$dst/pod-runtime/bin" "$dst/cni"
+    zstd -dc "$CACHE_DIR/rke2-images-core-${CACHE_VER}.tar.zst" | tar -x -C "$work/core"
+    zstd -dc "$CACHE_DIR/rke2-images-cilium-${CACHE_VER}.tar.zst" | tar -x -C "$work/cilium"
+
+    extract_bundle_image "$work/core" "docker.io/rancher/rke2-runtime:${RKE2_VERSION//+/-}" "$work/runtime"
+    for name in $POD_RUNTIME_BINS; do
+        [ -f "$work/runtime/bin/$name" ] || { echo "c8s sync: FATAL rke2-runtime has no bin/$name" >&2; exit 1; }
+        install -m 0755 "$work/runtime/bin/$name" "$dst/pod-runtime/bin/$name"
+    done
+    extract_bundle_image "$work/cilium" "docker.io/rancher/hardened-cni-plugins:" "$work/cni-plugins"
+    for name in $CNI_PLUGINS; do
+        [ -f "$work/cni-plugins/opt/cni/bin/$name" ] || { echo "c8s sync: FATAL hardened-cni-plugins has no opt/cni/bin/$name" >&2; exit 1; }
+        install -m 0755 "$work/cni-plugins/opt/cni/bin/$name" "$dst/cni/$name"
+    done
+
+    # A one-image docker archive: the bundle's own pause entry, config and
+    # layers, so containerd's import rebuilds the digest the NRI floor pins.
+    pause=$(bundle_entry "$work/core" "docker.io/rancher/mirrored-pause:")
+    [ "$pause" != "null" ] || { echo "c8s sync: FATAL no pause image in the core bundle" >&2; exit 1; }
+    printf '[%s]' "$pause" > "$work/pause-manifest.json"
+    # shellcheck disable=SC2046 # one path per word
+    tar -c --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -f "$dst/pod-runtime/pause.tar" \
+        --transform "s|^pause-manifest.json$|manifest.json|" -C "$work" pause-manifest.json \
+        -C "$work/core" $(jq -r '.[0] | .Config, .Layers[]' "$work/pause-manifest.json")
+    rm -rf "$work"
+    echo "c8s sync: pod-role runtime staged from the RKE2 airgap bundles"
+}
+
 # --- 3. nri-image-policy plugin binary ------------------------------------
 
 PLUGIN_TARGET="$STAGE_DIR/opt/nri/plugins/10-nri-image-policy"
@@ -481,5 +550,6 @@ render_node_integration
 ROUTER_IMAGE_FILE="$NODE_INTEGRATION_DIR/router-image.txt"
 [ -s "$ROUTER_IMAGE_FILE" ] || { echo "c8s sync: FATAL ${C8S_REF} reported no front-door image at ${ROUTER_IMAGE_FILE#"$TMP"/}" >&2; exit 1; }
 render_nri_base "$(cat "$ROUTER_IMAGE_FILE")"
+stage_pod_runtime
 
 echo "c8s sync: staged rke2 ${RKE2_VERSION} + airgap bundles + measured c8s Kubernetes workloads"

@@ -173,6 +173,7 @@ pins. The server public key must differ from the pod launch key.`,
 	f.StringVar(&opts.ServerPublicKeyPath, "server-public-key", "", "server launch public key PEM file, e.g. <cluster>/server/pubkey")
 	f.StringVar(&opts.PodManifest, "pod-manifest", "", "v1 Pod manifest, YAML or JSON, with metadata.uid set")
 	f.StringVar(&opts.WorkloadsPath, "workloads", "", "nonempty c8s.allowlist/v1 JSON base admitted before CDS is available")
+	f.StringArrayVar(&opts.MeshPeers, "mesh-peer", nil, "reachable mesh IPv4:port endpoint (repeatable; empty permits ingress only)")
 	for _, name := range []string{"out", "cluster-id", "image-manifest", "pod-manifest", "workloads", "server-address", "server-public-key"} {
 		_ = cmd.MarkFlagRequired(name)
 	}

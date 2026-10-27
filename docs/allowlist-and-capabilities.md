@@ -250,3 +250,13 @@ approver key. It is a no-op on SEV-SNP, which has no runtime register. A node
 that cannot measure keeps enforcing the policy it holds — at startup, the base
 allowlist alone — and after 256 policies, the most a certificate carries, it
 takes no further policy until it reboots.
+
+A pod CVM (`role: pod`, see [operator.md](operator.md#pod-cvm))
+measures each image digest it admits instead (`measure.rtmr3`, which excludes
+`allowlist.pull.measure_policies`: a boot has one RTMR[3] writer), into the same
+journal, seeded with the pod launch key the initrd staged. The guest polls CDS
+under the separate server key, and the policies it fetches affect admission
+without extending this journal, whose directory is not mounted into pod
+containers. `c8s pod-status serve` carries that list in its armTLS
+certificate, and `c8s pod-attest` accepts the certificate's binding as the seed followed by a prefix of the list, then requires
+the list it read on both sides of a fresh quote to replay in full.

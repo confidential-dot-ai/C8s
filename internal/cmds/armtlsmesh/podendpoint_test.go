@@ -407,8 +407,7 @@ func TestRequireDeliverable(t *testing.T) {
 	}
 }
 
-// A captured connection leaves the pod and enters its peer on an application
-// port.
+// A captured connection leaves the pod; a remote provider may translate its port.
 func TestRequireMeshDestination(t *testing.T) {
 	endpoint := &podEndpoint{
 		own: podAddresses{netip.MustParseAddr("10.42.0.7")},
@@ -419,8 +418,9 @@ func TestRequireMeshDestination(t *testing.T) {
 	}{
 		{"10.42.0.9:8080", false},
 		{"10.42.0.7:8080", true},
-		{"10.42.0.9:15006", true},
-		{"10.42.0.9:15021", true},
+		{"10.42.0.9:15001", false},
+		{"10.42.0.9:15006", false},
+		{"10.42.0.9:15021", false},
 	}
 	for _, tc := range tests {
 		err := endpoint.requireMeshDestination(netip.MustParseAddrPort(tc.dst))

@@ -3,6 +3,9 @@
 [Unit]
 Description=Label the node when an NVIDIA GPU is attached
 Before=rke2-server.service rke2-agent.service
+# A pod-role boot never registers a node.
+After=rke2-role.service
+ConditionPathExists=!/run/confos/role-pod
 
 [Service]
 Type=oneshot

@@ -31,6 +31,7 @@ type PodBundleOptions struct {
 	ServerPublicKeyPath string
 	PodManifest         string
 	WorkloadsPath       string
+	MeshPeers           []string
 }
 
 // NewPodBundle writes a signed role-pod document. The pod's UID, namespace
@@ -90,7 +91,7 @@ func NewPodBundle(opts PodBundleOptions) (err error) {
 		Server:               ServerConfig{Address: opts.ServerAddress, OperatorPublicKey: string(serverPub)},
 		PodOperatorPublicKey: pub,
 		Workloads:            string(workloads),
-		Pod:                  &PodSpec{UID: string(pod.UID), Namespace: pod.Namespace, Name: pod.Name, Manifest: string(manifest)},
+		Pod:                  &PodSpec{UID: string(pod.UID), Namespace: pod.Namespace, Name: pod.Name, Manifest: string(manifest), MeshPeers: opts.MeshPeers},
 	}
 	return writeSignedDocument(filepath.Join(opts.Dir, podDir), doc, key, pub)
 }

@@ -245,7 +245,9 @@ func (g *meshGate) lockStarts(pod *api.PodSandbox) func() {
 // exits are fixed for the pod's life: an allowlist change applies to the next
 // pod.
 func (g *meshGate) bindEntry(pod *api.PodSandbox, decision exitDecision) error {
-	if !g.hosts(pod) {
+	// A pod CVM's egress is its own ruleset's (ruleset.Policy.Pod): no entry's
+	// exits are granted there, and none hold a container back.
+	if !g.hosts(pod) || g.policy.Pod != nil {
 		return nil
 	}
 	g.mu.Lock()

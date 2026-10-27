@@ -3,21 +3,25 @@ package launchconfig
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 
 	"github.com/distribution/reference"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/yaml"
+
+	"github.com/confidential-dot-ai/c8s/internal/podmesh"
 )
 
 // PodSpec names the pod a pod-role boot runs. Manifest is a v1 Pod in YAML
 // or JSON; its metadata must repeat UID, Namespace and Name so the identity
 // the provider reports and the pod kubelet runs cannot diverge.
 type PodSpec struct {
-	UID       string `yaml:"uid" json:"uid"`
-	Namespace string `yaml:"namespace" json:"namespace"`
-	Name      string `yaml:"name" json:"name"`
-	Manifest  string `yaml:"manifest" json:"manifest"`
+	UID       string   `yaml:"uid" json:"uid"`
+	Namespace string   `yaml:"namespace" json:"namespace"`
+	Name      string   `yaml:"name" json:"name"`
+	Manifest  string   `yaml:"manifest" json:"manifest"`
+	MeshPeers []string `yaml:"meshPeers,omitempty" json:"meshPeers,omitempty"`
 }
 
 // validate is defence in depth: NRI's sandbox policy is the enforcement
@@ -39,6 +43,15 @@ func (p *PodSpec) validate() error {
 	}
 	if string(pod.UID) != p.UID || pod.Namespace != p.Namespace || pod.Name != p.Name {
 		return fmt.Errorf("pod.manifest metadata must match pod.uid, pod.namespace and pod.name")
+	}
+	if err := podmesh.ValidateWorkloadPod(pod); err != nil {
+		return fmt.Errorf("pod.manifest: %w", err)
+	}
+	if _, err := p.PeerAddresses(); err != nil {
+		return err
+	}
+	if _, err := podmesh.IngressPorts(pod); err != nil {
+		return fmt.Errorf("pod.manifest: %w", err)
 	}
 	s := pod.Spec
 	if s.HostNetwork || s.HostPID || s.HostIPC {
@@ -72,6 +85,24 @@ func (p *PodSpec) validate() error {
 		}
 	}
 	return nil
+}
+
+// PeerAddresses is the signed set of endpoints this Pod may initiate mesh traffic to.
+func (p *PodSpec) PeerAddresses() ([]netip.AddrPort, error) {
+	peers, err := podmesh.ParseMeshPeers(p.MeshPeers)
+	if err != nil {
+		return nil, fmt.Errorf("pod.meshPeers: %w", err)
+	}
+	return peers, nil
+}
+
+// IngressPorts derives ingress from the signed manifest before endpoint injection.
+func (p *PodSpec) IngressPorts() ([]uint16, error) {
+	pod, err := ParsePodManifest([]byte(p.Manifest))
+	if err != nil {
+		return nil, err
+	}
+	return podmesh.IngressPorts(pod)
 }
 
 // pinnedImage accepts only an image reference that names its digest. A tag

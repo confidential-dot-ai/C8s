@@ -37,7 +37,8 @@ raw bytes for SEV-SNP, an evidence envelope elsewhere — a collateral field C8s
 leaves empty, since an envelope carries its own, and an optional
 `runtimeExtensions` list. The type comes from the evidence, not from the
 component's configured platform. `runtimeExtensions` is TDX-only: it lists the
-allowlist policy digests the node extended into RTMR[3], one of the TDX runtime
+allowlist policy digests the node extended into RTMR[3] — on a pod CVM, the
+image digests it admitted — one of the TDX runtime
 measurement registers a guest can extend after boot, at most 256 per boot, so a
 verifier can replay the register. Weighing those digests is an external
 verifier's job
@@ -51,7 +52,8 @@ what CDS copies onto a leaf is the challenge-free extension the CSR carried.
 Certificates live 24 hours by default and rotate at half their lifetime. Every
 leaf CDS signs also carries `…1.2`, a digest of the evidence it was issued on;
 it carries `…1.4`, the [sandbox ID](#sandbox-identity), when the request proved
-a sandbox, and `…1.5`, the [matched workload](#matched-workload), when exactly
+a sandbox through a node inventory token or the
+[Pod CVM issuance profile](#pod-cvm-issuance), and `…1.5`, the [matched workload](#matched-workload), when exactly
 one entry matched.
 
 ## The handshake and pin checks
@@ -173,6 +175,55 @@ leaf, or by name alone while that leaf carries no stamp
 Every armTLS configuration disables session tickets and sets no client session
 cache: a resumed handshake would skip the callback where armTLS checks chain and
 evidence.
+
+### Pod CVM issuance
+
+A `role: pod` guest runs the same mesh endpoint, with credentials supplied by
+its measured admission plugin instead of a container credential client and node
+inventory callback. The guest authenticates CDS against the signed launch
+document's independent server pins, then sends an empty-subject CSR, a fresh
+challenge, evidence and canonical `pod_claims` to `POST /attest`. The claims
+bind the boot identity, the assigned and runtime Pod UIDs, the sandbox ID, a
+revision, the complete ordered image measurement list and every retained
+admission observation (image, arguments, environment commitments and mounts,
+completed containers included); `pkg/workloadclaims` owns their encoding. The
+report data is:
+
+```text
+SHA384("c8s-pod-attestation/v1\0" || SHA384(SPKI DER) || challenge || SHA384(claims))
+```
+
+CDS verifies that binding and replays the whole measurement list against its
+separate Pod image policy. Every measured digest must be in the current workload
+policy and every non-platform observation must pass its admission checks. A
+snapshot holding only the measured endpoint can get an unnamed membership leaf;
+a named leaf needs one unique whole-workload match of the complete non-platform
+history. Neither a status quote nor a node inventory token substitutes for this
+profile.
+
+The guest publishes complete credential generations to a verified RAM-backed
+volume only the endpoint mounts, read-only. Publication rechecks the retained
+revision, sandbox and packet protection. The revision moves when the history
+gains an observation or the sandbox's identity ends — not when a container stops
+or is removed, so neither restarts issuance. Renewal uses fresh evidence and the
+current policy. Losing the retained history or protection ends issuance and
+removes the published credentials; a plugin restart cannot rebuild history from
+the processes left. A copied leaf stays usable until expiry, and an abrupt
+process failure cannot guarantee immediate local removal.
+
+These are ordinary mesh leaves: a relying party sees neither the claims nor the
+profile, and a named leaf records authorization at issuance, not current
+liveness or exclusive assignment. The profile creates no node inventory binding
+and does not enable secret release. Setup is in
+[operator.md](operator.md#pod-cvm).
+
+A standalone pod CVM captures only its signed IPv4 TCP peer tuples, and a peer
+authentication failure never turns a tuple into ordinary egress. Other IPv4
+TCP/UDP traffic, DNS to the guest's upstream resolvers included, leaves with the
+CVM's source address. Pod and guest rules exclude IPv4 link-local and block
+container-initiated access to guest-local services, the endpoint's included. An
+entry's declared exits and the node's platform exits (`mesh.exits`) grant
+nothing in a pod CVM, whose egress needs none.
 
 ## Sandbox identity
 

@@ -3,7 +3,6 @@ package nriimagepolicy
 import (
 	"context"
 	"slices"
-	"sync/atomic"
 	"testing"
 
 	"github.com/containerd/nri/pkg/api"
@@ -101,15 +100,11 @@ func TestStartAdmittedJustBeforeARevocationIsKilled(t *testing.T) {
 	p.inventory = newAdmissionInventory("/proc")
 	pod := makePod("default", "pod")
 	ctr := makeCtrWithImage(pod.Id, "app", "registry/repo:tag")
+	p.containerd.(*fakeContainerd).resolve = func(context.Context, string) (string, error) { return pushDigestA, nil }
+	// A start resolves its image once, so the measurement, which follows the
+	// admission verdict and precedes the start's return, is where it pauses.
 	admitted, release := make(chan struct{}), make(chan struct{})
-	var resolves atomic.Int32
-	p.containerd.(*fakeContainerd).resolve = func(context.Context, string) (string, error) {
-		if resolves.Add(1) == 2 { // the inventory record of the admitted start
-			close(admitted)
-			<-release
-		}
-		return pushDigestA, nil
-	}
+	p.measurer = pausingMeasurer{admitted: admitted, release: release}
 	started := make(chan error)
 	go func() { started <- p.StartContainer(context.Background(), pod, ctr) }()
 
@@ -176,3 +171,14 @@ func TestStopAndRemoveUntrackOnlyAStartedContainer(t *testing.T) {
 		})
 	}
 }
+
+// pausingMeasurer holds a start between its admission verdict and its return.
+type pausingMeasurer struct{ admitted, release chan struct{} }
+
+func (m pausingMeasurer) MeasureOnce(string) (bool, error) {
+	close(m.admitted)
+	<-m.release
+	return true, nil
+}
+
+func (pausingMeasurer) Digests() []string { return nil }
