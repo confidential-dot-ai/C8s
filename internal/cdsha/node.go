@@ -171,6 +171,7 @@ type Node struct {
 
 	seatsOKAt atomic.Pointer[time.Time] // monotonic time of the last full-seat report (non-voters)
 	voteKnown atomic.Bool               // every staying voter has held this voter (votersAgree); reset as a non-voter
+	seated    atomic.Bool               // this voter was Ready among no more voters than seats (noteSeated); reset as a non-voter
 
 	readOK    atomic.Pointer[barrierMark] // leader: the last read barrier that succeeded
 	barrierMS atomic.Int64                // leader: how long the last successful read barrier took
@@ -688,6 +689,7 @@ func (n *Node) Run(ctx context.Context) error {
 			n.joinOrBootstrap(ctx)
 			continue
 		}
+		n.noteSeated()
 		if e := n.fsm.Core().Epoch; e != lastEpoch {
 			lastEpoch = e
 			n.mux.Load().recheck() // the pin set may have changed
@@ -1522,7 +1524,10 @@ func (n *Node) Ready() bool {
 	if n.isVoter() {
 		// A seat more than the seats: a dead or replaced voter still counts
 		// for the quorum until it retires, so the next restart must wait.
-		return n.voterCount() <= n.seats() && n.voteKnown.Load()
+		// The replacement shows that wait (it was never seated); the voters
+		// that held their seats stay Ready, so the Service keeps endpoints
+		// while a majority serves.
+		return n.voteKnown.Load() && (n.voterCount() <= n.seats() || n.seated.Load())
 	}
 	if n.leading() {
 		return n.seatsFilled()
@@ -1533,6 +1538,18 @@ func (n *Node) Ready() bool {
 	}
 	age := time.Since(*at)
 	return age >= 0 && age < 3*n.cfg.Timing.Tick+time.Second
+}
+
+// noteSeated (Run loop) records that this voter holds one of no more
+// voters than seats, known to every staying voter: one that held its seat
+// before a replacement was added (Ready).
+func (n *Node) noteSeated() {
+	switch {
+	case !n.isVoter():
+		n.seated.Store(false)
+	case n.voteKnown.Load() && n.voterCount() <= n.seats():
+		n.seated.Store(true)
+	}
 }
 
 // watchApply stops a replica whose state machine has been on one command

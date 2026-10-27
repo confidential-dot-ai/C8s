@@ -148,8 +148,10 @@ Two NodePort Services lead to the replicas:
   Ready replicas. A replica is Ready only while it serves and its seat is
   settled: a voter while the cluster has no more voters than seats and every
   staying voter knows of its promotion, a non-voter while the leader reports
-  every seat held by a healthy voter. Any node's address may answer from any
-  Ready replica.
+  every seat held by a healthy voter. Readiness also gates a rolling restart:
+  a newly promoted voter is not Ready until the voter it replaces has left,
+  while the voters that already held their seats stay Ready. Any node's
+  address may answer from any Ready replica.
 * `c8s-cds-replicas` (`cds.ha.replicaNodePort`, 30809) is for the operator.
   `https://<node>:30809` answers from the replica on that node only, whether
   it serves or not. Use it for replicas that do not serve: a fresh replica
