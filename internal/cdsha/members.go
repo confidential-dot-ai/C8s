@@ -161,6 +161,15 @@ func (n *Node) handleJoin(req controlRequest) controlResponse {
 	nonVoters := 0
 	for _, s := range f.Configuration().Servers {
 		if s.ID == id {
+			// A voter dropSuspects excluded asks to come back: it has no
+			// leader, so it leads no recovered cluster. It votes again at
+			// its address, with its log.
+			if s.Suffrage == raft.Voter && s.Address == excludedAddress {
+				if err := r.AddVoter(id, raft.ServerAddress(req.Address), 0, n.cfg.Timing.Apply).Error(); err != nil {
+					return controlResponse{Member: true, Err: err.Error()}
+				}
+				n.log.Info("excluded voter rejoined at its address", "id", id, "address", req.Address)
+			}
 			return controlResponse{Member: true}
 		}
 		if hp, _ := splitRaftAddr(string(s.Address)); hp == hostport && s.ID != n.id {

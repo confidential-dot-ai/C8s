@@ -200,10 +200,19 @@ func (n *Node) judgeRecovers(ctx context.Context, ds []PendingDecree, core Core,
 	return doubts, ok
 }
 
-// dropSuspects (leader) removes from the configuration every member a
+// excludedAddress is the Raft address dropSuspects gives a voter it cuts
+// out. It names no member, so neither Raft (mux.Dial) nor a control call
+// reaches anyone there.
+const excludedAddress raft.ServerAddress = "excluded"
+
+// dropSuspects (leader) cuts out of the configuration every member a
 // Recover decree names that this cluster did not reject in time and, while
 // the decree view is stale, every member cut off for DeadAfter: either may
-// lead a recovered cluster, and Raft must never merge it back.
+// lead a recovered cluster, and Raft must never merge it back. A non-voter
+// is removed. A voter keeps its vote at excludedAddress: to Raft it is a
+// dead voter, which leaves only through retireVoters once a replacement
+// votes. Removed at once, it would free its seat, and the replacement's
+// promotion could commit without a staying voter (soak F9).
 func (n *Node) dropSuspects() {
 	if n.cfg.Decrees == nil {
 		return
@@ -227,7 +236,7 @@ func (n *Node) dropSuspects() {
 	}
 	now := time.Now()
 	for _, s := range n.servers() {
-		if s.ID == n.id {
+		if s.ID == n.id || s.Address == excludedAddress {
 			continue
 		}
 		n.mu.Lock()
@@ -237,8 +246,8 @@ func (n *Node) dropSuspects() {
 		if !blind && (!bad || !slices.Contains(doubted, s.ID)) {
 			continue
 		}
-		if n.removeMember(r, s.ID) {
-			n.log.Error("cds-ha: removed a cut-off member that may lead a recovered cluster; it rejoins if it did not recover", "id", s.ID, "decree_view_stale", stale)
+		if n.cutOut(r, s) {
+			n.log.Error("cds-ha: cut out a cut-off member that may lead a recovered cluster; it rejoins if it did not recover", "id", s.ID, "decree_view_stale", stale)
 			if blind {
 				n.mu.Lock()
 				n.blindRemoved[s.ID] = struct{}{}
@@ -246,6 +255,20 @@ func (n *Node) dropSuspects() {
 			}
 		}
 	}
+}
+
+// cutOut stops Raft from reaching s: a voter is excluded (excludedAddress),
+// a non-voter removed. It reports whether the change committed.
+func (n *Node) cutOut(r *raft.Raft, s raft.Server) bool {
+	if s.Suffrage != raft.Voter {
+		return n.removeMember(r, s.ID)
+	}
+	if err := r.AddVoter(s.ID, excludedAddress, 0, n.cfg.Timing.Apply).Error(); err != nil {
+		n.log.Warn("exclude voter", "id", s.ID, "err", err)
+		return false
+	}
+	n.log.Info("voter excluded: it keeps its vote until it retires", "id", s.ID)
+	return true
 }
 
 // noteAcks (leader, Run loop) records the members that report this leader

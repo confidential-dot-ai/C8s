@@ -423,8 +423,10 @@ What to do:
 - **API outage plus a cut-off member** (no decree named): restore the leader's
   API access (or the cut-off member). The fence ends at the next decree list.
   Do NOT issue Recover: the majority is alive.
-- **Refused late**: the leader removed the named member from its
-  configuration so Raft never merges it back. If that member did not recover,
+- **Refused late**: the leader cut the named member out of its configuration
+  so Raft never merges it back: a non-voter is removed; a voter keeps its vote
+  under the address `excluded` (Raft no longer reaches it) and leaves only
+  once a replacement votes, like any dead voter. If that member did not recover,
   it sees the rejection and rejoins by itself once it can reach the cluster;
   the fence ends when it is a healthy member again (or a later process on its
   node is). If you know it is gone, `kubectl delete` the decree object.

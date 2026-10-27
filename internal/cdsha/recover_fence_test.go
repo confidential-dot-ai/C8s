@@ -114,6 +114,14 @@ func cutOff(t *testing.T) (c *cluster, l, s *replica, majority []string) {
 	return c, l, s, majority
 }
 
+// reachableMember reports that l's configuration holds s at an address
+// Raft reaches (not cut out, see dropSuspects).
+func reachableMember(l, s *replica) bool {
+	return slices.ContainsFunc(l.node.servers(), func(m raft.Server) bool {
+		return m.ID == raft.ServerID(s.node.ID()) && m.Address != excludedAddress
+	})
+}
+
 func majorityLeader(c *cluster, s *replica) *replica {
 	for _, r := range c.live() {
 		if r != s && r.node.leading() {
@@ -160,7 +168,7 @@ func TestRecoverSplitBrainLeaderAPIDownRefused(t *testing.T) {
 			return false
 		}
 		f := ml.node.Status().Fenced
-		return f != nil && f.Decree == name && f.Member == s.node.ID() && !slices.Contains(ml.node.Status().Voters, s.node.ID())
+		return f != nil && f.Decree == name && f.Member == s.node.ID() && !reachableMember(ml, s)
 	})
 	// The network heals: no merge, the fork keeps its write, and the
 	// majority stays fenced.
