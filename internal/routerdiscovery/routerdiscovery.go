@@ -12,12 +12,12 @@
 // This package therefore dials the front door once, fetches and verifies the
 // document over that connection, requires the attested cert to be the leaf
 // that same handshake presented, and returns an HTTP client bound to that
-// attested leaf. When the connection is lost (the router closes the discovery
-// response's connection, idle eviction) the client redials the same host and
-// uses the new connection only if its handshake presents the attested leaf
-// again — a TLS 1.3 handshake proves possession of the leaf's key, so the
-// evidence covers the new connection exactly as it covered the first. A
-// redial that presents any other leaf fails closed with a re-run hint.
+// attested leaf. When the connection is lost (the router's keepalive limits,
+// idle eviction) the client redials the same host and uses the new connection
+// only if its handshake presents the attested leaf again — a full TLS 1.3
+// handshake proves possession of the leaf's key, so the evidence covers the
+// new connection exactly as it covered the first. A redial that presents any
+// other leaf fails closed with a re-run hint.
 //
 // Evidence verification runs in-process (internal/localverify).
 package routerdiscovery
@@ -141,6 +141,8 @@ func dialFrontDoor(ctx context.Context, host string) (*tls.Conn, error) {
 	d := tls.Dialer{
 		NetDialer: &net.Dialer{Timeout: 5 * time.Second},
 		Config: &tls.Config{
+			// No ClientSessionCache: a resumed TLS 1.3 handshake carries no
+			// CertificateVerify, so every redial must be a full handshake.
 			MinVersion:         tls.VersionTLS13,
 			InsecureSkipVerify: true, //nolint:gosec // attestation, not PKI, authenticates the peer; see dialFrontDoor doc
 		},
@@ -285,7 +287,7 @@ func (d *attestedDialer) dial(ctx context.Context, _, _ string) (net.Conn, error
 			presented = "serving cert sha256 " + hex.EncodeToString(sum[:])
 		}
 		attested := sha256.Sum256(d.leaf)
-		return nil, fmt.Errorf("routerdiscovery: the attested connection was lost and the redial presented %s, not the attested %s — a different router replica may have answered; re-run the command to attest a fresh connection",
+		return nil, fmt.Errorf("routerdiscovery: the attested connection was lost and the redial presented %s, not the attested %s — a different router replica answered or the router renewed its certificate; re-run the command to attest a fresh connection",
 			presented, hex.EncodeToString(attested[:]))
 	}
 	return conn, nil
