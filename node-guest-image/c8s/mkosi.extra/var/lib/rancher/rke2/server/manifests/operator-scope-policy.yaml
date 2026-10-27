@@ -17,7 +17,15 @@
 #     Node objects;
 #   - the kubelet-proxy subresources (nodes/proxy, pods/proxy,
 #     services/proxy) that reach the kubelet's exec endpoint without a
-#     pods/exec admission check.
+#     pods/exec admission check;
+#   - Services that would take over a platform address that member pods'
+#     packet filters let through by IP (the resolver 10.53.0.10, the
+#     kube-state-metrics exit 10.53.0.11): spec.externalIPs, which kube-proxy
+#     routes beside the real ClusterIP (CVE-2020-8554), and a ClusterIP in
+#     10.53.0.0/24, the static band where the platform pins its addresses.
+#     The apiserver allocates before admission and a server-side dry-run
+#     presents the range's network address, 10.53.0.0, so that one stays
+#     admitted (it is never a real ClusterIP).
 # cred-release-rbac.yaml already omits all of this from the operator role;
 # this policy is the second, independent layer so neither an RBAC mistake
 # nor a tenant RoleBinding the operator writes can widen it. The match
@@ -60,6 +68,15 @@ spec:
       message: "c8s credentials may not write PersistentVolumes or Nodes"
     - expression: "!(request.resource.group == '' && request.resource.resource in ['nodes', 'pods', 'services'] && variables.sub == 'proxy')"
       message: "c8s credentials may not use the proxy subresources"
+    - expression: >-
+        !(request.resource.group == '' && request.resource.resource == 'services' && object != null &&
+        has(object.spec) && has(object.spec.externalIPs) && size(object.spec.externalIPs) > 0)
+      message: "c8s credentials may not set Service externalIPs"
+    - expression: >-
+        !(request.resource.group == '' && request.resource.resource == 'services' && object != null && has(object.spec) &&
+        ((has(object.spec.clusterIP) && object.spec.clusterIP.startsWith('10.53.0.') && object.spec.clusterIP != '10.53.0.0') ||
+        (has(object.spec.clusterIPs) && object.spec.clusterIPs.exists(ip, ip.startsWith('10.53.0.') && ip != '10.53.0.0'))))
+      message: "c8s credentials may not claim a ClusterIP in the platform's static band (10.53.0.0/24)"
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding

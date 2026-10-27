@@ -1463,9 +1463,12 @@ enforce that:
   are PodSecurity-exempt, and `c8s-system`, labelled privileged for the
   baked operator), where a pod, an edited DaemonSet, a HelmChart or a
   service-account token secret is root on the node; and none of the
-  cluster-scoped resources listed above. Its match condition selects the
-  `c8s:` groups before any validation runs, so system components and the
-  in-guest `rke2.yaml` are unaffected.
+  cluster-scoped resources listed above. It also refuses a Service with
+  `externalIPs` or with a ClusterIP in `10.53.0.0/24`, the band holding the
+  resolver and kube-state-metrics addresses that member pods reach
+  uncaptured, so no Service can take those addresses over. Its match
+  condition selects the `c8s:` groups before any validation runs, so system
+  components and the in-guest `rke2.yaml` are unaffected.
 
 The role therefore cannot lower a namespace below restricted, cannot exec,
 cannot write where PodSecurity does not apply, cannot mount the host through
