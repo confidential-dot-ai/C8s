@@ -158,14 +158,16 @@ type recoveredContainer struct {
 }
 
 // recoverPod takes a sandbox that was running before this enforcer connected
-// back under the gate, or refuses it for its life. The sandbox's containers
-// were created while an enforcer was registered, as containerd refuses a
-// create without one; what that enforcer protected is read back from the
-// sandbox itself: the namespace the runtime reports is proven the sandbox's
-// own, the ruleset live in it is the one trusted policy defines, which is
-// installed once in a namespace's life, and each container passes the checks
-// that read a container alone. The order of the list says nothing about what
-// started first, so the order rules are not re-read.
+// back under the gate, or refuses it for its life. What an earlier enforcer
+// protected is read back from the sandbox itself, from evidence still live in
+// it rather than any claim the pod makes: the namespace the runtime reports is
+// proven the sandbox's own, the ruleset live in it is the one trusted policy
+// defines (its real anchor, re-verified here, which is installed once in a
+// namespace's life), and each container passes the checks that read a container
+// alone. A measured node image separately aborts if any container exists at
+// first boot (policy.fatal_existing, checked in Synchronize). The order of the
+// list says nothing about what started first, so the order rules are not
+// re-read.
 func (g *meshGate) recoverPod(pod *api.PodSandbox, ctrs []recoveredContainer) error {
 	if !g.hosts(pod) {
 		return nil
@@ -216,9 +218,7 @@ func (g *meshGate) recovered(pod *api.PodSandbox, ctrs []recoveredContainer) (*p
 // running is the start the rest of the pod waits on.
 func (s *protectedPod) restore(policy meshPolicy, c recoveredContainer) error {
 	for _, check := range []func() error{
-		func() error { return s.requireRoleOnlyPod(c.launch) },
-		func() error { return policy.requireRoleIdentity(c.ctr, c.launch.role) },
-		func() error { return requirePrivatePIDNamespace(c.ctr) },
+		func() error { return s.requireContainerAlone(policy, c.ctr, c.launch) },
 		func() error { return s.requireSandboxNetwork(c.ctr) },
 	} {
 		if err := check(); err != nil {
@@ -228,6 +228,24 @@ func (s *protectedPod) restore(policy meshPolicy, c recoveredContainer) error {
 	s.recordLaunch(c.launch)
 	if c.running && c.launch.role == meshRole {
 		s.meshStarted = true
+	}
+	return nil
+}
+
+// requireContainerAlone runs the checks a create makes from a container on its
+// own, with no bearing on the order it started in or the rest of the pod: its
+// role may run only where its pod admits it, it runs as the identity its role
+// reserves, and it keeps its own PID namespace. Both admission (admissible) and
+// recovery (restore) make these; each adds the checks its path alone can make.
+func (s *protectedPod) requireContainerAlone(policy meshPolicy, ctr *api.Container, launch gatedContainer) error {
+	for _, check := range []func() error{
+		func() error { return s.requireRoleOnlyPod(launch) },
+		func() error { return policy.requireRoleIdentity(ctr, launch.role) },
+		func() error { return requirePrivatePIDNamespace(ctr) },
+	} {
+		if err := check(); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -462,10 +480,8 @@ func (g *meshGate) admissible(pod *api.PodSandbox, ctr *api.Container, launch ga
 	}
 	for _, check := range []func() error{
 		func() error { return state.requireRoleOrder(launch) },
-		func() error { return state.requireRoleOnlyPod(launch) },
-		func() error { return g.policy.requireRoleIdentity(ctr, launch.role) },
+		func() error { return state.requireContainerAlone(g.policy, ctr, launch) },
 		func() error { return launch.requireNoNetworkChange() },
-		func() error { return requirePrivatePIDNamespace(ctr) },
 	} {
 		if err := check(); err != nil {
 			return podNamespace{}, "", err
