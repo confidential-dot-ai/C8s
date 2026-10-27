@@ -172,6 +172,13 @@ This works only when both images use the same peer binding and overlapping
 state formats. It does not cross a format boundary (format 3 to format 4 needs
 a clean redeploy: `cds-ha.md`, "Compatibility boundary").
 
+It also needs both images to run the HA replica with the same arguments. A
+cds node admits the replica only with the exact arguments its own image was
+built with, and the replica's DaemonSet comes from the server image. If the
+new release changes the CDS arguments or the chart's HA DaemonSet, the new
+replicas are refused: relaunch the cluster instead (`cds-ha.md`, "Rolling CDS
+to a new image").
+
 1. Pin both images:
 
        # TDX: mrtd:rtmr1:rtmr2

@@ -61,7 +61,11 @@ old-backup compatibility have not been implemented or tested.
 
 The procedure applies ONLY when both releases explicitly support the
 same peer binding and overlapping state formats. It does not cross the above
-boundary. The step-by-step version, with the readiness gate, is runbook 3 in
+boundary. Both releases must also run the HA replica with the same
+arguments: the `c8s-cds-ha` DaemonSet comes from the server image, and a cds
+node admits the replica only with the exact arguments its own image was
+built with. A release that changes the CDS arguments or the chart's HA
+DaemonSet needs a relaunch of the cluster, not a rolling upgrade. The step-by-step version, with the readiness gate, is runbook 3 in
 `cds-ha-runbooks.md`. In short:
 
 1. Sign and apply an `UpdateMeasurements` decree that pins both images
