@@ -73,17 +73,29 @@ func TestMuxRefusals(t *testing.T) {
 	}
 	m.connMu.Unlock()
 	// A control request when the mux has no handler: closed without answer.
-	if _, err := callControl(addr, b.tls, v, time.Second, controlRequest{Op: ctlStatus}, nil); err == nil {
+	if _, err := callControl(addr, "", b.tls, v, time.Second, controlRequest{Op: ctlStatus}, nil); err == nil {
 		t.Fatal("a control answer without a handler")
 	}
-	// Raft for another member: refused after the target ID.
-	bm := &mux{tls: b.tls, verifier: v, advert: raftAddr{tcp: &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)}, id: string(b.id)}, conns: map[*peerConn]struct{}{}}
-	rc, err := bm.Dial(raft.ServerAddress(addr+"#someone-else/1-x"), time.Second)
+	// Raft for another member: the server refuses after the target ID,
+	// and Dial refuses a server that is another member than the target.
+	rc, _, err := dialKind(addr, time.Second, b.tls, v, muxRaft, nil)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rc.Write(append([]byte{byte(len("someone-else/1-x"))}, "someone-else/1-x"...)); err != nil {
 		t.Fatal(err)
 	}
 	closedByPeer(t, rc, "raft connection for another member")
 	rc.Close()
+	bm := &mux{tls: b.tls, verifier: v, advert: raftAddr{tcp: &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)}, id: string(b.id)}, conns: map[*peerConn]struct{}{}}
+	if _, err := bm.Dial(raft.ServerAddress(addr+"#someone-else/1-x"), time.Second); err == nil {
+		t.Fatal("dialed another member than the raft address names")
+	}
+	if c, err := bm.Dial(raft.ServerAddress(addr+"#"+string(a.id)), time.Second); err != nil {
+		t.Fatalf("dial the member the address names: %v", err)
+	} else {
+		c.Close()
+	}
 	if _, err := bm.Dial(raft.ServerAddress(addr), time.Second); err == nil {
 		t.Fatal("dialed a raft address without a member id")
 	}
@@ -106,7 +118,7 @@ func TestMuxRefusals(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer om.Close()
-	if _, err := callControl(om.ln.Addr().String(), b.tls, v, time.Second, controlRequest{Op: ctlStatus}, nil); err == nil {
+	if _, err := callControl(om.ln.Addr().String(), "", b.tls, v, time.Second, controlRequest{Op: ctlStatus}, nil); err == nil {
 		t.Fatal("the mux answered a peer of another cluster")
 	}
 	if cfg, _ := v.tlsConfig(&tls.Config{}); cfg.VerifyConnection(tls.ConnectionState{}) == nil {

@@ -188,12 +188,16 @@ func TestLeaderControlRefusals(t *testing.T) {
 	if resp := n.handleControl(pinned, controlRequest{Op: ctlApply, Entry: []byte(`{"kind":"nope"}`)}); resp.Err == "" {
 		t.Fatalf("a malformed entry applied: %+v", resp)
 	}
-	if resp := n.handleControl(pinned, controlRequest{Op: ctlJoin, ID: n.ID(), Address: string(n.raftAddress()), Reads: Format, Entry: policy}); resp.Err != "" || !resp.Member {
+	if resp := n.handleControl(Claims{Measurement: "m1", Member: n.ID()}, controlRequest{Op: ctlJoin, ID: n.ID(), Address: string(n.raftAddress()), Reads: Format, Entry: policy}); resp.Err != "" || !resp.Member {
 		t.Fatalf("a member asking to join again: %+v", resp)
+	}
+	other := controlRequest{Op: ctlJoin, ID: "w/1-aa", Address: "127.0.0.1:3#w/1-aa", Reads: Format, Entry: policy}
+	if resp := n.handleControl(Claims{Measurement: "m1", Member: "q/1-bb"}, other); !strings.Contains(resp.Err, "names another member") {
+		t.Fatalf("a join for another member than the connection's: %+v", resp)
 	}
 	join := func(node, hostport string) controlResponse {
 		id := node + "/1-aa"
-		return n.handleControl(pinned, controlRequest{Op: ctlJoin, ID: id, Address: hostport + "#" + id, Reads: Format, Entry: policy})
+		return n.handleControl(Claims{Measurement: "m1", Member: id}, controlRequest{Op: ctlJoin, ID: id, Address: hostport + "#" + id, Reads: Format, Entry: policy})
 	}
 	if resp := join("x", "127.0.0.1:1"); resp.Err != "" {
 		t.Fatalf("first non-voter: %+v", resp)
@@ -477,7 +481,7 @@ func TestNewNodeRejectsIncompleteConfig(t *testing.T) {
 			t.Errorf("%s: accepted", name)
 		}
 	}
-	if _, err := newPeerCert(testCluster, failingAttestor{}, time.Now()); err == nil {
+	if _, err := newPeerCert(testCluster, failingAttestor{}, time.Now(), "n/1-test"); err == nil {
 		t.Error("peer certificate without evidence")
 	}
 	if nodeOf("no-slash") != "" || bornOf("n0/notanumber-x") != 0 {

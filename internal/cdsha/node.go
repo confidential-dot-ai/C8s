@@ -399,7 +399,7 @@ func NewNode(cfg Config) (*Node, error) {
 		n.fsm.readable = cfg.Format
 	}
 	n.lastMember.Store(time.Now().UnixMilli())
-	cert, err := newPeerCert(cfg.ClusterID, cfg.Attestor, time.Now().Add(peerCertLife))
+	cert, err := newPeerCert(cfg.ClusterID, cfg.Attestor, time.Now().Add(peerCertLife), string(n.id))
 	if err != nil {
 		return nil, err
 	}
@@ -420,7 +420,7 @@ func (n *Node) renewPeerCert() {
 	if time.Since(n.cert.Load().Leaf.NotBefore) < peerCertLife/4 {
 		return
 	}
-	c, err := newPeerCert(n.cfg.ClusterID, n.cfg.Attestor, time.Now().Add(peerCertLife))
+	c, err := newPeerCert(n.cfg.ClusterID, n.cfg.Attestor, time.Now().Add(peerCertLife), string(n.id))
 	if err != nil {
 		n.log.Warn("renew peer certificate", "err", err)
 		return
@@ -805,7 +805,22 @@ func (n *Node) shutdown() {
 	}
 }
 
+// call sends req to whichever replica answers at host:port addr.
 func (n *Node) call(addr string, timeout time.Duration, req controlRequest) (controlResponse, error) {
+	return n.callAs(addr, "", timeout, req)
+}
+
+// callMember sends req to the member that Raft address addr names, and to
+// no other replica that may answer there.
+func (n *Node) callMember(addr raft.ServerAddress, timeout time.Duration, req controlRequest) (controlResponse, error) {
+	hp, id := splitRaftAddr(string(addr))
+	if id == "" {
+		return controlResponse{}, fmt.Errorf("cds-ha: raft address %q names no member", addr)
+	}
+	return n.callAs(hp, id, timeout, req)
+}
+
+func (n *Node) callAs(addr, member string, timeout time.Duration, req controlRequest) (controlResponse, error) {
 	if n.blocked != nil && n.blocked(addr) {
 		return controlResponse{}, errors.New("partitioned")
 	}
@@ -813,7 +828,7 @@ func (n *Node) call(addr string, timeout time.Duration, req controlRequest) (con
 	if m := n.mux.Load(); m != nil {
 		local = m.advert.tcp
 	}
-	return callControl(addr, n.tls, n.verifier, timeout, req, local)
+	return callControl(addr, member, n.tls, n.verifier, timeout, req, local)
 }
 
 // handleControl answers a control request from an attested peer.
@@ -841,20 +856,25 @@ func (n *Node) handleControl(peer Claims, req controlRequest) controlResponse {
 		// TLS already checks this; the join is where it matters most.
 		return controlResponse{Member: true, Err: "peer measurement is not pinned"}
 	}
+	r := n.r()
+	term := r.CurrentTerm()
 	if req.Op == ctlReadBarrier {
 		// The barrier applies everything up to last here; the follower's
 		// digests are compared with that (divergence.go).
-		last := n.r().LastIndex()
-		idx, err := n.readBarrier(n.r(), min(n.cfg.Timing.Apply, n.cfg.Timing.Lease))
+		last := r.LastIndex()
+		idx, err := n.readBarrier(r, min(n.cfg.Timing.Apply, n.cfg.Timing.Lease))
 		if err != nil {
 			return controlResponse{Member: true, Err: err.Error()}
 		}
-		if why := n.observeReport(raft.ServerID(req.ID), req.Digests, last); why != "" {
-			return controlResponse{Member: true, Err: "diverged: " + why, Diverged: why}
+		if why := n.observeReport(raft.ServerID(peer.Member), req.Digests, last); why != "" {
+			return controlResponse{Member: true, Err: "diverged: " + why, Diverged: why, Term: term}
 		}
-		return controlResponse{Member: true, Index: idx}
+		return controlResponse{Member: true, Index: idx, Term: term}
 	}
 	if req.Op == ctlJoin {
+		if req.ID != peer.Member {
+			return controlResponse{Member: true, Err: "join request names another member than its certificate"}
+		}
 		return n.handleJoin(req)
 	}
 	// Its answer would come from a state that skipped an entry.
@@ -895,7 +915,7 @@ func (n *Node) handleControl(peer Claims, req controlRequest) controlResponse {
 	if err != nil {
 		return controlResponse{Member: true, Err: err.Error()}
 	}
-	return controlResponse{Member: true, Index: idx, Response: body}
+	return controlResponse{Member: true, Index: idx, Term: term, Response: body}
 }
 
 // forwardedEntry decodes an entry another replica forwarded to the leader
@@ -969,11 +989,13 @@ func (n *Node) propose(e Entry) (json.RawMessage, error) {
 		}
 		return json.Marshal(resp)
 	}
-	hp := n.leaderHostPort()
-	if hp == "" {
+	r := n.r()
+	leader, _ := r.LeaderWithID()
+	term := r.CurrentTerm()
+	if leader == "" {
 		return nil, errors.New("cds-ha: no leader (fewer than a majority of replicas reachable)")
 	}
-	resp, err := n.call(hp, n.cfg.Timing.Apply, controlRequest{Op: ctlApply, Entry: raw})
+	resp, err := n.callMember(leader, n.cfg.Timing.Apply, controlRequest{Op: ctlApply, Entry: raw})
 	if err != nil {
 		return nil, err
 	}
@@ -982,6 +1004,11 @@ func (n *Node) propose(e Entry) (json.RawMessage, error) {
 			return nil, err
 		}
 		return nil, errors.New("cds-ha: " + resp.Err)
+	}
+	// The index is one of the log this replica follows only if the leader
+	// it follows answered in its term.
+	if resp.Term != term {
+		return nil, fmt.Errorf("cds-ha: the leader answered in term %d, this replica follows term %d", resp.Term, term)
 	}
 	if !n.waitFor(n.cfg.Timing.Apply, func() bool { return n.fsm.AppliedIndex() >= resp.Index }) {
 		return nil, errors.New("cds-ha: write committed but not yet applied here")
@@ -1194,21 +1221,25 @@ func (n *Node) confirmRead(timeout time.Duration) (*readCertificate, error) {
 			return nil, err
 		}
 	} else {
-		hp := n.leaderHostPort()
-		if hp == "" {
+		if leader == "" {
 			return nil, errors.New("cds-ha: no leader")
 		}
-		resp, err := n.call(hp, timeout, controlRequest{Op: ctlReadBarrier, ID: string(n.id), Digests: n.fsm.dig.report()})
+		resp, err := n.callMember(leader, timeout, controlRequest{Op: ctlReadBarrier, Digests: n.fsm.dig.report()})
 		if err != nil {
 			return nil, err
+		}
+		if resp.Err != "" && resp.Diverged == "" {
+			return nil, errors.New("cds-ha: " + resp.Err)
+		}
+		// Its watermark and verdict hold for this replica's log only if the
+		// leader it follows answered in its term.
+		if resp.Term != term {
+			return nil, fmt.Errorf("cds-ha: the leader answered in term %d, this replica follows term %d", resp.Term, term)
 		}
 		if resp.Diverged != "" {
 			// The leader of a majority holds other state at the same index:
 			// stop serving, and restart to take its state (FSM.stopLocal).
 			return nil, n.fsm.stopLocal(fmt.Errorf("%w: %s", ErrDiverged, resp.Diverged))
-		}
-		if resp.Err != "" {
-			return nil, errors.New("cds-ha: " + resp.Err)
 		}
 		if resp.Index == 0 {
 			return nil, errors.New("cds-ha: missing read watermark")
@@ -1530,8 +1561,7 @@ func (n *Node) waitFor(timeout time.Duration, cond func() bool) bool {
 
 // peerStatus asks the member at Raft address addr for its status.
 func (n *Node) peerStatus(addr raft.ServerAddress, timeout time.Duration) (*Status, error) {
-	hp, _ := splitRaftAddr(string(addr))
-	resp, err := n.call(hp, timeout, controlRequest{Op: ctlStatus})
+	resp, err := n.callMember(addr, timeout, controlRequest{Op: ctlStatus})
 	if err == nil && resp.Status == nil {
 		err = errors.New("cds-ha: peer sent no status")
 	}

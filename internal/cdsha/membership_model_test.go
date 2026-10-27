@@ -107,6 +107,11 @@ func TestReconcileDoesNotResurrectReplacedIncarnation(t *testing.T) {
 		t.Fatal(err)
 	}
 	replacementNode.id = replacement
+	cert, err := newPeerCert(replacementNode.cfg.ClusterID, replacementNode.cfg.Attestor, time.Now().Add(peerCertLife), string(replacement))
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacementNode.cert.Store(&cert)
 	if err := replacementNode.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +120,7 @@ func TestReconcileDoesNotResurrectReplacedIncarnation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	joined := n.handleControl(Claims{Measurement: "m1"}, controlRequest{Op: ctlJoin, ID: string(replacement), Address: oldHP + "#" + string(replacement), Reads: Format, Entry: policy})
+	joined := n.handleControl(Claims{Measurement: "m1", Member: string(replacement)}, controlRequest{Op: ctlJoin, ID: string(replacement), Address: oldHP + "#" + string(replacement), Reads: Format, Entry: policy})
 	if joined.Err != "" {
 		t.Fatalf("replacement join: %s", joined.Err)
 	}
@@ -213,7 +218,7 @@ func TestConcurrentIncarnationJoinsKeepOneAddress(t *testing.T) {
 		id := fmt.Sprintf("x/%d-new", i+1)
 		go func() {
 			<-start
-			replies <- n.handleControl(Claims{Measurement: "m1"}, controlRequest{Op: ctlJoin, ID: id, Address: hp + "#" + id, Reads: Format, Entry: policy})
+			replies <- n.handleControl(Claims{Measurement: "m1", Member: id}, controlRequest{Op: ctlJoin, ID: id, Address: hp + "#" + id, Reads: Format, Entry: policy})
 		}()
 	}
 	close(start)

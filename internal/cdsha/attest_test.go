@@ -2,6 +2,7 @@ package cdsha
 
 import (
 	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/hex"
@@ -185,16 +186,45 @@ func TestPeerVerifier(t *testing.T) {
 	v := peerVerifier{clusterID: testCluster, att: MockAttestor{}, pins: func() []string { return []string{"m1"} }}
 	m1 := MockAttestor{Measurement: "m1"}
 	day := time.Now().Add(24 * time.Hour)
-	good, err := newPeerCert(testCluster, m1, day)
+	good, err := newPeerCert(testCluster, m1, day, "n/1-test")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := v.claims(good.Certificate[0]); err != nil {
+	if c, err := v.claims(good.Certificate[0]); err != nil || c.Member != "n/1-test" {
+		t.Fatalf("claims %+v, %v; want member n/1-test", c, err)
+	}
+	// The member ID is another's, in a certificate the attested key did not
+	// sign: the key that signed it is not the one the evidence binds.
+	gm, _ := x509.ParseCertificate(good.Certificate[0])
+	gm.ExtraExtensions = nil
+	for _, e := range gm.Extensions {
+		if e.Id.Equal(OIDPeerMember) {
+			e.Value = []byte("n/2-other")
+		}
+		gm.ExtraExtensions = append(gm.ExtraExtensions, e)
+	}
+	forger, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	signer := *gm
+	signer.PublicKey = &forger.PublicKey
+	renamed, err := x509.CreateCertificate(rand.Reader, gm, &signer, &good.PrivateKey.(*ecdsa.PrivateKey).PublicKey, forger)
+	if err != nil {
 		t.Fatal(err)
 	}
-	unpinned, _ := newPeerCert(testCluster, MockAttestor{Measurement: "m9"}, day)
-	otherCluster, _ := newPeerCert("tenant-b", m1, day)
-	expired, _ := newPeerCert(testCluster, m1, time.Now().Add(-time.Hour))
+	gn, _ := x509.ParseCertificate(good.Certificate[0])
+	gn.ExtraExtensions = nil
+	for _, e := range gn.Extensions {
+		if e.Id.Equal(OIDPeerEvidence) {
+			gn.ExtraExtensions = append(gn.ExtraExtensions, e)
+		}
+	}
+	gk := good.PrivateKey.(*ecdsa.PrivateKey)
+	nameless, err := x509.CreateCertificate(rand.Reader, gn, gn, &gk.PublicKey, gk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unpinned, _ := newPeerCert(testCluster, MockAttestor{Measurement: "m9"}, day, "n/1-test")
+	otherCluster, _ := newPeerCert("tenant-b", m1, day, "n/1-test")
+	expired, _ := newPeerCert(testCluster, m1, time.Now().Add(-time.Hour), "n/1-test")
 	plain := mustCA(t).Cert.Raw // no evidence extension
 	// A leaked key re-signs the expired certificate, evidence and all, with
 	// a later NotAfter.
@@ -212,6 +242,8 @@ func TestPeerVerifier(t *testing.T) {
 		"unpinned measurement": unpinned.Certificate[0],
 		"other cluster":        otherCluster.Certificate[0],
 		"no evidence":          plain,
+		"member renamed":       renamed,
+		"no member":            nameless,
 		"not a certificate":    []byte("junk"),
 	} {
 		if _, err := v.claims(der); err == nil {
