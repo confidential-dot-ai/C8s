@@ -90,6 +90,10 @@ func run(cfg config) error {
 	if err := validateConfig(cfg); err != nil {
 		return err
 	}
+	measurements := parseReferenceDigests(cfg.measurements)
+	if len(measurements) == 0 {
+		return fmt.Errorf("--measurements or --image-policy-file must name at least one launch measurement: /attest and the inventory callback admit only a pinned guest")
+	}
 	// Empty stays empty: it selects the plain-HTTP path below.
 	if family, err := teetypes.ParseFamily(cfg.armtlsPlatform); err == nil {
 		cfg.armtlsPlatform = family.String()
@@ -152,12 +156,7 @@ func run(cfg config) error {
 		"not_after", mesh.Current().CA.Cert.NotAfter.Format(time.RFC3339),
 	)
 
-	measurements := parseReferenceDigests(cfg.measurements)
-	if len(measurements) == 0 {
-		slog.Warn("--measurements empty: /attest accepts any TEE measurement. UNSAFE outside development.")
-	} else {
-		slog.Info("measurement pinning enabled for /attest", "count", len(measurements))
-	}
+	slog.Info("measurement pinning enabled for /attest", "count", len(measurements))
 	rtmrPins, err := refvalues.ParseRegisterPins(cfg.rtmrs)
 	if err != nil {
 		return fmt.Errorf("--rtmrs: %w", err)
@@ -245,11 +244,7 @@ func run(cfg config) error {
 	//
 	// Needs an armTLS identity of its own, since inventories require a client
 	// certificate; without --armtls-platform there is none, and a request
-	// carrying a sandbox token is refused rather than issued unchecked. An
-	// empty --measurements does NOT disable the callback: it tracks the same
-	// posture /attest already takes above, so a dev cluster still issues
-	// sandbox-bound leaves (and can still receive secrets) instead of failing
-	// every workload.
+	// carrying a sandbox token is refused rather than issued unchecked.
 	inventoryHosts, err := buildInventoryHosts(ctx, cfg.inventoryCIDRs)
 	if err != nil {
 		return err
@@ -259,9 +254,6 @@ func run(cfg config) error {
 	if cfg.armtlsPlatform == "" {
 		slog.Warn("no --armtls-platform: CDS cannot call inventories back for sandbox digests, so requests carrying a sandbox token will be refused")
 	} else {
-		if len(measurements) == 0 {
-			slog.Warn("--measurements empty: CDS accepts ANY armTLS-attested inventory as the source of a sandbox's container digests, so the issuance-time allowlist gate rests on an unpinned peer. UNSAFE outside development.")
-		}
 		measurementBytes, mErr := measurementDigests(measurements)
 		if mErr != nil {
 			return mErr

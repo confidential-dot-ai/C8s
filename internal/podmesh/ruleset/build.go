@@ -71,9 +71,9 @@ func captureInbound(p Policy) chain {
 }
 
 // captureOutbound redirects application TCP leaving the pod to the outbound
-// listener. Pod-local destinations, queries to an approved resolver and
-// platform-role sockets stay uncaptured; the resolver port elsewhere is
-// captured like every other destination.
+// listener. Pod-local destinations, queries to an approved resolver, the
+// pod's exits and platform-role sockets stay uncaptured; the resolver port
+// elsewhere is captured like every other destination.
 // Standalone Pods instead capture only their signed peer TCP tuples.
 func captureOutbound(p Policy) chain {
 	rules := []rule{
@@ -93,6 +93,7 @@ func captureOutbound(p Policy) chain {
 	}
 	resolverTCP := fmt.Sprintf("resolver-%s-tcp", p.Resolver)
 	rules = append(rules, rule{resolverTCP, withVerdict(matchResolver(p.Resolver, unix.IPPROTO_TCP), expr.VerdictReturn)})
+	rules = append(rules, exitRules(p, expr.VerdictReturn)...)
 	rules = append(rules, serverServiceRules(p, expr.VerdictReturn)...)
 	rules = append(rules, serverUpstreamRules(p, expr.VerdictReturn)...)
 	rules = append(rules, serverClusterCaptureRules(p)...)
@@ -116,10 +117,10 @@ func filterInput(p Policy) chain {
 
 // filterOutput denies traffic leaving the pod unless it is a reply, bound for
 // a pod-local address, neighbour discovery, an approved resolver query, TCP
-// from the mesh endpoint's own sockets, or sent by a platform role to a
-// destination it is bound to. No member pod process on a node runs as root,
-// so a root-owned socket there entered the namespace from outside, as
-// port-forward does.
+// from the mesh endpoint's own sockets or to one of the pod's exits, or sent
+// by a platform role to a destination it is bound to. No member pod process
+// on a node runs as root, so a root-owned socket there entered the namespace
+// from outside, as port-forward does.
 // Standalone Pods additionally admit ordinary IPv4 TCP/UDP egress, and admit
 // root: a pod CVM's containers may run as root, and nothing enters its pod
 // network namespace from outside the CVM.
@@ -152,6 +153,7 @@ func filterOutput(p Policy) chain {
 	for _, role := range p.Roles {
 		rules = append(rules, roleDestinationRules(role)...)
 	}
+	rules = append(rules, exitRules(p, expr.VerdictAccept)...)
 	rules = append(rules, serverServiceRules(p, expr.VerdictAccept)...)
 	rules = append(rules, serverUpstreamRules(p, expr.VerdictAccept)...)
 	rules = append(rules, serverClusterDropRules(p)...)
@@ -285,6 +287,22 @@ func serverEgressRules(p Policy, kind expr.VerdictKind) []rule {
 	for _, port := range p.Server.Egress.Ports {
 		exprs := slices.Concat(matchSocketUID(p.Server.Egress.UID), matchTCPPort(port))
 		name := fmt.Sprintf("server-egress-%d", port)
+		rules = append(rules, rule{name, withVerdict(exprs, kind)})
+	}
+	return rules
+}
+
+// exitRules match TCP from any socket of the pod to one of its exits. They
+// precede the capture, so an exit is reached as the application sends it.
+func exitRules(p Policy, kind expr.VerdictKind) []rule {
+	rules := make([]rule, 0, len(p.Exits))
+	for _, exit := range p.Exits {
+		destination := matchDestinationRange(exit.Range)
+		if exit.Range.IsSingleIP() {
+			destination = matchDestination(exit.Range.Addr())
+		}
+		exprs := slices.Concat(destination, matchTCPPort(exit.Port))
+		name := fmt.Sprintf("exit-%s-%d", exit.Range, exit.Port)
 		rules = append(rules, rule{name, withVerdict(exprs, kind)})
 	}
 	return rules

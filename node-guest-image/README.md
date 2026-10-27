@@ -367,8 +367,10 @@ provisioner's helper pods mount hostPath and run as root, which is what the
 live under `/var/lib/local-path-provisioner` on the writable state overlay
 and are local to the node; the helper creates them mode 0777, so a non-root
 consumer writes without an init container. The requested capacity is
-advisory — nothing enforces it. For encrypted, attested volumes see
-[../docs/volumes.md](../docs/volumes.md).
+advisory — nothing enforces it. A volume's source is a host directory, so the
+image policy refuses a workload container that mounts one (see
+[Host privilege](../docs/allowlist-and-capabilities.md#host-privilege)). For
+encrypted, attested volumes see [../docs/volumes.md](../docs/volumes.md).
 
 Ephemeral containers may inherit safe pod-level `runAsNonRoot` and seccomp
 settings when their own settings are absent. Explicit unsafe Pod settings,
@@ -481,7 +483,12 @@ current attempt has no artifact; there is no fallback to older evidence.
 For manual image builds, dispatch `c8s-image-manual.yml` (Actions name:
 `c8s-image manual`), with the existing `dev`, `c8s_ref`, `confos_ref` and
 `gate` inputs. It builds through the same reusable builder but cannot call
-exact acceptance or promote stable aliases. `tdx-metal-e2e.yml` remains
+exact acceptance or promote stable aliases. To build the images of one
+commit without pairing it with another commit's profile or components, run
+`.github/scripts/publish-ref-images.sh --sha <full-sha> [--dev] [--confos-ref <sha>]`:
+it points a build branch at the commit, publishes the component tags through
+`docker.yml` if `:<short-sha>` is missing, then dispatches this workflow with
+the matching `c8s_ref`, and prints the resulting tags. `tdx-metal-e2e.yml` remains
 manually dispatchable for published-image regression and `keep_cvm` debugging.
 
 ### Post-start exec

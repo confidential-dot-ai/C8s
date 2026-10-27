@@ -294,9 +294,6 @@ func allowlistPullHTTPClient(cfg pullConfig, platform string) (*http.Client, err
 	if err != nil {
 		return nil, err
 	}
-	if set.Empty() {
-		slog.Warn("allowlist.pull.cds_measurements not set; nri-image-policy accepts any armTLS-attested CDS measurement")
-	}
 	client, err := armtls.NewVerifyingHTTPClient(armtls.Pins(set.Policy()), cfg.AttestationApiURL)
 	if err != nil {
 		return nil, fmt.Errorf("CDS armTLS client: %w", err)
@@ -825,9 +822,6 @@ func startSandboxDigests(ctx context.Context, logger *slog.Logger, cfg *config, 
 	set, err := cfg.Allowlist.Pull.policySet(cfg.NormalizedPlatform())
 	if err != nil {
 		return err
-	}
-	if set.Empty() {
-		logger.Warn("allowlist.pull.cds_measurements not set: the sandbox-digests endpoint answers ANY armTLS-attested caller, so any TEE on the network can read what this node runs. UNSAFE outside development.")
 	}
 	attestationApiURL := cfg.Allowlist.Pull.AttestationApiURL
 	var journal string

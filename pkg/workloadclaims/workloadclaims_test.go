@@ -727,25 +727,32 @@ func TestListenUnixNoChgrpWhenGIDNonPositive(t *testing.T) {
 	}
 }
 
+// testPins name the guest a callback peer must be running, which armTLS
+// requires of every evidence-path policy.
+func testPins() armtls.Pins {
+	return armtls.Pins{Measurements: [][]byte{bytes.Repeat([]byte{0x11}, armtls.SNPMeasurementSize)}}
+}
+
 // Both ends of the callback need an attestation-api URL to verify their peer
 // against; without one armtls fails closed per connection, so it is rejected at
 // construction instead of at the first issuance.
 func TestDigestsCallbackRequiresAttestationApi(t *testing.T) {
 	attest := func(context.Context, string) (string, error) { return "", nil }
-	if _, _, err := DigestsServerTLSConfig("sev-snp", attest, "", armtls.Pins{}, 0, ""); err == nil {
+	if _, _, err := DigestsServerTLSConfig("sev-snp", attest, "", testPins(), 0, ""); err == nil {
 		t.Fatal("server config built with no attestation-api URL")
 	}
-	if _, err := NewDigestsClient(context.Background(), DigestsClientConfig{Platform: "sev-snp", AttestFunc: attest}); err == nil {
+	if _, err := NewDigestsClient(context.Background(), DigestsClientConfig{Platform: "sev-snp", AttestFunc: attest, Pins: testPins()}); err == nil {
 		t.Fatal("client built with no attestation-api URL")
 	}
 }
 
-// An empty measurement list is the dev opt-out, not a construction error: it
-// yields a working, unpinned-but-attested peer on both ends.
-func TestDigestsCallbackAcceptsEmptyMeasurements(t *testing.T) {
+// Pins that name no guest would disclose what a node runs to any attested TEE
+// on the network, so the endpoint refuses to come up.
+func TestDigestsCallbackRefusesEmptyMeasurements(t *testing.T) {
 	attest := func(context.Context, string) (string, error) { return "", nil }
-	if _, _, err := DigestsServerTLSConfig("sev-snp", attest, "http://127.0.0.1:8400", armtls.Pins{}, 0, ""); err != nil {
-		t.Fatalf("server config rejected empty measurements: %v", err)
+	_, _, err := DigestsServerTLSConfig("sev-snp", attest, "http://127.0.0.1:8400", armtls.Pins{}, 0, "")
+	if !errors.Is(err, armtls.ErrUnpinned) {
+		t.Fatalf("err = %v, want errors.Is armtls.ErrUnpinned", err)
 	}
 }
 

@@ -310,7 +310,8 @@ cds:
   ##   1. CDS admits these to call /attest.
   ##   2. The armtls-mesh daemonset and nri-image-policy plugin pin CDS's armTLS
   ##      serving cert against it when they dial CDS.
-  ## Empty = no pinning (UNSAFE outside dev).
+  ## Required unless node.baked or measurementsConfig pins whole images: CDS
+  ## refuses to start unpinned, and the chart refuses to render it.
   measurements: []
   ## TDX RTMR pins, each "<index>=<sha384-hex>", completing `measurements` on
   ## TDX: the launch digest (MRTD) covers TDVF firmware only, while RTMR[1]
@@ -882,11 +883,6 @@ router:
     # Empty uses 75% of the cds-attest memory limit (router.attest.resources),
     # or 32Gi without one.
     tunnelBudget: ""
-    # -- Development only. With no CDS pin (cds.measurements,
-    # cds.measurementsConfig) and no cds.operatorKeys off a baked node, true
-    # lets any attested CDS supply both the route manifest and its keys;
-    # false fails the render.
-    allowUnpinnedCDS: false
 
   # -- Route publication. When enabled, cds-attest serves the applied signed
   # route manifest at /.well-known/c8s/routes (the CDS GET /routes envelope,

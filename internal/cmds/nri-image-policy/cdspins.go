@@ -48,9 +48,7 @@ func (p *plugin) prepareCDSPins() error {
 		return err
 	}
 	if set.Empty() {
-		// The node pins nothing, which leaves its clients to report
-		// themselves unpinned.
-		return nil
+		return fmt.Errorf("allowlist.pull: this node injects credential clients but pins no CDS: set cds_measurements or cds_measurements_config")
 	}
 	document, err := refvalues.Format(set)
 	if err != nil {
