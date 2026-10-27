@@ -28,6 +28,7 @@ type createConfig struct {
 	size      string
 	sizeBytes uint64
 	workDir   string
+	jobs      int
 	mutable   bool
 	dryRun    bool
 	gate      cdsconn.MeshCAGate
@@ -81,6 +82,7 @@ one you pinned, or the key is refused. --force writes without that check.`,
 	f.BoolVar(&cfg.mutable, "mutable", false, "build a writable ext4 volume instead of an immutable, verified one")
 	f.StringVar(&cfg.size, "size", "", "mutable filesystem size, e.g. 50Gi (default: inferred from --source; required without one)")
 	f.StringVar(&cfg.workDir, "work-dir", "", "directory for build intermediates (default: a temp dir); they are removed either way")
+	f.IntVar(&cfg.jobs, "jobs", 0, "goroutines encrypting the image (default: one per CPU)")
 	f.BoolVar(&cfg.dryRun, "dry-run", false, "build the image and write escrow, but do not call CDS")
 	cfg.gate.BindFlags(f)
 	return cmd
@@ -126,7 +128,7 @@ func runCreate(cmd *cobra.Command, o *options, cfg createConfig) error {
 	var verity Verity
 	if cfg.mutable {
 		size, err = BuildMutable(cmd.Context(), MutableBuildConfig{
-			Source: cfg.source, Out: cfg.out, Key: key, Size: cfg.sizeBytes, WorkDir: cfg.workDir, Run: cfg.run,
+			Source: cfg.source, Out: cfg.out, Key: key, Size: cfg.sizeBytes, WorkDir: cfg.workDir, Run: cfg.run, Jobs: cfg.jobs,
 		})
 		if err != nil {
 			return err
@@ -134,7 +136,7 @@ func runCreate(cmd *cobra.Command, o *options, cfg createConfig) error {
 		blob, err = NewMutableBlob(key)
 	} else {
 		verity, err = Build(cmd.Context(), BuildConfig{
-			Source: cfg.source, Out: cfg.out, Key: key, WorkDir: cfg.workDir, Run: cfg.run,
+			Source: cfg.source, Out: cfg.out, Key: key, WorkDir: cfg.workDir, Run: cfg.run, Jobs: cfg.jobs,
 		})
 		if err != nil {
 			return err

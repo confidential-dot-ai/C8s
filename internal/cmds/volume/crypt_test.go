@@ -3,7 +3,10 @@ package volume
 import (
 	"bytes"
 	"crypto/aes"
+	"crypto/rand"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -140,5 +143,44 @@ func TestDecryptWithWrongKeyDoesNotRecoverPlaintext(t *testing.T) {
 	}
 	if bytes.Equal(back.Bytes(), plain) {
 		t.Fatal("wrong key recovered the plaintext")
+	}
+}
+
+// The parallel path must be byte-identical to the serial one for every job
+// count, including a payload that ends in a partial chunk.
+func TestEncryptAtMatchesEncrypt(t *testing.T) {
+	key := testKey()
+	plain := make([]byte, 3*chunkSize+5*SectorSize)
+	if _, err := rand.Read(plain[chunkSize:]); err != nil { // first chunk stays zero
+		t.Fatal(err)
+	}
+	var want bytes.Buffer
+	if err := Encrypt(&want, bytes.NewReader(plain), key); err != nil {
+		t.Fatalf("encrypt: %v", err)
+	}
+	for _, jobs := range []int{1, 2, 3, 8} {
+		out, err := os.Create(filepath.Join(t.TempDir(), "img"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := EncryptAt(out, bytes.NewReader(plain), key, jobs); err != nil {
+			t.Fatalf("jobs=%d: %v", jobs, err)
+		}
+		got, err := os.ReadFile(out.Name())
+		out.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got, want.Bytes()) {
+			t.Fatalf("jobs=%d: output differs from Encrypt", jobs)
+		}
+	}
+	out, err := os.Create(filepath.Join(t.TempDir(), "img"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer out.Close()
+	if err := EncryptAt(out, bytes.NewReader(plain[:chunkSize+7]), key, 2); !errors.Is(err, ErrUnaligned) {
+		t.Fatalf("unaligned payload: err = %v, want ErrUnaligned", err)
 	}
 }
