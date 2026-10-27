@@ -57,7 +57,7 @@ func (p *plugin) gateMesh(ctx context.Context, req *api.ValidateContainerAdjustm
 	declared := launch
 	declared.Mounts = p.observedMounts(pod, req.GetContainer())
 	role := p.roleOf(declared)
-	if p.cfg.Pod != nil {
+	if p.cfg.podRole() {
 		// The Pod endpoint receives no node mounts. Its final adjusted mounts
 		// must retain the exact private RAM volume, even under an any policy.
 		role = p.roleOf(launch)

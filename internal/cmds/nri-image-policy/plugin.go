@@ -256,7 +256,7 @@ func newPlugin(
 	isPreInstalled := os.Getenv("NRI_PLUGIN_NAME") != ""
 
 	var opts []stub.Option
-	if cfg.Pod != nil {
+	if cfg.podRole() {
 		opts = append(opts, stub.WithOnClose(p.disconnectPodStarts))
 	}
 	if !isPreInstalled {
@@ -428,7 +428,7 @@ func (p *plugin) DigestsForSandbox(sandboxID string) ([]string, []workloadclaims
 // INVARIANT: every refusal a hook returns in enforcing mode passes through
 // here, so the sandbox it belongs to asserts no identity.
 func (p *plugin) denyContainer(sandboxID string, refusal error) error {
-	if p.cfg.Pod != nil {
+	if p.cfg.podRole() {
 		p.endPodIdentity(refusal)
 	}
 	if p.inventory != nil {
@@ -488,7 +488,7 @@ func (p *plugin) recordDigest(ctr *api.Container, digest string, mounts []allowl
 
 // nodeMounts grants no node-service exception to a measured Pod workload.
 func (p *plugin) nodeMounts() nodeMounts {
-	if p.cfg.Measure.RTMR3 {
+	if p.cfg.podRole() {
 		return nodeMounts{}
 	}
 	return nodeMounts{
@@ -1063,7 +1063,7 @@ func (p *plugin) checkExisting(ctx context.Context, cfg *config, pods []*api.Pod
 	for _, ctr := range ctrs {
 		imageRef := ctr.GetAnnotations()[annotationImageName]
 		pod := podByID[ctr.GetPodSandboxId()]
-		unreconstructable := cfg.Pod != nil
+		unreconstructable := cfg.podRole()
 		if unreconstructable {
 			// Current runtime metadata cannot reconstruct the complete history
 			// required by a Pod identity after a plugin restart.
@@ -1181,7 +1181,7 @@ func (p *plugin) CreateContainer(ctx context.Context, pod *api.PodSandbox, ctr *
 	if verdict == verdictDeny && p.cfg.Policy.Mode != ModeAudit {
 		if !p.Ready() {
 			refusal := fmt.Errorf("image policy plugin initializing: %s", reason)
-			if p.cfg.Pod != nil {
+			if p.cfg.podRole() {
 				return nil, nil, p.denyContainerCreation(pod.GetId(), ctr.GetName(), refusal)
 			}
 			return nil, nil, refusal
@@ -1209,7 +1209,7 @@ func (p *plugin) StartContainer(ctx context.Context, pod *api.PodSandbox, ctr *a
 		return p.denyContainer(pod.GetId(), err)
 	}
 	var credentialSource string
-	if cfg.Pod != nil {
+	if cfg.podRole() {
 		if p.measurer == nil {
 			return p.denyContainer(pod.GetId(), errors.New("pod start requires the runtime measurement journal"))
 		}
@@ -1263,7 +1263,7 @@ func (p *plugin) StartContainer(ctx context.Context, pod *api.PodSandbox, ctr *a
 // held against its sandbox; a pod CVM records it, since every refusal there
 // ends the pod's identity (denyContainer).
 func (p *plugin) transientRefusal(pod *api.PodSandbox, refusal error) error {
-	if p.cfg.Pod != nil {
+	if p.cfg.podRole() {
 		return p.denyContainer(pod.GetId(), refusal)
 	}
 	return refusal
@@ -1326,7 +1326,7 @@ func (p *plugin) observedLaunch(ctx context.Context, ctr *api.Container, imageRe
 // plane cannot pass one as an argument. A container running as the credentials
 // identity that this node's measured base grants no such role is refused.
 func (p *plugin) credentialMounts(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) (*api.ContainerAdjustment, error) {
-	if p.cfg.Measure.RTMR3 {
+	if p.cfg.podRole() {
 		return nil, nil
 	}
 	if fetchesRouteManifest(pod, ctr) {

@@ -26,7 +26,7 @@ var listenPodStarts = func() (net.Listener, error) {
 }
 
 func (p *plugin) listenPodStarts() (net.Listener, error) {
-	if p.cfg.Pod == nil {
+	if !p.cfg.podRole() {
 		return nil, nil
 	}
 	return listenPodStarts()
@@ -70,7 +70,7 @@ func (p *plugin) finishPodStart(ctx context.Context, pod *api.PodSandbox, ctr *a
 	if err := p.afterPodStart(pod, source); err != nil {
 		return err
 	}
-	if p.cfg.Pod == nil {
+	if !p.cfg.podRole() {
 		return nil
 	}
 	request := podstart.Request{ContainerID: ctr.GetId(), SandboxID: pod.GetId(), PID: ctr.GetPid()}
@@ -106,7 +106,7 @@ func (p *plugin) requirePodStart(ctx context.Context, request podstart.Request) 
 	if err := request.Validate(); err != nil {
 		return err
 	}
-	if p.cfg.Pod == nil || p.measurer == nil || p.inventory == nil {
+	if !p.cfg.podRole() || p.measurer == nil || p.inventory == nil {
 		return errors.New("pod start lacks admission, measurement or process identity")
 	}
 	b := p.podBroker

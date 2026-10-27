@@ -43,7 +43,7 @@ type podCredentialBroker struct {
 var runGuestCredentials = getcert.RunGuest
 
 func (p *plugin) lockPodAdmission() func() {
-	if p.cfg.Pod == nil {
+	if !p.cfg.podRole() {
 		return func() {}
 	}
 	p.podMu.Lock()
@@ -51,7 +51,7 @@ func (p *plugin) lockPodAdmission() func() {
 }
 
 func (p *plugin) afterPodStart(pod *api.PodSandbox, source string) error {
-	if p.cfg.Pod == nil {
+	if !p.cfg.podRole() {
 		return nil
 	}
 	if source != "" {
@@ -70,7 +70,7 @@ func (p *plugin) afterPodStart(pod *api.PodSandbox, source string) error {
 }
 
 func (p *plugin) preparePodBroker(ctx context.Context, client *http.Client) error {
-	if p.cfg.Pod == nil {
+	if !p.cfg.podRole() {
 		return nil
 	}
 	if client == nil {
@@ -257,7 +257,7 @@ func (p *plugin) commitPodCredentials(claims workloadclaims.PodClaims, publish f
 // podCredentialSource checks the final mount table independently of a tenant's
 // allowlist. A broad mounts policy must never hand it the platform's key.
 func (p *plugin) podCredentialSource(pod *api.PodSandbox, ctr *api.Container, role string, mounts []allowlist.ObservedMount) (string, error) {
-	if p.cfg.Pod == nil {
+	if !p.cfg.podRole() {
 		return "", nil
 	}
 	if pod.GetNamespace() != p.cfg.Pod.Namespace || pod.GetName() != p.cfg.Pod.Name || pod.GetUid() == "" || pod.GetId() == "" {

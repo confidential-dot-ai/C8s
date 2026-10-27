@@ -353,10 +353,17 @@ func (c *config) NormalizedPlatform() string {
 	return family.String()
 }
 
-// injectsCredentialClients excludes the Pod guest journal: recording measured
-// workloads does not grant containers access to node credential services.
+// podRole reports whether this boot is a pod CVM's: the signed pod section is
+// present, and validatePod ties it to measure.rtmr3 and mesh.pod, so the
+// plugin asks this one question wherever the two roles part.
+func (c *config) podRole() bool {
+	return c.Pod != nil
+}
+
+// injectsCredentialClients excludes a pod CVM: measuring its workloads does
+// not grant containers access to node credential services.
 func (c *config) injectsCredentialClients() bool {
-	return c.WorkloadClaims.SocketDir != "" && !c.Measure.RTMR3
+	return c.WorkloadClaims.SocketDir != "" && !c.podRole()
 }
 
 // PullEnabled reports whether the plugin should poll a remote CDS.

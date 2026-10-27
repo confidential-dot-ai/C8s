@@ -46,7 +46,7 @@ func (c *config) validatePodImages() error {
 // containerImage chooses Pod identity only from the staged manifest. The CRI
 // image-name annotation may name a mutable alias even for a pinned request.
 func (p *plugin) containerImage(pod *api.PodSandbox, ctr *api.Container) (string, error) {
-	if p.cfg.Pod == nil {
+	if !p.cfg.podRole() {
 		return ctr.GetAnnotations()[annotationImageName], nil
 	}
 	assigned := p.cfg.Pod
