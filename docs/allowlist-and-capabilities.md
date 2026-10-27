@@ -472,7 +472,7 @@ backs every component volume with tmpfs: `medium: Memory` `emptyDir`s, and
 its ConfigMaps as projected volumes. Its component entries then hold on any
 node.
 
-The baked local-path provisioner creates `hostPath` persistent volumes under
+The optional local-path provisioner (a `C8S_LOCAL_PATH=1` node image) creates `hostPath` persistent volumes under
 `/var/lib/local-path-provisioner`. Their bytes sit on the same encrypted
 overlay, but the container's mount source is the volume's host path, not the
 pod's volume directory, so it observes as `host` with a per-claim source no
@@ -713,7 +713,9 @@ ships `nginx.conf` and the TLS snippets read-only in
 ConfigMap mounted in their place is refused. The
 local-path helper runs `/bin/sh /script/setup` from a `/script` ConfigMap with
 args and mounts `any`, so any pod running the helper digest can supply its own
-script ([#872](https://github.com/confidential-dot-ai/C8s/issues/872)). Both
+script ([#872](https://github.com/confidential-dot-ai/C8s/issues/872)); its
+entry is seeded only on an image that opts into the provisioner
+(`rke2.localPathHelper.enabled`, `C8S_LOCAL_PATH=1`). Both
 content residuals need the content pinned, or an image that carries the file. The node image's generated RKE2 system
 entries still admit their digests under `command`, `args` and `mounts` of
 `any`, so the control plane can restage one of those images — several ship a

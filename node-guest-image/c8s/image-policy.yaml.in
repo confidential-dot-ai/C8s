@@ -248,6 +248,9 @@ allowlist:
             command: {policy: any}
             args: {policy: any}
             mounts: {policy: any}
+      # END rke2 system images
+      # BEGIN local-path (kept only by a C8S_LOCAL_PATH=1 build; mkosi.sync deletes
+      # this block otherwise). The provisioner of local-path/local-path-storage.yaml.
       local-path-provisioner-1eba82e9c386:
         label: "rancher/local-path-provisioner:v0.0.36@sha256:1eba82e9c386038b4af6d69cca7519fac738c28c42735ed48ce70c882ad0d80f"
         containers:
@@ -256,7 +259,7 @@ allowlist:
             command: {policy: any}
             args: {policy: any}
             mounts: {policy: any}
-      # END rke2 system images
+      # END local-path
       # The platform roles the enforcer grants inside a member pod. A role
       # comes from this measured base alone: the JSON ingest drops the field,
       # so a document CDS serves can never claim one (pkg/allowlist).
@@ -591,9 +594,11 @@ mesh:
   exempt_namespaces:
     - kube-system
     - c8s-system
-    # The baked RKE2 addon, whose helper pod writes a host path as root
-    # (mkosi.extra/var/lib/rancher/rke2/server/manifests/local-path-storage.yaml).
+    # BEGIN local-path (kept only by a C8S_LOCAL_PATH=1 build)
+    # The optional RKE2 addon, whose helper pod writes a host path as root
+    # (local-path/local-path-storage.yaml).
     - local-path-storage
+    # END local-path
   # INVARIANT: equal to cluster-dns in etc/rancher/rke2/config.yaml. A
   # config.yaml.d drop-in that moves the cluster DNS breaks name resolution in
   # member pods closed, never open.

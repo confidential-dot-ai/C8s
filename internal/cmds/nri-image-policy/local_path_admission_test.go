@@ -1,11 +1,37 @@
 package nriimagepolicy
 
 import (
+	"os"
+	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/containerd/nri/pkg/api"
 )
+
+// localPathManifest is the optional provisioner manifest a C8S_LOCAL_PATH=1
+// build bakes.
+const localPathManifest = "../../../node-guest-image/c8s/local-path/local-path-storage.yaml"
+
+// The provisioner entry in the local-path block admits exactly the image the
+// optional manifest runs.
+func TestLocalPathBlockMatchesManifest(t *testing.T) {
+	manifest, err := os.ReadFile(localPathManifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`image: (rancher/local-path-provisioner:\S+@(sha256:[0-9a-f]{64}))`).FindSubmatch(manifest)
+	if m == nil {
+		t.Fatalf("no digest-pinned provisioner image in %s", localPathManifest)
+	}
+	cfg, err := parseConfig([]byte(renderNodeImagePolicy(t)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Allowlist.Base.BuildIndex().AdmitsDigest(string(m[2])) {
+		t.Errorf("the local-path block does not admit %s, the image %s runs", m[1], localPathManifest)
+	}
+}
 
 func TestLocalPathMeshExemptionKeepsImageAndLaunchAdmission(t *testing.T) {
 	cfg, err := parseConfig([]byte(renderNodeImagePolicy(t)))

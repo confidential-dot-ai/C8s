@@ -357,8 +357,13 @@ and host-port checks over the full Pod.
 
 ### Cluster storage
 
-The image bakes rancher/local-path-provisioner as the default StorageClass
-(`local-path`), so a PVC with no `storageClassName` binds dynamically. The
+The image has no StorageClass by default. A build with `C8S_LOCAL_PATH=1`
+bakes rancher/local-path-provisioner as the default StorageClass
+(`local-path`, from `c8s/local-path/local-path-storage.yaml`), so a PVC with
+no `storageClassName` binds dynamically. It is off by default (#872): the
+helper pod runs a ConfigMap script with a hostPath mount, its seed entry
+leaves the helper's args, env and mounts open, and a pod that mounts one of
+its volumes holds a host bind mount. The
 provisioner's helper pods mount hostPath and run as root, which is what the
 `local-path-storage` PSA and admission-policy exemptions exist for. Volumes
 live under `/var/lib/local-path-provisioner` on the writable state overlay

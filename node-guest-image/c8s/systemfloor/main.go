@@ -1,7 +1,8 @@
 // Command systemfloor regenerates the RKE2 system-image entries in
 // image-policy.yaml.in: the allowlist.base workloads that admit the node's
-// baked system components (rke2 static pods, Cilium, CoreDNS,
-// local-path-storage) under any command line.
+// baked system components (rke2 static pods, Cilium, CoreDNS, the NVIDIA
+// device plugin) under any command line. The optional local-path provisioner
+// keeps its own entry outside this block (C8S_LOCAL_PATH=1).
 //
 // The digests are the ones containerd computes when it IMPORTS the airgap
 // bundles at rke2 boot, not the registry's: the bundles are docker-archive
@@ -13,7 +14,6 @@
 //
 //	systemfloor -bundle rke2-images-core.linux-amd64.tar.zst \
 //	    -bundle rke2-images-cilium.linux-amd64.tar.zst \
-//	    -manifest .../server/manifests/local-path-storage.yaml \
 //	    -manifest .../server/manifests/nvidia-device-plugin.yaml
 //
 // prints the block. With -template pointing at image-policy.yaml.in,
