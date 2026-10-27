@@ -20,6 +20,9 @@ containers:
       - operator
       - --leader-election-namespace={{ .Release.Namespace }}
       - --status-mirror-enabled={{ .Values.statusMirror.enabled }}
+      {{- if .Values.operator.podCVMProvider.enabled }}
+      - --pod-cvm-provider-config=/mnt/c8s-data/pod-cvm/config.json
+      {{- end }}
       - --get-cert-image={{ include "c8s.image" . }}
       - --mesh-image={{ include "c8s-common.image" .Values.armtlsMesh.image }}
       - --webhook-config-name={{ include "c8s.fullname" . }}-pod-injector
@@ -76,11 +79,22 @@ containers:
       # every component volume (see cds.yaml).
       - name: tmp
         mountPath: /tmp
+      {{- if .Values.operator.podCVMProvider.enabled }}
+      - name: pod-cvm-provider
+        mountPath: /mnt/c8s-data/pod-cvm
+        readOnly: true
+      {{- end }}
 volumes:
   - name: tmp
     emptyDir:
       medium: Memory
       sizeLimit: 16Mi
+  {{- if .Values.operator.podCVMProvider.enabled }}
+  - name: pod-cvm-provider
+    secret:
+      secretName: {{ required "operator.podCVMProvider.existingSecret is required when the provider is enabled" .Values.operator.podCVMProvider.existingSecret | quote }}
+      defaultMode: 0440
+  {{- end }}
 {{- end -}}
 
 apiVersion: apps/v1

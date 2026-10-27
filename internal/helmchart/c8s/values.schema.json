@@ -615,7 +615,19 @@
     },
     "c8sComponents": {},
     "image": {},
-    "operator": {},
+    "operator": {
+      "type": "object",
+      "properties": {
+        "podCVMProvider": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "existingSecret": { "type": "string" }
+          }
+        }
+      }
+    },
     "imagePullSecrets": {},
     "imagePullSecret": {},
     "certProvisioning": {},

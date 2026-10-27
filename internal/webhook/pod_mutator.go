@@ -174,6 +174,9 @@ const reservedMeshContainerName = workloadclaims.MeshContainerName
 
 // Config tunes the injector.
 type Config struct {
+	// PodCVMProviderEnabled routes explicitly opted-in Pods to the virtual node.
+	PodCVMProviderEnabled bool
+
 	// GetCertImage is the c8s multi-mode binary image used for the
 	// injected get-cert containers.
 	GetCertImage string
@@ -564,6 +567,9 @@ func (m *podMutator) Handle(ctx context.Context, req admission.Request) admissio
 	pod := &corev1.Pod{}
 	if err := m.decoder.Decode(req, pod); err != nil {
 		return admission.Errored(http.StatusBadRequest, err)
+	}
+	if response, handled := handlePodCVM(req, pod, m.decoder, m.cfg, true); handled {
+		return response
 	}
 
 	// An ephemeral container is attached to a running pod, so nothing here is

@@ -260,6 +260,7 @@ func TestChartComponentShapesAreExact(t *testing.T) {
 		{"acme", append(slices.Clone(derived),
 			"--set", "router.publicTLS.mode=acme", "--set", "router.service.type=LoadBalancer", "--set-json", `router.san=["a.example.com"]`), true},
 		{"escaped operator args", append(slices.Clone(derived), "--set-json", `operator.extraArgs=["cost $5","$(a $$","$$(POD_NAME)","$$(KUBERNETES_SERVICE_HOST)"]`), true},
+		{"pod CVM provider", append(slices.Clone(derived), "--set", "operator.podCVMProvider.enabled=true", "--set", "operator.podCVMProvider.existingSecret=pod-launch-config"), true},
 		{"baked", append(slices.Clone(bakedArgs), "--set", "armtlsMesh.image.digest=sha256:"+strings.Repeat("2", 64)), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

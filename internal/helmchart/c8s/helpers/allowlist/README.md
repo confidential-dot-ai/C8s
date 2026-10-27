@@ -157,6 +157,11 @@ rendered, with the environment it launches with, and refuse it with one
 argument or mount more, one mount fewer, `LD_PRELOAD` set or `PATH` moved, for
 default, gke, bare-metal and baked renders.
 
+The optional Pod CVM provider uses the same derivation. Its operator config flag
+and read-only Secret mount at `/mnt/c8s-data/pod-cvm` are included in the exact
+component shape. Enabling it changes that shape; the provider render is covered
+by the component admission tests too.
+
 ## Argv-pinned entries
 
 `c8s.argvPinnedEntries` takes the chart context and returns a JSON map of

@@ -202,6 +202,11 @@ the pod role measures each container image it starts into RTMR[3], and
 SNP has no register a guest can extend after launch, so an SNP image
 manifest is refused at signing and in the guest.
 
+For automatic placement from Kubernetes, enable the optional
+[Pod CVM provider](pod-cvm-provider.md). It signs the scheduler-assigned Pod,
+launches its Cloud VM, projects attested status and owns cleanup. The manual
+launch commands below use the same guest contract.
+
 ```sh
 c8s node launch-config new-pod --out pod1 --cluster-id demo \
   --image-manifest manifest.json \
