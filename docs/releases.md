@@ -1,136 +1,77 @@
 # Releases
 
-C8s is one versioned release unit. A root `vX.Y.Z` tag versions the CLI,
-component images, measured node image, and Helm chart
-together. Maintainers do not calculate or push release tags manually.
+C8s releases as one unit. A `vX.Y.Z` tag versions the `c8s` CLI, the component
+images, the Helm chart, and the measured node images — the guest images a node
+boots — together, all built from one commit. Releases are automatic:
+maintainers do not calculate or push release tags. Terms are defined in
+[glossary.md](glossary.md).
 
-## Automatic versioning
+## Version rules
 
-After every build and retag job in the `Docker` workflow succeeds for a push to
-`main`, [`semver-tag.yml`](../.github/workflows/semver-tag.yml) examines the
-Conventional Commits since the latest stable release tag.
+A push to `main` whose component builds all succeed runs
+[`semver-tag.yml`](../.github/workflows/semver-tag.yml), which asks git-cliff
+for the next version from the Conventional Commits since the last stable tag.
 
-| Commit | Version change while on `0.x` |
-| --- | --- |
+| Commit type | Version change on the `0.x` line |
+|---|---|
 | `fix:` | patch |
 | `feat:` | minor |
 | `!` or a `BREAKING CHANGE:` footer | minor |
 | any other type | no release |
 
-Major version zero is deliberate while the public interfaces settle. The
-workflow rejects any automatically calculated tag outside the configured `v0`
-line. Graduating to `v1.0.0` requires a reviewed change to both the git-cliff
-bump policy and the workflow's `RELEASE_MAJOR` gate; a breaking commit alone
-cannot cross that boundary.
+Releases stay on major version zero. The workflow rejects a calculated tag
+outside the `v0` line, so graduating to `v1.0.0` takes a change to both the
+bump policy in `.github/c8s-cliff.toml` and the workflow's `RELEASE_MAJOR`
+gate.
 
-Pre-release tags are not stable baselines. The first automatic stable release
-is therefore `v0.1.0`, following the existing `v0.1.0-rc*` series. After that,
-the highest release-worthy change across all unreleased commits wins.
+## What a release publishes
 
-## Publication
+| Artifact | Where |
+|---|---|
+| Component images: `c8s-operator`, `cds`, `get-cert`, `armtls-mesh`, `nri-image-policy`, `volumed` | `ghcr.io/confidential-dot-ai/<name>`, tagged `vX.Y.Z`, `X.Y.Z`, and the 7-character commit SHA |
+| Helm chart | `ghcr.io/confidential-dot-ai/charts/c8s`, version `X.Y.Z`, packaged byte-reproducibly from the release commit |
+| Node images | `ghcr.io/confidential-dot-ai/node-guest-base:rke2-{tdx,snp}[-cdi]-vX.Y.Z` |
+| GitHub release | `release-statement.json`, `release-statement.sigstore.json`, `allowlist-seed-tdx.json`, `allowlist-seed-snp.json` |
 
-Release publication stays inside the successful main-push `Docker` run:
+A release also moves the `X.Y` image alias when it is the newest patch of that
+series, and `latest` when it is the newest stable release across all series. It
+adds no moving node-image alias: it only creates the exact `-vX.Y.Z` tags. The
+floating `rke2-{tdx,snp}[-cdi]` tags track `main` builds, so pin the exact
+release whose measurement you accept.
 
-1. The normal main-push image build and retag legs complete successfully.
-2. git-cliff calculates the next stable version after all older main-push
-   Docker runs finish.
-3. Every component image is rebuilt from that exact commit under a
-   commit-scoped staging tag. This retains the old tag-triggered path's
-   all-components rebuild without starting a second workflow or trusting a
-   potentially stale `main` alias. A retry reuses an existing staging digest so
-   mutable upstream base images cannot change a partially published release.
-4. The Helm chart is linted, rendered, and packaged reproducibly for that
-   version in a read-only job. Another read-only job renders the allowlist
-   seed of each node-image platform from the staging digests, as the node
-   image build does (see [Fetch the allowlist seed](#fetch-the-allowlist-seed)).
-5. A job protected by the `release` environment verifies every staging digest,
-   then creates a create-only annotated Git tag with the built-in
-   `GITHUB_TOKEN`.
-6. The verified manifests are promoted to `vX.Y.Z`, `X.Y.Z`, the moving `X.Y`
-   compatibility tag, `latest` when this is the newest stable release, and the
-   commit's short-SHA tag. The same job
-   publishes chart `X.Y.Z`. Normal branch builds update `main`, never `latest`.
-7. Completion of the original Docker run starts the existing measured node
-   and e2e workflows. The node workflow builds both TDX/SNP formats,
-   then promotes their exact commit manifests to
-   `rke2-{tdx,snp}[-cdi]-vX.Y.Z` only after every matrix leg succeeds. It does
-   not publish a bare `vX.Y.Z` because that would not identify a platform and
-   format. A leg whose image bakes an allowlist seed other than the one the
-   signed release statement lists for its platform fails before it publishes.
-8. Existing stable node aliases are verified by
-   digest and never silently moved by a retry or manual rebuild.
-9. After the tag and registry publication, a separate job signs a release
-   statement keyless with Sigstore and attaches it and the allowlist seeds to
-   a GitHub release for the tag, before the Docker run completes and step 7
-   starts. See [Verify a release tag](#verify-a-release-tag).
+Every component image is rebuilt from the release commit under a commit-scoped
+staging tag and promoted by digest; an exact release tag that already exists
+must resolve to that same digest. The CLI ships inside the `c8s-operator`
+image, and a released binary prints its tag with `c8s --version`. The release
+workflow stamps that tag; a plain `go build` of the same commit prints `dev`.
 
-For the first stable release, the measured node aliases are therefore
-`rke2-tdx-v0.1.0`, `rke2-tdx-cdi-v0.1.0`, `rke2-snp-v0.1.0`, and
-`rke2-snp-cdi-v0.1.0` in
-`ghcr.io/confidential-dot-ai/node-guest-base`. There is deliberately no moving
-`v0.1` alias for a measured image; operators pin the exact release whose
-measurement they allowlist.
+## Verify a release
 
-GitHub intentionally does not start new workflows for the tag created with
-`GITHUB_TOKEN`. That is part of this design: component and chart publication is
-explicit in the originating run, while the existing node workflows consume
-that run's successful `workflow_run` completion. No OAuth App, GitHub App,
-personal access token, or long-lived release credential is required.
+Each release from `v0.36.0` on has a GitHub release carrying
+`release-statement.json`:
 
-## Release a transcript change
+```json
+{"allowlistSeeds":{...},"commit":"<SHA>","repository":"confidential-dot-ai/C8s","tag":"vX.Y.Z"}
+```
 
-A c8s release that changes an attestation transcript ships after compatible
-client releases. Release `c8s-verify-js` and TEErminator versions that
-reproduce the new vectors first, then the router that carries the new
-transcript. The binding ids stay at v1: c8s is unreleased and no released
-client depends on the transcript, so the layout changes in place. A client and
-router on different layouts therefore fail verification instead of reporting a
-version mismatch. After an upgrade, a transcript or signature mismatch from a
-client most likely means the client predates the field, not an attack. No workflow
-enforces this order. See [Upgrade from the earlier
-layout](routes-evidence.md#upgrade-from-the-earlier-layout).
+and `release-statement.sigstore.json`, a Sigstore bundle over those bytes,
+signed keyless through GitHub Actions OIDC, so there is no release key.
+Releases before `v0.74.0` carry no `allowlistSeeds` field. A statement or
+bundle that is present but does not verify is a failure, not an unsigned tag.
 
-## One-time GitHub setup
-
-1. Create a GitHub Actions environment named `release`.
-2. Set its deployment branches and tags to **Selected branches and tags**, allow
-   only the `main` branch, and disable administrator bypass. Do not add a
-   required reviewer if releases must remain fully automatic.
-3. Ensure organization/repository Actions policy permits the workflow's
-   explicit `contents: write`, `packages: write`, and `id-token: write`
-   permissions.
-4. If a tag ruleset covers `v*`, ensure it permits GitHub Actions to create a
-   new tag. It should continue to reject updates and deletions.
-
-The environment contains no release credential. Its purpose is to gate the
-stable component/chart publisher and the stable node-image alias publisher.
-Calculation and chart construction run in separate read-only jobs, and neither
-publisher checks out or executes repository source.
-
-The Git Data API creates annotated but unsigned tags. A ruleset requiring
-cryptographically signed `v*` tags will reject this workflow. The tag is
-instead covered by the signed release statement below.
-
-## Verify a release tag
-
-Each release tag from `v0.36.0` on has a GitHub release with these assets:
-
-- `release-statement.json`: `{"allowlistSeeds":{...},"commit":"<sha>","repository":"confidential-dot-ai/C8s","tag":"vX.Y.Z"}`.
-  Releases before the allowlist seed assets have no `allowlistSeeds` field.
-- `release-statement.sigstore.json`: a Sigstore bundle over that file. The
-  `sign` job of `semver-tag.yml` makes it with keyless cosign signing through
-  GitHub Actions OIDC, so there is no signing key to store. Only that job has
-  `id-token: write`.
-
-Tags up to `v0.35.0` have no statement. A downstream check must treat a
-statement or bundle that is present but does not verify as a failure, not as
-an unsigned tag.
-
-Verify with cosign 3 or later:
+The checks below need an authenticated `gh`, cosign 3 or later (CI signs and
+verifies with 3.1.3), `jq`, and `sha256sum` from GNU coreutils — on macOS,
+`shasum -a 256`. Run them in one shell and directory, starting with the tag:
 
 ```sh
-tag=vX.Y.Z
-gh release download "$tag" --repo confidential-dot-ai/C8s \
+TAG=<RELEASE_TAG>
+```
+
+`<RELEASE_TAG>` is the tag to check, for example `v0.75.1`. Download the
+statement and its bundle, then verify the signature:
+
+```sh
+gh release download "$TAG" --repo confidential-dot-ai/C8s \
   --pattern release-statement.json --pattern release-statement.sigstore.json
 cosign verify-blob \
   --bundle release-statement.sigstore.json \
@@ -139,154 +80,109 @@ cosign verify-blob \
   release-statement.json
 ```
 
-The identity and the `repository` field use the GitHub name of this
-repository, `confidential-dot-ai/C8s`, with a capital C: Fulcio keeps its
-case and cosign compares the identity exactly.
+```text
+Verified OK
+```
+
+A download failure means the tag has no release. The capital C in
+`confidential-dot-ai/C8s`, in the identity above and in the statement's
+`repository` field, matters to cosign: Fulcio (Sigstore's certificate
+authority) keeps the case and cosign compares the identity exactly.
 
 The signature proves only that the statement came from `semver-tag.yml` on
-`main`. Then check its fields against the tag:
+`main`. Check its fields against the tag, parsing them rather than comparing
+file bytes:
 
 ```sh
-commit=$(gh api "repos/confidential-dot-ai/C8s/commits/$tag" --jq .sha)
-jq -e --arg tag "$tag" --arg commit "$commit" \
+COMMIT=$(gh api "repos/confidential-dot-ai/C8s/commits/$TAG" --jq .sha)
+jq -e --arg tag "$TAG" --arg commit "$COMMIT" \
   '.repository == "confidential-dot-ai/C8s" and .tag == $tag and .commit == $commit' \
   release-statement.json
 ```
 
-Parse the fields; do not compare the file bytes with your own JSON.
+```text
+true
+```
 
-### Fetch the allowlist seed
+### Allowlist seeds
 
-The release also publishes, per node-image platform, the allowlist seed that
-the node image bakes at `/usr/lib/c8s/allowlist-seed.json`:
+Releases from `v0.74.0` on also publish the file each node-image platform bakes
+at `/usr/lib/c8s/allowlist-seed.json`: the base allowlist a node admits before
+it reaches CDS, and the content a baked node publishes as its CDS seed
+([allowlist-and-capabilities.md](allowlist-and-capabilities.md#bootstrap)). The
+statement lists each asset's SHA-256 under its platform:
 
 | Asset | Node images |
-| --- | --- |
+|---|---|
 | `allowlist-seed-tdx.json` | `rke2-tdx-vX.Y.Z`, `rke2-tdx-cdi-vX.Y.Z` |
 | `allowlist-seed-snp.json` | `rke2-snp-vX.Y.Z`, `rke2-snp-cdi-vX.Y.Z` |
 
-The `-cdi` image is the same disk in another format, so it uses its
-platform's seed. `c8s node-image render` writes the seed in canonical bytes
-(the `Canonical` form of `pkg/allowlist`), the form to mirror into an
-uploaded allowlist and to digest, so each asset is byte for byte the baked
-file. The node build checks the seed baked into each image against the asset
-before it publishes the image.
-
-The signed statement lists each asset's SHA-256 under its platform:
-
-```json
-"allowlistSeeds": {
-  "snp": {"asset": "allowlist-seed-snp.json", "sha256": "<hex>"},
-  "tdx": {"asset": "allowlist-seed-tdx.json", "sha256": "<hex>"}
-}
-```
-
-Verify the statement as above, then check the asset against it:
+The `-cdi` image is the same disk in another format, so it bakes its platform's
+copy. The node image build compares that copy against the asset and fails
+before publishing if they differ. Continue in the shell where you verified the
+statement, which set `TAG` and downloaded `release-statement.json`:
 
 ```sh
-platform=tdx
-asset="allowlist-seed-$platform.json"
-gh release download "$tag" --repo confidential-dot-ai/C8s --pattern "$asset"
-want=$(jq -er --arg p "$platform" --arg a "$asset" \
+PLATFORM=tdx
+ASSET="allowlist-seed-$PLATFORM.json"
+gh release download "$TAG" --repo confidential-dot-ai/C8s --pattern "$ASSET"
+WANT=$(jq -er --arg p "$PLATFORM" --arg a "$ASSET" \
   '.allowlistSeeds[$p] | select(.asset == $a) | .sha256' release-statement.json)
-echo "$want  $asset" | sha256sum --check
+echo "$WANT  $ASSET" | sha256sum --check
 ```
 
-Releases made before the seed assets have neither the assets nor the
-`allowlistSeeds` field.
+```text
+allowlist-seed-tdx.json: OK
+```
 
-The GitHub release is marked Latest under the same rule as the `latest` image
-alias, so a rerun for an older tag cannot take it back. A rerun verifies
-existing statement assets and does not replace them. Releases made with
-`GITHUB_TOKEN` start no other workflow.
-
-## Consistency and recovery
-
-Release calculation is sequential by repository-monotonic workflow run ID. It
-does not trust runner clocks. Git and GHCR reads are eventually consistent; a
-timeout, network partition, malformed response, or exhausted wait budget fails
-closed.
-
-Creating `refs/tags/vX.Y.Z` reserves the version. Registry publication is not a
-cross-system transaction, so a failure after tag creation can leave that release
-temporarily incomplete. Re-run the failed **Docker** workflow to repair its
-component/chart publication, the signed release statement and the seeds, or rerun the
-downstream **c8s-image** workflow to repair measured node aliases. Missing
-aliases are created and matching ones are verified; neither workflow moves a
-Git release tag or overwrites an exact image tag whose digest differs. A pulled
-existing Helm chart must match the deterministic package byte-for-byte.
-
-The moving `X.Y` image aliases advance only when the run's Git tag is the latest
-stable patch in that series. The global `latest` alias advances only for the
-newest stable version across all series. Re-running an older workflow therefore
-cannot roll either compatibility alias backward.
-
-- A non-release commit completes without creating a stable tag.
-- A failed build creates no tag because release calculation depends on every
-  image build/retag leg.
-- Never move, delete, or reuse a published stable tag. Fix a bad release with a
-  new Conventional Commit and let automation create the next version.
+`PLATFORM` is `tdx` or `snp`. The asset is byte for byte the file the image
+bakes, in the canonical form `c8s node-image render` writes: the form to mirror
+into an uploaded allowlist and to digest.
 
 ## Beta releases
 
-The protected `beta` branch gives a fast signed prerelease. It uses the same
-pipeline as `main`. A push to `beta` makes these items:
+A push to the protected `beta` branch runs the same pipeline and releases
+`vX.Y.Z-beta.N`, where `vX.Y.Z` is the stable version the same commits would
+get on `main` and `N` counts the betas of that base. A beta publishes exact
+image and chart tags, node-image aliases `rke2-{tdx,snp}[-cdi]-vX.Y.Z-beta.N`,
+and a GitHub prerelease with its own statement and seed assets. It never moves
+`latest`, an `X.Y` alias, a stable tag, or a floating node-image tag, and beta
+tags never change the stable baseline on `main`.
 
-- The Git tag `vX.Y.Z-beta.N`. `vX.Y.Z` is the stable version that the same
-  commits would get on `main`. `N` starts at 1 and increases with each beta
-  release of that base.
-- Component images and a Helm chart with the exact tags `vX.Y.Z-beta.N` and
-  `X.Y.Z-beta.N`, plus the short commit tag. A beta never moves `latest`,
-  `X.Y`, a stable `X.Y.Z` tag, or the `main` tag.
-- Node images with the exact aliases `rke2-{tdx,snp}[-cdi]-vX.Y.Z-beta.N`. A
-  beta never moves the floating node-image tags.
-- A GitHub release that is marked as a prerelease, never Latest. It holds
-  `release-statement.json`, its Sigstore bundle and the allowlist seeds.
+A beta is signed under its own identity, so a verifier pinning the `main`
+identity does not accept one: verify it as above with
+`...semver-tag.yml@refs/heads/beta` as `--certificate-identity`. The signature
+proves that the `beta` workflow made the statement, so its value rests on the
+branch rules below. To bring `main` into `beta`, merge a pull request from
+`main` with a merge commit.
 
-Every push to `beta` rebuilds every component image. The unchanged-component
-retag copies `:main`, and `:main` does not describe a beta commit.
+## Repository setup
 
-Beta tags do not match the git-cliff `tag_pattern`. Thus they never change the
-stable baseline on `main`.
+A release needs:
 
-### Verify a beta tag
+- An Actions environment named `release`, limited to selected branches and
+  tags, allowing `main` and `beta`, with administrator bypass disabled and no
+  required reviewer (a reviewer stops releases being automatic). It holds no
+  credential; it gates the publishing jobs.
+- An Actions policy permitting the workflow's `contents: write`,
+  `packages: write`, and `id-token: write` permissions.
+- A `v*` tag ruleset, if any, that lets GitHub Actions create tags while
+  rejecting updates and deletions. Release tags are annotated but unsigned, so
+  a ruleset requiring signed `v*` tags rejects the workflow.
+- A `beta` ruleset copying `main`'s rules (pull request, signed commits, the
+  required status checks, no force-push, no deletion), without a bypass and
+  without linear history, which the merge-commit flow above needs.
 
-A beta has its own signer identity. A verifier that pins the `main` identity
-does not accept a beta.
+## Recovery
 
-```sh
-tag=vX.Y.Z-beta.N
-gh release download "$tag" --repo confidential-dot-ai/C8s \
-  --pattern release-statement.json --pattern release-statement.sigstore.json
-cosign verify-blob \
-  --bundle release-statement.sigstore.json \
-  --certificate-identity https://github.com/confidential-dot-ai/C8s/.github/workflows/semver-tag.yml@refs/heads/beta \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  release-statement.json
-```
+Creating `refs/tags/vX.Y.Z` reserves the version before any registry write.
+Registry publication is not a transaction, so a failure after that can leave a
+release incomplete. Re-run the failed **Docker** workflow to repair component
+and chart publication, the signed statement, and the seed assets; re-run the
+**c8s-image** workflow to repair node-image aliases. Missing aliases are
+created and matching ones verified by digest; neither workflow moves a Git tag,
+overwrites an exact image tag whose digest differs, or rolls `X.Y` or `latest`
+backward.
 
-Then check the statement fields against the tag, as for a stable release.
-
-### Keep beta current
-
-Rules forbid force-push on `beta`. To bring `main` into `beta`, open a PR from
-`main` (or from a branch made from `main`) into `beta` and merge it with a
-merge commit. For this reason the `beta` ruleset must not require linear
-history.
-
-### One-time setup for beta
-
-A repository admin does these steps before the first beta release:
-
-1. Create the `beta` branch from a `main` commit that contains this workflow.
-2. Add a ruleset for `beta` that copies the `main` rules: a pull request,
-   signed commits, the required status checks (including the image repro
-   gate), no force-push, and no deletion. Do not require linear history. Do
-   not give a bypass. The team sets the number of required approvals. With
-   0 approvals, a beta signature means that CI checked the commit on the
-   protected branch, not that a second person reviewed it.
-3. In the `release` environment, add `beta` to **Selected branches and tags**
-   next to `main`.
-
-A beta signature only proves that the `beta` workflow made the statement. It
-has value only while the rules in step 2 protect `beta`.
+Never move, delete, or reuse a published stable tag. Fix a bad release with a
+new Conventional Commit and let the next version carry the fix.

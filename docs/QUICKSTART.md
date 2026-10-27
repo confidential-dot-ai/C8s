@@ -1,184 +1,166 @@
-# C8s quickstart
+# Install C8s
 
-This is the supported install path for the consolidated C8s chart.
+Install C8s on a Kubernetes cluster and confirm it runs.
+
+Two components arrive with it. CDS, the Certificate Distribution Service, is
+the single pod that holds the allowlist — the operator-signed list of what may
+run — and signs each workload's certificate. The `c8s operator` is the
+controller and admission webhooks that give every pod its identity. Terms used
+once and not explained here are in [glossary.md](glossary.md).
+
+This tutorial uses one deployment shape, `--cvm-mode=bare-metal`: every node
+boots the measured C8s node image, so the node is itself the confidential VM —
+a VM whose memory the CPU encrypts and whose boot state the hardware measures.
+[overview.md](overview.md) has the other modes.
 
 ## Prerequisites
 
-- A Kubernetes cluster with platform-admin permissions.
-- Helm 3 and `kubectl` on PATH, plus `crane` (digest resolution is on by
-  default; not needed if you pass `--resolve-digests=false`).
-- C8s images published with the same tag as the release, for example `v0.1.0`,
-  resolved to digests by default or supplied in a values file.
-- One node labelled to run CDS (`role=cds` by default).
-- Nodes with the TEE device shape expected by `attestationApi.teeDevices`.
-- Node kernels new enough for `SO_PEERPIDFD` (Linux ≥ 6.5), which the
-  admission inventory (nri-image-policy) requires to pin a caller's peer
-  credentials against PID reuse; a node without it fails sandbox-token fetches
-  closed. TEE-capable kernels already exceed this — AMD
-  SEV-SNP hosts need ≥ 6.11 and Intel TDX ≥ 6.16 — so this is satisfied on any
-  supported node.
+- A Kubernetes cluster whose nodes boot a measured C8s node image, and
+  platform-admin credentials for it.
+- The `c8s` CLI of the version you intend to run, from its release artifact or
+  `make install` in a source checkout. Its build version is the default
+  `--image-tag`, so the CLI picks which component images the install pins; an
+  unstamped build falls back to the `main` tag ([releases.md](releases.md)).
+- `helm`, `kubectl`, and `crane` on PATH. `crane` resolves the component image
+  tags to digests; it is needed unless you pass `--resolve-digests=false`.
+- The launch measurement of the node image your nodes booted — the digest of
+  what the CVM booted, published as a value in that image's `manifest.json`.
+- Host port 443 free on the nodes: the router, the cluster's public entry
+  point, publishes the front door there, and install refuses when every node
+  has it bound.
+- Node kernels from Linux 6.5, which the node's admission inventory needs to
+  pin the process on the other end of its socket. SEV-SNP and TDX hosts need
+  newer kernels than that, so a supported node already satisfies it.
 
-## Install C8s
+If the cluster's own node image already deploys C8s, its `c8s-system` namespace
+carries the label `confidential.ai/baked=true` and `c8s install` refuses: that
+image owns the core services, and you configure them through its signed launch
+configuration instead ([operator.md](operator.md)).
 
-This installs the supported chart-managed CVM shape: operator, RBAC, CRDs,
-webhook, attestation-api, and CDS.
+## 1. Generate an operator keypair
+
+The private key signs every allowlist, secret, volume, and route write. CDS
+pins the public half at install time and accepts writes signed by nothing else.
+
+```sh
+c8s keys new --out c8s-operator.key --pub-out c8s-operator-pub.pem
+```
+
+```text
+wrote c8s-operator.key (private, 0600) and c8s-operator-pub.pem (public)
+```
+
+Keep `c8s-operator.key`. Without it you cannot change cluster policy; with it,
+anyone can.
+
+## 2. Choose the node that runs CDS
+
+CDS holds its CA key and secrets in memory on one node. On a cluster of several
+nodes, label the one it should run on: the chart's selector is `role=cds`, and
+it tolerates the `dedicated=cds:NoSchedule` taint. On a single-node cluster,
+skip this step and use the `--single-node` variant in step 3 instead.
+
+```sh
+kubectl label node <CDS_NODE> role=cds
+```
+
+`<CDS_NODE>` is the node CDS will run on. Confirm the selector matches it:
+
+```sh
+kubectl get nodes -l role=cds -o name
+```
+
+```text
+node/<CDS_NODE>
+```
+
+A default install whose selector matches no node fails a preflight check before
+anything is changed; an install that passes `-f` owns its node labels itself.
+
+## 3. Install
+
+Two flags are required, and they are independent. `--cvm-mode` is the
+deployment shape (`bare-metal` here). `--hardware-platform` names the CPU TEE
+the nodes run: `sev-snp` for AMD SEV-SNP, `tdx` for Intel TDX.
 
 ```sh
 c8s install --namespace c8s-system --cvm-mode=bare-metal --hardware-platform=sev-snp \
-  --operator-keys operator-pub.pem --measurements abababababababababababababababababababababababababababababababababababababababababababababababab \
-  --workload-ref vllm=vllm/deployment/serving:8443 --upstream vllm
+  --operator-keys c8s-operator-pub.pem \
+  --measurements abababababababababababababababababababababababababababababababababababababababababababababababab
 ```
 
-`--cvm-mode` is required — one of `bare-metal` (node-as-CVM: the nodes themselves are TDX/SNP CVMs, shown here;
-single-tenant), `gke`, or `aks`. So is `--hardware-platform`, naming the nodes' CPU TEE: `sev-snp` or
-`tdx` (under `aks` it selects the Azure vTPM shape instead). `--operator-keys`
-takes a PEM bundle of EC public keys that authorize
-`c8s allowlist` writes and that the router verifies route manifests under;
-without it the install refuses to proceed. `--force` installs with
-allowlist writes disabled, but CDS then stores no route manifest, so the
-router answers 503 to every application request until you set
-`cds.operatorKeys` and upgrade the release. Every install needs `--measurements`
-(or `--image-policy-file`) to pin CDS, or it refuses to render; the digest above
-is a placeholder for the launch measurement in your node image's
-`manifest.json`. Generate a key pair:
+Replace the `--measurements` value: it is an example, not a working pin. Pass
+the 96 lowercase hex characters from your node image's `manifest.json`. It pins
+CDS — every client that dials CDS holds it to that measurement, the chart
+refuses to render without it, and CDS refuses to start without it.
 
-```sh
-openssl ecparam -genkey -name prime256v1 -noout -out operator.key
-openssl ec -in operator.key -pubout -out operator-pub.pem
-```
-
-The router routes only by an operator-signed route manifest on CDS, and answers
-503 until one is stored. `--upstream` (with the port on its `--workload-ref`)
-writes one that routes `/` to the adopted workload on that port. The pod's
-injected endpoint holds the mesh leaf the router verifies, so the workload
-itself listens in the clear. Without `--operator-key`, install writes it to `routes.json` and
-prints the `c8s routes add` commands that store the route. Details:
-[Route manifest](operator.md#route-manifest).
-
-For existing workloads, use `--workload-ref <cw-id>=<namespace>/<kind>/<name>` so install
-adopts them as CWs and resolves their images into the NRI bootstrap allowlist.
-Details and the vLLM router/engine example: [existing workload adoption](operator.md#existing-workload-adoption).
-
-By default `c8s install` resolves each component image tag to its registry
-digest (via `crane`) and pins it. The image policy admits C8s components by
-digest, so this is what lets a plain install satisfy the floor: without pinned
-digests the render fails closed rather than ship a cluster whose own components
-its image policy would deny. `crane` must be on PATH. To pin the digests
-yourself instead, pass `--resolve-digests=false` and supply them via
-`-f values.yaml`.
-
-Label the node that will run CDS so the chart's default `role: cds` selector
-matches (override `cds.node.selector` for a different label):
-
-```sh
-kubectl label node <cds-node> role=cds
-```
-
-`c8s install` passes the CLI build version as the chart image tag when it is a
-stable release version (for example `v0.1.0`), for which CI publishes a matching
-image alias. Any other build (a local `git describe` derivative, a commit SHA,
-or the unstamped default) falls back to the `main` branch tag, the only other
-fallback tag published for every component.
-
-The chart itself is versioned separately. CI publishes it to
-`oci://ghcr.io/confidential-dot-ai/charts` under a SemVer chart version (`X.Y.Z`
-for a stable release, `<Chart.yaml version>-g<short-sha>` for a development
-build), never a `main` tag, because Helm chart versions must be SemVer. The chart
-carries no default image tag of its own, so the image tag above is supplied by
-`c8s install` rather than baked into the published chart.
-
-To install without the advisory CRDs:
+On a single-node cluster, install this variant instead. It clears the
+dedicated-CDS-node selector and toleration, so CDS schedules anywhere:
 
 ```sh
 c8s install --namespace c8s-system --cvm-mode=bare-metal --hardware-platform=sev-snp \
-  --operator-keys operator-pub.pem --measurements abababababababababababababababababababababababababababababababababababababababababababababababab --install-crds=false \
-  --workload-ref vllm=vllm/deployment/serving:8443 --upstream vllm
+  --operator-keys c8s-operator-pub.pem --single-node \
+  --measurements abababababababababababababababababababababababababababababababababababababababababababababababab
 ```
 
-The cluster still runs without CRDs. CRDs only provide demo/status UX such as
-`kubectl get cwl`; pod injection is driven by pod annotations. In this mode the
-status-mirror controller is disabled.
+Under `bare-metal` the node image already runs `attestation-api` and the
+admission plugin — the container-runtime plugin that admits or denies every
+container — so the chart adds the operator and its webhooks, CDS, the router,
+and the `c8s-nri-image-policy-worker` DaemonSet, which carries this release's
+CDS pins to the baked plugin.
 
-## Private registry credentials
+What the flags above do, with the semantics in
+[operator.md](operator.md#what-an-install-deploys):
 
-When the C8s images (or your mirrors of them) live in a registry that requires
-authentication, create a registry-credential Secret in the release namespace
-and pass its name at install time:
+- `--operator-keys` pins the public keys CDS accepts writes from; the install
+  refuses without it, unless a `-f` file sets `cds.operatorKeys`.
+- `--force` installs regardless, with allowlist writes disabled and no route
+  manifest, so cluster policy cannot change and the router answers 503.
+- `--resolve-digests` is on by default: each component image tag is resolved to
+  its registry digest and pinned, because the admission plugin admits C8s
+  components by digest. Pass `--resolve-digests=false` with a `-f values.yaml`
+  to supply the digests yourself.
+- `--wait` is on by default, so the command returns once the release is ready.
+
+## 4. Confirm the platform pods
 
 ```sh
-kubectl create namespace c8s-system
-kubectl create secret docker-registry ghcr-pull-secret \
-  -n c8s-system \
-  --docker-server=ghcr.io \
-  --docker-username=<user-or-x-access-token> \
-  --docker-password="$GITHUB_TOKEN"
-
-c8s install --namespace c8s-system --cvm-mode=bare-metal --hardware-platform=sev-snp \
-  --operator-keys operator-pub.pem --measurements abababababababababababababababababababababababababababababababababababababababababababababababab \
-  --image-pull-secret ghcr-pull-secret \
-  --workload-ref vllm=vllm/deployment/serving:8443 --upstream vllm
+kubectl -n c8s-system wait --for=condition=Ready pod --all --timeout=5m
 ```
 
-`scripts/deploy-image-pull-secret.sh` wraps the secret-creation step
-idempotently (re-run it to rotate the credential in place):
+```text
+pod/c8s-cds-... condition met
+pod/c8s-operator-... condition met
+```
+
+Every line ends `condition met`. The namespace holds CDS, the operator, and the
+`c8s-nri-image-policy-worker` DaemonSet.
+
+## 5. Confirm the router
 
 ```sh
-IMAGE_PULL_SECRET=<ghcr-token> NAMESPACE=c8s-system ./scripts/deploy-image-pull-secret.sh
-c8s install --namespace c8s-system --cvm-mode=bare-metal --hardware-platform=sev-snp \
-  --operator-keys operator-pub.pem --measurements abababababababababababababababababababababababababababababababababababababababababababababababab \
-  --image-pull-secret ghcr-pull-secret \
-  --workload-ref vllm=vllm/deployment/serving:8443 --upstream vllm
+kubectl -n c8s-router wait --for=condition=Ready pod --all --timeout=5m
 ```
 
-Pass `NAMESPACE=c8s-system` explicitly — the script defaults to `default`,
-and `imagePullSecrets` references are namespace-local, so a Secret there is
-invisible to the C8s pods.
+The router runs in its own namespace, `c8s-router`. It answers 503 to
+application requests until a route manifest — the operator-signed list of
+hosts, paths, and backends it serves — is stored
+([operator.md](operator.md#route-manifest)), so an empty front door at this
+point is expected.
 
-The chart appends the Secret to every component's `imagePullSecrets` —
-including components that set their own local list — so all pods authenticate
-from their first start: no Secret references to patch in afterwards, no pods
-to bounce. The install fails fast if the named Secret is missing from the
-namespace or is not a registry-credential type
-(`kubernetes.io/dockerconfigjson`). Helm-values consumers (e.g. a fleet
-HelmRelease) get the same behavior by setting `imagePullSecret`.
+## Next steps
 
-The chart never creates or adopts the Secret itself, so it works equally with
-a kubectl-created Secret, external-secrets, or a previous manual rollout, and
-rotating the credential is a plain Secret update with no helm interaction.
+- Deploy the sample workload and see what the webhook injects:
+  [DEMO.md](DEMO.md).
+- Onboard your own workload, secrets, volumes, and routes:
+  [workloads.md](workloads.md).
+- Check from outside that CDS is a genuine TEE running the code you pinned:
+  [verify.md](verify.md).
+- Chart options, credentials, and day-2 operations: [operator.md](operator.md).
 
-Note this is the cluster-side (kubelet) credential: `--resolve-digests` runs
-`crane` on your workstation and uses your local docker login, not this
-Secret.
+To remove C8s again, uninstall the release; it also sweeps the artifacts the
+release left on each node ([operator.md](operator.md)):
 
-## Certificate path
-
-The chart wires workload injection to chart-managed CDS. CDS generates its
-mesh CA key in process memory and persists only the public CA bundle. The
-persisted bundle lets already-issued leaves keep verifying across CDS
-restarts; it does not preserve issuance — a restart generates a new CA key,
-and workloads must re-bootstrap to trust new leaves. See docs/operator.md
-for the singleton operational guidance. Run this chart inside the intended
-CVM trust boundary; the supported chart path no longer has external CDS
-URL values.
-
-Every armTLS handshake with CDS verifies it against `cds.measurements` (or
-`cds.measurementsConfig`), which `c8s install --measurements` sets: the chart
-refuses to render without one, and CDS refuses to start without one.
-
-## Workload opt-in
-
-Application teams opt in by annotating their pod templates:
-
-```yaml
-metadata:
-  annotations:
-    confidential.ai/cw: api
+```sh
+c8s uninstall --namespace c8s-system
 ```
-
-The webhook injects `c8s get-cert` as an init container and renewal sidecar.
-They write `tls.crt` and `tls.key` into the pod's `c8s-certs` volume, which
-the mesh endpoint reads at `/etc/c8s/certs`.
-
-See:
-
-- `docs/DEMO.md` for a minimal demo flow.

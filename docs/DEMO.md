@@ -1,82 +1,88 @@
-# C8s demo
+# Deploy the sample workload
 
-This demo uses chart-managed CDS so the certificate bootstrap
-path is self-contained. It is intended for review and demos, not as the final
-production trust boundary.
+Run the sample confidential workload on a cluster that already has C8s, and see
+what the admission webhook injected into the pod.
 
-## 1. Install C8s
+## Prerequisites
 
-This demo shows confidential-workload injection, not the public front door, so
-it installs with router disabled. To also expose a workload through router,
-write a route manifest for it instead (see [Route manifest](operator.md#route-manifest)).
+- C8s installed ([QUICKSTART.md](QUICKSTART.md)) and its operator key.
+- `crane` on PATH: the sample sets no `command`, so the entry takes that image's
+  baked argv from the registry.
 
-```sh
-c8s install --namespace c8s-system --cvm-mode=bare-metal --hardware-platform=sev-snp \
-  --operator-keys operator-pub.pem --measurements abababababababababababababababababababababababababababababababababababababababababababababababab -f - <<'EOF'
-router:
-  enabled: false
-EOF
-```
+## 1. Admit the sample image
 
-`--cvm-mode` is required (`bare-metal`, `gke`, or `aks` — see
-[install-flows.md](install-flows.md)), as is `--hardware-platform` (`sev-snp`
-or `tdx`). `--operator-keys` points at a PEM bundle
-of EC public keys authorizing `c8s allowlist` writes (or pass `--force` to
-install with writes disabled; the router then routes nothing).
-`--measurements` pins CDS and is required; the digest above is a placeholder for
-the launch measurement in your node image's `manifest.json`.
-
-## 2. Apply optional CRD object
-
-CRDs are advisory. This object is useful for status display and review:
+Nodes admit containers by image digest and deny everything else, so the sample
+needs a workload entry: an allowlist entry naming the containers a pod may run.
+Open a path to CDS and set `$PIN` and `$KEY` as the first step of
+[workloads.md](workloads.md) shows, then write it. `--env any` admits any
+environment, `--mounts deny` platform mounts alone, and `apply` lints and diffs
+before signing:
 
 ```sh
-kubectl apply -f samples/confidentialworkload.yaml
+kubectl create -o json --dry-run=server -f samples/nginx-confidential-pod.yaml |
+  c8s allowlist derive demo-nginx - --env any --mounts deny |
+  c8s allowlist apply - $PIN $KEY
 ```
 
-## 3. Deploy an annotated workload
+## 2. Create a Restricted namespace
 
 The node image enforces the Restricted PodSecurity standard in every tenant
-namespace, including namespaces hosting confidential workloads. In bare-metal mode,
-`nri-image-policy` mounts the inventory socket directory read-only into credential
-sidecars through NRI, below the Pod spec. The chart also enforces Restricted
-controls and denies every tenant `hostPath` volume. Keep enforcement, warning,
-and audit at Restricted:
+namespace, and a confidential workload needs no exemption: no pod volume carries
+host state. The sidecars' read-only mount onto the node's admission inventory —
+the service that records a pod's containers and signs tokens about them — is
+made by the node below the pod spec, not by a `hostPath` in it.
 
 ```sh
 kubectl create namespace demo
-kubectl label namespace demo \
-  pod-security.kubernetes.io/enforce=restricted \
+kubectl label namespace demo pod-security.kubernetes.io/enforce=restricted \
   pod-security.kubernetes.io/enforce-version=latest \
-  pod-security.kubernetes.io/warn=restricted \
-  pod-security.kubernetes.io/audit=restricted
-kubectl -n demo apply -f samples/nginx-confidential-pod.yaml
+  pod-security.kubernetes.io/warn=restricted pod-security.kubernetes.io/audit=restricted
 ```
 
-The pod template annotation `confidential.ai/cw: demo-nginx` is the security
-opt-in. The `ConfidentialWorkload` object is not required for injection.
+`kubectl get namespace demo --show-labels` confirms the four labels.
 
-## 4. Inspect the result
+## 3. Deploy the sample
 
 ```sh
-kubectl -n demo get pods
-kubectl -n demo describe pod -l app=demo-nginx
-kubectl get cwl -A
+kubectl -n demo apply -f samples/nginx-confidential-pod.yaml
+kubectl -n demo rollout status deploy/demo-nginx
 ```
 
-Expected injected pieces:
+`rollout status` is the confirmation: it returns once the pod is ready. A
+rollout that does not progress usually means no entry matches the containers the
+pod runs, which only CDS can tell you — see the confirm step of
+[workloads.md](workloads.md).
 
-- an init container and renewal sidecar running `c8s get-cert`;
-- an in-memory `c8s-certs` volume;
-- the mesh endpoint and the credential sidecars mounting `/etc/c8s/certs`;
-- no injected credential Secret references.
+Injection covers every pod of a namespace the webhook is configured for; the
+pod template's `confidential.ai/cw: demo-nginx` annotation adds the workload the
+pod belongs to, and requests `c8s-demo-nginx.demo.svc` on its certificate.
+
+## 4. See what was injected
+
+```sh
+kubectl -n demo get pod -l app=demo-nginx -o \
+  jsonpath='{.items[0].spec.initContainers[*].name}{"\n"}{.items[0].spec.containers[*].name}{"\n"}'
+```
+
+```text
+c8s-mesh c8s-cert c8s-cert-wait
+nginx
+```
+
+`c8s-mesh`, the pod's mesh endpoint, carries its traffic, and `c8s-cert` obtains
+and renews its certificate; both keep running. `c8s-cert-wait` runs once and
+holds `nginx` until the first certificate exists, so the workload never starts
+unattested. The certificate lands in `c8s-certs`, a memory-backed volume mounted
+at `/etc/c8s/certs` into the injected containers alone
+([getcert-workload-binding.md](getcert-workload-binding.md)).
 
 ## Reset
 
 ```sh
 kubectl delete namespace demo
-kubectl delete -f samples/confidentialworkload.yaml
-c8s uninstall
+c8s uninstall --namespace c8s-system
 ```
 
-`c8s uninstall` wraps `helm uninstall c8s -n c8s-system`.
+`c8s uninstall` removes the release, then sweeps the node-side artifacts it
+left: the admission plugin's containerd registration, the mesh's netfilter
+chains.
