@@ -519,7 +519,9 @@ func TestComposite(t *testing.T) {
 		// wins over the deployed lease runScenarios adds).
 		{name: "G4-rolling-restart-under-loss-harness-lease", productionRaftTiming: true,
 			args: []string{"--ha-lease", timing.lease.String()}, run: rollingUnderLoss},
-		{name: "G5-rotate-key-during-follower-restart-write-storm", writers: 32, pause: time.Millisecond, run: func(t *testing.T, c *Cluster, _ *Checker) {
+		// Deployment config, not an oracle change: 32 writers fill the
+		// admission cap with unbounded history (the cap is CAP1's).
+		{name: "G5-rotate-key-during-follower-restart-write-storm", writers: 32, pause: time.Millisecond, args: historyBound, run: func(t *testing.T, c *Cluster, _ *Checker) {
 			for round := range 2 {
 				l := c.WaitLeader(30 * time.Second)
 				f := followerVoter(t, c, l)
