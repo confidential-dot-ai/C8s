@@ -8,9 +8,12 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -98,9 +101,22 @@ func caPEM(cas ...*issuer.CA) string {
 // testSandboxID is the workload instance a member leaf names.
 const testSandboxID = "8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a0e8d9f"
 
+// testDigest is the allowlist digest issueLeaf stamps, the router's own
+// unless a test renews it.
+var testDigest = digestOf(0x42)
+
+// digestOf returns an allowlist digest of b repeated 32 times.
+func digestOf(b byte) []byte { return bytes.Repeat([]byte{b}, 32) }
+
 // issueLeaf mints a leaf the way CDS does, carrying the matched workload
 // extension when workload is non-empty.
 func issueLeaf(t testing.TB, ca *issuer.CA, workload string, dnsNames ...string) tls.Certificate {
+	t.Helper()
+	return issueStampedLeaf(t, ca, workload, testDigest, dnsNames...)
+}
+
+// issueStampedLeaf is issueLeaf with the allowlist digest set to digest.
+func issueStampedLeaf(t testing.TB, ca *issuer.CA, workload string, digest []byte, dnsNames ...string) tls.Certificate {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -121,7 +137,7 @@ func issueLeaf(t testing.TB, ca *issuer.CA, workload string, dnsNames ...string)
 		params.MatchedWorkload = &armtls.MatchedWorkload{
 			Name:             workload,
 			AllowlistVersion: "1",
-			AllowlistDigest:  bytes.Repeat([]byte{0x42}, 32),
+			AllowlistDigest:  digest,
 		}
 	}
 	certPEM, _, _, err := ca.SignCSR(params)
@@ -342,15 +358,16 @@ func (m manifestSpec) bytes(t testing.TB) []byte {
 // volume, an operator, and the routing engine wired the way cds-attest wires
 // it.
 type fixture struct {
-	mesh       *issuer.CA
-	volume     string
-	routerLeaf tls.Certificate
-	identity   *MeshIdentity
-	op         operator
-	clock      *fakeClock
-	state      *State
-	transports *Transports
-	proxy      *Proxy
+	transportLogs bytes.Buffer // what Transports reports, once per leaf
+	mesh          *issuer.CA
+	volume        string
+	routerLeaf    tls.Certificate
+	identity      *MeshIdentity
+	op            operator
+	clock         *fakeClock
+	state         *State
+	transports    *Transports
+	proxy         *Proxy
 }
 
 func newFixture(t testing.TB) *fixture {
@@ -370,9 +387,38 @@ func newFixture(t testing.TB) *fixture {
 	}
 	f.identity = identity
 	f.state = NewState(StateConfig{Reserved: testReserved, MeshCAs: identity.MeshCAs, Now: f.clock.Now})
-	f.transports = NewTransports(TransportConfig{MeshIdentity: identity.Credential})
+	f.transports = NewTransports(TransportConfig{MeshIdentity: identity.Credential, Logger: slog.New(slog.NewTextHandler(&f.transportLogs, nil))})
 	f.proxy = NewProxy(ProxyConfig{State: f.state, Transports: f.transports, Timeout: 10 * time.Second})
 	return f
+}
+
+// damagedStampLeaf is a self-signed leaf whose matched-workload extension
+// does not parse.
+func damagedStampLeaf(t testing.TB) tls.Certificate {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:    big.NewInt(1),
+		Subject:         pkix.Name{CommonName: "router"},
+		NotBefore:       time.Now().Add(-time.Minute),
+		NotAfter:        time.Now().Add(time.Hour),
+		ExtraExtensions: []pkix.Extension{{Id: armtls.OIDMatchedWorkload, Value: []byte{0x05, 0x00}}},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
+}
+
+// renew publishes leaf as the router's own, with the fixture's mesh CA.
+func (f *fixture) renew(t testing.TB, leaf tls.Certificate) {
+	t.Helper()
+	f.routerLeaf = leaf
+	f.publish(t, caPEM(f.mesh))
 }
 
 // publish publishes a generation holding the router's leaf and bundle as its

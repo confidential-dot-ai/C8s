@@ -574,6 +574,17 @@ CDS answers 304 while nothing changed, so an idle poll is cheap. Strict
 clients recover without a router restart within one poll interval, plus up to
 half an interval of jitter, plus one issuance.
 
+Workload routes fail closed across that window. The router forwards to a
+workload backend only when the backend's leaf is stamped under the allowlist
+digest on the router's own leaf. The router and each backend re-issue on
+their own watch ticks, so after an allowlist write a workload route can answer
+502 until both carry the new digest. The slower of the two
+`--ca-watch-interval`s (`router.certProvisioning.caWatchInterval` on the
+router), plus half an interval of jitter, plus one issuance bounds that
+window; with the watch off (`0`) it lasts until the next scheduled
+renewal. Connections the router pooled under its previous digest retire on its
+next route poll (`--routes-poll-interval`).
+
 CDS renews its mesh CA certificate at half its configured lifetime under the
 same process-lifetime key. Workloads pick up the current certificate on their
 next `/ca` refresh, and the continuity check accepts its signature under the
@@ -661,8 +672,13 @@ follows these rules:
 - A workload backend (`workload`) is reached as a mesh client of the member
   behind it: `cds-attest` presents the router's mesh certificate and requires
   a peer certificate chaining to the mesh CA whose matched workload name
-  equals `workload`. A failed handshake gets 502; no backend is reached in
-  plaintext.
+  equals `workload`, stamped under the allowlist digest on the router's own
+  leaf. A failed handshake gets 502, `backend_digest_mismatch` when the
+  stamped digests differ; no backend is reached in plaintext.
+  While the router's own leaf carries no stamp, as under get-cert's
+  `--no-workload-claims`, the router binds no policy digest and checks
+  workload backends by name alone; a client pinning the router's allowlist
+  digest fails closed on the absent stamp.
 - `router.routing.readTimeout` bounds nginx's wait between reads, and
   `router.routing.backendTimeout` (default 1h) how long a routed request, or
   a WebSocket, may go with no data moving; a tunnelled request gets that long
