@@ -180,3 +180,5 @@ func (m pausingMeasurer) MeasureOnce(string) (bool, error) {
 	<-m.release
 	return true, nil
 }
+
+func (pausingMeasurer) Digests() []string { return nil }
