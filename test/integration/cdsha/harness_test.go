@@ -307,6 +307,9 @@ func (c *Cluster) Start(i int, keepDB bool) {
 		"--rate-limit", "100000", "--rate-burst", "100000",
 		"--secrets-max-paths", "200000", "--secrets-max-paths-per-workload", "100000",
 		"--sandbox-inventory-cidr", "127.0.0.0/8",
+		// CDS refuses to start with no pinned launch measurement; no guest
+		// attests in this harness, so any digest serves.
+		"--measurements", strings.Repeat("ab", 48),
 		"--ha-cluster-id", clusterID, "--ha-decree-namespace", decreeNS,
 		"--ha-peers", strings.Join(peers, ","), "--ha-advertise-ip", r.Advertise, "--ha-port", strconv.Itoa(c.PeerPort),
 		"--ha-node-name", r.Node, "--ha-attestor", "mock", "--ha-measurement", measurement, "--ha-replica-pins", measurement,
