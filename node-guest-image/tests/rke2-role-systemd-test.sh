@@ -12,8 +12,9 @@ if [[ "${1:-}" != --inside ]]; then
     CTR=c8s-launch-systemd-$$
     docker build -q -t "$IMG" - <<'EOF' >/dev/null
 FROM debian:12
+# python3, not python3-minimal: the fake Cilium agent needs http.server and json.
 RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
-    systemd systemd-sysv && apt-get clean && rm -rf /var/lib/apt/lists/*
+    systemd systemd-sysv python3 && apt-get clean && rm -rf /var/lib/apt/lists/*
 CMD ["/sbin/init"]
 EOF
     trap 'docker rm -f "$CTR" >/dev/null 2>&1 || true' EXIT
@@ -29,6 +30,12 @@ EOF
     done
     case "$state" in running|degraded) ;; *) echo "systemd failed to settle: $state" >&2; exit 2 ;; esac
     docker cp "$TESTS_DIR/.." "$CTR":/ngi >/dev/null
+    # The stale Cilium address case runs the real c8s command.
+    command -v go >/dev/null || { echo "go required" >&2; exit 2; }
+    BIN=$(mktemp -d)
+    trap 'docker rm -f "$CTR" >/dev/null 2>&1 || true; rm -rf "$BIN"' EXIT
+    (cd "$TESTS_DIR/../.." && CGO_ENABLED=0 GOOS=linux go build -o "$BIN/c8s" ./cmd/c8s)
+    docker cp "$BIN/c8s" "$CTR":/usr/local/lib/c8s-real >/dev/null
     docker exec "$CTR" bash /ngi/tests/rke2-role-systemd-test.sh --inside
     exit $?
 fi
@@ -94,7 +101,7 @@ done
 
 # Application services are Kubernetes workloads. These host services retain
 # the authenticated launch dependency before any pod can start.
-core_units=(attest-proxy.service cred-release.service nri-node-ip.service)
+core_units=(attest-proxy.service cred-release.service nri-node-ip.service cilium-node-ip.service)
 
 for unit in "${core_units[@]}"; do
     install -D -m644 "$SOURCE_UNITS/$unit" "/etc/systemd/system/$unit"
@@ -262,6 +269,51 @@ for role in server agent; do
     ok "server stays down" not_active rke2-server.service
     ok "agent stays down" not_active rke2-agent.service
 done
+
+# T1: a node that came back with a new address has a Cilium agent announcing
+# the previous one. The production unit runs the real command against a fake
+# agent (its API socket, comm and pod cgroup) and must restart only that one.
+CASE=cilium-node-ip-restarts-stale-agent
+scenario_reset
+launch_media agent
+: > /dev/disk/by-label/opkeydata
+rm -f /etc/systemd/system/cilium-node-ip.service.d/90-test-payload.conf
+systemctl daemon-reload
+mkdir -p /run/nri-image-policy
+echo 192.0.2.10 > /run/nri-image-policy/node-ip
+install -D -m755 /dev/stdin /usr/local/bin/cilium-agent <<'EOF'
+#!/usr/bin/python3
+import http.server, json, os, socketserver, sys
+path = "/var/run/cilium/cilium.sock"
+os.makedirs(os.path.dirname(path), exist_ok=True)
+if os.path.exists(path):
+    os.unlink(path)
+class H(http.server.BaseHTTPRequestHandler):
+    def address_string(self):
+        return "local"
+    def do_GET(self):
+        body = json.dumps({"self": "default/n", "nodes-added": [
+            {"name": "default/n", "primary-address": {"ipv4": {"ip": sys.argv[1]}}}]}).encode()
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(body)
+socketserver.UnixStreamServer(path, H).serve_forever()
+EOF
+ok "selected role boots" boot_roles
+ok "cilium-node-ip runs the real command" active cilium-node-ip.service
+agent() { systemd-run --quiet --unit="$1" --slice=kubepods-burstable.slice /usr/local/bin/cilium-agent "$2"; }
+agent fake-cilium-current 192.0.2.10
+/bin/sleep 12
+ok "an agent announcing the current address keeps running" active fake-cilium-current.service
+systemctl stop fake-cilium-current.service
+agent fake-cilium-stale 192.0.2.99
+for _ in $(seq 30); do active fake-cilium-stale.service || break; /bin/sleep 1; done
+ok "the agent announcing a stale address was restarted" not_active fake-cilium-stale.service
+ok "the restart is logged with both addresses" bash -c \
+    "journalctl -b -u cilium-node-ip.service --no-pager | grep -F 'restarting cilium-agent: stale node IP 192.0.2.99 -> 192.0.2.10' | grep 'old_ip=192.0.2.99' | grep -q 'new_ip=192.0.2.10'"
+ok "the watch keeps running" active cilium-node-ip.service
+systemctl stop fake-cilium-stale.service >/dev/null 2>&1 || true
+rm -f /usr/local/bin/cilium-agent /run/nri-image-policy/node-ip
 
 scenario_reset
 summarize "authenticated launch systemd dependencies"

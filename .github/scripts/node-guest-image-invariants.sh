@@ -534,10 +534,11 @@ if grep -qE 'joindata|defaulting to server|set_legacy_server_role' "$role_sh"; t
   exit 1
 fi
 
-# Only attestation access, node inventory, credential release and volume
-# opening remain host services. Core application lifecycle belongs to the
-# baked Kubernetes chart, which refuses the volumed DaemonSet on a baked node.
-for service in attest-proxy nri-node-ip cred-release volumed; do
+# Only attestation access, node inventory, the stale Cilium node-address
+# restart, credential release and volume opening remain host services. Core
+# application lifecycle belongs to the baked Kubernetes chart, which refuses
+# the volumed DaemonSet on a baked node.
+for service in attest-proxy nri-node-ip cilium-node-ip cred-release volumed; do
   require_launch_dependency "$units/$service.service"
   if ! grep -qxF "enable $service.service" "$preset"; then
     echo "::error::$preset must enable $service.service"
@@ -552,6 +553,10 @@ for service in cds armtls-mesh armtls-mesh-iptables c8s-get-cert cds-attest allo
 done
 if ! grep -qF 'ExecStart=/usr/local/bin/c8s volumed --socket-dir=/run/nri-image-policy ' "$units/volumed.service"; then
   echo "::error::volumed must serve in the inventory socket directory the NRI plugin mounts into workload sidecars"
+  exit 1
+fi
+if ! grep -qxF 'ExecStart=/usr/local/bin/c8s node-services cilium-node-ip' "$units/cilium-node-ip.service"; then
+  echo "::error::cilium-node-ip must run the stale Cilium node-address restart"
   exit 1
 fi
 if ! grep -qF 'ExecStart=/usr/local/bin/c8s attest-proxy ' "$units/attest-proxy.service"; then
