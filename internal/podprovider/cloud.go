@@ -56,12 +56,17 @@ type endpoint struct {
 	Host string `json:"host"`
 	Port int    `json:"port"`
 }
+type instanceNetwork struct {
+	Ingress         []ingress `json:"ingress"`
+	IngressUpdating bool      `json:"ingressUpdating"`
+}
 type instance struct {
 	ID        string            `json:"id"`
 	Status    string            `json:"status"`
 	Tee       string            `json:"tee"`
 	Labels    map[string]string `json:"labels"`
 	Endpoints []endpoint        `json:"endpoints"`
+	Network   instanceNetwork   `json:"network"`
 	Image     struct {
 		Family  string `json:"family"`
 		Version string `json:"version"`
@@ -81,6 +86,12 @@ type cloudAPI interface {
 	Get(context.Context, string) (*instance, error)
 	Delete(context.Context, string) error
 	Ping(context.Context) error
+}
+
+// cloudIngressAPI is needed only by the opt-in warm path. Cold launches keep
+// their create-time network contract and require no mutable-ingress support.
+type cloudIngressAPI interface {
+	AddIngress(context.Context, string, string, ingress) (*instance, error)
 }
 
 type cloudClient struct {
@@ -129,6 +140,19 @@ func (c *cloudClient) Find(ctx context.Context, key string) (*instance, error) {
 func (c *cloudClient) Get(ctx context.Context, id string) (*instance, error) {
 	var out instance
 	if err := c.do(ctx, http.MethodGet, "/v1/instances/"+url.PathEscape(id), "", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// AddIngress uses Cloud's existing idempotent rule addition. The caller freezes
+// the rule/key before this call and waits for Network.IngressUpdating to clear.
+func (c *cloudClient) AddIngress(ctx context.Context, id, key string, rule ingress) (*instance, error) {
+	if id == "" || key == "" || rule.Name == "" || rule.Port < 1 || rule.Port > 65535 {
+		return nil, errors.New("cloud ingress requires an instance, idempotency key and valid rule")
+	}
+	var out instance
+	if err := c.do(ctx, http.MethodPost, "/v1/instances/"+url.PathEscape(id)+"/ingress", key, rule, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

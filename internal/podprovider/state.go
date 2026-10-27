@@ -2,12 +2,9 @@ package podprovider
 
 import (
 	"context"
-	"crypto/ecdsa"
 	"crypto/sha256"
-	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"time"
@@ -19,7 +16,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
-	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
 // record is the durable authority for one Pod UID's Cloud side effects. Keep
@@ -27,6 +23,8 @@ import (
 // original signature, request and account binding. It deliberately has no Pod
 // owner reference, so forced Pod deletion cannot garbage-collect cleanup intent.
 type record struct {
+	Pool                       *poolRef          `json:"pool,omitempty"`
+	PoolCommitted              bool              `json:"poolCommitted,omitempty"`
 	Version                    int               `json:"version"`
 	ProviderID                 string            `json:"providerID"`
 	CloudURL                   string            `json:"cloudURL"`
@@ -51,27 +49,12 @@ type record struct {
 }
 
 func (r *record) document() (*launchconfig.Document, error) {
-	doc, err := launchconfig.Parse(r.Request.Trust.InitData.Document)
+	doc, err := signedDocument(r.Request.Trust)
 	if err != nil {
-		return nil, errors.New("stored Pod launch document is invalid")
+		return nil, err
 	}
 	if doc.Role != launchconfig.Pod || doc.Pod == nil || doc.Pod.UID != string(r.UID) || doc.Pod.Name != r.Name || doc.Pod.Namespace != r.Namespace || doc.Node.Name != r.Key || doc.PodOperatorPublicKey != r.Request.Trust.LaunchKey {
 		return nil, errors.New("stored Pod identity differs from its signed launch")
-	}
-	block, rest := pem.Decode([]byte(r.Request.Trust.LaunchKey))
-	if block == nil || len(rest) != 0 {
-		return nil, errors.New("invalid stored launch public key")
-	}
-	key, err := x509.ParsePKIXPublicKey(block.Bytes)
-	if err != nil {
-		return nil, errors.New("invalid stored launch public key")
-	}
-	pub, ok := key.(*ecdsa.PublicKey)
-	if !ok {
-		return nil, errors.New("invalid stored launch key type")
-	}
-	if err := operatorauth.VerifyDetached([]*ecdsa.PublicKey{pub}, r.Request.Trust.InitData.Document, string(r.Request.Trust.InitData.Signature)); err != nil {
-		return nil, errors.New("stored launch signature does not verify")
 	}
 	return doc, nil
 }
@@ -89,8 +72,14 @@ func (r *Reconciler) loadRecord(ctx context.Context, key string) (*record, *core
 	if err := decode(secret.Data["state.json"], &rec); err != nil {
 		return nil, nil, errors.New("provider record is invalid")
 	}
-	if rec.Version != 1 || rec.ProviderID != r.cfg.ProviderID || rec.CloudURL != r.cfg.CloudURL || rec.NodeName != r.cfg.NodeName || rec.Key != key || identityKey(rec.ProviderID, string(rec.UID)) != key || rec.CreatedAt.IsZero() || len(rec.Manifest) == 0 {
+	if (rec.Version != 1 && rec.Version != 2) || rec.ProviderID != r.cfg.ProviderID || rec.CloudURL != r.cfg.CloudURL || rec.NodeName != r.cfg.NodeName || rec.Key != key || identityKey(rec.ProviderID, string(rec.UID)) != key || rec.CreatedAt.IsZero() || len(rec.Manifest) == 0 {
 		return nil, nil, errors.New("provider record identity or origin differs from this provider")
+	}
+	if rec.Version == 1 && (rec.Pool != nil || rec.PoolCommitted) {
+		return nil, nil, errors.New("static Pod record contains an allocation")
+	}
+	if rec.Version == 2 && (secret.UID == "" || (rec.PoolCommitted && rec.Pool == nil) || rec.CreateAttempted || rec.InstanceID != "" || (rec.Pool != nil && (rec.Pool.Name == "" || rec.Pool.UID == ""))) {
+		return nil, nil, errors.New("pooled Pod record has invalid allocation authority")
 	}
 	if rec.CredentialHash != credentialHash(r.cfg.token) {
 		return nil, nil, errors.New("cloud credential changed while provider records exist; drain with the original credential before rotating")
@@ -118,6 +107,13 @@ func (r *Reconciler) ensureRecord(ctx context.Context, pod *corev1.Pod) (*record
 		return nil, nil, fmt.Errorf("pod cannot be launched: %w", err)
 	}
 	rec = &record{Version: 1, ProviderID: r.cfg.ProviderID, CloudURL: r.cfg.CloudURL, CredentialHash: credentialHash(r.cfg.token), UID: pod.UID, Namespace: pod.Namespace, Name: pod.Name, NodeName: r.cfg.NodeName, Key: key, Request: req, Manifest: r.cfg.manifest, VCPUs: r.cfg.VCPUs, MemoryMiB: r.cfg.MemoryMiB, CreatedAt: r.now()}
+	pooled, err := r.poolMode(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	if pooled {
+		rec.Version = 2
+	}
 	rec.VerificationTimeoutSeconds = r.cfg.VerificationTimeoutSeconds
 	deadline := rec.CreatedAt.Add(time.Duration(rec.VerificationTimeoutSeconds) * time.Second)
 	rec.VerificationDeadline = &deadline

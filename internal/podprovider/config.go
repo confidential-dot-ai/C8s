@@ -58,6 +58,7 @@ type Config struct {
 	MemoryMiB                  int64    `json:"memoryMiB"`
 	ReservedMemoryMiB          int64    `json:"reservedMemoryMiB"`
 	MaxPods                    int64    `json:"maxPods"`
+	WarmTarget                 int64    `json:"warmTarget,omitempty"`
 	MeshPeers                  []string `json:"meshPeers,omitempty"`
 	PublicIP                   string   `json:"publicIP,omitempty"`
 	VerificationTimeoutSeconds int64    `json:"verificationTimeoutSeconds,omitempty"`
@@ -100,6 +101,11 @@ func LoadConfig(path string) (*Config, error) {
 	if _, err := cfg.launch(probe); err != nil {
 		return nil, fmt.Errorf("pod CVM launch configuration: %w", err)
 	}
+	if cfg.WarmTarget > 0 {
+		if _, err := cfg.genericLaunch(identityKey(cfg.ProviderID, "configuration-generic-check")); err != nil {
+			return nil, fmt.Errorf("generic Pod CVM configuration: %w", err)
+		}
+	}
 	return &cfg, nil
 }
 
@@ -137,6 +143,9 @@ func (c *Config) validate() error {
 	}
 	if c.VCPUs < 1 || c.VCPUs > 1024 || c.MemoryMiB < 1 || c.MemoryMiB > 1<<22 || c.ReservedMemoryMiB < 1 || c.ReservedMemoryMiB >= c.MemoryMiB || c.MaxPods < 1 || c.MaxPods > 10000 {
 		return errors.New("invalid provider capacity: require bounded positive vCPUs, memoryMiB, reservedMemoryMiB below memoryMiB, and maxPods")
+	}
+	if c.WarmTarget < 0 || c.WarmTarget > c.MaxPods {
+		return errors.New("warmTarget must be between zero and maxPods")
 	}
 	return launchconfig.ValidateIPv4(c.ServerAddress, true)
 }

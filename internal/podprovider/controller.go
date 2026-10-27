@@ -24,13 +24,15 @@ const pollInterval = 10 * time.Second
 // Reconciler owns a single provider's immutable Pod-to-instance assignments.
 // One leader and one mutex serialize normal and orphan paths around side effects.
 type Reconciler struct {
-	client   client.Client
-	cfg      *Config
-	cloud    cloudAPI
-	guest    guestReader
-	now      func() time.Time
-	ownsNode func(context.Context) error
-	mu       sync.Mutex
+	client     client.Client
+	cfg        *Config
+	cloud      cloudAPI
+	guest      guestReader
+	assignment assignmentVerifier
+	poolCursor int64
+	now        func() time.Time
+	ownsNode   func(context.Context) error
+	mu         sync.Mutex
 }
 
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -108,6 +110,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 	if err := matchesPod(rec, pod); err != nil {
 		return r.unverified(ctx, pod, rec, secret, "FrozenPodChanged", err)
+	}
+	if rec.Version == 2 {
+		return r.pooled(ctx, pod, rec, secret)
 	}
 	callCtx, cancel := r.verificationContext(ctx, rec)
 	in, err := r.ensureInstance(callCtx, rec, secret)
@@ -314,6 +319,9 @@ func (r *Reconciler) releaseFinalizer(ctx context.Context, pod *corev1.Pod) erro
 }
 
 func (r *Reconciler) removeInstance(ctx context.Context, rec *record, secret *corev1.Secret) (bool, error) {
+	if rec.Version == 2 {
+		return r.removePooledInstance(ctx, rec, secret)
+	}
 	if rec.Deleted {
 		return true, nil
 	}
@@ -430,11 +438,17 @@ func (r *Reconciler) sweep(ctx context.Context) error {
 	}
 	var errs []error
 	for _, s := range records.Items {
+		if s.Labels[slotLabel] == "true" {
+			continue
+		}
 		if err := r.sweepRecord(ctx, s.Name); err != nil {
 			errs = append(errs, fmt.Errorf("reconcile provider record %s: %w", s.Name, err))
 		}
 	}
-	return errors.Join(errs...)
+	r.mu.Lock()
+	poolErr := r.maintainPools(ctx)
+	r.mu.Unlock()
+	return errors.Join(append(errs, poolErr)...)
 }
 
 func (r *Reconciler) sweepRecord(ctx context.Context, key string) error {

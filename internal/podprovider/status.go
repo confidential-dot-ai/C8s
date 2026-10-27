@@ -114,13 +114,20 @@ func endpoints(rec *record, in *instance) (string, []endpoint, string, error) {
 }
 
 func projectedStatus(rec *record, projection podstatus.PodProjection, pod *corev1.Pod, podIP string) (corev1.PodStatus, error) {
+	return projectedStatusForNode(rec, projection, pod, podIP, "")
+}
+
+func projectedStatusForNode(rec *record, projection podstatus.PodProjection, pod *corev1.Pod, podIP, guestNode string) (corev1.PodStatus, error) {
 	var out corev1.PodStatus
 	doc, err := rec.document()
 	if err != nil {
 		return out, err
 	}
+	if guestNode == "" {
+		guestNode = doc.Node.Name
+	}
 	meta := projection.Metadata
-	if meta.UID != string(rec.UID) || meta.Namespace != rec.Namespace || meta.Name != rec.Name+"-"+doc.Node.Name {
+	if meta.UID != string(rec.UID) || meta.Namespace != rec.Namespace || meta.Name != rec.Name+"-"+guestNode {
 		return out, errors.New("attested guest status names another Pod")
 	}
 	guest, err := launchconfig.ParsePodManifest([]byte(doc.Pod.Manifest))

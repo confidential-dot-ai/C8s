@@ -81,7 +81,7 @@ func TestConfigurationRejectsUnsafeOrIncompleteOriginsAndCapacity(t *testing.T) 
 }
 
 func TestTrustFilesFailBeforeSigningOrRegistration(t *testing.T) {
-	for _, kind := range []string{"missing-token", "empty-token", "multiline-token", "missing-key", "invalid-key", "wrong-curve", "missing-server", "invalid-server", "missing-policy", "invalid-policy", "empty-policy", "missing-manifest", "invalid-manifest", "unsupported-snp", "oversized-file", "directory"} {
+	for _, kind := range []string{"missing-token", "empty-token", "multiline-token", "missing-key", "invalid-key", "wrong-curve", "missing-server", "invalid-server", "missing-policy", "invalid-policy", "empty-policy-file", "missing-manifest", "invalid-manifest", "unsupported-snp", "oversized-file", "directory"} {
 		t.Run(kind, func(t *testing.T) {
 			cfg := fixtureConfig(t)
 			path := filepath.Join(filepath.Dir(cfg.CloudTokenFile), "config.json")
@@ -122,9 +122,9 @@ func TestTrustFilesFailBeforeSigningOrRegistration(t *testing.T) {
 			case "invalid-policy":
 				target = cfg.WorkloadsFile
 				data = []byte(`{"wrong":"policy"}`)
-			case "empty-policy":
+			case "empty-policy-file":
 				target = cfg.WorkloadsFile
-				data = []byte(`{"schema":"c8s.allowlist/v1","workloads":{}}`)
+				data = nil
 			case "missing-manifest":
 				cfg.ImageManifestFile += ".missing"
 			case "invalid-manifest":

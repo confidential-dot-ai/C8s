@@ -2,14 +2,15 @@
 
 The optional Pod CVM provider lets the Kubernetes scheduler place an opted-in
 Pod on a virtual node. The operator then launches one Cloud CVM for that Pod
-UID, supplies its signed workload at boot, and projects verified guest status
-back to Kubernetes. Deleting the Pod terminates its CVM before releasing the
-provider finalizer.
+UID, supplies its signed workload at boot or through one authenticated
+assignment, and projects verified guest status back to Kubernetes. Deleting the
+Pod terminates its CVM before releasing the provider finalizer.
 
-This is a cold-launch provider. It does not require a pool of generic guests or
-an assignment service. Each new Pod UID gets a new VM; a rebooted or terminal VM
-is never reused for that UID. Kubernetes workload controllers can create a
-replacement Pod in their normal way.
+By default each Pod boots with its signed workload. Optional warm capacity boots
+generic guests in advance, verifies that they have run no containers, and
+authenticates one immutable assignment when a Pod claims a guest. An assigned,
+rebooted or terminal VM is never reused for another Pod. Kubernetes workload
+controllers can create replacement Pods in their normal way.
 
 ## Platform configuration
 
@@ -45,6 +46,7 @@ and size placeholders with compatible Cloud values:
   "memoryMiB": 8192,
   "reservedMemoryMiB": 1024,
   "maxPods": 10,
+  "warmTarget": 0,
   "verificationTimeoutSeconds": 600,
   "publicIP": "shared",
   "meshPeers": []
@@ -116,6 +118,48 @@ term would allow an existing alternative to select the virtual node. Leave
 explicit empty required selectors and empty terms unchanged: they match no
 nodes. Keep existing expressions, match fields, node selectors, and preferred
 affinity.
+
+## Optional warm capacity
+
+`warmTarget` defaults to zero. Set it between zero and `maxPods` to maintain that
+many unassigned generic VMs when capacity permits. This requires a Pod image
+with generic boot and the authenticated assignment service. The default cold
+path remains compatible with images that only support boot-time workloads.
+Warm VMs consume Cloud resources even before a Pod claims them. Validate a freshly
+built image containing assignment support before enabling the pool; a successful
+static-launch run does not validate this path.
+
+While pooling is active, `maxPods` bounds all outstanding VM obligations:
+existing cold launches, idle and starting generic guests, assigned guests,
+uncertain creates and VMs still terminating. The idle target is best effort
+within that bound. Demand can claim an idle guest or start a new generic guest
+when a slot is free; it cannot allocate above the bound. Lowering the limit
+retires idle capacity and blocks new allocations until outstanding obligations
+fit. Assigned workloads are not evicted to meet a lower idle target.
+
+Generic launches contain no Pod, workload entries or application ingress. The
+provider verifies fresh guest evidence and an empty measured list before signing
+an assignment. After a permanent claim, it adds the exact workload ingress
+through Cloud's idempotent ingress API and waits for those rules to apply. It
+then saves the exact assignment bytes and verified serving-key binding before
+POSTing them. Readiness still comes only from verified Pod status.
+
+A lost assignment reply retains the same VM and Pod claim. The provider can
+replay the saved bytes to the same serving key and recover through matching
+attested status. It never signs a new assignment for a different serving key
+after publishing an assignment intent. If recovery cannot establish valid Pod
+status within the frozen verification window, the Pod fails and the VM is
+terminated. A claimed VM never returns to the idle pool. Refusal to issue an
+assignment nonce, including exhaustion of the guest's bounded nonce store, uses
+the same bounded failure path; it does not reset the deadline or release the
+claim.
+
+Set `warmTarget` to zero to drain unused generic guests and stop replenishment.
+Existing assignments continue to run. Generic assignment remains required for
+new allocations while older pool obligations are being drained; once all pool
+slots are gone, new Pods use the default static launch path again. Disable the
+warm target and wait for idle termination as well as Pod cleanup before
+uninstalling the provider.
 
 ## Workload opt-in
 
@@ -199,9 +243,10 @@ or provide Kubernetes cluster DNS/Service networking inside the guest.
 
 ## Recovery and teardown
 
-Before Cloud creation, the operator saves the exact signed request in a
-provider-owned Secret and adds a Pod finalizer. Retries use the same request and
-idempotency key, including after restart or an ambiguous create response. The
+Before each Cloud creation, the operator saves the exact signed request in a
+provider-owned Secret. A workload launch also has a Pod finalizer; an unassigned
+generic guest retains its allocation slot as cleanup authority. Retries use the
+same request and idempotency key, including after restart or an ambiguous create response. The
 record is retained until deletion is confirmed. An orphan sweep also handles
 force-deleted Pods and same-name Pods with a new UID. Do not manually remove
 provider records or finalizers to bypass cleanup.
