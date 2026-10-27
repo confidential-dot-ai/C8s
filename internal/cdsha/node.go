@@ -159,6 +159,7 @@ type Node struct {
 	shutdownPending *pendingShutdown // protected by stopRaftMu
 
 	seatsOKAt atomic.Pointer[time.Time] // monotonic time of the last full-seat report (non-voters)
+	voteKnown atomic.Bool               // every staying voter has held this voter (votersAgree); reset as a non-voter
 
 	readOK    atomic.Pointer[barrierMark] // leader: the last read barrier that succeeded
 	barrierMS atomic.Int64                // leader: how long the last successful read barrier took
@@ -173,6 +174,7 @@ type Node struct {
 	joinedAt map[raft.ServerID]time.Time // leader: when a member was added
 	addedAt  map[raft.ServerID]time.Time // leader: when this leader added a member (handleJoin)
 	reads    map[raft.ServerID]uint32    // leader: the newest format each member reads
+	known    map[raft.ServerID]bool      // leader: voters every staying voter has reported as voters (votersAgree)
 
 	joinRefusedLog *cache.LRUExpireCache // peer + reason
 	retireLog      *cache.LRUExpireCache // retiring voter + what it waits for
@@ -218,6 +220,9 @@ type Status struct {
 	// RetiringVoters (leader): dead or replaced voters that keep their vote
 	// until their replacement is a voter that every staying voter reports.
 	RetiringVoters []string `json:"retiring_voters,omitempty"`
+	// KnownVoters (leader): voters that every staying voter has reported as
+	// voters. A promoted voter is Ready only once it is listed.
+	KnownVoters []string `json:"known_voters,omitempty"`
 	// Format is the cluster's agreed encoding format; Reads the newest this
 	// replica reads. Stuck says why it stopped following the log.
 	Format uint32 `json:"format,omitempty"`
@@ -295,6 +300,7 @@ func NewNode(cfg Config) (*Node, error) {
 		joinedAt:       map[raft.ServerID]time.Time{},
 		addedAt:        map[raft.ServerID]time.Time{},
 		reads:          map[raft.ServerID]uint32{},
+		known:          map[raft.ServerID]bool{},
 		joinRefusedLog: newLogOnce(),
 		retireLog:      newLogOnce(),
 	}
@@ -1060,6 +1066,11 @@ func (n *Node) Status() Status {
 		for _, id := range n.retiring {
 			st.RetiringVoters = append(st.RetiringVoters, string(id))
 		}
+		for _, id := range st.Voters {
+			if n.known[raft.ServerID(id)] {
+				st.KnownVoters = append(st.KnownVoters, id)
+			}
+		}
 		n.mu.Unlock()
 		st.ReadBarrierMS = n.barrierMS.Load()
 	}
@@ -1068,10 +1079,15 @@ func (n *Node) Status() Status {
 
 // Ready is readiness for a rolling restart (a DaemonSet with
 // maxUnavailable 1 restarts the next replica once this one is Ready): the
-// replica serves, and either holds a voter seat or the leader reports every
-// seat held by a healthy voter. A restarted voter comes back as a new member
-// that serves as a non-voter until it is promoted; were it Ready then, the
-// next restart could take a second voter and the majority with it.
+// replica serves, and either holds a voter seat that every staying voter
+// holds too, or the leader reports every seat held by a healthy voter. A
+// restarted voter comes back as a new member that serves as a non-voter
+// until it is promoted; were it Ready then, the next restart could take a
+// second voter and the majority with it. A voter is Ready only once the
+// leader reported that every staying voter holds it (votersAgree); before,
+// losing the leader could leave the rest unable to elect one. That report
+// is needed once per promotion, so a voter's Ready does not depend on the
+// leader afterwards.
 func (n *Node) Ready() bool {
 	if !n.Serving() {
 		return false
@@ -1079,7 +1095,7 @@ func (n *Node) Ready() bool {
 	if n.isVoter() {
 		// A seat more than the seats: a dead or replaced voter still counts
 		// for the quorum until it retires, so the next restart must wait.
-		return n.voterCount() <= n.seats()
+		return n.voterCount() <= n.seats() && n.voteKnown.Load()
 	}
 	if n.leading() {
 		return n.seatsFilled()

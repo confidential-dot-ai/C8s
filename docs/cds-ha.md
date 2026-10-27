@@ -227,3 +227,16 @@ CDS checks address-backend anchors against its current mesh CA on each signed
 route write, including after HA RotateKey without a process restart. Missing
 current CA fails closed. Singleton CDS uses the same live CA provider interface.
 Do not reuse retired mesh keys for backend services.
+
+## Known limitations
+
+- **Losing the leader right after a promotion.** A promotion into a free voter
+  seat (at Genesis, or after `SetVoters` raises the seats) can commit before
+  every voter holds it. Until all of them do, the promoted replica is not
+  Ready, `seats_filled` stays false and nothing else is promoted, so a
+  readiness-gated rollout never takes the leader then. If the leader is lost
+  without a plan in that short window, about one replication round, the
+  other voters cannot elect a leader: a voter that missed the promotion
+  refuses the new voter's vote requests. The cluster stops serving until the
+  old leader's replica is back with its log. If that replica is gone, recover
+  a survivor (runbook 4).

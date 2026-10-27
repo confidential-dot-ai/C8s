@@ -308,7 +308,9 @@ func (c *cluster) settled(within time.Duration) {
 		}
 		st := l.node.Status()
 		want := min(c.seats, len(rs))
-		return len(st.Voters) == want && len(st.Voters)+len(st.NonVoters) == len(rs)
+		// Every voter holds every voter: losing the leader then leaves the
+		// rest able to elect one (votersAgree).
+		return len(st.Voters) == want && len(st.Voters)+len(st.NonVoters) == len(rs) && len(st.KnownVoters) == len(st.Voters)
 	})
 }
 

@@ -385,7 +385,9 @@ func (n *Node) reconcile() {
 	}
 	var promote []raft.Server
 	for _, s := range servers {
-		if voters+len(promote) >= n.seats() {
+		// One at a time: the next waits until every voter holds this one
+		// (votersAgree).
+		if voters+len(promote) >= n.seats() || len(promote) == 1 {
 			break
 		}
 		if s.Suffrage == raft.Voter || slices.Contains(remove, s.ID) || voterNodes[nodeOf(s.ID)] || !healthy(s.ID) {
@@ -405,6 +407,9 @@ func (n *Node) reconcile() {
 	n.mu.Unlock()
 	for _, id := range remove {
 		n.removeMember(r, id)
+	}
+	if !n.votersAgree(retiring) {
+		promote = nil
 	}
 	for _, s := range promote {
 		if err := r.AddVoter(s.ID, s.Address, 0, n.cfg.Timing.Apply).Error(); err != nil {
@@ -432,9 +437,65 @@ func (n *Node) removeMember(r *raft.Raft, id raft.ServerID) bool {
 	delete(n.failing, id)
 	delete(n.joinedAt, id)
 	delete(n.addedAt, id)
+	delete(n.known, id)
 	delete(n.reads, id)
 	n.mu.Unlock()
 	n.log.Info("member removed", "id", id)
+	return true
+}
+
+// votersAgree is called with membershipMu held. It reports whether every
+// voter that stays reports every voter as one. It asks them only while a
+// voter is not yet known to all of them (known), so a settled cluster sends
+// no probes. Raft counts a vote only from a candidate that is a voter in the
+// receiver's latest configuration. A promotion commits through the leader
+// and any one other voter, which can be the promoted member itself. Were the
+// leader lost before a staying voter holds the promotion, that voter would
+// refuse the new voter's vote requests, and the new voter its requests for
+// their shorter log: no leader until the old one is back. So nothing else is
+// promoted, and the promoted member is not Ready, until every staying voter
+// holds the promotion. Retiring voters leave and do not hold it up.
+func (n *Node) votersAgree(retiring []raft.ServerID) bool {
+	var voters []raft.Server
+	for _, s := range n.servers() {
+		if s.Suffrage == raft.Voter {
+			voters = append(voters, s)
+		}
+	}
+	n.mu.Lock()
+	// A member demoted and promoted again must be confirmed again.
+	for id := range n.known {
+		if !slices.ContainsFunc(voters, func(s raft.Server) bool { return s.ID == id }) {
+			delete(n.known, id)
+		}
+	}
+	unknown := slices.ContainsFunc(voters, func(s raft.Server) bool { return !n.known[s.ID] })
+	n.mu.Unlock()
+	if !unknown {
+		return true
+	}
+	for _, s := range voters {
+		if s.ID == n.id || slices.Contains(retiring, s.ID) {
+			continue
+		}
+		st, err := n.peerStatus(s.Address, min(time.Second, n.cfg.Timing.Lease/2))
+		if err != nil || st.ID != string(s.ID) {
+			return false
+		}
+		for _, v := range voters {
+			if !slices.Contains(st.Voters, string(v.ID)) {
+				return false
+			}
+		}
+	}
+	n.mu.Lock()
+	for _, s := range voters {
+		n.known[s.ID] = true
+	}
+	n.mu.Unlock()
+	if slices.ContainsFunc(voters, func(s raft.Server) bool { return s.ID == n.id }) {
+		n.voteKnown.Store(true)
+	}
 	return true
 }
 
@@ -585,8 +646,9 @@ func (n *Node) raiseFormat(servers []raft.Server) {
 	n.log.Info("cluster format raised: every member reads it", "from", agreed, "to", low)
 }
 
-// seatsFilled (leader): the configuration has Seats voters and none of them
-// is failing heartbeats. GetConfiguration is the latest configuration, which
+// seatsFilled (leader): the configuration has Seats voters, none of them
+// is failing heartbeats, and every staying voter holds each of them
+// (votersAgree). GetConfiguration is the latest configuration, which
 // may not be committed: a promotion still in flight is lost if this leader
 // dies, and a rollout that counted it as a filled seat could restart a voter
 // of what is really a two-voter configuration, losing the majority for good.
@@ -611,6 +673,9 @@ func (n *Node) seatsFilledLocked() bool {
 			continue
 		}
 		if _, bad := n.failing[s.ID]; bad && s.ID != n.id {
+			return false
+		}
+		if !n.known[s.ID] {
 			return false
 		}
 		voters++
@@ -642,10 +707,14 @@ func (n *Node) isVoter() bool {
 	return i >= 0 && ss[i].Suffrage == raft.Voter
 }
 
-// refreshSeats asks the leader whether every seat is filled (non-voters
-// only; see Ready).
+// refreshSeats asks the leader whether every seat is filled (non-voters),
+// or, once, whether every staying voter holds this voter (see Ready).
 func (n *Node) refreshSeats() {
-	if n.isVoter() {
+	voter := n.isVoter()
+	if !voter {
+		n.voteKnown.Store(false)
+	}
+	if voter && n.voteKnown.Load() {
 		return
 	}
 	addr, _ := n.r().LeaderWithID()
@@ -653,6 +722,12 @@ func (n *Node) refreshSeats() {
 		return
 	}
 	if st, err := n.peerStatus(addr, time.Second); err == nil {
+		if voter {
+			if slices.Contains(st.KnownVoters, string(n.id)) {
+				n.voteKnown.Store(true)
+			}
+			return
+		}
 		if !st.SeatsFilled {
 			n.seatsOKAt.Store(nil)
 			return
