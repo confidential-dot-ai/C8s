@@ -2,14 +2,17 @@ package routing
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/tls"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -582,5 +585,204 @@ func TestListenerUpgradeIsIdle(t *testing.T) {
 	}
 	if elapsed := time.Since(quiet); elapsed < timeout {
 		t.Fatalf("quiet upgraded connection closed after %v, want at least %v", elapsed, timeout)
+	}
+}
+
+func TestB8WorkloadBackendDigest(t *testing.T) {
+	f := newFixture(t)
+	tests := []struct {
+		name     string
+		leaf     tls.Certificate
+		want     int
+		wantBody string
+	}{
+		{"B8 equal digest and name", issueLeaf(t, f.mesh, "web"), http.StatusOK, ""},
+		{"B8 equal name, other digest", issueStampedLeaf(t, f.mesh, "web", digestOf(0x43)), http.StatusBadGateway, backendDigestMismatch},
+		{"B8 equal name, digest differing in the last byte", issueStampedLeaf(t, f.mesh, "web", append(testDigest[:31:31], 0x43)), http.StatusBadGateway, backendDigestMismatch},
+	}
+	for i, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			b := startBackend(t, "web", tc.leaf)
+			f.apply(t, simpleManifest(uint64(i+1), b.addr()))
+			w := f.get("/")
+			if w.Code != tc.want || !strings.Contains(w.Body.String(), tc.wantBody) {
+				t.Fatalf("GET / = %d %q, want %d %q", w.Code, w.Body.String(), tc.want, tc.wantBody)
+			}
+			if tc.want != http.StatusOK {
+				var logs bytes.Buffer
+				f.proxy.log = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
+				sealedHost := []types.HeaderField{{Name: "Host", Value: testHost}}
+				resp, err := f.proxy.Forward(outerRequest(testHost), types.TunnelRequest{Path: "/", Headers: sealedHost})
+				if err != nil || resp.Status != tc.want || !strings.Contains(string(resp.Body), tc.wantBody) {
+					t.Fatalf("Forward(/) = %d %q, %v, want %d %q, nil", resp.Status, resp.Body, err, tc.want, tc.wantBody)
+				}
+				// A tunnelled refusal leaves the same Info line as the listener,
+				// and nothing at Warn: the mismatch is expected after an
+				// allowlist write.
+				if !strings.Contains(logs.String(), "backend request refused") || strings.Contains(logs.String(), "level=WARN") {
+					t.Fatalf("tunnelled B8 refusal logged %q, want a backend request refused line at Info", logs.String())
+				}
+			}
+			if tc.want != http.StatusOK && b.hits.Load() != 0 {
+				t.Fatalf("backend saw %d requests after a failed verification, want 0", b.hits.Load())
+			}
+		})
+	}
+}
+
+// TestB9UnnamedRouter: a router whose own leaf carries no stamp binds no
+// policy digest, so it checks a workload backend by name alone (B1) and
+// forwards to a stamped backend under any allowlist digest. A damaged router
+// stamp is never read as absence: the dial fails.
+func TestB9UnnamedRouter(t *testing.T) {
+	tests := []struct {
+		name string
+		leaf func(testing.TB, *fixture) tls.Certificate
+		want int
+	}{
+		{"B9 no stamp routes by name", func(t testing.TB, f *fixture) tls.Certificate { return issueLeaf(t, f.mesh, "") }, http.StatusOK},
+		{"B9 damaged stamp fails the dial", func(t testing.TB, _ *fixture) tls.Certificate { return damagedStampLeaf(t) }, http.StatusBadGateway},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			f.renew(t, tc.leaf(t, f))
+			b := startBackend(t, "web", issueStampedLeaf(t, f.mesh, "web", digestOf(0x43)))
+			unnamed := startBackend(t, "web", issueLeaf(t, f.mesh, "", "web.default.svc"))
+			external := newCA(t, "external")
+			admin := startBackend(t, "admin", issueLeaf(t, external, "", "admin.ops.svc"), webPKI)
+			f.apply(t, manifestSpec{revision: 1, hosts: map[string][]route{testHost: {
+				workloadRoute("/", "prefix", b.addr(), "web"),
+				workloadRoute("/unnamed", "prefix", unnamed.addr(), "web"),
+				addressRoute("/admin", "prefix", admin.addr(), "admin.ops.svc", caPEM(external)),
+			}}})
+
+			var logs bytes.Buffer
+			f.proxy.log = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
+			if w := f.get("/"); w.Code != tc.want {
+				t.Fatalf("GET / = %d %q, want %d", w.Code, w.Body.String(), tc.want)
+			}
+			sealedHost := []types.HeaderField{{Name: "Host", Value: testHost}}
+			if resp, err := f.proxy.Forward(outerRequest(testHost), types.TunnelRequest{Path: "/", Headers: sealedHost}); err != nil || resp.Status != tc.want {
+				t.Fatalf("Forward(/) = %d, %v, want %d, nil", resp.Status, err, tc.want)
+			}
+			if tc.want != http.StatusOK {
+				// Neither path blames the backend; the damaged leaf is reported
+				// once, where it is parsed.
+				if strings.Contains(logs.String(), "backend request failed") || strings.Contains(logs.String(), "level=ERROR") {
+					t.Fatalf("damaged router stamp logged per request %q, want no backend blame and no per-request Error", logs.String())
+				}
+				if n := strings.Count(f.transportLogs.String(), "router stamp damaged"); n != 1 {
+					t.Fatalf("damaged router stamp reported %d times, want once per leaf: %s", n, f.transportLogs.String())
+				}
+			}
+			if tc.want != http.StatusOK && b.hits.Load() != 0 {
+				t.Fatalf("backend saw %d requests through a router with a damaged stamp, want 0", b.hits.Load())
+			}
+			if got := f.get("/unnamed").Code; got != http.StatusBadGateway {
+				t.Fatalf("GET /unnamed = %d, want %d (B1 still requires a name)", got, http.StatusBadGateway)
+			}
+			if got := f.get("/admin").Code; got != http.StatusOK {
+				t.Fatalf("GET /admin = %d, want %d (B3 unaffected)", got, http.StatusOK)
+			}
+			if tc.want != http.StatusOK {
+				return
+			}
+			// Once the router gains a stamp, the name-only pool retires and
+			// B8 judges the backend against the router's digest.
+			hits := b.hits.Load()
+			f.renew(t, issueStampedLeaf(t, f.mesh, "router", digestOf(0x42)))
+			if err := f.transports.dropMeshPools(); err != nil {
+				t.Fatal(err)
+			}
+			if w := f.get("/"); w.Code != http.StatusBadGateway || !strings.Contains(w.Body.String(), backendDigestMismatch) {
+				t.Fatalf("GET / after the router gained a stamp = %d %q, want %d %q", w.Code, w.Body.String(), http.StatusBadGateway, backendDigestMismatch)
+			}
+			if b.hits.Load() != hits {
+				t.Fatalf("backend served %d more requests after the router gained a stamp, want 0", b.hits.Load()-hits)
+			}
+		})
+	}
+}
+
+// TestB9DamagedStampRetiresPools: a router renewed to a leaf with a damaged
+// stamp retires the pools it filled while unstamped, and a later good leaf
+// counts as a change too.
+func TestB9DamagedStampRetiresPools(t *testing.T) {
+	f := newFixture(t)
+	f.renew(t, issueLeaf(t, f.mesh, ""))
+	b := startBackend(t, "web", issueStampedLeaf(t, f.mesh, "web", digestOf(0x43)))
+	f.apply(t, simpleManifest(1, b.addr()))
+	if err := f.transports.dropMeshPools(); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.get("/").Code; got != http.StatusOK {
+		t.Fatalf("GET / through an unstamped router = %d, want %d", got, http.StatusOK)
+	}
+	f.renew(t, damagedStampLeaf(t))
+	if err := f.transports.dropMeshPools(); err != nil {
+		t.Fatal(err)
+	}
+	if w := f.get("/"); w.Code != http.StatusBadGateway {
+		t.Fatalf("GET / through a router with a damaged stamp = %d %q, want %d", w.Code, w.Body.String(), http.StatusBadGateway)
+	}
+	if n := b.hits.Load(); n != 1 {
+		t.Fatalf("backend served %d requests, want 1: the name-only pool must retire on a damaged stamp", n)
+	}
+	f.renew(t, issueStampedLeaf(t, f.mesh, "router", digestOf(0x43)))
+	if err := f.transports.dropMeshPools(); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.get("/").Code; got != http.StatusOK {
+		t.Fatalf("GET / after the router regained a good stamp = %d, want %d", got, http.StatusOK)
+	}
+}
+
+// TestB10RenewedRouterLeafRetiresPools: once the router's leaf renews under
+// another digest, the next poll retires the workload connection pooled under
+// the old one and keeps the address backend's.
+func TestB10RenewedRouterLeafRetiresPools(t *testing.T) {
+	f := newFixture(t)
+	old := startBackend(t, "old", issueLeaf(t, f.mesh, "web"))
+	external := newCA(t, "external")
+	admin := startBackend(t, "admin", issueLeaf(t, external, "", "admin.ops.svc"), webPKI)
+	adminRoute := addressRoute("/admin", "prefix", admin.addr(), "admin.ops.svc", caPEM(external))
+	f.apply(t, manifestSpec{revision: 1, hosts: map[string][]route{testHost: {
+		workloadRoute("/", "prefix", old.addr(), "web"), adminRoute,
+	}}})
+	if err := f.transports.dropMeshPools(); err != nil { // records the bundle and digest
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/", "/admin"} {
+		if got := f.get(path).Code; got != http.StatusOK {
+			t.Fatalf("GET %s = %d, want %d", path, got, http.StatusOK)
+		}
+	}
+	adminBackend := f.state.Current().Manifest.Hosts[testHost].Routes[1].Backend
+	adminTransport := f.transports.For(adminBackend)
+
+	f.renew(t, issueStampedLeaf(t, f.mesh, "router", digestOf(0x43)))
+	if err := f.transports.dropMeshPools(); err != nil {
+		t.Fatal(err)
+	}
+	if w := f.get("/"); w.Code != http.StatusBadGateway || !strings.Contains(w.Body.String(), backendDigestMismatch) {
+		t.Fatalf("GET / after the router renewed under another digest = %d %q, want %d %q", w.Code, w.Body.String(), http.StatusBadGateway, backendDigestMismatch)
+	}
+	if n := old.hits.Load(); n != 1 {
+		t.Fatalf("backend under the old digest served %d requests, want 1", n)
+	}
+	if f.transports.For(adminBackend) != adminTransport {
+		t.Fatal("router digest renewal retired the address backend's transport, want it kept")
+	}
+	if got := f.get("/admin").Code; got != http.StatusOK {
+		t.Fatalf("GET /admin after the router renewed = %d, want %d", got, http.StatusOK)
+	}
+
+	renewed := startBackend(t, "renewed", issueStampedLeaf(t, f.mesh, "web", digestOf(0x43)))
+	f.apply(t, manifestSpec{revision: 2, hosts: map[string][]route{testHost: {
+		workloadRoute("/", "prefix", renewed.addr(), "web"), adminRoute,
+	}}})
+	if got := f.get("/").Code; got != http.StatusOK {
+		t.Fatalf("GET / to a backend under the router's new digest = %d, want %d", got, http.StatusOK)
 	}
 }

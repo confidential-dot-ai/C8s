@@ -312,11 +312,13 @@ A failed chain is never retried against the leaf's embedded evidence, so a
 self-signed peer and a peer from another mesh CA both fail.
 
 Either role may also set `AcceptPeer`, which runs on the identity the chain
-path read — the sandbox ID, the CA-vouched matched workload name and the
-purpose required — once that verification passed and before any application
-byte moves. An error there fails the handshake. The router's routing sidecar
-sets it: the backend of a route must be the workload the signed manifest
-names, and a leaf CDS stamped no workload on names none.
+path read — the sandbox ID, the CA-vouched matched workload name with its
+allowlist version and digest, and the purpose required — once that
+verification passed and before any application byte moves. An error there
+fails the handshake. The router's routing sidecar sets it: the backend of a
+route must be the workload the signed manifest names, stamped under the
+allowlist digest on the router's own leaf, or by name alone while the router's
+own leaf carries no stamp, and a leaf CDS stamped no workload on names none.
 
 This profile authenticates member-to-member traffic only: a credential client
 reaches CDS on the evidence path, and the router is itself a member. Its
@@ -825,6 +827,10 @@ transcript.
   That is the contract: on those connections nothing vouches for the stamp.
   A caller that needs the name on such a hop must verify the leaf against the
   mesh CA itself and use `MatchedWorkloadFromCert`, not weaken the check.
+- The router reads the stamp off each workload backend's verified leaf
+  (`armtls.Peer`) and requires the route's name and an allowlist digest equal
+  to the one on its own mesh leaf, or the name alone while its own leaf
+  carries no stamp.
 
 A compromised mesh CA can mint any name — the stamp is CA-vouched, not
 hardware-bound.
