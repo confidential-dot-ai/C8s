@@ -134,33 +134,40 @@ func TestRotateKeyExcludingTheLeaderIsRefused(t *testing.T) {
 	}
 }
 
-// A store that refuses a backup for good stops the leader retrying it until
-// the state changes; any other failure is retried.
+// A failed backup stores nothing, so the leader tries again once per
+// Timing.Backup, not faster, even with no write in between: a store that
+// refused (the slot held another history) may accept once the operator
+// empties the slot. The failure stays in Status, and the streak's error is
+// logged once.
 func TestBackupFailuresAndRetries(t *testing.T) {
 	rk, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	for name, c := range map[string]struct {
 		err   error
-		retry bool
+		stage string
 	}{
-		"not newer":   {fmt.Errorf("wrapped: %w", ErrBackupNotNewer), false},
-		"store fails": {errors.New("api down"), true},
+		"not newer":   {fmt.Errorf("wrapped: %w", ErrBackupNotNewer), "backup refused"},
+		"store fails": {errors.New("api down"), "store"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			b := &memBackups{err: c.err}
-			s := newSolo(t, func(cfg *Config) { cfg.RecoveryKey, cfg.Backups = mustPKIX(t, &rk.PublicKey), b })
+			logs := &syncBuffer{}
+			s := newSolo(t, func(cfg *Config) {
+				cfg.RecoveryKey, cfg.Backups = mustPKIX(t, &rk.PublicKey), b
+				cfg.Logger = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
+			})
 			eventually(t, 5*time.Second, "a backup attempt", func() bool { return b.attempts() > 0 })
+			start, first := time.Now(), b.attempts()
 			time.Sleep(10 * testTiming.Backup)
-			if got := b.attempts(); (got > 1) != c.retry {
-				t.Fatalf("%d attempts, retry %v", got, c.retry)
+			got, elapsed := b.attempts()-first, time.Since(start)
+			if got < 2 || got > int(elapsed/testTiming.Backup)+1 {
+				t.Fatalf("%d more attempts in %v, want at least 2 and at most one per %v", got, elapsed, testTiming.Backup)
 			}
-			if c.retry {
-				return
+			if st := s.node.Status().BackupError; !strings.Contains(st, c.stage+": ") {
+				t.Fatalf("BackupError %q does not show stage %q", st, c.stage)
 			}
-			before := b.attempts()
-			if err := s.node.cfg.Allowlist.PutWorkload("w", mkWorkload(t, 0)); err != nil {
-				t.Fatal(err)
+			if n := strings.Count(logs.String(), "backups failing"); n != 1 {
+				t.Fatalf("the failing streak was logged as an error %d times, want once:\n%s", n, logs.String())
 			}
-			eventually(t, 5*time.Second, "a backup of the new state", func() bool { return b.attempts() > before })
 		})
 	}
 }

@@ -206,11 +206,11 @@ func (n *Node) maybeBackup(ctx context.Context) {
 		if errors.Is(err, ErrBackupNotNewer) {
 			// Another leader stored later state (this one is deposed or was
 			// cut off), or the stored backup is of another history: leave
-			// it, and wait for the next write. Still a failure, shown in
-			// Status as "backup refused" until a backup is stored again: a
-			// stored manifest is the host's word, and one that keeps
+			// it. Nothing was stored, so the next interval tries again: the
+			// slot may be emptied (a rollback) with no write to follow.
+			// Shown in Status as "backup refused" until a backup is stored:
+			// a stored manifest is the host's word, and one that keeps
 			// claiming newer state blocks every backup.
-			n.backupIndex = applied
 			n.backupFailed("backup refused", err)
 			return
 		}
@@ -221,7 +221,7 @@ func (n *Node) maybeBackup(ctx context.Context) {
 	if n.backupFails > 0 {
 		n.log.Info("backups resumed", "after_failures", n.backupFails)
 	}
-	n.backupFails, n.backupTooLarge = 0, false
+	n.backupFails, n.backupTooLarge, n.backupAlarmed = 0, false, false
 	n.backupErr.Store(nil)
 	n.lastBackup.Store(&storedBackup{BackupStatus: BackupStatus{Index: b.Meta.Index, Epoch: b.Meta.Epoch, AtMS: b.Meta.TakenAtMS}, at: time.Now()})
 	n.log.Info("backup stored", "epoch", b.Meta.Epoch, "index", b.Meta.Index, "bytes", len(b.Ciphertext))
@@ -257,7 +257,9 @@ func (n *Node) backupFailed(stage string, err error) {
 	}
 	msg := fmt.Sprintf("backup failing since %s (%d attempts): %s: %v", since, n.backupFails, stage, err)
 	n.backupErr.Store(&msg)
-	if n.backupFails >= backupAlarmFailures || time.Since(n.backupSince) >= backupAlarmPeriods*n.cfg.Timing.Backup {
+	// The error is logged once per streak; Status.BackupError stays set.
+	if !n.backupAlarmed && (n.backupFails >= backupAlarmFailures || time.Since(n.backupSince) >= backupAlarmPeriods*n.cfg.Timing.Backup) {
+		n.backupAlarmed = true
 		n.log.Error("backups failing: no new backup is stored, so a total loss would restore older state", "stage", stage, "err", err,
 			"consecutive_failures", n.backupFails, "failing_for", time.Since(n.backupSince).Round(time.Second))
 		return

@@ -219,10 +219,11 @@ type Node struct {
 	backupIndex uint64       // leader: applied index of the last stored backup
 	// backupFails counts consecutive failed backups, since backupSince;
 	// after one on a size bound (backupTooLarge) the next waits backupDelay.
-	// backupErr is the last failure and lastBackup the last stored backup,
-	// for Status.
+	// backupAlarmed says the streak's error was logged. backupErr is the
+	// last failure and lastBackup the last stored backup, for Status.
 	backupFails    int
 	backupTooLarge bool
+	backupAlarmed  bool
 	backupSince    time.Time
 	backupErr      atomic.Pointer[string]
 	lastBackup     atomic.Pointer[storedBackup]
