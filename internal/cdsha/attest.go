@@ -143,13 +143,29 @@ func (v peerVerifier) claims(der []byte) (Claims, error) {
 	return c, nil
 }
 
-// peer verifies the evidence of a connection's peer after the handshake.
-// Peer certificates are self-signed by design: attestation, not PKI,
-// authenticates a peer, so every attested connection must pass this.
-func (v peerVerifier) peer(c *tls.Conn) (Claims, error) {
-	cs := c.ConnectionState()
-	if len(cs.PeerCertificates) == 0 {
-		return Claims{}, errors.New("no peer certificate")
+// errPeerIdentity marks a handshake refused because the peer's certificate
+// failed claims.
+var errPeerIdentity = errors.New("peer identity")
+
+// tlsConfig returns a copy of cfg for one connection whose handshake fails
+// unless the peer's certificate passes claims; *verified holds the peer's
+// claims once the handshake succeeded. Peer certificates are self-signed by
+// design: attestation, not PKI, authenticates a peer. *v is read when the
+// peer is verified, during the handshake.
+// INVARIANT: every attested connection is made with a config from here.
+func (v *peerVerifier) tlsConfig(cfg *tls.Config) (_ *tls.Config, verified *Claims) {
+	c := cfg.Clone()
+	verified = new(Claims)
+	c.VerifyConnection = func(cs tls.ConnectionState) error {
+		if len(cs.PeerCertificates) == 0 {
+			return fmt.Errorf("%w: no peer certificate", errPeerIdentity)
+		}
+		claims, err := v.claims(cs.PeerCertificates[0].Raw)
+		if err != nil {
+			return fmt.Errorf("%w: %w", errPeerIdentity, err)
+		}
+		*verified = claims
+		return nil
 	}
-	return v.claims(cs.PeerCertificates[0].Raw)
+	return c, verified
 }
