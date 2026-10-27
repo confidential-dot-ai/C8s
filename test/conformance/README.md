@@ -223,7 +223,10 @@ credential client for the discovery document and mounts the volume the client
 writes it into, so `pod_cert_file` reads the pod's leaf from there; the key,
 and the leaf as another container sees it, stay out of reach. No namespace the mesh exempts is open to the operator, so the
 requester the steps drive runs as a mesh member and the scenarios that need a
-pod outside the mesh skip. [`metal.sh`](backends/metal.sh) gives each
+pod outside the mesh skip. On the SNP lane the guest sits behind a bridge
+interface and the ports Kubernetes routes on it never answer the harness
+host, so every CDS route but the allowlist answers unsupported there.
+[`metal.sh`](backends/metal.sh) gives each
 function's answer and its reason beside the function.
 
 ## What is a coordinated change
