@@ -151,7 +151,7 @@ func TestDecryptWithWrongKeyDoesNotRecoverPlaintext(t *testing.T) {
 func TestEncryptAtMatchesEncrypt(t *testing.T) {
 	key := testKey()
 	plain := make([]byte, 3*chunkSize+5*SectorSize)
-	if _, err := rand.Read(plain[chunkSize:]); err != nil { // first chunk stays zero
+	if _, err := rand.Read(plain[chunkSize:]); err != nil {
 		t.Fatal(err)
 	}
 	var want bytes.Buffer
@@ -163,7 +163,7 @@ func TestEncryptAtMatchesEncrypt(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := EncryptAt(out, bytes.NewReader(plain), key, jobs); err != nil {
+		if err := EncryptAt(t.Context(), out, bytes.NewReader(plain), key, jobs); err != nil {
 			t.Fatalf("jobs=%d: %v", jobs, err)
 		}
 		got, err := os.ReadFile(out.Name())
@@ -180,7 +180,7 @@ func TestEncryptAtMatchesEncrypt(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer out.Close()
-	if err := EncryptAt(out, bytes.NewReader(plain[:chunkSize+7]), key, 2); !errors.Is(err, ErrUnaligned) {
+	if err := EncryptAt(t.Context(), out, bytes.NewReader(plain[:chunkSize+7]), key, 2); !errors.Is(err, ErrUnaligned) {
 		t.Fatalf("unaligned payload: err = %v, want ErrUnaligned", err)
 	}
 }

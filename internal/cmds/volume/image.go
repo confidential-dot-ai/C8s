@@ -58,7 +58,7 @@ type BuildConfig struct {
 	WorkDir string
 	// Run executes the build tools; nil uses execRunner.
 	Run Runner
-	// Jobs is how many goroutines encrypt; zero uses one per CPU.
+	// Jobs is how many goroutines encrypt; zero uses EncryptAt's default.
 	Jobs int
 }
 
@@ -382,7 +382,7 @@ func buildImage(ctx context.Context, cfg BuildConfig, builder imageBuilder) erro
 		defer f.Close()
 		readers = append(readers, f)
 	}
-	return EncryptAt(out, io.MultiReader(readers...), cfg.Key, cfg.Jobs)
+	return EncryptAt(ctx, out, io.MultiReader(readers...), cfg.Key, cfg.Jobs)
 }
 
 func checkSource(source string) (os.FileInfo, error) {

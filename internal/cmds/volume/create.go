@@ -82,7 +82,7 @@ one you pinned, or the key is refused. --force writes without that check.`,
 	f.BoolVar(&cfg.mutable, "mutable", false, "build a writable ext4 volume instead of an immutable, verified one")
 	f.StringVar(&cfg.size, "size", "", "mutable filesystem size, e.g. 50Gi (default: inferred from --source; required without one)")
 	f.StringVar(&cfg.workDir, "work-dir", "", "directory for build intermediates (default: a temp dir); they are removed either way")
-	f.IntVar(&cfg.jobs, "jobs", 0, "goroutines encrypting the image (default: one per CPU)")
+	f.IntVar(&cfg.jobs, "jobs", 0, "goroutines encrypting the image (default 0: one per CPU, at most 16)")
 	f.BoolVar(&cfg.dryRun, "dry-run", false, "build the image and write escrow, but do not call CDS")
 	cfg.gate.BindFlags(f)
 	return cmd
@@ -190,6 +190,9 @@ func validateCreate(cfg *createConfig) (string, error) {
 		return "", fmt.Errorf("--out is required")
 	case cfg.escrowOut == "":
 		return "", fmt.Errorf("--escrow-out is required: it is the only copy of the key outside CDS")
+	}
+	if cfg.jobs < 0 {
+		return "", fmt.Errorf("--jobs must not be negative")
 	}
 	if !cfg.mutable {
 		if cfg.source == "" {

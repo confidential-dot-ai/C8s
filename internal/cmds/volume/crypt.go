@@ -57,20 +57,24 @@ func Encrypt(dst io.Writer, src io.Reader, key []byte) error {
 }
 
 // chunkSize is the unit EncryptAt hands to a worker and writes in one call: a
-// whole number of sectors and of 4 KiB pages, large enough that syscalls cost
-// nothing next to the cipher.
+// whole number of sectors and of 4 KiB pages, large enough to amortize syscalls.
 const chunkSize = 1 << 20
+
+// maxDefaultJobs caps the default worker count: past about 16 workers the
+// single reader and the writes to one file limit throughput, not the cipher.
+const maxDefaultJobs = 16
 
 // EncryptAt is Encrypt spread over jobs goroutines, with the same output byte
 // for byte. XTS sectors are independent, so each chunk is encrypted with its own
 // starting sector as the tweak base and written at its own offset; order does not
-// matter. jobs < 1 means one per CPU. Memory is jobs+1 chunks.
-func EncryptAt(dst io.WriterAt, src io.Reader, key []byte, jobs int) error {
+// matter. jobs < 1 means min(GOMAXPROCS, maxDefaultJobs). Memory is jobs+1
+// chunks. Cancelling ctx stops the encryption.
+func EncryptAt(ctx context.Context, dst io.WriterAt, src io.Reader, key []byte, jobs int) error {
 	if len(key) != KeyBytes {
 		return fmt.Errorf("volume: key is %d bytes, want %d", len(key), KeyBytes)
 	}
 	if jobs < 1 {
-		jobs = runtime.NumCPU()
+		jobs = min(runtime.GOMAXPROCS(0), maxDefaultJobs)
 	}
 	type chunk struct {
 		buf []byte
@@ -81,7 +85,7 @@ func EncryptAt(dst io.WriterAt, src io.Reader, key []byte, jobs int) error {
 		free <- make([]byte, chunkSize)
 	}
 	work := make(chan chunk)
-	g, ctx := errgroup.WithContext(context.Background())
+	g, gctx := errgroup.WithContext(ctx)
 	for range jobs {
 		g.Go(func() error {
 			cipher, err := xts.NewCipher(aes.NewCipher, key)
@@ -109,33 +113,37 @@ func EncryptAt(dst io.WriterAt, src io.Reader, key []byte, jobs int) error {
 			var buf []byte
 			select {
 			case buf = <-free:
-			case <-ctx.Done():
+			case <-gctx.Done():
 				return nil
 			}
 			n, err := io.ReadFull(src, buf)
+			eof := errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
+			if err != nil && !eof {
+				return fmt.Errorf("volume: read at %d: %w", off, err)
+			}
 			if n%SectorSize != 0 {
 				return fmt.Errorf("%w: trailing %d bytes", ErrUnaligned, n%SectorSize)
 			}
 			if n > 0 {
 				select {
 				case work <- chunk{buf[:n], off}:
-				case <-ctx.Done():
+				case <-gctx.Done():
 					return nil
 				}
 				off += int64(n)
 			}
-			switch {
-			case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
+			if eof {
 				return nil
-			case err != nil:
-				return fmt.Errorf("volume: read at %d: %w", off, err)
 			}
 		}
 	}()
 	if err := g.Wait(); err != nil {
 		return err
 	}
-	return readErr
+	if readErr != nil {
+		return readErr
+	}
+	return ctx.Err()
 }
 
 // Decrypt is Encrypt's inverse, and exists so a build can prove its own output
