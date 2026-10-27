@@ -62,7 +62,7 @@ func renderedTopologyAllowlist(t *testing.T, mode string) pkgallowlist.Allowlist
 	t.Helper()
 	args := []string{"template", "c8s", filepath.Join("..", "..", "internal", "helmchart", "c8s"), "--skip-tests", "--kube-version", "v1.34.5",
 		"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
-		"--set", "router.routing.allowUnpinnedCDS=true",
+		"--set-string", "cds.measurements[0]=" + strings.Repeat("ab", 48),
 		"--set-string", "nriImagePolicy.mesh.clusterRanges[0]=10.42.0.0/16",
 		"--set-string", "nriImagePolicy.mesh.resolver=10.43.0.10"}
 	for i, path := range []string{"image", "cds.image", "attestationApi.image", "armtlsMesh.image", "nriImagePolicy.image", "volumed.image"} {

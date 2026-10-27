@@ -203,17 +203,18 @@ Step by step:
    attestation-api means no connection (fail closed).
 5. **Measurement policy.** The verified launch digest returned by the
    attestation-api is compared against the caller's allowlist
-   (`VerifyPolicy.Policy.Measurements`; SNP LAUNCH_DIGEST or TDX MRTD, 48 bytes). An
-   **empty allowlist accepts any genuine TEE** — deliberate bootstrap
-   ergonomics, loudly warned, and unsafe in production.
+   (`VerifyPolicy.Policy.Measurements`; SNP LAUNCH_DIGEST or TDX MRTD, 48 bytes). A
+   policy naming no guest — no measurement and no image pin — is **refused**
+   (`ErrUnpinned`): any genuine TEE would otherwise pass.
 6. **mTLS.** Servers configured with a `ClientPolicy` require a client
    certificate and verify it the same way (steps 3–5, roles swapped).
 
 Verification failures map to typed sentinels (`errors.go`):
 `ErrSignatureInvalid` (hardware chain), `ErrKeyBinding` (REPORTDATA mismatch —
 the key was not generated in that TEE), `ErrPolicyViolation` (measurement not
-allowlisted), `ErrNoAttestation`, `ErrInvalidReport`, `ErrUnsupportedTEE` — the
-last three re-exported from attestation-go/armtls.
+allowlisted), `ErrUnpinned` (the policy names no guest), `ErrNoAttestation`,
+`ErrInvalidReport`, `ErrUnsupportedTEE` — the last three re-exported from
+attestation-go/armtls.
 
 ## The chain path: CDS issuance
 
@@ -365,11 +366,6 @@ CDS's checks at issuance time, as described above.
 
 What it does **not** guarantee:
 
-- **Nothing, with an empty measurement allowlist.** Any genuine TEE — including
-  an attacker's own CVM on the pod network — is accepted. Both CDS and
-  the mesh clients ship with empty pins, warn loudly, and export
-  `armtls_mesh_measurement_pinning=0` for alerting. Pinning is the operator's
-  explicit production step.
 - **A trustworthy verdict from an untrusted verifier.** The attestation-api's
   `/verify` response is **unsigned**; whoever can impersonate the configured
   `AttestationApiURL` forges "valid". Every deployment therefore keeps the
@@ -675,11 +671,10 @@ bound must cover those addresses: `cds.sandboxInventoryCIDRs` (`c8s install
 --node-cidr`) when set, else one host route per node derived live from the node
 list — a node added later is covered without a CDS restart.
 
-An empty measurement allowlist does not disable any of this — it tracks the same
-posture `/attest` takes (see "What armTLS guarantees"): both ends still require
-a hardware-attested armTLS peer, they just pin no measurement, so any TEE can
-answer as the inventory and any TEE can read what a node runs. Both ends log it
-as UNSAFE outside development. The token verification and the issuance-time
+The callback needs a measurement allowlist like every other armTLS path (see
+"What armTLS guarantees"): both ends require a hardware-attested armTLS peer
+their pins name, so an empty set refuses the callback rather than letting any
+TEE answer as the inventory. The token verification and the issuance-time
 allowlist gate are unaffected. A `--measurements` entry that is not hex fails
 CDS startup rather than silently unpinning the callback.
 

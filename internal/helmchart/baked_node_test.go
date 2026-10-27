@@ -108,7 +108,6 @@ func TestChartBakedNodeLaunchContract(t *testing.T) {
 	assertContainerNoArgPrefix(t, "c8s-cert", cert.Args, "--san=")
 	attest := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")
 	assertContainerHasArg(t, "cds-attest", attest.Args, "--operator-keys-file=/run/c8s-node/operator-pubkey")
-	assertContainerNoArgPrefix(t, "cds-attest", attest.Args, "--allow-unpinned-cds")
 	if got, want := expectedWorkloadArg(cert), routerEntryName(t, renderedSeed(t, out)); want == "" || got != want {
 		t.Errorf("c8s-cert --expected-workload = %q, want the seeded router entry %q", got, want)
 	}

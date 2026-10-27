@@ -152,25 +152,15 @@ func TestPrepareCDSPinsRefusesRegistersTheFamilyLacks(t *testing.T) {
 	}
 }
 
-// A node that pins nothing mounts nothing: the client then has no policy to
-// read, which its own unpinned check reports.
-func TestPrepareCDSPinsEmptyWithoutPins(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		cfg  *config
-	}{
-		{"no pins", &config{WorkloadClaims: workloadClaimsConfig{SocketDir: t.TempDir()}}},
-		{"no inventory directory", &config{Allowlist: allowlistConfig{Pull: pullConfig{CDSMeasurements: []string{testDigestA}}}}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			p := testPlugin(t, tc.cfg)
-			if err := p.prepareCDSPins(); err != nil {
-				t.Fatalf("prepareCDSPins: %v", err)
-			}
-			if p.cdsPins != "" {
-				t.Fatalf("pins path = %q, want none", p.cdsPins)
-			}
-		})
+// Without an inventory directory no pod of this node is injected, so there is
+// nothing to render and nothing to mount.
+func TestPrepareCDSPinsEmptyWithoutInventory(t *testing.T) {
+	p := testPlugin(t, &config{Allowlist: allowlistConfig{Pull: pullConfig{CDSMeasurements: []string{testDigestA}}}})
+	if err := p.prepareCDSPins(); err != nil {
+		t.Fatalf("prepareCDSPins: %v", err)
+	}
+	if p.cdsPins != "" {
+		t.Fatalf("pins path = %q, want none", p.cdsPins)
 	}
 }
 
@@ -334,12 +324,13 @@ func TestSidecarAdjustmentFollowsTheMeasuredCredentialsRole(t *testing.T) {
 	}
 }
 
-// A node that pins nothing adds no policy mount, so a client cannot mistake an
-// empty file for a policy.
-func TestSidecarAdjustmentWithoutPins(t *testing.T) {
+// A node that injects credential clients but pins no CDS refuses before any
+// container is created, and renders nothing a client could mistake for a
+// policy.
+func TestSidecarAdjustmentRefusedWithoutPins(t *testing.T) {
 	p := testPlugin(t, &config{WorkloadClaims: workloadClaimsConfig{SocketDir: t.TempDir()}})
-	if err := p.prepareCDSPins(); err != nil {
-		t.Fatalf("prepareCDSPins: %v", err)
+	if err := p.prepareCDSPins(); err == nil || !strings.Contains(err.Error(), "pins no CDS") {
+		t.Fatalf("prepareCDSPins() = %v, want the unpinned-CDS refusal", err)
 	}
 	pod := &api.PodSandbox{
 		Id:          "sandbox",

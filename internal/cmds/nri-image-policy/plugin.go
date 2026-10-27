@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"os"
 	"slices"
 	"strings"
@@ -41,7 +42,10 @@ const (
 // last-applied CDS pull, tagged with that pull's version (the ETag counter).
 // Swapped as a unit; policyStore checks the base allowlist ahead of it.
 type policySnapshot struct {
-	index   *allowlist.Index
+	index *allowlist.Index
+	// pulled is the served document the index was built from: a pod's
+	// workload match, and so its exits, are read from its entries.
+	pulled  *allowlist.Allowlist
 	version uint64
 }
 
@@ -140,7 +144,7 @@ func (s *policyStore) apply(pulled *allowlist.Allowlist, version uint64) bool {
 	if s.rolledBack(version) {
 		return false
 	}
-	s.snap.Store(&policySnapshot{index: pulled.BuildIndex(), version: version})
+	s.snap.Store(&policySnapshot{index: pulled.BuildIndex(), pulled: pulled, version: version})
 	return true
 }
 
@@ -189,8 +193,8 @@ type plugin struct {
 	measurer workloadMeasurer
 
 	// cdsPins is the node-side path of the CDS attestation policy handed to
-	// the injected credential clients, or "" when the node pins nothing.
-	// prepareCDSPins sets it before any container can be created (cdspins.go).
+	// the injected credential clients, or "" when no pod of this node is
+	// injected. prepareCDSPins sets it before any container can be created (cdspins.go).
 	cdsPins string
 
 	// cdsAddress is the node-side path of the CDS endpoint handed to those
@@ -228,6 +232,7 @@ func newPlugin(
 	}
 	p.boot = newBootGate(cfg, logger)
 	p.mesh = newMeshGate(*cfg.Mesh, logger)
+	p.mesh.nodeAddress = func() (netip.Addr, error) { return nodeOwnAddress(cfg) }
 	logger.Info("mesh gate enabled",
 		"trusted_enforcement", cfg.requiresTrustedMeshEnforcement(),
 		"exempt_namespaces", cfg.Mesh.ExemptNamespaces)
@@ -1163,6 +1168,11 @@ func (p *plugin) StartContainer(ctx context.Context, pod *api.PodSandbox, ctr *a
 		if err := p.measureStarted(ctx, imageRef); err != nil {
 			return err
 		}
+		unlock := p.mesh.lockStarts(pod)
+		defer unlock()
+		if err := p.bindExits(ctx, pod, ctr, imageRef); err != nil {
+			return p.denyContainer(pod.GetId(), fmt.Errorf("mesh gate: container %s of pod %s/%s: %w", ctr.GetName(), pod.GetNamespace(), pod.GetName(), err))
+		}
 		// INVARIANT: the gate holds a member pod whether or not the first
 		// pull has settled, so the start that opens it is recorded on both
 		// paths. A role comes from the base alone, which is loaded at boot.
@@ -1180,6 +1190,11 @@ func (p *plugin) StartContainer(ctx context.Context, pod *api.PodSandbox, ctr *a
 	}
 	if err := p.measureStarted(ctx, imageRef); err != nil {
 		return err
+	}
+	unlock := p.mesh.lockStarts(pod)
+	defer unlock()
+	if err := p.bindExits(ctx, pod, ctr, imageRef); err != nil {
+		return p.denyContainer(pod.GetId(), fmt.Errorf("mesh gate: container %s of pod %s/%s: %w", ctr.GetName(), pod.GetNamespace(), pod.GetName(), err))
 	}
 	p.noteMeshStarted(ctx, pod, ctr, imageRef)
 	p.recordForInventory(ctx, pod, ctr, imageRef)

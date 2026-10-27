@@ -168,8 +168,9 @@ func TestCheckPeerKeyTypeRefusesNonECDSAKey(t *testing.T) {
 	}
 }
 
-// Evidence verification without a policy has no attestation-api to verify
-// against, so it must refuse rather than fall back to trusting the report.
+// Evidence verification without a policy names no guest and has no
+// attestation-api to verify against, so it must refuse rather than fall back to
+// trusting the report.
 func TestVerifyAttestationWithoutPolicyRefuses(t *testing.T) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -183,7 +184,7 @@ func TestVerifyAttestationWithoutPolicyRefuses(t *testing.T) {
 	if err == nil {
 		t.Fatal("verification without a policy succeeded")
 	}
-	if !errors.Is(err, ErrInvalidReport) {
-		t.Fatalf("error = %v, want ErrInvalidReport", err)
+	if !errors.Is(err, ErrUnpinned) {
+		t.Fatalf("error = %v, want ErrUnpinned", err)
 	}
 }
