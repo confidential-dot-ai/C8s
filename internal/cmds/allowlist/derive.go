@@ -89,9 +89,10 @@ func argvPolicy(argv []string) allowlist.ArgvPolicy {
 // imageArgv returns an image's baked Entrypoint and Cmd.
 type imageArgv func(image string) (entrypoint, cmd []string, err error)
 
-// deriveContainers pins each container's argv as the runtime resolves it: an
-// unset command runs the image's Entrypoint, and unset args run its Cmd only
-// when the command is unset too.
+// deriveContainers pins each container's argv as the runtime resolves it: the
+// kubelet expands the pod's command and args ($$ becomes $), an unset command
+// runs the image's Entrypoint, and unset args run its Cmd only when the
+// command is unset too.
 func deriveContainers(cs []templateContainer, resolve imageArgv) ([]allowlist.Container, error) {
 	out := make([]allowlist.Container, 0, len(cs))
 	for _, c := range cs {
@@ -103,7 +104,14 @@ func deriveContainers(cs []templateContainer, resolve imageArgv) ([]allowlist.Co
 		if err != nil {
 			return nil, fmt.Errorf("container %q: %w", c.Name, err)
 		}
-		command, args := c.Command, c.Args
+		command, err := allowlist.KubeletArgv(c.Command)
+		if err != nil {
+			return nil, fmt.Errorf("container %q command: %w", c.Name, err)
+		}
+		args, err := allowlist.KubeletArgv(c.Args)
+		if err != nil {
+			return nil, fmt.Errorf("container %q args: %w", c.Name, err)
+		}
 		if len(command) == 0 {
 			entrypoint, cmd, err := resolve(c.Image)
 			if err != nil {
