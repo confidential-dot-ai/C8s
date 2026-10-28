@@ -99,10 +99,10 @@ func TestFSMEdges(t *testing.T) {
 		de   DecreeEntry
 		want string
 	}{
-		{"genesis without pins", DecreeEntry{Decree: sign(Decree{IntentID: "g0", Kind: Genesis, BootstrapNode: "n0"}), AtMS: now, RootCert: ca.Cert.Raw, Key: key}, "genesis without the bootstrap replica's pins"},
-		{"genesis with a bad key", DecreeEntry{Decree: sign(Decree{IntentID: "g1", Kind: Genesis, BootstrapNode: "n0"}), AtMS: now, Pins: []string{"m1"}, RootCert: ca.Cert.Raw, Key: []byte("x")}, "mesh CA key:"},
-		{"genesis key mismatch", DecreeEntry{Decree: sign(Decree{IntentID: "g2", Kind: Genesis, BootstrapNode: "n0"}), AtMS: now, Pins: []string{"m1"}, RootCert: mustCA(t).Cert.Raw, Key: key}, "mesh CA key does not match its certificate"},
-		{"expired at entry time", DecreeEntry{Decree: sign(Decree{IntentID: "g3", Kind: Genesis, BootstrapNode: "n0"}), AtMS: time.Now().Add(2 * time.Hour).UnixMilli(), Pins: []string{"m1"}, RootCert: ca.Cert.Raw, Key: key}, "decree expired"},
+		{"genesis without pins", DecreeEntry{Decree: sign(Decree{IntentID: "g0", Kind: Genesis, BootstrapNode: "n0", GenesisCA: caFP(ca)}), AtMS: now, RootCert: ca.Cert.Raw, Key: key}, "genesis without the bootstrap replica's pins"},
+		{"genesis with a bad key", DecreeEntry{Decree: sign(Decree{IntentID: "g1", Kind: Genesis, BootstrapNode: "n0", GenesisCA: caFP(ca)}), AtMS: now, Pins: []string{"m1"}, RootCert: ca.Cert.Raw, Key: []byte("x")}, "mesh CA key:"},
+		{"genesis key mismatch", DecreeEntry{Decree: sign(Decree{IntentID: "g2", Kind: Genesis, BootstrapNode: "n0", GenesisCA: caFP(ca)}), AtMS: now, Pins: []string{"m1"}, RootCert: mustCA(t).Cert.Raw, Key: key}, "mesh CA key does not match its certificate"},
+		{"expired at entry time", DecreeEntry{Decree: sign(Decree{IntentID: "g3", Kind: Genesis, BootstrapNode: "n0", GenesisCA: caFP(ca)}), AtMS: time.Now().Add(2 * time.Hour).UnixMilli(), Pins: []string{"m1"}, RootCert: ca.Cert.Raw, Key: key}, "decree expired"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// Ordinary decree refusals must reach their own validation, not
@@ -120,7 +120,7 @@ func TestFSMEdges(t *testing.T) {
 			}
 		})
 	}
-	g := DecreeEntry{Policy: f.LocalPolicy(), Decree: sign(Decree{IntentID: "g", Kind: Genesis, BootstrapNode: "n0"}), AtMS: now, Pins: []string{"m1"}, RootCert: ca.Cert.Raw, Key: key}
+	g := DecreeEntry{Policy: f.LocalPolicy(), Decree: sign(Decree{IntentID: "g", Kind: Genesis, BootstrapNode: "n0", GenesisCA: caFP(ca)}), AtMS: now, Pins: []string{"m1"}, RootCert: ca.Cert.Raw, Key: key}
 	if res := apply(Entry{Kind: KindDecree, Decree: &g}).(DecreeResult); res.Err != "" || res.Epoch != 1 {
 		t.Fatalf("genesis: %+v", res)
 	}
@@ -468,7 +468,7 @@ func TestFSMRestoreKeepsLaunchIdentity(t *testing.T) {
 	f := newTestFSM(t, opPub)
 	ca := mustCA(t)
 	key, _ := x509.MarshalPKCS8PrivateKey(ca.Key)
-	g := DecreeEntry{Policy: f.LocalPolicy(), Decree: signDecree(t, opKey, Decree{IntentID: "g", Kind: Genesis, BootstrapNode: "n0"}),
+	g := DecreeEntry{Policy: f.LocalPolicy(), Decree: signDecree(t, opKey, Decree{IntentID: "g", Kind: Genesis, BootstrapNode: "n0", GenesisCA: caFP(ca)}),
 		AtMS: time.Now().UnixMilli(), Pins: []string{"m1"}, RootCert: ca.Cert.Raw, Key: key}
 	if res := applyAt(f, 1, Entry{Kind: KindDecree, Decree: &g}).(DecreeResult); res.Err != "" {
 		t.Fatalf("genesis: %+v", res)

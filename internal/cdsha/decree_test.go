@@ -64,11 +64,11 @@ func TestCheckDecree(t *testing.T) {
 		if d.TargetMember == "" && d.BootstrapNode != "" && (d.Kind == Genesis || d.Kind == Recover || d.Kind == Restore) {
 			d.TargetMember = d.BootstrapNode + "/1-a"
 		}
-		return signRaw(t, d, k)
+		return signRaw(t, startFields(d), k)
 	}
 	untargeted := func(d Decree) SignedDecree {
 		d.ClusterID, d.BaseEpoch, d.IntentID, d.ExpiresAt = testCluster, 3, "i", now.Add(time.Hour)
-		return signRaw(t, d, k)
+		return signRaw(t, startFields(d), k)
 	}
 	update := Decree{Kind: UpdateMeasurements, Measurements: []string{pin}, Images: []DecreeImage{img}}
 	tampered := sign(update)
@@ -295,7 +295,7 @@ func TestPinDecreeIsAgreedState(t *testing.T) {
 			t.Fatalf("entry %d: %s", i, res.Err)
 		}
 	}
-	apply(1, DecreeEntry{Policy: f.LocalPolicy(), Decree: signDecree(t, opKey, Decree{Kind: Genesis, BootstrapNode: "n0"}), Pins: []string{pinA}, RootCert: ca.Cert.Raw, Key: key})
+	apply(1, DecreeEntry{Policy: f.LocalPolicy(), Decree: signDecree(t, opKey, Decree{Kind: Genesis, BootstrapNode: "n0", GenesisCA: caFP(ca)}), Pins: []string{pinA}, RootCert: ca.Cert.Raw, Key: key})
 	if f.Core().PinsDecree != nil {
 		t.Fatal("a pin decree before any was applied")
 	}

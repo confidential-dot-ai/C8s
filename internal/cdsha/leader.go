@@ -654,12 +654,14 @@ func (n *Node) commitDecree(p PendingDecree) (DecreeStatus, bool) {
 		de.Policy = n.fsm.LocalPolicy()
 	}
 	if d.Kind == Genesis || d.Kind == RotateKey {
-		minted, err := issuer.NewMeshCA(n.cfg.CACommonName, n.cfg.CAValidity)
+		ca, err := n.genesisCA() // the CA the Genesis decree names (Decree.GenesisCA)
+		if d.Kind == RotateKey {
+			ca, err = mintCA(n.cfg)
+		}
 		if err != nil {
 			n.log.Error("mint mesh CA", "err", err)
 			return DecreeStatus{}, false
 		}
-		ca := minted.Current().CA
 		key, err := x509.MarshalPKCS8PrivateKey(ca.Key)
 		if err != nil {
 			n.log.Error("encode mesh CA key", "err", err)

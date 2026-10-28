@@ -31,7 +31,7 @@ func newRestartFixture(t *testing.T, genesisAt int64) *restartFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	g := DecreeEntry{Policy: x.f.LocalPolicy(), Decree: signDecree(t, op, Decree{Kind: Genesis, BootstrapNode: "n0"}),
+	g := DecreeEntry{Policy: x.f.LocalPolicy(), Decree: signDecree(t, op, Decree{Kind: Genesis, BootstrapNode: "n0", GenesisCA: caFP(ca)}),
 		AtMS: genesisAt, Pins: []string{"m1"}, RootCert: ca.Cert.Raw, Key: key}
 	x.apply(Entry{Kind: KindDecree, Decree: &g})
 	return x

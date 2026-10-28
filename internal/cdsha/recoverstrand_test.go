@@ -39,7 +39,7 @@ func TestRecoverPastAStrandedBarrierEndsRun(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- n.Run(ctx) }()
 	t.Cleanup(func() { release.Do(func() { close(held.release) }); cancel() })
-	ds.put(signDecree(t, key, Decree{Kind: Genesis, BootstrapNode: "stalled", TargetMember: n.ID(), Alone: true}))
+	ds.put(signDecree(t, key, Decree{Kind: Genesis, BootstrapNode: "stalled", TargetMember: n.ID(), GenesisCA: genesisCAOf(t, n), Alone: true}))
 	eventually(t, 10*time.Second, "stalled test leader serves", n.Serving)
 	held.hold.Store(true)
 	go func() { _ = r.Apply([]byte(`{}`), time.Second).Error() }()

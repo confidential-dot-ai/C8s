@@ -25,6 +25,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/sandboxledger"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
+	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 )
 
 // Core is the cluster state every replica agrees on through the Raft log:
@@ -49,7 +50,7 @@ type Core struct {
 	// Restore or Recover since. Single-use operator tokens issued before it
 	// are refused: no replica can know whether they were spent in an earlier
 	// life of the cluster, or after the backup a Restore rolled back to, or
-	// by the replicas a Recover left behind.
+	// by the replicas a Recover left behind. Set to startMS.
 	GenesisAtMS int64 `json:"genesis_at_ms,omitempty"`
 	// Format is the encoding every replica writes (see Format). 0 is baseFormat.
 	Format uint32 `json:"format,omitempty"`
@@ -518,7 +519,7 @@ func (f *FSM) applyDecree(de DecreeEntry) DecreeResult {
 		return DecreeResult{Epoch: f.core.Epoch, Err: err.Error()}
 	}
 	if k := de.Decree.Decree.Kind; k == Genesis || k == Recover {
-		if err := f.raiseVersion(de.AtMS); err != nil {
+		if err := f.raiseVersion(startMS(de.Decree.Decree, de.AtMS)); err != nil {
 			return DecreeResult{Epoch: f.core.Epoch, Err: err.Error()}
 		}
 	}
@@ -584,11 +585,12 @@ func (f *FSM) applyRestore(re RestoreEntry) DecreeResult {
 	if err := sn.Core.resumeAfter(resume, re.Decree.Decree.IntentID, sn.Index); err != nil {
 		return fail(err)
 	}
-	sn.Core.GenesisAtMS = re.AtMS
+	start := startMS(re.Decree.Decree, re.AtMS)
+	sn.Core.GenesisAtMS = start
 	if err := f.restore(sn); err != nil {
 		return fail(err)
 	}
-	if err := f.raiseVersion(re.AtMS); err != nil {
+	if err := f.raiseVersion(start); err != nil {
 		return fail(err)
 	}
 	f.mu.Lock()
@@ -597,18 +599,23 @@ func (f *FSM) applyRestore(re RestoreEntry) DecreeResult {
 	return DecreeResult{Epoch: sn.Core.Epoch}
 }
 
+// startMS is when a cluster that starts again (Genesis, Restore, Recover)
+// starts: the later of the operator-signed issued_at and the start entry's
+// leader-stamped time. A replica clock set back cannot move it before the
+// operator signed; one set forward cannot move it past the decree's expiry,
+// since CheckDecree refuses the decree at that time.
+func startMS(d Decree, atMS int64) int64 { return max(d.IssuedAtMS, atMS) }
+
 // raiseVersion moves the allowlist version of a cluster that starts again
-// (Genesis, Restore, Recover) to at least atMS, the start entry's
-// leader-stamped time. Node enforcers ignore a version below the one they
-// applied and answer an equal one from cache, so a version that went back with
-// the restored or surviving state would keep every later write, revocations
-// included, from the nodes.
+// (Genesis, Restore, Recover) to at least atMS, its startMS. Node enforcers
+// ignore a version below the one they applied and answer an equal one from
+// cache, so a version that went back with the restored or surviving state
+// would keep every later write, revocations included, from the nodes.
 //
 // INVARIANT: the served version never decreases across a restart, provided
-// the stamping leader's clock is not behind the time of the highest version
-// the earlier life served (its start time plus its writes, each a single-use
-// operator token). If it is behind, nodes keep the last allowlist they
-// applied until the version passes theirs.
+// the operator signed the start decree after the earlier life's highest
+// version: its start time plus its writes, each a single-use operator token,
+// which stays below the time of the loss. The replicas' clocks do not matter.
 //
 // The input is the logged entry, so every replica sets the same version. A
 // failure is this replica's store: it stops and rejoins.
@@ -642,6 +649,12 @@ func nextCore(cur Core, de DecreeEntry, from uint64) (Core, *issuer.CA, error) {
 	}
 	switch d.Kind {
 	case Genesis:
+		// INVARIANT: the mesh CA is the one the operator signed. RootCert,
+		// Key and Pins are chosen by whoever logged the entry; caFromDER
+		// ties Key to RootCert, this ties RootCert to the decree.
+		if certutil.CertFingerprint(de.RootCert) != d.GenesisCA {
+			return Core{}, nil, errors.New("genesis mesh CA differs from the one the decree names")
+		}
 		if err := de.Policy.Validate(); err != nil {
 			return Core{}, nil, err
 		}
@@ -653,9 +666,9 @@ func nextCore(cur Core, de DecreeEntry, from uint64) (Core, *issuer.CA, error) {
 			return Core{}, nil, errors.New("genesis without the bootstrap replica's pins")
 		}
 		next.Measurements = pins
-		next.GenesisAtMS = de.AtMS
+		next.GenesisAtMS = startMS(d, de.AtMS)
 	case Recover:
-		next.GenesisAtMS = de.AtMS
+		next.GenesisAtMS = startMS(d, de.AtMS)
 	case SetVoters:
 		next.Seats = d.Voters
 	case UpdateMeasurements, RotateKey:

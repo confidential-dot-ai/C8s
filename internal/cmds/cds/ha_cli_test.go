@@ -115,7 +115,8 @@ func TestHADecreeCLI(t *testing.T) {
 	allowPlainHTTP = true
 	key, _ := testKeyPEM(t)
 	keyPath := writeKey(t, key)
-	fresh, _ := statusServer(t, cdsha.Status{ClusterID: "c1", NodeName: "n0", ID: "n0/1-aa"}, false)
+	fresh, _ := statusServer(t, cdsha.Status{ClusterID: "c1", NodeName: "n0", ID: "n0/1-aa", GenesisCA: "ca-of-n0"}, false)
+	signing := time.Now().UnixMilli()
 	out, err := runHA(t, "decree", "--cluster-id", "c1", "--operator-key", keyPath, "--kind", "Genesis", "--target-url", fresh.URL, "--target-insecure")
 	if err != nil {
 		t.Fatal(err)
@@ -133,6 +134,9 @@ func TestHADecreeCLI(t *testing.T) {
 	}
 	if sd.Decree.TargetMember != "n0/1-aa" || sd.Decree.BootstrapNode != "n0" || sd.Decree.Alone {
 		t.Fatalf("Genesis not bound to the target's process: %+v", sd.Decree)
+	}
+	if sd.Decree.GenesisCA != "ca-of-n0" || sd.Decree.IssuedAtMS < signing || sd.Decree.IssuedAtMS > time.Now().UnixMilli() {
+		t.Fatalf("Genesis not bound to the target's mesh CA and the signing time: %+v", sd.Decree)
 	}
 	pub, _ := x509.MarshalPKIXPublicKey(&key.PublicKey)
 	if err := cdsha.CheckDecree(sd, cdsha.PreGenesis("c1", pub), time.Now()); err != nil {
@@ -161,7 +165,8 @@ func TestHADecreeCLIRefusals(t *testing.T) {
 	allowPlainHTTP = true
 	key, _ := testKeyPEM(t)
 	p := writeKey(t, key)
-	fresh, _ := statusServer(t, cdsha.Status{ClusterID: "c1", NodeName: "n0", ID: "n0/1-aa"}, false)
+	fresh, _ := statusServer(t, cdsha.Status{ClusterID: "c1", NodeName: "n0", ID: "n0/1-aa", GenesisCA: "ca-of-n0"}, false)
+	noCA, _ := statusServer(t, cdsha.Status{ClusterID: "c1", NodeName: "n0", ID: "n0/1-aa"}, false)
 	joined, _ := statusServer(t, cdsha.Status{ClusterID: "c1", NodeName: "n1", ID: "n1/2-bb", Joined: true, Voters: []string{"n1/2-bb"}}, false)
 	nonVoter, _ := statusServer(t, cdsha.Status{ClusterID: "c1", NodeName: "n1", ID: "n1/2-bb", Joined: true, Voters: []string{"n0/1-aa"}, NonVoters: []string{"n1/2-bb"}}, false)
 	other, _ := statusServer(t, cdsha.Status{ClusterID: "c2", NodeName: "n0", ID: "n0/1-aa"}, false)
@@ -183,6 +188,7 @@ func TestHADecreeCLIRefusals(t *testing.T) {
 		"resume epoch on another kind":          {[]string{"--kind", "SetVoters", "--voters", "3", "--base-epoch", "3", "--resume-epoch", "4"}, "for Recover only"},
 		"target on another node":                {append([]string{"--kind", "Genesis", "--bootstrap-node", "n2"}, tgt(fresh)...), "not --bootstrap-node"},
 		"target of another cluster":             {append([]string{"--kind", "Genesis"}, tgt(other)...), "of cluster"},
+		"Genesis to a replica without its CA":   {append([]string{"--kind", "Genesis"}, tgt(noCA)...), "no genesis_ca"},
 		"plaintext target without insecure":     {[]string{"--kind", "Genesis", "--target-url", fresh.URL}, "refusing plaintext"},
 		"alone on Recover":                      {append([]string{"--kind", "Recover", "--alone", "--base-epoch", "3", "--i-understand-recover-is-break-glass"}, tgt(joined)...), "Genesis only"},
 		"UpdateMeasurements naming a node":      {[]string{"--kind", "UpdateMeasurements", "--measurements", "m", "--base-epoch", "3", "--bootstrap-node", "n1"}, "for Genesis and Recover only"},
@@ -592,7 +598,7 @@ func TestPreJoinRestoreHandler(t *testing.T) {
 	if call(http.MethodPost, "/ha/restore", "{") != http.StatusBadRequest {
 		t.Fatal("malformed restore")
 	}
-	sd, _ := cdsha.SignDecree(cdsha.Decree{ClusterID: "c1", IntentID: "r", Kind: cdsha.Restore, BootstrapNode: "n9", TargetMember: "n9/1-a",
+	sd, _ := cdsha.SignDecree(cdsha.Decree{ClusterID: "c1", IntentID: "r", Kind: cdsha.Restore, BootstrapNode: "n9", TargetMember: "n9/1-a", IssuedAtMS: 1,
 		SnapshotSHA256: cdsha.SnapshotSHA256([]byte("s")), ExpiresAt: time.Now().Add(time.Hour)}, k)
 	body, _ := json.Marshal(RestoreRequest{Decree: sd, Snapshot: []byte("s")})
 	// 409 until Run is up; then a restore for another node is misdirected.

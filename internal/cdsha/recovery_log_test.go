@@ -57,7 +57,7 @@ func TestRecoveryConfigurationTailPreservesState(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer n.shutdown()
-			genesis := signDecree(t, key, Decree{Kind: Genesis, BootstrapNode: "n0", TargetMember: n.ID(), Alone: true})
+			genesis := signDecree(t, key, Decree{Kind: Genesis, BootstrapNode: "n0", TargetMember: n.ID(), GenesisCA: genesisCAOf(t, n), Alone: true})
 			n.bootstrap(context.Background(), PendingDecree{Name: "genesis", Decree: genesis})
 			if !n.Core().Joined() {
 				t.Fatal("genesis not applied")

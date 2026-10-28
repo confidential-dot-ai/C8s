@@ -329,6 +329,9 @@ func (c *cluster) decree(d Decree) string {
 	if d.TargetMember == "" && (d.Kind == Genesis || d.Kind == Recover || d.Kind == Restore) {
 		d.TargetMember = c.memberOf(d.BootstrapNode)
 	}
+	if d.GenesisCA == "" && d.Kind == Genesis {
+		d.GenesisCA = c.genesisCAOf(d.BootstrapNode)
+	}
 	return c.decrees.put(signDecree(c.t, c.opKey, d))
 }
 
@@ -340,6 +343,17 @@ func (c *cluster) memberOf(name string) string {
 		return r.node.ID()
 	}
 	return name + "/0-none"
+}
+
+// genesisCAOf is the GenesisCA of the replica running on node name.
+func (c *cluster) genesisCAOf(name string) string {
+	c.mu.Lock()
+	r := c.nodes[name]
+	c.mu.Unlock()
+	if r == nil {
+		return "none"
+	}
+	return genesisCAOf(c.t, r.node)
 }
 
 func (c *cluster) live() []*replica {

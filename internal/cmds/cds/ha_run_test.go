@@ -107,7 +107,7 @@ func (c *haTestCluster) postGenesis(base string) {
 		return resp.StatusCode == http.StatusOK && json.NewDecoder(resp.Body).Decode(&st) == nil && st.ID != ""
 	})
 	sd, err := cdsha.SignDecree(cdsha.Decree{ClusterID: "c1", IntentID: "genesis", Kind: cdsha.Genesis,
-		BootstrapNode: "n0", TargetMember: st.ID, ExpiresAt: time.Now().Add(time.Hour)}, c.opKey)
+		BootstrapNode: "n0", TargetMember: st.ID, GenesisCA: st.GenesisCA, IssuedAtMS: time.Now().UnixMilli(), ExpiresAt: time.Now().Add(time.Hour)}, c.opKey)
 	if err != nil {
 		c.t.Fatal(err)
 	}

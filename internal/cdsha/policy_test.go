@@ -96,7 +96,7 @@ func TestGenesisPersistsExactPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	makeEntry := func(p FSMPolicy) DecreeEntry {
-		return DecreeEntry{Policy: p, Decree: signDecree(t, key, Decree{Kind: Genesis, BootstrapNode: "n0"}), AtMS: time.Now().UnixMilli(), Pins: []string{"m1"}, RootCert: ca.Cert.Raw, Key: der}
+		return DecreeEntry{Policy: p, Decree: signDecree(t, key, Decree{Kind: Genesis, BootstrapNode: "n0", GenesisCA: caFP(ca)}), AtMS: time.Now().UnixMilli(), Pins: []string{"m1"}, RootCert: ca.Cert.Raw, Key: der}
 	}
 	f := newTestFSM(t, pub)
 	f.core.Policy = FSMPolicy{}

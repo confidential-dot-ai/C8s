@@ -87,6 +87,9 @@ func (s *solo) decree(d Decree) string {
 	if d.Kind == Genesis || d.Kind == Recover || d.Kind == Restore {
 		d.TargetMember, d.Alone = s.node.ID(), d.Kind == Genesis
 	}
+	if d.Kind == Genesis {
+		d.GenesisCA = genesisCAOf(s.t, s.node)
+	}
 	return s.decrees.put(signDecree(s.t, s.opKey, d))
 }
 
@@ -317,7 +320,7 @@ func TestPendingBootstrapDecreesUnusable(t *testing.T) {
 	}
 	expired := signDecree(t, k, Decree{IntentID: "r", Kind: Recover, BootstrapNode: "n0", TargetMember: n.ID(), ExpiresAt: time.Now().Add(-time.Minute)})
 	ds.items["r"] = expired
-	gen := signDecree(t, k, Decree{IntentID: "g", Kind: Genesis, BootstrapNode: "n0", TargetMember: n.ID(), ExpiresAt: time.Now().Add(-time.Minute)})
+	gen := signDecree(t, k, Decree{IntentID: "g", Kind: Genesis, BootstrapNode: "n0", TargetMember: n.ID(), GenesisCA: genesisCAOf(t, n), ExpiresAt: time.Now().Add(-time.Minute)})
 	ds.items["g"] = gen
 	ctx := context.Background()
 	if _, ok := n.pendingDecree(ctx, Recover); ok {

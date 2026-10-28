@@ -276,7 +276,7 @@ func newClusterWithRaftTiming(t *testing.T, heartbeat, election time.Duration, e
 	// The operator reads the bootstrap replica's member ID from its status
 	// and signs the Genesis decree for that process.
 	c.PutDecree(cdsha.Decree{ClusterID: clusterID, IntentID: "genesis", Kind: cdsha.Genesis,
-		BootstrapNode: "n1", TargetMember: c.MemberID(0), ExpiresAt: time.Now().Add(time.Hour)}, nil)
+		BootstrapNode: "n1", TargetMember: c.MemberID(0), GenesisCA: c.genesisCA(0), ExpiresAt: time.Now().Add(time.Hour)}, nil)
 	c.WaitAllServing(60 * time.Second)
 	// Operator tokens are refused until the clock skew (1 s) has passed
 	// since Genesis.
@@ -429,6 +429,9 @@ func (c *Cluster) PutDecree(d cdsha.Decree, key *ecdsa.PrivateKey) string {
 	c.t.Helper()
 	if key == nil {
 		key = c.OpKey
+	}
+	if d.IssuedAtMS == 0 && (d.Kind == cdsha.Genesis || d.Kind == cdsha.Recover || d.Kind == cdsha.Restore) {
+		d.IssuedAtMS = time.Now().UnixMilli() // as `c8s cds ha decree` does
 	}
 	sd, err := cdsha.SignDecree(d, key)
 	if err != nil {
@@ -584,6 +587,14 @@ func (c *Cluster) MemberID(i int) string {
 		return ok && st.ID != ""
 	}, func() string { return c.Replicas[i].Node + " reports no member id" })
 	return st.ID
+}
+
+// genesisCA is the mesh CA fingerprint replica i reports before it joins:
+// what a Genesis decree for it names.
+func (c *Cluster) genesisCA(i int) string {
+	c.t.Helper()
+	st, _ := c.Status(i)
+	return st.GenesisCA
 }
 
 // Status is replica i's /ha/status (ok=false when unreachable).

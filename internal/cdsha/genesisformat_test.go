@@ -16,7 +16,7 @@ func TestGenesisStartsAtTheBaseFormat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	g := DecreeEntry{Policy: f.LocalPolicy(), Decree: signDecree(t, opKey, Decree{Kind: Genesis, BootstrapNode: "n0"}),
+	g := DecreeEntry{Policy: f.LocalPolicy(), Decree: signDecree(t, opKey, Decree{Kind: Genesis, BootstrapNode: "n0", GenesisCA: caFP(ca)}),
 		AtMS: time.Now().UnixMilli(), Pins: []string{"m1"}, RootCert: ca.Cert.Raw, Key: key}
 	if res := applyAt(f, 1, Entry{Kind: KindDecree, Decree: &g}).(DecreeResult); res.Err != "" {
 		t.Fatalf("genesis: %+v", res)

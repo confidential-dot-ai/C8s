@@ -105,7 +105,7 @@ func newHARecoverCmd() *cobra.Command {
 			expires := time.Now().Add(expiresIn).UTC().Truncate(time.Second)
 			sign := func(member string) ([]byte, error) {
 				sd, err := cdsha.SignDecree(cdsha.Decree{ClusterID: clusterID, IntentID: intent, Kind: cdsha.Restore, BootstrapNode: node,
-					TargetMember: member, ResumeEpoch: resumeEpoch, SnapshotSHA256: cdsha.SnapshotSHA256(snap), ExpiresAt: expires, Alone: alone}, dk)
+					IssuedAtMS: time.Now().UnixMilli(), TargetMember: member, ResumeEpoch: resumeEpoch, SnapshotSHA256: cdsha.SnapshotSHA256(snap), ExpiresAt: expires, Alone: alone}, dk)
 				if err != nil {
 					return nil, err
 				}

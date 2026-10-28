@@ -125,6 +125,16 @@ type Decree struct {
 	// back to the backup's or the survivor's. 0 resumes after the epoch of
 	// the state the decree starts from; the CLI always sets it.
 	ResumeEpoch uint64 `json:"resume_epoch,omitempty"`
+	// IssuedAtMS is when the operator signed a Genesis, Restore or Recover
+	// decree (Unix ms, the operator's clock). The cluster's start time is at
+	// least this (startMS), so the token floor and the allowlist version a
+	// start sets never depend on a replica's clock going back.
+	IssuedAtMS int64 `json:"issued_at_ms,omitempty"`
+	// GenesisCA binds a Genesis decree to the mesh CA its target replica
+	// minted (Status.GenesisCA, the SHA-256 of the CA certificate). Every
+	// replica refuses a Genesis entry carrying another CA, so a replica that
+	// replays the cluster's real Genesis cannot install a key of its own.
+	GenesisCA string `json:"genesis_ca,omitempty"`
 	// Images are the launch identities behind Measurements, for clients
 	// outside the group (node agents, pods) that pin CDS by its full launch
 	// identity rather than by a replica pin. When set, Measurements must be
@@ -266,6 +276,10 @@ func verifyDecree(sd SignedDecree, tail Core) error {
 		return errors.New("only a Restore or Recover decree names the epoch it resumes after (resume_epoch)")
 	case (d.Kind == Restore) != (d.SnapshotSHA256 != ""):
 		return errors.New("a Restore decree, and only one, names the snapshot it restores")
+	case (d.Kind == Genesis || d.Kind == Recover || d.Kind == Restore) != (d.IssuedAtMS > 0):
+		return errors.New("a Genesis, Recover or Restore decree, and only one, names when it was issued (issued_at_ms): re-sign it")
+	case (d.Kind == Genesis) != (d.GenesisCA != ""):
+		return errors.New("a Genesis decree, and only one, names the mesh CA of its target (genesis_ca from /ha/status): re-sign it")
 	case (d.Kind == Genesis || d.Kind == Recover || d.Kind == Restore) && d.BootstrapNode == "":
 		return errors.New("a Genesis, Recover or Restore decree must name its node")
 	case d.Kind != Genesis && d.Kind != Recover && d.Kind != Restore && d.BootstrapNode != "":

@@ -26,6 +26,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/sandboxledger"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
@@ -68,11 +69,22 @@ func signDecree(t *testing.T, key *ecdsa.PrivateKey, d Decree) SignedDecree {
 	if d.TargetMember == "" && (d.Kind == Genesis || d.Kind == Recover || d.Kind == Restore) {
 		d.TargetMember = d.BootstrapNode + "/0-unbound" // the tests that act on it name a real member
 	}
-	sd, err := SignDecree(d, key)
+	sd, err := SignDecree(startFields(d), key)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return sd
+}
+
+// startFields fills what a start decree must carry and a test did not set.
+func startFields(d Decree) Decree {
+	if d.IssuedAtMS == 0 && (d.Kind == Genesis || d.Kind == Recover || d.Kind == Restore) {
+		d.IssuedAtMS = 1 // signed long ago: the entry's AtMS sets the start; tests of the floor set it
+	}
+	if d.GenesisCA == "" && d.Kind == Genesis {
+		d.GenesisCA = "unbound" // the tests that apply it name the entry's CA
+	}
+	return d
 }
 
 // memDecrees stands in for the decree ConfigMaps. failList and failStatus
@@ -262,6 +274,28 @@ func mustCA(t *testing.T) *issuer.CA {
 		t.Fatal(err)
 	}
 	return mesh.Current().CA
+}
+
+// genesisCAOf is the GenesisCA a Genesis decree naming n carries.
+func genesisCAOf(t *testing.T, n *Node) string {
+	t.Helper()
+	ca, err := n.genesisCA()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return certutil.CertFingerprint(ca.Cert.Raw)
+}
+
+// caFP is the GenesisCA of a Genesis entry that carries ca.
+func caFP(ca *issuer.CA) string { return certutil.CertFingerprint(ca.Cert.Raw) }
+
+func mustPKCS8(t *testing.T, ca *issuer.CA) []byte {
+	t.Helper()
+	der, err := x509.MarshalPKCS8PrivateKey(ca.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return der
 }
 
 // withDigests gives a hand-built snapshot the digests and chain a replica

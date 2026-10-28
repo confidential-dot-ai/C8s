@@ -208,11 +208,14 @@ Node enforcers order documents by the version: they ignore a version below the
 one they applied, and `If-None-Match` on an equal one is answered 304. With CDS
 HA, an event that starts the cluster again (Genesis, Restore of a backup,
 Recover on a survivor) therefore raises the version to at least its start time
-in Unix milliseconds, as stamped by the leader. Later writes add one each, so
-writes applied again after a Restore reach the nodes. This holds while the
-leader's clock at that event is not behind the time of the last version nodes
-saw. If it is behind, nodes keep the last allowlist they applied, entries
-revoked since included, until the version passes theirs.
+in Unix milliseconds: the later of the `issued_at_ms` the operator signed into
+the decree and the leader's time when it applied. Later writes add one each, so
+writes applied again after a Restore reach the nodes. Replica clocks cannot
+move the start back: it holds as long as the operator signs the decree after
+the loss, on a clock that is not behind the one that signed the earlier
+life's write tokens. The token floor (tokens issued before the start are
+refused) is the same start time. A replica clock set forward moves both at
+most to the decree's `expires_at`, since the decree is refused after it.
 
 `PUT /allowlist` takes `If-Match: "N"`, the strong tag of version N, the N of
 the ETag `W/"N"` that `GET /allowlist` serves. CDS replaces the document only

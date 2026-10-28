@@ -40,7 +40,7 @@ func TestReconcileDoesNotResurrectReplacedIncarnation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	genesis := DecreeEntry{Policy: n.fsm.LocalPolicy(), Decree: signDecree(t, key, Decree{Kind: Genesis, BootstrapNode: "n0"}), AtMS: time.Now().UnixMilli(), Pins: []string{"m1"}, RootCert: ca.Cert.Raw, Key: der}
+	genesis := DecreeEntry{Policy: n.fsm.LocalPolicy(), Decree: signDecree(t, key, Decree{Kind: Genesis, BootstrapNode: "n0", GenesisCA: caFP(ca)}), AtMS: time.Now().UnixMilli(), Pins: []string{"m1"}, RootCert: ca.Cert.Raw, Key: der}
 	resp, err := n.applyEntry(Entry{Kind: KindDecree, Decree: &genesis})
 	if err != nil {
 		t.Fatal(err)
@@ -192,7 +192,7 @@ func membershipModelLeader(t *testing.T) (*Node, *ecdsa.PrivateKey) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	genesis := DecreeEntry{Policy: n.fsm.LocalPolicy(), Decree: signDecree(t, key, Decree{Kind: Genesis, BootstrapNode: "n0"}), AtMS: time.Now().UnixMilli(), Pins: []string{"m1"}, RootCert: ca.Cert.Raw, Key: der}
+	genesis := DecreeEntry{Policy: n.fsm.LocalPolicy(), Decree: signDecree(t, key, Decree{Kind: Genesis, BootstrapNode: "n0", GenesisCA: caFP(ca)}), AtMS: time.Now().UnixMilli(), Pins: []string{"m1"}, RootCert: ca.Cert.Raw, Key: der}
 	resp, err := n.applyEntry(Entry{Kind: KindDecree, Decree: &genesis})
 	if err != nil {
 		t.Fatal(err)

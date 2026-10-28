@@ -297,7 +297,7 @@ func TestReadBarrierStalledFSMBoundsWaitersAndShutsDown(t *testing.T) {
 	done := make(chan struct{})
 	go func() { defer close(done); _ = n.Run(ctx) }()
 	t.Cleanup(func() { release.Do(func() { close(held.release) }); cancel(); <-done })
-	ds.put(signDecree(t, key, Decree{Kind: Genesis, BootstrapNode: "stalled", TargetMember: n.ID(), Alone: true}))
+	ds.put(signDecree(t, key, Decree{Kind: Genesis, BootstrapNode: "stalled", TargetMember: n.ID(), GenesisCA: genesisCAOf(t, n), Alone: true}))
 	eventually(t, 10*time.Second, "stalled test leader serves", n.Serving)
 	cert, err := n.confirmRead(time.Second)
 	if err != nil {

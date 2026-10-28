@@ -161,6 +161,11 @@ type Node struct {
 	measurement   string
 	log           *slog.Logger
 
+	// genesisCA is the mesh CA this process installs if a Genesis decree
+	// names it: minted once, its certificate's fingerprint reported in
+	// Status.GenesisCA and signed into the decree.
+	genesisCA func() (*issuer.CA, error)
+
 	jumpAt        atomic.Int64 // Unix ms of the last clock jump not yet cleared by fresh contact
 	readCert      atomic.Pointer[readCertificate]
 	barrierGate   chan struct{}             // one pending Barrier, including timed-out callers
@@ -321,6 +326,10 @@ type Status struct {
 	// AwaitingRestore: no cluster seen for DeadAfter (see AwaitingRestore).
 	// Advice for the operator only: a partitioned replica shows it too.
 	AwaitingRestore bool `json:"awaiting_restore,omitempty"`
+	// GenesisCA (not joined) is the SHA-256 fingerprint of the mesh CA
+	// certificate this process installs if a Genesis decree names it
+	// (Decree.GenesisCA).
+	GenesisCA string `json:"genesis_ca,omitempty"`
 }
 
 // BackupStatus is a stored backup: the state it holds, when it was taken
@@ -412,10 +421,20 @@ func NewNode(cfg Config) (*Node, error) {
 		return nil, err
 	}
 	n.cert.Store(&cert)
+	n.genesisCA = sync.OnceValues(func() (*issuer.CA, error) { return mintCA(cfg) })
 	n.launchPins = slices.Concat(cfg.BakedPins, cfg.PeerPins)
 	n.verifier = peerVerifier{clusterID: cfg.ClusterID, att: cfg.Attestor, anchor: own.Anchor, pins: n.peerPins}
 	n.tls = peerTLSConfig(n.cert.Load)
 	return n, nil
+}
+
+// mintCA mints a mesh CA under the launch configuration's name and validity.
+func mintCA(cfg Config) (*issuer.CA, error) {
+	mesh, err := issuer.NewMeshCA(cfg.CACommonName, cfg.CAValidity)
+	if err != nil {
+		return nil, err
+	}
+	return mesh.Current().CA, nil
 }
 
 // peerCertLife is how long a peer certificate lasts; renewPeerCert
@@ -1485,6 +1504,11 @@ func (n *Node) Status() Status {
 	st := Status{ClusterID: n.cfg.ClusterID, NodeName: n.cfg.NodeName, ID: string(n.id), Joined: core.Joined(),
 		Epoch: core.Epoch, Measurement: n.measurement, AppliedIndex: n.fsm.AppliedIndex(),
 		Format: core.format(), Reads: n.fsm.readable, Stuck: n.fsm.Stuck(), StuckLocal: n.fsm.StuckLocal(), Seats: n.seats(), AwaitingRestore: n.AwaitingRestore()}
+	if !st.Joined {
+		if ca, err := n.genesisCA(); err == nil {
+			st.GenesisCA = certutil.CertFingerprint(ca.Cert.Raw)
+		}
+	}
 	if n.r() != nil && n.leading() {
 		if p := n.backupErr.Load(); p != nil {
 			st.BackupError = *p

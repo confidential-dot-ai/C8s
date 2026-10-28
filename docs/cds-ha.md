@@ -26,7 +26,15 @@ What Genesis relies on:
   inside the TD at every start and never stores it.
 - `c8s cds ha decree --target-url` reads the member ID over armTLS (the
   `--target-*` flags are the usual connection flags) and signs it into the
-  decree (`target_member`). It refuses a replica that already holds a cluster
+  decree (`target_member`), with the fingerprint of the mesh CA that process
+  minted (`genesis_ca`). Every replica refuses a Genesis entry whose CA is
+  another one, so a peer that replays the decree cannot install a key of its
+  own. A peer that holds the genuine Genesis key (an image that was a member)
+  can still replay it: keep removed images out of launch documents' peer
+  images. The decree also carries the time the operator signed it
+  (`issued_at_ms`, as do Recover and Restore): the cluster's start time, which
+  orders operator tokens and the allowlist version, is never before it.
+  The command refuses a replica that already holds a cluster
   or runs on another node than `--bootstrap-node` (default: the target's
   node). It never takes a member ID from anything but the verified replica.
 - The replica starts the cluster only when peer discovery shows at least one
@@ -45,8 +53,9 @@ This release reads and writes state format **4** (SQLite snapshot images; the
 replicated state records, per epoch, the index it was made from, and the
 one-shot decrees carry `target_member`). Formats 2 and 3 are not supported
 here. Old backups (sealed as `c8s-cds-ha-backup-v2`) are refused, not
-migrated. Genesis, Recover and Restore decrees signed without `target_member`
-are refused with an error that names the missing field: re-sign them.
+migrated. Genesis, Recover and Restore decrees signed without `target_member` or
+`issued_at_ms`, and Genesis decrees without `genesis_ca`, are refused with an
+error that names the missing field: re-sign them.
 Peer binding v2 also differs from the earlier v1 certificate binding; changing
 measurement pins does not make those protocols interoperable.
 

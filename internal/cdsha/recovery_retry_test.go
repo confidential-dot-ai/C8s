@@ -40,7 +40,7 @@ func TestRecoveryFatalReplayRetryDoesNotRestart(t *testing.T) {
 			done := make(chan struct{})
 			go func() { defer close(done); _ = n.Run(ctx) }()
 			t.Cleanup(func() { cancel(); <-done; n.shutdown() })
-			ds.put(signDecree(t, key, Decree{Kind: Genesis, BootstrapNode: "n0", TargetMember: n.ID(), Alone: true}))
+			ds.put(signDecree(t, key, Decree{Kind: Genesis, BootstrapNode: "n0", TargetMember: n.ID(), GenesisCA: genesisCAOf(t, n), Alone: true}))
 			eventually(t, 5*time.Second, "Genesis", n.Serving)
 			at := time.Now().UnixMilli()
 			if got, err := n.applyEntry(Entry{Kind: KindBinding, Binding: &sandboxledger.Command{SandboxID: "s", Host: "original", AtMS: at}}); err != nil || got != true {

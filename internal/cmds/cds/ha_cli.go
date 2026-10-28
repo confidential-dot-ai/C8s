@@ -127,6 +127,9 @@ func newHADecreeCmd() *cobra.Command {
 				d.IntentID = cdsha.NewIntentID()
 			}
 			d.ExpiresAt = time.Now().Add(expiresIn).UTC().Truncate(time.Second)
+			if d.Kind == cdsha.Genesis || d.Kind == cdsha.Recover || d.Kind == cdsha.Restore {
+				d.IssuedAtMS = time.Now().UnixMilli()
+			}
 			sd, err := cdsha.SignDecree(d, key)
 			if err != nil {
 				return err
@@ -206,12 +209,17 @@ func bindTarget(d *cdsha.Decree, st cdsha.Status) error {
 		return errors.New("the target replica reports no member id")
 	case d.Kind == cdsha.Genesis && st.Joined:
 		return errors.New("the target replica already holds a cluster: Genesis is only for a cluster that was never started")
+	case d.Kind == cdsha.Genesis && st.GenesisCA == "":
+		return errors.New("the target replica reports no genesis_ca: it runs a build that cannot take this Genesis")
 	case d.Kind == cdsha.Recover && !st.Joined:
 		return errors.New("the target replica holds no cluster: Recover carries on a survivor's state (a total loss is `c8s cds ha recover`)")
 	case d.Kind == cdsha.Recover && !slices.Contains(st.Voters, st.ID):
 		return errors.New("the target replica is not a voter: it may lack committed writes; name a surviving voter")
 	}
 	d.BootstrapNode, d.TargetMember = st.NodeName, st.ID
+	if d.Kind == cdsha.Genesis {
+		d.GenesisCA = st.GenesisCA
+	}
 	return nil
 }
 
