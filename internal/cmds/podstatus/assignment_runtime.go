@@ -202,8 +202,12 @@ func restartAssignmentRuntime(ctx context.Context) error {
 }
 
 func assignmentHealth(ctx context.Context, uid string) error {
+	return assignmentHealthAt(ctx, uid, "/run/nri-image-policy/health.sock")
+}
+
+func assignmentHealthAt(ctx context.Context, uid, socket string) error {
 	transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-		return (&net.Dialer{}).DialContext(ctx, "unix", "/run/nri-image-policy/health.sock")
+		return (&net.Dialer{}).DialContext(ctx, "unix", socket)
 	}}
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
