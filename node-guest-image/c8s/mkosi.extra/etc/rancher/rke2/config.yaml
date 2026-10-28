@@ -76,3 +76,6 @@ kube-apiserver-arg:
   - audit-log-maxbackup=10
   - audit-log-maxsize=100
   - audit-policy-file=/etc/rancher/rke2/audit-policy.yaml
+# Throttles kube-apiserver's exec startup probe, denied forever on the locked image: docs/node-exec-mode.md
+control-plane-probe-configuration:
+  - kube-apiserver-startup-period-seconds=300
