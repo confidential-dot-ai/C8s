@@ -82,6 +82,50 @@ func TestApplyStallOnEveryReplicaRecoversWithoutRestart(t *testing.T) {
 	})
 }
 
+// Replicas stalled on the same entry do not return at the same instant.
+// The last one, still stalled while the others already follow the log,
+// must not leave: its command returns a moment later, and a stall is not a
+// reason to leave.
+func TestStallEndingAfterTheOthersResumedDoesNotLeave(t *testing.T) {
+	c := newCluster(t, 3)
+	c.genesis("n0", "n1", "n2")
+	l := c.leader()
+	last := followers(c)[0]
+	stall := testTiming.DeadAfter + testTiming.Apply + testTiming.DeadAfter + 2*testTiming.Lease
+	for _, r := range c.live() {
+		d := stall
+		if r == last {
+			d += testTiming.DeadAfter / 3
+		}
+		r.node.fsm.applyDelay.Store(int64(d))
+	}
+	w := mkWorkload(t, 1)
+	go func() { _ = l.al.PutWorkload("w", w) }()
+	eventually(t, testTiming.DeadAfter+testTiming.Apply+20*testTiming.Tick, "every replica stalled", func() bool {
+		for _, r := range c.live() {
+			if !r.node.fsm.StuckLocal() {
+				return false
+			}
+		}
+		return true
+	})
+	for _, r := range c.live() {
+		r.node.fsm.applyDelay.Store(0)
+	}
+	eventually(t, stall+10*time.Second, "every replica follows the log again", func() bool {
+		for _, r := range c.live() {
+			if runEnded(r) {
+				t.Fatalf("%s ended Run: %v", r.name, r.err)
+			}
+			if r.node.fsm.Stuck() != "" {
+				return false
+			}
+		}
+		return true
+	})
+	noRunEnds(t, testTiming.DeadAfter+testTiming.Lease, c.live()...)
+}
+
 // A stall ends with its command, and only then: a stall raised after the
 // command returned is taken back; a checkpoint applied during a stall keeps
 // its state digest; a real stop raised during a stalled command stays, and

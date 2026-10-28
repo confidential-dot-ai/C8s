@@ -462,6 +462,25 @@ func (f *FSM) stall(start int64, err error) {
 	slog.Error("cds-ha: this replica's state machine is stalled on a command; it stops serving until the command returns", "reason", r.msg)
 }
 
+// leaveReason is the stop that may make this replica leave the cluster: a
+// local fault, or a deterministic stop the cluster passed; nil otherwise. A
+// stall never is: the command may still return (endStall).
+func (f *FSM) leaveReason() *stopReason {
+	if p := f.stuck.Load(); p != nil && !p.stall && (p.local || f.passed.Load()) {
+		return p
+	}
+	return nil
+}
+
+// hung turns stall p into a local stop that stays: its command is held for
+// good (a store lock never released), not slow. Node.watchApply decides.
+func (f *FSM) hung(p *stopReason, why string) {
+	r := &stopReason{msg: p.msg + "; " + why, local: true}
+	if f.stuck.CompareAndSwap(p, r) {
+		slog.Error("cds-ha: this replica can no longer follow the log (local fault); it stops serving and exits to rejoin", "reason", r.msg)
+	}
+}
+
 // endStall (end of Apply, after applyStart is cleared) ends a stall of the
 // command that just returned: it was slow, but it applied, and so did every
 // entry before it. Another stop meanwhile replaced the stall and stays.

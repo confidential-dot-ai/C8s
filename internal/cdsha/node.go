@@ -701,9 +701,12 @@ func (n *Node) Run(ctx context.Context) error {
 			}
 			since := time.Since(stuckAt)
 			due := (!n.leading() && since >= n.cfg.Timing.Lease) || since >= n.cfg.Timing.DeadAfter
+			// INVARIANT: only a stop that may leave (never a stall), and
+			// still the current one after the quorum probe, ends Run.
+			leave := n.fsm.leaveReason()
 			switch {
-			case due && (n.fsm.StuckLocal() || n.fsm.stuckPassed()) && n.leaveKeepsQuorum():
-				return fmt.Errorf("%w: %s", ErrStuck, reason)
+			case due && leave != nil && n.leaveKeepsQuorum() && n.fsm.leaveReason() == leave:
+				return fmt.Errorf("%w: %s", ErrStuck, leave.msg)
 			case time.Since(alarmAt) < haltAlarmEvery:
 			default:
 				alarmAt = time.Now()
@@ -1422,8 +1425,9 @@ const haltAlarmEvery = time.Minute
 // A deterministic stop is never overdue: exiting would lose the log
 // (FSM.stop).
 func (n *Node) StuckOverdue() string {
-	if d := n.fsm.stuckFor(); d > n.cfg.Timing.DeadAfter+n.cfg.Timing.Lease && n.fsm.StuckLocal() && n.leaveKeepsQuorum() {
-		return n.fsm.Stuck()
+	p := n.fsm.leaveReason()
+	if d := n.fsm.stuckFor(); p != nil && p.local && d > n.cfg.Timing.DeadAfter+n.cfg.Timing.Lease && n.leaveKeepsQuorum() && n.fsm.leaveReason() == p {
+		return p.msg
 	}
 	return ""
 }
@@ -1625,14 +1629,19 @@ func (n *Node) noteSeated() {
 // for DeadAfter plus Apply, the longest a caller waits on a command (a
 // store lock never released, a stalled write). Raft keeps
 // answering its heartbeats, so without this it would keep its vote and
-// count as a filled seat while it applies nothing. The stop is local: it
-// exits once the others keep a majority without it (Run, StuckOverdue).
-// If the command returns first, the stop ends (FSM.endStall): a stall on
-// every replica (a host IO stall) must not outlast the stall itself.
+// count as a filled seat while it applies nothing. The stop is a stall: if
+// the command returns, it ends (FSM.endStall), so a stall on every replica
+// (a host IO stall) does not outlast the stall itself, and a stall is never
+// a reason to leave. Once the voters that follow the log have kept a
+// majority without this one for DeadAfter while the command still runs,
+// the command is held for good, not slow: the stall becomes a local stop
+// and the replica exits (Run, StuckOverdue). Replicas stalled on the same
+// entry that return a moment apart therefore all stay.
 // It runs apart from the Run loop, which the same fault may block.
 func (n *Node) watchApply(ctx context.Context) {
 	t := time.NewTicker(n.cfg.Timing.Tick)
 	defer t.Stop()
+	var othersSince time.Time // others keep a majority without this stalled replica
 	for {
 		select {
 		case <-ctx.Done():
@@ -1643,6 +1652,15 @@ func (n *Node) watchApply(ctx context.Context) {
 			if d := time.Duration(monoNow() - at); d >= n.cfg.Timing.DeadAfter+n.cfg.Timing.Apply {
 				n.fsm.stall(at, fmt.Errorf("applying log entry %d has not finished after %s", n.fsm.applying.Load(), d.Round(time.Second)))
 			}
+		}
+		p := n.fsm.stuck.Load()
+		switch {
+		case p == nil || !p.stall || !n.leaveKeepsQuorum():
+			othersSince = time.Time{}
+		case othersSince.IsZero():
+			othersSince = time.Now()
+		case time.Since(othersSince) >= n.cfg.Timing.DeadAfter:
+			n.fsm.hung(p, "the replicas that follow the log keep a majority without this one")
 		}
 	}
 }
