@@ -58,7 +58,7 @@ if [ -z "$denied" ]; then
 fi
 echo "ok: $image denied at container creation"
 
-al add "$digest" "$image" >/dev/null || fail "signed floor write rejected for $digest"
+cds_write al add "$digest" "$image" >/dev/null || fail "signed floor write rejected for $digest"
 echo "ok: signed floor write accepted"
 
 # Recreated rather than waited out: the plugin re-pulls every 5s, while
