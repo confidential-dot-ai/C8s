@@ -245,7 +245,7 @@ func TestNewAndPolicyErrors(t *testing.T) {
 		t.Fatal("corrupt state accepted")
 	}
 	other, _ := key()
-	bad, _ := json.Marshal(pinDecree(t, other, cluster, 3, img(5)))
+	bad, _ := json.Marshal(pinState{InForce: pinDecree(t, other, cluster, 3, img(5))})
 	if err := os.WriteFile(state, bad, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -340,7 +340,7 @@ func TestPinFloorRefusesOlderDecrees(t *testing.T) {
 	// A state file from before a relaunch with a higher floor is ignored,
 	// not fatal.
 	state := filepath.Join(t.TempDir(), "state.json")
-	old, _ := json.Marshal(pinDecree(t, k, cluster, 3, img(1)))
+	old, _ := json.Marshal(pinState{InForce: pinDecree(t, k, cluster, 3, img(1))})
 	if err := os.WriteFile(state, old, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -464,4 +464,121 @@ func TestAttestedHTTPFetchRefusesAnUnattestedCDS(t *testing.T) {
 	if got, err := AttestedHTTPFetch(ts.URL, "http://127.0.0.1:1")(t.Context(), bootstrap()); err == nil || got != nil {
 		t.Fatalf("attested fetch took an unattested answer: %+v", got)
 	}
+}
+
+// A signed decree the replicas never applied, with a base epoch above
+// theirs, taken over the unverified path while the attested one is blocked,
+// is replaced by the replicas' decree at the next attested fetch.
+func TestAttestedReplacesAnUnverifiedHigherEpoch(t *testing.T) {
+	k, pub := key()
+	host := &served{}
+	var attestedUp bool
+	replicas := pinDecree(t, k, cluster, 7, img(5))
+	attested := func(context.Context, refvalues.ReferenceValues) (*cdsha.SignedDecree, error) {
+		if !attestedUp {
+			return nil, errors.New("host blocks the pinned CDS")
+		}
+		return replicas, nil
+	}
+	src, err := New(Config{ClusterID: cluster, DecreeKey: pub, Bootstrap: bootstrap(), Attested: attested, Fetch: host.fetch, MinInterval: time.Nanosecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	host.sd = pinDecree(t, k, cluster, 1000, img(9))
+	if changed, err := src.Refresh(t.Context()); !changed || err != nil {
+		t.Fatalf("unverified high epoch not taken: %v %v", changed, err)
+	}
+	attestedUp = true
+	changed, err := src.Refresh(t.Context())
+	if e, _ := src.Epoch(); e != 7 || !changed || err != nil {
+		t.Fatalf("replicas serve epoch 7 over the attested path, node keeps epoch %d (changed=%v err=%v)", e, changed, err)
+	}
+	// Now attested: the unverified path takes only a newer one again.
+	host.sd = pinDecree(t, k, cluster, 6, img(9))
+	attestedUp = false
+	if changed, _ := src.Refresh(t.Context()); changed {
+		t.Fatal("unverified older decree taken over an attested one")
+	}
+}
+
+// The provisional decree pins images no replica runs, so no handshake under
+// it succeeds: the client asks under the last attested pins, and takes that
+// answer only at or above the last attested base epoch.
+func TestProvisionalDecreeAskedUnderTheLastAttestedPins(t *testing.T) {
+	k, pub := key()
+	host := &served{}
+	running := img(5) // the image the replicas run
+	var answer *cdsha.SignedDecree
+	var asked []string
+	attested := func(_ context.Context, pins refvalues.ReferenceValues) (*cdsha.SignedDecree, error) {
+		for _, p := range pins.Images {
+			if hex.EncodeToString(p.Digest) == running.MRTD {
+				asked = append(asked, "running")
+				return answer, nil
+			}
+		}
+		asked = append(asked, "other")
+		return nil, errors.New("handshake: not pinned")
+	}
+	cfg := Config{ClusterID: cluster, DecreeKey: pub, Bootstrap: bootstrap(), Attested: attested, Fetch: host.fetch, MinInterval: time.Nanosecond,
+		StateFile: filepath.Join(t.TempDir(), "state.json")}
+	src, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Bootstrap pins image 1, the replicas run 5: the unverified path
+	// delivers their decree, then the attested path confirms it.
+	answer = pinDecree(t, k, cluster, 7, running)
+	host.sd = answer
+	if changed, err := src.Refresh(t.Context()); !changed || err != nil {
+		t.Fatalf("rollout decree: %v %v", changed, err)
+	}
+	if changed, err := src.Refresh(t.Context()); changed || err != nil {
+		t.Fatalf("confirming the same decree changed the pins: %v %v", changed, err)
+	}
+	// The host blocks the replicas and serves a signed decree pinning only
+	// image 9 at a higher epoch.
+	host.sd = pinDecree(t, k, cluster, 1000, img(9))
+	block := answer
+	answer = nil
+	running = img(14) // nothing passes: every attested ask fails
+	if changed, err := src.Refresh(t.Context()); !changed || err != nil {
+		t.Fatalf("unverified high epoch: %v %v", changed, err)
+	}
+	running = img(5)
+	// A replica under the last attested pins replays an older decree:
+	// refused, also after a restart of the client.
+	answer = pinDecree(t, k, cluster, 6, running)
+	for _, s := range []*Source{src, mustNew(t, cfg)} {
+		asked = nil
+		if changed, _ := s.Refresh(t.Context()); changed {
+			t.Fatal("attested decree below the last attested epoch taken")
+		}
+		if e, _ := s.Epoch(); e != 1000 {
+			t.Fatalf("epoch %d", e)
+		}
+		if len(asked) != 2 || asked[0] != "other" || asked[1] != "running" {
+			t.Fatalf("asked %v, want the provisional pins, then the last attested ones", asked)
+		}
+	}
+	// The replicas' decree, at the last attested epoch, replaces it; the
+	// restarted client too.
+	answer = block
+	for _, s := range []*Source{mustNew(t, cfg), src} {
+		if changed, err := s.Refresh(t.Context()); !changed || err != nil {
+			t.Fatalf("replicas' decree under the last attested pins: %v %v", changed, err)
+		}
+		if e, _ := s.Epoch(); e != 7 {
+			t.Fatalf("epoch %d, want the replicas' 7", e)
+		}
+	}
+}
+
+func mustNew(t *testing.T, cfg Config) *Source {
+	t.Helper()
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
 }

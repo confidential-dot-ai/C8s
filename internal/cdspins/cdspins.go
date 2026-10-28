@@ -14,8 +14,11 @@
 // under the current set answers does it fetch over an unverified channel
 // (Fetch), where everything rests on the signature and only a strictly newer
 // base epoch is taken, so an older decree replayed by the host is never
-// taken. A decree the replicas never applied, taken that way, is replaced at
-// the next attested fetch.
+// taken. A decree taken that way is provisional: the next attested answer
+// replaces it at any base epoch not below the last attested one, asked under
+// the provisional pins and, when no replica passes those, under the last
+// attested ones. A signed decree the replicas never applied, even with a
+// higher base epoch, therefore never outlasts an attested fetch.
 //
 // With a state file the newest decree survives a restart of the client, not
 // a reboot of the node (/run). There is no expiry: a host that withholds
@@ -81,11 +84,20 @@ type Config struct {
 type Source struct {
 	cfg Config
 
-	mu      sync.Mutex
-	gen     uint64
-	cur     refvalues.ReferenceValues
-	decree  *cdsha.SignedDecree // in force; nil while on the bootstrap set
-	lastTry time.Time
+	mu     sync.Mutex
+	gen    uint64
+	cur    refvalues.ReferenceValues
+	decree *cdsha.SignedDecree // in force; nil while on the bootstrap set
+	// attested is the last decree an attested fetch delivered; nil before
+	// the first. The decree in force is provisional when it is not this one.
+	attested *cdsha.SignedDecree
+	lastTry  time.Time
+}
+
+// state is the state file: the decree in force and the last attested one.
+type pinState struct {
+	InForce  *cdsha.SignedDecree `json:"in_force"`
+	Attested *cdsha.SignedDecree `json:"attested"`
 }
 
 // New starts from the bootstrap set, or from the decree in the state file.
@@ -104,14 +116,22 @@ func New(cfg Config) (*Source, error) {
 		case err != nil:
 			return nil, fmt.Errorf("cdspins: state: %w", err)
 		default:
-			var sd cdsha.SignedDecree
-			if err := json.Unmarshal(data, &sd); err != nil {
-				return nil, fmt.Errorf("cdspins: state: %w", err)
+			var st pinState
+			dec := json.NewDecoder(bytes.NewReader(data))
+			dec.DisallowUnknownFields()
+			if err := dec.Decode(&st); err != nil || st.InForce == nil {
+				return nil, fmt.Errorf("cdspins: state: not a pin state file: %v", err)
 			}
 			// A stored decree below a newer launch document's floor is
-			// simply outdated: start from the bootstrap set.
-			if _, err := s.take(&sd, false); err != nil && !errors.Is(err, ErrBelowFloor) {
-				return nil, fmt.Errorf("cdspins: state: %w", err)
+			// simply outdated: start from the bootstrap set. The attested
+			// one is taken first, so the one in force keeps its standing.
+			for _, sd := range []*cdsha.SignedDecree{st.Attested, st.InForce} {
+				if sd == nil {
+					continue
+				}
+				if _, err := s.take(sd, sd == st.Attested); err != nil && !errors.Is(err, ErrBelowFloor) {
+					return nil, fmt.Errorf("cdspins: state: %w", err)
+				}
 			}
 		}
 	}
@@ -152,15 +172,27 @@ func (s *Source) Refresh(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 	s.lastTry = time.Now()
-	cur := s.cur
+	asks := []refvalues.ReferenceValues{s.cur}
+	if s.provisional() {
+		// The provisional decree may pin images no replica runs: ask
+		// under the last attested pins too.
+		last, err := s.attestedPins()
+		if err != nil {
+			s.mu.Unlock()
+			return false, err
+		}
+		asks = append(asks, last)
+	}
 	s.mu.Unlock()
 	if s.cfg.Attested != nil {
-		sd, err := s.cfg.Attested(ctx, cur)
-		if err == nil {
-			if sd == nil {
-				return false, nil
+		for _, pins := range asks {
+			sd, err := s.cfg.Attested(ctx, pins)
+			if err == nil {
+				if sd == nil {
+					return false, nil
+				}
+				return s.take(sd, true)
 			}
-			return s.take(sd, true)
 		}
 	}
 	sd, err := s.cfg.Fetch(ctx)
@@ -170,9 +202,31 @@ func (s *Source) Refresh(ctx context.Context) (bool, error) {
 	return s.take(sd, false)
 }
 
+// provisional reports whether the decree in force was not delivered by an
+// attested fetch. Callers hold s.mu.
+func (s *Source) provisional() bool {
+	return s.decree != nil && s.decree != s.attested
+}
+
+// attestedPins is the pin set of the last attested decree, or the bootstrap
+// set before one. Callers hold s.mu.
+func (s *Source) attestedPins() (refvalues.ReferenceValues, error) {
+	if s.attested == nil {
+		return s.cfg.Bootstrap, nil
+	}
+	return Policy(s.cfg.Bootstrap, s.attested.Decree.Images)
+}
+
 // take verifies sd and makes it the pin set if it replaces the one in force:
 // a higher base epoch, or, from a replica the client pins (attested), the
-// same base epoch with other content.
+// same base epoch with other content, or any base epoch not below the last
+// attested decree's when the one in force is provisional.
+//
+// INVARIANT: the last attested decree's base epoch never decreases, and the
+// decree in force is either that decree or one taken unverified with a
+// higher base epoch, which the next attested answer replaces. An attested
+// replica can thus deliver only what it could have had the host never served
+// the unverified decree: nothing below the last attested base epoch.
 func (s *Source) take(sd *cdsha.SignedDecree, attested bool) (bool, error) {
 	if err := cdsha.VerifyPinDecree(*sd, s.cfg.ClusterID, s.cfg.DecreeKey); err != nil {
 		return false, err
@@ -186,16 +240,36 @@ func (s *Source) take(sd *cdsha.SignedDecree, attested bool) (bool, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	nextAttested := s.attested
+	if attested {
+		if s.attested != nil && sd.Decree.BaseEpoch < s.attested.Decree.BaseEpoch {
+			return false, nil // an older one replayed by a pinned replica
+		}
+		nextAttested = sd
+	}
+	changed := true
 	if s.decree != nil {
 		held := s.decree.Decree.BaseEpoch
+		same := sameDecree(sd.Decree, s.decree.Decree)
 		replaces := sd.Decree.BaseEpoch > held ||
-			attested && sd.Decree.BaseEpoch == held && !sameDecree(sd.Decree, s.decree.Decree)
-		if !replaces {
+			attested && sd.Decree.BaseEpoch == held && !same ||
+			attested && s.provisional() && !same
+		switch {
+		case attested && s.provisional() && same:
+			// The replicas applied the provisional decree: it is attested
+			// now, and the pin set stays.
+			changed = false
+		case !replaces:
 			return false, nil // the same decree, or an older one replayed
 		}
 	}
+	next := sd
+	if !changed {
+		next = s.decree
+		nextAttested = s.decree
+	}
 	if s.cfg.StateFile != "" {
-		data, err := json.Marshal(sd)
+		data, err := json.Marshal(pinState{InForce: next, Attested: nextAttested})
 		if err != nil {
 			return false, err
 		}
@@ -205,6 +279,10 @@ func (s *Source) take(sd *cdsha.SignedDecree, attested bool) (bool, error) {
 		if err := fileutil.WriteAtomic(s.cfg.StateFile, data, 0o644); err != nil {
 			return false, err
 		}
+	}
+	s.attested = nextAttested
+	if !changed {
+		return false, nil
 	}
 	s.cur, s.decree = pol, sd
 	s.gen++
