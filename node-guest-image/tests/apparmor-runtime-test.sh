@@ -43,7 +43,7 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 # `allowlist add` names the entry "<basename>-<first 12 hex of digest>".
-al add "$digest" "$image" >/dev/null || fail "signed allowlist write rejected for $digest"
+cds_write al add "$digest" "$image" >/dev/null || fail "signed allowlist write rejected for $digest"
 entry="busybox-$(printf '%s' "${digest#sha256:}" | cut -c1-12)"
 ns=$(k create -f - -o jsonpath='{.metadata.name}' <<'EOF'
 {"apiVersion":"v1","kind":"Namespace","metadata":{"generateName":"apparmor-admission-"}}
