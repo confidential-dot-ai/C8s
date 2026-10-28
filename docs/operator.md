@@ -265,18 +265,22 @@ detectable only by pinning the route digest or the operator keys.
 - A request whose `Host` is not a manifest host, or whose path matches no route,
   gets 404. The router's own paths are never routed by the manifest.
 - A workload backend is dialed as a mesh client: the peer must present a leaf
-  chaining to the mesh CA, carrying that route's workload name, stamped under
-  the same allowlist digest as the router's own leaf. A failed handshake is
-  502 — `backend_digest_mismatch` when the two digests differ — and no backend
-  is reached in plaintext. A router whose own leaf carries no stamp binds no
-  policy digest and checks the name alone.
-- The router and its backends renew on their own schedules, so after an
-  allowlist write a workload route refuses requests until both carry the new
-  digest: 502 `backend_digest_mismatch` while a backend lags, 503
-  `router_digest_changed` while the router's own pools still hold its previous
-  digest. The slower of their `--ca-watch-interval`s, plus half an interval of
-  jitter, plus one issuance bounds that; with the watch off it lasts until the
-  next scheduled renewal.
+  chaining to the mesh CA, carrying that route's workload name, and that entry
+  must be the same in the allowlist its leaf is stamped under as in the one
+  the router's own leaf is stamped under. When the two digests differ the
+  router fetches both documents from CDS's allowlist history
+  (`/allowlist/objects/sha256/<hex>`, cached by digest) and compares the
+  entry. A failed check is 502 `backend_digest_mismatch`: the entry was
+  redefined, is missing from either document, or a document cannot be
+  fetched. No backend is reached in plaintext. A router whose own leaf carries
+  no stamp binds no policy digest and checks the name alone.
+- An allowlist write therefore refuses only the backends whose entry it
+  removed or redefined, from the router's renewal or the backend's, whichever
+  comes first, until both carry the new definition. The slower of their
+  `--ca-watch-interval`s, plus half an interval of jitter, plus one issuance
+  bounds that; with the watch off it lasts until the next scheduled renewal.
+  Bound sessions still end on every router renewal (503
+  `router_digest_changed`, below).
 - An attested session routes only by the manifest and the router allowlist
   digest its handshake bound. Once either changes the router answers 503 and
   the client attests again

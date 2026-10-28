@@ -178,8 +178,8 @@ How the node image is built is `../node-guest-image/README.md`.
    [secrets.md](secrets.md), [volumes.md](volumes.md).
 8. Public requests reach the router, which routes only by the operator-signed
    route manifest. A route names either a workload backend, whose leaf must
-   carry that workload name under the router's own allowlist digest, or an
-   address backend with its own server name and CA. A client can attest the
+   carry that workload name with the same entry as in the router's own
+   allowlist, or an address backend with its own server name and CA. A client can attest the
    router, and its session then routes only by what that handshake bound —
    [routes-evidence.md](routes-evidence.md).
 
