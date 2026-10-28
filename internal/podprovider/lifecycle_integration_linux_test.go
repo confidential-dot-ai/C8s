@@ -130,6 +130,57 @@ func (h *providerControlPlane) runVerificationTimeoutScenario(t *testing.T) {
 	h.cfg.VerificationTimeoutSeconds = original
 }
 
+func (h *providerControlPlane) awaitIdleGenericGuest(t *testing.T, reader *Reconciler, cloud *controlPlaneCloud) poolState {
+	t.Helper()
+	var pools []poolState
+	var legacy int64
+	var readFailed bool
+	var counts controlPlaneCloudCounts
+	defer func() {
+		if !t.Failed() {
+			return
+		}
+		t.Logf("warm startup: allocationReadFailed=%t pools=%d legacy=%d Cloud=%+v", readFailed, len(pools), legacy, counts)
+		for _, state := range pools {
+			p := state.record
+			t.Logf("warm slot %d: createAttempted=%t instanceKnown=%t claimed=%t deadlinePending=%t deleteRequested=%t deleted=%t", p.Slot, p.CreateAttempted, p.InstanceID != "", p.Claim != nil, p.VerificationDeadline != nil, p.DeleteRequested, p.Deleted)
+		}
+	}()
+	observe := func() bool {
+		var err error
+		pools, legacy, err = reader.allocations(h.ctx)
+		readFailed = err != nil
+		counts = cloud.snapshot()
+		return err == nil && legacy == 0 && len(pools) == 1
+	}
+	// Node registration and the deliberately lost create reply are independent
+	// retry phases. Observe durable uncertain creation before timing recovery.
+	h.await(t, "lost generic create reply retains one durable VM obligation", func() bool {
+		if !observe() {
+			return false
+		}
+		p := pools[0].record
+		return p.CreateAttempted && p.InstanceID == "" && p.Claim == nil && p.VerificationDeadline != nil &&
+			!p.DeleteRequested && !p.Deleted && counts.creates == 1 && counts.createCalls == 1 && counts.remaining == 1
+	})
+	uncertain := pools[0]
+	if uncertain.secret.UID == "" {
+		t.Fatal("uncertain generic creation lacks a real API allocation UID")
+	}
+	// A pending node registration can precede the lost reply, so the worker's
+	// second backoff is 40--48 seconds. Allow API overhead within the global bound.
+	h.awaitWithTimeout(t, "one empty generic guest is ready before a Pod is scheduled", 60*time.Second, func() bool {
+		return observe() && pools[0].record.Claim == nil && pools[0].record.InstanceID != "" && pools[0].record.VerificationDeadline == nil
+	})
+	recovered := pools[0]
+	if recovered.secret.UID != uncertain.secret.UID || recovered.record.Key != uncertain.record.Key ||
+		!reflect.DeepEqual(recovered.record.Request, uncertain.record.Request) || !recovered.record.CreateAttempted ||
+		recovered.record.DeleteRequested || recovered.record.Deleted || counts.creates != 1 || counts.createCalls != 1 || counts.remaining != 1 || counts.keys != 1 {
+		t.Fatal("lost generic create reply changed its allocation authority or duplicated the VM")
+	}
+	return recovered
+}
+
 func (h *providerControlPlane) runWarmAssignmentScenario(t *testing.T) {
 	t.Helper()
 	h.cfg.WarmTarget = 1
@@ -138,16 +189,9 @@ func (h *providerControlPlane) runWarmAssignmentScenario(t *testing.T) {
 	guest := newControlPlaneAssignment(reader)
 	h.startProvider(t, cloud, guest.read, guest.verify)
 	h.waitForVirtualNode(t)
-	h.await(t, "one empty generic guest is ready before a Pod is scheduled", func() bool {
-		pools, legacy, err := reader.allocations(h.ctx)
-		return err == nil && legacy == 0 && len(pools) == 1 && pools[0].record.Claim == nil && pools[0].record.InstanceID != "" && pools[0].record.VerificationDeadline == nil
-	})
-	pools, _, err := reader.allocations(h.ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	generic, err := pools[0].record.document()
-	if err != nil || generic.Pod != nil || generic.Workloads != "" || len(pools[0].record.Request.Network.Ingress) != 1 {
+	idle := h.awaitIdleGenericGuest(t, reader, cloud)
+	generic, err := idle.record.document()
+	if err != nil || generic.Pod != nil || generic.Workloads != "" || len(idle.record.Request.Network.Ingress) != 1 {
 		t.Fatal("idle VM received Pod authority or speculative workload ingress")
 	}
 	pods := []*corev1.Pod{controlPlanePod("warm-workload"), controlPlanePod("warm-peer")}
