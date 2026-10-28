@@ -145,11 +145,26 @@ namespaces, the namespaces `hostNamespacePolicy.exemptNamespaces` names, and
 Some containers must hold host privilege: the RKE2 static pods, Cilium, C8s's
 own node-level components. They are the node's trusted computing base, and the
 exemption belongs to whoever measured them. A boot config can mark its own base
-allowlist as the node TCB; a container that base admits — digest, argv,
-environment, and mounts together — is then exempt, and nothing else is. The node
-image sets that marker, since its base is measured with the image; a
-chart-rendered base must not, and no served document can claim it: the marker is
-a boot-config key, not an allowlist field.
+allowlist as the node TCB, and nothing else exempts a container. The node image
+sets that marker, since its base is measured with the image; a chart-rendered
+base must not, and no served document can claim it: the marker is a boot-config
+key, not an allowlist field.
+
+The control plane picks the image a pod runs, so a base entry that leaves its
+launch open would otherwise let the cluster admin run that image with a shell
+and the node's root. A launch the base admits is therefore exempt in three
+steps, and nothing more:
+
+- a kubelet static pod (sandbox annotation `kubernetes.io/config.source: file`,
+  which the kubelet sets itself and writes `api` for every API pod): its
+  manifest comes only from RKE2 on the node, from the measured config and the
+  signed launch document;
+- the host network alone (the node's network and uts namespaces), for any entry;
+- anything else only under an entry that pins the launch: command, args and
+  mounts not `any`, and the environment constrained.
+
+An open entry, such as the RKE2 chart jobs (`klipper-helm`) or the Cilium
+operator, admits its image, and the pod is sandboxed like any other.
 
 A measured base can also tag a container with a platform role, the identity
 C8s's own node-side invocations run under. It grants the role only with the

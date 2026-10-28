@@ -52,7 +52,7 @@ func TestPreparedFloorAdmitsTheCapturedSystemPods(t *testing.T) {
 	entrypoints := capturedEntrypoints(t)
 	pinsOfCapturedImages, launched := map[string]bool{}, map[string]bool{}
 	for _, captured := range capturedNodes {
-		floor := preparedFloor(t, captured.role, captured.node)
+		floor := envOpen(preparedFloor(t, captured.role, captured.node))
 		if got, want := advertiseAddressFlags(floor), advertiseAddressFlagsFor(captured.node); !slices.Equal(got, want) {
 			t.Errorf("node %s: kube-apiserver's pinned address flags are %q, want %q", captured.node.Name, got, want)
 		}
@@ -81,6 +81,21 @@ func TestPreparedFloorAdmitsTheCapturedSystemPods(t *testing.T) {
 			t.Errorf("floor container %s admits no captured launch", key)
 		}
 	}
+}
+
+// envOpen is base with every environment policy set to any: the capture has
+// no container environment (the nri-image-policy package checks the Cilium
+// env pins against crictl records).
+func envOpen(base *allowlist.Allowlist) *allowlist.Allowlist {
+	for name, w := range base.Workloads {
+		for _, containers := range [][]allowlist.Container{w.InitContainers, w.Containers} {
+			for i := range containers {
+				containers[i].Env = allowlist.EnvPolicy{Policy: allowlist.PolicyAny}
+			}
+		}
+		base.Workloads[name] = w
+	}
+	return base
 }
 
 // advertiseAddressFlags are the address flags of kube-apiserver's pin.
@@ -345,5 +360,19 @@ func TestFillingRefusesAPlaceholderTheFloorDoesNotDefine(t *testing.T) {
 		if err := fillNodeValues(base, launchconfig.Node{Name: "n1"}); err == nil {
 			t.Errorf("filled %q", element)
 		}
+	}
+}
+
+// A pinned script's own shell variables are not floor placeholders.
+func TestFillingKeepsAScriptsOwnVariables(t *testing.T) {
+	script := `nsenter --mount=/hostproc/1/ns/mnt "${BIN_PATH}/cilium-mount" $CGROUP_ROOT`
+	base := &allowlist.Allowlist{Workloads: map[string]allowlist.Workload{"w": {Containers: []allowlist.Container{{
+		Command: allowlist.ArgvPolicy{Policy: allowlist.PolicyExact, Argv: []string{"bash", "-ec", script}},
+	}}}}}
+	if err := fillNodeValues(base, launchconfig.Node{Name: "n1"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := base.Workloads["w"].Containers[0].Command.Argv[2]; got != script {
+		t.Errorf("script = %q, want it unchanged", got)
 	}
 }
