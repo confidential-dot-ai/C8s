@@ -844,7 +844,7 @@ func (p *plugin) checkSandbox(ctx context.Context, cfg *config, pod *api.PodSand
 			digest = p.resolveDigest(ctx, imageRef)
 		}
 		rc := allowlist.RunningContainer{Digest: digest, Argv: ctr.GetArgs(), Env: env, Mounts: mounts}
-		if p.nodeTCBExempt(pod, rc, violations) {
+		if p.nodeTCBExempt(pod, rc) {
 			return verdictAllow, ""
 		}
 	}
@@ -894,19 +894,17 @@ const (
 )
 
 // nodeTCBExempt reports whether the measured base excuses a launch holding
-// violations, in three steps:
+// host privilege:
 //   - a kubelet static pod whose launch the base admits: its manifest is
 //     written only by RKE2 on the node, from the measured config and the signed
 //     launch document;
-//   - host network alone, for any launch the base admits, an open entry
-//     included;
-//   - anything more only for a launch a base entry pins
+//   - any other pod only for a launch a base entry pins
 //     (allowlist.Container.LaunchPinned).
 //
 // An open entry (command, args or mounts any) therefore admits its image but
-// never hands it more than the host network.
-func (p *plugin) nodeTCBExempt(pod *api.PodSandbox, rc allowlist.RunningContainer, violations []string) bool {
-	if pod.GetAnnotations()[configSourceAnnotation] == staticPodSource || hostNetworkOnly(violations) {
+// never hands it host privilege, the host network included.
+func (p *plugin) nodeTCBExempt(pod *api.PodSandbox, rc allowlist.RunningContainer) bool {
+	if pod.GetAnnotations()[configSourceAnnotation] == staticPodSource {
 		return p.policy.baseAdmits(rc, launchFinal)
 	}
 	return p.policy.baseAdmitsPinned(rc)

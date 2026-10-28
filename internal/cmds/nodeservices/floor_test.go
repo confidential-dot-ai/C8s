@@ -262,6 +262,10 @@ func capturedLaunches(t *testing.T, capture, node string, entrypoints map[string
 	return launches
 }
 
+// configMapKeys are the ConfigMap values the captured argv reference, which
+// the capture does not hold: the Cilium operator's --debug.
+var configMapKeys = map[string]string{"cilium-config/debug": "false"}
+
 // launchArgv is the argv the kubelet hands the runtime: the container's
 // command, else the image's entrypoint, then its args.
 func launchArgv(c corev1.Container, entrypoint []string) []string {
@@ -272,8 +276,8 @@ func launchArgv(c corev1.Container, entrypoint []string) []string {
 }
 
 // kubeletExpanded is argv with each $(NAME) the container's env defines
-// replaced by its value, as the kubelet does: a literal value, or the pod's
-// namespace from the downward API.
+// replaced by its value, as the kubelet does: a literal value, the pod's
+// namespace from the downward API, or a ConfigMap key in configMapKeys.
 func kubeletExpanded(argv []string, env []corev1.EnvVar, namespace string) []string {
 	values := map[string]string{}
 	for _, e := range env {
@@ -282,6 +286,11 @@ func kubeletExpanded(argv []string, env []corev1.EnvVar, namespace string) []str
 			values[e.Name] = e.Value
 		case e.ValueFrom.FieldRef != nil && e.ValueFrom.FieldRef.FieldPath == "metadata.namespace":
 			values[e.Name] = namespace
+		case e.ValueFrom.ConfigMapKeyRef != nil:
+			ref := e.ValueFrom.ConfigMapKeyRef
+			if value, ok := configMapKeys[ref.Name+"/"+ref.Key]; ok {
+				values[e.Name] = value
+			}
 		}
 	}
 	expanded := make([]string, len(argv))
