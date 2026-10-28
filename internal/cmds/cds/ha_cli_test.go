@@ -109,6 +109,10 @@ func statusServer(t *testing.T, st cdsha.Status, tls bool) (*httptest.Server, *a
 }
 
 func TestHADecreeCLI(t *testing.T) {
+	// Run as a c8s_dev build, over plain HTTP; the release build's target
+	// refusal is TestHADecreeRefusesWeakTargetPins.
+	defer func(v bool) { allowPlainHTTP = v }(allowPlainHTTP)
+	allowPlainHTTP = true
 	key, _ := testKeyPEM(t)
 	keyPath := writeKey(t, key)
 	fresh, _ := statusServer(t, cdsha.Status{ClusterID: "c1", NodeName: "n0", ID: "n0/1-aa"}, false)
@@ -153,6 +157,8 @@ func TestHADecreeCLI(t *testing.T) {
 // Each refusal passes every other required flag, so only its own check can
 // refuse it.
 func TestHADecreeCLIRefusals(t *testing.T) {
+	defer func(v bool) { allowPlainHTTP = v }(allowPlainHTTP)
+	allowPlainHTTP = true
 	key, _ := testKeyPEM(t)
 	p := writeKey(t, key)
 	fresh, _ := statusServer(t, cdsha.Status{ClusterID: "c1", NodeName: "n0", ID: "n0/1-aa"}, false)
@@ -193,7 +199,8 @@ func TestHAMemberIDOnlyFromAttestedReplica(t *testing.T) {
 	key, _ := testKeyPEM(t)
 	keyPath := writeKey(t, key)
 	fake, hits := statusServer(t, cdsha.Status{ClusterID: "c1", NodeName: "n0", ID: "n0/1-forged"}, true)
-	out, err := runHA(t, "decree", "--cluster-id", "c1", "--operator-key", keyPath, "--kind", "Genesis", "--target-url", fake.URL)
+	out, err := runHA(t, "decree", "--cluster-id", "c1", "--operator-key", keyPath, "--kind", "Genesis", "--target-url", fake.URL,
+		"--target-image-policy-file", "../../testdata/node-identities.json")
 	if err == nil || strings.Contains(out, "ConfigMap") || strings.Contains(out, "forged") {
 		t.Fatalf("Genesis signed for an unattested replica's status: %v %q", err, out)
 	}
@@ -822,5 +829,59 @@ func TestHADecreesCLI(t *testing.T) {
 		if _, err := runHA(t, "decrees", "--url", url, "--insecure"); err == nil {
 			t.Errorf("%s: decrees succeeded", name)
 		}
+	}
+}
+
+// A Genesis or Recover decree signs in the member ID its target reports, so
+// in a release build the target is pinned as `ha recover` pins its replica:
+// a launch digest alone or plaintext gets no request at all.
+func TestHADecreeRefusesWeakTargetPins(t *testing.T) {
+	if allowPlainHTTP {
+		t.Skip("c8s_dev builds allow plaintext for the integration harness")
+	}
+	dir := t.TempDir()
+	key, _ := testKeyPEM(t)
+	keyPath := writeKey(t, key)
+	policy := func(name string, edit func(m map[string]any)) string {
+		t.Helper()
+		var doc map[string]any
+		if err := json.Unmarshal(must(os.ReadFile("../../testdata/node-identities.json")), &doc); err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range doc["measurements"].([]any) {
+			edit(m.(map[string]any))
+		}
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, must(json.Marshal(doc)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	noAnchor := policy("no-anchor.json", func(m map[string]any) { delete(m, "approver_key") })
+	noRTMRs := policy("no-rtmrs.json", func(m map[string]any) { delete(m, "rtmr") })
+	st := cdsha.Status{ClusterID: "c1", NodeName: "n1", ID: "n1/2-lagging", Joined: true}
+	plain, plainHits := statusServer(t, st, false)
+	tlsSrv, tlsHits := statusServer(t, st, true)
+	mrtd := strings.Repeat("a1", 48)
+	kinds := map[string][]string{
+		"Recover": {"--kind", "Recover", "--base-epoch", "3", "--resume-epoch", "5", "--i-understand-recover-is-break-glass"},
+		"Genesis": {"--kind", "Genesis"},
+	}
+	for kind, kargs := range kinds {
+		for name, args := range map[string][]string{
+			"plaintext with --target-insecure": {"--target-url", plain.URL, "--target-insecure"},
+			"launch digest only":               {"--target-url", tlsSrv.URL, "--target-measurements", mrtd},
+			"policy without anchors":           {"--target-url", tlsSrv.URL, "--target-image-policy-file", noAnchor},
+			"policy without RTMRs":             {"--target-url", tlsSrv.URL, "--target-image-policy-file", noRTMRs},
+		} {
+			out, err := runHA(t, append(append([]string{"decree", "--cluster-id", "c1", "--operator-key", keyPath}, kargs...), args...)...)
+			// The shared policy loader names the flag without its prefix.
+			if err == nil || !strings.Contains(err.Error(), "image-policy-file") || strings.Contains(out, "ConfigMap") {
+				t.Errorf("%s, %s: %v, want a refusal that asks for --target-image-policy-file", kind, name, err)
+			}
+		}
+	}
+	if n := plainHits.Load() + tlsHits.Load(); n != 0 {
+		t.Fatalf("weakly pinned targets answered %d requests", n)
 	}
 }

@@ -48,7 +48,7 @@ func newHADecreeCmd() *cobra.Command {
 			"applies it and every replica checks the signature. Re-sign with the current epoch\n" +
 			"if it is rejected for a base_epoch conflict.\n\n" +
 			"Genesis and Recover act on one replica process: the CLI reads its member ID from GET /ha/status\n" +
-			"of --target-url over armTLS (pin it with --target-image-policy-file or --target-measurements) and\n" +
+			"of --target-url over armTLS (pin its whole image with --target-image-policy-file) and\n" +
 			"signs it into the decree (target_member). A restarted replica has a new ID, so the decree is then\n" +
 			"dead: read the ID again and re-sign. --bootstrap-node defaults to the target's node.\n" +
 			"Genesis and Recover expire after 10 minutes by default, the other kinds after --expires-in.",
@@ -106,6 +106,11 @@ func newHADecreeCmd() *cobra.Command {
 				return err
 			}
 			if d.Kind == cdsha.Genesis || d.Kind == cdsha.Recover {
+				// The member ID it reports is signed in: a Recover to a
+				// lagging member rolls back what it missed.
+				if err := checkPinnedReplica(target, "target-", "the decree binds the member ID the target reports"); err != nil {
+					return err
+				}
 				st, err := readTargetStatus(cmd.Context(), target)
 				if err != nil {
 					return fmt.Errorf("target replica status: %w", err)

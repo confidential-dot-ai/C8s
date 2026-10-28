@@ -53,7 +53,7 @@ func newHARecoverCmd() *cobra.Command {
 			"signs a Restore decree for that one process (target_member) with the decree key, and sends it with the\n" +
 			"snapshot on the same attested connection; the replica starts the cluster from it and the others join.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if err := checkRecoverEndpoint(conn); err != nil {
+			if err := checkPinnedReplica(conn, "", "recover sends the decrypted cluster state"); err != nil {
 				return err
 			}
 			if !cmd.Flags().Changed("min-epoch") || !cmd.Flags().Changed("min-index") {
@@ -138,37 +138,38 @@ func newHARecoverCmd() *cobra.Command {
 	return cmd
 }
 
-// checkRecoverEndpoint refuses an endpoint the decrypted state (mesh CA key,
-// every secret) may not go to. Outside c8s_dev builds that is anything but
-// armTLS to a replica whose whole image identity an image policy pins: the
-// launch digest alone (TDX: the firmware) admits any guest on that firmware.
-func checkRecoverEndpoint(conn cdsconn.Options) error {
+// checkPinnedReplica refuses a replica endpoint that is not armTLS to a
+// replica whose whole image identity an image policy pins, outside c8s_dev
+// builds: the launch digest alone (TDX: the firmware) admits any guest on
+// that firmware. prefix is the flags' prefix ("" or "target-"), why what the
+// endpoint is trusted with.
+func checkPinnedReplica(conn cdsconn.Options, prefix, why string) error {
 	u, err := url.Parse(conn.URL)
 	if err != nil {
-		return fmt.Errorf("invalid --url %q", conn.URL)
+		return fmt.Errorf("invalid --%surl %q", prefix, conn.URL)
 	}
 	if u.Scheme != "https" {
 		if allowPlainHTTP {
 			return nil // c8s_dev: the integration harness serves plain HTTP
 		}
-		return errors.New("recover sends the decrypted cluster state: use an https --url pinned with --image-policy-file")
+		return fmt.Errorf("%s: use an https --%surl pinned with --%simage-policy-file", why, prefix, prefix)
 	}
 	if conn.MeasurementsConfig == "" {
-		return errors.New("recover sends the decrypted cluster state: pin the replica's whole image with --image-policy-file; --measurements pins only its launch digest")
+		return fmt.Errorf("%s: pin the replica's whole image with --%simage-policy-file; --%smeasurements pins only its launch digest", why, prefix, prefix)
 	}
 	pins, err := cmdsutil.ImagePolicySource{File: conn.MeasurementsConfig}.LoadValues(cmdsutil.MeasurementPins{Measurements: conn.Measurements, MeasurementsFile: conn.MeasurementsFile})
 	if err != nil {
 		return err
 	}
 	if len(pins.Images) == 0 {
-		return errors.New("--image-policy-file pins no image")
+		return fmt.Errorf("--%simage-policy-file pins no image", prefix)
 	}
 	for _, img := range pins.Images {
 		switch {
 		case len(img.Anchor) == 0:
-			return fmt.Errorf("--image-policy-file: image %q has no launch-key anchor", img.Name)
+			return fmt.Errorf("--%simage-policy-file: image %q has no launch-key anchor", prefix, img.Name)
 		case pins.Family == teetypes.FamilyTDX && (len(img.Registers[1]) == 0 || len(img.Registers[2]) == 0):
-			return fmt.Errorf("--image-policy-file: TDX image %q does not pin RTMR1 and RTMR2", img.Name)
+			return fmt.Errorf("--%simage-policy-file: TDX image %q does not pin RTMR1 and RTMR2", prefix, img.Name)
 		}
 	}
 	return nil
