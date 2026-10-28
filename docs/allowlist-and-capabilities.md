@@ -166,6 +166,21 @@ steps, and nothing more:
 An open entry, such as the RKE2 chart jobs (`klipper-helm`) or the Cilium
 operator, admits its image, and the pod is sandboxed like any other.
 
+GPU devices are the one exception outside the node TCB. containerd applies the
+edits of the CDI devices a container requests (the CRI `CDIDevices` field or a
+`cdi.k8s.io/` annotation) before the plugin sees the spec, so they arrive as
+plain device nodes, hooks, and bind mounts. For devices of the kinds
+`k8s.device-plugin.nvidia.com/gpu` (the NVIDIA device plugin's spec) and
+`nvidia.com/gpu` (the node's `nvidia-ctk cdi generate` spec), the plugin
+re-expands the requested devices from the spec files in `/etc/cdi` and
+`/var/run/cdi`, which only node code writes, and sets aside exactly the device
+nodes, hooks (stage, path, args, and env), and bind mounts (source, destination,
+and read-only flag) that expansion produces. Any other device node or hook, a
+device of another kind, and a device that no spec or two specs define stay
+violations, and so does a spec that changed between containerd's read and the
+plugin's. The container still needs an allowlist entry, and the CDI bind mounts
+still have to match that entry's mount policy.
+
 A measured base can also tag a container with a platform role, the identity
 C8s's own node-side invocations run under. It grants the role only with the
 argv and the exact mount table that invocation is given, so a pod's own
