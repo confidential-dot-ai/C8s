@@ -44,6 +44,17 @@ owned_root() {
   ' <<<"$object" >/dev/null
 }
 
+# host_pressure prints the launcher host's load and I/O pressure as the runner
+# pod sees them (procfs is not namespaced), with its root filesystem use: an
+# import that crawls on a quiet registry is usually a busy or full host.
+host_pressure() {
+  local load io disk
+  load=$(cut -d ' ' -f1-3 /proc/loadavg 2>/dev/null || echo '?')
+  io=$(awk '/^some/ { for (i = 1; i <= NF; i++) if ($i ~ /^avg60=/) { sub(/^avg60=/, "", $i); print $i } }' /proc/pressure/io 2>/dev/null || true)
+  disk=$(df -hP / 2>/dev/null | awk 'NR == 2 { print $5 " of " $2 }' || true)
+  echo "load ${load} cpus=$(nproc 2>/dev/null || echo '?') io-pressure=${io:-n/a} root-disk=${disk:-n/a}"
+}
+
 # import_status NAMESPACE PVC [full] prints one line on the CDI import into
 # PVC: its phase, the importer pod with its restarts and container state, and
 # the scratch claim CDI fills first. With full, the PVC's events and the
@@ -66,7 +77,7 @@ import_status() {
   else
     scratch='scratch absent'
   fi
-  echo "tdx-image-acceptance: $pvc import $phase; $summary; $scratch"
+  echo "tdx-image-acceptance: $pvc import $phase; $summary; $scratch; host $(host_pressure)"
   [[ $full == full ]] || return 0
   timeout 30 kubectl -n "$ns" describe pvc "$pvc" 2>/dev/null | sed -n '/^Events:/,$p' | tail -15 || true
   if [[ $summary != 'importer absent' ]]; then

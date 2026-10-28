@@ -219,7 +219,7 @@ jq '.metadata.annotations["cdi.kubevirt.io/storage.pod.phase"] = "Running"
   | .metadata.annotations["cdi.kubevirt.io/storage.import.importPodName"] = "importer-c8s-tdx-123-2-root"' \
   "$fixture/pvc-good.json" > "$FIXTURE_PVC"
 status=$(bash "$script" import-status "$ns" "$vm-root")
-[[ $status == *'import Running'* && $status == *'importer-c8s-tdx-123-2-root Running'* && $status == *'restarts=2'* && $status == *'scratch Bound'* ]] \
+[[ $status == *'import Running'* && $status == *'importer-c8s-tdx-123-2-root Running'* && $status == *'restarts=2'* && $status == *'scratch Bound'* && $status == *'host load '* ]] \
   || fail "import-status summary: $status"
 [[ $status != *'Events:'* && $status != *'pulling layer'* ]] || fail 'import-status summary dumped the full report'
 pass
