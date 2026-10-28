@@ -145,7 +145,7 @@ func NewBundle(opts BundleOptions) (err error) {
 		return err
 	}
 	server := Document{
-		SchemaVersion:           SchemaVersion,
+		SchemaVersion:           SchemaVersionV1,
 		ClusterID:               opts.ClusterID,
 		Role:                    Server,
 		Image:                   image,

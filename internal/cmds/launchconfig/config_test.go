@@ -42,7 +42,7 @@ func testDocument(t *testing.T, platform string, role Role) (Document, *ecdsa.Pr
 	serverKey, serverPub := testKey(t)
 	agentKey, agentPub := testKey(t)
 	doc := Document{
-		SchemaVersion: SchemaVersion, ClusterID: "cluster-one", Role: role,
+		SchemaVersion: SchemaVersionV1, ClusterID: "cluster-one", Role: role,
 		Image:                   Image{Platform: platform, Measurement: strings.Repeat("11", 48)},
 		Node:                    Node{Name: "node-one", IP: "10.0.0.2", ExternalIP: "192.0.2.4"},
 		RKE2:                    RKE2{AgentToken: strings.Repeat("a", 64)},
@@ -140,10 +140,7 @@ func TestStageBothRolesAndPlatforms(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				cds, err := refvalues.Load(cfg.path(Dir + "/cds.json"))
-				if err != nil {
-					t.Fatal(err)
-				}
+				cds := stagedCDSPolicy(t, staged)
 				if len(peers.Images) != 2 || len(cds.Images) != 1 || !bytes.Equal(cds.Images[0].Anchor, []byte(doc.Server.OperatorPublicKey)) {
 					t.Fatal("node and server policy sets are not separated")
 				}

@@ -2,6 +2,7 @@ package nodeservices
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
@@ -27,10 +29,24 @@ func testPins(t *testing.T) refvalues.ReferenceValues {
 	return pins
 }
 
+// document is a staged launch configuration of the node image the staged
+// peer policy pins, under the server launch key that policy anchors.
 func document(t *testing.T, role launchconfig.Role) *launchconfig.Document {
 	t.Helper()
-	pins := testPins(t)
-	return &launchconfig.Document{Role: role, Image: launchconfig.Image{Platform: "tdx"}, Server: launchconfig.ServerConfig{Address: "192.0.2.10", OperatorPublicKey: string(pins.Images[0].Anchor)}, TLSSAN: "c8s.local"}
+	server := testPins(t).Images[0]
+	return &launchconfig.Document{
+		SchemaVersion: launchconfig.SchemaVersionV1, Role: role,
+		Image: launchconfig.Image{
+			Platform:    "tdx",
+			Measurement: hex.EncodeToString(server.Digest),
+			RTMRs: map[int]string{
+				1: hex.EncodeToString(server.Registers[1]),
+				2: hex.EncodeToString(server.Registers[2]),
+			},
+		},
+		Server: launchconfig.ServerConfig{Address: "192.0.2.10", OperatorPublicKey: string(server.Anchor)},
+		TLSSAN: "c8s.local",
+	}
 }
 
 const floor = "platform: tdx\nallowlist:\n  base:\n    schema: c8s.allowlist/v1\n    workloads:\n      system:\n        containers:\n          - digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n            command: {policy: any}\n            args: {policy: any}\n  pull:\n    url: https://127.0.0.1:30808\n    timeout: 30s\n    cds_measurements: []\npolicy:\n  mode: fail-closed\n  enforce_existing: true\n"
@@ -53,17 +69,11 @@ func prepareRoot(t *testing.T) string {
 	for name, data := range map[string]string{"image-policy.yaml": meshFloor, "allowlist-seed.json": seed} {
 		writeInput(t, root, "/usr/lib/c8s/"+name, []byte(data))
 	}
-	pins := testPins(t)
-	for _, name := range []string{"peers.json", "cds.json"} {
-		if name == "cds.json" {
-			pins.Images = pins.Images[:1]
-		}
-		data, err := refvalues.Format(pins)
-		if err != nil {
-			t.Fatal(err)
-		}
-		writeInput(t, root, launchDir+name, data)
+	peers, err := refvalues.Format(testPins(t))
+	if err != nil {
+		t.Fatal(err)
 	}
+	writeInput(t, root, launchDir+"peers.json", peers)
 	writeInput(t, root, launchDir+"config.json", []byte(`{"rke2":{"serverToken":"SECRET-SERVER-TOKEN","agentToken":"SECRET-AGENT-TOKEN"}}`))
 	return root
 }
@@ -113,7 +123,7 @@ func TestPreparePreservesFloorAndPinsServerBeforeRKE2(t *testing.T) {
 				t.Fatalf("chart components missing from bootstrap base: %v", base.Workloads)
 			}
 			pull := ga["pull"].(map[string]any)
-			if pull["url"] != doc.CDSURL() || pull["cds_measurements_config"] != launchDir+"cds.json" || pull["timeout"] != "30s" {
+			if pull["url"] != cmdsutil.CDSURL(doc.CDSAddrPort()) || pull["cds_measurements_config"] != PublicDir+"/cds.json" || pull["timeout"] != "30s" {
 				t.Fatalf("bad pull config: %v", pull)
 			}
 			if _, exists := pull["cds_measurements"]; exists {
@@ -230,15 +240,13 @@ func TestPreparePublishesOnlyPublicRoleInputs(t *testing.T) {
 			if !reflect.DeepEqual(names, want) {
 				t.Fatalf("public files = %v, want %v", names, want)
 			}
-			for _, name := range []string{"peers.json", "cds.json"} {
-				original, err := os.ReadFile(filepath.Join(root, launchDir, name))
-				if err != nil {
-					t.Fatal(err)
-				}
-				public, err := os.ReadFile(filepath.Join(root, PublicDir, name))
-				if err != nil || !bytes.Equal(original, public) {
-					t.Fatalf("changed authenticated %s: %v", name, err)
-				}
+			original, err := os.ReadFile(filepath.Join(root, launchDir, "peers.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			public, err := os.ReadFile(filepath.Join(root, PublicDir, "peers.json"))
+			if err != nil || !bytes.Equal(original, public) {
+				t.Fatalf("changed authenticated peers.json: %v", err)
 			}
 			private, err := os.Stat(filepath.Join(root, launchDir, "config.json"))
 			if err != nil || private.Mode().Perm() != 0600 {

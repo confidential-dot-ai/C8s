@@ -7,8 +7,6 @@ import (
 
 func TestPullAndInventoryUseCompleteCDSPolicy(t *testing.T) {
 	cfg := validConfig()
-	// The plugin's platform is the one CDS runs with, so a document naming
-	// another family is refused on every path that reads it.
 	cfg.Platform = "tdx"
 	cfg.Allowlist.Pull.CDSMeasurementsConfig = "../../../internal/testdata/node-identities.json"
 	if err := cfg.Validate(); err != nil {

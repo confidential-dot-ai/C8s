@@ -1405,7 +1405,7 @@ allowlist:
     interval: "5s"
     timeout: "30s"
     attestation_api_url: "http://127.0.0.1:8400"
-    cds_measurements_config: "/run/confos/launch/cds.json"
+    cds_measurements_config: "/run/c8s-node/cds.json"
     # measure_policies (extend RTMR[3] with each pulled allowlist) is off
     # here; the chart's policy-measurement installer patches it from
     # nriImagePolicy.measurePolicies.

@@ -12,6 +12,7 @@ import (
 
 	"github.com/containerd/nri/pkg/api"
 
+	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/c8s/internal/audit"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
@@ -23,8 +24,8 @@ var (
 	testDigestB = strings.Repeat("b2", 48)
 )
 
-// identityPolicyFile is a complete sev-snp policy document, as a node's
-// measured config names one.
+// identityPolicyFile is a complete tdx policy document, as a node's measured
+// config names one.
 const identityPolicyFile = "../../testdata/node-identities.json"
 
 // A node whose policy is a document hands those identities on whole, through
@@ -89,17 +90,25 @@ func TestPrepareCDSPinsStagesACopyEveryClientCanRead(t *testing.T) {
 	}
 }
 
-// A configured document for another platform is refused at startup: a node
-// must not hand its pods pins it cannot itself verify CDS against.
-func TestPrepareCDSPinsRefusesAnotherPlatformsDocument(t *testing.T) {
+// A CDS runs on the TEE family its own document declares, which an operator
+// chooses independently of the nodes it serves.
+func TestPrepareCDSPinsAcceptsTheCDSVMsOwnFamily(t *testing.T) {
+	renderInTempDir(t)
 	p := testPlugin(t, &config{
 		Platform:       "sev-snp",
 		WorkloadClaims: workloadClaimsConfig{SocketDir: t.TempDir()},
 		Allowlist:      allowlistConfig{Pull: pullConfig{CDSMeasurementsConfig: identityPolicyFile}},
 	})
 
-	if err := p.prepareCDSPins(); err == nil {
-		t.Fatal("prepareCDSPins accepted a document for another platform")
+	if err := p.prepareCDSPins(); err != nil {
+		t.Fatalf("prepareCDSPins: %v", err)
+	}
+	rendered, err := refvalues.Load(p.cdsPins)
+	if err != nil {
+		t.Fatalf("rendered pins do not load: %v", err)
+	}
+	if rendered.Family != teetypes.FamilyTDX {
+		t.Fatalf("rendered family = %s, want the document's own %s", rendered.Family, teetypes.FamilyTDX)
 	}
 }
 

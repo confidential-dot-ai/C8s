@@ -154,18 +154,23 @@ func (c pullConfig) cdsSource() (cdsSource, error) {
 }
 
 // policySet is the CDS identity set this node's own clients and its injected
-// credential clients are held to, whichever form the config names it in.
+// credential clients are held to, whichever form the config names it in. Only
+// the flat pins take this node's family; a policy document carries the family
+// of the CDS VM itself.
 func (c pullConfig) policySet(platform string) (refvalues.ReferenceValues, error) {
 	source, err := c.cdsSource()
 	if err != nil {
 		return refvalues.ReferenceValues{}, err
 	}
-	set, err := cmdsutil.LoadImagePolicySet(cmdsutil.ImagePolicyValuesConfig{
+	values := cmdsutil.ImagePolicyValuesConfig{
 		Source:       cmdsutil.ImagePolicySource{File: source.PinFile},
 		Pins:         source.Pins,
-		Platform:     platform,
 		PlatformFlag: "platform",
-	})
+	}
+	if !values.Source.IsSet() {
+		values.Platform = platform
+	}
+	set, err := cmdsutil.LoadImagePolicySet(values)
 	if err != nil {
 		return refvalues.ReferenceValues{}, fmt.Errorf("allowlist.pull: %w", err)
 	}
