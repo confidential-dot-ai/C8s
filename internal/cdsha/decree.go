@@ -278,7 +278,7 @@ func verifyDecree(sd SignedDecree, tail Core) error {
 		return errors.New("a Restore decree, and only one, names the snapshot it restores")
 	case (d.Kind == Genesis || d.Kind == Recover || d.Kind == Restore) != (d.IssuedAtMS > 0):
 		return errors.New("a Genesis, Recover or Restore decree, and only one, names when it was issued (issued_at_ms): re-sign it")
-	case d.IssuedAtMS > d.ExpiresAt.UnixMilli():
+	case d.IssuedAtMS > 0 && d.IssuedAtMS > d.ExpiresAt.UnixMilli():
 		// An issue time past the expiry is a wrong operator clock: as the
 		// start time it would refuse every operator token until then.
 		return errors.New("issued_at_ms is after expires_at: check the signing clock and re-sign it")

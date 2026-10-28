@@ -98,4 +98,16 @@ func TestIssuedAtNotAfterExpiry(t *testing.T) {
 	if err := CheckDecree(ok, pre, now); err != nil {
 		t.Errorf("a Genesis decree issued now: %v", err)
 	}
+	// The bound is on the issue time only: a pin decree carries none, and
+	// clients check it without expiry, so one signed without expires_at
+	// still verifies.
+	a := testImage(1)
+	pin, _ := a.Pin()
+	noExpiry, err := SignDecree(Decree{ClusterID: testCluster, IntentID: "roll", BaseEpoch: 4, Kind: UpdateMeasurements, Measurements: []string{pin}, Images: []DecreeImage{a}}, op)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyPinDecree(noExpiry, testCluster, pub); err != nil {
+		t.Errorf("a pin decree without expires_at: %v", err)
+	}
 }
