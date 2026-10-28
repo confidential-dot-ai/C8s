@@ -89,6 +89,22 @@ func TestWritePinPolicy(t *testing.T) {
 	if _, err := run(out); err == nil {
 		t.Fatal("an existing --out was overwritten")
 	}
+	// The written policy is the next rollout's starting point: the same
+	// anchors, pin names that do not grow.
+	var buf bytes.Buffer
+	again := filepath.Join(dir, "server-again.json")
+	if err := writePinPolicy(t.Context(), ts.Client(), ts.URL, pol, "c1", block.Bytes, again, &buf); err != nil {
+		t.Fatal(err)
+	}
+	pol2, err := refvalues.Load(again)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range pol2.Images {
+		if pol2.Images[i].Name != pol.Images[i].Name || !bytes.Equal(pol2.Images[i].Anchor, pol.Images[i].Anchor) {
+			t.Fatalf("pin %q became %q", pol.Images[i].Name, pol2.Images[i].Name)
+		}
+	}
 	// Printing only, for the pin floor.
 	if printed, err := run(""); err != nil || !strings.Contains(printed, "base_epoch=7") {
 		t.Fatalf("print only: %v %s", err, printed)

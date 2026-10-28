@@ -39,6 +39,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -311,7 +312,10 @@ func Policy(bootstrap refvalues.ReferenceValues, images []cdsha.DecreeImage) (re
 			return refvalues.ReferenceValues{}, fmt.Errorf("cdspins: bootstrap image %q has no launch-key anchor", img.Name)
 		}
 		if !slices.ContainsFunc(anchors, func(a anchor) bool { return bytes.Equal(a.key, img.Anchor) }) {
-			anchors = append(anchors, anchor{name: img.Name, key: img.Anchor})
+			// A policy this function wrote names its pins <anchor>@<image>:
+			// keep the anchor's name, so the names do not grow per rollout.
+			name, _, _ := strings.Cut(img.Name, "@")
+			anchors = append(anchors, anchor{name: name, key: img.Anchor})
 		}
 	}
 	if len(anchors) == 0 {
