@@ -1,9 +1,15 @@
 # Running a cluster
 
-What a C8s install puts in a cluster, and what the platform operator controls
-afterwards. The platform operator is the person holding the cluster's keys;
-`c8s install` is the command they run, `c8s operator` is the controller pod it
-deploys, and only the person's keys authorize policy. For the install itself see
+A C8s cluster takes its policy from operator private keys that never enter it,
+and a measured node releases credentials only inside the bounds its image
+bakes.
+
+Guarantee: [No privileged way in](guarantees.md#no-privileged-way-in),
+[Routes are what the operator signed](guarantees.md#routes-are-what-the-operator-signed).
+
+The platform operator is the person holding those keys; `c8s install` is the
+command they run, `c8s operator` is the controller pod it deploys, and only the
+person's keys authorize policy. For the install itself see
 [QUICKSTART.md](QUICKSTART.md); for a workload, [workloads.md](workloads.md).
 
 ## What an install deploys
@@ -19,7 +25,7 @@ here, such as `router.publicTLS.mode`, are chart values.
 |---|---|
 | `c8s-operator` Deployment and Service | Controllers and the two admission webhooks |
 | `c8s-cds` Deployment, Service (NodePort `30808`), PodDisruptionBudget | CDS, the Certificate Distribution Service: the cluster's trust root |
-| `c8s-pod-injector`, `c8s-pod-validator`, `c8s-deny-host-namespaces` | Injection, its enforcement, and the host-namespace refusal |
+| `c8s-pod-injector`, `c8s-pod-validator`, `<release>-deny-host-namespaces` | Injection, its enforcement, and the host-namespace refusal |
 | `c8s-attestation-api` and `c8s-nri-image-policy-worker` DaemonSets | Node-local evidence and the admission plugin; on `bare-metal` the node image bakes both, and the worker only carries this release's CDS pins to the baked plugin |
 | `c8s-router` Deployment, Service, and the `c8s-router` namespace | The public front door |
 | One ingress NetworkPolicy per installed component | See [Network policies](#network-policies) |
@@ -77,12 +83,15 @@ an installed cluster (`node.baked=false`) also excludes `local-path-storage`.
 Injection adds the memory-backed `c8s-certs` volume, mounted at `/etc/c8s/certs`
 for the platform containers alone, and these containers ahead of the pod's own:
 
-| Container | What it is |
-|---|---|
-| `c8s-mesh` | The pod's mesh endpoint, carrying its traffic over armTLS ([armtls.md](armtls.md)) |
-| `c8s-cert` | get-cert: the first leaf before the application starts, then renewal on the chart default `webhook.getCert.renewInterval` (2h); the cadence rule is [armtls.md](armtls.md) |
-| `c8s-cert-wait` | A run-once gate holding the application containers until the first `tls.crt` exists |
-| `c8s-secret`, `c8s-volume` | The fetchers, when the pod requests secrets or volumes ([secrets.md](secrets.md), [volumes.md](volumes.md)) |
+- `c8s-mesh`: the pod's mesh endpoint, carrying its traffic over armTLS
+  ([armtls.md](armtls.md)).
+- `c8s-cert`: get-cert, which obtains the first leaf before the application
+  starts and then renews on the chart default `webhook.getCert.renewInterval`
+  (2h); the cadence rule is [armtls.md](armtls.md).
+- `c8s-cert-wait`: a run-once gate holding the application containers until the
+  first `tls.crt` exists.
+- `c8s-secret`, `c8s-volume`: the fetchers, when the pod requests secrets or
+  volumes ([secrets.md](secrets.md), [volumes.md](volumes.md)).
 
 Those endpoints form the mesh, the armTLS traffic layer with its own identity
 and guarantees; `c8s-mesh` is one pod's end of it ([armtls.md](armtls.md)).
@@ -131,33 +140,32 @@ PVC observes as either.
 ## Authenticated launch configuration
 
 A measured node runs one image for both roles and takes its configuration from a
-disk labelled `opkeydata` holding exactly `pubkey`, `launch.yaml`, and
-`launch.yaml.sig`. The strict `c8s-launch/v1` document fixes the role (`server`
-or `agent`), the cluster id, node addresses, RKE2 join tokens, the trusted role
-keys, the image pins, the TLS SAN, and optionally an initial allowlist, registry
-mirrors, and the server's `router` block, which carries the public hostnames,
-ACME settings, and request body cap an image built before the cluster cannot
-know. Non-empty `hostnames` puts the baked front door in ACME mode at boot,
-while the chart value `router.publicTLS.mode` stays `cds`.
+signed `c8s-launch/v1` document on the disk it boots with: the document fixes
+the role (`server` or `agent`), the node's identity in the cluster, the RKE2
+join tokens, and the image measurements the boot must report, and staging
+authenticates its bytes before parsing them. Nothing an unmeasured host says at
+boot decides any of it. Every field, the signature, and the boot-time check
+order are [launch-configuration.md](launch-configuration.md).
 
-The signature covers the exact file bytes, and the launch key's public half
-binds into the node's evidence: the measured initrd extends TDX RTMR[3], while
-an SNP launcher sets `HOSTDATA` to `SHA-256(pubkey)`. At boot, staging
-authenticates those bytes before parsing them and checks the image measurement
-and the role-key relationship against fresh self-attestation. Missing, unsigned,
-or inconsistent input leaves RKE2 and the role's services down; any change means
-a relaunch with newly signed bytes.
-
-`c8s node launch-config new` writes one cluster's bundle: separate server and
+On a measured bare-metal node — the one CVM mode with a launch document
+([overview.md](overview.md#cvm-modes-and-hardware-platforms)) — the launch key's
+public half binds into the node's evidence, so a client that pins the image and
+that key learns which operator launched the guest it dialled, not only which
+image booted ([measurements.md](measurements.md)). Use distinct keys per
+cluster: evidence names the key and the image, not the cluster, so two clusters
+sharing both are indistinguishable to a client pinning them.
+`c8s node launch-config new` writes one cluster's bundle — separate server and
 agent launch keys, fresh join tokens, a signed document per node, and the client
 policies pinning the server and listing every identity CDS admits. The server
 launch key is also the operator key for
 [`c8s get-kubeconfig`](#trust-gate-c8s-get-kubeconfig) and for signed CDS
-writes. Use distinct keys per cluster: evidence names the key and the image, not
-the cluster, so two clusters sharing both are indistinguishable to a client
-pinning them. The join tokens in the document are RKE2 enrollment credentials,
-not C8s identity: the mesh wraps neither port `9345` nor `6443`, so a token
-holder with network access can enroll with no C8s evidence.
+writes.
+
+A non-empty `router.hostnames` in the document puts the baked front door in ACME
+mode at boot, while the chart value `router.publicTLS.mode` stays `cds`. The
+join tokens are RKE2 enrollment credentials, not C8s identity: the mesh wraps
+neither port `9345` nor `6443`, so a token holder with network access can enroll
+with no C8s evidence.
 
 ## Operator credentials
 
@@ -165,12 +173,11 @@ holder with network access can enroll with no C8s evidence.
 
 `c8s get-kubeconfig` obtains a kubeconfig from a measured node and enforces the
 node's full measured identity before any credential moves. The
-`--image-manifest` shape selects the platform and pins the whole guest image:
-MRTD, RTMR[1] and RTMR[2] on TDX, one of the per-vCPU launch measurements on
-SEV-SNP. The operator-key binding is pinned with it, as the RTMR[3] chain (the
-key's seed, each digest-pinned `--workload-image`, then optionally a replaying
-prefix of the policies the node measured) or as SEV-SNP `HOSTDATA` equal to
-`SHA-256(operator pubkey)`. A fresh nonce-bound report comes from the
+`--image-manifest` shape selects the platform and pins the whole guest image.
+The operator-key binding is pinned with it: on TDX as the RTMR[3] chain, which
+`--workload-image` pins in first-extend order, and on SEV-SNP as `HOST_DATA`
+equal to `SHA-256(operator pubkey)`. What each register and field holds is
+[measurements.md](measurements.md). A fresh nonce-bound report comes from the
 credential-release service on port `8443`, which authenticates the operator
 token first. The gate proves that a genuine guest of that platform booted the
 pinned image and was launched to trust this operator key — and nothing the flags

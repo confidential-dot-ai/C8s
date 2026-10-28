@@ -20,6 +20,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -84,9 +85,20 @@ func discoveryDoc(t *testing.T, cert *x509.Certificate, challenge []byte, mode, 
 // with servingCert (no armTLS extension), like a router front door.
 func fakeLB(t *testing.T, servingCert tls.Certificate, doc []byte) *httptest.Server {
 	t.Helper()
+	return lbServer(t, &tls.Config{Certificates: []tls.Certificate{servingCert}}, doc, false)
+}
+
+// lbServer is fakeLB over any TLS configuration. closeDiscovery makes the
+// discovery response close the connection, as a router whose discovery
+// location sets keepalive_timeout 0 does.
+func lbServer(t *testing.T, cfg *tls.Config, doc []byte, closeDiscovery bool) *httptest.Server {
+	t.Helper()
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case DefaultPath:
+			if closeDiscovery {
+				w.Header().Set("Connection", "close")
+			}
 			w.Header().Set("Content-Type", "application/json")
 			w.Write(doc)
 		case "/allowlist":
@@ -96,7 +108,7 @@ func fakeLB(t *testing.T, servingCert tls.Certificate, doc []byte) *httptest.Ser
 			http.NotFound(w, r)
 		}
 	}))
-	srv.TLS = &tls.Config{Certificates: []tls.Certificate{servingCert}}
+	srv.TLS = cfg
 	srv.StartTLS()
 	t.Cleanup(srv.Close)
 	return srv
@@ -153,7 +165,7 @@ func TestNewVerifiedHTTPClient_EndToEnd(t *testing.T) {
 	}
 
 	// Two sequential requests: both must ride the one attested connection
-	// (the client never redials).
+	// (nothing closed it, so there is nothing to redial).
 	for i := range 2 {
 		resp, err := hc.Get(lb.URL + "/allowlist")
 		if err != nil {
@@ -306,11 +318,11 @@ func TestNewVerifiedHTTPClient_PublicTLSModes(t *testing.T) {
 	}
 }
 
-// TestNewVerifiedHTTPClient_FailsClosedOnReconnect proves the client never
-// redials once the attested connection is gone: a new handshake could land on
-// a different router replica (per-pod serving certs) that the verified
-// document says nothing about.
-func TestNewVerifiedHTTPClient_FailsClosedOnReconnect(t *testing.T) {
+// TestNewVerifiedHTTPClient_RedialsToTheAttestedLeaf proves a lost attested
+// connection is redialed and used when the new handshake presents the leaf
+// the document attested: only the holder of the attested key can produce it,
+// so the attestation covers the new connection as it did the first.
+func TestNewVerifiedHTTPClient_RedialsToTheAttestedLeaf(t *testing.T) {
 	servingCert, leaf := plainServingCert(t)
 	doc := discoveryDoc(t, leaf, []byte("challenge"), "cds", string(teetypes.PlatformAzSNP), `{"hcl_report":"fake"}`)
 	lb := fakeLB(t, servingCert, doc)
@@ -329,17 +341,22 @@ func TestNewVerifiedHTTPClient_FailsClosedOnReconnect(t *testing.T) {
 
 	lb.CloseClientConnections()
 
-	if _, err := hc.Get(lb.URL + "/allowlist"); err == nil ||
-		!bytes.Contains([]byte(err.Error()), []byte("re-run the command")) {
-		t.Fatalf("want a fail-closed redial refusal, got: %v", err)
+	resp, err = hc.Get(lb.URL + "/allowlist")
+	if err != nil {
+		t.Fatalf("GET after the attested connection was closed: %v", err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET after redial = %d, want 200", resp.StatusCode)
 	}
 }
 
-// TestNewSingleConnClientConfig pins the connection-bound client's shape: the
-// timeout knobs mirror armtls.NewVerifyingHTTPClient and the transport is
-// limited to the single attested connection.
-func TestNewSingleConnClientConfig(t *testing.T) {
-	hc := newSingleConnClient(nil)
+// TestNewAttestedClientConfig pins the attested client's shape: the timeout
+// knobs mirror armtls.NewVerifyingHTTPClient and the transport serializes
+// requests over one connection.
+func TestNewAttestedClientConfig(t *testing.T) {
+	hc := newAttestedClient(&attestedDialer{})
 	if hc.Timeout != 30*time.Second {
 		t.Errorf("Timeout = %v, want 30s", hc.Timeout)
 	}
@@ -421,5 +438,68 @@ func TestNewVerifiedHTTPClient_RejectsExpiredServingCert(t *testing.T) {
 	}
 	if verifyCalls != 0 {
 		t.Fatalf("an expired serving cert consumed %d evidence verification(s), want 0", verifyCalls)
+	}
+}
+
+// TestNewVerifiedHTTPClient_RefusesRedialToAnotherLeaf proves the redial
+// fails closed when the new handshake presents a leaf other than the attested
+// one: a different router replica (per-pod serving certs) that the verified
+// document says nothing about.
+func TestNewVerifiedHTTPClient_RefusesRedialToAnotherLeaf(t *testing.T) {
+	servingCert, leaf := plainServingCert(t)
+	otherCert, _ := plainServingCert(t)
+	doc := discoveryDoc(t, leaf, []byte("challenge"), "cds", string(teetypes.PlatformAzSNP), `{"hcl_report":"fake"}`)
+	var handshakes atomic.Int32
+	// GetConfigForClient, not GetCertificate: the client dials an IP, so
+	// the hello carries no server name and crypto/tls would skip the latter.
+	lb := lbServer(t, &tls.Config{GetConfigForClient: func(*tls.ClientHelloInfo) (*tls.Config, error) {
+		if handshakes.Add(1) == 1 {
+			return &tls.Config{Certificates: []tls.Certificate{servingCert}}, nil
+		}
+		return &tls.Config{Certificates: []tls.Certificate{otherCert}}, nil
+	}}, doc, false)
+	measurement := bytes.Repeat([]byte{0x42}, armtls.SNPMeasurementSize)
+
+	hc, err := NewVerifiedHTTPClient(context.Background(), lb.URL, [][]byte{measurement}, approvingVerify(measurement))
+	if err != nil {
+		t.Fatalf("NewVerifiedHTTPClient: %v", err)
+	}
+	resp, err := hc.Get(lb.URL + "/allowlist")
+	if err != nil {
+		t.Fatalf("GET on the attested connection: %v", err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+
+	lb.CloseClientConnections()
+
+	if _, err := hc.Get(lb.URL + "/allowlist"); err == nil ||
+		!bytes.Contains([]byte(err.Error()), []byte("redial presented")) {
+		t.Fatalf("want a refusal naming the leaf the redial presented, got: %v", err)
+	}
+}
+
+// TestNewVerifiedHTTPClient_SurvivesDiscoveryConnectionClose is the regression
+// test for a router whose discovery location closes the connection after the
+// document (keepalive_timeout 0): the requests that follow must still reach
+// the attested front door.
+func TestNewVerifiedHTTPClient_SurvivesDiscoveryConnectionClose(t *testing.T) {
+	servingCert, leaf := plainServingCert(t)
+	doc := discoveryDoc(t, leaf, []byte("challenge"), "cds", string(teetypes.PlatformAzSNP), `{"hcl_report":"fake"}`)
+	lb := lbServer(t, &tls.Config{Certificates: []tls.Certificate{servingCert}}, doc, true)
+	measurement := bytes.Repeat([]byte{0x42}, armtls.SNPMeasurementSize)
+
+	hc, err := NewVerifiedHTTPClient(context.Background(), lb.URL, [][]byte{measurement}, approvingVerify(measurement))
+	if err != nil {
+		t.Fatalf("NewVerifiedHTTPClient: %v", err)
+	}
+	resp, err := hc.Get(lb.URL + "/allowlist")
+	if err != nil {
+		t.Fatalf("GET /allowlist after a closed discovery response: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !bytes.Contains(body, []byte(`"workloads"`)) {
+		t.Fatalf("GET /allowlist = %d %s", resp.StatusCode, body)
 	}
 }

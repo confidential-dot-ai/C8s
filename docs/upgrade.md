@@ -1,7 +1,9 @@
 # Upgrade a cluster
 
-Move a chart-installed C8s cluster to a new release. Every node admits C8s's own
-components by image digest, and a chart-installed CDS — the pod that serves the
+Move a chart-installed C8s cluster to a new release.
+
+Every node admits C8s's own components by image digest, and a chart-installed
+CDS — the pod that serves the
 allowlist — reads its CDS seed, the allowlist document it starts from, only at
 start. So the new release's entries reach the nodes only if you publish them
 through the running CDS first, which is why the steps are ordered this way. A
