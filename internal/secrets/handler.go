@@ -184,11 +184,14 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// ReadDeniedLog is the CDS log message for a read outside the caller's grant.
+const ReadDeniedLog = "secret read denied"
+
 func (h Handler) serveGet(ctx context.Context, w http.ResponseWriter, g grant, path string) {
 	if !g.secrets.Allows(path, pkgallowlist.OpRead) {
 		// Indistinguishable from a path that does not exist: telling a caller
 		// which of its ungranted guesses are real would enumerate the store.
-		h.logger().Warn("secret read denied", "path", path)
+		h.logger().Warn(ReadDeniedLog, "path", path)
 		http.Error(w, "no such secret", http.StatusNotFound)
 		return
 	}
