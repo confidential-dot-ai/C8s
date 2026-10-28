@@ -141,6 +141,41 @@ func (c Client) fetch(ctx context.Context, ifNoneMatch string, raw *[]byte) (Ser
 	return Served{Allowlist: al, ETag: resp.Header.Get("ETag"), Digest: "sha256:" + hex.EncodeToString(sum[:])}, false, nil
 }
 
+// HistoryEntry is one document in GET /allowlist/history.
+type HistoryEntry struct {
+	Version string `json:"version"`
+	Digest  string `json:"digest"`
+	Signed  bool   `json:"signed"`
+}
+
+// History returns every document CDS served, oldest first, as far back as it
+// keeps them.
+func (c Client) History(ctx context.Context) ([]HistoryEntry, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/allowlist/history", nil)
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch allowlist history: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, operatorauth.ResponseError(resp)
+	}
+	body, err := readCapped(resp.Body, maxAllowlistResponseBytes)
+	if err != nil {
+		return nil, err
+	}
+	var h struct {
+		Entries []HistoryEntry `json:"entries"`
+	}
+	if err := json.Unmarshal(body, &h); err != nil {
+		return nil, fmt.Errorf("decode allowlist history: %w", err)
+	}
+	return h.Entries, nil
+}
+
 // ReplaceAll atomically replaces the entire allowlist. CDS assigns the new
 // version. A non-empty version makes the write conditional: CDS refuses it
 // with a 412 *operatorauth.StatusError unless the allowlist is still at that

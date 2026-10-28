@@ -149,7 +149,6 @@ func TestAdmissionCapAdmitsShrinkingAndNeededWrites(t *testing.T) {
 		{Kind: KindAllowlist, Allowlist: &allowlist.Command{Op: allowlist.OpDeleteWorkload, Name: "w"}},
 		{Kind: KindAllowlist, Allowlist: &allowlist.Command{Op: allowlist.OpPruneHistory, Keep: 1}},
 		{Kind: KindAllowlist, Allowlist: &allowlist.Command{Op: allowlist.OpConsumeToken, Token: "t"}},
-		{Kind: KindAllowlist, Allowlist: &allowlist.Command{Op: allowlist.OpSignPolicy, Body: []byte("{}")}},
 		{Kind: KindAllowlist, Allowlist: &allowlist.Command{Op: allowlist.OpSeed}},
 		{Kind: KindAllowlist, Allowlist: &allowlist.Command{Op: allowlist.OpStartJournal}},
 		{Kind: KindBinding, Binding: &sandboxledger.Command{SandboxID: "s", Host: "h"}},

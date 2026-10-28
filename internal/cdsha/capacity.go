@@ -116,8 +116,6 @@ func (f *FSM) snapshotEstimate() (header, image int64, err error) {
 //   - token spends: every write spends one first, a DELETE included, so
 //     refusing them would refuse the writes that make room; a spent token
 //     is one small row, dropped at expiry;
-//   - the signature of a document whose replace_all was admitted (the same
-//     request);
 //   - seeds and the journal start: startup work that fails closed, so
 //     refusing them would crash-loop replicas restarted at the cap;
 //   - bindings (bounded by --sandbox-ledger-max-entries; issuance needs

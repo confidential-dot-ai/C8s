@@ -4,7 +4,9 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"io"
@@ -12,6 +14,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,6 +22,7 @@ import (
 	"time"
 
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
@@ -53,6 +57,19 @@ type fakeCDS struct {
 	// lost503 answers this many committed whole-document writes 503, as an
 	// HA CDS does when the reply is lost after the commit.
 	lost503 int
+	// lost500 answers this many committed whole-document writes 500, which
+	// the client does not send again: a commit whose answer was lost.
+	lost500 int
+	// fail500 answers this many whole-document writes 500 without
+	// committing them.
+	fail500 int
+	// afterReplace, when set, runs once after a whole-document write is
+	// committed and before it is answered: a write landing on top of it.
+	afterReplace func()
+	// history is GET /allowlist/history: one entry per version.
+	history []allowlistclient.HistoryEntry
+	// historyPruned serves an empty history, as after pruning.
+	historyPruned bool
 }
 
 func newFakeCDS(pinned []*ecdsa.PublicKey) *fakeCDS {
@@ -69,6 +86,7 @@ func newFakeCDS(pinned []*ecdsa.PublicKey) *fakeCDS {
 func (f *fakeCDS) mux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /allowlist", f.handleList)
+	mux.HandleFunc("GET /allowlist/history", f.handleHistory)
 	mux.HandleFunc("PUT /allowlist", f.handleReplace)
 	mux.HandleFunc("PUT /allowlist/workloads/{name}", f.handlePutWorkload)
 	mux.HandleFunc("DELETE /allowlist/workloads/{name}", f.handleDeleteWorkload)
@@ -87,6 +105,30 @@ func (f *fakeCDS) handleList(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("ETag", `W/"`+strconv.Itoa(version)+`"`)
 	w.Write(body)
+}
+
+func (f *fakeCDS) handleHistory(w http.ResponseWriter, _ *http.Request) {
+	f.mu.Lock()
+	entries := slices.Clone(f.history)
+	if f.historyPruned {
+		entries = nil
+	}
+	f.mu.Unlock()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"entries": entries})
+}
+
+// bump is a committed write: a new version, journaled. f.mu must be held.
+func (f *fakeCDS) bump() {
+	f.version++
+	body, err := f.al.Canonical()
+	if err != nil {
+		panic(err)
+	}
+	sum := sha256.Sum256(body)
+	f.history = append(f.history, allowlistclient.HistoryEntry{
+		Version: strconv.Itoa(f.version), Digest: "sha256:" + hex.EncodeToString(sum[:]),
+	})
 }
 
 func (f *fakeCDS) authorize(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
@@ -113,23 +155,46 @@ func (f *fakeCDS) handleReplace(w http.ResponseWriter, r *http.Request) {
 		hook()
 	}
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	if ifMatch := r.Header.Get("If-Match"); ifMatch != "" && ifMatch != `"`+strconv.Itoa(f.version)+`"` {
+		f.mu.Unlock()
 		http.Error(w, "the allowlist changed since it was read", http.StatusPreconditionFailed)
+		return
+	}
+	if f.fail500 > 0 {
+		f.fail500--
+		f.mu.Unlock()
+		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	f.al = *parsed
 	if f.al.Workloads == nil {
 		f.al.Workloads = map[string]pkgallowlist.Workload{}
 	}
-	f.version++
-	if f.lost503 > 0 {
+	f.bump()
+	status := http.StatusNoContent
+	switch {
+	case f.lost503 > 0:
 		f.lost503--
-		w.Header().Set("Retry-After", "0")
-		http.Error(w, "replicated store unavailable", http.StatusServiceUnavailable)
-		return
+		status = http.StatusServiceUnavailable
+	case f.lost500 > 0:
+		f.lost500--
+		status = http.StatusInternalServerError
 	}
-	w.WriteHeader(http.StatusNoContent)
+	hook := f.afterReplace
+	f.afterReplace = nil
+	f.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	switch status {
+	case http.StatusServiceUnavailable:
+		w.Header().Set("Retry-After", "0")
+		http.Error(w, "replicated store unavailable", status)
+	case http.StatusInternalServerError:
+		http.Error(w, "internal error", status)
+	default:
+		w.WriteHeader(status)
+	}
 }
 
 func (f *fakeCDS) handlePutWorkload(w http.ResponseWriter, r *http.Request) {
@@ -144,7 +209,7 @@ func (f *fakeCDS) handlePutWorkload(w http.ResponseWriter, r *http.Request) {
 	}
 	f.mu.Lock()
 	f.al.Workloads[r.PathValue("name")] = *wl
-	f.version++
+	f.bump()
 	f.mu.Unlock()
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -161,7 +226,7 @@ func (f *fakeCDS) handleDeleteWorkload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	delete(f.al.Workloads, name)
-	f.version++
+	f.bump()
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -182,7 +247,7 @@ func (f *fakeCDS) workload(name string) (pkgallowlist.Workload, bool) {
 func (f *fakeCDS) put(name string, w pkgallowlist.Workload) {
 	f.mu.Lock()
 	f.al.Workloads[name] = w
-	f.version++
+	f.bump()
 	f.mu.Unlock()
 }
 

@@ -1,6 +1,7 @@
 package allowlist
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -118,7 +119,18 @@ func (h Handler) HandleReplaceAll(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `If-Match takes the strong tag "N" of version N, not the weak ETag W/"N": a weak tag never matches`, http.StatusPreconditionFailed)
 		return
 	}
-	if err := h.Store.ReplaceAllIfMatch(al, ifMatch); err != nil {
+	// The token that wrote a canonical whole document is the operator's
+	// signature over it (docs/allowlist-and-capabilities.md), stored in the
+	// same write. Re-uploading the same document with a fresh token stores it.
+	// A body that is not exactly the canonical bytes is not what verifiers
+	// fetch, so its token signs nothing.
+	var signature string
+	if token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok {
+		if canonical, err := al.Canonical(); err == nil && bytes.Equal(canonical, body) {
+			signature = token
+		}
+	}
+	if err := h.Store.ReplaceAllIfMatch(al, ifMatch, signature); err != nil {
 		if errors.Is(err, ErrVersionMismatch) {
 			http.Error(w, err.Error()+"; fetch it and apply the change again", http.StatusPreconditionFailed)
 			return
@@ -126,17 +138,6 @@ func (h Handler) HandleReplaceAll(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
-	// The token that wrote a canonical whole document is the operator's
-	// signature over it (docs/allowlist-and-capabilities.md). Re-uploading the
-	// same document with a fresh token is a no-op write that stores it.
-	if token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok {
-		if err := h.Store.SignPolicy(body, token); err != nil {
-			slog.Error("store the operator signature of the allowlist", "error", err)
-			http.Error(w, "allowlist replaced but its operator signature was not stored; upload it again", http.StatusInternalServerError)
-			return
-		}
-	}
-
 	slog.Info("allowlist replaced", "workloads", len(al.Workloads))
 	w.WriteHeader(http.StatusNoContent)
 }

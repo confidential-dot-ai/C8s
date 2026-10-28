@@ -4,7 +4,6 @@ import (
 	"crypto/ecdsa"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -34,6 +33,7 @@ func realCDS(t *testing.T, pub *ecdsa.PublicKey, race func(*cdsallowlist.Store))
 	var once sync.Once
 	r := chi.NewRouter()
 	r.Get("/allowlist", h.HandleList)
+	r.Get("/allowlist/history", h.HandleHistory)
 	r.Put("/allowlist", func(w http.ResponseWriter, req *http.Request) {
 		if race != nil {
 			once.Do(func() { race(&store) })
@@ -73,6 +73,8 @@ func TestApplyAgainstCDSHandler(t *testing.T) {
 	}
 }
 
+// The CDS handler refuses the first write with 412; apply re-reads, puts its
+// entry into the newer document, and the second write keeps the racing entry.
 func TestApplyAgainstCDSHandlerKeepsARacingWrite(t *testing.T) {
 	dir := t.TempDir()
 	keyPath, pub := newOperatorKeypair(t, dir, "op.key")
@@ -83,14 +85,14 @@ func TestApplyAgainstCDSHandlerKeepsARacingWrite(t *testing.T) {
 	})
 	file := writeFile(t, "doc.json", entryMap("web"))
 	_, _, err := runCmd("apply", file, "--url", srv.URL, "--insecure", "--operator-key", keyPath)
-	if err == nil || !strings.Contains(err.Error(), "nothing was applied") {
-		t.Fatalf("err = %v, want the write refused", err)
+	if err != nil {
+		t.Fatalf("apply after a racing write to another entry: %v", err)
 	}
 	al, _, _ := store.LoadAll()
 	if _, ok := al.Workloads["racer"]; !ok {
 		t.Fatal("the racing write was overwritten")
 	}
-	if _, ok := al.Workloads["web"]; ok {
-		t.Fatal("the refused write landed")
+	if _, ok := al.Workloads["web"]; !ok {
+		t.Fatal("the applied entry is missing")
 	}
 }

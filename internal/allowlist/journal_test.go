@@ -215,7 +215,7 @@ func TestObjectRefusesUnservedOrTampered(t *testing.T) {
 	}
 }
 
-func TestSignPolicyOnlyForCanonicalWholeDocument(t *testing.T) {
+func TestSignatureOnlyForCanonicalWholeDocument(t *testing.T) {
 	store := openJournaled(t)
 	h := Handler{Store: store, WriteAuthorizer: func(*http.Request, []byte) error { return nil }}
 	put := func(body, token string) {
@@ -231,19 +231,19 @@ func TestSignPolicyOnlyForCanonicalWholeDocument(t *testing.T) {
 	canonical := canonicalDoc(t, map[string]pkgallowlist.Workload{"a": oneContainerWorkload(mustParseDigest(t, digestA))})
 	digest := objectDigest(canonical)
 
+	// A body that is not the canonical bytes still replaces the document, in
+	// the same write, but signs nothing: its token does not bind what
+	// verifiers fetch, so they keep failing closed on the document.
 	put(" "+string(canonical), "padded")
+	if served, _ := servedDigest(t, store); served != digest {
+		t.Fatalf("served %s after a non-canonical PUT, want %s", served, digest)
+	}
 	if _, ok, _ := store.Signature(digest); ok {
 		t.Fatal("a non-canonical body stored a signature")
 	}
 	put(string(canonical), "signed")
 	if token, ok, err := store.Signature(digest); err != nil || !ok || token != "signed" {
 		t.Fatalf("Signature(%s) = %q, %v, %v; want the write token", digest, token, ok, err)
-	}
-	if err := store.SignPolicy([]byte(`{"schema":"other"}`), "stray"); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok, _ := store.Signature(objectDigest([]byte(`{"schema":"other"}`))); ok {
-		t.Fatal("SignPolicy stored a signature for a document never served")
 	}
 
 	if err := store.PutWorkload("b", oneContainerWorkload(mustParseDigest(t, digestB))); err != nil {
@@ -262,9 +262,10 @@ func TestSignPolicyOnlyForCanonicalWholeDocument(t *testing.T) {
 	}
 }
 
-// A write whose signature cannot be stored reports failure, and re-uploading
-// the same document signs it.
-func TestReplaceAllReportsUnstoredSignature(t *testing.T) {
+// A whole-document write and its signature are one write: when the signature
+// cannot be stored, the document is not replaced either, so no reader ever
+// sees it served unsigned. Re-uploading it then stores both.
+func TestReplaceAllWithoutItsSignatureChangesNothing(t *testing.T) {
 	store := openJournaled(t)
 	h := Handler{Store: store, WriteAuthorizer: func(*http.Request, []byte) error { return nil }}
 	canonical := canonicalDoc(t, map[string]pkgallowlist.Workload{"a": oneContainerWorkload(mustParseDigest(t, digestA))})
@@ -275,15 +276,23 @@ func TestReplaceAllReportsUnstoredSignature(t *testing.T) {
 		h.HandleReplaceAll(w, r)
 		return w.Code
 	}
+	beforeDigest, beforeVersion := servedDigest(t, store)
+	beforeHistory := len(mustHistory(t, store))
 
 	if _, err := store.db.Exec("ALTER TABLE journal_signature RENAME TO broken"); err != nil {
 		t.Fatal(err)
 	}
-	if code := put("first"); code != http.StatusInternalServerError {
-		t.Fatalf("PUT /allowlist with the signature unstored = %d, want 500", code)
+	if code := put("first"); code == http.StatusNoContent {
+		t.Fatal("PUT /allowlist succeeded with its signature unstored")
+	}
+	if digest, version := servedDigest(t, store); digest != beforeDigest || version != beforeVersion {
+		t.Fatalf("served %s at version %s after the failed write, want %s at %s unchanged", digest, version, beforeDigest, beforeVersion)
 	}
 	if _, err := store.db.Exec("ALTER TABLE broken RENAME TO journal_signature"); err != nil {
 		t.Fatal(err)
+	}
+	if got := len(mustHistory(t, store)); got != beforeHistory {
+		t.Fatalf("history has %d entries after the failed write, want %d", got, beforeHistory)
 	}
 	if code := put("second"); code != http.StatusNoContent {
 		t.Fatalf("re-upload = %d, want 204", code)
@@ -337,10 +346,7 @@ func TestHistoryRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.ReplaceAll(al); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.SignPolicy(canonical, "tok"); err != nil {
+	if err := store.ReplaceAllIfMatch(al, "", "tok"); err != nil {
 		t.Fatal(err)
 	}
 	empty, _, _ := store.Object(mustHistory(t, store)[0].Digest)

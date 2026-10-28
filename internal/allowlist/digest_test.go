@@ -33,10 +33,6 @@ func TestDigestFollowsEveryWrite(t *testing.T) {
 	checkDigest(t, s, "open")
 	wA, wB := oneContainerWorkload(mustParseDigest(t, digestA)), oneContainerWorkload(mustParseDigest(t, digestC))
 	al := &pkgallowlist.Allowlist{Schema: pkgallowlist.Schema, Workloads: map[string]pkgallowlist.Workload{"x": wA, "y": wB}}
-	body, err := al.Canonical()
-	if err != nil {
-		t.Fatal(err)
-	}
 	steps := []struct {
 		name string
 		do   func() error
@@ -50,8 +46,8 @@ func TestDigestFollowsEveryWrite(t *testing.T) {
 		}},
 		{"bad name (refused)", func() error { s.PutWorkload("BAD NAME", wA); return nil }},
 		{"replace all", func() error { return s.ReplaceAll(al) }},
-		{"sign", func() error { return s.SignPolicy(body, "tok.en.sig") }},
-		{"resign (replace)", func() error { return s.SignPolicy(body, "tok.en.sig2") }},
+		{"replace all signed", func() error { return s.ReplaceAllIfMatch(al, "", "tok.en.sig") }},
+		{"resign (replace)", func() error { return s.ReplaceAllIfMatch(al, "", "tok.en.sig2") }},
 		{"token", func() error { return s.ConsumeToken("a.b.sig") }},
 		{"token reused (rolled back)", func() error { s.ConsumeToken("a.b.sig"); return nil }},
 		{"bad routes (refused)", func() error { s.ReplaceRoutes(routes.Envelope{Manifest: []byte("{")}, ""); return nil }},

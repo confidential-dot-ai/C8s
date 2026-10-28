@@ -38,7 +38,6 @@ const (
 	OpPutWorkload    Op = "put_workload"
 	OpDeleteWorkload Op = "delete_workload"
 	OpReplaceAll     Op = "replace_all"
-	OpSignPolicy     Op = "sign_policy"
 	OpConsumeToken   Op = "consume_token"
 	OpReplaceRoutes  Op = "replace_routes"
 	OpStartJournal   Op = "start_journal"
@@ -55,7 +54,6 @@ type Command struct {
 	Workload  *pkgallowlist.Workload           `json:"workload,omitempty"`
 	Workloads map[string]pkgallowlist.Workload `json:"workloads,omitempty"`
 	Allowlist *pkgallowlist.Allowlist          `json:"allowlist,omitempty"`
-	Body      []byte                           `json:"body,omitempty"`
 	Token     string                           `json:"token,omitempty"`
 	Routes    *routes.Envelope                 `json:"routes,omitempty"`
 	IfMatch   string                           `json:"if_match,omitempty"`
@@ -167,9 +165,7 @@ func (s *Store) apply(cmd Command) (r Result, err error) {
 	case OpDeleteWorkload:
 		r.Found, err = s.deleteWorkload(cmd.Name)
 	case OpReplaceAll:
-		err = s.replaceAll(cmd.Allowlist, cmd.IfMatch)
-	case OpSignPolicy:
-		err = s.signPolicy(cmd.Body, cmd.Token)
+		err = s.replaceAll(cmd.Allowlist, cmd.IfMatch, cmd.Token)
 	case OpConsumeToken:
 		err = s.consumeToken(cmd.Token)
 	case OpReplaceRoutes:
@@ -222,24 +218,20 @@ func (s *Store) DeleteWorkload(name string) (bool, error) {
 	return res.Found, err
 }
 
-// ReplaceAll swaps the entire allowlist (see replaceAll).
+// ReplaceAll swaps the entire allowlist, unconditionally and unsigned (see
+// replaceAll).
 func (s *Store) ReplaceAll(al *pkgallowlist.Allowlist) error {
-	return s.ReplaceAllIfMatch(al, "")
+	return s.ReplaceAllIfMatch(al, "", "")
 }
 
 // ReplaceAllIfMatch swaps the entire allowlist if it is still at the version
-// the strong entity tag ifMatch names, else returns ErrVersionMismatch (see
-// replaceAll). Replicated, every replica checks the version it holds when it
-// applies the command, which is the same one at every replica.
-func (s *Store) ReplaceAllIfMatch(al *pkgallowlist.Allowlist, ifMatch string) error {
-	_, err := s.write(Command{Op: OpReplaceAll, Allowlist: al, IfMatch: ifMatch})
-	return err
-}
-
-// SignPolicy stores the operator token of a whole-document write (see
-// signPolicy).
-func (s *Store) SignPolicy(body []byte, token string) error {
-	_, err := s.write(Command{Op: OpSignPolicy, Body: body, Token: token})
+// the strong entity tag ifMatch names, else returns ErrVersionMismatch, and
+// stores token as the document's operator signature with it (see
+// replaceAll). Replicated, it is one command: every replica checks the
+// version it holds when it applies it, which is the same one at every
+// replica, and no replica holds the document without its signature.
+func (s *Store) ReplaceAllIfMatch(al *pkgallowlist.Allowlist, ifMatch, token string) error {
+	_, err := s.write(Command{Op: OpReplaceAll, Allowlist: al, IfMatch: ifMatch, Token: token})
 	return err
 }
 

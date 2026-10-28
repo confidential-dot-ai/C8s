@@ -3,10 +3,14 @@ package allowlist
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"slices"
+	"strconv"
 
 	"github.com/spf13/cobra"
 
@@ -187,31 +191,102 @@ before upload; --strict makes lint warnings fatal.`,
 	return cmd
 }
 
-// errAllowlistChanged is a whole-document write CDS refused because another
-// write landed after the read the document was built from.
+// errAllowlistChanged is a whole-document write that did not land because
+// another write landed after the read the document was built from.
 var errAllowlistChanged = errors.New("the allowlist changed since it was read; run the command again to re-read it and see the new diff")
+
+// unconfirmedError is a whole-document write no answer confirmed or refused
+// (a 5xx, or no answer at all) while CDS still serves the version it was
+// conditional on: it has not landed, and it still can until another write
+// lands.
+type unconfirmedError struct {
+	cause   error
+	version string
+}
+
+func (e *unconfirmedError) Error() string {
+	return fmt.Sprintf("the write was not confirmed (%v): CDS still serves version %s without it, and the write "+
+		"was conditional on that version, so it lands only if no other write lands first; run the command "+
+		"again: the new write is conditional on the version it reads too, so the document is written at most once", e.cause, e.version)
+}
+
+func (e *unconfirmedError) Unwrap() error { return e.cause }
 
 // replaceIfUnchanged writes doc in place of the allowlist at version, the
 // version of the read doc was built from, so it never overwrites a write made
-// since. A refused precondition is errAllowlistChanged, unless the allowlist
-// already holds exactly doc: an earlier attempt of this write that CDS
-// committed but answered 503 for, which the client sent again.
+// since. CDS commits the document and its operator signature in one write.
+//
+// When the answer does not settle whether the write landed (a 412, which may
+// refuse a resend of a write CDS committed but answered 503 for; a 5xx; no
+// answer), it reads the allowlist back and reports what happened: nil if doc
+// landed, errAllowlistChanged if another write landed instead, an
+// *unconfirmedError if nothing landed yet. A refusal (any other 4xx) or an
+// error before sending is returned as is: nothing was written.
 func replaceIfUnchanged(ctx context.Context, c allowlistclient.Client, doc *pkgallowlist.Allowlist, version string, signer allowlistclient.Authorizer) error {
 	if version == "" {
 		// Without a version the write would be unconditional.
 		return errors.New("CDS served the allowlist without a version (ETag W/\"N\"), so the write cannot be made conditional on it")
 	}
 	err := c.ReplaceAll(ctx, doc, version, signer)
-	var se *operatorauth.StatusError
-	if !errors.As(err, &se) || se.Status != http.StatusPreconditionFailed {
-		return err
-	}
-	want, cerr := doc.Canonical()
-	got, _, gerr := c.CanonicalBytes(ctx)
-	if cerr == nil && gerr == nil && bytes.Equal(want, got) {
+	if err == nil {
 		return nil
 	}
-	return errAllowlistChanged
+	var se *operatorauth.StatusError
+	var ue *url.Error
+	refused := errors.As(err, &se) && se.Status < 500 && se.Status != http.StatusPreconditionFailed
+	if refused || (se == nil && !errors.As(err, &ue)) {
+		return err
+	}
+	landed, served, rerr := writeLanded(ctx, c, doc, version)
+	switch {
+	case rerr != nil:
+		return fmt.Errorf("the write was not confirmed (%w), and reading the allowlist back to see whether it landed failed: %v; "+
+			"check with 'c8s allowlist list' before running the command again", err, rerr)
+	case landed:
+		return nil
+	case served != version || (se != nil && se.Status == http.StatusPreconditionFailed):
+		return errAllowlistChanged
+	default:
+		return &unconfirmedError{cause: err, version: version}
+	}
+}
+
+// writeLanded reports whether a whole-document write of doc conditional on
+// version landed, and the version CDS serves now. It landed if CDS serves doc
+// now, or if its history holds doc at the version right after version: the
+// one write conditional on version produced it.
+func writeLanded(ctx context.Context, c allowlistclient.Client, doc *pkgallowlist.Allowlist, version string) (bool, string, error) {
+	want, err := doc.Canonical()
+	if err != nil {
+		return false, "", err
+	}
+	got, served, err := c.CanonicalBytes(ctx)
+	if err != nil {
+		return false, "", err
+	}
+	if bytes.Equal(want, got) {
+		return true, served, nil
+	}
+	if served == version {
+		return false, served, nil
+	}
+	n, err := strconv.ParseUint(version, 10, 64)
+	if err != nil {
+		return false, "", fmt.Errorf("version %q is not a counter: %w", version, err)
+	}
+	history, err := c.History(ctx)
+	if err != nil {
+		return false, "", err
+	}
+	sum := sha256.Sum256(want)
+	digest := "sha256:" + hex.EncodeToString(sum[:])
+	next := strconv.FormatUint(n+1, 10)
+	for _, e := range history {
+		if e.Version == next && e.Digest == digest {
+			return true, served, nil
+		}
+	}
+	return false, served, nil
 }
 
 func requiredComponentsForMode(mode string) ([]string, error) {

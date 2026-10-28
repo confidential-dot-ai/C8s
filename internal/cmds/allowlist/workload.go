@@ -2,16 +2,19 @@ package allowlist
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"maps"
+	mrand "math/rand/v2"
 	"os"
 	"os/exec"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -52,8 +55,12 @@ apply reads the live allowlist, puts the entries into it, and writes the
 result back as one whole-document write: every entry lands or none does. The
 write is signed by the operator key like an upload, so the key signs the whole
 resulting document, not only the entries in <file>. It is conditional on the
-version apply read: if another write landed since, CDS refuses it and nothing
-changes; run apply again to re-read and re-merge.`,
+version apply read: if another write landed since, CDS refuses it, and apply
+re-reads the allowlist, prints what the other write changed, and puts the
+entries into the newer document, up to ` + fmt.Sprint(maxApplyAttempts) + ` writes in all. Other entries
+the other write changed are kept; an entry in <file> is set to the file's value
+even if the other write changed it. If every attempt is refused, nothing was
+applied.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := o.validate(); err != nil {
@@ -116,17 +123,8 @@ changes; run apply again to re-read and re-merge.`,
 			if err != nil {
 				return err
 			}
-			merged := maps.Clone(live.Workloads)
-			if merged == nil {
-				merged = map[string]pkgallowlist.Workload{}
-			}
-			maps.Copy(merged, entries)
-			doc := &pkgallowlist.Allowlist{Schema: pkgallowlist.Schema, Workloads: merged}
-			if err := replaceIfUnchanged(ctx(cmd), c, doc, version, signer); err != nil {
-				if errors.Is(err, errAllowlistChanged) {
-					return fmt.Errorf("nothing was applied: %w", err)
-				}
-				return fmt.Errorf("apply %d entr(ies) in one write, so all of them or none landed: %w", len(entries), err)
+			if err := applyEntries(cmd, c, live, version, entries, signer); err != nil {
+				return err
 			}
 			for _, name := range names {
 				fmt.Fprintf(cmd.OutOrStdout(), "applied %s\n", name)
@@ -255,6 +253,96 @@ func collisionsWithLive(entries map[string]pkgallowlist.Workload, live *pkgallow
 		}
 	}
 	return out
+}
+
+// maxApplyAttempts bounds how many times apply writes its entries onto a
+// newer allowlist after another write landed since its read.
+const maxApplyAttempts = 5
+
+// applyEntries writes live with entries put in, conditional on version. When
+// another write landed since the read, it re-reads the allowlist and puts the
+// same entries into the newer document: apply sets exactly these entries, so
+// the result is still what the operator asked for, and the condition still
+// keeps every other write. A concurrent write to one of these entries is
+// replaced by the file's value, as a later apply would replace it.
+//
+// Writing again is safe only because apply is idempotent: putting the same
+// entries into a document that already holds them changes nothing. So a
+// write of ours that landed unconfirmed, then had another write land on top,
+// is found again in the re-read, and the re-merge, which then equals the
+// served document, is not written.
+//
+// INVARIANT: every write is conditional on the version of the document it was
+// built from, and every document it builds is lint-checked against that read.
+func applyEntries(cmd *cobra.Command, c allowlistclient.Client, live *pkgallowlist.Allowlist, version string,
+	entries map[string]pkgallowlist.Workload, signer allowlistclient.Authorizer) error {
+	for attempt := 1; ; attempt++ {
+		merged := maps.Clone(live.Workloads)
+		if merged == nil {
+			merged = map[string]pkgallowlist.Workload{}
+		}
+		maps.Copy(merged, entries)
+		doc := &pkgallowlist.Allowlist{Schema: pkgallowlist.Schema, Workloads: merged}
+		if attempt > 1 {
+			same, err := sameDocument(doc, live)
+			if err != nil {
+				return err
+			}
+			if same {
+				return nil
+			}
+		}
+		err := replaceIfUnchanged(ctx(cmd), c, doc, version, signer)
+		if err == nil {
+			return nil
+		}
+		var unconfirmed *unconfirmedError
+		if errors.As(err, &unconfirmed) {
+			return fmt.Errorf("apply %d entr(ies) in one write: %w", len(entries), err)
+		}
+		if !errors.Is(err, errAllowlistChanged) {
+			return fmt.Errorf("nothing was applied: %w", err)
+		}
+		if attempt == maxApplyAttempts {
+			return fmt.Errorf("nothing was applied: other writes kept landing, %d attempts each re-read the allowlist and lost the race: %w",
+				attempt, err)
+		}
+		// Writers that raced once tend to race again; a random pause
+		// spreads them apart.
+		select {
+		case <-ctx(cmd).Done():
+			return fmt.Errorf("nothing was applied: %w", ctx(cmd).Err())
+		case <-time.After(time.Duration(50+mrand.IntN(100*attempt)) * time.Millisecond):
+		}
+		newer, newVersion, err := readForWrite(ctx(cmd), c)
+		if err != nil {
+			return fmt.Errorf("nothing was applied: re-read the allowlist after another write landed: %w", err)
+		}
+		fmt.Fprintf(cmd.ErrOrStderr(), "the allowlist changed since it was read (version %s -> %s); applying the entries onto it again:\n",
+			version, newVersion)
+		_ = printDiff(cmd.ErrOrStderr(), "", diffAllowlists(live, newer))
+		findings := collisionsWithLive(entries, newer)
+		for _, f := range findings {
+			fmt.Fprintf(cmd.ErrOrStderr(), "lint: %s\n", f)
+		}
+		if errs := countErrors(findings); errs > 0 {
+			return fmt.Errorf("nothing was applied: refusing to apply onto the changed allowlist: %d lint error(s)", errs)
+		}
+		live, version = newer, newVersion
+	}
+}
+
+// sameDocument reports whether a and b have the same canonical bytes.
+func sameDocument(a, b *pkgallowlist.Allowlist) (bool, error) {
+	ab, err := a.Canonical()
+	if err != nil {
+		return false, err
+	}
+	bb, err := (&pkgallowlist.Allowlist{Schema: pkgallowlist.Schema, Workloads: b.Workloads}).Canonical()
+	if err != nil {
+		return false, err
+	}
+	return bytes.Equal(ab, bb), nil
 }
 
 // --- shared helpers ---

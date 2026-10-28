@@ -480,8 +480,11 @@ var ErrVersionMismatch = errors.New("the allowlist changed since it was read (If
 // replaceAll atomically swaps the entire allowlist for the given document and
 // bumps the version. An empty document clears everything. A non-empty ifMatch
 // is a strong entity tag "N": the swap happens only while the version is N,
-// else it returns ErrVersionMismatch and changes nothing.
-func (s *Store) replaceAll(al *pkgallowlist.Allowlist, ifMatch string) error {
+// else it returns ErrVersionMismatch and changes nothing. A non-empty token is
+// the operator write token whose body was exactly al's canonical bytes: it is
+// stored as the signature of the document in the same transaction, so the
+// document is never served without it.
+func (s *Store) replaceAll(al *pkgallowlist.Allowlist, ifMatch, token string) error {
 	if al == nil {
 		return fmt.Errorf("allowlist is required")
 	}
@@ -511,6 +514,19 @@ func (s *Store) replaceAll(al *pkgallowlist.Allowlist, ifMatch string) error {
 	}
 	if err := bumpVersionTx(tx); err != nil {
 		return err
+	}
+	if token != "" {
+		// Journal the document first: the signature is of a journaled one.
+		if err := publishTx(tx, s.now()); err != nil {
+			return fmt.Errorf("journal allowlist: %w", err)
+		}
+		body, err := al.Canonical()
+		if err != nil {
+			return err
+		}
+		if err := signTx(tx, body, token); err != nil {
+			return err
+		}
 	}
 	return s.commitTx(tx)
 }

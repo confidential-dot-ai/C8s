@@ -28,7 +28,7 @@ func TestReplicatedReplaceIfMatch(t *testing.T) {
 		"other": oneContainerWorkload(mustParseDigest(t, digestB)),
 	}}
 
-	if err := st[1].ReplaceAllIfMatch(doc, `"1"`); !errors.Is(err, ErrVersionMismatch) {
+	if err := st[1].ReplaceAllIfMatch(doc, `"1"`, ""); !errors.Is(err, ErrVersionMismatch) {
 		t.Fatalf("stale If-Match: err = %v, want ErrVersionMismatch", err)
 	}
 	for i, s := range st {
@@ -37,7 +37,7 @@ func TestReplicatedReplaceIfMatch(t *testing.T) {
 		}
 	}
 
-	if err := st[2].ReplaceAllIfMatch(doc, `"`+version+`"`); err != nil {
+	if err := st[2].ReplaceAllIfMatch(doc, `"`+version+`"`, ""); err != nil {
 		t.Fatalf("current If-Match: %v", err)
 	}
 	want := contents(t, st[0])
