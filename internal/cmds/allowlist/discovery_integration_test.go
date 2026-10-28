@@ -132,8 +132,14 @@ func approvingVerify(measurement []byte) localverify.VerifyFunc {
 
 // runCmdWith executes the allowlist command with an injected evidence verifier.
 func runCmdWith(verify localverify.VerifyFunc, args ...string) (string, string, error) {
+	return runCmdWithIn(verify, "", args...)
+}
+
+// runCmdWithIn is runCmdWith with a stdin payload, for prompts.
+func runCmdWithIn(verify localverify.VerifyFunc, stdin string, args ...string) (string, string, error) {
 	cmd := newCmd(testutil.VerifierStub(verify))
 	var out, errb bytes.Buffer
+	cmd.SetIn(strings.NewReader(stdin))
 	cmd.SetOut(&out)
 	cmd.SetErr(&errb)
 	cmd.SetArgs(args)
@@ -205,6 +211,63 @@ func TestListThroughRouterFailsClosed(t *testing.T) {
 	if !strings.Contains(err.Error(), "discovery document verification failed") {
 		t.Fatalf("want a discovery verification error, got: %v", err)
 	}
+}
+
+// cdsBehindRouterRenewingOnEveryRequest puts fakeCDS behind a router that
+// renews its serving cert on every allowlist request, as after an allowlist
+// change, and closes that request's connection, as nginx does to an idle or
+// minute-old connection. So every request after the first needs a new
+// connection to a leaf the client has not attested yet.
+func cdsBehindRouterRenewingOnEveryRequest(t *testing.T, pinned []*ecdsa.PublicKey) (*testutil.RenewingRouter, *fakeCDS) {
+	t.Helper()
+	cds := newFakeCDS(pinned)
+	router := testutil.NewRenewingRouter(t, func(router *testutil.RenewingRouter) http.Handler {
+		backend := testutil.CloseEveryResponse(cds.mux())
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			router.Renew()
+			backend.ServeHTTP(w, r)
+		})
+	})
+	return router, cds
+}
+
+// TestWritesThroughARenewingRouter is the command-level regression test for a
+// router that renews its serving cert mid-command.
+func TestWritesThroughARenewingRouter(t *testing.T) {
+	measurement := bytes.Repeat([]byte{0x42}, armtls.SNPMeasurementSize)
+	pins := []string{"--measurements", hex.EncodeToString(measurement)}
+
+	t.Run("edit", func(t *testing.T) {
+		keyPath, pub := newOperatorKeypair(t, t.TempDir(), "op.key")
+		router, cds := cdsBehindRouterRenewingOnEveryRequest(t, []*ecdsa.PublicKey{pub})
+		cds.seedWorkload("web", mustParseAllowlist(t, `{"schema":"c8s.allowlist/v1","workloads":{
+			"web":{"containers":[`+ctrJSON(digA, "/app")+`]}}}`).Workloads["web"])
+		setEditor(t, `{"label":"v2","containers":[`+ctrJSON(digA, "/app")+`]}`)
+
+		args := append([]string{"edit", "web", "--url", router.URL, "--operator-key", keyPath}, pins...)
+		if _, errOut, err := runCmdWithIn(approvingVerify(measurement), "y\n", args...); err != nil {
+			t.Fatalf("edit through a renewing router: %v (stderr: %s)", err, errOut)
+		}
+		if wl, _ := cds.workload("web"); wl.Label != "v2" {
+			t.Fatalf("label = %q, want v2", wl.Label)
+		}
+	})
+
+	t.Run("apply two entries", func(t *testing.T) {
+		keyPath, pub := newOperatorKeypair(t, t.TempDir(), "op.key")
+		router, cds := cdsBehindRouterRenewingOnEveryRequest(t, []*ecdsa.PublicKey{pub})
+		file := writeFile(t, "wl.json", `{"schema":"c8s.allowlist/v1","workloads":{
+			"web":{"containers":[`+ctrJSON(digA, "/app")+`]},
+			"worker":{"containers":[`+ctrJSON(digB, "/work")+`]}}}`)
+
+		args := append([]string{"apply", file, "--url", router.URL, "--operator-key", keyPath}, pins...)
+		if _, errOut, err := runCmdWith(approvingVerify(measurement), args...); err != nil {
+			t.Fatalf("apply through a renewing router: %v (stderr: %s)", err, errOut)
+		}
+		if got := cds.count(); got != 2 {
+			t.Fatalf("store has %d entries, want 2", got)
+		}
+	})
 }
 
 // armtlsCDSServer stands in for a port-forwarded CDS: a TLS server whose

@@ -6,18 +6,20 @@
 // (armtls.ReportDataForKey).
 //
 // Serving certs are per replica (each router pod provisions its own leaf into
-// a pod-local emptyDir), so evidence fetched on one connection says nothing
-// about the leaf a *different* connection would be served — a scaled-out or
-// rolling Service can answer alternating handshakes with alternating certs.
-// This package therefore dials the front door once, fetches and verifies the
-// document over that connection, requires the attested cert to be the leaf
-// that same handshake presented, and returns an HTTP client bound to that
-// attested leaf. When the connection is lost (the router's keepalive limits,
-// idle eviction) the client redials the same host and uses the new connection
-// only if its handshake presents the attested leaf again — a full TLS 1.3
-// handshake proves possession of the leaf's key, so the evidence covers the
-// new connection exactly as it covered the first. A redial that presents any
-// other leaf fails closed with a re-run hint.
+// a pod-local emptyDir) and each renewal is a new key, so evidence fetched on
+// one connection says nothing about the leaf a *different* connection would be
+// served — a scaled-out or rolling Service can answer alternating handshakes
+// with alternating certs, and a renewal changes the cert the next handshake
+// presents. This package therefore attests a connection: it fetches and
+// verifies the document over that connection and requires the attested cert
+// to be the leaf that same handshake presented. When the connection is lost
+// (the router's keepalive limits, idle eviction) the client redials the same
+// host and uses the new connection if its handshake presents the attested
+// leaf again — a full TLS 1.3 handshake proves possession of the leaf's key,
+// so the evidence covers the new connection exactly as it covered the first.
+// A redial that presents another leaf is refused, and the client attests a new
+// connection the same way, sending the request there only if its leaf is
+// issued by the same CDS (mesh CA key) as the first one attested.
 //
 // Evidence verification runs in-process (internal/localverify).
 package routerdiscovery
@@ -60,15 +62,11 @@ const maxDocumentBytes = 1 << 20
 // or failing verification is NOT this error — those fail closed.
 var ErrNoDiscovery = errors.New("routerdiscovery: target serves no discovery document")
 
-// NewVerifiedHTTPClient returns an http.Client for a router front door: it
-// dials base once, fetches the discovery document over that connection,
-// verifies the embedded attestation evidence (launch measurement checked
-// against measurements — empty accepts any, UNSAFE), and requires the
-// attested serving certificate to be the leaf the connection's handshake
-// presented. The returned client serializes requests over one connection to
-// base's host; a lost connection is redialed and accepted only when the new
-// handshake presents the attested leaf — see the package comment for why
-// (per-replica serving certs).
+// NewVerifiedHTTPClient returns an http.Client for a router front door. It
+// attests the front door (see frontDoor.attest) and sends every request over
+// a connection whose handshake presents an attested serving certificate; when
+// the router presents another one, it attests the front door again (see
+// reattestingTransport).
 //
 // verify is localverify.Verify in production, a stub in tests.
 //
@@ -89,31 +87,61 @@ func NewVerifiedHTTPClient(ctx context.Context, base string, measurements [][]by
 		return nil, fmt.Errorf("routerdiscovery: URL scheme must be https, got %q", u.Scheme)
 	}
 
-	conn, err := dialFrontDoor(ctx, u.Host)
-	if err != nil {
-		return nil, fmt.Errorf("%w: dial %s: %v", ErrNoDiscovery, u.Host, err)
-	}
-	dialer := &attestedDialer{host: u.Host, conn: conn}
-	client := newAttestedClient(dialer)
-	verified := false
-	defer func() {
-		if !verified {
-			conn.Close()
-		}
-	}()
-
-	data, err := fetchDocument(ctx, client, u)
+	door := &frontDoor{url: u, measurements: measurements, verify: verify}
+	session, leaf, err := door.attest(ctx)
 	if err != nil {
 		return nil, err
 	}
-	cert, err := verifyDocument(ctx, data, verify, measurements)
+	return &http.Client{
+		Timeout:   requestTimeout,
+		Transport: &reattestingTransport{door: door, firstIssuerKeyID: leaf.AuthorityKeyId, session: session},
+	}, nil
+}
+
+// frontDoor is a router front door and the operator's pins for its evidence.
+type frontDoor struct {
+	url          *url.URL
+	measurements [][]byte
+	verify       localverify.VerifyFunc
+}
+
+// attest dials the front door once, attests that connection (see
+// verifyConnection), and returns a transport whose connections all present
+// the attested leaf, and the leaf.
+func (f *frontDoor) attest(ctx context.Context) (*http.Transport, *x509.Certificate, error) {
+	conn, err := dialFrontDoor(ctx, f.url.Host)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: dial %s: %v", ErrNoDiscovery, f.url.Host, err)
+	}
+	dialer := &attestedDialer{host: f.url.Host, conn: conn}
+	transport := newAttestedTransport(dialer)
+	cert, err := f.verifyConnection(ctx, conn, transport)
+	if err != nil {
+		conn.Close()
+		return nil, nil, err
+	}
+	dialer.attest(cert.Raw)
+	return transport, cert, nil
+}
+
+// verifyConnection fetches the discovery document over conn (the first
+// connection transport hands out), verifies the embedded attestation evidence
+// (launch measurement checked against the pins — empty accepts any, UNSAFE),
+// and returns the attested serving certificate if it is the leaf conn's
+// handshake presented.
+func (f *frontDoor) verifyConnection(ctx context.Context, conn *tls.Conn, transport *http.Transport) (*x509.Certificate, error) {
+	data, err := fetchDocument(ctx, &http.Client{Transport: transport}, f.url)
+	if err != nil {
+		return nil, err
+	}
+	cert, err := verifyDocument(ctx, data, f.verify, f.measurements)
 	if err != nil {
 		return nil, fmt.Errorf("routerdiscovery: discovery document verification failed: %w", err)
 	}
 
 	// The evidence binds cert's key; require cert to be the leaf THIS
 	// connection presented, or the attestation says nothing about the peer we
-	// are talking to (a different replica may have answered the handshake).
+	// are talking to.
 	peers := conn.ConnectionState().PeerCertificates
 	if len(peers) == 0 {
 		return nil, fmt.Errorf("routerdiscovery: connection presented no peer certificate")
@@ -121,19 +149,16 @@ func NewVerifiedHTTPClient(ctx context.Context, base string, measurements [][]by
 	if !bytes.Equal(peers[0].Raw, cert.Raw) {
 		docSum := sha256.Sum256(cert.Raw)
 		connSum := sha256.Sum256(peers[0].Raw)
-		return nil, fmt.Errorf("routerdiscovery: discovery document attests serving cert sha256 %s but the connection presented %s — a different router replica may have answered; re-run the command",
+		return nil, fmt.Errorf("routerdiscovery: discovery document attests serving cert sha256 %s but the connection presented %s — the router may be renewing its certificate, or a different router replica answered; re-run the command",
 			hex.EncodeToString(docSum[:]), hex.EncodeToString(connSum[:]))
 	}
-
-	dialer.attest(cert.Raw)
-	verified = true
-	return client, nil
+	return cert, nil
 }
 
-// dialFrontDoor opens the one TLS connection the returned client will use.
-// PKI is intentionally not verified — the trust anchor is the attestation in
-// the discovery document, which NewVerifiedHTTPClient binds to this
-// connection's leaf after the fetch.
+// dialFrontDoor opens a TLS connection to the front door. PKI is
+// intentionally not verified — the trust anchor is the attestation in the
+// discovery document, which frontDoor.attest binds to the connection's leaf
+// after the fetch.
 func dialFrontDoor(ctx context.Context, host string) (*tls.Conn, error) {
 	if _, _, err := net.SplitHostPort(host); err != nil {
 		host = net.JoinHostPort(host, "443")
@@ -221,7 +246,7 @@ func verifyDocument(ctx context.Context, data []byte, verify localverify.VerifyF
 	// it binds is read out of the document too, so there is no freshness
 	// anywhere on this path. A forger re-minting this body around the attested
 	// key picks its own NotAfter. The bound that actually holds is applied by
-	// the caller, NewVerifiedHTTPClient: the attested leaf must be
+	// the caller, frontDoor.verifyConnection: the attested leaf must be
 	// byte-identical to the one this connection's handshake presented, which
 	// only the holder of the attested key can produce.
 	if _, err := certutil.AuthenticateLeafBody(cert, time.Now()); err != nil {
@@ -247,7 +272,7 @@ func verifyDocument(ctx context.Context, data []byte, verify localverify.VerifyF
 // attestedDialer is the transport's dialer: it hands out the connection the
 // discovery document was fetched over, then redials host on demand and admits
 // a new connection only when its handshake presents the attested leaf. Until
-// NewVerifiedHTTPClient has attested a leaf, a lost connection fails closed.
+// frontDoor.attest has attested a leaf, a lost connection fails closed.
 type attestedDialer struct {
 	host string
 
@@ -287,26 +312,138 @@ func (d *attestedDialer) dial(ctx context.Context, _, _ string) (net.Conn, error
 			presented = "serving cert sha256 " + hex.EncodeToString(sum[:])
 		}
 		attested := sha256.Sum256(d.leaf)
-		return nil, fmt.Errorf("routerdiscovery: the attested connection was lost and the redial presented %s, not the attested %s — a different router replica answered or the router renewed its certificate; re-run the command to attest a fresh connection",
-			presented, hex.EncodeToString(attested[:]))
+		return nil, &unattestedLeafError{presented: presented, attested: hex.EncodeToString(attested[:])}
 	}
 	return conn, nil
 }
 
-// newAttestedClient returns an http.Client whose transport dials through d
+// unattestedLeafError is a redial the dialer refused because its handshake
+// presented a leaf other than the attested one. Nothing was sent over it.
+type unattestedLeafError struct {
+	presented string // "serving cert sha256 <hex>", or "no certificate"
+	attested  string // sha256 hex of the attested serving cert
+}
+
+func (e *unattestedLeafError) Error() string {
+	return fmt.Sprintf("routerdiscovery: the attested connection was lost and the redial presented %s, not the attested %s", e.presented, e.attested)
+}
+
+// newAttestedTransport returns a transport that dials through d
 // (MaxConnsPerHost=1 serializes requests over one connection). Timeout knobs
 // mirror armtls.NewVerifyingHTTPClient. dialFrontDoor + attestedDialer are a
 // sibling of the verify CLI's dialFrontDoor + singleConnClient
 // (internal/cmds/verify/discovery.go) — port fixes both ways.
-func newAttestedClient(d *attestedDialer) *http.Client {
-	return &http.Client{
-		Timeout: 30 * time.Second,
-		Transport: &http.Transport{
-			DialTLSContext:        d.dial,
-			ResponseHeaderTimeout: 10 * time.Second,
-			IdleConnTimeout:       90 * time.Second,
-			MaxIdleConns:          1,
-			MaxConnsPerHost:       1,
-		},
+func newAttestedTransport(d *attestedDialer) *http.Transport {
+	return &http.Transport{
+		DialTLSContext:        d.dial,
+		ResponseHeaderTimeout: 10 * time.Second,
+		IdleConnTimeout:       90 * time.Second,
+		MaxIdleConns:          1,
+		MaxConnsPerHost:       1,
 	}
+}
+
+// requestTimeout bounds one request, including any re-attestation it needs.
+const requestTimeout = 30 * time.Second
+
+// reattestingTransport sends each request over the current session: a
+// transport whose connections all present one attested leaf. When the session
+// refuses a redial because the router presented another leaf — it renewed its
+// certificate, or a different replica answered — it attests the front door
+// again and resends the request over the new session.
+type reattestingTransport struct {
+	door             *frontDoor
+	firstIssuerKeyID []byte // AuthorityKeyId the first attested leaf names
+
+	mu      sync.Mutex
+	session *http.Transport
+}
+
+func (t *reattestingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.currentSession().RoundTrip(req)
+	var refused *unattestedLeafError
+	if !errors.As(err, &refused) {
+		return resp, err
+	}
+	return t.resendOnceOnNewSession(req, refused)
+}
+
+// CloseIdleConnections is what http.Client.CloseIdleConnections calls.
+func (t *reattestingTransport) CloseIdleConnections() {
+	t.currentSession().CloseIdleConnections()
+}
+
+func (t *reattestingTransport) currentSession() *http.Transport {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.session
+}
+
+// resendOnceOnNewSession attests the front door again and sends req over the
+// new session. net/http dials for a request it has not written yet, or to
+// retry a replayable one (GET, HEAD), so the resend never writes a PUT or
+// DELETE twice.
+func (t *reattestingTransport) resendOnceOnNewSession(req *http.Request, refused *unattestedLeafError) (*http.Response, error) {
+	resend, err := rewound(req)
+	if err != nil {
+		return nil, fmt.Errorf("%w; %w", refused, err)
+	}
+	// req's context carries the client's Timeout, so it bounds the
+	// re-attestation and the resend together.
+	session, err := t.replaceSession(req.Context())
+	if err != nil {
+		return nil, fmt.Errorf("%w; attesting it failed: %w", refused, err)
+	}
+	return session.RoundTrip(resend)
+}
+
+// replaceSession attests the front door again and makes the result the
+// current session if its leaf names the first attested leaf's issuer key.
+func (t *reattestingTransport) replaceSession(ctx context.Context) (*http.Transport, error) {
+	session, leaf, err := t.door.attest(ctx)
+	if errors.Is(err, ErrNoDiscovery) {
+		return nil, fmt.Errorf("routerdiscovery: the front door stopped serving its discovery document mid-session: %v", err)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !t.namesFirstIssuerKey(leaf) {
+		session.CloseIdleConnections()
+		sum := sha256.Sum256(leaf.Raw)
+		return nil, fmt.Errorf("routerdiscovery: serving cert sha256 %s names another mesh CA key than the first one this command attested — another c8s deployment answered, or its CDS changed CA key; re-run the command",
+			hex.EncodeToString(sum[:]))
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.session = session
+	return session, nil
+}
+
+// namesFirstIssuerKey reports whether leaf names the same issuer key as the
+// first attested leaf. Pins name a build, not a deployment; an attested
+// router presents the leaf its own CDS issued, so this keeps one command on
+// one CDS. A first leaf naming no issuer key matches nothing.
+func (t *reattestingTransport) namesFirstIssuerKey(leaf *x509.Certificate) bool {
+	if len(t.firstIssuerKeyID) == 0 {
+		return false
+	}
+	return bytes.Equal(leaf.AuthorityKeyId, t.firstIssuerKeyID)
+}
+
+// rewound returns a copy of req ready to send again: the transport closed
+// req's body when the dial failed, so a body is recreated from GetBody.
+func rewound(req *http.Request) (*http.Request, error) {
+	resend := req.Clone(req.Context())
+	if req.Body == nil {
+		return resend, nil
+	}
+	if req.GetBody == nil {
+		return nil, errors.New("the request body cannot be sent again; re-run the command")
+	}
+	body, err := req.GetBody()
+	if err != nil {
+		return nil, err
+	}
+	resend.Body = body
+	return resend, nil
 }
