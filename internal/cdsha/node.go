@@ -1339,6 +1339,13 @@ func (n *Node) refreshReads(ctx context.Context) {
 			return
 		case <-t.C:
 		}
+		// A confirmRead outlasts the period, so a tick is always pending
+		// once it returns, and select picks between ready cases at random:
+		// without this check a stopping replica (Run's exit) waits a random
+		// number of further read timeouts.
+		if ctx.Err() != nil {
+			return
+		}
 		cert := n.readCert.Load()
 		if n.validReadCertificate(cert) && time.Since(cert.at) < n.cfg.Timing.Lease/3 && n.jumpAt.Load() == 0 {
 			continue
