@@ -93,6 +93,13 @@ iptables and nftables.
 CI requires this suite and includes its coverage alongside ordinary tests and
 the kernel dm-verity harness, using the same procedure for the PR and its base.
 
+For Pod runtime changes, also run `make test-integration-pod-runtime`. It needs
+Python 3 and Docker with privileged containers and validates process admission,
+containerd/plugin recovery, and standalone kubelet recovery in an isolated
+container. All three result receipts are required. See
+[Pod scheduler and runtime CI](docs/integration-tests.md#pod-scheduler-and-runtime-ci)
+for the evidence and its limits.
+
 ## Pull requests
 
 - **Discuss large changes first.** Open an issue before starting anything

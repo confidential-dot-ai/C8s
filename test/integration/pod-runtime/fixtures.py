@@ -5,6 +5,7 @@ import io
 import json
 import re
 import sys
+import subprocess
 import tarfile
 import uuid
 from pathlib import Path
@@ -27,26 +28,40 @@ def prepare(source, stage, architecture):
     expected_ref = "docker.io/rancher/rke2-runtime:" + versions[0].replace("+", "-")
     if entries != [(expected_ref, pins["airgapFloorDigest"])]:
         raise ValueError("runtime registry pin must be reviewed with the measured airgap floor")
+    cni = pins["cni"]
+    cni_entries = re.findall(
+        r'label: "(docker.io/rancher/hardened-cni-plugins:[^"]+)"\s+'
+        r'containers:\s+- digest: "(sha256:[a-f0-9]{64})"', policy,
+    )
+    if cni_entries != [("docker.io/rancher/hardened-cni-plugins:" + cni["version"], cni["airgapFloorDigest"])]:
+        raise ValueError("CNI registry pin must be reviewed with the measured airgap floor")
     kind_lib = (source / "test/integration/cluster/lib.sh").read_text()
     runner = re.findall(r'NODE_IMAGE="\$\{C8S_IT_NODE_IMAGE:-([^}]+)\}"', kind_lib)
     if len(runner) != 1 or not re.fullmatch(
         r"kindest/node:[A-Za-z0-9.-]+@sha256:[a-f0-9]{64}", runner[0]
     ):
         raise ValueError("expected the existing digest-pinned kind runner image")
-    for digest in [pins["registryIndex"], *pins["platforms"].values()]:
+    for digest in [pins["registryIndex"], *pins["platforms"].values(), cni["registryIndex"], *cni["platforms"].values()]:
         if not re.fullmatch(r"sha256:[a-f0-9]{64}", digest):
             raise ValueError("runtime inputs require sha256 pins")
     inputs = {
         "runId": str(uuid.uuid4()),
+        "sourceRevision": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=source, timeout=10).decode().strip(),
+        "sourceDiffSHA256": hashlib.sha256(subprocess.check_output(["git", "diff", "HEAD", "--binary"], cwd=source, timeout=10)).hexdigest(),
+        "kubeletTestSHA256": hashlib.sha256((source / "internal/cmds/nri-image-policy/pod_runtime_kubelet_integration_linux_test.go").read_bytes()).hexdigest(),
+        "recoveryTestSHA256": hashlib.sha256((source / "internal/cmds/nri-image-policy/pod_runtime_recovery_integration_linux_test.go").read_bytes()).hexdigest(),
         "rke2Version": pins["rke2Version"],
         "runtimeImage": "docker.io/rancher/rke2-runtime@" + pins["platforms"][architecture],
+        "cniImage": "docker.io/rancher/hardened-cni-plugins@" + cni["platforms"][architecture],
+        "cniRegistryIndex": cni["registryIndex"],
+        "cniAirgapFloorDigest": cni["airgapFloorDigest"],
         "runtimeRegistryIndex": pins["registryIndex"],
         "runtimePlatformDigest": pins["platforms"][architecture],
         "airgapFloorDigest": pins["airgapFloorDigest"],
         "runnerImage": runner[0],
         "architecture": architecture,
         "scope": "native snapshotter; simulated measurement register and credential broker",
-        "runtimeProvenance": "digest-pinned registry release runtime; guest airgap byte equivalence unverified",
+        "runtimeProvenance": "digest-pinned registry release runtime; runtime/CNI guest airgap byte equivalence unverified",
     }
     (stage / "inputs.json").write_text(json.dumps(inputs, indent=2) + "\n")
     (stage / "pins.json").write_bytes(
@@ -76,32 +91,34 @@ def image(stage, architecture):
         entry.type, entry.mode = tarfile.DIRTYPE, 0o1777
         archive.addfile(entry)
     layer_desc = blob(layer.getvalue(), "application/vnd.oci.image.layer.v1.tar")
-    config = obj(
-        {
-            "architecture": architecture,
-            "os": "linux",
-            "config": {"Entrypoint": ["/pause"], "Env": []},
-            "rootfs": {"type": "layers", "diff_ids": [layer_desc["digest"]]},
-        },
-        "application/vnd.oci.image.config.v1+json",
-    )
-    manifest = obj(
-        {
-            "schemaVersion": 2,
-            "mediaType": "application/vnd.oci.image.manifest.v1+json",
-            "config": config,
-            "layers": [layer_desc],
-        },
-        "application/vnd.oci.image.manifest.v1+json",
-    )
-    tag = "example.invalid/pod-start:fixture"
-    descriptor = {
-        **manifest,
-        "annotations": {"org.opencontainers.image.ref.name": tag},
-    }
+    descriptors = []
+    for name in ["pod-start", "pod-recovery-mesh"]:
+        config = obj(
+            {
+                "architecture": architecture,
+                "os": "linux",
+                "config": {"Entrypoint": ["/pause"], "Env": [], "Labels": {"fixture": name}},
+                "rootfs": {"type": "layers", "diff_ids": [layer_desc["digest"]]},
+            },
+            "application/vnd.oci.image.config.v1+json",
+        )
+        manifest = obj(
+            {
+                "schemaVersion": 2,
+                "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                "config": config,
+                "layers": [layer_desc],
+            },
+            "application/vnd.oci.image.manifest.v1+json",
+        )
+        tag = "example.invalid/" + name + ":fixture"
+        descriptors.append({**manifest, "annotations": {"org.opencontainers.image.ref.name": tag}})
+        fixture = {"tag": tag, "pin": manifest["digest"], "reference": "example.invalid/" + name + "@" + manifest["digest"]}
+        output = "fixture.json" if name == "pod-start" else "mesh-fixture.json"
+        (stage / output).write_text(json.dumps(fixture, indent=2) + "\n")
     files = {
         "oci-layout": b'{"imageLayoutVersion":"1.0.0"}',
-        "index.json": json.dumps({"schemaVersion": 2, "manifests": [descriptor]}).encode(),
+        "index.json": json.dumps({"schemaVersion": 2, "manifests": descriptors}).encode(),
         **blobs,
     }
     with tarfile.open(stage / "fixtures.tar", "w") as archive:
@@ -109,12 +126,7 @@ def image(stage, architecture):
             entry = tarfile.TarInfo(name)
             entry.size = len(data)
             archive.addfile(entry, io.BytesIO(data))
-    fixture = {
-        "tag": tag,
-        "pin": manifest["digest"],
-        "reference": "example.invalid/pod-start@" + manifest["digest"],
-    }
-    (stage / "fixture.json").write_text(json.dumps(fixture, indent=2) + "\n")
+
 
 
 def receipt(inputs_path, result_path):
@@ -156,6 +168,56 @@ def receipt(inputs_path, result_path):
     print("PASS: fresh runtime receipt validates all eight cases and exact task identity")
 
 
+def recovery_receipt(inputs_path, result_path):
+    inputs = json.loads(inputs_path.read_text())
+    result = json.loads(result_path.read_text())
+    if result.get("runId") != inputs["runId"]:
+        raise ValueError("recovery result is not from this invocation")
+    for key in ["fullClaimsPreserved", "taskPreserved", "oldGrantRefused", "cgroupIdentityChecked", "sandboxCleanup"]:
+        if result.get(key) is not True:
+            raise ValueError("missing production recovery assertion: " + key)
+    for key in ["pluginProcessIds", "containerdProcessIds"]:
+        pids = result.get(key)
+        if not isinstance(pids, list) or len(pids) != 2 or len(set(pids)) != 2 or any(type(pid) is not int or pid <= 0 for pid in pids):
+            raise ValueError("recovery did not replace the real processes: " + key)
+    ids = [result.get(key) for key in ["meshContainerId", "appContainerId", "removedContainerId", "postRecoveryContainerId"]]
+    if any(not isinstance(value, str) or not value for value in ids) or len(set(ids)) != 4:
+        raise ValueError("recovery requires four distinct actual runtime container identities")
+    if result.get("historicalObservations") != 3 or len(result.get("measuredDigests", [])) != 2:
+        raise ValueError("recovery did not preserve distinct removed same-image history")
+    if result.get("negative") != {"missing-history": True, "tampered-history": True, "pending-transition": True}:
+        raise ValueError("recovery must refuse each invalid retained-history state")
+    if not re.fullmatch(r"pcvm-[a-f0-9]{64}", result.get("credentialInstanceId", "")):
+        raise ValueError("missing stable recovery credential identity")
+    if not re.fullmatch(r"[a-f0-9]{64}", result.get("assignedPolicySHA256", "")):
+        raise ValueError("missing unchanged assigned-policy identity")
+    if type(result.get("taskPid")) is not int or result["taskPid"] <= 0 or not result.get("sandboxId"):
+        raise ValueError("missing retained actual task identity")
+    print("PASS: fresh production recovery receipt validates actual process restart, full history and fail-closed state")
+
+
+def kubelet_receipt(inputs_path, result_path):
+    inputs = json.loads(inputs_path.read_text())
+    result = json.loads(result_path.read_text())
+    if result.get("runId") != inputs["runId"]:
+        raise ValueError("kubelet recovery result is not from this invocation")
+    for key in ["assignmentPreserved", "fullClaimsPreserved", "tasksPreserved", "kubeletReportedRunning", "sandboxCleanup"]:
+        if result.get(key) is not True:
+            raise ValueError("missing actual kubelet recovery assertion: " + key)
+    for key in ["kubeletProcessIds", "pluginProcessIds", "containerdProcessIds"]:
+        pids = result.get(key)
+        if not isinstance(pids, list) or len(pids) != 2 or len(set(pids)) != 2 or any(type(pid) is not int or pid <= 0 for pid in pids):
+            raise ValueError("kubelet recovery did not replace the actual service process: " + key)
+    if not re.fullmatch(r"pcvm-[a-f0-9]{64}", result.get("credentialInstanceId", "")) or not result.get("runtimePodUID"):
+        raise ValueError("kubelet recovery lost credential or runtime Pod identity")
+    for key in ["appPID", "meshPID"]:
+        if type(result.get(key)) is not int or result[key] <= 0:
+            raise ValueError("kubelet recovery is missing its retained task PID")
+    if not result.get("appContainerId") or not result.get("meshContainerId") or result["appContainerId"] == result["meshContainerId"]:
+        raise ValueError("kubelet recovery is missing distinct task identities")
+    print("PASS: fresh kubelet receipt validates actual static Pod service restart and retained tasks")
+
+
 if __name__ == "__main__":
     if len(sys.argv) == 5 and sys.argv[1] == "prepare":
         prepare(Path(sys.argv[2]), Path(sys.argv[3]), sys.argv[4])
@@ -163,5 +225,9 @@ if __name__ == "__main__":
         image(Path(sys.argv[2]), sys.argv[3])
     elif len(sys.argv) == 4 and sys.argv[1] == "receipt":
         receipt(Path(sys.argv[2]), Path(sys.argv[3]))
+    elif len(sys.argv) == 4 and sys.argv[1] == "recovery-receipt":
+        recovery_receipt(Path(sys.argv[2]), Path(sys.argv[3]))
+    elif len(sys.argv) == 4 and sys.argv[1] == "kubelet-receipt":
+        kubelet_receipt(Path(sys.argv[2]), Path(sys.argv[3]))
     else:
-        raise SystemExit("usage: fixtures.py prepare SOURCE STAGE ARCH | image STAGE ARCH | receipt INPUTS RESULT")
+        raise SystemExit("usage: fixtures.py prepare SOURCE STAGE ARCH | image STAGE ARCH | receipt INPUTS RESULT | recovery-receipt INPUTS RESULT | kubelet-receipt INPUTS RESULT")

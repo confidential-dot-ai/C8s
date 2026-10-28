@@ -119,22 +119,46 @@ virtual node. Existing node selectors are preserved. Scheduler CI advertises
 two Pod slots and verifies that two opted-in workloads can run concurrently,
 with infrastructure DaemonSets excluded from those slots.
 
-The runtime lane needs Go, Python 3 and Docker with privileged containers. It
-uses digest-pinned RKE2 registry release binaries on the Docker daemon's native
-architecture, the production `c8s-runc`, and an offline workload. One workload
-executes only after its exact NRI container, sandbox and process identity is
-consumed once. Seven cases reject execution: missing authority, policy denial,
-measurement failure, callback timeout, lost socket, plugin disconnect and replay.
-Measurement registers and the credential broker are simulated, and containerd
-uses its native snapshotter. Registry runtime provenance does not establish
-byte equivalence with the guest airgap archive or validate the guest's systemd,
-overlay filesystem or TDX attestation.
+Run `make test-integration-pod-runtime` with Go, Python 3 and Docker supporting
+privileged containers. The existing `Integration (Pod runtime)` CI job invokes
+this command and requires all three checks:
 
-Both lanes require complete fresh result receipts and fail when prerequisites
-or required assertions are missing. They remove only their owned local resources.
+1. Start authorization: one offline workload executes only after its exact NRI
+   container, sandbox and process identity is consumed once. Seven cases reject
+   execution: missing authority, policy denial, measurement failure, callback
+   timeout, lost socket, plugin disconnect and replay.
+2. Production NRI recovery: separate containerd and full plugin processes restart
+   while the original sandbox and task remain alive. The test verifies the task's
+   actual cgroup/process identity, complete admission history including a removed
+   same-image workload, unchanged measurements and credential identity, and refusal
+   of old permissions. Missing, malformed and interrupted recovery state must
+   refuse startup.
+3. Standalone kubelet recovery: the real kubelet owns a static Pod with a mesh
+   sidecar and application. Restarting kubelet, containerd and the full plugin must
+   preserve the staged manifest/configuration, Pod UID, running task identities,
+   complete claims and measurements. The kubelet's `/pods` response is checked
+   against its serving certificate and the actual containerd tasks.
+
+The runner extracts digest-pinned RKE2 runtime/kubelet and CNI release binaries
+for the Docker daemon's native architecture. It uses the production `c8s-runc`,
+full NRI callbacks for recovery, real namespace protection, and memory-backed
+recovery/credential volumes. The first check isolates the start-permission
+boundary; the recovery checks use the complete configured plugin.
+
+Measurement registers, CDS transport and credential issuance are fixtures.
+Containerd uses the native snapshotter and cgroupfs. This lane does not exercise
+the assignment endpoint, issue a real Pod certificate, or establish guest-airgap
+byte equivalence, systemd ordering, overlay filesystem behavior or TDX/cloud
+acceptance.
+
+Both scheduler and runtime lanes require fresh result receipts and fail when
+prerequisites or required assertions are missing. The runtime lane requires
+`result.json`, `recovery-result.json` and `kubelet-recovery-result.json`, each bound
+to the current invocation, plus successful cleanup. Evidence includes runtime,
+kubelet and CNI binary hashes and bounded logs. The lanes remove only their owned
+local resources; the runtime container has no host mounts or network access.
 Set `C8S_PODPROVIDER_ARTIFACTS` or `C8S_POD_RUNTIME_ARTIFACTS` to a new evidence
-directory to retain bounded logs and receipts. CI retains those artifacts for
-seven days. The runtime container has no host mounts or network access.
+directory. CI retains those artifacts for seven days.
 
 ## Pod Cloud acceptance
 

@@ -5,5 +5,14 @@
   "platforms": {
     "amd64": "sha256:b259e466c7539f3b10209da1725c2176352a5cbb7adec9e3dafd9959585d4940",
     "arm64": "sha256:968092e31c40396932080ba74e9470bd1e6e57fe7e9b3bc94d46f912e466adb1"
+  },
+  "cni": {
+    "version": "v1.9.1-build20260717",
+    "registryIndex": "sha256:e2eeda778144983b9dc2482c25872ba8ce19ba7eebc32d830791aeb33d7dd614",
+    "airgapFloorDigest": "sha256:0d26512c90d935db3180f47a7a716e3dfac0847ec29076fb5487e535125a86a8",
+    "platforms": {
+      "amd64": "sha256:a0b9549f6a833b295c5d5a235bfe1415918ab4441227e9f5e04397d27511a910",
+      "arm64": "sha256:1e84cf1e44937ee9374e66d49e316d48ee279db723b58ec26371f7a1bf08342c"
+    }
   }
 }

@@ -48,6 +48,7 @@ export PATH="/validation/runtime:$PATH"
 {
     containerd --version
     runc --version
+    kubelet --version
 } > /validation/artifacts/runtime-versions.txt
 runc --help > /validation/artifacts/runc-help.txt
 
@@ -98,3 +99,53 @@ ctr --address /run/pod-start-test/containerd.sock --namespace k8s.io \
 cd /validation/source/internal/cmds/nri-image-policy
 /validation/nri-runtime.test -test.v -test.timeout=120s \
     -test.run '^TestPodRuntimeAdmissionIntegration$'
+
+
+# The admission-only runtime above is fully stopped before the independent
+# recovery lane owns a new daemon and full production plugin process.
+kill "$runtime_pid"
+wait "$runtime_pid" || true
+runtime_pid=
+mkdir -p /validation/cni-config /var/run/nri
+for plugin in bridge host-local loopback; do
+    [[ -x "/validation/cni/$plugin" ]] || { echo "missing pinned guest-release CNI plugin: $plugin" >&2; exit 1; }
+done
+cat > /validation/cni-config/10-c8s.conflist <<'JSON'
+{"cniVersion":"1.0.0","name":"c8s-pod","plugins":[{"type":"bridge","bridge":"c8spod0","isGateway":true,"ipMasq":false,"ipam":{"type":"host-local","ranges":[[{"subnet":"10.255.254.0/30"}]],"routes":[{"dst":"0.0.0.0/0"}]}}]}
+JSON
+cat > /validation/recovery-containerd.toml <<'TOML'
+version = 3
+root = '/var/lib/rancher/rke2/agent/containerd'
+state = '/run/k3s/containerd'
+[grpc]
+address = '/run/pod-recovery-runtime/containerd.sock'
+[plugins.'io.containerd.cri.v1.images']
+snapshotter = 'native'
+[plugins.'io.containerd.cri.v1.images'.pinned_images]
+sandbox = 'example.invalid/pod-start:fixture'
+[plugins.'io.containerd.cri.v1.runtime']
+disable_apparmor = true
+[plugins.'io.containerd.cri.v1.runtime'.cni]
+bin_dirs = ['/validation/cni']
+conf_dir = '/validation/cni-config'
+[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc]
+runtime_type = 'io.containerd.runc.v2'
+[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc.options]
+BinaryName = '/validation/c8s-runc'
+SystemdCgroup = false
+[plugins.'io.containerd.nri.v1.nri']
+disable = false
+socket_path = '/var/run/nri/nri.sock'
+plugin_path = '/validation/empty-plugins'
+plugin_config_path = '/validation/empty-config'
+plugin_registration_timeout = '10s'
+plugin_request_timeout = '2s'
+[plugins.'io.containerd.nri.v1.nri'.default_validator]
+enable = true
+required_plugins = ['image-policy']
+TOML
+/validation/nri-runtime.test -test.v -test.timeout=180s \
+    -test.run '^TestPodRuntimeRecoveryIntegration$'
+
+/validation/nri-runtime.test -test.v -test.timeout=180s \
+    -test.run '^TestPodRuntimeKubeletRecoveryIntegration$'
