@@ -2,7 +2,6 @@ package cdsha
 
 import (
 	"database/sql"
-	"slices"
 	"testing"
 	"time"
 )
@@ -66,28 +65,23 @@ func TestLocalStopOnEveryReplicaKeepsTheLog(t *testing.T) {
 
 	// The documented way out: restart the stuck replicas one at a time,
 	// each once its predecessor's replacement is a voter. The stuck ones
-	// keep voting, so the majority holds; the last stuck one, once the
-	// others follow the log, hands off and leaves by itself.
+	// keep voting, so the majority holds. At an operator's pace each
+	// replacement leads or follows through a checkpoint past the stop that
+	// the stuck voters applied too (their state skipped the entry): they
+	// must not outvote it. The last stuck one, once the others follow the
+	// log, hands off and leaves by itself.
 	for _, lock := range locks {
 		if _, err := lock.Exec(`ROLLBACK`); err != nil {
 			t.Fatal(err)
 		}
 	}
+	var fresh []*replica
 	for _, r := range c.live() {
 		if r == l {
 			continue
 		}
-		old := r.node.ID()
-		c.stopReplica(r)
-		again := c.start(r.name, "m1")
-		eventually(t, 30*time.Second, r.name+" replaced as a voter", func() bool {
-			ld := c.leader()
-			if ld == nil {
-				return false
-			}
-			st := ld.node.Status()
-			return slices.Contains(st.Voters, again.node.ID()) && !slices.Contains(st.Voters, old)
-		})
+		fresh = append(fresh, replaceReplica(t, c, r))
+		checkpointJudged(t, c, last, fresh)
 	}
 	select {
 	case <-l.done:

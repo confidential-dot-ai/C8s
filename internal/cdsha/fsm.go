@@ -193,13 +193,13 @@ type FSM struct {
 	// met an entry it could not apply, and keeps it from serving.
 	readable uint32
 	stuck    atomic.Pointer[stopReason]
-	stuckAt  atomic.Int64 // unix nanoseconds when stuck was set
+	stuckAt  atomic.Int64 // monoNow when stuck was set
 	// passed is set once the serving leader certified a read past a
 	// deterministic stop's entry (passedBy).
 	passed atomic.Bool
 	// applying is the index of the entry Apply is on, for stop.
 	applying atomic.Uint64
-	// applyStart is when the command Apply is on started (UnixNano), 0
+	// applyStart is when the command Apply is on started (monoNow), 0
 	// between commands and during a Restore (Node.watchApply).
 	applyStart atomic.Int64
 
@@ -230,11 +230,24 @@ func NewFSM(pre Core, al *allowlist.Store, sec *secrets.MemoryStore, led *sandbo
 // (this replica's store or process) is cured by a restart. Any other stop is
 // deterministic: every replica on this code stops at the same entry, so a
 // restart would only throw the in-memory log away; index is that entry.
+//
+// A stall is a local stop for a command that has run too long
+// (Node.watchApply): slow, not skipped. It ends when that command returns
+// (endStall), unless another stop replaced it meanwhile (halt).
 type stopReason struct {
 	msg   string
 	local bool
 	index uint64
+	stall bool
+	start int64 // stall: applyStart of the command it was raised for
 }
+
+// monoBase makes monoNow monotonic: time.Since on a time.Now() reading
+// ignores wall-clock steps.
+var monoBase = time.Now()
+
+// monoNow is the monotonic time in nanoseconds since monoBase, never 0.
+func monoNow() int64 { return int64(time.Since(monoBase)) + 1 }
 
 // Stuck is why this replica stopped applying the log, or "".
 func (f *FSM) Stuck() string {
@@ -248,6 +261,13 @@ func (f *FSM) Stuck() string {
 func (f *FSM) StuckLocal() bool {
 	p := f.stuck.Load()
 	return p != nil && p.local
+}
+
+// trusted reports a state that applied every entry so far: not stopped, or
+// only stalled on the command Apply is on.
+func (f *FSM) trusted() bool {
+	p := f.stuck.Load()
+	return p == nil || p.stall
 }
 
 // passedBy records that the serving leader certified a read at index: its
@@ -267,19 +287,10 @@ func (f *FSM) stuckPassed() bool {
 	return p != nil && !p.local && f.passed.Load()
 }
 
-// applyingFor is how long the command Apply is on has run, or 0 between
-// commands.
-func (f *FSM) applyingFor() time.Duration {
-	if at := f.applyStart.Load(); at != 0 {
-		return time.Since(time.Unix(0, at))
-	}
-	return 0
-}
-
 // stuckFor is how long ago the replica got stuck, or 0 if it is not.
 func (f *FSM) stuckFor() time.Duration {
 	if at := f.stuckAt.Load(); at != 0 {
-		return time.Since(time.Unix(0, at))
+		return time.Duration(monoNow() - at)
 	}
 	return 0
 }
@@ -307,7 +318,8 @@ func (f *FSM) Apply(l *raft.Log) any {
 	if l.Type != raft.LogCommand {
 		return nil
 	}
-	f.applyStart.Store(time.Now().UnixNano())
+	f.applyStart.Store(monoNow())
+	defer f.endStall()
 	defer f.applyStart.Store(0)
 	point := f.dig.next(l)
 	defer func() { f.dig.record(point) }()
@@ -323,7 +335,13 @@ func (f *FSM) Apply(l *raft.Log) any {
 		return f.stop(fmt.Errorf("%w: entry %d needs format %d, this replica reads up to %d", ErrNewerFormat, l.Index, e.Format, f.readable))
 	}
 	if e.Kind == KindCheckpoint {
-		point.State = f.stateDigest(point.Index)
+		// INVARIANT: only a state that applied every entry up to here
+		// takes part in the checkpoint vote (divergence.go). Replicas that
+		// stopped at the same entry hold the same wrong state and would
+		// otherwise outvote a healthy leader.
+		if f.trusted() {
+			point.State = f.stateDigest(point.Index)
+		}
 		return nil
 	}
 	if e.Kind == KindRestore {
@@ -405,20 +423,55 @@ func (f *FSM) stopLocal(err error) error {
 	return f.halt(err, true)
 }
 
+// halt records a stop. It replaces nothing but a stall: the first real
+// stop stays.
 func (f *FSM) halt(err error, local bool) error {
 	r := &stopReason{msg: err.Error(), local: local}
 	if !local {
 		r.index = f.applying.Load()
 	}
-	if f.stuck.CompareAndSwap(nil, r) {
-		f.stuckAt.Store(time.Now().UnixNano())
-		if local {
-			slog.Error("cds-ha: this replica can no longer follow the log (local fault); it stops serving and exits to rejoin", "reason", r.msg)
-		} else {
-			slog.Error("cds-ha: ALARM: this replica cannot apply a committed log entry; it stops serving and keeps its log for an operator (an image that applies the entry, or a Restore)", "reason", r.msg, "index", r.index)
+	for {
+		cur := f.stuck.Load()
+		if cur != nil && !cur.stall {
+			return err
+		}
+		if f.stuck.CompareAndSwap(cur, r) {
+			break
 		}
 	}
+	f.stuckAt.Store(monoNow())
+	if local {
+		slog.Error("cds-ha: this replica can no longer follow the log (local fault); it stops serving and exits to rejoin", "reason", r.msg)
+	} else {
+		slog.Error("cds-ha: ALARM: this replica cannot apply a committed log entry; it stops serving and keeps its log for an operator (an image that applies the entry, or a Restore)", "reason", r.msg, "index", r.index)
+	}
 	return err
+}
+
+// stall records a stall of the command that started at start, if nothing
+// stopped the replica yet. It takes the stall back if that command has
+// returned meanwhile, so a stall never outlives its command (endStall).
+func (f *FSM) stall(start int64, err error) {
+	r := &stopReason{msg: err.Error(), local: true, stall: true, start: start}
+	if !f.stuck.CompareAndSwap(nil, r) {
+		return
+	}
+	f.stuckAt.Store(monoNow())
+	if f.applyStart.Load() != start {
+		f.stuck.CompareAndSwap(r, nil)
+		return
+	}
+	slog.Error("cds-ha: this replica's state machine is stalled on a command; it stops serving until the command returns", "reason", r.msg)
+}
+
+// endStall (end of Apply, after applyStart is cleared) ends a stall of the
+// command that just returned: it was slow, but it applied, and so did every
+// entry before it. Another stop meanwhile replaced the stall and stays.
+func (f *FSM) endStall() {
+	if p := f.stuck.Load(); p != nil && p.stall && f.stuck.CompareAndSwap(p, nil) {
+		f.stuckAt.Store(0)
+		slog.Info("cds-ha: the stalled command returned; following the log again", "stalled", p.msg)
+	}
 }
 
 func (f *FSM) apply(e Entry) any {

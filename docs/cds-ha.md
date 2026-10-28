@@ -310,17 +310,28 @@ shows `backup refused: ...` in `backup_error` until a backup is stored again.
 ## A replica that cannot apply a log entry
 
 A replica whose own store fails (disk full, I/O error) stops serving and exits;
-its restart rejoins with the cluster's state. It exits only while the voters
-that follow the log keep a majority without it: every replica applies the
-same entries to the same state, so a full store or a host-wide memory
-shortage can stop all of them at the same entry. Then none exits; each keeps
-its log, logs `ALARM` every minute and shows `stuck_local` true. Once the
-cause is fixed, restart the stuck replicas one at a time: wait until the
-restarted one is a voter (`/ha/status` of the leader lists it in `voters`
-and no longer lists the old member) before the next. The stuck ones keep
-voting, so the majority holds throughout. A replica that has been applying
-one entry for `dead_after + apply` (a store lock that is never released, a write
-that never returns) stops the same way; a Restore is not timed. Any other
+its restart rejoins with the cluster's state. It exits only while it has a
+leader other than itself, and that leader plus the voters that are not stuck
+and follow it in this term are a majority without it. A stuck leader first
+hands off leadership and then leaves as a follower; with no leader a stuck
+replica never leaves. Every replica applies the same entries to the same
+state, so a full store or a host-wide memory shortage can stop all of them
+at the same entry. Then none exits; each keeps its log, logs `ALARM` every
+minute and shows `stuck_local` true. Once the cause is fixed, restart the
+stuck replicas one at a time: wait until the restarted one is a voter
+(`/ha/status` of the leader lists it in `voters` and no longer lists the old
+member) before the next. The stuck ones keep voting, so the majority holds
+throughout. A stuck replica takes no part in the checkpoint comparison: it
+records no state digest after its stop, so replicas stopped at the same entry
+never outvote a replica that follows the log. A stuck replica takes no
+snapshot, so its in-memory log grows with every write the others commit
+through it (the `ALARM` line and `/ha/status` show `log_entries` and
+`log_bytes`). It can still win an election; it then hands leadership to a
+caught-up replica that follows the log. A replica that has been applying one
+entry for `dead_after + apply` (a store lock that is never released, a write
+that never returns) stops the same way, but only until that entry returns:
+if every replica stalls (a host I/O stall), none leaves, and all follow the
+log again once the stall ends. A Restore is not timed. Any other
 entry it cannot apply
 (an unknown or malformed entry, a newer format, a panic while applying) would
 fail the same way on every replica of the image. Such a replica does **not**

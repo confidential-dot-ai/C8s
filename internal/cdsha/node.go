@@ -652,7 +652,10 @@ func (n *Node) Run(ctx context.Context) error {
 			return nil
 		case <-t.C:
 		}
-		if reason := n.fsm.Stuck(); reason != "" {
+		reason := n.fsm.Stuck()
+		if reason == "" {
+			stuckAt = time.Time{} // a stall that ended (FSM.endStall)
+		} else {
 			// A stuck replica serves nothing. After a local fault only a
 			// restart, which replays the log from the cluster, brings it
 			// back. A transient fault (a disk that filled and was freed,
@@ -676,12 +679,16 @@ func (n *Node) Run(ctx context.Context) error {
 			case due && (n.fsm.StuckLocal() || n.fsm.stuckPassed()) && n.leaveKeepsQuorum():
 				return fmt.Errorf("%w: %s", ErrStuck, reason)
 			case time.Since(alarmAt) < haltAlarmEvery:
-			case !n.fsm.StuckLocal() && !n.fsm.stuckPassed():
-				alarmAt = time.Now()
-				n.log.Error("cds-ha: ALARM: halted at a log entry no replica could apply; serving nothing, keeping the log; deploy an image that applies it, or Restore", "reason", reason, "for", since.Round(time.Second))
 			default:
 				alarmAt = time.Now()
-				n.log.Error("cds-ha: ALARM: stopped following the log, and the replicas that follow it are no majority without this one; serving nothing, keeping the log; restart the stuck replicas one at a time, or Restore", "reason", reason, "for", since.Round(time.Second))
+				msg := "cds-ha: ALARM: stopped following the log, and the replicas that follow it are no majority without this one; serving nothing, keeping the log; restart the stuck replicas one at a time, or Restore"
+				if !n.fsm.StuckLocal() && !n.fsm.stuckPassed() {
+					msg = "cds-ha: ALARM: halted at a log entry no replica could apply; serving nothing, keeping the log; deploy an image that applies it, or Restore"
+				}
+				// The log grows with every write the others commit through
+				// this replica: a stuck state machine takes no snapshot.
+				entries, bytes := n.logs.usage()
+				n.log.Error(msg, "reason", reason, "for", since.Round(time.Second), "log_entries", entries, "log_bytes", bytes)
 			}
 		}
 		n.renewPeerCert()
@@ -1558,6 +1565,8 @@ func (n *Node) noteSeated() {
 // answering its heartbeats, so without this it would keep its vote and
 // count as a filled seat while it applies nothing. The stop is local: it
 // exits once the others keep a majority without it (Run, StuckOverdue).
+// If the command returns first, the stop ends (FSM.endStall): a stall on
+// every replica (a host IO stall) must not outlast the stall itself.
 // It runs apart from the Run loop, which the same fault may block.
 func (n *Node) watchApply(ctx context.Context) {
 	t := time.NewTicker(n.cfg.Timing.Tick)
@@ -1568,8 +1577,10 @@ func (n *Node) watchApply(ctx context.Context) {
 			return
 		case <-t.C:
 		}
-		if d := n.fsm.applyingFor(); d >= n.cfg.Timing.DeadAfter+n.cfg.Timing.Apply {
-			_ = n.fsm.stopLocal(fmt.Errorf("applying log entry %d has not finished after %s", n.fsm.applying.Load(), d.Round(time.Second)))
+		if at := n.fsm.applyStart.Load(); at != 0 {
+			if d := time.Duration(monoNow() - at); d >= n.cfg.Timing.DeadAfter+n.cfg.Timing.Apply {
+				n.fsm.stall(at, fmt.Errorf("applying log entry %d has not finished after %s", n.fsm.applying.Load(), d.Round(time.Second)))
+			}
 		}
 	}
 }

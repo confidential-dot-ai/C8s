@@ -35,6 +35,11 @@ import (
 // A committed entry is held by a majority, so the majority's digest is the
 // committed history; an entry only a minority applied (the uncommitted
 // write of hashicorp/raft #695) always loses.
+//
+// A stopped replica (FSM.Stuck) records no state digest at the checkpoints
+// it applies after the stop (FSM.Apply): it counts as missing them, never
+// as a group. Replicas stopped at the same entry hold the same wrong state,
+// and must not outvote a healthy leader.
 
 // DigestReport is a follower's digests, sent with a read barrier.
 type DigestReport struct {
