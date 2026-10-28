@@ -10,11 +10,14 @@ import (
 
 func TestAssignmentStoreRequiresProtectedRAMAndSurvivesReopen(t *testing.T) {
 	if os.Geteuid() != 0 {
+		if os.Getenv("C8S_REQUIRE_ASSIGNMENT_ROOT") == "1" {
+			t.Fatal("required assignment storage test needs root")
+		}
 		t.Skip("root-owned guest filesystem test")
 	}
 	dir, err := os.MkdirTemp("/dev/shm", "assignment-")
 	if err != nil {
-		t.Skipf("RAM fixture unavailable: %v", err)
+		t.Fatalf("RAM fixture unavailable: %v", err)
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	path := filepath.Join(dir, "state")
