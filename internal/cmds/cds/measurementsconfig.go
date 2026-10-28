@@ -5,6 +5,8 @@ import (
 	"sort"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
+	"github.com/confidential-dot-ai/attestation-go/refvalues"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 )
 
 // servedFamily names the platform the served document declares. The flat flags
@@ -27,4 +29,24 @@ func measurementBytes(allowed map[string]bool) [][]byte {
 	}
 	sort.Slice(out, func(i, j int) bool { return string(out[i]) < string(out[j]) })
 	return out
+}
+
+// loadNodePins is the node launch identities CDS admits on /attest and serves
+// on /measurements: the measured configuration's document, else the one the
+// flags name. A flagged document must declare the platform flag's family,
+// while a CDS VM reads its own family from its hardware and the nodes it
+// serves need not share it.
+func loadNodePins(cfg config) (refvalues.ReferenceValues, error) {
+	if cfg.measured != nil {
+		return cfg.measured.Nodes, nil
+	}
+	return cmdsutil.LoadImagePolicyValues(cmdsutil.ImagePolicyValuesConfig{
+		Source: cmdsutil.ImagePolicySource{File: cfg.measurementsConfig},
+		Pins: cmdsutil.MeasurementPins{
+			Measurements: cfg.measurements,
+			Registers:    cfg.rtmrs,
+		},
+		Platform:     cfg.armtlsPlatform,
+		PlatformFlag: "--armtls-platform",
+	})
 }

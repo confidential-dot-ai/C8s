@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
+	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsca"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/verify"
@@ -33,7 +34,10 @@ func NewCmd() *cobra.Command {
 		Use:   "cds",
 		Short: "Run the Certificate Distribution Service (CDS)",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := validateARMTLSPlatformFlag(cfg.armtlsPlatform); err != nil {
+			if cfg.configPath != "" {
+				return runMeasuredConfig(cmd.Context(), cfg)
+			}
+			if err := validateARMTLSPlatform("--armtls-platform", cfg.armtlsPlatform); err != nil {
 				return err
 			}
 			return run(cfg)
@@ -42,6 +46,7 @@ func NewCmd() *cobra.Command {
 
 	flags := cmd.Flags()
 
+	flags.StringVar(&cfg.configPath, "config", "", "path to the CDS configuration document (c8s-cds/v1) this VM was launched with. CDS serves the cluster it describes only if a verified self-report binds the file byte for byte, and refuses the flags it supplies")
 	flags.StringVar(&cfg.host, "host", "0.0.0.0", "")
 	flags.IntVarP(&cfg.port, "port", "p", 8443, "")
 	flags.StringVar(&cfg.logLevel, "log-level", "info", "log level: debug, info, warn, error")
@@ -93,9 +98,16 @@ func NewCmd() *cobra.Command {
 	flags.DurationVar(&cfg.armtlsCertTTL, "armtls-cert-ttl", 24*time.Hour, "")
 	flags.StringVar(&cfg.measuredPolicies, "measured-policies-file", armtls.NodeJournal, "the node's journal of allowlist policies extended into TDX RTMR[3]; the armTLS serving and sandbox-digests client certificates list it. Empty lists none")
 
-	_ = cmd.MarkFlagRequired("armtls-platform")
 	_ = cmd.MarkFlagRequired("attestation-api-url")
 	_ = cmd.MarkFlagRequired("allowlist-db")
+
+	// The platform comes from the measured configuration's launch or from the
+	// flag, and a setting the configuration decides is never also taken from
+	// argv.
+	cmd.MarkFlagsOneRequired("config", "armtls-platform")
+	for _, excluded := range excludedByConfig {
+		cmd.MarkFlagsMutuallyExclusive("config", excluded)
+	}
 
 	// `c8s cds verify` — a shorthand for `c8s verify --kind cds`, sharing the
 	// same implementation. Running CDS (the server) stays `c8s cds`.
@@ -118,6 +130,7 @@ func NewCmd() *cobra.Command {
 }
 
 type config struct {
+	configPath          string
 	host                string
 	port                int
 	logLevel            string
@@ -164,17 +177,22 @@ type config struct {
 	secretsMaxPathsPerWorkload int
 	secretsMaxValueBytes       int
 	sandboxLedgerMax           int
+
+	// measured is the configuration document this VM was launched with. It
+	// decides every setting the flags in excludedByConfig would; nil when
+	// those flags do.
+	measured *cdsconfig.Config
 }
 
-// validateARMTLSPlatformFlag rejects the CLI paths to a TLS-less CDS: the
+// validateARMTLSPlatform rejects the paths to a TLS-less CDS: the
 // empty-platform plain-HTTP mode stays reachable only for tests constructing
-// Config directly.
-func validateARMTLSPlatformFlag(v string) error {
-	if strings.TrimSpace(v) == "" {
-		return fmt.Errorf("--armtls-platform must not be empty (armTLS is mandatory; tests construct Config directly)")
+// Config directly. source names where the platform came from.
+func validateARMTLSPlatform(source, platform string) error {
+	if strings.TrimSpace(platform) == "" {
+		return fmt.Errorf("%s must not be empty (armTLS is mandatory; tests construct Config directly)", source)
 	}
-	if _, err := teetypes.ParseFamily(v); err != nil {
-		return fmt.Errorf("--armtls-platform: %w", err)
+	if _, err := teetypes.ParseFamily(platform); err != nil {
+		return fmt.Errorf("%s: %w", source, err)
 	}
 	return nil
 }

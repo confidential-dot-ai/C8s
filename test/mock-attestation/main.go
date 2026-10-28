@@ -1,12 +1,14 @@
 // mock-attestation is a fake attestation-api for integration testing: the
 // networked counterpart of internal/mockapi. /attest answers synthetic
-// SEV-SNP reports binding the requested REPORTDATA; /verify checks that
-// binding and refuses mismatches with the real api's 422 verification_failed
-// shape. Speaks the production wire types (pkg/types). No real TEE — use
-// only in test environments.
+// SEV-SNP reports binding the requested REPORTDATA and the HOST_DATA the
+// environment names; /verify checks the REPORTDATA binding and refuses
+// mismatches with the real api's 422 verification_failed shape. Speaks the
+// production wire types (pkg/types). No real TEE — use only in test
+// environments.
 package main
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -31,7 +33,12 @@ const (
 	reportDataSize    = 64
 	measurementOffset = 0x90
 	measurementSize   = 48
+	hostDataOffset    = 0xC0
+	hostDataSize      = 32
 )
+
+// noHostData is the HOST_DATA of a guest whose launcher committed nothing.
+var noHostData [hostDataSize]byte
 
 func main() {
 	port := os.Getenv("PORT")
@@ -39,8 +46,14 @@ func main() {
 		port = "8400"
 	}
 
+	hostData, err := parseHostData(os.Getenv("HOST_DATA"))
+	if err != nil {
+		slog.Error("invalid HOST_DATA", "error", err)
+		os.Exit(1)
+	}
+
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /attest", handleAttest)
+	mux.HandleFunc("POST /attest", attestHandler(hostData))
 	mux.HandleFunc("POST /verify", handleVerify)
 	mux.HandleFunc("GET /health", handleHealth)
 
@@ -51,28 +64,36 @@ func main() {
 	}
 }
 
-func handleAttest(w http.ResponseWriter, r *http.Request) {
-	var req remote.AttestRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeDecodeError(w, err)
-		return
+// attestHandler answers synthetic reports binding the requested REPORTDATA and
+// hostData, the launch binding a launcher commits.
+func attestHandler(hostData []byte) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req remote.AttestRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeDecodeError(w, err)
+			return
+		}
+
+		platform := req.Platform
+		if platform == "" || platform == remote.PlatformAuto {
+			platform = teetypes.PlatformSNP
+		}
+		slog.Info("mock attest called", "platform", platform)
+
+		report := make([]byte, snpReportSize)
+		report[0] = 0x02    // report version 2
+		report[0x0A] = 0x03 // SMT-allowed policy
+		copy(report[reportDataOffset:reportDataOffset+reportDataSize], req.ReportData)
+		copy(report[hostDataOffset:hostDataOffset+hostDataSize], hostData)
+
+		evidence, _ := json.Marshal(map[string]string{
+			"attestation_report": base64.StdEncoding.EncodeToString(report),
+		})
+		writeJSON(w, remote.AttestResponse{
+			Platform: platform,
+			Evidence: evidence,
+		})
 	}
-
-	platform := req.Platform
-	if platform == "" || platform == remote.PlatformAuto {
-		platform = teetypes.PlatformSNP
-	}
-	slog.Info("mock attest called", "platform", platform)
-
-	report := make([]byte, snpReportSize)
-	report[0] = 0x02    // report version 2
-	report[0x0A] = 0x03 // SMT-allowed policy
-	copy(report[reportDataOffset:reportDataOffset+reportDataSize], req.ReportData)
-
-	evidence, _ := json.Marshal(map[string]string{
-		"attestation_report": base64.StdEncoding.EncodeToString(report),
-	})
-	writeJSON(w, remote.AttestResponse{Platform: platform, Evidence: evidence})
 }
 
 func handleVerify(w http.ResponseWriter, r *http.Request) {
@@ -111,9 +132,37 @@ func handleVerify(w http.ResponseWriter, r *http.Request) {
 			ReportDataMatch: match,
 			Claims: teetypes.Claims{
 				LaunchDigest: hex.EncodeToString(report[measurementOffset : measurementOffset+measurementSize]),
+				InitData:     hostDataClaim(report),
 			},
 		},
 	})
+}
+
+// hostDataClaim is the launch binding the report carries, and none when the
+// launcher committed nothing: an all-zero HOST_DATA binds no launch file.
+func hostDataClaim(report []byte) []byte {
+	hostData := report[hostDataOffset : hostDataOffset+hostDataSize]
+	if bytes.Equal(hostData, noHostData[:]) {
+		return nil
+	}
+	return hostData
+}
+
+// parseHostData decodes the hex HOST_DATA the environment names. A value of
+// the wrong width is refused rather than padded: a guest bound to a truncated
+// digest is bound to nothing an operator wrote.
+func parseHostData(value string) ([]byte, error) {
+	if value == "" {
+		return nil, nil
+	}
+	raw, err := hex.DecodeString(value)
+	if err != nil {
+		return nil, fmt.Errorf("%q is not hex: %s", value, err)
+	}
+	if len(raw) != hostDataSize {
+		return nil, fmt.Errorf("%q is %d bytes, want %d", value, len(raw), hostDataSize)
+	}
+	return raw, nil
 }
 
 // extractSNPReport pulls the raw report out of an SNP evidence envelope and

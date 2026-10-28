@@ -5,8 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/spf13/cobra"
-
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
@@ -53,17 +51,16 @@ func TestNewCmdTakesNoKubeconfig(t *testing.T) {
 	}
 }
 
-func TestNewCmdRequiresARMTLSPlatform(t *testing.T) {
+// Which TEE CDS serves armTLS on is always stated: by the measured
+// configuration (TestPlatformComesFromTheConfigOrTheFlag) or by this flag.
+func TestNewCmdARMTLSPlatformHasNoDefault(t *testing.T) {
 	flag := NewCmd().Flags().Lookup("armtls-platform")
 	if flag == nil {
 		t.Fatal("missing --armtls-platform flag")
 	}
 	// No default: a silently-assumed TEE must never serve armTLS.
 	if flag.DefValue != "" {
-		t.Fatalf("default --armtls-platform = %q, want required with no default", flag.DefValue)
-	}
-	if flag.Annotations[cobra.BashCompOneRequiredFlag] == nil {
-		t.Fatal("--armtls-platform is not marked required")
+		t.Fatalf("default --armtls-platform = %q, want no default", flag.DefValue)
 	}
 
 	_, _, err := armtls.NewServerTLSConfig(&armtls.ServerConfig{
@@ -75,7 +72,7 @@ func TestNewCmdRequiresARMTLSPlatform(t *testing.T) {
 	}
 }
 
-func TestValidateARMTLSPlatformFlag(t *testing.T) {
+func TestValidateARMTLSPlatform(t *testing.T) {
 	for _, tc := range []struct {
 		in      string
 		wantErr string
@@ -85,13 +82,15 @@ func TestValidateARMTLSPlatformFlag(t *testing.T) {
 		{"tdx", ""},
 		{"", "must not be empty"},
 		{"foo", "--armtls-platform:"},
+		// What a verified report of an unroutable platform would derive.
+		{"unknown", "--armtls-platform:"},
 	} {
-		err := validateARMTLSPlatformFlag(tc.in)
+		err := validateARMTLSPlatform("--armtls-platform", tc.in)
 		if tc.wantErr == "" && err != nil {
-			t.Errorf("validateARMTLSPlatformFlag(%q) = %v, want nil", tc.in, err)
+			t.Errorf("validateARMTLSPlatform(%q) = %v, want nil", tc.in, err)
 		}
 		if tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
-			t.Errorf("validateARMTLSPlatformFlag(%q) = %v, want substring %q", tc.in, err, tc.wantErr)
+			t.Errorf("validateARMTLSPlatform(%q) = %v, want substring %q", tc.in, err, tc.wantErr)
 		}
 	}
 }

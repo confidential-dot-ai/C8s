@@ -43,29 +43,36 @@ func startSeed(ctx context.Context, store *allowlist.Store, path string, follow 
 
 // seedStore reads the JSON allowlist at path, seeds its workload entries into
 // store and returns the content it applied. It owns the file/wire-format
-// concerns; the version-stable merge is Store.SeedWorkloads.
-//
-// Seeding runs before the HTTP server serves, so the first GET /allowlist
-// reflects the seed. Any error fails closed: CDS must not serve an empty or
-// partial allowlist because its seed could not be applied.
+// concerns; seedWorkloads owns the store.
 func seedStore(store *allowlist.Store, path string) ([]byte, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read allowlist seed %q: %w", path, err)
 	}
-
 	seed, err := pkgallowlist.ParseJSON(data)
 	if err != nil {
 		return nil, fmt.Errorf("parse allowlist seed %q: %w", path, err)
 	}
+	if err := seedWorkloads(store, seed); err != nil {
+		return nil, err
+	}
+	return data, nil
+}
 
+// seedWorkloads seeds an allowlist document's workload entries into store; the
+// version-stable merge is Store.SeedWorkloads.
+//
+// Seeding runs before the HTTP server serves, so the first GET /allowlist
+// reflects the seed. Any error fails closed: CDS must not serve an empty or
+// partial allowlist because its seed could not be applied.
+func seedWorkloads(store *allowlist.Store, seed *pkgallowlist.Allowlist) error {
 	added, retired, err := store.SeedWorkloads(seed.Workloads)
 	if err != nil {
-		return nil, fmt.Errorf("seed allowlist workloads: %w", err)
+		return fmt.Errorf("seed allowlist workloads: %w", err)
 	}
 
 	slog.Info("allowlist seeded", "workloads_added", added, "workloads_retired", retired, "workloads_in_seed", len(seed.Workloads))
-	return data, nil
+	return nil
 }
 
 // followSeed seeds store again on each tick at which the content at path
