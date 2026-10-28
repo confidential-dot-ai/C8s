@@ -27,6 +27,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/internal/localverify"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
@@ -85,29 +86,31 @@ func discoveryDoc(t *testing.T, cert *x509.Certificate, challenge []byte, mode, 
 // with servingCert (no armTLS extension), like a router front door.
 func fakeLB(t *testing.T, servingCert tls.Certificate, doc []byte) *httptest.Server {
 	t.Helper()
-	return lbServer(t, &tls.Config{Certificates: []tls.Certificate{servingCert}}, doc, false)
+	return lbServer(t, &tls.Config{Certificates: []tls.Certificate{servingCert}}, routerHandler(doc))
 }
 
-// lbServer is fakeLB over any TLS configuration. closeDiscovery makes the
-// discovery response close the connection, as a router whose discovery
-// location sets keepalive_timeout 0 does.
-func lbServer(t *testing.T, cfg *tls.Config, doc []byte, closeDiscovery bool) *httptest.Server {
+// routerHandler answers the front-door routes the client uses: the discovery
+// document, the proxied allowlist read, and a workload write.
+func routerHandler(doc []byte) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET "+DefaultPath, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(doc)
+	})
+	mux.HandleFunc("GET /allowlist", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"schema":"c8s.allowlist/v1","workloads":{}}`))
+	})
+	mux.HandleFunc("PUT /allowlist/workloads/{name}", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	return mux
+}
+
+// lbServer serves h over any TLS configuration.
+func lbServer(t *testing.T, cfg *tls.Config, h http.Handler) *httptest.Server {
 	t.Helper()
-	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case DefaultPath:
-			if closeDiscovery {
-				w.Header().Set("Connection", "close")
-			}
-			w.Header().Set("Content-Type", "application/json")
-			w.Write(doc)
-		case "/allowlist":
-			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(`{"schema":"c8s.allowlist/v1","workloads":{}}`))
-		default:
-			http.NotFound(w, r)
-		}
-	}))
+	srv := httptest.NewUnstartedServer(h)
 	srv.TLS = cfg
 	srv.StartTLS()
 	t.Cleanup(srv.Close)
@@ -352,6 +355,18 @@ func TestNewVerifiedHTTPClient_RedialsToTheAttestedLeaf(t *testing.T) {
 	}
 }
 
+// TestAttestedDialerFailsClosedBeforeAttestation proves a connection lost
+// before the document was verified fails closed: with no attested leaf there
+// is nothing a redial could be bound to. A nil conn is the state after the
+// discovery connection was handed out.
+func TestAttestedDialerFailsClosedBeforeAttestation(t *testing.T) {
+	d := &attestedDialer{}
+	_, err := d.dial(context.Background(), "tcp", "")
+	if err == nil || !strings.Contains(err.Error(), "lost before the discovery document was verified") {
+		t.Fatalf("want a fail-closed error, got: %v", err)
+	}
+}
+
 // TestNewAttestedClientConfig pins the attested client's shape: the timeout
 // knobs mirror armtls.NewVerifyingHTTPClient and the transport serializes
 // requests over one connection.
@@ -449,7 +464,8 @@ func TestNewVerifiedHTTPClient_RefusesRedialToAnotherLeaf(t *testing.T) {
 	servingCert, leaf := plainServingCert(t)
 	otherCert, _ := plainServingCert(t)
 	doc := discoveryDoc(t, leaf, []byte("challenge"), "cds", string(teetypes.PlatformAzSNP), `{"hcl_report":"fake"}`)
-	var handshakes atomic.Int32
+	var handshakes, requests atomic.Int32
+	router := routerHandler(doc)
 	// GetConfigForClient, not GetCertificate: the client dials an IP, so
 	// the hello carries no server name and crypto/tls would skip the latter.
 	lb := lbServer(t, &tls.Config{GetConfigForClient: func(*tls.ClientHelloInfo) (*tls.Config, error) {
@@ -457,7 +473,10 @@ func TestNewVerifiedHTTPClient_RefusesRedialToAnotherLeaf(t *testing.T) {
 			return &tls.Config{Certificates: []tls.Certificate{servingCert}}, nil
 		}
 		return &tls.Config{Certificates: []tls.Certificate{otherCert}}, nil
-	}}, doc, false)
+	}}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		router.ServeHTTP(w, r)
+	}))
 	measurement := bytes.Repeat([]byte{0x42}, armtls.SNPMeasurementSize)
 
 	hc, err := NewVerifiedHTTPClient(context.Background(), lb.URL, [][]byte{measurement}, approvingVerify(measurement))
@@ -472,27 +491,37 @@ func TestNewVerifiedHTTPClient_RefusesRedialToAnotherLeaf(t *testing.T) {
 	resp.Body.Close()
 
 	lb.CloseClientConnections()
+	requestsOnAttestedConn := requests.Load()
 
 	if _, err := hc.Get(lb.URL + "/allowlist"); err == nil ||
 		!bytes.Contains([]byte(err.Error()), []byte("redial presented")) {
 		t.Fatalf("want a refusal naming the leaf the redial presented, got: %v", err)
 	}
+	// The security property: no request bytes reach the unattested peer.
+	if got := requests.Load() - requestsOnAttestedConn; got != 0 {
+		t.Fatalf("the server handled %d request(s) on the connection presenting another leaf, want 0", got)
+	}
 }
 
-// TestNewVerifiedHTTPClient_SurvivesDiscoveryConnectionClose is the regression
-// test for a router whose discovery location closes the connection after the
-// document (keepalive_timeout 0): the requests that follow must still reach
-// the attested front door.
-func TestNewVerifiedHTTPClient_SurvivesDiscoveryConnectionClose(t *testing.T) {
+// TestNewVerifiedHTTPClient_RedialsPerRequestWhenEveryResponseCloses proves a
+// router that closes the connection after discovery and after every
+// /allowlist request still serves reads and writes, each over a redial that
+// presents the attested leaf.
+func TestNewVerifiedHTTPClient_RedialsPerRequestWhenEveryResponseCloses(t *testing.T) {
 	servingCert, leaf := plainServingCert(t)
 	doc := discoveryDoc(t, leaf, []byte("challenge"), "cds", string(teetypes.PlatformAzSNP), `{"hcl_report":"fake"}`)
-	lb := lbServer(t, &tls.Config{Certificates: []tls.Certificate{servingCert}}, doc, true)
 	measurement := bytes.Repeat([]byte{0x42}, armtls.SNPMeasurementSize)
+	var handshakes atomic.Int32
+	lb := lbServer(t, &tls.Config{GetConfigForClient: func(*tls.ClientHelloInfo) (*tls.Config, error) {
+		handshakes.Add(1)
+		return &tls.Config{Certificates: []tls.Certificate{servingCert}}, nil
+	}}, testutil.CloseEveryResponse(routerHandler(doc)))
 
 	hc, err := NewVerifiedHTTPClient(context.Background(), lb.URL, [][]byte{measurement}, approvingVerify(measurement))
 	if err != nil {
 		t.Fatalf("NewVerifiedHTTPClient: %v", err)
 	}
+
 	resp, err := hc.Get(lb.URL + "/allowlist")
 	if err != nil {
 		t.Fatalf("GET /allowlist after a closed discovery response: %v", err)
@@ -501,5 +530,28 @@ func TestNewVerifiedHTTPClient_SurvivesDiscoveryConnectionClose(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK || !bytes.Contains(body, []byte(`"workloads"`)) {
 		t.Fatalf("GET /allowlist = %d %s", resp.StatusCode, body)
+	}
+
+	writes := []string{"web", "api"}
+	for _, name := range writes {
+		req, err := http.NewRequest(http.MethodPut, lb.URL+"/allowlist/workloads/"+name,
+			strings.NewReader(`{"containers":[]}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := hc.Do(req)
+		if err != nil {
+			t.Fatalf("PUT %s after a closed response: %v", name, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("PUT %s = %d, want 204", name, resp.StatusCode)
+		}
+	}
+
+	requestsSent := 2 + len(writes) // discovery, the read, each write
+	if got := int(handshakes.Load()); got != requestsSent {
+		t.Fatalf("server saw %d handshake(s) for %d requests, want one each", got, requestsSent)
 	}
 }

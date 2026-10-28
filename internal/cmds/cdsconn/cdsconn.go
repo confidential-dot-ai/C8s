@@ -163,7 +163,7 @@ func (o *Options) httpsClient(ctx context.Context, pins refvalues.ReferenceValue
 			"Use the CDS URL directly, e.g. https://<node>:30808 (cds.service.nodePort) or "+
 			"'kubectl port-forward -n c8s-system svc/c8s-cds 8443:8443', and pin the CDS launch digest instead of the router's", o.URL)
 	case err == nil:
-		fmt.Fprintln(os.Stderr, "note: target is a router front door; verified its discovery attestation and bound this session to the attested connection")
+		fmt.Fprintln(os.Stderr, "note: target is a router front door; verified its discovery attestation and bound this session to the attested serving certificate")
 		return hc, nil
 	case errors.Is(err, routerdiscovery.ErrNoDiscovery):
 		return pinFirstPeer(localverify.NewARMTLSHTTPClient(pins.Digests(), verify.Verify, o.Timeout))
