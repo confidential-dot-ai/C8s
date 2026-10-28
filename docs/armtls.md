@@ -204,12 +204,21 @@ profile.
 The guest publishes complete credential generations to a verified RAM-backed
 volume only the endpoint mounts, read-only. Publication rechecks the retained
 revision, sandbox and packet protection. The revision moves when the history
-gains an observation or the sandbox's identity ends — not when a container stops
-or is removed, so neither restarts issuance. Renewal uses fresh evidence and the
-current policy. Losing the retained history or protection ends issuance and
-removes the published credentials; a plugin restart cannot rebuild history from
-the processes left. A copied leaf stays usable until expiry, and an abrupt
-process failure cannot guarantee immediate local removal.
+gains an observation, the applied policy changes or the sandbox's identity ends.
+Stopping or removing a container does not change it or restart issuance. Renewal
+uses fresh evidence and the current policy. The guest checkpoints complete
+history, boot and sandbox identity, issuer binding and applied policy in
+protected RAM. A completed service restart can restore that state after
+verifying the original task identities, image bindings, namespace rules and
+credential volume. It withdraws the old local generation and requests fresh
+evidence; it never restores start permissions.
+Policy changes invalidate issuance responses obtained under an earlier revision.
+
+Losing retained history or protection ends issuance and removes the published
+credentials. An interrupted state transition also refuses recovery; the
+processes left cannot reconstruct complete history. A copied leaf stays usable
+until expiry, and an abrupt process failure cannot guarantee immediate local
+removal.
 
 These are ordinary mesh leaves: a relying party sees neither the claims nor the
 profile, and a named leaf records authorization at issuance, not current

@@ -42,6 +42,7 @@ func TestGenericWaitingRegistrationSurvivesRestartBeforeCDSReadiness(t *testing.
 	for attempt := range 2 {
 		p, actions := gatedPlugin(t, marker)
 		p.cfg.Pod = &podConfig{Waiting: true, Generic: true}
+		p.measurer = emptyRestartMeasurer{}
 		p.ready.Store(false)
 		sock := filepath.Join(t.TempDir(), "health.sock")
 		if err := startHealthServer(t.Context(), healthServerConfig{logger: discardLogger(), plugin: p, addr: "unix://" + sock, readTimeout: time.Second, writeTimeout: time.Second}); err != nil {

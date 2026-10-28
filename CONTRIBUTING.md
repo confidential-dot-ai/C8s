@@ -83,8 +83,12 @@ additionally runs golangci-lint, a CRD/chart consistency check
 (`make check-crd-chart`), and vulnerability scanning.
 
 On Linux, `make test-podmesh-netns` runs the real namespace transport, guest
-bootstrap and private RAM credential-custody tests. It requires root (or
-passwordless `sudo`), network/mount namespace capabilities, iptables and nftables.
+bootstrap, retained admission recovery and private RAM credential-custody tests.
+The recovery cases use production NRI callbacks and real namespaces with
+simulated runtime metadata, measurement registers and credential issuance. They
+cover complete history after removal, issuer continuity, damaged state and
+refusal to replay a start permission. The suite requires root (or passwordless
+`sudo`), network/mount namespace capabilities, iptables and nftables.
 CI requires this suite and includes its coverage alongside ordinary tests and
 the kernel dm-verity harness, using the same procedure for the PR and its base.
 

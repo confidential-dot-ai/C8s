@@ -43,6 +43,7 @@ func assertPodBootstrap(t *testing.T, cfg *config, root string, podKey []byte, b
 			runPodBootstrap(t, &local, root, podKey, baseDigest, scenario)
 		})
 	}
+	assertPodRecovery(t, cfg, root, podKey, baseDigest)
 }
 
 func runPodBootstrap(t *testing.T, cfg *config, root string, podKey []byte, baseDigest, scenario string) {
@@ -65,6 +66,10 @@ func runPodBootstrap(t *testing.T, cfg *config, root string, podKey []byte, base
 	cfg.Allowlist.Pull.Timeout = 5 * time.Second
 	cfg.Allowlist.Pull.Interval = 20 * time.Millisecond
 	pod, credentialSource := preparePodBootstrapRuntime(t, cfg, dir)
+	// Runtime IDs are synthetic here; process birth/liveness remain real.
+	oldIdentity := podProcessIdentity
+	podProcessIdentity = func(pid uint32, _ string) (uint64, error) { return readPodProcessBirth(pid) }
+	t.Cleanup(func() { podProcessIdentity = oldIdentity })
 	var selected sync.Map
 	oldResolver := newContainerdResolver
 	newContainerdResolver = func(socket, namespace string) (containerdConnection, error) {
@@ -379,11 +384,16 @@ func podBootstrapContainer(pod *api.PodSandbox, id, name, digest string) *api.Co
 	return ctr
 }
 
-func startPodNRIRuntime(t *testing.T, dir string, registered chan<- struct{}) *adaptation.Adaptation {
+func startPodNRIRuntime(t *testing.T, dir string, registered chan<- struct{}, inventory ...func() ([]*api.PodSandbox, []*api.Container)) *adaptation.Adaptation {
 	t.Helper()
 	var once sync.Once
 	nri, err := adaptation.New("pod-bootstrap-test", "1", func(ctx context.Context, cb adaptation.SyncCB) error {
-		_, err := cb(ctx, nil, nil)
+		var pods []*api.PodSandbox
+		var containers []*api.Container
+		if len(inventory) != 0 {
+			pods, containers = inventory[0]()
+		}
+		_, err := cb(ctx, pods, containers)
 		if err == nil {
 			once.Do(func() { close(registered) })
 		}

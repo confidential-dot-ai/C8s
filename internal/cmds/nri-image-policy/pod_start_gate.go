@@ -92,6 +92,9 @@ func (p *plugin) finishPodStart(ctx context.Context, pod *api.PodSandbox, ctr *a
 
 func (p *plugin) consumePodStart(ctx context.Context, request podstart.Request) error {
 	defer p.lockPodAdmission()()
+	if p.recovery != nil && p.recovery.active {
+		return errors.New("pod admission transition has not committed")
+	}
 	grant, exists := p.podStarts[request.ContainerID]
 	if !exists || grant.request != request || !time.Now().Before(grant.expires) {
 		return errors.New("pod start has no matching current admission")
@@ -108,6 +111,9 @@ func (p *plugin) requirePodStart(ctx context.Context, request podstart.Request) 
 	}
 	if !p.cfg.podRole() || p.measurer == nil || p.inventory == nil {
 		return errors.New("pod start lacks admission, measurement or process identity")
+	}
+	if p.recovery != nil && (p.recovery.failed != nil || p.recovery.state == nil) {
+		return errors.New("pod admission has no complete recovery state")
 	}
 	b := p.podBroker
 	if b == nil || b.ctx == nil || b.ctx.Err() != nil || b.terminal != nil || b.pod.GetId() != request.SandboxID {

@@ -218,9 +218,22 @@ Acceptance records the signed assignment in root-only guest RAM before changing
 policy or publishing its manifest. Status-service restarts recover this record,
 even if the serving key rotates, and refuse further assignments with HTTP 409.
 The guest installs policy into an empty runtime, restarts containerd and kubelet,
-confirms admission registration, then publishes the manifest last. Recovery
-never replaces a published manifest or restarts a runtime that already ran it.
-Assignment state lasts for this boot; a reboot needs a new VM allocation.
+confirms admission registration, then publishes the manifest last. Assignment
+recovery never replaces a published manifest or restarts a runtime that already
+ran it. Assignment state lasts for this boot; a reboot needs a new VM allocation.
+
+Within that boot, restarting kubelet, containerd or the admission plugin retains
+the original sandbox, assignment, complete admission history and credential
+identity. The guest stores this state in protected RAM before authorizing a
+start. Recovery verifies the live tasks, image bindings, packet protection and
+credential volume, then obtains fresh credentials under the retained issuer
+binding. It also retains the last authenticated CDS policy during an outage and
+refuses older policy versions. Start permissions from the old process are never
+reused.
+
+An interrupted admission transition, lost history, changed protection or a
+replaced sandbox prevents recovery for that boot. Allocate a new Pod CVM in
+those cases; deleting the retained state does not authorize another assignment.
 
 Assignment nonces have no time expiry and are forgotten on service restart.
 The service retains at most 256 outstanding nonces without evicting any; further

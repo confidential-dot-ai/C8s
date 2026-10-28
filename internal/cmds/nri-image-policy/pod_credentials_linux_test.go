@@ -16,7 +16,7 @@ import (
 
 func TestPodCredentialRootRejectsDiskAndSymlinksAndHoldsIdentity(t *testing.T) {
 	requireNetNS(t)
-	base := t.TempDir()
+	base := podCredentialTestDir(t)
 	ram := filepath.Join(base, "ram")
 	mountPodTestRAM(t, ram)
 	volume := filepath.Join(ram, "volume")
@@ -53,13 +53,31 @@ func TestPodCredentialRootRejectsDiskAndSymlinksAndHoldsIdentity(t *testing.T) {
 		root.Close()
 		t.Fatal("disk-backed credential volume accepted")
 	}
-	oldOpen := openPodCredentialRoot
-	openPodCredentialRoot = func(source string) (*os.Root, error) { return openPodCredentialRootBeneath(base, source) }
-	t.Cleanup(func() { openPodCredentialRoot = oldOpen })
+	if err := samePodCredentialRoot(held, volume); err != nil {
+		t.Fatalf("unchanged credential root refused: %v", err)
+	}
+	if err := os.Chmod(volume, 0777); err != nil {
+		t.Fatal(err)
+	}
+	if err := samePodCredentialRoot(held, volume); err == nil {
+		t.Fatal("changed credential permissions accepted")
+	}
+	if info, err := os.Stat(volume); err != nil || info.Mode().Perm() != 0777 {
+		t.Fatal("credential verification repaired changed permissions")
+	}
+	if err := os.Chmod(volume, 0750); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Rename(volume, volume+"-old"); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Mkdir(volume, 0700); err != nil {
+	if err := os.Mkdir(volume, 0750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chown(volume, 0, int(workloadclaims.MeshUID)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(volume, 0750); err != nil {
 		t.Fatal(err)
 	}
 	if err := samePodCredentialRoot(held, volume); err == nil {
@@ -75,7 +93,7 @@ func TestPodCredentialRootRejectsDiskAndSymlinksAndHoldsIdentity(t *testing.T) {
 
 func TestPodBrokerRefusesReconstructedOrReusedBootHistory(t *testing.T) {
 	requireNetNS(t)
-	base := t.TempDir()
+	base := podCredentialTestDir(t)
 	mountPodTestRAM(t, base)
 	source := filepath.Join(base, "certs")
 	if err := os.Mkdir(source, 0700); err != nil {
@@ -120,7 +138,7 @@ func podBrokerPlugins(t *testing.T, base string) func() *plugin {
 // first issuance reads, so it sends no change; a later start does.
 func TestEndpointStartWakesTheBrokerOnlyAfterItsFirstIssuance(t *testing.T) {
 	requireNetNS(t)
-	base := t.TempDir()
+	base := podCredentialTestDir(t)
 	mountPodTestRAM(t, base)
 	source := filepath.Join(base, "certs")
 	if err := os.Mkdir(source, 0700); err != nil {
@@ -140,4 +158,23 @@ func TestEndpointStartWakesTheBrokerOnlyAfterItsFirstIssuance(t *testing.T) {
 	if len(p.podBroker.changes) != 1 {
 		t.Fatal("a later endpoint start did not wake the broker")
 	}
+}
+
+// Use an exclusively owned path beneath the production anchor so verification
+// exercises openat2 custody checks without weakening them through an opener hook.
+func podCredentialTestDir(t *testing.T) string {
+	t.Helper()
+	if err := os.MkdirAll(kubeletRoot, 0755); err != nil {
+		t.Fatal(err)
+	}
+	dir, err := os.MkdirTemp(kubeletRoot, "pod-credential-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(dir); err != nil {
+			t.Error(err)
+		}
+	})
+	return dir
 }
