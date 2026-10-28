@@ -79,7 +79,15 @@ by itself. That happens when every seat is filled by a replica that reads the
 new format, so during the rollout the old format stays in force.
 
 The router, `get-cert`, the injected sidecars and `allowlist-proxy` follow the
-decrees through the node's enforcer.
+decrees through the node's enforcer. They re-read the enforcer's pins at least
+every 5 seconds, so a removed image stops being trusted even by a client whose
+requests keep succeeding.
+
+A node's enforcer reads the pin decree (`GET /ha/pins`) from a CDS it pins
+first, so it follows the decree the replicas applied. Only when no replica
+under its current pins answers does it read the decree unverified; then it
+takes a decree only with a higher base epoch than the one it holds, and the
+next verified read replaces a decree the replicas never applied.
 
 ## Application policy and read freshness
 
@@ -200,6 +208,15 @@ Replacing the key itself is the `RotateKey` decree, a break-glass step.
 * A rebooted cds or agent node rejoins under its own name. A rebooted voter
   loses its state and comes back as a new member. The cluster gives its seat
   to another replica.
+* A rebooted node forgets the CDS pin decree it followed: node state does
+  not survive a reboot. It trusts its launch document's CDS pins until its
+  first decree fetch succeeds. The enforcer makes that fetch at start, before
+  it hands pins to any client, and logs `no CDS pin decree at start` at
+  ERROR when it fails. A host that withholds the decree keeps the node on its
+  launch-document pins. A launch document pins the server document's image
+  and the node's own, so removing the server document's image for good needs
+  new launch documents from a new bundle. A node launched with `--pin-floor`
+  at the removing decree's base epoch refuses every older decree (runbook 2).
 * **A server-node reboot starts a new, empty cluster.** The server keeps
   all cluster state on the per-boot encrypted scratch disk (see
   operator.md, "Revocation is a launch-time decision"). That includes the CDS
@@ -464,6 +481,10 @@ Do not reuse retired mesh keys for backend services.
   apply them again. Export backups off the cluster on a schedule.
 - **Server-node reboot.** A server-node reboot starts a new, empty cluster
   until server HA is available. Keep an exported backup.
+- **Removing a CDS image survives no node reboot.** After a reboot a node
+  trusts its launch-document CDS pins until its first decree fetch succeeds.
+  Durable removal means relaunching the node with a new launch document that
+  no longer pins the image.
 - **Size limits.** Snapshots are limited to 128 MiB compressed and 256 MiB
   SQLite. Size cds nodes for the chart's memory limit (`cds.ha.resources`,
   about 8 GiB nodes for the default 4Gi limit), and keep allowlist documents
@@ -471,6 +492,8 @@ Do not reuse retired mesh keys for backend services.
 - **Replica count.** 3 to 9 cds nodes, an odd number.
 - **Every component change is a new image.** It needs new launch documents;
   a rolling upgrade replaces every cds node.
+- **Launch CDS pins on cds nodes.** A cds node hands its injected credential
+  clients the launch CDS policy and does not follow CDS pin decrees.
 - **No metrics endpoint for HA state.** `/ha/status` and the log lines in
   `cds-ha-alerts.md` are the signals.
 - **Attestation policy.** CDS-HA consumes the attestation library's verdict.
