@@ -63,7 +63,7 @@ func (g *MeshCAGate) Precheck(rawURL string) error {
 // is authenticated, and /ca fetched over it would be the host's answer anyway.
 //
 // INVARIANT: hc is the client from Options.HTTPClient that then carries the
-// write. Every request on it reaches one peer (see the package doc), so the CA
+// write. Every request on it reaches one CDS (see the package doc), so the CA
 // compared is the CA of the CDS that receives the value, not of whatever
 // answered an earlier connection.
 func (g *MeshCAGate) Check(ctx context.Context, stderr io.Writer, hc *http.Client, rawURL string) error {

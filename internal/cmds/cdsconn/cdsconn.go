@@ -9,8 +9,9 @@
 // URL is verified by armTLS — belong in one place, since each is a way to talk
 // to an unattested endpoint by mistake.
 //
-// Every request one HTTPClient sends reaches one peer: a router front door is a
-// single connection, and a direct armTLS URL is pinned to the serving
+// Every request one HTTPClient sends reaches one CDS: a router front door
+// client uses only router certificates issued under the mesh CA key of the
+// first one it attested, and a direct armTLS URL is pinned to the serving
 // certificate its first handshake presented. MeshCAGate depends on that: it
 // checks the mesh CA on the client that then carries the write.
 package cdsconn
@@ -163,7 +164,7 @@ func (o *Options) httpsClient(ctx context.Context, pins refvalues.ReferenceValue
 			"Use the CDS URL directly, e.g. https://<node>:30808 (cds.service.nodePort) or "+
 			"'kubectl port-forward -n c8s-system svc/c8s-cds 8443:8443', and pin the CDS launch digest instead of the router's", o.URL)
 	case err == nil:
-		fmt.Fprintln(os.Stderr, "note: target is a router front door; verified its discovery attestation and bound this session to the attested serving certificate")
+		fmt.Fprintln(os.Stderr, "note: target is a router front door; verified its discovery attestation and bound this session to its CDS")
 		return hc, nil
 	case errors.Is(err, routerdiscovery.ErrNoDiscovery):
 		return pinFirstPeer(localverify.NewARMTLSHTTPClient(pins.Digests(), verify.Verify, o.Timeout))
