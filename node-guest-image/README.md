@@ -318,6 +318,12 @@ privileged namespaces (`kube-system`, the baked
 operator's `c8s-system` and the router role's `c8s-router`) and the
 kubelet-proxy subresources. The
 `psa-ready.sh` gate proves that deny path before cred-release serves.
+Service addresses are guarded for every principal, including ServiceAccounts
+an operator creates: kube-apiserver runs the `DenyServiceExternalIPs`
+admission plugin (`etc/rancher/rke2/config.yaml`), and the
+`confos-service-address` policy (`service-address-policy.yaml`) keeps
+ClusterIPs in `10.53.0.0/24`, where the platform pins its own Service
+addresses, to `kube-system` and `system:masters`.
 
 `kubectl exec`, `attach`, `port-forward` and ephemeral containers are closed
 by the baked `pod-exec-policy.yaml` AddOn (`confos-pod-exec`), a constant

@@ -3301,6 +3301,7 @@
               "--client-ca-file=/var/lib/rancher/rke2/server/tls/client-ca.crt",
               "--egress-selector-config-file=/var/lib/rancher/rke2/server/etc/egress-selector-config.yaml",
               "--enable-admission-plugins=NodeRestriction",
+              "--enable-admission-plugins=DenyServiceExternalIPs",
               "--enable-aggregator-routing=true",
               "--enable-bootstrap-token-auth=true",
               "--encryption-provider-config=/var/lib/rancher/rke2/server/cred/encryption-config.json",

@@ -1,7 +1,8 @@
 # Baked into server/manifests so RKE2 grants the group cred-release.service
 # issues (--cert-org) a bounded operator role through an ordinary, revocable
 # RBAC binding. Never cluster-admin and never system:masters: the baked
-# guards (confos-psa-level, confos-pod-exec, confos-operator-scope) exist to
+# guards (confos-psa-level, confos-pod-exec, confos-operator-scope,
+# confos-service-address) exist to
 # hold against the credential holder, so the holder must not be able to edit
 # RBAC, admission policies, the privileged namespaces, or anything
 # else that reaches the host. The role is an enumerated allowlist with no
