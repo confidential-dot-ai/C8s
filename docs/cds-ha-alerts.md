@@ -66,6 +66,7 @@ act.
 | Decree status `rejected_reason` says `target_member` | Signed without a target, or for a process that restarted | Sign again with `--target-url` (runbook 1 or 4). |
 | `decree object name "...": ...` from `c8s cds ha decree` | An `--intent-id` that is not a lowercase RFC 1123 name | Use lowercase letters, digits and `-`, or leave `--intent-id` out (the default is valid). Never reuse an intent: the object keeps the old `status`, and the leader skips the new decree. |
 | `Recover decree refused: the cluster has a leader with a majority` | The majority is alive | Delete the decree object. Do not sign it again. |
+| `Recover decree refused: this replica is not a voter` | The decree names a non-voter | Delete the decree object. Name a surviving voter (runbook 4). |
 | `Recover decree names this replica: acting after the hold unless the cluster rejects it or answers` | A Recover is pending on this replica | Expected only during runbook 4. Otherwise delete the decree object now: the hold is about 57 s. |
 | `Recover refused: a member of the cluster answers and has a leader` | The old cluster is alive | Delete the decree object. Find out why the survivor looked cut off. |
 | `RECOVER: forcing a one-voter configuration with this replica's state` | A Recover was applied | Finish runbook 4: RotateKey, add nodes, write a new record. |

@@ -253,6 +253,8 @@ state. Writes the survivor did not get are lost.
 - a Recover was refused with `the cluster has a leader with a majority`.
 - the survivor has restarted (`joined=false`). It holds no state. This is a
   total loss: use runbook 5.
+- the survivor is not a voter. A non-voter may lack committed writes; the
+  CLI and the replica refuse it. Name a surviving voter.
 - the replicas show `stuck=deterministic` (a halted cluster). The majority is
   not lost: use runbook 6.
 
@@ -262,9 +264,9 @@ backup matter more than the risk above.
 Steps:
 
 1. Confirm outside the host that the lost voters are destroyed.
-2. Read the survivor. It must show `joined=true`. Note its `epoch=`. A
-   survivor without a majority does not serve, so `$CDS` does not reach it:
-   use its node's own address. The command exits non-zero because the
+2. Read the survivor. It must show `joined=true` and be a voter. Note its
+   `epoch=`. A survivor without a majority does not serve, so `$CDS` does
+   not reach it: use its node's own address. The command exits non-zero because the
    survivor does not serve.
 
        c8s cds ha status $POL $(R <survivor IP>)

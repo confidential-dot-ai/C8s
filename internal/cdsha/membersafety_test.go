@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -177,3 +178,47 @@ func TestStuckSurvivorNotOverdueWhileRecoverStopsRaft(t *testing.T) {
 	}
 }
 
+// Only a voter recovers. A non-voter need not hold every committed entry,
+// and a cut-off non-voter is removed, not excluded: once its fork has no
+// leader, its member ID would join again with the forked log. The decree
+// names a cut-off non-voter while the majority cannot list decrees (so
+// nothing else refuses it): the non-voter refuses it itself.
+func TestRecoverRefusedOnANonVoter(t *testing.T) {
+	c := newCluster(t, 3)
+	c.genesis("n0", "n1", "n2", "n3")
+	st := c.leader().node.Status()
+	var nv *replica
+	var majority []string
+	for _, r := range c.live() {
+		if slices.Contains(st.NonVoters, r.node.ID()) {
+			nv = r
+		} else {
+			majority = append(majority, r.name)
+		}
+	}
+	if nv == nil {
+		t.Fatalf("no non-voter: %+v", st)
+	}
+	c.setListDown(true, majority...)
+	c.partition(nv.name, true)
+	time.Sleep(testTiming.DeadAfter + 500*time.Millisecond)
+	name := c.decree(Decree{Kind: Recover, BaseEpoch: nv.node.Core().Epoch, BootstrapNode: nv.name})
+	deadline := time.Now().Add(testTiming.DeadAfter + testTiming.recoverHold() + 10*time.Second)
+	for {
+		if recoveredAlone(nv) {
+			t.Fatal("the non-voter recovered alone")
+		}
+		if ds, ok := c.decrees.get(name); ok && ds.RejectedReason == ErrRecoverNotVoter.Error() {
+			break
+		}
+		if time.Now().After(deadline) {
+			ds, _ := c.decrees.get(name)
+			t.Fatalf("the non-voter did not refuse the decree: status %+v", ds)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	time.Sleep(testTiming.recoverHold())
+	if recoveredAlone(nv) {
+		t.Fatal("the non-voter recovered alone after refusing")
+	}
+}

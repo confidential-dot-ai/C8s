@@ -146,7 +146,7 @@ func TestHADecreeCLI(t *testing.T) {
 	if err != nil || !strings.Contains(out, "WARNING") {
 		t.Fatalf("RotateKey without pins must warn (D14): %v %q", err, out)
 	}
-	survivor, _ := statusServer(t, cdsha.Status{ClusterID: "c1", NodeName: "n1", ID: "n1/2-bb", Joined: true}, false)
+	survivor, _ := statusServer(t, cdsha.Status{ClusterID: "c1", NodeName: "n1", ID: "n1/2-bb", Joined: true, Voters: []string{"n1/2-bb"}}, false)
 	out, err = runHA(t, "decree", "--cluster-id", "c1", "--operator-key", keyPath, "--kind", "Recover", "--bootstrap-node", "n1", "--target-url", survivor.URL, "--target-insecure",
 		"--base-epoch", "3", "--resume-epoch", "5", "--i-understand-recover-is-break-glass")
 	if err != nil || !strings.Contains(out, "RotateKey") || !strings.Contains(out, "n1/2-bb") || !strings.Contains(out, `\"resume_epoch\":5`) {
@@ -162,7 +162,8 @@ func TestHADecreeCLIRefusals(t *testing.T) {
 	key, _ := testKeyPEM(t)
 	p := writeKey(t, key)
 	fresh, _ := statusServer(t, cdsha.Status{ClusterID: "c1", NodeName: "n0", ID: "n0/1-aa"}, false)
-	joined, _ := statusServer(t, cdsha.Status{ClusterID: "c1", NodeName: "n1", ID: "n1/2-bb", Joined: true}, false)
+	joined, _ := statusServer(t, cdsha.Status{ClusterID: "c1", NodeName: "n1", ID: "n1/2-bb", Joined: true, Voters: []string{"n1/2-bb"}}, false)
+	nonVoter, _ := statusServer(t, cdsha.Status{ClusterID: "c1", NodeName: "n1", ID: "n1/2-bb", Joined: true, Voters: []string{"n0/1-aa"}, NonVoters: []string{"n1/2-bb"}}, false)
 	other, _ := statusServer(t, cdsha.Status{ClusterID: "c2", NodeName: "n0", ID: "n0/1-aa"}, false)
 	tgt := func(s *httptest.Server) []string { return []string{"--target-url", s.URL, "--target-insecure"} }
 	for name, c := range map[string]struct {
@@ -176,6 +177,7 @@ func TestHADecreeCLIRefusals(t *testing.T) {
 		"Genesis without a target":              {[]string{"--kind", "Genesis", "--bootstrap-node", "n0"}, "needs --target-url"},
 		"Genesis to a replica in a cluster":     {append([]string{"--kind", "Genesis"}, tgt(joined)...), "already holds a cluster"},
 		"Recover to a replica with no cluster":  {append([]string{"--kind", "Recover", "--base-epoch", "3", "--resume-epoch", "3", "--i-understand-recover-is-break-glass"}, tgt(fresh)...), "holds no cluster"},
+		"Recover to a non-voter":                {append([]string{"--kind", "Recover", "--base-epoch", "3", "--resume-epoch", "3", "--i-understand-recover-is-break-glass"}, tgt(nonVoter)...), "not a voter"},
 		"Recover without --resume-epoch":        {append([]string{"--kind", "Recover", "--base-epoch", "3", "--i-understand-recover-is-break-glass"}, tgt(joined)...), "--resume-epoch"},
 		"Recover resuming below --base-epoch":   {append([]string{"--kind", "Recover", "--base-epoch", "3", "--resume-epoch", "2", "--i-understand-recover-is-break-glass"}, tgt(joined)...), "below --base-epoch"},
 		"resume epoch on another kind":          {[]string{"--kind", "SetVoters", "--voters", "3", "--base-epoch", "3", "--resume-epoch", "4"}, "for Recover only"},

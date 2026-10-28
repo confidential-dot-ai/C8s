@@ -34,6 +34,14 @@ func (n *Node) recover(ctx context.Context, p PendingDecree) {
 		n.log.Error("recover: application policy", "err", err)
 		return
 	}
+	// INVARIANT: only a voter recovers. A non-voter's log need not hold
+	// every committed entry, and a cut-off non-voter is removed, not
+	// excluded (cutOut): its member ID could join again with a forked log.
+	if !slices.ContainsFunc(n.servers(), func(s raft.Server) bool { return s.ID == n.id && s.Suffrage == raft.Voter }) {
+		n.log.Error("Recover decree refused: this replica is not a voter", "decree", p.Name, "id", n.id)
+		n.setStatus(ctx, p.Name, DecreeStatus{RejectedReason: ErrRecoverNotVoter.Error()})
+		return
+	}
 	n.recovering.Store(true)
 	defer n.recovering.Store(false)
 	n.log.Warn("RECOVER: forcing a one-voter configuration with this replica's state", "decree", p.Name, "id", n.id)
@@ -597,6 +605,10 @@ func (n *Node) checkPinsKeepMajority(pins []string) error {
 
 // ErrPinsLoseMajority refuses a pin set that a majority of voters fail.
 var ErrPinsLoseMajority = errors.New("refused: the new pin set leaves fewer than a majority of voters pinned, which would stop the cluster for good; pin the new image beside the running one first")
+
+// ErrRecoverNotVoter rejects a Recover decree naming a replica that is not a
+// voter in its own configuration (recover).
+var ErrRecoverNotVoter = errors.New("refused: the replica this decree names is not a voter; it may lack committed writes. Name a surviving voter")
 
 // ErrRecoverWithQuorum refuses a Recover decree on a cluster that has a
 // leader, and so a majority of its voters.

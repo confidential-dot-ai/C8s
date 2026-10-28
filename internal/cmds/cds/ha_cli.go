@@ -208,6 +208,8 @@ func bindTarget(d *cdsha.Decree, st cdsha.Status) error {
 		return errors.New("the target replica already holds a cluster: Genesis is only for a cluster that was never started")
 	case d.Kind == cdsha.Recover && !st.Joined:
 		return errors.New("the target replica holds no cluster: Recover carries on a survivor's state (a total loss is `c8s cds ha recover`)")
+	case d.Kind == cdsha.Recover && !slices.Contains(st.Voters, st.ID):
+		return errors.New("the target replica is not a voter: it may lack committed writes; name a surviving voter")
 	}
 	d.BootstrapNode, d.TargetMember = st.NodeName, st.ID
 	return nil
