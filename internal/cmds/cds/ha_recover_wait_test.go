@@ -88,7 +88,9 @@ func runDeliver(t *testing.T, f *fakeRestoreReplica, attempts int) (string, erro
 	var out bytes.Buffer
 	conn := cdsconn.Options{URL: srv.URL, Insecure: true, Timeout: 2 * time.Second}
 	err := deliverRestore(context.Background(), conn, &out, &out, restoreTarget{clusterID: "c1", node: "n2", intent: f.intent, attempts: attempts},
-		func(member string) ([]byte, error) { return []byte(`{"decree":{"decree":{"target_member":"` + member + `"}}}`), nil })
+		func(member string) ([]byte, error) {
+			return []byte(`{"decree":{"decree":{"target_member":"` + member + `"}}}`), nil
+		})
 	return out.String(), err
 }
 
