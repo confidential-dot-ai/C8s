@@ -249,6 +249,11 @@ Replacing the key itself is the `RotateKey` decree, a break-glass step.
   and the node's own, so removing the server document's image for good needs
   new launch documents from a new bundle. A node launched with `--pin-floor`
   at the removing decree's base epoch refuses every older decree (runbook 2).
+* A node takes a pin decree over an unverified fetch only when no CDS it
+  pins answers. Such a decree is provisional: the next answer from a pinned
+  CDS replaces it, at any base epoch not below the last decree a pinned CDS
+  delivered. While the host blocks every pinned CDS, it can keep the node on
+  a provisional decree. That decree is still operator-signed.
 * **A server-node reboot starts a new, empty cluster.** The server keeps
   all cluster state on the per-boot encrypted scratch disk (see
   operator.md, "Revocation is a launch-time decision"). That includes the CDS
