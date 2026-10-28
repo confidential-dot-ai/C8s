@@ -167,7 +167,11 @@ func VerifyMeasuredLaunchFile(ctx context.Context, attestationAPIURL string, lau
 	if err := runtimemeasure.VerifyBinding(report, launchFile, noWorkloadDigests); err != nil {
 		return teetypes.FamilyUnknown, err
 	}
-	return report.Platform.Family(), nil
+	family := report.Platform.Family()
+	if family == teetypes.FamilyUnknown {
+		return teetypes.FamilyUnknown, fmt.Errorf("the verified report names platform %q, which routes to no TEE family", report.Platform)
+	}
+	return family, nil
 }
 
 // MeasuredIdentity separates the verified guest image from the operator-key

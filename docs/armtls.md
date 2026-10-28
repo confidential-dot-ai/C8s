@@ -207,10 +207,10 @@ digest of the requester's key, the CDS challenge for this issuance, and the IP
 of the node serving port 1019. Nothing get-cert sends names its pod, and it
 reports no images of its own. The token carries no credential for its signing
 key: CDS resolves that key by dialing `/identity` at the named address, which
-must be a routable unicast IP literal inside the operator's node bound
-(`--sandbox-inventory-cidr`, else the live node list; an empty bound refuses
-every token). CDS then verifies the token and asks `/digests/{id}`, where every
-image reported must be in the allowlist — the operator policy of workload
+must be a routable unicast IP literal inside the operator's node bound (the CDS
+configuration's `nodeCIDRs`; an empty bound refuses every token). CDS then
+verifies the token and asks `/digests/{id}`, where every image reported must be
+in the allowlist — the operator policy of workload
 entries CDS serves and every node enforces — and an empty answer is refused.
 
 Issuance gates on membership, not on a whole workload entry

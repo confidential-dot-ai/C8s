@@ -1,11 +1,7 @@
 package cds
 
 import (
-	"context"
-	"strings"
 	"testing"
-
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 // TestNewCmdDurationFlagDefaults pins the shipped default for every duration
@@ -48,76 +44,5 @@ func TestNewCmdDurationFlagDefaults(t *testing.T) {
 func TestNewCmdTakesNoKubeconfig(t *testing.T) {
 	if f := NewCmd().Flags().Lookup("kubeconfig"); f != nil {
 		t.Fatal("cds defines --kubeconfig")
-	}
-}
-
-// Which TEE CDS serves armTLS on is always stated: by the measured
-// configuration (TestPlatformComesFromTheConfigOrTheFlag) or by this flag.
-func TestNewCmdARMTLSPlatformHasNoDefault(t *testing.T) {
-	flag := NewCmd().Flags().Lookup("armtls-platform")
-	if flag == nil {
-		t.Fatal("missing --armtls-platform flag")
-	}
-	// No default: a silently-assumed TEE must never serve armTLS.
-	if flag.DefValue != "" {
-		t.Fatalf("default --armtls-platform = %q, want no default", flag.DefValue)
-	}
-
-	_, _, err := armtls.NewServerTLSConfig(&armtls.ServerConfig{
-		Platform:   "sev-snp",
-		AttestFunc: func(context.Context, string) (string, error) { return "", nil },
-	})
-	if err != nil {
-		t.Fatalf("documented --armtls-platform value is not accepted by armtls: %v", err)
-	}
-}
-
-func TestValidateARMTLSPlatform(t *testing.T) {
-	for _, tc := range []struct {
-		in      string
-		wantErr string
-	}{
-		{"sev-snp", ""},
-		{"snp", ""}, // alias, normalized
-		{"tdx", ""},
-		{"", "must not be empty"},
-		{"foo", "--armtls-platform:"},
-		// What a verified report of an unroutable platform would derive.
-		{"unknown", "--armtls-platform:"},
-	} {
-		err := validateARMTLSPlatform("--armtls-platform", tc.in)
-		if tc.wantErr == "" && err != nil {
-			t.Errorf("validateARMTLSPlatform(%q) = %v, want nil", tc.in, err)
-		}
-		if tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
-			t.Errorf("validateARMTLSPlatform(%q) = %v, want substring %q", tc.in, err, tc.wantErr)
-		}
-	}
-}
-
-// CDS reads the node's journal where the plugin keeps it, like the mesh and
-// cred-release, so its certificates list what the node measured.
-func TestNewCmdMeasuredPoliciesFileDefaultsToNodeJournal(t *testing.T) {
-	flag := NewCmd().Flags().Lookup("measured-policies-file")
-	if flag == nil || flag.DefValue != armtls.NodeJournal {
-		t.Fatalf("--measured-policies-file = %v, want default %s", flag, armtls.NodeJournal)
-	}
-}
-
-// Every certificate CDS self-signs lists the node's measured policies: a TDX
-// peer pinning RTMR[3] rejects one that omits them once the node measures a
-// policy.
-func TestProducersCarryMeasuredPoliciesFile(t *testing.T) {
-	const journal = "/run/custom-nri/measured-policies"
-	cfg := config{armtlsPlatform: "tdx", attestationApiURL: "http://127.0.0.1:1", measuredPolicies: journal}
-	for _, tc := range []struct {
-		name, got string
-	}{
-		{"armTLS serving certificate", servingConfig(cfg, nil).MeasuredPoliciesFile},
-		{"sandbox-digests client certificate", digestsClientConfig(cfg, armtls.Pins{}).MeasuredPoliciesFile},
-	} {
-		if tc.got != journal {
-			t.Errorf("%s lists %q, want %q", tc.name, tc.got, journal)
-		}
 	}
 }

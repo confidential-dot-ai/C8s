@@ -70,7 +70,7 @@ func ValidateInventoryHost(host string) error {
 // host first. Hence: an IP literal, never a name (a resolvable name lets DNS
 // decide the destination after the check), and global unicast only (no
 // loopback, link-local/IMDS, multicast, or unspecified). Callers additionally
-// constrain it to the operator's inventory CIDRs — see InventoryHosts.
+// constrain it to the operator's node subnets — see CIDRHosts.
 func ParseInventoryHost(host string) (string, error) {
 	ip := net.ParseIP(host)
 	if ip == nil {
@@ -82,20 +82,10 @@ func ParseInventoryHost(host string) (string, error) {
 	return ip.String(), nil
 }
 
-// InventoryHosts bounds which addresses an inventory may live at — the
-// operator's node addresses. CDS refuses to dial anything outside the set,
-// which is what keeps a pod (whose IP is in the pod CIDR) from standing in
-// for a node. Implementations: CIDRHosts (operator-given CIDRs, static) and
-// NodeHosts (derived live from the cluster's node objects).
-type InventoryHosts interface {
-	// Contains reports whether host is inside the set. An empty set contains
-	// nothing: callers must fail closed rather than dial anywhere.
-	Contains(host string) bool
-	// Empty reports whether the set currently holds nothing.
-	Empty() bool
-}
-
-// CIDRHosts is the static InventoryHosts parsed from operator-given CIDRs.
+// CIDRHosts bounds which addresses an inventory may live at — the operator's
+// node subnets. CDS refuses to dial anything outside the set, which is what
+// keeps a pod (whose IP is in the pod CIDR) from standing in for a node. An
+// empty set contains nothing, so a caller holding one fails closed.
 type CIDRHosts []*net.IPNet
 
 // ParseInventoryHosts builds the set from CIDR strings.
@@ -111,8 +101,18 @@ func ParseInventoryHosts(cidrs []string) (CIDRHosts, error) {
 	return out, nil
 }
 
-func (h CIDRHosts) Contains(host string) bool { return cidrSet(h).contains(host) }
-func (h CIDRHosts) Empty() bool               { return len(h) == 0 }
+func (h CIDRHosts) Contains(host string) bool {
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	for _, n := range h {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
 
 // ResolveAdvertiseHost returns the node IP an inventory signs into its sandbox
 // tokens. An explicit host always wins; the plugin passes the node-ip file's

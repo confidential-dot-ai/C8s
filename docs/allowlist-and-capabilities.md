@@ -248,12 +248,11 @@ argv-pinned platform entries, and
 `c8s cds config new`, which merges it with the operator's tenant workloads
 into the configuration the CDS VM boots on. Each component entry's name
 carries its image and the digests of its policy, so an image bump or a
-configuration change adds an entry beside the old one. Seeding adds every name the store lacks and retires
-the chart-generated shapes its seed replaces, leaving an operator entry under
-any other name untouched: an operator edit survives a CDS restart, while a
-deleted entry returns on the next start for as long as the chart renders it. A
-chart-managed CDS reads the seed once, at start; a measured node image's CDS
-rereads its file every 30 seconds and seeds it again when it changed.
+configuration change adds an entry beside the old one. Seeding runs once, at
+start: it adds every name the store lacks and retires the chart-generated
+shapes its seed replaces, leaving an operator entry under any other name
+untouched, so an operator edit survives until the CDS VM restarts and a
+deleted entry returns then for as long as the configuration carries it.
 
 ## Allowlist history
 

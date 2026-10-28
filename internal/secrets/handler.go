@@ -111,7 +111,7 @@ type Handler struct {
 
 	// InventoryHosts bounds the addresses the callback may dial. Empty refuses
 	// every request: without it a workload could name its own pod.
-	InventoryHosts workloadclaims.InventoryHosts
+	InventoryHosts workloadclaims.CIDRHosts
 
 	Logger *slog.Logger
 }
@@ -395,7 +395,7 @@ func (h Handler) verifyToken(ctx context.Context, token *workloadclaims.SignedSa
 	if h.Inventory == nil || h.Bindings == nil {
 		return "", fmt.Errorf("secrets are not configured to reach an inventory")
 	}
-	if h.InventoryHosts == nil || h.InventoryHosts.Empty() {
+	if len(h.InventoryHosts) == 0 {
 		return "", fmt.Errorf("the inventory callback has no node addresses to bound it")
 	}
 	// The binding, not the token, decides who is asked. The token names a host

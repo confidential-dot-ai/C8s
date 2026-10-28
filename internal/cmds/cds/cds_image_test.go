@@ -26,36 +26,9 @@ func TestCDSImageServiceArguments(t *testing.T) {
 	if err := command.ValidateRequiredFlags(); err != nil {
 		t.Errorf("baked ExecStart omits a required flag: %v", err)
 	}
-	// Covers every flag --config excludes (excludedByConfig), so the unit
-	// cannot carry a setting the measured configuration decides.
-	if err := command.ValidateFlagGroups(); err != nil {
-		t.Errorf("baked ExecStart breaks a flag group: %v", err)
-	}
-	if path, _ := command.Flags().GetString("config"); path == "" {
-		t.Error("the unit must run CDS from its measured configuration (--config)")
-	}
 	api, _ := command.Flags().GetString("attestation-api-url")
 	if err := requireLoopbackAttestationAPI(api); err != nil {
 		t.Errorf("baked attestation API: %v", err)
-	}
-
-	// The exclusions bite: each one, given alongside the unit's own --config,
-	// must fail validation. Flag groups are checked against Changed, so
-	// marking the flag as given needs no per-type value.
-	for _, excluded := range excludedByConfig {
-		command := NewCmd()
-		if err := command.ParseFlags(args); err != nil {
-			t.Fatalf("parse the baked ExecStart flags: %v", err)
-		}
-		flag := command.Flags().Lookup(excluded)
-		if flag == nil {
-			t.Errorf("--%s is excluded by --config but is not a flag", excluded)
-			continue
-		}
-		flag.Changed = true
-		if err := command.ValidateFlagGroups(); err == nil {
-			t.Errorf("--%s alongside the unit's --config is accepted", excluded)
-		}
 	}
 }
 

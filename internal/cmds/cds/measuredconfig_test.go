@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 
@@ -20,7 +19,6 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 // nodesDocument pins one TDX node image. The CDS VM in these tests attests on
@@ -28,18 +26,21 @@ import (
 var nodesDocument = `{"schema_version":"1","tee":"tdx","measurements":[{"name":"node","mrtd":"` +
 	strings.Repeat("ab", 48) + `"}]}`
 
+// cluster is what a test varies in the configuration a CDS VM is launched
+// with: the operator bundle authorizing writes and the workloads CDS serves.
+type cluster struct {
+	operatorPEM []byte
+	workloads   map[string]string
+}
+
 // measuredDocument renders one cluster's complete CDS configuration document.
-func measuredDocument(t *testing.T) []byte {
+func measuredDocument(t *testing.T, c cluster) []byte {
 	t.Helper()
-	operatorPEM, err := os.ReadFile(writeOperatorKeysPEM(t))
-	if err != nil {
-		t.Fatal(err)
-	}
 	document, err := yaml.Marshal(map[string]any{
 		"schemaVersion":      cdsconfig.SchemaVersion,
 		"clusterID":          "lane",
-		"operatorPublicKeys": string(operatorPEM),
-		"workloads":          anySeed(map[string]string{"attestation-api": digestA}),
+		"operatorPublicKeys": string(c.operatorPEM),
+		"workloads":          anySeed(c.workloads),
 		"nodes":              nodesDocument,
 		"nodeCIDRs":          []string{"10.0.0.0/24"},
 		"leafDNSNames":       []string{"cds.example.com"},
@@ -52,9 +53,9 @@ func measuredDocument(t *testing.T) []byte {
 }
 
 // measuredConfig parses the document, as a CDS VM does at boot.
-func measuredConfig(t *testing.T) *cdsconfig.Config {
+func measuredConfig(t *testing.T, c cluster) *cdsconfig.Config {
 	t.Helper()
-	measured, err := cdsconfig.Parse(measuredDocument(t))
+	measured, err := cdsconfig.Parse(measuredDocument(t, c))
 	if err != nil {
 		t.Fatalf("parse CDS configuration: %v", err)
 	}
@@ -64,74 +65,33 @@ func measuredConfig(t *testing.T) *cdsconfig.Config {
 // Every setting the document decides must reach the server through the
 // resolver that reads it, and the platform must be the one the hardware proved
 // rather than one an argument claimed.
-func TestMeasuredConfigDecidesWhatTheExcludedFlagsWould(t *testing.T) {
-	measured := measuredConfig(t)
-	cfg := withMeasuredConfig(config{measuredPolicies: armtls.NodeJournal}, measured, teetypes.FamilySNP)
+func TestMeasuredConfigDecidesEverySetting(t *testing.T) {
+	operatorPEM := operatorKeysPEM(t)
+	measured := measuredConfig(t, cluster{operatorPEM: operatorPEM, workloads: map[string]string{"attestation-api": digestA}})
+	cfg := withMeasuredConfig(config{}, measured, teetypes.FamilySNP)
 
-	if cfg.armtlsPlatform != teetypes.FamilySNP.String() {
+	if cfg.armtlsPlatform != teetypes.FamilySNP {
 		t.Errorf("armTLS platform = %q, want %q", cfg.armtlsPlatform, teetypes.FamilySNP)
 	}
-	// A CDS VM extends no register, so the node journal the flag defaults to
-	// must not follow it into the VM.
-	if cfg.measuredPolicies != "" {
-		t.Errorf("measured policies file = %q, want none", cfg.measuredPolicies)
+	if len(measured.OperatorKeys.Keys()) != 1 || !bytes.Equal(measured.OperatorKeys.PEM(), operatorPEM) {
+		t.Errorf("operator keys = %d, PEM = %q, want the document's key and bytes", len(measured.OperatorKeys.Keys()), measured.OperatorKeys.PEM())
 	}
-
-	operatorKeys, err := loadOperatorKeys(cfg)
-	if err != nil {
-		t.Fatalf("loadOperatorKeys: %v", err)
+	if measured.Nodes.Family != teetypes.FamilyTDX || len(measured.Nodes.Images) != 1 {
+		t.Errorf("node pins = %+v, want the document's one TDX image", measured.Nodes)
 	}
-	if len(operatorKeys.Keys()) != 1 || !bytes.Equal(operatorKeys.PEM(), measured.OperatorKeys.PEM()) {
-		t.Errorf("operator keys = %d, PEM = %q, want the document's key and bytes", len(operatorKeys.Keys()), operatorKeys.PEM())
+	if len(measured.DNSSANPatterns) != 2 {
+		t.Errorf("leaf DNS rules = %v, want the document's pattern and name", measured.DNSSANPatterns)
 	}
-
-	pins, err := loadNodePins(cfg)
-	if err != nil {
-		t.Fatalf("loadNodePins: %v", err)
-	}
-	if pins.Family != teetypes.FamilyTDX || len(pins.Images) != 1 {
-		t.Errorf("node pins = %+v, want the document's one TDX image", pins)
-	}
-
-	patterns, err := leafDNSPatterns(cfg)
-	if err != nil {
-		t.Fatalf("leafDNSPatterns: %v", err)
-	}
-	if len(patterns) != 2 {
-		t.Errorf("leaf DNS rules = %v, want the document's pattern and name", patterns)
-	}
-
-	hosts, err := buildInventoryHosts(t.Context(), cfg.measured.NodeCIDRs, nil)
-	if err != nil {
-		t.Fatalf("buildInventoryHosts: %v", err)
-	}
-	if !hosts.Contains("10.0.0.7") || hosts.Contains("10.244.1.5") {
-		t.Errorf("inventory bound = %v, want the document's node subnets", hosts)
+	if !measured.NodeCIDRs.Contains("10.0.0.7") || measured.NodeCIDRs.Contains("10.244.1.5") {
+		t.Errorf("inventory bound = %v, want the document's node subnets", measured.NodeCIDRs)
 	}
 }
 
-// A setting the document decides must not also come from argv: the two could
-// disagree, and only one of them is measured. "true" parses as every excluded
-// flag's type, so the refusal is the exclusion and not a value rejected.
-func TestConfigExcludesTheInputsItDecides(t *testing.T) {
-	for _, name := range excludedByConfig {
-		t.Run(name, func(t *testing.T) {
-			err := executeCDS(t, "--config=/nonexistent", "--"+name+"=true")
-			set := []string{"config", name}
-			slices.Sort(set)
-			want := fmt.Sprintf("if any flags in the group [config %s] are set none of the others can be; %v were all set", name, set)
-			if err == nil || err.Error() != want {
-				t.Fatalf("`c8s cds --config ... --%s` = %v, want %q", name, err, want)
-			}
-		})
-	}
-}
-
-// The platform CDS attests on comes from the document's launch or from the
-// flag; with neither, there is nothing to serve armTLS on.
-func TestPlatformComesFromTheConfigOrTheFlag(t *testing.T) {
+// CDS serves one cluster's measured configuration, so there is no mode that
+// starts without one.
+func TestConfigIsRequired(t *testing.T) {
 	if err := executeCDS(t); err == nil {
-		t.Fatal("`c8s cds` started with no platform and no configuration")
+		t.Fatal("`c8s cds` started with no configuration")
 	}
 }
 
@@ -157,15 +117,21 @@ func TestRunMeasuredConfigRefusesADocumentTheLaunchDidNotBind(t *testing.T) {
 }
 
 // The self-report admitting the configuration comes from the attester inside
-// this VM; one fetched over the network is another guest's.
+// this VM; one fetched over the network is another guest's, and one this
+// process cannot parse reaches no attester at all.
 func TestRunMeasuredConfigRequiresALoopbackAttester(t *testing.T) {
-	cfg := config{
-		configPath:        writeMeasuredDocument(t),
-		attestationApiURL: "http://10.0.0.7:8400",
-	}
-	err := runMeasuredConfig(context.Background(), cfg)
-	if err == nil || !strings.Contains(err.Error(), "loopback") {
-		t.Fatalf("runMeasuredConfig = %v, want a non-loopback attester refusal", err)
+	for name, url := range map[string]string{
+		"another guest":  "http://10.0.0.7:8400",
+		"not a URL":      "not a url",
+		"no scheme":      "127.0.0.1:8400",
+		"no attestation": "",
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := config{configPath: writeMeasuredDocument(t), attestationApiURL: url}
+			if err := runMeasuredConfig(context.Background(), cfg); err == nil {
+				t.Fatal("runMeasuredConfig accepted an attester outside this VM")
+			}
+		})
 	}
 }
 
@@ -173,7 +139,8 @@ func TestRunMeasuredConfigRequiresALoopbackAttester(t *testing.T) {
 func writeMeasuredDocument(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "cds-config.yaml")
-	if err := os.WriteFile(path, measuredDocument(t), 0o600); err != nil {
+	document := measuredDocument(t, cluster{operatorPEM: operatorKeysPEM(t), workloads: map[string]string{"attestation-api": digestA}})
+	if err := os.WriteFile(path, document, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return path
@@ -184,7 +151,7 @@ func writeMeasuredDocument(t *testing.T) string {
 func TestRunServesTheMeasuredConfiguration(t *testing.T) {
 	cfg := validRunConfig(t, mockapi.New(t).URL())
 	cfg.port = freePort(t)
-	cfg = withMeasuredConfig(cfg, measuredConfig(t), teetypes.FamilySNP)
+	cfg = withMeasuredConfig(cfg, measuredConfig(t, cluster{operatorPEM: operatorKeysPEM(t), workloads: map[string]string{"attestation-api": digestA}}), teetypes.FamilySNP)
 
 	base := fmt.Sprintf("https://127.0.0.1:%d", cfg.port)
 	client := armTLSClient(nil)
