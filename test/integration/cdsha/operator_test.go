@@ -293,7 +293,8 @@ func TestRestore(t *testing.T) {
 		"--recovery-key", c.RecKeyPath, "--decree-key", c.OpKeyPath, "--cluster-id", clusterID,
 		"--trusted-ca-sha256", trusted.CAFingerprint,
 		"--bootstrap-node", c.Replicas[2].Node, "--url", c.Replicas[2].Base, "--insecure",
-		"--min-epoch", strconv.FormatUint(newest.Meta.Epoch, 10), "--min-index", strconv.FormatUint(newest.Meta.Index, 10)).CombinedOutput()
+		"--min-epoch", strconv.FormatUint(newest.Meta.Epoch, 10), "--min-index", strconv.FormatUint(newest.Meta.Index, 10),
+		"--resume-epoch", strconv.FormatUint(newest.Meta.Epoch, 10)).CombinedOutput()
 	if err != nil {
 		t.Fatalf("recover: %v\n%s", err, out)
 	}

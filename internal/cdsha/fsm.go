@@ -486,12 +486,13 @@ func (f *FSM) applyRestore(re RestoreEntry) DecreeResult {
 	if !sn.Core.Joined() {
 		return fail(errors.New("snapshot holds no mesh CA"))
 	}
-	if sn.Core.Epoch == ^uint64(0) {
-		return fail(errors.New("snapshot epoch overflows on restore"))
+	resume := sn.Core.Epoch
+	if re.Decree.Decree.ResumeEpoch != 0 {
+		resume = re.Decree.Decree.ResumeEpoch
 	}
-	sn.Core.Epoch++
-	sn.Core.AppliedDecrees = append(sn.Core.AppliedDecrees, re.Decree.Decree.IntentID)
-	sn.Core.EpochFrom = append(sn.Core.EpochFrom, sn.Index)
+	if err := sn.Core.resumeAfter(resume, re.Decree.Decree.IntentID, sn.Index); err != nil {
+		return fail(err)
+	}
 	sn.Core.GenesisAtMS = re.AtMS
 	if err := f.restore(sn); err != nil {
 		return fail(err)
@@ -577,9 +578,13 @@ func nextCore(cur Core, de DecreeEntry, from uint64) (Core, *issuer.CA, error) {
 			}
 		}
 	}
-	next.Epoch++
-	next.AppliedDecrees = append(next.AppliedDecrees, d.IntentID)
-	next.EpochFrom = append(next.EpochFrom, from)
+	resume := next.Epoch // every other kind, and a Recover without resume_epoch
+	if d.Kind == Recover && d.ResumeEpoch != 0 {
+		resume = d.ResumeEpoch
+	}
+	if err := next.resumeAfter(resume, d.IntentID, from); err != nil {
+		return Core{}, nil, err
+	}
 	return next, ca, nil
 }
 

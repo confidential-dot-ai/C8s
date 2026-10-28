@@ -57,6 +57,9 @@ func newHADecreeCmd() *cobra.Command {
 			if d.Alone && d.Kind != cdsha.Genesis {
 				return errors.New("--alone is for Genesis only")
 			}
+			if d.ResumeEpoch != 0 && d.Kind != cdsha.Recover {
+				return errors.New("--resume-epoch is for Recover only")
+			}
 			switch d.Kind {
 			case cdsha.Genesis, cdsha.Recover:
 				if target.URL == "" {
@@ -68,6 +71,12 @@ func newHADecreeCmd() *cobra.Command {
 				if d.Kind == cdsha.Recover {
 					if !ackRecover {
 						return errors.New("a Recover decree is break-glass after losing a majority of replicas for good: writes the lost replicas had and the survivor did not are gone, and if they were only cut off they could carry on as the old majority. Make sure they are destroyed, follow with RotateKey, and pass --i-understand-recover-is-break-glass")
+					}
+					if d.ResumeEpoch == 0 {
+						return errors.New("a Recover decree needs --resume-epoch: the highest epoch you know the cluster reached (c8s cds ha decrees, or the base_epoch c8s cds ha pin-policy shows), at least --base-epoch; the survivor resumes after it, so nodes take its next pin decree")
+					}
+					if d.ResumeEpoch < d.BaseEpoch {
+						return fmt.Errorf("--resume-epoch %d is below --base-epoch %d: name the highest epoch the cluster reached", d.ResumeEpoch, d.BaseEpoch)
 					}
 					fmt.Fprintln(cmd.ErrOrStderr(), "WARNING: follow Recover with a RotateKey decree, so any lost replica that comes back holds a retired key.")
 				}
@@ -141,6 +150,7 @@ func newHADecreeCmd() *cobra.Command {
 	f.BoolVar(&ackFork, "i-understand-rotation-forks-the-cluster", false, "required for RotateKey")
 	f.BoolVar(&ackRecover, "i-understand-recover-is-break-glass", false, "required for Recover")
 	f.BoolVar(&d.Alone, "alone", false, "Genesis: start even if the replica finds no other replica (a one-replica cluster only)")
+	f.Uint64Var(&d.ResumeEpoch, "resume-epoch", 0, "Recover: the highest epoch you know the cluster reached, at least --base-epoch (required); the survivor resumes at the epoch after it")
 	bindTargetFlags(f, &target)
 	_ = cmd.MarkFlagRequired("cluster-id")
 	_ = cmd.MarkFlagRequired("operator-key")

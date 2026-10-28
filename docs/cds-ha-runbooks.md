@@ -41,7 +41,8 @@ replica, serving or not:
 RotateKey and every CA renewal, read attested status (above) and write
 down `cluster`, the full 64-hex `ca=`, `epoch=` and `applied=`, with the date.
 `recover` needs this record (`--trusted-ca-sha256`, `--min-epoch`,
-`--min-index`). Never copy these values from a backup export.
+`--min-index`, and the highest `epoch=` for `--resume-epoch`). Never copy
+these values from a backup export.
 
 **Export the backup on a schedule.** Do this at least every few minutes, and
 store the file off the host:
@@ -188,11 +189,17 @@ Steps:
 3. Sign and apply the decree for that process:
 
        c8s cds ha decree --kind Recover --cluster-id $ID --operator-key $B/decree.key \
-         --base-epoch <epoch> \
+         --base-epoch <epoch> --resume-epoch <highest epoch> \
          --target-url $(R <survivor IP>) --target-image-policy-file $B/server.json \
          --i-understand-recover-is-break-glass > recover.json
        kubectl apply -f recover.json
 
+   `--resume-epoch` is the highest epoch you know the cluster reached: the
+   newest `epoch=` in your recovery record, or the `base_epoch` that
+   `c8s cds ha pin-policy` shows for the pin decree in force, if higher. The
+   survivor resumes at the epoch after it. The lost voters may have applied
+   decrees the survivor lacks, and nodes ignore a pin decree whose
+   `base_epoch` is not above the one they hold.
    If the CLI says `the target replica holds no cluster`, you picked the
    wrong node: that replica holds no state.
 4. Wait. The survivor acts only after the decree stays pending for about 57 s,
@@ -239,7 +246,7 @@ so use your latest export.
        c8s cds ha recover --url $(R <bootstrap node IP>) $POL --operator-key $B/server.key \
          --backup-file cds-backup.json --cluster-id $ID --bootstrap-node <that node> \
          --decree-key $B/decree.key --trusted-ca-sha256 <recorded ca> \
-         --min-epoch <E> --min-index <I> \
+         --min-epoch <E> --min-index <I> --resume-epoch <highest epoch> \
          --recovery-key-share share-1.json --recovery-key-share share-3.json --recovery-key-share share-4.json
 
    Each attempt reads the replica's status and signs the decree for that
@@ -264,7 +271,9 @@ so use your latest export.
    issued before the Restore plus that skew (401, runbook 1, step 7): it cannot
    know which of them were spent after the backup. The backup holds at most
    the state of one minute before the loss. The allowlist version restarts
-   above the one served before the loss, so nodes take these writes.
+   above the one served before the loss, so nodes take these writes. The
+   epoch resumes after `--resume-epoch` (the same choice as runbook 4,
+   step 3), so nodes take the next pin decree too.
 
 **Restoring an older backup on purpose.** The restored
 cluster's backups are then refused (`backup refused` in `backup_error`). This

@@ -48,6 +48,45 @@ const (
 	SetVoters DecreeKind = "SetVoters"
 )
 
+// maxResumeGap bounds how far a Restore or Recover may move the epoch past
+// the state it starts from: far more decrees than a cluster applies between
+// two backups, and a guard against a mistyped resume_epoch.
+const maxResumeGap = 1024
+
+// resumeAfter moves c to the epoch after resume, the epoch a Restore or
+// Recover decree names, for that decree's intent made from index from. Each
+// epoch it skips gets no decree ("", which no intent equals) and the same
+// origin, so Epoch == len(AppliedDecrees) == len(EpochFrom) still holds and
+// BackupMeta.Follows still orders backups across the jump.
+func (c *Core) resumeAfter(resume uint64, intent string, from uint64) error {
+	if err := checkResume(resume, c.Epoch); err != nil {
+		return err
+	}
+	for c.Epoch < resume {
+		c.AppliedDecrees = append(c.AppliedDecrees, "")
+		c.EpochFrom = append(c.EpochFrom, from)
+		c.Epoch++
+	}
+	c.Epoch++
+	c.AppliedDecrees = append(c.AppliedDecrees, intent)
+	c.EpochFrom = append(c.EpochFrom, from)
+	return nil
+}
+
+// checkResume refuses a resume_epoch that would move the epoch back from
+// epoch, or too far past it.
+func checkResume(resume, epoch uint64) error {
+	switch {
+	case resume < epoch:
+		return fmt.Errorf("resume_epoch %d is below the epoch %d of the state it starts from", resume, epoch)
+	case resume-epoch > maxResumeGap:
+		return fmt.Errorf("resume_epoch %d is more than %d past the epoch %d of the state it starts from", resume, maxResumeGap, epoch)
+	case resume == ^uint64(0):
+		return errors.New("resume_epoch overflows the epoch")
+	}
+	return nil
+}
+
 // MaxVoters bounds the voter seats: each voter adds a round trip to every
 // commit.
 const MaxVoters = 9
@@ -79,6 +118,13 @@ type Decree struct {
 	SnapshotSHA256 string `json:"snapshot_sha256,omitempty"`
 	// Voters is the voter seat count a SetVoters decree sets.
 	Voters int `json:"voters,omitempty"`
+	// ResumeEpoch is, for a Restore or Recover, the highest epoch the
+	// operator knows the cluster reached (c8s cds ha decrees, or the
+	// base_epoch of the pin decree in force). The cluster resumes at the
+	// epoch after it, so epochs, which nodes order pin decrees by, never go
+	// back to the backup's or the survivor's. 0 resumes after the epoch of
+	// the state the decree starts from; the CLI always sets it.
+	ResumeEpoch uint64 `json:"resume_epoch,omitempty"`
 	// Images are the launch identities behind Measurements, for clients
 	// outside the group (node agents, pods) that pin CDS by its full launch
 	// identity rather than by a replica pin. When set, Measurements must be
@@ -194,6 +240,8 @@ func verifyDecree(sd SignedDecree, tail Core) error {
 		return errors.New("empty measurement set") // D8
 	case (d.Kind == Genesis || d.Kind == Restore) && (len(tail.RootCert) != 0 || len(d.Measurements) != 0):
 		return errors.New("a Genesis or Restore decree applies only to a cluster without a key, and carries no measurements")
+	case d.Kind != Restore && d.Kind != Recover && d.ResumeEpoch != 0:
+		return errors.New("only a Restore or Recover decree names the epoch it resumes after (resume_epoch)")
 	case (d.Kind == Restore) != (d.SnapshotSHA256 != ""):
 		return errors.New("a Restore decree, and only one, names the snapshot it restores")
 	case (d.Kind == Genesis || d.Kind == Recover || d.Kind == Restore) && d.BootstrapNode == "":
@@ -218,6 +266,12 @@ func verifyDecree(sd SignedDecree, tail Core) error {
 		return errors.New("a SetVoters decree applies to a cluster with a key, and carries no measurements")
 	case !slices.Equal(d.Measurements, normalizePins(d.Measurements)):
 		return errors.New("measurements not in canonical form")
+	}
+	// A Restore's starting epoch is the snapshot's, checked when it applies.
+	if d.Kind == Recover && d.ResumeEpoch != 0 {
+		if err := checkResume(d.ResumeEpoch, tail.Epoch); err != nil {
+			return err
+		}
 	}
 	// Images force Measurements to their pins, which every kind but
 	// UpdateMeasurements and RotateKey refuses above.

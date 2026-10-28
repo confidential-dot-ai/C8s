@@ -119,7 +119,7 @@ func TestRunHARestoreAfterTotalLoss(t *testing.T) {
 		cmd.SetOut(&out)
 		cmd.SetErr(&out)
 		args := append([]string{"--backup-file", backupFile, "--decree-key", decreeKeyPath,
-			"--trusted-ca-sha256", trustedCA, "--cluster-id", "c1", "--url", bases[2], "--insecure"}, key...)
+			"--trusted-ca-sha256", trustedCA, "--cluster-id", "c1", "--url", bases[2], "--insecure", "--resume-epoch", "4"}, key...)
 		cmd.SetArgs(append(args, extra...))
 		// The replicas here serve plain HTTP, as in a c8s_dev build; a release
 		// build's recover refuses it (TestHARecoverRefusesWeakPins).
@@ -143,6 +143,9 @@ func TestRunHARestoreAfterTotalLoss(t *testing.T) {
 	if _, err := recover("--bootstrap-node", "n2"); err == nil {
 		t.Fatal("recover without --min-epoch/--min-index")
 	}
+	if out, err := run(keyArgs, append(ok, "--resume-epoch", "0")...); err == nil || !strings.Contains(err.Error(), "--resume-epoch") {
+		t.Fatalf("recover without --resume-epoch: %v %q", err, out)
+	}
 	if out, err := recover("--bootstrap-node", "n2", "--min-epoch", "9", "--min-index", "0"); err == nil || !strings.Contains(out, "backup:") {
 		t.Fatalf("an older backup than the operator accepts was restored: %v %q", err, out)
 	}
@@ -157,6 +160,15 @@ func TestRunHARestoreAfterTotalLoss(t *testing.T) {
 		code, _, _ := do(t, http.MethodGet, bases[2]+"/readyz", "", nil)
 		return code == http.StatusOK
 	})
+	// The cluster resumes after the epoch the operator named, not at the
+	// backup's epoch + 1: nodes order pin decrees by epoch.
+	for _, b := range bases {
+		_, _, raw := do(t, http.MethodGet, b+"/ha/status", "", nil)
+		var st cdsha.Status
+		if err := json.Unmarshal(raw, &st); err != nil || st.Epoch != 5 {
+			t.Fatalf("%s epoch after a restore resuming after 4: %d (%v)", b, st.Epoch, err)
+		}
+	}
 	// A second recover over the serving cluster is refused: its new intent
 	// is not in the decree record.
 	if out, err := recover(ok...); err == nil {

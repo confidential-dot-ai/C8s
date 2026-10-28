@@ -38,6 +38,7 @@ func newHARecoverCmd() *cobra.Command {
 		clusterID          string
 		node               string
 		minEpoch, minIndex uint64
+		resumeEpoch        uint64
 		expiresIn          time.Duration
 		attempts           int
 		alone              bool
@@ -58,6 +59,9 @@ func newHARecoverCmd() *cobra.Command {
 			if !cmd.Flags().Changed("min-epoch") || !cmd.Flags().Changed("min-index") {
 				return errors.New("--min-epoch and --min-index are required: the oldest state you accept, from your own record of the cluster")
 			}
+			if resumeEpoch == 0 {
+				return errors.New("--resume-epoch is required: the highest epoch you know the cluster reached (c8s cds ha decrees, or the base_epoch c8s cds ha pin-policy shows); the restored cluster resumes after it, so nodes take its next pin decree")
+			}
 			raw, err := os.ReadFile(backupFile)
 			if err != nil {
 				return err
@@ -75,6 +79,9 @@ func newHARecoverCmd() *cobra.Command {
 				time.UnixMilli(m.TakenAtMS).UTC().Format(time.RFC3339), m.CAFingerprint, strings.Join(m.AppliedDecrees, ","), m.StateDigest)
 			if m.Epoch < minEpoch || (m.Epoch == minEpoch && m.Index < minIndex) {
 				return fmt.Errorf("backup (epoch %d, index %d) is older than --min-epoch %d --min-index %d: refusing to roll the cluster back", m.Epoch, m.Index, minEpoch, minIndex)
+			}
+			if resumeEpoch < m.Epoch {
+				return fmt.Errorf("--resume-epoch %d is below the backup's epoch %d: name the highest epoch the cluster reached", resumeEpoch, m.Epoch)
 			}
 			if err := cdsha.VerifyBackupSource(b, trustedCA); err != nil {
 				return err
@@ -98,7 +105,7 @@ func newHARecoverCmd() *cobra.Command {
 			expires := time.Now().Add(expiresIn).UTC().Truncate(time.Second)
 			sign := func(member string) ([]byte, error) {
 				sd, err := cdsha.SignDecree(cdsha.Decree{ClusterID: clusterID, IntentID: intent, Kind: cdsha.Restore, BootstrapNode: node,
-					TargetMember: member, SnapshotSHA256: cdsha.SnapshotSHA256(snap), ExpiresAt: expires, Alone: alone}, dk)
+					TargetMember: member, ResumeEpoch: resumeEpoch, SnapshotSHA256: cdsha.SnapshotSHA256(snap), ExpiresAt: expires, Alone: alone}, dk)
 				if err != nil {
 					return nil, err
 				}
@@ -118,6 +125,7 @@ func newHARecoverCmd() *cobra.Command {
 	f.StringVar(&node, "bootstrap-node", "", "node whose fresh replica starts the restored cluster")
 	f.Uint64Var(&minEpoch, "min-epoch", 0, "refuse a backup below this epoch (required)")
 	f.Uint64Var(&minIndex, "min-index", 0, "with --min-epoch: refuse a backup below this index in that epoch (required)")
+	f.Uint64Var(&resumeEpoch, "resume-epoch", 0, "the highest epoch you know the cluster reached, at least the backup's (required); the restored cluster resumes at the epoch after it")
 	f.DurationVar(&expiresIn, "expires-in", 10*time.Minute, "Restore decree lifetime")
 	f.IntVar(&attempts, "attempts", 30, "requests before giving up, each to whichever replica the address reaches")
 	f.BoolVar(&alone, "alone", false, "restore even if the replica discovers no other replica; only when you have confirmed outside the host that no other replica of the cluster exists")

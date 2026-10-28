@@ -142,8 +142,8 @@ func TestHADecreeCLI(t *testing.T) {
 	}
 	survivor, _ := statusServer(t, cdsha.Status{ClusterID: "c1", NodeName: "n1", ID: "n1/2-bb", Joined: true}, false)
 	out, err = runHA(t, "decree", "--cluster-id", "c1", "--operator-key", keyPath, "--kind", "Recover", "--bootstrap-node", "n1", "--target-url", survivor.URL, "--target-insecure",
-		"--base-epoch", "3", "--i-understand-recover-is-break-glass")
-	if err != nil || !strings.Contains(out, "RotateKey") || !strings.Contains(out, "n1/2-bb") {
+		"--base-epoch", "3", "--resume-epoch", "5", "--i-understand-recover-is-break-glass")
+	if err != nil || !strings.Contains(out, "RotateKey") || !strings.Contains(out, "n1/2-bb") || !strings.Contains(out, `\"resume_epoch\":5`) {
 		t.Fatalf("Recover: %v %q", err, out)
 	}
 }
@@ -167,7 +167,10 @@ func TestHADecreeCLIRefusals(t *testing.T) {
 		"Recover without a target":              {[]string{"--kind", "Recover", "--bootstrap-node", "n1", "--base-epoch", "3", "--i-understand-recover-is-break-glass"}, "needs --target-url"},
 		"Genesis without a target":              {[]string{"--kind", "Genesis", "--bootstrap-node", "n0"}, "needs --target-url"},
 		"Genesis to a replica in a cluster":     {append([]string{"--kind", "Genesis"}, tgt(joined)...), "already holds a cluster"},
-		"Recover to a replica with no cluster":  {append([]string{"--kind", "Recover", "--base-epoch", "3", "--i-understand-recover-is-break-glass"}, tgt(fresh)...), "holds no cluster"},
+		"Recover to a replica with no cluster":  {append([]string{"--kind", "Recover", "--base-epoch", "3", "--resume-epoch", "3", "--i-understand-recover-is-break-glass"}, tgt(fresh)...), "holds no cluster"},
+		"Recover without --resume-epoch":        {append([]string{"--kind", "Recover", "--base-epoch", "3", "--i-understand-recover-is-break-glass"}, tgt(joined)...), "--resume-epoch"},
+		"Recover resuming below --base-epoch":   {append([]string{"--kind", "Recover", "--base-epoch", "3", "--resume-epoch", "2", "--i-understand-recover-is-break-glass"}, tgt(joined)...), "below --base-epoch"},
+		"resume epoch on another kind":          {[]string{"--kind", "SetVoters", "--voters", "3", "--base-epoch", "3", "--resume-epoch", "4"}, "for Recover only"},
 		"target on another node":                {append([]string{"--kind", "Genesis", "--bootstrap-node", "n2"}, tgt(fresh)...), "not --bootstrap-node"},
 		"target of another cluster":             {append([]string{"--kind", "Genesis"}, tgt(other)...), "of cluster"},
 		"plaintext target without insecure":     {[]string{"--kind", "Genesis", "--target-url", fresh.URL}, "refusing plaintext"},
@@ -560,7 +563,7 @@ func TestHARecoverCLIErrors(t *testing.T) {
 		cmd.SetOut(io.Discard)
 		cmd.SetErr(io.Discard)
 		cmd.SetArgs(append([]string{"--cluster-id", "c1", "--bootstrap-node", "n0", "--url", "http://127.0.0.1:1", "--insecure",
-			"--trusted-ca-sha256", pin, "--min-epoch", "0", "--min-index", "0", "--attempts", "1"}, args...))
+			"--trusted-ca-sha256", pin, "--min-epoch", "0", "--min-index", "0", "--resume-epoch", "1", "--attempts", "1"}, args...))
 		return cmd.ExecuteContext(context.Background())
 	}
 	// Authentic backups with absent/unknown policy must fail before even loading
