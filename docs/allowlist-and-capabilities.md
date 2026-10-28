@@ -18,6 +18,12 @@ reference, the entry name, or the container name; every one of them keys on the
 digest. The entry name is load-bearing elsewhere: it is stamped on a matching
 pod's certificate and is the `confidential.ai/cw` annotation's value.
 
+A pod admitted by the served allowlist must name its image by digest
+(`name@sha256:...`): a tag is resolved when the node checks it, not bound to the
+image the runtime starts, so a tag reference is refused with `image must be
+referenced by digest`. Only the base allowlist keeps tags, for the images the
+node image carries.
+
 ## The model
 
 One entry declares init and main containers. Each container pins a digest with
