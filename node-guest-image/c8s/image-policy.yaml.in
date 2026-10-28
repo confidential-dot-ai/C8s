@@ -601,13 +601,28 @@ allowlist:
                 PATH:
                   exact: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
               serviceLinks: true
+      # As a booted node runs it (crictl inspect); CILIUM_DEBUG is the
+      # cilium-config ConfigMap's debug key.
       cilium-operator:
         containers:
           - digest: "sha256:aadc3b1a2b8b682f5b4f7b01e182eeeac16f1177af0561b07825abab1d654b2b"
             image: "docker.io/rancher/mirrored-cilium-operator-generic:v1.19.6"
-            command: {policy: any}
-            args: {policy: any}
-            mounts: {policy: any}
+            command: {policy: exact, argv: ["cilium-operator-generic"]}
+            args: {policy: exact, argv: ["--config-dir=/tmp/cilium/config-map", "--debug=false"]}
+            mounts:
+              policy: exact
+              rules:
+                - {destination: "/tmp/cilium/config-map", kind: data, source: "cilium-config-path", node: true}
+            env:
+              policy: match
+              variables:
+                CILIUM_DEBUG: {exact: "false"}
+                CILIUM_K8S_NAMESPACE: {exact: "kube-system"}
+                GOPS_CONFIG_DIR: {exact: "/home/gops"}
+                HOSTNAME: {present: true}
+                K8S_NODE_NAME: {present: true}
+                PATH: {exact: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}
+              serviceLinks: true
       coredns:
         containers:
           - digest: "sha256:e9435ef6526a98e8d01d98a85d23770859ca49028ebd282912ae5e76f92c0166"
@@ -661,14 +676,282 @@ allowlist:
                 - "--leader-election=true"
                 - "--leader-election-namespace=kube-system"
             mounts: {policy: deny}
-      # The jobs that install RKE2's charts.
+      # The jobs that install RKE2's charts, one launch per baked chart, as a
+      # booted node runs them (crictl inspect). The image's entry script
+      # passes NAME, CONFIG_HASH and the other variables unquoted to helm, so
+      # an unpinned value is a helm flag of the pod's choosing (a
+      # --post-renderer runs any program): every variable is exact.
+      # CONFIG_HASH is helm-controller's hash of the chart's baked manifest
+      # and its HelmChartConfig, so a change to either (or an RKE2 bump)
+      # needs these entries updated.
       helm-install:
         containers:
+          # rke2-cilium
           - digest: "sha256:ba922718d919920b6b6168e3f55f8effa85032a38bf44d8cc5f4df79a2fe405d"
             image: "docker.io/rancher/klipper-helm:v0.13.3-build20260820"
-            command: {policy: any}
-            args: {policy: any}
-            mounts: {policy: any}
+            command: {policy: exact, argv: ["entry"]}
+            args: &helm-install-args
+              policy: exact
+              argv:
+                - "install"
+                - "--set-string"
+                - "global.clusterCIDR=10.52.0.0/16"
+                - "--set-string"
+                - "global.clusterCIDRv4=10.52.0.0/16"
+                - "--set-string"
+                - "global.clusterDNS=10.53.0.10"
+                - "--set-string"
+                - "global.clusterDomain=cluster.local"
+                - "--set"
+                - "global.prime.enabled=false"
+                - "--set-string"
+                - "global.rke2DataDir=/var/lib/rancher/rke2"
+                - "--set-string"
+                - "global.serviceCIDR=10.53.0.0/16"
+                - "--set-string"
+                - "global.systemDefaultIngressClass=traefik"
+            mounts: &helm-install-mounts
+              policy: exact
+              rules:
+                - {destination: "/home/klipper-helm/.helm", kind: emptyDir, source: "klipper-helm"}
+                - {destination: "/home/klipper-helm/.cache", kind: emptyDir, source: "klipper-cache"}
+                - {destination: "/home/klipper-helm/.config", kind: emptyDir, source: "klipper-config"}
+                - {destination: "/tmp", kind: emptyDir, source: "tmp"}
+                - {destination: "/config", kind: data, source: "values", node: true}
+                - {destination: "/chart", kind: data, source: "content", node: true}
+            env:
+              policy: match
+              variables:
+                AUTH_PASS_CREDENTIALS: {exact: "false"}
+                BOOTSTRAP: {exact: "true"}
+                CHART: {exact: ""}
+                CHART_NAMESPACE: {exact: "kube-system"}
+                CONFIG_HASH: {exact: "782319E7FE222AA2112A65AC8178D28B78EA2BEAA2CF319EDF8B74C9C5F5E39"}
+                EXPECTED_RELEASE_REVISION: {exact: "0"}
+                FAILURE_POLICY: {exact: "reinstall"}
+                FORCE_CONFLICTS: {exact: "true"}
+                HELM_DRIVER: {exact: "secret"}
+                HELM_VERSION: {exact: ""}
+                HOSTNAME: {present: true}
+                INSECURE_SKIP_TLS_VERIFY: {exact: "false"}
+                NAME: {exact: "rke2-cilium"}
+                NO_PROXY: {exact: ".svc,.cluster.local,10.52.0.0/16,10.53.0.0/16"}
+                PATH: {exact: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}
+                PLAIN_HTTP: {exact: "false"}
+                REPO: {exact: ""}
+                SERVER_SIDE: {exact: "auto"}
+                STABLE_REPO_URL: {exact: "https://charts.helm.sh/stable/"}
+                TARGET_NAMESPACE: {exact: "kube-system"}
+                TIMEOUT: {exact: ""}
+                VERSION: {exact: ""}
+              serviceLinks: true
+          # rke2-coredns
+          - digest: "sha256:ba922718d919920b6b6168e3f55f8effa85032a38bf44d8cc5f4df79a2fe405d"
+            image: "docker.io/rancher/klipper-helm:v0.13.3-build20260820"
+            command: {policy: exact, argv: ["entry"]}
+            args: *helm-install-args
+            mounts: *helm-install-mounts
+            env:
+              policy: match
+              variables:
+                AUTH_PASS_CREDENTIALS: {exact: "false"}
+                BOOTSTRAP: {exact: "true"}
+                CHART: {exact: ""}
+                CHART_NAMESPACE: {exact: "kube-system"}
+                CONFIG_HASH: {exact: "C2022DA3D93681905C56DE7FB8659EB0AA8923CAA7CED6BC9530E4CC02C48A1"}
+                EXPECTED_RELEASE_REVISION: {exact: "0"}
+                FAILURE_POLICY: {exact: "retry"}
+                FORCE_CONFLICTS: {exact: "true"}
+                HELM_DRIVER: {exact: "secret"}
+                HELM_VERSION: {exact: ""}
+                HOSTNAME: {present: true}
+                INSECURE_SKIP_TLS_VERIFY: {exact: "false"}
+                NAME: {exact: "rke2-coredns"}
+                NO_PROXY: {exact: ".svc,.cluster.local,10.52.0.0/16,10.53.0.0/16"}
+                PATH: {exact: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}
+                PLAIN_HTTP: {exact: "false"}
+                REPO: {exact: ""}
+                SERVER_SIDE: {exact: "auto"}
+                STABLE_REPO_URL: {exact: "https://charts.helm.sh/stable/"}
+                TARGET_NAMESPACE: {exact: "kube-system"}
+                TIMEOUT: {exact: ""}
+                VERSION: {exact: ""}
+              serviceLinks: true
+          # rke2-metrics-server
+          - digest: "sha256:ba922718d919920b6b6168e3f55f8effa85032a38bf44d8cc5f4df79a2fe405d"
+            image: "docker.io/rancher/klipper-helm:v0.13.3-build20260820"
+            command: {policy: exact, argv: ["entry"]}
+            args: *helm-install-args
+            mounts: *helm-install-mounts
+            env:
+              policy: match
+              variables:
+                AUTH_PASS_CREDENTIALS: {exact: "false"}
+                CHART: {exact: ""}
+                CHART_NAMESPACE: {exact: "kube-system"}
+                CONFIG_HASH: {exact: "EA24CE135607F6A32B2A9C1FE28D07DC3013FA29B1BE51EB656592FDFA90E3D"}
+                EXPECTED_RELEASE_REVISION: {exact: "0"}
+                FAILURE_POLICY: {exact: "retry"}
+                FORCE_CONFLICTS: {exact: "true"}
+                HELM_DRIVER: {exact: "secret"}
+                HELM_VERSION: {exact: ""}
+                HOSTNAME: {present: true}
+                INSECURE_SKIP_TLS_VERIFY: {exact: "false"}
+                NAME: {exact: "rke2-metrics-server"}
+                NO_PROXY: {exact: ".svc,.cluster.local,10.52.0.0/16,10.53.0.0/16"}
+                PATH: {exact: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}
+                PLAIN_HTTP: {exact: "false"}
+                REPO: {exact: ""}
+                SERVER_SIDE: {exact: "auto"}
+                STABLE_REPO_URL: {exact: "https://charts.helm.sh/stable/"}
+                TARGET_NAMESPACE: {exact: "kube-system"}
+                TIMEOUT: {exact: ""}
+                VERSION: {exact: ""}
+              serviceLinks: true
+          # rke2-runtimeclasses
+          - digest: "sha256:ba922718d919920b6b6168e3f55f8effa85032a38bf44d8cc5f4df79a2fe405d"
+            image: "docker.io/rancher/klipper-helm:v0.13.3-build20260820"
+            command: {policy: exact, argv: ["entry"]}
+            args: &helm-install-args-take-ownership
+              policy: exact
+              argv:
+                - "install"
+                - "--take-ownership"
+                - "--set-string"
+                - "global.clusterCIDR=10.52.0.0/16"
+                - "--set-string"
+                - "global.clusterCIDRv4=10.52.0.0/16"
+                - "--set-string"
+                - "global.clusterDNS=10.53.0.10"
+                - "--set-string"
+                - "global.clusterDomain=cluster.local"
+                - "--set"
+                - "global.prime.enabled=false"
+                - "--set-string"
+                - "global.rke2DataDir=/var/lib/rancher/rke2"
+                - "--set-string"
+                - "global.serviceCIDR=10.53.0.0/16"
+                - "--set-string"
+                - "global.systemDefaultIngressClass=traefik"
+            mounts: *helm-install-mounts
+            env:
+              policy: match
+              variables:
+                AUTH_PASS_CREDENTIALS: {exact: "false"}
+                CHART: {exact: ""}
+                CHART_NAMESPACE: {exact: "kube-system"}
+                CONFIG_HASH: {exact: "6237DDEDD29BF0937081C4CFCCBE1CE2BF25FB745C12DEFDD1757F3E49B6490"}
+                EXPECTED_RELEASE_REVISION: {exact: "0"}
+                FAILURE_POLICY: {exact: "retry"}
+                FORCE_CONFLICTS: {exact: "true"}
+                HELM_DRIVER: {exact: "secret"}
+                HELM_VERSION: {exact: ""}
+                HOSTNAME: {present: true}
+                INSECURE_SKIP_TLS_VERIFY: {exact: "false"}
+                NAME: {exact: "rke2-runtimeclasses"}
+                NO_PROXY: {exact: ".svc,.cluster.local,10.52.0.0/16,10.53.0.0/16"}
+                PATH: {exact: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}
+                PLAIN_HTTP: {exact: "false"}
+                REPO: {exact: ""}
+                SERVER_SIDE: {exact: "auto"}
+                STABLE_REPO_URL: {exact: "https://charts.helm.sh/stable/"}
+                TARGET_NAMESPACE: {exact: "kube-system"}
+                TIMEOUT: {exact: ""}
+                VERSION: {exact: ""}
+              serviceLinks: true
+          # rke2-snapshot-controller
+          - digest: "sha256:ba922718d919920b6b6168e3f55f8effa85032a38bf44d8cc5f4df79a2fe405d"
+            image: "docker.io/rancher/klipper-helm:v0.13.3-build20260820"
+            command: {policy: exact, argv: ["entry"]}
+            args: *helm-install-args
+            mounts: *helm-install-mounts
+            env:
+              policy: match
+              variables:
+                AUTH_PASS_CREDENTIALS: {exact: "false"}
+                CHART: {exact: ""}
+                CHART_NAMESPACE: {exact: "kube-system"}
+                CONFIG_HASH: {exact: "ED4DBD8A0712DA96275DF8DE2AFB4A5CD028710551FCF8FF78C692F5F1B9868"}
+                EXPECTED_RELEASE_REVISION: {exact: "0"}
+                FAILURE_POLICY: {exact: "retry"}
+                FORCE_CONFLICTS: {exact: "true"}
+                HELM_DRIVER: {exact: "secret"}
+                HELM_VERSION: {exact: ""}
+                HOSTNAME: {present: true}
+                INSECURE_SKIP_TLS_VERIFY: {exact: "false"}
+                NAME: {exact: "rke2-snapshot-controller"}
+                NO_PROXY: {exact: ".svc,.cluster.local,10.52.0.0/16,10.53.0.0/16"}
+                PATH: {exact: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}
+                PLAIN_HTTP: {exact: "false"}
+                REPO: {exact: ""}
+                SERVER_SIDE: {exact: "auto"}
+                STABLE_REPO_URL: {exact: "https://charts.helm.sh/stable/"}
+                TARGET_NAMESPACE: {exact: "kube-system"}
+                TIMEOUT: {exact: ""}
+                VERSION: {exact: ""}
+              serviceLinks: true
+          # rke2-snapshot-controller-crd
+          - digest: "sha256:ba922718d919920b6b6168e3f55f8effa85032a38bf44d8cc5f4df79a2fe405d"
+            image: "docker.io/rancher/klipper-helm:v0.13.3-build20260820"
+            command: {policy: exact, argv: ["entry"]}
+            args: *helm-install-args
+            mounts: *helm-install-mounts
+            env:
+              policy: match
+              variables:
+                AUTH_PASS_CREDENTIALS: {exact: "false"}
+                CHART: {exact: ""}
+                CHART_NAMESPACE: {exact: "kube-system"}
+                CONFIG_HASH: {exact: "77D6CC475829A6654E604B17D3F28813F70A8AEF3CA7A9B31C75756F35C9822"}
+                EXPECTED_RELEASE_REVISION: {exact: "0"}
+                FAILURE_POLICY: {exact: "retry"}
+                FORCE_CONFLICTS: {exact: "true"}
+                HELM_DRIVER: {exact: "secret"}
+                HELM_VERSION: {exact: ""}
+                HOSTNAME: {present: true}
+                INSECURE_SKIP_TLS_VERIFY: {exact: "false"}
+                NAME: {exact: "rke2-snapshot-controller-crd"}
+                NO_PROXY: {exact: ".svc,.cluster.local,10.52.0.0/16,10.53.0.0/16"}
+                PATH: {exact: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}
+                PLAIN_HTTP: {exact: "false"}
+                REPO: {exact: ""}
+                SERVER_SIDE: {exact: "auto"}
+                STABLE_REPO_URL: {exact: "https://charts.helm.sh/stable/"}
+                TARGET_NAMESPACE: {exact: "kube-system"}
+                TIMEOUT: {exact: ""}
+                VERSION: {exact: ""}
+              serviceLinks: true
+          # rke2-traefik-crd
+          - digest: "sha256:ba922718d919920b6b6168e3f55f8effa85032a38bf44d8cc5f4df79a2fe405d"
+            image: "docker.io/rancher/klipper-helm:v0.13.3-build20260820"
+            command: {policy: exact, argv: ["entry"]}
+            args: *helm-install-args
+            mounts: *helm-install-mounts
+            env:
+              policy: match
+              variables:
+                AUTH_PASS_CREDENTIALS: {exact: "false"}
+                CHART: {exact: ""}
+                CHART_NAMESPACE: {exact: "kube-system"}
+                CONFIG_HASH: {exact: "4BDA485FCF9B9E569115B51B3709E58DCB468142E6B7B3B792E2BCF9F031D1A"}
+                EXPECTED_RELEASE_REVISION: {exact: "0"}
+                FAILURE_POLICY: {exact: "retry"}
+                FORCE_CONFLICTS: {exact: "true"}
+                HELM_DRIVER: {exact: "secret"}
+                HELM_VERSION: {exact: ""}
+                HOSTNAME: {present: true}
+                INSECURE_SKIP_TLS_VERIFY: {exact: "false"}
+                NAME: {exact: "rke2-traefik-crd"}
+                NO_PROXY: {exact: ".svc,.cluster.local,10.52.0.0/16,10.53.0.0/16"}
+                PATH: {exact: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}
+                PLAIN_HTTP: {exact: "false"}
+                REPO: {exact: ""}
+                SERVER_SIDE: {exact: "auto"}
+                STABLE_REPO_URL: {exact: "https://charts.helm.sh/stable/"}
+                TARGET_NAMESPACE: {exact: "kube-system"}
+                TIMEOUT: {exact: ""}
+                VERSION: {exact: ""}
+              serviceLinks: true
       # GPU nodes, from the baked server/manifests/nvidia-device-plugin.yaml.
       nvidia-device-plugin:
         containers:

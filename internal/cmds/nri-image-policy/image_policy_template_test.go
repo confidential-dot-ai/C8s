@@ -225,10 +225,8 @@ func TestNodeImageBootConfig_ParsesAndAdmitsSystemImages(t *testing.T) {
 	// except those of the images named here, whose launch stays open for the
 	// reasons docs/allowlist-and-capabilities.md ("Host privilege") gives.
 	openSystemImages := map[string]bool{
-		"docker.io/rancher/mirrored-cilium-cilium:v1.19.6":           true,
-		"docker.io/rancher/mirrored-cilium-operator-generic:v1.19.6": true,
-		"docker.io/rancher/klipper-helm:v0.13.3-build20260820":       true,
-		"docker.io/rancher/hardened-coredns:v1.14.7-build20260819":   true,
+		"docker.io/rancher/mirrored-cilium-cilium:v1.19.6":         true,
+		"docker.io/rancher/hardened-coredns:v1.14.7-build20260819": true,
 	}
 	for name, w := range cfg.Allowlist.Base.Workloads {
 		for _, c := range slices.Concat(w.InitContainers, w.Containers) {
@@ -257,6 +255,60 @@ func TestNodeImageBaseRefusesAMountOverCoreDNS(t *testing.T) {
 	launch.Mounts = append(launch.Mounts, allowlist.ObservedMount{Destination: "/coredns", Volume: "binary", Class: allowlist.MountData, Storage: allowlist.MountEncrypted})
 	if store.baseAdmits(launch, launchFinal) {
 		t.Fatal("the base admits CoreDNS with a mount over its executable")
+	}
+}
+
+// The chart jobs and the Cilium operator run with the host network, so every
+// launch of theirs the base admits is pinned whole, and a pod changing any
+// part of one is refused.
+func TestNodeImageBasePinsTheChartJobsAndTheCiliumOperator(t *testing.T) {
+	cfg, err := parseConfig([]byte(renderNodeImagePolicy(t)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := newPolicyStore(cfg.Allowlist.Base)
+	for _, name := range []string{"helm-install", "cilium-operator"} {
+		for _, c := range cfg.Allowlist.Base.Workloads[name].Containers {
+			if !c.LaunchPinned() {
+				t.Fatalf("base entry %q leaves a launch of %s open", name, c.Image)
+			}
+			if !store.baseAdmitsPinned(containerLaunch(t, c)) {
+				t.Fatalf("base entry %q refuses the launch it pins", name)
+			}
+		}
+	}
+
+	job := cfg.Allowlist.Base.Workloads["helm-install"].Containers[0]
+	withEnv := func(variable string) allowlist.RunningContainer {
+		launch := containerLaunch(t, job)
+		entries := []string{variable}
+		for name, value := range job.Env.ExactValues() {
+			if !strings.HasPrefix(variable, name+"=") {
+				entries = append(entries, name+"="+value)
+			}
+		}
+		entries = append(entries, "HOSTNAME="+presentValue)
+		env, err := allowlist.ObserveEnv(entries)
+		if err != nil {
+			t.Fatal(err)
+		}
+		launch.Env = env
+		return launch
+	}
+	if !store.baseAdmitsPinned(withEnv("KUBERNETES_SERVICE_HOST=10.53.0.1")) {
+		t.Fatal("the base refuses a chart job with the kubelet's service links")
+	}
+	shell := containerLaunch(t, job)
+	shell.Argv = []string{"sh", "-c", "id"}
+	for what, launch := range map[string]allowlist.RunningContainer{
+		"a helm flag in NAME":        withEnv("NAME=rke2-cilium --post-renderer /bin/sh"),
+		"another CONFIG_HASH":        withEnv("CONFIG_HASH=0"),
+		"a variable it does not pin": withEnv("BASH_ENV=/config/values.yaml"),
+		"a shell for its entrypoint": shell,
+	} {
+		if store.baseAdmits(launch, launchFinal) {
+			t.Errorf("the base admits a chart job with %s", what)
+		}
 	}
 }
 
