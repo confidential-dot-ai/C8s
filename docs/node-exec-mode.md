@@ -86,6 +86,35 @@ gRPC probe against a port it already listens on, or a small in-process endpoint
 when it otherwise listens only on a Unix socket, and it handles SIGTERM instead
 of carrying a `preStop` hook.
 
+## RKE2's kube-apiserver
+
+On the locked image, RKE2's kube-apiserver static pod never reports Ready. The
+RKE2 release `node-guest-image/c8s/mkosi.sync` pins gives that pod exec
+startup, liveness and readiness probes (`kubectl get --raw=/livez` and
+`--raw=/readyz`); etcd, kube-scheduler, kube-controller-manager and kube-proxy
+have HTTP probes and report Ready.
+
+Each startup probe ends in `c8s-runc`'s denial, which reaches the kubelet as a
+runtime error rather than a failed command. The kubelet discards an errored
+probe result instead of counting it as a failure, so:
+
+- the pod shows `0/1 Running` with no restarts, and the API serves: RKE2 and
+  C8s check the API itself, never this pod's readiness;
+- the startup probe errors every five minutes for the node's life
+  (`kube-apiserver-startup-period-seconds=300` in the image's RKE2 config), each
+  time adding an `Unhealthy` warning
+  (`Startup probe errored … c8s-runc: exec is denied on this node`) and a line
+  to the container's runtime log in memory, which grows by about 40 KB a day
+  until the container is removed;
+- the liveness and readiness probes never run, because the startup probe never
+  succeeds. The kubelet still restarts kube-apiserver when its process exits,
+  but nothing restarts one that keeps running and stops answering.
+
+Check the API's health with `kubectl get --raw='/readyz?verbose'`, which any
+released kubeconfig may call, the log-reader one included. A server node whose
+API stops answering has to be rebooted, which starts a new cluster: no RKE2
+state survives a reboot ([operator.md](operator.md#bounded-operator)).
+
 Container creation is not what this closes: whoever can create a pod can put any
 command in its initial process, which the allowlist restricts
 ([allowlist-and-capabilities.md](allowlist-and-capabilities.md)).

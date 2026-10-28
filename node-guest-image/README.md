@@ -491,9 +491,11 @@ paths end in that one call, so all of them fail.
 
 The consequences for anything running on such a node: an exec probe never
 passes and a `preStop` exec hook never runs. C8s's own components use HTTP
-probes and SIGTERM handling instead. See
+probes and SIGTERM handling instead; RKE2's kube-apiserver keeps its exec
+probes and never reports Ready. See
 [docs/node-exec-mode.md](../docs/node-exec-mode.md) for the wrapper, the build
-gate that proves no handler escapes it, and what to do in a new component.
+gate that proves no handler escapes it, what to do in a new component, and
+what the kube-apiserver's denied probes mean.
 
 ## Refreshing measurements
 
