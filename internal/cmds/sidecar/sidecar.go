@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
@@ -204,8 +205,8 @@ func Retry(ctx context.Context, cfg Config, what string, attempt func(context.Co
 
 // refusalReason says what a failed attempt most likely means. CDS answers
 // every authorization failure with the same opaque 403, and the expected one
-// is a pod whose main containers are not all running yet. A 404 is a path the
-// store holds nothing at (or a grant without read access).
+// is a pod whose main containers are not all running yet. CDS answers a read
+// outside the entry's grant and a read of an empty path with the same 404.
 func refusalReason(err error) string {
 	se, ok := errors.AsType[*StatusError](err)
 	switch {
@@ -214,7 +215,10 @@ func refusalReason(err error) string {
 			"a main image still pulling delays it. If they are running, the pod's allowlist entry " +
 			"does not match or has no grant for this path (the CDS log names the denial)"
 	case ok && se.Status == http.StatusNotFound:
-		return "the store holds no value at this path yet; for a volume, run `c8s volume create`"
+		return "either the pod's allowlist entry does not grant reading this path, " +
+			"and the CDS log shows `" + secrets.ReadDeniedLog + "`; " +
+			"or the store holds no value at it (CDS keeps the store in memory, so every restart empties it), " +
+			"and an operator writes it with `c8s secrets put`, for a volume from its escrow file"
 	}
 	return "CDS or the node could not complete the request"
 }
