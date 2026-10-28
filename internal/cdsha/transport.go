@@ -419,6 +419,9 @@ type controlResponse struct {
 	// Diverged (read barrier) says why the leader found the follower's
 	// state to differ from the majority's.
 	Diverged string `json:"diverged,omitempty"`
+	// Excluded (join): the leader excluded the joining member ID; it must
+	// restart as a new member with an empty log (ErrExcluded).
+	Excluded bool `json:"excluded,omitempty"`
 }
 
 // callControl sends req to the replica at addr. With member set, only that

@@ -247,7 +247,7 @@ func (n *Node) dropSuspects() {
 			continue
 		}
 		if n.cutOut(r, s) {
-			n.log.Error("cds-ha: cut out a cut-off member that may lead a recovered cluster; it rejoins if it did not recover", "id", s.ID, "decree_view_stale", stale)
+			n.log.Error("cds-ha: cut out a cut-off member that may lead a recovered cluster; it rejoins only by restarting as a new member", "id", s.ID, "decree_view_stale", stale)
 			if blind {
 				n.mu.Lock()
 				n.blindRemoved[s.ID] = struct{}{}

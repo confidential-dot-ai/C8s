@@ -43,6 +43,7 @@ func (n *Node) recover(ctx context.Context, p PendingDecree) {
 			// Its goroutines may still run over the stores and the log:
 			// no new generation over them. Stuck, the replica exits (Run)
 			// and its restart rejoins; the decree stays pending.
+			n.raftGone.Store(true)
 			_ = n.fsm.stopLocal(fmt.Errorf("recover: %w", err))
 			return
 		}

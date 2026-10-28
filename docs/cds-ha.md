@@ -480,10 +480,13 @@ What to do:
 - **Refused late**: the leader cut the named member out of its configuration
   so Raft never merges it back: a non-voter is removed; a voter keeps its vote
   under the address `excluded` (Raft no longer reaches it) and leaves only
-  once a replacement votes, like any dead voter. If that member did not recover,
-  it sees the rejection and rejoins by itself once it can reach the cluster;
-  the fence ends when it is a healthy member again (or a later process on its
-  node is). If you know it is gone, `kubectl delete` the decree object.
+  once a replacement votes, like any dead voter. Once it can reach the
+  cluster, the leader refuses its member ID, recovered or not: its log may
+  hold a recovered cluster's writes. The process logs
+  `excluded from the cluster` at ERROR and exits; its restart joins as a new
+  member with an empty log and catches up from the leader. The fence ends
+  when that later process on its node is a healthy member. If you know it
+  is gone, `kubectl delete` the decree object.
 - **Fork** (the decree shows `applied_epoch` and the named member leads its own
   cluster): your Recover won. Writes the old majority took after the cut are
   not in it. Restart all the old majority's replicas at once (they join the
@@ -564,6 +567,18 @@ Do not reuse retired mesh keys for backend services.
   refuses the new voter's vote requests. The cluster stops serving until the
   old leader's replica is back with its log. If that replica is gone, recover
   a survivor (runbook 4).
+- **A cut-out voter rejoins only by restarting.** A voter cut off for
+  DeadAfter while the leader cannot list decrees is excluded, even if it
+  only lost the network. It exits once it reaches the cluster again and
+  rejoins as a new member: a restart and a full catch-up from the leader.
+  Until its replacement votes, the cluster runs one voter short.
+- **Losing the leader before an excluded voter's replacement votes.** If the
+  leader that excluded a voter is lost before that voter's replacement is
+  promoted, the remaining voters may be unable to elect a leader: they no
+  longer send vote requests to the excluded voter, and they refuse its own
+  vote requests, since its log lacks the exclusion. With 3 voters, two live
+  voters can stay leaderless. Only Recover (runbook 4) helps. Removing the voter
+  instead had the same cost.
 - **Backups lag up to one interval.** The leader stores a backup at most once
   a minute, in one slot. Writes after the last backup are lost on restore;
   apply them again with tokens minted after the Restore (tokens from before

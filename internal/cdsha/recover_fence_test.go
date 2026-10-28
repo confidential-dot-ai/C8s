@@ -212,8 +212,9 @@ func TestRecoverShortAPIOutageRejectedInTime(t *testing.T) {
 
 // The majority's API is down for longer than the decree lease, and back
 // before the hold ends: the majority fences itself, rejects the decree late
-// and drops the named replica; the replica does not recover, rejoins after
-// the partition heals, and the majority serves again.
+// and excludes the named replica; the replica does not recover, ends Run
+// once the partition heals, its restart rejoins, and the majority serves
+// again.
 func TestRecoverLongAPIOutageRejectedLateThenRejoin(t *testing.T) {
 	c, l, s, majority := cutOff(t)
 	c.setListDown(true, majority...)
@@ -237,14 +238,26 @@ func TestRecoverLongAPIOutageRejectedLateThenRejoin(t *testing.T) {
 		t.Fatal("the named replica recovered after a rejection")
 	}
 	c.partition(s.name, false)
-	eventually(t, 20*time.Second, "the named replica rejoins and the majority serves again", func() bool {
-		ml := majorityLeader(c, s)
-		return ml != nil && ml.node.Status().Fenced == nil && ml.node.Serving() && s.node.Serving()
-	})
+	// The leader excluded the named replica's member ID: it ends Run, and
+	// its restart (a new member on its node) rejoins and ends the fence.
+	select {
+	case <-s.done:
+		if !errors.Is(s.err, ErrExcluded) {
+			t.Fatalf("the named replica ended Run with %v, want ErrExcluded", s.err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("the excluded named replica did not end Run")
+	}
 	if w.recovered() {
 		t.Fatal("the named replica recovered")
 	}
 	w.finish(t)
+	c.stopReplica(s)
+	again := c.start(s.name, "m1")
+	eventually(t, 30*time.Second, "the named replica's restart rejoins and the majority serves again", func() bool {
+		ml := majorityLeader(c, again)
+		return ml != nil && ml.node.Status().Fenced == nil && ml.node.Serving() && again.node.Serving()
+	})
 }
 
 // The decree lands after the named replica's DeadAfter and both sides can list it.

@@ -95,14 +95,23 @@ func (n *Node) joinRefused(peer string, err error) {
 }
 
 // rejoin asks reachable replicas to add this member, as a joiner would; a
-// leader that already has it answers without change.
-func (n *Node) rejoin(ctx context.Context) {
+// leader that already has it answers without change. It reports whether a
+// leader answered that it excluded this member.
+func (n *Node) rejoin(ctx context.Context) (excluded bool) {
 	peers, _ := n.cfg.Peers(ctx)
 	for _, p := range peers {
-		if resp, err := n.askJoin(p); err == nil && resp.Err == "" {
-			return
+		resp, err := n.askJoin(p)
+		if err != nil {
+			continue
+		}
+		if resp.Excluded {
+			return true
+		}
+		if resp.Err == "" {
+			return false
 		}
 	}
+	return false
 }
 
 // askJoin asks peer p to add this replica, following one redirect to the
@@ -161,14 +170,15 @@ func (n *Node) handleJoin(req controlRequest) controlResponse {
 	nonVoters := 0
 	for _, s := range f.Configuration().Servers {
 		if s.ID == id {
-			// A voter dropSuspects excluded asks to come back: it has no
-			// leader, so it leads no recovered cluster. It votes again at
-			// its address, with its log.
-			if s.Suffrage == raft.Voter && s.Address == excludedAddress {
-				if err := r.AddVoter(id, raft.ServerAddress(req.Address), 0, n.cfg.Timing.Apply).Error(); err != nil {
-					return controlResponse{Member: true, Err: err.Error()}
-				}
-				n.log.Info("excluded voter rejoined at its address", "id", id, "address", req.Address)
+			// INVARIANT: an excluded member ID never votes again. It may
+			// hold a recovered cluster's log, with entries at the same
+			// index and term as this cluster's but other content, which
+			// Raft's log matching cannot tell apart. Only a new process,
+			// with a new ID and an empty log, rejoins for its node; the
+			// excluded ID retires once that one votes (retireVoters).
+			if s.Address == excludedAddress {
+				n.log.Warn("excluded member asked to rejoin; it must restart as a new member", "id", id)
+				return controlResponse{Member: true, Excluded: true, Err: "member excluded: restart to rejoin as a new member"}
 			}
 			return controlResponse{Member: true}
 		}

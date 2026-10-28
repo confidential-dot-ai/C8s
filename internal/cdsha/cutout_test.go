@@ -1,6 +1,7 @@
 package cdsha
 
 import (
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -89,22 +90,67 @@ func TestCutOutVoterKeepsItsSeatUntilReplaced(t *testing.T) {
 }
 
 // A cut-out voter that did not recover asks to join again once the
-// partition heals: it votes again at its own address, with its log.
-func TestCutOutVoterRejoinsAtItsAddress(t *testing.T) {
+// partition heals. The leader refuses its member ID: an excluded process may
+// hold a recovered cluster's log, which Raft cannot tell apart from its own.
+// The process ends Run (ErrExcluded); its restart, a new member with a new ID
+// and an empty log, joins, is promoted, and only then does the excluded ID
+// retire. The old ID is never re-addressed, and never reused.
+func TestCutOutVoterRestartsToRejoin(t *testing.T) {
 	c, s, majority := cutOutVoter(t)
-	c.setListDown(false, majority...)
-	c.partition(s.name, false)
-	eventually(t, 30*time.Second, "the member votes at its address again", func() bool {
-		ml := majorityLeader(c, s)
-		if ml == nil {
-			return false
-		}
-		for _, m := range ml.node.servers() {
-			if m.ID == raft.ServerID(s.node.ID()) {
-				return m.Suffrage == raft.Voter && m.Address == s.node.raftAddress()
+	old := raft.ServerID(s.node.ID())
+	readdressed := func() bool {
+		for _, r := range c.live() {
+			if r == s || !r.node.leading() {
+				continue
+			}
+			for _, m := range r.node.servers() {
+				if m.ID == old && m.Address != excludedAddress {
+					return true
+				}
 			}
 		}
 		return false
+	}
+	c.setListDown(false, majority...)
+	c.partition(s.name, false)
+	deadline := time.After(30 * time.Second)
+	for ended := false; !ended; {
+		select {
+		case <-s.done:
+			ended = true
+		case <-deadline:
+			t.Fatal("the excluded member did not end Run")
+		case <-time.After(10 * time.Millisecond):
+		}
+		if readdressed() {
+			t.Fatal("the excluded member ID was re-admitted at its address")
+		}
+	}
+	if !errors.Is(s.err, ErrExcluded) {
+		t.Fatalf("Run returned %v, want ErrExcluded", s.err)
+	}
+	c.stopReplica(s)
+	again := c.start(s.name, "m1")
+	if raft.ServerID(again.node.ID()) == old {
+		t.Fatal("the restart reused the excluded member ID")
+	}
+	eventually(t, 30*time.Second, "the restart votes and the excluded ID retired", func() bool {
+		if readdressed() {
+			t.Fatal("the excluded member ID was re-admitted at its address")
+		}
+		ml := c.leader()
+		if ml == nil {
+			return false
+		}
+		voter, oldThere := false, false
+		for _, m := range ml.node.servers() {
+			voter = voter || m.ID == raft.ServerID(again.node.ID()) && m.Suffrage == raft.Voter
+			oldThere = oldThere || m.ID == old
+		}
+		if !oldThere && !voter {
+			t.Fatal("the excluded ID retired before its replacement votes")
+		}
+		return voter && !oldThere
 	})
 	c.settled(30 * time.Second)
 }

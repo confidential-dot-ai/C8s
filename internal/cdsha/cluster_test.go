@@ -117,6 +117,8 @@ type cluster struct {
 	nextIP int
 	ipOf   map[string]string
 	reads  map[string]uint32 // node name -> newest format its next replica reads (0: Format)
+	// pairCut: IP pairs cut from each other (both orders), the rest kept.
+	pairCut map[[2]string]bool
 	// dnsSelfOnly: IPs whose peer discovery returns no other replica (the
 	// host's DNS answers only the replica's own address).
 	dnsSelfOnly map[string]bool
@@ -182,7 +184,20 @@ func (c *cluster) blocked(self string) func(string) bool {
 		}
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		return c.cut[host] != c.cut[self] // either side cut off from the rest
+		return c.cut[host] != c.cut[self] || c.pairCut[[2]string{self, host}] // either side cut off from the rest
+	}
+}
+
+// cutPair cuts replicas a and b from each other only.
+func (c *cluster) cutPair(a, b *replica, on bool) {
+	c.mu.Lock()
+	if c.pairCut == nil {
+		c.pairCut = map[[2]string]bool{}
+	}
+	c.pairCut[[2]string{a.ip, b.ip}], c.pairCut[[2]string{b.ip, a.ip}] = on, on
+	c.mu.Unlock()
+	for _, r := range c.live() {
+		r.node.mux.Load().recheck()
 	}
 }
 

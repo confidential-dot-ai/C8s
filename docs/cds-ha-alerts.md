@@ -35,6 +35,7 @@ act.
 | `cds-ha: this replica can no longer follow the log (local fault); it stops serving and exits to rejoin`; `stuck=local` | Its own store failed (disk full, I/O, file descriptors) | None: it restarts and rejoins. If one node repeats it, replace that node (runbook 2). |
 | `cds-ha replica stuck and its loop did not end it; exiting` | The watchdog ended a stuck replica | Same as the line above. |
 | `cds-ha: ALARM: stopped following the log, ...` on every replica, `reason` with `database or disk is full`; `stuck=local` | The store is full on every replica at the same entry | Runbook 6, "A full store on every replica". Do not restart the replicas. |
+| `cds-ha: the cluster's leader excluded this member; exiting` | The leader cut this member out while it was cut off (see "Refused late" in `cds-ha.md`) | None: it restarts and rejoins as a new member. If a Recover decree names it, check that decree first. |
 | `cds-ha: ALARM: halted at a log entry no replica could apply`; `stuck=deterministic` | A committed entry that no replica applies. The replicas keep the log. | Runbook 6. Do not restart the replicas. |
 | `leader wedged: raft refuses every barrier although a quorum answers heartbeats` | raft #696 stall. The leader exits, and another one takes over. | None. If it repeats, report it with the log line. |
 | Pod `OOMKilled` | Not enough memory | Size the cds nodes at about 8 GiB (limitations). Several at once lose the majority. |
@@ -71,7 +72,7 @@ act.
 | `RESTORE: starting the cluster from an operator backup` | A Restore was applied | Expected only during runbook 5. Otherwise check `c8s cds ha decrees`. |
 | `cds-ha: FENCED: this cluster serves no reads or writes`; `fenced=true` (leader) | The leader cannot rule out a Recover elsewhere | Act on the reason at the end of the `FENCED` line. See the next three rows. |
 | `FENCED` reason: `has not seen the decree objects ... while members are cut off`, or `not yet seen the decree objects in its term` | Kube API outage during a cut-off (or right after an election) | Restore the leader's API access, or the cut-off member. The fence ends at the next decree list. **Do not issue Recover**: the majority is alive. |
-| `FENCED` reason: `Recover decree may have been applied by <member>` (decree status `refused late: ...`) | A Recover arrived while the leader was blind | If that member is gone, delete the decree object. Otherwise wait: it rejoins once it reaches the cluster, and the fence ends. |
+| `FENCED` reason: `Recover decree may have been applied by <member>` (decree status `refused late: ...`) | A Recover arrived while the leader was blind | If that member is gone, delete the decree object. Otherwise wait: once it reaches the cluster it exits, its restart rejoins as a new member, and the fence ends. |
 | `FENCED` reason: `Recover decree was applied by <member>: this cluster is a fork` | The Recover side runs its own cluster | Keep the recovered cluster: reboot all of the old majority's VMs at once, so they join it. Or keep the old majority: stop the recovered replica and delete the decree object. Writes on the side you drop are lost. |
 
 ## Divergence

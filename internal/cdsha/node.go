@@ -211,6 +211,10 @@ type Node struct {
 	// recovering is set while recover runs: it records the Recover decree
 	// itself, and decree cycles wait until it has (applyDecrees).
 	recovering atomic.Bool
+	// raftGone: this process's Raft is shut down for good (Run ended, or a
+	// recover could not stop it in time). A Raft that recover stopped for
+	// its replay is not gone (leaveKeepsQuorum).
+	raftGone atomic.Bool
 
 	backupAt    time.Time    // leader: last backup attempt
 	compactAt   time.Time    // leader: last log compaction (maybeCompact)
@@ -264,6 +268,9 @@ type Status struct {
 	// KnownVoters (leader): voters that every staying voter has reported as
 	// voters. A promoted voter is Ready only once it is listed.
 	KnownVoters []string `json:"known_voters,omitempty"`
+	// Heard (leader): the other voters whose heartbeats succeed
+	// (leaveKeepsQuorum).
+	Heard []string `json:"heard,omitempty"`
 	// Format is the cluster's agreed encoding format; Reads the newest this
 	// replica reads. Stuck says why it stopped following the log;
 	// StuckLocal that the cause is its own (it exits and rejoins). A stop
@@ -732,12 +739,14 @@ func (n *Node) Run(ctx context.Context) error {
 			switch {
 			case !ok:
 				n.recoverSeen = recoverSighting{}
-				n.rejoin(ctx)
 			case n.recoverReady(p):
 				n.recover(ctx, p)
 				n.noLeader, n.recoverSeen = time.Time{}, recoverSighting{}
-			default:
-				n.rejoin(ctx)
+				continue
+			}
+			if n.rejoin(ctx) {
+				n.log.Error("cds-ha: the cluster's leader excluded this member; exiting so that a restart rejoins as a new member with the cluster's state", "id", n.id)
+				return ErrExcluded
 			}
 		}
 	}
@@ -823,6 +832,7 @@ func (n *Node) awaitShutdown(r *raft.Raft) error {
 func (n *Node) shutdown() {
 	n.membershipMu.Lock()
 	defer n.membershipMu.Unlock()
+	n.raftGone.Store(true)
 	if r := n.r(); r != nil {
 		_ = n.stopRaft(r)
 	}
@@ -1377,6 +1387,11 @@ func (n *Node) Serving() bool {
 // must be restarted to rejoin with the cluster's state.
 var ErrStuck = errors.New("cds-ha: replica stopped following the log; restart to rejoin")
 
+// ErrExcluded ends Run: the leader excluded this member ID (dropSuspects),
+// which may hold a log the cluster cannot merge. Only a restart, with a new
+// ID and an empty log, rejoins.
+var ErrExcluded = errors.New("cds-ha: excluded from the cluster; restart to rejoin as a new member")
+
 // haltAlarmEvery is how often Run repeats the alarm of a deterministic stop.
 const haltAlarmEvery = time.Minute
 
@@ -1395,35 +1410,52 @@ func (n *Node) StuckOverdue() string {
 }
 
 // leaveKeepsQuorum reports that this replica can exit without costing the
-// cluster its majority: it is not a voter, or the other voters that answer
-// and are not stuck are a majority of the voters. Stuck voters never count,
-// so several of them stopped at once (a passed entry, or a store fault every
+// cluster its majority. A non-voter, or a replica whose Raft is gone for
+// good, always can. A voter can only on the authority of its leader in its
+// current term: the leader (another replica, not stuck) and the other
+// voters it hears (Status.Heard) that report it as their leader in this
+// term and are not stuck must be a majority of the voters. Peers that merely
+// answer prove nothing about reaching each other. With no leader, or as the
+// leader (it hands off first), a voter stays. Stuck voters never count, so
+// several of them stopped at once (a passed entry, or a store fault every
 // replica hit) do not all leave together.
 func (n *Node) leaveKeepsQuorum() bool {
-	// A Raft shut down for good (a recover that could not stop it) takes
-	// no part in the quorum, and no new generation may start over it.
-	if n.r().State() == raft.Shutdown {
+	if n.raftGone.Load() {
 		return true
 	}
+	r := n.r()
 	servers := n.servers()
 	if servers == nil {
 		return false
 	}
-	voters, following, self := 0, 0, false
+	if !slices.ContainsFunc(servers, func(s raft.Server) bool { return s.ID == n.id && s.Suffrage == raft.Voter }) {
+		return true
+	}
+	term := r.CurrentTerm()
+	leaderAddr, leaderID := r.LeaderWithID()
+	if leaderID == "" || leaderID == n.id {
+		return false
+	}
+	timeout := min(time.Second, n.cfg.Timing.Lease/2)
+	ls, err := n.peerStatus(leaderAddr, timeout)
+	if err != nil || ls.ID != string(leaderID) || ls.State != raft.Leader.String() || ls.Term != term || ls.Stuck != "" {
+		return false
+	}
+	leaderHP, _ := splitRaftAddr(string(leaderAddr))
+	voters, following := 0, 1 // the leader
 	for _, s := range servers {
 		if s.Suffrage != raft.Voter {
 			continue
 		}
 		voters++
-		if s.ID == n.id {
-			self = true
+		if s.ID == n.id || s.ID == leaderID || !slices.Contains(ls.Heard, string(s.ID)) {
 			continue
 		}
-		if st, err := n.peerStatus(s.Address, min(time.Second, n.cfg.Timing.Lease/2)); err == nil && st.ID == string(s.ID) && st.Stuck == "" {
+		if st, err := n.peerStatus(s.Address, timeout); err == nil && st.ID == string(s.ID) && st.Stuck == "" && st.Term == term && st.Leader == leaderHP {
 			following++
 		}
 	}
-	return !self || following > voters/2
+	return following > voters/2
 }
 
 // ErrNotServing means the replica cannot currently admit a mesh CA read.
@@ -1487,7 +1519,8 @@ func (n *Node) Status() Status {
 	if lc := n.r().LastContact(); !lc.IsZero() {
 		st.LastContactMS = time.Since(lc).Milliseconds()
 	}
-	for _, s := range n.servers() {
+	servers := n.servers()
+	for _, s := range servers {
 		if s.Suffrage == raft.Voter {
 			st.Voters = append(st.Voters, string(s.ID))
 		} else {
@@ -1504,6 +1537,11 @@ func (n *Node) Status() Status {
 		for _, id := range st.Voters {
 			if n.known[raft.ServerID(id)] {
 				st.KnownVoters = append(st.KnownVoters, id)
+			}
+		}
+		for _, s := range servers {
+			if _, bad := n.failing[s.ID]; s.Suffrage == raft.Voter && s.ID != n.id && s.Address != excludedAddress && !bad {
+				st.Heard = append(st.Heard, string(s.ID))
 			}
 		}
 		n.mu.Unlock()
