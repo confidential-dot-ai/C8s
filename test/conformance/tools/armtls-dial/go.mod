@@ -3,7 +3,7 @@ module github.com/confidential-dot-ai/c8s/test/conformance/tools/armtls-dial
 go 1.27.3
 
 require (
-	github.com/confidential-dot-ai/attestation-go v0.8.1
+	github.com/confidential-dot-ai/attestation-go v0.8.2-0.20261028102134-fcdaf48f0eca
 	github.com/confidential-dot-ai/c8s v0.0.0
 	golang.org/x/crypto v0.58.0
 )

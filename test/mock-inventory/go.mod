@@ -6,7 +6,7 @@ require github.com/confidential-dot-ai/c8s v0.0.0
 
 require (
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
-	github.com/confidential-dot-ai/attestation-go v0.8.1 // indirect
+	github.com/confidential-dot-ai/attestation-go v0.8.2-0.20261028102134-fcdaf48f0eca // indirect
 	github.com/fxamacker/cbor/v2 v2.9.6 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/google/go-sev-guest v0.15.0 // indirect

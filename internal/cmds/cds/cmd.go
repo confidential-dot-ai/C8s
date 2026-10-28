@@ -12,6 +12,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsca"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cdslaunch"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/verify"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
@@ -125,6 +126,7 @@ func NewCmd() *cobra.Command {
 	}))
 
 	cmd.AddCommand(cdsca.NewCmd())
+	cmd.AddCommand(cdslaunch.NewCmd())
 
 	return cmd
 }

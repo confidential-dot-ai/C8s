@@ -130,7 +130,7 @@ pins its node with `--image-manifest`.
 
 | Field | Rule |
 |---|---|
-| `schema_version` | Exactly `"1"`. |
+| `schema_version` | Exactly `"1"`, or `"2"` for a document pinning a launch file. |
 | `tee` | The TEE family: `sev-snp` or `tdx`, which is what `derive` writes. A platform tag such as `snp` or `az-tdx` normalizes to its family. One file covers one family. |
 | `measurements` | At least one entry. Two entries may not pin the same tuple. |
 | `name` | Required, unique in the file, and diagnostic only: nothing matches on it. |
@@ -138,6 +138,7 @@ pins its node with `--image-manifest`.
 | `mrtd` | TDX only and required there, 96 lowercase hex. |
 | `rtmr` | TDX only: up to four slots, `rtmr[0]` must be `null`, a null slot is unpinned, `""` pins the all-zero register. |
 | `approver_key` | Optional: the launch key, PEM. The entry then also requires that this guest was launched for that key — the RTMR[3] seed on TDX, `HOST_DATA` on SEV-SNP — which only a measured node image on `bare-metal` carries. |
+| `launch_file` | Optional, schema 2 only: the exact bytes of the configuration file the guest was launched with. The entry then requires that the guest's launch binding is that file alone, with nothing extended on top. Excludes `approver_key`, which binds the same field. |
 
 Unknown fields, repeated JSON keys, trailing data and an empty `measurements`
 list are refused; omit the flag to pin nothing.
