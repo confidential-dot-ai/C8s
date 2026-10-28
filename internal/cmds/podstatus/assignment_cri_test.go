@@ -3,6 +3,7 @@ package podstatus
 import (
 	"context"
 	"net"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -40,7 +41,12 @@ func (s *assignmentCRI) ListContainers(context.Context, *cri.ListContainersReque
 func TestAssignmentCRIRequiresEmptyCompleteInventory(t *testing.T) {
 	for _, mode := range []string{"empty", "sandbox", "container", "rpc-error", "unavailable", "cancelled"} {
 		t.Run(mode, func(t *testing.T) {
-			socket := filepath.Join(t.TempDir(), "cri.sock")
+			dir, err := os.MkdirTemp("/tmp", "assignment-cri-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.RemoveAll(dir) })
+			socket := filepath.Join(dir, "cri.sock")
 			if mode != "unavailable" {
 				listener, err := net.Listen("unix", socket)
 				if err != nil {
@@ -56,7 +62,7 @@ func TestAssignmentCRIRequiresEmptyCompleteInventory(t *testing.T) {
 			if mode == "cancelled" {
 				cancel()
 			}
-			err := emptyAssignmentCRIAt(ctx, socket)
+			err = emptyAssignmentCRIAt(ctx, socket)
 			if (err == nil) != (mode == "empty") {
 				t.Fatalf("%s inventory accepted/refused incorrectly: %v", mode, err)
 			}
