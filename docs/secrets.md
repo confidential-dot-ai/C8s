@@ -20,7 +20,7 @@ not a Kubernetes Secret: nothing is written to the API server.
 
 CDS serves the secrets endpoint only when it can establish what a pod runs. It
 needs its own `--armtls-platform` (the chart's `cds.armtlsPlatform`, which
-`c8s install --hardware-platform` sets), `--measurements`, and node addresses
+`c8s install --hardware-platform` sets), its node pins, and node addresses
 bounding its callback to a node's admission inventory — the node service that
 records which containers each pod has run (`--sandbox-inventory-cidr`, or host
 routes from the live node list). Miss one and CDS logs a warning naming it and

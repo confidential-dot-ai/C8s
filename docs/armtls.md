@@ -73,8 +73,8 @@ warning instead ([verify.md](verify.md)). On TDX the launch measurement is the
 MRTD, which covers the firmware alone, so pins identify guest code only with two
 of the guest's runtime measurement registers pinned too: RTMR[1], holding the
 kernel, and RTMR[2], holding the command line that carries the dm-verity root
-hash (`c8s install --rtmrs`). A measurement covers boot state, so runtime
-compromise inside a measured node is out of scope.
+hash. A measurement covers boot state, so runtime compromise inside a measured
+node is out of scope.
 
 ## CDS issuance
 

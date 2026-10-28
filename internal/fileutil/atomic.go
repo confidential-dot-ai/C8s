@@ -4,6 +4,7 @@ package fileutil
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -84,4 +85,19 @@ func atomicTempName(name string) (string, error) {
 		return "", fmt.Errorf("generate atomic-write temp name: %w", err)
 	}
 	return "." + name + "." + hex.EncodeToString(suffix[:]) + ".tmp", nil
+}
+
+// WriteTemp writes data to a new temp file matching pattern and returns its
+// path. The caller removes the file.
+func WriteTemp(pattern string, data []byte) (string, error) {
+	f, err := os.CreateTemp("", pattern)
+	if err != nil {
+		return "", err
+	}
+	_, werr := f.Write(data)
+	if err := errors.Join(werr, f.Close()); err != nil {
+		os.Remove(f.Name())
+		return "", err
+	}
+	return f.Name(), nil
 }

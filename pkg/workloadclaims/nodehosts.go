@@ -2,6 +2,7 @@ package workloadclaims
 
 import (
 	"net"
+	"slices"
 	"sync/atomic"
 
 	corev1 "k8s.io/api/core/v1"
@@ -23,6 +24,17 @@ func (s cidrSet) contains(host string) bool {
 	return false
 }
 
+// PodCIDRs is every range a node assigns pod addresses from.
+func PodCIDRs(node *corev1.Node) []string {
+	var ranges []string
+	for _, cidr := range append([]string{node.Spec.PodCIDR}, node.Spec.PodCIDRs...) {
+		if cidr != "" && !slices.Contains(ranges, cidr) {
+			ranges = append(ranges, cidr)
+		}
+	}
+	return ranges
+}
+
 // NodeHostCIDRs derives the inventory dial bound from node objects: one host
 // route per InternalIP. A host route per node rather than a covering range,
 // deliberately — on a CNI that assigns pod IPs from the node subnet (AWS VPC
@@ -35,10 +47,7 @@ func (s cidrSet) contains(host string) bool {
 func NodeHostCIDRs(nodes []*corev1.Node) (hosts []*net.IPNet, excluded []string) {
 	var podRanges []*net.IPNet
 	for _, n := range nodes {
-		for _, c := range append([]string{n.Spec.PodCIDR}, n.Spec.PodCIDRs...) {
-			if c == "" {
-				continue
-			}
+		for _, c := range PodCIDRs(n) {
 			if _, network, err := net.ParseCIDR(c); err == nil {
 				podRanges = append(podRanges, network)
 			}

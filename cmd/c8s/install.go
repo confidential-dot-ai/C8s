@@ -5,7 +5,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,11 +29,10 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsconn"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/crane"
 	"github.com/confidential-dot-ai/c8s/internal/deployment"
+	"github.com/confidential-dot-ai/c8s/internal/fileutil"
 	"github.com/confidential-dot-ai/c8s/internal/helmchart"
 	"github.com/confidential-dot-ai/c8s/internal/version"
 	"github.com/confidential-dot-ai/c8s/internal/webhook"
@@ -67,12 +65,17 @@ var (
 	installUpstream     string
 	installWorkloadRefs []string
 
-	installResolveDigests     bool
-	installAttestEnabled      bool
-	installMeasurements       []string
-	installMeasurementsConfig string
-	installRegisters          []string
-	installInventoryCIDRs     []string
+	installResolveDigests bool
+	installAttestEnabled  bool
+	installCDSAddress     string
+	installCDSPin         string
+	installSeedOut        string
+	installInventoryCIDRs []string
+
+	// installCDS is the pin this install holds its CDS to, resolved once from
+	// the values the release renders with, so the chart, the clients this
+	// install dials and the commands it prints name one document.
+	installCDS *cdsPin
 )
 
 // Flag names referenced in more than one place (registration plus a Changed()
@@ -83,6 +86,9 @@ const (
 	flagHardwarePlatform = "hardware-platform"
 	flagWorkloadRef      = "workload-ref"
 	flagUpstream         = "upstream"
+	flagCDSAddress       = "cds-address"
+	flagCDSPin           = "cds-pin"
+	flagSeedOut          = "allowlist-seed-out"
 )
 
 // allowedCvmModes is the --cvm-mode enum: bare-metal/gke/aks are node-as-CVM
@@ -230,118 +236,50 @@ func operatorKeysPreflight(operatorKeys string, valuesFiles []string, force bool
 	return "installing with allowlist writes DISABLED (no --operator-keys); `c8s allowlist` add/remove/upload will not work, and CDS stores no route manifest, so the router answers 503 to every application request, until you set cds.operatorKeys and reinstall", nil
 }
 
-// cdsPinPreflight refuses an install that pins no CDS guest identity: no
-// --measurements, no --image-policy-file, and no -f values file setting
-// cds.measurements, cds.measurementsConfig or node.baked=true (a baked node
-// carries its pins in the measured launch config, which the chart cannot see).
-// The chart fails that render too; this names the install flags before
-// anything runs.
-func cdsPinPreflight(measurements []string, measurementsConfig string, valuesFiles []string) error {
-	if len(measurements) > 0 || measurementsConfig != "" {
+// cdsPreflight refuses an install that names no CDS: no --cds-address and
+// --cds-pin, and no -f values file setting cds.address, cds.measurementsConfig
+// or node.baked=true (a baked node runs its own CDS and carries its pin in the
+// measured launch config, which the chart cannot see). The chart fails that
+// render too; this names the install flags before anything runs.
+func cdsPreflight(address string, pin string, valuesFiles []string) error {
+	if cdsNamed(address, pin) {
 		return nil
 	}
+	values, err := cdsValues(valuesFiles)
+	if err != nil {
+		return err
+	}
+	named := func(path string) string {
+		text, _ := values[path].(string)
+		return text
+	}
+	baked, _ := values["node.baked"].(bool)
+	if baked || cdsNamed(named("cds.address"), named("cds.measurementsConfig")) {
+		return nil
+	}
+	return fmt.Errorf("nothing names the CDS this cluster trusts, so nothing dialing it could tell it from any other attested TEE: pass --%s <ip:port> and --%s <cds-pin.json>, the outputs of `c8s cds config new`", flagCDSAddress, flagCDSPin)
+}
+
+// cdsValues are the CDS settings the -f files name, merged as helm merges
+// them: the last file writing a path is the one the release renders with.
+func cdsValues(valuesFiles []string) (map[string]any, error) {
 	values := map[string]any{}
 	for _, f := range valuesFiles {
 		tree, err := decodeValuesFile(f)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		for _, path := range []string{"node.baked", "cds.measurements", "cds.measurementsConfig"} {
+		for _, path := range []string{
+			"node.baked",
+			"cds.address",
+			"cds.measurementsConfig",
+		} {
 			if v, ok := valueAtPath(tree, path); ok {
 				values[path] = v
 			}
 		}
 	}
-	set := func(path string) bool {
-		switch v := values[path].(type) {
-		case string:
-			return v != ""
-		case []any:
-			return len(v) > 0
-		case bool:
-			return v
-		}
-		return false
-	}
-	if set("node.baked") || set("cds.measurements") || set("cds.measurementsConfig") {
-		return nil
-	}
-	return errors.New("nothing pins the guest identity of this cluster's CDS, so CDS refuses to start and nothing dialing it could tell it from any other attested TEE: pass --measurements <launch-digest> (the node image's manifest.json value) or --image-policy-file <policy.json>")
-}
-
-// tdxRTMRPinWarning is the "MRTD does not confer code identity" warning for a
-// TDX install that pins no RTMRs: measurement pinning then covers the TDVF
-// firmware only, and a host can boot it with a substituted kernel and rootfs.
-// Satisfied by --rtmrs or by a -f values file that sets a non-empty cds.rtmrs.
-func tdxRTMRPinWarning(hardwarePlatform string, rtmrs, valuesFiles []string) (string, error) {
-	if hardwarePlatform != "tdx" || len(rtmrs) > 0 {
-		return "", nil
-	}
-	set, err := valuesFilesSetRTMRs(valuesFiles)
-	if err != nil || set {
-		return "", err
-	}
-	return "TDX with no --rtmrs: measurement pinning covers the TDVF firmware only (MRTD), NOT the guest kernel or rootfs — a host can boot the pinned firmware with substituted guest software and still attest. Pass --rtmrs 1=<hex>,2=<hex> (values read off a boot you trust, e.g. `c8s verify --kind lb` verbose output) to pin the guest image in-cluster", nil
-}
-
-// valuesFilesSetRTMRs reports whether any -f values file pins TDX RTMRs
-// (cds.rtmrs).
-func valuesFilesSetRTMRs(files []string) (bool, error) {
-	for _, f := range files {
-		tree, err := decodeValuesFile(f)
-		if err != nil {
-			return false, err
-		}
-		if v, ok := valueAtPath(tree, "cds.rtmrs"); ok {
-			if list, isList := v.([]any); isList && len(list) > 0 {
-				return true, nil
-			}
-		}
-	}
-	return false, nil
-}
-
-// preflightCDSNode fails fast (before the helm install) when no node carries
-// the CDS node-selector label. The chart pins the singleton CDS pod to that
-// label, so without a matching node CDS stays Pending and `helm --wait` would
-// block for the full timeout before failing with an opaque message. The label
-// requirement is exact (read straight from the chart's cds.node.selector), not
-// a heuristic.
-//
-// It reads the chart's default values, so it only guards the default path; an
-// operator who customizes via -f is trusted to manage node labels themselves
-// (the caller skips this when -f is supplied).
-func preflightCDSNode(ctx context.Context, chartPath string) error {
-	out, err := exec.CommandContext(ctx, "helm", "show", "values", chartPath).Output()
-	if err != nil {
-		return fmt.Errorf("helm show values %q: %w", chartPath, err)
-	}
-	var tree map[string]any
-	if err := yaml.Unmarshal(out, &tree); err != nil {
-		return fmt.Errorf("parse chart values: %w", err)
-	}
-
-	sel, ok := nestedMap(tree, "cds", "node", "selector")
-	if !ok || len(sel) != 1 {
-		// The chart's own one-pair guard will report a malformed selector; the
-		// preflight only owns the "no matching node" case.
-		return nil
-	}
-	var key, val string
-	for k, v := range sel {
-		key = k
-		val, _ = v.(string)
-	}
-
-	labeled, err := exec.CommandContext(ctx, "kubectl", "get", "nodes",
-		"-l", key+"="+val, "-o", "name").Output()
-	if err != nil {
-		return fmt.Errorf("kubectl get nodes -l %s=%s: %w", key, val, err)
-	}
-	if strings.TrimSpace(string(labeled)) == "" {
-		return fmt.Errorf("no node is labelled %s=%s, so the CDS pod cannot schedule (image policy pins it there). Label one: kubectl label node <node> %s=%s", key, val, key, val)
-	}
-	return nil
+	return values, nil
 }
 
 // preflightNotBakedNode refuses a second installation over the image-owned
@@ -955,20 +893,13 @@ func materializeStdinValues(files []string, stdin io.Reader) ([]string, func(), 
 			cleanup()
 			return nil, nil, fmt.Errorf("read values from stdin: %w", err)
 		}
-		tmp, err := os.CreateTemp("", "c8s-install-stdin-*.yaml")
+		tmp, err := fileutil.WriteTemp("c8s-install-stdin-*.yaml", data)
 		if err != nil {
-			cleanup()
-			return nil, nil, fmt.Errorf("create stdin values file: %w", err)
-		}
-		_, werr := tmp.Write(data)
-		cerr := tmp.Close()
-		if err := errors.Join(werr, cerr); err != nil {
-			os.Remove(tmp.Name())
 			cleanup()
 			return nil, nil, fmt.Errorf("write stdin values file: %w", err)
 		}
-		temps = append(temps, tmp.Name())
-		out = append(out, tmp.Name())
+		temps = append(temps, tmp)
+		out = append(out, tmp)
 	}
 	return out, cleanup, nil
 }
@@ -1100,6 +1031,12 @@ Requires the 'helm' and 'kubectl' CLIs to be on PATH, and 'crane' unless
 		if err != nil {
 			return err
 		}
+		pin, removePin, err := resolveCDSPin(installValues)
+		if err != nil {
+			return err
+		}
+		defer removePin()
+		installCDS = pin
 		installRoutesOutSet, installRoutesMaxAgeSet = cmd.Flags().Changed("routes-out"), cmd.Flags().Changed("routes-max-age")
 		if err := preflightUpstreamRoutes(); err != nil {
 			return err
@@ -1107,15 +1044,15 @@ Requires the 'helm' and 'kubectl' CLIs to be on PATH, and 'crane' unless
 		if err := preflightRoutesOut(); err != nil {
 			return err
 		}
-		if err := cdsPinPreflight(installMeasurements, installMeasurementsConfig, installValues); err != nil {
+		seedOnly := installSeedOut != ""
+		if seedOnly {
+			if installCDSAddress != "" || installCDSPin != "" {
+				return fmt.Errorf("--%s writes the seed the CDS is configured with, so it runs before --%s and --%s name one", flagSeedOut, flagCDSAddress, flagCDSPin)
+			}
+		} else if err := cdsPreflight(installCDSAddress, installCDSPin, installValues); err != nil {
 			return err
 		}
 		if warn, err := operatorKeysPreflight(installOperatorKeys, installValues, installForce); err != nil {
-			return err
-		} else if warn != "" {
-			fmt.Fprintln(os.Stderr, "warning: "+warn)
-		}
-		if warn, err := tdxRTMRPinWarning(installHardwarePlatform, installRegisters, installValues); err != nil {
 			return err
 		} else if warn != "" {
 			fmt.Fprintln(os.Stderr, "warning: "+warn)
@@ -1125,9 +1062,6 @@ Requires the 'helm' and 'kubectl' CLIs to be on PATH, and 'crane' unless
 		}
 		if _, err := exec.LookPath("kubectl"); err != nil {
 			return fmt.Errorf("kubectl CLI not found on PATH: %w", err)
-		}
-		if err := preflightNotBakedNode(cmd.Context()); err != nil {
-			return err
 		}
 		// Always read the adopted workloads, even when --resolve-digests=false
 		// discards workloadImages: this is the only pre-install existence check,
@@ -1208,18 +1142,25 @@ Requires the 'helm' and 'kubectl' CLIs to be on PATH, and 'crane' unless
 			return err
 		}
 		defer os.Remove(computedValues)
-		helmArgs := buildInstallHelmArgs(chartPath, computedValues, installValues, installCRDs, installWait)
-
-		// Fail fast on the default path if the CDS node is unlabelled, before
-		// mutating the cluster. Skipped when -f is supplied: a custom values
-		// file may disable image policy or change the selector, and the operator
-		// owns node labels in that case. Also skipped under --single-node, which
-		// clears the selector so no node needs the label.
-		if len(installValues) == 0 && !installSingleNode {
-			if err := preflightCDSNode(cmd.Context(), chartPath); err != nil {
-				return err
-			}
+		kubeVersion, err := clusterKubeVersion(cmd.Context())
+		if err != nil {
+			return err
 		}
+		render := seedRender{
+			chart:       chartPath,
+			release:     installRelease,
+			namespace:   installNamespace,
+			kubeVersion: kubeVersion,
+			valueFiles:  installValues,
+			computed:    computedValues,
+		}
+		if seedOnly {
+			return writeInstallSeed(cmd.Context(), render, installSeedOut)
+		}
+		if err := preflightNotBakedNode(cmd.Context()); err != nil {
+			return err
+		}
+		helmArgs := buildInstallHelmArgs(chartPath, computedValues, installValues, installCRDs, installWait)
 
 		// Fail fast when router's host port is already taken cluster-wide (e.g.
 		// an existing ingress owns 443), which would otherwise wedge `--wait`.
@@ -1254,8 +1195,11 @@ Requires the 'helm' and 'kubectl' CLIs to be on PATH, and 'crane' unless
 		if err := checkAdoptedEntries(adoptedEntries, values); err != nil {
 			return err
 		}
+		if err := checkNamedCDS(cmd.Context(), render, installCDS); err != nil {
+			return err
+		}
 		var routes upstreamRoutes
-		var cds cdsTarget
+		var cdsURL string
 		if upstream != "" {
 			hosts, skipped := routeHosts(values, installRelease)
 			for _, san := range skipped {
@@ -1268,7 +1212,7 @@ Requires the 'helm' and 'kubectl' CLIs to be on PATH, and 'crane' unless
 			if !installResolveDigests {
 				fmt.Fprintf(os.Stderr, "warning: --resolve-digests=false writes no allowlist entry named %q, so the router refuses the %s backend until an entry of that name describes its pod (c8s allowlist)\n", installUpstream, installUpstream)
 			}
-			if cds, err = installCDSTarget(values); err != nil {
+			if cdsURL, err = installCDSURL(values); err != nil {
 				return err
 			}
 		}
@@ -1305,7 +1249,7 @@ Requires the 'helm' and 'kubectl' CLIs to be on PATH, and 'crane' unless
 			}
 		}
 		if upstream != "" {
-			if err := deliverUpstreamRoutes(cmd.Context(), os.Stdout, routes, cds, adoptedEntries); err != nil {
+			if err := deliverUpstreamRoutes(cmd.Context(), os.Stdout, routes, cdsURL, adoptedEntries); err != nil {
 				return err
 			}
 		}
@@ -1315,29 +1259,20 @@ Requires the 'helm' and 'kubectl' CLIs to be on PATH, and 'crane' unless
 	},
 }
 
-// printAttestVerifyHint surfaces measurement pinning after an install with the
-// router attestation sidecar (on by default).
-//
-// The cluster's launch measurement M is a property of the deployed node image
-// (its manifest.json), known before the cluster runs. --measurements <M> pins it
-// into the internal mesh (cds.measurements) on the install itself; external
-// clients pin the same M when they verify.
+// printAttestVerifyHint surfaces CDS pinning after an install with the router
+// attestation sidecar (on by default): a client of this cluster verifies the
+// router under the same pin document the install named.
 func printAttestVerifyHint(w io.Writer, attestEnabled bool) {
 	if !attestEnabled {
 		return
 	}
-	if len(installMeasurements) > 0 {
-		fmt.Fprintln(w, "+ router attestation sidecar enabled; mesh pinned to --measurements.")
-		fmt.Fprintln(w, "  Clients verify with the same M and the mesh anchor:")
-		fmt.Fprintln(w, "    c8s verify https://<router> --measurements <M> --mesh-ca mesh-ca.pem")
-		fmt.Fprintln(w, "  Write the anchor with: c8s cds ca --out mesh-ca.pem")
-		return
+	pin := "<cds-pin.json>"
+	if installCDS != nil {
+		pin = installCDS.path
 	}
-	fmt.Fprintln(w, "+ router attestation sidecar enabled; the mesh pins come from")
-	fmt.Fprintln(w, "  --image-policy-file, a -f values file, or the node image. Clients verify")
-	fmt.Fprintln(w, "  against the same pins (--image-policy-file <policy.json> or")
-	fmt.Fprintln(w, "  --measurements <M>) and the mesh anchor:")
-	fmt.Fprintln(w, "    c8s verify https://<router> --image-policy-file <policy.json> --mesh-ca mesh-ca.pem")
+	fmt.Fprintln(w, "+ router attestation sidecar enabled; clients verify with the CDS pin")
+	fmt.Fprintln(w, "  and the mesh anchor:")
+	fmt.Fprintf(w, "    c8s verify https://<router> --image-policy-file %s --mesh-ca mesh-ca.pem\n", pin)
 	fmt.Fprintln(w, "  Write the anchor with: c8s cds ca --out mesh-ca.pem")
 }
 
@@ -1454,20 +1389,11 @@ func writeComputedValues(setArgs []string) (string, error) {
 	// a -f file rather than inline --set flags (stderr; helm's own output stays
 	// on stdout).
 	fmt.Fprintf(os.Stderr, "+ computed values:\n%s", out)
-	f, err := os.CreateTemp("", "c8s-install-values-*.yaml")
+	path, err := fileutil.WriteTemp("c8s-install-values-*.yaml", out)
 	if err != nil {
-		return "", fmt.Errorf("create computed values file: %w", err)
-	}
-	if _, err := f.Write(out); err != nil {
-		f.Close()
-		os.Remove(f.Name())
 		return "", fmt.Errorf("write computed values: %w", err)
 	}
-	if err := f.Close(); err != nil {
-		os.Remove(f.Name())
-		return "", fmt.Errorf("close computed values: %w", err)
-	}
-	return f.Name(), nil
+	return path, nil
 }
 
 // resolveImageTag returns the tag to resolve component images at: the explicit
@@ -1637,38 +1563,6 @@ func appendCvmModeInstallArgs(helmArgs []string, cvmMode, hardwarePlatform strin
 			"--set", "attestationApi.enabled=false",
 			"--set", "nriImagePolicy.baked=true",
 		)
-	}
-	// --measurements pins the expected launch measurement(s) of this cluster's
-	// CVM: every client that dials CDS holds it to that measurement
-	// (cds.measurements). The operator supplies M — it is a property of the
-	// deployed node image (its manifest.json), known before the cluster runs —
-	// so CDS is pinned from first boot rather than accept-any-then-tighten.
-	// Empty leaves CDS refusing to start, and the chart refusing to render it.
-	//
-	// Parse here, on the shared builder path, so the pinned list is validated
-	// and normalized regardless of which command emitted it — and so the fanned
-	// list matches exactly what was validated (a blank/whitespace entry, e.g.
-	// from a trailing comma, is dropped by the parser, not silently emitted as
-	// an empty pin that would disable pinning at that index).
-	digests, rtmrs, pinArgs, err := installPins()
-	if err != nil {
-		return nil, err
-	}
-	helmArgs = append(helmArgs, pinArgs...)
-	// cds.measurements pins the launch measurement CDS presents to the
-	// components that dial it. In bare-metal/gke/aks the node IS the CVM, so
-	// that is the node image's M.
-	for i, m := range digests {
-		helmArgs = append(helmArgs,
-			"--set-string", fmt.Sprintf("cds.measurements[%d]=%s", i, hex.EncodeToString(m)),
-		)
-	}
-	// --rtmrs completes the TDX pin: the launch measurement (MRTD) covers TDVF
-	// firmware alone, and RTMR[1]/[2] are what pin the guest kernel and the
-	// command line carrying the dm-verity root hash. Emitted normalized and in
-	// index order so the fanned values match what was validated.
-	for i, pin := range refvalues.FormatRegisterPins(rtmrs) {
-		helmArgs = append(helmArgs, "--set-string", fmt.Sprintf("cds.rtmrs[%d]=%s", i, pin))
 	}
 	for i, c := range installInventoryCIDRs {
 		helmArgs = append(helmArgs,
@@ -2591,7 +2485,7 @@ func init() {
 	installCmd.Flags().Int64Var(&installGetCertRunAsUser, "webhook-get-cert-run-as-user", 65532, "runAsUser for injected get-cert containers")
 	installCmd.Flags().Int64Var(&installGetCertRunAsGroup, "webhook-get-cert-run-as-group", 65532, "runAsGroup for injected get-cert containers")
 	installCmd.Flags().BoolVar(&installGetCertRunAsNonRoot, "webhook-get-cert-run-as-non-root", true, "set runAsNonRoot for injected get-cert containers")
-	installCmd.Flags().BoolVar(&installSingleNode, "single-node", false, "single-node / single-CVM cluster: clear the dedicated-CDS-node selector and taint toleration so every node is CDS-eligible (no role=cds label or dedicated node needed). Sets cds.node.selector={} and cds.node.tolerations=[]")
+	installCmd.Flags().BoolVar(&installSingleNode, "single-node", false, "single-node / single-CVM cluster: clear the dedicated-CDS-node selector and taint toleration (cds.node.selector={}, cds.node.tolerations=[])")
 	installCmd.Flags().BoolVar(&installVolumes, "volumes", false, "serve encrypted volumes (docs/volumes.md): deploy volumed, the node agent that opens a pod's volume devices, and pin its image into the NRI allowlist. Off by default — it runs privileged, with hostPID and a writable bind of the kubelet directory")
 	installCmd.Flags().StringSliceVar(&installWorkloadRefs, flagWorkloadRef, nil, "existing workload to adopt as a c8s confidential workload, as <cw-id>=<namespace>/<kind>/<name>[:<port>]; repeatable. Kind is any resource exposing a pod template at spec.template (deployment, statefulset, daemonset, or an operator CRD such as <kind>.<group>). The optional :<port> is the port the workload serves TLS on with its get-cert certificate, needed on the ref --upstream selects")
 	installCmd.Flags().StringVar(&installUpstream, flagUpstream, "", "confidential.ai/cw id of the adopted --workload-ref workload to route / to: writes a route manifest naming c8s-<id>.<ns>.svc.cluster.local:<port> (that ref's :<port>, serving TLS on its get-cert certificate) and the allowlist entry <id>, for every router.san DNS name")
@@ -2604,9 +2498,9 @@ func init() {
 	installCmd.Flags().BoolVar(&installResolveDigests, "resolve-digests", true, "resolve each c8s component image tag to its registry digest (via crane), pin it, and add the resolved images to the NRI allowlist (enables deriveComponents). Also reads each pinned image config, the router nginx image included (docker.io unless router.nginx.image.repository names a mirror). On by default; pass --resolve-digests=false when supplying digests via -f")
 	installCmd.Flags().BoolVar(&installAttestEnabled, "attest", true, "serve the router's attestation endpoints under /.well-known/c8s/ (browser/CLI verification via c8s-verify). On by default; --attest=false turns them off, while the cds-attest sidecar keeps routing application requests")
 	installCmd.Flags().StringSliceVar(&installInventoryCIDRs, "node-cidr", nil, "CIDR(s) holding this cluster's sandbox inventories (repeatable/comma-separated): CDS dials an inventory inside them and nowhere else. Under --cvm-mode=bare-metal/gke/aks these are node addresses, which is what stops a workload pointing the sandbox-digests callback at its own pod IP; the default is CDS deriving one host route per node from the live node list, so set a range only when the node network is separate from the pod network")
-	installCmd.Flags().StringSliceVar(&installMeasurements, "measurements", nil, "expected hex launch measurement(s) of the CVM CDS runs in (repeatable/comma-separated). Pins cds.measurements, which every client that dials CDS holds it to; required, unless --image-policy-file names the images. Under --cvm-mode=bare-metal/gke/aks this is the node image's manifest.json value")
-	cmdsutil.BindImagePolicyFlags(installCmd.Flags(), &installMeasurementsConfig, nil, "pins CDS, mesh and NRI; Helm requires unanchored images with identical RTMR pins; excludes --measurements and --rtmrs")
-	installCmd.Flags().StringSliceVar(&installRegisters, "rtmrs", nil, "TDX RTMR pin(s) <index>=<sha384-hex> completing --measurements on --hardware-platform=tdx (repeatable/comma-separated). Pins cds.rtmrs: RTMR[1] is the guest kernel, RTMR[2] the command line carrying the dm-verity root hash — without them the measurement pin covers TDVF firmware only. Read the values off a boot you trust; ignored for SNP evidence")
+	installCmd.Flags().StringVar(&installCDSAddress, flagCDSAddress, "", "<ip>:<port> of the CDS this cluster trusts: the VM `c8s cds config new` wrote a configuration and a pin for. Sets cds.address, which every client of this cluster dials and whose packet rules admit nothing else")
+	installCmd.Flags().StringVar(&installCDSPin, flagCDSPin, "", "path to that CDS's pin document (cds-pin.json): the image and launch file its VM proves. Sets cds.measurementsConfig, which every client holds the CDS to")
+	installCmd.Flags().StringVar(&installSeedOut, flagSeedOut, "", "write the component allowlist entries this install needs served to <file> and stop, touching nothing: the input `c8s cds config new --allowlist-seed` takes before the CDS this install then names exists")
 	installCmd.Flags().StringVar(&installImagePullSecret, "image-pull-secret", "", "name of an existing registry-credential Secret (kubernetes.io/dockerconfigjson) in the release namespace; the chart appends it to every component's imagePullSecrets, so all pods can pull the c8s images from an authenticated registry (e.g. a private mirror) from first start. The Secret itself is never created or managed by the install — the install fails fast if it is missing or has the wrong type")
 	installCmd.Flags().StringVar(&installImageTag, "image-tag", "", "component image tag to resolve digests at (default: the CLI build version, or 'main' for an unstamped build). Override to pin a specific branch/tag/release")
 	installCmd.Flags().StringVar(&installOperatorKeys, "operator-keys", "", "path to a PEM bundle of operator EC public keys that authorize `c8s allowlist` writes and route manifests; sets cds.operatorKeys, which also pins the router's keys. Without it, allowlist writes are disabled (reads still served). See the README \"Operator allowlist credentials\"")

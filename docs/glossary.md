@@ -71,5 +71,5 @@ CVM mode is [overview.md](overview.md#cvm-modes-and-hardware-platforms).
 | `pod-injector`, `pod-validator` | The mutating and validating admission webhooks that give a pod its C8s shape. | [operator.md](operator.md) |
 | **Verifying a deployment** | | |
 | `c8s verify` | Client command that checks a component's evidence against the pins you supply. | [verify.md](verify.md) |
-| measurement pin | A measurement or register value a verifier requires (`c8s install --rtmrs`, `c8s verify --rtmr`). | [measurements.md](measurements.md) |
+| measurement pin | A measurement or register value a verifier requires (`c8s verify --rtmr`). | [measurements.md](measurements.md) |
 | measurements config | Per-image measurements and registers `c8s measurements` reads and writes. | [measurements.md](measurements.md) |
