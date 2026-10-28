@@ -2,14 +2,17 @@ package allowlist
 
 import (
 	"bytes"
+	"crypto/ecdsa"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsconn"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
@@ -306,6 +309,56 @@ func TestWorkloadEditEditorFails(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "editor") {
 		t.Fatalf("expected an editor error, got %v", err)
 	}
+}
+
+// TestWorkloadEditKeepsTheEditWhenTheWriteFails proves an edit whose write
+// fails after the editor exits is saved in a file that apply then writes.
+func TestWorkloadEditKeepsTheEditWhenTheWriteFails(t *testing.T) {
+	dir := t.TempDir()
+	keyPath, pub := newOperatorKeypair(t, dir, "op.key")
+	unpinnedKeyPath, _ := newOperatorKeypair(t, dir, "unpinned.key")
+	t.Setenv(cdsconn.EnvOperatorKey, "")
+
+	cases := []struct {
+		name     string
+		keyFlags []string
+	}{
+		{name: "CDS refuses the write", keyFlags: []string{"--operator-key", unpinnedKeyPath}},
+		{name: "no operator key to sign it"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, cds := cdsTestServer(t, []*ecdsa.PublicKey{pub})
+			cds.seedWorkload("web", mustParseAllowlist(t, `{"schema":"c8s.allowlist/v1","workloads":{
+				"web":{"containers":[`+ctrJSON(digA, "/app")+`]}}}`).Workloads["web"])
+			setEditor(t, `{"label":"v2","containers":[`+ctrJSON(digA, "/app")+`]}`)
+
+			args := append([]string{"edit", "web", "--url", srv.URL, "--insecure"}, tc.keyFlags...)
+			_, errOut, err := runCmdIn("y\n", args...)
+			if err == nil {
+				t.Fatal("expected the write to fail")
+			}
+			saved := savedEditPath(t, errOut)
+
+			if _, _, err := runCmd("apply", saved, "--url", srv.URL, "--insecure", "--operator-key", keyPath); err != nil {
+				t.Fatalf("apply the saved edit: %v", err)
+			}
+			if wl, _ := cds.workload("web"); wl.Label != "v2" {
+				t.Fatalf("label after applying the saved edit = %q, want v2", wl.Label)
+			}
+		})
+	}
+}
+
+// savedEditPath returns the file edit's stderr names as holding the edit.
+func savedEditPath(t *testing.T, stderr string) string {
+	t.Helper()
+	m := regexp.MustCompile(`your edit is saved in (\S+);`).FindStringSubmatch(stderr)
+	if m == nil {
+		t.Fatalf("stderr names no saved edit:\n%s", stderr)
+	}
+	t.Cleanup(func() { os.Remove(m[1]) })
+	return m[1]
 }
 
 // --- workload delete ---
