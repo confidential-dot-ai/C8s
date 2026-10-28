@@ -331,13 +331,17 @@ runs:
         resources: {requests: {storage: 4Gi}}
       EOF
       fi
+      # Reported once a minute, and in full when it fails, so a slow import
+      # leaves its pace and its importer's state in the log.
+      status() { bash .github/scripts/tdx-image-acceptance.sh import-status "$NS" "$rootPvc" "$@" || true; }
       for i in $(seq 1 120); do
         phase=$(kubectl -n "$NS" get pvc "$rootPvc" -o jsonpath='{.metadata.annotations.cdi\.kubevirt\.io/storage\.pod\.phase}' 2>/dev/null || true)
         case "$phase" in
           Succeeded) echo "root disk $rootPvc ready"; break ;;
-          Failed) kubectl -n "$NS" describe pvc "$rootPvc" | tail -15; echo "::error::CDI import of $image failed"; exit 1 ;;
+          Failed) status full; echo "::error::CDI import of $image failed"; exit 1 ;;
         esac
-        [ "$i" -lt 120 ] || { kubectl -n "$NS" describe pvc "$rootPvc" | tail -15; echo "::error::CDI import of $image did not finish in 20 min (phase ${phase:-none})"; exit 1; }
+        [ "$i" -lt 120 ] || { status full; echo "::error::CDI import of $image did not finish in 20 min (phase ${phase:-none})"; exit 1; }
+        [ $((i % 6)) -ne 1 ] || status
         sleep 10
       done
 

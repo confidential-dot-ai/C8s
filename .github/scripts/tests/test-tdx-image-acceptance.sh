@@ -101,6 +101,10 @@ record_delete() {
   printf '%s/%s\n' "$2" "$3" >> "$FIXTURE_DELETES"
 }
 case " $* " in
+  *' get pod importer-'*) [[ -s ${FIXTURE_IMPORTER:-} ]] && cat "$FIXTURE_IMPORTER" || exit 1 ;;
+  *' get pvc '*'-scratch '*) [[ -s ${FIXTURE_SCRATCH:-} ]] && cat "$FIXTURE_SCRATCH" || exit 1 ;;
+  *' logs '*) [[ -z ${FIXTURE_LOGS_DENIED:-} ]] && printf 'pulling layer\n12.5%%\n' || { echo 'Error from server (Forbidden): pods/log is forbidden' >&2; exit 1; } ;;
+  *' describe pvc '*) printf 'Name: %s\nEvents:\n  Normal  Provisioning  waiting for scratch\n' "$3" ;;
   *' get pvc -l '*) cat "$FIXTURE_ROOTS" ;;
   *' get pvc '*) cat "$FIXTURE_PVC" ;;
   *' get pod '*) cat "$FIXTURE_BINDER" ;;
@@ -203,4 +207,46 @@ pass
 jq '.metadata.labels["ci.confidential.ai/run-id"] = "456"' "$fixture/binder-good.json" > "$FIXTURE_BINDER"
 reject bash "$script" cleanup "$vm" "$ns" "$run" "$repo"
 expect_deletes ''
+
+# import-status reports the import without owning anything: the PVC phase,
+# the importer pod, the scratch claim, and in full form the events and logs.
+cp "$fixture/pvc-good.json" "$FIXTURE_PVC"
+export FIXTURE_IMPORTER="$fixture/importer.json" FIXTURE_SCRATCH="$fixture/scratch.json"
+jq -n '{metadata: {name: "importer-c8s-tdx-123-2-root"}, status: {phase: "Running",
+  containerStatuses: [{name: "importer", restartCount: 2, state: {running: {}}}]}}' > "$FIXTURE_IMPORTER"
+jq -n '{metadata: {name: "c8s-tdx-123-2-root-scratch"}, status: {phase: "Bound"}}' > "$FIXTURE_SCRATCH"
+jq '.metadata.annotations["cdi.kubevirt.io/storage.pod.phase"] = "Running"
+  | .metadata.annotations["cdi.kubevirt.io/storage.import.importPodName"] = "importer-c8s-tdx-123-2-root"' \
+  "$fixture/pvc-good.json" > "$FIXTURE_PVC"
+status=$(bash "$script" import-status "$ns" "$vm-root")
+[[ $status == *'import Running'* && $status == *'importer-c8s-tdx-123-2-root Running'* && $status == *'restarts=2'* && $status == *'scratch Bound'* ]] \
+  || fail "import-status summary: $status"
+[[ $status != *'Events:'* && $status != *'pulling layer'* ]] || fail 'import-status summary dumped the full report'
+pass
+full=$(bash "$script" import-status "$ns" "$vm-root" full)
+[[ $full == *'waiting for scratch'* && $full == *'pulling layer'* ]] || fail "import-status full report: $full"
+pass
+export FIXTURE_LOGS_DENIED=1
+full=$(bash "$script" import-status "$ns" "$vm-root" full)
+[[ $full == *'waiting for scratch'* && $full == *'not readable'* ]] || fail "import-status must tolerate denied logs: $full"
+pass
+unset FIXTURE_LOGS_DENIED
+: > "$FIXTURE_IMPORTER"
+: > "$FIXTURE_SCRATCH"
+status=$(bash "$script" import-status "$ns" "$vm-root")
+[[ $status == *'importer absent'* && $status == *'scratch absent'* ]] || fail "import-status without an importer: $status"
+pass
+# The staged root of the non-exact lane is readable too; anything else is not.
+bash "$script" import-status "$ns" c8s-root-bbbbbbbbbbbb >/dev/null
+pass
+reject bash "$script" import-status default "$vm-root"
+reject bash "$script" import-status "$ns" "cds-$vm-root"
+# wait reports the import once a minute, so a slow import leaves a trace,
+# and in full when it gives up.
+cp "$fixture/pvc-good.json" "$FIXTURE_PVC"
+if bash "$script" wait "$vm" "$ns" "$run" "$repo" 1 >"$fixture/stdout" 2>"$fixture/stderr"; then fail 'wait succeeded without a Succeeded phase'; fi
+grep -q 'import Pending' "$fixture/stderr" || fail "wait did not report the import: $(cat "$fixture/stderr")"
+grep -q 'waiting for scratch' "$fixture/stderr" || fail "wait did not dump the full report on timeout: $(cat "$fixture/stderr")"
+pass
+
 echo "$tests exact-image acceptance assertions passed"
