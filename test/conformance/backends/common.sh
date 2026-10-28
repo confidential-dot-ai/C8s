@@ -31,7 +31,7 @@
 #   cds_block / cds_unblock          make the CDS unreachable for every node's pull, leaving
 #                                    the pods' issuance alone, and undo it; cds_block returns
 #                                    once node_refuses says a pull is refused
-#   node_refuses <port>              yes/no: a connect from the node to 127.0.0.1:<port>
+#   node_refuses                     yes/no: a connect from the node to the CDS
 #                                    fails or hangs now; a backend without a node shell answers yes
 #   cds_restart                      restart the CDS and wait until it serves again
 #   api_service_name                 the fully qualified DNS name of the cluster's
@@ -39,7 +39,6 @@
 #   mesh_restart                     recreate every controller-owned mesh member and wait
 #                                    until all are ready, so each holds a leaf under the
 #                                    CDS's mesh CA
-#   cds_volatile                     yes/no: a CDS restart loses the allowlist and its version
 #   served_version                   the version of the allowlist CDS serves now
 #   applied_version                  the allowlist version the admission plugin
 #                                    on the node decides with, from its health
@@ -65,16 +64,6 @@
 #                                    configuration sets, one per line
 #   operator_keys                    yes/no: the CDS holds an operator key
 #   seed_declares <digest>           yes/no: the seed of the CDS names digest
-#   seed_add <name> <file>           add the entry in file to the seed the CDS
-#                                    follows, under name; unsupported where
-#                                    the CDS does not follow its seed or the
-#                                    seed it follows is not the cluster's to
-#                                    change (only a measured node image's CDS
-#                                    follows its seed, and that seed is in
-#                                    the image)
-#   seed_restore                     put back the seed seed_add changed, if any
-#   cds_instance                     the CDS pod's uid and restart count, one
-#                                    line, so a later read tells a restart
 #   write_token <operator|foreign> <method> <path> <body-file> [validity]
 #                                    the Authorization header of a write token,
 #                                    signed with the operator's key or with one
@@ -123,8 +112,6 @@
 #                                    TCP to the CDS the node drops; as
 #                                    cds_request prints
 #   cds_pod_url                      the CDS address a pod's requester dials
-#   cds_service_url                  the CDS address a requester dials with its
-#                                    own address as the request's source
 #   cds_arg <flag>                   the value of --<flag>= the CDS runs with,
 #                                    empty when it is not set
 #   evidence <ns> <pod> <report-data-base64>
@@ -183,19 +170,18 @@
 #   router_tls_mode                  cds, webpki or acme: the public TLS
 #                                    credential the router selects
 #   cds_relay_block / cds_relay_unblock
-#                                    leave the CDS Service with no endpoints, so
-#                                    the router's allowlist relay cannot reach
-#                                    the CDS, and undo it; each returns once
-#                                    the Service's endpoints say so
-# node_name, image_ref, image_digest, pull_interval, cds_pod_url,
-# cds_service_url, cert_paths,
+#                                    make the CDS unreachable for the router's
+#                                    allowlist relay, leaving every other
+#                                    client's reach alone, and undo it
+# node_name, image_ref, image_digest, pull_interval, cds_pod_url, cert_paths,
 # pod_exec, exempt_namespace and api_service_name answer the same for a whole
 # run; callers may cache them. The
 # allowlist is state: served_allowlist answers for the moment of the call.
 #
 # The implementations below that are the same everywhere need these from the
 # backend, which the steps never call:
-#   cds_url                          the base URL of the CDS, reachable from here
+#   cds_url                          the base URL of the CDS the cluster trusts,
+#                                    reachable from here
 #   router_url                       the base URL of the router's public HTTPS
 #                                    address, reachable from here
 #   cds_plain_url                    the same listener over http://, or unsupported
@@ -352,47 +338,8 @@ operator_arg() {
         -l app.kubernetes.io/name=c8s-operator,app.kubernetes.io/component=operator
 }
 
-cds_arg() { deploy_arg "$1" '{.spec.template.spec.containers[?(@.name=="cds")].args}' c8s-cds; }
-
 # The image the webhook injects get-cert and its siblings from.
 injected_image() { operator_arg get-cert-image; }
-
-# Where an injected credential client dials CDS on an install: node "one"'s
-# own address and the CDS Service's node port.
-cds_pod_url() {
-    local node host port
-    node="$(node_name one)" || return
-    host="$(kubectl get node "$node" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')" || return
-    port="$(kubectl -n "$NS" get svc c8s-cds -o jsonpath='{.spec.ports[0].nodePort}')" || return
-    if [ -z "$host" ] || [ -z "$port" ]; then
-        echo "backend: no address or CDS node port for node $node" >&2
-        return 1
-    fi
-    echo "https://${host%% *}:$port"
-}
-
-# The CDS Service's cluster address: a requester, outside the mesh, keeps its
-# own address as the source there, which the node port translates away.
-cds_service_url() {
-    local port
-    port="$(kubectl -n "$NS" get svc c8s-cds -o jsonpath='{.spec.ports[0].port}')" || return
-    if [ -z "$port" ]; then
-        echo "backend: the CDS Service has no port" >&2
-        return 1
-    fi
-    echo "https://c8s-cds.$NS.svc:$port"
-}
-
-# The CDS keeps its allowlist and version counter in its data volume; a
-# restart loses both when that volume is an emptyDir (the chart's
-# cds.persistence.enabled=false), and the seed is applied again.
-cds_volatile() {
-    if [ -n "$(kubectl -n "$NS" get deploy c8s-cds -o jsonpath='{.spec.template.spec.volumes[?(@.name=="data")].emptyDir}')" ]; then
-        echo yes
-    else
-        echo no
-    fi
-}
 
 # --- The CDS API as a caller sees it ---
 # The signed path (allowlist_put, allowlist_delete) is the harness's way of
@@ -428,56 +375,6 @@ seed_declares() {
     if printf '%s' "$seed" | grep -qF "$1"; then echo yes; else echo no; fi
 }
 
-# The seed the CDS reads is the ConfigMap only where the CDS Deployment
-# mounts it; a baked node's CDS reads the seed held in the image, and the
-# chart still renders the ConfigMap, which nothing reads. A CDS rereads its
-# seed only with --follow-seed, which the chart sets only on a baked node. So
-# seed_add answers unsupported on a chart-managed install (not followed) and on a
-# baked node (followed, but not the cluster's to change), and the original
-# is kept for seed_restore only once a change is possible.
-seed_configmap() {
-    kubectl -n "$NS" get configmaps -o json |
-        jq -r '.items[] | select(.metadata.name | endswith("-allowlist-seed")) | .metadata.name' | head -1
-}
-
-seed_followed() {
-    kubectl -n "$NS" get deployments -l app.kubernetes.io/component=cds -o json |
-        jq -e '[.items[].spec.template.spec.containers[] | select(.name == "cds") | .args[]?] | index("--follow-seed")' >/dev/null
-}
-
-# Whether the CDS Deployment mounts the ConfigMap, as a projected volume.
-seed_mounted() {
-    kubectl -n "$NS" get deployments -l app.kubernetes.io/component=cds -o json |
-        jq -e --arg cm "$1" '[.items[].spec.template.spec.volumes[]? | .projected.sources[]?.configMap.name // .configMap.name // empty] | index($cm)' >/dev/null
-}
-
-seed_add() {
-    local cm original
-    cm="$(seed_configmap)"
-    [ -n "$cm" ] || return $UNSUPPORTED
-    seed_followed && seed_mounted "$cm" || return $UNSUPPORTED
-    original="$(scratch)/seed-original.json"
-    [ -s "$original" ] || kubectl -n "$NS" get configmap "$cm" -o json > "$original" || return
-    kubectl -n "$NS" get configmap "$cm" -o json |
-        jq --arg name "$1" --slurpfile entry "$2" \
-            '.data["allowlist-seed.json"] |= (fromjson | .workloads[$name] = $entry[0] | tojson)' |
-        kubectl replace -f - >/dev/null
-}
-
-# Only the data goes back: the ConfigMap's resourceVersion moved with the
-# change, so a replace of the saved object conflicts.
-seed_restore() {
-    local original cm
-    original="$(scratch)/seed-original.json"
-    [ -s "$original" ] || return 0
-    cm="$(jq -r .metadata.name "$original")"
-    kubectl -n "$NS" patch configmap "$cm" --type merge -p "$(jq -c '{data: .data}' "$original")" >/dev/null && rm -f "$original"
-}
-
-cds_instance() {
-    kubectl -n "$NS" get pods -l app.kubernetes.io/component=cds \
-        -o jsonpath='{range .items[*]}{.metadata.uid} {.status.containerStatuses[0].restartCount}{"\n"}{end}' | head -1
-}
 
 # A key that is not an operator key, minted once per run.
 foreign_key() {
@@ -614,7 +511,6 @@ serving_cert() {
 # The chart's router Deployment and its nginx ConfigMap in $ROUTER_NS, whether the
 # chart or a node image's launch configuration drives it.
 ROUTER_DEPLOY=c8s-router
-CDS_SELECTOR_ANNOTATION=c8s-conformance/selector
 
 router_serving_cert() { local url; url="$(router_url)" || return; serving_cert "$url"; }
 
@@ -669,46 +565,6 @@ router_tls_mode() {
     echo "$mode" | tr -d '[:space:]'
 }
 
-# The selector the Service had is kept in an annotation on it, so
-# cds_relay_unblock restores it from any process. Established connections
-# outlive the endpoints, so the block holds only once the relay's pooled ones
-# have idled out (the armTLS client's IdleConnTimeout, 30s).
-RELAY_IDLE_SECONDS=31
-cds_relay_block() {
-    local selector
-    [ -z "$(kubectl -n "$NS" get svc c8s-cds -o jsonpath="{.metadata.annotations.$CDS_SELECTOR_ANNOTATION}")" ] || return 0
-    selector="$(kubectl -n "$NS" get svc c8s-cds -o jsonpath='{.spec.selector}')"
-    [ -n "$selector" ] || { echo "backend: the CDS Service has no selector" >&2; return 1; }
-    kubectl -n "$NS" annotate svc c8s-cds "$CDS_SELECTOR_ANNOTATION=$selector" --overwrite >/dev/null || return
-    kubectl -n "$NS" patch svc c8s-cds --type merge -p '{"spec":{"selector":{"c8s-conformance/none":"none"}}}' >/dev/null || return
-    cds_endpoints_await empty || return
-    sleep "$RELAY_IDLE_SECONDS"
-}
-
-cds_relay_unblock() {
-    local selector
-    selector="$(kubectl -n "$NS" get svc c8s-cds -o jsonpath="{.metadata.annotations.$CDS_SELECTOR_ANNOTATION}")"
-    [ -n "$selector" ] || return 0
-    kubectl -n "$NS" patch svc c8s-cds --type json \
-        -p "[{\"op\":\"replace\",\"path\":\"/spec/selector\",\"value\":$selector}]" >/dev/null || return
-    kubectl -n "$NS" annotate svc c8s-cds "$CDS_SELECTOR_ANNOTATION-" >/dev/null || return
-    cds_endpoints_await present
-}
-
-# cds_endpoints_await <empty|present>
-cds_endpoints_await() {
-    local deadline=$(($(date +%s) + 60)) ips
-    while :; do
-        ips="$(kubectl -n "$NS" get endpoints c8s-cds -o jsonpath='{.subsets[*].addresses[*].ip}')"
-        case "$1" in
-            empty) [ -n "$ips" ] || return 0 ;;
-            present) [ -z "$ips" ] || return 0 ;;
-        esac
-        [ "$(date +%s)" -lt "$deadline" ] || { echo "backend: the CDS Service's endpoints are not $1 after 60s" >&2; return 1; }
-        sleep 1
-    done
-}
-
 # --- Mesh members ---
 # The requester the webhook injects into every per-pod mesh member.
 MESH_CERT_CONTAINER=c8s-cert
@@ -750,12 +606,8 @@ owned_mesh_members_ready() {
             and any(.status.conditions[]?; .type == "Ready" and .status == "True"))' >/dev/null
 }
 
-# Once per run, after the scenarios: the seed any scenario changed, then what
-# this backend did.
-teardown() {
-    seed_restore || true
-    teardown_backend
-}
+# Once per run, after the scenarios: what this backend kept for the run.
+teardown() { teardown_backend; }
 
 # A namespace the chart's webhook excludes (c8s.webhookExcludedNamespaces),
 # which also admits the harness's pods.

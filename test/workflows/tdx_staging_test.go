@@ -157,12 +157,14 @@ case "$*" in
   '-n confai-images get vm -o json')
     [[ $FIXTURE_MODE != 'VM read failure' ]] || exit 1
     printf '%s' "$FIXTURE_VMS" ;;
-  '-n confai-images get pvc -l ci.confidential.ai/managed=true,ci.confidential.ai/resource=tdx-node-root -o name')
-    printf 'persistentvolumeclaim/%s\n' "$FIXTURE_ROOT" ;;
-  "-n confai-images get persistentvolumeclaim/$FIXTURE_ROOT -o jsonpath={.metadata.creationTimestamp}")
+  '-n confai-images get pvc -l ci.confidential.ai/managed=true,ci.confidential.ai/resource in (tdx-node-root, tdx-cds-root) -o name')
+    printf 'persistentvolumeclaim/%s\npersistentvolumeclaim/%s\n' "$FIXTURE_ROOT" "$FIXTURE_CDS_ROOT" ;;
+  "-n confai-images get persistentvolumeclaim/$FIXTURE_ROOT -o jsonpath={.metadata.creationTimestamp}" | \
+  "-n confai-images get persistentvolumeclaim/$FIXTURE_CDS_ROOT -o jsonpath={.metadata.creationTimestamp}")
     printf old ;;
-  "-n confai-images delete persistentvolumeclaim/$FIXTURE_ROOT --ignore-not-found --wait=false")
-    printf '%s\n' "$FIXTURE_ROOT" >> "$FIXTURE_DELETIONS" ;;
+  "-n confai-images delete persistentvolumeclaim/$FIXTURE_ROOT --ignore-not-found --wait=false" | \
+  "-n confai-images delete persistentvolumeclaim/$FIXTURE_CDS_ROOT --ignore-not-found --wait=false")
+    printf '%s\n' "${4#persistentvolumeclaim/}" >> "$FIXTURE_DELETIONS" ;;
   *) printf '%s\n' "$*" >> "$FIXTURE_UNEXPECTED"; exit 1 ;;
 esac
 `,
@@ -180,18 +182,24 @@ esac
 		}
 	}
 	rootPVC := "c8s-root-" + strings.Repeat("a", 12)
-	for _, name := range []string{"unused old root", "stopped VM reference", "VMI reference", "DataVolume reference", "VMI read failure", "VM read failure", "malformed inventory"} {
+	cdsPVC := "c8s-cds-root-" + strings.Repeat("b", 12)
+	claim := func(name string) string { return `{"persistentVolumeClaim":{"claimName":"` + name + `"}}` }
+	// The lane stages a node image and a CDS image, so each case says which of
+	// the two shared roots a guest holds; every other root is unused.
+	for _, name := range []string{"unused old roots", "stopped VM reference", "VMI reference", "DataVolume reference",
+		"CDS root in use", "VMI read failure", "VM read failure", "malformed inventory"} {
 		t.Run(name, func(t *testing.T) {
 			output := t.TempDir()
 			vms, vmis := `{"items":[]}`, `{"items":[]}`
-			volume := `{"persistentVolumeClaim":{"claimName":"` + rootPVC + `"}}`
 			switch name {
 			case "stopped VM reference":
-				vms = `{"items":[{"spec":{"runStrategy":"Halted","template":{"spec":{"volumes":[` + volume + `]}}}}]}`
+				vms = `{"items":[{"spec":{"runStrategy":"Halted","template":{"spec":{"volumes":[` + claim(rootPVC) + `]}}}}]}`
 			case "VMI reference":
-				vmis = `{"items":[{"spec":{"volumes":[` + volume + `]}}]}`
+				vmis = `{"items":[{"spec":{"volumes":[` + claim(rootPVC) + `]}}]}`
 			case "DataVolume reference":
 				vms = `{"items":[{"spec":{"template":{"spec":{"volumes":[{"dataVolume":{"name":"` + rootPVC + `"}}]}}}}]}`
+			case "CDS root in use":
+				vmis = `{"items":[{"spec":{"volumes":[` + claim(cdsPVC) + `]}}]}`
 			case "malformed inventory":
 				vmis = `{broken`
 			}
@@ -199,7 +207,7 @@ esac
 			defer cancel()
 			cmd := exec.CommandContext(ctx, "bash", "-c", script)
 			cmd.Env = append(os.Environ(), "PATH="+fixture+string(os.PathListSeparator)+os.Getenv("PATH"),
-				"NS=confai-images", "FIXTURE_ROOT="+rootPVC, "FIXTURE_MODE="+name,
+				"NS=confai-images", "FIXTURE_ROOT="+rootPVC, "FIXTURE_CDS_ROOT="+cdsPVC, "FIXTURE_MODE="+name,
 				"FIXTURE_VMS="+vms, "FIXTURE_VMIS="+vmis,
 				"FIXTURE_DELETIONS="+filepath.Join(output, "deletions"), "FIXTURE_UNEXPECTED="+filepath.Join(output, "unexpected"))
 			log, err := cmd.CombinedOutput()
@@ -212,8 +220,15 @@ esac
 					t.Fatal(readErr)
 				}
 				want := ""
-				if file == "deletions" && name == "unused old root" {
-					want = rootPVC + "\n"
+				if file == "deletions" {
+					switch name {
+					case "unused old roots":
+						want = rootPVC + "\n" + cdsPVC + "\n"
+					case "stopped VM reference", "VMI reference", "DataVolume reference":
+						want = cdsPVC + "\n"
+					case "CDS root in use":
+						want = rootPVC + "\n"
+					}
 				}
 				if string(contents) != want {
 					t.Fatalf("unsafe root reaping: %s got %q want %q; log=%s", file, contents, want, log)

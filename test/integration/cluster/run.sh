@@ -333,40 +333,14 @@ rm -rf "$WORKDIR/cds"
     || fail "could not write the CDS configuration and pin"
 
 log "Starting the CDS outside the cluster"
-# Its attestation-api reports the launch binding of the file CDS boots on
-# (HOST_DATA = SHA-256 of those bytes), which is what the pin names and every
-# client checks. CDS shares that container's network namespace, so the
-# self-report it reads comes over loopback, as it does in a CDS VM.
-cds_stop
-docker run -d \
-    --name "$CDS_ATTESTATION_CONTAINER" \
-    --network "$KIND_NETWORK" \
-    -e "HOST_DATA=$(sha256sum "$WORKDIR/cds/cds-config.yaml" | cut -d' ' -f1)" \
-    "ghcr.io/confidential-dot-ai/mock-attestation:$IMAGE_TAG" >/dev/null \
-    || fail "could not start the CDS attestation-api"
-# Docker assigns the address, and CDS answers on it by sharing this
-# container's network namespace. It is the one endpoint every client of this
-# cluster dials, so the renders and the install below take it from here.
-docker inspect "$CDS_ATTESTATION_CONTAINER" \
-    -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' > "$WORKDIR/cds-ip"
-CDS_IP=$(cat "$WORKDIR/cds-ip")
-[ -n "$CDS_IP" ] || fail "the CDS has no address on the $KIND_NETWORK network"
-CDS_ADDRESS="$CDS_IP:8443"
-echo "$CDS_ADDRESS" > "$WORKDIR/cds-address"
+# The pin names the launch binding its attestation-api reports, which every
+# client checks (lib.sh, cds_start). Docker assigns the address, the one
+# endpoint every client of this cluster dials, so the renders and the install
+# below take it from there.
+cds_start
+CDS_ADDRESS="$(cds_address)"
 # How every install below names that CDS.
 CDS_INSTALL_FLAGS=(--cds-address "$CDS_ADDRESS" --cds-pin "$WORKDIR/cds/cds-pin.json")
-docker run -d \
-    --name "$CDS_CONTAINER" \
-    --network "container:$CDS_ATTESTATION_CONTAINER" \
-    -v "$WORKDIR/cds:/etc/confai:ro" \
-    "ghcr.io/confidential-dot-ai/cds:$IMAGE_TAG" \
-    --config=/etc/confai/cds-config.yaml \
-    --attestation-api-url=http://127.0.0.1:8400 \
-    --allowlist-db=/tmp/allowlist.db \
-    --allowlist-persistent=false \
-    --port=8443 \
-    --log-level=debug >/dev/null \
-    || fail "could not start CDS"
 cds_wait
 pass "CDS serves the cluster its own launch binds it to"
 

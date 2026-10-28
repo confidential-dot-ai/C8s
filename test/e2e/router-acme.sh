@@ -11,17 +11,23 @@
 # ACME leaf. `c8s verify` then checks from outside that the leaf behind the
 # front door is stamped with the seeded router entry.
 #
-# Deletes the lane's CVM first: the host may not hold two.
+# Deletes the lane's CVMs first: the host may not hold two of each.
 # Needs: c8s, crane, jq, kubectl (launcher cluster).
-# Env: NS, VM (the lane's CVM), IMAGE_MANIFEST, C8S_SOURCE_DIR, c8sRef,
-# GH_TOKEN (reads the component images).
+# Env: NS, VM (the lane's CVM), CDS_VM (the CDS VM it trusts), IMAGE_MANIFEST,
+# CDS_IMAGE_MANIFEST, NODE_CIDR (the launcher network the guests boot on),
+# C8S_SOURCE_DIR, c8sRef, GH_TOKEN (reads the component images).
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 . "$here/lib.sh"
-: "${NS:?}" "${VM:?}" "${IMAGE_MANIFEST:?}" "${C8S_SOURCE_DIR:?}" "${c8sRef:?}" "${GH_TOKEN:?}"
+: "${NS:?}" "${VM:?}" "${CDS_VM:?}" "${IMAGE_MANIFEST:?}" "${CDS_IMAGE_MANIFEST:?}" \
+  "${NODE_CIDR:?}" "${C8S_SOURCE_DIR:?}" "${c8sRef:?}" "${GH_TOKEN:?}"
 
 acme_vm=$VM-acme
+acme_cds=$CDS_VM-acme
 host=front.c8s-e2e.test
+# The lane boots TDX guests, and the CDS serves the port its unit fixes.
+platform=tdx
+cds_port=8443
 work=$(mktemp -d)
 cd "$work"
 
@@ -40,18 +46,55 @@ for pair in image:c8s-operator armtls-mesh-image:armtls-mesh; do
   flag=${pair%%:*} repo=ghcr.io/confidential-dot-ai/${pair#*:}
   render+=("--$flag-repository" "$repo" "--$flag-digest" "$(crane digest "$repo:$c8sRef")")
 done
-PATH="$work/bin:$PATH" c8s node-image render --hardware-platform tdx --kube-version "$rke2_version" "${render[@]}" --output-dir node-image
+PATH="$work/bin:$PATH" c8s node-image render \
+  --hardware-platform "$platform" \
+  --kube-version "$rke2_version" \
+  "${render[@]}" \
+  --output-dir node-image
 router=$(jq -er '[.workloads | keys[] | select(startswith("c8s-router-"))] | if length == 1 then .[0] else error("want one router entry") end' node-image/allowlist-seed.json)
 echo "seeded router entry: $router"
 
+# This cluster needs a CDS of its own: the launch below carries a fresh
+# operator key, and the lane's CDS is bound to the lane's launch file. The
+# Service comes first, because the launch file names the address before any VM
+# boots on it and a ClusterIP is one the cluster hands out up front.
+kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: $acme_cds
+  namespace: $NS
+spec:
+  selector: {kubevirt.io/domain: $acme_cds}
+  ports: [{port: $cds_port, targetPort: $cds_port}]
+EOF
+cds_ip=$(kubectl -n "$NS" get svc "$acme_cds" -o jsonpath='{.spec.clusterIP}')
+[ -n "$cds_ip" ] || fail "the CDS Service got no address"
+
 # The ACME directory is under .invalid, so the sidecar can reach no CA.
-c8s launch-config new --out launch --cluster-id "$acme_vm" --server-name c8s-node \
+c8s launch-config new \
+  --out launch \
+  --cluster-id "$acme_vm" \
+  --server-name c8s-node \
   --image-manifest "$IMAGE_MANIFEST" \
-  --router-hostname "$host" --acme-directory-url https://acme.invalid/directory
+  --cds-address "$cds_ip:$cds_port" \
+  --cds-image-manifest "$CDS_IMAGE_MANIFEST" \
+  --cds-platform "$platform" \
+  --cds-node-cidr "$NODE_CIDR" \
+  --cds-allowlist-seed node-image/allowlist-seed.json \
+  --router-hostname "$host" \
+  --acme-directory-url https://acme.invalid/directory
 kubectl -n "$NS" create secret generic "$acme_vm-opkey" \
   --from-file=pubkey=launch/server/pubkey \
   --from-file=launch.yaml=launch/server/launch.yaml \
   --from-file=launch.yaml.sig=launch/server/launch.yaml.sig
+# The CDS VM's opkeydata disk holds its launch file alone, under the name the
+# lane's CDS secret gives it; the TDX initrd extends those bytes into RTMR[3],
+# which is what launch/cds-pin.json names.
+cds_key=$(kubectl -n "$NS" get secret "$CDS_VM-opkey" -o json |
+  jq -er '.data | keys | if length == 1 then .[0] else error("want one file on the CDS opkeydata disk") end')
+kubectl -n "$NS" create secret generic "$acme_cds-opkey" \
+  --from-file="$cds_key=launch/cds-config.yaml"
 
 # The lane VM's spec with this launch's opkey and a scratch disk of its own.
 kubectl -n "$NS" get vm "$VM" -o json | jq --arg name "$acme_vm" '
@@ -66,9 +109,18 @@ kubectl -n "$NS" get vm "$VM" -o json | jq --arg name "$acme_vm" '
 kubectl -n "$NS" get pvc "$VM-scratch" -o json | jq --arg name "$acme_vm-scratch" '
   {apiVersion, kind, metadata: {name: $name, namespace: .metadata.namespace, labels: .metadata.labels},
    spec: (.spec | {accessModes, resources, storageClassName})}' > scratch.json
-kubectl -n "$NS" delete vm "$VM" --wait=true --timeout=180s
-kubectl -n "$NS" wait --for=delete "vmi/$VM" --timeout=180s
-kubectl create -f scratch.json -f vm.json
+# The CDS VM's spec with this launch's opkey; it boots the same staged image
+# and keeps no disk of its own.
+kubectl -n "$NS" get vm "$CDS_VM" -o json | jq --arg name "$acme_cds" '
+  {apiVersion, kind,
+   metadata: {name: $name, namespace: .metadata.namespace, labels: .metadata.labels, annotations: .metadata.annotations},
+   spec: (.spec
+     | .template.metadata.labels["kubevirt.io/domain"] = $name
+     | .template.spec.volumes |= map(
+         if .name == "opkey" then .secret.secretName = "\($name)-opkey" else . end))}' > cds-vm.json
+kubectl -n "$NS" delete vm "$VM" "$CDS_VM" --wait=true --timeout=180s
+kubectl -n "$NS" wait --for=delete "vmi/$VM" "vmi/$CDS_VM" --timeout=180s
+kubectl create -f scratch.json -f vm.json -f cds-vm.json
 
 ip=""
 for _ in $(seq 1 60); do
@@ -86,12 +138,12 @@ c8s get-kubeconfig --node "$ip" --operator-key launch/server.key --image-manifes
   --out kubeconfig --timeout 180s
 export KUBECONFIG=$work/kubeconfig
 
-# The kubeconfig is served before CDS is up.
+# The kubeconfig is served before the CDS VM is up.
 for _ in $(seq 1 30); do
-  c8s cds ca --url "https://$ip:30808" --image-policy-file launch/server.json --out mesh-ca.pem && break
+  c8s cds ca --url "https://$cds_ip:$cds_port" --image-policy-file launch/cds-pin.json --out mesh-ca.pem && break
   sleep 10
 done
-[ -s mesh-ca.pem ] || { echo "FAIL: no mesh CA from CDS at $ip:30808" >&2; exit 1; }
+[ -s mesh-ca.pem ] || { echo "FAIL: no mesh CA from the CDS at $cds_ip:$cds_port" >&2; exit 1; }
 
 # attest-lb binds the router's route manifest (#852), which the client checks
 # under the launch operator key. One route; its backend is never dialled here.
@@ -99,7 +151,7 @@ done
 # started until --jwt-clock-skew has passed, so retry with a fresh one.
 routed=""
 for _ in $(seq 1 12); do
-  if c8s routes add --new --url "https://$ip:30808" --image-policy-file launch/server.json \
+  if c8s routes add --new --url "https://$cds_ip:$cds_port" --image-policy-file launch/cds-pin.json \
       --operator-key launch/server.key --operator-keys launch/server/pubkey \
       --host "$host" --path / --address c8s-none.default.svc.cluster.local:9443 --workload none; then
     routed=1; break
