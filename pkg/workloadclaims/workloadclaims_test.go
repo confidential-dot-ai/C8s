@@ -195,7 +195,7 @@ func TestTokenRouteRefusesAnUnverifiedCaller(t *testing.T) {
 	if err == nil {
 		t.Fatal("an unverified caller was signed an assertion")
 	}
-	if !strings.Contains(err.Error(), "403") {
+	if !errors.Is(err, ErrSandboxRefused) {
 		t.Fatalf("error = %v, want a 403 refusal", err)
 	}
 }
