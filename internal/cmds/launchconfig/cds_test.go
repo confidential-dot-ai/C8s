@@ -6,8 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"gopkg.in/yaml.v3"
-
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
@@ -43,16 +41,8 @@ func testCDSPin(t *testing.T, family teetypes.Family, digests int) string {
 	return string(data)
 }
 
-// namesExternalCDS makes the fixture the v2 document of a cluster whose CDS
-// runs on a confidential VM of its own.
-func namesExternalCDS(t *testing.T, d *Document) {
-	t.Helper()
-	d.SchemaVersion = SchemaVersionV2
-	d.CDS = &CDS{Address: "192.0.2.50:8443", Measurements: testCDSPin(t, teetypes.FamilySNP, 2)}
-}
-
 // testDigestOnlyPin pins the CDS image without binding the configuration it
-// boots with, which is all a schema 1 document can express.
+// boots with, which no CDS client accepts.
 func testDigestOnlyPin(t *testing.T) string {
 	t.Helper()
 	data, err := refvalues.Format(refvalues.ReferenceValues{
@@ -71,7 +61,6 @@ func testDigestOnlyPin(t *testing.T) string {
 // policy still comes from the image and launch keys it was signed with.
 func TestStageNamesTheExternalCDS(t *testing.T) {
 	doc, key, pub := testDocument(t, "tdx", Server)
-	namesExternalCDS(t, &doc)
 	testLoader(t, doc, pub)
 	cfg := testConfig(t, doc, key)
 	if err := Stage(context.Background(), cfg); err != nil {
@@ -81,7 +70,11 @@ func TestStageNamesTheExternalCDS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := staged.CDSAddrPort().String(); got != "192.0.2.50:8443" {
+	endpoint, err := staged.CDSEndpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := endpoint.String(); got != "192.0.2.50:8443" {
 		t.Fatalf("staged CDS endpoint = %s", got)
 	}
 	cds := stagedCDSPolicy(t, staged)
@@ -102,33 +95,6 @@ func TestStageNamesTheExternalCDS(t *testing.T) {
 	}
 }
 
-// A v1 document derives both: the CDS runs beside the Kubernetes server, on
-// the node image, under the server launch key.
-func TestDerivedCDSIsTheServersOwnIdentity(t *testing.T) {
-	doc, _, _ := testDocument(t, "tdx", Server)
-	parsed, err := Parse(mustMarshalYAML(t, doc))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := parsed.CDSAddrPort().String(); got != doc.Server.Address+":30808" {
-		t.Fatalf("derived CDS endpoint = %s", got)
-	}
-	cds := stagedCDSPolicy(t, parsed)
-	if len(cds.Images) != 1 || string(cds.Images[0].Anchor) != doc.Server.OperatorPublicKey {
-		t.Fatalf("derived CDS policy = %+v, want the server launch identity alone", cds)
-	}
-	// A server that leaves its address to autodetection has no endpoint
-	// until Stage resolves one.
-	doc.Server.Address = ""
-	parsed, err = Parse(mustMarshalYAML(t, doc))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if parsed.CDSAddrPort().IsValid() {
-		t.Fatal("an unresolved server address yielded a CDS endpoint")
-	}
-}
-
 // stagedCDSPolicy reads the policy document back as the node services write
 // it for the clients that verify CDS.
 func stagedCDSPolicy(t *testing.T, d *Document) refvalues.ReferenceValues {
@@ -142,13 +108,4 @@ func stagedCDSPolicy(t *testing.T, d *Document) refvalues.ReferenceValues {
 		t.Fatal(err)
 	}
 	return pins
-}
-
-func mustMarshalYAML(t *testing.T, doc Document) []byte {
-	t.Helper()
-	data, err := yaml.Marshal(doc)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return data
 }

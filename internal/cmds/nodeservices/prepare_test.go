@@ -91,19 +91,6 @@ func TestPrepareFailsClosedOnBrokenBakedInputs(t *testing.T) {
 	}
 }
 
-func TestPrepareRejectsInvalidLaunchWorkloads(t *testing.T) {
-	root := prepareRoot(t)
-	doc := document(t, launchconfig.Server)
-	doc.Workloads = `{"schema":"c8s.allowlist/v1","workloads":`
-	err := Prepare(root, doc)
-	if err == nil || !strings.Contains(err.Error(), "launch workloads") {
-		t.Fatalf("got %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(root, PublicDir)); !errors.Is(err, os.ErrNotExist) {
-		t.Fatal("published a seed with rejected launch workloads")
-	}
-}
-
 func TestMissingLaunchDocumentHasNoBootSideEffects(t *testing.T) {
 	old := primaryIPv4
 	t.Cleanup(func() { primaryIPv4 = old })
@@ -175,16 +162,13 @@ func TestPrepareRejectsMissingOrPartialPeerPolicy(t *testing.T) {
 	}
 }
 
-// A v2 document names the cluster's CDS, so the plugin pulls from the address
-// the document carries, the credential clients reach only that endpoint, and
-// the policy pods read is the document's own: every launch digest of the CDS
-// image, on that VM's own TEE family.
+// The document names the cluster's CDS, so the plugin pulls from the address
+// it carries, the credential clients reach only that endpoint, and the policy
+// pods read is the document's own: every launch digest of the CDS image, on
+// that VM's own TEE family.
 func TestPrepareNamesTheExternalCDS(t *testing.T) {
 	root := prepareRoot(t)
-	pin := externalCDSPin(t)
 	doc := document(t, launchconfig.Server)
-	doc.SchemaVersion = launchconfig.SchemaVersionV2
-	doc.CDS = &launchconfig.CDS{Address: "192.0.2.50:8443", Measurements: string(pin)}
 
 	if err := Prepare(root, doc); err != nil {
 		t.Fatal(err)
@@ -231,8 +215,7 @@ func TestPrepareNamesTheExternalCDS(t *testing.T) {
 func TestPrepareRefusesAnUnrenderableCDSPolicy(t *testing.T) {
 	root := prepareRoot(t)
 	doc := document(t, launchconfig.Server)
-	doc.SchemaVersion = launchconfig.SchemaVersionV2
-	doc.CDS = &launchconfig.CDS{Address: "192.0.2.50:8443", Measurements: "{"}
+	doc.CDS = launchconfig.CDS{Address: "192.0.2.50:8443", Measurements: "{"}
 
 	if err := Prepare(root, doc); err == nil {
 		t.Fatal("accepted a document whose CDS policy does not parse")

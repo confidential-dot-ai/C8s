@@ -76,9 +76,9 @@ at its root:
   `/etc/confai/operator-pubkey`, and binds them into TDX RTMR[3]. An SNP
   launcher must set HOST_DATA to the SHA-256 of
   those same bytes.
-- `launch.yaml`: the strict `c8s-launch/v1` document selecting `server` or
+- `launch.yaml`: the strict `c8s-launch/v2` document selecting `server` or
   `agent`, the image measurements, cluster/node identity, join tokens,
-  trusted role keys and TLS SAN.
+  trusted role keys, TLS SAN and the CDS this cluster's clients trust.
 - `launch.yaml.sig`: the detached signature over those exact bytes.
 
 `c8s node launch-config new` writes all three for a server and its agents,
@@ -232,7 +232,7 @@ sidecar that sets HOST_DATA from the launch public key, and stages the CDI
 disk and the IGVM on the launcher in digest-named claims that later runs of
 the same image reuse (`.github/scripts/snp-node-image.sh`). Changing the
 attester requires a new measured image. Automatic TDX acceptance reads the
-image identity and `launch_config_version=c8s-launch/v1` from the publication
+image identity and `launch_config_version=c8s-launch/v2` from the publication
 run's validated evidence.
 
 Before either platform boots, the lane builds the paired CLI and generates
@@ -415,7 +415,7 @@ Automatic main-push publication in `c8s-image-publish.yml` calls the separate
 automatic publisher can call exact-image acceptance; neither workflow has a
 manual-dispatch trigger. It consumes the same run and attempt's
 immutable evidence: the source SHA, CDI and ORAS digests, the published
-manifest, and `launch_config_version=c8s-launch/v1`. Evidence validation
+manifest, and `launch_config_version=c8s-launch/v2`. Evidence validation
 binds these to the publication run and attempt and rejects a missing or
 incompatible launch version. Disk and UKI hashes plus MRTD/RTMR1/RTMR2 must
 match the fresh build; a differing nonmeasured build timestamp is not a

@@ -35,8 +35,7 @@ import (
 )
 
 const (
-	SchemaVersionV1          = "c8s-launch/v1"
-	SchemaVersionV2          = "c8s-launch/v2"
+	SchemaVersion            = "c8s-launch/v2"
 	DefaultAttestationAPIURL = "http://127.0.0.1:8400"
 	// Dir holds the root-only artifacts Stage writes for the node services.
 	Dir               = "/run/confos/launch"
@@ -128,12 +127,11 @@ type Document struct {
 	AgentOperatorPublicKeys []string     `yaml:"agentOperatorPublicKeys" json:"agent_operator_public_keys"`
 	TLSSAN                  string       `yaml:"tlsSAN,omitempty" json:"tls_san"`
 
-	// CDS is the confidential data service this cluster's nodes trust. A v2
-	// document names it; a v1 document derives it from the server.
-	CDS *CDS `yaml:"cds,omitempty" json:"cds,omitempty"`
+	// CDS is the confidential data service this cluster's nodes trust.
+	CDS CDS `yaml:"cds" json:"cds"`
 
-	// Workloads is an optional strict c8s.allowlist/v1 JSON document. Keeping
-	// its existing wire schema avoids an independent YAML policy language.
+	// Workloads is refused: a cluster's workload entries belong in the CDS
+	// configuration, which the generator writes.
 	Workloads string `yaml:"workloads,omitempty" json:"workloads,omitempty"`
 
 	// Router is the server's front door. A baked image cannot know it at
@@ -415,12 +413,14 @@ func Verify(ctx context.Context, cfg Config) (*Verified, error) {
 var tokenRE = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 func (d *Document) validate() error {
-	cds, err := d.cds()
-	if err != nil {
+	if d.SchemaVersion != SchemaVersion {
+		return fmt.Errorf("schemaVersion must be %s", SchemaVersion)
+	}
+	if err := d.validateCDS(); err != nil {
 		return err
 	}
-	if err := cds.validateCDSFields(d); err != nil {
-		return err
+	if d.Workloads != "" {
+		return fmt.Errorf("workloads is not a node's to apply: give the cluster's tenant entries to `c8s launch-config new --tenant-workloads`, which writes them into the CDS configuration")
 	}
 	if !dnsLabel(d.ClusterID) {
 		return fmt.Errorf("clusterID must be an RFC1123 label")
@@ -661,33 +661,30 @@ func readBounded(path string, limit int64) ([]byte, error) {
 
 // referenceValues pins this document's image under every launch key it names.
 func (d *Document) referenceValues() (refvalues.ReferenceValues, error) {
-	return d.pinsUnderLaunchKeys(append([]string{d.Server.OperatorPublicKey}, d.AgentOperatorPublicKeys...))
+	return peerPolicy(d.Image, append([]string{d.Server.OperatorPublicKey}, d.AgentOperatorPublicKeys...))
 }
 
-// serverReferenceValues pins the image under the server launch key alone: the
-// launch identity of this cluster's server, and of the CDS a v1 cluster runs
-// beside it.
-func (d *Document) serverReferenceValues() (refvalues.ReferenceValues, error) {
-	return d.pinsUnderLaunchKeys([]string{d.Server.OperatorPublicKey})
-}
-
-// pinsUnderLaunchKeys names the server's key first; every later key is an
-// agent's.
-func (d *Document) pinsUnderLaunchKeys(keys []string) (refvalues.ReferenceValues, error) {
-	platform, ok := d.Image.platform()
+// peerPolicy pins image under every launch key a cluster admits: the server's
+// key first, every later key an agent's.
+func peerPolicy(image Image, launchKeys []string) (refvalues.ReferenceValues, error) {
+	platform, ok := image.platform()
 	if !ok {
 		return refvalues.ReferenceValues{}, fmt.Errorf("image.platform must be tdx or snp")
 	}
 	pins := refvalues.ReferenceValues{Family: platform.family}
-	for i, pub := range keys {
+	for i, pub := range launchKeys {
 		name := "server"
 		if i > 0 {
 			name = fmt.Sprintf("agent-%d", i)
 		}
-		entry := remote.ImagePin{Name: name, Digest: mustDecodeHex(d.Image.Measurement), Anchor: []byte(pub)}
-		if len(d.Image.RTMRs) > 0 {
-			entry.Registers = make(map[int][]byte, len(d.Image.RTMRs))
-			for idx, digest := range d.Image.RTMRs {
+		entry := remote.ImagePin{
+			Name:   name,
+			Digest: mustDecodeHex(image.Measurement),
+			Anchor: []byte(pub),
+		}
+		if len(image.RTMRs) > 0 {
+			entry.Registers = make(map[int][]byte, len(image.RTMRs))
+			for idx, digest := range image.RTMRs {
 				entry.Registers[idx] = mustDecodeHex(digest)
 			}
 		}

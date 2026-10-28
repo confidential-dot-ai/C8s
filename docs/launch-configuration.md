@@ -21,8 +21,9 @@ reads `pubkey` before `switch_root`:
   bytes.
 
 `c8s node launch-config new` writes all three per node, plus the cluster's
-private keys and client policies; `c8s node launch-config add-agent` adds a
-node later, and `c8s keys sign-launch` re-signs a hand-edited document.
+private keys, client policies and the launch file and pin of the CDS VM its
+nodes trust; `c8s node launch-config add-agent` adds a node later, and
+`c8s keys sign-launch` re-signs a hand-edited document.
 
 ## Document rules
 
@@ -40,7 +41,7 @@ column names the role that must carry the field.
 
 | Field | Required | Holds |
 |---|---|---|
-| `schemaVersion` | yes | `c8s-launch/v1` or `c8s-launch/v2`. |
+| `schemaVersion` | yes | `c8s-launch/v2`. |
 | `clusterID` | yes | The cluster's name, an RFC1123 label. |
 | `role` | yes | `server` or `agent`. |
 | `image.platform` | yes | `tdx` or `snp`, and it must be the platform this boot is on. |
@@ -56,9 +57,9 @@ column names the role that must carry the field.
 | `server.operatorPublicKey` | yes | The server launch key, PEM. A server boot is authorized only for these exact bytes. |
 | `agentOperatorPublicKeys` | agent | The agent launch keys this cluster trusts, PEM, at most 128, all distinct and none equal to the server's. A server document may list them; an agent document must. |
 | `tlsSAN` | no | DNS name for the front-door certificate. Default `c8s.local`. |
-| `cds.address` | v2 | The CDS endpoint, `<IPV4>:<port>`. A v1 document carries no `cds` block. |
-| `cds.measurements` | v2 | One measurements JSON document ([measurements.md](measurements.md)), pinning the CDS image to the launch file that VM boots with. |
-| `workloads` | no | One `c8s.allowlist/v1` JSON document, applied as the node's initial allowlist ([allowlist-entries.md](allowlist-entries.md)). |
+| `cds.address` | yes | The CDS endpoint, `<IPV4>:<port>`. |
+| `cds.measurements` | yes | One measurements JSON document ([measurements.md](measurements.md)), pinning the CDS image to the launch file that VM boots with. Every entry must bind that file. |
+| `workloads` | refused | A cluster's workload entries belong in the CDS configuration: pass them to `c8s node launch-config new --tenant-workloads`. |
 | `router.hostnames` | no | Server only: up to 100 lowercase DNS names the router serves. A non-empty list puts the baked front door in ACME mode at boot. |
 | `router.acmeEmail` | no | Bare email address for the ACME account. Requires `hostnames`. |
 | `router.acmeDirectoryURL` | no | An `https` ACME directory URL, for example a staging directory. Requires `hostnames`. |
@@ -67,10 +68,9 @@ column names the role that must carry the field.
 
 The node's own measurement pins follow from the document rather than being
 written in it: they are derived from `image` plus every launch key the
-document names. A v1 document derives its CDS — the Certificate Distribution
-Service, which holds policy and signs workload certificates — the same way:
-it runs on the server's node at `https://<server.address>:30808`, under the
-server launch key. A v2 document instead names the CDS in `cds`.
+document names. The CDS — the Certificate Distribution Service, which holds
+policy and signs workload certificates — runs on a confidential VM of its own,
+on the TEE family its pin names, which need not be the one these nodes boot on.
 
 ## The signature
 
@@ -111,10 +111,9 @@ field instead, which is why this flow is for a measured node image on
    be `server.operatorPublicKey` byte for byte; an `agent` boot requires it to
    appear in `agentOperatorPublicKeys` and to differ from the server's.
 6. Write the staged artifacts, root-only, under `/run/confos/launch`: the
-   document as `config.json`, the launch key, this cluster's node peer pins,
-   and the initial allowlist when the document carries one. The node services
-   render the CDS pins from the staged document, for the clients that verify
-   it.
+   document as `config.json`, the launch key and this cluster's node peer
+   pins. The node services render the CDS pins from the staged document, for
+   the clients that verify it.
 7. Stage what RKE2 reads: the join tokens, the node password, the role
    fragment under `/etc/rancher/rke2/config.yaml.d/`, and `registries.yaml`
    when the document sets mirrors. The role marker is written last, so a step

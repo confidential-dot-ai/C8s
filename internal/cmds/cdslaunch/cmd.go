@@ -8,13 +8,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
-)
-
-// The files `new` writes into --out.
-const (
-	configFile = "cds-config.yaml"
-	pinFile    = "cds-pin.json"
 )
 
 // options are one cluster's CDS settings as the operator supplies them.
@@ -66,7 +61,7 @@ per --vcpus count the VM may boot with.`,
 				return err
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "wrote %s and %s\n",
-				filepath.Join(opts.dir, configFile), filepath.Join(opts.dir, pinFile))
+				filepath.Join(opts.dir, cdsconfig.ConfigFile), filepath.Join(opts.dir, cdsconfig.PinFile))
 			return nil
 		},
 	}
