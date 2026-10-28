@@ -386,6 +386,11 @@ func podBootstrapContainer(pod *api.PodSandbox, id, name, digest string) *api.Co
 
 func startPodNRIRuntime(t *testing.T, dir string, registered chan<- struct{}, inventory ...func() ([]*api.PodSandbox, []*api.Container)) *adaptation.Adaptation {
 	t.Helper()
+	return startPodNRIRuntimeObserved(t, dir, registered, nil, inventory...)
+}
+
+func startPodNRIRuntimeObserved(t *testing.T, dir string, registered chan<- struct{}, onSync func(error), inventory ...func() ([]*api.PodSandbox, []*api.Container)) *adaptation.Adaptation {
+	t.Helper()
 	var once sync.Once
 	nri, err := adaptation.New("pod-bootstrap-test", "1", func(ctx context.Context, cb adaptation.SyncCB) error {
 		var pods []*api.PodSandbox
@@ -394,6 +399,9 @@ func startPodNRIRuntime(t *testing.T, dir string, registered chan<- struct{}, in
 			pods, containers = inventory[0]()
 		}
 		_, err := cb(ctx, pods, containers)
+		if onSync != nil {
+			onSync(err)
+		}
 		if err == nil {
 			once.Do(func() { close(registered) })
 		}

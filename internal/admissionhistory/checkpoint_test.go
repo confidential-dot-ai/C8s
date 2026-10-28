@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
@@ -109,11 +110,18 @@ func TestCheckpointRejectsInconsistentHistory(t *testing.T) {
 	h.Record("live", "sha256:a", "", []string{"run"}, env)
 	raw, _ := h.Checkpoint()
 	cases := map[string]func(*historyCheckpoint){
-		"version":             func(s *historyCheckpoint) { s.Version++ },
-		"missing records":     func(s *historyCheckpoint) { s.Records = nil },
-		"zero sequence":       func(s *historyCheckpoint) { s.Records[0].Sequence = 0 },
-		"future sequence":     func(s *historyCheckpoint) { s.Records[0].Sequence++ },
-		"duplicate record":    func(s *historyCheckpoint) { s.Records = append(s.Records, s.Records[0]) },
+		"version":          func(s *historyCheckpoint) { s.Version++ },
+		"missing records":  func(s *historyCheckpoint) { s.Records = nil },
+		"zero sequence":    func(s *historyCheckpoint) { s.Records[0].Sequence = 0 },
+		"future sequence":  func(s *historyCheckpoint) { s.Records[0].Sequence++ },
+		"duplicate record": func(s *historyCheckpoint) { s.Records = append(s.Records, s.Records[0]) },
+		"duplicate observation with independent sequence and live ID": func(s *historyCheckpoint) {
+			s.Sequence++
+			second := s.Records[0]
+			second.Sequence = s.Sequence
+			second.Running = []string{"second"}
+			s.Records = append(s.Records, second)
+		},
 		"duplicate live ID":   func(s *historyCheckpoint) { s.Records[0].Running = []string{"live", "live"} },
 		"empty live ID":       func(s *historyCheckpoint) { s.Records[0].Running = []string{""} },
 		"missing live IDs":    func(s *historyCheckpoint) { s.Records[0].Running = nil },
@@ -140,4 +148,53 @@ func TestCheckpointRejectsInconsistentHistory(t *testing.T) {
 			t.Fatal("accepted ambiguous or incomplete JSON")
 		}
 	}
+}
+
+func TestCheckpointRefusesOversizedHistoryAndUnboundedEvidence(t *testing.T) {
+	t.Run("serialized history", func(t *testing.T) {
+		var h History
+		payload := strings.Repeat("x", 16<<10)
+		state := historyCheckpoint{Version: 1, Unresolved: []string{}}
+		// A long-lived Pod can accumulate many individually executable launches.
+		// Each argument fits Linux's per-argument limit; their history exceeds
+		// the checkpoint bound only cumulatively.
+		for i := range maxCheckpointBytes/len(payload) + 1 {
+			id := fmt.Sprint(i)
+			argv := []string{"run", id, payload}
+			h.Record(id, "sha256:a", "", argv, nil)
+			state.Sequence++
+			state.Records = append(state.Records, checkpointRecord{
+				Container: checkpointContainer{Digest: "sha256:a", Argv: argv}, Sequence: state.Sequence, Running: []string{id},
+			})
+		}
+		if raw, err := h.Checkpoint(); err == nil || raw != nil || !strings.Contains(err.Error(), "too large") {
+			t.Fatalf("oversized history produced usable state or the wrong refusal: %v", err)
+		}
+		// Syntactically valid stored records above the bound must also be
+		// refused on restore, before they can become retained authority.
+		raw, err := json.Marshal(state)
+		if err != nil || len(raw) <= maxCheckpointBytes {
+			t.Fatalf("invalid oversized checkpoint fixture: %d bytes, %v", len(raw), err)
+		}
+		if _, err := RestoreCheckpoint(raw); err == nil {
+			t.Fatal("restored a checkpoint above its storage bound")
+		}
+	})
+	t.Run("variable evidence budget", func(t *testing.T) {
+		var h History
+		fit := allowlist.MaxSandboxVariableEvidenceBytes / observeAtLimits(t, "x").VariableEvidenceBytes()
+		for i := range fit + 1 {
+			id := fmt.Sprint(i)
+			h.Record(id, "sha256:a", "", []string{"run", id}, observeAtLimits(t, id))
+		}
+		raw, err := h.Checkpoint()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := RestoreCheckpoint(raw); err == nil || !strings.Contains(err.Error(), "evidence budget") {
+			t.Fatalf("restored evidence without its cumulative budget refusal: %v", err)
+		}
+		h.Bound(nil)
+		_ = restoreHistory(t, h)
+	})
 }
