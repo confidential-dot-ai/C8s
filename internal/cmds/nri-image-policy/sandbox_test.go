@@ -504,11 +504,11 @@ func TestCheckSandboxModes(t *testing.T) {
 	}
 }
 
-// The measured base excuses host privilege in three steps: a static pod, the
-// host network alone, or a launch an entry pins. An open entry still admits
-// its image, so a privileged pod with the node's root mounted is refused for
-// the sandbox, not for the image.
-func TestNodeTCBExemptsOnlyStaticHostNetworkOrPinnedLaunches(t *testing.T) {
+// The measured base excuses host privilege for a static pod or a launch an
+// entry pins. An open entry still admits its image, so a pod with the node's
+// root mounted, or only its network, is refused for the sandbox, not for the
+// image.
+func TestNodeTCBExemptsOnlyStaticOrPinnedLaunches(t *testing.T) {
 	open := allowlist.Container{
 		Command: allowlist.ArgvPolicy{Policy: allowlist.PolicyAny},
 		Args:    allowlist.ArgvPolicy{Policy: allowlist.PolicyAny},
@@ -542,7 +542,8 @@ func TestNodeTCBExemptsOnlyStaticHostNetworkOrPinnedLaunches(t *testing.T) {
 		want   imageVerdict
 	}{
 		{name: "open entry, privileged with the node root", entry: open, ctr: privileged, argv: shell, want: verdictDeny},
-		{name: "open entry, host network alone", entry: open, pod: hostNetwork, argv: shell, want: verdictAllow},
+		{name: "open entry, host network alone", entry: open, pod: hostNetwork, argv: shell, want: verdictDeny},
+		{name: "pinned entry at its own launch, host network", entry: pinned, pod: hostNetwork, ctr: privileged, argv: []string{"/floor"}, want: verdictAllow},
 		{name: "open entry, host network and privileged", entry: open, pod: hostNetwork, ctr: privileged, argv: shell, want: verdictDeny},
 		{name: "open entry, static pod", entry: open, static: true, ctr: privileged, argv: shell, want: verdictAllow},
 		{name: "pinned entry at its own launch", entry: pinned, ctr: privileged, argv: []string{"/floor"}, want: verdictAllow},

@@ -145,19 +145,20 @@ key, not an allowlist field.
 
 The control plane picks the image a pod runs, so a base entry that leaves its
 launch open would otherwise let the cluster admin run that image with a shell
-and the node's root. A launch the base admits is therefore exempt in three
-steps, and nothing more:
+and the node's root. A launch the base admits is therefore exempt in two
+cases, and nothing more:
 
 - a kubelet static pod (sandbox annotation `kubernetes.io/config.source: file`,
   which the kubelet sets itself and writes `api` for every API pod): its
   manifest comes only from RKE2 on the node, from the measured config and the
   signed launch document;
-- the host network alone (the node's network and uts namespaces), for any entry;
-- anything else only under an entry that pins the launch: command, args and
+- any other pod only under an entry that pins the launch: command, args and
   mounts not `any`, and the environment constrained.
 
-An open entry, such as the RKE2 chart jobs (`klipper-helm`) or the Cilium
-operator, admits its image, and the pod is sandboxed like any other.
+An open entry admits its image, and the pod is sandboxed like any other, the
+host network included. The RKE2 chart jobs (`klipper-helm`) and the Cilium
+operator run with the host network, so their entries pin every launch the
+node runs, environment included.
 
 A measured base can also tag a container with a platform role, the identity
 C8s's own node-side invocations run under. It grants the role only with the
