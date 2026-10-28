@@ -82,3 +82,20 @@ func TestIssuedAtOnlyOnStartDecrees(t *testing.T) {
 		t.Error("a SetVoters decree with issued_at_ms applied")
 	}
 }
+
+// A start decree is not issued after it expires: an operator clock far ahead
+// would otherwise set a start time that refuses every operator token until
+// then.
+func TestIssuedAtNotAfterExpiry(t *testing.T) {
+	op, pub := operatorKey(t)
+	pre := PreGenesis(testCluster, pub)
+	now := time.Now()
+	ahead := signDecree(t, op, Decree{Kind: Genesis, BootstrapNode: "n0", ExpiresAt: now.Add(10 * time.Minute), IssuedAtMS: now.Add(365 * 24 * time.Hour).UnixMilli()})
+	if err := CheckDecree(ahead, pre, now); err == nil {
+		t.Error("a Genesis decree issued a year after it expires applied")
+	}
+	ok := signDecree(t, op, Decree{Kind: Genesis, BootstrapNode: "n0", ExpiresAt: now.Add(10 * time.Minute), IssuedAtMS: now.UnixMilli()})
+	if err := CheckDecree(ok, pre, now); err != nil {
+		t.Errorf("a Genesis decree issued now: %v", err)
+	}
+}
