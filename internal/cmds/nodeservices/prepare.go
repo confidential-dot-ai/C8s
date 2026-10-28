@@ -52,7 +52,7 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 		return fmt.Errorf("baked workload seed: %w", err)
 	}
 	if d.Role == launchconfig.Server {
-		server, err := serverOutputs(d, bakedData)
+		server, err := serverOutputs(d)
 		if err != nil {
 			return err
 		}
@@ -84,7 +84,7 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 	if err := fillNodeValues(base, d.Node); err != nil {
 		return err
 	}
-	if err := mergeWorkloads(base, bakedSeed, true); err != nil {
+	if err := mergeBakedSeed(base, bakedSeed); err != nil {
 		return fmt.Errorf("merge chart seed into NRI base: %w", err)
 	}
 	a["base"] = base
@@ -271,7 +271,6 @@ func appendCredentialRole(policy map[string]any, address netip.AddrPort) error {
 // as loose strings spread across Prepare.
 type serverConfig struct {
 	operatorPubKey []byte
-	allowlistSeed  []byte
 	tlsSAN         string
 	router         launchconfig.Router
 }
@@ -280,9 +279,13 @@ type serverConfig struct {
 // these, and an agent clears exactly these. The router files are always
 // written, empty when unset, so the router pod never waits on a missing file.
 var serverOutputNames = []string{
-	"operator-pubkey", "allowlist-seed.json", "tls-san",
-	"router/tls.conf", "router/hostnames",
-	"router/acme-email", "router/acme-directory-url", "router/front-door-mode",
+	"operator-pubkey",
+	"tls-san",
+	"router/tls.conf",
+	"router/hostnames",
+	"router/acme-email",
+	"router/acme-directory-url",
+	"router/front-door-mode",
 	"router/request-body.conf",
 }
 
@@ -310,9 +313,8 @@ func (c serverConfig) files() map[string][]byte {
 		hostnames = append(hostnames, name+"\n"...)
 	}
 	files := map[string][]byte{
-		"operator-pubkey":     c.operatorPubKey,
-		"allowlist-seed.json": c.allowlistSeed,
-		"tls-san":             []byte(c.tlsSAN + "\n"),
+		"operator-pubkey": c.operatorPubKey,
+		"tls-san":         []byte(c.tlsSAN + "\n"),
 		// nginx includes this in its server block to pick the certificate.
 		"router/tls.conf":           []byte(fmt.Sprintf("include %s/tls-%s.conf;\n", RouterTLSSnippetDir, mode)),
 		"router/hostnames":          hostnames,
@@ -335,20 +337,15 @@ func (c serverConfig) files() map[string][]byte {
 	return files
 }
 
-// serverOutputs validates the server-only fields of the staged document and
-// canonicalizes the baked seed it publishes. It writes nothing: Prepare
-// publishes only after every input has been validated.
-func serverOutputs(d *launchconfig.Document, bakedData []byte) (serverConfig, error) {
+// serverOutputs validates the server-only fields of the staged document. It
+// writes nothing: Prepare publishes only after every input has been validated.
+func serverOutputs(d *launchconfig.Document) (serverConfig, error) {
 	if err := launchconfig.ValidateHostname(d.TLSSAN); err != nil {
 		return serverConfig{}, fmt.Errorf("staged TLS SAN: %w", err)
 	}
 	pub := []byte(d.Server.OperatorPublicKey)
 	if _, err := operatorauth.ParsePublicKeysPEM(pub); err != nil {
 		return serverConfig{}, fmt.Errorf("staged server operator key: %w", err)
-	}
-	seed, err := mergedSeed(bakedData)
-	if err != nil {
-		return serverConfig{}, err
 	}
 	var router launchconfig.Router
 	if d.Router != nil {
@@ -361,7 +358,7 @@ func serverOutputs(d *launchconfig.Document, bakedData []byte) (serverConfig, er
 			return serverConfig{}, fmt.Errorf("staged router hostname: %w", err)
 		}
 	}
-	return serverConfig{operatorPubKey: pub, allowlistSeed: seed, tlsSAN: d.TLSSAN, router: router}, nil
+	return serverConfig{operatorPubKey: pub, tlsSAN: d.TLSSAN, router: router}, nil
 }
 
 // removeServerOutputs clears the server-only inputs from an agent's public
@@ -415,25 +412,15 @@ func policyPinsComplete(pins refvalues.ReferenceValues) bool {
 	return true
 }
 
-func mergedSeed(data []byte) ([]byte, error) {
-	seed, err := allowlist.ParseJSON(data)
-	if err != nil {
-		return nil, fmt.Errorf("baked workload seed: %w", err)
-	}
-	return seed.Canonical()
-}
-
-// allowIdentical is used only for the two measured bootstrap sources. Signed
-// tenant workloads may never replace a component, even with identical content.
-func mergeWorkloads(base, extra *allowlist.Allowlist, allowIdentical bool) error {
-	for name, workload := range extra.Workloads {
+// mergeBakedSeed adds the baked component seed to the measured NRI base: both
+// are measured bootstrap sources, so an entry present in each must be
+// identical rather than replaced.
+func mergeBakedSeed(base, seed *allowlist.Allowlist) error {
+	for name, workload := range seed.Workloads {
 		existing, exists := base.Workloads[name]
 		if !exists {
 			base.Workloads[name] = workload
 			continue
-		}
-		if !allowIdentical {
-			return fmt.Errorf("workload %q replaces a baked component", name)
 		}
 		old, err := json.Marshal(existing)
 		if err != nil {

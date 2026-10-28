@@ -564,27 +564,6 @@ func TestChartCDSAttestMeasuredPoliciesFile(t *testing.T) {
 	}
 }
 
-// CDS reads the journal from the runtime directory it mounts for the
-// attestation-api socket.
-func TestChartCDSMeasuredPoliciesFile(t *testing.T) {
-	const dir = "/run/custom-nri"
-	out, err := helmTemplateBakedNode(t, "--set-string", "nriImagePolicy.hostPaths.runtimeDir="+dir)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	cds := renderedDeploymentContainer(t, out, "c8s-cds", "cds")
-	flag := "--measured-policies-file=" + dir + "/measured-policies"
-	if !slices.Contains(cds.Args, flag) {
-		t.Fatalf("cds does not read the journal (%s)\nargs: %v", flag, cds.Args)
-	}
-	mounted := slices.ContainsFunc(cds.VolumeMounts, func(m corev1.VolumeMount) bool {
-		return m.MountPath == dir && m.ReadOnly
-	})
-	if !mounted {
-		t.Errorf("cds reads the journal without mounting %s read-only: %+v", dir, cds.VolumeMounts)
-	}
-}
-
 // The chart's default runtime directory is where the node's binaries look for
 // the journal, so the two never drift apart.
 func TestChartDefaultMeasuredPoliciesFileIsNodeJournal(t *testing.T) {

@@ -31,9 +31,9 @@ server_name by router-configmap.yaml. Fails if san is set but not a list.
 {{- end -}}
 
 {{/*
-The single identity baked into the CDS-issued mesh cert (get-cert) and validated
-by cds.dnsSanPatterns: the first entry of router.sanList. Extra san entries
-widen only nginx server_name, not the mesh cert.
+The single identity baked into the CDS-issued mesh cert (get-cert), which the
+CDS's own leaf DNS rules must admit: the first entry of router.sanList. Extra
+san entries widen only nginx server_name, not the mesh cert.
 */}}
 {{- define "router.san" -}}
 {{- first (include "router.sanList" . | fromJsonArray) -}}
@@ -543,7 +543,7 @@ router.cdsAttestArgs takes (dict "root" $ "expectedWorkload" <name>).
        CDS's GET /operator-keys (route policy W6; docs/operator.md, Route
        manifest). cds-attest prefers the launch configuration whenever it
        finds it. */ -}}
-{{- if $root.Values.node.baked -}}
+{{- if not (include "c8s.cdsFromValues" $root) -}}
 {{- $args = append $args "--operator-keys-file=/run/c8s-node/operator-pubkey" -}}
 {{- else if $root.Values.cds.operatorKeys -}}
 {{- $args = append $args "--operator-keys-file=/mnt/c8s-data/operator-keys/keys.pem" -}}
@@ -779,8 +779,8 @@ cds.measurementsConfig. Shared by allowlist-proxy and cds-attest, so the relay
 and the route manifest poller trust the same CDS.
 */}}
 {{- define "router.cdsPinArgs" -}}
-{{- $pin := "/mnt/c8s-data/measurements/cds.json" -}}
-{{- if include "c8s.cdsInCluster" . -}}{{- $pin = "/run/c8s-node/cds.json" -}}{{- end -}}
+{{- $pin := "/run/c8s-node/cds.json" -}}
+{{- if include "c8s.cdsFromValues" . -}}{{- $pin = "/mnt/c8s-data/measurements/cds.json" -}}{{- end -}}
 {{- list (printf "--image-policy-file=%s" $pin) | toJson -}}
 {{- end -}}
 

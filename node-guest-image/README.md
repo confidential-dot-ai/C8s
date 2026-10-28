@@ -142,7 +142,6 @@ application services:
 | NRI image admission | Required containerd plugin | Every node, before pods |
 | RKE2 | systemd service | Authenticated server or agent role |
 | armTLS mesh and iptables reconciliation | DaemonSet with native sidecars | Every node |
-| CDS | Singleton Deployment | Server |
 | Router, certificate renewal and attestation helpers | Singleton Deployment | Server |
 | Operator, webhook and admission integration | Kubernetes resources | Cluster-wide |
 | Attested operator credential release | systemd service | Server |
@@ -150,8 +149,8 @@ application services:
 `rke2-role.service` verifies and stages launch settings before either RKE2
 role starts. The local attester must precede this gate because launch
 verification uses it. The host attester listens on `127.0.0.1:8400`;
-pods access its Unix socket in the admission-inventory directory. CDS uses
-its Kubernetes Service and server NodePort `30808`; agents join RKE2 at
+pods access its Unix socket in the admission-inventory directory. Every CDS
+client dials the address the signed launch file names; agents join RKE2 at
 `9345`; the router exposes the server's port `443`. Cilium's VXLAN
 runs on UDP `8473`, not the kernel default `8472`: a nested guest's outer
 host often runs its own VXLAN on `8472` and drops the inner overlay. Open
@@ -161,7 +160,10 @@ UDP `8473` between nodes in any firewall or security group.
 then runs `c8s node-image render` with the checksum-pinned build-time Helm
 binary and baked RKE2 Kubernetes version. The complete chart renders once
 into `/var/lib/rancher/rke2/server/manifests/c8s-integration.yaml`, including
-CDS, router, mesh, operator, CRDs, RBAC, webhook and admission policies.
+router, mesh, operator, CRDs, RBAC, webhook and admission policies. The CDS
+those components trust runs on a confidential VM of its own, which
+`c8s launch-config new` writes the configuration and the pin for, so the image
+neither renders a CDS nor preloads its image.
 Only `rke2-server` applies that directory; including it in the agent image
 is intentional. There is no guest Helm install, chart archive or runtime
 values merge.
@@ -176,23 +178,21 @@ role. It reuses a cached layout under `mkosi.pkgcache/c8s/core-images` only
 when every referenced blob is present and matches its digest, and copies the
 image afresh otherwise, so a warm cache needs no registry access. Core pods use `imagePullPolicy: Never`. Before containerd starts,
 boot preparation merges the measured component seed into the NRI system
-floor, allowing CDS and its clients to start while CDS is unavailable.
-Signed tenant workload entries are added to CDS's served seed without
-replacing measured bootstrap components.
+floor, allowing the components to start while CDS is unavailable.
 
 Boot preparation publishes only public identity inputs under `/run/c8s-node`:
-peer pins, server-only CDS pins, and, on the server, the operator public key,
-merged workload seed and TLS hostname. Core pods mount these root-owned
+peer pins, the CDS pin the launch file carries, and, on the server, the
+operator public key and TLS hostname. Core pods mount these root-owned
 files read-only. They never mount `/run/confos/launch`, which contains join
 credentials. The operator reads the server policy from this mount and passes
-it to workload helpers, which use the in-cluster CDS Service URL. Every CDS
-client requires the server's launch key; peer connections accept the
-configured role keys. The shared image measurement alone does not
-identify the role.
+it to workload helpers. Every CDS client holds the CDS to the launch file's
+pin; peer connections accept the configured role keys. The shared image
+measurement alone does not identify the role.
 
 The router's get-cert helper runs alongside nginx again. It reads the signed
-hostname from `tls-san`, and CDS permits that exact hostname in addition to
-its in-cluster Service DNS pattern. nginx uses one default virtual host;
+hostname from `tls-san`, which `c8s launch-config new` writes into the CDS
+configuration as a leaf DNS name, so CDS permits that exact hostname in
+addition to its in-cluster Service DNS pattern. nginx uses one default virtual host;
 TLS clients validate the signed certificate hostname. Certificate and
 discovery files live in the router Pod's memory-backed volumes. The router
 and attestation helpers share the existing chart implementation. Adding a
@@ -213,9 +213,8 @@ Core version upgrades rebuild the image and relaunch with updated signed
 measurement pins. Restarting a Pod uses the same baked image. The current
 launch schema accepts one image policy and does not support mixed-image
 rolling upgrades. CDS has an ephemeral database and an in-memory CA;
-recreating CDS or rebooting its VM requires certificate re-bootstrap and
-reapplying the initial workload seed. Launch settings do not enable volume
-support, arbitrary service arguments or front-door routes.
+rebooting its VM requires certificate re-bootstrap. Launch settings do not
+enable volume support, arbitrary service arguments or front-door routes.
 
 Published `C8S_REF` images must include the renderer and the SAN-file flags
 used by the manifests. The reproducibility gate builds the host binary and

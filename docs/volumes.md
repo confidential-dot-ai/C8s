@@ -66,8 +66,11 @@ only copy of the key outside CDS, which holds secrets in process memory, so a
 CDS restart makes every volume unopenable until its key is written back with
 `c8s secrets put <PATH> --from-file <ESCROW>` and that command's write flags —
 `--url`, a measurement pin, `--operator-key`, and the `--mesh-ca` bundle CDS
-must serve. Lose the escrow file and the ciphertext is gone for good. What else
-a restart drops is in [operator.md](operator.md).
+must serve. The restart drops the consumer's workload entry too, so the volume
+opens again only once that entry's `secrets` grant and `data` mount rule are
+back as well. Lose the escrow file and the ciphertext is gone for good. The
+whole recovery, and what else a restart drops, is in
+[operator.md](operator.md#cds-is-a-singleton).
 
 ### The device
 

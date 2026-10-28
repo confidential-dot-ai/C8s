@@ -21,14 +21,13 @@ var bakedArgs = []string{
 	"--set", "image.digest=sha256:" + strings.Repeat("1", 64),
 	"--set", "armtlsMesh.image.digest=sha256:" + strings.Repeat("2", 64),
 	"--set", "image.pullPolicy=Never",
-	"--set", "cds.image.pullPolicy=Never",
 	"--set", "armtlsMesh.image.pullPolicy=Never",
 	"--set", "router.nginx.image.pullPolicy=Never",
 	"--set", "router.attest.enabled=true",
 }
 
-// helmTemplateBakedNode renders the chart shape a baked node image carries,
-// the only one whose CDS the chart runs (templates/cds.yaml).
+// helmTemplateBakedNode renders the chart shape `c8s node-image render`
+// produces, with any extra values a caller names.
 func helmTemplateBakedNode(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 	return helmTemplate(t, append(slices.Clone(bakedArgs), args...)...)
@@ -36,16 +35,16 @@ func helmTemplateBakedNode(t *testing.T, args ...string) (string, error) {
 
 func TestChartBakedNodeLaunchContract(t *testing.T) {
 	t.Parallel()
-	out, err := helmTemplate(t, bakedArgs...)
+	out, err := helmTemplateBakedNode(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	// CDS alone: the router's clients hold platform roles, so the enforcer
-	// mounts the node's policy for them and the chart passes none.
-	wantPolicies := map[string]string{"c8s-cds/cds": "peers.json"}
+	// The CDS every client verifies is the VM the signed launch file names, so
+	// the one component argv naming a policy reads it from the staged copy.
+	wantPolicies := map[string]string{"c8s-router/cds-attest": "cds.json"}
 	workloads := renderedPodSpecs(t, out)
-	if len(workloads) != 3 {
-		t.Fatalf("baked chart should contain operator, CDS and router; got %d workloads", len(workloads))
+	if len(workloads) != 2 {
+		t.Fatalf("baked chart should contain the operator and the router; got %d workloads", len(workloads))
 	}
 	for _, workload := range workloads {
 		for _, volume := range workload.spec.Volumes {
@@ -63,22 +62,20 @@ func TestChartBakedNodeLaunchContract(t *testing.T) {
 			if container.ImagePullPolicy != corev1.PullNever {
 				t.Errorf("%s does not honor the preloaded image pull policy", name)
 			}
-			if policy, ok := wantPolicies[name]; ok {
-				assertContainerHasArg(t, name, container.Args, "--image-policy-file=/run/c8s-node/"+policy)
-				mountFound := false
-				for _, mount := range container.VolumeMounts {
-					if mount.Name == "node-config" {
-						mountFound = true
-						if mount.MountPath != "/run/c8s-node" || !mount.ReadOnly {
-							t.Errorf("%s must mount verified policy read-only", name)
-						}
-					}
+			for _, mount := range container.VolumeMounts {
+				if mount.Name == "node-config" && (mount.MountPath != "/run/c8s-node" || !mount.ReadOnly) {
+					t.Errorf("%s must mount verified policy read-only", name)
 				}
-				if !mountFound {
-					t.Errorf("%s cannot read its required policy", name)
-				}
-				delete(wantPolicies, name)
 			}
+			policy, named := wantPolicies[name]
+			if !named {
+				continue
+			}
+			assertContainerHasArg(t, name, container.Args, "--image-policy-file=/run/c8s-node/"+policy)
+			if !slices.ContainsFunc(container.VolumeMounts, func(m corev1.VolumeMount) bool { return m.Name == "node-config" }) {
+				t.Errorf("%s cannot read its required policy", name)
+			}
+			delete(wantPolicies, name)
 		}
 		if workload.name == "c8s-router" {
 			if workload.spec.SecurityContext == nil || !slices.Contains(workload.spec.SecurityContext.SupplementalGroups, int64(65532)) {
@@ -89,8 +86,7 @@ func TestChartBakedNodeLaunchContract(t *testing.T) {
 	if len(wantPolicies) != 0 {
 		t.Errorf("missing policy consumers: %v", wantPolicies)
 	}
-
-	for name, namespace := range map[string]string{"c8s-cds": "c8s-system", "c8s-router": workloadclaims.RouterNamespace} {
+	for name, namespace := range map[string]string{"c8s-router": workloadclaims.RouterNamespace} {
 		deployment := renderedDeployment(t, out, name)
 		if deployment.Namespace != namespace || deployment.Spec.Replicas == nil || *deployment.Spec.Replicas != 1 || deployment.Spec.Strategy.Type != appsv1.RecreateDeploymentStrategyType {
 			t.Errorf("%s must be a singleton of %s with Recreate strategy", name, namespace)
@@ -98,14 +94,6 @@ func TestChartBakedNodeLaunchContract(t *testing.T) {
 		if deployment.Spec.Template.Spec.NodeSelector["node-role.kubernetes.io/control-plane"] != "true" {
 			t.Errorf("%s must run on the signed server node", name)
 		}
-	}
-	cds := renderedDeploymentContainer(t, out, "c8s-cds", "cds")
-	for _, arg := range []string{
-		"--operator-keys=/run/c8s-node/operator-pubkey",
-		"--allowlist-seed=/run/c8s-node/allowlist-seed.json",
-		"--dns-san-file=/run/c8s-node/tls-san",
-	} {
-		assertContainerHasArg(t, "cds", cds.Args, arg)
 	}
 	cert, ok := findContainer(renderedDeploymentInitContainers(t, out, "c8s-router"), "c8s-cert")
 	if !ok {
@@ -131,8 +119,7 @@ func TestChartBakedNodeLaunchContract(t *testing.T) {
 
 func TestChartBakedRouterReadsLaunchFiles(t *testing.T) {
 	t.Parallel()
-	args := append(slices.Clone(bakedArgs), "--set-string", "nriImagePolicy.distro=rke2")
-	out, err := helmTemplate(t, args...)
+	out, err := helmTemplateBakedNode(t, "--set-string", "nriImagePolicy.distro=rke2")
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
@@ -252,7 +239,7 @@ func TestChartBakedRouterReadsLaunchFiles(t *testing.T) {
 
 func TestChartBakedRouterRejectsChartTLSMode(t *testing.T) {
 	t.Parallel()
-	out, err := helmTemplate(t, append(slices.Clone(bakedArgs), "--set", "router.publicTLS.mode=acme")...)
+	out, err := helmTemplateBakedNode(t, "--set", "router.publicTLS.mode=acme")
 	if err == nil || !strings.Contains(out, "node.baked takes the public TLS mode") {
 		t.Fatalf("render accepted or failed elsewhere: %v\n%s", err, out)
 	}
@@ -261,7 +248,7 @@ func TestChartBakedRouterRejectsChartTLSMode(t *testing.T) {
 // A baked router runs the ACME sidecar whatever router.publicTLS.mode says.
 func TestChartBakedRouterRoutingPortAvoidsACMEPorts(t *testing.T) {
 	t.Parallel()
-	out, err := helmTemplate(t, append(slices.Clone(bakedArgs), "--set", "router.routing.port=8080")...)
+	out, err := helmTemplateBakedNode(t, "--set", "router.routing.port=8080")
 	if err == nil {
 		t.Fatalf("helm template succeeded, want the ACME port collision refused\n%s", out)
 	}
@@ -286,7 +273,7 @@ func TestChartRouterDefaultIgnoresLaunchFiles(t *testing.T) {
 // Image admission alone does not put a matched-workload stamp in its mesh leaf.
 func TestChartBakedRouterRequestsWorkloadIdentity(t *testing.T) {
 	t.Parallel()
-	out, err := helmTemplate(t, bakedArgs...)
+	out, err := helmTemplateBakedNode(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}

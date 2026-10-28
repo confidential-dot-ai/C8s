@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
 
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
@@ -354,7 +353,7 @@ func TestChartComponentShapesAreExact(t *testing.T) {
 // image, so the seed refuses a ConfigMap swapped in over that directory.
 func TestChartBakedNginxRefusesConfigMapConfig(t *testing.T) {
 	t.Parallel()
-	out, err := helmTemplate(t, bakedArgs...)
+	out, err := helmTemplateBakedNode(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
@@ -438,38 +437,6 @@ func TestChartMemoryVolumesHaveSizeLimit(t *testing.T) {
 			if v.EmptyDir.SizeLimit == nil {
 				t.Errorf("%s/%s volume %q: memory emptyDir without sizeLimit", w.kind, w.name, v.Name)
 			}
-		}
-	}
-}
-
-// The schema accepts any positive Kubernetes quantity as the store's memory
-// limit and renders it as the volume's sizeLimit.
-func TestChartAcceptsCDSMemorySizeLimitQuantities(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		flag, value, want string
-	}{
-		{"--set-string", "64Mi", "64Mi"},
-		{"--set", "67108864", "64Mi"},
-	} {
-		out, err := helmTemplateBakedNode(t, tc.flag, "cds.persistence.memorySizeLimit="+tc.value)
-		if err != nil {
-			t.Errorf("helm template %s memorySizeLimit=%s: %v\n%s", tc.flag, tc.value, err, out)
-			continue
-		}
-		pod := renderedDeployment(t, out, "c8s-cds").Spec.Template.Spec
-		i := slices.IndexFunc(pod.Volumes, func(v corev1.Volume) bool { return v.Name == "data" })
-		if i < 0 || pod.Volumes[i].EmptyDir == nil || pod.Volumes[i].EmptyDir.SizeLimit == nil {
-			t.Errorf("memorySizeLimit=%s: no data emptyDir with a sizeLimit in %+v", tc.value, pod.Volumes)
-			continue
-		}
-		if got := pod.Volumes[i].EmptyDir.SizeLimit; got.Cmp(resource.MustParse(tc.want)) != 0 {
-			t.Errorf("memorySizeLimit=%s: sizeLimit = %s, want %s", tc.value, got, tc.want)
-		}
-	}
-	for _, value := range []string{"0Mi"} {
-		if out, err := helmTemplateBakedNode(t, "--set-string", "cds.persistence.memorySizeLimit="+value); err == nil {
-			t.Errorf("helm template memorySizeLimit=%s succeeded, want a schema error\n%s", value, out)
 		}
 	}
 }

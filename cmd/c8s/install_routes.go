@@ -259,9 +259,9 @@ type revisionError struct{ error }
 
 func (e revisionError) Unwrap() error { return e.error }
 
-// storeUpstreamRoutes reaches CDS through a port-forward, checks that it
-// names the adopted pod after its entry, and stores the routes. It returns
-// the manifest it built, if it got that far.
+// storeUpstreamRoutes dials the CDS, checks that it names the adopted pod
+// after its entry, and stores the routes. It returns the manifest it built,
+// if it got that far.
 func storeUpstreamRoutes(ctx context.Context, w io.Writer, u upstreamRoutes, url string, entries map[string]adoptedEntry) ([]byte, error) {
 	o := installCDSConn(url)
 	hc, err := o.HTTPClient(ctx)

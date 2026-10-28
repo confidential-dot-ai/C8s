@@ -146,7 +146,7 @@ func renderedSeed(t *testing.T, chart string, set []string) *pkgallowlist.Allowl
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
 	var cm corev1.ConfigMap
-	if err := yaml.Unmarshal(nodeImageDocuments(t, out)["c8s-system/ConfigMap/c8s-cds-allowlist-seed"], &cm); err != nil {
+	if err := yaml.Unmarshal(nodeImageDocuments(t, out)["c8s-system/ConfigMap/c8s-allowlist-seed"], &cm); err != nil {
 		t.Fatal(err)
 	}
 	al, err := pkgallowlist.ParseJSON([]byte(cm.Data["allowlist-seed.json"]))

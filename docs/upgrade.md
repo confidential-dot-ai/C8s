@@ -2,13 +2,12 @@
 
 Move a chart-installed C8s cluster to a new release.
 
-Every node admits C8s's own components by image digest, and a chart-installed
-CDS — the pod that serves the
-allowlist — reads its CDS seed, the allowlist document it starts from, only at
-start. So the new release's entries reach the nodes only if you publish them
-through the running CDS first, which is why the steps are ordered this way. A
-measured node image's CDS follows a seed file instead
-([allowlist-and-capabilities.md](allowlist-and-capabilities.md)).
+Every node admits C8s's own components by image digest, and a cluster's CDS —
+the VM outside the cluster that serves the allowlist — reads the workload
+entries its measured configuration carries only at start. So the new release's
+entries reach the nodes only if you publish them through the running CDS first,
+which is why the steps are ordered this way
+([allowlist-and-capabilities.md](allowlist-and-capabilities.md#bootstrap)).
 
 ## Prerequisites
 
@@ -107,19 +106,3 @@ release is ready; confirm the router namespace too, with
 Install refuses when the resolved policy would deny a platform pod the cluster
 already runs, before touching anything; `--force` overrides. The previous
 release's entries stay in the allowlist, so a rollback still matches them.
-
-## 6. Recover from the CDS shape guard
-
-An upgrade that changes CDS's own image, command line, or mounts fails before it
-touches the cluster:
-
-```text
-this upgrade changes the CDS image, command line or mounts, and the running
-enforcers do not admit the new CDS yet. To proceed, publish entry <ENTRY> ...
-then rerun with --set cds.publishedShape=<SHAPE> ...
-```
-
-CDS is recreated rather than rolled, so the old pod stops before the new one
-starts and cannot publish its own shape. `<ENTRY>` is the seed entry step 3
-published; pass `--set cds.publishedShape=<SHAPE>` to `helm`, or set
-`cds.publishedShape` in a values file for `c8s install -f`.

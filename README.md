@@ -376,13 +376,12 @@ attested.
 Do not point this CLI at router when `router.publicTLS.secretName` is set. That
 front door uses WebPKI (`public_tls.mode=webpki`), and its public certificate is
 not cryptographically bound to the discovery attestation, so the CLI
-deliberately refuses it. Use a direct CDS armTLS URL and the CDS launch digest;
-if CDS is not otherwise routable, use a local port-forward:
+deliberately refuses it. Use the CDS address the install was given instead, with
+the pin it was given:
 
 ```sh
-kubectl port-forward -n c8s-system svc/c8s-cds 8443:8443 &
-c8s allowlist export --url https://localhost:8443 \
-  --measurements <cds-launch-digest>
+c8s allowlist export --url https://<CDS_ADDRESS> \
+  --image-policy-file cds-pin.json
 ```
 
 Writes are authorized by an operator EC keypair whose **public** half CDS
@@ -405,8 +404,8 @@ payload. The private key remains on the operator machine: router forwards only
 the signed request and CDS verifies it against the pinned public key.
 
 Set `router.allowlist.enabled=false` to remove the built-in public route. A
-direct CDS connection, including a local port-forward for debugging, can
-still be passed explicitly with `--url`.
+direct connection to the CDS address can still be passed explicitly with
+`--url`.
 
 Verify CDS's root of trust — its launch measurement and the operator key set it
 serves — before exposing public ingress, using your own install inputs (the
@@ -434,10 +433,9 @@ wiring is described in [docs/operator.md](docs/operator.md).
 
 `c8s routes` (`show`, `digest`, `put`, `add`, `rm`) reads and writes the signed
 route manifest that CDS stores at `/routes`, with the operator key used for
-allowlist writes. Point `--url` at CDS directly, for example through a
-port-forward, because the router does not relay `/routes`. The commands only
-store the manifest: the router does not apply it yet. See
-[Route manifest](docs/operator.md#route-manifest).
+allowlist writes. Point `--url` at the CDS address, because the router does not
+relay `/routes`. The commands only store the manifest: the router does not apply
+it yet. See [Route manifest](docs/operator.md#route-manifest).
 
 ## Docker images
 

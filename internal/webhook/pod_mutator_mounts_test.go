@@ -53,7 +53,7 @@ func chartSeed(t *testing.T) *allowlist.Allowlist {
 	}
 	for _, doc := range strings.Split(string(out), "\n---\n") {
 		var cm corev1.ConfigMap
-		if err := yaml.Unmarshal([]byte(doc), &cm); err != nil || cm.Name != "c8s-cds-allowlist-seed" {
+		if err := yaml.Unmarshal([]byte(doc), &cm); err != nil || cm.Name != "c8s-allowlist-seed" {
 			continue
 		}
 		seed, err := allowlist.ParseJSON([]byte(cm.Data["allowlist-seed.json"]))

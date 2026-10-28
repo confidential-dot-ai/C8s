@@ -245,7 +245,6 @@ func renderBakedRouterDeployment(t *testing.T) appsv1.Deployment {
 		"--set-string", "image.digest="+operatorImageDigest,
 		"--set-string", "armtlsMesh.image.digest="+meshImageDigest,
 		"--set-string", "router.nginx.image.digest="+routerImageDigest,
-		"--set-string", "cds.image.digest="+pushDigestA,
 		"--set-string", "nriImagePolicy.mesh.resolver=10.43.0.10",
 		"--set-string", "nriImagePolicy.mesh.clusterRanges[0]=10.42.0.0/16",
 	)

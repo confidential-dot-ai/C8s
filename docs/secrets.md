@@ -7,8 +7,8 @@ Guarantee: [Data stays in the TEE](guarantees.md#data-stays-in-the-tee),
 [Only allowlisted code runs](guarantees.md#only-allowlisted-code-runs).
 
 A secret is a value CDS keeps in its own memory, addressed by a store path. CDS
-— the Certificate Distribution Service, the one in-cluster pod that verifies TEE
-evidence, signs the certificate each pod run gets, and holds C8s policy —
+— the Certificate Distribution Service, the VM outside the cluster that verifies
+TEE evidence, signs the certificate each pod run gets, and holds C8s policy —
 releases it only to such a pod. A workload entry is one named set of container
 images with the command, mounts, and environment each may run; its grant lists
 the store paths that entry may read or write. Both are allowlist policy: fields
@@ -19,8 +19,7 @@ not a Kubernetes Secret: nothing is written to the API server.
 ## When it is served
 
 CDS serves the secrets endpoint only when it can establish what a pod runs. It
-needs its own `--armtls-platform` (the chart's `cds.armtlsPlatform`, which
-`c8s install --hardware-platform` sets), its node pins, and node addresses
+needs its own armTLS platform, its node pins, and node addresses
 bounding its callback to a node's admission inventory — the node service that
 records which containers each pod has run (`--sandbox-inventory-cidr`, or host
 routes from the live node list). Miss one and CDS logs a warning naming it and

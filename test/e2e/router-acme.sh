@@ -36,7 +36,7 @@ curl -fsSL --retry 4 -o helm.tgz "https://get.helm.sh/helm-$helm_version-linux-a
 echo "$helm_sha  helm.tgz" | sha256sum -c -
 mkdir -p bin && tar -xzf helm.tgz -C bin --strip-components 1 linux-amd64/helm
 render=()
-for pair in image:c8s-operator cds-image:cds armtls-mesh-image:armtls-mesh; do
+for pair in image:c8s-operator armtls-mesh-image:armtls-mesh; do
   flag=${pair%%:*} repo=ghcr.io/confidential-dot-ai/${pair#*:}
   render+=("--$flag-repository" "$repo" "--$flag-digest" "$(crane digest "$repo:$c8sRef")")
 done

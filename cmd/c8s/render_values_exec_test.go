@@ -38,7 +38,7 @@ func TestRenderValuesEmitsComputedBundle(t *testing.T) {
 	// No cluster, no digests: every chart component pins its tag instead, at
 	// the unstamped-build fallback tag.
 	for _, prefix := range [][]string{
-		{"image", "tag"}, {"cds", "image", "tag"}, {"attestationApi", "image", "tag"},
+		{"image", "tag"}, {"attestationApi", "image", "tag"},
 		{"armtlsMesh", "image", "tag"}, {"nriImagePolicy", "image", "tag"},
 	} {
 		if got := treeAt(t, tree, prefix...); got != "main" {

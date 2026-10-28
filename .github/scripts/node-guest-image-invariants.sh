@@ -471,13 +471,19 @@ grep -qFx 'disable apparmor.service' "$ngi/c8s/mkosi.extra/usr/lib/systemd/syste
 for token in '"$C8S_TARGET" node-image render' '--image-digest "$OPERATOR_DIGEST"' \
              '--kube-version "${RKE2_VERSION%%+*}"' \
              'c8s-integration.yaml' '/usr/lib/c8s/allowlist-seed.json' \
-             '--cds-image-digest "$CDS_DIGEST"' '--armtls-mesh-image-digest "$MESH_DIGEST"' \
+             '--armtls-mesh-image-digest "$MESH_DIGEST"' \
              'c8s/airgap-images.sh' '"$out/images.txt"' 'if ! "$C8S_TARGET" node-image check-images'; do
   if ! grep -qF -- "$token" "$sync"; then
     echo "::error::$sync must stage the measured node integration (missing: $token)"
     exit 1
   fi
 done
+# The CDS this cluster trusts is a VM of its own, named by the signed launch
+# file: the image neither resolves a CDS container image nor preloads one.
+if grep -qE -- '--cds-image|CDS_REPO|/cds[@:"]' "$sync"; then
+  echo "::error::$sync must not name a CDS container image: the node image runs no CDS"
+  exit 1
+fi
 for stale in "$ngi/c8s/c8s-chart.tdx.yaml.in" "$ngi/c8s/c8s-chart.snp.yaml.in" \
              "$ngi/c8s/mkosi.extra/etc/systemd/system/c8s-chart-values.service" \
              "$ngi/c8s/mkosi.extra/usr/local/bin/c8s-chart-values.sh" \

@@ -24,8 +24,8 @@ when, is [armtls.md](armtls.md) and [verify.md](verify.md).
 ## Trust boundary and adversary
 
 The trust boundary is the TEE. Inside it: the measured node software, the pods
-it admits, and CDS, the Certificate Distribution Service — one pod that holds
-the cluster's policy and signs every workload certificate.
+it admits, and CDS, the Certificate Distribution Service — a VM of its own,
+outside the cluster, holding C8s policy and signing every workload certificate.
 
 Outside it: the host and its hypervisor, the Kubernetes control plane, the pod
 network, and the public internet. All of those are the adversary, and the host
@@ -50,13 +50,14 @@ API server — below the layer the adversary controls.
 
 ## What runs where
 
-- **CDS** is a single pod in the release namespace (`c8s-system` by default). It
-  verifies evidence, signs each pod's leaf — the short-lived certificate issued
-  for one pod run — with a mesh CA it generates in its own memory, and holds the
-  served allowlist, the secret store, and the route manifest. CDS writes nothing
-  to Kubernetes: operator-added entries, secrets, the route manifest, and the
-  mesh CA live only in its memory, so a restart re-bootstraps from its CDS
-  seed — [operator.md](operator.md).
+- **CDS** is one VM outside the cluster, booted on the measured configuration
+  document `c8s cds config new` writes. It verifies evidence, signs each pod's
+  leaf — the short-lived certificate issued for one pod run — with a mesh CA it
+  generates in its own memory, and holds the served allowlist, the secret store,
+  and the route manifest. CDS reads and writes no Kubernetes object:
+  operator-added entries, secrets, the route manifest, and the mesh CA live only
+  in its memory, so a restart re-bootstraps from its configuration and the
+  operator re-applies the rest — [operator.md](operator.md#cds-is-a-singleton).
 - The **admission plugin** `nri-image-policy` is a host process containerd
   launches, not a pod. It admits or denies every container and installs each
   member pod's packet rules —
@@ -90,13 +91,17 @@ API server — below the layer the adversary controls.
     relying party:    c8s verify, or a browser client using the
                       router's attestation endpoints
   --------------------------- trust boundary ---------------------------
+   CDS VM, measured at launch
+   +-----------------------------------------------------------------+
+   | CDS: allowlist, secret store, route manifest, mesh CA           |
+   +-----------------------------------------------------------------+
    node CVM (AMD SEV-SNP or Intel TDX), measured at launch
    +-----------------------------------------------------------------+
    | containerd + nri-image-policy ---> admission inventory          |
    | attestation-api (node-local)       [volumed: encrypted volumes] |
    | c8s-runc (privilege floor; measured node image only)            |
    |                                                                 |
-   | c8s-system  c8s operator + webhooks | CDS                       |
+   | c8s-system  c8s operator + webhooks                             |
    | c8s-router  router: public TLS, manifest routing                |
    | your pod    app + c8s-mesh + c8s-cert [+ c8s-secret, c8s-volume]|
    +-----------------------------------------------------------------+

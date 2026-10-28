@@ -10,7 +10,7 @@ Public policy, not secret: an address and the digests a verifier compares
 evidence against. No component's arguments name either, so an entry of the
 allowlist seed this cluster serves does not depend on the CDS serving it.
 */ -}}
-{{- if not (include "c8s.cdsInCluster" .) }}
+{{- if include "c8s.cdsFromValues" . }}
 {{- $cds := include "c8s.cdsPinDocument" . }}
 apiVersion: v1
 kind: ConfigMap

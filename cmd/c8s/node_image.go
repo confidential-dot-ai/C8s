@@ -40,8 +40,6 @@ type nodeImageRenderConfig struct {
 	kubeVersion               string
 	imageDigest               string
 	imageRepository           string
-	cdsImageDigest            string
-	cdsImageRepository        string
 	armtlsMeshImageDigest     string
 	armtlsMeshImageRepository string
 	routerImageDigest         string
@@ -71,8 +69,6 @@ func newNodeImageCmd() *cobra.Command {
 	f.StringVar(&cfg.kubeVersion, "kube-version", "", "Kubernetes semantic version from the baked RKE2 release (required)")
 	f.StringVar(&cfg.imageDigest, "image-digest", "", "digest of the operator/get-cert container image (sha256:..., required)")
 	f.StringVar(&cfg.imageRepository, "image-repository", "", "operator/get-cert container repository; empty uses the chart default")
-	f.StringVar(&cfg.cdsImageDigest, "cds-image-digest", "", "digest of the CDS container image (sha256:..., required)")
-	f.StringVar(&cfg.cdsImageRepository, "cds-image-repository", "", "CDS container repository; empty uses the chart default")
 	f.StringVar(&cfg.armtlsMeshImageDigest, "armtls-mesh-image-digest", "", "digest of the armTLS mesh container image (sha256:..., required)")
 	f.StringVar(&cfg.armtlsMeshImageRepository, "armtls-mesh-image-repository", "", "armTLS mesh container repository; empty uses the chart default")
 	f.StringVar(&cfg.routerImageDigest, "router-image-digest", "", "digest of the nginx container image; empty uses the pinned chart default")
@@ -115,7 +111,7 @@ func (cfg nodeImageRenderConfig) validate() error {
 
 // nodeImageInput ties one image build flag to the chart value it pins.
 type nodeImageInput struct {
-	flag       string // build flag prefix, e.g. "cds-image"
+	flag       string // build flag prefix, e.g. "armtls-mesh-image"
 	valuePath  string // chart value the repository and digest are set under
 	repository string
 	digest     string
@@ -126,7 +122,6 @@ type nodeImageInput struct {
 func (cfg nodeImageRenderConfig) images() []nodeImageInput {
 	return []nodeImageInput{
 		{flag: "image", valuePath: "image", repository: cfg.imageRepository, digest: cfg.imageDigest, required: true},
-		{flag: "cds-image", valuePath: "cds.image", repository: cfg.cdsImageRepository, digest: cfg.cdsImageDigest, required: true},
 		{flag: "armtls-mesh-image", valuePath: "armtlsMesh.image", repository: cfg.armtlsMeshImageRepository, digest: cfg.armtlsMeshImageDigest, required: true},
 		{flag: "router-image", valuePath: "router.nginx.image", repository: cfg.routerImageRepository, digest: cfg.routerImageDigest},
 	}
@@ -150,7 +145,6 @@ func renderNodeImage(ctx context.Context, cfg nodeImageRenderConfig) error {
 		return err
 	}
 	args = appendDistroInstallArgs(args, "rke2")
-	args = appendSingleNodeInstallArgs(args, true)
 	args = append(args,
 		"--set", "node.baked=true",
 		"--set", "nriImagePolicy.enabled=false",
@@ -253,14 +247,13 @@ func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
 	decoder := k8syaml.NewYAMLOrJSONDecoder(bytes.NewReader(rendered), 4096)
 	required := map[string]bool{
 		"Deployment/c8s-operator": false,
-		"Deployment/c8s-cds":      false,
 		"Deployment/c8s-router":   false,
 		kubeStateMetricsKey:       false,
 		// The namespace the measured mesh policy names for the router role.
 		"Namespace/" + workloadclaims.RouterNamespace:                    false,
 		"CustomResourceDefinition/confidentialworkloads.confidential.ai": false,
 		"ConfigMap/c8s-router-nginx":                                     false,
-		"ConfigMap/c8s-cds-allowlist-seed":                               false,
+		"ConfigMap/c8s-allowlist-seed":                                   false,
 	}
 	seen := make(map[string]bool)
 	images := make(map[string]*bakedImage)
@@ -381,8 +374,7 @@ func seedContainers(seed *pkgallowlist.Allowlist) map[string][]pkgallowlist.Cont
 // measured mesh policy names.
 var nodeImageResourceNamespaces = map[string]string{
 	"Deployment/c8s-operator":           nodeImageNamespace,
-	"Deployment/c8s-cds":                nodeImageNamespace,
-	"ConfigMap/c8s-cds-allowlist-seed":  nodeImageNamespace,
+	"ConfigMap/c8s-allowlist-seed":      nodeImageNamespace,
 	routerWorkloadKey:                   workloadclaims.RouterNamespace,
 	"Service/c8s-router":                workloadclaims.RouterNamespace,
 	"ConfigMap/c8s-router-nginx":        workloadclaims.RouterNamespace,
@@ -825,14 +817,14 @@ func recordPinnedImage(image, key, name string, images map[string]*bakedImage) (
 // files: the CDS bootstrap seed, which is written beside the manifests, and
 // the router's nginx configuration (routerNginxFiles).
 func collectConfigMapArtifact(object unstructured.Unstructured, key, name string, artifacts *nodeImageArtifacts) error {
-	if key != "ConfigMap/c8s-cds-allowlist-seed" && key != "ConfigMap/c8s-router-nginx" {
+	if key != "ConfigMap/c8s-allowlist-seed" && key != "ConfigMap/c8s-router-nginx" {
 		return nil
 	}
 	var cm corev1.ConfigMap
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(object.Object, &cm); err != nil {
 		return fmt.Errorf("decode chart ConfigMap %q: %w", name, err)
 	}
-	if name == "c8s-cds-allowlist-seed" {
+	if name == "c8s-allowlist-seed" {
 		// Baked and published in canonical bytes, so the release asset of
 		// each variant (docs/releases.md) is byte for byte the measured file.
 		seed, err := pkgallowlist.ParseJSON([]byte(cm.Data["allowlist-seed.json"]))

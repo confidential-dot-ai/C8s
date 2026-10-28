@@ -852,23 +852,6 @@ func TestInstallVolumesEnablesTheNodeAgent(t *testing.T) {
 	}
 }
 
-func TestInstallSingleNodeClearsTheCDSNodeSelector(t *testing.T) {
-	s := newInstallStubs(t, "", false)
-	s.f.tool(t, "kubectl", clusterKubectl(s.applied, ""))
-	if err := runInstall(t, "--cvm-mode=bare-metal", "--wait=false", "--force", "--resolve-digests=false", "--single-node"); err != nil {
-		t.Fatalf("install: %v", err)
-	}
-	calls := s.f.calls(t)
-	if lineIndex(calls, "helm upgrade ") < 0 {
-		t.Fatal("helm upgrade did not run")
-	}
-	tree := readYAMLTree(t, s.computed)
-	sel, ok := treeAt(t, tree, "cds", "node").(map[string]any)
-	if !ok || sel["selector"] != nil {
-		t.Errorf("cds.node = %#v, want a cleared (null) selector", sel)
-	}
-}
-
 func TestInstallAbortsOnRouterHostPortConflict(t *testing.T) {
 	pods := podListFile(t, hostPortPod("kube-system", "ingress-a", "node-a", 443))
 	s := newInstallStubs(t, "", false)

@@ -228,23 +228,6 @@ func TestValidateCvmModeRequiresKnownValue(t *testing.T) {
 	}
 }
 
-func TestAppendSingleNodeInstallArgsDisabledIsNoOp(t *testing.T) {
-	got := appendSingleNodeInstallArgs([]string{"upgrade"}, false)
-	assertArgsEqual(t, got, []string{"upgrade"})
-}
-
-func TestAppendSingleNodeInstallArgsClearsCDSNodePinning(t *testing.T) {
-	// --single-node must null both the selector (drops the role=cds pin and
-	// collapses the installer split) and the tolerations (the dedicated-node
-	// taint is meaningless without a dedicated node).
-	got := appendSingleNodeInstallArgs([]string{"upgrade"}, true)
-	assertArgsEqual(t, got, []string{
-		"upgrade",
-		"--set", "cds.node.selector=null",
-		"--set", "cds.node.tolerations=null",
-	})
-}
-
 func TestAppendVolumedInstallArgsDisabledIsNoOp(t *testing.T) {
 	got := appendVolumedInstallArgs([]string{"upgrade"}, false)
 	assertArgsEqual(t, got, []string{"upgrade"})
@@ -1290,7 +1273,7 @@ func TestAppendCvmModeInstallArgsSetsAttestationApiValue(t *testing.T) {
 		// propagates the CPU TEE to CDS, which names its armTLS platform, or
 		// CDS parses the TDX quote as an SNP report.
 		if platform == "tdx" {
-			out = append(out, "--set-string", "cds.armtlsPlatform=tdx")
+			out = append(out, "--set-string", "nriImagePolicy.platform=tdx")
 		}
 		// The attest sidecar's platform names the evidence shape the sidecar
 		// requests from the attestation-api: az-snp/az-tdx under aks (Azure
@@ -1378,7 +1361,7 @@ func TestAppendCvmModeInstallArgsAcceptsAksWithTdx(t *testing.T) {
 		"attestationApi.cvmMode=aks",
 		"attestationApi.teeDevices.tpm=true",
 		"attestationApi.teeDevices.tdxGuest=false",
-		"cds.armtlsPlatform=tdx",
+		"nriImagePolicy.platform=tdx",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("aks+tdx args missing %q; got %v", want, got)
@@ -1650,7 +1633,6 @@ func TestChartComponentsFromValues(t *testing.T) {
 	want := map[string]string{
 		"image":                "ghcr.io/confidential-dot-ai/c8s-operator",
 		"attestationApi.image": "ghcr.io/confidential-dot-ai/attestation-api",
-		"cds.image":            "ghcr.io/confidential-dot-ai/cds",
 		"armtlsMesh.image":     "ghcr.io/confidential-dot-ai/armtls-mesh",
 		"nriImagePolicy.image": "ghcr.io/confidential-dot-ai/nri-image-policy",
 		"volumed.image":        "ghcr.io/confidential-dot-ai/volumed",

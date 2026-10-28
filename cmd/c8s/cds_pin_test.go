@@ -165,7 +165,7 @@ const installSeedEntryName = "app"
 
 // installSeedConfigMap is the seed ConfigMap a stubbed `helm template` answers
 // with, as the chart renders it.
-var installSeedConfigMap = `{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"c8s-cds-allowlist-seed"},"data":{"allowlist-seed.json":` +
+var installSeedConfigMap = `{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"c8s-allowlist-seed"},"data":{"allowlist-seed.json":` +
 	mustJSONString(testSeedDocument(installSeedEntryName)) + `}}`
 
 func mustJSONString(s string) string {

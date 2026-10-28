@@ -8,7 +8,7 @@ with.
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ include "c8s.cdsName" . }}-allowlist-seed
+  name: {{ include "c8s.fullname" . }}-allowlist-seed
   namespace: {{ .Release.Namespace }}
   labels:
 {{ include "c8s.commonLabels" . | indent 4 }}

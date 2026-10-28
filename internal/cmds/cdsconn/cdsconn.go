@@ -63,7 +63,7 @@ func BindFlags(pf *pflag.FlagSet, o *Options) {
 	urlHelp := "CDS-issued-TLS router or direct CDS base URL (required); WebPKI router URLs are not attestation-bound"
 	pinHelp := "use the router value for CDS-issued public TLS or the CDS value for a direct URL"
 	if o.DirectCDS {
-		urlHelp = "direct CDS base URL, e.g. https://<node>:30808 (required); a router front door does not relay this API"
+		urlHelp = "direct CDS base URL, the <ip>:<port> an install was given as --cds-address (required); a router front door does not relay this API"
 		pinHelp = "use the CDS value"
 	}
 	pf.StringVar(&o.URL, "url", "", urlHelp)
@@ -161,8 +161,8 @@ func (o *Options) httpsClient(ctx context.Context, pins refvalues.ReferenceValue
 			hc.CloseIdleConnections()
 		}
 		return nil, fmt.Errorf("--url %s serves a router discovery document; a router front door does not relay CDS's /ca or /secrets. "+
-			"Use the CDS URL directly, e.g. https://<node>:30808 (cds.service.nodePort) or "+
-			"'kubectl port-forward -n c8s-system svc/c8s-cds 8443:8443', and pin the CDS launch digest instead of the router's", o.URL)
+			"Use the CDS URL directly, the <ip>:<port> the install was given as --cds-address, "+
+			"and pin the CDS launch file instead of the router's launch digest", o.URL)
 	case err == nil:
 		fmt.Fprintln(os.Stderr, "note: target is a router front door; verified its discovery attestation and bound this session to its CDS")
 		return hc, nil
