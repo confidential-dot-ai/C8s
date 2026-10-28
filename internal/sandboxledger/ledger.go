@@ -91,10 +91,15 @@ func (l *Ledger) recordAt(now time.Time, sandboxID, inventoryHost string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	if b, ok := l.bindings[sandboxID]; ok && now.Before(b.expires) {
-		if b.host != inventoryHost {
-			return false
+	expires := now.Add(l.ttl)
+	if b, ok := l.bindings[sandboxID]; ok && b.host == inventoryHost {
+		// INVARIANT: a binding's expiry never moves back. A refresh stamped
+		// by a clock behind the one that made the binding keeps it.
+		if b.expires.After(expires) {
+			expires = b.expires
 		}
+	} else if ok && now.Before(b.expires) {
+		return false
 	}
 	if _, ok := l.bindings[sandboxID]; !ok && len(l.bindings) >= l.max {
 		l.evictExpiredLocked(now)
@@ -102,7 +107,7 @@ func (l *Ledger) recordAt(now time.Time, sandboxID, inventoryHost string) bool {
 			return false
 		}
 	}
-	l.setLocked(sandboxID, binding{host: inventoryHost, expires: now.Add(l.ttl)})
+	l.setLocked(sandboxID, binding{host: inventoryHost, expires: expires})
 	return true
 }
 

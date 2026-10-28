@@ -54,9 +54,9 @@ func TestForwardedBindingAppliesAtTheLeadersTime(t *testing.T) {
 	}
 }
 
-// Time in the replicated state does not go backwards: a command stamped
-// before one already applied (a new leader whose clock is behind the old
-// one's) applies at the later time, on every replica alike.
+// A binding's expiry does not go backwards: a refresh stamped before the
+// binding (a new leader whose clock is behind the old one's) keeps it, on
+// every replica alike.
 func TestBindingTimeNeverGoesBackwards(t *testing.T) {
 	_, opPub := operatorKey(t)
 	f := newTestFSM(t, opPub) // ledger ttl: one hour
@@ -76,12 +76,16 @@ func TestBindingTimeNeverGoesBackwards(t *testing.T) {
 	if h, ok := f.ledger.Lookup("sb"); !ok || h != "A" {
 		t.Fatalf("sb bound to %q (%v), want A", h, ok)
 	}
-	// A replica that joins from a snapshot keeps the time.
+	// A replica that joins from a snapshot keeps the expiry: it refuses B
+	// at the same time.
 	g := newTestFSM(t, opPub)
 	if err := restoreCopy(t, f, g); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := g.Core().ClockMS, f.Core().ClockMS; got != want || want != ms(30*time.Minute) {
-		t.Fatalf("restored clock %d, applied %d, want %d", got, want, ms(30*time.Minute))
+	if res := applyAt(g, 4, Entry{Kind: KindBinding, Binding: bindingAt("sb", "B", ms(30*time.Minute))}); res != false {
+		t.Fatalf("B took the sandbox on the restored replica while A's binding was live: %v", res)
+	}
+	if h, ok := g.ledger.Lookup("sb"); !ok || h != "A" {
+		t.Fatalf("restored replica: sb bound to %q (%v), want A", h, ok)
 	}
 }

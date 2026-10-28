@@ -124,9 +124,12 @@ redeploy; it does not infer policy for old clusters or support format-2 restore
 or rolling conversion.
 
 Sandbox bindings expire at the leader's clock: the leader stamps the time
-on every binding and allowlist write, and the replicated time never goes
-back. A host that sets the leader's clock forward can expire bindings early,
-as it could with one CDS replica; a follower's clock does not matter.
+on every binding and allowlist write, and each write applies at its own
+time. Binding first-write-wins and expiry therefore trust the current
+leader's clock. A host that sets the leader's clock forward can expire
+bindings early, as it could with one CDS replica, but only for the writes
+stamped while the clock is ahead. A clock behind never shortens a binding:
+a refresh keeps the later expiry. A follower's clock does not matter.
 
 Local authorization reads are **bounded stale, not linearizable**. Each replica
 periodically asks the leader for a Raft barrier, then waits until its own FSM

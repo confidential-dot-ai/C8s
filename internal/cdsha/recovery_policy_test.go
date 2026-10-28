@@ -53,8 +53,8 @@ func TestRecoveryReplayPreservesPolicy(t *testing.T) {
 					t.Fatalf("command %d: live=%+v replay=%+v", i, a, b)
 				}
 			}
-			// s keeps the expiry of its first binding. Core.ClockMS moves
-			// only the later commands (s2, s3), so Dump order must not decide.
+			// s keeps the expiry of its first binding; look it up by name,
+			// since Dump order is not defined.
 			expiry := map[string]int64{}
 			for _, b := range led.Dump() {
 				expiry[b.SandboxID] = b.ExpiresMS

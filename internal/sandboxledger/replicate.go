@@ -23,9 +23,10 @@ type Replicator interface {
 func (l *Ledger) SetReplicator(r Replicator) { l.repl = r }
 
 // Command records one binding at a time every replica uses alike. With CDS
-// HA the leader sets AtMS from its own clock, and a command never applies
-// before one already applied: expiry trusts the leader's wall clock, as the
-// single-replica CDS trusted its own.
+// HA the leader sets AtMS from its own clock, and the command applies at that
+// time: expiry and first-write-wins trust the current leader's wall clock, as
+// the single-replica CDS trusted its own. A clock set forward affects only the
+// commands stamped while it is (see recordAt for the other direction).
 type Command struct {
 	SandboxID string `json:"sandbox_id"`
 	Host      string `json:"host"`
