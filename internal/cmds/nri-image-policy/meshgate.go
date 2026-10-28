@@ -19,6 +19,17 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// errSandboxOffRecord is the gate's answer for a sandbox it holds no state for.
+// Before recovery has run, that is a pod not yet taken back under the gate, so
+// the refusal is transient; after it, the sandbox is genuinely unknown and the
+// refusal holds for its life.
+var errSandboxOffRecord = errors.New("this enforcer installed no packet protection for the sandbox")
+
+// errSandboxAlreadyOnRecord is recoverPod's answer for a sandbox protect()
+// already took: it is protected, so recovery treating it as a failure would
+// warn the operator about a pod that is in fact under the gate.
+var errSandboxAlreadyOnRecord = errors.New("sandbox is on record already")
+
 // meshGate holds this node's protection state, under the mesh policy its
 // measured configuration carries.
 type meshGate struct {
@@ -26,10 +37,28 @@ type meshGate struct {
 	logger *slog.Logger
 	mu     sync.Mutex
 	pods   map[string]*protectedPod
+	// recoveryRan is set once recovery has run: until then a sandbox off the
+	// record may simply be one recovery has not reached yet.
+	recoveryRan bool
 	// nodeAddress is this node's own address, which no exit may reach.
 	nodeAddress func() (netip.Addr, error)
 	// extend adds granted exits to a pod's live ruleset.
 	extend func(podNamespace, meshPolicy, string, []exit) error
+}
+
+// noteRecovered marks recovery complete, so a sandbox off the record is then a
+// refusal for its life rather than a pod recovery has not yet reached.
+func (g *meshGate) noteRecovered() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.recoveryRan = true
+}
+
+// recoveryDone reports whether recovery has run.
+func (g *meshGate) recoveryDone() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.recoveryRan
 }
 
 // protectedPod is one protected sandbox: a refusal holds for its life, and
@@ -171,7 +200,7 @@ func (g *meshGate) recoverPod(pod *api.PodSandbox, ctrs []recoveredContainer, ex
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if _, onRecord := g.pods[pod.GetId()]; onRecord {
-		return fmt.Errorf("sandbox %s is on record already", pod.GetId())
+		return fmt.Errorf("%w: %s", errSandboxAlreadyOnRecord, pod.GetId())
 	}
 	state, err := g.recovered(pod, ctrs, exits)
 	if err != nil {
@@ -548,7 +577,7 @@ func (g *meshGate) state(sandboxID string) (*protectedPod, error) {
 	state := g.pods[sandboxID]
 	switch {
 	case state == nil:
-		return nil, fmt.Errorf("this enforcer installed no packet protection for sandbox %s", sandboxID)
+		return nil, fmt.Errorf("%w %s", errSandboxOffRecord, sandboxID)
 	case state.refusal != nil:
 		return nil, fmt.Errorf("sandbox %s is refused for its life: %w", sandboxID, state.refusal)
 	}

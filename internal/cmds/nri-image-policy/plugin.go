@@ -2,6 +2,7 @@ package nriimagepolicy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/netip"
@@ -981,6 +982,9 @@ func (p *plugin) Synchronize(ctx context.Context, pods []*api.PodSandbox, ctrs [
 	p.deferredMu.Unlock()
 
 	p.recoverExisting(ctx, pods, ctrs)
+	// Recovery has run: a container create from here finds its pod on record or
+	// is refused for its sandbox's life, no longer transiently.
+	p.mesh.noteRecovered()
 
 	if !p.shouldCheckExisting() {
 		p.logger.Info("startup check disabled", "pods", len(pods), "containers", len(ctrs))
@@ -1028,7 +1032,11 @@ func (p *plugin) recoverExisting(ctx context.Context, pods []*api.PodSandbox, ct
 		}
 		launch := p.observedLaunch(ctx, ctr, ctr.GetAnnotations()[annotationImageName], containerEnv(ctr), p.observedMounts(pod, ctr))
 		role := p.roleOf(launch)
-		running := ctr.GetState() == api.ContainerState_CONTAINER_RUNNING
+		// Liveness is the running set, not the registration snapshot: a container
+		// that started in the deferral window is not CONTAINER_RUNNING in the
+		// snapshot but is on the running set, and its mesh endpoint opened the
+		// gate, so recovery must see it as started.
+		running := p.running.contains(ctr.GetId())
 		bySandbox[pod.GetId()] = append(bySandbox[pod.GetId()], recoveredContainer{
 			ctr: ctr,
 			launch: gatedContainer{
@@ -1039,8 +1047,10 @@ func (p *plugin) recoverExisting(ctx context.Context, pods []*api.PodSandbox, ct
 			},
 			running: running,
 		})
-		// A container that never ran was never counted by admission.
-		if ctr.GetState() != api.ContainerState_CONTAINER_CREATED {
+		// A container that never ran was never counted by admission. One that ran
+		// counts whether it is still running or has since stopped, so the snapshot
+		// state and the running set together decide it.
+		if ctr.GetState() != api.ContainerState_CONTAINER_CREATED || running {
 			workloads[pod.GetId()] = append(workloads[pod.GetId()], p.sandboxContainer(launch))
 		}
 	}
@@ -1049,7 +1059,11 @@ func (p *plugin) recoverExisting(ctx context.Context, pods []*api.PodSandbox, ct
 			continue
 		}
 		exits := p.recoveredExits(workloads[pod.GetId()])
-		if err := p.mesh.recoverPod(pod, bySandbox[pod.GetId()], exits); err != nil {
+		switch err := p.mesh.recoverPod(pod, bySandbox[pod.GetId()], exits); {
+		case err == nil, errors.Is(err, errSandboxAlreadyOnRecord):
+			// Already on record means protect() took the pod first; it is
+			// protected, so this is not a failure to recover.
+		default:
 			p.logger.Warn("a pod running before this enforcer connected was not taken under the mesh gate", "error", err)
 		}
 	}
@@ -1182,6 +1196,9 @@ func (p *plugin) RunDeferredCheck(ctx context.Context) {
 	// Recovery runs even with the check off: a pod off the gate's record is
 	// refused for its life.
 	p.recoverExisting(ctx, pods, ctrs)
+	// Recovery has run: a container create from here finds its pod on record or
+	// is refused for its sandbox's life, no longer transiently.
+	p.mesh.noteRecovered()
 
 	if !p.shouldCheckExisting() {
 		if p.inventory != nil {
