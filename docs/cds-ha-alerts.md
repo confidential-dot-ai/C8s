@@ -34,6 +34,7 @@ act.
 |---|---|---|
 | `cds-ha: this replica can no longer follow the log (local fault); it stops serving and exits to rejoin`; `stuck=local` | Its own store failed (disk full, I/O, file descriptors) | None: it restarts and rejoins. If one node repeats it, replace that node (runbook 2). |
 | `cds-ha replica stuck and its loop did not end it; exiting` | The watchdog ended a stuck replica | Same as the line above. |
+| `cds-ha: ALARM: stopped following the log, ...` on every replica, `reason` with `database or disk is full`; `stuck=local` | The store is full on every replica at the same entry | Runbook 6, "A full store on every replica". Do not restart the replicas. |
 | `cds-ha: ALARM: halted at a log entry no replica could apply`; `stuck=deterministic` | A committed entry that no replica applies. The replicas keep the log. | Runbook 6. Do not restart the replicas. |
 | `leader wedged: raft refuses every barrier although a quorum answers heartbeats` | raft #696 stall. The leader exits, and another one takes over. | None. If it repeats, report it with the log line. |
 | Pod `OOMKilled` | Not enough memory | Size the cds nodes at about 8 GiB (limitations). Several at once lose the majority. |

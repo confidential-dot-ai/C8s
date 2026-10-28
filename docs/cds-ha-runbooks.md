@@ -404,6 +404,27 @@ Only one replica halted, and the others serve? It exits by itself once the
 serving leader is past the entry. If it runs an older image, replace it with
 the current image.
 
+**A full store on every replica.** Every replica shows `stuck=local`, logs
+`cds-ha: ALARM: stopped following the log, ...` once a minute, and the
+`reason` contains `database or disk is full` at the same index. Restarting
+the replicas does not help: each one stops at the same entry again. A
+larger store (`cds.ha.storeSizeLimit`) changes the replica's arguments, so it
+needs a new bundle, and a new bundle's cluster cannot restore this cluster's
+backup (`cds-ha.md`, "A full store on every replica"). To keep the state:
+
+1. Do not reboot any cds VM yet. Read attested status over every replica and
+   write down, from the `state=Leader` line, `last_backup=<index>:<epoch>:<age>`,
+   `epoch=` and `ca=`. Export the backup slot (setup, "Export the backup on a schedule").
+2. Reboot every cds VM. Keep the server running: the backup slot lives in
+   its etcd.
+3. Do runbook 5 with that export: `--trusted-ca-sha256` is the recorded
+   `ca=`, `--min-epoch` and `--min-index` are the epoch and index of the
+   recorded `last_backup=`, and `--resume-epoch` is the recorded `epoch=`.
+4. Before you apply any write made after the backup, make room: delete the
+   workload policy entries and secrets you no longer need. Then apply again
+   only the writes that are still needed (runbook 5, step 6). Writes that
+   grow the state get 507 once the store guard is reached.
+
 ## 7. Divergence alarm
 
 Every replica reports `chain` and `checkpoint`. The leader compares them at

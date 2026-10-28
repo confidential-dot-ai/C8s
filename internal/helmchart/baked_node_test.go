@@ -414,6 +414,21 @@ func TestChartBakedNodeHoldsInjectionScopeToTheMeasuredExemptSet(t *testing.T) {
 	}
 }
 
+// A changed HA template restarts no replica: a rolling update would replace
+// every not-Ready replica at once, and those may hold the only copy of the
+// in-memory log.
+func TestChartBakedCDSHAUpdatesOnlyOnDelete(t *testing.T) {
+	t.Parallel()
+	out, err := helmTemplate(t, append(slices.Clone(bakedArgs), "--set", "cds.ha.enabled=true")...)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	ds := renderedDaemonSet(t, out, "c8s-cds-ha")
+	if ds.Spec.UpdateStrategy.Type != appsv1.OnDeleteDaemonSetStrategyType || ds.Spec.UpdateStrategy.RollingUpdate != nil {
+		t.Fatalf("c8s-cds-ha updateStrategy = %+v, want OnDelete", ds.Spec.UpdateStrategy)
+	}
+}
+
 // HA replicas are Ready only while they serve, so the client Service never
 // carries an unjoined or out-of-contact replica. The
 // operator reaches each node's replica, Ready or not, on its own NodePort.

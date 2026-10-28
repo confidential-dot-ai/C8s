@@ -12,13 +12,14 @@ metadata:
 {{ include "c8s.commonLabels" . | indent 4 }}
     app.kubernetes.io/component: cds
 spec:
-  # One replica per cds-role node: replicas come and go with the nodes. A
-  # replica is Ready only once it has joined the Raft group and serves, so
-  # a rolling update (one node at a time) never takes a second voter away
-  # before the replaced one is back: two at once would cost the majority.
-  minReadySeconds: 5
+  # One replica per cds-role node: replicas come and go with the nodes.
+  # OnDelete: a changed template restarts no replica. A rolling update would
+  # replace every replica that is not Ready at once, and replicas that are
+  # stuck, fenced or without a leader are not Ready while they may hold the
+  # only copy of the in-memory log. A replica restarts only when its node is
+  # replaced, one at a time behind the readiness gate (runbook 3).
   updateStrategy:
-    rollingUpdate: {maxUnavailable: 1}
+    type: OnDelete
   selector:
     matchLabels:
       app.kubernetes.io/name: c8s-operator

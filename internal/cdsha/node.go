@@ -1506,8 +1506,8 @@ func (n *Node) Status() Status {
 	return st
 }
 
-// Ready is readiness for a rolling restart (a DaemonSet with
-// maxUnavailable 1 restarts the next replica once this one is Ready): the
+// Ready is readiness for replacing replicas one at a time (the DaemonSet
+// is OnDelete: the next node is replaced once this one is Ready): the
 // replica serves, and either holds a voter seat that every staying voter
 // holds too, or the leader reports every seat held by a healthy voter. A
 // restarted voter comes back as a new member that serves as a non-voter

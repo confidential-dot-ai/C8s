@@ -66,7 +66,15 @@ arguments: the `c8s-cds-ha` DaemonSet comes from the server image, and a cds
 node admits the replica only with the exact arguments its own image was
 built with. A release that changes the CDS arguments or the chart's HA
 DaemonSet needs a relaunch of the cluster, not a rolling upgrade. The step-by-step version, with the readiness gate, is runbook 3 in
-`cds-ha-runbooks.md`. In short:
+`cds-ha-runbooks.md`.
+
+The DaemonSet's update strategy is `OnDelete`: Kubernetes never restarts a
+replica because the DaemonSet changed. A rolling update would replace every
+replica that is not Ready at once, and a replica that is stuck, fenced or
+without a leader is not Ready while it may hold the only copy of the log. A
+replica keeps its pod until its node is replaced, and a new node gets a pod
+from the current DaemonSet. So the rollout replaces nodes, one at a time,
+behind the readiness gate. In short:
 
 1. Sign and apply an `UpdateMeasurements` decree that pins both images
    (`c8s cds ha decree --image <old> --image <new>`). Nodes and pods follow
@@ -148,10 +156,10 @@ Two NodePort Services lead to the replicas:
   Ready replicas. A replica is Ready only while it serves and its seat is
   settled: a voter while the cluster has no more voters than seats and every
   staying voter knows of its promotion, a non-voter while the leader reports
-  every seat held by a healthy voter. Readiness also gates a rolling restart:
-  a newly promoted voter is not Ready until the voter it replaces has left,
-  while the voters that already held their seats stay Ready. Any node's
-  address may answer from any Ready replica.
+  every seat held by a healthy voter. Readiness also gates replacing nodes
+  one at a time: a newly promoted voter is not Ready until the voter it
+  replaces has left, while the voters that already held their seats stay
+  Ready. Any node's address may answer from any Ready replica.
 * `c8s-cds-replicas` (`cds.ha.replicaNodePort`, 30809) is for the operator.
   `https://<node>:30809` answers from the replica on that node only, whether
   it serves or not. Use it for replicas that do not serve: a fresh replica
@@ -316,6 +324,26 @@ backup (loses the tail). The steps are runbook 6 in `cds-ha-runbooks.md`.
 If the cluster's serving leader is past the entry (only this replica fails,
 for example an older image), the replica exits so its restart rejoins, as long
 as the voters that follow the log keep a majority without it.
+
+### A full store on every replica
+
+When every replica stops at the same entry with `database or disk is full`
+in the `reason`, the cluster outgrew its store. Restarting replicas does not
+help: each one applies the same entries into the same size and stops at the
+same entry again. The store size (`cds.ha.storeSizeLimit`) is both an argument
+of the replica (`--allowlist-max-bytes`) and the size of its memory volume.
+Both are built into the node image, and a cds node admits the replica only with
+its own image's arguments. A larger store is therefore a new release, and a
+release that changes the replica's arguments needs a relaunch of the cluster
+from a new bundle. A replica restores only a backup made under its own
+bundle's decree key, and a new bundle has a new one, so a cluster with a
+larger store is a new cluster (Genesis), not a copy of this one.
+
+To keep the state, restore the last backup on the same bundle and image, and
+shrink the state before you apply the writes made after the backup again. The
+writes after the backup are lost until you apply them again. The steps are
+runbook 6, "A full store on every replica". If a fixed image makes the entry
+fit under the same size, roll it in as in runbook 6, option A (no loss).
 
 ## Splitting the recovery key
 

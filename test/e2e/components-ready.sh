@@ -14,6 +14,23 @@ ns=c8s-system
 # policy names.
 router_ns=c8s-router
 
+# `kubectl rollout status` refuses a DaemonSet that is not RollingUpdate (the
+# HA CDS is OnDelete), so wait for the conditions it checks: the controller saw
+# the current generation, and every scheduled pod is updated and available.
+daemonset_rolled_out() {
+  local status gen observed desired updated available
+  for _ in $(seq 1 96); do
+    status=$(kubectl -n "$1" get "$2" -o jsonpath='{.metadata.generation} {.status.observedGeneration} {.status.desiredNumberScheduled} {.status.updatedNumberScheduled} {.status.numberAvailable}') || status=""
+    read -r gen observed desired updated available <<<"$status"
+    if [ "${observed:-0}" -ge "${gen:-1}" ] && [ "${updated:-0}" -ge "${desired:-0}" ] &&
+      [ "${available:-0}" -ge "${desired:-0}" ]; then
+      return 0
+    fi
+    sleep 5
+  done
+  fail "$2 did not roll out within 8m (${status:-no status})"
+}
+
 if [ "${C8S_NODE_IMAGE:-}" = 1 ]; then
   : "${C8S_MEASUREMENTS_CONFIG:?node-image checks require the full server policy}"
   : "${C8S_ALLOWLIST_URL:?node-image checks require the measured CDS front door}"
@@ -31,7 +48,10 @@ if [ "${C8S_NODE_IMAGE:-}" = 1 ]; then
   kubectl -n "$ns" wait --for=create "${workloads[@]}" --timeout=8m
   kubectl -n "$router_ns" wait --for=create deployment/c8s-router --timeout=8m
   for workload in "${workloads[@]}"; do
-    kubectl -n "$ns" rollout status "$workload" --timeout=8m
+    case "$workload" in
+      daemonset/*) daemonset_rolled_out "$ns" "$workload" ;;
+      *) kubectl -n "$ns" rollout status "$workload" --timeout=8m ;;
+    esac
   done
   kubectl -n "$router_ns" rollout status deployment/c8s-router --timeout=8m
   # Public policies are host-staged, not stored in Kubernetes. CDS and the

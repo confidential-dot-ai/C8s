@@ -417,7 +417,8 @@ func run(cfg config) error {
 		// the replica is not serving and follows renewals and rotations.
 		deps.HA = haNode
 		// Ready also waits for the voter seats to be full again (see
-		// cdsha.Node.Ready), so a rolling restart never takes the majority.
+		// cdsha.Node.Ready), so a node replacement that waits for it never
+		// takes the majority.
 		ready := deps.ReadyFn
 		deps.ReadyFn = func() bool { return haNode.Ready() && ready() }
 		router = haGate(haNode.Serving, devHARoutes(newRouter(deps), secretsStore, secretsMem, writeAuthorizer, deps.SecretsOperator == nil))
