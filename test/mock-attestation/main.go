@@ -26,7 +26,7 @@ import (
 
 // SNP report layout (AMD SEV-SNP ABI): the fields the synthetic report
 // carries. The measurement is all zero — the mock's launch identity, which
-// the compose file pins as get-cert's --cds-measurements allowlist.
+// the lane's CDS pin names.
 const (
 	snpReportSize     = 1184
 	reportDataOffset  = 0x50

@@ -46,16 +46,6 @@ func TestNewCmdDefaults(t *testing.T) {
 	}
 }
 
-// A malformed measurement is a typo in rendered config, and pinning nothing is
-// not an acceptable fallback for it.
-func TestRunRejectsBadMeasurements(t *testing.T) {
-	cfg := validConfig(t)
-	cfg.Measurements = []string{"not-hex"}
-	if err := run(cfg); err == nil || !strings.Contains(err.Error(), "--measurements") {
-		t.Fatalf("err = %v, want a measurement-parse failure", err)
-	}
-}
-
 func TestRunRejectsInvalidConfig(t *testing.T) {
 	cfg := validConfig(t)
 	cfg.CDSURL = ""

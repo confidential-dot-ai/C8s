@@ -443,7 +443,7 @@ func TestPreflightUpstreamRoutes(t *testing.T) {
 		{name: "upstream without key", upstream: "web"},
 		{name: "max age below a second", upstream: "web", maxAge: "500ms", wantErr: "--routes-max-age"},
 		{name: "max age above D4", upstream: "web", maxAge: "600000h", wantErr: "--routes-max-age"},
-		{name: "unpinned CDS", upstream: "web", key: key, keys: pub, wantErr: "unpinned CDS"},
+		{name: "unpinned CDS", upstream: "web", key: key, keys: pub, wantErr: "unpinned endpoint"},
 		{name: "key in --operator-keys", upstream: "web", key: key, keys: pub, pinned: true},
 		{name: "key in cds.operatorKeys", upstream: "web", key: key, values: []string{values}, pinned: true},
 		{name: "no keys for CDS", upstream: "web", key: key, pinned: true, wantErr: "pass --operator-keys"},

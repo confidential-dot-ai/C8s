@@ -41,15 +41,13 @@ var nodePinsPath = workloadclaims.CDSPinsPath
 type clientFunc func(sidecar.Config, armtls.Pins) (*http.Client, crypto.PublicKey, error)
 
 // newProbe verifies CDS as the pod's sidecars do, through armTLS against the
-// node's CDS pins where the enforcer mounts them, otherwise the pins given.
+// node's CDS pins where the enforcer mounts them, otherwise the policy given.
 // The pins are resolved without the sidecars' log line: the steps read the
 // probe's stdout and stderr as one stream.
 func newProbe(o options) (*probe, error) {
 	cfg := sidecar.Config{
 		CDSURL:                 o.cdsURL,
 		AttestationApiURL:      o.attestationURL,
-		Measurements:           o.measurements,
-		RTMRs:                  o.rtmrs,
 		MeasurementsConfig:     o.policyFile,
 		MeasurementsConfigJSON: o.policyJSON,
 		CertPath:               o.certPath,
@@ -57,8 +55,7 @@ func newProbe(o options) (*probe, error) {
 		RequestTimeout:         o.timeout,
 	}
 	policy, _, err := cmdsutil.ResolveCDSPins(nodePinsPath,
-		cmdsutil.ImagePolicySource{File: cfg.MeasurementsConfig, JSON: cfg.MeasurementsConfigJSON},
-		cmdsutil.MeasurementPins{Measurements: cfg.Measurements, Registers: cfg.RTMRs})
+		cmdsutil.ImagePolicySource{File: cfg.MeasurementsConfig, JSON: cfg.MeasurementsConfigJSON})
 	if err != nil {
 		return nil, err
 	}

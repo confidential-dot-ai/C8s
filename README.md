@@ -415,7 +415,7 @@ certificate, so it cannot be substituted in transit
 
 ```sh
 c8s cds verify https://<cds>:8443 \
-  --measurements <launch-digest> \
+  --image-policy-file cds-pin.json \
   --operator-keys operator.pub
 ```
 

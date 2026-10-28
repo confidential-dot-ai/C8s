@@ -3,7 +3,6 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
 	"net/netip"
 	"os"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
 )
 
@@ -52,17 +52,9 @@ func cdsPinConfig(document []byte) (*cdsconfig.Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("the CDS pin: %w", err)
 	}
-	if set.Empty() {
-		return nil, fmt.Errorf("the CDS pin names no image, so nothing tells this cluster's CDS from any other attested TEE")
-	}
-	file := set.Images[0].LaunchFile
-	if len(file) == 0 {
-		return nil, fmt.Errorf("the CDS pin binds no launch file: a CDS is pinned to the configuration it runs on")
-	}
-	for _, image := range set.Images[1:] {
-		if !bytes.Equal(image.LaunchFile, file) {
-			return nil, fmt.Errorf("the CDS pin binds two configurations: one pin names one CDS")
-		}
+	file, err := cmdsutil.CDSLaunchFile(set)
+	if err != nil {
+		return nil, fmt.Errorf("the CDS pin %w", err)
 	}
 	config, err := cdsconfig.Parse(file)
 	if err != nil {

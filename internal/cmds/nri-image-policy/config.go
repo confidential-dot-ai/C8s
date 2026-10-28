@@ -104,9 +104,7 @@ type pullConfig struct {
 	Interval              time.Duration `yaml:"interval"`                // ticker cadence; > 0 required when a CDS is named
 	Timeout               time.Duration `yaml:"timeout"`                 // per-request timeout; > 0 required when a CDS is named
 	AttestationApiURL     string        `yaml:"attestation_api_url"`     // required for https pull
-	CDSMeasurements       []string      `yaml:"cds_measurements"`        // SHA-384 hex launch digests
-	CDSRTMRs              []string      `yaml:"cds_rtmrs"`               // TDX RTMR pins <index>=<sha384-hex>
-	CDSMeasurementsConfig string        `yaml:"cds_measurements_config"` // complete CDS image and operator identity policy
+	CDSMeasurementsConfig string        `yaml:"cds_measurements_config"` // the CDS pin document, every entry bound to the launch file CDS runs on
 	// MeasurePolicies extends RTMR[3] (TDX) with each pulled policy before
 	// applying it. Off by default: verifiers on attestation-go predating
 	// runtime extensions, and flat RTMR[3] pins, still require the bare
@@ -115,15 +113,13 @@ type pullConfig struct {
 }
 
 // cdsSource is how a config names the CDS this node reaches: a measured boot
-// config carries the URL and the pins, an install's carries the files it
-// mounts. Each half has one source, so a node reaches one CDS and holds it to
-// one identity.
+// config carries the URL, an install's carries the file it mounts. Each half
+// has one source, so a node reaches one CDS and holds it to one identity.
 type cdsSource struct {
 	// URL locates the CDS, or AddressFile holds its endpoint.
 	URL         string
 	AddressFile string
-	// Pins identify it as flat values, or PinFile as a document.
-	Pins    cmdsutil.MeasurementPins
+	// PinFile is the document identifying it.
 	PinFile string
 }
 
@@ -137,42 +133,29 @@ func (c pullConfig) cdsSource() (cdsSource, error) {
 	source := cdsSource{
 		URL:         c.URL,
 		AddressFile: c.CDSAddressFile,
-		Pins: cmdsutil.MeasurementPins{
-			Measurements: c.CDSMeasurements,
-			Registers:    c.CDSRTMRs,
-			Prefix:       "cds-",
-		},
-		PinFile: c.CDSMeasurementsConfig,
+		PinFile:     c.CDSMeasurementsConfig,
 	}
 	if source.URL != "" && source.AddressFile != "" {
 		return cdsSource{}, fmt.Errorf("allowlist.pull.url cannot be combined with cds_address_file: a node reaches one CDS")
-	}
-	if source.PinFile != "" && (len(c.CDSMeasurements) != 0 || len(c.CDSRTMRs) != 0) {
-		return cdsSource{}, fmt.Errorf("allowlist.pull.cds_measurements_config cannot be combined with cds_measurements or cds_rtmrs: a node holds its CDS to one identity")
 	}
 	return source, nil
 }
 
 // policySet is the CDS identity set this node's own clients and its injected
-// credential clients are held to, whichever form the config names it in. Only
-// the flat pins take this node's family; a policy document carries the family
-// of the CDS VM itself.
-func (c pullConfig) policySet(platform string) (refvalues.ReferenceValues, error) {
+// credential clients are held to. The document declares the family of the CDS
+// VM, which an operator chooses independently of this node's, and binds every
+// entry to the launch file that CDS runs on.
+func (c pullConfig) policySet() (refvalues.ReferenceValues, error) {
 	source, err := c.cdsSource()
 	if err != nil {
 		return refvalues.ReferenceValues{}, err
 	}
-	values := cmdsutil.ImagePolicyValuesConfig{
-		Source:       cmdsutil.ImagePolicySource{File: source.PinFile},
-		Pins:         source.Pins,
-		PlatformFlag: "platform",
-	}
-	if !values.Source.IsSet() {
-		values.Platform = platform
-	}
-	set, err := cmdsutil.LoadImagePolicySet(values)
+	set, err := (cmdsutil.ImagePolicySource{File: source.PinFile}).Values()
 	if err != nil {
 		return refvalues.ReferenceValues{}, fmt.Errorf("allowlist.pull: %w", err)
+	}
+	if _, err := cmdsutil.CDSLaunchFile(set); err != nil {
+		return refvalues.ReferenceValues{}, fmt.Errorf("allowlist.pull.cds_measurements_config %w", err)
 	}
 	return set, nil
 }
@@ -322,12 +305,6 @@ func parseConfig(data []byte) (*config, error) {
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
-	// The pin parsers take one spelling of a digest, and this file is
-	// hand-editable: fold the case an operator typed rather than refusing a
-	// config the node has been booting with.
-	cfg.Allowlist.Pull.CDSMeasurements = foldHexPins(cfg.Allowlist.Pull.CDSMeasurements)
-	cfg.Allowlist.Pull.CDSRTMRs = foldHexPins(cfg.Allowlist.Pull.CDSRTMRs)
-
 	if cfg.Allowlist.Base != nil {
 		if err := cfg.Allowlist.Base.Normalize(); err != nil {
 			return nil, fmt.Errorf("allowlist.base: %w", err)
@@ -356,20 +333,8 @@ func checkPullURL(raw string) error {
 	return nil
 }
 
-// foldHexPins lowercases each pin, leaving blanks and the "<index>=" prefix of
-// an RTMR pin untouched: both halves are hex or digits, which fold to
-// themselves.
-func foldHexPins(vals []string) []string {
-	out := make([]string, len(vals))
-	for i, v := range vals {
-		out[i] = strings.ToLower(v)
-	}
-	return out
-}
-
 // NormalizedPlatform folds the az-/gcp- variants onto the two TEE families the
-// armTLS extension records, matching what CDS does with its own
-// --armtls-platform. Defaulting here rather than in loadConfig keeps every
+// armTLS extension records. Defaulting here rather than in loadConfig keeps every
 // construction path on the same value, including callers that build a config
 // literal and validate it directly.
 func (c *config) NormalizedPlatform() string {
@@ -482,12 +447,6 @@ func (c *config) Validate() error {
 		}
 		if c.Allowlist.Pull.AttestationApiURL == "" {
 			return fmt.Errorf("allowlist.pull.attestation_api_url must be set")
-		}
-		if _, err := refvalues.ParseHexMeasurementsList(c.Allowlist.Pull.CDSMeasurements); err != nil {
-			return fmt.Errorf("allowlist.pull.cds_measurements: %w", err)
-		}
-		if _, err := refvalues.ParseRegisterPins(c.Allowlist.Pull.CDSRTMRs); err != nil {
-			return fmt.Errorf("allowlist.pull.cds_rtmrs: %w", err)
 		}
 	}
 	if !c.AllowlistEnabled() && len(c.Policy.LabelRules) == 0 {

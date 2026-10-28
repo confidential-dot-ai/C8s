@@ -94,8 +94,6 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 	}
 	pull["url"] = cmdsutil.CDSURL(endpoint)
 	pull["cds_measurements_config"] = PublicDir + "/cds.json"
-	delete(pull, "cds_measurements")
-	delete(pull, "cds_rtmrs")
 	mesh, declared := floor["mesh"]
 	if !declared {
 		return fmt.Errorf("baked NRI policy missing mesh")

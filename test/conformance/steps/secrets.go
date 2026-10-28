@@ -960,8 +960,8 @@ func (w *world) probe(p *pod, args ...string) (string, error) {
 }
 
 // cdsVerification is how the pod's certificate container verifies the CDS,
-// as the probe's flags: the webhook's attestation API and pins, with the
-// one $(HOST_IP) reference the kubelet expands resolved to the pod's node.
+// as the probe's flags: the webhook's attestation API and pin document, with
+// the one $(HOST_IP) reference the kubelet expands resolved to the pod's node.
 func (w *world) cdsVerification(p *pod) ([]string, error) {
 	if p.verifyCDS != nil {
 		return p.verifyCDS, nil
@@ -976,11 +976,7 @@ func (w *world) cdsVerification(p *pod) ([]string, error) {
 	for _, arg := range strings.Split(rest, "\n") {
 		name, value, _ := strings.Cut(arg, "=")
 		switch name {
-		case "--attestation-api-url", "--image-policy-json":
-		case "--cds-measurements":
-			name = "--measurements"
-		case "--cds-rtmrs":
-			name = "--rtmrs"
+		case "--attestation-api-url", "--image-policy-file", "--image-policy-json":
 		default:
 			continue
 		}

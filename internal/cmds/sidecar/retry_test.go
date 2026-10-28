@@ -8,8 +8,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/confidential-dot-ai/c8s/internal/secrets"
 )
 
 func TestRetryRecoversOnceReleased(t *testing.T) {
@@ -79,7 +77,7 @@ func TestRefusalReasonNamesTheContainerGate(t *testing.T) {
 func TestRefusalReasonOnNotFoundNamesBothCauses(t *testing.T) {
 	wrappedNotFound := fmt.Errorf("volume scratch: %w", &StatusError{Status: http.StatusNotFound, Err: errNotYet})
 	got := refusalReason(wrappedNotFound)
-	for _, want := range []string{"does not grant reading", secrets.ReadDeniedLog, "holds no value", "c8s secrets put"} {
+	for _, want := range []string{"does not grant reading", "c8s secrets explain", "holds no value", "c8s secrets put"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("404 reason = %q, want it to name %q", got, want)
 		}

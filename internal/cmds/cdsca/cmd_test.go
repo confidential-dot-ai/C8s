@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/pem"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsconn"
 	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 )
@@ -53,11 +55,11 @@ func TestRefusesAnUnpinnedCDS(t *testing.T) {
 	seen, url := newAttestedCDS(t, http.StatusOK, testutil.PEMCerts(testutil.MeshCA(t, "cds-m")))
 
 	_, _, err := run(t, "--url", url)
-	if err == nil {
-		t.Fatal("a read from an endpoint with no --measurements was accepted")
+	if !errors.Is(err, cdsconn.ErrUnpinnedEndpoint) {
+		t.Fatalf("err = %v, want errors.Is cdsconn.ErrUnpinnedEndpoint", err)
 	}
-	if !strings.Contains(err.Error(), "--measurements") {
-		t.Fatalf("refusal does not name --measurements: %v", err)
+	if !strings.Contains(err.Error(), "--image-policy-file") {
+		t.Fatalf("refusal does not name --image-policy-file: %v", err)
 	}
 	if *seen != 0 {
 		t.Fatalf("the refused read still sent %d request(s)", *seen)
@@ -72,7 +74,7 @@ func TestRefusesAPlaintextURL(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	_, _, err := run(t, "--url", srv.URL, "--measurements", testutil.TestMeasurement, "--insecure")
+	_, _, err := run(t, "--url", srv.URL, "--image-policy-file", testutil.CDSPinFile(t), "--insecure")
 	if err == nil {
 		t.Fatal("a mesh CA read over plaintext http was accepted")
 	}
@@ -84,7 +86,7 @@ func TestRefusesAPlaintextURL(t *testing.T) {
 // A URL that does not parse is a typo, not a plaintext endpoint; reporting it
 // as one sends an operator looking for a scheme they did not write.
 func TestRefusesAnUnparseableURLWithoutBlamingTheScheme(t *testing.T) {
-	_, _, err := run(t, "--url", "://missing-scheme", "--measurements", testutil.TestMeasurement)
+	_, _, err := run(t, "--url", "://missing-scheme", "--image-policy-file", testutil.CDSPinFile(t))
 	if err == nil {
 		t.Fatal("an unparseable --url was accepted")
 	}
@@ -104,7 +106,7 @@ func TestWritesTheServedChainAndReportsEachDigest(t *testing.T) {
 	_, url := newAttestedCDS(t, http.StatusOK, testutil.PEMCerts(newest, retained))
 	out := filepath.Join(t.TempDir(), "mesh-ca.pem")
 
-	_, stderr, err := run(t, "--url", url, "--measurements", testutil.TestMeasurement, "--out", out)
+	_, stderr, err := run(t, "--url", url, "--image-policy-file", testutil.CDSPinFile(t), "--out", out)
 	if err != nil {
 		t.Fatalf("read failed: %v", err)
 	}
@@ -129,7 +131,7 @@ func TestWritesToStdoutWithoutOut(t *testing.T) {
 	ca := testutil.MeshCA(t, "cds-m")
 	_, url := newAttestedCDS(t, http.StatusOK, testutil.PEMCerts(ca))
 
-	stdout, _, err := run(t, "--url", url, "--measurements", testutil.TestMeasurement)
+	stdout, _, err := run(t, "--url", url, "--image-policy-file", testutil.CDSPinFile(t))
 	if err != nil {
 		t.Fatalf("read failed: %v", err)
 	}
@@ -147,7 +149,7 @@ func TestDropsNonCertificateBlocks(t *testing.T) {
 	_, url := newAttestedCDS(t, http.StatusOK, body)
 	out := filepath.Join(t.TempDir(), "mesh-ca.pem")
 
-	if _, _, err := run(t, "--url", url, "--measurements", testutil.TestMeasurement, "--out", out); err != nil {
+	if _, _, err := run(t, "--url", url, "--image-policy-file", testutil.CDSPinFile(t), "--out", out); err != nil {
 		t.Fatalf("read failed: %v", err)
 	}
 	if got := readFile(t, out); !bytes.Equal(got, testutil.PEMCerts(ca)) {
@@ -161,7 +163,7 @@ func TestRefusesANonCertificateBody(t *testing.T) {
 	_, url := newAttestedCDS(t, http.StatusOK, []byte("not a bundle"))
 	out := filepath.Join(t.TempDir(), "mesh-ca.pem")
 
-	if _, _, err := run(t, "--url", url, "--measurements", testutil.TestMeasurement, "--out", out); err == nil {
+	if _, _, err := run(t, "--url", url, "--image-policy-file", testutil.CDSPinFile(t), "--out", out); err == nil {
 		t.Fatal("a body with no CERTIFICATE block was accepted")
 	}
 	assertNotWritten(t, out)
@@ -173,7 +175,7 @@ func TestRefusesANonOKResponse(t *testing.T) {
 	_, url := newAttestedCDS(t, http.StatusNotFound, []byte("no such route"))
 	out := filepath.Join(t.TempDir(), "mesh-ca.pem")
 
-	_, _, err := run(t, "--url", url, "--measurements", testutil.TestMeasurement, "--out", out)
+	_, _, err := run(t, "--url", url, "--image-policy-file", testutil.CDSPinFile(t), "--out", out)
 	if err == nil {
 		t.Fatal("a 404 at /ca was accepted")
 	}
@@ -221,7 +223,7 @@ func TestImagePolicyGatesCARead(t *testing.T) {
 			ca := testutil.MeshCA(t, "cds-m")
 			seen, url := newAttestedCDS(t, http.StatusOK, testutil.PEMCerts(ca))
 			policy := filepath.Join(t.TempDir(), "policy.json")
-			data := `{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"cds","measurement":"` + tc.digest + `"}]}`
+			data := testutil.CDSPinDocument(tc.digest, testutil.CDSLaunchFile)
 			if err := os.WriteFile(policy, []byte(data), 0o600); err != nil {
 				t.Fatal(err)
 			}

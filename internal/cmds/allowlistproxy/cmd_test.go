@@ -17,8 +17,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 )
 
 // No test runs on a node, so the compiled mount paths name an empty directory
@@ -250,7 +250,7 @@ func nodeCDSFiles(t *testing.T) (address, pins, verifier string) {
 		t.Fatal(err)
 	}
 	pins = filepath.Join(dir, "cds-pins.json")
-	policy := `{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"cds","measurement":"` + strings.Repeat("ab", 48) + `"}]}`
+	policy := testutil.CDSPinDocument(testutil.TestMeasurement, testutil.CDSLaunchFile)
 	if err := os.WriteFile(pins, []byte(policy), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -262,8 +262,9 @@ func nodeCDSFiles(t *testing.T) (address, pins, verifier string) {
 // refusal.
 func TestNewHandlerRequiresCDSURLWithoutNodeEndpoint(t *testing.T) {
 	_, err := newHandler(config{
-		attestationAPIURL: "http://attestation-api:8400",
-		requestTimeout:    time.Second,
+		attestationAPIURL:  "http://attestation-api:8400",
+		measurementsConfig: testutil.CDSPinFile(t),
+		requestTimeout:     time.Second,
 	}, slog.Default())
 	if err == nil || !strings.Contains(err.Error(), "--cds-url is required") {
 		t.Fatalf("error = %v, want one naming the missing CDS endpoint", err)
@@ -360,28 +361,32 @@ func TestNewHandlerRefusesANamedVerifier(t *testing.T) {
 	}
 }
 
-func TestNewHandlerRejectsBadMeasurement(t *testing.T) {
-	bad := []string{"not-hex"}
-	_, parseErr := refvalues.ParseHexMeasurementsList(bad)
+// The proxy holds CDS to the configuration it runs on, so a document naming
+// only its image admits any CDS VM.
+func TestNewHandlerRejectsAPinWithoutALaunchBinding(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cds-pin.json")
+	unbound := `{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"cds","measurement":"` + testutil.TestMeasurement + `"}]}`
+	if err := os.WriteFile(path, []byte(unbound), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	_, err := newHandler(config{
-		cdsURL:            "https://c8s-cds:8443",
-		cdsMeasurements:   bad,
-		attestationAPIURL: "http://attestation-api:8400",
-		requestTimeout:    time.Second,
+		cdsURL:             "https://c8s-cds:8443",
+		measurementsConfig: path,
+		attestationAPIURL:  "http://attestation-api:8400",
+		requestTimeout:     time.Second,
 	}, slog.Default())
-	want := "--cds-measurements: " + parseErr.Error()
-	if err == nil || err.Error() != want {
-		t.Fatalf("error = %v, want %q", err, want)
+	if err == nil || !strings.Contains(err.Error(), "launch file") {
+		t.Fatalf("error = %v, want a launch-binding refusal", err)
 	}
 }
 
 func TestNewHandlerServesHealthWithoutDialingCDS(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	handler, err := newHandler(config{
-		cdsURL:            "https://c8s-cds.c8s-system.svc:8443",
-		cdsMeasurements:   []string{testCDSMeasurement},
-		attestationAPIURL: "http://attestation-api.c8s-system.svc:8400",
-		requestTimeout:    time.Second,
+		cdsURL:             "https://c8s-cds.c8s-system.svc:8443",
+		measurementsConfig: testutil.CDSPinFile(t),
+		attestationAPIURL:  "http://attestation-api.c8s-system.svc:8400",
+		requestTimeout:     time.Second,
 	}, logger)
 	if err != nil {
 		t.Fatalf("newHandler: %v", err)
@@ -412,7 +417,7 @@ func TestRunContextServesAndShutsDown(t *testing.T) {
 	}, 1)
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- runContext(ctx, validConfig(), func(network, address string) (net.Listener, error) {
+		errCh <- runContext(ctx, validConfig(t), func(network, address string) (net.Listener, error) {
 			listenCalled <- struct {
 				network string
 				address string
@@ -463,7 +468,7 @@ func TestRunContextServesAndShutsDown(t *testing.T) {
 
 func TestRunContextReportsListenFailure(t *testing.T) {
 	bindErr := errors.New("bind failed")
-	err := runContext(context.Background(), validConfig(), func(network, address string) (net.Listener, error) {
+	err := runContext(context.Background(), validConfig(t), func(network, address string) (net.Listener, error) {
 		if network != "tcp" || address != "127.0.0.1:8801" {
 			t.Fatalf("listen = %q %q, want tcp 127.0.0.1:8801", network, address)
 		}
@@ -507,30 +512,15 @@ func TestRunRejectsInvalidHeaderTimeoutBeforeBuildingHandler(t *testing.T) {
 	}
 }
 
-// testCDSMeasurement is the launch measurement these configs pin CDS to, which
-// armTLS requires of every verifying client.
-const testCDSMeasurement = "abababababababababababababababababababababababababababababababababababababababababababababababab"
-
-func validConfig() config {
+func validConfig(t *testing.T) config {
+	t.Helper()
 	return config{
-		host:              "127.0.0.1",
-		port:              8801,
-		cdsURL:            "https://c8s-cds.c8s-system.svc:8443",
-		cdsMeasurements:   []string{testCDSMeasurement},
-		attestationAPIURL: "http://attestation-api.c8s-system.svc:8400",
-		requestTimeout:    time.Second,
-		readHeaderTimeout: time.Second,
-	}
-}
-
-func TestNewHandlerRejectsBadRTMRPin(t *testing.T) {
-	_, err := newHandler(config{
-		cdsURL:            "https://c8s-cds:8443",
-		cdsRTMRs:          []string{"1=zz"},
-		attestationAPIURL: "http://attestation-api:8400",
-		requestTimeout:    time.Second,
-	}, slog.Default())
-	if err == nil || !strings.Contains(err.Error(), "--cds-rtmrs") {
-		t.Fatalf("error = %v, want an RTMR parse failure naming the flag", err)
+		host:               "127.0.0.1",
+		port:               8801,
+		cdsURL:             "https://c8s-cds.c8s-system.svc:8443",
+		measurementsConfig: testutil.CDSPinFile(t),
+		attestationAPIURL:  "http://attestation-api.c8s-system.svc:8400",
+		requestTimeout:     time.Second,
+		readHeaderTimeout:  time.Second,
 	}
 }

@@ -146,6 +146,7 @@ list are refused; omit the flag to pin nothing.
 
 `c8s install --cds-pin` takes such a document whole: the chart carries it to
 every in-cluster verifier as a file. CDS renders the set it enforces at
-`/measurements`, which `c8s verify --kind cds` compares against your file. To
+`/measurements`, which `c8s verify --kind cds --served-policy-file` compares
+against the node identities you expect it to serve. To
 build a config from an image build, see
 [verify.md](verify.md#derive-the-pins-yourself).

@@ -37,8 +37,6 @@ type config struct {
 	host               string
 	port               int
 	cdsURL             string
-	cdsMeasurements    []string
-	cdsRTMRs           []string
 	attestationAPIURL  string
 	requestTimeout     time.Duration
 	readHeaderTimeout  time.Duration
@@ -75,9 +73,7 @@ func NewCmd() *cobra.Command {
 	f.StringVar(&cfg.host, "host", "127.0.0.1", "listen host (loopback; nginx is the public listener)")
 	f.IntVarP(&cfg.port, "port", "p", 8801, "listen port")
 	f.StringVar(&cfg.cdsURL, "cds-url", "", "CDS base URL (must use https/armTLS)")
-	f.StringSliceVar(&cfg.cdsMeasurements, "cds-measurements", nil, "allowed CDS SHA-384 launch measurement(s), repeatable/comma-separated; required unless the node or --image-policy-file pins CDS")
-	f.StringSliceVar(&cfg.cdsRTMRs, "cds-rtmrs", nil, "TDX RTMR pin(s) <index>=<sha384-hex> CDS must additionally satisfy, repeatable/comma-separated; ignored when CDS presents SNP evidence (empty pins no registers)")
-	cmdsutil.BindImagePolicyFlags(f, &cfg.measurementsConfig, nil, "pins the CDS endpoint; excludes --cds-measurements and --cds-rtmrs")
+	cmdsutil.BindImagePolicyFlags(f, &cfg.measurementsConfig, nil, "pins the CDS endpoint, every entry bound to the launch file that CDS runs on; required unless the node pins CDS")
 	f.StringVar(&cfg.attestationAPIURL, "attestation-api-url", "", "attestation-api URL used to verify CDS evidence"+cmdsutil.NodeAddressHelp)
 	f.DurationVar(&cfg.requestTimeout, "request-timeout", defaultRequestTimeout, "timeout for one request to CDS")
 	f.DurationVar(&cfg.readHeaderTimeout, "read-header-timeout", defaultReadHeaderTimeout, "HTTP request-header timeout")
@@ -176,17 +172,8 @@ func (cfg config) resolveCDS() (cds, error) {
 	if err != nil {
 		return cds{}, err
 	}
-	pins, pinsFromNode, err := cmdsutil.ResolveCDSPins(nodePinsPath,
-		cmdsutil.ImagePolicySource{File: cfg.measurementsConfig},
-		cmdsutil.MeasurementPins{
-			Measurements: cfg.cdsMeasurements,
-			Registers:    cfg.cdsRTMRs,
-			Prefix:       "cds-",
-		})
+	pinsFromNode, err := cmdsutil.NodeProvidesCDSPins(nodePinsPath)
 	if err != nil {
-		return cds{}, err
-	}
-	if err := cmdsutil.RequireNodeVerifier(nodePinsPath, nodeVerifier, cfg.attestationAPIURL); err != nil {
 		return cds{}, err
 	}
 	if endpointFromNode != pinsFromNode {
@@ -197,6 +184,13 @@ func (cfg config) resolveCDS() (cds, error) {
 			missing = nodePinsPath
 		}
 		return cds{}, fmt.Errorf("this node provides %s but not %s: a CDS endpoint and the pins it is held to must come from one source", mounted, missing)
+	}
+	if err := cmdsutil.RequireNodeVerifier(nodePinsPath, nodeVerifier, cfg.attestationAPIURL); err != nil {
+		return cds{}, err
+	}
+	pins, _, err := cmdsutil.ResolveCDSPins(nodePinsPath, cmdsutil.ImagePolicySource{File: cfg.measurementsConfig})
+	if err != nil {
+		return cds{}, err
 	}
 	if endpointFromNode {
 		return cds{

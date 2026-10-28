@@ -20,6 +20,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/credrelease"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
@@ -141,7 +142,10 @@ func TestStageBothRolesAndPlatforms(t *testing.T) {
 					t.Fatal(err)
 				}
 				cds := stagedCDSPolicy(t, staged)
-				if len(peers.Images) != 2 || len(cds.Images) != 2 || !bindsEveryLaunchFile(cds) {
+				if _, err := cmdsutil.CDSLaunchFile(cds); err != nil {
+					t.Fatalf("the staged CDS pin is not one VM's identity: %v", err)
+				}
+				if len(peers.Images) != 2 || len(cds.Images) != 2 {
 					t.Fatal("the node's peer pins and its CDS pin are not separated")
 				}
 				for _, entry := range peers.Images {

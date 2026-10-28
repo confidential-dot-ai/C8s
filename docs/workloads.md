@@ -31,8 +31,10 @@ KEY="--operator-key c8s-operator.key"
 ```
 
 `<CDS_ADDRESS>` is the `<ip>:<port>` the install named with `--cds-address`,
-and `cds-pin.json` the document it named with `--cds-pin`. Every later step
-uses `$PIN` and `$KEY`, so run this block in each new shell.
+and `cds-pin.json` the document it named with `--cds-pin`: it binds the exact
+configuration that VM runs on, so it names this cluster's CDS rather than any
+VM of the same image. Every later step uses `$PIN` and `$KEY`, so run this
+block in each new shell.
 
 Confirm the path by listing the entries CDS serves, then read the mesh CA
 bundle, the anchor workload certificates chain to:
@@ -42,10 +44,9 @@ c8s allowlist list $PIN
 c8s cds ca $PIN --out mesh-ca.pem
 ```
 
-Secret and volume writes hold CDS to that bundle. A measurement identifies the
-image a CDS runs, not which CDS it is, so the read takes whatever answered:
-record the certificate SHA-256 it prints on stderr and compare it on later
-reads. CDS makes the mesh CA in process, so a restart replaces it and the bundle
+Secret and volume writes hold CDS to that bundle. The read takes whatever
+answered under the pin: record the certificate SHA-256 it prints on stderr and
+compare it on later reads. CDS makes the mesh CA in process, so a restart replaces it and the bundle
 has to be read again ([operator.md](operator.md#cds-is-a-singleton) lists what
 else a restart drops).
 

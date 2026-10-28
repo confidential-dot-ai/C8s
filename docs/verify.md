@@ -61,9 +61,9 @@ c8s cds ca --url https://<CDS_ADDRESS> --image-policy-file cds-pin.json --out me
 
 `<CDS_ADDRESS>` is the `<ip>:<port>` the install named with `--cds-address`,
 and `cds-pin.json` the document it named with `--cds-pin`, which pins the guest
-CDS runs. The certificate SHA-256 digests
-print on stderr; record them: a measurement identifies the image, not the
-instance, and a CDS restart replaces the bundle.
+CDS runs. These commands take that document and no launch digest of their own.
+The certificate SHA-256 digests print on stderr; record them: a CDS restart
+replaces the bundle.
 
 ## Derive the pins yourself
 
@@ -104,11 +104,13 @@ ok: tdx, 1 image(s)
 The two register pins are RTMR[1] and RTMR[2], so the file pins the guest
 kernel and rootfs, not the firmware alone. An SNP image has no registers and
 contributes one entry per vCPU count. Pass the file as `--image-policy-file`
-wherever this page uses `--measurements`; against CDS it also checks the set
-CDS says it enforces:
+wherever this page uses `--measurements`; against CDS, name the node
+identities it serves with `--served-policy-file` to check the set CDS says it
+enforces:
 
 ```sh
-c8s cds verify https://<CDS_ADDRESS> --image-policy-file measurements.json
+c8s cds verify https://<CDS_ADDRESS> --image-policy-file cds-pin.json \
+    --served-policy-file measurements.json
 ```
 
 Deriving reads what the build measured; it does not rebuild the image.
