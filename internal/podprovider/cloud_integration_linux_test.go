@@ -123,7 +123,7 @@ func TestPodProviderCloud(t *testing.T) {
 			return
 		}
 		if accepted && !t.Failed() {
-			if err := cloudWrite(filepath.Join(r.dir, "result.json"), map[string]any{"passed": true, "run": r.ledger.Run, "source": r.cfg.Source, "sourceProvenance": "caller-supplied release provenance; local artifact hashes and remote measured image are enforced", "cliSHA256": r.cfg.CLISHA256, "manifestDigest": r.cfg.ManifestDigest, "meshImage": r.cfg.MeshImage, "image": r.cfg.Image, "cdsImage": r.cfg.CDSImage, "infrastructurePlacement": h.infrastructure, "scope": "normal Kubernetes scheduling, production provider, real Cloud TDX, authenticated connected acceptance", "assertions": map[string]bool{"normalScheduler": true, "restartRecovery": true, "attestedReadiness": true, "exactDigests": true, "meshDNSInternet": true, "readinessCycle": true, "timedRenewal": true, "negativeProbes": true, "providerDeletion": true, "cleanup": true}}); err != nil {
+			if err := r.writeResult(h); err != nil {
 				t.Error(err)
 			}
 		}
@@ -149,6 +149,17 @@ func TestPodProviderCloud(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Log("normal scheduler bound PodA; real guest status and exact measured digests verified")
+	if r.cfg.scenario() == "verification-timeout" {
+		if err = r.verificationTimeout(ctx, t, h, cfg, a); err != nil {
+			t.Fatal(err)
+		}
+		h.assertKindInfrastructure(t)
+		if err = r.deleteThroughProvider(ctx, h, cfg); err != nil {
+			t.Fatal(err)
+		}
+		accepted = true
+		return
+	}
 	frozen, err := json.Marshal(a.rec.Request)
 	if err != nil {
 		t.Fatal(err)
@@ -606,6 +617,9 @@ func (r *cloudRun) deleteThroughProvider(ctx context.Context, h *providerControl
 	defer cancel()
 	for _, side := range []string{"b", "a"} {
 		o := r.ledger.Owned[side]
+		if o == nil {
+			continue // Single-Pod scenarios never submit the other side.
+		}
 		pod := &corev1.Pod{}
 		if err := h.client.Get(ctx, client.ObjectKey{Namespace: "tenant", Name: "cloud-" + side}, pod); err != nil {
 			return err

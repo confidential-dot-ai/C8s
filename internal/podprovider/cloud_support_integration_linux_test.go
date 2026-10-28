@@ -30,6 +30,7 @@ import (
 // The live lane deliberately accepts only a trusted local input file. Credentials
 // never enter argv, evidence, test logs, Kubernetes tenant objects or CI artifacts.
 type cloudRunConfig struct {
+	Scenario       string `json:"scenario,omitempty"`
 	Source         string `json:"source"`
 	CloudURL       string `json:"cloudURL"`
 	TokenFile      string `json:"tokenFile"`
@@ -233,7 +234,25 @@ func (r *cloudRun) close() {
 	}
 }
 
+// Keep the stored zero value unchanged so historical cleanup ledgers still match.
+func (c cloudRunConfig) scenario() string {
+	if c.Scenario == "" {
+		return "connected"
+	}
+	return c.Scenario
+}
+
+func (c cloudRunConfig) instanceCount() int64 {
+	if c.scenario() == "verification-timeout" {
+		return 2 // CDS and one Pod guest.
+	}
+	return 3
+}
+
 func (c cloudRunConfig) validate(artifacts bool) error {
+	if c.scenario() != "connected" && c.scenario() != "verification-timeout" {
+		return errors.New("unknown live Cloud acceptance scenario")
+	}
 	if c.CloudURL != "https://api.cloud.confidential.ai" || !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(c.Source) || !cloudVersion.MatchString(c.Image) || c.CDSImage != strings.Replace(c.Image, "c8s-pod@", "c8s-pod-cds@", 1) {
 		return errors.New("exact source and paired production catalog versions required")
 	}
@@ -445,9 +464,9 @@ func (r *cloudRun) preflight(ctx context.Context) error {
 			InUse int64
 		}
 		need int64
-	}{{limits.Caller.Instances, 3}, {limits.Caller.VCPUs, 3 * r.cfg.VCPUs}} {
+	}{{limits.Caller.Instances, r.cfg.instanceCount()}, {limits.Caller.VCPUs, r.cfg.instanceCount() * r.cfg.VCPUs}} {
 		if q.limit != nil && q.limit.Limit != nil && *q.limit.Limit-q.limit.InUse < q.need {
-			return errors.New("credential lacks capacity for three simultaneous CVMs")
+			return errors.New("credential lacks capacity for the selected scenario")
 		}
 	}
 	if limits.Caller.Sizes != nil && !slices.Contains(limits.Caller.Sizes.Allowed, r.cfg.Size) || limits.Caller.Locations != nil && !slices.Contains(limits.Caller.Locations.Allowed, r.cfg.Location) {

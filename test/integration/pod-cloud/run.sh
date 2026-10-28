@@ -107,6 +107,10 @@ if [[ "$mode" == cleanup && ! -e "$state/ledger.json" ]]; then
 fi
 
 if [[ "$mode" == run ]]; then
+    scenario="$(jq -er 'if .scenario == null or .scenario == "" then "connected" else .scenario end |
+        select(. == "connected" or . == "verification-timeout")' "$input")" || {
+        echo 'scenario must be connected or verification-timeout' >&2; exit 1;
+    }
     command -v go >/dev/null || { echo 'go is required to build the live harness' >&2; exit 1; }
     for entry in tokenFile manifestFile cliFile probeFile; do
         source_file="$(jq -er --arg key "$entry" '.[$key] | select(type == "string" and startswith("/"))' "$input")"
@@ -115,7 +119,7 @@ if [[ "$mode" == run ]]; then
         chmod 600 "$state/$entry"
     done
     chmod 700 "$state/cliFile" "$state/probeFile"
-    jq '.tokenFile="/podcloud/tokenFile" | .manifestFile="/podcloud/manifestFile" | .cliFile="/podcloud/cliFile" | .probeFile="/podcloud/probeFile"' "$input" > "$state/config.json"
+    jq --arg scenario "$scenario" '.scenario=$scenario | .tokenFile="/podcloud/tokenFile" | .manifestFile="/podcloud/manifestFile" | .cliFile="/podcloud/cliFile" | .probeFile="/podcloud/probeFile"' "$input" > "$state/config.json"
     C8S_IT_NODE_IMAGE="${C8S_PODCLOUD_NODE_IMAGE:-}"
     C8S_IT_CLUSTER=""
     source ./test/integration/cluster/lib.sh
@@ -125,6 +129,31 @@ if [[ "$mode" == run ]]; then
     [[ "$docker_arch" == amd64 || "$docker_arch" == arm64 ]] || { echo 'unsupported Docker architecture' >&2; exit 1; }
     "$deadline" 600 env GOOS=linux GOARCH="$docker_arch" CGO_ENABLED=0 go test -c \
         -tags podprovider_integration,podprovider_cloud -o "$state/provider.test" ./internal/podprovider
+    provider_binary_sha256="$(python3 - "$state" <<'PYBUILD'
+import hashlib
+import json
+from pathlib import Path
+import subprocess
+import sys
+
+state = Path(sys.argv[1])
+def git(*args):
+    return subprocess.run(["git", *args], check=True, capture_output=True,
+                          text=True, timeout=15).stdout.strip()
+
+# The provider is built from this checkout; config.source identifies guest/CLI.
+source = git("rev-parse", "--verify", "HEAD")
+dirty = bool(git("status", "--porcelain=v1", "--untracked-files=normal"))
+digest = hashlib.sha256()
+with (state / "provider.test").open("rb") as runner:
+    for chunk in iter(lambda: runner.read(1024 * 1024), b""):
+        digest.update(chunk)
+with (state / "provider-build.json").open("x") as receipt:
+    json.dump({"source": source, "dirty": dirty,
+               "providerBinarySHA256": digest.hexdigest()}, receipt)
+print(digest.hexdigest())
+PYBUILD
+)"
     cluster="c8s-podcloud-$(date +%s)-$$"
     existing="$("$deadline" 15 kind get clusters)"
     if printf '%s\n' "$existing" | grep -Fxq "$cluster"; then
@@ -167,7 +196,7 @@ verify_state_mount() {
     local expected observed
     # Docker's mount metadata can name the requested host path even when a
     # remote daemon or VM sees a different, empty directory at that path.
-    expected="$(python3 - "$state" <<'PY'
+    expected="$(python3 - "$state" "$provider_binary_sha256" <<'PY'
 import hashlib
 import os
 import secrets
@@ -183,6 +212,8 @@ digest = hashlib.sha256()
 with open(os.path.join(directory, "provider.test"), "rb") as runner:
     for chunk in iter(lambda: runner.read(1024 * 1024), b""):
         digest.update(chunk)
+if digest.hexdigest() != sys.argv[2]:
+    raise SystemExit("built provider binary changed before execution")
 print(nonce, end="")
 print(digest.hexdigest() + "  /podcloud/provider.test")
 PY
@@ -233,11 +264,30 @@ if [[ "$status" != 0 ]] || ! jq -e '.complete == true' "$state/ledger.json" >/de
     exit 1
 fi
 if [[ "$mode" == run ]]; then
-    jq -e --slurpfile cfg "$state/config.json" --slurpfile ledger "$state/ledger.json" '
+    observed_binary_sha256="$(python3 - "$state/provider.test" <<'PY'
+import hashlib
+import sys
+
+digest = hashlib.sha256()
+with open(sys.argv[1], "rb") as runner:
+    for chunk in iter(lambda: runner.read(1024 * 1024), b""):
+        digest.update(chunk)
+print(digest.hexdigest())
+PY
+)"
+    jq -e --arg scenario "$scenario" --arg binary "$provider_binary_sha256" \
+      --arg observed "$observed_binary_sha256" --slurpfile build "$state/provider-build.json" \
+      --slurpfile cfg "$state/config.json" --slurpfile ledger "$state/ledger.json" '
+      .scenario == $scenario and .scenario == $cfg[0].scenario and
+      .providerBinarySHA256 == $binary and $binary == $observed and $build[0].providerBinarySHA256 == $binary and
       .passed == true and .run == $ledger[0].run and .source == $cfg[0].source and
       .image == $cfg[0].image and .cdsImage == $cfg[0].cdsImage and
       .cliSHA256 == $cfg[0].cliSHA256 and .manifestDigest == $cfg[0].manifestDigest and .meshImage == $cfg[0].meshImage and
-      (.assertions | keys == ["attestedReadiness","cleanup","exactDigests","meshDNSInternet","negativeProbes","normalScheduler","providerDeletion","readinessCycle","restartRecovery","timedRenewal"]) and
+      (.assertions | keys == (if $scenario == "verification-timeout" then
+        ["attestedReadiness","cleanup","exactDigests","lateVerifiedResultRejected","normalScheduler","persistedVerificationDeadline","providerDeletion","readinessWithdrawn","restartRecovery","timeoutTermination"]
+      else
+        ["attestedReadiness","cleanup","exactDigests","meshDNSInternet","negativeProbes","normalScheduler","providerDeletion","readinessCycle","restartRecovery","timedRenewal"]
+      end)) and
       all(.assertions[]; . == true)
       ' "$state/result.json" >/dev/null || { echo 'Missing matching complete acceptance receipt; cleanup success alone is not acceptance.' >&2; exit 1; }
 fi

@@ -208,9 +208,9 @@ export C8S_PODCLOUD_STATE=/absolute/docker-shared-checkout/target/new-run
 make test-integration-pod-cloud
 ```
 
-The runner creates a private local kind cluster, one CDS guest and two Pod
-guests. It starts production provider `Setup` compiled from the checkout; the
-provider creates the Pod guests after normal Kubernetes scheduling. Acceptance
+The default `connected` scenario creates a private local kind cluster, one CDS
+guest and two Pod guests. It starts production provider `Setup` compiled from
+the checkout; the provider creates the Pod guests after normal Kubernetes scheduling. Acceptance
 checks exact measured workloads, authenticated status,
 readiness withdrawal and recovery, peer mesh traffic, HTTPS and DNS egress,
 certificate renewal over at least 65 minutes, rejected unauthenticated traffic,
@@ -218,6 +218,25 @@ and deletion through the production provider. It reuses the connected native
 lane's acceptance predicates. The run requires at least six Cloud vCPUs and
 24 GiB of memory plus a CDS scratch disk; provisioning and cleanup add time to
 the observation window.
+
+Set `"scenario": "verification-timeout"` in the input to test bounded verification
+failure separately. This scenario needs one CDS guest and one Pod guest (four
+Cloud vCPUs and 16 GiB with the example shape). After real TDX verification and
+provider readiness, it injects an unavailable verification result, restarts the
+provider with a longer configured timeout, and holds a real verified response
+until after the original persisted 600-second deadline. Acceptance requires
+withdrawn readiness/endpoints, `GuestVerificationTimedOut`, and confirmed Cloud
+termination before deleting the Kubernetes Pod. Provisioning and cleanup add
+time to the ten-minute failure window. The injected fault is provider result
+unavailability/latency; it does not simulate a hardware attestation failure.
+The private `verification-timeout.json` records the deadline and observation times.
+
+Both scenarios compile the provider from the current checkout. Its commit,
+dirty status and executable hash are recorded in `provider-build.json`; the
+result's executable hash must match the runner that was built and executed.
+The input `source` still identifies the paired guest/CLI publication. This lets
+provider-only scenarios run before merging the provider or publishing new guest
+images, without claiming coverage of guest features absent from the pinned image.
 
 Infrastructure DaemonSets in a real cluster must also exclude Pod-CVM virtual
 nodes. Broad `Exists` tolerations can bypass their `NoSchedule` taint; critical
@@ -241,7 +260,8 @@ make cleanup-integration-pod-cloud
 
 Cleanup uses the recorded identities and never starts another Cloud run. A
 successful acceptance requires `result.json` with `passed: true` and a ledger
-with `complete: true`; cleanup success alone does not prove acceptance.
+with `complete: true`, matching scenario, exact scenario assertions, and matching
+provider executable identity; cleanup success alone does not prove acceptance.
 
 ## Connected Pod acceptance on TDX
 
