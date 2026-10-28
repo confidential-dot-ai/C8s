@@ -48,9 +48,12 @@ runs, and the verdict says only that the endpoint is some TEE:
 That leniency is this client-side check's alone: in-cluster armTLS peers refuse
 a pin set naming no guest before any request ([armtls.md](armtls.md)).
 
-Pass `--mesh-ca` too: the mesh CA is what CDS signs workload certificates with,
-and without it the certificate chains to a CA the endpoint committed itself,
-leaving its deployment and its stamped names unproven. Read the bundle from CDS:
+Pass `--mesh-ca` too with `--kind lb` and `--kind workload`: the mesh CA is
+what CDS signs their certificates with, and without it the certificate chains
+to a CA the endpoint committed itself, leaving its deployment and its stamped
+names unproven. CDS's own serving certificate is self-signed, so `--kind cds`
+refuses `--mesh-ca`, `--sandbox-id`, `--workload` and `--allowlist`. Read the
+bundle from CDS:
 
 ```sh
 c8s cds ca --url https://<NODE>:30808 --measurements <NODE_MEASUREMENT> --out mesh-ca.pem
