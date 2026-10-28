@@ -416,3 +416,26 @@ func TestDeriveContainersAdmitsArgvOfImageWithoutEntrypoint(t *testing.T) {
 		}
 	}
 }
+
+// The kubelet hands the runtime `$` for a pod's `$$`, so that is the argv the
+// node observes; an image's Cmd is not the kubelet's and stays as built.
+func TestDeriveContainersPinsTheKubeletExpandedArgv(t *testing.T) {
+	resolve := func(string) ([]string, []string, error) { return []string{"/bin/sh"}, []string{"-c", "echo $$"}, nil }
+	got, err := deriveContainers([]templateContainer{
+		{Name: "pod", Image: testImage, Command: []string{"/bin/sh", "-c"}, Args: []string{"echo $$ > /tmp/pid && exec sleep $$(DELAY)"}},
+		{Name: "image", Image: testImage},
+	}, resolve)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"echo $ > /tmp/pid && exec sleep $(DELAY)"}; !equalArgv(got[0].Args.Argv, want) {
+		t.Errorf("pod args = %q, want %q", got[0].Args.Argv, want)
+	}
+	if want := []string{"-c", "echo $$"}; !equalArgv(got[1].Args.Argv, want) {
+		t.Errorf("image Cmd = %q, want %q", got[1].Args.Argv, want)
+	}
+	_, err = deriveContainers([]templateContainer{{Name: "app", Image: testImage, Args: []string{"--ip=$(POD_IP)"}}}, resolve)
+	if err == nil || !strings.Contains(err.Error(), `container "app" args`) || !strings.Contains(err.Error(), "$$(POD_IP)") {
+		t.Fatalf("a $(NAME) reference = %v, want an error naming the container and the escape", err)
+	}
+}
