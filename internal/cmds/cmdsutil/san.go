@@ -2,6 +2,7 @@ package cmdsutil
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"regexp"
 	"strings"
@@ -52,4 +53,35 @@ func ValidateDNSName(s string) error {
 		}
 	}
 	return nil
+}
+
+// CompileDNSSANName compiles one authenticated hostname into a whole-name
+// match. The name is a literal identity, never a caller-supplied regular
+// expression, so the anchoring is explicit here.
+func CompileDNSSANName(name string) (*regexp.Regexp, error) {
+	if net.ParseIP(name) != nil {
+		return nil, fmt.Errorf("'%s' is an IP address, not a DNS hostname", name)
+	}
+	if err := ValidateDNSName(name); err != nil {
+		return nil, err
+	}
+	return regexp.MustCompile("^" + regexp.QuoteMeta(name) + "$"), nil
+}
+
+// CompileDNSSANPatterns compiles the patterns a leaf's DNS SANs may match,
+// skipping empties so a stray "" does not become a rule of its own. No
+// pattern at all admits no DNS SAN (issuer.CSRPolicy).
+func CompileDNSSANPatterns(patterns []string) ([]*regexp.Regexp, error) {
+	var compiled []*regexp.Regexp
+	for _, pattern := range patterns {
+		if pattern == "" {
+			continue
+		}
+		re, err := regexp.Compile(pattern)
+		if err != nil {
+			return nil, fmt.Errorf("invalid pattern '%s': %w", pattern, err)
+		}
+		compiled = append(compiled, re)
+	}
+	return compiled, nil
 }

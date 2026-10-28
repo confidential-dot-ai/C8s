@@ -41,6 +41,14 @@ func TestValidateRejectsEachMalformedField(t *testing.T) {
 		{"snp with rtmrs", Server, func(d *Document) {
 			d.Image.RTMRs = map[int]string{1: strings.Repeat("22", 48), 2: strings.Repeat("33", 48)}
 		}, "SNP image cannot"},
+		{"extra rtmr index", Server, func(d *Document) {
+			d.Image.Platform = "tdx"
+			d.Image.RTMRs = map[int]string{
+				1: strings.Repeat("22", 48),
+				2: strings.Repeat("33", 48),
+				3: strings.Repeat("44", 48),
+			}
+		}, "exactly RTMR[1] and RTMR[2]"},
 		{"server address", Server, func(d *Document) { d.Server.Address = "224.0.0.1" }, "server.address"},
 		{"server address v6", Server, func(d *Document) { d.Server.Address = "2001:db8::1" }, "server.address"},
 		{"node ip", Server, func(d *Document) { d.Node.IP = "not-an-ip" }, "node.ip"},
