@@ -929,12 +929,13 @@ router:
     # -- nginx write limiting, per public client and in aggregate across all
     # clients. The aggregate bound protects the single per-source-IP CDS
     # bucket the whole front door shares (see docs/operator.md, "Built-in
-    # allowlist route"). The chart requires requestsPerSecond/burst <=
-    # totalRequestsPerSecond/totalBurst < cds.rateLimit/rateBurst. GET, HEAD,
-    # and OPTIONS are exempt here (see readRateLimit).
+    # allowlist route"). The chart requires burst <= totalBurst <
+    # cds.rateBurst and requestsPerSecond <= totalRequestsPerSecond <
+    # cds.rateLimit. GET, HEAD, and OPTIONS are exempt here (see
+    # readRateLimit).
     rateLimit:
       requestsPerSecond: 1
-      burst: 5
+      burst: 15
       totalRequestsPerSecond: 8
       totalBurst: 15
     # -- Per-public-client read (GET/HEAD) limiting; generous by default to

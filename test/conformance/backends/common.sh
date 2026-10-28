@@ -571,9 +571,9 @@ http_request() {
     printf '%s' "${answer%$'\n'*}"
 }
 
-# The router admits one allowlist write a second per client (burst 5), and
-# the harness is one client: a 429 is waited out, never an answer. No
-# scenario observes rate limiting.
+# The router rate-limits allowlist writes per client, and the harness is one
+# client: a 429 is waited out, never an answer. No scenario observes rate
+# limiting.
 curl_paced() {
     local answer _
     for _ in $(seq 10); do

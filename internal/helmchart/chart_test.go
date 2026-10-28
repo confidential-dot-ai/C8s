@@ -2653,7 +2653,7 @@ func TestRouterExposesAllowlistThroughCDSByDefault(t *testing.T) {
 		location.assertDirective(t, "proxy_pass", "http://127.0.0.1:8801$request_uri")
 		location.assertDirective(t, "proxy_set_header", "Host", "$host")
 		location.assertDirective(t, "proxy_set_header", "Authorization", "$http_authorization")
-		location.assertDirective(t, "limit_req", "zone=allowlist_write_per_client", "burst=5", "nodelay")
+		location.assertDirective(t, "limit_req", "zone=allowlist_write_per_client", "burst=15", "nodelay")
 		location.assertDirective(t, "limit_req", "zone=allowlist_write_total", "burst=15", "nodelay")
 		location.assertDirective(t, "limit_req", "zone=allowlist_read_per_client", "burst=40", "nodelay")
 		location.assertDirective(t, "limit_req_status", "429")
@@ -4666,7 +4666,7 @@ func Example_routerConfig() {
 	//             # These run before nginx collapses callers onto the loopback proxy source.
 	//             # Each zone's map key is empty for the methods it does not cover, so
 	//             # mutations count per client and in aggregate, reads per client only.
-	//             limit_req zone=allowlist_write_per_client burst=5 nodelay;
+	//             limit_req zone=allowlist_write_per_client burst=15 nodelay;
 	//             limit_req zone=allowlist_write_total burst=15 nodelay;
 	//             limit_req zone=allowlist_read_per_client burst=40 nodelay;
 	//             limit_req_status 429;
@@ -4698,7 +4698,7 @@ func Example_routerConfig() {
 	//             # These run before nginx collapses callers onto the loopback proxy source.
 	//             # Each zone's map key is empty for the methods it does not cover, so
 	//             # mutations count per client and in aggregate, reads per client only.
-	//             limit_req zone=allowlist_write_per_client burst=5 nodelay;
+	//             limit_req zone=allowlist_write_per_client burst=15 nodelay;
 	//             limit_req zone=allowlist_write_total burst=15 nodelay;
 	//             limit_req zone=allowlist_read_per_client burst=40 nodelay;
 	//             limit_req_status 429;
