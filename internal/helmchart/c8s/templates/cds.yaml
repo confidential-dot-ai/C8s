@@ -1,4 +1,7 @@
 {{- define "c8s.cdsPodSpec" -}}
+{{- if not (include "c8s.cdsInCluster" .) -}}
+{{- fail "c8s.cdsPodSpec is the CDS a baked node image runs; every other release names one outside the cluster (cds.address)" -}}
+{{- end -}}
 # Keeps the env names fixed for the allowlist's env match (c8s.componentEnv).
 enableServiceLinks: false
 
@@ -44,17 +47,12 @@ containers:
       - --attestation-api-url={{ include "c8s.attestationApiURL" . }}
       - --allowlist-db={{ .Values.cds.allowlistDB }}
       - --allowlist-persistent={{ .Values.cds.persistence.enabled }}
-      {{- if .Values.node.baked }}
       - --allowlist-seed=/run/c8s-node/allowlist-seed.json
       {{- /* The measured image holds this seed, so following it publishes
-             nothing an operator token would not. The seed ConfigMap below is
-             editable by namespace RBAC: read it once. */}}
+             nothing an operator token would not. */}}
       - --follow-seed
       - --operator-keys=/run/c8s-node/operator-pubkey
       - --dns-san-file=/run/c8s-node/tls-san
-      {{- else }}
-      - --allowlist-seed=/mnt/c8s-data/cds-seed/allowlist-seed.json
-      {{- end }}
       - --jwt-clock-skew={{ .Values.cds.jwtClockSkew }}
       - --ca-common-name={{ .Values.cds.ca.commonName }}
       - --ca-cert-validity={{ .Values.cds.ca.certValidity }}
@@ -81,23 +79,9 @@ containers:
       {{- if .Values.cds.cnPattern }}
       - --allowed-cn-pattern={{ .Values.cds.cnPattern }}
       {{- end }}
-      {{- if .Values.node.baked }}
       - --image-policy-file=/run/c8s-node/peers.json
-      {{- else if .Values.cds.measurementsConfig }}
-      - --image-policy-file=/mnt/c8s-data/measurements/cds.json
-      {{- else }}
-      {{- with .Values.cds.measurements }}
-      - --measurements={{ join "," . }}
-      {{- end }}
-      {{- with .Values.cds.rtmrs }}
-      - --rtmrs={{ join "," . }}
-      {{- end }}
-      {{- end }}
       {{- with .Values.cds.sandboxInventoryCIDRs }}
       - --sandbox-inventory-cidr={{ join "," . }}
-      {{- end }}
-      {{- if and (not .Values.node.baked) .Values.cds.operatorKeys }}
-      - --operator-keys=/mnt/c8s-data/cds-operator-keys/keys.pem
       {{- end }}
       - --rate-limit={{ .Values.cds.rateLimit }}
       - --rate-burst={{ .Values.cds.rateBurst }}
@@ -142,21 +126,6 @@ containers:
         mountPath: /mnt/c8s-data/cds
       {{- include "c8s.attestationApiSocketMount" . | nindent 6 }}
       {{- include "c8s.nodeConfigMount" . | nindent 6 }}
-      {{- if not .Values.node.baked }}
-      - name: allowlist-seed
-        mountPath: /mnt/c8s-data/cds-seed
-        readOnly: true
-      {{- if .Values.cds.operatorKeys }}
-      - name: operator-keys
-        mountPath: /mnt/c8s-data/cds-operator-keys
-        readOnly: true
-      {{- end }}
-      {{- if .Values.cds.measurementsConfig }}
-      - name: measurements-config
-        mountPath: /mnt/c8s-data/measurements
-        readOnly: true
-      {{- end }}
-      {{- end }}
     securityContext:
       allowPrivilegeEscalation: false
       readOnlyRootFilesystem: true
@@ -182,29 +151,9 @@ volumes:
     {{- end }}
   {{- include "c8s.attestationApiSocketVolume" . | nindent 2 }}
   {{- include "c8s.nodeConfigVolume" . | nindent 2 }}
-  {{- if not .Values.node.baked }}
-  - name: allowlist-seed
-    projected:
-      sources:
-        - configMap:
-            name: {{ include "c8s.cdsName" . }}-allowlist-seed
-  {{- if .Values.cds.operatorKeys }}
-  - name: operator-keys
-    projected:
-      sources:
-        - configMap:
-            name: {{ include "c8s.cdsName" . }}-operator-keys
-  {{- end }}
-  {{- if .Values.cds.measurementsConfig }}
-  - name: measurements-config
-    projected:
-      sources:
-        - configMap:
-            name: {{ include "c8s.fullname" . }}-measurements
-  {{- end }}
-  {{- end }}
 {{- end -}}
 
+{{- if include "c8s.cdsInCluster" . }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -215,50 +164,6 @@ metadata:
     app.kubernetes.io/component: cds
 {{ include "c8s.serviceAccountImagePullSecrets" . }}
 ---
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: {{ include "c8s.cdsName" . }}-allowlist-seed
-  namespace: {{ .Release.Namespace }}
-  labels:
-{{ include "c8s.commonLabels" . | indent 4 }}
-    app.kubernetes.io/component: cds
-data:
-  allowlist-seed.json: {{ include "c8s.allowlistSeedJSON" . | trim | quote }}
----
-{{- if .Values.cds.operatorKeys }}
-{{- if not (contains "BEGIN PUBLIC KEY" .Values.cds.operatorKeys) }}
-{{- fail "cds.operatorKeys must be the PEM content of the operator public-key bundle, not a file path — use `c8s install --operator-keys <file>`, `c8s render-values --operator-keys <file>`, or helm --set-file cds.operatorKeys=<file>" }}
-{{- end }}
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: {{ include "c8s.cdsName" . }}-operator-keys
-  namespace: {{ .Release.Namespace }}
-  labels:
-{{ include "c8s.commonLabels" . | indent 4 }}
-    app.kubernetes.io/component: cds
-data:
-  # PEM bundle of operator EC public keys that authorize allowlist writes.
-  # Public key material — not a secret.
-  keys.pem: {{ .Values.cds.operatorKeys | quote }}
----
-{{- if and .Values.router.enabled (not .Values.node.baked) }}
-# The router reads the same bundle from its own namespace, which a projected
-# volume cannot leave.
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: {{ include "c8s.cdsName" . }}-operator-keys
-  namespace: {{ include "c8s.routerMeshNamespace" . }}
-  labels:
-{{ include "c8s.commonLabels" . | indent 4 }}
-    app.kubernetes.io/component: cds
-data:
-  keys.pem: {{ .Values.cds.operatorKeys | quote }}
----
-{{- end }}
-{{- end }}
 {{- if .Values.cds.persistence.enabled }}
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -316,11 +221,6 @@ spec:
         app.kubernetes.io/component: cds
       annotations:
         confidential.ai/trust-root-mode: "inMemory"
-        {{- if .Values.cds.measurementsConfig }}
-        # Pins live in a ConfigMap, which no longer changes the pod template on
-        # its own: without this a tightened pin would not roll the pod.
-        checksum/measurements-config: {{ .Values.cds.measurementsConfig | sha256sum }}
-        {{- end }}
     spec:
 {{- include "c8s.cdsPodSpec" . | nindent 6 }}
 ---
@@ -347,3 +247,4 @@ spec:
       {{- if and (eq .Values.cds.service.type "NodePort") .Values.cds.service.nodePort }}
       nodePort: {{ .Values.cds.service.nodePort }}
       {{- end }}
+{{- end }}

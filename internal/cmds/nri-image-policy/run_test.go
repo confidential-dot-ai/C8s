@@ -288,6 +288,9 @@ func TestRun_WorkloadClaimsListenFailureSurfaces(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, NodeIPFile), []byte("10.0.0.7\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(dir, "cds-address"), []byte("10.9.9.9:8443\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	occupySocketPath(t, dir)
 	renderInTempDir(t)
 	cfgYAML := fmt.Sprintf(`
@@ -307,16 +310,17 @@ allowlist:
             command: {policy: any}
             args: {policy: any}
   pull:
+    cds_address_file: %s/cds-address
+    attestation_api_url: http://127.0.0.1:1
     cds_measurements: ["%s"]
 policy:
   mode: fail-closed
   enforce_existing: false
 workload_claims:
   socket_dir: %s
-  cds_node_port: 30808
 logging:
   level: error
-`+meshYAML, dir, dir, pushDigestA, strings.Repeat("ab", 48), dir)
+`+meshYAML, dir, dir, pushDigestA, dir, strings.Repeat("ab", 48), dir)
 	err := runWithDeadline(t, 10*time.Second, []string{"-config", writeConfigYAML(t, cfgYAML)})
 	if err == nil || !strings.Contains(err.Error(), "start admission inventory") || !errors.Is(err, syscall.EADDRINUSE) {
 		t.Fatalf("err = %v, want an admission-inventory listen failure", err)

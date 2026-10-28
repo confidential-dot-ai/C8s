@@ -1,19 +1,17 @@
 {{- /*
-The measurements config: the VM images this cluster runs, each pinned as a
-whole image. CDS verifies one against it, so it lives in its own ConfigMap
-rather than beside a single component's own material.
+The CDS this cluster trusts: the pin its clients hold it to and, where the
+chart hands the node one, the address they dial. The installer copies both to
+the node, where the image policy plugin reads them and hands them to every
+injected credential client. The router's sidecars read the pin from their own
+namespace, which a projected volume cannot leave, so the same document is
+rendered there too.
 
-Public policy, not secret: these are the digests a verifier compares evidence
-against.
-
-The router reads it from its own namespace, which a projected volume cannot
-leave, so the same document is rendered there too.
+Public policy, not secret: an address and the digests a verifier compares
+evidence against. No component's arguments name either, so an entry of the
+allowlist seed this cluster serves does not depend on the CDS serving it.
 */ -}}
-{{- $cds := .Values.cds.measurementsConfig | default "" }}
-{{- if $cds }}
-{{- if not (hasPrefix "{" (trim $cds)) }}
-{{- fail "cds.measurementsConfig must be the JSON content of the measurements config, not a file path — use `c8s install --image-policy-file <file>`, `c8s render-values --image-policy-file <file>`, or helm --set-file cds.measurementsConfig=<file>" }}
-{{- end }}
+{{- if not (include "c8s.cdsInCluster" .) }}
+{{- $cds := include "c8s.cdsPinDocument" . }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -23,6 +21,9 @@ metadata:
 {{ include "c8s.commonLabels" . | indent 4 }}
 data:
   cds.json: {{ $cds | quote }}
+  {{- if include "c8s.nodeReadsCDSAddress" . }}
+  cds-address: {{ .Values.cds.address | quote }}
+  {{- end }}
 ---
 {{- if .Values.router.enabled }}
 apiVersion: v1

@@ -33,27 +33,45 @@ func (p *plugin) prepareCDSAddress() error {
 	return nil
 }
 
+// loadCDSEndpoint reads the CDS endpoint an install mounts beside this config:
+// the one the plugin pulls from and its credential clients dial. A config
+// naming no file yields the zero endpoint — a measured config names the CDS by
+// URL and is bound at launch staging (internal/cmds/nodeservices). A named
+// file must exist and must carry a port.
+func loadCDSEndpoint(c pullConfig) (netip.AddrPort, error) {
+	if c.CDSAddressFile == "" {
+		return netip.AddrPort{}, nil
+	}
+	endpoint, mounted, err := cmdsutil.ResolveCDSEndpoint(c.CDSAddressFile, "")
+	if err != nil {
+		return netip.AddrPort{}, err
+	}
+	if !mounted {
+		return netip.AddrPort{}, fmt.Errorf("allowlist.pull.cds_address_file %s: no such file", c.CDSAddressFile)
+	}
+	if endpoint.Port() == 0 {
+		return netip.AddrPort{}, fmt.Errorf("allowlist.pull.cds_address_file %s names port 0, which reaches no CDS", c.CDSAddressFile)
+	}
+	return endpoint, nil
+}
+
 // bindCredentialRole completes a mesh policy that names no CDS address with
-// the endpoint this node's credential clients dial, so the pod ruleset admits
-// exactly the address they are handed, and validates the policy it
-// completed. A measured policy arrives bound, because a baked node's CDS
-// address is staged at launch (internal/cmds/nodeservices), and that binding
-// stands.
+// endpoint, so the pod ruleset admits exactly the address this node's
+// credential clients are handed, and validates the policy it completed. A
+// measured policy arrives bound, because a baked node's CDS address is staged
+// at launch (internal/cmds/nodeservices), and that binding stands; the zero
+// endpoint leaves such a policy alone.
 //
 // The mesh gate copies the policy, so this belongs to loading the config.
-func bindCredentialRole(cfg *config) error {
+func bindCredentialRole(cfg *config, endpoint netip.AddrPort) error {
 	if _, bound := cfg.credentialRole(); bound {
 		return nil
 	}
-	if cfg.WorkloadClaims.CDSNodePort == 0 {
+	if !endpoint.IsValid() {
 		// Nothing here names the CDS this node reaches. A node that injects
 		// credential clients refuses to start without one; one that injects
 		// none needs no binding (prepareCDSAddress).
 		return nil
-	}
-	endpoint, err := credentialEndpoint(cfg)
-	if err != nil {
-		return err
 	}
 	cfg.Mesh.Roles = append(cfg.Mesh.Roles, roleBinding{
 		Name:         CredentialRole,
@@ -64,24 +82,17 @@ func bindCredentialRole(cfg *config) error {
 }
 
 // credentialEndpoint is the CDS endpoint the injected credential clients of
-// this node dial. A measured mesh policy binds it, and the pod ruleset then
-// admits that one address; an install has no measured policy, so the endpoint
-// is this node's own address and the CDS node port the chart renders.
+// this node dial: the one destination of the bound credentials role, which a
+// measured policy carries and loading binds from the install's address file.
 func credentialEndpoint(cfg *config) (netip.AddrPort, error) {
-	if role, bound := cfg.credentialRole(); bound {
-		if len(role.Destinations) != 1 {
-			return netip.AddrPort{}, fmt.Errorf("the %s role reaches %d destinations, not the one CDS its clients dial", CredentialRole, len(role.Destinations))
-		}
-		return role.Destinations[0], nil
+	role, bound := cfg.credentialRole()
+	if !bound {
+		return netip.AddrPort{}, fmt.Errorf("nothing binds the %s role to a CDS: a measured policy names one, and an install names it in allowlist.pull.cds_address_file", CredentialRole)
 	}
-	if cfg.WorkloadClaims.CDSNodePort == 0 {
-		return netip.AddrPort{}, fmt.Errorf("no measured policy binds the %s role, so workload_claims.cds_node_port is required: an injected credential client dials CDS at this node's own address and that port", CredentialRole)
+	if len(role.Destinations) != 1 {
+		return netip.AddrPort{}, fmt.Errorf("the %s role reaches %d destinations, not the one CDS its clients dial", CredentialRole, len(role.Destinations))
 	}
-	address, err := nodeOwnAddress(cfg)
-	if err != nil {
-		return netip.AddrPort{}, err
-	}
-	return netip.AddrPortFrom(address, cfg.WorkloadClaims.CDSNodePort), nil
+	return role.Destinations[0], nil
 }
 
 // credentialRole is this node's binding of the credential role.

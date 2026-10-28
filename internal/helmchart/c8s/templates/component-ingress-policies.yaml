@@ -14,6 +14,7 @@ Escape hatch: policies are additive, so an operator who needs another port open
 applies their own NetworkPolicy selecting the same pods — nothing here has to be
 disabled first. See docs/operator.md.
 */}}
+{{- if include "c8s.cdsInCluster" . }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -37,6 +38,7 @@ spec:
         - protocol: TCP
           port: {{ .Values.cds.port }}
 ---
+{{- end }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

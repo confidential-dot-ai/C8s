@@ -344,7 +344,8 @@ image digests, the DNS resolver and the cluster CIDRs.
 ```sh
 helm template c8s internal/helmchart/c8s \
   --namespace c8s-system \
-  --set cds.measurements[0]=abababababababababababababababababababababababababababababababababababababababababababababababab \
+  --set cds.address=10.0.0.9:8443 \
+  --set-file cds.measurementsConfig=cds-pin.json \
   --set image.tag=main \
   --set attestationApi.image.tag=main \
   --set cds.image.tag=main \
@@ -352,4 +353,5 @@ helm template c8s internal/helmchart/c8s \
   --set nriImagePolicy.enabled=false
 ```
 
-The measurement is a placeholder; a real install passes the node image's own.
+The address is this cluster's CDS and `cds-pin.json` the document
+`c8s cds config new` wrote beside its configuration.

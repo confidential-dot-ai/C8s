@@ -27,6 +27,13 @@ var bakedArgs = []string{
 	"--set", "router.attest.enabled=true",
 }
 
+// helmTemplateBakedNode renders the chart shape a baked node image carries,
+// the only one whose CDS the chart runs (templates/cds.yaml).
+func helmTemplateBakedNode(t *testing.T, args ...string) (string, error) {
+	t.Helper()
+	return helmTemplate(t, append(slices.Clone(bakedArgs), args...)...)
+}
+
 func TestChartBakedNodeLaunchContract(t *testing.T) {
 	t.Parallel()
 	out, err := helmTemplate(t, bakedArgs...)

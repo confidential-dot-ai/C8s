@@ -63,8 +63,8 @@ type ServerRole struct {
 	// captured, and it is the one identity here that reaches Services.
 	Upstream uint32
 	// Services are the destinations the upstream identity reaches in the
-	// clear, each one address and port: its own node's CDS, which it fetches
-	// the signed route manifest from.
+	// clear, each one address and port: the CDS it fetches the signed route
+	// manifest from, and the verifier that weighs that CDS's evidence.
 	Services []Destination
 	// ClusterRanges are this cluster's pod and Service ranges: the egress
 	// exception excludes them, and the upstream identity reaches them

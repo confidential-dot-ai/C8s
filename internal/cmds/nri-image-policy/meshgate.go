@@ -152,7 +152,7 @@ func (g *meshGate) protect(pod *api.PodSandbox) error {
 	if _, onRecord := g.pods[pod.GetId()]; onRecord {
 		return fmt.Errorf("sandbox %s is on record already, so its protection stands as installed", pod.GetId())
 	}
-	netns, err := installProtection(pod, g.policy)
+	netns, err := installProtection(pod, g.rulesetPolicy())
 	g.pods[pod.GetId()] = &protectedPod{
 		netns:         netns,
 		refusal:       err,
@@ -164,6 +164,23 @@ func (g *meshGate) protect(pod *api.PodSandbox) error {
 	g.logger.Info("installed the pod mesh ruleset",
 		"namespace", pod.GetNamespace(), "pod", pod.GetName(), "netns", netns.path)
 	return nil
+}
+
+// rulesetPolicy is the policy a pod's ruleset is built from: the measured
+// document plus this node's own address, which the document cannot carry.
+func (g *meshGate) rulesetPolicy() meshPolicy {
+	policy := g.policy
+	if policy.CredentialAttestationPort == 0 {
+		return policy
+	}
+	node, err := g.nodeAddress()
+	if err != nil {
+		g.logger.Warn("this node's own address is unknown, so no pod ruleset admits the attestation-api its credential clients verify evidence through",
+			"error", err)
+		return policy
+	}
+	policy.nodeAddr = node
+	return policy
 }
 
 // installProtection proves the pod's own network namespace and installs the
@@ -233,7 +250,7 @@ func (g *meshGate) recovered(pod *api.PodSandbox, ctrs []recoveredContainer, exi
 	if err != nil {
 		return nil, err
 	}
-	if err := verifyPodRuleset(netns, g.policy, pod.GetNamespace(), exits.exits); err != nil {
+	if err := verifyPodRuleset(netns, g.rulesetPolicy(), pod.GetNamespace(), exits.exits); err != nil {
 		if exits.cause != nil {
 			return nil, fmt.Errorf("%w; the pod was granted no exits: %v", err, exits.cause)
 		}
@@ -358,7 +375,7 @@ func (g *meshGate) admit(pod *api.PodSandbox, ctr *api.Container, launch gatedCo
 	if err != nil {
 		return fmt.Errorf("mesh gate: container %s of pod %s/%s: %w", ctr.GetName(), pod.GetNamespace(), pod.GetName(), err)
 	}
-	if err := verifyPodRuleset(netns, g.policy, kubeNamespace, g.grantedExits(pod.GetId())); err != nil {
+	if err := verifyPodRuleset(netns, g.rulesetPolicy(), kubeNamespace, g.grantedExits(pod.GetId())); err != nil {
 		return fmt.Errorf("mesh gate: container %s of pod %s/%s: %w", ctr.GetName(), pod.GetNamespace(), pod.GetName(), err)
 	}
 	g.noteLaunched(pod.GetId(), launch)
@@ -434,7 +451,7 @@ func (g *meshGate) bindEntry(pod *api.PodSandbox, decision exitDecision) error {
 	if err := g.requireOffLimits(decision.exits); err != nil {
 		return fmt.Errorf("allowlist entry %q: %w", decision.entry, err)
 	}
-	if err := g.extend(state.netns, g.policy, state.kubeNamespace, decision.exits); err != nil {
+	if err := g.extend(state.netns, g.rulesetPolicy(), state.kubeNamespace, decision.exits); err != nil {
 		return fmt.Errorf("grant the exits of allowlist entry %q: %w", decision.entry, err)
 	}
 	state.exitEntry, state.exits = decision.entry, decision.exits
@@ -553,7 +570,7 @@ func (g *meshGate) verifyMemberRuleset(sandboxID string) error {
 	if err != nil {
 		return err
 	}
-	return verifyPodRuleset(netns, g.policy, kubeNamespace, g.grantedExits(sandboxID))
+	return verifyPodRuleset(netns, g.rulesetPolicy(), kubeNamespace, g.grantedExits(sandboxID))
 }
 
 // memberNamespace is the network namespace of a protected sandbox whose

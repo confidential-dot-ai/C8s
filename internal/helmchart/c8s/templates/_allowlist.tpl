@@ -19,11 +19,25 @@
    gate a no-op, deriving even disabled components that carry a digest. */ -}}
 {{- $enabled := true -}}
 {{- if $c.enabledPath -}}{{- $enabled = eq (include "c8s.valueAtPath" (dict "root" $root.Values "path" $c.enabledPath)) "true" -}}{{- end -}}
-{{- $component := dict "name" $c.valuePath "image" $img "enabled" $enabled "cdsExempt" $c.cdsExempt "argvPinned" (get $c "argvPinned" | default false) "entrypoint" (get $c "entrypoint" | default list) -}}
+{{- $component := dict "name" $c.valuePath "image" $img "enabled" $enabled "argvPinned" (get $c "argvPinned" | default false) "entrypoint" (get $c "entrypoint" | default list) -}}
 {{- if hasKey $c "imageEnv" -}}{{- $_ := set $component "imageEnv" (get $c "imageEnv" | default dict) -}}{{- end -}}
 {{- $out = append $out $component -}}
 {{- end -}}
 {{ $out | toJson }}
+{{- end -}}
+
+{{/* One component of c8s.components by name, as JSON. A name the inventory
+     does not carry fails the render: every caller names a component the
+     chart ships. Takes components and name. */ -}}
+{{- define "c8s.component" -}}
+{{- $found := dict -}}
+{{- range $c := .components -}}
+{{- if eq (get $c "name") $.name -}}{{- $found = $c -}}{{- end -}}
+{{- end -}}
+{{- if not $found -}}
+{{- fail (printf "c8sComponents has no entry %s" .name) -}}
+{{- end -}}
+{{ $found | toJson }}
 {{- end -}}
 
 {{/* The command of a container running a component image: the entrypoint
@@ -59,12 +73,11 @@
 {{- end -}}
 {{- end -}}
 {{- end -}}
+{{- /* CDS self-entry: where the chart runs CDS, its digest reaches the floor
+       whether or not components are derived. */ -}}
 {{- $cdsImg := .Values.cds.image -}}
-{{- if $cdsImg.digest -}}
-{{- $cds := dict -}}
-{{- range $c := $components -}}
-{{- if eq (get $c "name") "cds.image" -}}{{- $cds = $c -}}{{- end -}}
-{{- end -}}
+{{- $cds := include "c8s.component" (dict "components" $components "name" "cds.image") | fromJson -}}
+{{- if and (get $cds "enabled") $cdsImg.digest -}}
 {{- if not (get $cds "entrypoint") -}}
 {{- fail "c8sComponents entry cds.image has no entrypoint: the CDS self-entry must pin the image's executable" -}}
 {{- end -}}
@@ -108,7 +121,8 @@
      {name, spec}: the same named templates the workloads render, so the
      shapes derived from them cannot drift from what runs. */ -}}
 {{- define "c8s.componentPods" -}}
-{{- $templates := list (list "operator" "c8s.operatorPodSpec") (list "cds" "c8s.cdsPodSpec") -}}
+{{- $templates := list (list "operator" "c8s.operatorPodSpec") -}}
+{{- if include "c8s.cdsInCluster" . -}}{{- $templates = append $templates (list "cds" "c8s.cdsPodSpec") -}}{{- end -}}
 {{- if .Values.attestationApi.enabled -}}{{- $templates = append $templates (list "attestation-api" "c8s.attestationApiPodSpec") -}}{{- end -}}
 {{- if .Values.armtlsMesh.enabled -}}{{- $templates = append $templates (list "armtls-mesh" "armtls-mesh.podSpec") -}}{{- end -}}
 {{- if .Values.volumed.enabled -}}
@@ -830,7 +844,7 @@ null
 {{- $ref := printf "%s@%s" $img.repository $digest -}}
 {{- $script := include "nri-image-policy.installScript" (dict "root" . "bootConfig" (include "nri-image-policy.bootConfig" (dict "root" .))) -}}
 {{- if .Values.nriImagePolicy.baked -}}
-{{- $script = include "nri-image-policy.pinsScript" (dict "root" .) -}}
+{{- $script = include "nri-image-policy.measurePoliciesScript" (dict "root" .) -}}
 {{- end -}}
 {{- $sh := dict "policy" "exact" "argv" (list "/bin/sh" "-c") -}}
 {{- /* Platform setup scripts require host mounts; their executable and script argv stay pinned. */ -}}

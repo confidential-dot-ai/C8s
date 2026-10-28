@@ -63,6 +63,10 @@ spec:
               value: {{ include "nri-image-policy.hostPluginPath" . | quote }}
             - name: HOST_CONFIG_PATH
               value: {{ include "nri-image-policy.hostConfigPath" . | quote }}
+            - name: HOST_CDS_ADDRESS_PATH
+              value: {{ include "nri-image-policy.hostCDSAddressPath" . | quote }}
+            - name: HOST_CDS_PIN_PATH
+              value: {{ include "nri-image-policy.hostCDSPinPath" . | quote }}
             - name: HOST_CONTAINERD_DIR
               value: {{ include "nri-image-policy.containerdConfigDir" . | quote }}
             - name: CONTAINERD_CONFIG_MODE

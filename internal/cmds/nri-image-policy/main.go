@@ -74,8 +74,8 @@ func startupSourceMode(cfg *config) string {
 // Run executes the nri-image-policy binary. args is the slice of CLI args
 // after the program name.
 func Run(args []string) error {
-	if len(args) > 0 && args[0] == setCDSPinsVerb {
-		return runSetCDSPins(os.Stdout, args[1:])
+	if len(args) > 0 && args[0] == setMeasurePoliciesVerb {
+		return runSetMeasurePolicies(os.Stdout, args[1:])
 	}
 	if len(args) > 0 && args[0] == pluginReadyVerb {
 		return runPluginReady(args[1:])
@@ -126,12 +126,12 @@ func Run(args []string) error {
 
 	var wlClient allowlistclient.Client
 	if cfg.PullEnabled() {
-		logger.Info("initializing allowlist client", "url", cfg.Allowlist.Pull.URL)
+		logger.Info("initializing allowlist client", "url", cfg.pullURL())
 		httpClient, err := allowlistPullHTTPClient(cfg.Allowlist.Pull, cfg.NormalizedPlatform())
 		if err != nil {
 			return fmt.Errorf("create allowlist client: %w", err)
 		}
-		wlClient = allowlistclient.NewClientWithHTTP(cfg.Allowlist.Pull.URL, httpClient)
+		wlClient = allowlistclient.NewClientWithHTTP(cfg.pullURL(), httpClient)
 	}
 
 	logNodeRoot(logger, cfg.AllowlistEnabled(), nodeRootUnavailable)
@@ -799,7 +799,7 @@ func digestsAdvertiseHost(cfg *config) (string, error) {
 	// recheck, with no caller ctx to inherit.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return workloadclaims.ResolveAdvertiseHost(ctx, host, cfg.Allowlist.Pull.URL)
+	return workloadclaims.ResolveAdvertiseHost(ctx, host, cfg.pullURL())
 }
 
 // startSandboxDigests serves the CDS-facing digests endpoint over

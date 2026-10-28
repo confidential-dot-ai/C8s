@@ -34,11 +34,19 @@ func TestOperatorDocHelmTemplateExamples(t *testing.T) {
 	if len(examples) == 0 {
 		t.Fatal("docs/operator.md has no helm template example")
 	}
+	// The examples read the CDS pin an operator has beside them, and name the
+	// chart relative to the repository, so they run in a directory holding
+	// that pin against the chart's absolute path.
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "cds-pin.json"), []byte(baseCDSPinDocument(t)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	chart := "helm template c8s " + filepath.Join(root, "internal", "helmchart", "c8s")
 	for _, example := range examples {
 		// The helm client's simulated cluster may predate the chart's kubeVersion.
-		script := "set -e\n" + strings.Replace(example, helmCommand, helmCommand+" --kube-version 1.30.0", 1)
+		script := "set -e\n" + strings.Replace(example, helmCommand, chart+" --kube-version 1.30.0", 1)
 		cmd := exec.Command("sh", "-c", script)
-		cmd.Dir = root
+		cmd.Dir = dir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Errorf("%s: %v\n%s", example, err, tail(out))
 		}

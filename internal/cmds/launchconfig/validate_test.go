@@ -178,22 +178,6 @@ func TestParseRejectsEmptyAndMalformedYAML(t *testing.T) {
 	}
 }
 
-func TestYAMLPathPresent(t *testing.T) {
-	var tree yaml.Node
-	if err := yaml.Unmarshal([]byte("rke2:\n  agentToken: a\nrole: server\n"), &tree); err != nil {
-		t.Fatal(err)
-	}
-	if !yamlPathPresent(&tree, "rke2", "agentToken") {
-		t.Error("present nested key not found")
-	}
-	if yamlPathPresent(&tree, "rke2", "serverToken") {
-		t.Error("absent nested key reported present")
-	}
-	if yamlPathPresent(&tree, "role", "nested") {
-		t.Error("descended into a scalar")
-	}
-}
-
 func TestParseLaunchKeyShape(t *testing.T) {
 	_, valid := testKey(t)
 	p384, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)

@@ -42,9 +42,6 @@ func TestChartConfigOnlyUpgradeAdmitsOldAndNewShapes(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	if got, want := cdsShapeAnnotation(t, after), cdsShapeAnnotation(t, before); got == "" || got != want {
-		t.Fatalf("CDS shape %q after the upgrade, want unchanged %q", got, want)
-	}
 	if _, _, err := store.SeedWorkloads(renderedSeed(t, before).Workloads); err != nil {
 		t.Fatal(err)
 	}
@@ -195,12 +192,12 @@ func TestCDSShapeGuard(t *testing.T) {
 // trips on it.
 func TestChartCDSDigestBumpChangesShape(t *testing.T) {
 	t.Parallel()
-	before, err := helmTemplate(t)
+	before, err := helmTemplateBakedNode(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, before)
 	}
 	const bumped = "sha256:c100000000000000000000000000000000000000000000000000000000000000"
-	after, err := helmTemplate(t, "--set", "cds.image.digest="+bumped)
+	after, err := helmTemplateBakedNode(t, "--set", "cds.image.digest="+bumped)
 	if err != nil {
 		t.Fatalf("helm template with a bumped CDS digest: %v\n%s", err, after)
 	}
@@ -227,11 +224,11 @@ func TestChartEntryNamesIgnoreImageRepository(t *testing.T) {
 		slices.Sort(got)
 		return got
 	}
-	upstream, err := helmTemplate(t)
+	upstream, err := helmTemplateBakedNode(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, upstream)
 	}
-	mirrored, err := helmTemplate(t, "--set", "cds.image.repository=mirror.example/c8s/cds")
+	mirrored, err := helmTemplateBakedNode(t, "--set", "cds.image.repository=mirror.example/c8s/cds")
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, mirrored)
 	}
@@ -300,36 +297,5 @@ func TestChartSeedRetiresPreShapeComponentEntries(t *testing.T) {
 		if _, ok := live.Workloads[name]; ok {
 			t.Errorf("pre-shape entry %q survived the seed", name)
 		}
-	}
-}
-
-// Following the seed lets whoever edits it publish entries, so CDS follows
-// only the measured node image's seed and reads the seed ConfigMap once,
-// with or without operator keys.
-func TestChartCDSFollowsOnlyBakedSeed(t *testing.T) {
-	t.Parallel()
-	keys := filepath.Join(t.TempDir(), "operator.pub")
-	if err := os.WriteFile(keys, []byte("-----BEGIN PUBLIC KEY-----\nMFkwfakefakefake\n-----END PUBLIC KEY-----\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	for _, tc := range []struct {
-		name   string
-		args   []string
-		follow bool
-	}{
-		{name: "chart-managed"},
-		{name: "chart-managed with operator keys", args: []string{"--set-file", "cds.operatorKeys=" + keys}},
-		{name: "baked node", args: bakedArgs, follow: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			out, err := helmTemplate(t, tc.args...)
-			if err != nil {
-				t.Fatalf("helm template: %v\n%s", err, out)
-			}
-			args := renderedDeploymentContainer(t, out, "c8s-cds", "cds").Args
-			if got := slices.Contains(args, "--follow-seed"); got != tc.follow {
-				t.Errorf("CDS args contain --follow-seed = %t, want %t: %q", got, tc.follow, args)
-			}
-		})
 	}
 }

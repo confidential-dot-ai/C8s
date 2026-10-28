@@ -1407,7 +1407,7 @@ allowlist:
     attestation_api_url: "http://127.0.0.1:8400"
     cds_measurements_config: "/run/confos/launch/cds.json"
     # measure_policies (extend RTMR[3] with each pulled allowlist) is off
-    # here; the chart's pins installer patches it from
+    # here; the chart's policy-measurement installer patches it from
     # nriImagePolicy.measurePolicies.
 
 # The measured mesh policy: what a member pod's packet ruleset is built from,

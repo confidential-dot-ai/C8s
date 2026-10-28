@@ -38,9 +38,8 @@ c8s render-values --cvm-mode=<CVM_MODE> --hardware-platform=<HW_PLATFORM> \
   > computed.yaml
 helm pull oci://ghcr.io/confidential-dot-ai/charts/c8s --version <X.Y.Z> --untar
 helm template c8s ./c8s --namespace c8s-system -f values.yaml -f computed.yaml \
-  --show-only templates/cds.yaml > cds.yaml
-yq '. | select(.metadata.name == "c8s-cds-allowlist-seed") |
-  .data["allowlist-seed.json"]' cds.yaml > seed.json
+  --show-only templates/allowlist-seed.yaml |
+  yq '.data["allowlist-seed.json"]' > seed.json
 c8s allowlist lint seed.json
 ```
 

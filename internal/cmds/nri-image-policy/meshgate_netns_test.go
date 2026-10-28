@@ -16,6 +16,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/confidential-dot-ai/c8s/internal/podmesh/ruleset"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 // requireNetNS fails rather than skips when C8S_REQUIRE_NFT is set, which is
@@ -202,11 +203,29 @@ func TestProtectAndGateAPodInTheNamespace(t *testing.T) {
 	}
 }
 
+// verifierGate protects pods on a node whose ruleset admits the attestation-api
+// its credential clients verify their CDS's evidence through: the one part of a
+// pod's ruleset that comes from the node, not the measured document.
+func verifierGate() *meshGate {
+	policy := meshRoles()
+	policy.CredentialAttestationPort = 8400
+	policy.Roles = append(policy.Roles, roleBinding{
+		Name:         CredentialRole,
+		UID:          workloadclaims.CredentialsUID,
+		Destinations: []netip.AddrPort{netip.MustParseAddrPort("10.9.9.9:8443")},
+	})
+	gate := newMeshGate(*policy, discardLogger())
+	gate.nodeAddress = func() (netip.Addr, error) { return netip.MustParseAddr("192.0.2.10"), nil }
+	return gate
+}
+
 // A restarted enforcer takes a protected pod back under the gate; a sandbox
-// holding no ruleset is refused for its life.
+// holding no ruleset is refused for its life. The pod is protected on a node
+// whose verifier its ruleset admits, so recovery reads back a ruleset the
+// measured document alone does not describe.
 func TestRecoverAProtectedPodInTheNamespace(t *testing.T) {
 	pod := sandboxPod(t, "default", "pod")
-	before := newMeshGate(*meshRoles(), discardLogger())
+	before := verifierGate()
 	if err := before.protect(pod); err != nil {
 		t.Fatalf("protect: %v", err)
 	}
@@ -222,7 +241,7 @@ func TestRecoverAProtectedPodInTheNamespace(t *testing.T) {
 	}
 
 	// The enforcer restarts: a new gate reads the sandbox back.
-	after := newMeshGate(*meshRoles(), discardLogger())
+	after := verifierGate()
 	err := after.recoverPod(pod, []recoveredContainer{
 		{ctr: mesh, launch: meshLaunch, running: true},
 		{ctr: workload, running: true},
