@@ -62,7 +62,7 @@ func TestWritePinPolicy(t *testing.T) {
 	dir := t.TempDir()
 	run := func(out string) (string, error) {
 		var buf bytes.Buffer
-		err := writePinPolicy(t.Context(), ts.Client(), ts.URL, current, "c1", block.Bytes, out, &buf)
+		err := writePinPolicy(t.Context(), ts.Client(), ts.URL, current, "c1", block.Bytes, out, "", &buf)
 		return buf.String(), err
 	}
 
@@ -93,7 +93,7 @@ func TestWritePinPolicy(t *testing.T) {
 	// anchors, pin names that do not grow.
 	var buf bytes.Buffer
 	again := filepath.Join(dir, "server-again.json")
-	if err := writePinPolicy(t.Context(), ts.Client(), ts.URL, pol, "c1", block.Bytes, again, &buf); err != nil {
+	if err := writePinPolicy(t.Context(), ts.Client(), ts.URL, pol, "c1", block.Bytes, again, "", &buf); err != nil {
 		t.Fatal(err)
 	}
 	pol2, err := refvalues.Load(again)
@@ -108,6 +108,15 @@ func TestWritePinPolicy(t *testing.T) {
 	// Printing only, for the pin floor.
 	if printed, err := run(""); err != nil || !strings.Contains(printed, "base_epoch=7") {
 		t.Fatalf("print only: %v %s", err, printed)
+	}
+	// The signed decree itself, for add-cds-node --pin-decree.
+	decreeOut := filepath.Join(dir, "pin-decree.json")
+	if err := writePinPolicy(t.Context(), ts.Client(), ts.URL, current, "c1", block.Bytes, "", decreeOut, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	var saved cdsha.SignedDecree
+	if err := json.Unmarshal(must(os.ReadFile(decreeOut)), &saved); err != nil || cdsha.VerifyPinDecree(saved, "c1", block.Bytes) != nil || saved.Decree.IntentID != "roll" {
+		t.Fatalf("--decree-out wrote %+v: %v", saved, err)
 	}
 	for name, sd := range map[string]*cdsha.SignedDecree{
 		"no decree":     nil,

@@ -120,20 +120,22 @@ cannot reach the others starts a second cluster.
 
 A new replica joins as a non-voter. It takes a voter seat when a seat is free.
 
-1. Find the pin floor, the base epoch of the pin decree in force, read over
-   armTLS and checked against the decree key. On a cluster that never applied
-   an `UpdateMeasurements` with `--image`, the command says the replicas serve
-   no pin decree: leave the flag out.
+1. Save the pin decree in force, read over armTLS and checked against the
+   decree key. Its images become the new node's peer images and its base
+   epoch the node's pin floor. On a cluster that never applied an
+   `UpdateMeasurements` with `--image`, the command says the replicas serve
+   no pin decree: leave the flag out in step 2.
 
-       c8s cds ha pin-policy $POL --url $CDS --cluster-id $ID --decree-public-key $B/decree.pub
-       FLOOR=<base_epoch= from the line above>
+       c8s cds ha pin-policy $POL --url $CDS --cluster-id $ID --decree-public-key $B/decree.pub \
+         --decree-out $B/pin-decree-<new-node>.json
+       DECREE=$B/pin-decree-<new-node>.json
 
-   Never take the floor from `/ha/pins` or another unauthenticated read. A
-   host that serves an older decree there lowers the floor, and the new node
-   then accepts that older decree.
+   Never take the decree from `/ha/pins` or another unauthenticated read. A
+   host that serves an older decree there lowers the floor and adds removed
+   images to the new node's peer images.
 2. Write the node's launch document under a **new** name:
 
-       c8s node launch-config add-cds-node --bundle $B --name <new-node> ${FLOOR:+--pin-floor $FLOOR}
+       c8s node launch-config add-cds-node --bundle $B --name <new-node> ${DECREE:+--pin-decree $DECREE}
 
 3. Launch the VM with `$B/<new-node>` as its opkeydata disk. Give it a stable
    IP, and add it to `CDS_NODES`.
@@ -204,7 +206,8 @@ to a new image").
 
 2. Replace the cds nodes one at a time, as in runbook 2, but add
    `--image-manifest new-manifest.json` to `add-cds-node` (and
-   `--vcpus <n>` on SEV-SNP). Replace the non-voters first and the leader
+   `--vcpus <n>` on SEV-SNP). `--pin-decree` is required here: save the
+   decree that pins both images (step 1 with `--decree-out`). Replace the non-voters first and the leader
    (`state=Leader` in attested status) last.
    Pass the readiness gate after each new node and after each removal.
 3. If new replicas exit or crash-loop, stop the rollout. The old replicas
@@ -222,9 +225,12 @@ to a new image").
    Nodes rebooted later trust their launch-document CDS pins, which still
    name the old image, until their first decree fetch succeeds. A node
    relaunched with `--pin-floor` set to the `base_epoch` that `pin-policy`
-   printed refuses every older decree, but its launch document still pins the
-   server document's image until it takes a decree. Only a new bundle drops
-   that image from launch documents.
+   printed refuses every older decree. An agent's launch document still pins
+   the server document's image until it takes a decree; only a new bundle
+   drops that image from agent documents. A cds node added from now on with
+   `--pin-decree` pins only the new image. It also refuses a server node that
+   still runs the old image as a peer: roll the server node before you sign
+   the decree that removes its image.
 
 5. Remove the old image's entries from the workload policy. They stay until
    you remove them.

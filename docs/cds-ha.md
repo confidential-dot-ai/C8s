@@ -83,13 +83,16 @@ behind the readiness gate. In short:
    for each vCPU count a cds node may launch with.
 2. Replace the cds nodes one at a time, the leader last. Each replacement
    gets a **new name** (`c8s node launch-config add-cds-node --image-manifest
-   <new manifest.json>`, plus `--vcpus <n>` on SEV-SNP). Wait until the new
+   <new manifest.json> --pin-decree <decree.json>`, plus `--vcpus <n>` on
+   SEV-SNP; `c8s cds ha pin-policy --decree-out` writes the decree file). Wait until the new
    replica passes the readiness gate (runbook 2) before you remove the old
    node. Serving alone is not enough: a non-voter serves while a seat is
    still unfilled. Until it joins, a replica admits only peers on its own
    image and on the launch document's peer images, which `add-cds-node`
-   sets to the bundle server document's image. A replica whose launch
-   document names neither the image the cluster runs cannot join it.
+   takes from the applied pin decree (`--pin-decree`), never from the
+   bundle server document: an image a decree removed is not admitted. A
+   replica whose launch document names neither the image the cluster runs
+   cannot join it.
 3. Sign and apply a decree that pins only the new image.
 4. Remove the old image's workload policy entries. They stay until you do.
 
@@ -245,10 +248,12 @@ Replacing the key itself is the `RotateKey` decree, a break-glass step.
   first decree fetch succeeds. The enforcer makes that fetch at start, before
   it hands pins to any client, and logs `no CDS pin decree at start` at
   ERROR when it fails. A host that withholds the decree keeps the node on its
-  launch-document pins. A launch document pins the server document's image
-  and the node's own, so removing the server document's image for good needs
-  new launch documents from a new bundle. A node launched with `--pin-floor`
-  at the removing decree's base epoch refuses every older decree (runbook 2).
+  launch-document pins. An agent's launch document pins the server
+  document's image and the node's own, so removing the server document's
+  image for good needs new agent documents from a new bundle. A cds node
+  added with `--pin-decree` pins only the decree's images. A node launched
+  with `--pin-floor` (or `--pin-decree`) at the removing decree's base epoch
+  refuses every older decree (runbook 2).
 * A node takes a pin decree over an unverified fetch only when no CDS it
   pins answers. Such a decree is provisional: the next answer from a pinned
   CDS replaces it, at any base epoch not below the last decree a pinned CDS
