@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -20,6 +19,7 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
+	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/attestation"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
@@ -53,11 +53,6 @@ func run(cfg config) error {
 	}
 	pinned := cfg.measured.Nodes
 	slog.Info("node identities loaded", "tee", pinned.Family, "images", len(pinned.Images))
-	rtmrPins, uniform := pinned.CommonRegisters()
-	if !uniform {
-		return fmt.Errorf("the configuration's nodes pin different registers: /attest applies one set to every caller, so which one it would apply is ambiguous")
-	}
-	measurements := admittedMeasurements(pinned.Digests())
 
 	challengeLimiter, err := issuer.NewIPRateLimiter(rate.Limit(cfg.rateLimit), cfg.rateBurst, cfg.rateLimiterMax)
 	if err != nil {
@@ -99,11 +94,11 @@ func run(cfg config) error {
 		"not_after", mesh.Current().CA.Cert.NotAfter.Format(time.RFC3339),
 	)
 
-	slog.Info("measurement pinning enabled for /attest", "count", len(measurements))
-	if len(rtmrPins) > 0 {
-		slog.Info("TDX RTMR pinning enabled for /attest", "count", len(rtmrPins))
-	} else if pinned.Family == teetypes.FamilyTDX {
-		slog.Warn("the configuration's TDX nodes pin no RTMR: the measurement allowlist then pins TDVF firmware only (MRTD), and the guest kernel and rootfs are not pinned")
+	slog.Info("node image pinning enabled for /attest", "count", len(pinned.Images))
+	if pinned.Family == teetypes.FamilyTDX {
+		if firmwareOnly := imagesWithoutRegisters(pinned.Images); len(firmwareOnly) > 0 {
+			slog.Warn("these TDX node images pin no RTMR: the pin covers TDVF firmware only (MRTD), and the guest kernel and rootfs are not pinned", "images", firmwareOnly)
+		}
 	}
 
 	// Served at /measurements so a verifier holding the operator's own file can
@@ -163,11 +158,7 @@ func run(cfg config) error {
 	// identity"). Pins the same node identities as /attest, so the inventory
 	// answering is held to the standard its armTLS certificate already met.
 	inventoryHosts := cfg.measured.NodeCIDRs
-	nodePins := armtls.Pins{
-		Measurements: pinned.Digests(),
-		Registers:    rtmrPins,
-		Images:       pinned.Images,
-	}
+	nodePins := armtls.Pins{Images: pinned.Images}
 	sandboxDigests, err := workloadclaims.NewDigestsClient(ctx, digestsClientConfig(cfg, nodePins))
 	if err != nil {
 		return err
@@ -184,7 +175,7 @@ func run(cfg config) error {
 		secretsOperator *secrets.OperatorHandler
 		secretsExplain  *secrets.ExplainHandler
 	)
-	if enabled, why := secretsEnabled(measurements, inventoryHosts); enabled {
+	if enabled, why := secretsEnabled(pinned.Images, inventoryHosts); enabled {
 		// One store behind both handlers: an operator write and a workload read
 		// are two doors onto the same paths.
 		store := newSecretsStore(cfg)
@@ -227,8 +218,6 @@ func run(cfg config) error {
 			CertTTL:           cfg.certTTL,
 			NamedCertTTL:      cfg.namedCertTTL,
 			RequestTimeout:    cfg.requestTimeout,
-			Measurements:      measurements,
-			RTMRs:             rtmrPins,
 			Images:            pinned.Images,
 			SANValidation:     cfg.sanValidation,
 			Policy:            policy,
@@ -412,14 +401,26 @@ func validateSecretsConfig(cfg config) error {
 // one releases nothing and mounting the endpoint is inert until an operator
 // writes a grant. What this decides is narrower: whether CDS can answer at all,
 // which is what sandbox identity already needs.
-func secretsEnabled(measurements map[string]bool, inventoryHosts workloadclaims.CIDRHosts) (bool, string) {
+func secretsEnabled(nodeImages []remote.ImagePin, inventoryHosts workloadclaims.CIDRHosts) (bool, string) {
 	switch {
 	case len(inventoryHosts) == 0:
 		return false, "the inventory callback has no node addresses to bound it"
-	case len(measurements) == 0:
+	case len(nodeImages) == 0:
 		return false, "the configuration pins no node identity, so any TEE could answer as a sandbox's inventory"
 	}
 	return true, ""
+}
+
+// imagesWithoutRegisters names the node images pinned by their launch
+// measurement alone.
+func imagesWithoutRegisters(images []remote.ImagePin) []string {
+	var names []string
+	for _, image := range images {
+		if len(image.Registers) == 0 {
+			names = append(names, image.Name)
+		}
+	}
+	return names
 }
 
 func validateConfig(cfg config) error {
@@ -485,16 +486,6 @@ func compilePattern(name, raw string) (*regexp.Regexp, error) {
 		return nil, fmt.Errorf("invalid %s %q: %w", name, raw, err)
 	}
 	return re, nil
-}
-
-// admittedMeasurements is the launch allowlist /attest compares a caller's
-// digest against, keyed the way the handler spells one.
-func admittedMeasurements(digests [][]byte) map[string]bool {
-	allowed := make(map[string]bool, len(digests))
-	for _, d := range digests {
-		allowed[hex.EncodeToString(d)] = true
-	}
-	return allowed
 }
 
 // readinessFn returns a closure that flips /readyz to 503 when either the

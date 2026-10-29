@@ -21,16 +21,48 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
 )
 
+// nodeMRTD is the TDVF firmware measurement the node images in these tests
+// were built against.
+var nodeMRTD = strings.Repeat("ab", refvalues.DigestSize)
+
 // nodesDocument pins one TDX node image. The CDS VM in these tests attests on
 // SEV-SNP: the family it serves is the nodes', not its own.
-var nodesDocument = `{"schema_version":"1","tee":"tdx","measurements":[{"name":"node","mrtd":"` +
-	strings.Repeat("ab", 48) + `"}]}`
+var nodesDocument = `{"schema_version":"1","tee":"tdx","measurements":[` +
+	tdxNodeEntry("node", nodeMRTD, "", "") + `]}`
+
+// upgradingNodesDocument pins the node image being replaced and the one being
+// rolled out: one firmware, each image with its own kernel and command-line
+// registers.
+var upgradingNodesDocument = `{"schema_version":"1","tee":"tdx","measurements":[` +
+	tdxNodeEntry("node", nodeMRTD, strings.Repeat("c1", refvalues.DigestSize), strings.Repeat("c2", refvalues.DigestSize)) + `,` +
+	tdxNodeEntry("node-next", nodeMRTD, strings.Repeat("d1", refvalues.DigestSize), strings.Repeat("d2", refvalues.DigestSize)) + `]}`
+
+// tdxNodeEntry is one node image's entry in a measurements document: the
+// firmware measurement, and the kernel and command-line registers from the
+// same build. Empty registers pin the firmware alone.
+func tdxNodeEntry(name, mrtd, kernel, commandLine string) string {
+	if kernel == "" && commandLine == "" {
+		return fmt.Sprintf(`{"name":%q,"mrtd":%q}`, name, mrtd)
+	}
+	return fmt.Sprintf(`{"name":%q,"mrtd":%q,"rtmr":[null,%q,%q,null]}`, name, mrtd, kernel, commandLine)
+}
 
 // cluster is what a test varies in the configuration a CDS VM is launched
-// with: the operator bundle authorizing writes and the workloads CDS serves.
+// with: the operator bundle authorizing writes, the workloads CDS serves and
+// the node images it admits.
 type cluster struct {
 	operatorPEM []byte
 	workloads   map[string]string
+	nodes       string
+}
+
+// nodePins is the cluster's node pin document, defaulting to the one-image
+// nodesDocument.
+func (c cluster) nodePins() string {
+	if c.nodes == "" {
+		return nodesDocument
+	}
+	return c.nodes
 }
 
 // measuredDocument renders one cluster's complete CDS configuration document.
@@ -41,7 +73,7 @@ func measuredDocument(t *testing.T, c cluster) []byte {
 		"clusterID":          "lane",
 		"operatorPublicKeys": string(c.operatorPEM),
 		"workloads":          anySeed(c.workloads),
-		"nodes":              nodesDocument,
+		"nodes":              c.nodePins(),
 		"nodeCIDRs":          []string{"10.0.0.0/24"},
 		"leafDNSNames":       []string{"cds.example.com"},
 		"leafDNSPatterns":    []string{`^[a-z0-9-]+[.][a-z0-9-]+[.]svc$`},
