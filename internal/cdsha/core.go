@@ -272,7 +272,7 @@ func mintsMeshCA(kind cdsdecree.Kind) bool {
 }
 
 func adoptMeshCA(next *ClusterState, de DecreeEntry) (*issuer.CA, error) {
-	ca, err := meshCA(de)
+	ca, err := meshCA(de.MeshCACert, de.MeshCAKey)
 	if err != nil {
 		return nil, err
 	}
@@ -280,14 +280,13 @@ func adoptMeshCA(next *ClusterState, de DecreeEntry) (*issuer.CA, error) {
 	return ca, nil
 }
 
-// meshCA rebuilds the mesh CA from the entry's certificate and key, and checks
-// that the two belong together.
-func meshCA(de DecreeEntry) (*issuer.CA, error) {
-	cert, err := x509.ParseCertificate(de.MeshCACert)
+// meshCA checks that a certificate in DER and a key in PKCS#8 belong together.
+func meshCA(certDER, keyPKCS8 []byte) (*issuer.CA, error) {
+	cert, err := x509.ParseCertificate(certDER)
 	if err != nil {
 		return nil, fmt.Errorf("mesh CA certificate: %w", err)
 	}
-	parsed, err := x509.ParsePKCS8PrivateKey(de.MeshCAKey)
+	parsed, err := x509.ParsePKCS8PrivateKey(keyPKCS8)
 	if err != nil {
 		return nil, fmt.Errorf("mesh CA key: %w", err)
 	}

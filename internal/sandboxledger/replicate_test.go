@@ -249,3 +249,49 @@ func TestReplicasAgreeOnWhatTheyHold(t *testing.T) {
 		}
 	}
 }
+
+// A replica that joins a cluster takes every binding with its expiry,
+// expired ones included: a replica drops one only when a command needs its
+// room, so every replica holds the same set.
+func TestASnapshotCarriesEveryBindingWithItsExpiry(t *testing.T) {
+	now := time.UnixMilli(1_000_000)
+	source := New(time.Hour, 10)
+	source.now = func() time.Time { return now }
+	if !source.Local().Record("sb1", "10.0.0.1") {
+		t.Fatal("binding refused")
+	}
+	if !source.Local().Record("sb2", "10.0.0.2") {
+		t.Fatal("binding refused")
+	}
+
+	joining := New(time.Hour, 10)
+	joining.now = source.now
+	joining.Restore(source.Dump())
+
+	if host, ok := joining.Local().Lookup("sb1"); !ok || host != "10.0.0.1" {
+		t.Fatalf("the binding is %q, %v", host, ok)
+	}
+	if joining.Len() != 2 {
+		t.Fatalf("the ledger holds %d live bindings", joining.Len())
+	}
+	now = now.Add(2 * time.Hour)
+	if _, ok := joining.Local().Lookup("sb1"); ok {
+		t.Fatal("an expired binding is still believed")
+	}
+	if len(joining.Dump()) != 2 {
+		t.Fatal("an expired binding left the ledger without a command needing its room")
+	}
+}
+
+// Restoring replaces what the ledger held: a replica installing a snapshot
+// holds the cluster's bindings and none of its own.
+func TestASnapshotReplacesTheLedgerItIsInstalledOn(t *testing.T) {
+	ledger := New(time.Hour, 10)
+	if !ledger.Local().Record("its-own", "10.0.0.1") {
+		t.Fatal("binding refused")
+	}
+	ledger.Restore(nil)
+	if _, ok := ledger.Local().Lookup("its-own"); ok {
+		t.Fatal("the binding survived the snapshot")
+	}
+}

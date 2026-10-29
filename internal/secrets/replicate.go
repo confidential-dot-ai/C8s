@@ -88,6 +88,46 @@ var sentinels = map[string]error{
 	"store_full":   ErrStoreFull,
 }
 
+// SnapshotEntry is one stored path in a CDS HA snapshot.
+type SnapshotEntry struct {
+	Path   string `json:"path"`
+	Value  []byte `json:"value"`
+	Origin Origin `json:"origin"`
+	Name   string `json:"name,omitempty"`
+}
+
+// Dump is every path the store holds, for a replica that joins a cluster.
+func (s *MemoryStore) Dump() []SnapshotEntry {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]SnapshotEntry, 0, len(s.values))
+	for path, e := range s.values {
+		out = append(out, SnapshotEntry{
+			Path:   path,
+			Value:  append([]byte(nil), e.value...),
+			Origin: e.holder.origin,
+			Name:   e.holder.name,
+		})
+	}
+	return out
+}
+
+// Restore replaces every path the store holds with a snapshot's, holders and
+// their quotas included.
+func (s *MemoryStore) Restore(entries []SnapshotEntry) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.values = make(map[string]entry, len(entries))
+	s.holders = make(map[Holder]int)
+	for _, e := range entries {
+		s.storeLocked(
+			e.Path,
+			e.Value,
+			Holder{origin: e.Origin, name: e.Name},
+		)
+	}
+}
+
 // Apply runs one command against the entries this process holds. Replicas
 // apply the same commands in the same order, so a quota and a first writer
 // are decided the same way everywhere.
