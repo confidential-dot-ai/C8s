@@ -2,6 +2,7 @@ package nriimagepolicy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/netip"
@@ -989,10 +990,7 @@ func (p *plugin) initExempt(ctx context.Context, pods []*api.PodSandbox, ctrs []
 func (p *plugin) captureExempt(ctx context.Context, pods []*api.PodSandbox, ctrs []*api.Container) *exemptSnapshot {
 	snap := newExemptSnapshot(p.cfg.Policy.ExemptNamespaces)
 
-	podByID := make(map[string]*api.PodSandbox, len(pods))
-	for _, pod := range pods {
-		podByID[pod.GetId()] = pod
-	}
+	podByID := podsByID(pods)
 	for _, ctr := range ctrs {
 		pod := podByID[ctr.GetPodSandboxId()]
 		if pod == nil {
@@ -1028,7 +1026,6 @@ func (p *plugin) Synchronize(ctx context.Context, pods []*api.PodSandbox, ctrs [
 		}
 		p.inventory.awaitRecovery()
 	}
-	p.mesh.refuseExisting(pods)
 
 	// Ahead of every other decision: on a node image a container that already
 	// exists means admission was not in place when it started The
@@ -1043,37 +1040,50 @@ func (p *plugin) Synchronize(ctx context.Context, pods []*api.PodSandbox, ctrs [
 
 	p.trackRunning(pods, ctrs)
 
-	if !p.shouldCheckExisting() {
-		p.logger.Info("startup check disabled", "pods", len(pods), "containers", len(ctrs))
-		return nil, nil
-	}
-
-	// If not ready yet, defer the check until after CDS init completes. Ready
-	// is read under deferredMu so RunDeferredCheck cannot run between it and
-	// the store and leave the batch unchecked.
+	// If not ready yet, defer recovery and the startup check until CDS init
+	// completes: recovery needs the served allowlist to decide exits. Ready is
+	// read under deferredMu so RunDeferredCheck cannot run between it and the
+	// store and leave the batch unhandled.
 	p.deferredMu.Lock()
 	if !p.Ready() {
 		p.deferredPods = pods
 		p.deferredCtrs = ctrs
 		p.deferredMu.Unlock()
-		p.logger.Info("plugin not ready, deferring startup check",
+		p.logger.Info("plugin not ready, deferring recovery and the startup check",
 			"pods", len(pods), "containers", len(ctrs))
 		return nil, nil
 	}
 	p.deferredMu.Unlock()
 
+	p.recoverExisting(ctx, pods, ctrs)
+	// Recovery has run: a container create from here finds its pod on record or
+	// is refused for its sandbox's life, no longer transiently.
+	p.mesh.noteRecovered()
+
+	if !p.shouldCheckExisting() {
+		p.logger.Info("startup check disabled", "pods", len(pods), "containers", len(ctrs))
+		return nil, nil
+	}
+
 	p.checkExisting(ctx, cfg, pods, ctrs)
 	return nil, nil
+}
+
+// podsByID indexes the sandboxes the runtime reported by their sandbox ID, so
+// a container can be matched to its pod by GetPodSandboxId.
+func podsByID(pods []*api.PodSandbox) map[string]*api.PodSandbox {
+	byID := make(map[string]*api.PodSandbox, len(pods))
+	for _, pod := range pods {
+		byID[pod.GetId()] = pod
+	}
+	return byID
 }
 
 // trackRunning adds every running container whose pod sandbox the runtime
 // reported at registration to the running set: the containers the startup check
 // can judge.
 func (p *plugin) trackRunning(pods []*api.PodSandbox, ctrs []*api.Container) {
-	podByID := make(map[string]*api.PodSandbox, len(pods))
-	for _, pod := range pods {
-		podByID[pod.GetId()] = pod
-	}
+	podByID := podsByID(pods)
 	for _, ctr := range ctrs {
 		pod := podByID[ctr.GetPodSandboxId()]
 		if pod == nil || ctr.GetState() != api.ContainerState_CONTAINER_RUNNING {
@@ -1083,17 +1093,76 @@ func (p *plugin) trackRunning(pods []*api.PodSandbox, ctrs []*api.Container) {
 	}
 }
 
+// recoverExisting takes every sandbox running when this enforcer connected
+// back under the mesh gate, or refuses it for its life.
+func (p *plugin) recoverExisting(ctx context.Context, pods []*api.PodSandbox, ctrs []*api.Container) {
+	podByID := podsByID(pods)
+	bySandbox := map[string][]recoveredContainer{}
+	workloads := map[string][]workloadclaims.SandboxContainer{}
+	for _, ctr := range ctrs {
+		pod := podByID[ctr.GetPodSandboxId()]
+		if pod == nil || !p.mesh.hosts(pod) {
+			continue
+		}
+		launch := p.observedLaunch(ctx, ctr, ctr.GetAnnotations()[annotationImageName], containerEnv(ctr), p.observedMounts(pod, ctr))
+		role := p.roleOf(launch)
+		// Liveness is the running set, not the registration snapshot: a container
+		// that started in the deferral window is not CONTAINER_RUNNING in the
+		// snapshot but is on the running set, and its mesh endpoint opened the
+		// gate, so recovery must see it as started.
+		running := p.running.contains(ctr.GetId())
+		bySandbox[pod.GetId()] = append(bySandbox[pod.GetId()], recoveredContainer{
+			ctr: ctr,
+			launch: gatedContainer{
+				role:         role,
+				mountsPinned: p.bindsRoleMounts(launch, role),
+				digest:       launch.Digest,
+				argv:         launch.Argv,
+			},
+			running: running,
+		})
+		// A container that never ran was never counted by admission. One that ran
+		// counts whether it is still running or has since stopped, so the snapshot
+		// state and the running set together decide it.
+		if ctr.GetState() != api.ContainerState_CONTAINER_CREATED || running {
+			workloads[pod.GetId()] = append(workloads[pod.GetId()], p.sandboxContainer(launch))
+		}
+	}
+	for _, pod := range pods {
+		if !p.mesh.hosts(pod) {
+			continue
+		}
+		exits := p.recoveredExits(workloads[pod.GetId()])
+		switch err := p.mesh.recoverPod(pod, bySandbox[pod.GetId()], exits); {
+		case err == nil, errors.Is(err, errSandboxAlreadyOnRecord):
+			// Already on record means protect() took the pod first; it is
+			// protected, so this is not a failure to recover.
+		default:
+			p.logger.Warn("a pod running before this enforcer connected was not taken under the mesh gate", "error", err)
+		}
+	}
+}
+
+// recoveredExits reads back the exit grant a running sandbox holds. An
+// undecided or refused match grants none and carries the cause.
+func (p *plugin) recoveredExits(containers []workloadclaims.SandboxContainer) recoveredExits {
+	decision := p.recoveredExitDecision(containers)
+	if decision.undecided != nil {
+		return recoveredExits{cause: decision.undecided}
+	}
+	if decision.refusal != nil {
+		return recoveredExits{cause: decision.refusal}
+	}
+	return recoveredExits{entry: decision.entry, exits: decision.exits}
+}
+
 // checkExisting records every container it is handed, checks the ones whose pod
 // sandbox it was also handed, and kills violations when enforce_existing is set.
 func (p *plugin) checkExisting(ctx context.Context, cfg *config, pods []*api.PodSandbox, ctrs []*api.Container) {
 	p.logger.Info("checking existing containers",
 		"pods", len(pods), "containers", len(ctrs), "enforcing", cfg.Policy.EnforceExisting)
 
-	// Build pod lookup by sandbox ID
-	podByID := make(map[string]*api.PodSandbox, len(pods))
-	for _, pod := range pods {
-		podByID[pod.GetId()] = pod
-	}
+	podByID := podsByID(pods)
 
 	if p.inventory != nil {
 		defer p.inventory.recovered()
@@ -1185,14 +1254,11 @@ func (p *plugin) killRunning(ctx context.Context, pod *api.PodSandbox, ctr *api.
 	return true
 }
 
-// RunDeferredCheck checks the pods/containers that were seen during Synchronize
-// before the plugin was ready. Should be called after SetReady and CDS init.
+// RunDeferredCheck recovers and checks the pods/containers that were seen
+// during Synchronize before the plugin was ready. Should be called after
+// SetReady and CDS init.
 func (p *plugin) RunDeferredCheck(ctx context.Context) {
 	cfg := p.cfg
-
-	if !p.shouldCheckExisting() {
-		return
-	}
 
 	p.deferredMu.Lock()
 	pods := p.deferredPods
@@ -1200,6 +1266,20 @@ func (p *plugin) RunDeferredCheck(ctx context.Context) {
 	p.deferredPods = nil
 	p.deferredCtrs = nil
 	p.deferredMu.Unlock()
+
+	// Recovery runs even with the check off: a pod off the gate's record is
+	// refused for its life.
+	p.recoverExisting(ctx, pods, ctrs)
+	// Recovery has run: a container create from here finds its pod on record or
+	// is refused for its sandbox's life, no longer transiently.
+	p.mesh.noteRecovered()
+
+	if !p.shouldCheckExisting() {
+		if p.inventory != nil {
+			p.inventory.recovered()
+		}
+		return
+	}
 
 	if len(ctrs) == 0 {
 		p.logger.Info("no deferred containers to check")

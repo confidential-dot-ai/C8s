@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 var relayExit = []exit{{Range: netip.MustParsePrefix("203.0.113.7/32"), Port: 443}}
@@ -195,6 +196,49 @@ func TestBindEntryRefusesAnExitIntoTheClusterOrOntoTheNode(t *testing.T) {
 	gate.policy.ClusterRanges = nil
 	if err := gate.bindEntry(pod, exitDecision{entry: "collector", exits: relayExit}); err == nil || !strings.Contains(err.Error(), "names no IPv4 cluster range") {
 		t.Fatalf("err = %v, want a refusal without cluster ranges", err)
+	}
+}
+
+// recovered builds the workload-container view of the given launches.
+func recovered(digests ...string) []workloadclaims.SandboxContainer {
+	out := make([]workloadclaims.SandboxContainer, 0, len(digests))
+	for _, d := range digests {
+		out = append(out, workloadclaims.SandboxContainer{Digest: d, Argv: []string{"/run"}, Mounts: []allowlist.ObservedMount{}})
+	}
+	return out
+}
+
+// A running sandbox's exit grant is reconstructed from the served allowlist and
+// the runtime's launches; with no served allowlist it is empty with a cause.
+func TestRecoveredExitsReconstructsTheGrant(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		running   []string // digests the runtime reports for the sandbox
+		wantEntry string
+		wantExits []exit
+		wantCause bool // the match refused the pod, so the empty grant carries a cause
+	}{
+		{"collector alone", []string{collectorDigest}, "collector", relayExit, false},
+		{"collector with a foreign container", []string{collectorDigest, appDigest}, "", nil, true},
+		{"app alone", []string{appDigest}, "", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, _ := newCachedPlugin(&config{Policy: policyConfig{Mode: ModeFailClosed}}, exitsAllowlist(t, ""))
+			p.SetReady()
+
+			got := p.recoveredExits(recovered(tc.running...))
+			if (got.cause != nil) != tc.wantCause {
+				t.Fatalf("recoveredExits cause = %v, want a cause: %v", got.cause, tc.wantCause)
+			}
+			if got.entry != tc.wantEntry || !slices.Equal(got.exits, tc.wantExits) {
+				t.Fatalf("recoveredExits = {entry:%q exits:%v}, want {entry:%q exits:%v}", got.entry, got.exits, tc.wantEntry, tc.wantExits)
+			}
+		})
+	}
+
+	p := &plugin{policy: newPolicyStore(nil), mesh: newMeshGate(*meshRoles(), discardLogger())}
+	if got := p.recoveredExits(recovered(collectorDigest)); got.cause == nil || got.exits != nil || got.entry != "" {
+		t.Fatalf("recoveredExits with no served allowlist = %+v, want an empty grant with a cause", got)
 	}
 }
 

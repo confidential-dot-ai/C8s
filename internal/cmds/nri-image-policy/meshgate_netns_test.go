@@ -5,11 +5,14 @@ package nriimagepolicy
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/containerd/nri/pkg/api"
 	"golang.org/x/sys/unix"
 
 	"github.com/confidential-dot-ai/c8s/internal/podmesh/ruleset"
@@ -63,6 +66,15 @@ func sandboxProcess(t *testing.T) uint32 {
 
 func sandboxNetNSPath(pid uint32) string {
 	return fmt.Sprintf("/proc/%d/ns/net", pid)
+}
+
+// sandboxPod starts a sandbox process and returns a pod whose reported netns
+// path and Pid are that live process, ready to protect or recover.
+func sandboxPod(t *testing.T, namespace, name string) *api.PodSandbox {
+	pid := sandboxProcess(t)
+	pod := meshPod(namespace, name, sandboxNetNSPath(pid))
+	pod.Pid = pid
+	return pod
 }
 
 // The ruleset is installed into the pod's own namespace only when the path the
@@ -132,9 +144,7 @@ func TestVerifyRejectsAReplacedNamespaceInTheNamespace(t *testing.T) {
 // an assertion needs the live ruleset, and a namespace that is gone refuses
 // everything.
 func TestProtectAndGateAPodInTheNamespace(t *testing.T) {
-	pid := sandboxProcess(t)
-	pod := meshPod("default", "pod", sandboxNetNSPath(pid))
-	pod.Pid = pid
+	pod := sandboxPod(t, "default", "pod")
 	gate := newMeshGate(*meshRoles(), discardLogger())
 
 	if err := gate.protect(pod); err != nil {
@@ -172,16 +182,16 @@ func TestProtectAndGateAPodInTheNamespace(t *testing.T) {
 
 	// A second install into the same namespace is refused, so the pod's
 	// protection cannot be replaced under a running container.
-	if err := installPodRuleset(podNamespace{path: sandboxNetNSPath(pid)}, gate.policy, "default"); !errors.Is(err, ruleset.ErrForeignRules) {
+	if err := installPodRuleset(podNamespace{path: sandboxNetNSPath(pod.GetPid())}, gate.policy, "default"); !errors.Is(err, ruleset.ErrForeignRules) {
 		t.Fatalf("second install = %v, want ErrForeignRules", err)
 	}
 
 	// The namespace is gone once the sandbox process is: every answer about it
 	// is then a refusal.
-	if err := unix.Kill(int(pid), unix.SIGKILL); err != nil {
+	if err := unix.Kill(int(pod.GetPid()), unix.SIGKILL); err != nil {
 		t.Fatal(err)
 	}
-	if err := waitForNamespaceGone(sandboxNetNSPath(pid)); err != nil {
+	if err := waitForNamespaceGone(sandboxNetNSPath(pod.GetPid())); err != nil {
 		t.Fatal(err)
 	}
 	if err := gate.admit(pod, workload, gatedContainer{}); err == nil {
@@ -189,6 +199,160 @@ func TestProtectAndGateAPodInTheNamespace(t *testing.T) {
 	}
 	if err := gate.verifyMember(pod.GetId()); err == nil {
 		t.Fatal("a sandbox whose namespace is gone was verified as a member")
+	}
+}
+
+// A restarted enforcer takes a protected pod back under the gate; a sandbox
+// holding no ruleset is refused for its life.
+func TestRecoverAProtectedPodInTheNamespace(t *testing.T) {
+	pod := sandboxPod(t, "default", "pod")
+	before := newMeshGate(*meshRoles(), discardLogger())
+	if err := before.protect(pod); err != nil {
+		t.Fatalf("protect: %v", err)
+	}
+	mesh := gateCtr("c8s-mesh", testMeshUID)
+	meshLaunch := gatedContainer{role: meshRole, digest: digestOther, argv: []string{"/app/c8s", "armtls-mesh"}}
+	if err := before.admit(pod, mesh, meshLaunch); err != nil {
+		t.Fatalf("admit the mesh endpoint: %v", err)
+	}
+	before.noteMeshStarted(pod.GetId())
+	workload := gateCtr("app", testWorkloadUID)
+	if err := before.admit(pod, workload, gatedContainer{}); err != nil {
+		t.Fatalf("admit the workload: %v", err)
+	}
+
+	// The enforcer restarts: a new gate reads the sandbox back.
+	after := newMeshGate(*meshRoles(), discardLogger())
+	err := after.recoverPod(pod, []recoveredContainer{
+		{ctr: mesh, launch: meshLaunch, running: true},
+		{ctr: workload, running: true},
+	}, recoveredExits{})
+	if err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if err := after.verifyMember(pod.GetId()); err != nil {
+		t.Fatalf("a recovered member pod was refused an assertion: %v", err)
+	}
+	later := gateCtr("sidecar", testWorkloadUID)
+	if err := after.admit(pod, later, gatedContainer{}); err != nil {
+		t.Fatalf("a container joining a recovered pod was refused: %v", err)
+	}
+	// The crashed endpoint's replacement is the launch on record, nothing else.
+	if err := after.admit(pod, mesh, meshLaunch); err != nil {
+		t.Fatalf("the recorded mesh launch was refused a restart: %v", err)
+	}
+	if err := after.admit(pod, gateCtr("c8s-cert", testCertUID), gatedContainer{role: testCertRole}); err == nil {
+		t.Fatal("a platform role this gate never saw joined a recovered pod behind its workload")
+	}
+
+	// A sandbox nothing protected shows no ruleset to read back.
+	bare := sandboxProcess(t)
+	unprotected := meshPod("default", "bare", sandboxNetNSPath(bare))
+	unprotected.Pid = bare
+	if err := after.recoverPod(unprotected, nil, recoveredExits{}); err == nil {
+		t.Fatal("a sandbox holding no ruleset was taken under the gate")
+	}
+	if err := after.verifyMember(unprotected.GetId()); err == nil || !strings.Contains(err.Error(), "before this enforcer connected") {
+		t.Fatalf("error = %v, want the pre-existing sandbox refusal", err)
+	}
+}
+
+// Recovery verifies the live ruleset against the base plus the granted exits:
+// with the grant the pod recovers, without it the held exits are refused.
+func TestRecoverAPodHoldingExitsInTheNamespace(t *testing.T) {
+	exits := []exit{{Range: netip.MustParsePrefix("203.0.113.7/32"), Port: 443}}
+	mesh := gateCtr("c8s-mesh", testMeshUID)
+	meshLaunch := gatedContainer{role: meshRole, digest: digestOther, argv: []string{"/app/c8s", "armtls-mesh"}}
+
+	p := sandboxPod(t, "default", "pod")
+	before := newMeshGate(*meshRoles(), discardLogger())
+	if err := before.protect(p); err != nil {
+		t.Fatalf("protect: %v", err)
+	}
+	if err := extendPodRuleset(before.pods[p.GetId()].netns, before.policy, "default", exits); err != nil {
+		t.Fatalf("extend the ruleset with the granted exit: %v", err)
+	}
+	ran := []recoveredContainer{{ctr: mesh, launch: meshLaunch, running: true}}
+
+	granted := newMeshGate(*meshRoles(), discardLogger())
+	if err := granted.recoverPod(p, ran, recoveredExits{entry: "collector", exits: exits}); err != nil {
+		t.Fatalf("recover a pod holding its granted exit: %v", err)
+	}
+	if err := granted.verifyMember(p.GetId()); err != nil {
+		t.Fatalf("a recovered pod holding its granted exit was refused an assertion: %v", err)
+	}
+	if held := granted.grantedExits(p.GetId()); !slices.Equal(held, exits) {
+		t.Fatalf("recovered exits = %v, want %v", held, exits)
+	}
+
+	// No grant: the exit still live in the namespace is refused, naming the cause.
+	ungranted := newMeshGate(*meshRoles(), discardLogger())
+	err := ungranted.recoverPod(p, ran, recoveredExits{cause: errors.New("no served allowlist on this node yet")})
+	if err == nil || !strings.Contains(err.Error(), "granted no exits") {
+		t.Fatalf("error = %v, want a refusal naming the undecided cause", err)
+	}
+	if err := ungranted.verifyMember(p.GetId()); err == nil {
+		t.Fatal("a pod refused on recovery was verified as a member")
+	}
+
+	// A base-only ruleset recovers with no grant.
+	bpid := sandboxProcess(t)
+	base := meshPod("default", "base", sandboxNetNSPath(bpid))
+	base.Pid = bpid
+	beforeBase := newMeshGate(*meshRoles(), discardLogger())
+	if err := beforeBase.protect(base); err != nil {
+		t.Fatalf("protect base pod: %v", err)
+	}
+	baseGate := newMeshGate(*meshRoles(), discardLogger())
+	if err := baseGate.recoverPod(base, ran, recoveredExits{cause: errors.New("no served allowlist on this node yet")}); err != nil {
+		t.Fatalf("a base-ruleset pod with an undecided grant was refused: %v", err)
+	}
+	if err := baseGate.verifyMember(base.GetId()); err != nil {
+		t.Fatalf("a recovered base-ruleset pod was refused an assertion: %v", err)
+	}
+}
+
+// A container's network namespace is matched to the sandbox's by kernel
+// identity, not path; a different namespace is refused.
+func TestRecoverMatchesTheSandboxNamespaceByIdentity(t *testing.T) {
+	requireNetNS(t)
+	// The test's own namespace, named two ways.
+	proven, err := namespaceFile("/proc/self/ns/net")
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := &protectedPod{netns: proven, kubeNamespace: "default"}
+	relabelled := fmt.Sprintf("/proc/%d/ns/net", os.Getpid())
+
+	ctr := &api.Container{
+		Name:  "app",
+		Linux: &api.LinuxContainer{Namespaces: []*api.LinuxNamespace{{Type: "network", Path: relabelled}}},
+	}
+	if err := state.requireSandboxNetwork(ctr, true); err != nil {
+		t.Fatalf("a running container reported the sandbox namespace under another path and was refused: %v", err)
+	}
+
+	// A stopped container is not checked.
+	gone := &api.Container{
+		Name:  "exited",
+		Linux: &api.LinuxContainer{Namespaces: []*api.LinuxNamespace{{Type: "network", Path: "/proc/2147483647/ns/net"}}},
+	}
+	if err := state.requireSandboxNetwork(gone, false); err != nil {
+		t.Fatalf("a stopped container's missing namespace handle was refused: %v", err)
+	}
+
+	// A running container whose /proc handle has since vanished has exited.
+	if err := state.requireSandboxNetwork(gone, true); err != nil {
+		t.Fatalf("a running container whose /proc handle is gone was refused: %v", err)
+	}
+
+	elsewhere := sandboxProcess(t)
+	moved := &api.Container{
+		Name:  "moved",
+		Linux: &api.LinuxContainer{Namespaces: []*api.LinuxNamespace{{Type: "network", Path: sandboxNetNSPath(elsewhere)}}},
+	}
+	if err := state.requireSandboxNetwork(moved, true); err == nil {
+		t.Fatal("a container in another network namespace was taken as the sandbox's")
 	}
 }
 

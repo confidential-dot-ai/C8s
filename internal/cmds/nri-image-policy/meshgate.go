@@ -8,14 +8,27 @@ package nriimagepolicy
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/netip"
 	"slices"
+	"strings"
 	"sync"
 
 	"github.com/containerd/nri/pkg/api"
 	"golang.org/x/sys/unix"
 )
+
+// errSandboxOffRecord is the gate's answer for a sandbox it holds no state for.
+// Before recovery has run, that is a pod not yet taken back under the gate, so
+// the refusal is transient; after it, the sandbox is genuinely unknown and the
+// refusal holds for its life.
+var errSandboxOffRecord = errors.New("this enforcer installed no packet protection for the sandbox")
+
+// errSandboxAlreadyOnRecord is recoverPod's answer for a sandbox protect()
+// already took: it is protected, so recovery treating it as a failure would
+// warn the operator about a pod that is in fact under the gate.
+var errSandboxAlreadyOnRecord = errors.New("sandbox is on record already")
 
 // meshGate holds this node's protection state, under the mesh policy its
 // measured configuration carries.
@@ -24,10 +37,28 @@ type meshGate struct {
 	logger *slog.Logger
 	mu     sync.Mutex
 	pods   map[string]*protectedPod
+	// recoveryRan is set once recovery has run: until then a sandbox off the
+	// record may simply be one recovery has not reached yet.
+	recoveryRan bool
 	// nodeAddress is this node's own address, which no exit may reach.
 	nodeAddress func() (netip.Addr, error)
 	// extend adds granted exits to a pod's live ruleset.
 	extend func(podNamespace, meshPolicy, string, []exit) error
+}
+
+// noteRecovered marks recovery complete, so a sandbox off the record is then a
+// refusal for its life rather than a pod recovery has not yet reached.
+func (g *meshGate) noteRecovered() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.recoveryRan = true
+}
+
+// recoveryDone reports whether recovery has run.
+func (g *meshGate) recoveryDone() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.recoveryRan
 }
 
 // protectedPod is one protected sandbox: a refusal holds for its life, and
@@ -149,17 +180,132 @@ func installProtection(pod *api.PodSandbox, policy meshPolicy) (podNamespace, er
 	return netns, nil
 }
 
-// refuseExisting refuses every sandbox already running when this enforcer
-// connected: its containers ran unchecked, and a ruleset that is correct now
-// says nothing about what already ran.
-func (g *meshGate) refuseExisting(pods []*api.PodSandbox) {
+// recoveredContainer is a container of a sandbox that was running when this
+// enforcer connected, as the gate reads it from the runtime's list.
+type recoveredContainer struct {
+	ctr     *api.Container
+	launch  gatedContainer
+	running bool
+}
+
+// recoverPod takes a sandbox that was running before this enforcer connected
+// back under the gate, or refuses it for its life. Protection is read from the
+// sandbox, not the pod's claims: its proven namespace, the ruleset live there,
+// and the per-container checks. The list's order says nothing about start
+// order, so the order rules are not re-read.
+func (g *meshGate) recoverPod(pod *api.PodSandbox, ctrs []recoveredContainer, exits recoveredExits) error {
+	if !g.hosts(pod) {
+		return nil
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	for _, pod := range pods {
-		if g.hosts(pod) {
-			g.pods[pod.GetId()] = &protectedPod{refusal: errors.New("the sandbox was running before this enforcer connected")}
+	if _, onRecord := g.pods[pod.GetId()]; onRecord {
+		return fmt.Errorf("%w: %s", errSandboxAlreadyOnRecord, pod.GetId())
+	}
+	state, err := g.recovered(pod, ctrs, exits)
+	if err != nil {
+		g.pods[pod.GetId()] = &protectedPod{
+			refusal:       fmt.Errorf("the sandbox was running before this enforcer connected, and %w", err),
+			kubeNamespace: pod.GetNamespace(),
+		}
+		return fmt.Errorf("recover pod %s/%s: %w", pod.GetNamespace(), pod.GetName(), err)
+	}
+	g.pods[pod.GetId()] = state
+	g.logger.Info("recovered the protection of a running pod",
+		"namespace", pod.GetNamespace(), "pod", pod.GetName(), "netns", state.netns.path,
+		"containers", len(ctrs), "mesh_running", state.meshStarted, "exit_entry", state.exitEntry)
+	return nil
+}
+
+// recoveredExits is the exit grant read back for a running sandbox; its live
+// ruleset must be the base mesh ruleset plus exactly these exits. cause, when
+// set, is why the grant is empty (match undecided or refused) and is reported
+// if the ruleset then fails to verify.
+type recoveredExits struct {
+	entry string
+	exits []exit
+	cause error
+}
+
+// recovered is the record of a running sandbox whose protection reads back.
+func (g *meshGate) recovered(pod *api.PodSandbox, ctrs []recoveredContainer, exits recoveredExits) (*protectedPod, error) {
+	netns, err := proveSandboxNamespace(podNetworkNamespace(pod), pod.GetPid())
+	if err != nil {
+		return nil, err
+	}
+	if err := verifyPodRuleset(netns, g.policy, pod.GetNamespace(), exits.exits); err != nil {
+		if exits.cause != nil {
+			return nil, fmt.Errorf("%w; the pod was granted no exits: %v", err, exits.cause)
+		}
+		return nil, err
+	}
+	state := &protectedPod{
+		netns:         netns,
+		kubeNamespace: pod.GetNamespace(),
+		exitEntry:     exits.entry,
+		exits:         exits.exits,
+	}
+	for _, c := range ctrs {
+		if err := state.restore(g.policy, c); err != nil {
+			return nil, fmt.Errorf("container %s: %w", c.ctr.GetName(), err)
 		}
 	}
+	return state, nil
+}
+
+// restore records a container found in a recovered sandbox. A running mesh
+// endpoint counts as started.
+func (s *protectedPod) restore(policy meshPolicy, c recoveredContainer) error {
+	if err := s.requireContainerAlone(policy, c.ctr, c.launch); err != nil {
+		return err
+	}
+	if err := s.requireSandboxNetwork(c.ctr, c.running); err != nil {
+		return err
+	}
+	s.recordLaunch(c.launch)
+	if c.running && c.launch.role == meshRole {
+		s.meshStarted = true
+	}
+	return nil
+}
+
+// requireContainerAlone runs the create checks that need only the container,
+// shared by admission and recovery.
+func (s *protectedPod) requireContainerAlone(policy meshPolicy, ctr *api.Container, launch gatedContainer) error {
+	if err := s.requireRoleOnlyPod(launch); err != nil {
+		return err
+	}
+	if err := policy.requireRoleIdentity(ctr, launch.role); err != nil {
+		return err
+	}
+	return requirePrivatePIDNamespace(ctr)
+}
+
+// requireSandboxNetwork requires a running container's network namespace to be
+// the sandbox's. The runtime may name it by CNI path or by /proc/<pid>/ns/net,
+// so namespaces are compared by kernel identity, not path.
+func (s *protectedPod) requireSandboxNetwork(ctr *api.Container, running bool) error {
+	if !running {
+		return nil
+	}
+	for _, ns := range ctr.GetLinux().GetNamespaces() {
+		if ns.GetType() != "network" || ns.GetPath() == "" || ns.GetPath() == s.netns.path {
+			continue
+		}
+		described, err := namespaceFile(ns.GetPath())
+		if err != nil {
+			// A vanished /proc handle means the process exited and moves no
+			// packets; any other unresolvable path is refused.
+			if strings.HasPrefix(ns.GetPath(), "/proc/") && errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			return fmt.Errorf("the container runs in the network namespace %s, not the sandbox's %s: %w", ns.GetPath(), s.netns.path, err)
+		}
+		if described.id != s.netns.id {
+			return fmt.Errorf("the container runs in the network namespace %s, not the sandbox's %s", ns.GetPath(), s.netns.path)
+		}
+	}
+	return nil
 }
 
 func (g *meshGate) forget(sandboxID string) {
@@ -178,14 +324,19 @@ func (g *meshGate) noteMeshStarted(sandboxID string) {
 // noteLaunched records an admitted container for the order rules.
 func (g *meshGate) noteLaunched(sandboxID string, launch gatedContainer) {
 	g.update(sandboxID, func(state *protectedPod) {
-		if launch.role == "" {
-			state.workloadCreated = true
-			return
-		}
-		if !state.admittedBefore(launch) {
-			state.roleLaunches = append(state.roleLaunches, launch.identity())
-		}
+		state.recordLaunch(launch)
 	})
+}
+
+// recordLaunch records a container of the sandbox for the order rules.
+func (s *protectedPod) recordLaunch(launch gatedContainer) {
+	if launch.role == "" {
+		s.workloadCreated = true
+		return
+	}
+	if !s.admittedBefore(launch) {
+		s.roleLaunches = append(s.roleLaunches, launch.identity())
+	}
 }
 
 func (g *meshGate) update(sandboxID string, change func(*protectedPod)) {
@@ -375,10 +526,8 @@ func (g *meshGate) admissible(pod *api.PodSandbox, ctr *api.Container, launch ga
 	}
 	for _, check := range []func() error{
 		func() error { return state.requireRoleOrder(launch) },
-		func() error { return state.requireRoleOnlyPod(launch) },
-		func() error { return g.policy.requireRoleIdentity(ctr, launch.role) },
+		func() error { return state.requireContainerAlone(g.policy, ctr, launch) },
 		func() error { return launch.requireNoNetworkChange() },
-		func() error { return requirePrivatePIDNamespace(ctr) },
 	} {
 		if err := check(); err != nil {
 			return podNamespace{}, "", err
@@ -428,7 +577,7 @@ func (g *meshGate) state(sandboxID string) (*protectedPod, error) {
 	state := g.pods[sandboxID]
 	switch {
 	case state == nil:
-		return nil, fmt.Errorf("this enforcer installed no packet protection for sandbox %s", sandboxID)
+		return nil, fmt.Errorf("%w %s", errSandboxOffRecord, sandboxID)
 	case state.refusal != nil:
 		return nil, fmt.Errorf("sandbox %s is refused for its life: %w", sandboxID, state.refusal)
 	}

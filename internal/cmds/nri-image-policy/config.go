@@ -480,11 +480,12 @@ func (c *config) validateMesh() error {
 	if c.requiresTrustedMeshEnforcement() && (c.Policy.Mode != ModeFailClosed || !c.Policy.FatalExisting) {
 		return fmt.Errorf("mesh requires policy.mode %q and policy.fatal_existing: a member pod needs trusted enforcement from node startup", ModeFailClosed)
 	}
-	// A namespace the admission carve-out keeps running across an enforcer
-	// restart holds pods the gate refuses for their life, so the mesh exempts it.
+	// A namespace the admission carve-out admits holds the provider's platform
+	// pods, which came up before any enforcer connected and run as no member
+	// pod's container may, so the mesh exempts it rather than refuse them.
 	for _, namespace := range c.Policy.ExemptNamespaces {
 		if !slices.Contains(c.Mesh.ExemptNamespaces, namespace) {
-			return fmt.Errorf("policy.exempt_namespaces %q must also be in mesh.exempt_namespaces: the gate refuses a pod that was running before this enforcer connected", namespace)
+			return fmt.Errorf("policy.exempt_namespaces %q must also be in mesh.exempt_namespaces: the gate refuses the platform pods that were running before any enforcer connected", namespace)
 		}
 	}
 	return nil
