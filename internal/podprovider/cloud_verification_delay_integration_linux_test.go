@@ -133,3 +133,40 @@ func TestCloudAcceptanceVerificationDelayRefusesFailedOrForeignEvidence(t *testi
 		})
 	}
 }
+
+func TestCloudAcceptanceAbsoluteWaitRechecksClockAfterWakeup(t *testing.T) {
+	until := time.Unix(1234, 0).UTC()
+	for name, remaining := range map[string]time.Duration{"clock-rollback": 20 * time.Second, "early-timer": 3 * time.Second} {
+		t.Run(name, func(t *testing.T) {
+			clock := until.Add(-10 * time.Second)
+			var delays []time.Duration
+			observed, err := cloudWaitUntil(t.Context(), until, func() time.Time { return clock }, func(_ context.Context, delay time.Duration) error {
+				delays = append(delays, delay)
+				if len(delays) == 1 {
+					clock = until.Add(-remaining)
+				} else {
+					clock = until
+				}
+				return nil
+			})
+			if err != nil || !observed.Equal(until) || !reflect.DeepEqual(delays, []time.Duration{10 * time.Second, remaining}) {
+				t.Fatalf("absolute deadline was not rechecked after wake-up: %v %v %v", observed, delays, err)
+			}
+		})
+	}
+}
+
+func TestCloudAcceptanceAbsoluteWaitAbortCannotReturnDeliveryTimestamp(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	until := time.Unix(1234, 0).UTC()
+	clock := until.Add(-time.Second)
+	observed, err := cloudWaitUntil(ctx, until, func() time.Time { return clock }, func(context.Context, time.Duration) error {
+		clock = until.Add(time.Second)
+		cancel()
+		return nil
+	})
+	if !errors.Is(err, context.Canceled) || !observed.IsZero() {
+		t.Fatalf("aborted wait produced a delivery timestamp: %v %v", observed, err)
+	}
+}

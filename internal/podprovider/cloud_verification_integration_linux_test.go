@@ -49,11 +49,33 @@ func (g *cloudDelayedGuest) readGuest(ctx context.Context, rec *record, address 
 	}
 	// Ignore only the child's verification deadline after real verification has
 	// succeeded, modeling a late successful callback without fabricating status.
-	if err := cloudPause(g.abort, time.Until(g.deliverAt)); err != nil {
+	deliveredAt, err := cloudWaitUntil(g.abort, g.deliverAt, time.Now, cloudPause)
+	if err != nil {
 		return podstatus.PodProjection{}, err
 	}
-	g.delivered <- time.Now()
+	g.delivered <- deliveredAt
 	return projection, nil
+}
+
+// Timers use monotonic elapsed time, but persisted verification deadlines use
+// wall time. Recheck the absolute clock after every wake-up, including rollback.
+func cloudWaitUntil(ctx context.Context, until time.Time, now func() time.Time, pause func(context.Context, time.Duration) error) (time.Time, error) {
+	until = until.UTC()
+	for {
+		if err := ctx.Err(); err != nil {
+			return time.Time{}, err
+		}
+		observed := now().UTC()
+		if !observed.Before(until) {
+			if err := ctx.Err(); err != nil {
+				return time.Time{}, err
+			}
+			return observed, nil
+		}
+		if err := pause(ctx, until.Sub(observed)); err != nil {
+			return time.Time{}, err
+		}
+	}
 }
 
 // verificationTimeout uses a real static guest and Cloud cleanup. The injected
@@ -228,10 +250,10 @@ func (r *cloudRun) verificationTimeout(ctx context.Context, t *testing.T, h *pro
 	t.Log("provider restart retained the frozen verification window; delaying a real verified result until expiry")
 	select {
 	case deliveredAt := <-late.delivered:
+		evidence["verifiedResultDeliveredAt"] = deliveredAt
 		if deliveredAt.Before(frozen) {
 			return errors.New("verified result was delivered before the persisted deadline")
 		}
-		evidence["verifiedResultDeliveredAt"] = deliveredAt
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-h.manager.done:
