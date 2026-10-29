@@ -20,6 +20,41 @@
 {{- printf "%s-volumed" .Release.Name | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
+{{/* c8s.cdsPinDocument is the pin an operator passed as content: the
+     refvalues document naming the image and launch file this cluster's CDS
+     VM proves. A schema below 2 carries no launch file, which is the only
+     thing binding that VM to the configuration it serves. */}}
+{{- define "c8s.cdsPinDocument" -}}
+{{- $document := toString .Values.cds.measurementsConfig -}}
+{{- if not $document -}}
+{{- fail "VALIDATION_ERROR kind=cds_pins_required: cds.measurementsConfig is empty, so nothing pins the guest identity of this cluster's CDS and nothing dialing it could tell it from any other attested TEE. Pass `c8s install --cds-pin <cds-pin.json>` (written by `c8s cds config new`)." -}}
+{{- end -}}
+{{- if not (hasPrefix "{" (trim $document)) -}}
+{{- fail "VALIDATION_ERROR kind=cds_pin_content: cds.measurementsConfig must be the JSON content of the CDS pin, not a file path — use `c8s install --cds-pin <file>`, `c8s render-values --cds-pin <file>`, or helm --set-file cds.measurementsConfig=<file>" -}}
+{{- end -}}
+{{- $schema := dig "schema_version" "" (mustFromJson $document) -}}
+{{- if ne $schema "2" -}}
+{{- fail (printf "VALIDATION_ERROR kind=cds_pin_schema: cds.measurementsConfig is schema_version %q, want \"2\": a CDS is pinned to the launch file it serves, which only schema 2 carries" $schema) -}}
+{{- end -}}
+{{- $document -}}
+{{- end -}}
+
+{{/* c8s.checkCDSAddress refuses an address a credential client's packet rules
+     could not admit: one IPv4 address and one port. Takes the value. */}}
+{{- define "c8s.checkCDSAddress" -}}
+{{- $address := toString . -}}
+{{- $parts := splitList ":" $address -}}
+{{- $refusal := printf "VALIDATION_ERROR kind=cds_address_required: cds.address must be this cluster's CDS as <ipv4>:<port> (got %q): a credential client's packet rules admit that one endpoint, so a name would not be what it dials. Pass `c8s install --cds-address <ip:port>`." $address -}}
+{{- if ne (len $parts) 2 -}}{{- fail $refusal -}}{{- end -}}
+{{- $octets := splitList "." (first $parts) -}}
+{{- if ne (len $octets) 4 -}}{{- fail $refusal -}}{{- end -}}
+{{- range $octets -}}
+{{- if or (not (regexMatch `^[0-9]{1,3}$` .)) (gt (int .) 255) -}}{{- fail $refusal -}}{{- end -}}
+{{- end -}}
+{{- $port := last $parts -}}
+{{- if or (not (regexMatch `^[1-9][0-9]*$` $port)) (gt (int $port) 65535) -}}{{- fail $refusal -}}{{- end -}}
+{{- end -}}
+
 {{- define "c8s.int" -}}
 {{- if and (not (kindIs "int" .)) (not (kindIs "float64" .)) (not (regexMatch "^-?[0-9]+$" (toString .))) -}}
 {{- fail (printf "expected an integer, got %q" (toString .)) -}}

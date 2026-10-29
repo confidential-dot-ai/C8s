@@ -3,6 +3,7 @@ package nriimagepolicy
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -36,6 +37,11 @@ type config struct {
 	WorkloadClaims workloadClaimsConfig `yaml:"workload_claims"`
 	// Mesh is the trusted mesh policy (roles.go); required.
 	Mesh *meshPolicy `yaml:"mesh"`
+
+	// cdsEndpoint is the CDS this node reaches, read from the address file an
+	// install mounts beside this config (cdsaddress.go). Invalid when no file
+	// names one.
+	cdsEndpoint netip.AddrPort
 }
 
 // pluginConfig contains plugin runtime settings.
@@ -67,11 +73,6 @@ type workloadClaimsConfig struct {
 	// node's own view (see publishNodeIP). The chart sets it; the node image
 	// leaves it unset because nri-node-ip.service writes the file there.
 	PublishNodeIP bool `yaml:"publish_node_ip"`
-
-	// CDSNodePort is the port an injected credential client reaches CDS on, at
-	// this node's own address. A measured mesh policy binds that endpoint
-	// itself, so only an install sets this (cdsaddress.go).
-	CDSNodePort uint16 `yaml:"cds_node_port"`
 }
 
 // allowlistConfig groups the digest-source mechanisms.
@@ -98,9 +99,10 @@ type allowlistConfig struct {
 
 // pullConfig configures the CDS polling source.
 type pullConfig struct {
-	URL                   string        `yaml:"url"`                     // empty disables pull
-	Interval              time.Duration `yaml:"interval"`                // ticker cadence; > 0 required when URL is set
-	Timeout               time.Duration `yaml:"timeout"`                 // per-request timeout; > 0 required when URL is set
+	URL                   string        `yaml:"url"`                     // a measured config names the CDS here; excludes cds_address_file
+	CDSAddressFile        string        `yaml:"cds_address_file"`        // the CDS endpoint an install mounts, as host:port
+	Interval              time.Duration `yaml:"interval"`                // ticker cadence; > 0 required when a CDS is named
+	Timeout               time.Duration `yaml:"timeout"`                 // per-request timeout; > 0 required when a CDS is named
 	AttestationApiURL     string        `yaml:"attestation_api_url"`     // required for https pull
 	CDSMeasurements       []string      `yaml:"cds_measurements"`        // SHA-384 hex launch digests
 	CDSRTMRs              []string      `yaml:"cds_rtmrs"`               // TDX RTMR pins <index>=<sha384-hex>
@@ -112,28 +114,55 @@ type pullConfig struct {
 	MeasurePolicies bool `yaml:"measure_policies"`
 }
 
-// checkPolicySources rejects competing CDS identity policy sources, before any
-// I/O: config validation runs where the configured document need not exist yet.
-func (c pullConfig) checkPolicySources() error {
-	if c.CDSMeasurementsConfig != "" && (len(c.CDSMeasurements) != 0 || len(c.CDSRTMRs) != 0) {
-		return fmt.Errorf("allowlist.pull.cds_measurements_config cannot be combined with cds_measurements or cds_rtmrs")
-	}
-	return nil
+// cdsSource is how a config names the CDS this node reaches: a measured boot
+// config carries the URL and the pins, an install's carries the files it
+// mounts. Each half has one source, so a node reaches one CDS and holds it to
+// one identity.
+type cdsSource struct {
+	// URL locates the CDS, or AddressFile holds its endpoint.
+	URL         string
+	AddressFile string
+	// Pins identify it as flat values, or PinFile as a document.
+	Pins    cmdsutil.MeasurementPins
+	PinFile string
 }
 
-// policySet is the CDS identity set this node's own clients and its injected
-// credential clients are held to, whichever form the config names it in.
-func (c pullConfig) policySet(platform string) (refvalues.ReferenceValues, error) {
-	if err := c.checkPolicySources(); err != nil {
-		return refvalues.ReferenceValues{}, err
-	}
-	set, err := cmdsutil.LoadImagePolicySet(cmdsutil.ImagePolicyValuesConfig{
-		Source: cmdsutil.ImagePolicySource{File: c.CDSMeasurementsConfig},
+func (s cdsSource) located() bool {
+	return s.URL != "" || s.AddressFile != ""
+}
+
+// cdsSource refuses competing sources before any I/O: config validation runs
+// where the configured documents need not exist yet.
+func (c pullConfig) cdsSource() (cdsSource, error) {
+	source := cdsSource{
+		URL:         c.URL,
+		AddressFile: c.CDSAddressFile,
 		Pins: cmdsutil.MeasurementPins{
 			Measurements: c.CDSMeasurements,
 			Registers:    c.CDSRTMRs,
 			Prefix:       "cds-",
 		},
+		PinFile: c.CDSMeasurementsConfig,
+	}
+	if source.URL != "" && source.AddressFile != "" {
+		return cdsSource{}, fmt.Errorf("allowlist.pull.url cannot be combined with cds_address_file: a node reaches one CDS")
+	}
+	if source.PinFile != "" && (len(c.CDSMeasurements) != 0 || len(c.CDSRTMRs) != 0) {
+		return cdsSource{}, fmt.Errorf("allowlist.pull.cds_measurements_config cannot be combined with cds_measurements or cds_rtmrs: a node holds its CDS to one identity")
+	}
+	return source, nil
+}
+
+// policySet is the CDS identity set this node's own clients and its injected
+// credential clients are held to, whichever form the config names it in.
+func (c pullConfig) policySet(platform string) (refvalues.ReferenceValues, error) {
+	source, err := c.cdsSource()
+	if err != nil {
+		return refvalues.ReferenceValues{}, err
+	}
+	set, err := cmdsutil.LoadImagePolicySet(cmdsutil.ImagePolicyValuesConfig{
+		Source:       cmdsutil.ImagePolicySource{File: source.PinFile},
+		Pins:         source.Pins,
 		Platform:     platform,
 		PlatformFlag: "platform",
 	})
@@ -230,8 +259,8 @@ const defaultPullTimeout = 30 * time.Second
 const NodeIPFile = "node-ip"
 
 // DefaultConfigPath is the plugin config containerd's plugin_config_path
-// resolves for this plugin, the file set-cds-pins patches, and the measured
-// policy the node's runtime wrapper reads (internal/cmds/c8srunc).
+// resolves for this plugin, the file set-measure-policies patches, and the
+// measured policy the node's runtime wrapper reads (internal/cmds/c8srunc).
 const DefaultConfigPath = "/etc/nri/conf.d/image-policy.yaml"
 
 // loadConfig loads configuration from a YAML file, and completes the one
@@ -245,7 +274,12 @@ func loadConfig(path string) (*config, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := bindCredentialRole(cfg); err != nil {
+	endpoint, err := loadCDSEndpoint(cfg.Allowlist.Pull)
+	if err != nil {
+		return nil, fmt.Errorf("the CDS this node reaches: %w", err)
+	}
+	cfg.cdsEndpoint = endpoint
+	if err := bindCredentialRole(cfg, endpoint); err != nil {
 		return nil, fmt.Errorf("bind the %s role to the CDS this node reaches: %w", CredentialRole, err)
 	}
 	if err := cfg.validateMeshRoleBindings(); err != nil {
@@ -254,7 +288,8 @@ func loadConfig(path string) (*config, error) {
 	return cfg, nil
 }
 
-// parseConfig validates static configuration for the plugin and set-cds-pins.
+// parseConfig validates static configuration for the plugin and
+// set-measure-policies.
 // loadConfig completes runtime role bindings before validating them.
 func parseConfig(data []byte) (*config, error) {
 	cfg := &config{
@@ -301,6 +336,21 @@ func parseConfig(data []byte) (*config, error) {
 	return cfg, nil
 }
 
+// checkPullURL holds a configured pull URL to https: CDS serves armTLS only.
+func checkPullURL(raw string) error {
+	if raw == "" {
+		return nil
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("allowlist.pull.url: %w", err)
+	}
+	if parsed.Scheme != "https" {
+		return fmt.Errorf("allowlist.pull.url scheme must be https, got %q", parsed.Scheme)
+	}
+	return nil
+}
+
 // foldHexPins lowercases each pin, leaving blanks and the "<index>=" prefix of
 // an RTMR pin untouched: both halves are hex or digits, which fold to
 // themselves.
@@ -336,8 +386,21 @@ func (c *config) injectsCredentialClients() bool {
 	return c.WorkloadClaims.SocketDir != ""
 }
 
-// PullEnabled reports whether the plugin should poll a remote CDS.
-func (c *config) PullEnabled() bool { return c.Allowlist.Pull.URL != "" }
+// PullEnabled: a config naming two CDS sources never loads (cdsSource), so
+// either half answers.
+func (c *config) PullEnabled() bool {
+	return c.Allowlist.Pull.URL != "" || c.Allowlist.Pull.CDSAddressFile != ""
+}
+
+// pullURL is the CDS this node pulls its allowlist from: the endpoint the
+// address file named at load (cdsaddress.go), else the URL a measured config
+// carries. Empty where the config names no CDS.
+func (c *config) pullURL() string {
+	if c.cdsEndpoint.IsValid() {
+		return cmdsutil.CDSURL(c.cdsEndpoint)
+	}
+	return c.Allowlist.Pull.URL
+}
 
 // baseEnabled reports whether the base allowlist carries any workload.
 func (c *config) baseEnabled() bool {
@@ -398,24 +461,19 @@ func (c *config) Validate() error {
 	if c.PullEnabled() && !c.baseEnabled() {
 		return fmt.Errorf("allowlist.base must carry at least one workload when pull is configured (cold-boot baseline)")
 	}
-	if c.PullEnabled() {
-		if err := c.Allowlist.Pull.checkPolicySources(); err != nil {
-			return err
-		}
+	source, err := c.Allowlist.Pull.cdsSource()
+	if err != nil {
+		return err
+	}
+	if source.located() {
 		if c.Allowlist.Pull.Timeout <= 0 {
-			return fmt.Errorf("allowlist.pull.timeout must be > 0 when pull.url is set")
+			return fmt.Errorf("allowlist.pull.timeout must be > 0 when allowlist.pull names a CDS")
 		}
 		if c.Allowlist.Pull.Interval <= 0 {
-			return fmt.Errorf("allowlist.pull.interval must be > 0 when pull.url is set")
+			return fmt.Errorf("allowlist.pull.interval must be > 0 when allowlist.pull names a CDS")
 		}
-		parsed, err := url.Parse(c.Allowlist.Pull.URL)
-		if err != nil {
-			return fmt.Errorf("allowlist.pull.url: %w", err)
-		}
-		// CDS serves armTLS only, so the pull URL must be https — a plaintext
-		// pull would defeat the attestation handshake entirely.
-		if parsed.Scheme != "https" {
-			return fmt.Errorf("allowlist.pull.url scheme must be https, got %q", parsed.Scheme)
+		if err := checkPullURL(source.URL); err != nil {
+			return err
 		}
 		if c.Allowlist.Pull.AttestationApiURL == "" {
 			return fmt.Errorf("allowlist.pull.attestation_api_url must be set")
@@ -455,7 +513,7 @@ func (c *config) Validate() error {
 	// Certificate producers read the journal only from the default runtime directory.
 	journalDir := filepath.Dir(armtls.NodeJournal)
 	if c.Allowlist.Pull.MeasurePolicies && !c.PullEnabled() {
-		return fmt.Errorf("allowlist.pull.measure_policies requires allowlist.pull.url: only pulled policies are measured")
+		return fmt.Errorf("allowlist.pull.measure_policies requires a CDS to pull from: only pulled policies are measured")
 	}
 	if c.Allowlist.Pull.MeasurePolicies && filepath.Clean(c.WorkloadClaims.SocketDir) != journalDir {
 		return fmt.Errorf("allowlist.pull.measure_policies requires workload_claims.socket_dir %s (got %q): certificate producers read the measured-policy journal there", journalDir, c.WorkloadClaims.SocketDir)

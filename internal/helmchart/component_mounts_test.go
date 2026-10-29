@@ -2,6 +2,8 @@ package helmchart
 
 import (
 	"maps"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -12,6 +14,17 @@ import (
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
+
+// writeMeasurementsConfig writes a measurements document where helm
+// --set-file can read it, whatever directory the render runs in.
+func writeMeasurementsConfig(t *testing.T, document string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "measurements.json")
+	if err := os.WriteFile(path, []byte(document), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
 
 // kubeletExpand is the kubelet's $(VAR) expansion of one argv token: $$ is a
 // literal $, a reference to a variable the container defines becomes its
@@ -239,7 +252,7 @@ func TestChartComponentShapesAreExact(t *testing.T) {
 	}
 	derived := append([]string{"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true"}, digests...)
 	measurements := strings.Repeat("a", 96)
-	measurementsConfig := writeChartImagePolicy(t, `{"schema_version":"1","tee":"tdx","measurements":[{"name":"first","mrtd":"`+measurements+`"}]}`)
+	measurementsConfig := writeMeasurementsConfig(t, `{"schema_version":"1","tee":"tdx","measurements":[{"name":"first","mrtd":"`+measurements+`"}]}`)
 	for _, tc := range []struct {
 		name string
 		args []string
@@ -255,8 +268,7 @@ func TestChartComponentShapesAreExact(t *testing.T) {
 			"--set", "router.attest.enabled=true", "--set", "router.attest.expectedWorkload=front", "--set", "router.hostPort.enabled=false"), false},
 		{"webpki and discovery", append(slices.Clone(derived),
 			"--set", "router.publicTLS.mode=webpki", "--set", "router.publicTLS.secretName=pub", "--set", "router.discovery.enabled=true",
-			"--set-file", "cds.measurementsConfig="+measurementsConfig, "--set-file", "armtlsMesh.measurementsConfig="+measurementsConfig,
-			"--set", "cds.measurements={"+measurements+"}"), true},
+			"--set-file", "armtlsMesh.measurementsConfig="+measurementsConfig), true},
 		{"acme", append(slices.Clone(derived),
 			"--set", "router.publicTLS.mode=acme", "--set", "router.service.type=LoadBalancer", "--set-json", `router.san=["a.example.com"]`), true},
 		{"escaped operator args", append(slices.Clone(derived), "--set-json", `operator.extraArgs=["cost $5","$(a $$","$$(POD_NAME)","$$(KUBERNETES_SERVICE_HOST)"]`), true},
@@ -440,7 +452,7 @@ func TestChartAcceptsCDSMemorySizeLimitQuantities(t *testing.T) {
 		{"--set-string", "64Mi", "64Mi"},
 		{"--set", "67108864", "64Mi"},
 	} {
-		out, err := helmTemplate(t, tc.flag, "cds.persistence.memorySizeLimit="+tc.value)
+		out, err := helmTemplateBakedNode(t, tc.flag, "cds.persistence.memorySizeLimit="+tc.value)
 		if err != nil {
 			t.Errorf("helm template %s memorySizeLimit=%s: %v\n%s", tc.flag, tc.value, err, out)
 			continue
@@ -456,7 +468,7 @@ func TestChartAcceptsCDSMemorySizeLimitQuantities(t *testing.T) {
 		}
 	}
 	for _, value := range []string{"0Mi"} {
-		if out, err := helmTemplate(t, "--set-string", "cds.persistence.memorySizeLimit="+value); err == nil {
+		if out, err := helmTemplateBakedNode(t, "--set-string", "cds.persistence.memorySizeLimit="+value); err == nil {
 			t.Errorf("helm template memorySizeLimit=%s succeeded, want a schema error\n%s", value, out)
 		}
 	}

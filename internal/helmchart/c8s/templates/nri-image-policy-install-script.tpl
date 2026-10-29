@@ -41,6 +41,24 @@ mkdir -p "/host{{ $root.Values.nriImagePolicy.hostPaths.runtimeDir }}"
 # world-writable, so an untrusted pod can't swap the socket.
 chmod 0711 "/host{{ $root.Values.nriImagePolicy.hostPaths.runtimeDir }}"
 
+# The CDS this cluster trusts. It lands beside the boot config, which outlives
+# a reboot: containerd starts the plugin before this DaemonSet runs again.
+cds_changed=0
+if install_file \
+  {{ include "nri-image-policy.cdsPolicyMount" $root }}/cds-address \
+  "/host{{ include "nri-image-policy.hostCDSAddressPath" $root }}" \
+  0644; then
+  cds_changed=1
+  echo "CDS address updated"
+fi
+if install_file \
+  {{ include "nri-image-policy.cdsPolicyMount" $root }}/cds.json \
+  "/host{{ include "nri-image-policy.hostCDSPinPath" $root }}" \
+  0644; then
+  cds_changed=1
+  echo "CDS pin updated"
+fi
+
 config_changed=0
 if write_file "/host{{ include "nri-image-policy.hostConfigPath" $root }}" 0644 <<'IMAGE_POLICY_EOF'
 {{ .bootConfig }}
@@ -139,7 +157,10 @@ else
 fi
 
 restart_needed=0
-if [ "$containerd_changed" = "1" ] || [ "$binary_changed" = "1" ] || [ "$config_changed" = "1" ]; then
+if [ "$containerd_changed" = "1" ] ||
+  [ "$binary_changed" = "1" ] ||
+  [ "$config_changed" = "1" ] ||
+  [ "$cds_changed" = "1" ]; then
   restart_needed=1
 fi
 {{ include "nri-image-policy.restartAndWait" (dict "root" $root) }}
@@ -238,20 +259,20 @@ echo "==> nri-image-policy installer finished; plugin healthy: $health"
 {{- end }}
 
 {{/*
-Pins script for a node-as-CVM (--cvm-mode=bare-metal), where the node image bakes the
+Policy-measurement script for a node-as-CVM (--cvm-mode=bare-metal), where the node image bakes the
 plugin binary, its containerd registration and the boot config — base included,
-whose RKE2 system digests only the image build resolves. This release's CDS pins
-and the policy-measurement switch are the one thing that config cannot carry,
-so the installer patches those keys into it and restarts containerd when they
-change.
+whose RKE2 system digests only the image build resolves, and the CDS its launch
+staging pins. The policy-measurement switch is the one thing that config cannot
+carry, so the installer patches that key into it and restarts containerd when it
+changes.
 
 Caller dict: .root.
 */}}
-{{- define "nri-image-policy.pinsScript" -}}
+{{- define "nri-image-policy.measurePoliciesScript" -}}
 {{- $root := .root -}}
 set -eu
 
-echo "==> nri-image-policy pins installer starting"
+echo "==> nri-image-policy policy-measurement installer starting"
 
 # Components read this as $(NODE_IP) (cmdsutil.NodeIPPath) as a non-root
 # user; nri-node-ip.service on earlier node images publishes it 0600.
@@ -259,12 +280,10 @@ if [ -f "/host{{ $root.Values.nriImagePolicy.hostPaths.runtimeDir }}/node-ip" ];
   chmod 0644 "/host{{ $root.Values.nriImagePolicy.hostPaths.runtimeDir }}/node-ip"
 fi
 
-result=$(/usr/local/bin/c8s nri-image-policy set-cds-pins \
+result=$(/usr/local/bin/c8s nri-image-policy set-measure-policies \
   --config "/host{{ include "nri-image-policy.hostConfigPath" $root }}" \
-  --cds-measurements {{ join "," $root.Values.cds.measurements | quote }} \
-  --cds-rtmrs {{ join "," $root.Values.cds.rtmrs | quote }} \
   --measure-policies={{ $root.Values.nriImagePolicy.measurePolicies }})
-echo "CDS pins $result"
+echo "policy measurement $result"
 
 restart_needed=0
 if [ "$result" = "updated" ]; then
@@ -293,28 +312,18 @@ workload_claims:
   # Components read node-ip as their attestation-api host, so the plugin
   # writes it from the host's view; this pod's environment is not pinned.
   publish_node_ip: true
-  # An injected credential client dials CDS at this node's own address and this
-  # port, and its pod ruleset admits exactly that endpoint.
-  cds_node_port: {{ required "cds.service.nodePort is required with nriImagePolicy.enabled=true: an injected credential client dials CDS at its own node's address and that port" $root.Values.cds.service.nodePort }}
 allowlist:
   pull:
-    url: {{ include "c8s.nriCDSURL" $root | quote }}
     interval: {{ $root.Values.nriImagePolicy.refresh.interval | quote }}
     timeout: "30s"
     # Node-local socket served by the DaemonSet's attest-proxy sidecar.
     attestation_api_url: {{ printf "unix://%s" (include "c8s.attestationApiSocket" $root) | quote }}
-    cds_measurements:
-{{- range $root.Values.cds.measurements }}
-      - {{ . | quote }}
-{{- else }}
-      []
-{{- end }}
-    cds_rtmrs:
-{{- range $root.Values.cds.rtmrs }}
-      - {{ . | quote }}
-{{- else }}
-      []
-{{- end }}
+    # The CDS this cluster trusts, installed beside this config from the
+    # ConfigMap the installer mounts: the endpoint the plugin pulls from and
+    # hands its injected credential clients, and the pin they hold it to.
+    # Paths, so no argument of a component names the CDS it is served by.
+    cds_address_file: {{ include "nri-image-policy.hostCDSAddressPath" $root | quote }}
+    cds_measurements_config: {{ include "nri-image-policy.hostCDSPinPath" $root | quote }}
     measure_policies: {{ $root.Values.nriImagePolicy.measurePolicies }}
   base:
     {{- /* Also the installer's argv pin: JSON key order is defined, toYaml's is not. */ -}}

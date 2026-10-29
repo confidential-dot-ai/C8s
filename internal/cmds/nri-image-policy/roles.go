@@ -69,6 +69,9 @@ type meshPolicy struct {
 	// socket serves the attestation-api. 0 names none.
 	CredentialAttestationPort uint16        `yaml:"credential_attestation_port"`
 	Roles                     []roleBinding `yaml:"roles"`
+	// nodeAddr is this node's own address, which the measured document cannot
+	// carry. The mesh gate fills it (rulesetPolicy).
+	nodeAddr netip.Addr
 	// ClusterRanges are this cluster's pod and Service ranges. A destination
 	// inside them is a member, so the acme egress exception excludes them and
 	// that traffic is captured like any other application connection.

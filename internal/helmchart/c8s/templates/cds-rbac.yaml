@@ -1,4 +1,4 @@
-{{- if empty .Values.cds.sandboxInventoryCIDRs }}
+{{- if and (include "c8s.cdsInCluster" .) (empty .Values.cds.sandboxInventoryCIDRs) }}
 # CDS derives the sandbox-digests dial bound from the live node list unless
 # cds.sandboxInventoryCIDRs pins it statically — only the derived mode needs
 # the node read.

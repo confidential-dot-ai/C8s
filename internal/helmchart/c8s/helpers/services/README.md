@@ -55,6 +55,10 @@ Cluster administrators remain trusted to manage the rendered Kubernetes objects.
 ports (`c8s-router`). The chart renders that Namespace under the fixed name the
 enforcer compiles in (`pkg/workloadclaims.RouterNamespace`).
 
-`c8s.cdsURL` builds the in-cluster CDS Service URL.
-`c8s.nriCDSURL` uses `nriImagePolicy.cds.url` when supplied, otherwise
-`https://127.0.0.1:<cds.service.nodePort>` for the host plugin.
+`c8s.cdsInCluster` is non-empty where the chart runs the CDS, which only a
+baked node image does; `c8s.nodeReadsCDSAddress` where it hands the node the
+CDS address instead of the node image's launch staging.
+
+The host plugin and the clients it injects reach the CDS by the address the
+installer copies to the node from the `-measurements` ConfigMap, beside the pin
+it holds it to (`cds.address`, `cds.measurementsConfig`).

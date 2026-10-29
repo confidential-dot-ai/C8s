@@ -17,6 +17,7 @@
       ],
       "additionalProperties": false,
       "properties": {
+        "address": { "type": "string" },
         "allowlistDB": {},
         "ca": {
           "type": [
@@ -50,7 +51,6 @@
         "jwtClockSkew": {},
         "logLevel": {},
         "maxRequestSize": {},
-        "measurements": {},
         "measurementsConfig": {
           "type": "string"
         },
@@ -118,7 +118,6 @@
         "requestTimeout": {},
         "resources": {},
         "sanValidation": {},
-        "rtmrs": {},
         "sandboxInventoryCIDRs": {},
         "secretsMaxPaths": {},
         "secretsMaxPathsPerWorkload": {},
@@ -175,16 +174,6 @@
           "properties": {
             "deriveComponents": {},
             "workloads": {}
-          }
-        },
-        "cds": {
-          "type": [
-            "object",
-            "null"
-          ],
-          "additionalProperties": false,
-          "properties": {
-            "url": {}
           }
         },
         "containerd": {

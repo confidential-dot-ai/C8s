@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
@@ -14,7 +15,9 @@ func TestMeshRoleBindingsAfterCredentialEndpoint(t *testing.T) {
 	cfg.Allowlist.NodeTCB = false
 	cfg.Allowlist.Base = roleBase(t, pushDigestB, CredentialRole, []string{"/usr/local/bin/c8s", "get-cert"})
 	cfg.WorkloadClaims.AdvertiseHost = "10.0.0.7"
-	cfg.WorkloadClaims.CDSNodePort = 30808
+	cfg.Allowlist.Pull = installedCDSEndpoint(t, "10.9.9.9:8443").Pull
+	cfg.Allowlist.Pull.Interval, cfg.Allowlist.Pull.Timeout = time.Second, time.Second
+	cfg.Allowlist.Pull.AttestationApiURL = "http://127.0.0.1:8400"
 	if _, err := parseConfig(meshConfigDocument(t, cfg)); err != nil {
 		t.Fatalf("static config rejected before credential binding: %v", err)
 	}
@@ -23,10 +26,10 @@ func TestMeshRoleBindingsAfterCredentialEndpoint(t *testing.T) {
 		t.Fatal(err)
 	}
 	bound, ok := loaded.credentialRole()
-	if !ok || bound.Destinations[0].String() != "10.0.0.7:30808" {
+	if !ok || bound.Destinations[0].String() != "10.9.9.9:8443" {
 		t.Fatalf("credential role = %+v, bound = %v", bound, ok)
 	}
-	cfg.WorkloadClaims.CDSNodePort = 0
+	cfg.Allowlist.Pull.CDSAddressFile = ""
 	if _, err := loadMeshConfigDocument(t, cfg); err == nil {
 		t.Fatal("unbound credentials role loaded")
 	}

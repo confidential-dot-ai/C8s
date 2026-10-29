@@ -1,4 +1,4 @@
-{{- if .Values.cds.podDisruptionBudget.enabled }}
+{{- if and (include "c8s.cdsInCluster" .) .Values.cds.podDisruptionBudget.enabled }}
 {{/*
 CDS holds the mesh CA key in process memory, so a voluntary
 eviction (node drain, autoscaler) of the serving pod loses the trust root.

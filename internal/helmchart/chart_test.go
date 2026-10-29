@@ -405,22 +405,6 @@ func TestChartHostNamespacePolicyDeniesAllHostPath(t *testing.T) {
 	}
 }
 
-// Single-node (empty cds.node.selector) renders the installer identically to
-// the default (covered by TestChartNriInstallerRendersSinglePullDaemonSet);
-// what's unique here is the CDS Deployment carrying no nodeSelector so it lands
-// on the lone node.
-func TestChartCDSDeploymentHasNoNodeSelectorUnderEmptySelector(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t, "--set", "cds.node.selector=null")
-	if err != nil {
-		t.Fatalf("helm template --set cds.node.selector=null: %v\n%s", err, out)
-	}
-	cdsDep := renderedDeployment(t, out, "c8s-cds")
-	if len(cdsDep.Spec.Template.Spec.NodeSelector) != 0 {
-		t.Errorf("cds Deployment must have no nodeSelector under single-node; got %v", cdsDep.Spec.Template.Spec.NodeSelector)
-	}
-}
-
 // findContainer mirrors findEnv in internal/webhook/pod_mutator_test.go:
 // return (value, ok) so callers decide how to report the miss.
 func findContainer(containers []corev1.Container, name string) (corev1.Container, bool) {
@@ -488,7 +472,9 @@ func TestChartRejectsOperatorKeysPath(t *testing.T) {
 	if err == nil {
 		t.Fatalf("helm template succeeded, want operatorKeys content-guard failure\n%s", out)
 	}
-	assertHelmFailMessage(t, out, "cds.operatorKeys must be the PEM content of the operator public-key bundle, not a file path — use `c8s install --operator-keys <file>`, `c8s render-values --operator-keys <file>`, or helm --set-file cds.operatorKeys=<file>")
+	if kind := parseValidationErrorKind(out); kind != "cds_operator_keys_content" {
+		t.Fatalf("validation kind = %q, want cds_operator_keys_content\n%s", kind, out)
+	}
 }
 
 func TestChartRendersOperatorKeysPEM(t *testing.T) {
@@ -683,7 +669,7 @@ func TestChartBothWebhooksShareAnnotations(t *testing.T) {
 
 func TestChartManagedARMTLSServiceTargetPortsMatchContainerPorts(t *testing.T) {
 	t.Parallel()
-	out, err := helmTemplate(t)
+	out, err := helmTemplateBakedNode(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
@@ -719,13 +705,15 @@ func TestChartManagedARMTLSServiceTargetPortsMatchContainerPorts(t *testing.T) {
 // Pending, so both must hold.
 func TestChartCDSPinnedToCDSNode(t *testing.T) {
 	t.Parallel()
-	out, err := helmTemplate(t)
+	out, err := helmTemplateBakedNode(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
 	spec := renderedDeployment(t, out, "c8s-cds").Spec.Template.Spec
-	if got := spec.NodeSelector["role"]; got != "cds" {
-		t.Errorf("CDS nodeSelector[role] = %q, want %q (CDS must pin to a known node)", got, "cds")
+	// A baked image boots one server, and RKE2 labels only servers, so this
+	// pins the singleton to it.
+	if got := spec.NodeSelector["node-role.kubernetes.io/control-plane"]; got != "true" {
+		t.Errorf("CDS nodeSelector = %v, want the control-plane node (CDS must pin to a known node)", spec.NodeSelector)
 	}
 	if !tolerates(spec.Tolerations, "dedicated", "cds") {
 		t.Errorf("CDS does not tolerate the dedicated=cds taint; it would stay Pending on a dedicated node: %v", spec.Tolerations)
@@ -754,7 +742,7 @@ func TestChartCDSSecretsPathQuotaFlagsThrough(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			out, err := helmTemplate(t, tc.set...)
+			out, err := helmTemplateBakedNode(t, tc.set...)
 			if err != nil {
 				t.Fatalf("helm template: %v\n%s", err, out)
 			}
@@ -770,13 +758,13 @@ func TestChartCDSSecretsPathQuotaFlagsThrough(t *testing.T) {
 // keeps its own bound.
 func TestChartCDSSecretsMaxValueBytesFlagsThrough(t *testing.T) {
 	t.Parallel()
-	out, err := helmTemplate(t, "--set", "cds.secretsMaxValueBytes=8192")
+	out, err := helmTemplateBakedNode(t, "--set", "cds.secretsMaxValueBytes=8192")
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
 	assertContainerHasArg(t, "cds", renderedDeploymentContainer(t, out, "c8s-cds", "cds").Args, "--secrets-max-value-bytes=8192")
 
-	out, err = helmTemplate(t)
+	out, err = helmTemplateBakedNode(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
@@ -786,13 +774,13 @@ func TestChartCDSSecretsMaxValueBytesFlagsThrough(t *testing.T) {
 		}
 	}
 
-	out, err = helmTemplate(t, "--set", "cds.secretsMaxValueBytes=32")
+	out, err = helmTemplateBakedNode(t, "--set", "cds.secretsMaxValueBytes=32")
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
 	assertContainerHasArg(t, "cds", renderedDeploymentContainer(t, out, "c8s-cds", "cds").Args, "--secrets-max-value-bytes=32")
 
-	out, err = helmTemplate(t, "--set", "cds.secretsMaxValueBytes=31")
+	out, err = helmTemplateBakedNode(t, "--set", "cds.secretsMaxValueBytes=31")
 	if err == nil {
 		t.Fatalf("a bound below a generated value rendered:\n%s", out)
 	}
@@ -845,33 +833,47 @@ func TestChartLeavesTheInjectedCDSEndpointToTheNode(t *testing.T) {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
 	assertContainerNoArgPrefix(t, "operator", renderedOperatorArgs(t, out), "--cds-url=")
-	if got := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker").WorkloadClaims.CDSNodePort; got != 30808 {
-		t.Fatalf("workload_claims.cds_node_port = %d, want the chart's CDS node port 30808", got)
+	// The node reads the endpoint from the file the installer puts beside its
+	// config and hands it to every injected client; no component names it.
+	if got := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker").Allowlist.Pull.CDSAddressFile; got != "/etc/nri/conf.d/cds-address" {
+		t.Fatalf("allowlist.pull.cds_address_file = %q, want the file beside the boot config", got)
 	}
+	iterateManifests(t, out, func(doc []byte) bool {
+		var meta docMeta
+		if err := sigsyaml.Unmarshal(doc, &meta); err != nil {
+			t.Fatalf("decode rendered document: %v", err)
+		}
+		if strings.Contains(string(doc), baseCDSAddress) && meta.Metadata.Name != "c8s-measurements" {
+			t.Fatalf("%s %q names the CDS address; only the ConfigMap the installer mounts may\n%s", meta.Kind, meta.Metadata.Name, doc)
+		}
+		return false
+	})
 }
 
 func TestChartNRIImagePolicyUsesPullMode(t *testing.T) {
 	t.Parallel()
-	const measurement = "abc1230000000000000000000000000000000000000000000000000000000000000000000000000000000000000000ff"
-	out, err := helmTemplate(t,
-		"--set", "cds.measurements[0]="+measurement,
-	)
+	out, err := helmTemplate(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
 
 	workerCfg := renderedNRIBootConfig(t, out, "c8s-nri-image-policy-worker")
-	if got, want := workerCfg.Allowlist.Pull.URL, "https://127.0.0.1:30808"; got != want {
-		t.Fatalf("worker pull URL = %q, want %q", got, want)
+	// The CDS reaches the plugin as two paths beside its config: no argument
+	// of the installer names the address or the pin it is served by.
+	if got, want := workerCfg.Allowlist.Pull.CDSAddressFile, "/etc/nri/conf.d/cds-address"; got != want {
+		t.Fatalf("worker CDS address file = %q, want %q", got, want)
+	}
+	if got, want := workerCfg.Allowlist.Pull.CDSMeasurementsConfig, "/etc/nri/conf.d/cds.json"; got != want {
+		t.Fatalf("worker CDS pin = %q, want %q", got, want)
+	}
+	if workerCfg.Allowlist.Pull.URL != "" {
+		t.Fatalf("worker pull URL = %q, want none: the address file names the CDS", workerCfg.Allowlist.Pull.URL)
 	}
 	if got, want := workerCfg.Allowlist.Pull.Interval, "5s"; got != want {
 		t.Fatalf("worker pull interval = %q, want %q", got, want)
 	}
 	if got, want := workerCfg.Allowlist.Pull.AttestationApiURL, "unix:///run/nri-image-policy/attestation-api.sock"; got != want {
 		t.Fatalf("runtime attestation-api URL = %q, want %q", got, want)
-	}
-	if want := []string{measurement}; !slices.Equal(workerCfg.Allowlist.Pull.CDSMeasurements, want) {
-		t.Fatalf("worker CDS measurements = %v, want %v", workerCfg.Allowlist.Pull.CDSMeasurements, want)
 	}
 	// Pull-only: the boot config never carries a push block.
 	if workerCfg.Allowlist.Push.PersistPath != "" {
@@ -1037,17 +1039,6 @@ func TestChartAllowsImagePolicyOffInBareMetalMode(t *testing.T) {
 	}
 }
 
-func TestChartRejectsPlaintextNRIAllowlist(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t,
-		"--set-string", "nriImagePolicy.cds.url=http://c8s-cds.c8s-system.svc:8443",
-	)
-	if err == nil {
-		t.Fatalf("helm template succeeded, want plaintext NRI allowlist failure\n%s", out)
-	}
-	assertHelmFailMessage(t, out, `nriImagePolicy.cds.url must start with https:// when nriImagePolicy.enabled=true (got "http://c8s-cds.c8s-system.svc:8443"): the host plugin must fetch the allowlist over armTLS`)
-}
-
 // parseValidationErrorKind extracts kind=<id> from helm's stderr when the
 // chart's `fail` message starts with `VALIDATION_ERROR kind=<id>:`. Returns
 // empty string if the marker is absent.
@@ -1176,7 +1167,7 @@ func findKey(node any, key string) string {
 // not need it.
 func TestChartGetCertRenewIntervalIsBelowNamedCertTTL(t *testing.T) {
 	t.Parallel()
-	out, err := helmTemplate(t)
+	out, err := helmTemplateBakedNode(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
@@ -1396,13 +1387,6 @@ func TestChartBareMetalModeAttestationApiURLUsesHostIP(t *testing.T) {
 		t.Fatalf("cvmMode=bare-metal install shape renders no attestation-api Service or DaemonSet\n%s", out)
 	}
 
-	// cds: pod-netns, dials the host attestation-api via $(HOST_IP).
-	cds := renderedDeploymentContainer(t, out, "c8s-cds", "cds")
-	assertContainerArgs(t, cds, hostIPURL)
-	if !hasHostIPEnv(cds) {
-		t.Errorf("cds container missing HOST_IP downward-API env; have %+v", cds.Env)
-	}
-
 	// router c8s-cert sidecar (via c8s.getCertContainers): a credentials-role
 	// container reading the node's CDS pins, so its verifier is the node's own
 	// attestation-api in the inventory socket directory it mounts.
@@ -1502,8 +1486,6 @@ func TestChartNonBareMetalModeUsesAttestationSocket(t *testing.T) {
 			if !findDoc(t, out, "NetworkPolicy", "c8s-attestation-api", &np) || len(np.Spec.Ingress) != 0 {
 				t.Fatalf("cvmMode=%s renders the attestation-api default-deny NetworkPolicy; got %+v", mode, np.Spec.Ingress)
 			}
-			cds := renderedDeploymentContainer(t, out, "c8s-cds", "cds")
-			assertContainerArgs(t, cds, socketURL)
 			// Every consumer of the socket URL must also mount the socket
 			// directory (read-only), at the host path so the URL is verbatim.
 			assertHasSocketMount := func(c corev1.Container) {
@@ -1515,8 +1497,9 @@ func TestChartNonBareMetalModeUsesAttestationSocket(t *testing.T) {
 				}
 				t.Errorf("container %s carries the socket URL but no attestation-api-socket mount; mounts %+v", c.Name, c.VolumeMounts)
 			}
-			assertHasSocketMount(cds)
-			assertHasSocketMount(renderedDeploymentContainer(t, out, "c8s-router", "cds-attest"))
+			attest := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")
+			assertContainerArgs(t, attest, socketURL)
+			assertHasSocketMount(attest)
 			// The router's credentials-role containers reach the same socket
 			// through the inventory directory at the compiled path their
 			// clients accept (cmdsutil.RequireNodeVerifier).
@@ -2273,10 +2256,10 @@ func TestChartRendersRouterAttestSidecar(t *testing.T) {
 	assertContainerHasArgPrefix(t, "cds-attest", sidecar.Args, "--attestation-api-url=unix:///run/nri-image-policy/attestation-api.sock")
 	// --cds-url among them: the enforcer mounts the one CDS endpoint this
 	// node admits for the router role, and cds-attest reads it there.
-	for _, banned := range []string{"--upstream", "--attest-endpoints", "--operator-keys-file", "--image-policy-file", "--cds-rtmrs", "--publish-routes", "--cds-url", "--mesh-identity-"} {
+	for _, banned := range []string{"--upstream", "--attest-endpoints", "--operator-keys-file", "--cds-measurements", "--cds-rtmrs", "--publish-routes", "--cds-url", "--mesh-identity-"} {
 		assertContainerNoArgPrefix(t, "cds-attest", sidecar.Args, banned)
 	}
-	assertContainerHasArg(t, "cds-attest", sidecar.Args, "--cds-measurements="+baseCDSDigest)
+	assertContainerHasArg(t, "cds-attest", sidecar.Args, "--image-policy-file=/mnt/c8s-data/measurements/cds.json")
 	if got := len(deployment.Spec.Template.Spec.Containers); got != 3 {
 		t.Fatalf("router should have nginx + cds-attest + allowlist-proxy, got %d containers", got)
 	}
@@ -2387,28 +2370,14 @@ func TestChartRouterRoutePublication(t *testing.T) {
 // TestChartRouterCDSPins pins that cds-attest and allowlist-proxy verify the
 // same CDS: both take their pins from router.cdsPinArgs.
 func TestChartRouterCDSPins(t *testing.T) {
-	measurement := strings.Repeat("ab", armtls.SNPMeasurementSize)
-	rtmr := "2=" + strings.Repeat("cd", 48)
-	policy := writeChartImagePolicy(t, fmt.Sprintf(`{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"snp","measurement":%q}]}`, chartDigestA))
 	for _, tc := range []struct {
-		name      string
-		args      []string
-		wantArgs  []string
-		wantMount bool
+		name    string
+		args    []string
+		want    string
+		mounted bool
 	}{
-		{
-			name:     "measurements and rtmrs",
-			args:     []string{"--set-string", "cds.measurements[0]=" + measurement, "--set-string", "cds.rtmrs[0]=" + rtmr},
-			wantArgs: []string{"--cds-measurements=" + measurement, "--cds-rtmrs=" + rtmr},
-		},
-		{
-			name: "measurementsConfig",
-			// NRI requires the equivalent flat pins beside a policy file; the
-			// router sidecars take the file alone.
-			args:      []string{"--set-file", "cds.measurementsConfig=" + policy, "--set-string", "cds.measurements[0]=" + chartDigestA},
-			wantArgs:  []string{"--image-policy-file=/mnt/c8s-data/measurements/cds.json"},
-			wantMount: true,
-		},
+		{name: "an external CDS", want: "--image-policy-file=/mnt/c8s-data/measurements/cds.json", mounted: true},
+		{name: "a baked node", args: bakedArgs, want: "--image-policy-file=/run/c8s-node/cds.json"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out, err := helmTemplate(t, tc.args...)
@@ -2416,13 +2385,13 @@ func TestChartRouterCDSPins(t *testing.T) {
 				t.Fatalf("helm template: %v\n%s", err, out)
 			}
 			// The allowlist proxy holds the credentials role, so the node
-			// hands it the pins instead
+			// hands it the pin instead
 			// (TestRouterAllowlistProxyTakesItsCDSPinsFromTheNode).
 			c := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")
-			assertContainerArgs(t, c, tc.wantArgs...)
+			assertContainerArgs(t, c, tc.want)
 			m, ok := containerVolumeMount(c, "measurements-config")
-			if ok != tc.wantMount || (ok && (m.MountPath != "/mnt/c8s-data/measurements" || !m.ReadOnly)) {
-				t.Errorf("cds-attest measurements-config mount = (%+v, %v), want present=%v at /mnt/c8s-data/measurements read-only", m, ok, tc.wantMount)
+			if ok != tc.mounted || (ok && (m.MountPath != "/mnt/c8s-data/measurements" || !m.ReadOnly)) {
+				t.Errorf("cds-attest measurements-config mount = (%+v, %v), want present=%v at /mnt/c8s-data/measurements read-only", m, ok, tc.mounted)
 			}
 		})
 	}
@@ -2458,18 +2427,16 @@ func TestChartRouterOperatorKeySource(t *testing.T) {
 	}
 }
 
-// TestChartRefusesUnpinnedCDS renders each pin source that names this
-// cluster's CDS — cds.measurements, cds.measurementsConfig, a baked node's
-// measured launch config — and the default values, which name none.
+// TestChartRefusesUnpinnedCDS renders each way a release names its CDS — the
+// address and pin of a VM outside the cluster, a baked node's measured launch
+// config — and the inputs that name none.
 func TestChartRefusesUnpinnedCDS(t *testing.T) {
 	t.Parallel()
-	policy := writeChartImagePolicy(t, chartTDXPolicy(chartTDXImage("first", chartDigestA, `[null,"`+chartDigestB+`"]`)))
 	for _, tc := range []struct {
 		name string
 		args []string
 	}{
-		{name: "cds.measurements", args: []string{"--set-string", baseCDSPin}},
-		{name: "cds.measurementsConfig", args: []string{"--set", "nriImagePolicy.enabled=false", "--set-file", "cds.measurementsConfig=" + policy}},
+		{name: "cds.address and cds.measurementsConfig", args: baseCDSPolicy(t)},
 		{name: "node.baked", args: bakedArgs},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2479,12 +2446,27 @@ func TestChartRefusesUnpinnedCDS(t *testing.T) {
 			}
 		})
 	}
-	out, err := helmTemplateUnpinned(t, ".")
-	if err == nil {
-		t.Fatalf("helm template accepted the default values, which pin no CDS\n%s", out)
-	}
-	if got := parseValidationErrorKind(out); got != "cds_pins_required" {
-		t.Fatalf("validation kind = %q, want cds_pins_required\n%s", got, out)
+	pin := []string{"--set-file", "cds.measurementsConfig=" + baseCDSPin(t)}
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "neither", want: "cds_pins_required"},
+		{name: "no pin", args: []string{"--set-string", "cds.address=" + baseCDSAddress}, want: "cds_pins_required"},
+		{name: "no address", args: pin, want: "cds_address_required"},
+		{name: "a name, not an address", args: append(pin, "--set-string", "cds.address=cds.example.com:8443"), want: "cds_address_required"},
+		{name: "no port", args: append(pin, "--set-string", "cds.address=10.9.9.9"), want: "cds_address_required"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := helmTemplateUnpinned(t, ".", tc.args...)
+			if err == nil {
+				t.Fatalf("helm template accepted a release that names no CDS\n%s", out)
+			}
+			if got := parseValidationErrorKind(out); got != tc.want {
+				t.Fatalf("validation kind = %q, want %s\n%s", got, tc.want, out)
+			}
+		})
 	}
 }
 
@@ -2713,10 +2695,7 @@ func TestRouterAllowlistRateLimitsAreConfigurable(t *testing.T) {
 // The node pins the CDS its credential clients reach, so the chart hands the
 // proxy no pin of its own while CDS still takes the operator's.
 func TestRouterAllowlistProxyTakesItsCDSPinsFromTheNode(t *testing.T) {
-	measurement := strings.Repeat("ab", armtls.SNPMeasurementSize)
-	out, err := helmTemplate(t,
-		"--set-string", "cds.measurements[0]="+measurement,
-	)
+	out, err := helmTemplate(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
@@ -2724,7 +2703,6 @@ func TestRouterAllowlistProxyTakesItsCDSPinsFromTheNode(t *testing.T) {
 	// It holds the credentials role, so its node hands it the pins and
 	// refuses an argument naming any.
 	assertNoArgWithPrefix(t, "allowlist-proxy", proxy.Args, "--cds-measurements", "--image-policy-file")
-	assertContainerHasArg(t, "cds", renderedDeploymentContainer(t, out, "c8s-cds", "cds").Args, "--measurements="+measurement)
 }
 
 func TestRouterBuiltInAllowlistRouteCanBeDisabled(t *testing.T) {
@@ -3276,9 +3254,9 @@ func TestChartOperatorRBACIsScoped(t *testing.T) {
 	if got := operatorVerbsFor(role, "", "services"); !slices.Equal(got, []string{"get", "list", "watch", "create", "update", "delete"}) {
 		t.Fatalf("operator services verbs = %v", got)
 	}
-	// No rendered Role/ClusterRole may grant any of these resources at all.
-	// nodes is granted — but only to CDS's node-reader, which keeps the
-	// sandbox-digests bound current from the live node list.
+	// No rendered Role/ClusterRole may grant any of these resources at all,
+	// and no rendered role grants nodes: only the CDS a baked image runs reads
+	// them, to keep its sandbox-digests bound current from the live node list.
 	banned := []string{"confidentialworkloads/finalizers", "replicasets", "secrets", "configmaps", "rolebindings"}
 	var nodesGrantors []string
 	iterateManifests(t, out, func(doc []byte) bool {
@@ -3304,8 +3282,8 @@ func TestChartOperatorRBACIsScoped(t *testing.T) {
 		}
 		return false
 	})
-	if !slices.Equal(nodesGrantors, []string{"c8s-cds-node-reader"}) {
-		t.Fatalf("nodes granted to %v, want only c8s-cds-node-reader", nodesGrantors)
+	if len(nodesGrantors) != 0 {
+		t.Fatalf("nodes granted to %v, want none", nodesGrantors)
 	}
 }
 
@@ -3327,7 +3305,7 @@ func operatorVerbsFor(role rbacv1.ClusterRole, apiGroup, resource string) []stri
 // the API token exist only in the default mode — and the grant is read-only.
 func TestChartCDSNodeReaderRBAC(t *testing.T) {
 	t.Parallel()
-	out, err := helmTemplate(t)
+	out, err := helmTemplateBakedNode(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
@@ -3349,7 +3327,7 @@ func TestChartCDSNodeReaderRBAC(t *testing.T) {
 		t.Fatalf("lister mode must mount the CDS API token, got %v", am)
 	}
 
-	staticOut, err := helmTemplate(t, "--set-string", "cds.sandboxInventoryCIDRs[0]=10.0.0.0/24")
+	staticOut, err := helmTemplateBakedNode(t, "--set-string", "cds.sandboxInventoryCIDRs[0]=10.0.0.0/24")
 	if err != nil {
 		t.Fatalf("helm template static CIDRs: %v\n%s", err, staticOut)
 	}
@@ -3596,11 +3574,47 @@ func hostPathVolume(t *testing.T, ds appsv1.DaemonSet, name string) string {
 // the seed admits it argv-pinned, so the default fail-closed render is valid.
 const baseNRIDigest = "sha256:aaaa000000000000000000000000000000000000000000000000000000000000"
 
-// baseCDSDigest is the placeholder CDS launch digest the shared harness pins:
-// the chart refuses a release naming no CDS guest (kind=cds_pins_required).
+// baseCDSDigest is the CDS launch digest testdata/cds-pin.json carries, and
+// baseCDSAddress the endpoint the shared harness points a release at: the
+// chart refuses a release naming no CDS (kind=cds_pins_required,
+// kind=cds_address_required).
 var baseCDSDigest = strings.Repeat("ab", armtls.SNPMeasurementSize)
 
-var baseCDSPin = "cds.measurements[0]=" + baseCDSDigest
+const (
+	baseCDSAddress = "10.9.9.9:8443"
+	// baseCDSPinPath is that CDS as the pin document an operator passes: the
+	// image and the launch file its VM proves, schema 2 as every CDS pin is.
+	baseCDSPinPath = "../testdata/cds-pin.json"
+)
+
+// baseCDSPin is that document where a render running in any directory reads
+// it, which the renders of a copied chart do.
+func baseCDSPin(t *testing.T) string {
+	t.Helper()
+	path, err := filepath.Abs(baseCDSPinPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// baseCDSPinDocument is that document's bytes, for a render that takes the
+// content rather than the file.
+func baseCDSPinDocument(t *testing.T) string {
+	t.Helper()
+	document, err := os.ReadFile(baseCDSPinPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(document)
+}
+
+// baseCDSPolicy is that CDS as install arguments: one address and one pin
+// document, which is how every non-baked release names its CDS.
+func baseCDSPolicy(t *testing.T) []string {
+	t.Helper()
+	return []string{"--set-string", "cds.address=" + baseCDSAddress, "--set-file", "cds.measurementsConfig=" + baseCDSPin(t)}
+}
 
 // helmOutput keeps warnings outside the YAML. Failed commands keep diagnostics.
 func helmOutput(cmd *exec.Cmd) ([]byte, error) {
@@ -3619,15 +3633,15 @@ func helmTemplate(t *testing.T, args ...string) (string, error) {
 }
 
 // helmTemplateIn is helmTemplate on the chart directory c8s under dir, under a
-// placeholder CDS pin unless the caller brings its own pin source: the chart
-// refuses a release naming no CDS guest (kind=cds_pins_required).
+// placeholder CDS unless the caller names its own: the chart refuses a release
+// naming no CDS (kind=cds_pins_required, kind=cds_address_required).
 func helmTemplateIn(t *testing.T, dir string, args ...string) (string, error) {
 	t.Helper()
 	pinned := slices.ContainsFunc(args, func(arg string) bool {
-		return strings.HasPrefix(arg, "cds.measurements") || strings.HasPrefix(arg, "node.baked")
+		return strings.HasPrefix(arg, "cds.measurementsConfig") || strings.HasPrefix(arg, "cds.address") || strings.HasPrefix(arg, "node.baked")
 	})
 	if !pinned {
-		args = append([]string{"--set-string", baseCDSPin}, args...)
+		args = append(baseCDSPolicy(t), args...)
 	}
 	return helmTemplateUnpinned(t, dir, args...)
 }
@@ -3978,7 +3992,7 @@ func renderedOperatorArgs(t *testing.T, manifest string) []string {
 // TestChartDefaultRendersReplacementStack.
 func TestChartCDSIsInMemorySingleton(t *testing.T) {
 	t.Parallel()
-	out, err := helmTemplate(t)
+	out, err := helmTemplateBakedNode(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
@@ -3995,16 +4009,12 @@ func TestChartCDSIsInMemorySingleton(t *testing.T) {
 // (no Secret/ca-cert flag) and the allowlist DB.
 func TestChartCDSWiresInProcessTrustRoot(t *testing.T) {
 	t.Parallel()
-	// gke: host-side attestation-api over the on-node Unix socket. node points
-	// CDS at the baked host attestation-api via HOST_IP (covered separately),
-	// so pin the socket mode here.
-	out, err := helmTemplate(t, "--set", "attestationApi.cvmMode=gke")
+	out, err := helmTemplateBakedNode(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
 	args := renderedDeploymentContainer(t, out, "c8s-cds", "cds").Args
 	for _, want := range []string{
-		"--attestation-api-url=unix:///run/nri-image-policy/attestation-api.sock",
 		"--allowlist-db=/mnt/c8s-data/cds/allowlist.db",
 		"--ca-common-name=c8s Mesh CA",
 		"--ca-cert-validity=8760h",
@@ -4020,20 +4030,12 @@ func TestChartCDSWiresInProcessTrustRoot(t *testing.T) {
 func TestChartCDSAllowlistPersistentTracksPVC(t *testing.T) {
 	t.Parallel()
 	t.Run("default (no persistence) renders false", func(t *testing.T) {
-		out, err := helmTemplate(t)
+		out, err := helmTemplateBakedNode(t)
 		if err != nil {
 			t.Fatalf("helm template: %v\n%s", err, out)
 		}
 		args := renderedDeploymentContainer(t, out, "c8s-cds", "cds").Args
 		assertContainerHasArg(t, "cds", args, "--allowlist-persistent=false")
-	})
-	t.Run("persistence enabled renders true", func(t *testing.T) {
-		out, err := helmTemplate(t, "--set", "cds.persistence.enabled=true", "--set", "nriImagePolicy.policy.mode=audit")
-		if err != nil {
-			t.Fatalf("helm template: %v\n%s", err, out)
-		}
-		args := renderedDeploymentContainer(t, out, "c8s-cds", "cds").Args
-		assertContainerHasArg(t, "cds", args, "--allowlist-persistent=true")
 	})
 }
 
@@ -4091,7 +4093,7 @@ func TestChartRefusesCDSPersistenceUnderEnforcement(t *testing.T) {
 // collapsing the H1 bootstrap-channel MITM defence — a regression this guards.
 func TestChartCDSServesARMTLS(t *testing.T) {
 	t.Parallel()
-	out, err := helmTemplate(t)
+	out, err := helmTemplateBakedNode(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
@@ -4110,7 +4112,7 @@ func TestChartCDSServesARMTLS(t *testing.T) {
 // per-cluster public hostname (cds.dnsSanPatterns) only ever adds to it.
 func TestChartCDSDnsSanPatternAcceptsAnyNamespace(t *testing.T) {
 	t.Parallel()
-	out, err := helmTemplate(t)
+	out, err := helmTemplateBakedNode(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
@@ -4155,7 +4157,7 @@ func TestChartCDSDnsSanPatternsAppendPublicHostname(t *testing.T) {
 	// helm --set strips backslashes, so use a literal pattern that needs no
 	// escaping to prove plumbing without the assertion fighting --set parsing.
 	const public = "confidential-gke-confidential-dot-ai"
-	out, err := helmTemplate(t, "--set", "cds.dnsSanPatterns[0]="+public)
+	out, err := helmTemplateBakedNode(t, "--set", "cds.dnsSanPatterns[0]="+public)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
@@ -4336,19 +4338,6 @@ func TestChartGetCertRetriesInProcess(t *testing.T) {
 	assertContainerHasArg(t, "c8s-cert", cert.Args, "--initial-retry-timeout=2m")
 }
 
-// TestChartCDSMeasurementsPlumbFlatAllowlist proves the flat cds.measurements
-// list drives --measurements.
-func TestChartCDSMeasurementsPlumbFlatAllowlist(t *testing.T) {
-	t.Parallel()
-	const measurement = "0011223344556677889900112233445566778899001122334455667788990011223344556677889900112233445566ff"
-	out, err := helmTemplate(t, "--set", "cds.measurements[0]="+measurement)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	args := renderedDeploymentContainer(t, out, "c8s-cds", "cds").Args
-	assertContainerHasArg(t, "cds", args, "--measurements="+measurement)
-}
-
 // TestChartCDSStrategyIsRecreateSingleton pins the rollout to its constraint:
 // two cds pods would mint divergent trust roots and cannot co-mount the RWO
 // data PVC, so the pod is replaced, never surged. Replicas stays 1: EAR
@@ -4356,7 +4345,7 @@ func TestChartCDSMeasurementsPlumbFlatAllowlist(t *testing.T) {
 // verification (see the active/active decision memo).
 func TestChartCDSStrategyIsRecreateSingleton(t *testing.T) {
 	t.Parallel()
-	out, err := helmTemplate(t)
+	out, err := helmTemplateBakedNode(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
@@ -4390,13 +4379,13 @@ func renderedDaemonSet(t *testing.T, manifest, name string) appsv1.DaemonSet {
 type nriRuntimeConfig struct {
 	Allowlist struct {
 		Pull struct {
-			URL               string   `yaml:"url"`
-			Interval          string   `yaml:"interval"`
-			Timeout           string   `yaml:"timeout"`
-			AttestationApiURL string   `yaml:"attestation_api_url"`
-			CDSMeasurements   []string `yaml:"cds_measurements"`
-			CDSRTMRs          []string `yaml:"cds_rtmrs"`
-			MeasurePolicies   bool     `yaml:"measure_policies"`
+			URL                   string `yaml:"url"`
+			CDSAddressFile        string `yaml:"cds_address_file"`
+			CDSMeasurementsConfig string `yaml:"cds_measurements_config"`
+			Interval              string `yaml:"interval"`
+			Timeout               string `yaml:"timeout"`
+			AttestationApiURL     string `yaml:"attestation_api_url"`
+			MeasurePolicies       bool   `yaml:"measure_policies"`
 		} `yaml:"pull"`
 		Push struct {
 			PersistPath string `yaml:"persist_path"`
@@ -4508,7 +4497,6 @@ func helmTemplateRouter(t *testing.T, args ...string) (string, error) {
 		"--set", "image.tag=dev",
 		"--set", "attestationApi.image.tag=dev",
 		"--set", "cds.image.tag=dev",
-		"--set-string", baseCDSPin,
 		"--set", "armtlsMesh.image.tag=dev",
 		"--set-string", "nriImagePolicy.mesh.clusterRanges[0]=10.42.0.0/16",
 		"--set-string", "nriImagePolicy.mesh.resolver=10.43.0.10",
@@ -4523,6 +4511,7 @@ func helmTemplateRouter(t *testing.T, args ...string) (string, error) {
 		"--show-only", "templates/router-configmap.yaml",
 		"--show-only", "templates/router-deployment.yaml",
 	}
+	base = append(base, baseCDSPolicy(t)...)
 	cmd := exec.Command("helm", append(base, prefixRouterSetArgs(args)...)...)
 	cmd.Dir = "."
 	out, err := helmOutput(cmd)
@@ -4878,18 +4867,14 @@ func TestChartSeedsCDSAllowlistFromBootstrapEntries(t *testing.T) {
 	if got := baseImages(worker.Allowlist.Base)[bootDigest]; got != "ghcr.io/x/coredns:v1" {
 		t.Errorf("base[%s] = %q, want the entry's image\nbase: %v", bootDigest, got, worker.Allowlist.Base.Workloads)
 	}
-	// The CDS self-entry, derived from cds.image (set by the test harness to
-	// digest ...0001); the reference is repository@digest.
+	// No entry admits the CDS: it runs outside the cluster, and its image is
+	// no workload of this one.
 	const cdsDigest = "sha256:0000000000000000000000000000000000000000000000000000000000000001"
-	const cdsRef = "ghcr.io/confidential-dot-ai/cds@" + cdsDigest
-	if got := seedLabel(seed, cdsDigest); got != cdsRef {
-		t.Errorf("seed CDS self-entry = %q, want %q\nseed: %v", got, cdsRef, seed.Workloads)
-	}
 	for _, al := range []pkgallowlist.Allowlist{*seed, worker.Allowlist.Base} {
-		for _, entry := range al.Workloads {
+		for name, entry := range al.Workloads {
 			for _, c := range entry.Containers {
-				if c.Digest.String() == cdsDigest && (c.Mounts.Policy != pkgallowlist.PolicyExact || c.Args.Policy != pkgallowlist.PolicyExact) {
-					t.Errorf("generated CDS policy = args %+v, mounts %+v, want both exact", c.Args, c.Mounts)
+				if c.Digest.String() == cdsDigest {
+					t.Errorf("entry %s admits the CDS image: %+v", name, c)
 				}
 			}
 		}
@@ -4982,7 +4967,7 @@ func TestChartBaseSkipsPinnedEntries(t *testing.T) {
 func TestChartSeedEntryNameIsCaseInsensitive(t *testing.T) {
 	t.Parallel()
 	const d = "sha256:ABCDEF0000000000000000000000000000000000000000000000000000000000"
-	out, err := helmTemplate(t, "--set-string", "cds.image.digest="+d)
+	out, err := helmTemplateBakedNode(t, "--set-string", "cds.image.digest="+d)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
@@ -5080,7 +5065,6 @@ func TestChartDerivesComponentDigestsIntoAllowlist(t *testing.T) {
 	const (
 		opD  = "sha256:00000000000000000000000000000000000000000000000000000000000000a1"
 		asD  = "sha256:00000000000000000000000000000000000000000000000000000000000000a2"
-		cdsD = "sha256:00000000000000000000000000000000000000000000000000000000000000a3"
 		rmD  = "sha256:00000000000000000000000000000000000000000000000000000000000000a4"
 		nriD = "sha256:00000000000000000000000000000000000000000000000000000000000000a5"
 	)
@@ -5088,7 +5072,6 @@ func TestChartDerivesComponentDigestsIntoAllowlist(t *testing.T) {
 		"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
 		"--set-string", "image.digest="+opD,
 		"--set-string", "attestationApi.image.digest="+asD,
-		"--set-string", "cds.image.digest="+cdsD,
 		"--set-string", "armtlsMesh.image.digest="+rmD,
 		"--set-string", "nriImagePolicy.image.digest="+nriD,
 	)
@@ -5107,7 +5090,6 @@ func TestChartDerivesComponentDigestsIntoAllowlist(t *testing.T) {
 	want := map[string]string{
 		opD:  "ghcr.io/confidential-dot-ai/c8s-operator@" + opD,
 		asD:  "ghcr.io/confidential-dot-ai/attestation-api@" + asD,
-		cdsD: "ghcr.io/confidential-dot-ai/cds@" + cdsD,
 		rmD:  "ghcr.io/confidential-dot-ai/armtls-mesh@" + rmD,
 		nriD: "ghcr.io/confidential-dot-ai/nri-image-policy@" + nriD,
 	}
@@ -5247,6 +5229,10 @@ func TestChartComponentArgsDoNotRepeatTheEntrypointSubcommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
+	baked, err := helmTemplateBakedNode(t)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
 
 	for _, tc := range []struct {
 		name   string
@@ -5254,7 +5240,7 @@ func TestChartComponentArgsDoNotRepeatTheEntrypointSubcommand(t *testing.T) {
 		forbid string
 	}{
 		{"volumed", renderedDaemonSetContainer(t, out, "c8s-volumed", "volumed").Args, "volumed"},
-		{"cds", renderedDeploymentContainer(t, out, "c8s-cds", "cds").Args, "cds"},
+		{"cds", renderedDeploymentContainer(t, baked, "c8s-cds", "cds").Args, "cds"},
 	} {
 		if len(tc.args) == 0 {
 			t.Errorf("%s: no args rendered", tc.name)
@@ -5275,10 +5261,6 @@ func TestChartComponentArgsDoNotRepeatTheEntrypointSubcommand(t *testing.T) {
 // carry them into the baked plugin config.
 func TestChartPinsCDSInBareMetalMode(t *testing.T) {
 	t.Parallel()
-	const (
-		pinM = "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"
-		pinR = "1=bbccddeeff00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899aa"
-	)
 	const pinsImageDigest = "sha256:00000000000000000000000000000000000000000000000000000000000000d1"
 	out, err := helmTemplate(t,
 		"--set-string", "attestationApi.cvmMode=bare-metal",
@@ -5286,8 +5268,6 @@ func TestChartPinsCDSInBareMetalMode(t *testing.T) {
 		"--set", "nriImagePolicy.baked=true",
 		"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
 		"--set-string", "nriImagePolicy.image.digest="+pinsImageDigest,
-		"--set-string", "cds.measurements[0]="+pinM,
-		"--set-string", "cds.rtmrs[0]="+pinR,
 	)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
@@ -5295,14 +5275,8 @@ func TestChartPinsCDSInBareMetalMode(t *testing.T) {
 
 	ds := renderedDaemonSet(t, out, "c8s-nri-image-policy-worker")
 	script := strings.Join(containerArgs(t, &ds, "install"), "\n")
-	for _, want := range []string{
-		"set-cds-pins",
-		"--cds-measurements \"" + pinM + "\"",
-		"--cds-rtmrs \"" + pinR + "\"",
-	} {
-		if !strings.Contains(script, want) {
-			t.Errorf("bare-metal-mode installer script missing %q\n%s", want, script)
-		}
+	if !strings.Contains(script, "set-measure-policies") {
+		t.Errorf("bare-metal-mode installer script does not patch the baked config\n%s", script)
 	}
 
 	// The baked config carries the image base whose RKE2 system digests only
@@ -5327,7 +5301,7 @@ func TestChartPinsCDSInBareMetalMode(t *testing.T) {
 		t.Fatalf("bare-metal-mode seed JSON does not parse: %v\n%s", err, cm.Data["allowlist-seed.json"])
 	}
 	if got := seedLabel(seed, pinsImageDigest); got != "ghcr.io/confidential-dot-ai/nri-image-policy@"+pinsImageDigest {
-		t.Errorf("seed[%s] = %q, want the pins installer image; the baked plugin would deny it", pinsImageDigest, got)
+		t.Errorf("seed[%s] = %q, want the policy-measurement installer image; the baked plugin would deny it", pinsImageDigest, got)
 	}
 }
 
@@ -5372,10 +5346,10 @@ func TestChartServesAllowlistSeedInBareMetalMode(t *testing.T) {
 	if _, ok := seedEntry(seed, nginxD); !ok {
 		t.Errorf("bare-metal-mode seed missing router nginx self-entry\nseed: %v", seed.Workloads)
 	}
-	// The flag/mount must be present so CDS actually loads the seed.
-	cds := renderedDeploymentContainer(t, out, "c8s-cds", "cds")
-	if !slices.Contains(cds.Args, "--allowlist-seed=/mnt/c8s-data/cds-seed/allowlist-seed.json") {
-		t.Errorf("bare-metal-mode CDS missing --allowlist-seed flag; seed rendered but not loaded\nargs: %v", cds.Args)
+	// The CDS this cluster serves it to runs outside the cluster, so no entry
+	// of the seed admits CDS itself.
+	if _, ok := seedEntry(seed, "sha256:0000000000000000000000000000000000000000000000000000000000000001"); ok {
+		t.Errorf("seed admits the CDS image; an external CDS is no workload of this cluster\nseed: %v", seed.Workloads)
 	}
 }
 
@@ -5442,13 +5416,12 @@ func TestChartAllowlistsContainerdPrepOnRke2(t *testing.T) {
 // (internal/cmds/nri-image-policy/config.go, which is unexported) needed by the
 // chart tests, so assertions are against typed fields rather than substrings.
 type installerBootConfig struct {
-	WorkloadClaims struct {
-		CDSNodePort int `yaml:"cds_node_port"`
-	} `yaml:"workload_claims"`
 	Allowlist struct {
 		Base pkgallowlist.Allowlist `yaml:"base"`
 		Pull struct {
-			URL string `yaml:"url"`
+			URL                   string `yaml:"url"`
+			CDSAddressFile        string `yaml:"cds_address_file"`
+			CDSMeasurementsConfig string `yaml:"cds_measurements_config"`
 		} `yaml:"pull"`
 		Push struct {
 			PersistPath string `yaml:"persist_path"`
@@ -5511,16 +5484,16 @@ func TestChartBootConfigParsesAsPluginYAML(t *testing.T) {
 		// deriveComponents on (and a second component digest) so the installer
 		// image reaches the base allowlist both explicitly and via derivation.
 		"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
-		"--set-string", "cds.image.digest=sha256:00000000000000000000000000000000000000000000000000000000000000c5",
+		"--set-string", "image.digest=sha256:00000000000000000000000000000000000000000000000000000000000000c5",
 	)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	// The single installer is pull-mode: it configures a pull URL and never a
-	// push block. Asserting both confirms the typed decode landed on the boot
-	// config document, not just that some YAML parsed.
-	if wl := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker").Allowlist; wl.Pull.URL == "" || wl.Push.PersistPath != "" {
-		t.Errorf("worker boot config should configure pull, not push: pull.url=%q push.persist_path=%q", wl.Pull.URL, wl.Push.PersistPath)
+	// The single installer is pull-mode: it names the CDS it pulls from and
+	// never a push block. Asserting both confirms the typed decode landed on
+	// the boot config document, not just that some YAML parsed.
+	if wl := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker").Allowlist; wl.Pull.CDSAddressFile == "" || wl.Push.PersistPath != "" {
+		t.Errorf("worker boot config should configure pull, not push: pull.cds_address_file=%q push.persist_path=%q", wl.Pull.CDSAddressFile, wl.Push.PersistPath)
 	}
 }
 
@@ -5576,7 +5549,6 @@ func TestChartBootConfigRendersExemptNamespaces(t *testing.T) {
 func TestChartDeriveComponentsDefaultsOff(t *testing.T) {
 	t.Parallel()
 	const opD = "sha256:00000000000000000000000000000000000000000000000000000000000000a1"
-	const cdsDigest = "sha256:0000000000000000000000000000000000000000000000000000000000000001"
 	for _, tc := range []struct {
 		name string
 		args []string
@@ -5597,45 +5569,7 @@ func TestChartDeriveComponentsDefaultsOff(t *testing.T) {
 			if _, ok := seedEntry(seed, opD); ok {
 				t.Errorf("operator digest derived without deriveComponents: %v", seed.Workloads)
 			}
-			// The CDS base self-entry is always present, independent of derivation.
-			if _, ok := seedEntry(seed, cdsDigest); !ok {
-				t.Errorf("CDS base self-entry missing: %v", seed.Workloads)
-			}
 		})
-	}
-}
-
-// TestChartWiresCDSAllowlistSeedFlagAndVolume proves the CDS container receives
-// --allowlist-seed pointing at a read-only mount of the seed ConfigMap. The CDS
-// pod runs readOnlyRootFilesystem, so the seed must be a read-only volume, not a
-// writable path.
-func TestChartWiresCDSAllowlistSeedFlagAndVolume(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-
-	cds := renderedDeploymentContainer(t, out, "c8s-cds", "cds")
-	assertContainerHasArg(t, "cds", cds.Args, "--allowlist-seed=/mnt/c8s-data/cds-seed/allowlist-seed.json")
-
-	mount, ok := containerVolumeMount(cds, "allowlist-seed")
-	if !ok {
-		t.Fatalf("cds container missing allowlist-seed volume mount; mounts=%v", cds.VolumeMounts)
-	}
-	if mount.MountPath != "/mnt/c8s-data/cds-seed" {
-		t.Errorf("allowlist-seed mountPath = %q, want /mnt/c8s-data/cds-seed", mount.MountPath)
-	}
-	if !mount.ReadOnly {
-		t.Errorf("allowlist-seed mount must be readOnly (cds has readOnlyRootFilesystem)")
-	}
-
-	vol, ok := podVolume(renderedDeployment(t, out, "c8s-cds").Spec.Template.Spec, "allowlist-seed")
-	if !ok {
-		t.Fatalf("cds pod missing allowlist-seed volume")
-	}
-	if got := projectedConfigMap(vol); got != "c8s-cds-allowlist-seed" {
-		t.Errorf("allowlist-seed volume should project ConfigMap c8s-cds-allowlist-seed; got %+v", vol.VolumeSource)
 	}
 }
 
@@ -5654,7 +5588,7 @@ func projectedConfigMap(v corev1.Volume) string {
 // fails the render with a structured marker rather than shipping that deadlock.
 func TestChartRejectsImagePolicyWithoutCDSDigest(t *testing.T) {
 	t.Parallel()
-	out, err := helmTemplate(t, "--set-string", "cds.image.digest=")
+	out, err := helmTemplateBakedNode(t, "--set-string", "cds.image.digest=")
 	if err == nil {
 		t.Fatalf("helm template succeeded without cds image digest, want guard failure\n%s", out)
 	}
@@ -5750,7 +5684,8 @@ func renderExampleRouterNginxConf() string {
 		"--set", "image.tag=dev",
 		"--set", "attestationApi.image.tag=dev",
 		"--set", "cds.image.tag=dev",
-		"--set-string", baseCDSPin,
+		"--set-string", "cds.address="+baseCDSAddress,
+		"--set-file", "cds.measurementsConfig="+baseCDSPinPath,
 		"--set", "armtlsMesh.image.tag=dev",
 		"--set-string", "nriImagePolicy.mesh.clusterRanges[0]=10.42.0.0/16",
 		"--set-string", "nriImagePolicy.mesh.resolver=10.43.0.10",
@@ -5759,7 +5694,6 @@ func renderExampleRouterNginxConf() string {
 		// argv-pinned). The render is scoped to the router ConfigMap, so nri
 		// manifests do not appear.
 		"--set", "nriImagePolicy.image.tag=dev",
-		"--set", "cds.image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000001",
 		"--set", "nriImagePolicy.image.digest="+baseNRIDigest,
 		// discovery and the attestation endpoints default to enabled; their
 		// locations are covered by dedicated tests, so this example shows the
@@ -5847,11 +5781,11 @@ func TestChartImagePullSecretReachesEveryPodSpecWithoutCreatingASecret(t *testin
 		}
 		return false
 	})
-	// The default render ships at least operator, cds, and router Deployments
+	// The default render ships at least the operator and router Deployments
 	// plus the attestation-api, armtls-mesh, and nri-image-policy DaemonSets;
 	// fewer means the decode regressed and the loop below passes vacuously.
-	if len(workloads) < 6 {
-		t.Fatalf("decoded only %d pod-bearing workloads, want >= 6", len(workloads))
+	if len(workloads) < 5 {
+		t.Fatalf("decoded only %d pod-bearing workloads, want >= 5", len(workloads))
 	}
 
 	for _, w := range workloads {
@@ -5945,7 +5879,7 @@ func TestChartDefaultRendersNoPullSecretRefs(t *testing.T) {
 // Deployment's pods, not select nothing.
 func TestCDSPodDisruptionBudget(t *testing.T) {
 	t.Parallel()
-	out, err := helmTemplate(t)
+	out, err := helmTemplateBakedNode(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
@@ -5968,7 +5902,7 @@ func TestCDSPodDisruptionBudget(t *testing.T) {
 	}
 
 	t.Run("maxUnavailable override", func(t *testing.T) {
-		out, err := helmTemplate(t, "--set", "cds.podDisruptionBudget.maxUnavailable=1")
+		out, err := helmTemplateBakedNode(t, "--set", "cds.podDisruptionBudget.maxUnavailable=1")
 		if err != nil {
 			t.Fatalf("helm template: %v\n%s", err, out)
 		}
@@ -5982,7 +5916,7 @@ func TestCDSPodDisruptionBudget(t *testing.T) {
 	})
 
 	t.Run("disabled removes the PDB", func(t *testing.T) {
-		out, err := helmTemplate(t, "--set", "cds.podDisruptionBudget.enabled=false")
+		out, err := helmTemplateBakedNode(t, "--set", "cds.podDisruptionBudget.enabled=false")
 		if err != nil {
 			t.Fatalf("helm template: %v\n%s", err, out)
 		}
@@ -6022,10 +5956,7 @@ func TestAttestationApiSeccomp(t *testing.T) {
 // pin the control plane could pass is a pin the control plane could choose.
 // This asserts the chart end of that rule.
 func TestChartOperatorPassesNoCDSPins(t *testing.T) {
-	out, err := helmTemplate(t,
-		"--set-string", "cds.measurements[0]=aa11",
-		"--set-string", "cds.rtmrs[0]=1="+strings.Repeat("11", 48),
-	)
+	out, err := helmTemplate(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
@@ -6502,48 +6433,6 @@ func TestChartVolumedTeardownHookOffWithVolumed(t *testing.T) {
 	}
 }
 
-// A non-default cds.service.nodePort must reach the NRI plugin's pull URL.
-// The two used to be independent literals, so moving the port left the plugin
-// pulling from 30808 and only validations.yaml's https:// prefix check looking.
-func TestChartNRICDSURLFollowsTheNodePort(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t, "--set", "cds.service.nodePort=31234")
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	if want := "https://127.0.0.1:31234"; !strings.Contains(out, want) {
-		t.Errorf("render does not carry the derived NRI pull URL %q", want)
-	}
-	if strings.Contains(out, "https://127.0.0.1:30808") {
-		t.Error("render still carries the default NRI pull URL after moving the NodePort")
-	}
-
-	// An explicit url still wins; it is the escape hatch for a plugin that
-	// should pull from somewhere else entirely.
-	out, err = helmTemplate(t, "--set", "cds.service.nodePort=31234",
-		"--set-string", "nriImagePolicy.cds.url=https://10.0.0.1:9999")
-	if err != nil {
-		t.Fatalf("helm template with an explicit url: %v\n%s", err, out)
-	}
-	if !strings.Contains(out, "https://10.0.0.1:9999") {
-		t.Error("an explicit nriImagePolicy.cds.url did not override the derivation")
-	}
-}
-
-// The derived URL is a node-local NodePort address, so a ClusterIP CDS with no
-// nodePort has nothing to derive from and must say so rather than render
-// "https://127.0.0.1:0".
-func TestChartNRICDSURLRefusesAnUnderivableService(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t, "--set-string", "cds.service.type=ClusterIP")
-	if err == nil {
-		t.Fatalf("helm template succeeded, want an underivable-URL failure\n%s", out)
-	}
-	if kind := parseValidationErrorKind(out); kind != "nri_cds_url_underivable" {
-		t.Errorf("validation kind = %q, want nri_cds_url_underivable", kind)
-	}
-}
-
 // The pod's route authority runs as the upstream role's reserved identity: the
 // one identity of this pod the node leaves uncaptured into the cluster,
 // because it authenticates the member it reaches itself. The front door, which
@@ -6716,9 +6605,9 @@ func TestChartCDSNodePortMatchesTheBakedNRIFloor(t *testing.T) {
 }
 
 // The node image bakes the pull interval too, and under nriImagePolicy.baked
-// the installer runs set-cds-pins, which rewrites only the CDS pins. So the
-// interval a node-CVM's gate actually runs on is the baked one, and a drift
-// surfaces only as a policy change that bites later than the chart says.
+// the installer runs set-measure-policies, which rewrites only that switch. So
+// the interval a node-CVM's gate actually runs on is the baked one, and a
+// drift surfaces only as a policy change that bites later than the chart says.
 func TestChartRefreshIntervalMatchesTheBakedNRIPull(t *testing.T) {
 	t.Parallel()
 	const bakedPath = "../../node-guest-image/c8s/image-policy.yaml.in"
@@ -6820,20 +6709,26 @@ func TestChartComponentIngressPoliciesAreDefaultDeny(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
+	// The CDS the chart runs, which only a baked image does.
+	baked, err := helmTemplateBakedNode(t)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, baked)
+	}
 
 	for _, tc := range []struct {
 		policy    string
 		component string
 		ports     []int32
+		manifest  string
 	}{
-		{"c8s-cds-ingress", "cds", []int32{8443}},
-		{"c8s-operator-ingress", "operator", []int32{9443, 8081, 8080}},
-		{"c8s-volumed-ingress", "volumed", nil},
-		{"c8s-router-ingress", "", []int32{8443}},
+		{"c8s-cds-ingress", "cds", []int32{8443}, baked},
+		{"c8s-operator-ingress", "operator", []int32{9443, 8081, 8080}, out},
+		{"c8s-volumed-ingress", "volumed", nil, out},
+		{"c8s-router-ingress", "", []int32{8443}, out},
 	} {
 		t.Run(tc.policy, func(t *testing.T) {
 			var np networkingv1.NetworkPolicy
-			if !findDoc(t, out, "NetworkPolicy", tc.policy, &np) {
+			if !findDoc(t, tc.manifest, "NetworkPolicy", tc.policy, &np) {
 				t.Fatalf("render is missing NetworkPolicy %q", tc.policy)
 			}
 			// Ingress only: armtls-mesh's tcp-only-egress selects every pod and
@@ -6890,52 +6785,6 @@ func TestChartRouterIngressPolicyStaysReachableFromOffCluster(t *testing.T) {
 	}
 
 	assertRouterFrontDoorPorts(t, out)
-}
-
-// TestChartRTMRPinsFlagThrough confirms cds.rtmrs and armtlsMesh.rtmrs reach
-// every consumer the way cds.measurements does: without the fan-out a TDX
-// install's RTMR pins would validate in values and enforce nowhere.
-func TestChartRTMRPinsFlagThrough(t *testing.T) {
-	t.Parallel()
-	const (
-		measurement = "abc1230000000000000000000000000000000000000000000000000000000000000000000000000000000000000000ff"
-		rtmr1       = "1=111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111"
-		rtmr2       = "2=222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222"
-	)
-	out, err := helmTemplate(t,
-		"--set", "cds.measurements[0]="+measurement,
-		"--set", "cds.rtmrs[0]="+rtmr1,
-		"--set", "cds.rtmrs[1]="+rtmr2,
-	)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	joined := rtmr1 + "," + rtmr2
-
-	cdsArgs := renderedDeploymentContainer(t, out, "c8s-cds", "cds").Args
-	assertContainerHasArg(t, "cds", cdsArgs, "--rtmrs="+joined)
-
-	workerCfg := renderedNRIBootConfig(t, out, "c8s-nri-image-policy-worker")
-	if want := []string{rtmr1, rtmr2}; !slices.Equal(workerCfg.Allowlist.Pull.CDSRTMRs, want) {
-		t.Fatalf("worker CDS RTMR pins = %v, want %v", workerCfg.Allowlist.Pull.CDSRTMRs, want)
-	}
-
-	// The router's proxy holds the credentials role, so the enforcer's mount
-	// is its only pin source and the chart passes it none.
-	proxyArgs := renderedDeploymentContainer(t, out, "c8s-router", "allowlist-proxy").Args
-	assertNoArgWithPrefix(t, "allowlist-proxy", proxyArgs, "--cds-rtmrs")
-}
-
-// With no rtmrs set nothing renders the flags — the empty default must not
-// emit empty pins.
-func TestChartNoRTMRPinsRendersNoFlags(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	cdsArgs := renderedDeploymentContainer(t, out, "c8s-cds", "cds").Args
-	assertContainerNoArgPrefix(t, "cds", cdsArgs, "--rtmrs")
 }
 
 func TestChartRejectsImagePolicyOffOnManagedNodes(t *testing.T) {
@@ -7083,7 +6932,8 @@ func TestChartRouterReservedPathsCoverNginxLocations(t *testing.T) {
 }
 
 // nriImagePolicy.measurePolicies reaches both plugin configs: the rendered
-// boot config and, on a baked node, the set-cds-pins patch. The router's
+// boot config and, where the node image bakes one, the set-measure-policies
+// patch. The router's
 // cds-attest reads the journal wherever it mounts the runtime directory, so a
 // node that stopped measuring still reports the extends RTMR[3] keeps.
 func TestChartMeasurePolicies(t *testing.T) {
@@ -7112,7 +6962,7 @@ func TestChartMeasurePolicies(t *testing.T) {
 		ds := renderedDaemonSet(t, out, "c8s-nri-image-policy-worker")
 		script := strings.Join(containerArgs(t, &ds, "install"), "\n")
 		if want := fmt.Sprintf("--measure-policies=%t", measure); !strings.Contains(script, want) {
-			t.Errorf("%s: baked pins script missing %q\n%s", set, want, script)
+			t.Errorf("%s: baked policy-measurement script missing %q\n%s", set, want, script)
 		}
 	}
 

@@ -3,6 +3,8 @@
 package nriimagepolicy
 
 import (
+	"errors"
+	"log/slog"
 	"net/netip"
 	"slices"
 	"testing"
@@ -51,32 +53,41 @@ func TestPodRulesetServesOwnPortsOnlyInTheRouterNamespace(t *testing.T) {
 
 // The router answers from the signed route manifest it fetches from CDS, so a
 // pod of its namespace reaches the one endpoint the credential role is bound
-// to — this node's own — and, where policy names a port for it, the verifier
-// that weighs that CDS's evidence at the same address.
-func TestPodRulesetGivesTheRouterRoleTheNodesCDS(t *testing.T) {
+// to and, where policy names a port for it, the verifier that weighs that
+// CDS's evidence: the attestation-api on its own node, wherever CDS runs.
+func TestPodRulesetGivesTheRouterRoleItsCDSAndThisNodesVerifier(t *testing.T) {
 	policy := meshRoles()
+	node := netip.MustParseAddr("172.18.0.2")
+	policy.nodeAddr = node
+	// A CDS outside this cluster: the endpoint the credential role names.
 	policy.Roles = append(policy.Roles, roleBinding{
 		Name:         CredentialRole,
 		UID:          workloadclaims.CredentialsUID,
-		Destinations: []netip.AddrPort{netip.MustParseAddrPort("172.18.0.2:30808")},
+		Destinations: []netip.AddrPort{netip.MustParseAddrPort("172.18.0.9:8443")},
 	})
 
-	node := netip.MustParseAddr("172.18.0.2")
-	want := []ruleset.Destination{{Addr: node, Port: 30808}}
+	want := []ruleset.Destination{{Addr: netip.MustParseAddr("172.18.0.9"), Port: 8443}}
 	server := policy.podRuleset(routerNamespace, nil).Server
 	if !slices.Equal(server.Services, want) {
-		t.Fatalf("router services = %+v, want this node's CDS alone", server.Services)
+		t.Fatalf("router services = %+v, want the CDS it is bound to alone", server.Services)
 	}
 	if member := policy.podRuleset("default", nil).Server; len(member.Services) != 0 {
 		t.Fatalf("a pod outside that namespace reaches %+v", member.Services)
 	}
 
 	// A node whose attestation-api answers over a port, not a socket: the
-	// router verifies that CDS's evidence there and nowhere else.
+	// router weighs that CDS's evidence on its own node and nowhere else.
 	policy.CredentialAttestationPort = 8400
 	want = append(want, ruleset.Destination{Addr: node, Port: 8400})
 	if got := policy.podRuleset(routerNamespace, nil).Server.Services; !slices.Equal(got, want) {
-		t.Fatalf("router services = %+v, want the CDS and its verifier on this node", got)
+		t.Fatalf("router services = %+v, want that CDS and this node's verifier", got)
+	}
+
+	// A node that cannot say what its own address is names no verifier a
+	// ruleset could admit.
+	policy.nodeAddr = netip.Addr{}
+	if got := policy.podRuleset(routerNamespace, nil).Server.Services; !slices.Equal(got, want[:1]) {
+		t.Fatalf("router services = %+v, want the CDS alone", got)
 	}
 }
 
@@ -143,15 +154,17 @@ func TestPodRulesetWithoutABoundCDSServesTheRouterRoleNone(t *testing.T) {
 }
 
 // The injected credential clients verify CDS evidence through the
-// attestation-api on their own node, so the ruleset admits that port at the
-// address their CDS is on and the clients' identity alone reaches it.
+// attestation-api on their own node, so the ruleset admits that port at this
+// node's address — not the CDS's, which an off-node CDS makes another host
+// entirely — and the clients' identity alone reaches it.
 func TestPodRulesetAdmitsTheCredentialAttestationPort(t *testing.T) {
 	policy := meshRoles()
 	policy.CredentialAttestationPort = 8400
+	policy.nodeAddr = netip.MustParseAddr("172.18.0.2")
 	policy.Roles = append(policy.Roles, roleBinding{
 		Name:         CredentialRole,
 		UID:          workloadclaims.CredentialsUID,
-		Destinations: []netip.AddrPort{netip.MustParseAddrPort("172.18.0.2:30808")},
+		Destinations: []netip.AddrPort{netip.MustParseAddrPort("172.18.0.9:8443")},
 	})
 
 	var credentials ruleset.Role
@@ -161,10 +174,25 @@ func TestPodRulesetAdmitsTheCredentialAttestationPort(t *testing.T) {
 		}
 	}
 	want := []ruleset.Destination{
-		{Addr: netip.MustParseAddr("172.18.0.2"), Port: 30808},
+		{Addr: netip.MustParseAddr("172.18.0.9"), Port: 8443},
 		{Addr: netip.MustParseAddr("172.18.0.2"), Port: 8400},
 	}
 	if !slices.Equal(credentials.Destinations, want) {
 		t.Fatalf("credential destinations = %+v, want %+v", credentials.Destinations, want)
+	}
+}
+
+// The verifier a pod's ruleset admits comes from the node's own view: every
+// node reads the same measured document.
+func TestRulesetPolicyNamesThisNodesVerifier(t *testing.T) {
+	gate := newMeshGate(*meshRoles(), slog.New(slog.DiscardHandler))
+	gate.policy.CredentialAttestationPort = 8400
+	gate.nodeAddress = func() (netip.Addr, error) { return netip.MustParseAddr("10.0.2.15"), nil }
+	if got := gate.rulesetPolicy().nodeAddr; got != netip.MustParseAddr("10.0.2.15") {
+		t.Fatalf("ruleset node address = %v, want the node's own", got)
+	}
+	gate.nodeAddress = func() (netip.Addr, error) { return netip.Addr{}, errors.New("unknown") }
+	if got := gate.rulesetPolicy().nodeAddr; got.IsValid() {
+		t.Fatalf("ruleset node address = %v, want none", got)
 	}
 }

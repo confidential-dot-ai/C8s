@@ -172,8 +172,15 @@ func TestConfigRefusesCompetingPolicySources(t *testing.T) {
 		CDSMeasurements:       []string{testDigestA},
 	}
 
-	if err := pull.checkPolicySources(); err == nil {
+	if _, err := pull.cdsSource(); err == nil {
 		t.Fatal("a document beside independent pins was accepted")
+	}
+	both := pullConfig{
+		URL:            "https://cds:8443",
+		CDSAddressFile: "/etc/nri/conf.d/cds-address",
+	}
+	if _, err := both.cdsSource(); err == nil {
+		t.Fatal("a URL beside a mounted address was accepted")
 	}
 	if _, err := pull.policySet("tdx"); err == nil {
 		t.Fatal("the loader read a document beside independent pins")

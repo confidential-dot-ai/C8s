@@ -1,6 +1,7 @@
 package nriimagepolicy
 
 import (
+	"net/netip"
 	"os/exec"
 	"slices"
 	"testing"
@@ -183,12 +184,12 @@ func routerNodeMountPlugin(t *testing.T) *plugin {
 		t.Fatal(err)
 	}
 	cfg.WorkloadClaims.AdvertiseHost = "10.0.0.1"
-	cfg.WorkloadClaims.CDSNodePort = 30808
+	cfg.cdsEndpoint = netip.MustParseAddrPort("10.9.9.9:8443")
 	// The router's host binds are exempted by the chart seed boot merges into
 	// this base, which pins each launch (cmd/c8s TestNodeImageRender); this
 	// test drives the mount and role checks on the template alone.
 	cfg.Policy.Sandbox = SandboxOff
-	if err := bindCredentialRole(cfg); err != nil {
+	if err := bindCredentialRole(cfg, cfg.cdsEndpoint); err != nil {
 		t.Fatal(err)
 	}
 	p := newTestPlugin(cfg)

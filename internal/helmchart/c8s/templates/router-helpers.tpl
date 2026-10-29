@@ -773,27 +773,15 @@ refuses one that is not already normalized.
 {{- end -}}
 
 {{/*
-The CDS measurement pins a router sidecar verifies the chart-managed CDS
-against, as a JSON list of container args: the node's signed policy on a baked node, else
-cds.measurementsConfig, else cds.measurements and cds.rtmrs. Shared by
-allowlist-proxy and cds-attest, so the relay and the route manifest poller
-trust the same CDS.
+The pin a router sidecar verifies this cluster's CDS against, as a JSON list of
+container args: the node's signed policy on a baked node, else the mounted
+cds.measurementsConfig. Shared by allowlist-proxy and cds-attest, so the relay
+and the route manifest poller trust the same CDS.
 */}}
 {{- define "router.cdsPinArgs" -}}
-{{- $args := list -}}
-{{- if .Values.node.baked -}}
-{{- $args = append $args "--image-policy-file=/run/c8s-node/cds.json" -}}
-{{- else if .Values.cds.measurementsConfig -}}
-{{- $args = append $args "--image-policy-file=/mnt/c8s-data/measurements/cds.json" -}}
-{{- else -}}
-{{- with .Values.cds.measurements -}}
-{{- $args = append $args (printf "--cds-measurements=%s" (join "," .)) -}}
-{{- end -}}
-{{- with .Values.cds.rtmrs -}}
-{{- $args = append $args (printf "--cds-rtmrs=%s" (join "," .)) -}}
-{{- end -}}
-{{- end -}}
-{{- $args | toJson -}}
+{{- $pin := "/mnt/c8s-data/measurements/cds.json" -}}
+{{- if include "c8s.cdsInCluster" . -}}{{- $pin = "/run/c8s-node/cds.json" -}}{{- end -}}
+{{- list (printf "--image-policy-file=%s" $pin) | toJson -}}
 {{- end -}}
 
 {{/*

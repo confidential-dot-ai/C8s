@@ -164,14 +164,14 @@ func TestMissingComponents(t *testing.T) {
 		t.Fatalf("expected no missing components, got %v", got)
 	}
 
-	partial := map[string]string{digA: "registry/c8s/cds@" + digA}
+	partial := map[string]string{digA: "registry/c8s/armtls-mesh@" + digA}
 	got := missingComponents(partial, defaultRequiredComponents)
 	if len(got) != len(defaultRequiredComponents)-1 {
-		t.Fatalf("expected all but cds missing, got %v", got)
+		t.Fatalf("expected all but armtls-mesh missing, got %v", got)
 	}
 	for _, c := range got {
-		if c == "cds" {
-			t.Fatal("cds should not be reported missing")
+		if c == "armtls-mesh" {
+			t.Fatal("armtls-mesh should not be reported missing")
 		}
 	}
 }

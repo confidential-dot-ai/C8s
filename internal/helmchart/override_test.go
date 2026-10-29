@@ -117,7 +117,7 @@ func TestChartOverrideReplacesArgvPinnedEntry(t *testing.T) {
 // An override admitting CDS replaces its generated entry in the seed.
 func TestChartCDSOverrideReplacesGeneratedEntry(t *testing.T) {
 	t.Parallel()
-	base, err := helmTemplate(t)
+	base, err := helmTemplateBakedNode(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, base)
 	}
@@ -133,7 +133,7 @@ func TestChartCDSOverrideReplacesGeneratedEntry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := helmTemplate(t, "--set-json", "nriImagePolicy.bootstrapAllowlist.workloads."+override+"="+string(raw))
+	out, err := helmTemplateBakedNode(t, "--set-json", "nriImagePolicy.bootstrapAllowlist.workloads."+override+"="+string(raw))
 	if err != nil {
 		t.Fatalf("helm template with the override: %v\n%s", err, out)
 	}

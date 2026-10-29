@@ -115,14 +115,23 @@ func (p meshPolicy) servedPorts(kubeNamespace string) ruleset.ServerRole {
 	}
 	if cds, bound := p.boundCDS(); bound {
 		server.Services = append(server.Services, cds)
-		if p.CredentialAttestationPort != 0 {
-			server.Services = append(server.Services, ruleset.Destination{
-				Addr: cds.Addr,
-				Port: p.CredentialAttestationPort,
-			})
+		if verifier, named := p.credentialVerifier(); named {
+			server.Services = append(server.Services, verifier)
 		}
 	}
 	return server
+}
+
+// credentialVerifier is the attestation-api that weighs a CDS's evidence for
+// the pods on this node: this node's own address, on the port policy names.
+func (p meshPolicy) credentialVerifier() (ruleset.Destination, bool) {
+	if p.CredentialAttestationPort == 0 || !p.nodeAddr.IsValid() {
+		return ruleset.Destination{}, false
+	}
+	return ruleset.Destination{
+		Addr: p.nodeAddr,
+		Port: p.CredentialAttestationPort,
+	}, true
 }
 
 // boundCDS is the one CDS endpoint this node's credential role is bound to
@@ -141,8 +150,8 @@ func (p meshPolicy) boundCDS() (ruleset.Destination, bool) {
 
 // dialingRoles are the roles the ruleset permits by destination: every bound
 // role but the mesh endpoint, whose sockets it exempts by UID instead. The
-// credential clients also reach the attestation-api on the port policy names
-// for it, at the address their CDS is on — their own node's.
+// credential clients also reach the verifier that weighs their CDS's
+// evidence, where policy names a port for it.
 func (p meshPolicy) dialingRoles() []ruleset.Role {
 	var roles []ruleset.Role
 	for _, role := range p.Roles {
@@ -156,11 +165,10 @@ func (p meshPolicy) dialingRoles() []ruleset.Role {
 				Port: dst.Port(),
 			})
 		}
-		if role.Name == CredentialRole && p.CredentialAttestationPort != 0 && len(bound.Destinations) > 0 {
-			bound.Destinations = append(bound.Destinations, ruleset.Destination{
-				Addr: bound.Destinations[0].Addr,
-				Port: p.CredentialAttestationPort,
-			})
+		if role.Name == CredentialRole && len(bound.Destinations) > 0 {
+			if verifier, named := p.credentialVerifier(); named {
+				bound.Destinations = append(bound.Destinations, verifier)
+			}
 		}
 		roles = append(roles, bound)
 	}

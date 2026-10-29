@@ -832,10 +832,11 @@ func TestInstallBareMetalModeHappyPath(t *testing.T) {
 	// them: the baked installer runs from that image, and its digest is what
 	// derives it into the seed the node's plugin admits it from.
 	mustContainLine(t, calls, "crane digest ghcr.io/confidential-dot-ai/c8s-operator:main")
-	mustContainLine(t, calls, "crane digest ghcr.io/confidential-dot-ai/cds:main")
 	mustContainLine(t, calls, "crane digest ghcr.io/confidential-dot-ai/armtls-mesh:main")
 	mustContainLine(t, calls, "crane digest ghcr.io/confidential-dot-ai/nri-image-policy:main")
 	mustNotContainPrefix(t, calls, "crane digest ghcr.io/confidential-dot-ai/attestation-api")
+	// The CDS runs outside the cluster, so the install deploys no CDS image.
+	mustNotContainPrefix(t, calls, "crane digest ghcr.io/confidential-dot-ai/cds")
 	// volumed stays off without --volumes.
 	mustNotContainPrefix(t, calls, "crane digest ghcr.io/confidential-dot-ai/volumed")
 

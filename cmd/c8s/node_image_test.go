@@ -71,34 +71,34 @@ func TestNodeImageRender(t *testing.T) {
 			}
 			docs := nodeImageDocuments(t, raw)
 			for _, key := range []string{
-				"Namespace/c8s-system", "Namespace/" + workloadclaims.RouterNamespace,
-				"CustomResourceDefinition/confidentialworkloads.confidential.ai",
-				"Deployment/c8s-operator", "Deployment/c8s-cds", "Deployment/c8s-router",
-				"ConfigMap/c8s-cds-allowlist-seed", "MutatingWebhookConfiguration/c8s-pod-injector",
-				"ValidatingWebhookConfiguration/c8s-pod-validator",
-				"ValidatingAdmissionPolicy/c8s-deny-host-namespaces", "ValidatingAdmissionPolicyBinding/c8s-deny-host-namespaces",
-				"ValidatingAdmissionPolicy/c8s-deny-host-namespaces-ephemeral", "ValidatingAdmissionPolicyBinding/c8s-deny-host-namespaces-ephemeral",
-				"NetworkPolicy/c8s-operator-ingress",
+				"/Namespace/c8s-system", "/Namespace/" + workloadclaims.RouterNamespace,
+				"/CustomResourceDefinition/confidentialworkloads.confidential.ai",
+				"c8s-system/Deployment/c8s-operator", "c8s-system/Deployment/c8s-cds", "c8s-router/Deployment/c8s-router",
+				"c8s-system/ConfigMap/c8s-cds-allowlist-seed", "/MutatingWebhookConfiguration/c8s-pod-injector",
+				"/ValidatingWebhookConfiguration/c8s-pod-validator",
+				"/ValidatingAdmissionPolicy/c8s-deny-host-namespaces", "/ValidatingAdmissionPolicyBinding/c8s-deny-host-namespaces",
+				"/ValidatingAdmissionPolicy/c8s-deny-host-namespaces-ephemeral", "/ValidatingAdmissionPolicyBinding/c8s-deny-host-namespaces-ephemeral",
+				"c8s-system/NetworkPolicy/c8s-operator-ingress",
 			} {
 				if docs[key] == nil {
 					t.Errorf("missing %s", key)
 				}
 			}
 			for _, key := range []string{
-				"Deployment/c8s-operator", "MutatingWebhookConfiguration/c8s-pod-injector",
-				"ValidatingWebhookConfiguration/c8s-pod-validator",
-				"ValidatingAdmissionPolicy/c8s-deny-host-namespaces",
-				"ValidatingAdmissionPolicy/c8s-deny-host-namespaces-ephemeral",
+				"c8s-system/Deployment/c8s-operator", "/MutatingWebhookConfiguration/c8s-pod-injector",
+				"/ValidatingWebhookConfiguration/c8s-pod-validator",
+				"/ValidatingAdmissionPolicy/c8s-deny-host-namespaces",
+				"/ValidatingAdmissionPolicy/c8s-deny-host-namespaces-ephemeral",
 			} {
 				if bytes.Contains(docs[key], []byte("local-path-storage")) {
 					t.Errorf("%s retains the removed addon exemption", key)
 				}
 			}
-			if !bytes.Contains(docs["Deployment/c8s-router"], []byte("--publish-routes")) {
+			if !bytes.Contains(docs["c8s-router/Deployment/c8s-router"], []byte("--publish-routes")) {
 				t.Error("baked router does not publish its route manifest")
 			}
 			for _, name := range []string{"c8s-deny-host-namespaces", "c8s-deny-host-namespaces-ephemeral"} {
-				if !bytes.Contains(docs["ValidatingAdmissionPolicy/"+name], []byte("AppArmor must not")) {
+				if !bytes.Contains(docs["/ValidatingAdmissionPolicy/"+name], []byte("AppArmor must not")) {
 					t.Errorf("baked node image lost AppArmor admission in %s", name)
 				}
 			}
@@ -112,7 +112,9 @@ func TestNodeImageRender(t *testing.T) {
 				}
 				switch object.Kind {
 				case "Deployment", "DaemonSet", "ConfigMap", "ServiceAccount", "Role", "RoleBinding", "Service", "PersistentVolumeClaim", "PodDisruptionBudget", "NetworkPolicy":
-					want, named := nodeImageResourceNamespaces[key]
+					// The chart's contract is per kind and name; the key
+					// carries the namespace the render chose.
+					want, named := nodeImageResourceNamespaces[object.Kind+"/"+object.Metadata.Name]
 					if !named {
 						want = nodeImageNamespace
 					}
@@ -124,7 +126,7 @@ func TestNodeImageRender(t *testing.T) {
 						t.Errorf("cluster resource %s has namespace %q", key, object.Metadata.Namespace)
 					}
 				}
-				if strings.HasPrefix(key, "Pod/") || strings.HasPrefix(key, "HelmChart") {
+				if object.Kind == "Pod" || strings.HasPrefix(object.Kind, "HelmChart") {
 					t.Errorf("unexpected runtime resource %s", key)
 				}
 			}
@@ -134,7 +136,7 @@ func TestNodeImageRender(t *testing.T) {
 				}
 			}
 			var namespace corev1.Namespace
-			if err := yaml.Unmarshal(docs["Namespace/c8s-system"], &namespace); err != nil {
+			if err := yaml.Unmarshal(docs["/Namespace/c8s-system"], &namespace); err != nil {
 				t.Fatal(err)
 			}
 			if namespace.Labels["confidential.ai/baked"] != "true" {
@@ -181,7 +183,7 @@ func TestNodeImageRender(t *testing.T) {
 					}
 				}
 			}
-			if docs["ConfigMap/c8s-router-nginx"] != nil {
+			if docs["c8s-router/ConfigMap/c8s-router-nginx"] != nil {
 				t.Error("integration manifests kept the router nginx ConfigMap")
 			}
 			// mkosi.sync installs every file in router-nginx/.
@@ -240,6 +242,12 @@ func TestNodeImageRender(t *testing.T) {
 	}
 }
 
+// nodeImageDocumentKey is one rendered object's identity: a cluster-scoped
+// object has no namespace, which leaves the leading separator.
+func nodeImageDocumentKey(namespace, kind, name string) string {
+	return namespace + "/" + kind + "/" + name
+}
+
 func nodeImageDocuments(t *testing.T, raw []byte) map[string][]byte {
 	t.Helper()
 	docs := map[string][]byte{}
@@ -262,7 +270,9 @@ func nodeImageDocuments(t *testing.T, raw []byte) map[string][]byte {
 		if object.Kind == "" {
 			continue
 		}
-		key := object.Kind + "/" + object.Metadata.Name
+		// The identity Kubernetes gives an object, so one document rendered
+		// into two namespaces is two entries (nodeImageDocumentKey).
+		key := nodeImageDocumentKey(object.Metadata.Namespace, object.Kind, object.Metadata.Name)
 		if docs[key] != nil {
 			t.Fatalf("duplicate %s", key)
 		}
@@ -525,13 +535,13 @@ func TestNodeImageCollectPreservesCompleteResourcesAndConfigData(t *testing.T) {
 		t.Fatal(err)
 	}
 	before, after := nodeImageDocuments(t, []byte(fixture)), nodeImageDocuments(t, artifacts.integration)
-	if after["ConfigMap/c8s-router-nginx"] != nil {
+	if after["c8s-router/ConfigMap/c8s-router-nginx"] != nil {
 		t.Error("integration manifests kept the router nginx ConfigMap the image ships as files")
 	}
 	if got := artifacts.routerNginx["nginx.conf"]; got != "# a document-looking line remains nginx content\n---\nevents {}\n" {
 		t.Errorf("router nginx.conf = %q, want the ConfigMap's content", got)
 	}
-	delete(before, "ConfigMap/c8s-router-nginx")
+	delete(before, "c8s-router/ConfigMap/c8s-router-nginx")
 	for key, doc := range before {
 		var want, got map[string]any
 		if err := k8syaml.Unmarshal(doc, &want); err != nil {
@@ -540,7 +550,7 @@ func TestNodeImageCollectPreservesCompleteResourcesAndConfigData(t *testing.T) {
 		if err := k8syaml.Unmarshal(after[key], &got); err != nil {
 			t.Fatal(err)
 		}
-		if key == "ConfigMap/c8s-cds-allowlist-seed" {
+		if key == "c8s-system/ConfigMap/c8s-cds-allowlist-seed" {
 			// Rewritten in canonical bytes; checked below.
 			delete(want["data"].(map[string]any), "allowlist-seed.json")
 			delete(got["data"].(map[string]any), "allowlist-seed.json")
@@ -549,11 +559,11 @@ func TestNodeImageCollectPreservesCompleteResourcesAndConfigData(t *testing.T) {
 			t.Errorf("chart resource %s lost fields: got %#v, want %#v", key, got, want)
 		}
 	}
-	if len(after) != len(before)+1 || after["Namespace/c8s-system"] == nil {
+	if len(after) != len(before)+1 || after["/Namespace/c8s-system"] == nil {
 		t.Fatalf("unexpected integration resources: %v", after)
 	}
 	var cm corev1.ConfigMap
-	if err := yaml.Unmarshal(after["ConfigMap/c8s-cds-allowlist-seed"], &cm); err != nil {
+	if err := yaml.Unmarshal(after["c8s-system/ConfigMap/c8s-cds-allowlist-seed"], &cm); err != nil {
 		t.Fatal(err)
 	}
 	if string(artifacts.seed) != cm.Data["allowlist-seed.json"] {
