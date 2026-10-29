@@ -19,3 +19,13 @@ func CheckStartup(path, runtimeDir string) error {
 	}
 	return p.prepareCDSAddress()
 }
+
+// RunIn runs the plugin as Run does, rendering the documents it hands
+// injected credential clients into runtimeDir instead of the compiled
+// runtime directory.
+func RunIn(runtimeDir string, args []string) error {
+	previous := enforcerRuntimeDir
+	enforcerRuntimeDir = runtimeDir
+	defer func() { enforcerRuntimeDir = previous }()
+	return Run(args)
+}
