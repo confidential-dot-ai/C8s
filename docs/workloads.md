@@ -25,18 +25,14 @@ certificates carry the peer's TEE evidence, so you verify what CDS runs rather
 than a name. The front door relays the allowlist API only, so reach CDS itself:
 
 ```sh
-CDS=https://<CDS_NODE>:30808
-M=<LAUNCH_MEASUREMENT>
-PIN="--url $CDS --measurements $M"
+CDS=https://<CDS_ADDRESS>
+PIN="--url $CDS --image-policy-file cds-pin.json"
 KEY="--operator-key c8s-operator.key"
 ```
 
-`<CDS_NODE>` is the address of any node: the chart publishes CDS on NodePort
-`30808` (`cds.service.nodePort`). `kubectl port-forward` is no substitute, since
-the measured node image denies it. `<LAUNCH_MEASUREMENT>` is the 96 lowercase
-hex characters from your node image's `manifest.json`, the value
-`c8s install --measurements` took. Every later step uses `$PIN` and `$KEY`, so
-run this block in each new shell.
+`<CDS_ADDRESS>` is the `<ip>:<port>` the install named with `--cds-address`,
+and `cds-pin.json` the document it named with `--cds-pin`. Every later step
+uses `$PIN` and `$KEY`, so run this block in each new shell.
 
 Confirm the path by listing the entries CDS serves, then read the mesh CA
 bundle, the anchor workload certificates chain to:

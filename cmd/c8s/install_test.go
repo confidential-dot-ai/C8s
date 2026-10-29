@@ -60,31 +60,31 @@ func TestCDSPinPreflight(t *testing.T) {
 		}
 		return path
 	}
-	pinned := file("m.yaml", "cds:\n  measurements: [ab]\n")
-	empty := file("e.yaml", "cds:\n  measurements: []\n")
+	named := file("named.yaml", "cds:\n  address: 10.9.9.9:8443\n  measurementsConfig: '{}'\n")
+	addressOnly := file("address.yaml", "cds:\n  address: 10.9.9.9:8443\n")
+	emptied := file("emptied.yaml", "cds:\n  address: \"\"\n")
 	for _, tc := range []struct {
-		name               string
-		measurements       []string
-		measurementsConfig string
-		values             []string
-		wantErr            bool
+		name         string
+		address, pin string
+		values       []string
+		wantErr      bool
 	}{
-		{name: "nothing pinned", wantErr: true},
-		{name: "--measurements", measurements: []string{"ab"}},
-		{name: "--image-policy-file", measurementsConfig: "server.json"},
-		{name: "--operator-keys pins nothing", wantErr: true},
-		{name: "cds.measurements", values: []string{pinned}},
-		{name: "empty cds.measurements", values: []string{empty}, wantErr: true},
-		{name: "later file keeps the pin", values: []string{empty, pinned}},
-		{name: "later file drops the pin", values: []string{pinned, empty}, wantErr: true},
-		{name: "cds.operatorKeys pins nothing", values: []string{file("k.yaml", "cds:\n  operatorKeys: pem\n")}, wantErr: true},
-		{name: "router disabled still needs a pin", values: []string{file("r.yaml", "router:\n  enabled: false\n")}, wantErr: true},
+		{name: "nothing named", wantErr: true},
+		{name: "address and pin", address: "10.9.9.9:8443", pin: "cds-pin.json"},
+		{name: "address alone", address: "10.9.9.9:8443", wantErr: true},
+		{name: "pin alone", pin: "cds-pin.json", wantErr: true},
+		{name: "cds.address and cds.measurementsConfig", values: []string{named}},
+		{name: "cds.address alone", values: []string{addressOnly}, wantErr: true},
+		{name: "later file keeps the CDS", values: []string{addressOnly, named}},
+		{name: "later file drops the address", values: []string{named, emptied}, wantErr: true},
+		{name: "cds.operatorKeys names no CDS", values: []string{file("k.yaml", "cds:\n  operatorKeys: pem\n")}, wantErr: true},
+		{name: "router disabled still needs a CDS", values: []string{file("r.yaml", "router:\n  enabled: false\n")}, wantErr: true},
 		{name: "baked node", values: []string{file("b.yaml", "node:\n  baked: true\n")}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := cdsPinPreflight(tc.measurements, tc.measurementsConfig, tc.values)
+			err := cdsPreflight(tc.address, tc.pin, tc.values)
 			if (err != nil) != tc.wantErr {
-				t.Fatalf("cdsPinPreflight() = %v, want error %v", err, tc.wantErr)
+				t.Fatalf("cdsPreflight() = %v, want error %v", err, tc.wantErr)
 			}
 		})
 	}
@@ -1359,43 +1359,6 @@ func TestAppendCvmModeInstallArgsRejectsUnknownMode(t *testing.T) {
 	}
 }
 
-// --measurements fans each M into both mesh pin points, indexed, so the operator
-// pins the internal mesh on the install itself. A blank entry (e.g. from a
-// trailing comma) is dropped, not emitted as an empty index, and the emitted
-// indices are contiguous over the validated list.
-func TestAppendCvmModeInstallArgsMeasurements(t *testing.T) {
-	prev := installMeasurements
-	defer func() { installMeasurements = prev }()
-	m0, m1 := strings.Repeat("aa", 48), strings.Repeat("bb", 48)
-	installMeasurements = []string{m0, "", m1} // blank middle entry
-
-	got, err := appendCvmModeInstallArgs([]string{"upgrade"}, "bare-metal", "tdx")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	for _, want := range []string{
-		"cds.measurements[0]=" + m0,
-		"cds.measurements[1]=" + m1,
-	} {
-		if !slices.Contains(got, want) {
-			t.Errorf("args missing %q; got %v", want, got)
-		}
-	}
-	// The blank must not produce an empty index-2 pin.
-	if bad := "cds.measurements[2]="; slices.Contains(got, bad) {
-		t.Errorf("blank entry leaked an empty pin %q; got %v", bad, got)
-	}
-}
-
-func TestAppendCvmModeInstallArgsRejectsBadMeasurement(t *testing.T) {
-	prev := installMeasurements
-	defer func() { installMeasurements = prev }()
-	installMeasurements = []string{"not-hex"}
-	if _, err := appendCvmModeInstallArgs([]string{"upgrade"}, "bare-metal", "tdx"); err == nil {
-		t.Fatal("appendCvmModeInstallArgs accepted a malformed measurement, want error")
-	}
-}
-
 func TestAppendCvmModeInstallArgsRejectsUnknownHardwarePlatform(t *testing.T) {
 	if _, err := appendCvmModeInstallArgs([]string{"upgrade"}, "bare-metal", "sgx"); err == nil {
 		t.Fatal("appendCvmModeInstallArgs accepted an unknown --hardware-platform, want error")
@@ -2226,69 +2189,5 @@ func TestReportExemptedImages(t *testing.T) {
 	reportExemptedImages(&buf, nil, nil)
 	if buf.Len() != 0 {
 		t.Errorf("nothing exempted must print nothing, got:\n%s", buf.String())
-	}
-}
-
-// --rtmrs completes the TDX pin: the entries fan into cds.rtmrs and
-// armtlsMesh.rtmrs, normalized and in index order.
-func TestAppendCvmModeInstallArgsRTMRs(t *testing.T) {
-	prev := installRegisters
-	defer func() { installRegisters = prev }()
-	r1, r2 := strings.Repeat("11", 48), strings.Repeat("22", 48)
-	installRegisters = []string{"2=" + r2, "1=" + r1} // out of order on purpose
-
-	got, err := appendCvmModeInstallArgs([]string{"upgrade"}, "bare-metal", "tdx")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	for _, want := range []string{
-		"cds.rtmrs[0]=1=" + r1,
-		"cds.rtmrs[1]=2=" + r2,
-	} {
-		if !slices.Contains(got, want) {
-			t.Errorf("args missing %q; got %v", want, got)
-		}
-	}
-
-	installRegisters = []string{"0=" + r1}
-	if _, err := appendCvmModeInstallArgs([]string{"upgrade"}, "bare-metal", "tdx"); err == nil {
-		t.Fatal("RTMR[0] pin accepted; only RTMR[1] and RTMR[2] are supported")
-	}
-}
-
-// A TDX install without RTMR pins warns that the measurement pin covers TDVF
-// firmware only; SNP, pinned TDX, and values-file-pinned TDX stay quiet.
-func TestTDXRTMRPinWarning(t *testing.T) {
-	r1 := "1=" + strings.Repeat("11", 48)
-
-	if warn, err := tdxRTMRPinWarning("sev-snp", nil, nil); err != nil || warn != "" {
-		t.Fatalf("sev-snp: warn=%q err=%v, want quiet", warn, err)
-	}
-	if warn, err := tdxRTMRPinWarning("tdx", []string{r1}, nil); err != nil || warn != "" {
-		t.Fatalf("pinned tdx: warn=%q err=%v, want quiet", warn, err)
-	}
-	warn, err := tdxRTMRPinWarning("tdx", nil, nil)
-	if err != nil || warn == "" {
-		t.Fatalf("unpinned tdx: warn=%q err=%v, want a warning", warn, err)
-	}
-
-	pinned := filepath.Join(t.TempDir(), "values.yaml")
-	if err := os.WriteFile(pinned, []byte("cds:\n  rtmrs:\n    - \""+r1+"\"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if warn, err := tdxRTMRPinWarning("tdx", nil, []string{pinned}); err != nil || warn != "" {
-		t.Fatalf("values-file pinned tdx: warn=%q err=%v, want quiet", warn, err)
-	}
-
-	empty := filepath.Join(t.TempDir(), "values.yaml")
-	if err := os.WriteFile(empty, []byte("cds:\n  rtmrs: []\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if warn, err := tdxRTMRPinWarning("tdx", nil, []string{empty}); err != nil || warn == "" {
-		t.Fatalf("empty-list values file: warn=%q err=%v, want a warning", warn, err)
-	}
-
-	if _, err := tdxRTMRPinWarning("tdx", nil, []string{filepath.Join(t.TempDir(), "absent.yaml")}); err == nil {
-		t.Fatal("an unreadable values file was silently treated as unpinned")
 	}
 }

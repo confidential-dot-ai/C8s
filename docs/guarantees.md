@@ -134,7 +134,8 @@ the digest of the manifest it applied into the attested handshakes a TEE-held
 front door offers (`cds`, `acme`; a `webpki` one offers attest-pq alone), so a
 session routes by the two digests that handshake bound — the manifest's and the
 router's own allowlist digest — and nothing else.
-CDS's own API is reachable separately, by default on node port `30808`.
+CDS's own API is reachable separately, at the address the install named with
+`--cds-address`.
 
 - **Route manifest**: the operator-signed hosts, paths, and backends CDS
   stores — [operator.md](operator.md#route-manifest).

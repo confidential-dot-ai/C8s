@@ -31,11 +31,10 @@ not the ones its pods need — the same flags and `-f` file, plus the `--distro`
 `c8s install` detects for itself:
 
 ```sh
-CDS=https://<CDS_NODE>:30808    # any node address; CDS is on NodePort 30808
-M=<LAUNCH_MEASUREMENT>          # the digest of what CDS's CVM booted
+CDS=https://<CDS_ADDRESS>       # the CDS this cluster trusts
 c8s render-values --cvm-mode=<CVM_MODE> --hardware-platform=<HW_PLATFORM> \
-  --distro <DISTRO> --measurements "$M" --operator-keys c8s-operator-pub.pem \
-  > computed.yaml
+  --distro <DISTRO> --cds-address <CDS_ADDRESS> --cds-pin cds-pin.json \
+  --operator-keys c8s-operator-pub.pem > computed.yaml
 helm pull oci://ghcr.io/confidential-dot-ai/charts/c8s --version <X.Y.Z> --untar
 helm template c8s ./c8s --namespace c8s-system -f values.yaml -f computed.yaml \
   --show-only templates/allowlist-seed.yaml |
@@ -66,7 +65,7 @@ node shell, `kubectl -n c8s-system logs -l app=c8s-nri-image-policy -c install
 ## 3. Publish the CDS seed
 
 ```sh
-c8s allowlist apply seed.json --url "$CDS" --measurements "$M" \
+c8s allowlist apply seed.json --url "$CDS" --image-policy-file cds-pin.json \
   --operator-key c8s-operator.key
 ```
 
@@ -78,7 +77,7 @@ written.
 ## 4. Check CDS's version, and raise it if a node is ahead
 
 ```sh
-c8s allowlist list --url "$CDS" --measurements "$M"
+c8s allowlist list --url "$CDS" --image-policy-file cds-pin.json
 ```
 
 ```text

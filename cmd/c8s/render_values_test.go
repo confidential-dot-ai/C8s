@@ -44,14 +44,14 @@ func TestValueArgsToTreeNestsDottedKeys(t *testing.T) {
 
 func TestValueArgsToTreeBuildsListFromIndexedKeys(t *testing.T) {
 	got, err := valueArgsToTree([]string{
-		"--set-string", "cds.measurements[0]=aa",
-		"--set-string", "cds.measurements[1]=bb",
+		"--set-string", "cds.dnsSanPatterns[0]=aa",
+		"--set-string", "cds.dnsSanPatterns[1]=bb",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	want := map[string]any{
-		"cds": map[string]any{"measurements": []any{"aa", "bb"}},
+		"cds": map[string]any{"dnsSanPatterns": []any{"aa", "bb"}},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %#v, want %#v (indexed keys must nest as a list, not a scalar key)", got, want)
@@ -388,8 +388,9 @@ func TestBuildValueArgsStaysWithinParserGrammar(t *testing.T) {
 	prev := struct {
 		crds, singleNode, resolveDigests          bool
 		secret, cvm, plat, upstream, operatorKeys string
-		workloadRefs, measurements                []string
-	}{installCRDs, installSingleNode, installResolveDigests, installImagePullSecret, installCvmMode, installHardwarePlatform, installUpstream, installOperatorKeys, slices.Clone(installWorkloadRefs), slices.Clone(installMeasurements)}
+		workloadRefs                              []string
+		cdsAddress, cdsPin                        string
+	}{installCRDs, installSingleNode, installResolveDigests, installImagePullSecret, installCvmMode, installHardwarePlatform, installUpstream, installOperatorKeys, slices.Clone(installWorkloadRefs), installCDSAddress, installCDSPin}
 	defer func() {
 		installCRDs, installSingleNode, installResolveDigests = prev.crds, prev.singleNode, prev.resolveDigests
 		installImagePullSecret, installCvmMode = prev.secret, prev.cvm
@@ -397,12 +398,11 @@ func TestBuildValueArgsStaysWithinParserGrammar(t *testing.T) {
 		installUpstream = prev.upstream
 		installOperatorKeys = prev.operatorKeys
 		installWorkloadRefs = prev.workloadRefs
-		installMeasurements = prev.measurements
+		installCDSAddress, installCDSPin = prev.cdsAddress, prev.cdsPin
 	}()
 	// Drive every value-producing toggle. --install-crds=false exercises the
 	// non-default CRD path; --resolve-digests=false keeps crane off PATH (the
 	// digest-arg shape is covered separately via buildDigestArgs below).
-	// --measurements exercises the indexed key[i]= form in a second pass below.
 	installCRDs, installSingleNode, installResolveDigests = false, true, false
 	installImagePullSecret, installCvmMode = "regcred", "bare-metal"
 	installHardwarePlatform = "sev-snp"
@@ -448,22 +448,27 @@ func TestBuildValueArgsStaysWithinParserGrammar(t *testing.T) {
 		t.Fatalf("cds.operatorKeys = %q, want the PEM content of %s", keys, installOperatorKeys)
 	}
 
-	// Second pass: bare-metal mode with --measurements exercises the indexed key[i]=
-	// form. Its args must also stay within the
-	// grammar and round-trip to a list.
-	installCvmMode = "bare-metal"
-	installMeasurements = []string{strings.Repeat("ab", 48)}
-	mArgs, err := appendCvmModeInstallArgs(nil, installCvmMode, installHardwarePlatform)
+	// Second pass: the CDS this cluster trusts. Its args must also stay within
+	// the grammar and round-trip, the pin as the document's content.
+	cdsArgs, err := cdsInstallArgs("10.9.9.9:8443", cdsPinFile(t, []string{"app"}, "192.0.2.0/24"))
 	if err != nil {
-		t.Fatalf("appendCvmModeInstallArgs (bare-metal + measurements): %v", err)
+		t.Fatalf("cdsInstallArgs: %v", err)
 	}
-	for i := 0; i < len(mArgs); i += 2 {
-		if kv := mArgs[i+1]; !coerceSafeValueArg.MatchString(kv) {
-			t.Errorf("measurement arg %q is outside the grammar", kv)
+	for i := 0; i < len(cdsArgs); i += 2 {
+		if kv := cdsArgs[i+1]; !coerceSafeValueArg.MatchString(kv) {
+			t.Errorf("CDS arg %q is outside the grammar", kv)
 		}
 	}
-	if _, err := valueArgsToTree(mArgs); err != nil {
-		t.Fatalf("measurement args failed to parse: %v", err)
+	cdsTree, err := valueArgsToTree(cdsArgs)
+	if err != nil {
+		t.Fatalf("CDS args failed to parse: %v", err)
+	}
+	cds, _ := cdsTree["cds"].(map[string]any)
+	if cds["address"] != "10.9.9.9:8443" {
+		t.Errorf("cds.address = %#v, want the named endpoint", cds["address"])
+	}
+	if pin, _ := cds["measurementsConfig"].(string); !strings.Contains(pin, `"launch_file"`) {
+		t.Errorf("cds.measurementsConfig = %q, want the pin document's content", pin)
 	}
 }
 

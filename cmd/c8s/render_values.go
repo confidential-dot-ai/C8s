@@ -14,7 +14,6 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/helmchart"
 	"github.com/confidential-dot-ai/c8s/internal/version"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
@@ -72,8 +71,8 @@ install, the host distro is not autodetected — pass --distro to pin it, or lea
 it unset to keep the chart default. No preflight checks run and no namespace is
 applied. --operator-keys embeds the key file's PEM content as cds.operatorKeys
 (the chart value is the content itself, never a file path). The chart refuses
-to render without a CDS pin (--measurements or --image-policy-file), unless the
-consuming values set cds.measurements, cds.measurementsConfig or
+to render without the CDS this cluster trusts (--cds-address and --cds-pin),
+unless the consuming values set cds.address and cds.measurementsConfig, or
 node.baked=true.
 
 "No cluster" does not mean no network: by default each component tag is resolved
@@ -181,6 +180,11 @@ func buildValueArgs(ctx context.Context, cmd *cobra.Command, chartPath string, c
 		return nil, err
 	}
 	setArgs = appendSingleNodeInstallArgs(setArgs, installSingleNode)
+	cdsArgs, err := cdsInstallArgs(installCDSAddress, installCDSPin)
+	if err != nil {
+		return nil, err
+	}
+	setArgs = append(setArgs, cdsArgs...)
 	// Ahead of resolveDigests, which pins a component's image only while the
 	// effective values enable it.
 	setArgs = appendVolumedInstallArgs(setArgs, installVolumes)
@@ -308,8 +312,8 @@ func setNested(m map[string]any, path []string, value any) error {
 	for i, seg := range path {
 		if i == len(path)-1 {
 			// A trailing key[n] sets element n of a list (helm --set list
-			// syntax, e.g. cds.measurements[0]=…). setListElem grows the list
-			// as needed.
+			// syntax, e.g. cds.sandboxInventoryCIDRs[0]=…). setListElem grows
+			// the list as needed.
 			if key, idx, ok := parseListIndex(seg); ok {
 				return setListElem(m, strings.Join(path, "."), key, idx, value)
 			}
@@ -404,9 +408,8 @@ func init() {
 	renderValuesCmd.Flags().BoolVar(&installVolumes, "volumes", false, "emit volumed.enabled=true, deploying the node agent that opens encrypted volumes (docs/volumes.md).")
 	renderValuesCmd.Flags().StringVar(&installCvmMode, flagCvmMode, "", "CVM deployment shape (REQUIRED; orthogonal to --hardware-platform): bare-metal (generalized node-as-CVM native TEE device) or gke (GKE managed CVMs) or aks (vTPM /dev/tpm0). bare-metal/gke/aks are single-tenant — the node is one trust domain")
 	renderValuesCmd.Flags().StringVar(&installHardwarePlatform, flagHardwarePlatform, "", "CPU-level TEE hardware (REQUIRED; orthogonal to --cvm-mode): sev-snp (/dev/sev-guest) or tdx (Intel TDX, /dev/tdx-guest). Ignored when --cvm-mode=aks")
-	renderValuesCmd.Flags().StringSliceVar(&installMeasurements, "measurements", nil, "expected hex launch measurement(s) of the CVM components that speak to CDS (repeatable/comma-separated). Emits cds.measurements + armtlsMesh.measurements; required, unless --image-policy-file names the images. Under --cvm-mode=bare-metal/gke/aks this is the node image's manifest.json value")
-	cmdsutil.BindImagePolicyFlags(renderValuesCmd.Flags(), &installMeasurementsConfig, nil, "pins CDS, mesh and NRI; Helm requires unanchored images with identical RTMR pins; excludes --measurements and --rtmrs")
-	renderValuesCmd.Flags().StringSliceVar(&installRegisters, "rtmrs", nil, "TDX RTMR pin(s) <index>=<sha384-hex> completing --measurements on --hardware-platform=tdx (repeatable/comma-separated). Emits cds.rtmrs + armtlsMesh.rtmrs; ignored for SNP evidence")
+	renderValuesCmd.Flags().StringVar(&installCDSAddress, flagCDSAddress, "", "<ip>:<port> of the CDS this cluster trusts. Emits cds.address")
+	renderValuesCmd.Flags().StringVar(&installCDSPin, flagCDSPin, "", "path to that CDS's pin document (cds-pin.json). Emits cds.measurementsConfig as the file's content")
 	renderValuesCmd.Flags().BoolVar(&installResolveDigests, "resolve-digests", true, "resolve each component image tag to its registry digest (via crane), pin it, and enable the NRI allowlist derivation")
 	renderValuesCmd.Flags().StringVar(&installImagePullSecret, "image-pull-secret", "", "name of an existing dockerconfigjson Secret the chart wires into every component's imagePullSecrets")
 	renderValuesCmd.Flags().StringVar(&installImageTag, "image-tag", "", "component image tag to resolve digests at (default: the CLI build version, or 'main'). Override to pin a specific branch/tag/release")

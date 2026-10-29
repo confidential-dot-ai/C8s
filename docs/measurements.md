@@ -109,10 +109,11 @@ A measurements config pins whole images: each entry is one image matched as a
 tuple, so a digest from one build cannot be paired with registers from another.
 Every component that dials a pinned CDS takes it as `--image-policy-file`:
 `c8s verify`, the client commands (`c8s cds`, `c8s allowlist`, `c8s secrets`,
-`c8s routes`, `c8s volume`), `c8s install`, CDS itself, and the sidecars C8s
-injects — among them get-cert, which fetches a pod's certificate. Some also
-accept `--image-policy-json`, the same document inline; `c8s get-kubeconfig`
-pins its node with `--image-manifest`.
+`c8s routes`, `c8s volume`), CDS itself, and the sidecars C8s
+injects — among them get-cert, which fetches a pod's certificate. `c8s install`
+takes the same document as `--cds-pin`. Some also accept
+`--image-policy-json`, the same document inline; `c8s get-kubeconfig` pins its
+node with `--image-manifest`.
 
 ```json
 {
@@ -143,9 +144,8 @@ pins its node with `--image-manifest`.
 Unknown fields, repeated JSON keys, trailing data and an empty `measurements`
 list are refused; omit the flag to pin nothing.
 
-`c8s install --image-policy-file` also refuses an `approver_key` entry and
-per-image register differences: the chart carries one digest list and one
-register map to every in-cluster verifier. CDS renders the set it enforces at
+`c8s install --cds-pin` takes such a document whole: the chart carries it to
+every in-cluster verifier as a file. CDS renders the set it enforces at
 `/measurements`, which `c8s verify --kind cds` compares against your file. To
 build a config from an image build, see
 [verify.md](verify.md#derive-the-pins-yourself).

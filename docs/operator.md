@@ -24,18 +24,18 @@ here, such as `router.publicTLS.mode`, are chart values.
 | Resource | Role |
 |---|---|
 | `c8s-operator` Deployment and Service | Controllers and the two admission webhooks |
-| `c8s-cds` Deployment, Service (NodePort `30808`), PodDisruptionBudget | CDS, the Certificate Distribution Service: the cluster's trust root |
+| `c8s-cds` Deployment, Service (NodePort `30808`), PodDisruptionBudget | CDS, the Certificate Distribution Service: rendered only by the node image's own release, which runs CDS inside it; an install names a CDS outside the cluster instead |
 | `c8s-pod-injector`, `c8s-pod-validator`, `<release>-deny-host-namespaces` | Injection, its enforcement, and the host-namespace refusal |
 | `c8s-attestation-api` and `c8s-nri-image-policy-worker` DaemonSets | Node-local evidence and the admission plugin; on `bare-metal` the node image bakes both, and the worker only carries this release's CDS pins to the baked plugin |
 | `c8s-router` Deployment, Service, and the `c8s-router` namespace | The public front door |
 | One ingress NetworkPolicy per installed component | See [Network policies](#network-policies) |
 | `c8s-volumed` DaemonSet, the `ConfidentialWorkload` CRD | Volumes with `--volumes` ([volumes.md](volumes.md)); `--install-crds=false` skips the CRD |
 
-Two inputs are policy rather than plumbing. `--measurements` (or
-`--image-policy-file`) pins the guest CDS runs in, and the chart refuses to
-render unpinned. `--operator-keys` pins the operator public keys that authorize
-allowlist and route writes; without them CDS refuses every write, so a change
-needing a new entry needs a reinstall. `--force` proceeds past the two guarded
+Two inputs are policy rather than plumbing. `--cds-address` and `--cds-pin`
+name the CDS this cluster trusts and the guest it runs in, and the chart
+refuses to render without them. `--operator-keys` pins the operator public keys
+that authorize allowlist and route writes; without them CDS refuses every
+write, so a change needing a new entry needs a reinstall. `--force` proceeds past the two guarded
 prompts — no `--operator-keys`, and a fail-closed policy that would deny the
 platform's own pods; `--single-node` clears the dedicated-CDS-node selector and
 toleration. A measured node image boots the same chart, rendered at build time
@@ -293,7 +293,7 @@ The chart publishes CDS's `/allowlist` API through the router by default
 `/allowlist/` prefix, so a lookalike path is not exposed. An in-pod proxy holds
 CDS to the endpoint and pins the admission plugin bind-mounts for a container
 holding the credentials platform role, refusing a flag naming another; on an
-install they come from `--measurements`. Reads stay unauthenticated at CDS; a
+install they come from `--cds-pin`. Reads stay unauthenticated at CDS; a
 write still needs the body-bound operator token, and the operator private key
 never enters the cluster. nginx rate-limits the route per client and in
 aggregate. Both bounds are nginx's: CDS limits per source IP and sees the whole

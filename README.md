@@ -174,9 +174,6 @@ git clone https://github.com/confidential-dot-ai/c8s
 cd c8s
 make install
 
-# Label the node that will run CDS
-kubectl label node <cds-node> role=cds
-
 # Generate the operator keypair whose public half authorizes allowlist writes
 openssl ecparam -name prime256v1 -genkey -noout -out operator.key
 openssl ec -in operator.key -pubout -out operator.pub
@@ -186,7 +183,8 @@ openssl ec -in operator.key -pubout -out operator.pub
 # router verifies; install prints the `c8s routes add` commands that store the
 # route
 c8s install --cvm-mode=bare-metal --hardware-platform=sev-snp --namespace c8s-system \
-  --operator-keys operator.pub --measurements <node image manifest.json launch digest> \
+  --operator-keys operator.pub \
+  --cds-address <ip:port of your CDS> --cds-pin cds-pin.json \
   --workload-ref vllm=vllm/deployment/serving:8443 \
   --upstream vllm
 ```
@@ -222,10 +220,9 @@ pod's `c8s-certs` volume, which the mesh endpoint reads at `/etc/c8s/certs`.
 
 ### Production notes
 
-- **Pin measurements.** `cds.measurements` is required: the chart refuses to
-  render without it, and CDS refuses to start without it. Pass the node image's
-  launch digest as `c8s install --measurements <launch-digest>`, or name the
-  images with `--image-policy-file`.
+- **Name the CDS.** `--cds-address` and `--cds-pin` are required: they say
+  which CDS this cluster trusts and which guest it runs, and the chart refuses
+  to render without both. `c8s cds config new` writes the pin.
 
 - **Pin operator keys.** Pass `--operator-keys` at install time or allowlist
   writes stay disabled. Leaving writes disabled and re-deploying CDS on every
