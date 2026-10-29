@@ -5,12 +5,15 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -166,6 +169,9 @@ func renderNodeImage(ctx context.Context, cfg nodeImageRenderConfig) error {
 		// names as every member pod's exit (image-policy.yaml.in mesh.exits).
 		"--set", "kubeStateMetrics.enabled=true",
 		"--set-string", "kubeStateMetrics.image.pullPolicy=Never",
+		// Both CDS Deployments are baked; the signed launch document selects
+		// which one runs (cds-role nodes, or the singleton on the server).
+		"--set", "cds.ha.enabled=true",
 	)
 	for _, input := range cfg.images() {
 		args = append(args, "--set-string", input.valuePath+".pullPolicy=Never")
@@ -184,7 +190,7 @@ func renderNodeImage(ctx context.Context, cfg nodeImageRenderConfig) error {
 	if err != nil {
 		return fmt.Errorf("render node integration with helm: %w: %s", err, stderr.String())
 	}
-	artifacts, err := collectNodeImageArtifacts(rendered)
+	artifacts, err := collectNodeImageArtifacts(rendered, cfg.componentDigests())
 	if err != nil {
 		return err
 	}
@@ -200,11 +206,18 @@ func renderNodeImage(ctx context.Context, cfg nodeImageRenderConfig) error {
 		{"allowlist-seed.json", artifacts.seed},
 		{"images.txt", []byte(strings.Join(artifacts.images, "\n") + "\n")},
 		{"router-image.txt", []byte(artifacts.routerImage + "\n")},
+		{"cds-floor.json", artifacts.cdsFloor},
+		{"c8s-cds-singleton.yaml", artifacts.cdsSingleton},
+		{"c8s-cds-ha.yaml", artifacts.cdsHA},
+		{"local-names.txt", localNamesFile(artifacts.localNames)},
 	}
 	for _, name := range routerNginxFiles {
 		files = append(files, artifact{filepath.Join("router-nginx", name), []byte(artifacts.routerNginx[name])})
 	}
 	for _, artifact := range files {
+		if len(artifact.body) == 0 && !strings.HasPrefix(artifact.name, "router-nginx") {
+			continue
+		}
 		if err := os.WriteFile(filepath.Join(cfg.outputDir, artifact.name), artifact.body, 0o644); err != nil {
 			return fmt.Errorf("write %s: %w", artifact.name, err)
 		}
@@ -214,13 +227,31 @@ func renderNodeImage(ctx context.Context, cfg nodeImageRenderConfig) error {
 
 type nodeImageArtifacts struct {
 	integration []byte
-	seed        []byte
-	images      []string
-	routerNginx map[string]string
+	// cdsSingleton and cdsHA hold the objects only one CDS flavour needs; the
+	// server's node-services skips the file the launch document did not pick.
+	cdsSingleton []byte
+	cdsHA        []byte
+	seed         []byte
+	images       []string
+	routerNginx  map[string]string
 
 	// routerImage is the front door's own image, which the measured base
 	// pins for the router role. Only the chart carries that digest.
 	routerImage string
+	// localNames maps a baked image to the node-local name it is also
+	// imported under ("<ref> <name>" lines in local-names.txt).
+	localNames map[string]string
+	// cdsFloor is the NRI floor a cds-role node admits instead of the seed:
+	// the HA CDS container pinned exactly, plus the DaemonSets every node runs.
+	// Empty when the chart renders no HA CDS.
+	cdsFloor []byte
+}
+
+// cdsFloorContainer is a container that may run on a cds-role node.
+type cdsFloorContainer struct {
+	key       string // workload, for the entry name
+	container corev1.Container
+	digest    string
 }
 
 // routerNginxFiles are the c8s-router-nginx ConfigMap keys the image installs
@@ -231,7 +262,9 @@ var routerNginxFiles = []string{"nginx.conf", "serve.sh", "tls-cds.conf", "tls-a
 // collectNodeImageArtifacts retains complete chart resources and copies the seed
 // for host NRI bootstrap. Every workload image must be pinned and present in the
 // seed; the same inventory drives image preloading into the measured rootfs.
-func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
+// collectNodeImageArtifacts splits the render; components are the digests of
+// the images this build produces (DaemonSets name them node-locally).
+func collectNodeImageArtifacts(rendered []byte, components map[string]bool) (*nodeImageArtifacts, error) {
 	namespace, err := yaml.Marshal(corev1.Namespace{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Namespace"},
 		ObjectMeta: metav1.ObjectMeta{
@@ -247,7 +280,8 @@ func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
 	if err != nil {
 		return nil, fmt.Errorf("encode node namespace: %w", err)
 	}
-	var artifacts nodeImageArtifacts
+	artifacts := nodeImageArtifacts{localNames: map[string]string{}}
+	injected := map[string]string{} // injected sidecar image -> node-local name
 	var manifests bytes.Buffer
 	manifests.Write(namespace)
 	decoder := k8syaml.NewYAMLOrJSONDecoder(bytes.NewReader(rendered), 4096)
@@ -262,8 +296,12 @@ func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
 		"ConfigMap/c8s-router-nginx":                                     false,
 		"ConfigMap/c8s-cds-allowlist-seed":                               false,
 	}
+	// Workloads the chart may render without being required by every render.
+	optional := map[string]bool{"DaemonSet/c8s-cds-ha": true}
 	seen := make(map[string]bool)
 	images := make(map[string]*bakedImage)
+	var cdsNode []cdsFloorContainer // containers a cds-role node runs
+	var singleton, ha bytes.Buffer
 	for {
 		var raw runtime.RawExtension
 		if err := decoder.Decode(&raw); err == io.EOF {
@@ -292,11 +330,21 @@ func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
 		seen[key] = true
 		switch kind {
 		case "Deployment", "DaemonSet":
-			if _, expected := required[key]; !expected {
+			if _, expected := required[key]; !expected && !optional[key] {
 				return nil, fmt.Errorf("unexpected node-image workload %s", key)
 			}
-			if err := collectWorkloadImages(object, key, images); err != nil {
+			containers, err := collectWorkloadImages(object, key, images)
+			if err != nil {
 				return nil, err
+			}
+			if key == "Deployment/c8s-operator" {
+				// The webhook injects sidecars into pods on every node, so
+				// it names their images node-locally too; the seed's exact
+				// argv for the operator is rewritten to match below, after
+				// the seed is checked against the digest-pinned render.
+				if err := localizeInjectedImages(&object, components, injected); err != nil {
+					return nil, fmt.Errorf("node-image workload %s: %w", key, err)
+				}
 			}
 			if key == routerWorkloadKey {
 				image, err := frontDoorImage(object)
@@ -304,6 +352,14 @@ func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
 					return nil, err
 				}
 				artifacts.routerImage = image
+			}
+			if kind == "DaemonSet" {
+				cdsNode = append(cdsNode, containers...)
+				// Every node must run the components its own measured
+				// image carries, not the server image's.
+				if err := localizeDaemonSet(&object, components, artifacts.localNames); err != nil {
+					return nil, fmt.Errorf("node-image workload %s: %w", key, err)
+				}
 			}
 		case "ConfigMap":
 			if err := collectConfigMapArtifact(object, key, name, &artifacts); err != nil {
@@ -326,8 +382,15 @@ func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
 		if err != nil {
 			return nil, fmt.Errorf("encode node-image resource %s: %w", key, err)
 		}
-		manifests.WriteString("---\n")
-		manifests.Write(doc)
+		out := &manifests
+		switch flavour := cdsFlavour(object); flavour {
+		case "singleton":
+			out = &singleton
+		case "ha":
+			out = &ha
+		}
+		out.WriteString("---\n")
+		out.Write(doc)
 	}
 	for key, found := range required {
 		if !found {
@@ -359,8 +422,31 @@ func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
 		}
 		artifacts.images = append(artifacts.images, image)
 	}
+	// The operator's exact argv in the seed names the injected images; keep
+	// it equal to the rewritten Deployment, in the seed file and in the seed
+	// ConfigMap the manifests carry.
+	for image, local := range injected {
+		for _, flag := range injectedImageFlags {
+			from, to := []byte(flag+image), []byte(flag+local)
+			artifacts.seed = bytes.ReplaceAll(artifacts.seed, from, to)
+			rewritten := bytes.ReplaceAll(manifests.Bytes(), from, to)
+			manifests.Reset()
+			manifests.Write(rewritten)
+		}
+		if err := recordLocalName(artifacts.localNames, image, local); err != nil {
+			return nil, err
+		}
+	}
 	slices.Sort(artifacts.images)
 	artifacts.integration = manifests.Bytes()
+	artifacts.cdsSingleton, artifacts.cdsHA = singleton.Bytes(), ha.Bytes()
+	if seen["DaemonSet/c8s-cds-ha"] {
+		floor, err := buildCDSFloor(seed, cdsNode)
+		if err != nil {
+			return nil, err
+		}
+		artifacts.cdsFloor = floor
+	}
 	return &artifacts, nil
 }
 
@@ -374,6 +460,96 @@ func seedContainers(seed *pkgallowlist.Allowlist) map[string][]pkgallowlist.Cont
 	}
 	return seeded
 }
+
+// cdsFlavour assigns the objects only one CDS flavour uses: the singleton
+// Deployment, and everything the HA chart template renders, matched by
+// kind and name. Shared objects return "".
+func cdsFlavour(object unstructured.Unstructured) string {
+	switch object.GetKind() + "/" + object.GetName() {
+	case "Deployment/c8s-cds":
+		return "singleton"
+	case "DaemonSet/c8s-cds-ha", "Service/c8s-cds-peers", "NetworkPolicy/c8s-cds-ha-peers",
+		"Role/c8s-cds-ha", "RoleBinding/c8s-cds-ha", "Role/c8s-cds-decrees",
+		"RoleBinding/c8s-cds-decrees", "Namespace/" + nodeImageDecreeNamespace:
+		return "ha"
+	}
+	return ""
+}
+
+// buildCDSFloor derives the cds-role NRI floor from the seed. DaemonSet
+// containers keep their seed entries (their entrypoint stays pinned, so the
+// c8s binary inside cannot be started as `cds`). The HA CDS container is
+// pinned to its exact argv: on a cds node any other invocation of the CDS
+// image, or of the operator image, is refused, so nothing but the replica
+// can ask the node's attester for a cds-anchored quote.
+func buildCDSFloor(seed *pkgallowlist.Allowlist, containers []cdsFloorContainer) ([]byte, error) {
+	floor := pkgallowlist.Allowlist{Schema: seed.Schema, Workloads: map[string]pkgallowlist.Workload{}}
+	add := func(name string, entry pkgallowlist.Container) {
+		w := floor.Workloads[name]
+		w.Label = name
+		if !slices.ContainsFunc(w.Containers, func(c pkgallowlist.Container) bool { return reflect.DeepEqual(c, entry) }) {
+			w.Containers = append(w.Containers, entry)
+		}
+		floor.Workloads[name] = w
+	}
+	for _, fc := range containers {
+		entries := seedEntriesFor(seed, fc.digest)
+		if len(entries) == 0 {
+			return nil, fmt.Errorf("cds floor: %s container %q has no seed entry", fc.key, fc.container.Name)
+		}
+		if fc.key != "DaemonSet/c8s-cds-ha" {
+			for _, e := range entries {
+				add(e.name, e.container)
+			}
+			continue
+		}
+		// The HA replica: only the seed entry pinning its exact argv.
+		var match *pkgallowlist.Container
+		for _, e := range entries {
+			command := fc.container.Command
+			if len(command) == 0 {
+				command = e.container.Command.Argv // the image entrypoint, as the seed pins it
+			}
+			if e.container.Command.Policy == pkgallowlist.PolicyExact && slices.Equal(command, e.container.Command.Argv) &&
+				e.container.Args.Policy == pkgallowlist.PolicyExact && slices.Equal(fc.container.Args, e.container.Args.Argv) {
+				match = &e.container
+				break
+			}
+		}
+		if match == nil {
+			return nil, fmt.Errorf("cds floor: no seed entry pins the HA CDS argv exactly")
+		}
+		add("cds-ha-replica", *match)
+	}
+	if _, ok := floor.Workloads["cds-ha-replica"]; !ok {
+		return nil, errors.New("cds floor: no HA CDS container")
+	}
+	return json.MarshalIndent(floor, "", "  ")
+}
+
+type seedEntry struct {
+	name      string
+	container pkgallowlist.Container
+}
+
+// seedEntriesFor returns the seed's container entries for digest, sorted by
+// workload name so the floor is reproducible.
+func seedEntriesFor(seed *pkgallowlist.Allowlist, digest string) []seedEntry {
+	var out []seedEntry
+	for _, name := range slices.Sorted(maps.Keys(seed.Workloads)) {
+		w := seed.Workloads[name]
+		for _, c := range append(w.InitContainers, w.Containers...) {
+			if c.Digest.String() == digest {
+				out = append(out, seedEntry{name, c})
+			}
+		}
+	}
+	return out
+}
+
+// nodeImageDecreeNamespace is the chart's cds.ha.decreeNamespace default:
+// the HA CDS reads operator decrees there through a Role of its own.
+const nodeImageDecreeNamespace = "c8s-cds-decrees"
 
 // nodeImageResourceNamespaces is where the chart must place each namespaced
 // resource a baked node runs: the release namespace, except the router's own
@@ -404,6 +580,9 @@ const kubeStateMetricsKey = "Deployment/kube-state-metrics"
 func requireNodeImageNamespace(object *unstructured.Unstructured) error {
 	kind, name := object.GetKind(), object.GetName()
 	key := kind + "/" + name
+	if (kind == "Role" || kind == "RoleBinding") && object.GetNamespace() == nodeImageDecreeNamespace {
+		return nil
+	}
 	if !namespacedNodeImageKind(kind) {
 		if object.GetNamespace() != "" {
 			return fmt.Errorf("cluster-scoped node-image resource %s has a namespace", key)
@@ -687,39 +866,41 @@ func frontDoorImage(object unstructured.Unstructured) (string, error) {
 const frontDoorContainerName = "nginx"
 
 // collectWorkloadImages records every container image a baked workload runs,
-// keyed by reference. The rootfs preloads exactly these, so an unpinned or
+// keyed by reference, and returns the workload's containers with their
+// digests. The rootfs preloads exactly these images, so an unpinned or
 // tag-only image would leave the node pulling at boot: reject it here.
-func collectWorkloadImages(object unstructured.Unstructured, key string, images map[string]*bakedImage) error {
+func collectWorkloadImages(object unstructured.Unstructured, key string, images map[string]*bakedImage) ([]cdsFloorContainer, error) {
 	pod, found, err := unstructured.NestedMap(object.Object, "spec", "template", "spec")
 	if err != nil || !found {
-		return fmt.Errorf("node-image workload %s lacks a valid pod spec", key)
+		return nil, fmt.Errorf("node-image workload %s lacks a valid pod spec", key)
 	}
 	var spec corev1.PodSpec
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(pod, &spec); err != nil {
-		return fmt.Errorf("decode node-image workload %s: %w", key, err)
+		return nil, fmt.Errorf("decode node-image workload %s: %w", key, err)
 	}
 	if len(spec.Containers) == 0 || len(spec.EphemeralContainers) != 0 {
-		return fmt.Errorf("node-image workload %s requires containers and no ephemeral containers", key)
+		return nil, fmt.Errorf("node-image workload %s requires containers and no ephemeral containers", key)
 	}
 	volumes := make(map[string]corev1.Volume, len(spec.Volumes))
 	for _, v := range spec.Volumes {
 		volumes[v.Name] = v
 	}
+	var out []cdsFloorContainer
 	for _, c := range append(spec.InitContainers, spec.Containers...) {
 		baked, err := recordPinnedImage(c.Image, key, c.Name, images)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if err := collectInjectedImages(c, key, images); err != nil {
-			return err
+			return nil, err
 		}
 		command, err := kubeletArgv(c.Command)
 		if err != nil {
-			return fmt.Errorf("node-image workload %s container %q command: %w", key, c.Name, err)
+			return nil, fmt.Errorf("node-image workload %s container %q command: %w", key, c.Name, err)
 		}
 		args, err := kubeletArgv(c.Args)
 		if err != nil {
-			return fmt.Errorf("node-image workload %s container %q args: %w", key, c.Name, err)
+			return nil, fmt.Errorf("node-image workload %s container %q args: %w", key, c.Name, err)
 		}
 		k := bakedContainer{name: c.Name, command: command, args: args, envFrom: len(c.EnvFrom) > 0, serviceLinks: spec.EnableServiceLinks == nil || *spec.EnableServiceLinks}
 		for _, e := range c.Env {
@@ -728,13 +909,14 @@ func collectWorkloadImages(object unstructured.Unstructured, key string, images 
 		for _, m := range c.VolumeMounts {
 			rule, err := mountRule(m, volumes)
 			if err != nil {
-				return fmt.Errorf("node-image workload %s container %q: %w", key, c.Name, err)
+				return nil, fmt.Errorf("node-image workload %s container %q: %w", key, c.Name, err)
 			}
 			k.mounts = append(k.mounts, rule)
 		}
 		baked.containers = append(baked.containers, k)
+		out = append(out, cdsFloorContainer{key: key, container: c, digest: baked.digest})
 	}
-	return nil
+	return out, nil
 }
 
 // kubeletArgv is the argv the kubelet hands the runtime for a manifest's
@@ -854,4 +1036,147 @@ func collectConfigMapArtifact(object unstructured.Unstructured, key, name string
 	}
 	artifacts.routerNginx = cm.Data
 	return nil
+}
+
+// nodeLocalTag names a baked image on the node that baked it. A DaemonSet is
+// one object, applied by the server from the server's image, but every node
+// must run the components its own measured image carries: a rollout launches
+// nodes on a new image while others keep the old one, and pullPolicy Never
+// can only run what the node imported. So DaemonSet containers name the
+// build's own component images by this node-local tag, which each image's
+// airgap import also gives them (local-names.txt). Admission still pins
+// exact digests: the bootstrap seed and the cds floor are derived before
+// the rewrite, and NRI resolves the tag to the node's own digest.
+const nodeLocalTag = "c8s-node"
+
+// componentDigests are the digests of the images this build produces (the
+// c8s operator image, CDS, armTLS mesh): the ones that differ per build.
+func (cfg nodeImageRenderConfig) componentDigests() map[string]bool {
+	out := map[string]bool{}
+	for _, d := range []string{cfg.imageDigest, cfg.cdsImageDigest, cfg.armtlsMeshImageDigest} {
+		if d != "" {
+			out[d] = true
+		}
+	}
+	return out
+}
+
+// localizeDaemonSet rewrites the DaemonSet's component image references to
+// their node-local names and records them in names.
+func localizeDaemonSet(object *unstructured.Unstructured, components map[string]bool, names map[string]string) error {
+	for _, field := range []string{"initContainers", "containers"} {
+		list, found, err := unstructured.NestedSlice(object.Object, "spec", "template", "spec", field)
+		if err != nil {
+			return err
+		}
+		if !found {
+			continue
+		}
+		for i, item := range list {
+			c, ok := item.(map[string]any)
+			if !ok {
+				return fmt.Errorf("%s[%d] is not an object", field, i)
+			}
+			image, _ := c["image"].(string)
+			local, ok, err := localName(image, components)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				continue
+			}
+			if err := recordLocalName(names, image, local); err != nil {
+				return err
+			}
+			c["image"] = local
+			list[i] = c
+		}
+		if err := unstructured.SetNestedSlice(object.Object, list, "spec", "template", "spec", field); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// injectedImageFlags are the operator flags naming the images its webhook
+// injects into member pods.
+var injectedImageFlags = []string{"--get-cert-image=", "--mesh-image="}
+
+// localizeInjectedImages rewrites the operator's injected-image flags that
+// name one of the build's component images to their node-local names. The
+// operator runs on the server, but the sidecars it injects run on every
+// node: a pod on a node launched on a newer image must run that image's
+// sidecars (the node's measured mesh policy recognises only its own mesh
+// endpoint), and pullPolicy IfNotPresent finds them under the local name.
+func localizeInjectedImages(object *unstructured.Unstructured, components map[string]bool, names map[string]string) error {
+	list, found, err := unstructured.NestedSlice(object.Object, "spec", "template", "spec", "containers")
+	if err != nil || !found {
+		return err
+	}
+	for i, item := range list {
+		c, ok := item.(map[string]any)
+		if !ok {
+			return fmt.Errorf("containers[%d] is not an object", i)
+		}
+		args, _ := c["args"].([]any)
+		for j, a := range args {
+			arg, _ := a.(string)
+			for _, flag := range injectedImageFlags {
+				image, ok := strings.CutPrefix(arg, flag)
+				if !ok {
+					continue
+				}
+				local, ok, err := localName(image, components)
+				if err != nil {
+					return fmt.Errorf("%s: %w", flag, err)
+				}
+				if !ok {
+					continue
+				}
+				names[image] = local
+				args[j] = flag + local
+			}
+		}
+		if args != nil {
+			c["args"] = args
+			list[i] = c
+		}
+	}
+	return unstructured.SetNestedSlice(object.Object, list, "spec", "template", "spec", "containers")
+}
+
+// localName is the node-local name of image, and false when image is not
+// one of the build's component images.
+func localName(image string, components map[string]bool) (string, bool, error) {
+	ref, err := reference.ParseDockerRef(image)
+	if err != nil {
+		return "", false, err
+	}
+	pinned, ok := ref.(reference.Canonical)
+	if !ok || !components[pinned.Digest().String()] {
+		return "", false, nil
+	}
+	return reference.TrimNamed(ref).Name() + ":" + nodeLocalTag, true, nil
+}
+
+// recordLocalName records that local stands for image. Two digests of one
+// repository get the same local name, and local-names.txt can map a name
+// back to only one image, so a name already standing for another image
+// is refused.
+func recordLocalName(names map[string]string, image, local string) error {
+	for other, name := range names {
+		if name == local && other != image {
+			return fmt.Errorf("images %s and %s would share the node-local name %s", other, image, local)
+		}
+	}
+	names[image] = local
+	return nil
+}
+
+func localNamesFile(names map[string]string) []byte {
+	var b strings.Builder
+	for _, ref := range slices.Sorted(maps.Keys(names)) {
+		fmt.Fprintf(&b, "%s %s\n", ref, names[ref])
+	}
+	return []byte(b.String())
 }

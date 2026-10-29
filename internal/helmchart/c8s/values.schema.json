@@ -70,6 +70,23 @@
           }
         },
         "operatorKeys": {},
+        "ha": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {},
+            "peerPort": {},
+            "decreeNamespace": {},
+            "goMemLimit": {},
+            "historyVersions": {},
+            "historyBytes": {},
+            "storeSizeLimit": {},
+            "resources": {}
+          }
+        },
         "persistence": {
           "type": [
             "object",

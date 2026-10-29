@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -31,7 +32,14 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 	path := func(name string) string { return filepath.Join(rootDir, name) }
 	outputs := make(map[string][]byte)
 	for _, name := range []string{"peers.json", "cds.json"} {
-		data, err := readPolicy(path(launchDir+name), d.Image.Platform, name == "cds.json")
+		// cds.json pins exactly the server, plus one entry per cds launch key
+		// when the cluster runs an HA CDS, each on every accepted image;
+		// peers.json pins every role.
+		want := 0
+		if name == "cds.json" {
+			want = (1 + len(d.CDSOperatorPublicKeys)) * (1 + len(d.PeerImages))
+		}
+		data, err := readPolicy(path(launchDir+name), d.Image.Platform, want)
 		if err != nil {
 			return err
 		}
@@ -45,13 +53,37 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 	if err != nil {
 		return fmt.Errorf("baked workload seed: %w", err)
 	}
-	if d.Role == launchconfig.Server {
+	// Every node publishes which CDS flavour the signed document selected, so
+	// the baked singleton can yield on an HA cluster without reading the
+	// root-only staged document (which carries join tokens).
+	outputs[CDSModeFile] = []byte(CDSModeSingleton + "\n")
+	if d.CDSHA != nil {
+		outputs[CDSModeFile] = []byte(CDSModeHA + "\n")
+	}
+	nodeSeed := bakedSeed
+	switch d.Role {
+	case launchconfig.Server:
 		server, err := serverOutputs(d, bakedData)
 		if err != nil {
 			return err
 		}
-		for name, data := range server.files() {
-			outputs[name] = data
+		maps.Copy(outputs, server.files())
+	case launchconfig.CDS:
+		cds, err := cdsOutputs(d, bakedData)
+		if err != nil {
+			return err
+		}
+		maps.Copy(outputs, cds)
+		// A cds-role node admits the cds floor instead of the chart seed: the
+		// HA CDS replica with its exact argv and the per-node DaemonSets,
+		// nothing else of the chart (the operator image carries the same c8s
+		// binary).
+		floorData, err := os.ReadFile(path("/usr/lib/c8s/cds-floor.json"))
+		if err != nil {
+			return fmt.Errorf("cds role needs the baked cds floor: %w", err)
+		}
+		if nodeSeed, err = allowlist.ParseJSON(floorData); err != nil {
+			return fmt.Errorf("baked cds floor: %w", err)
 		}
 	}
 
@@ -78,14 +110,31 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 	if err := fillNodeValues(base, d.Node); err != nil {
 		return err
 	}
-	if err := mergeWorkloads(base, bakedSeed, true); err != nil {
+	if err := mergeWorkloads(base, nodeSeed, true); err != nil {
 		return fmt.Errorf("merge chart seed into NRI base: %w", err)
 	}
 	a["base"] = base
-	pull["url"] = d.CDSURL()
-	pull["cds_measurements_config"] = launchDir + "cds.json"
-	delete(pull, "cds_measurements")
-	delete(pull, "cds_rtmrs")
+	if d.Role == launchconfig.CDS {
+		// A cds node admits only the measured floor: no served allowlist, so
+		// no allowlisted image can land beside a replica and share its quote.
+		// It still injects credential clients, so it keeps the CDS pins
+		// they are handed: the plugin refuses to start without them.
+		a["pull"] = map[string]any{"cds_measurements_config": launchDir + "cds.json"}
+	} else {
+		pull["url"] = d.CDSURL()
+		pull["cds_measurements_config"] = launchDir + "cds.json"
+		if d.CDSHA != nil {
+			// What the enforcer needs to follow the operator's signed CDS
+			// pin decrees across a CDS image rollout.
+			pull["cds_decrees"] = map[string]any{"cluster_id": d.ClusterID, "decree_key": d.CDSHA.DecreeKey, "pin_floor": d.CDSHA.PinFloor}
+			pull["cds_decrees_state"] = "/run/nri-image-policy/cds-decree-state.json"
+		}
+		delete(pull, "cds_measurements")
+		delete(pull, "cds_rtmrs")
+	}
+	// Every role binds the credential role: the measured base names the
+	// credential workloads on every node (a cds node included), and the
+	// runtime refuses a base whose credential role is unbound.
 	mesh, declared := floor["mesh"]
 	if !declared {
 		return fmt.Errorf("baked NRI policy missing mesh")
@@ -115,8 +164,13 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 	if err := os.Chmod(publicPath, 0755); err != nil {
 		return err
 	}
-	if d.Role == launchconfig.Agent {
-		if err := removeServerOutputs(publicPath); err != nil {
+	// Remove every public file this role does not publish, so a node whose
+	// signed document changed role or dropped cdsHA keeps no stale input.
+	for _, name := range append([]string{cdsHAFile}, serverOutputNames...) {
+		if _, ok := outputs[name]; ok {
+			continue
+		}
+		if err := os.Remove(filepath.Join(publicPath, name)); err != nil && !os.IsNotExist(err) {
 			return err
 		}
 	}
@@ -126,6 +180,11 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 			return err
 		}
 		if err := fileutil.WriteAtomic(dst, data, 0644); err != nil {
+			return err
+		}
+	}
+	if d.Role == launchconfig.Server {
+		if err := selectCDSFlavour(path(rke2ManifestsDir), d.CDSHA != nil); err != nil {
 			return err
 		}
 	}
@@ -358,20 +417,9 @@ func serverOutputs(d *launchconfig.Document, bakedData []byte) (serverConfig, er
 	return serverConfig{operatorPubKey: pub, allowlistSeed: seed, tlsSAN: d.TLSSAN, router: router}, nil
 }
 
-// removeServerOutputs clears the server-only inputs from an agent's public
-// directory, so a node demoted to agent cannot keep serving stale ones.
-func removeServerOutputs(publicPath string) error {
-	for _, name := range serverOutputNames {
-		if err := os.Remove(filepath.Join(publicPath, name)); err != nil && !os.IsNotExist(err) {
-			return err
-		}
-	}
-	return nil
-}
-
 // readPolicy refuses partial pins even when the staged file parses. The
 // authenticated launcher emits an anchored tuple for every permitted role.
-func readPolicy(path, platform string, serverOnly bool) ([]byte, error) {
+func readPolicy(path, platform string, wantImages int) ([]byte, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -380,7 +428,7 @@ func readPolicy(path, platform string, serverOnly bool) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("staged identity policy %s: %w", path, err)
 	}
-	if !policyMatchesPlatform(pins, platform, serverOnly) {
+	if !policyMatchesPlatform(pins, platform, wantImages) {
 		return nil, fmt.Errorf("staged identity policy %s has invalid family or image count", path)
 	}
 	if !policyPinsComplete(pins) {
@@ -389,15 +437,14 @@ func readPolicy(path, platform string, serverOnly bool) ([]byte, error) {
 	return data, nil
 }
 
-// policyMatchesPlatform reports whether the policy targets the booted TEE
-// family and pins the number of images the role permits: at least one, and
-// exactly one when the policy is server-only.
-func policyMatchesPlatform(pins refvalues.ReferenceValues, platform string, serverOnly bool) bool {
+// policyMatchesPlatform checks the family and, when wantImages > 0, that
+// the policy holds exactly that many image pins.
+func policyMatchesPlatform(pins refvalues.ReferenceValues, platform string, wantImages int) bool {
 	family, err := teetypes.ParseFamily(platform)
 	if err != nil || pins.Family != family || len(pins.Images) == 0 {
 		return false
 	}
-	return !serverOnly || len(pins.Images) == 1
+	return wantImages == 0 || len(pins.Images) == wantImages
 }
 
 // policyPinsComplete reports whether every image pin carries an anchor and,
@@ -462,4 +509,67 @@ func mergeWorkloads(base, extra *allowlist.Allowlist, allowIdentical bool) error
 		return fmt.Errorf("combined workload policy: %w", err)
 	}
 	return nil
+}
+
+// CDSModeFile names the public file holding CDSModeSingleton or CDSModeHA.
+const (
+	CDSModeFile      = "cds-mode"
+	CDSModeSingleton = "singleton"
+	CDSModeHA        = "ha"
+)
+
+// cdsHAFile is the CDS pod's HA configuration on a cds-role node, published
+// from the signed launch document so none of its trust roots is a pod flag.
+const cdsHAFile = "cds-ha.json"
+
+// CDSHAConfig is the content of cds-ha.json.
+type CDSHAConfig struct {
+	ClusterID   string             `json:"cluster_id"`
+	DecreeKey   string             `json:"decree_key"`
+	Replicas    int                `json:"replicas"`
+	RecoveryKey string             `json:"recovery_key,omitempty"`
+	Image       launchconfig.Image `json:"image"`
+}
+
+// cdsOutputs publishes what a CDS replica on a cds-role node needs: the
+// server's operator key and allowlist seed (as on the server; CDS serves the
+// same policy), the TLS SAN, and the HA configuration.
+func cdsOutputs(d *launchconfig.Document, bakedData []byte) (map[string][]byte, error) {
+	pub := []byte(d.Server.OperatorPublicKey)
+	if _, err := operatorauth.ParsePublicKeysPEM(pub); err != nil {
+		return nil, fmt.Errorf("staged server operator key: %w", err)
+	}
+	seed, err := mergedSeed(bakedData, d.Workloads)
+	if err != nil {
+		return nil, err
+	}
+	ha, err := json.Marshal(CDSHAConfig{ClusterID: d.ClusterID, DecreeKey: d.CDSHA.DecreeKey, Replicas: d.CDSHA.Replicas, RecoveryKey: d.CDSHA.RecoveryKey, Image: d.Image})
+	if err != nil {
+		return nil, err
+	}
+	return map[string][]byte{
+		"operator-pubkey":     pub,
+		"allowlist-seed.json": seed,
+		"tls-san":             []byte(d.TLSSAN + "\n"),
+		cdsHAFile:             ha,
+	}, nil
+}
+
+// rke2ManifestsDir is where RKE2 applies the baked AddOns from.
+const rke2ManifestsDir = "/var/lib/rancher/rke2/server/manifests"
+
+// selectCDSFlavour makes RKE2 apply only the CDS flavour the signed launch
+// document selects: a <file>.skip sibling makes RKE2 ignore an AddOn.
+func selectCDSFlavour(dir string, ha bool) error {
+	skip, keep := "c8s-cds-ha.yaml.skip", "c8s-cds-singleton.yaml.skip"
+	if ha {
+		skip, keep = keep, skip
+	}
+	if err := os.Remove(filepath.Join(dir, keep)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	return fileutil.WriteAtomic(filepath.Join(dir, skip), []byte("# not selected by the launch document (cdsHA)\n"), 0o644)
 }

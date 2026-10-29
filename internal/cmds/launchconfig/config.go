@@ -13,12 +13,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/mail"
 	"net/netip"
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -28,6 +30,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
+	"github.com/confidential-dot-ai/c8s/internal/cdsha"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/credrelease"
 	"github.com/confidential-dot-ai/c8s/internal/readutil"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
@@ -53,6 +56,11 @@ type Role string
 const (
 	Server Role = "server"
 	Agent  Role = "agent"
+	// CDS is an agent that runs only the CDS replicas of a highly available
+	// CDS. It joins with the agent token and is authorized by its own launch
+	// key, so a CDS node's launch-key binding (TDX RTMR3, SNP HOST_DATA)
+	// differs from every workload node's.
+	CDS Role = "cds"
 )
 
 // Valid reports whether r is a role this image can boot.
@@ -108,6 +116,17 @@ var roles = map[Role]roleRules{
 		router:        false,
 		ownLaunchKey:  false,
 	},
+	// CDS runs only the HA CDS replicas; it is authorized by a key in
+	// cdsOperatorPublicKeys (authorizeKey) and carries the server's agent keys
+	// as derived, which may be none.
+	CDS: {
+		serverToken:   forbidden,
+		agentKeys:     optional,
+		namesServer:   true,
+		stagedAddress: true,
+		router:        false,
+		ownLaunchKey:  false,
+	},
 }
 
 // rules resolves the document's role. Callers reach it only after validate,
@@ -117,15 +136,26 @@ func (d *Document) rules() roleRules { return roles[d.Role] }
 // Document is the signed launch.yaml wire contract. All secrets are boot
 // inputs; agent documents must never carry the control-plane server token.
 type Document struct {
-	SchemaVersion           string       `yaml:"schemaVersion" json:"schema_version"`
-	ClusterID               string       `yaml:"clusterID" json:"cluster_id"`
-	Role                    Role         `yaml:"role" json:"role"`
-	Image                   Image        `yaml:"image" json:"image"`
+	SchemaVersion string `yaml:"schemaVersion" json:"schema_version"`
+	ClusterID     string `yaml:"clusterID" json:"cluster_id"`
+	Role          Role   `yaml:"role" json:"role"`
+	Image         Image  `yaml:"image" json:"image"`
+	// PeerImages are images, besides Image, that this node accepts its
+	// peers and CDS to run: the images of an unfinished rollout. Image is
+	// still the only one this node may boot. A node launched on a new image
+	// lists the old one here, so it trusts the nodes not yet rolled.
+	PeerImages              []Image      `yaml:"peerImages,omitempty" json:"peer_images,omitempty"`
 	Node                    Node         `yaml:"node" json:"node"`
 	RKE2                    RKE2         `yaml:"rke2" json:"rke2"`
 	Server                  ServerConfig `yaml:"server" json:"server"`
 	AgentOperatorPublicKeys []string     `yaml:"agentOperatorPublicKeys" json:"agent_operator_public_keys"`
 	TLSSAN                  string       `yaml:"tlsSAN,omitempty" json:"tls_san"`
+
+	// CDSHA, when set, runs CDS as replicas on cds-role nodes instead of a
+	// singleton on the server. CDSOperatorPublicKeys authorize cds-role
+	// launches; one key authorizes exactly one role.
+	CDSHA                 *CDSHA   `yaml:"cdsHA,omitempty" json:"cds_ha,omitempty"`
+	CDSOperatorPublicKeys []string `yaml:"cdsOperatorPublicKeys,omitempty" json:"cds_operator_public_keys,omitempty"`
 
 	// Workloads is an optional strict c8s.allowlist/v1 JSON document. Keeping
 	// its existing wire schema avoids an independent YAML policy language.
@@ -143,6 +173,25 @@ type Document struct {
 	RegistryMirrors map[string]string `yaml:"registryMirrors,omitempty" json:"registry_mirrors,omitempty"`
 
 	serverTokenPresent bool
+}
+
+// CDSHA configures the highly available CDS (internal/cdsha).
+type CDSHA struct {
+	// DecreeKey is the PEM P-256 public key that signs the operator's
+	// decrees (Genesis, UpdateMeasurements, RotateKey). It is the only
+	// authority over the shared mesh CA key and the replica image set.
+	DecreeKey string `yaml:"decreeKey" json:"decree_key"`
+	// Replicas is the number of CDS pods; one per cds-role node.
+	Replicas int `yaml:"replicas" json:"replicas"`
+	// RecoveryKey, when set, is the PEM P-256 public key the replicas encrypt
+	// their state backups to. Its private half stays with the operator,
+	// offline: with it, the operator can restore a cluster that lost every
+	// replica, mesh CA and secrets included.
+	RecoveryKey string `yaml:"recoveryKey,omitempty" json:"recovery_key,omitempty"`
+	// PinFloor is the lowest CDS pin decree base epoch this node accepts. A
+	// node launched while a later decree is in force carries it, so the
+	// control plane cannot feed it an older decree the operator also signed.
+	PinFloor uint64 `yaml:"pinFloor,omitempty" json:"pin_floor,omitempty"`
 }
 
 // Router selects the router's public hostnames and front-door limits. All
@@ -401,10 +450,9 @@ func Verify(ctx context.Context, cfg Config) (*Verified, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Verified{
-		document: *doc, operatorPub: pub, pins: pins,
-		cdsPins: refvalues.ReferenceValues{Family: pins.Family, Images: pins.Images[:1]},
-	}, nil
+	// CDS clients accept CDS on the server (singleton) and on cds-role nodes
+	// (HA): the server entry plus one per cds launch key.
+	return &Verified{document: *doc, operatorPub: pub, pins: pins, cdsPins: doc.cdsPins(pins)}, nil
 }
 
 var tokenRE = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -420,7 +468,7 @@ func (d *Document) validate() error {
 		return fmt.Errorf("node.name must be an RFC1123 label")
 	}
 	if !d.Role.Valid() {
-		return fmt.Errorf("role must be server or agent")
+		return fmt.Errorf("role must be server, agent or cds")
 	}
 	rules := d.rules()
 	platform, ok := d.Image.platform()
@@ -432,6 +480,25 @@ func (d *Document) validate() error {
 	}
 	if err := platform.validateRegisters(d.Image.RTMRs); err != nil {
 		return err
+	}
+	if len(d.PeerImages) > maxPeerImages {
+		return fmt.Errorf("peerImages: at most %d", maxPeerImages)
+	}
+	for i, img := range d.PeerImages {
+		if img.Platform != d.Image.Platform {
+			return fmt.Errorf("peerImages[%d]: platform must be the node's (%s)", i, d.Image.Platform)
+		}
+		if !registerHex(img.Measurement) {
+			return fmt.Errorf("peerImages[%d].measurement must be 96 lowercase hex characters", i)
+		}
+		if err := platform.validateRegisters(img.RTMRs); err != nil {
+			return fmt.Errorf("peerImages[%d]: %w", i, err)
+		}
+		for _, other := range append([]Image{d.Image}, d.PeerImages[:i]...) {
+			if sameImage(img, other) {
+				return fmt.Errorf("peerImages[%d] repeats an image", i)
+			}
+		}
 	}
 	if d.Server.Address != "" || rules.namesServer {
 		if err := ValidateIPv4(d.Server.Address, true); err != nil {
@@ -492,18 +559,49 @@ func (d *Document) validate() error {
 			return fmt.Errorf("%s must not carry agentOperatorPublicKeys", d.Role)
 		}
 	}
+	// One launch key authorizes exactly one role: a key in two lists would
+	// let a host boot a workload node with the CDS role's binding.
 	seen := []*ecdsa.PublicKey{server}
-	for _, raw := range d.AgentOperatorPublicKeys {
-		key, err := parseLaunchKey(raw)
-		if err != nil {
-			return fmt.Errorf("agentOperatorPublicKeys: %w", err)
+	for _, list := range []struct {
+		name string
+		keys []string
+	}{{"agentOperatorPublicKeys", d.AgentOperatorPublicKeys}, {"cdsOperatorPublicKeys", d.CDSOperatorPublicKeys}} {
+		for _, raw := range list.keys {
+			key, err := parseLaunchKey(raw)
+			if err != nil {
+				return fmt.Errorf("%s: %w", list.name, err)
+			}
+			for _, previous := range seen {
+				if key.Equal(previous) {
+					return fmt.Errorf("server, agent and cds public keys must be distinct and nonduplicated")
+				}
+			}
+			seen = append(seen, key)
 		}
-		for _, previous := range seen {
-			if key.Equal(previous) {
-				return fmt.Errorf("server and agent public keys must be distinct and nonduplicated")
+	}
+	if len(d.CDSOperatorPublicKeys) > maxAgentKeys {
+		return fmt.Errorf("too many cds operator keys")
+	}
+	if (d.CDSHA != nil) != (len(d.CDSOperatorPublicKeys) > 0) {
+		return fmt.Errorf("cdsHA and cdsOperatorPublicKeys go together")
+	}
+	if d.Role == CDS && d.CDSHA == nil {
+		return fmt.Errorf("cds role requires cdsHA")
+	}
+	if d.CDSHA != nil {
+		if k := d.CDSHA.RecoveryKey; k != "" {
+			if _, err := parseLaunchKey(k); err != nil {
+				return fmt.Errorf("cdsHA.recoveryKey: %w", err)
 			}
 		}
-		seen = append(seen, key)
+		if _, err := parseLaunchKey(d.CDSHA.DecreeKey); err != nil {
+			return fmt.Errorf("cdsHA.decreeKey: %w", err)
+		}
+		// Replicas is the cdsha voter seat count: odd (an even set tolerates
+		// no more loss than one fewer) and at most cdsha.MaxVoters.
+		if r := d.CDSHA.Replicas; r < 3 || r%2 == 0 || r > cdsha.MaxVoters {
+			return fmt.Errorf("cdsHA.replicas must be odd, between 3 and %d", cdsha.MaxVoters)
+		}
 	}
 	if d.TLSSAN == "" {
 		d.TLSSAN = defaultTLSSAN
@@ -576,12 +674,18 @@ func (d *Document) authorizeKey(pub []byte, key *ecdsa.PublicKey) error {
 	if key.Equal(server) {
 		return fmt.Errorf("%s must use a different launch key from its server", d.Role)
 	}
-	for _, agent := range d.AgentOperatorPublicKeys {
-		if bytes.Equal(pub, []byte(agent)) {
+	// The measured key must be in this role's list and no other (validate
+	// already rejects a key listed twice).
+	list, name := d.AgentOperatorPublicKeys, "agentOperatorPublicKeys"
+	if d.Role == CDS {
+		list, name = d.CDSOperatorPublicKeys, "cdsOperatorPublicKeys"
+	}
+	for _, allowed := range list {
+		if bytes.Equal(pub, []byte(allowed)) {
 			return nil
 		}
 	}
-	return fmt.Errorf("this %s's measured launch key is not in agentOperatorPublicKeys", d.Role)
+	return fmt.Errorf("this %s node's measured launch key is not in %s", d.Role, name)
 }
 
 func parseLaunchKey(raw string) (*ecdsa.PublicKey, error) {
@@ -645,20 +749,31 @@ func (d *Document) referenceValues() (refvalues.ReferenceValues, error) {
 		return refvalues.ReferenceValues{}, fmt.Errorf("image.platform must be tdx or snp")
 	}
 	pins := refvalues.ReferenceValues{Family: platform.family}
-	keys := append([]string{d.Server.OperatorPublicKey}, d.AgentOperatorPublicKeys...)
-	for i, pub := range keys {
-		name := "server"
-		if i > 0 {
-			name = fmt.Sprintf("agent-%d", i)
-		}
-		entry := remote.ImagePin{Name: name, Digest: mustDecodeHex(d.Image.Measurement), Anchor: []byte(pub)}
-		if len(d.Image.RTMRs) > 0 {
-			entry.Registers = make(map[int][]byte, len(d.Image.RTMRs))
-			for idx, digest := range d.Image.RTMRs {
-				entry.Registers[idx] = mustDecodeHex(digest)
+	type named struct{ name, pub string }
+	keys := []named{{"server", d.Server.OperatorPublicKey}}
+	for i, pub := range d.CDSOperatorPublicKeys {
+		keys = append(keys, named{fmt.Sprintf("cds-%d", i+1), pub})
+	}
+	for i, pub := range d.AgentOperatorPublicKeys {
+		keys = append(keys, named{fmt.Sprintf("agent-%d", i+1), pub})
+	}
+	for _, k := range keys {
+		for i, img := range append([]Image{d.Image}, d.PeerImages...) {
+			name := k.name
+			if i > 0 {
+				// Images of one firmware share their measurement: name a
+				// peer image by its index, which is unique and stable.
+				name = fmt.Sprintf("%s@peer%d", k.name, i)
 			}
+			entry := remote.ImagePin{Name: name, Digest: mustDecodeHex(img.Measurement), Anchor: []byte(k.pub)}
+			if len(img.RTMRs) > 0 {
+				entry.Registers = make(map[int][]byte, len(img.RTMRs))
+				for idx, digest := range img.RTMRs {
+					entry.Registers[idx] = mustDecodeHex(digest)
+				}
+			}
+			pins.Images = append(pins.Images, entry)
 		}
-		pins.Images = append(pins.Images, entry)
 	}
 	// Use the shared parser as a final schema check on the emitted policy.
 	data, err := refvalues.Format(pins)
@@ -670,6 +785,26 @@ func (d *Document) referenceValues() (refvalues.ReferenceValues, error) {
 
 // cdsPort is the image's fixed CDS node port.
 const cdsPort = 30808
+
+// cdsPins is the part of the peer pins that may serve CDS: the server's and
+// the cds keys', on every accepted image.
+func (d *Document) cdsPins(pins refvalues.ReferenceValues) refvalues.ReferenceValues {
+	cds := refvalues.ReferenceValues{Family: pins.Family}
+	for _, pin := range pins.Images {
+		if a := string(pin.Anchor); a == d.Server.OperatorPublicKey || slices.Contains(d.CDSOperatorPublicKeys, a) {
+			cds.Images = append(cds.Images, pin)
+		}
+	}
+	return cds
+}
+
+// maxPeerImages bounds the images of one rollout a node accepts besides its
+// own.
+const maxPeerImages = 4
+
+func sameImage(a, b Image) bool {
+	return a.Platform == b.Platform && a.Measurement == b.Measurement && maps.Equal(a.RTMRs, b.RTMRs)
+}
 
 // CDSURL is derived from the signed server address and the image's fixed port.
 func (d *Document) CDSURL() string {

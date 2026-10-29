@@ -3,12 +3,25 @@
 # original manifest/index bytes makes the pod image pin and NRI digest agree.
 set -euo pipefail
 
-[[ $# -ge 3 && $# -le 5 ]] || { echo "usage: airgap-images.sh IMAGES_FILE CACHE_DIR OUTPUT_DIR [LOCAL_IMAGES_DIR [C8S_REGISTRY]]" >&2; exit 2; }
+[[ $# -ge 3 && $# -le 6 ]] || { echo "usage: airgap-images.sh IMAGES_FILE CACHE_DIR OUTPUT_DIR [LOCAL_IMAGES_DIR [C8S_REGISTRY [LOCAL_NAMES_FILE]]]" >&2; exit 2; }
 images_file=$1
 cache_dir=$2
 output_dir=$3
 local_images_dir=${4:-}
 c8s_registry=${5:-ghcr.io/confidential-dot-ai}
+# "<ref> <name>" lines: a baked image also imported under a node-local name
+# (node-image render's local-names.txt; the HA CDS DaemonSet runs by it).
+local_names_file=${6:-}
+declare -A local_name=()
+if [[ -n "$local_names_file" && -s "$local_names_file" ]]; then
+    while read -r lref lname; do
+        [[ "$lref" =~ ^[^[:space:]@]+@sha256:[a-f0-9]{64}$ && "$lname" =~ ^[^[:space:]@]+:[A-Za-z0-9_][A-Za-z0-9_.-]*$ ]] || {
+            echo "airgap-images: bad local name line '$lref $lname'" >&2
+            exit 1
+        }
+        local_name[$lref]=$lname
+    done < "$local_names_file"
+fi
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=node-guest-image/c8s/image-source.sh
 source "$SCRIPT_DIR/image-source.sh"
@@ -86,8 +99,10 @@ while IFS= read -r ref || [[ -n "$ref" ]]; do
         "$layout/index.json" >/dev/null
     # containerd uses this annotation as the exact imported image name.
     # Only the outer layout index changes; all referenced blobs stay intact.
-    jq -S --arg ref "$ref" --arg digest "$digest" \
-        '.manifests = [.manifests[] | select(.digest == $digest and .annotations["org.opencontainers.image.ref.name"] == "measured") | .annotations = {"io.containerd.image.name": $ref, "org.opencontainers.image.ref.name": $ref}]' \
+    jq -S --arg ref "$ref" --arg digest "$digest" --arg local "${local_name[$ref]:-}" \
+        '.manifests = [.manifests[] | select(.digest == $digest and .annotations["org.opencontainers.image.ref.name"] == "measured")
+           | (.annotations = {"io.containerd.image.name": $ref, "org.opencontainers.image.ref.name": $ref}),
+             (select($local != "") | .annotations = {"io.containerd.image.name": $local, "org.opencontainers.image.ref.name": $local})]' \
         "$layout/index.json" > "$work/index.json"
     # The bytes oras writes; a cached layout's copy is never archived.
     printf '%s' '{"imageLayoutVersion":"1.0.0"}' > "$work/oci-layout"

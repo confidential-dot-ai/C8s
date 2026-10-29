@@ -155,13 +155,22 @@ func stageVerified(cfg Config, v *Verified) error {
 }
 
 type roleFragment struct {
-	TokenFile      string `yaml:"token-file"`
-	AgentTokenFile string `yaml:"agent-token-file,omitempty"`
-	Server         string `yaml:"server,omitempty"`
-	NodeName       string `yaml:"node-name"`
-	NodeIP         string `yaml:"node-ip,omitempty"`
-	NodeExternalIP string `yaml:"node-external-ip,omitempty"`
+	TokenFile      string   `yaml:"token-file"`
+	AgentTokenFile string   `yaml:"agent-token-file,omitempty"`
+	Server         string   `yaml:"server,omitempty"`
+	NodeName       string   `yaml:"node-name"`
+	NodeIP         string   `yaml:"node-ip,omitempty"`
+	NodeExternalIP string   `yaml:"node-external-ip,omitempty"`
+	NodeLabel      []string `yaml:"node-label,omitempty"`
+	NodeTaint      []string `yaml:"node-taint,omitempty"`
 }
+
+// CDS-role node label and taint. The taint is placement only: the NRI floor
+// on a cds node is what refuses every pod but CDS.
+const (
+	CDSNodeLabel = "c8s.confidential.ai/role=cds"
+	CDSNodeTaint = "c8s.confidential.ai/role=cds:NoSchedule"
+)
 
 // rke2Registries is the mirrors section of RKE2's registries.yaml. Only the
 // mirror is listed; containerd tries the registry itself last regardless.
@@ -188,6 +197,10 @@ func rke2Fragment(doc *Document) roleFragment {
 		out.AgentTokenFile = agentTokenPath
 	} else {
 		out.Server = "https://" + doc.Server.Address + ":9345"
+	}
+	if doc.Role == CDS {
+		out.NodeLabel = []string{CDSNodeLabel}
+		out.NodeTaint = []string{CDSNodeTaint}
 	}
 	return out
 }
