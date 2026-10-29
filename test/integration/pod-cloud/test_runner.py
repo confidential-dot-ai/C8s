@@ -21,6 +21,15 @@ TIMEOUT_ASSERTIONS = [
     "normalScheduler", "persistedVerificationDeadline", "providerDeletion",
     "readinessWithdrawn", "restartRecovery", "timeoutTermination",
 ]
+WARM_ASSERTIONS = [
+    "assignmentBeforePOST", "attestedReadiness", "certificateIdentity", "cleanup",
+    "conflictingAssignmentRejected", "exactDigests", "genericIdle", "normalScheduler",
+    "poolDrain", "providerDeletion", "restartRecovery", "uidFencedClaim",
+]
+SCENARIO_ASSERTIONS = {
+    "connected": ASSERTIONS, "verification-timeout": TIMEOUT_ASSERTIONS,
+    "warm-assignment": WARM_ASSERTIONS,
+}
 PROVIDER_SOURCE = "1" * 40
 DOUBLE = r'''#!/usr/bin/env python3
 import datetime
@@ -198,8 +207,7 @@ class RunnerTests(unittest.TestCase):
         self.env = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ["PATH"],
                         C8S_PODCLOUD_LIVE="1", KUBECONFIG=str(self.normal_kubeconfig),
                         PODCLOUD_DOUBLE_ROOT=str(self.root), PODCLOUD_DIRTY="0",
-                        PODCLOUD_ASSERTIONS=json.dumps({"connected": ASSERTIONS,
-                                                       "verification-timeout": TIMEOUT_ASSERTIONS}))
+                        PODCLOUD_ASSERTIONS=json.dumps(SCENARIO_ASSERTIONS))
 
     def run_driver(self, mode="run", scenario="pass"):
         args = ["bash", str(RUNNER), mode]
@@ -224,7 +232,7 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(self.normal_kubeconfig.read_text(), "user context must stay unchanged")
 
     def test_resolved_scenarios_and_provider_build_provenance(self):
-        for scenario in (None, "", "connected", "verification-timeout"):
+        for scenario in (None, "", *SCENARIO_ASSERTIONS):
             for dirty in (False, True):
                 with self.subTest(scenario=scenario, dirty=dirty):
                     self.state = self.root / (str(scenario) + str(dirty))
@@ -240,7 +248,7 @@ class RunnerTests(unittest.TestCase):
                     self.assertEqual(build, {"source": PROVIDER_SOURCE, "dirty": dirty,
                         "providerBinarySHA256": hashlib.sha256((self.state / "provider.test").read_bytes()).hexdigest()})
                     self.assertEqual(receipt["providerBinarySHA256"], build["providerBinarySHA256"])
-                    expected = TIMEOUT_ASSERTIONS if scenario == "verification-timeout" else ASSERTIONS
+                    expected = SCENARIO_ASSERTIONS[scenario or "connected"]
                     self.assertEqual(receipt["assertions"], {key: True for key in expected})
 
     def test_invalid_scenario_is_rejected_before_build_or_provisioning(self):
@@ -251,12 +259,12 @@ class RunnerTests(unittest.TestCase):
                 self.input.write_text(json.dumps(self.config))
                 result = self.run_driver()
                 self.assertNotEqual(result.returncode, 0)
-                self.assertIn("scenario must be connected or verification-timeout", result.stderr)
+                self.assertIn("scenario must be connected, verification-timeout or warm-assignment", result.stderr)
                 self.assertFalse((self.root / "calls.jsonl").exists())
                 self.assertFalse((self.state / "execution-started").exists())
 
     def test_scenario_assertions_and_binary_provenance_must_match(self):
-        for requested in ("connected", "verification-timeout"):
+        for requested in SCENARIO_ASSERTIONS:
             self.config["scenario"] = requested
             self.input.write_text(json.dumps(self.config))
             for scenario in ("wrong-scenario", "missing-scenario", "wrong-assertions", "missing-proof",

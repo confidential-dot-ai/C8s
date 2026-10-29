@@ -232,12 +232,33 @@ time to the ten-minute failure window. The injected fault is provider result
 unavailability/latency; it does not simulate a hardware attestation failure.
 The private `verification-timeout.json` records the deadline and observation times.
 
-Both scenarios compile the provider from the current checkout. Its commit,
+Set `"scenario": "warm-assignment"` to test generic boot and a warm allocation.
+This needs a paired image containing the generic assignment guest, plus capacity
+for CDS, one assigned Pod guest, and one idle replacement (six Cloud vCPUs and
+24 GiB with the example shape). The provider starts with `maxPods=2` and
+`warmTarget=1`. The driver verifies empty attested measurements and no Pod authority
+before scheduling, then observes normal scheduling, a reciprocal UID-fenced claim,
+and the exact signed assignment persisted before its real POST. It requires a
+conflicting signed assignment to be rejected, authenticated readiness and exact
+workload digests, stable assignment and certificate identity across provider
+restart, and draining the unused allocation with `warmTarget=0`. Deletion must
+confirm Cloud termination before releasing the assigned allocation.
+
+This scenario uses the production reconciler and elected manager workers with
+observing wrappers around real Cloud and assignment clients. It records ownership
+of each allocation generation before creation, including unclaimed replacement
+guests. The run's private evidence includes the signed assignment and must stay
+private. Existing scheduler integration tests separately cover competing claims,
+lost assignment replies, stale writes, forced deletion and replacement generations.
+
+All scenarios compile the provider from the current checkout. Its commit,
 dirty status and executable hash are recorded in `provider-build.json`; the
 result's executable hash must match the runner that was built and executed.
 The input `source` still identifies the paired guest/CLI publication. This lets
 provider-only scenarios run before merging the provider or publishing new guest
 images, without claiming coverage of guest features absent from the pinned image.
+The `warm-assignment` scenario requires those guest features in its pinned image;
+a successful static or timeout run does not establish warm-assignment acceptance.
 
 Infrastructure DaemonSets in a real cluster must also exclude Pod-CVM virtual
 nodes. Broad `Exists` tolerations can bypass their `NoSchedule` taint; critical

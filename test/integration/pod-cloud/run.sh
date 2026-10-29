@@ -108,8 +108,8 @@ fi
 
 if [[ "$mode" == run ]]; then
     scenario="$(jq -er 'if .scenario == null or .scenario == "" then "connected" else .scenario end |
-        select(. == "connected" or . == "verification-timeout")' "$input")" || {
-        echo 'scenario must be connected or verification-timeout' >&2; exit 1;
+        select(. == "connected" or . == "verification-timeout" or . == "warm-assignment")' "$input")" || {
+        echo 'scenario must be connected, verification-timeout or warm-assignment' >&2; exit 1;
     }
     command -v go >/dev/null || { echo 'go is required to build the live harness' >&2; exit 1; }
     for entry in tokenFile manifestFile cliFile probeFile; do
@@ -285,6 +285,8 @@ PY
       .cliSHA256 == $cfg[0].cliSHA256 and .manifestDigest == $cfg[0].manifestDigest and .meshImage == $cfg[0].meshImage and
       (.assertions | keys == (if $scenario == "verification-timeout" then
         ["attestedReadiness","cleanup","exactDigests","lateVerifiedResultRejected","normalScheduler","persistedVerificationDeadline","providerDeletion","readinessWithdrawn","restartRecovery","timeoutTermination"]
+      elif $scenario == "warm-assignment" then
+        ["assignmentBeforePOST","attestedReadiness","certificateIdentity","cleanup","conflictingAssignmentRejected","exactDigests","genericIdle","normalScheduler","poolDrain","providerDeletion","restartRecovery","uidFencedClaim"]
       else
         ["attestedReadiness","cleanup","exactDigests","meshDNSInternet","negativeProbes","normalScheduler","providerDeletion","readinessCycle","restartRecovery","timedRenewal"]
       end)) and

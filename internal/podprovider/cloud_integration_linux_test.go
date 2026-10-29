@@ -134,6 +134,13 @@ func TestPodProviderCloud(t *testing.T) {
 	}
 	t.Log("exact paired CDS booted and its CA was attested")
 	h = newProviderControlPlaneWithTimeout(t, cfg, 135*time.Minute)
+	if r.cfg.scenario() == "warm-assignment" {
+		if err = r.warmAssignment(ctx, t, h, cfg, podA); err != nil {
+			t.Fatal(err)
+		}
+		accepted = true
+		return
+	}
 	start := func() {
 		h.cfg = cfg
 		h.startManager(t, func(mgr ctrl.Manager, _ string) error { return Setup(mgr, cfg) })
@@ -282,8 +289,8 @@ func (r *cloudRun) submit(ctx context.Context, h *providerControlPlane, pod *cor
 }
 
 func (r *cloudRun) snapshot(ctx context.Context, h *providerControlPlane, cfg *Config, side string) (*record, error) {
-	owned := r.ledger.Owned[side]
-	if owned == nil {
+	owned, ok := r.submittedPod(side)
+	if !ok {
 		return nil, errors.New("missing Pod ownership intent")
 	}
 	verifier := &Reconciler{client: h.client, cfg: cfg}
@@ -293,6 +300,17 @@ func (r *cloudRun) snapshot(ctx context.Context, h *providerControlPlane, cfg *C
 	}
 	if string(rec.UID) != owned.UID {
 		return nil, errors.New("record UID differs from durable run intent")
+	}
+	if rec.Pool != nil && rec.PoolCommitted {
+		p, slot, err := r.cloudPool(ctx, verifier, rec, secret)
+		if err != nil {
+			return nil, err
+		}
+		if err = r.bindCloudPod(side, owned, p, slot); err != nil {
+			return nil, err
+		}
+		// This returned copy projects the allocation identity for observers only.
+		rec.InstanceID = p.InstanceID
 	}
 	// Contains signed launch material. The whole run directory is private and is
 	// never an upload artifact; this export survives control-plane/process loss.
@@ -367,8 +385,8 @@ func (r *cloudRun) waitBoot(ctx context.Context, h *providerControlPlane, cfg *C
 // A submitted Pod can be preempted while Cloud is still booting. Waiting for a
 // now-deleted guest to attest hides the scheduler cause and wastes the deadline.
 func (r *cloudRun) bootPod(ctx context.Context, h *providerControlPlane, cfg *Config, side string) (*corev1.Pod, error) {
-	owned := r.ledger.Owned[side]
-	if owned == nil || owned.UID == "" {
+	owned, ok := r.submittedPod(side)
+	if !ok || owned.UID == "" {
 		return nil, errors.New("missing submitted Pod identity")
 	}
 	pod := &corev1.Pod{}
@@ -402,7 +420,7 @@ func (r *cloudRun) bootPod(ctx context.Context, h *providerControlPlane, cfg *Co
 
 func (r *cloudRun) bootFailure(side, reason string, pod *corev1.Pod, rec *record) error {
 	evidence := map[string]any{"side": side, "failure": reason}
-	if owned := r.ledger.Owned[side]; owned != nil {
+	if owned, ok := r.submittedPod(side); ok {
 		evidence["expectedPodUID"] = owned.UID
 	}
 	if pod != nil {
@@ -436,7 +454,7 @@ func (r *cloudRun) readStatus(ctx context.Context, g *cloudGuest) ([]byte, podcv
 	if err != nil {
 		return nil, podcvmtest.PodState{}, err
 	}
-	if r.cfg.scenario() == "verification-timeout" {
+	if r.cfg.scenario() != "connected" {
 		state, err := standaloneCloudState(projection, string(g.rec.UID))
 		return raw, state, err
 	}
@@ -620,8 +638,8 @@ func (r *cloudRun) deleteThroughProvider(ctx context.Context, h *providerControl
 	ctx, cancel := context.WithTimeout(ctx, 8*time.Minute)
 	defer cancel()
 	for _, side := range []string{"b", "a"} {
-		o := r.ledger.Owned[side]
-		if o == nil {
+		o, ok := r.submittedPod(side)
+		if !ok {
 			continue // Single-Pod scenarios never submit the other side.
 		}
 		pod := &corev1.Pod{}
@@ -647,8 +665,7 @@ func (r *cloudRun) deleteThroughProvider(ctx context.Context, h *providerControl
 				return err
 			}
 			if missing && apierrors.IsNotFound(podErr) && in != nil && in.Status == "terminated" {
-				o.Terminated = true
-				if err = r.save(); err != nil {
+				if err = r.markTerminated(side); err != nil {
 					return err
 				}
 				break

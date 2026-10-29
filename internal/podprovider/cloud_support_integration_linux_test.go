@@ -18,9 +18,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -69,32 +71,43 @@ type cloudReceipt struct {
 	} `json:"attestation"`
 }
 
+type cloudPodIntent struct {
+	UID        string `json:"uid"`
+	Key        string `json:"key"`
+	Allocation string `json:"allocation,omitempty"`
+}
+
 type cloudOwned struct {
-	Key        string            `json:"key"`
-	UID        string            `json:"uid,omitempty"`
-	Image      string            `json:"image"`
-	LaunchKey  string            `json:"launchKey"`
-	Labels     map[string]string `json:"labels"`
-	IntentAt   time.Time         `json:"intentAt"`
-	Attempted  bool              `json:"attempted"`
-	Receipt    *cloudReceipt     `json:"receipt,omitempty"`
-	Terminated bool              `json:"terminated,omitempty"`
+	Key         string            `json:"key"`
+	UID         string            `json:"uid,omitempty"`
+	Image       string            `json:"image"`
+	LaunchKey   string            `json:"launchKey"`
+	Labels      map[string]string `json:"labels"`
+	IntentAt    time.Time         `json:"intentAt"`
+	Attempted   bool              `json:"attempted"`
+	Receipt     *cloudReceipt     `json:"receipt,omitempty"`
+	Terminated  bool              `json:"terminated,omitempty"`
+	SlotName    string            `json:"slotName,omitempty"`
+	SlotUID     string            `json:"slotUID,omitempty"`
+	RequestHash string            `json:"requestHash,omitempty"`
 }
 
 type cloudLedger struct {
-	Version        int                     `json:"version"`
-	Run            string                  `json:"run"`
-	Config         cloudRunConfig          `json:"config"`
-	CredentialHash string                  `json:"credentialHash"`
-	Before         map[string]cloudReceipt `json:"before"`
-	Owned          map[string]*cloudOwned  `json:"owned"`
-	Complete       bool                    `json:"complete"`
+	Version        int                       `json:"version"`
+	Run            string                    `json:"run"`
+	Config         cloudRunConfig            `json:"config"`
+	CredentialHash string                    `json:"credentialHash"`
+	Before         map[string]cloudReceipt   `json:"before"`
+	Owned          map[string]*cloudOwned    `json:"owned"`
+	Pods           map[string]cloudPodIntent `json:"pods,omitempty"`
+	Complete       bool                      `json:"complete"`
 }
 
 type cloudRun struct {
 	dir           string
 	cfg           cloudRunConfig
 	api           *cloudClient
+	ledgerMu      sync.Mutex
 	ledger        cloudLedger
 	lock          *os.File
 	cleanupBudget time.Duration // Test-only shortening of the per-instance wait; never a live input.
@@ -149,15 +162,21 @@ func cloudWriteBytes(path string, data []byte) error {
 }
 
 func (r *cloudRun) save() error {
+	r.ledgerMu.Lock()
+	defer r.ledgerMu.Unlock()
+	return r.saveLocked(r.ledger)
+}
+
+func (r *cloudRun) saveLocked(ledger cloudLedger) error {
 	marker := filepath.Join(r.dir, "cloud-authority-issued.json")
 	if _, err := os.Lstat(marker); os.IsNotExist(err) {
-		if err = cloudWrite(marker, map[string]string{"run": r.ledger.Run}); err != nil {
+		if err = cloudWrite(marker, map[string]string{"run": ledger.Run}); err != nil {
 			return err
 		}
 	} else if err != nil {
 		return err
 	}
-	return cloudWrite(filepath.Join(r.dir, "ledger.json"), r.ledger)
+	return cloudWrite(filepath.Join(r.dir, "ledger.json"), ledger)
 }
 
 func openCloudRun(config, dir, mode string) (*cloudRun, error) {
@@ -250,7 +269,7 @@ func (c cloudRunConfig) instanceCount() int64 {
 }
 
 func (c cloudRunConfig) validate(artifacts bool) error {
-	if c.scenario() != "connected" && c.scenario() != "verification-timeout" {
+	if c.scenario() != "connected" && c.scenario() != "verification-timeout" && c.scenario() != "warm-assignment" {
 		return errors.New("unknown live Cloud acceptance scenario")
 	}
 	if c.CloudURL != "https://api.cloud.confidential.ai" || !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(c.Source) || !cloudVersion.MatchString(c.Image) || c.CDSImage != strings.Replace(c.Image, "c8s-pod@", "c8s-pod-cds@", 1) {
@@ -522,9 +541,9 @@ func (r *cloudRun) preflight(ctx context.Context) error {
 }
 
 func (r *cloudRun) getOwned(ctx context.Context, side string) (*instance, error) {
-	o := r.ledger.Owned[side]
-	if o == nil {
-		return nil, errors.New("missing owned intent")
+	o, handle, err := r.ownedSnapshot(side)
+	if err != nil {
+		return nil, err
 	}
 	id := ""
 	if o.Receipt != nil {
@@ -547,8 +566,17 @@ func (r *cloudRun) getOwned(ctx context.Context, side string) (*instance, error)
 		return nil, err
 	}
 	if o.Receipt == nil {
-		o.Receipt = &receipt
-		if err := r.save(); err != nil {
+		if err := r.updateLedger(func(ledger *cloudLedger) error {
+			current := ledger.Owned[handle]
+			if current == nil || current.Key != o.Key {
+				return errors.New("owned intent changed while obtaining its receipt")
+			}
+			if current.Receipt != nil && !reflect.DeepEqual(*current.Receipt, receipt) {
+				return errors.New("owned receipt changed during lookup")
+			}
+			current.Receipt = &receipt
+			return nil
+		}); err != nil {
 			return nil, err
 		}
 	}
@@ -556,7 +584,13 @@ func (r *cloudRun) getOwned(ctx context.Context, side string) (*instance, error)
 }
 
 func (r *cloudRun) checkOwned(o *cloudOwned, in cloudReceipt) error {
-	if _, exists := r.ledger.Before[in.ID]; exists {
+	if !o.Attempted {
+		return errors.New("refusing an instance without a durable create attempt")
+	}
+	r.ledgerMu.Lock()
+	_, exists := r.ledger.Before[in.ID]
+	r.ledgerMu.Unlock()
+	if exists {
 		return errors.New("refusing a pre-existing Cloud instance")
 	}
 	launch := "c8s-pod/1"
@@ -578,8 +612,12 @@ func (r *cloudRun) checkOwned(o *cloudOwned, in cloudReceipt) error {
 
 func (r *cloudRun) cleanup(ctx context.Context) error {
 	var failures []error
-	for _, side := range []string{"b", "a", "cds"} {
-		o := r.ledger.Owned[side]
+	for _, side := range r.ownedHandles() {
+		o, _, snapshotErr := r.ownedSnapshot(side)
+		if snapshotErr != nil {
+			failures = append(failures, snapshotErr)
+			continue
+		}
 		if o == nil || o.Terminated {
 			continue
 		}
@@ -610,12 +648,14 @@ func (r *cloudRun) cleanup(ctx context.Context) error {
 	if len(failures) != 0 {
 		return errors.Join(failures...)
 	}
-	r.ledger.Complete = true
-	return r.save()
+	return r.updateLedger(func(ledger *cloudLedger) error { ledger.Complete = true; return nil })
 }
 
 func (r *cloudRun) cleanupOwned(ctx context.Context, side string) error {
-	o := r.ledger.Owned[side]
+	o, handle, err := r.ownedSnapshot(side)
+	if err != nil {
+		return err
+	}
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -645,8 +685,10 @@ func (r *cloudRun) cleanupOwned(ctx context.Context, side string) error {
 			return err
 		}
 	}
-	o.Terminated = true
-	return r.save()
+	return r.updateLedger(func(ledger *cloudLedger) error {
+		ledger.Owned[handle].Terminated = true
+		return nil
+	})
 }
 
 func cloudPause(ctx context.Context, delay time.Duration) error {

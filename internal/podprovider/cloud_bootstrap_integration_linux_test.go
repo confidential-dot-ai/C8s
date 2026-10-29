@@ -45,10 +45,10 @@ HTTPServer(("0.0.0.0", 8080), Handler).serve_forever()
 
 func (r *cloudRun) workload(side string, peer *endpoint) (*corev1.Pod, map[string]any, error) {
 	program, names := podfixture.Script, []string{"app", "checker"}
-	verification := r.cfg.scenario() == "verification-timeout"
+	verification := r.cfg.scenario() != "connected"
 	if verification {
 		if side != "a" || peer != nil {
-			return nil, nil, errors.New("verification timeout requires one standalone A workload")
+			return nil, nil, errors.New("standalone scenario requires one A workload")
 		}
 		program, names = cloudVerificationScript, []string{"app"}
 	}
@@ -227,6 +227,9 @@ func (r *cloudRun) bootstrap(ctx context.Context) (*Config, *corev1.Pod, endpoin
 		return nil, nil, cds, err
 	}
 	cfg := &Config{ProviderID: r.ledger.Run, NodeName: r.ledger.Run, Namespace: "podcloud-system", CloudURL: r.cfg.CloudURL, CloudTokenFile: r.cfg.TokenFile, Image: r.cfg.Image, ImageManifestFile: r.cfg.ManifestFile, LaunchKeyFile: providerKey, ServerAddress: cds.Host, ServerPublicKeyFile: filepath.Join(bundle, "server/pubkey"), WorkloadsFile: workloadPath, ClusterID: r.ledger.Run, Size: r.cfg.Size, Location: r.cfg.Location, VCPUs: r.cfg.VCPUs, MemoryMiB: r.cfg.MemoryMiB, ReservedMemoryMiB: 1024, MaxPods: 2, PublicIP: "shared"}
+	if r.cfg.scenario() == "warm-assignment" {
+		cfg.WarmTarget = 1
+	}
 	if err = cloudWrite(filepath.Join(r.dir, "provider.json"), cfg); err != nil {
 		return nil, nil, cds, err
 	}
@@ -335,6 +338,18 @@ func (r *cloudRun) addB(ctx context.Context, cds endpoint, peer endpoint, cfg *C
 // the exact provider's idempotency keys, never discovery by a display name.
 func (r *cloudRun) recordPod(pod *corev1.Pod, cfg *Config, side string) error {
 	key := identityKey(cfg.ProviderID, string(pod.UID))
-	r.ledger.Owned[side] = &cloudOwned{Key: key, UID: string(pod.UID), Image: cfg.Image, LaunchKey: cfg.pub, Labels: map[string]string{"podcvm-provider": cfg.ProviderID, "podcvm-uid": strings.TrimPrefix(key, "podcvm-")}, IntentAt: time.Now().UTC(), Attempted: true}
-	return r.save()
+	return r.updateLedger(func(ledger *cloudLedger) error {
+		if r.cfg.scenario() == "warm-assignment" {
+			if ledger.Pods == nil {
+				ledger.Pods = map[string]cloudPodIntent{}
+			}
+			if _, exists := ledger.Pods[side]; exists {
+				return errors.New("submitted Pod identity already exists")
+			}
+			ledger.Pods[side] = cloudPodIntent{UID: string(pod.UID), Key: key}
+		} else {
+			ledger.Owned[side] = &cloudOwned{Key: key, UID: string(pod.UID), Image: cfg.Image, LaunchKey: cfg.pub, Labels: map[string]string{"podcvm-provider": cfg.ProviderID, "podcvm-uid": strings.TrimPrefix(key, "podcvm-")}, IntentAt: time.Now().UTC(), Attempted: true}
+		}
+		return nil
+	})
 }

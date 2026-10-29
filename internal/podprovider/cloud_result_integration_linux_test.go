@@ -34,6 +34,10 @@ func (r *cloudRun) writeResult(h *providerControlPlane) error {
 		assertions = map[string]bool{"normalScheduler": true, "attestedReadiness": true, "exactDigests": true, "persistedVerificationDeadline": true, "restartRecovery": true, "lateVerifiedResultRejected": true, "readinessWithdrawn": true, "timeoutTermination": true, "providerDeletion": true, "cleanup": true}
 		scope = "real Cloud TDX boot and production verification; injected result unavailability and latency across provider restart; confirmed timeout termination before Pod deletion"
 	}
+	if r.cfg.scenario() == "warm-assignment" {
+		assertions = map[string]bool{"assignmentBeforePOST": true, "attestedReadiness": true, "certificateIdentity": true, "cleanup": true, "conflictingAssignmentRejected": true, "exactDigests": true, "genericIdle": true, "normalScheduler": true, "poolDrain": true, "providerDeletion": true, "restartRecovery": true, "uidFencedClaim": true}
+		scope = "real Kubernetes scheduling and production provider components with durable observation wrappers; real Cloud TDX generic boot, authenticated one-time assignment, provider restart, refill and drain"
+	}
 	return cloudWrite(filepath.Join(r.dir, "result.json"), map[string]any{
 		"passed": true, "run": r.ledger.Run, "scenario": r.cfg.scenario(),
 		"source": r.cfg.Source, "sourceProvenance": "caller-supplied guest/CLI release provenance; local artifact hashes and remote measured image are enforced",

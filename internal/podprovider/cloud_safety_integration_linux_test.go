@@ -257,7 +257,7 @@ func TestCloudAcceptanceUncertainSiblingDoesNotStarveKnownReceipt(t *testing.T) 
 	if err := r.cleanup(t.Context()); err == nil {
 		t.Fatal("uncertain sibling accepted as clean")
 	}
-	if !a.Terminated || r.ledger.Owned["b"].Terminated || r.ledger.Complete {
+	if !r.ledger.Owned["a"].Terminated || r.ledger.Owned["b"].Terminated || r.ledger.Complete {
 		t.Fatal("uncertain sibling starved confirmed cleanup")
 	}
 	if lookups.Load() != 1 {
