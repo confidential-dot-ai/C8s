@@ -15,12 +15,13 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 )
 
 const testWorkloads = `{"schema":"c8s.allowlist/v1","workloads":{"c8s-router":{"containers":[{"digest":"sha256:` +
 	"1111111111111111111111111111111111111111111111111111111111111111" + `"}]}}}`
 
-const testServicePattern = `^[a-z0-9-]+[.][a-z0-9-]+[.]svc$`
+const testServicePattern = cmdsutil.ServiceDNSSANPattern
 
 func testKey(t *testing.T) (*ecdsa.PublicKey, string) {
 	t.Helper()

@@ -20,6 +20,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
+	"github.com/confidential-dot-ai/c8s/internal/fileutil"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
@@ -310,22 +311,12 @@ func writeSignedDocument(dir string, doc Document, key *ecdsa.PrivateKey, pub st
 	if err != nil {
 		return err
 	}
-	if err := os.Mkdir(dir, 0o700); err != nil {
-		return fmt.Errorf("create %s: %w", dir, err)
-	}
-	defer func() {
-		if err != nil {
-			os.RemoveAll(dir)
-		}
-	}()
-	if err := writeNew(filepath.Join(dir, pubkeyFile), []byte(pub), 0o644); err != nil {
-		return err
-	}
-	// The document carries the join tokens: operator-readable only.
-	if err := writeNew(filepath.Join(dir, documentFile), data, 0o600); err != nil {
-		return err
-	}
-	return writeNew(filepath.Join(dir, signatureFile), []byte(signature+"\n"), 0o600)
+	return fileutil.WriteNewDir(dir, 0o700, []fileutil.NewFile{
+		{Name: pubkeyFile, Data: []byte(pub), Mode: 0o644},
+		// The document carries the join tokens: operator-readable only.
+		{Name: documentFile, Data: data, Mode: 0o600},
+		{Name: signatureFile, Data: []byte(signature + "\n"), Mode: 0o600},
+	})
 }
 
 func newLaunchKey() (*ecdsa.PrivateKey, error) {

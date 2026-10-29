@@ -37,6 +37,11 @@ func ReadSANFile(flag, path string) (string, error) {
 	return value, nil
 }
 
+// ServiceDNSSANPattern matches an in-cluster Service DNS name,
+// <service>.<namespace>.svc. The chart renders the same literal into the CDS
+// command line (templates/_certificates.tpl, c8s.cdsDnsSanPattern).
+const ServiceDNSSANPattern = `^[a-z0-9-]+[.][a-z0-9-]+[.]svc$`
+
 // hostnameLabelRe accepts RFC 1123 labels: 1–63 alphanumeric characters,
 // with hyphens allowed in the middle.
 var hostnameLabelRe = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$`)

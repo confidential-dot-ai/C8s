@@ -29,6 +29,7 @@ import (
 	sigsyaml "sigs.k8s.io/yaml"
 
 	acmecmd "github.com/confidential-dot-ai/c8s/internal/cmds/acme"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
@@ -4114,7 +4115,7 @@ func TestChartCDSDnsSanPatternAcceptsAnyNamespace(t *testing.T) {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
 	args := renderedDeploymentContainer(t, out, "c8s-cds", "cds").Args
-	const wantArg = "--dns-san-pattern=^[a-z0-9-]+[.][a-z0-9-]+[.]svc$"
+	const wantArg = "--dns-san-pattern=" + cmdsutil.ServiceDNSSANPattern
 	assertContainerHasArg(t, "cds", args, wantArg)
 
 	re := regexp.MustCompile(strings.TrimPrefix(wantArg, "--dns-san-pattern="))
@@ -4159,7 +4160,7 @@ func TestChartCDSDnsSanPatternsAppendPublicHostname(t *testing.T) {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
 	args := renderedDeploymentContainer(t, out, "c8s-cds", "cds").Args
-	assertContainerHasArg(t, "cds", args, "--dns-san-pattern=^[a-z0-9-]+[.][a-z0-9-]+[.]svc$")
+	assertContainerHasArg(t, "cds", args, "--dns-san-pattern="+cmdsutil.ServiceDNSSANPattern)
 	assertContainerHasArg(t, "cds", args, "--dns-san-pattern="+public)
 }
 
