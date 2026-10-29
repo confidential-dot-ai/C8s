@@ -7,6 +7,7 @@
 
 : "${KUBECONFIG:?the attested kubeconfig from the lane}"
 : "${C8S_ALLOWLIST_URL:?the allowlist front door of the guest}"
+: "${C8S_CDS_URL:?the CDS VM the launch of this cluster names}"
 : "${C8S_OPERATOR_KEY:?the operator key of the launch}"
 PLATFORM="${SUITE_PLATFORM:-metal}"
 # Not the router's nginx digest: the served allowlist carries the router's
@@ -80,11 +81,10 @@ scratch_encrypted() { echo yes; }
 # allowlist route, which forwards the /allowlist routes unchanged. The
 # operator's credential may neither exec, port-forward nor write in $NS, and
 # a pod the run keeps is a mesh member whose traffic to the CDS is dropped,
-# so the CDS's other routes are sent from here to its Service's node port on
-# the guest's address, as is the CDS's own serving certificate read; its
-# Service answers unsupported below. The launch bundle's key is the run's operator key; the
-# token minter is built from the checkout on first use, with the Go
-# toolchain that built the CLI.
+# so the CDS's other routes are sent from here to the CDS VM itself, as is
+# the CDS's own serving certificate read. The launch bundle's key is the run's
+# operator key; the token minter is built from the checkout on first use, with
+# the Go toolchain that built the CLI.
 cds_url() { echo "${C8S_ALLOWLIST_URL%/}"; }
 cds_request() {
     case "$2" in
@@ -92,27 +92,15 @@ cds_request() {
         *) cds_pod_request "$@" ;;
     esac
 }
+# The CDS VM the lane launched this cluster on, which answers the harness host
+# on both platforms: it serves a listener of its own, not a node port of the
+# guest's Kubernetes, which on the SNP lane's bridge interface never answers
+# here (run 40547124565: every write to it timed out on SNP while the TDX lane
+# of the same run passed them). It is the address an injected client dials too.
+cds_vm_url() { echo "${C8S_CDS_URL%/}"; }
+cds_pod_url() { cds_vm_url; }
 # cds_pod_request <method> <route> [body-file] [authorization] [client-cert] [client-key] [header...]
-cds_pod_request() { local url; url="$(cds_node_url)" || return; http_request "$url" "$@"; }
-cds_pod_url() { cds_node_url; }
-# A member requester's CDS requests leave from here (cds_pod_request), so
-# no address lets the CDS see the pod's own as the source.
-cds_service_url() { return "$UNSUPPORTED"; }
-# The guest's address from the allowlist URL, with the CDS Service's node port.
-# Not on the SNP lane: its guest hangs off a bridge interface and its node
-# port never answers the harness host (run 40547124565: every write to it
-# timed out on SNP while the TDX lane of the same run passed them), so the
-# routes behind it are out of reach there; answered before a dial that
-# would cost its 30 s timeout.
-cds_node_url() {
-    local host port
-    [ "$PLATFORM" != snp-metal ] || return "$UNSUPPORTED"
-    host="${C8S_ALLOWLIST_URL#*://}"
-    host="${host%%/*}"
-    port="$(kubectl -n "$NS" get svc c8s-cds -o jsonpath='{.spec.ports[0].nodePort}')" || return
-    [ -n "$port" ] || { echo "backend: the CDS Service has no node port" >&2; return 1; }
-    echo "https://${host%:*}:$port"
-}
+cds_pod_request() { local url; url="$(cds_vm_url)" || return; http_request "$url" "$@"; }
 cds_read() {
     local path
     [ "${2:-}" != plain ] || return "$UNSUPPORTED"
@@ -121,7 +109,7 @@ cds_read() {
 }
 router_url() { echo "${C8S_ALLOWLIST_URL%/}"; }
 # The leaf, the first certificate curl's %{certs} lists for the chain.
-cds_serving_cert() { local url; url="$(cds_node_url)" || return; serving_cert "$url"; }
+cds_serving_cert() { local url; url="$(cds_vm_url)" || return; serving_cert "$url"; }
 # No node shell, so the plugin's health socket is out of reach.
 applied_version() { return "$UNSUPPORTED"; }
 cds_block() { return "$UNSUPPORTED"; }
@@ -159,8 +147,11 @@ cds_pins() {
 }
 
 # Reconfiguring or stopping node services, and searching the node, need a
-# shell on it; an issuance from the harness host needs a TEE it has not.
+# shell on it; an issuance from the harness host needs a TEE it has not. The
+# CDS VM is outside the cluster and outside the operator's reach, so what it
+# runs with cannot be read here either.
 cds_restart_with() { return "$UNSUPPORTED"; }
+cds_arg() { return "$UNSUPPORTED"; }
 attestation_service_stop() { return "$UNSUPPORTED"; }
 attestation_service_start() { return "$UNSUPPORTED"; }
 private_keys() { return "$UNSUPPORTED"; }

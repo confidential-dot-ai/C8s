@@ -28,13 +28,20 @@ MOCK_MEASUREMENT="00000000000000000000000000000000000000000000000000000000000000
 # The CDS this cluster trusts runs outside it: two containers on the kind
 # network, the attestation-api reporting the launch binding of the
 # configuration CDS boots on, and CDS itself in its network namespace, so the
-# self-report it reads comes over loopback. run.sh writes the address they
+# self-report it reads comes over loopback. cds_start writes the address they
 # answer on, so a driver sourcing this file after a kept run addresses the
 # same CDS. kind puts every node on that docker network, and the CDS joins it.
 KIND_NETWORK="${C8S_IT_KIND_NETWORK:-kind}"
 CDS_ATTESTATION_CONTAINER="${C8S_IT_CDS_ATTESTATION:-c8s-it-cds-attestation}"
 CDS_CONTAINER="${C8S_IT_CDS:-c8s-it-cds}"
+# The port CDS serves on, which the address its clients dial carries.
+CDS_PORT=8443
 cds_address() { cat "$WORKDIR/cds-address"; }
+cds_host() {
+    local address
+    address="$(cds_address)"
+    echo "${address%:*}"
+}
 cds_url() { echo "https://$(cds_address)"; }
 
 # The mock attestation-api's Deployment (manifests/mock-attestation.yaml) and
@@ -108,6 +115,48 @@ store_digests() {
 # --- CDS API helpers ---
 
 cds_healthy() { curl -sSk "$(cds_url)/healthz" >/dev/null 2>&1; }
+
+# cds_start runs the CDS the cluster trusts: the attestation-api, reporting
+# the launch binding of the configuration CDS boots on, and CDS itself in that
+# container's network namespace, so the self-report it reads comes over
+# loopback, as in a CDS VM. The address is the attestation container's, so
+# cds_serve brings CDS back on the one the cluster trusts.
+cds_start() {
+    local ip
+    cds_stop
+    docker run -d \
+        --name "$CDS_ATTESTATION_CONTAINER" \
+        --network "$KIND_NETWORK" \
+        -e "HOST_DATA=$(sha256sum "$WORKDIR/cds/cds-config.yaml" | cut -d' ' -f1)" \
+        "ghcr.io/confidential-dot-ai/mock-attestation:$IMAGE_TAG" >/dev/null \
+        || fail "could not start the CDS attestation-api"
+    ip=$(docker inspect "$CDS_ATTESTATION_CONTAINER" \
+        -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
+    [ -n "$ip" ] || fail "the CDS has no address on the $KIND_NETWORK network"
+    echo "$ip:$CDS_PORT" > "$WORKDIR/cds-address"
+    cds_serve
+}
+
+# cds_serve [extra `c8s cds` flags...] replaces the CDS container on that
+# address: the flags the chart renders today, plus any given here, which a
+# later flag of the same name overrides.
+cds_serve() {
+    docker rm -f "$CDS_CONTAINER" >/dev/null 2>&1 || true
+    docker run -d \
+        --name "$CDS_CONTAINER" \
+        --network "container:$CDS_ATTESTATION_CONTAINER" \
+        -v "$WORKDIR/cds:/etc/confai:ro" \
+        "ghcr.io/confidential-dot-ai/cds:$IMAGE_TAG" \
+        --config=/etc/confai/cds-config.yaml \
+        --attestation-api-url=http://127.0.0.1:8400 \
+        --allowlist-db=/tmp/allowlist.db \
+        --allowlist-persistent=false \
+        --san-validation=true \
+        --port="$CDS_PORT" \
+        --log-level=debug \
+        "$@" >/dev/null \
+        || fail "could not start CDS"
+}
 
 # cds_wait blocks until the CDS container serves: it refuses to serve at all
 # until a verified self-report binds the configuration it booted on.

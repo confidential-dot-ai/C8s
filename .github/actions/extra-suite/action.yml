@@ -4,8 +4,8 @@ description: >-
   after the lane's own asserts. The caller uploads the suite as an artifact of
   the same workflow run, so the lane holds no credential for it. The suite
   gets the environment the lane's e2e scripts get (KUBECONFIG,
-  C8S_SOURCE_DIR, C8S_ALLOWLIST_URL, C8S_MEASUREMENTS_CONFIG,
-  C8S_OPERATOR_KEY, GUEST_IP) plus SUITE_DIR, SUITE_RESULTS and
+  C8S_SOURCE_DIR, C8S_ALLOWLIST_URL, C8S_MEASUREMENTS_CONFIG, C8S_CDS_URL,
+  C8S_CDS_PIN, C8S_OPERATOR_KEY, GUEST_IP) plus SUITE_DIR, SUITE_RESULTS and
   SUITE_PLATFORM; whatever it writes to SUITE_RESULTS is uploaded, and its
   exit status is the step's.
 
@@ -41,6 +41,11 @@ runs:
         export C8S_SOURCE_DIR="${C8S_SOURCE_DIR:-/tmp/c8s-src}"
         export C8S_ALLOWLIST_URL="https://$GUEST_IP:443"
         export C8S_MEASUREMENTS_CONFIG=/tmp/launch-data/server.json
+        # The CDS the cluster's launch names, and the pin binding it to the
+        # configuration it boots on: the routes the router does not relay are
+        # sent there.
+        export C8S_CDS_URL="https://$CDS_ADDRESS"
+        export C8S_CDS_PIN=/tmp/launch-data/cds-pin.json
         export C8S_OPERATOR_KEY=/tmp/launch-data/server.key
         mkdir -p "$SUITE_RESULTS"
         cd "$SUITE_DIR"
