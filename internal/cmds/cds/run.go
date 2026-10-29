@@ -2,7 +2,6 @@ package cds
 
 import (
 	"context"
-	"crypto/ecdsa"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
@@ -59,18 +58,13 @@ func run(cfg config) error {
 	if err := cmdsutil.ValidateAttestationAPIURL("--attestation-api-url", cfg.attestationApiURL); err != nil {
 		return err
 	}
-	dnsPatterns, err := compileDNSPatterns(cfg.dnsSANPatterns, cfg.dnsSANFile)
+	dnsPatterns, err := leafDNSPatterns(cfg)
 	if err != nil {
 		return err
 	}
 	// Resolve before validateConfig: the secrets predicate reads the flat
 	// lists, so a config-mode start must fill them first.
-	pinned, err := cmdsutil.LoadImagePolicyValues(cmdsutil.ImagePolicyValuesConfig{
-		Source:       cmdsutil.ImagePolicySource{File: cfg.measurementsConfig},
-		Pins:         cmdsutil.MeasurementPins{Measurements: cfg.measurements, Registers: cfg.rtmrs},
-		Platform:     cfg.armtlsPlatform,
-		PlatformFlag: "--armtls-platform",
-	})
+	pinned, err := loadNodePins(cfg)
 	if err != nil {
 		return err
 	}
@@ -102,30 +96,28 @@ func run(cfg config) error {
 	}
 
 	var writeAuthorizer allowlist.WriteAuthorizer = func(*http.Request, []byte) error {
-		return fmt.Errorf("operator writes are disabled: set --operator-keys")
+		return fmt.Errorf("operator writes are disabled: no operator keys configured")
 	}
 	var authorizeIssuedAt func(*http.Request, []byte) (time.Time, error)
-	var operatorKeysPEM []byte
+	operatorKeys, err := loadOperatorKeys(cfg)
+	if err != nil {
+		return err
+	}
 	var operatorKeysHash string
-	if cfg.operatorKeys != "" {
-		keys, pemBytes, err := loadOperatorKeys(cfg.operatorKeys)
+	if len(operatorKeys.Keys()) > 0 {
+		operatorKeysHash, err = operatorauth.KeySetHash(operatorKeys.Keys())
 		if err != nil {
-			return err
+			return fmt.Errorf("hash operator public keys: %w", err)
 		}
-		operatorKeysHash, err = operatorauth.KeySetHash(keys)
-		if err != nil {
-			return fmt.Errorf("hash --operator-keys %q: %w", cfg.operatorKeys, err)
-		}
-		operatorKeysPEM = pemBytes
 		verifier := operatorauth.Verifier{
-			Keys:      keys,
+			Keys:      operatorKeys.Keys(),
 			ClockSkew: time.Duration(cfg.jwtClockSkew) * time.Second,
 		}
 		writeAuthorizer = verifier.Authorize
 		authorizeIssuedAt = verifier.AuthorizeIssuedAt
-		slog.Info("operator write authorization enabled (pinned operator keys)", "operator_keys", cfg.operatorKeys, "count", len(keys), "key_set_hash", operatorKeysHash)
+		slog.Info("operator write authorization enabled (pinned operator keys)", "count", len(operatorKeys.Keys()), "key_set_hash", operatorKeysHash)
 	} else {
-		slog.Warn("--operator-keys empty: allowlist and secret writes are disabled (reads still served)")
+		slog.Warn("no pinned operator keys: allowlist and secret writes are disabled (reads still served)")
 	}
 
 	allowlistStore, err := allowlist.OpenStore(cfg.allowlistDB)
@@ -164,7 +156,9 @@ func run(cfg config) error {
 	if served.Empty() {
 		served = refvalues.FromFlags(measurementBytes(measurements), rtmrPins)
 	}
-	served.Family = servedFamily(cfg.armtlsPlatform)
+	if served.Family == teetypes.FamilyUnknown {
+		served.Family = servedFamily(cfg.armtlsPlatform)
+	}
 	measurementsDoc, err := refvalues.Render(served)
 	if err != nil {
 		return fmt.Errorf("render /measurements document: %w", err)
@@ -185,7 +179,11 @@ func run(cfg config) error {
 	// allowlist (CDS, attestation-api, system images) rather than an empty
 	// set; an unseeded store would deny every worker pull until an operator
 	// populated it. Fail closed on any seed error.
-	if cfg.allowlistSeed != "" {
+	if cfg.measured != nil {
+		if err := seedWorkloads(&allowlistStore, cfg.measured.Workloads); err != nil {
+			return fmt.Errorf("seed measured workloads: %w", err)
+		}
+	} else if cfg.allowlistSeed != "" {
 		seedCtx, stopSeed := context.WithCancel(ctx)
 		following, err := startSeed(seedCtx, &allowlistStore, cfg.allowlistSeed, cfg.followSeed)
 		if err != nil {
@@ -210,7 +208,7 @@ func run(cfg config) error {
 		return fmt.Errorf("start allowlist history: %w", err)
 	}
 	operatorAuthorizer := writeAuthorizer
-	if cfg.operatorKeys != "" {
+	if len(operatorKeys.Keys()) > 0 {
 		var started time.Time
 		if !cfg.allowlistPersistent {
 			started = time.Now()
@@ -235,7 +233,11 @@ func run(cfg config) error {
 	// Needs an armTLS identity of its own, since inventories require a client
 	// certificate; without --armtls-platform there is none, and a request
 	// carrying a sandbox token is refused rather than issued unchecked.
-	inventoryHosts, err := buildInventoryHosts(ctx, cfg.inventoryCIDRs)
+	var nodeSubnets workloadclaims.CIDRHosts
+	if cfg.measured != nil {
+		nodeSubnets = cfg.measured.NodeCIDRs
+	}
+	inventoryHosts, err := buildInventoryHosts(ctx, nodeSubnets, cfg.inventoryCIDRs)
 	if err != nil {
 		return err
 	}
@@ -331,7 +333,7 @@ func run(cfg config) error {
 		},
 		ReadyFn:           readinessFn(checker.Ready, mesh, cfg.minCAValidity),
 		MeshCA:            mesh,
-		OperatorKeysPEM:   operatorKeysPEM,
+		OperatorKeysPEM:   operatorKeys.PEM(),
 		MeasurementsDoc:   measurementsDoc,
 		RateLimiter:       rateLimiter,
 		ChallengeLimiter:  challengeLimiter,
@@ -576,20 +578,27 @@ func compilePattern(name, raw string) (*regexp.Regexp, error) {
 	return re, nil
 }
 
-// loadOperatorKeys reads the PEM operator public-key bundle used to verify
-// operator write tokens, returning both the parsed keys and the raw PEM (served
-// back on GET /operator-keys). It fails closed when the file has no EC public
-// key so a typo cannot silently disable write authorization.
-func loadOperatorKeys(path string) ([]*ecdsa.PublicKey, []byte, error) {
-	pemBytes, err := os.ReadFile(path)
-	if err != nil {
-		return nil, nil, fmt.Errorf("read --operator-keys: %w", err)
+// loadOperatorKeys resolves the operator public keys that authorize writes:
+// the bundle the measured configuration carries, else the PEM bundle
+// --operator-keys names. A bundle holding no EC public key fails closed, so a
+// typo cannot silently disable write authorization; no source at all is no
+// key, which disables writes.
+func loadOperatorKeys(cfg config) (operatorauth.KeyBundle, error) {
+	if cfg.measured != nil {
+		return cfg.measured.OperatorKeys, nil
 	}
-	keys, err := operatorauth.ParsePublicKeysPEM(pemBytes)
-	if err != nil {
-		return nil, nil, fmt.Errorf("--operator-keys %q: %w", path, err)
+	if cfg.operatorKeys == "" {
+		return operatorauth.KeyBundle{}, nil
 	}
-	return keys, pemBytes, nil
+	pemBytes, err := os.ReadFile(cfg.operatorKeys)
+	if err != nil {
+		return operatorauth.KeyBundle{}, fmt.Errorf("read --operator-keys: %w", err)
+	}
+	bundle, err := operatorauth.ParseKeyBundle(pemBytes)
+	if err != nil {
+		return operatorauth.KeyBundle{}, fmt.Errorf("--operator-keys %q: %w", cfg.operatorKeys, err)
+	}
+	return bundle, nil
 }
 
 // measurementDigests renders the /attest measurement allowlist as the raw

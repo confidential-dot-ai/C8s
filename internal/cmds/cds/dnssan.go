@@ -25,3 +25,12 @@ func compileDNSPatterns(raws []string, path string) ([]*regexp.Regexp, error) {
 	}
 	return append(patterns, literal), nil
 }
+
+// leafDNSPatterns bounds the DNS names a leaf may carry: the rules the measured
+// configuration compiled, else the patterns and the staged name the flags give.
+func leafDNSPatterns(cfg config) ([]*regexp.Regexp, error) {
+	if cfg.measured != nil {
+		return cfg.measured.DNSSANPatterns, nil
+	}
+	return compileDNSPatterns(cfg.dnsSANPatterns, cfg.dnsSANFile)
+}

@@ -691,21 +691,29 @@ func TestRun_ARMTLSWarmupFailureFailsClosed(t *testing.T) {
 
 func TestLoadOperatorKeys(t *testing.T) {
 	t.Run("valid bundle", func(t *testing.T) {
-		path := writeOperatorKeysPEM(t)
-		keys, pemBytes, err := loadOperatorKeys(path)
+		bundle, err := loadOperatorKeys(config{operatorKeys: writeOperatorKeysPEM(t)})
 		if err != nil {
 			t.Fatalf("loadOperatorKeys: %v", err)
 		}
-		if len(keys) != 1 {
-			t.Errorf("keys = %d, want 1", len(keys))
+		if len(bundle.Keys()) != 1 {
+			t.Errorf("keys = %d, want 1", len(bundle.Keys()))
 		}
-		if len(pemBytes) == 0 {
+		if len(bundle.PEM()) == 0 {
 			t.Error("raw PEM bytes empty")
 		}
 	})
 
+	// No source is no key: writes stay disabled rather than authorized by
+	// something that was never configured.
+	t.Run("no source", func(t *testing.T) {
+		bundle, err := loadOperatorKeys(config{})
+		if err != nil || bundle.Keys() != nil || bundle.PEM() != nil {
+			t.Fatalf("loadOperatorKeys = %v, %v, %v; want no key and no error", bundle.Keys(), bundle.PEM(), err)
+		}
+	})
+
 	t.Run("missing file", func(t *testing.T) {
-		if _, _, err := loadOperatorKeys(filepath.Join(t.TempDir(), "nope.pem")); err == nil {
+		if _, err := loadOperatorKeys(config{operatorKeys: filepath.Join(t.TempDir(), "nope.pem")}); err == nil {
 			t.Fatal("expected error for missing file")
 		}
 	})
@@ -715,7 +723,7 @@ func TestLoadOperatorKeys(t *testing.T) {
 		if err := os.WriteFile(path, []byte("garbage"), 0o600); err != nil {
 			t.Fatalf("write: %v", err)
 		}
-		if _, _, err := loadOperatorKeys(path); err == nil {
+		if _, err := loadOperatorKeys(config{operatorKeys: path}); err == nil {
 			t.Fatal("expected error for bundle without EC public key")
 		}
 	})

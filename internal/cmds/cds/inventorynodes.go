@@ -16,10 +16,14 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
-// buildInventoryHosts resolves the sandbox-digests dial bound: the operator's
-// explicit CIDRs when given, else one host route per node derived live from
-// the cluster's node objects.
-func buildInventoryHosts(ctx context.Context, cidrs []string) (workloadclaims.InventoryHosts, error) {
+// buildInventoryHosts resolves the sandbox-digests dial bound: the node
+// subnets a measured configuration names, the operator's explicit CIDRs when
+// given, else one host route per node derived live from the cluster's node
+// objects.
+func buildInventoryHosts(ctx context.Context, nodeSubnets workloadclaims.CIDRHosts, cidrs []string) (workloadclaims.InventoryHosts, error) {
+	if !nodeSubnets.Empty() {
+		return nodeSubnets, nil
+	}
 	if len(cidrs) > 0 {
 		return workloadclaims.ParseInventoryHosts(cidrs)
 	}

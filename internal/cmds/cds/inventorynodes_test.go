@@ -13,6 +13,8 @@ import (
 	"k8s.io/client-go/kubernetes"
 	k8sfake "k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
+
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 func node(name, internalIP string) *corev1.Node {
@@ -35,12 +37,29 @@ func stubInClusterKubeClientset(t *testing.T, cs kubernetes.Interface, err error
 // client is consulted at all.
 func TestBuildInventoryHostsExplicit(t *testing.T) {
 	stubInClusterKubeClientset(t, nil, errors.New("must not be called"))
-	hosts, err := buildInventoryHosts(t.Context(), []string{"10.0.0.0/24"})
+	hosts, err := buildInventoryHosts(t.Context(), nil, []string{"10.0.0.0/24"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !hosts.Contains("10.0.0.7") || hosts.Contains("10.244.1.5") {
 		t.Fatal("static CIDR bound misapplied")
+	}
+}
+
+// A measured configuration's node subnets are the bound, and like explicit
+// CIDRs they consult no Kubernetes client: a CDS VM has none.
+func TestBuildInventoryHostsFromTheMeasuredConfig(t *testing.T) {
+	stubInClusterKubeClientset(t, nil, errors.New("must not be called"))
+	subnets, err := workloadclaims.ParseInventoryHosts([]string{"10.0.0.0/24"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hosts, err := buildInventoryHosts(t.Context(), subnets, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hosts.Contains("10.0.0.7") || hosts.Contains("10.244.1.5") {
+		t.Fatal("measured node subnets misapplied")
 	}
 }
 
@@ -50,7 +69,7 @@ func TestWatchNodeInventoryHosts(t *testing.T) {
 	cs := k8sfake.NewSimpleClientset(node("a", "10.0.1.4"))
 	stubInClusterKubeClientset(t, cs, nil)
 
-	hosts, err := buildInventoryHosts(t.Context(), nil)
+	hosts, err := buildInventoryHosts(t.Context(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +115,7 @@ func TestWatchNodeInventoryHostsUnreadable(t *testing.T) {
 	t.Cleanup(func() { nodeCacheSyncTimeout = prev })
 	nodeCacheSyncTimeout = 100 * time.Millisecond
 
-	_, err := buildInventoryHosts(t.Context(), nil)
+	_, err := buildInventoryHosts(t.Context(), nil, nil)
 	if err == nil {
 		t.Fatal("an unreadable node list must fail startup, not hang")
 	}
@@ -109,7 +128,7 @@ func TestWatchNodeInventoryHostsUnreadable(t *testing.T) {
 // empty bound that refuses every sandbox token, not a startup failure.
 func TestWatchNodeInventoryHostsNoCluster(t *testing.T) {
 	stubInClusterKubeClientset(t, nil, errors.New("no in-cluster config"))
-	hosts, err := buildInventoryHosts(t.Context(), nil)
+	hosts, err := buildInventoryHosts(t.Context(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
