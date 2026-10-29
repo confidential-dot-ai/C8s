@@ -35,6 +35,8 @@ type Config struct {
 	// compiled from the document's leaf names and patterns. Empty admits no
 	// DNS SAN, as issuer.CSRPolicy defines.
 	DNSSANPatterns []*regexp.Regexp
+	// HA is the replica set this CDS belongs to; nil runs the singleton.
+	HA *HA
 }
 
 // wire mirrors the document. Workloads and Nodes keep the JSON wire schemas
@@ -49,6 +51,7 @@ type wire struct {
 	NodeCIDRs          []string `yaml:"nodeCIDRs"`
 	LeafDNSNames       []string `yaml:"leafDNSNames"`
 	LeafDNSPatterns    []string `yaml:"leafDNSPatterns"`
+	HA                 *haWire  `yaml:"ha,omitempty"`
 }
 
 // Parse validates a CDS configuration document. It authenticates nothing:
@@ -88,6 +91,10 @@ func (w wire) parse() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	ha, err := w.HA.parse()
+	if err != nil {
+		return nil, err
+	}
 	return &Config{
 		ClusterID:      w.ClusterID,
 		OperatorKeys:   operatorKeys,
@@ -95,6 +102,7 @@ func (w wire) parse() (*Config, error) {
 		Nodes:          nodes,
 		NodeCIDRs:      subnets,
 		DNSSANPatterns: patterns,
+		HA:             ha,
 	}, nil
 }
 
