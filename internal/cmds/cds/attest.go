@@ -381,8 +381,8 @@ func (h AttestHandler) verifySandboxToken(ctx context.Context, raw json.RawMessa
 	}
 	// The key comes from the inventory's own endpoint on a privileged port,
 	// which is what separates the inventory from a compromised workload in the
-	// same node: an unprivileged pod cannot bind the node's network namespace
-	// (the chart's deny-host-namespaces policy). Measurement alone cannot make
+	// same node: an unprivileged pod cannot answer in the node's network
+	// namespace (workloadclaims.DigestsPort). Measurement alone cannot make
 	// that distinction on node-CVM, where every pod shares the node's.
 	inventoryPub, err := h.SandboxDigests.InventoryKey(ctx, host)
 	if err != nil {

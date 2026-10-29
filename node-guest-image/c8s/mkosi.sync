@@ -139,7 +139,7 @@ printf '# Self-label so c8s install --hardware-platform %s finds this node.\nnod
 # keeps psa-ready.sh from waiting for objects that never appear. The locked
 # image keeps the policy (the kubelet debugging handlers are on in both
 # builds, for `kubectl logs`) and has no such marker at all.
-GUARDS="psa-level-policy pod-exec-policy operator-scope-policy cred-release-rbac log-reader-rbac"
+GUARDS="psa-level-policy pod-exec-policy operator-scope-policy service-address-policy cred-release-rbac log-reader-rbac"
 GUARDS_SRC="$SRCDIR/mkosi.profiles/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests"
 GUARDS_DST="$STAGE_DIR/usr/lib/confai/guards"
 DEV=$(cat "$SYNC_INPUTS/dev" 2>/dev/null || true)

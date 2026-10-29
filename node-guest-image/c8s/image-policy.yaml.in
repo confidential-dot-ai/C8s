@@ -89,6 +89,7 @@ allowlist:
                 - "--client-ca-file=/var/lib/rancher/rke2/server/tls/client-ca.crt"
                 - "--egress-selector-config-file=/var/lib/rancher/rke2/server/etc/egress-selector-config.yaml"
                 - "--enable-admission-plugins=NodeRestriction"
+                - "--enable-admission-plugins=DenyServiceExternalIPs"
                 - "--enable-aggregator-routing=true"
                 - "--enable-bootstrap-token-auth=true"
                 - "--encryption-provider-config=/var/lib/rancher/rke2/server/cred/encryption-config.json"
@@ -1476,9 +1477,8 @@ policy:
   # Host privilege outside the node TCB: host namespaces, host bind mounts,
   # devices, CDI injection, OCI hooks and the marks of a privileged container
   # (see docs/allowlist-and-capabilities.md, "Host privilege"). The base above
-  # exempts a launch in three steps: a kubelet static pod whose launch it
-  # admits; host network alone for any launch it admits; anything more only
-  # for a launch one of its entries pins (command, args, mounts and env).
+  # exempts only a kubelet static pod whose launch it admits and a launch
+  # one of its entries pins (command, args, mounts and env).
   sandbox: "enforce"
   label_rules: []
 

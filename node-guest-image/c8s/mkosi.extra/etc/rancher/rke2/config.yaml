@@ -71,6 +71,14 @@ kubelet-arg:
   # Probes are unaffected (they go over CRI).
   - enable-debugging-handlers=true
 kube-apiserver-arg:
+  # DenyServiceExternalIPs: no principal may give a Service spec.externalIPs,
+  # which kube-proxy routes in the node's own network namespace beside the
+  # real ClusterIP (CVE-2020-8554). Without it a Service could take over an
+  # address the node itself dials, such as an inventory endpoint's
+  # <node IP>:1019 that CDS reaches. RKE2 passes its own
+  # --enable-admission-plugins=NodeRestriction first and keeps both flags;
+  # kube-apiserver adds them up.
+  - enable-admission-plugins=DenyServiceExternalIPs
   - audit-log-path=/var/log/kube-audit/audit.log
   - audit-log-maxage=30
   - audit-log-maxbackup=10

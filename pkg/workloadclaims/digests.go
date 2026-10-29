@@ -35,8 +35,12 @@ import (
 // the only port CDS will dial for one. It is fixed rather than carried in the
 // token, and it is privileged (<1024, IANA-unassigned), because that is what
 // makes it an identity: answering on it at the node's address requires
-// hostNetwork or a hostPort, and the chart's deny-host-namespaces policy
-// withholds BOTH from tenant pods. A pod can bind any port inside its own
+// hostNetwork, a hostPort or a Service redirect. Tenant pods get neither host
+// namespace nor hostPort (restricted PodSecurity and, on an installed cluster,
+// the chart's deny-host-namespaces policy; on the baked node also the
+// plugin's host-network rule), a redirect into a member pod lands in its mesh
+// endpoint, and the baked node refuses Service externalIPs for every
+// principal (DenyServiceExternalIPs). A pod can bind any port inside its own
 // netns, so an unprivileged port would let any workload answer as the
 // inventory.
 //
@@ -364,8 +368,8 @@ var ErrSandboxUnknown = fmt.Errorf("workloadclaims: inventory does not know this
 //
 // This is what gives an inventory an identity CDS can check. The key arrives
 // over armTLS from DigestsPort — a privileged port in the node's own network
-// namespace — so answering here requires a privilege the chart's
-// deny-host-namespaces policy withholds from tenant pods. Sharing the node's
+// namespace — so answering here requires a privilege tenant pods are not
+// given (see DigestsPort). Sharing the node's
 // launch measurement, which every pod on a node-CVM does, is not enough.
 func (c *DigestsClient) InventoryKey(ctx context.Context, host string) (*ecdsa.PublicKey, error) {
 	resp, err := c.get(ctx, host, IdentityPath)

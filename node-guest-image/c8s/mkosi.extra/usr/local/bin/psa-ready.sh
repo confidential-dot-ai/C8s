@@ -1,7 +1,8 @@
 #!/bin/sh
 # Gate attested credential release on the live guards: the PodSecurity
 # invariant, the operator-scope policy that keeps cred-release credentials
-# away from the guards themselves, the pod-exec policy, and the two RBAC
+# away from the guards themselves, the pod-exec policy, the Service-address
+# policy, and the two RBAC
 # bindings the issued groups rely on. RKE2 reconciles server/manifests
 # asynchronously after kube-apiserver is ready, so object presence is not
 # enough: prove that every live guard equals its reference copy on the

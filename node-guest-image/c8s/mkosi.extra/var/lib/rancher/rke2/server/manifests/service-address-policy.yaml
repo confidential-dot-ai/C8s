@@ -1,0 +1,54 @@
+# Keeps the static band of the Service range, 10.53.0.0/24, to the platform.
+# The apiserver hands out addresses there only on request, and the platform
+# pins its own in it: the kubernetes Service 10.53.0.1, the resolver
+# 10.53.0.10 and the kube-state-metrics exit 10.53.0.11. Member pods' packet
+# filters let the resolver and the exit through by address, so any other
+# Service holding one of them would take that traffic.
+# Every principal is checked, not only the c8s:* ones confos-operator-scope
+# selects: a released credential can bind its namespaced rights to a
+# ServiceAccount it creates and call the API as that account. The match
+# condition lets through only the two that place the platform's addresses:
+# kube-system, where RKE2 and the baked chart create the resolver and the
+# exit and which no released credential may write (confos-operator-scope),
+# and system:masters, the apiserver's own client that keeps the kubernetes
+# Service (and the in-guest rke2.yaml), which cred-release never issues.
+# The apiserver allocates before admission and a server-side dry-run
+# presents the range's network address, 10.53.0.0, so that one stays
+# admitted (it is never a real ClusterIP). spec.externalIPs needs no rule
+# here: kube-apiserver's DenyServiceExternalIPs plugin refuses it for every
+# principal (etc/rancher/rke2/config.yaml). cred-release.service waits for
+# both objects before it serves (psa-ready.sh).
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: confos-service-address
+spec:
+  # Every optional field read is guarded with has(), so Fail cannot deny on
+  # an evaluation error.
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["services"]
+  matchConditions:
+    - name: outside-the-platform
+      expression: >-
+        !(has(request.namespace) && request.namespace == 'kube-system') &&
+        !(has(request.userInfo.groups) && request.userInfo.groups.exists(g, g == 'system:masters'))
+  validations:
+    - expression: >-
+        !(has(object.spec) &&
+        ((has(object.spec.clusterIP) && object.spec.clusterIP.startsWith('10.53.0.') && object.spec.clusterIP != '10.53.0.0') ||
+        (has(object.spec.clusterIPs) && object.spec.clusterIPs.exists(ip, ip.startsWith('10.53.0.') && ip != '10.53.0.0'))))
+      message: "a Service outside kube-system may not claim a ClusterIP in the platform's static band (10.53.0.0/24)"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: confos-service-address
+spec:
+  policyName: confos-service-address
+  validationActions:
+    - Deny

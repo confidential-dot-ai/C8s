@@ -202,10 +202,13 @@ or `impersonate`, no cluster-scoped RBAC, admission or webhook writes, no
 admission policy re-checks the same exclusions for every principal in a `c8s:`
 group, whatever RBAC says, and refuses any write in the privileged namespaces
 (`kube-system`, `c8s-system`, and `c8s-router`), where a pod or an edited
-DaemonSet is root on the node. It also refuses a Service that would take over a
-platform address a member pod's packet filter passes by IP: `spec.externalIPs`,
-and a ClusterIP in `10.53.0.0/24`, where the platform pins the resolver and the
-baked cluster-metrics exit
+DaemonSet is root on the node. For every principal, not only the released
+credentials and the ServiceAccounts their holder can create, the node also
+refuses a Service that would take over an address the node or a member pod's
+packet filter trusts: kube-apiserver's `DenyServiceExternalIPs` plugin refuses
+`spec.externalIPs`, and the baked `confos-service-address` policy refuses a
+ClusterIP in `10.53.0.0/24` outside `kube-system`, the band where the platform
+pins the resolver and the baked cluster-metrics exit
 ([armtls.md](armtls.md#cluster-metrics)). The credential-release service keeps
 its listener closed until those guards are live, match their copies on the
 read-only root, and pass server-side dry-runs of the deny paths; exec, attach,
