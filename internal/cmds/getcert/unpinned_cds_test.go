@@ -2,15 +2,15 @@ package getcert
 
 import (
 	"errors"
-	"strings"
 	"testing"
 
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 )
 
-// testCDSMeasurement is the CDS launch measurement these tests pin, which
-// armTLS requires of every verifying client.
-var testCDSMeasurement = strings.Repeat("ab", 48)
+// testCDSPin is the identity these tests hold CDS to: one image bound to the
+// exact launch file that CDS runs on, the only pin a client accepts.
+var testCDSPin = testutil.CDSPinDocument(testutil.TestMeasurement, testutil.CDSLaunchFile)
 
 // Without a pin armTLS accepts any attested CDS, so the client is not built.
 func TestUnpinnedCDSRefused(t *testing.T) {
@@ -19,18 +19,18 @@ func TestUnpinnedCDSRefused(t *testing.T) {
 		AttestationApiURL: "http://attestation-api:8400",
 		SAN:               "host.example.com",
 	}
-	if _, err := cdsHTTPClient(cfg); !errors.Is(err, armtls.ErrUnpinned) {
-		t.Fatalf("err = %v, want errors.Is armtls.ErrUnpinned", err)
+	if _, err := cdsHTTPClient(cfg); !errors.Is(err, cmdsutil.ErrCDSPinUnbound) {
+		t.Fatalf("err = %v, want errors.Is cmdsutil.ErrCDSPinUnbound", err)
 	}
 }
 
-// A pinned measurement is what the flag is for; it must still work.
+// A pin document is what --image-policy-file is for; it must still work.
 func TestPinnedCDSAccepted(t *testing.T) {
 	cfg := config{
-		CDSURL:            "https://cds:8443",
-		AttestationApiURL: "http://attestation-api:8400",
-		SAN:               "host.example.com",
-		CDSMeasurements:   testCDSMeasurement,
+		CDSURL:                 "https://cds:8443",
+		AttestationApiURL:      "http://attestation-api:8400",
+		SAN:                    "host.example.com",
+		MeasurementsConfigJSON: testCDSPin,
 	}
 	if _, err := cdsHTTPClient(cfg); err != nil {
 		t.Fatalf("cdsHTTPClient: %v", err)

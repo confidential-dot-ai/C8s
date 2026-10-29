@@ -19,7 +19,6 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
-	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
@@ -30,8 +29,6 @@ import (
 type Config struct {
 	CDSURL                 string
 	AttestationApiURL      string
-	Measurements           []string
-	RTMRs                  []string
 	MeasurementsConfig     string
 	MeasurementsConfigJSON string
 
@@ -58,11 +55,9 @@ func (c Config) Endpoint() string {
 // shape also moves the volume daemon onto guest loopback) overrides the
 // affected flag's Usage via f.Lookup after this call.
 func BindFlags(f *pflag.FlagSet, cfg *Config) {
-	cmdsutil.BindImagePolicyFlags(f, &cfg.MeasurementsConfig, &cfg.MeasurementsConfigJSON, "pins the CDS endpoint; excludes --measurements and --rtmrs")
+	cmdsutil.BindImagePolicyFlags(f, &cfg.MeasurementsConfig, &cfg.MeasurementsConfigJSON, "pins the CDS endpoint, every entry bound to the launch file that CDS runs on; required unless the node pins CDS")
 	f.StringVar(&cfg.CDSURL, "cds-url", "", "https base URL of CDS; refused in an injected sidecar, which dials the endpoint the node mounts")
 	f.StringVar(&cfg.AttestationApiURL, "attestation-api-url", "", "local attestation-api used to verify CDS's armTLS certificate")
-	f.StringSliceVar(&cfg.Measurements, "measurements", nil, "SHA-384 hex launch measurement(s) CDS must present (repeatable); required unless the node or --image-policy-file pins CDS")
-	f.StringSliceVar(&cfg.RTMRs, "rtmrs", nil, "TDX RTMR pin(s) <index>=<sha384-hex> CDS must additionally satisfy (repeatable; ignored when CDS presents SNP evidence, empty pins no registers)")
 	f.StringVar(&cfg.CertPath, "cert", "/run/c8s/certs/tls.crt", "the pod's CDS-issued certificate, presented to CDS")
 	f.StringVar(&cfg.KeyPath, "key", "/run/c8s/certs/tls.key", "private key for --cert")
 	f.IntVar(&cfg.Attempts, "attempts", 0, "how many times to try before failing; 0 (the default) means no limit. The waits between attempts back off (see --retry-interval), so N attempts last longer than N x --retry-interval. Release is refused until every main container is running, which a slow image pull can delay for many minutes")
@@ -115,14 +110,13 @@ func (c *Config) Validate() error {
 }
 
 // ParsePins resolves the pins this sidecar holds its CDS to: the node's policy
-// where the enforcer mounts it, otherwise --measurements and --rtmrs.
+// where the enforcer mounts it, otherwise --image-policy-file.
 func (c *Config) ParsePins() (armtls.Pins, error) {
 	policy, fromNode, err := cmdsutil.ResolveCDSPins(workloadclaims.CDSPinsPath,
 		cmdsutil.ImagePolicySource{
 			File: c.MeasurementsConfig,
 			JSON: c.MeasurementsConfigJSON,
-		},
-		cmdsutil.MeasurementPins{Measurements: c.Measurements, Registers: c.RTMRs})
+		})
 	if err != nil {
 		return armtls.Pins{}, err
 	}
@@ -213,10 +207,10 @@ func refusalReason(err error) string {
 	case ok && se.Status == http.StatusForbidden:
 		return "CDS releases only once every main container of this pod is running; " +
 			"a main image still pulling delays it. If they are running, the pod's allowlist entry " +
-			"does not match or has no grant for this path (the CDS log names the denial)"
+			"does not match or has no grant for this path (`c8s secrets explain` names the denial)"
 	case ok && se.Status == http.StatusNotFound:
-		return "either the pod's allowlist entry does not grant reading this path, " +
-			"and the CDS log shows `" + secrets.ReadDeniedLog + "`; " +
+		return "either the pod's allowlist entry does not grant reading this path — " +
+			"`c8s secrets explain` prints the grant it has; " +
 			"or the store holds no value at it (CDS keeps the store in memory, so every restart empties it), " +
 			"and an operator writes it with `c8s secrets put`, for a volume from its escrow file"
 	}

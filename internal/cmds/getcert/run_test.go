@@ -31,6 +31,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
@@ -50,9 +51,9 @@ func TestCDSHTTPClientRejectsPlainHTTP(t *testing.T) {
 
 func TestCDSHTTPClientUsesARMTLSForHTTPS(t *testing.T) {
 	client, err := cdsHTTPClient(config{
-		CDSURL:            "https://cds:8443",
-		CDSMeasurements:   testCDSMeasurement,
-		AttestationApiURL: "http://attestation-api:8400",
+		CDSURL:                 "https://cds:8443",
+		MeasurementsConfigJSON: testCDSPin,
+		AttestationApiURL:      "http://attestation-api:8400",
 	})
 	if err != nil {
 		t.Fatalf("cdsHTTPClient: %v", err)
@@ -1110,28 +1111,28 @@ func TestRunFailsFastWithoutClaimsSocketDir(t *testing.T) {
 	}
 	dir := ramBackedDir(t)
 	err := run(config{
-		CDSURL:            "https://cds:8443",
-		CDSMeasurements:   testCDSMeasurement,
-		AttestationApiURL: "http://attestation-api:8400",
-		SAN:               "host.example.com",
-		CertPath:          filepath.Join(dir, "tls.crt"),
-		KeyPath:           filepath.Join(dir, "tls.key"),
-		CAPath:            filepath.Join(dir, "ca.crt"),
+		CDSURL:                 "https://cds:8443",
+		MeasurementsConfigJSON: testCDSPin,
+		AttestationApiURL:      "http://attestation-api:8400",
+		SAN:                    "host.example.com",
+		CertPath:               filepath.Join(dir, "tls.crt"),
+		KeyPath:                filepath.Join(dir, "tls.key"),
+		CAPath:                 filepath.Join(dir, "ca.crt"),
 	})
 	if err == nil || !strings.Contains(err.Error(), "inventory socket directory") {
 		t.Fatalf("run() = %v, want the missing socket-directory failure", err)
 	}
 }
 
-func TestRunFailsOnBadCDSMeasurements(t *testing.T) {
+func TestRunFailsOnACDSPinWithoutALaunchBinding(t *testing.T) {
 	cfg := stagePodEnvironment(t, config{
-		CDSURL:            "https://cds:8443",
-		CDSMeasurements:   "zz",
-		AttestationApiURL: "http://attestation-api:8400",
-		SAN:               "host.example.com",
+		CDSURL:                 "https://cds:8443",
+		MeasurementsConfigJSON: `{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"cds","measurement":"` + testutil.TestMeasurement + `"}]}`,
+		AttestationApiURL:      "http://attestation-api:8400",
+		SAN:                    "host.example.com",
 	})
-	if err := run(cfg); err == nil || !strings.Contains(err.Error(), "--cds-measurements") {
-		t.Fatalf("error = %v, want measurements error", err)
+	if err := run(cfg); err == nil || !strings.Contains(err.Error(), "launch file") {
+		t.Fatalf("error = %v, want a launch-binding refusal", err)
 	}
 }
 
@@ -1376,14 +1377,14 @@ func TestMeasuredPoliciesFileDefaultsToSidecarJournal(t *testing.T) {
 func TestRunWithdrawsWhenResumingFails(t *testing.T) {
 	v, _, _ := publishedVolume(t, newTestCA(t))
 	cfg := config{
-		CDSURL:                "https://cds:8443",
-		CDSMeasurements:       testCDSMeasurement,
-		AttestationApiURL:     "http://attestation-api:8400",
-		SAN:                   "host.example.com",
-		WorkloadClaimsTimeout: time.Second,
-		CertPath:              filepath.Join(v.dir, v.leafName),
-		KeyPath:               filepath.Join(v.dir, v.keyName),
-		CAPath:                filepath.Join(v.dir, v.caName),
+		CDSURL:                 "https://cds:8443",
+		MeasurementsConfigJSON: testCDSPin,
+		AttestationApiURL:      "http://attestation-api:8400",
+		SAN:                    "host.example.com",
+		WorkloadClaimsTimeout:  time.Second,
+		CertPath:               filepath.Join(v.dir, v.leafName),
+		KeyPath:                filepath.Join(v.dir, v.keyName),
+		CAPath:                 filepath.Join(v.dir, v.caName),
 	}
 	// An inventory that refuses: the pod cannot know which instance it is, so
 	// nothing it holds can be revalidated.

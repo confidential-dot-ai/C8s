@@ -1,52 +1,51 @@
 package nriimagepolicy
 
 import (
-	"strings"
+	"os"
+	"path/filepath"
 	"testing"
+
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 )
 
-func TestPullAndInventoryUseCompleteCDSPolicy(t *testing.T) {
+// testCDSPinFile stages the pin document a node's config names, at the launch
+// identity testutil reports.
+func testCDSPinFile(t *testing.T) string {
+	t.Helper()
+	return cdsPinFile(t, testutil.CDSPinDocument(testutil.TestMeasurement, testutil.CDSLaunchFile))
+}
+
+// cdsPinFile stages the pin document this node holds its CDS to.
+func cdsPinFile(t *testing.T, document string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "cds.json")
+	if err := os.WriteFile(path, []byte(document), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestPullAndInventoryUseTheCDSPinDocument(t *testing.T) {
 	cfg := validConfig()
 	cfg.Platform = "tdx"
-	cfg.Allowlist.Pull.CDSMeasurementsConfig = "../../../internal/testdata/node-identities.json"
+	cfg.Allowlist.Pull.CDSMeasurementsConfig = testCDSPinFile(t)
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	// Both the pull client and inventory endpoint call this resolver.
-	set, err := cfg.Allowlist.Pull.policySet(cfg.NormalizedPlatform())
+	// Both the pull client and inventory endpoint call this resolver. The CDS
+	// VM's family is its own; this node attests on TDX.
+	set, err := cfg.Allowlist.Pull.policySet()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(set.Images) != 2 || len(set.Images[0].Anchor) == 0 || len(set.Images[0].Registers) != 2 {
-		t.Fatal("CDS policy lost part of its image/operator tuple")
+	if len(set.Images) != 1 || len(set.Images[0].LaunchFile) == 0 {
+		t.Fatalf("CDS policy = %+v, want the launch-bound image", set.Images)
 	}
-	if _, err := allowlistPullHTTPClient(cfg.Allowlist.Pull, cfg.NormalizedPlatform()); err != nil {
+	if _, err := allowlistPullHTTPClient(cfg.Allowlist.Pull); err != nil {
 		t.Fatal(err)
 	}
 	cfg.Allowlist.Pull.CDSMeasurementsConfig = "missing-file"
-	if _, err := cfg.Allowlist.Pull.policySet(cfg.NormalizedPlatform()); err == nil {
+	if _, err := cfg.Allowlist.Pull.policySet(); err == nil {
 		t.Fatal("missing full policy fell back to unpinned")
-	}
-}
-
-func TestCDSPolicyConflictValidationIsShared(t *testing.T) {
-	for _, tc := range []struct {
-		name                string
-		measurements, rtmrs []string
-	}{
-		{"digest", []string{"invalid"}, nil},
-		{"register", nil, []string{"invalid"}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			cfg := validConfig()
-			cfg.Allowlist.Pull.CDSMeasurementsConfig = "missing-file"
-			cfg.Allowlist.Pull.CDSMeasurements = tc.measurements
-			cfg.Allowlist.Pull.CDSRTMRs = tc.rtmrs
-			validationErr := cfg.Validate()
-			_, loadErr := cfg.Allowlist.Pull.policySet(cfg.NormalizedPlatform())
-			if validationErr == nil || loadErr == nil || validationErr.Error() != loadErr.Error() || !strings.Contains(loadErr.Error(), "cannot be combined") {
-				t.Fatalf("conflict must precede parsing and file reads: validation=%v load=%v", validationErr, loadErr)
-			}
-		})
 	}
 }

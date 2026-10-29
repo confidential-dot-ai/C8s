@@ -48,7 +48,8 @@ func ResolveCDSEndpoint(path, suppliedURL string) (netip.AddrPort, bool, error) 
 }
 
 // resolveNodePolicy returns what the node mounts at path, parsed, and whether
-// there is a mount at all.
+// there is a mount at all. The mount answer holds even when parsing or the
+// caller's own arguments fail it, so a caller can say which source was short.
 //
 // THE RULE: while the enforcer's mount is at path, it is the only source, and
 // a supplied input is an error rather than a merged or silently ignored one.
@@ -65,14 +66,14 @@ func resolveNodePolicy[T any](path string, supplied []string, parse func([]byte)
 	case errors.Is(err, fs.ErrNotExist):
 		return none, false, nil
 	case err != nil:
-		return none, false, fmt.Errorf("node policy %s: %w", path, err)
+		return none, true, fmt.Errorf("node policy %s: %w", path, err)
 	}
 	if len(supplied) > 0 {
-		return none, false, fmt.Errorf("this node provides %s; remove %s", path, strings.Join(supplied, " and "))
+		return none, true, fmt.Errorf("this node provides %s; remove %s", path, strings.Join(supplied, " and "))
 	}
 	parsed, err := parse(data)
 	if err != nil {
-		return none, false, fmt.Errorf("node policy %s: %w", path, err)
+		return none, true, fmt.Errorf("node policy %s: %w", path, err)
 	}
 	return parsed, true, nil
 }

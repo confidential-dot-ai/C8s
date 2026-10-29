@@ -61,24 +61,10 @@ func (d *Document) validateCDS() error {
 	if err != nil {
 		return fmt.Errorf("cds.measurements: %w", err)
 	}
-	if !bindsEveryLaunchFile(pins) {
-		return fmt.Errorf("cds.measurements must bind every entry to the CDS launch file")
+	if _, err := cmdsutil.CDSLaunchFile(pins); err != nil {
+		return fmt.Errorf("cds.measurements %w", err)
 	}
 	return nil
-}
-
-// bindsEveryLaunchFile reports whether the set pins an image at all and binds
-// every entry to the exact launch file of the VM it admits.
-func bindsEveryLaunchFile(pins refvalues.ReferenceValues) bool {
-	if len(pins.Images) == 0 {
-		return false
-	}
-	for _, image := range pins.Images {
-		if len(image.LaunchFile) == 0 {
-			return false
-		}
-	}
-	return true
 }
 
 // The pod and service ranges the node image's RKE2 configuration fixes, which

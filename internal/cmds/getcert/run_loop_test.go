@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -33,7 +32,7 @@ func holdSIGTERM(t *testing.T) {
 func unreachableRenewalConfig(t *testing.T) config {
 	return stagePodEnvironment(t, config{
 		CDSURL:                 "https://127.0.0.1:1",
-		CDSMeasurements:        testCDSMeasurement,
+		MeasurementsConfigJSON: testCDSPin,
 		AttestationApiURL:      "http://127.0.0.1:1",
 		SAN:                    "host.example.com",
 		InitialRetryTimeout:    0,
@@ -577,24 +576,5 @@ func TestRenewLoopPicksUpNameWithinSeconds(t *testing.T) {
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatalf("renewLoop returned %v, want nil on shutdown", err)
-	}
-}
-
-func TestCDSHTTPClientParsesRTMRPins(t *testing.T) {
-	base := config{
-		CDSURL:            "https://cds:8443",
-		AttestationApiURL: "http://attestation-api:8400",
-	}
-
-	cfg := base
-	cfg.CDSRTMRs = "1=zz"
-	if _, err := cdsHTTPClient(cfg); err == nil || !strings.Contains(err.Error(), "--cds-rtmrs") {
-		t.Fatalf("err = %v, want an RTMR parse failure naming the flag", err)
-	}
-
-	cfg.CDSMeasurements = strings.Repeat("ab", 48)
-	cfg.CDSRTMRs = "1=" + strings.Repeat("cd", 48)
-	if _, err := cdsHTTPClient(cfg); err != nil {
-		t.Fatalf("cdsHTTPClient with valid pins: %v", err)
 	}
 }

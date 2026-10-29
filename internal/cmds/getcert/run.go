@@ -46,8 +46,6 @@ import (
 // config holds all CLI configuration for get-cert.
 type config struct {
 	CDSURL                 string
-	CDSMeasurements        string
-	CDSRTMRs               string
 	MeasurementsConfig     string
 	MeasurementsConfigJSON string
 	AttestationApiURL      string
@@ -136,10 +134,8 @@ consumers that read that volume.`,
 	}
 
 	flags := cmd.Flags()
-	cmdsutil.BindImagePolicyFlags(flags, &cfg.MeasurementsConfig, &cfg.MeasurementsConfigJSON, "pins the CDS endpoint; excludes --cds-measurements and --cds-rtmrs")
+	cmdsutil.BindImagePolicyFlags(flags, &cfg.MeasurementsConfig, &cfg.MeasurementsConfigJSON, "pins the CDS endpoint, every entry bound to the launch file that CDS runs on; required unless the node pins CDS")
 	flags.StringVar(&cfg.CDSURL, "cds-url", "", "URL of the CDS service (e.g. https://cds:8443); refused in an injected sidecar, which dials the endpoint the node mounts")
-	flags.StringVar(&cfg.CDSMeasurements, "cds-measurements", "", "comma-separated SHA-384 hex launch measurements for CDS armTLS verification; required unless the node or --image-policy-file pins CDS")
-	flags.StringVar(&cfg.CDSRTMRs, "cds-rtmrs", "", "comma-separated TDX RTMR pins <index>=<sha384-hex> CDS's armTLS cert must additionally satisfy; ignored when CDS presents SNP evidence (empty = launch-digest pinning only)")
 	flags.StringVar(&cfg.AttestationApiURL, "attestation-api-url", "", "URL of the node-local attestation-api (http://localhost:8400, or unix:// plus the on-node socket path the chart wires)"+cmdsutil.NodeAddressHelp)
 	flags.StringVar(&cfg.CertPath, "cert-path", "", "Path where the certificate chain PEM of the published generation is read")
 	flags.StringVar(&cfg.CAPath, "ca-path", "", "Path where the mesh CA PEM of the published generation is read; must be in the --cert-path directory")
@@ -227,8 +223,7 @@ func cdsPins(cfg config) (armtls.Pins, error) {
 		cmdsutil.ImagePolicySource{
 			File: cfg.MeasurementsConfig,
 			JSON: cfg.MeasurementsConfigJSON,
-		},
-		cmdsutil.MeasurementPinsFromStrings(cfg.CDSMeasurements, cfg.CDSRTMRs, "cds-"))
+		})
 	if err != nil {
 		return armtls.Pins{}, err
 	}

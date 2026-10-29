@@ -49,7 +49,7 @@ if [ "${C8S_NODE_IMAGE:-}" = 1 ]; then
         any((.spec.template.spec | .containers + (.initContainers // []))[];
           .name == $container and
           all((.args // [])[];
-            test("^--(cds-url|image-policy-file|image-policy-json|cds-measurements|cds-rtmrs)(=|$)") | not)));
+            test("^--(cds-url|image-policy-file|image-policy-json)(=|$)") | not)));
     policy("c8s-router"; "cds-attest"; "--image-policy-file=/run/c8s-node/cds.json") and
     nodepins("c8s-router"; "c8s-cert") and
     nodepins("c8s-router"; "allowlist-proxy") and

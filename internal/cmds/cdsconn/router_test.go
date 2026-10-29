@@ -29,11 +29,15 @@ func TestHTTPClientRouterFrontDoor(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			o := Options{
-				URL:          router.URL,
-				Measurements: []string{testutil.TestMeasurement},
-				Timeout:      5 * time.Second,
-				Verifier:     tc.verifier,
-				DirectCDS:    tc.directCDS,
+				URL:       router.URL,
+				Timeout:   5 * time.Second,
+				Verifier:  tc.verifier,
+				DirectCDS: tc.directCDS,
+			}
+			if tc.directCDS {
+				o.MeasurementsConfig = testutil.CDSPinFile(t)
+			} else {
+				o.Measurements = []string{testutil.TestMeasurement}
 			}
 			hc, err := o.HTTPClient(context.Background())
 			if tc.wantErr == "" {

@@ -127,7 +127,7 @@ func Run(args []string) error {
 	var wlClient allowlistclient.Client
 	if cfg.PullEnabled() {
 		logger.Info("initializing allowlist client", "url", cfg.pullURL())
-		httpClient, err := allowlistPullHTTPClient(cfg.Allowlist.Pull, cfg.NormalizedPlatform())
+		httpClient, err := allowlistPullHTTPClient(cfg.Allowlist.Pull)
 		if err != nil {
 			return fmt.Errorf("create allowlist client: %w", err)
 		}
@@ -270,8 +270,8 @@ func Run(args []string) error {
 // allowlistPullHTTPClient builds the armTLS client for the CDS pull. The pull
 // URL is always https (enforced by config.Validate), so this always verifies
 // the CDS attestation handshake.
-func allowlistPullHTTPClient(cfg pullConfig, platform string) (*http.Client, error) {
-	set, err := cfg.policySet(platform)
+func allowlistPullHTTPClient(cfg pullConfig) (*http.Client, error) {
+	set, err := cfg.policySet()
 	if err != nil {
 		return nil, err
 	}
@@ -805,7 +805,7 @@ func digestsAdvertiseHost(cfg *config) (string, error) {
 // startSandboxDigests serves the CDS-facing digests endpoint over
 // mutually-attested armTLS (docs/armtls.md, "Sandbox identity").
 func startSandboxDigests(ctx context.Context, logger *slog.Logger, cfg *config, resolver workloadclaims.SandboxResolver, signer *workloadclaims.SandboxTokenSigner) error {
-	set, err := cfg.Allowlist.Pull.policySet(cfg.NormalizedPlatform())
+	set, err := cfg.Allowlist.Pull.policySet()
 	if err != nil {
 		return err
 	}

@@ -50,7 +50,7 @@ func document(t *testing.T, role launchconfig.Role) *launchconfig.Document {
 	}
 }
 
-const floor = "platform: tdx\nallowlist:\n  base:\n    schema: c8s.allowlist/v1\n    workloads:\n      system:\n        containers:\n          - digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n            command: {policy: any}\n            args: {policy: any}\n  pull:\n    url: https://127.0.0.1:30808\n    timeout: 30s\n    cds_measurements: []\npolicy:\n  mode: fail-closed\n  enforce_existing: true\n"
+const floor = "platform: tdx\nallowlist:\n  base:\n    schema: c8s.allowlist/v1\n    workloads:\n      system:\n        containers:\n          - digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n            command: {policy: any}\n            args: {policy: any}\n  pull:\n    url: https://127.0.0.1:30808\n    timeout: 30s\npolicy:\n  mode: fail-closed\n  enforce_existing: true\n"
 const seed = `{"schema":"c8s.allowlist/v1","workloads":{"operator":{"containers":[{"digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","command":{"policy":"any"},"args":{"policy":"any"}}]}}}`
 
 func writeInput(t *testing.T, root, name string, data []byte) {
@@ -130,9 +130,6 @@ func TestPreparePreservesFloorAndPinsServerBeforeRKE2(t *testing.T) {
 			}
 			if pull["url"] != cmdsutil.CDSURL(endpoint) || pull["cds_measurements_config"] != PublicDir+"/cds.json" || pull["timeout"] != "30s" {
 				t.Fatalf("bad pull config: %v", pull)
-			}
-			if _, exists := pull["cds_measurements"]; exists {
-				t.Fatal("flat pins retained")
 			}
 		})
 	}

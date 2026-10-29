@@ -31,6 +31,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/overenc"
@@ -226,7 +227,7 @@ func TestBuildPolicy_MeshLeafFlagsRefusedWithKindCDS(t *testing.T) {
 	})
 
 	t.Run("kind cds without mesh leaf flags is accepted", func(t *testing.T) {
-		if _, err := buildPolicy(config{kind: "cds"}); err != nil {
+		if _, err := buildPolicy(config{kind: "cds", measurementsConfig: testutil.CDSPinFile(t)}); err != nil {
 			t.Fatalf("buildPolicy: %v", err)
 		}
 	})

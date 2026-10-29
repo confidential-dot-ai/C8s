@@ -176,7 +176,7 @@ func TestRenderedDocumentsAreOutsideTheMountedSocketDirectory(t *testing.T) {
 		Allowlist:      installedCDSEndpoint(t, "10.9.9.9:8443"),
 		Mesh:           meshRoles(),
 	}
-	cfg.Allowlist.Pull.CDSMeasurements = []string{testDigestA}
+	cfg.Allowlist.Pull.CDSMeasurementsConfig = testCDSPinFile(t)
 	endpoint, err := loadCDSEndpoint(cfg.Allowlist.Pull)
 	if err != nil {
 		t.Fatalf("loadCDSEndpoint: %v", err)

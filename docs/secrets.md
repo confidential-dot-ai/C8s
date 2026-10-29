@@ -105,10 +105,9 @@ there and then, provided the entry's grant covers that path for write, so no
 caller ever chooses what another will later read. Under a read-only grant the
 request answers `404` until an operator writes the value. Values CDS cannot
 invent — an API token, a database password, a wrapped key — an operator writes
-with `c8s secrets put`. A measurement pin proves only that the peer is an
-attested build, and several instances can share one, so such a write also pins
-the mesh CA you hold out of band: that is what tells your CDS from another at
-the same measurement — [workloads.md](workloads.md).
+with `c8s secrets put`. The pin names the configuration that CDS runs on, and
+such a write also pins the mesh CA you hold out of band, which is what ties the
+peer to the instance you read it from — [workloads.md](workloads.md).
 
 ## Fixed sidecar mounts
 

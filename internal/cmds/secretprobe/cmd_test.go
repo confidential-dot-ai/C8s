@@ -83,14 +83,15 @@ func (f *fakeCDS) only(t *testing.T) seen {
 }
 
 // harness is one probe invocation's environment: a leaf, an inventory and a
-// CDS, plus the common flags that point the probe at them.
+// CDS, plus the flags that point the probe at them.
 type harness struct {
 	cds     *fakeCDS
 	cdsURL  string
 	socket  string
 	leafPub *ecdsa.PublicKey
 	roots   *x509.CertPool // what the probe trusts CDS by, in place of armTLS
-	common  []string
+	common  []string       // flags naming CDS, the leaf and the inventory
+	pinned  []string       // common, plus the pin a node that mounts none needs
 }
 
 func newHarness(t *testing.T, cds *fakeCDS) *harness {
@@ -104,7 +105,10 @@ func newHarnessAt(t *testing.T, cds *fakeCDS, cdsURL string) *harness {
 	t.Helper()
 	certPath, keyPath, pub := testutil.WriteLeaf(t, t.TempDir())
 	h := &harness{cds: cds, cdsURL: cdsURL, socket: testutil.StartInventory(t), leafPub: pub}
-	h.common = []string{"--cds-url", cdsURL, "--attestation-api-url", "unix:///nonexistent/attest.sock", "--cert", certPath, "--key", keyPath, "--socket", h.socket, "--timeout", "5s"}
+	h.common = []string{"--cds-url", cdsURL, "--attestation-api-url", "unix:///nonexistent/attest.sock",
+		"--cert", certPath, "--key", keyPath, "--socket", h.socket, "--timeout", "5s"}
+	h.pinned = append(append([]string{}, h.common...),
+		"--image-policy-json", testutil.CDSPinDocument(testutil.TestMeasurement, testutil.CDSLaunchFile))
 	return h
 }
 
@@ -112,7 +116,7 @@ func newHarnessAt(t *testing.T, cds *fakeCDS, cdsURL string) *harness {
 // action, and returns exit code, stdout and stderr.
 func (h *harness) run(t *testing.T, args ...string) (int, string, string) {
 	t.Helper()
-	return executeWith(t, trusting(h.roots), append(append([]string{}, h.common...), args...)...)
+	return executeWith(t, trusting(h.roots), append(append([]string{}, h.pinned...), args...)...)
 }
 
 // trusting builds the probe's client as the command does, presenting the
@@ -382,8 +386,7 @@ func TestRequestDoesNotTrustAnUnverifiedCDS(t *testing.T) {
 	t.Cleanup(srv.Close)
 	h := newHarnessAt(t, cds, srv.URL)
 	code, out, errOut := executeWith(t, sidecar.NewClient,
-		append(append([]string{}, h.common...), "--measurements", strings.Repeat("ab", 48),
-			"request", "GET", "/api/db", "--no-challenge", "--no-token")...)
+		append(append([]string{}, h.pinned...), "request", "GET", "/api/db", "--no-challenge", "--no-token")...)
 	if code != 0 || out != "000 - -\n" {
 		t.Fatalf("exit %d, stdout %q, stderr %q; want 0 and 000", code, out, errOut)
 	}
@@ -519,12 +522,9 @@ func (f *fakeCDS) fetched() int {
 // the test's duration.
 func writeNodePins(t *testing.T) string {
 	t.Helper()
-	document, err := os.ReadFile("../../../internal/testdata/node-identities.json")
-	if err != nil {
-		t.Fatal(err)
-	}
 	path := filepath.Join(t.TempDir(), "cds-pins.json")
-	if err := os.WriteFile(path, document, 0o644); err != nil {
+	document := testutil.CDSPinDocument(testutil.TestMeasurement, testutil.CDSLaunchFile)
+	if err := os.WriteFile(path, []byte(document), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	previous := nodePinsPath
@@ -535,7 +535,7 @@ func writeNodePins(t *testing.T) string {
 
 // The probe runs in the certificate container, where the enforcer mounts the
 // node's CDS pins. Like the sidecars it stands in for, it holds CDS to those
-// pins, so a node that passes its clients no --measurements still names the
+// pins, so a node that passes its clients no pin document still names the
 // CDS the probe dials.
 func TestProbeFollowsTheNodePins(t *testing.T) {
 	path := writeNodePins(t)
@@ -564,7 +564,7 @@ func TestProbeResolvesPinsSilently(t *testing.T) {
 	t.Cleanup(func() { log.SetOutput(os.Stderr) })
 	cds := newFakeCDS(http.StatusOK, "secret")
 	h := newHarness(t, cds)
-	code, out, errOut := h.run(t, "challenge")
+	code, out, errOut := executeWith(t, trusting(h.roots), append(append([]string{}, h.common...), "challenge")...)
 	if code != 0 {
 		t.Fatalf("exit %d, stdout %q, stderr %q", code, out, errOut)
 	}
