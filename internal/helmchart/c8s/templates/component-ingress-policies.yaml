@@ -3,9 +3,9 @@ Default-deny ingress for the components that had none: each pod accepts only
 the ports it declares, and nothing else on the pod network can reach it.
 
 No rule carries a `from`, so none of them restricts WHO may connect — only
-which port answers. router stays reachable from off-cluster, cds from every
-node, the operator from the API server. A policy with no `ingress:` key at all
-(volumed) is the one that refuses everything.
+which port answers. router stays reachable from off-cluster, the operator from
+the API server. A policy with no `ingress:` key at all (volumed) is the one
+that refuses everything.
 
 Ingress only: egress from a C8s component is bounded by the pod rules the node
 enforcer installs, not by a NetworkPolicy.
@@ -14,31 +14,6 @@ Escape hatch: policies are additive, so an operator who needs another port open
 applies their own NetworkPolicy selecting the same pods — nothing here has to be
 disabled first. See docs/operator.md.
 */}}
-{{- if include "c8s.cdsInCluster" . }}
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: {{ include "c8s.cdsName" . }}-ingress
-  namespace: {{ .Release.Namespace }}
-  labels:
-{{ include "c8s.commonLabels" . | indent 4 }}
-    app.kubernetes.io/component: cds
-spec:
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/name: c8s-operator
-      app.kubernetes.io/instance: {{ .Release.Name }}
-      app.kubernetes.io/component: cds
-  policyTypes:
-    - Ingress
-  ingress:
-    # armTLS from anywhere: get-cert runs beside every adopted workload, and the
-    # NodePort route arrives off-cluster.
-    - ports:
-        - protocol: TCP
-          port: {{ .Values.cds.port }}
----
-{{- end }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

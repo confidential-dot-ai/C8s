@@ -24,7 +24,6 @@ here, such as `router.publicTLS.mode`, are chart values.
 | Resource | Role |
 |---|---|
 | `c8s-operator` Deployment and Service | Controllers and the two admission webhooks |
-| `c8s-cds` Deployment, Service (NodePort `30808`), PodDisruptionBudget | CDS, the Certificate Distribution Service: rendered only by the node image's own release, which runs CDS inside it; an install names a CDS outside the cluster instead |
 | `c8s-pod-injector`, `c8s-pod-validator`, `<release>-deny-host-namespaces` | Injection, its enforcement, and the host-namespace refusal |
 | `c8s-attestation-api` and `c8s-nri-image-policy-worker` DaemonSets | Node-local evidence and the admission plugin; on `bare-metal` the node image bakes both, and the worker only carries this release's CDS pins to the baked plugin |
 | `c8s-router` Deployment, Service, and the `c8s-router` namespace | The public front door |
@@ -37,9 +36,9 @@ refuses to render without them. `--operator-keys` pins the operator public keys
 that authorize allowlist and route writes; without them CDS refuses every
 write, so a change needing a new entry needs a reinstall. `--force` proceeds past the two guarded
 prompts — no `--operator-keys`, and a fail-closed policy that would deny the
-platform's own pods; `--single-node` clears the dedicated-CDS-node selector and
-toleration. A measured node image boots the same chart, rendered at build time
-and configured from the signed launch file; `c8s install` refuses a cluster
+platform's own pods. A measured node image boots the same chart, rendered at
+build time and configured from the signed launch file; `c8s install` refuses a
+cluster
 labelled `confidential.ai/baked=true`.
 
 Images in a registry that needs authentication need a
@@ -115,27 +114,30 @@ final shape that is not the injected one.
 
 ## CDS is a singleton
 
-CDS runs as one replica with `strategy: Recreate`, and the default
-PodDisruptionBudget (`maxUnavailable: 0`) blocks voluntary disruptions. Its
-state is in the pod: the mesh CA key is generated inside the process and written
-nowhere, released secrets live in process memory, and the allowlist and route
-manifest live in a store on a memory-backed `emptyDir`. Any restart is a
-re-bootstrap:
+CDS runs as one VM outside the cluster, which `c8s cds config new` writes the
+configuration and the pin for. Its state is in that VM: the mesh CA key is
+generated inside the process and written nowhere, released secrets live in
+process memory, and the allowlist and route manifest live in a store on a
+tmpfs. Any restart is a re-bootstrap:
 
-- The replacement pod mints a new CA key. Member pods stay bound to the key
+- The replacement process mints a new CA key. Member pods stay bound to the key
   their first issuance recorded, so all of them must be recreated, the router
   included.
 - Operator-written workload entries, every stored secret — every encrypted
-  volume's key blob included — and the route manifest are gone; only the CDS
-  seed is applied again, and each node keeps serving the policy it last
-  applied ([allowlist-and-capabilities.md](allowlist-and-capabilities.md)).
-  For `cds.jwtClockSkew` seconds (30) it also refuses operator tokens, having
+  volume's key blob included — and the route manifest are gone; only the
+  configuration's own workloads are served again, and each node keeps serving
+  the policy it last applied
+  ([allowlist-and-capabilities.md](allowlist-and-capabilities.md)). For its
+  clock-skew window (30 seconds) it also refuses operator tokens, having
   forgotten which were spent.
 
-Persistence is refused rather than offered: `cds.persistence.enabled=true`
-mounts a PVC, and the chart fails the render outside `audit` mode, because CDS's
-own workload entry admits its store only on memory or encrypted storage, and no
-PVC observes as either.
+Recovery re-applies all of it: the operator's workload entries with their
+`secrets` grants and mount rules (`c8s allowlist upload` of a saved
+`c8s allowlist export`, or `c8s allowlist apply` per entry), the route manifest
+(`c8s routes add --new`, which an empty store needs), and every secret from its
+escrow file (`c8s secrets put <PATH> --from-file <ESCROW>`). An encrypted
+volume opens once its consumer's entry and its key are both back
+([volumes.md](volumes.md#keep-the-escrow-file)).
 
 ## Authenticated launch configuration
 
@@ -328,14 +330,14 @@ refuses, so write that entry yourself
 ## Network policies
 
 The chart ships one ingress policy per component it installs, each admitting
-only the ports that pod answers on: `cds.port` for CDS, 9443, 8081 and 8080 for
-the operator pod, `router.nginx.httpsPort` for the router plus the ACME HTTP-01
-port `8080` in mode `acme`, and nothing at all for attestation-api and volumed,
-which answer on pod loopback and a node-local socket. None of them carries a
-`from`, so each narrows which port answers, not who may connect: the router is
-public, the API server's address is not nameable, and the CDS NodePort arrives
-off-cluster. They are ingress-only — outward reach is the node's packet ruleset
-— and additive, so another port is your own NetworkPolicy.
+only the ports that pod answers on: 9443, 8081 and 8080 for the operator pod,
+`router.nginx.httpsPort` for the router plus the ACME HTTP-01 port `8080` in
+mode `acme`, and nothing at all for attestation-api and volumed, which answer
+on pod loopback and a node-local socket. None of them carries a `from`, so each
+narrows which port answers, not who may connect: the router is public and the
+API server's address is not nameable. They are ingress-only — outward reach is
+the node's packet ruleset — and additive, so another port is your own
+NetworkPolicy.
 
 ## Rendering the chart
 
@@ -350,7 +352,6 @@ helm template c8s internal/helmchart/c8s \
   --set-file cds.measurementsConfig=cds-pin.json \
   --set image.tag=main \
   --set attestationApi.image.tag=main \
-  --set cds.image.tag=main \
   --set armtlsMesh.image.tag=main \
   --set nriImagePolicy.enabled=false
 ```

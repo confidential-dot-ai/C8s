@@ -46,14 +46,6 @@ c8sComponents:
     imageEnv:
       PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
       SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
-    ## The chart runs CDS only on a baked node; elsewhere it is a VM outside
-    ## the cluster and no entry of this cluster's allowlist admits it.
-  - valuePath: cds.image
-    enabledPath: node.baked
-    entrypoint: ["/c8s", "cds"]
-    imageEnv:
-      PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-      SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
   - valuePath: attestationApi.image
     enabledPath: attestationApi.enabled
     entrypoint: ["/attestation-api"]
@@ -172,10 +164,9 @@ webhook:
   certVolume:
     fsGroup: 65532
   getCert:
-    ## Must be strictly shorter than cds.namedCertTTL, which is the shortest
-    ## TTL CDS issues (a named leaf's, 6h) and therefore the binding one — a
-    ## renewal interval at or above it would only fire once the installed leaf
-    ## had already expired. The default is a third of it. get-cert additionally
+    ## Must be strictly shorter than the shortest TTL CDS issues (a named
+    ## leaf's, 6h) and therefore the binding one — a renewal interval at or
+    ## above it would only fire once the installed leaf had already expired. The default is a third of it. get-cert additionally
     ## paces off the installed leaf's own NotAfter, so a mis-set value here
     ## degrades to more frequent renewals rather than an expired certificate.
     renewInterval: 2h
@@ -184,126 +175,23 @@ webhook:
     runAsGroup: 65532
     runAsNonRoot: true
 
-## Certificate Distribution Service (cds): the C8s trust root. One binary, one Service,
-## one ServiceAccount, and one measurement allowlist serve attestation,
-## allowlist, and mesh-CA leaf signing.
+## Certificate Distribution Service (cds): the C8s trust root, which serves
+## attestation, the allowlist and mesh-CA leaf signing. It runs on a
+## confidential VM outside the cluster, which `c8s cds config new` writes the
+## launch file and pin for; the values below name it to this release's clients.
 ##
 ## The mesh CA key is generated inside the cds process and stays in memory
 ## only — it is never rendered into a Kubernetes Secret or volume.
 cds:
-  ## Pin the deployed image by digest in production to decouple it from a
-  ## floating tag's movement. This applies to every C8s .image.digest field.
-  image:
-    repository: ghcr.io/confidential-dot-ai/cds
-    tag: ""
-    digest: ""
-    pullPolicy: IfNotPresent
-  port: 8443
-  ## An upgrade that changes CDS's own image, command line or mounts fails
-  ## until the running enforcers admit the new CDS. The failure names the new
-  ## seed entry: publish it with `c8s allowlist apply`, wait for every node to
-  ## pull it, and set this to its name (docs/allowlist-and-capabilities.md).
-  publishedShape: ""
-  ## CIDR(s) holding this cluster's node addresses. CDS dials a node's admission
-  ## inventory inside them and nowhere else, which is what stops a workload
-  ## pointing the sandbox-digests callback at its own pod IP and answering as
-  ## the inventory.
-  ##
-  ## Unset (default), CDS derives the bound live from the cluster's node list —
-  ## one host route per node, kept current as nodes come and go — and the chart
-  ## grants its ServiceAccount read-only node access for that. Set a range only
-  ## when the node network is separate from the pod network; on CNIs that assign
-  ## pod IPs from the node subnet a range admits pods too (docs/operator.md).
-  sandboxInventoryCIDRs: []
-  service:
-    type: NodePort
-    nodePort: 30808
-  ## CDS is a singleton, in-memory trust root reached over a node-local
-  ## NodePort and (with persistence) an RWO volume, so it must land on a
-  ## known node. node.selector pins it there; the default expects a node
-  ## labelled `role=cds`; override to match your cluster.
-  ##
-  ## Set selector: {} for a single-node / single-CVM cluster with no dedicated
-  ## CDS node: CDS schedules on any node (`c8s install --single-node` sets this
-  ## for you). The NRI installer is one pull-mode DaemonSet on every node
-  ## regardless, so each plugin pulls from whichever node hosts CDS.
-  ##
-  ## tolerations let CDS land on a node dedicated to it. The default tolerates
-  ## `dedicated=cds:NoSchedule`, the conventional dedicated-CDS-node taint (the
-  ## counterpart of the role=cds label); override for a different taint, or set
-  ## [] for an untainted node (e.g. a single-node cluster).
-  node:
-    selector:
-      role: cds
-    tolerations:
-      - key: dedicated
-        value: cds
-        effect: NoSchedule
-  ## CDS is a singleton in-memory trust root: any voluntary eviction (node
-  ## drain, autoscaler) destroys the CA key and forces every workload
-  ## to re-bootstrap. The default PDB (maxUnavailable: 0) blocks voluntary
-  ## disruptions so a drain cannot silently take CDS down — the operator must
-  ## delete the pod deliberately (a planned re-bootstrap). Set maxUnavailable: 1
-  ## to allow drains if you accept the re-bootstrap, or enabled: false to remove
-  ## the PDB.
-  podDisruptionBudget:
-    enabled: true
-    maxUnavailable: 0
-  logLevel: info
-  allowlistDB: /mnt/c8s-data/cds/allowlist.db
-  # -- Operator token clock skew tolerance in seconds. Without
-  # `persistence.enabled`, CDS also refuses operator-token requests
-  # (allowlist, routes, secrets) for this long after it starts, since it
-  # forgets spent tokens at restart.
-  jwtClockSkew: 30
-  certTTL: 24h
-  # -- Upper bound on the TTL of a leaf carrying a matched-workload stamp
-  # (OID …1.5). A named leaf can outlive its match by at most its remaining
-  # lifetime, so this is the documented stale-identity bound; it never applies
-  # to membership-only (unnamed) leaves. See docs/armtls.md, "Matched workload".
-  # It may only shorten the 6h built-in ceiling — CDS refuses to start on a
-  # larger value, or on 0, which is not a disable switch here.
-  namedCertTTL: 6h
-  challengeTTL: 60s
-  requestTimeout: 5s
-  # -- Max HTTP request body CDS accepts on /authenticate and /attest.
-  # Sized for the largest evidence envelope we serve today: an Intel
-  # TDX quote + full cc_eventlog is ~90 KB uncompressed (the eventlog alone
-  # runs 40-85 KB on real TDX hosts). The stock 64 KiB limit is fine for SEV-SNP
-  # (evidence ~2 KiB) but rejects every TDX request with HTTP 422
-  # `http: request body too large`.
-  maxRequestSize: 262144
-  # -- Max secret paths one allowlist entry may hold. Must stay below
-  # cds.secretsMaxPaths; the chart refuses to render otherwise.
-  secretsMaxPathsPerWorkload: 64
-  # -- Max secret paths CDS holds in memory across every workload. Raise this
-  # alongside secretsMaxPathsPerWorkload.
-  secretsMaxPaths: 1024
-  # -- Max bytes in one secret value, never below the 32 bytes of a value CDS
-  # generates.
-  secretsMaxValueBytes:
-  readinessInterval: 10s
-  ## /attest CSRs arrive without a matching TCP source IP under chart routing,
-  ## so leave sanValidation off and pin DNS SAN / CN patterns instead.
-  sanValidation: false
-  ## Extra full-match regexes a CSR's DNS SANs may match, on top of the chart's
-  ## always-present in-cluster Service DNS pattern (c8s.cdsDnsSanPattern:
-  ## <name>.<namespace>.svc). A SAN passes if it matches any allowed pattern.
-  ##
-  ## The mesh's own CSRs (router.<ns>.svc, armtls-mesh.<ns>.svc)
-  ## always validate against the built-in Service pattern, so leave this empty
-  ## for purely in-cluster deployments. When router fronts a routed domain, make
-  ## that hostname the first router.san entry and add it here so CDS signs it onto
-  ## the router leaf — appending here never shadows the in-cluster pattern. Only
-  ## the first router.san is the mesh-cert identity; extra entries widen nginx
-  ## server_name only and need no pattern here.
-  dnsSanPatterns: []
-  cnPattern: ""
-  ## The CDS this cluster trusts, as <ip>:<port>: a VM outside the cluster,
-  ## measured against the pin below. Required unless node.baked, which renders
-  ## CDS in the cluster. An injected credential client's packet rules admit
-  ## this one endpoint, so it is an address, never a name.
+  ## Its endpoint, as <ip>:<port>. Required unless node.baked, whose nodes take
+  ## the endpoint and the pin from their measured launch file. An injected
+  ## credential client's packet rules admit this one endpoint, so it is an
+  ## address, never a name.
   address: ""
+  ## The CDS pin: the refvalues document naming the launch file and image the
+  ## CDS VM proves. Content, not a path — set it with `c8s install --cds-pin
+  ## <file>` or `helm --set-file`. Required with address.
+  measurementsConfig: ""
   ## PEM bundle of operator EC public keys (public material, not a secret).
   ## When set, CDS accepts PUT/DELETE /allowlist from a client presenting a
   ## short-lived token signed by one of the matching operator private keys (see
@@ -316,46 +204,7 @@ cds:
   ## reinstall; adding the keys later is such an upgrade
   ## (docs/allowlist-and-capabilities.md). Prefer
   ## `c8s install --operator-keys <file>` over hand-editing this multi-line value.
-  ## The CDS pin: the refvalues document naming the launch file and image the
-  ## CDS VM proves. Content, not a path — set it with `c8s install --cds-pin
-  ## <file>` or `helm --set-file`. Required with address.
-  measurementsConfig: ""
   operatorKeys: ""
-  rateLimit: 10
-  rateBurst: 20
-  rateLimiterMaxEntries: 10000
-  rateLimiterEvictInterval: 1m
-  rateLimiterIdleTimeout: 5m
-  ## armTLS settings for the cds serving cert. Without this, clients talk to
-  ## cds over plaintext HTTP and an on-path attacker can forge responses.
-  ## Empty platform disables TLS — UNSAFE outside tests.
-  armtlsPlatform: snp
-  armtlsCertTTL: 24h
-  ca:
-    ## The mesh CA key is generated inside cds memory and is not rendered into
-    ## a Kubernetes Secret or persistent volume.
-    commonName: c8s Mesh CA
-    certValidity: 8760h
-    minValidity: 1h
-  ## The claim is mounted at /mnt/c8s-data/cds, and CDS's component entry
-  ## admits it only on storage the node proves memory or encrypted. No PVC is:
-  ## a CSI volume observes as unknown and a local-path volume as a host path.
-  ## The render therefore refuses enabled=true unless
-  ## nriImagePolicy.policy.mode=audit. See docs/allowlist-and-capabilities.md.
-  persistence:
-    enabled: false
-    ## With enabled=false the store (SQLite DB and WAL) is a memory emptyDir:
-    ## it counts toward cds.resources.limits.memory, so keep this below that.
-    memorySizeLimit: 64Mi
-    size: 1Gi
-    storageClassName: ""
-  resources:
-    requests:
-      cpu: 50m
-      memory: 64Mi
-    limits:
-      cpu: 500m
-      memory: 256Mi
 
 ## DaemonSet running the attestation-api image from github.com/confidential-dot-ai/attestation-rs.
 attestationApi:
@@ -480,6 +329,11 @@ kubeStateMetrics:
       memory: 256Mi
 
 nriImagePolicy:
+  ## The TEE family this cluster's nodes run on, which the plugin presents
+  ## armTLS evidence of to the CDS it pulls from: the two ends of one
+  ## mutually-attested connection. Empty disables TLS — UNSAFE outside tests.
+  ## `c8s install --hardware-platform` sets it.
+  platform: snp
   ## The mesh policy of an installed (unmeasured) node: the pods of this
   ## release's namespace and kube-system host no member pods, and the pod
   ## ruleset admits this resolver on the DNS port.
@@ -646,18 +500,19 @@ nriImagePolicy:
 
   # --- Bootstrap allowlist ---
   # The entries the cluster needs before an operator writes anything, rendered
-  # into CDS's --allowlist-seed (templates/cds.yaml) beside the chart's own
-  # component entries, so CDS's served /allowlist is non-empty on the first
-  # worker pull. An entry admitting a digest with open args, env and mounts,
-  # under any command or pinned to one, also lands in every plugin's base
-  # allowlist (nri-image-policy.bootConfig), so the cluster can bring itself
-  # up before CDS is reachable, and so does an entry for a C8s component's
+  # into the allowlist seed (templates/allowlist-seed.yaml) beside the chart's
+  # own component entries, so the CDS this cluster trusts serves a non-empty
+  # /allowlist on the first worker pull. An entry admitting a digest with open
+  # args, env and mounts, under any command or pinned to one, also lands in
+  # every plugin's base allowlist (nri-image-policy.bootConfig), so the
+  # cluster can bring itself up before CDS is reachable, and so does an
+  # entry for a C8s component's
   # digest whatever it pins; any other entry that pins args, env or mounts is
   # seed-only. The chart's own component entries pin each container it
   # renders to its exact argv and mount table, and land in both.
   #
-  # Everything needed to reach a Ready CDS on the CDS node and a working kubelet
-  # on every node goes here as any-argv entries — the C8s component images plus
+  # Everything needed to reach a working kubelet on every node goes here as
+  # any-argv entries — the C8s component images plus
   # kube-proxy, coredns, pause/sandbox, CNI — supplied via values or `-f`
   # (resolve digests with crane/skopeo; `c8s allowlist add` writes the same
   # shape). In production you pin the full set here; deriveComponents below is
@@ -665,7 +520,7 @@ nriImagePolicy:
   bootstrapAllowlist:
     # deriveComponents: a demo convenience (off by default, like
     # `c8s install --resolve-digests`, which turns it on). When true, the C8s
-    # component images this chart installs (operator, cds, attestation-api,
+    # component images this chart installs (operator, attestation-api,
     # armtls-mesh) are seeded and admitted whenever their image.digest is set,
     # each container pinned to the exact argv and mounts it renders, so a
     # digest-pinned install self-allows the C8s images without an entry
@@ -824,8 +679,8 @@ router:
   # chart-managed Service DNS name: <release>-router.c8s-router.svc. Every entry
   # becomes an nginx server_name, so one router can answer on several hostnames
   # the serving cert (publicTLS) covers. The FIRST entry is the single identity
-  # on the CDS-issued mesh cert — pin it in cds.dnsSanPatterns; the rest widen
-  # only server_name and need no dnsSanPatterns entry.
+  # on the CDS-issued mesh cert — name it in the CDS configuration's leaf DNS
+  # rules; the rest widen only server_name and need no rule.
   san: []
 
   # -- Application routing. nginx proxies every request that no protocol
@@ -900,9 +755,9 @@ router:
     # -- nginx write limiting, per public client and in aggregate across all
     # clients. The aggregate bound protects the single per-source-IP CDS
     # bucket the whole front door shares (see docs/operator.md, "Built-in
-    # allowlist route"). The chart requires burst <= totalBurst <
-    # cds.rateBurst and requestsPerSecond <= totalRequestsPerSecond <
-    # cds.rateLimit. GET, HEAD, and OPTIONS are exempt here (see
+    # allowlist route"). The chart requires burst <= totalBurst and
+    # requestsPerSecond <= totalRequestsPerSecond, which must stay below the
+    # CDS's own rate limit. GET, HEAD, and OPTIONS are exempt here (see
     # readRateLimit).
     rateLimit:
       requestsPerSecond: 1

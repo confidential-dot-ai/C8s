@@ -134,13 +134,6 @@ func TestPreparePreservesFloorAndPinsServerBeforeRKE2(t *testing.T) {
 			if _, exists := pull["cds_measurements"]; exists {
 				t.Fatal("flat pins retained")
 			}
-			_, err = os.Stat(filepath.Join(root, PublicDir, "allowlist-seed.json"))
-			if role == launchconfig.Agent && !os.IsNotExist(err) {
-				t.Fatal("agent received server seed")
-			}
-			if role == launchconfig.Server && err != nil {
-				t.Fatal(err)
-			}
 		})
 	}
 }
@@ -197,7 +190,7 @@ func TestPreparePublishesOnlyPublicRoleInputs(t *testing.T) {
 			}
 			want := []string{"cds.json", "peers.json"}
 			if role == launchconfig.Server {
-				want = []string{"allowlist-seed.json", "cds.json", "operator-pubkey", "peers.json", "router", "tls-san"}
+				want = []string{"cds.json", "operator-pubkey", "peers.json", "router", "tls-san"}
 				for name, expected := range map[string]string{"operator-pubkey": doc.Server.OperatorPublicKey, "tls-san": doc.TLSSAN + "\n"} {
 					data, err := os.ReadFile(filepath.Join(root, PublicDir, name))
 					if err != nil || string(data) != expected {

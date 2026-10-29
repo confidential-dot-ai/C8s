@@ -39,11 +39,9 @@ CDS_PIN
 common_set=(
   --set image.tag=ci
   --set attestationApi.image.tag=ci
-  --set cds.image.tag=ci
   --set armtlsMesh.image.tag=ci
   --set nriImagePolicy.image.tag=ci
   --set nriImagePolicy.image.digest=sha256:aaaa000000000000000000000000000000000000000000000000000000000000
-  --set cds.image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000001
   # The default policy mode is fail-closed, which requires every digest-pinned
   # C8s component to be covered in the allowlist floor or the plugin would deny
   # it on its own node. deriveComponents auto-covers the C8s images from their

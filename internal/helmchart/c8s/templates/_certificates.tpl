@@ -87,7 +87,3 @@ capabilities:
 seccompProfile:
   type: RuntimeDefault
 {{- end -}}
-
-{{- define "c8s.cdsDnsSanPattern" -}}
-^[a-z0-9-]+[.][a-z0-9-]+[.]svc$
-{{- end -}}

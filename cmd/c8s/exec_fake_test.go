@@ -101,22 +101,21 @@ func writeChart(t *testing.T, values string) string {
 func resetCLIState(t *testing.T) {
 	t.Helper()
 	saved := struct {
-		installNamespace, installRelease, installCvmMode                             string
-		installHardwarePlatform, installImagePullSecret, installImageTag             string
-		installOperatorKeys, installUpstream, renderValuesDistro                     string
-		uninstallNamespace, uninstallRelease                                         string
-		installCDSAddress, installCDSPin, installSeedOut                             string
-		installValues, installWorkloadRefs                                           []string
-		installInventoryCIDRs                                                        []string
-		installWait, installCRDs, installGetCertRunAsNonRoot                         bool
-		installSingleNode, installForce, installResolveDigests, installAttestEnabled bool
-		uninstallWait, uninstallHostSweep, uninstallHostSweepOnly, uninstallForce    bool
-		uninstallDeleteCRDs, uninstallDeleteNamespace, installVolumes                bool
-		installCertFSGroup, installGetCertRunAsUser, installGetCertRunAsGroup        int64
-		installGetCertRenewInterval                                                  time.Duration
-		installOperatorKey, installRoutesOut                                         string
-		installRoutesMaxAge                                                          time.Duration
-		installCDS                                                                   *cdsPin
+		installNamespace, installRelease, installCvmMode                          string
+		installHardwarePlatform, installImagePullSecret, installImageTag          string
+		installOperatorKeys, installUpstream, renderValuesDistro                  string
+		uninstallNamespace, uninstallRelease                                      string
+		installCDSAddress, installCDSPin, installSeedOut                          string
+		installValues, installWorkloadRefs                                        []string
+		installWait, installCRDs, installGetCertRunAsNonRoot                      bool
+		installForce, installResolveDigests, installAttestEnabled                 bool
+		uninstallWait, uninstallHostSweep, uninstallHostSweepOnly, uninstallForce bool
+		uninstallDeleteCRDs, uninstallDeleteNamespace, installVolumes             bool
+		installCertFSGroup, installGetCertRunAsUser, installGetCertRunAsGroup     int64
+		installGetCertRenewInterval                                               time.Duration
+		installOperatorKey, installRoutesOut                                      string
+		installRoutesMaxAge                                                       time.Duration
+		installCDS                                                                *cdsPin
 	}{
 		installNamespace, installRelease, installCvmMode,
 		installHardwarePlatform, installImagePullSecret, installImageTag,
@@ -124,9 +123,8 @@ func resetCLIState(t *testing.T) {
 		uninstallNamespace, uninstallRelease,
 		installCDSAddress, installCDSPin, installSeedOut,
 		slices.Clone(installValues), slices.Clone(installWorkloadRefs),
-		slices.Clone(installInventoryCIDRs),
 		installWait, installCRDs, installGetCertRunAsNonRoot,
-		installSingleNode, installForce, installResolveDigests, installAttestEnabled,
+		installForce, installResolveDigests, installAttestEnabled,
 		uninstallWait, uninstallHostSweep, uninstallHostSweepOnly, uninstallForce,
 		uninstallDeleteCRDs, uninstallDeleteNamespace, installVolumes,
 		installCertFSGroup, installGetCertRunAsUser, installGetCertRunAsGroup,
@@ -142,9 +140,8 @@ func resetCLIState(t *testing.T) {
 		uninstallNamespace, uninstallRelease = saved.uninstallNamespace, saved.uninstallRelease
 		installCDSAddress, installCDSPin, installSeedOut = saved.installCDSAddress, saved.installCDSPin, saved.installSeedOut
 		installValues, installWorkloadRefs = saved.installValues, saved.installWorkloadRefs
-		installInventoryCIDRs = saved.installInventoryCIDRs
 		installWait, installCRDs, installGetCertRunAsNonRoot = saved.installWait, saved.installCRDs, saved.installGetCertRunAsNonRoot
-		installSingleNode, installForce, installResolveDigests, installAttestEnabled = saved.installSingleNode, saved.installForce, saved.installResolveDigests, saved.installAttestEnabled
+		installForce, installResolveDigests, installAttestEnabled = saved.installForce, saved.installResolveDigests, saved.installAttestEnabled
 		uninstallWait, uninstallHostSweep, uninstallHostSweepOnly, uninstallForce = saved.uninstallWait, saved.uninstallHostSweep, saved.uninstallHostSweepOnly, saved.uninstallForce
 		uninstallDeleteCRDs, uninstallDeleteNamespace = saved.uninstallDeleteCRDs, saved.uninstallDeleteNamespace
 		installVolumes = saved.installVolumes
@@ -160,7 +157,7 @@ func resetCLIState(t *testing.T) {
 	installGetCertRenewInterval = 6 * time.Hour
 	installGetCertRunAsUser, installGetCertRunAsGroup, installGetCertRunAsNonRoot = 65532, 65532, true
 	installCvmMode, installHardwarePlatform = "", "sev-snp"
-	installSingleNode, installImagePullSecret, installImageTag = false, "", ""
+	installImagePullSecret, installImageTag = "", ""
 	installVolumes = false
 	installOperatorKeys, installForce = "", false
 	installUpstream, installWorkloadRefs = "", nil

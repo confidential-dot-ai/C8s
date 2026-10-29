@@ -85,7 +85,7 @@ releases: it can create any pod and edit every object that credential reaches.
   [Only allowlisted code runs](guarantees.md#only-allowlisted-code-runs),
   [Routes are what the operator signed](guarantees.md#routes-are-what-the-operator-signed).
 - **Issue a workload certificate**: only CDS — the Certificate Distribution
-  Service, the one in-cluster pod holding C8s policy — signs leaves, and its
+  Service, the VM outside the cluster holding C8s policy — signs leaves, and its
   mesh CA key lives only in process memory, never in a Kubernetes Secret
   ([armtls.md](armtls.md#cds-issuance));
   [Identity comes from hardware evidence](guarantees.md#identity-comes-from-hardware-evidence).

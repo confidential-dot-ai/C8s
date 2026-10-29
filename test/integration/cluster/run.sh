@@ -240,7 +240,6 @@ c8s_install() {
         --namespace "$NS" \
         --cvm-mode=bare-metal \
         --hardware-platform=sev-snp \
-        --single-node \
         --resolve-digests=false \
         --image-tag="$IMAGE_TAG" \
         --operator-keys "$WORKDIR/operator-pub.pem" \

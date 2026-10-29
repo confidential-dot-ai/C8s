@@ -30,7 +30,6 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/credrelease"
 	"github.com/confidential-dot-ai/c8s/internal/readutil"
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
@@ -526,14 +525,6 @@ func (d *Document) validate() error {
 		}
 		if err := d.Router.validate(); err != nil {
 			return err
-		}
-	}
-	if d.Workloads != "" {
-		if !json.Valid([]byte(d.Workloads)) {
-			return fmt.Errorf("workloads must contain one valid JSON document")
-		}
-		if _, err := allowlist.ParseJSON([]byte(d.Workloads)); err != nil {
-			return fmt.Errorf("workloads: %w", err)
 		}
 	}
 	return validateRegistryMirrors(d.RegistryMirrors)

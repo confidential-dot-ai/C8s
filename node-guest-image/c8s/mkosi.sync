@@ -86,7 +86,6 @@ fi
 source "$SRCDIR/mkosi.profiles/c8s/image-source.sh"
 NRI_REPO="${C8S_REGISTRY}/nri-image-policy"
 OPERATOR_REPO="${C8S_REGISTRY}/c8s-operator"
-CDS_REPO="${C8S_REGISTRY}/cds"
 MESH_REPO="${C8S_REGISTRY}/armtls-mesh"
 # The image's TEE platform, from build's --sync-input. Required: the NRI
 # base allowlist types the armTLS identity CDS checks against attestation
@@ -217,8 +216,6 @@ else
 fi
 resolve_digest_bg "$OPERATOR_REPO" "$C8S_REF" "$DIGEST_TMPDIR/operator" &
 operator_pid=$!
-resolve_digest_bg "$CDS_REPO" "$C8S_REF" "$DIGEST_TMPDIR/cds" &
-cds_pid=$!
 resolve_digest_bg "$MESH_REPO" "$C8S_REF" "$DIGEST_TMPDIR/mesh" &
 mesh_pid=$!
 # Wait on every job regardless of individual exit status (a bare `wait $pid`
@@ -228,7 +225,6 @@ mesh_pid=$!
 # shape and is what actually fails the build closed.
 [ -z "$nri_pid" ] || wait "$nri_pid" || true
 wait "$operator_pid" || true
-wait "$cds_pid" || true
 wait "$mesh_pid" || true
 
 read_digest() {  # <name> <out-file> -> prints sha256:... or FATALs on a bad/missing result
@@ -241,7 +237,6 @@ read_digest() {  # <name> <out-file> -> prints sha256:... or FATALs on a bad/mis
 }
 NRI_DIGEST=$(read_digest nri "$DIGEST_TMPDIR/nri")
 OPERATOR_DIGEST=$(read_digest operator "$DIGEST_TMPDIR/operator")
-CDS_DIGEST=$(read_digest cds "$DIGEST_TMPDIR/cds")
 MESH_DIGEST=$(read_digest mesh "$DIGEST_TMPDIR/mesh")
 rm -rf "$DIGEST_TMPDIR"
 trap - EXIT
@@ -249,8 +244,8 @@ NRI_IMAGE="${NRI_REPO}@${NRI_DIGEST}"
 echo "c8s sync: ref ${C8S_REF} -> binary ${NRI_DIGEST}, operator ${OPERATOR_DIGEST}"
 
 # Render the system floor. Boot preparation merges the chart's measured
-# component seed into this base before RKE2/containerd starts, so CDS and
-# its clients can start before the live allowlist becomes available.
+# component seed into this base before RKE2/containerd starts, so the
+# components can start before the live allowlist becomes available.
 # The router's own image is pinned by the embedded chart alone, so the base is
 # rendered after the node integration that reports it.
 render_nri_base() {  # <front-door-image>: repository@digest
@@ -289,8 +284,6 @@ render_node_integration() {
         --kube-version "${RKE2_VERSION%%+*}" \
         --image-repository "$OPERATOR_REPO" \
         --image-digest "$OPERATOR_DIGEST" \
-        --cds-image-repository "$CDS_REPO" \
-        --cds-image-digest "$CDS_DIGEST" \
         --armtls-mesh-image-repository "$MESH_REPO" \
         --armtls-mesh-image-digest "$MESH_DIGEST" \
         --output-dir "$out"; then

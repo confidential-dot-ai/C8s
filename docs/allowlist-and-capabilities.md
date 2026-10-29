@@ -64,17 +64,17 @@ pull lands only the base allowlist admits — the entries the plugin carries in
 its own boot config ([Bootstrap](#bootstrap)); `nriImagePolicy.policy.mode:
 audit` admits anyway and logs denials.
 
-CDS — the Certificate Distribution Service, the one in-cluster pod that serves
-this policy and signs each pod's certificate — checks again when it issues a
-pod's certificate: it asks that pod's own admission inventory which images the
-sandbox runs and requires every reported digest to be allowlisted, against one
-atomic snapshot ([armtls.md](armtls.md#sandbox-identity)). That is membership,
-not the whole entry, because issuance lands mid-lifecycle, where the running set
-is a subset of what the pod declares; when the set does match exactly one entry,
-CDS stamps the leaf with its name ([armtls.md](armtls.md#matched-workload)).
-Neither point gates a combination of images, since the plugin sees one container
-at a time: secret release is where a whole entry is required
-([secrets.md](secrets.md)).
+CDS — the Certificate Distribution Service, the VM outside the cluster that
+serves this policy and signs each pod's certificate — checks again when it
+issues a pod's certificate: it asks that pod's own admission inventory which
+images the sandbox runs and requires every reported digest to be allowlisted,
+against one atomic snapshot ([armtls.md](armtls.md#sandbox-identity)). That is
+membership, not the whole entry, because issuance lands mid-lifecycle, where the
+running set is a subset of what the pod declares; when the set does match
+exactly one entry, CDS stamps the leaf with its name
+([armtls.md](armtls.md#matched-workload)). Neither point gates a combination of
+images, since the plugin sees one container at a time: secret release is where a
+whole entry is required ([secrets.md](secrets.md)).
 
 ## What a launch policy constrains
 
@@ -231,12 +231,6 @@ on its first connect (Corner 8 of
 narrowing an entry stops its containers on every node within one refresh
 interval.
 
-One upgrade can stop on this. CDS is recreated rather than rolled — the old pod
-stops before the new one starts — so it cannot publish its own new shape. The
-chart refuses an upgrade that changes CDS's image, command line, or mounts
-until the running enforcers admit it, naming the seed entry to publish and the
-`cds.publishedShape` value that confirms it ([upgrade.md](upgrade.md)).
-
 ## Bootstrap
 
 Two documents start the platform before CDS serves anything. The base allowlist
@@ -246,13 +240,15 @@ before CDS is reachable and a failed pull never drops it. The chart renders it
 from `nriImagePolicy.bootstrapAllowlist`; a measured node image merges it at
 boot from the file it bakes at `/usr/lib/c8s/allowlist-seed.json`.
 
-The CDS seed is the document CDS seeds its store from at start. The chart
-renders it into a ConfigMap from the resolved component digests, its argv-pinned
-platform entries, and `nriImagePolicy.bootstrapAllowlist.workloads`; a measured
-node image publishes it from that same baked file, plus the workloads its signed
-launch configuration carries. Each component entry's name carries its image and
-the digests of its policy, so an image bump or a configuration change adds an
-entry beside the old one. Seeding adds every name the store lacks and retires
+The CDS seed is the component entries this release needs served. The chart
+renders them into a ConfigMap from the resolved component digests, its
+argv-pinned platform entries, and
+`nriImagePolicy.bootstrapAllowlist.workloads`;
+`c8s install --allowlist-seed-out` writes the same document for
+`c8s cds config new`, which merges it with the operator's tenant workloads
+into the configuration the CDS VM boots on. Each component entry's name
+carries its image and the digests of its policy, so an image bump or a
+configuration change adds an entry beside the old one. Seeding adds every name the store lacks and retires
 the chart-generated shapes its seed replaces, leaving an operator entry under
 any other name untouched: an operator edit survives a CDS restart, while a
 deleted entry returns on the next start for as long as the chart renders it. A

@@ -55,7 +55,6 @@ var (
 	installGetCertRunAsNonRoot  bool
 	installCvmMode              string
 	installHardwarePlatform     string
-	installSingleNode           bool
 	installVolumes              bool
 	installImagePullSecret      string
 	installImageTag             string
@@ -70,7 +69,6 @@ var (
 	installCDSAddress     string
 	installCDSPin         string
 	installSeedOut        string
-	installInventoryCIDRs []string
 
 	// installCDS is the pin this install holds its CDS to, resolved once from
 	// the values the release renders with, so the chart, the clients this
@@ -111,7 +109,7 @@ const platformExemptNamespace = "kube-system"
 // against, so an operator's -f override of a repository cannot leave the chart
 // deploying repoA@<digest-of-repoB>.
 type c8sComponent struct {
-	valuePrefix  string            // values path, e.g. "cds.image" (renders {repository}@{digest})
+	valuePrefix  string            // values path, e.g. "armtlsMesh.image" (renders {repository}@{digest})
 	repository   string            // values.yaml default repository resolved against
 	enabledPath  string            // values path guarding the render, e.g. "attestationApi.enabled" ("" = always rendered)
 	pinnedDigest string            // chart-declared digest to pin instead of resolving at the install tag ("" = resolve)
@@ -238,8 +236,8 @@ func operatorKeysPreflight(operatorKeys string, valuesFiles []string, force bool
 
 // cdsPreflight refuses an install that names no CDS: no --cds-address and
 // --cds-pin, and no -f values file setting cds.address, cds.measurementsConfig
-// or node.baked=true (a baked node runs its own CDS and carries its pin in the
-// measured launch config, which the chart cannot see). The chart fails that
+// or node.baked=true (a baked node takes the address and the pin from its
+// measured launch file, which the chart cannot see). The chart fails that
 // render too; this names the install flags before anything runs.
 func cdsPreflight(address string, pin string, valuesFiles []string) error {
 	if cdsNamed(address, pin) {
@@ -1108,18 +1106,6 @@ Requires the 'helm' and 'kubectl' CLIs to be on PATH, and 'crane' unless
 			}
 			fmt.Fprintf(os.Stdout, "+ detected host distro: %s\n", distro)
 		}
-		// The sandbox-digests callback dials node addresses and nothing else.
-		// Resolve here, where the cluster is reachable, that CDS can bound
-		// it — a default install must not quietly ship with sandbox identity
-		// disabled. Must run before buildValueArgs, which folds an explicit
-		// --node-cidr into the
-		// computed values.
-		resolved, err := resolveInventoryCIDRs(cmd.Context(), installInventoryCIDRs)
-		if err != nil {
-			return err
-		}
-		installInventoryCIDRs = resolved
-
 		// The computed values are shared with `c8s render-values` via
 		// buildValueArgs, then written to one values file rather than passed as a
 		// pile of --set flags. The contract that the CLI's flag-derived values
@@ -1512,17 +1498,15 @@ func appendCvmModeInstallArgs(helmArgs []string, cvmMode, hardwarePlatform strin
 		"--set", "attestationApi.teeDevices.tdxGuest="+tdxGuest,
 		"--set", "attestationApi.teeDevices.tpm="+tpm,
 	)
-	// Propagate the CPU TEE to CDS, which names its armTLS platform. It
-	// defaults to SNP in the chart; on a TDX cluster CDS (which self-warms its
-	// serving cert via the attestation-api and is non-privileged, so it cannot
-	// probe /dev/tdx_guest to auto-detect) must be told `tdx` explicitly, or it
-	// parses the attestation-api's TDX quote as an SNP report and crash-loops
-	// ("evidence contains neither attestation_report nor hcl_report"). This
-	// holds for the Azure-vTPM TDX shape (aks + tdx, i.e. az-tdx) too: the vTPM
-	// HCL report carries a TD quote. cds.armtlsPlatform uses `snp`/`tdx` (both
-	// normalize az-tdx -> tdx).
+	// Propagate the CPU TEE to the admission plugin, which presents armTLS
+	// evidence of this family to the CDS it pulls from: the two ends of one
+	// mutually-attested connection. It defaults to SNP in the chart, and a
+	// plugin told `snp` on a TDX cluster parses the attestation-api's TDX
+	// quote as an SNP report. This holds for the Azure-vTPM TDX shape (aks +
+	// tdx, i.e. az-tdx) too: the vTPM HCL report carries a TD quote.
+	// nriImagePolicy.platform uses `snp`/`tdx` (both normalize az-tdx -> tdx).
 	if hardwarePlatform == "tdx" {
-		helmArgs = append(helmArgs, "--set-string", "cds.armtlsPlatform=tdx")
+		helmArgs = append(helmArgs, "--set-string", "nriImagePolicy.platform=tdx")
 	}
 	// The router attestation endpoints are on by default (chart default);
 	// --attest=false turns them off. When on, the sidecar passes this platform straight to the attestation-api
@@ -1562,11 +1546,6 @@ func appendCvmModeInstallArgs(helmArgs []string, cvmMode, hardwarePlatform strin
 		helmArgs = append(helmArgs,
 			"--set", "attestationApi.enabled=false",
 			"--set", "nriImagePolicy.baked=true",
-		)
-	}
-	for i, c := range installInventoryCIDRs {
-		helmArgs = append(helmArgs,
-			"--set-string", fmt.Sprintf("cds.sandboxInventoryCIDRs[%d]=%s", i, c),
 		)
 	}
 	return helmArgs, nil
@@ -1680,22 +1659,6 @@ func preflightOperatorImage(ctx context.Context, components []c8sComponent, tag 
 		fmt.Fprintf(os.Stderr, "warning: could not verify operator image %s:%s exists (%v); continuing\n", repo, tag, err)
 	}
 	return nil
-}
-
-// appendSingleNodeInstallArgs collapses the dedicated-CDS-node partition for a
-// single-node / single-CVM cluster: an empty cds.node.selector makes every node
-// CDS-eligible (worker/pull installer everywhere, no split; the node pulls from
-// its co-hosted CDS), and the dedicated-node taint toleration is meaningless
-// without it. helm renders =null as an empty value the chart reads as "no
-// partition". --set wins over -f, so the flag is authoritative if both are supplied.
-func appendSingleNodeInstallArgs(helmArgs []string, singleNode bool) []string {
-	if !singleNode {
-		return helmArgs
-	}
-	return append(helmArgs,
-		"--set", "cds.node.selector=null",
-		"--set", "cds.node.tolerations=null",
-	)
 }
 
 // appendVolumedInstallArgs turns on the node agent that opens encrypted volumes
@@ -2423,8 +2386,8 @@ func effectiveValues(ctx context.Context, chartPath string, setArgs []string) (m
 // its repository and the digest resolved against that repository. Pinning the
 // repository too means an operator's -f override of a repository cannot leave
 // the chart deploying repoA@<digest-of-repoB>: helm gives --set strict
-// precedence over -f, so the repository and digest move together. cds.image
-// covers both the CDS Deployment and the allowlist-seed / floor self-entry,
+// precedence over -f, so the repository and digest move together. A component's
+// value path covers its workload and its allowlist-seed / floor entry alike,
 // which all read it. Any resolution failure aborts: a
 // partially-pinned floor would let the render guard pass while the served
 // allowlist pointed at the wrong digest. The resolver is injected so the arg
@@ -2485,7 +2448,6 @@ func init() {
 	installCmd.Flags().Int64Var(&installGetCertRunAsUser, "webhook-get-cert-run-as-user", 65532, "runAsUser for injected get-cert containers")
 	installCmd.Flags().Int64Var(&installGetCertRunAsGroup, "webhook-get-cert-run-as-group", 65532, "runAsGroup for injected get-cert containers")
 	installCmd.Flags().BoolVar(&installGetCertRunAsNonRoot, "webhook-get-cert-run-as-non-root", true, "set runAsNonRoot for injected get-cert containers")
-	installCmd.Flags().BoolVar(&installSingleNode, "single-node", false, "single-node / single-CVM cluster: clear the dedicated-CDS-node selector and taint toleration (cds.node.selector={}, cds.node.tolerations=[])")
 	installCmd.Flags().BoolVar(&installVolumes, "volumes", false, "serve encrypted volumes (docs/volumes.md): deploy volumed, the node agent that opens a pod's volume devices, and pin its image into the NRI allowlist. Off by default — it runs privileged, with hostPID and a writable bind of the kubelet directory")
 	installCmd.Flags().StringSliceVar(&installWorkloadRefs, flagWorkloadRef, nil, "existing workload to adopt as a c8s confidential workload, as <cw-id>=<namespace>/<kind>/<name>[:<port>]; repeatable. Kind is any resource exposing a pod template at spec.template (deployment, statefulset, daemonset, or an operator CRD such as <kind>.<group>). The optional :<port> is the port the workload serves TLS on with its get-cert certificate, needed on the ref --upstream selects")
 	installCmd.Flags().StringVar(&installUpstream, flagUpstream, "", "confidential.ai/cw id of the adopted --workload-ref workload to route / to: writes a route manifest naming c8s-<id>.<ns>.svc.cluster.local:<port> (that ref's :<port>, serving TLS on its get-cert certificate) and the allowlist entry <id>, for every router.san DNS name")
@@ -2497,7 +2459,6 @@ func init() {
 	installCmd.Flags().StringVar(&installHardwarePlatform, flagHardwarePlatform, "", "CPU-level TEE hardware (REQUIRED; orthogonal to --cvm-mode): sev-snp (/dev/sev-guest) or tdx (Intel TDX, /dev/tdx-guest). Under --cvm-mode=aks the CPU TEE rides the Azure vTPM: sev-snp selects az-snp and tdx selects az-tdx (no guest device needed — the report comes from /dev/tpm0)")
 	installCmd.Flags().BoolVar(&installResolveDigests, "resolve-digests", true, "resolve each c8s component image tag to its registry digest (via crane), pin it, and add the resolved images to the NRI allowlist (enables deriveComponents). Also reads each pinned image config, the router nginx image included (docker.io unless router.nginx.image.repository names a mirror). On by default; pass --resolve-digests=false when supplying digests via -f")
 	installCmd.Flags().BoolVar(&installAttestEnabled, "attest", true, "serve the router's attestation endpoints under /.well-known/c8s/ (browser/CLI verification via c8s-verify). On by default; --attest=false turns them off, while the cds-attest sidecar keeps routing application requests")
-	installCmd.Flags().StringSliceVar(&installInventoryCIDRs, "node-cidr", nil, "CIDR(s) holding this cluster's sandbox inventories (repeatable/comma-separated): CDS dials an inventory inside them and nowhere else. Under --cvm-mode=bare-metal/gke/aks these are node addresses, which is what stops a workload pointing the sandbox-digests callback at its own pod IP; the default is CDS deriving one host route per node from the live node list, so set a range only when the node network is separate from the pod network")
 	installCmd.Flags().StringVar(&installCDSAddress, flagCDSAddress, "", "<ip>:<port> of the CDS this cluster trusts: the VM `c8s cds config new` wrote a configuration and a pin for. Sets cds.address, which every client of this cluster dials and whose packet rules admit nothing else")
 	installCmd.Flags().StringVar(&installCDSPin, flagCDSPin, "", "path to that CDS's pin document (cds-pin.json): the image and launch file its VM proves. Sets cds.measurementsConfig, which every client holds the CDS to")
 	installCmd.Flags().StringVar(&installSeedOut, flagSeedOut, "", "write the component allowlist entries this install needs served to <file> and stop, touching nothing: the input `c8s cds config new --allowlist-seed` takes before the CDS this install then names exists")

@@ -111,11 +111,11 @@ http://$$(HOST_IP):{{ .Values.attestationApi.port }}
 {{- end -}}
 {{- end -}}
 
-{{/* c8s.cdsInCluster is non-empty where the chart runs this cluster's CDS:
-     only a baked node image does. Everywhere else CDS is a VM outside the
-     cluster, named by cds.address and cds.measurementsConfig. */}}
-{{- define "c8s.cdsInCluster" -}}
-{{- if .Values.node.baked -}}true{{- end -}}
+{{/* c8s.cdsFromValues is non-empty where this release's values name the CDS
+     its clients trust — cds.address and cds.measurementsConfig — which is
+     every install but a baked node, whose signed launch file carries both. */}}
+{{- define "c8s.cdsFromValues" -}}
+{{- if not .Values.node.baked -}}true{{- end -}}
 {{- end -}}
 
 {{/* c8s.nodeReadsCDSAddress is non-empty where the chart hands the node the

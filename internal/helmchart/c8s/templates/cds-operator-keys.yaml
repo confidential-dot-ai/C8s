@@ -1,14 +1,14 @@
 {{- /*
 The keys the route manifest is signed under, in the router's own namespace,
 which a projected volume cannot leave. Public key material — not a secret, and
-checked for content in validations.yaml. The CDS a baked image runs reads the
-same keys from its measured launch configuration instead.
+checked for content in validations.yaml. A baked node's router reads the same
+keys from its measured launch staging instead.
 */ -}}
-{{- if and (not (include "c8s.cdsInCluster" .)) .Values.router.enabled .Values.cds.operatorKeys }}
+{{- if and (include "c8s.cdsFromValues" .) .Values.router.enabled .Values.cds.operatorKeys }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ include "c8s.cdsName" . }}-operator-keys
+  name: {{ include "c8s.fullname" . }}-operator-keys
   namespace: {{ include "c8s.routerMeshNamespace" . }}
   labels:
 {{ include "c8s.commonLabels" . | indent 4 }}

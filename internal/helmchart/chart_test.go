@@ -22,14 +22,12 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
-	policyv1 "k8s.io/api/policy/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	sigsyaml "sigs.k8s.io/yaml"
 
 	acmecmd "github.com/confidential-dot-ai/c8s/internal/cmds/acme"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
@@ -139,11 +137,6 @@ func namedContainerPort(c corev1.Container, portName string) (corev1.ContainerPo
 		}
 	}
 	return corev1.ContainerPort{}, false
-}
-
-func containerHostPort(c corev1.Container, portName string) (int32, bool) {
-	p, ok := namedContainerPort(c, portName)
-	return p.HostPort, ok
 }
 
 func allContainers(ds *appsv1.DaemonSet) []corev1.Container {
@@ -488,7 +481,7 @@ func TestChartRendersOperatorKeysPEM(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	cm := renderedConfigMap(t, out, "c8s-cds-operator-keys")
+	cm := renderedConfigMap(t, out, "c8s-operator-keys")
 	if got := cm.Data["keys.pem"]; got != pemText {
 		t.Fatalf("operator-keys ConfigMap keys.pem = %q, want the PEM content %q", got, pemText)
 	}
@@ -665,162 +658,6 @@ func TestChartBothWebhooksShareAnnotations(t *testing.T) {
 			}
 		}
 	}
-}
-
-func TestChartManagedARMTLSServiceTargetPortsMatchContainerPorts(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplateBakedNode(t)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-
-	for _, tc := range []struct {
-		service    string
-		deployment string
-		container  string
-		want       string
-	}{
-		{service: "c8s-cds", deployment: "c8s-cds", container: "cds", want: "https"},
-	} {
-		svc := renderedService(t, out, tc.service)
-		if len(svc.Spec.Ports) != 1 {
-			t.Fatalf("Service %s ports = %d, want 1", tc.service, len(svc.Spec.Ports))
-		}
-		if got := svc.Spec.Ports[0].TargetPort.String(); got != tc.want {
-			t.Fatalf("Service %s targetPort = %q, want %q", tc.service, got, tc.want)
-		}
-
-		container := renderedDeploymentContainer(t, out, tc.deployment, tc.container)
-		if _, ok := containerHostPort(container, tc.want); !ok {
-			t.Fatalf("Deployment %s container %s missing port named %q; ports=%v", tc.deployment, tc.container, tc.want, container.Ports)
-		}
-	}
-}
-
-// TestChartCDSPinnedToCDSNode proves the CDS Deployment is pinned to the
-// cds.node.selector node and tolerates that node's dedicated taint. CDS is a
-// singleton trust root reached over a node-local NodePort and (with
-// persistence) an RWO volume, so it must land on a known node — independent of
-// image policy. Pinning without tolerating the dedicated taint leaves CDS
-// Pending, so both must hold.
-func TestChartCDSPinnedToCDSNode(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplateBakedNode(t)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	spec := renderedDeployment(t, out, "c8s-cds").Spec.Template.Spec
-	// A baked image boots one server, and RKE2 labels only servers, so this
-	// pins the singleton to it.
-	if got := spec.NodeSelector["node-role.kubernetes.io/control-plane"]; got != "true" {
-		t.Errorf("CDS nodeSelector = %v, want the control-plane node (CDS must pin to a known node)", spec.NodeSelector)
-	}
-	if !tolerates(spec.Tolerations, "dedicated", "cds") {
-		t.Errorf("CDS does not tolerate the dedicated=cds taint; it would stay Pending on a dedicated node: %v", spec.Tolerations)
-	}
-}
-
-// Both secret path bounds are chart-settable, up to a quota one below the
-// ceiling — the largest the guard admits.
-func TestChartCDSSecretsPathQuotaFlagsThrough(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		name string
-		set  []string
-		want []string
-	}{
-		{"default", nil, []string{"--secrets-max-paths=1024", "--secrets-max-paths-per-workload=64"}},
-		{
-			"sized",
-			[]string{"--set", "cds.secretsMaxPaths=256", "--set", "cds.secretsMaxPathsPerWorkload=8"},
-			[]string{"--secrets-max-paths=256", "--secrets-max-paths-per-workload=8"},
-		},
-		{
-			"quota one below the ceiling",
-			[]string{"--set", "cds.secretsMaxPaths=256", "--set", "cds.secretsMaxPathsPerWorkload=255"},
-			[]string{"--secrets-max-paths=256", "--secrets-max-paths-per-workload=255"},
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			out, err := helmTemplateBakedNode(t, tc.set...)
-			if err != nil {
-				t.Fatalf("helm template: %v\n%s", err, out)
-			}
-			args := renderedDeploymentContainer(t, out, "c8s-cds", "cds").Args
-			for _, want := range tc.want {
-				assertContainerHasArg(t, "cds", args, want)
-			}
-		})
-	}
-}
-
-// The value bound is chart-settable, and unset renders no flag at all, so CDS
-// keeps its own bound.
-func TestChartCDSSecretsMaxValueBytesFlagsThrough(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplateBakedNode(t, "--set", "cds.secretsMaxValueBytes=8192")
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	assertContainerHasArg(t, "cds", renderedDeploymentContainer(t, out, "c8s-cds", "cds").Args, "--secrets-max-value-bytes=8192")
-
-	out, err = helmTemplateBakedNode(t)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	for _, a := range renderedDeploymentContainer(t, out, "c8s-cds", "cds").Args {
-		if strings.HasPrefix(a, "--secrets-max-value-bytes=") {
-			t.Fatalf("the unset value rendered %s", a)
-		}
-	}
-
-	out, err = helmTemplateBakedNode(t, "--set", "cds.secretsMaxValueBytes=32")
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	assertContainerHasArg(t, "cds", renderedDeploymentContainer(t, out, "c8s-cds", "cds").Args, "--secrets-max-value-bytes=32")
-
-	out, err = helmTemplateBakedNode(t, "--set", "cds.secretsMaxValueBytes=31")
-	if err == nil {
-		t.Fatalf("a bound below a generated value rendered:\n%s", out)
-	}
-	if want := "kind=cds_secrets_value_bytes"; !strings.Contains(out, want) {
-		t.Fatalf("render failed without %q: %v\n%s", want, err, out)
-	}
-}
-
-// The pair CDS refuses to start on is refused at template time instead.
-func TestChartCDSSecretsQuotaAboveTheCeilingFailsRendering(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		name string
-		set  []string
-		want string
-	}{
-		{"at the ceiling", []string{"--set", "cds.secretsMaxPaths=64"}, "kind=cds_secrets_path_budget"},
-		{"above the ceiling", []string{"--set", "cds.secretsMaxPaths=32"}, "kind=cds_secrets_path_budget"},
-		{"raised quota, default ceiling", []string{"--set", "cds.secretsMaxPathsPerWorkload=1024"}, "kind=cds_secrets_path_budget"},
-		{"zero ceiling", []string{"--set", "cds.secretsMaxPaths=0"}, "cds.secretsMaxPaths must be a positive integer"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			out, err := helmTemplate(t, tc.set...)
-			if err == nil {
-				t.Fatalf("a quota at or above the ceiling rendered:\n%s", out)
-			}
-			if !strings.Contains(out, tc.want) {
-				t.Fatalf("render failed without %q: %v\n%s", tc.want, err, out)
-			}
-		})
-	}
-}
-
-func tolerates(tols []corev1.Toleration, key, value string) bool {
-	for _, t := range tols {
-		if t.Key == key && t.Value == value {
-			return true
-		}
-	}
-	return false
 }
 
 // TestChartLeavesTheInjectedCDSEndpointToTheNode proves the chart hands the
@@ -1157,46 +994,6 @@ func findKey(node any, key string) string {
 		}
 	}
 	return ""
-}
-
-// The renewal interval the operator hands every injected sidecar must be
-// strictly below the shortest TTL CDS issues. cds.namedCertTTL is that TTL — a
-// named leaf's — and nothing backdates NotBefore, so an interval at or above it
-// would only fire once the installed leaf had already expired. get-cert paces
-// off the leaf's own NotAfter as a backstop, but the chart's own defaults must
-// not need it.
-func TestChartGetCertRenewIntervalIsBelowNamedCertTTL(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplateBakedNode(t)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	renew := durationArg(t, renderedOperatorArgs(t, out), "--get-cert-renew-interval=")
-	named := durationArg(t, renderedDeploymentContainer(t, out, "c8s-cds", "cds").Args, "--named-cert-ttl=")
-	certTTL := durationArg(t, renderedDeploymentContainer(t, out, "c8s-cds", "cds").Args, "--cert-ttl=")
-
-	if renew >= named {
-		t.Fatalf("webhook.getCert.renewInterval %v >= cds.namedCertTTL %v: an injected sidecar would renew at or after its leaf expired", renew, named)
-	}
-	if renew >= certTTL {
-		t.Fatalf("webhook.getCert.renewInterval %v >= cds.certTTL %v", renew, certTTL)
-	}
-}
-
-// durationArg extracts and parses the value of the first arg carrying prefix.
-func durationArg(t *testing.T, args []string, prefix string) time.Duration {
-	t.Helper()
-	for _, a := range args {
-		if raw, ok := strings.CutPrefix(a, prefix); ok {
-			d, err := time.ParseDuration(raw)
-			if err != nil {
-				t.Fatalf("parse %s%s: %v", prefix, raw, err)
-			}
-			return d
-		}
-	}
-	t.Fatalf("args missing %s\n%v", prefix, args)
-	return 0
 }
 
 func TestChartWebhookRendersSecurityKnobs(t *testing.T) {
@@ -3028,20 +2825,6 @@ func TestRouterRejectsInvalidValues(t *testing.T) {
 			want: "VALIDATION_ERROR kind=router_allowlist_rate_budget: router.allowlist.rateLimit.burst must not exceed rateLimit.totalBurst (15), got: 16",
 		},
 		{
-			name: "allowlist-write-total-rate-consumes-cds-capacity",
-			args: []string{
-				"--set", "allowlist.rateLimit.totalRequestsPerSecond=10",
-			},
-			want: "VALIDATION_ERROR kind=router_allowlist_rate_budget: router.allowlist.rateLimit.totalRequestsPerSecond must be less than cds.rateLimit (10), got: 10",
-		},
-		{
-			name: "allowlist-write-total-burst-consumes-cds-capacity",
-			args: []string{
-				"--set", "allowlist.rateLimit.totalBurst=20",
-			},
-			want: "VALIDATION_ERROR kind=router_allowlist_rate_budget: router.allowlist.rateLimit.totalBurst must be less than cds.rateBurst (20), got: 20",
-		},
-		{
 			name: "allowlist-read-rate-not-positive",
 			args: []string{
 				"--set", "allowlist.readRateLimit.requestsPerSecond=0",
@@ -3298,48 +3081,6 @@ func operatorVerbsFor(role rbacv1.ClusterRole, apiGroup, resource string) []stri
 		}
 	}
 	return nil
-}
-
-// CDS derives the sandbox-digests dial bound from the live node list unless
-// cds.sandboxInventoryCIDRs pins it statically, so the node-reader role and
-// the API token exist only in the default mode — and the grant is read-only.
-func TestChartCDSNodeReaderRBAC(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplateBakedNode(t)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	var role rbacv1.ClusterRole
-	if !findDoc(t, out, "ClusterRole", "c8s-cds-node-reader", &role) {
-		t.Fatalf("default render missing the CDS node-reader ClusterRole\n%s", out)
-	}
-	if len(role.Rules) != 1 {
-		t.Fatalf("CDS node-reader rules = %v, want nodes only", role.Rules)
-	}
-	if got := operatorVerbsFor(role, "", "nodes"); !slices.Equal(got, []string{"get", "list", "watch"}) {
-		t.Fatalf("CDS nodes verbs = %v, want read-only [get list watch]", got)
-	}
-	var deploy appsv1.Deployment
-	if !findDoc(t, out, "Deployment", "c8s-cds", &deploy) {
-		t.Fatalf("render missing the CDS Deployment\n%s", out)
-	}
-	if am := deploy.Spec.Template.Spec.AutomountServiceAccountToken; am == nil || !*am {
-		t.Fatalf("lister mode must mount the CDS API token, got %v", am)
-	}
-
-	staticOut, err := helmTemplateBakedNode(t, "--set-string", "cds.sandboxInventoryCIDRs[0]=10.0.0.0/24")
-	if err != nil {
-		t.Fatalf("helm template static CIDRs: %v\n%s", err, staticOut)
-	}
-	if findDoc(t, staticOut, "ClusterRole", "c8s-cds-node-reader", &role) {
-		t.Fatalf("static CIDRs rendered the node-reader role\n%s", staticOut)
-	}
-	if !findDoc(t, staticOut, "Deployment", "c8s-cds", &deploy) {
-		t.Fatalf("render missing the CDS Deployment\n%s", staticOut)
-	}
-	if am := deploy.Spec.Template.Spec.AutomountServiceAccountToken; am == nil || *am {
-		t.Fatalf("static CIDRs must not mount the CDS API token, got %v", am)
-	}
 }
 
 func TestChartWebhookAddsCABundleRBAC(t *testing.T) {
@@ -3663,7 +3404,6 @@ func helmTemplateUnpinned(t *testing.T, dir string, args ...string) (string, err
 		"--namespace", "c8s-system",
 		"--set", "image.tag=dev",
 		"--set", "attestationApi.image.tag=dev",
-		"--set", "cds.image.tag=dev",
 		"--set", "armtlsMesh.image.tag=dev",
 		"--set", "nriImagePolicy.image.tag=dev",
 		// volumed is off by default, so its image is unused unless a test
@@ -3680,7 +3420,6 @@ func helmTemplateUnpinned(t *testing.T, dir string, args ...string) (string, err
 		// exempts it as argvPinned. Tests that exercise the guard pin a
 		// different, deliberately-uncovered component digest.
 		"--set", "nriImagePolicy.image.digest=" + baseNRIDigest,
-		"--set", "cds.image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000001",
 	}
 	cmd := exec.Command("helm", append(base, args...)...)
 	cmd.Dir = dir
@@ -3985,187 +3724,6 @@ func renderedOperatorArgs(t *testing.T, manifest string) []string {
 	return nil
 }
 
-// TestChartCDSIsInMemorySingleton locks the two invariants the in-memory mesh
-// CA depends on: the Deployment is a single replica (a second would mint a
-// divergent trust root) and is annotated inMemory (the CA key never lands in a
-// Secret/PVC). The cds component's presence is covered by
-// TestChartDefaultRendersReplacementStack.
-func TestChartCDSIsInMemorySingleton(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplateBakedNode(t)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	dep := renderedDeployment(t, out, "c8s-cds")
-	if got := dep.Spec.Template.Annotations["confidential.ai/trust-root-mode"]; got != "inMemory" {
-		t.Fatalf("cds Deployment trust-root-mode annotation = %q, want inMemory", got)
-	}
-	if got := *dep.Spec.Replicas; got != 1 {
-		t.Fatalf("cds replicas = %d, want 1 (in-memory CA singleton)", got)
-	}
-}
-
-// TestChartCDSWiresInProcessTrustRoot confirms the flag set: the in-memory CA
-// (no Secret/ca-cert flag) and the allowlist DB.
-func TestChartCDSWiresInProcessTrustRoot(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplateBakedNode(t)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	args := renderedDeploymentContainer(t, out, "c8s-cds", "cds").Args
-	for _, want := range []string{
-		"--allowlist-db=/mnt/c8s-data/cds/allowlist.db",
-		"--ca-common-name=c8s Mesh CA",
-		"--ca-cert-validity=8760h",
-	} {
-		assertContainerHasArg(t, "cds", args, want)
-	}
-}
-
-// TestChartCDSAllowlistPersistentTracksPVC pins --allowlist-persistent to
-// cds.persistence.enabled, so CDS knows whether its allowlist store is durable
-// and warns at startup when it is not (operator-added digests are lost on a
-// restart otherwise).
-func TestChartCDSAllowlistPersistentTracksPVC(t *testing.T) {
-	t.Parallel()
-	t.Run("default (no persistence) renders false", func(t *testing.T) {
-		out, err := helmTemplateBakedNode(t)
-		if err != nil {
-			t.Fatalf("helm template: %v\n%s", err, out)
-		}
-		args := renderedDeploymentContainer(t, out, "c8s-cds", "cds").Args
-		assertContainerHasArg(t, "cds", args, "--allowlist-persistent=false")
-	})
-}
-
-func TestChartRefusesCDSAllowlistDBOutsideItsVolume(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		path string
-		ok   bool
-	}{
-		{"/mnt/c8s-data/cds/allowlist.db", true},
-		{"/mnt/c8s-data/cds/other.db", true},
-		{"/data/allowlist.db", false},
-		{"/mnt/c8s-data/cds/../cds-seed/allowlist.db", false},
-		{"/mnt/c8s-data/cds-seed/allowlist.db", false},
-	} {
-		t.Run(tc.path, func(t *testing.T) {
-			out, err := helmTemplate(t, "--set-string", "cds.allowlistDB="+tc.path)
-			if tc.ok {
-				if err != nil {
-					t.Fatalf("helm template(cds.allowlistDB=%s): %v\n%s", tc.path, err, out)
-				}
-				return
-			}
-			if kind := parseValidationErrorKind(out); err == nil || kind != "cds_allowlist_db_path" {
-				t.Fatalf("helm template(cds.allowlistDB=%s) = %v (kind %q), want cds_allowlist_db_path", tc.path, err, kind)
-			}
-		})
-	}
-}
-
-// No PVC observes as memory or encrypted storage, so CDS's component entry
-// refuses a persistent store; the render refuses it wherever the image policy
-// enforces.
-func TestChartRefusesCDSPersistenceUnderEnforcement(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		name string
-		args []string
-	}{
-		{"fail-closed", []string{"--set", "nriImagePolicy.policy.mode=fail-closed"}},
-		{"bare-metal without the installer", []string{"--set", "attestationApi.cvmMode=bare-metal", "--set", "attestationApi.enabled=false", "--set", "nriImagePolicy.enabled=false", "--set", "nriImagePolicy.policy.mode=audit"}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			out, err := helmTemplate(t, append(tc.args, "--set", "cds.persistence.enabled=true")...)
-			if kind := parseValidationErrorKind(out); err == nil || kind != "cds_persistence_unadmitted" {
-				t.Fatalf("helm template = %v (kind %q), want cds_persistence_unadmitted\n%s", err, kind, out)
-			}
-		})
-	}
-}
-
-// TestChartCDSServesARMTLS confirms the cds container renders with a non-empty
-// --armtls-platform by default, i.e. armTLS serving is ON. An empty platform
-// makes cds serve /attest over plaintext HTTP,
-// collapsing the H1 bootstrap-channel MITM defence — a regression this guards.
-func TestChartCDSServesARMTLS(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplateBakedNode(t)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	args := renderedDeploymentContainer(t, out, "c8s-cds", "cds").Args
-	// Default cds.armtlsPlatform is snp; an empty value would render
-	// "--armtls-platform=" and serve plaintext. Assert the exact default token.
-	assertContainerHasArg(t, "cds", args, "--armtls-platform=snp")
-}
-
-// TestChartCDSDnsSanPatternAcceptsAnyNamespace pins the always-present
-// in-cluster --dns-san-pattern and the identities it admits: CDS full-matches
-// the regex (issuer.fullRegexMatch), so it must sign any
-// <service>.<namespace>.svc (workloads live in their own namespaces, not just
-// the release namespace) while still rejecting SANs that are not in-cluster
-// Service DNS names. This pattern is emitted by the chart unconditionally, so a
-// per-cluster public hostname (cds.dnsSanPatterns) only ever adds to it.
-func TestChartCDSDnsSanPatternAcceptsAnyNamespace(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplateBakedNode(t)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	args := renderedDeploymentContainer(t, out, "c8s-cds", "cds").Args
-	const wantArg = "--dns-san-pattern=" + cmdsutil.ServiceDNSSANPattern
-	assertContainerHasArg(t, "cds", args, wantArg)
-
-	re := regexp.MustCompile(strings.TrimPrefix(wantArg, "--dns-san-pattern="))
-	fullMatch := func(s string) bool {
-		loc := re.FindStringIndex(s)
-		return loc != nil && loc[0] == 0 && loc[1] == len(s)
-	}
-	for _, san := range []string{
-		"c8s-router.c8s-router.svc",
-		"armtls-mesh.c8s-system.svc",
-		"acme-vllm-router-service.vllm.svc",
-		"acme-vllm-acme-opt-125m-engine-service.vllm.svc",
-	} {
-		if !fullMatch(san) {
-			t.Fatalf("default dns-san-pattern should accept in-cluster SAN %q", san)
-		}
-	}
-	for _, san := range []string{
-		"evil.example.com",                    // not a .svc name
-		"svc.cluster.local",                   // wrong shape
-		"a.b.c.svc",                           // more than <name>.<ns>
-		"router.c8s-system.svc.cluster.local", // trailing labels
-	} {
-		if fullMatch(san) {
-			t.Fatalf("default dns-san-pattern should reject non-Service SAN %q", san)
-		}
-	}
-}
-
-// TestChartCDSDnsSanPatternsAppendPublicHostname proves that adding a public
-// hostname via cds.dnsSanPatterns (the per-cluster ingress override that broke
-// the mesh before this fix) leaves the always-present in-cluster pattern
-// intact, so CDS renders both --dns-san-pattern args and both the public
-// hostname and the mesh Service SANs validate.
-func TestChartCDSDnsSanPatternsAppendPublicHostname(t *testing.T) {
-	t.Parallel()
-	// helm --set strips backslashes, so use a literal pattern that needs no
-	// escaping to prove plumbing without the assertion fighting --set parsing.
-	const public = "confidential-gke-confidential-dot-ai"
-	out, err := helmTemplateBakedNode(t, "--set", "cds.dnsSanPatterns[0]="+public)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	args := renderedDeploymentContainer(t, out, "c8s-cds", "cds").Args
-	assertContainerHasArg(t, "cds", args, "--dns-san-pattern="+cmdsutil.ServiceDNSSANPattern)
-	assertContainerHasArg(t, "cds", args, "--dns-san-pattern="+public)
-}
-
 // TestChartCertDependentPodStrategies pins router's rollout strategy to its
 // constraint: with the default hostPort binding it must Recreate (two pods on
 // a node would collide on the host port, and a surge pod could never schedule
@@ -4338,26 +3896,6 @@ func TestChartGetCertRetriesInProcess(t *testing.T) {
 	assertContainerHasArg(t, "c8s-cert", cert.Args, "--initial-retry-timeout=2m")
 }
 
-// TestChartCDSStrategyIsRecreateSingleton pins the rollout to its constraint:
-// two cds pods would mint divergent trust roots and cannot co-mount the RWO
-// data PVC, so the pod is replaced, never surged. Replicas stays 1: EAR
-// signing keys are per pod, so a second steady-state endpoint breaks EAR
-// verification (see the active/active decision memo).
-func TestChartCDSStrategyIsRecreateSingleton(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplateBakedNode(t)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	dep := renderedDeployment(t, out, "c8s-cds")
-	if dep.Spec.Strategy.Type != appsv1.RecreateDeploymentStrategyType {
-		t.Errorf("cds strategy = %q, want Recreate", dep.Spec.Strategy.Type)
-	}
-	if got := *dep.Spec.Replicas; got != 1 {
-		t.Errorf("cds replicas = %d, want the fixed singleton 1", got)
-	}
-}
-
 func renderedDeployment(t *testing.T, manifest, name string) appsv1.Deployment {
 	t.Helper()
 	var dep appsv1.Deployment
@@ -4496,7 +4034,6 @@ func helmTemplateRouter(t *testing.T, args ...string) (string, error) {
 		"--namespace", "c8s-system",
 		"--set", "image.tag=dev",
 		"--set", "attestationApi.image.tag=dev",
-		"--set", "cds.image.tag=dev",
 		"--set", "armtlsMesh.image.tag=dev",
 		"--set-string", "nriImagePolicy.mesh.clusterRanges[0]=10.42.0.0/16",
 		"--set-string", "nriImagePolicy.mesh.resolver=10.43.0.10",
@@ -4505,7 +4042,6 @@ func helmTemplateRouter(t *testing.T, args ...string) (string, error) {
 		// (the seed admits it argv-pinned). Output is scoped to the router
 		// templates below, so its manifests do not appear here.
 		"--set", "nriImagePolicy.image.tag=dev",
-		"--set", "cds.image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000001",
 		"--set", "nriImagePolicy.image.digest=" + baseNRIDigest,
 		"--set", "router.nginx.image.tag=dev",
 		"--show-only", "templates/router-configmap.yaml",
@@ -4842,7 +4378,7 @@ func TestChartSeedsCDSAllowlistFromBootstrapEntries(t *testing.T) {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
 
-	cm := renderedConfigMap(t, out, "c8s-cds-allowlist-seed")
+	cm := renderedConfigMap(t, out, "c8s-allowlist-seed")
 	raw, ok := cm.Data["allowlist-seed.json"]
 	if !ok {
 		t.Fatalf("seed ConfigMap missing allowlist-seed.json key: %v", cm.Data)
@@ -4948,7 +4484,7 @@ func TestChartBaseSkipsPinnedEntries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	cm := renderedConfigMap(t, out, "c8s-cds-allowlist-seed")
+	cm := renderedConfigMap(t, out, "c8s-allowlist-seed")
 	seed, err := pkgallowlist.ParseJSON([]byte(cm.Data["allowlist-seed.json"]))
 	if err != nil {
 		t.Fatalf("seed JSON does not parse: %v\n%s", err, cm.Data["allowlist-seed.json"])
@@ -4959,25 +4495,6 @@ func TestChartBaseSkipsPinnedEntries(t *testing.T) {
 	worker := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker")
 	if _, ok := baseImages(worker.Allowlist.Base)[pinned]; ok {
 		t.Errorf("a pinned entry's digest reached the base allowlist, where it would be admitted under any argv: %v", worker.Allowlist.Base.Workloads)
-	}
-}
-
-// The derived name lowercases the digest whatever case the values key used, so
-// the chart and pkg/allowlist DigestEntryName agree on it.
-func TestChartSeedEntryNameIsCaseInsensitive(t *testing.T) {
-	t.Parallel()
-	const d = "sha256:ABCDEF0000000000000000000000000000000000000000000000000000000000"
-	out, err := helmTemplateBakedNode(t, "--set-string", "cds.image.digest="+d)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	cm := renderedConfigMap(t, out, "c8s-cds-allowlist-seed")
-	seed, err := pkgallowlist.ParseJSON([]byte(cm.Data["allowlist-seed.json"]))
-	if err != nil {
-		t.Fatalf("seed JSON does not parse: %v\n%s", err, cm.Data["allowlist-seed.json"])
-	}
-	if generatedEntryName(seed, "cds-abcdef000000") == "" {
-		t.Fatalf("seed entry cds-abcdef000000-<policy> missing\nseed: %v", seed.Workloads)
 	}
 }
 
@@ -5004,7 +4521,7 @@ func TestChartSeedEntryNamesMatchMigration(t *testing.T) {
 			if err != nil {
 				t.Fatalf("helm template: %v\n%s", err, out)
 			}
-			cm := renderedConfigMap(t, out, "c8s-cds-allowlist-seed")
+			cm := renderedConfigMap(t, out, "c8s-allowlist-seed")
 			seed, err := pkgallowlist.ParseJSON([]byte(cm.Data["allowlist-seed.json"]))
 			if err != nil {
 				t.Fatalf("seed JSON does not parse: %v\n%s", err, cm.Data["allowlist-seed.json"])
@@ -5016,29 +4533,43 @@ func TestChartSeedEntryNamesMatchMigration(t *testing.T) {
 	}
 }
 
+// The derived name lowercases the digest whatever case the values key used, so
+// the chart and pkg/allowlist DigestEntryName agree on it.
+func TestChartSeedEntryNameIsCaseInsensitive(t *testing.T) {
+	t.Parallel()
+	const d = "sha256:ABCDEF0000000000000000000000000000000000000000000000000000000000"
+	out, err := helmTemplate(t, "--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true", "--set-string", "image.digest="+d)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	if generatedEntryName(renderedSeed(t, out), "c8s-operator-abcdef000000") == "" {
+		t.Fatalf("seed entry c8s-operator-abcdef000000-<policy> missing\nseed: %v", renderedSeed(t, out).Workloads)
+	}
+}
+
 // A bootstrapAllowlist.workloads entry sharing a derived entry's name replaces
 // it whole in the seed, so an operator can narrow a component's policy without
 // the chart re-widening it; the component stays in the base allowlist regardless.
 func TestChartSeedWorkloadsOverrideDerivedEntry(t *testing.T) {
 	t.Parallel()
-	// The harness pins cds.image.digest to ...0001; its derived entry is
-	// cds-000000000000.
 	const d = "sha256:0000000000000000000000000000000000000000000000000000000000000001"
-	p := "nriImagePolicy.bootstrapAllowlist.workloads.cds-000000000000.containers[0]."
+	p := "nriImagePolicy.bootstrapAllowlist.workloads.c8s-operator-000000000000.containers[0]."
 	out, err := helmTemplate(t,
+		"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
+		"--set-string", "image.digest="+d,
 		"--set-string", p+"digest="+d,
 		"--set-string", p+"command.policy=exact",
-		"--set-string", p+"command.argv[0]=/cds",
+		"--set-string", p+"command.argv[0]=/c8s",
 	)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	cm := renderedConfigMap(t, out, "c8s-cds-allowlist-seed")
+	cm := renderedConfigMap(t, out, "c8s-allowlist-seed")
 	seed, err := pkgallowlist.ParseJSON([]byte(cm.Data["allowlist-seed.json"]))
 	if err != nil {
 		t.Fatalf("seed JSON does not parse: %v\n%s", err, cm.Data["allowlist-seed.json"])
 	}
-	w, ok := seed.Workloads["cds-000000000000"]
+	w, ok := seed.Workloads["c8s-operator-000000000000"]
 	if !ok || len(w.Containers) != 1 {
 		t.Fatalf("seed entry = %#v, want one container", w)
 	}
@@ -5050,7 +4581,7 @@ func TestChartSeedWorkloadsOverrideDerivedEntry(t *testing.T) {
 	}
 	worker := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker")
 	if _, ok := baseImages(worker.Allowlist.Base)[d]; !ok {
-		t.Errorf("narrowing the seed entry dropped CDS from the base allowlist: %v", worker.Allowlist.Base.Workloads)
+		t.Errorf("narrowing the seed entry dropped the operator from the base allowlist: %v", worker.Allowlist.Base.Workloads)
 	}
 }
 
@@ -5079,7 +4610,7 @@ func TestChartDerivesComponentDigestsIntoAllowlist(t *testing.T) {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
 
-	cm := renderedConfigMap(t, out, "c8s-cds-allowlist-seed")
+	cm := renderedConfigMap(t, out, "c8s-allowlist-seed")
 	seed, err := pkgallowlist.ParseJSON([]byte(cm.Data["allowlist-seed.json"]))
 	if err != nil {
 		t.Fatalf("seed JSON does not parse: %v\n%s", err, cm.Data["allowlist-seed.json"])
@@ -5137,7 +4668,7 @@ func TestChartAllowlistsRouterNginxSelfEntry(t *testing.T) {
 		if err != nil {
 			t.Fatalf("helm template: %v\n%s", err, out)
 		}
-		cm := renderedConfigMap(t, out, "c8s-cds-allowlist-seed")
+		cm := renderedConfigMap(t, out, "c8s-allowlist-seed")
 		seed, err := pkgallowlist.ParseJSON([]byte(cm.Data["allowlist-seed.json"]))
 		if err != nil {
 			t.Fatalf("seed JSON does not parse: %v", err)
@@ -5156,7 +4687,7 @@ func TestChartAllowlistsRouterNginxSelfEntry(t *testing.T) {
 		if err != nil {
 			t.Fatalf("helm template: %v\n%s", err, out)
 		}
-		cm := renderedConfigMap(t, out, "c8s-cds-allowlist-seed")
+		cm := renderedConfigMap(t, out, "c8s-allowlist-seed")
 		seed, err := pkgallowlist.ParseJSON([]byte(cm.Data["allowlist-seed.json"]))
 		if err != nil {
 			t.Fatalf("seed JSON does not parse: %v", err)
@@ -5185,7 +4716,7 @@ func TestChartDerivesVolumedImageIntoFloor(t *testing.T) {
 		if err != nil {
 			t.Fatalf("helm template: %v\n%s", err, out)
 		}
-		cm := renderedConfigMap(t, out, "c8s-cds-allowlist-seed")
+		cm := renderedConfigMap(t, out, "c8s-allowlist-seed")
 		seed, err := pkgallowlist.ParseJSON([]byte(cm.Data["allowlist-seed.json"]))
 		if err != nil {
 			t.Fatalf("seed JSON does not parse: %v", err)
@@ -5203,7 +4734,7 @@ func TestChartDerivesVolumedImageIntoFloor(t *testing.T) {
 		if err != nil {
 			t.Fatalf("helm template: %v\n%s", err, out)
 		}
-		cm := renderedConfigMap(t, out, "c8s-cds-allowlist-seed")
+		cm := renderedConfigMap(t, out, "c8s-allowlist-seed")
 		seed, err := pkgallowlist.ParseJSON([]byte(cm.Data["allowlist-seed.json"]))
 		if err != nil {
 			t.Fatalf("seed JSON does not parse: %v", err)
@@ -5217,9 +4748,7 @@ func TestChartDerivesVolumedImageIntoFloor(t *testing.T) {
 // The volumed image entrypoint is ["/app/c8s", "volumed"], so the DaemonSet's
 // args must NOT repeat the subcommand. Shipping it once produced
 // `unknown command "volumed" for "c8s volumed"` and a CrashLoopBackOff daemon
-// that no chart test caught, because nothing asserted on the invocation. cds
-// has the same shape (its image entrypoint carries "cds") and its args start at
-// a flag, so this checks the convention rather than one literal.
+// that no chart test caught, because nothing asserted on the invocation.
 func TestChartComponentArgsDoNotRepeatTheEntrypointSubcommand(t *testing.T) {
 	t.Parallel()
 	out, err := helmTemplate(t,
@@ -5229,18 +4758,12 @@ func TestChartComponentArgsDoNotRepeatTheEntrypointSubcommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	baked, err := helmTemplateBakedNode(t)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-
 	for _, tc := range []struct {
 		name   string
 		args   []string
 		forbid string
 	}{
 		{"volumed", renderedDaemonSetContainer(t, out, "c8s-volumed", "volumed").Args, "volumed"},
-		{"cds", renderedDeploymentContainer(t, baked, "c8s-cds", "cds").Args, "cds"},
 	} {
 		if len(tc.args) == 0 {
 			t.Errorf("%s: no args rendered", tc.name)
@@ -5295,7 +4818,7 @@ func TestChartPinsCDSInBareMetalMode(t *testing.T) {
 
 	// The installer image is a chart image, not a baked one, so the node admits
 	// it only through the seed CDS serves.
-	cm := renderedConfigMap(t, out, "c8s-cds-allowlist-seed")
+	cm := renderedConfigMap(t, out, "c8s-allowlist-seed")
 	seed, err := pkgallowlist.ParseJSON([]byte(cm.Data["allowlist-seed.json"]))
 	if err != nil {
 		t.Fatalf("bare-metal-mode seed JSON does not parse: %v\n%s", err, cm.Data["allowlist-seed.json"])
@@ -5329,7 +4852,7 @@ func TestChartServesAllowlistSeedInBareMetalMode(t *testing.T) {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
 
-	cm := renderedConfigMap(t, out, "c8s-cds-allowlist-seed")
+	cm := renderedConfigMap(t, out, "c8s-allowlist-seed")
 	seed, err := pkgallowlist.ParseJSON([]byte(cm.Data["allowlist-seed.json"]))
 	if err != nil {
 		t.Fatalf("bare-metal-mode seed JSON does not parse (CDS would start empty): %v\n%s", err, cm.Data["allowlist-seed.json"])
@@ -5561,7 +5084,7 @@ func TestChartDeriveComponentsDefaultsOff(t *testing.T) {
 			if err != nil {
 				t.Fatalf("helm template: %v\n%s", err, out)
 			}
-			cm := renderedConfigMap(t, out, "c8s-cds-allowlist-seed")
+			cm := renderedConfigMap(t, out, "c8s-allowlist-seed")
 			seed, err := pkgallowlist.ParseJSON([]byte(cm.Data["allowlist-seed.json"]))
 			if err != nil {
 				t.Fatalf("seed JSON does not parse: %v", err)
@@ -5581,20 +5104,6 @@ func projectedConfigMap(v corev1.Volume) string {
 		return ""
 	}
 	return v.Projected.Sources[0].ConfigMap.Name
-}
-
-// The CDS image must be admittable by digest in the base/seed; without
-// cds.image.digest the image policy would deny CDS on its own node. The chart
-// fails the render with a structured marker rather than shipping that deadlock.
-func TestChartRejectsImagePolicyWithoutCDSDigest(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplateBakedNode(t, "--set-string", "cds.image.digest=")
-	if err == nil {
-		t.Fatalf("helm template succeeded without cds image digest, want guard failure\n%s", out)
-	}
-	if kind := parseValidationErrorKind(out); kind != "cds_image_digest" {
-		t.Fatalf("validation error kind = %q, want cds_image_digest\n%s", kind, out)
-	}
 }
 
 // In fail-closed mode with deriveComponents off, a digest-pinned component no
@@ -5683,7 +5192,6 @@ func renderExampleRouterNginxConf() string {
 		"--namespace", "c8s-system",
 		"--set", "image.tag=dev",
 		"--set", "attestationApi.image.tag=dev",
-		"--set", "cds.image.tag=dev",
 		"--set-string", "cds.address="+baseCDSAddress,
 		"--set-file", "cds.measurementsConfig="+baseCDSPinPath,
 		"--set", "armtlsMesh.image.tag=dev",
@@ -5870,60 +5378,6 @@ func TestChartDefaultRendersNoPullSecretRefs(t *testing.T) {
 			t.Errorf("default render carries an imagePullSecrets block: %s %s at %s", meta.Kind, meta.Metadata.Name, path)
 		}
 		return false
-	})
-}
-
-// TestCDSPodDisruptionBudget guards the singleton trust root: the PDB must
-// default to maxUnavailable: 0 (block voluntary drains so the in-memory CA is
-// not silently evicted) and its selector must actually match the CDS
-// Deployment's pods, not select nothing.
-func TestCDSPodDisruptionBudget(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplateBakedNode(t)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-
-	var pdb policyv1.PodDisruptionBudget
-	if !findDoc(t, out, "PodDisruptionBudget", "c8s-cds", &pdb) {
-		t.Fatalf("rendered manifest missing CDS PodDisruptionBudget\n%s", out)
-	}
-	if pdb.Spec.MaxUnavailable == nil || pdb.Spec.MaxUnavailable.IntValue() != 0 {
-		t.Fatalf("CDS PDB maxUnavailable = %v, want 0 (block voluntary disruption of the singleton trust root)", pdb.Spec.MaxUnavailable)
-	}
-
-	// The PDB selector must match the CDS Deployment's pod template labels, or
-	// it protects nothing.
-	dep := renderedDeployment(t, out, "c8s-cds")
-	for k, v := range pdb.Spec.Selector.MatchLabels {
-		if got := dep.Spec.Template.Labels[k]; got != v {
-			t.Fatalf("CDS PDB selector %s=%q does not match Deployment pod label %q; PDB would select no pods", k, v, got)
-		}
-	}
-
-	t.Run("maxUnavailable override", func(t *testing.T) {
-		out, err := helmTemplateBakedNode(t, "--set", "cds.podDisruptionBudget.maxUnavailable=1")
-		if err != nil {
-			t.Fatalf("helm template: %v\n%s", err, out)
-		}
-		var pdb policyv1.PodDisruptionBudget
-		if !findDoc(t, out, "PodDisruptionBudget", "c8s-cds", &pdb) {
-			t.Fatalf("rendered manifest missing CDS PodDisruptionBudget\n%s", out)
-		}
-		if pdb.Spec.MaxUnavailable == nil || pdb.Spec.MaxUnavailable.IntValue() != 1 {
-			t.Fatalf("CDS PDB maxUnavailable = %v, want 1", pdb.Spec.MaxUnavailable)
-		}
-	})
-
-	t.Run("disabled removes the PDB", func(t *testing.T) {
-		out, err := helmTemplateBakedNode(t, "--set", "cds.podDisruptionBudget.enabled=false")
-		if err != nil {
-			t.Fatalf("helm template: %v\n%s", err, out)
-		}
-		var pdb policyv1.PodDisruptionBudget
-		if findDoc(t, out, "PodDisruptionBudget", "c8s-cds", &pdb) {
-			t.Fatal("CDS PodDisruptionBudget rendered while podDisruptionBudget.enabled=false")
-		}
 	})
 }
 
@@ -6250,7 +5704,7 @@ func TestChartValuesSchemaRejectsUnknownKeys(t *testing.T) {
 		{"nriImagePolicy.policy", "nriImagePolicy.policy.exemptNamespace=kube-system"},
 		{"nriImagePolicy top level", "nriImagePolicy.exemptNamespaces=kube-system"},
 		{"router.hostPort", "router.hostPort.enable=false"},
-		{"cds.persistence", "cds.persistence.enable=true"},
+		{"cds", "cds.addresss=10.9.9.9:8443"},
 		{"volumed", "volumed.enable=true"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -6573,37 +6027,6 @@ func digestOf(image string) string {
 	return digest
 }
 
-// The node image bakes its own copy of the pull URL into the NRI base, and the
-// chart cannot reach it. Keeping the two literals equal in-tree is the half
-// that is enforceable here; a per-install -f override still cannot follow (the
-// bare-metal-mode baked-config problem).
-func TestChartCDSNodePortMatchesTheBakedNRIFloor(t *testing.T) {
-	t.Parallel()
-	const bakedPath = "../../node-guest-image/c8s/image-policy.yaml.in"
-	baked, err := os.ReadFile(bakedPath)
-	if err != nil {
-		t.Fatalf("read %s: %v", bakedPath, err)
-	}
-	m := regexp.MustCompile(`(?m)^\s*url:\s*"https://127\.0\.0\.1:(\d+)"`).FindSubmatch(baked)
-	if m == nil {
-		t.Fatalf("%s carries no loopback CDS pull url", bakedPath)
-	}
-
-	var values struct {
-		CDS struct {
-			Service struct {
-				NodePort int `yaml:"nodePort"`
-			} `yaml:"service"`
-		} `yaml:"cds"`
-	}
-	readChartFile(t, "values.yaml", &values)
-
-	if got, want := strconv.Itoa(values.CDS.Service.NodePort), string(m[1]); got != want {
-		t.Errorf("baked NRI base pulls from :%s but cds.service.nodePort is %s — the node image's plugin would pull from the wrong port (%s)",
-			want, got, bakedPath)
-	}
-}
-
 // The node image bakes the pull interval too, and under nriImagePolicy.baked
 // the installer runs set-measure-policies, which rewrites only that switch. So
 // the interval a node-CVM's gate actually runs on is the baked one, and a
@@ -6673,16 +6096,14 @@ func TestChartTeeProxyKeepsItsMigrationMessage(t *testing.T) {
 	}
 }
 
-// A NodePort outside the service range, a mistyped service type, or a mistyped
-// policy mode were all accepted silently: nothing in the chart checked any of
-// the three, and the last one only surfaced when the plugin refused its config
-// on the node.
+// A relative plugin path, a unitless duration, or a mistyped policy mode were
+// all accepted silently: nothing in the chart checked any of the three, and
+// the last one only surfaced when the plugin refused its config on the node.
 func TestChartValuesSchemaConstrainsTheEnumsAndRanges(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct{ name, set string }{
-		{"nodePort below the service range", "cds.service.nodePort=8443"},
-		{"nodePort above the service range", "cds.service.nodePort=40000"},
-		{"unknown service type", "cds.service.type=NodePortt"},
+		{"plugin directory outside an absolute path", "nriImagePolicy.hostPaths.pluginDir=opt/nri"},
+		{"request timeout without a unit", "nriImagePolicy.requestTimeout=2"},
 		{"unknown policy mode", "nriImagePolicy.policy.mode=failclosed"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -6692,10 +6113,9 @@ func TestChartValuesSchemaConstrainsTheEnumsAndRanges(t *testing.T) {
 		})
 	}
 
-	// The in-range default and the other real mode still render.
-	if out, err := helmTemplate(t, "--set", "cds.service.nodePort=31234",
-		"--set-string", "nriImagePolicy.policy.mode=audit"); err != nil {
-		t.Fatalf("a valid nodePort and mode were refused: %v\n%s", err, out)
+	// The other real mode still renders.
+	if out, err := helmTemplate(t, "--set-string", "nriImagePolicy.policy.mode=audit"); err != nil {
+		t.Fatalf("a valid mode was refused: %v\n%s", err, out)
 	}
 }
 
@@ -6709,19 +6129,12 @@ func TestChartComponentIngressPoliciesAreDefaultDeny(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	// The CDS the chart runs, which only a baked image does.
-	baked, err := helmTemplateBakedNode(t)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, baked)
-	}
-
 	for _, tc := range []struct {
 		policy    string
 		component string
 		ports     []int32
 		manifest  string
 	}{
-		{"c8s-cds-ingress", "cds", []int32{8443}, baked},
 		{"c8s-operator-ingress", "operator", []int32{9443, 8081, 8080}, out},
 		{"c8s-volumed-ingress", "volumed", nil, out},
 		{"c8s-router-ingress", "", []int32{8443}, out},
@@ -6746,7 +6159,7 @@ func TestChartComponentIngressPoliciesAreDefaultDeny(t *testing.T) {
 			var got []int32
 			for _, rule := range np.Spec.Ingress {
 				if len(rule.From) != 0 {
-					t.Errorf("ingress rule restricts source (%v); these policies narrow which port answers, never who connects — router is a public front door, the API server dialling the webhook has no selectable address, and the CDS NodePort route arrives off-cluster", rule.From)
+					t.Errorf("ingress rule restricts source (%v); these policies narrow which port answers, never who connects — router is a public front door and the API server dialling the webhook has no selectable address", rule.From)
 				}
 				for _, p := range rule.Ports {
 					if p.Port == nil {
@@ -6852,7 +6265,7 @@ func TestChartSweepMountAdmission(t *testing.T) {
 			if err != nil {
 				t.Fatalf("helm template: %v\n%s", err, out)
 			}
-			cm := renderedConfigMap(t, out, "c8s-cds-allowlist-seed")
+			cm := renderedConfigMap(t, out, "c8s-allowlist-seed")
 			seed, err := pkgallowlist.ParseJSON([]byte(cm.Data["allowlist-seed.json"]))
 			if err != nil {
 				t.Fatal(err)

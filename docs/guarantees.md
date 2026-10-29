@@ -14,8 +14,8 @@ confidential VM — one whose memory the CPU encrypts and whose launch state the
 hardware measures — and nowhere the host can read them in the clear.
 
 It covers what C8s itself holds: the secret store and the mesh CA of CDS — the
-Certificate Distribution Service, the one in-cluster pod holding C8s policy and
-signing pod certificates — plus each pod's private key and volume plaintext,
+Certificate Distribution Service, the VM outside the cluster holding C8s policy
+and signing pod certificates — plus each pod's private key and volume plaintext,
 none of them a Kubernetes object. A volume's ciphertext does sit on host
 storage, so a key that leaks opens every copy of it the host kept, and a
 `--mutable` volume carries no integrity tree.

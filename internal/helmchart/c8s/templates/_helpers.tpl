@@ -12,10 +12,6 @@
 {{- printf "%s-attestation-api" .Release.Name | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
-{{- define "c8s.cdsName" -}}
-{{- printf "%s-cds" .Release.Name | trunc 63 | trimSuffix "-" -}}
-{{- end -}}
-
 {{- define "c8s.volumedName" -}}
 {{- printf "%s-volumed" .Release.Name | trunc 63 | trimSuffix "-" -}}
 {{- end -}}

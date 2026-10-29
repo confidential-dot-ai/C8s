@@ -150,11 +150,25 @@ func checkSeedServed(seed *pkgallowlist.Allowlist, config *cdsconfig.Config) err
 	return nil
 }
 
+// clusterNodes reads the live node list, which is what says where this
+// cluster assigns pod addresses.
+func clusterNodes(ctx context.Context) (*corev1.NodeList, error) {
+	out, err := exec.CommandContext(ctx, "kubectl", "get", "nodes", "-o", "json").Output()
+	if err != nil {
+		return nil, fmt.Errorf("kubectl get nodes: %w", withStderr(err))
+	}
+	var nodes corev1.NodeList
+	if err := json.Unmarshal(out, &nodes); err != nil {
+		return nil, fmt.Errorf("parse node list: %w", err)
+	}
+	return &nodes, nil
+}
+
 // checkNodeSubnets refuses a CDS whose inventory bound reaches pod addresses:
 // inside it, a pod answering as a node's admission inventory would have CDS
 // resolve its signing key, so the bound must hold node addresses alone.
 func checkNodeSubnets(ctx context.Context, config *cdsconfig.Config) error {
-	nodes, err := fetchNodes(ctx)
+	nodes, err := clusterNodes(ctx)
 	if err != nil {
 		return err
 	}
