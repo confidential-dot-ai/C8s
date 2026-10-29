@@ -77,6 +77,7 @@ type podRecoveryRunner struct {
 	cancel     context.CancelFunc
 	done       chan error
 	syncResult <-chan error
+	registered <-chan struct{}
 	nri        *adaptation.Adaptation
 	healthPath string
 	stopped    bool
@@ -232,8 +233,6 @@ func runPodRecovery(t *testing.T, cfg *config, root string, podKey []byte, diges
 		registered := make(chan struct{})
 		syncResult := make(chan error, 1)
 		nri := startPodNRIRuntimeObserved(t, dir, registered, func(err error) {
-			// Adaptation also synchronizes before any external plugin registers.
-			// Keep the actual refusal, not that earlier successful empty sync.
 			if err == nil {
 				return
 			}
@@ -243,7 +242,7 @@ func runPodRecovery(t *testing.T, cfg *config, root string, podKey []byte, diges
 			}
 		}, live.snapshot)
 		child, stop := context.WithCancel(ctx)
-		r := &podRecoveryRunner{cancel: stop, done: make(chan error, 1), syncResult: syncResult, nri: nri, healthPath: filepath.Join(dir, "health.sock")}
+		r := &podRecoveryRunner{cancel: stop, done: make(chan error, 1), syncResult: syncResult, registered: registered, nri: nri, healthPath: filepath.Join(dir, "health.sock")}
 		go func() {
 			r.done <- runConfigured(child, cfg, discardLogger(), healthServerConfig{readTimeout: time.Second, writeTimeout: time.Second})
 		}()
@@ -262,7 +261,11 @@ func runPodRecovery(t *testing.T, cfg *config, root string, podKey []byte, diges
 				decodeErr := json.NewDecoder(response.Body).Decode(&state)
 				_ = response.Body.Close()
 				if decodeErr == nil && response.StatusCode == http.StatusOK && state.PodRegistered && state.PodUID == cfg.Pod.UID && state.AllowlistVersion == expectedVersion {
-					return
+					select {
+					case <-r.registered:
+						return
+					default:
+					}
 				}
 			}
 			select {

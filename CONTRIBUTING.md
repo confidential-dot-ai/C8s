@@ -89,7 +89,8 @@ simulated runtime metadata, measurement registers and credential issuance. They
 cover complete history after removal, issuer continuity, damaged state and
 refusal to replay a start permission. The suite requires root (or passwordless
 `sudo`), network/mount namespace capabilities, writable cgroup v2 delegation,
-iptables and nftables.
+iptables and nftables. Packages run sequentially because BPF link enumeration
+is global to the kernel.
 CI requires this suite and includes its coverage alongside ordinary tests and
 the kernel dm-verity harness, using the same procedure for the PR and its base.
 
