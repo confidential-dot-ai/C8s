@@ -247,6 +247,11 @@ func newPlugin(
 		cdiSpecDirs: cdiSpecDirs,
 	}
 	p.boot = newBootGate(cfg, logger)
+	// Every sandbox namespace is proven against the enforcer's own, read here
+	// before any thread of it can attach to a pod's (meshgate.go).
+	if _, err := enforcerNetworkNamespace(); err != nil {
+		return nil, fmt.Errorf("read the enforcer's own network namespace: %w", err)
+	}
 	p.mesh = newMeshGate(*cfg.Mesh, logger)
 	p.mesh.nodeAddress = func() (netip.Addr, error) { return nodeOwnAddress(cfg) }
 	logger.Info("mesh gate enabled",
