@@ -157,6 +157,12 @@ func NewMemoryStore(maxPaths, maxPerHolder, maxValue int) *MemoryStore {
 	}
 }
 
+// Policy is the bounds the store holds. A CDS HA cluster fixes them at its
+// Genesis, and a replica built with others cannot apply its log.
+func (s *MemoryStore) Policy() (maxPaths, maxPerHolder, maxValue int) {
+	return s.maxPaths, s.maxPerHolder, s.maxValue
+}
+
 func (s *MemoryStore) Get(_ context.Context, path string) ([]byte, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
