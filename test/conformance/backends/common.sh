@@ -526,6 +526,24 @@ router_headers() {
     printf '%s\n' "${answer#*$'\n'}" | sed '/^$/d'
 }
 
+# The tail of the routing process's log, for a failed step to attach. cds-attest
+# is the container that proxies each application request to its workload
+# backend, so the Warn behind a 502 backend-unavailable ("backend request
+# failed") is logged here with the dial target and reason. Every router pod the
+# Deployment selects, since a pod replaced mid-run loses the instance that
+# served the request. Each call is bounded, so a wedged apiserver cannot hang
+# the failed step that reads it.
+router_logs() {
+    local selector pods p
+    selector="$(kubectl --request-timeout=30s -n "$ROUTER_NS" get deploy "$ROUTER_DEPLOY" -o json |
+        jq -r '.spec.selector.matchLabels | to_entries | map("\(.key)=\(.value)") | join(",")')" || return
+    pods="$(kubectl --request-timeout=30s -n "$ROUTER_NS" get pods -l "$selector" -o name)" || return
+    for p in $pods; do
+        echo "# $p"
+        kubectl --request-timeout=30s -n "$ROUTER_NS" logs "$p" -c cds-attest --tail=200 2>&1 || true
+    done
+}
+
 # Off a node image the configuration is a ConfigMap, mounted directly or
 # through a projected volume; a baked node mounts it from the image
 # (hostPath), which nothing here can read without a node shell.
