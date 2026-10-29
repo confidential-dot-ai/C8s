@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"slices"
 	"sort"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -170,8 +171,9 @@ func (r *cloudRun) recordCloudPool(p *poolRecord, slot *corev1.Secret, attempted
 // cloudTrackedAPI observes the real adapter. It cannot mint an allocation or
 // adopt an instance discovered without a previously persisted create attempt.
 type cloudTrackedAPI struct {
-	run    *cloudRun
-	reader *Reconciler
+	run     *cloudRun
+	reader  *Reconciler
+	observe func(time.Time, time.Time, *instance)
 }
 
 func (c *cloudTrackedAPI) pool(ctx context.Context, key string) (*poolRecord, *corev1.Secret, error) {
@@ -252,7 +254,11 @@ func (c *cloudTrackedAPI) Get(ctx context.Context, id string) (*instance, error)
 	if err != nil {
 		return nil, err
 	}
+	start := time.Now().UTC()
 	in, err := c.run.getOwned(ctx, key)
+	if err == nil && in != nil && c.observe != nil {
+		c.observe(start, time.Now().UTC(), in)
+	}
 	if err != nil || in == nil || in.Status != "terminated" {
 		return in, err
 	}

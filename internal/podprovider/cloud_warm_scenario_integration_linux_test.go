@@ -190,8 +190,8 @@ func (r *cloudRun) warmAssignment(ctx context.Context, t *testing.T, h *provider
 		resultErr = errors.Join(resultErr, cloudWrite(filepath.Join(r.dir, "warm-assignment.json"), evidence))
 	}()
 	reader := &Reconciler{client: h.client, cfg: cfg}
-	tracked := &cloudTrackedAPI{run: r, reader: reader}
 	observed := &cloudAssignmentObserver{run: r, reader: reader}
+	tracked := &cloudTrackedAPI{run: r, reader: reader, observe: observed.diagnostics.observeCloud}
 	start := func(next *Config) {
 		h.cfg = next
 		reader.cfg = next
@@ -255,6 +255,9 @@ func (r *cloudRun) warmAssignment(ctx context.Context, t *testing.T, h *provider
 	if proof.PodUID != string(before.record.UID) || proof.AllocationUID != before.slotUID || proof.AssignmentSHA256 != cloudHash(before.pool.Assignment) || proof.ServingKeySHA256 != cloudHash(before.pool.ServingKey) || !proof.Rejected || !proof.Fenced || !proof.Persisted || len(proof.Conflict) == 0 {
 		return errors.New("assignment proof differs from the accepted durable intent")
 	}
+	if err = observed.freezePosts(); err != nil {
+		return err
+	}
 	evidence["assignment"] = json.RawMessage(accepted)
 	stage = "refill-and-restart"
 	refill, err := r.waitCloudIdle(ctx, h, reader, before.pool.Key)
@@ -269,8 +272,8 @@ func (r *cloudRun) warmAssignment(ctx context.Context, t *testing.T, h *provider
 	}
 	// Only the restarted manager may advance this stopped-generation baseline.
 	reads, posts := observed.counts()
-	if posts != 1 {
-		return errors.New("acceptance requires one primary assignment POST")
+	if err = observed.checkFrozenPosts(posts); err != nil {
+		return err
 	}
 	start(cfg)
 	if err = cloudWarmWait(ctx, h, 3*time.Minute, func(ctx context.Context) (bool, error) { current, _ := observed.counts(); return current > reads, nil }); err != nil {
@@ -283,9 +286,8 @@ func (r *cloudRun) warmAssignment(ctx context.Context, t *testing.T, h *provider
 	if !sameWarmSnapshot(before, after) {
 		return errors.New("provider restart changed assignment, workload starts or certificate identity")
 	}
-	_, posts = observed.counts()
-	if posts != 1 {
-		return errors.New("provider restart repeated assignment POST")
+	if err = observed.checkFrozenPosts(posts); err != nil {
+		return err
 	}
 	evidence["beforeCertificate"] = json.RawMessage(before.leaf.Raw)
 	evidence["afterCertificate"] = json.RawMessage(after.leaf.Raw)
@@ -346,15 +348,16 @@ func (r *cloudRun) warmAssignment(ctx context.Context, t *testing.T, h *provider
 	if err = stop(); err != nil {
 		return err
 	}
-	_, posts = observed.counts()
-	if posts != 1 {
-		return errors.New("warm lifecycle repeated the primary assignment POST")
+	if err = observed.checkFrozenPosts(posts); err != nil {
+		return err
 	}
 	evidence["passed"] = true
 	evidence["assignmentSHA256"] = cloudHash(before.pool.Assignment)
 	evidence["genericLaunchSHA256"] = cloudHash(before.pool.Request.Trust.InitData.Document)
 	evidence["terminationBeforeRelease"] = true
 	evidence["primaryAssignmentPOSTs"] = posts
+	evidence["acceptedAssignments"] = 1
+	evidence["immutableAssignmentRetries"] = true
 	t.Log("real generic assignment, provider restart, idle refill drain and claimed VM deletion passed")
 	return nil
 }

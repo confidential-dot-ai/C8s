@@ -242,13 +242,19 @@ and the exact signed assignment persisted before its real POST. It requires a
 conflicting signed assignment to be rejected, authenticated readiness and exact
 workload digests, stable assignment and certificate identity across provider
 restart, and draining the unused allocation with `warmTarget=0`. Deletion must
-confirm Cloud termination before releasing the assigned allocation.
+confirm Cloud termination before releasing the assigned allocation. Identical
+assignment retries are allowed before verified readiness; the evidence requires
+one acknowledged acceptance and no further assignment POSTs after readiness.
 
 This scenario uses the production reconciler and elected manager workers with
 observing wrappers around real Cloud and assignment clients. It records ownership
 of each allocation generation before creation, including unclaimed replacement
 guests. The run's private evidence includes the signed assignment and must stay
-private. Existing scheduler integration tests separately cover competing claims,
+private. Bounded `warm-read-*.json` receipts retain the first three and latest 21
+sampled status observations, with verification errors, UTC times, the deadline,
+and separately timed Cloud instance status. They use the existing verification
+call and do not extend its deadline. `assignment-posts.json` records immutable
+retry accounting. Existing scheduler integration tests separately cover competing claims,
 lost assignment replies, stale writes, forced deletion and replacement generations.
 
 All scenarios compile the provider from the current checkout. Its commit,

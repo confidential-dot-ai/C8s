@@ -9,7 +9,9 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
+	"time"
 
 	"k8s.io/apimachinery/pkg/types"
 
@@ -21,15 +23,20 @@ import (
 // The empty verified session is retained through the negative POST. Reopening
 // VerifyAssignmentTarget after assignment would correctly refuse measured guests.
 type cloudAssignmentObserver struct {
-	run    *cloudRun
-	reader *Reconciler
-	verify assignmentVerifier
-	reads  atomic.Int64
-	posts  atomic.Int64
+	run         *cloudRun
+	reader      *Reconciler
+	verify      assignmentVerifier
+	reads       atomic.Int64
+	posts       atomic.Int64
+	diagnostics cloudWarmDiagnostics
+	postMu      sync.Mutex
+	postProof   cloudWarmPostProof
 }
 
 func (o *cloudAssignmentObserver) read(ctx context.Context, rec *record, address string) (podstatus.PodProjection, error) {
-	projection, err := readGuest(ctx, rec, address)
+	start := time.Now().UTC()
+	projection, err, detail := cloudReadGuest(ctx, rec, address, podstatus.Get)
+	o.observeRead(rec, address, start, time.Now().UTC(), err == nil, detail)
 	if err == nil {
 		o.reads.Add(1)
 	}
@@ -119,10 +126,13 @@ func (s *cloudObservedAssignment) Send(ctx context.Context, body []byte) (string
 	if err = cloudWrite(filepath.Join(o.run.dir, "assignment-intent-"+current.Key+".json"), currentSlot); err != nil {
 		return "", err
 	}
-	o.posts.Add(1)
-	// Repeated primary POSTs remain observable even when the guest returns 409;
-	// the live scenario requires exactly one, including across leader restart.
+	if err = o.beginPost(string(rec.UID), current.Key, body, current.ServingKey); err != nil {
+		return "", err
+	}
 	uid, err := s.assignmentSession.Send(ctx, body)
+	if proofErr := o.finishPost(uid, err); proofErr != nil {
+		return "", proofErr
+	}
 	if err != nil {
 		return uid, err
 	}
@@ -152,4 +162,72 @@ func (s *cloudObservedAssignment) Send(ctx context.Context, body []byte) (string
 		return "", err
 	}
 	return uid, nil
+}
+
+// Primary retries may recover an uncertain response while the immutable guest
+// assignment is being installed. A new identity or a POST after independently
+// verified readiness is never a retry of that transition.
+type cloudWarmPostProof struct {
+	PodUID           string `json:"podUID"`
+	Allocation       string `json:"allocation"`
+	AssignmentSHA256 string `json:"assignmentSHA256"`
+	ServingKeySHA256 string `json:"servingKeySHA256"`
+	Attempts         int64  `json:"attempts"`
+	Accepted         int64  `json:"accepted"`
+	AlreadyAssigned  int64  `json:"alreadyAssigned"`
+	Uncertain        int64  `json:"uncertain"`
+	Frozen           bool   `json:"frozenAfterVerifiedReadiness"`
+	Violated         bool   `json:"violated"`
+}
+
+func (o *cloudAssignmentObserver) beginPost(uid, allocation string, body, serving []byte) error {
+	o.postMu.Lock()
+	defer o.postMu.Unlock()
+	p := &o.postProof
+	if p.Frozen || (p.Attempts != 0 && (p.PodUID != uid || p.Allocation != allocation || p.AssignmentSHA256 != cloudHash(body) || p.ServingKeySHA256 != cloudHash(serving))) {
+		p.Violated = true
+		return errors.New("primary assignment changed identity or followed verified readiness")
+	}
+	p.PodUID, p.Allocation, p.AssignmentSHA256, p.ServingKeySHA256 = uid, allocation, cloudHash(body), cloudHash(serving)
+	p.Attempts++
+	o.posts.Add(1)
+	return cloudWrite(filepath.Join(o.run.dir, "assignment-posts.json"), p)
+}
+
+func (o *cloudAssignmentObserver) finishPost(uid string, err error) error {
+	o.postMu.Lock()
+	defer o.postMu.Unlock()
+	p := &o.postProof
+	switch {
+	case errors.Is(err, podstatus.ErrAlreadyAssigned):
+		p.AlreadyAssigned++
+	case err != nil:
+		p.Uncertain++
+	case uid != p.PodUID || p.Accepted != 0:
+		p.Violated = true
+		return errors.New("primary assignment was accepted more than once or for another UID")
+	default:
+		p.Accepted++
+	}
+	return cloudWrite(filepath.Join(o.run.dir, "assignment-posts.json"), p)
+}
+
+func (o *cloudAssignmentObserver) freezePosts() error {
+	o.postMu.Lock()
+	defer o.postMu.Unlock()
+	p := &o.postProof
+	if p.Violated || p.Accepted != 1 || p.Attempts != p.Accepted+p.AlreadyAssigned+p.Uncertain {
+		return errors.New("assignment attempts lack one immutable acknowledged acceptance")
+	}
+	p.Frozen = true
+	return cloudWrite(filepath.Join(o.run.dir, "assignment-posts.json"), p)
+}
+
+func (o *cloudAssignmentObserver) checkFrozenPosts(want int64) error {
+	o.postMu.Lock()
+	defer o.postMu.Unlock()
+	if !o.postProof.Frozen || o.postProof.Violated || o.postProof.Attempts != want || o.posts.Load() != want {
+		return errors.New("verified warm lifecycle attempted another assignment POST")
+	}
+	return o.diagnostics.failure()
 }
