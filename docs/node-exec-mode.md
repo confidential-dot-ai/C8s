@@ -65,7 +65,13 @@ container the measured mesh policy covers holds more than the floor:
   masked or read-only `/proc` paths, a writable `sysfs` or `cgroupfs`;
 - its own PID namespace, no user namespace or id mapping — the packet rules
   match the socket's UID in the initial user namespace — and an identity that is
-  neither root nor an id reserved for another role.
+  neither root nor an id reserved for another role;
+- a working directory that is not at or below a data or host mount (a
+  ConfigMap, Secret, projected or downward API volume, a PVC or CSI volume, or a
+  host path), resolved through the image's symlinks; an emptyDir, including the
+  pod's shared memory, is allowed, since only the pod's own containers write it.
+  The allowlist pins the command line, and an interpreter looks up its first
+  module in the working directory.
 
 A measured policy that cannot be read, or that carries no `mesh` policy, denies
 the create. The floor is independent of the exec posture above, and leaves the

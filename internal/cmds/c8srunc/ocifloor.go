@@ -13,10 +13,13 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 
+	"github.com/containerd/nri/pkg/api"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 
 	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
+	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
 // The CRI annotations containerd writes into every container's OCI spec
@@ -24,6 +27,8 @@ import (
 const (
 	annotationSandboxNamespace = "io.kubernetes.cri.sandbox-namespace"
 	annotationSandboxID        = "io.kubernetes.cri.sandbox-id"
+	annotationSandboxUID       = "io.kubernetes.cri.sandbox-uid"
+	annotationContainerName    = "io.kubernetes.cri.container-name"
 	annotationContainerType    = "io.kubernetes.cri.container-type"
 	containerTypeSandbox       = "sandbox"
 )
@@ -93,7 +98,99 @@ func floorChecks(spec *specs.Spec, floor nriimagepolicy.MeshFloor) error {
 	if err := requireOwnNamespaces(spec.Linux); err != nil {
 		return err
 	}
-	return requireUnreservedIdentity(user, floor, role)
+	if err := requireUnreservedIdentity(user, floor, role); err != nil {
+		return err
+	}
+	return requireWorkingDirOnImage(spec)
+}
+
+// maxSymlinks bounds the links followed while resolving the working directory,
+// as the kernel's ELOOP limit does.
+const maxSymlinks = 40
+
+// requireWorkingDirOnImage refuses a working directory at or below a data or
+// host mount. The allowlist pins the command line, environment and mounts, but
+// the process resolves relative paths and, for an interpreter, its first module
+// search path against the working directory, so it must not be content the
+// control plane or the host supplies. An emptyDir starts empty and only the
+// pod's own admitted containers write it, so a working directory there stays
+// allowed. Symlinks are followed inside the root filesystem, where the runtime
+// follows them.
+func requireWorkingDirOnImage(spec *specs.Spec) error {
+	cwd := spec.Process.Cwd
+	if !filepath.IsAbs(cwd) {
+		return fmt.Errorf("the working directory %q is not absolute", cwd)
+	}
+	if spec.Root == nil || !filepath.IsAbs(spec.Root.Path) {
+		return errors.New("the bundle names no root filesystem to resolve the working directory in")
+	}
+	var supplied []string
+	for _, mount := range spec.Mounts {
+		if !suppliedContent(spec, mount) {
+			continue
+		}
+		supplied = append(supplied, filepath.Clean(mount.Destination))
+		if resolved, err := resolveInRoot(spec.Root.Path, mount.Destination, nil); err == nil {
+			supplied = append(supplied, resolved)
+		}
+	}
+	if _, err := resolveInRoot(spec.Root.Path, cwd, supplied); err != nil {
+		return fmt.Errorf("the working directory %s: %w", cwd, err)
+	}
+	return nil
+}
+
+// suppliedContent reports a mount admission classifies as data or host: its
+// content comes from the control plane or the host, not from the pod.
+func suppliedContent(spec *specs.Spec, mount specs.Mount) bool {
+	class, ok := nriimagepolicy.ClassifyBundleMount(
+		spec.Annotations[annotationSandboxUID],
+		spec.Annotations[annotationSandboxID],
+		spec.Annotations[annotationContainerName],
+		&api.Mount{Destination: mount.Destination, Source: mount.Source, Type: mount.Type, Options: mount.Options},
+	)
+	return ok && (class == allowlist.MountData || class == allowlist.MountHost)
+}
+
+// resolveInRoot resolves path inside the root filesystem at root, following
+// symlinks relative to root, and refuses to step onto any of mounts. A missing
+// component ends link resolution: the runtime creates the rest as directories.
+func resolveInRoot(root, path string, mounts []string) (string, error) {
+	current := "/"
+	pending := strings.Split(path, "/")
+	links := 0
+	for len(pending) > 0 {
+		name := pending[0]
+		pending = pending[1:]
+		switch name {
+		case "", ".":
+			continue
+		case "..":
+			current = filepath.Dir(current)
+			continue
+		}
+		next := filepath.Join(current, name)
+		if slices.Contains(mounts, next) {
+			return "", fmt.Errorf("is at or below the data or host mount at %s", next)
+		}
+		info, err := os.Lstat(filepath.Join(root, next))
+		if err != nil || info.Mode()&os.ModeSymlink == 0 {
+			current = next
+			continue
+		}
+		if links++; links > maxSymlinks {
+			return "", errors.New("has too many levels of symbolic links")
+		}
+		target, err := os.Readlink(filepath.Join(root, next))
+		if err != nil {
+			return "", err
+		}
+		if filepath.IsAbs(target) {
+			current = "/"
+		}
+		pending = append(strings.Split(target, "/"), pending...)
+	}
+	return current, nil
 }
 
 // requireNotAttachable refuses the two halves of what an attach session would
@@ -311,6 +408,9 @@ func readBundle(args []string) (*specs.Spec, string, error) {
 	var spec specs.Spec
 	if err := json.Unmarshal(data, &spec); err != nil {
 		return nil, "", fmt.Errorf("parse %s: %w", path, err)
+	}
+	if spec.Root != nil && !filepath.IsAbs(spec.Root.Path) {
+		spec.Root.Path = filepath.Join(dir, spec.Root.Path)
 	}
 	return &spec, containerID, nil
 }
