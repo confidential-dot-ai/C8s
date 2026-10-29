@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"maps"
@@ -661,6 +662,23 @@ func TestNodeImageCollectCanonicalizesPreloadReferences(t *testing.T) {
 	}
 }
 
+// bootstrapImage is the launch document's view of the image the staged peer
+// policy pins.
+func bootstrapImage(t *testing.T, pins refvalues.ReferenceValues) launchconfig.Image {
+	t.Helper()
+	image := launchconfig.Image{
+		Platform:    string(pins.Family.DefaultPlatform()),
+		Measurement: hex.EncodeToString(pins.Images[0].Digest),
+	}
+	if len(pins.Images[0].Registers) > 0 {
+		image.RTMRs = map[int]string{}
+		for index, value := range pins.Images[0].Registers {
+			image.RTMRs[index] = hex.EncodeToString(value)
+		}
+	}
+	return image
+}
+
 // Exercise the actual build-to-boot contract, including all system-floor and
 // chart entries. Unit fixtures alone cannot catch collisions between the two.
 func testNodeImageBootstrap(t *testing.T, seed []byte, platform string) {
@@ -695,11 +713,6 @@ func testNodeImageBootstrap(t *testing.T, seed []byte, platform string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pins.Images = pins.Images[:1]
-	cds, err := refvalues.Format(pins)
-	if err != nil {
-		t.Fatal(err)
-	}
 	components, err := pkgallowlist.ParseJSON(seed)
 	if err != nil {
 		t.Fatal(err)
@@ -711,7 +724,6 @@ func testNodeImageBootstrap(t *testing.T, seed []byte, platform string) {
 				"usr/lib/c8s/image-policy.yaml":               floor,
 				"usr/lib/c8s/allowlist-seed.json":             seed,
 				filepath.Join(launchconfig.Dir, "peers.json"): peers,
-				filepath.Join(launchconfig.Dir, "cds.json"):   cds,
 			} {
 				path := filepath.Join(root, name)
 				if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
@@ -722,10 +734,11 @@ func testNodeImageBootstrap(t *testing.T, seed []byte, platform string) {
 				}
 			}
 			doc := &launchconfig.Document{
-				Role:   role,
-				Image:  launchconfig.Image{Platform: platform},
-				Server: launchconfig.ServerConfig{Address: "192.0.2.10", OperatorPublicKey: string(pins.Images[0].Anchor)},
-				TLSSAN: "c8s.local",
+				SchemaVersion: launchconfig.SchemaVersionV1,
+				Role:          role,
+				Image:         bootstrapImage(t, pins),
+				Server:        launchconfig.ServerConfig{Address: "192.0.2.10", OperatorPublicKey: string(pins.Images[0].Anchor)},
+				TLSSAN:        "c8s.local",
 			}
 			if err := nodeservices.Prepare(root, doc); err != nil {
 				t.Fatalf("actual chart seed and measured NRI floor cannot boot: %v", err)

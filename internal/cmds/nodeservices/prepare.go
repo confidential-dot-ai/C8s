@@ -13,6 +13,7 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
@@ -29,13 +30,18 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 		return err
 	}
 	path := func(name string) string { return filepath.Join(rootDir, name) }
-	outputs := make(map[string][]byte)
-	for _, name := range []string{"peers.json", "cds.json"} {
-		data, err := readPolicy(path(launchDir+name), d.Image.Platform, name == "cds.json")
-		if err != nil {
-			return err
-		}
-		outputs[name] = data
+	peers, err := readPeerPolicy(path(launchDir+"peers.json"), d.Image.Platform)
+	if err != nil {
+		return err
+	}
+	// The staged document is this node's only source for its CDS.
+	cds, err := d.CDSPolicy()
+	if err != nil {
+		return err
+	}
+	outputs := map[string][]byte{
+		"peers.json": peers,
+		"cds.json":   cds,
 	}
 	bakedData, err := os.ReadFile(path("/usr/lib/c8s/allowlist-seed.json"))
 	if err != nil {
@@ -82,8 +88,9 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 		return fmt.Errorf("merge chart seed into NRI base: %w", err)
 	}
 	a["base"] = base
-	pull["url"] = d.CDSURL()
-	pull["cds_measurements_config"] = launchDir + "cds.json"
+	endpoint := d.CDSAddrPort()
+	pull["url"] = cmdsutil.CDSURL(endpoint)
+	pull["cds_measurements_config"] = PublicDir + "/cds.json"
 	delete(pull, "cds_measurements")
 	delete(pull, "cds_rtmrs")
 	mesh, declared := floor["mesh"]
@@ -94,11 +101,7 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 	if !ok {
 		return fmt.Errorf("baked NRI mesh policy is %T, not a mapping", mesh)
 	}
-	address, err := d.CDSAddrPort()
-	if err != nil {
-		return err
-	}
-	if err := appendCredentialRole(policy, address); err != nil {
+	if err := appendCredentialRole(policy, endpoint); err != nil {
 		return err
 	}
 	data, err = yaml.Marshal(floor)
@@ -369,9 +372,15 @@ func removeServerOutputs(publicPath string) error {
 	return nil
 }
 
-// readPolicy refuses partial pins even when the staged file parses. The
-// authenticated launcher emits an anchored tuple for every permitted role.
-func readPolicy(path, platform string, serverOnly bool) ([]byte, error) {
+// readPeerPolicy accepts the launch identities this cluster's nodes boot
+// with, refusing partial pins even when the staged file parses: the
+// authenticated launcher emits an anchored tuple for every permitted role, on
+// the family this node booted.
+func readPeerPolicy(path, platform string) ([]byte, error) {
+	family, err := teetypes.ParseFamily(platform)
+	if err != nil {
+		return nil, fmt.Errorf("staged image platform: %w", err)
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -380,24 +389,13 @@ func readPolicy(path, platform string, serverOnly bool) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("staged identity policy %s: %w", path, err)
 	}
-	if !policyMatchesPlatform(pins, platform, serverOnly) {
-		return nil, fmt.Errorf("staged identity policy %s has invalid family or image count", path)
+	if pins.Family != family {
+		return nil, fmt.Errorf("staged identity policy %s does not pin this node's TEE family", path)
 	}
 	if !policyPinsComplete(pins) {
 		return nil, fmt.Errorf("staged identity policy %s requires complete image and operator pins", path)
 	}
 	return data, nil
-}
-
-// policyMatchesPlatform reports whether the policy targets the booted TEE
-// family and pins the number of images the role permits: at least one, and
-// exactly one when the policy is server-only.
-func policyMatchesPlatform(pins refvalues.ReferenceValues, platform string, serverOnly bool) bool {
-	family, err := teetypes.ParseFamily(platform)
-	if err != nil || pins.Family != family || len(pins.Images) == 0 {
-		return false
-	}
-	return !serverOnly || len(pins.Images) == 1
 }
 
 // policyPinsComplete reports whether every image pin carries an anchor and,

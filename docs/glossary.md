@@ -66,7 +66,7 @@ CVM mode is [overview.md](overview.md#cvm-modes-and-hardware-platforms).
 | router | The front door: terminates public TLS and routes application traffic by the signed manifest. | [operator.md](operator.md) |
 | **Operating a cluster** | | |
 | `c8s operator` | The controller-manager and admission webhooks; an ordinary cluster pod, not a person. | [operator.md](operator.md) |
-| launch configuration | The signed `c8s-launch/v1` `launch.yaml` fixing a node's role, identity, and image measurements. | [launch-configuration.md](launch-configuration.md) |
+| launch configuration | The signed `launch.yaml` fixing a node's role, identity, and image measurements. | [launch-configuration.md](launch-configuration.md) |
 | launch key | The keypair a node boots with (`pubkey` on its config disk); its public half binds into the node's evidence. On a baked cluster the server launch key is also the operator key. | [launch-configuration.md](launch-configuration.md) |
 | `pod-injector`, `pod-validator` | The mutating and validating admission webhooks that give a pod its C8s shape. | [operator.md](operator.md) |
 | **Verifying a deployment** | | |
