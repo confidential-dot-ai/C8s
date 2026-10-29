@@ -17,7 +17,7 @@ import (
 // The journal is the append-only history of every allowlist document CDS
 // served: journal_object holds each document's canonical bytes under its
 // digest, journal_event the order they were served in, journal_signature the
-// operator write token of a whole-document PUT, and used_token the tokens
+// operator write token that wrote a document, and used_token the tokens
 // already spent (docs/allowlist-and-capabilities.md, "Allowlist history").
 const journalSQL = `
 CREATE TABLE IF NOT EXISTS journal_object (
@@ -48,8 +48,8 @@ type HistoryEntry struct {
 	Digest      string    `json:"digest"`
 	PublishedAt time.Time `json:"published_at"`
 	// Signed reports whether an operator signature is stored for Digest. It
-	// describes the document, not this entry's write: a per-workload write that
-	// returns to a signed document shows it signed.
+	// describes the document, not this entry's write: a write that returns to
+	// a document signed before shows it signed.
 	Signed bool `json:"signed"`
 }
 
@@ -97,22 +97,23 @@ func (s *Store) StartJournal() error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	if err := publishTx(tx); err != nil {
+	if _, err := publishTx(tx); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
 // publishTx appends a history entry for the document tx leaves in the store
-// when its digest differs from the head's.
-func publishTx(tx *sql.Tx) error {
+// when its digest differs from the head's, and returns that document's
+// canonical bytes.
+func publishTx(tx *sql.Tx) ([]byte, error) {
 	workloads, err := loadWorkloads(tx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	body, err := (&pkgallowlist.Allowlist{Schema: pkgallowlist.Schema, Workloads: workloads}).Canonical()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	digest := objectDigest(body)
 
@@ -120,21 +121,23 @@ func publishTx(tx *sql.Tx) error {
 	var position int64
 	err = tx.QueryRow("SELECT digest, position FROM journal_event ORDER BY position DESC LIMIT 1").Scan(&head, &position)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return err
+		return nil, err
 	}
 	if head == digest {
-		return nil
+		return body, nil
 	}
 	var version string
 	if err := tx.QueryRow("SELECT version FROM allowlist_version LIMIT 1").Scan(&version); err != nil {
-		return err
+		return nil, err
 	}
 	if _, err := tx.Exec("INSERT OR IGNORE INTO journal_object (digest, body) VALUES (?, ?)", digest, body); err != nil {
-		return err
+		return nil, err
 	}
-	_, err = tx.Exec("INSERT INTO journal_event (position, version, digest, published_at_ms) VALUES (?, ?, ?, ?)",
-		position+1, version, digest, time.Now().UnixMilli())
-	return err
+	if _, err := tx.Exec("INSERT INTO journal_event (position, version, digest, published_at_ms) VALUES (?, ?, ?, ?)",
+		position+1, version, digest, time.Now().UnixMilli()); err != nil {
+		return nil, err
+	}
+	return body, nil
 }
 
 // History returns every document the store has served, oldest first.
@@ -182,23 +185,25 @@ func (s *Store) Object(digest string) ([]byte, bool, error) {
 	return b, true, nil
 }
 
-// SignPolicy stores token, the operator write token that authorized a
-// whole-document write of body, as the signature of that document. It stores
-// nothing unless body is byte for byte a journaled document: the token's pbh
-// claim binds body, so only then does it sign what verifiers fetch.
-func (s *Store) SignPolicy(body []byte, token string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	digest := objectDigest(body)
-	var stored []byte
-	err := s.db.QueryRow("SELECT body FROM journal_object WHERE digest = ?", digest).Scan(&stored)
-	if errors.Is(err, sql.ErrNoRows) || (err == nil && !bytes.Equal(stored, body)) {
+// documentSignature is an operator write token and the canonical document
+// bytes its pbh claim binds. The zero value signs nothing: a seed carries no
+// operator token.
+type documentSignature struct {
+	token    string
+	document []byte
+}
+
+// storeTx records the signature of journaled, the document the write
+// journaled. A journaled document that differs from the bytes the token binds
+// fails the write: a signature must name what verifiers fetch.
+func (s documentSignature) storeTx(tx *sql.Tx, journaled []byte) error {
+	if s.token == "" {
 		return nil
 	}
-	if err != nil {
-		return err
+	if !bytes.Equal(journaled, s.document) {
+		return errors.New("the journaled allowlist is not the document the write signed")
 	}
-	_, err = s.db.Exec("INSERT OR REPLACE INTO journal_signature (digest, token) VALUES (?, ?)", digest, token)
+	_, err := tx.Exec("INSERT OR REPLACE INTO journal_signature (digest, token) VALUES (?, ?)", objectDigest(journaled), s.token)
 	return err
 }
 

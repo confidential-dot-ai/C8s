@@ -1,7 +1,6 @@
 package allowlist_test
 
 import (
-	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -84,15 +83,13 @@ func testAllowlistApp(t *testing.T) (http.Handler, *readiness.Checker, *operator
 	return allowlistTestRouter(wh, checker.Ready), &checker, signer
 }
 
-// allowlistTestRouter mounts the allowlist routes on a chi router so the
-// workload path parameter resolves the same way the cds router serves it.
+// allowlistTestRouter mounts the allowlist routes on a chi router, as the cds
+// router serves them.
 func allowlistTestRouter(wh allowlist.Handler, ready attestation.ReadinessFunc) http.Handler {
 	r := chi.NewRouter()
 	r.Get("/readyz", attestation.HandleReadyz(ready))
 	r.Get("/allowlist", wh.HandleList)
 	r.Put("/allowlist", wh.HandleReplaceAll)
-	r.Put("/allowlist/workloads/{name}", wh.HandlePutWorkload)
-	r.Delete("/allowlist/workloads/{name}", wh.HandleDeleteWorkload)
 	return r
 }
 
@@ -209,7 +206,7 @@ func TestAllowlistReplaceSwapsSet(t *testing.T) {
 	srv := httptest.NewServer(app)
 	defer srv.Close()
 
-	putWorkload(t, srv.URL, signer, "old", digestA)
+	writeEntry(t, srv.URL, signer, "old", digestA)
 
 	putBody := fmt.Sprintf(`{"schema":%q,"workloads":{"new":{"containers":[{"digest":"%s"}]}}}`, pkgallowlist.Schema, digestMissing)
 	putReq, _ := http.NewRequest(http.MethodPut, srv.URL+"/allowlist", strings.NewReader(putBody))
@@ -236,6 +233,75 @@ func TestAllowlistReplaceSwapsSet(t *testing.T) {
 	}
 }
 
+// putAllowlistIfMatch sends a whole document with the given If-Match ("" sends
+// none) and returns the status.
+func putAllowlistIfMatch(t *testing.T, h allowlist.Handler, body, ifMatch string) int {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/allowlist", strings.NewReader(body))
+	if ifMatch != "" {
+		req.Header.Set("If-Match", ifMatch)
+	}
+	h.HandleReplaceAll(rec, req)
+	return rec.Code
+}
+
+// A write conditional on the version it was built from lands only while CDS
+// still serves that version, so it never overwrites a write made since.
+func TestAllowlistReplaceIfMatch(t *testing.T) {
+	h, store := guardTestHandler(t)
+	seedEntry(t, store, "web", digestA)
+	_, version, _ := store.LoadAll()
+
+	// Refused preconditions: an older version, the weak ETag GET serves
+	// (strong comparison never matches a weak tag), an unquoted value.
+	for _, ifMatch := range []string{`"1"`, `W/"` + version + `"`, version, `"` + version + `0"`, "*"} {
+		if code := putAllowlistIfMatch(t, h, oneEntryDocument("new", digestMissing), ifMatch); code != http.StatusPreconditionFailed {
+			t.Fatalf("If-Match %s: got %d, want 412", ifMatch, code)
+		}
+		al, after, _ := store.LoadAll()
+		if after != version || len(al.Workloads) != 1 || al.Workloads["web"].Containers == nil {
+			t.Fatalf("If-Match %s: a refused precondition changed the store (version %s -> %s, %v)", ifMatch, version, after, al.Workloads)
+		}
+	}
+
+	if code := putAllowlistIfMatch(t, h, oneEntryDocument("new", digestMissing), `"`+version+`"`); code != http.StatusNoContent {
+		t.Fatalf("current version: got %d, want 204", code)
+	}
+	al, next, _ := store.LoadAll()
+	if _, ok := al.Workloads["new"]; !ok || next == version {
+		t.Fatalf("matching If-Match did not replace: version %s, %v", next, al.Workloads)
+	}
+	// The version it matched is gone: a second write built on it is refused.
+	if code := putAllowlistIfMatch(t, h, oneEntryDocument("new", digestA), `"`+version+`"`); code != http.StatusPreconditionFailed {
+		t.Fatalf("stale version after a write: got %d, want 412", code)
+	}
+	if code := putAllowlistIfMatch(t, h, oneEntryDocument("new", digestA), ""); code != http.StatusNoContent {
+		t.Fatalf("no If-Match: got %d, want an unconditional 204", code)
+	}
+}
+
+// A precondition no version can satisfy is refused before the write is
+// authorized, so it does not spend the operator's one-shot token.
+func TestAllowlistReplaceRefusesUnmatchableIfMatchBeforeAuth(t *testing.T) {
+	store, err := allowlist.OpenInMemory()
+	if err != nil {
+		t.Fatalf("open in-memory store: %v", err)
+	}
+	spent := false
+	h := allowlist.Handler{Store: &store, WriteAuthorizer: func(*http.Request, []byte) error {
+		spent = true
+		return nil
+	}}
+
+	if code := putAllowlistIfMatch(t, h, oneEntryDocument("web", digestA), `W/"1"`); code != http.StatusPreconditionFailed {
+		t.Fatalf("weak If-Match: got %d, want 412", code)
+	}
+	if spent {
+		t.Fatal("the write was authorized, spending a token, before the precondition was refused")
+	}
+}
+
 // guardTestHandler builds a Handler with a permissive authorizer, for tests of
 // the post-auth request-decoding guards.
 func guardTestHandler(t *testing.T) (allowlist.Handler, *allowlist.Store) {
@@ -253,9 +319,7 @@ func guardTestHandler(t *testing.T) (allowlist.Handler, *allowlist.Store) {
 // touch the store.
 func TestAllowlistReplaceRejectsInvalidDoc(t *testing.T) {
 	h, store := guardTestHandler(t)
-	if err := store.PutWorkload("web", entryFor(t, digestA)); err != nil {
-		t.Fatalf("seed store: %v", err)
-	}
+	seedEntry(t, store, "web", digestA)
 	_, versionBefore, _ := store.LoadAll()
 
 	// The last body is the pre-unification shape: a top-level digests map is
@@ -284,9 +348,7 @@ func TestAllowlistReplaceRejectsInvalidDoc(t *testing.T) {
 // the allowlist.
 func TestAllowlistReplaceExplicitEmptyClears(t *testing.T) {
 	h, store := guardTestHandler(t)
-	if err := store.PutWorkload("web", entryFor(t, digestA)); err != nil {
-		t.Fatalf("seed store: %v", err)
-	}
+	seedEntry(t, store, "web", digestA)
 
 	rec := httptest.NewRecorder()
 	body := fmt.Sprintf(`{"schema":%q,"workloads":{}}`, pkgallowlist.Schema)
@@ -305,143 +367,102 @@ func TestAllowlistReplaceExplicitEmptyClears(t *testing.T) {
 	}
 }
 
-// entryFor is a minimally-specified one-container entry at digest.
-func entryFor(t *testing.T, digest string) pkgallowlist.Workload {
+// seedEntry makes the stored allowlist the document holding one named entry
+// at digest.
+func seedEntry(t *testing.T, store *allowlist.Store, name, digest string) {
 	t.Helper()
 	d, err := types.ParseDigest(digest)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return pkgallowlist.Workload{Containers: []pkgallowlist.Container{{Digest: d}}}
+	doc := &pkgallowlist.Allowlist{
+		Schema:    pkgallowlist.Schema,
+		Workloads: map[string]pkgallowlist.Workload{name: {Containers: []pkgallowlist.Container{{Digest: d}}}},
+	}
+	if err := store.ReplaceAll(doc, allowlist.OperatorWrite{}); err != nil {
+		t.Fatalf("seed store: %v", err)
+	}
 }
 
-// workloadRequest builds a request for the per-entry handlers with the chi
-// {name} parameter resolved, as the cds router would.
-func workloadRequest(method, name, body string) *http.Request {
-	req := httptest.NewRequest(method, "/allowlist/workloads/"+name, strings.NewReader(body))
-	rctx := chi.NewRouteContext()
-	rctx.URLParams.Add("name", name)
-	return req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+// oneEntryDocument is the allowlist document holding one named entry at
+// digest.
+func oneEntryDocument(name, digest string) string {
+	return fmt.Sprintf(`{"schema":%q,"workloads":{%q:{"containers":[{"digest":%q}]}}}`, pkgallowlist.Schema, name, digest)
 }
 
-// putWorkloadRequest builds a PUT of a one-container entry; a nil signer
-// sends it without a token.
-func putWorkloadRequest(t *testing.T, srvURL string, signer *operatorauth.Signer, name, digest string) *http.Request {
+// replaceRequest builds a PUT of the whole document; a nil signer sends it
+// without a token.
+func replaceRequest(t *testing.T, srvURL string, signer *operatorauth.Signer, body string) *http.Request {
 	t.Helper()
-	path := "/allowlist/workloads/" + name
-	body := fmt.Sprintf(`{"containers":[{"digest":"%s"}]}`, digest)
-	req, err := http.NewRequest(http.MethodPut, srvURL+path, strings.NewReader(body))
+	req, err := http.NewRequest(http.MethodPut, srvURL+"/allowlist", strings.NewReader(body))
 	if err != nil {
 		t.Fatalf("create request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if signer != nil {
-		req.Header.Set("Authorization", authHeader(t, signer, http.MethodPut, path, []byte(body)))
+		req.Header.Set("Authorization", authHeader(t, signer, http.MethodPut, "/allowlist", []byte(body)))
 	}
 	return req
 }
 
-// putWorkload writes a one-container entry through the signed PUT path.
-func putWorkload(t *testing.T, srvURL string, signer *operatorauth.Signer, name, digest string) {
+// writeEntry makes the allowlist the document holding one named entry,
+// through the signed write path.
+func writeEntry(t *testing.T, srvURL string, signer *operatorauth.Signer, name, digest string) {
 	t.Helper()
-	resp, err := http.DefaultClient.Do(putWorkloadRequest(t, srvURL, signer, name, digest))
+	resp, err := http.DefaultClient.Do(replaceRequest(t, srvURL, signer, oneEntryDocument(name, digest)))
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusNoContent {
-		t.Fatalf("put workload got status %d, want 204", resp.StatusCode)
+		t.Fatalf("write got status %d, want 204", resp.StatusCode)
 	}
 }
 
-// TestWorkloadPutRejectsUnpinnedOperatorKey proves a well-formed token signed
-// by a key CDS does not pin is rejected at the handler level.
-func TestWorkloadPutRejectsUnpinnedOperatorKey(t *testing.T) {
+// TestReplaceRejectsUnpinnedOperatorKey proves a well-formed token signed by a
+// key CDS does not pin is rejected at the handler level.
+func TestReplaceRejectsUnpinnedOperatorKey(t *testing.T) {
 	app, _, _ := testAllowlistApp(t)
 	srv := httptest.NewServer(app)
 	defer srv.Close()
 
 	otherSigner, _ := testOperatorCredential(t) // not the pinned key
-	refusedWrite(t, srv.URL, putWorkloadRequest(t, srv.URL, otherSigner, "web", digestA))
+	refusedWrite(t, srv.URL, replaceRequest(t, srv.URL, otherSigner, oneEntryDocument("web", digestA)))
 }
 
-// TestWorkloadPutRejectsReplayWithDifferentBody: a captured operator token for
-// one body MUST NOT authorize a different body within the token's TTL.
-func TestWorkloadPutRejectsReplayWithDifferentBody(t *testing.T) {
+// TestReplaceRejectsReplayWithDifferentBody: a captured operator token for one
+// document MUST NOT authorize a different one within the token's TTL.
+func TestReplaceRejectsReplayWithDifferentBody(t *testing.T) {
 	app, _, signer := testAllowlistApp(t)
 	srv := httptest.NewServer(app)
 	defer srv.Close()
 
-	path := "/allowlist/workloads/web"
-	originalBody := fmt.Sprintf(`{"containers":[{"digest":"%s"}]}`, digestA)
-	header := authHeader(t, signer, http.MethodPut, path, []byte(originalBody))
-
-	attackerBody := fmt.Sprintf(`{"containers":[{"digest":"%s"}]}`, digestMissing)
-	req, err := http.NewRequest(http.MethodPut, srv.URL+path, strings.NewReader(attackerBody))
+	signed := oneEntryDocument("web", digestA)
+	attackerBody := oneEntryDocument("web", digestMissing)
+	req, err := http.NewRequest(http.MethodPut, srv.URL+"/allowlist", strings.NewReader(attackerBody))
 	if err != nil {
 		t.Fatalf("create request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", header)
+	req.Header.Set("Authorization", authHeader(t, signer, http.MethodPut, "/allowlist", []byte(signed)))
 	refusedWrite(t, srv.URL, req)
 }
 
-// A captured PUT token binds method and path as well as body: it does not
-// authorize removing the entry it wrote.
-func TestWorkloadPutRejectsReplayOnDelete(t *testing.T) {
-	app, _, signer := testAllowlistApp(t)
-	srv := httptest.NewServer(app)
-	defer srv.Close()
-
-	path := "/allowlist/workloads/web"
-	body := fmt.Sprintf(`{"containers":[{"digest":"%s"}]}`, digestA)
-	header := authHeader(t, signer, http.MethodPut, path, []byte(body))
-	putWorkload(t, srv.URL, signer, "web", digestA)
-
-	req, err := http.NewRequest(http.MethodDelete, srv.URL+path, nil)
-	if err != nil {
-		t.Fatalf("create request: %v", err)
-	}
-	req.Header.Set("Authorization", header)
-	refusedWrite(t, srv.URL, req)
-	if _, ok := getAllowlist(t, srv.URL).Workloads["web"]; !ok {
-		t.Fatal("the replayed token removed the entry")
-	}
-}
-
-// Nor does it authorize the same body written under another entry name.
-func TestWorkloadPutRejectsReplayOnAnotherEntry(t *testing.T) {
-	app, _, signer := testAllowlistApp(t)
-	srv := httptest.NewServer(app)
-	defer srv.Close()
-
-	body := fmt.Sprintf(`{"containers":[{"digest":"%s"}]}`, digestA)
-	header := authHeader(t, signer, http.MethodPut, "/allowlist/workloads/web", []byte(body))
-
-	req, err := http.NewRequest(http.MethodPut, srv.URL+"/allowlist/workloads/batch", strings.NewReader(body))
-	if err != nil {
-		t.Fatalf("create request: %v", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", header)
-	refusedWrite(t, srv.URL, req)
-}
-
-// TestWorkloadPutRejectsTokenBeyondMaxValidity: a token stamped with a lifetime
+// TestReplaceRejectsTokenBeyondMaxValidity: a token stamped with a lifetime
 // longer than the verifier's MaxTokenValidity is refused whatever the signer
 // chose, and refusing it changes nothing.
-func TestWorkloadPutRejectsTokenBeyondMaxValidity(t *testing.T) {
+func TestReplaceRejectsTokenBeyondMaxValidity(t *testing.T) {
 	app, _, signer := testAllowlistApp(t)
 	srv := httptest.NewServer(app)
 	defer srv.Close()
 
-	refusedWrite(t, srv.URL, putWorkloadRequest(t, srv.URL, signer.WithTTL(time.Hour), "web", digestA))
+	refusedWrite(t, srv.URL, replaceRequest(t, srv.URL, signer.WithTTL(time.Hour), oneEntryDocument("web", digestA)))
 }
 
-// TestWorkloadPutRejectsBodyOverConfiguredCap confirms the per-Handler cap is
+// TestReplaceRejectsBodyOverConfiguredCap confirms the per-Handler cap is
 // honoured: an over-cap body returns 413 before the auth check runs.
-func TestWorkloadPutRejectsBodyOverConfiguredCap(t *testing.T) {
+func TestReplaceRejectsBodyOverConfiguredCap(t *testing.T) {
 	store, err := allowlist.OpenInMemory()
 	if err != nil {
 		t.Fatalf("open in-memory store: %v", err)
@@ -457,14 +478,8 @@ func TestWorkloadPutRejectsBodyOverConfiguredCap(t *testing.T) {
 	srv := httptest.NewServer(allowlistTestRouter(wh, checker.Ready))
 	defer srv.Close()
 
-	path := "/allowlist/workloads/web"
 	body := strings.Repeat("x", 1024)
-	req, err := http.NewRequest(http.MethodPut, srv.URL+path, strings.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", authHeader(t, signer, http.MethodPut, path, []byte(body)))
+	req := replaceRequest(t, srv.URL, signer, body)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -482,94 +497,53 @@ func TestWorkloadPutRejectsBodyOverConfiguredCap(t *testing.T) {
 func TestAllowlistDefaultWriteBodyCap(t *testing.T) {
 	h, _ := guardTestHandler(t)
 
-	small := fmt.Sprintf(`{"containers":[{"digest":%q}]}`, digestA)
 	rec := httptest.NewRecorder()
-	h.HandlePutWorkload(rec, workloadRequest(http.MethodPut, "web", small))
+	h.HandleReplaceAll(rec, httptest.NewRequest(http.MethodPut, "/allowlist", strings.NewReader(oneEntryDocument("web", digestA))))
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("small body got status %d, want 204 (body %q)", rec.Code, rec.Body.String())
 	}
 
 	big := strings.Repeat("x", 64*1024+1)
 	rec = httptest.NewRecorder()
-	h.HandlePutWorkload(rec, workloadRequest(http.MethodPut, "web", big))
+	h.HandleReplaceAll(rec, httptest.NewRequest(http.MethodPut, "/allowlist", strings.NewReader(big)))
 	if rec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("over-cap body got status %d, want 413", rec.Code)
 	}
 }
 
-// TestWorkloadPutDeleteRoundtrip exercises the workload routes end to end,
-// including the {name} path parameter and the 404 on a repeated delete.
-func TestWorkloadPutDeleteRoundtrip(t *testing.T) {
+// A document whose entry is not valid is refused whole: the write is signed
+// over bytes CDS will not serve.
+func TestReplaceRejectsInvalidEntry(t *testing.T) {
 	app, _, signer := testAllowlistApp(t)
 	srv := httptest.NewServer(app)
 	defer srv.Close()
 
-	path := "/allowlist/workloads/web"
-	body := fmt.Sprintf(`{"label":"web","containers":[{"digest":"%s"}]}`, digestA)
-	putReq, _ := http.NewRequest(http.MethodPut, srv.URL+path, strings.NewReader(body))
-	putReq.Header.Set("Content-Type", "application/json")
-	putReq.Header.Set("Authorization", authHeader(t, signer, http.MethodPut, path, []byte(body)))
-	putResp, err := http.DefaultClient.Do(putReq)
-	if err != nil {
-		t.Fatalf("put: %v", err)
-	}
-	putResp.Body.Close()
-	if putResp.StatusCode != http.StatusNoContent {
-		t.Fatalf("put: got %d, want 204", putResp.StatusCode)
-	}
-
-	al := getAllowlist(t, srv.URL)
-	w, ok := al.Workloads["web"]
-	if !ok || len(w.Containers) != 1 || w.Containers[0].Digest.String() != digestA {
-		t.Fatalf("served workload = %#v", al.Workloads)
-	}
-
-	del := func() int {
-		req, _ := http.NewRequest(http.MethodDelete, srv.URL+path, nil)
-		req.Header.Set("Authorization", authHeader(t, signer, http.MethodDelete, path, nil))
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatalf("delete: %v", err)
-		}
-		resp.Body.Close()
-		return resp.StatusCode
-	}
-	if code := del(); code != http.StatusNoContent {
-		t.Fatalf("first delete: got %d, want 204", code)
-	}
-	etag := servedETag(t, srv.URL)
-	if code := del(); code != http.StatusNotFound {
-		t.Fatalf("second delete: got %d, want 404", code)
-	}
-	wantUnchanged(t, srv.URL, etag)
-}
-
-func TestWorkloadPutRejectsInvalidBody(t *testing.T) {
-	app, _, signer := testAllowlistApp(t)
-	srv := httptest.NewServer(app)
-	defer srv.Close()
-
-	path := "/allowlist/workloads/web"
-	body := `{"containers":[{"digest":"sha256:bad"}]}`
-	req, _ := http.NewRequest(http.MethodPut, srv.URL+path, strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", authHeader(t, signer, http.MethodPut, path, []byte(body)))
-	resp, err := http.DefaultClient.Do(req)
+	body := fmt.Sprintf(`{"schema":%q,"workloads":{"web":{"containers":[{"digest":"sha256:bad"}]}}}`, pkgallowlist.Schema)
+	resp, err := http.DefaultClient.Do(replaceRequest(t, srv.URL, signer, body))
 	if err != nil {
 		t.Fatalf("put: %v", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusUnprocessableEntity {
-		t.Fatalf("invalid workload body: got %d, want 422", resp.StatusCode)
+		t.Fatalf("invalid entry in the document: got %d, want 422", resp.StatusCode)
 	}
 }
 
-func TestWorkloadPutRequiresAuth(t *testing.T) {
-	app, _, _ := testAllowlistApp(t)
+// An entry name the allowlist grammar refuses is refused with the document,
+// so no write puts one in the store.
+func TestReplaceRejectsInvalidEntryName(t *testing.T) {
+	app, _, signer := testAllowlistApp(t)
 	srv := httptest.NewServer(app)
 	defer srv.Close()
 
-	refusedWrite(t, srv.URL, putWorkloadRequest(t, srv.URL, nil, "web", digestA))
+	resp, err := http.DefaultClient.Do(replaceRequest(t, srv.URL, signer, oneEntryDocument("bad/name", digestA)))
+	if err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("entry name with a slash: got %d, want 422", resp.StatusCode)
+	}
 }
 
 func TestAllowlistListEmitsETag(t *testing.T) {
@@ -624,7 +598,7 @@ func TestAllowlistListStaleIfNoneMatchReturns200WithNewETag(t *testing.T) {
 	srv := httptest.NewServer(app)
 	defer srv.Close()
 
-	putWorkload(t, srv.URL, signer, "web", digestA)
+	writeEntry(t, srv.URL, signer, "web", digestA)
 
 	req, err := http.NewRequest(http.MethodGet, srv.URL+"/allowlist", nil)
 	if err != nil {
@@ -654,33 +628,29 @@ func TestAllowlistWritesRejectedWithoutAuthorizer(t *testing.T) {
 	}
 	h := allowlist.Handler{Store: &store}
 
-	body := fmt.Sprintf(`{"containers":[{"digest":"%s"}]}`, digestA)
 	rec := httptest.NewRecorder()
-	h.HandlePutWorkload(rec, workloadRequest(http.MethodPut, "web", body))
+	h.HandleReplaceAll(rec, httptest.NewRequest(http.MethodPut, "/allowlist", strings.NewReader(oneEntryDocument("web", digestA))))
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("PUT without authorizer: got status %d, want 401", rec.Code)
 	}
 }
 
-// TestAllowlistMutationsRejectMalformedBody covers the decode guards on every
-// mutation: syntactically invalid JSON and unknown fields both 422.
-func TestAllowlistMutationsRejectMalformedBody(t *testing.T) {
+// TestAllowlistWriteRejectsMalformedBody covers the decode guards on a write:
+// syntactically invalid JSON and unknown fields both 422.
+func TestAllowlistWriteRejectsMalformedBody(t *testing.T) {
 	h, _ := guardTestHandler(t)
 
-	cases := []struct {
-		name    string
-		handler http.HandlerFunc
-		body    string
+	for _, tc := range []struct {
+		name string
+		body string
 	}{
-		{"put invalid json", h.HandlePutWorkload, `{`},
-		{"put unknown field", h.HandlePutWorkload, `{"containers":[{"digest":"` + digestA + `"}],"bogus":1}`},
-		{"replace invalid json", h.HandleReplaceAll, `{`},
-		{"replace unknown field", h.HandleReplaceAll, `{"workloads":{},"bogus":1}`},
-	}
-	for _, tc := range cases {
+		{"invalid json", `{`},
+		{"unknown field", `{"workloads":{},"bogus":1}`},
+		{"unknown entry field", `{"schema":"c8s.allowlist/v1","workloads":{"web":{"containers":[{"digest":"` + digestA + `"}],"bogus":1}}}`},
+	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := httptest.NewRecorder()
-			tc.handler(rec, workloadRequest(http.MethodPut, "web", tc.body))
+			h.HandleReplaceAll(rec, httptest.NewRequest(http.MethodPut, "/allowlist", strings.NewReader(tc.body)))
 			if rec.Code != http.StatusUnprocessableEntity {
 				t.Fatalf("got status %d, want 422", rec.Code)
 			}
@@ -700,21 +670,18 @@ func TestAllowlistHandlersReturn500OnStoreFailure(t *testing.T) {
 	}
 	h := allowlist.Handler{Store: &store, WriteAuthorizer: func(*http.Request, []byte) error { return nil }}
 
-	cases := []struct {
+	for _, tc := range []struct {
 		name    string
 		handler http.HandlerFunc
 		method  string
 		body    string
 	}{
 		{"list", h.HandleList, http.MethodGet, ""},
-		{"put", h.HandlePutWorkload, http.MethodPut, fmt.Sprintf(`{"containers":[{"digest":"%s"}]}`, digestA)},
-		{"delete", h.HandleDeleteWorkload, http.MethodDelete, ""},
-		{"replace", h.HandleReplaceAll, http.MethodPut, fmt.Sprintf(`{"schema":"c8s.allowlist/v1","workloads":{"web":{"containers":[{"digest":"%s"}]}}}`, digestA)},
-	}
-	for _, tc := range cases {
+		{"replace", h.HandleReplaceAll, http.MethodPut, oneEntryDocument("web", digestA)},
+	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := httptest.NewRecorder()
-			tc.handler(rec, workloadRequest(tc.method, "web", tc.body))
+			tc.handler(rec, httptest.NewRequest(tc.method, "/allowlist", strings.NewReader(tc.body)))
 			if rec.Code != http.StatusInternalServerError {
 				t.Fatalf("got status %d, want 500", rec.Code)
 			}

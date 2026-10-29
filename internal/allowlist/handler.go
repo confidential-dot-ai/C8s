@@ -1,6 +1,7 @@
 package allowlist
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -67,7 +68,20 @@ func (h Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 
 // HandleReplaceAll handles PUT /allowlist: validate the full document and swap
 // it in atomically. CDS assigns the new version.
+//
+// If-Match makes the swap conditional on the version: the strong tag "N"
+// matches version N, the N of the ETag W/"N" that GET serves. A refused
+// precondition is 412 and changes nothing. No If-Match, or "*", swaps
+// unconditionally.
 func (h Handler) HandleReplaceAll(w http.ResponseWriter, r *http.Request) {
+	// Before the token is spent: a precondition no version can satisfy is
+	// the operator's mistake, not a write.
+	version, matchable := requiredVersion(r.Header.Get("If-Match"))
+	if !matchable {
+		http.Error(w, `If-Match takes the strong tag "N" of version N, which the ETag W/"N" of GET /allowlist names`, http.StatusPreconditionFailed)
+		return
+	}
+
 	body, ok := h.authorize(w, r)
 	if !ok {
 		return
@@ -79,73 +93,60 @@ func (h Handler) HandleReplaceAll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.Store.ReplaceAll(al); err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
+	write := OperatorWrite{Version: version, Signature: operatorSignature(r, al, body)}
+	if write.Signature == "" {
+		slog.Warn("allowlist write stores no operator signature: its body is not the document's canonical bytes",
+			"remote", r.RemoteAddr)
 	}
-	// The token that wrote a canonical whole document is the operator's
-	// signature over it (docs/allowlist-and-capabilities.md). Re-uploading the
-	// same document with a fresh token is a no-op write that stores it.
-	if token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok {
-		if err := h.Store.SignPolicy(body, token); err != nil {
-			slog.Error("store the operator signature of the allowlist", "error", err)
-			http.Error(w, "allowlist replaced but its operator signature was not stored; upload it again", http.StatusInternalServerError)
+	if err := h.Store.ReplaceAll(al, write); err != nil {
+		if errors.Is(err, ErrVersionMismatch) {
+			http.Error(w, err.Error()+"; fetch it and apply the change again", http.StatusPreconditionFailed)
 			return
 		}
+		slog.Error("allowlist write failed", "err", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
 	}
 
 	slog.Info("allowlist replaced", "workloads", len(al.Workloads))
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// HandlePutWorkload handles PUT /allowlist/workloads/{name}: validate the entry
-// body and upsert it under the path name. An out-of-spec name or body is 422.
-func (h Handler) HandlePutWorkload(w http.ResponseWriter, r *http.Request) {
-	body, ok := h.authorize(w, r)
+// requiredVersion is the allowlist version an If-Match header requires, empty
+// when there is no header: that write is unconditional. Only the strong tag
+// "N" of a version can match, since If-Match compares strongly (RFC 9110
+// 13.1.1), so a weak tag or any other form is not matchable.
+func requiredVersion(ifMatch string) (version string, matchable bool) {
+	if ifMatch == "" {
+		return "", true
+	}
+	version, ok := strings.CutPrefix(ifMatch, `"`)
 	if !ok {
-		return
+		return "", false
 	}
-
-	entry, err := pkgallowlist.ParseWorkloadJSON(body)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
-		return
+	version, ok = strings.CutSuffix(version, `"`)
+	if !ok || version == "" {
+		return "", false
 	}
-
-	name := chi.URLParam(r, "name")
-	if err := h.Store.PutWorkload(name, *entry); err != nil {
-		if errors.Is(err, ErrInvalidWorkload) {
-			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
-			return
-		}
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	slog.Info("allowlist workload put", "name", name)
-	w.WriteHeader(http.StatusNoContent)
+	return version, true
 }
 
-// HandleDeleteWorkload handles DELETE /allowlist/workloads/{name}: remove the
-// named entry, 404 if absent.
-func (h Handler) HandleDeleteWorkload(w http.ResponseWriter, r *http.Request) {
-	if _, ok := h.authorize(w, r); !ok {
-		return
+// operatorSignature is the write token of a body that is the document's
+// canonical bytes: the operator's signature over what verifiers fetch
+// (docs/allowlist-and-capabilities.md). Any other body signs nothing.
+func operatorSignature(r *http.Request, al *pkgallowlist.Allowlist, body []byte) string {
+	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !ok || !isCanonicalDocument(al, body) {
+		return ""
 	}
+	return token
+}
 
-	name := chi.URLParam(r, "name")
-	found, err := h.Store.DeleteWorkload(name)
-	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-	if !found {
-		w.WriteHeader(http.StatusNotFound)
-		return
-	}
-
-	slog.Info("allowlist workload deleted", "name", name)
-	w.WriteHeader(http.StatusNoContent)
+// isCanonicalDocument reports whether body is exactly al's canonical bytes,
+// the bytes GET /allowlist serves and a verifier fetches.
+func isCanonicalDocument(al *pkgallowlist.Allowlist, body []byte) bool {
+	canonical, err := al.Canonical()
+	return err == nil && bytes.Equal(canonical, body)
 }
 
 // authorize reads the body (capped) and runs the configured authorizer.

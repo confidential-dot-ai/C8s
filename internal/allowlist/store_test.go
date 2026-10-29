@@ -1,7 +1,6 @@
 package allowlist
 
 import (
-	"errors"
 	"path/filepath"
 	"strconv"
 	"testing"
@@ -22,6 +21,37 @@ func oneContainerWorkload(digest types.Digest) pkgallowlist.Workload {
 	}
 }
 
+// replaceAll writes workloads as the whole allowlist, the store's one write.
+func replaceAll(t *testing.T, store *Store, workloads map[string]pkgallowlist.Workload) {
+	t.Helper()
+	if err := store.ReplaceAll(&pkgallowlist.Allowlist{Schema: pkgallowlist.Schema, Workloads: workloads}, OperatorWrite{}); err != nil {
+		t.Fatalf("replace: %v", err)
+	}
+}
+
+// putEntry writes one entry into the allowlist the store serves, keeping
+// every other entry.
+func putEntry(t *testing.T, store *Store, name string, w pkgallowlist.Workload) {
+	t.Helper()
+	doc, _, err := store.LoadAll()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	doc.Workloads[name] = w
+	replaceAll(t, store, doc.Workloads)
+}
+
+// deleteEntry takes one entry out of the allowlist the store serves.
+func deleteEntry(t *testing.T, store *Store, name string) {
+	t.Helper()
+	doc, _, err := store.LoadAll()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	delete(doc.Workloads, name)
+	replaceAll(t, store, doc.Workloads)
+}
+
 func mustParseDigest(t *testing.T, s string) types.Digest {
 	t.Helper()
 	d, err := types.ParseDigest(s)
@@ -38,20 +68,13 @@ func TestReplaceAllBumpsVersionByOne(t *testing.T) {
 	}
 	defer store.Close()
 
-	if err := store.PutWorkload("a", oneContainerWorkload(mustParseDigest(t, digestA))); err != nil {
-		t.Fatalf("put: %v", err)
-	}
+	putEntry(t, &store, "a", oneContainerWorkload(mustParseDigest(t, digestA)))
 	_, beforeVersion, err := store.LoadAll()
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
 
-	if err := store.ReplaceAll(&pkgallowlist.Allowlist{
-		Schema:    pkgallowlist.Schema,
-		Workloads: map[string]pkgallowlist.Workload{"b": oneContainerWorkload(mustParseDigest(t, digestB))},
-	}); err != nil {
-		t.Fatalf("replace: %v", err)
-	}
+	replaceAll(t, &store, map[string]pkgallowlist.Workload{"b": oneContainerWorkload(mustParseDigest(t, digestB))})
 
 	doc, version, err := store.LoadAll()
 	if err != nil {
@@ -84,12 +107,8 @@ func TestReplaceAllEmptyClears(t *testing.T) {
 	}
 	defer store.Close()
 
-	if err := store.PutWorkload("a", oneContainerWorkload(mustParseDigest(t, digestA))); err != nil {
-		t.Fatalf("put: %v", err)
-	}
-	if err := store.ReplaceAll(&pkgallowlist.Allowlist{Schema: pkgallowlist.Schema}); err != nil {
-		t.Fatalf("replace empty: %v", err)
-	}
+	putEntry(t, &store, "a", oneContainerWorkload(mustParseDigest(t, digestA)))
+	replaceAll(t, &store, nil)
 	doc, _, err := store.LoadAll()
 	if err != nil {
 		t.Fatalf("load: %v", err)
@@ -138,9 +157,7 @@ func TestVersionMatchesLoadAllWithoutLoadingRows(t *testing.T) {
 
 	// Version is the ETag the worker pull carries, so it must move in lockstep
 	// with the counter LoadAll reports after a write.
-	if err := store.PutWorkload("a", oneContainerWorkload(mustParseDigest(t, digestA))); err != nil {
-		t.Fatalf("put: %v", err)
-	}
+	putEntry(t, &store, "a", oneContainerWorkload(mustParseDigest(t, digestA)))
 	_, loadVersion, err := store.LoadAll()
 	if err != nil {
 		t.Fatalf("load: %v", err)
@@ -161,7 +178,7 @@ func TestVersionMatchesLoadAllWithoutLoadingRows(t *testing.T) {
 	}
 }
 
-func TestPutAndDeleteWorkloadRoundtrip(t *testing.T) {
+func TestAddAndRemoveOneEntryRoundtrip(t *testing.T) {
 	store, err := OpenInMemory()
 	if err != nil {
 		t.Fatalf("open: %v", err)
@@ -169,56 +186,27 @@ func TestPutAndDeleteWorkloadRoundtrip(t *testing.T) {
 	defer store.Close()
 
 	dA := mustParseDigest(t, digestA)
-	if err := store.PutWorkload("web", oneContainerWorkload(dA)); err != nil {
-		t.Fatalf("put: %v", err)
-	}
+	putEntry(t, &store, "web", oneContainerWorkload(dA))
 
 	doc, version, err := store.LoadAll()
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
 	if version != "2" {
-		t.Fatalf("version after put: got %q, want 2", version)
+		t.Fatalf("version after the write: got %q, want 2", version)
 	}
 	w, ok := doc.Workloads["web"]
 	if !ok || len(w.Containers) != 1 || w.Containers[0].Digest != dA {
 		t.Fatalf("stored workload = %#v", doc.Workloads)
 	}
-	// Absent policies must have normalized to deny on the way in.
-	if w.Containers[0].Command.Policy != pkgallowlist.PolicyDeny {
-		t.Fatalf("entrypoint policy = %q, want deny", w.Containers[0].Command.Policy)
-	}
-
 	// The container digest is now admitted via the workload index.
 	if ok, err := store.Contains(dA); err != nil || !ok {
 		t.Fatalf("Contains(workload digest) = %t, %v; want true, nil", ok, err)
 	}
 
-	found, err := store.DeleteWorkload("web")
-	if err != nil || !found {
-		t.Fatalf("delete: found=%t err=%v", found, err)
-	}
+	deleteEntry(t, &store, "web")
 	if ok, err := store.Contains(dA); err != nil || ok {
-		t.Fatalf("Contains after delete = %t, %v; want false, nil", ok, err)
-	}
-	if found, err := store.DeleteWorkload("web"); err != nil || found {
-		t.Fatalf("re-delete: found=%t err=%v; want false, nil", found, err)
-	}
-}
-
-func TestPutWorkloadRejectsBadName(t *testing.T) {
-	store, err := OpenInMemory()
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer store.Close()
-
-	err = store.PutWorkload("bad/name", oneContainerWorkload(mustParseDigest(t, digestA)))
-	if err == nil {
-		t.Fatal("PutWorkload accepted a name with a slash")
-	}
-	if !errors.Is(err, ErrInvalidWorkload) {
-		t.Fatalf("error should wrap ErrInvalidWorkload, got %v", err)
+		t.Fatalf("Contains after the entry was removed = %t, %v; want false, nil", ok, err)
 	}
 }
 
@@ -344,19 +332,8 @@ func TestReplaceAllSwapsWorkloads(t *testing.T) {
 	}
 	defer store.Close()
 
-	if err := store.PutWorkload("old-wl", oneContainerWorkload(mustParseDigest(t, digestB))); err != nil {
-		t.Fatalf("put: %v", err)
-	}
-
-	replacement := &pkgallowlist.Allowlist{
-		Schema: pkgallowlist.Schema,
-		Workloads: map[string]pkgallowlist.Workload{
-			"new-wl": oneContainerWorkload(mustParseDigest(t, digestA)),
-		},
-	}
-	if err := store.ReplaceAll(replacement); err != nil {
-		t.Fatalf("replace all: %v", err)
-	}
+	putEntry(t, &store, "old-wl", oneContainerWorkload(mustParseDigest(t, digestB)))
+	replaceAll(t, &store, map[string]pkgallowlist.Workload{"new-wl": oneContainerWorkload(mustParseDigest(t, digestA))})
 
 	doc, _, err := store.LoadAll()
 	if err != nil {
@@ -385,16 +362,10 @@ func TestReplaceAllIndexesEveryWorkload(t *testing.T) {
 
 	dA := mustParseDigest(t, digestA)
 	dB := mustParseDigest(t, digestB)
-	replacement := &pkgallowlist.Allowlist{
-		Schema: pkgallowlist.Schema,
-		Workloads: map[string]pkgallowlist.Workload{
-			"web": oneContainerWorkload(dA),
-			"db":  oneContainerWorkload(dB),
-		},
-	}
-	if err := store.ReplaceAll(replacement); err != nil {
-		t.Fatalf("replace all: %v", err)
-	}
+	replaceAll(t, &store, map[string]pkgallowlist.Workload{
+		"web": oneContainerWorkload(dA),
+		"db":  oneContainerWorkload(dB),
+	})
 
 	doc, _, err := store.LoadAll()
 	if err != nil {
@@ -413,8 +384,8 @@ func TestReplaceAllIndexesEveryWorkload(t *testing.T) {
 	}
 }
 
-// PutWorkload must index every container digest of the entry, init and main.
-func TestPutWorkloadIndexesAllContainers(t *testing.T) {
+// Every container digest of an entry is indexed, init and main.
+func TestReplaceAllIndexesInitAndMainContainers(t *testing.T) {
 	store, err := OpenInMemory()
 	if err != nil {
 		t.Fatalf("open: %v", err)
@@ -427,9 +398,7 @@ func TestPutWorkloadIndexesAllContainers(t *testing.T) {
 		InitContainers: []pkgallowlist.Container{{Digest: dInit}},
 		Containers:     []pkgallowlist.Container{{Digest: dMain}},
 	}
-	if err := store.PutWorkload("web", w); err != nil {
-		t.Fatalf("put: %v", err)
-	}
+	replaceAll(t, &store, map[string]pkgallowlist.Workload{"web": w})
 
 	for _, d := range []types.Digest{dInit, dMain} {
 		if ok, err := store.Contains(d); err != nil || !ok {
@@ -447,9 +416,7 @@ func TestContains(t *testing.T) {
 
 	present := mustParseDigest(t, digestA)
 	absent := mustParseDigest(t, digestB)
-	if err := store.PutWorkload("a", oneContainerWorkload(present)); err != nil {
-		t.Fatal(err)
-	}
+	putEntry(t, &store, "a", oneContainerWorkload(present))
 
 	if ok, err := store.Contains(present); err != nil || !ok {
 		t.Fatalf("Contains(present) = %t, %v; want true, nil", ok, err)
@@ -467,13 +434,9 @@ func TestOpenStoreCreatesAndReopens(t *testing.T) {
 		t.Fatalf("open new store: %v", err)
 	}
 	dA := mustParseDigest(t, digestA)
-	if err := store.PutWorkload("nginx", oneContainerWorkload(dA)); err != nil {
-		t.Fatalf("put: %v", err)
-	}
+	putEntry(t, &store, "nginx", oneContainerWorkload(dA))
 	dB := mustParseDigest(t, digestB)
-	if err := store.PutWorkload("web", oneContainerWorkload(dB)); err != nil {
-		t.Fatalf("put workload: %v", err)
-	}
+	putEntry(t, &store, "web", oneContainerWorkload(dB))
 	if err := store.Close(); err != nil {
 		t.Fatalf("close: %v", err)
 	}
@@ -522,12 +485,14 @@ func TestGenerationMovesOnEveryMutation(t *testing.T) {
 		gen = next
 	}
 
-	step("PutWorkload", func() error {
-		return store.PutWorkload("w", oneContainerWorkload(mustParseDigest(t, digestB)))
-	})
-	step("DeleteWorkload", func() error { _, err := store.DeleteWorkload("w"); return err })
 	step("ReplaceAll", func() error {
-		return store.ReplaceAll(&pkgallowlist.Allowlist{Schema: pkgallowlist.Schema})
+		return store.ReplaceAll(&pkgallowlist.Allowlist{
+			Schema:    pkgallowlist.Schema,
+			Workloads: map[string]pkgallowlist.Workload{"w": oneContainerWorkload(mustParseDigest(t, digestB))},
+		}, OperatorWrite{})
+	})
+	step("ReplaceAll with the entry gone", func() error {
+		return store.ReplaceAll(&pkgallowlist.Allowlist{Schema: pkgallowlist.Schema}, OperatorWrite{})
 	})
 	step("SeedWorkloads", func() error {
 		_, _, err := store.SeedWorkloads(map[string]pkgallowlist.Workload{"s": oneContainerWorkload(mustParseDigest(t, digestC))})
@@ -556,7 +521,7 @@ func TestEnvironmentValuesPersist(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.ReplaceAll(al); err != nil {
+	if err := store.ReplaceAll(al, OperatorWrite{}); err != nil {
 		t.Fatal(err)
 	}
 	store.Close()
@@ -569,10 +534,7 @@ func TestEnvironmentValuesPersist(t *testing.T) {
 	if err != nil || got.Schema != pkgallowlist.Schema || got.Workloads["w"].Containers[0].Env.Values["MODE"] != "production" {
 		t.Fatalf("schema lost: %v %v", got, err)
 	}
-	if err := store.PutWorkload("w", al.Workloads["w"]); err != nil {
-		t.Fatal(err)
-	}
-
+	putEntry(t, &store, "w", al.Workloads["w"])
 }
 
 // An operator override named <image>-<12 hex> replaces every generated shape
