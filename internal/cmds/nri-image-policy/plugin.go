@@ -647,8 +647,9 @@ func (p *plugin) checkImagePhase(ctx context.Context, cfg *config, check imageCh
 	// rootfs from the image kubelet resolved earlier; a tag moved in between
 	// would let this check judge one image and the container run another.
 	// Only the base keeps tags: the node's own manifests name its carried
-	// images by tag.
-	if !pinned && !baseAdmitted {
+	// images by tag. Mesh-exempt platform namespaces keep them too: their pods
+	// are not mesh members, so they never receive workload traffic.
+	if !pinned && !baseAdmitted && !slices.Contains(p.mesh.policy.ExemptNamespaces, check.Namespace) {
 		log.Warn("image not referenced by digest", "digest", digest)
 		p.audit.Log(audit.Event{
 			Action:    "deny",

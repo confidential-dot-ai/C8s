@@ -22,7 +22,8 @@ A pod admitted by the served allowlist must name its image by digest
 (`name@sha256:...`): a tag is resolved when the node checks it, not bound to the
 image the runtime starts, so a tag reference is refused with `image must be
 referenced by digest`. Only the base allowlist keeps tags, for the images the
-node image carries.
+node image carries, and so do pods in mesh-exempt platform namespaces, which
+never receive workload traffic.
 
 ## The model
 
