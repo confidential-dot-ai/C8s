@@ -182,8 +182,15 @@ func TestAssignmentAvailabilityRejectsJournalAndKubeletUncertainty(t *testing.T)
 			}
 			called := false
 			runtime := guestAssignmentRuntime{journal: path, pods: func(context.Context) ([]byte, error) { called = true; return body, podErr }}
-			if err := runtime.available(t.Context()); err == nil {
+			err := runtime.available(t.Context())
+			if err == nil {
 				t.Fatal("uncertain guest accepted assignment")
+			}
+			if errors.Is(err, errAssignmentRuntimeUnavailable) != (failure == "kubelet-unavailable") {
+				t.Fatalf("incorrect runtime availability classification: %v", err)
+			}
+			if podErr != nil && !errors.Is(err, podErr) {
+				t.Fatal("kubelet availability lost its underlying cause")
 			}
 			if (failure == "journal-unreadable" || failure == "measured") && called {
 				t.Fatal("journal refusal still consulted kubelet")
