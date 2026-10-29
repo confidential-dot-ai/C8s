@@ -49,7 +49,7 @@ func newStubRouter(t *testing.T) http.Handler {
 			CertTTL:    time.Hour,
 		},
 		AllowlistHandler: allowlist.Handler{Store: &store, WriteAuthorizer: func(*http.Request, []byte) error { return nil }},
-		Routes:           routeHandler{Store: &store, MeshCA: mesh.Current().CA.Cert},
+		Routes:           routeHandler{Store: &store, MeshCA: mesh},
 		ReadyFn:          func() bool { return true },
 		MeshCA:           mesh,
 		RateLimiter:      newTestRateLimiter(t),

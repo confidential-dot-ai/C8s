@@ -37,8 +37,11 @@ import (
 type AttestHandler struct {
 	Challenges        *attestation.ChallengeStore
 	AttestationClient remote.Client
-	MeshCA            *issuer.MeshCA
-	CertTTL           time.Duration
+	// MeshCA is the current mesh CA: a singleton's issuer.MeshCA, or an HA
+	// replica's replicated CA, which reads empty while the replica may not
+	// issue.
+	MeshCA  meshCA
+	CertTTL time.Duration
 
 	// RequestTimeout caps how long /attest may spend on attestation
 	// verification + signing. Zero = no timeout.
@@ -284,6 +287,11 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 	}
 	// One read: the certificate that signs the leaf is the chain returned with it.
 	signing := h.MeshCA.Current()
+	if signing.CA == nil {
+		slog.Warn("attest: no mesh CA to issue with")
+		attestation.WriteError(w, http.StatusServiceUnavailable, types.ErrorCodeSignFailed, "mesh CA unavailable")
+		return
+	}
 	certPEM, leafCN, serial, err := signing.CA.SignCSR(issuer.SignCSRParams{
 		CSR:             csr,
 		TTL:             ttl,
@@ -605,4 +613,12 @@ func rejectsRequest(status int) bool {
 	return status == http.StatusBadRequest ||
 		status == http.StatusUnsupportedMediaType ||
 		status == http.StatusUnprocessableEntity
+}
+
+// meshCA is the mesh CA a CDS issues under and serves at /ca: one read gives
+// the certificate that signs a leaf and the chain returned with it. A
+// singleton's is an issuer.MeshCA; an HA replica's reads the replicated CA and
+// is empty (CA nil) while the replica may not issue.
+type meshCA interface {
+	Current() issuer.CurrentCA
 }

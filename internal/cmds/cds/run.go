@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"syscall"
@@ -24,6 +25,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/attestation"
+	"github.com/confidential-dot-ai/c8s/internal/cdsha"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/readiness"
@@ -35,6 +37,9 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
+
+// evictBindings drops expired sandbox bindings until done; tests replace it.
+var evictBindings = (*sandboxledger.Ledger).EvictionLoop
 
 // caRenewalCheckInterval is how often the renewal loop re-reads the current
 // mesh CA certificate.
@@ -134,16 +139,63 @@ func run(cfg config) error {
 	}
 	defer allowlistStore.Close()
 
+	// The secret store and the sandbox ledger exist before CDS serves: in HA
+	// mode they are part of the replicated state a joining replica receives.
+	secretsMem := newSecretsStore(cfg)
+	// The ledger is written on every issuance, not only when secrets are on:
+	// enabling the feature later would otherwise start with an empty ledger and
+	// fail closed for every pod until its certificate next renews.
+	sandboxBindings := sandboxledger.New(issuer.CapTTL(cfg.certTTL, issuer.MaxLeafTTL), cfg.sandboxLedgerMax)
+
 	// CDS generates its mesh CA in process at startup; the private key never
-	// touches a Kubernetes Secret.
-	mesh, err := issuer.NewMeshCA(cfg.caCommonName, cfg.caCertValidity)
+	// touches a Kubernetes Secret. In HA mode the replicas share one, minted
+	// by the Genesis replica and handed only to attested replicas, and every
+	// write is replicated through the Raft log; the leader renews the CA
+	// certificate under the same key through the log too (cdsha).
+	haNode, stopHA, err := haStart(ctx, cfg, haStores{allowlist: &allowlistStore, secrets: secretsMem, ledger: sandboxBindings})
 	if err != nil {
-		return fmt.Errorf("generate mesh CA: %w", err)
+		return fmt.Errorf("cds-ha: %w", err)
 	}
-	slog.Info("generated in-memory mesh CA",
-		"key_id", caKeyID(mesh.Current().CA.Cert),
-		"fingerprint", certutil.CertFingerprint(mesh.Current().CA.Cert.Raw),
-		"not_after", mesh.Current().CA.Cert.NotAfter.Format(time.RFC3339),
+	// Runs before the store's deferred Close: the replica applies the log to it.
+	defer stopHA()
+	if haNode == nil {
+		// Not in HA: a replica applies each binding at the command's time, and
+		// evicting by its own clock would let replicas disagree at capacity.
+		go evictBindings(sandboxBindings, ctx.Done(), cfg.rateLimiterEvictInterval)
+	}
+	// capacityGuard refuses writes that grow the replicated state while it
+	// is at its snapshot capacity, before their token is spent.
+	var fullGuard, capacityGuard func() error
+	if haNode != nil {
+		capacityGuard = func() error {
+			if err := haNode.CheckCapacity(false); err != nil {
+				return fmt.Errorf("%w: %w", allowlist.ErrCapacity, err)
+			}
+			return nil
+		}
+		fullGuard = allowlistFullGuard(filepath.Dir(cfg.allowlistDB), cfg.allowlistMaxBytes.Value(), allowlistStore.LiveBytes)
+	}
+	// startCA is one successful startup CA read, reused below: an HA replica
+	// can stop serving (lease lapse) between reads, and mesh then reads empty.
+	var mesh meshCA
+	var singletonCA *issuer.MeshCA
+	var startCA *issuer.CA
+	if haNode != nil {
+		if startCA, err = startMeshCA(ctx, haNode.CA); err != nil {
+			return fmt.Errorf("mesh CA: %w", err)
+		}
+		mesh = haMeshCA{node: haNode}
+	} else {
+		if singletonCA, err = issuer.NewMeshCA(cfg.caCommonName, cfg.caCertValidity); err != nil {
+			return err
+		}
+		mesh = singletonCA
+		startCA = singletonCA.Current().CA
+	}
+	slog.Info("in-memory mesh CA",
+		"key_id", caKeyID(startCA.Cert),
+		"fingerprint", certutil.CertFingerprint(startCA.Cert.Raw),
+		"not_after", startCA.Cert.NotAfter.Format(time.RFC3339),
 	)
 
 	slog.Info("measurement pinning enabled for /attest", "count", len(measurements))
@@ -179,6 +231,14 @@ func run(cfg config) error {
 	// A separate pool for /secrets: sharing one would make a nonce minted for
 	// issuance redeemable against a secret, and vice versa.
 	secretsChallenges := attestation.NewChallengeStore(cfg.challengeTTL)
+	if haNode != nil {
+		// Any replica may answer the second request of a challenge exchange:
+		// challenges are MACed under a key every replica derives from the
+		// shared mesh CA key (a rotation invalidates outstanding ones).
+		for purpose, s := range map[string]*attestation.ChallengeStore{"issuance": &challengeStore, "secrets": &secretsChallenges} {
+			s.SetSharedKey(haChallengeKey(haNode, purpose))
+		}
+	}
 	checker := readiness.NewChecker(asClient, cfg.readinessInterval)
 
 	// Seed before serving so the first GET /allowlist returns the bootstrap
@@ -206,19 +266,24 @@ func run(cfg config) error {
 		return err
 	}
 
-	if err := allowlistStore.StartJournal(); err != nil {
+	if err := startJournal(ctx, &allowlistStore); err != nil {
 		return fmt.Errorf("start allowlist history: %w", err)
 	}
 	operatorAuthorizer := writeAuthorizer
 	if cfg.operatorKeys != "" {
 		var started time.Time
-		if !cfg.allowlistPersistent {
+		switch {
+		case haNode != nil:
+			// Spent tokens are replicated and outlive any replica; only tokens
+			// from before the cluster was born could have been spent unseen.
+			started = time.UnixMilli(haNode.Core().GenesisAtMS)
+		case !cfg.allowlistPersistent:
 			started = time.Now()
 		}
 		operatorAuthorizer = singleUse(authorizeIssuedAt, &allowlistStore, started, time.Duration(cfg.jwtClockSkew)*time.Second)
 	}
 
-	if !cfg.allowlistPersistent {
+	if !cfg.allowlistPersistent && haNode == nil {
 		slog.Warn("allowlist store is not persistent (cds.persistence.enabled=false): a restart resets the served allowlist to the install seed and regenerates the mesh CA. Operator-added digests, the allowlist history, spent operator tokens and the route manifest do not survive")
 	}
 
@@ -254,24 +319,21 @@ func run(cfg config) error {
 		}
 	}
 
-	// The ledger is written on every issuance, not only when secrets are on:
-	// enabling the feature later would otherwise start with an empty ledger and
-	// fail closed for every pod until its certificate next renews.
-	sandboxBindings := sandboxledger.New(issuer.CapTTL(cfg.certTTL, issuer.MaxLeafTTL), cfg.sandboxLedgerMax)
-	go sandboxBindings.EvictionLoop(ctx.Done(), cfg.rateLimiterEvictInterval)
-
 	var (
 		secretsHandler  *secrets.Handler
 		secretsOperator *secrets.OperatorHandler
 		secretsExplain  *secrets.ExplainHandler
 	)
+	// One store behind every secrets door (workload reads, operator writes,
+	// and the c8s_dev test route); in HA mode it writes through the log.
+	var secretsStore secrets.Store = secretsMem
+	if haNode != nil {
+		secretsStore = secrets.ReplicatedStore{MemoryStore: secretsMem, Repl: haNode}
+	}
 	if enabled, why := secretsEnabled(cfg, sandboxDigests, inventoryHosts); enabled {
-		// One store behind both handlers: an operator write and a workload read
-		// are two doors onto the same paths.
-		store := newSecretsStore(cfg)
 		policy := secrets.NewCachedPolicy(&allowlistStore)
 		secretsHandler = &secrets.Handler{
-			Store:          store,
+			Store:          secretsStore,
 			Challenges:     &secretsChallenges,
 			Inventory:      sandboxDigests,
 			Bindings:       sandboxBindings,
@@ -280,7 +342,7 @@ func run(cfg config) error {
 			Logger:         slog.Default(),
 		}
 		secretsOperator = &secrets.OperatorHandler{
-			Store:        store,
+			Store:        secretsStore,
 			Authorize:    operatorAuthorizer,
 			MaxBodyBytes: allowlistWriteBodyCap,
 			Logger:       slog.Default(),
@@ -323,11 +385,14 @@ func run(cfg config) error {
 			Store:             &allowlistStore,
 			WriteAuthorizer:   operatorAuthorizer,
 			MaxWriteBodyBytes: allowlistWriteBodyCap,
+			Full:              fullGuard,
+			Capacity:          capacityGuard,
 		},
 		Routes: routeHandler{
 			Store:     &allowlistStore,
 			Authorize: operatorAuthorizer,
-			MeshCA:    mesh.Current().CA.Cert,
+			MeshCA:    mesh,
+			Capacity:  capacityGuard,
 		},
 		ReadyFn:           readinessFn(checker.Ready, mesh, cfg.minCAValidity),
 		MeshCA:            mesh,
@@ -344,7 +409,19 @@ func run(cfg config) error {
 	go rateLimiter.EvictionLoop(ctx, cfg.rateLimiterEvictInterval, cfg.rateLimiterIdleTimeout)
 	go challengeLimiter.EvictionLoop(ctx, cfg.rateLimiterEvictInterval, cfg.rateLimiterIdleTimeout)
 
-	router := newRouter(deps)
+	var router http.Handler
+	if haNode != nil {
+		// Issuance follows the replica through mesh (haMeshCA): it stops while
+		// the replica is not serving and follows renewals and rotations.
+		deps.HA = haNode
+		// Ready also waits for the voter seats to be full again (see
+		// cdsha.Node.Ready), so a rolling restart never takes the majority.
+		ready := deps.ReadyFn
+		deps.ReadyFn = func() bool { return haNode.Ready() && ready() }
+		router = haGate(haNode.Serving, devHARoutes(newRouter(deps), secretsStore, secretsMem, writeAuthorizer, deps.SecretsOperator == nil))
+	} else {
+		router = newRouter(deps)
+	}
 
 	go checker.Run(ctx)
 
@@ -354,9 +431,12 @@ func run(cfg config) error {
 	serve := srv.ListenAndServe
 	var meshPeers *armtls.CertManager
 	if cfg.armtlsPlatform != "" {
-		tlsCfg, certMgr, err := armtls.NewServerTLSConfig(servingConfig(cfg, mesh.Current().CA.Cert))
+		tlsCfg, certMgr, err := armtlsServerTLS(ctx, cfg, startCA.Cert)
 		if err != nil {
-			return fmt.Errorf("armtls server config: %w", err)
+			return err
+		}
+		if haNode != nil {
+			tlsCfg = followMeshCA(tlsCfg, haNode.CA)
 		}
 		srv.TLSConfig = tlsCfg
 		meshPeers = certMgr
@@ -364,28 +444,93 @@ func run(cfg config) error {
 			return srv.ListenAndServeTLS("", "")
 		}
 
-		warmupCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		err = certMgr.WarmUp(warmupCtx)
-		cancel()
-		if err != nil {
-			return fmt.Errorf("warm up armtls serving cert: %w", err)
-		}
-
-		go certMgr.RunRotation(ctx)
-
 		slog.Info("cds serving armTLS", "platform", cfg.armtlsPlatform)
 	} else {
 		slog.Warn("armTLS disabled (--armtls-platform empty); serving plain HTTP. UNSAFE outside tests.")
 	}
 
 	go cmdsutil.ShutdownOnDone(ctx, srv, 5*time.Second)
-	go renewMeshCAWhenDue(ctx, mesh, caRenewalCheckInterval, meshPeers)
+	if singletonCA != nil {
+		// A singleton renews its own certificate; an HA replica's leader
+		// renews the shared one through the log (cdsha), and followMeshCA
+		// moves the listener's client CA with it.
+		go renewMeshCAWhenDue(ctx, singletonCA, caRenewalCheckInterval, meshPeers)
+	}
 
 	slog.Info("cds listening", "addr", addr)
 	if err := serve(); err != http.ErrServerClosed {
 		return cmdsutil.NodeIPChanged(ctx, err)
 	}
 	return cmdsutil.NodeIPChanged(ctx, nil)
+}
+
+// startJournal retries only this idempotent startup operation. ErrUnavailable
+// can mean the command committed but this replica has not applied it yet.
+// Keep Raft alive and do not expose the full API until history is verified.
+func startJournal(ctx context.Context, store *allowlist.Store) error {
+	return retryStartup(ctx, store.StartJournal, allowlist.ErrUnavailable)
+}
+
+// startMeshCA tolerates a loss of freshness after haStart observed Serving.
+// Only this read is retried; ordinary CA reads still refuse immediately.
+func startMeshCA(ctx context.Context, current func() (*issuer.CA, error)) (*issuer.CA, error) {
+	var ca *issuer.CA
+	err := retryStartup(ctx, func() error {
+		var err error
+		ca, err = current()
+		return err
+	}, cdsha.ErrNotServing)
+	if err != nil {
+		return nil, err
+	}
+	return ca, nil
+}
+
+// retryStartup is only for the idempotent startup operations above. It leaves
+// Raft running while admission is unavailable and stops on permanent errors.
+func retryStartup(ctx context.Context, operation func() error, unavailable error) error {
+	backoff := 100 * time.Millisecond
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		err := operation()
+		if err == nil || !errors.Is(err, unavailable) ||
+			errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
+		timer := time.NewTimer(backoff)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+		backoff = min(2*backoff, time.Second)
+	}
+}
+
+// armtlsServerTLS is the attested serving configuration of the CDS port,
+// warmed up so the first handshake has a certificate.
+func armtlsServerTLS(ctx context.Context, cfg config, meshCA *x509.Certificate) (*tls.Config, *armtls.CertManager, error) {
+	serverCfg := servingConfig(cfg, meshCA)
+	if meshCA == nil {
+		// The pre-join server holds no mesh CA yet: no client chain to check.
+		serverCfg.ClientCA, serverCfg.ClientAuth = nil, tls.NoClientCert
+	}
+	tlsCfg, certMgr, err := armtls.NewServerTLSConfig(serverCfg)
+	if err != nil {
+		return nil, nil, fmt.Errorf("armtls server config: %w", err)
+	}
+	warmupCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if err := certMgr.WarmUp(warmupCtx); err != nil {
+		return nil, nil, fmt.Errorf("warm up armtls serving cert: %w", err)
+	}
+	// Keep the serving certificate fresh for as long as ctx lives (every
+	// warmed-up certificate gets its rotation worker).
+	go certMgr.RunRotation(ctx)
+	return tlsCfg, certMgr, nil
 }
 
 func newHTTPServer(addr string, handler http.Handler, cfg config) *http.Server {
@@ -531,6 +676,9 @@ func validateConfig(cfg config) error {
 	if cfg.maxHeaderBytes < 0 {
 		return fmt.Errorf("--max-header-bytes must be non-negative")
 	}
+	if cfg.allowlistHistoryBytes.Sign() < 0 || cfg.allowlistMaxBytes.Sign() < 0 {
+		return fmt.Errorf("--allowlist-history-bytes and --allowlist-max-bytes must be non-negative")
+	}
 	// Not "0 disables": this is the stale-identity bound for a named leaf, and
 	// 0 is the disable idiom elsewhere in the chart, so a zero here would read
 	// as "no bound" while silently meaning issuer.MaxNamedLeafTTL.
@@ -647,12 +795,13 @@ func parseReferenceDigests(raw []string) map[string]bool {
 // readinessFn returns a closure that flips /readyz to 503 when either the
 // attestation-api is unhealthy or the current mesh CA certificate is within
 // minCAValidity of expiry — the window renewal has to succeed in.
-func readinessFn(svcReady func() bool, mesh *issuer.MeshCA, minCAValidity time.Duration) func() bool {
+func readinessFn(svcReady func() bool, mesh meshCA, minCAValidity time.Duration) func() bool {
 	return func() bool {
 		if !svcReady() {
 			return false
 		}
-		if !caValidityHolds(mesh.Current().CA.Cert, minCAValidity, time.Now()) {
+		current := mesh.Current()
+		if current.CA == nil || !caValidityHolds(current.CA.Cert, minCAValidity, time.Now()) {
 			return false
 		}
 		return true
@@ -684,7 +833,7 @@ func renewMeshCAWhenDue(ctx context.Context, mesh *issuer.MeshCA, every time.Dur
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if !pastHalfLife(mesh.Current().CA.Cert, time.Now()) {
+			if !issuer.PastHalfLife(mesh.Current().CA.Cert, time.Now()) {
 				continue
 			}
 			renewed, err := mesh.RenewCertificate()
@@ -703,11 +852,4 @@ func renewMeshCAWhenDue(ctx context.Context, mesh *issuer.MeshCA, every time.Dur
 			)
 		}
 	}
-}
-
-// pastHalfLife is the renewal trigger: half the certificate's lifetime, which
-// --ca-cert-validity guarantees leaves room for renewal to retry in before
-// readiness fails.
-func pastHalfLife(cert *x509.Certificate, now time.Time) bool {
-	return now.After(cert.NotBefore.Add(cert.NotAfter.Sub(cert.NotBefore) / 2))
 }
