@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
@@ -24,7 +25,8 @@ func newSignLaunchCmd() *cobra.Command {
 		Use:   "sign-launch <launch.yaml>",
 		Short: "Sign a launch configuration with the operator private key",
 		Long: `Sign a launch configuration for opkeydata, writing the detached
-signature to <launch.yaml>.sig next to it. See docs/operator.md,
+signature to <launch.yaml>.sig next to it. The document must parse as a
+launch configuration. See docs/operator.md,
 "Authenticated launch configuration", for the schema and how
 'c8s launch-config stage' verifies it on the guest.`,
 		Args:         cobra.ExactArgs(1),
@@ -41,14 +43,27 @@ signature to <launch.yaml>.sig next to it. See docs/operator.md,
 	return cmd
 }
 
+// readLaunchDocument returns the bytes of a file that a node would accept as
+// its launch configuration.
+func readLaunchDocument(path string) ([]byte, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	if _, err := launchconfig.Parse(data); err != nil {
+		return nil, fmt.Errorf("not a launch configuration: %w", err)
+	}
+	return data, nil
+}
+
 func runSignLaunch(cmd *cobra.Command, keyPath, launchPath string, force bool) error {
 	key, err := certutil.LoadECPrivateKeyFile(keyPath)
 	if err != nil {
 		return fmt.Errorf("load operator key: %w", err)
 	}
-	data, err := os.ReadFile(launchPath)
+	data, err := readLaunchDocument(launchPath)
 	if err != nil {
-		return fmt.Errorf("read %s: %w", launchPath, err)
+		return err
 	}
 	line, err := operatorauth.SignDetached(key, data)
 	if err != nil {
