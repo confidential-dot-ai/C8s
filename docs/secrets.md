@@ -19,12 +19,12 @@ not a Kubernetes Secret: nothing is written to the API server.
 ## When it is served
 
 CDS serves the secrets endpoint only when it can establish what a pod runs. It
-needs its own armTLS platform, its node pins, and node addresses
+needs the TEE family its own launch proved, its node pins, and node addresses
 bounding its callback to a node's admission inventory — the node service that
-records which containers each pod has run (`--sandbox-inventory-cidr`, or host
-routes from the live node list). Miss one and CDS logs a warning naming it and
-serves nothing, so a pod asking for a secret retries until that is fixed. Where
-the operator has no node inventory at all, such a pod is refused at admission.
+records which containers each pod has run (the configuration's `nodeCIDRs`).
+Miss one and CDS logs a warning naming it and serves nothing, so a pod asking
+for a secret retries until that is fixed. Where the operator has no node
+inventory at all, such a pod is refused at admission.
 
 Release is gated on a `secrets` grant in the workload entry. An entry without
 one releases nothing, so writing the grant is what turns release on; it is

@@ -97,7 +97,7 @@ type AttestHandler struct {
 	// operator's node CIDRs. Empty rejects any request carrying a sandbox
 	// token: without it a workload could point CDS at its own pod IP and
 	// answer as the inventory.
-	InventoryHosts workloadclaims.InventoryHosts
+	InventoryHosts workloadclaims.CIDRHosts
 
 	// SandboxBindings records which inventory vouched for a sandbox, so a
 	// later decision about that sandbox asks the same one rather than one the
@@ -356,7 +356,7 @@ func (h AttestHandler) verifySandboxToken(ctx context.Context, raw json.RawMessa
 	if h.SandboxDigests == nil {
 		return workloadclaims.VerifiedSandbox{}, fmt.Errorf("sandbox token presented but this CDS cannot reach an inventory to verify it")
 	}
-	if h.InventoryHosts == nil || h.InventoryHosts.Empty() {
+	if len(h.InventoryHosts) == 0 {
 		return workloadclaims.VerifiedSandbox{}, fmt.Errorf("sandbox token presented but the inventory callback has no node addresses to bound it")
 	}
 	var token workloadclaims.SignedSandboxToken

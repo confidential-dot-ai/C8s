@@ -24,7 +24,6 @@ CVM mode is [overview.md](overview.md#cvm-modes-and-hardware-platforms).
 | admission plugin (`nri-image-policy`) | The node's container-runtime plugin; admits or denies every container before it starts. | [allowlist-and-capabilities.md](allowlist-and-capabilities.md) |
 | allowlist | The operator policy of workload entries CDS serves and every node enforces. | [allowlist-and-capabilities.md](allowlist-and-capabilities.md) |
 | base allowlist | Entries the node plugin holds itself — measured in the image or chart-rendered — admitted without CDS. | [allowlist-and-capabilities.md](allowlist-and-capabilities.md#bootstrap) |
-| CDS seed | The allowlist document CDS seeds its store from at start, and again on change with `--follow-seed` (`cds --allowlist-seed`). | [allowlist-and-capabilities.md](allowlist-and-capabilities.md#bootstrap) |
 | egress | A workload entry's egress entries: the CIDR and port pairs its pods may dial outside the mesh. | [allowlist-entries.md](allowlist-entries.md) |
 | grant | The secret paths a workload entry may read or write. | [allowlist-entries.md](allowlist-entries.md) |
 | host privilege | Host namespaces, binds, devices, hooks, or sysctls; only measured node components may hold them. | [allowlist-and-capabilities.md](allowlist-and-capabilities.md#host-privilege) |
@@ -35,6 +34,7 @@ CVM mode is [overview.md](overview.md#cvm-modes-and-hardware-platforms).
 | policy history | The allowlist policies a TDX node extends into RTMR[3] for verifiers to replay, when policy measurement is on. | [allowlist-and-capabilities.md](allowlist-and-capabilities.md#measured-policy-history) |
 | privilege floor | The measured limits `c8s-runc` enforces on every container of a member pod. | [node-exec-mode.md](node-exec-mode.md) |
 | workload entry | One allowlist entry: a named container set with argv, mount, and environment policy. | [allowlist-entries.md](allowlist-entries.md) |
+| workloads | The allowlist document in the CDS configuration, seeded into CDS's store at start. | [allowlist-and-capabilities.md](allowlist-and-capabilities.md#bootstrap) |
 | **Identity and the mesh** | | |
 | admission inventory | Node service that records a pod's containers and signs tokens naming its sandbox. | [armtls.md](armtls.md#sandbox-identity) |
 | allowlist digest | SHA-256 of the canonical bytes of the allowlist snapshot that named a leaf's matched workload. | [armtls.md](armtls.md#matched-workload) |

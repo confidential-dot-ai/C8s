@@ -383,6 +383,7 @@ func TestNewHTTPServerSetsTimeouts(t *testing.T) {
 
 func TestValidateConfigRejectsUnsafeValues(t *testing.T) {
 	valid := config{
+		measured:                   measuredConfig(t, cluster{operatorPEM: operatorKeysPEM(t), workloads: map[string]string{"cds": digestA}}),
 		maxHeaderBytes:             1,
 		namedCertTTL:               issuer.MaxNamedLeafTTL,
 		maxRequestSize:             1,
@@ -503,24 +504,15 @@ func TestReadinessFn(t *testing.T) {
 	}
 }
 
-func TestParseReferenceDigests(t *testing.T) {
-	cases := []struct {
-		name    string
-		input   []string
-		wantLen int
-	}{
-		{"empty", nil, 0},
-		{"whitespace only", []string{"  ", ""}, 0},
-		{"normalises case and trim", []string{"DEAD", " beef ", "dead"}, 2},
-		{"three distinct", []string{"a", "b", "c"}, 3},
+// The /attest allowlist is keyed the way the handler spells a verified launch
+// digest: lowercase hex, one entry per pinned image.
+func TestAdmittedMeasurements(t *testing.T) {
+	got := admittedMeasurements([][]byte{{0xde, 0xad}, {0xbe, 0xef}, {0xde, 0xad}})
+	if len(got) != 2 || !got["dead"] || !got["beef"] {
+		t.Fatalf("allowed = %v, want one lowercase-hex key per distinct digest", got)
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := parseReferenceDigests(tc.input)
-			if len(got) != tc.wantLen {
-				t.Errorf("len: got %d, want %d (map=%v)", len(got), tc.wantLen, got)
-			}
-		})
+	if len(admittedMeasurements(nil)) != 0 {
+		t.Fatal("no digests must admit nothing")
 	}
 }
 

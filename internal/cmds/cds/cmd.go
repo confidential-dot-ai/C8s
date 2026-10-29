@@ -3,8 +3,6 @@
 package cds
 
 import (
-	"fmt"
-	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -13,11 +11,9 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsca"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cdslaunch"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/verify"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 const (
@@ -35,29 +31,20 @@ func NewCmd() *cobra.Command {
 		Use:   "cds",
 		Short: "Run the Certificate Distribution Service (CDS)",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if cfg.configPath != "" {
-				return runMeasuredConfig(cmd.Context(), cfg)
-			}
-			if err := validateARMTLSPlatform("--armtls-platform", cfg.armtlsPlatform); err != nil {
-				return err
-			}
-			return run(cfg)
+			return runMeasuredConfig(cmd.Context(), cfg)
 		},
 	}
 
 	flags := cmd.Flags()
 
-	flags.StringVar(&cfg.configPath, "config", "", "path to the CDS configuration document (c8s-cds/v1) this VM was launched with. CDS serves the cluster it describes only if a verified self-report binds the file byte for byte, and refuses the flags it supplies")
+	flags.StringVar(&cfg.configPath, "config", "", "path to the CDS configuration document (c8s-cds/v1) this VM was launched with (REQUIRED). CDS serves the cluster it describes only if a verified self-report binds the file byte for byte")
 	flags.StringVar(&cfg.host, "host", "0.0.0.0", "")
 	flags.IntVarP(&cfg.port, "port", "p", 8443, "")
 	flags.StringVar(&cfg.logLevel, "log-level", "info", "log level: debug, info, warn, error")
 
-	flags.StringVar(&cfg.attestationApiURL, "attestation-api-url", "", "URL of the attestation-api service"+cmdsutil.NodeAddressHelp)
+	flags.StringVar(&cfg.attestationApiURL, "attestation-api-url", "", "URL of this VM's own attestation-api (REQUIRED); it must name a loopback address")
 	flags.StringVar(&cfg.caCommonName, "ca-common-name", issuer.DefaultCACommonName, "common name for the in-memory generated mesh CA")
 	flags.DurationVar(&cfg.caCertValidity, "ca-cert-validity", 8760*time.Hour, "validity period of each in-memory mesh CA certificate; past half of it CDS renews the certificate under the same key")
-	flags.StringSliceVar(&cfg.measurements, "measurements", nil, "SHA-384 hex launch measurements allowed to call /attest; required unless --image-policy-file names the images")
-	cmdsutil.BindImagePolicyFlags(flags, &cfg.measurementsConfig, nil, "pins complete client identities for /attest; excludes --measurements and --rtmrs")
-	flags.StringSliceVar(&cfg.rtmrs, "rtmrs", nil, "TDX RTMR pins <index>=<sha384-hex> required of TDX callers on /attest (repeatable; RTMR[1] pins the guest kernel, RTMR[2] the command line carrying the dm-verity root hash). SNP evidence is unaffected. Empty = no RTMR pinning: on TDX the reference values then cover TDVF firmware only, UNSAFE")
 
 	flags.Int64Var(&cfg.jwtClockSkew, "jwt-clock-skew", 30, "operator JWT clock skew tolerance in seconds; without --allowlist-persistent, CDS also refuses operator-token requests (allowlist, routes, secrets) for this long after it starts")
 	flags.DurationVar(&cfg.certTTL, "cert-ttl", 24*time.Hour, "")
@@ -72,17 +59,11 @@ func NewCmd() *cobra.Command {
 	flags.IntVar(&cfg.maxHeaderBytes, "max-header-bytes", defaultHTTPMaxHeaderBytes, "maximum HTTP request header bytes")
 
 	flags.BoolVar(&cfg.sanValidation, "san-validation", true, "require CSR IP SANs to equal the request source IP (false rejects CSRs carrying IP SANs)")
-	flags.StringSliceVar(&cfg.dnsSANPatterns, "dns-san-pattern", nil, "regex a CSR's DNS SANs may match in full; repeatable, and a SAN passes if it matches any one. The chart always supplies the in-cluster Service DNS pattern and appends a public hostname when router fronts a routed domain. A CSR carrying DNS SANs is rejected when none are set.")
-	flags.StringVar(&cfg.dnsSANFile, "dns-san-file", "", "Path to a file containing one literal DNS SAN to allow in addition to --dns-san-pattern")
 	flags.StringVar(&cfg.allowedCNPattern, "allowed-cn-pattern", "", "regex the CSR Subject CN must match in full (empty disables)")
 	flags.DurationVar(&cfg.readinessInterval, "readiness-interval", 10*time.Second, "")
 	flags.DurationVar(&cfg.minCAValidity, "min-ca-validity", time.Hour, "/readyz fails when the current mesh CA certificate has less than this remaining lifetime")
 	flags.StringVar(&cfg.allowlistDB, "allowlist-db", "", "Path to the allowlist SQLite database")
 	flags.BoolVar(&cfg.allowlistPersistent, "allowlist-persistent", false, "whether --allowlist-db is on durable storage; false makes CDS warn at startup that operator-added digests, the allowlist history, spent operator tokens, the route manifest and the mesh CA do not survive a restart")
-	flags.StringSliceVar(&cfg.inventoryCIDRs, "sandbox-inventory-cidr", nil, "CIDR(s) holding the node addresses CDS may dial for a sandbox's admission inventory (repeatable). It is what stops a workload pointing the callback at its own pod IP and answering as the inventory (docs/armtls.md). Unset, CDS derives one host route per node from the live node list and refuses sandbox tokens until that syncs")
-	flags.StringVar(&cfg.allowlistSeed, "allowlist-seed", "", "Path to a JSON allowlist (version + digests map) seeded into the store at startup before serving; missing entries are added, existing entries are left untouched (empty disables seeding)")
-	flags.BoolVar(&cfg.followSeed, "follow-seed", false, "reread --allowlist-seed every 30s and seed it again when its content changes. Whoever can write the seed file then publishes entries without an operator token, so set it only for a seed no one can change, such as the measured node image's")
-	flags.StringVar(&cfg.operatorKeys, "operator-keys", "", "Path to a PEM bundle of pinned operator EC public keys; /allowlist writes (PUT/DELETE) and PUT /routes require an operator token signed by one of them, each token authorizing one write (empty = writes disabled, reads still served)")
 
 	flags.Float64Var(&cfg.rateLimit, "rate-limit", 10, "max requests per second per source IP on attestation endpoints")
 	flags.IntVar(&cfg.rateBurst, "rate-burst", 20, "max burst size per source IP")
@@ -95,19 +76,14 @@ func NewCmd() *cobra.Command {
 	flags.IntVar(&cfg.secretsMaxValueBytes, "secrets-max-value-bytes", 4096, "max bytes in one secret value")
 	flags.IntVar(&cfg.sandboxLedgerMax, "sandbox-ledger-max-entries", 10000, "max sandbox-to-inventory bindings held in memory")
 
-	flags.StringVar(&cfg.armtlsPlatform, "armtls-platform", "", "TEE platform for the armTLS serving cert (REQUIRED): sev-snp or tdx (snp/az-snp/gcp-snp and az-tdx/gcp-tdx aliases are normalized)")
 	flags.DurationVar(&cfg.armtlsCertTTL, "armtls-cert-ttl", 24*time.Hour, "")
-	flags.StringVar(&cfg.measuredPolicies, "measured-policies-file", armtls.NodeJournal, "the node's journal of allowlist policies extended into TDX RTMR[3]; the armTLS serving and sandbox-digests client certificates list it. Empty lists none")
 
-	_ = cmd.MarkFlagRequired("attestation-api-url")
-	_ = cmd.MarkFlagRequired("allowlist-db")
-
-	// The platform comes from the measured configuration's launch or from the
-	// flag, and a setting the configuration decides is never also taken from
-	// argv.
-	cmd.MarkFlagsOneRequired("config", "armtls-platform")
-	for _, excluded := range excludedByConfig {
-		cmd.MarkFlagsMutuallyExclusive("config", excluded)
+	for _, name := range []string{
+		"config",
+		"attestation-api-url",
+		"allowlist-db",
+	} {
+		_ = cmd.MarkFlagRequired(name)
 	}
 
 	// `c8s cds verify` — a shorthand for `c8s verify --kind cds`, sharing the
@@ -139,9 +115,6 @@ type config struct {
 	attestationApiURL   string
 	caCommonName        string
 	caCertValidity      time.Duration
-	measurements        []string
-	measurementsConfig  string
-	rtmrs               []string
 	jwtClockSkew        int64
 	certTTL             time.Duration
 	namedCertTTL        time.Duration
@@ -154,20 +127,13 @@ type config struct {
 	idleTimeout         time.Duration
 	maxHeaderBytes      int
 	sanValidation       bool
-	dnsSANPatterns      []string
-	dnsSANFile          string
 	allowedCNPattern    string
 	readinessInterval   time.Duration
 	minCAValidity       time.Duration
 	allowlistDB         string
 	allowlistPersistent bool
-	allowlistSeed       string
-	followSeed          bool
-	inventoryCIDRs      []string
-	operatorKeys        string
-	armtlsPlatform      string
+	armtlsPlatform      teetypes.Family
 	armtlsCertTTL       time.Duration
-	measuredPolicies    string
 
 	rateLimit                float64
 	rateBurst                int
@@ -180,21 +146,7 @@ type config struct {
 	secretsMaxValueBytes       int
 	sandboxLedgerMax           int
 
-	// measured is the configuration document this VM was launched with. It
-	// decides every setting the flags in excludedByConfig would; nil when
-	// those flags do.
+	// measured is the configuration document this VM was launched with: every
+	// per-cluster setting CDS serves.
 	measured *cdsconfig.Config
-}
-
-// validateARMTLSPlatform rejects the paths to a TLS-less CDS: the
-// empty-platform plain-HTTP mode stays reachable only for tests constructing
-// Config directly. source names where the platform came from.
-func validateARMTLSPlatform(source, platform string) error {
-	if strings.TrimSpace(platform) == "" {
-		return fmt.Errorf("%s must not be empty (armTLS is mandatory; tests construct Config directly)", source)
-	}
-	if _, err := teetypes.ParseFamily(platform); err != nil {
-		return fmt.Errorf("%s: %w", source, err)
-	}
-	return nil
 }

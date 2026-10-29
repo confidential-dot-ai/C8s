@@ -31,6 +31,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 
+	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
@@ -105,9 +106,9 @@ func TestNormalizeHTTPServerConfig_PreservesNonZero(t *testing.T) {
 	}
 }
 
-// writeOperatorKeyPair generates an operator EC key, writes the public half as
-// a PEM bundle, and returns the private key plus the bundle path.
-func writeOperatorKeyPair(t *testing.T) (*ecdsa.PrivateKey, string) {
+// operatorKeyPair generates an operator EC key and returns it with the PEM
+// bundle pinning its public half, as a CDS configuration carries it.
+func operatorKeyPair(t *testing.T) (*ecdsa.PrivateKey, []byte) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -117,20 +118,14 @@ func writeOperatorKeyPair(t *testing.T) (*ecdsa.PrivateKey, string) {
 	if err != nil {
 		t.Fatalf("marshal operator key: %v", err)
 	}
-	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})
-	path := filepath.Join(t.TempDir(), "operator-keys.pem")
-	if err := os.WriteFile(path, pemBytes, 0o600); err != nil {
-		t.Fatalf("write operator keys: %v", err)
-	}
-	return key, path
+	return key, pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})
 }
 
-// writeOperatorKeysPEM writes a PEM bundle with one EC public key and returns
-// its path.
-func writeOperatorKeysPEM(t *testing.T) string {
+// operatorKeysPEM is a PEM bundle with one EC public key.
+func operatorKeysPEM(t *testing.T) []byte {
 	t.Helper()
-	_, path := writeOperatorKeyPair(t)
-	return path
+	_, pemBytes := operatorKeyPair(t)
+	return pemBytes
 }
 
 // newHealthyAttestationApi returns an httptest server that answers every path
@@ -145,11 +140,14 @@ func newHealthyAttestationApi(t *testing.T) *httptest.Server {
 	return srv
 }
 
-// validRunConfig returns a config that passes run()'s validation with armTLS
-// disabled, an in-tempdir allowlist DB, and hermetic endpoints.
+// validRunConfig returns a config that passes run()'s validation, with an
+// in-tempdir allowlist DB and hermetic endpoints. The cluster it serves is the
+// measured configuration; pass another with measuredConfig to vary the
+// operator keys or the workloads.
 func validRunConfig(t *testing.T, attestationURL string) config {
 	t.Helper()
 	return config{
+		measured:                   measuredConfig(t, cluster{operatorPEM: operatorKeysPEM(t), workloads: map[string]string{"cds": digestA}}),
 		host:                       "127.0.0.1",
 		port:                       0,
 		logLevel:                   "error",
@@ -174,8 +172,7 @@ func validRunConfig(t *testing.T, attestationURL string) config {
 		rateLimiterMax:             1000,
 		rateLimiterEvictInterval:   time.Minute,
 		rateLimiterIdleTimeout:     5 * time.Minute,
-		armtlsPlatform:             "",
-		measurements:               []string{strings.Repeat("ab", 48)},
+		armtlsPlatform:             teetypes.FamilySNP,
 	}
 }
 
@@ -204,11 +201,6 @@ func TestRun_ErrorPaths(t *testing.T) {
 			wantSub: "--log-level",
 		},
 		{
-			name:    "bad attestation api url",
-			mutate:  func(_ *testing.T, cfg *config) { cfg.attestationApiURL = "not a url" },
-			wantSub: "--attestation-api-url",
-		},
-		{
 			name:    "invalid config",
 			mutate:  func(_ *testing.T, cfg *config) { cfg.namedCertTTL = 0 },
 			wantSub: "--named-cert-ttl",
@@ -217,24 +209,6 @@ func TestRun_ErrorPaths(t *testing.T) {
 			name:    "rate limiter max entries",
 			mutate:  func(_ *testing.T, cfg *config) { cfg.rateLimiterMax = 0 },
 			wantSub: "rate limiter",
-		},
-		{
-			name: "operator keys file missing",
-			mutate: func(t *testing.T, cfg *config) {
-				cfg.operatorKeys = filepath.Join(t.TempDir(), "missing.pem")
-			},
-			wantSub: "--operator-keys",
-		},
-		{
-			name: "operator keys file has no EC key",
-			mutate: func(t *testing.T, cfg *config) {
-				path := filepath.Join(t.TempDir(), "bad.pem")
-				if err := os.WriteFile(path, []byte("not pem at all"), 0o600); err != nil {
-					t.Fatalf("write bad operator keys: %v", err)
-				}
-				cfg.operatorKeys = path
-			},
-			wantSub: "--operator-keys",
 		},
 		{
 			name: "allowlist db unopenable",
@@ -266,36 +240,14 @@ func TestRun_ErrorPaths(t *testing.T) {
 			wantSub: "allowlist history",
 		},
 		{
-			name:    "invalid dns san pattern",
-			mutate:  func(_ *testing.T, cfg *config) { cfg.dnsSANPatterns = []string{"("} },
-			wantSub: "--dns-san-pattern",
-		},
-		{
-			name:    "follow seed without a seed",
-			mutate:  func(_ *testing.T, cfg *config) { cfg.followSeed = true },
-			wantSub: "--follow-seed",
-		},
-		{
 			name:    "invalid cn pattern",
 			mutate:  func(_ *testing.T, cfg *config) { cfg.allowedCNPattern = "(" },
 			wantSub: "--allowed-cn-pattern",
 		},
 		{
-			name: "seed file missing fails closed",
-			mutate: func(t *testing.T, cfg *config) {
-				cfg.allowlistSeed = filepath.Join(t.TempDir(), "missing-seed.json")
-			},
-			wantSub: "seed allowlist",
-		},
-		{
 			name:    "unsupported armtls platform",
 			mutate:  func(_ *testing.T, cfg *config) { cfg.armtlsPlatform = "bogus-platform" },
 			wantSub: "unsupported TEE platform",
-		},
-		{
-			name:    "no measurements",
-			mutate:  func(_ *testing.T, cfg *config) { cfg.measurements = nil },
-			wantSub: "--measurements",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -312,29 +264,18 @@ func TestRun_ErrorPaths(t *testing.T) {
 	}
 }
 
-// Full plain-HTTP startup: operator keys, measurements, seed, and
-// SAN validation enabled. run() must serve /healthz and exit cleanly on SIGTERM.
+// Full startup from a measured configuration, with SAN validation enabled.
+// run() must serve /healthz and exit cleanly on SIGTERM.
 func TestRun_ServesAndShutsDownOnSIGTERM(t *testing.T) {
-	api := newHealthyAttestationApi(t)
-
-	seedPath := filepath.Join(t.TempDir(), "seed.json")
-	seedJSON := anySeed(map[string]string{"cds": digestA})
-	if err := os.WriteFile(seedPath, []byte(seedJSON), 0o600); err != nil {
-		t.Fatalf("write seed: %v", err)
-	}
-
-	cfg := validRunConfig(t, api.URL)
-	cfg.port = freePort(t)
-	cfg.dnsSANPatterns = []string{`^[a-z.-]+$`}
+	cfg := armTLSRunConfig(t)
 	cfg.allowedCNPattern = `^.*$`
-	cfg.operatorKeys = writeOperatorKeysPEM(t)
-	cfg.allowlistSeed = seedPath
 	cfg.sanValidation = true
+	client := armTLSClient(nil)
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- run(cfg) }()
 
-	base := fmt.Sprintf("http://127.0.0.1:%d", cfg.port)
+	base := fmt.Sprintf("https://127.0.0.1:%d", cfg.port)
 	deadline := time.Now().Add(15 * time.Second)
 	up := false
 	for time.Now().Before(deadline) {
@@ -343,7 +284,7 @@ func TestRun_ServesAndShutsDownOnSIGTERM(t *testing.T) {
 			t.Fatalf("run() exited early: %v", err)
 		default:
 		}
-		resp, err := http.Get(base + "/healthz")
+		resp, err := client.Get(base + "/healthz")
 		if err == nil {
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
@@ -360,7 +301,7 @@ func TestRun_ServesAndShutsDownOnSIGTERM(t *testing.T) {
 	}
 
 	// The seeded allowlist must be served before shutdown.
-	resp, err := http.Get(base + "/allowlist")
+	resp, err := client.Get(base + "/allowlist")
 	if err != nil {
 		t.Fatalf("GET /allowlist: %v", err)
 	}
@@ -378,7 +319,7 @@ func TestRun_ServesAndShutsDownOnSIGTERM(t *testing.T) {
 	}
 
 	// Operator keys are pinned, so /operator-keys must serve the bundle.
-	resp, err = http.Get(base + "/operator-keys")
+	resp, err = client.Get(base + "/operator-keys")
 	if err != nil {
 		t.Fatalf("GET /operator-keys: %v", err)
 	}
@@ -400,13 +341,15 @@ func TestRun_ServesAndShutsDownOnSIGTERM(t *testing.T) {
 	}
 }
 
-// startRunServer launches run(cfg) in the background, waits for /healthz, and
-// registers a cleanup that SIGTERMs the process and requires a clean exit.
-func startRunServer(t *testing.T, cfg config) string {
+// startRunServer launches run(cfg) on its armTLS listener, waits for /healthz,
+// and registers a cleanup that SIGTERMs the process and requires a clean exit.
+// It returns the base URL and the client that reaches it.
+func startRunServer(t *testing.T, cfg config) (string, *http.Client) {
 	t.Helper()
-	base := fmt.Sprintf("http://127.0.0.1:%d", cfg.port)
-	startRunServerOn(t, cfg, base, http.DefaultClient)
-	return base
+	base := fmt.Sprintf("https://127.0.0.1:%d", cfg.port)
+	client := armTLSClient(nil)
+	startRunServerOn(t, cfg, base, client)
+	return base, client
 }
 
 // startRunServerOn is startRunServer for a listener that client knows how to
@@ -451,15 +394,13 @@ func startRunServerOn(t *testing.T, cfg config, base string, client *http.Client
 	})
 }
 
-// TestRun_LogsMeasurementPinning: with --measurements set, startup must log the
-// pinning-enabled line, not the UNSAFE empty-allowlist warning. DNS validation
-// succeeds first; a bad CN pattern stops startup after the pinning log.
+// TestRun_LogsMeasurementPinning: the configuration's node identities must log
+// the pinning-enabled line, not the UNSAFE empty-allowlist warning. A bad CN
+// pattern stops startup after the pinning log.
 func TestRun_LogsMeasurementPinning(t *testing.T) {
 	api := newHealthyAttestationApi(t)
 	cfg := validRunConfig(t, api.URL)
 	cfg.logLevel = "info"
-	cfg.measurements = []string{strings.Repeat("ab", 48)}
-	cfg.dnsSANPatterns = []string{`^service[.]example$`}
 	cfg.allowedCNPattern = "("
 
 	r, w, err := os.Pipe()
@@ -484,7 +425,7 @@ func TestRun_LogsMeasurementPinning(t *testing.T) {
 	if !strings.Contains(string(logged), "measurement pinning enabled") {
 		t.Fatalf("startup log missing pinning-enabled line:\n%s", logged)
 	}
-	if strings.Contains(string(logged), "--measurements empty") {
+	if strings.Contains(string(logged), "name no launch measurement") {
 		t.Fatalf("startup log warned about empty measurements despite pinning:\n%s", logged)
 	}
 }
@@ -493,13 +434,11 @@ func TestRun_LogsMeasurementPinning(t *testing.T) {
 // must apply --jwt-clock-skew as leeway, so a token stamped by a slightly-fast
 // operator clock still authorizes the write.
 func TestRun_AllowlistWriteAcceptsClockSkewedToken(t *testing.T) {
-	api := newHealthyAttestationApi(t)
-	operatorKey, keysPath := writeOperatorKeyPair(t)
-	cfg := validRunConfig(t, api.URL) // jwtClockSkew: 30
-	cfg.port = freePort(t)
-	cfg.operatorKeys = keysPath
+	operatorKey, keysPEM := operatorKeyPair(t)
+	cfg := armTLSRunConfig(t) // jwtClockSkew: 30
+	cfg.measured = measuredConfig(t, cluster{operatorPEM: keysPEM, workloads: map[string]string{"cds": digestA}})
 	cfg.allowlistPersistent = true // a non-persistent store refuses tokens for --jwt-clock-skew after start
-	base := startRunServer(t, cfg)
+	base, client := startRunServer(t, cfg)
 
 	body := []byte(anySeed(map[string]string{"cds": digestA}))
 	sum := sha256.Sum256(body)
@@ -520,7 +459,7 @@ func TestRun_AllowlistWriteAcceptsClockSkewedToken(t *testing.T) {
 		t.Fatalf("build request: %v", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("PUT /allowlist: %v", err)
 	}
@@ -534,12 +473,10 @@ func TestRun_AllowlistWriteAcceptsClockSkewedToken(t *testing.T) {
 // A non-persistent store forgets spent tokens at restart, so CDS refuses a
 // fresh token until --jwt-clock-skew has passed since start.
 func TestRun_NonPersistentStoreRefusesTokensAfterStart(t *testing.T) {
-	api := newHealthyAttestationApi(t)
-	operatorKey, keysPath := writeOperatorKeyPair(t)
-	cfg := validRunConfig(t, api.URL) // jwtClockSkew: 30, not persistent
-	cfg.port = freePort(t)
-	cfg.operatorKeys = keysPath
-	base := startRunServer(t, cfg)
+	operatorKey, keysPEM := operatorKeyPair(t)
+	cfg := armTLSRunConfig(t) // jwtClockSkew: 30, not persistent
+	cfg.measured = measuredConfig(t, cluster{operatorPEM: keysPEM, workloads: map[string]string{"cds": digestA}})
+	base, client := startRunServer(t, cfg)
 
 	body := []byte(anySeed(map[string]string{"cds": digestA}))
 	sum := sha256.Sum256(body)
@@ -558,7 +495,7 @@ func TestRun_NonPersistentStoreRefusesTokensAfterStart(t *testing.T) {
 		t.Fatal(err)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -572,13 +509,11 @@ func TestRun_NonPersistentStoreRefusesTokensAfterStart(t *testing.T) {
 // A whole-document write stores its token as the document's signature, so the
 // token must not authorize a second write.
 func TestRun_AllowlistWriteTokenSignsOnce(t *testing.T) {
-	api := newHealthyAttestationApi(t)
-	operatorKey, keysPath := writeOperatorKeyPair(t)
-	cfg := validRunConfig(t, api.URL)
-	cfg.port = freePort(t)
-	cfg.operatorKeys = keysPath
+	operatorKey, keysPEM := operatorKeyPair(t)
+	cfg := armTLSRunConfig(t)
+	cfg.measured = measuredConfig(t, cluster{operatorPEM: keysPEM, workloads: map[string]string{"cds": digestA}})
 	cfg.allowlistPersistent = true // a non-persistent store refuses tokens for --jwt-clock-skew after start
-	base := startRunServer(t, cfg)
+	base, client := startRunServer(t, cfg)
 
 	doc, err := pkgallowlist.ParseJSON([]byte(anySeed(map[string]string{"web": digestA})))
 	if err != nil {
@@ -606,7 +541,7 @@ func TestRun_AllowlistWriteTokenSignsOnce(t *testing.T) {
 			t.Fatal(err)
 		}
 		req.Header.Set("Authorization", "Bearer "+token)
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := client.Do(req)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -614,7 +549,7 @@ func TestRun_AllowlistWriteTokenSignsOnce(t *testing.T) {
 		return resp.StatusCode
 	}
 	get := func(path string) []byte {
-		resp, err := http.Get(base + path)
+		resp, err := client.Get(base + path)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -645,7 +580,7 @@ func TestRun_AllowlistWriteTokenSignsOnce(t *testing.T) {
 	if got := get("/allowlist/objects/sha256/" + hexDigest); !bytes.Equal(got, body) {
 		t.Fatalf("object = %s, want %s", got, body)
 	}
-	keys, err := operatorauth.ParsePublicKeysPEM(mustRead(t, keysPath))
+	keys, err := operatorauth.ParsePublicKeysPEM(keysPEM)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -653,15 +588,6 @@ func TestRun_AllowlistWriteTokenSignsOnce(t *testing.T) {
 	if err := operatorauth.VerifyStored(keys, stored, http.MethodPut, "/allowlist", body); err != nil {
 		t.Fatalf("VerifyStored(served signature) = %v", err)
 	}
-}
-
-func mustRead(t *testing.T, path string) []byte {
-	t.Helper()
-	b, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return b
 }
 
 // TestRun_ARMTLSWarmupFailureFailsClosed: with armTLS enabled, a failed serving
@@ -689,85 +615,14 @@ func TestRun_ARMTLSWarmupFailureFailsClosed(t *testing.T) {
 	}
 }
 
-func TestLoadOperatorKeys(t *testing.T) {
-	t.Run("valid bundle", func(t *testing.T) {
-		bundle, err := loadOperatorKeys(config{operatorKeys: writeOperatorKeysPEM(t)})
-		if err != nil {
-			t.Fatalf("loadOperatorKeys: %v", err)
-		}
-		if len(bundle.Keys()) != 1 {
-			t.Errorf("keys = %d, want 1", len(bundle.Keys()))
-		}
-		if len(bundle.PEM()) == 0 {
-			t.Error("raw PEM bytes empty")
-		}
-	})
-
-	// No source is no key: writes stay disabled rather than authorized by
-	// something that was never configured.
-	t.Run("no source", func(t *testing.T) {
-		bundle, err := loadOperatorKeys(config{})
-		if err != nil || bundle.Keys() != nil || bundle.PEM() != nil {
-			t.Fatalf("loadOperatorKeys = %v, %v, %v; want no key and no error", bundle.Keys(), bundle.PEM(), err)
-		}
-	})
-
-	t.Run("missing file", func(t *testing.T) {
-		if _, err := loadOperatorKeys(config{operatorKeys: filepath.Join(t.TempDir(), "nope.pem")}); err == nil {
-			t.Fatal("expected error for missing file")
-		}
-	})
-
-	t.Run("no EC key fails closed", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "empty.pem")
-		if err := os.WriteFile(path, []byte("garbage"), 0o600); err != nil {
-			t.Fatalf("write: %v", err)
-		}
-		if _, err := loadOperatorKeys(config{operatorKeys: path}); err == nil {
-			t.Fatal("expected error for bundle without EC public key")
-		}
-	})
-}
-
-// measurementDigests renders the /attest allowlist for the callback's pin. It
-// must not silently drop an entry: /attest compares the same allowlist as
-// strings, so a dropped entry would leave the callback unpinned while /attest
-// still enforced it — two derivations of one allowlist disagreeing in the
-// direction that weakens the callback.
-func TestMeasurementDigests(t *testing.T) {
-	valid := map[string]bool{"abcd": true, "ef01": true}
-	got, err := measurementDigests(valid)
-	if err != nil {
-		t.Fatalf("measurementDigests: %v", err)
-	}
-	if len(got) != 2 {
-		t.Fatalf("got %d digests, want 2", len(got))
-	}
-
-	if _, err := measurementDigests(map[string]bool{"abcd": true, "0xnothex": true}); err == nil {
-		t.Fatal("a non-hex measurement was dropped instead of failing startup")
-	}
-
-	empty, err := measurementDigests(nil)
-	if err != nil || len(empty) != 0 {
-		t.Fatalf("empty allowlist: got %v, %v", empty, err)
-	}
-}
-
 // armTLSRunConfig returns validRunConfig with the armTLS listener on. A stub
 // attestation API provisions both certificates run() warms up, the serving
 // certificate and the sandbox-digests client's, with a fake SNP report.
 func armTLSRunConfig(t *testing.T) config {
 	t.Helper()
-	seedPath := filepath.Join(t.TempDir(), "seed.json")
-	if err := os.WriteFile(seedPath, []byte(anySeed(map[string]string{"cds": digestA})), 0o600); err != nil {
-		t.Fatalf("write seed: %v", err)
-	}
 	cfg := validRunConfig(t, mockapi.New(t).URL())
 	cfg.port = freePort(t)
 	cfg.armtlsPlatform = "sev-snp"
-	cfg.operatorKeys = writeOperatorKeysPEM(t)
-	cfg.allowlistSeed = seedPath
 	return cfg
 }
 
@@ -950,10 +805,9 @@ func TestRun_ARMTLSRefusesPlainHTTP(t *testing.T) {
 // do: the replay is 409 and a freshly minted token still works.
 func TestRun_SecretsOperatorTokenSpendsOnce(t *testing.T) {
 	cfg := armTLSRunConfig(t)
-	operatorKey, keysPath := writeOperatorKeyPair(t)
-	cfg.operatorKeys = keysPath
+	operatorKey, keysPEM := operatorKeyPair(t)
+	cfg.measured = measuredConfig(t, cluster{operatorPEM: keysPEM, workloads: map[string]string{"cds": digestA}})
 	cfg.allowlistPersistent = true // a non-persistent store refuses tokens for --jwt-clock-skew after start
-	cfg.inventoryCIDRs = []string{"127.0.0.1/32"}
 	base := fmt.Sprintf("https://127.0.0.1:%d", cfg.port)
 	client := armTLSClient(nil)
 	startRunServerOn(t, cfg, base, client)

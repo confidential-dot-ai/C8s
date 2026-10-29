@@ -27,7 +27,7 @@ func TestSecretsPathQuotaFlagIsWired(t *testing.T) {
 	if value == nil {
 		t.Fatal("missing --secrets-max-value-bytes flag")
 	}
-	cfg := secretsReadyConfig()
+	cfg := secretsSizingConfig()
 	cfg.secretsMaxPaths = mustAtoi(t, ceiling.DefValue)
 	cfg.secretsMaxPathsPerWorkload = mustAtoi(t, quota.DefValue)
 	cfg.secretsMaxValueBytes = mustAtoi(t, value.DefValue)
@@ -84,12 +84,9 @@ func TestNewSecretsStoreCarriesEachBound(t *testing.T) {
 	}
 }
 
-// secretsReadyConfig can serve /secrets: sandbox identity is fully configured.
-func secretsReadyConfig() config {
+// secretsSizingConfig holds the bounds validateSecretsConfig checks.
+func secretsSizingConfig() config {
 	return config{
-		armtlsPlatform:             "sev-snp",
-		measurements:               []string{strings.Repeat("ab", 48)},
-		inventoryCIDRs:             []string{"10.0.0.0/24"},
 		secretsMaxPaths:            16,
 		secretsMaxPathsPerWorkload: 8,
 		secretsMaxValueBytes:       64,
@@ -97,7 +94,13 @@ func secretsReadyConfig() config {
 	}
 }
 
-func testInventoryHosts(t *testing.T) workloadclaims.InventoryHosts {
+// nodeMeasurements is the /attest allowlist a measured configuration's node
+// pins give.
+func nodeMeasurements() map[string]bool {
+	return map[string]bool{strings.Repeat("ab", 48): true}
+}
+
+func testInventoryHosts(t *testing.T) workloadclaims.CIDRHosts {
 	t.Helper()
 	hosts, err := workloadclaims.ParseInventoryHosts([]string{"10.0.0.0/24"})
 	if err != nil {
@@ -109,7 +112,7 @@ func testInventoryHosts(t *testing.T) workloadclaims.InventoryHosts {
 // A fully-configured CDS serves /secrets with no flag to turn it on: release is
 // gated on an allowlist entry carrying a grant, not on configuration.
 func TestSecretsEnabledWhenSandboxIdentityWorks(t *testing.T) {
-	enabled, why := secretsEnabled(secretsReadyConfig(), &workloadclaims.DigestsClient{}, testInventoryHosts(t))
+	enabled, why := secretsEnabled(nodeMeasurements(), testInventoryHosts(t))
 	if !enabled {
 		t.Fatalf("secrets not served on a fully configured CDS: %s", why)
 	}
@@ -119,18 +122,16 @@ func TestSecretsEnabledWhenSandboxIdentityWorks(t *testing.T) {
 // not answer at all rather than answer badly.
 func TestSecretsDisabledWhenItCannotAnswer(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		cfg    func(*config)
-		client *workloadclaims.DigestsClient
-		want   string
+		name         string
+		measurements map[string]bool
+		hosts        workloadclaims.CIDRHosts
+		want         string
 	}{
-		{"no platform", func(*config) {}, nil, "--armtls-platform"},
-		{"no measurements", func(c *config) { c.measurements = nil }, &workloadclaims.DigestsClient{}, "--measurements"},
+		{"no node addresses", nodeMeasurements(), nil, "no node addresses"},
+		{"no node identities", nil, testInventoryHosts(t), "pins no node identity"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := secretsReadyConfig()
-			tc.cfg(&cfg)
-			enabled, why := secretsEnabled(cfg, tc.client, testInventoryHosts(t))
+			enabled, why := secretsEnabled(tc.measurements, tc.hosts)
 			if enabled {
 				t.Fatal("secrets served despite the prerequisite being unmet")
 			}
@@ -138,15 +139,6 @@ func TestSecretsDisabledWhenItCannotAnswer(t *testing.T) {
 				t.Fatalf("reason %q does not mention %q", why, tc.want)
 			}
 		})
-	}
-}
-
-// Without a bound there is nothing constraining which address the callback
-// may dial.
-func TestSecretsDisabledWithoutInventoryCIDRs(t *testing.T) {
-	enabled, why := secretsEnabled(secretsReadyConfig(), &workloadclaims.DigestsClient{}, nil)
-	if enabled || !strings.Contains(why, "no node addresses") {
-		t.Fatalf("enabled=%v reason=%q", enabled, why)
 	}
 }
 
@@ -161,7 +153,7 @@ func TestSecretsSizingMustBePositive(t *testing.T) {
 		{"--sandbox-ledger-max-entries", func(c *config) { c.sandboxLedgerMax = 0 }},
 	} {
 		t.Run(tc.flag, func(t *testing.T) {
-			cfg := secretsReadyConfig()
+			cfg := secretsSizingConfig()
 			tc.brk(&cfg)
 			err := validateSecretsConfig(cfg)
 			if err == nil {
@@ -172,7 +164,7 @@ func TestSecretsSizingMustBePositive(t *testing.T) {
 			}
 		})
 	}
-	if err := validateSecretsConfig(secretsReadyConfig()); err != nil {
+	if err := validateSecretsConfig(secretsSizingConfig()); err != nil {
 		t.Fatalf("valid bounds refused: %v", err)
 	}
 }
@@ -186,7 +178,7 @@ func TestSecretsQuotaMustStayBelowTheCeiling(t *testing.T) {
 		{"above the ceiling", func(ceiling int) int { return ceiling + 1 }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := secretsReadyConfig()
+			cfg := secretsSizingConfig()
 			cfg.secretsMaxPathsPerWorkload = tc.quota(cfg.secretsMaxPaths)
 			err := validateSecretsConfig(cfg)
 			if err == nil {
@@ -197,7 +189,7 @@ func TestSecretsQuotaMustStayBelowTheCeiling(t *testing.T) {
 			}
 		})
 	}
-	cfg := secretsReadyConfig()
+	cfg := secretsSizingConfig()
 	cfg.secretsMaxPathsPerWorkload = cfg.secretsMaxPaths - 1
 	if err := validateSecretsConfig(cfg); err != nil {
 		t.Fatalf("a quota one below the ceiling refused: %v", err)
@@ -207,7 +199,7 @@ func TestSecretsQuotaMustStayBelowTheCeiling(t *testing.T) {
 // Generate always mints GeneratedValueBytes, so a smaller cap turns every
 // workload's first POST into a 500 rather than refusing at startup.
 func TestSecretsValueBoundHoldsAGeneratedValue(t *testing.T) {
-	cfg := secretsReadyConfig()
+	cfg := secretsSizingConfig()
 	cfg.secretsMaxValueBytes = secrets.GeneratedValueBytes - 1
 	err := validateSecretsConfig(cfg)
 	if err == nil {

@@ -3,26 +3,9 @@ package workloadclaims
 import (
 	"net"
 	"slices"
-	"sync/atomic"
 
 	corev1 "k8s.io/api/core/v1"
 )
-
-// cidrSet is the membership check behind CIDRHosts and NodeHosts.
-type cidrSet []*net.IPNet
-
-func (s cidrSet) contains(host string) bool {
-	ip := net.ParseIP(host)
-	if ip == nil {
-		return false
-	}
-	for _, n := range s {
-		if n.Contains(ip) {
-			return true
-		}
-	}
-	return false
-}
 
 // PodCIDRs is every range a node assigns pod addresses from.
 func PodCIDRs(node *corev1.Node) []string {
@@ -87,31 +70,4 @@ func NodeHostCIDRs(nodes []*corev1.Node) (hosts []*net.IPNet, excluded []string)
 		}
 	}
 	return hosts, excluded
-}
-
-// NodeHosts is an InventoryHosts derived from the cluster's node objects and
-// swapped atomically by the caller's informer. Before the first SetNodes it
-// holds nothing, so Contains fails closed.
-type NodeHosts struct {
-	snap atomic.Pointer[cidrSet]
-}
-
-// SetNodes re-derives the bound and swaps it in. It reports the node
-// addresses excluded for sitting inside a pod range, so the caller can log
-// them per change rather than per lookup.
-func (h *NodeHosts) SetNodes(nodes []*corev1.Node) (excluded []string) {
-	hosts, excluded := NodeHostCIDRs(nodes)
-	set := cidrSet(hosts)
-	h.snap.Store(&set)
-	return excluded
-}
-
-func (h *NodeHosts) Contains(host string) bool {
-	snap := h.snap.Load()
-	return snap != nil && snap.contains(host)
-}
-
-func (h *NodeHosts) Empty() bool {
-	snap := h.snap.Load()
-	return snap == nil || len(*snap) == 0
 }
