@@ -151,11 +151,6 @@ func Run(args []string) error {
 	if err != nil {
 		return fmt.Errorf("create plugin: %w", err)
 	}
-	if decrees != nil {
-		// A rebooted node holds no decree: take the replicas' one before
-		// any credential client is handed the launch document's pins.
-		takeFirstDecree(decrees, firstDecreeTimeout, logger)
-	}
 	// Before the plugin serves a single container creation: a pod admitted
 	// without this mount would read no pins at all.
 	if err := plugin.prepareCDSPins(); err != nil {
@@ -163,6 +158,9 @@ func Run(args []string) error {
 	}
 	if decrees != nil {
 		decrees.mounted = plugin.cdsPins
+		// A rebooted node holds no decree: until the first fetch settles,
+		// no container is handed the launch document's pins.
+		plugin.awaitingDecree.Store(true)
 	}
 	if err := plugin.prepareCDSAddress(); err != nil {
 		return fmt.Errorf("prepare the CDS address handed to injected clients: %w", err)
@@ -171,11 +169,6 @@ func Run(args []string) error {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	if decrees != nil {
-		// Clients also refresh on a pin miss; the poll moves a node that is
-		// not talking to CDS.
-		go wait.UntilWithContext(ctx, func(ctx context.Context) { _, _ = decrees.Refresh(ctx) }, decreePollInterval)
-	}
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -221,6 +214,17 @@ func Run(args []string) error {
 		if err := startAdmissionInventory(ctx, logger, cfg, plugin, socketPath); err != nil {
 			return fmt.Errorf("start admission inventory: %w", err)
 		}
+	}
+
+	if decrees != nil {
+		// INVARIANT: this fetch runs after NRI registration started.
+		// containerd kills a plugin that has not registered within its
+		// registration timeout and never starts it again, and a CDS that
+		// drops packets holds the fetch for its whole bound.
+		plugin.takeFirstDecree(decrees, firstDecreeTimeout)
+		// Clients also refresh on a pin miss; the poll moves a node that is
+		// not talking to CDS.
+		go wait.UntilWithContext(ctx, func(ctx context.Context) { _, _ = decrees.Refresh(ctx) }, decreePollInterval)
 	}
 
 	measure := policyMeasurer(cfg, logger)
@@ -297,18 +301,19 @@ func Run(args []string) error {
 const decreePollInterval = time.Minute
 
 // firstDecreeTimeout bounds the start-up decree fetch: a CDS that does not
-// answer must not keep the node's containers from starting.
+// answer must not keep the node's credential clients from starting.
 const firstDecreeTimeout = 10 * time.Second
 
-// takeFirstDecree fetches the pin decree once, within timeout, before the
-// plugin hands CDS pins to anyone. Until a fetch succeeds the node trusts its
-// launch document's CDS pins, which may include an image the operator has
-// since removed: that is worth an error.
-func takeFirstDecree(decrees *followedPins, timeout time.Duration, logger *slog.Logger) {
+// takeFirstDecree fetches the pin decree once, within timeout, then lets the
+// plugin hand CDS pins out whether or not the fetch succeeded. Until a fetch
+// succeeds the node trusts its launch document's CDS pins, which may include
+// an image the operator has since removed: that is worth an error.
+func (p *plugin) takeFirstDecree(decrees *followedPins, timeout time.Duration) {
+	defer p.awaitingDecree.Store(false)
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	if _, err := decrees.Refresh(ctx); err != nil {
-		logger.Error("no CDS pin decree at start: trusting the launch document's CDS pins until a fetch succeeds", "error", err)
+		p.logger.Error("no CDS pin decree at start: trusting the launch document's CDS pins until a fetch succeeds", "error", err)
 	}
 }
 

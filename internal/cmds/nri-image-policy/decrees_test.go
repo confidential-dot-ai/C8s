@@ -11,14 +11,18 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/containerd/nri/pkg/api"
+
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/c8s/internal/cdsha"
 	"github.com/confidential-dot-ai/c8s/internal/cdspins"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 func decreeKey(t *testing.T) (*ecdsa.PrivateKey, string) {
@@ -105,7 +109,7 @@ func TestFollowedDecreesRewriteTheMountedPolicyInPlace(t *testing.T) {
 
 // At start the enforcer takes the replicas' decree before it hands out any
 // pins, within a bound; a failed fetch is logged as an error and leaves the
-// launch document's pins.
+// launch document's pins. Either way the node's CDS clients start after it.
 func TestTakeFirstDecree(t *testing.T) {
 	k, pub := decreeKey(t)
 	cfg := pullConfig{URL: "https://cds:30808", AttestationApiURL: "http://127.0.0.1:1", CDSMeasurementsConfig: "../../testdata/node-identities.json"}
@@ -129,15 +133,65 @@ func TestTakeFirstDecree(t *testing.T) {
 		var log bytes.Buffer
 		return &followedPins{Source: src, logger: slog.New(slog.NewTextHandler(&log, nil))}, &log
 	}
+	take := func(f *followedPins, timeout time.Duration) {
+		t.Helper()
+		p := &plugin{logger: f.logger, cdsPins: "/run/c8s-enforcer/cds-pins.json"}
+		p.awaitingDecree.Store(true)
+		p.takeFirstDecree(f, timeout)
+		if err := p.decreeSettled(); err != nil {
+			t.Fatalf("CDS clients still refused after the first fetch: %v", err)
+		}
+	}
 	served, log := follow(func(context.Context) (*cdsha.SignedDecree, error) { return &sd, nil })
-	takeFirstDecree(served, time.Second, served.logger)
+	take(served, time.Second)
 	if e, ok := served.Epoch(); !ok || e != 3 || strings.Contains(log.String(), "ERROR") {
 		t.Fatalf("decree not taken at start: epoch %d %v, log %s", e, ok, log.String())
 	}
 	start := time.Now()
 	hung, log := follow(func(ctx context.Context) (*cdsha.SignedDecree, error) { <-ctx.Done(); return nil, ctx.Err() })
-	takeFirstDecree(hung, 50*time.Millisecond, hung.logger)
+	take(hung, 50*time.Millisecond)
 	if _, ok := hung.Epoch(); ok || !strings.Contains(log.String(), "level=ERROR") || time.Since(start) > 5*time.Second {
 		t.Fatalf("unanswered fetch: log %s after %v", log.String(), time.Since(start))
+	}
+	if got, want := len(hung.Current().Images), len(launch.Images); got != want {
+		t.Fatalf("after an unanswered fetch the node holds %d CDS images, want the launch document's %d", got, want)
+	}
+}
+
+// While the node takes its first decree, a container the node's CDS pins
+// would be mounted into is refused, so none starts on the launch document's
+// pins; every other container is admitted as before.
+func TestCredentialClientsWaitForTheFirstDecree(t *testing.T) {
+	for _, client := range []struct {
+		workload, name string
+		uid            uint32
+	}{
+		{"c8s-allowlist-proxy", "allowlist-proxy", workloadclaims.CredentialsUID},
+		{"c8s-router-upstream", workloadclaims.AttestContainerName, workloadclaims.UpstreamUID},
+	} {
+		t.Run(client.name, func(t *testing.T) {
+			p := routerNodeMountPlugin(t)
+			pod := routerNodeMountPod()
+			declaration := p.cfg.Allowlist.Base.Workloads[client.workload].Containers[0]
+			ctr := routerNodeMountContainer(pod, client.name, client.uid, declaration)
+			p.awaitingDecree.Store(true)
+			if _, _, err := p.CreateContainer(t.Context(), pod, ctr); err == nil {
+				t.Fatal("a CDS client was handed the launch document's pins before the first decree")
+			}
+			p.awaitingDecree.Store(false)
+			adjustment, _, err := p.CreateContainer(t.Context(), pod, ctr)
+			if err != nil {
+				t.Fatalf("the CDS client is refused once the first decree settled: %v", err)
+			}
+			if !slices.ContainsFunc(adjustment.GetMounts(), func(m *api.Mount) bool { return m.GetSource() == p.cdsPins }) {
+				t.Fatalf("no CDS pins mounted: %v", adjustment.GetMounts())
+			}
+		})
+	}
+	p := routerNodeMountPlugin(t)
+	p.awaitingDecree.Store(true)
+	pod := makePod("default", "app")
+	if _, err := p.credentialMounts(t.Context(), pod, makeCtrWithImageArgs(pod.Id, "app", "", nil)); err != nil {
+		t.Fatalf("a container without CDS pins waits for the decree: %v", err)
 	}
 }
