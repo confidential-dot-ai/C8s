@@ -436,6 +436,10 @@ func (r *cloudRun) readStatus(ctx context.Context, g *cloudGuest) ([]byte, podcv
 	if err != nil {
 		return nil, podcvmtest.PodState{}, err
 	}
+	if r.cfg.scenario() == "verification-timeout" {
+		state, err := standaloneCloudState(projection, string(g.rec.UID))
+		return raw, state, err
+	}
 	state, err := podcvmtest.PodStateFrom(raw, string(g.rec.UID))
 	return raw, state, err
 }

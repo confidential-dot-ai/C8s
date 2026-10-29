@@ -5,6 +5,7 @@ package podprovider
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -60,6 +61,7 @@ func (g *cloudDelayedGuest) readGuest(ctx context.Context, rec *record, address 
 func (r *cloudRun) verificationTimeout(ctx context.Context, t *testing.T, h *providerControlPlane, cfg *Config, a *cloudGuest) (resultErr error) {
 	t.Helper()
 	ctx, abort := context.WithTimeout(ctx, 18*time.Minute)
+	stage := "verified-baseline"
 	evidence := map[string]any{
 		"passed": false, "run": r.ledger.Run,
 		"fault": "injected provider verification unavailability and delayed verified result delivery",
@@ -67,6 +69,10 @@ func (r *cloudRun) verificationTimeout(ctx context.Context, t *testing.T, h *pro
 	}
 	defer func() {
 		abort()
+		evidence["stage"] = stage
+		if resultErr != nil {
+			resultErr = fmt.Errorf("verification timeout %s: %w", stage, resultErr)
+		}
 		resultErr = errors.Join(resultErr, cloudWrite(filepath.Join(r.dir, "verification-timeout.json"), evidence))
 	}()
 	if a == nil || a.rec == nil || a.rec.InstanceID == "" {
@@ -122,11 +128,17 @@ func (r *cloudRun) verificationTimeout(ctx context.Context, t *testing.T, h *pro
 			return false, errors.New("guest became terminal before verification fault injection")
 		}
 		baseline = pod
+		last := map[string]any{"phase": pod.Status.Phase, "reason": truncateBootReason(pod.Status.Reason), "ready": controlPlanePodReady(pod), "hasEndpoints": pod.Annotations[endpointsAnnotation] != ""}
+		if rec.VerificationDeadline != nil {
+			last["verificationDeadline"] = *rec.VerificationDeadline
+		}
+		evidence["lastBaseline"] = last
 		return rec.VerificationDeadline == nil && controlPlanePodReady(pod) && pod.Annotations[endpointsAnnotation] != "", nil
 	}); err != nil {
 		return err
 	}
 	evidence["verifiedProviderBaseline"] = true
+	stage = "verification-unavailable"
 	stop := func() error {
 		h.manager.stop(t)
 		select {
@@ -170,6 +182,7 @@ func (r *cloudRun) verificationTimeout(ctx context.Context, t *testing.T, h *pro
 	}
 	evidence["verificationDeadline"], evidence["verificationTimeoutSeconds"] = frozen, defaultVerificationTimeoutSeconds
 	evidence["unavailabilityWithdrawsReadinessAndEndpoints"] = true
+	stage = "restart-and-verified-result"
 	if err := stop(); err != nil {
 		return err
 	}
@@ -211,6 +224,7 @@ func (r *cloudRun) verificationTimeout(ctx context.Context, t *testing.T, h *pro
 	}); err != nil {
 		return err
 	}
+	stage = "late-result-delivery"
 	t.Log("provider restart retained the frozen verification window; delaying a real verified result until expiry")
 	select {
 	case deliveredAt := <-late.delivered:
@@ -223,6 +237,7 @@ func (r *cloudRun) verificationTimeout(ctx context.Context, t *testing.T, h *pro
 	case <-h.manager.done:
 		return errors.New("provider manager stopped before delayed result delivery")
 	}
+	stage = "provider-termination"
 	if err := wait(3*time.Minute, func() (bool, error) {
 		pod, rec, err := read()
 		if err != nil {
@@ -254,6 +269,7 @@ func (r *cloudRun) verificationTimeout(ctx context.Context, t *testing.T, h *pro
 	}); err != nil {
 		return err
 	}
+	stage = "complete"
 	evidence["passed"], evidence["lateResultRefused"], evidence["providerConfirmedTerminationBeforePodDeletion"] = true, true, true
 	evidence["terminationConfirmedAt"] = time.Now()
 	t.Log("late verified result was refused; production provider confirmed owned VM termination before Pod deletion")

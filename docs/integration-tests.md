@@ -221,9 +221,10 @@ the observation window.
 
 Set `"scenario": "verification-timeout"` in the input to test bounded verification
 failure separately. This scenario needs one CDS guest and one Pod guest (four
-Cloud vCPUs and 16 GiB with the example shape). After real TDX verification and
-provider readiness, it injects an unavailable verification result, restarts the
-provider with a longer configured timeout, and holds a real verified response
+Cloud vCPUs and 16 GiB with the example shape). Its small HTTP workload becomes
+ready independently of peer traffic. After real TDX verification and provider
+readiness, it injects an unavailable verification result, restarts the provider
+with a longer configured timeout, and holds a real verified response
 until after the original persisted 600-second deadline. Acceptance requires
 withdrawn readiness/endpoints, `GuestVerificationTimedOut`, and confirmed Cloud
 termination before deleting the Kubernetes Pod. Provisioning and cleanup add
