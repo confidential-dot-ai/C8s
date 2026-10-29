@@ -106,12 +106,12 @@ fi
 if [ "${C8S_NODE_IMAGE:-}" = 1 ]; then
   ready=0
   for _ in $(seq 1 60); do
-    if c8s allowlist list --url "$C8S_ALLOWLIST_URL" --image-policy-file "$C8S_MEASUREMENTS_CONFIG" >/dev/null 2>&1; then
+    if probe=$(c8s allowlist list --url "$C8S_ALLOWLIST_URL" --image-policy-file "$C8S_MEASUREMENTS_CONFIG" 2>&1 >/dev/null); then
       ready=1; break
     fi
     sleep 5
   done
-  [ "$ready" = 1 ] || fail "measured CDS/front-door services did not become ready under the server policy"
+  [ "$ready" = 1 ] || fail "measured CDS/front-door services did not become ready under the server policy; last probe: ${probe:-no output}"
 fi
 
 echo "PASS: all $total c8s Kubernetes components Running"

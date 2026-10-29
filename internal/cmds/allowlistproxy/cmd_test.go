@@ -379,6 +379,7 @@ func TestNewHandlerServesHealthWithoutDialingCDS(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	handler, err := newHandler(config{
 		cdsURL:            "https://c8s-cds.c8s-system.svc:8443",
+		cdsMeasurements:   []string{testCDSMeasurement},
 		attestationAPIURL: "http://attestation-api.c8s-system.svc:8400",
 		requestTimeout:    time.Second,
 	}, logger)
@@ -420,7 +421,15 @@ func TestRunContextServesAndShutsDown(t *testing.T) {
 		})
 	}()
 
-	gotListen := <-listenCalled
+	var gotListen struct {
+		network string
+		address string
+	}
+	select {
+	case gotListen = <-listenCalled:
+	case err := <-errCh:
+		t.Fatalf("runContext returned before it listened: %v", err)
+	}
 	if gotListen.network != "tcp" || gotListen.address != "127.0.0.1:8801" {
 		t.Fatalf("listen = %q %q, want tcp 127.0.0.1:8801", gotListen.network, gotListen.address)
 	}
@@ -498,11 +507,16 @@ func TestRunRejectsInvalidHeaderTimeoutBeforeBuildingHandler(t *testing.T) {
 	}
 }
 
+// testCDSMeasurement is the launch measurement these configs pin CDS to, which
+// armTLS requires of every verifying client.
+const testCDSMeasurement = "abababababababababababababababababababababababababababababababababababababababababababababababab"
+
 func validConfig() config {
 	return config{
 		host:              "127.0.0.1",
 		port:              8801,
 		cdsURL:            "https://c8s-cds.c8s-system.svc:8443",
+		cdsMeasurements:   []string{testCDSMeasurement},
 		attestationAPIURL: "http://attestation-api.c8s-system.svc:8400",
 		requestTimeout:    time.Second,
 		readHeaderTimeout: time.Second,

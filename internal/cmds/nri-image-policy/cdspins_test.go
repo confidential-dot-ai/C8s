@@ -152,25 +152,15 @@ func TestPrepareCDSPinsRefusesRegistersTheFamilyLacks(t *testing.T) {
 	}
 }
 
-// A node that pins nothing mounts nothing: the client then has no policy to
-// read, which its own unpinned check reports.
-func TestPrepareCDSPinsEmptyWithoutPins(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		cfg  *config
-	}{
-		{"no pins", &config{WorkloadClaims: workloadClaimsConfig{SocketDir: t.TempDir()}}},
-		{"no inventory directory", &config{Allowlist: allowlistConfig{Pull: pullConfig{CDSMeasurements: []string{testDigestA}}}}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			p := testPlugin(t, tc.cfg)
-			if err := p.prepareCDSPins(); err != nil {
-				t.Fatalf("prepareCDSPins: %v", err)
-			}
-			if p.cdsPins != "" {
-				t.Fatalf("pins path = %q, want none", p.cdsPins)
-			}
-		})
+// Without an inventory directory no pod of this node is injected, so there is
+// nothing to render and nothing to mount.
+func TestPrepareCDSPinsEmptyWithoutInventory(t *testing.T) {
+	p := testPlugin(t, &config{Allowlist: allowlistConfig{Pull: pullConfig{CDSMeasurements: []string{testDigestA}}}})
+	if err := p.prepareCDSPins(); err != nil {
+		t.Fatalf("prepareCDSPins: %v", err)
+	}
+	if p.cdsPins != "" {
+		t.Fatalf("pins path = %q, want none", p.cdsPins)
 	}
 }
 
@@ -334,12 +324,13 @@ func TestSidecarAdjustmentFollowsTheMeasuredCredentialsRole(t *testing.T) {
 	}
 }
 
-// A node that pins nothing adds no policy mount, so a client cannot mistake an
-// empty file for a policy.
-func TestSidecarAdjustmentWithoutPins(t *testing.T) {
+// A node that injects credential clients but pins no CDS refuses before any
+// container is created, and renders nothing a client could mistake for a
+// policy.
+func TestSidecarAdjustmentRefusedWithoutPins(t *testing.T) {
 	p := testPlugin(t, &config{WorkloadClaims: workloadClaimsConfig{SocketDir: t.TempDir()}})
-	if err := p.prepareCDSPins(); err != nil {
-		t.Fatalf("prepareCDSPins: %v", err)
+	if err := p.prepareCDSPins(); err == nil || !strings.Contains(err.Error(), "pins no CDS") {
+		t.Fatalf("prepareCDSPins() = %v, want the unpinned-CDS refusal", err)
 	}
 	pod := &api.PodSandbox{
 		Id:          "sandbox",
@@ -372,6 +363,68 @@ func testPlugin(t *testing.T, cfg *config) *plugin {
 		t.Fatalf("newPlugin: %v", err)
 	}
 	return p
+}
+
+// The certificate gate holds the credentials identity but is no socket
+// consumer: it takes the CDS policy and no socket directory, so the mounts the
+// node observes for it are the webhook's alone and its exact entry holds.
+func TestCertGateTakesNoSocketDirectory(t *testing.T) {
+	dir := t.TempDir()
+	renderInTempDir(t)
+	certs := allowlist.MountRule{Destination: workloadclaims.MemberCertDir, Kind: allowlist.MountEmptyDir, Source: "c8s-certs"}
+	base := &allowlist.Allowlist{
+		Schema: allowlist.Schema,
+		Workloads: map[string]allowlist.Workload{
+			"c8s-probe-file": {Containers: []allowlist.Container{{
+				Digest:  mustDigestOrPanic(pushDigestA),
+				Role:    CredentialRole,
+				Command: allowlist.ArgvPolicy{Policy: allowlist.PolicyExact, Argv: []string{"/c8s", "probe-file"}},
+				Args:    allowlist.ArgvPolicy{Policy: allowlist.PolicyAny},
+				Mounts:  allowlist.MountPolicy{Policy: allowlist.PolicyExact, Rules: []allowlist.MountRule{certs}},
+			}}},
+		},
+	}
+	p := testPlugin(t, &config{
+		Platform:       "sev-snp",
+		WorkloadClaims: workloadClaimsConfig{SocketDir: dir},
+		Allowlist:      allowlistConfig{Base: base, Pull: pullConfig{CDSMeasurements: []string{testDigestA}}},
+	})
+	p.policy = newPolicyStore(base)
+	p.mountStorage = fixedStorage(allowlist.MountMemory)
+	p.inventory = newAdmissionInventory(t.TempDir())
+	if err := p.prepareCDSPins(); err != nil {
+		t.Fatalf("prepareCDSPins: %v", err)
+	}
+	pod := &api.PodSandbox{
+		Id:          "sandbox",
+		Uid:         "uid",
+		Namespace:   "default",
+		Annotations: map[string]string{workloadclaims.AnnotationInjected: "true"},
+	}
+	gate := &api.Container{
+		Name:         workloadclaims.CertWaitContainerName,
+		PodSandboxId: "sandbox",
+		Annotations:  map[string]string{annotationImageName: "registry/c8s@" + pushDigestA},
+		Args:         []string{"/c8s", "probe-file", "--wait", workloadclaims.MemberCertDir + "/tls.crt"},
+		User:         &api.User{Uid: workloadclaims.CredentialsUID},
+		Mounts: []*api.Mount{{
+			Source:      kubeletRoot + "/pods/uid/volumes/" + emptyDirPlugin + "/c8s-certs",
+			Destination: workloadclaims.MemberCertDir,
+			Type:        "bind",
+			Options:     []string{"rbind", "rw"},
+		}},
+	}
+	adjust := mustCredentialMounts(t, p, pod, gate)
+	if mountTo(adjust, workloadclaims.CDSPinsPath) == nil {
+		t.Error("the certificate gate was handed no CDS policy")
+	}
+	if m := mountTo(adjust, workloadclaims.SidecarSocketDir); m != nil {
+		t.Errorf("the certificate gate was handed the socket directory %s, which it observes as a host mount", m.GetSource())
+	}
+	gate.Mounts = append(gate.Mounts, adjust.GetMounts()...)
+	if got := p.measuredRole(context.Background(), pod, gate); got != CredentialRole {
+		t.Errorf("the gate with the node's own mounts holds the role %q, want %q", got, CredentialRole)
+	}
 }
 
 // mustCredentialMounts is the adjustment the node adds for one container, for

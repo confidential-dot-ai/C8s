@@ -14,10 +14,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"maps"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -31,10 +33,18 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
+// workloadWrites is the set of workload names written through the fake front
+// door.
+type workloadWrites struct {
+	mu    sync.Mutex
+	names map[string]bool
+}
+
 // routerServer stands in for the router front door: a TLS server whose serving
 // cert carries NO armTLS extension, serving its discovery document plus the
-// CDS allowlist read handler it proxies.
-func routerServer(t *testing.T, measurementChallenge []byte) *httptest.Server {
+// CDS allowlist read and workload-write handlers it proxies. Every response
+// carries Connection: close, like nginx locations with keepalive_timeout 0.
+func routerServer(t *testing.T, measurementChallenge []byte) (*httptest.Server, *workloadWrites) {
 	t.Helper()
 
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -67,18 +77,26 @@ func routerServer(t *testing.T, measurementChallenge []byte) *httptest.Server {
 		t.Fatal(err)
 	}
 
+	written := &workloadWrites{names: map[string]bool{}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET "+routerdiscovery.DefaultPath, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(doc)
 	})
 	mux.HandleFunc("GET /allowlist", seededAllowlistHandler(t))
+	// The operator signature is CDS's to check; the front door only relays.
+	mux.HandleFunc("PUT /allowlist/workloads/{name}", func(w http.ResponseWriter, r *http.Request) {
+		written.mu.Lock()
+		written.names[r.PathValue("name")] = true
+		written.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	})
 
-	srv := httptest.NewUnstartedServer(mux)
+	srv := httptest.NewUnstartedServer(testutil.CloseEveryResponse(mux))
 	srv.TLS = &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}}}
 	srv.StartTLS()
 	t.Cleanup(srv.Close)
-	return srv
+	return srv, written
 }
 
 // seededAllowlistHandler serves a canonical allowlist (one entry admitting
@@ -114,8 +132,14 @@ func approvingVerify(measurement []byte) localverify.VerifyFunc {
 
 // runCmdWith executes the allowlist command with an injected evidence verifier.
 func runCmdWith(verify localverify.VerifyFunc, args ...string) (string, string, error) {
+	return runCmdWithIn(verify, "", args...)
+}
+
+// runCmdWithIn is runCmdWith with a stdin payload, for prompts.
+func runCmdWithIn(verify localverify.VerifyFunc, stdin string, args ...string) (string, string, error) {
 	cmd := newCmd(testutil.VerifierStub(verify))
 	var out, errb bytes.Buffer
+	cmd.SetIn(strings.NewReader(stdin))
 	cmd.SetOut(&out)
 	cmd.SetErr(&errb)
 	cmd.SetArgs(args)
@@ -130,7 +154,7 @@ func runCmdWith(verify localverify.VerifyFunc, args ...string) (string, string, 
 // cert.
 func TestListThroughRouter(t *testing.T) {
 	measurement := bytes.Repeat([]byte{0x42}, armtls.SNPMeasurementSize)
-	lb := routerServer(t, []byte("issuance-challenge"))
+	lb, _ := routerServer(t, []byte("issuance-challenge"))
 
 	out, errOut, err := runCmdWith(approvingVerify(measurement), "list",
 		"--url", lb.URL,
@@ -144,12 +168,38 @@ func TestListThroughRouter(t *testing.T) {
 	}
 }
 
+// TestApplyThroughRouter proves `c8s allowlist apply` writes every entry
+// through a front door that closes every response: the live read and each
+// entry's write ride their own redial.
+func TestApplyThroughRouter(t *testing.T) {
+	measurement := bytes.Repeat([]byte{0x42}, armtls.SNPMeasurementSize)
+	lb, written := routerServer(t, []byte("issuance-challenge"))
+	keyPath := writeOperatorKey(t, t.TempDir())
+	file := writeFile(t, "wl.json", `{"schema":"c8s.allowlist/v1","workloads":{
+		"api":{"containers":[`+ctrJSON(digB, "/api")+`]},
+		"web":{"containers":[`+ctrJSON(digC, "/web")+`]}}}`)
+
+	_, errOut, err := runCmdWith(approvingVerify(measurement), "apply", file,
+		"--url", lb.URL,
+		"--measurements", hex.EncodeToString(measurement),
+		"--operator-key", keyPath,
+	)
+	if err != nil {
+		t.Fatalf("apply through router failed: %v (stderr: %s)", err, errOut)
+	}
+	written.mu.Lock()
+	defer written.mu.Unlock()
+	if want := map[string]bool{"api": true, "web": true}; !maps.Equal(written.names, want) {
+		t.Fatalf("front door relayed workload writes %v, want %v", written.names, want)
+	}
+}
+
 // TestListThroughRouterFailsClosed proves a front door whose discovery evidence
 // does not verify is rejected outright — no fallback, no allowlist read.
 func TestListThroughRouterFailsClosed(t *testing.T) {
 	pinned := bytes.Repeat([]byte{0x42}, armtls.SNPMeasurementSize)
 	reported := bytes.Repeat([]byte{0x01}, armtls.SNPMeasurementSize)
-	lb := routerServer(t, []byte("issuance-challenge"))
+	lb, _ := routerServer(t, []byte("issuance-challenge"))
 
 	_, _, err := runCmdWith(approvingVerify(reported), "list",
 		"--url", lb.URL,
@@ -161,6 +211,63 @@ func TestListThroughRouterFailsClosed(t *testing.T) {
 	if !strings.Contains(err.Error(), "discovery document verification failed") {
 		t.Fatalf("want a discovery verification error, got: %v", err)
 	}
+}
+
+// cdsBehindRouterRenewingOnEveryRequest puts fakeCDS behind a router that
+// renews its serving cert on every allowlist request, as after an allowlist
+// change, and closes that request's connection, as nginx does to an idle or
+// minute-old connection. So every request after the first needs a new
+// connection to a leaf the client has not attested yet.
+func cdsBehindRouterRenewingOnEveryRequest(t *testing.T, pinned []*ecdsa.PublicKey) (*testutil.RenewingRouter, *fakeCDS) {
+	t.Helper()
+	cds := newFakeCDS(pinned)
+	router := testutil.NewRenewingRouter(t, func(router *testutil.RenewingRouter) http.Handler {
+		backend := testutil.CloseEveryResponse(cds.mux())
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			router.Renew()
+			backend.ServeHTTP(w, r)
+		})
+	})
+	return router, cds
+}
+
+// TestWritesThroughARenewingRouter is the command-level regression test for a
+// router that renews its serving cert mid-command.
+func TestWritesThroughARenewingRouter(t *testing.T) {
+	measurement := bytes.Repeat([]byte{0x42}, armtls.SNPMeasurementSize)
+	pins := []string{"--measurements", hex.EncodeToString(measurement)}
+
+	t.Run("edit", func(t *testing.T) {
+		keyPath, pub := newOperatorKeypair(t, t.TempDir(), "op.key")
+		router, cds := cdsBehindRouterRenewingOnEveryRequest(t, []*ecdsa.PublicKey{pub})
+		cds.seedWorkload("web", mustParseAllowlist(t, `{"schema":"c8s.allowlist/v1","workloads":{
+			"web":{"containers":[`+ctrJSON(digA, "/app")+`]}}}`).Workloads["web"])
+		setEditor(t, `{"label":"v2","containers":[`+ctrJSON(digA, "/app")+`]}`)
+
+		args := append([]string{"edit", "web", "--url", router.URL, "--operator-key", keyPath}, pins...)
+		if _, errOut, err := runCmdWithIn(approvingVerify(measurement), "y\n", args...); err != nil {
+			t.Fatalf("edit through a renewing router: %v (stderr: %s)", err, errOut)
+		}
+		if wl, _ := cds.workload("web"); wl.Label != "v2" {
+			t.Fatalf("label = %q, want v2", wl.Label)
+		}
+	})
+
+	t.Run("apply two entries", func(t *testing.T) {
+		keyPath, pub := newOperatorKeypair(t, t.TempDir(), "op.key")
+		router, cds := cdsBehindRouterRenewingOnEveryRequest(t, []*ecdsa.PublicKey{pub})
+		file := writeFile(t, "wl.json", `{"schema":"c8s.allowlist/v1","workloads":{
+			"web":{"containers":[`+ctrJSON(digA, "/app")+`]},
+			"worker":{"containers":[`+ctrJSON(digB, "/work")+`]}}}`)
+
+		args := append([]string{"apply", file, "--url", router.URL, "--operator-key", keyPath}, pins...)
+		if _, errOut, err := runCmdWith(approvingVerify(measurement), args...); err != nil {
+			t.Fatalf("apply through a renewing router: %v (stderr: %s)", err, errOut)
+		}
+		if got := cds.count(); got != 2 {
+			t.Fatalf("store has %d entries, want 2", got)
+		}
+	})
 }
 
 // armtlsCDSServer stands in for a port-forwarded CDS: a TLS server whose

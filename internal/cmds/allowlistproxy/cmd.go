@@ -75,7 +75,7 @@ func NewCmd() *cobra.Command {
 	f.StringVar(&cfg.host, "host", "127.0.0.1", "listen host (loopback; nginx is the public listener)")
 	f.IntVarP(&cfg.port, "port", "p", 8801, "listen port")
 	f.StringVar(&cfg.cdsURL, "cds-url", "", "CDS base URL (must use https/armTLS)")
-	f.StringSliceVar(&cfg.cdsMeasurements, "cds-measurements", nil, "allowed CDS SHA-384 launch measurement(s), repeatable/comma-separated; empty accepts any attested CDS (unsafe)")
+	f.StringSliceVar(&cfg.cdsMeasurements, "cds-measurements", nil, "allowed CDS SHA-384 launch measurement(s), repeatable/comma-separated; required unless the node or --image-policy-file pins CDS")
 	f.StringSliceVar(&cfg.cdsRTMRs, "cds-rtmrs", nil, "TDX RTMR pin(s) <index>=<sha384-hex> CDS must additionally satisfy, repeatable/comma-separated; ignored when CDS presents SNP evidence (empty pins no registers)")
 	cmdsutil.BindImagePolicyFlags(f, &cfg.measurementsConfig, nil, "pins the CDS endpoint; excludes --cds-measurements and --cds-rtmrs")
 	f.StringVar(&cfg.attestationAPIURL, "attestation-api-url", "", "attestation-api URL used to verify CDS evidence"+cmdsutil.NodeAddressHelp)
@@ -155,9 +155,6 @@ func newHandler(cfg config, logger *slog.Logger) (http.Handler, error) {
 	target, err := parseCDSURL(resolved.url)
 	if err != nil {
 		return nil, err
-	}
-	if len(resolved.pins.Measurements) == 0 && len(resolved.pins.Images) == 0 {
-		logger.Warn("no CDS measurements pinned; accepting any armTLS-attested CDS (unsafe outside development)")
 	}
 	httpClient, err := armtls.NewVerifyingHTTPClient(armtls.Pins(resolved.pins), cfg.attestationAPIURL)
 	if err != nil {

@@ -19,6 +19,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/guestverify"
 	"github.com/confidential-dot-ai/c8s/internal/localverify"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
+	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
 // newBootstrapEnv exposes only the credential service. Hardware verification is
@@ -43,7 +44,7 @@ func newBootstrapEnv(t *testing.T, platform teetypes.PlatformType, mutateFresh f
 			result = verifiedResultFor(env.operatorPubPEM)
 		}
 		if len(params.ExpectedReportData) == 32 {
-			var reported credrelease.AttestRequest
+			var reported types.NonceRequest
 			if err := json.Unmarshal(evidence, &reported); err != nil {
 				return nil, err
 			}
@@ -92,7 +93,7 @@ func newBootstrapEnv(t *testing.T, platform teetypes.PlatformType, mutateFresh f
 		}
 		switch r.URL.Path {
 		case credrelease.AttestPath:
-			var req credrelease.AttestRequest
+			var req types.NonceRequest
 			if err := json.Unmarshal(body, &req); err != nil || len(req.Nonce) != 32 {
 				t.Errorf("invalid nonce request: %s", body)
 				http.Error(w, "nonce", http.StatusBadRequest)

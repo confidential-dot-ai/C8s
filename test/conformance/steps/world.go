@@ -96,9 +96,6 @@ type container struct {
 	// stated: the scenario gave the argv; otherwise the harness chose it (a
 	// placeholder sleep, a hello server, a datagram listener).
 	stated bool
-	// helper: the argv is a helper mode c8s injects, which the mesh gate
-	// starts only as the credentials role (leadWithHelpers).
-	helper bool
 }
 
 type worldKey struct{}

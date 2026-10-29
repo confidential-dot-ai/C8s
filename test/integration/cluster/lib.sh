@@ -32,7 +32,7 @@ mock_attestation_url() { echo "http://$NODE_IP:8400"; }
 # Test-client and workload images. The workload image joins the install-time
 # floor; the test-client image stays out of it so the admission test can
 # drive a deny-then-allow transition through the signed CDS API.
-CURL_IMAGE=curlimages/curl:8.10.1
+CURL_IMAGE=curlimages/curl:8.10.1@sha256:d9b4541e214bcd85196d6e92e2753ac6d0ea699f0af5741f8c6cccbfcf00ef4b
 WORKLOAD_IMAGE=nginxinc/nginx-unprivileged@sha256:3af0c10d960cc2502427fe1219c52989d309e7d65596869c60a34fd2fa2406f0
 
 # Keep live client Pods and the admission regression tests on the same renderer.

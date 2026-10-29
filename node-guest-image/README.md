@@ -299,7 +299,7 @@ restricted PodSecurity standard by default
 (`etc/rancher/rke2/psa-config.yaml`): no privileged pods, no host
 namespaces, no root user, dropped ALL capabilities (only `NET_BIND_SERVICE`
 may be added back), and no unconfined seccomp or AppArmor. Only `kube-system`
-and `local-path-storage` are exempt; `default` is not.
+is exempt; `default` inherits Restricted.
 
 A namespace label can normally lower that level. The baked
 `psa-level-policy.yaml` AddOn denies an `enforce` label other than
@@ -314,7 +314,7 @@ operator's `c8s-node-operator` ClusterRole (`cred-release-rbac.yaml`) has
 no admission or cluster-scoped RBAC writes, and the `confos-operator-scope`
 policy (`operator-scope-policy.yaml`) denies them in admission for every
 `c8s:` group regardless of RBAC, together with every write in the
-privileged namespaces (`kube-system`, `local-path-storage`, the baked
+privileged namespaces (`kube-system`, the baked
 operator's `c8s-system` and the router role's `c8s-router`) and the
 kubelet-proxy subresources. The
 `psa-ready.sh` gate proves that deny path before cred-release serves.
@@ -357,15 +357,8 @@ and host-port checks over the full Pod.
 
 ### Cluster storage
 
-The image bakes rancher/local-path-provisioner as the default StorageClass
-(`local-path`), so a PVC with no `storageClassName` binds dynamically. The
-provisioner's helper pods mount hostPath and run as root, which is what the
-`local-path-storage` PSA and admission-policy exemptions exist for. Volumes
-live under `/var/lib/local-path-provisioner` on the writable state overlay
-and are local to the node; the helper creates them mode 0777, so a non-root
-consumer writes without an init container. The requested capacity is
-advisory — nothing enforces it. For encrypted, attested volumes see
-[../docs/volumes.md](../docs/volumes.md).
+Encrypted workload volumes use attested key release and `volumed` block
+attachment. See [../docs/volumes.md](../docs/volumes.md).
 
 Ephemeral containers may inherit safe pod-level `runAsNonRoot` and seccomp
 settings when their own settings are absent. Explicit unsafe Pod settings,
@@ -498,9 +491,11 @@ paths end in that one call, so all of them fail.
 
 The consequences for anything running on such a node: an exec probe never
 passes and a `preStop` exec hook never runs. C8s's own components use HTTP
-probes and SIGTERM handling instead. See
+probes and SIGTERM handling instead; RKE2's kube-apiserver keeps its exec
+probes and never reports Ready. See
 [docs/node-exec-mode.md](../docs/node-exec-mode.md) for the wrapper, the build
-gate that proves no handler escapes it, and what to do in a new component.
+gate that proves no handler escapes it, what to do in a new component, and
+what the kube-apiserver's denied probes mean.
 
 ## Refreshing measurements
 

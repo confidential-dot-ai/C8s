@@ -31,7 +31,7 @@ func getPublication(t *testing.T, srv *Server) (*http.Response, []byte) {
 func TestE4RoutePublication(t *testing.T) {
 	state := routing.NewState(routing.StateConfig{MeshCAs: noMeshCAs})
 	newServer := func(publish, attestOff bool) *Server {
-		return NewServer(Config{Routes: testRouter{State: state, backendFunc: echoBackend}, PublishRoutes: publish, DisableAttestEndpoints: attestOff})
+		return NewServer(Config{Routes: testRouter{State: state, backendFunc: echoBackend}, PublishRoutes: publish, DisableAttestEndpoints: attestOff, Bindings: NewBindings()})
 	}
 
 	resp, _ := getPublication(t, newServer(true, false))

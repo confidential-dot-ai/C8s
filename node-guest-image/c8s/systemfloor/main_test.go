@@ -10,10 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"gopkg.in/yaml.v3"
-
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
 // writeSyntheticBundle builds a minimal deterministic docker-archive bundle:
@@ -122,95 +118,62 @@ func TestManifestEntries_DigestPinnedOnly(t *testing.T) {
 	}
 }
 
-func TestRender_DedupesAliasedDigests(t *testing.T) {
-	// Two tags on one manifest (or a bundle/manifest overlap) must not emit a
-	// second entry for the same digest.
-	digestA := "sha256:" + strings.Repeat("a", 64)
-	digestB := "sha256:" + strings.Repeat("b", 64)
-	out, err := render([]entry{
-		{digest: digestA, ref: "example.com/a:1"},
-		{digest: digestA, ref: "example.com/a:2"},
-		{digest: digestB, ref: "example.com/b:1"},
-	}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Count(out, digestA) != 1 || strings.Count(out, digestB) != 1 {
-		t.Fatalf("aliased digest produced duplicate entries:\n%s", out)
+// floorTemplate wraps workloads in the marker lines at the template's indent.
+func floorTemplate(workloads string) string {
+	return "allowlist:\n  base:\n    workloads:\n      " + beginMarker + "\n" + workloads + "      " + endMarker + "\n"
+}
+
+const fixtureRef = "example.com/library/fixture:1.2.3"
+
+func fixtureFloor(digest string) string {
+	return fmt.Sprintf(`      fixture:
+        containers:
+          - digest: %q
+            image: %q
+            command: {policy: any}
+            args: {policy: any}
+            mounts: {policy: any}
+`, digest, fixtureRef)
+}
+
+func TestStaleDigests(t *testing.T) {
+	stored := "sha256:" + strings.Repeat("a", 64)
+	other := "sha256:" + strings.Repeat("b", 64)
+	for _, tc := range []struct {
+		name   string
+		floor  string
+		stored map[string]string
+		// wantNamed is what the stale report must name; empty when the floor is current.
+		wantNamed string
+	}{
+		{"digest the node stores", fixtureFloor(stored), map[string]string{fixtureRef: stored}, ""},
+		{"digest the node does not store", fixtureFloor(other), map[string]string{fixtureRef: stored}, stored},
+		{"image no input carries", fixtureFloor(stored), map[string]string{"example.com/library/other:1": stored}, fixtureRef},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			floor, err := floorWorkloads(floorTemplate(tc.floor))
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = staleDigests(floor, tc.stored)
+			if tc.wantNamed == "" {
+				if err != nil {
+					t.Fatalf("current floor reported stale: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantNamed) {
+				t.Fatalf("staleDigests = %v, want a report naming %s", err, tc.wantNamed)
+			}
+		})
 	}
 }
 
-// The rendered block must decode as an allowlist document whose entries admit
-// their digest under any argv — the shape the plugin's base allowlist loads.
-func TestRender_ParsesAsBaseWorkloads(t *testing.T) {
-	digestA := "sha256:" + strings.Repeat("a", 64)
-	out, err := render([]entry{{digest: digestA, ref: "example.com/a:1"}}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var doc struct {
-		Workloads map[string]allowlist.Workload `yaml:"workloads"`
-	}
-	if err := yaml.Unmarshal([]byte("schema: c8s.allowlist/v1\nworkloads:\n"+out), &doc); err != nil {
-		t.Fatalf("rendered block does not decode: %v\n%s", err, out)
-	}
-	if len(doc.Workloads) != 1 {
-		t.Fatalf("want 1 entry, got %v", doc.Workloads)
-	}
-	for name, w := range doc.Workloads {
-		if name != "a-"+strings.Repeat("a", 12) {
-			t.Errorf("entry name = %q, want the DigestEntryName form", name)
-		}
-		if len(w.Containers) != 1 || w.Containers[0].Digest.String() != digestA || !w.Containers[0].IsUnconstrained() {
-			t.Errorf("entry = %#v, want %s under unconstrained launch policies", w, digestA)
-		}
-		if w.Label != "example.com/a:1" {
-			t.Errorf("label = %q", w.Label)
-		}
-	}
-}
-
-func TestRender_ExcludesRefs(t *testing.T) {
-	// The local-path helper's busybox is argv-pinned by the served allowlist;
-	// floor-listing it would admit any command line on any pod.
-	out, err := render([]entry{
-		{digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", ref: "busybox:1.38.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
-		{digest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", ref: "rancher/local-path-provisioner:v0.0.36@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
-	}, []string{"busybox"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(out, "busybox") {
-		t.Fatalf("excluded ref rendered:\n%s", out)
-	}
-	if !strings.Contains(out, `"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"`) {
-		t.Fatalf("non-excluded ref dropped:\n%s", out)
-	}
-}
-
-func TestSplice_ReplacesBetweenMarkers(t *testing.T) {
-	template := strings.Join([]string{
-		"head",
-		"    " + beginMarker,
-		"    stale",
-		"    " + endMarker,
-		"tail",
-	}, "\n")
-	got, err := splice(template, "    fresh\n")
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := strings.Join([]string{
-		"head",
-		"    " + beginMarker,
-		"    fresh",
-		"    " + endMarker,
-		"tail",
-	}, "\n")
-	if got != want {
-		t.Fatalf("splice =\n%s\nwant\n%s", got, want)
-	}
-	if _, err := splice("no markers", "x"); err == nil {
+func TestFloorWorkloadsNeedsBothMarkers(t *testing.T) {
+	if _, err := floorWorkloads("no markers"); err == nil {
 		t.Fatal("missing markers must error")
+	}
+	if _, err := floorWorkloads("      " + beginMarker + "\n"); err == nil {
+		t.Fatal("a missing end marker must error")
 	}
 }

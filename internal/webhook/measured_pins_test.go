@@ -104,6 +104,71 @@ func TestMeasuredMeshEntryPinsTheInjectedMounts(t *testing.T) {
 	}
 }
 
+// The credentials role is dropped from the workload match, so each credential
+// client's entry grants it only with the mount table the webhook gives that
+// invocation: the one the injected container runs with holds the role, and the
+// same invocation with a mount of the pod's choosing holds none, with or
+// without the pod's discovery volume.
+func TestMeasuredCredentialEntriesPinTheInjectedMounts(t *testing.T) {
+	base := measuredBase(t)
+	operatorEntrypoint := imageEntrypoint(t, operatorDockerfile)
+	for _, discovery := range []string{"", "disco"} {
+		pod := podWithApp()
+		mutatePod(pod, &injection{
+			WorkloadID: "api",
+			Discovery:  discoverySpec{Volume: discovery, MountPath: discoveryMountPath},
+			Secrets:    secretsSpec{Specs: []string{"DB=/api/db"}},
+			Volumes:    volumesSpec{Specs: []string{"weights"}},
+		}, secretsConfig())
+		for _, tc := range []struct{ entry, container string }{
+			{"c8s-get-cert", reservedCertContainerName},
+			{"c8s-probe-file", reservedCertWaitContainerName},
+			{"c8s-get-secret", reservedSecretContainerName},
+			{"c8s-get-volume", reservedVolumeContainerName},
+		} {
+			t.Run(tc.entry+"/discovery="+discovery, func(t *testing.T) {
+				entry := base.Workloads[tc.entry]
+				for i, c := range entry.Containers {
+					if c.Role == credentialRole && c.Mounts.Policy != allowlist.PolicyExact {
+						t.Errorf("container %d of %q grants the role with mounts %q, want exact", i, tc.entry, c.Mounts.Policy)
+					}
+				}
+				index := (&allowlist.Allowlist{Schema: base.Schema, Workloads: map[string]allowlist.Workload{tc.entry: entry}}).BuildIndex()
+				ctr := containerNamed(pod, tc.container)
+				launch := allowlist.RunningContainer{
+					Digest: operatorImageDigest,
+					Argv:   processArgv(operatorEntrypoint, ctr),
+					Mounts: injectedMounts(ctr),
+				}
+				if got := index.RoleOf(launch); got != credentialRole {
+					t.Errorf("the injected %s with mounts %v holds the role %q, want %q", tc.container, launch.Mounts, got, credentialRole)
+				}
+				launch.Mounts = append(slices.Clone(launch.Mounts), allowlist.ObservedMount{
+					Destination: "/scratch", Volume: "scratch", Class: allowlist.MountEmptyDir, Storage: allowlist.MountUnknown,
+				})
+				if got := index.RoleOf(launch); got != "" {
+					t.Errorf("%s with a disk volume of the pod's own holds the role %q, want none", tc.container, got)
+				}
+			})
+		}
+	}
+}
+
+// injectedMounts is the mount evidence the node reports for an injected
+// container: each of its volume mounts, a memory-backed emptyDir of the pod.
+func injectedMounts(c *corev1.Container) []allowlist.ObservedMount {
+	mounts := make([]allowlist.ObservedMount, 0, len(c.VolumeMounts))
+	for _, m := range c.VolumeMounts {
+		mounts = append(mounts, allowlist.ObservedMount{
+			Destination: m.MountPath,
+			Volume:      m.Name,
+			Class:       allowlist.MountEmptyDir,
+			Storage:     allowlist.MountMemory,
+		})
+	}
+	return mounts
+}
+
 // injectedPod is a pod carrying every platform container: the endpoint, the
 // credential sidecars, and the fetchers its annotations ask for.
 func injectedPod(t *testing.T) *corev1.Pod {

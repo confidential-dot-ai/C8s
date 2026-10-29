@@ -26,6 +26,10 @@ var (
 	// attestation-api error or [ErrSignatureInvalid], not this sentinel.
 	ErrPolicyViolation = errors.New("armtls: attestation policy check failed")
 
+	// ErrUnpinned indicates an evidence-path policy that names no guest: it
+	// carries no launch measurement and no image pin.
+	ErrUnpinned = errors.New("armtls: no launch measurement or image pin names the peer's guest")
+
 	// ErrCertValidity indicates the certificate is outside its validity
 	// window: expired, or NotBefore further in the future than the shared
 	// clock-skew allowance (certutil.LeafValiditySkew).

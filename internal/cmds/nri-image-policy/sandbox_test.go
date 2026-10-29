@@ -394,7 +394,7 @@ func TestSandboxViolations(t *testing.T) {
 				cdsPins:    tt.ownPins,
 				cdsAddress: tt.ownAddress,
 			}
-			got := observeSandbox(pod, ctr, own, nil, nil).violations()
+			got := observeSandbox(pod, ctr, own, nil, nil, cdiExpansion{}).violations()
 			if tt.want == "" {
 				if len(got) != 0 {
 					t.Fatalf("observeSandbox(ordinary pod).violations() = %v, want none", got)
@@ -456,16 +456,16 @@ func TestCheckSandboxModes(t *testing.T) {
 			floorDigest: pushDigestA, want: verdictDeny,
 		},
 		{
-			name: "node TCB exempts a floor entry", sandbox: SandboxEnforce, nodeTCB: true,
-			floorDigest: pushDigestA, want: verdictAllow,
+			name: "node TCB does not exempt an open floor entry's host bind", sandbox: SandboxEnforce, nodeTCB: true,
+			floorDigest: pushDigestA, want: verdictDeny,
 		},
 		{
 			name: "node TCB does not exempt a served entry", sandbox: SandboxEnforce, nodeTCB: true,
 			floorDigest: pushDigestB, want: verdictDeny,
 		},
 		{
-			name: "node TCB exempts a pinned entry at its own argv", sandbox: SandboxEnforce, nodeTCB: true,
-			floorDigest: pushDigestA, pinned: true, argv: []string{"/floor"}, want: verdictAllow,
+			name: "node TCB does not exempt an argv-only pin's host bind", sandbox: SandboxEnforce, nodeTCB: true,
+			floorDigest: pushDigestA, pinned: true, argv: []string{"/floor"}, want: verdictDeny,
 		},
 		{
 			name: "node TCB does not exempt a pinned entry restaged with a shell", sandbox: SandboxEnforce, nodeTCB: true,
@@ -499,6 +499,98 @@ func TestCheckSandboxModes(t *testing.T) {
 			}
 			if tt.want == verdictDeny && !strings.Contains(reason, "host path bind mount") {
 				t.Fatalf("checkSandbox(%s) reason = %q, want it to name the violation", tt.name, reason)
+			}
+		})
+	}
+}
+
+// The measured base excuses host privilege for a static pod or a launch an
+// entry pins. An open entry still admits its image, so a pod with the node's
+// root mounted, or only its network, is refused for the sandbox, not for the
+// image.
+func TestNodeTCBExemptsOnlyStaticOrPinnedLaunches(t *testing.T) {
+	open := allowlist.Container{
+		Command: allowlist.ArgvPolicy{Policy: allowlist.PolicyAny},
+		Args:    allowlist.ArgvPolicy{Policy: allowlist.PolicyAny},
+		Mounts:  allowlist.MountPolicy{Policy: allowlist.PolicyAny},
+	}
+	pinned := allowlist.Container{
+		Command: allowlist.ArgvPolicy{Policy: allowlist.PolicyExact, Argv: []string{"/floor"}},
+		Args:    allowlist.ArgvPolicy{Policy: allowlist.PolicyDeny},
+		Mounts: allowlist.MountPolicy{Policy: allowlist.PolicyExact, Rules: []allowlist.MountRule{
+			{Destination: "/host", Kind: allowlist.MountHost, Source: "/"},
+		}},
+		Env: allowlist.EnvPolicy{Policy: allowlist.PolicyExact, Values: map[string]string{"PATH": "/bin"}},
+	}
+	shell := []string{"/bin/sh", "-c", "id"}
+	privileged := func(ctr *api.Container) {
+		ctr.Mounts = append(ctr.Mounts, &api.Mount{Destination: "/host", Type: "bind", Source: "/", Options: []string{"rbind", "rw"}})
+		ctr.Linux.Namespaces = slices.DeleteFunc(ctr.Linux.Namespaces, func(ns *api.LinuxNamespace) bool { return ns.Type == cgroupNamespace })
+	}
+	hostNetwork := func(pod *api.PodSandbox) {
+		pod.Linux.Namespaces = slices.DeleteFunc(pod.Linux.Namespaces, func(ns *api.LinuxNamespace) bool {
+			return ns.Type == "network" || ns.Type == "uts"
+		})
+	}
+	tests := []struct {
+		name   string
+		entry  allowlist.Container
+		static bool
+		pod    func(*api.PodSandbox)
+		ctr    func(*api.Container)
+		argv   []string
+		want   imageVerdict
+	}{
+		{name: "open entry, privileged with the node root", entry: open, ctr: privileged, argv: shell, want: verdictDeny},
+		{name: "open entry, host network alone", entry: open, pod: hostNetwork, argv: shell, want: verdictDeny},
+		{name: "pinned entry at its own launch, host network", entry: pinned, pod: hostNetwork, ctr: privileged, argv: []string{"/floor"}, want: verdictAllow},
+		{name: "open entry, host network and privileged", entry: open, pod: hostNetwork, ctr: privileged, argv: shell, want: verdictDeny},
+		{name: "open entry, static pod", entry: open, static: true, ctr: privileged, argv: shell, want: verdictAllow},
+		{name: "pinned entry at its own launch", entry: pinned, ctr: privileged, argv: []string{"/floor"}, want: verdictAllow},
+		{name: "pinned entry restaged with a shell", entry: pinned, ctr: privileged, argv: shell, want: verdictDeny},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			entry := tt.entry
+			entry.Digest = mustDigestOrPanic(pushDigestA)
+			entry.Image = "floor"
+			base := &allowlist.Allowlist{Schema: allowlist.Schema, Workloads: map[string]allowlist.Workload{
+				"floor": {Label: "floor", Containers: []allowlist.Container{entry}},
+			}}
+			if err := base.Normalize(); err != nil {
+				t.Fatal(err)
+			}
+			cfg := &config{
+				Allowlist: allowlistConfig{Base: base, NodeTCB: true},
+				Policy:    policyConfig{Mode: ModeFailClosed, Sandbox: SandboxEnforce},
+			}
+			p := newTestPlugin(cfg)
+			p.policy = newPolicyStore(base)
+
+			pod, ctr := sandboxedPod(), sandboxedContainer()
+			// Without kubelet state the mount observer cannot place the pod's
+			// own binds, so keep only the kernel filesystems.
+			ctr.Mounts = slices.DeleteFunc(ctr.Mounts, func(m *api.Mount) bool { return m.Type == "bind" })
+			pod.Annotations = map[string]string{configSourceAnnotation: "api"}
+			if tt.static {
+				pod.Annotations[configSourceAnnotation] = staticPodSource
+			}
+			if tt.pod != nil {
+				tt.pod(pod)
+			}
+			if tt.ctr != nil {
+				tt.ctr(ctr)
+			}
+			ctr.Annotations = map[string]string{annotationImageName: testFloorImage}
+			ctr.Args = tt.argv
+			ctr.Env = []string{"PATH=/bin"}
+			mounts := newMountObserver(nil, nodeMounts{}).Observe(pod, ctr)
+			verdict, reason := p.checkSandbox(context.Background(), cfg, pod, ctr, testFloorImage, containerEnv(ctr), mounts)
+			if verdict != tt.want {
+				t.Fatalf("checkSandbox = %d %q, want %d", verdict, reason, tt.want)
+			}
+			if tt.want == verdictDeny && !strings.Contains(reason, "not part of the node TCB") {
+				t.Errorf("reason = %q, want it to say the launch is outside the node TCB", reason)
 			}
 		})
 	}
@@ -637,7 +729,7 @@ func TestVerifiedFileBindIsNotHostBind(t *testing.T) {
 			admitted := func(m allowlist.ObservedMount) bool {
 				return m.Provenance == allowlist.ProvenanceNodeRoot && m.ReadOnly
 			}
-			got := observeSandbox(pod, ctr, nodeMounts{}, mounts, admitted).HostBinds
+			got := observeSandbox(pod, ctr, nodeMounts{}, mounts, admitted, cdiExpansion{}).HostBinds
 			if (len(got) > 0) != tc.hostBind {
 				t.Fatalf("observeSandbox(%s).HostBinds = %v, want host bind %t", tc.name, got, tc.hostBind)
 			}
@@ -720,10 +812,10 @@ func TestNodeRootBindMatchesEvidenceBySourceAndDestination(t *testing.T) {
 	// Evidence order differs from the container's mount order.
 	mounts := []allowlist.ObservedMount{verified, {Source: "/var/lib/kubelet/pods/" + testPodUID + "/etc-hosts", Destination: "/etc/hosts"}}
 	admitted := func(m allowlist.ObservedMount) bool { return m.Provenance == allowlist.ProvenanceNodeRoot }
-	if got := observeSandbox(pod, ctr, nodeMounts{}, mounts, admitted).HostBinds; len(got) != 0 {
+	if got := observeSandbox(pod, ctr, nodeMounts{}, mounts, admitted, cdiExpansion{}).HostBinds; len(got) != 0 {
 		t.Fatalf("observeSandbox(reordered evidence).HostBinds = %v, want none", got)
 	}
-	if got := observeSandbox(pod, ctr, nodeMounts{}, mounts[1:], admitted).HostBinds; len(got) != 1 {
+	if got := observeSandbox(pod, ctr, nodeMounts{}, mounts[1:], admitted, cdiExpansion{}).HostBinds; len(got) != 1 {
 		t.Fatalf("observeSandbox(no evidence for the bind).HostBinds = %v, want the bind", got)
 	}
 }

@@ -354,8 +354,8 @@ func TestChartBakedNginxRefusesConfigMapConfig(t *testing.T) {
 	nginx := spec.Containers[i]
 	pin := componentPins(t, out, bakedArgs)[imageDigest(nginx.Image)]
 	argv := runtimeArgv(nginx, pin.entrypoint)
-	if !slices.Contains(argv, "/usr/lib/c8s/router-nginx/reload.sh") {
-		t.Errorf("baked nginx argv = %q, want the image's /usr/lib/c8s/router-nginx/reload.sh", argv)
+	if !slices.Contains(argv, "/usr/lib/c8s/router-nginx/serve.sh") {
+		t.Errorf("baked nginx argv = %q, want the image's /usr/lib/c8s/router-nginx/serve.sh", argv)
 	}
 	index := renderedSeed(t, out).BuildIndex()
 	admits := func() bool {

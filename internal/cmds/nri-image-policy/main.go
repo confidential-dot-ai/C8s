@@ -246,6 +246,8 @@ func Run(args []string) error {
 			timeout:  cfg.Allowlist.Pull.Timeout,
 			etag:     initialETag,
 			logger:   logger,
+
+			killRevoked: plugin.KillRevoked,
 		})
 	}
 
@@ -272,9 +274,6 @@ func allowlistPullHTTPClient(cfg pullConfig, platform string) (*http.Client, err
 	set, err := cfg.policySet(platform)
 	if err != nil {
 		return nil, err
-	}
-	if set.Empty() {
-		slog.Warn("allowlist.pull.cds_measurements not set; nri-image-policy accepts any armTLS-attested CDS measurement")
 	}
 	client, err := armtls.NewVerifyingHTTPClient(armtls.Pins(set.Policy()), cfg.AttestationApiURL)
 	if err != nil {
@@ -360,10 +359,14 @@ type pullLoopArgs struct {
 	timeout  time.Duration
 	etag     string
 	logger   *slog.Logger
+
+	// killRevoked runs after each applied document.
+	killRevoked func(context.Context)
 }
 
 // runPullLoop polls CDS with If-None-Match. 200 rebuilds the index from the
-// pulled document and advances the ETag — unless the pulled version is below the applied
+// pulled document, advances the ETag and kills the running containers it no
+// longer admits — unless the pulled version is below the applied
 // one (epoch rollback), which is ignored so the ETag keeps re-fetching until a
 // forward version arrives. 304 and errors leave the index untouched. A
 // version the measurer refuses for good also advances the ETag and is logged
@@ -435,6 +438,7 @@ func runPullLoop(ctx context.Context, args pullLoopArgs) {
 			"etag", etag,
 			"digest", served.Digest,
 		)
+		args.killRevoked(ctx)
 	}
 }
 
@@ -804,9 +808,6 @@ func startSandboxDigests(ctx context.Context, logger *slog.Logger, cfg *config, 
 	set, err := cfg.Allowlist.Pull.policySet(cfg.NormalizedPlatform())
 	if err != nil {
 		return err
-	}
-	if set.Empty() {
-		logger.Warn("allowlist.pull.cds_measurements not set: the sandbox-digests endpoint answers ANY armTLS-attested caller, so any TEE on the network can read what this node runs. UNSAFE outside development.")
 	}
 	attestationApiURL := cfg.Allowlist.Pull.AttestationApiURL
 	var journal string

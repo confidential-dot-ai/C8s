@@ -99,8 +99,14 @@ cds_pod_url() { cds_node_url; }
 # no address lets the CDS see the pod's own as the source.
 cds_service_url() { return "$UNSUPPORTED"; }
 # The guest's address from the allowlist URL, with the CDS Service's node port.
+# Not on the SNP lane: its guest hangs off a bridge interface and its node
+# port never answers the harness host (run 40547124565: every write to it
+# timed out on SNP while the TDX lane of the same run passed them), so the
+# routes behind it are out of reach there; answered before a dial that
+# would cost its 30 s timeout.
 cds_node_url() {
     local host port
+    [ "$PLATFORM" != snp-metal ] || return "$UNSUPPORTED"
     host="${C8S_ALLOWLIST_URL#*://}"
     host="${host%%/*}"
     port="$(kubectl -n "$NS" get svc c8s-cds -o jsonpath='{.spec.ports[0].nodePort}')" || return
@@ -425,11 +431,7 @@ plugin_ready() {
 
 node_containers() { return $UNSUPPORTED; }
 
-# The node image's confos-operator-scope policy denies the operator every
-# write in kube-system, local-path-storage and c8s-system, the namespaces
-# the webhook exempts that admit the harness's pods. So the requester the
-# steps drive runs as a mesh member, and a scenario that needs a pod outside
-# the mesh skips.
+# Operator scope forbids exempt namespaces.
 exempt_namespace() { return "$UNSUPPORTED"; }
 
 # No shell on the node, so its plugin cannot be stopped or started; and

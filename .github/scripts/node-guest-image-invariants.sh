@@ -58,7 +58,7 @@ if grep -qx 'CONFIG_MODULES=y' "$ngi/kernel/c8s.config"; then
   fi
 fi
 
-# The baked NRI template contains only the generated RKE2 system floor.
+# The baked NRI template's only digests are the RKE2 system floor's.
 # The complete chart component seed is merged into it before containerd starts;
 # duplicating component digests here would drift from the rendered workloads.
 policy="$ngi/c8s/image-policy.yaml.in"
@@ -390,8 +390,8 @@ vap="$manifests/psa-level-policy.yaml"
 psa_gate="$ngi/c8s/mkosi.extra/usr/local/bin/psa-ready.sh"
 cred_release="$ngi/c8s/mkosi.extra/etc/systemd/system/cred-release.service"
 exempt=$(sed -n '/^[[:space:]]*namespaces:/,/^[[:space:]]*[^[:space:]-]/s/^[[:space:]]*-[[:space:]]*//p' "$psa")
-if [ "$exempt" != "$(printf 'kube-system\nlocal-path-storage')" ]; then
-  echo "::error::$psa must exempt exactly kube-system and local-path-storage from restricted PodSecurity; got: $(echo "$exempt" | tr '\n' ' ')"
+if [ "$exempt" != "kube-system" ]; then
+  echo "::error::$psa must exempt exactly kube-system from restricted PodSecurity; got: $(echo "$exempt" | tr '\n' ' ')"
   exit 1
 fi
 if ! grep -q 'enforce: "restricted"' "$psa"; then

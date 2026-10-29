@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
-# Run against a disposable, single-node C8s image. Requires kubectl + jq. No
-# exec/logs endpoint, external test image or allowlist change: reuse the baked
-# local-path-provisioner image (Alpine + BusyBox).
+# Run against a disposable, single-node C8s image. Requires kubectl, jq and
+# `c8s`, and, as allowlist-enforcement.sh:
+#   C8S_ALLOWLIST_URL, C8S_MEASUREMENTS_CONFIG (or C8S_MEASUREMENTS),
+#   C8S_OPERATOR_KEY
+# The probe image is busybox, admitted by a signed allowlist entry this test
+# adds and deletes: baked images are pinned to their own command lines. A
+# different tag from allowlist-enforcement.sh, which first expects busybox:1.36
+# to be refused.
 # Admission and the runtime labels are proven from a Restricted pod in this
 # test's own namespace, which the bounded operator credential may create. The
 # mount-denial control needs Unconfined with SYS_ADMIN in the exempt system
@@ -15,21 +20,31 @@ k() { kubectl --request-timeout=30s "$@"; }
 nodes=$(k get nodes -o json)
 [ "$(jq '.items | length' <<<"$nodes")" = 1 ] || fail "requires a disposable single-node cluster"
 node=$(jq -er '.items[0].metadata.name' <<<"$nodes")
-image=$(k -n local-path-storage get deployment local-path-provisioner \
-    -o jsonpath='{.spec.template.spec.containers[0].image}')
-[ -n "$image" ] || fail "local-path-provisioner image is missing"
+
+: "${C8S_ALLOWLIST_URL:?names the armTLS CDS or router endpoint}"
+cds_measurement_args
+: "${C8S_OPERATOR_KEY:?path to the operator EC key PEM}"
+al() { c8s allowlist "$@" --url "$C8S_ALLOWLIST_URL" "${measurement_args[@]}"; }
+digest=$(c8s allowlist inspect-image busybox:1.37 | awk '$1 == "digest:" { print $2 }')
+[ -n "$digest" ] || fail "no digest resolved for busybox:1.37"
+image="busybox@$digest"
 
 # Let the API allocate unique names; only delete resources this invocation made.
 ns=""
 pod=""
+entry=""
 cleanup() {
     local result=$?
     if [ -n "$pod" ]; then k -n kube-system delete pod "$pod" --wait=false --ignore-not-found || result=1; fi
     if [ -n "$ns" ]; then k delete namespace "$ns" --wait=false --ignore-not-found || result=1; fi
+    if [ -n "$entry" ]; then al delete "$entry" >/dev/null || result=1; fi
     return "$result"
 }
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
+# `allowlist add` names the entry "<basename>-<first 12 hex of digest>".
+cds_write al add "$digest" "$image" >/dev/null || fail "signed allowlist write rejected for $digest"
+entry="busybox-$(printf '%s' "${digest#sha256:}" | cut -c1-12)"
 ns=$(k create -f - -o jsonpath='{.metadata.name}' <<'EOF'
 {"apiVersion":"v1","kind":"Namespace","metadata":{"generateName":"apparmor-admission-"}}
 EOF
@@ -63,6 +78,9 @@ wait_pod() {
             Succeeded) printf '%s' "$status"; return 0 ;;
             Failed) jq '.status' <<<"$status" >&2; fail "AppArmor runtime probe $pname failed" ;;
         esac
+        # An NRI refusal shows only here, and the final status drops it.
+        jq -r '.status.containerStatuses[]? | select(.state.waiting.message)
+            | "\(.name): \(.state.waiting.reason): \(.state.waiting.message)"' <<<"$status" >&2
         sleep 5
     done
     jq '.status' <<<"$status" >&2

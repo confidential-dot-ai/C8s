@@ -48,7 +48,8 @@ workload-agnostic: anything that runs on Kubernetes can run confidentially.
 - [Your first confidential cluster](https://confidential.ai/docs/c8s/tutorials/first-confidential-cluster), an end-to-end tutorial from bare cloud account to verified confidential workload
 - [c8s-verify](https://github.com/confidential-dot-ai/c8s-verify-js), verify a C8s cluster from a browser
 - [attestation-rs](https://github.com/confidential-dot-ai/attestation-rs), the TEE evidence verification service C8s uses
-- [armTLS](docs/armtls.md), how attested TLS works in C8s — the handshake step by step, the guarantees, and which certificate is used where
+- [Repository docs](docs/README.md), the concepts and intentions behind C8s, with reading paths for operators, workload owners, verifiers and contributors
+- [armTLS](docs/armtls.md), how attested TLS works in C8s: the handshake, what each certificate proves, and which certificate is used where
 - [Route evidence](docs/routes-evidence.md), how the router binds its route manifest into attestation evidence and how `c8s verify` checks it
 
 ## Features
@@ -185,7 +186,7 @@ openssl ec -in operator.key -pubout -out operator.pub
 # router verifies; install prints the `c8s routes add` commands that store the
 # route
 c8s install --cvm-mode=bare-metal --hardware-platform=sev-snp --namespace c8s-system \
-  --operator-keys operator.pub \
+  --operator-keys operator.pub --measurements <node image manifest.json launch digest> \
   --workload-ref vllm=vllm/deployment/serving:8443 \
   --upstream vllm
 ```
@@ -221,9 +222,10 @@ pod's `c8s-certs` volume, which the mesh endpoint reads at `/etc/c8s/certs`.
 
 ### Production notes
 
-- **Pin measurements.** The chart's armTLS handshakes accept any TEE-attested
-  peer until you pin `cds.measurements` and `armtlsMesh.measurements` to the
-  expected launch digests. Leave them empty only on a trusted network.
+- **Pin measurements.** `cds.measurements` is required: the chart refuses to
+  render without it, and CDS refuses to start without it. Pass the node image's
+  launch digest as `c8s install --measurements <launch-digest>`, or name the
+  images with `--image-policy-file`.
 
 - **Pin operator keys.** Pass `--operator-keys` at install time or allowlist
   writes stay disabled. Leaving writes disabled and re-deploying CDS on every
@@ -281,7 +283,7 @@ attestation and reports the operator keys it pins.
 | [`pkg/overenc`](pkg/overenc/) | Post-quantum over-encryption channel and its identity transcript |
 | [`pkg/operatorauth`](pkg/operatorauth/) | Operator-key signing and verification for allowlist and secret writes |
 | [`pkg/types`](pkg/types/) | Shared request/response types for the C8s protocols (the attestation-api wire types live in [attestation-go/remote](https://github.com/confidential-dot-ai/attestation-go)) |
-| [`pkg/runtimemeasure`](pkg/runtimemeasure/) | TDX image-pin manifests and RTMR[3] measurement replay |
+| [`attestation-go/runtimemeasure`](https://github.com/confidential-dot-ai/attestation-go/tree/main/runtimemeasure) | TDX image-pin manifests and RTMR[3] measurement replay, consumed from attestation-go |
 | [`pkg/certutil`](pkg/certutil/) | Certificate utility functions |
 
 ## Repository layout
@@ -368,11 +370,10 @@ to. For the default public route, use the router launch digest; the CLI reads
 router's discovery document and verifies its attestation automatically.
 Direct CDS URLs remain supported, in which case pin the CDS launch digest.
 
-An empty set accepts any attested endpoint. Reads run with a warning; anything
-that signs with the operator key — every `c8s allowlist` write and
-`c8s secrets put`/`explain` — is **refused**, because the credential and its
-payload would go to whatever answered. A plaintext `--insecure` dev endpoint is
-exempt: it already declares that nothing about it is attested.
+An empty set is **refused**, reads included: the request, and any operator
+credential signing it, would go to whatever answered. A plaintext `--insecure`
+dev endpoint is exempt: it already declares that nothing about it is
+attested.
 
 Do not point this CLI at router when `router.publicTLS.secretName` is set. That
 front door uses WebPKI (`public_tls.mode=webpki`), and its public certificate is
@@ -470,10 +471,6 @@ evidence verification service, which is built and published from
 
 C8s is built around a strong threat model, and we would rather list the holes
 than let you discover them:
-
-- **Measurements are not pinned by default.** Until `cds.measurements` and
-  `armtlsMesh.measurements` are set, the mesh accepts any attested peer. Fine
-  for demos, mandatory homework for production.
 
 - **CDS is a singleton.** The mesh CA key lives only in CDS process
   memory; a restart mints a new CA and workloads re-bootstrap.

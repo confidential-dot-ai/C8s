@@ -717,15 +717,15 @@ func TestPrintAttestVerifyHint(t *testing.T) {
 
 	buf.Reset()
 	printAttestVerifyHint(&buf, true)
-	if !strings.Contains(buf.String(), "UNPINNED") {
-		t.Errorf("no measurements: want the UNPINNED warning, got %q", buf.String())
+	if out := buf.String(); !strings.Contains(out, "--image-policy-file") || strings.Contains(out, "pinned to --measurements") {
+		t.Errorf("no measurements: want the other pin sources named, got %q", out)
 	}
 
 	buf.Reset()
 	installMeasurements = []string{strings.Repeat("aa", 48)}
 	printAttestVerifyHint(&buf, true)
 	out := buf.String()
-	if !strings.Contains(out, "pinned to --measurements") || strings.Contains(out, "UNPINNED") {
+	if !strings.Contains(out, "pinned to --measurements") || strings.Contains(out, "--image-policy-file") {
 		t.Errorf("with measurements: want the pinned hint only, got %q", out)
 	}
 }
@@ -783,7 +783,7 @@ func clusterKubectl(applied, extra string) string {
 esac`
 }
 
-// runInstall runs c8s install with a CDS pin, which routeSourcePreflight
+// runInstall runs c8s install with a CDS pin, which cdsPinPreflight
 // otherwise demands.
 func runInstall(t *testing.T, args ...string) error {
 	t.Helper()
@@ -1100,7 +1100,7 @@ esac`)
 // effectiveValues must read it, and helm must receive the piped bytes as a
 // -f file ahead of the computed values.
 func TestInstallValuesFromStdin(t *testing.T) {
-	payload := "volumed:\n  enabled: true\nnriImagePolicy:\n  distro: rke2\nrouter:\n  routing:\n    allowUnpinnedCDS: true\n"
+	payload := "volumed:\n  enabled: true\nnriImagePolicy:\n  distro: rke2\ncds:\n  measurements: [" + strings.Repeat("ab", 48) + "]\n"
 
 	s := newInstallStubs(t, "", false)
 	s.f.tool(t, "kubectl", clusterKubectl(s.applied, ""))
@@ -1430,7 +1430,7 @@ func TestInstallNodeLaneReportsNoExemption(t *testing.T) {
 // `-f -` is such a file: the exempt scan runs after stdin is materialized, so
 // it reads the piped bytes rather than a literal "-".
 func TestInstallHostedLaneKeepsExemptNamespacesFromStdin(t *testing.T) {
-	payload := "nriImagePolicy:\n  policy:\n    exemptNamespaces: [gatekeeper-system]\nrouter:\n  routing:\n    allowUnpinnedCDS: true\n"
+	payload := "nriImagePolicy:\n  policy:\n    exemptNamespaces: [gatekeeper-system]\ncds:\n  measurements: [" + strings.Repeat("ab", 48) + "]\n"
 
 	s := newInstallStubs(t, "", false)
 	s.f.tool(t, "kubectl", clusterKubectl(s.applied, ""))

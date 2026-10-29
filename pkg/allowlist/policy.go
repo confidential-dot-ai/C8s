@@ -305,3 +305,30 @@ func (i *Index) DeclaresNodeRoot(digest string) bool {
 		})
 	})
 }
+
+// LaunchPinned reports whether the container fixes everything the pod could
+// otherwise choose about its launch: command, args and mounts are not any, and
+// the environment is constrained (an absent env policy is any).
+func (c Container) LaunchPinned() bool {
+	return c.Command.Policy != PolicyAny && c.Args.Policy != PolicyAny &&
+		c.Mounts.Policy != PolicyAny && c.Env.Policy != PolicyAny && c.Env.Policy != ""
+}
+
+// AdmitsContainerWhere is AdmitsContainer restricted to the entries keep
+// selects.
+func (i *Index) AdmitsContainerWhere(r RunningContainer, keep func(Container) bool) bool {
+	if i == nil {
+		return false
+	}
+	d, err := types.ParseDigest(r.Digest)
+	if err != nil {
+		return false
+	}
+	r.Digest = d.String()
+	for _, c := range i.byDigest[r.Digest] {
+		if keep(c) && c.admits(r) {
+			return true
+		}
+	}
+	return false
+}

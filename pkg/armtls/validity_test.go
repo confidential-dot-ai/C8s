@@ -56,7 +56,7 @@ func TestVerifyCertEnforcesValidity(t *testing.T) {
 	t.Run("expired rejected before the evidence round-trip", func(t *testing.T) {
 		stub := mockapi.New(t)
 		cert := attestedCertWithWindow(t, now.Add(-2*time.Hour), now.Add(-time.Hour))
-		_, err := VerifyCert(cert, &VerifyPolicy{AttestationApiURL: stub.URL()}, nil)
+		_, err := VerifyCert(cert, pinnedPolicy(stub.URL()), nil)
 		if !errors.Is(err, ErrCertValidity) {
 			t.Fatalf("err = %v, want errors.Is ErrCertValidity", err)
 		}
@@ -68,7 +68,7 @@ func TestVerifyCertEnforcesValidity(t *testing.T) {
 	t.Run("not yet valid beyond skew rejected", func(t *testing.T) {
 		stub := mockapi.New(t)
 		cert := attestedCertWithWindow(t, now.Add(certutil.LeafValiditySkew+time.Minute), now.Add(2*time.Hour))
-		_, err := VerifyCert(cert, &VerifyPolicy{AttestationApiURL: stub.URL()}, nil)
+		_, err := VerifyCert(cert, pinnedPolicy(stub.URL()), nil)
 		if !errors.Is(err, ErrCertValidity) {
 			t.Fatalf("err = %v, want errors.Is ErrCertValidity", err)
 		}
@@ -96,7 +96,7 @@ func TestVerifyPeerCallbackRejectsExpiredSelfSigned(t *testing.T) {
 	stub := mockapi.New(t)
 	cert := attestedCertWithWindow(t, time.Now().Add(-2*time.Hour), time.Now().Add(-time.Hour))
 
-	verify := verifyPeerCallback(&VerifyPolicy{AttestationApiURL: stub.URL()}, x509.ExtKeyUsageClientAuth)
+	verify := verifyPeerCallback(pinnedPolicy(stub.URL()), x509.ExtKeyUsageClientAuth)
 	err := verify([][]byte{cert.Raw}, nil)
 	if !errors.Is(err, ErrCertValidity) {
 		t.Fatalf("err = %v, want errors.Is ErrCertValidity", err)
@@ -226,7 +226,7 @@ func TestVerifyCertAuthenticatesTheLeafBody(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = VerifyCert(cert, &VerifyPolicy{AttestationApiURL: stub.URL()}, nil)
+	_, err = VerifyCert(cert, pinnedPolicy(stub.URL()), nil)
 	if err == nil || !strings.Contains(err.Error(), "does not verify with its own key") {
 		t.Fatalf("err = %v, want the self-signature rejection", err)
 	}

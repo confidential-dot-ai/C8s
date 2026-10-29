@@ -237,6 +237,7 @@ func TestPullLoopOnly200UpdatesIndexAndETag(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	var sweeps int
 	done := make(chan struct{})
 	go func() {
 		runPullLoop(ctx, pullLoopArgs{
@@ -246,6 +247,8 @@ func TestPullLoopOnly200UpdatesIndexAndETag(t *testing.T) {
 			timeout:  time.Second,
 			etag:     "",
 			logger:   discardLogger(),
+
+			killRevoked: func(context.Context) { sweeps++ },
 		})
 		close(done)
 	}()
@@ -263,6 +266,9 @@ func TestPullLoopOnly200UpdatesIndexAndETag(t *testing.T) {
 
 	cancel()
 	<-done
+	if sweeps != 2 {
+		t.Fatalf("running containers rechecked %d times, want 2 (once per applied version)", sweeps)
+	}
 }
 
 func TestPullLoop304LeavesIndexUntouched(t *testing.T) {
@@ -290,6 +296,8 @@ func TestPullLoop304LeavesIndexUntouched(t *testing.T) {
 			timeout:  time.Second,
 			etag:     `W/"1"`,
 			logger:   discardLogger(),
+
+			killRevoked: func(context.Context) {},
 		})
 		close(done)
 	}()
@@ -325,6 +333,8 @@ func TestPullLoop5xxLeavesIndexUntouched(t *testing.T) {
 			timeout:  time.Second,
 			etag:     `W/"5"`,
 			logger:   discardLogger(),
+
+			killRevoked: func(context.Context) {},
 		})
 		close(done)
 	}()
@@ -360,6 +370,8 @@ func TestPullLoopKeepsTheBaseBesidePulled(t *testing.T) {
 			timeout:  time.Second,
 			etag:     "",
 			logger:   discardLogger(),
+
+			killRevoked: func(context.Context) {},
 		})
 		close(done)
 	}()
@@ -398,6 +410,7 @@ func TestPullLoopIgnoresRolledBackFetch(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	var sweeps int
 	done := make(chan struct{})
 	go func() {
 		runPullLoop(ctx, pullLoopArgs{
@@ -407,6 +420,8 @@ func TestPullLoopIgnoresRolledBackFetch(t *testing.T) {
 			timeout:  time.Second,
 			etag:     "",
 			logger:   discardLogger(),
+
+			killRevoked: func(context.Context) { sweeps++ },
 		})
 		close(done)
 	}()
@@ -430,6 +445,9 @@ func TestPullLoopIgnoresRolledBackFetch(t *testing.T) {
 
 	cancel()
 	<-done
+	if sweeps != 1 {
+		t.Fatalf("running containers rechecked %d times, want 1 (only for version 5)", sweeps)
+	}
 }
 
 func TestPullInitialSucceedsAfterTransientFailures(t *testing.T) {
@@ -705,6 +723,8 @@ func TestPullLoopAppliesOnlyMeasuredPolicies(t *testing.T) {
 		interval: time.Millisecond,
 		timeout:  time.Second,
 		logger:   discardLogger(),
+
+		killRevoked: func(context.Context) {},
 	})
 
 	if want := []string{servedDigest(bodyA), servedDigest(bodyB)}; !slices.Equal(measured, want) {
@@ -917,6 +937,8 @@ func TestPullLoopRefusedVersionNotRefetched(t *testing.T) {
 		interval: time.Millisecond,
 		timeout:  time.Second,
 		logger:   slog.New(slog.NewTextHandler(&logs, nil)),
+
+		killRevoked: func(context.Context) {},
 	})
 
 	if measures != 1 || bodies.Load() != 1 {
@@ -951,6 +973,8 @@ func TestPullLoopLogsMeasureFailureOnce(t *testing.T) {
 		interval: time.Millisecond,
 		timeout:  time.Second,
 		logger:   slog.New(slog.NewTextHandler(&logs, nil)),
+
+		killRevoked: func(context.Context) {},
 	})
 
 	if measures != 3 {
@@ -1038,6 +1062,8 @@ func TestPullLoopLogsMeasureFailureAfterRefusal(t *testing.T) {
 		interval: time.Millisecond,
 		timeout:  time.Second,
 		logger:   slog.New(slog.NewTextHandler(&logs, nil)),
+
+		killRevoked: func(context.Context) {},
 	})
 
 	if n := strings.Count(logs.String(), "could not measure"); n != 2 {

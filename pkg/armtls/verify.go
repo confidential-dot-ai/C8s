@@ -21,7 +21,8 @@ import (
 type VerifyPolicy struct {
 	// Policy is the evidence policy the attestation-api enforces: image pins,
 	// launch-measurement reference values, TDX runtime registers, the SEV-SNP
-	// TCB floor and the debug rule. Leave ExpectedReportData unset — the
+	// TCB floor and the debug rule. It must carry a launch measurement or an
+	// image pin ([ErrUnpinned]). Leave ExpectedReportData unset — the
 	// verifying paths derive it from the certificate key and refuse a value
 	// that disagrees.
 	Policy remote.Policy
@@ -74,9 +75,14 @@ type VerifyResult struct {
 //     minimum-TCB policy.
 //  2. The launch measurement it returns is checked against policy.Policy here,
 //     by the same enforcement every attestation-go caller gets.
+//
+// A policy that names no guest fails with [ErrUnpinned] before any request.
 func VerifyAttestation(pub crypto.PublicKey, att *Attestation, policy *VerifyPolicy, nonce []byte) (*VerifyResult, error) {
 	if policy == nil {
 		policy = &VerifyPolicy{}
+	}
+	if err := requirePins(policy.Policy); err != nil {
+		return nil, err
 	}
 	if err := policy.requireAttestationApi(); err != nil {
 		return nil, err
@@ -100,9 +106,14 @@ func VerifyAttestation(pub crypto.PublicKey, att *Attestation, policy *VerifyPol
 // rewritten under a genuine extension. Doing it before the evidence
 // round-trip also keeps a bad certificate from consuming an attestation-api
 // call.
+//
+// A policy that names no guest fails with [ErrUnpinned].
 func VerifyCert(cert *x509.Certificate, policy *VerifyPolicy, nonce []byte) (*VerifyResult, error) {
 	if policy == nil {
 		policy = &VerifyPolicy{}
+	}
+	if err := requirePins(policy.Policy); err != nil {
+		return nil, err
 	}
 
 	// Split out so a window failure keeps its own sentinel, which callers

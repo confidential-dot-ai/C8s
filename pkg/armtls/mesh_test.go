@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"math/big"
 	"net"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -287,7 +288,7 @@ func TestEveryConfigRefusesResumption(t *testing.T) {
 	configs := map[string]func(t *testing.T) (*tls.Config, *CertManager, error){
 		"evidence server": func(t *testing.T) (*tls.Config, *CertManager, error) {
 			cfg := testServerConfig()
-			cfg.ClientPolicy = &VerifyPolicy{AttestationApiURL: "http://unused.invalid"}
+			cfg.ClientPolicy = pinnedPolicy("http://unused.invalid")
 			return NewServerTLSConfig(cfg)
 		},
 		"client-CA server": func(t *testing.T) (*tls.Config, *CertManager, error) {
@@ -298,7 +299,7 @@ func TestEveryConfigRefusesResumption(t *testing.T) {
 		},
 		"evidence client": func(t *testing.T) (*tls.Config, *CertManager, error) {
 			return NewClientTLSConfig(&ClientConfig{
-				Policy: &VerifyPolicy{},
+				Policy: pinnedPolicy("http://unused.invalid"),
 				CertProvider: &mockProvider{
 					cert: generateSimpleCert(t),
 					ttl:  time.Hour,
@@ -544,14 +545,14 @@ func acceptingMeshPair(t *testing.T, server, client meshLeafSpec, acceptClient, 
 }
 
 // Each role hands its AcceptPeer the identity the chain path read off the
-// peer it just verified: the instance the leaf names, the workload CDS
-// stamped on it, and the purpose that role required.
+// peer it just verified: the instance the leaf names, the workload and
+// allowlist snapshot CDS stamped on it, and the purpose that role required.
 func TestMeshAcceptPeerReadsTheVerifiedIdentity(t *testing.T) {
 	accepted := make(chan Peer, 1)
 	var reachedServer Peer
 	server, client := acceptingMeshPair(t,
 		meshLeafSpec{workload: "web"},
-		meshLeafSpec{workload: "router"},
+		meshLeafSpec{},
 		func(peer Peer) error {
 			accepted <- peer
 			return nil
@@ -565,21 +566,22 @@ func TestMeshAcceptPeerReadsTheVerifiedIdentity(t *testing.T) {
 		t.Fatalf("mesh handshake failed: %v", err)
 	}
 	want := Peer{
-		SandboxID:    testMeshSandboxID,
-		WorkloadName: "web",
-		Purpose:      x509.ExtKeyUsageServerAuth,
+		SandboxID:        testMeshSandboxID,
+		WorkloadName:     "web",
+		AllowlistVersion: "1",
+		AllowlistDigest:  bytes.Repeat([]byte{0x42}, 32),
+		Purpose:          x509.ExtKeyUsageServerAuth,
 	}
-	if reachedServer != want {
+	if !reflect.DeepEqual(reachedServer, want) {
 		t.Fatalf("the client judged %+v, want %+v", reachedServer, want)
 	}
 	want = Peer{
-		SandboxID:    testMeshSandboxID,
-		WorkloadName: "router",
-		Purpose:      x509.ExtKeyUsageClientAuth,
+		SandboxID: testMeshSandboxID,
+		Purpose:   x509.ExtKeyUsageClientAuth,
 	}
 	select {
 	case got := <-accepted:
-		if got != want {
+		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("the server judged %+v, want %+v", got, want)
 		}
 	case <-time.After(5 * time.Second):

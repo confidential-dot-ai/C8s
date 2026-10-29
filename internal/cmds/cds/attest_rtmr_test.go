@@ -115,9 +115,9 @@ func TestAttestTDXPinnedRTMRNotReportedIsRefused(t *testing.T) {
 // digest, so a configured RTMR pin must not lock SNP guests out of a mixed
 // fleet.
 func TestAttestSNPUnaffectedByRTMRPins(t *testing.T) {
-	stub := newStubAttestationApi(t, "deadbeef")
+	stub := newStubAttestationApi(t, testLaunchDigest)
 
-	h := newTestAttestHandler(t, stub.URL(), map[string]bool{"deadbeef": true})
+	h := newTestAttestHandler(t, stub.URL(), map[string]bool{testLaunchDigest: true})
 	h.RTMRs = rtmrPin(t, 1, testRTMR1)
 
 	csrPEM, _ := generateCSR(t)

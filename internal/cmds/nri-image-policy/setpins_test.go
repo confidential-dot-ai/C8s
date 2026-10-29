@@ -14,7 +14,7 @@ const (
 )
 
 // bakedConfig mirrors the shape the node image ships: a base allowlist whose
-// digests only the image build knows, and empty CDS pins.
+// digests only the image build knows, and CDS pins set-cds-pins fills in.
 const bakedConfig = `# nri-image-policy boot config — the MEASURED boot-time base allowlist.
 platform: "snp"
 
@@ -165,12 +165,13 @@ func TestSetCDSPinsFoldsCaseWhenComparing(t *testing.T) {
 	}
 }
 
-// An install with no --measurements must cost no containerd restart: the baked
-// config already says "accept any attested CDS", so there is nothing to write.
-func TestSetCDSPinsLeavesAnUnpinnedInstallAlone(t *testing.T) {
+// The plugin pulls its allowlist only from a pinned CDS, so an install with no
+// --measurements is refused and the baked config is left as it was.
+func TestSetCDSPinsRefusesAnUnpinnedInstall(t *testing.T) {
 	path := writeConfig(t, bakedConfig)
-	if got := setPins(t, path); got != pinsUnchanged {
-		t.Fatalf("outcome = %q, want %q", got, pinsUnchanged)
+	var out bytes.Buffer
+	if err := runSetCDSPins(&out, []string{"--config", path}); err == nil || !strings.Contains(err.Error(), "--cds-measurements is required") {
+		t.Fatalf("set-cds-pins without pins = %v, want the required-flag refusal", err)
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -199,25 +200,18 @@ func TestSetCDSPinsWritesRTMRsInIndexOrder(t *testing.T) {
 	}
 }
 
-// An install that drops its pins clears them rather than leaving the previous
-// release's set in force.
-func TestSetCDSPinsClearsPins(t *testing.T) {
+// An install that drops its pins is refused, so the previous release's set
+// stays in force rather than the node pulling from any attested CDS.
+func TestSetCDSPinsRefusesToClearPins(t *testing.T) {
 	path := writeConfig(t, bakedConfig)
 	setPins(t, path, "--cds-measurements", pinA)
 
-	if got := setPins(t, path); got != pinsUpdated {
-		t.Fatalf("outcome = %q, want %q", got, pinsUpdated)
+	var out bytes.Buffer
+	if err := runSetCDSPins(&out, []string{"--config", path}); err == nil {
+		t.Fatal("set-cds-pins cleared the node's CDS pins")
 	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read patched config: %v", err)
-	}
-	cfg, err := parseConfig(data)
-	if err != nil {
-		t.Fatalf("patched config does not load: %v", err)
-	}
-	if len(cfg.Allowlist.Pull.CDSMeasurements) != 0 {
-		t.Errorf("cds_measurements = %v, want empty", cfg.Allowlist.Pull.CDSMeasurements)
+	if got := loadPatched(t, path).Allowlist.Pull.CDSMeasurements; len(got) != 1 || got[0] != pinA {
+		t.Errorf("cds_measurements = %v, want the previous pin", got)
 	}
 }
 
@@ -278,25 +272,25 @@ func TestRunDispatchesThesetCDSPinsVerb(t *testing.T) {
 // the same value is not a change.
 func TestSetCDSPinsSetsMeasurePolicies(t *testing.T) {
 	path := writeConfig(t, bakedConfig)
-	if got := setPins(t, path, "--measure-policies"); got != pinsUpdated {
+	if got := setPins(t, path, "--cds-measurements", pinA, "--measure-policies"); got != pinsUpdated {
 		t.Fatalf("enable outcome = %q, want %q", got, pinsUpdated)
 	}
 	if !loadPatched(t, path).Allowlist.Pull.MeasurePolicies {
 		t.Fatal("measure_policies not set")
 	}
-	if got := setPins(t, path, "--measure-policies"); got != pinsUnchanged {
+	if got := setPins(t, path, "--cds-measurements", pinA, "--measure-policies"); got != pinsUnchanged {
 		t.Fatalf("re-run outcome = %q, want %q", got, pinsUnchanged)
 	}
-	if got := setPins(t, path, "--cds-measurements", pinA); got != pinsUpdated {
+	if got := setPins(t, path, "--cds-measurements", pinB); got != pinsUpdated {
 		t.Fatalf("pins-only outcome = %q, want %q", got, pinsUpdated)
 	}
 	if cfg := loadPatched(t, path); !cfg.Allowlist.Pull.MeasurePolicies {
 		t.Fatal("a run without --measure-policies turned measuring off")
 	}
-	if got := setPins(t, path, "--cds-measurements", pinA); got != pinsUnchanged {
+	if got := setPins(t, path, "--cds-measurements", pinB); got != pinsUnchanged {
 		t.Fatalf("re-run without --measure-policies outcome = %q, want %q", got, pinsUnchanged)
 	}
-	if got := setPins(t, path, "--cds-measurements", pinA, "--measure-policies=false"); got != pinsUpdated {
+	if got := setPins(t, path, "--cds-measurements", pinB, "--measure-policies=false"); got != pinsUpdated {
 		t.Fatalf("disable outcome = %q, want %q", got, pinsUpdated)
 	}
 	if cfg := loadPatched(t, path); cfg.Allowlist.Pull.MeasurePolicies {

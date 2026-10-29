@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsattest"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/routing"
 	"github.com/confidential-dot-ai/c8s/internal/testutil"
@@ -130,7 +132,7 @@ func newE2ERouter(t *testing.T, stub *mockapi.Stub, cdsURL string, pin []byte, m
 		poller: routing.NewPoller(routing.PollerConfig{
 			State: state, Fetcher: cds, Keys: cds, Transports: transports, Interval: time.Hour,
 		}),
-		proxy: routing.NewProxy(routing.ProxyConfig{State: state, Transports: transports, Timeout: 10 * time.Second}),
+		proxy: routing.NewProxy(routing.ProxyConfig{State: state, Transports: transports, Bindings: cdsattest.NewBindings(), Timeout: 10 * time.Second}),
 	}
 }
 
@@ -180,13 +182,13 @@ const e2eSandboxID = "8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a
 
 func e2eNamedLeaf(t *testing.T, ca *issuer.CA, workload string) tls.Certificate {
 	t.Helper()
-	csrPEM, key := generateCSR(t)
+	csrPEM, key := generateCSRWith(t, pkix.Name{}, nil, nil)
 	block, _ := pem.Decode([]byte(csrPEM))
 	csr, err := x509.ParseCertificateRequest(block.Bytes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	certPEM, _, err := ca.SignCSR(issuer.SignCSRParams{CSR: csr, TTL: 30 * time.Minute, SandboxID: e2eSandboxID, MatchedWorkload: &armtls.MatchedWorkload{
+	certPEM, _, _, err := ca.SignCSR(issuer.SignCSRParams{CSR: csr, TTL: 30 * time.Minute, SandboxID: e2eSandboxID, MatchedWorkload: &armtls.MatchedWorkload{
 		Name: workload, AllowlistVersion: "1", AllowlistDigest: bytes.Repeat([]byte{0x42}, 32),
 	}})
 	if err != nil {

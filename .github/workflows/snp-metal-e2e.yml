@@ -473,6 +473,10 @@ jobs:
                         disk: {bus: virtio}
                       - name: cloudinit
                         disk: {bus: virtio}
+                    # bridge, as every SNP lane: under it the guest's node ports do not
+                    # answer the runner (run 40547124565). Whether masquerade would is
+                    # undetermined: its one run (40565629411) failed a :443 check that
+                    # bridge then failed too on the same code.
                     interfaces: [{name: default, bridge: {}}]
                     rng: {}
                   firmware: {bootloader: {efi: {secureBoot: false}}}

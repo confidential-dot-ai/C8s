@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18,58 +17,6 @@ import (
 
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
 )
-
-// capturedRecord is one captured slog record: message plus resolved attrs.
-type capturedRecord struct {
-	level slog.Level
-	msg   string
-	attrs map[string]slog.Value
-}
-
-// logCapture is a slog.Handler that stores records for later inspection.
-type logCapture struct {
-	mu      sync.Mutex
-	records []capturedRecord
-}
-
-func (c *logCapture) Enabled(context.Context, slog.Level) bool { return true }
-
-func (c *logCapture) Handle(_ context.Context, r slog.Record) error {
-	rec := capturedRecord{level: r.Level, msg: r.Message, attrs: map[string]slog.Value{}}
-	r.Attrs(func(a slog.Attr) bool {
-		rec.attrs[a.Key] = a.Value.Resolve()
-		return true
-	})
-	c.mu.Lock()
-	c.records = append(c.records, rec)
-	c.mu.Unlock()
-	return nil
-}
-
-func (c *logCapture) WithAttrs([]slog.Attr) slog.Handler { return c }
-func (c *logCapture) WithGroup(string) slog.Handler      { return c }
-
-func (c *logCapture) find(msg string) (capturedRecord, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	for _, rec := range c.records {
-		if rec.msg == msg {
-			return rec, true
-		}
-	}
-	return capturedRecord{}, false
-}
-
-// captureDefaultLogger swaps the process default logger for a capture handler
-// and restores it on cleanup.
-func captureDefaultLogger(t *testing.T) *logCapture {
-	t.Helper()
-	c := &logCapture{}
-	old := slog.Default()
-	slog.SetDefault(slog.New(c))
-	t.Cleanup(func() { slog.SetDefault(old) })
-	return c
-}
 
 // holdSIGTERM keeps a test-side SIGTERM subscription for the test's lifetime,
 // so signalling the process can never hit the default terminate action.
@@ -86,6 +33,7 @@ func holdSIGTERM(t *testing.T) {
 func unreachableRenewalConfig(t *testing.T) config {
 	return stagePodEnvironment(t, config{
 		CDSURL:                 "https://127.0.0.1:1",
+		CDSMeasurements:        testCDSMeasurement,
 		AttestationApiURL:      "http://127.0.0.1:1",
 		SAN:                    "host.example.com",
 		InitialRetryTimeout:    0,
@@ -630,36 +578,6 @@ func TestRenewLoopPicksUpNameWithinSeconds(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatalf("renewLoop returned %v, want nil on shutdown", err)
 	}
-}
-
-func TestCDSHTTPClientWarnsOnlyWithoutMeasurements(t *testing.T) {
-	base := config{
-		CDSURL:            "https://cds:8443",
-		AttestationApiURL: "http://attestation-api:8400",
-	}
-	const warnMsg = "--cds-measurements not set; get-cert accepts any armTLS-attested CDS measurement"
-
-	t.Run("unpinned warns", func(t *testing.T) {
-		c := captureDefaultLogger(t)
-		if _, err := cdsHTTPClient(base); err != nil {
-			t.Fatalf("cdsHTTPClient: %v", err)
-		}
-		if _, ok := c.find(warnMsg); !ok {
-			t.Fatal("no warning logged for an unpinned CDS measurement set")
-		}
-	})
-
-	t.Run("pinned does not warn", func(t *testing.T) {
-		c := captureDefaultLogger(t)
-		cfg := base
-		cfg.CDSMeasurements = strings.Repeat("ab", 48)
-		if _, err := cdsHTTPClient(cfg); err != nil {
-			t.Fatalf("cdsHTTPClient: %v", err)
-		}
-		if _, ok := c.find(warnMsg); ok {
-			t.Fatal("warning logged despite pinned measurements")
-		}
-	})
 }
 
 func TestCDSHTTPClientParsesRTMRPins(t *testing.T) {

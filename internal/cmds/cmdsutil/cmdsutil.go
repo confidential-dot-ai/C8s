@@ -185,15 +185,3 @@ func ServeInBackground(ctx context.Context, addr string, handler http.Handler, l
 	}()
 	return listener.Addr(), nil
 }
-
-// WarnIfCDSUnpinned warns when a sidecar talks to CDS without launch measurements.
-//
-// An empty set accepts any armTLS-attested CDS. "No pinning" is a supported
-// development shape (`c8s install --measurements` documents empty as UNSAFE),
-// so it stays a warning. Shared by get-cert, get-secret and get-volume: three
-// copies of this decision would be three chances to drift.
-func WarnIfCDSUnpinned(measurementCount int, warn string) {
-	if measurementCount <= 0 {
-		slog.Warn(warn)
-	}
-}

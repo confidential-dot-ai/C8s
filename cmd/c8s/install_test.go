@@ -51,7 +51,7 @@ func TestOperatorKeysPreflight(t *testing.T) {
 	}
 }
 
-func TestRouteSourcePreflight(t *testing.T) {
+func TestCDSPinPreflight(t *testing.T) {
 	dir := t.TempDir()
 	file := func(name, body string) string {
 		path := filepath.Join(dir, name)
@@ -60,32 +60,31 @@ func TestRouteSourcePreflight(t *testing.T) {
 		}
 		return path
 	}
-	optIn := file("opt-in.yaml", "router:\n  routing:\n    allowUnpinnedCDS: true\n")
-	optOut := file("opt-out.yaml", "router:\n  routing:\n    allowUnpinnedCDS: false\n")
+	pinned := file("m.yaml", "cds:\n  measurements: [ab]\n")
+	empty := file("e.yaml", "cds:\n  measurements: []\n")
 	for _, tc := range []struct {
 		name               string
 		measurements       []string
 		measurementsConfig string
-		operatorKeys       string
 		values             []string
 		wantErr            bool
 	}{
 		{name: "nothing pinned", wantErr: true},
 		{name: "--measurements", measurements: []string{"ab"}},
 		{name: "--image-policy-file", measurementsConfig: "server.json"},
-		{name: "--operator-keys", operatorKeys: "operator-pub.pem"},
-		{name: "opt-in", values: []string{optIn}},
-		{name: "later file opts out", values: []string{optIn, optOut}, wantErr: true},
-		{name: "cds.measurements", values: []string{file("m.yaml", "cds:\n  measurements: [ab]\n")}},
-		{name: "empty cds.measurements", values: []string{file("e.yaml", "cds:\n  measurements: []\n")}, wantErr: true},
-		{name: "cds.operatorKeys", values: []string{file("k.yaml", "cds:\n  operatorKeys: pem\n")}},
-		{name: "router disabled", values: []string{file("r.yaml", "router:\n  enabled: false\n")}},
+		{name: "--operator-keys pins nothing", wantErr: true},
+		{name: "cds.measurements", values: []string{pinned}},
+		{name: "empty cds.measurements", values: []string{empty}, wantErr: true},
+		{name: "later file keeps the pin", values: []string{empty, pinned}},
+		{name: "later file drops the pin", values: []string{pinned, empty}, wantErr: true},
+		{name: "cds.operatorKeys pins nothing", values: []string{file("k.yaml", "cds:\n  operatorKeys: pem\n")}, wantErr: true},
+		{name: "router disabled still needs a pin", values: []string{file("r.yaml", "router:\n  enabled: false\n")}, wantErr: true},
 		{name: "baked node", values: []string{file("b.yaml", "node:\n  baked: true\n")}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := routeSourcePreflight(tc.measurements, tc.measurementsConfig, tc.operatorKeys, tc.values)
+			err := cdsPinPreflight(tc.measurements, tc.measurementsConfig, tc.values)
 			if (err != nil) != tc.wantErr {
-				t.Fatalf("routeSourcePreflight() = %v, want error %v", err, tc.wantErr)
+				t.Fatalf("cdsPinPreflight() = %v, want error %v", err, tc.wantErr)
 			}
 		})
 	}

@@ -3,6 +3,7 @@
 // CDS verifies attestation before issuing mesh certificates.
 //
 // This package provides certificate issuance and lifecycle, TLS configurations,
+// an HTTPS serve loop that exposes each connection's serving key (Serve),
 // CDS provisioning, and policy verification through the C8s attestation-api.
 // The evidence extension format and key binding live in attestation-go/armtls.
 package armtls

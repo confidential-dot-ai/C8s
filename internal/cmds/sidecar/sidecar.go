@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
@@ -60,7 +61,7 @@ func BindFlags(f *pflag.FlagSet, cfg *Config) {
 	cmdsutil.BindImagePolicyFlags(f, &cfg.MeasurementsConfig, &cfg.MeasurementsConfigJSON, "pins the CDS endpoint; excludes --measurements and --rtmrs")
 	f.StringVar(&cfg.CDSURL, "cds-url", "", "https base URL of CDS; refused in an injected sidecar, which dials the endpoint the node mounts")
 	f.StringVar(&cfg.AttestationApiURL, "attestation-api-url", "", "local attestation-api used to verify CDS's armTLS certificate")
-	f.StringSliceVar(&cfg.Measurements, "measurements", nil, "SHA-384 hex launch measurement(s) CDS must present (repeatable; empty pins none, UNSAFE)")
+	f.StringSliceVar(&cfg.Measurements, "measurements", nil, "SHA-384 hex launch measurement(s) CDS must present (repeatable); required unless the node or --image-policy-file pins CDS")
 	f.StringSliceVar(&cfg.RTMRs, "rtmrs", nil, "TDX RTMR pin(s) <index>=<sha384-hex> CDS must additionally satisfy (repeatable; ignored when CDS presents SNP evidence, empty pins no registers)")
 	f.StringVar(&cfg.CertPath, "cert", "/run/c8s/certs/tls.crt", "the pod's CDS-issued certificate, presented to CDS")
 	f.StringVar(&cfg.KeyPath, "key", "/run/c8s/certs/tls.key", "private key for --cert")
@@ -126,8 +127,6 @@ func (c *Config) ParsePins() (armtls.Pins, error) {
 		return armtls.Pins{}, err
 	}
 	slog.Info("CDS pins resolved", "from_node", fromNode)
-	cmdsutil.WarnIfCDSUnpinned(len(policy.Measurements)+len(policy.Images),
-		"--measurements empty: the CDS this sidecar hands its sandbox token to is not pinned to a launch measurement. UNSAFE outside development.")
 	return armtls.Pins(policy), nil
 }
 
@@ -206,8 +205,8 @@ func Retry(ctx context.Context, cfg Config, what string, attempt func(context.Co
 
 // refusalReason says what a failed attempt most likely means. CDS answers
 // every authorization failure with the same opaque 403, and the expected one
-// is a pod whose main containers are not all running yet. A 404 is a path the
-// store holds nothing at (or a grant without read access).
+// is a pod whose main containers are not all running yet. CDS answers a read
+// outside the entry's grant and a read of an empty path with the same 404.
 func refusalReason(err error) string {
 	se, ok := errors.AsType[*StatusError](err)
 	switch {
@@ -216,7 +215,10 @@ func refusalReason(err error) string {
 			"a main image still pulling delays it. If they are running, the pod's allowlist entry " +
 			"does not match or has no grant for this path (the CDS log names the denial)"
 	case ok && se.Status == http.StatusNotFound:
-		return "the store holds no value at this path yet; for a volume, run `c8s volume create`"
+		return "either the pod's allowlist entry does not grant reading this path, " +
+			"and the CDS log shows `" + secrets.ReadDeniedLog + "`; " +
+			"or the store holds no value at it (CDS keeps the store in memory, so every restart empties it), " +
+			"and an operator writes it with `c8s secrets put`, for a volume from its escrow file"
 	}
 	return "CDS or the node could not complete the request"
 }

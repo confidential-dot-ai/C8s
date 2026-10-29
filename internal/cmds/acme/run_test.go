@@ -29,7 +29,7 @@ func freePort(t *testing.T) int {
 
 // TestRunIssuesAndInstalls drives the real run(): bootstrap placeholder, the
 // challenge listener, ACME issuance against the fake directory, the installed
-// key's mode, and shutdown on SIGTERM. nginx's own entrypoint reloads it.
+// key's mode, and shutdown on SIGTERM. nginx reads it per TLS handshake.
 func TestRunIssuesAndInstalls(t *testing.T) {
 	ca := newTestCA(t)
 	port := freePort(t)

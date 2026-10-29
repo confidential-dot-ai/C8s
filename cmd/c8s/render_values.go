@@ -72,9 +72,9 @@ install, the host distro is not autodetected — pass --distro to pin it, or lea
 it unset to keep the chart default. No preflight checks run and no namespace is
 applied. --operator-keys embeds the key file's PEM content as cds.operatorKeys
 (the chart value is the content itself, never a file path). The chart refuses
-to render without --operator-keys or a CDS pin, unless the consuming values set
-node.baked=true, router.enabled=false, or (development only)
-router.routing.allowUnpinnedCDS=true.
+to render without a CDS pin (--measurements or --image-policy-file), unless the
+consuming values set cds.measurements, cds.measurementsConfig or
+node.baked=true.
 
 "No cluster" does not mean no network: by default each component tag is resolved
 to its registry digest via crane, which needs the registry reachable and local
@@ -404,7 +404,7 @@ func init() {
 	renderValuesCmd.Flags().BoolVar(&installVolumes, "volumes", false, "emit volumed.enabled=true, deploying the node agent that opens encrypted volumes (docs/volumes.md).")
 	renderValuesCmd.Flags().StringVar(&installCvmMode, flagCvmMode, "", "CVM deployment shape (REQUIRED; orthogonal to --hardware-platform): bare-metal (generalized node-as-CVM native TEE device) or gke (GKE managed CVMs) or aks (vTPM /dev/tpm0). bare-metal/gke/aks are single-tenant — the node is one trust domain")
 	renderValuesCmd.Flags().StringVar(&installHardwarePlatform, flagHardwarePlatform, "", "CPU-level TEE hardware (REQUIRED; orthogonal to --cvm-mode): sev-snp (/dev/sev-guest) or tdx (Intel TDX, /dev/tdx-guest). Ignored when --cvm-mode=aks")
-	renderValuesCmd.Flags().StringSliceVar(&installMeasurements, "measurements", nil, "expected hex launch measurement(s) of the CVM components that speak to CDS (repeatable/comma-separated). Emits cds.measurements + armtlsMesh.measurements; empty = no pinning (UNSAFE). Under --cvm-mode=bare-metal/gke/aks this is the node image's manifest.json value")
+	renderValuesCmd.Flags().StringSliceVar(&installMeasurements, "measurements", nil, "expected hex launch measurement(s) of the CVM components that speak to CDS (repeatable/comma-separated). Emits cds.measurements + armtlsMesh.measurements; required, unless --image-policy-file names the images. Under --cvm-mode=bare-metal/gke/aks this is the node image's manifest.json value")
 	cmdsutil.BindImagePolicyFlags(renderValuesCmd.Flags(), &installMeasurementsConfig, nil, "pins CDS, mesh and NRI; Helm requires unanchored images with identical RTMR pins; excludes --measurements and --rtmrs")
 	renderValuesCmd.Flags().StringSliceVar(&installRegisters, "rtmrs", nil, "TDX RTMR pin(s) <index>=<sha384-hex> completing --measurements on --hardware-platform=tdx (repeatable/comma-separated). Emits cds.rtmrs + armtlsMesh.rtmrs; ignored for SNP evidence")
 	renderValuesCmd.Flags().BoolVar(&installResolveDigests, "resolve-digests", true, "resolve each component image tag to its registry digest (via crane), pin it, and enable the NRI allowlist derivation")

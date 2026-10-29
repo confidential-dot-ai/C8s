@@ -276,6 +276,16 @@ type Node struct {
 	ExternalIP string `yaml:"externalIP,omitempty" json:"external_ip,omitempty"`
 }
 
+// AdvertiseAddress is the address RKE2 has kube-apiserver advertise for this
+// node: its external IP, else its node IP (k3s pkg/cli/server). It is empty
+// when the node has neither, and RKE2 then passes no --advertise-address.
+func (n Node) AdvertiseAddress() string {
+	if n.ExternalIP != "" {
+		return n.ExternalIP
+	}
+	return n.IP
+}
+
 type RKE2 struct {
 	ServerToken string `yaml:"serverToken,omitempty" json:"server_token,omitempty"`
 	AgentToken  string `yaml:"agentToken" json:"agent_token"`

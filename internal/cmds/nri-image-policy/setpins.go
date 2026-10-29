@@ -38,7 +38,7 @@ const (
 func runSetCDSPins(stdout io.Writer, args []string) error {
 	fs := flag.NewFlagSet("nri-image-policy "+setCDSPinsVerb, flag.ContinueOnError)
 	path := fs.String("config", DefaultConfigPath, "plugin config to patch in place")
-	rawMeasurements := fs.String("cds-measurements", "", "comma-separated SHA-384 hex CDS launch measurements; empty clears the pins")
+	rawMeasurements := fs.String("cds-measurements", "", "comma-separated SHA-384 hex CDS launch measurements (required)")
 	rawRTMRs := fs.String("cds-rtmrs", "", "comma-separated TDX RTMR pins <index>=<sha384-hex>; empty clears the pins")
 	measurePolicies := fs.Bool("measure-policies", false, "set allowlist.pull.measure_policies: extend TDX RTMR[3] with each pulled allowlist before applying it; omitted leaves the key as found")
 	if err := cmdsutil.ParseFlags(fs, args); err != nil {
@@ -50,6 +50,9 @@ func runSetCDSPins(stdout io.Writer, args []string) error {
 	measurements, err := refvalues.ParseHexMeasurements(*rawMeasurements)
 	if err != nil {
 		return fmt.Errorf("--cds-measurements: %w", err)
+	}
+	if len(measurements) == 0 {
+		return fmt.Errorf("--cds-measurements is required: the plugin pulls its allowlist only from a pinned CDS")
 	}
 	rtmrs, err := refvalues.ParseRegisterPinsString(*rawRTMRs)
 	if err != nil {

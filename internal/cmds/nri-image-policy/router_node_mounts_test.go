@@ -184,6 +184,10 @@ func routerNodeMountPlugin(t *testing.T) *plugin {
 	}
 	cfg.WorkloadClaims.AdvertiseHost = "10.0.0.1"
 	cfg.WorkloadClaims.CDSNodePort = 30808
+	// The router's host binds are exempted by the chart seed boot merges into
+	// this base, which pins each launch (cmd/c8s TestNodeImageRender); this
+	// test drives the mount and role checks on the template alone.
+	cfg.Policy.Sandbox = SandboxOff
 	if err := bindCredentialRole(cfg); err != nil {
 		t.Fatal(err)
 	}

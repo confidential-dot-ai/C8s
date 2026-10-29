@@ -19,6 +19,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
+	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
 type evidenceGeneratorFunc func(context.Context, []byte) (teetypes.AttestationEvidence, error)
@@ -39,7 +40,7 @@ func newAttestHandler(t *testing.T) (*Handler, *operatorauth.Signer) {
 
 func attestBody(t *testing.T, n int) []byte {
 	t.Helper()
-	body, err := json.Marshal(AttestRequest{Nonce: bytes.Repeat([]byte{0x7a}, n)})
+	body, err := json.Marshal(types.NonceRequest{Nonce: bytes.Repeat([]byte{0x7a}, n)})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -244,10 +244,11 @@ responder chose).`,
 	f.StringVar(&cfg.routesFloor, "routes-floor", "", "with --operator-keys in attest-pq/attest-lb: <revision>:<route digest hex> last accepted; a published manifest with a lower revision, or the same revision and another digest, fails (rollback)")
 	f.StringSliceVar(&cfg.routeDigests, "route-digest", nil, "expected route digest(s) (repeatable / comma-separated), the hex SHA-256 of the route manifest bytes as `c8s routes show` prints it; attest-pq and attest-lb evidence binds one, so evidence binding any other digest fails verification. These modes require this or --operator-keys")
 	f.StringVar(&cfg.servedPolicyFile, "served-policy-file", "", "path to a complete JSON image policy naming the exact set the target must serve and enforce at /measurements (kind=cds targets); when set, the served-set equality check compares against this file instead of --image-policy-file, which then pins the target's own identity only — for a cluster launched from a c8s launch-config bundle this is peers.json beside server.json")
-	f.StringVar(&cfg.sandboxID, "sandbox-id", "", "expected CRI pod sandbox ID on the target's leaf; requires --mesh-ca, since CDS's signature on the leaf is what vouches for the ID (docs/armtls.md)")
-	f.StringVar(&cfg.workload, "workload", "", "expected matched-workload name on the target's leaf; requires --mesh-ca, since CDS's signature on the leaf is what vouches for the stamp (docs/armtls.md)")
-	f.StringVar(&cfg.allowlistFile, "allowlist", "", "file holding the exact canonical allowlist bytes (as served by GET /allowlist); the leaf's stamped policy digest must equal SHA-256 of these bytes and the stamped name must resolve in the document. Requires --mesh-ca")
-	f.StringVar(&cfg.meshCA, "mesh-ca", "", "PEM bundle of the CDS mesh CA; when set, the target's leaf must chain to it, which is what authenticates the reported sandbox ID. On attest-pq and attest-lb it is also what upgrades the chain anchor from responder-chosen (partial verdict) to verified")
+	const refusedWithKindCDS = ". Refused with --kind cds: CDS's serving certificate is self-signed"
+	f.StringVar(&cfg.sandboxID, "sandbox-id", "", "expected CRI pod sandbox ID on the target's leaf; requires --mesh-ca, since CDS's signature on the leaf is what vouches for the ID (docs/armtls.md)"+refusedWithKindCDS)
+	f.StringVar(&cfg.workload, "workload", "", "expected matched-workload name on the target's leaf; requires --mesh-ca, since CDS's signature on the leaf is what vouches for the stamp (docs/armtls.md)"+refusedWithKindCDS)
+	f.StringVar(&cfg.allowlistFile, "allowlist", "", "file holding the exact canonical allowlist bytes (as served by GET /allowlist); the leaf's stamped policy digest must equal SHA-256 of these bytes and the stamped name must resolve in the document. Requires --mesh-ca"+refusedWithKindCDS)
+	f.StringVar(&cfg.meshCA, "mesh-ca", "", "PEM bundle of the CDS mesh CA; when set, the target's leaf must chain to it, which is what authenticates the reported sandbox ID. On attest-pq and attest-lb it is also what upgrades the chain anchor from responder-chosen (partial verdict) to verified"+refusedWithKindCDS)
 	f.StringVar(&cfg.initDataHex, "init-data", "", "expected init-data digest: SHA-256 hex of the init-data document the target guest must carry. Verification fails unless the evidence commits exactly this digest")
 	f.BoolVar(&cfg.allowDebug, "allow-debug", false, "accept debug-enabled guests")
 	const tcbSNPOnly = " (SEV-SNP evidence only — TDX carries no such component, so against TDX evidence this is a policy error rather than an ignored flag)"
@@ -588,6 +589,10 @@ type servedSet struct {
 // min-TCB are enforced on the verifier verdict (newOutcome / verifyInProcess);
 // only Measurements and AllowDebug are read by the verifier itself.
 func buildPolicy(cfg config) (*verifyPlan, error) {
+	if err := refuseMeshLeafFlagsWithKindCDS(cfg); err != nil {
+		return nil, err
+	}
+
 	// Each TCB component is a single byte; reject >255 rather than silently
 	// truncating it (byte(256)==0 would weaken the policy without warning).
 	for name, v := range map[string]uint{
@@ -800,6 +805,31 @@ func allowlistFlagsUsed(cfg config) string {
 	default:
 		return "--measurements"
 	}
+}
+
+// refuseMeshLeafFlagsWithKindCDS refuses, under --kind cds, the flags that
+// check a leaf the mesh CA issued: its chain and the stamps CDS signs into it.
+func refuseMeshLeafFlagsWithKindCDS(cfg config) error {
+	if cfg.kind != "cds" {
+		return nil
+	}
+	var used []string
+	if cfg.meshCA != "" {
+		used = append(used, "--mesh-ca")
+	}
+	if cfg.sandboxID != "" {
+		used = append(used, "--sandbox-id")
+	}
+	if cfg.workload != "" {
+		used = append(used, "--workload")
+	}
+	if cfg.allowlistFile != "" {
+		used = append(used, "--allowlist")
+	}
+	if len(used) == 0 {
+		return nil
+	}
+	return fmt.Errorf("a CDS target (--kind cds) takes no %s: its serving certificate is self-signed, so it chains to no mesh CA and carries no sandbox ID or workload stamp. These flags check the certificates CDS issues to --kind lb and --kind workload targets", strings.Join(used, ", "))
 }
 
 // rtmr3FlagUsed names whichever flag supplied the RTMR[3] pin. Both feed one

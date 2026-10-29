@@ -33,7 +33,7 @@ import (
 //
 // THREAT MODEL: the measurement check is the only thing standing between an
 // attacker who controls a TEE workload and a CA-signed leaf for any subject
-// they choose. Empty Measurements skips this check (UNSAFE outside dev).
+// they choose. Empty Measurements admits no flat-pinned caller.
 type AttestHandler struct {
 	Challenges        *attestation.ChallengeStore
 	AttestationClient remote.Client
@@ -45,7 +45,7 @@ type AttestHandler struct {
 	RequestTimeout time.Duration
 
 	// Measurements is the flat set of SHA-384 launch digests permitted
-	// to obtain a signed leaf. Empty = no measurement pinning.
+	// to obtain a signed leaf when Images is empty.
 	Measurements map[string]bool
 
 	// RTMRs pins TDX runtime measurement registers on issuance: on TDX the
@@ -203,9 +203,6 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Read outside the pinning branch: with h.Measurements empty every
-	// measurement is admitted, so the digest a leaf was issued against is the
-	// only record of what actually attested.
 	launchDigest := strings.ToLower(verifyResp.Result.Claims.LaunchDigest)
 	if len(h.Images) > 0 {
 		if err := armtls.EnforceImages(verifyResp, h.Images, req.Evidence.Platform, req.RuntimeExtensions); err != nil {
@@ -214,12 +211,10 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		if len(h.Measurements) > 0 {
-			if !h.Measurements[launchDigest] {
-				slog.Warn("measurement does not match any reference value", "launch_digest", launchDigest, "remote_addr", r.RemoteAddr)
-				attestation.WriteError(w, http.StatusForbidden, types.ErrorCodeMeasurementDenied, "launch measurement not allowed")
-				return
-			}
+		if !h.Measurements[launchDigest] {
+			slog.Warn("measurement does not match any reference value", "launch_digest", launchDigest, "remote_addr", r.RemoteAddr)
+			attestation.WriteError(w, http.StatusForbidden, types.ErrorCodeMeasurementDenied, "launch measurement not allowed")
+			return
 		}
 		if req.Evidence.Platform.HasRegisters() {
 			if err := remote.EnforceRTMRs(verifyResp, h.RTMRs); err != nil {
@@ -262,12 +257,6 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Every other gate has passed, so this sandbox is about to be named on a
-	// leaf: bind it to the inventory that vouched for it. Recorded here rather
-	// than at token verification so a request that then fails the measurement
-	// or workload check cannot claim a sandbox ID it never got a cert for.
-	h.recordSandboxBinding(sandbox)
-
 	// The leaf's OID .1.1 armTLS extension is copied from the client's CSR
 	// (see issuer.SignCSR): the client embeds evidence bound to
 	// SHA-384(pubkey) with no nonce, which is the only form downstream
@@ -295,18 +284,25 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 	}
 	// One read: the certificate that signs the leaf is the chain returned with it.
 	signing := h.MeshCA.Current()
-	certPEM, serial, err := signing.CA.SignCSR(issuer.SignCSRParams{
+	certPEM, leafCN, serial, err := signing.CA.SignCSR(issuer.SignCSRParams{
 		CSR:             csr,
 		TTL:             ttl,
 		Evidence:        evidenceJSON,
 		SandboxID:       sandbox.SandboxID,
 		MatchedWorkload: matched,
 	})
+	if errors.Is(err, issuer.ErrSubjectDenied) {
+		slog.Warn("leaf subject denied", "error", err, "remote_addr", r.RemoteAddr)
+		attestation.WriteError(w, http.StatusForbidden, types.ErrorCodeCSRDenied, err.Error())
+		return
+	}
 	if err != nil {
 		slog.Error("in-process sign failed", "error", err)
 		attestation.WriteError(w, http.StatusInternalServerError, types.ErrorCodeSignFailed, err.Error())
 		return
 	}
+
+	h.recordSandboxBinding(sandbox)
 
 	// The issuance record is the audit-relevant event: a mesh identity is only
 	// as accountable as what was written down when it was granted, and a leaf
@@ -319,7 +315,7 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 	// version it matched under, and the sandbox that vouched, so a disputed
 	// name reconstructs from the log alone.
 	issued := []any{
-		"cn", csr.Subject.CommonName,
+		"cn", leafCN,
 		"sans", csr.DNSNames,
 		"serial", serialHex(serial),
 		"ttl", ttl,

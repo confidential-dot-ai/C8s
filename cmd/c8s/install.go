@@ -230,12 +230,14 @@ func operatorKeysPreflight(operatorKeys string, valuesFiles []string, force bool
 	return "installing with allowlist writes DISABLED (no --operator-keys); `c8s allowlist` add/remove/upload will not work, and CDS stores no route manifest, so the router answers 503 to every application request, until you set cds.operatorKeys and reinstall", nil
 }
 
-// routeSourcePreflight refuses an install whose router would take its route
-// manifest keys from an unpinned CDS: no CDS pin, no --operator-keys, and no
-// router.routing.allowUnpinnedCDS=true. The chart fails that render too; this
-// names the install flags before anything runs.
-func routeSourcePreflight(measurements []string, measurementsConfig, operatorKeys string, valuesFiles []string) error {
-	if len(measurements) > 0 || measurementsConfig != "" || operatorKeys != "" {
+// cdsPinPreflight refuses an install that pins no CDS guest identity: no
+// --measurements, no --image-policy-file, and no -f values file setting
+// cds.measurements, cds.measurementsConfig or node.baked=true (a baked node
+// carries its pins in the measured launch config, which the chart cannot see).
+// The chart fails that render too; this names the install flags before
+// anything runs.
+func cdsPinPreflight(measurements []string, measurementsConfig string, valuesFiles []string) error {
+	if len(measurements) > 0 || measurementsConfig != "" {
 		return nil
 	}
 	values := map[string]any{}
@@ -244,7 +246,7 @@ func routeSourcePreflight(measurements []string, measurementsConfig, operatorKey
 		if err != nil {
 			return err
 		}
-		for _, path := range []string{"router.enabled", "node.baked", "router.routing.allowUnpinnedCDS", "cds.measurements", "cds.measurementsConfig", "cds.operatorKeys"} {
+		for _, path := range []string{"node.baked", "cds.measurements", "cds.measurementsConfig"} {
 			if v, ok := valueAtPath(tree, path); ok {
 				values[path] = v
 			}
@@ -261,13 +263,10 @@ func routeSourcePreflight(measurements []string, measurementsConfig, operatorKey
 		}
 		return false
 	}
-	if enabled, ok := values["router.enabled"].(bool); ok && !enabled {
+	if set("node.baked") || set("cds.measurements") || set("cds.measurementsConfig") {
 		return nil
 	}
-	if set("node.baked") || set("router.routing.allowUnpinnedCDS") || set("cds.measurements") || set("cds.measurementsConfig") || set("cds.operatorKeys") {
-		return nil
-	}
-	return errors.New("the router would take its route manifest keys from an unpinned CDS, so any attested TEE answering as CDS could choose both the routes and their keys: pin CDS with --measurements (or --image-policy-file), pin the operator keys with --operator-keys, or, on a development cluster only, set router.routing.allowUnpinnedCDS=true in a -f values file")
+	return errors.New("nothing pins the guest identity of this cluster's CDS, so CDS refuses to start and nothing dialing it could tell it from any other attested TEE: pass --measurements <launch-digest> (the node image's manifest.json value) or --image-policy-file <policy.json>")
 }
 
 // tdxRTMRPinWarning is the "MRTD does not confer code identity" warning for a
@@ -1060,10 +1059,9 @@ write its entry with 'c8s allowlist'. Install refuses an adoption whose pod anot
 seed also describes, since CDS would then name it nothing.
 
 The router routes only by the operator-signed route manifest on CDS, verified
-under --operator-keys. Without --operator-keys or a CDS pin (--measurements or
---image-policy-file) install refuses, unless a -f file sets
-router.routing.allowUnpinnedCDS=true (development clusters only). To front an
-adopted workload, give its ref the :<port> it serves TLS on, with its get-cert
+under --operator-keys. Without one the router takes the keys from the pinned
+CDS. To front an adopted workload, give its ref the :<port> it serves TLS on,
+with its get-cert
 certificate, and pass --upstream <id>: install builds a manifest whose every
 router.san DNS name routes / to c8s-<id>.<ns>.svc.cluster.local:<port>, verified
 as the allowlist entry <id>. With --operator-key (or C8S_OPERATOR_KEY) install
@@ -1109,7 +1107,7 @@ Requires the 'helm' and 'kubectl' CLIs to be on PATH, and 'crane' unless
 		if err := preflightRoutesOut(); err != nil {
 			return err
 		}
-		if err := routeSourcePreflight(installMeasurements, installMeasurementsConfig, installOperatorKeys, installValues); err != nil {
+		if err := cdsPinPreflight(installMeasurements, installMeasurementsConfig, installValues); err != nil {
 			return err
 		}
 		if warn, err := operatorKeysPreflight(installOperatorKeys, installValues, installForce); err != nil {
@@ -1323,9 +1321,7 @@ Requires the 'helm' and 'kubectl' CLIs to be on PATH, and 'crane' unless
 // The cluster's launch measurement M is a property of the deployed node image
 // (its manifest.json), known before the cluster runs. --measurements <M> pins it
 // into the internal mesh (cds.measurements) on the install itself; external
-// clients pin the same M when they verify. When
-// --measurements was omitted, the mesh accepts any attested peer (UNSAFE), so
-// the hint says how to fix it.
+// clients pin the same M when they verify.
 func printAttestVerifyHint(w io.Writer, attestEnabled bool) {
 	if !attestEnabled {
 		return
@@ -1337,11 +1333,11 @@ func printAttestVerifyHint(w io.Writer, attestEnabled bool) {
 		fmt.Fprintln(w, "  Write the anchor with: c8s cds ca --out mesh-ca.pem")
 		return
 	}
-	fmt.Fprintln(w, "+ router attestation sidecar enabled, but the mesh is UNPINNED (accepts any")
-	fmt.Fprintln(w, "  attested TEE). Pin it with the node image's launch measurement M (its")
-	fmt.Fprintln(w, "  manifest.json): reinstall with --measurements <M>. Clients verify with the")
-	fmt.Fprintln(w, "  same M and the mesh anchor:")
-	fmt.Fprintln(w, "    c8s verify https://<router> --measurements <M> --mesh-ca mesh-ca.pem")
+	fmt.Fprintln(w, "+ router attestation sidecar enabled; the mesh pins come from")
+	fmt.Fprintln(w, "  --image-policy-file, a -f values file, or the node image. Clients verify")
+	fmt.Fprintln(w, "  against the same pins (--image-policy-file <policy.json> or")
+	fmt.Fprintln(w, "  --measurements <M>) and the mesh anchor:")
+	fmt.Fprintln(w, "    c8s verify https://<router> --image-policy-file <policy.json> --mesh-ca mesh-ca.pem")
 	fmt.Fprintln(w, "  Write the anchor with: c8s cds ca --out mesh-ca.pem")
 }
 
@@ -1647,7 +1643,7 @@ func appendCvmModeInstallArgs(helmArgs []string, cvmMode, hardwarePlatform strin
 	// (cds.measurements). The operator supplies M — it is a property of the
 	// deployed node image (its manifest.json), known before the cluster runs —
 	// so CDS is pinned from first boot rather than accept-any-then-tighten.
-	// Empty = no pinning (UNSAFE, the chart default).
+	// Empty leaves CDS refusing to start, and the chart refusing to render it.
 	//
 	// Parse here, on the shared builder path, so the pinned list is validated
 	// and normalized regardless of which command emitted it — and so the fanned
@@ -2608,7 +2604,7 @@ func init() {
 	installCmd.Flags().BoolVar(&installResolveDigests, "resolve-digests", true, "resolve each c8s component image tag to its registry digest (via crane), pin it, and add the resolved images to the NRI allowlist (enables deriveComponents). Also reads each pinned image config, the router nginx image included (docker.io unless router.nginx.image.repository names a mirror). On by default; pass --resolve-digests=false when supplying digests via -f")
 	installCmd.Flags().BoolVar(&installAttestEnabled, "attest", true, "serve the router's attestation endpoints under /.well-known/c8s/ (browser/CLI verification via c8s-verify). On by default; --attest=false turns them off, while the cds-attest sidecar keeps routing application requests")
 	installCmd.Flags().StringSliceVar(&installInventoryCIDRs, "node-cidr", nil, "CIDR(s) holding this cluster's sandbox inventories (repeatable/comma-separated): CDS dials an inventory inside them and nowhere else. Under --cvm-mode=bare-metal/gke/aks these are node addresses, which is what stops a workload pointing the sandbox-digests callback at its own pod IP; the default is CDS deriving one host route per node from the live node list, so set a range only when the node network is separate from the pod network")
-	installCmd.Flags().StringSliceVar(&installMeasurements, "measurements", nil, "expected hex launch measurement(s) of the CVM CDS runs in (repeatable/comma-separated). Pins cds.measurements, which every client that dials CDS holds it to; empty = no pinning (UNSAFE). Under --cvm-mode=bare-metal/gke/aks this is the node image's manifest.json value")
+	installCmd.Flags().StringSliceVar(&installMeasurements, "measurements", nil, "expected hex launch measurement(s) of the CVM CDS runs in (repeatable/comma-separated). Pins cds.measurements, which every client that dials CDS holds it to; required, unless --image-policy-file names the images. Under --cvm-mode=bare-metal/gke/aks this is the node image's manifest.json value")
 	cmdsutil.BindImagePolicyFlags(installCmd.Flags(), &installMeasurementsConfig, nil, "pins CDS, mesh and NRI; Helm requires unanchored images with identical RTMR pins; excludes --measurements and --rtmrs")
 	installCmd.Flags().StringSliceVar(&installRegisters, "rtmrs", nil, "TDX RTMR pin(s) <index>=<sha384-hex> completing --measurements on --hardware-platform=tdx (repeatable/comma-separated). Pins cds.rtmrs: RTMR[1] is the guest kernel, RTMR[2] the command line carrying the dm-verity root hash — without them the measurement pin covers TDVF firmware only. Read the values off a boot you trust; ignored for SNP evidence")
 	installCmd.Flags().StringVar(&installImagePullSecret, "image-pull-secret", "", "name of an existing registry-credential Secret (kubernetes.io/dockerconfigjson) in the release namespace; the chart appends it to every component's imagePullSecrets, so all pods can pull the c8s images from an authenticated registry (e.g. a private mirror) from first start. The Secret itself is never created or managed by the install — the install fails fast if it is missing or has the wrong type")

@@ -9,6 +9,10 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
+// exampleMeasurement stands in for the SHA-384 launch measurement of the guest
+// a peer must be running, which production reads from its image policy.
+var exampleMeasurement = make([]byte, armtls.SNPMeasurementSize)
+
 func ExampleNewServerTLSConfig() {
 	tlsCfg, _, err := armtls.NewServerTLSConfig(&armtls.ServerConfig{
 		Platform: "sev-snp",
@@ -31,11 +35,9 @@ func ExampleNewServerTLSConfig() {
 }
 
 func ExampleNewClientTLSConfig() {
+	pins := armtls.Pins{Measurements: [][]byte{exampleMeasurement}}
 	tlsCfg, _, err := armtls.NewClientTLSConfig(&armtls.ClientConfig{
-		Policy: &armtls.VerifyPolicy{
-			// In production: set acceptable launch measurements.
-			// Empty means accept any measurement (UNSAFE — dev only).
-		},
+		Policy: pins.VerifyPolicy("http://localhost:8400"),
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -55,11 +57,10 @@ func ExampleNewServerTLSConfig_mutualTLS() {
 		AttestFunc: func(ctx context.Context, customData string) (string, error) {
 			return "", fmt.Errorf("not running in a TEE")
 		},
-		DNSNames:     []string{"app.internal"},
-		ClientPolicy: &armtls.VerifyPolicy{
-			// Require clients to present armTLS certificates.
-			// Measurements: acceptable client launch measurements.
-		},
+		DNSNames: []string{"app.internal"},
+		// Clients must present an armTLS certificate on one of these
+		// launch measurements.
+		ClientPolicy: armtls.Pins{Measurements: [][]byte{exampleMeasurement}}.VerifyPolicy("http://localhost:8400"),
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -72,7 +73,7 @@ func ExampleNewServerTLSConfig_mutualTLS() {
 
 func ExampleNewClientTLSConfig_mutualTLS() {
 	tlsCfg, _, err := armtls.NewClientTLSConfig(&armtls.ClientConfig{
-		Policy: &armtls.VerifyPolicy{},
+		Policy: armtls.Pins{Measurements: [][]byte{exampleMeasurement}}.VerifyPolicy("http://localhost:8400"),
 		// Present own armTLS certificate to the server.
 		Platform: "sev-snp",
 		AttestFunc: func(ctx context.Context, customData string) (string, error) {

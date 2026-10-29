@@ -363,7 +363,9 @@ mesh:
   exempt_namespaces:
     - {{ $root.Release.Namespace | quote }}
     - "kube-system"
+    {{- if not $root.Values.node.baked }}
     - "local-path-storage"
+    {{- end }}
   resolver: {{ $root.Values.nriImagePolicy.mesh.resolver | quote }}
 {{- if $root.Values.nriImagePolicy.mesh.clusterRanges }}
 {{/* This cluster's pod and Service ranges. The acme role of the router's

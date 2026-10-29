@@ -17,7 +17,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -222,13 +221,12 @@ func (w *world) deployRequester(r *requester) error {
 		return fmt.Errorf("harness: the requester %q got %d from the CDS's /healthz", p.name, status)
 	}
 	// The pod's own view, which a member's healthz, sent from the backend,
-	// does not give: the node's sockets are bound into it.
-	sockets, err := w.podExec(p, "", "ls", filepath.Dir(inventorySocket))
-	if err != nil {
-		return err
-	}
-	if !strings.Contains(sockets, filepath.Base(inventorySocket)) {
-		return fmt.Errorf("harness: the socket directory of the requester %q holds no %s:\n%s", p.name, filepath.Base(inventorySocket), sockets)
+	// does not give: the node's sockets are bound into it. The admission
+	// plugin makes the socket directory traversable but not listable (mode
+	// 0o711, nri-image-policy main.go), so name the socket itself; listing
+	// the directory is Permission denied to a non-root consumer.
+	if _, err := w.podExec(p, "", "ls", inventorySocket); err != nil {
+		return fmt.Errorf("harness: the requester %q cannot see the inventory socket %s in its pod: %w", p.name, inventorySocket, err)
 	}
 	return nil
 }
