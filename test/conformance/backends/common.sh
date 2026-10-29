@@ -235,12 +235,16 @@ declare -A CONFORMANCE_IMAGES=(
 )
 image_ref() {
     [ -z "${CONFORMANCE_IMAGES[$1]:-}" ] || { echo "$CONFORMANCE_REPO$1@${CONFORMANCE_IMAGES[$1]}"; return; }
+    # Each library image carries its index digest: the NRI image policy admits
+    # a container only when its manifest reference names a digest, so a bare tag
+    # is refused at admission (CreateContainerError) before any pull. The tag
+    # before the @ is the human-readable version these digests resolve.
     case "$1" in
         rogue) echo "docker.io/$CURL_IMAGE" ;;
         nginx) echo "docker.io/${NGINX_IMAGE:-$WORKLOAD_IMAGE}" ;;
-        job-runner) echo "docker.io/library/alpine:3.20" ;;
-        model-server) echo "docker.io/library/debian:bookworm-slim" ;;
-        model-loader) echo "docker.io/library/busybox:1.35.0" ;;
+        job-runner) echo "docker.io/library/alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc" ;;
+        model-server) echo "docker.io/library/debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3" ;;
+        model-loader) echo "docker.io/library/busybox:1.35.0@sha256:98ad9d1a2be345201bb0709b0d38655eb1b370145c7d94ca1fe9c421f76e245a" ;;
         requester) echo "docker.io/curlimages/curl:8.11.0@sha256:83a505ba2ba62f208ed6e410c268b7b9aa48f0f7b403c8108b9773b44199dbba" ;;
         secret-client) injected_image ;;
         *) return $UNSUPPORTED ;;
