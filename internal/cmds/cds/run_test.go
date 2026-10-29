@@ -68,34 +68,6 @@ func TestCompilePattern(t *testing.T) {
 	})
 }
 
-func TestCompilePatterns(t *testing.T) {
-	t.Run("nil input yields nil slice", func(t *testing.T) {
-		got, err := compilePatterns("--x", nil)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if got != nil {
-			t.Fatalf("expected nil slice, got %v", got)
-		}
-	})
-
-	t.Run("empties are skipped", func(t *testing.T) {
-		got, err := compilePatterns("--x", []string{"", `^a$`, ""})
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if len(got) != 1 {
-			t.Fatalf("expected 1 compiled pattern (empties skipped), got %d", len(got))
-		}
-	})
-
-	t.Run("propagates compile error", func(t *testing.T) {
-		if _, err := compilePatterns("--x", []string{"["}); err == nil {
-			t.Fatal("expected error for invalid regex in list, got nil")
-		}
-	})
-}
-
 func TestNormalizeHTTPServerConfig_FillsZeroDefaults(t *testing.T) {
 	got := normalizeHTTPServerConfig(config{})
 	if got.readTimeout != defaultHTTPReadTimeout {

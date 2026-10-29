@@ -576,23 +576,6 @@ func compilePattern(name, raw string) (*regexp.Regexp, error) {
 	return re, nil
 }
 
-// compilePatterns compiles each raw pattern, skipping empties so a stray "" in
-// the list does not become a match-nothing rule. Returns nil for no patterns,
-// which ValidateCSR treats as "reject any DNS SAN".
-func compilePatterns(name string, raws []string) ([]*regexp.Regexp, error) {
-	var patterns []*regexp.Regexp
-	for _, raw := range raws {
-		re, err := compilePattern(name, raw)
-		if err != nil {
-			return nil, err
-		}
-		if re != nil {
-			patterns = append(patterns, re)
-		}
-	}
-	return patterns, nil
-}
-
 // loadOperatorKeys reads the PEM operator public-key bundle used to verify
 // operator write tokens, returning both the parsed keys and the raw PEM (served
 // back on GET /operator-keys). It fails closed when the file has no EC public
