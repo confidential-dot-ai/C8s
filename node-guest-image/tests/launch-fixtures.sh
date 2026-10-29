@@ -68,6 +68,9 @@ case "$1 $2" in
         *) exit 31 ;;
     esac
     ;;
+'node-services cilium-node-ip')
+    exec /usr/local/lib/c8s-real "$@"
+    ;;
 'node-services prepare')
     [[ $# == 2 ]]
     [[ -f /run/confos/role-server || -f /run/confos/role-agent ]]
