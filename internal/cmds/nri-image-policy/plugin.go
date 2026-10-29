@@ -603,10 +603,9 @@ func (p *plugin) checkImagePhase(ctx context.Context, cfg *config, check imageCh
 		return verdictSkip, ""
 	}
 
-	// Extract digest from image reference (e.g. repo@sha256:abc)
 	digest := extractDigest(check.ImageRef)
-	if digest == "" {
-		// No digest in reference — resolve tag via containerd image store
+	pinned := digest != ""
+	if !pinned {
 		resolved, err := p.containerd.Resolve(ctx, check.ImageRef)
 		if err != nil {
 			log.Warn("cannot resolve image digest via containerd", "error", err)
@@ -642,11 +641,32 @@ func (p *plugin) checkImagePhase(ctx context.Context, cfg *config, check imageCh
 	// The base allowlist admits what its entries admit. Served entries are
 	// matched against the final OCI argv, environment, and classified mounts.
 	rc := allowlist.RunningContainer{Digest: digest, Argv: check.Argv, Env: check.Env, Mounts: check.Mounts}
+	baseAdmitted := p.policy.baseAdmits(rc, phase)
+
+	// A tag is resolved here, at hook time, while the runtime builds the
+	// rootfs from the image kubelet resolved earlier; a tag moved in between
+	// would let this check judge one image and the container run another.
+	// Only the base keeps tags: the node's own manifests name its carried
+	// images by tag. Mesh-exempt platform namespaces keep them too: their pods
+	// are not mesh members, so they never receive workload traffic.
+	if !pinned && !baseAdmitted && !slices.Contains(p.mesh.policy.ExemptNamespaces, check.Namespace) {
+		log.Warn("image not referenced by digest", "digest", digest)
+		p.audit.Log(audit.Event{
+			Action:    "deny",
+			Reason:    "not_digest_pinned",
+			Namespace: check.Namespace,
+			Pod:       check.PodName,
+			Container: check.Container,
+			Image:     check.ImageRef,
+		})
+		return verdictDeny, fmt.Sprintf("image must be referenced by digest (name@sha256:...): %s", check.ImageRef)
+	}
+
 	admitted := snap.index.AdmitsProcess(rc)
 	if phase == launchFinal {
 		admitted = snap.index.AdmitsContainer(rc)
 	}
-	if !p.policy.baseAdmits(rc, phase) && !admitted {
+	if !baseAdmitted && !admitted {
 		// INVARIANT: the returned reason reaches a namespace-readable kubelet
 		// event, so it names only the image — argv can carry credentials and
 		// stays in the node-local log.
