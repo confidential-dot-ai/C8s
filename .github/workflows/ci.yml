@@ -134,8 +134,9 @@ jobs:
         # restored GOCACHE; Go invalidates by content, so edits still rerun.
         # External binaries the tests exec (iptables-translate) are covered
         # via the testlog's stat of the LookPath'd path: an apt bump changes
-        # its mtime and invalidates the cached pass.
-        run: make test C8S_TEST_COUNT=
+        # its mtime and invalidates the cached pass. internal/cdsha runs in
+        # the cdsha job below.
+        run: make test-pkgs C8S_TEST_COUNT=
 
       - name: Test the pod ruleset in a network namespace
         run: make test-podmesh-netns
@@ -174,6 +175,60 @@ jobs:
             while read -r id; do
               gh api -X DELETE "repos/$REPO/actions/caches/$id" || true
             done
+
+  # internal/cdsha runs for minutes under -race: it has its own job, split
+  # into shards, and on pull requests runs only when the PR changes a
+  # package its tests build from (or the build files).
+  cdsha-changes:
+    name: CDS-HA changes
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.changes.outputs.run }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: ./.github/actions/setup-go-c8s
+
+      - id: changes
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ "$EVENT" != pull_request ]; then
+            echo run=true >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          module=$(GOWORK=off go list -m)
+          dirs=$(go list -deps -test -f "{{if and .Module (eq .Module.Path \"$module\")}}{{.Dir}}{{end}}" ./internal/cdsha | sed "s|^$PWD/||" | sort -u)
+          run=false
+          while IFS= read -r f; do
+            case "$f" in
+              go.mod | go.sum | go.work | go.work.sum | Makefile | .github/workflows/ci.yml) run=true ;;
+            esac
+            d=$(dirname "$f")
+            if grep -qxF "${d%%/testdata*}" <<<"$dirs"; then run=true; fi
+          done < <(git diff --name-only "$BASE"...HEAD)
+          echo "run=$run" | tee -a "$GITHUB_OUTPUT"
+
+  cdsha:
+    name: CDS-HA unit tests (${{ matrix.shard }}/6)
+    needs: cdsha-changes
+    if: needs.cdsha-changes.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: ./.github/actions/setup-go-c8s
+
+      - name: Test one shard
+        run: make test-cdsha CDSHA_SHARDS=6 CDSHA_SHARD=${{ matrix.shard }} CDSHA_TIMEOUT=10m
 
   integration:
     name: Integration
