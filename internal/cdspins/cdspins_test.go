@@ -373,6 +373,46 @@ func TestImagesSharingAnMRTD(t *testing.T) {
 	}
 }
 
+// On SEV-SNP a pin decree names launch digests; the node pins each under
+// every launch key of its bootstrap set, as its launch document pins SNP
+// images. A decree's images must be of the bootstrap set's family.
+func TestSNPPinDecrees(t *testing.T) {
+	k, pub := key()
+	h := func(c string) string { return strings.Repeat(c, 96) }
+	snpBoot := refvalues.ReferenceValues{Family: teetypes.FamilySNP, Images: []remote.ImagePin{
+		{Name: "server", Digest: make([]byte, 48), Anchor: serverKey}, {Name: "cds-1", Digest: make([]byte, 48), Anchor: cdsKey}}}
+	srv := &served{sd: pinDecree(t, k, cluster, 3, cdsha.DecreeImage{Measurement: h("4")}, cdsha.DecreeImage{Measurement: h("5")})}
+	src, err := New(Config{ClusterID: cluster, DecreeKey: pub, Bootstrap: snpBoot, Fetch: srv.fetch, MinInterval: time.Nanosecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := src.Refresh(t.Context()); !changed || err != nil {
+		t.Fatalf("SNP decree: %v %v", changed, err)
+	}
+	cur := src.Current()
+	want := map[string]bool{}
+	for _, m := range []string{h("4"), h("5")} {
+		for _, a := range [][]byte{serverKey, cdsKey} {
+			want[string(a)+m] = true
+		}
+	}
+	for _, p := range cur.Images {
+		if len(p.Registers) != 0 {
+			t.Fatalf("SNP pin with registers: %+v", p)
+		}
+		delete(want, string(p.Anchor)+hex.EncodeToString(p.Digest))
+	}
+	if cur.Family != teetypes.FamilySNP || len(cur.Images) != 4 || len(want) != 0 {
+		t.Fatalf("SNP pins %+v, missing %d", cur.Images, len(want))
+	}
+	if _, err := Policy(snpBoot, []cdsha.DecreeImage{img(1)}); err == nil {
+		t.Fatal("a TDX image in an SNP set accepted")
+	}
+	if _, err := Policy(bootstrap(), []cdsha.DecreeImage{{Measurement: h("4")}}); err == nil {
+		t.Fatal("an SNP image in a TDX set accepted")
+	}
+}
+
 // A node takes the decree the replicas applied: it asks a replica it pins
 // first, and fetches unverified only when none answers. A decree taken
 // unverified that the replicas never applied (signed, then rejected) is

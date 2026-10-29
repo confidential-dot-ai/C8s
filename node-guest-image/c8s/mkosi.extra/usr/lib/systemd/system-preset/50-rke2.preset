@@ -3,6 +3,8 @@
 enable containerd-data-disk.service
 enable models-disk.service
 enable nri-node-ip.service
+# Restarts a Cilium agent that kept the previous boot's node address.
+enable cilium-node-ip.service
 enable gpu-node-label.service
 # Fail closed on a non-CC or unattested GPU before nvidia-cc-ready sets the
 # CC Ready state; RequiredBy nvidia-cc-ready and the rke2 pair so a failed

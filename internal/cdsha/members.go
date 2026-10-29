@@ -27,7 +27,9 @@ func (n *Node) member() bool {
 // joinOrBootstrap asks the replicas it can reach to add it. A replica named
 // by a pending Genesis decree starts the group instead, but only when no
 // reachable replica already belongs to one. Discovery or contact failure
-// cannot establish absence and therefore blocks Genesis fallback.
+// cannot establish absence and therefore blocks Genesis fallback. Neither
+// can an empty discovery answer, which the host's DNS can give at will: it
+// blocks Genesis unless the decree says the replica is alone.
 func (n *Node) joinOrBootstrap(ctx context.Context) {
 	n.eligibilityMu.Lock()
 	defer n.eligibilityMu.Unlock()
@@ -73,7 +75,12 @@ func (n *Node) joinOrBootstrap(ctx context.Context) {
 	if uncertain || n.fsm.Core().Joined() || n.member() {
 		return
 	}
-	if g, ok := n.pendingDecree(ctx, Genesis); ok {
+	g, ok := n.pendingDecree(ctx, Genesis)
+	switch {
+	case !ok:
+	case len(peers) == 0 && !g.Decree.Decree.Alone:
+		n.joinRefused("genesis", errors.New("peer discovery found no other replica and the Genesis decree does not say alone"))
+	default:
 		n.bootstrap(ctx, g)
 	}
 }
@@ -88,14 +95,23 @@ func (n *Node) joinRefused(peer string, err error) {
 }
 
 // rejoin asks reachable replicas to add this member, as a joiner would; a
-// leader that already has it answers without change.
-func (n *Node) rejoin(ctx context.Context) {
+// leader that already has it answers without change. It reports whether a
+// leader answered that it excluded this member.
+func (n *Node) rejoin(ctx context.Context) (excluded bool) {
 	peers, _ := n.cfg.Peers(ctx)
 	for _, p := range peers {
-		if resp, err := n.askJoin(p); err == nil && resp.Err == "" {
-			return
+		resp, err := n.askJoin(p)
+		if err != nil {
+			continue
+		}
+		if resp.Excluded {
+			return true
+		}
+		if resp.Err == "" {
+			return false
 		}
 	}
+	return false
 }
 
 // askJoin asks peer p to add this replica, following one redirect to the
@@ -154,6 +170,16 @@ func (n *Node) handleJoin(req controlRequest) controlResponse {
 	nonVoters := 0
 	for _, s := range f.Configuration().Servers {
 		if s.ID == id {
+			// INVARIANT: an excluded member ID never votes again. It may
+			// hold a recovered cluster's log, with entries at the same
+			// index and term as this cluster's but other content, which
+			// Raft's log matching cannot tell apart. Only a new process,
+			// with a new ID and an empty log, rejoins for its node; the
+			// excluded ID retires once that one votes (retireVoters).
+			if s.Address == excludedAddress {
+				n.log.Warn("excluded member asked to rejoin; it must restart as a new member", "id", id)
+				return controlResponse{Member: true, Excluded: true, Err: "member excluded: restart to rejoin as a new member"}
+			}
 			return controlResponse{Member: true}
 		}
 		if hp, _ := splitRaftAddr(string(s.Address)); hp == hostport && s.ID != n.id {
@@ -242,6 +268,13 @@ func (n *Node) observe(ctx context.Context, generation *raft.Raft, ch <-chan raf
 					n.noteFailure(d.PeerID, d.LastContact, time.Now())
 				case raft.ResumedHeartbeatObservation:
 					delete(n.failing, d.PeerID)
+				case raft.LeaderObservation:
+					if d.LeaderID == n.id {
+						select {
+						case n.leaderNow <- struct{}{}:
+						default:
+						}
+					}
 				}
 			}
 			n.mu.Unlock()
@@ -306,6 +339,10 @@ func (n *Node) reconcile() {
 	// Reachability probes may wait on the network. Do not block admission
 	// during them, and never use their configuration sample for mutations.
 	n.clearReachable(servers, time.Now())
+	var target *raft.Server
+	if n.fsm.Stuck() != "" {
+		target = n.stuckTransferTarget(r, servers)
+	}
 	n.membershipMu.Lock()
 	defer n.membershipMu.Unlock()
 	if r == nil || r != n.r() || n.stoppingReads.Load() == r || r.State() != raft.Leader {
@@ -315,11 +352,19 @@ func (n *Node) reconcile() {
 		// A leader that cannot follow its own log certifies no reads and
 		// applies no writes, for anyone: hand the log to a replica that can.
 		// Its own seat is left alone; a restart replays the log.
-		n.log.Warn("stuck leader: transferring leadership", "reason", reason)
-		if err := r.LeadershipTransfer().Error(); err != nil {
-			n.log.Warn("stuck leader: leadership transfer", "err", err)
+		if target != nil {
+			n.log.Warn("stuck leader: transferring leadership", "reason", reason, "target", target.ID)
+			if err := n.transferLeadership(r, *target); err != nil {
+				n.log.Warn("stuck leader: leadership transfer", "target", target.ID, "err", err)
+			}
+			return
 		}
-		return
+		// No replica fit to take over: keep leading, and keeping the
+		// membership, so that replicas that apply the log (an image that
+		// applies the entry, or restarts after a store fault every replica
+		// hit) can join, take seats and then the lead (FSM.stop). Run ends
+		// this one once the others keep a majority without it.
+		n.log.Warn("stuck leader: no caught-up, responsive voter to hand leadership to", "reason", reason)
 	}
 	servers = n.servers()
 	if servers == nil {
@@ -439,6 +484,7 @@ func (n *Node) removeMember(r *raft.Raft, id raft.ServerID) bool {
 	delete(n.addedAt, id)
 	delete(n.known, id)
 	delete(n.reads, id)
+	delete(n.acked, id)
 	n.mu.Unlock()
 	n.log.Info("member removed", "id", id)
 	return true
@@ -448,8 +494,9 @@ func (n *Node) removeMember(r *raft.Raft, id raft.ServerID) bool {
 // voter that stays reports every voter as one. It asks them only while a
 // voter is not yet known to all of them (known), so a settled cluster sends
 // no probes. Raft counts a vote only from a candidate that is a voter in the
-// receiver's latest configuration. A promotion commits through the leader
-// and any one other voter, which can be the promoted member itself. Were the
+// receiver's latest configuration. A promotion commits once a majority of
+// the new configuration holds it, which can count the promoted member
+// itself (from a free seat: the leader and that member). Were the
 // leader lost before a staying voter holds the promotion, that voter would
 // refuse the new voter's vote requests, and the new voter its requests for
 // their shorter log: no leader until the old one is back. So nothing else is
@@ -890,7 +937,81 @@ func (n *Node) transferSlowLeader(r *raft.Raft, target *raft.Server, attrs []any
 	n.slow.tried = time.Now()
 	n.mu.Unlock()
 	n.log.Warn("slow leader: transferring leadership", attrs...)
-	if err := r.LeadershipTransferToServer(target.ID, target.Address).Error(); err != nil {
+	if err := n.transferLeadership(r, *target); err != nil {
 		n.log.Warn("slow leader: leadership transfer", "target", target.ID, "err", err)
 	}
+}
+
+// errTransferCooldown refuses a transfer to the target of a recent one.
+var errTransferCooldown = errors.New("cds-ha: a transfer to this target may still be queued in raft; not repeating it yet")
+
+// transferLeadership is called with membershipMu held, so ours never
+// overlap. Raft v1.8 queues a transfer request in the target's replicator
+// (one slot) until the replicator's RPC in flight returns; a second
+// transfer to the same target meanwhile blocks Raft's transfer monitor, and
+// the leader refuses every write and barrier until the slot drains, for
+// good if it steps down first (hashicorp/raft#696). So a target gets one
+// transfer per transferCooldown: the longest that RPC can take, plus the
+// transfer's own timeout. Another target has a replicator of its own.
+func (n *Node) transferLeadership(r *raft.Raft, target raft.Server) error {
+	now := time.Now()
+	n.mu.Lock()
+	if n.lastTransfer.to == target.ID && now.Sub(n.lastTransfer.at) < n.transferCooldown() {
+		n.mu.Unlock()
+		return errTransferCooldown
+	}
+	prev := n.lastTransfer
+	n.lastTransfer.to, n.lastTransfer.at = target.ID, now
+	n.mu.Unlock()
+	err := r.LeadershipTransferToServer(target.ID, target.Address).Error()
+	if errors.Is(err, raft.ErrLeadershipTransferInProgress) {
+		// Refused before anything was queued for the target.
+		n.mu.Lock()
+		if n.lastTransfer.to == target.ID && n.lastTransfer.at.Equal(now) {
+			n.lastTransfer = prev
+		}
+		n.mu.Unlock()
+	}
+	return err
+}
+
+func (n *Node) transferCooldown() time.Duration { return raftRPCTimeout + n.cfg.Timing.Election }
+
+// stuckTransferTarget is the voter a stuck leader hands leadership to: not
+// failing heartbeats, answering status as itself and not stuck, past the
+// transfer cooldown, and caught up: it knows as committed (applied index
+// plus apply lag, its own commit index) at least what this leader had
+// committed before the probe. A replica whose log lags (its state machine
+// queue full, which blocks its Raft thread inside AppendEntries, or an
+// InstallSnapshot in progress) would leave the transfer queued in raft
+// (see transferLeadership). The most applied wins; nil when none is fit.
+// Probes run without membershipMu.
+func (n *Node) stuckTransferTarget(r *raft.Raft, servers []raft.Server) *raft.Server {
+	if r == nil || r != n.r() || r.State() != raft.Leader {
+		return nil
+	}
+	commit := r.CommitIndex()
+	now := time.Now()
+	var candidates []raft.Server
+	n.mu.Lock()
+	for _, s := range servers {
+		_, bad := n.failing[s.ID]
+		cooling := n.lastTransfer.to == s.ID && now.Sub(n.lastTransfer.at) < n.transferCooldown()
+		if s.ID != n.id && s.Suffrage == raft.Voter && !bad && !cooling {
+			candidates = append(candidates, s)
+		}
+	}
+	n.mu.Unlock()
+	var best *raft.Server
+	var bestApplied uint64
+	for _, s := range candidates {
+		st, err := n.peerStatus(s.Address, min(time.Second, n.cfg.Timing.Lease/2))
+		if err != nil || st.ID != string(s.ID) || st.Stuck != "" || st.AppliedIndex+st.ApplyLag < commit {
+			continue
+		}
+		if best == nil || st.AppliedIndex > bestApplied {
+			best, bestApplied = &s, st.AppliedIndex
+		}
+	}
+	return best
 }

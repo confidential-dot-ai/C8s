@@ -12,8 +12,9 @@ if [[ "${1:-}" != --inside ]]; then
     CTR=c8s-launch-systemd-$$
     docker build -q -t "$IMG" - <<'EOF' >/dev/null
 FROM debian:12
+# python3, not python3-minimal: the fake Cilium agent needs http.server and json.
 RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
-    systemd systemd-sysv && apt-get clean && rm -rf /var/lib/apt/lists/*
+    systemd systemd-sysv python3 && apt-get clean && rm -rf /var/lib/apt/lists/*
 CMD ["/sbin/init"]
 EOF
     trap 'docker rm -f "$CTR" >/dev/null 2>&1 || true' EXIT
@@ -29,6 +30,12 @@ EOF
     done
     case "$state" in running|degraded) ;; *) echo "systemd failed to settle: $state" >&2; exit 2 ;; esac
     docker cp "$TESTS_DIR/.." "$CTR":/ngi >/dev/null
+    # The stale Cilium address case runs the real c8s command.
+    command -v go >/dev/null || { echo "go required" >&2; exit 2; }
+    BIN=$(mktemp -d)
+    trap 'docker rm -f "$CTR" >/dev/null 2>&1 || true; rm -rf "$BIN"' EXIT
+    (cd "$TESTS_DIR/../.." && CGO_ENABLED=0 GOOS=linux go build -o "$BIN/c8s" ./cmd/c8s)
+    docker cp "$BIN/c8s" "$CTR":/usr/local/lib/c8s-real >/dev/null
     docker exec "$CTR" bash /ngi/tests/rke2-role-systemd-test.sh --inside
     exit $?
 fi
@@ -94,7 +101,7 @@ done
 
 # Application services are Kubernetes workloads. These host services retain
 # the authenticated launch dependency before any pod can start.
-core_units=(attest-proxy.service cred-release.service nri-node-ip.service)
+core_units=(attest-proxy.service cred-release.service nri-node-ip.service cilium-node-ip.service)
 
 for unit in "${core_units[@]}"; do
     install -D -m644 "$SOURCE_UNITS/$unit" "/etc/systemd/system/$unit"
@@ -109,6 +116,19 @@ ExecStop=
 EOF
 done
 
+systemctl daemon-reload
+# Launch-verification and node-address failures power the node off rather
+# than leaving it idle; keep the parsed production policy, then disable it so
+# failure scenarios do not power off the test host.
+for unit in rke2-role.service nri-node-ip.service; do
+    CASE="policy-$unit"
+    ok "$unit powers off on failure" \
+        test "$(systemctl show -p FailureAction --value "$unit")" = poweroff-force
+    install -D -m644 /dev/stdin "/etc/systemd/system/$unit.d/95-test-no-poweroff.conf" <<'EOF'
+[Unit]
+FailureAction=none
+EOF
+done
 systemctl daemon-reload
 payload_units=(rke2-server.service rke2-agent.service "${core_units[@]}")
 active() { systemctl is-active --quiet "$1"; }
@@ -181,6 +201,63 @@ for scenario in missing-launch invalid-signature prepare-failure; do
     for unit in "${payload_units[@]}"; do ok "$unit stayed down" not_active "$unit"; done
 done
 
+# The boot's first quote fails once (platform SVN update, KDS briefly
+# unavailable). The retry stays inside rke2-role's start job, so the role and
+# every dependent still start; a failed rke2-role would fail them for good.
+CASE=boot-transient-attestation-failure
+scenario_reset
+launch_media server
+: > /dev/disk/by-label/opkeydata
+echo 1 > "$C8S_ROLE_FIXTURE/stage-fails-times"
+ok "boot completes after a failed first verification" boot_roles
+ok "verification ran twice" test "$(stage_calls)" -eq 2
+ok "launch verification is active" active rke2-role.service
+for unit in rke2-server.service "${core_units[@]}"; do ok "$unit active" active "$unit"; done
+ok "the retry is logged" bash -c "journalctl -b -u rke2-role.service --no-pager | grep -q 'failed (attempt 1/5'"
+
+CASE=boot-persistent-attestation-failure
+scenario_reset
+launch_media server
+: > /dev/disk/by-label/opkeydata
+echo 99 > "$C8S_ROLE_FIXTURE/stage-fails-times"
+ok "startup fails visibly" not boot_roles
+ok "launch unit failed" systemctl is-failed --quiet rke2-role.service
+ok "verification is attempted exactly 5 times" test "$(stage_calls)" -eq 5
+ok "no role authorized" no_launch_markers
+for unit in "${payload_units[@]}"; do ok "$unit stayed down" not_active "$unit"; done
+
+# cred-release must not give up after a burst of failed starts: a start
+# limit would keep :8443 closed until the next boot.
+CASE=cred-release-keeps-retrying
+scenario_reset
+launch_media server
+: > /dev/disk/by-label/opkeydata
+install -D -m755 /dev/stdin /usr/local/bin/flaky-cred-release <<'EOF'
+#!/bin/sh
+n=$(( $(cat /run/cred-release-starts 2>/dev/null || echo 0) + 1 ))
+echo "$n" > /run/cred-release-starts
+[ "$n" -gt 7 ] && exec /bin/sleep infinity
+exit 1
+EOF
+install -D -m644 /dev/stdin /etc/systemd/system/cred-release.service.d/95-test-flaky.conf <<'EOF'
+[Service]
+ExecStart=
+ExecStart=/usr/local/bin/flaky-cred-release
+RestartSec=100ms
+RestartMaxDelaySec=100ms
+EOF
+systemctl daemon-reload
+rm -f /run/cred-release-starts
+ok "selected role boots" boot_roles
+for _ in $(seq 100); do
+    [[ $(cat /run/cred-release-starts 2>/dev/null || echo 0) -gt 7 ]] && active cred-release.service && break
+    /bin/sleep 0.2
+done
+ok "cred-release is running after 7 failed starts" active cred-release.service
+ok "cred-release was restarted, not abandoned" test "$(cat /run/cred-release-starts 2>/dev/null || echo 0)" -gt 7
+rm -f /etc/systemd/system/cred-release.service.d/95-test-flaky.conf /usr/local/bin/flaky-cred-release /run/cred-release-starts
+systemctl daemon-reload
+
 for role in server agent; do
     CASE="boot-$role-AppArmor-failure"
     scenario_reset
@@ -192,6 +269,51 @@ for role in server agent; do
     ok "server stays down" not_active rke2-server.service
     ok "agent stays down" not_active rke2-agent.service
 done
+
+# T1: a node that came back with a new address has a Cilium agent announcing
+# the previous one. The production unit runs the real command against a fake
+# agent (its API socket, comm and pod cgroup) and must restart only that one.
+CASE=cilium-node-ip-restarts-stale-agent
+scenario_reset
+launch_media agent
+: > /dev/disk/by-label/opkeydata
+rm -f /etc/systemd/system/cilium-node-ip.service.d/90-test-payload.conf
+systemctl daemon-reload
+mkdir -p /run/nri-image-policy
+echo 192.0.2.10 > /run/nri-image-policy/node-ip
+install -D -m755 /dev/stdin /usr/local/bin/cilium-agent <<'EOF'
+#!/usr/bin/python3
+import http.server, json, os, socketserver, sys
+path = "/var/run/cilium/cilium.sock"
+os.makedirs(os.path.dirname(path), exist_ok=True)
+if os.path.exists(path):
+    os.unlink(path)
+class H(http.server.BaseHTTPRequestHandler):
+    def address_string(self):
+        return "local"
+    def do_GET(self):
+        body = json.dumps({"self": "default/n", "nodes-added": [
+            {"name": "default/n", "primary-address": {"ipv4": {"ip": sys.argv[1]}}}]}).encode()
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(body)
+socketserver.UnixStreamServer(path, H).serve_forever()
+EOF
+ok "selected role boots" boot_roles
+ok "cilium-node-ip runs the real command" active cilium-node-ip.service
+agent() { systemd-run --quiet --unit="$1" --slice=kubepods-burstable.slice /usr/local/bin/cilium-agent "$2"; }
+agent fake-cilium-current 192.0.2.10
+/bin/sleep 12
+ok "an agent announcing the current address keeps running" active fake-cilium-current.service
+systemctl stop fake-cilium-current.service
+agent fake-cilium-stale 192.0.2.99
+for _ in $(seq 30); do active fake-cilium-stale.service || break; /bin/sleep 1; done
+ok "the agent announcing a stale address was restarted" not_active fake-cilium-stale.service
+ok "the restart is logged with both addresses" bash -c \
+    "journalctl -b -u cilium-node-ip.service --no-pager | grep -F 'restarting cilium-agent: stale node IP 192.0.2.99 -> 192.0.2.10' | grep 'old_ip=192.0.2.99' | grep -q 'new_ip=192.0.2.10'"
+ok "the watch keeps running" active cilium-node-ip.service
+systemctl stop fake-cilium-stale.service >/dev/null 2>&1 || true
+rm -f /usr/local/bin/cilium-agent /run/nri-image-policy/node-ip
 
 scenario_reset
 summarize "authenticated launch systemd dependencies"

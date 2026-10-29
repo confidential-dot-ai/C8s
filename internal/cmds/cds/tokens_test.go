@@ -32,7 +32,7 @@ func TestSingleUse(t *testing.T) {
 	}
 	denied := errors.New("denied")
 	var verdict error
-	authorize := singleUse(func(*http.Request, []byte) (time.Time, error) { return time.Time{}, verdict }, &store, time.Time{}, 0)
+	authorize := singleUse(func(*http.Request, []byte) (time.Time, error) { return time.Time{}, verdict }, &store, nil, 0)
 	r := httptest.NewRequest(http.MethodPut, "/allowlist", nil)
 	r.Header.Set("Authorization", "Bearer "+token)
 
@@ -85,7 +85,7 @@ func TestSingleUseRejectsSignatureTwin(t *testing.T) {
 	twin := token[:dot+1] + base64.RawURLEncoding.EncodeToString(sig)
 
 	verifier := operatorauth.Verifier{Keys: []*ecdsa.PublicKey{&key.PublicKey}}
-	authorize := singleUse(verifier.AuthorizeIssuedAt, &store, time.Time{}, 0)
+	authorize := singleUse(verifier.AuthorizeIssuedAt, &store, nil, 0)
 	request := func(token string) *http.Request {
 		r := httptest.NewRequest(http.MethodPut, "/allowlist", nil)
 		r.Header.Set("Authorization", "Bearer "+token)
@@ -123,7 +123,7 @@ func TestSingleUseRefusesTokensBeforeStart(t *testing.T) {
 		{"issued inside the skew", start.Add(skew - time.Second), false},
 		{"issued at start plus skew", start.Add(skew), true},
 	} {
-		authorize := singleUse(func(*http.Request, []byte) (time.Time, error) { return tc.iat, nil }, &store, start, skew)
+		authorize := singleUse(func(*http.Request, []byte) (time.Time, error) { return tc.iat, nil }, &store, func() time.Time { return start }, skew)
 		r := bearerRequest(t, jwt.MapClaims{"iat": tc.iat.Unix()})
 		if err := authorize(r, nil); (err == nil) != tc.ok {
 			t.Errorf("%s: authorize = %v, want ok=%v", tc.name, err, tc.ok)
@@ -146,7 +146,7 @@ func TestSingleUseRefusesReplayAfterRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer first.Close()
-	if err := singleUse(allow, &first, start.Add(-time.Hour), skew)(r, nil); err != nil {
+	if err := singleUse(allow, &first, func() time.Time { return start.Add(-time.Hour) }, skew)(r, nil); err != nil {
 		t.Fatalf("first use = %v", err)
 	}
 
@@ -155,7 +155,7 @@ func TestSingleUseRefusesReplayAfterRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer restarted.Close()
-	if err := singleUse(allow, &restarted, start.Add(time.Second), skew)(r, nil); !errors.Is(err, operatorauth.ErrTokenBeforeStart) {
+	if err := singleUse(allow, &restarted, func() time.Time { return start.Add(time.Second) }, skew)(r, nil); !errors.Is(err, operatorauth.ErrTokenBeforeStart) {
 		t.Fatalf("replay after restart = %v, want operatorauth.ErrTokenBeforeStart", err)
 	}
 }
@@ -168,9 +168,30 @@ func TestSingleUseReportsStoreFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	store.Close()
-	authorize := singleUse(func(*http.Request, []byte) (time.Time, error) { return time.Time{}, nil }, &store, time.Time{}, 0)
+	authorize := singleUse(func(*http.Request, []byte) (time.Time, error) { return time.Time{}, nil }, &store, nil, 0)
 	if err := authorize(bearerRequest(t, jwt.MapClaims{}), nil); !errors.Is(err, operatorauth.ErrTokenNotRecorded) {
 		t.Fatalf("authorize on a closed store = %v, want operatorauth.ErrTokenNotRecorded", err)
+	}
+}
+
+// An HA cluster's floor moves when a Recover applies on a replica that is
+// already serving: the authorizer reads it at every request.
+func TestSingleUseReadsTheFloorPerRequest(t *testing.T) {
+	store, err := allowlist.OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	start := time.Unix(1_700_000_000, 0)
+	iat := start.Add(time.Minute)
+	floor := start
+	authorize := singleUse(func(*http.Request, []byte) (time.Time, error) { return iat, nil }, &store, func() time.Time { return floor }, 0)
+	if err := authorize(bearerRequest(t, jwt.MapClaims{"jti": "a"}), nil); err != nil {
+		t.Fatalf("before the floor moved: %v", err)
+	}
+	floor = iat.Add(time.Second)
+	if err := authorize(bearerRequest(t, jwt.MapClaims{"jti": "b"}), nil); !errors.Is(err, operatorauth.ErrTokenBeforeStart) {
+		t.Fatalf("after the floor moved past the token: %v, want operatorauth.ErrTokenBeforeStart", err)
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
 
+	"github.com/confidential-dot-ai/c8s/internal/lthash"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 	"github.com/confidential-dot-ai/c8s/pkg/routes"
@@ -37,7 +38,6 @@ const (
 	OpPutWorkload    Op = "put_workload"
 	OpDeleteWorkload Op = "delete_workload"
 	OpReplaceAll     Op = "replace_all"
-	OpSignPolicy     Op = "sign_policy"
 	OpConsumeToken   Op = "consume_token"
 	OpReplaceRoutes  Op = "replace_routes"
 	OpStartJournal   Op = "start_journal"
@@ -54,7 +54,6 @@ type Command struct {
 	Workload  *pkgallowlist.Workload           `json:"workload,omitempty"`
 	Workloads map[string]pkgallowlist.Workload `json:"workloads,omitempty"`
 	Allowlist *pkgallowlist.Allowlist          `json:"allowlist,omitempty"`
-	Body      []byte                           `json:"body,omitempty"`
 	Token     string                           `json:"token,omitempty"`
 	Routes    *routes.Envelope                 `json:"routes,omitempty"`
 	IfMatch   string                           `json:"if_match,omitempty"`
@@ -76,6 +75,7 @@ var sentinels = map[string]error{
 	"token_reused":         operatorauth.ErrTokenReused,
 	"revision_not_greater": ErrRevisionNotGreater,
 	"digest_mismatch":      ErrDigestMismatch,
+	"version_mismatch":     ErrVersionMismatch,
 }
 
 // with records err in r for the trip back across the log.
@@ -165,9 +165,7 @@ func (s *Store) apply(cmd Command) (r Result, err error) {
 	case OpDeleteWorkload:
 		r.Found, err = s.deleteWorkload(cmd.Name)
 	case OpReplaceAll:
-		err = s.replaceAll(cmd.Allowlist)
-	case OpSignPolicy:
-		err = s.signPolicy(cmd.Body, cmd.Token)
+		err = s.replaceAll(cmd.Allowlist, cmd.IfMatch, cmd.Token)
 	case OpConsumeToken:
 		err = s.consumeToken(cmd.Token)
 	case OpReplaceRoutes:
@@ -220,16 +218,20 @@ func (s *Store) DeleteWorkload(name string) (bool, error) {
 	return res.Found, err
 }
 
-// ReplaceAll swaps the entire allowlist (see replaceAll).
+// ReplaceAll swaps the entire allowlist, unconditionally and unsigned (see
+// replaceAll).
 func (s *Store) ReplaceAll(al *pkgallowlist.Allowlist) error {
-	_, err := s.write(Command{Op: OpReplaceAll, Allowlist: al})
-	return err
+	return s.ReplaceAllIfMatch(al, "", "")
 }
 
-// SignPolicy stores the operator token of a whole-document write (see
-// signPolicy).
-func (s *Store) SignPolicy(body []byte, token string) error {
-	_, err := s.write(Command{Op: OpSignPolicy, Body: body, Token: token})
+// ReplaceAllIfMatch swaps the entire allowlist if it is still at the version
+// the strong entity tag ifMatch names, else returns ErrVersionMismatch, and
+// stores token as the document's operator signature with it (see
+// replaceAll). Replicated, it is one command: every replica checks the
+// version it holds when it applies it, which is the same one at every
+// replica, and no replica holds the document without its signature.
+func (s *Store) ReplaceAllIfMatch(al *pkgallowlist.Allowlist, ifMatch, token string) error {
+	_, err := s.write(Command{Op: OpReplaceAll, Allowlist: al, IfMatch: ifMatch, Token: token})
 	return err
 }
 
@@ -274,37 +276,43 @@ func memdbURI(use string) string {
 // rows they still hold) and keeps rowids. Two replicas with the same rows may
 // still produce different bytes: compare stores by content, not by image.
 func (s *Store) Dump() ([]byte, error) {
+	image, _, err := s.DumpDigest()
+	return image, err
+}
+
+// DumpDigest is Dump, with the content digest the store held when the image
+// was taken (Digest, not read back from the image).
+func (s *Store) DumpDigest() ([]byte, [32]byte, error) {
 	ctx := context.Background()
 	uri := memdbURI("dump")
 	dst, err := sql.Open("sqlite", uri)
 	if err != nil {
-		return nil, err
+		return nil, [32]byte{}, err
 	}
 	defer dst.Close()
 	conn, err := dst.Conn(ctx) // keeps the database alive until it is read
 	if err != nil {
-		return nil, err
+		return nil, [32]byte{}, err
 	}
 	defer conn.Close()
 	s.mu.Lock()
 	_, err = s.db.Exec("VACUUM INTO ?", uri)
+	sum := s.dig.sum()
 	s.mu.Unlock()
 	if err != nil {
-		return nil, fmt.Errorf("dump allowlist: %w", err)
+		return nil, [32]byte{}, fmt.Errorf("dump allowlist: %w", err)
 	}
 	var image []byte
 	err = conn.Raw(func(dc any) error {
 		image, err = dc.(imageConn).Serialize()
 		return err
 	})
-	return image, err
+	return image, sum, err
 }
 
-// Restore replaces the whole database with an image from Dump. The image is
-// checked and migrated on a scratch connection first, then copied in with
-// the SQLite backup API in one step, so a bad image leaves the store as it
-// was.
-func (s *Store) Restore(image []byte) error {
+// withImage loads image into a scratch database, checks and migrates it,
+// and calls fn with it and its content digest.
+func withImage(image []byte, fn func(conn *sql.Conn, acc *lthash.Hash) error) error {
 	ctx := context.Background()
 	scratch, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
@@ -326,22 +334,52 @@ func (s *Store) Restore(image []byte) error {
 	if err := initDB(ctx, conn); err != nil {
 		return fmt.Errorf("restore allowlist: %w", err)
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	err = conn.Raw(func(dc any) error {
-		b, err := dc.(imageConn).NewBackup(s.uri)
-		if err != nil {
-			return err
-		}
-		if _, err := b.Step(-1); err != nil {
-			_ = b.Finish()
-			return err
-		}
-		return b.Finish()
-	})
+	acc, err := scanDigest(ctx, conn)
 	if err != nil {
-		return fmt.Errorf("restore allowlist: %w", err)
+		return fmt.Errorf("restore allowlist: content digest: %w", err)
 	}
-	s.gen++
-	return nil
+	return fn(conn, &acc)
+}
+
+// ErrImageDigest refuses an image whose content is not the content its
+// digest names.
+var ErrImageDigest = errors.New("allowlist: database image does not match its content digest")
+
+// Restore replaces the whole database with an image from Dump. The image is
+// checked and migrated on a scratch connection first, then copied in with
+// the SQLite backup API in one step, so a bad image leaves the store as it
+// was.
+func (s *Store) Restore(image []byte) error { return s.restore(image, nil) }
+
+// RestoreDigest is Restore of an image whose content digest must be want: an
+// image that differs is refused (ErrImageDigest) and the store is left as
+// it was.
+func (s *Store) RestoreDigest(image []byte, want [32]byte) error { return s.restore(image, &want) }
+
+func (s *Store) restore(image []byte, want *[32]byte) error {
+	return withImage(image, func(conn *sql.Conn, acc *lthash.Hash) error {
+		if want != nil && acc.Sum() != *want {
+			return ErrImageDigest
+		}
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		err := conn.Raw(func(dc any) error {
+			b, err := dc.(imageConn).NewBackup(s.uri)
+			if err != nil {
+				return err
+			}
+			if _, err := b.Step(-1); err != nil {
+				_ = b.Finish()
+				return err
+			}
+			return b.Finish()
+		})
+		if err != nil {
+			return fmt.Errorf("restore allowlist: %w", err)
+		}
+		// The backup API copies pages: no row hook sees them.
+		s.dig.reset(*acc)
+		s.gen++
+		return nil
+	})
 }

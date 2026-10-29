@@ -3,6 +3,8 @@ Description=Publish the authenticated node address for admission inventory
 Requires=rke2-role.service
 After=rke2-role.service
 Before=rke2-server.service rke2-agent.service
+# rke2 Requires this unit: power off visibly rather than idle without rke2.
+FailureAction=poweroff-force
 
 [Service]
 Type=oneshot

@@ -178,10 +178,12 @@ type Document struct {
 // CDSHA configures the highly available CDS (internal/cdsha).
 type CDSHA struct {
 	// DecreeKey is the PEM P-256 public key that signs the operator's
-	// decrees (Genesis, UpdateMeasurements, RotateKey). It is the only
+	// decrees (Genesis, UpdateMeasurements, RotateKey, SetVoters, Recover,
+	// Restore). It is the only
 	// authority over the shared mesh CA key and the replica image set.
 	DecreeKey string `yaml:"decreeKey" json:"decree_key"`
-	// Replicas is the number of CDS pods; one per cds-role node.
+	// Replicas is the voter seat count at launch: odd, 3 to cdsha.MaxVoters.
+	// More cds-role nodes than seats serve as non-voters.
 	Replicas int `yaml:"replicas" json:"replicas"`
 	// RecoveryKey, when set, is the PEM P-256 public key the replicas encrypt
 	// their state backups to. Its private half stays with the operator,

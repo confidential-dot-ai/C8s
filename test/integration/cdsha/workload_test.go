@@ -772,7 +772,10 @@ func TestWorkload(t *testing.T) {
 		{name: "W1-hot-key", run: hotKey},
 		{name: "W2-large-bodies", args: historyBound, run: largeBodies},
 		{name: "W3-wide-keyspace", args: historyBound, run: wideKeyspace},
-		{name: "W4-delete-overwrite-mix", run: deleteMix},
+		// Deployment config, not an oracle change: every PUT journals the
+		// whole document, and unbounded history reaches the admission cap
+		// within the row (the cap is CAP1's).
+		{name: "W4-delete-overwrite-mix", args: historyBound, run: deleteMix},
 		{name: "W5-read-heavy-staleness", writers: 1, run: readHeavy},
 	})
 }

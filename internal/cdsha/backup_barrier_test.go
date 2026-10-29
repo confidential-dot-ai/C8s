@@ -26,11 +26,16 @@ func TestBackupBarrierStateIndex(t *testing.T) {
 	}
 	defer n.shutdown()
 	// No Run loop: only this test can request a backup or read barrier.
-	decree := signDecree(t, key, Decree{Kind: Genesis, BootstrapNode: "n0"})
+	decree := signDecree(t, key, Decree{Kind: Genesis, BootstrapNode: "n0", TargetMember: n.ID(), GenesisCA: genesisCAOf(t, n), Alone: true})
 	n.bootstrap(context.Background(), PendingDecree{Name: "genesis", Decree: decree})
 	if !n.Core().Joined() {
 		t.Fatal("Genesis did not commit")
 	}
+	// A backup seals state a checkpoint vouched for (divergence.go).
+	if _, err := n.applyEntry(Entry{Kind: KindCheckpoint}); err != nil {
+		t.Fatal(err)
+	}
+	n.checkDivergence()
 	state := n.fsm.AppliedIndex()
 	if n.Status().AppliedIndex != state {
 		t.Fatal("status is not the state watermark")

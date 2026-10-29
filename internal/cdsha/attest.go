@@ -21,6 +21,12 @@ import (
 // certificate. PROTOTYPE: not allocated in the c8s OID arc.
 var OIDPeerEvidence = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 66378, 1, 90}
 
+// OIDPeerMember carries the replica's Raft member ID in its peer TLS
+// certificate. The certificate is signed by the key its evidence binds, and
+// claims checks that signature, so only the attested process chose the ID.
+// PROTOTYPE: not allocated in the c8s OID arc.
+var OIDPeerMember = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 66378, 1, 91}
+
 const peerBindingDomain = "c8s-cds-ha-peer-v2\n"
 
 // Claims are the verified contents of a peer's evidence.
@@ -28,6 +34,7 @@ type Claims struct {
 	Measurement string   // the image: what the pin set lists
 	Anchor      string   // the launch-key binding (TDX RTMR3, SNP HOST_DATA); "" if the platform has none
 	ReportData  [48]byte // binds cluster_id, the TLS key and its NotAfter (SHA-384, the armTLS REPORT_DATA size)
+	Member      string   // the Raft member ID, from the certificate the attested key signed
 }
 
 // Attestor produces and verifies TEE evidence. Verify MUST check the
@@ -57,9 +64,9 @@ func PeerBinding(clusterID string, spki []byte, notAfter time.Time) [48]byte {
 }
 
 // newPeerCert makes the replica's ephemeral self-signed peer certificate with
-// its evidence embedded. x509 keeps whole seconds, so notAfter is truncated
-// to them before it is bound.
-func newPeerCert(clusterID string, att Attestor, notAfter time.Time) (tls.Certificate, error) {
+// its evidence and member ID embedded. x509 keeps whole seconds, so notAfter
+// is truncated to them before it is bound.
+func newPeerCert(clusterID string, att Attestor, notAfter time.Time, member string) (tls.Certificate, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return tls.Certificate{}, err
@@ -79,7 +86,7 @@ func newPeerCert(clusterID string, att Attestor, notAfter time.Time) (tls.Certif
 		NotBefore:       time.Now().Add(-time.Minute),
 		NotAfter:        notAfter,
 		ExtKeyUsage:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
-		ExtraExtensions: []pkix.Extension{{Id: OIDPeerEvidence, Value: ev}},
+		ExtraExtensions: []pkix.Extension{{Id: OIDPeerEvidence, Value: ev}, {Id: OIDPeerMember, Value: []byte(member)}},
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	if err != nil {
@@ -91,16 +98,14 @@ func newPeerCert(clusterID string, att Attestor, notAfter time.Time) (tls.Certif
 
 // peerVerifier checks a peer certificate: evidence verifies, binds this
 // cluster and the certificate key, carries our launch-key anchor, and the
-// measurement is in the current pin set (L2). A cold replica (no chain yet)
-// has no current pin set: it admits any measurement at the TLS layer, and
-// syncFrom accepts an offer only if the offered, operator-decreed chain pins
-// both the source and this replica. That lets a replica on a new node image,
-// which the operator added with UpdateMeasurements, join from replicas on
-// the old one; its baked pins name only its own image.
+// measurement is in the current pin set (L2). Before a replica joins, that
+// set is its launch document's images (Node.peerPins): a replica on a new
+// node image joins from replicas on the old one when its launch document
+// lists the old image among its peer images.
 type peerVerifier struct {
 	clusterID string
 	att       Attestor
-	pins      func() []string // nil: cold, see above
+	pins      func() []string // empty admits nobody
 	anchor    string          // our own Anchor; a peer's must be equal (same role launch key)
 }
 
@@ -109,14 +114,25 @@ func (v peerVerifier) claims(der []byte) (Claims, error) {
 	if err != nil {
 		return Claims{}, err
 	}
-	var ev []byte
+	var ev, member []byte
 	for _, e := range cert.Extensions {
-		if e.Id.Equal(OIDPeerEvidence) {
+		switch {
+		case e.Id.Equal(OIDPeerEvidence):
 			ev = e.Value
+		case e.Id.Equal(OIDPeerMember):
+			member = e.Value
 		}
 	}
 	if ev == nil {
 		return Claims{}, errors.New("peer certificate has no evidence")
+	}
+	if len(member) == 0 {
+		return Claims{}, errors.New("peer certificate names no member")
+	}
+	// The TLS handshake proves the peer holds the key; this proves the
+	// holder wrote the certificate, member ID included.
+	if err := cert.CheckSignature(cert.SignatureAlgorithm, cert.RawTBSCertificate, cert.Signature); err != nil {
+		return Claims{}, fmt.Errorf("peer certificate signature: %w", err)
 	}
 	// A replica renews its certificate every few hours: an expired one is
 	// an old key, perhaps a leaked one. NotAfter is bound into the evidence
@@ -132,7 +148,7 @@ func (v peerVerifier) claims(der []byte) (Claims, error) {
 	if c.ReportData != PeerBinding(v.clusterID, cert.RawSubjectPublicKeyInfo, cert.NotAfter) {
 		return Claims{}, errors.New("peer evidence not bound to this cluster, TLS key and expiry")
 	}
-	if pins := v.pins(); pins != nil && !slices.Contains(pins, c.Measurement) {
+	if !slices.Contains(v.pins(), c.Measurement) {
 		return Claims{}, fmt.Errorf("peer measurement %q not in the replica pin set", c.Measurement)
 	}
 	if c.Anchor != v.anchor {
@@ -140,6 +156,7 @@ func (v peerVerifier) claims(der []byte) (Claims, error) {
 		// cluster's CDS. Never a replica of ours (review F2).
 		return Claims{}, errors.New("peer launch-key binding differs from ours")
 	}
+	c.Member = string(member)
 	return c, nil
 }
 

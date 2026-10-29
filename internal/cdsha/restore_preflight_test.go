@@ -42,7 +42,7 @@ func TestRestorePreflightPreservesFreshTarget(t *testing.T) {
 			encode := func(sn snapshot) []byte {
 				t.Helper()
 				var buf bytes.Buffer
-				if err := encodeSnapshot(&buf, sn); err != nil {
+				if err := encodeSnapshot(&buf, withDigests(t, sn)); err != nil {
 					t.Fatal(err)
 				}
 				return buf.Bytes()
@@ -74,7 +74,7 @@ func TestRestorePreflightPreservesFreshTarget(t *testing.T) {
 			// exactly as CLI recovery authenticates it, not a hash-only corruption.
 			if mode == "policy" {
 				recovery, _ := operatorKey(t)
-				meta := BackupMeta{ClusterID: testCluster, Epoch: bad.Core.Epoch, Index: bad.Index, CAFingerprint: certutil.CertFingerprint(ca.Cert.Raw)}
+				meta := BackupMeta{ClusterID: testCluster, Epoch: bad.Core.Epoch, Index: bad.Index, CAFingerprint: certutil.CertFingerprint(ca.Cert.Raw), StateDigest: withDigests(t, bad).Digests.State}
 				backup, err := SealAuthenticatedBackup(&recovery.PublicKey, meta, body, ca.Cert.Raw, der)
 				if err != nil {
 					t.Fatal(err)
@@ -93,7 +93,7 @@ func TestRestorePreflightPreservesFreshTarget(t *testing.T) {
 			if mode == "compressed" {
 				body = []byte("not zstd")
 			}
-			sd := signDecree(t, key, Decree{Kind: Restore, BootstrapNode: "n0", SnapshotSHA256: SnapshotSHA256(body)})
+			sd := signDecree(t, key, Decree{Kind: Restore, BootstrapNode: "n0", TargetMember: n.ID(), SnapshotSHA256: SnapshotSHA256(body), Alone: true})
 			if mode == "hash" {
 				body = append(body, 0)
 			}
@@ -123,7 +123,7 @@ func TestRestorePreflightPreservesFreshTarget(t *testing.T) {
 				t.Fatal("refused restore changed membership, log, core or application stores")
 			}
 			validBody := encode(good)
-			valid := signDecree(t, key, Decree{Kind: Restore, BootstrapNode: "n0", SnapshotSHA256: SnapshotSHA256(validBody)})
+			valid := signDecree(t, key, Decree{Kind: Restore, BootstrapNode: "n0", TargetMember: n.ID(), SnapshotSHA256: SnapshotSHA256(validBody), Alone: true})
 			result, err := n.Restore(context.Background(), valid, validBody)
 			if err != nil || result.Err != "" || !n.member() || !n.Core().Joined() || n.Core().Epoch != good.Core.Epoch+1 {
 				t.Fatalf("same fresh target cannot restore valid backup: result=%+v err=%v core=%+v", result, err, n.Core())

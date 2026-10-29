@@ -468,7 +468,7 @@ func cdsFlavour(object unstructured.Unstructured) string {
 	switch object.GetKind() + "/" + object.GetName() {
 	case "Deployment/c8s-cds":
 		return "singleton"
-	case "DaemonSet/c8s-cds-ha", "Service/c8s-cds-peers", "NetworkPolicy/c8s-cds-ha-peers",
+	case "DaemonSet/c8s-cds-ha", "Service/c8s-cds-peers", "Service/c8s-cds-replicas", "NetworkPolicy/c8s-cds-ha-peers",
 		"Role/c8s-cds-ha", "RoleBinding/c8s-cds-ha", "Role/c8s-cds-decrees",
 		"RoleBinding/c8s-cds-decrees", "Namespace/" + nodeImageDecreeNamespace:
 		return "ha"

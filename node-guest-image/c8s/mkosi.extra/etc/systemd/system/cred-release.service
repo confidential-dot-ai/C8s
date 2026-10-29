@@ -1,11 +1,12 @@
 [Unit]
 Description=Attested RKE2 operator credential release
 Documentation=https://github.com/confidential-dot-ai/c8s
-# Bound restart storms: a persistent failure (e.g. a runtime-measurement
-# mismatch — the on-disk pubkey doesn't match) should fail closed and stop,
-# not spin. 5 tries in 5 min, then give up until the next boot.
-StartLimitIntervalSec=300
-StartLimitBurst=5
+# Never give up: a start limit would leave :8443 closed until the next boot
+# after a transient failure (the first quote, attestation-api or KDS briefly
+# unavailable). A persistent failure (e.g. a runtime-measurement mismatch —
+# the on-disk pubkey doesn't match) still fails closed: nothing is served,
+# and the backoff below (10 s up to 5 min) keeps it from spinning.
+StartLimitIntervalSec=0
 # Needs the RKE2 client-CA (to sign operator certs) and the attestation-api
 # (to fetch the armTLS serving cert's quote from :8400). rke2-server
 # creates /var/lib/rancher/rke2/server/tls/client-ca.* only once it has
@@ -31,8 +32,8 @@ Type=simple
 # substituted.
 # Non-operator boots never reach here (ConditionPathExists skips the unit).
 # Waits bounded (10 min) rather than failing fast: on a slow first boot the
-# CA can take minutes to appear, and 5 quick ExecStartPre failures 10s apart
-# would exhaust StartLimitBurst in under a minute and give up until reboot.
+# CA can take minutes to appear, and quick ExecStartPre failures would only
+# walk the restart backoff up to its 5 min ceiling.
 # Also waits for the c8s-node-operators and c8s-log-readers ClusterRoleBindings
 # and the baked pod-exec, operator-scope and PodSecurity policies, then proves
 # the PodSecurity allow and deny paths and the operator-scope deny path with
@@ -61,6 +62,8 @@ ExecStart=/usr/local/bin/c8s cred-release \
     --log-cert-cn log-reader
 Restart=on-failure
 RestartSec=10
+RestartSteps=6
+RestartMaxDelaySec=5min
 # Reads the initrd-staged operator pubkey (/etc/confai), the RKE2 client-CA
 # key, and (ExecStartPre only) the RKE2 admin kubeconfig. Writes only the
 # kubectl cache under /run. Keep the rest of the FS read-only.

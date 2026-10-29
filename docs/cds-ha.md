@@ -5,19 +5,57 @@
 These notes cover running CDS as several replicas that share one mesh CA
 (`launch-config new --cds-node`).
 
+This file explains how HA CDS behaves. The operational procedures are in
+`cds-ha-runbooks.md`, the alarms in `cds-ha-alerts.md`, and the known limits
+in [Known limitations](#known-limitations).
+
 ## Starting an HA cluster
 
 HA CDS starts with a **fresh launch**. A cluster that runs a single CDS
-(no `cdsHA` in its launch documents) does not convert in place. Create a new
-bundle with `c8s node launch-config new --cds-node <name>` (repeat the flag:
-an odd number, 3 to 9), launch every node, and apply the Genesis decree. Then move
-workloads and re-apply the workload policy (`c8s allowlist apply`) and secrets.
+(no `cdsHA` in its launch documents) does not convert in place.
 
-## Compatibility boundary: format 3 and peer binding v2
+1. Create a new bundle with `c8s node launch-config new --cds-node <name>`
+   (repeat the flag: an odd number, 3 to 9) and launch every node.
+2. Start the cluster with a Genesis decree: runbook 1 in
+   `cds-ha-runbooks.md`.
 
-This release reads and writes state format **3** (SQLite snapshot images).
-Format 2 previously named incompatible JSON-row and SQLite encodings. Neither
-format-2 variant is supported here. Old backups are refused, not migrated.
+What Genesis relies on:
+
+- The decree names one replica process. `c8s cds ha status` shows its member
+  ID as `id=` (`<node>/<ms>-<random>`). The replica mints it from `crypto/rand`
+  inside the TD at every start and never stores it.
+- `c8s cds ha decree --target-url` reads the member ID over armTLS (the
+  `--target-*` flags are the usual connection flags) and signs it into the
+  decree (`target_member`), with the fingerprint of the mesh CA that process
+  minted (`genesis_ca`). Every replica refuses a Genesis entry whose CA is
+  another one, so a peer that replays the decree cannot install a key of its
+  own. A peer that holds the genuine Genesis key (an image that was a member)
+  can still replay it: keep removed images out of launch documents' peer
+  images. The decree also carries the time the operator signed it
+  (`issued_at_ms`, as do Recover and Restore): the cluster's start time, which
+  orders operator tokens and the allowlist version, is never before it.
+  The command refuses a replica that already holds a cluster
+  or runs on another node than `--bootstrap-node` (default: the target's
+  node). It never takes a member ID from anything but the verified replica.
+- The replica starts the cluster only when peer discovery shows at least one
+  other replica and every replica it finds answers that it holds no cluster.
+  The other replicas join. A one-replica cluster needs `--alone` on the
+  decree; do not use it when there are more replicas.
+- If the bootstrap replica restarts before it applies the decree, the decree
+  is dead (its member ID is gone): read the ID again and sign a new one.
+
+Then move workloads and re-apply the workload policy (`c8s allowlist apply`)
+and secrets.
+
+## Compatibility boundary: format 4 and peer binding v2
+
+This release reads and writes state format **4** (SQLite snapshot images; the
+replicated state records, per epoch, the index it was made from, and the
+one-shot decrees carry `target_member`). Formats 2 and 3 are not supported
+here. Old backups (sealed as `c8s-cds-ha-backup-v2`) are refused, not
+migrated. Genesis, Recover and Restore decrees signed without `target_member` or
+`issued_at_ms`, and Genesis decrees without `genesis_ca`, are refused with an
+error that names the missing field: re-sign them.
 Peer binding v2 also differs from the earlier v1 certificate binding; changing
 measurement pins does not make those protocols interoperable.
 
@@ -30,17 +68,40 @@ old-backup compatibility have not been implemented or tested.
 
 ## Rolling CDS to a new image
 
-The procedure below applies ONLY when both releases explicitly support the
+The procedure applies ONLY when both releases explicitly support the
 same peer binding and overlapping state formats. It does not cross the above
-boundary.
+boundary. Both releases must also run the HA replica with the same
+arguments: the `c8s-cds-ha` DaemonSet comes from the server image, and a cds
+node admits the replica only with the exact arguments its own image was
+built with. A release that changes the CDS arguments or the chart's HA
+DaemonSet needs a relaunch of the cluster, not a rolling upgrade. The step-by-step version, with the readiness gate, is runbook 3 in
+`cds-ha-runbooks.md`.
+
+The DaemonSet's update strategy is `OnDelete`: Kubernetes never restarts a
+replica because the DaemonSet changed. A rolling update would replace every
+replica that is not Ready at once, and a replica that is stuck, fenced or
+without a leader is not Ready while it may hold the only copy of the log. A
+replica keeps its pod until its node is replaced, and a new node gets a pod
+from the current DaemonSet. So the rollout replaces nodes, one at a time,
+behind the readiness gate. In short:
 
 1. Sign and apply an `UpdateMeasurements` decree that pins both images
    (`c8s cds ha decree --image <old> --image <new>`). Nodes and pods follow
-   it. No node is relaunched for this.
+   it. No node is relaunched for this. On TDX an `--image` is
+   `mrtd:rtmr1:rtmr2`. On SEV-SNP it is a launch digest: give one `--image`
+   for each vCPU count a cds node may launch with.
 2. Replace the cds nodes one at a time, the leader last. Each replacement
    gets a **new name** (`c8s node launch-config add-cds-node --image-manifest
-   <new manifest.json>`). Wait until the new replica serves before you remove
-   the old node.
+   <new manifest.json> --pin-decree <decree.json>`, plus `--vcpus <n>` on
+   SEV-SNP; `c8s cds ha pin-policy --decree-out` writes the decree file). Wait until the new
+   replica passes the readiness gate (runbook 2) before you remove the old
+   node. Serving alone is not enough: a non-voter serves while a seat is
+   still unfilled. Until it joins, a replica admits only peers on its own
+   image and on the launch document's peer images, which `add-cds-node`
+   takes from the applied pin decree (`--pin-decree`), never from the
+   bundle server document: an image a decree removed is not admitted. A
+   replica whose launch document names neither the image the cluster runs
+   cannot join it.
 3. Sign and apply a decree that pins only the new image.
 4. Remove the old image's workload policy entries. They stay until you do.
 
@@ -49,7 +110,15 @@ by itself. That happens when every seat is filled by a replica that reads the
 new format, so during the rollout the old format stays in force.
 
 The router, `get-cert`, the injected sidecars and `allowlist-proxy` follow the
-decrees through the node's enforcer.
+decrees through the node's enforcer. They re-read the enforcer's pins at least
+every 5 seconds, so a removed image stops being trusted even by a client whose
+requests keep succeeding.
+
+A node's enforcer reads the pin decree (`GET /ha/pins`) from a CDS it pins
+first, so it follows the decree the replicas applied. Only when no replica
+under its current pins answers does it read the decree unverified; then it
+takes a decree only with a higher base epoch than the one it holds, and the
+next verified read replaces a decree the replicas never applied.
 
 ## Application policy and read freshness
 
@@ -62,6 +131,14 @@ policy as live application, including refused logged commands. Policy version
 is separate from snapshot format. The format-3 release requires a clean
 redeploy; it does not infer policy for old clusters or support format-2 restore
 or rolling conversion.
+
+Sandbox bindings expire at the leader's clock: the leader stamps the time
+on every binding and allowlist write, and each write applies at its own
+time. Binding first-write-wins and expiry therefore trust the current
+leader's clock. A host that sets the leader's clock forward can expire
+bindings early, as it could with one CDS replica, but only for the writes
+stamped while the clock is ahead. A clock behind never shortens a binding:
+a refresh keeps the later expiry. A follower's clock does not matter.
 
 Local authorization reads are **bounded stale, not linearizable**. Each replica
 periodically asks the leader for a Raft barrier, then waits until its own FSM
@@ -77,19 +154,92 @@ quorum confirmation stalls, replicas stop admitting reads when evidence expires.
 This is an admission-time guarantee, not an atomic transaction around an entire
 HTTP handler that was already admitted.
 
-Genesis fallback fails closed on discovery errors and unreachable discovered
-peers, and never replaces locally known cluster state. A successful **empty**
-discovery result still permits the explicitly signed initial Genesis.
+Genesis fallback and Restore fail closed on discovery errors and unreachable
+discovered peers, and never replace locally known cluster state. An **empty**
+discovery result also blocks them, unless the decree says `alone`. Genesis,
+Recover and Restore decrees name the member ID of one replica process
+(`target_member`), and only that process acts on them. A restarted replica has a new member ID,
+so a recorded decree cannot be replayed to it, whatever the decree objects in
+Kubernetes or the guest clock say. `expires_at` only bounds how long a
+decree waits; it is not the replay protection.
+
+## Reaching the replicas
+
+Two NodePort Services lead to the replicas:
+
+* `c8s-cds` (`cds.service.nodePort`, 30808) is for clients. It carries only
+  Ready replicas. A replica is Ready only while it serves and its seat is
+  settled: a voter while the cluster has no more voters than seats and every
+  staying voter knows of its promotion, a non-voter while the leader reports
+  every seat held by a healthy voter. Readiness also gates replacing nodes
+  one at a time: a newly promoted voter is not Ready until the voter it
+  replaces has left, while the voters that already held their seats stay
+  Ready. Any node's address may answer from any Ready replica.
+* `c8s-cds-replicas` (`cds.ha.replicaNodePort`, 30809) is for the operator.
+  `https://<node>:30809` answers from the replica on that node only, whether
+  it serves or not. Use it for replicas that do not serve: a fresh replica
+  awaiting a Restore, or a Recover survivor without a majority.
+
+A replica that has not joined is never Ready. One that has heard of no
+cluster for a while shows `awaiting_restore: true` in `/ha/status`. A
+replica that is only cut off from the others shows the same, so this is a
+hint, not proof of a total loss.
 
 ## Checking the replicas
 
-    c8s cds ha status --image-policy-file server.json https://<node-1>:30808 https://<node-2>:30808 ...
+    c8s cds ha status --image-policy-file server.json https://<node-1>:30809 https://<node-2>:30809 ...
 
 `status` reads `GET /ha/status` from each replica over armTLS, with the same
 connection flags as the other `c8s cds` commands. It prints each replica's
-role, epoch, mesh CA and applied index, and fails when a replica cannot be
-reached, is not serving, or disagrees on the epoch or mesh CA. A status is the
+member ID (`id=`), role, epoch, mesh CA and applied index, and on the leader
+its seats, fence and backups, then a line per alarm (`cds-ha-runbooks.md`
+lists the fields; `--json` prints the whole status). It fails when a replica
+cannot be reached, is not serving, or disagrees on the epoch or mesh CA. A status is the
 replica's own report; `c8s cds ha decrees` gives the agreed decree record.
+
+## Replica divergence
+
+Every replica keeps two digests of what it applied. They are reported in
+`/ha/status`:
+
+- `chain`: a rolling SHA-256 over every command it applied.
+- `checkpoint`: its state digest at the latest checkpoint. A checkpoint is an
+  empty log entry that the leader proposes every 10 s while the state changes.
+
+The state digest covers Core, the mesh CA key, the decree record, and a
+multiset hash of every allowlist row, secret and sandbox binding. Each store
+keeps that hash up to date as it writes. Replicas that agree report the same
+`checkpoint` at the same index. A backup's metadata carries the same value as
+`state_digest`, so you can compare a backup with the live cluster.
+
+The leader compares the replicas at each checkpoint.
+
+- **A replica that differs from a majority of the voters is stopped.** This
+  covers a follower that applied an entry the cluster never committed
+  (hashicorp/raft #695), and a replica whose stored state changed under it. The
+  stopped replica stops serving, exits, and on restart takes the leader's state.
+  The leader's own `status` shows `divergence: stopped diverged replicas: …`.
+- **A leader that differs from a majority of the other voters stops itself.**
+  It hands off leadership, snapshots nothing, and exits. A single follower can
+  never cause this; with 3 voters it takes both followers.
+- **Local check at every snapshot.** Each replica recomputes the digests from
+  the snapshot it is about to ship (to a joining replica or into a backup). If
+  the state no longer matches what it applied, it refuses the snapshot and
+  stops. Every restore (InstallSnapshot, `Restore`, and the CLI's backup check)
+  refuses a snapshot whose content does not match its digests.
+
+Each event logs one ERROR line per episode, starting
+`cds-ha: replica divergence:`. The line names the checkpoint index, each member
+ID with its `chain/state`, and how many voters agree.
+
+**`divergence: no majority: …`.** No majority holds one state. For
+example, one voter is down and the other two differ, or there is a three-way
+split. Nothing is stopped automatically, because no side can be proven right.
+**Backups pause** until the alarm clears. What to do: runbook 7 in
+`cds-ha-runbooks.md`.
+
+Snapshots and backups written before format 4 carry no digests. This release
+refuses them.
 
 ## The mesh CA certificate
 
@@ -102,8 +252,25 @@ Replacing the key itself is the `RotateKey` decree, a break-glass step.
 ## Rebooting nodes
 
 * A rebooted cds or agent node rejoins under its own name. A rebooted voter
-  loses its state and comes back as a new member. The cluster gives its seat
-  to another replica.
+  loses its state and comes back as a new member, first as a non-voter. The
+  old member keeps its vote until a replacement (this one or another
+  replica) is a voter, then retires.
+* A rebooted node forgets the CDS pin decree it followed: node state does
+  not survive a reboot. It trusts its launch document's CDS pins until its
+  first decree fetch succeeds. The enforcer makes that fetch at start, before
+  it hands pins to any client, and logs `no CDS pin decree at start` at
+  ERROR when it fails. A host that withholds the decree keeps the node on its
+  launch-document pins. An agent's launch document pins the server
+  document's image and the node's own, so removing the server document's
+  image for good needs new agent documents from a new bundle. A cds node
+  added with `--pin-decree` pins only the decree's images. A node launched
+  with `--pin-floor` (or `--pin-decree`) at the removing decree's base epoch
+  refuses every older decree (runbook 2).
+* A node takes a pin decree over an unverified fetch only when no CDS it
+  pins answers. Such a decree is provisional: the next answer from a pinned
+  CDS replaces it, at any base epoch not below the last decree a pinned CDS
+  delivered. While the host blocks every pinned CDS, it can keep the node on
+  a provisional decree. That decree is still operator-signed.
 * **A server-node reboot starts a new, empty cluster.** The server keeps
   all cluster state on the per-boot encrypted scratch disk (see
   operator.md, "Revocation is a launch-time decision"). That includes the CDS
@@ -116,6 +283,14 @@ Replacing the key itself is the `RotateKey` decree, a break-glass step.
 The leader seals the state to the recovery key and stores it at most once a
 minute. Writes made after the last backup are lost
 in a total loss, so the window is up to one interval.
+
+**Watch backups.** The leader's `/ha/status` reports `last_backup`
+(`index`, `epoch`, `at_ms`, `age_ms`) and, while backups fail for any reason,
+`backup_error` (stage, cause, attempts, since when). The leader logs an error
+once 3 attempts in a row failed or failures lasted 3 backup intervals. Alert on
+`backup_error`, or on `age_ms` well past the interval while writes happen.
+There is one backup slot, in the cluster's own Kubernetes; the export below is
+the only second copy.
 
 **Export the backup off the cluster on a schedule.** The backup is sealed to
 the recovery key, so you can store the export anywhere:
@@ -133,6 +308,76 @@ positions are separate and must not be used as recovery floors. A floor above
 the authenticated state index is refused even if a later barrier exists; the
 CLI never lowers or translates the supplied floor.
 
+### Which backup the slot keeps
+
+There is one backup slot per cluster (`cds-backup-<cluster-id>`). A new
+backup replaces the stored one only if it continues the stored backup's
+history: it holds the same decrees first, and it is at a later index of that
+epoch, or in a later epoch made from the stored state or a later one. So a
+second cluster (another Genesis), a restore of an older backup, or a Recover
+side that lacks writes the stored backup holds cannot overwrite the live
+cluster's backup. Its backups are refused, and the leader's `/ha/status`
+shows `backup refused: ...` in `backup_error` until a backup is stored again.
+
+## A replica that cannot apply a log entry
+
+A replica whose own store fails (disk full, I/O error) stops serving and exits;
+its restart rejoins with the cluster's state. It exits only while it has a
+leader other than itself, and that leader plus the voters that are not stuck
+and follow it in this term are a majority without it. A stuck leader first
+hands off leadership and then leaves as a follower; with no leader a stuck
+replica never leaves. Every replica applies the same entries to the same
+state, so a full store or a host-wide memory shortage can stop all of them
+at the same entry. Then none exits; each keeps its log, logs `ALARM` every
+minute and shows `stuck_local` true. Once the cause is fixed, restart the
+stuck replicas one at a time: wait until the restarted one is a voter
+(`/ha/status` of the leader lists it in `voters` and no longer lists the old
+member) before the next. The stuck ones keep voting, so the majority holds
+throughout. A stuck replica takes no part in the checkpoint comparison: it
+records no state digest after its stop, so replicas stopped at the same entry
+never outvote a replica that follows the log. A stuck replica takes no
+snapshot, so its in-memory log grows with every write the others commit
+through it (the `ALARM` line and `/ha/status` show `log_entries` and
+`log_bytes`). It can still win an election; it then hands leadership to a
+caught-up replica that follows the log. A replica that has been applying one
+entry for `dead_after + apply` (a store lock that is never released, a write
+that never returns) stops the same way, but only until that entry returns:
+if every replica stalls (a host I/O stall), none leaves, and all follow the
+log again once the stall ends. A Restore is not timed. Any other
+entry it cannot apply
+(an unknown or malformed entry, a newer format, a panic while applying) would
+fail the same way on every replica of the image. Such a replica does **not**
+exit, because the log lives only in memory: it serves nothing, refuses writes,
+keeps its log, logs `ALARM` every minute, and `/ha/status` shows `stuck` with
+`stuck_local` false. If every replica halts, the cluster keeps a leader and its
+membership but serves nothing. There are two ways out: roll an image that
+applies the entry (no loss), or restart every replica and restore the last
+backup (loses the tail). The steps are runbook 6 in `cds-ha-runbooks.md`.
+
+If the cluster's serving leader is past the entry (only this replica fails,
+for example an older image), the replica exits so its restart rejoins, as long
+as the voters that follow the log keep a majority without it.
+
+### A full store on every replica
+
+When every replica stops at the same entry with `database or disk is full`
+in the `reason`, the cluster outgrew its store. Restarting replicas does not
+help: each one applies the same entries into the same size and stops at the
+same entry again. The store size (`cds.ha.storeSizeLimit`) is both an argument
+of the replica (`--allowlist-max-bytes`) and the size of its memory volume.
+Both are built into the node image, and a cds node admits the replica only with
+its own image's arguments. A larger store is therefore a new release, and a
+release that changes the replica's arguments needs a relaunch of the cluster
+from a new bundle. A replica restores only a backup made under its own
+bundle's decree key, and a new bundle has a new one, so a cluster with a
+larger store is a new cluster (Genesis), not a copy of this one.
+
+To keep the state, restore the last backup on the same bundle and image, and
+shrink the state before you apply the writes made after the backup again. The
+writes after the backup are lost until you apply them again. The steps are
+runbook 6, "A full store on every replica". If a fixed image makes the entry
+fit under the same size, roll it in as in runbook 6, option A (no loss).
+
 ## Splitting the recovery key
 
     c8s cds ha recovery-key split --recovery-key recovery.key --out shares --shares 5 --threshold 3
@@ -142,17 +387,58 @@ Give each `share-N.json` to a different custodian, then destroy
 
 ## Recovering from a total loss
 
-Use this when every replica lost its state:
+Use this when every replica lost its state. The steps are runbook 5 in
+`cds-ha-runbooks.md`. No replica is Ready then, so the restore goes to the
+bootstrap node's own address on `c8s-cds-replicas` (:30809).
 
-    c8s cds ha recover --url <cds url> --image-policy-file server.json --operator-key server.key \
-      --backup-file cds-backup.json --cluster-id <id> --bootstrap-node <a fresh cds node> \
-      --decree-key decree.key --trusted-ca-sha256 <recorded-CA-fingerprint> --min-epoch <E> --min-index <I> \
-      --recovery-key-share share-1.json --recovery-key-share share-3.json --recovery-key-share share-4.json
+`recover` checks the backup, then on each attempt opens an armTLS
+connection, reads that replica's `/ha/status`, and goes on only if it runs on
+`--bootstrap-node` and holds no cluster. It signs the Restore decree for that
+process's member ID (`target_member`) and sends it with the snapshot on the
+same connection (every request of one connection goes to the one attested
+replica it verified). Another replica, or the same one after a restart,
+refuses the decree (HTTP 421) and `recover` tries again with a fresh ID.
+The other replicas then join the restored one. Policy, revocations and secrets
+written after the backup are not in it.
 
 Fewer shares than the threshold are refused. The restored cluster keeps its
 mesh CA, secrets, workload policy and decree record, and the other replicas join it.
-If an attempt's answer times out while the replica restores, `recover` checks
-the decree record and reports success when its own Restore is there.
+A restore can take minutes for a large backup. When an attempt gets no answer,
+or meets the restore already in progress, `recover` keeps reading the
+replica's status and decree record (for up to 5 minutes) and reports success
+only when its own Restore is in the record.
+
+### Restoring an older backup on purpose (rollback)
+
+Restoring a backup older than the one in the slot is a rollback: the restored
+cluster does not continue the stored backup's history, so its backups are
+refused (`backup refused` in `backup_error`). To accept the rollback, export
+the slot, restore, then delete the slot: runbook 5 in `cds-ha-runbooks.md`,
+"Restoring an older backup on purpose".
+
+## Recovering from the loss of a majority (Recover)
+
+Recover is break-glass: one surviving replica becomes the only voter with the
+state it holds; writes it did not receive are lost.
+
+The steps, and when NOT to issue Recover, are runbook 4 in
+`cds-ha-runbooks.md`. Above all: make sure the lost replicas are destroyed,
+not only cut off, by means outside the cluster's hosts (cloud console, node
+power state). From inside the cluster, a live majority that is cut off looks
+the same as a lost one.
+
+As for Genesis, the CLI reads the survivor's member ID over armTLS
+(`--target-url https://<survivor>:30809`) and signs it in. If the survivor
+restarts, it has no state left and the decree is dead.
+
+The survivor acts only after the decree has stayed pending for the hold,
+`2·dead_after + apply + lease + 2·tick` (57 s with the default timing),
+while it still sees no leader and no member of its old configuration
+answers with one. A live majority rejects the decree in that time
+(`rejected_reason`), or, if it cannot read the decree objects, has stopped
+serving (see "Fenced" below). If the slot holds a backup with writes the
+survivor lacks, the recovered cluster's backups are refused: keep that
+backup, then delete the slot as in the rollback steps.
 
 ### Restore and peer resource limits
 
@@ -177,6 +463,51 @@ deadline. Mux shutdown closes all accepted sockets, including incomplete
 handshakes and stalled target reads. These are availability bounds, not a
 substitute for peer attestation or network policy.
 
+### Fenced: the cluster serves nothing while it cannot see decrees
+
+A Recover decree for a replica that is only cut off would start a second
+cluster. Only the majority can refuse it, so its leader must see the decree
+objects. The leader **fences** the cluster (no reads, no writes; every
+replica's reads stop within `lease`) when:
+
+- it has not listed the decree objects for `2·dead_after` (40 s by default)
+  **and** a member is cut off (`cut_off_voters`); or
+- it has not listed them yet in its term (it lists at once on taking
+  leadership) **and** a member is cut off or has not yet reported it as its
+  leader over an attested status probe; or
+- a Recover decree it did not reject in time names one of its members: it
+  saw the decree only after such a gap (status `refused late: ...`), or another
+  replica applied it (`applied_epoch`, a fork).
+
+`c8s cds ha status` on the leader shows `fenced=true` and a `FENCED` line
+with the reason, since, stale_for, cut_off voters, and for a Recover decree
+decree and member; the leader logs `FENCED` at ERROR once a minute. A plain API outage
+with every member healthy fences nothing, also across an election.
+
+What to do:
+
+- **API outage plus a cut-off member** (no decree named): restore the leader's
+  API access (or the cut-off member). The fence ends at the next decree list.
+  Do NOT issue Recover: the majority is alive.
+- **Refused late**: the leader cut the named member out of its configuration
+  so Raft never merges it back: a non-voter is removed; a voter keeps its vote
+  under the address `excluded` (Raft no longer reaches it) and leaves only
+  once a replacement votes, like any dead voter. Once it can reach the
+  cluster, the leader refuses its member ID, recovered or not: its log may
+  hold a recovered cluster's writes. The process logs
+  `excluded from the cluster` at ERROR and exits; its restart joins as a new
+  member with an empty log and catches up from the leader. The fence ends
+  when that later process on its node is a healthy member. If you know it
+  is gone, `kubectl delete` the decree object.
+- **Fork** (the decree shows `applied_epoch` and the named member leads its own
+  cluster): your Recover won. Writes the old majority took after the cut are
+  not in it. Restart all the old majority's replicas at once (they join the
+  recovered cluster), or, to keep the old majority instead, stop the recovered
+  replica and delete the decree object.
+
+Before you sign a Recover, confirm outside the cluster's hosts that the other
+replicas are gone (runbook 4).
+
 ## Backup provenance and recovery limits
 
 Backups are sealed to the recovery key, and each carries an ECDSA source
@@ -188,7 +519,7 @@ before decrypting, checking inner metadata/floors, or signing a Restore decree.
 There is no unsigned-backup fallback.
 
 Before loss:
-1. Use `c8s cds ha status --image-policy-file server.json https://<node>:30808`
+1. Use `c8s cds ha status --image-policy-file server.json https://<node>:30809`
    over the attested channel. Retain the full 64-hex-character `ca=` value, cluster identity,
    epoch and applied index in an access-controlled offline recovery record.
    Do not use `--insecure` in this workflow.
@@ -230,6 +561,14 @@ Do not reuse retired mesh keys for backend services.
 
 ## Known limitations
 
+- **Clean deployment only.** HA CDS starts from a fresh launch. A single-CDS
+  cluster does not convert in place, and state formats and backups older than
+  this release are refused, not migrated.
+- **Bounded-stale reads.** A replica serves reads up to one Lease (5 s by
+  default) after its last confirmed barrier. Reads are not linearizable.
+- **Majority loss needs an operator.** A restarted voter comes back empty.
+  When a majority is lost, restore from a backup or recover a survivor
+  (runbooks 4 and 5).
 - **Losing the leader right after a promotion.** A promotion into a free voter
   seat (at Genesis, or after `SetVoters` raises the seats) can commit before
   every voter holds it. Until all of them do, the promoted replica is not
@@ -240,3 +579,49 @@ Do not reuse retired mesh keys for backend services.
   refuses the new voter's vote requests. The cluster stops serving until the
   old leader's replica is back with its log. If that replica is gone, recover
   a survivor (runbook 4).
+- **A cut-out voter rejoins only by restarting.** A voter cut off for
+  DeadAfter while the leader cannot list decrees is excluded, even if it
+  only lost the network. It exits once it reaches the cluster again and
+  rejoins as a new member: a restart and a full catch-up from the leader.
+  Until its replacement votes, the cluster runs one voter short.
+- **Losing the leader before an excluded voter's replacement votes.** If the
+  leader that excluded a voter is lost before that voter's replacement is
+  promoted, the remaining voters may be unable to elect a leader: they no
+  longer send vote requests to the excluded voter, and they refuse its own
+  vote requests, since its log lacks the exclusion. With 3 voters, two live
+  voters can stay leaderless. Only Recover (runbook 4) helps. Removing the voter
+  instead had the same cost.
+- **Backups lag up to one interval.** The leader stores a backup at most once
+  a minute, in one slot. Writes after the last backup are lost on restore;
+  apply them again with tokens minted after the Restore (tokens from before
+  it are refused, since their spends may be lost too). Export backups off the
+  cluster on a schedule.
+- **Server-node reboot.** A server-node reboot starts a new, empty cluster
+  until server HA is available. Keep an exported backup.
+- **Removing a CDS image survives no node reboot.** After a reboot a node
+  trusts its launch-document CDS pins until its first decree fetch succeeds.
+  Durable removal means relaunching the node with a new launch document that
+  no longer pins the image.
+- **Size limits.** Snapshots are limited to 128 MiB compressed and 256 MiB
+  SQLite. Size cds nodes for the chart's memory limit (`cds.ha.resources`,
+  about 8 GiB nodes for the default 4Gi limit), and keep allowlist documents
+  small.
+- **Voter seats.** 3 to 9 voter seats at launch, an odd number
+  (`cdsHA.replicas`: one per `--cds-node` of `launch-config new`); `SetVoters`
+  changes the count (odd, 1 to 9). Further cds nodes serve as non-voters, at
+  most 16 of them, and need not keep the total odd.
+- **Every component change is a new image.** It needs new launch documents;
+  a rolling upgrade replaces every cds node.
+- **Launch CDS pins on cds nodes.** A cds node hands its injected credential
+  clients the launch CDS policy and does not follow CDS pin decrees.
+- **No metrics endpoint for HA state.** `/ha/status` and the log lines in
+  `cds-ha-alerts.md` are the signals.
+- **Attestation policy.** CDS-HA consumes the attestation library's verdict.
+  TCB and attestation policy live in attestation-rs.
+
+## Runbooks and alerts
+
+This file is the reference. Step-by-step procedures (Genesis, adding and
+replacing nodes, rolling upgrades, Recover, Restore and rollback, a halted
+cluster, divergence, failing backups) are in `cds-ha-runbooks.md`. The meaning
+of each `/ha/status` field and alarm log line is in `cds-ha-alerts.md`.

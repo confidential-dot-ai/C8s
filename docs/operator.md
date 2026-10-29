@@ -115,7 +115,7 @@ final shape that is not the injected one.
 
 ## CDS is a singleton
 
-CDS runs as one replica with `strategy: Recreate`, and the default
+Without HA ([cds-ha.md](cds-ha.md)), CDS runs as one replica with `strategy: Recreate`, and the default
 PodDisruptionBudget (`maxUnavailable: 0`) blocks voluntary disruptions. Its
 state is in the pod: the mesh CA key is generated inside the process and written
 nowhere, released secrets live in process memory, and the allowlist and route

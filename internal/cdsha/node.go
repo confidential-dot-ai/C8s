@@ -36,7 +36,8 @@ import (
 // DecreeSource is where operator decrees arrive (Kubernetes objects). Its
 // contents are untrusted: every decree is checked against the operator key.
 type DecreeSource interface {
-	PendingDecrees(ctx context.Context) ([]PendingDecree, error)
+	// ListDecrees lists this cluster's decree objects, with their status.
+	ListDecrees(ctx context.Context) ([]PendingDecree, error)
 	SetDecreeStatus(ctx context.Context, name string, st DecreeStatus) error
 }
 
@@ -56,7 +57,8 @@ type Timing struct {
 	// so it cannot keep admitting what a decree just evicted.
 	Lease time.Duration
 	// DeadAfter is how long a member fails heartbeats before the leader
-	// removes it and frees its seat.
+	// treats it as dead. A dead non-voter is removed; a dead voter keeps its
+	// vote until a replacement is a voter (retireVoters).
 	DeadAfter time.Duration
 	// Stabilize is how long a non-voter must stay healthy before it is
 	// promoted into a free seat.
@@ -68,13 +70,17 @@ type Timing struct {
 	// Backup is how often the leader writes a sealed state backup, when the
 	// state changed since the last one.
 	Backup time.Duration
+	// Checkpoint is how often the leader asks every replica to record its
+	// state digest, when the state changed since the last checkpoint
+	// (divergence.go).
+	Checkpoint time.Duration
 }
 
 // DefaultTiming suits replicas on one site.
 var DefaultTiming = Timing{
 	Heartbeat: time.Second, Election: time.Second, Lease: 5 * time.Second,
 	DeadAfter: 20 * time.Second, Stabilize: 3 * time.Second, Apply: 10 * time.Second, Tick: time.Second,
-	Backup: time.Minute,
+	Backup: time.Minute, Checkpoint: 10 * time.Second,
 }
 
 // Config configures a replica.
@@ -86,7 +92,11 @@ type Config struct {
 	Attestor  Attestor
 	// BakedPins are the measurements this replica's launch configuration
 	// pins; the Genesis replica makes them the first pin set.
-	BakedPins      []string
+	BakedPins []string
+	// PeerPins are the launch document's peer images: those of an
+	// unfinished rollout. Before it joins, a replica admits only peers on
+	// BakedPins or PeerPins.
+	PeerPins       []string
 	OperatorPubKey []byte // PKIX DER
 	// Seats is the voter count, from the signed launch configuration. More
 	// replicas than seats join as non-voters: they serve reads, issuance and
@@ -147,8 +157,14 @@ type Node struct {
 	cert          atomic.Pointer[tls.Certificate] // the peer certificate; renewPeerCert replaces it
 	tls           *tls.Config
 	verifier      peerVerifier
+	launchPins    []string // BakedPins and PeerPins: the peers admitted before joining
 	measurement   string
 	log           *slog.Logger
+
+	// genesisCA is the mesh CA this process installs if a Genesis decree
+	// names it: minted once, its certificate's fingerprint reported in
+	// Status.GenesisCA and signed into the decree.
+	genesisCA func() (*issuer.CA, error)
 
 	jumpAt        atomic.Int64 // Unix ms of the last clock jump not yet cleared by fresh contact
 	readCert      atomic.Pointer[readCertificate]
@@ -160,10 +176,18 @@ type Node struct {
 
 	seatsOKAt atomic.Pointer[time.Time] // monotonic time of the last full-seat report (non-voters)
 	voteKnown atomic.Bool               // every staying voter has held this voter (votersAgree); reset as a non-voter
+	seated    atomic.Bool               // this voter was Ready among no more voters than seats (noteSeated); reset as a non-voter
 
 	readOK    atomic.Pointer[barrierMark] // leader: the last read barrier that succeeded
 	barrierMS atomic.Int64                // leader: how long the last successful read barrier took
 	slow      slowLeader                  // leader: slow-leader check state; protected by mu
+	// lastTransfer is our last leadership transfer (transferLeadership);
+	// protected by mu.
+	lastTransfer struct {
+		to raft.ServerID
+		at time.Time
+	}
+	refused atomic.Pointer[barrierRefusal] // leader: Raft refuses its barriers (raft #696)
 
 	// blocked, in tests only, refuses connections to and from addresses as a
 	// network partition would.
@@ -180,17 +204,43 @@ type Node struct {
 	retireLog      *cache.LRUExpireCache // retiring voter + what it waits for
 	retiring       []raft.ServerID       // leader: voters waiting to retire (reconcile); protected by mu
 
+	// Recover fencing (fence.go).
+	decreeView   atomic.Pointer[decreeView]     // leader: the last fresh decree cycle
+	doubts       atomic.Pointer[[]recoverDoubt] // leader: Recover decrees not rejected in time
+	blindRemoved map[raft.ServerID]struct{}     // leader: removed while the decree view was stale; protected by mu
+	acked        map[raft.ServerID]uint64       // leader: the term in which a member last reported this leader (noteAcks); protected by mu
+	leaderNow    chan struct{}                  // signalled when this replica takes leadership: runDecrees lists at once
+	fencedSince  atomic.Int64                   // leader: Unix ms the current fence began, 0 if none
+	fenceLog     *cache.LRUExpireCache
+	recoverSeen  recoverSighting // the Run loop's Recover hold
+	// recovering is set while recover runs: it records the Recover decree
+	// itself, and decree cycles wait until it has (applyDecrees).
+	recovering atomic.Bool
+	// raftGone: this process's Raft is shut down for good (Run ended, or a
+	// recover could not stop it in time). A Raft that recover stopped for
+	// its replay is not gone (leaveKeepsQuorum).
+	raftGone atomic.Bool
+
 	backupAt    time.Time    // leader: last backup attempt
+	compactAt   time.Time    // leader: last log compaction (maybeCompact)
+	compacting  atomic.Bool  // a compaction snapshot is running
 	pruneAt     time.Time    // leader: last history prune check
 	prunes      atomic.Int64 // history prune entries this replica proposed (for tests)
 	renewAt     time.Time    // leader: last mesh CA renewal attempt
 	backupIndex uint64       // leader: applied index of the last stored backup
-	// backupFails counts consecutive backups that failed on a size bound;
-	// the next waits backupDelay. backupErr is the last one, for Status.
-	backupFails int
-	backupSince time.Time
-	backupErr   atomic.Pointer[string]
-	recovery    *ecdsa.PublicKey
+	// backupFails counts consecutive failed backups, since backupSince;
+	// after one on a size bound (backupTooLarge) the next waits backupDelay.
+	// backupAlarmed says the streak's error was logged. backupErr is the
+	// last failure and lastBackup the last stored backup, for Status.
+	backupFails    int
+	backupTooLarge bool
+	backupAlarmed  bool
+	backupSince    time.Time
+	backupErr      atomic.Pointer[string]
+	lastBackup     atomic.Pointer[storedBackup]
+	recovery       *ecdsa.PublicKey
+
+	div divergence // leader: the replicas' digests (divergence.go)
 }
 
 // snapshotInterval is Raft's snapshot check period; a var so tests can
@@ -223,11 +273,18 @@ type Status struct {
 	// KnownVoters (leader): voters that every staying voter has reported as
 	// voters. A promoted voter is Ready only once it is listed.
 	KnownVoters []string `json:"known_voters,omitempty"`
+	// Heard (leader): the other voters whose heartbeats succeed
+	// (leaveKeepsQuorum).
+	Heard []string `json:"heard,omitempty"`
 	// Format is the cluster's agreed encoding format; Reads the newest this
-	// replica reads. Stuck says why it stopped following the log.
-	Format uint32 `json:"format,omitempty"`
-	Reads  uint32 `json:"reads,omitempty"`
-	Stuck  string `json:"stuck,omitempty"`
+	// replica reads. Stuck says why it stopped following the log;
+	// StuckLocal that the cause is its own (it exits and rejoins). A stop
+	// that is not local is the same on every replica on this code: the
+	// replica stays up with its log and waits for an operator.
+	Format     uint32 `json:"format,omitempty"`
+	Reads      uint32 `json:"reads,omitempty"`
+	Stuck      string `json:"stuck,omitempty"`
+	StuckLocal bool   `json:"stuck_local,omitempty"`
 	// Term is this replica's current Raft term: election churn shows as it
 	// climbing.
 	Term uint64 `json:"term,omitempty"`
@@ -237,9 +294,17 @@ type Status struct {
 	ApplyLag      uint64 `json:"apply_lag,omitempty"`
 	ReadBarrierMS int64  `json:"read_barrier_ms,omitempty"`
 
-	// BackupError (leader) says backups are failing because the state is
-	// over a snapshot size bound: no backup is stored until it shrinks.
-	BackupError string `json:"backup_error,omitempty"`
+	// BackupError (leader) says backups are failing, since when and why:
+	// for example the state is over a snapshot size bound (no backup is
+	// stored until it shrinks), or the stored backup is newer or of another
+	// cluster history ("backup refused", ErrBackupNotNewer). LastBackup
+	// (leader) is the last backup this replica stored.
+	BackupError string        `json:"backup_error,omitempty"`
+	LastBackup  *BackupStatus `json:"last_backup,omitempty"`
+	// Fenced (leader) says why the cluster serves no reads or writes: its
+	// leader cannot see the decree objects while members are cut off, or a
+	// Recover decree may have forked it (see Fence).
+	Fenced *Fence `json:"fenced,omitempty"`
 	// LogEntries and LogBytes are the in-memory Raft log: entries kept
 	// until a snapshot compacts them, and the bytes they hold.
 	LogEntries uint64 `json:"log_entries,omitempty"`
@@ -249,6 +314,36 @@ type Status struct {
 	SnapshotIndex uint64 `json:"snapshot_index,omitempty"`
 	SnapshotBytes int64  `json:"snapshot_bytes,omitempty"`
 	SnapshotAtMS  int64  `json:"snapshot_at_ms,omitempty"`
+
+	// Chain is this replica's chain after the last command it applied, and
+	// Checkpoint its latest state digest (digest.go): replicas that agree
+	// report the same at the same index. Divergence (leader) is an
+	// unresolved disagreement, or the last replicas found to differ from
+	// the majority (divergence.go).
+	Chain      *Point `json:"chain,omitempty"`
+	Checkpoint *Point `json:"checkpoint,omitempty"`
+	Divergence string `json:"divergence,omitempty"`
+	// AwaitingRestore: no cluster seen for DeadAfter (see AwaitingRestore).
+	// Advice for the operator only: a partitioned replica shows it too.
+	AwaitingRestore bool `json:"awaiting_restore,omitempty"`
+	// GenesisCA (not joined) is the SHA-256 fingerprint of the mesh CA
+	// certificate this process installs if a Genesis decree names it
+	// (Decree.GenesisCA).
+	GenesisCA string `json:"genesis_ca,omitempty"`
+}
+
+// BackupStatus is a stored backup: the state it holds, when it was taken
+// (the leader's wall clock) and how long ago it was stored.
+type BackupStatus struct {
+	Index uint64 `json:"index"`
+	Epoch uint64 `json:"epoch"`
+	AtMS  int64  `json:"at_ms"`
+	AgeMS int64  `json:"age_ms"`
+}
+
+type storedBackup struct {
+	BackupStatus
+	at time.Time
 }
 
 // NewNode prepares a replica. Every start is a new Raft member: the log
@@ -268,7 +363,7 @@ func NewNode(cfg Config) (*Node, error) {
 	t, def := &cfg.Timing, DefaultTiming
 	for _, f := range [][2]*time.Duration{{&t.Heartbeat, &def.Heartbeat}, {&t.Election, &def.Election},
 		{&t.Lease, &def.Lease}, {&t.DeadAfter, &def.DeadAfter}, {&t.Stabilize, &def.Stabilize},
-		{&t.Apply, &def.Apply}, {&t.Tick, &def.Tick}, {&t.Backup, &def.Backup}} {
+		{&t.Apply, &def.Apply}, {&t.Tick, &def.Tick}, {&t.Backup, &def.Backup}, {&t.Checkpoint, &def.Checkpoint}} {
 		if *f[0] <= 0 {
 			*f[0] = *f[1]
 		}
@@ -303,6 +398,10 @@ func NewNode(cfg Config) (*Node, error) {
 		known:          map[raft.ServerID]bool{},
 		joinRefusedLog: newLogOnce(),
 		retireLog:      newLogOnce(),
+		blindRemoved:   map[raft.ServerID]struct{}{},
+		acked:          map[raft.ServerID]uint64{},
+		leaderNow:      make(chan struct{}, 1),
+		fenceLog:       newLogOnce(),
 	}
 	if len(cfg.RecoveryKey) > 0 {
 		k, err := x509.ParsePKIXPublicKey(cfg.RecoveryKey)
@@ -317,14 +416,25 @@ func NewNode(cfg Config) (*Node, error) {
 		n.fsm.readable = cfg.Format
 	}
 	n.lastMember.Store(time.Now().UnixMilli())
-	cert, err := newPeerCert(cfg.ClusterID, cfg.Attestor, time.Now().Add(peerCertLife))
+	cert, err := newPeerCert(cfg.ClusterID, cfg.Attestor, time.Now().Add(peerCertLife), string(n.id))
 	if err != nil {
 		return nil, err
 	}
 	n.cert.Store(&cert)
+	n.genesisCA = sync.OnceValues(func() (*issuer.CA, error) { return mintCA(cfg) })
+	n.launchPins = slices.Concat(cfg.BakedPins, cfg.PeerPins)
 	n.verifier = peerVerifier{clusterID: cfg.ClusterID, att: cfg.Attestor, anchor: own.Anchor, pins: n.peerPins}
 	n.tls = peerTLSConfig(n.cert.Load)
 	return n, nil
+}
+
+// mintCA mints a mesh CA under the launch configuration's name and validity.
+func mintCA(cfg Config) (*issuer.CA, error) {
+	mesh, err := issuer.NewMeshCA(cfg.CACommonName, cfg.CAValidity)
+	if err != nil {
+		return nil, err
+	}
+	return mesh.Current().CA, nil
 }
 
 // peerCertLife is how long a peer certificate lasts; renewPeerCert
@@ -337,7 +447,7 @@ func (n *Node) renewPeerCert() {
 	if time.Since(n.cert.Load().Leaf.NotBefore) < peerCertLife/4 {
 		return
 	}
-	c, err := newPeerCert(n.cfg.ClusterID, n.cfg.Attestor, time.Now().Add(peerCertLife))
+	c, err := newPeerCert(n.cfg.ClusterID, n.cfg.Attestor, time.Now().Add(peerCertLife), string(n.id))
 	if err != nil {
 		n.log.Warn("renew peer certificate", "err", err)
 		return
@@ -346,13 +456,13 @@ func (n *Node) renewPeerCert() {
 }
 
 // peerPins is the pin set peers are checked against: the agreed one once
-// the cluster exists. Before that (a replica that has not joined yet) any
-// measurement passes the TLS layer with our launch-key anchor; what a
-// joiner then accepts is decided by the leader of a real majority.
+// the cluster exists. Before that, the images the signed launch document
+// names: a replica that has not joined takes its whole state from the peer
+// it joins, so that peer must run an image the operator signed for it.
 func (n *Node) peerPins() []string {
 	c := n.fsm.Core()
 	if !c.Joined() {
-		return nil
+		return n.launchPins
 	}
 	return c.Measurements
 }
@@ -422,11 +532,12 @@ func (n *Node) startRaft() error {
 		_ = trans.Close()
 		return err
 	}
+	trans.raft.Store(r)
 	n.rft.Store(r)
 	obs := make(chan raft.Observation, 256)
 	observer := raft.NewObserver(obs, false, func(o *raft.Observation) bool {
 		switch o.Data.(type) {
-		case raft.FailedHeartbeatObservation, raft.ResumedHeartbeatObservation:
+		case raft.FailedHeartbeatObservation, raft.ResumedHeartbeatObservation, raft.LeaderObservation:
 			return true
 		}
 		return false
@@ -439,13 +550,89 @@ func (n *Node) startRaft() error {
 	return nil
 }
 
-func (n *Node) transport() (*raft.NetworkTransport, error) {
+func (n *Node) transport() (*termSafeHeartbeats, error) {
 	m, err := newMux(n.cfg.Bind, n.cfg.Advertise, string(n.id), n.tls, n.verifier, n.handleControl, n.blocked)
 	if err != nil {
 		return nil, err
 	}
 	n.mux.Store(m)
-	return raft.NewNetworkTransportWithConfig(raftTransportConfig(m, n.rcfg.Logger)), nil
+	return newTermSafeHeartbeats(raft.NewNetworkTransportWithConfig(raftTransportConfig(m, n.rcfg.Logger))), nil
+}
+
+// termSafeHeartbeats is the peer transport with Raft's heartbeat fast path
+// kept only for heartbeats that cannot change this node's term or role.
+// NetworkTransport runs a heartbeat's AppendEntries on its own goroutine, so
+// that heartbeats are answered while the main thread is busy (a full FSM
+// queue, a slow disk). A heartbeat with a newer term, or one that reaches a
+// leader or candidate, steps the node down there, concurrently with the main
+// thread: a leader that then stamps a client write with the newer term
+// writes an entry the new leader never had at the same index and term, and
+// replicas diverge (hashicorp/raft #695, open in v1.8.0). Those heartbeats go
+// to the main loop like every other RPC, so the term and role change only
+// there; a follower's heartbeat at its own term (all but the first of each
+// term) keeps the fast path.
+type termSafeHeartbeats struct {
+	*raft.NetworkTransport
+	// raft is the instance using the transport; until it is set, every
+	// heartbeat goes to the main loop.
+	raft     atomic.Pointer[raft.Raft]
+	consumer chan raft.RPC
+	done     chan struct{}
+	once     sync.Once
+}
+
+func newTermSafeHeartbeats(t *raft.NetworkTransport) *termSafeHeartbeats {
+	s := &termSafeHeartbeats{NetworkTransport: t, consumer: make(chan raft.RPC), done: make(chan struct{})}
+	go func() {
+		for {
+			select {
+			case rpc := <-t.Consumer():
+				select {
+				case s.consumer <- rpc:
+				case <-s.done:
+					return
+				}
+			case <-s.done:
+				return
+			}
+		}
+	}()
+	return s
+}
+
+// Consumer carries every RPC for the main loop: the transport's, and the
+// heartbeats the fast path must not handle.
+func (s *termSafeHeartbeats) Consumer() <-chan raft.RPC { return s.consumer }
+
+// SetHeartbeatHandler installs Raft's fast path behind the term check.
+func (s *termSafeHeartbeats) SetHeartbeatHandler(fast func(raft.RPC)) {
+	if fast == nil {
+		s.NetworkTransport.SetHeartbeatHandler(nil)
+		return
+	}
+	s.NetworkTransport.SetHeartbeatHandler(func(rpc raft.RPC) {
+		// A check of term and role here narrows #695: once it passed, an
+		// election on the main thread raises the term, and appendEntries
+		// then refuses this older heartbeat. A pre-vote candidacy keeps the
+		// term, so it is not covered: appendEntries may still step the node
+		// down and, racing an election, set its term back to the heartbeat's.
+		req, ok := rpc.Command.(*raft.AppendEntriesRequest)
+		if r := s.raft.Load(); ok && r != nil && r.State() == raft.Follower && req.Term <= r.CurrentTerm() {
+			fast(rpc)
+			return
+		}
+		select {
+		case s.consumer <- rpc: // the main loop answers it
+		case <-s.done:
+			rpc.Respond(nil, raft.ErrTransportShutdown)
+		}
+	})
+}
+
+// Close stops the forwarding to the main loop and closes the transport.
+func (s *termSafeHeartbeats) Close() error {
+	s.once.Do(func() { close(s.done) })
+	return s.NetworkTransport.Close()
 }
 
 // raftTransportConfig is the peer transport's configuration. Pipelining is
@@ -456,8 +643,11 @@ func (n *Node) transport() (*raft.NetworkTransport, error) {
 // transport still hands it results, the sender then waits on the transport
 // forever, and Raft can never shut down.
 func raftTransportConfig(stream raft.StreamLayer, logger hclog.Logger) *raft.NetworkTransportConfig {
-	return &raft.NetworkTransportConfig{Stream: stream, MaxPool: 3, Timeout: 10 * time.Second, Logger: logger, MaxRPCsInFlight: 1}
+	return &raft.NetworkTransportConfig{Stream: stream, MaxPool: 3, Timeout: raftRPCTimeout, Logger: logger, MaxRPCsInFlight: 1}
 }
+
+// raftRPCTimeout bounds one Raft RPC to a peer that does not answer.
+const raftRPCTimeout = 10 * time.Second
 
 // Run drives the replica until ctx ends: join or bootstrap, then as leader
 // keep the seats filled and apply decrees.
@@ -470,35 +660,64 @@ func (n *Node) Run(ctx context.Context) error {
 	defer n.shutdown()
 	workerCtx, stopWorkers := context.WithCancel(ctx)
 	var workers sync.WaitGroup
-	workers.Add(3)
+	workers.Add(5)
+	go func() { defer workers.Done(); n.watchApply(workerCtx) }()
 	go func() { defer workers.Done(); n.watchClock(workerCtx) }()
 	go func() { defer workers.Done(); n.refreshReads(workerCtx) }()
 	go func() { defer workers.Done(); n.watchSlowLeader(workerCtx) }()
-	// Stop and join read/clock/slow-leader workers before shutdown and caller store close.
+	go func() { defer workers.Done(); n.runDecrees(workerCtx) }()
+	// Stop and join read/clock/slow-leader/decree workers before shutdown and caller store close.
 	defer func() { stopWorkers(); workers.Wait() }()
 	t := time.NewTicker(n.cfg.Timing.Tick)
 	defer t.Stop()
 	var lastEpoch uint64
-	var stuckAt time.Time
+	var stuckAt, alarmAt time.Time
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-t.C:
 		}
-		if reason := n.fsm.Stuck(); reason != "" {
-			// A stuck replica serves nothing, and only a restart, which
-			// replays the log from the cluster, brings it back. A transient
-			// fault (a disk that filled and was freed, descriptors exhausted
-			// for a moment) must not take it out for good, and its peer
-			// port stays open, so no TCP liveness check notices. A leader
-			// first hands off leadership (reconcile); return once it has,
-			// or after DeadAfter, so the process exits and is restarted.
+		reason := n.fsm.Stuck()
+		if reason == "" {
+			stuckAt = time.Time{} // a stall that ended (FSM.endStall)
+		} else {
+			// A stuck replica serves nothing. After a local fault only a
+			// restart, which replays the log from the cluster, brings it
+			// back. A transient fault (a disk that filled and was freed,
+			// descriptors exhausted for a moment) must not take it out for
+			// good, and its peer port stays open, so no TCP liveness check
+			// notices. A leader first hands off leadership (reconcile);
+			// return once it has, or after DeadAfter, so the process exits
+			// and is restarted. A deterministic stop may leave only once the
+			// cluster is past it. Either leaves only while the voters that
+			// follow the log keep a majority without this one
+			// (leaveKeepsQuorum): a "local" fault can strike every replica
+			// at the same entry (the same state over the same store limit),
+			// and the log lives only in memory. Until then the process
+			// keeps the log and raises the alarm.
 			if stuckAt.IsZero() {
-				stuckAt = time.Now()
+				stuckAt, alarmAt = time.Now(), time.Now()
 			}
-			if since := time.Since(stuckAt); (!n.leading() && since >= n.cfg.Timing.Lease) || since >= n.cfg.Timing.DeadAfter {
-				return fmt.Errorf("%w: %s", ErrStuck, reason)
+			since := time.Since(stuckAt)
+			due := (!n.leading() && since >= n.cfg.Timing.Lease) || since >= n.cfg.Timing.DeadAfter
+			// INVARIANT: only a stop that may leave (never a stall), and
+			// still the current one after the quorum probe, ends Run.
+			leave := n.fsm.leaveReason()
+			switch {
+			case due && leave != nil && n.leaveKeepsQuorum() && n.fsm.leaveReason() == leave:
+				return fmt.Errorf("%w: %s", ErrStuck, leave.msg)
+			case time.Since(alarmAt) < haltAlarmEvery:
+			default:
+				alarmAt = time.Now()
+				msg := "cds-ha: ALARM: stopped following the log, and the replicas that follow it are no majority without this one; serving nothing, keeping the log; restart the stuck replicas one at a time, or Restore"
+				if !n.fsm.StuckLocal() && !n.fsm.stuckPassed() {
+					msg = "cds-ha: ALARM: halted at a log entry no replica could apply; serving nothing, keeping the log; deploy an image that applies it, or Restore"
+				}
+				// The log grows with every write the others commit through
+				// this replica: a stuck state machine takes no snapshot.
+				entries, bytes := n.logs.usage()
+				n.log.Error(msg, "reason", reason, "for", since.Round(time.Second), "log_entries", entries, "log_bytes", bytes)
 			}
 		}
 		n.renewPeerCert()
@@ -506,32 +725,50 @@ func (n *Node) Run(ctx context.Context) error {
 			n.joinOrBootstrap(ctx)
 			continue
 		}
+		n.noteSeated()
 		if e := n.fsm.Core().Epoch; e != lastEpoch {
 			lastEpoch = e
 			n.mux.Load().recheck() // the pin set may have changed
 		}
 		switch addr, _ := n.r().LeaderWithID(); {
 		case n.leading():
-			n.noLeader = time.Time{}
+			n.noLeader, n.recoverSeen = time.Time{}, recoverSighting{}
+			if err := n.wedged(); err != nil {
+				return err
+			}
+			// Decrees and backups wait on the API server: runDecrees.
+			n.noteAcks()
 			n.reconcile()
-			n.applyDecrees(ctx)
-			n.maybeBackup(ctx)
-			n.maybePruneHistory()
-			n.maybeRenewCA()
+			n.dropSuspects()
+			n.checkDivergence()
+			n.maybeCheckpoint()
+			if n.fsm.Stuck() == "" { // both derive their entries from this replica's state
+				n.maybePruneHistory()
+				n.maybeRenewCA()
+				n.maybeCompact()
+			}
 		case addr != "":
-			n.noLeader = time.Time{}
+			n.noLeader, n.recoverSeen = time.Time{}, recoverSighting{}
 			n.refreshSeats()
 		case n.noLeader.IsZero():
 			n.noLeader = time.Now()
 		case time.Since(n.noLeader) > n.cfg.Timing.DeadAfter:
 			// No majority for a while: an operator Recover decree naming us
-			// makes us the only voter; otherwise the cluster may have been
-			// recovered around us, so ask to be added again.
-			if p, ok := n.pendingDecree(ctx, Recover); ok {
+			// makes us the only voter, once it has stayed pending for the
+			// hold and no member answers (fence.go); otherwise the cluster
+			// may have been recovered around us, so ask to be added again.
+			p, ok := n.pendingDecree(ctx, Recover)
+			switch {
+			case !ok:
+				n.recoverSeen = recoverSighting{}
+			case n.recoverReady(p):
 				n.recover(ctx, p)
-				n.noLeader = time.Time{}
-			} else {
-				n.rejoin(ctx)
+				n.noLeader, n.recoverSeen = time.Time{}, recoverSighting{}
+				continue
+			}
+			if n.rejoin(ctx) {
+				n.log.Error("cds-ha: the cluster's leader excluded this member; exiting so that a restart rejoins as a new member with the cluster's state", "id", n.id)
+				return ErrExcluded
 			}
 		}
 	}
@@ -540,7 +777,9 @@ func (n *Node) Run(ctx context.Context) error {
 // stopRaft drains the one genuine read future while Raft can still resolve it.
 // Raft v1.8 Barrier futures have no shutdown channel; shutting down first can
 // strand a committed future in the FSM queue. Keep the gate through shutdown.
-// As with Raft shutdown itself, a permanently blocked FSM must be released.
+// A future behind a blocked FSM may never resolve: after Timing.Apply Raft is
+// shut down without the gate, and errShutdownTimeout says that the future
+// (and the FSM) may still be held, so no new generation starts over them.
 func (n *Node) stopRaft(r *raft.Raft) error {
 	if r == nil {
 		return nil
@@ -551,8 +790,19 @@ func (n *Node) stopRaft(r *raft.Raft) error {
 		n.stoppingReads.Store(r)
 		n.readCert.Store(nil)
 	}
-	n.barrierGate <- struct{}{}
-	defer func() { <-n.barrierGate }()
+	drained := true
+	// Once r's shutdown started, no barrier of r can be drained any more.
+	if p := n.shutdownPending; p == nil || p.raft != r {
+		gate := time.NewTimer(n.cfg.Timing.Apply)
+		defer gate.Stop()
+		select {
+		case n.barrierGate <- struct{}{}:
+			defer func() { <-n.barrierGate }()
+		case <-gate.C:
+			drained = false
+			n.log.Error("a read barrier did not finish; shutting raft down without it", "waited", n.cfg.Timing.Apply)
+		}
+	}
 	// Never close the observation channel: Raft owns sends. Deregister,
 	// cancel and join before stores or generation bookkeeping can be retired.
 	if worker := n.observer; worker != nil && worker.raft == r {
@@ -561,7 +811,10 @@ func (n *Node) stopRaft(r *raft.Raft) error {
 		<-worker.done
 		n.observer = nil
 	}
-	return n.awaitShutdown(r)
+	if err := n.awaitShutdown(r); err != nil || drained {
+		return err
+	}
+	return errShutdownTimeout
 }
 
 // errShutdownTimeout: Raft did not shut down within Timing.Apply; its
@@ -601,6 +854,7 @@ func (n *Node) awaitShutdown(r *raft.Raft) error {
 func (n *Node) shutdown() {
 	n.membershipMu.Lock()
 	defer n.membershipMu.Unlock()
+	n.raftGone.Store(true)
 	if r := n.r(); r != nil {
 		_ = n.stopRaft(r)
 	}
@@ -609,7 +863,22 @@ func (n *Node) shutdown() {
 	}
 }
 
+// call sends req to whichever replica answers at host:port addr.
 func (n *Node) call(addr string, timeout time.Duration, req controlRequest) (controlResponse, error) {
+	return n.callAs(addr, "", timeout, req)
+}
+
+// callMember sends req to the member that Raft address addr names, and to
+// no other replica that may answer there.
+func (n *Node) callMember(addr raft.ServerAddress, timeout time.Duration, req controlRequest) (controlResponse, error) {
+	hp, id := splitRaftAddr(string(addr))
+	if id == "" {
+		return controlResponse{}, fmt.Errorf("cds-ha: raft address %q names no member", addr)
+	}
+	return n.callAs(hp, id, timeout, req)
+}
+
+func (n *Node) callAs(addr, member string, timeout time.Duration, req controlRequest) (controlResponse, error) {
 	if n.blocked != nil && n.blocked(addr) {
 		return controlResponse{}, errors.New("partitioned")
 	}
@@ -617,7 +886,7 @@ func (n *Node) call(addr string, timeout time.Duration, req controlRequest) (con
 	if m := n.mux.Load(); m != nil {
 		local = m.advert.tcp
 	}
-	return callControl(addr, n.tls, n.verifier, timeout, req, local)
+	return callControl(addr, member, n.tls, n.verifier, timeout, req, local)
 }
 
 // handleControl answers a control request from an attested peer.
@@ -645,22 +914,58 @@ func (n *Node) handleControl(peer Claims, req controlRequest) controlResponse {
 		// TLS already checks this; the join is where it matters most.
 		return controlResponse{Member: true, Err: "peer measurement is not pinned"}
 	}
+	r := n.r()
+	term := r.CurrentTerm()
 	if req.Op == ctlReadBarrier {
-		idx, err := n.readBarrier(n.r(), min(n.cfg.Timing.Apply, n.cfg.Timing.Lease))
+		// The barrier applies everything up to last here; the follower's
+		// digests are compared with that (divergence.go).
+		last := r.LastIndex()
+		idx, err := n.readBarrier(r, min(n.cfg.Timing.Apply, n.cfg.Timing.Lease))
 		if err != nil {
 			return controlResponse{Member: true, Err: err.Error()}
 		}
-		return controlResponse{Member: true, Index: idx}
+		if why := n.observeReport(raft.ServerID(peer.Member), req.Digests, last); why != "" {
+			return controlResponse{Member: true, Err: "diverged: " + why, Diverged: why, Term: term}
+		}
+		return controlResponse{Member: true, Index: idx, Term: term}
 	}
 	if req.Op == ctlJoin {
+		if req.ID != peer.Member {
+			return controlResponse{Member: true, Err: "join request names another member than its certificate"}
+		}
 		return n.handleJoin(req)
+	}
+	// Its answer would come from a state that skipped an entry.
+	if reason := n.fsm.Stuck(); reason != "" {
+		return controlResponse{Member: true, Err: "leader stopped following the log: " + reason}
+	}
+	e, err := forwardedEntry(req.Entry)
+	if err != nil {
+		return controlResponse{Member: true, Err: err.Error()}
+	}
+	// INVARIANT: a committed binding or allowlist time is the leader's
+	// clock, never the forwarding replica's (the leader's own writes carry
+	// its clock already). Binding expiry and first-write-wins trust the
+	// leader's clock, as the single-replica CDS trusted its own.
+	if now := time.Now().UnixMilli(); e.Binding != nil {
+		e.Binding.AtMS = now
+	} else if e.Allowlist != nil {
+		e.Allowlist.AtMS = now
+	}
+	// The leader commits the entry it checked, encoded by itself.
+	raw, err := json.Marshal(e)
+	if err != nil {
+		return controlResponse{Member: true, Err: err.Error()}
 	}
 	// The forwarding replica checked the cap against its own copy; the
 	// leader's check is the one that holds for every proposer.
-	if err := n.fsm.admitRaw(req.Entry); err != nil {
+	if err := n.fsm.admit(e, len(raw), true); err != nil {
 		return controlResponse{Member: true, Err: err.Error()}
 	}
-	idx, resp, err := n.applyLocal(req.Entry)
+	if err := n.fenced(); err != nil {
+		return controlResponse{Member: true, Err: err.Error()}
+	}
+	idx, resp, err := n.applyLocal(raw)
 	var body json.RawMessage
 	if err == nil {
 		body, err = json.Marshal(resp)
@@ -668,7 +973,28 @@ func (n *Node) handleControl(peer Claims, req controlRequest) controlResponse {
 	if err != nil {
 		return controlResponse{Member: true, Err: err.Error()}
 	}
-	return controlResponse{Member: true, Index: idx, Response: body}
+	return controlResponse{Member: true, Index: idx, Term: term, Response: body}
+}
+
+// forwardedEntry decodes an entry another replica forwarded to the leader
+// (ctlApply). Replicas forward only client writes (Replicate,
+// ReplicateSecret, ReplicateBinding): one allowlist, secret or binding
+// command and nothing else. Every other kind is the leader's own, and an
+// entry that does not decode would stop every replica once committed, so
+// both are refused before they reach the log.
+func forwardedEntry(raw json.RawMessage) (Entry, error) {
+	var e Entry
+	if err := decodeStrict(raw, &e); err != nil {
+		return Entry{}, fmt.Errorf("%w: forwarded entry: %w", errMalformed, err)
+	}
+	leaderOnly := e.Format != 0 || e.SetFormat != 0 || e.Decree != nil || e.Restore != nil || e.RenewCA != nil
+	allowlistWrite := e.Kind == KindAllowlist && e.Allowlist != nil && e.Secret == nil && e.Binding == nil
+	secretWrite := e.Kind == KindSecret && e.Secret != nil && e.Allowlist == nil && e.Binding == nil
+	bindingWrite := e.Kind == KindBinding && e.Binding != nil && e.Allowlist == nil && e.Secret == nil
+	if leaderOnly || !allowlistWrite && !secretWrite && !bindingWrite {
+		return Entry{}, fmt.Errorf("%w: a forwarded entry is one allowlist, secret or binding command, not this %q entry", errMalformed, e.Kind)
+	}
+	return e, nil
 }
 
 // applyEntry commits e through this replica, which must lead, and returns
@@ -705,21 +1031,29 @@ func (n *Node) propose(e Entry) (json.RawMessage, error) {
 	if !n.fsm.Core().Joined() {
 		return nil, errors.New("cds-ha: this replica has not joined the cluster")
 	}
+	if reason := n.fsm.Stuck(); reason != "" {
+		return nil, errors.New("cds-ha: this replica stopped following the log: " + reason)
+	}
 	if err := n.fsm.admit(e, len(raw), n.leading()); err != nil {
 		return nil, err
 	}
 	if n.leading() {
+		if err := n.fenced(); err != nil {
+			return nil, err
+		}
 		_, resp, err := n.applyLocal(raw)
 		if err != nil {
 			return nil, err
 		}
 		return json.Marshal(resp)
 	}
-	hp := n.leaderHostPort()
-	if hp == "" {
+	r := n.r()
+	leader, _ := r.LeaderWithID()
+	term := r.CurrentTerm()
+	if leader == "" {
 		return nil, errors.New("cds-ha: no leader (fewer than a majority of replicas reachable)")
 	}
-	resp, err := n.call(hp, n.cfg.Timing.Apply, controlRequest{Op: ctlApply, Entry: raw})
+	resp, err := n.callMember(leader, n.cfg.Timing.Apply, controlRequest{Op: ctlApply, Entry: raw})
 	if err != nil {
 		return nil, err
 	}
@@ -728,6 +1062,11 @@ func (n *Node) propose(e Entry) (json.RawMessage, error) {
 			return nil, err
 		}
 		return nil, errors.New("cds-ha: " + resp.Err)
+	}
+	// The index is one of the log this replica follows only if the leader
+	// it follows answered in its term.
+	if resp.Term != term {
+		return nil, fmt.Errorf("cds-ha: the leader answered in term %d, this replica follows term %d", resp.Term, term)
 	}
 	if !n.waitFor(n.cfg.Timing.Apply, func() bool { return n.fsm.AppliedIndex() >= resp.Index }) {
 		return nil, errors.New("cds-ha: write committed but not yet applied here")
@@ -810,6 +1149,14 @@ func (n *Node) readBarrier(r *raft.Raft, timeout time.Duration) (uint64, error) 
 	if r == nil || r != n.r() || n.stoppingReads.Load() == r {
 		return 0, errors.New("cds-ha: read instance stopping or replaced")
 	}
+	// A stuck leader certifies nothing; a Barrier would only grow a log
+	// that no snapshot compacts while it is stuck.
+	if reason := n.fsm.Stuck(); reason != "" {
+		return 0, errors.New("cds-ha: leader stopped following the log: " + reason)
+	}
+	if err := n.fenced(); err != nil {
+		return 0, err
+	}
 	start := time.Now()
 	deadline := start.Add(timeout)
 	timer := time.NewTimer(timeout)
@@ -844,6 +1191,7 @@ func (n *Node) readBarrier(r *raft.Raft, timeout time.Duration) (uint64, error) 
 		if err == nil && (r != n.r() || n.stoppingReads.Load() == r || r.State() != raft.Leader || r.CurrentTerm() != term || currentLeader != leader || currentID != id || n.fsm.Stuck() != "") {
 			err = errors.New("cds-ha: read leader or state changed")
 		}
+		n.noteRefusal(r, term, err)
 		if err == nil {
 			// Certificates from this barrier date from before start.
 			n.readOK.Store(&barrierMark{raft: r, term: term, start: start})
@@ -857,6 +1205,63 @@ func (n *Node) readBarrier(r *raft.Raft, timeout time.Duration) (uint64, error) 
 	case <-timer.C:
 		return 0, errors.New("cds-ha: read barrier timed out")
 	}
+}
+
+// barrierRefusal is a run of read barriers Raft refused outright with
+// ErrLeadershipTransferInProgress, in one term of one Raft instance.
+type barrierRefusal struct {
+	raft        *raft.Raft
+	term        uint64
+	since, last time.Time
+}
+
+// noteRefusal records a leader barrier's outcome: a refusal starts or extends
+// the run, a success ends it. Timeouts (a slow state machine) do neither.
+func (n *Node) noteRefusal(r *raft.Raft, term uint64, err error) {
+	switch {
+	case err == nil:
+		n.refused.Store(nil)
+	case errors.Is(err, raft.ErrLeadershipTransferInProgress):
+		now := time.Now()
+		run := barrierRefusal{raft: r, term: term, since: now, last: now}
+		if p := n.refused.Load(); p != nil && p.raft == r && p.term == term {
+			run.since = p.since
+		}
+		n.refused.Store(&run)
+	}
+}
+
+// ErrLeaderWedged ends Run: Raft refuses every write and read barrier of this
+// leader, though a quorum still answers its heartbeats (raft #696: a
+// leadership transfer that never finishes). Nothing short of a restart, which
+// rejoins as a new member, clears it.
+var ErrLeaderWedged = errors.New("cds-ha: raft refuses every barrier of this leader (leadership transfer stuck in progress); restart to rejoin")
+
+// wedged (leader) is ErrLeaderWedged once Raft has refused every barrier of
+// this term for DeadAfter, the last within a Lease. A transfer that Raft
+// finishes or times out holds the refusal for at most an election timeout.
+func (n *Node) wedged() error {
+	r := n.r()
+	p := n.refused.Load()
+	if p == nil || p.raft != r || p.term != r.CurrentTerm() || time.Since(p.last) > n.cfg.Timing.Lease {
+		return nil
+	}
+	refusedFor := time.Since(p.since)
+	if refusedFor <= n.cfg.Timing.DeadAfter {
+		return nil
+	}
+	var lastOK any = "never"
+	if m := n.readOK.Load(); m != nil && m.raft == r {
+		lastOK = time.Since(m.start).Round(time.Millisecond)
+	}
+	n.mu.Lock()
+	to, at := n.lastTransfer.to, n.lastTransfer.at
+	n.mu.Unlock()
+	n.log.Error("leader wedged: raft refuses every barrier although a quorum answers heartbeats; exiting so a new leader takes over",
+		"refused_for", refusedFor.Round(time.Millisecond), "term", p.term, "last_good_barrier_ago", lastOK,
+		"commit_index", r.CommitIndex(), "last_index", r.LastIndex(), "applied_index", n.fsm.AppliedIndex(),
+		"last_transfer_to", to, "last_transfer_at", at)
+	return fmt.Errorf("%w (refused for %v in term %d)", ErrLeaderWedged, refusedFor.Round(time.Millisecond), p.term)
 }
 
 func (n *Node) confirmRead(timeout time.Duration) (*readCertificate, error) {
@@ -874,21 +1279,31 @@ func (n *Node) confirmRead(timeout time.Duration) (*readCertificate, error) {
 			return nil, err
 		}
 	} else {
-		hp := n.leaderHostPort()
-		if hp == "" {
+		if leader == "" {
 			return nil, errors.New("cds-ha: no leader")
 		}
-		resp, err := n.call(hp, timeout, controlRequest{Op: ctlReadBarrier})
+		resp, err := n.callMember(leader, timeout, controlRequest{Op: ctlReadBarrier, Digests: n.fsm.dig.report()})
 		if err != nil {
 			return nil, err
 		}
-		if resp.Err != "" {
+		if resp.Err != "" && resp.Diverged == "" {
 			return nil, errors.New("cds-ha: " + resp.Err)
+		}
+		// Its watermark and verdict hold for this replica's log only if the
+		// leader it follows answered in its term.
+		if resp.Term != term {
+			return nil, fmt.Errorf("cds-ha: the leader answered in term %d, this replica follows term %d", resp.Term, term)
+		}
+		if resp.Diverged != "" {
+			// The leader of a majority holds other state at the same index:
+			// stop serving, and restart to take its state (FSM.stopLocal).
+			return nil, n.fsm.stopLocal(fmt.Errorf("%w: %s", ErrDiverged, resp.Diverged))
 		}
 		if resp.Index == 0 {
 			return nil, errors.New("cds-ha: missing read watermark")
 		}
 		index = resp.Index
+		n.fsm.passedBy(index)
 	}
 	remaining := timeout - time.Since(at)
 	if remaining <= 0 || !n.waitFor(remaining, func() bool { return n.fsm.AppliedIndex() >= index }) {
@@ -923,6 +1338,13 @@ func (n *Node) refreshReads(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+		}
+		// A confirmRead outlasts the period, so a tick is always pending
+		// once it returns, and select picks between ready cases at random:
+		// without this check a stopping replica (Run's exit) waits a random
+		// number of further read timeouts.
+		if ctx.Err() != nil {
+			return
 		}
 		cert := n.readCert.Load()
 		if n.validReadCertificate(cert) && time.Since(cert.at) < n.cfg.Timing.Lease/3 && n.jumpAt.Load() == 0 {
@@ -989,19 +1411,81 @@ func (n *Node) Serving() bool {
 	return n.validReadCertificate(cert) && n.fsm.AppliedIndex() >= cert.index
 }
 
-// ErrStuck ends Run: this replica stopped following the log (see FSM.stop)
-// and must be restarted to rejoin with the cluster's state.
+// ErrStuck ends Run: this replica stopped following the log for a reason of
+// its own (a local fault, or an entry the cluster applies and it cannot) and
+// must be restarted to rejoin with the cluster's state.
 var ErrStuck = errors.New("cds-ha: replica stopped following the log; restart to rejoin")
 
-// StuckOverdue is the stuck reason once this replica has been stuck longer
-// than Run allows (DeadAfter, plus a Lease of slack), "" otherwise. Run ends
-// a stuck replica itself; a caller that watches StuckOverdue independently
-// still ends a replica whose Run loop is blocked and never gets there.
+// ErrExcluded ends Run: the leader excluded this member ID (dropSuspects),
+// which may hold a log the cluster cannot merge. Only a restart, with a new
+// ID and an empty log, rejoins.
+var ErrExcluded = errors.New("cds-ha: excluded from the cluster; restart to rejoin as a new member")
+
+// haltAlarmEvery is how often Run repeats the alarm of a deterministic stop.
+const haltAlarmEvery = time.Minute
+
+// StuckOverdue is the stuck reason once this replica has been stuck on a
+// local fault longer than Run allows (DeadAfter, plus a Lease of slack) and
+// may leave (leaveKeepsQuorum), "" otherwise. Run ends such a replica
+// itself; a caller that watches StuckOverdue independently still ends a
+// replica whose Run loop is blocked behind the fault and never gets there.
+// A deterministic stop is never overdue: exiting would lose the log
+// (FSM.stop).
 func (n *Node) StuckOverdue() string {
-	if d := n.fsm.stuckFor(); d > n.cfg.Timing.DeadAfter+n.cfg.Timing.Lease {
-		return n.fsm.Stuck()
+	p := n.fsm.leaveReason()
+	if d := n.fsm.stuckFor(); p != nil && p.local && d > n.cfg.Timing.DeadAfter+n.cfg.Timing.Lease && n.leaveKeepsQuorum() && n.fsm.leaveReason() == p {
+		return p.msg
 	}
 	return ""
+}
+
+// leaveKeepsQuorum reports that this replica can exit without costing the
+// cluster its majority. A non-voter, or a replica whose Raft is gone for
+// good, always can. A voter can only on the authority of its leader in its
+// current term: the leader (another replica, not stuck) and the other
+// voters it hears (Status.Heard) that report it as their leader in this
+// term and are not stuck must be a majority of the voters. Peers that merely
+// answer prove nothing about reaching each other. With no leader, or as the
+// leader (it hands off first), a voter stays. Stuck voters never count, so
+// several of them stopped at once (a passed entry, or a store fault every
+// replica hit) do not all leave together.
+func (n *Node) leaveKeepsQuorum() bool {
+	if n.raftGone.Load() {
+		return true
+	}
+	r := n.r()
+	servers := n.servers()
+	if servers == nil {
+		return false
+	}
+	if !slices.ContainsFunc(servers, func(s raft.Server) bool { return s.ID == n.id && s.Suffrage == raft.Voter }) {
+		return true
+	}
+	term := r.CurrentTerm()
+	leaderAddr, leaderID := r.LeaderWithID()
+	if leaderID == "" || leaderID == n.id {
+		return false
+	}
+	timeout := min(time.Second, n.cfg.Timing.Lease/2)
+	ls, err := n.peerStatus(leaderAddr, timeout)
+	if err != nil || ls.ID != string(leaderID) || ls.State != raft.Leader.String() || ls.Term != term || ls.Stuck != "" {
+		return false
+	}
+	leaderHP, _ := splitRaftAddr(string(leaderAddr))
+	voters, following := 0, 1 // the leader
+	for _, s := range servers {
+		if s.Suffrage != raft.Voter {
+			continue
+		}
+		voters++
+		if s.ID == n.id || s.ID == leaderID || !slices.Contains(ls.Heard, string(s.ID)) {
+			continue
+		}
+		if st, err := n.peerStatus(s.Address, timeout); err == nil && st.ID == string(s.ID) && st.Stuck == "" && st.Term == term && st.Leader == leaderHP {
+			following++
+		}
+	}
+	return following > voters/2
 }
 
 // ErrNotServing means the replica cannot currently admit a mesh CA read.
@@ -1030,12 +1514,29 @@ func (n *Node) Status() Status {
 	core := n.fsm.Core()
 	st := Status{ClusterID: n.cfg.ClusterID, NodeName: n.cfg.NodeName, ID: string(n.id), Joined: core.Joined(),
 		Epoch: core.Epoch, Measurement: n.measurement, AppliedIndex: n.fsm.AppliedIndex(),
-		Format: core.format(), Reads: n.fsm.readable, Stuck: n.fsm.Stuck(), Seats: n.seats()}
-	if p := n.backupErr.Load(); p != nil && n.r() != nil && n.leading() {
-		st.BackupError = *p
+		Format: core.format(), Reads: n.fsm.readable, Stuck: n.fsm.Stuck(), StuckLocal: n.fsm.StuckLocal(), Seats: n.seats(), AwaitingRestore: n.AwaitingRestore()}
+	if !st.Joined {
+		if ca, err := n.genesisCA(); err == nil {
+			st.GenesisCA = certutil.CertFingerprint(ca.Cert.Raw)
+		}
+	}
+	if n.r() != nil && n.leading() {
+		if p := n.backupErr.Load(); p != nil {
+			st.BackupError = *p
+		}
+		if b := n.lastBackup.Load(); b != nil {
+			bs := b.BackupStatus
+			bs.AgeMS = time.Since(b.at).Milliseconds()
+			st.LastBackup = &bs
+		}
 	}
 	if core.Joined() {
 		st.CAFingerprint = certutil.CertFingerprint(core.RootCert)
+	}
+	chain := n.fsm.dig.latest()
+	st.Chain = &chain
+	if cps := n.fsm.dig.checkpointsCopy(); len(cps) > 0 {
+		st.Checkpoint = &cps[len(cps)-1]
 	}
 	if n.r() == nil {
 		return st
@@ -1053,7 +1554,8 @@ func (n *Node) Status() Status {
 	if lc := n.r().LastContact(); !lc.IsZero() {
 		st.LastContactMS = time.Since(lc).Milliseconds()
 	}
-	for _, s := range n.servers() {
+	servers := n.servers()
+	for _, s := range servers {
 		if s.Suffrage == raft.Voter {
 			st.Voters = append(st.Voters, string(s.ID))
 		} else {
@@ -1061,6 +1563,7 @@ func (n *Node) Status() Status {
 		}
 	}
 	if n.leading() {
+		st.Fenced = n.fence()
 		st.SeatsFilled = n.seatsFilled()
 		n.mu.Lock()
 		for _, id := range n.retiring {
@@ -1071,14 +1574,20 @@ func (n *Node) Status() Status {
 				st.KnownVoters = append(st.KnownVoters, id)
 			}
 		}
+		for _, s := range servers {
+			if _, bad := n.failing[s.ID]; s.Suffrage == raft.Voter && s.ID != n.id && s.Address != excludedAddress && !bad {
+				st.Heard = append(st.Heard, string(s.ID))
+			}
+		}
 		n.mu.Unlock()
 		st.ReadBarrierMS = n.barrierMS.Load()
+		st.Divergence = n.div.status()
 	}
 	return st
 }
 
-// Ready is readiness for a rolling restart (a DaemonSet with
-// maxUnavailable 1 restarts the next replica once this one is Ready): the
+// Ready is readiness for replacing replicas one at a time (the DaemonSet
+// is OnDelete: the next node is replaced once this one is Ready): the
 // replica serves, and either holds a voter seat that every staying voter
 // holds too, or the leader reports every seat held by a healthy voter. A
 // restarted voter comes back as a new member that serves as a non-voter
@@ -1095,7 +1604,10 @@ func (n *Node) Ready() bool {
 	if n.isVoter() {
 		// A seat more than the seats: a dead or replaced voter still counts
 		// for the quorum until it retires, so the next restart must wait.
-		return n.voterCount() <= n.seats() && n.voteKnown.Load()
+		// The replacement shows that wait (it was never seated); the voters
+		// that held their seats stay Ready, so the Service keeps endpoints
+		// while a majority serves.
+		return n.voteKnown.Load() && (n.voterCount() <= n.seats() || n.seated.Load())
 	}
 	if n.leading() {
 		return n.seatsFilled()
@@ -1106,6 +1618,58 @@ func (n *Node) Ready() bool {
 	}
 	age := time.Since(*at)
 	return age >= 0 && age < 3*n.cfg.Timing.Tick+time.Second
+}
+
+// noteSeated (Run loop) records that this voter holds one of no more
+// voters than seats, known to every staying voter: one that held its seat
+// before a replacement was added (Ready).
+func (n *Node) noteSeated() {
+	switch {
+	case !n.isVoter():
+		n.seated.Store(false)
+	case n.voteKnown.Load() && n.voterCount() <= n.seats():
+		n.seated.Store(true)
+	}
+}
+
+// watchApply stops a replica whose state machine has been on one command
+// for DeadAfter plus Apply, the longest a caller waits on a command (a
+// store lock never released, a stalled write). Raft keeps
+// answering its heartbeats, so without this it would keep its vote and
+// count as a filled seat while it applies nothing. The stop is a stall: if
+// the command returns, it ends (FSM.endStall), so a stall on every replica
+// (a host IO stall) does not outlast the stall itself, and a stall is never
+// a reason to leave. Once the voters that follow the log have kept a
+// majority without this one for DeadAfter while the command still runs,
+// the command is held for good, not slow: the stall becomes a local stop
+// and the replica exits (Run, StuckOverdue). Replicas stalled on the same
+// entry that return a moment apart therefore all stay.
+// It runs apart from the Run loop, which the same fault may block.
+func (n *Node) watchApply(ctx context.Context) {
+	t := time.NewTicker(n.cfg.Timing.Tick)
+	defer t.Stop()
+	var othersSince time.Time // others keep a majority without this stalled replica
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		if at := n.fsm.applyStart.Load(); at != 0 {
+			if d := time.Duration(monoNow() - at); d >= n.cfg.Timing.DeadAfter+n.cfg.Timing.Apply {
+				n.fsm.stall(at, fmt.Errorf("applying log entry %d has not finished after %s", n.fsm.applying.Load(), d.Round(time.Second)))
+			}
+		}
+		p := n.fsm.stuck.Load()
+		switch {
+		case p == nil || !p.stall || !n.leaveKeepsQuorum():
+			othersSince = time.Time{}
+		case othersSince.IsZero():
+			othersSince = time.Now()
+		case time.Since(othersSince) >= n.cfg.Timing.DeadAfter:
+			n.fsm.hung(p, "the replicas that follow the log keep a majority without this one")
+		}
+	}
 }
 
 // watchClock notices the wall clock moving apart from the monotonic one: a
@@ -1156,8 +1720,7 @@ func (n *Node) waitFor(timeout time.Duration, cond func() bool) bool {
 
 // peerStatus asks the member at Raft address addr for its status.
 func (n *Node) peerStatus(addr raft.ServerAddress, timeout time.Duration) (*Status, error) {
-	hp, _ := splitRaftAddr(string(addr))
-	resp, err := n.call(hp, timeout, controlRequest{Op: ctlStatus})
+	resp, err := n.callMember(addr, timeout, controlRequest{Op: ctlStatus})
 	if err == nil && resp.Status == nil {
 		err = errors.New("cds-ha: peer sent no status")
 	}

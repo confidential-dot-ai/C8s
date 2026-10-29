@@ -1,6 +1,7 @@
 package allowlist
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -88,6 +89,16 @@ func readFailed(w http.ResponseWriter, err error) {
 
 // HandleReplaceAll handles PUT /allowlist: validate the full document and swap
 // it in atomically. CDS assigns the new version.
+//
+// If-Match makes the swap conditional on the version: the strong tag "N"
+// matches version N, the version the ETag W/"N" of GET names. If-Match uses
+// strong comparison (RFC 9110 13.1.1), so a weak tag never matches; a version
+// names exactly one stored document, so "N" is a strong validator. That holds
+// across an HA cluster's restarts too (Genesis, Restore, Recover raise the
+// version past their start time, cdsha FSM.raiseVersion), while the leader's
+// clock at the restart is not behind the earlier life's writes. A refused
+// precondition is 412 and changes nothing. "*" or no If-Match swaps
+// unconditionally.
 func (h Handler) HandleReplaceAll(w http.ResponseWriter, r *http.Request) {
 	body, ok := h.authorize(w, r)
 	if !ok {
@@ -100,21 +111,33 @@ func (h Handler) HandleReplaceAll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.Store.ReplaceAll(al); err != nil {
-		writeStoreError(w, err)
+	ifMatch := r.Header.Get("If-Match")
+	if ifMatch == "*" {
+		ifMatch = ""
+	}
+	if strings.HasPrefix(ifMatch, "W/") {
+		http.Error(w, `If-Match takes the strong tag "N" of version N, not the weak ETag W/"N": a weak tag never matches`, http.StatusPreconditionFailed)
 		return
 	}
 	// The token that wrote a canonical whole document is the operator's
-	// signature over it (docs/allowlist-and-capabilities.md). Re-uploading the
-	// same document with a fresh token is a no-op write that stores it.
+	// signature over it (docs/allowlist-and-capabilities.md), stored in the
+	// same write. Re-uploading the same document with a fresh token stores it.
+	// A body that is not exactly the canonical bytes is not what verifiers
+	// fetch, so its token signs nothing.
+	var signature string
 	if token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok {
-		if err := h.Store.SignPolicy(body, token); err != nil {
-			slog.Error("store the operator signature of the allowlist", "error", err)
-			http.Error(w, "allowlist replaced but its operator signature was not stored; upload it again", http.StatusInternalServerError)
-			return
+		if canonical, err := al.Canonical(); err == nil && bytes.Equal(canonical, body) {
+			signature = token
 		}
 	}
-
+	if err := h.Store.ReplaceAllIfMatch(al, ifMatch, signature); err != nil {
+		if errors.Is(err, ErrVersionMismatch) {
+			http.Error(w, err.Error()+"; fetch it and apply the change again", http.StatusPreconditionFailed)
+			return
+		}
+		writeStoreError(w, err)
+		return
+	}
 	slog.Info("allowlist replaced", "workloads", len(al.Workloads))
 	w.WriteHeader(http.StatusNoContent)
 }

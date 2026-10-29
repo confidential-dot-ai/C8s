@@ -39,6 +39,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -293,8 +294,8 @@ func (s *Source) take(sd *cdsha.SignedDecree, attested bool) (bool, error) {
 // which keys may launch a CDS comes from the launch document, which images
 // it may run comes from the decree.
 func Policy(bootstrap refvalues.ReferenceValues, images []cdsha.DecreeImage) (refvalues.ReferenceValues, error) {
-	if bootstrap.Family != teetypes.FamilyTDX {
-		return refvalues.ReferenceValues{}, fmt.Errorf("cdspins: pin decrees name TDX images; the bootstrap set is for %q", bootstrap.Family)
+	if bootstrap.Family != teetypes.FamilyTDX && bootstrap.Family != teetypes.FamilySNP {
+		return refvalues.ReferenceValues{}, fmt.Errorf("cdspins: pin decrees name TDX or SNP images; the bootstrap set is for %q", bootstrap.Family)
 	}
 	if len(images) == 0 {
 		return refvalues.ReferenceValues{}, errors.New("cdspins: a pin decree without images")
@@ -311,7 +312,10 @@ func Policy(bootstrap refvalues.ReferenceValues, images []cdsha.DecreeImage) (re
 			return refvalues.ReferenceValues{}, fmt.Errorf("cdspins: bootstrap image %q has no launch-key anchor", img.Name)
 		}
 		if !slices.ContainsFunc(anchors, func(a anchor) bool { return bytes.Equal(a.key, img.Anchor) }) {
-			anchors = append(anchors, anchor{name: img.Name, key: img.Anchor})
+			// A policy this function wrote names its pins <anchor>@<image>:
+			// keep the anchor's name, so the names do not grow per rollout.
+			name, _, _ := strings.Cut(img.Name, "@")
+			anchors = append(anchors, anchor{name: name, key: img.Anchor})
 		}
 	}
 	if len(anchors) == 0 {
@@ -320,18 +324,27 @@ func Policy(bootstrap refvalues.ReferenceValues, images []cdsha.DecreeImage) (re
 	out := refvalues.ReferenceValues{Family: bootstrap.Family}
 	for _, a := range anchors {
 		for _, im := range images {
-			mrtd, err1 := hex.DecodeString(im.MRTD)
-			r1, err2 := hex.DecodeString(im.RTMR1)
-			r2, err3 := hex.DecodeString(im.RTMR2)
-			if err := errors.Join(err1, err2, err3); err != nil {
+			if _, err := im.Pin(); err != nil {
 				return refvalues.ReferenceValues{}, err
+			}
+			if im.SNP() != (bootstrap.Family == teetypes.FamilySNP) {
+				return refvalues.ReferenceValues{}, fmt.Errorf("cdspins: a pin decree image of another TEE family than the bootstrap set's %q", bootstrap.Family)
 			}
 			// Images of one firmware share their MRTD and differ in their
 			// RTMRs (kernel, command line): name each pin by all three, so
 			// two images of one firmware get distinct names.
-			id := sha256.Sum256([]byte(im.MRTD + im.RTMR1 + im.RTMR2))
-			out.Images = append(out.Images, remote.ImagePin{Name: a.name + "@" + hex.EncodeToString(id[:6]), Digest: mrtd,
-				Registers: map[int][]byte{1: r1, 2: r2}, Anchor: slices.Clone(a.key)})
+			id := sha256.Sum256([]byte(im.MRTD + im.RTMR1 + im.RTMR2 + im.Measurement))
+			pin := remote.ImagePin{Name: a.name + "@" + hex.EncodeToString(id[:6]), Anchor: slices.Clone(a.key)}
+			if im.SNP() {
+				// As a launch document pins an SNP image: the launch digest.
+				pin.Digest, _ = hex.DecodeString(im.Measurement)
+			} else {
+				pin.Digest, _ = hex.DecodeString(im.MRTD)
+				r1, _ := hex.DecodeString(im.RTMR1)
+				r2, _ := hex.DecodeString(im.RTMR2)
+				pin.Registers = map[int][]byte{1: r1, 2: r2}
+			}
+			out.Images = append(out.Images, pin)
 		}
 	}
 	// The shared parser is the schema check, as for launch documents.

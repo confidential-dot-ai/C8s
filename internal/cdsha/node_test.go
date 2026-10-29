@@ -81,7 +81,17 @@ func newSolo(t *testing.T, mutate func(*Config)) *solo {
 	return s
 }
 
-func (s *solo) decree(d Decree) string { return s.decrees.put(signDecree(s.t, s.opKey, d)) }
+// decree signs and posts d; a one-shot decree names the solo replica's
+// process, and a Genesis says alone (its discovery finds nobody).
+func (s *solo) decree(d Decree) string {
+	if d.Kind == Genesis || d.Kind == Recover || d.Kind == Restore {
+		d.TargetMember, d.Alone = s.node.ID(), d.Kind == Genesis
+	}
+	if d.Kind == Genesis {
+		d.GenesisCA = genesisCAOf(s.t, s.node)
+	}
+	return s.decrees.put(signDecree(s.t, s.opKey, d))
+}
 
 func (s *solo) applied(name string, epoch uint64) {
 	s.t.Helper()
@@ -127,33 +137,40 @@ func TestRotateKeyExcludingTheLeaderIsRefused(t *testing.T) {
 	}
 }
 
-// A store that refuses a backup for good stops the leader retrying it until
-// the state changes; any other failure is retried.
+// A failed backup stores nothing, so the leader tries again once per
+// Timing.Backup, not faster, even with no write in between: a store that
+// refused (the slot held another history) may accept once the operator
+// empties the slot. The failure stays in Status, and the streak's error is
+// logged once.
 func TestBackupFailuresAndRetries(t *testing.T) {
 	rk, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	for name, c := range map[string]struct {
 		err   error
-		retry bool
+		stage string
 	}{
-		"not newer":   {fmt.Errorf("wrapped: %w", ErrBackupNotNewer), false},
-		"store fails": {errors.New("api down"), true},
+		"not newer":   {fmt.Errorf("wrapped: %w", ErrBackupNotNewer), "backup refused"},
+		"store fails": {errors.New("api down"), "store"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			b := &memBackups{err: c.err}
-			s := newSolo(t, func(cfg *Config) { cfg.RecoveryKey, cfg.Backups = mustPKIX(t, &rk.PublicKey), b })
+			logs := &syncBuffer{}
+			s := newSolo(t, func(cfg *Config) {
+				cfg.RecoveryKey, cfg.Backups = mustPKIX(t, &rk.PublicKey), b
+				cfg.Logger = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
+			})
 			eventually(t, 5*time.Second, "a backup attempt", func() bool { return b.attempts() > 0 })
+			start, first := time.Now(), b.attempts()
 			time.Sleep(10 * testTiming.Backup)
-			if got := b.attempts(); (got > 1) != c.retry {
-				t.Fatalf("%d attempts, retry %v", got, c.retry)
+			got, elapsed := b.attempts()-first, time.Since(start)
+			if got < 2 || got > int(elapsed/testTiming.Backup)+1 {
+				t.Fatalf("%d more attempts in %v, want at least 2 and at most one per %v", got, elapsed, testTiming.Backup)
 			}
-			if c.retry {
-				return
+			if st := s.node.Status().BackupError; !strings.Contains(st, c.stage+": ") {
+				t.Fatalf("BackupError %q does not show stage %q", st, c.stage)
 			}
-			before := b.attempts()
-			if err := s.node.cfg.Allowlist.PutWorkload("w", mkWorkload(t, 0)); err != nil {
-				t.Fatal(err)
+			if n := strings.Count(logs.String(), "backups failing"); n != 1 {
+				t.Fatalf("the failing streak was logged as an error %d times, want once:\n%s", n, logs.String())
 			}
-			eventually(t, 5*time.Second, "a backup of the new state", func() bool { return b.attempts() > before })
 		})
 	}
 }
@@ -174,12 +191,16 @@ func TestLeaderControlRefusals(t *testing.T) {
 	if resp := n.handleControl(pinned, controlRequest{Op: ctlApply, Entry: []byte(`{"kind":"nope"}`)}); resp.Err == "" {
 		t.Fatalf("a malformed entry applied: %+v", resp)
 	}
-	if resp := n.handleControl(pinned, controlRequest{Op: ctlJoin, ID: n.ID(), Address: string(n.raftAddress()), Reads: Format, Entry: policy}); resp.Err != "" || !resp.Member {
+	if resp := n.handleControl(Claims{Measurement: "m1", Member: n.ID()}, controlRequest{Op: ctlJoin, ID: n.ID(), Address: string(n.raftAddress()), Reads: Format, Entry: policy}); resp.Err != "" || !resp.Member {
 		t.Fatalf("a member asking to join again: %+v", resp)
+	}
+	other := controlRequest{Op: ctlJoin, ID: "w/1-aa", Address: "127.0.0.1:3#w/1-aa", Reads: Format, Entry: policy}
+	if resp := n.handleControl(Claims{Measurement: "m1", Member: "q/1-bb"}, other); !strings.Contains(resp.Err, "names another member") {
+		t.Fatalf("a join for another member than the connection's: %+v", resp)
 	}
 	join := func(node, hostport string) controlResponse {
 		id := node + "/1-aa"
-		return n.handleControl(pinned, controlRequest{Op: ctlJoin, ID: id, Address: hostport + "#" + id, Reads: Format, Entry: policy})
+		return n.handleControl(Claims{Measurement: "m1", Member: id}, controlRequest{Op: ctlJoin, ID: id, Address: hostport + "#" + id, Reads: Format, Entry: policy})
 	}
 	if resp := join("x", "127.0.0.1:1"); resp.Err != "" {
 		t.Fatalf("first non-voter: %+v", resp)
@@ -217,22 +238,22 @@ func TestRestoreRefusals(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	restore := func(node string) SignedDecree {
-		return signDecree(t, s.opKey, Decree{Kind: Restore, BootstrapNode: node, SnapshotSHA256: SnapshotSHA256(snap)})
+	restore := func(n *Node) SignedDecree {
+		return signDecree(t, s.opKey, Decree{Kind: Restore, BootstrapNode: n.cfg.NodeName, TargetMember: n.ID(), SnapshotSHA256: SnapshotSHA256(snap)})
 	}
 	_, pub := operatorKey(t)
 	cold, err := NewNode(soloConfig(t, "n1", freeAddr(t), pub, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := cold.Restore(ctx, restore("n1"), snap); err == nil || !strings.Contains(err.Error(), "not started") {
+	if _, err := cold.Restore(ctx, restore(cold), snap); err == nil || !strings.Contains(err.Error(), "not started") {
 		t.Fatalf("unstarted replica: %v", err)
 	}
 	if _, err := s.node.Restore(ctx, signDecree(t, s.opKey, Decree{Kind: UpdateMeasurements, BaseEpoch: 1, Measurements: []string{"m1"}}), snap); err == nil ||
 		!strings.Contains(err.Error(), "not a Restore") {
 		t.Fatalf("not a Restore decree: %v", err)
 	}
-	if _, err := s.node.Restore(ctx, restore("n0"), snap); err == nil || !strings.Contains(err.Error(), "already belongs") {
+	if _, err := s.node.Restore(ctx, restore(s.node), snap); err == nil || !strings.Contains(err.Error(), "already belongs") {
 		t.Fatalf("a member restoring: %v", err)
 	}
 	cfg := soloConfig(t, "n1", freeAddr(t), s.node.cfg.OperatorPubKey, nil)
@@ -245,11 +266,47 @@ func TestRestoreRefusals(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(fresh.shutdown)
-	if _, err := fresh.Restore(ctx, restore("n1"), snap); err == nil || !strings.Contains(err.Error(), "belongs to a cluster") {
+	if _, err := fresh.Restore(ctx, restore(fresh), snap); err == nil || !strings.Contains(err.Error(), "belongs to a cluster") {
 		t.Fatalf("restore beside a live cluster: %v", err)
 	}
 	if fresh.member() {
 		t.Fatal("the refused restore bootstrapped a cluster")
+	}
+	// Absence is never inferred: a discovery error, a discovered replica that
+	// does not answer, or an empty answer the decree does not call alone
+	// leaves it unknown whether a live cluster exists.
+	for name, peers := range map[string]func(context.Context) ([]string, error){
+		"discovery error":   func(context.Context) ([]string, error) { return nil, errors.New("dns down") },
+		"unanswering peer":  func(context.Context) ([]string, error) { return []string{freeAddr(t)}, nil },
+		"nobody discovered": func(context.Context) ([]string, error) { return nil, nil },
+	} {
+		cfg := soloConfig(t, "n1", freeAddr(t), s.node.cfg.OperatorPubKey, nil)
+		cfg.Peers = peers
+		n, err := NewNode(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := n.Start(); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(n.shutdown)
+		if _, err := n.Restore(ctx, restore(n), snap); err == nil || n.member() {
+			t.Errorf("%s: restore bootstrapped a cluster (%v)", name, err)
+		}
+	}
+	// The operator's word that no other replica exists lets it restore.
+	cfg = soloConfig(t, "n1", freeAddr(t), s.node.cfg.OperatorPubKey, nil)
+	alone, err := NewNode(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := alone.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(alone.shutdown)
+	sd := signDecree(t, s.opKey, Decree{Kind: Restore, BootstrapNode: "n1", TargetMember: alone.ID(), SnapshotSHA256: SnapshotSHA256(snap), Alone: true})
+	if _, err := alone.Restore(ctx, sd, snap); err != nil || !alone.member() {
+		t.Fatalf("alone restore with no replica discovered: %v", err)
 	}
 }
 
@@ -257,14 +314,14 @@ func TestRestoreRefusals(t *testing.T) {
 func TestPendingBootstrapDecreesUnusable(t *testing.T) {
 	k, pub := operatorKey(t)
 	ds := newMemDecrees()
-	expired := signDecree(t, k, Decree{IntentID: "r", Kind: Recover, BootstrapNode: "n0", ExpiresAt: time.Now().Add(-time.Minute)})
-	ds.items["r"] = expired
-	gen := signDecree(t, k, Decree{IntentID: "g", Kind: Genesis, BootstrapNode: "n0", ExpiresAt: time.Now().Add(-time.Minute)})
-	ds.items["g"] = gen
 	n, err := NewNode(soloConfig(t, "n0", freeAddr(t), pub, ds))
 	if err != nil {
 		t.Fatal(err)
 	}
+	expired := signDecree(t, k, Decree{IntentID: "r", Kind: Recover, BootstrapNode: "n0", TargetMember: n.ID(), ExpiresAt: time.Now().Add(-time.Minute)})
+	ds.items["r"] = expired
+	gen := signDecree(t, k, Decree{IntentID: "g", Kind: Genesis, BootstrapNode: "n0", TargetMember: n.ID(), GenesisCA: genesisCAOf(t, n), ExpiresAt: time.Now().Add(-time.Minute)})
+	ds.items["g"] = gen
 	ctx := context.Background()
 	if _, ok := n.pendingDecree(ctx, Recover); ok {
 		t.Fatal("an expired Recover decree used")
@@ -427,7 +484,7 @@ func TestNewNodeRejectsIncompleteConfig(t *testing.T) {
 			t.Errorf("%s: accepted", name)
 		}
 	}
-	if _, err := newPeerCert(testCluster, failingAttestor{}, time.Now()); err == nil {
+	if _, err := newPeerCert(testCluster, failingAttestor{}, time.Now(), "n/1-test"); err == nil {
 		t.Error("peer certificate without evidence")
 	}
 	if nodeOf("no-slash") != "" || bornOf("n0/notanumber-x") != 0 {

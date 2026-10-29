@@ -53,8 +53,14 @@ func TestRecoveryReplayPreservesPolicy(t *testing.T) {
 					t.Fatalf("command %d: live=%+v replay=%+v", i, a, b)
 				}
 			}
-			if got := led.Dump()[0].ExpiresMS; got != at+ttl.Milliseconds() {
-				t.Fatalf("expiry %d", got)
+			// s keeps the expiry of its first binding; look it up by name,
+			// since Dump order is not defined.
+			expiry := map[string]int64{}
+			for _, b := range led.Dump() {
+				expiry[b.SandboxID] = b.ExpiresMS
+			}
+			if got := expiry["s"]; got != at+ttl.Milliseconds() {
+				t.Fatalf("expiry of s %d, want %d", got, at+ttl.Milliseconds())
 			}
 			if err := restoreCopy(t, scratch, live); err != nil {
 				t.Fatal(err)

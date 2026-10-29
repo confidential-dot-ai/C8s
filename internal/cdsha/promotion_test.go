@@ -15,9 +15,9 @@ import (
 func TestPromotionWaitsForEveryVoter(t *testing.T) {
 	tm := testTiming
 	tm.Stabilize = time.Second // room to stall y before a member is promoted
-	// No backup write is in flight while y is stalled: one that cannot
-	// commit without y would hold the leader loop.
-	tm.Backup = time.Hour
+	// No checkpoint or backup write is in flight while y is stalled: one
+	// that cannot commit without y would hold the leader loop.
+	tm.Checkpoint, tm.Backup = time.Hour, time.Hour
 	c := newCluster(t, 4)
 	c.timing = &tm
 	c.genesis("n0", "n2")

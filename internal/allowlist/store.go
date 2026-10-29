@@ -43,6 +43,9 @@ type Store struct {
 	// history every replica journals is identical.
 	repl Replicator
 	at   atomic.Int64
+	// dig is the digest of the database's content, kept current by every
+	// write (digest.go).
+	dig *contentDigest
 }
 
 // roleInit / roleMain label the two container partitions in the digest index.
@@ -83,36 +86,38 @@ CREATE TABLE IF NOT EXISTS route_manifest (
 // OpenStore opens (or creates) a SQLite-backed allowlist store at the given path.
 func OpenStore(path string) (Store, error) {
 	_, err := os.Stat(path)
-	isNew := os.IsNotExist(err)
-
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		return Store{}, fmt.Errorf("open allowlist db: %w", err)
-	}
-
-	if isNew {
+	if os.IsNotExist(err) {
 		slog.Warn("allowlist db did not exist, creating", "path", path)
 	}
-
-	if err := initDB(context.Background(), db); err != nil {
-		db.Close()
-		return Store{}, fmt.Errorf("init allowlist schema: %w", err)
-	}
-	return Store{db: db, uri: path}, nil
+	return open(path)
 }
 
 // OpenInMemory opens an in-memory allowlist store, useful for testing.
 func OpenInMemory() (Store, error) {
-	uri := memdbURI("store")
-	db, err := sql.Open("sqlite", uri)
+	return open(memdbURI("store"))
+}
+
+// open opens the database at uri with the content digest kept on every
+// connection (digest.go), creates or migrates its tables, and computes the
+// digest of what it already holds.
+func open(uri string) (Store, error) {
+	dig := &contentDigest{}
+	db, err := dig.openDB(uri)
 	if err != nil {
-		return Store{}, err
+		return Store{}, fmt.Errorf("open allowlist db: %w", err)
 	}
-	if err := initDB(context.Background(), db); err != nil {
+	ctx := context.Background()
+	if err := initDB(ctx, db); err != nil {
 		db.Close()
-		return Store{}, err
+		return Store{}, fmt.Errorf("init allowlist schema: %w", err)
 	}
-	return Store{db: db, uri: uri}, nil
+	acc, err := scanDigest(ctx, db)
+	if err != nil {
+		db.Close()
+		return Store{}, fmt.Errorf("allowlist content digest: %w", err)
+	}
+	dig.reset(acc)
+	return Store{db: db, uri: uri, dig: dig}, nil
 }
 
 // dbConn is what initDB needs: an *sql.DB, or one connection of it.
@@ -263,6 +268,34 @@ func bumpVersionTx(tx *sql.Tx) error {
 		"UPDATE allowlist_version SET version = CAST(CAST(version AS INTEGER) + 1 AS TEXT)",
 	)
 	return err
+}
+
+// RaiseVersion sets the version to the larger of the next version and floor,
+// and returns it. The replicated state machine calls it when the cluster
+// starts again (Genesis, Restore, Recover), with the start's log-entry time in
+// Unix ms, so the version stays above every version an earlier life of the
+// cluster served (see docs/allowlist-and-capabilities.md). The document does
+// not change, so nothing is journaled.
+func (s *Store) RaiseVersion(floor int64) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+	var version string
+	if err := tx.QueryRow(
+		"UPDATE allowlist_version SET version = CAST(MAX(CAST(version AS INTEGER) + 1, ?) AS TEXT) RETURNING version", floor,
+	).Scan(&version); err != nil {
+		return "", fmt.Errorf("raise allowlist version: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return "", err
+	}
+	s.gen++
+	return version, nil
 }
 
 // seedWorkloads adds every workload entry whose name is not already present
@@ -440,9 +473,18 @@ func (s *Store) deleteWorkload(name string) (bool, error) {
 	return true, s.commitTx(tx)
 }
 
+// ErrVersionMismatch refuses a conditional whole-document write: the
+// allowlist is no longer at the version its If-Match names.
+var ErrVersionMismatch = errors.New("the allowlist changed since it was read (If-Match names an older version)")
+
 // replaceAll atomically swaps the entire allowlist for the given document and
-// bumps the version. An empty document clears everything.
-func (s *Store) replaceAll(al *pkgallowlist.Allowlist) error {
+// bumps the version. An empty document clears everything. A non-empty ifMatch
+// is a strong entity tag "N": the swap happens only while the version is N,
+// else it returns ErrVersionMismatch and changes nothing. A non-empty token is
+// the operator write token whose body was exactly al's canonical bytes: it is
+// stored as the signature of the document in the same transaction, so the
+// document is never served without it.
+func (s *Store) replaceAll(al *pkgallowlist.Allowlist, ifMatch, token string) error {
 	if al == nil {
 		return fmt.Errorf("allowlist is required")
 	}
@@ -456,11 +498,35 @@ func (s *Store) replaceAll(al *pkgallowlist.Allowlist) error {
 	}
 	defer tx.Rollback()
 
+	if ifMatch != "" {
+		// INVARIANT: read in the transaction that writes, so the check is of
+		// the version this write replaces.
+		var version string
+		if err := tx.QueryRow("SELECT version FROM allowlist_version LIMIT 1").Scan(&version); err != nil {
+			return fmt.Errorf("read allowlist version: %w", err)
+		}
+		if ifMatch != `"`+version+`"` {
+			return ErrVersionMismatch
+		}
+	}
 	if err := replaceContentsTx(tx, al); err != nil {
 		return err
 	}
 	if err := bumpVersionTx(tx); err != nil {
 		return err
+	}
+	if token != "" {
+		// Journal the document first: the signature is of a journaled one.
+		if err := publishTx(tx, s.now()); err != nil {
+			return fmt.Errorf("journal allowlist: %w", err)
+		}
+		body, err := al.Canonical()
+		if err != nil {
+			return err
+		}
+		if err := signTx(tx, body, token); err != nil {
+			return err
+		}
 	}
 	return s.commitTx(tx)
 }

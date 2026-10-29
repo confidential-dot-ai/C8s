@@ -17,13 +17,14 @@ func TestRecoveryAuthentication(t *testing.T) {
 	ca := mustCA(t)
 	other := mustCA(t)
 	key, _ := x509.MarshalPKCS8PrivateKey(ca.Key)
-	sn := snapshot{Format: Format, Index: 12, Core: Core{Policy: FSMPolicy{Version: 1, LedgerTTLNS: int64(time.Hour), LedgerMax: 8, SecretsMaxPaths: 8, SecretsMaxPerHolder: 4, SecretsMaxValue: 64}, ClusterID: testCluster, Epoch: 4, RootCert: ca.Cert.Raw}, Key: key, Allowlist: []byte("image")}
+	sn := snapshot{Format: Format, Index: 12, Core: Core{Policy: FSMPolicy{Version: 1, LedgerTTLNS: int64(time.Hour), LedgerMax: 8, SecretsMaxPaths: 8, SecretsMaxPerHolder: 4, SecretsMaxValue: 64}, ClusterID: testCluster, Epoch: 4, RootCert: ca.Cert.Raw}, Key: key, Allowlist: emptyImage(t)}
+	sn = withDigests(t, sn)
 	var buf bytes.Buffer
 	if err := encodeSnapshot(&buf, sn); err != nil {
 		t.Fatal(err)
 	}
 	body := buf.Bytes()
-	meta := BackupMeta{ClusterID: testCluster, Epoch: 4, Index: 12, CAFingerprint: certutil.CertFingerprint(ca.Cert.Raw)}
+	meta := BackupMeta{ClusterID: testCluster, Epoch: 4, Index: 12, CAFingerprint: certutil.CertFingerprint(ca.Cert.Raw), StateDigest: sn.Digests.State}
 	b, err := SealAuthenticatedBackup(&recovery.PublicKey, meta, body, ca.Cert.Raw, key)
 	if err != nil {
 		t.Fatal(err)

@@ -231,14 +231,11 @@ func TestReplicatedWholeDocumentAndMalformed(t *testing.T) {
 		t.Fatal(err)
 	}
 	al := &pkgallowlist.Allowlist{Schema: pkgallowlist.Schema, Workloads: map[string]pkgallowlist.Workload{"web": oneContainerWorkload(mustParseDigest(t, digestA))}}
-	if err := st[1].ReplaceAll(al); err != nil {
+	if err := st[0].ReplaceAllIfMatch(al, "", "tok.en.sig"); err != nil {
 		t.Fatal(err)
 	}
 	body, err := al.Canonical()
 	if err != nil {
-		t.Fatal(err)
-	}
-	if err := st[0].SignPolicy(body, "tok.en.sig"); err != nil {
 		t.Fatal(err)
 	}
 	if tok, ok, err := st[1].Signature(objectDigest(body)); err != nil || !ok || tok != "tok.en.sig" {

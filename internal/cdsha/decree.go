@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hashicorp/raft"
+
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
@@ -46,6 +48,45 @@ const (
 	SetVoters DecreeKind = "SetVoters"
 )
 
+// maxResumeGap bounds how far a Restore or Recover may move the epoch past
+// the state it starts from: far more decrees than a cluster applies between
+// two backups, and a guard against a mistyped resume_epoch.
+const maxResumeGap = 1024
+
+// resumeAfter moves c to the epoch after resume, the epoch a Restore or
+// Recover decree names, for that decree's intent made from index from. Each
+// epoch it skips gets no decree ("", which no intent equals) and the same
+// origin, so Epoch == len(AppliedDecrees) == len(EpochFrom) still holds and
+// BackupMeta.Follows still orders backups across the jump.
+func (c *Core) resumeAfter(resume uint64, intent string, from uint64) error {
+	if err := checkResume(resume, c.Epoch); err != nil {
+		return err
+	}
+	for c.Epoch < resume {
+		c.AppliedDecrees = append(c.AppliedDecrees, "")
+		c.EpochFrom = append(c.EpochFrom, from)
+		c.Epoch++
+	}
+	c.Epoch++
+	c.AppliedDecrees = append(c.AppliedDecrees, intent)
+	c.EpochFrom = append(c.EpochFrom, from)
+	return nil
+}
+
+// checkResume refuses a resume_epoch that would move the epoch back from
+// epoch, or too far past it.
+func checkResume(resume, epoch uint64) error {
+	switch {
+	case resume < epoch:
+		return fmt.Errorf("resume_epoch %d is below the epoch %d of the state it starts from", resume, epoch)
+	case resume-epoch > maxResumeGap:
+		return fmt.Errorf("resume_epoch %d is more than %d past the epoch %d of the state it starts from", resume, maxResumeGap, epoch)
+	case resume == ^uint64(0):
+		return errors.New("resume_epoch overflows the epoch")
+	}
+	return nil
+}
+
 // MaxVoters bounds the voter seats: each voter adds a round trip to every
 // commit.
 const MaxVoters = 9
@@ -62,10 +103,38 @@ type Decree struct {
 	// cluster's Raft group for a Genesis decree. Any other replica joins it,
 	// so one decree can never start two clusters.
 	BootstrapNode string `json:"bootstrap_node,omitempty"`
+	// TargetMember binds a Genesis, Recover or Restore decree to one process:
+	// the Raft member ID (node/<ms>-<random>) that the replica on
+	// BootstrapNode minted at its start and reports in /ha/status. A restart
+	// mints a new ID, so a recorded decree can never act again, whatever the
+	// guest clock or the host's decree objects say.
+	TargetMember string `json:"target_member,omitempty"`
+	// Alone lets a Genesis or Restore decree start the cluster when peer
+	// discovery finds no other replica: the operator asserts that no other
+	// replica exists. Without it, both wait for at least one other replica
+	// to answer that it holds no cluster.
+	Alone bool `json:"alone,omitempty"`
 	// SnapshotSHA256 names the backup a Restore decree restores (hex).
 	SnapshotSHA256 string `json:"snapshot_sha256,omitempty"`
 	// Voters is the voter seat count a SetVoters decree sets.
 	Voters int `json:"voters,omitempty"`
+	// ResumeEpoch is, for a Restore or Recover, the highest epoch the
+	// operator knows the cluster reached (c8s cds ha decrees, or the
+	// base_epoch of the pin decree in force). The cluster resumes at the
+	// epoch after it, so epochs, which nodes order pin decrees by, never go
+	// back to the backup's or the survivor's. 0 resumes after the epoch of
+	// the state the decree starts from; the CLI always sets it.
+	ResumeEpoch uint64 `json:"resume_epoch,omitempty"`
+	// IssuedAtMS is when the operator signed a Genesis, Restore or Recover
+	// decree (Unix ms, the operator's clock). The cluster's start time is at
+	// least this (startMS), so the token floor and the allowlist version a
+	// start sets never depend on a replica's clock going back.
+	IssuedAtMS int64 `json:"issued_at_ms,omitempty"`
+	// GenesisCA binds a Genesis decree to the mesh CA its target replica
+	// minted (Status.GenesisCA, the SHA-256 of the CA certificate). Every
+	// replica refuses a Genesis entry carrying another CA, so a replica that
+	// replays the cluster's real Genesis cannot install a key of its own.
+	GenesisCA string `json:"genesis_ca,omitempty"`
 	// Images are the launch identities behind Measurements, for clients
 	// outside the group (node agents, pods) that pin CDS by its full launch
 	// identity rather than by a replica pin. When set, Measurements must be
@@ -74,24 +143,41 @@ type Decree struct {
 	Images []DecreeImage `json:"images,omitempty"`
 }
 
-// DecreeImage is one TDX launch identity: MRTD and RTMR[1..2], lowercase hex.
+// DecreeImage is one launch identity, lowercase hex: on TDX MRTD and
+// RTMR[1..2], on SEV-SNP the launch digest (Measurement). An image has
+// exactly one of the two shapes.
 type DecreeImage struct {
-	MRTD  string `json:"mrtd"`
-	RTMR1 string `json:"rtmr1"`
-	RTMR2 string `json:"rtmr2"`
+	MRTD  string `json:"mrtd,omitempty"`
+	RTMR1 string `json:"rtmr1,omitempty"`
+	RTMR2 string `json:"rtmr2,omitempty"`
+	// Measurement is the SNP launch digest, one per vCPU count the operator
+	// accepts.
+	Measurement string `json:"measurement,omitempty"`
 }
 
-// Pin is the replica pin of the image, as a TDX replica reports its own
-// (NodeAttestor, ImagePin): "mrtd:rtmr1:rtmr2".
+// SNP reports whether the image is an SEV-SNP launch digest.
+func (i DecreeImage) SNP() bool { return i.Measurement != "" }
+
+// Pin is the replica pin of the image, as a replica reports its own
+// (NodeAttestor, ImagePin): TDX "mrtd:rtmr1:rtmr2", SNP the launch digest.
 func (i DecreeImage) Pin() (string, error) {
-	rtmrs := map[int]string{1: i.RTMR1, 2: i.RTMR2}
-	for _, v := range []string{i.MRTD, i.RTMR1, i.RTMR2} {
+	registers := []string{i.MRTD, i.RTMR1, i.RTMR2}
+	if i.SNP() {
+		if i.MRTD != "" || i.RTMR1 != "" || i.RTMR2 != "" {
+			return "", errors.New("an image is either TDX (mrtd, rtmr1, rtmr2) or SNP (measurement), not both")
+		}
+		registers = []string{i.Measurement}
+	}
+	for _, v := range registers {
 		b, err := hex.DecodeString(v)
 		if err != nil || len(b) != sha512.Size384 || v != strings.ToLower(v) {
 			return "", fmt.Errorf("image register %q is not 48 bytes of lowercase hex", v)
 		}
 	}
-	return ImagePin("tdx", i.MRTD, rtmrs)
+	if i.SNP() {
+		return ImagePin("snp", i.Measurement, nil)
+	}
+	return ImagePin("tdx", i.MRTD, map[int]string{1: i.RTMR1, 2: i.RTMR2})
 }
 
 // imagePins are the replica pins of images, canonical.
@@ -152,6 +238,11 @@ func CheckDecree(sd SignedDecree, tail Core, now time.Time) error {
 	if err := verifyDecree(sd, tail); err != nil {
 		return err
 	}
+	// Not in verifyDecree: VerifyPinDecree checks a decree without the
+	// cluster's state.
+	if k := sd.Decree.Kind; (k == RotateKey || k == UpdateMeasurements) && len(tail.RootCert) == 0 {
+		return fmt.Errorf("a %s decree applies to a cluster with a key", k)
+	}
 	if !now.Before(sd.Decree.ExpiresAt) {
 		return errors.New("decree expired")
 	}
@@ -181,12 +272,28 @@ func verifyDecree(sd SignedDecree, tail Core) error {
 		return errors.New("empty measurement set") // D8
 	case (d.Kind == Genesis || d.Kind == Restore) && (len(tail.RootCert) != 0 || len(d.Measurements) != 0):
 		return errors.New("a Genesis or Restore decree applies only to a cluster without a key, and carries no measurements")
+	case d.Kind != Restore && d.Kind != Recover && d.ResumeEpoch != 0:
+		return errors.New("only a Restore or Recover decree names the epoch it resumes after (resume_epoch)")
 	case (d.Kind == Restore) != (d.SnapshotSHA256 != ""):
 		return errors.New("a Restore decree, and only one, names the snapshot it restores")
+	case (d.Kind == Genesis || d.Kind == Recover || d.Kind == Restore) != (d.IssuedAtMS > 0):
+		return errors.New("a Genesis, Recover or Restore decree, and only one, names when it was issued (issued_at_ms): re-sign it")
+	case d.IssuedAtMS > 0 && d.IssuedAtMS > d.ExpiresAt.UnixMilli():
+		// An issue time past the expiry is a wrong operator clock: as the
+		// start time it would refuse every operator token until then.
+		return errors.New("issued_at_ms is after expires_at: check the signing clock and re-sign it")
+	case (d.Kind == Genesis) != (d.GenesisCA != ""):
+		return errors.New("a Genesis decree, and only one, names the mesh CA of its target (genesis_ca from /ha/status): re-sign it")
 	case (d.Kind == Genesis || d.Kind == Recover || d.Kind == Restore) && d.BootstrapNode == "":
 		return errors.New("a Genesis, Recover or Restore decree must name its node")
 	case d.Kind != Genesis && d.Kind != Recover && d.Kind != Restore && d.BootstrapNode != "":
 		return errors.New("only Genesis, Recover and Restore decrees name a node")
+	case (d.Kind == Genesis || d.Kind == Recover || d.Kind == Restore) && d.TargetMember == "":
+		return fmt.Errorf("a %s decree must name its target_member (the replica's id from /ha/status): decrees signed before target_member existed are refused, re-sign it", d.Kind)
+	case d.TargetMember != "" && nodeOf(raft.ServerID(d.TargetMember)) != d.BootstrapNode:
+		return errors.New("target_member is not a member of bootstrap_node")
+	case d.Kind != Genesis && d.Kind != Restore && d.Alone:
+		return errors.New("only a Genesis or Restore decree may say alone")
 	case d.Kind == Recover && (len(tail.RootCert) == 0 || len(d.Measurements) != 0):
 		return errors.New("a Recover decree applies to a cluster with a key, and carries no measurements")
 	case d.Kind != UpdateMeasurements && d.Kind != RotateKey && d.Kind != Genesis && d.Kind != Recover && d.Kind != Restore && d.Kind != SetVoters:
@@ -199,6 +306,12 @@ func verifyDecree(sd SignedDecree, tail Core) error {
 		return errors.New("a SetVoters decree applies to a cluster with a key, and carries no measurements")
 	case !slices.Equal(d.Measurements, normalizePins(d.Measurements)):
 		return errors.New("measurements not in canonical form")
+	}
+	// A Restore's starting epoch is the snapshot's, checked when it applies.
+	if d.Kind == Recover && d.ResumeEpoch != 0 {
+		if err := checkResume(d.ResumeEpoch, tail.Epoch); err != nil {
+			return err
+		}
 	}
 	// Images force Measurements to their pins, which every kind but
 	// UpdateMeasurements and RotateKey refuses above.

@@ -79,6 +79,7 @@
           "properties": {
             "enabled": {},
             "peerPort": {},
+            "replicaNodePort": {},
             "decreeNamespace": {},
             "goMemLimit": {},
             "historyVersions": {},

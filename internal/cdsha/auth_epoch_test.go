@@ -29,7 +29,7 @@ func TestAuthEpochBoundary(t *testing.T) {
 		RootCert: ca.Cert.Raw, Epoch: math.MaxUint64 - 1, Format: Format, Measurements: []string{"m1"},
 	}}
 	var buf bytes.Buffer
-	if err := encodeSnapshot(&buf, sn); err != nil {
+	if err := encodeSnapshot(&buf, withDigests(t, sn)); err != nil {
 		t.Fatal(err)
 	}
 	sd := signDecree(t, op, Decree{Kind: Restore, IntentID: "boundary-restore", BootstrapNode: "n0", SnapshotSHA256: SnapshotSHA256(buf.Bytes())})
@@ -51,7 +51,7 @@ func TestAuthEpochBoundary(t *testing.T) {
 	f2 := newTestFSM(t, pub)
 	sn.Core.Epoch = math.MaxUint64 - 2
 	buf.Reset()
-	if err := encodeSnapshot(&buf, sn); err != nil {
+	if err := encodeSnapshot(&buf, withDigests(t, sn)); err != nil {
 		t.Fatal(err)
 	}
 	sd2 := signDecree(t, op, Decree{Kind: Restore, IntentID: "preceding-restore", BootstrapNode: "n0", SnapshotSHA256: SnapshotSHA256(buf.Bytes())})

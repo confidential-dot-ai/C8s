@@ -6,11 +6,13 @@ import (
 	"cmp"
 	"crypto/ecdsa"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"runtime/debug"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -23,6 +25,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/sandboxledger"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
+	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 )
 
 // Core is the cluster state every replica agrees on through the Raft log:
@@ -38,9 +41,16 @@ type Core struct {
 	Measurements   []string  `json:"measurements,omitempty"` // replica pin set, sorted lowercase hex
 	OperatorPubKey []byte    `json:"operator_pubkey"`        // PKIX DER; nil means decrees are rejected
 	AppliedDecrees []string  `json:"applied_decrees,omitempty"`
-	// GenesisAtMS is when the cluster was born. Single-use operator tokens
-	// issued before it are refused: no replica can know whether they were
-	// spent in an earlier life of the cluster.
+	// EpochFrom[k] is the applied index of the state epoch k+1 was made from:
+	// the index before its decree's entry, or the restored backup's index.
+	// A backup replaces a stored one only if it descends from it
+	// (BackupMeta.Follows).
+	EpochFrom []uint64 `json:"epoch_from,omitempty"`
+	// GenesisAtMS is when the cluster last started: its Genesis, or the
+	// Restore or Recover since. Single-use operator tokens issued before it
+	// are refused: no replica can know whether they were spent in an earlier
+	// life of the cluster, or after the backup a Restore rolled back to, or
+	// by the replicas a Recover left behind. Set to startMS.
 	GenesisAtMS int64 `json:"genesis_at_ms,omitempty"`
 	// Format is the encoding every replica writes (see Format). 0 is baseFormat.
 	Format uint32 `json:"format,omitempty"`
@@ -63,6 +73,7 @@ func (c Core) clone() Core {
 	c.Measurements = slices.Clone(c.Measurements)
 	c.OperatorPubKey = slices.Clone(c.OperatorPubKey)
 	c.AppliedDecrees = slices.Clone(c.AppliedDecrees)
+	c.EpochFrom = slices.Clone(c.EpochFrom)
 	return c
 }
 
@@ -107,6 +118,9 @@ const (
 type Entry struct {
 	Kind EntryKind `json:"kind"`
 	// Format is the oldest format that can apply the entry (0 is baseFormat).
+	// It stays 0 until a release changes what an existing field means; a new
+	// field needs no Format, since a replica that does not know it stops
+	// (decodeStrict).
 	Format    uint32                 `json:"format,omitempty"`
 	SetFormat uint32                 `json:"set_format,omitempty"` // KindFormat
 	Allowlist *allowlist.Command     `json:"allowlist,omitempty"`
@@ -158,6 +172,9 @@ type FSM struct {
 	mu   sync.RWMutex
 	core Core
 	ca   *issuer.CA
+	// launch is the cluster id and operator key this replica was launched
+	// with. No state of another cluster or operator ever replaces them.
+	launch Core
 
 	allowlist *allowlist.Store
 	secrets   *secrets.MemoryStore
@@ -173,8 +190,16 @@ type FSM struct {
 	// readable is the newest format this replica reads; stuck is set once it
 	// met an entry it could not apply, and keeps it from serving.
 	readable uint32
-	stuck    atomic.Pointer[string]
-	stuckAt  atomic.Int64 // unix nanoseconds when stuck was set
+	stuck    atomic.Pointer[stopReason]
+	stuckAt  atomic.Int64 // monoNow when stuck was set
+	// passed is set once the serving leader certified a read past a
+	// deterministic stop's entry (passedBy).
+	passed atomic.Bool
+	// applying is the index of the entry Apply is on, for stop.
+	applying atomic.Uint64
+	// applyStart is when the command Apply is on started (monoNow), 0
+	// between commands and during a Restore (Node.watchApply).
+	applyStart atomic.Int64
 
 	// applyDelay is a test seam (set only from tests, zero otherwise): it
 	// slows every command apply, as a slow local disk does.
@@ -186,26 +211,84 @@ type FSM struct {
 	// measure is the last snapshot this replica encoded, for the admission
 	// cap's compressed estimate.
 	measure atomic.Pointer[sizeMeasure]
+
+	// dig is the chain and checkpoints of what this replica applied
+	// (digest.go).
+	dig digestLog
 }
 
 // NewFSM builds the state machine over the replica's local stores. pre is
 // the pre-Genesis state from the replica's launch configuration.
 func NewFSM(pre Core, al *allowlist.Store, sec *secrets.MemoryStore, led *sandboxledger.Ledger) *FSM {
-	return &FSM{core: pre, allowlist: al, secrets: sec, ledger: led, readable: Format}
+	launch := Core{ClusterID: pre.ClusterID, OperatorPubKey: bytes.Clone(pre.OperatorPubKey)}
+	return &FSM{core: pre, launch: launch, allowlist: al, secrets: sec, ledger: led, readable: Format}
 }
+
+// stopReason is why a replica stopped following the log. A local stop
+// (this replica's store or process) is cured by a restart. Any other stop is
+// deterministic: every replica on this code stops at the same entry, so a
+// restart would only throw the in-memory log away; index is that entry.
+//
+// A stall is a local stop for a command that has run too long
+// (Node.watchApply): slow, not skipped. It ends when that command returns
+// (endStall), unless another stop replaced it meanwhile (halt).
+type stopReason struct {
+	msg   string
+	local bool
+	index uint64
+	stall bool
+	start int64 // stall: applyStart of the command it was raised for
+}
+
+// monoBase makes monoNow monotonic: time.Since on a time.Now() reading
+// ignores wall-clock steps.
+var monoBase = time.Now()
+
+// monoNow is the monotonic time in nanoseconds since monoBase, never 0.
+func monoNow() int64 { return int64(time.Since(monoBase)) + 1 }
 
 // Stuck is why this replica stopped applying the log, or "".
 func (f *FSM) Stuck() string {
 	if p := f.stuck.Load(); p != nil {
-		return *p
+		return p.msg
 	}
 	return ""
+}
+
+// StuckLocal reports a stop caused by this replica's own store or process.
+func (f *FSM) StuckLocal() bool {
+	p := f.stuck.Load()
+	return p != nil && p.local
+}
+
+// trusted reports a state that applied every entry so far: not stopped, or
+// only stalled on the command Apply is on.
+func (f *FSM) trusted() bool {
+	p := f.stuck.Load()
+	return p == nil || p.stall
+}
+
+// passedBy records that the serving leader certified a read at index: its
+// state machine applied every entry up to index and is not stuck. At or
+// past a deterministic stop's entry, it proves that the cluster applies the
+// entry and only this replica cannot (an older binary, a local bug): the
+// stop is this replica's own after all.
+func (f *FSM) passedBy(index uint64) {
+	if p := f.stuck.Load(); p != nil && !p.local && index >= p.index {
+		f.passed.Store(true)
+	}
+}
+
+// stuckPassed reports a deterministic stop that the cluster has passed.
+func (f *FSM) stuckPassed() bool {
+	p := f.stuck.Load()
+	return p != nil && !p.local && f.passed.Load()
 }
 
 // stuckFor is how long ago the replica got stuck, or 0 if it is not.
 func (f *FSM) stuckFor() time.Duration {
 	if at := f.stuckAt.Load(); at != 0 {
-		return time.Since(time.Unix(0, at))
+		return time.Duration(monoNow() - at)
 	}
 	return 0
 }
@@ -233,26 +316,86 @@ func (f *FSM) Apply(l *raft.Log) any {
 	if l.Type != raft.LogCommand {
 		return nil
 	}
+	f.applyStart.Store(monoNow())
+	defer f.endStall()
+	defer f.applyStart.Store(0)
+	point := f.dig.next(l)
+	defer func() { f.dig.record(point) }()
+	f.applying.Store(l.Index)
 	if d := f.applyDelay.Load(); d > 0 {
 		time.Sleep(time.Duration(d))
 	}
 	var e Entry
-	if err := json.Unmarshal(l.Data, &e); err != nil {
+	if err := decodeStrict(l.Data, &e); err != nil {
 		return f.stop(fmt.Errorf("decode log entry %d: %w", l.Index, err))
 	}
 	if cmp.Or(e.Format, baseFormat) > f.readable {
 		return f.stop(fmt.Errorf("%w: entry %d needs format %d, this replica reads up to %d", ErrNewerFormat, l.Index, e.Format, f.readable))
 	}
-	res := f.apply(e)
+	if e.Kind == KindCheckpoint {
+		// INVARIANT: only a state that applied every entry up to here
+		// takes part in the checkpoint vote (divergence.go). Replicas that
+		// stopped at the same entry hold the same wrong state and would
+		// otherwise outvote a healthy leader.
+		if f.trusted() {
+			point.State = f.stateDigest(point.Index)
+		}
+		return nil
+	}
+	if e.Kind == KindRestore {
+		// It replaces the whole state from a backup, which takes as long
+		// as the backup is large: not watched (Node.watchApply).
+		f.applyStart.Store(0)
+	}
+	res := f.applyRecovering(l.Index, e)
 	if err, ok := res.(error); ok && errors.Is(err, errMalformed) {
 		return f.stop(fmt.Errorf("log entry %d: %w", l.Index, err))
 	}
 	// The entry is committed, and replicas whose disks took it hold it. One
 	// that could not write it here must not mark it applied and serve on.
 	if r, ok := res.(allowlist.Result); ok && r.LocalStoreFault() {
-		return f.stop(fmt.Errorf("log entry %d: local allowlist store: %w", l.Index, r.Error()))
+		return f.stopLocal(fmt.Errorf("log entry %d: local allowlist store: %w", l.Index, r.Error()))
 	}
 	return res
+}
+
+// applyRecovering applies e, turning a panic into a deterministic stop: the
+// same entry panics on every replica, and a crash would end them all.
+func (f *FSM) applyRecovering(index uint64, e Entry) (res any) {
+	defer func() {
+		if p := recover(); p != nil {
+			slog.Error("cds-ha: panic applying a log entry", "index", index, "kind", e.Kind, "panic", p, "stack", string(debug.Stack()))
+			res = f.stop(fmt.Errorf("log entry %d of kind %q: panic: %v", index, e.Kind, p))
+		}
+	}()
+	return f.apply(e)
+}
+
+// stateDigest is the state digest at a checkpoint entry. It reads the
+// stores' running digests, so it costs the same at any state size.
+func (f *FSM) stateDigest(index uint64) string {
+	d, err := f.liveDigests(f.allowlist.Digest())
+	if err != nil {
+		_ = f.stopLocal(fmt.Errorf("state digest at %d: %w", index, err))
+		return ""
+	}
+	return d.State
+}
+
+// decodeStrict decodes data, which must be exactly one JSON value, into v,
+// refusing fields v does not have: an older replica that dropped a field
+// it does not know would apply something else than the replicas that know
+// it.
+func decodeStrict(data []byte, v any) error {
+	d := json.NewDecoder(bytes.NewReader(data))
+	d.DisallowUnknownFields()
+	if err := d.Decode(v); err != nil {
+		return err
+	}
+	if _, err := d.Token(); err != io.EOF {
+		return errors.New("data after the JSON value")
+	}
+	return nil
 }
 
 // errMalformed is an entry this replica does not understand.
@@ -261,14 +404,91 @@ var errMalformed = errors.New("malformed log entry")
 // stop records that this replica can no longer follow the log. Raft treats
 // Apply's result as the entry's answer and moves on, so a replica that
 // skipped an entry would serve state the rest of the group does not have.
-// It stops serving instead, and is replaced by one that reads the log.
+// It stops serving instead.
+//
+// stop is for a deterministic reason (an entry this code cannot apply):
+// every replica on the same code stops at the same entry, and since the log
+// lives only in memory, exiting would lose the cluster. The replica keeps
+// running, with its log, until the cluster is seen past the entry (passedBy)
+// or an operator acts: an image that applies the entry, or a Restore.
 func (f *FSM) stop(err error) error {
-	msg := err.Error()
-	if f.stuck.CompareAndSwap(nil, &msg) {
-		f.stuckAt.Store(time.Now().UnixNano())
-		slog.Error("cds-ha: this replica can no longer follow the log; it stops serving and exits to rejoin", "reason", msg)
+	return f.halt(err, false)
+}
+
+// stopLocal is stop for a fault of this replica's own (its store, its
+// process): it exits and rejoins with the cluster's state.
+func (f *FSM) stopLocal(err error) error {
+	return f.halt(err, true)
+}
+
+// halt records a stop. It replaces nothing but a stall: the first real
+// stop stays.
+func (f *FSM) halt(err error, local bool) error {
+	r := &stopReason{msg: err.Error(), local: local}
+	if !local {
+		r.index = f.applying.Load()
+	}
+	for {
+		cur := f.stuck.Load()
+		if cur != nil && !cur.stall {
+			return err
+		}
+		if f.stuck.CompareAndSwap(cur, r) {
+			break
+		}
+	}
+	f.stuckAt.Store(monoNow())
+	if local {
+		slog.Error("cds-ha: this replica can no longer follow the log (local fault); it stops serving and exits to rejoin", "reason", r.msg)
+	} else {
+		slog.Error("cds-ha: ALARM: this replica cannot apply a committed log entry; it stops serving and keeps its log for an operator (an image that applies the entry, or a Restore)", "reason", r.msg, "index", r.index)
 	}
 	return err
+}
+
+// stall records a stall of the command that started at start, if nothing
+// stopped the replica yet. It takes the stall back if that command has
+// returned meanwhile, so a stall never outlives its command (endStall).
+func (f *FSM) stall(start int64, err error) {
+	r := &stopReason{msg: err.Error(), local: true, stall: true, start: start}
+	if !f.stuck.CompareAndSwap(nil, r) {
+		return
+	}
+	f.stuckAt.Store(monoNow())
+	if f.applyStart.Load() != start {
+		f.stuck.CompareAndSwap(r, nil)
+		return
+	}
+	slog.Error("cds-ha: this replica's state machine is stalled on a command; it stops serving until the command returns", "reason", r.msg)
+}
+
+// leaveReason is the stop that may make this replica leave the cluster: a
+// local fault, or a deterministic stop the cluster passed; nil otherwise. A
+// stall never is: the command may still return (endStall).
+func (f *FSM) leaveReason() *stopReason {
+	if p := f.stuck.Load(); p != nil && !p.stall && (p.local || f.passed.Load()) {
+		return p
+	}
+	return nil
+}
+
+// hung turns stall p into a local stop that stays: its command is held for
+// good (a store lock never released), not slow. Node.watchApply decides.
+func (f *FSM) hung(p *stopReason, why string) {
+	r := &stopReason{msg: p.msg + "; " + why, local: true}
+	if f.stuck.CompareAndSwap(p, r) {
+		slog.Error("cds-ha: this replica can no longer follow the log (local fault); it stops serving and exits to rejoin", "reason", r.msg)
+	}
+}
+
+// endStall (end of Apply, after applyStart is cleared) ends a stall of the
+// command that just returned: it was slow, but it applied, and so did every
+// entry before it. Another stop meanwhile replaced the stall and stays.
+func (f *FSM) endStall() {
+	if p := f.stuck.Load(); p != nil && p.stall && f.stuck.CompareAndSwap(p, nil) {
+		f.stuckAt.Store(0)
+		slog.Info("cds-ha: the stalled command returned; following the log again", "stalled", p.msg)
+	}
 }
 
 func (f *FSM) apply(e Entry) any {
@@ -313,9 +533,14 @@ func (f *FSM) applyDecree(de DecreeEntry) DecreeResult {
 			return DecreeResult{Epoch: f.core.Epoch, Err: err.Error()}
 		}
 	}
-	next, ca, err := nextCore(f.core, de)
+	next, ca, err := nextCore(f.core, de, f.applied.Load())
 	if err != nil {
 		return DecreeResult{Epoch: f.core.Epoch, Err: err.Error()}
+	}
+	if k := de.Decree.Decree.Kind; k == Genesis || k == Recover {
+		if err := f.raiseVersion(startMS(de.Decree.Decree, de.AtMS)); err != nil {
+			return DecreeResult{Epoch: f.core.Epoch, Err: err.Error()}
+		}
 	}
 	f.record(de.Decree, de.AtMS, next.Epoch)
 	f.core = next
@@ -369,20 +594,22 @@ func (f *FSM) applyRestore(re RestoreEntry) DecreeResult {
 	if err != nil {
 		return fail(err)
 	}
-	switch {
-	case sn.Core.ClusterID != cur.ClusterID:
-		return fail(fmt.Errorf("snapshot is of cluster %q", sn.Core.ClusterID))
-	case !bytes.Equal(sn.Core.OperatorPubKey, cur.OperatorPubKey):
-		return fail(errors.New("snapshot names another operator key"))
-	case !sn.Core.Joined():
+	if !sn.Core.Joined() {
 		return fail(errors.New("snapshot holds no mesh CA"))
 	}
-	if sn.Core.Epoch == ^uint64(0) {
-		return fail(errors.New("snapshot epoch overflows on restore"))
+	resume := sn.Core.Epoch
+	if re.Decree.Decree.ResumeEpoch != 0 {
+		resume = re.Decree.Decree.ResumeEpoch
 	}
-	sn.Core.Epoch++
-	sn.Core.AppliedDecrees = append(sn.Core.AppliedDecrees, re.Decree.Decree.IntentID)
+	if err := sn.Core.resumeAfter(resume, re.Decree.Decree.IntentID, sn.Index); err != nil {
+		return fail(err)
+	}
+	start := startMS(re.Decree.Decree, re.AtMS)
+	sn.Core.GenesisAtMS = start
 	if err := f.restore(sn); err != nil {
+		return fail(err)
+	}
+	if err := f.raiseVersion(start); err != nil {
 		return fail(err)
 	}
 	f.mu.Lock()
@@ -391,8 +618,38 @@ func (f *FSM) applyRestore(re RestoreEntry) DecreeResult {
 	return DecreeResult{Epoch: sn.Core.Epoch}
 }
 
-// nextCore is the state after decree entry de, or why de does not apply.
-func nextCore(cur Core, de DecreeEntry) (Core, *issuer.CA, error) {
+// startMS is when a cluster that starts again (Genesis, Restore, Recover)
+// starts: the later of the operator-signed issued_at and the start entry's
+// leader-stamped time. A replica clock set back cannot move it before the
+// operator signed; one set forward cannot move it past the decree's expiry,
+// since CheckDecree refuses the decree at that time.
+func startMS(d Decree, atMS int64) int64 { return max(d.IssuedAtMS, atMS) }
+
+// raiseVersion moves the allowlist version of a cluster that starts again
+// (Genesis, Restore, Recover) to at least atMS, its startMS. Node enforcers
+// ignore a version below the one they applied and answer an equal one from
+// cache, so a version that went back with the restored or surviving state
+// would keep every later write, revocations included, from the nodes.
+//
+// INVARIANT: the served version never decreases across a restart, provided
+// the operator signed the start decree after the earlier life's highest
+// version: its start time plus its writes, each a single-use operator token,
+// which stays below the time of the loss. The replicas' clocks do not matter.
+//
+// The input is the logged entry, so every replica sets the same version. A
+// failure is this replica's store: it stops and rejoins.
+func (f *FSM) raiseVersion(atMS int64) error {
+	v, err := f.allowlist.RaiseVersion(atMS)
+	if err != nil {
+		return f.stopLocal(fmt.Errorf("allowlist version at the cluster's start: %w", err))
+	}
+	slog.Info("cds-ha: the cluster starts again; allowlist version raised", "version", v, "at_ms", atMS)
+	return nil
+}
+
+// nextCore is the state after decree entry de, applied on the state at
+// index from, or why de does not apply.
+func nextCore(cur Core, de DecreeEntry, from uint64) (Core, *issuer.CA, error) {
 	if err := CheckDecree(de.Decree, cur, time.UnixMilli(de.AtMS)); err != nil {
 		return Core{}, nil, err
 	}
@@ -411,17 +668,26 @@ func nextCore(cur Core, de DecreeEntry) (Core, *issuer.CA, error) {
 	}
 	switch d.Kind {
 	case Genesis:
+		// INVARIANT: the mesh CA is the one the operator signed. RootCert,
+		// Key and Pins are chosen by whoever logged the entry; caFromDER
+		// ties Key to RootCert, this ties RootCert to the decree.
+		if certutil.CertFingerprint(de.RootCert) != d.GenesisCA {
+			return Core{}, nil, errors.New("genesis mesh CA differs from the one the decree names")
+		}
 		if err := de.Policy.Validate(); err != nil {
 			return Core{}, nil, err
 		}
 		next.Policy = de.Policy
-		next.Format = Format
+		// Only the leader raises the format, once every member reads it.
+		next.Format = baseFormat
 		pins := normalizePins(de.Pins)
 		if len(pins) == 0 {
 			return Core{}, nil, errors.New("genesis without the bootstrap replica's pins")
 		}
 		next.Measurements = pins
-		next.GenesisAtMS = de.AtMS
+		next.GenesisAtMS = startMS(d, de.AtMS)
+	case Recover:
+		next.GenesisAtMS = startMS(d, de.AtMS)
 	case SetVoters:
 		next.Seats = d.Voters
 	case UpdateMeasurements, RotateKey:
@@ -436,8 +702,13 @@ func nextCore(cur Core, de DecreeEntry) (Core, *issuer.CA, error) {
 			}
 		}
 	}
-	next.Epoch++
-	next.AppliedDecrees = append(next.AppliedDecrees, d.IntentID)
+	resume := next.Epoch // every other kind, and a Recover without resume_epoch
+	if d.Kind == Recover && d.ResumeEpoch != 0 {
+		resume = d.ResumeEpoch
+	}
+	if err := next.resumeAfter(resume, d.IntentID, from); err != nil {
+		return Core{}, nil, err
+	}
 	return next, ca, nil
 }
 
@@ -456,6 +727,11 @@ type snapshot struct {
 	Allowlist []byte                  `json:"-"`
 	Secrets   []secrets.SnapshotEntry `json:"secrets"`
 	Bindings  []sandboxledger.Binding `json:"bindings"`
+	// Chain is the chain of the commands applied up to Index, and Digests
+	// the digests of the content (digest.go). Persist and restore check the
+	// content against Digests.
+	Chain   Point   `json:"chain"`
+	Digests Digests `json:"digests"`
 }
 
 // StoreConfiguration implements raft.ConfigurationStore. The state machine
@@ -488,11 +764,17 @@ func (f *FSM) Snapshot() (raft.FSMSnapshot, error) {
 		sn.Key = key
 	}
 	f.mu.RUnlock()
-	al, err := f.allowlist.Dump()
+	al, alSum, err := f.allowlist.DumpDigest()
 	if err != nil {
 		return nil, err
 	}
 	sn.Allowlist, sn.Secrets, sn.Bindings = al, f.secrets.Dump(), f.ledger.Dump()
+	// The digests the stores kept as they applied the log, not read from
+	// the copies: Persist compares the two.
+	if sn.Digests, err = f.liveDigests(alSum); err != nil {
+		return nil, err
+	}
+	sn.Chain = f.dig.latest()
 	// Raft calls Snapshot between applies, so the estimate is of this state.
 	decoded := int64(-1)
 	if header, image, err := f.snapshotEstimate(); err == nil {
@@ -523,9 +805,12 @@ func (f *FSM) Restore(rc io.ReadCloser) error {
 		// with healthy heartbeats, serves nothing. Stop like on an entry the
 		// store cannot take, so the replica exits and rejoins.
 		if allowlist.IsLocalStoreFault(err) {
-			return f.stop(fmt.Errorf("restore snapshot at index %d: local allowlist store: %w", sn.Index, err))
+			return f.stopLocal(fmt.Errorf("restore snapshot at index %d: local allowlist store: %w", sn.Index, err))
 		}
 		return err
+	}
+	if err := f.dig.reset(sn.Chain); err != nil {
+		return f.stopLocal(fmt.Errorf("restore snapshot at index %d: %w", sn.Index, err))
 	}
 	f.applied.Store(sn.Index)
 	slog.Info("cds-ha: snapshot restored", "index", sn.Index, "applied_before", before, "took", time.Since(start).Round(time.Millisecond))
@@ -580,7 +865,31 @@ const MaxSnapshotBytes = 128 << 20
 
 // decodeSnapshot reads a snapshot in a format from baseFormat to readable.
 // With headOnly it stops after the header line, without the allowlist.
+// Otherwise it checks the header's digests against the content, except the
+// allowlist image's rows, which restore (allowlist.Store.RestoreDigest) and
+// ValidateRecoverySnapshot check: reading them costs a pass over the image.
 func decodeSnapshot(r io.Reader, readable uint32, headOnly bool) (snapshot, error) {
+	sn, err := decodeSnapshotRaw(r, readable, headOnly)
+	if err != nil || headOnly {
+		return sn, err
+	}
+	if _, err := sn.checkDigests(); err != nil {
+		return snapshot{}, err
+	}
+	return sn, nil
+}
+
+// ContentDigests decodes a snapshot without checking its digests and
+// computes them from its content: what its header must carry.
+func ContentDigests(body []byte) (Digests, error) {
+	sn, err := decodeSnapshotRaw(bytes.NewReader(body), Format, false)
+	if err != nil {
+		return Digests{}, err
+	}
+	return contentDigests(sn, allowlist.ImageDigest)
+}
+
+func decodeSnapshotRaw(r io.Reader, readable uint32, headOnly bool) (snapshot, error) {
 	compressed := &io.LimitedReader{R: r, N: MaxSnapshotBytes + 1}
 	d, err := zstd.NewReader(compressed, zstd.WithDecoderMaxWindow(snapshotWindow), zstd.WithDecoderConcurrency(1))
 	if err != nil {
@@ -603,7 +912,7 @@ func decodeSnapshotBody(r io.Reader, readable uint32, headOnly bool, headerLimit
 		return snapshot{}, errors.New("decode snapshot: missing or oversized header")
 	}
 	var sn snapshot
-	if err := json.Unmarshal(header, &sn); err != nil {
+	if err := decodeStrict(header, &sn); err != nil {
 		return snapshot{}, fmt.Errorf("decode snapshot: %w", err)
 	}
 	switch v, c := cmp.Or(sn.Format, baseFormat), sn.Core.format(); {
@@ -632,6 +941,14 @@ func (f *FSM) restore(sn snapshot) error {
 	if err := f.ValidatePolicy(sn.Core.Policy); err != nil {
 		return err
 	}
+	// INVARIANT: Core.ClusterID and Core.OperatorPubKey are the launch
+	// values. A snapshot is not signed: whoever sent it chose them.
+	switch {
+	case sn.Core.ClusterID != f.launch.ClusterID:
+		return fmt.Errorf("snapshot is of cluster %q", sn.Core.ClusterID)
+	case !bytes.Equal(sn.Core.OperatorPubKey, f.launch.OperatorPubKey):
+		return errors.New("snapshot names another operator key")
+	}
 	cur := f.Core()
 	if cur.Policy != (FSMPolicy{}) && cur.Policy != sn.Core.Policy {
 		return fmt.Errorf("%w: snapshot changes established policy", ErrPolicy)
@@ -643,7 +960,15 @@ func (f *FSM) restore(sn snapshot) error {
 			return fmt.Errorf("snapshot: %w", err)
 		}
 	}
-	if err := f.allowlist.Restore(sn.Allowlist); err != nil {
+	// decodeSnapshot checked the rest of the content against sn.Digests.
+	al, err := hex.DecodeString(sn.Digests.Allowlist)
+	if err != nil || len(al) != 32 {
+		return fmt.Errorf("%w: no allowlist digest", ErrSnapshotDigest)
+	}
+	if err := f.allowlist.RestoreDigest(sn.Allowlist, [32]byte(al)); err != nil {
+		if errors.Is(err, allowlist.ErrImageDigest) {
+			return fmt.Errorf("%w: allowlist", ErrSnapshotDigest)
+		}
 		return fmt.Errorf("snapshot allowlist: %w", err)
 	}
 	f.secrets.Restore(sn.Secrets)
@@ -652,6 +977,36 @@ func (f *FSM) restore(sn snapshot) error {
 	f.core, f.ca, f.decrees = sn.Core, ca, sn.Decrees
 	f.mu.Unlock()
 	return nil
+}
+
+// checkDigests checks the header's state digest and the secrets and
+// bindings against the content, before any store changes, and returns the
+// allowlist digest the image must have (allowlist.Store.RestoreDigest).
+func (sn snapshot) checkDigests() ([32]byte, error) {
+	var al [32]byte
+	d := sn.Digests
+	b, err := hex.DecodeString(d.Allowlist)
+	if err != nil || len(b) != len(al) {
+		return al, fmt.Errorf("%w: no allowlist digest", ErrSnapshotDigest)
+	}
+	al = [32]byte(b)
+	if _, err := hex.DecodeString(sn.Chain.Chain); err != nil || len(sn.Chain.Chain) != 64 {
+		return al, fmt.Errorf("%w: no chain", ErrSnapshotDigest)
+	}
+	c, err := coreDigest(sn.Core, sn.Key, sn.Decrees)
+	if err != nil {
+		return al, err
+	}
+	sec, led := secrets.DigestOf(sn.Secrets), sandboxledger.DigestOf(sn.Bindings)
+	switch {
+	case hexOf(sec) != d.Secrets:
+		return al, fmt.Errorf("%w: secrets", ErrSnapshotDigest)
+	case hexOf(led) != d.Ledger:
+		return al, fmt.Errorf("%w: bindings", ErrSnapshotDigest)
+	case hexOf(stateDigest(c, al, sec, led)) != d.State:
+		return al, fmt.Errorf("%w: state", ErrSnapshotDigest)
+	}
+	return al, nil
 }
 
 type fsmSnapshot struct {
@@ -663,6 +1018,18 @@ type fsmSnapshot struct {
 }
 
 func (s *fsmSnapshot) Persist(sink raft.SnapshotSink) error {
+	// The content must still be what the replica applied: state that
+	// changed under it would otherwise reach a joining replica or a backup.
+	if got, err := contentDigests(s.sn, allowlist.ImageDigest); err != nil || got != s.sn.Digests {
+		_ = sink.Cancel()
+		if err == nil {
+			err = fmt.Errorf("local state no longer matches what this replica applied (digests %+v, applied %+v)", got, s.sn.Digests)
+		}
+		if s.fsm != nil {
+			return s.fsm.stopLocal(fmt.Errorf("snapshot at index %d: %w", s.sn.Index, err))
+		}
+		return err
+	}
 	cw := &countWriter{w: sink}
 	if err := encodeSnapshot(cw, s.sn); err != nil {
 		_ = sink.Cancel()

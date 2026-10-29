@@ -13,6 +13,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net"
 	"net/http"
 	"os"
@@ -182,11 +183,17 @@ func TestMajorityLoss(t *testing.T) {
 				}
 				return ""
 			})
+			// The recovered cluster refuses operator tokens issued before the
+			// Recover plus --jwt-clock-skew (their spends may be lost), so the
+			// load pauses until a fresh token passes, as the runbook says.
+			k.Pause()
 			name := c.PutDecree(cdsha.Decree{ClusterID: clusterID, IntentID: "recover-1", Kind: cdsha.Recover, BaseEpoch: epoch,
-				BootstrapNode: c.Replicas[survivor].Node, ExpiresAt: time.Now().Add(10 * time.Minute)}, nil)
+				BootstrapNode: c.Replicas[survivor].Node, TargetMember: c.MemberID(survivor), ExpiresAt: time.Now().Add(10 * time.Minute)}, nil)
 			start := time.Now()
 			c.WaitServing([]int{survivor}, 60*time.Second)
 			c.Logf("survivor %s serving %s after the Recover decree", c.Replicas[survivor].Node, time.Since(start))
+			time.Sleep(jwtClockSkew + 2*time.Second) // + JWT iat granularity (1 s) and margin
+			k.Resume()
 			if st := c.WaitDecreeStatus(name, 30*time.Second); st.AppliedEpoch == nil {
 				t.Errorf("Recover decree status: %+v", st)
 			}
@@ -207,7 +214,7 @@ func TestMajorityLoss(t *testing.T) {
 			c.WaitNotServing(l, timing.lease+3*time.Second)
 			nl := c.WaitLeader(20*time.Second, l)
 			name := c.PutDecree(cdsha.Decree{ClusterID: clusterID, IntentID: "recover-wrong", Kind: cdsha.Recover, BaseEpoch: epoch,
-				BootstrapNode: c.Replicas[l].Node, ExpiresAt: time.Now().Add(10 * time.Minute)}, nil)
+				BootstrapNode: c.Replicas[l].Node, TargetMember: c.MemberID(l), ExpiresAt: time.Now().Add(10 * time.Minute)}, nil)
 			st := c.WaitDecreeStatus(name, 30*time.Second)
 			c.Logf("Recover naming the isolated %s while %s leads: status %+v", c.Replicas[l].Node, c.Replicas[nl].Node, st)
 			if st.AppliedEpoch != nil || !strings.Contains(st.RejectedReason, "majority") {
@@ -272,9 +279,13 @@ func TestRestore(t *testing.T) {
 	for i := range c.Replicas {
 		c.Start(i, false)
 	}
-	// The pre-join server is ready once the replica awaits a restore.
-	c.waitFor(timing.deadAfter+30*time.Second, func() bool { return c.Get(2, "/readyz").Code == http.StatusOK },
+	// The replica reports that it awaits a restore; it is not Ready, because
+	// Ready means joined and serving.
+	c.waitFor(timing.deadAfter+30*time.Second, func() bool { st, ok := c.Status(2); return ok && st.AwaitingRestore && !st.Joined },
 		func() string { return "n3 does not await a restore: " + c.StatusLine(2) })
+	if code := c.Get(2, "/readyz").Code; code != http.StatusServiceUnavailable {
+		t.Fatalf("a replica awaiting a restore answered /readyz %d, want 503", code)
+	}
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -282,7 +293,8 @@ func TestRestore(t *testing.T) {
 		"--recovery-key", c.RecKeyPath, "--decree-key", c.OpKeyPath, "--cluster-id", clusterID,
 		"--trusted-ca-sha256", trusted.CAFingerprint,
 		"--bootstrap-node", c.Replicas[2].Node, "--url", c.Replicas[2].Base, "--insecure",
-		"--min-epoch", strconv.FormatUint(newest.Meta.Epoch, 10), "--min-index", strconv.FormatUint(newest.Meta.Index, 10)).CombinedOutput()
+		"--min-epoch", strconv.FormatUint(newest.Meta.Epoch, 10), "--min-index", strconv.FormatUint(newest.Meta.Index, 10),
+		"--resume-epoch", strconv.FormatUint(newest.Meta.Epoch, 10)).CombinedOutput()
 	if err != nil {
 		t.Fatalf("recover: %v\n%s", err, out)
 	}
@@ -297,11 +309,27 @@ func TestRestore(t *testing.T) {
 		ref = s
 		break
 	}
+	// The restore serves the same allowlist under a higher version, so nodes
+	// take the writes re-applied after it (the version never goes back).
+	before := etagVersion(t, ref.ETag)
 	for i, s := range got {
-		if s.CA != ref.CA || s.ETag != ref.ETag || s.Secrets != ref.Secrets {
-			t.Errorf("%s after restore differs from before the loss (CA %v, ETag %v, secrets %v)", c.Replicas[i].Node, s.CA == ref.CA, s.ETag == ref.ETag, s.Secrets == ref.Secrets)
+		if s.CA != ref.CA || !maps.Equal(s.Values, ref.Values) || s.Secrets != ref.Secrets {
+			t.Errorf("%s after restore differs from before the loss (CA %v, allowlist %v, secrets %v)", c.Replicas[i].Node, s.CA == ref.CA, maps.Equal(s.Values, ref.Values), s.Secrets == ref.Secrets)
+		}
+		if after := etagVersion(t, s.ETag); after <= before {
+			t.Errorf("%s serves allowlist version %d after the restore, want above %d", c.Replicas[i].Node, after, before)
 		}
 	}
+}
+
+// etagVersion is the allowlist version of an ETag (W/"N").
+func etagVersion(t *testing.T, etag string) uint64 {
+	t.Helper()
+	v, err := strconv.ParseUint(strings.TrimSuffix(strings.TrimPrefix(etag, `W/"`), `"`), 10, 64)
+	if err != nil {
+		t.Fatalf("ETag %q: %v", etag, err)
+	}
+	return v
 }
 
 // TestBigState: C3 (2,000 allowlist entries + 500 secrets, then a restarted

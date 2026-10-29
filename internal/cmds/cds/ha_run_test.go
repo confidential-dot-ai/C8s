@@ -3,6 +3,7 @@ package cds
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -61,6 +62,8 @@ type haTestCluster struct {
 	signer *operatorauth.Signer
 	// decreeKeyPEM is the operator private key, which also signs decrees.
 	decreeKeyPEM []byte
+	opKey        *ecdsa.PrivateKey
+	genesis      bool // the Genesis decree is posted (on the first start)
 	apiURL       string
 	keysPath     string
 	hosts        []string
@@ -85,17 +88,33 @@ func newHATestCluster(t *testing.T, hosts []string) *haTestCluster {
 	if c.signer, err = operatorauth.NewSignerFromKeyPEM(keyPEM); err != nil {
 		t.Fatal(err)
 	}
+	c.opKey = opKey
+	c.decreeKeyPEM = keyPEM
+	return c
+}
+
+// postGenesis signs the Genesis decree for the process now running on n0, as
+// the operator does from its /ha/status, and stores the decree object.
+func (c *haTestCluster) postGenesis(base string) {
+	c.t.Helper()
+	var st cdsha.Status
+	eventually(c.t, 20*time.Second, "n0 answers /ha/status", func() bool {
+		resp, err := http.Get(base + "/ha/status")
+		if err != nil {
+			return false
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode == http.StatusOK && json.NewDecoder(resp.Body).Decode(&st) == nil && st.ID != ""
+	})
 	sd, err := cdsha.SignDecree(cdsha.Decree{ClusterID: "c1", IntentID: "genesis", Kind: cdsha.Genesis,
-		BootstrapNode: "n0", ExpiresAt: time.Now().Add(time.Hour)}, opKey)
+		BootstrapNode: "n0", TargetMember: st.ID, GenesisCA: st.GenesisCA, IssuedAtMS: time.Now().UnixMilli(), ExpiresAt: time.Now().Add(time.Hour)}, c.opKey)
 	if err != nil {
-		t.Fatal(err)
+		c.t.Fatal(err)
 	}
 	cm, _ := cdsha.DecreeConfigMap("ns", sd)
 	if _, err := c.kube.CoreV1().ConfigMaps("ns").Create(context.Background(), cm, metav1.CreateOptions{}); err != nil {
-		t.Fatal(err)
+		c.t.Fatal(err)
 	}
-	c.decreeKeyPEM = keyPEM
-	return c
 }
 
 // start runs the three replicas; ha is every replica's HA config except
@@ -120,6 +139,10 @@ func (c *haTestCluster) start(ha haConfig) (chan error, []string) {
 		}
 		bases[i] = fmt.Sprintf("http://%s:%d", host, c.httpPort)
 		go func() { errs <- run(cfg) }()
+	}
+	if !c.genesis {
+		c.genesis = true
+		c.postGenesis(bases[0])
 	}
 	return errs, bases
 }

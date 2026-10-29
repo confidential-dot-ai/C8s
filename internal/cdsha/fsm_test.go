@@ -41,8 +41,8 @@ func TestFSMStopsOnEntryItCannotRead(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			f := newTestFSM(t, opPub)
 			res := applyAt(f, 3, e)
-			if _, ok := res.(error); !ok || f.Stuck() == "" {
-				t.Fatalf("applied %v, stuck %q", res, f.Stuck())
+			if _, ok := res.(error); !ok || f.Stuck() == "" || f.StuckLocal() {
+				t.Fatalf("applied %v, stuck %q, local %v", res, f.Stuck(), f.StuckLocal())
 			}
 			if f.AppliedIndex() != 3 {
 				t.Fatal("the index still moves: Raft has moved on")
@@ -99,10 +99,10 @@ func TestFSMEdges(t *testing.T) {
 		de   DecreeEntry
 		want string
 	}{
-		{"genesis without pins", DecreeEntry{Decree: sign(Decree{IntentID: "g0", Kind: Genesis, BootstrapNode: "n0"}), AtMS: now, RootCert: ca.Cert.Raw, Key: key}, "genesis without the bootstrap replica's pins"},
-		{"genesis with a bad key", DecreeEntry{Decree: sign(Decree{IntentID: "g1", Kind: Genesis, BootstrapNode: "n0"}), AtMS: now, Pins: []string{"m1"}, RootCert: ca.Cert.Raw, Key: []byte("x")}, "mesh CA key:"},
-		{"genesis key mismatch", DecreeEntry{Decree: sign(Decree{IntentID: "g2", Kind: Genesis, BootstrapNode: "n0"}), AtMS: now, Pins: []string{"m1"}, RootCert: mustCA(t).Cert.Raw, Key: key}, "mesh CA key does not match its certificate"},
-		{"expired at entry time", DecreeEntry{Decree: sign(Decree{IntentID: "g3", Kind: Genesis, BootstrapNode: "n0"}), AtMS: time.Now().Add(2 * time.Hour).UnixMilli(), Pins: []string{"m1"}, RootCert: ca.Cert.Raw, Key: key}, "decree expired"},
+		{"genesis without pins", DecreeEntry{Decree: sign(Decree{IntentID: "g0", Kind: Genesis, BootstrapNode: "n0", GenesisCA: caFP(ca)}), AtMS: now, RootCert: ca.Cert.Raw, Key: key}, "genesis without the bootstrap replica's pins"},
+		{"genesis with a bad key", DecreeEntry{Decree: sign(Decree{IntentID: "g1", Kind: Genesis, BootstrapNode: "n0", GenesisCA: caFP(ca)}), AtMS: now, Pins: []string{"m1"}, RootCert: ca.Cert.Raw, Key: []byte("x")}, "mesh CA key:"},
+		{"genesis key mismatch", DecreeEntry{Decree: sign(Decree{IntentID: "g2", Kind: Genesis, BootstrapNode: "n0", GenesisCA: caFP(ca)}), AtMS: now, Pins: []string{"m1"}, RootCert: mustCA(t).Cert.Raw, Key: key}, "mesh CA key does not match its certificate"},
+		{"expired at entry time", DecreeEntry{Decree: sign(Decree{IntentID: "g3", Kind: Genesis, BootstrapNode: "n0", GenesisCA: caFP(ca)}), AtMS: time.Now().Add(2 * time.Hour).UnixMilli(), Pins: []string{"m1"}, RootCert: ca.Cert.Raw, Key: key}, "decree expired"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// Ordinary decree refusals must reach their own validation, not
@@ -120,7 +120,7 @@ func TestFSMEdges(t *testing.T) {
 			}
 		})
 	}
-	g := DecreeEntry{Policy: f.LocalPolicy(), Decree: sign(Decree{IntentID: "g", Kind: Genesis, BootstrapNode: "n0"}), AtMS: now, Pins: []string{"m1"}, RootCert: ca.Cert.Raw, Key: key}
+	g := DecreeEntry{Policy: f.LocalPolicy(), Decree: sign(Decree{IntentID: "g", Kind: Genesis, BootstrapNode: "n0", GenesisCA: caFP(ca)}), AtMS: now, Pins: []string{"m1"}, RootCert: ca.Cert.Raw, Key: key}
 	if res := apply(Entry{Kind: KindDecree, Decree: &g}).(DecreeResult); res.Err != "" || res.Epoch != 1 {
 		t.Fatalf("genesis: %+v", res)
 	}
@@ -373,6 +373,7 @@ func digestWorkload(t *testing.T, rng *rand.Rand) pkgallowlist.Workload {
 // refuses one in a format it does not read.
 func TestSnapshotCompression(t *testing.T) {
 	sn, size := historySnapshot(t, Format, 300)
+	sn = withDigests(t, sn)
 	var buf bytes.Buffer
 	if err := encodeSnapshot(&buf, sn); err != nil {
 		t.Fatal(err)
@@ -390,7 +391,7 @@ func TestSnapshotCompression(t *testing.T) {
 	for _, format := range []uint32{Format + 1, baseFormat - 1} {
 		buf.Reset()
 		sn, _ := historySnapshot(t, format, 2)
-		_ = encodeSnapshot(&buf, sn)
+		_ = encodeSnapshot(&buf, withDigests(t, sn))
 		if _, err := decodeSnapshot(bytes.NewReader(buf.Bytes()), Format, false); err == nil {
 			t.Fatalf("took a format %d snapshot", format)
 		}
@@ -454,5 +455,36 @@ func TestFSMRefusesOlderSnapshot(t *testing.T) {
 	// The same index again (Raft restarting from its own snapshot) is fine.
 	if err := g.Restore(io.NopCloser(bytes.NewReader(newer))); err != nil {
 		t.Fatalf("snapshot at the applied index: %v", err)
+	}
+}
+
+// A replica installs a snapshot only of the cluster and operator key it was
+// launched with: the snapshot is not signed, so a peer could otherwise hand a
+// replica that has not joined yet another operator key and a mesh CA of its
+// choosing.
+func TestFSMRestoreKeepsLaunchIdentity(t *testing.T) {
+	opKey, opPub := operatorKey(t)
+	_, otherPub := operatorKey(t)
+	f := newTestFSM(t, opPub)
+	ca := mustCA(t)
+	key, _ := x509.MarshalPKCS8PrivateKey(ca.Key)
+	g := DecreeEntry{Policy: f.LocalPolicy(), Decree: signDecree(t, opKey, Decree{IntentID: "g", Kind: Genesis, BootstrapNode: "n0", GenesisCA: caFP(ca)}),
+		AtMS: time.Now().UnixMilli(), Pins: []string{"m1"}, RootCert: ca.Cert.Raw, Key: key}
+	if res := applyAt(f, 1, Entry{Kind: KindDecree, Decree: &g}).(DecreeResult); res.Err != "" {
+		t.Fatalf("genesis: %+v", res)
+	}
+	for name, to := range map[string]*FSM{
+		"another operator key": newTestFSMIn(t, testCluster, otherPub),
+		"another cluster":      newTestFSMIn(t, "other-cluster", opPub),
+	} {
+		if err := restoreCopy(t, f, to); err == nil {
+			t.Errorf("%s: snapshot installed", name)
+		}
+		if c := to.Core(); c.Joined() || to.CA() != nil || to.AppliedIndex() != 0 {
+			t.Errorf("%s: refused snapshot changed the state", name)
+		}
+	}
+	if err := restoreCopy(t, f, newTestFSM(t, opPub)); err != nil {
+		t.Fatalf("same launch identity: %v", err)
 	}
 }

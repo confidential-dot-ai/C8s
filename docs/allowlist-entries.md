@@ -45,7 +45,10 @@ A name matches `[A-Za-z0-9][A-Za-z0-9._-]*`, because it is used verbatim as a
 URL path segment, and is at most 63 bytes, the Kubernetes label-value length,
 so the same string can be a `confidential.ai/cw` value and a matched-workload
 stamp. That bound applies on write; a served document is parsed leniently, and
-an over-long entry is dropped from it with a warning.
+an over-long entry is dropped from it with a warning. `c8s allowlist apply`
+refuses while such an entry is served, because it writes the whole document
+back and could not keep that entry unchanged: delete it first, then apply under
+a new name.
 
 ## `command` and `args`
 
@@ -177,7 +180,7 @@ Reads are unauthenticated; writes are signed with the operator key from
 | `inspect-image <ref>` | print an image's digest and baked `Entrypoint`/`Cmd` |
 | `derive <name> <file\|->` | build an entry from a Pod, Deployment, StatefulSet, or DaemonSet |
 | `add <digest> <image>` | write `<image basename>-<first 12 hex of digest>`, with `any` for command, args, env, and mounts; `--dry-run` |
-| `apply <file\|->` | upsert entries, each replaced whole; `--dry-run` |
+| `apply <file\|->` | upsert entries, each replaced whole, in one atomic write; `--dry-run` |
 | `edit <name>` | fetch, `$EDITOR`, validate, diff, confirm, apply |
 | `delete <name>...` | delete entries |
 | `upload <file>` | replace the whole document; `--force`, `--require`, `--cvm-mode`, `--strict`, `--dry-run` |

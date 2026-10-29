@@ -25,20 +25,20 @@ func closedByPeer(t *testing.T, c net.Conn, what string) {
 }
 
 // muxPeers are two replicas' TLS configs and a mux for the first, with
-// verifier v (no pins, empty anchor) and control handler control.
+// verifier v (pins m1, empty anchor) and control handler control.
 func muxPeers(t *testing.T, control controlHandler) (a, b *Node, v peerVerifier, m *mux) {
 	t.Helper()
 	al, sec, led := testStores(t)
 	mk := func(name string) *Node {
 		n, err := NewNode(Config{ClusterID: testCluster, NodeName: name, Bind: "127.0.0.1:0", Advertise: "127.0.0.1:1",
-			Attestor: MockAttestor{"m1"}, Seats: 3, Allowlist: al, Secrets: sec, Ledger: led})
+			Attestor: MockAttestor{"m1"}, BakedPins: []string{"m1"}, Seats: 3, Allowlist: al, Secrets: sec, Ledger: led})
 		if err != nil {
 			t.Fatal(err)
 		}
 		return n
 	}
 	a, b = mk("a"), mk("b")
-	v = peerVerifier{clusterID: testCluster, att: MockAttestor{}, anchor: "", pins: func() []string { return nil }}
+	v = peerVerifier{clusterID: testCluster, att: MockAttestor{}, anchor: "", pins: func() []string { return []string{"m1"} }}
 	m, err := newMux("127.0.0.1:0", "127.0.0.1:1", string(a.id), a.tls, v, control, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -73,17 +73,29 @@ func TestMuxRefusals(t *testing.T) {
 	}
 	m.connMu.Unlock()
 	// A control request when the mux has no handler: closed without answer.
-	if _, err := callControl(addr, b.tls, v, time.Second, controlRequest{Op: ctlStatus}, nil); err == nil {
+	if _, err := callControl(addr, "", b.tls, v, time.Second, controlRequest{Op: ctlStatus}, nil); err == nil {
 		t.Fatal("a control answer without a handler")
 	}
-	// Raft for another member: refused after the target ID.
-	bm := &mux{tls: b.tls, verifier: v, advert: raftAddr{tcp: &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)}, id: string(b.id)}, conns: map[*peerConn]struct{}{}}
-	rc, err := bm.Dial(raft.ServerAddress(addr+"#someone-else/1-x"), time.Second)
+	// Raft for another member: the server refuses after the target ID,
+	// and Dial refuses a server that is another member than the target.
+	rc, _, err := dialKind(addr, time.Second, b.tls, v, muxRaft, nil)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rc.Write(append([]byte{byte(len("someone-else/1-x"))}, "someone-else/1-x"...)); err != nil {
 		t.Fatal(err)
 	}
 	closedByPeer(t, rc, "raft connection for another member")
 	rc.Close()
+	bm := &mux{tls: b.tls, verifier: v, advert: raftAddr{tcp: &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)}, id: string(b.id)}, conns: map[*peerConn]struct{}{}}
+	if _, err := bm.Dial(raft.ServerAddress(addr+"#someone-else/1-x"), time.Second); err == nil {
+		t.Fatal("dialed another member than the raft address names")
+	}
+	if c, err := bm.Dial(raft.ServerAddress(addr+"#"+string(a.id)), time.Second); err != nil {
+		t.Fatalf("dial the member the address names: %v", err)
+	} else {
+		c.Close()
+	}
 	if _, err := bm.Dial(raft.ServerAddress(addr), time.Second); err == nil {
 		t.Fatal("dialed a raft address without a member id")
 	}
@@ -106,7 +118,7 @@ func TestMuxRefusals(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer om.Close()
-	if _, err := callControl(om.ln.Addr().String(), b.tls, v, time.Second, controlRequest{Op: ctlStatus}, nil); err == nil {
+	if _, err := callControl(om.ln.Addr().String(), "", b.tls, v, time.Second, controlRequest{Op: ctlStatus}, nil); err == nil {
 		t.Fatal("the mux answered a peer of another cluster")
 	}
 	if cfg, _ := v.tlsConfig(&tls.Config{}); cfg.VerifyConnection(tls.ConnectionState{}) == nil {

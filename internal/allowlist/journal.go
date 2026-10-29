@@ -220,23 +220,21 @@ func (s *Store) Object(digest string) ([]byte, bool, error) {
 	return b, true, nil
 }
 
-// signPolicy stores token, the operator write token that authorized a
+// signTx stores token, the operator write token that authorized a
 // whole-document write of body, as the signature of that document. It stores
 // nothing unless body is byte for byte a journaled document: the token's pbh
 // claim binds body, so only then does it sign what verifiers fetch.
-func (s *Store) signPolicy(body []byte, token string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func signTx(tx *sql.Tx, body []byte, token string) error {
 	digest := objectDigest(body)
 	var stored []byte
-	err := s.db.QueryRow("SELECT body FROM journal_object WHERE digest = ?", digest).Scan(&stored)
+	err := tx.QueryRow("SELECT body FROM journal_object WHERE digest = ?", digest).Scan(&stored)
 	if errors.Is(err, sql.ErrNoRows) || (err == nil && !bytes.Equal(stored, body)) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec("INSERT OR REPLACE INTO journal_signature (digest, token) VALUES (?, ?)", digest, token)
+	_, err = tx.Exec("INSERT OR REPLACE INTO journal_signature (digest, token) VALUES (?, ?)", digest, token)
 	return err
 }
 

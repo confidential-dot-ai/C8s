@@ -18,6 +18,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 
@@ -60,7 +61,14 @@ func TestCheckDecree(t *testing.T) {
 		if d.ExpiresAt.IsZero() {
 			d.ExpiresAt = now.Add(time.Hour)
 		}
-		return signRaw(t, d, k)
+		if d.TargetMember == "" && d.BootstrapNode != "" && (d.Kind == Genesis || d.Kind == Recover || d.Kind == Restore) {
+			d.TargetMember = d.BootstrapNode + "/1-a"
+		}
+		return signRaw(t, startFields(d), k)
+	}
+	untargeted := func(d Decree) SignedDecree {
+		d.ClusterID, d.BaseEpoch, d.IntentID, d.ExpiresAt = testCluster, 3, "i", now.Add(time.Hour)
+		return signRaw(t, startFields(d), k)
 	}
 	update := Decree{Kind: UpdateMeasurements, Measurements: []string{pin}, Images: []DecreeImage{img}}
 	tampered := sign(update)
@@ -100,6 +108,14 @@ func TestCheckDecree(t *testing.T) {
 		{"recover with a set", sign(Decree{Kind: Recover, BootstrapNode: "n0", Measurements: []string{pin}}), keyed, "a Recover decree"},
 		{"recover without a key", sign(Decree{Kind: Recover, BootstrapNode: "n0"}), bare, "a Recover decree"},
 		{"unknown kind", sign(Decree{Kind: "Nuke"}), keyed, "unknown kind"},
+		{"genesis without target", untargeted(Decree{Kind: Genesis, BootstrapNode: "n0"}), bare, "must name its target_member"},
+		{"restore without target", untargeted(Decree{Kind: Restore, BootstrapNode: "n0", SnapshotSHA256: "aa"}), bare, "must name its target_member"},
+		{"recover without target", untargeted(Decree{Kind: Recover, BootstrapNode: "n0"}), keyed, "must name its target_member"},
+		{"target on another node", sign(Decree{Kind: Genesis, BootstrapNode: "n0", TargetMember: "n1/1-a"}), bare, "not a member of bootstrap_node"},
+		{"target on rotate", sign(Decree{Kind: RotateKey, TargetMember: "n0/1-a"}), keyed, "not a member of bootstrap_node"},
+		{"alone genesis", sign(Decree{Kind: Genesis, BootstrapNode: "n0", Alone: true}), bare, ""},
+		{"alone restore", sign(Decree{Kind: Restore, BootstrapNode: "n0", SnapshotSHA256: "aa", Alone: true}), bare, ""},
+		{"alone recover", sign(Decree{Kind: Recover, BootstrapNode: "n0", Alone: true}), keyed, "only a Genesis or Restore decree may say alone"},
 		{"voters on update", sign(Decree{Kind: UpdateMeasurements, Measurements: []string{pin}, Voters: 3}), keyed, "names a voter count"},
 		{"set voters without count", sign(Decree{Kind: SetVoters}), keyed, "names a voter count"},
 		{"even voters", sign(Decree{Kind: SetVoters, Voters: 2}), keyed, "voters must be odd"},
@@ -195,6 +211,22 @@ func TestSetDecreeStatusEdges(t *testing.T) {
 	}
 }
 
+// Decree objects must be valid ConfigMap names or kubectl apply refuses them.
+func TestDecreeConfigMapName(t *testing.T) {
+	for range 16 {
+		cm, err := DecreeConfigMap("decrees", SignedDecree{Decree: Decree{ClusterID: testCluster, IntentID: NewIntentID()}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if errs := validation.IsDNS1123Subdomain(cm.Name); len(errs) > 0 {
+			t.Fatalf("%s: %v", cm.Name, errs)
+		}
+	}
+	if _, err := DecreeConfigMap("decrees", SignedDecree{Decree: Decree{ClusterID: testCluster, IntentID: rand.Text()}}); err == nil {
+		t.Fatal("uppercase intent id accepted")
+	}
+}
+
 func TestKubeDecrees(t *testing.T) {
 	ctx := context.Background()
 	kube := fake.NewClientset()
@@ -216,7 +248,7 @@ func TestKubeDecrees(t *testing.T) {
 	if _, err := kube.CoreV1().ConfigMaps("decrees").Create(ctx, bad, metav1.CreateOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	pending, err := st.PendingDecrees(ctx)
+	pending, err := st.ListDecrees(ctx)
 	if err != nil || len(pending) != 2 {
 		t.Fatalf("pending %+v: %v", pending, err)
 	}
@@ -229,8 +261,14 @@ func TestKubeDecrees(t *testing.T) {
 	if err := st.SetDecreeStatus(ctx, good.Name, DecreeStatus{AppliedEpoch: &epoch}); err != nil {
 		t.Fatal(err)
 	}
-	if pending, _ := st.PendingDecrees(ctx); len(pending) != 1 || pending[0].Name != bad.Name {
-		t.Fatalf("a decree with a status is still pending: %+v", pending)
+	listed, _ := st.ListDecrees(ctx)
+	for _, p := range listed {
+		if (p.Status != nil) != (p.Name == good.Name) || p.Name == good.Name && (p.Status.AppliedEpoch == nil || *p.Status.AppliedEpoch != 1) {
+			t.Fatalf("%s: status %+v", p.Name, p.Status)
+		}
+	}
+	if len(listed) != 2 {
+		t.Fatalf("listed %+v", listed)
 	}
 }
 
@@ -257,7 +295,7 @@ func TestPinDecreeIsAgreedState(t *testing.T) {
 			t.Fatalf("entry %d: %s", i, res.Err)
 		}
 	}
-	apply(1, DecreeEntry{Policy: f.LocalPolicy(), Decree: signDecree(t, opKey, Decree{Kind: Genesis, BootstrapNode: "n0"}), Pins: []string{pinA}, RootCert: ca.Cert.Raw, Key: key})
+	apply(1, DecreeEntry{Policy: f.LocalPolicy(), Decree: signDecree(t, opKey, Decree{Kind: Genesis, BootstrapNode: "n0", GenesisCA: caFP(ca)}), Pins: []string{pinA}, RootCert: ca.Cert.Raw, Key: key})
 	if f.Core().PinsDecree != nil {
 		t.Fatal("a pin decree before any was applied")
 	}
@@ -304,5 +342,47 @@ func TestVerifyPinDecree(t *testing.T) {
 		if err := VerifyPinDecree(c.sd, cluster, pub); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: %v, want %q", name, err, c.want)
 		}
+	}
+}
+
+// An SNP image is its launch digest; it pins as the digest, which is what an
+// SNP replica reports. A TDX image keeps its JSON (and so its signed bytes)
+// exactly as before SNP images existed.
+func TestDecreeImageShapes(t *testing.T) {
+	h := func(c string) string { return strings.Repeat(c, 96) }
+	tdx := DecreeImage{MRTD: h("a"), RTMR1: h("b"), RTMR2: h("c")}
+	raw, err := json.Marshal(tdx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"mrtd":"` + h("a") + `","rtmr1":"` + h("b") + `","rtmr2":"` + h("c") + `"}`; string(raw) != want {
+		t.Fatalf("TDX image JSON changed: %s", raw)
+	}
+	snp := DecreeImage{Measurement: h("d")}
+	if pin, err := snp.Pin(); err != nil || pin != h("d") {
+		t.Fatalf("SNP pin %q: %v", pin, err)
+	}
+	if want, _ := ImagePin("snp", h("d"), nil); want != h("d") {
+		t.Fatalf("SNP replica pin %q", want)
+	}
+	for name, bad := range map[string]DecreeImage{
+		"both shapes":  {MRTD: h("a"), RTMR1: h("b"), RTMR2: h("c"), Measurement: h("d")},
+		"upper case":   {Measurement: strings.ToUpper(h("d"))},
+		"short digest": {Measurement: "dd"},
+		"partial TDX":  {MRTD: h("a"), Measurement: h("d")},
+	} {
+		if _, err := bad.Pin(); err == nil {
+			t.Errorf("%s: pinned", name)
+		}
+	}
+	// A pin decree of SNP images verifies like a TDX one.
+	k, pub := operatorKey(t)
+	sd, err := SignDecree(Decree{ClusterID: testCluster, IntentID: "i", BaseEpoch: 3, Kind: UpdateMeasurements,
+		ExpiresAt: time.Now().Add(time.Hour), Measurements: []string{h("d")}, Images: []DecreeImage{snp}}, k)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyPinDecree(sd, testCluster, pub); err != nil {
+		t.Fatalf("SNP pin decree refused: %v", err)
 	}
 }

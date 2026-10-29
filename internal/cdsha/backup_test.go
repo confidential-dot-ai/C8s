@@ -136,7 +136,7 @@ func TestApplyRestoreRefusals(t *testing.T) {
 	good := snapshot{Core: Core{Policy: f.LocalPolicy(), ClusterID: testCluster, Epoch: 3, RootCert: ca.Cert.Raw, Measurements: []string{"m1"}, OperatorPubKey: opPub}, Key: key, Allowlist: image}
 	enc := func(sn snapshot) []byte {
 		var b bytes.Buffer
-		if err := encodeSnapshot(&b, sn); err != nil {
+		if err := encodeSnapshot(&b, withDigests(t, sn)); err != nil {
 			t.Fatal(err)
 		}
 		return b.Bytes()
@@ -320,7 +320,7 @@ func TestDecreeStoreListErrors(t *testing.T) {
 	if _, err := st.GetBackup(ctx); err == nil {
 		t.Fatal("a backup read through a failing API")
 	}
-	if _, err := st.PendingDecrees(ctx); err == nil {
+	if _, err := st.ListDecrees(ctx); err == nil {
 		t.Fatal("decrees listed through a failing API")
 	}
 }

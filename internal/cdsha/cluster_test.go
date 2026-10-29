@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -29,7 +30,7 @@ const testCluster = "c1"
 var testTiming = Timing{
 	Heartbeat: 150 * time.Millisecond, Election: 150 * time.Millisecond, Lease: time.Second,
 	DeadAfter: 1500 * time.Millisecond, Stabilize: 200 * time.Millisecond, Apply: 3 * time.Second, Tick: 50 * time.Millisecond,
-	Backup: 100 * time.Millisecond,
+	Backup: 100 * time.Millisecond, Checkpoint: 100 * time.Millisecond,
 }
 
 // memBackups stands in for the backup ConfigMaps; with err set it refuses
@@ -62,7 +63,7 @@ func (m *memBackups) PutBackup(ctx context.Context, b Backup) error {
 	if m.err != nil {
 		return m.err
 	}
-	if m.last != nil && !b.Meta.Newer(m.last.Meta) {
+	if m.last != nil && !b.Meta.Follows(m.last.Meta) {
 		return ErrBackupNotNewer
 	}
 	m.last = &b
@@ -90,10 +91,12 @@ type replica struct {
 	ip     string
 	node   *Node
 	al     *allowlist.Store
+	alPath string // the allowlist database file, with cluster.fileStores
 	sec    secrets.ReplicatedStore
 	led    *sandboxledger.Ledger
 	cancel context.CancelFunc
 	done   chan struct{}
+	err    error // what Run returned; read after done
 }
 
 type cluster struct {
@@ -114,12 +117,24 @@ type cluster struct {
 	nextIP int
 	ipOf   map[string]string
 	reads  map[string]uint32 // node name -> newest format its next replica reads (0: Format)
+	// pairCut: IP pairs cut from each other (both orders), the rest kept.
+	pairCut map[[2]string]bool
+	// dnsSelfOnly: IPs whose peer discovery returns no other replica (the
+	// host's DNS answers only the replica's own address).
+	dnsSelfOnly map[string]bool
+	// listDown: node names whose decree List fails (their API path is down).
+	listDown map[string]bool
 
 	historyVersions int           // Config.HistoryVersions of every replica started
 	historyBytes    int64         // Config.HistoryBytes of every replica started
 	caValidity      time.Duration // Config.CAValidity of every replica started
 	timing          *Timing       // Config.Timing of every replica started; nil: testTiming
 	secretLimits    [3]int        // secrets.NewMemoryStore limits of every replica started; zero: 64, 8, 4096
+	fileStores      bool          // allowlist databases in files (replica.alPath), not in memory
+	noBackups       bool          // replicas run without a backup store
+	// peerImages: node name -> the launch document's peer images (PeerPins)
+	// of the replicas started there; guarded by mu.
+	peerImages map[string][]string
 }
 
 func (c *cluster) timingOr() Timing {
@@ -145,7 +160,7 @@ func newCluster(t *testing.T, seats int) *cluster {
 	rk, _ := operatorKey(t)
 	c := &cluster{t: t, opKey: k, opPub: pub, seats: seats, port: port, backups: &memBackups{}, recKey: rk,
 		decrees: newMemDecrees(),
-		nodes:   map[string]*replica{}, meas: map[string]string{}, cut: map[string]bool{}, nextIP: 2, ipOf: map[string]string{}, reads: map[string]uint32{},
+		nodes:   map[string]*replica{}, meas: map[string]string{}, cut: map[string]bool{}, nextIP: 2, ipOf: map[string]string{}, reads: map[string]uint32{}, dnsSelfOnly: map[string]bool{}, listDown: map[string]bool{},
 		block: 1 + clusterSeq.Add(1)%250}
 	t.Cleanup(func() {
 		c.mu.Lock()
@@ -169,7 +184,20 @@ func (c *cluster) blocked(self string) func(string) bool {
 		}
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		return c.cut[host] != c.cut[self] // either side cut off from the rest
+		return c.cut[host] != c.cut[self] || c.pairCut[[2]string{self, host}] // either side cut off from the rest
+	}
+}
+
+// cutPair cuts replicas a and b from each other only.
+func (c *cluster) cutPair(a, b *replica, on bool) {
+	c.mu.Lock()
+	if c.pairCut == nil {
+		c.pairCut = map[[2]string]bool{}
+	}
+	c.pairCut[[2]string{a.ip, b.ip}], c.pairCut[[2]string{b.ip, a.ip}] = on, on
+	c.mu.Unlock()
+	for _, r := range c.live() {
+		r.node.mux.Load().recheck()
 	}
 }
 
@@ -178,6 +206,9 @@ func (c *cluster) peers(self string) func(context.Context) ([]string, error) {
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		var out []string
+		if c.dnsSelfOnly[self] {
+			return out, nil
+		}
 		for _, r := range c.nodes {
 			if r.ip != self {
 				out = append(out, fmt.Sprintf("%s:%d", r.ip, c.port))
@@ -190,6 +221,18 @@ func (c *cluster) peers(self string) func(context.Context) ([]string, error) {
 // start runs a fresh replica on node name (a restart if one ran there).
 func (c *cluster) start(name, measurement string) *replica {
 	return c.startWithControl(name, measurement, nil)
+}
+
+// startRolled starts a replica on a new image whose launch document lists
+// peerImages, the images of the rollout it joins.
+func (c *cluster) startRolled(name, measurement string, peerImages ...string) *replica {
+	c.mu.Lock()
+	if c.peerImages == nil {
+		c.peerImages = map[string][]string{}
+	}
+	c.peerImages[name] = peerImages
+	c.mu.Unlock()
+	return c.start(name, measurement)
 }
 
 // startWithControl installs a test control wrapper before peers can discover
@@ -205,8 +248,15 @@ func (c *cluster) startWithControl(name, measurement string, wrap func(controlHa
 	}
 	c.meas[name] = measurement
 	reads := c.reads[name]
+	peerPins := c.peerImages[name]
 	c.mu.Unlock()
-	al, err := allowlist.OpenInMemory()
+	var alPath string
+	open := allowlist.OpenInMemory
+	if c.fileStores {
+		alPath = filepath.Join(c.t.TempDir(), name+".db")
+		open = func() (allowlist.Store, error) { return allowlist.OpenStore(alPath) }
+	}
+	al, err := open()
 	if err != nil {
 		c.t.Fatal(err)
 	}
@@ -217,9 +267,9 @@ func (c *cluster) startWithControl(name, measurement string, wrap func(controlHa
 	led := sandboxledger.New(time.Hour, 100)
 	n, err := NewNode(Config{
 		ClusterID: testCluster, NodeName: name, Bind: fmt.Sprintf("%s:%d", ip, c.port), Advertise: fmt.Sprintf("%s:%d", ip, c.port),
-		Attestor: MockAttestor{measurement}, BakedPins: []string{measurement}, OperatorPubKey: c.opPub,
-		Seats: c.seats, MaxNonVoters: 8, Peers: c.peers(ip), Decrees: c.decrees, Timing: c.timingOr(),
-		RecoveryKey: mustPKIX(c.t, &c.recKey.PublicKey), Backups: c.backups,
+		Attestor: MockAttestor{measurement}, BakedPins: []string{measurement}, PeerPins: peerPins, OperatorPubKey: c.opPub,
+		Seats: c.seats, MaxNonVoters: 8, Peers: c.peers(ip), Decrees: nodeDecrees{c, name}, Timing: c.timingOr(),
+		RecoveryKey: mustPKIX(c.t, &c.recKey.PublicKey), Backups: c.backupSink(),
 		Allowlist: &al, Secrets: mem, Ledger: led, Format: reads, HistoryVersions: c.historyVersions, HistoryBytes: c.historyBytes, CAValidity: c.caValidity,
 	})
 	if err != nil {
@@ -235,12 +285,20 @@ func (c *cluster) startWithControl(name, measurement string, wrap func(controlHa
 		n.mux.Load().control = wrap(n.mux.Load().control)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	r := &replica{name: name, ip: ip, node: n, al: &al, sec: secrets.ReplicatedStore{MemoryStore: mem, Repl: n}, led: led, cancel: cancel, done: make(chan struct{})}
-	go func() { defer close(r.done); _ = n.Run(ctx) }()
+	r := &replica{name: name, ip: ip, node: n, al: &al, alPath: alPath, sec: secrets.ReplicatedStore{MemoryStore: mem, Repl: n}, led: led, cancel: cancel, done: make(chan struct{})}
+	go func() { defer close(r.done); r.err = n.Run(ctx) }()
 	c.mu.Lock()
 	c.nodes[name] = r
 	c.mu.Unlock()
 	return r
+}
+
+// backupSink is the replicas' backup store, nil with noBackups.
+func (c *cluster) backupSink() BackupSink {
+	if c.noBackups {
+		return nil
+	}
+	return c.backups
 }
 
 // stopReplica is a crash: the process and its memory are gone.
@@ -264,9 +322,38 @@ func (c *cluster) partition(name string, on bool) {
 	}
 }
 
+// decree signs and posts d. A one-shot decree without a target names the
+// running replica on its BootstrapNode.
 func (c *cluster) decree(d Decree) string {
 	c.t.Helper()
+	if d.TargetMember == "" && (d.Kind == Genesis || d.Kind == Recover || d.Kind == Restore) {
+		d.TargetMember = c.memberOf(d.BootstrapNode)
+	}
+	if d.GenesisCA == "" && d.Kind == Genesis {
+		d.GenesisCA = c.genesisCAOf(d.BootstrapNode)
+	}
 	return c.decrees.put(signDecree(c.t, c.opKey, d))
+}
+
+// memberOf is the member ID of the replica running on node name.
+func (c *cluster) memberOf(name string) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if r := c.nodes[name]; r != nil {
+		return r.node.ID()
+	}
+	return name + "/0-none"
+}
+
+// genesisCAOf is the GenesisCA of the replica running on node name.
+func (c *cluster) genesisCAOf(name string) string {
+	c.mu.Lock()
+	r := c.nodes[name]
+	c.mu.Unlock()
+	if r == nil {
+		return "none"
+	}
+	return genesisCAOf(c.t, r.node)
 }
 
 func (c *cluster) live() []*replica {
@@ -319,7 +406,7 @@ func (c *cluster) genesis(names ...string) {
 	for _, n := range names {
 		c.start(n, "m1")
 	}
-	g := c.decree(Decree{Kind: Genesis, BootstrapNode: names[0]})
+	g := c.decree(Decree{Kind: Genesis, BootstrapNode: names[0], Alone: len(names) == 1})
 	eventually(c.t, 10*time.Second, "genesis applied", func() bool { st, ok := c.decrees.get(g); return ok && st.AppliedEpoch != nil })
 	c.settled(15 * time.Second)
 }
@@ -546,7 +633,7 @@ func TestEvictedImageIsCutOff(t *testing.T) {
 	if _, err := c.nodes["n0"].sec.Put(t.Context(), "/before", []byte("v")); err != nil {
 		t.Fatal(err)
 	}
-	c.start("n3", "m2") // a new image, not yet pinned: refused
+	c.startRolled("n3", "m2", "m1") // a new image, not yet pinned: refused
 	time.Sleep(time.Second)
 	if c.nodes["n3"].node.Serving() || c.nodes["n3"].node.member() {
 		t.Fatal("an unpinned image joined")
@@ -642,8 +729,12 @@ func TestRecoverAfterLosingTheMajority(t *testing.T) {
 	eventually(t, 4*time.Second, "survivor stops serving", func() bool { return !surv.node.Serving() })
 	epoch := surv.node.Core().Epoch
 	rec := c.decree(Decree{Kind: Recover, BootstrapNode: surv.name, BaseEpoch: epoch})
-	eventually(t, 10*time.Second, "recover applied", func() bool { st, ok := c.decrees.get(rec); return ok && st.AppliedEpoch != nil })
+	eventually(t, testTiming.DeadAfter+testTiming.recoverHold()+5*time.Second, "recover applied", func() bool { st, ok := c.decrees.get(rec); return ok && st.AppliedEpoch != nil })
 	eventually(t, 5*time.Second, "survivor serves again", surv.node.Serving)
+	// The replica that recovered never judged its own decree.
+	if rj := c.decrees.rejections(rec); len(rj) > 0 {
+		t.Fatalf("the applied Recover decree was also rejected: %q", rj)
+	}
 	if surv.node.Status().CAFingerprint != fp {
 		t.Fatal("recovery changed the mesh CA")
 	}
@@ -812,7 +903,7 @@ func TestTotalLossRestoreFromBackup(t *testing.T) {
 		return true
 	})
 	sign := func(node string, s []byte) SignedDecree {
-		return signDecree(t, c.opKey, Decree{Kind: Restore, BootstrapNode: node, SnapshotSHA256: SnapshotSHA256(s)})
+		return signDecree(t, c.opKey, Decree{Kind: Restore, BootstrapNode: node, TargetMember: c.memberOf(node), SnapshotSHA256: SnapshotSHA256(s)})
 	}
 	if _, err := c.nodes["n1"].node.Restore(ctx, sign("n0", snap), snap); !errors.Is(err, ErrNotForThisNode) {
 		t.Fatalf("a restore for another node: %v", err)
@@ -825,6 +916,10 @@ func TestTotalLossRestoreFromBackup(t *testing.T) {
 		t.Fatalf("restore: %v %+v", err, res)
 	}
 	c.settled(15 * time.Second)
+	restoredVer, _ := c.nodes["n0"].al.Version()
+	if a, b := mustUint(t, restoredVer), mustUint(t, ver); a <= b {
+		t.Fatalf("restored allowlist version %d, not above %d served before the loss", a, b)
+	}
 	for _, r := range c.live() {
 		if r.node.AwaitingRestore() {
 			t.Fatalf("%s still awaits a restore", r.name)
@@ -835,8 +930,8 @@ func TestTotalLossRestoreFromBackup(t *testing.T) {
 		if v, err := r.sec.Get(ctx, "/kept"); err != nil || string(v) != "secret-v" {
 			t.Fatalf("%s lost a secret: %v", r.name, err)
 		}
-		if v, _ := r.al.Version(); v != ver {
-			t.Fatalf("%s allowlist version %s, want %s", r.name, v, ver)
+		if v, _ := r.al.Version(); v != restoredVer {
+			t.Fatalf("%s allowlist version %s, want %s", r.name, v, restoredVer)
 		}
 	}
 	if err := c.nodes["n2"].al.ConsumeToken("h.p.spent-again"); !errors.Is(err, operatorauth.ErrTokenReused) {
@@ -1224,4 +1319,132 @@ func TestFormatRisesOnlyWhenEveryMemberReadsIt(t *testing.T) {
 	if st := l.node.Status(); len(st.Voters)+len(st.NonVoters) != 3 {
 		t.Fatalf("membership changed: %+v", st)
 	}
+}
+
+// nodeDecrees is one replica's view of the shared decree objects.
+type nodeDecrees struct {
+	c    *cluster
+	name string
+}
+
+func (d nodeDecrees) ListDecrees(ctx context.Context) ([]PendingDecree, error) {
+	d.c.mu.Lock()
+	down := d.c.listDown[d.name]
+	d.c.mu.Unlock()
+	if down {
+		return nil, errors.New("api unreachable from this node")
+	}
+	return d.c.decrees.ListDecrees(ctx)
+}
+
+func (d nodeDecrees) SetDecreeStatus(ctx context.Context, name string, st DecreeStatus) error {
+	d.c.mu.Lock()
+	down := d.c.listDown[d.name]
+	d.c.mu.Unlock()
+	if down {
+		return errors.New("api unreachable from this node")
+	}
+	return d.c.decrees.SetDecreeStatus(ctx, name, st)
+}
+
+// setListDown cuts (or restores) the API path of the named replicas.
+func (c *cluster) setListDown(down bool, names ...string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, n := range names {
+		c.listDown[n] = down
+	}
+}
+
+// While a replica runs recover, decree cycles wait; afterwards each decree
+// that arrived meanwhile is still applied or judged.
+func TestDecreesWaitWhileRecovering(t *testing.T) {
+	c := newCluster(t, 3)
+	c.genesis("n0", "n1", "n2")
+	l := c.leader()
+	var cut *replica
+	for _, r := range c.live() {
+		if r != l && cut == nil {
+			cut = r
+		}
+	}
+	c.partition(cut.name, true)
+	eventually(t, 4*time.Second, "cut-off replica stops serving", func() bool { return !cut.node.Serving() })
+	for _, r := range c.live() {
+		r.node.recovering.Store(true)
+	}
+	epoch := l.node.Core().Epoch
+	pins := c.decree(Decree{Kind: UpdateMeasurements, BaseEpoch: epoch, Measurements: []string{"m1", "m2"}})
+	rec := c.decree(Decree{Kind: Recover, BootstrapNode: cut.name, BaseEpoch: epoch})
+	time.Sleep(10 * testTiming.Tick)
+	for _, name := range []string{pins, rec} {
+		if st, ok := c.decrees.get(name); ok {
+			t.Fatalf("decree %s judged while recovering: %+v", name, st)
+		}
+	}
+	for _, r := range c.live() {
+		r.node.recovering.Store(false)
+	}
+	eventually(t, 5*time.Second, "pin set applied after recover", func() bool { st, ok := c.decrees.get(pins); return ok && st.AppliedEpoch != nil })
+	eventually(t, 5*time.Second, "Recover judged after recover", func() bool { _, ok := c.decrees.get(rec); return ok })
+	if st, _ := c.decrees.get(rec); st.AppliedEpoch != nil || st.RejectedReason != ErrRecoverWithQuorum.Error() {
+		t.Fatalf("Recover with a quorum, judged after recover: %+v", st)
+	}
+}
+
+// The leader compacts its log without a backup to store (or one it may not
+// seal yet): a replica that restarts then installs a snapshot instead of
+// replaying the whole log, and Raft's own SnapshotInterval check (30 s or
+// more) has not run. Every snapshot still passes the Persist digest check
+// (TestPersistRefusesStateChangedUnderTheReplica).
+func TestLeaderCompactsWithoutBackups(t *testing.T) {
+	c := newCluster(t, 3)
+	c.noBackups = true
+	c.genesis("n0", "n1", "n2")
+	l := c.leader()
+	for i := range 700 {
+		if err := l.al.PutWorkload(fmt.Sprintf("w%d", i%50), mkWorkload(t, i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	applied := l.node.fsm.AppliedIndex()
+	eventually(t, 5*time.Second, "leader compacted its log", func() bool {
+		idx, _, _ := l.node.snaps.latest()
+		return idx > 0 && idx+l.node.rcfg.SnapshotThreshold > applied
+	})
+	var f *replica
+	for _, r := range c.live() {
+		if r != l {
+			f = r
+			break
+		}
+	}
+	c.stopReplica(f)
+	n := c.start(f.name, "m1")
+	eventually(t, 15*time.Second, "restarted replica serves", n.node.Serving)
+	if idx, _, _ := n.node.snaps.latest(); idx == 0 {
+		t.Fatal("the restarted replica replayed the whole log: it installed no snapshot")
+	}
+}
+
+// A replica that has not joined admits only the images its launch document
+// names. A cluster on another image (one the operator dropped, relaunched by
+// the host from an old launch document with the same key and cluster id)
+// cannot become its source of state, even if that cluster's own pin set
+// names the replica's image.
+func TestColdReplicaAdmitsOnlyLaunchImages(t *testing.T) {
+	c := newCluster(t, 3)
+	c.start("n0", "revoked")
+	g := c.decree(Decree{Kind: Genesis, BootstrapNode: "n0", Alone: true})
+	eventually(t, 10*time.Second, "genesis applied", func() bool { st, ok := c.decrees.get(g); return ok && st.AppliedEpoch != nil })
+	up := c.decree(Decree{Kind: UpdateMeasurements, BaseEpoch: 1, Measurements: []string{"good", "revoked"}})
+	eventually(t, 5*time.Second, "pin set names the new image", func() bool { st, ok := c.decrees.get(up); return ok && st.AppliedEpoch != nil })
+	cold := c.start("n1", "good")
+	time.Sleep(3 * time.Second)
+	if cold.node.Serving() || cold.node.member() || cold.node.Core().Joined() {
+		t.Fatal("a replica joined a cluster on an image its launch document does not name")
+	}
+	// The same image, launched to roll from "revoked", joins.
+	rolled := c.startRolled("n2", "good", "revoked")
+	eventually(t, 8*time.Second, "a replica whose launch document names the cluster's image joined", func() bool { return rolled.node.Serving() })
 }

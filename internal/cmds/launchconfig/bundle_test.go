@@ -7,6 +7,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -14,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
+	"github.com/confidential-dot-ai/c8s/internal/cdsha"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 )
 
@@ -407,7 +409,8 @@ func TestAddCDSNodeOnANewImage(t *testing.T) {
 	if err := os.WriteFile(b, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := runBundleCmd(t, "add-cds-node", "--bundle", dir, "--name", "demo-cds-3", "--image-manifest", b); err != nil {
+	both := writePinDecree(t, dir, "demo", 5, tdxImage("11", "22", "33"), tdxImage("66", "77", "88"))
+	if err := runBundleCmd(t, "add-cds-node", "--bundle", dir, "--name", "demo-cds-3", "--image-manifest", b, "--pin-decree", both); err != nil {
 		t.Fatal(err)
 	}
 	server, _ := readBundleDocument(t, dir, serverDir)
@@ -703,5 +706,133 @@ func TestNewLaunchKeyFile(t *testing.T) {
 	}
 	if _, err := newLaunchKeyFile(path); err == nil {
 		t.Fatal("overwrote an existing key file")
+	}
+}
+
+// An SNP rollout: add-cds-node takes --vcpus to pick the launch digest of a
+// multi-variant SNP manifest, as launch-config new does.
+func TestAddCDSNodeOnANewSNPImage(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "bundle")
+	if err := runBundleCmd(t, "new", "--out", dir, "--cluster-id", "demo", "--image-manifest", writeManifest(t, "snp"), "--vcpus", "4",
+		"--server-address", "10.0.0.10", "--cds-node", "demo-cds-0", "--cds-node", "demo-cds-1", "--cds-node", "demo-cds-2"); err != nil {
+		t.Fatal(err)
+	}
+	snp := writeManifest(t, "snp")
+	if err := runBundleCmd(t, "add-cds-node", "--bundle", dir, "--name", "demo-cds-3", "--image-manifest", snp); err == nil || !strings.Contains(err.Error(), "--vcpus is required") {
+		t.Fatalf("multi-variant manifest without --vcpus: %v", err)
+	}
+	both := writePinDecree(t, dir, "demo", 5, cdsha.DecreeImage{Measurement: strings.Repeat("44", 48)}, cdsha.DecreeImage{Measurement: strings.Repeat("55", 48)})
+	if err := runBundleCmd(t, "add-cds-node", "--bundle", dir, "--name", "demo-cds-3", "--image-manifest", snp, "--vcpus", "8", "--pin-decree", both); err != nil {
+		t.Fatal(err)
+	}
+	server, _ := readBundleDocument(t, dir, serverDir)
+	doc, _ := readBundleDocument(t, dir, "demo-cds-3")
+	if doc.Image.Platform != "snp" || doc.Image.Measurement != strings.Repeat("55", 48) || len(doc.PeerImages) != 1 || !sameImage(doc.PeerImages[0], server.Image) {
+		t.Fatalf("image %+v, peer images %+v", doc.Image, doc.PeerImages)
+	}
+	stageBundleNode(t, dir, "demo-cds-3")
+	if err := runBundleCmd(t, "add-agent", "--bundle", dir, "--name", "agent-8", "--image-manifest", snp, "--vcpus", "8"); err != nil {
+		t.Fatal(err)
+	}
+	if err := runBundleCmd(t, "add-agent", "--bundle", dir, "--name", "agent-x", "--vcpus", "8"); err == nil {
+		t.Fatal("--vcpus without --image-manifest accepted")
+	}
+}
+
+func tdxImage(mrtd, rtmr1, rtmr2 string) cdsha.DecreeImage {
+	return cdsha.DecreeImage{MRTD: strings.Repeat(mrtd, 48), RTMR1: strings.Repeat(rtmr1, 48), RTMR2: strings.Repeat(rtmr2, 48)}
+}
+
+// writePinDecree signs a pin decree for images with the bundle's decree key
+// and writes it as `c8s cds ha pin-policy --decree-out` does.
+func writePinDecree(t *testing.T, dir, clusterID string, base uint64, images ...cdsha.DecreeImage) string {
+	t.Helper()
+	key, err := certutil.LoadECPrivateKeyFile(filepath.Join(dir, decreeKeyFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return writeSignedPinDecree(t, key, clusterID, base, images...)
+}
+
+func writeSignedPinDecree(t *testing.T, key *ecdsa.PrivateKey, clusterID string, base uint64, images ...cdsha.DecreeImage) string {
+	t.Helper()
+	var pins []string
+	for _, im := range images {
+		p, err := im.Pin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		pins = append(pins, p)
+	}
+	sd, err := cdsha.SignDecree(cdsha.Decree{ClusterID: clusterID, IntentID: "roll", BaseEpoch: base, Kind: cdsha.UpdateMeasurements,
+		Measurements: pins, Images: images}, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(sd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "pin-decree.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// A cds node's peer images come from the pin decree the replicas applied,
+// not from the server document: once a decree has removed the server's
+// image A, a cds node added on B does not admit A, not even before it joins.
+func TestAddCDSNodePeerImagesFromThePinDecree(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "bundle")
+	if err := runBundleCmd(t, "new", "--out", dir, "--cluster-id", "demo", "--image-manifest", writeManifest(t, "tdx"),
+		"--server-address", "10.0.0.10", "--cds-node", "demo-cds-0", "--cds-node", "demo-cds-1", "--cds-node", "demo-cds-2"); err != nil {
+		t.Fatal(err)
+	}
+	b := filepath.Join(t.TempDir(), "manifest-b.json")
+	if err := os.WriteFile(b, []byte(`{"version":1,"build":{"platform":"tdx"},"tdx":{"mrtd":"`+strings.Repeat("66", 48)+
+		`","rtmr1":"`+strings.Repeat("77", 48)+`","rtmr2":"`+strings.Repeat("88", 48)+`"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server, _ := readBundleDocument(t, dir, serverDir)
+	imgA, imgB := tdxImage("11", "22", "33"), tdxImage("66", "77", "88")
+	onlyB := writePinDecree(t, dir, "demo", 9, imgB)
+	if err := runBundleCmd(t, "add-cds-node", "--bundle", dir, "--name", "cds-b", "--image-manifest", b, "--pin-decree", onlyB); err != nil {
+		t.Fatal(err)
+	}
+	doc, _ := readBundleDocument(t, dir, "cds-b")
+	if len(doc.PeerImages) != 0 || doc.CDSHA == nil || doc.CDSHA.PinFloor != 9 {
+		t.Fatalf("peer images %+v, cdsHA %+v: want none and the decree's floor", doc.PeerImages, doc.CDSHA)
+	}
+	pins, err := doc.referenceValues()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, pin := range pins.Images {
+		if hex.EncodeToString(pin.Digest) == server.Image.Measurement {
+			t.Fatalf("the removed server image is pinned as %s", pin.Name)
+		}
+	}
+	stageBundleNode(t, dir, "cds-b")
+	other, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, args := range map[string][]string{
+		"no pin decree":              {"--image-manifest", b},
+		"decree signed by other key": {"--image-manifest", b, "--pin-decree", writeSignedPinDecree(t, other, "demo", 9, imgB)},
+		"decree of another cluster":  {"--image-manifest", b, "--pin-decree", writePinDecree(t, dir, "other", 9, imgB)},
+		"own image not decreed":      {"--image-manifest", b, "--pin-decree", writePinDecree(t, dir, "demo", 9, imgA)},
+		"pin floor beside decree":    {"--image-manifest", b, "--pin-decree", onlyB, "--pin-floor", "3"},
+	} {
+		if err := runBundleCmd(t, append([]string{"add-cds-node", "--bundle", dir, "--name", "refused"}, args...)...); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "refused")); err == nil {
+			t.Fatalf("%s: a document was written", name)
+		}
+	}
+	if err := AddNode(dir, Agent, JoinOptions{Name: "agent-d", PinDecree: &cdsha.SignedDecree{}}); err == nil {
+		t.Fatal("a pin decree on an agent accepted")
 	}
 }

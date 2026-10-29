@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +19,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/confidential-dot-ai/c8s/internal/cdsha"
+	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 )
 
@@ -72,8 +74,8 @@ func TestRunHARestoreAfterTotalLoss(t *testing.T) {
 		backups = list.Items
 		return err == nil && b.Meta.Index >= applied
 	})
-	// Signed now and spent only after the restore: spent tokens are part
-	// of the replicated state, so only tokens from before Genesis are cut off.
+	// Signed before the loss and never spent. The restored cluster cannot
+	// tell it from one spent after the backup was taken, so it is refused.
 	unspent := c.auth(http.MethodPut, "/allowlist", doc)
 	c.stop(errs)
 
@@ -81,12 +83,20 @@ func TestRunHARestoreAfterTotalLoss(t *testing.T) {
 	errs, bases = c.start(ha)
 	t.Cleanup(func() { c.stop(errs) })
 	waitServing(t, bases, false)
-	// A replica that waits for a restore is ready, so the operator reaches
-	// it through the Service.
-	eventually(t, 40*time.Second, "a replica awaiting a restore is ready", func() bool {
-		code, _, _ := do(t, http.MethodGet, bases[2]+"/readyz", "", nil)
-		return code == http.StatusOK
+	// A replica that waits for a restore says so in its status but is not
+	// Ready: it serves nothing, and a partitioned replica looks the same. The
+	// operator reaches it by its own address (c8s-cds-replicas).
+	eventually(t, 40*time.Second, "a replica awaiting a restore", func() bool {
+		if code, _, body := do(t, http.MethodGet, bases[2]+"/readyz", "", nil); code != http.StatusServiceUnavailable {
+			t.Fatalf("an unjoined replica answered /readyz %d %s", code, body)
+		}
+		_, _, raw := do(t, http.MethodGet, bases[2]+"/ha/status", "", nil)
+		var st cdsha.Status
+		return json.Unmarshal(raw, &st) == nil && st.AwaitingRestore
 	})
+	if code, _, body := do(t, http.MethodGet, bases[2]+"/readyz", "", nil); code != http.StatusServiceUnavailable {
+		t.Fatalf("a replica awaiting a restore answered /readyz %d %s", code, body)
+	}
 	raw, _ := json.Marshal(corev1.ConfigMapList{Items: backups})
 	backupFile := filepath.Join(dir, "backup.json")
 	_ = os.WriteFile(backupFile, raw, 0o600)
@@ -109,8 +119,12 @@ func TestRunHARestoreAfterTotalLoss(t *testing.T) {
 		cmd.SetOut(&out)
 		cmd.SetErr(&out)
 		args := append([]string{"--backup-file", backupFile, "--decree-key", decreeKeyPath,
-			"--trusted-ca-sha256", trustedCA, "--cluster-id", "c1", "--url", bases[2], "--insecure"}, key...)
+			"--trusted-ca-sha256", trustedCA, "--cluster-id", "c1", "--url", bases[2], "--insecure", "--resume-epoch", "4"}, key...)
 		cmd.SetArgs(append(args, extra...))
+		// The replicas here serve plain HTTP, as in a c8s_dev build; a release
+		// build's recover refuses it (TestHARecoverRefusesWeakPins).
+		defer func(v bool) { allowPlainHTTP = v }(allowPlainHTTP)
+		allowPlainHTTP = true
 		err := cmd.ExecuteContext(context.Background())
 		return out.String(), err
 	}
@@ -129,6 +143,9 @@ func TestRunHARestoreAfterTotalLoss(t *testing.T) {
 	if _, err := recover("--bootstrap-node", "n2"); err == nil {
 		t.Fatal("recover without --min-epoch/--min-index")
 	}
+	if out, err := run(keyArgs, append(ok, "--resume-epoch", "0")...); err == nil || !strings.Contains(err.Error(), "--resume-epoch") {
+		t.Fatalf("recover without --resume-epoch: %v %q", err, out)
+	}
 	if out, err := recover("--bootstrap-node", "n2", "--min-epoch", "9", "--min-index", "0"); err == nil || !strings.Contains(out, "backup:") {
 		t.Fatalf("an older backup than the operator accepts was restored: %v %q", err, out)
 	}
@@ -139,20 +156,42 @@ func TestRunHARestoreAfterTotalLoss(t *testing.T) {
 		t.Fatalf("recover: %v\n%s", err, out)
 	}
 	waitServing(t, bases, true)
+	eventually(t, 30*time.Second, "the restored replica turns Ready", func() bool {
+		code, _, _ := do(t, http.MethodGet, bases[2]+"/readyz", "", nil)
+		return code == http.StatusOK
+	})
+	// The cluster resumes after the epoch the operator named, not at the
+	// backup's epoch + 1: nodes order pin decrees by epoch.
+	for _, b := range bases {
+		_, _, raw := do(t, http.MethodGet, b+"/ha/status", "", nil)
+		var st cdsha.Status
+		if err := json.Unmarshal(raw, &st); err != nil || st.Epoch != 5 {
+			t.Fatalf("%s epoch after a restore resuming after 4: %d (%v)", b, st.Epoch, err)
+		}
+	}
 	// A second recover over the serving cluster is refused: its new intent
 	// is not in the decree record.
 	if out, err := recover(ok...); err == nil {
 		t.Fatalf("a second restore over a serving cluster succeeded: %q", out)
 	}
+	// The restored version is above the one served before the loss, so
+	// node enforcers take the restored document and later writes; every
+	// replica serves the same one.
+	_, h1, _ := do(t, http.MethodGet, bases[0]+"/allowlist", "", nil)
+	before, _ := strconv.ParseUint(allowlistclient.VersionFromETag(h0.Get("ETag")), 10, 64)
+	after, _ := strconv.ParseUint(allowlistclient.VersionFromETag(h1.Get("ETag")), 10, 64)
+	if before == 0 || after <= before {
+		t.Fatalf("allowlist version after restore %q, not above %q before the loss", h1.Get("ETag"), h0.Get("ETag"))
+	}
 	for _, b := range bases {
 		_, h, _ := do(t, http.MethodGet, b+"/allowlist", "", nil)
 		_, _, c := do(t, http.MethodGet, b+"/ca", "", nil)
-		if h.Get("ETag") != h0.Get("ETag") || !bytes.Equal(c, ca) {
-			t.Fatalf("%s after restore: etag %q want %q, same CA %v", b, h.Get("ETag"), h0.Get("ETag"), bytes.Equal(c, ca))
+		if h.Get("ETag") != h1.Get("ETag") || !bytes.Equal(c, ca) {
+			t.Fatalf("%s after restore: etag %q want %q, same CA %v", b, h.Get("ETag"), h1.Get("ETag"), bytes.Equal(c, ca))
 		}
 	}
-	if code, _, body := do(t, http.MethodPut, bases[0]+"/allowlist", unspent, doc); code != http.StatusNoContent {
-		t.Fatalf("a token signed after Genesis, before the loss, refused after the restore: %d %s", code, body)
+	if code, _, body := do(t, http.MethodPut, bases[0]+"/allowlist", unspent, doc); code != http.StatusUnauthorized || !strings.Contains(string(body), "too early") {
+		t.Fatalf("a token signed before the loss was not refused after the restore: %d %s", code, body)
 	}
 }
 
@@ -170,13 +209,15 @@ func TestRestoreAppliedReadsTheDecreeRecord(t *testing.T) {
 	}))
 	defer srv.Close()
 	ctx := context.Background()
-	if !restoreApplied(ctx, srv.Client(), srv.URL, "restore-1") {
-		t.Fatal("the recorded Restore was not found")
+	if ok, err := restoreApplied(ctx, srv.Client(), srv.URL, "restore-1"); !ok || err != nil {
+		t.Fatalf("the recorded Restore was not found: %v", err)
 	}
-	if restoreApplied(ctx, srv.Client(), srv.URL, "restore-2") || restoreApplied(ctx, srv.Client(), srv.URL, "restore-3") {
-		t.Fatal("another decree kind or an unknown intent counted as the Restore")
+	for _, intent := range []string{"restore-2", "restore-3"} {
+		if ok, err := restoreApplied(ctx, srv.Client(), srv.URL, intent); ok || err != nil {
+			t.Fatalf("%s: another decree kind or an unknown intent counted as the Restore (%v)", intent, err)
+		}
 	}
-	if restoreApplied(ctx, srv.Client(), srv.URL+"/nowhere", "restore-1") {
-		t.Fatal("an unreadable record counted as applied")
+	if ok, err := restoreApplied(ctx, srv.Client(), srv.URL+"/nowhere", "restore-1"); ok || err == nil {
+		t.Fatal("an unreadable record counted as applied, or as read")
 	}
 }

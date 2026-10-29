@@ -50,6 +50,7 @@ type haConfig struct {
 	attestor       string
 	measurement    string
 	pins           []string
+	peerPins       []string // --ha-config: the launch document's peer images
 	operatorKey    string
 	operatorKeyPEM []byte // set from --ha-config instead of a file
 	recoveryKeyPEM []byte // from --ha-config or --ha-recovery-key: backups are sealed to it
@@ -229,7 +230,7 @@ func newHANode(cfg config, st haStores) (*cdsha.Node, error) {
 		}
 		recovery = block.Bytes
 	}
-	decrees := cdsha.KubeDecrees{Client: kube, Namespace: h.decreeNS, ClusterID: h.clusterID}
+	decrees := cdsha.KubeDecrees{Client: kube, Namespace: h.decreeNS, ClusterID: h.clusterID, Timeout: h.timing.Apply}
 	node, err := cdsha.NewNode(cdsha.Config{
 		ClusterID:       h.clusterID,
 		NodeName:        h.nodeName,
@@ -237,6 +238,7 @@ func newHANode(cfg config, st haStores) (*cdsha.Node, error) {
 		Advertise:       net.JoinHostPort(podIP, strconv.Itoa(h.port)),
 		Attestor:        att,
 		BakedPins:       h.pins,
+		PeerPins:        h.peerPins,
 		OperatorPubKey:  opKey,
 		Seats:           h.seats,
 		MaxNonVoters:    16,
@@ -325,9 +327,16 @@ func loadHAConfigFile(h *haConfig) error {
 		return fmt.Errorf("--ha-config image: %w", err)
 	}
 	h.clusterID, h.pins = c.ClusterID, []string{pin}
+	for _, img := range c.PeerImages {
+		peer, err := cdsha.ImagePin(img.Platform, img.Measurement, img.RTMRs)
+		if err != nil {
+			return fmt.Errorf("--ha-config peer image: %w", err)
+		}
+		h.peerPins = append(h.peerPins, peer)
+	}
 	h.operatorKeyPEM = []byte(c.DecreeKey)
 	h.recoveryKeyPEM = []byte(c.RecoveryKey)
-	h.seats = c.Replicas // launchconfig refuses fewer than 2
+	h.seats = c.Replicas // launchconfig refuses an even count or one outside 3..cdsha.MaxVoters
 	return nil
 }
 
@@ -426,7 +435,7 @@ func haPins(node *cdsha.Node) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		sd := node.Core().PinsDecree
 		if sd == nil {
-			http.Error(w, "cds-ha: the pin set came from Genesis; the launch document's is current", http.StatusNotFound)
+			http.Error(w, "cds-ha: no pin decree with images is in force", http.StatusNotFound)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -499,7 +508,11 @@ func handleRestore(node *cdsha.Node) http.HandlerFunc {
 		}
 		// The server also bounds request reads. Set an explicit handler deadline
 		// so a slow upload cannot retain the restore admission slot indefinitely.
-		_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(30 * time.Second))
+		// The answer may take up to restoreTimeout: the server's WriteTimeout
+		// would cut it off while the restore goes on.
+		rc := http.NewResponseController(w)
+		_ = rc.SetReadDeadline(time.Now().Add(30 * time.Second))
+		_ = rc.SetWriteDeadline(time.Now().Add(restoreTimeout))
 		limit := int64(maxLegacyRestoreBytes)
 		if header := r.Header.Get(restoreDecreeHeader); header != "" {
 			var sd cdsha.SignedDecree
@@ -550,15 +563,12 @@ func handleRestore(node *cdsha.Node) http.HandlerFunc {
 func preJoinMux(node *cdsha.Node) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
-	// Ready only while waiting for a restore, so the operator can reach a
-	// replica through the Service after every replica was lost; a replica
-	// joining a live cluster takes no client traffic.
+	// Never ready: Ready puts a replica in the client Service, and an
+	// unjoined one serves nothing. A replica cannot tell a total loss from
+	// its own partition, so waiting for a restore is no reason either; the
+	// operator reaches it through the per-node c8s-cds-replicas Service.
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) {
-		if !node.AwaitingRestore() {
-			http.Error(w, "joining", http.StatusServiceUnavailable)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
+		http.Error(w, "cds-ha: not joined", http.StatusServiceUnavailable)
 	})
 	mux.HandleFunc("GET /ha/status", serveJSON(node.Status))
 	mux.HandleFunc("POST /ha/restore", handleRestore(node))

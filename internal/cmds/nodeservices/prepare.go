@@ -529,6 +529,9 @@ type CDSHAConfig struct {
 	Replicas    int                `json:"replicas"`
 	RecoveryKey string             `json:"recovery_key,omitempty"`
 	Image       launchconfig.Image `json:"image"`
+	// PeerImages are the launch document's peer images: before it joins,
+	// the replica admits only peers on Image or one of these.
+	PeerImages []launchconfig.Image `json:"peer_images,omitempty"`
 }
 
 // cdsOutputs publishes what a CDS replica on a cds-role node needs: the
@@ -543,7 +546,7 @@ func cdsOutputs(d *launchconfig.Document, bakedData []byte) (map[string][]byte, 
 	if err != nil {
 		return nil, err
 	}
-	ha, err := json.Marshal(CDSHAConfig{ClusterID: d.ClusterID, DecreeKey: d.CDSHA.DecreeKey, Replicas: d.CDSHA.Replicas, RecoveryKey: d.CDSHA.RecoveryKey, Image: d.Image})
+	ha, err := json.Marshal(CDSHAConfig{ClusterID: d.ClusterID, DecreeKey: d.CDSHA.DecreeKey, Replicas: d.CDSHA.Replicas, RecoveryKey: d.CDSHA.RecoveryKey, Image: d.Image, PeerImages: d.PeerImages})
 	if err != nil {
 		return nil, err
 	}

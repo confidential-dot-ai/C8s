@@ -1,8 +1,12 @@
 package sandboxledger
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
 	"log/slog"
 	"time"
+
+	"github.com/confidential-dot-ai/c8s/internal/lthash"
 )
 
 // Replicator carries a binding to every CDS replica (CDS HA) and returns the
@@ -18,7 +22,11 @@ type Replicator interface {
 // SetReplicator makes every later binding a replicated command.
 func (l *Ledger) SetReplicator(r Replicator) { l.repl = r }
 
-// Command records one binding at a time every replica uses alike.
+// Command records one binding at a time every replica uses alike. With CDS
+// HA the leader sets AtMS from its own clock, and the command applies at that
+// time: expiry and first-write-wins trust the current leader's wall clock, as
+// the single-replica CDS trusted its own. A clock set forward affects only the
+// commands stamped while it is (see recordAt for the other direction).
 type Command struct {
 	SandboxID string `json:"sandbox_id"`
 	Host      string `json:"host"`
@@ -93,7 +101,37 @@ func (l *Ledger) Restore(bs []Binding) {
 	defer l.mu.Unlock()
 	l.bindings = make(map[string]binding, len(bs))
 	l.bytes = 0
+	l.digest = lthash.Hash{}
 	for _, b := range bs {
 		l.setLocked(b.SandboxID, binding{host: b.Host, expires: time.UnixMilli(b.ExpiresMS)})
 	}
+}
+
+// Digest names the ledger's bindings: equal ledgers have equal digests,
+// whatever order their writes came in.
+func (l *Ledger) Digest() [32]byte {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.digest.Sum()
+}
+
+// DigestOf is the Digest a ledger restored from bs has, computed from the
+// bindings themselves.
+func DigestOf(bs []Binding) [32]byte {
+	var h lthash.Hash
+	for _, b := range bs {
+		h.Add(bindingDigest(b.SandboxID, b.Host, b.ExpiresMS))
+	}
+	return h.Sum()
+}
+
+// bindingDigest is the SHA-256 of one binding, its fields length-prefixed.
+func bindingDigest(sandboxID, host string, expiresMS int64) [32]byte {
+	h := sha256.New()
+	for _, f := range []string{sandboxID, host} {
+		_ = binary.Write(h, binary.BigEndian, uint64(len(f)))
+		h.Write([]byte(f))
+	}
+	_ = binary.Write(h, binary.BigEndian, expiresMS)
+	return [32]byte(h.Sum(nil))
 }

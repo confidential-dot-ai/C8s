@@ -116,8 +116,6 @@ func (f *FSM) snapshotEstimate() (header, image int64, err error) {
 //   - token spends: every write spends one first, a DELETE included, so
 //     refusing them would refuse the writes that make room; a spent token
 //     is one small row, dropped at expiry;
-//   - the signature of a document whose replace_all was admitted (the same
-//     request);
 //   - seeds and the journal start: startup work that fails closed, so
 //     refusing them would crash-loop replicas restarted at the cap;
 //   - bindings (bounded by --sandbox-ledger-max-entries; issuance needs
@@ -199,17 +197,6 @@ func (f *FSM) compressedEstimate(decoded int64) (int64, bool) {
 		return decoded, false
 	}
 	return m.compressed + max(0, decoded-m.decoded), true
-}
-
-// admitRaw is admit for an entry that arrived marshalled (a forwarded
-// write, judged by the leader). One that does not decode is left to Apply
-// to refuse.
-func (f *FSM) admitRaw(raw json.RawMessage) error {
-	var e Entry
-	if json.Unmarshal(raw, &e) != nil {
-		return nil
-	}
-	return f.admit(e, len(raw), true)
 }
 
 // countWriter counts the bytes written through it.

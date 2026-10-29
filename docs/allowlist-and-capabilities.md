@@ -204,6 +204,53 @@ expired that long before the newest spent one. The comparison uses only the
 tokens' own iat and exp, so every HA replica forgets the same records, and a
 host that turns CDS's clock back cannot make a forgotten token valid again.
 
+Node enforcers order documents by the version: they ignore a version below the
+one they applied, and `If-None-Match` on an equal one is answered 304. With CDS
+HA, an event that starts the cluster again (Genesis, Restore of a backup,
+Recover on a survivor) therefore raises the version to at least its start time
+in Unix milliseconds: the later of the `issued_at_ms` the operator signed into
+the decree and the leader's time when it applied. Later writes add one each, so
+writes applied again after a Restore reach the nodes. Replica clocks cannot
+move the start back: it holds as long as the operator signs the decree after
+the loss, on a clock that is not behind the one that signed the earlier
+life's write tokens. The token floor (tokens issued before the start are
+refused) is the same start time. A replica clock set forward moves both at
+most to the decree's `expires_at`, since the decree is refused after it.
+
+`PUT /allowlist` takes `If-Match: "N"`, the strong tag of version N, the N of
+the ETag `W/"N"` that `GET /allowlist` serves. CDS replaces the document only
+while the version is still N, and answers 412 otherwise, leaving the allowlist
+unchanged. A weak tag never matches (If-Match uses strong comparison) and is
+answered 412 too. Without `If-Match`, or with `*`, the replace is
+unconditional. `upload` and `apply` make their write conditional on the version
+they read and diffed, so neither overwrites a write that landed in between.
+`upload` then fails with "nothing was uploaded": its file is the whole
+document, so writing it onto the newer one would undo the other write; run it
+again to see the new diff. `apply` sets only the entries in its file, so it
+re-reads the allowlist, prints what the other write changed, lint-checks its
+entries against it, and puts them into the newer document, up to five writes in
+all, each conditional on the version it was built from. Entries the other write
+changed and the file does not name are kept. An entry the file names is set to
+the file's value even if the other write changed it, as running `apply` again
+after that write would. If all five writes are refused, `apply` fails with
+"nothing was applied". `apply` puts all of its entries in one write, so they
+all land or none do. Like every operator write, that body is limited to 1 MiB,
+so once the live allowlist is larger, `apply` is refused with 413 even for one
+entry; `edit` changes one existing entry in a write of its own.
+
+Writes are metered per source address (`cds --rate-limit`, `--rate-burst`). A
+refused write is answered 429 with a `Retry-After`. While an HA CDS has no
+leader, a write is answered 503 with a `Retry-After`. The CLI sends a write
+again on either, up to six attempts, each with a new token. When an answer does
+not settle whether a whole-document write landed (a 412 to such a resend, any
+other 5xx, or no answer), the CLI reads the allowlist and its history back. If
+CDS serves the document, or its history holds it at the version right after
+the one the write was conditional on, the write landed and the CLI reports
+success. If another write landed instead, nothing was written. If CDS still
+serves the version the write was conditional on, the CLI says the write is not
+confirmed: it has not landed, and can still land until another write does.
+Running the command again is safe, since the new write is conditional too.
+
 ## Refresh and anti-rollback
 
 Every node polls `GET /allowlist` on `nriImagePolicy.refresh.interval` (5s by
@@ -270,8 +317,17 @@ differs from the head. A policy digest is `sha256:<hex>` of the exact bytes
 | `GET /allowlist/objects/sha256/<hex>/signature` | its operator signature as `text/plain`; 404 when unsigned |
 
 A document's signature is the write token of a `PUT /allowlist` whose body is
-exactly its canonical bytes, so `c8s allowlist upload` signs what it writes
-while a per-workload write signs nothing.
+exactly its canonical bytes, so `c8s allowlist upload` and `c8s allowlist
+apply` sign what they write, while a per-workload write (`add`, `edit`,
+`delete`) signs nothing. CDS stores the signature in the same replicated write
+as the document, so a signed write never serves its document unsigned; a body
+that is not exactly the canonical bytes replaces the document but stores no
+signature. `apply` writes the whole resulting document, the live
+entries with the file's entries put in, so the operator key signs every entry
+in it, not only the ones in the file: before applying, read the diff `apply`
+prints and check the live document with `c8s allowlist list` or `c8s allowlist
+diff`. When `apply` writes again after another write, the key also signs that
+write's entries; `apply` prints what it changed.
 
 ## Measured policy history
 

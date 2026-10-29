@@ -59,6 +59,9 @@ var timing = struct {
 }{500 * time.Millisecond, 500 * time.Millisecond, 2500 * time.Millisecond, 8 * time.Second,
 	2 * time.Second, 5 * time.Second, 250 * time.Millisecond, time.Second}
 
+// jwtClockSkew is every replica's --jwt-clock-skew.
+const jwtClockSkew = time.Second
+
 var (
 	binPath string
 	logRoot string
@@ -267,11 +270,13 @@ func newClusterWithRaftTiming(t *testing.T, heartbeat, election time.Duration, e
 			t.Logf("replica logs: %s", c.LogDir)
 		}
 	})
-	c.PutDecree(cdsha.Decree{ClusterID: clusterID, IntentID: "genesis", Kind: cdsha.Genesis,
-		BootstrapNode: "n1", ExpiresAt: time.Now().Add(time.Hour)}, nil)
 	for i := range c.Replicas {
 		c.Start(i, false)
 	}
+	// The operator reads the bootstrap replica's member ID from its status
+	// and signs the Genesis decree for that process.
+	c.PutDecree(cdsha.Decree{ClusterID: clusterID, IntentID: "genesis", Kind: cdsha.Genesis,
+		BootstrapNode: "n1", TargetMember: c.MemberID(0), GenesisCA: c.genesisCA(0), ExpiresAt: time.Now().Add(time.Hour)}, nil)
 	c.WaitAllServing(60 * time.Second)
 	// Operator tokens are refused until the clock skew (1 s) has passed
 	// since Genesis.
@@ -303,7 +308,7 @@ func (c *Cluster) Start(i int, keepDB bool) {
 	args := []string{"cds",
 		"--armtls-platform", "", "--host", r.Bind, "--port", strconv.Itoa(c.HTTPPort), "--log-level", "info",
 		"--attestation-api-url", c.attestAPI.URL, "--allowlist-db", r.db,
-		"--operator-keys", c.OpPubPath, "--jwt-clock-skew", "1",
+		"--operator-keys", c.OpPubPath, "--jwt-clock-skew", strconv.Itoa(int(jwtClockSkew / time.Second)),
 		"--rate-limit", "100000", "--rate-burst", "100000",
 		"--secrets-max-paths", "200000", "--secrets-max-paths-per-workload", "100000",
 		"--sandbox-inventory-cidr", "127.0.0.0/8",
@@ -424,6 +429,9 @@ func (c *Cluster) PutDecree(d cdsha.Decree, key *ecdsa.PrivateKey) string {
 	c.t.Helper()
 	if key == nil {
 		key = c.OpKey
+	}
+	if d.IssuedAtMS == 0 && (d.Kind == cdsha.Genesis || d.Kind == cdsha.Recover || d.Kind == cdsha.Restore) {
+		d.IssuedAtMS = time.Now().UnixMilli() // as `c8s cds ha decree` does
 	}
 	sd, err := cdsha.SignDecree(d, key)
 	if err != nil {
@@ -566,6 +574,27 @@ func (c *Cluster) Get(i int, path string) Response {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	return c.Do(ctx, i, http.MethodGet, path, nil, false)
+}
+
+// MemberID is the member ID replica i's process reports in /ha/status: what
+// a one-shot decree for it names.
+func (c *Cluster) MemberID(i int) string {
+	c.t.Helper()
+	var st cdsha.Status
+	c.waitFor(30*time.Second, func() bool {
+		var ok bool
+		st, ok = c.Status(i)
+		return ok && st.ID != ""
+	}, func() string { return c.Replicas[i].Node + " reports no member id" })
+	return st.ID
+}
+
+// genesisCA is the mesh CA fingerprint replica i reports before it joins:
+// what a Genesis decree for it names.
+func (c *Cluster) genesisCA(i int) string {
+	c.t.Helper()
+	st, _ := c.Status(i)
+	return st.GenesisCA
 }
 
 // Status is replica i's /ha/status (ok=false when unreachable).

@@ -146,6 +146,7 @@ application services:
 | Router, certificate renewal and attestation helpers | Singleton Deployment | Server |
 | Operator, webhook and admission integration | Kubernetes resources | Cluster-wide |
 | Attested operator credential release | systemd service | Server |
+| Stale Cilium node address restart (`cilium-node-ip.service`) | systemd service | Every node |
 
 `rke2-role.service` verifies and stages launch settings before either RKE2
 role starts. The local attester must precede this gate because launch
@@ -156,6 +157,25 @@ its Kubernetes Service and server NodePort `30808`; agents join RKE2 at
 runs on UDP `8473`, not the kernel default `8472`: a nested guest's outer
 host often runs its own VXLAN on `8472` and drops the inner overlay. Open
 UDP `8473` between nodes in any firewall or security group.
+
+A node may get a new address on every boot (KubeVirt pod networking, DHCP).
+RKE2 registers the current one (`node-ip` from the launch staging, published
+to `/run/nri-image-policy/node-ip` by `nri-node-ip.service`), but the Node
+object keeps the previous address until the kubelet's first status update.
+Cilium reads its node IP from the Node object once, when the agent starts,
+and announces it to the other nodes as this node's tunnel endpoint. An agent
+that starts first keeps the old address, and the node's pods stay unreachable
+(`listen tcp <old-ip>:4240: bind: cannot assign requested address`).
+`cilium-node-ip.service` (`c8s node-services cilium-node-ip`) checks every
+10 seconds the address the agent announces for this node (its local API,
+`/run/cilium/cilium.sock`). If that address is neither the published node
+address nor assigned to any local interface, it logs both addresses and sends
+SIGTERM to the agent: the `cilium-agent` process in a kubelet pod cgroup that
+holds the API socket. The kubelet restarts the container, and the new agent
+reads the updated Node. Without a published node address it does nothing.
+Each restart is logged with the old and the new address. After a restart it
+waits 1, 2, then 5 minutes before acting again, and resets the wait once the
+agent announces the node address.
 
 `c8s/mkosi.sync` resolves the c8s binary and core image digests from `C8S_REF`,
 then runs `c8s node-image render` with the checksum-pinned build-time Helm

@@ -170,7 +170,7 @@ func (m *mux) track(c *tls.Conn, claims Claims) (*peerConn, error) {
 	// Serialize this final pin snapshot and registration with recheck.
 	// Verification may have completed before the latest epoch's sweep.
 	pins := m.verifier.pins()
-	if (pins != nil && !slices.Contains(pins, claims.Measurement)) || (m.blocked != nil && m.blocked(c.RemoteAddr().String())) {
+	if !slices.Contains(pins, claims.Measurement) || (m.blocked != nil && m.blocked(c.RemoteAddr().String())) {
 		return nil, errors.New("peer no longer admitted")
 	}
 	m.conns[pc] = struct{}{}
@@ -184,7 +184,7 @@ func (m *mux) recheck() {
 	pins := m.verifier.pins()
 	var drop []*peerConn
 	for c := range m.conns {
-		if (pins != nil && !slices.Contains(pins, c.claims.Measurement)) || (m.blocked != nil && m.blocked(c.RemoteAddr().String())) {
+		if !slices.Contains(pins, c.claims.Measurement) || (m.blocked != nil && m.blocked(c.RemoteAddr().String())) {
 			drop = append(drop, c)
 		}
 	}
@@ -355,6 +355,10 @@ func (m *mux) Dial(address raft.ServerAddress, timeout time.Duration) (net.Conn,
 	if err != nil {
 		return nil, err
 	}
+	if claims.Member != id {
+		c.Close()
+		return nil, fmt.Errorf("raft address %q answered by member %q", address, claims.Member)
+	}
 	if _, err := c.Write(append([]byte{byte(len(id))}, id...)); err != nil {
 		c.Close()
 		return nil, err
@@ -400,6 +404,8 @@ type controlRequest struct {
 	Address string          `json:"address,omitempty"`
 	Entry   json.RawMessage `json:"entry,omitempty"`
 	Reads   uint32          `json:"reads,omitempty"` // join: newest format the joiner reads
+	// Digests (read barrier) are the follower's chain and checkpoints.
+	Digests *DigestReport `json:"digests,omitempty"`
 }
 
 type controlResponse struct {
@@ -407,16 +413,28 @@ type controlResponse struct {
 	Leader   string          `json:"leader,omitempty"` // set when the receiver is not the leader
 	Member   bool            `json:"member,omitempty"` // the receiver belongs to a Raft group
 	Index    uint64          `json:"index,omitempty"`
+	Term     uint64          `json:"term,omitempty"` // read barrier, apply: the leader's term
 	Response json.RawMessage `json:"response,omitempty"`
 	Status   *Status         `json:"status,omitempty"`
+	// Diverged (read barrier) says why the leader found the follower's
+	// state to differ from the majority's.
+	Diverged string `json:"diverged,omitempty"`
+	// Excluded (join): the leader excluded the joining member ID; it must
+	// restart as a new member with an empty log (ErrExcluded).
+	Excluded bool `json:"excluded,omitempty"`
 }
 
-func callControl(addr string, cfg *tls.Config, v peerVerifier, timeout time.Duration, req controlRequest, local net.Addr) (controlResponse, error) {
-	c, _, err := dialKind(addr, timeout, cfg, v, muxControl, local)
+// callControl sends req to the replica at addr. With member set, only that
+// member may answer: the request is not sent to another.
+func callControl(addr, member string, cfg *tls.Config, v peerVerifier, timeout time.Duration, req controlRequest, local net.Addr) (controlResponse, error) {
+	c, claims, err := dialKind(addr, timeout, cfg, v, muxControl, local)
 	if err != nil {
 		return controlResponse{}, err
 	}
 	defer c.Close()
+	if member != "" && claims.Member != member {
+		return controlResponse{}, fmt.Errorf("control %s to %s: answered by member %q, want %q", req.Op, addr, claims.Member, member)
+	}
 	_ = c.SetDeadline(time.Now().Add(timeout))
 	if err := json.NewEncoder(c).Encode(req); err != nil { // one Write
 		return controlResponse{}, err

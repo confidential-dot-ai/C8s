@@ -1,12 +1,16 @@
 package launchconfig
 
 import (
+	"bytes"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
 
+	"github.com/confidential-dot-ai/c8s/internal/cdsha"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
@@ -22,8 +26,9 @@ already booted with changes.`),
 		newAddNodeCmd(CDS, "add-cds-node", "Add a signed cds-role document to an existing launch bundle",
 			`Derive a cds-role launch.yaml from the bundle's server document, sign it
 with the bundle's cds key and write <bundle>/<name>. The bundle must have
-been created with --cds-node. Use it to add a replica or to replace one: a
-rebooted node cannot rejoin RKE2 under its old name.`),
+been created with --cds-node. Use it to add a replica or to replace a lost
+one under a new name. A rebooted node keeps its document and rejoins under
+its own name.`),
 		newStageCmd())
 	return cmd
 }
@@ -154,9 +159,11 @@ func newStageCmd() *cobra.Command {
 // role from the bundle's server document (AddNode).
 func newAddNodeCmd(role Role, use, short, long string) *cobra.Command {
 	var (
-		o        JoinOptions
-		dir      string
-		manifest string
+		o         JoinOptions
+		dir       string
+		manifest  string
+		vcpus     int
+		pinDecree string
 	)
 	cmd := &cobra.Command{
 		Use:          use,
@@ -165,12 +172,22 @@ func newAddNodeCmd(role Role, use, short, long string) *cobra.Command {
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if vcpus != 0 && manifest == "" {
+				return errors.New("--vcpus selects a launch digest of --image-manifest; it needs one")
+			}
 			if manifest != "" {
-				image, err := imageFromManifest(manifest, 0)
+				image, err := imageFromManifest(manifest, vcpus)
 				if err != nil {
 					return err
 				}
 				o.Image = &image
+			}
+			if pinDecree != "" {
+				sd, err := readPinDecree(pinDecree)
+				if err != nil {
+					return err
+				}
+				o.PinDecree = sd
 			}
 			if err := AddNode(dir, role, o); err != nil {
 				return err
@@ -183,10 +200,29 @@ func newAddNodeCmd(role Role, use, short, long string) *cobra.Command {
 	f.StringVar(&dir, "bundle", "", "bundle directory created by 'launch-config new' (with --cds-node for a cds node)")
 	f.StringVar(&o.Name, "name", "", string(role)+" node name, an RFC1123 label")
 	f.StringVar(&o.ServerAddress, "server-address", "", "server IPv4 address (default: the server document's, which must then be explicit)")
-	f.Uint64Var(&o.PinFloor, "pin-floor", 0, "HA CDS: the lowest CDS pin decree base epoch the node accepts; set it to base_epoch of the decree in force (GET /ha/pins)")
-	f.StringVar(&manifest, "image-manifest", "", "boot this image instead of the server's (a rollout): the build's manifest.json. The document still accepts the server's image for its peers; for a cds node, follow with a signed pin decree for the new image")
+	f.Uint64Var(&o.PinFloor, "pin-floor", 0, "HA CDS: the lowest CDS pin decree base epoch the node accepts; set it to base_epoch of the decree in force, read from the attested 'c8s cds ha decrees'")
+	f.StringVar(&manifest, "image-manifest", "", "boot this image instead of the server's (a rollout): the build's manifest.json. An agent document still accepts the server's image for its peers; a cds node needs --pin-decree")
+	f.IntVar(&vcpus, "vcpus", 0, "SNP only: the VM's vCPU count, selecting its launch digest from --image-manifest")
+	if role == CDS {
+		f.StringVar(&pinDecree, "pin-decree", "", "HA CDS: the applied pin decree, written by the attested 'c8s cds ha pin-policy --decree-out'. Its images, which must include the node's own, are the node's peer images, and its base epoch the pin floor (excludes --pin-floor). Required with --image-manifest; leave it out only while the replicas serve no pin decree")
+	}
 	for _, flag := range []string{"bundle", "name"} {
 		_ = cmd.MarkFlagRequired(flag)
 	}
 	return cmd
+}
+
+// readPinDecree reads a signed pin decree file; AddNode verifies it.
+func readPinDecree(path string) (*cdsha.SignedDecree, error) {
+	data, err := readBounded(path, 1<<20)
+	if err != nil {
+		return nil, fmt.Errorf("--pin-decree: %w", err)
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	var sd cdsha.SignedDecree
+	if err := dec.Decode(&sd); err != nil {
+		return nil, fmt.Errorf("--pin-decree: %w", err)
+	}
+	return &sd, nil
 }

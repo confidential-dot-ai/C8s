@@ -85,7 +85,7 @@ func TestRestoreAuthenticatedLargeEnvelope(t *testing.T) {
 	done := make(chan struct{})
 	go func() { defer close(done); _ = node.Run(ctx) }()
 	defer func() { cancel(); <-done }()
-	sd, err := cdsha.SignDecree(cdsha.Decree{ClusterID: "c1", IntentID: "surface", Kind: cdsha.Restore, BootstrapNode: "n0", SnapshotSHA256: cdsha.SnapshotSHA256([]byte("different")), ExpiresAt: time.Now().Add(time.Hour)}, k)
+	sd, err := cdsha.SignDecree(cdsha.Decree{ClusterID: "c1", IntentID: "surface", Kind: cdsha.Restore, BootstrapNode: "n0", TargetMember: node.ID(), IssuedAtMS: time.Now().UnixMilli(), SnapshotSHA256: cdsha.SnapshotSHA256([]byte("different")), ExpiresAt: time.Now().Add(time.Hour)}, k)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -25,6 +26,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/sandboxledger"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
@@ -64,11 +66,25 @@ func signDecree(t *testing.T, key *ecdsa.PrivateKey, d Decree) SignedDecree {
 	if d.ExpiresAt.IsZero() {
 		d.ExpiresAt = time.Now().Add(time.Hour)
 	}
-	sd, err := SignDecree(d, key)
+	if d.TargetMember == "" && (d.Kind == Genesis || d.Kind == Recover || d.Kind == Restore) {
+		d.TargetMember = d.BootstrapNode + "/0-unbound" // the tests that act on it name a real member
+	}
+	sd, err := SignDecree(startFields(d), key)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return sd
+}
+
+// startFields fills what a start decree must carry and a test did not set.
+func startFields(d Decree) Decree {
+	if d.IssuedAtMS == 0 && (d.Kind == Genesis || d.Kind == Recover || d.Kind == Restore) {
+		d.IssuedAtMS = 1 // signed long ago: the entry's AtMS sets the start; tests of the floor set it
+	}
+	if d.GenesisCA == "" && d.Kind == Genesis {
+		d.GenesisCA = "unbound" // the tests that apply it name the entry's CA
+	}
+	return d
 }
 
 // memDecrees stands in for the decree ConfigMaps. failList and failStatus
@@ -77,13 +93,18 @@ type memDecrees struct {
 	mu         sync.Mutex
 	items      map[string]SignedDecree
 	status     map[string]DecreeStatus
+	written    map[string][]DecreeStatus // every status write, in order
 	failList   atomic.Bool
 	failStatus atomic.Bool
 	statusErrs atomic.Int32
+	// hang, when set, blocks every List until it closes or ctx ends, as a
+	// hung API server does.
+	hang atomic.Pointer[chan struct{}]
+	hung atomic.Int32
 }
 
 func newMemDecrees() *memDecrees {
-	return &memDecrees{items: map[string]SignedDecree{}, status: map[string]DecreeStatus{}}
+	return &memDecrees{items: map[string]SignedDecree{}, status: map[string]DecreeStatus{}, written: map[string][]DecreeStatus{}}
 }
 
 // put stores a decree object and returns its name.
@@ -95,7 +116,15 @@ func (m *memDecrees) put(sd SignedDecree) string {
 	return name
 }
 
-func (m *memDecrees) PendingDecrees(context.Context) ([]PendingDecree, error) {
+func (m *memDecrees) ListDecrees(ctx context.Context) ([]PendingDecree, error) {
+	if h := m.hang.Load(); h != nil {
+		m.hung.Add(1)
+		select {
+		case <-*h:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	if m.failList.Load() {
 		return nil, errors.New("api down")
 	}
@@ -103,11 +132,21 @@ func (m *memDecrees) PendingDecrees(context.Context) ([]PendingDecree, error) {
 	defer m.mu.Unlock()
 	var out []PendingDecree
 	for name, sd := range m.items {
-		if _, done := m.status[name]; !done {
-			out = append(out, PendingDecree{Name: name, Decree: sd})
+		p := PendingDecree{Name: name, Decree: sd}
+		if st, done := m.status[name]; done {
+			p.Status = &st
 		}
+		out = append(out, p)
 	}
 	return out, nil
+}
+
+// del removes a decree object and its status, as an operator would.
+func (m *memDecrees) del(name string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.items, name)
+	delete(m.status, name)
 }
 
 func (m *memDecrees) SetDecreeStatus(_ context.Context, name string, st DecreeStatus) error {
@@ -118,6 +157,7 @@ func (m *memDecrees) SetDecreeStatus(_ context.Context, name string, st DecreeSt
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.status[name] = st
+	m.written[name] = append(m.written[name], st)
 	return nil
 }
 
@@ -126,6 +166,19 @@ func (m *memDecrees) get(name string) (DecreeStatus, bool) {
 	defer m.mu.Unlock()
 	st, ok := m.status[name]
 	return st, ok
+}
+
+// rejections are the RejectedReason values ever written for name.
+func (m *memDecrees) rejections(name string) []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []string
+	for _, st := range m.written[name] {
+		if st.RejectedReason != "" {
+			out = append(out, st.RejectedReason)
+		}
+	}
+	return out
 }
 
 func eventually(t *testing.T, within time.Duration, what string, ok func() bool) {
@@ -182,8 +235,14 @@ var _ raft.SnapshotSink = (*memSink)(nil)
 // pub, over fresh stores.
 func newTestFSM(t *testing.T, pub []byte) *FSM {
 	t.Helper()
+	return newTestFSMIn(t, testCluster, pub)
+}
+
+// newTestFSMIn is a pre-Genesis FSM of cluster, with operator key pub.
+func newTestFSMIn(t *testing.T, cluster string, pub []byte) *FSM {
+	t.Helper()
 	al, sec, led := testStores(t)
-	f := NewFSM(PreGenesis(testCluster, pub), al, sec, led)
+	f := NewFSM(PreGenesis(cluster, pub), al, sec, led)
 	f.core.Policy = f.LocalPolicy()
 	return f
 }
@@ -215,4 +274,57 @@ func mustCA(t *testing.T) *issuer.CA {
 		t.Fatal(err)
 	}
 	return mesh.Current().CA
+}
+
+// genesisCAOf is the GenesisCA a Genesis decree naming n carries.
+func genesisCAOf(t *testing.T, n *Node) string {
+	t.Helper()
+	ca, err := n.genesisCA()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return certutil.CertFingerprint(ca.Cert.Raw)
+}
+
+// caFP is the GenesisCA of a Genesis entry that carries ca.
+func caFP(ca *issuer.CA) string { return certutil.CertFingerprint(ca.Cert.Raw) }
+
+func mustPKCS8(t *testing.T, ca *issuer.CA) []byte {
+	t.Helper()
+	der, err := x509.MarshalPKCS8PrivateKey(ca.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return der
+}
+
+// withDigests gives a hand-built snapshot the digests and chain a replica
+// writes, so it is refused only for what a test changed. An image that is
+// not a database gets a zero allowlist digest (its restore fails anyway).
+func withDigests(t *testing.T, sn snapshot) snapshot {
+	t.Helper()
+	d, err := contentDigests(sn, func(image []byte) ([32]byte, error) {
+		sum, err := allowlist.ImageDigest(image)
+		if err != nil {
+			return [32]byte{}, nil
+		}
+		return sum, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sn.Digests = d
+	sn.Chain = Point{Index: sn.Index, Chain: strings.Repeat("0", 64)}
+	return sn
+}
+
+// emptyImage is the database image of an empty allowlist.
+func emptyImage(t *testing.T) []byte {
+	t.Helper()
+	al, _, _ := testStores(t)
+	image, err := al.Dump()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return image
 }

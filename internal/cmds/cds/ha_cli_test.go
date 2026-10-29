@@ -15,11 +15,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/klauspost/compress/zstd"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
@@ -27,6 +29,7 @@ import (
 
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/cdsha"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsconn"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/nodeservices"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
@@ -80,10 +83,41 @@ func writeKey(t *testing.T, k *ecdsa.PrivateKey) string {
 	return writePEM(t, "EC PRIVATE KEY", der)
 }
 
+// statusServer answers GET /ha/status with st and counts the requests to
+// /ha/ routes (a router discovery probe may reach it first).
+func statusServer(t *testing.T, st cdsha.Status, tls bool) (*httptest.Server, *atomic.Int32) {
+	t.Helper()
+	var hits atomic.Int32
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/ha/") {
+			hits.Add(1)
+		}
+		if r.URL.Path != "/ha/status" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(st)
+	})
+	s := httptest.NewUnstartedServer(h)
+	if tls {
+		s.StartTLS()
+	} else {
+		s.Start()
+	}
+	t.Cleanup(s.Close)
+	return s, &hits
+}
+
 func TestHADecreeCLI(t *testing.T) {
+	// Run as a c8s_dev build, over plain HTTP; the release build's target
+	// refusal is TestHADecreeRefusesWeakTargetPins.
+	defer func(v bool) { allowPlainHTTP = v }(allowPlainHTTP)
+	allowPlainHTTP = true
 	key, _ := testKeyPEM(t)
 	keyPath := writeKey(t, key)
-	out, err := runHA(t, "decree", "--cluster-id", "c1", "--operator-key", keyPath, "--kind", "Genesis", "--bootstrap-node", "n0")
+	fresh, _ := statusServer(t, cdsha.Status{ClusterID: "c1", NodeName: "n0", ID: "n0/1-aa", GenesisCA: "ca-of-n0"}, false)
+	signing := time.Now().UnixMilli()
+	out, err := runHA(t, "decree", "--cluster-id", "c1", "--operator-key", keyPath, "--kind", "Genesis", "--target-url", fresh.URL, "--target-insecure")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,23 +125,35 @@ func TestHADecreeCLI(t *testing.T) {
 		Kind string            `json:"kind"`
 		Data map[string]string `json:"data"`
 	}
-	if err := json.Unmarshal([]byte(out), &cm); err != nil || cm.Kind != "ConfigMap" {
+	if err := json.Unmarshal([]byte(out[strings.Index(out, "{"):]), &cm); err != nil || cm.Kind != "ConfigMap" {
 		t.Fatalf("output %q: %v", out, err)
 	}
 	var sd cdsha.SignedDecree
 	if err := json.Unmarshal([]byte(cm.Data["decree"]), &sd); err != nil || sd.Decree.Kind != cdsha.Genesis || sd.Decree.IntentID == "" {
 		t.Fatalf("decree %+v: %v", sd, err)
 	}
+	if sd.Decree.TargetMember != "n0/1-aa" || sd.Decree.BootstrapNode != "n0" || sd.Decree.Alone {
+		t.Fatalf("Genesis not bound to the target's process: %+v", sd.Decree)
+	}
+	if sd.Decree.GenesisCA != "ca-of-n0" || sd.Decree.IssuedAtMS < signing || sd.Decree.IssuedAtMS > time.Now().UnixMilli() {
+		t.Fatalf("Genesis not bound to the target's mesh CA and the signing time: %+v", sd.Decree)
+	}
 	pub, _ := x509.MarshalPKIXPublicKey(&key.PublicKey)
 	if err := cdsha.CheckDecree(sd, cdsha.PreGenesis("c1", pub), time.Now()); err != nil {
 		t.Fatalf("the CLI's decree does not verify: %v", err)
+	}
+	out, err = runHA(t, "decree", "--cluster-id", "c1", "--operator-key", keyPath, "--kind", "Genesis", "--target-url", fresh.URL, "--target-insecure", "--alone")
+	if err != nil || !strings.Contains(out, "WARNING: --alone") || !strings.Contains(out, `\"alone\":true`) {
+		t.Fatalf("alone Genesis: %v %q", err, out)
 	}
 	out, err = runHA(t, "decree", "--cluster-id", "c1", "--operator-key", keyPath, "--kind", "RotateKey", "--base-epoch", "1", "--i-understand-rotation-forks-the-cluster")
 	if err != nil || !strings.Contains(out, "WARNING") {
 		t.Fatalf("RotateKey without pins must warn (D14): %v %q", err, out)
 	}
-	out, err = runHA(t, "decree", "--cluster-id", "c1", "--operator-key", keyPath, "--kind", "Recover", "--bootstrap-node", "n1", "--base-epoch", "3", "--i-understand-recover-is-break-glass")
-	if err != nil || !strings.Contains(out, "RotateKey") {
+	survivor, _ := statusServer(t, cdsha.Status{ClusterID: "c1", NodeName: "n1", ID: "n1/2-bb", Joined: true, Voters: []string{"n1/2-bb"}}, false)
+	out, err = runHA(t, "decree", "--cluster-id", "c1", "--operator-key", keyPath, "--kind", "Recover", "--bootstrap-node", "n1", "--target-url", survivor.URL, "--target-insecure",
+		"--base-epoch", "3", "--resume-epoch", "5", "--i-understand-recover-is-break-glass")
+	if err != nil || !strings.Contains(out, "RotateKey") || !strings.Contains(out, "n1/2-bb") || !strings.Contains(out, `\"resume_epoch\":5`) {
 		t.Fatalf("Recover: %v %q", err, out)
 	}
 }
@@ -115,21 +161,67 @@ func TestHADecreeCLI(t *testing.T) {
 // Each refusal passes every other required flag, so only its own check can
 // refuse it.
 func TestHADecreeCLIRefusals(t *testing.T) {
+	defer func(v bool) { allowPlainHTTP = v }(allowPlainHTTP)
+	allowPlainHTTP = true
 	key, _ := testKeyPEM(t)
 	p := writeKey(t, key)
+	fresh, _ := statusServer(t, cdsha.Status{ClusterID: "c1", NodeName: "n0", ID: "n0/1-aa", GenesisCA: "ca-of-n0"}, false)
+	noCA, _ := statusServer(t, cdsha.Status{ClusterID: "c1", NodeName: "n0", ID: "n0/1-aa"}, false)
+	joined, _ := statusServer(t, cdsha.Status{ClusterID: "c1", NodeName: "n1", ID: "n1/2-bb", Joined: true, Voters: []string{"n1/2-bb"}}, false)
+	nonVoter, _ := statusServer(t, cdsha.Status{ClusterID: "c1", NodeName: "n1", ID: "n1/2-bb", Joined: true, Voters: []string{"n0/1-aa"}, NonVoters: []string{"n1/2-bb"}}, false)
+	other, _ := statusServer(t, cdsha.Status{ClusterID: "c2", NodeName: "n0", ID: "n0/1-aa"}, false)
+	tgt := func(s *httptest.Server) []string { return []string{"--target-url", s.URL, "--target-insecure"} }
 	for name, c := range map[string]struct {
 		args []string
 		want string
 	}{
 		"RotateKey without the acknowledgement": {[]string{"--kind", "RotateKey", "--base-epoch", "1"}, "--i-understand-rotation-forks-the-cluster"},
 		"RotateKey without --base-epoch":        {[]string{"--kind", "RotateKey", "--i-understand-rotation-forks-the-cluster"}, "--base-epoch"},
-		"Recover without the acknowledgement":   {[]string{"--kind", "Recover", "--bootstrap-node", "n1", "--base-epoch", "3"}, "--i-understand-recover-is-break-glass"},
-		"Recover without a node":                {[]string{"--kind", "Recover", "--base-epoch", "3", "--i-understand-recover-is-break-glass"}, "needs --bootstrap-node"},
+		"Recover without the acknowledgement":   {append([]string{"--kind", "Recover", "--base-epoch", "3"}, tgt(joined)...), "--i-understand-recover-is-break-glass"},
+		"Recover without a target":              {[]string{"--kind", "Recover", "--bootstrap-node", "n1", "--base-epoch", "3", "--i-understand-recover-is-break-glass"}, "needs --target-url"},
+		"Genesis without a target":              {[]string{"--kind", "Genesis", "--bootstrap-node", "n0"}, "needs --target-url"},
+		"Genesis to a replica in a cluster":     {append([]string{"--kind", "Genesis"}, tgt(joined)...), "already holds a cluster"},
+		"Recover to a replica with no cluster":  {append([]string{"--kind", "Recover", "--base-epoch", "3", "--resume-epoch", "3", "--i-understand-recover-is-break-glass"}, tgt(fresh)...), "holds no cluster"},
+		"Recover to a non-voter":                {append([]string{"--kind", "Recover", "--base-epoch", "3", "--resume-epoch", "3", "--i-understand-recover-is-break-glass"}, tgt(nonVoter)...), "not a voter"},
+		"Recover without --resume-epoch":        {append([]string{"--kind", "Recover", "--base-epoch", "3", "--i-understand-recover-is-break-glass"}, tgt(joined)...), "--resume-epoch"},
+		"Recover resuming below --base-epoch":   {append([]string{"--kind", "Recover", "--base-epoch", "3", "--resume-epoch", "2", "--i-understand-recover-is-break-glass"}, tgt(joined)...), "below --base-epoch"},
+		"resume epoch on another kind":          {[]string{"--kind", "SetVoters", "--voters", "3", "--base-epoch", "3", "--resume-epoch", "4"}, "for Recover only"},
+		"target on another node":                {append([]string{"--kind", "Genesis", "--bootstrap-node", "n2"}, tgt(fresh)...), "not --bootstrap-node"},
+		"target of another cluster":             {append([]string{"--kind", "Genesis"}, tgt(other)...), "of cluster"},
+		"Genesis to a replica without its CA":   {append([]string{"--kind", "Genesis"}, tgt(noCA)...), "no genesis_ca"},
+		"plaintext target without insecure":     {[]string{"--kind", "Genesis", "--target-url", fresh.URL}, "refusing plaintext"},
+		"alone on Recover":                      {append([]string{"--kind", "Recover", "--alone", "--base-epoch", "3", "--i-understand-recover-is-break-glass"}, tgt(joined)...), "Genesis only"},
 		"UpdateMeasurements naming a node":      {[]string{"--kind", "UpdateMeasurements", "--measurements", "m", "--base-epoch", "3", "--bootstrap-node", "n1"}, "for Genesis and Recover only"},
+		"UpdateMeasurements with a target":      {append([]string{"--kind", "UpdateMeasurements", "--measurements", "m", "--base-epoch", "3"}, tgt(fresh)...), "for Genesis and Recover only"},
 	} {
 		if out, err := runHA(t, append([]string{"decree", "--cluster-id", "c1", "--operator-key", p}, c.args...)...); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: got %v %q, want %q", name, err, out, c.want)
 		}
+	}
+}
+
+// The member ID a one-shot decree binds to is read only from a replica that
+// armTLS verified: an https endpoint that is not an attested CDS is refused
+// before its status is used (`ha recover`: TestHARecoverCLIErrors).
+func TestHAMemberIDOnlyFromAttestedReplica(t *testing.T) {
+	key, _ := testKeyPEM(t)
+	keyPath := writeKey(t, key)
+	fake, hits := statusServer(t, cdsha.Status{ClusterID: "c1", NodeName: "n0", ID: "n0/1-forged"}, true)
+	out, err := runHA(t, "decree", "--cluster-id", "c1", "--operator-key", keyPath, "--kind", "Genesis", "--target-url", fake.URL,
+		"--target-image-policy-file", "../../testdata/node-identities.json")
+	if err == nil || strings.Contains(out, "ConfigMap") || strings.Contains(out, "forged") {
+		t.Fatalf("Genesis signed for an unattested replica's status: %v %q", err, out)
+	}
+	if err == nil || !strings.Contains(err.Error(), "target replica status") {
+		t.Fatalf("want a target status error, got %v", err)
+	}
+	before := hits.Load()
+	st, err := readTargetStatus(context.Background(), cdsconn.Options{URL: fake.URL, DirectCDS: true, Timeout: 5 * time.Second})
+	if err == nil {
+		t.Fatalf("status of an unattested https endpoint accepted: %+v", st)
+	}
+	if n := hits.Load() - before; n != 0 {
+		t.Fatalf("the unattested endpoint answered %d requests", n)
 	}
 }
 
@@ -145,10 +237,10 @@ func TestHAStatusCLI(t *testing.T) {
 		t.Cleanup(s.Close)
 		return s
 	}
-	a := serve(cdsha.Status{Epoch: 2, CAFingerprint: "aa", Serving: true}, http.StatusOK)
-	b := serve(cdsha.Status{Epoch: 2, CAFingerprint: "aa", Serving: true}, http.StatusOK)
+	a := serve(cdsha.Status{Epoch: 2, CAFingerprint: "aa", Serving: true, Term: 7}, http.StatusOK)
+	b := serve(cdsha.Status{Epoch: 2, CAFingerprint: "aa", Serving: true, Term: 7}, http.StatusOK)
 	broken := serve(cdsha.Status{}, http.StatusInternalServerError)
-	if out, err := runHA(t, "status", "--insecure", a.URL, b.URL); err != nil || !strings.Contains(out, "epoch=2") {
+	if out, err := runHA(t, "status", "--insecure", a.URL, b.URL); err != nil || !strings.Contains(out, "epoch=2") || !strings.Contains(out, "term=7") {
 		t.Fatalf("agreeing replicas: %v %q", err, out)
 	}
 	// A replica serves armTLS: plaintext is refused unless asked for.
@@ -160,18 +252,115 @@ func TestHAStatusCLI(t *testing.T) {
 	}
 }
 
-// Two replicas on one epoch with different CAs is a split cluster.
+// The runbooks gate on the leader's seats, backups and alarms: status prints
+// them after the fields scripts already read, and --json gives the whole view.
+func TestHAStatusCLIPrintsSeatsBackupsAndAlarms(t *testing.T) {
+	leader := cdsha.Status{
+		ClusterID: "c1", NodeName: "n1", ID: "m1", State: "Leader", Joined: true, Epoch: 4, Serving: true, CAFingerprint: "aa",
+		Voters: []string{"m1", "m2", "m3"}, NonVoters: []string{"m4"}, AppliedIndex: 90, Term: 7,
+		Seats: 3, RetiringVoters: []string{"m0"}, KnownVoters: []string{"m1", "m2"},
+		BackupError: "backup failing since 2026-01-01T00:00:00Z (3 attempts): store: forbidden",
+		LastBackup:  &cdsha.BackupStatus{Index: 80, Epoch: 4, AgeMS: 125_400},
+		Fenced:      &cdsha.Fence{Reason: "not yet seen the decree objects in its term"},
+		Stuck:       "apply 85: bad entry",
+		Divergence:  "no majority: m2 differs",
+	}
+	follower := cdsha.Status{ClusterID: "c1", NodeName: "n2", ID: "m2", State: "Follower", Joined: true, Epoch: 4, Serving: true,
+		CAFingerprint: "aa", AwaitingRestore: true, Stuck: "disk full", StuckLocal: true}
+	serve := func(hb cdsha.Status) string {
+		s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewEncoder(w).Encode(hb)
+		}))
+		t.Cleanup(s.Close)
+		return s.URL
+	}
+	a, b := serve(leader), serve(follower)
+
+	out, err := runHA(t, "status", "--insecure", a, b)
+	if err == nil {
+		t.Fatalf("a leader with an unresolved divergence must fail the command: %q", out)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	fields := func(line string) map[string]string {
+		m := map[string]string{}
+		for _, f := range strings.Fields(line) {
+			if k, v, ok := strings.Cut(f, "="); ok {
+				m[k] = v
+			}
+		}
+		return m
+	}
+	want := map[string]map[string]string{
+		a: {"id": "m1", "joined": "true", "term": "7", "voters": "3", "non_voters": "1", "seats": "3", "seats_filled": "false",
+			"retiring_voters": "1", "known_voters": "2", "fenced": "true", "backup_error": "true", "last_backup": "80:4:2m5s",
+			"stuck": "deterministic", "awaiting_restore": "false", "divergence": "true"},
+		b: {"id": "m2", "seats": "0", "fenced": "false", "backup_error": "false", "last_backup": "-", "stuck": "local",
+			"awaiting_restore": "true", "divergence": "false"},
+	}
+	for u, kv := range want {
+		var got map[string]string
+		for _, l := range lines {
+			if strings.HasPrefix(l, u+" ") && strings.Contains(l, " cluster=") {
+				got = fields(l)
+			}
+		}
+		for k, v := range kv {
+			if got[k] != v {
+				t.Errorf("%s: %s=%q, want %q\n%s", u, k, got[k], v, out)
+			}
+		}
+	}
+	for _, alarm := range []string{
+		"FENCED", leader.Fenced.Reason, "divergence: " + leader.Divergence, "backup_error: " + leader.BackupError,
+		"stuck (deterministic): " + leader.Stuck, "stuck (local): " + follower.Stuck,
+	} {
+		if !strings.Contains(out, alarm) {
+			t.Errorf("output lacks %q:\n%s", alarm, out)
+		}
+	}
+
+	dead := httptest.NewServer(http.NotFoundHandler())
+	dead.Close()
+	out, err = runHA(t, "status", "--insecure", "--json", a, b, dead.URL)
+	if err == nil {
+		t.Fatalf("an unreachable replica must fail the command: %q", out)
+	}
+	var got []replicaStatus
+	// cobra appends the error after the JSON.
+	if jerr := json.NewDecoder(strings.NewReader(out)).Decode(&got); jerr != nil {
+		t.Fatalf("--json: %v\n%s", jerr, out)
+	}
+	if len(got) != 3 || got[0].URL != a || got[1].URL != b || got[2].Status != nil || got[2].Error == "" {
+		t.Fatalf("--json reports = %+v", got)
+	}
+	if !reflect.DeepEqual(*got[0].Status, leader) || !reflect.DeepEqual(*got[1].Status, follower) {
+		t.Fatalf("--json statuses differ from the replicas':\n%+v\n%+v", *got[0].Status, *got[1].Status)
+	}
+}
+
+func withCheckpoint(st cdsha.Status, index uint64, state string) cdsha.Status {
+	st.Checkpoint = &cdsha.Point{Index: index, State: state}
+	return st
+}
+
+// Two replicas on one epoch with different CAs is a split cluster, and so
+// are two that hold different state at one checkpoint.
 func TestReportDivergence(t *testing.T) {
 	ok := cdsha.Status{Epoch: 2, CAFingerprint: "aa", Serving: true}
 	for name, c := range map[string]struct {
 		seen []cdsha.Status
 		bad  bool
 	}{
-		"agree":       {[]cdsha.Status{ok, ok}, false},
-		"epoch":       {[]cdsha.Status{ok, {Epoch: 1, CAFingerprint: "aa", Serving: true}}, true},
-		"CA":          {[]cdsha.Status{ok, {Epoch: 2, CAFingerprint: "bb", Serving: true}}, true},
-		"not serving": {[]cdsha.Status{ok, {Epoch: 2, CAFingerprint: "aa"}}, true},
-		"unreachable": {[]cdsha.Status{ok}, true},
+		"agree":             {[]cdsha.Status{ok, ok}, false},
+		"epoch":             {[]cdsha.Status{ok, {Epoch: 1, CAFingerprint: "aa", Serving: true}}, true},
+		"CA":                {[]cdsha.Status{ok, {Epoch: 2, CAFingerprint: "bb", Serving: true}}, true},
+		"not serving":       {[]cdsha.Status{ok, {Epoch: 2, CAFingerprint: "aa"}}, true},
+		"unreachable":       {[]cdsha.Status{ok}, true},
+		"same checkpoint":   {[]cdsha.Status{withCheckpoint(ok, 7, "s1"), withCheckpoint(ok, 7, "s1")}, false},
+		"other checkpoints": {[]cdsha.Status{withCheckpoint(ok, 7, "s1"), withCheckpoint(ok, 9, "s2")}, false},
+		"state differs":     {[]cdsha.Status{withCheckpoint(ok, 7, "s1"), withCheckpoint(ok, 7, "s2")}, true},
+		"leader alarm":      {[]cdsha.Status{ok, {Epoch: 2, CAFingerprint: "aa", Serving: true, Divergence: "no majority: checkpoint 7"}}, true},
+		"settled verdict":   {[]cdsha.Status{ok, {Epoch: 2, CAFingerprint: "aa", Serving: true, Divergence: "stopped diverged replicas: checkpoint 7"}}, false},
 	} {
 		if err := reportDivergence(c.seen, 2); (err != nil) != c.bad {
 			t.Errorf("%s: %v", name, err)
@@ -409,7 +598,7 @@ func TestPreJoinRestoreHandler(t *testing.T) {
 	if call(http.MethodPost, "/ha/restore", "{") != http.StatusBadRequest {
 		t.Fatal("malformed restore")
 	}
-	sd, _ := cdsha.SignDecree(cdsha.Decree{ClusterID: "c1", IntentID: "r", Kind: cdsha.Restore, BootstrapNode: "n9",
+	sd, _ := cdsha.SignDecree(cdsha.Decree{ClusterID: "c1", IntentID: "r", Kind: cdsha.Restore, BootstrapNode: "n9", TargetMember: "n9/1-a", IssuedAtMS: 1,
 		SnapshotSHA256: cdsha.SnapshotSHA256([]byte("s")), ExpiresAt: time.Now().Add(time.Hour)}, k)
 	body, _ := json.Marshal(RestoreRequest{Decree: sd, Snapshot: []byte("s")})
 	// 409 until Run is up; then a restore for another node is misdirected.
@@ -434,6 +623,11 @@ func TestPreJoinRestoreHandler(t *testing.T) {
 
 // recover refuses what it cannot read before it reaches any replica.
 func TestHARecoverCLIErrors(t *testing.T) {
+	// Run as a c8s_dev build, over plain HTTP: these cases are about what
+	// recover checks before it connects. The release build's endpoint
+	// refusal is TestHARecoverRefusesWeakPins.
+	defer func(v bool) { allowPlainHTTP = v }(allowPlainHTTP)
+	allowPlainHTTP = true
 	dir := t.TempDir()
 	k, _ := testKeyPEM(t)
 	keyPath := writeKey(t, k)
@@ -447,13 +641,13 @@ func TestHARecoverCLIErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 	keyDER, _ := x509.MarshalPKCS8PrivateKey(k)
-	header, _ := json.Marshal(map[string]any{"format": cdsha.Format, "index": 5, "core": cdsha.Core{Policy: cdsha.FSMPolicy{Version: 1, LedgerTTLNS: int64(time.Hour), LedgerMax: 100, SecretsMaxPaths: 64, SecretsMaxPerHolder: 8, SecretsMaxValue: 4096}, ClusterID: "c1", Epoch: 1, RootCert: cert.Raw}, "key": keyDER})
-	var encoded bytes.Buffer
-	zw, _ := zstd.NewWriter(&encoded)
-	_, _ = zw.Write(append(header, '\n'))
-	_ = zw.Close()
+	body := testSnapshot(t, map[string]any{"format": cdsha.Format, "index": 5, "core": cdsha.Core{Policy: cdsha.FSMPolicy{Version: 1, LedgerTTLNS: int64(time.Hour), LedgerMax: 100, SecretsMaxPaths: 64, SecretsMaxPerHolder: 8, SecretsMaxValue: 4096}, ClusterID: "c1", Epoch: 1, RootCert: cert.Raw}, "key": keyDER})
+	digests, err := cdsha.ContentDigests(body)
+	if err != nil {
+		t.Fatal(err)
+	}
 	pin := certutil.CertFingerprint(cert.Raw)
-	b, err := cdsha.SealAuthenticatedBackup(&k.PublicKey, cdsha.BackupMeta{ClusterID: "c1", Epoch: 1, Index: 5, CAFingerprint: pin}, encoded.Bytes(), cert.Raw, keyDER)
+	b, err := cdsha.SealAuthenticatedBackup(&k.PublicKey, cdsha.BackupMeta{ClusterID: "c1", Epoch: 1, Index: 5, CAFingerprint: pin, StateDigest: digests.State}, body, cert.Raw, keyDER)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -472,26 +666,15 @@ func TestHARecoverCLIErrors(t *testing.T) {
 		cmd.SetOut(io.Discard)
 		cmd.SetErr(io.Discard)
 		cmd.SetArgs(append([]string{"--cluster-id", "c1", "--bootstrap-node", "n0", "--url", "http://127.0.0.1:1", "--insecure",
-			"--trusted-ca-sha256", pin, "--min-epoch", "0", "--min-index", "0", "--attempts", "1"}, args...))
+			"--trusted-ca-sha256", pin, "--min-epoch", "0", "--min-index", "0", "--resume-epoch", "1", "--attempts", "1"}, args...))
 		return cmd.ExecuteContext(context.Background())
 	}
 	// Authentic backups with absent/unknown policy must fail before even loading
 	// the operator key. A missing decree-key file makes that ordering observable.
 	for name, policy := range map[string]cdsha.FSMPolicy{"missing": {}, "unknown": {Version: 2}} {
 		t.Run("policy-"+name, func(t *testing.T) {
-			header, _ := json.Marshal(map[string]any{"format": cdsha.Format, "index": 5, "core": cdsha.Core{Policy: policy, ClusterID: "c1", Epoch: 1, RootCert: cert.Raw}, "key": keyDER})
-			var encoded bytes.Buffer
-			zw, err := zstd.NewWriter(&encoded)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := zw.Write(append(header, '\n')); err != nil {
-				t.Fatal(err)
-			}
-			if err := zw.Close(); err != nil {
-				t.Fatal(err)
-			}
-			bad, err := cdsha.SealAuthenticatedBackup(&k.PublicKey, b.Meta, encoded.Bytes(), cert.Raw, keyDER)
+			body := testSnapshot(t, map[string]any{"format": cdsha.Format, "index": 5, "core": cdsha.Core{Policy: policy, ClusterID: "c1", Epoch: 1, RootCert: cert.Raw}, "key": keyDER})
+			bad, err := cdsha.SealAuthenticatedBackup(&k.PublicKey, b.Meta, body, cert.Raw, keyDER)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -536,6 +719,15 @@ func TestHARecoverCLIErrors(t *testing.T) {
 			t.Errorf("%s: got %v, want %q", name, err, c.want)
 		}
 	}
+	// The Restore decree binds the member ID from the replica's status: an
+	// https endpoint that armTLS does not verify gets no request at all.
+	unattested, hits := statusServer(t, cdsha.Status{ClusterID: "c1", NodeName: "n0", ID: "n0/1-forged"}, true)
+	if err := run("--backup-file", good, "--recovery-key", keyPath, "--decree-key", keyPath, "--url", unattested.URL); err == nil {
+		t.Fatal("restore against an unattested https endpoint succeeded")
+	}
+	if n := hits.Load(); n != 0 {
+		t.Fatalf("the unattested endpoint answered %d requests", n)
+	}
 }
 
 func TestSetDecreeImages(t *testing.T) {
@@ -553,6 +745,12 @@ func TestSetDecreeImages(t *testing.T) {
 	if err := setDecreeImages(&d, []string{spec}); err != nil {
 		t.Fatalf("matching --measurements refused: %v", err)
 	}
+	// An SNP image is its launch digest, one --image per accepted digest.
+	d = cdsha.Decree{Kind: cdsha.UpdateMeasurements}
+	if err := setDecreeImages(&d, []string{strings.ToUpper(h("d")), h("e")}); err != nil || len(d.Images) != 2 ||
+		d.Images[0].Measurement != h("d") || d.Images[0].MRTD != "" || !slices.Equal(d.Measurements, []string{h("d"), h("e")}) {
+		t.Fatalf("SNP images %+v measurements %v: %v", d.Images, d.Measurements, err)
+	}
 	for name, c := range map[string]struct {
 		kind  cdsha.DecreeKind
 		specs []string
@@ -560,6 +758,7 @@ func TestSetDecreeImages(t *testing.T) {
 	}{
 		"genesis":        {cdsha.Genesis, []string{spec}, nil},
 		"two parts":      {cdsha.UpdateMeasurements, []string{h("a") + ":" + h("b")}, nil},
+		"short digest":   {cdsha.UpdateMeasurements, []string{"dd"}, nil},
 		"short register": {cdsha.UpdateMeasurements, []string{"aa:bb:cc"}, nil},
 		"other pins":     {cdsha.UpdateMeasurements, []string{spec}, []string{"x"}},
 	} {
@@ -638,5 +837,59 @@ func TestHADecreesCLI(t *testing.T) {
 		if _, err := runHA(t, "decrees", "--url", url, "--insecure"); err == nil {
 			t.Errorf("%s: decrees succeeded", name)
 		}
+	}
+}
+
+// A Genesis or Recover decree signs in the member ID its target reports, so
+// in a release build the target is pinned as `ha recover` pins its replica:
+// a launch digest alone or plaintext gets no request at all.
+func TestHADecreeRefusesWeakTargetPins(t *testing.T) {
+	if allowPlainHTTP {
+		t.Skip("c8s_dev builds allow plaintext for the integration harness")
+	}
+	dir := t.TempDir()
+	key, _ := testKeyPEM(t)
+	keyPath := writeKey(t, key)
+	policy := func(name string, edit func(m map[string]any)) string {
+		t.Helper()
+		var doc map[string]any
+		if err := json.Unmarshal(must(os.ReadFile("../../testdata/node-identities.json")), &doc); err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range doc["measurements"].([]any) {
+			edit(m.(map[string]any))
+		}
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, must(json.Marshal(doc)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	noAnchor := policy("no-anchor.json", func(m map[string]any) { delete(m, "approver_key") })
+	noRTMRs := policy("no-rtmrs.json", func(m map[string]any) { delete(m, "rtmr") })
+	st := cdsha.Status{ClusterID: "c1", NodeName: "n1", ID: "n1/2-lagging", Joined: true}
+	plain, plainHits := statusServer(t, st, false)
+	tlsSrv, tlsHits := statusServer(t, st, true)
+	mrtd := strings.Repeat("a1", 48)
+	kinds := map[string][]string{
+		"Recover": {"--kind", "Recover", "--base-epoch", "3", "--resume-epoch", "5", "--i-understand-recover-is-break-glass"},
+		"Genesis": {"--kind", "Genesis"},
+	}
+	for kind, kargs := range kinds {
+		for name, args := range map[string][]string{
+			"plaintext with --target-insecure": {"--target-url", plain.URL, "--target-insecure"},
+			"launch digest only":               {"--target-url", tlsSrv.URL, "--target-measurements", mrtd},
+			"policy without anchors":           {"--target-url", tlsSrv.URL, "--target-image-policy-file", noAnchor},
+			"policy without RTMRs":             {"--target-url", tlsSrv.URL, "--target-image-policy-file", noRTMRs},
+		} {
+			out, err := runHA(t, append(append([]string{"decree", "--cluster-id", "c1", "--operator-key", keyPath}, kargs...), args...)...)
+			// The shared policy loader names the flag without its prefix.
+			if err == nil || !strings.Contains(err.Error(), "image-policy-file") || strings.Contains(out, "ConfigMap") {
+				t.Errorf("%s, %s: %v, want a refusal that asks for --target-image-policy-file", kind, name, err)
+			}
+		}
+	}
+	if n := plainHits.Load() + tlsHits.Load(); n != 0 {
+		t.Fatalf("weakly pinned targets answered %d requests", n)
 	}
 }

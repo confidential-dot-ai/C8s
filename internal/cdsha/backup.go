@@ -22,6 +22,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
@@ -35,7 +36,7 @@ import (
 // the public key can replace the entire backup. Recovery requires an independently
 // trusted CA certificate fingerprint and source signature. The snapshot is already zstd-compressed.
 
-const backupInfo = "c8s-cds-ha-backup-v2\n"
+const backupInfo = "c8s-cds-ha-backup-v3\n" // v3: meta carries epoch_from and state_digest
 
 // BackupMeta says which state a backup holds. The operator compares it with
 // their own record before restoring: an older backup would roll back
@@ -45,8 +46,12 @@ type BackupMeta struct {
 	Epoch          uint64   `json:"epoch"`
 	Index          uint64   `json:"index"`
 	AppliedDecrees []string `json:"applied_decrees"`
+	EpochFrom      []uint64 `json:"epoch_from"` // Core.EpochFrom
 	TakenAtMS      int64    `json:"taken_at_ms"`
 	CAFingerprint  string   `json:"ca_fingerprint"`
+	// StateDigest is the state digest of the snapshot (Digests.State): what
+	// /ha/status reports at a checkpoint of the same state.
+	StateDigest string `json:"state_digest"`
 }
 
 // Backup is one sealed backup. Ciphertext is the HPKE encapsulated key
@@ -148,10 +153,28 @@ func (m backupManifest) partName(clusterID string, i int) string {
 	return BackupName(clusterID) + "-" + m.Gen + "-" + strconv.Itoa(i)
 }
 
-// ErrBackupNotNewer refuses to replace a stored backup with an older one: a
-// deposed leader, or a replica cut off from the majority, must never
-// overwrite the majority's backup with its own stale state.
-var ErrBackupNotNewer = errors.New("cds-ha: a newer backup is already stored")
+// ErrBackupNotNewer refuses to replace a stored backup with one that does not
+// descend from it: a deposed leader, a replica cut off from the majority, or
+// a cluster of another history (a second Genesis, a restore of an older
+// backup, a Recover that lacks writes the stored backup holds) must never
+// overwrite the live cluster's backup.
+var ErrBackupNotNewer = errors.New("cds-ha: the stored backup is newer or of another cluster history")
+
+// Follows reports whether m is later state of o's history: o's decrees are
+// the first of m's, and m is at a later index of o's epoch, or in a later
+// epoch made from o's epoch at or after o's index. Epoch and index alone do
+// not say that: a restore of an older backup, or a Recover side that missed
+// writes, reaches a later epoch from an earlier index.
+func (m BackupMeta) Follows(o BackupMeta) bool {
+	n := len(o.AppliedDecrees)
+	switch {
+	case m.ClusterID != o.ClusterID || len(m.AppliedDecrees) < n || !slices.Equal(m.AppliedDecrees[:n], o.AppliedDecrees):
+		return false
+	case m.Epoch == o.Epoch:
+		return m.Index > o.Index
+	}
+	return m.Epoch > o.Epoch && o.Epoch < uint64(len(m.EpochFrom)) && m.EpochFrom[o.Epoch] >= o.Index
+}
 
 // Newer reports whether m is later state than o: a later epoch (every decree,
 // Restore and Recover raises it), or the same epoch at a later log index.
@@ -182,9 +205,9 @@ func (s KubeDecrees) PutBackup(ctx context.Context, b Backup) error {
 		return err
 	default:
 		var man backupManifest
-		if json.Unmarshal([]byte(cur.Data[keyBackup]), &man) == nil && !b.Meta.Newer(man.Meta) {
-			return fmt.Errorf("%w (stored epoch %d index %d, this one epoch %d index %d)", ErrBackupNotNewer,
-				man.Meta.Epoch, man.Meta.Index, b.Meta.Epoch, b.Meta.Index)
+		if json.Unmarshal([]byte(cur.Data[keyBackup]), &man) == nil && !b.Meta.Follows(man.Meta) {
+			return fmt.Errorf("%w (stored epoch %d index %d decrees %v, this one epoch %d index %d decrees %v)", ErrBackupNotNewer,
+				man.Meta.Epoch, man.Meta.Index, man.Meta.AppliedDecrees, b.Meta.Epoch, b.Meta.Index, b.Meta.AppliedDecrees)
 		}
 	}
 	var nonce [4]byte
@@ -314,8 +337,12 @@ func ValidateRecoverySnapshot(body []byte, meta BackupMeta, minEpoch, minIndex u
 	}
 
 	if sn.Core.ClusterID != meta.ClusterID || sn.Core.Epoch != meta.Epoch || sn.Index != meta.Index ||
-		certutil.CertFingerprint(sn.Core.RootCert) != meta.CAFingerprint || !slices.Equal(sn.Core.AppliedDecrees, meta.AppliedDecrees) {
+		certutil.CertFingerprint(sn.Core.RootCert) != meta.CAFingerprint || !slices.Equal(sn.Core.AppliedDecrees, meta.AppliedDecrees) ||
+		!slices.Equal(sn.Core.EpochFrom, meta.EpochFrom) || sn.Digests.State != meta.StateDigest {
 		return errors.New("backup metadata differs from snapshot")
+	}
+	if got, err := contentDigests(sn, allowlist.ImageDigest); err != nil || got != sn.Digests {
+		return fmt.Errorf("%w: allowlist (%v)", ErrSnapshotDigest, err)
 	}
 	if sn.Core.Epoch < minEpoch || (sn.Core.Epoch == minEpoch && sn.Index < minIndex) {
 		return errors.New("snapshot is older than the recovery floor")

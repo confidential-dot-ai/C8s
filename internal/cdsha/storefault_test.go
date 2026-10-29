@@ -58,8 +58,8 @@ func TestApplyStopsOnLocalStoreFault(t *testing.T) {
 		t.Fatalf("entry the local database refused: answer %#v, want an error", res)
 	}
 	reason := f.Stuck()
-	if !strings.Contains(reason, "log entry 3") || !strings.Contains(reason, "local allowlist store") {
-		t.Fatalf("stuck = %q, want the entry and the local store named", reason)
+	if !strings.Contains(reason, "log entry 3") || !strings.Contains(reason, "local allowlist store") || !f.StuckLocal() {
+		t.Fatalf("stuck = %q (local %v), want a local stop naming the entry and the local store", reason, f.StuckLocal())
 	}
 	// The database recovering does not resume a replica that skipped an entry.
 	if _, err := lock.Exec(`ROLLBACK`); err != nil {
@@ -80,7 +80,7 @@ func TestStuckLeaderTransfersLeadership(t *testing.T) {
 	if old == nil {
 		t.Fatal("no leader")
 	}
-	old.node.fsm.stop(errors.New("test: local store fault"))
+	old.node.fsm.stopLocal(errors.New("test: local store fault"))
 	eventually(t, 15*time.Second, "a replica that follows the log leads and serves", func() bool {
 		l := c.leader()
 		if l == nil || l == old || l.node.fsm.Stuck() != "" {

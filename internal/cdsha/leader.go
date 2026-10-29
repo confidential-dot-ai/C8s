@@ -34,6 +34,16 @@ func (n *Node) recover(ctx context.Context, p PendingDecree) {
 		n.log.Error("recover: application policy", "err", err)
 		return
 	}
+	// INVARIANT: only a voter recovers. A non-voter's log need not hold
+	// every committed entry, and a cut-off non-voter is removed, not
+	// excluded (cutOut): its member ID could join again with a forked log.
+	if !slices.ContainsFunc(n.servers(), func(s raft.Server) bool { return s.ID == n.id && s.Suffrage == raft.Voter }) {
+		n.log.Error("Recover decree refused: this replica is not a voter", "decree", p.Name, "id", n.id)
+		n.setStatus(ctx, p.Name, DecreeStatus{RejectedReason: ErrRecoverNotVoter.Error()})
+		return
+	}
+	n.recovering.Store(true)
+	defer n.recovering.Store(false)
 	n.log.Warn("RECOVER: forcing a one-voter configuration with this replica's state", "decree", p.Name, "id", n.id)
 	n.readCert.Store(nil) // recovery stops read admission before shutting Raft down
 	if err := n.stopRaft(r); err != nil {
@@ -41,7 +51,8 @@ func (n *Node) recover(ctx context.Context, p PendingDecree) {
 			// Its goroutines may still run over the stores and the log:
 			// no new generation over them. Stuck, the replica exits (Run)
 			// and its restart rejoins; the decree stays pending.
-			_ = n.fsm.stop(fmt.Errorf("recover: %w", err))
+			n.raftGone.Store(true)
+			_ = n.fsm.stopLocal(fmt.Errorf("recover: %w", err))
 			return
 		}
 		n.log.Error("recover: shut down raft", "err", err)
@@ -90,21 +101,37 @@ func (n *Node) pendingDecree(ctx context.Context, kind DecreeKind) (PendingDecre
 	if n.cfg.Decrees == nil {
 		return PendingDecree{}, false
 	}
-	ds, err := n.cfg.Decrees.PendingDecrees(ctx)
+	ds, err := n.cfg.Decrees.ListDecrees(ctx)
 	if err != nil {
 		return PendingDecree{}, false
 	}
 	for _, d := range ds {
-		if d.Err != nil || d.Decree.Decree.Kind != kind || d.Decree.Decree.BootstrapNode != n.cfg.NodeName {
+		if d.Status != nil || d.Err != nil || d.Decree.Decree.Kind != kind || d.Decree.Decree.BootstrapNode != n.cfg.NodeName {
 			continue
 		}
-		if err := CheckDecree(d.Decree, n.fsm.Core(), time.Now()); err != nil {
+		err := CheckDecree(d.Decree, n.fsm.Core(), time.Now())
+		if err == nil {
+			err = n.checkTarget(d.Decree)
+		}
+		if err != nil {
 			n.log.Info("decree not usable", "decree", d.Name, "kind", kind, "why", err)
 			continue
 		}
 		return d, true
 	}
 	return PendingDecree{}, false
+}
+
+// checkTarget refuses a one-shot decree meant for another process: its
+// target_member is the member ID this process minted at its start, never
+// one a restarted replica on the same node could hold. Only the replica
+// that acts on the decree checks it; the others apply the logged decree
+// under their own IDs.
+func (n *Node) checkTarget(sd SignedDecree) error {
+	if t := sd.Decree.TargetMember; t != string(n.id) {
+		return fmt.Errorf("%w: the decree names member %q, this replica is %q", ErrNotForThisNode, t, n.id)
+	}
+	return nil
 }
 
 // bootstrap starts a one-voter group with this replica and applies Genesis.
@@ -126,12 +153,17 @@ func (n *Node) bootstrap(ctx context.Context, g PendingDecree) {
 }
 
 // maybeBackup seals and stores the state when it changed since the last
-// stored backup, at most every Timing.Backup (leader only). A state over a
-// snapshot size bound fails every attempt, and each attempt dumps and
-// encodes the whole state: those failures back off (backupDelay), and each
-// is logged as an error and kept in Status.BackupError.
+// stored backup, at most every Timing.Backup (leader only). Every failure is
+// kept in Status.BackupError; a streak of them is logged as an error
+// (backupFailed). A state over a snapshot size bound fails every attempt,
+// and each attempt dumps and encodes the whole state: after such a failure
+// the next attempt backs off (backupDelay).
 func (n *Node) maybeBackup(ctx context.Context) {
-	if n.recovery == nil || n.cfg.Backups == nil || time.Since(n.backupAt) < backupDelay(n.cfg.Timing.Backup, n.backupFails) {
+	wait := n.cfg.Timing.Backup
+	if n.backupTooLarge {
+		wait = backupDelay(wait, n.backupFails)
+	}
+	if n.recovery == nil || n.cfg.Backups == nil || time.Since(n.backupAt) < wait {
 		return
 	}
 	core := n.fsm.Core()
@@ -139,6 +171,14 @@ func (n *Node) maybeBackup(ctx context.Context) {
 	// then still counts as not backed up, and the next round covers it.
 	applied := n.fsm.AppliedIndex()
 	if !core.Joined() || applied == n.backupIndex {
+		return
+	}
+	// Seal only state a majority vouched for: the latest checkpoint matched
+	// at a majority of voters, and no divergence is unresolved
+	// (divergence.go). A stuck leader proposes no checkpoint, so it goes on
+	// to the snapshot, which refuses, and the failure shows in Status.
+	if why := n.backupBlocked(); why != "" && n.fsm.Stuck() == "" {
+		n.log.Debug("backup: waiting", "for", why)
 		return
 	}
 	n.backupAt = time.Now()
@@ -149,13 +189,13 @@ func (n *Node) maybeBackup(ctx context.Context) {
 	}
 	_, rc, err := f.Open()
 	if err != nil {
-		n.log.Warn("backup: open snapshot", "err", err)
+		n.backupFailed("open snapshot", err)
 		return
 	}
 	defer rc.Close()
 	body, err := io.ReadAll(rc)
 	if err != nil {
-		n.log.Warn("backup: read snapshot", "err", err)
+		n.backupFailed("read snapshot", err)
 		return
 	}
 	sn, err := decodeSnapshot(bytes.NewReader(body), n.fsm.readable, true)
@@ -165,7 +205,8 @@ func (n *Node) maybeBackup(ctx context.Context) {
 	}
 	// Export the application state watermark, not Raft's barrier-only suffix.
 	b, err := SealAuthenticatedBackup(n.recovery, BackupMeta{ClusterID: sn.Core.ClusterID, Epoch: sn.Core.Epoch, Index: sn.Index,
-		AppliedDecrees: sn.Core.AppliedDecrees, TakenAtMS: time.Now().UnixMilli(), CAFingerprint: certutil.CertFingerprint(sn.Core.RootCert)}, body, sn.Core.RootCert, sn.Key)
+		AppliedDecrees: sn.Core.AppliedDecrees, EpochFrom: sn.Core.EpochFrom, TakenAtMS: time.Now().UnixMilli(), CAFingerprint: certutil.CertFingerprint(sn.Core.RootCert),
+		StateDigest: sn.Digests.State}, body, sn.Core.RootCert, sn.Key)
 	if err != nil {
 		n.backupFailed("seal", err)
 		return
@@ -173,41 +214,93 @@ func (n *Node) maybeBackup(ctx context.Context) {
 	if err := n.cfg.Backups.PutBackup(ctx, b); err != nil {
 		if errors.Is(err, ErrBackupNotNewer) {
 			// Another leader stored later state (this one is deposed or was
-			// cut off): leave it.
-			n.log.Warn("backup: not stored, a newer one exists", "err", err)
-			n.backupIndex = applied
+			// cut off), or the stored backup is of another history: leave
+			// it. Nothing was stored, so the next interval tries again: the
+			// slot may be emptied (a rollback) with no write to follow.
+			// Shown in Status as "backup refused" until a backup is stored:
+			// a stored manifest is the host's word, and one that keeps
+			// claiming newer state blocks every backup.
+			n.backupFailed("backup refused", err)
 			return
 		}
-		n.log.Warn("backup: store", "err", err)
+		n.backupFailed("store", err)
 		return
 	}
 	n.backupIndex = applied
 	if n.backupFails > 0 {
 		n.log.Info("backups resumed", "after_failures", n.backupFails)
 	}
-	n.backupFails = 0
+	n.backupFails, n.backupTooLarge, n.backupAlarmed = 0, false, false
 	n.backupErr.Store(nil)
+	n.lastBackup.Store(&storedBackup{BackupStatus: BackupStatus{Index: b.Meta.Index, Epoch: b.Meta.Epoch, AtMS: b.Meta.TakenAtMS}, at: time.Now()})
 	n.log.Info("backup stored", "epoch", b.Meta.Epoch, "index", b.Meta.Index, "bytes", len(b.Ciphertext))
 }
 
-// backupFailed reports a backup that failed at stage. A failure on a size
-// bound will repeat until the state shrinks: it is an error, it backs off,
-// and Status carries it. Others are retried at the usual interval.
+// A streak of backup failures is an error once it reaches
+// backupAlarmFailures attempts or lasts backupAlarmPeriods x Timing.Backup:
+// a total loss would now restore older state than the cluster holds.
+const (
+	backupAlarmFailures = 3
+	backupAlarmPeriods  = 3
+)
+
+// backupFailed reports a backup that failed at stage: in Status.BackupError
+// always, as a warning until the streak reaches the alarm, then as an
+// error. A failure on a size bound will repeat until the state shrinks: it
+// is an error at once, and the next attempt backs off.
 func (n *Node) backupFailed(stage string, err error) {
-	if !tooLarge(err) {
-		n.log.Warn("backup: "+stage, "err", err)
-		return
-	}
 	if n.backupFails == 0 {
 		n.backupSince = time.Now()
 	}
 	n.backupFails++
-	retry := backupDelay(n.cfg.Timing.Backup, n.backupFails)
-	msg := fmt.Sprintf("backup failing since %s (%d attempts): the replicated state exceeds the snapshot size limit (%s: %v); no backup is stored until it shrinks",
-		n.backupSince.UTC().Format(time.RFC3339), n.backupFails, stage, err)
+	n.backupTooLarge = tooLarge(err)
+	since := n.backupSince.UTC().Format(time.RFC3339)
+	if n.backupTooLarge {
+		retry := backupDelay(n.cfg.Timing.Backup, n.backupFails)
+		msg := fmt.Sprintf("backup failing since %s (%d attempts): the replicated state exceeds the snapshot size limit (%s: %v); no backup is stored until it shrinks",
+			since, n.backupFails, stage, err)
+		n.backupErr.Store(&msg)
+		n.log.Error("backup failed: the replicated state exceeds the snapshot size limit; no backup is stored until it shrinks (delete allowlist entries or lower --allowlist-history-bytes/--allowlist-history-versions)",
+			"stage", stage, "err", err, "consecutive_failures", n.backupFails, "next_attempt_in", retry)
+		return
+	}
+	msg := fmt.Sprintf("backup failing since %s (%d attempts): %s: %v", since, n.backupFails, stage, err)
 	n.backupErr.Store(&msg)
-	n.log.Error("backup failed: the replicated state exceeds the snapshot size limit; no backup is stored until it shrinks (delete allowlist entries or lower --allowlist-history-bytes/--allowlist-history-versions)",
-		"stage", stage, "err", err, "consecutive_failures", n.backupFails, "next_attempt_in", retry)
+	// The error is logged once per streak; Status.BackupError stays set.
+	if !n.backupAlarmed && (n.backupFails >= backupAlarmFailures || time.Since(n.backupSince) >= backupAlarmPeriods*n.cfg.Timing.Backup) {
+		n.backupAlarmed = true
+		n.log.Error("backups failing: no new backup is stored, so a total loss would restore older state", "stage", stage, "err", err,
+			"consecutive_failures", n.backupFails, "failing_for", time.Since(n.backupSince).Round(time.Second))
+		return
+	}
+	n.log.Warn("backup: "+stage, "err", err, "consecutive_failures", n.backupFails)
+}
+
+// maybeCompact (leader) has Raft snapshot, and so compact, its log once
+// SnapshotThreshold entries were applied since the last snapshot, at most
+// every Timing.Backup. Raft's own check runs only every SnapshotInterval,
+// and a backup, which also snapshots, waits for a confirmed checkpoint
+// (backupBlocked) and a backup store: meanwhile a replica that joins or
+// restarts would replay the whole log. TrailingLogs still lets a follower
+// a little behind catch up from the log, and Persist checks every snapshot
+// against the digests (fsmSnapshot.Persist). The snapshot runs off the Run
+// loop: it dumps and encodes the whole state.
+func (n *Node) maybeCompact() {
+	r := n.r()
+	if r == nil || time.Since(n.compactAt) < n.cfg.Timing.Backup || n.compacting.Load() {
+		return
+	}
+	if last, _, _ := n.snaps.latest(); n.fsm.AppliedIndex() < last+n.rcfg.SnapshotThreshold {
+		return
+	}
+	n.compactAt = time.Now()
+	n.compacting.Store(true)
+	go func() {
+		defer n.compacting.Store(false)
+		if err := r.Snapshot().Error(); err != nil {
+			n.log.Debug("compact log", "err", err)
+		}
+	}()
 }
 
 // pruneSlack lets the history grow this far past HistoryVersions before the
@@ -282,14 +375,13 @@ func (n *Node) maybeRenewCA() {
 }
 
 // AwaitingRestore reports a replica that holds no cluster and has not seen
-// one for dead_after: every replica was lost, and only an operator Restore
-// (or Genesis) can start one. It is how the pre-join server tells the Service
-// it may take the operator's restore; a replica on its way into a live
-// cluster is not ready.
+// one for dead_after: every replica may have been lost, and only an operator
+// Restore (or Genesis) can start one. /ha/status shows it to the operator.
+// It is advice, not readiness: a partitioned replica cannot tell its own
+// isolation from a total loss.
 //
 // Not hearing from a member is not enough: a replica on a node whose pod
-// network is still coming up hears from nobody, and taking client traffic
-// then would answer it from the pre-join server. It needs a peer that
+// network is still coming up hears from nobody. It needs a peer that
 // answered and holds no cluster either, or, for a lone survivor of a total
 // loss, no member for lonerAfter.
 func (n *Node) AwaitingRestore() bool {
@@ -307,12 +399,17 @@ func (n *Node) AwaitingRestore() bool {
 // it offers to take a restore on its own.
 const lonerAfter = 5 * time.Minute
 
-// ErrNotForThisNode refuses a Restore decree that names another node.
-var ErrNotForThisNode = errors.New("cds-ha: the Restore decree names another node")
+// ErrNotForThisNode refuses a one-shot decree that names another node, or
+// another process (an earlier or later start) on this node.
+var ErrNotForThisNode = errors.New("cds-ha: the decree names another node or replica process")
 
 // Restore starts a cluster from an operator backup on this replica, which
-// must hold no cluster and be the node the decree names. No replica it can
-// reach may belong to a cluster: a restore never forks a live one.
+// must hold no cluster and be the node the decree names. As for Genesis,
+// absence is never inferred: discovery must succeed and every discovered
+// replica must answer that it holds no cluster. An empty discovery answer,
+// which the host's DNS can give at will, needs a decree that says alone.
+// Discovery is still the host's: the operator's check that every other
+// replica is gone stays the gate against a cluster the host hides.
 // CheckRestore checks authorization and local eligibility without reading snapshot bytes.
 // Restore repeats this check because state may change during an upload.
 func (n *Node) CheckRestore(sd SignedDecree) error {
@@ -330,7 +427,7 @@ func (n *Node) CheckRestore(sd SignedDecree) error {
 	if err := CheckDecree(sd, n.fsm.Core(), time.Now()); err != nil {
 		return err
 	}
-	return nil
+	return n.checkTarget(sd)
 }
 
 func (n *Node) Restore(ctx context.Context, sd SignedDecree, snapshot []byte) (DecreeResult, error) {
@@ -355,9 +452,19 @@ func (n *Node) Restore(ctx context.Context, sd SignedDecree, snapshot []byte) (D
 	if result.Err != "" {
 		return result, fmt.Errorf("cds-ha: restore preflight: %s", result.Err)
 	}
-	peers, _ := n.cfg.Peers(ctx)
+	peers, err := n.cfg.Peers(ctx)
+	if err != nil {
+		return DecreeResult{}, fmt.Errorf("cds-ha: peer discovery: %w; cannot tell whether a cluster is live", err)
+	}
+	if len(peers) == 0 && !d.Alone {
+		return DecreeResult{}, errors.New("cds-ha: peer discovery found no other replica and the Restore decree does not say alone")
+	}
 	for _, p := range peers {
-		if resp, err := n.call(p, 3*time.Second, controlRequest{Op: ctlStatus}); err == nil && resp.Member {
+		resp, err := n.call(p, 3*time.Second, controlRequest{Op: ctlStatus})
+		switch {
+		case err != nil:
+			return DecreeResult{}, fmt.Errorf("cds-ha: replica %s does not answer, so it may belong to a live cluster: %w", p, err)
+		case resp.Member:
 			return DecreeResult{}, fmt.Errorf("cds-ha: replica %s belongs to a cluster; join it instead of restoring", p)
 		}
 	}
@@ -389,23 +496,80 @@ func (n *Node) applyDecrees(ctx context.Context) {
 	if n.cfg.Decrees == nil {
 		return
 	}
-	ds, err := n.cfg.Decrees.PendingDecrees(ctx)
+	r := n.r()
+	if r == nil {
+		return
+	}
+	term, start := r.CurrentTerm(), time.Now()
+	ds, err := n.cfg.Decrees.ListDecrees(ctx)
 	if err != nil {
 		n.log.Debug("list decrees", "err", err)
 		return
 	}
-	applied := n.fsm.Core().AppliedDecrees
+	// The new leader of a Recover takes leadership before recover has
+	// committed the decree: judged now, that decree would look pending and
+	// late. Every decree waits for the next cycle.
+	if n.recovering.Load() {
+		return
+	}
+	// Recover decrees first: the decree view is fresh once they are judged
+	// (fence.go).
+	core := n.fsm.Core()
+	v := n.decreeView.Load()
+	fresh := v != nil && v.term == term && start.Sub(v.at) < n.cfg.Timing.decreeLease()
+	doubts, ok := n.judgeRecovers(ctx, ds, core, fresh)
+	n.doubts.Store(&doubts)
+	if ok && time.Since(start) < n.cfg.Timing.Apply {
+		n.decreeView.Store(&decreeView{term: term, at: start})
+		n.mu.Lock()
+		clear(n.blindRemoved)
+		n.mu.Unlock()
+	}
 	for _, d := range ds {
-		if d.Err == nil && d.Decree.Decree.Kind == Recover && !slices.Contains(applied, d.Decree.Decree.IntentID) {
-			// A leader holds a majority: nothing was lost for good. Applied
-			// here, the decree would only bump the epoch, and the replica it
-			// names, if merely cut off, would come back to an epoch it did
-			// not see.
-			n.log.Warn("Recover decree refused: the cluster has a leader with a majority", "decree", d.Name)
-			n.setStatus(ctx, d.Name, DecreeStatus{RejectedReason: ErrRecoverWithQuorum.Error()})
+		if d.Status != nil || d.Err == nil && d.Decree.Decree.Kind == Recover && !slices.Contains(core.AppliedDecrees, d.Decree.Decree.IntentID) {
 			continue
 		}
-		n.applyDecree(ctx, d)
+		r := n.r()
+		n.membershipMu.Lock()
+		// A decree can change what reconcile decides from (seats, pins, the
+		// key): never apply one in the middle of a membership pass, nor
+		// after this replica stopped leading.
+		var st DecreeStatus
+		ok := false
+		if r == n.r() && n.stoppingReads.Load() != r && r.State() == raft.Leader {
+			st, ok = n.commitDecree(d)
+		}
+		n.membershipMu.Unlock()
+		if ok {
+			n.setStatus(ctx, d.Name, st) // the API server's wait holds no lock
+		}
+	}
+}
+
+// runDecrees applies operator decrees and stores backups while this
+// replica leads. Both wait on the API server, so they run here rather than
+// in Run's loop: a server that accepts and never answers must not hold up
+// seat repair, history pruning, CA renewal or a stuck leader's exit. One
+// goroutine keeps decrees in order and backups one at a time.
+func (n *Node) runDecrees(ctx context.Context) {
+	t := time.NewTicker(n.cfg.Timing.Tick)
+	defer t.Stop()
+	for {
+		backup := true
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		case <-n.leaderNow: // a new leader has no decree view yet (fence.go)
+			backup = false
+		}
+		if r := n.r(); r == nil || r.State() != raft.Leader {
+			continue
+		}
+		n.applyDecrees(ctx)
+		if backup {
+			n.maybeBackup(ctx)
+		}
 	}
 }
 
@@ -442,17 +606,31 @@ func (n *Node) checkPinsKeepMajority(pins []string) error {
 // ErrPinsLoseMajority refuses a pin set that a majority of voters fail.
 var ErrPinsLoseMajority = errors.New("refused: the new pin set leaves fewer than a majority of voters pinned, which would stop the cluster for good; pin the new image beside the running one first")
 
+// ErrRecoverNotVoter rejects a Recover decree naming a replica that is not a
+// voter in its own configuration (recover).
+var ErrRecoverNotVoter = errors.New("refused: the replica this decree names is not a voter; it may lack committed writes. Name a surviving voter")
+
 // ErrRecoverWithQuorum refuses a Recover decree on a cluster that has a
 // leader, and so a majority of its voters.
 var ErrRecoverWithQuorum = errors.New("refused: the cluster has a leader with a majority of its voters; Recover is break-glass after losing the majority for good")
 
+// applyDecree applies one decree and records the outcome on its object.
+// Callers hold membershipMu.
 func (n *Node) applyDecree(ctx context.Context, p PendingDecree) {
+	if st, ok := n.commitDecree(p); ok {
+		n.setStatus(ctx, p.Name, st)
+	}
+}
+
+// commitDecree checks a decree and commits it through the log. It returns
+// the status to record on the decree object, if any: a failure to commit
+// leaves the decree pending. Callers hold membershipMu.
+func (n *Node) commitDecree(p PendingDecree) (DecreeStatus, bool) {
 	core := n.fsm.Core()
 	if p.Err == nil {
 		if i := slices.Index(core.AppliedDecrees, p.Decree.Decree.IntentID); i >= 0 {
 			epoch := uint64(i + 1)
-			n.setStatus(ctx, p.Name, DecreeStatus{AppliedEpoch: &epoch})
-			return
+			return DecreeStatus{AppliedEpoch: &epoch}, true
 		}
 	}
 	err := p.Err
@@ -468,8 +646,7 @@ func (n *Node) applyDecree(ctx context.Context, p PendingDecree) {
 	}
 	if err != nil {
 		n.log.Info("decree rejected", "decree", p.Name, "why", err)
-		n.setStatus(ctx, p.Name, DecreeStatus{RejectedReason: err.Error()})
-		return
+		return DecreeStatus{RejectedReason: err.Error()}, true
 	}
 	de := DecreeEntry{Decree: p.Decree, AtMS: time.Now().UnixMilli()}
 	if d.Kind == Genesis {
@@ -477,35 +654,38 @@ func (n *Node) applyDecree(ctx context.Context, p PendingDecree) {
 		de.Policy = n.fsm.LocalPolicy()
 	}
 	if d.Kind == Genesis || d.Kind == RotateKey {
-		minted, err := issuer.NewMeshCA(n.cfg.CACommonName, n.cfg.CAValidity)
+		ca, err := n.genesisCA() // the CA the Genesis decree names (Decree.GenesisCA)
+		if d.Kind == RotateKey {
+			ca, err = mintCA(n.cfg)
+		}
 		if err != nil {
 			n.log.Error("mint mesh CA", "err", err)
-			return
+			return DecreeStatus{}, false
 		}
-		ca := minted.Current().CA
 		key, err := x509.MarshalPKCS8PrivateKey(ca.Key)
 		if err != nil {
 			n.log.Error("encode mesh CA key", "err", err)
-			return
+			return DecreeStatus{}, false
 		}
 		de.RootCert, de.Key = ca.Cert.Raw, key
 	}
 	resp, err := n.applyEntry(Entry{Kind: KindDecree, Decree: &de})
 	if err != nil {
 		n.log.Warn("apply decree", "decree", p.Name, "err", err)
-		return
+		return DecreeStatus{}, false
 	}
 	res, _ := resp.(DecreeResult)
 	if res.Err != "" {
-		n.setStatus(ctx, p.Name, DecreeStatus{RejectedReason: res.Err})
-		return
+		return DecreeStatus{RejectedReason: res.Err}, true
 	}
 	n.log.Info("decree applied", "decree", p.Name, "kind", d.Kind, "epoch", res.Epoch)
-	n.setStatus(ctx, p.Name, DecreeStatus{AppliedEpoch: &res.Epoch})
+	return DecreeStatus{AppliedEpoch: &res.Epoch}, true
 }
 
-func (n *Node) setStatus(ctx context.Context, name string, st DecreeStatus) {
+func (n *Node) setStatus(ctx context.Context, name string, st DecreeStatus) bool {
 	if err := n.cfg.Decrees.SetDecreeStatus(ctx, name, st); err != nil {
 		n.log.Warn("write decree status", "decree", name, "err", err)
+		return false
 	}
+	return true
 }

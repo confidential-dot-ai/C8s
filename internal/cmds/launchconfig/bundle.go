@@ -236,6 +236,11 @@ type JoinOptions struct {
 	// force (GET /ha/pins), so the control plane cannot feed the new node an
 	// older, still-signed decree.
 	PinFloor uint64
+	// PinDecree, for a cds node, is the pin decree the replicas applied, as
+	// `c8s cds ha pin-policy --decree-out` reads it over armTLS. Its images
+	// are the node's peer images and its base epoch the pin floor, so an
+	// image the decree removed is not admitted even before the node joins.
+	PinDecree *cdsha.SignedDecree
 }
 
 // AddNode derives an agent or cds document from the bundle's server
@@ -244,7 +249,8 @@ type JoinOptions struct {
 // or cds key and writes <dir>/<name>. It works on a bundle created earlier,
 // so a cluster can grow without regenerating or re-signing anything the
 // server already booted with. With o.Image set the node boots that image (a
-// rollout) and still accepts the server's images as peer images.
+// rollout): an agent still accepts the server's image as a peer image, a cds
+// node only the images of o.PinDecree, which it then requires.
 func AddNode(dir string, role Role, o JoinOptions) (err error) {
 	keyFile := agentKeyFile
 	switch role {
@@ -301,10 +307,32 @@ func AddNode(dir string, role Role, o JoinOptions) (err error) {
 	agent.RKE2 = RKE2{AgentToken: server.RKE2.AgentToken, NodePassword: password}
 	agent.Server.Address = o.ServerAddress
 	agent.Router = nil
-	// A bundle's server document has no peer images (only AddNode writes
-	// them), so a node on another image accepts exactly the server's.
-	if o.Image != nil && !sameImage(*o.Image, server.Image) {
-		agent.Image, agent.PeerImages = *o.Image, []Image{server.Image}
+	if o.Image != nil {
+		agent.Image = *o.Image
+	}
+	switch rolled := !sameImage(agent.Image, server.Image); {
+	case o.PinDecree != nil:
+		if role != CDS {
+			return errors.New("--pin-decree sets a cds node's peer images; an agent follows decrees at run time")
+		}
+		if o.PinFloor != 0 {
+			return errors.New("--pin-floor and --pin-decree: the pin decree's base epoch is the floor")
+		}
+		peers, err := decreePeerImages(server, agent.Image, *o.PinDecree)
+		if err != nil {
+			return err
+		}
+		agent.PeerImages, o.PinFloor = peers, o.PinDecree.Decree.BaseEpoch
+	case rolled && role == CDS:
+		// INVARIANT: a cds node's peer images come from the applied pin
+		// decree, never from the server document: that image may be one the
+		// operator has removed since.
+		return errors.New("a cds node on another image than the server document's needs --pin-decree (c8s cds ha pin-policy --decree-out): its peer images come from the applied pin decree")
+	case rolled:
+		// A bundle's server document has no peer images (only AddNode
+		// writes them), so an agent on another image accepts exactly the
+		// server's.
+		agent.PeerImages = []Image{server.Image}
 	}
 	if o.PinFloor > 0 {
 		if server.CDSHA == nil {
@@ -315,6 +343,40 @@ func AddNode(dir string, role Role, o JoinOptions) (err error) {
 		agent.CDSHA = &ha
 	}
 	return writeSignedDocument(filepath.Join(dir, o.Name), agent, key, pub)
+}
+
+// decreePeerImages checks sd, the pin decree the replicas applied, against the
+// bundle's decree key and cluster, and returns its images other than own,
+// which it must contain: the replicas admit no image the decree leaves out.
+func decreePeerImages(server *Document, own Image, sd cdsha.SignedDecree) ([]Image, error) {
+	key, err := runtimemeasure.ParsePublicKeyPEM([]byte(server.CDSHA.DecreeKey))
+	if err != nil {
+		return nil, fmt.Errorf("bundle decree key: %w", err)
+	}
+	der, err := x509.MarshalPKIXPublicKey(key)
+	if err != nil {
+		return nil, err
+	}
+	if err := cdsha.VerifyPinDecree(sd, server.ClusterID, der); err != nil {
+		return nil, fmt.Errorf("--pin-decree: %w", err)
+	}
+	var peers []Image
+	ownIn := false
+	for _, di := range sd.Decree.Images {
+		img := Image{Platform: "snp", Measurement: di.Measurement}
+		if !di.SNP() {
+			img = Image{Platform: "tdx", Measurement: di.MRTD, RTMRs: map[int]string{1: di.RTMR1, 2: di.RTMR2}}
+		}
+		if sameImage(img, own) {
+			ownIn = true
+			continue
+		}
+		peers = append(peers, img)
+	}
+	if !ownIn {
+		return nil, errors.New("--pin-decree does not name the node's image: the replicas would not admit it")
+	}
+	return peers, nil
 }
 
 // imageFromManifest turns the build's provenanced manifest into the launch

@@ -17,12 +17,18 @@ import (
 //     cannot join;
 //   - a replica that meets an entry or a snapshot newer than it reads stops
 //     serving: skipping an entry would silently diverge from the group.
-const Format uint32 = 3
+const Format uint32 = 4
 
 // baseFormat is the oldest format this release reads: a new cluster starts
-// at it, and a format left unset (zero) means it. Formats 1 and 2 are incompatible and refused. This is a clean-redeploy
+// at it, and a format left unset (zero) means it. Formats 1 to 3 are
+// incompatible and refused (format 4 added Core.EpochFrom and the one-shot
+// decrees' target_member and alone fields, which an older replica would
+// drop before it checks the operator's signature; snapshots carry state
+// digests, and KindCheckpoint is new; an allowlist replace_all applies only
+// while the version matches its if_match, which an older replica would
+// ignore). This is a clean-redeploy
 // boundary, not a rolling upgrade; see docs/cds-ha.md.
-const baseFormat uint32 = 3
+const baseFormat uint32 = 4
 
 // ErrNewerFormat is a log entry or snapshot this replica cannot read.
 var ErrNewerFormat = errors.New("cds-ha: log entry or snapshot in a newer format than this replica reads")
