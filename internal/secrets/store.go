@@ -15,6 +15,17 @@ import (
 // ErrNotFound reports a path the store does not hold.
 var ErrNotFound = errors.New("secrets: no such path")
 
+// ErrUnavailable wraps a store that may take the next write: a CDS HA replica
+// with no leader or no quorum.
+var ErrUnavailable = errors.New("secrets: store unavailable; retry")
+
+// ErrCapacity wraps a write refused because the replicated state is near what
+// a snapshot can hold. It clears when the state shrinks.
+var ErrCapacity = errors.New("secrets: replicated state at capacity")
+
+// capacityMessage answers a write the cluster's state size refused.
+const capacityMessage = "CDS state is at its snapshot capacity: writes that grow it are refused until it shrinks; retry later"
+
 // The two refusals a write that grows the path map can meet.
 var (
 	ErrHolderQuota = errors.New("secrets: holder path quota")
@@ -158,7 +169,9 @@ func (s *MemoryStore) Get(_ context.Context, path string) ([]byte, error) {
 	return append([]byte(nil), e.value...), nil
 }
 
-func (s *MemoryStore) PutIfAbsent(_ context.Context, path string, value []byte, by Holder) ([]byte, Held, error) {
+// putIfAbsent applies a put_if_absent command. Only Apply reaches it, so no
+// writer can skip the committer.
+func (s *MemoryStore) putIfAbsent(path string, value []byte, by Holder) ([]byte, Held, error) {
 	if err := s.checkValue(value); err != nil {
 		return nil, Held{}, err
 	}
@@ -174,7 +187,8 @@ func (s *MemoryStore) PutIfAbsent(_ context.Context, path string, value []byte, 
 	return append([]byte(nil), value...), Held{}, nil
 }
 
-func (s *MemoryStore) Put(_ context.Context, path string, value []byte) (Held, error) {
+// put applies a put command (see putIfAbsent).
+func (s *MemoryStore) put(path string, value []byte) (Held, error) {
 	if err := s.checkValue(value); err != nil {
 		return Held{}, err
 	}

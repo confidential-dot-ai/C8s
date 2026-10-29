@@ -54,44 +54,62 @@ func New(ttl time.Duration, max int) *Ledger {
 	}
 }
 
-// Record binds sandboxID to inventoryHost, reporting whether the binding holds.
+// recordAt binds sandboxID to inventoryHost as of now, reporting whether the
+// binding holds. It is first-write-wins: false means a different, unexpired
+// host already owns the sandbox, or the ledger is at its cap with nothing to
+// reclaim.
 //
-// It returns false only when a *different*, unexpired host already owns the
-// sandbox. The same host re-recording is a refresh, not a conflict: a workload
-// renews its certificate on an interval and re-presents the same pair, so
-// once-only would refuse a pod its own renewal.
-//
-// A caller must not deny issuance on false. get-cert has no token-less retry, so
-// refusing there would let one pre-claim wedge a pod for a full certificate
-// lifetime — a worse outcome than the theft it prevents. False means the sandbox
-// is unsafe to answer questions about, not that the requester is unauthorized.
-func (l *Ledger) Record(sandboxID, inventoryHost string) bool {
+// The same host re-recording is a refresh, not a conflict: a workload renews
+// its certificate on an interval and re-presents the same pair, so once-only
+// would refuse a pod its own renewal.
+func (l *Ledger) recordAt(now time.Time, sandboxID, inventoryHost string) Held {
 	if sandboxID == "" || inventoryHost == "" {
 		return false
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	now := l.now()
-	if b, ok := l.bindings[sandboxID]; ok && now.Before(b.expires) {
-		if b.host != inventoryHost {
-			return false
+	switch held, ok := l.bindings[sandboxID]; {
+	case ok && held.host == inventoryHost:
+		// A binding's expiry never moves back, so a command stamped by a clock
+		// behind the one that made it keeps the binding.
+		l.bindings[sandboxID] = binding{
+			host:    inventoryHost,
+			expires: later(now.Add(l.ttl), held.expires),
 		}
+		return true
+	case ok && now.Before(held.expires):
+		return false
+	case !ok && !l.makeRoomLocked(now):
+		return false
 	}
-	if _, ok := l.bindings[sandboxID]; !ok && len(l.bindings) >= l.max {
-		l.evictExpiredLocked(now)
-		if len(l.bindings) >= l.max {
-			return false
-		}
+	l.bindings[sandboxID] = binding{
+		host:    inventoryHost,
+		expires: now.Add(l.ttl),
 	}
-	l.bindings[sandboxID] = binding{host: inventoryHost, expires: now.Add(l.ttl)}
 	return true
 }
 
-// Lookup returns the inventory host bound to sandboxID. An expired or absent
-// binding reports false, which callers must treat as fail-closed: without it
-// there is no inventory this process is willing to believe about the sandbox.
-func (l *Ledger) Lookup(sandboxID string) (string, bool) {
+// makeRoomLocked reports room for a binding the ledger does not hold yet; at
+// the cap it reclaims the bindings expired at now (l.mu held).
+func (l *Ledger) makeRoomLocked(now time.Time) bool {
+	if len(l.bindings) < l.max {
+		return true
+	}
+	l.dropExpiredLocked(now)
+	return len(l.bindings) < l.max
+}
+
+// later is the further of two expiry times.
+func later(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b
+	}
+	return a
+}
+
+// bound returns the inventory host bound to sandboxID, if the binding is live.
+func (l *Ledger) bound(sandboxID string) (string, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -102,34 +120,27 @@ func (l *Ledger) Lookup(sandboxID string) (string, bool) {
 	return b.host, true
 }
 
-// Len reports the number of live bindings, for metrics and tests.
+// Len reports the number of live bindings, for metrics and tests. It only
+// counts: a binding is dropped when a command needs its room, so every
+// replica holds the same bindings whatever each one's clock says.
 func (l *Ledger) Len() int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.evictExpiredLocked(l.now())
-	return len(l.bindings)
+	now := l.now()
+	live := 0
+	for _, b := range l.bindings {
+		if now.Before(b.expires) {
+			live++
+		}
+	}
+	return live
 }
 
-func (l *Ledger) evictExpiredLocked(now time.Time) {
+// dropExpiredLocked removes the bindings expired at now (l.mu held).
+func (l *Ledger) dropExpiredLocked(now time.Time) {
 	for id, b := range l.bindings {
 		if !now.Before(b.expires) {
 			delete(l.bindings, id)
-		}
-	}
-}
-
-// EvictionLoop drops expired bindings on each tick until done is closed.
-func (l *Ledger) EvictionLoop(done <-chan struct{}, interval time.Duration) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-done:
-			return
-		case <-ticker.C:
-			l.mu.Lock()
-			l.evictExpiredLocked(l.now())
-			l.mu.Unlock()
 		}
 	}
 }

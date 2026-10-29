@@ -36,7 +36,7 @@ import (
 // attacker who controls a TEE workload and a CA-signed leaf for any subject
 // they choose. An empty Images set admits nobody.
 type AttestHandler struct {
-	Challenges        *attestation.ChallengeStore
+	Challenges        attestation.Challenges
 	AttestationClient remote.Client
 	MeshCA            *issuer.MeshCA
 	CertTTL           time.Duration

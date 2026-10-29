@@ -42,10 +42,10 @@ func newStubRouter(t *testing.T) http.Handler {
 	if err != nil {
 		t.Fatalf("ca: %v", err)
 	}
-	cs := attestation.NewChallengeStore(time.Minute)
+	cs := attestation.NewLocalChallenges(time.Minute)
 	deps := dependencies{
 		AttestHandler: AttestHandler{
-			Challenges: &cs,
+			Challenges: cs,
 			CertTTL:    time.Hour,
 		},
 		AllowlistHandler: allowlist.Handler{
@@ -69,7 +69,7 @@ func TestRouter_RateLimitsAttestationEndpoints(t *testing.T) {
 	store, _ := allowlist.OpenInMemory()
 	t.Cleanup(func() { _ = store.Close() })
 	mesh, _ := issuer.NewMeshCA("test ca", time.Hour)
-	cs := attestation.NewChallengeStore(time.Minute)
+	cs := attestation.NewLocalChallenges(time.Minute)
 	// Burst of 1, so the second request from the same source IP is rejected.
 	rl, err := issuer.NewIPRateLimiter(rate.Limit(1), 1, 100)
 	if err != nil {
@@ -77,7 +77,7 @@ func TestRouter_RateLimitsAttestationEndpoints(t *testing.T) {
 	}
 	deps := dependencies{
 		AttestHandler: AttestHandler{
-			Challenges: &cs,
+			Challenges: cs,
 			CertTTL:    time.Hour,
 		},
 		AllowlistHandler: allowlist.Handler{
@@ -154,7 +154,7 @@ func TestRouter_RateLimitsAuthenticate(t *testing.T) {
 	store, _ := allowlist.OpenInMemory()
 	t.Cleanup(func() { _ = store.Close() })
 	mesh, _ := issuer.NewMeshCA("test ca", time.Hour)
-	cs := attestation.NewChallengeStore(time.Minute)
+	cs := attestation.NewLocalChallenges(time.Minute)
 	// Burst of 1 with a refill too slow to reach, so the assertion is on the
 	// budget rather than on how fast the test runs. The challenge route has a
 	// limiter of its own, as it does in the shipped wiring.
@@ -170,7 +170,7 @@ func TestRouter_RateLimitsAuthenticate(t *testing.T) {
 	}
 	deps := dependencies{
 		AttestHandler: AttestHandler{
-			Challenges: &cs,
+			Challenges: cs,
 			CertTTL:    time.Hour,
 		},
 		AllowlistHandler: allowlist.Handler{
@@ -283,10 +283,10 @@ func TestRouter_AttestRejectsOversizedBody(t *testing.T) {
 	store, _ := allowlist.OpenInMemory()
 	t.Cleanup(func() { _ = store.Close() })
 	mesh, _ := issuer.NewMeshCA("test ca", time.Hour)
-	cs := attestation.NewChallengeStore(time.Minute)
+	cs := attestation.NewLocalChallenges(time.Minute)
 	deps := dependencies{
 		AttestHandler: AttestHandler{
-			Challenges: &cs,
+			Challenges: cs,
 			CertTTL:    time.Hour,
 		},
 		AllowlistHandler: allowlist.Handler{

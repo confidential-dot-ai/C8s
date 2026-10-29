@@ -88,9 +88,9 @@ func newTestAttestHandler(t *testing.T, stubURL string, pinned []remote.ImagePin
 	if err != nil {
 		t.Fatalf("new mesh ca: %v", err)
 	}
-	store := attestation.NewChallengeStore(30 * time.Second)
+	store := attestation.NewLocalChallenges(30 * time.Second)
 	return AttestHandler{
-		Challenges:        &store,
+		Challenges:        store,
 		AttestationClient: remote.NewClient(stubURL),
 		MeshCA:            mesh,
 		CertTTL:           time.Hour,
@@ -110,7 +110,10 @@ func imagePin(t *testing.T, name, digest string) remote.ImagePin {
 
 func issueChallenge(t *testing.T, h AttestHandler) string {
 	t.Helper()
-	c := h.Challenges.Create()
+	c, err := h.Challenges.Create()
+	if err != nil {
+		t.Fatalf("create challenge: %v", err)
+	}
 	return base64.StdEncoding.EncodeToString(c[:])
 }
 

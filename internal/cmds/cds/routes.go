@@ -27,7 +27,7 @@ type dependencies struct {
 	ChallengeLimiter  *issuer.IPRateLimiter // /authenticate's own, so it cannot spend the map above
 	MaxRequestSize    int64                 // applied to write endpoints; must be > 0
 	SecretsHandler    *secrets.Handler      // nil leaves /secrets unrouted (--secrets off)
-	SecretsChallenges *attestation.ChallengeStore
+	SecretsChallenges attestation.Challenges
 	SecretsOperator   *secrets.OperatorHandler // operator-supplied values; routed with SecretsHandler
 	SecretsExplain    *secrets.ExplainHandler  // release diagnostic; routed with SecretsHandler
 }
