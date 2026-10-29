@@ -299,6 +299,7 @@ internal/          Operator, webhook, attestation, mesh CA, secret store,
 pkg/               Public Go libraries (see Libraries above)
 node-guest-image/  The node-image definition for node-as-CVM (new home;
                    phase 0 — nothing consumes it from here yet)
+images/cds-guest/  The CDS-image definition for the CDS as its own CVM
 docs/              Design and operator docs
 samples/           Example manifests
 scripts/           Dev and CI helpers

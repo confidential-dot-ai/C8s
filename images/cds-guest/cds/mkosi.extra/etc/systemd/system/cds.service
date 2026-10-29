@@ -1,0 +1,34 @@
+[Unit]
+Description=C8s Certificate Distribution Service
+Documentation=https://github.com/confidential-dot-ai/c8s
+# The CDS config is this VM's launch file: the confos initrd binds it to the
+# attestation (SNP HOST_DATA, TDX RTMR[3]) and stages it read-only here.
+# Without it the unit is skipped and nothing listens.
+ConditionPathExists=/run/confai/operator-pubkey
+Requires=attestation-api.service
+After=attestation-api.service network-online.target
+Wants=network-online.target
+# The trust root keeps retrying for as long as the VM runs: the route to AMD
+# or Intel can come up minutes after boot.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# The settings the CDS config does not carry are fixed here, at the values
+# the chart renders today. The store is the runtime directory: an in-memory
+# trust root re-bootstraps its mesh CA on every start anyway.
+ExecStart=/usr/local/bin/c8s cds \
+    --config=/run/confai/operator-pubkey \
+    --attestation-api-url=http://127.0.0.1:8400 \
+    --allowlist-db=/run/cds/allowlist.db \
+    --max-request-size=262144 \
+    --san-validation=false
+Restart=on-failure
+RestartSec=5
+RuntimeDirectory=cds
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=strict
+
+[Install]
+WantedBy=multi-user.target

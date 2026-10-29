@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# mkosi sync hook for the cds profile.
+#
+# Same mechanism as the attest profile's sync (see its header for the oras +
+# layer-extract approach and the mkosi.local staging convention). Stages two
+# artifacts under usr/local/bin: the multi-command c8s binary, and the
+# attestation-api the CDS self-check verifies against. The attest profile
+# stages its own pinned attestation-api; this hook runs after it (profile
+# order in images/cds-guest/build), so the measured attester is the
+# attestation-rs build .github/build-pins.json names for the node images.
+#
+# Both binaries' bytes sit in the verity-protected root, so a new C8S_REF or
+# attestation-rs pin changes the launch measurement of any `--profile cds`
+# build — intended behaviour.
+
+set -euo pipefail
+
+STAGE_DIR="$SRCDIR/mkosi.local/mkosi.extra"
+
+# Inputs arrive through confos's explicit sync-input files; mkosi runs under
+# sudo, which strips the caller's environment. Each is required: there is no
+# default ref, so a build that forgot one cannot pin stale bytes.
+SYNC_INPUTS="$SRCDIR/mkosi.local/.confos-sync-inputs"
+sync_input() {
+    local value
+    value=$(cat "$SYNC_INPUTS/$1" 2>/dev/null || true)
+    if [ -z "$value" ]; then
+        echo "cds sync: FATAL the $1 sync-input is empty; build through images/cds-guest/build" >&2
+        exit 1
+    fi
+    printf '%s' "$value"
+}
+
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
+
+# Install the binary a published image carries at its root; the target's
+# basename names it. Both images are built by docker and published as an OCI
+# image index (amd64 image + provenance manifest).
+stage_published_binary() {
+    local repo=$1 ref=$2 target=$3
+    local binary digest child layers extract
+    binary=$(basename "$target")
+
+    # Resolve the ref once, then fetch every blob by that digest: a tag that
+    # moves mid-build cannot swap the bytes under the measurement.
+    digest=$(oras manifest fetch --descriptor "${repo}:${ref}" | jq -r '.digest' || true)
+    case "$digest" in
+        sha256:*) ;;
+        *) echo "cds sync: FATAL cannot resolve ${repo}:${ref}" >&2; exit 1 ;;
+    esac
+    echo "cds sync: ref ${ref} -> ${binary} ${digest}"
+
+    child=$(oras manifest fetch "${repo}@${digest}" \
+        | jq -r '[.manifests[] | select(.platform.architecture == "amd64")][0].digest')
+    case "$child" in
+        sha256:*) ;;
+        *) echo "cds sync: FATAL no amd64 manifest in index ${repo}@${digest}" >&2; exit 1 ;;
+    esac
+
+    # Every gzipped tar layer in manifest order into one staging dir; later
+    # layers shadow earlier ones, the same flattening containerd performs.
+    layers=$(oras manifest fetch "${repo}@${child}" \
+        | jq -r '.layers[] | select(.mediaType | test("tar.?gzip$")) | .digest')
+    if [ -z "$layers" ]; then
+        echo "cds sync: FATAL no tar+gzip layers in ${repo}@${child} (zstd or unexpected media types?)" >&2
+        exit 1
+    fi
+    extract="$TMP/$binary"
+    mkdir -p "$extract"
+    while read -r layer; do
+        echo "cds sync: fetching layer $layer" >&2
+        oras blob fetch --output "$TMP/layer.tar.gz" "${repo}@${layer}"
+        tar -xzf "$TMP/layer.tar.gz" -C "$extract"
+        rm -f "$TMP/layer.tar.gz"
+    done <<<"$layers"
+
+    if [ ! -f "$extract/$binary" ]; then
+        echo "cds sync: FATAL no $binary at / in ${repo}@${child}" >&2
+        find "$extract" -maxdepth 2 -name "$binary*" >&2
+        exit 1
+    fi
+    install -D -m 0755 "$extract/$binary" "$target"
+    echo "cds sync: staged $binary from ${repo}@${digest}"
+}
+
+C8S_REF=$(sync_input c8s-ref)
+ATTESTATION_RS_REF=$(sync_input attestation-rs-ref)
+
+# `c8s cds` is the service the image runs.
+stage_published_binary ghcr.io/confidential-dot-ai/c8s-operator \
+    "$C8S_REF" "$STAGE_DIR/usr/local/bin/c8s"
+# attestation-rs CI publishes one image per main commit, tagged sha-<short>.
+stage_published_binary ghcr.io/confidential-dot-ai/attestation-api \
+    "sha-${ATTESTATION_RS_REF:0:7}" "$STAGE_DIR/usr/local/bin/attestation-api"
