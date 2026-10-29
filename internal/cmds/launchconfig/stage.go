@@ -65,7 +65,6 @@ func clearOutputs(cfg Config) error {
 		"peers.json",
 		"operator-pubkey",
 		"config.json",
-		"workloads.json",
 	} {
 		paths = append(paths, Dir+"/"+name)
 	}
@@ -121,9 +120,6 @@ func stageVerified(cfg Config, v *Verified) error {
 	if doc.RKE2.NodePassword != "" {
 		// Without one (an older bundle), RKE2 generates its own per boot.
 		outputs = append(outputs, outputFile{nodePasswordPath, []byte(doc.RKE2.NodePassword + "\n")})
-	}
-	if doc.Workloads != "" {
-		outputs = append(outputs, outputFile{Dir + "/workloads.json", []byte(doc.Workloads)})
 	}
 	if len(doc.RegistryMirrors) > 0 {
 		registries, err := yaml.Marshal(registriesFile(doc))

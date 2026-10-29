@@ -14,6 +14,13 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
+// The pair an operator launches and verifies a CDS VM with, named the same by
+// every generator that writes them.
+const (
+	ConfigFile = "cds-config.yaml"
+	PinFile    = "cds-pin.json"
+)
+
 // Document is one cluster's CDS settings as a launch file carries them: each
 // embedded policy the exact bytes its own parser reads.
 type Document struct {

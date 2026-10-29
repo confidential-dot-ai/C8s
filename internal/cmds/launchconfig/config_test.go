@@ -42,12 +42,13 @@ func testDocument(t *testing.T, platform string, role Role) (Document, *ecdsa.Pr
 	serverKey, serverPub := testKey(t)
 	agentKey, agentPub := testKey(t)
 	doc := Document{
-		SchemaVersion: SchemaVersionV1, ClusterID: "cluster-one", Role: role,
+		SchemaVersion: SchemaVersion, ClusterID: "cluster-one", Role: role,
 		Image:                   Image{Platform: platform, Measurement: strings.Repeat("11", 48)},
 		Node:                    Node{Name: "node-one", IP: "10.0.0.2", ExternalIP: "192.0.2.4"},
 		RKE2:                    RKE2{AgentToken: strings.Repeat("a", 64)},
 		Server:                  ServerConfig{Address: "10.0.0.1", OperatorPublicKey: serverPub},
 		AgentOperatorPublicKeys: []string{agentPub},
+		CDS:                     CDS{Address: "192.0.2.50:8443", Measurements: testCDSPin(t, teetypes.FamilySNP, 2)},
 	}
 	if platform == "tdx" {
 		doc.Image.RTMRs = map[int]string{1: strings.Repeat("22", 48), 2: strings.Repeat("33", 48)}
@@ -123,7 +124,6 @@ func TestStageBothRolesAndPlatforms(t *testing.T) {
 			t.Run(platform+"/"+string(role), func(t *testing.T) {
 				doc, key, pub := testDocument(t, platform, role)
 				doc.Node.IP = "0.0.0.0"
-				doc.Workloads = `{"schema":"c8s.allowlist/v1","workloads":{}}`
 				testLoader(t, doc, pub)
 				cfg := testConfig(t, doc, key)
 				if err := Stage(context.Background(), cfg); err != nil {
@@ -141,8 +141,8 @@ func TestStageBothRolesAndPlatforms(t *testing.T) {
 					t.Fatal(err)
 				}
 				cds := stagedCDSPolicy(t, staged)
-				if len(peers.Images) != 2 || len(cds.Images) != 1 || !bytes.Equal(cds.Images[0].Anchor, []byte(doc.Server.OperatorPublicKey)) {
-					t.Fatal("node and server policy sets are not separated")
+				if len(peers.Images) != 2 || len(cds.Images) != 2 || !bindsEveryLaunchFile(cds) {
+					t.Fatal("the node's peer pins and its CDS pin are not separated")
 				}
 				for _, entry := range peers.Images {
 					if !bytes.Equal(entry.Digest, mustDecodeHex(doc.Image.Measurement)) {
@@ -175,7 +175,7 @@ func TestStageBothRolesAndPlatforms(t *testing.T) {
 						t.Fatal("agent does not join signed server")
 					}
 				}
-				for _, path := range []string{DefaultStagedPath, agentTokenPath, Dir + "/workloads.json", rke2FragmentPath} {
+				for _, path := range []string{DefaultStagedPath, agentTokenPath, rke2FragmentPath} {
 					info, err := os.Stat(cfg.path(path))
 					if err != nil {
 						t.Fatal(err)

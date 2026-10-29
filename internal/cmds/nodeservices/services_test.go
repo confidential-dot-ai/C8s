@@ -35,7 +35,8 @@ func document(t *testing.T, role launchconfig.Role) *launchconfig.Document {
 	t.Helper()
 	server := testPins(t).Images[0]
 	return &launchconfig.Document{
-		SchemaVersion: launchconfig.SchemaVersionV1, Role: role,
+		SchemaVersion: launchconfig.SchemaVersion, Role: role,
+		CDS: launchconfig.CDS{Address: "192.0.2.50:8443", Measurements: string(externalCDSPin(t))},
 		Image: launchconfig.Image{
 			Platform:    "tdx",
 			Measurement: hex.EncodeToString(server.Digest),
@@ -123,7 +124,11 @@ func TestPreparePreservesFloorAndPinsServerBeforeRKE2(t *testing.T) {
 				t.Fatalf("chart components missing from bootstrap base: %v", base.Workloads)
 			}
 			pull := ga["pull"].(map[string]any)
-			if pull["url"] != cmdsutil.CDSURL(doc.CDSAddrPort()) || pull["cds_measurements_config"] != PublicDir+"/cds.json" || pull["timeout"] != "30s" {
+			endpoint, err := doc.CDSEndpoint()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if pull["url"] != cmdsutil.CDSURL(endpoint) || pull["cds_measurements_config"] != PublicDir+"/cds.json" || pull["timeout"] != "30s" {
 				t.Fatalf("bad pull config: %v", pull)
 			}
 			if _, exists := pull["cds_measurements"]; exists {
@@ -137,43 +142,6 @@ func TestPreparePreservesFloorAndPinsServerBeforeRKE2(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
-	}
-}
-
-func TestPrepareCannotReplaceBakedWorkload(t *testing.T) {
-	root := prepareRoot(t)
-	doc := document(t, launchconfig.Server)
-	doc.Workloads = seed
-	if err := Prepare(root, doc); err == nil || !strings.Contains(err.Error(), "replaces a baked component") {
-		t.Fatalf("got %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(root, PublicDir, "allowlist-seed.json")); !os.IsNotExist(err) {
-		t.Fatal("published rejected seed")
-	}
-
-	doc.Workloads = strings.ReplaceAll(strings.ReplaceAll(seed, "operator", "application"), strings.Repeat("a", 64), strings.Repeat("b", 64))
-	if err := Prepare(root, doc); err != nil {
-		t.Fatal(err)
-	}
-	data, err := os.ReadFile(filepath.Join(root, PublicDir, "allowlist-seed.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	merged, err := allowlist.ParseJSON(data)
-	if err != nil || len(merged.Workloads) != 2 {
-		t.Fatalf("merged policy: %v %v", merged, err)
-	}
-	data, err = os.ReadFile(filepath.Join(root, "/etc/nri/conf.d/image-policy.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var policy map[string]any
-	if err := yaml.Unmarshal(data, &policy); err != nil {
-		t.Fatal(err)
-	}
-	base := basePolicy(t, policy["allowlist"].(map[string]any)["base"])
-	if _, exists := base.Workloads["application"]; exists {
-		t.Fatal("signed tenant workload entered the unconditional bootstrap base")
 	}
 }
 
@@ -410,7 +378,7 @@ func TestPrepareBindsTheCredentialRoleToTheStagedCDS(t *testing.T) {
 	if credentials.Name != nriimagepolicy.CredentialRole || credentials.UID != workloadclaims.CredentialsUID {
 		t.Errorf("credential role = %+v, want %s on the reserved uid %d", credentials, nriimagepolicy.CredentialRole, workloadclaims.CredentialsUID)
 	}
-	if want := []string{"192.0.2.10:30808"}; !reflect.DeepEqual(credentials.Destinations, want) {
+	if want := []string{"192.0.2.50:8443"}; !reflect.DeepEqual(credentials.Destinations, want) {
 		t.Errorf("credential destinations = %v, want this cluster's CDS %v", credentials.Destinations, want)
 	}
 }

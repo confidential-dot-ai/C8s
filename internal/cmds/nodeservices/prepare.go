@@ -88,7 +88,10 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 		return fmt.Errorf("merge chart seed into NRI base: %w", err)
 	}
 	a["base"] = base
-	endpoint := d.CDSAddrPort()
+	endpoint, err := d.CDSEndpoint()
+	if err != nil {
+		return err
+	}
 	pull["url"] = cmdsutil.CDSURL(endpoint)
 	pull["cds_measurements_config"] = PublicDir + "/cds.json"
 	delete(pull, "cds_measurements")
@@ -333,8 +336,8 @@ func (c serverConfig) files() map[string][]byte {
 }
 
 // serverOutputs validates the server-only fields of the staged document and
-// merges the operator's workloads over the baked seed. It writes nothing:
-// Prepare publishes only after every input has been validated.
+// canonicalizes the baked seed it publishes. It writes nothing: Prepare
+// publishes only after every input has been validated.
 func serverOutputs(d *launchconfig.Document, bakedData []byte) (serverConfig, error) {
 	if err := launchconfig.ValidateHostname(d.TLSSAN); err != nil {
 		return serverConfig{}, fmt.Errorf("staged TLS SAN: %w", err)
@@ -343,7 +346,7 @@ func serverOutputs(d *launchconfig.Document, bakedData []byte) (serverConfig, er
 	if _, err := operatorauth.ParsePublicKeysPEM(pub); err != nil {
 		return serverConfig{}, fmt.Errorf("staged server operator key: %w", err)
 	}
-	seed, err := mergedSeed(bakedData, d.Workloads)
+	seed, err := mergedSeed(bakedData)
 	if err != nil {
 		return serverConfig{}, err
 	}
@@ -412,19 +415,10 @@ func policyPinsComplete(pins refvalues.ReferenceValues) bool {
 	return true
 }
 
-func mergedSeed(data []byte, workloads string) ([]byte, error) {
+func mergedSeed(data []byte) ([]byte, error) {
 	seed, err := allowlist.ParseJSON(data)
 	if err != nil {
 		return nil, fmt.Errorf("baked workload seed: %w", err)
-	}
-	if workloads != "" {
-		extra, err := allowlist.ParseJSON([]byte(workloads))
-		if err != nil {
-			return nil, fmt.Errorf("launch workloads: %w", err)
-		}
-		if err := mergeWorkloads(seed, extra, false); err != nil {
-			return nil, fmt.Errorf("launch workloads: %w", err)
-		}
 	}
 	return seed.Canonical()
 }

@@ -14,6 +14,19 @@ import (
 // their measurements, never on the name.
 const pinName = "cds"
 
+// ParsePlatform accepts a bare TEE family only: a cloud paravisor's launch
+// binding carries no file for a pin to bind.
+func ParsePlatform(platform string) (teetypes.Family, error) {
+	switch platform {
+	case string(teetypes.FamilySNP):
+		return teetypes.FamilySNP, nil
+	case string(teetypes.FamilyTDX):
+		return teetypes.FamilyTDX, nil
+	default:
+		return "", fmt.Errorf("%q, want %s or %s", platform, teetypes.FamilySNP, teetypes.FamilyTDX)
+	}
+}
+
 // Pin renders the measurements document a client verifies a CDS with: the
 // image the CDS VM boots, bound to the launch file it boots on. One document
 // covers one TEE family, the one the operator runs the CDS VM on. Only an SNP

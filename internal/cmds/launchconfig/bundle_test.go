@@ -12,7 +12,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
+	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 )
 
@@ -37,6 +39,54 @@ func writeManifest(t *testing.T, platform string) string {
 	return path
 }
 
+// componentSeed is the release asset `launch-config new` takes the cluster's
+// component entries from.
+const componentSeed = `{"schema":"c8s.allowlist/v1","workloads":{"c8s-operator":{"containers":[{"digest":"sha256:` +
+	"1111111111111111111111111111111111111111111111111111111111111111" + `"}]}}}`
+
+const tenantWorkloads = `{"schema":"c8s.allowlist/v1","workloads":{"tenant-app":{"containers":[{"digest":"sha256:` +
+	"2222222222222222222222222222222222222222222222222222222222222222" + `"}]}}}`
+
+func writeFile(t *testing.T, name, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// writeCDSManifest writes the CDS guest image's own manifest: a TDX image
+// whose measurements differ from every node manifest, so a pin built from one
+// cannot pass for the other.
+func writeCDSManifest(t *testing.T) string {
+	t.Helper()
+	body := `{"version":1,"build":{"platform":"tdx"},"tdx":{"mrtd":"` + strings.Repeat("c1", 48) +
+		`","rtmr1":"` + strings.Repeat("c2", 48) + `","rtmr2":"` + strings.Repeat("c3", 48) + `"}}`
+	return writeFile(t, "cds-manifest.json", body)
+}
+
+// cdsInputs name the CDS VM every bundle trusts: a TDX VM, whose TEE family
+// need not be the one its nodes boot on.
+func cdsInputs(t *testing.T) []string {
+	t.Helper()
+	return []string{
+		"--cds-address", "192.0.2.50:8443",
+		"--cds-image-manifest", writeCDSManifest(t),
+		"--cds-platform", "tdx",
+		"--cds-node-cidr", "10.0.0.0/24",
+		"--cds-allowlist-seed", writeFile(t, "allowlist-seed-tdx.json", componentSeed),
+	}
+}
+
+// bundleArgs are the flags `new` always needs: an output directory, a cluster,
+// the node image its nodes boot and the CDS VM they trust.
+func bundleArgs(t *testing.T, dir, platform string) []string {
+	t.Helper()
+	args := []string{"new", "--out", dir, "--cluster-id", "demo", "--image-manifest", writeManifest(t, platform)}
+	return append(args, cdsInputs(t)...)
+}
+
 func readBundleDocument(t *testing.T, dir, node string) (*Document, []byte) {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(dir, node, documentFile))
@@ -48,6 +98,20 @@ func readBundleDocument(t *testing.T, dir, node string) (*Document, []byte) {
 		t.Fatalf("%s document does not parse: %v", node, err)
 	}
 	return doc, data
+}
+
+// readBundleCDSConfig parses the launch file the bundle's CDS VM boots on.
+func readBundleCDSConfig(t *testing.T, dir string) *cdsconfig.Config {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(dir, cdsconfig.ConfigFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cdsconfig.Parse(data)
+	if err != nil {
+		t.Fatalf("the bundle's CDS configuration does not parse: %v", err)
+	}
+	return cfg
 }
 
 // runBundleCmd drives the real cobra command so flag wiring is under test.
@@ -93,8 +157,8 @@ func TestNewBundleBootsServerAndAgentsOnBothPlatforms(t *testing.T) {
 	for _, platform := range []string{"tdx", "snp"} {
 		t.Run(platform, func(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), "bundle")
-			args := []string{"new", "--out", dir, "--cluster-id", "demo", "--image-manifest", writeManifest(t, platform),
-				"--server-address", "10.0.0.10", "--agent", "demo-f1", "--agent", "demo-f2"}
+			args := append(bundleArgs(t, dir, platform),
+				"--server-address", "10.0.0.10", "--agent", "demo-f1", "--agent", "demo-f2")
 			if platform == "snp" {
 				args = append(args, "--vcpus", "8")
 			}
@@ -205,9 +269,62 @@ func TestNewBundleBootsServerAndAgentsOnBothPlatforms(t *testing.T) {
 	}
 }
 
+// Every node document names one CDS VM and carries the pin binding it to the
+// configuration the bundle wrote, which is what makes that VM an identity and
+// not just an address. The VM's TEE family is its own, not the nodes'.
+func TestNewBundleNamesOneCDSEveryNodeTrusts(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "bundle")
+	args := append(bundleArgs(t, dir, "snp"), "--vcpus", "8", "--server-address", "10.0.0.10", "--agent", "demo-f1")
+	if err := runBundleCmd(t, args...); err != nil {
+		t.Fatal(err)
+	}
+	config, err := os.ReadFile(filepath.Join(dir, cdsconfig.ConfigFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pin, err := refvalues.Load(filepath.Join(dir, cdsconfig.PinFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pin.Family != teetypes.FamilyTDX || len(pin.Images) == 0 {
+		t.Fatalf("CDS pin = %+v, want the TDX VM the bundle names", pin)
+	}
+	for _, image := range pin.Images {
+		if !bytes.Equal(image.LaunchFile, config) {
+			t.Fatalf("CDS pin entry %s does not bind the configuration that was written", image.Name)
+		}
+	}
+	server, _ := readBundleDocument(t, dir, serverDir)
+	cds := readBundleCDSConfig(t, dir)
+	if string(cds.OperatorKeys.PEM()) != server.Server.OperatorPublicKey {
+		t.Fatal("the CDS configuration does not authorize this cluster's operator key")
+	}
+	peers, err := refvalues.Load(filepath.Join(dir, peersPolicy))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(cds.Nodes, peers) {
+		t.Fatalf("the CDS configuration admits %+v, want the bundle's peer policy %+v", cds.Nodes, peers)
+	}
+	for _, node := range []string{serverDir, "demo-f1"} {
+		doc, _ := readBundleDocument(t, dir, node)
+		if doc.CDS.Address != "192.0.2.50:8443" {
+			t.Fatalf("%s names CDS at %+v", node, doc.CDS)
+		}
+		named, err := refvalues.Parse([]byte(doc.CDS.Measurements))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(named, pin) {
+			t.Fatalf("%s carries a CDS pin other than the bundle's", node)
+		}
+		stageBundleNode(t, dir, node)
+	}
+}
+
 func TestAddAgentExtendsAnExistingBundle(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "bundle")
-	if err := runBundleCmd(t, "new", "--out", dir, "--cluster-id", "demo", "--image-manifest", writeManifest(t, "tdx")); err != nil {
+	if err := runBundleCmd(t, bundleArgs(t, dir, "tdx")...); err != nil {
 		t.Fatal(err)
 	}
 	if err := runBundleCmd(t, "add-agent", "--bundle", dir, "--name", "late"); err == nil || !strings.Contains(err.Error(), "--server-address") {
@@ -251,11 +368,15 @@ func TestNewBundleRefusesBadInputsAndLeavesNothingBehind(t *testing.T) {
 		{"dns mirror", []string{"--image-manifest", tdx, "--registry-mirror", "ghcr.io=http://cache.example"}, "registryMirrors"},
 		{"duplicate mirror", []string{"--image-manifest", tdx, "--registry-mirror", "ghcr.io=http://10.43.0.5", "--registry-mirror", "ghcr.io=http://10.43.0.6"}, "more than once"},
 		{"mirror without endpoint", []string{"--image-manifest", tdx, "--registry-mirror", "ghcr.io"}, "registry=http"},
+		{"cds platform alias", []string{"--image-manifest", tdx, "--cds-platform", "snp"}, "want sev-snp or tdx"},
+		{"snp cds without vcpus", []string{"--image-manifest", tdx, "--cds-image-manifest", snp, "--cds-platform", "sev-snp"}, "name the counts"},
+		{"cds address without port", []string{"--image-manifest", tdx, "--cds-address", "192.0.2.50"}, "--cds-address"},
+		{"tenant entry takes a component name", []string{"--image-manifest", tdx, "--tenant-workloads", writeFile(t, "workloads.json", componentSeed)}, "is a component entry"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := filepath.Join(base, strings.ReplaceAll(tc.name, " ", "-"))
-			args := append([]string{"new", "--out", dir, "--cluster-id", "demo"}, tc.args...)
+			args := append(append([]string{"new", "--out", dir, "--cluster-id", "demo"}, cdsInputs(t)...), tc.args...)
 			err := runBundleCmd(t, args...)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("got %v, want error containing %q", err, tc.want)
@@ -269,36 +390,63 @@ func TestNewBundleRefusesBadInputsAndLeavesNothingBehind(t *testing.T) {
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := runBundleCmd(t, "new", "--out", dir, "--cluster-id", "demo", "--image-manifest", tdx); err == nil {
+	if err := runBundleCmd(t, bundleArgs(t, dir, "tdx")...); err == nil {
 		t.Fatal("an existing directory must not be reused for a new bundle")
 	}
 }
 
-func TestNewBundleCarriesAnInitialAllowlist(t *testing.T) {
-	workloads := filepath.Join(t.TempDir(), "workloads.json")
-	if err := os.WriteFile(workloads, []byte(`{"schema":"c8s.allowlist/v1","workloads":{}}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
+// A node subnet reaching into the pod or service range the node image's RKE2
+// configuration fixes would let a pod there answer as a node's admission
+// inventory. The subnets are this run's only ones, so nothing else admits it.
+func TestNewBundleRefusesANodeSubnetHoldingClusterAddresses(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "bundle")
-	err := runBundleCmd(t, "new", "--out", dir, "--cluster-id", "demo", "--image-manifest", writeManifest(t, "tdx"),
-		"--tls-san", "cluster.example", "--workloads", workloads)
-	if err != nil {
+	err := runBundleCmd(t, "new", "--out", dir, "--cluster-id", "demo",
+		"--image-manifest", writeManifest(t, "tdx"),
+		"--cds-address", "192.0.2.50:8443",
+		"--cds-image-manifest", writeCDSManifest(t),
+		"--cds-platform", "tdx",
+		"--cds-node-cidr", "10.52.0.0/24",
+		"--cds-allowlist-seed", writeFile(t, "allowlist-seed-tdx.json", componentSeed))
+	if err == nil || !strings.Contains(err.Error(), "overlaps the cluster range") {
+		t.Fatalf("got %v, want the overlapping node subnet refused", err)
+	}
+	if _, statErr := os.Stat(dir); !os.IsNotExist(statErr) {
+		t.Fatalf("the refused bundle left %s behind", dir)
+	}
+}
+
+// The front-door name a cluster is installed with is what its CDS may sign
+// onto a leaf, and the tenant workloads join the component entries CDS serves.
+func TestNewBundleCarriesTheFrontDoorNameAndTenantWorkloads(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "bundle")
+	args := append(bundleArgs(t, dir, "tdx"),
+		"--tls-san", "cluster.example", "--tenant-workloads", writeFile(t, "workloads.json", tenantWorkloads))
+	if err := runBundleCmd(t, args...); err != nil {
 		t.Fatal(err)
 	}
 	server, _ := readBundleDocument(t, dir, serverDir)
-	if server.TLSSAN != "cluster.example" || server.Workloads == "" {
-		t.Fatalf("SAN or workloads not carried: %+v", server)
+	if server.TLSSAN != "cluster.example" {
+		t.Fatalf("front-door name not carried: %+v", server)
+	}
+	cds := readBundleCDSConfig(t, dir)
+	if len(cds.DNSSANPatterns) != 2 || !cds.DNSSANPatterns[0].MatchString("mesh.c8s-system.svc") || !cds.DNSSANPatterns[1].MatchString("cluster.example") {
+		t.Fatalf("CDS leaf DNS rules = %v", cds.DNSSANPatterns)
+	}
+	for _, name := range []string{"c8s-operator", "tenant-app"} {
+		if _, served := cds.Workloads.Workloads[name]; !served {
+			t.Fatalf("the CDS configuration does not serve %s: %v", name, cds.Workloads.Workloads)
+		}
 	}
 	stageBundleNode(t, dir, serverDir)
 }
 
 func TestNewBundleCarriesASignedServerRouter(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "bundle")
-	err := runBundleCmd(t, "new", "--out", dir, "--cluster-id", "demo", "--image-manifest", writeManifest(t, "tdx"),
+	err := runBundleCmd(t, append(bundleArgs(t, dir, "tdx"),
 		"--server-address", "10.0.0.10", "--agent", "worker-1",
 		"--router-hostname", "candidate.api.confidential.ai", "--router-hostname", "api.confidential.ai",
 		"--acme-email", "ops@confidential.ai",
-		"--acme-directory-url", "https://acme-staging-v02.api.letsencrypt.org/directory")
+		"--acme-directory-url", "https://acme-staging-v02.api.letsencrypt.org/directory")...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -326,8 +474,7 @@ func TestNewBundleCarriesASignedServerRouter(t *testing.T) {
 
 func TestNewBundleCarriesARouterBodyLimitAlone(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "bundle")
-	err := runBundleCmd(t, "new", "--out", dir, "--cluster-id", "demo", "--image-manifest", writeManifest(t, "tdx"),
-		"--router-max-request-body-bytes", "67108864")
+	err := runBundleCmd(t, append(bundleArgs(t, dir, "tdx"), "--router-max-request-body-bytes", "67108864")...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -343,8 +490,8 @@ func TestNewBundleCarriesARouterBodyLimitAlone(t *testing.T) {
 
 func TestNewBundleCarriesRegistryMirrorsToEveryNode(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "bundle")
-	err := runBundleCmd(t, "new", "--out", dir, "--cluster-id", "demo", "--image-manifest", writeManifest(t, "tdx"),
-		"--server-address", "10.0.0.10", "--agent", "demo-agent-1", "--registry-mirror", "ghcr.io=http://10.43.0.5:5000")
+	err := runBundleCmd(t, append(bundleArgs(t, dir, "tdx"),
+		"--server-address", "10.0.0.10", "--agent", "demo-agent-1", "--registry-mirror", "ghcr.io=http://10.43.0.5:5000")...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -392,9 +539,9 @@ func writeOperatorKey(t *testing.T) (keyPath, pubPath string) {
 func TestNewBundleReusesTheOperatorKey(t *testing.T) {
 	keyPath, pubPath := writeOperatorKey(t)
 	dir := filepath.Join(t.TempDir(), "bundle")
-	if err := runBundleCmd(t, "new", "--out", dir, "--cluster-id", "demo", "--image-manifest", writeManifest(t, "tdx"),
+	if err := runBundleCmd(t, append(bundleArgs(t, dir, "tdx"),
 		"--server-address", "10.0.0.10", "--agent", "demo-f1",
-		"--operator-key", keyPath, "--operator-pubkey", pubPath); err != nil {
+		"--operator-key", keyPath, "--operator-pubkey", pubPath)...); err != nil {
 		t.Fatal(err)
 	}
 	want, _ := os.ReadFile(pubPath)
@@ -455,7 +602,7 @@ func TestNewBundleRefusesAMismatchedOperatorPubkey(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), "bundle")
-			args := append([]string{"new", "--out", dir, "--cluster-id", "demo", "--image-manifest", writeManifest(t, "tdx")}, tc.args...)
+			args := append(bundleArgs(t, dir, "tdx"), tc.args...)
 			err := runBundleCmd(t, args...)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("err = %v, want it to mention %q", err, tc.want)

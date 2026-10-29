@@ -5,92 +5,58 @@ import (
 	"os"
 	"slices"
 
-	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
 // write renders both outputs before it creates anything, so a refused input
 // leaves no half-built directory to launch a CDS VM from.
 func write(opts options) error {
-	family, err := platformFamily(opts.platform)
+	family, err := cdsconfig.ParsePlatform(opts.platform)
 	if err != nil {
 		return fmt.Errorf("--platform: %w", err)
 	}
-	clusterRanges := append(slices.Clone(opts.podCIDRs), opts.serviceCIDRs...)
-	if err := cdsconfig.CheckNodeSubnets(opts.nodeCIDRs, clusterRanges); err != nil {
-		return err
-	}
-	document, err := documentFrom(opts)
+	operatorKeys, err := readOperatorKeys(opts.operatorKeys)
 	if err != nil {
 		return err
 	}
-	config, err := cdsconfig.Format(document)
+	components, err := readInput("allowlist-seed", opts.allowlistSeed)
 	if err != nil {
 		return err
 	}
-	pin, err := cdsconfig.Pin(opts.manifest, family, opts.vcpus, config)
+	var tenant []byte
+	if opts.workloads != "" {
+		if tenant, err = readInput("workloads", opts.workloads); err != nil {
+			return err
+		}
+	}
+	nodes, err := readInput("node-pins", opts.nodePins)
+	if err != nil {
+		return err
+	}
+	config, pin, err := cdsconfig.Build(cdsconfig.Inputs{
+		ClusterID:       opts.clusterID,
+		OperatorKeys:    operatorKeys,
+		ComponentSeed:   components,
+		TenantWorkloads: tenant,
+		Nodes:           nodes,
+		NodeCIDRs:       opts.nodeCIDRs,
+		ClusterCIDRs:    append(slices.Clone(opts.podCIDRs), opts.serviceCIDRs...),
+		LeafDNSNames:    opts.leafDNSNames,
+		LeafDNSPatterns: opts.leafDNSPatterns,
+		ManifestPath:    opts.manifest,
+		Family:          family,
+		VCPUs:           opts.vcpus,
+	})
 	if err != nil {
 		return err
 	}
 	// A configuration and the pin binding it are only usable together.
 	return fileutil.WriteNewDir(opts.dir, 0o755, []fileutil.NewFile{
-		{Name: configFile, Data: config, Mode: 0o644},
-		{Name: pinFile, Data: pin, Mode: 0o644},
+		{Name: cdsconfig.ConfigFile, Data: config, Mode: 0o644},
+		{Name: cdsconfig.PinFile, Data: pin, Mode: 0o644},
 	})
-}
-
-// platformFamily accepts a bare TEE family only: a cloud paravisor's launch
-// binding carries no file for a pin to bind.
-func platformFamily(platform string) (teetypes.Family, error) {
-	switch platform {
-	case string(teetypes.FamilySNP):
-		return teetypes.FamilySNP, nil
-	case string(teetypes.FamilyTDX):
-		return teetypes.FamilyTDX, nil
-	default:
-		return "", fmt.Errorf("%q, want %s or %s", platform, teetypes.FamilySNP, teetypes.FamilyTDX)
-	}
-}
-
-func documentFrom(opts options) (cdsconfig.Document, error) {
-	operatorKeys, err := readOperatorKeys(opts.operatorKeys)
-	if err != nil {
-		return cdsconfig.Document{}, err
-	}
-	workloads, err := mergedWorkloads(opts)
-	if err != nil {
-		return cdsconfig.Document{}, err
-	}
-	nodes, err := readInput("node-pins", opts.nodePins)
-	if err != nil {
-		return cdsconfig.Document{}, err
-	}
-	return cdsconfig.Document{
-		ClusterID:       opts.clusterID,
-		OperatorKeys:    operatorKeys,
-		Workloads:       workloads,
-		Nodes:           nodes,
-		NodeCIDRs:       opts.nodeCIDRs,
-		LeafDNSNames:    opts.leafDNSNames,
-		LeafDNSPatterns: opts.leafDNSPatterns,
-	}, nil
-}
-
-func mergedWorkloads(opts options) (*allowlist.Allowlist, error) {
-	components, err := readInput("allowlist-seed", opts.allowlistSeed)
-	if err != nil {
-		return nil, err
-	}
-	var tenant []byte
-	if opts.workloads != "" {
-		if tenant, err = readInput("workloads", opts.workloads); err != nil {
-			return nil, err
-		}
-	}
-	return cdsconfig.MergeWorkloads(components, tenant)
 }
 
 func readOperatorKeys(path string) (operatorauth.KeyBundle, error) {

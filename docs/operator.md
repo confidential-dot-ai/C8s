@@ -140,12 +140,13 @@ PVC observes as either.
 ## Authenticated launch configuration
 
 A measured node runs one image for both roles and takes its configuration from a
-signed `c8s-launch/v1` document on the disk it boots with: the document fixes
+signed `c8s-launch/v2` document on the disk it boots with: the document fixes
 the role (`server` or `agent`), the node's identity in the cluster, the RKE2
-join tokens, and the image measurements the boot must report, and staging
-authenticates its bytes before parsing them. Nothing an unmeasured host says at
-boot decides any of it. Every field, the signature, and the boot-time check
-order are [launch-configuration.md](launch-configuration.md).
+join tokens, the CDS its clients trust, and the image measurements the boot
+must report, and staging authenticates its bytes before parsing them. Nothing
+an unmeasured host says at boot decides any of it. Every field, the signature,
+and the boot-time check order are
+[launch-configuration.md](launch-configuration.md).
 
 On a measured bare-metal node — the one CVM mode with a launch document
 ([overview.md](overview.md#cvm-modes-and-hardware-platforms)) — the launch key's
@@ -155,9 +156,10 @@ image booted ([measurements.md](measurements.md)). Use distinct keys per
 cluster: evidence names the key and the image, not the cluster, so two clusters
 sharing both are indistinguishable to a client pinning them.
 `c8s node launch-config new` writes one cluster's bundle — separate server and
-agent launch keys, fresh join tokens, a signed document per node, and the client
-policies pinning the server and listing every identity CDS admits. The server
-launch key is also the operator key for
+agent launch keys, fresh join tokens, a signed document per node, the client
+policies pinning the server and listing every identity CDS admits, and the
+launch file its CDS VM boots on with the pin binding those bytes, which every
+node document carries. The server launch key is also the operator key for
 [`c8s get-kubeconfig`](#trust-gate-c8s-get-kubeconfig) and for signed CDS
 writes.
 

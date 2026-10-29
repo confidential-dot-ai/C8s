@@ -28,7 +28,7 @@ of its own.
   refuses a pin set naming no guest before any request, and an issuance binds a
   single-use challenge into the report ([armtls.md](armtls.md#cds-issuance));
   [Identity comes from hardware evidence](guarantees.md#identity-comes-from-hardware-evidence).
-- **Relaunch a node with other settings**: the `c8s-launch/v1` document is
+- **Relaunch a node with other settings**: the `c8s-launch/v2` document is
   signed over its exact bytes and the launch key's public half binds into its
   evidence ([launch-configuration.md](launch-configuration.md),
   [operator.md](operator.md#authenticated-launch-configuration));

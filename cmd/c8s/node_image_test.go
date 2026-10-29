@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"maps"
 	"os"
@@ -28,9 +29,11 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
+	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/nodeservices"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
@@ -679,6 +682,41 @@ func bootstrapImage(t *testing.T, pins refvalues.ReferenceValues) launchconfig.I
 	return image
 }
 
+// bootstrapCDSPin is the pin `c8s launch-config new` writes into every node
+// document, built the way that command builds it: this cluster's CDS
+// configuration, bound to the launch digests of the image its VM boots.
+func bootstrapCDSPin(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	manifest := filepath.Join(dir, "cds-manifest.json")
+	body := fmt.Sprintf(`{"snp_variants":[{"smp":4,"measurement":{"algorithm":"sha384","snp_launch_digest":%q}}]}`,
+		strings.Repeat("50", refvalues.DigestSize))
+	if err := os.WriteFile(manifest, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	operatorKeys, err := operatorauth.ParseKeyBundle([]byte(testOperatorPublicKey(t)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, pin, err := cdsconfig.Build(cdsconfig.Inputs{
+		ClusterID:     "bootstrap",
+		OperatorKeys:  operatorKeys,
+		ComponentSeed: []byte(`{"schema":"c8s.allowlist/v1","workloads":{}}`),
+		Nodes: []byte(`{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"node","measurement":"` +
+			strings.Repeat("ab", refvalues.DigestSize) + `"}]}`),
+		NodeCIDRs:    []string{"192.0.2.0/24"},
+		ClusterCIDRs: []string{"10.52.0.0/16", "10.53.0.0/16"},
+		LeafDNSNames: []string{"c8s.local"},
+		ManifestPath: manifest,
+		Family:       teetypes.FamilySNP,
+		VCPUs:        []int{4},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(pin)
+}
+
 // Exercise the actual build-to-boot contract, including all system-floor and
 // chart entries. Unit fixtures alone cannot catch collisions between the two.
 func testNodeImageBootstrap(t *testing.T, seed []byte, platform string) {
@@ -734,11 +772,12 @@ func testNodeImageBootstrap(t *testing.T, seed []byte, platform string) {
 				}
 			}
 			doc := &launchconfig.Document{
-				SchemaVersion: launchconfig.SchemaVersionV1,
+				SchemaVersion: launchconfig.SchemaVersion,
 				Role:          role,
 				Image:         bootstrapImage(t, pins),
 				Server:        launchconfig.ServerConfig{Address: "192.0.2.10", OperatorPublicKey: string(pins.Images[0].Anchor)},
 				TLSSAN:        "c8s.local",
+				CDS:           launchconfig.CDS{Address: "192.0.2.50:8443", Measurements: bootstrapCDSPin(t)},
 			}
 			if err := nodeservices.Prepare(root, doc); err != nil {
 				t.Fatalf("actual chart seed and measured NRI floor cannot boot: %v", err)

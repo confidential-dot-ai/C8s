@@ -10,6 +10,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -20,6 +21,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
+	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
@@ -36,6 +38,9 @@ import (
 //	<dir>/server.json     client policy pinning the server (C8S_MEASUREMENTS_CONFIG)
 //	<dir>/peers.json      every launch identity CDS admits and serves
 //	                      (c8s cds verify --served-policy-file)
+//	<dir>/cds-config.yaml the launch file this cluster's CDS VM boots on
+//	<dir>/cds-pin.json    the measurements document pinning that VM, which
+//	                      every node document carries
 //	<dir>/server/         pubkey, launch.yaml, launch.yaml.sig
 //	<dir>/<agent>/     pubkey, launch.yaml, launch.yaml.sig, one per agent
 const (
@@ -59,7 +64,7 @@ type BundleOptions struct {
 	ServerAddress string
 	Agents        []string
 	TLSSAN        string
-	WorkloadsPath string
+	CDS           CDSOptions
 	Router        Router
 	// RegistryMirrors goes into the server document; agents inherit it.
 	RegistryMirrors map[string]string
@@ -70,6 +75,19 @@ type BundleOptions struct {
 	OperatorPubPath string
 }
 
+// CDSOptions describes the CDS VM this cluster's nodes trust: where the
+// operator runs it, the image it boots, the subnets it may dial and the
+// entries it serves.
+type CDSOptions struct {
+	Address             string
+	ManifestPath        string
+	Platform            string
+	VCPUs               []int
+	NodeCIDRs           []string
+	AllowlistSeedPath   string
+	TenantWorkloadsPath string
+}
+
 // NewBundle generates the cluster's launch keys (or takes the server key from
 // OperatorKeyPath) and join tokens, writes and signs the server document plus
 // one agent document per name, and emits the client policy. A reused server
@@ -78,6 +96,15 @@ type BundleOptions struct {
 func NewBundle(opts BundleOptions) (err error) {
 	if opts.Dir == "" || opts.ClusterID == "" || opts.ManifestPath == "" {
 		return errors.New("--out, --cluster-id and --image-manifest are required")
+	}
+	if opts.CDS.ManifestPath == "" ||
+		opts.CDS.Platform == "" ||
+		opts.CDS.AllowlistSeedPath == "" ||
+		len(opts.CDS.NodeCIDRs) == 0 {
+		return errors.New("--cds-image-manifest, --cds-platform, --cds-allowlist-seed and --cds-node-cidr are required: every node document names and pins this cluster's CDS VM")
+	}
+	if _, err := netip.ParseAddrPort(opts.CDS.Address); err != nil {
+		return fmt.Errorf("--cds-address must be the <IPv4>:<port> this cluster's CDS serves on: %w", err)
 	}
 	if opts.ServerName == "" {
 		opts.ServerName = opts.ClusterID + "-server"
@@ -98,14 +125,6 @@ func NewBundle(opts BundleOptions) (err error) {
 	serverKey, err := operatorKey(opts.OperatorKeyPath, opts.OperatorPubPath)
 	if err != nil {
 		return err
-	}
-	var workloads string
-	if opts.WorkloadsPath != "" {
-		data, err := readBounded(opts.WorkloadsPath, MaxDocumentSize)
-		if err != nil {
-			return err
-		}
-		workloads = string(data)
 	}
 	if err := os.Mkdir(opts.Dir, 0o700); err != nil {
 		return fmt.Errorf("create bundle directory: %w", err)
@@ -144,8 +163,22 @@ func NewBundle(opts BundleOptions) (err error) {
 	if err != nil {
 		return err
 	}
+	// The CDS configuration names the launch identities it admits, so the peer
+	// policy comes first; the documents then carry the pin binding its bytes.
+	peerPins, err := peerPolicy(image, []string{serverPub, agentPub})
+	if err != nil {
+		return err
+	}
+	peers, err := refvalues.Format(peerPins)
+	if err != nil {
+		return err
+	}
+	config, pin, err := clusterCDS(opts, serverPub, peers)
+	if err != nil {
+		return err
+	}
 	server := Document{
-		SchemaVersion:           SchemaVersionV1,
+		SchemaVersion:           SchemaVersion,
 		ClusterID:               opts.ClusterID,
 		Role:                    Server,
 		Image:                   image,
@@ -154,7 +187,7 @@ func NewBundle(opts BundleOptions) (err error) {
 		Server:                  ServerConfig{Address: opts.ServerAddress, OperatorPublicKey: serverPub},
 		AgentOperatorPublicKeys: []string{agentPub},
 		TLSSAN:                  opts.TLSSAN,
-		Workloads:               workloads,
+		CDS:                     CDS{Address: opts.CDS.Address, Measurements: string(pin)},
 		RegistryMirrors:         opts.RegistryMirrors,
 	}
 	if len(opts.Router.Hostnames) > 0 || opts.Router.ACMEEmail != "" || opts.Router.ACMEDirectoryURL != "" || opts.Router.MaxRequestBodyBytes != 0 {
@@ -164,30 +197,19 @@ func NewBundle(opts BundleOptions) (err error) {
 	if err := writeSignedDocument(filepath.Join(opts.Dir, serverDir), server, serverKey, serverPub); err != nil {
 		return err
 	}
-	peerPins, err := server.referenceValues()
+	policy, err := serverPinPolicy(peerPins, serverPub)
 	if err != nil {
 		return err
 	}
-	serverPinIndex := slices.IndexFunc(peerPins.Images, func(pin remote.ImagePin) bool {
-		return bytes.Equal(pin.Anchor, []byte(serverPub))
-	})
-	if serverPinIndex < 0 {
-		return errors.New("peer policy is missing the server launch-key anchor")
-	}
-	serverPin := peerPins.Images[serverPinIndex]
-	policy, err := refvalues.Format(refvalues.ReferenceValues{Family: peerPins.Family, Images: []remote.ImagePin{serverPin}})
-	if err != nil {
-		return err
-	}
-	if err := writeNew(filepath.Join(opts.Dir, serverPolicy), policy, 0o644); err != nil {
-		return err
-	}
-	peers, err := refvalues.Format(peerPins)
-	if err != nil {
-		return err
-	}
-	if err := writeNew(filepath.Join(opts.Dir, peersPolicy), peers, 0o644); err != nil {
-		return err
+	for _, out := range []outputFile{
+		{path: serverPolicy, data: policy},
+		{path: peersPolicy, data: peers},
+		{path: cdsconfig.ConfigFile, data: config},
+		{path: cdsconfig.PinFile, data: pin},
+	} {
+		if err := writeNew(filepath.Join(opts.Dir, out.path), out.data, 0o644); err != nil {
+			return err
+		}
 	}
 	for _, name := range opts.Agents {
 		if err := AddAgent(opts.Dir, name, opts.ServerAddress); err != nil {
@@ -195,6 +217,21 @@ func NewBundle(opts BundleOptions) (err error) {
 		}
 	}
 	return nil
+}
+
+// serverPinPolicy is the client policy of this cluster's server: the one
+// entry of the peer policy anchored to the server launch key.
+func serverPinPolicy(pins refvalues.ReferenceValues, serverPub string) ([]byte, error) {
+	index := slices.IndexFunc(pins.Images, func(pin remote.ImagePin) bool {
+		return bytes.Equal(pin.Anchor, []byte(serverPub))
+	})
+	if index < 0 {
+		return nil, errors.New("peer policy is missing the server launch-key anchor")
+	}
+	return refvalues.Format(refvalues.ReferenceValues{
+		Family: pins.Family,
+		Images: []remote.ImagePin{pins.Images[index]},
+	})
 }
 
 // AddAgent derives an agent document from the bundle's server document
