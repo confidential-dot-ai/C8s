@@ -23,6 +23,9 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
+// Only unavailable observations may be retried after restarting the empty runtime.
+var errAssignmentRuntimeUnavailable = errors.New("assignment runtime observation unavailable")
+
 type guestAssignmentRuntime struct {
 	journal string
 	pods    func(context.Context) ([]byte, error)
@@ -47,7 +50,7 @@ func (g guestAssignmentRuntime) empty(ctx context.Context) error {
 	}
 	body, err := g.pods(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: kubelet: %w", errAssignmentRuntimeUnavailable, err)
 	}
 	var pods corev1.PodList
 	if err := json.Unmarshal(body, &pods); err != nil {
@@ -75,13 +78,16 @@ func emptyAssignmentCRIAt(ctx context.Context, socket string) error {
 	client := cri.NewRuntimeServiceClient(conn)
 	pods, err := client.ListPodSandbox(ctx, &cri.ListPodSandboxRequest{})
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: CRI sandboxes: %w", errAssignmentRuntimeUnavailable, err)
+	}
+	if len(pods.Items) != 0 {
+		return errors.New("unassigned runtime is not empty")
 	}
 	containers, err := client.ListContainers(ctx, &cri.ListContainersRequest{})
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: CRI containers: %w", errAssignmentRuntimeUnavailable, err)
 	}
-	if len(pods.Items) != 0 || len(containers.Containers) != 0 {
+	if len(containers.Containers) != 0 {
 		return errors.New("unassigned runtime is not empty")
 	}
 	return nil
@@ -126,16 +132,18 @@ func installAssignment(ctx context.Context, runtime nodeservices.PodRuntime, man
 	defer ticker.Stop()
 	for {
 		if err := health(ctx, runtime.UID); err == nil {
-			break
+			// Type=simple kubelet can still be starting after systemctl returns.
+			if err := empty(ctx); err == nil {
+				break
+			} else if !errors.Is(err, errAssignmentRuntimeUnavailable) {
+				return err
+			}
 		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
 		}
-	}
-	if err := empty(ctx); err != nil {
-		return err
 	}
 	if installed, err := assignmentInstalled(manifests, policy, runtime); err != nil || installed {
 		return err

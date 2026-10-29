@@ -221,7 +221,9 @@ Acceptance records the signed assignment in root-only guest RAM before changing
 policy or publishing its manifest. Status-service restarts recover this record,
 even if the serving key rotates, and refuse further assignments with HTTP 409.
 The guest installs policy into an empty runtime, restarts containerd and kubelet,
-confirms admission registration, then publishes the manifest last. Assignment
+waits for assigned admission and empty kubelet and container inventories to become
+available, then publishes the manifest last. Startup delays are retried within the
+installation deadline without restarting the services again. Assignment
 recovery never replaces a published manifest or restarts a runtime that already
 ran it. Assignment state lasts for this boot; a reboot needs a new VM allocation.
 
