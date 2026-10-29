@@ -2,6 +2,7 @@ package nriimagepolicy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/netip"
@@ -202,6 +203,11 @@ type plugin struct {
 	// the injected credential clients, or "" when no pod of this node is
 	// injected. prepareCDSPins sets it before any container can be created (cdspins.go).
 	cdsPins string
+	// awaitingDecree holds every container cdsPins would be mounted into
+	// while the node takes its first CDS pin decree (main.go): until then
+	// the file holds the launch document's pins, which the operator may have
+	// retired.
+	awaitingDecree atomic.Bool
 
 	// cdsAddress is the node-side path of the CDS endpoint handed to those
 	// same clients, or "" when no pod of this node is injected.
@@ -1336,7 +1342,7 @@ func (p *plugin) observedLaunch(ctx context.Context, ctr *api.Container, imageRe
 // identity that this node's measured base grants no such role is refused.
 func (p *plugin) credentialMounts(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) (*api.ContainerAdjustment, error) {
 	if fetchesRouteManifest(pod, ctr) {
-		return p.routerCDSMount(), nil
+		return p.routerCDSMount(), p.decreeSettled()
 	}
 	injected := injectedCredentialSidecar(pod, ctr)
 	if !holdsCredentialsIdentity(ctr) && !injected {
@@ -1363,7 +1369,22 @@ func (p *plugin) credentialMounts(ctx context.Context, pod *api.PodSandbox, ctr 
 	if len(mounts) == 0 {
 		return nil, nil
 	}
-	return &api.ContainerAdjustment{Mounts: mounts}, nil
+	adjustment := &api.ContainerAdjustment{Mounts: mounts}
+	if p.cdsPins != "" && takesNodeMount(pod, ctr, workloadclaims.CDSPinsPath) {
+		return adjustment, p.decreeSettled()
+	}
+	return adjustment, nil
+}
+
+// decreeSettled refuses, for now, a container handed the node's CDS pins
+// while the first pin decree fetch runs. The refusal is immediate rather
+// than a wait: the fetch can outlast containerd's NRI request timeout, and
+// the kubelet retries the creation.
+func (p *plugin) decreeSettled() error {
+	if p.cdsPins != "" && p.awaitingDecree.Load() {
+		return errors.New("the node is still taking its first CDS pin decree; retry once it has")
+	}
+	return nil
 }
 
 // holdsCredentialsIdentity reports whether this container runs as the identity
@@ -1385,16 +1406,22 @@ func fetchesRouteManifest(pod *api.PodSandbox, ctr *api.Container) bool {
 		ctr.GetUser().GetUid() == workloadclaims.UpstreamUID
 }
 
-// routerCDSMount is the CDS endpoint alone: the router polls the signed route
-// manifest from the one CDS its node admits, and takes its pins from the
-// measured base the chart renders rather than from a node document.
+// routerCDSMount is the CDS endpoint, and the node's CDS pins as the enforcer
+// follows them: the router polls the signed route manifest from the one CDS
+// its node admits. Without the followed pins it held CDS to its launch-time
+// set and could not fetch routes once a CDS image rollout retired that set.
 func (p *plugin) routerCDSMount() *api.ContainerAdjustment {
-	if p.cdsAddress == "" {
+	var mounts []*api.Mount
+	if p.cdsAddress != "" {
+		mounts = append(mounts, readOnlyBind(p.cdsAddress, workloadclaims.CDSAddressPath))
+	}
+	if p.cdsPins != "" {
+		mounts = append(mounts, readOnlyBind(p.cdsPins, workloadclaims.RouterCDSPinsPath))
+	}
+	if len(mounts) == 0 {
 		return nil
 	}
-	return &api.ContainerAdjustment{
-		Mounts: []*api.Mount{readOnlyBind(p.cdsAddress, workloadclaims.CDSAddressPath)},
-	}
+	return &api.ContainerAdjustment{Mounts: mounts}
 }
 
 // injectedCredentialSidecar reports the webhook's own shape: a reserved

@@ -129,14 +129,9 @@ type routingEngine struct {
 // connections whose binding in bindings no longer holds.
 func newRoutingEngine(cfg config, bindings *Bindings, logger *slog.Logger) (*routingEngine, error) {
 	r := cfg.routing
-	policy, err := (cmdsutil.ImagePolicySource{File: r.imagePolicyFile}).Load(
-		cmdsutil.MeasurementPins{Measurements: r.cdsMeasurements, Registers: r.cdsRTMRs, Prefix: "cds-"})
+	httpClient, err := routeSourceClient(r, cfg.attestationAPIURL, logger)
 	if err != nil {
 		return nil, err
-	}
-	httpClient, err := armtls.NewVerifyingHTTPClient(armtls.Pins(policy), cfg.attestationAPIURL) // A1
-	if err != nil {
-		return nil, fmt.Errorf("CDS armTLS client: %w", err)
 	}
 	cds, err := routing.NewCDSClient(r.cdsURL, httpClient)
 	if err != nil {
@@ -172,6 +167,43 @@ func newRoutingEngine(cfg config, bindings *Bindings, logger *slog.Logger) (*rou
 			Logger:     logger,
 		}),
 	}, nil
+}
+
+// followedRouterPins is where the enforcer mounts the node's CDS pins as it
+// follows the operator's pin decrees (a var so tests can point elsewhere).
+var followedRouterPins = workloadclaims.RouterCDSPinsPath
+
+// routeSourceClient is the armTLS client the poller fetches the route
+// manifest with. On a node whose enforcer mounts the pins it follows, the
+// client holds CDS to those and re-reads them on a pin miss, so the router
+// keeps its routes across a CDS image rollout; they are the node's own policy,
+// the one --image-policy-file names on a baked node, as it stands after the
+// operator's decrees. Elsewhere the flags decide.
+func routeSourceClient(r routingConfig, attestationAPIURL string, logger *slog.Logger) (*http.Client, error) {
+	if r.imagePolicyFile != "" {
+		node, err := cmdsutil.FollowNodePins(followedRouterPins)
+		if err != nil {
+			return nil, fmt.Errorf("the node's followed CDS pins: %w", err)
+		}
+		if node != nil {
+			hc, err := armtls.NewRefreshingHTTPClient(node, attestationAPIURL)
+			if err != nil {
+				return nil, fmt.Errorf("CDS armTLS client: %w", err)
+			}
+			logger.Info("route manifest source pinned to the node's followed CDS pins", "path", followedRouterPins)
+			return hc, nil
+		}
+	}
+	policy, err := (cmdsutil.ImagePolicySource{File: r.imagePolicyFile}).Load(
+		cmdsutil.MeasurementPins{Measurements: r.cdsMeasurements, Registers: r.cdsRTMRs, Prefix: "cds-"})
+	if err != nil {
+		return nil, err
+	}
+	hc, err := armtls.NewVerifyingHTTPClient(armtls.Pins(policy), attestationAPIURL) // A1
+	if err != nil {
+		return nil, fmt.Errorf("CDS armTLS client: %w", err)
+	}
+	return hc, nil
 }
 
 // checkNodeVerifier binds this router to the verifier its node chose, as

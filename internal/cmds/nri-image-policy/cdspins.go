@@ -44,7 +44,7 @@ func (p *plugin) prepareCDSPins() error {
 		// nothing would read a policy.
 		return nil
 	}
-	set, err := p.cfg.Allowlist.Pull.policySet(p.cfg.NormalizedPlatform())
+	set, err := p.cfg.Allowlist.Pull.pinsSet(p.cfg.NormalizedPlatform())
 	if err != nil {
 		return err
 	}

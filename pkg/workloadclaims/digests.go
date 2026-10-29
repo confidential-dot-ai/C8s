@@ -200,10 +200,17 @@ func requireAttestationApi(url string) error {
 // rather than after the warm-up window. Warm-up failure is logged, not fatal:
 // the endpoint provisions on the first handshake instead, and taking the
 // inventory down would cost far more than a slow first callback.
-func StartDigestsEndpoint(ctx context.Context, logger *slog.Logger, resolver SandboxResolver, identity []byte, platform string, attestFunc func(ctx context.Context, customData string) (string, error), attestationApiURL string, cdsPins armtls.Pins, measuredPolicies string) error {
+//
+// When src is not nil the CDS pins follow it (the operator's signed CDS pin
+// decrees) and cdsPins no longer checks peers: a CDS replica on a newly
+// decreed image passes once the node has the decree.
+func StartDigestsEndpoint(ctx context.Context, logger *slog.Logger, resolver SandboxResolver, identity []byte, platform string, attestFunc func(ctx context.Context, customData string) (string, error), attestationApiURL string, cdsPins armtls.Pins, measuredPolicies string, src armtls.PinSource) error {
 	tlsCfg, certMgr, err := DigestsServerTLSConfig(platform, attestFunc, attestationApiURL, cdsPins, 0, measuredPolicies)
 	if err != nil {
 		return err
+	}
+	if src != nil {
+		tlsCfg.VerifyPeerCertificate = armtls.RefreshingPeerVerifier(src, attestationApiURL)
 	}
 	addr := net.JoinHostPort("", strconv.Itoa(listenPort))
 	l, err := tls.Listen("tcp", addr, tlsCfg)

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
@@ -54,18 +55,37 @@ func NewClient(cfg Config, pins armtls.Pins) (*http.Client, crypto.PublicKey, er
 	if err != nil {
 		return nil, nil, err
 	}
-	tlsCfg, _, err := armtls.NewClientTLSConfig(&armtls.ClientConfig{
-		Policy:       pins.VerifyPolicy(cfg.AttestationApiURL),
-		CertProvider: provider,
-	})
-	if err != nil {
-		return nil, nil, fmt.Errorf("build CDS client: %w", err)
+	build := func(p armtls.Pins) (*http.Transport, error) {
+		tlsCfg, _, err := armtls.NewClientTLSConfig(&armtls.ClientConfig{
+			Policy:       p.VerifyPolicy(cfg.AttestationApiURL),
+			CertProvider: provider,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("build CDS client: %w", err)
+		}
+		return &http.Transport{TLSClientConfig: tlsCfg}, nil
 	}
-	return &http.Client{
-		Timeout:   cfg.RequestTimeout,
-		Transport: &http.Transport{TLSClientConfig: tlsCfg},
-	}, pub, nil
+	// The node's policy follows the operator's CDS pin decrees: re-read it
+	// on a pin miss.
+	node, err := cmdsutil.FollowNodePins(nodePinsPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	var rt http.RoundTripper
+	if node != nil {
+		rt, err = armtls.NewRefreshingTransport(node, build)
+	} else {
+		rt, err = build(pins)
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	return &http.Client{Timeout: cfg.RequestTimeout, Transport: rt}, pub, nil
 }
+
+// nodePinsPath is where the enforcer mounts the node's CDS policy; a var so
+// tests can point it elsewhere.
+var nodePinsPath = workloadclaims.CDSPinsPath
 
 // Do performs one store request: a fresh challenge, a sandbox token redeemed
 // at endpoint and bound to the challenge and this pod's leaf key, then the
