@@ -673,6 +673,19 @@ func (c gatedContainer) requireNoNetworkChange() error {
 	return nil
 }
 
+// selfNetworkNamespace names the network namespace of the thread-group
+// leader, which is the enforcer's own until a thread of it attaches to a
+// pod's.
+const selfNetworkNamespace = "/proc/self/ns/net"
+
+// enforcerNetworkNamespace answers with the network namespace the enforcer
+// runs in, read on the first call and kept for the process: installing a pod
+// ruleset leaves the thread it ran on in that pod's namespace, the leader
+// thread included, so a later read names a pod's.
+var enforcerNetworkNamespace = sync.OnceValues(func() (podNamespace, error) {
+	return namespaceFile(selfNetworkNamespace)
+})
+
 // proveSandboxNamespace proves that path is the network namespace the
 // sandbox's own process lives in, and not the node's: without it the ruleset
 // could protect a namespace carrying none of the pod's traffic.
@@ -685,11 +698,11 @@ func proveSandboxNamespace(path string, sandboxPID uint32) (podNamespace, error)
 		return podNamespace{}, err
 	}
 	// The enforcer is a node process, so its own namespace is the node's.
-	node, err := namespaceFile("/proc/self/ns/net")
+	enforcer, err := enforcerNetworkNamespace()
 	if err != nil {
 		return podNamespace{}, err
 	}
-	if described.id == node.id {
+	if described.id == enforcer.id {
 		return podNamespace{}, fmt.Errorf("%s is the node's own network namespace", path)
 	}
 	sandbox, err := namespaceFile(fmt.Sprintf("/proc/%d/ns/net", sandboxPID))
