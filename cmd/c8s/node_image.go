@@ -178,7 +178,7 @@ func renderNodeImage(ctx context.Context, cfg nodeImageRenderConfig) error {
 	if err != nil {
 		return fmt.Errorf("render node integration with helm: %w: %s", err, stderr.String())
 	}
-	artifacts, err := collectNodeImageArtifacts(rendered)
+	artifacts, err := collectNodeImageArtifacts(rendered, cfg.componentDigests())
 	if err != nil {
 		return err
 	}
@@ -194,6 +194,7 @@ func renderNodeImage(ctx context.Context, cfg nodeImageRenderConfig) error {
 		{"allowlist-seed.json", artifacts.seed},
 		{"images.txt", []byte(strings.Join(artifacts.images, "\n") + "\n")},
 		{"router-image.txt", []byte(artifacts.routerImage + "\n")},
+		{"local-names.txt", localNamesFile(artifacts.localNames)},
 	}
 	for _, name := range routerNginxFiles {
 		files = append(files, artifact{filepath.Join("router-nginx", name), []byte(artifacts.routerNginx[name])})
@@ -215,6 +216,9 @@ type nodeImageArtifacts struct {
 	// routerImage is the front door's own image, which the measured base
 	// pins for the router role. Only the chart carries that digest.
 	routerImage string
+	// localNames maps a baked image to the node-local name the render also
+	// names it by ("<ref> <name>" lines in local-names.txt).
+	localNames map[string]string
 }
 
 // routerNginxFiles are the c8s-router-nginx ConfigMap keys the image installs
@@ -225,7 +229,9 @@ var routerNginxFiles = []string{"nginx.conf", "serve.sh", "tls-cds.conf", "tls-a
 // collectNodeImageArtifacts retains complete chart resources and copies the seed
 // for host NRI bootstrap. Every workload image must be pinned and present in the
 // seed; the same inventory drives image preloading into the measured rootfs.
-func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
+// components are the digests of the images this build produces, which the
+// render names node-locally where another node's pods run them.
+func collectNodeImageArtifacts(rendered []byte, components map[string]bool) (*nodeImageArtifacts, error) {
 	namespace, err := yaml.Marshal(corev1.Namespace{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Namespace"},
 		ObjectMeta: metav1.ObjectMeta{
@@ -241,7 +247,7 @@ func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
 	if err != nil {
 		return nil, fmt.Errorf("encode node namespace: %w", err)
 	}
-	var artifacts nodeImageArtifacts
+	artifacts := nodeImageArtifacts{localNames: map[string]string{}}
 	var manifests bytes.Buffer
 	manifests.Write(namespace)
 	decoder := k8syaml.NewYAMLOrJSONDecoder(bytes.NewReader(rendered), 4096)
@@ -290,6 +296,11 @@ func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
 			}
 			if err := collectWorkloadImages(object, key, images); err != nil {
 				return nil, err
+			}
+			if key == operatorWorkloadKey {
+				if err := recordInjectedImages(object, components, artifacts.localNames); err != nil {
+					return nil, fmt.Errorf("node-image workload %s: %w", key, err)
+				}
 			}
 			if key == routerWorkloadKey {
 				image, err := frontDoorImage(object)
@@ -353,7 +364,13 @@ func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
 		artifacts.images = append(artifacts.images, image)
 	}
 	slices.Sort(artifacts.images)
-	artifacts.integration = manifests.Bytes()
+	artifacts.integration = nameInjectedImagesLocally(manifests.Bytes(), artifacts.localNames)
+	artifacts.seed = nameInjectedImagesLocally(artifacts.seed, artifacts.localNames)
+	// The seed pins the operator's exact argv, so the file the image bakes and
+	// the seed ConfigMap the manifests carry must stay the same bytes.
+	if !bytes.Contains(artifacts.integration, artifacts.seed) {
+		return nil, fmt.Errorf("the rendered seed ConfigMap does not carry the bootstrap seed byte for byte")
+	}
 	return &artifacts, nil
 }
 
@@ -846,4 +863,123 @@ func collectConfigMapArtifact(object unstructured.Unstructured, key, name string
 	}
 	artifacts.routerNginx = cm.Data
 	return nil
+}
+
+// operatorWorkloadKey is the workload whose admission webhook injects images
+// into the pods of every node.
+const operatorWorkloadKey = "Deployment/c8s-operator"
+
+// nodeLocalTag is the name every node's airgap import also gives the
+// component images its own measured image carries (local-names.txt).
+const nodeLocalTag = "c8s-node"
+
+// getCertImageFlag is the operator argument naming the image of the
+// credential containers its webhook injects (internal/webhook).
+const getCertImageFlag = "--get-cert-image"
+
+// injectedImageFlags are the operator flags naming the images its webhook
+// injects into member pods.
+var injectedImageFlags = []string{getCertImageFlag + "=", meshImageFlag + "="}
+
+// componentDigests are the digests of the images this build produces, the
+// ones that differ between node images.
+func (cfg nodeImageRenderConfig) componentDigests() map[string]bool {
+	return map[string]bool{
+		cfg.imageDigest:           true,
+		cfg.armtlsMeshImageDigest: true,
+	}
+}
+
+// recordInjectedImages records the node-local name of every component image
+// the operator's webhook injects. The operator runs on the server, but the
+// sidecars it injects run on every node: a pod on a node launched on a newer
+// image must run that image's sidecars, the only ones that node's measured
+// policy admits, and pullPolicy IfNotPresent finds them under the node-local
+// name.
+func recordInjectedImages(object unstructured.Unstructured, components map[string]bool, names map[string]string) error {
+	pod, _, err := unstructured.NestedMap(object.Object, "spec", "template", "spec")
+	if err != nil {
+		return err
+	}
+	var spec corev1.PodSpec
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(pod, &spec); err != nil {
+		return fmt.Errorf("decode pod spec: %w", err)
+	}
+	for _, container := range spec.Containers {
+		for _, arg := range append(container.Command, container.Args...) {
+			image, named := injectedImage(arg)
+			if !named {
+				continue
+			}
+			local, component, err := localNameIfComponent(image, components)
+			if err != nil {
+				return fmt.Errorf("%s: %w", arg, err)
+			}
+			if !component {
+				continue
+			}
+			if err := recordLocalName(names, image, local); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// injectedImage is the image an injected-image flag names in arg, and whether
+// arg names one at all.
+func injectedImage(arg string) (string, bool) {
+	for _, flag := range injectedImageFlags {
+		if image, named := strings.CutPrefix(arg, flag); named {
+			return image, true
+		}
+	}
+	return "", false
+}
+
+// localNameIfComponent is the node-local name of image, and whether this
+// build produces image at all.
+func localNameIfComponent(image string, components map[string]bool) (string, bool, error) {
+	ref, err := reference.ParseDockerRef(image)
+	if err != nil {
+		return "", false, err
+	}
+	pinned, ok := ref.(reference.Canonical)
+	if !ok || !components[pinned.Digest().String()] {
+		return "", false, nil
+	}
+	return reference.TrimNamed(ref).Name() + ":" + nodeLocalTag, true, nil
+}
+
+// recordLocalName records that local stands for image. local-names.txt maps a
+// name back to one image, so two digests of one repository are refused.
+func recordLocalName(names map[string]string, image, local string) error {
+	for other, name := range names {
+		if name != local || other == image {
+			continue
+		}
+		return fmt.Errorf("images %s and %s would share the node-local name %s", other, image, local)
+	}
+	names[image] = local
+	return nil
+}
+
+// nameInjectedImagesLocally rewrites every injected-image flag in doc to the
+// node-local name of the image it names.
+func nameInjectedImagesLocally(doc []byte, names map[string]string) []byte {
+	for _, image := range slices.Sorted(maps.Keys(names)) {
+		for _, flag := range injectedImageFlags {
+			doc = bytes.ReplaceAll(doc, []byte(flag+image), []byte(flag+names[image]))
+		}
+	}
+	return doc
+}
+
+// localNamesFile is the local-names.txt body: one "<image> <name>" line each.
+func localNamesFile(names map[string]string) []byte {
+	var file strings.Builder
+	for _, image := range slices.Sorted(maps.Keys(names)) {
+		fmt.Fprintf(&file, "%s %s\n", image, names[image])
+	}
+	return []byte(file.String())
 }

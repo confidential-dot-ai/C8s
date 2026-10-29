@@ -52,11 +52,15 @@ func newNodeImageCheckImagesCmd() *cobra.Command {
 // checkNodeImages checks the render in outputDir against the image configs
 // in layoutDir: render alone knows only the image env the chart declares.
 func checkNodeImages(outputDir, layoutDir string) error {
-	rendered, err := os.ReadFile(filepath.Join(outputDir, "c8s-integration.yaml"))
+	names, err := os.ReadFile(filepath.Join(outputDir, "local-names.txt"))
 	if err != nil {
 		return err
 	}
-	rawSeed, err := os.ReadFile(filepath.Join(outputDir, "allowlist-seed.json"))
+	rendered, err := digestPinnedRender(outputDir, "c8s-integration.yaml", names)
+	if err != nil {
+		return err
+	}
+	rawSeed, err := digestPinnedRender(outputDir, "allowlist-seed.json", names)
 	if err != nil {
 		return err
 	}
@@ -217,4 +221,34 @@ func readJSON(path string, v any) error {
 		return fmt.Errorf("decode %s: %w", path, err)
 	}
 	return nil
+}
+
+// digestPinnedRender reads one file of the render in outputDir with every
+// node-local image name mapped back to the digest it stands for: the seed pins
+// the operator's argv, so both sides of the checks name digests.
+func digestPinnedRender(outputDir, name string, names []byte) ([]byte, error) {
+	data, err := os.ReadFile(filepath.Join(outputDir, name))
+	if err != nil {
+		return nil, err
+	}
+	return resolveLocalNames(data, names)
+}
+
+// resolveLocalNames maps the node-local image names the render wrote back to
+// the digest-pinned references they stand for (local-names.txt).
+func resolveLocalNames(doc, names []byte) ([]byte, error) {
+	for _, line := range strings.Split(string(names), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		if len(fields) != 2 {
+			return nil, fmt.Errorf("local-names.txt: bad line %q", line)
+		}
+		image, local := fields[0], fields[1]
+		for _, flag := range injectedImageFlags {
+			doc = bytes.ReplaceAll(doc, []byte(flag+local), []byte(flag+image))
+		}
+	}
+	return doc, nil
 }

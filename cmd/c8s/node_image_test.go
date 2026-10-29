@@ -24,6 +24,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	k8syaml "k8s.io/apimachinery/pkg/util/yaml"
 	"sigs.k8s.io/yaml"
 
@@ -149,6 +150,34 @@ func TestNodeImageRender(t *testing.T) {
 				if namespace.Labels["pod-security.kubernetes.io/"+mode] != "privileged" {
 					t.Errorf("namespace missing %s label", mode)
 				}
+			}
+			// The webhook injects the mesh and credential sidecars into pods
+			// on every node, so the operator names them node-locally, in its
+			// own argv and in the seed that pins that argv.
+			localNames, err := os.ReadFile(filepath.Join(out, "local-names.txt"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			meshLocal, operatorLocal := "registry.example.com/armtls-mesh:"+nodeLocalTag, "registry.example.com/c8s-operator:"+nodeLocalTag
+			wantNames := "registry.example.com/armtls-mesh@" + nodeImageTestMeshDigest + " " + meshLocal + "\n" +
+				"registry.example.com/c8s-operator@" + testDigest + " " + operatorLocal + "\n"
+			if string(localNames) != wantNames {
+				t.Errorf("local-names.txt = %q, want %q", localNames, wantNames)
+			}
+			seedRaw, err := os.ReadFile(filepath.Join(out, "allowlist-seed.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, flag := range []string{"--get-cert-image=" + operatorLocal, "--mesh-image=" + meshLocal} {
+				if !bytes.Contains(docs["c8s-system/Deployment/c8s-operator"], []byte(flag)) {
+					t.Errorf("operator does not inject node-local images: missing %s", flag)
+				}
+				if !bytes.Contains(seedRaw, []byte(flag)) {
+					t.Errorf("bootstrap seed does not pin %s", flag)
+				}
+			}
+			if bytes.Contains(raw, []byte("--mesh-image=registry.example.com/armtls-mesh@")) {
+				t.Error("manifests still name an injected image by digest")
 			}
 			imageList, err := os.ReadFile(filepath.Join(out, "images.txt"))
 			if err != nil {
@@ -322,7 +351,7 @@ func TestNodeImageRenderRejectsBadInputsBeforeHelm(t *testing.T) {
 
 func TestNodeImageCollectRejectsIncompleteOrUnexpectedChart(t *testing.T) {
 	for _, input := range []string{"", "kind: Deployment\nmetadata:\n  name: c8s-cds\n", "kind: DaemonSet\nmetadata:\n  name: armtls-mesh\n", "kind: HelmChart\nmetadata:\n  name: c8s\n"} {
-		if _, err := collectNodeImageArtifacts([]byte(input)); err == nil {
+		if _, err := collectNodeImageArtifacts([]byte(input), nil); err == nil {
 			t.Errorf("accepted incomplete or unexpected render %q", input)
 		}
 	}
@@ -365,7 +394,7 @@ func TestNodeImageCollectRequiresEachResourceWhereItBelongs(t *testing.T) {
 			if input == nodeImageCollectFixture() {
 				t.Fatalf("fixture no longer contains %q", tc.old)
 			}
-			_, err := collectNodeImageArtifacts([]byte(input))
+			_, err := collectNodeImageArtifacts([]byte(input), nil)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Errorf("collect error = %v, want one naming %s", err, tc.want)
 			}
@@ -522,7 +551,7 @@ func TestMeshImageArg(t *testing.T) {
 
 func TestNodeImageCollectPreservesCompleteResourcesAndConfigData(t *testing.T) {
 	fixture := nodeImageCollectFixture()
-	artifacts, err := collectNodeImageArtifacts([]byte(fixture))
+	artifacts, err := collectNodeImageArtifacts([]byte(fixture), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -587,7 +616,7 @@ func TestNodeImageCollectRejectsExtraInvalidResources(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			input := nodeImageCollectFixture() + "---\n" + tc.resource
-			if _, err := collectNodeImageArtifacts([]byte(input)); err == nil {
+			if _, err := collectNodeImageArtifacts([]byte(input), nil); err == nil {
 				t.Fatal("accepted an invalid resource alongside otherwise complete chart artifacts")
 			}
 		})
@@ -602,7 +631,7 @@ func TestNodeImageCollectRejectsIncompleteRouterNginx(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			input := strings.Replace(nodeImageCollectFixture(), "  tls-acme.conf: ssl_certificate /etc/c8s-acme-tls/cert.pem;\n", replacement, 1)
-			if _, err := collectNodeImageArtifacts([]byte(input)); err == nil {
+			if _, err := collectNodeImageArtifacts([]byte(input), nil); err == nil {
 				t.Fatal("accepted a router nginx ConfigMap that does not hold exactly routerNginxFiles")
 			}
 		})
@@ -627,7 +656,7 @@ func TestNodeImageCollectRejectsUnpinnedOrUnseededImages(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			input := strings.ReplaceAll(nodeImageCollectFixture(), tc.old, tc.replacement)
-			if _, err := collectNodeImageArtifacts([]byte(input)); err == nil {
+			if _, err := collectNodeImageArtifacts([]byte(input), nil); err == nil {
 				t.Fatal("accepted incomplete or unpinned measured workload inventory")
 			}
 		})
@@ -642,7 +671,7 @@ func TestNodeImageCollectCanonicalizesPreloadReferences(t *testing.T) {
 	} {
 		t.Run(tc.image, func(t *testing.T) {
 			input := strings.ReplaceAll(nodeImageCollectFixture(), "registry.example.com/operator", tc.image)
-			artifacts, err := collectNodeImageArtifacts([]byte(input))
+			artifacts, err := collectNodeImageArtifacts([]byte(input), nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -866,7 +895,7 @@ func TestNodeImageCollectPinnedArgs(t *testing.T) {
 			if tc.manifest != "" {
 				input = strings.Replace(input, router, tc.manifest, 1)
 			}
-			_, err := collectNodeImageArtifacts([]byte(input))
+			_, err := collectNodeImageArtifacts([]byte(input), nil)
 			if (err == nil) != tc.ok {
 				t.Fatalf("collectNodeImageArtifacts() error = %v, want ok %v", err, tc.ok)
 			}
@@ -881,7 +910,7 @@ func TestNodeImageCollectAcceptsPinnedEntrypoint(t *testing.T) {
 	if input == nodeImageCollectFixture() {
 		t.Fatal("fixture did not change")
 	}
-	if _, err := collectNodeImageArtifacts([]byte(input)); err != nil {
+	if _, err := collectNodeImageArtifacts([]byte(input), nil); err != nil {
 		t.Fatalf("rejected a seed pinning the baked image to its entrypoint: %v", err)
 	}
 }
@@ -1011,7 +1040,7 @@ func TestNodeImageCollectMatchedEnv(t *testing.T) {
 			if tc.links {
 				input = strings.Replace(input, "enableServiceLinks: false\n      containers:\n        - name: operator", "containers:\n        - name: operator", 1)
 			}
-			_, err := collectNodeImageArtifacts([]byte(input))
+			_, err := collectNodeImageArtifacts([]byte(input), nil)
 			if (err == nil) != tc.ok {
 				t.Fatalf("collectNodeImageArtifacts() error = %v, want ok %v", err, tc.ok)
 			}
@@ -1036,5 +1065,48 @@ func assertLocalPathDenied(t *testing.T, policy *pkgallowlist.Allowlist) {
 		}}) {
 			t.Errorf("policy admits removed local-path container %s: %v", tc.digest, tc.argv)
 		}
+	}
+}
+
+func TestRecordInjectedImages(t *testing.T) {
+	mesh, operator := "registry.example.com/armtls-mesh@"+nodeImageTestMeshDigest, "registry.example.com/c8s-operator@"+testDigest
+	meshLocal, operatorLocal := "registry.example.com/armtls-mesh:"+nodeLocalTag, "registry.example.com/c8s-operator:"+nodeLocalTag
+	operatorDeployment := func(args ...string) unstructured.Unstructured {
+		argv := make([]any, 0, len(args))
+		for _, arg := range args {
+			argv = append(argv, arg)
+		}
+		pod := map[string]any{"containers": []any{map[string]any{"name": "operator", "args": argv}}}
+		return unstructured.Unstructured{Object: map[string]any{"spec": map[string]any{"template": map[string]any{"spec": pod}}}}
+	}
+	components := map[string]bool{nodeImageTestMeshDigest: true, testDigest: true}
+	names := map[string]string{}
+	injecting := operatorDeployment("--mesh-image="+mesh, "--get-cert-image="+operator, "--webhook-service-name=c8s-operator")
+	if err := recordInjectedImages(injecting, components, names); err != nil {
+		t.Fatal(err)
+	}
+	wantNames := mesh + " " + meshLocal + "\n" + operator + " " + operatorLocal + "\n"
+	if got := string(localNamesFile(names)); got != wantNames {
+		t.Fatalf("local-names.txt = %q, want %q", got, wantNames)
+	}
+	doc := []byte("      - --mesh-image=" + mesh + "\n      - --get-cert-image=" + operator + "\n")
+	want := []byte("      - --mesh-image=" + meshLocal + "\n      - --get-cert-image=" + operatorLocal + "\n")
+	if named := nameInjectedImagesLocally(doc, names); !bytes.Equal(named, want) {
+		t.Fatalf("nameInjectedImagesLocally() = %s, want %s", named, want)
+	}
+	// An image this build does not produce keeps the digest it is pinned to.
+	thirdParty := "registry.example.com/nginx@" + nodeImageTestRouterDigest
+	if err := recordInjectedImages(operatorDeployment("--mesh-image="+thirdParty), components, names); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(localNamesFile(names)); got != wantNames {
+		t.Fatalf("a third-party image was named locally: %q", got)
+	}
+	// A second digest of the same repository would share the local name,
+	// which local-names.txt maps back to only one image.
+	twin := "registry.example.com/armtls-mesh@" + nodeImageTestUnseededDigest
+	taken := map[string]string{mesh: meshLocal}
+	if err := recordInjectedImages(operatorDeployment("--mesh-image="+twin), map[string]bool{nodeImageTestUnseededDigest: true}, taken); err == nil {
+		t.Fatal("two images under one node-local name accepted")
 	}
 }
