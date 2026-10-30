@@ -30,6 +30,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/credrelease"
 	"github.com/confidential-dot-ai/c8s/internal/readutil"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
@@ -234,35 +235,42 @@ type Image struct {
 	RTMRs       map[int]string `yaml:"rtmrs,omitempty" json:"rtmrs,omitempty"`
 }
 
-// imagePlatform keeps each TEE's register rules in one place, so the shared
+// imagePlatform names the TEE family a launch tag selects, so the shared
 // verify, validate and policy paths ask the platform instead of testing for
-// "tdx" inline. Adding a platform means adding an entry, not new branches.
+// "tdx" inline.
 type imagePlatform struct {
 	family teetypes.Family
-	// validateRegisters rejects a register map that does not match what this
-	// platform measures. Its error names the platform's own rule.
-	validateRegisters func(rtmrs map[int]string) error
 }
 
 var imagePlatforms = map[string]imagePlatform{
-	"tdx": {
-		family: teetypes.FamilyTDX,
-		validateRegisters: func(rtmrs map[int]string) error {
-			if len(rtmrs) != 2 || !registerHex(rtmrs[1]) || !registerHex(rtmrs[2]) {
-				return fmt.Errorf("TDX image must pin exactly RTMR[1] and RTMR[2]")
-			}
-			return nil
-		},
-	},
-	"snp": {
-		family: teetypes.FamilySNP,
-		validateRegisters: func(rtmrs map[int]string) error {
-			if len(rtmrs) != 0 {
-				return fmt.Errorf("SNP image cannot carry RTMR pins")
-			}
-			return nil
-		},
-	},
+	"tdx": {family: teetypes.FamilyTDX},
+	"snp": {family: teetypes.FamilySNP},
+}
+
+// validateRegisters refuses a register map that is not the set this platform's
+// guests are identified by.
+func (p imagePlatform) validateRegisters(rtmrs map[int]string) error {
+	identifying, _ := armtls.ImageRegisters(p.family)
+	if len(rtmrs) != len(identifying) {
+		return fmt.Errorf("a %s image pins %s", p.family, registerRule(identifying))
+	}
+	for _, index := range identifying {
+		if !registerHex(rtmrs[index]) {
+			return fmt.Errorf("image.rtmrs[%d] must be 96 lowercase hex characters", index)
+		}
+	}
+	return nil
+}
+
+func registerRule(identifying []int) string {
+	if len(identifying) == 0 {
+		return "no RTMRs"
+	}
+	names := make([]string, 0, len(identifying))
+	for _, index := range identifying {
+		names = append(names, fmt.Sprintf("RTMR[%d]", index))
+	}
+	return "exactly " + strings.Join(names, " and ")
 }
 
 // platform resolves the document's launch tag. Callers reach it only after

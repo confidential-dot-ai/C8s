@@ -6,15 +6,23 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"net"
+	"net/netip"
+	"slices"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
+	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
+	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
@@ -266,4 +274,173 @@ func testNodeImages(t *testing.T) *cdsdecree.NodeImages {
 		t.Fatal(err)
 	}
 	return images
+}
+
+// The peer fixtures: this cluster's image and launch file, and another of each.
+var (
+	testLaunchFile  = []byte(launchFile)
+	otherLaunchFile = []byte("schemaVersion: c8s-cds/v1\nclusterID: other\n")
+
+	testImage  = strings.Repeat("a1", 48)
+	otherImage = strings.Repeat("b2", 48)
+	testRTMR1  = strings.Repeat("c3", 48)
+	testRTMR2  = strings.Repeat("d4", 48)
+	otherRTMR1 = strings.Repeat("e5", 48)
+)
+
+const testCallTimeout = 10 * time.Second
+
+// snpVerdict is an SEV-SNP launch digest with HOSTDATA bound to file.
+func snpVerdict(digest string, file []byte) mockapi.Verdict {
+	verdict := mockapi.PassingVerdict(digest)
+	bound := runtimemeasure.HostData(file)
+	verdict.Claims.InitData = bound[:]
+	return verdict
+}
+
+// tdxVerdict is snpVerdict for TDX: the MRTD, RTMR[1], RTMR[2], and RTMR[3] bound to file.
+func tdxVerdict(mrtd, rtmr1, rtmr2 string, file []byte) mockapi.Verdict {
+	verdict := mockapi.PassingVerdict(mrtd)
+	bound := runtimemeasure.FromDigestsSeeded(runtimemeasure.Seed(file), nil)
+	verdict.Claims.PlatformData = map[string]any{
+		"rtmr_1": rtmr1,
+		"rtmr_2": rtmr2,
+		"rtmr_3": hex.EncodeToString(bound[:]),
+	}
+	return verdict
+}
+
+// imagePin is one entry of an admission set, bound to file.
+func imagePin(t *testing.T, digest string, file []byte) remote.ImagePin {
+	t.Helper()
+	raw, err := hex.DecodeString(digest)
+	if err != nil {
+		t.Fatalf("image digest: %v", err)
+	}
+	return remote.ImagePin{Name: digest[:8], Digest: raw, LaunchFile: file}
+}
+
+// admittedImages is what a replica admits, changed while connections are live.
+type admittedImages struct {
+	mu     sync.Mutex
+	pinned []remote.ImagePin
+}
+
+func (a *admittedImages) hold(images ...remote.ImagePin) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.pinned = images
+}
+
+func (a *admittedImages) get() []remote.ImagePin {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return slices.Clone(a.pinned)
+}
+
+// testReplica is one CDS VM: its attestation-api, identity and admission set.
+type testReplica struct {
+	stub     *mockapi.Stub
+	attestor attestor
+	identity peerIdentity
+	member   string
+	admits   *admittedImages
+	mux      *mux
+	answered chan peer
+}
+
+// newSNPReplica is a replica of the test image that admits its own image.
+func newSNPReplica(t *testing.T, member string) *testReplica {
+	t.Helper()
+	return newPeerReplica(
+		t,
+		member,
+		teetypes.PlatformSNP,
+		snpVerdict(testImage, testLaunchFile),
+		time.Now().Add(time.Hour),
+	)
+}
+
+// newTDXReplica is newSNPReplica for a TDX guest.
+func newTDXReplica(t *testing.T, member string, verdict mockapi.Verdict) *testReplica {
+	t.Helper()
+	return newPeerReplica(t, member, teetypes.PlatformTDX, verdict, time.Now().Add(time.Hour))
+}
+
+// newPeerReplica is a replica that peers under platform's verdict.
+func newPeerReplica(
+	t *testing.T,
+	member string,
+	platform teetypes.PlatformType,
+	verdict mockapi.Verdict,
+	notAfter time.Time,
+) *testReplica {
+	t.Helper()
+	stub := mockapi.New(t)
+	stub.SetPlatform(platform)
+	stub.SetVerdict(verdict)
+	a, err := newAttestor(stub.URL(), testCallTimeout)
+	if err != nil {
+		t.Fatalf("attestation-api on %s: %v", stub.URL(), err)
+	}
+	identity, err := newPeerIdentity(a, testCluster, member, testLaunchFile, notAfter)
+	if err != nil {
+		t.Fatalf("mint %s identity: %v", member, err)
+	}
+	admits := &admittedImages{}
+	admits.hold(identity.self)
+	return &testReplica{
+		stub:     stub,
+		attestor: a,
+		identity: identity,
+		member:   member,
+		admits:   admits,
+		answered: make(chan peer, 8),
+	}
+}
+
+// serve starts the replica's peer port on the loopback.
+func (r *testReplica) serve(t *testing.T) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	endpoint, err := netip.ParseAddrPort(ln.Addr().String())
+	if err != nil {
+		t.Fatalf("listen address: %v", err)
+	}
+	r.mux = newMux(
+		ln,
+		raftAddr{endpoint: endpoint, member: r.member},
+		r.certificate,
+		r.verifier(),
+		r.answer,
+	)
+	t.Cleanup(func() { r.mux.Close() })
+}
+
+func (r *testReplica) certificate() *tls.Certificate { return &r.identity.certificate }
+
+func (r *testReplica) verifier() peerVerifier {
+	return peerVerifier{clusterID: testCluster, attestor: r.attestor, admits: r.admits.get}
+}
+
+// judges makes this replica's attestation-api answer verdict from now on.
+func (r *testReplica) judges(verdict mockapi.Verdict) { r.stub.SetVerdict(verdict) }
+
+// refuses makes this replica's attestation-api verify nothing further.
+func (r *testReplica) refuses(reply mockapi.ErrorReply) { r.stub.SetVerifyError(reply) }
+
+// verdicts counts the verdicts this replica's attestation-api has given.
+func (r *testReplica) verdicts() int { return len(r.stub.VerifyRequests()) }
+
+func (r *testReplica) endpoint() string { return r.mux.advert.endpoint.String() }
+
+func (r *testReplica) raftAddress() string { return r.mux.Addr().String() }
+
+// answer reports the peer the control channel handed over, and echoes request.
+func (r *testReplica) answer(from peer, request json.RawMessage) json.RawMessage {
+	r.answered <- from
+	return request
 }

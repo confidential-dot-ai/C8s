@@ -56,6 +56,8 @@ const (
 //	1.3.6.1.4.1.66378.1.2 - attestation-evidence audit digest (certutil)
 //	1.3.6.1.4.1.66378.1.4 - pod sandbox ID extension (sandbox.go)
 //	1.3.6.1.4.1.66378.1.5 - matched workload extension (matchedworkload.go)
+//	1.3.6.1.4.1.66378.1.6 - CDS HA peer evidence (internal/cdsha)
+//	1.3.6.1.4.1.66378.1.7 - CDS HA peer member id (internal/cdsha)
 //
 // .1.3 was the armTLS config-claims extension; it is retired, not reusable.
 var (
