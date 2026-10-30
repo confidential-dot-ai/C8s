@@ -34,7 +34,7 @@ jobs:
       - uses: ./.github/actions/setup-go-c8s
 
       - name: Run the -short subset
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && hashFiles('test/integration/cdsha/run.sh') != ''
         run: ./test/integration/cdsha/run.sh -short
 
       - name: Run every scenario
