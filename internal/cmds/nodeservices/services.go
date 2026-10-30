@@ -33,13 +33,16 @@ func validateRole(d *launchconfig.Document) error {
 // primaryIPv4 is a package var so tests can fake the host's routes.
 var primaryIPv4 = launchconfig.PrimaryIPv4
 
-// PublishNodeIP selects the same address as RKE2, including an explicit
-// authenticated node.ip. RootDir only rebases the fixed output for tests.
+// PublishNodeIP writes the inventory host CDS dials and the sandbox tokens
+// name: the node's external IP when the launch document sets one (a node CDS
+// reaches at an address other than its own interface — e.g. behind NAT), else
+// its node.ip, else the route-aware address RKE2 itself registers. RootDir only
+// rebases the fixed output for tests.
 func PublishNodeIP(rootDir string, d *launchconfig.Document) error {
 	if err := validateRole(d); err != nil {
 		return err
 	}
-	address := d.Node.IP
+	address := d.Node.AdvertiseAddress()
 	if address == "" {
 		var err error
 		if address, err = primaryIPv4(); err != nil {

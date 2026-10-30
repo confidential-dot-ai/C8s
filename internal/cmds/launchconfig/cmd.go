@@ -75,6 +75,7 @@ that file. See docs/operator.md, "Authenticated launch configuration".`,
 	f.IntVar(&opts.VCPUs, "vcpus", 0, "SNP only: the VM's vCPU count, selecting its launch digest from the manifest")
 	f.StringVar(&opts.ServerName, "server-name", "", "server node name (default <cluster-id>-server)")
 	f.StringVar(&opts.ServerAddress, "server-address", "", "server IPv4 address every node can reach; required with agents, otherwise the server autodetects it")
+	f.StringVar(&opts.ServerExternalIP, "node-external-ip", "", "the address CDS reaches this node's admission inventory at, when it differs from the node's own interface address — e.g. a node behind NAT. Set as the node's external IP (RKE2 node-external-ip) and the inventory host its sandbox tokens name; must fall inside a --cds-node-cidr")
 	f.StringArrayVar(&opts.Agents, "agent", nil, "agent node name; repeatable")
 	f.StringVar(&opts.TLSSAN, "tls-san", "", "DNS name for the front-door certificate, which CDS signs onto a leaf (default c8s.local)")
 	f.StringVar(&opts.CDS.Address, "cds-address", "", "<host>:<port> the cluster's CDS serves on, the host a DNS name its clients resolve or an IPv4 address; its port is the only one a credential client may dial outside the cluster")

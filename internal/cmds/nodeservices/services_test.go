@@ -154,6 +154,23 @@ func TestPublishNodeIPHonorsAuthenticatedAddress(t *testing.T) {
 	}
 }
 
+func TestPublishNodeIPPrefersExternalAddress(t *testing.T) {
+	// A node CDS reaches at an address other than its own interface (e.g.
+	// behind NAT) sets node.externalIP; the inventory host CDS dials must be
+	// that external address, not the node's local IP.
+	root := t.TempDir()
+	doc := document(t, launchconfig.Agent)
+	doc.Node.IP = "192.0.2.22"
+	doc.Node.ExternalIP = "198.51.100.7"
+	if err := PublishNodeIP(root, doc); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, nodeIPPath))
+	if err != nil || string(data) != "198.51.100.7\n" {
+		t.Fatalf("got %q, %v; want the external address", data, err)
+	}
+}
+
 func TestPreparePublishesOnlyPublicRoleInputs(t *testing.T) {
 	for _, role := range []launchconfig.Role{launchconfig.Server, launchconfig.Agent} {
 		t.Run(string(role), func(t *testing.T) {

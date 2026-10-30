@@ -25,6 +25,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 // A bundle is one cluster's complete launch input, laid out so each node's
@@ -56,16 +57,17 @@ const (
 
 // BundleOptions describes a new cluster's launch bundle.
 type BundleOptions struct {
-	Dir           string
-	ClusterID     string
-	ManifestPath  string
-	VCPUs         int
-	ServerName    string
-	ServerAddress string
-	Agents        []string
-	TLSSAN        string
-	CDS           CDSOptions
-	Router        Router
+	Dir              string
+	ClusterID        string
+	ManifestPath     string
+	VCPUs            int
+	ServerName       string
+	ServerAddress    string
+	ServerExternalIP string
+	Agents           []string
+	TLSSAN           string
+	CDS              CDSOptions
+	Router           Router
 	// RegistryMirrors goes into the server document; agents inherit it.
 	RegistryMirrors map[string]string
 	// OperatorKeyPath, when set, is an existing server launch key (the
@@ -114,6 +116,22 @@ func NewBundle(opts BundleOptions) (err error) {
 	}
 	if len(opts.Agents) > 0 && opts.ServerAddress == "" {
 		return errors.New("--server-address is required when the bundle has agents: an agent must be told where its server is")
+	}
+	if opts.ServerExternalIP != "" {
+		// The node signs this address as its inventory host; CDS admits a leaf
+		// only when it falls inside a node CIDR (the same check CDS applies at
+		// issuance). Refuse here so the mistake is a CLI error, not a node that
+		// boots and then loops on csr_denied.
+		if err := ValidateIPv4(opts.ServerExternalIP, true); err != nil {
+			return fmt.Errorf("--node-external-ip: %w", err)
+		}
+		hosts, err := workloadclaims.ParseInventoryHosts(opts.CDS.NodeCIDRs)
+		if err != nil {
+			return fmt.Errorf("--cds-node-cidr: %w", err)
+		}
+		if !hosts.Contains(opts.ServerExternalIP) {
+			return fmt.Errorf("--node-external-ip %s is outside every --cds-node-cidr; CDS would refuse this node's inventory", opts.ServerExternalIP)
+		}
 	}
 	if opts.OperatorPubPath != "" && opts.OperatorKeyPath == "" {
 		return errors.New("--operator-pubkey checks --operator-key; it needs one")
@@ -182,7 +200,7 @@ func NewBundle(opts BundleOptions) (err error) {
 		ClusterID:               opts.ClusterID,
 		Role:                    Server,
 		Image:                   image,
-		Node:                    Node{Name: opts.ServerName},
+		Node:                    Node{Name: opts.ServerName, ExternalIP: opts.ServerExternalIP},
 		RKE2:                    RKE2{ServerToken: serverToken, AgentToken: agentToken, NodePassword: serverPassword},
 		Server:                  ServerConfig{Address: opts.ServerAddress, OperatorPublicKey: serverPub},
 		AgentOperatorPublicKeys: []string{agentPub},

@@ -49,7 +49,7 @@ column names the role that must carry the field.
 | `image.rtmrs` | TDX | Exactly RTMR[1] and RTMR[2], 96 lowercase hex each. An SNP document carries none. |
 | `node.name` | yes | This node's Kubernetes name, an RFC1123 label. |
 | `node.ip` | no | This node's IPv4 address. |
-| `node.externalIP` | no | A unicast IPv4 address to publish as the node's external address. |
+| `node.externalIP` | no | A unicast IPv4 address to publish as the node's external address (RKE2 `node-external-ip`) and the inventory host its sandbox tokens name, for a node CDS reaches at an address other than its own interface — e.g. behind NAT. Set by `--node-external-ip`; must fall inside one of the `--cds-node-cidr` subnets. |
 | `rke2.serverToken` | server | The control-plane join token of RKE2, the Kubernetes distribution the node image boots: 64 lowercase hex, different from `agentToken`. An agent document must not carry it. |
 | `rke2.agentToken` | yes | The agent join token, 64 lowercase hex. |
 | `rke2.nodePassword` | no | This node's RKE2 node password, 64 lowercase hex, different from both tokens. Per node, so one node's document opens no other node's name. |

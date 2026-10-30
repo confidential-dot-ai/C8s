@@ -371,6 +371,8 @@ func TestNewBundleRefusesBadInputsAndLeavesNothingBehind(t *testing.T) {
 		{"cds platform alias", []string{"--image-manifest", tdx, "--cds-platform", "snp"}, "want sev-snp or tdx"},
 		{"snp cds without vcpus", []string{"--image-manifest", tdx, "--cds-image-manifest", snp, "--cds-platform", "sev-snp"}, "name the counts"},
 		{"cds address without port", []string{"--image-manifest", tdx, "--cds-address", "192.0.2.50"}, "--cds-address"},
+		{"node external ip not an ip", []string{"--image-manifest", tdx, "--node-external-ip", "not-an-ip"}, "--node-external-ip"},
+		{"node external ip outside node cidr", []string{"--image-manifest", tdx, "--node-external-ip", "198.51.100.7"}, "outside every --cds-node-cidr"},
 		{"tenant entry takes a component name", []string{"--image-manifest", tdx, "--tenant-workloads", writeFile(t, "workloads.json", componentSeed)}, "is a component entry"},
 	}
 	for _, tc := range cases {
@@ -505,6 +507,22 @@ func TestNewBundleCarriesRegistryMirrorsToEveryNode(t *testing.T) {
 		}
 		stageBundleNode(t, dir, node)
 	}
+}
+
+func TestNewBundleCarriesTheServerNodeExternalIP(t *testing.T) {
+	// The external IP must fall inside a --cds-node-cidr (the test's is
+	// 10.0.0.0/24, see cdsInputs), the same constraint CDS enforces.
+	dir := filepath.Join(t.TempDir(), "bundle")
+	err := runBundleCmd(t, append(bundleArgs(t, dir, "tdx"),
+		"--server-address", "10.0.0.10", "--node-external-ip", "10.0.0.77")...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, _ := readBundleDocument(t, dir, serverDir)
+	if doc.Node.ExternalIP != "10.0.0.77" {
+		t.Fatalf("server node.externalIP = %q, want 10.0.0.77", doc.Node.ExternalIP)
+	}
+	stageBundleNode(t, dir, serverDir)
 }
 
 // writeOperatorKey writes a P-256 key and its public half the way
