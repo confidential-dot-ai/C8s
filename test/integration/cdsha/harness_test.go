@@ -152,7 +152,9 @@ type replica struct {
 	base   string
 	apiURL string
 	db     string
-	cds    *process
+	// Counts the CDS images this VM has been replaced with.
+	rolls int
+	cds   *process
 	// locked is the connection holding this VM's allowlist database away from
 	// the process serving the cluster.
 	locked *sql.Conn
@@ -256,7 +258,7 @@ func newCluster(t *testing.T, size shape) *cluster {
 	c.operator = newKey(t)
 	c.signer = c.operatorSigner()
 	c.configure(size)
-	c.client = c.attestedClient()
+	c.client = c.attestedClient(testutil.TestMeasurement)
 	for i := range size.replicas {
 		c.replicas = append(c.replicas, c.start(i))
 	}
@@ -321,7 +323,7 @@ func (c *cluster) start(i int) *replica {
 		index:  i,
 		host:   replicaHost(i),
 		db:     filepath.Join(c.dir, fmt.Sprintf("allowlist-%d.db", i)),
-		apiURL: c.attestationAPI(fmt.Sprintf("replica-%d", i)),
+		apiURL: c.attestationAPI(fmt.Sprintf("replica-%d", i), testutil.TestMeasurement),
 	}
 	r.base = fmt.Sprintf("https://%s:%d", r.host, clientPort)
 	c.restart(r)
@@ -329,14 +331,14 @@ func (c *cluster) start(i int) *replica {
 }
 
 // attestationAPI runs one attestation-api on this host's loopback, reporting
-// the CDS image and the launch file of this cluster's replicas.
-func (c *cluster) attestationAPI(name string) string {
+// this CDS image and the launch file of this cluster's replicas.
+func (c *cluster) attestationAPI(name, measurement string) string {
 	c.t.Helper()
 	port := freePort(c.t)
 	launch := runtimemeasure.HostData(c.config)
 	c.run(name+"-attestation-api", built.api, nil, []string{
 		"PORT=" + strconv.Itoa(port),
-		"MEASUREMENT=" + testutil.TestMeasurement,
+		"MEASUREMENT=" + measurement,
 		"HOST_DATA=" + hex.EncodeToString(launch[:]),
 	})
 	url := fmt.Sprintf("http://127.0.0.1:%d", port)
@@ -438,20 +440,23 @@ func tail(path string) string {
 	return strings.Join(lines, "\n")
 }
 
-// attestedClient reads the replicas over armTLS, verified against the image
+// attestedClient reads the replicas over armTLS, verified against the images
 // the cluster's pin document names, bound to the launch file they boot.
-func (c *cluster) attestedClient() *http.Client {
+func (c *cluster) attestedClient(measurement string, alsoAccepted ...string) *http.Client {
 	c.t.Helper()
-	digest, err := hex.DecodeString(testutil.TestMeasurement)
-	if err != nil {
-		c.t.Fatal(err)
+	var pins armtls.Pins
+	for i, accepted := range append([]string{measurement}, alsoAccepted...) {
+		digest, err := hex.DecodeString(accepted)
+		if err != nil {
+			c.t.Fatal(err)
+		}
+		pins.Images = append(pins.Images, remote.ImagePin{
+			Name:       fmt.Sprintf("cds-%d", i),
+			Digest:     digest,
+			LaunchFile: c.config,
+		})
 	}
-	pins := armtls.Pins{Images: []remote.ImagePin{{
-		Name:       "cds",
-		Digest:     digest,
-		LaunchFile: c.config,
-	}}}
-	client, err := armtls.NewVerifyingHTTPClient(pins, c.attestationAPI("the operator"))
+	client, err := armtls.NewVerifyingHTTPClient(pins, c.attestationAPI("the operator", testutil.TestMeasurement))
 	if err != nil {
 		c.t.Fatal(err)
 	}
@@ -512,9 +517,8 @@ func (c *cluster) decree(to *replica, d cdsdecree.Decree) cdsha.Delivered {
 	return delivered
 }
 
-// decreePins posts the pin decree of an image roll to a replica: the image
-// the replicas run, and the one the roll adds beside it.
-func (c *cluster) decreePins(to *replica, version uint64) (string, cdsha.Delivered) {
+// Names the CDS images a replica of the cluster may run from then on.
+func (c *cluster) decreePins(to *replica, version uint64, measurements ...string) (string, cdsha.Delivered) {
 	c.t.Helper()
 	decree := cdsdecree.Decree{
 		ClusterID:   clusterID,
@@ -522,11 +526,26 @@ func (c *cluster) decreePins(to *replica, version uint64) (string, cdsha.Deliver
 		Kind:        cdsdecree.UpdateMeasurements,
 		ExpiresAt:   time.Now().Add(time.Hour),
 		BaseVersion: version,
-		CDSPins:     c.rollPins(),
+		CDSPins:     c.pinDocument(measurements...),
 	}
 	return decree.IntentID, c.decree(to, decree)
 }
 
+// The Admit decree a replica holding no cluster acts on, so a replica of a
+// new image reaches a leader still running the old one.
+func (c *cluster) decreeAdmit(to *replica, measurements ...string) cdsha.Delivered {
+	c.t.Helper()
+	return c.decree(to, cdsdecree.Decree{
+		ClusterID:    clusterID,
+		IntentID:     cdsdecree.NewIntentID(),
+		Kind:         cdsdecree.Admit,
+		ExpiresAt:    time.Now().Add(time.Hour),
+		CDSPins:      c.pinDocument(measurements...),
+		TargetMember: c.awaitStatus(to).ID,
+	})
+}
+
+// decreeRotateKey posts a RotateKey decree to a replica.
 func (c *cluster) decreeRotateKey(to *replica, version uint64) (string, cdsha.Delivered) {
 	c.t.Helper()
 	decree := cdsdecree.Decree{
@@ -539,19 +558,31 @@ func (c *cluster) decreeRotateKey(to *replica, version uint64) (string, cdsha.De
 	return decree.IntentID, c.decree(to, decree)
 }
 
-// rollPins is the pin document of an image roll: the image the replicas run
-// and the one the roll adds, both bound to the launch file they boot.
-func (c *cluster) rollPins() *cdsdecree.PinDocument {
+// Each image bound to the launch file every replica of the cluster boots.
+func (c *cluster) pinDocument(measurements ...string) *cdsdecree.PinDocument {
 	c.t.Helper()
 	launchFile := strconv.Quote(string(c.config))
-	document := `{"schema_version":"2","tee":"sev-snp","measurements":[` +
-		`{"name":"cds","measurement":"` + testutil.TestMeasurement + `","launch_file":` + launchFile + `},` +
-		`{"name":"cds-next","measurement":"` + nextCDSImage + `","launch_file":` + launchFile + `}]}`
-	pins, err := cdsdecree.NewPinDocument([]byte(document))
+	entries := make([]string, 0, len(measurements))
+	for i, measurement := range measurements {
+		entries = append(entries, fmt.Sprintf(`{"name":"cds-%d","measurement":%q,"launch_file":%s}`, i, measurement, launchFile))
+	}
+	pins, err := cdsdecree.NewPinDocument([]byte(
+		`{"schema_version":"2","tee":"sev-snp","measurements":[` + strings.Join(entries, ",") + `]}`))
 	if err != nil {
 		c.t.Fatal(err)
 	}
 	return pins
+}
+
+// The process ends and starts again beside an attestation-api reporting the
+// new image, at the address the cluster's replica entries resolve to.
+func (c *cluster) rollImage(r *replica, measurement string) {
+	c.t.Helper()
+	c.kill(r)
+	r.rolls++
+	r.apiURL = c.attestationAPI(fmt.Sprintf("replica-%d-roll-%d", r.index, r.rolls), measurement)
+	c.restart(r)
+	c.logf("replica %d runs CDS image %s now", r.index, measurement)
 }
 
 // The member is alive and answers nothing, as under a host that drops its packets.
