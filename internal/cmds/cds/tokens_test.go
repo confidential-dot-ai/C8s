@@ -20,6 +20,12 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
+// floorAt is a CDS whose spent-token record began at start; the zero time
+// refuses no token for its age.
+func floorAt(start time.Time) func() time.Time {
+	return func() time.Time { return start }
+}
+
 func TestSingleUse(t *testing.T) {
 	store, err := allowlist.OpenInMemory()
 	if err != nil {
@@ -39,7 +45,7 @@ func TestSingleUse(t *testing.T) {
 	authorize := singleUse(
 		func(*http.Request, []byte) (time.Time, error) { return time.Time{}, verdict },
 		store.Local(),
-		time.Time{},
+		floorAt(time.Time{}),
 		0,
 	)
 	r := httptest.NewRequest(http.MethodPut, "/allowlist", nil)
@@ -94,7 +100,7 @@ func TestSingleUseRejectsSignatureTwin(t *testing.T) {
 	twin := token[:dot+1] + base64.RawURLEncoding.EncodeToString(sig)
 
 	verifier := operatorauth.Verifier{Keys: []*ecdsa.PublicKey{&key.PublicKey}}
-	authorize := singleUse(verifier.AuthorizeIssuedAt, store.Local(), time.Time{}, 0)
+	authorize := singleUse(verifier.AuthorizeIssuedAt, store.Local(), floorAt(time.Time{}), 0)
 	request := func(token string) *http.Request {
 		r := httptest.NewRequest(http.MethodPut, "/allowlist", nil)
 		r.Header.Set("Authorization", "Bearer "+token)
@@ -135,7 +141,7 @@ func TestSingleUseRefusesTokensBeforeStart(t *testing.T) {
 		authorize := singleUse(
 			func(*http.Request, []byte) (time.Time, error) { return tc.iat, nil },
 			store.Local(),
-			start,
+			floorAt(start),
 			skew,
 		)
 		r := bearerRequest(t, tc.iat)
@@ -160,7 +166,7 @@ func TestSingleUseRefusesReplayAfterRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer first.Close()
-	if err := singleUse(allow, first.Local(), start.Add(-time.Hour), skew)(r, nil); err != nil {
+	if err := singleUse(allow, first.Local(), floorAt(start.Add(-time.Hour)), skew)(r, nil); err != nil {
 		t.Fatalf("first use = %v", err)
 	}
 
@@ -169,7 +175,7 @@ func TestSingleUseRefusesReplayAfterRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer restarted.Close()
-	afterRestart := singleUse(allow, restarted.Local(), start.Add(time.Second), skew)
+	afterRestart := singleUse(allow, restarted.Local(), floorAt(start.Add(time.Second)), skew)
 	if err := afterRestart(r, nil); !errors.Is(err, operatorauth.ErrTokenBeforeStart) {
 		t.Fatalf("replay after restart = %v, want operatorauth.ErrTokenBeforeStart", err)
 	}
@@ -186,7 +192,7 @@ func TestSingleUseReportsStoreFailure(t *testing.T) {
 	authorize := singleUse(
 		func(*http.Request, []byte) (time.Time, error) { return time.Time{}, nil },
 		store.Local(),
-		time.Time{},
+		floorAt(time.Time{}),
 		0,
 	)
 	if err := authorize(bearerRequest(t, time.Now()), nil); !errors.Is(err, operatorauth.ErrTokenNotRecorded) {

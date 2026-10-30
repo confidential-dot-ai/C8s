@@ -22,13 +22,14 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
-func testMeshCA(t *testing.T) *issuer.MeshCA {
+// testMeshCA is the mesh CA a singleton holds.
+func testMeshCA(t *testing.T) ownCA {
 	t.Helper()
 	mesh, err := issuer.NewMeshCA("test ca", time.Hour)
 	if err != nil {
 		t.Fatalf("mesh ca: %v", err)
 	}
-	return mesh
+	return ownCA{mesh}
 }
 
 func newStubRouter(t *testing.T) http.Handler {
@@ -52,12 +53,9 @@ func newStubRouter(t *testing.T) http.Handler {
 			Allowlist:       store.Local(),
 			WriteAuthorizer: func(*http.Request, []byte) error { return nil },
 		},
-		Routes: routeHandler{
-			Allowlist: store.Local(),
-			MeshCA:    mesh.Current().CA.Cert,
-		},
+		Routes:           routeHandler{Allowlist: store.Local()},
 		ReadyFn:          func() bool { return true },
-		MeshCA:           mesh,
+		MeshCA:           ownCA{mesh},
 		RateLimiter:      newTestRateLimiter(t),
 		ChallengeLimiter: newTestRateLimiter(t),
 		MaxRequestSize:   65536,
@@ -85,7 +83,7 @@ func TestRouter_RateLimitsAttestationEndpoints(t *testing.T) {
 			WriteAuthorizer: func(*http.Request, []byte) error { return nil },
 		},
 		ReadyFn:          func() bool { return true },
-		MeshCA:           mesh,
+		MeshCA:           ownCA{mesh},
 		RateLimiter:      rl,
 		ChallengeLimiter: newTestRateLimiter(t),
 		MaxRequestSize:   65536,
@@ -124,7 +122,7 @@ func TestRouter_RateLimitsAllowlistWrites(t *testing.T) {
 			WriteAuthorizer: func(*http.Request, []byte) error { return nil },
 		},
 		ReadyFn:          func() bool { return true },
-		MeshCA:           mesh,
+		MeshCA:           ownCA{mesh},
 		RateLimiter:      rl,
 		ChallengeLimiter: newTestRateLimiter(t),
 		MaxRequestSize:   65536,
@@ -178,7 +176,7 @@ func TestRouter_RateLimitsAuthenticate(t *testing.T) {
 			WriteAuthorizer: func(*http.Request, []byte) error { return nil },
 		},
 		ReadyFn:          func() bool { return true },
-		MeshCA:           mesh,
+		MeshCA:           ownCA{mesh},
 		RateLimiter:      rl,
 		ChallengeLimiter: challengeRL,
 		MaxRequestSize:   65536,
@@ -294,7 +292,7 @@ func TestRouter_AttestRejectsOversizedBody(t *testing.T) {
 			WriteAuthorizer: func(*http.Request, []byte) error { return nil },
 		},
 		ReadyFn:          func() bool { return true },
-		MeshCA:           mesh,
+		MeshCA:           ownCA{mesh},
 		RateLimiter:      newTestRateLimiter(t),
 		ChallengeLimiter: newTestRateLimiter(t),
 		MaxRequestSize:   16,
@@ -486,26 +484,34 @@ func TestCAValidityHolds(t *testing.T) {
 	}
 }
 
+// notServing is a replica out of contact with its cluster.
+type notServing struct {
+	*singleton
+}
+
+func (notServing) Ready() bool {
+	return false
+}
+
 func TestReadinessFn(t *testing.T) {
 	mesh, err := issuer.NewMeshCA("test ca", 48*time.Hour)
 	if err != nil {
 		t.Fatalf("mesh ca: %v", err)
 	}
+	current := &singleton{mesh: mesh}
 
 	for _, tc := range []struct {
 		name string
 		svc  func() bool
+		back backend
 		want bool
 	}{
-		{"attestation-api healthy and CA current", func() bool {
-			return true
-		}, true},
-		{"attestation-api down", func() bool {
-			return false
-		}, false},
+		{"attestation-api healthy and CA current", func() bool { return true }, current, true},
+		{"attestation-api down", func() bool { return false }, current, false},
+		{"the state this CDS serves answers nothing", func() bool { return true }, notServing{current}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := readinessFn(tc.svc, mesh, time.Hour)(); got != tc.want {
+			if got := readinessFn(tc.svc, tc.back, time.Hour)(); got != tc.want {
 				t.Errorf("readinessFn() = %v, want %v", got, tc.want)
 			}
 		})
@@ -513,11 +519,9 @@ func TestReadinessFn(t *testing.T) {
 
 	expiring, err := issuer.NewMeshCA("test ca", time.Minute)
 	if err != nil {
-		t.Fatalf("mesh ca: %v", err)
+		t.Fatalf("expiring mesh ca: %v", err)
 	}
-	if readinessFn(func() bool {
-		return true
-	}, expiring, time.Hour)() {
+	if readinessFn(func() bool { return true }, &singleton{mesh: expiring}, time.Hour)() {
 		t.Error("readiness held with a CA certificate inside the renewal window")
 	}
 }

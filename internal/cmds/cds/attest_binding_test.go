@@ -132,7 +132,8 @@ func TestAttest_SigningFailureDoesNotBindSandbox(t *testing.T) {
 	h, signer := newSandboxTestEnv(t, stub.URL())
 	ledger := sandboxledger.New(time.Hour, 10).Local()
 	h.SandboxBindings = ledger
-	h.MeshCA.Current().CA.Key = nil
+	signing, _ := h.MeshCA.Current()
+	signing.CA.Key = nil
 	csrPEM := sandboxCSR(t)
 	challenge := issueChallenge(t, h)
 	w := postAttestSandbox(t, h, challenge, csrPEM, signedSandboxToken(t, signer, csrPEM, challenge, testSandboxID))

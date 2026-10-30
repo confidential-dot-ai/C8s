@@ -32,6 +32,7 @@ type routeFixture struct {
 	signer   *operatorauth.Signer
 	rogue    *operatorauth.Signer
 	key      *ecdsa.PublicKey
+	mesh     ownCA
 	meshCA   *x509.Certificate
 	meshPEM  string
 	otherPEM string
@@ -59,7 +60,8 @@ func operatorSigner(t *testing.T) (*operatorauth.Signer, *ecdsa.PublicKey) {
 func newRouteFixture(t *testing.T, store *allowlist.Handle) *routeFixture {
 	t.Helper()
 	mesh := testMeshCA(t)
-	meshCert := mesh.Current().CA.Cert
+	issuing, _ := mesh.Current()
+	meshCert := issuing.CA.Cert
 	other, err := issuer.NewCA("backend ca", time.Hour)
 	if err != nil {
 		t.Fatal(err)
@@ -72,7 +74,7 @@ func newRouteFixture(t *testing.T, store *allowlist.Handle) *routeFixture {
 			Routes: routeHandler{
 				Allowlist: store,
 				Authorize: authorize,
-				MeshCA:    meshCert,
+				MeshCA:    mesh,
 			},
 			ReadyFn:          func() bool { return true },
 			MeshCA:           mesh,
@@ -84,6 +86,7 @@ func newRouteFixture(t *testing.T, store *allowlist.Handle) *routeFixture {
 		signer:   signer,
 		rogue:    rogue,
 		key:      key,
+		mesh:     mesh,
 		meshCA:   meshCert,
 		meshPEM:  string(certutil.EncodeCertPEM(meshCert.Raw)),
 		otherPEM: string(certutil.EncodeCertPEM(other.Cert.Raw)),
@@ -303,7 +306,7 @@ func TestRoutePutWithoutOperatorKeys(t *testing.T) {
 			h := routeHandler{
 				Allowlist: store,
 				Authorize: authorize,
-				MeshCA:    f.meshCA,
+				MeshCA:    f.mesh,
 			}
 			req := httptest.NewRequest(http.MethodPut, routes.Path, bytes.NewReader(b))
 			req.Header.Set("Authorization", auth)
@@ -460,20 +463,28 @@ func TestRouteHandlersReturn500OnStoreFailure(t *testing.T) {
 	}
 }
 
-// C3 cannot run its mesh-CA check without the mesh CA, so writes fail closed,
-// after authorization.
-func TestRoutePutWithoutMeshCA(t *testing.T) {
+// holdsNoCA is a replica that may not issue under its cluster's mesh CA.
+type holdsNoCA struct{}
+
+func (holdsNoCA) Current() (issuer.CurrentCA, bool) {
+	return issuer.CurrentCA{}, false
+}
+
+// C3 cannot run its mesh-CA check while the CDS holds no mesh CA, so writes
+// fail closed, after authorization.
+func TestRoutePutWhileTheCDSHoldsNoMeshCA(t *testing.T) {
 	store := inMemoryStore(t)
 	f := newRouteFixture(t, store)
 	h := routeHandler{
 		Allowlist: store,
 		Authorize: func(*http.Request, []byte) error { return nil },
+		MeshCA:    holdsNoCA{},
 	}
 	b := manifest(t, 1, f.otherPEM)
 	w := httptest.NewRecorder()
 	h.handlePut(w, httptest.NewRequest(http.MethodPut, routes.Path, bytes.NewReader(b)))
-	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("PUT /routes without a mesh CA = %d, want 500", w.Code)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("PUT /routes while the CDS holds no mesh CA = %d, want 503", w.Code)
 	}
 	if _, err := store.LoadRoutes(); err == nil {
 		t.Fatal("a manifest was stored without the mesh CA check")
@@ -482,6 +493,7 @@ func TestRoutePutWithoutMeshCA(t *testing.T) {
 	unauthenticated := routeHandler{
 		Allowlist: store,
 		Authorize: func(*http.Request, []byte) error { return errors.New("no token") },
+		MeshCA:    holdsNoCA{},
 	}
 	w = httptest.NewRecorder()
 	unauthenticated.handlePut(w, httptest.NewRequest(http.MethodPut, routes.Path, bytes.NewReader(b)))

@@ -1,6 +1,7 @@
 package cds
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -15,15 +16,18 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
+	"github.com/confidential-dot-ai/c8s/internal/cdsha"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsconn"
 )
 
 // A replica serves its clients and the operator on one port, and the decree
-// commands read two of its routes.
+// commands read two of its routes and post to a third.
 const (
 	replicaPort   = 8443
 	statusPath    = "/ha/status"
 	pinDecreePath = "/ha/pins"
+	decreesPath   = "/ha/decrees"
 )
 
 // replicaTimeout bounds each read of a replica.
@@ -154,6 +158,54 @@ func splitReplicaAddress(address string) (string, uint16, error) {
 		return "", 0, fmt.Errorf("replica address %q: %w", address, err)
 	}
 	return host, uint16(port), nil
+}
+
+// postDecree hands one signed decree to this replica over the attested
+// channel. A decree the cluster refused is an answer, not an error.
+func (r replica) postDecree(ctx context.Context, signed cdsdecree.Signed) (cdsha.Delivered, string, error) {
+	object, err := json.Marshal(signed)
+	if err != nil {
+		return cdsha.Delivered{}, "", err
+	}
+	client, address, err := r.dial(ctx)
+	if err != nil {
+		return cdsha.Delivered{}, "", err
+	}
+	delivered, err := postedDecree(ctx, client, address, object)
+	if err != nil {
+		return cdsha.Delivered{}, "", fmt.Errorf("%s: %w", address, err)
+	}
+	return delivered, address.String(), nil
+}
+
+func postedDecree(ctx context.Context, client *http.Client, address netip.AddrPort, object []byte) (cdsha.Delivered, error) {
+	request, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		"https://"+address.String()+decreesPath,
+		bytes.NewReader(object),
+	)
+	if err != nil {
+		return cdsha.Delivered{}, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := client.Do(request)
+	if err != nil {
+		return cdsha.Delivered{}, err
+	}
+	defer response.Body.Close()
+	answer, err := io.ReadAll(io.LimitReader(response.Body, maxReplicaAnswer))
+	if err != nil {
+		return cdsha.Delivered{}, fmt.Errorf("POST %s: %w", decreesPath, err)
+	}
+	if response.StatusCode != http.StatusOK {
+		return cdsha.Delivered{}, fmt.Errorf("POST %s: %s: %s", decreesPath, response.Status, bytes.TrimSpace(answer))
+	}
+	var delivered cdsha.Delivered
+	if err := json.Unmarshal(answer, &delivered); err != nil {
+		return cdsha.Delivered{}, fmt.Errorf("POST %s: %w", decreesPath, err)
+	}
+	return delivered, nil
 }
 
 // replicaAnswer is a replica's answer to one GET, at most maxReplicaAnswer bytes.

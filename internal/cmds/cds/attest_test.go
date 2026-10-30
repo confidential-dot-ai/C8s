@@ -92,7 +92,7 @@ func newTestAttestHandler(t *testing.T, stubURL string, pinned []remote.ImagePin
 	return AttestHandler{
 		Challenges:        store,
 		AttestationClient: remote.NewClient(stubURL),
-		MeshCA:            mesh,
+		MeshCA:            ownCA{mesh},
 		CertTTL:           time.Hour,
 		Images:            pinned,
 	}
@@ -186,7 +186,8 @@ func TestAttest_InProcessSignAndReturnsChain(t *testing.T) {
 	}
 	leaf := chain[0]
 	ca := chain[1]
-	if !bytes.Equal(ca.Raw, h.MeshCA.Current().CA.Cert.Raw) {
+	signing, _ := h.MeshCA.Current()
+	if !bytes.Equal(ca.Raw, signing.CA.Cert.Raw) {
 		t.Fatalf("CA bundle cert does not match handler CA")
 	}
 	if err := leaf.CheckSignatureFrom(ca); err != nil {

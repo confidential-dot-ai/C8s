@@ -16,6 +16,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
 	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
+	"github.com/confidential-dot-ai/c8s/internal/cdsha"
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 )
@@ -36,8 +37,9 @@ func newHACmd() *cobra.Command {
 }
 
 // newDecreeCmd groups the decrees an operator signs, one subcommand per
-// intent. Each writes the signed decree to --out, which the operator then
-// uploads to the cluster's board with their own credentials.
+// intent. Each kind that names the replica it is for is posted to that
+// replica over the attested channel, and every kind can be written to --out
+// as a file.
 func newDecreeCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "decree",
@@ -79,9 +81,9 @@ func decreeCmd(use, short, long string, o *decreeOptions, run func(*cobra.Comman
 	f := cmd.Flags()
 	f.StringVar(&o.config, "config", "", "the configuration document the cluster's CDS VMs boot on (REQUIRED)")
 	f.StringVar(&o.operatorKey, "operator-key", "", "operator EC private key PEM file, whose public key the configuration pins (REQUIRED)")
-	f.StringVar(&o.out, "out", "", "file to write the signed decree to (REQUIRED); upload it to the cluster's board")
+	f.StringVar(&o.out, "out", "", "file to write the signed decree to, beside posting it")
 	f.DurationVar(&o.expiresIn, "expires-in", defaultDecreeValidity, "how long the cluster may adopt this decree for")
-	requireFlags(cmd, "config", "operator-key", "out")
+	requireFlags(cmd, "config", "operator-key")
 	return cmd
 }
 
@@ -113,27 +115,34 @@ func readDecreeConfig(path string) (decreeConfig, error) {
 	return decreeConfig{launchFile: launchFile, parsed: parsed}, nil
 }
 
-// sign fills in what every decree carries, signs it, and writes it where the
-// operator uploads it from. The signature is checked against the keys the
+// sign fills in what every decree carries, signs it, and writes it to --out
+// where the operator named one. The signature is checked against the keys the
 // configuration pins, so a key the cluster would refuse is caught here.
-func (o decreeOptions) sign(cmd *cobra.Command, c decreeConfig, d cdsdecree.Decree) error {
+func (o decreeOptions) sign(cmd *cobra.Command, c decreeConfig, d cdsdecree.Decree) (cdsdecree.Signed, error) {
 	if o.expiresIn <= 0 {
-		return errors.New("--expires-in must be positive: a decree no replica may adopt does nothing")
+		return cdsdecree.Signed{}, errors.New("--expires-in must be positive: a decree no replica may adopt does nothing")
 	}
 	key, err := certutil.LoadECPrivateKeyFile(o.operatorKey)
 	if err != nil {
-		return fmt.Errorf("--operator-key: %w", err)
+		return cdsdecree.Signed{}, fmt.Errorf("--operator-key: %w", err)
 	}
 	d.ClusterID = c.parsed.ClusterID
 	d.IntentID = cdsdecree.NewIntentID()
 	d.ExpiresAt = time.Now().Add(o.expiresIn).UTC().Truncate(time.Second)
 	signed, err := cdsdecree.Sign(d, key)
 	if err != nil {
-		return err
+		return cdsdecree.Signed{}, err
 	}
 	if err := cdsdecree.Verify(signed, c.parsed.OperatorKeys.Keys(), d.ClusterID); err != nil {
-		return fmt.Errorf("the decree this would upload: %w", err)
+		return cdsdecree.Signed{}, fmt.Errorf("the decree this would hand the cluster: %w", err)
 	}
+	if o.out == "" {
+		return signed, nil
+	}
+	return signed, o.write(cmd, signed)
+}
+
+func (o decreeOptions) write(cmd *cobra.Command, signed cdsdecree.Signed) error {
 	body, err := json.MarshalIndent(signed, "", "  ")
 	if err != nil {
 		return err
@@ -141,17 +150,45 @@ func (o decreeOptions) sign(cmd *cobra.Command, c decreeConfig, d cdsdecree.Decr
 	if err := fileutil.WriteAtomic(o.out, append(body, '\n'), 0o644); err != nil {
 		return err
 	}
+	d := signed.Decree
 	fmt.Fprintf(cmd.OutOrStdout(), "wrote %s: %s decree %s for cluster %s, adoptable until %s\n",
 		o.out, d.Kind, d.IntentID, d.ClusterID, d.ExpiresAt.Format(time.RFC3339))
 	return nil
 }
 
-// signIssued signs a decree that starts or carries on a cluster: it records
+// signOnly signs a decree the operator hands the cluster themselves.
+func (o decreeOptions) signOnly(cmd *cobra.Command, c decreeConfig, d cdsdecree.Decree) error {
+	_, err := o.sign(cmd, c, d)
+	return err
+}
+
+// deliver signs a decree and posts it over the attested channel to the replica
+// it names, which is the member id that replica's process minted, so no other
+// replica acts on it.
+func (o decreeOptions) deliver(cmd *cobra.Command, c decreeConfig, to replica, d cdsdecree.Decree) error {
+	signed, err := o.sign(cmd, c, d)
+	if err != nil {
+		return err
+	}
+	delivered, address, err := to.postDecree(cmd.Context(), signed)
+	if err != nil {
+		return err
+	}
+	return reportDelivered(cmd, address, signed.Decree, delivered)
+}
+
+// deliverIssued posts a decree that starts or carries on a cluster: it records
 // the operator's signing time, which is the earliest start time that cluster
 // takes.
-func (o decreeOptions) signIssued(cmd *cobra.Command, c decreeConfig, d cdsdecree.Decree) error {
+func (o decreeOptions) deliverIssued(cmd *cobra.Command, c decreeConfig, to replica, d cdsdecree.Decree) error {
 	d.IssuedAtMS = time.Now().UnixMilli()
-	return o.sign(cmd, c, d)
+	return o.deliver(cmd, c, to, d)
+}
+
+func reportDelivered(cmd *cobra.Command, address string, d cdsdecree.Decree, delivered cdsha.Delivered) error {
+	fmt.Fprintf(cmd.OutOrStdout(), "posted %s decree %s to %s: the replica holds it until it acts on it\n",
+		d.Kind, delivered.Intent, address)
+	return nil
 }
 
 // acknowledged refuses an intent whose consequence the operator has not
@@ -270,7 +307,7 @@ func (o genesisOptions) run(cmd *cobra.Command) error {
 	if o.alone {
 		fmt.Fprintln(cmd.ErrOrStderr(), "warning: --alone starts the cluster even if the replica finds no other, so a host that hides the others gets a cluster beside them")
 	}
-	return o.signIssued(cmd, c, cdsdecree.Decree{
+	return o.deliverIssued(cmd, c, o.target, cdsdecree.Decree{
 		Kind:          cdsdecree.Genesis,
 		CDSPins:       cdsPins,
 		NodePins:      nodePins,
@@ -344,6 +381,7 @@ func newPinsCmd() *cobra.Command {
 		&o.decreeOptions, func(cmd *cobra.Command) error { return o.run(cmd) })
 	bindBaseVersionFlag(cmd, &o.decreeOptions)
 	bindPinFlags(cmd, &o.pins)
+	requireFlags(cmd, "out")
 	return cmd
 }
 
@@ -356,7 +394,7 @@ func (o pinsOptions) run(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	return o.sign(cmd, c, cdsdecree.Decree{
+	return o.signOnly(cmd, c, cdsdecree.Decree{
 		Kind:        cdsdecree.UpdateMeasurements,
 		BaseVersion: o.baseVersion,
 		CDSPins:     cdsPins,
@@ -377,7 +415,7 @@ func newRotateKeyCmd() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		return o.sign(cmd, c, cdsdecree.Decree{
+		return o.signOnly(cmd, c, cdsdecree.Decree{
 			Kind:        cdsdecree.RotateKey,
 			BaseVersion: o.baseVersion,
 		})
@@ -387,6 +425,7 @@ func newRotateKeyCmd() *cobra.Command {
 		&o, run)
 	bindBaseVersionFlag(cmd, &o)
 	cmd.Flags().BoolVar(&acknowledge, "i-understand-rotation-forks-the-cluster", false, "required: every leaf must be issued again under the new key")
+	requireFlags(cmd, "out")
 	return cmd
 }
 
@@ -434,7 +473,7 @@ func (o recoverOptions) run(cmd *cobra.Command) error {
 		return err
 	}
 	fmt.Fprintln(cmd.ErrOrStderr(), "warning: follow this Recover with a rotate-key decree, so a lost replica that comes back holds a retired key")
-	return o.signIssued(cmd, c, cdsdecree.Decree{
+	return o.deliverIssued(cmd, c, o.target, cdsdecree.Decree{
 		Kind:          cdsdecree.Recover,
 		BaseVersion:   o.baseVersion,
 		TargetMember:  target.ID,
@@ -468,7 +507,7 @@ func newDismissRecoverCmd() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		return o.sign(cmd, c, cdsdecree.Decree{
+		return o.signOnly(cmd, c, cdsdecree.Decree{
 			Kind:          cdsdecree.DismissRecover,
 			BaseVersion:   o.baseVersion,
 			RecoverIntent: recoverIntent,
@@ -480,7 +519,7 @@ func newDismissRecoverCmd() *cobra.Command {
 		&o, run)
 	bindBaseVersionFlag(cmd, &o)
 	cmd.Flags().StringVar(&recoverIntent, "recover-intent", "", "intent id of the Recover decree the cluster reports as its doubt (REQUIRED)")
-	requireFlags(cmd, "recover-intent")
+	requireFlags(cmd, "recover-intent", "out")
 	return cmd
 }
 
@@ -520,7 +559,7 @@ func (o admitOptions) run(cmd *cobra.Command) error {
 	if err := checkAdmitTarget(target, c.parsed.ClusterID); err != nil {
 		return err
 	}
-	return o.sign(cmd, c, cdsdecree.Decree{
+	return o.deliver(cmd, c, o.target, cdsdecree.Decree{
 		Kind:         cdsdecree.Admit,
 		CDSPins:      cdsPins,
 		TargetMember: target.ID,

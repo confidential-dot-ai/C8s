@@ -147,7 +147,8 @@ type config struct {
 	secretsMaxValueBytes       int
 	sandboxLedgerMax           int
 
-	// measured is the configuration document this VM was launched with: every
-	// per-cluster setting CDS serves.
-	measured *cdsconfig.Config
+	// measured is the configuration document this VM was launched with, and
+	// measuredFile the bytes its launch bound and a cluster's decrees pin.
+	measured     *cdsconfig.Config
+	measuredFile []byte
 }
