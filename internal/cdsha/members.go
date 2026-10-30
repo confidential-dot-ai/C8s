@@ -460,11 +460,13 @@ func (n *Node) moveMember(server raft.Server, moved reachedMember) {
 
 // joinOrStart is what a replica outside its cluster does every tick: take the
 // images the operator decreed it admits, ask the members it reached to take
-// it in, and, where the operator decreed this process the start of the
-// cluster, start it.
+// it in, record what it found of its cluster, for the operator and for a
+// restore (restore.go), and, where the operator decreed this process the
+// start of the cluster, start it.
 func (n *Node) joinOrStart(found discovered) {
 	n.admitAsDecreed()
 	answers := n.askToJoin()
+	n.searchedForItsCluster(found, answers)
 	if answers.cluster {
 		return
 	}

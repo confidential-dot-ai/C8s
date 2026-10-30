@@ -253,6 +253,21 @@ func (f *FSM) install(sn snapshot) error {
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if err := f.takeState(sn, ca); err != nil {
+		return err
+	}
+	f.applied.Store(sn.Index)
+	// The chain of the replica that captured the state is the one this
+	// replica reports from here on.
+	f.dig.installed(sn.Chain)
+	return nil
+}
+
+// takeState replaces the stores, and the state around them, with the
+// snapshot's. The log index and the chain stay the caller's: a replica that
+// joins takes the sender's, and a restored cluster begins a log of its own
+// (f.mu held).
+func (f *FSM) takeState(sn snapshot, ca *issuer.CA) error {
 	if err := f.allowlist.Restore(sn.Image, [32]byte(sn.Digests.Allowlist)); err != nil {
 		return fmt.Errorf("install the allowlist database image: %w", err)
 	}
@@ -261,9 +276,6 @@ func (f *FSM) install(sn snapshot) error {
 	f.core = sn.ClusterState
 	f.ca = ca
 	f.decrees = sn.Decrees
-	f.applied.Store(sn.Index)
-	// This replica reports the chain of the replica that captured the state.
-	f.dig.installed(sn.Chain)
 	return nil
 }
 

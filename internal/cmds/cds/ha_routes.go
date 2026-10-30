@@ -10,6 +10,7 @@
 package cds
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -122,12 +123,14 @@ func servedUnjoined(path string) bool {
 	return false
 }
 
-// answerWhileJoining serves the client port with health, metrics and the
-// cluster routes alone, attested as the full server is. The operator reads an
-// unjoined replica's member id and mesh CA there, and posts the Genesis decree
-// it then acts on. stop returns once the port is free for the full server.
+// answerWhileJoining serves the client port with health, metrics, the cluster
+// routes and the restore route alone, attested as the full server is, until
+// the returned stop is called. The operator reads an unjoined replica's
+// member id and mesh CA there, and posts the Genesis decree it then acts on,
+// or the restore of a lost cluster. stop returns once the port is free for
+// the full server.
 func (r *clusterCDS) answerWhileJoining(cfg config) (stop func(), err error) {
-	server := newHTTPServer(clientAddress(cfg), joiningMux(r.ClusterRoutes()), cfg)
+	server := newHTTPServer(clientAddress(cfg), joiningMux(r.ClusterRoutes(), takeRestore(r.node)), cfg)
 	// A replica holding no mesh CA verifies no client chain.
 	tlsCfg, _, err := armtls.NewServerTLSConfig(servingConfig(cfg, nil))
 	if err != nil {
@@ -154,8 +157,9 @@ func (r *clusterCDS) answerWhileJoining(cfg config) (stop func(), err error) {
 const joiningShutdown = 5 * time.Second
 
 // joiningMux is what a replica answers before it joins its cluster: the
-// routes servedUnjoined names, and a retryable refusal everywhere else.
-func joiningMux(cluster map[string]http.HandlerFunc) http.Handler {
+// routes servedUnjoined names, the restore of a lost cluster, and a retryable
+// refusal everywhere else.
+func joiningMux(cluster map[string]http.HandlerFunc, restore http.HandlerFunc) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -169,8 +173,52 @@ func joiningMux(cluster map[string]http.HandlerFunc) http.Handler {
 	for route, handler := range cluster {
 		mux.HandleFunc(route, handler)
 	}
+	mux.HandleFunc("POST "+restorePath, restore)
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "cds-ha: this replica has not joined its cluster", http.StatusServiceUnavailable)
 	})
 	return mux
+}
+
+// restoreDeadline bounds one restore at both ends: how long the operator
+// waits for the replica, and the read and write deadlines that request holds
+// instead of this server's own, which bound a report.
+const restoreDeadline = 5 * time.Minute
+
+// takeRestore starts a lost cluster again from the state an operator posts.
+// A replica that holds a cluster, or that may still have one, refuses: the
+// restore is the operator's word that every replica of it is gone, and the
+// reason it refused is theirs to read.
+func takeRestore(node *cdsha.Node) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := untilRestored(w); err != nil {
+			slog.Error("cds-ha: this replica cannot hold a restore open", "error", err)
+			http.Error(w, "cds-ha: this replica cannot hold a restore open", http.StatusInternalServerError)
+			return
+		}
+		result, err := node.Restore(r.Body)
+		if err != nil {
+			slog.Warn("cds-ha: this replica restored no cluster", "error", err)
+			http.Error(w, err.Error(), refusedRestore(err))
+			return
+		}
+		writeJSON(w, result)
+	}
+}
+
+// refusedRestore is how a refusal answers: a request this replica could not
+// read is the operator's to post again, and every other refusal is about the
+// cluster or the state it was handed.
+func refusedRestore(err error) int {
+	if errors.Is(err, cdsha.ErrRestoreRequest) {
+		return http.StatusBadRequest
+	}
+	return http.StatusConflict
+}
+
+// untilRestored gives this request the deadlines a restore needs.
+func untilRestored(w http.ResponseWriter) error {
+	deadline := time.Now().Add(restoreDeadline)
+	control := http.NewResponseController(w)
+	return cmp.Or(control.SetReadDeadline(deadline), control.SetWriteDeadline(deadline))
 }

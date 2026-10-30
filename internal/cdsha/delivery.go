@@ -41,6 +41,9 @@ func (n *Node) TakeDecree(signed cdsdecree.Signed) (Delivered, error) {
 	if err := n.operatorSigned(signed); err != nil {
 		return Delivered{}, err
 	}
+	if signed.Decree.Kind == cdsdecree.Restore {
+		return Delivered{}, errors.New("cds-ha: a Restore decree comes with the state it opens: post it to /ha/restore")
+	}
 	if actedOnByItsTarget(signed.Decree.Kind) {
 		return n.holdDecree(signed)
 	}
@@ -53,12 +56,15 @@ func (n *Node) operatorSigned(signed cdsdecree.Signed) error {
 	return cdsdecree.Verify(signed, n.cfg.Launch.OperatorKeys, n.cfg.Launch.ClusterID)
 }
 
-// actedOnByItsTarget names the decree kinds the replica they name acts on.
+// actedOnByItsTarget names the decree kinds the replica they name acts on,
+// rather than the leader. A Restore is one of them, taken at the route it
+// carries its state on (restore.go).
 func actedOnByItsTarget(kind cdsdecree.Kind) bool {
 	switch kind {
-	case cdsdecree.Genesis,
+	case cdsdecree.Admit,
+		cdsdecree.Genesis,
 		cdsdecree.Recover,
-		cdsdecree.Admit:
+		cdsdecree.Restore:
 		return true
 	}
 	return false

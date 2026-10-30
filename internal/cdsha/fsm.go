@@ -37,6 +37,9 @@ const (
 	KindSecret    EntryKind = "secret"
 	KindBinding   EntryKind = "binding"
 	KindDecree    EntryKind = "decree"
+	// KindRestore starts a lost cluster again from the state a Restore decree
+	// names (restore.go).
+	KindRestore EntryKind = "restore"
 	// KindDoubt records a Recover decree no replica could confirm.
 	KindDoubt EntryKind = "recover_doubt"
 	// KindRenounce ends a doubt: the member it names gave that Recover decree
@@ -62,6 +65,7 @@ type Entry struct {
 	Secret    *secrets.Command       `json:"secret,omitempty"`
 	Binding   *sandboxledger.Command `json:"binding,omitempty"`
 	Decree    *DecreeEntry           `json:"decree,omitempty"`
+	Restore   *RestoreEntry          `json:"restore,omitempty"`
 	Doubt     *cdsdecree.Signed      `json:"recover_doubt,omitempty"`
 	Renounce  *RenounceEntry         `json:"recover_renounced,omitempty"`
 	RenewCA   *RenewCAEntry          `json:"renew_ca,omitempty"`
@@ -214,6 +218,8 @@ func (f *FSM) apply(e Entry) Result {
 		return Result{Binding: &held}
 	case e.Kind == KindDecree && e.Decree != nil:
 		return f.applyDecree(*e.Decree)
+	case e.Kind == KindRestore && e.Restore != nil:
+		return f.applyRestore(*e.Restore)
 	case e.Kind == KindDoubt && e.Doubt != nil:
 		return f.applyDoubt(*e.Doubt)
 	case e.Kind == KindRenounce && e.Renounce != nil:

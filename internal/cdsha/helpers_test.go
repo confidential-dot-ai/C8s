@@ -57,7 +57,10 @@ type replica struct {
 	cluster
 	// al is the allowlist store the state machine writes, as its builder
 	// holds it.
-	al    *allowlist.Store
+	al *allowlist.Store
+	// mints is the mesh CA this replica installs where a decree names it, as
+	// the process minted it once at its start (genesis.go).
+	mints *issuer.CA
 	t     *testing.T
 	index uint64
 }
@@ -104,6 +107,7 @@ func (c cluster) replica(t *testing.T, al *allowlist.Store, sec *secrets.MemoryS
 		FSM:     NewFSM(c.launch, al, sec, led),
 		cluster: c,
 		al:      al,
+		mints:   mintCA(t),
 		t:       t,
 	}
 }
