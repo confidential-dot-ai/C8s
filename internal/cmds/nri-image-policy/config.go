@@ -47,9 +47,13 @@ type config struct {
 // podConfig is the signed identity the guest preparation stages. Runtime UID
 // and sandbox identity come independently from NRI, never from this document.
 type podConfig struct {
-	UID       string `yaml:"uid"`
-	Namespace string `yaml:"namespace"`
-	Name      string `yaml:"name"`
+	// Waiting is an unassigned generic boot: no sandbox or container may start.
+	Waiting   bool              `yaml:"waiting,omitempty"`
+	Generic   bool              `yaml:"generic,omitempty"`
+	UID       string            `yaml:"uid"`
+	Namespace string            `yaml:"namespace"`
+	Name      string            `yaml:"name"`
+	Images    map[string]string `yaml:"images"`
 }
 
 // measureConfig extends each started workload's image digest into RTMR[3]
@@ -366,10 +370,17 @@ func (c *config) NormalizedPlatform() string {
 	return family.String()
 }
 
-// injectsCredentialClients excludes the Pod guest journal: recording measured
-// workloads does not grant containers access to node credential services.
+// podRole reports whether this boot is a pod CVM's: the signed pod section is
+// present, and validatePod ties it to measure.rtmr3 and mesh.pod, so the
+// plugin asks this one question wherever the two roles part.
+func (c *config) podRole() bool {
+	return c.Pod != nil
+}
+
+// injectsCredentialClients excludes a pod CVM: measuring its workloads does
+// not grant containers access to node credential services.
 func (c *config) injectsCredentialClients() bool {
-	return c.WorkloadClaims.SocketDir != "" && !c.Measure.RTMR3
+	return c.WorkloadClaims.SocketDir != "" && !c.podRole()
 }
 
 // PullEnabled: a config naming two CDS sources never loads (cdsSource), so
@@ -518,11 +529,13 @@ func (c *config) Validate() error {
 	return validateLabelRules(c.Policy.LabelRules)
 }
 
+func (c *config) podWaiting() bool { return c.Pod != nil && c.Pod.Waiting }
+
 func (c *config) validatePod() error {
 	if !c.Measure.RTMR3 && c.Pod == nil && c.Mesh.Pod == nil {
 		return nil
 	}
-	if !c.Measure.RTMR3 || c.Pod == nil || c.Mesh.Pod == nil || c.Pod.UID == "" || c.Pod.Namespace == "" || c.Pod.Name == "" {
+	if !c.Measure.RTMR3 || c.Pod == nil || c.Mesh.Pod == nil {
 		return fmt.Errorf("the Pod broker requires measure.rtmr3 and the signed pod uid, namespace and name")
 	}
 	if c.NormalizedPlatform() != "tdx" || !c.PullEnabled() || c.Allowlist.Pull.CDSMeasurementsConfig == "" || c.Allowlist.NodeTCB || c.Policy.Mode != ModeFailClosed || c.Policy.Sandbox != SandboxEnforce || !c.Policy.FatalExisting {
@@ -534,7 +547,16 @@ func (c *config) validatePod() error {
 	if len(c.Mesh.Roles) != 1 || c.Mesh.Roles[0].Name != meshRole || c.Mesh.Roles[0].UID != workloadclaims.MeshUID || c.Mesh.Roles[0].Port != 0 || c.Mesh.CredentialAttestationPort != 0 {
 		return fmt.Errorf("the Pod broker requires only the mesh role and no Pod credential-client bypass")
 	}
-	return nil
+	if c.Pod.Waiting {
+		if !c.Pod.Generic || c.Pod.UID != "" || c.Pod.Namespace != "" || c.Pod.Name != "" || len(c.Pod.Images) != 0 || len(c.Mesh.Pod.Peers) != 0 || len(c.Mesh.Pod.IngressPorts) != 0 {
+			return errors.New("a waiting Pod guest must not carry an assigned identity, images or peers")
+		}
+		return nil
+	}
+	if c.Pod.UID == "" || c.Pod.Namespace == "" || c.Pod.Name == "" {
+		return errors.New("the Pod broker requires the signed pod uid, namespace and name")
+	}
+	return c.validatePodImages()
 }
 
 // validateMesh requires a mesh policy this node can enforce.

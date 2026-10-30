@@ -20,6 +20,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -33,6 +34,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cmds/credrelease"
 	ctrdresolver "github.com/confidential-dot-ai/c8s/internal/containerd"
 	"github.com/confidential-dot-ai/c8s/internal/version"
+	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
@@ -46,6 +48,15 @@ var (
 	allowlistApiMaxRetries   = 5
 	allowlistApiInitialDelay = 2 * time.Second
 )
+
+type containerdConnection interface {
+	containerdOps
+	Close() error
+}
+
+var newContainerdResolver = func(socket, namespace string) (containerdConnection, error) {
+	return ctrdresolver.NewResolver(socket, namespace)
+}
 
 var (
 	errInitialAllowlistNotModified = errors.New("initial allowlist fetch returned not modified without a cached CDS allowlist")
@@ -127,7 +138,7 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 		"socket", cfg.Containerd.Socket,
 		"namespace", cfg.Containerd.Namespace,
 	)
-	resolver, err := ctrdresolver.NewResolver(cfg.Containerd.Socket, cfg.Containerd.Namespace)
+	resolver, err := newContainerdResolver(cfg.Containerd.Socket, cfg.Containerd.Namespace)
 	if err != nil {
 		return fmt.Errorf("create containerd resolver: %w", err)
 	}
@@ -149,15 +160,37 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 		cdsHTTPClient = httpClient
 	}
 
+	recovery, err := openPodRecovery(cfg)
+	if err != nil {
+		return fmt.Errorf("open Pod recovery: %w", err)
+	}
+	defer recovery.Close()
+
 	logNodeRoot(logger, cfg.AllowlistEnabled(), nodeRootUnavailable)
 	plugin, err := newPlugin(cfg, resolver, store, auditLogger, logger)
 	if err != nil {
 		return fmt.Errorf("create plugin: %w", err)
 	}
+	plugin.recovery = recovery
 	if err := plugin.preparePodBroker(ctx, cdsHTTPClient); err != nil {
 		return fmt.Errorf("prepare Pod credential broker: %w", err)
 	}
 	defer plugin.closePodBroker()
+	var workers sync.WaitGroup
+	defer func() {
+		cancel()
+		workers.Wait()
+		// NRI closes transport before every queued handler necessarily returns.
+		// Disconnect rejects late callbacks; this lock drains the active mutation.
+		plugin.disconnectPodStarts()
+		plugin.podMu.Lock()
+		clear(plugin.podStarts)
+		plugin.podMu.Unlock()
+	}()
+	var applyPolicy func(context.Context, *allowlist.Allowlist, uint64) error
+	if recovery != nil && !cfg.podWaiting() {
+		applyPolicy = plugin.applyPodPolicy
+	}
 	// Before the plugin serves a single container creation: a pod admitted
 	// without this mount would read no pins at all.
 	if err := plugin.prepareCDSPins(); err != nil {
@@ -195,9 +228,12 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 	}
 
 	pluginErrCh := make(chan error, 1)
-	go func() {
-		pluginErrCh <- plugin.Run(ctx)
-	}()
+	startListener, err := plugin.listenPodStarts()
+	if err != nil {
+		return fmt.Errorf("start Pod runtime admission: %w", err)
+	}
+	workers.Add(1)
+	go func() { defer workers.Done(); pluginErrCh <- plugin.runWithPodStarts(ctx, startListener) }()
 
 	if cfg.injectsCredentialClients() {
 		socketPath := filepath.Join(cfg.WorkloadClaims.SocketDir, workloadclaims.SocketName)
@@ -212,6 +248,7 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 		initialETag, err = pullInitial(ctx, pullArgs{
 			client:      wlClient,
 			store:       store,
+			apply:       applyPolicy,
 			measure:     measure,
 			timeout:     cfg.Allowlist.Pull.Timeout,
 			pluginErrCh: pluginErrCh,
@@ -246,17 +283,22 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 	logger.Info("plugin ready")
 
 	if cfg.PullEnabled() {
-		go runPullLoop(ctx, pullLoopArgs{
-			client:   wlClient,
-			store:    store,
-			measure:  measure,
-			interval: cfg.Allowlist.Pull.Interval,
-			timeout:  cfg.Allowlist.Pull.Timeout,
-			etag:     initialETag,
-			logger:   logger,
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			runPullLoop(ctx, pullLoopArgs{
+				client:   wlClient,
+				store:    store,
+				apply:    applyPolicy,
+				measure:  measure,
+				interval: cfg.Allowlist.Pull.Interval,
+				timeout:  cfg.Allowlist.Pull.Timeout,
+				etag:     initialETag,
+				logger:   logger,
 
-			killRevoked: plugin.KillRevoked,
-		})
+				killRevoked: plugin.KillRevoked,
+			})
+		}()
 	}
 
 	plugin.RunDeferredCheck(ctx)
@@ -292,6 +334,7 @@ func allowlistPullHTTPClient(cfg pullConfig) (*http.Client, error) {
 }
 
 type pullArgs struct {
+	apply       func(context.Context, *allowlist.Allowlist, uint64) error
 	client      allowlistclient.Client
 	store       *policyStore
 	measure     func(digest string) error // nil measures nothing
@@ -330,14 +373,20 @@ func pullInitial(ctx context.Context, args pullArgs) (string, error) {
 				err = errInitialAllowlistNil
 			} else if err = measureWith(args.measure, served.Digest); err == nil {
 				version := parseVersion(etag)
-				args.store.apply(wl, version)
-				args.logger.Info("initial allowlist pulled from CDS",
-					"workloads", len(wl.Workloads),
-					"version", version,
-					"etag", etag,
-					"digest", served.Digest,
-				)
-				return etag, nil
+				if args.apply != nil {
+					err = args.apply(ctx, wl, version)
+				} else {
+					args.store.apply(wl, version)
+				}
+				if err == nil {
+					args.logger.Info("initial allowlist pulled from CDS",
+						"workloads", len(wl.Workloads),
+						"version", version,
+						"etag", etag,
+						"digest", served.Digest,
+					)
+					return etag, nil
+				}
 			}
 		}
 
@@ -360,6 +409,7 @@ func pullInitial(ctx context.Context, args pullArgs) (string, error) {
 }
 
 type pullLoopArgs struct {
+	apply    func(context.Context, *allowlist.Allowlist, uint64) error
 	client   allowlistclient.Client
 	store    *policyStore
 	measure  func(digest string) error // nil measures nothing
@@ -438,7 +488,14 @@ func runPullLoop(ctx context.Context, args pullLoopArgs) {
 			}
 			continue
 		}
-		args.store.apply(wl, version)
+		if args.apply != nil {
+			if err := args.apply(ctx, wl, version); err != nil {
+				args.logger.Warn("pull loop: retained Pod policy refused update", "error", err)
+				continue
+			}
+		} else {
+			args.store.apply(wl, version)
+		}
 		etag, failing = newETag, ""
 		args.logger.Info("pull loop: allowlist refreshed",
 			"workloads", len(wl.Workloads),
@@ -446,7 +503,9 @@ func runPullLoop(ctx context.Context, args pullLoopArgs) {
 			"etag", etag,
 			"digest", served.Digest,
 		)
-		args.killRevoked(ctx)
+		if args.apply == nil {
+			args.killRevoked(ctx)
+		}
 	}
 }
 
@@ -475,6 +534,9 @@ type healthServerConfig struct {
 type healthResponse struct {
 	Status           string `json:"status"`
 	AllowlistVersion uint64 `json:"allowlist_version"` // plugin.AppliedAllowlistVersion
+	PodUID           string `json:"pod_uid,omitempty"`
+	PodWaiting       bool   `json:"pod_waiting,omitempty"`
+	PodRegistered    bool   `json:"pod_registered,omitempty"`
 }
 
 // startHealthServer starts an HTTP server for readiness/liveness probes.
@@ -484,6 +546,11 @@ func startHealthServer(ctx context.Context, cfg healthServerConfig) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		body := healthResponse{Status: "ok", AllowlistVersion: cfg.plugin.AppliedAllowlistVersion()}
+		if cfg.plugin.cfg.Pod != nil {
+			body.PodUID = cfg.plugin.cfg.Pod.UID
+			body.PodWaiting = cfg.plugin.cfg.Pod.Waiting
+			body.PodRegistered = cfg.plugin.podRegistered.Load() && !cfg.plugin.podStartDisconnected.Load()
+		}
 		code := http.StatusOK
 		if !cfg.plugin.Ready() {
 			body.Status = "not ready"

@@ -199,19 +199,74 @@ and the exact image/launch-file policy in `--cds-image-policy-file`.
 The signed document carries both CDS values, no RKE2 join credentials, agent
 keys or `router` block. Re-signing it after an edit requires the Pod launch key.
 
-`workloads.json` must hold a `c8s.allowlist/v1` document with at least one
-workload. It is the base allowlist, in force before CDS responds; the plugin
+When supplied, `workloads.json` holds a `c8s.allowlist/v1` document; its entries
+may be empty. It is the base allowlist, in force before CDS responds; the plugin
 also admits entries fetched from the authenticated CDS. A failed initial pull
 leaves the base in force while polling continues, and a failed refresh keeps the
 last applied CDS policy. Neither source gets a node-TCB exemption. The pod role
 measures started images only and refuses a baked configuration that also sets
 `allowlist.pull.measure_policies`.
 
+For generic boot, use `--generic --name` and omit `--pod-manifest`, `--workloads`
+and `--mesh-peer`:
+
+```sh
+c8s node launch-config new-pod --generic --name warm-1 \
+  --out warm1 --cluster-id demo --image-manifest manifest.json \
+  --server-address 10.0.0.10 --server-public-key demo/server/pubkey \
+  --cds-address cds.example.com:30808 --cds-image-policy-file cds-pin.json
+```
+
+The guest starts its runtime and attested
+status service with no static manifest. Admission refuses every sandbox and
+container, including pause and the mesh endpoint, until assignment.
+
+The provider first verifies fresh guest evidence and an empty measured list,
+then fetches `GET /v1/assign/nonce` and signs one `POST /v1/assign` with the Pod
+launch key. The signature binds the verified serving key, nonce, manifest,
+allowlist entries and mesh peers. The provider must persist those exact signed
+bytes before sending them. A lost reply requires recovery of the same intent;
+it does not authorize signing for a different serving key or assigning another
+VM. The client API separates `Prepare` from `Send` for this boundary.
+
+Acceptance records the signed assignment in root-only guest RAM before changing
+policy or publishing its manifest. Status-service restarts recover this record,
+even if the serving key rotates, and refuse further assignments with HTTP 409.
+The guest installs policy into an empty runtime, restarts containerd and kubelet,
+waits for assigned admission and empty kubelet and container inventories to become
+available, then publishes the manifest last. Startup delays are retried within the
+installation deadline without restarting the services again. Assignment
+recovery never replaces a published manifest or restarts a runtime that already
+ran it. Assignment state lasts for this boot; a reboot needs a new VM allocation.
+
+Within that boot, restarting kubelet, containerd or the admission plugin retains
+the original sandbox, assignment, complete admission history and credential
+identity. The guest stores this state in protected RAM before authorizing a
+start. Recovery verifies the live tasks, image bindings, packet protection and
+credential volume, then obtains fresh credentials under the retained issuer
+binding. It also retains the last authenticated CDS policy during an outage and
+refuses older policy versions. Start permissions from the old process are never
+reused.
+
+An interrupted admission transition, lost history, changed protection or a
+replaced sandbox prevents recovery for that boot. Allocate a new Pod CVM in
+those cases; deleting the retained state does not authorize another assignment.
+
+Assignment nonces have no time expiry and are forgotten on service restart.
+The service retains at most 256 outstanding nonces without evicting any; further
+issuance returns 503. The provider must retire an unavailable target within its
+verification budget. Warm capacity is opt-in; generic boot itself has no wait
+deadline.
+
 The pod manifest requires `metadata.uid` and a canonical SHA-256 digest on every
-init and application image. Volumes
+init and application image; the guest stages these pins by container name
+([Pod image binding](allowlist-and-capabilities.md#pod-image-binding)). Volumes
 must be `emptyDir` with `medium: Memory`, so pod state stays in VM memory
 whether or not a scratch disk is attached. Host namespaces, `hostPort`,
-`hostIP` and privileged containers are refused. The image runs
+`hostIP` and privileged containers are refused. Containers may run as root: the
+CVM runs this one pod, and the runtime's
+[privilege floor](node-exec-mode.md#the-privilege-floor) still bounds
+capabilities and grants neither `SETUID` nor `SETGID`. The image runs
 containerd and a standalone kubelet (`podcvm-containerd`, `podcvm-kubelet`)
 instead of RKE2 and does not require the scratch disk. The kubelet listens on
 loopback only, and sets `makeIPTablesUtilChains: false`: the admission plugin

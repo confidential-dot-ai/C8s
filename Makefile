@@ -84,8 +84,9 @@ C8S_TEST_COUNT ?= -count=1
 test:
 	go test -race $(C8S_TEST_COUNT) -timeout=120s work
 
-# Real packet capture, guest bootstrap and private RAM credential custody need
-# Linux root and namespace capabilities. Missing privileges fail this target.
+# Real packet capture, guest bootstrap, private RAM credential custody and
+# assignment persistence need Linux root and namespace capabilities.
+# Missing privileges fail this target.
 test-podmesh-netns:
 	bash ./scripts/test-podmesh.sh -race
 
