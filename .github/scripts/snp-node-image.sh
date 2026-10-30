@@ -60,7 +60,9 @@ env_lines() {
   digest_ok "$cdi" || fail 'invalid CDI image digest'
   case "$prefix" in
     node) repo=$IMAGE_REPO platform='"snp"' ;;
-    cds) repo=$CDS_IMAGE_REPO platform=null ;;
+    # One image serves both TEE families (images/cds-guest/build --platform
+    # both, #1156), so the cds manifest names "multi", not a single platform.
+    cds) repo=$CDS_IMAGE_REPO platform='"multi"' ;;
     *) fail "no guest image '$prefix'" ;;
   esac
   jq -e --argjson platform "$platform" '.version == 3 and .build.platform == $platform' "$manifest" >/dev/null \

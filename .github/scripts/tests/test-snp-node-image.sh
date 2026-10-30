@@ -40,9 +40,10 @@ nodeLaunchDigest=$launch"
 [[ $output == "$expected" ]] || fail "unexpected environment: $output"
 pass
 
-# The CDS image serves both TEE families, so its manifest names no platform of
-# its own, and its claims are keyed by its own digests under its own names.
-jq 'del(.build)' "$fixture/manifest.json" > "$fixture/cds-manifest.json"
+# The CDS image serves both TEE families (images/cds-guest/build --platform
+# both), so its manifest names platform "multi"; its claims are keyed by its
+# own digests under its own names.
+jq '.build.platform = "multi"' "$fixture/manifest.json" > "$fixture/cds-manifest.json"
 output=$(bash "$script" env cds "$fixture/oras.json" "$fixture/cds-manifest.json" "$cdi" 4)
 expected="cdsImage=$cds_repo@$cdi
 cdsRootPvc=c8s-snp-cds-root-cccccccccccc
@@ -52,8 +53,8 @@ cdsIgvmDigest=sha256:$igvm_hex
 cdsLaunchDigest=$launch"
 [[ $output == "$expected" ]] || fail "unexpected CDS environment: $output"
 pass
-# Each image's manifest names its own platform, or none; neither passes for
-# the other, and no third guest image has claims here.
+# Each image's manifest names its own platform (node "snp", cds "multi");
+# neither passes for the other, and no third guest image has claims here.
 reject bash "$script" env node "$fixture/oras.json" "$fixture/cds-manifest.json" "$cdi" 4
 reject bash "$script" env cds "$fixture/oras.json" "$fixture/manifest.json" "$cdi" 4
 reject bash "$script" env other "$fixture/oras.json" "$fixture/manifest.json" "$cdi" 4
