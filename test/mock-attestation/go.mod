@@ -3,7 +3,7 @@ module github.com/confidential-dot-ai/c8s/test/mock-attestation
 go 1.27.3
 
 require (
-	github.com/confidential-dot-ai/attestation-go v0.8.2-0.20261028102134-fcdaf48f0eca
+	github.com/confidential-dot-ai/attestation-go v0.8.2-0.20261030152238-ab5b8da922c5
 	github.com/confidential-dot-ai/c8s v0.0.0
 )
 
