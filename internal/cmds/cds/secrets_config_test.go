@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
@@ -94,10 +95,10 @@ func secretsSizingConfig() config {
 	}
 }
 
-// nodeMeasurements is the /attest allowlist a measured configuration's node
-// pins give.
-func nodeMeasurements() map[string]bool {
-	return map[string]bool{strings.Repeat("ab", 48): true}
+// pinnedNodeImages is the node image set a measured configuration pins. The
+// gate reads how many there are, not what they pin.
+func pinnedNodeImages() []remote.ImagePin {
+	return []remote.ImagePin{{Name: "node"}}
 }
 
 func testInventoryHosts(t *testing.T) workloadclaims.CIDRHosts {
@@ -112,7 +113,7 @@ func testInventoryHosts(t *testing.T) workloadclaims.CIDRHosts {
 // A fully-configured CDS serves /secrets with no flag to turn it on: release is
 // gated on an allowlist entry carrying a grant, not on configuration.
 func TestSecretsEnabledWhenSandboxIdentityWorks(t *testing.T) {
-	enabled, why := secretsEnabled(nodeMeasurements(), testInventoryHosts(t))
+	enabled, why := secretsEnabled(pinnedNodeImages(), testInventoryHosts(t))
 	if !enabled {
 		t.Fatalf("secrets not served on a fully configured CDS: %s", why)
 	}
@@ -122,16 +123,16 @@ func TestSecretsEnabledWhenSandboxIdentityWorks(t *testing.T) {
 // not answer at all rather than answer badly.
 func TestSecretsDisabledWhenItCannotAnswer(t *testing.T) {
 	for _, tc := range []struct {
-		name         string
-		measurements map[string]bool
-		hosts        workloadclaims.CIDRHosts
-		want         string
+		name   string
+		images []remote.ImagePin
+		hosts  workloadclaims.CIDRHosts
+		want   string
 	}{
-		{"no node addresses", nodeMeasurements(), nil, "no node addresses"},
+		{"no node addresses", pinnedNodeImages(), nil, "no node addresses"},
 		{"no node identities", nil, testInventoryHosts(t), "pins no node identity"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			enabled, why := secretsEnabled(tc.measurements, tc.hosts)
+			enabled, why := secretsEnabled(tc.images, tc.hosts)
 			if enabled {
 				t.Fatal("secrets served despite the prerequisite being unmet")
 			}

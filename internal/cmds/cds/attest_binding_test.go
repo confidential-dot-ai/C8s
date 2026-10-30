@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/internal/sandboxledger"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
@@ -86,14 +87,14 @@ func TestAttest_FailedIssuanceBindsNothing(t *testing.T) {
 	h, signer := newSandboxTestEnv(t, stub.URL())
 	binder := &recordingBinder{}
 	h.SandboxBindings = binder
-	// Pin a measurement the stub does not report, so the request fails after
+	// Pin a node image the stub does not report, so the request fails after
 	// the sandbox token has been verified.
-	h.Measurements = map[string]bool{"00": true}
+	h.Images = []remote.ImagePin{imagePin(t, "node-next", otherLaunchDigest)}
 	csrPEM := sandboxCSR(t)
 
 	challenge := issueChallenge(t, h)
 	if w := postAttestSandbox(t, h, challenge, csrPEM, signedSandboxToken(t, signer, csrPEM, challenge, testSandboxID)); w.Code == http.StatusOK {
-		t.Fatal("expected the measurement gate to refuse issuance")
+		t.Fatal("expected the node image gate to refuse issuance")
 	}
 	if len(binder.calls) != 0 {
 		t.Fatalf("Record called %d times for a failed issuance, want 0", len(binder.calls))

@@ -394,10 +394,10 @@ func startRunServerOn(t *testing.T, cfg config, base string, client *http.Client
 	})
 }
 
-// TestRun_LogsMeasurementPinning: the configuration's node identities must log
+// TestRun_LogsNodeImagePinning: the configuration's node identities must log
 // the pinning-enabled line, not the UNSAFE empty-allowlist warning. A bad CN
 // pattern stops startup after the pinning log.
-func TestRun_LogsMeasurementPinning(t *testing.T) {
+func TestRun_LogsNodeImagePinning(t *testing.T) {
 	api := newHealthyAttestationApi(t)
 	cfg := validRunConfig(t, api.URL)
 	cfg.logLevel = "info"
@@ -422,12 +422,25 @@ func TestRun_LogsMeasurementPinning(t *testing.T) {
 	if runErr == nil || !strings.Contains(runErr.Error(), "--allowed-cn-pattern") {
 		t.Fatalf("run() error = %v, want --allowed-cn-pattern failure", runErr)
 	}
-	if !strings.Contains(string(logged), "measurement pinning enabled") {
+	if !strings.Contains(string(logged), "node image pinning enabled") {
 		t.Fatalf("startup log missing pinning-enabled line:\n%s", logged)
 	}
 	if strings.Contains(string(logged), "name no launch measurement") {
 		t.Fatalf("startup log warned about empty measurements despite pinning:\n%s", logged)
 	}
+}
+
+// A node-image upgrade pins the image being replaced and the one being rolled
+// out at once, and on TDX each carries its own registers. CDS serves such a
+// configuration; startRunServer fails the test if run() exits instead.
+func TestRun_ServesNodeImagesWithDifferentRegisters(t *testing.T) {
+	cfg := armTLSRunConfig(t)
+	cfg.measured = measuredConfig(t, cluster{
+		operatorPEM: operatorKeysPEM(t),
+		workloads:   map[string]string{"cds": digestA},
+		nodes:       upgradingNodesDocument,
+	})
+	startRunServer(t, cfg)
 }
 
 // TestRun_AllowlistWriteAcceptsClockSkewedToken: the operator-token verifier

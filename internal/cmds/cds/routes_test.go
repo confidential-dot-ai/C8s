@@ -504,18 +504,6 @@ func TestReadinessFn(t *testing.T) {
 	}
 }
 
-// The /attest allowlist is keyed the way the handler spells a verified launch
-// digest: lowercase hex, one entry per pinned image.
-func TestAdmittedMeasurements(t *testing.T) {
-	got := admittedMeasurements([][]byte{{0xde, 0xad}, {0xbe, 0xef}, {0xde, 0xad}})
-	if len(got) != 2 || !got["dead"] || !got["beef"] {
-		t.Fatalf("allowed = %v, want one lowercase-hex key per distinct digest", got)
-	}
-	if len(admittedMeasurements(nil)) != 0 {
-		t.Fatal("no digests must admit nothing")
-	}
-}
-
 func TestNewRouter_PanicsOnNilMeshCA(t *testing.T) {
 	defer func() {
 		if got := recover(); got != "cds: dependencies.MeshCA must be set" {
