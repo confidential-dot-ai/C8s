@@ -23,7 +23,6 @@ func registerNode(sc *godog.ScenarioContext) {
 	sc.Step(`^the admission plugin on node "([^"]*)" has started since the CDS became unreachable$`, pluginStartedSinceBlock)
 	sc.Step(`^the first pull of the admission plugin on node "([^"]*)" has not succeeded$`, firstPullNotSucceeded)
 	sc.Step(`^the admission plugin on node "([^"]*)" pulls the served allowlist$`, pluginPulls)
-	sc.Step(`^the database of the CDS does not survive a restart$`, cdsVolatile)
 	sc.Step(`^the CDS (?:restarts|has restarted)$`, cdsRestarted)
 	sc.Step(`^the version of the served allowlist is below the version the admission plugin on node "([^"]*)" applied$`, versionBelowApplied)
 }
@@ -122,17 +121,6 @@ func pluginPulls(ctx context.Context, node string) error {
 		return err
 	}
 	return w.awaitApplied()
-}
-
-func cdsVolatile(ctx context.Context) error {
-	answer, err := getWorld(ctx).be.call("cds_volatile")
-	if err != nil {
-		return err
-	}
-	if answer != "yes" {
-		return skipf("a CDS restart keeps the allowlist here (cds_volatile)")
-	}
-	return nil
 }
 
 // cdsRestarted restarts the CDS; what it serves afterwards is a change the

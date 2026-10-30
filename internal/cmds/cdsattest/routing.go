@@ -44,8 +44,6 @@ var defaultReservedPaths = []string{
 
 type routingConfig struct {
 	cdsURL           string
-	cdsMeasurements  []string
-	cdsRTMRs         []string
 	imagePolicyFile  string
 	launchKeysFile   string // empty means nodeOperatorKeysFile; tests point it elsewhere
 	operatorKeysFile string
@@ -60,9 +58,7 @@ type routingConfig struct {
 
 func bindRoutingFlags(f *pflag.FlagSet, cfg *routingConfig) {
 	f.StringVar(&cfg.cdsURL, "cds-url", "", "CDS base URL (https, armTLS-verified) to poll the signed route manifest from; required unless this node's enforcer mounts the endpoint")
-	f.StringSliceVar(&cfg.cdsMeasurements, "cds-measurements", nil, "allowed CDS SHA-384 launch measurement(s), repeatable/comma-separated; required unless --image-policy-file pins CDS")
-	f.StringSliceVar(&cfg.cdsRTMRs, "cds-rtmrs", nil, "TDX RTMR pin(s) <index>=<sha384-hex> CDS must additionally satisfy, repeatable/comma-separated")
-	cmdsutil.BindImagePolicyFlags(f, &cfg.imagePolicyFile, nil, "pins the CDS endpoint; excludes --cds-measurements and --cds-rtmrs")
+	cmdsutil.BindImagePolicyFlags(f, &cfg.imagePolicyFile, nil, "pins the CDS endpoint (REQUIRED), every entry bound to the launch file that CDS runs on")
 	f.StringVar(&cfg.operatorKeysFile, "operator-keys-file", "", "PEM operator public keys a route manifest must be signed under, used when the node's launch configuration carries none; unset, the keys come from the verified CDS's GET /operator-keys")
 	f.DurationVar(&cfg.pollInterval, "routes-poll-interval", 30*time.Second, "how often to poll the CDS for the route manifest")
 	f.StringVar(&cfg.host, "routing-host", "127.0.0.1", "routing listener host (loopback: nginx proxies application requests to it)")
@@ -129,12 +125,14 @@ type routingEngine struct {
 // connections whose binding in bindings no longer holds.
 func newRoutingEngine(cfg config, bindings *Bindings, logger *slog.Logger) (*routingEngine, error) {
 	r := cfg.routing
-	policy, err := (cmdsutil.ImagePolicySource{File: r.imagePolicyFile}).Load(
-		cmdsutil.MeasurementPins{Measurements: r.cdsMeasurements, Registers: r.cdsRTMRs, Prefix: "cds-"})
+	values, err := (cmdsutil.ImagePolicySource{File: r.imagePolicyFile}).Values()
 	if err != nil {
 		return nil, err
 	}
-	httpClient, err := armtls.NewVerifyingHTTPClient(armtls.Pins(policy), cfg.attestationAPIURL) // A1
+	if _, err := cmdsutil.CDSLaunchFile(values); err != nil {
+		return nil, fmt.Errorf("--image-policy-file %w", err)
+	}
+	httpClient, err := armtls.NewVerifyingHTTPClient(armtls.Pins(values.Policy()), cfg.attestationAPIURL) // A1
 	if err != nil {
 		return nil, fmt.Errorf("CDS armTLS client: %w", err)
 	}

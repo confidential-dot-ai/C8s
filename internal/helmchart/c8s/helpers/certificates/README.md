@@ -37,6 +37,7 @@ The helper takes a dict with these fields:
 requires a read-only root filesystem, and selects the RuntimeDefault seccomp
 profile. Both containers share it so they can access the consumer's cert volume.
 
-`c8s.cdsDnsSanPattern` matches `<service>.<namespace>.svc` across namespaces.
-CDS full-matches the regex. `cds.dnsSanPatterns` adds further allowed patterns,
-including public hostnames, alongside this in-cluster pattern.
+A leaf's DNS SANs are matched against the rules the CDS configuration carries:
+the in-cluster `<service>.<namespace>.svc` pattern
+(`cmdsutil.ServiceDNSSANPattern`) and any further name or pattern a leaf may
+carry, including public hostnames.

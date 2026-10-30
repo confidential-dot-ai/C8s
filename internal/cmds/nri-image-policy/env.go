@@ -2,6 +2,7 @@ package nriimagepolicy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -26,6 +27,14 @@ func (p *plugin) ValidateContainerAdjustment(ctx context.Context, req *api.Valid
 	// The gate runs ahead of the admission check and independently of
 	// policy.mode: a protected pod's container runs only once it is verified.
 	if err := p.gateMesh(ctx, req, ctr, env, mounts); err != nil {
+		// A pre-existing pod recovery has not yet reached is off the gate's
+		// record: refuse the create, but transiently, so the retry after
+		// recovery is not met by a denial recorded for the pod's life. A
+		// sandbox still off the record once recovery has run is unknown, and
+		// its refusal stands.
+		if errors.Is(err, errSandboxOffRecord) && !p.mesh.recoveryDone() {
+			return err
+		}
 		return p.denyContainer(req.GetPod().GetId(), err)
 	}
 	verdict, reason := p.checkContainerObserved(ctx, p.cfg, req.GetPod(), ctr, ctr.GetAnnotations()[annotationImageName], launchFinal, env, mounts)

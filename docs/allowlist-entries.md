@@ -1,8 +1,10 @@
 # Workload entries
 
-The format of the entries `c8s allowlist` writes, CDS serves, and every node
-enforces. One invariant runs through it: policy is looked up by container
-digest, and an absent `command`, `args`, or `mounts` policy denies. For why, see
+A workload entry names the containers a pod may run, in the format
+`c8s allowlist` writes, CDS serves, and every node enforces.
+
+One invariant runs through it: policy is looked up by container digest, and an
+absent `command`, `args`, or `mounts` policy denies. For why, see
 [allowlist-and-capabilities.md](allowlist-and-capabilities.md).
 
 ## Document shape
@@ -174,7 +176,7 @@ Reads are unauthenticated; writes are signed with the operator key from
 | `lint <file\|->` | validate and report findings; `--online`, `--strict`, `--seed <file>` |
 | `inspect-image <ref>` | print an image's digest and baked `Entrypoint`/`Cmd` |
 | `derive <name> <file\|->` | build an entry from a Pod, Deployment, StatefulSet, or DaemonSet |
-| `add <digest> <image>` | write `<image basename>-<first 12 hex of digest>`, admitting any command line; `--dry-run` |
+| `add <digest> <image>` | write `<image basename>-<first 12 hex of digest>`, with `any` for command, args, env, and mounts; `--dry-run` |
 | `apply <file\|->` | upsert entries, each replaced whole; `--dry-run` |
 | `edit <name>` | fetch, `$EDITOR`, validate, diff, confirm, apply |
 | `delete <name>...` | delete entries |

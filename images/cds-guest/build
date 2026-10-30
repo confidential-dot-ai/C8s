@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Build the C8s CDS image from THIS repo's profile, using a
+# confidential-os-builder checkout purely as the builder, as
+# node-guest-image/build does for the node image.
+#
+# The CDS VM carries the trust root and nothing else, so the composition is
+# confos's base + attest plus ./cds, which stages the measured c8s binary, the
+# attestation-api the nodes verify with, and the unit that runs them. One
+# `confos build` does it: no kernel fragment (the base lineage already carries
+# both TEEs' symbols and the ISO9660 driver the launch disk needs), no GPU
+# staging, no module signing.
+#
+# One image serves both TEE families. Nothing platform-specific is baked, so
+# a single build measures the SNP launch digests and the TDX block, and the
+# operator picks the platform when launching.
+#
+# Knobs:
+#   C8S_REF=...        REQUIRED. Bake the c8s binary from a specific C8s
+#                      COMMIT (short SHA) or release tag; mkosi.sync resolves
+#                      c8s-operator:<ref> to a digest and has no default. The
+#                      image must be published first (c8s docker.yml on main,
+#                      or workflow_dispatch for a branch).
+#   CONFOS_DIR=...     confos checkout to build with (default: sibling of
+#                      this repo's checkout).
+set -euo pipefail
+[ -n "${C8S_REF:-}" ] \
+    || { echo "images/cds-guest/build: C8S_REF is required (published short SHA or release tag)" >&2; exit 1; }
+IMAGE_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# One verifier version for the whole cluster: .github/build-pins.json names
+# the attestation-rs build both this image and CI's node images stage.
+PINS="$IMAGE_DIR/../../.github/build-pins.json"
+ATTESTATION_RS_REF=$(jq -er '.builds["node-image"].attestation_rs_ref' "$PINS")
+CONFOS_DIR=${CONFOS_DIR:-"$IMAGE_DIR/../../../confidential-os-builder"}
+[ -x "$CONFOS_DIR/bin/confos" ] \
+    || { echo "images/cds-guest/build: confos checkout not found at $CONFOS_DIR (set CONFOS_DIR)" >&2; exit 1; }
+cd "$CONFOS_DIR"
+# A profile dir is enabled under its basename, so ./cds must keep that name.
+# attest before cds: profile order is mkosi's config-merge order, so ./cds's
+# sync hook runs last and its attestation-api is the one measured.
+exec bin/confos build cds \
+    --profile attest \
+    --profile cds \
+    --profile-dir "$IMAGE_DIR/cds" \
+    --sync-input "c8s-ref=${C8S_REF}" \
+    --sync-input "attestation-rs-ref=${ATTESTATION_RS_REF}" \
+    --platform both \
+    --memory 4G

@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -24,9 +23,12 @@ import (
 	"github.com/containerd/nri/pkg/api"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
+	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/getcert"
 	"github.com/confidential-dot-ai/c8s/internal/podmesh"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
@@ -89,7 +91,7 @@ func runPodBootstrap(t *testing.T, cfg *config, root string, podKey []byte, base
 	defer release()
 	var pulls, failures atomic.Int64
 	var available atomic.Bool
-	cds := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	cds := testutil.NewARMTLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if pulls.Add(1) == 1 {
 			close(firstPull)
 			select {
@@ -108,9 +110,19 @@ func runPodBootstrap(t *testing.T, cfg *config, root string, podKey []byte, base
 		_, _ = w.Write(body)
 	}))
 	defer cds.Close()
-	// The source config was already validated as HTTPS. Keep TLS identity
-	// coverage in the armTLS test and use HTTP here to control pull timing.
+	// Rebase the already validated CDS location without bypassing armTLS.
+	// The prepared pin binds this independent SNP server's launch file.
 	cfg.Allowlist.Pull.URL = cds.URL
+	cfg.cdsAddress, err = cmdsutil.CDSURLAddress(cds.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier := mockapi.New(t)
+	verdict := mockapi.PassingVerdict(testutil.TestMeasurement)
+	binding := runtimemeasure.HostData([]byte(testutil.CDSLaunchFile))
+	verdict.Claims.InitData = binding[:]
+	verifier.SetVerdict(verdict)
+	cfg.Allowlist.Pull.AttestationApiURL = verifier.URL()
 
 	registered := make(chan struct{})
 	nri := startPodNRIRuntime(t, dir, registered)
@@ -224,6 +236,9 @@ func runPodBootstrap(t *testing.T, cfg *config, root string, podKey []byte, base
 	case guest = <-brokerStarted:
 	case <-ctx.Done():
 		t.Fatal("guest broker did not start after the measured endpoint")
+	}
+	if guest.CDSURL != cds.URL {
+		t.Fatalf("broker CDS URL = %q, want resolved pull endpoint %q", guest.CDSURL, cds.URL)
 	}
 	first, err := guest.Snapshot(ctx)
 	if err != nil || len(first.Containers) != 1 || first.Containers[0].Role != meshRole || !slices.Equal(first.RuntimeExtensions, []string{meshDigest}) {

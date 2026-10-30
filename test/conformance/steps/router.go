@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/cucumber/godog"
 )
@@ -41,15 +42,22 @@ const (
 	allowlistRoute     = "/allowlist"
 	allowlistLookalike = "/allowlisted"
 	relayFailureBody   = "CDS unavailable"
+	// backendDigestMismatchBody is the 502 the router returns while its
+	// workload backend pool lags the allowlist digest a request was checked
+	// against: a transient state after an allowlist or route change. A
+	// workload-name mismatch is a different refusal ("backend unavailable"),
+	// so matching this body does not retry an intended rejection.
+	backendDigestMismatchBody = "backend_digest_mismatch"
 )
 
 // routerState is what the scenario has learnt of the router: its rendered
 // configuration, the last answer a client got and the certificate the
 // router presented.
 type routerState struct {
-	conf    *nginxConf
-	answer  *answer
-	serving []byte // DER
+	conf     *nginxConf
+	answer   *answer
+	lastHost string // the resolved Host of the last request, for log matching
+	serving  []byte // DER
 }
 
 // nginxConf is the router's rendered nginx configuration, as locations.
@@ -166,10 +174,22 @@ func cdsCredentialSelected(ctx context.Context) error {
 	return nil
 }
 
-// routerGet sends the router GET path with headers ("Name: value").
+// routerGet sends the router GET path with headers ("Name: value"), retrying
+// through the transient backend_digest_mismatch 502 the router returns while
+// its workload backend pool catches up to a just-applied allowlist or route
+// digest. Any other answer, success or failure, is kept at once.
 func (w *world) routerGet(path string, headers ...string) error {
-	a, err := w.httpRequest("router_request", http.MethodGet, path, nil, "", "", "", headers...)
-	if err != nil {
+	var a *answer
+	// Each attempt is an attested handshake, so poll on the router's own
+	// refetch cadence rather than every second, as applyRoutes does.
+	if _, err := pollEvery(5*time.Second, observe, func() (bool, error) {
+		var err error
+		if a, err = w.httpRequest("router_request", http.MethodGet, path, nil, "", "", "", headers...); err != nil {
+			return false, err
+		}
+		settled := a.status != http.StatusBadGateway || !bytes.Contains(a.body, []byte(backendDigestMismatchBody))
+		return settled, nil
+	}); err != nil {
 		return err
 	}
 	w.router.answer = a

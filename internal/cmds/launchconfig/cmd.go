@@ -35,13 +35,17 @@ signed launch.yaml per node and the client policy that pins the server.
   <out>/server.json   C8S_MEASUREMENTS_CONFIG for clients of this cluster
   <out>/peers.json    every launch identity CDS admits and serves;
                       'c8s cds verify --served-policy-file'
+  <out>/cds-config.yaml  the launch file this cluster's CDS VM boots on
+  <out>/cds-pin.json  the measurements document pinning that VM; every
+                      node document carries it
   <out>/server/       pubkey, launch.yaml, launch.yaml.sig: the server's opkeydata
   <out>/<agent>/      the same three files for each --agent
 
 Attach each node directory as its opkeydata disk (an ISO labelled opkeydata,
 or a KubeVirt Secret volume with volumeLabel opkeydata). On SNP, also set
-HOST_DATA to SHA-256 of that node's pubkey file. See docs/operator.md,
-"Authenticated launch configuration".`,
+HOST_DATA to SHA-256 of that node's pubkey file. Launch the CDS VM on
+cds-config.yaml, binding it the same way: on SNP set HOST_DATA to SHA-256 of
+that file. See docs/operator.md, "Authenticated launch configuration".`,
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -72,9 +76,15 @@ HOST_DATA to SHA-256 of that node's pubkey file. See docs/operator.md,
 	f.StringVar(&opts.ServerName, "server-name", "", "server node name (default <cluster-id>-server)")
 	f.StringVar(&opts.ServerAddress, "server-address", "", "server IPv4 address every node can reach; required with agents, otherwise the server autodetects it")
 	f.StringArrayVar(&opts.Agents, "agent", nil, "agent node name; repeatable")
-	f.StringVar(&opts.TLSSAN, "tls-san", "", "DNS name for the front-door certificate (default c8s.local)")
-	f.StringVar(&opts.WorkloadsPath, "workloads", "", "optional c8s.allowlist/v1 JSON file applied as the initial workload allowlist")
-	f.StringVar(&opts.PodImagePolicyPath, "pod-image-policy-file", "", "optional complete Pod image and launch-key policy; authorizes Pod issuance separately from node peers")
+	f.StringVar(&opts.TLSSAN, "tls-san", "", "DNS name for the front-door certificate, which CDS signs onto a leaf (default c8s.local)")
+	f.StringVar(&opts.CDS.Address, "cds-address", "", "<host>:<port> the cluster's CDS serves on, the host a DNS name its clients resolve or an IPv4 address; its port is the only one a credential client may dial outside the cluster")
+	f.StringVar(&opts.CDS.ManifestPath, "cds-image-manifest", "", "manifest.json published with the CDS guest image that VM boots")
+	f.StringVar(&opts.CDS.Platform, "cds-platform", "", "TEE platform the CDS VM runs on: sev-snp or tdx, which need not be the nodes'")
+	f.IntSliceVar(&opts.CDS.VCPUs, "cds-vcpus", nil, "SEV-SNP only: a vCPU count the CDS VM may boot with, one pin entry each; repeatable")
+	f.StringArrayVar(&opts.CDS.NodeCIDRs, "cds-node-cidr", nil, "subnet holding the node addresses CDS may dial for a sandbox's admission inventory; repeatable")
+	f.StringVar(&opts.CDS.AllowlistSeedPath, "cds-allowlist-seed", "", "the release's allowlist-seed-<platform>.json: the component entries this cluster's CDS serves")
+	f.StringVar(&opts.PodImagePolicyPath, "pod-image-policy-file", "", "optional complete Pod image and launch-key policy embedded in the measured CDS configuration; never node peer trust")
+	f.StringVar(&opts.CDS.TenantWorkloadsPath, "tenant-workloads", "", "optional c8s.allowlist/v1 JSON file of tenant workloads the CDS serves beside the component entries; an entry may not take a component entry's name")
 	f.StringArrayVar(&opts.Router.Hostnames, "router-hostname", nil, "public DNS name the router serves with an ACME certificate; repeatable")
 	f.StringVar(&opts.Router.ACMEEmail, "acme-email", "", "contact email for the router's ACME account (requires --router-hostname)")
 	f.StringVar(&opts.Router.ACMEDirectoryURL, "acme-directory-url", "", "ACME directory URL, e.g. a staging directory for tests (requires --router-hostname; default Let's Encrypt)")
@@ -82,7 +92,16 @@ HOST_DATA to SHA-256 of that node's pubkey file. See docs/operator.md,
 	f.StringArrayVar(&mirrors, "registry-mirror", nil, "registry=http://ipv4[:port], the mirror containerd pulls that registry through; repeatable, once per registry")
 	f.StringVar(&opts.OperatorKeyPath, "operator-key", "", "existing ECDSA P-256 operator private key PEM to use as the server launch key instead of generating one; it is not copied into the bundle")
 	f.StringVar(&opts.OperatorPubPath, "operator-pubkey", "", "public key PEM --operator-key must match byte for byte, e.g. the one clients pin (c8s keys new --pub-out)")
-	for _, name := range []string{"out", "cluster-id", "image-manifest"} {
+	for _, name := range []string{
+		"out",
+		"cluster-id",
+		"image-manifest",
+		"cds-address",
+		"cds-image-manifest",
+		"cds-platform",
+		"cds-node-cidr",
+		"cds-allowlist-seed",
+	} {
 		_ = cmd.MarkFlagRequired(name)
 	}
 	return cmd
@@ -150,8 +169,9 @@ launch key:
 
 The pod's uid, namespace and name come from the manifest's metadata. The
 workloads allowlist supplies the cold-boot base. The guest also polls CDS
-at --server-address, authenticated with --server-public-key and the image
-pins. The server public key must differ from the pod launch key.`,
+at --cds-address, authenticated with the launch-file-bound --cds-image-policy-file.
+The independent cluster server identity remains in --server-address and
+--server-public-key; that public key must differ from the pod launch key.`,
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -169,12 +189,14 @@ pins. The server public key must differ from the pod launch key.`,
 	f.IntVar(&opts.VCPUs, "vcpus", 0, "SNP only: the VM's vCPU count, selecting its launch digest from the manifest")
 	f.StringVar(&opts.NodeName, "name", "", "node name (default p-<pod uid>)")
 	f.StringVar(&opts.LaunchKeyPath, "launch-key", "", "existing pod launch key PEM (default: generate <out>/pod.key)")
-	f.StringVar(&opts.ServerAddress, "server-address", "", "server IPv4 address the pod CVM can reach for CDS")
+	f.StringVar(&opts.ServerAddress, "server-address", "", "cluster server IPv4 address recorded in the signed Pod identity; does not select CDS")
 	f.StringVar(&opts.ServerPublicKeyPath, "server-public-key", "", "server launch public key PEM file, e.g. <cluster>/server/pubkey")
+	f.StringVar(&opts.CDSAddress, "cds-address", "", "external CDS host:port, as named by the cluster launch bundle")
+	f.StringVar(&opts.CDSImagePolicyPath, "cds-image-policy-file", "", "measurements document binding the external CDS image to its exact launch file")
 	f.StringVar(&opts.PodManifest, "pod-manifest", "", "v1 Pod manifest, YAML or JSON, with metadata.uid set")
 	f.StringVar(&opts.WorkloadsPath, "workloads", "", "nonempty c8s.allowlist/v1 JSON base admitted before CDS is available")
 	f.StringArrayVar(&opts.MeshPeers, "mesh-peer", nil, "reachable mesh IPv4:port endpoint (repeatable; empty permits ingress only)")
-	for _, name := range []string{"out", "cluster-id", "image-manifest", "pod-manifest", "workloads", "server-address", "server-public-key"} {
+	for _, name := range []string{"out", "cluster-id", "image-manifest", "pod-manifest", "workloads", "server-address", "server-public-key", "cds-address", "cds-image-policy-file"} {
 		_ = cmd.MarkFlagRequired(name)
 	}
 	return cmd

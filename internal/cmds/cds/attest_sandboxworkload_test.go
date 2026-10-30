@@ -259,13 +259,13 @@ func TestAttest_SandboxWorkload_NoTokenSkipsGate(t *testing.T) {
 	}
 }
 
-// A token and an allowlisted sandbox do not substitute for the launch
-// measurement: with no pin the handler admits no caller, so a request that
-// would otherwise be issued is denied.
-func TestAttest_SandboxWorkload_UnpinnedMeasurementsDenied(t *testing.T) {
+// A token and an allowlisted sandbox do not substitute for the node image:
+// with no pin the handler admits no caller, so a request that would otherwise
+// be issued is denied.
+func TestAttest_SandboxWorkload_UnpinnedNodeImagesDenied(t *testing.T) {
 	stub := newStubAttestationApi(t, testLaunchDigest)
 	h, signer := newSandboxTestEnv(t, stub.URL())
-	h.Measurements = nil
+	h.Images = nil
 	h.AllowlistStore = anyArgvStore(wlDigestA)
 	h.SandboxDigests = fakeDigests{digests: map[string][]string{testSandboxID: {wlDigestA}}, key: signer.PublicKey()}
 

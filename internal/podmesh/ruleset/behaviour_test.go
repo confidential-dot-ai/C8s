@@ -15,8 +15,8 @@ import (
 )
 
 // The UIDs, addresses and ports the behavioural cases use. The pod has one
-// veth to a peer namespace, which hosts the resolver, the credential service
-// and an address trusted policy names nowhere.
+// veth to a peer namespace, which hosts the resolver, an address inside the
+// range that plays this cluster's own, and one outside it.
 const (
 	workloadUID   = 1500
 	meshUID       = 1337
@@ -44,9 +44,10 @@ func behaviourPolicy() Policy {
 		},
 		MeshUID: meshUID,
 		Roles: []Role{{
-			UID:          credentialUID,
-			Destinations: []Destination{{netip.MustParseAddr(service), servicePort}},
+			UID:         credentialUID,
+			OutsidePort: servicePort,
 		}},
+		ClusterRanges: []netip.Prefix{netip.MustParsePrefix(clusterRange)},
 	}
 }
 
@@ -93,7 +94,8 @@ func TestTheRulesetCarriesOnlyPermittedTrafficInTheNamespace(t *testing.T) {
 			{"a workload connection is captured", workloadUID, "tcp", address(unapproved, 8080), captured},
 			{"the mesh endpoint is not captured", meshUID, "tcp", address(unapproved, 8080), admitted},
 			{"the mesh endpoint sends nothing outside TCP", meshUID, "udp", address(unapproved, 8080), denied},
-			{"a credential role reaches its service", credentialUID, "tcp", address(service, servicePort), admitted},
+			{"a credential role reaches its CDS port outside the cluster", credentialUID, "tcp", address(unapproved, servicePort), admitted},
+			{"a credential role reaches that port inside the cluster not at all", credentialUID, "tcp", address(service, servicePort), denied},
 			{"a credential role reaches nothing else", credentialUID, "tcp", address(unapproved, 8080), denied},
 			{"a workload connection to a role's service is captured", workloadUID, "tcp", address(service, servicePort), captured},
 			{"a resolver query is admitted", workloadUID, "udp", address(resolver, 53), admitted},
@@ -166,8 +168,8 @@ func serverBehaviourPolicy() Policy {
 			UID:   serverEgressUID,
 			Ports: []uint16{serverEgressPort},
 		},
-		Upstream:      serverUpstreamUID,
-		ClusterRanges: []netip.Prefix{netip.MustParsePrefix(clusterRange)},
+		Upstream:    serverUpstreamUID,
+		OutsidePort: servicePort,
 	}
 	return policy
 }

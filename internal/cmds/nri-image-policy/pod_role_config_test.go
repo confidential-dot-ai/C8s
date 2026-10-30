@@ -12,6 +12,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/nodeservices"
 	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
@@ -88,9 +89,11 @@ func podRoleInputs(t *testing.T, platform string) (string, *launchconfig.Documen
 		t.Fatal(err)
 	}
 	write(launchconfig.Dir+"/peers.json", policy)
-	write(launchconfig.Dir+"/cds.json", policy)
+	// The independent CDS VM uses SNP even when the Pod uses TDX.
+	cdsPolicy := testutil.CDSPinDocument(testutil.TestMeasurement, testutil.CDSLaunchFile)
 	doc := &launchconfig.Document{
 		Role:                 launchconfig.Pod,
+		CDS:                  launchconfig.CDS{Address: "cds.example.test:8443", Measurements: cdsPolicy},
 		Server:               launchconfig.ServerConfig{Address: "10.1.2.3", OperatorPublicKey: serverKey},
 		PodOperatorPublicKey: podKey,
 		Image:                launchconfig.Image{Platform: platform},

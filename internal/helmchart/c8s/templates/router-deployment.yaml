@@ -6,7 +6,7 @@ enableServiceLinks: false
 {{- $acmeSidecar := eq (include "router.acmeSidecar" .) "true" -}}
 {{- $expectedWorkload := include "router.expectedWorkload" . -}}
 {{- $renderAllowlistProxy := eq (include "router.renderAllowlistRoute" .) "true" -}}
-{{- $operatorKeys := and (not .Values.node.baked) .Values.cds.operatorKeys -}}
+{{- $operatorKeys := and (include "c8s.cdsFromValues" .) .Values.cds.operatorKeys -}}
 {{- /* Same control-plane pin as CDS: a baked image boots one server,
        and only servers carry this RKE2 role label. */}}
 {{- if .Values.node.baked }}
@@ -217,7 +217,7 @@ containers:
         readOnly: true
       {{- include "c8s.attestationApiSocketMount" . | nindent 6 }}
       {{- include "c8s.nodeConfigMount" . | nindent 6 }}
-      {{- if .Values.cds.measurementsConfig }}
+      {{- if include "c8s.cdsFromValues" . }}
       - name: measurements-config
         mountPath: /mnt/c8s-data/measurements
         readOnly: true
@@ -305,7 +305,7 @@ volumes:
     emptyDir:
       medium: Memory
       sizeLimit: 1Mi
-  {{- if .Values.cds.measurementsConfig }}
+  {{- if include "c8s.cdsFromValues" . }}
   - name: measurements-config
     projected:
       sources:
@@ -317,7 +317,7 @@ volumes:
     projected:
       sources:
         - configMap:
-            name: {{ include "c8s.cdsName" . }}-operator-keys
+            name: {{ include "c8s.fullname" . }}-operator-keys
   {{- end }}
   {{- if eq $publicTLSMode "webpki" }}
   - name: public-tls
@@ -459,12 +459,12 @@ spec:
       annotations:
         {{- /* On a baked node this tracks the image's copy of the config. */}}
         checksum/nginx-config: {{ include (print $.Template.BasePath "/router-configmap.yaml") . | sha256sum }}
-        {{- if .Values.cds.measurementsConfig }}
+        {{- if include "c8s.cdsFromValues" . }}
         # A ConfigMap edit alone does not change the pod template, so without
         # this a tightened pin would not roll the router.
         checksum/measurements-config: {{ .Values.cds.measurementsConfig | sha256sum }}
         {{- end }}
-        {{- if and (not .Values.node.baked) .Values.cds.operatorKeys }}
+        {{- if and (include "c8s.cdsFromValues" .) .Values.cds.operatorKeys }}
         checksum/operator-keys: {{ .Values.cds.operatorKeys | sha256sum }}
         {{- end }}
     spec:

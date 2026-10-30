@@ -74,8 +74,8 @@ func startupSourceMode(cfg *config) string {
 // Run executes the nri-image-policy binary. args is the slice of CLI args
 // after the program name.
 func Run(args []string) error {
-	if len(args) > 0 && args[0] == setCDSPinsVerb {
-		return runSetCDSPins(os.Stdout, args[1:])
+	if len(args) > 0 && args[0] == setMeasurePoliciesVerb {
+		return runSetMeasurePolicies(os.Stdout, args[1:])
 	}
 	if len(args) > 0 && args[0] == pluginReadyVerb {
 		return runPluginReady(args[1:])
@@ -140,12 +140,12 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 	var wlClient allowlistclient.Client
 	var cdsHTTPClient *http.Client
 	if cfg.PullEnabled() {
-		logger.Info("initializing allowlist client", "url", cfg.Allowlist.Pull.URL)
-		httpClient, err := allowlistPullHTTPClient(cfg.Allowlist.Pull, cfg.NormalizedPlatform())
+		logger.Info("initializing allowlist client", "url", cfg.pullURL())
+		httpClient, err := allowlistPullHTTPClient(cfg.Allowlist.Pull)
 		if err != nil {
 			return fmt.Errorf("create allowlist client: %w", err)
 		}
-		wlClient = allowlistclient.NewClientWithHTTP(cfg.Allowlist.Pull.URL, httpClient)
+		wlClient = allowlistclient.NewClientWithHTTP(cfg.pullURL(), httpClient)
 		cdsHTTPClient = httpClient
 	}
 
@@ -278,8 +278,8 @@ func runConfigured(ctx context.Context, cfg *config, logger *slog.Logger, health
 // allowlistPullHTTPClient builds the armTLS client for the CDS pull. The pull
 // URL is always https (enforced by config.Validate), so this always verifies
 // the CDS attestation handshake.
-func allowlistPullHTTPClient(cfg pullConfig, platform string) (*http.Client, error) {
-	set, err := cfg.policySet(platform)
+func allowlistPullHTTPClient(cfg pullConfig) (*http.Client, error) {
+	set, err := cfg.policySet()
 	if err != nil {
 		return nil, err
 	}
@@ -807,13 +807,13 @@ func digestsAdvertiseHost(cfg *config) (string, error) {
 	// recheck, with no caller ctx to inherit.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return workloadclaims.ResolveAdvertiseHost(ctx, host, cfg.Allowlist.Pull.URL)
+	return workloadclaims.ResolveAdvertiseHost(ctx, host, cfg.pullURL())
 }
 
 // startSandboxDigests serves the CDS-facing digests endpoint over
 // mutually-attested armTLS (docs/armtls.md, "Sandbox identity").
 func startSandboxDigests(ctx context.Context, logger *slog.Logger, cfg *config, resolver workloadclaims.SandboxResolver, signer *workloadclaims.SandboxTokenSigner) error {
-	set, err := cfg.Allowlist.Pull.policySet(cfg.NormalizedPlatform())
+	set, err := cfg.Allowlist.Pull.policySet()
 	if err != nil {
 		return err
 	}

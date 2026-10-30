@@ -888,16 +888,28 @@ func stillHoldsLeaf(ctx context.Context, name string) error {
 
 // --- The requester ---
 
-// awaitReady waits once for every container of the pod to be running.
+// awaitReady waits once for the pod's Ready condition, which the injected mesh
+// sidecar's readiness probe gates, so a step that uses the leaf does not race
+// it. It returns the moment a container is denied (a CreateContainerError the
+// runtime retries for the pod's life) rather than sitting out the whole budget
+// on a pod that will never be Ready: a mispinned image the image policy refuses
+// would otherwise cost `observe` on every scenario whose Background deploys it.
 func (w *world) awaitReady(p *pod) error {
 	if p.ready {
 		return nil
 	}
-	if _, err := kubectl(nil, "-n", p.namespace, "wait", "--for=condition=Ready", "pod/"+p.name, "--timeout=120s"); err != nil {
-		return fmt.Errorf("%q did not become Ready: %w", p.name, err)
+	for deadline := time.Now().Add(observe); ; {
+		if d := denials(w.statuses(p)); d != "" {
+			return fmt.Errorf("%q did not become Ready; denials: %s", p.name, d)
+		}
+		if _, err := kubectl(nil, "-n", p.namespace, "wait", "--for=condition=Ready", "pod/"+p.name, "--timeout=5s"); err == nil {
+			p.ready = true
+			return nil
+		}
+		if !time.Now().Before(deadline) {
+			return fmt.Errorf("%q did not become Ready within %s", p.name, observe)
+		}
 	}
-	p.ready = true
-	return nil
 }
 
 // certPaths is where a pod carrying a workload ID holds its leaf and key.
@@ -948,8 +960,8 @@ func (w *world) probe(p *pod, args ...string) (string, error) {
 }
 
 // cdsVerification is how the pod's certificate container verifies the CDS,
-// as the probe's flags: the webhook's attestation API and pins, with the
-// one $(HOST_IP) reference the kubelet expands resolved to the pod's node.
+// as the probe's flags: the webhook's attestation API and pin document, with
+// the one $(HOST_IP) reference the kubelet expands resolved to the pod's node.
 func (w *world) cdsVerification(p *pod) ([]string, error) {
 	if p.verifyCDS != nil {
 		return p.verifyCDS, nil
@@ -964,11 +976,7 @@ func (w *world) cdsVerification(p *pod) ([]string, error) {
 	for _, arg := range strings.Split(rest, "\n") {
 		name, value, _ := strings.Cut(arg, "=")
 		switch name {
-		case "--attestation-api-url", "--image-policy-json":
-		case "--cds-measurements":
-			name = "--measurements"
-		case "--cds-rtmrs":
-			name = "--rtmrs"
+		case "--attestation-api-url", "--image-policy-file", "--image-policy-json":
 		default:
 			continue
 		}

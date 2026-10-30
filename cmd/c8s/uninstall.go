@@ -530,10 +530,10 @@ func exactArgv(c allowlist.Container) ([]string, error) {
 	return append(append([]string{}, c.Command.Argv...), c.Args.Argv...), nil
 }
 
-// seedConfigMapName is the CDS allowlist seed ConfigMap for a release:
-// c8s.cdsName plus the suffix cds.yaml gives it.
+// seedConfigMapName is the allowlist seed ConfigMap of a release, as
+// templates/allowlist-seed.yaml names it (c8s.fullname).
 func seedConfigMapName(release string) string {
-	name := release + "-cds"
+	name := release
 	if len(name) > 63 {
 		name = strings.TrimSuffix(name[:63], "-")
 	}

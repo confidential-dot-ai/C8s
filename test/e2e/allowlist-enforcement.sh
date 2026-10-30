@@ -25,9 +25,11 @@ image=busybox:1.36
 
 al() { c8s allowlist "$@" --url "$C8S_ALLOWLIST_URL" "${measurement_args[@]}"; }
 
+# The probe names the image by digest: a member pod's tag reference is refused
+# before the allowlist is consulted, which would hide what this check tests.
 probe() {
-  kubectl -n "$ns" run "$pod" --image="$image" --restart=Never \
-    --overrides='{"spec":{"securityContext":{"runAsNonRoot":true,"runAsUser":65534,"seccompProfile":{"type":"RuntimeDefault"}},"containers":[{"name":"'"$pod"'","image":"'"$image"'","command":["sleep","300"],"securityContext":{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]}}}]}}' \
+  kubectl -n "$ns" run "$pod" --image="$ref" --restart=Never \
+    --overrides='{"spec":{"securityContext":{"runAsNonRoot":true,"runAsUser":65534,"seccompProfile":{"type":"RuntimeDefault"}},"containers":[{"name":"'"$pod"'","image":"'"$ref"'","command":["sleep","300"],"securityContext":{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]}}}]}}' \
     >/dev/null
 }
 
@@ -42,6 +44,7 @@ trap cleanup EXIT
 
 digest=$(c8s allowlist inspect-image "$image" | awk '$1 == "digest:" { print $2 }')
 [ -n "$digest" ] || fail "no digest resolved for $image"
+ref="$image@$digest"
 
 probe
 denied=""
@@ -58,7 +61,7 @@ if [ -z "$denied" ]; then
 fi
 echo "ok: $image denied at container creation"
 
-al add "$digest" "$image" >/dev/null || fail "signed floor write rejected for $digest"
+cds_write al add "$digest" "$image" >/dev/null || fail "signed floor write rejected for $digest"
 echo "ok: signed floor write accepted"
 
 # Recreated rather than waited out: the plugin re-pulls every 5s, while

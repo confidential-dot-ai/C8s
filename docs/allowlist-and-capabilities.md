@@ -1,15 +1,29 @@
 # Allowlist and capabilities
 
-Why a container may start on a C8s node, and what it may hold once it does. The
-allowlist is the operator's policy of workload entries: named container sets,
-each binding an image digest to the command line, environment, and mounts that
-image may run with. Every field: [allowlist-entries.md](allowlist-entries.md).
+Under the fail-closed image policy, a container starts on a C8s node only where
+an allowlist entry names its image digest and the launch that digest is given.
+
+Guarantee:
+[Only allowlisted code runs](guarantees.md#only-allowlisted-code-runs),
+[No privileged way in](guarantees.md#no-privileged-way-in).
+
+The allowlist is the operator's policy of workload entries: named container
+sets, each binding an image digest to the command line, environment, and mounts
+that image may run with. Every field:
+[allowlist-entries.md](allowlist-entries.md).
 
 The image reference a pod presents is chosen by the untrusted host and is not
 bound to the image that runs. The digest is. So no admission decision reads the
 reference, the entry name, or the container name; every one of them keys on the
 digest. The entry name is load-bearing elsewhere: it is stamped on a matching
 pod's certificate and is the `confidential.ai/cw` annotation's value.
+
+A pod admitted by the served allowlist must name its image by digest
+(`name@sha256:...`): a tag is resolved when the node checks it, not bound to the
+image the runtime starts, so a tag reference is refused with `image must be
+referenced by digest`. Only the base allowlist keeps tags, for the images the
+node image carries, and so do pods in mesh-exempt platform namespaces, which
+never receive workload traffic.
 
 ## The model
 
@@ -50,17 +64,17 @@ pull lands only the base allowlist admits — the entries the plugin carries in
 its own boot config ([Bootstrap](#bootstrap)); `nriImagePolicy.policy.mode:
 audit` admits anyway and logs denials.
 
-CDS — the Certificate Distribution Service, the one in-cluster pod that serves
-this policy and signs each pod's certificate — checks again when it issues a
-pod's certificate: it asks that pod's own admission inventory which images the
-sandbox runs and requires every reported digest to be allowlisted, against one
-atomic snapshot ([armtls.md](armtls.md#sandbox-identity)). That is membership,
-not the whole entry, because issuance lands mid-lifecycle, where the running set
-is a subset of what the pod declares; when the set does match exactly one entry,
-CDS stamps the leaf with its name ([armtls.md](armtls.md#matched-workload)).
-Neither point gates a combination of images, since the plugin sees one container
-at a time: secret release is where a whole entry is required
-([secrets.md](secrets.md)).
+CDS — the Certificate Distribution Service, the VM outside the cluster that
+serves this policy and signs each pod's certificate — checks again when it
+issues a pod's certificate: it asks that pod's own admission inventory which
+images the sandbox runs and requires every reported digest to be allowlisted,
+against one atomic snapshot ([armtls.md](armtls.md#sandbox-identity)). That is
+membership, not the whole entry, because issuance lands mid-lifecycle, where the
+running set is a subset of what the pod declares; when the set does match
+exactly one entry, CDS stamps the leaf with its name
+([armtls.md](armtls.md#matched-workload)). Neither point gates a combination of
+images, since the plugin sees one container at a time: secret release is where a
+whole entry is required ([secrets.md](secrets.md)).
 
 ## What a launch policy constrains
 
@@ -138,11 +152,42 @@ namespaces, the namespaces `hostNamespacePolicy.exemptNamespaces` names, and
 Some containers must hold host privilege: the RKE2 static pods, Cilium, C8s's
 own node-level components. They are the node's trusted computing base, and the
 exemption belongs to whoever measured them. A boot config can mark its own base
-allowlist as the node TCB; a container that base admits — digest, argv,
-environment, and mounts together — is then exempt, and nothing else is. The node
-image sets that marker, since its base is measured with the image; a
-chart-rendered base must not, and no served document can claim it: the marker is
-a boot-config key, not an allowlist field.
+allowlist as the node TCB, and nothing else exempts a container. The node image
+sets that marker, since its base is measured with the image; a chart-rendered
+base must not, and no served document can claim it: the marker is a boot-config
+key, not an allowlist field.
+
+The control plane picks the image a pod runs, so a base entry that leaves its
+launch open would otherwise let the cluster admin run that image with a shell
+and the node's root. A launch the base admits is therefore exempt in two
+cases, and nothing more:
+
+- a kubelet static pod (sandbox annotation `kubernetes.io/config.source: file`,
+  which the kubelet sets itself and writes `api` for every API pod): its
+  manifest comes only from RKE2 on the node, from the measured config and the
+  signed launch document;
+- any other pod only under an entry that pins the launch: command, args and
+  mounts not `any`, and the environment constrained.
+
+An open entry admits its image, and the pod is sandboxed like any other, the
+host network included. The RKE2 chart jobs (`klipper-helm`) and the Cilium
+operator run with the host network, so their entries pin every launch the
+node runs, environment included.
+
+GPU devices are the one exception outside the node TCB. containerd applies the
+edits of the CDI devices a container requests (the CRI `CDIDevices` field or a
+`cdi.k8s.io/` annotation) before the plugin sees the spec, so they arrive as
+plain device nodes, hooks, and bind mounts. For devices of the kinds
+`k8s.device-plugin.nvidia.com/gpu` (the NVIDIA device plugin's spec) and
+`nvidia.com/gpu` (the node's `nvidia-ctk cdi generate` spec), the plugin
+re-expands the requested devices from the spec files in `/etc/cdi` and
+`/var/run/cdi`, which only node code writes, and sets aside exactly the device
+nodes, hooks (stage, path, args, and env), and bind mounts (source, destination,
+and read-only flag) that expansion produces. Any other device node or hook, a
+device of another kind, and a device that no spec or two specs define stay
+violations, and so does a spec that changed between containerd's read and the
+plugin's. The container still needs an allowlist entry, and the CDI bind mounts
+still have to match that entry's mount policy.
 
 A measured base can also tag a container with a platform role, the identity
 C8s's own node-side invocations run under. It grants the role only with the
@@ -186,12 +231,6 @@ on its first connect (Corner 8 of
 narrowing an entry stops its containers on every node within one refresh
 interval.
 
-One upgrade can stop on this. CDS is recreated rather than rolled — the old pod
-stops before the new one starts — so it cannot publish its own new shape. The
-chart refuses an upgrade that changes CDS's image, command line, or mounts
-until the running enforcers admit it, naming the seed entry to publish and the
-`cds.publishedShape` value that confirms it ([upgrade.md](upgrade.md)).
-
 ## Bootstrap
 
 Two documents start the platform before CDS serves anything. The base allowlist
@@ -201,18 +240,19 @@ before CDS is reachable and a failed pull never drops it. The chart renders it
 from `nriImagePolicy.bootstrapAllowlist`; a measured node image merges it at
 boot from the file it bakes at `/usr/lib/c8s/allowlist-seed.json`.
 
-The CDS seed is the document CDS seeds its store from at start. The chart
-renders it into a ConfigMap from the resolved component digests, its argv-pinned
-platform entries, and `nriImagePolicy.bootstrapAllowlist.workloads`; a measured
-node image publishes it from that same baked file, plus the workloads its signed
-launch configuration carries. Each component entry's name carries its image and
-the digests of its policy, so an image bump or a configuration change adds an
-entry beside the old one. Seeding adds every name the store lacks and retires
-the chart-generated shapes its seed replaces, leaving an operator entry under
-any other name untouched: an operator edit survives a CDS restart, while a
-deleted entry returns on the next start for as long as the chart renders it. A
-chart-managed CDS reads the seed once, at start; a measured node image's CDS
-rereads its file every 30 seconds and seeds it again when it changed.
+The CDS seed is the component entries this release needs served. The chart
+renders them into a ConfigMap from the resolved component digests, its
+argv-pinned platform entries, and
+`nriImagePolicy.bootstrapAllowlist.workloads`;
+`c8s install --allowlist-seed-out` writes the same document for
+`c8s cds config new`, which merges it with the operator's tenant workloads
+into the configuration the CDS VM boots on. Each component entry's name
+carries its image and the digests of its policy, so an image bump or a
+configuration change adds an entry beside the old one. Seeding runs once, at
+start: it adds every name the store lacks and retires the chart-generated
+shapes its seed replaces, leaving an operator entry under any other name
+untouched, so an operator edit survives until the CDS VM restarts and a
+deleted entry returns then for as long as the configuration carries it.
 
 ## Allowlist history
 
@@ -233,30 +273,30 @@ while a per-workload write signs nothing.
 
 ## Measured policy history
 
-On a TDX node the plugin can extend RTMR[3] with each allowlist it pulls, before
-applying it. RTMR[3] is a hardware register the node extends in order and
-reports in its evidence, so it ends up holding the operator-key seed followed by
-the digest of every policy the node enforced since boot. A document the node
-fails to measure is not applied; the plugin journals the digests in extend
-order, and components that attest themselves carry that list with their
-evidence, which a verifier trusts only as far as it replays against the
-register: proof of what the node enforced, not that it was acceptable. Set
+On a TDX node the plugin can extend RTMR[3] — a runtime measurement register
+the node reports in its evidence — with each allowlist it pulls, before applying
+it, so a verifier can replay what the node enforced since boot: proof of what it
+enforced, not that it was acceptable. A document the node fails to measure is
+not applied. How the register is seeded, journalled, and replayed is
+[measurements.md](measurements.md#policy-history). Set
 `nriImagePolicy.measurePolicies: true` to turn measuring on.
 
-It is off by default because checks that expect the bare operator-key seed
-reject a node that measures: armTLS verifiers built before runtime extensions,
-a pin on one fixed RTMR[3] value, and `c8s verify --image-policy-file` with an
-approver key. It is a no-op on SEV-SNP, which has no runtime register. A node
-that cannot measure keeps enforcing the policy it holds — at startup, the base
-allowlist alone — and after 256 policies, the most a certificate carries, it
-takes no further policy until it reboots.
+It is off by default because checks that expect the bare seed reject a node
+that measures: armTLS verifiers built before runtime extensions, a pin on one
+fixed RTMR[3] value, and `c8s verify --image-policy-file` with an approver key.
+It is a no-op on SEV-SNP, which has no runtime register. A node that cannot
+measure keeps enforcing the policy it holds — at startup, the base allowlist
+alone — and once it reaches the register's per-boot extend cap it takes no
+further policy until it reboots.
 
-A pod CVM (`role: pod`, see [operator.md](operator.md#pod-cvm))
-measures each image digest it admits instead (`measure.rtmr3`, which excludes
-`allowlist.pull.measure_policies`: a boot has one RTMR[3] writer), into the same
-journal, seeded with the pod launch key the initrd staged. The guest polls CDS
-under the separate server key, and the policies it fetches affect admission
-without extending this journal, whose directory is not mounted into pod
-containers. `c8s pod-status serve` carries that list in its armTLS
-certificate, and `c8s pod-attest` accepts the certificate's binding as the seed followed by a prefix of the list, then requires
-the list it read on both sides of a fresh quote to replay in full.
+A Pod CVM (`role: pod`, see [operator.md](operator.md#pod-cvm)) measures each
+image digest it admits instead (`measure.rtmr3`, which excludes
+`allowlist.pull.measure_policies`: a boot has one RTMR[3] writer). The journal
+is seeded with the Pod launch key the initrd staged. The guest authenticates
+CDS with the separate image and launch-file policy in its signed launch
+configuration. Fetched policies affect admission without extending this image
+journal, whose directory is never mounted into Pod containers.
+`c8s pod-status serve` carries the retained image list in its armTLS
+certificate. `c8s pod-attest` accepts the certificate's binding as the seed
+followed by a prefix, then requires the list read on both sides of a fresh
+quote to replay in full.

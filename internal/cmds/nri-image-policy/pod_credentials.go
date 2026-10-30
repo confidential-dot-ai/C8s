@@ -76,7 +76,7 @@ func (p *plugin) preparePodBroker(ctx context.Context, client *http.Client) erro
 	if client == nil {
 		return errors.New("pod broker has no authenticated CDS client")
 	}
-	pins, err := p.cfg.Allowlist.Pull.policySet(p.cfg.NormalizedPlatform())
+	pins, err := p.cfg.Allowlist.Pull.policySet()
 	if err != nil {
 		return fmt.Errorf("pod broker CDS pins: %w", err)
 	}
@@ -176,7 +176,7 @@ func (p *plugin) startPodCredentials(pod *api.PodSandbox, source string) error {
 	go func() {
 		defer b.wg.Done()
 		err := runGuestCredentials(b.ctx, getcert.GuestConfig{
-			CDSURL: p.cfg.Allowlist.Pull.URL, AttestationAPIURL: p.cfg.Allowlist.Pull.AttestationApiURL,
+			CDSURL: p.cfg.pullURL(), AttestationAPIURL: p.cfg.Allowlist.Pull.AttestationApiURL,
 			HTTPClient: b.client, VolumeRoot: root, InstanceID: identity,
 			Snapshot: p.podSnapshot, Commit: p.commitPodCredentials, Changes: b.changes,
 		})

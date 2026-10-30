@@ -12,6 +12,7 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote"
+	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
@@ -24,7 +25,7 @@ func TestWriteDecodeErrorShapes(t *testing.T) {
 		path    string
 		handler http.HandlerFunc
 	}{
-		{"/attest", handleAttest},
+		{"/attest", attestHandler(nil)},
 		{"/verify", handleVerify},
 	} {
 		for _, tc := range []struct {
@@ -125,4 +126,87 @@ func snpEvidence(t *testing.T, reportData []byte) json.RawMessage {
 		t.Fatal(err)
 	}
 	return env
+}
+
+// The launch binding a lane configures must reach a client exactly as a real
+// SNP report carries it: HOST_DATA in the report, echoed as the init-data
+// claim, which is where runtimemeasure reads an SNP launch binding from.
+func TestReportBindsConfiguredHostData(t *testing.T) {
+	launchFile := []byte("schemaVersion: c8s-cds/v1\n")
+	digest := runtimemeasure.HostData(launchFile)
+
+	result := verify(t, attest(t, digest[:], bytes.Repeat([]byte{0x11}, reportDataSize)))
+
+	if err := runtimemeasure.VerifyBinding(&result, launchFile, nil); err != nil {
+		t.Fatalf("report does not bind the configured launch file: %v", err)
+	}
+}
+
+// With no HOST_DATA the report binds no launch file, and the claim says so
+// rather than reporting a 32-byte zero binding a guest could be checked
+// against.
+func TestReportWithoutHostDataCarriesNoBinding(t *testing.T) {
+	result := verify(t, attest(t, nil, bytes.Repeat([]byte{0x11}, reportDataSize)))
+
+	if len(result.Claims.InitData) != 0 {
+		t.Errorf("init data = %x, want none", result.Claims.InitData)
+	}
+}
+
+// A HOST_DATA that is not a 32-byte hex digest is refused at startup: a
+// truncated or padded value binds a guest to nothing an operator wrote.
+func TestParseHostDataRefusesIllFormedValues(t *testing.T) {
+	for _, value := range []string{
+		"zz",
+		"abcd",
+		strings.Repeat("ab", 31),
+		strings.Repeat("ab", 33),
+	} {
+		if _, err := parseHostData(value); err == nil {
+			t.Errorf("accepted HOST_DATA %q", value)
+		}
+	}
+	got, err := parseHostData("")
+	if err != nil || got != nil {
+		t.Errorf("parseHostData(\"\") = %x, %v; want no binding", got, err)
+	}
+}
+
+// attest asks /attest for a report binding hostData and reportData, and
+// returns the evidence envelope it answers with.
+func attest(t *testing.T, hostData []byte, reportData []byte) json.RawMessage {
+	t.Helper()
+	body, err := json.Marshal(remote.AttestRequest{
+		Platform:   teetypes.PlatformSNP,
+		ReportData: reportData,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	attestHandler(hostData)(rec, httptest.NewRequest(http.MethodPost, "/attest", bytes.NewReader(body)))
+	var resp remote.AttestResponse
+	if err := json.NewDecoder(rec.Result().Body).Decode(&resp); err != nil {
+		t.Fatalf("decode /attest: %v", err)
+	}
+	return resp.Evidence
+}
+
+// verify asks /verify for the result it reports over evidence.
+func verify(t *testing.T, evidence json.RawMessage) teetypes.VerificationResult {
+	t.Helper()
+	body, err := json.Marshal(remote.VerifyRequest{
+		Platform: teetypes.PlatformSNP,
+		Evidence: evidence,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	handleVerify(rec, httptest.NewRequest(http.MethodPost, "/verify", bytes.NewReader(body)))
+	var resp remote.VerifyResponse
+	if err := json.NewDecoder(rec.Result().Body).Decode(&resp); err != nil {
+		t.Fatalf("decode /verify: %v", err)
+	}
+	return resp.Result
 }

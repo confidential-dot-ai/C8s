@@ -270,7 +270,9 @@ func TestSynchronize_NotReady_Defers(t *testing.T) {
 	}
 }
 
-func TestSynchronize_NotReady_EnforceExistingDisabled_NoDeferral(t *testing.T) {
+// With the startup check off and no inventory, a not-ready Synchronize still
+// defers its batch for recovery, and RunDeferredCheck consumes it.
+func TestSynchronize_NotReady_EnforceExistingDisabled_DefersForRecovery(t *testing.T) {
 	p := newTestPlugin(&config{
 		Policy: policyConfig{
 			Mode:            "fail-closed",
@@ -281,15 +283,80 @@ func TestSynchronize_NotReady_EnforceExistingDisabled_NoDeferral(t *testing.T) {
 	pods := []*api.PodSandbox{makePod("default", "pod1")}
 	ctrs := []*api.Container{makeCtr(pods[0].Id, "ctr1")}
 
-	_, err := p.Synchronize(context.Background(), pods, ctrs)
-	if err != nil {
+	if _, err := p.Synchronize(context.Background(), pods, ctrs); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	p.deferredMu.Lock()
+	deferred := len(p.deferredPods)
+	p.deferredMu.Unlock()
+	if deferred != 1 {
+		t.Fatalf("expected the batch deferred for recovery, got %d deferred pods", deferred)
+	}
+
+	p.SetReady()
+	p.RunDeferredCheck(context.Background())
 
 	p.deferredMu.Lock()
 	defer p.deferredMu.Unlock()
-	if len(p.deferredPods) != 0 {
-		t.Fatalf("expected no deferred pods, got %d", len(p.deferredPods))
+	if len(p.deferredPods) != 0 || len(p.deferredCtrs) != 0 {
+		t.Fatal("RunDeferredCheck did not consume the deferred batch")
+	}
+}
+
+// Recovery runs from the deferred path when not ready at connect, inline when
+// ready, and with the startup check off. The refusal recorded for the
+// unprovable test namespace shows recoverPod ran.
+func TestRecoveryRunsFromTheDeferredPath(t *testing.T) {
+	newReady := func(ready, check bool) *plugin {
+		cfg := &config{Policy: policyConfig{Mode: ModeFailClosed, EnforceExisting: check}}
+		p, _ := newCachedPlugin(cfg, exitsAllowlist(t, ""))
+		if !check {
+			p = newTestPlugin(cfg) // no inventory: shouldCheckExisting() is false
+			p.policy.apply(exitsAllowlist(t, ""), 1)
+		}
+		if ready {
+			p.SetReady()
+		}
+		return p
+	}
+	pod := meshPod("default", "pod", testNetNS)
+
+	// Not ready at connect: on record only after the deferred path runs.
+	p := newReady(false, true)
+	if _, err := p.Synchronize(context.Background(), []*api.PodSandbox{pod}, nil); err != nil {
+		t.Fatalf("Synchronize: %v", err)
+	}
+	if p.mesh.pods[pod.GetId()] != nil {
+		t.Fatal("a member pod was recovered before the plugin was ready")
+	}
+	p.SetReady()
+	p.RunDeferredCheck(context.Background())
+	state := p.mesh.pods[pod.GetId()]
+	if state == nil {
+		t.Fatal("recovery did not run from the deferred path")
+	}
+	if state.refusal == nil || !strings.Contains(state.refusal.Error(), testNetNS) {
+		t.Fatalf("recovered-pod refusal = %v, want the namespace proof to have run on %s", state.refusal, testNetNS)
+	}
+
+	// Ready at connect: recovered inline by Synchronize.
+	ready := newReady(true, true)
+	if _, err := ready.Synchronize(context.Background(), []*api.PodSandbox{pod}, nil); err != nil {
+		t.Fatalf("Synchronize: %v", err)
+	}
+	if ready.mesh.pods[pod.GetId()] == nil {
+		t.Fatal("a ready plugin did not recover a member pod at connect")
+	}
+
+	// Startup check off (no inventory): recovery still runs from the deferred path.
+	off := newReady(false, false)
+	if _, err := off.Synchronize(context.Background(), []*api.PodSandbox{pod}, nil); err != nil {
+		t.Fatalf("Synchronize: %v", err)
+	}
+	off.SetReady()
+	off.RunDeferredCheck(context.Background())
+	if off.mesh.pods[pod.GetId()] == nil {
+		t.Fatal("recovery did not run with the startup check off")
 	}
 }
 
@@ -908,7 +975,7 @@ func TestCheckImage_DenialSeparatesUnlistedFromArgvMismatch(t *testing.T) {
 		Argv:      []string{"/bin/evil"},
 		Mounts:    []allowlist.ObservedMount{},
 	}, launchFinal)
-	if !strings.Contains(argvMismatch, "satisfies no workload entry's command, args, env or mounts policy") {
+	if !strings.Contains(argvMismatch, "satisfies no workload entry's command, args, env or mounts policy; the closest entry differs in command") {
 		t.Fatalf("a listed digest denied on argv should say so, got %q", argvMismatch)
 	}
 
@@ -922,6 +989,30 @@ func TestCheckImage_DenialSeparatesUnlistedFromArgvMismatch(t *testing.T) {
 	}, launchFinal)
 	if !strings.Contains(unlisted, "image not in allowlist") {
 		t.Fatalf("an unlisted digest should keep the not-in-allowlist denial, got %q", unlisted)
+	}
+}
+
+// An unobservable environment fails an env deny entry; the reason says which
+// variable made it unobservable, so the author need not guess.
+func TestCheckImage_DenialNamesTheUnobservableVariable(t *testing.T) {
+	al := workloadAllowlist(t, pushDigestA, pushDigestB, []string{"/bin/app"})
+	w := al.Workloads["w"]
+	w.Containers[0].Env = allowlist.EnvPolicy{Policy: allowlist.PolicyDeny}
+	al.Workloads["w"] = w
+	p, _ := newCachedPlugin(&config{Policy: policyConfig{Mode: ModeFailClosed}}, al)
+
+	_, envErr := observeEnv(&api.Container{Env: []string{"HOME=/tmp", "HOME=/root"}})
+	_, reason := p.checkImagePhase(context.Background(), p.cfg, imageCheck{
+		Namespace: "default",
+		PodName:   "pod",
+		Container: "ctr",
+		ImageRef:  "registry/repo@" + pushDigestB,
+		Argv:      []string{"/bin/app"},
+		EnvErr:    envErr,
+		Mounts:    []allowlist.ObservedMount{},
+	}, launchFinal)
+	if !strings.HasSuffix(reason, "; the closest entry differs in env (OCI environment sets HOME twice with different values)") {
+		t.Fatalf("reason = %q", reason)
 	}
 }
 
@@ -1086,7 +1177,9 @@ func TestRunDeferredCheck_OrphanContainer_Skipped(t *testing.T) {
 	assertDeferredCleared(t, p)
 }
 
-func TestRunDeferredCheck_EnforceExistingDisabled_NoOp(t *testing.T) {
+// With the startup check off, RunDeferredCheck consumes the batch for recovery
+// and skips the container check.
+func TestRunDeferredCheck_EnforceExistingDisabled_RecoversThenSkipsCheck(t *testing.T) {
 	p, _ := newCachedPlugin(&config{
 		Allowlist: allowlistConfig{Base: anyAllowlist(map[string]string{pushDigestA: "image-a"})},
 		Policy:    policyConfig{Mode: ModeFailClosed, EnforceExisting: false},
@@ -1100,12 +1193,11 @@ func TestRunDeferredCheck_EnforceExistingDisabled_NoOp(t *testing.T) {
 	p.deferredCtrs = []*api.Container{ctr}
 	p.deferredMu.Unlock()
 
-	// EnforceExisting=false → early return before clearing deferred state.
 	p.RunDeferredCheck(context.Background())
 	p.deferredMu.Lock()
 	defer p.deferredMu.Unlock()
-	if len(p.deferredCtrs) != 1 || len(p.deferredPods) != 1 {
-		t.Fatal("disabled check must leave deferred state untouched")
+	if len(p.deferredCtrs) != 0 || len(p.deferredPods) != 0 {
+		t.Fatal("recovery must consume the deferred batch even with the check off")
 	}
 }
 
@@ -1201,7 +1293,7 @@ func TestSynchronize_ReadyWhileDeferring_ChecksBatch(t *testing.T) {
 		Policy:    policyConfig{Mode: ModeFailClosed},
 	}, anyAllowlist(map[string]string{pushDigestA: "image-a"}))
 	p.inventory = newAdmissionInventory("/proc")
-	p.logger = slog.New(onLog{message: "plugin not ready, deferring startup check", hook: func() {
+	p.logger = slog.New(onLog{message: "plugin not ready, deferring recovery and the startup check", hook: func() {
 		p.SetReady()
 		p.RunDeferredCheck(context.Background())
 	}})

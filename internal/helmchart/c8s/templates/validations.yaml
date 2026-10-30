@@ -6,7 +6,6 @@
 {{- end -}}
 {{- $router := .Values.router -}}
 {{- $nri := .Values.nriImagePolicy -}}
-{{- $nriCDSURL := tpl (include "c8s.nriCDSURL" .) . -}}
 {{- /*
   Helm silently ignores values keys the chart no longer reads, so a values
   file carried over from a release that still had tee-proxy would drop its
@@ -65,10 +64,6 @@
 {{- fail (printf "VALIDATION_ERROR kind=nri_baked_requires_node: nriImagePolicy.baked=true requires attestationApi.cvmMode=bare-metal (got %q). Only the node-as-CVM image bakes the plugin and its containerd registration; anywhere else the installer must install them, so baked would leave the node with no image admission at all." .Values.attestationApi.cvmMode) -}}
 {{- end -}}
 
-{{- if and .Values.nriImagePolicy.enabled (not .Values.cds.image.digest) -}}
-{{- /* Structured marker (kind=...) lets tests discriminate this fail without substring-matching the prose. */ -}}
-{{- fail "VALIDATION_ERROR kind=cds_image_digest: nriImagePolicy.enabled requires cds.image.digest to be set. The CDS digest is pinned in every plugin's base allowlist so image policy admits CDS on its own node. A floating tag cannot be admitted by digest. Pass --resolve-digests to c8s install, or set cds.image.digest via -f." -}}
-{{- end -}}
 {{- /*
   In fail-closed mode with deriveComponents off, every container the chart
   runs a digest-pinned C8s component's executable in must be admitted by a
@@ -76,10 +71,9 @@
   args, env and mounts under any command (c8s.openArgsEntries), or one for
   the component's digest that pins them to what the chart renders and
   matches the env it launches with (c8s.pinnedComponentEntries); otherwise the NRI
-  plugin would deny that component's pod on its own node. cds.image is exempt:
-  it is always in the base via the seed self-entry, independent of
-  derivation. argvPinned components are exempt too: the chart seeds them
-  argv-pinned (c8s.argvPinnedEntries). This guard only applies in fail-closed
+  plugin would deny that component's pod on its own node. argvPinned
+  components are exempt: the chart seeds them argv-pinned
+  (c8s.argvPinnedEntries). This guard only applies in fail-closed
   mode (the default); audit mode creates every container, but with
   workloadClaims on a would-be denial still reaches /digests and costs its
   sandbox a certificate.
@@ -90,7 +84,7 @@
 {{- $names := dict -}}
 {{- range $c := (include "c8s.components" . | fromJsonArray) -}}
 {{- $img := get $c "image" -}}
-{{- if and (get $c "enabled") (not (get $c "cdsExempt")) (not (get $c "argvPinned")) (get $img "digest") -}}
+{{- if and (get $c "enabled") (not (get $c "argvPinned")) (get $img "digest") -}}
 {{- if not (hasKey $c "imageEnv") -}}
 {{- fail (printf "c8sComponents entry %s has no imageEnv: the coverage guard must know the environment the component launches with" (get $c "name")) -}}
 {{- end -}}
@@ -161,49 +155,20 @@
 {{- end -}}
 {{- end -}}
 {{- end -}}
-{{- /* The store volume mounts at /mnt/c8s-data/cds and the root is read-only,
-       so a DB path elsewhere crash-loops CDS. */ -}}
-{{- $db := toString .Values.cds.allowlistDB -}}
-{{- if or (not (hasPrefix "/mnt/c8s-data/cds/" $db)) (ne (clean $db) $db) -}}
-{{- fail (printf "VALIDATION_ERROR kind=cds_allowlist_db_path: cds.allowlistDB must name a file in /mnt/c8s-data/cds/, where the store volume is mounted (got %q); the CDS root filesystem is read-only." $db) -}}
-{{- end -}}
-{{- /*
-  CDS's component entry pins its store at /mnt/c8s-data/cds with a data rule,
-  which the node admits only on memory or encrypted storage. No PVC observes
-  as either: a CSI volume is its own device (unknown), and a local-path volume
-  is a host path. Only audit mode would start CDS with one.
-*/ -}}
-{{- if and .Values.cds.persistence.enabled (not (and $nri.enabled (eq $nri.policy.mode "audit"))) -}}
-{{- fail "VALIDATION_ERROR kind=cds_persistence_unadmitted: cds.persistence.enabled=true mounts a PVC as CDS's store, but CDS's component entry admits the store only on memory or encrypted storage, and the node observes a CSI volume as unknown and a local-path volume as a host path, so the image policy would refuse CDS on every node. Set cds.persistence.enabled=false and re-apply operator-added allowlist entries after CDS is recreated." -}}
-{{- end -}}
-{{- if and $nri.enabled (not (hasPrefix "https://" $nriCDSURL)) -}}
-{{- fail (printf "nriImagePolicy.cds.url must start with https:// when nriImagePolicy.enabled=true (got %q): the host plugin must fetch the allowlist over armTLS" $nriCDSURL) -}}
-{{- end -}}
-{{- /*
-  The derived form is a node-local NodePort address, so there has to be one.
-*/ -}}
-{{- if and $nri.enabled (not $nri.cds.url) -}}
-{{- if or (ne .Values.cds.service.type "NodePort") (not .Values.cds.service.nodePort) -}}
-{{- fail (printf "VALIDATION_ERROR kind=nri_cds_url_underivable: nriImagePolicy.cds.url is empty, so it derives https://127.0.0.1:<cds.service.nodePort>, but cds.service.type is %q and cds.service.nodePort is %v. Set cds.service.type=NodePort with a nodePort, or set nriImagePolicy.cds.url to the address the plugin should pull from." .Values.cds.service.type .Values.cds.service.nodePort) -}}
-{{- end -}}
-{{- end -}}
-
 {{- /*
   The mirror of require_host_image_policy for evidence: off bare-metal mode,
   the host attestation-api DaemonSet is the only evidence source for
-  get-cert, the mesh endpoint, and CDS. Disabling it there renders a cluster whose
+  get-cert and the mesh endpoint. Disabling it there renders a cluster whose
   attestation consumers all point at a socket nothing serves.
 */ -}}
 {{- if and (not .Values.attestationApi.enabled) (ne .Values.attestationApi.cvmMode "bare-metal") -}}
-{{- fail "VALIDATION_ERROR kind=require_attestation_api: attestationApi.enabled=false requires attestationApi.cvmMode=bare-metal. On a non-bare-metal cluster the host attestation-api DaemonSet is the only evidence source for get-cert/armtls-mesh/CDS (`c8s install --cvm-mode=bare-metal` sets attestationApi.enabled=false for you)." -}}
+{{- fail "VALIDATION_ERROR kind=require_attestation_api: attestationApi.enabled=false requires attestationApi.cvmMode=bare-metal. On a non-bare-metal cluster the host attestation-api DaemonSet is the only evidence source for get-cert/armtls-mesh (`c8s install --cvm-mode=bare-metal` sets attestationApi.enabled=false for you)." -}}
 {{- end -}}
 {{- /*
-  Rate budget for the built-in /allowlist route. CDS rate-limits per source
-  IP and sees every front-door request as the one router pod IP, so the nginx
-  aggregate write bound must undercut the CDS bucket signed operator writes
-  share, and each per-client bound must fit inside the aggregate. Positivity
-  parsing lives with the zone rendering in router-configmap.yaml (same
-  c8s.positiveInt, so either template failing first reports the same message).
+  Rate budget for the built-in /allowlist route: each per-client bound must
+  fit inside the nginx aggregate. Positivity parsing lives with the zone
+  rendering in router-configmap.yaml (same c8s.positiveInt, so either
+  template failing first reports the same message).
 */ -}}
 {{- if and $router.enabled (eq (include "router.renderAllowlistRoute" .) "true") -}}
 {{- $writeRate := int (include "c8s.positiveInt" (dict "value" $router.allowlist.rateLimit.requestsPerSecond "label" "router.allowlist.rateLimit.requestsPerSecond")) -}}
@@ -216,37 +181,19 @@
 {{- if gt $writeBurst $writeTotalBurst -}}
 {{- fail (printf "VALIDATION_ERROR kind=router_allowlist_rate_budget: router.allowlist.rateLimit.burst must not exceed rateLimit.totalBurst (%d), got: %d" $writeTotalBurst $writeBurst) -}}
 {{- end -}}
-{{- if ge (float64 $writeTotalRate) (float64 .Values.cds.rateLimit) -}}
-{{- fail (printf "VALIDATION_ERROR kind=router_allowlist_rate_budget: router.allowlist.rateLimit.totalRequestsPerSecond must be less than cds.rateLimit (%v), got: %d" .Values.cds.rateLimit $writeTotalRate) -}}
 {{- end -}}
-{{- if ge $writeTotalBurst (int .Values.cds.rateBurst) -}}
-{{- fail (printf "VALIDATION_ERROR kind=router_allowlist_rate_budget: router.allowlist.rateLimit.totalBurst must be less than cds.rateBurst (%v), got: %d" .Values.cds.rateBurst $writeTotalBurst) -}}
+{{- /* A baked node takes both from its measured launch file, which the chart
+       cannot see. */ -}}
+{{- if include "c8s.cdsFromValues" . -}}
+{{- $_ := include "c8s.cdsPinDocument" . -}}
 {{- end -}}
+{{- if include "c8s.nodeReadsCDSAddress" . -}}
+{{- include "c8s.checkCDSAddress" .Values.cds.address -}}
 {{- end -}}
-{{- /* A baked node image carries its pins in the measured launch config,
-       which the chart cannot see. */ -}}
-{{- if and (not .Values.node.baked) (not .Values.cds.measurementsConfig) (empty .Values.cds.measurements) -}}
-{{- fail "VALIDATION_ERROR kind=cds_pins_required: cds.measurements and cds.measurementsConfig are both empty, so nothing pins the guest identity of this cluster's CDS: CDS would refuse to start, and nothing dialing it could tell it from any other attested TEE. Pass `c8s install --measurements <launch-digest>` (the node image's manifest.json value) or --image-policy-file <policy.json>." -}}
-{{- end -}}
-{{- /*
-  CDS refuses to start unless the per-workload secret quota is strictly below
-  the store ceiling, so the pair is refused here instead.
-*/ -}}
-{{- $secretsCeiling := int (include "c8s.positiveInt" (dict "value" .Values.cds.secretsMaxPaths "label" "cds.secretsMaxPaths")) -}}
-{{- $secretsQuota := int (include "c8s.positiveInt" (dict "value" .Values.cds.secretsMaxPathsPerWorkload "label" "cds.secretsMaxPathsPerWorkload")) -}}
-{{- if ge $secretsQuota $secretsCeiling -}}
-{{- fail (printf "VALIDATION_ERROR kind=cds_secrets_path_budget: cds.secretsMaxPathsPerWorkload must be below cds.secretsMaxPaths (%d), got: %d" $secretsCeiling $secretsQuota) -}}
-{{- end -}}
-{{- /*
-  CDS refuses to start on a value bound below the size of the values it
-  generates, so that is refused here instead. Bump the 32 with
-  secrets.GeneratedValueBytes.
-*/ -}}
-{{- if not (kindIs "invalid" .Values.cds.secretsMaxValueBytes) -}}
-{{- $secretsValueBytes := int (include "c8s.positiveInt" (dict "value" .Values.cds.secretsMaxValueBytes "label" "cds.secretsMaxValueBytes")) -}}
-{{- if lt $secretsValueBytes 32 -}}
-{{- fail (printf "VALIDATION_ERROR kind=cds_secrets_value_bytes: cds.secretsMaxValueBytes must be at least 32, the size of every value CDS generates, got: %d" $secretsValueBytes) -}}
-{{- end -}}
+{{- /* The operator keys the router holds the route manifest to, which it reads
+       from its own namespace (templates/cds-operator-keys.yaml). */ -}}
+{{- if and (include "c8s.cdsFromValues" .) .Values.cds.operatorKeys (not (contains "BEGIN PUBLIC KEY" .Values.cds.operatorKeys)) -}}
+{{- fail "VALIDATION_ERROR kind=cds_operator_keys_content: cds.operatorKeys must be the PEM content of the operator public-key bundle, not a file path — use `c8s install --operator-keys <file>`, `c8s render-values --operator-keys <file>`, or helm --set-file cds.operatorKeys=<file>" -}}
 {{- end -}}
 {{- /*
   Per-container `paths` was replaced by an entry-level `secrets` grant. CDS
