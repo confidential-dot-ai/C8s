@@ -40,6 +40,13 @@ type Ledger struct {
 	ttl      time.Duration
 	max      int
 	now      func() time.Time
+	// repl, when set, makes every binding a replicated command (CDS HA), so
+	// a secret released by any replica asks the inventory bound at issuance
+	// by any other.
+	repl Replicator
+	// bytes is the snapshot size of bindings (bindingBytes summed), kept as
+	// the map changes so the HA admission cap reads it in O(1).
+	bytes int64
 }
 
 // New builds a ledger. ttl should be the maximum leaf lifetime: a binding is
@@ -69,10 +76,16 @@ func (l *Ledger) Record(sandboxID, inventoryHost string) bool {
 	if sandboxID == "" || inventoryHost == "" {
 		return false
 	}
+	if l.repl != nil {
+		return l.recordReplicated(sandboxID, inventoryHost)
+	}
+	return l.recordAt(l.now(), sandboxID, inventoryHost)
+}
+
+func (l *Ledger) recordAt(now time.Time, sandboxID, inventoryHost string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	now := l.now()
 	if b, ok := l.bindings[sandboxID]; ok && now.Before(b.expires) {
 		if b.host != inventoryHost {
 			return false
@@ -84,14 +97,43 @@ func (l *Ledger) Record(sandboxID, inventoryHost string) bool {
 			return false
 		}
 	}
-	l.bindings[sandboxID] = binding{host: inventoryHost, expires: now.Add(l.ttl)}
+	l.setLocked(sandboxID, binding{host: inventoryHost, expires: now.Add(l.ttl)})
 	return true
+}
+
+// setLocked stores b under sandboxID and keeps bytes (l.mu held).
+func (l *Ledger) setLocked(sandboxID string, b binding) {
+	if prior, ok := l.bindings[sandboxID]; ok {
+		l.bytes -= bindingBytes(sandboxID, prior.host)
+	}
+	l.bindings[sandboxID] = b
+	l.bytes += bindingBytes(sandboxID, b.host)
+}
+
+// bindingBytes bounds the JSON size of one Binding in a snapshot.
+func bindingBytes(sandboxID, host string) int64 {
+	return int64(64 + 2*(len(sandboxID)+len(host)))
+}
+
+// SnapshotBytes bounds the size the ledger adds to a CDS HA snapshot
+// header, in O(1).
+func (l *Ledger) SnapshotBytes() int64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.bytes
 }
 
 // Lookup returns the inventory host bound to sandboxID. An expired or absent
 // binding reports false, which callers must treat as fail-closed: without it
 // there is no inventory this process is willing to believe about the sandbox.
 func (l *Ledger) Lookup(sandboxID string) (string, bool) {
+	if l.repl != nil {
+		return l.lookupReplicated(sandboxID)
+	}
+	return l.lookupLocal(sandboxID)
+}
+
+func (l *Ledger) lookupLocal(sandboxID string) (string, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -114,11 +156,14 @@ func (l *Ledger) evictExpiredLocked(now time.Time) {
 	for id, b := range l.bindings {
 		if !now.Before(b.expires) {
 			delete(l.bindings, id)
+			l.bytes -= bindingBytes(id, b.host)
 		}
 	}
 }
 
-// EvictionLoop drops expired bindings on each tick until done is closed.
+// EvictionLoop drops expired bindings on each tick until done is closed. It is
+// for a ledger without a Replicator only: a replica that evicts by its own
+// clock decides capacity differently from the others.
 func (l *Ledger) EvictionLoop(done <-chan struct{}, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -132,4 +177,15 @@ func (l *Ledger) EvictionLoop(done <-chan struct{}, interval time.Duration) {
 			l.mu.Unlock()
 		}
 	}
+}
+
+// EmptyClone returns an empty ledger with identical application policy.
+// Recovery must replay commands with the same TTL and capacity as live Apply.
+func (l *Ledger) EmptyClone() *Ledger {
+	return New(l.ttl, l.max)
+}
+
+// Policy returns the ledger's immutable application settings.
+func (l *Ledger) Policy() (ttl time.Duration, max int) {
+	return l.ttl, l.max
 }

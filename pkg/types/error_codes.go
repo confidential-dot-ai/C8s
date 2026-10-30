@@ -34,6 +34,11 @@ const (
 	ErrorCodeSecretHolderQuota = "secret_holder_quota"
 	// ErrorCodeSecretStoreFull: the store is at --secrets-max-paths.
 	ErrorCodeSecretStoreFull = "secret_store_full"
+	// ErrorCodeStateCapacity: CDS HA refuses writes that grow its replicated
+	// state, which is near what a snapshot (and so a backup) can hold. It
+	// clears when the state shrinks (the allowlist history is pruned or
+	// entries are deleted); retry later.
+	ErrorCodeStateCapacity = "state_capacity"
 	// ErrorCodeRoutesUnavailable: no route manifest is applied yet, so the
 	// automated ingress service refuses attested sessions (route policy A2).
 	// A retry succeeds after the operator writes a manifest and the router

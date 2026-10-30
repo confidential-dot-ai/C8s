@@ -36,7 +36,7 @@ func (s *Store) LoadRoutes() (routes.Envelope, error) {
 	return env, nil
 }
 
-// ReplaceRoutes stores env as the signed route manifest when its revision is
+// replaceRoutes stores env as the signed route manifest when its revision is
 // greater than the stored one and, when ifMatch is not empty, the stored
 // manifest's lower-case hex route digest equals ifMatch. One statement checks
 // both and replaces the previous manifest (C3, C4). It returns
@@ -44,7 +44,7 @@ func (s *Store) LoadRoutes() (routes.Envelope, error) {
 // ifMatch set and no manifest stored, that is ErrDigestMismatch. It fails on a
 // manifest routes.Parse refuses. Route writes leave Generation alone: no
 // allowlist reader depends on them.
-func (s *Store) ReplaceRoutes(env routes.Envelope, ifMatch string) error {
+func (s *Store) replaceRoutes(env routes.Envelope, ifMatch string) error {
 	m, err := routes.Parse(env.Manifest)
 	if err != nil {
 		return err
