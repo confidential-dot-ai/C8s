@@ -173,6 +173,9 @@ type cluster struct {
 	roots      string
 	operator   *ecdsa.PrivateKey
 	signer     *operatorauth.Signer
+	// recovery is the key the cluster seals its backups to, as the operator
+	// keeps it offline.
+	recovery *ecdsa.PrivateKey
 	// client verifies through an attestation-api of its own, so no scenario's
 	// kill takes the verifier with it.
 	client   *http.Client
@@ -298,6 +301,7 @@ func newCluster(t *testing.T, size shape) *cluster {
 	t.Cleanup(c.board.Close)
 	c.roots = c.boardRoots()
 	c.operator = newKey(t)
+	c.recovery = newKey(t)
 	c.signer = c.operatorSigner()
 	c.configure(size)
 	c.client = c.attestedClient(testutil.TestMeasurement)
@@ -351,9 +355,7 @@ func (c *cluster) configure(size shape) {
 				"endpoint": c.board.Endpoint(),
 				"bucket":   bucket,
 			},
-			// The configuration seals its backups to a recovery key; no
-			// scenario here opens one.
-			"recoveryKey": string(publicKeyPEM(c.t, &newKey(c.t).PublicKey)),
+			"recoveryKey": string(publicKeyPEM(c.t, &c.recovery.PublicKey)),
 		},
 	})
 	if err != nil {
@@ -536,11 +538,7 @@ func (c *cluster) boardRoots() string {
 // operator with their own credentials for the store does.
 func (c *cluster) decreeOnTheBoard(d cdsdecree.Decree) string {
 	c.t.Helper()
-	signed, err := cdsdecree.Sign(d, c.operator)
-	if err != nil {
-		c.t.Fatal(err)
-	}
-	object, err := json.Marshal(signed)
+	object, err := json.Marshal(c.sign(d))
 	if err != nil {
 		c.t.Fatal(err)
 	}
@@ -587,15 +585,21 @@ func (c *cluster) genesisCertifying(r *replica, nodeImages string, resumeVersion
 	c.logf("decreed the Genesis of replica %d, member %s", r.index, reported.ID)
 }
 
-// decree signs one decree and posts it to a replica, as the operator's CLI
-// does over the attested channel.
-func (c *cluster) decree(to *replica, d cdsdecree.Decree) cdsha.Delivered {
+// sign signs one decree with the key the cluster's configuration pins.
+func (c *cluster) sign(d cdsdecree.Decree) cdsdecree.Signed {
 	c.t.Helper()
 	signed, err := cdsdecree.Sign(d, c.operator)
 	if err != nil {
 		c.t.Fatal(err)
 	}
-	object, err := json.Marshal(signed)
+	return signed
+}
+
+// decree signs one decree and posts it to a replica, as the operator's CLI
+// does over the attested channel, and reports what the replica answered.
+func (c *cluster) decree(to *replica, d cdsdecree.Decree) cdsha.Delivered {
+	c.t.Helper()
+	object, err := json.Marshal(c.sign(d))
 	if err != nil {
 		c.t.Fatal(err)
 	}
@@ -894,6 +898,12 @@ func (c *cluster) awaitStatus(r *replica) cdsha.Status {
 
 func (c *cluster) get(r *replica, route string) (int, []byte) {
 	return c.send(r, http.MethodGet, route, nil, nil)
+}
+
+// post writes one route of a replica over the attested channel, as the
+// operator restoring a cluster does.
+func (c *cluster) post(r *replica, route string, body []byte) (int, []byte) {
+	return c.send(r, http.MethodPost, route, body, nil)
 }
 
 // put writes one route of a replica with an operator token.

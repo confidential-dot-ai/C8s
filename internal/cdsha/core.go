@@ -41,8 +41,8 @@ type ClusterState struct {
 	// of them applies or raises a doubt twice.
 	AppliedDecrees []string `json:"applied_decrees,omitempty"`
 	// StartedAtMS is when the cluster last started: its Genesis, or the
-	// Recover since. Operator tokens issued before it are refused, and the
-	// allowlist version never goes below it.
+	// Recover or Restore since. Operator tokens issued before it are
+	// refused, and the allowlist version never goes below it.
 	StartedAtMS int64 `json:"started_at_ms,omitempty"`
 	// Format is the encoding every replica writes; 0 is baseFormat.
 	Format uint32 `json:"format,omitempty"`
@@ -153,7 +153,7 @@ type DecreeResult struct {
 // the same entry and reaches the same state or all refuse; its caller holds
 // the lock and installs the state and its mesh CA together.
 func nextCore(launch Launch, cur ClusterState, de DecreeEntry) (ClusterState, *issuer.CA, error) {
-	if err := checkDecree(launch, cur, de); err != nil {
+	if err := checkDecree(launch, cur, de.Decree, de.AtMS); err != nil {
 		return ClusterState{}, nil, err
 	}
 	next := cur.clone()
@@ -237,18 +237,18 @@ func startMS(d cdsdecree.Decree, atMS int64) int64 {
 
 // checkDecree is what a decree must satisfy before it changes any state: the
 // operator's signature over everything it says, a place in the cluster's life,
-// an expiry the leader's stamp is inside, an intent the cluster has not
+// an expiry the leader's stamp atMS is inside, an intent the cluster has not
 // accounted for, and pins binding this replica's own launch file.
-func checkDecree(launch Launch, cur ClusterState, de DecreeEntry) error {
-	if err := cdsdecree.Verify(de.Decree, launch.OperatorKeys, launch.ClusterID); err != nil {
+func checkDecree(launch Launch, cur ClusterState, signed cdsdecree.Signed, atMS int64) error {
+	if err := cdsdecree.Verify(signed, launch.OperatorKeys, launch.ClusterID); err != nil {
 		return err
 	}
-	d := de.Decree.Decree
+	d := signed.Decree
 	if err := checkLife(cur, d); err != nil {
 		return err
 	}
 	switch {
-	case expired(d, de.AtMS):
+	case expired(d, atMS):
 		return fmt.Errorf("the %s decree expired at %s", d.Kind, d.ExpiresAt.UTC().Format(time.RFC3339))
 	case cur.accountedFor(d.IntentID):
 		return fmt.Errorf("decree %s has applied before", d.IntentID)
@@ -264,17 +264,30 @@ func expired(d cdsdecree.Decree, atMS int64) bool {
 }
 
 // checkLife requires a decree's kind to have a place in the cluster's life: a
-// Genesis starts one, every other kind carries one on from the version it
-// names, and an Admit is answered by an unjoined replica rather than applied.
+// Genesis and a Restore start one, every other kind carries one on from the
+// version it names, and an Admit is answered by an unjoined replica rather
+// than applied.
 func checkLife(cur ClusterState, d cdsdecree.Decree) error {
-	switch {
-	case d.Kind == cdsdecree.Admit:
+	if d.Kind == cdsdecree.Admit {
 		return errors.New("an Admit decree admits an image to one unjoined replica; it never applies")
-	case d.Kind == cdsdecree.Genesis && cur.Joined():
-		return errors.New("a Genesis decree starts a cluster, and this one holds a mesh CA")
-	case d.Kind != cdsdecree.Genesis && !cur.Joined():
+	}
+	if startsACluster(d.Kind) {
+		if cur.Joined() {
+			return fmt.Errorf("a %s decree starts a cluster, and this one holds a mesh CA", d.Kind)
+		}
+		return nil
+	}
+	return carriesTheClusterOn(cur, d)
+}
+
+// carriesTheClusterOn is what a decree of every other kind must find: a
+// cluster, at the version the decree applies on, and a doubt where it
+// dismisses one.
+func carriesTheClusterOn(cur ClusterState, d cdsdecree.Decree) error {
+	switch {
+	case !cur.Joined():
 		return fmt.Errorf("a %s decree carries a cluster on, and this replica holds none", d.Kind)
-	case d.Kind != cdsdecree.Genesis && d.BaseVersion != cur.Version:
+	case d.BaseVersion != cur.Version:
 		return fmt.Errorf("the decree applies on version %d, and the cluster is at version %d", d.BaseVersion, cur.Version)
 	case d.Kind == cdsdecree.DismissRecover && !cur.doubted(d.RecoverIntent):
 		return fmt.Errorf("the cluster holds no doubt of Recover %s to dismiss", d.RecoverIntent)
@@ -282,6 +295,13 @@ func checkLife(cur ClusterState, d cdsdecree.Decree) error {
 	return nil
 }
 
+// startsACluster names the kinds a replica holding no cluster applies: the
+// Genesis of a new one, and the Restore of a lost one.
+func startsACluster(kind cdsdecree.Kind) bool {
+	return kind == cdsdecree.Genesis || kind == cdsdecree.Restore
+}
+
+// mintsMeshCA reports the kinds whose entry carries a freshly minted mesh CA.
 func mintsMeshCA(kind cdsdecree.Kind) bool {
 	return kind == cdsdecree.Genesis || kind == cdsdecree.RotateKey
 }

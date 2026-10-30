@@ -37,6 +37,8 @@ func newHACmd() *cobra.Command {
 		newStatusCmd(),
 		newDecreesCmd(),
 		newPinPolicyCmd(),
+		newBackupsCmd(),
+		newRecoverClusterCmd(),
 	)
 	return cmd
 }
@@ -302,7 +304,7 @@ func (o genesisOptions) run(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	nodePins, err := o.nodePins(c)
+	nodePins, err := decreedNodeImages(o.nodes, c)
 	if err != nil {
 		return err
 	}
@@ -328,18 +330,19 @@ func (o genesisOptions) run(cmd *cobra.Command) error {
 	})
 }
 
-// nodePins are the node images the cluster starts out certifying. The decree
-// carries them, so a cluster started again certifies the set the operator
-// names now rather than the one the configuration was written with.
-func (o genesisOptions) nodePins(c decreeConfig) (*cdsdecree.NodeImages, error) {
-	if o.nodes == "" {
+// decreedNodeImages are the node images a decree that starts a cluster
+// carries: the document --nodes names, or the configuration's nodes. The
+// decree carries them, so a cluster started again certifies the set the
+// operator names now rather than the one the configuration was written with.
+func decreedNodeImages(nodes string, c decreeConfig) (*cdsdecree.NodeImages, error) {
+	if nodes == "" {
 		measurements, err := refvalues.Format(c.parsed.Nodes)
 		if err != nil {
 			return nil, fmt.Errorf("the configuration's nodes: %w", err)
 		}
 		return cdsdecree.NewNodeImages(measurements)
 	}
-	return readNodeImages(o.nodes)
+	return readNodeImages(nodes)
 }
 
 // The whole set the cluster is to certify, as `c8s cds config new --nodes`

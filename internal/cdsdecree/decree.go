@@ -12,10 +12,11 @@
 // and the state an adopted decree made stays in force until a later decree
 // replaces it.
 //
-// Genesis, Recover and Admit act on one process. They name the member id their
-// target minted at its start, so a recorded decree never acts a second time,
-// and a Genesis names the mesh CA its target mints, so a replica replaying one
-// cannot install a CA of its own.
+// Genesis, Restore, Recover and Admit act on one process. They name the member
+// id their target minted at its start, so a recorded decree never acts a
+// second time; a Genesis names the mesh CA its target mints, so a replica
+// replaying one cannot install a CA of its own, and a Restore names the state
+// its target starts the cluster again from.
 package cdsdecree
 
 import (
@@ -64,6 +65,11 @@ const (
 	// carries the cluster on alone with the state it holds, and entries the
 	// lost voters committed and it never received are gone.
 	Recover Kind = "Recover"
+	// Restore starts a cluster again from a sealed backup, on a replica that
+	// holds none, under a configuration the operator may have written again:
+	// the decree carries the CDS and node image sets of that configuration,
+	// and the state brings the mesh CA, the allowlist and the secrets.
+	Restore Kind = "Restore"
 	// DismissRecover lifts the doubt a sighted Recover decree left on the
 	// cluster, once no other side can serve.
 	DismissRecover Kind = "DismissRecover"
@@ -100,6 +106,9 @@ type Decree struct {
 	// ResumeVersion is the highest version the operator knows a cluster under
 	// this cluster id reached; the cluster resumes above it.
 	ResumeVersion uint64 `json:"resume_version,omitempty"`
+	// StateSHA256 is the SHA-256 of the state a Restore decree starts the
+	// cluster again from.
+	StateSHA256 string `json:"state_sha256,omitempty"`
 	// Alone starts a cluster whose discovery answers with no other replica.
 	Alone bool `json:"alone,omitempty"`
 	// RecoverIntent is the Recover decree whose doubt a DismissRecover lifts.
@@ -269,6 +278,7 @@ var fields = map[string]func(Decree) bool{
 	"node_pins":      func(d Decree) bool { return d.NodePins != nil },
 	"recover_intent": func(d Decree) bool { return d.RecoverIntent != "" },
 	"resume_version": func(d Decree) bool { return d.ResumeVersion != 0 },
+	"state_sha256":   func(d Decree) bool { return d.StateSHA256 != "" },
 	"target_address": func(d Decree) bool { return d.TargetAddress != "" },
 	"target_member":  func(d Decree) bool { return d.TargetMember != "" },
 	"voters":         func(d Decree) bool { return d.Voters != 0 },
@@ -285,13 +295,17 @@ func (c carried) allows(name string) bool {
 	return slices.Contains(c.must, name) || slices.Contains(c.may, name)
 }
 
-// kinds is the shape of every decree kind. A Genesis applies to a cluster with
-// no version yet, and an Admit to a replica that holds none, so neither names
-// a base version; a first Genesis resumes above no version.
+// kinds is the shape of every decree kind. A Genesis and a Restore apply to a
+// cluster with no version yet, and an Admit to a replica that holds none, so
+// none of them names a base version; a first Genesis resumes above no version.
 var kinds = map[Kind]carried{
 	Genesis: {
 		must: []string{"cds_pins", "node_pins", "target_member", "target_address", "issued_at_ms", "genesis_ca"},
 		may:  []string{"resume_version", "alone"},
+	},
+	Restore: {
+		must: []string{"cds_pins", "node_pins", "target_member", "target_address", "issued_at_ms", "resume_version", "state_sha256"},
+		may:  []string{"alone"},
 	},
 	UpdateMeasurements: {must: []string{"base_version", "cds_pins"}},
 	SetNodeImages:      {must: []string{"base_version", "node_pins"}},
@@ -322,7 +336,7 @@ func (d Decree) checkFields() error {
 }
 
 // checkPins requires the image sets a decree carries to be documents their own
-// parser reads back, and the mesh CA it names to be a digest.
+// parser reads back, and the mesh CA and state it names to be digests.
 func (d Decree) checkPins() error {
 	if d.CDSPins != nil {
 		if err := d.CDSPins.check(); err != nil {
@@ -334,8 +348,11 @@ func (d Decree) checkPins() error {
 			return fmt.Errorf("node_pins: %w", err)
 		}
 	}
-	if d.GenesisCA != "" && !isCertificateDigest(d.GenesisCA) {
+	if d.GenesisCA != "" && !isSHA256Digest(d.GenesisCA) {
 		return fmt.Errorf("genesis_ca %q is not a SHA-256 digest in hex", d.GenesisCA)
+	}
+	if d.StateSHA256 != "" && !isSHA256Digest(d.StateSHA256) {
+		return fmt.Errorf("state_sha256 %q is not a SHA-256 digest in hex", d.StateSHA256)
 	}
 	return nil
 }
@@ -361,9 +378,9 @@ func (d Decree) checkSeats() error {
 	return nil
 }
 
-// isCertificateDigest reports whether s is the SHA-256 of a certificate, as a
-// replica reports its mesh CA.
-func isCertificateDigest(s string) bool {
+// isSHA256Digest reports whether s is a SHA-256 digest in hex, as a replica
+// reports its mesh CA and as a sealed backup names the state it holds.
+func isSHA256Digest(s string) bool {
 	digest, err := hex.DecodeString(s)
 	return err == nil && len(digest) == sha256.Size
 }

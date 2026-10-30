@@ -345,3 +345,10 @@ applies at as the node's pin floor: a replayed older decree, including one that
 still named the retired image, is refused. A node that reboots forgets the
 decree it followed and starts from its own document again, which is why the
 floor belongs in the document rather than in the node's state.
+
+## 11. Restore a cluster that lost every replica
+
+The log lives in the replicas' memory, so a cluster that lost them all is gone
+with them, and a Recover has no survivor to hand it to. What is left is a
+sealed backup on the board. [cds-ha-backups.md](cds-ha-backups.md) is the
+procedure: watching the backups, choosing one, and `c8s cds ha recover`.

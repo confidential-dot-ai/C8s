@@ -240,6 +240,11 @@ type Node struct {
 	// backups is what this replica's backup duty keeps (backupduty.go).
 	backups *backupDuty
 
+	// searched is what the last pass of a replica outside its cluster found
+	// of it, and restores admits one restore at a time (restore.go).
+	searched atomic.Pointer[clusterSearch]
+	restores sync.Mutex
+
 	// board is when this replica last read its cluster's board, and acks the
 	// members that reported this leader in the term it leads. A leader
 	// blind to the board goes by the acks (fence.go).
@@ -651,7 +656,7 @@ func (n *Node) commit(entry []byte) (Result, uint64, error) {
 
 // proposable refuses an entry this replica must not put on the log.
 func (n *Node) proposable(e Entry, entry []byte) error {
-	if e.Kind != KindDecree && !n.fsm.ClusterState().Joined() {
+	if !startsTheCluster(e) && !n.fsm.ClusterState().Joined() {
 		return errors.New("cds-ha: this replica holds no cluster")
 	}
 	if reason := n.fsm.Stuck(); reason != "" {
@@ -665,6 +670,14 @@ func (n *Node) proposable(e Entry, entry []byte) error {
 	return n.fsm.Admit(entry)
 }
 
+// startsTheCluster reports the entries a replica holding no cluster puts on
+// the log: the decree that starts one, and the state a restore starts a lost
+// one again from.
+func startsTheCluster(e Entry) bool {
+	return e.Kind == KindDecree || e.Kind == KindRestore
+}
+
+// appliedPoll is how often a caller waiting for the log asks again.
 const appliedPoll = 2 * time.Millisecond
 
 func (n *Node) awaitApplied(index uint64, within time.Duration) bool {

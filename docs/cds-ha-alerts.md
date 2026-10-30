@@ -48,6 +48,7 @@ A replica that does not lead reports `voters`, `non_voters`, `roll_safe`,
 | `this replica is fenced: ...` | the cluster holds the doubt of a Recover | runbook 7 |
 | `a Recover decree names a member this cluster cannot account for` | an operator handed the cluster to a member that does not answer here | runbook 7: bring it back or dismiss the Recover |
 | `a member of this cluster may be carrying a recovered cluster of its own` | that member is out of the cluster and rejoins only as a new member | destroy its VM, or let it rejoin |
+| `this replica holds no cluster and reached no replica that holds one` | every replica of the cluster may be gone, and this one is new | confirm the loss outside the host, then runbook 11 |
 | `the replicas of this cluster hold different state: ...` | the leader compared the checkpoints | runbook 9 |
 | `this cluster's board holds no backup of the state it has now: ...` | the leader could not seal its state or could not append it to the board | the reason names the attempt that failed; the board or the replicated state is at fault |
 | `no replica of this cluster may be replaced now: ...` | the seats are not settled | wait; do not replace a VM |
