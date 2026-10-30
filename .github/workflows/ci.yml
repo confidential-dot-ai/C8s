@@ -17,6 +17,7 @@ on:
       # (test/mock-*) gate PRs via the Integration job below.
       - "test/**"
       - "scripts/coverage-gate.sh"
+      - "scripts/shipped-deps-guard.sh"
       - "scripts/mutation-check.sh"
       - ".gremlins.yaml"
       - ".github/workflows/ci.yml"
@@ -104,22 +105,8 @@ jobs:
       - name: Build macOS CLI
         run: CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o /tmp/c8s-darwin ./cmd/c8s
 
-      # testing and test-helper packages must stay out of the measured binaries.
-      # CGO_ENABLED=0 matches the shipped builds; c8s_node changes the graph, so
-      # it is listed separately.
-      - name: Guard testing out of shipped binaries
-        run: |
-          forbidden='^(testing|github.com/confidential-dot-ai/c8s/internal/testattest)$'
-          deps=$(CGO_ENABLED=0 go list -deps ./cmd/...)
-          if grep -qE "$forbidden" <<<"$deps"; then
-            echo "testing code is in the dep graph of a shipped binary" >&2
-            exit 1
-          fi
-          node_deps=$(CGO_ENABLED=0 go list -tags c8s_node -deps ./cmd/c8s)
-          if grep -qE "$forbidden" <<<"$node_deps"; then
-            echo "testing code is in the dep graph of the c8s_node binary" >&2
-            exit 1
-          fi
+      - name: Guard test code out of shipped binaries
+        run: ./scripts/shipped-deps-guard.sh selftest && ./scripts/shipped-deps-guard.sh check
 
       # The cw-guard rule assertions resolve through iptables-translate;
       # C8S_REQUIRE_IPTABLES_TRANSLATE fails the job if it is missing. The pod

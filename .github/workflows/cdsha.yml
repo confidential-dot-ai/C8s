@@ -1,0 +1,43 @@
+name: CDS HA suite
+
+on:
+  pull_request:
+    branches: [main, beta, "feat/**"]
+    # The packages and lane scripts these jobs run.
+    paths: &cdsha-paths
+      - "internal/cdsha/**"
+      - "test/integration/cdsha/**"
+  push:
+    branches: [main]
+    paths: *cdsha-paths
+  schedule:
+    - cron: "41 2 * * *"
+
+# A pull request's own runs supersede each other; a push run runs to the end.
+concurrency:
+  group: cdsha-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  harness:
+    name: Three replicas
+    runs-on: ubuntu-latest
+    # Longer than the harness's own timeout, so go test prints its goroutines
+    # before the runner takes the job away.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: ./.github/actions/setup-go-c8s
+
+      - name: Run the -short subset
+        if: github.event_name == 'pull_request'
+        run: ./test/integration/cdsha/run.sh -short
+
+      - name: Run every scenario
+        if: github.event_name != 'pull_request' && hashFiles('test/integration/cdsha/run.sh') != ''
+        run: ./test/integration/cdsha/run.sh
+
