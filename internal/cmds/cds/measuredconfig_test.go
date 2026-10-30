@@ -167,6 +167,42 @@ func TestRunMeasuredConfigRequiresALoopbackAttester(t *testing.T) {
 	}
 }
 
+// Replicas arrive later in this stack: a document asking for them is refused,
+// rather than served as a singleton with its ha block ignored.
+func TestRunMeasuredConfigRefusesAReplicaSet(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cds-config.yaml")
+	if err := os.WriteFile(path, replicatedDocument(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config{
+		configPath:        path,
+		attestationApiURL: mockapi.New(t).URL(),
+	}
+	err := runMeasuredConfig(context.Background(), cfg)
+	if err == nil || !strings.Contains(err.Error(), "replica set") {
+		t.Fatalf("runMeasuredConfig = %v, want the ha block refused", err)
+	}
+}
+
+// replicatedDocument is the measured document with an ha block.
+func replicatedDocument(t *testing.T) []byte {
+	t.Helper()
+	var document map[string]any
+	measured := measuredDocument(t, cluster{operatorPEM: operatorKeysPEM(t), workloads: map[string]string{"attestation-api": digestA}})
+	if err := yaml.Unmarshal(measured, &document); err != nil {
+		t.Fatal(err)
+	}
+	document["ha"] = map[string]any{
+		"replicas": []string{"cds.example.com"},
+		"voters":   1,
+	}
+	data, err := yaml.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
 // writeMeasuredDocument stages the document where a launched VM reads it.
 func writeMeasuredDocument(t *testing.T) string {
 	t.Helper()

@@ -27,6 +27,9 @@ func runMeasuredConfig(ctx context.Context, cfg config) error {
 	if err != nil {
 		return fmt.Errorf("--config %s: %w", cfg.configPath, err)
 	}
+	if measured.HA != nil {
+		return fmt.Errorf("--config %s: this build serves a cluster's CDS as the singleton, not as a replica set", cfg.configPath)
+	}
 	if err := requireLoopbackAttestationAPI(cfg.attestationApiURL); err != nil {
 		return err
 	}
