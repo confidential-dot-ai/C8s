@@ -163,6 +163,7 @@ type Node struct {
 	genesisLog   changedReason
 	joinLog      changedReason
 	admitLog     changedReason
+	formatLog    changedReason
 
 	// lease is the read lease this replica answers reads under, and outage
 	// is why it has none (lease.go). barriers holds the one barrier a leader
@@ -171,6 +172,10 @@ type Node struct {
 	outage     atomic.Pointer[readOutage]
 	barriers   oneBarrier
 	clockJumps atomic.Uint64
+	// servingSince and seatbook carry the seat duty between passes
+	// (serving.go, seats.go).
+	servingSince servingState
+	seatbook     *seatBook
 
 	allowlist *allowlist.Handle
 	secrets   *secrets.Handle
@@ -211,6 +216,7 @@ func NewNode(cfg Config) (*Node, error) {
 		snaps:     &snapStore{},
 		genesisCA: sync.OnceValues(mintMeshCA),
 		barriers:  newOneBarrier(),
+		seatbook:  newSeatBook(),
 	}
 	n.peers = newMembers(string(n.member), cfg.Timing.DeadAfter)
 	if err := n.mintIdentity(); err != nil {
@@ -422,6 +428,8 @@ func (n *Node) Run(ctx context.Context) error {
 	defer stopReaching()
 	stopDuties := onItsOwn(ctx, n.keepCluster)
 	defer stopDuties()
+	stopSeating := onItsOwn(ctx, n.keepSeating)
+	defer stopSeating()
 	stopReads := n.serveReads(ctx)
 	defer stopReads()
 	tick := time.NewTicker(n.cfg.Timing.Tick)

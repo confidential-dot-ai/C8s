@@ -199,7 +199,7 @@ func (r *clusterCDS) join(ctx context.Context, cfg config) error {
 func (r *clusterCDS) awaitServing(ctx context.Context) error {
 	asking := time.NewTicker(joinPoll)
 	defer asking.Stop()
-	for !r.node.Serving() {
+	for !r.Ready() {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -226,8 +226,9 @@ func (r *clusterCDS) TokenFloor() time.Time {
 	return time.UnixMilli(started)
 }
 
+// /readyz, and the gate below holds every other route to it.
 func (r *clusterCDS) Ready() bool {
-	return r.node.Serving()
+	return r.node.Serving().OK
 }
 
 func (r *clusterCDS) ClusterRoutes() map[string]http.HandlerFunc {
@@ -235,7 +236,7 @@ func (r *clusterCDS) ClusterRoutes() map[string]http.HandlerFunc {
 }
 
 func (r *clusterCDS) Gate(next http.Handler) http.Handler {
-	return haGate(r.node.Serving, next)
+	return haGate(r.Ready, next)
 }
 
 // KeepMeshCA publishes the mesh CA the cluster's log carries whenever it

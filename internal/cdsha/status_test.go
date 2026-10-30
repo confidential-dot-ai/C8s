@@ -26,13 +26,16 @@ func TestAReplicaReportsTheClusterItServes(t *testing.T) {
 	}
 
 	following := c.awaitFollowerReport(leading)
+	if following.RollSafe != nil {
+		t.Errorf("a follower reports %+v, want the seats answered by the leader alone", following.RollSafe)
+	}
 	if !slices.Contains(following.Voters, following.ID) {
 		t.Errorf("a follower reports %+v, want its own vote", following)
 	}
 }
 
-// awaitLeaderReport is the report of a leader answering reads under a lease,
-// in a cluster whose configuration seats voters members.
+// awaitLeaderReport is the report of a leader answering reads under a lease, in
+// a cluster of voters seats one replica may leave.
 func (c *liveCluster) awaitLeaderReport(voters int) Status {
 	c.t.Helper()
 	var reported Status
@@ -42,7 +45,8 @@ func (c *liveCluster) awaitLeaderReport(voters int) Status {
 			return false
 		}
 		reported = leader.node.Status()
-		return reported.Serving && len(reported.Voters) == voters
+		return reported.Serving.OK && len(reported.Voters) == voters &&
+			reported.RollSafe != nil && reported.RollSafe.OK
 	})
 	return reported
 }
@@ -75,7 +79,7 @@ func TestAnUnjoinedReplicaReportsWhatItsGenesisWouldName(t *testing.T) {
 
 	unjoined := r.node.Status()
 	switch {
-	case unjoined.Joined || unjoined.Serving:
+	case unjoined.Joined || unjoined.Serving.OK:
 		t.Errorf("an unjoined replica reports %+v, want it holding no cluster", unjoined)
 	case unjoined.ID != string(r.node.member) || unjoined.GenesisCA != c.genesisCAOf(r):
 		t.Errorf("an unjoined replica reports %+v, want the member id and mesh CA a Genesis names", unjoined)

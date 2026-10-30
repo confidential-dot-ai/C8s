@@ -73,20 +73,6 @@ func (n *Node) leadsAs(led leadership) bool {
 	return n.leading() && n.following().same(led)
 }
 
-// Serving reports a replica that may answer a read: it holds a live lease, it
-// follows the log, and the lease's watermark has applied here.
-func (n *Node) Serving() bool {
-	lease := n.lease.Load()
-	if lease == nil || !n.holdsNow(lease) {
-		return false
-	}
-	return n.followsTheLog() && n.fsm.AppliedIndex() >= lease.index
-}
-
-func (n *Node) followsTheLog() bool {
-	return n.fsm.ClusterState().Joined() && n.fsm.Stuck() == ""
-}
-
 // holdsNow: the leader, term, cluster version and clock the lease was taken
 // under are the ones of this moment.
 func (n *Node) holdsNow(lease *readLease) bool {

@@ -148,7 +148,6 @@ func TestAReplicaJoiningTakesTheStateFromASnapshot(t *testing.T) {
 		t.Fatalf("snapshot: %v", err)
 	}
 	joiner := c.start()
-	c.addVoter(leader, joiner)
 	c.caughtUp(joiner, leader, 15*time.Second)
 	if index, _, _ := joiner.node.snaps.latest(); index == 0 {
 		t.Fatal("the joining replica installed no snapshot")

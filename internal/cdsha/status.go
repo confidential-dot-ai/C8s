@@ -17,9 +17,10 @@ type Status struct {
 	// ID is the member id this process minted at its start, which a decree names.
 	ID string `json:"id"`
 	// Joined reports a replica holding the cluster's mesh CA, and Serving one
-	// that may answer a read under a lease.
-	Joined  bool `json:"joined"`
-	Serving bool `json:"serving"`
+	// that may answer a read under a lease. Only the leader answers RollSafe.
+	Joined   bool        `json:"joined"`
+	Serving  Serving     `json:"serving"`
+	RollSafe *RollSafety `json:"roll_safe,omitempty"`
 	// Version counts the operator commands the cluster has applied.
 	Version       uint64   `json:"version"`
 	State         string   `json:"state,omitempty"`
@@ -62,6 +63,9 @@ func (n *Node) Status() Status {
 
 func (n *Node) inRaft(status Status) Status {
 	status.Serving = n.Serving()
+	if safe, leading := n.RollSafe(); leading {
+		status.RollSafe = &safe
+	}
 	status.State = n.raft.State().String()
 	followed := n.following()
 	status.Term = followed.term
@@ -79,7 +83,7 @@ func (n *Node) inRaft(status Status) Status {
 // CA is none while this replica does not serve its cluster: a cached CA must
 // not stand in for the one it would issue under.
 func (n *Node) CA() (*issuer.CA, bool) {
-	if !n.Serving() {
+	if !n.Serving().OK {
 		return nil, false
 	}
 	ca := n.fsm.CA()

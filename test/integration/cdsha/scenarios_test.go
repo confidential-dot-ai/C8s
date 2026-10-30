@@ -83,14 +83,16 @@ func TestAWriteTakenByAnyReplicaReachesEveryReplica(t *testing.T) {
 	})
 }
 
-// The one voter the cluster's Genesis seated is lost, and every replica stops
+// A cluster of one voter seat loses that voter, and every replica stops
 // serving: a replica answers a read under a lease its leader confirmed, so
 // one that cannot reach a leader fails closed instead of answering from the
-// state it still holds. Filling a second seat, so another replica can lead,
-// comes with the voter seats.
+// state it still holds.
 func TestEveryReplicaStopsServingWhenTheClusterLosesItsVoter(t *testing.T) {
 	notShort(t)
-	c := newCluster(t, threeReplicas)
+	c := newCluster(t, shape{
+		voters:   1,
+		replicas: 3,
+	})
 	leading := c.waitLeader(30 * time.Second)
 	c.waitVoter(leading, 30*time.Second)
 
@@ -118,7 +120,7 @@ func TestARestartedReplicaRejoinsItsCluster(t *testing.T) {
 	c := newCluster(t, threeReplicas)
 	leading := c.waitLeader(30 * time.Second)
 	restarting := c.others(leading)[0]
-	c.waitWithoutAVote(restarting, 30*time.Second)
+	c.waitVoter(restarting, 30*time.Second)
 	was, _ := c.status(restarting)
 
 	c.kill(restarting)
@@ -158,9 +160,138 @@ func TestReplicasThatHoldNoVoteStillServe(t *testing.T) {
 	})
 }
 
-// allServe reports every replica serving an allowlist that names workload.
+// The cluster of the seat scenarios: five replicas for three seats.
+var fiveReplicas = shape{
+	voters:   3,
+	replicas: 5,
+}
+
+// The replicas left over hand their writes to the leader.
+func TestTheVoterSeatsAreFilledAndTheReplicasLeftOverServeReads(t *testing.T) {
+	c := newCluster(t, fiveReplicas)
+	leading := c.waitLeader(30 * time.Second)
+	c.waitRollSafe(time.Minute)
+
+	if seated, spare := c.seated(), c.withoutAVote(); len(seated) != fiveReplicas.voters || len(spare) != 2 {
+		t.Fatalf("the cluster seats %v and holds %v without a vote, want %d seats of five replicas",
+			seated, spare, fiveReplicas.voters)
+	}
+	const workload = "written-through-a-replica-that-holds-no-vote"
+	c.replaceAllowlist(c.others(leading)[0], workload)
+	c.waitFor("every replica to serve the written allowlist", 30*time.Second, func() bool {
+		return c.allServe(workload)
+	})
+}
+
+// The cluster is no cluster to replace a replica of from the moment that voter
+// stops answering, and one again once its seat is filled.
+func TestADeadVoterGivesItsSeatToAReplicaWithoutAVote(t *testing.T) {
+	notShort(t)
+	c := newCluster(t, fiveReplicas)
+	leading := c.waitLeader(30 * time.Second)
+	c.waitRollSafe(time.Minute)
+	c.waitEveryReplicaJoined(time.Minute)
+	dying := c.holdingAVote(leading)
+	lost, _ := c.status(dying)
+
+	c.kill(dying)
+
+	c.waitFor("the cluster to report no replica of it replaceable", devDeadAfter/2, func() bool {
+		safe := c.leaderReport().RollSafe
+		return safe != nil && !safe.OK
+	})
+	taken := "the lost voter's seat taken by a replica that held no vote"
+	c.waitFor(taken, 2*time.Minute, func() bool {
+		seated := c.seated()
+		return len(seated) == fiveReplicas.voters && !slices.Contains(seated, lost.ID)
+	})
+	c.waitRollSafe(time.Minute)
+}
+
+// A replacement is a membership change, and the log carries writes and
+// membership both.
+func TestAVoterIsReplacedWhileTheClusterTakesWrites(t *testing.T) {
+	notShort(t)
+	c := newCluster(t, fiveReplicas)
+	leading := c.waitLeader(30 * time.Second)
+	c.waitRollSafe(time.Minute)
+	c.waitEveryReplicaJoined(time.Minute)
+	dying := c.holdingAVote(leading)
+
+	c.kill(dying)
+	for i := range writesWhileASeatChanges {
+		c.replaceAllowlist(leading, fmt.Sprintf("written-while-a-seat-changed-%d", i))
+	}
+
+	last := fmt.Sprintf("written-while-a-seat-changed-%d", writesWhileASeatChanges-1)
+	c.waitFor("the replicas that stayed to serve the last write", time.Minute, func() bool {
+		return c.allServing(c.others(dying), last)
+	})
+	c.waitRollSafe(2 * time.Minute)
+}
+
+const writesWhileASeatChanges = 5
+
+// A replica cut off and back is no replica's to replace.
+func TestAVoterThatAnswersAgainKeepsItsSeat(t *testing.T) {
+	notShort(t)
+	c := newCluster(t, fiveReplicas)
+	leading := c.waitLeader(30 * time.Second)
+	c.waitRollSafe(time.Minute)
+	c.waitEveryReplicaJoined(time.Minute)
+	seated := c.seated()
+	paused := c.holdingAVote(leading)
+
+	c.pause(paused)
+	time.Sleep(devDeadAfter / 2)
+	held := c.seated()
+	c.resume(paused)
+
+	if !slices.Equal(held, seated) {
+		t.Errorf("the cluster seats %v, want the %v it seated while the cut voter answers again within DeadAfter",
+			held, seated)
+	}
+	c.waitServing(time.Minute)
+	c.waitRollSafe(time.Minute)
+}
+
+// The DeadAfter a c8s_dev build runs with: the scenarios above cut a replica
+// off for half of it.
+const devDeadAfter = 5 * time.Second
+
+// The cluster fills the seats a SetVoters decree adds, and takes the vote of
+// the voters the seats it leaves no longer hold.
+func TestASetVotersDecreeMovesTheSeatsOfTheCluster(t *testing.T) {
+	notShort(t)
+	c := newCluster(t, fiveReplicas)
+	leading := c.waitLeader(30 * time.Second)
+	started, _ := c.status(leading)
+
+	intent, _ := c.decreeVoters(leading, started.Version, fiveReplicas.replicas)
+
+	c.waitFor("every replica seated", time.Minute, func() bool {
+		return c.allApplied(intent, started.Version+1) && len(c.seated()) == fiveReplicas.replicas
+	})
+	c.waitRollSafe(time.Minute)
+
+	back, _ := c.decreeVoters(c.waitLeader(30*time.Second), started.Version+1, fiveReplicas.voters)
+
+	c.waitFor("the seats back to three", 2*time.Minute, func() bool {
+		return c.allApplied(back, started.Version+2) && len(c.seated()) == fiveReplicas.voters
+	})
+	c.waitRollSafe(time.Minute)
+	if spare := c.withoutAVote(); len(spare) != 2 {
+		t.Errorf("the cluster holds %v without a vote, want the two the seats no longer hold",
+			spare)
+	}
+}
+
 func (c *cluster) allServe(workload string) bool {
-	for _, r := range c.replicas {
+	return c.allServing(c.replicas, workload)
+}
+
+func (c *cluster) allServing(replicas []*replica, workload string) bool {
+	for _, r := range replicas {
 		code, body := c.get(r, "/allowlist")
 		if code != http.StatusOK || !strings.Contains(string(body), workload) {
 			return false

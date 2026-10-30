@@ -56,6 +56,9 @@ type answeringAddress struct {
 	// address of no member's own: this replica's own, one its replicas take
 	// turns at, and one answering for a member known elsewhere.
 	held *controlConn
+	// replied is when repliedBy last answered a request of this replica.
+	replied   time.Time
+	repliedBy string
 	// quiet is when this replica dials an address it holds no connection to
 	// again.
 	quiet time.Time
@@ -136,6 +139,20 @@ func (m *members) reached() []reachedMember {
 	return reached
 }
 
+// A handshake is no answer: a peer that refuses this replica completes one
+// and then carries nothing.
+func (m *members) lastAnswer(member string) time.Time {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var last time.Time
+	for _, answering := range m.addresses {
+		if answering.repliedBy == member && answering.replied.After(last) {
+			last = answering.replied
+		}
+	}
+	return last
+}
+
 // knownAt is a member as this replica reached it.
 func (m *members) knownAt(member string) (reachedMember, bool) {
 	m.mu.Lock()
@@ -195,13 +212,14 @@ func (m *members) answeredAt(address netip.AddrPort, control *controlConn, now t
 	return nil
 }
 
-// stillThere records a member answering where it is known, so the answers of
-// every other member there age out.
+// The answers of every other member at that address age out.
 func (m *members) stillThere(held reachedMember, now time.Time) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if answering := m.addresses[held.address]; answering != nil && answering.held == held.control {
 		m.record(held.address, held.member, now)
+		answering.replied = now
+		answering.repliedBy = held.member
 	}
 }
 
@@ -541,6 +559,11 @@ func (n *Node) answerJoin(from peer, policy Policy, answer controlAnswer) contro
 	if n.memberOfCluster(from.member) {
 		// The member is in the configuration: its vote and its address are
 		// the cluster's to change, not a joiner's.
+		return answer
+	}
+	if n.nonVotersFull() {
+		answer.Err = fmt.Sprintf("this cluster follows its log with the %d non-voters it takes",
+			maxNonVoters)
 		return answer
 	}
 	held, reached := n.peers.knownAt(from.member)

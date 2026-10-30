@@ -116,6 +116,8 @@ func setField(t *testing.T, d *Decree, name string) {
 		d.Alone = true
 	case "recover_intent":
 		d.RecoverIntent = NewIntentID()
+	case "voters":
+		d.Voters = 3
 	default:
 		t.Fatalf("no value for decree field %q", name)
 	}
@@ -126,6 +128,7 @@ func everyKind() []Kind {
 		Genesis,
 		UpdateMeasurements,
 		RotateKey,
+		SetVoters,
 		Recover,
 		DismissRecover,
 		Admit,
@@ -252,9 +255,28 @@ func TestEveryKindNamesFields(t *testing.T) {
 func TestVerifyRefusesAnUnknownKind(t *testing.T) {
 	key, keys := operatorKey(t)
 	d := complete(t, RotateKey)
-	d.Kind = "SetVoters"
+	d.Kind = "Retire"
 	if err := verifySigned(t, key, keys, d); err == nil {
 		t.Fatal("a decree of an unknown kind verified")
+	}
+}
+
+// An even count tolerates no more loss than the odd count below it.
+func TestSetVotersNamesAnOddCountOfSeats(t *testing.T) {
+	key, keys := operatorKey(t)
+	for _, seats := range []int{-1, 2, 4, MaxVoterSeats + 2} {
+		d := complete(t, SetVoters)
+		d.Voters = seats
+		if err := verifySigned(t, key, keys, d); err == nil {
+			t.Fatalf("a decree naming %d voter seats verified", seats)
+		}
+	}
+	for _, seats := range []int{1, 3, MaxVoterSeats} {
+		d := complete(t, SetVoters)
+		d.Voters = seats
+		if err := verifySigned(t, key, keys, d); err != nil {
+			t.Fatalf("a decree naming %d voter seats was refused: %v", seats, err)
+		}
 	}
 }
 
@@ -336,6 +358,8 @@ func clearField(t *testing.T, d *Decree, name string) {
 		d.Alone = false
 	case "recover_intent":
 		d.RecoverIntent = ""
+	case "voters":
+		d.Voters = 0
 	default:
 		t.Fatalf("no way to clear decree field %q", name)
 	}

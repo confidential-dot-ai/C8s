@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
 )
 
 func testHAWire() haWire {
@@ -72,7 +74,7 @@ func TestParseRefusesEachMalformedHAField(t *testing.T) {
 		{"an empty replica", func(h *haWire) { h.Replicas = []string{""} }, "ha.replicas"},
 		{"no voter", func(h *haWire) { h.Voters = 0 }, "ha.voters"},
 		{"an even voter count", func(h *haWire) { h.Voters = 4 }, "ha.voters"},
-		{"more voters than seats", func(h *haWire) { h.Voters = maxVoters + 2 }, "ha.voters"},
+		{"more voters than seats", func(h *haWire) { h.Voters = cdsdecree.MaxVoterSeats + 2 }, "ha.voters"},
 	}
 	_, operatorPEM := testKey(t)
 	_, anchorPEM := testKey(t)

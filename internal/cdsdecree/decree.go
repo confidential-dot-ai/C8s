@@ -53,6 +53,9 @@ const (
 	// RotateKey mints a mesh CA key and forks the mesh: every leaf must be
 	// issued again under the new key.
 	RotateKey Kind = "RotateKey"
+	// SetVoters names the voter seats the cluster holds. The replicas fill
+	// or give up one seat at a time until they hold that many.
+	SetVoters Kind = "SetVoters"
 	// Recover is break-glass after a majority is lost for good: the target
 	// carries the cluster on alone with the state it holds, and entries the
 	// lost voters committed and it never received are gone.
@@ -80,6 +83,7 @@ type Decree struct {
 	CDSPins *PinDocument `json:"cds_pins,omitempty"`
 	// NodePins is the full set of node images the cluster certifies.
 	NodePins *NodeImages `json:"node_pins,omitempty"`
+	Voters   int         `json:"voters,omitempty"`
 	// TargetMember is the member id the target process minted at its start.
 	TargetMember string `json:"target_member,omitempty"`
 	// TargetAddress is the address the operator reached the target at.
@@ -158,7 +162,10 @@ func Verify(sd Signed, keys []*ecdsa.PublicKey, clusterID string) error {
 	if err := d.checkVersions(); err != nil {
 		return err
 	}
-	return d.checkPins()
+	if err := d.checkPins(); err != nil {
+		return err
+	}
+	return d.checkSeats()
 }
 
 // signedBytes is the message a signature covers: the decree's fields as this
@@ -254,6 +261,7 @@ var fields = map[string]func(Decree) bool{
 	"resume_version": func(d Decree) bool { return d.ResumeVersion != 0 },
 	"target_address": func(d Decree) bool { return d.TargetAddress != "" },
 	"target_member":  func(d Decree) bool { return d.TargetMember != "" },
+	"voters":         func(d Decree) bool { return d.Voters != 0 },
 }
 
 // carried is one kind's shape: the fields its decrees must set, and the ones
@@ -277,6 +285,7 @@ var kinds = map[Kind]carried{
 	},
 	UpdateMeasurements: {must: []string{"base_version", "cds_pins"}},
 	RotateKey:          {must: []string{"base_version"}},
+	SetVoters:          {must: []string{"base_version", "voters"}},
 	Recover:            {must: []string{"base_version", "target_member", "target_address", "issued_at_ms", "resume_version"}},
 	DismissRecover:     {must: []string{"base_version", "recover_intent"}},
 	Admit:              {must: []string{"cds_pins", "target_member"}},
@@ -316,6 +325,27 @@ func (d Decree) checkPins() error {
 	}
 	if d.GenesisCA != "" && !isCertificateDigest(d.GenesisCA) {
 		return fmt.Errorf("genesis_ca %q is not a SHA-256 digest in hex", d.GenesisCA)
+	}
+	return nil
+}
+
+const MaxVoterSeats = 9
+
+// An even seat count tolerates no more loss than the odd count below it.
+// Callers name the field they read the count from.
+func CheckVoterSeats(seats int) error {
+	if seats < 1 || seats > MaxVoterSeats || seats%2 == 0 {
+		return fmt.Errorf("must be odd, between 1 and %d", MaxVoterSeats)
+	}
+	return nil
+}
+
+func (d Decree) checkSeats() error {
+	if d.Voters == 0 {
+		return nil
+	}
+	if err := CheckVoterSeats(d.Voters); err != nil {
+		return fmt.Errorf("voters: %w", err)
 	}
 	return nil
 }
