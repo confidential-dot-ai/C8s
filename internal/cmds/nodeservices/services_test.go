@@ -13,7 +13,6 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
@@ -124,7 +123,7 @@ func TestPreparePreservesFloorAndPinsServerBeforeRKE2(t *testing.T) {
 				t.Fatalf("chart components missing from bootstrap base: %v", base.Workloads)
 			}
 			pull := ga["pull"].(map[string]any)
-			if pull["url"] != cmdsutil.CDSURL(doc.CDS.Address) || pull["cds_measurements_config"] != PublicDir+"/cds.json" || pull["timeout"] != "30s" {
+			if pull["url"] != "https://"+doc.CDS.Address || pull["cds_measurements_config"] != PublicDir+"/cds.json" || pull["timeout"] != "30s" {
 				t.Fatalf("bad pull config: %v", pull)
 			}
 		})

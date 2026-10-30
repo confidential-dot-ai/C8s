@@ -26,7 +26,7 @@ func cdsInstallArgs(address string, pin string) ([]string, error) {
 		}
 		return nil, fmt.Errorf("--%s and --%s name one CDS together: pass both", flagCDSAddress, flagCDSPin)
 	}
-	if _, _, err := cmdsutil.SplitCDSAddress(address); err != nil {
+	if _, err := cmdsutil.ParseCDSAddress(address); err != nil {
 		return nil, fmt.Errorf("--%s %w", flagCDSAddress, err)
 	}
 	if _, err := os.Stat(pin); err != nil {

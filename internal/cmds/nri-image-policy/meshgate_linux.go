@@ -156,7 +156,7 @@ func (p meshPolicy) dialingRoles() []ruleset.Role {
 			continue
 		}
 		bound := ruleset.Role{UID: role.UID, OutsidePort: role.Port}
-		if verifier, named := p.credentialVerifier(); named && role.Name == CredentialRole {
+		if verifier, named := p.credentialVerifier(); named && role.Name == CredentialRole && role.Port != 0 {
 			bound.Destinations = append(bound.Destinations, verifier)
 		}
 		roles = append(roles, bound)

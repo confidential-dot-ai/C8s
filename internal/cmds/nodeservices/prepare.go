@@ -12,7 +12,6 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
@@ -87,11 +86,11 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 		return fmt.Errorf("merge chart seed into NRI base: %w", err)
 	}
 	a["base"] = base
-	port, err := d.CDSPort()
+	cdsAddress, err := d.CDSAddress()
 	if err != nil {
 		return err
 	}
-	pull["url"] = cmdsutil.CDSURL(d.CDS.Address)
+	pull["url"] = cdsAddress.URL()
 	pull["cds_measurements_config"] = PublicDir + "/cds.json"
 	mesh, declared := floor["mesh"]
 	if !declared {
@@ -101,7 +100,7 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 	if !ok {
 		return fmt.Errorf("baked NRI mesh policy is %T, not a mapping", mesh)
 	}
-	if err := appendCredentialRole(policy, port); err != nil {
+	if err := appendCredentialRole(policy, cdsAddress.Port); err != nil {
 		return err
 	}
 	data, err = yaml.Marshal(floor)

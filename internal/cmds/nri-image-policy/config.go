@@ -36,9 +36,9 @@ type config struct {
 	// Mesh is the trusted mesh policy (roles.go); required.
 	Mesh *meshPolicy `yaml:"mesh"`
 
-	// cdsAddress is the <host>:<port> this node's CDS serves on, read at load
-	// from what names it (cdsaddress.go). "" when nothing does.
-	cdsAddress string
+	// cdsAddress is where this node's CDS serves, read at load from what
+	// names it (cdsaddress.go). The zero address means nothing does.
+	cdsAddress cmdsutil.CDSAddress
 }
 
 // pluginConfig contains plugin runtime settings.
@@ -264,7 +264,7 @@ func loadConfig(path string) (*config, error) {
 		return nil, fmt.Errorf("the CDS this node reaches: %w", err)
 	}
 	cfg.cdsAddress = address
-	if err := bindCredentialRole(cfg); err != nil {
+	if err := bindCredentialRole(cfg, address, cfg.Allowlist.Pull.CDSAddressFile != ""); err != nil {
 		return nil, fmt.Errorf("bind the %s role to the CDS this node reaches: %w", CredentialRole, err)
 	}
 	if err := cfg.validateMeshRoleBindings(); err != nil {
@@ -356,14 +356,19 @@ func (c *config) PullEnabled() bool {
 	return c.Allowlist.Pull.URL != "" || c.Allowlist.Pull.CDSAddressFile != ""
 }
 
+// namesCDS reports whether anything named the CDS this node reaches.
+func (c *config) namesCDS() bool {
+	return c.cdsAddress != cmdsutil.CDSAddress{}
+}
+
 // pullURL is the CDS this node pulls its allowlist from: the endpoint
 // whatever named it at load (cdsaddress.go), dialled over armTLS. Empty where
 // the config names no CDS.
 func (c *config) pullURL() string {
-	if c.cdsAddress == "" {
+	if !c.namesCDS() {
 		return ""
 	}
-	return cmdsutil.CDSURL(c.cdsAddress)
+	return c.cdsAddress.URL()
 }
 
 // baseEnabled reports whether the base allowlist carries any workload.

@@ -17,7 +17,6 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
-	"slices"
 
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
@@ -90,6 +89,12 @@ func (s ServerRole) serves() bool {
 	return len(s.Listeners) > 0
 }
 
+// reaches reports whether any rule of this role would name an identity of the
+// pod, which only a pod that serves the role's own ports carries.
+func (s ServerRole) reaches() bool {
+	return s.Upstream != 0 || s.OutsidePort != 0 || len(s.Services) > 0 || len(s.Egress.Ports) > 0
+}
+
 // CapturePorts are the ports the mesh endpoint listens on in its pod.
 type CapturePorts struct {
 	Outbound uint16
@@ -141,6 +146,9 @@ func (p Policy) validate() error {
 		if err := role.validate(); err != nil {
 			return err
 		}
+		if err := p.requireClusterRanges(role.UID, role.OutsidePort); err != nil {
+			return err
+		}
 	}
 	for _, exit := range p.Exits {
 		if err := exit.validate(); err != nil {
@@ -152,19 +160,17 @@ func (p Policy) validate() error {
 			return err
 		}
 	}
-	if p.reachesOutside() && len(p.ClusterRanges) == 0 {
-		return fmt.Errorf("%w: an outside port with no cluster ranges to stop it would reach every member pod", ErrPolicy)
-	}
 	return p.validateServer()
 }
 
-// reachesOutside reports whether any identity of this pod is permitted a port
-// beyond the cluster.
-func (p Policy) reachesOutside() bool {
-	if p.Server.OutsidePort != 0 {
-		return true
+// requireClusterRanges refuses a port reached outside this cluster with no
+// ranges saying where outside begins: the accept would reach every member pod
+// and every Service on that port.
+func (p Policy) requireClusterRanges(uid uint32, port uint16) error {
+	if port == 0 || len(p.ClusterRanges) > 0 {
+		return nil
 	}
-	return slices.ContainsFunc(p.Roles, func(role Role) bool { return role.OutsidePort != 0 })
+	return fmt.Errorf("%w: UID %d reaches port %d with no cluster ranges to stop it inside this cluster", ErrPolicy, uid, port)
 }
 
 // validate requires an exit one rule can match, to hosts outside the pod.
@@ -189,22 +195,27 @@ func (e Exit) validate() error {
 // that excludes none would carry a forwarded connection to a member out of
 // the pod in the clear.
 func (p Policy) validateServer() error {
-	s := p.Server
-	if !s.serves() {
+	if !p.Server.serves() {
+		if p.Server.reaches() {
+			return fmt.Errorf("%w: a server role that answers no port of its own reaches nothing, so no rule may name its identities", ErrPolicy)
+		}
 		return nil
 	}
-	if s.Upstream == 0 {
+	if p.Server.Upstream == 0 {
 		return fmt.Errorf("%w: server role has no upstream identity, so its uncaptured cluster rules would match root", ErrPolicy)
 	}
-	if len(s.Egress.Ports) > 0 && len(p.ClusterRanges) == 0 {
-		return fmt.Errorf("%w: server role UID %d has egress ports and no cluster ranges to exclude from them", ErrPolicy, s.Egress.UID)
+	if len(p.Server.Egress.Ports) > 0 && len(p.ClusterRanges) == 0 {
+		return fmt.Errorf("%w: server role UID %d has egress ports and no cluster ranges to exclude from them", ErrPolicy, p.Server.Egress.UID)
 	}
-	for _, dst := range s.Services {
+	if err := p.requireClusterRanges(p.Server.Upstream, p.Server.OutsidePort); err != nil {
+		return err
+	}
+	for _, dst := range p.Server.Services {
 		if err := validRemoteAddress(dst.Addr); err != nil {
 			return err
 		}
 		if dst.Port == 0 {
-			return fmt.Errorf("%w: upstream identity %d service %s has no port", ErrPolicy, s.Upstream, dst.Addr)
+			return fmt.Errorf("%w: upstream identity %d service %s has no port", ErrPolicy, p.Server.Upstream, dst.Addr)
 		}
 	}
 	return nil

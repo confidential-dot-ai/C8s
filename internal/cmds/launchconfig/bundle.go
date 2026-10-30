@@ -103,7 +103,7 @@ func NewBundle(opts BundleOptions) (err error) {
 		len(opts.CDS.NodeCIDRs) == 0 {
 		return errors.New("--cds-image-manifest, --cds-platform, --cds-allowlist-seed and --cds-node-cidr are required: every node document names and pins this cluster's CDS VM")
 	}
-	if _, _, err := cmdsutil.SplitCDSAddress(opts.CDS.Address); err != nil {
+	if _, err := cmdsutil.ParseCDSAddress(opts.CDS.Address); err != nil {
 		return fmt.Errorf("--cds-address %w", err)
 	}
 	if opts.ServerName == "" {

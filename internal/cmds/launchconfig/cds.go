@@ -26,20 +26,15 @@ type CDS struct {
 	Measurements string `yaml:"measurements" json:"measurements"`
 }
 
-// CDSPort is the port this cluster's CDS serves on, which is what a pod
-// ruleset admits outside the cluster for its credential clients. A document
-// naming its CDS by address holds that address to one a node can dial.
-func (d *Document) CDSPort() (uint16, error) {
-	host, port, err := cmdsutil.SplitCDSAddress(d.CDS.Address)
+// CDSAddress is where this cluster's CDS serves, as the document names it:
+// the host its clients dial and the port a pod ruleset admits for them
+// outside the cluster.
+func (d *Document) CDSAddress() (cmdsutil.CDSAddress, error) {
+	address, err := cmdsutil.ParseCDSAddress(d.CDS.Address)
 	if err != nil {
-		return 0, fmt.Errorf("cds.address %w", err)
+		return cmdsutil.CDSAddress{}, fmt.Errorf("cds.address %w", err)
 	}
-	if address, err := netip.ParseAddr(host); err == nil {
-		if err := ValidateRoutableIPv4(address); err != nil {
-			return 0, fmt.Errorf("cds.address %q: %w", host, err)
-		}
-	}
-	return port, nil
+	return address, nil
 }
 
 // CDSPolicy is the measurements document a node's clients verify this
@@ -56,7 +51,11 @@ func (d *Document) CDSPolicy() ([]byte, error) {
 // that is an identity for one VM: every entry bound to the exact launch file
 // it boots.
 func (d *Document) validateCDS() error {
-	if _, err := d.CDSPort(); err != nil {
+	address, err := d.CDSAddress()
+	if err != nil {
+		return err
+	}
+	if err := validateCDSLiteral(address); err != nil {
 		return err
 	}
 	pins, err := refvalues.Parse([]byte(d.CDS.Measurements))
@@ -65,6 +64,26 @@ func (d *Document) validateCDS() error {
 	}
 	if _, err := cmdsutil.CDSLaunchFile(pins); err != nil {
 		return fmt.Errorf("cds.measurements %w", err)
+	}
+	return nil
+}
+
+// validateCDSLiteral holds a CDS named by address to one a node's pods can
+// reach: a routable unicast address, and one outside the ranges their packet
+// rules never carry that port to. A CDS named by a DNS name is whatever the
+// nodes resolve it to.
+func validateCDSLiteral(address cmdsutil.CDSAddress) error {
+	literal, named := address.Literal()
+	if !named {
+		return nil
+	}
+	if err := ValidateRoutableIPv4(literal); err != nil {
+		return fmt.Errorf("cds.address %q: %w", address.Host, err)
+	}
+	for _, raw := range clusterRanges {
+		if in := netip.MustParsePrefix(raw); in.Contains(literal) {
+			return fmt.Errorf("cds.address %s is inside this cluster's own range %s, which no pod reaches outside the mesh", address.Host, in)
+		}
 	}
 	return nil
 }
