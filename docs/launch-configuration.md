@@ -57,7 +57,7 @@ column names the role that must carry the field.
 | `server.operatorPublicKey` | yes | The server launch key, PEM. A server boot is authorized only for these exact bytes. |
 | `agentOperatorPublicKeys` | agent | The agent launch keys this cluster trusts, PEM, at most 128, all distinct and none equal to the server's. A server document may list them; an agent document must. |
 | `tlsSAN` | no | DNS name for the front-door certificate. Default `c8s.local`. |
-| `cds.address` | yes | The CDS endpoint, `<IPV4>:<port>`. |
+| `cds.address` | yes | The CDS endpoint, `<host>:<port>`, the host a DNS name or an IPv4 address. A name is resolved by the clients that dial it, through the resolvers the node image is built with, so it must resolve there. |
 | `cds.measurements` | yes | One measurements JSON document ([measurements.md](measurements.md)), pinning the CDS image to the launch file that VM boots with. Every entry must bind that file. |
 | `workloads` | refused | A cluster's workload entries belong in the CDS configuration: pass them to `c8s node launch-config new --tenant-workloads`. |
 | `router.hostnames` | no | Server only: up to 100 lowercase DNS names the router serves. A non-empty list puts the baked front door in ACME mode at boot. |

@@ -165,10 +165,10 @@ func newHandler(cfg config, logger *slog.Logger) (http.Handler, error) {
 // verifier that decides them. All three come from one source: while the
 // enforcer mounts the node's endpoint, policy and attestation-api for a
 // credentials-role container, they are the only source and a flag naming
-// another is refused (cmdsutil.ResolveCDSEndpoint, cmdsutil.ResolveCDSPins,
+// another is refused (cmdsutil.ResolveCDSAddress, cmdsutil.ResolveCDSPins,
 // cmdsutil.RequireNodeVerifier).
 func (cfg config) resolveCDS() (cds, error) {
-	endpoint, endpointFromNode, err := cmdsutil.ResolveCDSEndpoint(nodeAddressPath, cfg.cdsURL)
+	address, endpointFromNode, err := cmdsutil.ResolveCDSAddress(nodeAddressPath, cfg.cdsURL)
 	if err != nil {
 		return cds{}, err
 	}
@@ -194,7 +194,7 @@ func (cfg config) resolveCDS() (cds, error) {
 	}
 	if endpointFromNode {
 		return cds{
-			url:  cmdsutil.CDSURL(endpoint),
+			url:  cmdsutil.CDSURL(address),
 			pins: pins,
 		}, nil
 	}

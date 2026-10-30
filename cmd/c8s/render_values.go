@@ -397,7 +397,7 @@ func init() {
 	renderValuesCmd.Flags().BoolVar(&installVolumes, "volumes", false, "emit volumed.enabled=true, deploying the node agent that opens encrypted volumes (docs/volumes.md).")
 	renderValuesCmd.Flags().StringVar(&installCvmMode, flagCvmMode, "", "CVM deployment shape (REQUIRED; orthogonal to --hardware-platform): bare-metal (generalized node-as-CVM native TEE device) or gke (GKE managed CVMs) or aks (vTPM /dev/tpm0). bare-metal/gke/aks are single-tenant — the node is one trust domain")
 	renderValuesCmd.Flags().StringVar(&installHardwarePlatform, flagHardwarePlatform, "", "CPU-level TEE hardware (REQUIRED; orthogonal to --cvm-mode): sev-snp (/dev/sev-guest) or tdx (Intel TDX, /dev/tdx-guest). Ignored when --cvm-mode=aks")
-	renderValuesCmd.Flags().StringVar(&installCDSAddress, flagCDSAddress, "", "<ip>:<port> of the CDS this cluster trusts. Emits cds.address")
+	renderValuesCmd.Flags().StringVar(&installCDSAddress, flagCDSAddress, "", "<host>:<port> of the CDS this cluster trusts, the host a DNS name or an IPv4 address. Emits cds.address")
 	renderValuesCmd.Flags().StringVar(&installCDSPin, flagCDSPin, "", "path to that CDS's pin document (cds-pin.json). Emits cds.measurementsConfig as the file's content")
 	renderValuesCmd.Flags().BoolVar(&installResolveDigests, "resolve-digests", true, "resolve each component image tag to its registry digest (via crane), pin it, and enable the NRI allowlist derivation")
 	renderValuesCmd.Flags().StringVar(&installImagePullSecret, "image-pull-secret", "", "name of an existing dockerconfigjson Secret the chart wires into every component's imagePullSecrets")

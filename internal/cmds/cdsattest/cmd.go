@@ -125,12 +125,12 @@ func run(ctx context.Context, cfg config) error {
 	if cfg.tunnelIOTimeout <= 0 {
 		return errors.New("--tunnel-io-timeout must be positive")
 	}
-	endpoint, fromNode, err := cmdsutil.ResolveCDSEndpoint(workloadclaims.CDSAddressPath, cfg.routing.cdsURL)
+	address, fromNode, err := cmdsutil.ResolveCDSAddress(workloadclaims.CDSAddressPath, cfg.routing.cdsURL)
 	if err != nil {
 		return err
 	}
 	if fromNode {
-		cfg.routing.cdsURL = cmdsutil.CDSURL(endpoint)
+		cfg.routing.cdsURL = cmdsutil.CDSURL(address)
 	}
 	logger.Info("CDS endpoint resolved", "cds_url", cfg.routing.cdsURL, "from_node", fromNode)
 	if err := checkRoutingFlags(cfg); err != nil {

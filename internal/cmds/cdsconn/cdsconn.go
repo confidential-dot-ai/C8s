@@ -71,7 +71,7 @@ type Options struct {
 func BindFlags(pf *pflag.FlagSet, o *Options) {
 	urlHelp := "CDS-issued-TLS router or direct CDS base URL (required); WebPKI router URLs are not attestation-bound"
 	if o.DirectCDS {
-		urlHelp = "direct CDS base URL, the <ip>:<port> an install was given as --cds-address (required); a router front door does not relay this API"
+		urlHelp = "direct CDS base URL, the <host>:<port> an install was given as --cds-address (required); a router front door does not relay this API"
 	} else {
 		pf.StringSliceVar(&o.Measurements, "measurements", nil, "trusted router build ID(s) (repeatable/comma-separated) for a CDS-issued public TLS front door; an https --url requires a pin")
 		pf.StringVar(&o.MeasurementsFile, "measurements-file", "", "text file of trusted router SHA-384 hex digests, one per line; use --image-policy-file for complete JSON policies")
@@ -176,7 +176,7 @@ func (o *Options) httpsClient(ctx context.Context, pins refvalues.ReferenceValue
 			hc.CloseIdleConnections()
 		}
 		return nil, fmt.Errorf("--url %s serves a router discovery document; a router front door does not relay CDS's /ca or /secrets. "+
-			"Use the CDS URL directly, the <ip>:<port> the install was given as --cds-address, "+
+			"Use the CDS URL directly, the <host>:<port> the install was given as --cds-address, "+
 			"and pin the CDS launch file instead of the router's launch digest", o.URL)
 	case err == nil:
 		fmt.Fprintln(os.Stderr, "note: target is a router front door; verified its discovery attestation and bound this session to its CDS")

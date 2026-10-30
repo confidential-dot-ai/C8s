@@ -4,7 +4,6 @@ package main
 
 import (
 	"fmt"
-	"net/netip"
 	"os"
 	"path/filepath"
 
@@ -27,8 +26,8 @@ func cdsInstallArgs(address string, pin string) ([]string, error) {
 		}
 		return nil, fmt.Errorf("--%s and --%s name one CDS together: pass both", flagCDSAddress, flagCDSPin)
 	}
-	if _, err := netip.ParseAddrPort(address); err != nil {
-		return nil, fmt.Errorf("--%s must be <ip>:<port>, the one endpoint a client's packet rules admit: %w", flagCDSAddress, err)
+	if _, _, err := cmdsutil.SplitCDSAddress(address); err != nil {
+		return nil, fmt.Errorf("--%s %w", flagCDSAddress, err)
 	}
 	if _, err := os.Stat(pin); err != nil {
 		return nil, fmt.Errorf("--%s: %w", flagCDSPin, err)

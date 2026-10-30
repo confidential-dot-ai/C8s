@@ -1,7 +1,6 @@
 package nriimagepolicy
 
 import (
-	"net/netip"
 	"os"
 	"path/filepath"
 	"testing"
@@ -15,7 +14,7 @@ func TestMeshRoleBindingsAfterCredentialEndpoint(t *testing.T) {
 	cfg.Allowlist.NodeTCB = false
 	cfg.Allowlist.Base = roleBase(t, pushDigestB, CredentialRole, []string{"/usr/local/bin/c8s", "get-cert"})
 	cfg.WorkloadClaims.AdvertiseHost = "10.0.0.7"
-	cfg.Allowlist.Pull = installedCDSEndpoint(t, "10.9.9.9:8443").Pull
+	cfg.Allowlist.Pull = installedCDSAddress(t, "cds.example.org:8443").Pull
 	cfg.Allowlist.Pull.Interval, cfg.Allowlist.Pull.Timeout = time.Second, time.Second
 	cfg.Allowlist.Pull.AttestationApiURL = "http://127.0.0.1:8400"
 	if _, err := parseConfig(meshConfigDocument(t, cfg)); err != nil {
@@ -26,7 +25,7 @@ func TestMeshRoleBindingsAfterCredentialEndpoint(t *testing.T) {
 		t.Fatal(err)
 	}
 	bound, ok := loaded.credentialRole()
-	if !ok || bound.Destinations[0].String() != "10.9.9.9:8443" {
+	if !ok || bound.Port != 8443 {
 		t.Fatalf("credential role = %+v, bound = %v", bound, ok)
 	}
 	cfg.Allowlist.Pull.CDSAddressFile = ""
@@ -53,9 +52,9 @@ func TestNodeImageBootConfigRequiresCredentialBinding(t *testing.T) {
 		t.Fatal("unstaged boot config loaded without a credential binding")
 	}
 	cfg.Mesh.Roles = append(cfg.Mesh.Roles, roleBinding{
-		Name:         CredentialRole,
-		UID:          workloadclaims.CredentialsUID,
-		Destinations: []netip.AddrPort{netip.MustParseAddrPort("192.0.2.10:30808")},
+		Name: CredentialRole,
+		UID:  workloadclaims.CredentialsUID,
+		Port: 30808,
 	})
 	if _, err := loadMeshConfigDocument(t, cfg); err != nil {
 		t.Fatalf("boot config with a staged credential binding: %v", err)

@@ -36,7 +36,7 @@ func document(t *testing.T, role launchconfig.Role) *launchconfig.Document {
 	server := testPins(t).Images[0]
 	return &launchconfig.Document{
 		SchemaVersion: launchconfig.SchemaVersion, Role: role,
-		CDS: launchconfig.CDS{Address: "192.0.2.50:8443", Measurements: string(externalCDSPin(t))},
+		CDS: launchconfig.CDS{Address: "cds.example.org:8443", Measurements: string(externalCDSPin(t))},
 		Image: launchconfig.Image{
 			Platform:    "tdx",
 			Measurement: hex.EncodeToString(server.Digest),
@@ -124,11 +124,7 @@ func TestPreparePreservesFloorAndPinsServerBeforeRKE2(t *testing.T) {
 				t.Fatalf("chart components missing from bootstrap base: %v", base.Workloads)
 			}
 			pull := ga["pull"].(map[string]any)
-			endpoint, err := doc.CDSEndpoint()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if pull["url"] != cmdsutil.CDSURL(endpoint) || pull["cds_measurements_config"] != PublicDir+"/cds.json" || pull["timeout"] != "30s" {
+			if pull["url"] != cmdsutil.CDSURL(doc.CDS.Address) || pull["cds_measurements_config"] != PublicDir+"/cds.json" || pull["timeout"] != "30s" {
 				t.Fatalf("bad pull config: %v", pull)
 			}
 		})
@@ -368,8 +364,8 @@ func TestPrepareBindsTheCredentialRoleToTheStagedCDS(t *testing.T) {
 	if credentials.Name != nriimagepolicy.CredentialRole || credentials.UID != workloadclaims.CredentialsUID {
 		t.Errorf("credential role = %+v, want %s on the reserved uid %d", credentials, nriimagepolicy.CredentialRole, workloadclaims.CredentialsUID)
 	}
-	if want := []string{"192.0.2.50:8443"}; !reflect.DeepEqual(credentials.Destinations, want) {
-		t.Errorf("credential destinations = %v, want this cluster's CDS %v", credentials.Destinations, want)
+	if credentials.Port != 8443 {
+		t.Errorf("credential role port = %d, want the port this cluster's CDS serves on", credentials.Port)
 	}
 }
 
@@ -484,9 +480,9 @@ type stagedCapture struct {
 }
 
 type stagedRole struct {
-	Name         string   `yaml:"name"`
-	UID          uint32   `yaml:"uid"`
-	Destinations []string `yaml:"destinations"`
+	Name string `yaml:"name"`
+	UID  uint32 `yaml:"uid"`
+	Port uint16 `yaml:"port"`
 }
 
 // meshPolicy is the measured mesh policy a baked config carries: its own role

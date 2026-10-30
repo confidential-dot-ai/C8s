@@ -158,25 +158,29 @@ func TestBindEntryWithoutExitsHeld(t *testing.T) {
 	}
 }
 
-// An exit into the cluster, onto this node, or to any service a platform role
-// is bound to (CDS on every port) is refused before the ruleset is touched,
-// and so is every exit where the node cannot name what is off limits,
-// including an exit of an address family with no trusted cluster range.
+// An exit into the cluster, onto this node, or onto the port a platform role
+// dials outside the cluster is refused before the ruleset is touched, and so
+// is every exit where the node cannot name what is off limits, including an
+// exit of an address family with no trusted cluster range.
 func TestBindEntryRefusesAnExitIntoTheClusterOrOntoTheNode(t *testing.T) {
 	for _, tc := range []struct {
 		exit  string
+		port  uint16
 		wants string
 	}{
-		{"10.52.3.0/24", "overlaps the cluster range 10.52.0.0/16"},
-		{"10.0.0.0/8", "overlaps the cluster range 10.52.0.0/16"},
-		{"10.0.2.15/32", "reaches 10.0.2.15"},
-		{"10.43.0.5/32", "reaches 10.43.0.5"},
-		{"10.43.0.4/30", "reaches 10.43.0.5"},
-		{"2001:db8::7/128", "names no IPv6 cluster range"},
+		{exit: "10.52.3.0/24", wants: "overlaps the cluster range 10.52.0.0/16"},
+		{exit: "10.0.0.0/8", wants: "overlaps the cluster range 10.52.0.0/16"},
+		{exit: "10.0.2.15/32", wants: "reaches 10.0.2.15"},
+		{exit: "203.0.113.7/32", port: 8443, wants: "is the port the get-cert role dials"},
+		{exit: "2001:db8::7/128", wants: "names no IPv6 cluster range"},
 	} {
 		gate, state, extended := exitsGate(t)
 		pod := meshPod("default", "collector", testNetNS)
-		exits := []exit{{Range: netip.MustParsePrefix(tc.exit), Port: 8400}}
+		port := tc.port
+		if port == 0 {
+			port = 8400
+		}
+		exits := []exit{{Range: netip.MustParsePrefix(tc.exit), Port: port}}
 		err := gate.bindEntry(pod, exitDecision{entry: "collector", exits: exits})
 		if err == nil || !strings.Contains(err.Error(), tc.wants) {
 			t.Fatalf("exit %s: err = %v, want %q", tc.exit, err, tc.wants)

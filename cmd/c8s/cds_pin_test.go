@@ -144,9 +144,15 @@ func TestCDSInstallArgs(t *testing.T) {
 		t.Fatalf("cdsInstallArgs() = %v, %v, want no arguments", args, err)
 	}
 
+	// A name is this cluster's CDS as much as an address is: its clients
+	// resolve it, and their packet rules admit the port.
+	if _, err := cdsInstallArgs("cds.example.com:8443", pin); err != nil {
+		t.Fatalf("cdsInstallArgs with a named CDS: %v", err)
+	}
+
 	for _, tc := range []struct{ name, address, pin string }{
-		{name: "a name, not an address", address: "cds.example.com:8443", pin: pin},
 		{name: "no port", address: "10.9.9.9", pin: pin},
+		{name: "an uppercase name", address: "CDS.example.com:8443", pin: pin},
 		{name: "no pin", address: "10.9.9.9:8443"},
 		{name: "no address", pin: pin},
 		{name: "a pin that is not there", address: "10.9.9.9:8443", pin: filepath.Join(t.TempDir(), "absent.json")},

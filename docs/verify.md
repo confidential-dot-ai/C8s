@@ -59,7 +59,7 @@ bundle from CDS:
 c8s cds ca --url https://<CDS_ADDRESS> --image-policy-file cds-pin.json --out mesh-ca.pem
 ```
 
-`<CDS_ADDRESS>` is the `<ip>:<port>` the install named with `--cds-address`,
+`<CDS_ADDRESS>` is the `<host>:<port>` the install named with `--cds-address`,
 and `cds-pin.json` the document it named with `--cds-pin`, which pins the guest
 CDS runs. These commands take that document and no launch digest of their own.
 The certificate SHA-256 digests print on stderr; record them: a CDS restart

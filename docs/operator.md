@@ -32,7 +32,8 @@ here, such as `router.publicTLS.mode`, are chart values.
 
 Two inputs are policy rather than plumbing. `--cds-address` and `--cds-pin`
 name the CDS this cluster trusts and the guest it runs in, and the chart
-refuses to render without them. `--operator-keys` pins the operator public keys
+refuses to render without them. The address is `<host>:<port>`: a DNS name
+this cluster's components resolve, or an IPv4 address. `--operator-keys` pins the operator public keys
 that authorize allowlist and route writes; without them CDS refuses every
 write, so a change needing a new entry needs a reinstall. `--force` proceeds past the two guarded
 prompts — no `--operator-keys`, and a fail-closed policy that would deny the

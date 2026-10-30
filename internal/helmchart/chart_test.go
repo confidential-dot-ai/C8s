@@ -2234,6 +2234,10 @@ func TestChartRefusesUnpinnedCDS(t *testing.T) {
 		args []string
 	}{
 		{name: "cds.address and cds.measurementsConfig", args: baseCDSPolicy(t)},
+		{
+			name: "a CDS named by a DNS name",
+			args: []string{"--set-string", "cds.address=cds.example.com:8443", "--set-file", "cds.measurementsConfig=" + baseCDSPin(t)},
+		},
 		{name: "node.baked", args: bakedArgs},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2252,8 +2256,9 @@ func TestChartRefusesUnpinnedCDS(t *testing.T) {
 		{name: "neither", want: "cds_pins_required"},
 		{name: "no pin", args: []string{"--set-string", "cds.address=" + baseCDSAddress}, want: "cds_pins_required"},
 		{name: "no address", args: pin, want: "cds_address_required"},
-		{name: "a name, not an address", args: append(pin, "--set-string", "cds.address=cds.example.com:8443"), want: "cds_address_required"},
 		{name: "no port", args: append(pin, "--set-string", "cds.address=10.9.9.9"), want: "cds_address_required"},
+		{name: "an uppercase name", args: append(pin, "--set-string", "cds.address=CDS.example.com:8443"), want: "cds_address_required"},
+		{name: "a URL, not an endpoint", args: append(pin, "--set-string", "cds.address=https://cds.example.com:8443"), want: "cds_address_required"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out, err := helmTemplateUnpinned(t, ".", tc.args...)

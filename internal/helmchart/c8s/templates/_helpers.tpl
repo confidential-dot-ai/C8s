@@ -35,18 +35,16 @@
 {{- $document -}}
 {{- end -}}
 
-{{/* c8s.checkCDSAddress refuses an address a credential client's packet rules
-     could not admit: one IPv4 address and one port. Takes the value. */}}
+{{/* c8s.checkCDSAddress refuses an endpoint this cluster's clients could not
+     dial: one host, a lowercase DNS name or an IPv4 address, and one port.
+     Takes the value. */}}
 {{- define "c8s.checkCDSAddress" -}}
 {{- $address := toString . -}}
 {{- $parts := splitList ":" $address -}}
-{{- $refusal := printf "VALIDATION_ERROR kind=cds_address_required: cds.address must be this cluster's CDS as <ipv4>:<port> (got %q): a credential client's packet rules admit that one endpoint, so a name would not be what it dials. Pass `c8s install --cds-address <ip:port>`." $address -}}
+{{- $refusal := printf "VALIDATION_ERROR kind=cds_address_required: cds.address must be this cluster's CDS as <host>:<port> (got %q), the host a lowercase DNS name or an IPv4 address. Pass `c8s install --cds-address <host:port>`." $address -}}
 {{- if ne (len $parts) 2 -}}{{- fail $refusal -}}{{- end -}}
-{{- $octets := splitList "." (first $parts) -}}
-{{- if ne (len $octets) 4 -}}{{- fail $refusal -}}{{- end -}}
-{{- range $octets -}}
-{{- if or (not (regexMatch `^[0-9]{1,3}$` .)) (gt (int .) 255) -}}{{- fail $refusal -}}{{- end -}}
-{{- end -}}
+{{- $host := first $parts -}}
+{{- if not (regexMatch `^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$` $host) -}}{{- fail $refusal -}}{{- end -}}
 {{- $port := last $parts -}}
 {{- if or (not (regexMatch `^[1-9][0-9]*$` $port)) (gt (int $port) 65535) -}}{{- fail $refusal -}}{{- end -}}
 {{- end -}}

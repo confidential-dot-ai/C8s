@@ -5,7 +5,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 
@@ -186,15 +185,15 @@ func TestPrepareNamesTheExternalCDS(t *testing.T) {
 	if err := yaml.Unmarshal(data, &staged); err != nil {
 		t.Fatal(err)
 	}
-	if got := staged.Allowlist.Pull["url"]; got != "https://192.0.2.50:8443" {
+	if got := staged.Allowlist.Pull["url"]; got != "https://cds.example.org:8443" {
 		t.Errorf("pull url = %v, want the CDS the document names", got)
 	}
 	roles := stagedMeshPolicy(t, root).Roles
 	if len(roles) != 2 {
 		t.Fatalf("staged roles = %+v, want the measured mesh role plus the credential role", roles)
 	}
-	if want := []string{"192.0.2.50:8443"}; !reflect.DeepEqual(roles[1].Destinations, want) {
-		t.Errorf("credential destinations = %v, want %v", roles[1].Destinations, want)
+	if roles[1].Port != 8443 {
+		t.Errorf("credential role port = %d, want the port the document's CDS serves on", roles[1].Port)
 	}
 	published, err := refvalues.Load(filepath.Join(root, PublicDir, "cds.json"))
 	if err != nil {

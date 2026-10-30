@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -88,11 +87,11 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 		return fmt.Errorf("merge chart seed into NRI base: %w", err)
 	}
 	a["base"] = base
-	endpoint, err := d.CDSEndpoint()
+	port, err := d.CDSPort()
 	if err != nil {
 		return err
 	}
-	pull["url"] = cmdsutil.CDSURL(endpoint)
+	pull["url"] = cmdsutil.CDSURL(d.CDS.Address)
 	pull["cds_measurements_config"] = PublicDir + "/cds.json"
 	mesh, declared := floor["mesh"]
 	if !declared {
@@ -102,7 +101,7 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 	if !ok {
 		return fmt.Errorf("baked NRI mesh policy is %T, not a mapping", mesh)
 	}
-	if err := appendCredentialRole(policy, endpoint); err != nil {
+	if err := appendCredentialRole(policy, port); err != nil {
 		return err
 	}
 	data, err = yaml.Marshal(floor)
@@ -232,10 +231,11 @@ func argvWithNodeValues(argv []string, values map[string]string) ([]string, erro
 }
 
 // appendCredentialRole completes the measured mesh policy with the one binding
-// only a launched node can know: the injected credential clients reach this
-// cluster's CDS and nothing else. A policy that already names that role, or
-// its reserved identity, is a measured policy this step would contradict.
-func appendCredentialRole(policy map[string]any, address netip.AddrPort) error {
+// only a launched node can know: the injected credential clients reach the
+// port this cluster's CDS serves on, outside the cluster, and nothing else. A
+// policy that already names that role, or its reserved identity, is a measured
+// policy this step would contradict.
+func appendCredentialRole(policy map[string]any, port uint16) error {
 	declared, ok := policy["roles"]
 	if !ok {
 		declared = []any{}
@@ -257,9 +257,9 @@ func appendCredentialRole(policy map[string]any, address netip.AddrPort) error {
 		}
 	}
 	policy["roles"] = append(roles, map[string]any{
-		"name":         nriimagepolicy.CredentialRole,
-		"uid":          workloadclaims.CredentialsUID,
-		"destinations": []any{address.String()},
+		"name": nriimagepolicy.CredentialRole,
+		"uid":  workloadclaims.CredentialsUID,
+		"port": port,
 	})
 	return nil
 }

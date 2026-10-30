@@ -70,12 +70,12 @@ func BindFlags(f *pflag.FlagSet, cfg *Config) {
 // hands an injected client, otherwise --cds-url. Each command calls it while
 // it wires its flags, before validating what it ended up with.
 func (c *Config) ResolveCDSEndpoint() error {
-	endpoint, fromNode, err := cmdsutil.ResolveCDSEndpoint(workloadclaims.CDSAddressPath, c.CDSURL)
+	address, fromNode, err := cmdsutil.ResolveCDSAddress(workloadclaims.CDSAddressPath, c.CDSURL)
 	if err != nil {
 		return err
 	}
 	if fromNode {
-		c.CDSURL = cmdsutil.CDSURL(endpoint)
+		c.CDSURL = cmdsutil.CDSURL(address)
 	}
 	slog.Info("CDS endpoint resolved", "cds_url", c.CDSURL, "from_node", fromNode)
 	return nil

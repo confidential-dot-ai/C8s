@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -246,7 +245,7 @@ func nodeCDSFiles(t *testing.T) (address, pins, verifier string) {
 	t.Helper()
 	dir := t.TempDir()
 	address = filepath.Join(dir, "cds-address")
-	if err := os.WriteFile(address, cmdsutil.FormatCDSAddress(netip.MustParseAddrPort("10.0.0.1:30808")), 0o600); err != nil {
+	if err := os.WriteFile(address, cmdsutil.FormatCDSAddress("cds.example.org:30808"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	pins = filepath.Join(dir, "cds-pins.json")

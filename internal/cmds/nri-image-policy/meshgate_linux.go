@@ -65,12 +65,13 @@ func rulesetExits(exits []exit) []ruleset.Exit {
 func (p meshPolicy) podRuleset(kubeNamespace string, granted []exit) ruleset.Policy {
 	endpoint, _ := p.role(meshRole)
 	return ruleset.Policy{
-		Resolver: p.Resolver,
-		Capture:  ruleset.CapturePorts(p.Capture),
-		MeshUID:  endpoint.UID,
-		Exits:    slices.Concat(p.serviceExits(), rulesetExits(granted)),
-		Server:   p.servedPorts(kubeNamespace),
-		Roles:    p.dialingRoles(),
+		Resolver:      p.Resolver,
+		Capture:       ruleset.CapturePorts(p.Capture),
+		MeshUID:       endpoint.UID,
+		ClusterRanges: p.ClusterRanges,
+		Exits:         slices.Concat(p.serviceExits(), rulesetExits(granted)),
+		Server:        p.servedPorts(kubeNamespace),
+		Roles:         p.dialingRoles(),
 	}
 }
 
@@ -95,11 +96,11 @@ func (p meshPolicy) serviceExits() []ruleset.Exit {
 // name resolves. Inside it, the upstream role reaches a member itself, as the
 // mesh client of the workload its route names.
 //
-// The upstream role reaches the one CDS the credential role is bound to, and
-// the verifier that weighs its evidence where policy names a port for it: the
-// front door answers from the signed route manifest it fetches there, over
-// armTLS it cannot verify without that verifier, and the node is what names
-// both.
+// The upstream role reaches the CDS port the credential role is bound to,
+// outside the cluster, and the verifier that weighs that CDS's evidence where
+// policy names a port for it: the front door answers from the signed route
+// manifest it fetches there, over armTLS it cannot verify without that
+// verifier, and the node is what names both.
 func (p meshPolicy) servedPorts(kubeNamespace string) ruleset.ServerRole {
 	if kubeNamespace != routerNamespace {
 		return ruleset.ServerRole{}
@@ -110,14 +111,11 @@ func (p meshPolicy) servedPorts(kubeNamespace string) ruleset.ServerRole {
 			UID:   workloadclaims.AcmeUID,
 			Ports: acmeEgressPorts,
 		},
-		Upstream:      workloadclaims.UpstreamUID,
-		ClusterRanges: p.ClusterRanges,
+		Upstream:    workloadclaims.UpstreamUID,
+		OutsidePort: p.credentialPort(),
 	}
-	if cds, bound := p.boundCDS(); bound {
-		server.Services = append(server.Services, cds)
-		if verifier, named := p.credentialVerifier(); named {
-			server.Services = append(server.Services, verifier)
-		}
+	if verifier, named := p.credentialVerifier(); named && server.OutsidePort != 0 {
+		server.Services = append(server.Services, verifier)
 	}
 	return server
 }
@@ -134,41 +132,32 @@ func (p meshPolicy) credentialVerifier() (ruleset.Destination, bool) {
 	}, true
 }
 
-// boundCDS is the one CDS endpoint this node's credential role is bound to
-// (bindCredentialRole). A policy that binds none leaves the upstream role
-// without it, as it leaves the credential clients without it.
-func (p meshPolicy) boundCDS() (ruleset.Destination, bool) {
+// credentialPort is the port this node's CDS serves on, which the credential
+// role is bound to (bindCredentialRole). A policy that binds no such role
+// leaves the upstream role without it, as it leaves the credential clients
+// without it.
+func (p meshPolicy) credentialPort() uint16 {
 	role, bound := p.role(CredentialRole)
-	if !bound || len(role.Destinations) != 1 {
-		return ruleset.Destination{}, false
+	if !bound {
+		return 0
 	}
-	return ruleset.Destination{
-		Addr: role.Destinations[0].Addr(),
-		Port: role.Destinations[0].Port(),
-	}, true
+	return role.Port
 }
 
-// dialingRoles are the roles the ruleset permits by destination: every bound
-// role but the mesh endpoint, whose sockets it exempts by UID instead. The
-// credential clients also reach the verifier that weighs their CDS's
-// evidence, where policy names a port for it.
+// dialingRoles are the roles the ruleset permits by port: every bound role
+// but the mesh endpoint, whose sockets it exempts by UID instead. Each
+// reaches its port outside this cluster, and the credential clients also
+// reach the verifier that weighs their CDS's evidence, where policy names a
+// port for it.
 func (p meshPolicy) dialingRoles() []ruleset.Role {
 	var roles []ruleset.Role
 	for _, role := range p.Roles {
 		if role.Name == meshRole {
 			continue
 		}
-		bound := ruleset.Role{UID: role.UID}
-		for _, dst := range role.Destinations {
-			bound.Destinations = append(bound.Destinations, ruleset.Destination{
-				Addr: dst.Addr(),
-				Port: dst.Port(),
-			})
-		}
-		if role.Name == CredentialRole && len(bound.Destinations) > 0 {
-			if verifier, named := p.credentialVerifier(); named {
-				bound.Destinations = append(bound.Destinations, verifier)
-			}
+		bound := ruleset.Role{UID: role.UID, OutsidePort: role.Port}
+		if verifier, named := p.credentialVerifier(); named && role.Name == CredentialRole {
+			bound.Destinations = append(bound.Destinations, verifier)
 		}
 		roles = append(roles, bound)
 	}

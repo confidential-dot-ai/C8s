@@ -3,8 +3,6 @@ package nriimagepolicy
 import (
 	"errors"
 	"fmt"
-	"net/netip"
-	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -38,10 +36,9 @@ type config struct {
 	// Mesh is the trusted mesh policy (roles.go); required.
 	Mesh *meshPolicy `yaml:"mesh"`
 
-	// cdsEndpoint is the CDS this node reaches, read from the address file an
-	// install mounts beside this config (cdsaddress.go). Invalid when no file
-	// names one.
-	cdsEndpoint netip.AddrPort
+	// cdsAddress is the <host>:<port> this node's CDS serves on, read at load
+	// from what names it (cdsaddress.go). "" when nothing does.
+	cdsAddress string
 }
 
 // pluginConfig contains plugin runtime settings.
@@ -262,12 +259,12 @@ func loadConfig(path string) (*config, error) {
 	if err != nil {
 		return nil, err
 	}
-	endpoint, err := loadCDSEndpoint(cfg.Allowlist.Pull)
+	address, err := loadCDSAddress(cfg.Allowlist.Pull)
 	if err != nil {
 		return nil, fmt.Errorf("the CDS this node reaches: %w", err)
 	}
-	cfg.cdsEndpoint = endpoint
-	if err := bindCredentialRole(cfg, endpoint); err != nil {
+	cfg.cdsAddress = address
+	if err := bindCredentialRole(cfg); err != nil {
 		return nil, fmt.Errorf("bind the %s role to the CDS this node reaches: %w", CredentialRole, err)
 	}
 	if err := cfg.validateMeshRoleBindings(); err != nil {
@@ -318,17 +315,14 @@ func parseConfig(data []byte) (*config, error) {
 	return cfg, nil
 }
 
-// checkPullURL holds a configured pull URL to https: CDS serves armTLS only.
+// checkPullURL holds a configured pull URL to the https <host>:<port> this
+// cluster's CDS serves on: CDS serves armTLS only.
 func checkPullURL(raw string) error {
 	if raw == "" {
 		return nil
 	}
-	parsed, err := url.Parse(raw)
-	if err != nil {
-		return fmt.Errorf("allowlist.pull.url: %w", err)
-	}
-	if parsed.Scheme != "https" {
-		return fmt.Errorf("allowlist.pull.url scheme must be https, got %q", parsed.Scheme)
+	if _, err := cmdsutil.CDSURLAddress(raw); err != nil {
+		return fmt.Errorf("allowlist.pull.url %w", err)
 	}
 	return nil
 }
@@ -362,14 +356,14 @@ func (c *config) PullEnabled() bool {
 	return c.Allowlist.Pull.URL != "" || c.Allowlist.Pull.CDSAddressFile != ""
 }
 
-// pullURL is the CDS this node pulls its allowlist from: the endpoint the
-// address file named at load (cdsaddress.go), else the URL a measured config
-// carries. Empty where the config names no CDS.
+// pullURL is the CDS this node pulls its allowlist from: the endpoint
+// whatever named it at load (cdsaddress.go), dialled over armTLS. Empty where
+// the config names no CDS.
 func (c *config) pullURL() string {
-	if c.cdsEndpoint.IsValid() {
-		return cmdsutil.CDSURL(c.cdsEndpoint)
+	if c.cdsAddress == "" {
+		return ""
 	}
-	return c.Allowlist.Pull.URL
+	return cmdsutil.CDSURL(c.cdsAddress)
 }
 
 // baseEnabled reports whether the base allowlist carries any workload.

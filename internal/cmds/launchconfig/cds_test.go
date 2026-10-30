@@ -70,12 +70,15 @@ func TestStageNamesTheExternalCDS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	endpoint, err := staged.CDSEndpoint()
+	if staged.CDS.Address != "cds.example.org:8443" {
+		t.Fatalf("staged CDS endpoint = %s", staged.CDS.Address)
+	}
+	port, err := staged.CDSPort()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := endpoint.String(); got != "192.0.2.50:8443" {
-		t.Fatalf("staged CDS endpoint = %s", got)
+	if port != 8443 {
+		t.Fatalf("staged CDS port = %d", port)
 	}
 	cds := stagedCDSPolicy(t, staged)
 	if cds.Family != teetypes.FamilySNP || len(cds.Images) != 2 {

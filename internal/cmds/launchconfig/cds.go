@@ -15,8 +15,10 @@ import (
 // confidential VM of its own, so its TEE family is that VM's, not the
 // family of the node reading the document.
 type CDS struct {
-	// Address is an IPv4 address and port, the one destination a pod
-	// ruleset admits for this cluster's credential clients.
+	// Address is the <host>:<port> this cluster's CDS serves on, the host a
+	// DNS name its clients resolve or the IPv4 address they dial as it
+	// stands. A pod ruleset admits that port outside the cluster for this
+	// cluster's credential clients.
 	Address string `yaml:"address" json:"address"`
 	// Measurements is one measurements JSON document, as `launch-config new`
 	// and `c8s cds config new` write it: every entry binds the CDS image to
@@ -24,14 +26,20 @@ type CDS struct {
 	Measurements string `yaml:"measurements" json:"measurements"`
 }
 
-// CDSEndpoint is this cluster's CDS endpoint, which is what a pod ruleset
-// names as a destination.
-func (d *Document) CDSEndpoint() (netip.AddrPort, error) {
-	endpoint, err := netip.ParseAddrPort(d.CDS.Address)
+// CDSPort is the port this cluster's CDS serves on, which is what a pod
+// ruleset admits outside the cluster for its credential clients. A document
+// naming its CDS by address holds that address to one a node can dial.
+func (d *Document) CDSPort() (uint16, error) {
+	host, port, err := cmdsutil.SplitCDSAddress(d.CDS.Address)
 	if err != nil {
-		return netip.AddrPort{}, fmt.Errorf("cds.address must be an IPv4 address and port: %w", err)
+		return 0, fmt.Errorf("cds.address %w", err)
 	}
-	return endpoint, nil
+	if address, err := netip.ParseAddr(host); err == nil {
+		if err := ValidateRoutableIPv4(address); err != nil {
+			return 0, fmt.Errorf("cds.address %q: %w", host, err)
+		}
+	}
+	return port, nil
 }
 
 // CDSPolicy is the measurements document a node's clients verify this
@@ -44,18 +52,12 @@ func (d *Document) CDSPolicy() ([]byte, error) {
 	return refvalues.Format(pins)
 }
 
-// validateCDS requires the endpoint a ruleset admits and a pin that is an
-// identity for one VM: every entry bound to the exact launch file it boots.
+// validateCDS requires the endpoint this cluster's clients dial and a pin
+// that is an identity for one VM: every entry bound to the exact launch file
+// it boots.
 func (d *Document) validateCDS() error {
-	endpoint, err := d.CDSEndpoint()
-	if err != nil {
+	if _, err := d.CDSPort(); err != nil {
 		return err
-	}
-	if err := ValidateRoutableIPv4(endpoint.Addr()); err != nil {
-		return fmt.Errorf("cds.address: %w", err)
-	}
-	if endpoint.Port() == 0 {
-		return fmt.Errorf("cds.address must name a port")
 	}
 	pins, err := refvalues.Parse([]byte(d.CDS.Measurements))
 	if err != nil {
