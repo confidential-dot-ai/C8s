@@ -21,6 +21,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
+	"github.com/confidential-dot-ai/c8s/internal/cdsboard"
 	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
 	"github.com/confidential-dot-ai/c8s/internal/sandboxledger"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
@@ -40,6 +41,7 @@ var testTiming = Timing{
 	Apply:      3 * time.Second,
 	Tick:       50 * time.Millisecond,
 	Checkpoint: 200 * time.Millisecond,
+	Backup:     500 * time.Millisecond,
 }
 
 // The store limits every replica of the test cluster holds, which its policy
@@ -261,11 +263,47 @@ func (b *addressBook) resolve(_ context.Context, entry string) ([]netip.AddrPort
 }
 
 // testBoard is the cluster's board: the decrees an operator left on it, which
-// every replica reads for itself, and how many times they have read it.
+// every replica reads for itself, how many times they have read it, and the
+// sealed backups its leader appends.
 type testBoard struct {
 	mu      sync.Mutex
 	decrees []cdsdecree.Signed
 	reads   int
+	backups []appendedBackup
+	// refuses makes the board take no backup.
+	refuses bool
+}
+
+// appendedBackup is one sealed backup as the board holds it.
+type appendedBackup struct {
+	name   cdsboard.BackupName
+	sealed []byte
+}
+
+// appendBackup is the leader writing one sealed backup.
+func (b *testBoard) appendBackup(_ context.Context, name cdsboard.BackupName, sealed []byte) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.refuses {
+		return errors.New("the board answered 503 Service Unavailable")
+	}
+	b.backups = append(b.backups, appendedBackup{name: name, sealed: sealed})
+	return nil
+}
+
+// refuseBackups makes the board take no backup, as a store the host stopped
+// serving does.
+func (b *testBoard) refuseBackups(refuses bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.refuses = refuses
+}
+
+// appendedBackups are the backups the board holds, oldest first.
+func (b *testBoard) appendedBackups() []appendedBackup {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return slices.Clone(b.backups)
 }
 
 // holds leaves one decree on the board, as an operator with their own
@@ -355,6 +393,8 @@ func (c *liveCluster) replicaConfig(stub *mockapi.Stub) Config {
 		AttestationURL: stub.URL(),
 		Timing:         c.timing,
 		Replicas:       []string{testReplicaEntry},
+		RecoveryKey:    &c.recovery.PublicKey,
+		AppendBackup:   c.board.appendBackup,
 		Allowlist:      inMemoryAllowlist(c.t),
 		Secrets:        secrets.NewMemoryStore(maxTestSecretPaths, maxTestPathsPerHolder, maxTestSecretValue),
 		Ledger:         sandboxledger.New(testBindingLife, maxTestSandboxBindings),

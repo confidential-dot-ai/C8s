@@ -44,7 +44,8 @@ cluster; the log rules afterwards.
 | `workloads` | seeds the allowlist at every Genesis | operator allowlist writes |
 | `ha.voters` | the voter seats the cluster starts with | a `voters` decree, one seat at a time |
 | `ha.replicas` | the names and addresses discovery resolves to find the replicas | adding replicas behind a name needs no change; another list is another cluster |
-| `ha.board` | the object store an operator may leave decrees in, beside posting them; optional | fixed for the cluster's life |
+| `ha.board` | the object store an operator may leave decrees in, beside posting them, and the cluster's backups travel through; optional | fixed for the cluster's life |
+| `ha.recoveryKey` | the key the leader seals the cluster's backups to; optional, and needs a board | fixed for the cluster's life |
 | `clusterID`, `operatorPublicKeys`, `nodeCIDRs`, `leafDNSNames`, `leafDNSPatterns` | as for a single CDS | fixed for the cluster's life |
 
 The CDS images a replica may run are not in the file at all: the Genesis
@@ -52,9 +53,11 @@ decree carries the first set, and a `pins` decree replaces it.
 
 `c8s cds config new --replica ... --voters 3` writes the file, and `c8s node
 launch-config new` writes the same under `--cds-replica` and `--cds-voters`.
-`--board-endpoint` and `--board-bucket` (`--cds-board-*`) name the board; a
-file without them runs a cluster that takes its decrees over the attested
-channel alone. A file with no `--replica` runs one CDS, which is the
+`--board-endpoint` and `--board-bucket` (`--cds-board-*`) name the board, and
+`--recovery-key` (`--cds-recovery-key`) the key its backups seal to; a file
+without them runs a cluster that takes its decrees over the attested channel
+alone and keeps its state in the replicas' memory. A file with no `--replica`
+runs one CDS, which is the
 deployment [operator.md](operator.md) describes.
 
 ## Addresses

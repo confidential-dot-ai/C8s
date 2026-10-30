@@ -88,7 +88,7 @@ type CDSOptions struct {
 	TenantWorkloadsPath string
 	// ReplicaSet is the replica set that CDS runs as, empty for a cluster
 	// whose CDS is a singleton.
-	ReplicaSet cdsconfig.HA
+	ReplicaSet cdsconfig.ReplicaSetFlags
 }
 
 // NewBundle generates the cluster's launch keys (or takes the server key from

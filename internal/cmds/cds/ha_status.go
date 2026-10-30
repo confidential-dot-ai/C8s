@@ -28,8 +28,8 @@ func newStatusCmd() *cobra.Command {
 		Long: "Reads every replica of the cluster over armTLS and prints one line per replica, then a line for\n" +
 			"each alarm it raises: a replica that does not serve, one that stopped following the log, and a\n" +
 			"cluster whose replicas hold different state. Only the leader knows the voter seats, the roll\n" +
-			"gate and what the state digests say, so the other replicas report none of them, which the\n" +
-			"line carries as -.\n\n" +
+			"gate, what the state digests say and the backups it appended, so the other replicas report\n" +
+			"none of them, which the line carries as -.\n\n" +
 			"Every value a replica reports is quoted, because the replica is what the command audits.",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
@@ -103,12 +103,12 @@ func printReport(w io.Writer, report replicaReport) {
 		return
 	}
 	reported := *report.Status
-	fmt.Fprintf(w, "%s cluster=%q member=%q state=%q joined=%t serving=%t version=%d node_images_version=%d ca=%q voters=%s non_voters=%s applied=%d term=%d leader=%q roll_safe=%s checkpoint=%s\n",
+	fmt.Fprintf(w, "%s cluster=%q member=%q state=%q joined=%t serving=%t version=%d node_images_version=%d ca=%q voters=%s non_voters=%s applied=%d term=%d leader=%q roll_safe=%s checkpoint=%s last_backup=%s\n",
 		report.Address, reported.ClusterID, reported.ID, reported.State,
 		reported.Joined, reported.Serving.OK, reported.Version, reported.NodeImagesVersion, reported.CAFingerprint,
 		reportedCount(reported.Voters), reportedCount(reported.NonVoters),
 		reported.AppliedIndex, reported.Term, reported.Leader, reportedRollSafe(reported.RollSafe),
-		reportedCheckpoint(reported.Checkpoint))
+		reportedCheckpoint(reported.Checkpoint), reportedBackup(reported.LastBackup))
 	for _, alarm := range alarms(reported) {
 		printAlarm(w, report.Address, alarm)
 	}
@@ -133,6 +133,9 @@ func alarms(reported cdsha.Status) []string {
 	if reported.Divergence != "" {
 		raised = append(raised, "the replicas of this cluster hold different state: "+reported.Divergence)
 	}
+	if reported.BackupError != "" {
+		raised = append(raised, "this cluster's board holds no backup of the state it has now: "+reported.BackupError)
+	}
 	return raised
 }
 
@@ -151,6 +154,16 @@ func reportedCheckpoint(point cdsha.Point) string {
 		return "-"
 	}
 	return fmt.Sprintf("%q", fmt.Sprintf("%d:%s", point.Index, point.State))
+}
+
+// reportedBackup is the state of the backup a leader last appended to the
+// board, as the version and log index an operator names a backup by, and none
+// from a replica that appended none.
+func reportedBackup(stored *cdsha.StoredBackup) string {
+	if stored == nil {
+		return "-"
+	}
+	return fmt.Sprintf("%q", fmt.Sprintf("%d:%d", stored.Version, stored.Index))
 }
 
 // None from a replica that does not lead and cannot know.

@@ -3,6 +3,8 @@ package cdsha
 import (
 	"cmp"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/tls"
 	"encoding/json"
@@ -20,6 +22,7 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
+	"github.com/confidential-dot-ai/c8s/internal/cdsboard"
 	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/sandboxledger"
@@ -42,6 +45,8 @@ type Timing struct {
 	// Checkpoint is how often the leader asks every replica to record the
 	// digest of its state (divergence.go).
 	Checkpoint time.Duration
+	// Backup is how often the leader seals the cluster's state to its board.
+	Backup time.Duration
 }
 
 // releaseTiming is the timer of every field a caller leaves unset.
@@ -53,6 +58,7 @@ var releaseTiming = Timing{
 	Tick:       time.Second,
 	DeadAfter:  20 * time.Second,
 	Checkpoint: 10 * time.Second,
+	Backup:     time.Minute,
 }
 
 func (t Timing) orRelease() Timing {
@@ -64,6 +70,7 @@ func (t Timing) orRelease() Timing {
 		Tick:       cmp.Or(t.Tick, releaseTiming.Tick),
 		DeadAfter:  cmp.Or(t.DeadAfter, releaseTiming.DeadAfter),
 		Checkpoint: cmp.Or(t.Checkpoint, releaseTiming.Checkpoint),
+		Backup:     cmp.Or(t.Backup, releaseTiming.Backup),
 	}
 }
 
@@ -83,6 +90,8 @@ func (t Timing) check() error {
 		return fmt.Errorf("cds-ha: a tick of %s outlasts the %s a replica waits for a peer's next control request", t.Tick, controlDeadline)
 	case t.Lease < 3*t.Tick:
 		return fmt.Errorf("cds-ha: a read lease of %s is not three turns of a %s loop", t.Lease, t.Tick)
+	case t.Backup < t.Tick:
+		return fmt.Errorf("cds-ha: a backup interval of %s is shorter than the %s turn of the loop that keeps the backups", t.Backup, t.Tick)
 	}
 	return nil
 }
@@ -110,6 +119,12 @@ type Config struct {
 	// whose configuration names one; none for a cluster that takes its
 	// decrees over the attested channel alone.
 	Board func(ctx context.Context) ([]cdsdecree.Signed, error)
+	// RecoveryKey seals the cluster's backups; only the operator's offline
+	// private half opens one.
+	RecoveryKey *ecdsa.PublicKey
+	// AppendBackup writes one sealed backup to the board, which replaces and
+	// deletes none.
+	AppendBackup func(ctx context.Context, name cdsboard.BackupName, sealed []byte) error
 
 	Allowlist *allowlist.Store
 	Secrets   *secrets.MemoryStore
@@ -136,6 +151,10 @@ func (c Config) check() error {
 		return errors.New("cds-ha: a replica launches with its allowlist, secret and binding stores")
 	case len(c.Replicas) == 0:
 		return errors.New("cds-ha: a replica launches with the replica set of its cluster")
+	case (c.RecoveryKey == nil) != (c.AppendBackup == nil):
+		return errors.New("cds-ha: a cluster backs its state up to the board it names with the key it names, or to neither")
+	case c.RecoveryKey != nil && c.RecoveryKey.Curve != elliptic.P256():
+		return errors.New("cds-ha: a cluster seals its backups to a P-256 recovery key")
 	}
 	return c.Timing.check()
 }
@@ -218,6 +237,9 @@ type Node struct {
 	// line (divergence.go).
 	divergenceLog changedReason
 
+	// backups is what this replica's backup duty keeps (backupduty.go).
+	backups *backupDuty
+
 	// board is when this replica last read its cluster's board, and acks the
 	// members that reported this leader in the term it leads. A leader
 	// blind to the board goes by the acks (fence.go).
@@ -264,6 +286,7 @@ func NewNode(cfg Config) (*Node, error) {
 		failures:  newHeartbeatFailures(),
 		transfers: newTransfers(),
 		acks:      newAcknowledgements(),
+		backups:   &backupDuty{},
 	}
 	n.peers = newMembers(string(n.member), cfg.Timing.DeadAfter)
 	if err := n.mintIdentity(); err != nil {
@@ -492,6 +515,7 @@ func (n *Node) Run(ctx context.Context) error {
 		n.reachMembers,
 		n.keepCluster,
 		n.keepSeating,
+		n.keepBackups,
 		n.watchHeartbeats,
 		n.watchHandover,
 		n.watchStalls,

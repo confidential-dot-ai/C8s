@@ -42,11 +42,12 @@ const (
 )
 
 // cluster is what every replica of the test cluster shares: the values they
-// booted with, the operator key whose decrees they obey, and the mesh CA the
-// target of their Genesis minted.
+// booted with, the operator key whose decrees they obey, the key their
+// backups seal to, and the mesh CA the target of their Genesis minted.
 type cluster struct {
 	launch   Launch
 	operator *ecdsa.PrivateKey
+	recovery *ecdsa.PrivateKey
 	minted   *issuer.CA
 }
 
@@ -67,6 +68,10 @@ func newCluster(t *testing.T) cluster {
 	if err != nil {
 		t.Fatal(err)
 	}
+	recovery, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
 	digest := sha256.Sum256([]byte(launchFile))
 	return cluster{
 		launch: Launch{
@@ -76,6 +81,7 @@ func newCluster(t *testing.T) cluster {
 			Voters:       3,
 		},
 		operator: operator,
+		recovery: recovery,
 		minted:   mintCA(t),
 	}
 }

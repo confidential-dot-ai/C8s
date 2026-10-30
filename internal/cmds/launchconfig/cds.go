@@ -105,6 +105,10 @@ func clusterCDS(opts BundleOptions, operatorPub string, peerPolicy []byte) (conf
 	if err != nil {
 		return nil, nil, fmt.Errorf("the bundle's operator public key: %w", err)
 	}
+	replicaSet, err := cdsconfig.ReplicaSet(opts.CDS.ReplicaSet)
+	if err != nil {
+		return nil, nil, err
+	}
 	return cdsconfig.Build(cdsconfig.Inputs{
 		ClusterID:       opts.ClusterID,
 		OperatorKeys:    operatorKeys,
@@ -115,7 +119,7 @@ func clusterCDS(opts BundleOptions, operatorPub string, peerPolicy []byte) (conf
 		ClusterCIDRs:    clusterRanges,
 		LeafDNSNames:    []string{opts.TLSSAN},
 		LeafDNSPatterns: []string{cmdsutil.ServiceDNSSANPattern},
-		HA:              opts.CDS.ReplicaSet,
+		HA:              replicaSet,
 		ManifestPath:    opts.CDS.ManifestPath,
 		Family:          family,
 		VCPUs:           opts.CDS.VCPUs,

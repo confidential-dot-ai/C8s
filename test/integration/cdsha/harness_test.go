@@ -351,6 +351,9 @@ func (c *cluster) configure(size shape) {
 				"endpoint": c.board.Endpoint(),
 				"bucket":   bucket,
 			},
+			// The configuration seals its backups to a recovery key; no
+			// scenario here opens one.
+			"recoveryKey": string(publicKeyPEM(c.t, &newKey(c.t).PublicKey)),
 		},
 	})
 	if err != nil {
