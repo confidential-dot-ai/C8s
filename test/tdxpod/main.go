@@ -18,10 +18,10 @@ func main() {
 	}
 }
 
-var lanes = map[string]func(mode string) error{"boot": runBoot, "acceptance": runAcceptance, "runtime": runRuntime}
+var lanes = map[string]func(mode string) error{"boot": runBoot, "acceptance": runAcceptance, "runtime": runRuntime, "recovery": runRecovery}
 
 func dispatch(args []string) error {
-	usage := errors.New("expected: boot|acceptance|runtime run|cleanup, or pins production|development")
+	usage := errors.New("expected: boot|acceptance|runtime|recovery run|cleanup, or pins production|development|recovery")
 	if len(args) != 2 {
 		return usage
 	}
@@ -45,6 +45,13 @@ func printPins(profile string) error {
 		data, validate = productionPins, validatePins
 	case "development":
 		data, validate = developmentPins, validateDiagnosticPins
+	case "recovery":
+		var err error
+		data, err = recoveryPins()
+		if err != nil {
+			return err
+		}
+		validate = validateRecoveryPins
 	default:
 		return errors.New("expected pins production|development")
 	}

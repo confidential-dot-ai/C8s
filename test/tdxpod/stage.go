@@ -67,6 +67,10 @@ func serviceSpecs(name string) map[string]map[string]any {
 
 // allocated checks the created Services and returns their addresses by side.
 func allocated(services []*object, name string) (map[string]endpoint, error) {
+	return allocatedFor(services, name, false)
+}
+
+func allocatedFor(services []*object, name string, recovery bool) (map[string]endpoint, error) {
 	result := map[string]endpoint{}
 	for _, service := range services {
 		if service.Metadata.Namespace != namespace || service.Metadata.UID == "" {
@@ -94,6 +98,9 @@ func allocated(services []*object, name string) (map[string]endpoint, error) {
 			}
 		}
 		required := map[int]int{8080: 8080, 8443: 8443}
+		if recovery && side != "server" {
+			required[8444] = 8444
+		}
 		if side == "server" {
 			required = map[int]int{30808: 30808, 8443: 8443, 6443: 6443}
 		}
@@ -125,6 +132,7 @@ func allocated(services []*object, name string) (map[string]endpoint, error) {
 
 // bundleInputs are the offline inputs of one acceptance run's bundle.
 type bundleInputs struct {
+	recovery                                                                  bool
 	name, cli, manifest, manifestSHA256, source, meshImage, collectorURL, out string
 	endpoints                                                                 map[string]endpoint
 }
@@ -280,11 +288,16 @@ func renderBundle(in bundleInputs) (*identity, error) {
 		return nil, err
 	}
 	for _, side := range []string{"a", "b"} {
-		if _, err := cli(in.cli, "node", "launch-config", "new-pod", "--out", filepath.Join(out, side), "--cluster-id", in.name,
-			"--name", in.name+"-"+side, "--image-manifest", filepath.Join(out, "manifest.json"), "--launch-key", filepath.Join(out, side+".key"),
-			"--server-address", in.endpoints["server"].IP, "--server-public-key", filepath.Join(out, "server/server/pubkey"),
-			"--pod-manifest", filepath.Join(out, "pod.json"), "--workloads", filepath.Join(out, "pod-workloads.json"),
-			"--mesh-peer", in.endpoints["a"].IP+":8080", "--mesh-peer", in.endpoints["b"].IP+":8080"); err != nil {
+		args := []string{"node", "launch-config", "new-pod", "--out", filepath.Join(out, side), "--cluster-id", in.name,
+			"--name", in.name + "-" + side, "--image-manifest", filepath.Join(out, "manifest.json"), "--launch-key", filepath.Join(out, side+".key"),
+			"--server-address", in.endpoints["server"].IP, "--server-public-key", filepath.Join(out, "server/server/pubkey")}
+		if in.recovery {
+			args = append(args, "--generic")
+		} else {
+			args = append(args, "--pod-manifest", filepath.Join(out, "pod.json"), "--workloads", filepath.Join(out, "pod-workloads.json"),
+				"--mesh-peer", in.endpoints["a"].IP+":8080", "--mesh-peer", in.endpoints["b"].IP+":8080")
+		}
+		if _, err := cli(in.cli, args...); err != nil {
 			return nil, err
 		}
 	}

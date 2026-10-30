@@ -87,7 +87,7 @@ func validatePins(p pins) error {
 	if err := validatePinStructure(p); err != nil {
 		return err
 	}
-	for _, key := range []string{"diagnosticOnly", "developmentProfile", "runtimeWrapper"} {
+	for _, key := range []string{"diagnosticOnly", "developmentProfile", "runtimeWrapper", "recoveryFixture", "overlaySource", "runtimeComponentsSHA256"} {
 		if _, present := p[key]; present {
 			return errors.New("development image pins cannot enter production acceptance")
 		}

@@ -495,6 +495,35 @@ the matching `c8s_ref`, and prints the resulting tags.
 `tdx-metal-e2e.yml` remains
 manually dispatchable for published-image regression and `keep_cvm` debugging.
 
+### Measured Pod recovery fixture
+
+The manual `pod_recovery_fixture=true` switch builds an isolated TDX image for
+fixed guest-service restart testing. Leave all other manual inputs at their
+empty/false defaults, including `c8s_ref`, `confos_ref`, `dev`, `ssh` and `gate`.
+The selected workflow commit supplies only the test overlay; a separate clean
+checkout supplies production source `05211a8b106415a0aefd5f47bc40b266b0c1dacd`.
+
+```sh
+gh workflow run c8s-image-manual.yml --repo confidential-dot-ai/C8s \
+  --ref '<branch-or-tag-containing-the-fixture>' -f pod_recovery_fixture=true
+```
+
+The builder verifies component pins in
+[`baseline.json`](../test/tdxpod/fixtures/pod-recovery/baseline.json) and compares
+the built runtime binaries, libraries, units and configuration against the
+captured production disk before publishing. The added controller is measured;
+there is no development profile, SSH or runtime-wrapper bypass. Publication
+uses a separate `rke2-tdx-recovery-<overlay-sha12>` variant with `05211a8` component
+tags. It cannot publish production aliases, update the Cloud catalog or invoke
+automatic exact-image acceptance.
+
+The successful build's `pod-recovery-fixture-<run>` artifact contains `image.json`,
+`runtime-components.json`, controller build provenance and the measured manifest.
+Use those actual immutable pins and the same overlay commit for the
+[receipt-pinned recovery dispatch](../docs/integration-tests.md#pod-guest-service-recovery-on-tdx).
+The fixture has its own disk digest and TDX measurements; a build or overlay
+acceptance result does not establish recovery on the exact production image.
+
 ### Post-start exec
 
 The kubelet setting above closes the kubelet's HTTP API. It does not close CRI

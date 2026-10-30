@@ -69,6 +69,7 @@ type forward struct {
 type acceptance struct {
 	*owned
 	pins               pins
+	recovery           bool
 	cli, probe, bundle string
 	forwards           []*forward
 	connections        map[string]string
@@ -275,7 +276,7 @@ func (a *acceptance) prepare() error {
 	}
 	id, err := renderBundle(bundleInputs{name: a.name, cli: a.cli, manifest: filepath.Join(a.private, "manifest.json"),
 		manifestSHA256: a.pins.str("manifestSHA256"), source: a.pins.str("source"), meshImage: a.pins.str("meshImage"),
-		out: a.bundle, endpoints: endpoints})
+		out: a.bundle, endpoints: endpoints, recovery: a.recovery})
 	if err != nil {
 		return err
 	}
@@ -287,6 +288,12 @@ func (a *acceptance) prepare() error {
 // returns their addresses.
 func (a *acceptance) services() (map[string]endpoint, error) {
 	specs := serviceSpecs(a.name)
+	if a.recovery {
+		for _, side := range []string{"a", "b"} {
+			spec := specs[side]["spec"].(map[string]any)
+			spec["ports"] = append(spec["ports"].([]map[string]any), map[string]any{"name": "recovery", "port": 8444, "targetPort": 8444, "protocol": "TCP"})
+		}
+	}
 	var items []json.RawMessage
 	var objects []*object
 	for _, side := range sides {
@@ -302,7 +309,7 @@ func (a *acceptance) services() (map[string]endpoint, error) {
 			return nil, err
 		}
 	}
-	return allocated(objects, a.name)
+	return allocatedFor(objects, a.name, a.recovery)
 }
 
 func (a *acceptance) vm(side string) map[string]any {

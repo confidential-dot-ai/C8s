@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -11,6 +12,15 @@ import (
 )
 
 func TestRendererDoesNotDuplicateCLILaunchPayloads(t *testing.T) {
+	for _, recovery := range []bool{false, true} {
+		t.Run(fmt.Sprint(recovery), func(t *testing.T) {
+			testRenderedBundle(t, recovery)
+		})
+	}
+}
+
+func testRenderedBundle(t *testing.T, recovery bool) {
+	t.Helper()
 	root := t.TempDir()
 	manifest := filepath.Join(root, "manifest.json")
 	raw, _ := json.Marshal(map[string]any{"build": map[string]any{"platform": "tdx"},
@@ -34,6 +44,12 @@ func TestRendererDoesNotDuplicateCLILaunchPayloads(t *testing.T) {
 			role := "pod"
 			if argv[3] == "new" {
 				role = "server"
+			} else if recovery {
+				if !slices.Contains(argv, "--generic") || slices.Contains(argv, "--pod-manifest") || slices.Contains(argv, "--workloads") || slices.Contains(argv, "--mesh-peer") {
+					t.Fatal("recovery must boot without assignment authority")
+				}
+			} else if slices.Contains(argv, "--generic") {
+				t.Fatal("ordinary acceptance became generic")
 			}
 			dir := filepath.Join(argv[slices.Index(argv, "--out")+1], role)
 			stageBundle(t, dir)
@@ -47,7 +63,7 @@ func TestRendererDoesNotDuplicateCLILaunchPayloads(t *testing.T) {
 	}
 	out := filepath.Join(root, "bundle")
 	id, err := renderBundle(bundleInputs{name: "acceptance-fixture", cli: "fixture-cli", manifest: manifest, manifestSHA256: sha256Hex(raw),
-		source: strings.Repeat("a", 40), meshImage: "registry/mesh@sha256:" + strings.Repeat("a", 64), out: out, endpoints: endpoints})
+		source: strings.Repeat("a", 40), meshImage: "registry/mesh@sha256:" + strings.Repeat("a", 64), out: out, endpoints: endpoints, recovery: recovery})
 	if err != nil {
 		t.Fatal(err)
 	}

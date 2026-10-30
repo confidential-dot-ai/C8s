@@ -1,0 +1,19 @@
+# Called exclusively through the existing manual image entrypoint.
+name: Pod recovery fixture build
+on:
+  workflow_call:
+    secrets:
+      MODULE_SIG_KEY_PEM:
+        required: true
+permissions:
+  contents: read
+  packages: write
+jobs:
+  build:
+    if: github.event_name == 'workflow_dispatch'
+    uses: ./.github/workflows/c8s-image.yml
+    with:
+      pod_recovery_fixture: true
+      c8s_ref: "05211a8"
+    secrets:
+      MODULE_SIG_KEY_PEM: ${{ secrets.MODULE_SIG_KEY_PEM }}

@@ -1,0 +1,4 @@
+#!/bin/bash
+set -euo pipefail
+mkdir -p "$BUILDROOT/etc/systemd/system/multi-user.target.wants"
+ln -s ../pod-recovery-fixture.service "$BUILDROOT/etc/systemd/system/multi-user.target.wants/pod-recovery-fixture.service"

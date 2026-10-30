@@ -14,7 +14,7 @@ func TestC8sManualImageSources(t *testing.T) {
 	host := doc.Jobs["host-deps"]
 	var guard workflowStep
 	guardIndex, pinsIndex := -1, -1
-	const selectedSource = "${{ github.event.workflow_run.head_sha || github.sha }}"
+	const selectedSource = "${{ inputs.pod_recovery_fixture && '05211a8b106415a0aefd5f47bc40b266b0c1dacd' || github.event.workflow_run.head_sha || github.sha }}"
 	for i, step := range host.Steps {
 		switch step.Name {
 		case "Require matching manual image sources":

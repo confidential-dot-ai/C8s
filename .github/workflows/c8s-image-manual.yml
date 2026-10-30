@@ -5,6 +5,11 @@ run-name: c8s-image (manual dispatch)
 on:
   workflow_dispatch:
     inputs:
+      pod_recovery_fixture:
+        description: "Build the isolated measured recovery fixture over fixed production 052 components; no production publication or catalog change. Other inputs must be empty/default."
+        required: false
+        type: boolean
+        default: false
       dev:
         description: "Build the rke2-dev variant (serial root autologin, different measurement). Never ship."
         required: false
@@ -38,6 +43,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   build-and-push:
+    if: ${{ !inputs.pod_recovery_fixture }}
     permissions:
       contents: read
       packages: write
@@ -48,5 +54,34 @@ jobs:
       c8s_ref: ${{ inputs.c8s_ref }}
       confos_ref: ${{ inputs.confos_ref }}
       gate: ${{ inputs.gate }}
+    secrets:
+      MODULE_SIG_KEY_PEM: ${{ secrets.MODULE_SIG_KEY_PEM }}
+
+  validate-recovery-mode:
+    if: ${{ inputs.pod_recovery_fixture }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require exclusive recovery fixture mode
+        env:
+          DEV: ${{ inputs.dev }}
+          SSH: ${{ inputs.ssh }}
+          GATE: ${{ inputs.gate }}
+          REF: ${{ inputs.c8s_ref }}
+          CONFOS: ${{ inputs.confos_ref }}
+        run: |
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$DEV" = false
+          test "$SSH" = false
+          test "$GATE" = false
+          test -z "$REF"
+          test -z "$CONFOS"
+
+  recovery-fixture:
+    if: ${{ inputs.pod_recovery_fixture }}
+    needs: validate-recovery-mode
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/pod-recovery-fixture.yml
     secrets:
       MODULE_SIG_KEY_PEM: ${{ secrets.MODULE_SIG_KEY_PEM }}

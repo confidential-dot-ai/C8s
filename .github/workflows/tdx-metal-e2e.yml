@@ -37,6 +37,21 @@ on:
         required: false
         type: boolean
         default: false
+      pod_recovery:
+        description: 'Run fixed guest-service recovery on a separately measured test overlay; always clean up'
+        required: false
+        type: boolean
+        default: false
+      pod_recovery_receipt:
+        description: 'Exact image.json from the completed fixture build for this harness commit'
+        required: false
+        type: string
+        default: ''
+      pod_recovery_receipt_sha256:
+        description: 'Independently captured SHA256 of that exact image.json file'
+        required: false
+        type: string
+        default: ''
       pod_acceptance:
         description: 'Boot the pinned production server and two Pods for native TDX connectivity and 65-minute renewal; always clean up'
         required: false
@@ -65,7 +80,7 @@ permissions:
 
 concurrency:
   # Preserve the shared-root lane; owned runtime diagnostics have their own fixed queue.
-  group: ${{ github.event_name == 'workflow_dispatch' && inputs.pod_runtime_diagnostic && !inputs.pod_diagnostic && !inputs.pod_acceptance && 'tdx-pod-runtime-diagnostic' || 'tdx-metal-e2e' }}
+  group: ${{ github.event_name == 'workflow_dispatch' && inputs.pod_recovery && !inputs.pod_acceptance && !inputs.pod_diagnostic && !inputs.pod_runtime_diagnostic && 'tdx-pod-service-recovery' || github.event_name == 'workflow_dispatch' && !inputs.pod_recovery && inputs.pod_runtime_diagnostic && !inputs.pod_diagnostic && !inputs.pod_acceptance && 'tdx-pod-runtime-diagnostic' || 'tdx-metal-e2e' }}
   cancel-in-progress: false
 
 env:
@@ -82,16 +97,24 @@ jobs:
           ACCEPTANCE: ${{ inputs.pod_acceptance }}
           HISTORICAL: ${{ inputs.pod_diagnostic }}
           RUNTIME: ${{ inputs.pod_runtime_diagnostic }}
+          RECOVERY: ${{ inputs.pod_recovery }}
+          RECEIPT: ${{ inputs.pod_recovery_receipt }}
+          RECEIPT_SHA256: ${{ inputs.pod_recovery_receipt_sha256 }}
         run: |
           set -euo pipefail
           selected=0
-          for mode in "$ACCEPTANCE" "$HISTORICAL" "$RUNTIME"; do
+          for mode in "$ACCEPTANCE" "$HISTORICAL" "$RUNTIME" "$RECOVERY"; do
             if [[ "$mode" == true ]]; then selected=$((selected + 1)); fi
           done
           if [[ "$selected" -gt 1 ]]; then echo "::error::Select only one Pod mode"; exit 1; fi
+          if [[ "$RECOVERY" == true ]]; then
+            test -n "$RECEIPT" && [[ "$RECEIPT_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          else
+            test -z "$RECEIPT" && test -z "$RECEIPT_SHA256"
+          fi
 
   e2e:
-    if: ${{ !inputs.pod_diagnostic && !inputs.pod_acceptance && !inputs.pod_runtime_diagnostic }}
+    if: ${{ !inputs.pod_recovery && !inputs.pod_diagnostic && !inputs.pod_acceptance && !inputs.pod_runtime_diagnostic }}
     name: cvm (tdx-metal/rke2-node)
     runs-on: cvm-launcher-tdx
     timeout-minutes: ${{ inputs.suite_run != '' && 115 || 95 }}
@@ -110,7 +133,7 @@ jobs:
           suite_run: ${{ inputs.suite_run }}
 
   pod-diagnostic:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.pod_diagnostic && !inputs.pod_acceptance && !inputs.pod_runtime_diagnostic }}
+    if: ${{ github.event_name == 'workflow_dispatch' && !inputs.pod_recovery && inputs.pod_diagnostic && !inputs.pod_acceptance && !inputs.pod_runtime_diagnostic }}
     name: Pod boot diagnostics (not image acceptance)
     runs-on: cvm-launcher-tdx
     timeout-minutes: 60
@@ -198,7 +221,7 @@ jobs:
 
 
   pod-acceptance:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.pod_acceptance && !inputs.pod_diagnostic && !inputs.pod_runtime_diagnostic }}
+    if: ${{ github.event_name == 'workflow_dispatch' && !inputs.pod_recovery && inputs.pod_acceptance && !inputs.pod_diagnostic && !inputs.pod_runtime_diagnostic }}
     name: Connected Pod acceptance (native TDX)
     runs-on: cvm-launcher-tdx
     timeout-minutes: 150
@@ -277,7 +300,7 @@ jobs:
           retention-days: 7
 
   pod-runtime-diagnostic:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.pod_runtime_diagnostic && !inputs.pod_diagnostic && !inputs.pod_acceptance }}
+    if: ${{ github.event_name == 'workflow_dispatch' && !inputs.pod_recovery && inputs.pod_runtime_diagnostic && !inputs.pod_diagnostic && !inputs.pod_acceptance }}
     name: Pod runtime diagnostics (development image)
     needs: validate-pod-mode
     runs-on: cvm-launcher-tdx
@@ -355,3 +378,90 @@ jobs:
           path: ${{ runner.temp }}/pod-runtime-diagnostic/evidence
           if-no-files-found: warn
           retention-days: 3
+
+  pod-recovery:
+    needs: validate-pod-mode
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.pod_recovery && !inputs.pod_acceptance && !inputs.pod_diagnostic && !inputs.pod_runtime_diagnostic }}
+    name: Measured guest service recovery (native TDX)
+    runs-on: cvm-launcher-tdx
+    timeout-minutes: 90
+    env:
+      POD_ACCEPTANCE_SOURCE: ${{ github.workspace }}/acceptance-source
+      POD_RECOVERY_RECEIPT_SHA256: ${{ inputs.pod_recovery_receipt_sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - uses: ./.github/actions/setup-go-c8s
+        with:
+          cache: 'false'
+
+      - name: Validate explicit fixture pins and select the unchanged production CLI
+        id: pins
+        env:
+          DIAGNOSTIC: ${{ inputs.pod_diagnostic }}
+          RECEIPT: ${{ inputs.pod_recovery_receipt }}
+        run: |
+          set -euo pipefail
+          test "$DIAGNOSTIC" != true
+          umask 077
+          mkdir -p "$RUNNER_TEMP/pod-service-recovery/private"
+          export POD_RECOVERY_RECEIPT="$RUNNER_TEMP/pod-service-recovery/private/image.json"
+          printf 'POD_RECOVERY_RECEIPT=%s\n' "$POD_RECOVERY_RECEIPT" >> "$GITHUB_ENV"
+          printf '%s' "$RECEIPT" > "$POD_RECOVERY_RECEIPT"
+          mkdir -p "$RUNNER_TEMP/pod-service-recovery-bin"
+          go build -o "$RUNNER_TEMP/pod-service-recovery-bin/tdxpod" ./test/tdxpod
+          "$RUNNER_TEMP/pod-service-recovery-bin/tdxpod" pins recovery >> "$GITHUB_OUTPUT"
+
+      - name: Check out the clean CLI source paired with the image
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ steps.pins.outputs.source }}
+          path: acceptance-source
+
+      - name: Prepare paired CLI, public certificate probe and native tools
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          umask 077
+          ACCEPTANCE_DIR="${RUNNER_TEMP}/pod-service-recovery"
+          mkdir -p "$ACCEPTANCE_DIR/private" "$ACCEPTANCE_DIR/evidence" "$RUNNER_TEMP/pod-service-recovery-bin"
+          (cd acceptance-source && go build -o "$ACCEPTANCE_DIR/private/c8s" ./cmd/c8s)
+          go build -o "$ACCEPTANCE_DIR/private/pod-mesh-probe" ./.github/scripts/pod-mesh-probe
+          if ! command -v kubectl >/dev/null; then
+            version=$(curl --retry 3 --connect-timeout 10 --max-time 60 -fsSL https://dl.k8s.io/release/stable.txt)
+            [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+            curl --retry 3 --connect-timeout 10 --max-time 60 -fsSL "https://dl.k8s.io/release/$version/bin/linux/amd64/kubectl" -o "$RUNNER_TEMP/pod-service-recovery-bin/kubectl"
+            checksum=$(curl --retry 3 --connect-timeout 10 --max-time 60 -fsSL "https://dl.k8s.io/release/$version/bin/linux/amd64/kubectl.sha256")
+            printf '%s  %s\n' "$checksum" "$RUNNER_TEMP/pod-service-recovery-bin/kubectl" | sha256sum -c -
+            chmod +x "$RUNNER_TEMP/pod-service-recovery-bin/kubectl"
+          fi
+          curl --retry 3 --connect-timeout 10 --max-time 60 -fsSL https://github.com/kubevirt/kubevirt/releases/download/v1.7.0/virtctl-v1.7.0-linux-amd64 -o "$RUNNER_TEMP/pod-service-recovery-bin/virtctl"
+          printf '%s  %s\n' ec6ee5619290e19590f3f9cd8b8dfce1affe0380eaaca77b3784c7b1acea86a6 "$RUNNER_TEMP/pod-service-recovery-bin/virtctl" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/pod-service-recovery-bin/virtctl"
+          echo "$RUNNER_TEMP/pod-service-recovery-bin" >> "$GITHUB_PATH"
+          go test ./test/tdxpod/ ./.github/scripts/pod-mesh-probe
+          python3 test/tdxpod/fixtures/pod-connected/test_app.py
+
+      - name: Assign generic Pods and observe fixed same-boot service restarts
+        timeout-minutes: 66
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: "\"$RUNNER_TEMP/pod-service-recovery-bin/tdxpod\" recovery run"
+
+      - name: Remove this run's VMs, Services, Secrets and private disks
+        if: always()
+        timeout-minutes: 10
+        run: "\"$RUNNER_TEMP/pod-service-recovery-bin/tdxpod\" recovery cleanup"
+
+      - name: Retain bounded public acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pod-service-recovery-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/pod-service-recovery/evidence
+          if-no-files-found: warn
+          retention-days: 7

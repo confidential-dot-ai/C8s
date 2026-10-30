@@ -257,6 +257,30 @@ call and do not extend its deadline. `assignment-posts.json` records immutable
 retry accounting. Existing scheduler integration tests separately cover competing claims,
 lost assignment replies, stale writes, forced deletion and replacement generations.
 
+Set `"scenario": "cds-outage"` to test retention of an authenticated CDS policy
+update through a network outage and one application restart. It needs one CDS
+guest and one Pod guest (four Cloud vCPUs and 16 GiB with the example shape),
+plus the CDS scratch disk. For the `2026.10.30-1` publication, use
+`c8s-pod@2026.10.30-1`, `c8s-pod-cds@2026.10.30-1` and source
+`05211a8b106415a0aefd5f47bc40b266b0c1dacd`, with that publication's matching pins
+and CLI. Use the same input, run and cleanup commands above and below.
+
+The immutable base admits only the mesh; the driver signs and applies the app
+rule to CDS before normal Kubernetes scheduling. It removes only the run-owned
+CDS ingress on port 30808, waits for the change to apply, and preserves status
+access. The app first proves CDS reachability, then requires 120 seconds of
+continuous connection failures before its one controlled exit. Acceptance
+requires fresh admission during the outage, unchanged guest boot and mesh
+identity, and exact measured digests. The driver restores the original ingress
+and endpoint, authenticates the same CA, deletes the signed app rule and observes
+at least 70 seconds without readmission, with Kubernetes readiness withdrawn.
+
+Private evidence includes `cds-outage.json`, numbered `cds-observation-*.json`,
+and policy/ingress intents and receipts. All 11 scenario assertions, provider
+deletion and owned cleanup must pass. This tests CDS network outage and served
+policy retention; guest service restart, CDS process restart and long-outage
+certificate renewal require separate acceptance.
+
 All scenarios compile the provider from the current checkout. Its commit,
 dirty status and executable hash are recorded in `provider-build.json`; the
 result's executable hash must match the runner that was built and executed.
@@ -344,6 +368,50 @@ This lane validates static Pods on native KubeVirt TDX hardware. Cloud API
 provisioning and Kubernetes provider assignment, discovery and deletion remain
 separate acceptance work. Guest exclusion checks observe connection denial;
 the privileged Linux suite supplies controlled listener and source-NAT checks.
+
+## Pod guest service recovery on TDX
+
+The manual `pod_recovery: true` mode uses a separately measured test image over
+production source `05211a8b106415a0aefd5f47bc40b266b0c1dacd`. First
+[build the recovery fixture](../node-guest-image/README.md#measured-pod-recovery-fixture).
+It needs the native TDX launcher, KubeVirt/CDI and approximately eight vCPUs and
+32 GiB of guest memory. Select this mode alone; leave `c8s_ref` empty and use the
+same workflow ref/commit as the fixture build. A changed harness commit requires
+a new fixture build.
+
+Download the successful build's artifact and supply its exact `image.json`
+bytes and independently calculated SHA256. Preserve the trailing newline; do
+not reserialize the receipt or infer image digests from tags.
+
+```sh
+fixture_ref='<branch-or-tag-at-the-fixture-build-commit>'
+build_run='<successful-fixture-build-run-id>'
+gh run download "$build_run" --repo confidential-dot-ai/C8s \
+  --name "pod-recovery-fixture-$build_run" --dir recovery-build
+receipt_sha256="$(python3 -c \
+  'import hashlib, pathlib; print(hashlib.sha256(pathlib.Path("recovery-build/image.json").read_bytes()).hexdigest())')"
+gh workflow run tdx-metal-e2e.yml --repo confidential-dot-ai/C8s \
+  --ref "$fixture_ref" -f pod_recovery=true \
+  -F pod_recovery_receipt=@recovery-build/image.json \
+  -f pod_recovery_receipt_sha256="$receipt_sha256"
+```
+
+The driver freshly attests and assigns two generic Pod guests beside a real CDS.
+After an externally observed baseline, the immutable controller performs its
+fixed, once-per-boot sequence: status service, kubelet, then containerd and
+kubelet. Its bounded read-only receipt is fetched over an attested connection;
+there is no remote restart API. Acceptance requires the expected service/NRI
+process changes, unchanged boot, assignment, admission history and running task
+identities, recovered authenticated readiness and stable workload/CA identity.
+
+The `pod-service-recovery-<run>-<attempt>` artifact retains image identity,
+authenticated baseline/completion receipts and cleanup evidence for seven days.
+A pass requires `result.json` with `passed: true`, `cleanup.json` with
+`complete: true` and a successful workflow. Owned cleanup always runs;
+`keep_cvm` does not apply. Local tests or a successful fixture build alone do
+not establish hardware acceptance. This lane covers production runtime
+components under the measured overlay; it does not establish guest-restart
+acceptance for the exact `2026.10.30-1` image or Cloud provider lifecycle.
 
 ## Diagnosing Pod runtime startup on TDX
 

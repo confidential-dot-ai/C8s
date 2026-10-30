@@ -1,0 +1,10 @@
+{
+  "source": "05211a8b106415a0aefd5f47bc40b266b0c1dacd",
+  "diskSHA256": "eb2dffb9712048ad23a2a62c04441c85f708cad60a846ce8cf4c5d7f4b610bb6",
+  "components": {
+    "c8s-operator": "ghcr.io/confidential-dot-ai/c8s-operator@sha256:97a1d7aced49d43540519f7750277e556be7a12822d12a0ec6e61f055c741b83",
+    "nri-image-policy": "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:91b5099928b40e94007214ae43907f3a8ed74e618c77036d0ef781894e157598",
+    "cds": "ghcr.io/confidential-dot-ai/cds@sha256:a70978c17547abc925397c8f47a777c83e4e39612d38aed50bee7770b04d7d1a",
+    "armtls-mesh": "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:e05ccc28f168972c86ccc1bdb899a371264a38a0ef69a2f0eece6d9813baee27"
+  }
+}

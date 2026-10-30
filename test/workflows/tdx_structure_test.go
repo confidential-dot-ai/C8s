@@ -165,7 +165,8 @@ func TestTDXWrappersShareLifecycleIdentity(t *testing.T) {
 	readYAML(t, "../../.github/actions/tdx-metal-e2e/action.yml", &action)
 	// Match the entire reviewed predicate and fixed fallback. A per-ref/run group,
 	// broader diagnostic condition or changed fallback would split shared-root users.
-	const diagnosticOnly = "github.event_name == 'workflow_dispatch' && inputs.pod_runtime_diagnostic && !inputs.pod_diagnostic && !inputs.pod_acceptance"
+	const diagnosticOnly = "github.event_name == 'workflow_dispatch' && !inputs.pod_recovery && inputs.pod_runtime_diagnostic && !inputs.pod_diagnostic && !inputs.pod_acceptance"
+	const recoveryOnly = "github.event_name == 'workflow_dispatch' && inputs.pod_recovery && !inputs.pod_acceptance && !inputs.pod_diagnostic && !inputs.pod_runtime_diagnostic"
 	for name, doc := range map[string]workflowDocument{exactWorkflow: exact, stagedWorkflow: staged} {
 		var concurrency struct {
 			Group  string
@@ -176,10 +177,10 @@ func TestTDXWrappersShareLifecycleIdentity(t *testing.T) {
 		}
 		wantGroup := "tdx-metal-e2e"
 		if name == stagedWorkflow {
-			wantGroup = "${{ " + diagnosticOnly + " && 'tdx-pod-runtime-diagnostic' || 'tdx-metal-e2e' }}"
+			wantGroup = "${{ " + recoveryOnly + " && 'tdx-pod-service-recovery' || " + diagnosticOnly + " && 'tdx-pod-runtime-diagnostic' || 'tdx-metal-e2e' }}"
 		}
 		if strings.Join(strings.Fields(concurrency.Group), " ") != wantGroup || concurrency.Cancel {
-			t.Fatalf("%s must preserve the fixed non-cancelling shared-root group outside exclusive runtime diagnostics", name)
+			t.Fatalf("%s must preserve the fixed non-cancelling shared-root group outside exclusive Pod diagnostics or recovery", name)
 		}
 		if doc.Env["VM"] != "c8s-tdx-${{ github.run_id }}-${{ github.run_attempt }}" || doc.Env["NS"] != "confai-images" {
 			t.Fatalf("unexpected resource identity: %v", doc.Env)
@@ -191,7 +192,7 @@ func TestTDXWrappersShareLifecycleIdentity(t *testing.T) {
 	if got := strings.Join(strings.Fields(staged.Jobs["pod-runtime-diagnostic"].If), " "); got != "${{ "+diagnosticOnly+" }}" {
 		t.Fatal("the private diagnostic job must use the same exclusive manual predicate as its concurrency group")
 	}
-	if got := strings.Join(strings.Fields(staged.Jobs["e2e"].If), " "); got != "${{ !inputs.pod_diagnostic && !inputs.pod_acceptance && !inputs.pod_runtime_diagnostic }}" {
+	if got := strings.Join(strings.Fields(staged.Jobs["e2e"].If), " "); got != "${{ !inputs.pod_recovery && !inputs.pod_diagnostic && !inputs.pod_acceptance && !inputs.pod_runtime_diagnostic }}" {
 		t.Fatal("the shared-root staged lifecycle must not run in a Pod diagnostic or acceptance mode")
 	}
 	exactCall, stagedCall := actionCall(t, exact.Jobs["e2e"].Steps), actionCall(t, staged.Jobs["e2e"].Steps)

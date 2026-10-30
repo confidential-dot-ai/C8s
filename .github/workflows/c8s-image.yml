@@ -11,6 +11,11 @@
 on:
   workflow_call:
     inputs:
+      pod_recovery_fixture:
+        description: "Internal manual-only measured test overlay; fixed production baseline and isolated tags."
+        required: false
+        type: boolean
+        default: false
       dev:
         required: false
         type: boolean
@@ -77,7 +82,7 @@ concurrency:
     ${{ github.workflow }}-${{ github.event.workflow_run.head_sha || github.sha
     }}-${{ inputs.c8s_ref }}-${{ inputs.dev }}-${{ inputs.ssh
     }}-${{ inputs.confos_ref }}-${{ inputs.release_tag }}-${{ inputs.gate
-    }}-${{ inputs.leg }}
+    }}-${{ inputs.leg }}-${{ inputs.pod_recovery_fixture }}
   cancel-in-progress: false
 
 env:
@@ -103,18 +108,40 @@ jobs:
     runs-on: the-machine
     timeout-minutes: 45
     steps:
+      - name: Fence recovery fixture publication
+        if: inputs.pod_recovery_fixture
+        env:
+          DEV: ${{ inputs.dev }}
+          SSH: ${{ inputs.ssh }}
+          GATE: ${{ inputs.gate }}
+          REF: ${{ inputs.c8s_ref }}
+          CONFOS: ${{ inputs.confos_ref }}
+          RELEASE: ${{ inputs.release_tag }}
+          GATE_IMAGES: ${{ inputs.gate_images_artifact }}
+          GATE_KEY: ${{ inputs.gate_signing_artifact }}
+        run: |
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$DEV" = false
+          test "$SSH" = false
+          test "$GATE" = false
+          test "$REF" = 05211a8
+          test -z "$CONFOS"
+          test -z "$RELEASE"
+          test -z "$GATE_IMAGES"
+          test -z "$GATE_KEY"
+
       - name: Checkout c8s
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ inputs.pod_recovery_fixture && '05211a8b106415a0aefd5f47bc40b266b0c1dacd' || github.event.workflow_run.head_sha || github.sha }}
           path: c8s
           sparse-checkout: .github
 
       - name: Require matching manual image sources
         if: github.event_name == 'workflow_dispatch' && inputs.gate != true
         env:
-          PROFILE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          PROFILE_SHA: ${{ inputs.pod_recovery_fixture && '05211a8b106415a0aefd5f47bc40b266b0c1dacd' || github.event.workflow_run.head_sha || github.sha }}
           C8S_REF_INPUT: ${{ inputs.c8s_ref }}
         run: |
           set -euo pipefail
@@ -195,8 +222,30 @@ jobs:
       # cancel the other platform's publish.
       fail-fast: false
       matrix:
-        platform: [tdx, snp]
+        platform: ${{ fromJSON(inputs.pod_recovery_fixture && '["tdx"]' || '["tdx","snp"]') }}
     steps:
+      - name: Fence recovery fixture publication
+        if: inputs.pod_recovery_fixture
+        env:
+          DEV: ${{ inputs.dev }}
+          SSH: ${{ inputs.ssh }}
+          GATE: ${{ inputs.gate }}
+          REF: ${{ inputs.c8s_ref }}
+          CONFOS: ${{ inputs.confos_ref }}
+          RELEASE: ${{ inputs.release_tag }}
+          GATE_IMAGES: ${{ inputs.gate_images_artifact }}
+          GATE_KEY: ${{ inputs.gate_signing_artifact }}
+        run: |
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$DEV" = false
+          test "$SSH" = false
+          test "$GATE" = false
+          test "$REF" = 05211a8
+          test -z "$CONFOS"
+          test -z "$RELEASE"
+          test -z "$GATE_IMAGES"
+          test -z "$GATE_KEY"
+
       - name: Keep gate-only signing material out of published images
         if: inputs.gate_signing_artifact != '' && inputs.gate != true
         run: |
@@ -215,8 +264,16 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ inputs.pod_recovery_fixture && '05211a8b106415a0aefd5f47bc40b266b0c1dacd' || github.event.workflow_run.head_sha || github.sha }}
           path: c8s
+
+      - name: Checkout separate recovery overlay
+        if: inputs.pod_recovery_fixture
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+          path: recovery-overlay
 
       - name: Load measured-build pins
         id: pins
@@ -267,8 +324,8 @@ jobs:
       # gated on its own code rather than on the last published C8S_REF.
       # Both legs build the same commit with the same toolchain; -trimpath
       # removes the workspace path so the bytes do not depend on the runner.
-      - name: Setup Go (gate)
-        if: inputs.gate == true
+      - name: Setup Go (gate or fixture controller)
+        if: inputs.gate == true || inputs.pod_recovery_fixture
         uses: ./c8s/.github/actions/setup-go-c8s
         with:
           go-version-file: c8s/go.mod
@@ -306,7 +363,14 @@ jobs:
             echo "::error::ssh=true requires dev=true: SSH builds are debug-only"
             exit 1
           fi
-          if [ "${{ inputs.dev }}" = "true" ]; then
+          if [ "${{ inputs.pod_recovery_fixture }}" = "true" ]; then
+            [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+            {
+              echo "VARIANT=rke2-tdx-recovery-${GITHUB_SHA:0:12}"
+              echo "KERNEL_FLAVOR=rke2"
+              echo "C8S_DEV=0"
+            } >> "$GITHUB_ENV"
+          elif [ "${{ inputs.dev }}" = "true" ]; then
             {
               echo "VARIANT=rke2-${{ matrix.platform }}-dev${{ inputs.ssh && '-ssh' || '' }}"
               echo "KERNEL_FLAVOR=rke2-dev"
@@ -547,6 +611,10 @@ jobs:
           # Must actually link libnvat (not a silent fallback).
           ldd target/release/attestation-api | grep -q libnvat
 
+      - name: Prepare fixed recovery controller and pin baseline components
+        if: inputs.pod_recovery_fixture
+        run: bash recovery-overlay/test/tdxpod/fixtures/pod-recovery/build.sh prepare c8s recovery-overlay fixture-build
+
       - name: Build c8s image
         # Warm builds take 2 minutes; a cold pkgcache or driver download
         # took 20 in the last 40 runs. Bounded so a wedged mirror fails
@@ -579,8 +647,12 @@ jobs:
           export C8S_REF="${C8S_REF_INPUT:-${HEAD_SHA::7}}"
           # The build script requires an explicit platform (no default). The
           # matrix publishes both measured platform variants.
+          extra_profiles=()
+          if [ "${{ inputs.pod_recovery_fixture }}" = true ]; then
+            extra_profiles=(--profile-dir "$GITHUB_WORKSPACE/fixture-build/pod-recovery" --profile pod-recovery)
+          fi
           C8S_PLATFORM="${{ matrix.platform }}" C8S_NAME="$VARIANT" ../c8s/node-guest-image/build \
-            ${{ inputs.ssh && '--profile ssh' || '' }}
+            "${extra_profiles[@]}" ${{ inputs.ssh && '--profile ssh' || '' }}
 
       - name: Make the tools trees cache-safe
         # The post-job cache tar runs unprivileged; mkosi builds these trees as
@@ -680,6 +752,14 @@ jobs:
           # rke2-<platform>-cdi is the same disk.
           bash c8s/.github/scripts/release-seeds.sh check "$release" "$PLATFORM" "$release/baked.json"
 
+      - name: Compare actual fixture runtime bytes with captured production disk
+        if: inputs.pod_recovery_fixture
+        timeout-minutes: 20
+        run: |
+          bash recovery-overlay/test/tdxpod/fixtures/pod-recovery/build.sh verify c8s recovery-overlay fixture-build \
+            "$GITHUB_WORKSPACE/confidential-os-builder/output/$VARIANT/disk.raw"
+          cp "confidential-os-builder/output/$VARIANT/manifest.json" fixture-build/manifest.json
+
       - name: Check whether the rootfs changed
         if: inputs.gate != true
         # An unchanged roothash leaves the floating tags where they are. The
@@ -763,9 +843,26 @@ jobs:
             --registry "$IMAGE" \
             --tag "$ORAS_TAGS"
 
+      - name: Capture verified recovery fixture pins
+        if: inputs.pod_recovery_fixture
+        run: bash recovery-overlay/test/tdxpod/fixtures/pod-recovery/build.sh capture c8s recovery-overlay fixture-build "$VARIANT"
+
+      - name: Retain isolated recovery build receipt
+        if: inputs.pod_recovery_fixture
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pod-recovery-fixture-${{ github.run_id }}
+          path: |
+            fixture-build/image.json
+            fixture-build/runtime-components.json
+            fixture-build/controller-build.txt
+            fixture-build/manifest.json
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Capture exact TDX image acceptance evidence
         if: >-
-          inputs.gate != true && inputs.dev != true && inputs.c8s_ref == '' &&
+          !inputs.pod_recovery_fixture && inputs.gate != true && inputs.dev != true && inputs.c8s_ref == '' &&
           matrix.platform == 'tdx' && github.event_name == 'workflow_run' &&
           github.event.workflow_run.event == 'push' &&
           github.event.workflow_run.head_repository.full_name == github.repository &&
@@ -810,7 +907,7 @@ jobs:
 
       - name: Upload exact TDX image acceptance evidence
         if: >-
-          inputs.gate != true && inputs.dev != true && inputs.c8s_ref == '' &&
+          !inputs.pod_recovery_fixture && inputs.gate != true && inputs.dev != true && inputs.c8s_ref == '' &&
           matrix.platform == 'tdx' && github.event_name == 'workflow_run' &&
           github.event.workflow_run.event == 'push' &&
           github.event.workflow_run.head_repository.full_name == github.repository &&
@@ -831,6 +928,7 @@ jobs:
           {
             echo "### ${VARIANT} confidential node image"
             echo "- image profile source: \`$profile_sha\`"
+            echo "- recovery overlay enabled: ${{ inputs.pod_recovery_fixture }}; source: $GITHUB_SHA"
             echo "- components ref: \`${C8S_REF_INPUT:-${profile_sha:0:7}}\`"
             echo "- CDI image: \`${IMAGE}:${VARIANT}-cdi${C8S_REF_INPUT:+-$C8S_REF_INPUT}\`"
             echo "- artifact: \`${IMAGE}:${VARIANT}${C8S_REF_INPUT:+-$C8S_REF_INPUT}\`"
