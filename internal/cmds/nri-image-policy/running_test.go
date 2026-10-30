@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/containerd/nri/pkg/api"
+
+	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
 // revocationPlugin enforces on running containers, with pushDigestA in a
@@ -98,17 +100,29 @@ func TestSynchronizeTracksRunningContainersOfReportedPods(t *testing.T) {
 func TestStartAdmittedJustBeforeARevocationIsKilled(t *testing.T) {
 	p, store, killed := revocationPlugin(enforcing)
 	p.inventory = newAdmissionInventory("/proc")
+	served := anyAllowlist(map[string]string{pushDigestA: "image-a"})
+	for name, w := range served.Workloads {
+		w.Containers[0].Mounts = allowlist.MountPolicy{Policy: allowlist.PolicyAny}
+		served.Workloads[name] = w
+	}
+	store.apply(served, 1)
 	pod := makePod("default", "pod")
-	ctr := makeCtrWithImage(pod.Id, "app", "registry/repo:tag")
-	p.containerd.(*fakeContainerd).resolve = func(context.Context, string) (string, error) { return pushDigestA, nil }
-	// A start resolves its image once, so the measurement, which follows the
-	// admission verdict and precedes the start's return, is where it pauses.
+	pod.Uid = "uid"
+	ctr := makeCtrWithImageArgs(pod.Id, "app", "registry/repo@"+pushDigestA, []string{"/app"})
+	ctr.Mounts = []*api.Mount{{Destination: "/scratch", Source: kubeletRoot + "/pods/uid/volumes/" + emptyDirPlugin + "/scratch", Type: "bind"}}
+	p.mountStorage = fixedStorage(allowlist.MountMemory)
+	// Measurement follows admission and precedes the start return, so it is
+	// the deterministic pause point even when digest resolution is cached.
 	admitted, release := make(chan struct{}), make(chan struct{})
 	p.measurer = pausingMeasurer{admitted: admitted, release: release}
 	started := make(chan error)
 	go func() { started <- p.StartContainer(context.Background(), pod, ctr) }()
 
-	<-admitted
+	select {
+	case <-admitted:
+	case err := <-started:
+		t.Fatalf("start returned before recording: %v", err)
+	}
 	store.apply(anyAllowlist(map[string]string{pushDigestB: "image-b"}), 2)
 	p.KillRevoked(context.Background())
 	close(release)

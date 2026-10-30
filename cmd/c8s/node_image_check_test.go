@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -12,6 +13,8 @@ import (
 	"testing"
 
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+
+	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
 // writeLayoutBlob stores v as a blob of the layout at dir and returns its digest.
@@ -96,7 +99,7 @@ spec:
           env: [{name: MODE, value: strict}]
 `
 	out := t.TempDir()
-	for name, data := range map[string][]byte{"c8s-integration.yaml": []byte(integration), "allowlist-seed.json": seed} {
+	for name, data := range map[string][]byte{"c8s-integration.yaml": []byte(integration), "allowlist-seed.json": seed, "local-names.txt": nil} {
 		if err := os.WriteFile(filepath.Join(out, name), data, 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -155,5 +158,74 @@ func TestCheckNodeImagesRefusesTamperedBlob(t *testing.T) {
 		if err := os.WriteFile(path, data, 0o644); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+// The render names the images the operator injects node-locally, in the
+// manifests and in the seed that pins the operator's exact argv; check-images
+// maps both back through local-names.txt, and without it refuses an image no
+// layout holds.
+func TestCheckNodeImagesResolvesLocalNames(t *testing.T) {
+	layouts := t.TempDir()
+	digest := writeNodeImageLayout(t, layouts, "amd64", nil)
+	out := writeNodeImageRender(t, digest, map[string]string{"PATH": containerdDefaultPath})
+	image, local := "registry.example.com/cds@"+digest, "registry.example.com/cds:"+nodeLocalTag
+	injected := "--mesh-image=" + local
+	rawSeed, err := os.ReadFile(filepath.Join(out, "allowlist-seed.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed, err := pkgallowlist.ParseJSON(rawSeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	core := seed.Workloads["core"]
+	core.Containers[0].Args = pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyExact, Argv: []string{injected}}
+	seed.Workloads["core"] = core
+	if rawSeed, err = seed.Canonical(); err != nil {
+		t.Fatal(err)
+	}
+	rendered, err := os.ReadFile(filepath.Join(out, "c8s-integration.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := []byte(`          command: ["/app/c8s"]` + "\n")
+	withArgs := bytes.Replace(rendered, command, append(command, []byte(`          args: ["`+injected+`"]`+"\n")...), 1)
+	if bytes.Equal(withArgs, rendered) {
+		t.Fatalf("fixture render shape changed: %s", rendered)
+	}
+	for name, data := range map[string][]byte{
+		"allowlist-seed.json":  rawSeed,
+		"c8s-integration.yaml": withArgs,
+		"local-names.txt":      []byte(image + " " + local + "\n"),
+	} {
+		if err := os.WriteFile(filepath.Join(out, name), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := checkNodeImages(out, layouts); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(out, "local-names.txt"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if checkNodeImages(out, layouts) == nil {
+		t.Fatal("accepted an injected image named node-locally with no map back to its digest")
+	}
+}
+
+func TestResolveLocalNames(t *testing.T) {
+	ref, local := "registry.example.com/cds@sha256:"+strings.Repeat("c", 64), "registry.example.com/cds:"+nodeLocalTag
+	names := []byte(ref + " " + local + "\n")
+	doc := []byte("      - --mesh-image=" + local + "\n      - --get-cert-image=" + local + "\n")
+	resolved, err := resolveLocalNames(doc, names)
+	if err != nil || bytes.Contains(resolved, []byte(local)) {
+		t.Fatalf("resolveLocalNames() = %s, %v", resolved, err)
+	}
+	if unchanged, err := resolveLocalNames(doc, nil); err != nil || !bytes.Equal(unchanged, doc) {
+		t.Fatalf("no names changed the document: %s, %v", unchanged, err)
+	}
+	if _, err := resolveLocalNames(doc, []byte("one-field\n")); err == nil {
+		t.Fatal("accepted a local-names.txt line that is not a reference and a name")
 	}
 }

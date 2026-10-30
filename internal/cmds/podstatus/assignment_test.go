@@ -17,6 +17,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/nodeservices"
 	"github.com/confidential-dot-ai/c8s/internal/podassign"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
@@ -56,12 +57,16 @@ func assignmentFixture(t *testing.T) (*assignmentService, *ecdsa.PrivateKey, *ec
 		SchemaVersion: launchconfig.SchemaVersion, ClusterID: "cluster", Role: launchconfig.Pod,
 		Node: launchconfig.Node{Name: "guest"}, Server: launchconfig.ServerConfig{Address: "192.0.2.1", OperatorPublicKey: public(server)},
 		PodOperatorPublicKey: public(key),
+		CDS:                  launchconfig.CDS{Address: "cds.example.org:8443", Measurements: testutil.CDSPinDocument(testutil.TestMeasurement, testutil.CDSLaunchFile)},
 		Image:                launchconfig.Image{Platform: "tdx", Measurement: strings.Repeat("11", 48), RTMRs: map[int]string{1: strings.Repeat("22", 48), 2: strings.Repeat("33", 48)}},
 	}
 	store := &memoryAssignmentStore{}
 	s, err := newAssignmentService(t.Context(), doc, store,
 		func(context.Context) (*ecdsa.PublicKey, error) { return &key.PublicKey, nil },
 		func(d *launchconfig.Document) (nodeservices.PodRuntime, error) {
+			if d.CDS != doc.CDS {
+				return nodeservices.PodRuntime{}, errors.New("assignment changed authenticated CDS trust")
+			}
 			return nodeservices.PodRuntime{UID: d.Pod.UID, Policy: []byte(d.Workloads), Manifest: []byte(d.Pod.Manifest)}, nil
 		},
 		func(context.Context) error { return nil },

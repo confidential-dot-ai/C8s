@@ -155,7 +155,7 @@ func TestChartNriInstallerReadinessTracksPluginProcess(t *testing.T) {
 			if len(c.VolumeMounts) != 0 {
 				t.Errorf("plugin-ready mounts %v; its argv-pinned seed entry denies mounts", c.VolumeMounts)
 			}
-			cm := renderedConfigMap(t, out, "c8s-cds-allowlist-seed")
+			cm := renderedConfigMap(t, out, "c8s-allowlist-seed")
 			seed, err := pkgallowlist.ParseJSON([]byte(cm.Data["allowlist-seed.json"]))
 			if err != nil {
 				t.Fatal(err)

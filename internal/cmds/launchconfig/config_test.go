@@ -20,6 +20,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/credrelease"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
@@ -48,6 +49,7 @@ func testDocument(t *testing.T, platform string, role Role) (Document, *ecdsa.Pr
 		RKE2:                    RKE2{AgentToken: strings.Repeat("a", 64)},
 		Server:                  ServerConfig{Address: "10.0.0.1", OperatorPublicKey: serverPub},
 		AgentOperatorPublicKeys: []string{agentPub},
+		CDS:                     CDS{Address: "cds.example.org:8443", Measurements: testCDSPin(t, teetypes.FamilySNP, 2)},
 	}
 	if platform == "tdx" {
 		doc.Image.RTMRs = map[int]string{1: strings.Repeat("22", 48), 2: strings.Repeat("33", 48)}
@@ -123,7 +125,6 @@ func TestStageBothRolesAndPlatforms(t *testing.T) {
 			t.Run(platform+"/"+string(role), func(t *testing.T) {
 				doc, key, pub := testDocument(t, platform, role)
 				doc.Node.IP = "0.0.0.0"
-				doc.Workloads = `{"schema":"c8s.allowlist/v1","workloads":{}}`
 				testLoader(t, doc, pub)
 				cfg := testConfig(t, doc, key)
 				if err := Stage(context.Background(), cfg); err != nil {
@@ -140,12 +141,12 @@ func TestStageBothRolesAndPlatforms(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				cds, err := refvalues.Load(cfg.path(Dir + "/cds.json"))
-				if err != nil {
-					t.Fatal(err)
+				cds := stagedCDSPolicy(t, staged)
+				if _, err := cmdsutil.CDSLaunchFile(cds); err != nil {
+					t.Fatalf("the staged CDS pin is not one VM's identity: %v", err)
 				}
-				if len(peers.Images) != 2 || len(cds.Images) != 1 || !bytes.Equal(cds.Images[0].Anchor, []byte(doc.Server.OperatorPublicKey)) {
-					t.Fatal("node and server policy sets are not separated")
+				if len(peers.Images) != 2 || len(cds.Images) != 2 {
+					t.Fatal("the node's peer pins and its CDS pin are not separated")
 				}
 				for _, entry := range peers.Images {
 					if !bytes.Equal(entry.Digest, mustDecodeHex(doc.Image.Measurement)) {
@@ -178,7 +179,7 @@ func TestStageBothRolesAndPlatforms(t *testing.T) {
 						t.Fatal("agent does not join signed server")
 					}
 				}
-				for _, path := range []string{DefaultStagedPath, agentTokenPath, Dir + "/workloads.json", rke2FragmentPath} {
+				for _, path := range []string{DefaultStagedPath, agentTokenPath, rke2FragmentPath} {
 					info, err := os.Stat(cfg.path(path))
 					if err != nil {
 						t.Fatal(err)

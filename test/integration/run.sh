@@ -26,10 +26,24 @@ fail() {
 }
 
 # Hard prerequisites: a missing tool fails the run.
-for tool in docker make openssl curl; do
+for tool in docker make openssl curl jq; do
     command -v "$tool" >/dev/null 2>&1 || { echo "FAIL: $tool not available" >&2; exit 1; }
 done
 docker compose version >/dev/null 2>&1 || { echo "FAIL: docker compose (v2) not available" >&2; exit 1; }
+
+# The identity get-cert holds the mock CDS to. A CDS is pinned to the
+# configuration it runs on, so the pin binds its launch file byte for byte and
+# the mock attestation-api reports SHA-256 of that same file as HOST_DATA.
+# The measurement is the mock's all-zero launch digest.
+MOCK_MEASUREMENT=000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+CDS_CONFIG="$WORKDIR/cds-config.yaml"
+CDS_PIN="$WORKDIR/cds-pin.json"
+printf 'clusterID: integration\n' > "$CDS_CONFIG"
+CDS_HOST_DATA="$(openssl dgst -sha256 "$CDS_CONFIG" | cut -d' ' -f2)"
+jq -Rs --arg measurement "$MOCK_MEASUREMENT" \
+    '{schema_version:"2",tee:"sev-snp",measurements:[{name:"mock-cds",measurement:$measurement,launch_file:.}]}' \
+    < "$CDS_CONFIG" > "$CDS_PIN"
+export CDS_HOST_DATA CDS_PIN
 
 echo "=== Building get-cert binary ==="
 make -C "$REPO_ROOT" build-c8s

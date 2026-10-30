@@ -58,6 +58,7 @@ func workloadBundle() *specs.Spec {
 				UID: testWorkloadUID,
 				GID: testWorkloadUID,
 			},
+			Cwd:             "/",
 			NoNewPrivileges: true,
 			Capabilities: &specs.LinuxCapabilities{
 				Bounding:  append([]string{}, workloadCapabilities...),
@@ -65,6 +66,7 @@ func workloadBundle() *specs.Spec {
 				Permitted: append([]string{}, workloadCapabilities...),
 			},
 		},
+		Root: &specs.Root{Path: "/run/containerd/bundle/rootfs"},
 		Mounts: []specs.Mount{
 			{
 				Destination: "/sys",
@@ -121,6 +123,18 @@ func TestPodFloorAdmitsRoot(t *testing.T) {
 				s.Process.User.UID = 0
 				s.Process.User.GID = 0
 			},
+		},
+		{
+			name: "a root workload with a data working directory",
+			bundle: func(s *specs.Spec) {
+				s.Process.User.UID = 0
+				s.Process.User.GID = 0
+				s.Process.Cwd = "/mnt/c8s-data/config"
+				s.Annotations[annotationSandboxUID] = "pod-uid"
+				s.Annotations[annotationContainerName] = "main"
+				s.Mounts = append(s.Mounts, bind("/mnt/c8s-data/config", "/var/lib/kubelet/pods/pod-uid/volumes/kubernetes.io~configmap/config"))
+			},
+			wants: "data or host mount at /mnt/c8s-data/config",
 		},
 		{
 			name: "a root workload holding CAP_SETUID",
@@ -762,4 +776,80 @@ func TestFloorDeviceWildcardSemantics(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestFloorRefusesAWorkingDirOnSuppliedContent keeps the working directory off
+// data and host mounts: a pinned interpreter launch resolves its first module
+// path against it.
+func TestFloorRefusesAWorkingDirOnSuppliedContent(t *testing.T) {
+	const pod = "/var/lib/kubelet/pods/pod-uid/volumes/"
+	root := t.TempDir()
+	for _, dir := range []string{"run", "app", "mnt/c8s-data"} {
+		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for link, target := range map[string]string{
+		"var-run": "/run",
+		"data":    "mnt/c8s-data/config",
+		"loop":    "loop",
+	} {
+		if err := os.Symlink(target, filepath.Join(root, link)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		name   string
+		cwd    string
+		mount  specs.Mount
+		noRoot bool
+		wants  string
+	}{
+		{name: "the image root", cwd: "/"},
+		{name: "the parent of a data mount", cwd: "/mnt/c8s-data"},
+		{name: "a data mount", cwd: "/mnt/c8s-data/config", wants: "data or host mount at /mnt/c8s-data/config"},
+		{name: "below a data mount", cwd: "/mnt/c8s-data/config/pkg", wants: "mount at /mnt/c8s-data/config"},
+		{name: "an unclean path onto a data mount", cwd: "/app/../mnt/c8s-data/config/", wants: "mount at /mnt/c8s-data/config"},
+		{name: "a relative link onto a data mount", cwd: "/data", wants: "mount at /mnt/c8s-data/config"},
+		{name: "an emptyDir", cwd: "/app/cache", mount: bind("/app/cache", pod+"kubernetes.io~empty-dir/cache")},
+		{name: "the pod's shared memory", cwd: "/dev/shm", mount: bind("/dev/shm", "/run/k3s/containerd/io.containerd.grpc.v1.cri/sandboxes/sandbox-1/shm")},
+		{name: "a kernel filesystem", cwd: "/tmp", mount: specs.Mount{Destination: "/tmp", Type: "tmpfs", Source: "tmpfs"}},
+		{name: "a host mount", cwd: "/srv", mount: bind("/srv", "/srv/data"), wants: "mount at /srv"},
+		{name: "another pod's emptyDir", cwd: "/app/cache", mount: bind("/app/cache", "/var/lib/kubelet/pods/other/volumes/kubernetes.io~empty-dir/cache"), wants: "mount at /app/cache"},
+		{name: "a volume placeholder", cwd: "/app/vol", mount: bind("/app/vol", pod+"kubernetes.io~empty-dir/c8s-volume-app"), wants: "mount at /app/vol"},
+		{name: "an absolute link onto a host mount", cwd: "/var-run/x", mount: bind("/run/x", "/srv/x"), wants: "mount at /run/x"},
+		{name: "a host mount named through a link", cwd: "/run/x", mount: bind("/var-run/x", "/srv/x"), wants: "mount at /run/x"},
+		{name: "a link loop", cwd: "/loop", wants: "too many levels"},
+		{name: "a relative working directory", cwd: "app", wants: "not absolute"},
+		{name: "no root filesystem", cwd: "/", noRoot: true, wants: "no root filesystem"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bundle := workloadBundle()
+			bundle.Annotations[annotationSandboxUID] = "pod-uid"
+			bundle.Annotations[annotationContainerName] = "main"
+			bundle.Root.Path = root
+			if tc.noRoot {
+				bundle.Root = nil
+			}
+			bundle.Process.Cwd = tc.cwd
+			bundle.Mounts = append(bundle.Mounts, bind("/mnt/c8s-data/config", pod+"kubernetes.io~configmap/config"))
+			if tc.mount.Destination != "" {
+				bundle.Mounts = append(bundle.Mounts, tc.mount)
+			}
+			err := requireFloor(bundle, "ctr", nil, testFloor())
+			if tc.wants == "" {
+				if err != nil {
+					t.Fatalf("refused: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wants) {
+				t.Fatalf("got %v, want an error containing %q", err, tc.wants)
+			}
+		})
+	}
+}
+
+func bind(destination, source string) specs.Mount {
+	return specs.Mount{Destination: destination, Type: "bind", Source: source, Options: []string{"rbind", "ro"}}
 }

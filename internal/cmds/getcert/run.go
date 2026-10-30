@@ -46,8 +46,6 @@ import (
 // config holds all CLI configuration for get-cert.
 type config struct {
 	CDSURL                 string
-	CDSMeasurements        string
-	CDSRTMRs               string
 	MeasurementsConfig     string
 	MeasurementsConfigJSON string
 	AttestationApiURL      string
@@ -138,10 +136,8 @@ consumers that read that volume.`,
 	}
 
 	flags := cmd.Flags()
-	cmdsutil.BindImagePolicyFlags(flags, &cfg.MeasurementsConfig, &cfg.MeasurementsConfigJSON, "pins the CDS endpoint; excludes --cds-measurements and --cds-rtmrs")
+	cmdsutil.BindImagePolicyFlags(flags, &cfg.MeasurementsConfig, &cfg.MeasurementsConfigJSON, "pins the CDS endpoint, every entry bound to the launch file that CDS runs on; required unless the node pins CDS")
 	flags.StringVar(&cfg.CDSURL, "cds-url", "", "URL of the CDS service (e.g. https://cds:8443); refused in an injected sidecar, which dials the endpoint the node mounts")
-	flags.StringVar(&cfg.CDSMeasurements, "cds-measurements", "", "comma-separated SHA-384 hex launch measurements for CDS armTLS verification; required unless the node or --image-policy-file pins CDS")
-	flags.StringVar(&cfg.CDSRTMRs, "cds-rtmrs", "", "comma-separated TDX RTMR pins <index>=<sha384-hex> CDS's armTLS cert must additionally satisfy; ignored when CDS presents SNP evidence (empty = launch-digest pinning only)")
 	flags.StringVar(&cfg.AttestationApiURL, "attestation-api-url", "", "URL of the node-local attestation-api (http://localhost:8400, or unix:// plus the on-node socket path the chart wires)"+cmdsutil.NodeAddressHelp)
 	flags.StringVar(&cfg.CertPath, "cert-path", "", "Path where the certificate chain PEM of the published generation is read")
 	flags.StringVar(&cfg.CAPath, "ca-path", "", "Path where the mesh CA PEM of the published generation is read; must be in the --cert-path directory")
@@ -153,7 +149,7 @@ consumers that read that volume.`,
 	flags.DurationVar(&cfg.RenewInterval, "renew-interval", 0, "Re-obtain the certificate at this interval (0 = run once and exit)")
 	flags.IntVar(&cfg.RenewJitterPercent, "renew-jitter-percent", defaultRenewJitterPercent, "Shorten each renewal delay by a random fraction of itself, up to this percent, so certificates issued together do not refresh in lockstep (0 = no jitter)")
 	flags.DurationVar(&cfg.InitialRetryTimeout, "initial-retry-timeout", 2*time.Minute, "Retry the first certificate request in-process for up to this long before failing, so a transient CDS/mesh outage during a roll does not crash the init container into kubelet backoff (0 = try once)")
-	flags.DurationVar(&cfg.InitialRetryInterval, "initial-retry-interval", 2*time.Second, "Delay between in-process retries of the first certificate request")
+	flags.DurationVar(&cfg.InitialRetryInterval, "initial-retry-interval", defaultInitialRetryInterval, "Delay between in-process retries of the first certificate request. A refusal from CDS or the node inventory (403) or a CDS rate limit (429) backs off from here, doubling with jitter up to 5m")
 	flags.BoolVar(&cfg.ContinueOnInitialError, "continue-on-initial-error", false, "In renewal mode, keep running when the first certificate request fails, retrying on a capped backoff until a certificate is issued")
 	flags.DurationVar(&cfg.CAWatchInterval, "ca-watch-interval", defaultCDSWatchInterval, "Poll CDS at this interval and renew when the published certificate falls behind it. Renew immediately when CDS serves a renewed certificate under the pod's bound CA key. A replacement CA key requires pod recreation. With a workload identity assertion, renew after a random delay of up to half the interval when the allowlist policy CDS serves no longer matches the snapshot stamped in the leaf, which strict clients reject. The default applies only with --renew-interval; otherwise the watch is off (0 = disabled, otherwise minimum 1s)")
 	flags.StringVar(&cfg.DiscoveryOutPath, "discovery-out", "", "Path to write JSON discovery metadata for the issued certificate and attestation evidence")
@@ -229,8 +225,7 @@ func cdsPins(cfg config) (armtls.Pins, error) {
 		cmdsutil.ImagePolicySource{
 			File: cfg.MeasurementsConfig,
 			JSON: cfg.MeasurementsConfigJSON,
-		},
-		cmdsutil.MeasurementPinsFromStrings(cfg.CDSMeasurements, cfg.CDSRTMRs, "cds-"))
+		})
 	if err != nil {
 		return armtls.Pins{}, err
 	}
@@ -253,12 +248,12 @@ func run(cfg config) error {
 	if err := resolveDiscoveryPublicTLSHostname(&cfg); err != nil {
 		return err
 	}
-	endpoint, fromNode, err := cmdsutil.ResolveCDSEndpoint(workloadclaims.CDSAddressPath, cfg.CDSURL)
+	address, fromNode, err := cmdsutil.ResolveCDSAddress(workloadclaims.CDSAddressPath, cfg.CDSURL)
 	if err != nil {
 		return err
 	}
 	if fromNode {
-		cfg.CDSURL = cmdsutil.CDSURL(endpoint)
+		cfg.CDSURL = cmdsutil.CDSURL(address)
 	}
 	if cfg.CDSURL == "" {
 		return errors.New("--cds-url is required: no node hands this client a CDS endpoint")
@@ -410,9 +405,10 @@ func renewLoop(ctx context.Context, cfg config, client attestclient.Client, poli
 		initialBackoff.InitialInterval = cfg.InitialRetryInterval
 	}
 	// unnamedRuns counts consecutive renewals that came back without a
-	// matched-workload stamp; failures counts consecutive renewal errors. Both
+	// matched-workload stamp; failures counts consecutive renewal errors and
+	// refusals the consecutive requests CDS or the inventory refused. They
 	// only pace the timer.
-	var unnamedRuns, failures int
+	var unnamedRuns, failures, refusals int
 	warned := map[string]bool{}
 	warnUnexpectedWorkload(cfg, publishedLeaf(creds.current), warned)
 	next := renewalInterval(cfg, creds.current, unnamedRuns)
@@ -523,8 +519,12 @@ func renewLoop(ctx context.Context, cfg config, client attestclient.Client, poli
 			if cfg.guest != nil && errors.Is(err, errFailClosed) {
 				return err
 			}
+			refusals = countRefusal(refusals, err)
 			if err != nil && !published {
 				retry := initialBackoff.NextBackOff()
+				if refusals > 0 {
+					retry = refusedRetryInterval(cfg, refusals)
+				}
 				slog.Error("certificate request failed, still nothing published", "error", err, "retry_in", retry)
 				resetRenewal(retry)
 				continue
@@ -541,7 +541,7 @@ func renewLoop(ctx context.Context, cfg config, client attestclient.Client, poli
 				// lifetime, so by the time a renewal fails the generation is
 				// already close to expiry.
 				failures++
-				retry := renewalRetryInterval(cfg, creds.current, failures)
+				retry := renewalRetryInterval(cfg, creds.current, failures, refusals)
 				slog.Error("certificate renewal failed, retrying", "error", err, "retry_in", retry, "failures", failures, "published", creds.current != nil)
 				resetRenewal(retry)
 				continue
@@ -568,6 +568,11 @@ const (
 	// maxInitialRetryInterval caps the backoff between attempts at the first
 	// certificate.
 	maxInitialRetryInterval = time.Minute
+
+	defaultInitialRetryInterval = 2 * time.Second
+
+	// maxRefusedRetryInterval caps the backoff after refusals (refused).
+	maxRefusedRetryInterval = 5 * time.Minute
 
 	// unnamedBackoffAfter is how many consecutive unnamed renewals run at the
 	// fast poll before it doubles toward --renew-interval. A pod can be
@@ -666,20 +671,69 @@ func unnamedPollInterval(cfg config, g *generation, unnamedRuns int) time.Durati
 }
 
 // renewalRetryInterval is the delay after a failed renewal: exponential from
-// renewalRetryBase so a CDS outage is not hammered, but never slower than the
-// ordinary pacing, which is itself bounded by the published generation's
-// remaining lifetime.
-func renewalRetryInterval(cfg config, g *generation, failures int) time.Duration {
-	// A wrong-name generation still serves; back off like a named one, not at
-	// the fast poll, so a CDS outage is not retried every few seconds.
+// renewalRetryBase so a CDS outage is not hammered, or refusedRetryInterval
+// after a refusal, but never slower than the ordinary pacing, which is itself
+// bounded by the published generation's remaining lifetime.
+func renewalRetryInterval(cfg config, g *generation, failures, refusals int) time.Duration {
+	// An unnamed or wrong-name generation still serves; back off like a named
+	// one, not at the fast poll, so a failure is not retried every few seconds
+	// (#1068).
 	cfg.ExpectedWorkload = ""
+	cfg.UnnamedRenewInterval = 0
 	ceiling := renewalInterval(cfg, g, 0)
+	if refusals > 0 {
+		return min(refusedRetryInterval(cfg, refusals), ceiling)
+	}
 	delay := renewalRetryBase
 	for i := 1; i < failures && delay < ceiling; i++ {
 		delay *= 2
 	}
 	return min(delay, ceiling)
 }
+
+// refused reports whether CDS or the node inventory refused this pod (403, as
+// for a sandbox the allowlist does not admit) or CDS rate-limited its source
+// (429). Asking again soon gets the same answer, and every attempt spends the
+// per-source CDS limit that all pods of the node share, the router's renewal
+// included.
+func refused(err error) bool {
+	var status *attestclient.StatusError
+	if errors.As(err, &status) {
+		return status.Status == http.StatusForbidden || status.Status == http.StatusTooManyRequests
+	}
+	return errors.Is(err, workloadclaims.ErrSandboxRefused)
+}
+
+// countRefusal is the consecutive refusal count after a request that ended in
+// err.
+func countRefusal(refusals int, err error) int {
+	if refused(err) {
+		return refusals + 1
+	}
+	return 0
+}
+
+// refusedRetryInterval is the delay after the refusals-th refusal in a row:
+// --initial-retry-interval doubled per refusal up to maxRefusedRetryInterval,
+// less up to half of it at random so the refused pods of a node spread out.
+func refusedRetryInterval(cfg config, refusals int) time.Duration {
+	delay := cfg.InitialRetryInterval
+	if delay <= 0 {
+		delay = defaultInitialRetryInterval
+	}
+	for i := 1; i < refusals && delay < maxRefusedRetryInterval; i++ {
+		delay *= 2
+	}
+	delay = min(delay, maxRefusedRetryInterval)
+	return delay - time.Duration(mrand.Int64N(int64(delay)/2+1))
+}
+
+// retryPacer is a backoff.BackOff whose next delay comes from a function.
+type retryPacer func() time.Duration
+
+func (f retryPacer) NextBackOff() time.Duration { return f() }
+
+func (retryPacer) Reset() {}
 
 // publishedLeaf is the certificate of the published generation, or nil when
 // nothing is published.
@@ -756,9 +810,17 @@ func obtainCertWithRetry(ctx context.Context, cfg config, client attestclient.Cl
 	if cfg.InitialRetryTimeout <= 0 {
 		return obtainCertFn(ctx, cfg, client, creds)
 	}
-	bo := backoff.NewConstantBackOff(cfg.InitialRetryInterval)
+	var refusals int
+	bo := retryPacer(func() time.Duration {
+		if refusals > 0 {
+			return refusedRetryInterval(cfg, refusals)
+		}
+		return cfg.InitialRetryInterval
+	})
 	_, err = backoff.Retry(ctx, func() (struct{}, error) {
-		return struct{}{}, obtainCertFn(ctx, cfg, client, creds)
+		err := obtainCertFn(ctx, cfg, client, creds)
+		refusals = countRefusal(refusals, err)
+		return struct{}{}, err
 	},
 		backoff.WithBackOff(bo),
 		backoff.WithMaxElapsedTime(cfg.InitialRetryTimeout),

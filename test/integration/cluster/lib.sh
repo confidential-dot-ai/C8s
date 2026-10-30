@@ -15,24 +15,44 @@ NS=c8s-system
 # The namespace whose pods serve the router's own ports. A fixed name: the
 # measured mesh policy carries it (internal/helmchart.RouterNamespace).
 ROUTER_NS=c8s-router
-CDS_LOCAL_PORT=18443
 ADOPTED_LOCAL_PORT=18445
 # The router's default router.san, which `c8s install --upstream` makes the
 # route manifest's host.
 ROUTER_HOST="c8s-router.$ROUTER_NS.svc"
-# The mock attestation-api's synthetic launch digest (all zero). Pinned into
-# cds.measurements so every armTLS hop is verified
-# against it, exactly as a pinned production measurement.
+# The mock attestation-api's synthetic launch digest (all zero). It is the
+# measurement of the CDS pin and of the node pins the CDS configuration
+# carries, so every armTLS hop is verified against it, exactly as a pinned
+# production measurement.
 MOCK_MEASUREMENT="000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
-# Its Deployment (manifests/mock-attestation.yaml) and the node address every
-# component dials it at.
+
+# The CDS this cluster trusts runs outside it: two containers on the kind
+# network, the attestation-api reporting the launch binding of the
+# configuration CDS boots on, and CDS itself in its network namespace, so the
+# self-report it reads comes over loopback. cds_start writes the address they
+# answer on, so a driver sourcing this file after a kept run addresses the
+# same CDS. kind puts every node on that docker network, and the CDS joins it.
+KIND_NETWORK="${C8S_IT_KIND_NETWORK:-kind}"
+CDS_ATTESTATION_CONTAINER="${C8S_IT_CDS_ATTESTATION:-c8s-it-cds-attestation}"
+CDS_CONTAINER="${C8S_IT_CDS:-c8s-it-cds}"
+# The port CDS serves on, which the address its clients dial carries.
+CDS_PORT=8443
+cds_address() { cat "$WORKDIR/cds-address"; }
+cds_host() {
+    local address
+    address="$(cds_address)"
+    echo "${address%:*}"
+}
+cds_url() { echo "https://$(cds_address)"; }
+
+# The mock attestation-api's Deployment (manifests/mock-attestation.yaml) and
+# the node address every component dials it at.
 MOCK_ATTESTATION_NS=kube-system
 MOCK_ATTESTATION_NAME=mock-attestation
 mock_attestation_url() { echo "http://$NODE_IP:8400"; }
 # Test-client and workload images. The workload image joins the install-time
 # floor; the test-client image stays out of it so the admission test can
 # drive a deny-then-allow transition through the signed CDS API.
-CURL_IMAGE=curlimages/curl:8.10.1
+CURL_IMAGE=curlimages/curl:8.10.1@sha256:d9b4541e214bcd85196d6e92e2753ac6d0ea699f0af5741f8c6cccbfcf00ef4b
 WORKLOAD_IMAGE=nginxinc/nginx-unprivileged@sha256:3af0c10d960cc2502427fe1219c52989d309e7d65596869c60a34fd2fa2406f0
 
 # Keep live client Pods and the admission regression tests on the same renderer.
@@ -61,7 +81,7 @@ diagnostics() {
     kubectl -n "$ROUTER_NS" describe pods 2>&1 | tail -60 || true
     kubectl -n "$ROUTER_NS" get pods -o json 2>&1 || true
     kubectl -n "$ROUTER_NS" logs deploy/c8s-router -c cds-attest --tail=40 2>&1 || true
-    kubectl -n "$NS" logs deploy/c8s-cds --tail=40 2>&1 || true
+    docker logs "$CDS_CONTAINER" --tail 40 2>&1 || true
     kubectl -n "$NS" logs deploy/c8s-operator --tail=40 2>&1 || true
     kubectl -n "$NS" logs ds/c8s-nri-image-policy-worker -c install --tail=80 2>&1 || true
     if [ -n "$NODE" ]; then
@@ -94,30 +114,63 @@ store_digests() {
 
 # --- CDS API helpers ---
 
-cds_healthy() { curl -sSk "https://127.0.0.1:$CDS_LOCAL_PORT/healthz" >/dev/null 2>&1; }
+cds_healthy() { curl -sSk "$(cds_url)/healthz" >/dev/null 2>&1; }
 
-# cds_pf_start opens the CDS port-forward, or reuses the one this WORKDIR
-# opened (its pid file), so drivers running each helper in its own process
-# share one. It forwards to the Deployment's pod rather than the Service: a
-# CDS that is not ready has no Service endpoint, and some callers read one.
-cds_pf_start() {
-    local pid
-    pid="$(cat "$WORKDIR/cds-pf.pid" 2>/dev/null || true)"
-    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && cds_healthy && return 0
-    kubectl -n "$NS" port-forward deploy/c8s-cds "$CDS_LOCAL_PORT:8443" >/dev/null 2>&1 &
-    echo "$!" > "$WORKDIR/cds-pf.pid"
-    for _ in $(seq 1 30); do
+# cds_start runs the CDS the cluster trusts: the attestation-api, reporting
+# the launch binding of the configuration CDS boots on, and CDS itself in that
+# container's network namespace, so the self-report it reads comes over
+# loopback, as in a CDS VM. The address is the attestation container's, so
+# cds_serve brings CDS back on the one the cluster trusts.
+cds_start() {
+    local ip
+    cds_stop
+    docker run -d \
+        --name "$CDS_ATTESTATION_CONTAINER" \
+        --network "$KIND_NETWORK" \
+        -e "HOST_DATA=$(sha256sum "$WORKDIR/cds/cds-config.yaml" | cut -d' ' -f1)" \
+        "ghcr.io/confidential-dot-ai/mock-attestation:$IMAGE_TAG" >/dev/null \
+        || fail "could not start the CDS attestation-api"
+    ip=$(docker inspect "$CDS_ATTESTATION_CONTAINER" \
+        -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
+    [ -n "$ip" ] || fail "the CDS has no address on the $KIND_NETWORK network"
+    echo "$ip:$CDS_PORT" > "$WORKDIR/cds-address"
+    cds_serve
+}
+
+# cds_serve [extra `c8s cds` flags...] replaces the CDS container on that
+# address: the flags the chart renders today, plus any given here, which a
+# later flag of the same name overrides.
+cds_serve() {
+    docker rm -f "$CDS_CONTAINER" >/dev/null 2>&1 || true
+    docker run -d \
+        --name "$CDS_CONTAINER" \
+        --network "container:$CDS_ATTESTATION_CONTAINER" \
+        -v "$WORKDIR/cds:/etc/confai:ro" \
+        "ghcr.io/confidential-dot-ai/cds:$IMAGE_TAG" \
+        --config=/etc/confai/cds-config.yaml \
+        --attestation-api-url=http://127.0.0.1:8400 \
+        --allowlist-db=/tmp/allowlist.db \
+        --allowlist-persistent=false \
+        --san-validation=true \
+        --port="$CDS_PORT" \
+        --log-level=debug \
+        "$@" >/dev/null \
+        || fail "could not start CDS"
+}
+
+# cds_wait blocks until the CDS container serves: it refuses to serve at all
+# until a verified self-report binds the configuration it booted on.
+cds_wait() {
+    for _ in $(seq 1 60); do
         cds_healthy && return 0
         sleep 1
     done
-    fail "CDS port-forward never came up"
+    docker logs "$CDS_CONTAINER" 2>&1 | tail -30 || true
+    fail "CDS never answered /healthz at $(cds_url)"
 }
 
-cds_pf_stop() {
-    local pid
-    pid="$(cat "$WORKDIR/cds-pf.pid" 2>/dev/null || true)"
-    [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
-    rm -f "$WORKDIR/cds-pf.pid"
+cds_stop() {
+    docker rm -f "$CDS_CONTAINER" "$CDS_ATTESTATION_CONTAINER" >/dev/null 2>&1 || true
 }
 
 # any_workload <digest> <image>: print a workload entry that admits the digest
@@ -132,14 +185,13 @@ any_workload() {
 # starts, so a 401 saying so is retried with a fresh token.
 cds_write() {
     local method="$1" path="$2" bodyfile="$3" token code
-    cds_pf_start
     for _ in $(seq 1 30); do
         token="$("$WORKDIR/optoken" "$WORKDIR/operator.key" "$method" "$path" "$bodyfile")"
         # Always exit 0: curl prints 000 on transport failure, and callers
         # assert on the code itself.
         code="$(curl -sSk -o "$WORKDIR/cds-write.out" -w '%{http_code}' -X "$method" \
             -H "Authorization: $token" -H 'Content-Type: application/json' \
-            --data-binary "@$bodyfile" "https://127.0.0.1:$CDS_LOCAL_PORT$path" || true)"
+            --data-binary "@$bodyfile" "$(cds_url)$path" || true)"
         if [ "$code" != 401 ] || ! grep -q 'issued too early' "$WORKDIR/cds-write.out"; then
             break
         fi
@@ -150,8 +202,7 @@ cds_write() {
 
 # cds_get <path> <out-file> -> http code; the response body lands in out-file.
 cds_get() {
-    cds_pf_start
-    curl -sSk -o "$2" -w '%{http_code}' "https://127.0.0.1:$CDS_LOCAL_PORT$1" || true
+    curl -sSk -o "$2" -w '%{http_code}' "$(cds_url)$1" || true
 }
 
 # route_manifest <revision> [<ca-pem-file>]: print a route manifest with one

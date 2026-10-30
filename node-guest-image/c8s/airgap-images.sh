@@ -3,12 +3,30 @@
 # original manifest/index bytes makes the pod image pin and NRI digest agree.
 set -euo pipefail
 
-[[ $# -ge 3 && $# -le 5 ]] || { echo "usage: airgap-images.sh IMAGES_FILE CACHE_DIR OUTPUT_DIR [LOCAL_IMAGES_DIR [C8S_REGISTRY]]" >&2; exit 2; }
+[[ $# -ge 3 && $# -le 6 ]] || { echo "usage: airgap-images.sh IMAGES_FILE CACHE_DIR OUTPUT_DIR [LOCAL_IMAGES_DIR [C8S_REGISTRY [LOCAL_NAMES_FILE]]]" >&2; exit 2; }
 images_file=$1
 cache_dir=$2
 output_dir=$3
 local_images_dir=${4:-}
 c8s_registry=${5:-ghcr.io/confidential-dot-ai}
+# "<ref> <name>" lines: an image this node also imports under a node-local
+# name, so pods naming it run the components of the image they run on
+# (node-image render's local-names.txt).
+local_names_file=${6:-}
+declare -A local_name=()
+if [[ -n "$local_names_file" ]]; then
+    while read -r image name || [[ -n "$image" ]]; do
+        [[ "$image" =~ ^[^[:space:]@]+@sha256:[a-f0-9]{64}$ ]] || {
+            echo "airgap-images: local name for '$image' is not a digest-pinned image" >&2
+            exit 1
+        }
+        [[ "$name" =~ ^[^[:space:]@]+:[A-Za-z0-9_][A-Za-z0-9_.-]*$ ]] || {
+            echo "airgap-images: '$name' is not a repository and tag" >&2
+            exit 1
+        }
+        local_name[$image]=$name
+    done < "$local_names_file"
+fi
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=node-guest-image/c8s/image-source.sh
 source "$SCRIPT_DIR/image-source.sh"
@@ -61,7 +79,7 @@ cached_layout_complete() {
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 count=0
-declare -A kept=()
+declare -A kept=() listed=()
 while IFS= read -r ref || [[ -n "$ref" ]]; do
     [[ "$ref" =~ ^[^[:space:]@]+@sha256:[a-f0-9]{64}$ ]] || {
         echo "airgap-images: expected a digest-pinned image, got '$ref'" >&2
@@ -70,6 +88,7 @@ while IFS= read -r ref || [[ -n "$ref" ]]; do
     digest=${ref##*@}
     layout="$cache_dir/oci-${digest#sha256:}"
     kept[$layout]=1
+    listed[$ref]=1
     # Copy the complete index, including every referenced manifest. Selecting
     # a platform here would replace the original index with a child digest.
     select_image_source "$ref" "$local_images_dir" "$c8s_registry"
@@ -86,8 +105,10 @@ while IFS= read -r ref || [[ -n "$ref" ]]; do
         "$layout/index.json" >/dev/null
     # containerd uses this annotation as the exact imported image name.
     # Only the outer layout index changes; all referenced blobs stay intact.
-    jq -S --arg ref "$ref" --arg digest "$digest" \
-        '.manifests = [.manifests[] | select(.digest == $digest and .annotations["org.opencontainers.image.ref.name"] == "measured") | .annotations = {"io.containerd.image.name": $ref, "org.opencontainers.image.ref.name": $ref}]' \
+    jq -S --arg ref "$ref" --arg digest "$digest" --arg local "${local_name[$ref]:-}" \
+        '.manifests = [.manifests[] | select(.digest == $digest and .annotations["org.opencontainers.image.ref.name"] == "measured")
+           | (.annotations = {"io.containerd.image.name": $ref, "org.opencontainers.image.ref.name": $ref}),
+             (select($local != "") | .annotations = {"io.containerd.image.name": $local, "org.opencontainers.image.ref.name": $local})]' \
         "$layout/index.json" > "$work/index.json"
     # The bytes oras writes; a cached layout's copy is never archived.
     printf '%s' '{"imageLayoutVersion":"1.0.0"}' > "$work/oci-layout"
@@ -99,6 +120,12 @@ while IFS= read -r ref || [[ -n "$ref" ]]; do
     count=$((count + 1))
 done < "$images_file"
 (( count > 0 )) || { echo "airgap-images: no core images were rendered" >&2; exit 1; }
+for image in "${!local_name[@]}"; do
+    [[ -n "${listed[$image]:-}" ]] || {
+        echo "airgap-images: local name for '$image', which no rendered image pins" >&2
+        exit 1
+    }
+done
 # The cache is persisted across CI runs; keep only the layouts this list pins.
 for layout in "$cache_dir"/oci-*; do
     [[ ! -e "$layout" || -n "${kept[$layout]:-}" ]] || rm -rf "$layout"

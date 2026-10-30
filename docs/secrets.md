@@ -1,26 +1,30 @@
 # Secret release
 
+A secret reaches a pod only when the containers running in it match one workload
+entry whose grant covers that secret's path.
+
+Guarantee: [Data stays in the TEE](guarantees.md#data-stays-in-the-tee),
+[Only allowlisted code runs](guarantees.md#only-allowlisted-code-runs).
+
 A secret is a value CDS keeps in its own memory, addressed by a store path. CDS
-— the Certificate Distribution Service, the one in-cluster pod that verifies TEE
-evidence, signs the certificate each pod run gets, and holds C8s policy —
-releases it only to a pod whose containers match a workload entry whose grant
-covers that path. A workload entry is one named set of container images with the
-command, mounts, and environment each may run; its grant lists the store paths
-that entry may read or write. Both are allowlist policy: fields in
-[allowlist-entries.md](allowlist-entries.md), steps in
+— the Certificate Distribution Service, the VM outside the cluster that verifies
+TEE evidence, signs the certificate each pod run gets, and holds C8s policy —
+releases it only to such a pod. A workload entry is one named set of container
+images with the command, mounts, and environment each may run; its grant lists
+the store paths that entry may read or write. Both are allowlist policy: fields
+in [allowlist-entries.md](allowlist-entries.md), steps in
 [workloads.md](workloads.md), names in [glossary.md](glossary.md). A secret is
 not a Kubernetes Secret: nothing is written to the API server.
 
 ## When it is served
 
 CDS serves the secrets endpoint only when it can establish what a pod runs. It
-needs its own `--armtls-platform` (the chart's `cds.armtlsPlatform`, which
-`c8s install --hardware-platform` sets), `--measurements`, and node addresses
+needs the TEE family its own launch proved, its node pins, and node addresses
 bounding its callback to a node's admission inventory — the node service that
-records which containers each pod has run (`--sandbox-inventory-cidr`, or host
-routes from the live node list). Miss one and CDS logs a warning naming it and
-serves nothing, so a pod asking for a secret retries until that is fixed. Where
-the operator has no node inventory at all, such a pod is refused at admission.
+records which containers each pod has run (the configuration's `nodeCIDRs`).
+Miss one and CDS logs a warning naming it and serves nothing, so a pod asking
+for a secret retries until that is fixed. Where the operator has no node
+inventory at all, such a pod is refused at admission.
 
 Release is gated on a `secrets` grant in the workload entry. An entry without
 one releases nothing, so writing the grant is what turns release on; it is
@@ -101,10 +105,9 @@ there and then, provided the entry's grant covers that path for write, so no
 caller ever chooses what another will later read. Under a read-only grant the
 request answers `404` until an operator writes the value. Values CDS cannot
 invent — an API token, a database password, a wrapped key — an operator writes
-with `c8s secrets put`. A measurement pin proves only that the peer is an
-attested build, and several instances can share one, so such a write also pins
-the mesh CA you hold out of band: that is what tells your CDS from another at
-the same measurement — [workloads.md](workloads.md).
+with `c8s secrets put`. The pin names the configuration that CDS runs on, and
+such a write also pins the mesh CA you hold out of band, which is what ties the
+peer to the instance you read it from — [workloads.md](workloads.md).
 
 ## Fixed sidecar mounts
 
@@ -128,12 +131,15 @@ a container of an injected pod. The inventory socket directory
 
 ## What the inventory reports
 
-The admission inventory answers with two views of one sandbox: `digests`, the
-image digests that certificate issuance gates on, and `containers`, each
-distinct launch — digest with its `argv`, environment evidence, and observed
-mounts — which release matches against. Both omit duplicates. `argv` is the
-effective command line a container ran, so release holds a sandbox to what its
-images were told to do, not only to which images ran.
+The admission inventory answers with two views of one sandbox, both omitting
+duplicates:
+
+- `digests`: the image digests that certificate issuance gates on.
+- `containers`: each distinct launch — digest with its `argv`, environment
+  evidence, and observed mounts — which release matches against.
+
+`argv` is the effective command line a container ran, so release holds a
+sandbox to what its images were told to do, not only to which images ran.
 
 Mount evidence records each destination's class and storage, never the node
 path. `mounts: []` means no bind mounts were seen; a missing or null field means

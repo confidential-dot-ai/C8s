@@ -244,7 +244,10 @@ func mapVerifyError(family TEEType, err error) error {
 		return ErrSignatureInvalid
 	case errors.Is(err, remote.ErrReportDataMismatch):
 		return fmt.Errorf("%w — key was not generated in this TEE", ErrKeyBinding)
-	case errors.Is(err, remote.ErrMeasurementNotAllowed), errors.Is(err, remote.ErrRegistersNotAllowed), errors.Is(err, remote.ErrAnchorNotAllowed):
+	case errors.Is(err, remote.ErrMeasurementNotAllowed),
+		errors.Is(err, remote.ErrRegistersNotAllowed),
+		errors.Is(err, remote.ErrAnchorNotAllowed),
+		errors.Is(err, remote.ErrLaunchFileNotAllowed):
 		return fmt.Errorf("%w: %v", ErrPolicyViolation, err)
 	case errors.Is(err, remote.ErrInvalidLaunchDigest):
 		return fmt.Errorf("%w: %v", ErrInvalidReport, err)

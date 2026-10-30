@@ -43,12 +43,9 @@ func (p *plugin) prepareCDSPins() error {
 		// This boot supplies no node credential clients.
 		return nil
 	}
-	set, err := p.cfg.Allowlist.Pull.policySet(p.cfg.NormalizedPlatform())
+	set, err := p.cfg.Allowlist.Pull.policySet()
 	if err != nil {
 		return err
-	}
-	if set.Empty() {
-		return fmt.Errorf("allowlist.pull: this node injects credential clients but pins no CDS: set cds_measurements or cds_measurements_config")
 	}
 	document, err := refvalues.Format(set)
 	if err != nil {

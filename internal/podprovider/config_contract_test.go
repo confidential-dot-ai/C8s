@@ -15,7 +15,7 @@ import (
 
 func TestConfigurationRejectsUnsafeOrIncompleteOriginsAndCapacity(t *testing.T) {
 	base := fixtureConfig(t)
-	for _, kind := range []string{"provider-id", "namespace", "node-name", "http", "url-credentials", "url-path", "url-query", "image", "size", "location", "cluster", "public-ip", "vcpus", "memory", "reserve", "pods", "server-ip", "missing-file"} {
+	for _, kind := range []string{"provider-id", "namespace", "node-name", "http", "url-credentials", "url-path", "url-query", "image", "size", "location", "cluster", "public-ip", "vcpus", "memory", "reserve", "pods", "server-ip", "missing-cds-address", "invalid-cds-address", "missing-cds-policy-file", "missing-file"} {
 		t.Run(kind, func(t *testing.T) {
 			cfg := *base
 			switch kind {
@@ -53,6 +53,12 @@ func TestConfigurationRejectsUnsafeOrIncompleteOriginsAndCapacity(t *testing.T) 
 				cfg.MaxPods = 10001
 			case "server-ip":
 				cfg.ServerAddress = "server.example"
+			case "missing-cds-address":
+				cfg.CDSAddress = ""
+			case "invalid-cds-address":
+				cfg.CDSAddress = "127.0.0.1:8443"
+			case "missing-cds-policy-file":
+				cfg.CDSImagePolicyFile = ""
 			case "missing-file":
 				cfg.WorkloadsFile = ""
 			}
@@ -81,7 +87,7 @@ func TestConfigurationRejectsUnsafeOrIncompleteOriginsAndCapacity(t *testing.T) 
 }
 
 func TestTrustFilesFailBeforeSigningOrRegistration(t *testing.T) {
-	for _, kind := range []string{"missing-token", "empty-token", "multiline-token", "missing-key", "invalid-key", "wrong-curve", "missing-server", "invalid-server", "missing-policy", "invalid-policy", "empty-policy-file", "missing-manifest", "invalid-manifest", "unsupported-snp", "oversized-file", "directory"} {
+	for _, kind := range []string{"missing-token", "empty-token", "multiline-token", "missing-key", "invalid-key", "wrong-curve", "missing-server", "invalid-server", "missing-cds-policy", "empty-cds-policy", "malformed-cds-policy", "unbound-cds-policy", "oversized-cds-policy", "missing-policy", "invalid-policy", "empty-policy-file", "missing-manifest", "invalid-manifest", "unsupported-snp", "oversized-file", "directory"} {
 		t.Run(kind, func(t *testing.T) {
 			cfg := fixtureConfig(t)
 			path := filepath.Join(filepath.Dir(cfg.CloudTokenFile), "config.json")
@@ -117,6 +123,16 @@ func TestTrustFilesFailBeforeSigningOrRegistration(t *testing.T) {
 			case "invalid-server":
 				target = cfg.ServerPublicKeyFile
 				data = []byte("not a public key")
+			case "missing-cds-policy":
+				cfg.CDSImagePolicyFile += ".missing"
+			case "empty-cds-policy":
+				target = cfg.CDSImagePolicyFile
+			case "malformed-cds-policy":
+				target, data = cfg.CDSImagePolicyFile, []byte("not a policy")
+			case "unbound-cds-policy":
+				target, data = cfg.CDSImagePolicyFile, providerCDSPolicy(t, nil)
+			case "oversized-cds-policy":
+				target, data = cfg.CDSImagePolicyFile, []byte(strings.Repeat("a", maxFile+1))
 			case "missing-policy":
 				cfg.WorkloadsFile += ".missing"
 			case "invalid-policy":

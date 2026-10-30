@@ -28,6 +28,7 @@ import (
 
 	"github.com/fxamacker/cbor/v2"
 
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/credvolume"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/routing"
@@ -673,9 +674,9 @@ func TestW6OperatorKeySource(t *testing.T) {
 // a pinned one.
 func TestRoutingRefusesAnUnpinnedCDS(t *testing.T) {
 	cfg := routedRunConfig(t, freePort(t))
-	cfg.routing.cdsMeasurements = nil
-	if _, err := newRoutingEngine(cfg, NewBindings(), slog.New(slog.DiscardHandler)); !errors.Is(err, armtls.ErrUnpinned) {
-		t.Fatalf("newRoutingEngine() = %v, want errors.Is armtls.ErrUnpinned", err)
+	cfg.routing.imagePolicyFile = ""
+	if _, err := newRoutingEngine(cfg, NewBindings(), slog.New(slog.DiscardHandler)); !errors.Is(err, cmdsutil.ErrCDSPinUnbound) {
+		t.Fatalf("newRoutingEngine() = %v, want errors.Is cmdsutil.ErrCDSPinUnbound", err)
 	}
 }
 

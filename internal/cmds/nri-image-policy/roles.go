@@ -69,6 +69,9 @@ type meshPolicy struct {
 	// socket serves the attestation-api. 0 names none.
 	CredentialAttestationPort uint16        `yaml:"credential_attestation_port"`
 	Roles                     []roleBinding `yaml:"roles"`
+	// nodeAddr is this node's own address, which the measured document cannot
+	// carry. The mesh gate fills it (rulesetPolicy).
+	nodeAddr netip.Addr
 	// ClusterRanges are this cluster's pod and Service ranges. A destination
 	// inside them is a member, so the acme egress exception excludes them and
 	// that traffic is captured like any other application connection.
@@ -92,13 +95,14 @@ type capturePorts struct {
 	Health   uint16 `yaml:"health"`
 }
 
-// roleBinding binds a dialing role to its reserved UID and the services it
-// may reach. The mesh endpoint names none: the enforcer installs the pod
-// ruleset, so the endpoint only proxies.
+// roleBinding binds a dialing role to its reserved UID and the port it
+// reaches outside this cluster: where this cluster's CDS serves, which the
+// role's clients dial by name. The mesh endpoint names no port: the enforcer
+// installs the pod ruleset, so the endpoint only proxies.
 type roleBinding struct {
-	Name         string           `yaml:"name"`
-	UID          uint32           `yaml:"uid"`
-	Destinations []netip.AddrPort `yaml:"destinations"`
+	Name string `yaml:"name"`
+	UID  uint32 `yaml:"uid"`
+	Port uint16 `yaml:"port"`
 }
 
 // MeshFloor is the measured mesh policy as the mesh gate and the node's
@@ -228,16 +232,11 @@ func validateRole(role roleBinding) error {
 	if role.UID == 0 {
 		return fmt.Errorf("mesh.roles %s requires a nonzero uid", role.Name)
 	}
-	for _, destination := range role.Destinations {
-		if destination.Port() == 0 {
-			return fmt.Errorf("mesh.roles %s destination %s requires a nonzero port", role.Name, destination)
-		}
-	}
 	switch {
-	case role.Name != meshRole && len(role.Destinations) == 0:
-		return fmt.Errorf("mesh.roles %s reaches nothing: give it a destination or drop it", role.Name)
-	case role.Name == CredentialRole && len(role.Destinations) != 1:
-		return fmt.Errorf("mesh.roles %s needs exactly one destination, the CDS its clients dial", CredentialRole)
+	case role.Name != meshRole && role.Port == 0:
+		return fmt.Errorf("mesh.roles %s reaches nothing: give it the port it dials or drop it", role.Name)
+	case role.Name == meshRole && role.Port != 0:
+		return fmt.Errorf("mesh.roles %s reaches no port of its own: the enforcer installs the ruleset its pod rides", meshRole)
 	case role.Name != CredentialRole && role.UID == workloadclaims.CredentialsUID:
 		return fmt.Errorf("mesh.roles %s holds uid %d, reserved for the %s role", role.Name, role.UID, CredentialRole)
 	case role.Name == routerRole || role.Name == acmeRole || role.Name == upstreamRole:

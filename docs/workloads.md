@@ -1,7 +1,8 @@
 # Onboard a workload
 
-Take your own workload from a plain Deployment to a confidential one: a
-workload entry, the pod annotation, a secret, an encrypted volume, and a route.
+Take your own workload from a plain Deployment to a confidential one: a workload
+entry, the pod annotation, a secret, an encrypted volume, and a route.
+
 After step 3, do only the steps you need; terms left undefined here are in
 [glossary.md](glossary.md).
 
@@ -24,18 +25,16 @@ certificates carry the peer's TEE evidence, so you verify what CDS runs rather
 than a name. The front door relays the allowlist API only, so reach CDS itself:
 
 ```sh
-CDS=https://<CDS_NODE>:30808
-M=<LAUNCH_MEASUREMENT>
-PIN="--url $CDS --measurements $M"
+CDS=https://<CDS_ADDRESS>
+PIN="--url $CDS --image-policy-file cds-pin.json"
 KEY="--operator-key c8s-operator.key"
 ```
 
-`<CDS_NODE>` is the address of any node: the chart publishes CDS on NodePort
-`30808` (`cds.service.nodePort`). `kubectl port-forward` is no substitute, since
-the measured node image denies it. `<LAUNCH_MEASUREMENT>` is the 96 lowercase
-hex characters from your node image's `manifest.json`, the value
-`c8s install --measurements` took. Every later step uses `$PIN` and `$KEY`, so
-run this block in each new shell.
+`<CDS_ADDRESS>` is the `<host>:<port>` the install named with `--cds-address`,
+and `cds-pin.json` the document it named with `--cds-pin`: it binds the exact
+configuration that VM runs on, so it names this cluster's CDS rather than any
+VM of the same image. Every later step uses `$PIN` and `$KEY`, so run this
+block in each new shell.
 
 Confirm the path by listing the entries CDS serves, then read the mesh CA
 bundle, the anchor workload certificates chain to:
@@ -45,10 +44,9 @@ c8s allowlist list $PIN
 c8s cds ca $PIN --out mesh-ca.pem
 ```
 
-Secret and volume writes hold CDS to that bundle. A measurement identifies the
-image a CDS runs, not which CDS it is, so the read takes whatever answered:
-record the certificate SHA-256 it prints on stderr and compare it on later
-reads. CDS makes the mesh CA in process, so a restart replaces it and the bundle
+Secret and volume writes hold CDS to that bundle. The read takes whatever
+answered under the pin: record the certificate SHA-256 it prints on stderr and
+compare it on later reads. CDS makes the mesh CA in process, so a restart replaces it and the bundle
 has to be read again ([operator.md](operator.md#cds-is-a-singleton) lists what
 else a restart drops).
 
@@ -161,23 +159,24 @@ node — and the image is ciphertext, so copy it where the hypervisor can read i
 Which option applies to your nodes, and why, is in
 [volumes.md](volumes.md#attaching-the-image).
 
-A. Cold-plug at VM launch: add these to the VM's launch command, image path on
-the hypervisor host.
+A. **Cold-plug at VM launch**: add these to the VM's launch command, image path
+on the hypervisor host.
 
 ```sh
 -drive if=none,id=volweights,file=/srv/c8s/weights.img,format=raw \
 -device virtio-blk-pci,drive=volweights,serial=c8s-vol-weights
 ```
 
-B. Hot-attach from the QEMU monitor of a VM that was launched with a
-virtio-scsi controller (`-device virtio-scsi-pci,id=scsi0`).
+B. **Hot-attach `scsi-hd`**: from the QEMU monitor of a VM that was launched
+with a virtio-scsi controller (`-device virtio-scsi-pci,id=scsi0`).
 
 ```text
 drive_add 0 if=none,id=volweights,file=/srv/c8s/weights.img,format=raw
 device_add scsi-hd,id=weights,bus=scsi0.0,drive=volweights,serial=c8s-vol-weights
 ```
 
-C. Build a local SCSI disk through LIO, as root on the node holding the image.
+C. **`c8s volume attach`**: builds a local SCSI disk through LIO, as root on
+the node holding the image.
 
 ```sh
 c8s volume attach weights --image /srv/c8s/weights.img

@@ -45,15 +45,16 @@
 #                      `confos run` (default 16G — etcd OOMs at the 4G default)
 #   C8S_REF=...        REQUIRED. Bake the host binary and core container
 #                      images from a specific C8s COMMIT (short SHA) or
-#                      release tag; mkosi.sync resolves nri-image-policy:<ref>
-#                      and cds:<ref> to digests and has no default. The
-#                      images must be published first (c8s docker.yml on
-#                      main, or workflow_dispatch for a branch). Use a
-#                      branch SHA to test an unmerged C8s build end-to-end.
+#                      release tag; mkosi.sync resolves nri-image-policy:<ref>,
+#                      c8s-operator:<ref> and armtls-mesh:<ref> to digests and
+#                      has no default. The images must be published first
+#                      (c8s docker.yml on main, or workflow_dispatch for a
+#                      branch). Use a branch SHA to test an unmerged C8s build
+#                      end-to-end.
 #   C8S_BINARY=...     pre-stage this locally built multi-command c8s binary
 #                      instead of pulling nri-image-policy:<C8S_REF>. The
 #                      core container images must support its chart's commands.
-#   C8S_IMAGES_DIR=... local OCI layouts for c8s-operator, cds and armtls-mesh,
+#   C8S_IMAGES_DIR=... local OCI layouts for c8s-operator and armtls-mesh,
 #                      tagged with C8S_REF. Requires C8S_BINARY. The repro gate
 #                      shares these container inputs between both builds.
 #   CONFOS_DIR=...     confos checkout to build with (default: sibling of this
@@ -79,7 +80,7 @@ esac
 if [ -n "${C8S_IMAGES_DIR:-}" ]; then
     [ -f "${C8S_BINARY:-}" ] || { echo "node-guest-image/build: C8S_IMAGES_DIR requires C8S_BINARY" >&2; exit 1; }
     C8S_IMAGES_DIR=$(realpath -e -- "$C8S_IMAGES_DIR")
-    for image in c8s-operator cds armtls-mesh; do
+    for image in c8s-operator armtls-mesh; do
         [ -f "$C8S_IMAGES_DIR/$image/index.json" ] || {
             echo "node-guest-image/build: missing local OCI layout for $image" >&2; exit 1;
         }

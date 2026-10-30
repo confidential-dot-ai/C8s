@@ -19,6 +19,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
@@ -32,9 +33,13 @@ func TestPodCDSPullAuthenticatesServerIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server, podKey := identities.Images[0], identities.Images[1].Anchor
-	// CDS staging emits only the server identity, independently of the Pod key.
+	nodeKey, podKey := identities.Images[0].Anchor, identities.Images[1].Anchor
+	// The CDS VM binds its entire configuration, independently of either
+	// node launch key and of the Pod guest's TEE family.
 	identities.Images = identities.Images[:1]
+	identities.Images[0].Anchor = nil
+	identities.Images[0].LaunchFile = []byte(testutil.CDSLaunchFile)
+	server := identities.Images[0]
 	pins, err := refvalues.Format(identities)
 	if err != nil {
 		t.Fatal(err)
@@ -79,22 +84,28 @@ func TestPodCDSPullAuthenticatesServerIdentity(t *testing.T) {
 
 	for _, tc := range []struct {
 		name          string
-		anchor        []byte
+		launch        []byte
 		wrongImage    bool
 		wrongRegister int
 		wrongBinding  bool
+		extended      bool
 		wantErr       error
 	}{
-		{name: "server", anchor: server.Anchor},
-		{name: "Pod launch key", anchor: podKey, wantErr: armtls.ErrPolicyViolation},
-		{name: "unrelated anchor", anchor: []byte("unrelated launch key"), wantErr: armtls.ErrPolicyViolation},
-		{name: "wrong image", anchor: server.Anchor, wrongImage: true, wantErr: armtls.ErrPolicyViolation},
-		{name: "wrong kernel", anchor: server.Anchor, wrongRegister: 1, wantErr: armtls.ErrPolicyViolation},
-		{name: "wrong rootfs", anchor: server.Anchor, wrongRegister: 2, wantErr: armtls.ErrPolicyViolation},
-		{name: "unbound certificate key", anchor: server.Anchor, wrongBinding: true, wantErr: armtls.ErrKeyBinding},
+		{name: "server", launch: server.LaunchFile},
+		{name: "Pod launch key", launch: podKey, wantErr: armtls.ErrPolicyViolation},
+		{name: "node launch key", launch: nodeKey, wantErr: armtls.ErrPolicyViolation},
+		{name: "another CDS configuration", launch: []byte("another configuration"), wantErr: armtls.ErrPolicyViolation},
+		{name: "extended CDS binding", launch: server.LaunchFile, extended: true, wantErr: armtls.ErrPolicyViolation},
+		{name: "wrong image", launch: server.LaunchFile, wrongImage: true, wantErr: armtls.ErrPolicyViolation},
+		{name: "wrong kernel", launch: server.LaunchFile, wrongRegister: 1, wantErr: armtls.ErrPolicyViolation},
+		{name: "wrong rootfs", launch: server.LaunchFile, wrongRegister: 2, wantErr: armtls.ErrPolicyViolation},
+		{name: "unbound certificate key", launch: server.LaunchFile, wrongBinding: true, wantErr: armtls.ErrKeyBinding},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			seed := runtimemeasure.Seed(tc.anchor)
+			seed := runtimemeasure.Seed(tc.launch)
+			if tc.extended {
+				seed = runtimemeasure.Extend(seed, runtimemeasure.Event(pushDigestA))
+			}
 			verdict := mockapi.PassingVerdict(hex.EncodeToString(server.Digest))
 			verdict.Claims.PlatformData = map[string]any{
 				"rtmr_1": hex.EncodeToString(server.Registers[1]),
@@ -114,7 +125,7 @@ func TestPodCDSPullAuthenticatesServerIdentity(t *testing.T) {
 				verdict.ReportDataMatch = teetypes.Ptr(false)
 			}
 			verifier.SetVerdict(verdict)
-			client, err := allowlistPullHTTPClient(pull, "tdx")
+			client, err := allowlistPullHTTPClient(pull)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -152,7 +163,7 @@ func TestPodCDSPullAuthenticatesServerIdentity(t *testing.T) {
 		if err := os.WriteFile(pinsPath, []byte(`{"schema_version":"1","tee":"tdx","measurements":[{"mrtd":"invalid"}]}`), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := allowlistPullHTTPClient(pull, "tdx"); err == nil {
+		if _, err := allowlistPullHTTPClient(pull); err == nil {
 			t.Fatal("invalid staged CDS pins produced a client")
 		}
 	})

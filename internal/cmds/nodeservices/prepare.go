@@ -4,14 +4,15 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
@@ -32,13 +33,18 @@ func prepare(rootDir string, d *launchconfig.Document, resolveMTU func() (int, e
 		return err
 	}
 	path := func(name string) string { return filepath.Join(rootDir, name) }
-	outputs := make(map[string][]byte)
-	for _, name := range []string{"peers.json", "cds.json"} {
-		data, err := readPolicy(path(launchDir+name), d.Image.Platform, name == "cds.json")
-		if err != nil {
-			return err
-		}
-		outputs[name] = data
+	peers, err := readPeerPolicy(path(launchDir+"peers.json"), d.Image.Platform)
+	if err != nil {
+		return err
+	}
+	// The staged document is this node's only source for its CDS.
+	cds, err := d.CDSPolicy()
+	if err != nil {
+		return err
+	}
+	outputs := map[string][]byte{
+		"peers.json": peers,
+		"cds.json":   cds,
 	}
 	if d.Role == launchconfig.Pod {
 		return preparePod(rootDir, d, outputs, resolveMTU)
@@ -52,7 +58,7 @@ func prepare(rootDir string, d *launchconfig.Document, resolveMTU func() (int, e
 		return fmt.Errorf("baked workload seed: %w", err)
 	}
 	if d.Role == launchconfig.Server {
-		server, err := serverOutputs(d, bakedData)
+		server, err := serverOutputs(d)
 		if err != nil {
 			return err
 		}
@@ -72,10 +78,17 @@ func prepare(rootDir string, d *launchconfig.Document, resolveMTU func() (int, e
 	if err != nil {
 		return err
 	}
-	if err := mergeWorkloads(base, bakedSeed, true); err != nil {
+	if err := fillNodeValues(base, d.Node); err != nil {
+		return err
+	}
+	if err := mergeBakedSeed(base, bakedSeed); err != nil {
 		return fmt.Errorf("merge chart seed into NRI base: %w", err)
 	}
 	a["base"] = base
+	port, err := d.CDSPort()
+	if err != nil {
+		return err
+	}
 	mesh, declared := floor["mesh"]
 	if !declared {
 		return fmt.Errorf("baked NRI policy missing mesh")
@@ -84,11 +97,7 @@ func prepare(rootDir string, d *launchconfig.Document, resolveMTU func() (int, e
 	if !ok {
 		return fmt.Errorf("baked NRI mesh policy is %T, not a mapping", mesh)
 	}
-	address, err := d.CDSAddrPort()
-	if err != nil {
-		return err
-	}
-	if err := appendCredentialRole(policy, address); err != nil {
+	if err := appendCredentialRole(policy, port); err != nil {
 		return err
 	}
 	data, err := yaml.Marshal(floor)
@@ -106,17 +115,17 @@ func prepare(rootDir string, d *launchconfig.Document, resolveMTU func() (int, e
 
 const nriPolicyPath = "/etc/nri/conf.d/image-policy.yaml"
 
-// bindCDSPull applies the signed server endpoint and its separately staged pins.
+// bindCDSPull applies the signed external CDS address and launch-file-bound pins.
 func bindCDSPull(a map[string]any, d *launchconfig.Document) (map[string]any, error) {
 	pull, ok := a["pull"].(map[string]any)
 	if !ok {
 		return nil, fmt.Errorf("baked NRI policy missing pull")
 	}
-	if err := launchconfig.ValidateIPv4(d.Server.Address, true); err != nil {
-		return nil, fmt.Errorf("staged server.address: %w", err)
+	if _, err := d.CDSPort(); err != nil {
+		return nil, err
 	}
-	pull["url"] = d.CDSURL()
-	pull["cds_measurements_config"] = launchDir + "cds.json"
+	pull["url"] = cmdsutil.CDSURL(d.CDS.Address)
+	pull["cds_measurements_config"] = PublicDir + "/cds.json"
 	delete(pull, "cds_measurements")
 	delete(pull, "cds_rtmrs")
 	return pull, nil
@@ -145,6 +154,12 @@ func publishPublic(publicPath string, outputs map[string][]byte, clearServer boo
 	}
 	if err := os.Chmod(publicPath, 0755); err != nil {
 		return err
+	}
+	// Legacy in-cluster CDS inputs have no consumer in a v2 node boot.
+	for _, name := range []string{"allowlist-seed.json", "pods.json"} {
+		if err := os.Remove(filepath.Join(publicPath, name)); err != nil && !os.IsNotExist(err) {
+			return err
+		}
 	}
 	if clearServer {
 		if err := removeServerOutputs(publicPath); err != nil {
@@ -187,11 +202,82 @@ func bakedBase(declared any) (*allowlist.Allowlist, error) {
 	return &base, nil
 }
 
+// The measured floor writes a static-pod flag whose value RKE2 takes from
+// this node's launch document as "<flag>=<placeholder>"
+// (node-guest-image/c8s/image-policy.yaml.in).
+const (
+	nodeNamePlaceholder             = "${NODE_NAME}"
+	nodeAdvertiseAddressPlaceholder = "${NODE_ADVERTISE_ADDRESS}"
+)
+
+// fillNodeValues gives each placeholder flag in the base's argv pins this
+// node's value.
+func fillNodeValues(base *allowlist.Allowlist, node launchconfig.Node) error {
+	values := map[string]string{
+		nodeNamePlaceholder:             node.Name,
+		nodeAdvertiseAddressPlaceholder: node.AdvertiseAddress(),
+	}
+	for name, w := range base.Workloads {
+		for i := range w.InitContainers {
+			if err := fillContainer(&w.InitContainers[i], values); err != nil {
+				return fmt.Errorf("baked NRI base workload %q: %w", name, err)
+			}
+		}
+		for i := range w.Containers {
+			if err := fillContainer(&w.Containers[i], values); err != nil {
+				return fmt.Errorf("baked NRI base workload %q: %w", name, err)
+			}
+		}
+		base.Workloads[name] = w
+	}
+	return nil
+}
+
+func fillContainer(c *allowlist.Container, values map[string]string) error {
+	for _, policy := range []*allowlist.ArgvPolicy{&c.Command, &c.Args} {
+		argv, err := argvWithNodeValues(policy.Argv, values)
+		if err != nil {
+			return err
+		}
+		policy.Argv = argv
+	}
+	return nil
+}
+
+// argvWithNodeValues is argv with each "<flag>=<placeholder>" element given
+// the node's value, and left out where the node has none, as RKE2 then
+// passes no such flag. An element that names a placeholder in any other way,
+// or a flag set to a placeholder the floor does not define, is an error. Any
+// other "${" is literal: a pinned shell script expands its own variables.
+func argvWithNodeValues(argv []string, values map[string]string) ([]string, error) {
+	filled := make([]string, 0, len(argv))
+	for _, element := range argv {
+		flag, placeholder, isFlag := strings.Cut(element, "=")
+		namesPlaceholder := isFlag && strings.HasPrefix(flag, "-") && strings.HasPrefix(placeholder, "${")
+		for p := range values {
+			namesPlaceholder = namesPlaceholder || strings.Contains(element, p)
+		}
+		if !namesPlaceholder {
+			filled = append(filled, element)
+			continue
+		}
+		value, defined := values[placeholder]
+		if !isFlag || !defined {
+			return nil, fmt.Errorf("argv element %q is not a flag set to a placeholder the floor defines", element)
+		}
+		if value != "" {
+			filled = append(filled, flag+"="+value)
+		}
+	}
+	return filled, nil
+}
+
 // appendCredentialRole completes the measured mesh policy with the one binding
-// only a launched node can know: the injected credential clients reach this
-// cluster's CDS and nothing else. A policy that already names that role, or
-// its reserved identity, is a measured policy this step would contradict.
-func appendCredentialRole(policy map[string]any, address netip.AddrPort) error {
+// only a launched node can know: the injected credential clients reach the
+// port this cluster's CDS serves on, outside the cluster, and nothing else. A
+// policy that already names that role, or its reserved identity, is a measured
+// policy this step would contradict.
+func appendCredentialRole(policy map[string]any, port uint16) error {
 	declared, ok := policy["roles"]
 	if !ok {
 		declared = []any{}
@@ -213,9 +299,9 @@ func appendCredentialRole(policy map[string]any, address netip.AddrPort) error {
 		}
 	}
 	policy["roles"] = append(roles, map[string]any{
-		"name":         nriimagepolicy.CredentialRole,
-		"uid":          workloadclaims.CredentialsUID,
-		"destinations": []any{address.String()},
+		"name": nriimagepolicy.CredentialRole,
+		"uid":  workloadclaims.CredentialsUID,
+		"port": port,
 	})
 	return nil
 }
@@ -225,8 +311,6 @@ func appendCredentialRole(policy map[string]any, address netip.AddrPort) error {
 // as loose strings spread across Prepare.
 type serverConfig struct {
 	operatorPubKey []byte
-	allowlistSeed  []byte
-	podImagePolicy []byte
 	tlsSAN         string
 	router         launchconfig.Router
 }
@@ -235,9 +319,13 @@ type serverConfig struct {
 // these, and an agent clears exactly these. The router files are always
 // written, empty when unset, so the router pod never waits on a missing file.
 var serverOutputNames = []string{
-	"operator-pubkey", "allowlist-seed.json", "pods.json", "tls-san",
-	"router/tls.conf", "router/hostnames",
-	"router/acme-email", "router/acme-directory-url", "router/front-door-mode",
+	"operator-pubkey",
+	"tls-san",
+	"router/tls.conf",
+	"router/hostnames",
+	"router/acme-email",
+	"router/acme-directory-url",
+	"router/front-door-mode",
 	"router/request-body.conf",
 }
 
@@ -265,10 +353,8 @@ func (c serverConfig) files() map[string][]byte {
 		hostnames = append(hostnames, name+"\n"...)
 	}
 	files := map[string][]byte{
-		"operator-pubkey":     c.operatorPubKey,
-		"allowlist-seed.json": c.allowlistSeed,
-		"pods.json":           c.podImagePolicy,
-		"tls-san":             []byte(c.tlsSAN + "\n"),
+		"operator-pubkey": c.operatorPubKey,
+		"tls-san":         []byte(c.tlsSAN + "\n"),
 		// nginx includes this in its server block to pick the certificate.
 		"router/tls.conf":           []byte(fmt.Sprintf("include %s/tls-%s.conf;\n", RouterTLSSnippetDir, mode)),
 		"router/hostnames":          hostnames,
@@ -291,31 +377,15 @@ func (c serverConfig) files() map[string][]byte {
 	return files
 }
 
-// serverOutputs validates the server-only fields of the staged document and
-// merges the operator's workloads over the baked seed. It writes nothing:
-// Prepare publishes only after every input has been validated.
-func serverOutputs(d *launchconfig.Document, bakedData []byte) (serverConfig, error) {
+// serverOutputs validates the server-only fields of the staged document. It
+// writes nothing: Prepare publishes only after every input has been validated.
+func serverOutputs(d *launchconfig.Document) (serverConfig, error) {
 	if err := launchconfig.ValidateHostname(d.TLSSAN); err != nil {
 		return serverConfig{}, fmt.Errorf("staged TLS SAN: %w", err)
 	}
 	pub := []byte(d.Server.OperatorPublicKey)
 	if _, err := operatorauth.ParsePublicKeysPEM(pub); err != nil {
 		return serverConfig{}, fmt.Errorf("staged server operator key: %w", err)
-	}
-	seed, err := mergedSeed(bakedData, d.Workloads)
-	if err != nil {
-		return serverConfig{}, err
-	}
-	podPolicy := []byte(d.PodImagePolicy)
-	if len(podPolicy) > 0 {
-		pins, err := workloadclaims.ParsePodImagePolicy(podPolicy)
-		if err != nil {
-			return serverConfig{}, fmt.Errorf("staged Pod image policy: %w", err)
-		}
-		podPolicy, err = refvalues.Format(pins)
-		if err != nil {
-			return serverConfig{}, fmt.Errorf("format Pod image policy: %w", err)
-		}
 	}
 	var router launchconfig.Router
 	if d.Router != nil {
@@ -328,7 +398,7 @@ func serverOutputs(d *launchconfig.Document, bakedData []byte) (serverConfig, er
 			return serverConfig{}, fmt.Errorf("staged router hostname: %w", err)
 		}
 	}
-	return serverConfig{operatorPubKey: pub, allowlistSeed: seed, podImagePolicy: podPolicy, tlsSAN: d.TLSSAN, router: router}, nil
+	return serverConfig{operatorPubKey: pub, tlsSAN: d.TLSSAN, router: router}, nil
 }
 
 // removeServerOutputs clears the server-only inputs from an agent's public
@@ -342,9 +412,15 @@ func removeServerOutputs(publicPath string) error {
 	return nil
 }
 
-// readPolicy refuses partial pins even when the staged file parses. The
-// authenticated launcher emits an anchored tuple for every permitted role.
-func readPolicy(path, platform string, serverOnly bool) ([]byte, error) {
+// readPeerPolicy accepts the launch identities this cluster's nodes boot
+// with, refusing partial pins even when the staged file parses: the
+// authenticated launcher emits an anchored tuple for every permitted role, on
+// the family this node booted.
+func readPeerPolicy(path, platform string) ([]byte, error) {
+	family, err := teetypes.ParseFamily(platform)
+	if err != nil {
+		return nil, fmt.Errorf("staged image platform: %w", err)
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -353,24 +429,13 @@ func readPolicy(path, platform string, serverOnly bool) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("staged identity policy %s: %w", path, err)
 	}
-	if !policyMatchesPlatform(pins, platform, serverOnly) {
-		return nil, fmt.Errorf("staged identity policy %s has invalid family or image count", path)
+	if pins.Family != family {
+		return nil, fmt.Errorf("staged identity policy %s does not pin this node's TEE family", path)
 	}
 	if !policyPinsComplete(pins) {
 		return nil, fmt.Errorf("staged identity policy %s requires complete image and operator pins", path)
 	}
 	return data, nil
-}
-
-// policyMatchesPlatform reports whether the policy targets the booted TEE
-// family and pins the number of images the role permits: at least one, and
-// exactly one when the policy is server-only.
-func policyMatchesPlatform(pins refvalues.ReferenceValues, platform string, serverOnly bool) bool {
-	family, err := teetypes.ParseFamily(platform)
-	if err != nil || pins.Family != family || len(pins.Images) == 0 {
-		return false
-	}
-	return !serverOnly || len(pins.Images) == 1
 }
 
 // policyPinsComplete reports whether every image pin carries an anchor and,
@@ -387,25 +452,14 @@ func policyPinsComplete(pins refvalues.ReferenceValues) bool {
 	return true
 }
 
-func mergedSeed(data []byte, workloads string) ([]byte, error) {
-	seed, err := allowlist.ParseJSON(data)
-	if err != nil {
-		return nil, fmt.Errorf("baked workload seed: %w", err)
-	}
-	if workloads != "" {
-		extra, err := allowlist.ParseJSON([]byte(workloads))
-		if err != nil {
-			return nil, fmt.Errorf("launch workloads: %w", err)
-		}
-		if err := mergeWorkloads(seed, extra, false); err != nil {
-			return nil, fmt.Errorf("launch workloads: %w", err)
-		}
-	}
-	return seed.Canonical()
+// mergeBakedSeed adds the baked component seed to the measured NRI base: both
+// are measured bootstrap sources, so an entry present in each must be
+// identical rather than replaced.
+func mergeBakedSeed(base, seed *allowlist.Allowlist) error {
+	return mergeWorkloads(base, seed, true)
 }
 
-// allowIdentical is used only for the two measured bootstrap sources. Signed
-// tenant workloads may never replace a component, even with identical content.
+// Signed Pod workloads cannot replace even an identical measured mesh entry.
 func mergeWorkloads(base, extra *allowlist.Allowlist, allowIdentical bool) error {
 	for name, workload := range extra.Workloads {
 		existing, exists := base.Workloads[name]

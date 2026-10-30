@@ -1,9 +1,15 @@
 # Running a cluster
 
-What a C8s install puts in a cluster, and what the platform operator controls
-afterwards. The platform operator is the person holding the cluster's keys;
-`c8s install` is the command they run, `c8s operator` is the controller pod it
-deploys, and only the person's keys authorize policy. For the install itself see
+A C8s cluster takes its policy from operator private keys that never enter it,
+and a measured node releases credentials only inside the bounds its image
+bakes.
+
+Guarantee: [No privileged way in](guarantees.md#no-privileged-way-in),
+[Routes are what the operator signed](guarantees.md#routes-are-what-the-operator-signed).
+
+The platform operator is the person holding those keys; `c8s install` is the
+command they run, `c8s operator` is the controller pod it deploys, and only the
+person's keys authorize policy. For the install itself see
 [QUICKSTART.md](QUICKSTART.md); for a workload, [workloads.md](workloads.md).
 
 ## What an install deploys
@@ -18,22 +24,22 @@ here, such as `router.publicTLS.mode`, are chart values.
 | Resource | Role |
 |---|---|
 | `c8s-operator` Deployment and Service | Controllers and the two admission webhooks |
-| `c8s-cds` Deployment, Service (NodePort `30808`), PodDisruptionBudget | CDS, the Certificate Distribution Service: the cluster's trust root |
-| `c8s-pod-injector`, `c8s-pod-validator`, `c8s-deny-host-namespaces` | Injection, its enforcement, and the host-namespace refusal |
+| `c8s-pod-injector`, `c8s-pod-validator`, `<release>-deny-host-namespaces` | Injection, its enforcement, and the host-namespace refusal |
 | `c8s-attestation-api` and `c8s-nri-image-policy-worker` DaemonSets | Node-local evidence and the admission plugin; on `bare-metal` the node image bakes both, and the worker only carries this release's CDS pins to the baked plugin |
 | `c8s-router` Deployment, Service, and the `c8s-router` namespace | The public front door |
 | One ingress NetworkPolicy per installed component | See [Network policies](#network-policies) |
 | `c8s-volumed` DaemonSet, the `ConfidentialWorkload` CRD | Volumes with `--volumes` ([volumes.md](volumes.md)); `--install-crds=false` skips the CRD |
 
-Two inputs are policy rather than plumbing. `--measurements` (or
-`--image-policy-file`) pins the guest CDS runs in, and the chart refuses to
-render unpinned. `--operator-keys` pins the operator public keys that authorize
-allowlist and route writes; without them CDS refuses every write, so a change
-needing a new entry needs a reinstall. `--force` proceeds past the two guarded
+Two inputs are policy rather than plumbing. `--cds-address` and `--cds-pin`
+name the CDS this cluster trusts and the guest it runs in, and the chart
+refuses to render without them. The address is `<host>:<port>`: a DNS name
+this cluster's components resolve, or an IPv4 address. `--operator-keys` pins the operator public keys
+that authorize allowlist and route writes; without them CDS refuses every
+write, so a change needing a new entry needs a reinstall. `--force` proceeds past the two guarded
 prompts — no `--operator-keys`, and a fail-closed policy that would deny the
-platform's own pods; `--single-node` clears the dedicated-CDS-node selector and
-toleration. A measured node image boots the same chart, rendered at build time
-and configured from the signed launch file; `c8s install` refuses a cluster
+platform's own pods. A measured node image boots the same chart, rendered at
+build time and configured from the signed launch file; `c8s install` refuses a
+cluster
 labelled `confidential.ai/baked=true`.
 
 Images in a registry that needs authentication need a
@@ -77,12 +83,15 @@ an installed cluster (`node.baked=false`) also excludes `local-path-storage`.
 Injection adds the memory-backed `c8s-certs` volume, mounted at `/etc/c8s/certs`
 for the platform containers alone, and these containers ahead of the pod's own:
 
-| Container | What it is |
-|---|---|
-| `c8s-mesh` | The pod's mesh endpoint, carrying its traffic over armTLS ([armtls.md](armtls.md)) |
-| `c8s-cert` | get-cert: the first leaf before the application starts, then renewal on the chart default `webhook.getCert.renewInterval` (2h); the cadence rule is [armtls.md](armtls.md) |
-| `c8s-cert-wait` | A run-once gate holding the application containers until the first `tls.crt` exists |
-| `c8s-secret`, `c8s-volume` | The fetchers, when the pod requests secrets or volumes ([secrets.md](secrets.md), [volumes.md](volumes.md)) |
+- `c8s-mesh`: the pod's mesh endpoint, carrying its traffic over armTLS
+  ([armtls.md](armtls.md)).
+- `c8s-cert`: get-cert, which obtains the first leaf before the application
+  starts and then renews on the chart default `webhook.getCert.renewInterval`
+  (2h); the cadence rule is [armtls.md](armtls.md).
+- `c8s-cert-wait`: a run-once gate holding the application containers until the
+  first `tls.crt` exists.
+- `c8s-secret`, `c8s-volume`: the fetchers, when the pod requests secrets or
+  volumes ([secrets.md](secrets.md), [volumes.md](volumes.md)).
 
 Those endpoints form the mesh, the armTLS traffic layer with its own identity
 and guarantees; `c8s-mesh` is one pod's end of it ([armtls.md](armtls.md)).
@@ -106,58 +115,62 @@ final shape that is not the injected one.
 
 ## CDS is a singleton
 
-CDS runs as one replica with `strategy: Recreate`, and the default
-PodDisruptionBudget (`maxUnavailable: 0`) blocks voluntary disruptions. Its
-state is in the pod: the mesh CA key is generated inside the process and written
-nowhere, released secrets live in process memory, and the allowlist and route
-manifest live in a store on a memory-backed `emptyDir`. Any restart is a
-re-bootstrap:
+CDS runs as one VM outside the cluster, which `c8s cds config new` writes the
+configuration and the pin for. Its state is in that VM: the mesh CA key is
+generated inside the process and written nowhere, released secrets live in
+process memory, and the allowlist and route manifest live in a store on a
+tmpfs. Any restart is a re-bootstrap:
 
-- The replacement pod mints a new CA key. Member pods stay bound to the key
+- The replacement process mints a new CA key. Member pods stay bound to the key
   their first issuance recorded, so all of them must be recreated, the router
   included.
 - Operator-written workload entries, every stored secret — every encrypted
-  volume's key blob included — and the route manifest are gone; only the CDS
-  seed is applied again, and each node keeps serving the policy it last
-  applied ([allowlist-and-capabilities.md](allowlist-and-capabilities.md)).
-  For `cds.jwtClockSkew` seconds (30) it also refuses operator tokens, having
+  volume's key blob included — and the route manifest are gone; only the
+  configuration's own workloads are served again, and each node keeps serving
+  the policy it last applied
+  ([allowlist-and-capabilities.md](allowlist-and-capabilities.md)). For its
+  clock-skew window (30 seconds) it also refuses operator tokens, having
   forgotten which were spent.
 
-Persistence is refused rather than offered: `cds.persistence.enabled=true`
-mounts a PVC, and the chart fails the render outside `audit` mode, because CDS's
-own workload entry admits its store only on memory or encrypted storage, and no
-PVC observes as either.
+Recovery re-applies all of it: the operator's workload entries with their
+`secrets` grants and mount rules (`c8s allowlist upload` of a saved
+`c8s allowlist export`, or `c8s allowlist apply` per entry), the route manifest
+(`c8s routes add --new`, which an empty store needs), and every secret from its
+escrow file (`c8s secrets put <PATH> --from-file <ESCROW>`). An encrypted
+volume opens once its consumer's entry and its key are both back
+([volumes.md](volumes.md#keep-the-escrow-file)).
 
 ## Authenticated launch configuration
 
-A measured node runs one image for both roles and takes its configuration from a
-disk labelled `opkeydata` holding exactly `pubkey`, `launch.yaml`, and
-`launch.yaml.sig`. The strict `c8s-launch/v1` document fixes the role (`server`,
-`agent` or `pod`), the cluster id, node addresses, RKE2 join tokens, the trusted role
-keys, the image pins, the TLS SAN, and optionally an initial allowlist, registry
-mirrors, and the server's `router` block, which carries the public hostnames,
-ACME settings, and request body cap an image built before the cluster cannot
-know. Non-empty `hostnames` puts the baked front door in ACME mode at boot,
-while the chart value `router.publicTLS.mode` stays `cds`.
+A measured guest takes its role and configuration from a signed
+`c8s-launch/v2` document on the disk it boots with: the document fixes
+the role (`server`, `agent` or `pod`), the guest's identity in the cluster,
+role-specific RKE2 join tokens, the CDS its clients trust, and the image
+measurements the boot must report, and staging authenticates its bytes before parsing them. Nothing
+an unmeasured host says at boot decides any of it. Every field, the signature,
+and the boot-time check order are
+[launch-configuration.md](launch-configuration.md).
 
-The signature covers the exact file bytes, and the launch key's public half
-binds into the node's evidence: the measured initrd extends TDX RTMR[3], while
-an SNP launcher sets `HOSTDATA` to `SHA-256(pubkey)`. At boot, staging
-authenticates those bytes before parsing them and checks the image measurement
-and the role-key relationship against fresh self-attestation. Missing, unsigned,
-or inconsistent input leaves RKE2 and the role's services down; any change means
-a relaunch with newly signed bytes.
-
-`c8s node launch-config new` writes one cluster's bundle: separate server and
-agent launch keys, fresh join tokens, a signed document per node, and the client
-policies pinning the server and listing every identity CDS admits. The server
-launch key is also the operator key for
+On a measured bare-metal node — the one CVM mode with a launch document
+([overview.md](overview.md#cvm-modes-and-hardware-platforms)) — the launch key's
+public half binds into the node's evidence, so a client that pins the image and
+that key learns which operator launched the guest it dialled, not only which
+image booted ([measurements.md](measurements.md)). Use distinct keys per
+cluster: evidence names the key and the image, not the cluster, so two clusters
+sharing both are indistinguishable to a client pinning them.
+`c8s node launch-config new` writes one cluster's bundle — separate server and
+agent launch keys, fresh join tokens, a signed document per node, the client
+policies pinning the server and listing every identity CDS admits, and the
+launch file its CDS VM boots on with the pin binding those bytes, which every
+node document carries. The server launch key is also the operator key for
 [`c8s get-kubeconfig`](#trust-gate-c8s-get-kubeconfig) and for signed CDS
-writes. Use distinct keys per cluster: evidence names the key and the image, not
-the cluster, so two clusters sharing both are indistinguishable to a client
-pinning them. The join tokens in the document are RKE2 enrollment credentials,
-not C8s identity: the mesh wraps neither port `9345` nor `6443`, so a token
-holder with network access can enroll with no C8s evidence.
+writes.
+
+A non-empty `router.hostnames` in the document puts the baked front door in ACME
+mode at boot, while the chart value `router.publicTLS.mode` stays `cds`. The
+join tokens are RKE2 enrollment credentials, not C8s identity: the mesh wraps
+neither port `9345` nor `6443`, so a token holder with network access can enroll
+with no C8s evidence.
 
 ### Pod CVM
 
@@ -167,12 +180,17 @@ register a guest can extend after launch, so an SNP image manifest is refused at
 signing and in the guest. For automatic placement from Kubernetes, enable the
 optional [Pod CVM provider](pod-cvm-provider.md): it signs the
 scheduler-assigned Pod, launches its Cloud VM, projects attested status and owns
-cleanup. The manual commands below use the same guest contract.
+cleanup. The provider requires explicit `cdsAddress` and `cdsImagePolicyFile`
+configuration, plus a guest image and Cloud launch contract accepting
+`c8s-launch/v2`. Follow its [configuration and upgrade requirements](pod-cvm-provider.md#platform-configuration),
+including draining v1 resources with the original provider before upgrading.
+The manual commands below use the same guest contract.
 
 ```sh
 c8s node launch-config new-pod --out pod1 --cluster-id demo \
   --image-manifest manifest.json \
   --server-address 10.0.0.10 --server-public-key demo/server/pubkey \
+  --cds-address cds.example.com:30808 --cds-image-policy-file cds-pin.json \
   --mesh-peer 10.0.0.20:8080 \
   --pod-manifest pod.json --workloads workloads.json
 ```
@@ -181,12 +199,12 @@ This writes a `role: pod` document signed by a separate pod launch key
 (`pod1/pod.key`, or an existing key passed with `--launch-key`), recorded in
 `podOperatorPublicKey`; the initrd binds its exact bytes, and workload
 measurements extend that key's seed. `--server-public-key` is the server's
-public PEM, recorded in `server.operatorPublicKey`; the guest derives its CDS
-pins from it and the image pins, and the two keys must differ.
-`--server-address` is the server's reachable IPv4 address; CDS is reached over
-armTLS on port `30808`. The document carries no RKE2 join credentials, agent
-keys or `router` block; re-signing it after a manual edit takes the pod launch
-key.
+public PEM, recorded in `server.operatorPublicKey`; the two launch keys must
+differ. `--server-address` is the server's reachable IPv4 address. These fields
+identify the cluster/server; CDS uses the separate `--cds-address` endpoint
+and the exact image/launch-file policy in `--cds-image-policy-file`.
+The signed document carries both CDS values, no RKE2 join credentials, agent
+keys or `router` block. Re-signing it after an edit requires the Pod launch key.
 
 When supplied, `workloads.json` holds a `c8s.allowlist/v1` document; its entries
 may be empty. It is the base allowlist, in force before CDS responds; the plugin
@@ -202,7 +220,8 @@ and `--mesh-peer`:
 ```sh
 c8s node launch-config new-pod --generic --name warm-1 \
   --out warm1 --cluster-id demo --image-manifest manifest.json \
-  --server-address 10.0.0.10 --server-public-key demo/server/pubkey
+  --server-address 10.0.0.10 --server-public-key demo/server/pubkey \
+  --cds-address cds.example.com:30808 --cds-image-policy-file cds-pin.json
 ```
 
 The guest starts its runtime and attested
@@ -274,19 +293,19 @@ applications get neither those keys nor the guest's evidence services. The
 endpoint becomes ready only once it holds valid credentials, so base-policy
 applications can start while CDS is down but cannot open mesh connections.
 
-CDS must explicitly authorize the Pod image and launch key: a separate
-image-policy JSON file names TDX MRTD, RTMR1, RTMR2 and the exact Pod public-key
-PEM bytes, and node peer pins grant no Pod authority. Pass
-`--pod-image-policy-file pods.json` to `c8s node launch-config new` for a new
-server bundle, or set `podImagePolicy` in an existing server document, re-sign
-and relaunch. Agent and Pod documents cannot carry it, and its keys must differ
-from server and agent keys. An unbaked Helm deployment uses
-`--set-file cds.podImagePolicy=pods.json`, a direct CDS process
-`--pod-image-policy-file`; an absent or empty policy disables Pod issuance. The
-CDS workload policy must also list every measured digest, the endpoint's
-included. A mesh-only bootstrap snapshot can get an unnamed membership
-certificate; a workload name needs a unique match of the complete retained
-history, exited init containers included. This profile does not authorize
+CDS must explicitly authorize the Pod image and launch key. Pass
+`--pod-image-policy-file pods.json` to `c8s cds config new`; the file names
+TDX MRTD, RTMR1, RTMR2 and the exact Pod public-key PEM bytes. Its contents
+become the optional `podImagePolicy` in the measured CDS configuration.
+Changing that policy requires generating a new CDS launch file and pin, then
+relaunching CDS and updating clients' trusted pin. Node launch documents and
+Helm values cannot grant Pod issuance authority. Omitting `podImagePolicy`
+disables Pod issuance; an explicitly supplied policy file must be nonempty
+and valid. Pod keys must differ from node and operator authorities.
+The CDS workload policy must also list every measured digest, including the
+mesh endpoint. A mesh-only bootstrap snapshot can get an unnamed membership
+certificate; a workload name requires a unique match of the complete retained
+history, including exited init containers. This profile does not authorize
 secret release ([Pod CVM issuance](armtls.md#pod-cvm-issuance)).
 
 Repeat `--mesh-peer` for each known destination's exact IPv4 address and TCP
@@ -321,12 +340,11 @@ locked image refuses exec probes in the runtime wrapper.
 
 `c8s get-kubeconfig` obtains a kubeconfig from a measured node and enforces the
 node's full measured identity before any credential moves. The
-`--image-manifest` shape selects the platform and pins the whole guest image:
-MRTD, RTMR[1] and RTMR[2] on TDX, one of the per-vCPU launch measurements on
-SEV-SNP. The operator-key binding is pinned with it, as the RTMR[3] chain (the
-key's seed, each digest-pinned `--workload-image`, then optionally a replaying
-prefix of the policies the node measured) or as SEV-SNP `HOSTDATA` equal to
-`SHA-256(operator pubkey)`. A fresh nonce-bound report comes from the
+`--image-manifest` shape selects the platform and pins the whole guest image.
+The operator-key binding is pinned with it: on TDX as the RTMR[3] chain, which
+`--workload-image` pins in first-extend order, and on SEV-SNP as `HOST_DATA`
+equal to `SHA-256(operator pubkey)`. What each register and field holds is
+[measurements.md](measurements.md). A fresh nonce-bound report comes from the
 credential-release service on port `8443`, which authenticates the operator
 token first. The gate proves that a genuine guest of that platform booted the
 pinned image and was launched to trust this operator key — and nothing the flags
@@ -442,7 +460,7 @@ The chart publishes CDS's `/allowlist` API through the router by default
 `/allowlist/` prefix, so a lookalike path is not exposed. An in-pod proxy holds
 CDS to the endpoint and pins the admission plugin bind-mounts for a container
 holding the credentials platform role, refusing a flag naming another; on an
-install they come from `--measurements`. Reads stay unauthenticated at CDS; a
+install they come from `--cds-pin`. Reads stay unauthenticated at CDS; a
 write still needs the body-bound operator token, and the operator private key
 never enters the cluster. nginx rate-limits the route per client and in
 aggregate. Both bounds are nginx's: CDS limits per source IP and sees the whole
@@ -475,14 +493,14 @@ refuses, so write that entry yourself
 ## Network policies
 
 The chart ships one ingress policy per component it installs, each admitting
-only the ports that pod answers on: `cds.port` for CDS, 9443, 8081 and 8080 for
-the operator pod, `router.nginx.httpsPort` for the router plus the ACME HTTP-01
-port `8080` in mode `acme`, and nothing at all for attestation-api and volumed,
-which answer on pod loopback and a node-local socket. None of them carries a
-`from`, so each narrows which port answers, not who may connect: the router is
-public, the API server's address is not nameable, and the CDS NodePort arrives
-off-cluster. They are ingress-only — outward reach is the node's packet ruleset
-— and additive, so another port is your own NetworkPolicy.
+only the ports that pod answers on: 9443, 8081 and 8080 for the operator pod,
+`router.nginx.httpsPort` for the router plus the ACME HTTP-01 port `8080` in
+mode `acme`, and nothing at all for attestation-api and volumed, which answer
+on pod loopback and a node-local socket. None of them carries a `from`, so each
+narrows which port answers, not who may connect: the router is public and the
+API server's address is not nameable. They are ingress-only — outward reach is
+the node's packet ruleset — and additive, so another port is your own
+NetworkPolicy.
 
 ## Rendering the chart
 
@@ -493,12 +511,13 @@ image digests, the DNS resolver and the cluster CIDRs.
 ```sh
 helm template c8s internal/helmchart/c8s \
   --namespace c8s-system \
-  --set cds.measurements[0]=abababababababababababababababababababababababababababababababababababababababababababababababab \
+  --set cds.address=10.0.0.9:8443 \
+  --set-file cds.measurementsConfig=cds-pin.json \
   --set image.tag=main \
   --set attestationApi.image.tag=main \
-  --set cds.image.tag=main \
   --set armtlsMesh.image.tag=main \
   --set nriImagePolicy.enabled=false
 ```
 
-The measurement is a placeholder; a real install passes the node image's own.
+The address is this cluster's CDS and `cds-pin.json` the document
+`c8s cds config new` wrote beside its configuration.

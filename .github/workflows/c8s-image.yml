@@ -7,6 +7,10 @@
 # pre-matrix :rke2[-cdi]* tags are frozen (TDX builds up to the rename).
 # (pre-flip images stay frozen under c8s-base)
 # (CDI image) + :rke2 / :rke2-<sha> (oras artifact). dev=true -> :rke2-dev-*.
+#
+# The same callers publish the CDS image from images/cds-guest/:
+# ghcr.io/confidential-dot-ai/cds-guest-base, tags :cds[-cdi][-<sha>]. One
+# build serves both TEE families, so it has no platform matrix.
 
 on:
   workflow_call:
@@ -783,7 +787,7 @@ jobs:
             --arg c8s_ref "$short" --arg image "$IMAGE@$cdi_digest" \
             --arg artifact "$IMAGE@$artifact_digest" --arg manifest "$manifest_sha" \
             '{schema: 1, source_sha: $source, run_id: $run, build_attempt: $attempt, c8s_ref: $c8s_ref,
-              variant: "rke2-tdx", launch_config_version: "c8s-launch/v1", image: $image, artifact: $artifact,
+              variant: "rke2-tdx", launch_config_version: "c8s-launch/v2", image: $image, artifact: $artifact,
               manifest_sha256: $manifest}' > "$evidence/acceptance.json"
           bash c8s/.github/scripts/tdx-image-acceptance.sh validate \
             "$evidence" "$HEAD_SHA" "$GITHUB_RUN_ID" >/dev/null
@@ -812,4 +816,189 @@ jobs:
             echo "- CDI image: \`${IMAGE}:${VARIANT}-cdi${C8S_REF_INPUT:+-$C8S_REF_INPUT}\`"
             echo "- artifact: \`${IMAGE}:${VARIANT}${C8S_REF_INPUT:+-$C8S_REF_INPUT}\`"
             echo "- confos ref: \`${CONFOS_REF}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  cds-image:
+    name: Build the C8s CDS image
+    needs: host-deps
+    # Published from the same c8s ref as the node image. Repro-gate legs
+    # build the node image only.
+    if: |
+      inputs.gate != true &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_repository.full_name == github.repository &&
+        (github.event.workflow_run.event == 'push' ||
+         github.event.workflow_run.event == 'workflow_dispatch') &&
+        (github.event.workflow_run.head_branch == 'main' ||
+         github.event.workflow_run.head_branch == 'beta')))
+    runs-on: the-machine
+    timeout-minutes: 120
+    env:
+      IMAGE: ghcr.io/confidential-dot-ai/cds-guest-base
+      # One image for both TEE families: images/cds-guest/build measures the
+      # SNP launch digests and the TDX block in a single build.
+      VARIANT: cds
+    steps:
+      - name: Checkout c8s
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          path: c8s
+
+      - name: Load measured-build pins
+        id: pins
+        env:
+          CONFOS_REF_OVERRIDE: ${{ inputs.confos_ref }}
+        run: |
+          set -euo pipefail
+          bash c8s/.github/scripts/pin-manifest.sh export \
+            --manifest c8s/.github/build-pins.json \
+            --domain node-image \
+            --format github-output \
+            --confos-override "$CONFOS_REF_OVERRIDE" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout confidential-os-builder (build tree)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          repository: confidential-dot-ai/confidential-os-builder
+          ref: ${{ steps.pins.outputs.confos }}
+          path: confidential-os-builder
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
+        with:
+          # Pinned for the same reason as the node image's leg: rustc builds
+          # the measured attestation-api and confos's measurement tooling.
+          toolchain: "1.98.0"
+          cache-workspaces: confidential-os-builder
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+
+      - name: Setup mkosi
+        uses: ./c8s/.github/actions/setup-mkosi
+        with:
+          ref: ${{ steps.pins.outputs.mkosi }}
+
+      - name: Compute runner-image cache term
+        id: image
+        run: echo "key=${ImageOS:-unknown}-${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore build-dep debs
+        # Same key as the node legs, so the host-deps job's seed serves both.
+        id: apt-debs
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: apt-debs
+          key: apt-debs-${{ steps.image.outputs.key }}-${{ hashFiles('confidential-os-builder/bin/host-deps', 'confidential-os-builder/mkosi/base/mkosi.sandbox/etc/apt/sources.list.d/mkosi.sources') }}
+
+      - name: Install build deps
+        timeout-minutes: 30
+        run: bash c8s/.github/scripts/host-deps.sh --cache-dir apt-debs
+
+      - name: Cache kernel-builder tools tree
+        id: tools-tree
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: confidential-os-builder/mkosi/kernel-builder/mkosi.output
+          key: ${{ runner.os }}-tools-v2-mkosi-${{ steps.pins.outputs.mkosi }}-${{ hashFiles('confidential-os-builder/mkosi/kernel-builder/mkosi.conf','confidential-os-builder/mkosi/kernel-builder/mkosi.sandbox/**') }}
+
+      - name: Cache kernel
+        # The CDS image passes no kernel fragment, so this flavor's inputs are
+        # confos's own kernel configs; it shares nothing with the rke2 flavors.
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: confidential-os-builder/output/kernel
+          key: ${{ runner.os }}-kernel-v3-cds-mkosi-${{ steps.pins.outputs.mkosi }}-${{ hashFiles('confidential-os-builder/mkosi/kernel-builder/mkosi.conf','confidential-os-builder/mkosi/kernel-builder/mkosi.sandbox/**','confidential-os-builder/kernel/required.config','confidential-os-builder/kernel/hardening.config','confidential-os-builder/kernel/confidential.config','confidential-os-builder/kernel/config-x86_64.snapshot','confidential-os-builder/kernel/randstruct.seed','confidential-os-builder/kernel/version') }}
+
+      - name: Rebuild the kernel when its toolchain is gone
+        if: steps.tools-tree.outputs.cache-hit != 'true'
+        run: rm -f confidential-os-builder/output/kernel/manifest.json
+
+      - name: Cache base image tools
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            confidential-os-builder/mkosi/base/mkosi.tools
+            confidential-os-builder/mkosi/base/mkosi.tools.manifest
+          key: ${{ runner.os }}-cds-tools-mkosi-${{ steps.pins.outputs.mkosi }}-${{ hashFiles('confidential-os-builder/mkosi/base/mkosi.conf.d/tools.conf','confidential-os-builder/mkosi/base/mkosi.profiles/*/mkosi.conf','c8s/images/cds-guest/cds/mkosi.conf') }}
+
+      - name: Cache apt package cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: confidential-os-builder/mkosi/base/mkosi.pkgcache
+          key: ${{ runner.os }}-pkgcache-cds-${{ hashFiles('confidential-os-builder/mkosi/base/mkosi.conf','confidential-os-builder/mkosi/base/mkosi.conf.d/*.conf','confidential-os-builder/mkosi/base/mkosi.profiles/*/mkosi.conf','confidential-os-builder/mkosi/base/mkosi.sandbox/**','c8s/images/cds-guest/cds/mkosi.conf') }}
+          restore-keys: |
+            ${{ runner.os }}-pkgcache-
+
+      - name: Setup ORAS
+        uses: oras-project/setup-oras@005458ad77f1c8facd38a094e4af2e69e5607ff4 # v2.0.2
+
+      - name: Log in to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | oras login "$REGISTRY" \
+            -u "${{ github.actor }}" --password-stdin
+
+      - name: Build the CDS image
+        timeout-minutes: 60
+        working-directory: confidential-os-builder
+        env:
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          C8S_REF_INPUT: ${{ inputs.c8s_ref }}
+        run: |
+          set -euo pipefail
+          # Short SHA matches docker.yml's component tags; the profile's
+          # mkosi.sync resolves c8s-operator:<ref> to a digest from it.
+          export C8S_REF="${C8S_REF_INPUT:-${HEAD_SHA::7}}"
+          ../c8s/images/cds-guest/build
+
+      - name: Make the tools trees cache-safe
+        run: |
+          sudo chown -R "$(id -u):$(id -g)" \
+            confidential-os-builder/mkosi/kernel-builder/mkosi.output \
+            confidential-os-builder/mkosi/base/mkosi.tools \
+            confidential-os-builder/mkosi/base/mkosi.tools.manifest \
+            confidential-os-builder/mkosi/base/mkosi.pkgcache || true
+
+      - name: Check tools tree presence
+        id: tools-built
+        run: echo "built=$([ -d confidential-os-builder/mkosi/kernel-builder/mkosi.output/image ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Save kernel-builder tools tree
+        if: steps.tools-tree.outputs.cache-hit != 'true' && steps.tools-built.outputs.built == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: confidential-os-builder/mkosi/kernel-builder/mkosi.output
+          key: ${{ runner.os }}-tools-v2-mkosi-${{ steps.pins.outputs.mkosi }}-${{ hashFiles('confidential-os-builder/mkosi/kernel-builder/mkosi.conf','confidential-os-builder/mkosi/kernel-builder/mkosi.sandbox/**') }}
+
+      - name: Push to GHCR
+        working-directory: confidential-os-builder
+        env:
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          C8S_REF_INPUT: ${{ inputs.c8s_ref }}
+        run: |
+          set -eux
+          SHORT_SHA="${C8S_REF_INPUT:-${HEAD_SHA::7}}"
+          # CDI first, oras artifact last, as the node image publishes: a
+          # partial failure re-publishes everything on the next run.
+          bin/confos push "output/${VARIANT}" --cdi \
+            --registry "$IMAGE" \
+            --tag "${VARIANT}-cdi,${VARIANT}-cdi-${SHORT_SHA}"
+          bin/confos push "output/${VARIANT}" \
+            --registry "$IMAGE" \
+            --tag "${VARIANT},${VARIANT}-${SHORT_SHA}"
+
+      - name: Summary
+        env:
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          C8S_REF_INPUT: ${{ inputs.c8s_ref }}
+        run: |
+          {
+            echo "### C8s CDS confidential image"
+            echo "- CDI image: \`${IMAGE}:${VARIANT}-cdi-${C8S_REF_INPUT:-${HEAD_SHA::7}}\`"
+            echo "- artifact: \`${IMAGE}:${VARIANT}-${C8S_REF_INPUT:-${HEAD_SHA::7}}\`"
+            echo "- confos ref: \`${{ steps.pins.outputs.confos }}\`"
           } >> "$GITHUB_STEP_SUMMARY"

@@ -78,7 +78,7 @@ type Config struct {
 	// measurement registers by index during the armTLS handshake. On TDX the
 	// launch digest covers TDVF firmware alone, so without these the
 	// handshake trusts a CDS whose kernel and rootfs the host chose. Ignored
-	// when CDS presents SNP evidence. Populate from `cds.rtmrs`.
+	// when CDS presents SNP evidence.
 	CDSRTMRs map[int][]byte
 
 	// CDSImages additionally binds the CDS image to its authorized server key.

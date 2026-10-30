@@ -15,11 +15,19 @@ controllers can create replacement Pods in their normal way.
 ## Platform configuration
 
 Use a validated TDX Pod image, its exact published `manifest.json`, and a Cloud
-catalog version pointing to that image. The current Pod measurement contract
-does not support SNP. The CDS server must authorize this image and the provider's
-Pod launch public key through its separate Pod image policy; see
-[the Pod launch contract](operator.md#authenticated-launch-configuration).
-Use a Pod signing key distinct from the CDS/server and agent launch keys.
+API/catalog launch contract that accept `c8s-launch/v2`. Historical v1 images and
+catalog entries do not satisfy this requirement. The Pod measurement contract
+does not support SNP; the separate measured CDS image may use another TEE.
+CDS must authorize the Pod image and provider's Pod launch public key in its
+measured Pod image policy; see [the Pod launch contract](operator.md#authenticated-launch-configuration).
+Use a Pod signing key distinct from the cluster server and agent launch keys.
+
+Before upgrading a v1 provider, stop new placements, set `warmTarget` to zero,
+and drain its managed Pods using the original provider and Cloud credential.
+Wait for all old VMs, including idle or uncertain allocations, to finish cleanup
+before replacing the provider. This version refuses v1 launch records and does
+not rewrite their signed bytes or silently migrate them. Retain the original
+provider and credentials until every v1 obligation is resolved.
 
 The operator loads trusted configuration once at startup. Put `config.json` and
 the referenced files in a Secret in the operator's release namespace. Relative
@@ -33,11 +41,13 @@ and size placeholders with compatible Cloud values:
   "namespace": "c8s-system",
   "cloudURL": "https://api.cloud.confidential.ai",
   "cloudTokenFile": "cloud-token",
-  "image": "c8s-pod@CATALOG_VERSION",
+  "image": "c8s-pod@V2_COMPATIBLE_CATALOG_VERSION",
   "imageManifestFile": "manifest.json",
   "launchKeyFile": "pod.key",
   "serverAddress": "198.51.100.10",
   "serverPublicKeyFile": "server.pub",
+  "cdsAddress": "cds.example.com:8443",
+  "cdsImagePolicyFile": "cds.json",
   "workloadsFile": "workloads.json",
   "clusterID": "demo",
   "size": "CLOUD_SIZE",
@@ -53,6 +63,14 @@ and size placeholders with compatible Cloud values:
 }
 ```
 
+`cdsAddress` names the external CDS host and port; `cdsImagePolicyFile` contains
+the generated policy binding every admitted CDS image to the same exact measured
+CDS configuration. Both are required. A DNS host and a different CDS image or
+TEE are supported. `serverAddress` and `serverPublicKeyFile` retain the cluster
+server identity; they do not select or authenticate CDS. Static and generic
+launches carry the same explicit CDS trust. Changing that trust drains idle
+allocations while existing Pod and allocation records retain their signed bytes.
+
 `vCPUs` and `memoryMiB` describe one VM of the selected size. Each workload must
 fit that VM after the memory reserve. The virtual node advertises the aggregate
 capacity for `maxPods`; this is a placement limit, not a reservation of Cloud
@@ -66,6 +84,7 @@ kubectl -n c8s-system create secret generic pod-cvm-provider \
   --from-file=manifest.json=provider/manifest.json \
   --from-file=pod.key=provider/pod.key \
   --from-file=server.pub=provider/server.pub \
+  --from-file=cds.json=provider/cds.json \
   --from-file=workloads.json=provider/workloads.json
 ```
 

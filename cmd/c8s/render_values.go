@@ -14,7 +14,6 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/helmchart"
 	"github.com/confidential-dot-ai/c8s/internal/version"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
@@ -40,19 +39,18 @@ var renderValuesDistro string
 // renderValuesCmd emits the resolved Helm values an install would apply, as a
 // values.yaml, without touching a cluster. It runs the same value computation
 // as `c8s install` — resolve each component image tag to its registry digest
-// (via crane), map --cvm-mode to the TEE devices, --single-node to the cleared
-// CDS node selector, and enable the NRI
+// (via crane), map --cvm-mode to the TEE devices, and enable the NRI
 // allowlist derivation — but writes the values to stdout instead of running
 // helm upgrade --install.
 //
 // This is the GitOps seam: a Flux HelmRelease (or any chart consumer) can
 // valuesFrom a bundle produced here instead of recomputing digests and device
 // mappings itself. The cluster-only steps of install are dropped: there is no
-// node-distro autodetection (pass --distro), no CDS-node / pull-secret
-// preflight, and no namespace apply.
+// node-distro autodetection (pass --distro), no pull-secret preflight, and no
+// namespace apply.
 //
 // What it does NOT emit: the per-cluster overrides a consumer layers on top
-// (dnsSanPatterns, router SAN/LB IP/CORS, nodeSelectors) and anything the chart
+// (router SAN/LB IP/CORS, nodeSelectors) and anything the chart
 // renders off these values internally (e.g. the AKS webhook annotation off
 // attestationApi.cvmMode). The output is the install-computed base, not a full
 // per-cluster values file.
@@ -60,9 +58,9 @@ var renderValuesCmd = &cobra.Command{
 	Use:   "render-values",
 	Short: "Print the resolved Helm values an install would apply (no cluster needed)",
 	Long: `Computes the install-time Helm values that need a registry or the chart
-to resolve — resolved image digests, --cvm-mode TEE devices, --single-node node
-selector, and the NRI allowlist derivation — and writes them to
-stdout as a values.yaml, without contacting a cluster. Per-cluster tuning a
+to resolve — resolved image digests, --cvm-mode TEE devices, and the NRI
+allowlist derivation — and writes them to stdout as a values.yaml, without
+contacting a cluster. Per-cluster tuning a
 consumer already owns (webhook cert settings, router, nodeSelectors, …) is not
 emitted; layer it in the consuming HelmRelease values.
 
@@ -72,8 +70,8 @@ install, the host distro is not autodetected — pass --distro to pin it, or lea
 it unset to keep the chart default. No preflight checks run and no namespace is
 applied. --operator-keys embeds the key file's PEM content as cds.operatorKeys
 (the chart value is the content itself, never a file path). The chart refuses
-to render without a CDS pin (--measurements or --image-policy-file), unless the
-consuming values set cds.measurements, cds.measurementsConfig or
+to render without the CDS this cluster trusts (--cds-address and --cds-pin),
+unless the consuming values set cds.address and cds.measurementsConfig, or
 node.baked=true.
 
 "No cluster" does not mean no network: by default each component tag is resolved
@@ -180,7 +178,11 @@ func buildValueArgs(ctx context.Context, cmd *cobra.Command, chartPath string, c
 	if err != nil {
 		return nil, err
 	}
-	setArgs = appendSingleNodeInstallArgs(setArgs, installSingleNode)
+	cdsArgs, err := cdsInstallArgs(installCDSAddress, installCDSPin)
+	if err != nil {
+		return nil, err
+	}
+	setArgs = append(setArgs, cdsArgs...)
 	// Ahead of resolveDigests, which pins a component's image only while the
 	// effective values enable it.
 	setArgs = appendVolumedInstallArgs(setArgs, installVolumes)
@@ -275,16 +277,13 @@ func valueArgsToTree(setArgs []string) (map[string]any, error) {
 }
 
 // coerce mirrors helm's --set vs --set-string typing: --set-string keeps the
-// raw string; --set coerces null/bool/int the way helm's strvals does, so
-// `cds.node.selector=null` becomes a real null (clearing the map) and
-// `teeDevices.tpm=true` a real bool.
+// raw string; --set coerces bool/int the way helm's strvals does, so
+// `teeDevices.tpm=true` becomes a real bool.
 func coerce(raw string, typed bool) any {
 	if !typed {
 		return raw
 	}
 	switch raw {
-	case "null":
-		return nil
 	case "true":
 		return true
 	case "false":
@@ -297,19 +296,14 @@ func coerce(raw string, typed bool) any {
 }
 
 // setNested writes value at the dotted path, creating intermediate maps. A
-// conflict (a path segment already holding a non-map scalar) is an error rather
-// than a silent overwrite, since it would mean two builder args disagree. A
-// segment holding nil (from a prior `=null` clear) is not a scalar conflict:
-// descending into it means a later arg populates the structure, so the nil is
-// replaced with a fresh map (`X=null` then `X.y=v` yields {X: {y: v}}). The nil
-// here is always coerce's untyped null; a typed nil map would mis-assert, but
-// coerce never produces one.
+// conflict (a path segment already holding a non-map value) is an error rather
+// than a silent overwrite, since it would mean two builder args disagree.
 func setNested(m map[string]any, path []string, value any) error {
 	for i, seg := range path {
 		if i == len(path)-1 {
 			// A trailing key[n] sets element n of a list (helm --set list
-			// syntax, e.g. cds.measurements[0]=…). setListElem grows the list
-			// as needed.
+			// syntax, e.g. nriImagePolicy.mesh.clusterRanges[0]=…).
+			// setListElem grows the list as needed.
 			if key, idx, ok := parseListIndex(seg); ok {
 				return setListElem(m, strings.Join(path, "."), key, idx, value)
 			}
@@ -326,8 +320,8 @@ func setNested(m map[string]any, path []string, value any) error {
 		// An inner key[n] descends into element n of a list of maps, as an
 		// allowlist entry's containers[0].digest does.
 		if key, idx, ok := parseListIndex(seg); ok {
-			list, _ := m[key].([]any)
-			if existing, set := m[key]; set && existing != nil && list == nil {
+			list, isList := m[key].([]any)
+			if _, set := m[key]; set && !isList {
 				return fmt.Errorf("value path %q conflicts with an existing non-list at %q", strings.Join(path, "."), key)
 			}
 			for len(list) <= idx {
@@ -350,7 +344,7 @@ func setNested(m map[string]any, path []string, value any) error {
 		}
 		child, ok := m[seg].(map[string]any)
 		if !ok {
-			if existing, set := m[seg]; set && existing != nil {
+			if _, set := m[seg]; set {
 				return fmt.Errorf("value path %q conflicts with an existing scalar at %q", strings.Join(path, "."), seg)
 			}
 			child = map[string]any{}
@@ -400,13 +394,11 @@ func init() {
 	// release, wait, values files).
 	renderValuesCmd.Flags().BoolVar(&installCRDs, "install-crds", true, "emit values for chart CRDs (false sets statusMirror.enabled=false, matching install --install-crds=false)")
 	renderValuesCmd.Flags().StringVar(&renderValuesDistro, "distro", "", "host Kubernetes distro (k8s | rke2) — install autodetects this from the cluster; render-values has no cluster, so pass it explicitly when you need it pinned. Unset leaves the chart default")
-	renderValuesCmd.Flags().BoolVar(&installSingleNode, "single-node", false, "single-node / single-CVM cluster: clear the dedicated-CDS-node selector and toleration (cds.node.selector={}, cds.node.tolerations=[])")
 	renderValuesCmd.Flags().BoolVar(&installVolumes, "volumes", false, "emit volumed.enabled=true, deploying the node agent that opens encrypted volumes (docs/volumes.md).")
 	renderValuesCmd.Flags().StringVar(&installCvmMode, flagCvmMode, "", "CVM deployment shape (REQUIRED; orthogonal to --hardware-platform): bare-metal (generalized node-as-CVM native TEE device) or gke (GKE managed CVMs) or aks (vTPM /dev/tpm0). bare-metal/gke/aks are single-tenant — the node is one trust domain")
 	renderValuesCmd.Flags().StringVar(&installHardwarePlatform, flagHardwarePlatform, "", "CPU-level TEE hardware (REQUIRED; orthogonal to --cvm-mode): sev-snp (/dev/sev-guest) or tdx (Intel TDX, /dev/tdx-guest). Ignored when --cvm-mode=aks")
-	renderValuesCmd.Flags().StringSliceVar(&installMeasurements, "measurements", nil, "expected hex launch measurement(s) of the CVM components that speak to CDS (repeatable/comma-separated). Emits cds.measurements + armtlsMesh.measurements; required, unless --image-policy-file names the images. Under --cvm-mode=bare-metal/gke/aks this is the node image's manifest.json value")
-	cmdsutil.BindImagePolicyFlags(renderValuesCmd.Flags(), &installMeasurementsConfig, nil, "pins CDS, mesh and NRI; Helm requires unanchored images with identical RTMR pins; excludes --measurements and --rtmrs")
-	renderValuesCmd.Flags().StringSliceVar(&installRegisters, "rtmrs", nil, "TDX RTMR pin(s) <index>=<sha384-hex> completing --measurements on --hardware-platform=tdx (repeatable/comma-separated). Emits cds.rtmrs + armtlsMesh.rtmrs; ignored for SNP evidence")
+	renderValuesCmd.Flags().StringVar(&installCDSAddress, flagCDSAddress, "", "<host>:<port> of the CDS this cluster trusts, the host a DNS name or an IPv4 address. Emits cds.address")
+	renderValuesCmd.Flags().StringVar(&installCDSPin, flagCDSPin, "", "path to that CDS's pin document (cds-pin.json). Emits cds.measurementsConfig as the file's content")
 	renderValuesCmd.Flags().BoolVar(&installResolveDigests, "resolve-digests", true, "resolve each component image tag to its registry digest (via crane), pin it, and enable the NRI allowlist derivation")
 	renderValuesCmd.Flags().StringVar(&installImagePullSecret, "image-pull-secret", "", "name of an existing dockerconfigjson Secret the chart wires into every component's imagePullSecrets")
 	renderValuesCmd.Flags().StringVar(&installImageTag, "image-tag", "", "component image tag to resolve digests at (default: the CLI build version, or 'main'). Override to pin a specific branch/tag/release")

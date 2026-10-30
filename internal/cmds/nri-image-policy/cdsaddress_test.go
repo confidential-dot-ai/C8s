@@ -1,7 +1,6 @@
 package nriimagepolicy
 
 import (
-	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -33,55 +32,75 @@ func renderInTempDir(t *testing.T) {
 	t.Cleanup(func() { enforcerRuntimeDir = previous })
 }
 
+// installedCDSAddress is an install's address file, naming the CDS this
+// cluster trusts, as the installer copies it beside the plugin's config.
+func installedCDSAddress(t *testing.T, address string) allowlistConfig {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "cds-address")
+	if err := os.WriteFile(path, []byte(address+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return allowlistConfig{Pull: pullConfig{CDSAddressFile: path}}
+}
+
 // measuredCDSPolicy is a baked node's mesh policy: boot preparation bound the
-// credential role to the CDS address staged at launch.
-func measuredCDSPolicy(destination string) *meshPolicy {
+// credential role to the port the CDS staged at launch serves on.
+func measuredCDSPolicy(port uint16) *meshPolicy {
 	policy := meshRoles()
 	policy.Roles = append(policy.Roles, roleBinding{
-		Name:         CredentialRole,
-		UID:          workloadclaims.CredentialsUID,
-		Destinations: []netip.AddrPort{netip.MustParseAddrPort(destination)},
+		Name: CredentialRole,
+		UID:  workloadclaims.CredentialsUID,
+		Port: port,
 	})
 	return policy
 }
 
-// A measured policy names the CDS its clients dial, and the address the node
-// hands them is that one: the pod ruleset admits nothing else.
-func TestMeasuredPolicyDecidesTheCDSEndpoint(t *testing.T) {
+// A measured policy names the port its credential clients reach, and loading
+// leaves that binding alone: the pod ruleset admits nothing else.
+func TestMeasuredPolicyDecidesTheCredentialPort(t *testing.T) {
 	cfg := &config{
-		WorkloadClaims: workloadClaimsConfig{
-			SocketDir:   nodeDir(t, "10.0.0.7"),
-			CDSNodePort: 31000,
-		},
-		Mesh: measuredCDSPolicy("10.1.2.3:30808"),
+		WorkloadClaims: workloadClaimsConfig{SocketDir: nodeDir(t, "10.0.0.7")},
+		Allowlist:      installedCDSAddress(t, "cds.example.org:8443"),
+		Mesh:           measuredCDSPolicy(30808),
 	}
+	address, err := loadCDSAddress(cfg.Allowlist.Pull)
+	if err != nil {
+		t.Fatalf("loadCDSAddress: %v", err)
+	}
+	cfg.cdsAddress = address
 	if err := bindCredentialRole(cfg); err != nil {
 		t.Fatalf("bindCredentialRole: %v", err)
 	}
 	role, bound := cfg.credentialRole()
-	if !bound || len(role.Destinations) != 1 || role.Destinations[0].String() != "10.1.2.3:30808" {
-		t.Fatalf("credential role = %+v, want the measured destination alone", role)
+	if !bound || role.Port != 30808 {
+		t.Fatalf("credential role = %+v, want the measured port alone", role)
 	}
 	renderInTempDir(t)
 	p := &plugin{cfg: cfg}
 	if err := p.prepareCDSAddress(); err != nil {
 		t.Fatalf("prepareCDSAddress: %v", err)
 	}
-	if got := readAddress(t, p.cdsAddress); got != "10.1.2.3:30808" {
-		t.Fatalf("handed address = %q, want the measured destination", got)
+	if got := readAddress(t, p.cdsAddress); got != "cds.example.org:8443" {
+		t.Fatalf("handed address = %q, want the CDS this node reaches", got)
 	}
 }
 
-// An install's policy names no CDS address, so the node binds the credential
-// role to its own address and the CDS node port, and hands its clients that
-// same endpoint.
-func TestInstallBindsTheCredentialRoleToThisNode(t *testing.T) {
+// An install's policy binds no credential role, so the node binds it to the
+// port the address file's CDS serves on, pulls from that same CDS, and hands
+// its clients its name to dial.
+func TestInstallBindsTheCredentialRoleToItsAddressFile(t *testing.T) {
 	cfg := &config{
-		WorkloadClaims: workloadClaimsConfig{
-			SocketDir:   nodeDir(t, "10.0.0.7"),
-			CDSNodePort: 30808,
-		},
-		Mesh: meshRoles(),
+		WorkloadClaims: workloadClaimsConfig{SocketDir: nodeDir(t, "10.0.0.7")},
+		Allowlist:      installedCDSAddress(t, "cds.example.org:8443"),
+		Mesh:           meshRoles(),
+	}
+	address, err := loadCDSAddress(cfg.Allowlist.Pull)
+	if err != nil {
+		t.Fatalf("loadCDSAddress: %v", err)
+	}
+	cfg.cdsAddress = address
+	if got := cfg.pullURL(); got != "https://cds.example.org:8443" {
+		t.Fatalf("pull URL = %q, want the endpoint the file names", got)
 	}
 	if err := bindCredentialRole(cfg); err != nil {
 		t.Fatalf("bindCredentialRole: %v", err)
@@ -90,8 +109,8 @@ func TestInstallBindsTheCredentialRoleToThisNode(t *testing.T) {
 	if !bound || role.UID != workloadclaims.CredentialsUID {
 		t.Fatalf("credential role = %+v, want it bound to uid %d", role, workloadclaims.CredentialsUID)
 	}
-	if got := role.Destinations[0].String(); got != "10.0.0.7:30808" {
-		t.Fatalf("destination = %q, want this node's address and CDS node port", got)
+	if role.Port != 8443 {
+		t.Fatalf("credential role port = %d, want the port the address file's CDS serves on", role.Port)
 	}
 	if err := cfg.Mesh.validate(); err != nil {
 		t.Fatalf("the completed policy no longer validates: %v", err)
@@ -101,52 +120,48 @@ func TestInstallBindsTheCredentialRoleToThisNode(t *testing.T) {
 	if err := p.prepareCDSAddress(); err != nil {
 		t.Fatalf("prepareCDSAddress: %v", err)
 	}
-	if got := readAddress(t, p.cdsAddress); got != "10.0.0.7:30808" {
-		t.Fatalf("handed address = %q, want the bound destination", got)
+	if got := readAddress(t, p.cdsAddress); got != "cds.example.org:8443" {
+		t.Fatalf("handed address = %q, want the CDS the address file names", got)
 	}
 }
 
 // A node that injects credential clients and knows no CDS endpoint refuses to
 // start: a client with no address reaches no CDS at all.
 func TestCDSEndpointIsRequiredWhereClientsAreInjected(t *testing.T) {
+	renderInTempDir(t)
+	cfg := &config{WorkloadClaims: workloadClaimsConfig{SocketDir: t.TempDir()}, Mesh: meshRoles()}
+	p := &plugin{cfg: cfg}
+	err := p.prepareCDSAddress()
+	if err == nil {
+		t.Fatal("a node with no CDS endpoint started")
+	}
+	if !strings.Contains(err.Error(), "nothing names the CDS") {
+		t.Fatalf("error = %v, want it to name the missing CDS", err)
+	}
+}
+
+// An address file the node cannot read, or one holding something no client
+// could dial, is refused at load: an endpoint the node cannot bind a rule to
+// would leave every injected client dialling nothing.
+func TestAddressFileMustNameAnEndpoint(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		cfg   *config
-		wants string
+		name    string
+		address string
 	}{
-		{
-			name:  "no node port",
-			cfg:   &config{WorkloadClaims: workloadClaimsConfig{SocketDir: nodeDir(t, "10.0.0.7")}, Mesh: meshRoles()},
-			wants: "cds_node_port",
-		},
-		{
-			name: "no address for this node",
-			cfg: &config{WorkloadClaims: workloadClaimsConfig{
-				SocketDir:   t.TempDir(),
-				CDSNodePort: 30808,
-			}, Mesh: meshRoles()},
-			wants: "this node's own address",
-		},
-		{
-			name: "an address that is no address",
-			cfg: &config{WorkloadClaims: workloadClaimsConfig{
-				SocketDir:   nodeDir(t, "node.cluster.local"),
-				CDSNodePort: 30808,
-			}, Mesh: meshRoles()},
-			wants: "this node's own address",
-		},
+		{name: "no port", address: "cds.cluster.local"},
+		{name: "port 0", address: "10.9.9.9:0"},
+		{name: "a URL", address: "https://cds.cluster.local:8443"},
+		{name: "empty", address: ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			renderInTempDir(t)
-			p := &plugin{cfg: tc.cfg}
-			err := p.prepareCDSAddress()
-			if err == nil {
-				t.Fatal("a node with no CDS endpoint started")
-			}
-			if !strings.Contains(err.Error(), tc.wants) {
-				t.Fatalf("error = %v, want it to name %q", err, tc.wants)
+			if _, err := loadCDSAddress(installedCDSAddress(t, tc.address).Pull); err == nil {
+				t.Fatalf("address %q accepted", tc.address)
 			}
 		})
+	}
+	absent := pullConfig{CDSAddressFile: filepath.Join(t.TempDir(), "absent")}
+	if _, err := loadCDSAddress(absent); err == nil {
+		t.Fatal("a missing address file was accepted")
 	}
 }
 
@@ -156,13 +171,19 @@ func TestCDSEndpointIsRequiredWhereClientsAreInjected(t *testing.T) {
 func TestRenderedDocumentsAreOutsideTheMountedSocketDirectory(t *testing.T) {
 	socketDir := nodeDir(t, "10.0.0.7")
 	cfg := &config{
-		Platform: "sev-snp",
-		WorkloadClaims: workloadClaimsConfig{
-			SocketDir:   socketDir,
-			CDSNodePort: 30808,
-		},
-		Allowlist: allowlistConfig{Pull: pullConfig{CDSMeasurements: []string{testDigestA}}},
-		Mesh:      meshRoles(),
+		Platform:       "sev-snp",
+		WorkloadClaims: workloadClaimsConfig{SocketDir: socketDir},
+		Allowlist:      installedCDSAddress(t, "cds.example.org:8443"),
+		Mesh:           meshRoles(),
+	}
+	cfg.Allowlist.Pull.CDSMeasurementsConfig = testCDSPinFile(t)
+	address, err := loadCDSAddress(cfg.Allowlist.Pull)
+	if err != nil {
+		t.Fatalf("loadCDSAddress: %v", err)
+	}
+	cfg.cdsAddress = address
+	if err := bindCredentialRole(cfg); err != nil {
+		t.Fatalf("bindCredentialRole: %v", err)
 	}
 	renderInTempDir(t)
 	p := &plugin{cfg: cfg}

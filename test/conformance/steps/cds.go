@@ -438,21 +438,26 @@ func holdsPins(ctx context.Context) error {
 	return nil
 }
 
-// reconfigure restarts the CDS with one parameter changed. The first change
-// of a scenario records the one restore of the installed configuration; a
-// restart is also what cdsRestarted notes.
+// reconfigure restarts the CDS with one parameter changed. A backend that
+// cannot express the change restarts nothing and records no restore, so a
+// skipped scenario leaves the mesh CA where it was. The first change the
+// backend did run records the one restore of the installed configuration;
+// that restore is itself a restart, as is this change, and a restart is what
+// cdsRestarted notes, so the mesh members are recreated to chain to the CA
+// each restart mints.
 func (w *world) reconfigure(parameter, value string) error {
-	if !w.cds.reconfigured {
-		w.cds.reconfigured = true
-		w.onUndo(func() error {
-			_, err := w.be.call("cds_restart_with", "default", "")
-			return err
-		})
-	}
 	if _, err := w.be.call("cds_restart_with", parameter, value); err != nil {
 		return err
 	}
 	w.noteCDSRestart()
+	if !w.cds.reconfigured {
+		w.cds.reconfigured = true
+		w.onUndo(func() error {
+			_, err := w.be.call("cds_restart_with", "default", "")
+			w.noteCDSRestart()
+			return err
+		})
+	}
 	return nil
 }
 
@@ -472,12 +477,14 @@ func cdsServing(ctx context.Context) error {
 
 func attestationServiceStops(ctx context.Context) error {
 	w := getWorld(ctx)
+	if _, err := w.be.call("attestation_service_stop"); err != nil {
+		return err
+	}
 	w.onUndo(func() error {
 		_, err := w.be.call("attestation_service_start")
 		return err
 	})
-	_, err := w.be.call("attestation_service_stop")
-	return err
+	return nil
 }
 
 func readinessRead(ctx context.Context) error {

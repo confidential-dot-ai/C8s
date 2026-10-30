@@ -30,6 +30,8 @@ type PodBundleOptions struct {
 	LaunchKeyPath       string
 	ServerAddress       string
 	ServerPublicKeyPath string
+	CDSAddress          string
+	CDSImagePolicyPath  string
 	PodManifest         string
 	WorkloadsPath       string
 	MeshPeers           []string
@@ -39,8 +41,8 @@ type PodBundleOptions struct {
 // and name come from the manifest's metadata. Dir must not exist; a failed
 // run removes it.
 func NewPodBundle(opts PodBundleOptions) (err error) {
-	if opts.Dir == "" || opts.ClusterID == "" || opts.ManifestPath == "" || opts.ServerAddress == "" || opts.ServerPublicKeyPath == "" {
-		return errors.New("--out, --cluster-id, --image-manifest, --server-address and --server-public-key are required")
+	if opts.Dir == "" || opts.ClusterID == "" || opts.ManifestPath == "" || opts.ServerAddress == "" || opts.ServerPublicKeyPath == "" || opts.CDSAddress == "" || opts.CDSImagePolicyPath == "" {
+		return errors.New("--out, --cluster-id, --image-manifest, --server-address, --server-public-key, --cds-address and --cds-image-policy-file are required")
 	}
 	if opts.Generic {
 		if opts.PodManifest != "" || opts.WorkloadsPath != "" || len(opts.MeshPeers) != 0 {
@@ -61,6 +63,14 @@ func NewPodBundle(opts PodBundleOptions) (err error) {
 	}
 	if _, err := parseLaunchKey(string(serverPub)); err != nil {
 		return fmt.Errorf("--server-public-key: %w", err)
+	}
+	cdsPolicy, err := readBounded(opts.CDSImagePolicyPath, MaxDocumentSize)
+	if err != nil {
+		return fmt.Errorf("--cds-image-policy-file: %w", err)
+	}
+	cds := CDS{Address: opts.CDSAddress, Measurements: string(cdsPolicy)}
+	if err := (&Document{CDS: cds}).validateCDS(); err != nil {
+		return err
 	}
 	image, err := imageFromManifest(opts.ManifestPath, opts.VCPUs)
 	if err != nil {
@@ -108,6 +118,7 @@ func NewPodBundle(opts PodBundleOptions) (err error) {
 		Node:                 Node{Name: opts.NodeName},
 		Server:               ServerConfig{Address: opts.ServerAddress, OperatorPublicKey: string(serverPub)},
 		PodOperatorPublicKey: pub,
+		CDS:                  cds,
 		Workloads:            string(workloads),
 		Pod:                  podSpec,
 	}

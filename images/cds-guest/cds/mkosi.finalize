@@ -1,0 +1,9 @@
+#!/bin/bash
+set -euo pipefail
+
+# Retain the selected attest/attest-gpu profile's complete configuration, but
+# never expose the host's hardware-report API to pods or the launch host.
+config="$BUILDROOT/etc/attestation-api/config.toml"
+grep -qx 'bind = "0.0.0.0:8400"' "$config"
+sed -i 's/^bind = "0.0.0.0:8400"$/bind = "127.0.0.1:8400"/' "$config"
+grep -qx 'bind = "127.0.0.1:8400"' "$config"

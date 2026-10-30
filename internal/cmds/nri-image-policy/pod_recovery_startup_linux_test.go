@@ -9,7 +9,6 @@ import (
 	"errors"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,10 +25,13 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
+	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/getcert"
 	"github.com/confidential-dot-ai/c8s/internal/podmesh"
 	"github.com/confidential-dot-ai/c8s/internal/podstart"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
@@ -210,7 +212,7 @@ func runPodRecovery(t *testing.T, cfg *config, root string, podKey []byte, diges
 		servedETag, expectedVersion = `W/"2"`, 2
 	}
 	var servedRequests atomic.Uint64
-	cds := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	cds := testutil.NewARMTLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		if !available.Load() {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
@@ -223,7 +225,19 @@ func runPodRecovery(t *testing.T, cfg *config, root string, podKey []byte, diges
 		servedRequests.Add(1)
 	}))
 	defer cds.Close()
+	// Both the fresh worker and recovered worker use the authenticated server
+	// whose independent SNP launch file is pinned by the prepared policy.
 	cfg.Allowlist.Pull.URL = cds.URL
+	cfg.cdsAddress, err = cmdsutil.CDSURLAddress(cds.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier := mockapi.New(t)
+	verdict := mockapi.PassingVerdict(testutil.TestMeasurement)
+	binding := runtimemeasure.HostData([]byte(testutil.CDSLaunchFile))
+	verdict.Claims.InitData = binding[:]
+	verifier.SetVerdict(verdict)
+	cfg.Allowlist.Pull.AttestationApiURL = verifier.URL()
 	healthClient := unixHealthClient(filepath.Join(dir, "health.sock"))
 	defer healthClient.CloseIdleConnections()
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
@@ -281,6 +295,9 @@ func runPodRecovery(t *testing.T, cfg *config, root string, podKey []byte, diges
 		t.Helper()
 		select {
 		case b := <-brokers:
+			if b.CDSURL != cds.URL || b.HTTPClient == nil {
+				t.Fatal("recovered broker lost the authenticated resolved CDS client")
+			}
 			return b
 		case <-ctx.Done():
 			t.Fatal("production broker did not start")

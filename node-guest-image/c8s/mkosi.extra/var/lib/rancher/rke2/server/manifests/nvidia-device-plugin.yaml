@@ -55,9 +55,15 @@ spec:
       priorityClassName: system-node-critical
       tolerations:
         - operator: Exists
+      # The measured base pins this container's whole launch, environment
+      # included (c8s/image-policy.yaml.in), so of the Service variables it
+      # takes only the kubernetes Service's.
+      enableServiceLinks: false
       containers:
         - name: nvidia-device-plugin
           image: nvcr.io/nvidia/k8s-device-plugin:v0.19.3@sha256:25cc340fe6fd53c101e16fc452f503e7a92c219c64a80ed5381784b522dbbf77
+          # The image's entrypoint, spelled out because the measured base pins it.
+          command: [nvidia-device-plugin]
           env:
             - name: FAIL_ON_INIT_ERROR
               value: "false"

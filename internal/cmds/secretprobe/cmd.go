@@ -29,8 +29,6 @@ const (
 type options struct {
 	cdsURL         string
 	attestationURL string
-	measurements   []string
-	rtmrs          []string
 	policyFile     string
 	policyJSON     string
 	certPath       string
@@ -104,8 +102,9 @@ missing or replayed challenge, another pod's token, a non-canonical path.
               as received
 
 CDS is verified as the pod's sidecars verify it: its armTLS certificate
-through --attestation-api-url, against the measurement or image-policy pins
-given (none pins nothing). Exit 0 whenever an answer was printed, a CDS that
+through --attestation-api-url, against the node's CDS pins where the enforcer
+mounts them, otherwise the measurement or image-policy pins given; with
+neither, every request fails. Exit 0 whenever an answer was printed, a CDS that
 issued no challenge included (status 000); 2 on a usage error, an unreadable
 file, or a token the inventory did not redeem, with the reason on stderr.`,
 		Args:          cobra.ArbitraryArgs,
@@ -130,9 +129,7 @@ file, or a token the inventory did not redeem, with the reason on stderr.`,
 	pf := root.PersistentFlags()
 	pf.StringVar(&o.cdsURL, "cds-url", "", "base URL of CDS (required)")
 	pf.StringVar(&o.attestationURL, "attestation-api-url", "", "local attestation-api used to verify CDS's armTLS certificate (required)")
-	pf.StringSliceVar(&o.measurements, "measurements", nil, "SHA-384 hex launch measurement(s) CDS must present (repeatable)")
-	pf.StringSliceVar(&o.rtmrs, "rtmrs", nil, "TDX RTMR pin(s) <index>=<sha384-hex> CDS must additionally satisfy (repeatable)")
-	cmdsutil.BindImagePolicyFlags(pf, &o.policyFile, &o.policyJSON, "pins CDS; excludes --measurements and --rtmrs")
+	cmdsutil.BindImagePolicyFlags(pf, &o.policyFile, &o.policyJSON, "pins CDS, every entry bound to the launch file it runs on")
 	pf.StringVar(&o.certPath, "cert", "", "the pod's CDS-issued certificate, presented to CDS (required)")
 	pf.StringVar(&o.keyPath, "key", "", "private key for --cert (required)")
 	pf.StringVar(&o.socket, "socket", strings.TrimPrefix(workloadclaims.InventoryEndpoint(), "unix://"), "the inventory's token socket")

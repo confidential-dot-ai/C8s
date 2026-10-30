@@ -2,6 +2,7 @@ package allowlist
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
@@ -158,11 +160,8 @@ func newEditCmd(o *options) *cobra.Command {
 				fmt.Fprintln(cmd.ErrOrStderr(), "aborted")
 				return nil
 			}
-			signer, err := o.signer()
-			if err != nil {
-				return err
-			}
-			if err := c.PutWorkload(ctx(cmd), name, *edited, signer); err != nil {
+			if err := signAndPutWorkload(ctx(cmd), o, c, name, *edited); err != nil {
+				keepEditForRetry(cmd.ErrOrStderr(), name, *edited)
 				return err
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "applied %s\n", name)
@@ -282,26 +281,59 @@ func readFileOrStdin(cmd *cobra.Command, path string) ([]byte, error) {
 	return data, nil
 }
 
+// signAndPutWorkload signs one entry with the operator key and writes it.
+func signAndPutWorkload(ctx context.Context, o *options, c allowlistclient.Client, name string, w pkgallowlist.Workload) error {
+	signer, err := o.signer()
+	if err != nil {
+		return err
+	}
+	return c.PutWorkload(ctx, name, w, signer)
+}
+
+// keepEditForRetry saves an edit that was not written as an allowlist
+// document holding only that entry, which `apply` writes as is.
+func keepEditForRetry(stderr io.Writer, name string, edited pkgallowlist.Workload) {
+	doc := pkgallowlist.Allowlist{Schema: pkgallowlist.Schema, Workloads: map[string]pkgallowlist.Workload{name: edited}}
+	data, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		fmt.Fprintf(stderr, "your edit could not be saved: %v\n", err)
+		return
+	}
+	path, err := writeTempFile(name, data)
+	if err != nil {
+		fmt.Fprintf(stderr, "your edit could not be saved: %v\n", err)
+		return
+	}
+	fmt.Fprintf(stderr, "your edit is saved in %s; retry with 'c8s allowlist apply %s' and the same flags\n", path, path)
+}
+
+// writeTempFile writes data and a newline to a new temp file named after the
+// entry and returns its path.
+func writeTempFile(name string, data []byte) (string, error) {
+	tmp, err := os.CreateTemp("", "c8s-workload-"+sanitizeFileName(name)+"-*.json")
+	if err != nil {
+		return "", err
+	}
+	defer tmp.Close()
+	if _, err := tmp.Write(append(data, '\n')); err != nil {
+		os.Remove(tmp.Name())
+		return "", err
+	}
+	return tmp.Name(), nil
+}
+
 // editWorkloadInEditor writes the entry to a temp file, opens $EDITOR (vi if
 // unset) on it, and re-validates the result via ParseWorkloadJSON.
 func editWorkloadInEditor(w pkgallowlist.Workload, name string) (*pkgallowlist.Workload, error) {
-	tmp, err := os.CreateTemp("", "c8s-workload-"+sanitizeFileName(name)+"-*.json")
-	if err != nil {
-		return nil, err
-	}
-	path := tmp.Name()
-	defer os.Remove(path)
-
 	data, err := json.MarshalIndent(w, "", "  ")
 	if err != nil {
-		tmp.Close()
 		return nil, err
 	}
-	if _, err := tmp.Write(append(data, '\n')); err != nil {
-		tmp.Close()
+	path, err := writeTempFile(name, data)
+	if err != nil {
 		return nil, err
 	}
-	tmp.Close()
+	defer os.Remove(path)
 
 	if err := runEditor(path); err != nil {
 		return nil, err

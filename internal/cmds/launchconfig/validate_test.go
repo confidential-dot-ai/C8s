@@ -41,6 +41,14 @@ func TestValidateRejectsEachMalformedField(t *testing.T) {
 		{"snp with rtmrs", Server, func(d *Document) {
 			d.Image.RTMRs = map[int]string{1: strings.Repeat("22", 48), 2: strings.Repeat("33", 48)}
 		}, "SNP image cannot"},
+		{"extra rtmr index", Server, func(d *Document) {
+			d.Image.Platform = "tdx"
+			d.Image.RTMRs = map[int]string{
+				1: strings.Repeat("22", 48),
+				2: strings.Repeat("33", 48),
+				3: strings.Repeat("44", 48),
+			}
+		}, "exactly RTMR[1] and RTMR[2]"},
 		{"server address", Server, func(d *Document) { d.Server.Address = "224.0.0.1" }, "server.address"},
 		{"server address v6", Server, func(d *Document) { d.Server.Address = "2001:db8::1" }, "server.address"},
 		{"node ip", Server, func(d *Document) { d.Node.IP = "not-an-ip" }, "node.ip"},
@@ -63,8 +71,17 @@ func TestValidateRejectsEachMalformedField(t *testing.T) {
 		{"agent without keys", Agent, func(d *Document) { d.AgentOperatorPublicKeys = nil }, "requires agentOperatorPublicKeys"},
 		{"tls san length", Server, func(d *Document) { d.TLSSAN = strings.Repeat("a", 254) }, "DNS name length"},
 		{"tls san label", Server, func(d *Document) { d.TLSSAN = "C8S.Local" }, "lowercase DNS hostname"},
-		{"workloads json", Server, func(d *Document) { d.Workloads = "{" }, "valid JSON"},
-		{"workloads schema", Server, func(d *Document) { d.Workloads = `{"schema":"other/v1","workloads":{}}` }, "workloads:"},
+		{"workloads carried by the document", Server, func(d *Document) {
+			d.Workloads = `{"schema":"c8s.allowlist/v1","workloads":{}}`
+		}, "--tenant-workloads"},
+		{"without cds", Server, func(d *Document) { d.CDS = CDS{} }, "cds.address"},
+		{"cds address without port", Server, func(d *Document) { d.CDS.Address = "cds.example.com" }, "must be <host>:<port>"},
+		{"cds ipv6 address", Server, func(d *Document) { d.CDS.Address = "[2001:db8::1]:8443" }, "must be an IPv4 address"},
+		{"cds address port zero", Server, func(d *Document) { d.CDS.Address = "192.0.2.50:0" }, "no CDS serves on"},
+		{"cds loopback address", Server, func(d *Document) { d.CDS.Address = "127.0.0.1:8443" }, "unicast"},
+		{"cds address with an uppercase name", Server, func(d *Document) { d.CDS.Address = "CDS.example.com:8443" }, "lowercase DNS name"},
+		{"cds measurements malformed", Server, func(d *Document) { d.CDS.Measurements = "{" }, "cds.measurements"},
+		{"cds measurements without launch file", Server, func(d *Document) { d.CDS.Measurements = testDigestOnlyPin(t) }, "launch file"},
 		{"mirror https", Server, func(d *Document) { d.RegistryMirrors = map[string]string{"ghcr.io": "https://10.43.0.5"} }, "http://host"},
 		{"mirror path", Agent, func(d *Document) { d.RegistryMirrors = map[string]string{"ghcr.io": "http://10.43.0.5:5000/v2"} }, "http://host"},
 		{"mirror userinfo", Server, func(d *Document) { d.RegistryMirrors = map[string]string{"ghcr.io": "http://u:p@10.43.0.5"} }, "http://host"},
@@ -169,22 +186,6 @@ func TestParseRejectsEmptyAndMalformedYAML(t *testing.T) {
 				t.Fatalf("accepted %s input", name)
 			}
 		})
-	}
-}
-
-func TestYAMLPathPresent(t *testing.T) {
-	var tree yaml.Node
-	if err := yaml.Unmarshal([]byte("rke2:\n  agentToken: a\nrole: server\n"), &tree); err != nil {
-		t.Fatal(err)
-	}
-	if !yamlPathPresent(&tree, "rke2", "agentToken") {
-		t.Error("present nested key not found")
-	}
-	if yamlPathPresent(&tree, "rke2", "serverToken") {
-		t.Error("absent nested key reported present")
-	}
-	if yamlPathPresent(&tree, "role", "nested") {
-		t.Error("descended into a scalar")
 	}
 }
 

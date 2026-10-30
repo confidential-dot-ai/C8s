@@ -393,12 +393,11 @@ jobs:
             echo "$d"
           }
           operator="$(digest c8s-operator)"
-          cds="$(digest cds)"
           mesh="$(digest armtls-mesh)"
           make build-c8s VERSION="$RELEASE_TAG"
           # shellcheck disable=SC2086 # one argument per platform
           bash .github/scripts/release-seeds.sh render build/c8s dist \
-            "$operator" "$cds" "$mesh" $RELEASE_SEED_PLATFORMS
+            "$operator" "$mesh" $RELEASE_SEED_PLATFORMS
           (cd dist && sha256sum allowlist-seed-*.json)
 
       - name: Upload allowlist seeds

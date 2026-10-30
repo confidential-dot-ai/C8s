@@ -66,7 +66,18 @@ concurrency:
 env:
   NS: confai-images
   VM: c8s-snp-${{ github.run_id }}-${{ github.run_attempt }}
+  # The cluster's CDS runs in a VM of its own, from the CDS image published for
+  # the same commit. A Service of this name carries its address, which the
+  # launch file names before either VM boots.
+  CDS_VM: c8s-snp-cds-${{ github.run_id }}-${{ github.run_attempt }}
   IMAGE_REPO: ghcr.io/confidential-dot-ai/node-guest-base
+  CDS_IMAGE_REPO: ghcr.io/confidential-dot-ai/cds-guest-base
+  # The launcher host's pod network, which both guests boot on: the one range
+  # the CDS may dial a node's admission inventory in. The boot below refuses a
+  # guest address outside it. This is a property of the SNP host (snp-gh-runner,
+  # on rke2's default 10.42/16); if that host's outer cluster is ever renumbered
+  # the way tdx-gh-runner was (to 172.20/172.21), this value must move with it.
+  NODE_CIDR: 10.42.0.0/16
   # The vCPU count selects the measured IGVM variant; the launch digest
   # differs per count.
   SMP: "4"
@@ -162,6 +173,15 @@ jobs:
         run: |
           set +e +o pipefail
           NOW=$(date -u +%s)
+          # Everything one run owns, whether it is the cluster's VM or its CDS
+          # VM: a resource the other kind never had is simply absent.
+          reap() {
+            kubectl -n "$NS" delete vm "$1" --ignore-not-found --wait=false
+            kubectl -n "$NS" delete pvc "$1-scratch" --ignore-not-found --wait=false
+            kubectl -n "$NS" delete secret "$1-opkey" "$1-cloudinit" --ignore-not-found
+            kubectl -n "$NS" delete svc "$1" --ignore-not-found
+            kubectl -n "$NS" delete pod "$1-igvm" --ignore-not-found --wait=false
+          }
           for vm in $(kubectl -n "$NS" get vm -l ci.confidential.ai/managed=true -o name 2>/dev/null); do
             rid=$(kubectl -n "$NS" get "$vm" -o jsonpath='{.metadata.labels.ci\.confidential\.ai/run-id}' 2>/dev/null)
             standing=$(kubectl -n "$NS" get "$vm" -o jsonpath='{.metadata.labels.ci\.confidential\.ai/standing}' 2>/dev/null)
@@ -183,16 +203,10 @@ jobs:
             st=$(gh api "repos/${orepo:-${{ github.repository }}}/actions/runs/$rid" -q .status 2>/dev/null)
             if [ "$st" = "completed" ]; then
               echo "reaping $vm (run ${orepo:-${{ github.repository }}}#$rid completed)"
-              kubectl -n "$NS" delete "$vm" --ignore-not-found --wait=false
-              kubectl -n "$NS" delete pvc "${vm#virtualmachine.kubevirt.io/}-scratch" --ignore-not-found --wait=false
-              kubectl -n "$NS" delete secret "${vm#virtualmachine.kubevirt.io/}-opkey" "${vm#virtualmachine.kubevirt.io/}-cloudinit" --ignore-not-found
-              kubectl -n "$NS" delete pod "${vm#virtualmachine.kubevirt.io/}-igvm" --ignore-not-found --wait=false
+              reap "${vm#virtualmachine.kubevirt.io/}"
             elif [ -z "$st" ] && [ "$age" -gt 10800 ]; then
               echo "reaping $vm (status unknown, age ${age}s > 3h -> orphaned)"
-              kubectl -n "$NS" delete "$vm" --ignore-not-found --wait=false
-              kubectl -n "$NS" delete pvc "${vm#virtualmachine.kubevirt.io/}-scratch" --ignore-not-found --wait=false
-              kubectl -n "$NS" delete secret "${vm#virtualmachine.kubevirt.io/}-opkey" "${vm#virtualmachine.kubevirt.io/}-cloudinit" --ignore-not-found
-              kubectl -n "$NS" delete pod "${vm#virtualmachine.kubevirt.io/}-igvm" --ignore-not-found --wait=false
+              reap "${vm#virtualmachine.kubevirt.io/}"
             else
               echo "keeping $vm (run ${orepo:-${{ github.repository }}}#$rid status=${st:-unknown} age=${age}s)"
             fi
@@ -205,10 +219,10 @@ jobs:
              inuse=$(jq -nr --argjson vmis "$vmis" --argjson vms "$vms" '
                [$vmis.items[].spec.volumes[]?, $vms.items[].spec.template.spec.volumes[]?]
                | .[] | (.persistentVolumeClaim.claimName // .dataVolume.name // empty)'); then
-            kubectl -n "$NS" get pvc -l 'ci.confidential.ai/managed=true,ci.confidential.ai/resource in (snp-node-root, snp-node-igvm)' -o json \
+            kubectl -n "$NS" get pvc -l 'ci.confidential.ai/managed=true,ci.confidential.ai/resource in (snp-node-root, snp-node-igvm, snp-cds-root, snp-cds-igvm)' -o json \
               | jq -r '.items[] | "\(.metadata.name) \(.metadata.creationTimestamp)"' \
               | while read -r name ct; do
-              [[ "$name" =~ ^c8s-snp-(root|igvm)-[0-9a-f]{12}$ ]] || continue
+              [[ "$name" =~ ^c8s-snp-(node|cds)-(root|igvm)-[0-9a-f]{12}$ ]] || continue
               grep -qx "$name" <<<"$inuse" && continue
               age=$(( NOW - $(date -u -d "$ct" +%s 2>/dev/null || echo "$NOW") ))
               [ "$age" -gt 604800 ] && { echo "reaping $name (unused, ${age}s old)"; kubectl -n "$NS" delete pvc "$name" --ignore-not-found --wait=false; }
@@ -306,11 +320,41 @@ jobs:
           retry curl -fsSL --max-time 60 -H "Authorization: Bearer $tok" "https://ghcr.io/v2/${oci}/blobs/$mlayer" -o /tmp/image-manifest.json
           # Refuses anything but one smp=$SMP variant whose IGVM is a layer of
           # the artifact; names the digest-keyed claims the stages below share.
-          resolved=$(bash .github/scripts/snp-node-image.sh env /tmp/image-oras.json /tmp/image-manifest.json "$IMG_DIGEST" "$SMP")
+          resolved=$(bash .github/scripts/snp-node-image.sh env node /tmp/image-oras.json /tmp/image-manifest.json "$IMG_DIGEST" "$SMP")
           printf '%s\n' "$resolved" >> "$GITHUB_ENV"
-          echo "c8s under test ${c8sRef} on its own node image ${IMAGE_VARIANT}-cdi-${c8sRef} (${IMG_DIGEST:0:19}...), launch digest $(sed -n 's/^snpLaunchDigest=\(.\{16\}\).*/\1/p' <<<"$resolved")..."
+          echo "c8s under test ${c8sRef} on its own node image ${IMAGE_VARIANT}-cdi-${c8sRef} (${IMG_DIGEST:0:19}...), launch digest $(sed -n 's/^nodeLaunchDigest=\(.\{16\}\).*/\1/p' <<<"$resolved")..."
 
-      - name: stage the root disk on the launcher (no-op when already staged)
+      - name: resolve the CDS image built from the commit under test
+        run: |
+          set -euo pipefail
+          # One image serves both TEE families, so the CDS image has a single
+          # variant, :cds[-cdi]-<ref>, published from the same commit as the
+          # node image.
+          . "$GITHUB_WORKSPACE/bin/retry.sh"
+          oci=${CDS_IMAGE_REPO#ghcr.io/}
+          tok=$(retry curl -fsSL --max-time 20 "https://ghcr.io/token?scope=repository:${oci}:pull" | jq -er .token)
+          accept='application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json'
+          CDS_DIGEST=""; code=""
+          for attempt in 1 2 3 4; do
+            hdr=$(curl -sI --max-time 20 -H "Authorization: Bearer $tok" -H "Accept: $accept" \
+              "https://ghcr.io/v2/${oci}/manifests/cds-cdi-${c8sRef}" | tr -d '\r')
+            code=$(awk 'NR==1{print $2}' <<<"$hdr")
+            case "$code" in
+              200) CDS_DIGEST=$(awk 'tolower($1)=="docker-content-digest:"{print $2}' <<<"$hdr"); break ;;
+              404) echo "::error::no CDS image for the commit under test: ${CDS_IMAGE_REPO}:cds-cdi-${c8sRef} is not published. The lane needs the pair this commit built; wait for its c8s-image run, or dispatch with a c8s_ref whose images exist"; exit 1 ;;
+              *)   sleep $((attempt * 3)) ;;
+            esac
+          done
+          [[ "$CDS_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::ghcr answered ${code:-none} for cds-cdi-${c8sRef} on 4 attempts"; exit 1; }
+          retry curl -fsSL --max-time 60 -H "Authorization: Bearer $tok" -H "Accept: $accept" \
+            "https://ghcr.io/v2/${oci}/manifests/cds-${c8sRef}" -o /tmp/cds-oras.json
+          mlayer=$(bash .github/scripts/snp-node-image.sh manifest-layer /tmp/cds-oras.json)
+          retry curl -fsSL --max-time 60 -H "Authorization: Bearer $tok" "https://ghcr.io/v2/${oci}/blobs/$mlayer" -o /tmp/cds-manifest.json
+          resolved=$(bash .github/scripts/snp-node-image.sh env cds /tmp/cds-oras.json /tmp/cds-manifest.json "$CDS_DIGEST" "$SMP")
+          printf '%s\n' "$resolved" >> "$GITHUB_ENV"
+          echo "CDS image cds-cdi-${c8sRef} (${CDS_DIGEST:0:19}...), launch digest $(sed -n 's/^cdsLaunchDigest=\(.\{16\}\).*/\1/p' <<<"$resolved")..."
+
+      - name: stage the root disks on the launcher (no-op when already staged)
         run: |
           set -euo pipefail
           # A CDI registry import into a claim named by image digest, shared
@@ -319,22 +363,29 @@ jobs:
           # and an existing claim must have imported this exact image. A
           # caller outside this lane's concurrency group can create the claim
           # between the get and the create; that one is checked the same way.
-          existing=$(kubectl -n "$NS" get pvc "$rootPvc" --ignore-not-found -o json)
-          if [ -z "$existing" ] && ! bash .github/scripts/snp-node-image.sh root-pvc "$image" "$NS" | kubectl create -f -; then
-            existing=$(kubectl -n "$NS" get pvc "$rootPvc" -o json)
-          fi
-          [ -z "$existing" ] || bash .github/scripts/snp-node-image.sh check-root-pvc "$image" <<<"$existing"
-          for i in $(seq 1 120); do
-            phase=$(kubectl -n "$NS" get pvc "$rootPvc" -o jsonpath='{.metadata.annotations.cdi\.kubevirt\.io/storage\.pod\.phase}' 2>/dev/null || true)
-            case "$phase" in
-              Succeeded) echo "root disk $rootPvc ready"; break ;;
-              Failed) kubectl -n "$NS" describe pvc "$rootPvc" | tail -15; echo "::error::CDI import of $image failed"; exit 1 ;;
-            esac
-            [ "$i" -lt 120 ] || { kubectl -n "$NS" describe pvc "$rootPvc" | tail -15; echo "::error::CDI import of $image did not finish in 20 min (phase ${phase:-none})"; exit 1; }
-            sleep 10
-          done
+          stage_root() {
+            local image=$1 pvc=$2 existing phase
+            existing=$(kubectl -n "$NS" get pvc "$pvc" --ignore-not-found -o json)
+            if [ -z "$existing" ] && ! bash .github/scripts/snp-node-image.sh root-pvc "$image" "$NS" | kubectl create -f -; then
+              existing=$(kubectl -n "$NS" get pvc "$pvc" -o json)
+            fi
+            [ -z "$existing" ] || bash .github/scripts/snp-node-image.sh check-root-pvc "$image" <<<"$existing"
+            for _ in $(seq 1 120); do
+              phase=$(kubectl -n "$NS" get pvc "$pvc" -o jsonpath='{.metadata.annotations.cdi\.kubevirt\.io/storage\.pod\.phase}' 2>/dev/null || true)
+              case "$phase" in
+                Succeeded) echo "root disk $pvc ready"; return ;;
+                Failed) kubectl -n "$NS" describe pvc "$pvc" | tail -15; echo "::error::CDI import of $image failed"; exit 1 ;;
+              esac
+              sleep 10
+            done
+            kubectl -n "$NS" describe pvc "$pvc" | tail -15
+            echo "::error::CDI import of $image did not finish in 20 min (phase ${phase:-none})"
+            exit 1
+          }
+          stage_root "$nodeImage" "$nodeRootPvc"
+          stage_root "$cdsImage" "$cdsRootPvc"
 
-      - name: stage the IGVM on the launcher (no-op when already staged)
+      - name: stage the IGVMs on the launcher (no-op when already staged)
         run: |
           set -euo pipefail
           # The hook sidecar mounts a claim into the compute container and
@@ -343,24 +394,32 @@ jobs:
           # against the published manifest before naming the file. A claim
           # another caller creates between the get and the create is checked
           # as an existing one.
-          existing=$(kubectl -n "$NS" get pvc "$igvmPvc" --ignore-not-found -o json)
-          if [ -z "$existing" ] && ! bash .github/scripts/snp-node-image.sh igvm-pvc "$NS" "$igvmDigest" | kubectl create -f -; then
-            existing=$(kubectl -n "$NS" get pvc "$igvmPvc" -o json)
-          fi
-          [ -z "$existing" ] || bash .github/scripts/snp-node-image.sh check-igvm-pvc "$igvmDigest" <<<"$existing"
-          # The pod bounds itself (activeDeadlineSeconds); this loop reports.
-          bash .github/scripts/snp-node-image.sh igvm-pod "$VM-igvm" "$NS" "$igvmPvc" "$igvmFile" "$igvmDigest" "$GITHUB_RUN_ID" "$GITHUB_REPOSITORY" | kubectl create -f -
-          for i in $(seq 1 66); do
-            phase=$(kubectl -n "$NS" get pod "$VM-igvm" -o jsonpath='{.status.phase}' 2>/dev/null || true)
-            case "$phase" in
-              Succeeded) kubectl -n "$NS" logs "$VM-igvm" | tail -2; break ;;
-              Failed) kubectl -n "$NS" logs "$VM-igvm" | tail -10; echo "::error::fetching $igvmFile ($igvmDigest) into $igvmPvc failed"; exit 1 ;;
-            esac
-            [ "$i" -lt 66 ] || { kubectl -n "$NS" describe pod "$VM-igvm" | tail -15; echo "::error::fetching $igvmFile did not finish in 11 min (phase ${phase:-none})"; exit 1; }
-            sleep 10
-          done
-          # Release the claim before the VM mounts it.
-          kubectl -n "$NS" delete pod "$VM-igvm" --ignore-not-found --wait=true --timeout=60s
+          stage_igvm() {
+            local image=$1 pvc=$2 file=$3 digest=$4 pod=$5 existing phase
+            existing=$(kubectl -n "$NS" get pvc "$pvc" --ignore-not-found -o json)
+            if [ -z "$existing" ] && ! bash .github/scripts/snp-node-image.sh igvm-pvc "$NS" "$digest" "$image" | kubectl create -f -; then
+              existing=$(kubectl -n "$NS" get pvc "$pvc" -o json)
+            fi
+            [ -z "$existing" ] || bash .github/scripts/snp-node-image.sh check-igvm-pvc "$digest" "$image" <<<"$existing"
+            # The pod bounds itself (activeDeadlineSeconds); this loop reports.
+            bash .github/scripts/snp-node-image.sh igvm-pod "$pod" "$NS" "$pvc" "$file" "$digest" "$GITHUB_RUN_ID" "$GITHUB_REPOSITORY" "$image" | kubectl create -f -
+            for _ in $(seq 1 66); do
+              phase=$(kubectl -n "$NS" get pod "$pod" -o jsonpath='{.status.phase}' 2>/dev/null || true)
+              case "$phase" in
+                Succeeded) kubectl -n "$NS" logs "$pod" | tail -2
+                  # Release the claim before the VM mounts it.
+                  kubectl -n "$NS" delete pod "$pod" --ignore-not-found --wait=true --timeout=60s
+                  return ;;
+                Failed) kubectl -n "$NS" logs "$pod" | tail -10; echo "::error::fetching $file ($digest) into $pvc failed"; exit 1 ;;
+              esac
+              sleep 10
+            done
+            kubectl -n "$NS" describe pod "$pod" | tail -15
+            echo "::error::fetching $file did not finish in 11 min (phase ${phase:-none})"
+            exit 1
+          }
+          stage_igvm "$nodeImage" "$nodeIgvmPvc" "$nodeIgvmFile" "$nodeIgvmDigest" "$VM-igvm"
+          stage_igvm "$cdsImage" "$cdsIgvmPvc" "$cdsIgvmFile" "$cdsIgvmDigest" "$CDS_VM-igvm"
 
       - name: preflight, SEV-SNP device capacity
         run: |
@@ -375,21 +434,139 @@ jobs:
             echo "no node read permission; skipping the SEV device capacity preflight"
           fi
 
+      - name: render the component entries this commit's images bake
+        # The CDS serves the cluster's component entries, which the launch
+        # below carries: the seed this commit's node image bakes, rendered from
+        # its own component images and the Helm version its build pins.
+        run: |
+          set -euo pipefail
+          . "$GITHUB_WORKSPACE/bin/retry.sh"
+          sync="$C8S_SOURCE_DIR/node-guest-image/c8s/mkosi.sync"
+          helm_version=$(sed -n 's/^HELM_VERSION="\(.*\)"$/\1/p' "$sync")
+          helm_sha=$(sed -n 's/^HELM_LINUX_AMD64_SHA256="\(.*\)"$/\1/p' "$sync")
+          retry curl -fsSL -o /tmp/helm.tgz "https://get.helm.sh/helm-$helm_version-linux-amd64.tar.gz"
+          echo "$helm_sha  /tmp/helm.tgz" | sha256sum -c -
+          tar -xzf /tmp/helm.tgz -C "$GITHUB_WORKSPACE/bin" --strip-components 1 linux-amd64/helm
+          registry=ghcr.io/confidential-dot-ai
+          bash "$C8S_SOURCE_DIR/.github/scripts/release-seeds.sh" render "$(command -v c8s)" /tmp/seed \
+            "$(crane digest "$registry/c8s-operator:$c8sRef")" "$(crane digest "$registry/armtls-mesh:$c8sRef")" snp
+
       - name: sign the server launch and attach opkeydata
         # The same exact public PEM is signed into launch.yaml, bound by the
         # measured initrd against HOSTDATA, and pinned by external clients.
         run: |
           set -euo pipefail
-          # The published manifest pins this vCPU count's launch digest; the
-          # bundle's server.key doubles as the run's operator key.
+          # The launch file names the CDS before either VM boots, so the
+          # cluster takes an address from the launcher up front; the VM that
+          # answers it carries the matching label.
+          kubectl apply -f - <<EOF
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: $CDS_VM
+            namespace: $NS
+            labels:
+              ci.confidential.ai/managed: "true"
+              ci.confidential.ai/run-id: "${{ github.run_id }}"
+          spec:
+            selector: {kubevirt.io/domain: $CDS_VM}
+            ports: [{port: 8443, targetPort: 8443}]
+          EOF
+          CDS_IP=$(kubectl -n "$NS" get svc "$CDS_VM" -o jsonpath='{.spec.clusterIP}')
+          [ -n "$CDS_IP" ] || { echo "::error::the CDS Service got no address"; exit 1; }
+          echo "CDS_ADDRESS=$CDS_IP:8443" >> "$GITHUB_ENV"
+          # The published manifests pin this vCPU count's launch digest for
+          # each image; the bundle's server.key doubles as the run's operator
+          # key, and its cds-config.yaml is what the CDS VM boots on.
           c8s launch-config new --out /tmp/launch-data --cluster-id "$VM" --server-name c8s-node \
-            --image-manifest /tmp/image-manifest.json --vcpus "$SMP"
+            --image-manifest /tmp/image-manifest.json --vcpus "$SMP" \
+            --cds-address "$CDS_IP:8443" --cds-image-manifest /tmp/cds-manifest.json \
+            --cds-platform sev-snp --cds-vcpus "$SMP" \
+            --cds-node-cidr "$NODE_CIDR" --cds-allowlist-seed /tmp/seed/allowlist-seed-snp.json
           echo "SNP_HOST_DATA=$(openssl dgst -sha256 -binary /tmp/launch-data/server/pubkey | base64 -w0)" >> "$GITHUB_ENV"
+          echo "CDS_HOST_DATA=$(openssl dgst -sha256 -binary /tmp/launch-data/cds-config.yaml | base64 -w0)" >> "$GITHUB_ENV"
           kubectl -n "$NS" create secret generic "$VM-opkey" \
             --from-file=pubkey=/tmp/launch-data/server/pubkey \
             --from-file=launch.yaml=/tmp/launch-data/server/launch.yaml \
             --from-file=launch.yaml.sig=/tmp/launch-data/server/launch.yaml.sig \
             --dry-run=client -o yaml | kubectl apply -f -
+          # The CDS VM's opkeydata disk holds its launch file alone; the initrd
+          # halts unless HOSTDATA is its SHA-256, which the pin names.
+          kubectl -n "$NS" create secret generic "$CDS_VM-opkey" \
+            --from-file=pubkey=/tmp/launch-data/cds-config.yaml \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: boot the CDS VM
+        # It serves only once its own boot self-check passes: a fresh report
+        # from the attester on its loopback must bind the configuration file it
+        # parsed, which is what HOSTDATA carries and the pin names. So an
+        # answer on :8443 is the binding, asserted by the wait below.
+        run: |
+          set -euo pipefail
+          kubectl apply -f - <<EOF
+          apiVersion: kubevirt.io/v1
+          kind: VirtualMachine
+          metadata:
+            name: $CDS_VM
+            namespace: $NS
+            labels:
+              ci.confidential.ai/managed: "true"
+              ci.confidential.ai/standing: "false"
+              ci.confidential.ai/run-id: "${{ github.run_id }}"
+              ci.confidential.ai/run-attempt: "${{ github.run_attempt }}"
+              ci.confidential.ai/platform: "snp-metal"
+              ci.confidential.ai/flavor: "cds"
+            annotations:
+              ci.confidential.ai/repo: "${{ github.repository }}"
+              ci.confidential.ai/run-url: "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          spec:
+            runStrategy: Always
+            template:
+              metadata:
+                labels: {kubevirt.io/domain: $CDS_VM}
+                annotations:
+                  igvm.confidential.ai/file: "$cdsIgvmFile"
+                  snp.confidential.ai/host-data: "$CDS_HOST_DATA"
+                  hooks.kubevirt.io/hookSidecars: '[{"image":"$IGVM_HOOK_IMAGE","imagePullPolicy":"IfNotPresent","args":["--version","v1alpha3"],"pvc":{"name":"$cdsIgvmPvc","volumePath":"/igvm","sharedComputePath":"/var/run/igvm"}}]'
+              spec:
+                nodeSelector:
+                  confidential.ai/sev-snp: "true"
+                domain:
+                  cpu:
+                    model: EPYC-Genoa
+                    cores: $SMP
+                  devices:
+                    disks:
+                      - name: rootdisk
+                        disk: {bus: virtio, readonly: true}
+                      - name: opkey
+                        disk: {bus: virtio}
+                    interfaces: [{name: default, bridge: {}}]
+                    rng: {}
+                  firmware: {bootloader: {efi: {secureBoot: false}}}
+                  launchSecurity: {snp: {}}
+                  # The size the CDS image's IGVM was built for; the trust root
+                  # keeps its state in memory and no disk of its own.
+                  memory: {guest: 4Gi}
+                  resources: {requests: {memory: 4Gi}}
+                networks: [{name: default, pod: {}}]
+                volumes:
+                  - name: rootdisk
+                    persistentVolumeClaim: {claimName: $cdsRootPvc}
+                  - name: opkey
+                    secret: {secretName: $CDS_VM-opkey, volumeLabel: opkeydata}
+          EOF
+          for _ in $(seq 1 120); do
+            code=$(curl -sk --connect-timeout 2 --max-time 4 -o /dev/null -w '%{http_code}' "https://$CDS_ADDRESS/healthz" 2>/dev/null || true)
+            [ "${code:-000}" = 200 ] && break
+            sleep 5
+          done
+          [ "${code:-000}" = 200 ] || {
+            kubectl -n "$NS" describe vmi "$CDS_VM" | tail -25
+            echo "::error::the CDS does not serve at $CDS_ADDRESS: its launch file, the binding its initrd checks, or the route to AMD's certificate service"
+            exit 1
+          }
+          echo "OK: the CDS serves the cluster its own launch binds it to, at $CDS_ADDRESS"
 
       - name: boot the SNP CVM
         run: |
@@ -440,9 +617,9 @@ jobs:
               metadata:
                 labels: {kubevirt.io/domain: $VM}
                 annotations:
-                  igvm.confidential.ai/file: "$igvmFile"
+                  igvm.confidential.ai/file: "$nodeIgvmFile"
                   snp.confidential.ai/host-data: "$SNP_HOST_DATA"
-                  hooks.kubevirt.io/hookSidecars: '[{"image":"$IGVM_HOOK_IMAGE","imagePullPolicy":"IfNotPresent","args":["--version","v1alpha3"],"pvc":{"name":"$igvmPvc","volumePath":"/igvm","sharedComputePath":"/var/run/igvm"}}]'
+                  hooks.kubevirt.io/hookSidecars: '[{"image":"$IGVM_HOOK_IMAGE","imagePullPolicy":"IfNotPresent","args":["--version","v1alpha3"],"pvc":{"name":"$nodeIgvmPvc","volumePath":"/igvm","sharedComputePath":"/var/run/igvm"}}]'
               spec:
                 nodeSelector:
                   confidential.ai/sev-snp: "true"
@@ -473,6 +650,10 @@ jobs:
                         disk: {bus: virtio}
                       - name: cloudinit
                         disk: {bus: virtio}
+                    # bridge, as every SNP lane: under it the guest's node ports do not
+                    # answer the runner (run 40547124565). Whether masquerade would is
+                    # undetermined: its one run (40565629411) failed a :443 check that
+                    # bridge then failed too on the same code.
                     interfaces: [{name: default, bridge: {}}]
                     rng: {}
                   firmware: {bootloader: {efi: {secureBoot: false}}}
@@ -482,7 +663,7 @@ jobs:
                 networks: [{name: default, pod: {}}]
                 volumes:
                   - name: rootdisk
-                    persistentVolumeClaim: {claimName: $rootPvc}
+                    persistentVolumeClaim: {claimName: $nodeRootPvc}
                   - name: scratch
                     persistentVolumeClaim: {claimName: $VM-scratch}
                   - name: opkey
@@ -506,6 +687,10 @@ jobs:
             sleep 5
           done
           [ -n "${IP:-}" ] || { echo "::error::the VMI never reported an IP"; kubectl -n "$NS" describe vmi "$VM" | tail -20; exit 1; }
+          # Both reduced to the two octets of the /16 the launch file lets the
+          # CDS dial a node's admission inventory in.
+          [ "${IP%.*.*}" = "${NODE_CIDR%.*.*/*}" ] \
+            || { echo "::error::the guest came up at $IP, outside NODE_CIDR $NODE_CIDR: the CDS admits no node address there"; exit 1; }
           echo "GUEST_IP=$IP" >> "$GITHUB_ENV"
           echo "VMI Running at $IP"
 
@@ -612,6 +797,7 @@ jobs:
           set +e
           echo "::group::host-side VMI and launcher"
           kubectl -n "$NS" describe vmi "$VM" 2>&1 | tail -30
+          kubectl -n "$NS" describe vmi "$CDS_VM" 2>&1 | tail -20
           POD=$(kubectl -n "$NS" get pods -l kubevirt.io/domain="$VM" -o name 2>/dev/null | head -1)
           [ -n "$POD" ] && kubectl -n "$NS" logs "$POD" --all-containers --tail=40 2>&1 | grep -iE 'igvm|host-data|hostData|sev|error' | tail -20
           echo "::endgroup::"
@@ -665,12 +851,13 @@ jobs:
             echo ""
             echo "| | |"
             echo "|---|---|"
-            echo "| image | \`${image:-?}\` |"
-            echo "| rootPvc | \`${rootPvc:-?}\` |"
-            echo "| igvmPvc | \`${igvmPvc:-?}\` |"
+            echo "| image | \`${nodeImage:-?}\` |"
+            echo "| rootPvc | \`${nodeRootPvc:-?}\` |"
+            echo "| igvmPvc | \`${nodeIgvmPvc:-?}\` |"
             echo "| c8s ref | \`${c8sRef:-?}\` |"
-            echo "| SNP launch digest | \`${snpLaunchDigest:0:32}...\` |"
+            echo "| SNP launch digest | \`${nodeLaunchDigest:0:32}...\` |"
             echo "| guest | \`${GUEST_IP:-?}\` |"
+            echo "| CDS | \`${CDS_ADDRESS:-?}\`, launch digest \`${cdsLaunchDigest:0:32}...\` |"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: teardown
@@ -678,9 +865,10 @@ jobs:
         run: |
           set +e
           cleanup_failed=0
-          kubectl -n "$NS" delete vm "$VM" --ignore-not-found --wait=true --timeout=120s || cleanup_failed=1
-          kubectl -n "$NS" delete secret "$VM-opkey" "$VM-cloudinit" --ignore-not-found || cleanup_failed=1
+          kubectl -n "$NS" delete vm "$VM" "$CDS_VM" --ignore-not-found --wait=true --timeout=120s || cleanup_failed=1
+          kubectl -n "$NS" delete secret "$VM-opkey" "$VM-cloudinit" "$CDS_VM-opkey" --ignore-not-found || cleanup_failed=1
+          kubectl -n "$NS" delete svc "$CDS_VM" --ignore-not-found || cleanup_failed=1
           kubectl -n "$NS" delete pvc "$VM-scratch" --ignore-not-found --wait=false || cleanup_failed=1
-          kubectl -n "$NS" delete pod "$VM-igvm" --ignore-not-found --wait=false || cleanup_failed=1
+          kubectl -n "$NS" delete pod "$VM-igvm" "$CDS_VM-igvm" --ignore-not-found --wait=false || cleanup_failed=1
           [ "$cleanup_failed" = 0 ] || echo "::error::SNP cleanup incomplete; owned resources may need orphan reaping"
           exit "$cleanup_failed"
