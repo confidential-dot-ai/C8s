@@ -19,6 +19,9 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 )
 
+// appliedPinVersion is the version the pin decree below applies at.
+const appliedPinVersion = 7
+
 // Another TDX image of the same CDS, for a roll to move the cluster onto.
 func writeRolledCDSManifest(t *testing.T) string {
 	t.Helper()
@@ -62,7 +65,7 @@ func writePinDecree(t *testing.T, bundle, clusterID string, key *ecdsa.PrivateKe
 		ClusterID:   clusterID,
 		IntentID:    cdsdecree.NewIntentID(),
 		Kind:        cdsdecree.UpdateMeasurements,
-		BaseVersion: 7,
+		BaseVersion: appliedPinVersion,
 		ExpiresAt:   time.Now().Add(time.Hour).UTC().Truncate(time.Second),
 		CDSPins:     pins,
 	}, key)
@@ -154,5 +157,28 @@ func TestAddAgentRefusesAPinDecreeTheBundleDoesNotAnswerFor(t *testing.T) {
 				t.Error("a refused decree left a node document behind")
 			}
 		})
+	}
+}
+
+// A node added after an image was retired must not take a decree that still
+// named it, so its document carries the applied decree's version as its floor.
+func TestAddAgentTakesItsPinFloorFromTheAppliedDecree(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "bundle")
+	if err := runBundleCmd(t, append(bundleArgs(t, dir, "tdx"), "--server-address", "10.0.0.10")...); err != nil {
+		t.Fatal(err)
+	}
+	decree := writePinDecree(t, dir, "demo", bundleOperatorKey(t, dir), writeRolledCDSManifest(t))
+
+	if err := runBundleCmd(t, "add-agent", "--bundle", dir, "--name", "retired", "--pin-decree", decree); err != nil {
+		t.Fatal(err)
+	}
+
+	agent, _ := readBundleDocument(t, dir, "retired")
+	if agent.CDS.PinFloor != appliedPinVersion {
+		t.Fatalf("pin floor = %d, want the version the decree applies at", agent.CDS.PinFloor)
+	}
+	server, _ := readBundleDocument(t, dir, serverDir)
+	if server.CDS.PinFloor != 0 {
+		t.Fatalf("the server document's pin floor = %d; nothing it booted with may change", server.CDS.PinFloor)
 	}
 }

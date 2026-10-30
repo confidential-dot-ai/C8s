@@ -1,6 +1,6 @@
 .PHONY: build install build-c8s build-c8s-node build-get-cert build-armtls-mesh \
        build-nri-image-policy \
-       test test-podmesh-netns test-integration test-integration-cluster test-integration-cdsha test-node-guest-image-role test-node-guest-image-gpu-label test-node-guest-image-gpu-cc test-node-guest-image-scratch test-node-guest-image-psa-ready test-node-guest-image-role-systemd test-node-guest-image-cloud-init test-e2e-cw-label-policy test-e2e-allowlist-enforcement test-e2e-components-ready test-e2e-cw-workload mutation-check mutation-full vet fmt lint clean \
+       test test-podmesh-netns test-integration test-integration-cluster test-integration-cdsha test-e2e-cds-ha-vms test-node-guest-image-role test-node-guest-image-gpu-label test-node-guest-image-gpu-cc test-node-guest-image-scratch test-node-guest-image-psa-ready test-node-guest-image-role-systemd test-node-guest-image-cloud-init test-e2e-cw-label-policy test-e2e-allowlist-enforcement test-e2e-components-ready test-e2e-cw-workload mutation-check mutation-full vet fmt lint clean \
        manifests generate check-crd-chart install-controller-gen require-controller-gen
 
 CONTROLLER_GEN         ?= controller-gen
@@ -185,6 +185,12 @@ test-e2e-allowlist-enforcement:
 # the tdx-metal-e2e lane.
 test-e2e-components-ready:
 	./test/e2e/components-ready.sh
+
+# Three CDS VMs serving one cluster on real SEV-SNP hardware, cloned from a
+# lane's own CDS VM. Needs kubectl pointed at the launcher cluster; runs last
+# in a metal lane's payload, because it replaces the lane's CVMs with its own.
+test-e2e-cds-ha-vms:
+	./test/e2e/cds-ha-vms.sh
 
 # Live-cluster check that the sample confidential workload runs with the
 # injected c8s-cert sidecar. Needs kubectl pointed at a cluster with C8s

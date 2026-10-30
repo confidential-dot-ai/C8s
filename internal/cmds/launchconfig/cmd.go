@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
@@ -84,6 +85,7 @@ that file. See docs/operator.md, "Authenticated launch configuration".`,
 	f.StringArrayVar(&opts.CDS.NodeCIDRs, "cds-node-cidr", nil, "subnet holding the node addresses CDS may dial for a sandbox's admission inventory; repeatable")
 	f.StringVar(&opts.CDS.AllowlistSeedPath, "cds-allowlist-seed", "", "the release's allowlist-seed-<platform>.json: the component entries this cluster's CDS serves")
 	f.StringVar(&opts.CDS.TenantWorkloadsPath, "tenant-workloads", "", "optional c8s.allowlist/v1 JSON file of tenant workloads the CDS serves beside the component entries; an entry may not take a component entry's name")
+	cdsconfig.BindReplicaSetFlags(f, "cds-", &opts.CDS.ReplicaSet)
 	f.StringArrayVar(&opts.Router.Hostnames, "router-hostname", nil, "public DNS name the router serves with an ACME certificate; repeatable")
 	f.StringVar(&opts.Router.ACMEEmail, "acme-email", "", "contact email for the router's ACME account (requires --router-hostname)")
 	f.StringVar(&opts.Router.ACMEDirectoryURL, "acme-directory-url", "", "ACME directory URL, e.g. a staging directory for tests (requires --router-hostname; default Let's Encrypt)")

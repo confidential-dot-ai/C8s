@@ -28,6 +28,9 @@ type options struct {
 	manifest        string
 	platform        string
 	vcpus           []int
+	// ha is the replica set the cluster's CDS runs as, empty for a cluster
+	// whose CDS is a singleton.
+	ha cdsconfig.HA
 }
 
 func NewCmd() *cobra.Command {
@@ -50,7 +53,12 @@ func newNewCmd() *cobra.Command {
   <out>/cds-pin.json      the measurements document its clients pin it with
 
 Each pin entry binds the configuration exactly; on SEV-SNP there is one entry
-per --vcpus count the VM may boot with.`,
+per --vcpus count the VM may boot with.
+
+Every replica of a highly available CDS boots these same bytes: --replica and
+--voters describe the cluster, and nothing in the file names one replica.
+docs/cds-ha.md says which of its fields the replicas only start from and which
+fix the cluster for its life.`,
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -78,6 +86,7 @@ per --vcpus count the VM may boot with.`,
 	f.StringArrayVar(&opts.leafDNSNames, "leaf-dns-name", nil, "literal DNS SAN a leaf may carry; repeatable")
 	f.StringArrayVar(&opts.leafDNSPatterns, "leaf-dns-pattern", nil,
 		"regex a leaf's DNS SANs may match in full; repeatable (default the in-cluster Service DNS pattern)")
+	cdsconfig.BindReplicaSetFlags(f, "", &opts.ha)
 	f.StringVar(&opts.manifest, "image-manifest", "", "manifest.json published with the CDS guest image the VM boots")
 	f.StringVar(&opts.platform, "platform", "", "TEE platform the CDS VM runs on: sev-snp or tdx")
 	f.IntSliceVar(&opts.vcpus, "vcpus", nil, "SEV-SNP only: a vCPU count the CDS VM may boot with, one pin entry each; repeatable")

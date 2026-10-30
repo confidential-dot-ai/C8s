@@ -54,6 +54,7 @@ func newDecreeCmd() *cobra.Command {
 		newGenesisCmd(),
 		newPinsCmd(),
 		newNodeImagesCmd(),
+		newVotersCmd(),
 		newRotateKeyCmd(),
 		newRecoverCmd(),
 		newDismissRecoverCmd(),
@@ -449,6 +450,42 @@ func (o pinsOptions) run(cmd *cobra.Command) error {
 		Kind:        cdsdecree.UpdateMeasurements,
 		BaseVersion: o.baseVersion,
 		CDSPins:     cdsPins,
+	})
+}
+
+// votersOptions move the voter seats of the cluster.
+type votersOptions struct {
+	decreeOptions
+	voters int
+	to     replica
+}
+
+func newVotersCmd() *cobra.Command {
+	var o votersOptions
+	cmd := decreeCmd("voters", "Sign the decree that names the voter seats the cluster holds",
+		"The replicas fill or give up one seat at a time, so a cluster keeps a majority throughout. A\n"+
+			"cluster whose replicas cannot fill the seats takes no write: name no more seats than it has\n"+
+			"replicas to fill them with.",
+		&o.decreeOptions, func(cmd *cobra.Command) error { return o.run(cmd) })
+	bindBaseVersionFlag(cmd, &o.decreeOptions)
+	bindDeliveryFlags(cmd, &o.to)
+	cmd.Flags().IntVar(&o.voters, "voters", 0, "voter seats the cluster holds, odd and up to "+strconv.Itoa(cdsdecree.MaxVoterSeats)+" (REQUIRED)")
+	requireFlags(cmd, "voters")
+	return cmd
+}
+
+func (o votersOptions) run(cmd *cobra.Command) error {
+	if err := cdsdecree.CheckVoterSeats(o.voters); err != nil {
+		return fmt.Errorf("--voters: %w", err)
+	}
+	c, err := readDecreeConfig(o.config)
+	if err != nil {
+		return err
+	}
+	return o.deliver(cmd, c, o.to, cdsdecree.Decree{
+		Kind:        cdsdecree.SetVoters,
+		BaseVersion: o.baseVersion,
+		Voters:      o.voters,
 	})
 }
 

@@ -4,12 +4,17 @@ package cdsha_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -20,6 +25,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
 	"github.com/confidential-dot-ai/c8s/internal/cdspins"
 	"github.com/confidential-dot-ai/c8s/internal/testutil"
+	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 )
 
 // threeReplicas is the cluster most scenarios run on: three replicas, and
@@ -697,4 +703,94 @@ func (c *cluster) nodeClient(r *replica) *cdspins.Source {
 		c.t.Fatalf("the node's CDS pin source: %v", err)
 	}
 	return source
+}
+
+// A client names its cluster's CDS by one address that resolves to every
+// replica. Losing the leader costs it neither a read nor its trust anchor:
+// every replica answers under the same pin, and the mesh CA is the cluster's.
+func TestAClientReachesItsClusterAtOneNameAcrossALeaderLoss(t *testing.T) {
+	notShort(t)
+	c := newCluster(t, threeReplicas)
+	leading := c.waitLeader(30 * time.Second)
+	named := c.clientResolvingTo(leading, c.others(leading)...)
+	before := c.caAtOneName(named, time.Minute)
+	for _, r := range c.others(leading) {
+		c.waitVoter(r, time.Minute)
+	}
+
+	c.kill(leading)
+
+	after := c.caAtOneName(named, time.Minute)
+	if after != before {
+		t.Fatalf("the cluster's mesh CA is %s behind the name, and was %s before its leader was lost", after, before)
+	}
+	if led := c.waitLeader(time.Minute); led == leading {
+		t.Fatal("the cluster reports the replica that was killed as its leader")
+	}
+}
+
+// clientResolvingTo reaches the cluster at one name resolving to first and
+// then to rest. A scenario names the replica it is about to kill first.
+func (c *cluster) clientResolvingTo(first *replica, rest ...*replica) *http.Client {
+	c.t.Helper()
+	addresses := make([]string, 0, len(rest)+1)
+	for _, r := range append([]*replica{first}, rest...) {
+		addresses = append(addresses, net.JoinHostPort(r.host, strconv.Itoa(clientPort)))
+	}
+	client := c.attestedClient(testutil.TestMeasurement)
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok {
+		c.t.Fatalf("the armTLS client carries a %T, and this scenario resolves the name itself", client.Transport)
+	}
+	transport.DialContext = dialFirstThatAnswers(addresses)
+	return client
+}
+
+// dialFirstThatAnswers answers with the last address's error where none connects.
+func dialFirstThatAnswers(resolved []string) func(context.Context, string, string) (net.Conn, error) {
+	dialer := &net.Dialer{Timeout: 2 * time.Second}
+	return func(ctx context.Context, network, _ string) (net.Conn, error) {
+		refused := fmt.Errorf("no address of this name answers: %v", resolved)
+		for _, address := range resolved {
+			conn, err := dialer.DialContext(ctx, network, address)
+			if err == nil {
+				return conn, nil
+			}
+			refused = err
+		}
+		return nil, refused
+	}
+}
+
+// caAtOneName is the fingerprint of the mesh CA served behind the name its
+// clients dial, read again until a replica serving the cluster answers.
+func (c *cluster) caAtOneName(client *http.Client, within time.Duration) string {
+	c.t.Helper()
+	var fingerprint string
+	c.waitFor("the cluster to serve its mesh CA behind the name its clients dial", within, func() bool {
+		fingerprint = servedCAFingerprint(client, "https://cds."+clusterID+".example:"+strconv.Itoa(clientPort)+"/ca")
+		return fingerprint != ""
+	})
+	return fingerprint
+}
+
+// servedCAFingerprint is empty where no replica served a mesh CA at url.
+func servedCAFingerprint(client *http.Client, url string) string {
+	response, err := client.Get(url) //nolint:noctx // the client carries the deadline
+	if err != nil {
+		return ""
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return ""
+	}
+	served, err := io.ReadAll(io.LimitReader(response.Body, maxAnswer))
+	if err != nil {
+		return ""
+	}
+	block, _ := pem.Decode(served)
+	if block == nil {
+		return ""
+	}
+	return certutil.CertFingerprint(block.Bytes)
 }

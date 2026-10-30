@@ -86,6 +86,9 @@ type CDSOptions struct {
 	NodeCIDRs           []string
 	AllowlistSeedPath   string
 	TenantWorkloadsPath string
+	// ReplicaSet is the replica set that CDS runs as, empty for a cluster
+	// whose CDS is a singleton.
+	ReplicaSet cdsconfig.HA
 }
 
 // NewBundle generates the cluster's launch keys (or takes the server key from
@@ -309,14 +312,7 @@ func agentCDS(dir, decreePath string, served CDS) (CDS, error) {
 	if decreePath == "" {
 		return served, nil
 	}
-	pins, err := decreedCDSPin(dir, decreePath)
-	if err != nil {
-		return CDS{}, err
-	}
-	return CDS{
-		Address:      served.Address,
-		Measurements: string(pins),
-	}, nil
+	return decreedCDS(dir, decreePath, served.Address)
 }
 
 func agentServerAddress(named string, server *Document) (string, error) {

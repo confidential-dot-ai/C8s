@@ -36,8 +36,8 @@ type Document struct {
 	// LeafDNSNames and LeafDNSPatterns are the DNS SAN rules CDS issues under.
 	LeafDNSNames    []string
 	LeafDNSPatterns []string
-	// HA is the replica set the cluster's CDS runs as; nil runs the singleton.
-	HA *HA
+	// HA is the replica set the cluster's CDS runs as; a zero one the singleton.
+	HA HA
 }
 
 // Format renders doc as a CDS launch file under the schema version this

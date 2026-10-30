@@ -115,6 +115,7 @@ func clusterCDS(opts BundleOptions, operatorPub string, peerPolicy []byte) (conf
 		ClusterCIDRs:    clusterRanges,
 		LeafDNSNames:    []string{opts.TLSSAN},
 		LeafDNSPatterns: []string{cmdsutil.ServiceDNSSANPattern},
+		HA:              opts.CDS.ReplicaSet,
 		ManifestPath:    opts.CDS.ManifestPath,
 		Family:          family,
 		VCPUs:           opts.CDS.VCPUs,

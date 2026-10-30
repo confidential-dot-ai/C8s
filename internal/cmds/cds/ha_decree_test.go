@@ -581,3 +581,38 @@ func TestAReplicaAddressNamesAHostAndAPort(t *testing.T) {
 		t.Fatalf("a replica at a literal address was refused: %v", err)
 	}
 }
+
+// The voter seats are the cluster's, and a count no cluster keeps a majority
+// at is refused where the operator signs.
+func TestVotersDecreeNamesTheSeatsOfTheCluster(t *testing.T) {
+	c := newOperatorCluster(t)
+	o := c.options(t)
+	serving := c.replicaServing(t, nil)
+
+	if err := signing(t, func(cmd *cobra.Command) error {
+		return votersOptions{
+			decreeOptions: o,
+			voters:        5,
+			to:            serving,
+		}.run(cmd)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	decree := c.signed(t, o.out).Decree
+	if decree.Kind != cdsdecree.SetVoters || decree.Voters != 5 || decree.BaseVersion != o.baseVersion {
+		t.Fatalf("decree = %+v", decree)
+	}
+
+	for _, seats := range []int{0, 2, cdsdecree.MaxVoterSeats + 2} {
+		err := signing(t, func(cmd *cobra.Command) error {
+			return votersOptions{
+				decreeOptions: c.options(t),
+				voters:        seats,
+				to:            serving,
+			}.run(cmd)
+		})
+		if err == nil {
+			t.Fatalf("a decree naming %d voter seats was signed", seats)
+		}
+	}
+}

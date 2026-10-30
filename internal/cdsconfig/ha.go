@@ -52,15 +52,20 @@ func (w *haWire) parse() (*HA, error) {
 	}, nil
 }
 
-// wire renders the block; a nil HA renders no ha block at all.
-func (h *HA) wire() *haWire {
-	if h == nil {
+// wire renders the block; a document naming no replica set renders no ha
+// block at all, and Parse reads that document back as the singleton CDS.
+func (h HA) wire() *haWire {
+	if h.namesNoReplicaSet() {
 		return nil
 	}
 	return &haWire{
 		Replicas: h.Replicas,
 		Voters:   h.Voters,
 	}
+}
+
+func (h HA) namesNoReplicaSet() bool {
+	return len(h.Replicas) == 0 && h.Voters == 0
 }
 
 func parseReplicas(entries []string) ([]string, error) {

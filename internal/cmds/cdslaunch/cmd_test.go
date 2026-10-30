@@ -179,3 +179,72 @@ func TestNewLeafDNSPatternReplacesTheDefault(t *testing.T) {
 		t.Fatalf("DNS SAN rules = %v", cfg.DNSSANPatterns)
 	}
 }
+
+// Every replica of a cluster boots one configuration, so the generator takes
+// the replica set and writes no replica's own name into the document.
+func TestNewWritesTheReplicaSetOfACluster(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "cds")
+	args := append(inputs(t, out),
+		"--replica", "cds-1.acme.example",
+		"--replica", "cds-2.acme.example",
+		"--replica", "cds-3.acme.example",
+		"--voters", "3")
+	if err := run(t, args...); err != nil {
+		t.Fatal(err)
+	}
+	cfg := parseWritten(t, out)
+	if cfg.HA == nil {
+		t.Fatal("the configuration runs the singleton CDS, want the replica set")
+	}
+	if len(cfg.HA.Replicas) != 3 || cfg.HA.Voters != 3 {
+		t.Fatalf("replica set = %+v", cfg.HA)
+	}
+}
+
+// A cluster named with no replica runs one CDS, and its configuration says so
+// by carrying no replica set at all.
+func TestNewWritesNoReplicaSetByDefault(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "cds")
+	if err := run(t, inputs(t, out)...); err != nil {
+		t.Fatal(err)
+	}
+	if cfg := parseWritten(t, out); cfg.HA != nil {
+		t.Fatalf("replica set = %+v, want the singleton CDS", cfg.HA)
+	}
+}
+
+// The voter seats are the cluster's, so an input no replica set can run on is
+// refused before anything is written.
+func TestNewRefusesAReplicaSetItCannotRun(t *testing.T) {
+	for name, flags := range map[string][]string{
+		"an even voter count": {"--replica", "cds-1.acme.example", "--voters", "2"},
+		"no voter seat":       {"--replica", "cds-1.acme.example"},
+		"no replica":          {"--voters", "3"},
+		"a replica twice":     {"--replica", "cds-1.acme.example", "--replica", "cds-1.acme.example", "--voters", "1"},
+		"a replica's port":    {"--replica", "cds-1.acme.example:8443", "--voters", "1"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			out := filepath.Join(t.TempDir(), "cds")
+			if err := run(t, append(inputs(t, out), flags...)...); err == nil {
+				t.Fatalf("%s was accepted", name)
+			}
+			if _, err := os.Stat(out); !os.IsNotExist(err) {
+				t.Fatal("the refused run still wrote its outputs")
+			}
+		})
+	}
+}
+
+// parseWritten is the configuration a run wrote, as a replica parses it.
+func parseWritten(t *testing.T, out string) *cdsconfig.Config {
+	t.Helper()
+	config, err := os.ReadFile(filepath.Join(out, cdsconfig.ConfigFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cdsconfig.Parse(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cfg
+}
