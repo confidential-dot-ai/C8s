@@ -49,7 +49,7 @@ func (n *Node) forward(entry []byte) (Result, error) {
 }
 
 func (n *Node) leaderChannel() (reachedMember, error) {
-	_, leader := n.raft.LeaderWithID()
+	_, leader := n.raft.Load().LeaderWithID()
 	if leader == "" {
 		return reachedMember{}, errors.New("cds-ha: this cluster has no leader (fewer than a majority of its voters answer)")
 	}

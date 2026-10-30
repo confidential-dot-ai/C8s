@@ -311,6 +311,7 @@ func (n *Node) reachMembers(ctx context.Context) {
 		found := n.reachPeers(ctx)
 		if n.settled() {
 			n.followMoves()
+			n.askBackIn()
 		} else {
 			n.joinOrStart(found)
 		}
@@ -395,13 +396,23 @@ func (n *Node) inConfiguration() bool {
 }
 
 func (n *Node) memberOfCluster(member string) bool {
-	return slices.ContainsFunc(n.configuration(), func(server raft.Server) bool {
-		return server.ID == raft.ServerID(member)
-	})
+	_, named := n.configuredAs(member)
+	return named
+}
+
+// configuredAs is a member's place in the cluster's configuration: the vote
+// it holds and the address the cluster reaches it at.
+func (n *Node) configuredAs(member string) (raft.Server, bool) {
+	for _, server := range n.configuration() {
+		if server.ID == raft.ServerID(member) {
+			return server, true
+		}
+	}
+	return raft.Server{}, false
 }
 
 func (n *Node) configuration() []raft.Server {
-	future := n.raft.GetConfiguration()
+	future := n.raft.Load().GetConfiguration()
 	if err := future.Error(); err != nil {
 		return nil
 	}
@@ -438,7 +449,7 @@ func (n *Node) movedTo(server raft.Server) (reachedMember, bool) {
 
 func (n *Node) moveMember(server raft.Server, moved reachedMember) {
 	slog.Info("cds-ha: a member of this cluster answers at another address", "member", server.ID, "was", server.Address, "now", moved.raftAddress())
-	if err := n.raft.RemoveServer(server.ID, 0, n.cfg.Timing.Apply).Error(); err != nil {
+	if err := n.raft.Load().RemoveServer(server.ID, 0, n.cfg.Timing.Apply).Error(); err != nil {
 		slog.Warn("cds-ha: this leader could not take out a member that moved", "member", server.ID, "error", err)
 		return
 	}
@@ -468,6 +479,23 @@ func (n *Node) joinOrStart(found discovered) {
 		return
 	}
 	n.startCluster(decree)
+}
+
+// askBackIn asks the members this replica reached to take it back in, while
+// it holds the cluster and follows no leader: a cluster that re-formed
+// without this member takes it back, and one that cut this member out
+// answers so, which only a restart of this process cures (fence.go).
+func (n *Node) askBackIn() {
+	if n.following().known() {
+		return
+	}
+	for _, held := range n.peers.reached() {
+		answer, _, err := n.askMember(held)
+		if err == nil && answer.Excluded {
+			n.excluded.Store(true)
+			return
+		}
+	}
 }
 
 // peerAnswers is what the members this replica reached said of the cluster.
@@ -556,7 +584,10 @@ func (n *Node) answerJoin(from peer, policy Policy, answer controlAnswer) contro
 		answer.Err = err.Error()
 		return answer
 	}
-	if n.memberOfCluster(from.member) {
+	if server, named := n.configuredAs(from.member); named {
+		if server.Address == excludedAddress {
+			return cutOutOfCluster(from.member, answer)
+		}
 		// The member is in the configuration: its vote and its address are
 		// the cluster's to change, not a joiner's.
 		return answer
@@ -577,6 +608,16 @@ func (n *Node) answerJoin(from peer, policy Policy, answer controlAnswer) contro
 	return answer
 }
 
+// cutOutOfCluster answers a member this cluster cut out: its log may hold
+// entries of a recovered cluster, which no replica can tell from this
+// cluster's, so only a restart of that process rejoins (fence.go).
+func cutOutOfCluster(member string, answer controlAnswer) controlAnswer {
+	slog.Warn("cds-ha: a member this cluster cut out asked to come back; it rejoins only as a new member", "member", member)
+	answer.Excluded = true
+	answer.Err = "this cluster cut member " + member + " out; restart the replica to rejoin as a new member"
+	return answer
+}
+
 // admissible refuses a replica whose stores hold other limits than the
 // cluster's policy: it could not apply the log it would be sent.
 func (n *Node) admissible(policy Policy) error {
@@ -593,7 +634,7 @@ func (n *Node) admissible(policy Policy) error {
 // addNonVoter adds a member that follows the log and serves reads; voter
 // seats are filled from the members that caught up.
 func (n *Node) addNonVoter(held reachedMember) error {
-	if err := n.raft.AddNonvoter(raft.ServerID(held.member), held.raftAddress(), 0, n.cfg.Timing.Apply).Error(); err != nil {
+	if err := n.raft.Load().AddNonvoter(raft.ServerID(held.member), held.raftAddress(), 0, n.cfg.Timing.Apply).Error(); err != nil {
 		return err
 	}
 	slog.Info("cds-ha: a replica joined this cluster as a non-voter", "member", held.member, "address", held.raftAddress())

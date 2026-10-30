@@ -27,6 +27,7 @@ type Server struct {
 	mu      sync.Mutex
 	objects map[string][]byte
 	views   map[string]*View
+	refused bool
 }
 
 // Start serves bucket until the caller closes the server.
@@ -59,6 +60,20 @@ func (s *Server) Put(key string, object []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.objects[key] = object
+}
+
+// Refuse answers every request with 503, as a store the host stops serving
+// does; false serves the bucket again.
+func (s *Server) Refuse(refused bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.refused = refused
+}
+
+func (s *Server) refuses() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.refused
 }
 
 // Object returns one stored object.
@@ -166,6 +181,10 @@ func (v *View) lists(stored []string) []string {
 }
 
 func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
+	if s.refuses() {
+		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+		return
+	}
 	view := s.View(clientIP(r))
 	view.hold(r.Context())
 	bucket, key, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/"), "/")

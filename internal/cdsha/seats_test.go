@@ -189,7 +189,7 @@ func TestAClusterTakesNoMoreNonVotersThanItServesReadsFrom(t *testing.T) {
 			endpoint: leader.peerAddress(),
 			member:   member,
 		}.serverAddress()
-		added := leader.node.raft.AddNonvoter(raft.ServerID(member), address, 0, testTiming.Apply)
+		added := leader.node.raft.Load().AddNonvoter(raft.ServerID(member), address, 0, testTiming.Apply)
 		if err := added.Error(); err != nil {
 			t.Fatalf("add non-voter %s: %v", member, err)
 		}

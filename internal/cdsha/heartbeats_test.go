@@ -15,10 +15,10 @@ func TestOnlyATermSafeHeartbeatTakesTheFastPath(t *testing.T) {
 	c.genesis(3)
 	leader := c.leader()
 	follower := c.follower()
-	if leader.node.transport.termSafe(heartbeatAt(leader.node.raft.CurrentTerm(), nil)) {
+	if leader.node.transport.termSafe(heartbeatAt(leader.node.raft.Load().CurrentTerm(), nil)) {
 		t.Fatal("a leader's heartbeat took the fast path")
 	}
-	term := follower.node.raft.CurrentTerm()
+	term := follower.node.raft.Load().CurrentTerm()
 	fast := make(chan raft.RPC, 1)
 	follower.node.transport.heartbeat(func(rpc raft.RPC) { fast <- rpc }, heartbeatAt(term, nil))
 	select {

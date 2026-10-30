@@ -67,6 +67,9 @@ type controlAnswer struct {
 	// Full reports a write the admission cap refused, which the store answers
 	// as full rather than as one to retry.
 	Full bool `json:"full,omitempty"`
+	// Excluded reports a member the cluster answering cut out of itself,
+	// which only a restart of that member's process cures (fence.go).
+	Excluded bool `json:"excluded,omitempty"`
 	// Index is where the leader committed a forwarded write, or the watermark
 	// its barrier confirmed for a read; the replica that asked waits for its
 	// own state machine to reach it.
@@ -113,13 +116,13 @@ func (n *Node) answerControl(from peer, request controlRequest) controlAnswer {
 
 // leading reports this replica as the one that appends to the cluster's log.
 func (n *Node) leading() bool {
-	return n.raft.State() == raft.Leader
+	return n.raft.Load().State() == raft.Leader
 }
 
 // redirectToLeader refuses a request only the cluster's leader answers,
 // naming the member leading so the caller can ask it instead.
 func (n *Node) redirectToLeader(answer controlAnswer) controlAnswer {
-	_, leader := n.raft.LeaderWithID()
+	_, leader := n.raft.Load().LeaderWithID()
 	answer.Leader = string(leader)
 	answer.Err = "this replica does not lead the cluster"
 	return answer

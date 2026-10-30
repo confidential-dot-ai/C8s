@@ -205,13 +205,29 @@ type Node struct {
 	secrets   *secrets.Handle
 	bindings  *sandboxledger.Handle
 
-	// Start builds these three and Run stops them.
-	raft      *raft.Raft
+	// raft, mux and transport are this replica's Raft: Start builds them and
+	// Run stops them. A replica that carried its cluster on alone runs
+	// another Raft over the same log and peer port (recover.go).
+	raft      atomic.Pointer[raft.Raft]
 	mux       *mux
 	transport *termSafeHeartbeats
+	// observed is what every Raft this process runs reports about the members
+	// it replicates to (liveness.go).
+	observed chan raft.Observation
 	// divergenceLog keeps one finding about its members' state to one log
 	// line (divergence.go).
 	divergenceLog changedReason
+
+	// board is when this replica last read its cluster's board, and acks the
+	// members that reported this leader in the term it leads. A leader
+	// blind to the board goes by the acks (fence.go).
+	board      atomic.Pointer[boardSighting]
+	acks       *acknowledgements
+	fenceLog   changedReason
+	recoverLog changedReason
+	// excluded is set once a member of this cluster answered that this
+	// member is cut out of it, which only a restart of this process cures.
+	excluded atomic.Bool
 }
 
 // attestationTimeout bounds one call to the attestation-api on this VM.
@@ -241,11 +257,13 @@ func NewNode(cfg Config) (*Node, error) {
 		fsm:       NewFSM(cfg.Launch, cfg.Allowlist, cfg.Secrets, cfg.Ledger),
 		logs:      newMemLog(),
 		snaps:     &snapStore{},
+		observed:  make(chan raft.Observation, observations),
 		genesisCA: sync.OnceValues(mintMeshCA),
 		barriers:  newOneBarrier(),
 		seatbook:  newSeatBook(),
 		failures:  newHeartbeatFailures(),
 		transfers: newTransfers(),
+		acks:      newAcknowledgements(),
 	}
 	n.peers = newMembers(string(n.member), cfg.Timing.DeadAfter)
 	if err := n.mintIdentity(); err != nil {
@@ -324,14 +342,13 @@ func (n *Node) certificate() *tls.Certificate {
 
 // Start opens the peer port and starts Raft; Run drives the replica from there.
 func (n *Node) Start() error {
-	if n.raft != nil {
+	if n.raft.Load() != nil {
 		return errors.New("cds-ha: this replica is started")
 	}
 	listener, err := net.Listen("tcp", n.cfg.Peer.String())
 	if err != nil {
 		return err
 	}
-	config := n.raftConfig()
 	n.mux = newMux(
 		listener,
 		n.answeringAt(listener),
@@ -340,18 +357,28 @@ func (n *Node) Start() error {
 		n.answerControl,
 	)
 	n.transport = newTermSafeHeartbeats(
-		raft.NewNetworkTransportWithConfig(peerTransportConfig(n.mux, config.Logger)),
+		raft.NewNetworkTransportWithConfig(peerTransportConfig(n.mux, raftLogger())),
 	)
-	started, err := raft.NewRaft(config, raftFSM{FSM: n.fsm}, n.logs, n.logs, n.snaps, n.transport)
-	if err != nil {
+	if err := n.startRaft(); err != nil {
 		n.transport.Close()
 		return err
 	}
-	n.transport.follows(started)
-	n.raft = started
 	// A control request is answered out of this replica's Raft, so the port
 	// takes none before there is one.
 	n.mux.serving()
+	return nil
+}
+
+// startRaft runs Raft over this replica's log, its snapshot store and its
+// peer port, and reports what it does with the members it replicates to.
+func (n *Node) startRaft() error {
+	started, err := raft.NewRaft(n.raftConfig(), raftFSM{FSM: n.fsm}, n.logs, n.logs, n.snaps, peerPortOnLoan{n.transport})
+	if err != nil {
+		return err
+	}
+	started.RegisterObserver(raft.NewObserver(n.observed, dropWhenFull, everyKind))
+	n.transport.follows(started)
+	n.raft.Store(started)
 	return nil
 }
 
@@ -426,6 +453,10 @@ const (
 func (n *Node) raftConfig() *raft.Config {
 	config := raft.DefaultConfig()
 	config.LocalID = raft.ServerID(n.member)
+	// Raft's stores live in this process's memory beside the state machine,
+	// so a snapshot in them is one the state machine already holds: the one a
+	// replica that carried its cluster on alone wrote (recover.go).
+	config.NoSnapshotRestoreOnStart = true
 	config.HeartbeatTimeout = n.cfg.Timing.Heartbeat
 	config.ElectionTimeout = n.cfg.Timing.Election
 	config.LeaderLeaseTimeout = n.cfg.Timing.Heartbeat / 2
@@ -453,7 +484,7 @@ func raftLogger() hclog.Logger {
 // through (stuck.go), which the restart of this process cures. It stops Raft
 // and closes the peer port before it returns.
 func (n *Node) Run(ctx context.Context) error {
-	if n.raft == nil {
+	if n.raft.Load() == nil {
 		return errors.New("cds-ha: this replica is not started")
 	}
 	defer n.stop()
@@ -464,6 +495,7 @@ func (n *Node) Run(ctx context.Context) error {
 		n.watchHeartbeats,
 		n.watchHandover,
 		n.watchStalls,
+		n.watchForRecover,
 		n.watchDivergence,
 	)
 	defer stopWorkers()
@@ -480,6 +512,7 @@ func (n *Node) Run(ctx context.Context) error {
 		}
 		n.renewIdentity()
 		n.recheckPeers()
+		n.alarmWhenFenced()
 		if err := n.endsAtAFault(); err != nil {
 			return err
 		}
@@ -526,27 +559,30 @@ func (n *Node) recheckPeers() {
 }
 
 func (n *Node) stop() {
-	n.shutDownRaft()
+	if err := n.shutDownRaft(); err != nil {
+		slog.Error("cds-ha: this replica's Raft did not shut down", "error", err)
+	}
 	if err := n.transport.Close(); err != nil {
 		slog.Error("cds-ha: this replica's peer port did not close", "error", err)
 	}
 }
 
-// A state machine held on a command never lets Raft's goroutines return. The
-// peer port closes after the wait either way, which is what they then fail on.
-func (n *Node) shutDownRaft() {
+// shutDownRaft waits for Raft to shut down, at most the budget of one
+// replicated write. A state machine held on a command never lets Raft's
+// goroutines return: a replica on its way out is gone either way, and the
+// peer port is closed after the wait; a replica recovering its cluster must
+// not replay a log those goroutines still write (recover.go).
+func (n *Node) shutDownRaft() error {
+	stopping := n.raft.Load()
 	stopped := make(chan error, 1)
 	go func() {
-		stopped <- n.raft.Shutdown().Error()
+		stopped <- stopping.Shutdown().Error()
 	}()
 	select {
 	case err := <-stopped:
-		if err != nil {
-			slog.Error("cds-ha: this replica's Raft did not shut down", "error", err)
-		}
+		return err
 	case <-time.After(n.cfg.Timing.Apply):
-		slog.Error("cds-ha: this replica's Raft did not shut down; its goroutines are left running",
-			"waited", n.cfg.Timing.Apply)
+		return fmt.Errorf("this replica's Raft did not shut down within %s; its goroutines are left running", n.cfg.Timing.Apply)
 	}
 }
 
@@ -574,7 +610,7 @@ func (n *Node) propose(e Entry) (Result, error) {
 // commit appends an entry to the log of the cluster this replica leads, and
 // answers the index it applied at.
 func (n *Node) commit(entry []byte) (Result, uint64, error) {
-	committed := n.raft.Apply(entry, n.cfg.Timing.Apply)
+	committed := n.raft.Load().Apply(entry, n.cfg.Timing.Apply)
 	if err := committed.Error(); err != nil {
 		return Result{}, 0, err
 	}
@@ -596,6 +632,11 @@ func (n *Node) proposable(e Entry, entry []byte) error {
 	}
 	if reason := n.fsm.Stuck(); reason != "" {
 		return errors.New("cds-ha: this replica stopped following the log: " + reason)
+	}
+	if !leadersOwn(e) {
+		if fenced := n.fenced(); fenced != nil {
+			return fenced
+		}
 	}
 	return n.fsm.Admit(entry)
 }

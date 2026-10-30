@@ -33,6 +33,9 @@ func (n *Node) endsAtAFault() error {
 	if err := n.wedged(); err != nil {
 		return err
 	}
+	if err := n.endsExcluded(); err != nil {
+		return err
+	}
 	return n.endsStuck()
 }
 
