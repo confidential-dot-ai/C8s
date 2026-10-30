@@ -219,6 +219,7 @@ func run(cfg config) error {
 			NamedCertTTL:      cfg.namedCertTTL,
 			RequestTimeout:    cfg.requestTimeout,
 			Images:            pinned.Images,
+			PodImages:         cfg.measured.PodImages,
 			SANValidation:     cfg.sanValidation,
 			Policy:            policy,
 			AllowlistStore:    &allowlistStore,
@@ -429,6 +430,9 @@ func validateConfig(cfg config) error {
 	}
 	if len(cfg.measured.OperatorKeys.Keys()) == 0 {
 		return fmt.Errorf("--config: the configuration pins no operator key, so no policy write could ever be authorized")
+	}
+	if err := cfg.measured.ValidatePodAuthorities(); err != nil {
+		return fmt.Errorf("--config: %w", err)
 	}
 	for _, timeout := range []struct {
 		name  string

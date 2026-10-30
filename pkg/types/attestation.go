@@ -34,6 +34,11 @@ type AttestRequestBody struct {
 	// here (types must not import workloadclaims).
 	SandboxToken json.RawMessage `json:"sandbox_token,omitempty"`
 
+	// PodClaims is a complete guest-owned admission snapshot bound directly
+	// into fresh quote REPORTDATA. Mutually exclusive with SandboxToken and
+	// the node profile's RuntimeExtensions; it carries its own complete log.
+	PodClaims json.RawMessage `json:"pod_claims,omitempty"`
+
 	// RuntimeExtensions is the requester's claimed TDX RTMR[3] runtime
 	// extension list, canonical digests in extend order. CDS replays it
 	// against the quote and trusts only the prefix that matches.

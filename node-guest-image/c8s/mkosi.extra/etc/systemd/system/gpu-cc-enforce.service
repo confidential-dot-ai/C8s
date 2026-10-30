@@ -8,13 +8,15 @@ Description=Refuse to start the node unless every NVIDIA GPU is in confidential-
 # reachable; both are Wants, not Requires, so a GPU-less boot of a
 # composition without them is a no-op. Egress is needed for NRAS.
 # The NRAS token carries nbf=now. A CVM boots with an unsynchronised clock,
-# so attestation must not run until time-sync.target is reached, otherwise
-# /verify fails with 'JWT is not yet valid (nbf)' and FailureAction powers
-# the node off. Measured on b200-dev-1: GPUs pass the CC-mode check, then
-# /verify returns 422 on nbf.
-After=nvidia-persistenced.service attestation-api.service network-online.target time-sync.target
-Wants=nvidia-persistenced.service attestation-api.service network-online.target time-sync.target
-Before=nvidia-cc-ready.service rke2-server.service rke2-agent.service
+# so attestation must not run before the first NTP sync, otherwise /verify
+# fails with 'JWT is not yet valid (nbf)' and FailureAction powers the node
+# off. Measured on b200-dev-1: GPUs pass the CC-mode check, then /verify
+# returns 422 on nbf. The script waits for the sync itself, and only when a
+# GPU is present: ordering after time-sync.target put the first NTP sync
+# (~11 s) on every GPU-less boot's critical path, pod CVMs included.
+After=nvidia-persistenced.service attestation-api.service network-online.target
+Wants=nvidia-persistenced.service attestation-api.service network-online.target
+Before=nvidia-cc-ready.service rke2-server.service rke2-agent.service podcvm-containerd.service
 
 [Service]
 # Once per boot covers every GPU only while the guest kernel has PCI hotplug
@@ -22,9 +24,9 @@ Before=nvidia-cc-ready.service rke2-server.service rke2-agent.service
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/local/bin/gpu-cc-enforce.sh
-# Driver wait (180s) + attestation-api wait (60s) + one attest/verify round
-# trip through NRAS, with headroom.
-TimeoutStartSec=420
+# Driver wait (180s) + clock-sync wait (120s) + attestation-api wait (60s)
+# + one attest/verify round trip through NRAS, with headroom.
+TimeoutStartSec=540
 # Fail closed: a non-CC or unattested GPU powers the VM off rather than
 # leaving a node that schedules unprotected GPU memory.
 FailureAction=poweroff-force
@@ -37,4 +39,4 @@ RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 WantedBy=multi-user.target
 # Preset creates the .requires links, so neither the Ready-state flip nor
 # rke2 can start while this unit is failing or has not run.
-RequiredBy=nvidia-cc-ready.service rke2-server.service rke2-agent.service
+RequiredBy=nvidia-cc-ready.service rke2-server.service rke2-agent.service podcvm-containerd.service

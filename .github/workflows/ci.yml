@@ -17,6 +17,7 @@ on:
       # (test/mock-*) gate PRs via the Integration job below.
       - "test/**"
       - "scripts/coverage-gate.sh"
+      - "scripts/test-podmesh.sh"
       - "scripts/mutation-check.sh"
       - ".gremlins.yaml"
       - ".github/workflows/ci.yml"
@@ -137,7 +138,7 @@ jobs:
         # its mtime and invalidates the cached pass.
         run: make test C8S_TEST_COUNT=
 
-      - name: Test the pod ruleset in a network namespace
+      - name: Test Pod mesh, guest bootstrap and credential custody
         run: make test-podmesh-netns
 
       # The advisory mutation job only exercises the 0-mutant path on
@@ -219,13 +220,16 @@ jobs:
       # Node-root provenance depends on a real kernel dm-verity table. Include
       # that test in the measured profile rather than skipping its successful
       # path on the runner's ordinary writable root filesystem.
-      - name: Install kernel verity test tools
+      - name: Install privileged test tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends cryptsetup-bin e2fsprogs
+          sudo apt-get install -y --no-install-recommends cryptsetup-bin e2fsprogs iptables nftables
 
       - name: Measure kernel verity coverage
         run: ./scripts/coverage-gate.sh kernel head.out
+
+      - name: Measure privileged Pod mesh coverage
+        run: ./scripts/coverage-gate.sh privileged head.out
 
       # On pushes to main, cache the total so PRs against this commit can
       # compare without re-running the whole suite on the base branch.
@@ -238,9 +242,9 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: base-total.txt
-          # v4 includes real kernel dm-verity execution as well as ordinary Go
-          # execution, with the same head-script procedure used for the base.
-          key: coverage-total-v4-${{ github.sha }}
+          # v5 also includes real Pod mesh, guest bootstrap and credential
+          # custody, using the same head-script procedure for both revisions.
+          key: coverage-total-v5-${{ github.sha }}
 
       - name: Restore baseline total
         if: github.event_name == 'pull_request'
@@ -248,7 +252,7 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: base-total.txt
-          key: coverage-total-v4-${{ github.event.pull_request.base.sha }}
+          key: coverage-total-v5-${{ github.event.pull_request.base.sha }}
 
       # Fallback when the base commit's total is not cached (e.g. cache
       # evicted, or main's coverage run predates this workflow).
@@ -265,6 +269,7 @@ jobs:
         run: |
           ../scripts/coverage-gate.sh run base.out
           ../scripts/coverage-gate.sh kernel base.out
+          ../scripts/coverage-gate.sh privileged base.out
           ../scripts/coverage-gate.sh total base.out > ../base-total.txt
 
       - name: Enforce non-decreasing total coverage
@@ -288,6 +293,17 @@ jobs:
               exit 1
             }
           }'
+
+      - name: Retain coverage evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-profiles
+          path: |
+            head.out
+            base/base.out
+            base-total.txt
+          retention-days: 7
 
   mutation:
     name: Mutation (advisory)

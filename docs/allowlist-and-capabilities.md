@@ -288,3 +288,15 @@ It is a no-op on SEV-SNP, which has no runtime register. A node that cannot
 measure keeps enforcing the policy it holds — at startup, the base allowlist
 alone — and once it reaches the register's per-boot extend cap it takes no
 further policy until it reboots.
+
+A Pod CVM (`role: pod`, see [operator.md](operator.md#pod-cvm)) measures each
+image digest it admits instead (`measure.rtmr3`, which excludes
+`allowlist.pull.measure_policies`: a boot has one RTMR[3] writer). The journal
+is seeded with the Pod launch key the initrd staged. The guest authenticates
+CDS with the separate image and launch-file policy in its signed launch
+configuration. Fetched policies affect admission without extending this image
+journal, whose directory is never mounted into Pod containers.
+`c8s pod-status serve` carries the retained image list in its armTLS
+certificate. `c8s pod-attest` accepts the certificate's binding as the seed
+followed by a prefix, then requires the list read on both sides of a fresh
+quote to replay in full.

@@ -25,7 +25,7 @@ C8s assigns them under its own Private Enterprise Number:
   evidence binds. Issuer equals subject, so a verifier authenticates the body by
   checking that self-signature, then the evidence inside it.
 - **CDS-issued leaf**: the certificate CDS — the Certificate Distribution
-  Service, the one cluster pod that verifies evidence and signs workload
+  Service, the separate confidential VM that verifies evidence and signs workload
   certificates — signs with the mesh CA. It names one pod run when the request
   proved a sandbox. Its signature under the mesh CA is what vouches for
   everything CDS stamped. A member pod's mesh endpoint presents the leaf
@@ -76,8 +76,8 @@ TEEAttestation ::= SEQUENCE {
   handshake: that chain is the TLS one, a self-issued certificate alone or a
   CDS-issued leaf under the mesh CA.
 - **`runtimeExtensions`**: TDX only, at most 256 entries, each a canonical
-  `sha256:<hex>`: the allowlist policies the node extended into RTMR[3], in
-  extend order, for a verifier to replay
+  `sha256:<hex>`: the allowlist policies a node extended into RTMR[3], or the image digests
+  a Pod CVM admitted, in extend order, for a verifier to replay
   ([measurements.md](measurements.md#policy-history)). The list is unattested
   on its own. A verifier refuses it on SEV-SNP evidence, which has no register
   to replay.
@@ -100,8 +100,10 @@ canonical encoding: a value that re-encodes to different bytes is refused, so
 two extensions cannot parse to the same ID. CDS stamps it after verifying the
 sandbox token signed by the node's admission inventory, the node service that
 records which containers ran in which pod sandbox
-([armtls.md](armtls.md#sandbox-identity)). A
-certificate carrying two of them, or one that does not parse, is an error and
+([armtls.md](armtls.md#sandbox-identity)). The
+[Pod CVM issuance profile](armtls.md#pod-cvm-issuance) instead derives a
+separate Pod identity from verified guest claims; that identity confers no
+node-inventory or secret-release authority. A certificate carrying two of them, or one that does not parse, is an error and
 never read as absence.
 
 For a CSR with no DNS or IP SAN and no common name, the issued common name is
