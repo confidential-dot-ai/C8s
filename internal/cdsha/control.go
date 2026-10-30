@@ -29,6 +29,9 @@ const (
 	opJoin controlOp = "join"
 	// opWrite asks the leader to commit a client write another replica took.
 	opWrite controlOp = "write"
+	// opRead asks the leader to confirm a read: a barrier of its own, and the
+	// watermark its state machine had applied behind it (lease.go).
+	opRead controlOp = "read"
 )
 
 type controlRequest struct {
@@ -54,8 +57,9 @@ type controlAnswer struct {
 	// Full reports a write the admission cap refused, which the store answers
 	// as full rather than as one to retry.
 	Full bool `json:"full,omitempty"`
-	// Index is where the leader committed a forwarded write, so the replica
-	// that forwarded it waits for the entry it asked for.
+	// Index is where the leader committed a forwarded write, or the watermark
+	// its barrier confirmed for a read; the replica that asked waits for its
+	// own state machine to reach it.
 	Index uint64 `json:"index,omitempty"`
 	// Result is what the state machine made of a forwarded write.
 	Result json.RawMessage `json:"result,omitempty"`
@@ -74,6 +78,8 @@ func (n *Node) answerControl(from peer, request controlRequest) controlAnswer {
 		return n.answerJoin(from, request.Policy, answer)
 	case opWrite:
 		return n.answerWrite(request.Entry, answer)
+	case opRead:
+		return n.answerRead(answer)
 	}
 	answer.Err = fmt.Sprintf("unknown control op %q", request.Op)
 	return answer

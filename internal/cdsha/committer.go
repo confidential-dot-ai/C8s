@@ -118,12 +118,11 @@ func bindingWrites(n *Node) ledgerCommitter {
 	}
 }
 
-// CatchUp applies what this replica knows the cluster has committed. A
-// replica that does not get there answers from the bindings it holds, which
-// fails closed.
+// CatchUp confirms a read with the cluster's leader. A replica that confirms
+// none answers from the bindings it holds, which fails closed.
 func (c ledgerCommitter) CatchUp() {
-	if !c.node.appliedKnownCommitted(c.node.cfg.Timing.Apply) {
-		slog.Warn("cds-ha: a sandbox lookup did not catch up with the cluster's log; it answers from the bindings this replica holds")
+	if err := c.node.ConfirmRead(); err != nil {
+		slog.Warn("cds-ha: a sandbox lookup confirmed no read with the cluster; it answers from the bindings this replica holds", "error", err)
 	}
 }
 

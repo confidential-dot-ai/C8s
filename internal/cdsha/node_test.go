@@ -243,9 +243,10 @@ func TestRunEndsWithItsContext(t *testing.T) {
 func TestNewNodeRefusesAConfigurationItCannotServe(t *testing.T) {
 	c := newLiveCluster(t)
 	for name, spoil := range map[string]func(*Config){
-		"no launch file":            func(cfg *Config) { cfg.LaunchFile = nil },
-		"no peer address":           func(cfg *Config) { cfg.Peer = netip.AddrPort{} },
-		"a peer address of no host": func(cfg *Config) { cfg.Peer = netip.MustParseAddrPort("0.0.0.0:8444") },
+		"no launch file":                        func(cfg *Config) { cfg.LaunchFile = nil },
+		"no peer address":                       func(cfg *Config) { cfg.Peer = netip.AddrPort{} },
+		"a peer address of no host":             func(cfg *Config) { cfg.Peer = netip.MustParseAddrPort("0.0.0.0:8444") },
+		"a read lease shorter than three ticks": func(cfg *Config) { cfg.Timing.Lease = 2 * testTiming.Tick },
 		"an election shorter than the heartbeat": func(cfg *Config) {
 			cfg.Timing = Timing{
 				Heartbeat: time.Second,
