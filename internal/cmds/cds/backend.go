@@ -6,7 +6,6 @@ package cds
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -59,16 +58,11 @@ func (o ownCA) Current() (issuer.CurrentCA, bool) {
 	return o.MeshCA.Current(), true
 }
 
-var errNoReplicaSet = errors.New("this build serves a cluster's CDS as the singleton: one replica of a replica set needs a c8s_dev build")
-
 // newBackend picks what this CDS serves from; the configuration's ha block is
 // the whole decision.
 func newBackend(ctx context.Context, cfg config, st stores) (backend, error) {
 	if cfg.measured.HA == nil {
 		return newSingleton(cfg, st)
-	}
-	if !servesReplicas {
-		return nil, fmt.Errorf("--config %s: %w", cfg.configPath, errNoReplicaSet)
 	}
 	return newReplica(ctx, cfg, st)
 }

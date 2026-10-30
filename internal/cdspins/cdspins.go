@@ -272,7 +272,7 @@ func (s *Source) check(served *cdsdecree.Signed) (checked, error) {
 	if decree.CDSPins == nil {
 		return checked{}, fmt.Errorf("cdspins: the %s decree pins no CDS image", decree.Kind)
 	}
-	version := appliesAt(decree)
+	version := decree.AppliesAt()
 	if belowFloor(version, s.cfg.Floor) {
 		return checked{}, fmt.Errorf("%w: it applies at version %d, and the floor is %d", errBelowFloor, version, s.cfg.Floor)
 	}
@@ -285,12 +285,6 @@ func (s *Source) check(served *cdsdecree.Signed) (checked, error) {
 		version: version,
 		pins:    pins,
 	}, nil
-}
-
-// appliesAt orders two decrees of one cluster; cdsdecree.Verify admits one of
-// the two versions per kind.
-func appliesAt(decree cdsdecree.Decree) uint64 {
-	return max(decree.BaseVersion, decree.ResumeVersion)
 }
 
 // belowFloor refuses the replay of a decree the client was launched past.

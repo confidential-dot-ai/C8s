@@ -106,6 +106,12 @@ type Decree struct {
 	RecoverIntent string `json:"recover_intent,omitempty"`
 }
 
+// AppliesAt orders two decrees of one cluster id: the version a decree
+// follows, or the one it resumes above. Verify admits one of the two per kind.
+func (d Decree) AppliesAt() uint64 {
+	return max(d.BaseVersion, d.ResumeVersion)
+}
+
 // Signed is a decree with the operator's detached signature over it.
 type Signed struct {
 	Decree    Decree `json:"decree"`

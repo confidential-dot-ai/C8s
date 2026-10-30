@@ -26,8 +26,8 @@ type Inputs struct {
 	// LeafDNSNames and LeafDNSPatterns are the DNS SAN rules CDS issues under.
 	LeafDNSNames    []string
 	LeafDNSPatterns []string
-	// HA is the replica set the cluster's CDS runs as; nil runs the singleton.
-	HA *HA
+	// HA is the replica set the cluster's CDS runs as; a zero one the singleton.
+	HA HA
 	// ManifestPath, Family and VCPUs select the CDS guest image the VM boots
 	// and the launch digests its pin carries.
 	ManifestPath string

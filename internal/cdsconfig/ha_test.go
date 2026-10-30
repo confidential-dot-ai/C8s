@@ -116,7 +116,7 @@ func TestFormatWritesAnHABlockParseAccepts(t *testing.T) {
 	_, operatorPEM := testKey(t)
 	_, anchorPEM := testKey(t)
 	document := testDocumentFor(t, operatorPEM, anchorPEM)
-	document.HA = &HA{
+	document.HA = HA{
 		Replicas: []string{"cds.acme.example"},
 		Voters:   1,
 	}
@@ -144,11 +144,11 @@ func TestFormatRefusesAReplicaSetParseWouldRefuse(t *testing.T) {
 			_, operatorPEM := testKey(t)
 			_, anchorPEM := testKey(t)
 			document := testDocumentFor(t, operatorPEM, anchorPEM)
-			document.HA = &HA{
+			document.HA = HA{
 				Replicas: []string{"cds.acme.example"},
 				Voters:   1,
 			}
-			change(document.HA)
+			change(&document.HA)
 			if _, err := Format(document); err == nil {
 				t.Fatal("Format wrote an ha block Parse refuses")
 			}

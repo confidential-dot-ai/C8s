@@ -123,7 +123,7 @@ func newMember(cfg config, st stores) (*cdsha.Node, error) {
 		LaunchFile:     cfg.measuredFile,
 		Peer:           peer,
 		AttestationURL: cfg.attestationApiURL,
-		Timing:         haTiming,
+		Timing:         haTimingOverride,
 		Replicas:       ha.Replicas,
 		Allowlist:      st.allowlist,
 		Secrets:        st.secrets,
