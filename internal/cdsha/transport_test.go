@@ -1,12 +1,10 @@
 package cdsha
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"os"
-	"slices"
 	"testing"
 	"time"
 
@@ -45,7 +43,7 @@ func TestRaftConnectionReachesTheStreamLayer(t *testing.T) {
 func TestRaftDialRefusesAnotherMemberAtTheAddress(t *testing.T) {
 	dialing, listening := servingPair(t)
 
-	address := raft.ServerAddress(listening.endpoint() + "#member-gone")
+	address := raft.ServerAddress(listening.peerAddress().String() + "#member-gone")
 	if _, err := dialing.mux.Dial(address, testCallTimeout); err == nil {
 		t.Fatal("dialled a member that does not answer at this address")
 	}
@@ -57,7 +55,7 @@ func TestRaftDialRefusesAnotherMemberAtTheAddress(t *testing.T) {
 func TestRaftConnectionForAnotherMemberIsRefused(t *testing.T) {
 	dialing, listening := servingPair(t)
 
-	connection, _, err := dialing.mux.dial(listening.endpoint(), muxRaft, testCallTimeout)
+	connection, _, err := dialing.mux.dial(listening.peerAddress().String(), muxRaft, testCallTimeout)
 	if err != nil {
 		t.Fatalf("dial a peer: %v", err)
 	}
@@ -75,28 +73,57 @@ func TestRaftConnectionForAnotherMemberIsRefused(t *testing.T) {
 }
 
 // A control request carries the attested peer that made it, and its answer
-// comes back over the same connection.
+// comes back over the same connection, which carries every request after it.
 func TestControlRequestNamesTheAttestedPeer(t *testing.T) {
 	dialing, listening := servingPair(t)
 
-	request := json.RawMessage(`{"op":"status"}`)
-	answering, answer, err := dialing.mux.call(listening.endpoint(), testCallTimeout, request)
+	held, err := dialing.mux.connect(listening.peerAddress(), testCallTimeout)
 	if err != nil {
-		t.Fatalf("control request: %v", err)
+		t.Fatalf("connect to a peer: %v", err)
 	}
-	if answering.member != listening.member {
-		t.Fatalf("answered by member %q, want %q", answering.member, listening.member)
+	defer held.close()
+	if held.member != listening.member {
+		t.Fatalf("the handshake named member %q, want %q", held.member, listening.member)
 	}
-	if !slices.Equal(answer, request) {
-		t.Fatalf("answer %s, want %s", answer, request)
-	}
-	select {
-	case from := <-listening.answered:
-		if from.member != dialing.member {
-			t.Fatalf("the handler was given member %q, want %q", from.member, dialing.member)
+	for range 2 {
+		answer, err := held.exchange(controlRequest{Op: opMember}, testCallTimeout)
+		if err != nil {
+			t.Fatalf("control request: %v", err)
 		}
-	case <-time.After(testCallTimeout):
-		t.Fatal("the handler was given no peer")
+		if answer.Member != listening.member {
+			t.Fatalf("answered by member %q, want %q", answer.Member, listening.member)
+		}
+		select {
+		case from := <-listening.answered:
+			if from.member != dialing.member {
+				t.Fatalf("the handler was given member %q, want %q", from.member, dialing.member)
+			}
+		case <-time.After(testCallTimeout):
+			t.Fatal("the handler was given no peer")
+		}
+	}
+}
+
+// Every answer names the member it comes from, and one from another member is
+// no answer at all: a fork of this cluster answering where a member is known
+// gives no status, no barrier and no write of that member's log.
+func TestAnAnswerFromAnotherMemberIsRefused(t *testing.T) {
+	dialing, listening := servingPair(t)
+
+	held, err := dialing.mux.connect(listening.peerAddress(), testCallTimeout)
+	if err != nil {
+		t.Fatalf("connect to a peer: %v", err)
+	}
+	expecting := &controlConn{
+		member: "member-gone",
+		conn:   held.conn,
+		stream: held.stream,
+	}
+	if _, err := expecting.exchange(controlRequest{Op: opMember}, testCallTimeout); err == nil {
+		t.Fatal("an answer from another member was taken")
+	}
+	if _, err := held.exchange(controlRequest{Op: opMember}, testCallTimeout); err == nil {
+		t.Fatal("the connection carried another request after an answer from another member")
 	}
 }
 
@@ -177,14 +204,14 @@ func TestInboundSocketsAreBounded(t *testing.T) {
 	listening.serve(t)
 
 	for range maxInboundSockets {
-		held, err := net.Dial("tcp", listening.endpoint())
+		held, err := net.Dial("tcp", listening.peerAddress().String())
 		if err != nil {
 			t.Fatalf("dial the peer port: %v", err)
 		}
 		defer held.Close()
 	}
 
-	beyond, err := net.Dial("tcp", listening.endpoint())
+	beyond, err := net.Dial("tcp", listening.peerAddress().String())
 	if err != nil {
 		t.Fatalf("dial the peer port: %v", err)
 	}
@@ -216,7 +243,7 @@ func TestCloseCutsEveryConnection(t *testing.T) {
 	if _, err := listening.mux.Accept(); !errors.Is(err, errTransportClosed) {
 		t.Fatalf("the stream layer answered %v after shutdown", err)
 	}
-	if _, err := net.Dial("tcp", listening.endpoint()); err == nil {
+	if _, err := net.Dial("tcp", listening.peerAddress().String()); err == nil {
 		t.Fatal("the peer port still listens after shutdown")
 	}
 }
