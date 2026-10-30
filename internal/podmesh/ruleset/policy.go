@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"net/netip"
 	"reflect"
+	"slices"
 
 	"github.com/confidential-dot-ai/c8s/internal/podmesh"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
@@ -43,6 +44,10 @@ type Policy struct {
 	// destination: the mesh endpoint authenticates its own peers.
 	MeshUID uint32
 	Roles   []Role
+	// ClusterRanges are this cluster's pod and Service ranges: a role's
+	// outside port stops at them, the server role's egress exception
+	// excludes them, and its upstream identity reaches them uncaptured.
+	ClusterRanges []netip.Prefix
 	// Exits are the destinations every socket of the pod but root's reaches
 	// over TCP uncaptured. Each is a way out of the pod for whatever the
 	// application sends, so only trusted policy names one.
@@ -77,13 +82,12 @@ type ServerRole struct {
 	// captured, and it is the one identity here that reaches Services.
 	Upstream uint32
 	// Services are the destinations the upstream identity reaches in the
-	// clear, each one address and port: its own node's CDS, which it fetches
-	// the signed route manifest from.
+	// clear, each one address and port: the verifier that weighs the
+	// evidence of the CDS it fetches the signed route manifest from.
 	Services []Destination
-	// ClusterRanges are this cluster's pod and Service ranges: the egress
-	// exception excludes them, and the upstream identity reaches them
-	// uncaptured.
-	ClusterRanges []netip.Prefix
+	// OutsidePort is the port that identity reaches on any address outside
+	// the cluster: where that CDS serves. 0 names none.
+	OutsidePort uint16
 }
 
 // ServerEgress is the one identity of a server-role pod whose sockets leave
@@ -107,11 +111,16 @@ type CapturePorts struct {
 	Health   uint16
 }
 
-// Role is one platform role bound to a reserved UID, with the services that
-// role's containers may reach outside the mesh listeners.
+// Role is one platform role bound to a reserved UID, with what that role's
+// containers may reach outside the mesh listeners.
 type Role struct {
 	UID          uint32
 	Destinations []Destination
+	// OutsidePort is one TCP port this role reaches on any address outside
+	// Policy.ClusterRanges: where this cluster's CDS serves. Trusted policy
+	// names that CDS by <host>:<port>, and the name is resolved by whatever
+	// dials it, so no rule can name its address. 0 names none.
+	OutsidePort uint16
 }
 
 // Exit is one range and one TCP port the pod reaches uncaptured.
@@ -161,7 +170,24 @@ func (p Policy) validate() error {
 			return err
 		}
 	}
-	return p.Server.validate()
+	for _, in := range p.ClusterRanges {
+		if err := validClusterRange(in); err != nil {
+			return err
+		}
+	}
+	if p.reachesOutside() && len(p.ClusterRanges) == 0 {
+		return fmt.Errorf("%w: an outside port with no cluster ranges to stop it would reach every member pod", ErrPolicy)
+	}
+	return p.validateServer()
+}
+
+// reachesOutside reports whether any identity of this pod is permitted a port
+// beyond the cluster.
+func (p Policy) reachesOutside() bool {
+	if p.Server.OutsidePort != 0 {
+		return true
+	}
+	return slices.ContainsFunc(p.Roles, func(role Role) bool { return role.OutsidePort != 0 })
 }
 
 func validatePeers(peers []Destination) error {
@@ -196,14 +222,15 @@ func (e Exit) validate() error {
 // ranges its egress exception excludes are the one input left: an exception
 // that excludes none would carry a forwarded connection to a member out of
 // the pod in the clear.
-func (s ServerRole) validate() error {
+func (p Policy) validateServer() error {
+	s := p.Server
 	if !s.serves() {
 		return nil
 	}
 	if s.Upstream == 0 {
 		return fmt.Errorf("%w: server role has no upstream identity, so its uncaptured cluster rules would match root", ErrPolicy)
 	}
-	if len(s.Egress.Ports) > 0 && len(s.ClusterRanges) == 0 {
+	if len(s.Egress.Ports) > 0 && len(p.ClusterRanges) == 0 {
 		return fmt.Errorf("%w: server role UID %d has egress ports and no cluster ranges to exclude from them", ErrPolicy, s.Egress.UID)
 	}
 	for _, dst := range s.Services {
@@ -212,11 +239,6 @@ func (s ServerRole) validate() error {
 		}
 		if dst.Port == 0 {
 			return fmt.Errorf("%w: upstream identity %d service %s has no port", ErrPolicy, s.Upstream, dst.Addr)
-		}
-	}
-	for _, in := range s.ClusterRanges {
-		if err := validClusterRange(in); err != nil {
-			return err
 		}
 	}
 	return nil
@@ -250,7 +272,7 @@ func (r Role) validate() error {
 	if r.UID == 0 {
 		return fmt.Errorf("%w: role UID is root", ErrPolicy)
 	}
-	if len(r.Destinations) == 0 {
+	if len(r.Destinations) == 0 && r.OutsidePort == 0 {
 		return fmt.Errorf("%w: role UID %d reaches nothing", ErrPolicy, r.UID)
 	}
 	for _, dst := range r.Destinations {

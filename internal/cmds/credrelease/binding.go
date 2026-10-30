@@ -150,6 +150,30 @@ func LoadMeasuredOperatorKey(ctx context.Context, attestationAPIURL, journal str
 	return pub, nil
 }
 
+// VerifyMeasuredLaunchFile confirms this guest's launch bound launchFile byte
+// for byte, and returns the TEE family the verified report proves. The file is
+// NOT itself measured, only its digest, so a host that swapped it post-boot
+// produces a mismatch.
+//
+// A guest whose launch file is its whole configuration runs no workload
+// measurer, so the binding must equal the bare anchor: an extension beyond it
+// means an unexpected measurer ran.
+func VerifyMeasuredLaunchFile(ctx context.Context, attestationAPIURL string, launchFile []byte) (teetypes.Family, error) {
+	var noWorkloadDigests []string
+	report, err := verifiedSelfReport(ctx, attestationAPIURL)
+	if err != nil {
+		return teetypes.FamilyUnknown, err
+	}
+	if err := runtimemeasure.VerifyBinding(report, launchFile, noWorkloadDigests); err != nil {
+		return teetypes.FamilyUnknown, err
+	}
+	family := report.Platform.Family()
+	if family == teetypes.FamilyUnknown {
+		return teetypes.FamilyUnknown, fmt.Errorf("the verified report names platform %q, which routes to no TEE family", report.Platform)
+	}
+	return family, nil
+}
+
 // MeasuredIdentity separates the verified guest image from the operator-key
 // binding result. Non-operator boots still need Image to pin peer nodes, so
 // a missing key must not discard a verified image. OperatorKeyErr distinguishes

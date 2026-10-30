@@ -90,6 +90,15 @@ func (s *policyStore) baseAdmits(r allowlist.RunningContainer, phase launchPhase
 	return s.base.AdmitsContainer(r)
 }
 
+// baseAdmitsPinned is the final baseAdmits restricted to entries that pin the
+// launch (allowlist.Container.LaunchPinned).
+func (s *policyStore) baseAdmitsPinned(r allowlist.RunningContainer) bool {
+	if s == nil {
+		return false
+	}
+	return s.base.AdmitsContainerWhere(r, allowlist.Container.LaunchPinned)
+}
+
 // admitsNodeRoot reports whether the base or applied allowlist admits r with
 // an exact nodeRootFile rule for m (allowlist.Index.AdmitsNodeRoot).
 func (s *policyStore) admitsNodeRoot(r allowlist.RunningContainer, m allowlist.ObservedMount) bool {
@@ -210,6 +219,10 @@ type plugin struct {
 	// (cdsaddress.go).
 	cdsAddress string
 
+	// cdiSpecDirs are the CDI spec directories the sandbox policy expands a
+	// container's trusted CDI devices from (cdi.go).
+	cdiSpecDirs []string
+
 	// boot is the boot gate: nil unless policy.fatal_existing. See
 	// bootgate.go. bootRestart records that this registration is a plugin
 	// restart, which makes the startup check's denials fatal.
@@ -239,8 +252,15 @@ func newPlugin(
 		audit:      auditLogger,
 		logger:     logger,
 		containerd: ctrd,
+
+		cdiSpecDirs: cdiSpecDirs,
 	}
 	p.boot = newBootGate(cfg, logger)
+	// Every sandbox namespace is proven against the enforcer's own, read here
+	// before any thread of it can attach to a pod's (meshgate.go).
+	if _, err := enforcerNetworkNamespace(); err != nil {
+		return nil, fmt.Errorf("read the enforcer's own network namespace: %w", err)
+	}
 	p.mesh = newMeshGate(*cfg.Mesh, logger)
 	p.mesh.nodeAddress = func() (netip.Addr, error) { return nodeOwnAddress(cfg) }
 	logger.Info("mesh gate enabled",
@@ -651,7 +671,10 @@ type imageCheck struct {
 	ImageRef  string
 	Argv      []string
 	Env       *allowlist.EnvObservation
-	Mounts    []allowlist.ObservedMount
+	// EnvErr says why Env is unavailable, when the OCI environment itself is
+	// the cause. It names at most a variable, never a value.
+	EnvErr error
+	Mounts []allowlist.ObservedMount
 }
 
 type launchPhase uint8
@@ -695,10 +718,9 @@ func (p *plugin) checkImagePhase(ctx context.Context, cfg *config, check imageCh
 		return verdictSkip, ""
 	}
 
-	// Extract digest from image reference (e.g. repo@sha256:abc)
 	digest := extractDigest(check.ImageRef)
-	if digest == "" {
-		// No digest in reference — resolve tag via containerd image store
+	pinned := digest != ""
+	if !pinned {
 		resolved, err := p.resolve(ctx, check.ImageRef)
 		if err != nil {
 			log.Warn("cannot resolve image digest via containerd", "error", err)
@@ -734,18 +756,45 @@ func (p *plugin) checkImagePhase(ctx context.Context, cfg *config, check imageCh
 	// The base allowlist admits what its entries admit. Served entries are
 	// matched against the final OCI argv, environment, and classified mounts.
 	rc := allowlist.RunningContainer{Digest: digest, Argv: check.Argv, Env: check.Env, Mounts: check.Mounts}
+	baseAdmitted := p.policy.baseAdmits(rc, phase)
+
+	// A tag is resolved here, at hook time, while the runtime builds the
+	// rootfs from the image kubelet resolved earlier; a tag moved in between
+	// would let this check judge one image and the container run another.
+	// Only the base keeps tags: the node's own manifests name its carried
+	// images by tag. Mesh-exempt platform namespaces keep them too: their pods
+	// are not mesh members, so they never receive workload traffic.
+	if !pinned && !baseAdmitted && !slices.Contains(p.mesh.policy.ExemptNamespaces, check.Namespace) {
+		log.Warn("image not referenced by digest", "digest", digest)
+		p.audit.Log(audit.Event{
+			Action:    "deny",
+			Reason:    "not_digest_pinned",
+			Namespace: check.Namespace,
+			Pod:       check.PodName,
+			Container: check.Container,
+			Image:     check.ImageRef,
+		})
+		return verdictDeny, fmt.Sprintf("image must be referenced by digest (name@sha256:...): %s", check.ImageRef)
+	}
+
 	admitted := snap.index.AdmitsProcess(rc)
 	if phase == launchFinal {
 		admitted = snap.index.AdmitsContainer(rc)
 	}
-	if !p.policy.baseAdmits(rc, phase) && !admitted {
+	if !baseAdmitted && !admitted {
 		// INVARIANT: the returned reason reaches a namespace-readable kubelet
-		// event, so it names only the image — argv can carry credentials and
-		// stays in the node-local log.
+		// event, so it names the image, policy fields and at most a variable
+		// name — argv and env values can carry credentials and stay out of it.
 		reason, denial := "not_in_allowlist", fmt.Sprintf("image not in allowlist: %s", check.ImageRef)
 		if listed := snap.index.AdmitsDigest(digest); listed {
 			reason = "launch_not_admitted"
 			denial = fmt.Sprintf("image %s is allowlisted, but its launch specification satisfies no workload entry's command, args, env or mounts policy", check.ImageRef)
+			if fields := snap.index.Mismatch(rc, phase == launchFinal); len(fields) > 0 {
+				denial += "; the closest entry differs in " + strings.Join(fields, ", ")
+				if check.EnvErr != nil && slices.Contains(fields, "env") {
+					denial += " (" + check.EnvErr.Error() + ")"
+				}
+			}
 		}
 		attrs := []any{"digest", digest, "argv", check.Argv, "reason", reason}
 		if missing := nodeRootMissing(check.Mounts); missing != "" && p.policy.declaresNodeRoot(digest) {
@@ -824,6 +873,7 @@ func (p *plugin) checkContainerObserved(ctx context.Context, cfg *config, pod *a
 			ImageRef:  imageRef,
 			Argv:      ctr.GetArgs(),
 			Env:       env,
+			EnvErr:    envError(ctr, env),
 			Mounts:    mounts,
 		}, phase)
 	}
@@ -874,14 +924,12 @@ func (p *plugin) exemptNamespace(ctx context.Context, cfg *config, pod *api.PodS
 // hook or the marks of a privileged container. The allowlist bounds which bytes
 // run; this bounds what those bytes are handed.
 //
-// Two exemptions apply. The first is a node-TCB entry: only the MEASURED base
+// Two exemptions apply. The first is the node TCB: only the MEASURED base
 // allowlist, and only when the node config claims it as the node TCB
 // (allowlist.node_tcb). A CDS-served entry never is, because the cluster admin
-// this policy defends against authors that document. The exemption is the
-// whole base entry — digest, argv, env and mounts — not the digest alone: the
-// control plane picks the image a pod runs, so a TCB image restaged with
-// another entrypoint is a tenant container, and an entry with a pinned argv
-// refuses it. An entry left at `any` exempts every launch of its digest; see
+// this policy defends against authors that document. The control plane picks
+// the image a pod runs, so a base digest alone proves nothing about the launch;
+// nodeTCBExempt says how much a base entry excuses. See
 // docs/allowlist-and-capabilities.md.
 //
 // The second exempts a single bind, not the container: one whose mount
@@ -894,7 +942,12 @@ func (p *plugin) exemptNamespace(ctx context.Context, cfg *config, pod *api.PodS
 // The digest is resolved only when an exemption could apply, so an ordinary
 // container costs no containerd round-trip.
 func (p *plugin) checkSandbox(ctx context.Context, cfg *config, pod *api.PodSandbox, ctr *api.Container, imageRef string, env *allowlist.EnvObservation, mounts []allowlist.ObservedMount) (imageVerdict, string) {
-	obs := observeSandbox(pod, ctr, p.nodeMounts(), mounts, nil)
+	cdi, err := expandCDI(ctr, p.cdiSpecDirs)
+	if err != nil {
+		p.logger.Warn("cannot expand the container's CDI devices; their edits count as host privilege",
+			"namespace", pod.GetNamespace(), "pod", pod.GetName(), "container", ctr.GetName(), "error", err)
+	}
+	obs := observeSandbox(pod, ctr, p.nodeMounts(), mounts, nil, cdi)
 	violations := obs.violations()
 	if len(violations) == 0 {
 		return verdictAllow, ""
@@ -905,7 +958,7 @@ func (p *plugin) checkSandbox(ctx context.Context, cfg *config, pod *api.PodSand
 		rc := allowlist.RunningContainer{Digest: digest, Argv: ctr.GetArgs(), Env: env, Mounts: mounts}
 		obs = observeSandbox(pod, ctr, p.nodeMounts(), mounts, func(m allowlist.ObservedMount) bool {
 			return p.policy.admitsNodeRoot(rc, m)
-		})
+		}, cdi)
 		if violations = obs.violations(); len(violations) == 0 {
 			return verdictAllow, ""
 		}
@@ -915,7 +968,7 @@ func (p *plugin) checkSandbox(ctx context.Context, cfg *config, pod *api.PodSand
 			digest = p.resolveDigest(ctx, imageRef)
 		}
 		rc := allowlist.RunningContainer{Digest: digest, Argv: ctr.GetArgs(), Env: env, Mounts: mounts}
-		if p.policy.baseAdmits(rc, launchFinal) {
+		if p.nodeTCBExempt(pod, rc) {
 			return verdictAllow, ""
 		}
 	}
@@ -953,6 +1006,32 @@ func (p *plugin) checkSandbox(ctx context.Context, cfg *config, pod *api.PodSand
 		Image:     imageRef,
 	})
 	return verdictDeny, fmt.Sprintf("container is not part of the node TCB and requests host privilege: %s", strings.Join(violations, ", "))
+}
+
+// The kubelet sets kubernetes.io/config.source on every pod it runs,
+// overwriting whatever the API object carries, and passes it to the runtime as
+// a sandbox annotation: "file" for a pod read from its manifest directory,
+// "api" for one created through the API server.
+const (
+	configSourceAnnotation = "kubernetes.io/config.source"
+	staticPodSource        = "file"
+)
+
+// nodeTCBExempt reports whether the measured base excuses a launch holding
+// host privilege:
+//   - a kubelet static pod whose launch the base admits: its manifest is
+//     written only by RKE2 on the node, from the measured config and the signed
+//     launch document;
+//   - any other pod only for a launch a base entry pins
+//     (allowlist.Container.LaunchPinned).
+//
+// An open entry (command, args or mounts any) therefore admits its image but
+// never hands it host privilege, the host network included.
+func (p *plugin) nodeTCBExempt(pod *api.PodSandbox, rc allowlist.RunningContainer) bool {
+	if pod.GetAnnotations()[configSourceAnnotation] == staticPodSource {
+		return p.policy.baseAdmits(rc, launchFinal)
+	}
+	return p.policy.baseAdmitsPinned(rc)
 }
 
 // shouldCheckExisting reports whether the startup check has work — enforcement,
@@ -1014,10 +1093,7 @@ func (p *plugin) initExempt(ctx context.Context, pods []*api.PodSandbox, ctrs []
 func (p *plugin) captureExempt(ctx context.Context, pods []*api.PodSandbox, ctrs []*api.Container) *exemptSnapshot {
 	snap := newExemptSnapshot(p.cfg.Policy.ExemptNamespaces)
 
-	podByID := make(map[string]*api.PodSandbox, len(pods))
-	for _, pod := range pods {
-		podByID[pod.GetId()] = pod
-	}
+	podByID := podsByID(pods)
 	for _, ctr := range ctrs {
 		pod := podByID[ctr.GetPodSandboxId()]
 		if pod == nil {
@@ -1076,7 +1152,6 @@ func (p *plugin) Synchronize(ctx context.Context, pods []*api.PodSandbox, ctrs [
 		}
 		p.inventory.awaitRecovery()
 	}
-	p.mesh.refuseExisting(pods)
 
 	// Ahead of every other decision: on a node image a container that already
 	// exists means admission was not in place when it started The
@@ -1111,37 +1186,50 @@ func (p *plugin) Synchronize(ctx context.Context, pods []*api.PodSandbox, ctrs [
 	p.trackRunning(pods, ctrs)
 	p.podRegistered.Store(p.cfg.podRole() && (p.cfg.podWaiting() || !p.bootRestart.Load()))
 
-	if !p.shouldCheckExisting() {
-		p.logger.Info("startup check disabled", "pods", len(pods), "containers", len(ctrs))
-		return nil, nil
-	}
-
-	// If not ready yet, defer the check until after CDS init completes. Ready
-	// is read under deferredMu so RunDeferredCheck cannot run between it and
-	// the store and leave the batch unchecked.
+	// If not ready yet, defer recovery and the startup check until CDS init
+	// completes: recovery needs the served allowlist to decide exits. Ready is
+	// read under deferredMu so RunDeferredCheck cannot run between it and the
+	// store and leave the batch unhandled.
 	p.deferredMu.Lock()
 	if !p.Ready() {
 		p.deferredPods = pods
 		p.deferredCtrs = ctrs
 		p.deferredMu.Unlock()
-		p.logger.Info("plugin not ready, deferring startup check",
+		p.logger.Info("plugin not ready, deferring recovery and the startup check",
 			"pods", len(pods), "containers", len(ctrs))
 		return nil, nil
 	}
 	p.deferredMu.Unlock()
 
+	p.recoverExisting(ctx, pods, ctrs)
+	// Recovery has run: a container create from here finds its pod on record or
+	// is refused for its sandbox's life, no longer transiently.
+	p.mesh.noteRecovered()
+
+	if !p.shouldCheckExisting() {
+		p.logger.Info("startup check disabled", "pods", len(pods), "containers", len(ctrs))
+		return nil, nil
+	}
+
 	p.checkExisting(ctx, cfg, pods, ctrs)
 	return nil, nil
+}
+
+// podsByID indexes the sandboxes the runtime reported by their sandbox ID, so
+// a container can be matched to its pod by GetPodSandboxId.
+func podsByID(pods []*api.PodSandbox) map[string]*api.PodSandbox {
+	byID := make(map[string]*api.PodSandbox, len(pods))
+	for _, pod := range pods {
+		byID[pod.GetId()] = pod
+	}
+	return byID
 }
 
 // trackRunning adds every running container whose pod sandbox the runtime
 // reported at registration to the running set: the containers the startup check
 // can judge.
 func (p *plugin) trackRunning(pods []*api.PodSandbox, ctrs []*api.Container) {
-	podByID := make(map[string]*api.PodSandbox, len(pods))
-	for _, pod := range pods {
-		podByID[pod.GetId()] = pod
-	}
+	podByID := podsByID(pods)
 	for _, ctr := range ctrs {
 		pod := podByID[ctr.GetPodSandboxId()]
 		if pod == nil || ctr.GetState() != api.ContainerState_CONTAINER_RUNNING {
@@ -1149,6 +1237,69 @@ func (p *plugin) trackRunning(pods []*api.PodSandbox, ctrs []*api.Container) {
 		}
 		p.running.add(pod, ctr)
 	}
+}
+
+// recoverExisting takes every sandbox running when this enforcer connected
+// back under the mesh gate, or refuses it for its life.
+func (p *plugin) recoverExisting(ctx context.Context, pods []*api.PodSandbox, ctrs []*api.Container) {
+	podByID := podsByID(pods)
+	bySandbox := map[string][]recoveredContainer{}
+	workloads := map[string][]workloadclaims.SandboxContainer{}
+	for _, ctr := range ctrs {
+		pod := podByID[ctr.GetPodSandboxId()]
+		if pod == nil || !p.mesh.hosts(pod) {
+			continue
+		}
+		launch := p.observedLaunch(ctx, ctr, ctr.GetAnnotations()[annotationImageName], containerEnv(ctr), p.observedMounts(pod, ctr))
+		role := p.roleOf(launch)
+		// Liveness is the running set, not the registration snapshot: a container
+		// that started in the deferral window is not CONTAINER_RUNNING in the
+		// snapshot but is on the running set, and its mesh endpoint opened the
+		// gate, so recovery must see it as started.
+		running := p.running.contains(ctr.GetId())
+		bySandbox[pod.GetId()] = append(bySandbox[pod.GetId()], recoveredContainer{
+			ctr: ctr,
+			launch: gatedContainer{
+				role:         role,
+				mountsPinned: p.bindsRoleMounts(launch, role),
+				digest:       launch.Digest,
+				argv:         launch.Argv,
+			},
+			running: running,
+		})
+		// A container that never ran was never counted by admission. One that ran
+		// counts whether it is still running or has since stopped, so the snapshot
+		// state and the running set together decide it.
+		if ctr.GetState() != api.ContainerState_CONTAINER_CREATED || running {
+			workloads[pod.GetId()] = append(workloads[pod.GetId()], p.sandboxContainer(launch))
+		}
+	}
+	for _, pod := range pods {
+		if !p.mesh.hosts(pod) {
+			continue
+		}
+		exits := p.recoveredExits(workloads[pod.GetId()])
+		switch err := p.mesh.recoverPod(pod, bySandbox[pod.GetId()], exits); {
+		case err == nil, errors.Is(err, errSandboxAlreadyOnRecord):
+			// Already on record means protect() took the pod first; it is
+			// protected, so this is not a failure to recover.
+		default:
+			p.logger.Warn("a pod running before this enforcer connected was not taken under the mesh gate", "error", err)
+		}
+	}
+}
+
+// recoveredExits reads back the exit grant a running sandbox holds. An
+// undecided or refused match grants none and carries the cause.
+func (p *plugin) recoveredExits(containers []workloadclaims.SandboxContainer) recoveredExits {
+	decision := p.recoveredExitDecision(containers)
+	if decision.undecided != nil {
+		return recoveredExits{cause: decision.undecided}
+	}
+	if decision.refusal != nil {
+		return recoveredExits{cause: decision.refusal}
+	}
+	return recoveredExits{entry: decision.entry, exits: decision.exits}
 }
 
 // checkExisting records every container it is handed, checks the ones whose pod
@@ -1160,11 +1311,7 @@ func (p *plugin) checkExisting(ctx context.Context, cfg *config, pods []*api.Pod
 	p.logger.Info("checking existing containers",
 		"pods", len(pods), "containers", len(ctrs), "enforcing", cfg.Policy.EnforceExisting)
 
-	// Build pod lookup by sandbox ID
-	podByID := make(map[string]*api.PodSandbox, len(pods))
-	for _, pod := range pods {
-		podByID[pod.GetId()] = pod
-	}
+	podByID := podsByID(pods)
 
 	if p.inventory != nil {
 		defer p.inventory.recovered()
@@ -1269,15 +1416,12 @@ func (p *plugin) killRunning(ctx context.Context, pod *api.PodSandbox, ctr *api.
 	return true
 }
 
-// RunDeferredCheck checks the pods/containers that were seen during Synchronize
-// before the plugin was ready. Should be called after SetReady and CDS init.
+// RunDeferredCheck recovers and checks the pods/containers that were seen
+// during Synchronize before the plugin was ready. Should be called after
+// SetReady and CDS init.
 func (p *plugin) RunDeferredCheck(ctx context.Context) {
 	defer p.lockPodAdmission()()
 	cfg := p.cfg
-
-	if !p.shouldCheckExisting() {
-		return
-	}
 
 	p.deferredMu.Lock()
 	pods := p.deferredPods
@@ -1285,6 +1429,20 @@ func (p *plugin) RunDeferredCheck(ctx context.Context) {
 	p.deferredPods = nil
 	p.deferredCtrs = nil
 	p.deferredMu.Unlock()
+
+	// Recovery runs even with the check off: a pod off the gate's record is
+	// refused for its life.
+	p.recoverExisting(ctx, pods, ctrs)
+	// Recovery has run: a container create from here finds its pod on record or
+	// is refused for its sandbox's life, no longer transiently.
+	p.mesh.noteRecovered()
+
+	if !p.shouldCheckExisting() {
+		if p.inventory != nil {
+			p.inventory.recovered()
+		}
+		return
+	}
 
 	if len(ctrs) == 0 {
 		p.logger.Info("no deferred containers to check")
@@ -1650,6 +1808,15 @@ func cdiInjected(ctr *api.Container) bool {
 // cdiAnnotationPrefix is the CRI annotation namespace kubelet uses to pass CDI
 // device references to the runtime.
 const cdiAnnotationPrefix = "cdi.k8s.io/"
+
+// envError is why the OCI environment left env unavailable, if it did.
+func envError(ctr *api.Container, env *allowlist.EnvObservation) error {
+	if env != nil {
+		return nil
+	}
+	_, err := observeEnv(ctr)
+	return err
+}
 
 // containerEnv refuses an incomplete OCI process. containerd can report an
 // empty spec after a failed spec read; that must not look like observed-empty.

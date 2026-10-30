@@ -24,14 +24,14 @@ func TestGenericBootStagesTrustWithoutWorkloadAuthority(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if staged.Role != Pod || staged.Pod != nil || staged.Workloads != "" || staged.PodOperatorPublicKey != pub || staged.Server != doc.Server {
+	if staged.Role != Pod || staged.Pod != nil || staged.Workloads != "" || staged.PodOperatorPublicKey != pub || staged.Server != doc.Server || staged.CDS != doc.CDS {
 		t.Fatal("generic launch changed workload or trust authority")
 	}
 	requirePresent(t, cfg.path(podMarker))
-	for _, p := range []string{Dir + "/operator-pubkey", Dir + "/cds.json", Dir + "/peers.json"} {
+	for _, p := range []string{Dir + "/operator-pubkey", Dir + "/peers.json"} {
 		requirePresent(t, cfg.path(p))
 	}
-	for _, p := range []string{Dir + "/workloads.json", serverMarker, agentMarker, serverTokenPath, agentTokenPath} {
+	for _, p := range []string{Dir + "/workloads.json", Dir + "/cds.json", serverMarker, agentMarker, serverTokenPath, agentTokenPath} {
 		requireAbsent(t, cfg.path(p))
 	}
 	for _, entries := range []string{testPodWorkloads, emptyPodEntries, "null"} {
@@ -57,6 +57,22 @@ func TestStaticPodAllowsAbsentOrEmptyBase(t *testing.T) {
 		if _, err := Parse(data); err != nil {
 			t.Fatal(err)
 		}
+		pubPath, _ := writePodServerKey(t)
+		dir := filepath.Join(t.TempDir(), "bundle")
+		args := []string{"new-pod", "--out", dir, "--cluster-id", "cluster-one",
+			"--image-manifest", writeManifest(t, "tdx"), "--pod-manifest", writeFile(t, "pod.json", testPodManifest("")),
+			"--server-address", "10.0.0.1", "--server-public-key", pubPath,
+			"--cds-address", "cds.example.org:8443", "--cds-image-policy-file", writePodCDSPin(t)}
+		if entries != "" {
+			args = append(args, "--workloads", writeFile(t, "workloads.json", entries))
+		}
+		if err := runBundleCmd(t, args...); err != nil {
+			t.Fatal(err)
+		}
+		bundled, _ := readBundleDocument(t, dir, podDir)
+		if bundled.Pod == nil || bundled.Workloads != entries || bundled.CDS.Address != "cds.example.org:8443" {
+			t.Fatal("static bundle lost optional base or explicit CDS trust")
+		}
 	}
 }
 
@@ -71,7 +87,7 @@ func TestAssignedPodPreservesGenericTrustAndValidatesPayload(t *testing.T) {
 		if doc.Pod != nil || doc.Workloads != "" || assigned.Pod == nil || assigned.Pod.UID != testPodUID || assigned.Pod.Namespace != "tenant" || assigned.Pod.Name != "app" || assigned.Workloads != entries || len(assigned.Pod.MeshPeers) != 1 {
 			t.Fatal("assignment mutated generic authority or lost Pod identity")
 		}
-		if assigned.Server != doc.Server || assigned.PodOperatorPublicKey != doc.PodOperatorPublicKey || assigned.Node != doc.Node || assigned.Image.Measurement != doc.Image.Measurement {
+		if assigned.CDS != doc.CDS || assigned.Server != doc.Server || assigned.PodOperatorPublicKey != doc.PodOperatorPublicKey || assigned.Node != doc.Node || assigned.Image.Measurement != doc.Image.Measurement {
 			t.Fatal("assignment changed launch trust")
 		}
 		if _, err := AssignedPod(assigned, []byte(testPodManifest("")), []byte(entries), []byte("[]")); err == nil {
@@ -115,12 +131,17 @@ func TestAssignedPodPreservesGenericTrustAndValidatesPayload(t *testing.T) {
 func TestGenericPodBundleRequiresExplicitEmptyLaunch(t *testing.T) {
 	pubPath, _ := writePodServerKey(t)
 	manifest := writeManifest(t, "tdx")
+	cdsPolicy := writePodCDSPin(t)
+	unboundCDS := writeFile(t, "unbound-cds.json", testDigestOnlyPin(t))
 	for _, tc := range []struct {
 		name  string
 		args  []string
 		valid bool
 	}{
 		{"generic", []string{"--generic", "--name", "warm-1"}, true},
+		{"missing CDS address", []string{"--generic", "--name", "warm-1", "--cds-address", ""}, false},
+		{"missing CDS policy", []string{"--generic", "--name", "warm-1", "--cds-image-policy-file", ""}, false},
+		{"unbound CDS policy", []string{"--generic", "--name", "warm-1", "--cds-image-policy-file", unboundCDS}, false},
 		{"implicit", nil, false},
 		{"no-name", []string{"--generic"}, false},
 		{"pod", []string{"--generic", "--name", "warm-1", "--pod-manifest", "unused"}, false},
@@ -129,7 +150,7 @@ func TestGenericPodBundleRequiresExplicitEmptyLaunch(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), "bundle")
-			args := append([]string{"new-pod", "--out", dir, "--cluster-id", "cluster-one", "--image-manifest", manifest, "--server-address", "10.0.0.1", "--server-public-key", pubPath}, tc.args...)
+			args := append([]string{"new-pod", "--out", dir, "--cluster-id", "cluster-one", "--image-manifest", manifest, "--server-address", "10.0.0.1", "--server-public-key", pubPath, "--cds-address", "cds.example.org:8443", "--cds-image-policy-file", cdsPolicy}, tc.args...)
 			err := runBundleCmd(t, args...)
 			if (err == nil) != tc.valid {
 				t.Fatalf("bundle validity: %v", err)
@@ -141,7 +162,7 @@ func TestGenericPodBundleRequiresExplicitEmptyLaunch(t *testing.T) {
 				return
 			}
 			doc, _ := readBundleDocument(t, dir, podDir)
-			if doc.Pod != nil || doc.Workloads != "" || doc.Node.Name != "warm-1" {
+			if doc.Pod != nil || doc.Workloads != "" || doc.Node.Name != "warm-1" || doc.CDS.Address != "cds.example.org:8443" || doc.CDS.Measurements == "" {
 				t.Fatal("generic bundle carried workload state")
 			}
 			stageBundleNode(t, dir, podDir)

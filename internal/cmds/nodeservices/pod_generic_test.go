@@ -1,11 +1,14 @@
 package nodeservices
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 )
 
 func TestGenericPodPreparationPublishesOnlyWaitingPolicy(t *testing.T) {
@@ -31,6 +34,10 @@ func TestGenericPodPreparationPublishesOnlyWaitingPolicy(t *testing.T) {
 		Measure   struct{ RTMR3 bool }
 		Allowlist struct {
 			NodeTCB bool `yaml:"node_tcb"`
+			Pull    struct {
+				URL       string `yaml:"url"`
+				CDSPolicy string `yaml:"cds_measurements_config"`
+			}
 		}
 	}
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
@@ -38,6 +45,17 @@ func TestGenericPodPreparationPublishesOnlyWaitingPolicy(t *testing.T) {
 	}
 	if !cfg.Pod.Waiting || !cfg.Pod.Generic || cfg.Pod.UID != "" || !cfg.Measure.RTMR3 || cfg.Allowlist.NodeTCB {
 		t.Fatalf("generic boot lost waiting floor: %+v", cfg)
+	}
+	if cfg.Allowlist.Pull.URL != cmdsutil.CDSURL(doc.CDS.Address) || cfg.Allowlist.Pull.CDSPolicy != PublicDir+"/cds.json" {
+		t.Fatal("generic waiting policy lost its explicit external CDS trust")
+	}
+	want, err := doc.CDSPolicy()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(root, PublicDir, "cds.json"))
+	if err != nil || !bytes.Equal(got, want) {
+		t.Fatal("generic boot did not publish the authenticated CDS pin")
 	}
 }
 

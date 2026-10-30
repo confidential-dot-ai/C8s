@@ -18,6 +18,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/sidecar"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 // probe is a CDS client bound to one leaf: the mTLS client presenting it, the
@@ -31,26 +32,30 @@ type probe struct {
 	timeout  time.Duration
 }
 
+// nodePinsPath is where the enforcer mounts the node's CDS pins; a var so tests
+// can mount their own.
+var nodePinsPath = workloadclaims.CDSPinsPath
+
 // clientFunc builds the mTLS client to CDS and returns the leaf's key;
 // sidecar.NewClient in the command, a client trusting a test server in tests.
 type clientFunc func(sidecar.Config, armtls.Pins) (*http.Client, crypto.PublicKey, error)
 
 // newProbe verifies CDS as the pod's sidecars do, through armTLS against the
-// pins it was given.
+// node's CDS pins where the enforcer mounts them, otherwise the policy given.
+// The pins are resolved without the sidecars' log line: the steps read the
+// probe's stdout and stderr as one stream.
 func newProbe(o options) (*probe, error) {
 	cfg := sidecar.Config{
 		CDSURL:                 o.cdsURL,
 		AttestationApiURL:      o.attestationURL,
-		Measurements:           o.measurements,
-		RTMRs:                  o.rtmrs,
 		MeasurementsConfig:     o.policyFile,
 		MeasurementsConfigJSON: o.policyJSON,
 		CertPath:               o.certPath,
 		KeyPath:                o.keyPath,
 		RequestTimeout:         o.timeout,
 	}
-	policy, err := (cmdsutil.ImagePolicySource{File: cfg.MeasurementsConfig, JSON: cfg.MeasurementsConfigJSON}).Load(
-		cmdsutil.MeasurementPins{Measurements: cfg.Measurements, Registers: cfg.RTMRs})
+	policy, _, err := cmdsutil.ResolveCDSPins(nodePinsPath,
+		cmdsutil.ImagePolicySource{File: cfg.MeasurementsConfig, JSON: cfg.MeasurementsConfigJSON})
 	if err != nil {
 		return nil, err
 	}

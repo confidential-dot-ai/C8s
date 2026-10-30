@@ -42,7 +42,8 @@ func TestPolicyRefusesWhatARuleCannotExpress(t *testing.T) {
 				Destinations: p.Roles[0].Destinations,
 			})
 		}},
-		{"role reaching nothing", func(p *Policy) { p.Roles[0].Destinations = nil }},
+		{"role reaching nothing", func(p *Policy) { p.Roles[0] = Role{UID: p.Roles[0].UID} }},
+		{"role port with no cluster ranges to stop it", func(p *Policy) { p.ClusterRanges = nil }},
 		{"destination without port", func(p *Policy) { p.Roles[0].Destinations[0].Port = 0 }},
 		{"destination without address", func(p *Policy) { p.Roles[0].Destinations[0].Addr = netip.Addr{} }},
 		{
@@ -71,15 +72,13 @@ func TestPolicyRefusesWhatARuleCannotExpress(t *testing.T) {
 		{"4-in-6 exit", func(p *Policy) { p.Exits = []Exit{{netip.MustParsePrefix("::ffff:203.0.113.7/128"), 443}} }},
 		{"server egress port with no cluster ranges to exclude", func(p *Policy) {
 			p.Server = serverPolicy().Server
-			p.Server.ClusterRanges = nil
+			p.Roles, p.ClusterRanges = nil, nil
 		}},
 		{"cluster range carrying host bits", func(p *Policy) {
-			p.Server = serverPolicy().Server
-			p.Server.ClusterRanges[0] = netip.PrefixFrom(netip.MustParseAddr("10.52.0.1"), 16)
+			p.ClusterRanges[0] = netip.PrefixFrom(netip.MustParseAddr("10.52.0.1"), 16)
 		}},
 		{"unset cluster range", func(p *Policy) {
-			p.Server = serverPolicy().Server
-			p.Server.ClusterRanges[0] = netip.Prefix{}
+			p.ClusterRanges[0] = netip.Prefix{}
 		}},
 	}
 	for _, test := range tests {

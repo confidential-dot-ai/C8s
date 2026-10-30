@@ -31,9 +31,7 @@ import (
 // anchor. Every command taking --mesh-ca treats the bundle as a pin it checks
 // CDS against; one read from an unpinned endpoint is whatever answered, and
 // pinning it later proves only that the same thing answered twice.
-var errUnpinned = errors.New(
-	"refusing to read a mesh CA from an unpinned CDS: no endpoint image is pinned, so any attested build would be accepted " +
-		"and its CA would become the anchor you pin. Pass --image-policy-file <policy.json>, --measurements <endpoint build ID>, or --measurements-file")
+var errUnpinned = fmt.Errorf("%w, and its CA would become the anchor you pin. Pass --image-policy-file <cds-pin.json>, the pin naming this cluster's CDS", cdsconn.ErrUnpinnedEndpoint)
 
 // errPlaintext refuses a plaintext endpoint. The bundle distinguishes one CDS
 // from another and nothing over http attests to being either.
@@ -55,13 +53,11 @@ func newCmd(verifier cdsconn.PinVerifier) *cobra.Command {
 or to stdout. This is the anchor 'c8s secrets put --mesh-ca',
 'c8s volume create --mesh-ca' and 'c8s verify --mesh-ca' take.
 
-The read travels the attested connection those commands use and requires endpoint
-pins: use --image-policy-file for a complete image policy, or --measurements
-(or --measurements-file) for launch digests. A router front door does not
-relay /ca, so --url names CDS itself and the pins are CDS's. A launch
-measurement identifies the image, not the instance, so the SHA-256 of each
-certificate is printed on stderr — record it, and compare it on a later read or
-against a copy obtained another way.
+The read travels the attested connection those commands use and requires the
+CDS pin: --image-policy-file names the document binding the configuration that
+CDS runs on. A router front door does not relay /ca, so --url names CDS itself.
+The SHA-256 of each certificate is printed on stderr — record it, and compare
+it on a later read or against a copy obtained another way.
 
 CDS generates its mesh CA in process, so a restart replaces it and the bundle
 has to be read again. The bundle carries the CAs CDS still signs against, newest

@@ -14,7 +14,6 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
@@ -47,10 +46,7 @@ func TestAttestKeepsNodeOperatorBoundToImage(t *testing.T) {
 }
 
 func TestCDSConfigPreservesNodeKeys(t *testing.T) {
-	got, err := cmdsutil.LoadImagePolicyValues(cmdsutil.ImagePolicyValuesConfig{
-		Source:   cmdsutil.ImagePolicySource{File: "../../../internal/testdata/node-identities.json"},
-		Platform: "tdx",
-	})
+	got, err := refvalues.Load("../../../internal/testdata/node-identities.json")
 	if err != nil {
 		t.Fatal(err)
 	}

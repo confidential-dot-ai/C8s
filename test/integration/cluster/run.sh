@@ -41,11 +41,11 @@ WORKDIR="${C8S_IT_WORKDIR:-$(mktemp -d)}"
 mkdir -p "$WORKDIR"
 
 cleanup() {
-    cds_pf_stop
     if [ "${C8S_IT_KEEP:-}" = 1 ]; then
-        echo "kept: kind cluster $CLUSTER, state in $WORKDIR"
+        echo "kept: kind cluster $CLUSTER, CDS container $CDS_CONTAINER, state in $WORKDIR"
         return
     fi
+    cds_stop
     kind delete cluster --name "$CLUSTER" >/dev/null 2>&1 || true
     rm -rf "$WORKDIR"
 }
@@ -87,7 +87,9 @@ NODE_IP="$(kubectl get node "$NODE" -o jsonpath='{.status.addresses[?(@.type=="I
 
 log "Loading images into the cluster"
 # One at a time: the podman provider crosses images loaded in a single call.
-for img in c8s-operator cds nri-image-policy armtls-mesh mock-attestation; do
+# The CDS is not one of them: it runs outside the cluster, in a container of
+# the kind network.
+for img in c8s-operator nri-image-policy armtls-mesh mock-attestation; do
     kind load docker-image "ghcr.io/confidential-dot-ai/$img:$IMAGE_TAG" --name "$CLUSTER" >/dev/null
 done
 
@@ -130,8 +132,7 @@ HELPER_IMAGE="$(kubectl -n local-path-storage get configmap local-path-config \
 grep -Fq "$HELPER_IMAGE" "$WORKDIR/floor.tsv" \
     || fail "kind local-path helper image $HELPER_IMAGE missing from the floor scan"
 NRI_STORE_DIGEST="$(awk -F'\t' '$2 ~ /nri-image-policy:it$/ {print $1; exit}' "$WORKDIR/floor.tsv")"
-CDS_STORE_DIGEST="$(awk -F'\t' '$2 ~ /\/cds:it$/ {print $1; exit}' "$WORKDIR/floor.tsv")"
-[ -n "$NRI_STORE_DIGEST" ] && [ -n "$CDS_STORE_DIGEST" ] || fail "loaded-image digests missing from the floor scan"
+[ -n "$NRI_STORE_DIGEST" ] || fail "the loaded nri-image-policy digest is missing from the floor scan"
 # Client-side render: the chart's kubeVersion floor is checked against the
 # live server version, not helm's compiled-in default.
 KUBE_VERSION="$(kubectl version -o json \
@@ -187,7 +188,65 @@ PYEOF
 openssl ecparam -genkey -name prime256v1 -noout -out "$WORKDIR/operator.key" 2>/dev/null
 openssl ec -in "$WORKDIR/operator.key" -pubout -out "$WORKDIR/operator-pub.pem" 2>/dev/null
 
+log "Reading the kind network"
+# The CDS runs outside the cluster, on the kind network: its IPv4 subnet
+# bounds the node addresses the inventory callback may dial. Docker assigns
+# the CDS its own address when it starts, below.
+docker network inspect "$KIND_NETWORK" -f '{{range .IPAM.Config}}{{.Subnet}} {{end}}' \
+    | python3 -c 'import ipaddress, sys
+for subnet in sys.stdin.read().split():
+    net = ipaddress.ip_network(subnet)
+    if net.version == 4:
+        print(net)
+        break' > "$WORKDIR/kind-subnet"
+KIND_SUBNET=$(cat "$WORKDIR/kind-subnet")
+[ -n "$KIND_SUBNET" ] || fail "the $KIND_NETWORK network has no IPv4 subnet"
+# The renders below name a CDS before one exists: the chart requires an
+# address and a schema-2 pin, and no document they produce carries either —
+# both reach a node as mounted files, never as arguments. The measurement is
+# the mock's, as the real pin written below also carries.
+DOCUMENTATION_RANGE_CDS_ADDRESS=192.0.2.1:8443
+printf '{"schema_version":"2","tee":"sev-snp","measurements":[{"name":"cds","measurement":"%s","launch_file":"the CDS configuration is written below"}]}' \
+    "$MOCK_MEASUREMENT" > "$WORKDIR/placeholder-pin.json"
+
 log "Rendering the NRI installer and its argv-pinned seed entry"
+# chart_render <helm template arguments>: this release as the install renders
+# it, for the documents the lane must apply before the install exists to
+# apply them. The caller names the CDS: the first render runs before one
+# exists.
+chart_render() {
+    helm template c8s internal/helmchart/c8s -n "$NS" \
+        --kube-version "$KUBE_VERSION" \
+        --set-string image.tag="$IMAGE_TAG" \
+        --set-string attestationApi.cvmMode=bare-metal \
+        --set attestationApi.enabled=false \
+        --set nriImagePolicy.enabled=true \
+        --set-string nriImagePolicy.image.tag="$IMAGE_TAG" \
+        --set-string nriImagePolicy.image.digest="$NRI_STORE_DIGEST" \
+        --set-file cds.operatorKeys="$WORKDIR/operator-pub.pem" \
+        --set volumed.enabled=false \
+        --set-string armtlsMesh.image.tag="$IMAGE_TAG" \
+        --set-string nriImagePolicy.mesh.resolver=10.96.0.10 \
+        --set-string "nriImagePolicy.mesh.clusterRanges[0]=10.244.0.0/16" \
+        --set-string "nriImagePolicy.mesh.clusterRanges[1]=10.96.0.0/16" \
+        -f "$WORKDIR/values.yaml" "$@"
+}
+
+# c8s_install <install flags>: the release shape every render and the install
+# itself share, so the entries the CDS is configured with are the ones the
+# install applies.
+c8s_install() {
+    ./build/c8s install \
+        --namespace "$NS" \
+        --cvm-mode=bare-metal \
+        --hardware-platform=sev-snp \
+        --resolve-digests=false \
+        --image-tag="$IMAGE_TAG" \
+        --operator-keys "$WORKDIR/operator-pub.pem" \
+        -f "$WORKDIR/values.yaml" \
+        "$@"
+}
+
 # One render feeds both the out-of-band installer DaemonSet and the pinned
 # seed entry injected into the floor: two renders could drift their flags,
 # and the plugin's enforce-existing check would kill the install init
@@ -199,23 +258,9 @@ log "Rendering the NRI installer and its argv-pinned seed entry"
 # namespace, which the install below creates. The base it carries pins each of
 # that pod's containers to its own mount set, so every value the install below
 # adds to those mounts — the operator keys cds-attest reads — belongs here too.
-helm template c8s internal/helmchart/c8s -n "$NS" \
-    --kube-version "$KUBE_VERSION" \
-    --set-string image.tag="$IMAGE_TAG" \
-    --set-string attestationApi.cvmMode=bare-metal \
-    --set attestationApi.enabled=false \
-    --set nriImagePolicy.enabled=true \
-    --set-string nriImagePolicy.image.tag="$IMAGE_TAG" \
-    --set-string nriImagePolicy.image.digest="$NRI_STORE_DIGEST" \
-    --set-string cds.image.digest="$CDS_STORE_DIGEST" \
-    --set-string "cds.measurements[0]=$MOCK_MEASUREMENT" \
-    --set-file cds.operatorKeys="$WORKDIR/operator-pub.pem" \
-    --set volumed.enabled=false \
-    --set-string armtlsMesh.image.tag="$IMAGE_TAG" \
-    --set-string nriImagePolicy.mesh.resolver=10.96.0.10 \
-    --set-string "nriImagePolicy.mesh.clusterRanges[0]=10.244.0.0/16" \
-    --set-string "nriImagePolicy.mesh.clusterRanges[1]=10.96.0.0/16" \
-    -f "$WORKDIR/values.yaml" > "$WORKDIR/nri-render.yaml" \
+chart_render --set-string cds.address="$DOCUMENTATION_RANGE_CDS_ADDRESS" \
+    --set-file cds.measurementsConfig="$WORKDIR/placeholder-pin.json" \
+    > "$WORKDIR/nri-render.yaml" \
     || fail "could not render the NRI installer chart documents"
 python3 - "$WORKDIR/nri-render.yaml" "$WORKDIR/values.yaml" "$WORKDIR/nri-installer.yaml" <<'PYEOF'
 import json, sys, yaml
@@ -258,6 +303,47 @@ node_exec sh -c "install -d -m 0711 /run/nri-image-policy \
     && chmod 0644 /run/nri-image-policy/node-ip" \
     || fail "could not publish the node-ip file"
 
+# --- The CDS this cluster trusts ---
+
+log "Writing the CDS configuration and its pin"
+# The entries the CDS must serve are the ones this install renders:
+# --allowlist-seed-out writes them before any CDS exists, and the install
+# below refuses to proceed unless the configuration carries exactly them.
+c8s_install --allowlist-seed-out "$WORKDIR/allowlist-seed.json" \
+    || fail "could not render this release's allowlist seed"
+
+# The CDS VM's identity as the mock reports it: one launch digest, under the
+# one vCPU count this lane pins, and the same digest for the nodes CDS admits.
+printf '{"snp_variants":[{"smp":1,"measurement":{"snp_launch_digest":"%s","algorithm":"sha384"}}]}' \
+    "$MOCK_MEASUREMENT" > "$WORKDIR/cds-image-manifest.json"
+printf '{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"node","measurement":"%s"}]}' \
+    "$MOCK_MEASUREMENT" > "$WORKDIR/node-pins.json"
+rm -rf "$WORKDIR/cds"
+./build/c8s cds config new --out "$WORKDIR/cds" \
+    --cluster-id "$CLUSTER" \
+    --operator-keys "$WORKDIR/operator-pub.pem" \
+    --allowlist-seed "$WORKDIR/allowlist-seed.json" \
+    --node-pins "$WORKDIR/node-pins.json" \
+    --node-cidr "$KIND_SUBNET" \
+    --pod-cidr 10.244.0.0/16 \
+    --service-cidr 10.96.0.0/16 \
+    --image-manifest "$WORKDIR/cds-image-manifest.json" \
+    --platform sev-snp \
+    --vcpus 1 \
+    || fail "could not write the CDS configuration and pin"
+
+log "Starting the CDS outside the cluster"
+# The pin names the launch binding its attestation-api reports, which every
+# client checks (lib.sh, cds_start). Docker assigns the address, the one
+# endpoint every client of this cluster dials, so the renders and the install
+# below take it from there.
+cds_start
+CDS_ADDRESS="$(cds_address)"
+# How every install below names that CDS.
+CDS_INSTALL_FLAGS=(--cds-address "$CDS_ADDRESS" --cds-pin "$WORKDIR/cds/cds-pin.json")
+cds_wait
+pass "CDS serves the cluster its own launch binds it to"
+
 # --- NRI image-policy plugin ---
 
 log "Installing the NRI image-policy plugin"
@@ -277,6 +363,17 @@ kubectl label namespace "$NS" --overwrite \
     pod-security.kubernetes.io/enforce=privileged \
     pod-security.kubernetes.io/warn=privileged \
     pod-security.kubernetes.io/audit=privileged
+# The installer copies the CDS address and pin to the node from the chart's
+# own ConfigMap, applied here under the release the install below adopts it
+# into. The router's copy of it lands with that install, which creates the
+# namespace it belongs to.
+chart_render --set-string cds.address="$CDS_ADDRESS" \
+    --set-file cds.measurementsConfig="$WORKDIR/cds/cds-pin.json" \
+    --set router.enabled=false \
+    --show-only templates/measurements-config.yaml \
+    | kubectl apply -f - || fail "could not apply the measurements ConfigMap"
+kubectl -n "$NS" annotate configmap c8s-measurements --overwrite \
+    meta.helm.sh/release-name=c8s "meta.helm.sh/release-namespace=$NS"
 kubectl apply -f "$WORKDIR/nri-installer.yaml"
 # The installer patches the node's containerd config and restarts it, and the
 # plugin comes up with the restarted runtime, which is the datapath the install
@@ -294,11 +391,7 @@ node_exec test -S /run/nri-image-policy/workload-claims.sock \
 pass "NRI plugin registered with containerd and serves the admission inventory"
 
 log "c8s install"
-./build/c8s install --namespace "$NS" --cvm-mode=bare-metal --hardware-platform=sev-snp \
-    --single-node --resolve-digests=false --image-tag="$IMAGE_TAG" \
-    --operator-keys "$WORKDIR/operator-pub.pem" \
-    --measurements "$MOCK_MEASUREMENT" \
-    -f "$WORKDIR/values.yaml" --wait || fail "c8s install failed"
+c8s_install "${CDS_INSTALL_FLAGS[@]}" --wait || fail "c8s install failed"
 
 # CDS now serves the installer's pinned entry. A fresh pod retries the denied
 # install container at once, rather than on kubelet's crash backoff.
@@ -323,10 +416,8 @@ fi
 # --- Tests ---
 
 log "Control plane"
-for deploy in c8s-operator c8s-cds; do
-    kubectl -n "$NS" wait --for=condition=Available "deploy/$deploy" --timeout=180s \
-        || fail "$deploy not Available"
-done
+kubectl -n "$NS" wait --for=condition=Available deploy/c8s-operator --timeout=180s \
+    || fail "c8s-operator not Available"
 # The router serves ports of its own, so it runs in the namespace the mesh
 # policy names.
 kubectl -n "$ROUTER_NS" wait --for=condition=Available deploy/c8s-router --timeout=180s \
@@ -343,29 +434,28 @@ log "Allowlist API"
 # Unsigned and wrongly-signed writes are refused; a write signed by the
 # pinned operator key lands, is served, and deletes cleanly. Exercised on a
 # throwaway digest so no assertion can pass on the seeded entries.
-cds_pf_start
 THROWAWAY_DIGEST="sha256:$(printf 'ab%.0s' {1..32})"
 any_workload "$THROWAWAY_DIGEST" "example.com/harness/throwaway:1" > "$WORKDIR/add.json"
 code="$(curl -sSk -o /dev/null -w '%{http_code}' -X PUT -H 'Content-Type: application/json' \
-    --data-binary @"$WORKDIR/add.json" "https://127.0.0.1:$CDS_LOCAL_PORT/allowlist/workloads/throwaway" || true)"
+    --data-binary @"$WORKDIR/add.json" "$(cds_url)/allowlist/workloads/throwaway" || true)"
 [ "$code" = "401" ] || fail "unsigned allowlist write: want HTTP 401, got $code"
 pass "unsigned allowlist write rejected (401)"
 
 openssl ecparam -genkey -name prime256v1 -noout -out "$WORKDIR/rogue.key" 2>/dev/null
 rogue_token="$("$WORKDIR/optoken" "$WORKDIR/rogue.key" PUT /allowlist/workloads/throwaway "$WORKDIR/add.json")"
 code="$(curl -sSk -o /dev/null -w '%{http_code}' -X PUT -H "Authorization: $rogue_token" -H 'Content-Type: application/json' \
-    --data-binary @"$WORKDIR/add.json" "https://127.0.0.1:$CDS_LOCAL_PORT/allowlist/workloads/throwaway" || true)"
+    --data-binary @"$WORKDIR/add.json" "$(cds_url)/allowlist/workloads/throwaway" || true)"
 [ "$code" = "401" ] || fail "wrong-key allowlist write: want HTTP 401, got $code"
 pass "allowlist write signed by an unpinned key rejected (401)"
 
 code="$(cds_write PUT /allowlist/workloads/throwaway "$WORKDIR/add.json")"
 [ "$code" = "204" ] || fail "signed allowlist write: want HTTP 204, got $code"
-curl -sSk "https://127.0.0.1:$CDS_LOCAL_PORT/allowlist" | grep -q "$THROWAWAY_DIGEST" \
+curl -sSk "$(cds_url)/allowlist" | grep -q "$THROWAWAY_DIGEST" \
     || fail "added digest not served from /allowlist"
 : > "$WORKDIR/del.json"
 code="$(cds_write DELETE /allowlist/workloads/throwaway "$WORKDIR/del.json")"
 [ "$code" = "204" ] || fail "signed allowlist delete: want HTTP 204, got $code"
-if curl -sSk "https://127.0.0.1:$CDS_LOCAL_PORT/allowlist" | grep -q "$THROWAWAY_DIGEST"; then
+if curl -sSk "$(cds_url)/allowlist" | grep -q "$THROWAWAY_DIGEST"; then
     fail "deleted digest still served from /allowlist"
 fi
 pass "signed allowlist write + delete round-trip through CDS"
@@ -384,11 +474,11 @@ pass "front door answers 503 before a route manifest is stored"
 # route digest of exactly those bytes.
 route_manifest 1 > "$WORKDIR/routes-1.json"
 code="$(curl -sSk -o /dev/null -w '%{http_code}' -X PUT -H 'Content-Type: application/json' \
-    --data-binary @"$WORKDIR/routes-1.json" "https://127.0.0.1:$CDS_LOCAL_PORT/routes" || true)"
+    --data-binary @"$WORKDIR/routes-1.json" "$(cds_url)/routes" || true)"
 [ "$code" = "401" ] || fail "unsigned route write: want HTTP 401, got $code"
 rogue_token="$("$WORKDIR/optoken" "$WORKDIR/rogue.key" PUT /routes "$WORKDIR/routes-1.json")"
 code="$(curl -sSk -o /dev/null -w '%{http_code}' -X PUT -H "Authorization: $rogue_token" -H 'Content-Type: application/json' \
-    --data-binary @"$WORKDIR/routes-1.json" "https://127.0.0.1:$CDS_LOCAL_PORT/routes" || true)"
+    --data-binary @"$WORKDIR/routes-1.json" "$(cds_url)/routes" || true)"
 [ "$code" = "401" ] || fail "wrong-key route write: want HTTP 401, got $code"
 pass "unsigned and wrong-key route writes rejected (401)"
 
@@ -646,8 +736,7 @@ log "router front door"
 # CDS: the router's pod is a mesh member, and a member admits no exec. Over
 # plain curl like every other CDS read here — in-process verification cannot
 # pass this lane's synthetic evidence (see the header).
-cds_pf_start
-curl -sSk "https://127.0.0.1:$CDS_LOCAL_PORT/ca" > "$WORKDIR/mesh-ca.pem" \
+curl -sSk "$(cds_url)/ca" > "$WORKDIR/mesh-ca.pem" \
     || fail "could not read the mesh CA from CDS"
 grep -q "BEGIN CERTIFICATE" "$WORKDIR/mesh-ca.pem" || fail "the mesh CA read from CDS is not a certificate"
 kubectl -n kube-system delete configmap it-mesh-ca --ignore-not-found >/dev/null
@@ -672,13 +761,13 @@ kubectl -n adopted wait --for=condition=Available deploy/web --timeout=120s \
 # put` verifies CDS in-process and cannot pass synthetic evidence. An ambient
 # C8S_OPERATOR_KEY would make install sign and store it instead.
 printf 'router:\n  routePublication:\n    enabled: true\n' > "$WORKDIR/values-publish.yaml"
-C8S_OPERATOR_KEY='' ./build/c8s install --namespace "$NS" --cvm-mode=bare-metal --hardware-platform=sev-snp \
-    --single-node --resolve-digests=false --image-tag="$IMAGE_TAG" \
-    --operator-keys "$WORKDIR/operator-pub.pem" \
-    --measurements "$MOCK_MEASUREMENT" \
-    --workload-ref web=adopted/deployment/web:8080 --upstream web \
+C8S_OPERATOR_KEY='' c8s_install "${CDS_INSTALL_FLAGS[@]}" \
+    --workload-ref web=adopted/deployment/web:8080 \
+    --upstream web \
     --routes-out "$WORKDIR/routes-install.json" \
-    -f "$WORKDIR/values.yaml" -f "$WORKDIR/values-publish.yaml" --wait || fail "c8s install --workload-ref failed"
+    -f "$WORKDIR/values-publish.yaml" \
+    --wait \
+    || fail "c8s install --workload-ref failed"
 TMPL_ANNOTATION="$(kubectl -n adopted get deploy web -o jsonpath='{.spec.template.metadata.annotations.confidential\.ai/cw}')"
 [ "$TMPL_ANNOTATION" = "web" ] || fail "adopted workload template not stamped (got: $TMPL_ANNOTATION)"
 # The first leaf predates the app container, so it names no workload;
@@ -753,7 +842,7 @@ esac
 pass "router routes the front door to the adopted workload over the mesh"
 
 log "Checking the served allowlist pins the host sweep argv"
-curl -sSk "https://127.0.0.1:$CDS_LOCAL_PORT/allowlist" > "$WORKDIR/served.json" \
+curl -sSk "$(cds_url)/allowlist" > "$WORKDIR/served.json" \
     || fail "could not read the served allowlist"
 python3 - "$WORKDIR/served.json" "$NRI_STORE_DIGEST" <<'PYEOF'
 import json, sys

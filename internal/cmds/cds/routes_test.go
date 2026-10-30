@@ -383,6 +383,7 @@ func TestNewHTTPServerSetsTimeouts(t *testing.T) {
 
 func TestValidateConfigRejectsUnsafeValues(t *testing.T) {
 	valid := config{
+		measured:                   measuredConfig(t, cluster{operatorPEM: operatorKeysPEM(t), workloads: map[string]string{"cds": digestA}}),
 		maxHeaderBytes:             1,
 		namedCertTTL:               issuer.MaxNamedLeafTTL,
 		maxRequestSize:             1,
@@ -500,27 +501,6 @@ func TestReadinessFn(t *testing.T) {
 		return true
 	}, expiring, time.Hour)() {
 		t.Error("readiness held with a CA certificate inside the renewal window")
-	}
-}
-
-func TestParseReferenceDigests(t *testing.T) {
-	cases := []struct {
-		name    string
-		input   []string
-		wantLen int
-	}{
-		{"empty", nil, 0},
-		{"whitespace only", []string{"  ", ""}, 0},
-		{"normalises case and trim", []string{"DEAD", " beef ", "dead"}, 2},
-		{"three distinct", []string{"a", "b", "c"}, 3},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := parseReferenceDigests(tc.input)
-			if len(got) != tc.wantLen {
-				t.Errorf("len: got %d, want %d (map=%v)", len(got), tc.wantLen, got)
-			}
-		})
 	}
 }
 

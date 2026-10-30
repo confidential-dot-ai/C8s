@@ -98,3 +98,24 @@ func TestIndex_NilAdmitsNothing(t *testing.T) {
 		t.Fatal("a nil *Index must admit nothing and report size 0")
 	}
 }
+
+func TestIndex_MismatchNamesTheClosestEntrysFields(t *testing.T) {
+	idx := mustParse(t, `{"schema":"c8s.allowlist/v1","workloads":{
+		"far":{"containers":[{"digest":"`+digestA+`","command":{"policy":"exact","argv":["/bin/other"]},"args":{"policy":"deny"},"env":{"policy":"deny"}}]},
+		"near":{"containers":[{"digest":"`+digestA+`","command":{"policy":"exact","argv":["/bin/app"]},"args":{"policy":"deny"},"env":{"policy":"deny"}}]}}}`).BuildIndex()
+	env, err := ObserveEnv([]string{"MODE=x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := RunningContainer{Digest: digestA, Argv: []string{"/bin/app"}, Mounts: []ObservedMount{}, Env: env}
+	if got := idx.Mismatch(r, true); len(got) != 1 || got[0] != "env" {
+		t.Errorf("final mismatch = %v, want [env]", got)
+	}
+	if got := idx.Mismatch(r, false); len(got) != 0 {
+		t.Errorf("preliminary mismatch = %v, want none: it checks command and args alone", got)
+	}
+	r.Argv = []string{"/bin/app", "--debug"}
+	if got := idx.Mismatch(r, true); len(got) != 2 || got[0] != "args" || got[1] != "env" {
+		t.Errorf("mismatch = %v, want [args env]", got)
+	}
+}

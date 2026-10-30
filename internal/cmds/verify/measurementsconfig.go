@@ -25,36 +25,6 @@ type measurementsReport struct {
 	note     string
 }
 
-func validateTargetInServedPolicy(target, served refvalues.ReferenceValues) error {
-	if target.Family != served.Family {
-		return fmt.Errorf("--image-policy-file is for %q but --served-policy-file is for %q: both policies must use the same TEE family", target.Family, served.Family)
-	}
-	missing, _ := refvalues.Diff(target, served)
-	if len(missing) > 0 {
-		return fmt.Errorf("--served-policy-file is missing the complete target pin %q from --image-policy-file: every target image, register set and launch anchor must appear in the served policy", missing[0].Name)
-	}
-	return nil
-}
-
-func applyCDSIdentityWarning(oc *Outcome, cfg config, target refvalues.ReferenceValues) {
-	if cfg.kind != "cds" || (!oc.Verified && !oc.Partial) {
-		return
-	}
-	if hasMultipleLaunchAnchors(target) {
-		oc.Warnings = append(oc.Warnings, "--image-policy-file accepts multiple launch-key anchors as the CDS server; agent identities included in this file can pass as CDS. Use a server-only --image-policy-file and --served-policy-file for the full served set")
-	}
-}
-
-func hasMultipleLaunchAnchors(values refvalues.ReferenceValues) bool {
-	anchors := make(map[string]struct{})
-	for _, image := range values.Images {
-		if len(image.Anchor) > 0 {
-			anchors[string(image.Anchor)] = struct{}{}
-		}
-	}
-	return len(anchors) > 1
-}
-
 // fetchServedMeasurements parses /measurements from the attested endpoint.
 func fetchServedMeasurements(ctx context.Context, base, serverName, wantCertSHA256 string, timeout time.Duration) (refvalues.ReferenceValues, error) {
 	resp, err := fetchAttested(ctx, base+"/measurements", serverName, wantCertSHA256, timeout)
@@ -79,13 +49,13 @@ func fetchServedMeasurements(ctx context.Context, base, serverName, wantCertSHA2
 	return refvalues.ParseRendered(body)
 }
 
-// checkServedMeasurements compares the served set against the operator's file,
-// naming flagName (the flag that supplied the file) in every failure.
+// checkServedMeasurements compares the served set against --served-policy-file.
 // Equality is exact in both directions: an entry the target pins and the file
 // does not is the substitution this check exists to catch, and one the file
 // pins and the target does not means the cluster is enforcing less than the
 // operator believes.
-func checkServedMeasurements(flagName string, want refvalues.ReferenceValues, report measurementsReport, fail func(string, ...any)) {
+func checkServedMeasurements(want refvalues.ReferenceValues, report measurementsReport, fail func(string, ...any)) {
+	const flagName = "--served-policy-file"
 	if report.fetchErr != nil {
 		fail("could not fetch /measurements to check it against %s: %v", flagName, report.fetchErr)
 		return
@@ -103,12 +73,8 @@ func checkServedMeasurements(flagName string, want refvalues.ReferenceValues, re
 		return
 	}
 	missing, extra := refvalues.Diff(want, report.served)
-	var hint string
-	if flagName == "--image-policy-file" {
-		hint = "; if the target serves agent identities too, name the served set with --served-policy-file"
-	}
 	for _, e := range extra {
-		fail("the target admits an image %s does not pin: %s (%x)%s", flagName, e.Name, e.Digest, hint)
+		fail("the target admits an image %s does not pin: %s (%x)", flagName, e.Name, e.Digest)
 	}
 	for _, e := range missing {
 		fail("%s pins an image the target does not admit: %s (%x)", flagName, e.Name, e.Digest)

@@ -82,37 +82,3 @@ func TestNodeHostCIDRs(t *testing.T) {
 		}
 	})
 }
-
-// NodeHosts is the runtime bound CDS applies per issuance: it must fail
-// closed before the informer's first sync, and track the node list in both
-// directions — a node added later becomes dialable, a removed node stops
-// being dialable. The static snapshot did neither.
-func TestNodeHostsTracksTheNodeList(t *testing.T) {
-	h := &NodeHosts{}
-	if !h.Empty() || h.Contains("10.0.1.4") {
-		t.Fatal("before the first sync the bound must be empty and refuse everything")
-	}
-
-	h.SetNodes([]*corev1.Node{nodeWith("a", nil, internalIP("10.0.1.4"))})
-	if h.Empty() || !h.Contains("10.0.1.4") {
-		t.Fatal("node a's address not admitted after sync")
-	}
-	if h.Contains("10.244.1.5") {
-		t.Fatal("a pod-range address was admitted")
-	}
-
-	// Scale-up: the new node is covered without a restart.
-	h.SetNodes([]*corev1.Node{
-		nodeWith("a", nil, internalIP("10.0.1.4")),
-		nodeWith("b", nil, internalIP("10.0.1.5")),
-	})
-	if !h.Contains("10.0.1.5") {
-		t.Fatal("a node added later was not admitted")
-	}
-
-	// Scale-down/replacement: the gone node's address leaves the bound.
-	h.SetNodes([]*corev1.Node{nodeWith("b", nil, internalIP("10.0.1.5"))})
-	if h.Contains("10.0.1.4") {
-		t.Fatal("a removed node's address stayed dialable")
-	}
-}

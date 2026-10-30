@@ -122,14 +122,6 @@ func TestValidate_PullRequiresAttestationApi(t *testing.T) {
 	}
 }
 
-func TestValidate_PullRejectsInvalidCDSMeasurement(t *testing.T) {
-	cfg := validConfig()
-	cfg.Allowlist.Pull.CDSMeasurements = []string{"not-hex"}
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("expected error for invalid CDS measurement")
-	}
-}
-
 func TestValidate_PullRejectsPlaintextScheme(t *testing.T) {
 	cfg := validConfig()
 	cfg.Allowlist.Pull.URL = "http://localhost:8080"
@@ -620,21 +612,13 @@ func writeAndLoad(t *testing.T, body string) *config {
 	return cfg
 }
 
-func TestValidateRejectsBadCDSRTMRs(t *testing.T) {
+// An unreadable pin document fails the pull-client build rather than silently
+// unpinning CDS.
+func TestAllowlistPullHTTPClientRejectsAnUnreadablePin(t *testing.T) {
 	cfg := validConfig()
-	cfg.Allowlist.Pull.CDSRTMRs = []string{"0=" + strings.Repeat("ab", 48)}
-	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "cds_rtmrs") {
-		t.Fatalf("err = %v, want a cds_rtmrs parse failure", err)
-	}
-}
-
-// A malformed RTMR pin fails the pull-client build rather than silently
-// unpinning the registers.
-func TestAllowlistPullHTTPClientRejectsBadRTMRs(t *testing.T) {
-	cfg := validConfig()
-	cfg.Allowlist.Pull.CDSRTMRs = []string{"1=zz"}
-	if _, err := allowlistPullHTTPClient(cfg.Allowlist.Pull, cfg.NormalizedPlatform()); err == nil || !strings.Contains(err.Error(), "--cds-rtmrs") {
-		t.Fatalf("err = %v, want an RTMR parse failure", err)
+	cfg.Allowlist.Pull.CDSMeasurementsConfig = "missing-file"
+	if _, err := allowlistPullHTTPClient(cfg.Allowlist.Pull); err == nil {
+		t.Fatal("an unreadable CDS pin was accepted")
 	}
 }
 

@@ -9,8 +9,9 @@
 // URL is verified by armTLS — belong in one place, since each is a way to talk
 // to an unattested endpoint by mistake.
 //
-// Every request one HTTPClient sends reaches one peer: a router front door is a
-// single connection, and a direct armTLS URL is pinned to the serving
+// Every request one HTTPClient sends reaches one CDS: a router front door
+// client uses only router certificates issued under the mesh CA key of the
+// first one it attested, and a direct armTLS URL is pinned to the serving
 // certificate its first handshake presented. MeshCAGate depends on that: it
 // checks the mesh CA on the client that then carries the write.
 package cdsconn
@@ -37,6 +38,10 @@ import (
 // EnvOperatorKey supplies the operator private key when the flag is unset.
 const EnvOperatorKey = "C8S_OPERATOR_KEY"
 
+// ErrUnpinnedEndpoint marks an https endpoint no pin names, which armTLS would
+// accept as any attested build.
+var ErrUnpinnedEndpoint = errors.New("refusing an unpinned endpoint: any attested build would be accepted")
+
 // Options are the connection and credential flags an operator CLI carries.
 // Embed it in a command's option struct and bind Flags to its persistent flags.
 type Options struct {
@@ -52,23 +57,27 @@ type Options struct {
 	Verifier PinVerifier
 
 	// DirectCDS refuses a router front door, for commands that call CDS's
-	// /ca or /secrets: the router relays /allowlist, not those.
+	// /ca or /secrets: the router relays /allowlist, not those. Such a command
+	// pins CDS by its configuration, so it takes no flat measurements.
 	DirectCDS bool
 }
 
 // BindFlags registers the connection and credential flags on a command's
 // persistent flag set, so every operator CLI spells them the same way.
+//
+// A router front door is one build, pinned by its launch digest; CDS is a VM
+// pinned to the configuration it runs on, so a command that only ever reaches
+// CDS takes the pin document and nothing else.
 func BindFlags(pf *pflag.FlagSet, o *Options) {
 	urlHelp := "CDS-issued-TLS router or direct CDS base URL (required); WebPKI router URLs are not attestation-bound"
-	pinHelp := "use the router value for CDS-issued public TLS or the CDS value for a direct URL"
 	if o.DirectCDS {
-		urlHelp = "direct CDS base URL, e.g. https://<node>:30808 (required); a router front door does not relay this API"
-		pinHelp = "use the CDS value"
+		urlHelp = "direct CDS base URL, the <host>:<port> an install was given as --cds-address (required); a router front door does not relay this API"
+	} else {
+		pf.StringSliceVar(&o.Measurements, "measurements", nil, "trusted router build ID(s) (repeatable/comma-separated) for a CDS-issued public TLS front door; an https --url requires a pin")
+		pf.StringVar(&o.MeasurementsFile, "measurements-file", "", "text file of trusted router SHA-384 hex digests, one per line; use --image-policy-file for complete JSON policies")
 	}
 	pf.StringVar(&o.URL, "url", "", urlHelp)
-	pf.StringSliceVar(&o.Measurements, "measurements", nil, "trusted endpoint build ID(s) (repeatable/comma-separated); "+pinHelp+"; an https --url requires a pin")
-	pf.StringVar(&o.MeasurementsFile, "measurements-file", "", "text file of trusted endpoint SHA-384 hex digests, one per line; use --image-policy-file for complete JSON policies")
-	cmdsutil.BindImagePolicyFlags(pf, &o.MeasurementsConfig, nil, "pins the endpoint; excludes --measurements and --measurements-file")
+	cmdsutil.BindImagePolicyFlags(pf, &o.MeasurementsConfig, nil, "pins the endpoint; a direct CDS URL needs this and every entry must bind the launch file CDS runs on")
 	pf.DurationVar(&o.Timeout, "timeout", 15*time.Second, "per-request timeout")
 	pf.StringVar(&o.OperatorKey, "operator-key", "", "operator EC private key PEM file, whose public key is pinned on CDS via --operator-keys (env "+EnvOperatorKey+"); required for writes")
 	pf.BoolVar(&o.Insecure, "insecure", false, "dev/test only: allow a plaintext http:// CDS URL, skipping armTLS attestation of CDS")
@@ -133,7 +142,14 @@ func (o *Options) endpoint() (*url.URL, error) {
 			return nil, err
 		}
 		if pins.Empty() {
-			return nil, fmt.Errorf("refusing an unpinned endpoint: any attested build would be accepted. Pass --image-policy-file <policy.json>, --measurements <endpoint build ID>, or --measurements-file")
+			return nil, fmt.Errorf("%w. Pass %s", ErrUnpinnedEndpoint, o.pinFlags())
+		}
+		// --url reaches CDS itself, which is pinned to the configuration it
+		// runs on rather than to its image.
+		if o.DirectCDS {
+			if _, err := cmdsutil.CDSLaunchFile(pins); err != nil {
+				return nil, fmt.Errorf("--image-policy-file %w", err)
+			}
 		}
 	default:
 		return nil, fmt.Errorf("--url scheme must be http or https, got %q", u.Scheme)
@@ -160,10 +176,10 @@ func (o *Options) httpsClient(ctx context.Context, pins refvalues.ReferenceValue
 			hc.CloseIdleConnections()
 		}
 		return nil, fmt.Errorf("--url %s serves a router discovery document; a router front door does not relay CDS's /ca or /secrets. "+
-			"Use the CDS URL directly, e.g. https://<node>:30808 (cds.service.nodePort) or "+
-			"'kubectl port-forward -n c8s-system svc/c8s-cds 8443:8443', and pin the CDS launch digest instead of the router's", o.URL)
+			"Use the CDS URL directly, the <host>:<port> the install was given as --cds-address, "+
+			"and pin the CDS launch file instead of the router's launch digest", o.URL)
 	case err == nil:
-		fmt.Fprintln(os.Stderr, "note: target is a router front door; verified its discovery attestation and bound this session to the attested connection")
+		fmt.Fprintln(os.Stderr, "note: target is a router front door; verified its discovery attestation and bound this session to its CDS")
 		return hc, nil
 	case errors.Is(err, routerdiscovery.ErrNoDiscovery):
 		return pinFirstPeer(localverify.NewARMTLSHTTPClient(pins.Digests(), verify.Verify, o.Timeout))
@@ -172,10 +188,26 @@ func (o *Options) httpsClient(ctx context.Context, pins refvalues.ReferenceValue
 	}
 }
 
+// pinFlags names the pin inputs this command takes, for an error that says
+// what to pass.
+func (o *Options) pinFlags() string {
+	if o.DirectCDS {
+		return "--image-policy-file <cds-pin.json>, the pin naming this cluster's CDS"
+	}
+	return "--image-policy-file <policy.json>, or --measurements/--measurements-file for a router front door"
+}
+
 func (o *Options) loadPins() (refvalues.ReferenceValues, error) {
+	pins := cmdsutil.MeasurementPins{Measurements: o.Measurements, MeasurementsFile: o.MeasurementsFile}
+	if o.DirectCDS {
+		if flags := pins.Flags(); len(flags) != 0 {
+			return refvalues.ReferenceValues{}, fmt.Errorf("%s pins a build, and this command only ever reaches CDS, which is pinned to the configuration it runs on: pass --image-policy-file", strings.Join(flags, " and "))
+		}
+		return (cmdsutil.ImagePolicySource{File: o.MeasurementsConfig}).Values()
+	}
 	source := cmdsutil.ImagePolicySource{File: o.MeasurementsConfig}
 	if source.IsSet() {
-		return source.LoadValues(cmdsutil.MeasurementPins{Measurements: o.Measurements, MeasurementsFile: o.MeasurementsFile})
+		return source.ValuesExcluding(pins)
 	}
 	digests, err := o.loadMeasurements()
 	return refvalues.FromFlags(digests, nil), err
@@ -226,8 +258,8 @@ func (o *Options) Signer() (*operatorauth.Signer, error) {
 
 // RequirePinnedEndpoint refuses to mint an operator token for an endpoint whose
 // build is not pinned. armTLS proves the peer is *a* TEE, not that it is the CDS
-// this operator meant; with no --measurements, `c8s secrets put` hands a secret,
-// and `c8s allowlist` a policy change, to whatever attested thing answered the
+// this operator meant; unpinned, `c8s secrets put` hands a secret, and
+// `c8s allowlist` a policy change, to whatever attested thing answered the
 // URL. It refuses before the command builds its payload; HTTPClient refuses
 // an unpinned https endpoint for every command.
 //
@@ -243,7 +275,7 @@ func (o *Options) RequirePinnedEndpoint() error {
 		return err
 	}
 	if !pinned {
-		return fmt.Errorf("refusing to authorize against an unpinned CDS: --measurements is empty, so any attested build would be accepted and this operator credential would be presented to it. Pass --image-policy-file <policy.json>, --measurements <endpoint build ID>, or --measurements-file; use the router value for a CDS-issued public TLS front door, the CDS value for a direct URL")
+		return fmt.Errorf("%w, and this operator credential would be presented to it. Pass %s", ErrUnpinnedEndpoint, o.pinFlags())
 	}
 	return nil
 }

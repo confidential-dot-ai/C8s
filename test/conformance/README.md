@@ -36,8 +36,9 @@ run with `kubectl exec -c c8s-cert <pod> -- /c8s secret-probe --cds-url URL
 --attestation-api-url URL --cert FILE --key FILE <action>` inside the injected
 certificate sidecar, it performs one workload secret request with every input
 under the caller's control. It verifies the CDS as the sidecars do, through
-armTLS against the pins it is given; the steps give it the attestation API and
-pins the webhook gave that container. `challenge` fetches a fresh CDS challenge and prints it base64;
+armTLS against the node's CDS pins where the enforcer mounts them, otherwise
+the pins it is given; the steps give it the attestation API and any pins the
+webhook gave that container. `challenge` fetches a fresh CDS challenge and prints it base64;
 `token` redeems a sandbox token for the pod's sandbox from the node's
 inventory socket, bound to the leaf's key and to a given challenge, and prints
 the JSON the Authorization header carries; `request <GET|POST> <path>` sends the
@@ -129,9 +130,9 @@ For scenarios about issuance, the backend renders two more pods: one carrying
 a workload ID, whose requester the webhook injects and which the steps watch
 through the files of its certificate volume and its requester's log, and a
 requester the steps drive themselves, a pod that relays HTTP from inside the
-cluster to the node port an injected client dials, or, while IP SAN binding
-is on, to the CDS Service, where the CDS sees the pod's own source address
-rather than the node's. The requester can also reach the
+cluster to the one address an injected client dials: the CDS is outside the
+cluster, so every client of it has the same one. The
+requester can also reach the
 node's sandbox inventory and local attestation service over the socket
 directory the admission plugin binds into it. It runs in the namespace the
 mesh exempts where the backend has one (`exempt_namespace`), outside the
@@ -143,17 +144,19 @@ since the node drops a member pod's own TCP to the CDS. The backend also fetches
 evidence over chosen report data, and says whether the CDS checks its
 signature: the steps edit its launch measurement into evidence that does not
 verify, or, where the attestation is mocked, into evidence for another
-launch digest. It reads the CDS's flags, restarts it with IP SAN
-binding or an inventory address range changed, names a pod's runtime sandbox,
-and runs the operator's verifier as a relying party on a saved leaf.
+launch digest. It reads the CDS's flags, restarts it with IP SAN binding
+changed, names a pod's runtime sandbox, and runs the operator's verifier as a
+relying party on a saved leaf.
 
 For scenarios about the CDS itself, the backend reads its documents and its
 serving certificate as any client would, says what it was started with,
 restarts it with one parameter changed and restores it, stops the local
 attestation service of its node, searches the cluster for private keys and
-performs one issuance against it; `common.sh` lists each function. The kind
-backend reaches the CDS through a port-forward to its pod, so a CDS that is
-not ready, and so has no Service endpoint, is still read.
+performs one issuance against it; `common.sh` lists each function. The CDS
+runs outside the cluster, pinned to the configuration its launch binds it to,
+so a parameter that configuration carries — the node pins it serves, its
+operator key, the subnets it dials an inventory in — answers unsupported: a
+CDS restarted with one of those changed is a CDS every client refuses.
 
 For scenarios about secret release, the backend sends one request to the CDS
 as the scenario shaped it (`cds_request`: a method, a route, a body, an
@@ -191,8 +194,8 @@ rejects unknown names.
 
 | Backend | Environment | Requires |
 |---|---|---|
-| [`kind.sh`](backends/kind.sh) | the kept kind cluster of [`test/integration/cluster/run.sh`](../integration/cluster/run.sh) (`C8S_IT_KEEP=1 C8S_IT_SETUP_ONLY=1`); mocked attestation, node shell via `docker exec`; the mock signs nothing and verifies only at the mock, so `evidence_signed` answers no and `relying_party` unsupported; the CDS reads its seed ConfigMap once, as on any chart-managed install, so `seed_add` answers unsupported | `C8S_IT_WORKDIR` |
-| [`metal.sh`](backends/metal.sh) | the attested node image a metal lane booted (`snp-metal-e2e`, `tdx-metal-e2e`), from its `extra-suite` hook; what it cannot reach answers unsupported ([below](#the-metal-backend)) | `KUBECONFIG`, `C8S_ALLOWLIST_URL`, `C8S_OPERATOR_KEY`, the `c8s` CLI on `PATH`; `go` for the write-token functions, `crane` for `image_entrypoint` and `image_env` |
+| [`kind.sh`](backends/kind.sh) | the kept kind cluster of [`test/integration/cluster/run.sh`](../integration/cluster/run.sh) (`C8S_IT_KEEP=1 C8S_IT_SETUP_ONLY=1`); its CDS is two containers on the kind network, so the backend starts and stops it with `docker`; mocked attestation, node shell via `docker exec`; the mock signs nothing and verifies only at the mock, so `evidence_signed` answers no and `relying_party` unsupported | `C8S_IT_WORKDIR` |
+| [`metal.sh`](backends/metal.sh) | the attested node image a metal lane booted (`snp-metal-e2e`, `tdx-metal-e2e`), from its `extra-suite` hook; what it cannot reach answers unsupported ([below](#the-metal-backend)) | `KUBECONFIG`, `C8S_ALLOWLIST_URL`, `C8S_CDS_URL`, `C8S_OPERATOR_KEY`, the `c8s` CLI on `PATH`; `go` for the write-token functions, `crane` for `image_entrypoint` and `image_env` |
 
 The backends source the kind harness's `lib.sh`, render pods with
 `pod-fixture.py`, and name components (the NRI DaemonSet, its socket) that
@@ -222,7 +225,10 @@ credential client for the discovery document and mounts the volume the client
 writes it into, so `pod_cert_file` reads the pod's leaf from there; the key,
 and the leaf as another container sees it, stay out of reach. No namespace the mesh exempts is open to the operator, so the
 requester the steps drive runs as a mesh member and the scenarios that need a
-pod outside the mesh skip. [`metal.sh`](backends/metal.sh) gives each
+pod outside the mesh skip. The CDS routes the router does not relay are sent
+to the CDS VM the lane launched the cluster on (`C8S_CDS_URL`), which answers
+the harness host on both platforms.
+[`metal.sh`](backends/metal.sh) gives each
 function's answer and its reason beside the function.
 
 ## What is a coordinated change

@@ -101,51 +101,54 @@ func writeChart(t *testing.T, values string) string {
 func resetCLIState(t *testing.T) {
 	t.Helper()
 	saved := struct {
-		installNamespace, installRelease, installCvmMode                             string
-		installHardwarePlatform, installImagePullSecret, installImageTag             string
-		installOperatorKeys, installUpstream, renderValuesDistro                     string
-		uninstallNamespace, uninstallRelease                                         string
-		installValues, installWorkloadRefs, installMeasurements                      []string
-		installInventoryCIDRs                                                        []string
-		installWait, installCRDs, installGetCertRunAsNonRoot                         bool
-		installSingleNode, installForce, installResolveDigests, installAttestEnabled bool
-		uninstallWait, uninstallHostSweep, uninstallHostSweepOnly, uninstallForce    bool
-		uninstallDeleteCRDs, uninstallDeleteNamespace, installVolumes                bool
-		installCertFSGroup, installGetCertRunAsUser, installGetCertRunAsGroup        int64
-		installGetCertRenewInterval                                                  time.Duration
-		installOperatorKey, installRoutesOut                                         string
-		installRoutesMaxAge                                                          time.Duration
+		installNamespace, installRelease, installCvmMode                          string
+		installHardwarePlatform, installImagePullSecret, installImageTag          string
+		installOperatorKeys, installUpstream, renderValuesDistro                  string
+		uninstallNamespace, uninstallRelease                                      string
+		installCDSAddress, installCDSPin, installSeedOut                          string
+		installValues, installWorkloadRefs                                        []string
+		installWait, installCRDs, installGetCertRunAsNonRoot                      bool
+		installForce, installResolveDigests, installAttestEnabled                 bool
+		uninstallWait, uninstallHostSweep, uninstallHostSweepOnly, uninstallForce bool
+		uninstallDeleteCRDs, uninstallDeleteNamespace, installVolumes             bool
+		installCertFSGroup, installGetCertRunAsUser, installGetCertRunAsGroup     int64
+		installGetCertRenewInterval                                               time.Duration
+		installOperatorKey, installRoutesOut                                      string
+		installRoutesMaxAge                                                       time.Duration
+		installCDS                                                                *cdsPin
 	}{
 		installNamespace, installRelease, installCvmMode,
 		installHardwarePlatform, installImagePullSecret, installImageTag,
 		installOperatorKeys, installUpstream, renderValuesDistro,
 		uninstallNamespace, uninstallRelease,
-		slices.Clone(installValues), slices.Clone(installWorkloadRefs), slices.Clone(installMeasurements),
-		slices.Clone(installInventoryCIDRs),
+		installCDSAddress, installCDSPin, installSeedOut,
+		slices.Clone(installValues), slices.Clone(installWorkloadRefs),
 		installWait, installCRDs, installGetCertRunAsNonRoot,
-		installSingleNode, installForce, installResolveDigests, installAttestEnabled,
+		installForce, installResolveDigests, installAttestEnabled,
 		uninstallWait, uninstallHostSweep, uninstallHostSweepOnly, uninstallForce,
 		uninstallDeleteCRDs, uninstallDeleteNamespace, installVolumes,
 		installCertFSGroup, installGetCertRunAsUser, installGetCertRunAsGroup,
 		installGetCertRenewInterval,
 		installOperatorKey, installRoutesOut,
 		installRoutesMaxAge,
+		installCDS,
 	}
 	t.Cleanup(func() {
 		installNamespace, installRelease, installCvmMode = saved.installNamespace, saved.installRelease, saved.installCvmMode
 		installHardwarePlatform, installImagePullSecret, installImageTag = saved.installHardwarePlatform, saved.installImagePullSecret, saved.installImageTag
 		installOperatorKeys, installUpstream, renderValuesDistro = saved.installOperatorKeys, saved.installUpstream, saved.renderValuesDistro
 		uninstallNamespace, uninstallRelease = saved.uninstallNamespace, saved.uninstallRelease
-		installValues, installWorkloadRefs, installMeasurements = saved.installValues, saved.installWorkloadRefs, saved.installMeasurements
-		installInventoryCIDRs = saved.installInventoryCIDRs
+		installCDSAddress, installCDSPin, installSeedOut = saved.installCDSAddress, saved.installCDSPin, saved.installSeedOut
+		installValues, installWorkloadRefs = saved.installValues, saved.installWorkloadRefs
 		installWait, installCRDs, installGetCertRunAsNonRoot = saved.installWait, saved.installCRDs, saved.installGetCertRunAsNonRoot
-		installSingleNode, installForce, installResolveDigests, installAttestEnabled = saved.installSingleNode, saved.installForce, saved.installResolveDigests, saved.installAttestEnabled
+		installForce, installResolveDigests, installAttestEnabled = saved.installForce, saved.installResolveDigests, saved.installAttestEnabled
 		uninstallWait, uninstallHostSweep, uninstallHostSweepOnly, uninstallForce = saved.uninstallWait, saved.uninstallHostSweep, saved.uninstallHostSweepOnly, saved.uninstallForce
 		uninstallDeleteCRDs, uninstallDeleteNamespace = saved.uninstallDeleteCRDs, saved.uninstallDeleteNamespace
 		installVolumes = saved.installVolumes
 		installCertFSGroup, installGetCertRunAsUser, installGetCertRunAsGroup = saved.installCertFSGroup, saved.installGetCertRunAsUser, saved.installGetCertRunAsGroup
 		installGetCertRenewInterval = saved.installGetCertRenewInterval
 		installOperatorKey, installRoutesOut, installRoutesMaxAge = saved.installOperatorKey, saved.installRoutesOut, saved.installRoutesMaxAge
+		installCDS = saved.installCDS
 	})
 
 	installNamespace, installRelease = "c8s-system", "c8s"
@@ -154,24 +157,26 @@ func resetCLIState(t *testing.T) {
 	installGetCertRenewInterval = 6 * time.Hour
 	installGetCertRunAsUser, installGetCertRunAsGroup, installGetCertRunAsNonRoot = 65532, 65532, true
 	installCvmMode, installHardwarePlatform = "", "sev-snp"
-	installSingleNode, installImagePullSecret, installImageTag = false, "", ""
+	installImagePullSecret, installImageTag = "", ""
 	installVolumes = false
 	installOperatorKeys, installForce = "", false
 	installUpstream, installWorkloadRefs = "", nil
-	installResolveDigests, installAttestEnabled, installMeasurements = true, true, nil
+	installResolveDigests, installAttestEnabled = true, true
+	installCDSAddress, installCDSPin, installSeedOut = "", "", ""
+	installCDS = nil
 	uninstallNamespace, uninstallRelease = "c8s-system", "c8s"
 	uninstallWait, uninstallHostSweep, uninstallHostSweepOnly = true, true, false
 	uninstallForce, uninstallDeleteCRDs, uninstallDeleteNamespace = false, false, false
 	renderValuesDistro = ""
 	installOperatorKey, installRoutesOut, installRoutesMaxAge = "", "routes.json", 24*time.Hour
 	prevOutSet, prevMaxAgeSet := installRoutesOutSet, installRoutesMaxAgeSet
-	prevRevision, prevRegisters := installRoutesRevision, installRegisters
+	prevRevision := installRoutesRevision
 	t.Cleanup(func() {
 		installRoutesOutSet, installRoutesMaxAgeSet = prevOutSet, prevMaxAgeSet
-		installRoutesRevision, installRegisters = prevRevision, prevRegisters
+		installRoutesRevision = prevRevision
 	})
 	installRoutesOutSet, installRoutesMaxAgeSet = false, false
-	installRoutesRevision, installRegisters = 0, nil
+	installRoutesRevision = 0
 	// cobra keeps a flag's Changed across Execute calls on the shared tree.
 	installCmd.Flags().VisitAll(func(f *pflag.Flag) { f.Changed = false })
 	t.Setenv("C8S_OPERATOR_KEY", "")

@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/internal/attestation"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
@@ -33,9 +34,9 @@ import (
 // AttestHandler serves POST /attest by verifying TEE evidence and signing the
 // requester's CSR in-process.
 //
-// THREAT MODEL: the measurement check is the only thing standing between an
+// THREAT MODEL: the node image check is the only thing standing between an
 // attacker who controls a TEE workload and a CA-signed leaf for any subject
-// they choose. Empty Measurements admits no flat-pinned caller.
+// they choose. An empty Images set admits nobody.
 type AttestHandler struct {
 	Challenges        *attestation.ChallengeStore
 	AttestationClient remote.Client
@@ -46,19 +47,9 @@ type AttestHandler struct {
 	// verification + signing. Zero = no timeout.
 	RequestTimeout time.Duration
 
-	// Measurements is the flat set of SHA-384 launch digests permitted
-	// to obtain a signed leaf when Images is empty.
-	Measurements map[string]bool
-
-	// RTMRs pins TDX runtime measurement registers on issuance: on TDX the
-	// launch digest (MRTD) covers the TDVF firmware alone, so without these a
-	// host can boot the pinned firmware with a substituted kernel and rootfs
-	// and still be issued a leaf. Enforced only against TDX-shaped evidence;
-	// SNP evidence is unaffected (kernel-hashes folds the guest image into
-	// its launch digest). Empty = no RTMR pinning.
-	RTMRs map[int][]byte
-
-	// Images binds each node image to an authorized launch key.
+	// Images are the node images permitted to obtain a signed leaf, each
+	// matched as one entry: its launch digest with the registers measured from
+	// the same build. Empty admits nobody.
 	Images []remote.ImagePin
 
 	// PodImages grants only quote-bound Pod mesh issuance. It is never used
@@ -103,7 +94,7 @@ type AttestHandler struct {
 	// operator's node CIDRs. Empty rejects any request carrying a sandbox
 	// token: without it a workload could point CDS at its own pod IP and
 	// answer as the inventory.
-	InventoryHosts workloadclaims.InventoryHosts
+	InventoryHosts workloadclaims.CIDRHosts
 
 	// SandboxBindings records which inventory vouched for a sandbox, so a
 	// later decision about that sandbox asks the same one rather than one the
@@ -228,9 +219,9 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	verifyReq := remote.NewVerifyRequest(req.Evidence, &remote.VerifyParams{
+	verifyReq := remote.NewVerifyRequestNoToken(req.Evidence, &remote.VerifyParams{
 		ExpectedReportData: expectedReportData[:sha512.Size384],
-	}, false)
+	})
 	verifyResp, err := h.AttestationClient.VerifyEnforced(ctx, verifyReq)
 	if err != nil {
 		status, code, msg := classifyVerifyError(err)
@@ -246,25 +237,10 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 			attestation.WriteError(w, http.StatusForbidden, types.ErrorCodeMeasurementDenied, "Pod identity not allowed")
 			return
 		}
-	} else if len(h.Images) > 0 {
-		if err := armtls.EnforceImages(verifyResp, h.Images, req.Evidence.Platform, req.RuntimeExtensions); err != nil {
-			slog.Warn("node identity does not match policy", "error", err, "remote_addr", r.RemoteAddr)
-			attestation.WriteError(w, http.StatusForbidden, types.ErrorCodeMeasurementDenied, "node identity not allowed")
-			return
-		}
-	} else {
-		if !h.Measurements[launchDigest] {
-			slog.Warn("measurement does not match any reference value", "launch_digest", launchDigest, "remote_addr", r.RemoteAddr)
-			attestation.WriteError(w, http.StatusForbidden, types.ErrorCodeMeasurementDenied, "launch measurement not allowed")
-			return
-		}
-		if req.Evidence.Platform.HasRegisters() {
-			if err := remote.EnforceRTMRs(verifyResp, h.RTMRs); err != nil {
-				slog.Warn("RTMR pin not satisfied", "launch_digest", launchDigest, "error", err, "remote_addr", r.RemoteAddr)
-				attestation.WriteError(w, http.StatusForbidden, types.ErrorCodeMeasurementDenied, "TDX runtime measurement registers not allowed")
-				return
-			}
-		}
+	} else if err := h.matchPinnedNodeImage(verifyResp, req.Evidence.Platform, req.RuntimeExtensions); err != nil {
+		slog.Warn("node identity does not match policy", "launch_digest", launchDigest, "error", err, "remote_addr", r.RemoteAddr)
+		attestation.WriteError(w, http.StatusForbidden, types.ErrorCodeMeasurementDenied, "node identity not allowed")
+		return
 	}
 
 	policy := h.Policy
@@ -386,6 +362,15 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 	w.Write(slices.Concat(certPEM, signing.CertPEM))
 }
 
+// matchPinnedNodeImage holds the verified evidence to one pinned node image.
+// The platform and extension list the caller claims are judged against it.
+func (h AttestHandler) matchPinnedNodeImage(verified remote.VerifyResponse, claimedPlatform teetypes.PlatformType, claimedExtensions []string) error {
+	if len(h.Images) == 0 {
+		return errors.New("the configuration pins no node image")
+	}
+	return armtls.EnforceImages(verified, h.Images, claimedPlatform, claimedExtensions)
+}
+
 // serialHex renders a certificate serial the way `openssl x509 -serial` does,
 // so an issuance record can be matched against a leaf in hand.
 func serialHex(serial *big.Int) string {
@@ -406,7 +391,7 @@ func (h AttestHandler) verifySandboxToken(ctx context.Context, raw json.RawMessa
 	if h.SandboxDigests == nil {
 		return workloadclaims.VerifiedSandbox{}, fmt.Errorf("sandbox token presented but this CDS cannot reach an inventory to verify it")
 	}
-	if h.InventoryHosts == nil || h.InventoryHosts.Empty() {
+	if len(h.InventoryHosts) == 0 {
 		return workloadclaims.VerifiedSandbox{}, fmt.Errorf("sandbox token presented but the inventory callback has no node addresses to bound it")
 	}
 	var token workloadclaims.SignedSandboxToken

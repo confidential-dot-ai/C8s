@@ -1,11 +1,14 @@
 # Run the integration tests
 
 Exercise C8s on a plain Linux or macOS host with no TEE hardware, so nothing
-here proves a confidential property. Two harnesses: docker-compose, for the
-armTLS certificate flow (armTLS is C8s's mutual TLS whose certificates carry
-TEE evidence), and kind, for a whole cluster. CI runs both as the
-**Integration** and **Integration (cluster)** jobs; terms are defined in
-[glossary.md](glossary.md).
+here proves a confidential property. Two harnesses:
+
+- **docker-compose**: the armTLS certificate flow, where armTLS is C8s's mutual
+  TLS whose certificates carry TEE evidence.
+- **kind**: a whole cluster.
+
+CI runs both as the Integration and Integration (cluster) jobs; terms are
+defined in [glossary.md](glossary.md).
 
 Prerequisites:
 
@@ -44,9 +47,15 @@ The TEE is replaced at exactly one point: evidence generation.
 measurement on the node IP `:8400`, the address `bare-metal` consumers dial for
 the node-baked attestation-api. It answers verification requests too, so no hop
 proves a hardware property; what matches production is the pinning — that
-measurement is the pinned CDS measurement, compared exactly as in production —
-and every component delegating verification to the attestation-api works
-unchanged.
+measurement is the one this cluster's CDS pin and node pins carry, compared
+exactly as in production — and every component delegating verification to the
+attestation-api works unchanged.
+
+The CDS runs outside the cluster, as a container of the kind network with an
+attestation-api of its own reporting the launch binding of the configuration it
+boots on (`HOST_DATA` = SHA-256 of that file). That is what the pin the install
+carries names, so every client holds it to the configuration it serves, exactly
+as it holds a CDS VM to its launch file.
 
 The rest is real: the admission webhook and validating admission policies in a
 real API server, the admission plugin registered against the node's containerd,
@@ -83,9 +92,9 @@ The run writes `$C8S_IT_WORKDIR/env`, which exports a `KUBECONFIG` for the kept
 cluster whatever kubectl's current context is. Source
 `test/integration/cluster/lib.sh` and then that file to drive the cluster with
 the harness's own helpers (`cds_write`, `cds_get`, `node_exec`, `run_pod`, and
-the rest). They open the shared CDS port-forward on demand with `cds_pf_start`,
-record its pid in `$C8S_IT_WORKDIR/cds-pf.pid`, and `cds_pf_stop` ends it.
-Delete the cluster with `kind delete cluster --name c8s-it`.
+the rest). They address the CDS at `$C8S_IT_WORKDIR/cds-address`, which the run
+wrote. Delete the cluster with `kind delete cluster --name c8s-it`, and the CDS
+with `docker rm -f c8s-it-cds c8s-it-cds-attestation`.
 
 ## When a run fails
 

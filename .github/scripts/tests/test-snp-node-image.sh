@@ -16,6 +16,7 @@ reject() {
 }
 
 repo=ghcr.io/confidential-dot-ai/node-guest-base
+cds_repo=ghcr.io/confidential-dot-ai/cds-guest-base
 cdi=sha256:$(printf 'c%.0s' {1..64})
 igvm_hex=$(printf 'd%.0s' {1..64})
 other_hex=$(printf 'e%.0s' {1..64})
@@ -29,15 +30,34 @@ jq -n --arg d "$igvm_hex" --arg o "$other_hex" --arg m "$launch" '{
     {smp: 2, igvm: {path: "guest-smp2.igvm", sha256: $o}, measurement: {algorithm: "sha384", snp_launch_digest: $m}},
     {smp: 4, igvm: {path: "guest-smp4.igvm", sha256: $d}, measurement: {algorithm: "sha384", snp_launch_digest: $m}}]}' > "$fixture/manifest.json"
 
-output=$(bash "$script" env "$fixture/oras.json" "$fixture/manifest.json" "$cdi" 4)
-expected="image=$repo@$cdi
-rootPvc=c8s-snp-root-cccccccccccc
-igvmPvc=c8s-snp-igvm-dddddddddddd
-igvmFile=guest-smp4.igvm
-igvmDigest=sha256:$igvm_hex
-snpLaunchDigest=$launch"
+output=$(bash "$script" env node "$fixture/oras.json" "$fixture/manifest.json" "$cdi" 4)
+expected="nodeImage=$repo@$cdi
+nodeRootPvc=c8s-snp-node-root-cccccccccccc
+nodeIgvmPvc=c8s-snp-node-igvm-dddddddddddd
+nodeIgvmFile=guest-smp4.igvm
+nodeIgvmDigest=sha256:$igvm_hex
+nodeLaunchDigest=$launch"
 [[ $output == "$expected" ]] || fail "unexpected environment: $output"
 pass
+
+# The CDS image serves both TEE families (images/cds-guest/build --platform
+# both), so its manifest names platform "multi"; its claims are keyed by its
+# own digests under its own names.
+jq '.build.platform = "multi"' "$fixture/manifest.json" > "$fixture/cds-manifest.json"
+output=$(bash "$script" env cds "$fixture/oras.json" "$fixture/cds-manifest.json" "$cdi" 4)
+expected="cdsImage=$cds_repo@$cdi
+cdsRootPvc=c8s-snp-cds-root-cccccccccccc
+cdsIgvmPvc=c8s-snp-cds-igvm-dddddddddddd
+cdsIgvmFile=guest-smp4.igvm
+cdsIgvmDigest=sha256:$igvm_hex
+cdsLaunchDigest=$launch"
+[[ $output == "$expected" ]] || fail "unexpected CDS environment: $output"
+pass
+# Each image's manifest names its own platform (node "snp", cds "multi");
+# neither passes for the other, and no third guest image has claims here.
+reject bash "$script" env node "$fixture/oras.json" "$fixture/cds-manifest.json" "$cdi" 4
+reject bash "$script" env cds "$fixture/oras.json" "$fixture/manifest.json" "$cdi" 4
+reject bash "$script" env other "$fixture/oras.json" "$fixture/manifest.json" "$cdi" 4
 
 # The variant must exist once, measure with sha384, and name the published IGVM.
 for mutation in \
@@ -51,7 +71,7 @@ for mutation in \
   ".snp_variants[1].igvm.sha256 = \"$other_hex\"" \
   'del(.snp_variants[1].igvm)'; do
   jq "$mutation" "$fixture/manifest.json" > "$fixture/mutated.json"
-  reject bash "$script" env "$fixture/oras.json" "$fixture/mutated.json" "$cdi" 4
+  reject bash "$script" env node "$fixture/oras.json" "$fixture/mutated.json" "$cdi" 4
 done
 # The artifact must carry exactly one IGVM for the count and one manifest.json.
 for mutation in \
@@ -60,11 +80,11 @@ for mutation in \
   '.layers[1].digest = "sha256:short"' \
   '{}'; do
   jq "$mutation" "$fixture/oras.json" > "$fixture/mutated.json"
-  reject bash "$script" env "$fixture/mutated.json" "$fixture/manifest.json" "$cdi" 4
+  reject bash "$script" env node "$fixture/mutated.json" "$fixture/manifest.json" "$cdi" 4
 done
-reject bash "$script" env "$fixture/oras.json" "$fixture/manifest.json" "$cdi" 8
-reject bash "$script" env "$fixture/oras.json" "$fixture/manifest.json" "$repo@$cdi" 4
-reject bash "$script" env "$fixture/oras.json" "$fixture/manifest.json" "sha256:$igvm_hex" x
+reject bash "$script" env node "$fixture/oras.json" "$fixture/manifest.json" "$cdi" 8
+reject bash "$script" env node "$fixture/oras.json" "$fixture/manifest.json" "$repo@$cdi" 4
+reject bash "$script" env node "$fixture/oras.json" "$fixture/manifest.json" "sha256:$igvm_hex" x
 
 [[ $(bash "$script" manifest-layer "$fixture/oras.json") == "sha256:$other_hex" ]] || fail 'manifest.json layer'
 pass
@@ -76,7 +96,7 @@ done
 image="$repo@$cdi"
 pvc=$(bash "$script" root-pvc "$image" confai-images)
 jq -e --arg image "$image" '
-  .kind == "PersistentVolumeClaim" and .metadata.name == "c8s-snp-root-cccccccccccc" and
+  .kind == "PersistentVolumeClaim" and .metadata.name == "c8s-snp-node-root-cccccccccccc" and
   .metadata.namespace == "confai-images" and
   .metadata.labels["ci.confidential.ai/resource"] == "snp-node-root" and
   .metadata.annotations["cdi.kubevirt.io/storage.import.endpoint"] == ("docker://" + $image) and
@@ -91,23 +111,31 @@ reject bash "$script" root-pvc "$repo:rke2-snp-cdi" confai-images
 reject bash "$script" check-root-pvc "$repo@sha256:$other_hex" <<<"$pvc"
 reject bash "$script" check-root-pvc "$image" <<<"$(jq 'del(.metadata.labels)' <<<"$pvc")"
 
-igvm=$(bash "$script" igvm-pvc confai-images "sha256:$igvm_hex")
+igvm=$(bash "$script" igvm-pvc confai-images "sha256:$igvm_hex" "$image")
 jq -e --arg d "sha256:$igvm_hex" '
-  .metadata.name == "c8s-snp-igvm-dddddddddddd" and
+  .metadata.name == "c8s-snp-node-igvm-dddddddddddd" and
   .metadata.labels["ci.confidential.ai/resource"] == "snp-node-igvm" and
   .metadata.annotations["confai.confidential.ai/igvm-digest"] == $d' <<<"$igvm" >/dev/null || fail 'IGVM PVC manifest'
 pass
-bash "$script" check-igvm-pvc "sha256:$igvm_hex" <<<"$igvm"
+bash "$script" check-igvm-pvc "sha256:$igvm_hex" "$image" <<<"$igvm"
 pass
-reject bash "$script" igvm-pvc confai-images "$igvm_hex"
-reject bash "$script" check-igvm-pvc "sha256:$other_hex" <<<"$igvm"
+reject bash "$script" igvm-pvc confai-images "$igvm_hex" "$image"
+reject bash "$script" check-igvm-pvc "sha256:$other_hex" "$image" <<<"$igvm"
+# A claim the CDS image's run staged is not this one's, and the other way round.
+reject bash "$script" check-igvm-pvc "sha256:$igvm_hex" "$cds_repo@$cdi" <<<"$igvm"
+cds_pvc=$(bash "$script" root-pvc "$cds_repo@$cdi" confai-images)
+jq -e '.metadata.name == "c8s-snp-cds-root-cccccccccccc" and
+  .metadata.labels["ci.confidential.ai/resource"] == "snp-cds-root"' <<<"$cds_pvc" >/dev/null \
+  || fail 'CDS root PVC manifest'
+pass
+reject bash "$script" check-root-pvc "$image" <<<"$cds_pvc"
 
-pod=$(bash "$script" igvm-pod c8s-snp-123-1-igvm confai-images c8s-snp-igvm-dddddddddddd guest-smp4.igvm "sha256:$igvm_hex" 123 confidential-dot-ai/C8s)
+pod=$(bash "$script" igvm-pod c8s-snp-123-1-igvm confai-images c8s-snp-node-igvm-dddddddddddd guest-smp4.igvm "sha256:$igvm_hex" 123 confidential-dot-ai/C8s "$image")
 jq -e --arg d "$igvm_hex" '
   .kind == "Pod" and .metadata.name == "c8s-snp-123-1-igvm" and .spec.restartPolicy == "Never" and
   .metadata.labels["ci.confidential.ai/run-id"] == "123" and
   .metadata.annotations["ci.confidential.ai/repo"] == "confidential-dot-ai/C8s" and
-  .spec.volumes[0].persistentVolumeClaim.claimName == "c8s-snp-igvm-dddddddddddd" and
+  .spec.volumes[0].persistentVolumeClaim.claimName == "c8s-snp-node-igvm-dddddddddddd" and
   (.spec.activeDeadlineSeconds | type == "number") and
   (.spec.containers[0].image | test("^docker[.]io/curlimages/curl@sha256:[0-9a-f]{64}$")) and
   (.spec.containers[0].env | map({(.name): .value}) | add) ==
@@ -120,10 +148,11 @@ pass
 # The fetch script is fixed text; every input reaches it through the environment.
 jq -r '.spec.containers[0].command[2]' <<<"$pod" > "$fixture/fetch.sh"
 if command -v shellcheck >/dev/null; then shellcheck -s sh "$fixture/fetch.sh"; pass; fi
-reject bash "$script" igvm-pod 'c8s-snp-123-1-igvm;rm' confai-images c8s-snp-igvm-dddddddddddd guest-smp4.igvm "sha256:$igvm_hex" 123 confidential-dot-ai/C8s
-reject bash "$script" igvm-pod c8s-snp-123-1-igvm confai-images c8s-snp-igvm-dddddddddddd ../etc/passwd "sha256:$igvm_hex" 123 confidential-dot-ai/C8s
-reject bash "$script" igvm-pod c8s-snp-123-1-igvm confai-images c8s-snp-igvm-dddddddddddd guest-smp4.igvm "$igvm_hex" 123 confidential-dot-ai/C8s
-reject bash "$script" igvm-pod c8s-snp-123-1-igvm confai-images c8s-snp-igvm-dddddddddddd guest-smp4.igvm "sha256:$igvm_hex" abc confidential-dot-ai/C8s
+reject bash "$script" igvm-pod 'c8s-snp-123-1-igvm;rm' confai-images c8s-snp-node-igvm-dddddddddddd guest-smp4.igvm "sha256:$igvm_hex" 123 confidential-dot-ai/C8s "$image"
+reject bash "$script" igvm-pod c8s-snp-123-1-igvm confai-images c8s-snp-node-igvm-dddddddddddd ../etc/passwd "sha256:$igvm_hex" 123 confidential-dot-ai/C8s "$image"
+reject bash "$script" igvm-pod c8s-snp-123-1-igvm confai-images c8s-snp-node-igvm-dddddddddddd guest-smp4.igvm "$igvm_hex" 123 confidential-dot-ai/C8s "$image"
+reject bash "$script" igvm-pod c8s-snp-123-1-igvm confai-images c8s-snp-node-igvm-dddddddddddd guest-smp4.igvm "sha256:$igvm_hex" abc confidential-dot-ai/C8s "$image"
+reject bash "$script" igvm-pod c8s-snp-123-1-igvm confai-images c8s-snp-node-igvm-dddddddddddd guest-smp4.igvm "sha256:$igvm_hex" 123 confidential-dot-ai/C8s ghcr.io/untrusted/image@"$cdi"
 reject bash "$script" bogus
 
 echo "ok: $tests checks"

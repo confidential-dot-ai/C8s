@@ -2,9 +2,7 @@ package cds
 
 import (
 	"context"
-	"crypto/ecdsa"
 	"fmt"
-	"os"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote"
@@ -13,59 +11,6 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
-
-// loadPodImages keeps disabled issuance distinct from an invalid policy. The
-// baked server always publishes this file; zero bytes explicitly disables it.
-func loadPodImages(path string) ([]remote.ImagePin, error) {
-	if path == "" {
-		return nil, nil
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read --pod-image-policy-file: %w", err)
-	}
-	if len(raw) == 0 {
-		return nil, nil
-	}
-	values, err := workloadclaims.ParsePodImagePolicy(raw)
-	if err != nil {
-		return nil, fmt.Errorf("--pod-image-policy-file: %w", err)
-	}
-	return values.Images, nil
-}
-
-// validatePodAuthorities keeps Pod launch keys distinct from every explicitly
-// configured node anchor and operator-write key. Compare parsed keys, not PEM
-// bytes: whitespace changes the launch binding without changing who can sign.
-// An unanchored development policy supplies no additional authority here.
-func validatePodAuthorities(pods, nodes []remote.ImagePin, operators []*ecdsa.PublicKey) error {
-	if len(pods) == 0 {
-		return nil
-	}
-	authorities := append([]*ecdsa.PublicKey(nil), operators...)
-	for _, node := range nodes {
-		if len(node.Anchor) == 0 {
-			continue
-		}
-		key, err := runtimemeasure.ParsePublicKeyPEM(node.Anchor)
-		if err != nil {
-			return fmt.Errorf("invalid configured node launch authority")
-		}
-		authorities = append(authorities, key)
-	}
-	for _, pod := range pods {
-		key, err := runtimemeasure.ParsePublicKeyPEM(pod.Anchor)
-		if err != nil {
-			return fmt.Errorf("invalid configured Pod launch authority")
-		}
-		for _, authority := range authorities {
-			if authority != nil && key.Equal(authority) {
-				return fmt.Errorf("pod launch keys must differ from configured node and operator authorities")
-			}
-		}
-	}
-	return nil
-}
 
 // enforcePodImages requires one whole image/key tuple AND exact replay of the
 // complete journal. Prefix acceptance alone cannot authenticate a complete

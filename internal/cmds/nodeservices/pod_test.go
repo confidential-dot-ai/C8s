@@ -11,6 +11,7 @@ import (
 	"gopkg.in/yaml.v3"
 	corev1 "k8s.io/api/core/v1"
 
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
 	"github.com/confidential-dot-ai/c8s/internal/podmesh"
@@ -109,7 +110,7 @@ func TestPreparePodBindsCDSPullAndKeepsOnlyMeasuredMeshAndSignedBase(t *testing.
 	}
 	a := got["allowlist"].(map[string]any)
 	pull, ok := a["pull"].(map[string]any)
-	if !ok || pull["url"] != doc.CDSURL() || pull["cds_measurements_config"] != launchDir+"cds.json" || pull["timeout"] != "30s" || pull["interval"] != "7s" || pull["measure_policies"] != false {
+	if !ok || pull["url"] != cmdsutil.CDSURL(doc.CDS.Address) || pull["cds_measurements_config"] != PublicDir+"/cds.json" || pull["timeout"] != "30s" || pull["interval"] != "7s" || pull["measure_policies"] != false {
 		t.Fatalf("pod CDS pull = %v", pull)
 	}
 	for _, legacy := range []string{"cds_measurements", "cds_rtmrs"} {
@@ -271,8 +272,8 @@ func TestPreparePodFailsClosed(t *testing.T) {
 		want   string
 	}{
 		{"generic with workloads", func(d *launchconfig.Document) { d.Pod = nil }, "must not carry workloads"},
-		{"no CDS address", func(d *launchconfig.Document) { d.Server.Address = "" }, "server.address"},
-		{"invalid CDS address", func(d *launchconfig.Document) { d.Server.Address = "127.0.0.1" }, "server.address"},
+		{"no CDS address", func(d *launchconfig.Document) { d.CDS.Address = "" }, "cds.address"},
+		{"invalid CDS address", func(d *launchconfig.Document) { d.CDS.Address = "127.0.0.1:8443" }, "cds.address"},
 		{"bad workloads", func(d *launchconfig.Document) { d.Workloads = "{" }, "launch workloads"},
 		{"bad manifest", func(d *launchconfig.Document) { d.Pod.Manifest = "kind: Deployment" }, "pod.manifest"},
 	}

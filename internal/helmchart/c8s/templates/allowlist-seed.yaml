@@ -1,0 +1,17 @@
+{{- /*
+The component entries this release needs served: every shape the chart renders,
+plus the operator's own. A baked image bakes it as the seed its CDS follows;
+otherwise `c8s install --allowlist-seed-out` writes it beside the CDS
+configuration that carries it, and this copy is what the cluster was installed
+with.
+*/ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "c8s.fullname" . }}-allowlist-seed
+  namespace: {{ .Release.Namespace }}
+  labels:
+{{ include "c8s.commonLabels" . | indent 4 }}
+    app.kubernetes.io/component: cds
+data:
+  allowlist-seed.json: {{ include "c8s.allowlistSeedJSON" . | trim | quote }}

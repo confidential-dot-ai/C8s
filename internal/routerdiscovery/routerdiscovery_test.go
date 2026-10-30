@@ -6,26 +6,32 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/sha512"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/internal/localverify"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
@@ -84,19 +90,32 @@ func discoveryDoc(t *testing.T, cert *x509.Certificate, challenge []byte, mode, 
 // with servingCert (no armTLS extension), like a router front door.
 func fakeLB(t *testing.T, servingCert tls.Certificate, doc []byte) *httptest.Server {
 	t.Helper()
-	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case DefaultPath:
-			w.Header().Set("Content-Type", "application/json")
-			w.Write(doc)
-		case "/allowlist":
-			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(`{"schema":"c8s.allowlist/v1","workloads":{}}`))
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	srv.TLS = &tls.Config{Certificates: []tls.Certificate{servingCert}}
+	return lbServer(t, &tls.Config{Certificates: []tls.Certificate{servingCert}}, routerHandler(doc))
+}
+
+// routerHandler answers the front-door routes the client uses: the discovery
+// document, the proxied allowlist read, and a workload write.
+func routerHandler(doc []byte) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET "+DefaultPath, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(doc)
+	})
+	mux.HandleFunc("GET /allowlist", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"schema":"c8s.allowlist/v1","workloads":{}}`))
+	})
+	mux.HandleFunc("PUT /allowlist/workloads/{name}", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	return mux
+}
+
+// lbServer serves h over any TLS configuration.
+func lbServer(t *testing.T, cfg *tls.Config, h http.Handler) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewUnstartedServer(h)
+	srv.TLS = cfg
 	srv.StartTLS()
 	t.Cleanup(srv.Close)
 	return srv
@@ -153,7 +172,7 @@ func TestNewVerifiedHTTPClient_EndToEnd(t *testing.T) {
 	}
 
 	// Two sequential requests: both must ride the one attested connection
-	// (the client never redials).
+	// (nothing closed it, so there is nothing to redial).
 	for i := range 2 {
 		resp, err := hc.Get(lb.URL + "/allowlist")
 		if err != nil {
@@ -255,8 +274,9 @@ func TestNewVerifiedHTTPClient_BindsDocCertToConnection(t *testing.T) {
 	lb := fakeLB(t, servingCert, doc)
 
 	_, err := NewVerifiedHTTPClient(context.Background(), lb.URL, nil, approvingVerify(nil))
-	if err == nil || !bytes.Contains([]byte(err.Error()), []byte("different router replica")) {
-		t.Fatalf("want a doc-cert/connection-leaf binding failure, got: %v", err)
+	if err == nil || !bytes.Contains([]byte(err.Error()), []byte("different router replica")) ||
+		!bytes.Contains([]byte(err.Error()), []byte("renewing")) {
+		t.Fatalf("want a doc-cert/connection-leaf binding failure naming both causes, got: %v", err)
 	}
 	if errors.Is(err, ErrNoDiscovery) {
 		t.Fatal("binding failure must not signal ErrNoDiscovery (would allow fallback)")
@@ -306,11 +326,11 @@ func TestNewVerifiedHTTPClient_PublicTLSModes(t *testing.T) {
 	}
 }
 
-// TestNewVerifiedHTTPClient_FailsClosedOnReconnect proves the client never
-// redials once the attested connection is gone: a new handshake could land on
-// a different router replica (per-pod serving certs) that the verified
-// document says nothing about.
-func TestNewVerifiedHTTPClient_FailsClosedOnReconnect(t *testing.T) {
+// TestNewVerifiedHTTPClient_RedialsToTheAttestedLeaf proves a lost attested
+// connection is redialed and used when the new handshake presents the leaf
+// the document attested: only the holder of the attested key can produce it,
+// so the attestation covers the new connection as it did the first.
+func TestNewVerifiedHTTPClient_RedialsToTheAttestedLeaf(t *testing.T) {
 	servingCert, leaf := plainServingCert(t)
 	doc := discoveryDoc(t, leaf, []byte("challenge"), "cds", string(teetypes.PlatformAzSNP), `{"hcl_report":"fake"}`)
 	lb := fakeLB(t, servingCert, doc)
@@ -329,24 +349,34 @@ func TestNewVerifiedHTTPClient_FailsClosedOnReconnect(t *testing.T) {
 
 	lb.CloseClientConnections()
 
-	if _, err := hc.Get(lb.URL + "/allowlist"); err == nil ||
-		!bytes.Contains([]byte(err.Error()), []byte("re-run the command")) {
-		t.Fatalf("want a fail-closed redial refusal, got: %v", err)
+	resp, err = hc.Get(lb.URL + "/allowlist")
+	if err != nil {
+		t.Fatalf("GET after the attested connection was closed: %v", err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET after redial = %d, want 200", resp.StatusCode)
 	}
 }
 
-// TestNewSingleConnClientConfig pins the connection-bound client's shape: the
-// timeout knobs mirror armtls.NewVerifyingHTTPClient and the transport is
-// limited to the single attested connection.
-func TestNewSingleConnClientConfig(t *testing.T) {
-	hc := newSingleConnClient(nil)
-	if hc.Timeout != 30*time.Second {
-		t.Errorf("Timeout = %v, want 30s", hc.Timeout)
+// TestAttestedDialerFailsClosedBeforeAttestation proves a connection lost
+// before the document was verified fails closed: with no attested leaf there
+// is nothing a redial could be bound to. A nil conn is the state after the
+// discovery connection was handed out.
+func TestAttestedDialerFailsClosedBeforeAttestation(t *testing.T) {
+	d := &attestedDialer{}
+	_, err := d.dial(context.Background(), "tcp", "")
+	if err == nil || !strings.Contains(err.Error(), "lost before the discovery document was verified") {
+		t.Fatalf("want a fail-closed error, got: %v", err)
 	}
-	tr, ok := hc.Transport.(*http.Transport)
-	if !ok {
-		t.Fatalf("transport = %T, want *http.Transport", hc.Transport)
-	}
+}
+
+// TestNewAttestedTransportConfig pins the attested transport's shape: the
+// timeout knobs mirror armtls.NewVerifyingHTTPClient and it serializes
+// requests over one connection.
+func TestNewAttestedTransportConfig(t *testing.T) {
+	tr := newAttestedTransport(&attestedDialer{})
 	if tr.ResponseHeaderTimeout != 10*time.Second {
 		t.Errorf("ResponseHeaderTimeout = %v, want 10s", tr.ResponseHeaderTimeout)
 	}
@@ -422,4 +452,325 @@ func TestNewVerifiedHTTPClient_RejectsExpiredServingCert(t *testing.T) {
 	if verifyCalls != 0 {
 		t.Fatalf("an expired serving cert consumed %d evidence verification(s), want 0", verifyCalls)
 	}
+}
+
+// TestNewVerifiedHTTPClient_RefusesRedialToAnotherLeaf proves the redial
+// fails closed when the new handshake presents a leaf other than the attested
+// one and no discovery document attests it: a different router replica
+// (per-pod serving certs) that the verified document says nothing about.
+func TestNewVerifiedHTTPClient_RefusesRedialToAnotherLeaf(t *testing.T) {
+	servingCert, leaf := plainServingCert(t)
+	otherCert, _ := plainServingCert(t)
+	doc := discoveryDoc(t, leaf, []byte("challenge"), "cds", string(teetypes.PlatformAzSNP), `{"hcl_report":"fake"}`)
+	var handshakes, callerRequests atomic.Int32
+	router := routerHandler(doc)
+	// GetConfigForClient, not GetCertificate: the client dials an IP, so
+	// the hello carries no server name and crypto/tls would skip the latter.
+	lb := lbServer(t, &tls.Config{GetConfigForClient: func(*tls.ClientHelloInfo) (*tls.Config, error) {
+		if handshakes.Add(1) == 1 {
+			return &tls.Config{Certificates: []tls.Certificate{servingCert}}, nil
+		}
+		return &tls.Config{Certificates: []tls.Certificate{otherCert}}, nil
+	}}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !isBareDiscoveryFetch(r) {
+			callerRequests.Add(1)
+		}
+		router.ServeHTTP(w, r)
+	}))
+	measurement := bytes.Repeat([]byte{0x42}, armtls.SNPMeasurementSize)
+
+	hc, err := NewVerifiedHTTPClient(context.Background(), lb.URL, [][]byte{measurement}, approvingVerify(measurement))
+	if err != nil {
+		t.Fatalf("NewVerifiedHTTPClient: %v", err)
+	}
+	resp, err := hc.Get(lb.URL + "/allowlist")
+	if err != nil {
+		t.Fatalf("GET on the attested connection: %v", err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+
+	lb.CloseClientConnections()
+	requestsOnAttestedConn := callerRequests.Load()
+
+	if _, err := hc.Get(lb.URL + "/allowlist"); err == nil ||
+		!bytes.Contains([]byte(err.Error()), []byte("redial presented")) ||
+		!bytes.Contains([]byte(err.Error()), []byte("renewing")) {
+		t.Fatalf("want a refusal naming the leaf the redial presented and its causes, got: %v", err)
+	}
+	// The security property: the unattested peer receives at most the
+	// discovery fetch that attests it, never a caller's request.
+	if got := callerRequests.Load() - requestsOnAttestedConn; got != 0 {
+		t.Fatalf("the server handled %d caller request(s) on the connection presenting another leaf, want 0", got)
+	}
+}
+
+// isBareDiscoveryFetch reports whether r is the discovery GET an attestation
+// sends: no credentials, no body.
+func isBareDiscoveryFetch(r *http.Request) bool {
+	return r.Method == http.MethodGet && r.URL.Path == DefaultPath &&
+		r.Header.Get("Authorization") == "" && r.ContentLength == 0
+}
+
+// TestNewVerifiedHTTPClient_RedialsPerRequestWhenEveryResponseCloses proves a
+// router that closes the connection after discovery and after every
+// /allowlist request still serves reads and writes, each over a redial that
+// presents the attested leaf.
+func TestNewVerifiedHTTPClient_RedialsPerRequestWhenEveryResponseCloses(t *testing.T) {
+	servingCert, leaf := plainServingCert(t)
+	doc := discoveryDoc(t, leaf, []byte("challenge"), "cds", string(teetypes.PlatformAzSNP), `{"hcl_report":"fake"}`)
+	measurement := bytes.Repeat([]byte{0x42}, armtls.SNPMeasurementSize)
+	var handshakes atomic.Int32
+	lb := lbServer(t, &tls.Config{GetConfigForClient: func(*tls.ClientHelloInfo) (*tls.Config, error) {
+		handshakes.Add(1)
+		return &tls.Config{Certificates: []tls.Certificate{servingCert}}, nil
+	}}, testutil.CloseEveryResponse(routerHandler(doc)))
+
+	hc, err := NewVerifiedHTTPClient(context.Background(), lb.URL, [][]byte{measurement}, approvingVerify(measurement))
+	if err != nil {
+		t.Fatalf("NewVerifiedHTTPClient: %v", err)
+	}
+
+	resp, err := hc.Get(lb.URL + "/allowlist")
+	if err != nil {
+		t.Fatalf("GET /allowlist after a closed discovery response: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !bytes.Contains(body, []byte(`"workloads"`)) {
+		t.Fatalf("GET /allowlist = %d %s", resp.StatusCode, body)
+	}
+
+	writes := []string{"web", "api"}
+	for _, name := range writes {
+		req, err := http.NewRequest(http.MethodPut, lb.URL+"/allowlist/workloads/"+name,
+			strings.NewReader(`{"containers":[]}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := hc.Do(req)
+		if err != nil {
+			t.Fatalf("PUT %s after a closed response: %v", name, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("PUT %s = %d, want 204", name, resp.StatusCode)
+		}
+	}
+
+	requestsSent := 2 + len(writes) // discovery, the read, each write
+	if got := int(handshakes.Load()); got != requestsSent {
+		t.Fatalf("server saw %d handshake(s) for %d requests, want one each", got, requestsSent)
+	}
+}
+
+// evidenceLedger is a verifier stub for a testutil.RenewingRouter: it approves
+// evidence, records which serving certs it approved, and refuses the evidence
+// for the cert whose sha256 is refuse.
+type evidenceLedger struct {
+	mu       sync.Mutex
+	approved map[string]bool
+	refuse   string
+}
+
+func (l *evidenceLedger) verify(_ context.Context, _ string, evidence json.RawMessage, _ localverify.Params) (*teetypes.VerificationResult, error) {
+	var ev testutil.RouterEvidence
+	if err := json.Unmarshal(evidence, &ev); err != nil {
+		return nil, err
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if ev.ServingCertSHA256 == l.refuse {
+		return nil, localverify.ErrMeasurementNotAllowed
+	}
+	l.approved[ev.ServingCertSHA256] = true
+	match := true
+	return &teetypes.VerificationResult{SignatureValid: true, ReportDataMatch: &match}, nil
+}
+
+func (l *evidenceLedger) refuseEvidenceFor(cert *x509.Certificate) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.refuse = certSHA256(cert)
+}
+
+func (l *evidenceLedger) isApproved(cert *x509.Certificate) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.approved[certSHA256(cert)]
+}
+
+func certSHA256(cert *x509.Certificate) string {
+	sum := sha256.Sum256(cert.Raw)
+	return hex.EncodeToString(sum[:])
+}
+
+// servedLeaves records the serving cert each backend request arrived on.
+type servedLeaves struct {
+	mu     sync.Mutex
+	leaves []*x509.Certificate
+}
+
+func (s *servedLeaves) add(cert *x509.Certificate) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.leaves = append(s.leaves, cert)
+}
+
+func (s *servedLeaves) count() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.leaves)
+}
+
+func (s *servedLeaves) last() *x509.Certificate {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.leaves[len(s.leaves)-1]
+}
+
+// TestNewVerifiedHTTPClient_ThroughARenewingRouter is the regression test for
+// a router that renews its serving cert mid-session: once the attested
+// connection is gone, the client attests the renewed leaf and sends the
+// request over it, provided its evidence verifies and it names the same mesh
+// CA key. Every request reaches only a leaf whose evidence was approved first.
+func TestNewVerifiedHTTPClient_ThroughARenewingRouter(t *testing.T) {
+	const putBody = `{"label":"v2"}`
+	renew := func(r *testutil.RenewingRouter, _ *evidenceLedger) { r.Renew() }
+	cases := []struct {
+		name            string
+		renew           func(*testutil.RenewingRouter, *evidenceLedger)
+		routerCloses    bool // the router closes each connection after one request
+		method          string
+		wantRenewedLeaf bool   // on success: the request rode the renewed leaf, not the first
+		wantErr         string // empty: the request succeeds
+	}{
+		{name: "renewal under a kept connection", renew: renew, method: http.MethodGet},
+		{name: "GET on a new connection after a renewal", renew: renew, routerCloses: true, method: http.MethodGet, wantRenewedLeaf: true},
+		{name: "PUT on a new connection after a renewal", renew: renew, routerCloses: true, method: http.MethodPut, wantRenewedLeaf: true},
+		{
+			name:         "renewed leaf the document does not attest yet",
+			renew:        func(r *testutil.RenewingRouter, _ *evidenceLedger) { r.RenewLeaf() },
+			routerCloses: true, method: http.MethodPut, wantErr: "renewing its certificate",
+		},
+		{
+			name: "renewed leaf whose evidence fails the pins",
+			renew: func(r *testutil.RenewingRouter, l *evidenceLedger) {
+				r.Renew()
+				l.refuseEvidenceFor(r.Leaf())
+			},
+			routerCloses: true, method: http.MethodPut, wantErr: localverify.ErrMeasurementNotAllowed.Error(),
+		},
+		{
+			name:         "renewed leaf from another mesh CA",
+			renew:        func(r *testutil.RenewingRouter, _ *evidenceLedger) { r.RenewUnderNewCA() },
+			routerCloses: true, method: http.MethodPut, wantErr: "another mesh CA key",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ledger := &evidenceLedger{approved: map[string]bool{}}
+			served := &servedLeaves{}
+			router := testutil.NewRenewingRouter(t, func(router *testutil.RenewingRouter) http.Handler {
+				backend := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					leaf := router.LeafOf(r)
+					if !ledger.isApproved(leaf) {
+						t.Errorf("%s %s reached serving cert %s before its evidence was approved", r.Method, r.URL.Path, certSHA256(leaf))
+					}
+					if body, _ := io.ReadAll(r.Body); r.Method == http.MethodPut && string(body) != putBody {
+						t.Errorf("PUT body = %q, want %q", body, putBody)
+					}
+					served.add(leaf)
+				})
+				if tc.routerCloses {
+					return testutil.CloseEveryResponse(backend)
+				}
+				return backend
+			})
+
+			hc, err := NewVerifiedHTTPClient(context.Background(), router.URL, nil, ledger.verify)
+			if err != nil {
+				t.Fatalf("NewVerifiedHTTPClient: %v", err)
+			}
+			firstLeaf := router.Leaf()
+			if err := send(hc, http.MethodGet, router.URL+"/allowlist", ""); err != nil {
+				t.Fatalf("GET on the attested connection: %v", err)
+			}
+			tc.renew(router, ledger)
+
+			body := ""
+			if tc.method == http.MethodPut {
+				body = putBody
+			}
+			err = send(hc, tc.method, router.URL+"/allowlist/workloads/web", body)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("want an error containing %q, got: %v", tc.wantErr, err)
+				}
+				if served.count() != 1 {
+					t.Fatalf("the backend saw %d requests, want only the first", served.count())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("%s after the renewal: %v", tc.method, err)
+			}
+			wantLeaf := firstLeaf
+			if tc.wantRenewedLeaf {
+				wantLeaf = router.Leaf()
+			}
+			if got := served.last(); !got.Equal(wantLeaf) {
+				t.Fatalf("%s rode serving cert %s, want %s", tc.method, certSHA256(got), certSHA256(wantLeaf))
+			}
+		})
+	}
+}
+
+// TestNewVerifiedHTTPClient_DoesNotResendAReceivedWrite proves a PUT the router
+// received is not sent again when its connection then drops, even though the
+// router renewed meanwhile: only a request net/http never wrote is resent.
+func TestNewVerifiedHTTPClient_DoesNotResendAReceivedWrite(t *testing.T) {
+	var puts atomic.Int32
+	router := testutil.NewRenewingRouter(t, func(router *testutil.RenewingRouter) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			puts.Add(1)
+			router.Renew()
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Errorf("hijack: %v", err)
+				return
+			}
+			conn.Close()
+		})
+	})
+	hc, err := NewVerifiedHTTPClient(context.Background(), router.URL, nil, approvingVerify(nil))
+	if err != nil {
+		t.Fatalf("NewVerifiedHTTPClient: %v", err)
+	}
+
+	if err := send(hc, http.MethodPut, router.URL+"/allowlist/workloads/web", `{"label":"v2"}`); err == nil {
+		t.Fatal("want the PUT whose connection dropped to fail")
+	}
+	if n := puts.Load(); n != 1 {
+		t.Fatalf("the router received the PUT %d times, want once", n)
+	}
+}
+
+// send makes one request through hc and requires a 2xx response.
+func send(hc *http.Client, method, url, body string) error {
+	req, err := http.NewRequest(method, url, strings.NewReader(body))
+	if err != nil {
+		return err
+	}
+	resp, err := hc.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode/100 != 2 {
+		return fmt.Errorf("%s %s = %d", method, url, resp.StatusCode)
+	}
+	return nil
 }

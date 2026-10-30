@@ -2,12 +2,14 @@ package steps
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/cucumber/godog"
 )
@@ -25,8 +27,15 @@ type backend struct {
 
 // constant names the functions whose answer the contract fixes for a run.
 var constant = map[string]bool{
-	"node_name": true, "image_ref": true, "image_digest": true, "pull_interval": true, "cds_pod_url": true, "cds_service_url": true,
-	"cert_paths": true, "pod_exec": true, "evidence_signed": true, "exempt_namespace": true,
+	"node_name":        true,
+	"image_ref":        true,
+	"image_digest":     true,
+	"pull_interval":    true,
+	"cds_pod_url":      true,
+	"cert_paths":       true,
+	"pod_exec":         true,
+	"evidence_signed":  true,
+	"exempt_namespace": true,
 	"api_service_name": true,
 }
 
@@ -103,13 +112,25 @@ func (w *world) podExec(p *pod, container string, cmd ...string) (string, error)
 	return kubectl(nil, append(append(args, "--"), cmd...)...)
 }
 
-// kubectl runs kubectl against the backend's current context.
+// kubectlDeadline bounds one kubectl invocation. Every call the steps make
+// returns in seconds — a get, a short --timeout wait, a --wait=false delete, an
+// exec of a quick probe — so a call still running at this bound is wedged
+// (a stalled API watch, a hung exec), and killing it fails that one step
+// instead of letting it consume the whole suite's timeout.
+const kubectlDeadline = 60 * time.Second
+
+// kubectl runs kubectl against the backend's current context, under a deadline.
 func kubectl(stdin []byte, args ...string) (string, error) {
-	cmd := exec.Command("kubectl", args...)
+	ctx, cancel := context.WithTimeout(context.Background(), kubectlDeadline)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "kubectl", args...)
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
 	}
 	out, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return "", fmt.Errorf("kubectl %s: killed after %s\n%s", strings.Join(args, " "), kubectlDeadline, out)
+	}
 	if err != nil {
 		return "", fmt.Errorf("kubectl %s: %w\n%s", strings.Join(args, " "), err, out)
 	}
