@@ -22,8 +22,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	storeallowlist "github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/podstatus"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/types"
 	podfixture "github.com/confidential-dot-ai/c8s/test/tdxpod/fixtures/pod-connected"
 )
 
@@ -73,6 +75,146 @@ func TestCloudAcceptanceCDSServedOnlyWorkload(t *testing.T) {
 	}
 	if _, _, err = r.cdsWorkload(endpoint{Name: "cds", Host: "127.0.0.1", Port: 30808}); err == nil {
 		t.Fatal("guest probe accepted a non-owned local target")
+	}
+}
+
+// Exercise the production seed-store and export serializer. An authenticated
+// CDS starts with measured component rules as well as the signed mesh entry.
+func TestCloudAcceptanceCDSSeededBaseline(t *testing.T) {
+	r, _, _ := cloudOwnershipFixture(t)
+	mesh := `{"containers":[{"digest":"sha256:` + strings.Repeat("b", 64) + `","image":"mesh","command":{"policy":"any"},"args":{"policy":"any"}}]}`
+	component := `{"containers":[{"digest":"sha256:` + strings.Repeat("c", 64) + `","image":"component","command":{"policy":"exact","argv":["component"]}}]}`
+	app := `{"containers":[{"digest":"sha256:` + strings.Repeat("a", 64) + `","image":"app","command":{"policy":"exact","argv":["app"]}}]}`
+	launch := []byte(`{"schema":"c8s.allowlist/v1","workloads":{"pod-mesh-membership":` + mesh + `}}`)
+	application := []byte(`{"schema":"c8s.allowlist/v1","workloads":{"pod-mesh-membership":` + mesh + `,"cloud-a":` + app + `}}`)
+	seed, err := pkgallowlist.ParseJSON([]byte(`{"schema":"c8s.allowlist/v1","workloads":{"component":` + component + `}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	authored, err := pkgallowlist.ParseJSON(launch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// nodeservices.mergedSeed combines both normalized inputs before CDS
+	// seedStore parses them and seeds the production SQLite store.
+	seed.Workloads["pod-mesh-membership"] = authored.Workloads["pod-mesh-membership"]
+	if err = seed.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	wire, _ := seed.Canonical()
+	seed, err = pkgallowlist.ParseJSON(wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := storeallowlist.OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if _, _, err = store.SeedWorkloads(seed.Workloads); err != nil {
+		t.Fatal(err)
+	}
+	export := func() []byte {
+		t.Helper()
+		doc, _, loadErr := store.LoadAll()
+		if loadErr != nil {
+			t.Fatal(loadErr)
+		}
+		raw, marshalErr := doc.Canonical()
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		return raw
+	}
+	baseline := export()
+	oldExpected, _ := authored.Canonical()
+	if bytes.Equal(oldExpected, baseline) {
+		t.Fatal("regression no longer reproduces the old mesh-only comparison failure")
+	}
+	before, after, err := cloudCDSServedPolicies(launch, application, baseline)
+	if err != nil || !bytes.Equal(before, baseline) {
+		t.Fatalf("measured component baseline was not preserved: %v", err)
+	}
+	added, _ := pkgallowlist.ParseJSON(application)
+	if err = store.PutWorkload("cloud-a", added.Workloads["cloud-a"]); err != nil {
+		t.Fatal(err)
+	}
+	if err = r.cdsPolicyRequire("add-after", after, export()); err != nil {
+		t.Fatal(err)
+	}
+	if deleted, deleteErr := store.DeleteWorkload("cloud-a"); deleteErr != nil || !deleted {
+		t.Fatalf("delete: %v", deleteErr)
+	}
+	if err = r.cdsPolicyRequire("delete-after", before, export()); err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func(*pkgallowlist.Allowlist){
+		"missing-mesh": func(p *pkgallowlist.Allowlist) { delete(p.Workloads, "pod-mesh-membership") },
+		"changed-mesh": func(p *pkgallowlist.Allowlist) {
+			w := p.Workloads["pod-mesh-membership"]
+			w.Containers[0].Env.Policy = pkgallowlist.PolicyDeny
+			p.Workloads["pod-mesh-membership"] = w
+		},
+		"app-name": func(p *pkgallowlist.Allowlist) { p.Workloads["cloud-a"] = p.Workloads["component"] },
+		"alternate-app-digest": func(p *pkgallowlist.Allowlist) {
+			w := p.Workloads["component"]
+			w.Containers[0].Digest = added.Workloads["cloud-a"].Containers[0].Digest
+			p.Workloads["other"] = w
+		},
+		"alternate-app-image": func(p *pkgallowlist.Allowlist) {
+			w := p.Workloads["component"]
+			w.Containers[0].Image = "app"
+			p.Workloads["component"] = w
+		},
+		"init-app-digest": func(p *pkgallowlist.Allowlist) {
+			w := p.Workloads["component"]
+			w.InitContainers = added.Workloads["cloud-a"].Containers
+			p.Workloads["component"] = w
+		},
+		"init-app-image": func(p *pkgallowlist.Allowlist) {
+			w := p.Workloads["component"]
+			c := w.Containers[0]
+			c.Image = "app"
+			w.InitContainers = []pkgallowlist.Container{c}
+			p.Workloads["component"] = w
+		},
+		"missing-digest": func(p *pkgallowlist.Allowlist) {
+			w := p.Workloads["component"]
+			w.Containers[0].Digest = types.Digest{}
+			p.Workloads["component"] = w
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			p, _ := pkgallowlist.ParseJSON(baseline)
+			mutate(p)
+			raw, _ := p.Canonical()
+			if _, _, err := cloudCDSServedPolicies(launch, application, raw); err == nil {
+				t.Fatal("unsafe initial baseline accepted")
+			}
+		})
+	}
+	if _, _, err = cloudCDSServedPolicies(launch, application, bytes.Replace(baseline, []byte(strings.Repeat("c", 64)), []byte("*"), 1)); err == nil {
+		t.Fatal("wildcard digest accepted")
+	}
+	for _, stage := range []string{"add-before", "add-after", "outage-before", "delete-before", "delete-after"} {
+		t.Run(stage+"-drift", func(t *testing.T) {
+			want := before
+			if stage == "add-after" || stage == "outage-before" || stage == "delete-before" {
+				want = after
+			}
+			p, _ := pkgallowlist.ParseJSON(want)
+			w := p.Workloads["component"]
+			w.Containers[0].Command.Argv = []string{"changed-component"}
+			p.Workloads["component"] = w
+			drifted, _ := p.Canonical()
+			if err := r.cdsPolicyRequire(stage, want, drifted); err == nil {
+				t.Fatal("component drift was accepted after baseline capture")
+			}
+			receipt, err := os.ReadFile(filepath.Join(r.dir, "cds-policy-"+stage+"-mismatch.json"))
+			if err != nil || bytes.Contains(receipt, []byte("changed-component")) || !bytes.Contains(receipt, []byte(cloudHash(drifted))) {
+				t.Fatal("policy mismatch diagnostic lost its hash or leaked policy content")
+			}
+		})
 	}
 }
 

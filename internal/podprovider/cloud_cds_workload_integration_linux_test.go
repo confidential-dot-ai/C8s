@@ -7,9 +7,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -139,10 +141,103 @@ func (r *cloudRun) cdsPolicies(cfg *Config) ([]byte, []byte, error) {
 	return before, after, err
 }
 
+// CDS seeds its measured platform entries before merging the signed launch
+// workloads. Freeze that authenticated baseline only after proving the exact
+// launch rule survives and no entry can already admit the application.
+func cloudCDSServedPolicies(launch, application, baseline []byte) ([]byte, []byte, error) {
+	base, err := pkgallowlist.ParseJSON(launch)
+	if err != nil {
+		return nil, nil, err
+	}
+	added, err := pkgallowlist.ParseJSON(application)
+	if err != nil {
+		return nil, nil, err
+	}
+	served, err := pkgallowlist.ParseJSON(baseline)
+	if err != nil {
+		return nil, nil, err
+	}
+	app, exists := added.Workloads["cloud-a"]
+	if !exists || len(app.Containers) != 1 {
+		return nil, nil, errors.New("missing exact application policy")
+	}
+	if _, exists = served.Workloads["cloud-a"]; exists {
+		return nil, nil, errors.New("application already present in CDS baseline")
+	}
+	for name, want := range base.Workloads {
+		got, exists := served.Workloads[name]
+		wantJSON, _ := json.Marshal(want)
+		gotJSON, _ := json.Marshal(got)
+		if !exists || !bytes.Equal(wantJSON, gotJSON) {
+			return nil, nil, errors.New("CDS baseline changed an immutable launch rule")
+		}
+	}
+	for _, workload := range served.Workloads {
+		for _, containers := range [][]pkgallowlist.Container{workload.InitContainers, workload.Containers} {
+			for _, container := range containers {
+				if container.Digest == app.Containers[0].Digest || container.Image == app.Containers[0].Image {
+					return nil, nil, errors.New("CDS baseline already admits the application image")
+				}
+			}
+		}
+	}
+	before, err := served.Canonical()
+	if err != nil {
+		return nil, nil, err
+	}
+	served.Workloads["cloud-a"] = app
+	after, err := served.Canonical()
+	return before, after, err
+}
+
+// Diagnostics expose only bounded entry names and hashes, never policy argv,
+// grants or credentials. Full canonical policies remain in private evidence.
+func cloudCDSPolicySummary(raw []byte) map[string]any {
+	var doc struct {
+		Workloads map[string]json.RawMessage `json:"workloads"`
+	}
+	_ = json.Unmarshal(raw, &doc)
+	keys := slices.Sorted(maps.Keys(doc.Workloads))
+	return map[string]any{"sha256": cloudHash(raw), "workloadCount": len(keys), "keys": keys[:min(len(keys), 64)]}
+}
+
+func (r *cloudRun) cdsPolicyMismatch(stage string, expected, actual []byte, reason error) error {
+	return errors.Join(reason, cloudWrite(filepath.Join(r.dir, "cds-policy-"+stage+"-mismatch.json"), map[string]any{
+		"at": time.Now().UTC(), "expected": cloudCDSPolicySummary(expected), "actual": cloudCDSPolicySummary(actual),
+	}))
+}
+
+func (r *cloudRun) cdsPolicyRequire(stage string, expected, actual []byte) error {
+	if bytes.Equal(expected, actual) {
+		return nil
+	}
+	return r.cdsPolicyMismatch(stage, expected, actual, errors.New("owned CDS policy differs from the frozen complete policy"))
+}
+
 func (r *cloudRun) cdsPolicyUpdate(ctx context.Context, cfg *Config, cds endpoint, add bool) error {
-	base, added, err := r.cdsPolicies(cfg)
+	launch, application, err := r.cdsPolicies(cfg)
 	if err != nil {
 		return err
+	}
+	_, actual, err := r.policy(ctx, cds)
+	if err != nil {
+		return err
+	}
+	baselinePath := filepath.Join(r.dir, "cds-policy-baseline.json")
+	baseline := actual
+	if add {
+		if _, statErr := os.Lstat(baselinePath); !os.IsNotExist(statErr) {
+			return errors.New("CDS baseline already captured or inaccessible")
+		}
+	} else {
+		baseline, err = cloudPrivateRead(baselinePath, 2<<20)
+		if err != nil {
+			return err
+		}
+	}
+	base, added, err := cloudCDSServedPolicies(launch, application, baseline)
+	if err != nil {
+		return r.cdsPolicyMismatch("baseline", launch, baseline, err)
 	}
 	before, after, action := base, added, "add"
 	args := []string{"allowlist", "apply", filepath.Join(r.dir, "cds-app-policy.json")}
@@ -150,14 +245,15 @@ func (r *cloudRun) cdsPolicyUpdate(ctx context.Context, cfg *Config, cds endpoin
 		before, after, action = added, base, "delete"
 		args = []string{"allowlist", "delete", "cloud-a"}
 	}
-	_, actual, err := r.policy(ctx, cds)
-	if err != nil {
+	if err = r.cdsPolicyRequire(action+"-before", before, actual); err != nil {
 		return err
 	}
-	if !bytes.Equal(actual, before) {
-		return errors.New("owned CDS policy differs before signed application update")
+	if add {
+		if err = cloudWriteBytes(baselinePath, base); err != nil {
+			return err
+		}
 	}
-	if err = cloudWrite(filepath.Join(r.dir, "cds-policy-"+action+"-intent.json"), map[string]any{"at": time.Now().UTC(), "before": json.RawMessage(before), "after": json.RawMessage(after)}); err != nil {
+	if err = cloudWrite(filepath.Join(r.dir, "cds-policy-"+action+"-intent.json"), map[string]any{"at": time.Now().UTC(), "baselineSHA256": cloudHash(base), "before": json.RawMessage(before), "after": json.RawMessage(after)}); err != nil {
 		return err
 	}
 	args = append(args, r.cdsOptions(cds)...)
@@ -169,8 +265,8 @@ func (r *cloudRun) cdsPolicyUpdate(ctx context.Context, cfg *Config, cds endpoin
 	if err != nil {
 		return err
 	}
-	if !bytes.Equal(actual, after) {
-		return errors.New("authenticated CDS update changed unexpected policy entries")
+	if err = r.cdsPolicyRequire(action+"-after", after, actual); err != nil {
+		return err
 	}
 	return cloudWrite(filepath.Join(r.dir, "cds-policy-"+action+".json"), map[string]any{"at": time.Now().UTC(), "canonical": json.RawMessage(actual), "sha256": cloudHash(actual)})
 }

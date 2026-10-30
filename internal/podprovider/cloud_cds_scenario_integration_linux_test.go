@@ -105,6 +105,14 @@ func (r *cloudRun) cdsOutage(ctx context.Context, h *providerControlPlane, cfg *
 	if json.Unmarshal([]byte(doc.Workloads), &actualBase) != nil || json.Unmarshal(base, &expectedBase) != nil || !reflect.DeepEqual(actualBase, expectedBase) {
 		return errors.New("signed Pod launch includes an application admission source")
 	}
+	baseline, err := cloudPrivateRead(filepath.Join(r.dir, "cds-policy-baseline.json"), 2<<20)
+	if err != nil {
+		return err
+	}
+	_, added, err = cloudCDSServedPolicies(base, added, baseline)
+	if err != nil {
+		return err
+	}
 	ca, err := r.ca(ctx, cds)
 	if err != nil {
 		return err
@@ -113,8 +121,8 @@ func (r *cloudRun) cdsOutage(ctx context.Context, h *providerControlPlane, cfg *
 	if err != nil {
 		return err
 	}
-	if !bytes.Equal(actual, added) {
-		return errors.New("CDS did not retain the exact signed application update")
+	if err = r.cdsPolicyRequire("outage-before", added, actual); err != nil {
+		return err
 	}
 	sequence := 0
 	observe := func() (cloudCDSState, error) {
