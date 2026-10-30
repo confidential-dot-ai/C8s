@@ -1,9 +1,9 @@
 github.com/cenkalti/backoff/v5 v5.0.3 h1:ZN+IMa753KfX5hd8vVaMixjnqRZ3y8CuJKRKj1xcsSM=
 github.com/cenkalti/backoff/v5 v5.0.3/go.mod h1:rkhZdG3JZukswDf7f0cwqPNk4K0sa+F97BxZthm/crw=
-github.com/confidential-dot-ai/attestation-go v0.8.1 h1:E1U3zcSqiyemqPzYNDYjb3RLGgAzds6nG/jI8GHYd8Y=
-github.com/confidential-dot-ai/attestation-go v0.8.1/go.mod h1:kOYIqCounvl1Ca9SM5AMiop5ePI1V6VEfLR14bWf9hk=
-github.com/confidential-dot-ai/c8s v0.63.0 h1:WKWhJaYL71MSXhwRJbH/ZBmRrn32qZ8RcwUc0s5QiHY=
-github.com/confidential-dot-ai/c8s v0.63.0/go.mod h1:vTigX6WDcT2TXUz6+snDWneGcVdNXUyGdcXMpUgIh60=
+github.com/confidential-dot-ai/attestation-go v0.8.2-0.20261028102134-fcdaf48f0eca h1:UVerZzOW1aEVol/RHcilH5PXUZsbBKhmPMNdrr1jOQQ=
+github.com/confidential-dot-ai/attestation-go v0.8.2-0.20261028102134-fcdaf48f0eca/go.mod h1:kOYIqCounvl1Ca9SM5AMiop5ePI1V6VEfLR14bWf9hk=
+github.com/confidential-dot-ai/c8s v0.74.0 h1:SnN8XPGW94YCNxNchp38VeW00fRKAPyk/73p37j1PQ0=
+github.com/confidential-dot-ai/c8s v0.74.0/go.mod h1:hCXwhQcNm24JT0S0PTXzytceElt0iZhFaE2ei7qm9m4=
 github.com/creack/pty v1.1.9/go.mod h1:oKZEueFk5CKHvIhNR5MUki03XCEU+Q6VDXinZuGJ33E=
 github.com/cucumber/gherkin/go/v42 v42.0.0 h1:Ulh3E2awUUSSja+wonP/IOQ+ycmiZwZbgmzqk5H8JNI=
 github.com/cucumber/gherkin/go/v42 v42.0.0/go.mod h1:CsaumaO2dR9XvBc6ZyiGLMhWCKtTRDxgoxqJigSjSSg=
