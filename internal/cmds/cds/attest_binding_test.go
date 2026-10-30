@@ -104,7 +104,7 @@ func TestAttest_FailedIssuanceBindsNothing(t *testing.T) {
 func TestAttest_SubjectDeniedDoesNotBindSandbox(t *testing.T) {
 	stub := newStubAttestationApi(t, testLaunchDigest)
 	h, signer := newSandboxTestEnv(t, stub.URL())
-	ledger := sandboxledger.New(time.Hour, 10)
+	ledger := sandboxledger.New(time.Hour, 10).Local()
 	h.SandboxBindings = ledger
 	csrPEM, _ := generateCSR(t)
 	challenge := issueChallenge(t, h)
@@ -130,7 +130,7 @@ func TestAttest_SubjectDeniedDoesNotBindSandbox(t *testing.T) {
 func TestAttest_SigningFailureDoesNotBindSandbox(t *testing.T) {
 	stub := newStubAttestationApi(t, testLaunchDigest)
 	h, signer := newSandboxTestEnv(t, stub.URL())
-	ledger := sandboxledger.New(time.Hour, 10)
+	ledger := sandboxledger.New(time.Hour, 10).Local()
 	h.SandboxBindings = ledger
 	h.MeshCA.Current().CA.Key = nil
 	csrPEM := sandboxCSR(t)

@@ -115,10 +115,10 @@ func run(cfg config) error {
 	}
 
 	asClient := armtls.NewAttestationClient(cfg.attestationApiURL)
-	challengeStore := attestation.NewChallengeStore(cfg.challengeTTL)
+	challengeStore := attestation.NewLocalChallenges(cfg.challengeTTL)
 	// A separate pool for /secrets: sharing one would make a nonce minted for
 	// issuance redeemable against a secret, and vice versa.
-	secretsChallenges := attestation.NewChallengeStore(cfg.challengeTTL)
+	secretsChallenges := attestation.NewLocalChallenges(cfg.challengeTTL)
 	checker := readiness.NewChecker(asClient, cfg.readinessInterval)
 
 	// Seed before serving so the first GET /allowlist returns the bootstrap
@@ -173,8 +173,10 @@ func run(cfg config) error {
 	// The ledger is written on every issuance, not only when secrets are on:
 	// enabling the feature later would otherwise start with an empty ledger and
 	// fail closed for every pod until its certificate next renews.
-	sandboxBindings := sandboxledger.New(issuer.CapTTL(cfg.certTTL, issuer.MaxLeafTTL), cfg.sandboxLedgerMax)
-	go sandboxBindings.EvictionLoop(ctx.Done(), cfg.rateLimiterEvictInterval)
+	sandboxBindings := sandboxledger.New(
+		issuer.CapTTL(cfg.certTTL, issuer.MaxLeafTTL),
+		cfg.sandboxLedgerMax,
+	).Local()
 
 	var (
 		secretsHandler  *secrets.Handler
@@ -184,11 +186,11 @@ func run(cfg config) error {
 	if enabled, why := secretsEnabled(pinned.Images, inventoryHosts); enabled {
 		// One store behind both handlers: an operator write and a workload read
 		// are two doors onto the same paths.
-		store := newSecretsStore(cfg)
+		store := newSecretsStore(cfg).Local()
 		policy := secrets.NewCachedPolicy(allowlistStore)
 		secretsHandler = &secrets.Handler{
 			Store:          store,
-			Challenges:     &secretsChallenges,
+			Challenges:     secretsChallenges,
 			Inventory:      sandboxDigests,
 			Bindings:       sandboxBindings,
 			Policy:         policy,
@@ -218,7 +220,7 @@ func run(cfg config) error {
 
 	deps := dependencies{
 		AttestHandler: AttestHandler{
-			Challenges:        &challengeStore,
+			Challenges:        challengeStore,
 			AttestationClient: asClient,
 			MeshCA:            mesh,
 			CertTTL:           cfg.certTTL,
@@ -251,7 +253,7 @@ func run(cfg config) error {
 		ChallengeLimiter:  challengeLimiter,
 		MaxRequestSize:    cfg.maxRequestSize,
 		SecretsHandler:    secretsHandler,
-		SecretsChallenges: &secretsChallenges,
+		SecretsChallenges: secretsChallenges,
 		SecretsOperator:   secretsOperator,
 		SecretsExplain:    secretsExplain,
 	}
