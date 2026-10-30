@@ -676,7 +676,13 @@ runs:
                     disk: {bus: virtio}
                   - name: cloudinit
                     disk: {bus: virtio}
-                interfaces: [{name: default, masquerade: {}}]
+                # The guest takes the launcher pod's own IP (the 172.20 the CDS
+                # admits), so node-ip, the inventory host and kube-apiserver's
+                # advertise address all resolve to one routable address: no
+                # Service in front, no advertise-host override. The SNP lane
+                # bridges its node VM the same way. masquerade here instead gives
+                # the guest a NAT-internal address no component can be reached at.
+                interfaces: [{name: default, bridge: {}}]
                 rng: {}
               firmware: {bootloader: {efi: {secureBoot: false}}}
               # Empty object: TDX takes no per-VM policy. Cluster config
