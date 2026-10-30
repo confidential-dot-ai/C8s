@@ -3,10 +3,13 @@ package cdsha
 import (
 	"context"
 	"fmt"
+	"io"
 	"maps"
+	"net"
 	"net/netip"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -46,12 +49,16 @@ const (
 // testCDSImage is the launch digest the replicas report and the pin decree names.
 var testCDSImage = strings.Repeat("11", 48)
 
+// testReplicaEntry is the replica entry every replica's discovery resolves.
+const testReplicaEntry = "replicas.cds.test"
+
 // liveReplica is one replica process: its attestation-api and its node.
 type liveReplica struct {
-	stub   *mockapi.Stub
-	node   *Node
-	cancel context.CancelFunc
-	done   chan struct{}
+	stub    *mockapi.Stub
+	node    *Node
+	resolve *addressBook
+	cancel  context.CancelFunc
+	done    chan struct{}
 }
 
 // liveCluster is a cluster of such replicas over shared launch values.
@@ -88,7 +95,10 @@ func (c *liveCluster) genesis(count int) {
 func (c *liveCluster) start() *liveReplica {
 	c.t.Helper()
 	stub := c.attestationAPI()
-	node, err := NewNode(c.replicaConfig(stub))
+	resolve := &addressBook{}
+	cfg := c.replicaConfig(stub)
+	cfg.Resolve = resolve.resolve
+	node, err := NewNode(cfg)
 	if err != nil {
 		c.t.Fatalf("new replica: %v", err)
 	}
@@ -97,10 +107,11 @@ func (c *liveCluster) start() *liveReplica {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &liveReplica{
-		stub:   stub,
-		node:   node,
-		cancel: cancel,
-		done:   make(chan struct{}),
+		stub:    stub,
+		node:    node,
+		resolve: resolve,
+		cancel:  cancel,
+		done:    make(chan struct{}),
 	}
 	go func() {
 		defer close(r.done)
@@ -109,12 +120,57 @@ func (c *liveCluster) start() *liveReplica {
 		}
 	}()
 	c.replicas = append(c.replicas, r)
+	c.resolveEachOther()
 	c.t.Cleanup(func() {
 		if slices.Contains(c.replicas, r) {
 			c.stop(r)
 		}
 	})
 	return r
+}
+
+// resolveEachOther makes every replica's entry answer with every peer address.
+func (c *liveCluster) resolveEachOther() {
+	addresses := c.peerAddresses()
+	for _, r := range c.replicas {
+		r.resolve.holds(addresses...)
+	}
+}
+
+// peerAddress is where this replica's peer port answers.
+func (r *liveReplica) peerAddress() netip.AddrPort {
+	return r.node.mux.advert.endpoint
+}
+
+// peerAddresses is where every replica of the cluster answers.
+func (c *liveCluster) peerAddresses() []netip.AddrPort {
+	addresses := make([]netip.AddrPort, 0, len(c.replicas))
+	for _, r := range c.replicas {
+		addresses = append(addresses, r.peerAddress())
+	}
+	return addresses
+}
+
+// addressBook is what one replica's discovery resolves.
+type addressBook struct {
+	mu        sync.Mutex
+	addresses []netip.AddrPort
+}
+
+// holds makes the cluster's entry answer with these addresses.
+func (b *addressBook) holds(addresses ...netip.AddrPort) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.addresses = addresses
+}
+
+func (b *addressBook) resolve(_ context.Context, entry string) ([]netip.AddrPort, error) {
+	if entry != testReplicaEntry {
+		return nil, fmt.Errorf("the cluster has no replica entry %q", entry)
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return slices.Clone(b.addresses), nil
 }
 
 // attestationAPI reports the CDS image of the test cluster.
@@ -135,6 +191,7 @@ func (c *liveCluster) replicaConfig(stub *mockapi.Stub) Config {
 		Peer:           netip.MustParseAddrPort("127.0.0.1:0"),
 		AttestationURL: stub.URL(),
 		Timing:         testTiming,
+		Replicas:       []string{testReplicaEntry},
 		Allowlist:      inMemoryAllowlist(c.t),
 		Secrets:        secrets.NewMemoryStore(maxTestSecretPaths, maxTestPathsPerHolder, maxTestSecretValue),
 		Ledger:         sandboxledger.New(testBindingLife, maxTestSandboxBindings),
@@ -298,6 +355,78 @@ func closePeerConnections(m *mux) {
 	for _, connection := range open {
 		connection.Close()
 	}
+}
+
+// relay carries every connection to a replica's own peer port, as the host's
+// routing does; several replicas behind one answer there in turn.
+type relay struct {
+	listener net.Listener
+	cutAfter time.Duration
+
+	mu      sync.Mutex
+	to      []netip.AddrPort
+	carried int
+}
+
+// newRelay carries connections to the replicas given, one after the other.
+func newRelay(t *testing.T, cutAfter time.Duration, to ...netip.AddrPort) *relay {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	r := &relay{
+		listener: listener,
+		cutAfter: cutAfter,
+		to:       to,
+	}
+	go r.serve()
+	t.Cleanup(r.close)
+	return r
+}
+
+func (r *relay) address() netip.AddrPort {
+	return r.listener.Addr().(*net.TCPAddr).AddrPort()
+}
+
+func (r *relay) close() {
+	r.listener.Close()
+}
+
+func (r *relay) serve() {
+	for {
+		accepted, err := r.listener.Accept()
+		if err != nil {
+			return
+		}
+		go r.carry(accepted)
+	}
+}
+
+// carry splices one connection to the next replica behind the relay.
+func (r *relay) carry(accepted net.Conn) {
+	defer accepted.Close()
+	onward, err := net.Dial("tcp", r.next().String())
+	if err != nil {
+		return
+	}
+	defer onward.Close()
+	if r.cutAfter > 0 {
+		deadline := time.Now().Add(r.cutAfter)
+		_ = accepted.SetDeadline(deadline)
+		_ = onward.SetDeadline(deadline)
+	}
+	go func() { _, _ = io.Copy(onward, accepted) }()
+	_, _ = io.Copy(accepted, onward)
+}
+
+// next is the replica the next connection goes to.
+func (r *relay) next() netip.AddrPort {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	to := r.to[r.carried%len(r.to)]
+	r.carried++
+	return to
 }
 
 // caughtUp waits until r has applied every entry leader has applied.

@@ -31,8 +31,8 @@ const (
 
 var errTransportClosed = errors.New("cds-ha peer transport closed")
 
-// controlHandler answers one control request, each side one JSON value.
-type controlHandler func(from peer, request json.RawMessage) json.RawMessage
+// controlHandler answers one control request from an admitted peer.
+type controlHandler func(from peer, request controlRequest) controlAnswer
 
 // raftAddr is a member's Raft address: where it listens, and which member it
 // is. A Raft RPC names only its sender, so without the member id a process
@@ -84,6 +84,7 @@ type mux struct {
 	control  controlHandler
 	raftConn chan net.Conn
 	done     chan struct{}
+	accept   sync.Once
 	stop     sync.Once
 	refusals refusalLog
 
@@ -93,8 +94,9 @@ type mux struct {
 	peers   map[*peerConn]struct{}
 }
 
-// newMux serves peers on ln, as the member advert names. It owns ln, and
-// closes it and every connection on Close.
+// newMux prepares the peer port on ln, as the member advert names, and
+// serving starts answering on it. It owns ln, and closes it and every
+// connection on Close.
 func newMux(
 	ln net.Listener,
 	advert raftAddr,
@@ -114,8 +116,12 @@ func newMux(
 		inbound:  map[*inboundConn]struct{}{},
 		peers:    map[*peerConn]struct{}{},
 	}
-	go m.serve()
 	return m
+}
+
+// serving accepts peers from now on, once.
+func (m *mux) serving() {
+	m.accept.Do(func() { go m.serve() })
 }
 
 // inboundConn owns an accepted socket from admission through protocol close.
@@ -262,14 +268,20 @@ func (m *mux) serveRaft(connection *peerConn) {
 	}
 }
 
+// serveControl answers one control connection until the peer stops asking,
+// so a replica handshakes with a peer once and not once per request.
 func (m *mux) serveControl(connection *peerConn) {
 	defer connection.Close()
-	_ = connection.SetDeadline(time.Now().Add(controlDeadline))
-	var request json.RawMessage
-	if err := json.NewDecoder(io.LimitReader(connection, maxControlBytes)).Decode(&request); err != nil {
-		return
+	stream := newControlStream(connection)
+	for {
+		var request controlRequest
+		if err := stream.read(&request, controlDeadline); err != nil {
+			return
+		}
+		if err := stream.write(m.control(connection.peer, request), controlDeadline); err != nil {
+			return
+		}
 	}
-	_ = json.NewEncoder(connection).Encode(m.control(connection.peer, request))
 }
 
 // register puts an attested connection in the set recheck sweeps, judging it
@@ -383,22 +395,93 @@ func (m *mux) Dial(address raft.ServerAddress, timeout time.Duration) (net.Conn,
 	return registered, nil
 }
 
-// call sends one control request to endpoint and names the peer that answers.
-func (m *mux) call(endpoint string, timeout time.Duration, request json.RawMessage) (peer, json.RawMessage, error) {
-	connection, admitted, err := m.dial(endpoint, muxControl, timeout)
+// connect opens a control connection to whatever member answers at endpoint.
+// The handshake attests that member, so the connection is where this replica
+// knows it to be.
+func (m *mux) connect(endpoint netip.AddrPort, timeout time.Duration) (*controlConn, error) {
+	connection, admitted, err := m.dial(endpoint.String(), muxControl, timeout)
 	if err != nil {
-		return peer{}, nil, err
+		return nil, err
 	}
-	defer connection.Close()
-	_ = connection.SetDeadline(time.Now().Add(timeout))
-	if err := json.NewEncoder(connection).Encode(request); err != nil {
-		return peer{}, nil, fmt.Errorf("control request to %s: %w", endpoint, err)
+	registered, err := m.register(connection, admitted)
+	if err != nil {
+		connection.Close()
+		return nil, err
 	}
-	var answer json.RawMessage
-	if err := json.NewDecoder(io.LimitReader(connection, maxControlBytes)).Decode(&answer); err != nil {
-		return peer{}, nil, fmt.Errorf("control answer from %s: %w", endpoint, err)
+	return &controlConn{
+		member: admitted.member,
+		conn:   registered,
+		stream: newControlStream(registered),
+	}, nil
+}
+
+// controlConn is the control connection this replica holds to one member: one
+// exchange at a time, so its rechecks and its forwarded writes share it.
+type controlConn struct {
+	member string
+	conn   *peerConn
+
+	mu     sync.Mutex
+	stream *controlStream
+}
+
+// exchange sends one request and reads the answer, refusing an answer that
+// names another member than the handshake admitted.
+func (c *controlConn) exchange(request controlRequest, within time.Duration) (controlAnswer, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.stream.write(request, within); err != nil {
+		return controlAnswer{}, c.broken(err)
 	}
-	return admitted, answer, nil
+	var answer controlAnswer
+	if err := c.stream.read(&answer, within); err != nil {
+		return controlAnswer{}, c.broken(err)
+	}
+	if answer.Member != c.member {
+		return controlAnswer{}, c.broken(fmt.Errorf("member %s answered for member %s", answer.Member, c.member))
+	}
+	return answer, nil
+}
+
+// broken closes a connection whose exchange failed: the bytes left on it
+// belong to a request the next exchange could not tell from its own.
+func (c *controlConn) broken(err error) error {
+	c.conn.Close()
+	return fmt.Errorf("control exchange with member %s: %w", c.member, err)
+}
+
+func (c *controlConn) close() {
+	c.conn.Close()
+}
+
+// controlStream carries the JSON values of one control connection, each
+// bounded in bytes and in time.
+type controlStream struct {
+	conn    net.Conn
+	bounded *io.LimitedReader
+	decoder *json.Decoder
+	encoder *json.Encoder
+}
+
+func newControlStream(conn net.Conn) *controlStream {
+	bounded := &io.LimitedReader{R: conn, N: maxControlBytes}
+	return &controlStream{
+		conn:    conn,
+		bounded: bounded,
+		decoder: json.NewDecoder(bounded),
+		encoder: json.NewEncoder(conn),
+	}
+}
+
+func (s *controlStream) read(v any, within time.Duration) error {
+	s.bounded.N = maxControlBytes
+	_ = s.conn.SetReadDeadline(time.Now().Add(within))
+	return s.decoder.Decode(v)
+}
+
+func (s *controlStream) write(v any, within time.Duration) error {
+	_ = s.conn.SetWriteDeadline(time.Now().Add(within))
+	return s.encoder.Encode(v)
 }
 
 // dial opens an attested connection of one kind, admitting the peer during

@@ -30,6 +30,9 @@ type Timing struct {
 	Election  time.Duration
 	Apply     time.Duration
 	Tick      time.Duration
+	// DeadAfter is how long an answer counts as live. Within it, an address
+	// several members answer at belongs to none of them.
+	DeadAfter time.Duration
 }
 
 // releaseTiming is the timer of every field a caller leaves unset.
@@ -38,6 +41,7 @@ var releaseTiming = Timing{
 	Election:  time.Second,
 	Apply:     10 * time.Second,
 	Tick:      time.Second,
+	DeadAfter: 20 * time.Second,
 }
 
 func (t Timing) orRelease() Timing {
@@ -46,19 +50,23 @@ func (t Timing) orRelease() Timing {
 		Election:  cmp.Or(t.Election, releaseTiming.Election),
 		Apply:     cmp.Or(t.Apply, releaseTiming.Apply),
 		Tick:      cmp.Or(t.Tick, releaseTiming.Tick),
+		DeadAfter: cmp.Or(t.DeadAfter, releaseTiming.DeadAfter),
 	}
 }
 
 // minRaftTimer is the shortest timer Raft takes.
 const minRaftTimer = 5 * time.Millisecond
 
-// check refuses the timers Raft refuses; the leader lease is half the heartbeat.
+// check refuses the timers Raft refuses, and a tick that outlasts the wait a
+// peer gives the next control request. The leader lease is half the heartbeat.
 func (t Timing) check() error {
 	switch {
 	case t.Heartbeat < 2*minRaftTimer:
 		return fmt.Errorf("cds-ha: a heartbeat of %s leaves a leader lease below %s", t.Heartbeat, minRaftTimer)
 	case t.Election < t.Heartbeat:
 		return fmt.Errorf("cds-ha: an election timer of %s is shorter than the %s heartbeat", t.Election, t.Heartbeat)
+	case t.Tick >= controlDeadline:
+		return fmt.Errorf("cds-ha: a tick of %s outlasts the %s a replica waits for a peer's next control request", t.Tick, controlDeadline)
 	}
 	return nil
 }
@@ -76,10 +84,26 @@ type Config struct {
 	// AttestationURL is the attestation-api on this VM's own loopback.
 	AttestationURL string
 	Timing         Timing
+	// Replicas are the names and addresses the cluster's replicas answer at,
+	// as the configuration lists them.
+	Replicas []string
+	// Resolve answers every address one replica entry names; the system
+	// resolver answers where the caller gives none.
+	Resolve resolveEntry
 
 	Allowlist *allowlist.Store
 	Secrets   *secrets.MemoryStore
 	Ledger    *sandboxledger.Ledger
+}
+
+// resolve answers every address one replica entry names: the system resolver,
+// unless the caller gave another. Every replica of a cluster serves its peers
+// on the one port this replica binds, so no entry names a port of its own.
+func (c Config) resolve(ctx context.Context, entry string) ([]netip.AddrPort, error) {
+	if c.Resolve != nil {
+		return c.Resolve(ctx, entry)
+	}
+	return resolveAtPort(ctx, entry, c.Peer.Port())
 }
 
 func (c Config) check() error {
@@ -90,6 +114,8 @@ func (c Config) check() error {
 		return fmt.Errorf("cds-ha: a replica launches with the address its peers dial, and %q is none", c.Peer)
 	case c.Allowlist == nil || c.Secrets == nil || c.Ledger == nil:
 		return errors.New("cds-ha: a replica launches with its allowlist, secret and binding stores")
+	case len(c.Replicas) == 0:
+		return errors.New("cds-ha: a replica launches with the replica set of its cluster")
 	}
 	return c.Timing.check()
 }
@@ -112,6 +138,10 @@ type Node struct {
 	// admitting is the cluster version the connections this replica holds
 	// were judged against. Only Run reads and writes it.
 	admitting uint64
+	// peers is where this replica reached the members of its cluster.
+	peers *members
+	// discoveryLog keeps a discovery that stays broken to one log line.
+	discoveryLog changedReason
 
 	allowlist *allowlist.Handle
 	secrets   *secrets.Handle
@@ -151,6 +181,7 @@ func NewNode(cfg Config) (*Node, error) {
 		logs:     newMemLog(),
 		snaps:    &snapStore{},
 	}
+	n.peers = newMembers(string(n.member), cfg.Timing.DeadAfter)
 	if err := n.mintIdentity(); err != nil {
 		return nil, err
 	}
@@ -240,7 +271,7 @@ func (n *Node) Start() error {
 		n.answeringAt(listener),
 		n.certificate,
 		n.verifier(),
-		noControlRequests,
+		n.answerControl,
 	)
 	n.transport = newTermSafeHeartbeats(
 		raft.NewNetworkTransportWithConfig(peerTransportConfig(n.mux, config.Logger)),
@@ -252,6 +283,9 @@ func (n *Node) Start() error {
 	}
 	n.transport.follows(started)
 	n.raft = started
+	// A control request is answered out of this replica's Raft, so the port
+	// takes none before there is one.
+	n.mux.serving()
 	return nil
 }
 
@@ -341,6 +375,8 @@ func (n *Node) Run(ctx context.Context) error {
 		return errors.New("cds-ha: this replica is not started")
 	}
 	defer n.stop()
+	stopReaching := n.reachingMembers(ctx)
+	defer stopReaching()
 	tick := time.NewTicker(n.cfg.Timing.Tick)
 	defer tick.Stop()
 	n.admitting = n.fsm.ClusterState().Version
@@ -352,6 +388,21 @@ func (n *Node) Run(ctx context.Context) error {
 		}
 		n.renewIdentity()
 		n.recheckPeers()
+	}
+}
+
+// reachingMembers runs the membership loop on a goroutine of its own, so a
+// dial that waits on the network holds up no other duty of the replica.
+func (n *Node) reachingMembers(ctx context.Context) (stopReaching func()) {
+	reaching, stop := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		n.reachMembers(reaching)
+	}()
+	return func() {
+		stop()
+		<-done
 	}
 }
 
@@ -409,11 +460,6 @@ func (n *Node) proposable(e Entry, entry []byte) error {
 		return errors.New("cds-ha: this replica stopped following the log: " + reason)
 	}
 	return n.fsm.Admit(entry)
-}
-
-// noControlRequests: a peer reaches this replica for Raft only.
-func noControlRequests(peer, json.RawMessage) json.RawMessage {
-	return nil
 }
 
 const appliedPoll = 2 * time.Millisecond

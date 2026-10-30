@@ -417,6 +417,7 @@ func (r *testReplica) serve(t *testing.T) {
 		r.verifier(),
 		r.answer,
 	)
+	r.mux.serving()
 	t.Cleanup(func() { r.mux.Close() })
 }
 
@@ -435,12 +436,14 @@ func (r *testReplica) refuses(reply mockapi.ErrorReply) { r.stub.SetVerifyError(
 // verdicts counts the verdicts this replica's attestation-api has given.
 func (r *testReplica) verdicts() int { return len(r.stub.VerifyRequests()) }
 
-func (r *testReplica) endpoint() string { return r.mux.advert.endpoint.String() }
+// peerAddress is where this replica's peer port answers.
+func (r *testReplica) peerAddress() netip.AddrPort { return r.mux.advert.endpoint }
 
 func (r *testReplica) raftAddress() string { return r.mux.Addr().String() }
 
-// answer reports the peer the control channel handed over, and echoes request.
-func (r *testReplica) answer(from peer, request json.RawMessage) json.RawMessage {
+// answer reports which peer the control channel handed over, and names the
+// member answering, as a replica of the cluster does.
+func (r *testReplica) answer(from peer, _ controlRequest) controlAnswer {
 	r.answered <- from
-	return request
+	return controlAnswer{Member: r.member}
 }
