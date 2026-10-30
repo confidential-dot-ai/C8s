@@ -1,6 +1,6 @@
 .PHONY: build install build-c8s build-c8s-node build-get-cert build-armtls-mesh \
        build-nri-image-policy \
-       test test-podmesh-netns test-integration test-integration-cluster test-node-guest-image-role test-node-guest-image-gpu-label test-node-guest-image-gpu-cc test-node-guest-image-scratch test-node-guest-image-psa-ready test-node-guest-image-role-systemd test-node-guest-image-cloud-init test-e2e-cw-label-policy test-e2e-allowlist-enforcement test-e2e-components-ready test-e2e-cw-workload mutation-check mutation-full vet fmt lint clean \
+       test test-podmesh-netns test-integration test-integration-cluster test-integration-cdsha test-node-guest-image-role test-node-guest-image-gpu-label test-node-guest-image-gpu-cc test-node-guest-image-scratch test-node-guest-image-psa-ready test-node-guest-image-role-systemd test-node-guest-image-cloud-init test-e2e-cw-label-policy test-e2e-allowlist-enforcement test-e2e-components-ready test-e2e-cw-workload mutation-check mutation-full vet fmt lint clean \
        manifests generate check-crd-chart install-controller-gen require-controller-gen
 
 CONTROLLER_GEN         ?= controller-gen
@@ -101,6 +101,10 @@ test-integration:
 # Integration (cluster) job.
 test-integration-cluster:
 	./test/integration/cluster/run.sh
+
+# Three real `c8s cds` replicas of one cluster on loopback addresses (Linux).
+test-integration-cdsha:
+	./test/integration/cdsha/run.sh -short
 
 # The byte-exact launch script with device and C8s stubs in disposable Linux.
 # Needs Docker; host files are mounted read-only and no privileges are added.
