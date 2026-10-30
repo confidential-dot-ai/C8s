@@ -448,6 +448,11 @@ func (c *controlConn) exchange(request controlRequest, within time.Duration) (co
 	return answer, nil
 }
 
+// attested is the verdict the member on the other side was admitted on.
+func (c *controlConn) attested() verdict {
+	return c.conn.peer.verdict
+}
+
 // broken closes a connection whose exchange failed: the bytes left on it
 // belong to a request the next exchange could not tell from its own.
 func (c *controlConn) broken(err error) error {

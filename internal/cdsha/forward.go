@@ -1,9 +1,9 @@
-// Forwarded writes: a client write a replica takes becomes an entry the
-// leader commits.
+// Forwarded work: a client write or an operator's decree a replica takes
+// becomes an entry the leader commits.
 //
-// Only the leader appends to the log, so a replica hands the write to it and
-// answers its client once it has applied the entry itself. The leader decodes
-// the entry again, refuses every kind that is its own, stamps the cluster's
+// Only the leader appends to the log, so a replica hands the work to it and
+// answers once it has applied the entry itself. The leader decodes what
+// arrived again, refuses every kind that is its own, stamps the cluster's
 // clock on it, judges it against the admission cap and commits what it
 // encoded: nothing a replica forwards reaches the log in the words it sent.
 
@@ -15,19 +15,17 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
+
+	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
 )
 
 // forward hands an entry to the cluster's leader and returns once this
 // replica has applied it too, so the client's next read sees its own write.
 // The leader's commit and this replica's apply share Timing.Apply.
 func (n *Node) forward(entry []byte) (Result, error) {
-	_, leader := n.raft.LeaderWithID()
-	if leader == "" {
-		return Result{}, errors.New("cds-ha: this cluster has no leader (fewer than a majority of its voters answer)")
-	}
-	held, reached := n.peers.knownAt(string(leader))
-	if !reached {
-		return Result{}, fmt.Errorf("cds-ha: this replica has not reached the leader, member %s", leader)
+	held, err := n.leaderChannel()
+	if err != nil {
+		return Result{}, err
 	}
 	deadline := time.Now().Add(n.cfg.Timing.Apply)
 	write := controlRequest{
@@ -48,6 +46,66 @@ func (n *Node) forward(entry []byte) (Result, error) {
 	}
 	var res Result
 	return res, decodeStrict(answer.Result, &res)
+}
+
+func (n *Node) leaderChannel() (reachedMember, error) {
+	_, leader := n.raft.LeaderWithID()
+	if leader == "" {
+		return reachedMember{}, errors.New("cds-ha: this cluster has no leader (fewer than a majority of its voters answer)")
+	}
+	held, reached := n.peers.knownAt(string(leader))
+	if !reached {
+		return reachedMember{}, fmt.Errorf("cds-ha: this replica has not reached the leader, member %s", leader)
+	}
+	return held, nil
+}
+
+// forwardDecree hands a decree to the cluster's leader, which judges it and
+// commits it.
+func (n *Node) forwardDecree(signed cdsdecree.Signed) (Delivered, error) {
+	posted, err := json.Marshal(signed)
+	if err != nil {
+		return Delivered{}, err
+	}
+	held, err := n.leaderChannel()
+	if err != nil {
+		return Delivered{}, err
+	}
+	answer, err := held.control.exchange(controlRequest{Op: opDecree, Decree: posted}, n.cfg.Timing.Apply)
+	if err != nil {
+		return Delivered{}, err
+	}
+	if answer.Err != "" {
+		return Delivered{}, errors.New("cds-ha: the leader did not take the decree: " + answer.Err)
+	}
+	if answer.Delivered == nil {
+		return Delivered{}, errors.New("cds-ha: the leader took the decree and answered nothing about it")
+	}
+	return *answer.Delivered, nil
+}
+
+// answerDecree applies a decree another replica was posted under this leader's
+// own judgement: it checks the operator's signature, as that replica did.
+func (n *Node) answerDecree(posted json.RawMessage, answer controlAnswer) controlAnswer {
+	if !n.leading() {
+		return n.redirectToLeader(answer)
+	}
+	signed, err := cdsdecree.Parse(posted)
+	if err != nil {
+		answer.Err = err.Error()
+		return answer
+	}
+	if err := n.operatorSigned(signed); err != nil {
+		answer.Err = err.Error()
+		return answer
+	}
+	delivered, err := n.applyDecree(signed)
+	if err != nil {
+		answer.Err = err.Error()
+		return answer
+	}
+	answer.Delivered = &delivered
+	return answer
 }
 
 // refusedByLeader is the leader's refusal as the forwarding replica's own
@@ -135,7 +193,7 @@ func clientWrite(entry Entry) bool {
 
 // leadersOwn is an entry only the cluster's leader writes.
 func leadersOwn(entry Entry) bool {
-	return entry.Format != 0 || entry.SetFormat != 0 || entry.Decree != nil || entry.Doubt != nil
+	return entry.Format != 0 || entry.SetFormat != 0 || entry.Decree != nil || entry.Doubt != nil || entry.RenewCA != nil
 }
 
 // underLeaderClock stamps the entry with the cluster's one clock: a binding's

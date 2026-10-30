@@ -156,10 +156,13 @@ type Node struct {
 	// posted are the decrees the operator posted to this replica and it has
 	// yet to act on.
 	posted postedDecrees
+	// decreedImages are admitted until this replica joins a cluster.
+	decreedImages atomic.Pointer[[]remote.ImagePin]
 	// These keep a condition that holds tick after tick to one log line.
 	discoveryLog changedReason
 	genesisLog   changedReason
 	joinLog      changedReason
+	admitLog     changedReason
 
 	// lease is the read lease this replica answers reads under, and outage
 	// is why it has none (lease.go). barriers holds the one barrier a leader
@@ -336,12 +339,13 @@ func (n *Node) verifier() peerVerifier {
 // admitsNobody is the image set that admits no peer.
 var admitsNobody []remote.ImagePin
 
-// admits is the cluster's CDS image set once it holds one, and this replica's
-// own image until then.
+// admits is the images this replica admits a peer by: the cluster's CDS image
+// set once it holds one, and its own image, with whatever an Admit decree
+// names for it, until then.
 func (n *Node) admits() []remote.ImagePin {
 	core := n.fsm.ClusterState()
 	if !core.Joined() {
-		return []remote.ImagePin{n.identity.Load().self}
+		return n.admitsBeforeJoining()
 	}
 	images, err := clusterImages(core, n.cfg.LaunchFile)
 	if err != nil {
@@ -349,6 +353,17 @@ func (n *Node) admits() []remote.ImagePin {
 		return admitsNobody
 	}
 	return images
+}
+
+// admitsBeforeJoining adds the images an Admit decree names for this replica,
+// so a replica of a new image reaches a cluster still running the old one.
+func (n *Node) admitsBeforeJoining() []remote.ImagePin {
+	own := []remote.ImagePin{n.identity.Load().self}
+	decreed := n.decreedImages.Load()
+	if decreed == nil {
+		return own
+	}
+	return append(own, *decreed...)
 }
 
 // clusterImages are the images of the cluster's pin decree, bound to the
@@ -403,8 +418,10 @@ func (n *Node) Run(ctx context.Context) error {
 		return errors.New("cds-ha: this replica is not started")
 	}
 	defer n.stop()
-	stopReaching := n.reachingMembers(ctx)
+	stopReaching := onItsOwn(ctx, n.reachMembers)
 	defer stopReaching()
+	stopDuties := onItsOwn(ctx, n.keepCluster)
+	defer stopDuties()
 	stopReads := n.serveReads(ctx)
 	defer stopReads()
 	tick := time.NewTicker(n.cfg.Timing.Tick)
@@ -421,17 +438,17 @@ func (n *Node) Run(ctx context.Context) error {
 	}
 }
 
-// reachingMembers runs the membership loop on a goroutine of its own, so a
-// dial that waits on the network holds up no other duty of the replica.
-func (n *Node) reachingMembers(ctx context.Context) (stopReaching func()) {
-	reaching, stop := context.WithCancel(ctx)
+// onItsOwn runs one loop of the replica on a goroutine of its own, so work
+// that waits on the network holds up no other duty of the replica.
+func onItsOwn(ctx context.Context, loop func(context.Context)) (endAndWait func()) {
+	running, end := context.WithCancel(ctx)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		n.reachMembers(reaching)
+		loop(running)
 	}()
 	return func() {
-		stop()
+		end()
 		<-done
 	}
 }

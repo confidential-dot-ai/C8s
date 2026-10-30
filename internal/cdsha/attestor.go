@@ -108,6 +108,10 @@ func (v verdict) admittedBy(images []remote.ImagePin) error {
 	return armtls.EnforceImages(v.response, images, v.verifiedPlatform, noRuntimeExtensions)
 }
 
+func (v verdict) runs(images []remote.ImagePin) bool {
+	return v.admittedBy(images) == nil
+}
+
 const selfPinName = "this replica's image"
 
 // imagePin is the launch identity this verdict reports, bound to launchFile.

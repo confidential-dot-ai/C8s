@@ -19,6 +19,7 @@ import (
 	"slices"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
@@ -37,8 +38,10 @@ const (
 	KindBinding   EntryKind = "binding"
 	KindDecree    EntryKind = "decree"
 	// KindDoubt records a Recover decree no replica could confirm.
-	KindDoubt  EntryKind = "recover_doubt"
-	KindFormat EntryKind = "format"
+	KindDoubt EntryKind = "recover_doubt"
+	// KindRenewCA carries the cluster's mesh CA certificate, signed again.
+	KindRenewCA EntryKind = "renew_ca"
+	KindFormat  EntryKind = "format"
 )
 
 // Entry is one log entry. Exactly one payload is set, the one its kind names.
@@ -55,6 +58,7 @@ type Entry struct {
 	Binding   *sandboxledger.Command `json:"binding,omitempty"`
 	Decree    *DecreeEntry           `json:"decree,omitempty"`
 	Doubt     *cdsdecree.Signed      `json:"recover_doubt,omitempty"`
+	RenewCA   *RenewCAEntry          `json:"renew_ca,omitempty"`
 }
 
 // Result is what applying one entry produced: the answer of the store command
@@ -184,6 +188,8 @@ func (f *FSM) apply(e Entry) Result {
 		return f.applyDecree(*e.Decree)
 	case e.Kind == KindDoubt && e.Doubt != nil:
 		return f.applyDoubt(*e.Doubt)
+	case e.Kind == KindRenewCA && e.RenewCA != nil:
+		return f.applyRenewCA(*e.RenewCA)
 	case e.Kind == KindFormat && e.SetFormat != 0:
 		return f.applySetFormat(e.SetFormat)
 	}
@@ -288,6 +294,26 @@ func (f *FSM) applyDoubt(sd cdsdecree.Signed) Result {
 	return Result{
 		Decree: &DecreeResult{Version: f.core.Version},
 	}
+}
+
+// applyRenewCA takes the mesh CA certificate the leader signed again. A
+// certificate of another key or another issuer is one no replica can serve:
+// every leaf the cluster issued names its issuer by subject and key.
+func (f *FSM) applyRenewCA(e RenewCAEntry) Result {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.ca == nil {
+		return Result{Stop: f.stop(errors.New("a renewed mesh CA certificate reached a replica that holds no mesh CA"))}
+	}
+	renewed, err := renewalOf(f.ca, e.MeshCACert)
+	if err != nil {
+		return Result{Stop: f.stop(err)}
+	}
+	f.core.MeshCACert = slices.Clone(e.MeshCACert)
+	f.ca = renewed
+	slog.Info("cds-ha: the cluster's mesh CA certificate is renewed", "audit", true,
+		"not_after", renewed.Cert.NotAfter.Format(time.RFC3339))
+	return Result{}
 }
 
 // DecreeRecord is one applied decree: what the operator signed, when the

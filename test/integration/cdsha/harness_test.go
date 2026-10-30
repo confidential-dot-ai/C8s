@@ -42,6 +42,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cdsha"
 	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
@@ -63,6 +64,9 @@ const (
 	// noAnswer is a replica that answered nothing, which no caller reads as a refusal.
 	noAnswer = 0
 )
+
+// nextCDSImage is the CDS image an image roll adds beside the one the replicas run.
+const nextCDSImage = "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
 
 // nodeImagesDocument is the node image set the cluster certifies: the
 // configuration seeds it and the Genesis decree carries it.
@@ -131,8 +135,10 @@ type cluster struct {
 	// kill takes the verifier with it.
 	client   *http.Client
 	replicas []*replica
-	// decreed is the replica the operator decreed the Genesis of.
-	decreed *replica
+	// decreed is the replica the operator decreed the Genesis of, and
+	// genesisIntent the decree that started the cluster.
+	decreed       *replica
+	genesisIntent string
 }
 
 // replica is one CDS VM: the address it answers at, the attestation-api
@@ -376,7 +382,7 @@ func (c *cluster) genesis(r *replica) {
 	if err != nil {
 		c.t.Fatal(err)
 	}
-	c.decree(r, cdsdecree.Decree{
+	genesis := cdsdecree.Decree{
 		ClusterID:     clusterID,
 		IntentID:      cdsdecree.NewIntentID(),
 		Kind:          cdsdecree.Genesis,
@@ -387,7 +393,9 @@ func (c *cluster) genesis(r *replica) {
 		TargetAddress: fmt.Sprintf("%s:%d", r.host, clientPort),
 		IssuedAtMS:    time.Now().UnixMilli(),
 		GenesisCA:     reported.GenesisCA,
-	})
+	}
+	c.decree(r, genesis)
+	c.genesisIntent = genesis.IntentID
 	c.decreed = r
 	c.logf("decreed the Genesis of replica %d, member %s", r.index, reported.ID)
 }
@@ -413,6 +421,91 @@ func (c *cluster) decree(to *replica, d cdsdecree.Decree) cdsha.Delivered {
 		c.t.Fatalf("what replica %d made of the %s decree: %v", to.index, d.Kind, err)
 	}
 	return delivered
+}
+
+// decreePins posts the pin decree of an image roll to a replica: the image
+// the replicas run, and the one the roll adds beside it.
+func (c *cluster) decreePins(to *replica, version uint64) (string, cdsha.Delivered) {
+	c.t.Helper()
+	decree := cdsdecree.Decree{
+		ClusterID:   clusterID,
+		IntentID:    cdsdecree.NewIntentID(),
+		Kind:        cdsdecree.UpdateMeasurements,
+		ExpiresAt:   time.Now().Add(time.Hour),
+		BaseVersion: version,
+		CDSPins:     c.rollPins(),
+	}
+	return decree.IntentID, c.decree(to, decree)
+}
+
+func (c *cluster) decreeRotateKey(to *replica, version uint64) (string, cdsha.Delivered) {
+	c.t.Helper()
+	decree := cdsdecree.Decree{
+		ClusterID:   clusterID,
+		IntentID:    cdsdecree.NewIntentID(),
+		Kind:        cdsdecree.RotateKey,
+		ExpiresAt:   time.Now().Add(time.Hour),
+		BaseVersion: version,
+	}
+	return decree.IntentID, c.decree(to, decree)
+}
+
+// rollPins is the pin document of an image roll: the image the replicas run
+// and the one the roll adds, both bound to the launch file they boot.
+func (c *cluster) rollPins() *cdsdecree.PinDocument {
+	c.t.Helper()
+	launchFile := strconv.Quote(string(c.config))
+	document := `{"schema_version":"2","tee":"sev-snp","measurements":[` +
+		`{"name":"cds","measurement":"` + testutil.TestMeasurement + `","launch_file":` + launchFile + `},` +
+		`{"name":"cds-next","measurement":"` + nextCDSImage + `","launch_file":` + launchFile + `}]}`
+	pins, err := cdsdecree.NewPinDocument([]byte(document))
+	if err != nil {
+		c.t.Fatal(err)
+	}
+	return pins
+}
+
+// allApplied reports every replica holding the decree, at the version it produced.
+func (c *cluster) allApplied(intent string, version uint64) bool {
+	for _, r := range c.replicas {
+		reported, answered := c.status(r)
+		if !answered || !reported.Serving || reported.Version != version {
+			return false
+		}
+		if !c.recorded(r, intent, version) {
+			return false
+		}
+	}
+	return true
+}
+
+// recorded reports a replica whose record of applied decrees names the decree.
+func (c *cluster) recorded(r *replica, intent string, version uint64) bool {
+	code, body := c.get(r, "/ha/decrees")
+	if code != http.StatusOK {
+		return false
+	}
+	var applied []cdsha.DecreeRecord
+	if json.Unmarshal(body, &applied) != nil {
+		return false
+	}
+	return slices.ContainsFunc(applied, func(record cdsha.DecreeRecord) bool {
+		return record.Decree.Decree.IntentID == intent && record.Version == version
+	})
+}
+
+// servedCA is the fingerprint of the certificate a replica serves at /ca.
+func (c *cluster) servedCA(r *replica) string {
+	c.t.Helper()
+	code, body := c.get(r, "/ca")
+	if code != http.StatusOK {
+		c.t.Fatalf("replica %d serves /ca = %d %s, want the cluster's mesh CA", r.index, code, body)
+	}
+	block, _ := pem.Decode(body)
+	if block == nil {
+		c.t.Fatalf("replica %d serves a mesh CA that is no PEM certificate: %s", r.index, body)
+	}
+	return certutil.CertFingerprint(block.Bytes)
 }
 
 // status is what a replica reports about its cluster, and whether it answered.

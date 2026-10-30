@@ -86,6 +86,8 @@ func peerReportData(pub crypto.PublicKey, context []byte) ([48]byte, error) {
 type peerIdentity struct {
 	certificate tls.Certificate
 	self        remote.ImagePin
+	// attested is the verdict an image set judges this replica by, as a peer.
+	attested verdict
 }
 
 // newPeerIdentity mints a peer certificate for member. The one verdict on the
@@ -124,7 +126,7 @@ func newPeerIdentity(
 	if err != nil {
 		return peerIdentity{}, err
 	}
-	return peerIdentity{certificate: certificate, self: self}, nil
+	return peerIdentity{certificate: certificate, self: self, attested: own}, nil
 }
 
 // newPeerCertificate self-signs the key and the expiry the evidence binds,

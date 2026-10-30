@@ -156,12 +156,6 @@ func (o decreeOptions) write(cmd *cobra.Command, signed cdsdecree.Signed) error 
 	return nil
 }
 
-// signOnly signs a decree the operator hands the cluster themselves.
-func (o decreeOptions) signOnly(cmd *cobra.Command, c decreeConfig, d cdsdecree.Decree) error {
-	_, err := o.sign(cmd, c, d)
-	return err
-}
-
 // deliver signs a decree and posts it over the attested channel to the replica
 // it names, which is the member id that replica's process minted, so no other
 // replica acts on it.
@@ -186,8 +180,16 @@ func (o decreeOptions) deliverIssued(cmd *cobra.Command, c decreeConfig, to repl
 }
 
 func reportDelivered(cmd *cobra.Command, address string, d cdsdecree.Decree, delivered cdsha.Delivered) error {
-	fmt.Fprintf(cmd.OutOrStdout(), "posted %s decree %s to %s: the replica holds it until it acts on it\n",
-		d.Kind, delivered.Intent, address)
+	if delivered.Refused != "" {
+		return fmt.Errorf("%s refused the %s decree %s: %s", address, d.Kind, delivered.Intent, delivered.Refused)
+	}
+	if delivered.Held {
+		fmt.Fprintf(cmd.OutOrStdout(), "posted %s decree %s to %s: the replica holds it until it acts on it\n",
+			d.Kind, delivered.Intent, address)
+		return nil
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "posted %s decree %s to %s: the cluster applied it at version %d\n",
+		d.Kind, delivered.Intent, address, delivered.Version)
 	return nil
 }
 
@@ -370,6 +372,7 @@ func checkTargetCluster(target replicaStatus, clusterID string) error {
 type pinsOptions struct {
 	decreeOptions
 	pins pinFlags
+	to   replica
 }
 
 func newPinsCmd() *cobra.Command {
@@ -381,7 +384,7 @@ func newPinsCmd() *cobra.Command {
 		&o.decreeOptions, func(cmd *cobra.Command) error { return o.run(cmd) })
 	bindBaseVersionFlag(cmd, &o.decreeOptions)
 	bindPinFlags(cmd, &o.pins)
-	requireFlags(cmd, "out")
+	bindDeliveryFlags(cmd, &o.to)
 	return cmd
 }
 
@@ -394,7 +397,7 @@ func (o pinsOptions) run(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	return o.signOnly(cmd, c, cdsdecree.Decree{
+	return o.deliver(cmd, c, o.to, cdsdecree.Decree{
 		Kind:        cdsdecree.UpdateMeasurements,
 		BaseVersion: o.baseVersion,
 		CDSPins:     cdsPins,
@@ -404,6 +407,7 @@ func (o pinsOptions) run(cmd *cobra.Command) error {
 func newRotateKeyCmd() *cobra.Command {
 	var (
 		o           decreeOptions
+		to          replica
 		acknowledge bool
 	)
 	run := func(cmd *cobra.Command) error {
@@ -415,7 +419,7 @@ func newRotateKeyCmd() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		return o.signOnly(cmd, c, cdsdecree.Decree{
+		return o.deliver(cmd, c, to, cdsdecree.Decree{
 			Kind:        cdsdecree.RotateKey,
 			BaseVersion: o.baseVersion,
 		})
@@ -424,8 +428,8 @@ func newRotateKeyCmd() *cobra.Command {
 		"Roll the mesh once the decree applies: every leaf under the old key stops being trusted.",
 		&o, run)
 	bindBaseVersionFlag(cmd, &o)
+	bindDeliveryFlags(cmd, &to)
 	cmd.Flags().BoolVar(&acknowledge, "i-understand-rotation-forks-the-cluster", false, "required: every leaf must be issued again under the new key")
-	requireFlags(cmd, "out")
 	return cmd
 }
 
@@ -500,6 +504,7 @@ func checkRecoverTarget(target replicaStatus, clusterID string) error {
 func newDismissRecoverCmd() *cobra.Command {
 	var (
 		o             decreeOptions
+		to            replica
 		recoverIntent string
 	)
 	run := func(cmd *cobra.Command) error {
@@ -507,7 +512,7 @@ func newDismissRecoverCmd() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		return o.signOnly(cmd, c, cdsdecree.Decree{
+		return o.deliver(cmd, c, to, cdsdecree.Decree{
 			Kind:          cdsdecree.DismissRecover,
 			BaseVersion:   o.baseVersion,
 			RecoverIntent: recoverIntent,
@@ -518,8 +523,9 @@ func newDismissRecoverCmd() *cobra.Command {
 			"cluster can serve.",
 		&o, run)
 	bindBaseVersionFlag(cmd, &o)
+	bindDeliveryFlags(cmd, &to)
 	cmd.Flags().StringVar(&recoverIntent, "recover-intent", "", "intent id of the Recover decree the cluster reports as its doubt (REQUIRED)")
-	requireFlags(cmd, "recover-intent", "out")
+	requireFlags(cmd, "recover-intent")
 	return cmd
 }
 

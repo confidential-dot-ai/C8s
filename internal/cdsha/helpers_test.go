@@ -10,6 +10,7 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/netip"
 	"slices"
@@ -235,16 +236,20 @@ func caBytes(t *testing.T, ca *issuer.CA) (cert, key []byte) {
 	return ca.Cert.Raw, key
 }
 
-// testPins pins one CDS image to the launch file every replica boots.
-func testPins(t *testing.T, digest byte) *cdsdecree.PinDocument {
+// testPins pins CDS images to the launch file every replica boots.
+func testPins(t *testing.T, digests ...byte) *cdsdecree.PinDocument {
 	t.Helper()
-	document, err := refvalues.Format(refvalues.ReferenceValues{
-		Family: teetypes.FamilySNP,
-		Images: []remote.ImagePin{{
-			Name:       "cds-smp4",
+	images := make([]remote.ImagePin, 0, len(digests))
+	for _, digest := range digests {
+		images = append(images, remote.ImagePin{
+			Name:       fmt.Sprintf("cds-%02x", digest),
 			Digest:     bytes.Repeat([]byte{digest}, refvalues.DigestSize),
 			LaunchFile: []byte(launchFile),
-		}},
+		})
+	}
+	document, err := refvalues.Format(refvalues.ReferenceValues{
+		Family: teetypes.FamilySNP,
+		Images: images,
 	})
 	if err != nil {
 		t.Fatal(err)

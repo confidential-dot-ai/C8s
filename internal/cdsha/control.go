@@ -29,6 +29,8 @@ const (
 	opJoin controlOp = "join"
 	// opWrite asks the leader to commit a client write another replica took.
 	opWrite controlOp = "write"
+	// opDecree asks the leader to apply a decree posted to another replica.
+	opDecree controlOp = "decree"
 	// opRead asks the leader to confirm a read: a barrier of its own, and the
 	// watermark its state machine had applied behind it (lease.go).
 	opRead controlOp = "read"
@@ -40,6 +42,8 @@ type controlRequest struct {
 	Policy Policy `json:"policy,omitzero"`
 	// Entry is the log entry the leader is to commit (opWrite).
 	Entry json.RawMessage `json:"entry,omitempty"`
+	// Decree is the signed decree the leader is to apply (opDecree).
+	Decree json.RawMessage `json:"decree,omitempty"`
 }
 
 // controlAnswer: Member and Joined answer every request; the rest belongs to
@@ -63,6 +67,8 @@ type controlAnswer struct {
 	Index uint64 `json:"index,omitempty"`
 	// Result is what the state machine made of a forwarded write.
 	Result json.RawMessage `json:"result,omitempty"`
+	// Delivered is what the cluster made of a decree another replica took.
+	Delivered *Delivered `json:"delivered,omitempty"`
 }
 
 // answerControl answers one control request from an admitted peer.
@@ -78,6 +84,8 @@ func (n *Node) answerControl(from peer, request controlRequest) controlAnswer {
 		return n.answerJoin(from, request.Policy, answer)
 	case opWrite:
 		return n.answerWrite(request.Entry, answer)
+	case opDecree:
+		return n.answerDecree(request.Decree, answer)
 	case opRead:
 		return n.answerRead(answer)
 	}

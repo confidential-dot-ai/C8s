@@ -10,7 +10,6 @@
 package cdsha
 
 import (
-	"crypto/x509"
 	"errors"
 	"log/slog"
 	"time"
@@ -132,7 +131,7 @@ func (n *Node) genesisEntry(signed cdsdecree.Signed) (*DecreeEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	key, err := x509.MarshalPKCS8PrivateKey(ca.Key)
+	cert, key, err := caEntryBytes(ca)
 	if err != nil {
 		return nil, err
 	}
@@ -140,7 +139,7 @@ func (n *Node) genesisEntry(signed cdsdecree.Signed) (*DecreeEntry, error) {
 		Decree:     signed,
 		AtMS:       time.Now().UnixMilli(),
 		Policy:     n.fsm.LocalPolicy(),
-		MeshCACert: ca.Cert.Raw,
+		MeshCACert: cert,
 		MeshCAKey:  key,
 	}, nil
 }

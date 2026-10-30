@@ -59,6 +59,16 @@ func bindTargetFlags(cmd *cobra.Command, target *replica) {
 	requireFlags(cmd, "target", "cds-pin")
 }
 
+// bindDeliveryFlags names the replica a decree is posted to, which hands it to
+// the cluster's leader, and the pin document it is verified against.
+func bindDeliveryFlags(cmd *cobra.Command, to *replica) {
+	to.verifier = cdsconn.LocalVerifier{}
+	f := cmd.Flags()
+	f.StringVar(&to.address, "to", "", "<host>[:"+strconv.Itoa(replicaPort)+"] of a replica of the cluster to post this decree to (REQUIRED)")
+	f.StringVar(&to.cdsPin, "cds-pin", "", "measurements document pinning this cluster's CDS, which the replica posted to is verified against (REQUIRED)")
+	requireFlags(cmd, "to", "cds-pin")
+}
+
 // replicaStatus is the part of a replica's /ha/status a decree binds to: the
 // member id its process minted, whether it holds a cluster, the voters it
 // knows, and the mesh CA it installs if a Genesis names it.
