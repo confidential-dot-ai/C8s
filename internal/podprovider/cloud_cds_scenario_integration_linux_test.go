@@ -23,24 +23,25 @@ import (
 const cloudCDSRetention = 70 * time.Second
 
 type cloudCDSProof struct {
-	Passed         bool             `json:"passed"`
-	CABeforeSHA256 string           `json:"caBeforeSHA256"`
-	CAAfterSHA256  string           `json:"caAfterSHA256"`
-	Run            string           `json:"run"`
-	UID            string           `json:"uid"`
-	CDSInstance    string           `json:"cdsInstance"`
-	PodInstance    string           `json:"podInstance"`
-	DisconnectedAt time.Time        `json:"disconnectedAt"`
-	RetainedAt     time.Time        `json:"retainedAt"`
-	RestartedAt    time.Time        `json:"restartedAt"`
-	RestoredAt     time.Time        `json:"restoredAt"`
-	RevokedAt      time.Time        `json:"revokedAt"`
-	RefusedUntil   time.Time        `json:"refusedUntil"`
-	InitialLeaf    *podcvmtest.Leaf `json:"initialLeaf"`
-	RetainedLeaf   *podcvmtest.Leaf `json:"retainedLeaf"`
+	Passed          bool             `json:"passed"`
+	CABeforeSHA256  string           `json:"caBeforeSHA256"`
+	CAAfterSHA256   string           `json:"caAfterSHA256"`
+	Run             string           `json:"run"`
+	UID             string           `json:"uid"`
+	CDSInstance     string           `json:"cdsInstance"`
+	PodInstance     string           `json:"podInstance"`
+	DisconnectedAt  time.Time        `json:"disconnectedAt"`
+	RetainedAt      time.Time        `json:"retainedAt"`
+	RestartedAt     time.Time        `json:"restartedAt"`
+	RestoredAt      time.Time        `json:"restoredAt"`
+	RevokedAt       time.Time        `json:"revokedAt"`
+	MeshWithdrawnAt time.Time        `json:"meshWithdrawnAt"`
+	RefusedUntil    time.Time        `json:"refusedUntil"`
+	InitialLeaf     *podcvmtest.Leaf `json:"initialLeaf"`
+	RetainedLeaf    *podcvmtest.Leaf `json:"retainedLeaf"`
 }
 
-func (r *cloudRun) cdsObserve(ctx context.Context, h *providerControlPlane, cfg *Config, guest *cloudGuest, sequence int) (cloudCDSState, error) {
+func (r *cloudRun) cdsObserve(ctx context.Context, h *providerControlPlane, cfg *Config, guest *cloudGuest, sequence int, phase cloudCDSPhase) (cloudCDSState, error) {
 	var out cloudCDSState
 	select {
 	case <-h.manager.done:
@@ -73,10 +74,6 @@ func (r *cloudRun) cdsObserve(ctx context.Context, h *providerControlPlane, cfg 
 	if err != nil {
 		return out, err
 	}
-	out, err = cloudCDSStatus(projection, rec)
-	if err != nil {
-		return out, err
-	}
 	if err = r.exactAttestation(ctx, guest); err != nil {
 		return out, err
 	}
@@ -84,8 +81,16 @@ func (r *cloudRun) cdsObserve(ctx context.Context, h *providerControlPlane, cfg 
 	if err != nil {
 		return out, err
 	}
-	err = cloudWrite(filepath.Join(r.dir, fmt.Sprintf("cds-observation-%04d.json", sequence)), map[string]any{"at": time.Now().UTC(), "status": projection, "attestation": json.RawMessage(attestation), "bootCount": in.Boot.Count, "instanceID": in.ID})
-	return out, err
+	return r.cdsRecordObservation(sequence, phase, rec, in, projection, attestation)
+}
+
+// cdsObserve authenticates both inputs before this write. Retain the bounded
+// projection and claims even when the phase's semantic validation fails.
+func (r *cloudRun) cdsRecordObservation(sequence int, phase cloudCDSPhase, rec *record, in *instance, projection podstatus.PodProjection, attestation json.RawMessage) (cloudCDSState, error) {
+	if err := cloudWrite(filepath.Join(r.dir, fmt.Sprintf("cds-observation-%04d.json", sequence)), map[string]any{"at": time.Now().UTC(), "phase": phase, "status": projection, "attestation": attestation, "bootCount": in.Boot.Count, "instanceID": in.ID}); err != nil {
+		return cloudCDSState{}, err
+	}
+	return cloudCDSStatus(projection, rec, phase)
 }
 
 // Compare the complete immutable policy after strict normalization: omitted
@@ -140,9 +145,10 @@ func (r *cloudRun) cdsOutage(ctx context.Context, h *providerControlPlane, cfg *
 		return err
 	}
 	sequence := 0
+	phase := cloudCDSActive
 	observe := func() (cloudCDSState, error) {
 		sequence++
-		return r.cdsObserve(ctx, h, cfg, guest, sequence)
+		return r.cdsObserve(ctx, h, cfg, guest, sequence, phase)
 	}
 	var first cloudCDSState
 	readyUntil := time.Now().Add(time.Minute)
@@ -273,6 +279,7 @@ func (r *cloudRun) cdsOutage(ctx context.Context, h *providerControlPlane, cfg *
 		return err
 	}
 	proof.RevokedAt = time.Now().UTC()
+	phase = cloudCDSRevocation
 	var refusedAt time.Time
 	var stopped *podstatus.ContainerTerminated
 	until := time.Now().Add(3 * time.Minute)
@@ -286,11 +293,12 @@ func (r *cloudRun) cdsOutage(ctx context.Context, h *providerControlPlane, cfg *
 			return err
 		}
 		if !refusedAt.IsZero() && (!refused || !reflect.DeepEqual(stopped, state.Exit)) {
-			return errors.New("revoked application resumed or changed its stopped process")
+			return errors.New("revoked application or mesh credentials resumed, or its stopped process changed")
 		}
 		if refused {
 			if refusedAt.IsZero() {
 				refusedAt, stopped = time.Now(), state.Exit
+				proof.MeshWithdrawnAt = refusedAt.UTC()
 			}
 			if time.Since(refusedAt) >= cloudCDSRetention {
 				pod, err := r.bootPod(ctx, h, cfg, "a")
@@ -326,5 +334,5 @@ func (r *cloudRun) cdsOutage(ctx context.Context, h *providerControlPlane, cfg *
 func (r *cloudRun) cdsProofComplete() bool {
 	raw, err := os.ReadFile(filepath.Join(r.dir, "cds-outage.json"))
 	var proof cloudCDSProof
-	return err == nil && json.Unmarshal(raw, &proof) == nil && proof.Passed && proof.Run == r.ledger.Run && proof.InitialLeaf != nil && proof.RetainedLeaf != nil && proof.InitialLeaf.Workload == "cloud-a" && proof.RetainedLeaf.Workload == "cloud-a" && proof.InitialLeaf.Denied && proof.RetainedLeaf.Denied && proof.InitialLeaf.SandboxID != "" && proof.InitialLeaf.SandboxID == proof.RetainedLeaf.SandboxID && proof.InitialLeaf.SPKI != "" && proof.InitialLeaf.SPKI == proof.RetainedLeaf.SPKI && cloudHex.MatchString(proof.CABeforeSHA256) && proof.CAAfterSHA256 == proof.CABeforeSHA256 && proof.UID != "" && proof.CDSInstance != "" && proof.PodInstance != "" && proof.RetainedAt.Sub(proof.DisconnectedAt) >= cloudCDSRetention && proof.RestartedAt.After(proof.RetainedAt) && proof.RestoredAt.After(proof.RestartedAt) && proof.RevokedAt.After(proof.RestoredAt) && proof.RefusedUntil.Sub(proof.RevokedAt) >= cloudCDSRetention
+	return err == nil && json.Unmarshal(raw, &proof) == nil && proof.Passed && proof.Run == r.ledger.Run && proof.InitialLeaf != nil && proof.RetainedLeaf != nil && proof.InitialLeaf.Workload == "cloud-a" && proof.RetainedLeaf.Workload == "cloud-a" && proof.InitialLeaf.Denied && proof.RetainedLeaf.Denied && proof.InitialLeaf.SandboxID != "" && proof.InitialLeaf.SandboxID == proof.RetainedLeaf.SandboxID && proof.InitialLeaf.SPKI != "" && proof.InitialLeaf.SPKI == proof.RetainedLeaf.SPKI && cloudHex.MatchString(proof.CABeforeSHA256) && proof.CAAfterSHA256 == proof.CABeforeSHA256 && proof.UID != "" && proof.CDSInstance != "" && proof.PodInstance != "" && proof.RetainedAt.Sub(proof.DisconnectedAt) >= cloudCDSRetention && proof.RestartedAt.After(proof.RetainedAt) && proof.RestoredAt.After(proof.RestartedAt) && proof.RevokedAt.After(proof.RestoredAt) && proof.MeshWithdrawnAt.After(proof.RevokedAt) && proof.RefusedUntil.Sub(proof.MeshWithdrawnAt) >= cloudCDSRetention
 }

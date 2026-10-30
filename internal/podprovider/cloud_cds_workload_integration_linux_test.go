@@ -271,7 +271,15 @@ func (r *cloudRun) cdsPolicyUpdate(ctx context.Context, cfg *Config, cds endpoin
 	return cloudWrite(filepath.Join(r.dir, "cds-policy-"+action+".json"), map[string]any{"at": time.Now().UTC(), "canonical": json.RawMessage(actual), "sha256": cloudHash(actual)})
 }
 
+type cloudCDSPhase string
+
+const (
+	cloudCDSActive     cloudCDSPhase = "active"
+	cloudCDSRevocation cloudCDSPhase = "revocation"
+)
+
 type cloudCDSState struct {
+	MeshReady bool
 	Ready     bool
 	Running   bool
 	Restarts  int32
@@ -280,8 +288,11 @@ type cloudCDSState struct {
 	Exit      *podstatus.ContainerTerminated
 }
 
-func cloudCDSStatus(p podstatus.PodProjection, rec *record) (cloudCDSState, error) {
+func cloudCDSStatus(p podstatus.PodProjection, rec *record, phase cloudCDSPhase) (cloudCDSState, error) {
 	var out cloudCDSState
+	if phase != cloudCDSActive && phase != cloudCDSRevocation {
+		return out, errors.New("unknown CDS observation phase")
+	}
 	doc, err := rec.document()
 	if err != nil {
 		return out, err
@@ -290,7 +301,7 @@ func cloudCDSStatus(p podstatus.PodProjection, rec *record) (cloudCDSState, erro
 		return out, errors.New("CDS scenario status has another Pod or unexpected containers")
 	}
 	app, mesh := p.Status.ContainerStatuses[0], p.Status.InitContainerStatuses[0]
-	if app.Name != "app" || mesh.Name != workloadclaims.MeshContainerName || mesh.RestartCount != 0 || mesh.State == nil || mesh.State.Running == nil || mesh.State.Waiting != nil || mesh.State.Terminated != nil || mesh.State.Running.StartedAt == nil || mesh.State.Running.StartedAt.IsZero() || (mesh.LastState != nil && (mesh.LastState.Running != nil || mesh.LastState.Waiting != nil || mesh.LastState.Terminated != nil)) || !mesh.Ready {
+	if app.Name != "app" || mesh.Name != workloadclaims.MeshContainerName || mesh.RestartCount != 0 || mesh.State == nil || mesh.State.Running == nil || mesh.State.Waiting != nil || mesh.State.Terminated != nil || mesh.State.Running.StartedAt == nil || mesh.State.Running.StartedAt.IsZero() || (mesh.LastState != nil && (mesh.LastState.Running != nil || mesh.LastState.Waiting != nil || mesh.LastState.Terminated != nil)) || (phase == cloudCDSActive && !mesh.Ready) {
 		return out, errors.New("CDS scenario mesh changed or stopped")
 	}
 	if app.RestartCount < 0 || app.RestartCount > 2 || app.State == nil {
@@ -309,6 +320,7 @@ func cloudCDSStatus(p podstatus.PodProjection, rec *record) (cloudCDSState, erro
 	if states != 1 || (app.Ready && app.State.Running == nil) || (app.LastState != nil && (app.LastState.Running != nil || app.LastState.Waiting != nil)) {
 		return out, errors.New("CDS scenario application has contradictory state")
 	}
+	out.MeshReady = mesh.Ready
 	out.MeshStart, out.Restarts = mesh.State.Running.StartedAt.Time, app.RestartCount
 	out.Ready, out.Running = app.Ready && p.Status.Phase == corev1.PodRunning, app.State.Running != nil
 	if out.Running {
@@ -363,5 +375,5 @@ func cloudCDSRevoked(before, current cloudCDSState) (bool, error) {
 		return false, nil
 	}
 	exit := current.Exit
-	return !current.Ready && exit != nil && exit.StartedAt != nil && exit.FinishedAt != nil && exit.StartedAt.Time.Equal(before.AppStart), nil
+	return !current.MeshReady && !current.Ready && exit != nil && exit.StartedAt != nil && exit.FinishedAt != nil && exit.StartedAt.Time.Equal(before.AppStart), nil
 }

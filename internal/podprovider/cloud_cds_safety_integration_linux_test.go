@@ -371,7 +371,7 @@ func TestCloudAcceptanceCDSProjectionRejectsForeignAndMalformedStatus(t *testing
 	start := metav1.NewTime(time.Unix(1700000000, 0))
 	projection.Status.ContainerStatuses[0].State.Running.StartedAt = &start
 	projection.Status.InitContainerStatuses[0].State.Running.StartedAt = &start
-	if _, err := cloudCDSStatus(projection, rec); err != nil {
+	if _, err := cloudCDSStatus(projection, rec, cloudCDSActive); err != nil {
 		t.Fatal(err)
 	}
 	for _, change := range []func(*podstatus.PodProjection){
@@ -385,12 +385,83 @@ func TestCloudAcceptanceCDSProjectionRejectsForeignAndMalformedStatus(t *testing
 		var changed podstatus.PodProjection
 		_ = json.Unmarshal(raw, &changed)
 		change(&changed)
-		if _, err := cloudCDSStatus(changed, rec); err == nil {
+		if _, err := cloudCDSStatus(changed, rec, cloudCDSActive); err == nil {
 			t.Fatal("malformed or foreign attested state accepted")
 		}
 	}
 	if r, _, _ := cloudOwnershipFixture(t); r.cdsProofComplete() {
 		t.Fatal("missing CDS evidence produced acceptance")
+	}
+}
+
+func TestCloudAcceptanceCDSRevocationMeshWithdrawal(t *testing.T) {
+	pod := fixturePod()
+	reader, _ := fixtureReconciler(t, pod)
+	rec, _, err := reader.ensureRecord(t.Context(), pod)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection := fixtureProjection(rec)
+	start := metav1.NewTime(time.Unix(1700000000, 0))
+	projection.Status.ContainerStatuses[0].State.Running.StartedAt = &start
+	projection.Status.InitContainerStatuses[0].State.Running.StartedAt = &start
+	projection.Status.InitContainerStatuses[0].Ready = false
+	if _, err = cloudCDSStatus(projection, rec, cloudCDSActive); err == nil {
+		t.Fatal("mesh unready accepted before signed deletion")
+	}
+	state, err := cloudCDSStatus(projection, rec, cloudCDSRevocation)
+	if err != nil || state.MeshReady || !state.MeshStart.Equal(start.Time) {
+		t.Fatalf("post-delete credential withdrawal lost the same running mesh: %v", err)
+	}
+	if _, err = cloudCDSStatus(projection, rec, cloudCDSPhase("untrusted")); err == nil {
+		t.Fatal("unknown phase relaxed mesh validation")
+	}
+	for name, change := range map[string]func(*podstatus.ContainerStatus){
+		"restarted": func(mesh *podstatus.ContainerStatus) { mesh.RestartCount = 1 },
+		"stopped": func(mesh *podstatus.ContainerStatus) {
+			mesh.State = &podstatus.ContainerState{Terminated: &podstatus.ContainerTerminated{}}
+		},
+		"waiting": func(mesh *podstatus.ContainerStatus) { mesh.State = &podstatus.ContainerState{Waiting: &struct{}{}} },
+	} {
+		t.Run(name, func(t *testing.T) {
+			raw, _ := json.Marshal(projection)
+			var changed podstatus.PodProjection
+			_ = json.Unmarshal(raw, &changed)
+			change(&changed.Status.InitContainerStatuses[0])
+			if _, err := cloudCDSStatus(changed, rec, cloudCDSRevocation); err == nil {
+				t.Fatal("post-delete mesh process continuity was relaxed")
+			}
+		})
+	}
+	before := cloudCDSState{Ready: true, Running: true, MeshReady: true, MeshStart: start.Time, AppStart: start.Time, Restarts: 1}
+	finished := metav1.NewTime(start.Add(time.Second))
+	stopped := cloudCDSState{MeshReady: true, MeshStart: start.Time, Restarts: 1, Exit: &podstatus.ContainerTerminated{StartedAt: &start, FinishedAt: &finished, ExitCode: 137}}
+	if done, err := cloudCDSRevoked(before, stopped); err != nil || done {
+		t.Fatal("termination alone passed before credential withdrawal")
+	}
+	stopped.MeshReady = false
+	if done, err := cloudCDSRevoked(before, stopped); err != nil || !done {
+		t.Fatal("actual termination and credential withdrawal were refused")
+	}
+	stopped.Running, stopped.AppStart = true, before.AppStart
+	if done, err := cloudCDSRevoked(before, stopped); err != nil || done {
+		t.Fatal("mesh unready alone passed without actual process termination")
+	}
+	stopped.Running = false
+	stopped.MeshStart = stopped.MeshStart.Add(time.Second)
+	if _, err := cloudCDSRevoked(before, stopped); err == nil {
+		t.Fatal("post-delete mesh start changed")
+	}
+	// The old failure discarded precisely this authenticated-but-unready sample.
+	r, _, _ := cloudOwnershipFixture(t)
+	in := &instance{ID: "i-owned"}
+	in.Boot.Count = 1
+	if _, err := r.cdsRecordObservation(1, cloudCDSActive, rec, in, projection, json.RawMessage(`{"unitTestOnly":true}`)); err == nil {
+		t.Fatal("invalid active-phase observation was accepted")
+	}
+	raw, err := os.ReadFile(filepath.Join(r.dir, "cds-observation-0001.json"))
+	if err != nil || !bytes.Contains(raw, []byte(`"phase": "active"`)) || !bytes.Contains(raw, []byte(`"ready": false`)) {
+		t.Fatal("semantic failure lost its retained observation")
 	}
 }
 
