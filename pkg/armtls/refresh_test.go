@@ -1,11 +1,16 @@
 package armtls
 
 import (
+	"context"
 	"crypto/sha512"
 	"crypto/tls"
 	"encoding/hex"
 	"errors"
+	"net"
+	"net/http"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
@@ -141,5 +146,127 @@ func TestFixedPinsNeverMove(t *testing.T) {
 	}
 	if fixed.Generation() != 0 || len(fixed.Current().Images) != 1 {
 		t.Fatalf("a fixed set reports generation %d and %d images", fixed.Generation(), len(fixed.Current().Images))
+	}
+}
+
+// A server pinning its clients through a PinSource re-checks a refused
+// handshake once against a newer set, as a client pinning its server does.
+func TestFollowClientPinsChecksAgainstANewerSet(t *testing.T) {
+	_, _, cert := testAttestedCert(t, nil)
+	api := mockapi.New(t)
+	api.SetVerdict(mockapi.PassingVerdict(hex.EncodeToString(imageDigest("new"))))
+	pins := &movingPins{
+		current: "old",
+		next:    "new",
+	}
+	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS13}
+	FollowClientPins(tlsCfg, pins, api.URL())
+
+	if err := tlsCfg.VerifyPeerCertificate([][]byte{cert.Raw}, nil); err != nil {
+		t.Fatalf("a caller on the new pins was refused: %v", err)
+	}
+}
+
+// unreachableCDS counts the attempts made through a CDS that answers nothing.
+func unreachableCDS(attempts *atomic.Int64) func(Pins) (*http.Transport, error) {
+	return func(Pins) (*http.Transport, error) {
+		return &http.Transport{DialContext: func(context.Context, string, string) (net.Conn, error) {
+			attempts.Add(1)
+			return nil, errCDSUnreachable
+		}}, nil
+	}
+}
+
+var errCDSUnreachable = errors.New("armtls_test: the CDS in the pins answered nothing")
+
+// A request that fails is made once more only where the set moved under it: a
+// CDS relaunched on a newly decreed image answers the second attempt, and a
+// peer the set in force refuses stays refused.
+func TestARefreshingTransportRunsAgainOnlyWhereThePinsMoved(t *testing.T) {
+	for name, next := range map[string]string{"the pins moved": "new", "the pins did not move": ""} {
+		t.Run(name, func(t *testing.T) {
+			var attempts atomic.Int64
+			pins := &movingPins{
+				current: "old",
+				next:    next,
+			}
+			transport, err := NewRefreshingTransport(pins, unreachableCDS(&attempts))
+			if err != nil {
+				t.Fatalf("NewRefreshingTransport: %v", err)
+			}
+			request, err := http.NewRequest(http.MethodGet, "https://cds.example/allowlist", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := transport.RoundTrip(request); err == nil {
+				t.Fatal("a request no CDS answered was reported as answered")
+			}
+			want := int64(1)
+			if next != "" {
+				want = 2
+			}
+			if attempts.Load() != want {
+				t.Fatalf("the client made %d attempts, want %d", attempts.Load(), want)
+			}
+			if pins.looks() != 1 {
+				t.Fatalf("the client looked for newer pins %d times, want one look per failed request", pins.looks())
+			}
+		})
+	}
+}
+
+// A request whose body the caller cannot reproduce is made once: the second
+// attempt would carry nothing.
+func TestARefreshingTransportDoesNotReplayAnUnrepeatableBody(t *testing.T) {
+	var attempts atomic.Int64
+	pins := &movingPins{
+		current: "old",
+		next:    "new",
+	}
+	transport, err := NewRefreshingTransport(pins, unreachableCDS(&attempts))
+	if err != nil {
+		t.Fatalf("NewRefreshingTransport: %v", err)
+	}
+	request, err := http.NewRequest(http.MethodPut, "https://cds.example/allowlist", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.GetBody = nil
+
+	if _, err := transport.RoundTrip(request); err == nil {
+		t.Fatal("a request no CDS answered was reported as answered")
+	}
+	if attempts.Load() != 1 {
+		t.Fatalf("the client made %d attempts with a body it cannot send again, want one", attempts.Load())
+	}
+}
+
+// Connections made under a retired set are closed with it: one of them
+// carrying a later request would reach the image the operator removed.
+func TestARefreshingTransportDropsTheConnectionsOfARetiredSet(t *testing.T) {
+	pins := &movingPins{current: "old"}
+	var built []*http.Transport
+	transport, err := NewRefreshingTransport(pins, func(Pins) (*http.Transport, error) {
+		next := &http.Transport{}
+		built = append(built, next)
+		return next, nil
+	})
+	if err != nil {
+		t.Fatalf("NewRefreshingTransport: %v", err)
+	}
+	refreshing, ok := transport.(*refreshingTransport)
+	if !ok {
+		t.Fatalf("transport = %T, want the refreshing one", transport)
+	}
+
+	pins.next = "new"
+	if err := pins.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := refreshing.transport(); err != nil {
+		t.Fatalf("the transport of the new set: %v", err)
+	}
+	if len(built) != 2 || built[0] == built[1] {
+		t.Fatalf("the client built %d transports, want one per set it held", len(built))
 	}
 }
