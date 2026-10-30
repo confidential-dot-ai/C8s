@@ -86,6 +86,12 @@ func (b *seatBook) sightedAt(member raft.ServerID, now time.Time) time.Time {
 	return b.sighted[member]
 }
 
+func (b *seatBook) firstSight(member raft.ServerID) time.Time {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.sighted[member]
+}
+
 func (b *seatBook) forgetMembersGone(members []raft.ServerID) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -168,7 +174,7 @@ func (n *Node) seatingNow() (seating, bool) {
 	seen := seating{seats: core.Voters, term: n.raft.CurrentTerm()}
 	for _, server := range servers {
 		seen.members = append(seen.members, server.ID)
-		dead := n.countsDead(server.ID, now)
+		dead := n.countsDead(seen.term, server.ID, now)
 		switch {
 		case server.Suffrage == raft.Voter:
 			seen.voters = append(seen.voters, server)
@@ -186,13 +192,14 @@ func (n *Node) seatingNow() (seating, bool) {
 	return seen, true
 }
 
-// countsDead reports a member that has not answered this leader for
-// DeadAfter.
-func (n *Node) countsDead(member raft.ServerID, now time.Time) bool {
+// Dead to this leader: silent for DeadAfter, or its heartbeats failing that
+// long in the term this leader holds (liveness.go).
+func (n *Node) countsDead(term uint64, member raft.ServerID, now time.Time) bool {
 	if string(member) == string(n.member) {
 		return false
 	}
-	return now.Sub(n.lastAnswerOrFirstSight(member, now)) >= n.cfg.Timing.DeadAfter
+	return now.Sub(n.lastAnswerOrFirstSight(member, now)) >= n.cfg.Timing.DeadAfter ||
+		n.failures.failingFor(term, member, now) >= n.cfg.Timing.DeadAfter
 }
 
 // A leader that has just taken over has reached nobody, so first sight gives
@@ -432,17 +439,17 @@ func (n *Node) askStanding(member raft.ServerID) (controlAnswer, error) {
 	return held.control.exchange(controlRequest{Op: opStanding}, controlTimeout)
 }
 
-// answerStanding answers where this replica stands in the cluster: the voters
-// of its configuration, how far its state machine has followed the log, and
-// the newest format it reads. A leader fills seats, retires a dead voter and
-// raises the agreed format by these answers.
 func (n *Node) answerStanding(answer controlAnswer) controlAnswer {
 	for _, server := range n.configuration() {
 		if server.Suffrage == raft.Voter {
 			answer.Voters = append(answer.Voters, string(server.ID))
 		}
 	}
+	led := n.following()
+	answer.Leader = string(led.member)
+	answer.Term = led.term
 	answer.Applied = n.fsm.AppliedIndex()
+	answer.Stuck = n.fsm.Stuck()
 	answer.Reads = n.fsm.readable
 	return answer
 }

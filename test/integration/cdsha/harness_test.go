@@ -11,10 +11,12 @@ package cdsha_test
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
@@ -34,6 +36,7 @@ import (
 
 	"github.com/hashicorp/raft"
 	"gopkg.in/yaml.v3"
+	_ "modernc.org/sqlite"
 
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
@@ -150,6 +153,72 @@ type replica struct {
 	apiURL string
 	db     string
 	cds    *process
+	// locked is the connection holding this VM's allowlist database away from
+	// the process serving the cluster.
+	locked *sql.Conn
+}
+
+// A fault of one VM's disk: the next log entry its state machine applies fails
+// in its own database. A reserved connection is the only way sqlite keeps the
+// transaction that holds the lock open.
+func (c *cluster) lockAllowlist(r *replica) {
+	c.t.Helper()
+	pool, err := sql.Open("sqlite", r.db)
+	if err != nil {
+		c.t.Fatal(err)
+	}
+	c.t.Cleanup(func() { pool.Close() })
+	held, err := pool.Conn(context.Background())
+	if err != nil {
+		c.t.Fatal(err)
+	}
+	if _, err := held.ExecContext(context.Background(), "BEGIN EXCLUSIVE"); err != nil {
+		c.t.Fatalf("hold the allowlist database of replica %d: %v", r.index, err)
+	}
+	r.locked = held
+	c.t.Cleanup(func() { c.freeAllowlist(r) })
+	c.logf("took the allowlist database of replica %d away from it", r.index)
+}
+
+// Gives the database back to the process that replaces the stuck replica.
+func (c *cluster) freeAllowlist(r *replica) {
+	c.t.Helper()
+	if r.locked == nil {
+		return
+	}
+	held := r.locked
+	r.locked = nil
+	if _, err := held.ExecContext(context.Background(), "ROLLBACK"); err != nil {
+		c.t.Errorf("give the allowlist database of replica %d back: %v", r.index, err)
+	}
+	if err := held.Close(); err != nil {
+		c.t.Errorf("close the connection holding the allowlist database of replica %d: %v",
+			r.index, err)
+	}
+	c.logf("gave the allowlist database of replica %d back", r.index)
+}
+
+// An exit is what the replica's unit restarts.
+func (c *cluster) waitExit(r *replica, within time.Duration) {
+	c.t.Helper()
+	exited := fmt.Sprintf("the process of replica %d to exit", r.index)
+	c.waitFor(exited, within, func() bool {
+		return !c.running(r)
+	})
+	if code := r.cds.cmd.ProcessState.ExitCode(); code == 0 {
+		c.t.Errorf("the process of replica %d exited %d; a unit restarts on a failure",
+			r.index, code)
+	}
+	c.logf("the process of replica %d exited", r.index)
+}
+
+func (c *cluster) running(r *replica) bool {
+	select {
+	case <-r.cds.exited:
+		return false
+	default:
+		return true
+	}
 }
 
 // replicaHost numbers the addresses from one, as the configuration's replica

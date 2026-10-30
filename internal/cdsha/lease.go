@@ -213,7 +213,9 @@ func barrierPassed(passed <-chan barrierResult, deadline time.Time) (uint64, err
 func (n *Node) passBarrier(passed chan<- barrierResult) {
 	defer n.barriers.give()
 	leader := n.following()
-	if err := n.raft.Barrier(n.readTimeout()).Error(); err != nil {
+	err := n.raft.Barrier(n.readTimeout()).Error()
+	n.refusals.record(leader.term, err)
+	if err != nil {
 		passed <- barrierResult{err: err}
 		return
 	}

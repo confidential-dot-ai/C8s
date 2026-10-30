@@ -34,8 +34,8 @@ const (
 	// opRead asks the leader to confirm a read: a barrier of its own, and the
 	// watermark its state machine had applied behind it (lease.go).
 	opRead controlOp = "read"
-	// opStanding asks a member where it stands in the cluster, which is how
-	// a leader fills the voter seats (seats.go).
+	// opStanding asks a member where it stands in the cluster: seats.go,
+	// handoff.go and stuck.go all judge by the answer.
 	opStanding controlOp = "standing"
 )
 
@@ -72,6 +72,9 @@ type controlAnswer struct {
 	Voters  []string `json:"voters,omitempty"`
 	Applied uint64   `json:"applied,omitempty"`
 	Reads   uint32   `json:"reads,omitempty"`
+	// Term and Stuck answer opStanding.
+	Term  uint64 `json:"term,omitempty"`
+	Stuck string `json:"stuck,omitempty"`
 	// Result is what the state machine made of a forwarded write.
 	Result json.RawMessage `json:"result,omitempty"`
 	// Delivered is what the cluster made of a decree another replica took.

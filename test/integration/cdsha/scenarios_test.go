@@ -3,6 +3,7 @@
 package cdsha_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -300,24 +301,42 @@ func (c *cluster) allServing(replicas []*replica, workload string) bool {
 	return true
 }
 
-// replaceAllowlist writes the whole allowlist document through r, naming one
-// workload the test reads back. A cluster refuses an operator token issued
-// before it started plus the clock skew, so the write is retried with a fresh
-// token until the cluster takes one.
+// Fails the test unless the cluster commits the write.
 func (c *cluster) replaceAllowlist(r *replica, workload string) {
 	c.t.Helper()
-	document := []byte(`{"schema":"c8s.allowlist/v1","workloads":{"` + workload +
-		`":{"label":"ghcr.io/x/` + workload + `:v1","containers":[{"digest":"sha256:` +
-		strings.Repeat("22", 32) + `","command":{"policy":"any"},"args":{"policy":"any"}}]}}}`)
-	var code int
-	var body []byte
-	c.waitFor(fmt.Sprintf("replica %d to take an operator write", r.index), 30*time.Second, func() bool {
-		code, body = c.put(r, "/allowlist", document)
-		return code == http.StatusNoContent
-	})
+	code, body := c.writeAllowlist(r, workload, committed)
 	if code != http.StatusNoContent {
 		c.t.Fatalf("PUT /allowlist through replica %d = %d %s", r.index, code, body)
 	}
+}
+
+// Writes until the cluster answers what done accepts.
+func (c *cluster) writeAllowlist(r *replica, workload string, done func(code int) bool) (int, []byte) {
+	c.t.Helper()
+	var code int
+	var body []byte
+	taken := fmt.Sprintf("an operator write through replica %d", r.index)
+	c.waitFor(taken, 30*time.Second, func() bool {
+		code, body = c.put(r, "/allowlist", allowlistDocument(workload))
+		return done(code)
+	})
+	return code, body
+}
+
+func committed(code int) bool {
+	return code == http.StatusNoContent
+}
+
+// Anything but a refusal of the operator's token as issued before the cluster
+// started plus the clock skew. The entry is then on the log either way.
+func judged(code int) bool {
+	return code != http.StatusUnauthorized
+}
+
+func allowlistDocument(workload string) []byte {
+	return []byte(`{"schema":"c8s.allowlist/v1","workloads":{"` + workload +
+		`":{"label":"ghcr.io/x/` + workload + `:v1","containers":[{"digest":"sha256:` +
+		strings.Repeat("22", 32) + `","command":{"policy":"any"},"args":{"policy":"any"}}]}}}`)
 }
 
 // notShort skips the scenarios the -short subset leaves to the full run.
@@ -384,4 +403,78 @@ func (c *cluster) allServeOneOtherCA(was string) bool {
 		serving[reported.CAFingerprint] = true
 	}
 	return len(serving) == 1
+}
+
+// Two of the three replicas failing at once both stay: the log lives in the
+// replicas' memory, and the one that follows it is no majority without them.
+func TestAStuckReplicaLeavesOnlyWhileAMajorityFollowsTheLog(t *testing.T) {
+	notShort(t)
+	c := newCluster(t, threeReplicas)
+	leading := c.waitLeader(30 * time.Second)
+	stuck := c.others(leading)
+
+	for _, r := range stuck {
+		c.waitVoter(r, 30*time.Second)
+		c.lockAllowlist(r)
+	}
+	c.replaceAllowlist(leading, "written-while-two-replicas-cannot-store-it")
+
+	c.waitFor("the replicas whose store failed to stop serving", time.Minute, func() bool {
+		return slices.Equal(c.serving(), []*replica{leading})
+	})
+	time.Sleep(longerThanAStuckReplicaWaits)
+	for _, r := range stuck {
+		if !c.running(r) {
+			t.Fatalf("replica %d left a cluster whose remaining replica is no majority",
+				r.index)
+		}
+	}
+
+	// The way out: the stuck replicas are restarted one at a time, each with
+	// its own database back. Once the first one follows the log and holds a
+	// seat, the one still stuck may leave, and it does so by itself.
+	c.freeAllowlist(stuck[0])
+	c.kill(stuck[0])
+	c.restart(stuck[0])
+	c.waitFor("the restarted replica to serve its cluster", 2*time.Minute, func() bool {
+		return slices.Contains(c.serving(), stuck[0])
+	})
+
+	c.waitExit(stuck[1], 2*time.Minute)
+}
+
+// Longer than a stuck replica waits before it would leave: a c8s_dev build
+// waits DeadAfter, five seconds.
+const longerThanAStuckReplicaWaits = 10 * time.Second
+
+// The leader is the only replica that appends to the log, and a cluster whose
+// leader walked out takes no write until it has elected another.
+func TestAStuckLeaderHandsTheClusterOverBeforeItLeaves(t *testing.T) {
+	c := newCluster(t, threeReplicas)
+	leading := c.waitLeader(30 * time.Second)
+	stuck, _ := c.status(leading)
+
+	c.lockAllowlist(leading)
+	code, body := c.writeAllowlist(leading, "written-while-the-leaders-store-fails", judged)
+	c.logf("PUT /allowlist through replica %d = %d %s", leading.index, code, bytes.TrimSpace(body))
+
+	c.waitFor("another replica of the cluster leading", time.Minute, func() bool {
+		if !c.running(leading) {
+			c.t.Fatal("the stuck leader exited before another replica led its cluster")
+		}
+		led := c.leader()
+		return led != nil && led != leading
+	})
+	c.waitExit(leading, time.Minute)
+	for _, r := range c.others(leading) {
+		reported, _ := c.status(r)
+		if reported.Leader == stuck.ID {
+			t.Errorf("replica %d still follows the member that left, %s", r.index, stuck.ID)
+		}
+	}
+	c.replaceAllowlist(c.waitLeader(30*time.Second), "written-after-the-cluster-changed-hands")
+	served := "the replicas that stayed to serve the write the new leader took"
+	c.waitFor(served, time.Minute, func() bool {
+		return c.allServing(c.others(leading), "written-after-the-cluster-changed-hands")
+	})
 }
