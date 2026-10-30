@@ -590,17 +590,29 @@ MESH_CERT_CONTAINER=c8s-cert
 # A restarted CDS mints a new mesh CA, and a per-pod mesh member is bound to
 # the CA key of its first leaf for the pod's life (get-cert R3), so only a pod
 # created after the restart holds a leaf under the new CA. Every member a
-# controller owns, such as the router, outlives the scenario and is
-# recreated; a scenario's own pods go with it.
+# controller owns, the router among them, outlives the scenario and must be
+# recreated; a scenario's own pods are bare and go with its namespace.
+#
+# The router is recreated by name, never left to the owned-member sweep: it
+# verifies every routed backend, so a router kept on the old CA rejects every
+# post-restart backend. Its Deployment is Recreate under hostPort, so a rollout
+# does not deadlock on the node's single :443.
 mesh_restart() {
-    local members deadline
+    kubectl -n "$ROUTER_NS" rollout restart "deploy/$ROUTER_DEPLOY" >/dev/null || return
+    kubectl -n "$ROUTER_NS" rollout status "deploy/$ROUTER_DEPLOY" --timeout=240s >/dev/null || {
+        echo "backend: the router did not become ready 240s after its rollout" >&2
+        return 1
+    }
+    local members others total deadline
     members="$(owned_mesh_members)" || return
-    [ -n "$members" ] || return 0
+    others="$(grep -v "^$ROUTER_NS " <<<"$members")" || true
+    [ -n "$others" ] || return 0
+    total="$(grep -c . <<<"$members")"
     while read -r ns pod; do
         kubectl -n "$ns" delete pod "$pod" --wait=false >/dev/null || return
-    done <<<"$members"
+    done <<<"$others"
     deadline=$(($(date +%s) + 240))
-    until owned_mesh_members_ready "$(wc -l <<<"$members")"; do
+    until owned_mesh_members_ready "$total"; do
         [ "$(date +%s)" -lt "$deadline" ] || { echo "backend: the recreated mesh members are not ready after 240s" >&2; return 1; }
         sleep 2
     done
