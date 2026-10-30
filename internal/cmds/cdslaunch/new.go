@@ -35,6 +35,10 @@ func write(opts options) error {
 	if err != nil {
 		return err
 	}
+	ha, err := cdsconfig.ReplicaSet(opts.ha)
+	if err != nil {
+		return err
+	}
 	config, pin, err := cdsconfig.Build(cdsconfig.Inputs{
 		ClusterID:       opts.clusterID,
 		OperatorKeys:    operatorKeys,
@@ -45,7 +49,7 @@ func write(opts options) error {
 		ClusterCIDRs:    append(slices.Clone(opts.podCIDRs), opts.serviceCIDRs...),
 		LeafDNSNames:    opts.leafDNSNames,
 		LeafDNSPatterns: opts.leafDNSPatterns,
-		HA:              opts.ha,
+		HA:              ha,
 		ManifestPath:    opts.manifest,
 		Family:          family,
 		VCPUs:           opts.vcpus,

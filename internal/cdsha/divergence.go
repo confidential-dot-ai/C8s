@@ -55,6 +55,9 @@ type divergence struct {
 	// reached.
 	alarm string
 	found string
+	// confirmed is the newest checkpoint a majority of the voters held this
+	// leader's state at, which is the state a backup seals (backupduty.go).
+	confirmed Point
 	// soon asks for a checkpoint at the next tick.
 	soon       bool
 	proposedAt time.Time
@@ -65,6 +68,19 @@ func (d *divergence) status() string {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return cmp.Or(d.alarm, d.found)
+}
+
+// confirmedCheckpoint is the newest checkpoint a majority of this cluster's
+// voters held this leader's state at, and whether the voters hold one state
+// now: a disagreement that is open settles at a later checkpoint, and until
+// it does the state this leader holds is no state to seal.
+func (d *divergence) confirmedCheckpoint() (Point, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.alarm != "" {
+		return Point{}, false
+	}
+	return d.confirmed, d.confirmed.Index > 0
 }
 
 // A loop of its own, so no other duty of the leader holds up a checkpoint.
@@ -195,6 +211,9 @@ func (d *divergence) decide(checkpoints []Point, servers []raft.Server, leader r
 	checkpoint, counted, answered := d.answeredCheckpoint(checkpoints, servers, leader)
 	if !answered {
 		return decision{}
+	}
+	if counted.leaderAgreed() {
+		d.confirmed = checkpoint
 	}
 	if len(counted.differingMembers) == 0 {
 		d.agreed(checkpoint)

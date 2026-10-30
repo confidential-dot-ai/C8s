@@ -222,6 +222,7 @@ func replicatedDocument(t *testing.T, operatorPEM []byte) []byte {
 			"endpoint": "https://s3.example.org",
 			"bucket":   "c8s-boards",
 		},
+		"recoveryKey": string(operatorKeysPEM(t)),
 	}
 	data, err := yaml.Marshal(document)
 	if err != nil {
