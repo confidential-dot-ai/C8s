@@ -358,7 +358,7 @@ jobs:
         id: helm
         run: |
           set -euo pipefail
-          version="$(sed -n 's/^HELM_VERSION="\(v[0-9.]*\)"$/\1/p' node-guest-image/c8s/mkosi.sync)"
+          version="$(sed -n 's/^HELM_VERSION="\(v[0-9.]*\)"$/\1/p' images/node-guest/c8s/mkosi.sync)"
           test -n "$version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 

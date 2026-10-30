@@ -41,7 +41,7 @@ set -euo pipefail
 
 registry_host=ghcr.io
 registry_namespace=confidential-dot-ai
-# The repositories node-guest-image/c8s/mkosi.sync resolves at C8S_REF.
+# The repositories images/node-guest/c8s/mkosi.sync resolves at C8S_REF.
 components=(c8s-operator nri-image-policy cds armtls-mesh)
 image_repo=node-guest-base
 docker_workflow=docker.yml

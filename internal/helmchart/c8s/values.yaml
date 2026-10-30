@@ -285,7 +285,7 @@ attestationApi:
 
 ## The per-pod mesh endpoint the admission webhook injects into every pod it
 ## covers. Its ports, identity and packet rules are the node's measured policy,
-## not chart values (node-guest-image/c8s/image-policy.yaml.in).
+## not chart values (images/node-guest/c8s/image-policy.yaml.in).
 armtlsMesh:
   image:
     repository: ghcr.io/confidential-dot-ai/armtls-mesh
@@ -300,7 +300,7 @@ armtlsMesh:
 ## kube-system, outside the mesh, with read-only RBAC that excludes Secrets
 ## and ConfigMaps, and serves plain HTTP on a fixed Service address that the
 ## measured mesh policy gives every member pod as an exit
-## (node-guest-image/c8s/image-policy.yaml.in mesh.exits).
+## (images/node-guest/c8s/image-policy.yaml.in mesh.exits).
 kubeStateMetrics:
   enabled: false
   image:

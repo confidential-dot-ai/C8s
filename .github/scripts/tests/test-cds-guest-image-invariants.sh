@@ -1,19 +1,18 @@
 #!/usr/bin/env bash
 # Exercise the production gate against copied inputs; the pinned confos
-# checkout and node-guest-image stay read-only.
+# checkout and images/node-guest stay read-only.
 set -euo pipefail
 test_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo_dir=$(cd "$test_dir/../../.." && pwd)
 fixture=$(mktemp -d)
 trap 'rm -rf -- "$fixture"' EXIT
 mkdir -p "$fixture/.github" "$fixture/confos/mkosi/initrd/mkosi.extra" \
-         "$fixture/node-guest-image/c8s"
-mkdir -p "$fixture/images"
+         "$fixture/images/node-guest/c8s"
 cp -a "$repo_dir/images/cds-guest" "$fixture/images/"
 cp -a "$repo_dir/.github/scripts" "$fixture/.github/"
 cp "$(cd "$repo_dir/confos" && pwd -P)/mkosi/initrd/mkosi.extra/init" \
    "$fixture/confos/mkosi/initrd/mkosi.extra/init"
-cp "$repo_dir/node-guest-image/c8s/mkosi.finalize" "$fixture/node-guest-image/c8s/"
+cp "$repo_dir/images/node-guest/c8s/mkosi.finalize" "$fixture/images/node-guest/c8s/"
 pristine="$fixture/pristine"
 mkdir "$pristine"
 cp -a "$fixture/images" "$fixture/confos" "$pristine/"
@@ -91,7 +90,7 @@ rejects "a profile dir under another name" \
 rejects "a second service in the image" \
   "may install cds.service only" add_second_service
 rejects "a host-reachable attester" \
-  "byte-identical to node-guest-image/c8s/mkosi.finalize" widen_attester_bind
+  "byte-identical to images/node-guest/c8s/mkosi.finalize" widen_attester_bind
 rejects "an allowlist store outside the runtime directory" \
   "must keep the allowlist store in RuntimeDirectory=cds" persist_allowlist_store
 rejects "a renamed staged launch file" \

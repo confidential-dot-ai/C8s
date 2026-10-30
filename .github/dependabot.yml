@@ -4,7 +4,7 @@
 # copy the production MODULE_SIG_KEY_PEM into Dependabot secrets.
 #
 # "Image pins" above means the measured component digests in
-# internal/helmchart/c8s/values.yaml and node-guest-image/c8s/mkosi.sync. No
+# internal/helmchart/c8s/values.yaml and images/node-guest/c8s/mkosi.sync. No
 # ecosystem below reads either file: docker covers Dockerfile FROM bases only.
 version: 2
 updates:

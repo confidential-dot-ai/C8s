@@ -23,7 +23,7 @@ import (
 // substitution, so nothing type-checks it against this package's config
 // struct. Parse the rendered form here so a drift fails in `go test`, not at
 // node boot.
-const nodeImagePolicyTemplate = "../../../node-guest-image/c8s/image-policy.yaml.in"
+const nodeImagePolicyTemplate = "../../../images/node-guest/c8s/image-policy.yaml.in"
 
 // The platform images mkosi.sync substitutes, as this test's stand-ins.
 const (
@@ -612,7 +612,7 @@ func prefixStrings(ranges []netip.Prefix) []string {
 
 // bakedAddonManifests is where RKE2 applies the node image's own addons at
 // boot.
-const bakedAddonManifests = "../../../node-guest-image/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests"
+const bakedAddonManifests = "../../../images/node-guest/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests"
 
 // podKinds are the baked manifest kinds that run a pod.
 var podKinds = []string{"Pod", "Deployment", "DaemonSet", "StatefulSet", "Job"}

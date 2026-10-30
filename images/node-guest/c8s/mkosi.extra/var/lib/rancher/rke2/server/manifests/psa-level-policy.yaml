@@ -1,0 +1,52 @@
+# Keeps the restricted PodSecurity floor from psa-config.yaml an invariant:
+# PodSecurity admission reads its level from namespace labels, so whoever can
+# label a namespace could hand its pods `privileged`, or pin `enforce-version`
+# to an older, weaker standard (for example, without required seccomp).
+# A namespace may carry an `enforce` label other than `restricted`, or an
+# `enforce-version` other than `latest`, only when the caller passes an RBAC
+# check for a virtual resource (`podsecurityexemptions.confidential.ai`, verb
+# `grant`) that no default role grants: only the in-guest rke2.yaml
+# (system:masters) passes; the released operator credential (the wildcard-free
+# c8s-node-operator role) and a tenant holding `admin`/`edit` in its own
+# namespaces do not. A write that leaves both labels as they were passes without the
+# check, so a controller that touches an operator-labelled namespace's
+# annotations or status is not denied. The status and finalize subresources
+# are matched because their update strategies keep the labels a writer sends.
+# RKE2 reconciles this AddOn asynchronously after kube-apiserver starts.
+# cred-release.service runs the measured psa-ready.sh gate and exposes no
+# externally attested credential until both objects exist and live server-side
+# probes prove this policy admits restricted and denies privileged. The
+# tenancy assumption and the bounded-operator argument are in images/node-guest/README.md,
+# "Workload isolation".
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: confos-psa-level
+spec:
+  # Fail closed: a CEL evaluation error denies the namespace write. The
+  # optional chains below cannot error on a missing label map or key.
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["namespaces", "namespaces/status", "namespaces/finalize"]
+  validations:
+    - expression: >-
+        (object.metadata.?labels[?'pod-security.kubernetes.io/enforce'].orValue('restricted') == 'restricted' &&
+         object.metadata.?labels[?'pod-security.kubernetes.io/enforce-version'].orValue('latest') == 'latest') ||
+        (oldObject != null &&
+         object.metadata.?labels[?'pod-security.kubernetes.io/enforce'] == oldObject.metadata.?labels[?'pod-security.kubernetes.io/enforce'] &&
+         object.metadata.?labels[?'pod-security.kubernetes.io/enforce-version'] == oldObject.metadata.?labels[?'pod-security.kubernetes.io/enforce-version']) ||
+        authorizer.group('confidential.ai').resource('podsecurityexemptions').check('grant').allowed()
+      message: "pod-security.kubernetes.io/enforce may not be set below restricted, nor enforce-version below latest, without permission to grant podsecurityexemptions.confidential.ai"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: confos-psa-level
+spec:
+  policyName: confos-psa-level
+  validationActions:
+    - Deny

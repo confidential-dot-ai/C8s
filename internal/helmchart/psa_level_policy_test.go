@@ -13,7 +13,7 @@ import (
 // The node image bakes a ValidatingAdmissionPolicy that keeps the restricted
 // PodSecurity floor an invariant for namespace-scoped tenants. The manifest is
 // applied by RKE2, not the chart, so it is read from the image tree here.
-const psaLevelPolicyPath = "../../node-guest-image/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/psa-level-policy.yaml"
+const psaLevelPolicyPath = "../../images/node-guest/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/psa-level-policy.yaml"
 
 // loadImagePolicy reads a baked ValidatingAdmissionPolicy and its binding, both
 // named name, from the node-image manifest at path.

@@ -738,7 +738,7 @@ func bootstrapCDSPin(t *testing.T) string {
 // chart entries. Unit fixtures alone cannot catch collisions between the two.
 func testNodeImageBootstrap(t *testing.T, seed []byte, platform string) {
 	t.Helper()
-	floor, err := os.ReadFile(filepath.Join("..", "..", "node-guest-image", "c8s", "image-policy.yaml.in"))
+	floor, err := os.ReadFile(filepath.Join("..", "..", "images", "node-guest", "c8s", "image-policy.yaml.in"))
 	if err != nil {
 		t.Fatal(err)
 	}

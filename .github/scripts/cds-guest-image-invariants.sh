@@ -11,7 +11,7 @@ profile="$image/cds"
 unit="$profile/mkosi.extra/etc/systemd/system/cds.service"
 preset="$profile/mkosi.extra/usr/lib/systemd/system-preset/50-cds.preset"
 finalize="$profile/mkosi.finalize"
-node_finalize=node-guest-image/c8s/mkosi.finalize
+node_finalize=images/node-guest/c8s/mkosi.finalize
 staged=/run/confai/operator-pubkey
 
 # The composition is confos's base + attest and this profile, in that order.

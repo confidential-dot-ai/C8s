@@ -12,7 +12,7 @@ import (
 // bakes this policy so that, whatever RBAC says, no c8s:* principal can write
 // where a guard could be disabled or the host reached. Applied by RKE2, not
 // the chart, so it is read from the image tree here like psa-level-policy.
-const operatorScopePolicyPath = "../../node-guest-image/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/operator-scope-policy.yaml"
+const operatorScopePolicyPath = "../../images/node-guest/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/operator-scope-policy.yaml"
 
 func TestOperatorScopePolicyShape(t *testing.T) {
 	t.Parallel()
