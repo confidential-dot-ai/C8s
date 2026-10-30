@@ -1,6 +1,6 @@
 .PHONY: build install build-c8s build-c8s-node build-get-cert build-armtls-mesh \
        build-nri-image-policy \
-       test test-podmesh-netns test-integration test-integration-cluster test-node-guest-image-role test-node-guest-image-gpu-label test-node-guest-image-gpu-cc test-node-guest-image-scratch test-node-guest-image-psa-ready test-node-guest-image-role-systemd test-node-guest-image-cloud-init test-e2e-cw-label-policy test-e2e-allowlist-enforcement test-e2e-components-ready test-e2e-cw-workload mutation-check mutation-full vet fmt lint clean \
+       test test-podmesh-netns test-integration test-integration-cluster test-podprovider-integration test-integration-pod-runtime test-node-guest-image-role test-node-guest-image-gpu-label test-node-guest-image-gpu-cc test-node-guest-image-scratch test-node-guest-image-psa-ready test-node-guest-image-role-systemd test-node-guest-image-cloud-init test-e2e-cw-label-policy test-e2e-allowlist-enforcement test-e2e-components-ready test-e2e-cw-workload mutation-check mutation-full vet fmt lint clean \
        manifests generate check-crd-chart install-controller-gen require-controller-gen
 
 CONTROLLER_GEN         ?= controller-gen
@@ -99,6 +99,24 @@ test-integration:
 # Integration (cluster) job.
 test-integration-cluster:
 	./test/integration/cluster/run.sh
+
+# Real scheduler, webhook and provider lifecycle in a disposable kind cluster.
+# Cloud and guest attestation are explicit test adapters.
+test-podprovider-integration:
+	bash ./scripts/test-podprovider.sh
+
+# Pinned RKE2 release containerd/runc with the production Pod start gate.
+# Runs inside an owned privileged container without host mounts or networking.
+test-integration-pod-runtime:
+	bash ./test/integration/pod-runtime/run.sh
+
+.PHONY: test-integration-pod-cloud cleanup-integration-pod-cloud
+# Explicit live Cloud acceptance; inputs and recovery state stay private.
+test-integration-pod-cloud:
+	bash ./test/integration/pod-cloud/run.sh run "$${C8S_PODCLOUD_INPUT:?absolute input JSON required}" "$${C8S_PODCLOUD_STATE:?new absolute private state directory required}"
+
+cleanup-integration-pod-cloud:
+	bash ./test/integration/pod-cloud/run.sh cleanup "$${C8S_PODCLOUD_STATE:?existing absolute private state directory required}"
 
 # The byte-exact launch script with device and C8s stubs in disposable Linux.
 # Needs Docker; host files are mounted read-only and no privileges are added.
