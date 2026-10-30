@@ -124,10 +124,11 @@ func installCDSURL(values map[string]any) (string, error) {
 	if !ok || address == "" {
 		return "", fmt.Errorf("cds.address names no CDS, so the route manifest has nowhere to go")
 	}
-	if _, _, err := cmdsutil.SplitCDSAddress(address); err != nil {
+	endpoint, err := cmdsutil.ParseCDSAddress(address)
+	if err != nil {
 		return "", fmt.Errorf("cds.address %w", err)
 	}
-	return cmdsutil.CDSURL(address), nil
+	return endpoint.URL(), nil
 }
 
 // installOperatorKeyPath is --operator-key, else the environment variable

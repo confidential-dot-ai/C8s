@@ -192,8 +192,6 @@ func validateRole(role roleBinding) error {
 	switch {
 	case role.Name != meshRole && role.Port == 0:
 		return fmt.Errorf("mesh.roles %s reaches nothing: give it the port it dials or drop it", role.Name)
-	case role.Name == meshRole && role.Port != 0:
-		return fmt.Errorf("mesh.roles %s reaches no port of its own: the enforcer installs the ruleset its pod rides", meshRole)
 	case role.Name != CredentialRole && role.UID == workloadclaims.CredentialsUID:
 		return fmt.Errorf("mesh.roles %s holds uid %d, reserved for the %s role", role.Name, role.UID, CredentialRole)
 	case role.Name == routerRole || role.Name == acmeRole || role.Name == upstreamRole:

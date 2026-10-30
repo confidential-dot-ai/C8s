@@ -130,7 +130,7 @@ func run(ctx context.Context, cfg config) error {
 		return err
 	}
 	if fromNode {
-		cfg.routing.cdsURL = cmdsutil.CDSURL(address)
+		cfg.routing.cdsURL = address.URL()
 	}
 	logger.Info("CDS endpoint resolved", "cds_url", cfg.routing.cdsURL, "from_node", fromNode)
 	if err := checkRoutingFlags(cfg); err != nil {
