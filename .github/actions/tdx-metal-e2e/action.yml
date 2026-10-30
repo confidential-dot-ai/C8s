@@ -756,7 +756,13 @@ runs:
       WHO=$(KUBECONFIG=/tmp/guest.kubeconfig kubectl auth whoami -o jsonpath='{.status.userInfo.username}')
       [ "$WHO" = operator ] || { echo "::error::unexpected identity '$WHO'"; exit 1; }
       echo "OK: attested kubeconfig, identity=$WHO"
-      KUBECONFIG=/tmp/guest.kubeconfig kubectl get nodes
+      KUBECONFIG=/tmp/guest.kubeconfig kubectl get nodes -o wide
+      # The address the node registered is the inventory host it signs into
+      # sandbox tokens; the CDS admits a cert only when it falls inside
+      # --cds-node-cidr. Under masquerade the guest's default-route interface is
+      # not the pod IP, so print what the node actually advertised.
+      echo "node addresses: $(KUBECONFIG=/tmp/guest.kubeconfig kubectl get nodes -o jsonpath='{.items[*].status.addresses}')"
+      echo "lane GUEST_IP=$GUEST_IP NODE_CIDR=$NODE_CIDR"
 
   - name: assert the host cidata disk is inert
     shell: bash
