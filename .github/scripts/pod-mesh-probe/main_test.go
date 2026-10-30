@@ -73,7 +73,7 @@ func testEndpoint(t *testing.T, requireClient, plaintext bool, badSigner ...bool
 		}
 		defer raw.Close()
 		_ = raw.SetDeadline(time.Now().Add(5 * time.Second))
-		var conn net.Conn = raw
+		conn := raw
 		if !plaintext {
 			secured := tls.Server(raw, cfg)
 			if secured.Handshake() != nil {

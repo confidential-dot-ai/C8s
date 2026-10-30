@@ -334,9 +334,15 @@ image or substitute a fake CDS. The lane tool (`test/tdxpod`) and the paired
 CLI build with the dispatched commit's Go toolchain, so the pinned source's
 `go` directive must not exceed the dispatched tree's.
 
+The current pins select production publication `2026.10.30-1`, source
+`05211a8b106415a0aefd5f47bc40b266b0c1dacd`, from
+[build 41048511005](https://github.com/confidential-dot-ai/C8s/actions/runs/41048511005).
+Dispatch a reviewed branch or tag containing these pins:
+
 ```sh
+acceptance_ref='<reviewed-branch-or-tag-with-these-pins>'
 gh workflow run tdx-metal-e2e.yml --repo confidential-dot-ai/C8s \
-  --ref podcvm/no-mesh-gate -f pod_acceptance=true
+  --ref "$acceptance_ref" -f pod_acceptance=true
 ```
 
 The two signed workloads test authenticated peer traffic, IPv4 HTTPS, system

@@ -1,11 +1,11 @@
 {
   "schema": 1,
-  "source": "853a4544486e02a6bfeb7b9ed1998bb6b9810414",
-  "profileSource": "853a4544486e02a6bfeb7b9ed1998bb6b9810414",
-  "buildRun": "40132177633",
-  "image": "ghcr.io/confidential-dot-ai/node-guest-base@sha256:e78f658a746ab20cf635caef93513279a800d89e25fb613497d11af79174f987",
-  "artifact": "ghcr.io/confidential-dot-ai/node-guest-base@sha256:c550b9e7029745ec457a64408fde5e5dbb36539c99cb9670e29bb0ade2d41196",
-  "manifestSHA256": "f2f846643b6ec917cd80fede6e5d832d08db521e8fcb95737b519db7fba66cae",
-  "diskSHA256": "185cdacd7877500aafc4963294fdb13f804a1e0e908a1a041fd4082713969b7f",
-  "meshImage": "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:6331d0750a9f124265fdd9f78231c4d44cdf8d287d97f539c4147d26c035f627"
+  "source": "05211a8b106415a0aefd5f47bc40b266b0c1dacd",
+  "profileSource": "05211a8b106415a0aefd5f47bc40b266b0c1dacd",
+  "buildRun": "41048511005",
+  "image": "ghcr.io/confidential-dot-ai/node-guest-base@sha256:3c51d42b69edbcf2507cdb4865004995267fdb30ac2758df139825c2243ee984",
+  "artifact": "ghcr.io/confidential-dot-ai/node-guest-base@sha256:6ccac9de0af7f388e3a0aa377e84a3a35be687eb90bcdde98911c1a84162de23",
+  "manifestSHA256": "004ca9f14116bb2df3c4bed73627cb88879d14d9e07387b74d7d3497387ea983",
+  "diskSHA256": "eb2dffb9712048ad23a2a62c04441c85f708cad60a846ce8cf4c5d7f4b610bb6",
+  "meshImage": "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:e05ccc28f168972c86ccc1bdb899a371264a38a0ef69a2f0eece6d9813baee27"
 }
