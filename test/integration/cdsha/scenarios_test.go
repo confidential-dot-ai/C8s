@@ -47,29 +47,25 @@ func TestTheDecreedReplicaStartsTheClusterAndTheRestJoinIt(t *testing.T) {
 		if code, body := c.get(r, "/allowlist"); code != http.StatusOK || !strings.Contains(string(body), seededWorkload) {
 			t.Errorf("replica %d serves /allowlist = %d %s, want the workload the configuration seeded", r.index, code, body)
 		}
-		c.requirePinDecree(r)
+		c.requirePinDecree(r, cdsdecree.Genesis, c.genesisIntent)
 	}
 }
 
-// requirePinDecree reads the decree behind the images a CDS of this cluster
-// may run: what a node follows, and the Genesis decree until another pins
-// them.
-func (c *cluster) requirePinDecree(r *replica) {
+// requirePinDecree reads the decree behind the images a CDS of this cluster may
+// run, which is what a node follows.
+func (c *cluster) requirePinDecree(r *replica, kind cdsdecree.Kind, intent string) {
 	c.t.Helper()
 	code, body := c.get(r, "/ha/pins")
 	if code != http.StatusOK {
 		c.t.Fatalf("replica %d serves /ha/pins = %d %s, want the applied pin decree", r.index, code, body)
 	}
-	var pinned struct {
-		Decree struct {
-			Kind string `json:"kind"`
-		} `json:"decree"`
-	}
+	var pinned cdsdecree.Signed
 	if err := json.Unmarshal(body, &pinned); err != nil {
 		c.t.Fatalf("replica %d serves a pin decree that does not decode: %v: %s", r.index, err, body)
 	}
-	if pinned.Decree.Kind != string(cdsdecree.Genesis) {
-		c.t.Errorf("replica %d serves a %s pin decree, want the Genesis the cluster started on", r.index, pinned.Decree.Kind)
+	if pinned.Decree.Kind != kind || pinned.Decree.IntentID != intent {
+		c.t.Errorf("replica %d serves the %s decree %s, want the %s decree %s",
+			r.index, pinned.Decree.Kind, pinned.Decree.IntentID, kind, intent)
 	}
 }
 
@@ -199,4 +195,62 @@ func notShort(t *testing.T) {
 	if testing.Short() {
 		t.Skip("not in the -short subset")
 	}
+}
+
+// The operator pins the CDS images of the cluster by decree: a replica that
+// does not lead hands the posted decree to the leader, the operator reads the
+// version it produced, and every replica then serves it as the decree a node
+// and a client follow.
+func TestAPinDecreeOfTheOperatorAppliesAtEveryReplica(t *testing.T) {
+	c := newCluster(t, threeReplicas)
+	leading := c.waitLeader(30 * time.Second)
+	started, _ := c.status(leading)
+
+	intent, delivered := c.decreePins(c.others(leading)[0], started.Version)
+
+	if delivered.Version != started.Version+1 || delivered.Refused != "" {
+		t.Errorf("the cluster answered %+v for the decree, want it applied at version %d", delivered, started.Version+1)
+	}
+	c.waitFor("every replica to hold the pin decree", time.Minute, func() bool {
+		return c.allApplied(intent, started.Version+1)
+	})
+	for _, r := range c.replicas {
+		c.requirePinDecree(r, cdsdecree.UpdateMeasurements, intent)
+	}
+}
+
+// A RotateKey decree forks the cluster's mesh: its leader mints a mesh CA
+// through the log, and every replica serves and issues under the certificate
+// the log carries.
+func TestARotateKeyDecreeGivesTheClusterAMeshCAOfItsOwn(t *testing.T) {
+	notShort(t)
+	c := newCluster(t, threeReplicas)
+	leading := c.waitLeader(30 * time.Second)
+	started, _ := c.status(leading)
+
+	intent, _ := c.decreeRotateKey(leading, started.Version)
+
+	c.waitFor("every replica to serve the mesh CA the decree minted", time.Minute, func() bool {
+		return c.allApplied(intent, started.Version+1) && c.allServeOneOtherCA(started.CAFingerprint)
+	})
+	for _, r := range c.replicas {
+		reported, _ := c.status(r)
+		if served := c.servedCA(r); served != reported.CAFingerprint {
+			t.Errorf("replica %d serves mesh CA %s at /ca and reports %s", r.index, served, reported.CAFingerprint)
+		}
+	}
+}
+
+// allServeOneOtherCA reports every replica serving one mesh CA between them,
+// and none of them the one was names.
+func (c *cluster) allServeOneOtherCA(was string) bool {
+	serving := map[string]bool{}
+	for _, r := range c.replicas {
+		reported, answered := c.status(r)
+		if !answered || reported.CAFingerprint == "" || reported.CAFingerprint == was {
+			return false
+		}
+		serving[reported.CAFingerprint] = true
+	}
+	return len(serving) == 1
 }

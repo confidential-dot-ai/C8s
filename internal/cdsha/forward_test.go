@@ -83,6 +83,7 @@ func TestTheLeaderCommitsOnlyForwardedClientWrites(t *testing.T) {
 		"a format change":             marshalled(t, Entry{Kind: KindFormat, SetFormat: Format}),
 		"a decree":                    marshalled(t, Entry{Kind: KindDecree, Decree: &DecreeEntry{}}),
 		"a doubt":                     marshalled(t, Entry{Kind: KindDoubt}),
+		"a renewed mesh CA":           marshalled(t, Entry{Kind: KindRenewCA, RenewCA: &RenewCAEntry{}}),
 		"no command":                  marshalled(t, Entry{Kind: KindSecret}),
 		"two commands":                marshalled(t, Entry{Kind: KindSecret, Secret: put, Binding: &sandboxledger.Command{SandboxID: "sandbox-1"}}),
 		"a client kind with a decree": marshalled(t, Entry{Kind: KindSecret, Secret: put, Decree: &DecreeEntry{}}),

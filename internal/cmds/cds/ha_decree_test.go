@@ -128,7 +128,7 @@ func (c operatorCluster) replicaServing(t *testing.T, routes map[string]any) rep
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(cdsha.Delivered{Intent: signed.Decree.IntentID, Held: true})
+		_ = json.NewEncoder(w).Encode(answerFor(signed.Decree))
 	})
 	server := testutil.NewARMTLSServer(t, handler)
 	return replica{
@@ -136,6 +136,15 @@ func (c operatorCluster) replicaServing(t *testing.T, routes map[string]any) rep
 		cdsPin:   c.cdsPinPath,
 		verifier: c.verifier(),
 	}
+}
+
+// answerFor holds the kinds a replica acts on itself, and applies the rest.
+func answerFor(d cdsdecree.Decree) cdsha.Delivered {
+	switch d.Kind {
+	case cdsdecree.Genesis, cdsdecree.Recover, cdsdecree.Admit:
+		return cdsha.Delivered{Intent: d.IntentID, Held: true}
+	}
+	return cdsha.Delivered{Intent: d.IntentID, Version: d.BaseVersion + 1}
 }
 
 // pinDecree is a pin decree the cluster has applied, as a replica serves it.
@@ -223,24 +232,28 @@ func signing(t *testing.T, run func(*cobra.Command) error) error {
 // digest, because two images of one cluster would otherwise take the same name.
 func TestPinDecreeNamesEveryImageTheClusterAccepts(t *testing.T) {
 	c := newOperatorCluster(t)
-	out := filepath.Join(t.TempDir(), "pins.json")
-	cmd := newPinsCmd()
-	cmd.SetArgs([]string{
-		"--config", c.configPath,
-		"--operator-key", c.keyPath,
-		"--out", out,
-		"--base-version", "4",
-		"--platform", "sev-snp",
-		"--vcpus", "2,4",
-		"--image-manifest", snpManifest(t, smp2Digest, smp4Digest),
-		"--image-manifest", snpManifest(t, rolledSMP2, rolledSMP4),
+	o := c.options(t)
+	serving := c.replicaServing(t, nil)
+
+	err := signing(t, func(cmd *cobra.Command) error {
+		return pinsOptions{
+			decreeOptions: o,
+			pins: pinFlags{
+				platform: "sev-snp",
+				vcpus:    []int{2, 4},
+				manifests: []string{
+					snpManifest(t, smp2Digest, smp4Digest),
+					snpManifest(t, rolledSMP2, rolledSMP4),
+				},
+			},
+			to: serving,
+		}.run(cmd)
 	})
-	cmd.SetOut(io.Discard)
-	if err := cmd.Execute(); err != nil {
+	if err != nil {
 		t.Fatal(err)
 	}
-	decree := c.signed(t, out).Decree
-	if decree.Kind != cdsdecree.UpdateMeasurements || decree.BaseVersion != 4 {
+	decree := c.signed(t, o.out).Decree
+	if decree.Kind != cdsdecree.UpdateMeasurements || decree.BaseVersion != o.baseVersion {
 		t.Fatalf("decree = %+v", decree)
 	}
 	pins, err := decree.CDSPins.WithLaunchFile(c.config)
@@ -268,6 +281,8 @@ func TestPinDecreeNeedsTheVersionItAppliesOn(t *testing.T) {
 		"--config", c.configPath,
 		"--operator-key", c.keyPath,
 		"--out", filepath.Join(t.TempDir(), "pins.json"),
+		"--to", "cds-1.acme.example",
+		"--cds-pin", c.cdsPinPath,
 		"--platform", "sev-snp",
 		"--vcpus", "2",
 		"--image-manifest", snpManifest(t, smp2Digest),

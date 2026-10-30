@@ -8,10 +8,14 @@
 package cdsha
 
 import (
+	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"sync"
+	"time"
 
+	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
 )
 
@@ -26,6 +30,10 @@ type Delivered struct {
 	Intent string `json:"intent"`
 	// Held reports a decree this replica keeps until it acts on it itself.
 	Held bool `json:"held,omitempty"`
+	// Version is the cluster version a decree the leader applied produced.
+	Version uint64 `json:"applied_version,omitempty"`
+	// Refused is why the cluster would not apply the decree.
+	Refused string `json:"refused,omitempty"`
 }
 
 // TakeDecree takes one decree the operator posted to this replica.
@@ -33,10 +41,10 @@ func (n *Node) TakeDecree(signed cdsdecree.Signed) (Delivered, error) {
 	if err := n.operatorSigned(signed); err != nil {
 		return Delivered{}, err
 	}
-	if !actedOnByItsTarget(signed.Decree.Kind) {
-		return Delivered{}, fmt.Errorf("cds-ha: a %s decree is not one a replica acts on by itself", signed.Decree.Kind)
+	if actedOnByItsTarget(signed.Decree.Kind) {
+		return n.holdDecree(signed)
 	}
-	return n.holdDecree(signed)
+	return n.applyThroughTheLeader(signed)
 }
 
 // operatorSigned reports a decree a key of this cluster's operator signed,
@@ -94,4 +102,44 @@ func (p *postedDecrees) all() []cdsdecree.Signed {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return slices.Clone(p.held)
+}
+
+// admitAsDecreed sets the images this replica admits beside its own to the ones
+// an Admit decree posted to it names, and none while it holds no such decree.
+func (n *Node) admitAsDecreed() {
+	n.decreedImages.Store(n.anyAdmitForThisProcess())
+}
+
+// anyAdmitForThisProcess is the images of an Admit decree this replica holds.
+// Every decree it holds names the member id this process minted, so the newest
+// Admit of them serves.
+func (n *Node) anyAdmitForThisProcess() *[]remote.ImagePin {
+	held := n.posted.all()
+	for _, signed := range slices.Backward(held) {
+		if signed.Decree.Kind != cdsdecree.Admit {
+			continue
+		}
+		images, err := n.imagesOfAdmit(signed)
+		if err != nil {
+			if n.admitLog.changed(err.Error()) {
+				slog.Warn("cds-ha: an Admit decree names this replica and it admits no image by it", "error", err)
+			}
+			continue
+		}
+		return &images
+	}
+	return nil
+}
+
+// imagesOfAdmit is the image set an Admit decree hands this replica: inside
+// its expiry, and pinned to the launch file this replica booted.
+func (n *Node) imagesOfAdmit(signed cdsdecree.Signed) ([]remote.ImagePin, error) {
+	if expired(signed.Decree, time.Now().UnixMilli()) {
+		return nil, errors.New("the Admit decree has expired")
+	}
+	images, err := signed.Decree.CDSPins.WithLaunchFile(n.cfg.LaunchFile)
+	if err != nil {
+		return nil, err
+	}
+	return images.Images, nil
 }

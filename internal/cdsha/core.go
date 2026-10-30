@@ -1,6 +1,7 @@
 package cdsha
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/x509"
 	"errors"
@@ -278,6 +279,50 @@ func adoptMeshCA(next *ClusterState, de DecreeEntry) (*issuer.CA, error) {
 	}
 	next.MeshCACert = slices.Clone(de.MeshCACert)
 	return ca, nil
+}
+
+// caEntryBytes is the certificate in DER and the key in PKCS#8, as a log entry
+// carries them.
+func caEntryBytes(ca *issuer.CA) (cert, key []byte, err error) {
+	key, err = x509.MarshalPKCS8PrivateKey(ca.Key)
+	if err != nil {
+		return nil, nil, err
+	}
+	return ca.Cert.Raw, key, nil
+}
+
+// RenewCAEntry carries the mesh CA certificate the leader signed again under
+// the key every replica already holds.
+type RenewCAEntry struct {
+	MeshCACert []byte `json:"mesh_ca_cert"`
+}
+
+// renewalOf is the cluster's mesh CA under the certificate der holds: its one
+// key, and the issuer its live leaves name.
+func renewalOf(ca *issuer.CA, der []byte) (*issuer.CA, error) {
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		return nil, fmt.Errorf("renewed mesh CA certificate: %w", err)
+	}
+	if !speaksFor(cert, ca.Key) {
+		return nil, errors.New("the renewed mesh CA certificate speaks for another key than the cluster's")
+	}
+	if !namesTheSameIssuer(ca.Cert, cert) {
+		return nil, errors.New("the renewed mesh CA certificate names another issuer than the leaves of this cluster")
+	}
+	return &issuer.CA{Cert: cert, Key: ca.Key}, nil
+}
+
+func speaksFor(cert *x509.Certificate, key *ecdsa.PrivateKey) bool {
+	public, ecdsaKey := cert.PublicKey.(*ecdsa.PublicKey)
+	return ecdsaKey && public.Equal(&key.PublicKey)
+}
+
+// namesTheSameIssuer: a leaf names the CA that signed it by subject and key
+// identifier.
+func namesTheSameIssuer(held, renewed *x509.Certificate) bool {
+	return bytes.Equal(held.RawSubject, renewed.RawSubject) &&
+		bytes.Equal(held.SubjectKeyId, renewed.SubjectKeyId)
 }
 
 // meshCA checks that a certificate in DER and a key in PKCS#8 belong together.

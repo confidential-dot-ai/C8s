@@ -17,6 +17,7 @@ import (
 	"github.com/hashicorp/raft"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
+	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
 	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
 	"github.com/confidential-dot-ai/c8s/internal/sandboxledger"
@@ -48,8 +49,22 @@ const (
 	maxTestSandboxBindings = 100
 )
 
-// testCDSImage is the launch digest the replicas report and the pin decree names.
-var testCDSImage = strings.Repeat("11", 48)
+// The CDS images of the test cluster: the one its replicas report and its pin
+// decree names, and the one a replica of the next release reports.
+const (
+	testCDSDigest   = 0x11
+	rolledCDSDigest = 0x22
+)
+
+var (
+	testCDSImage   = launchDigestOf(testCDSDigest)
+	rolledCDSImage = launchDigestOf(rolledCDSDigest)
+)
+
+// launchDigestOf is what an attestation-api reports for a testPins image.
+func launchDigestOf(digest byte) string {
+	return strings.Repeat(fmt.Sprintf("%02x", digest), refvalues.DigestSize)
+}
 
 // testReplicaEntry is the replica entry every replica's discovery resolves.
 const testReplicaEntry = "replicas.cds.test"
