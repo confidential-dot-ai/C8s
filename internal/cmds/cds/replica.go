@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/netip"
+	"os"
 	"time"
 
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
@@ -159,19 +160,55 @@ func emptyAllowlist(store *allowlist.Store) error {
 	return nil
 }
 
-// runMember drives the member until the returned stop is called. A replica
-// whose loop is gone joins nothing and, once its lease runs out, serves
-// nothing.
+// runMember drives the member until the returned stop is called, and reports
+// its loop ending: a replica whose loop is gone joins nothing and, once the
+// lease it holds runs out, serves nothing.
+//
+// A loop that ended because the replica left its cluster ends the process
+// (images/cds-guest). A replica whose loop waits behind the fault is ended by
+// the watchdog beside it.
 func runMember(ctx context.Context, node *cdsha.Node) (stop func(), ended <-chan struct{}) {
 	running, cancel := context.WithCancel(ctx)
 	gone := make(chan struct{})
 	go func() {
 		defer close(gone)
-		if err := node.Run(running); err != nil {
-			slog.Error("cds-ha: this replica stopped following its cluster", "error", err)
+		err := node.Run(running)
+		switch {
+		case errors.Is(err, cdsha.ErrLeftItsCluster):
+			exitToRestart(err.Error())
+		case err != nil:
+			slog.Error("cds-ha: this replica's loop ended", "error", err)
 		}
 	}()
+	go watchStuck(running, node)
 	return func() { cancel(); <-gone }, gone
+}
+
+const stuckLook = time.Second
+
+// A replica's own loop ends it on a fault, and that loop can be waiting
+// behind the very fault it would end on. A replica that serves nothing must
+// hold no open port for a prober to find.
+func watchStuck(ctx context.Context, node *cdsha.Node) {
+	look := time.NewTicker(stuckLook)
+	defer look.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-look.C:
+		}
+		if reason := node.StuckOverdue(); reason != "" {
+			exitToRestart("its own loop did not end it: " + reason)
+		}
+	}
+}
+
+// A failure exit is what the unit restarts on.
+func exitToRestart(reason string) {
+	slog.Error("cds-ha: this replica stopped following its cluster; it exits so a restart rejoins it as a new member with the cluster's state",
+		"reason", reason)
+	os.Exit(1)
 }
 
 // join answers health, status and the cluster's pins on the client port until

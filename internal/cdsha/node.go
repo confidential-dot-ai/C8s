@@ -164,6 +164,15 @@ type Node struct {
 	joinLog      changedReason
 	admitLog     changedReason
 	formatLog    changedReason
+	stuckLog     changedReason
+
+	// failures, transfers and refusals carry a leader's judgement of its
+	// members between passes (liveness.go, handoff.go, barriers.go).
+	failures  *heartbeatFailures
+	transfers *transfers
+	refusals  barrierRefusals
+	// Only Run writes stuckAlarmed (stuck.go).
+	stuckAlarmed time.Time
 
 	// lease is the read lease this replica answers reads under, and outage
 	// is why it has none (lease.go). barriers holds the one barrier a leader
@@ -217,6 +226,8 @@ func NewNode(cfg Config) (*Node, error) {
 		genesisCA: sync.OnceValues(mintMeshCA),
 		barriers:  newOneBarrier(),
 		seatbook:  newSeatBook(),
+		failures:  newHeartbeatFailures(),
+		transfers: newTransfers(),
 	}
 	n.peers = newMembers(string(n.member), cfg.Timing.DeadAfter)
 	if err := n.mintIdentity(); err != nil {
@@ -417,19 +428,26 @@ func raftLogger() hclog.Logger {
 	})
 }
 
-// Run drives the replica until ctx ends, then stops Raft and closes the peer
-// port.
+// Run drives the replica until ctx ends: it keeps the lease it answers reads
+// under and the evidence its peers admit it by fresh, and judges the
+// connections it holds again whenever the cluster's image set may have
+// changed. It returns before ctx ends on a fault this replica cannot serve
+// through (stuck.go), which the restart of this process cures. It stops Raft
+// and closes the peer port before it returns.
 func (n *Node) Run(ctx context.Context) error {
 	if n.raft == nil {
 		return errors.New("cds-ha: this replica is not started")
 	}
 	defer n.stop()
-	stopReaching := onItsOwn(ctx, n.reachMembers)
-	defer stopReaching()
-	stopDuties := onItsOwn(ctx, n.keepCluster)
-	defer stopDuties()
-	stopSeating := onItsOwn(ctx, n.keepSeating)
-	defer stopSeating()
+	stopWorkers := startWorkers(ctx,
+		n.reachMembers,
+		n.keepCluster,
+		n.keepSeating,
+		n.watchHeartbeats,
+		n.watchHandover,
+		n.watchStalls,
+	)
+	defer stopWorkers()
 	stopReads := n.serveReads(ctx)
 	defer stopReads()
 	tick := time.NewTicker(n.cfg.Timing.Tick)
@@ -443,6 +461,22 @@ func (n *Node) Run(ctx context.Context) error {
 		}
 		n.renewIdentity()
 		n.recheckPeers()
+		if err := n.endsAtAFault(); err != nil {
+			return err
+		}
+	}
+}
+
+// Answers with the function that ends every loop and waits for it.
+func startWorkers(ctx context.Context, loops ...func(context.Context)) (endAndWait func()) {
+	ending := make([]func(), 0, len(loops))
+	for _, loop := range loops {
+		ending = append(ending, onItsOwn(ctx, loop))
+	}
+	return func() {
+		for _, end := range ending {
+			end()
+		}
 	}
 }
 
@@ -473,11 +507,27 @@ func (n *Node) recheckPeers() {
 }
 
 func (n *Node) stop() {
-	if err := n.raft.Shutdown().Error(); err != nil {
-		slog.Error("cds-ha: this replica's Raft did not shut down", "error", err)
-	}
+	n.shutDownRaft()
 	if err := n.transport.Close(); err != nil {
 		slog.Error("cds-ha: this replica's peer port did not close", "error", err)
+	}
+}
+
+// A state machine held on a command never lets Raft's goroutines return. The
+// peer port closes after the wait either way, which is what they then fail on.
+func (n *Node) shutDownRaft() {
+	stopped := make(chan error, 1)
+	go func() {
+		stopped <- n.raft.Shutdown().Error()
+	}()
+	select {
+	case err := <-stopped:
+		if err != nil {
+			slog.Error("cds-ha: this replica's Raft did not shut down", "error", err)
+		}
+	case <-time.After(n.cfg.Timing.Apply):
+		slog.Error("cds-ha: this replica's Raft did not shut down; its goroutines are left running",
+			"waited", n.cfg.Timing.Apply)
 	}
 }
 

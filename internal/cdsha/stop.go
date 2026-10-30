@@ -25,9 +25,11 @@ const (
 	stalled stopKind = "stall"
 )
 
+// stopReason is why a replica stopped, of which kind, and since when.
 type stopReason struct {
 	kind stopKind
 	msg  string
+	at   time.Time
 }
 
 // stops is a replica's stop state and the command it is applying. Nothing
@@ -53,6 +55,21 @@ func (s *stops) Stuck() string {
 func (s *stops) StuckLocal() bool {
 	p := s.reason.Load()
 	return p != nil && p.kind == localFault
+}
+
+func (s *stops) stuckFor() time.Duration {
+	if p := s.reason.Load(); p != nil {
+		return time.Since(p.at)
+	}
+	return 0
+}
+
+func (s *stops) stalling() (*stopReason, bool) {
+	p := s.reason.Load()
+	if p == nil || p.kind != stalled {
+		return nil, false
+	}
+	return p, true
 }
 
 // ApplyingFor is how long the command Apply is on has been applying, and 0
@@ -85,6 +102,7 @@ func (s *stops) halt(err error, kind stopKind) error {
 	stop := &stopReason{
 		kind: kind,
 		msg:  err.Error(),
+		at:   time.Now(),
 	}
 	for {
 		current := s.reason.Load()
@@ -114,6 +132,7 @@ func (s *stops) Stall(err error) {
 	stall := &stopReason{
 		kind: stalled,
 		msg:  err.Error(),
+		at:   time.Now(),
 	}
 	if !s.reason.CompareAndSwap(nil, stall) {
 		return
@@ -123,6 +142,23 @@ func (s *stops) Stall(err error) {
 		return
 	}
 	slog.Error("cds-ha: this replica's state machine is stalled on a command; it stops serving until the command returns", "reason", stall.msg)
+}
+
+// A stall that outlasted its cluster is a fault of this replica's own: the
+// restart that replays the cluster's log takes this replica back into it.
+func (s *stops) hang(stall *stopReason, why string) {
+	// The stall's own start stands: this replica has served nothing since
+	// the command stopped returning.
+	hung := &stopReason{
+		kind: localFault,
+		msg:  stall.msg + ", and " + why,
+		at:   stall.at,
+	}
+	if !s.reason.CompareAndSwap(stall, hung) {
+		return
+	}
+	slog.Error("cds-ha: this replica's state machine is held on a command for good; it stops serving and exits to rejoin",
+		"reason", hung.msg)
 }
 
 // endStall ends the stall of the command that just returned: it was slow, but

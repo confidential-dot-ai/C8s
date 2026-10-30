@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -76,6 +77,35 @@ type liveReplica struct {
 	resolve *addressBook
 	cancel  context.CancelFunc
 	done    chan struct{}
+	// leaves reports a replica a test expects to end its own loop, and err is
+	// why it ended, which only a reader of a closed done may read.
+	leaves atomic.Bool
+	err    error
+}
+
+// The reason r left is then what the test reads rather than a failure.
+func (r *liveReplica) mayLeave() {
+	r.leaves.Store(true)
+}
+
+func (r *liveReplica) left() (error, bool) {
+	select {
+	case <-r.done:
+		return r.err, true
+	default:
+		return nil, false
+	}
+}
+
+func (c *liveCluster) leftWithin(r *liveReplica, within time.Duration) error {
+	c.t.Helper()
+	left := fmt.Sprintf("replica %s to leave its cluster", r.node.member)
+	eventually(c.t, within, left, func() bool {
+		_, gone := r.left()
+		return gone
+	})
+	err, _ := r.left()
+	return err
 }
 
 // liveCluster is a cluster of such replicas over shared launch values.
@@ -149,8 +179,9 @@ func (c *liveCluster) startAt(peer netip.AddrPort) *liveReplica {
 	}
 	go func() {
 		defer close(r.done)
-		if err := node.Run(ctx); err != nil {
-			c.t.Errorf("replica %s: %v", node.member, err)
+		r.err = node.Run(ctx)
+		if r.err != nil && !r.leaves.Load() {
+			c.t.Errorf("replica %s: %v", node.member, r.err)
 		}
 	}()
 	c.replicas = append(c.replicas, r)
