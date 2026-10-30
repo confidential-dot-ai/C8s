@@ -48,8 +48,14 @@ func newStubRouter(t *testing.T) http.Handler {
 			Challenges: &cs,
 			CertTTL:    time.Hour,
 		},
-		AllowlistHandler: allowlist.Handler{Store: &store, WriteAuthorizer: func(*http.Request, []byte) error { return nil }},
-		Routes:           routeHandler{Store: &store, MeshCA: mesh.Current().CA.Cert},
+		AllowlistHandler: allowlist.Handler{
+			Allowlist:       store.Local(),
+			WriteAuthorizer: func(*http.Request, []byte) error { return nil },
+		},
+		Routes: routeHandler{
+			Allowlist: store.Local(),
+			MeshCA:    mesh.Current().CA.Cert,
+		},
 		ReadyFn:          func() bool { return true },
 		MeshCA:           mesh,
 		RateLimiter:      newTestRateLimiter(t),
@@ -74,7 +80,10 @@ func TestRouter_RateLimitsAttestationEndpoints(t *testing.T) {
 			Challenges: &cs,
 			CertTTL:    time.Hour,
 		},
-		AllowlistHandler: allowlist.Handler{Store: &store, WriteAuthorizer: func(*http.Request, []byte) error { return nil }},
+		AllowlistHandler: allowlist.Handler{
+			Allowlist:       store.Local(),
+			WriteAuthorizer: func(*http.Request, []byte) error { return nil },
+		},
 		ReadyFn:          func() bool { return true },
 		MeshCA:           mesh,
 		RateLimiter:      rl,
@@ -110,7 +119,10 @@ func TestRouter_RateLimitsAllowlistWrites(t *testing.T) {
 		t.Fatalf("rate limiter: %v", err)
 	}
 	deps := dependencies{
-		AllowlistHandler: allowlist.Handler{Store: &store, WriteAuthorizer: func(*http.Request, []byte) error { return nil }},
+		AllowlistHandler: allowlist.Handler{
+			Allowlist:       store.Local(),
+			WriteAuthorizer: func(*http.Request, []byte) error { return nil },
+		},
 		ReadyFn:          func() bool { return true },
 		MeshCA:           mesh,
 		RateLimiter:      rl,
@@ -161,7 +173,10 @@ func TestRouter_RateLimitsAuthenticate(t *testing.T) {
 			Challenges: &cs,
 			CertTTL:    time.Hour,
 		},
-		AllowlistHandler: allowlist.Handler{Store: &store, WriteAuthorizer: func(*http.Request, []byte) error { return nil }},
+		AllowlistHandler: allowlist.Handler{
+			Allowlist:       store.Local(),
+			WriteAuthorizer: func(*http.Request, []byte) error { return nil },
+		},
 		ReadyFn:          func() bool { return true },
 		MeshCA:           mesh,
 		RateLimiter:      rl,
@@ -274,7 +289,10 @@ func TestRouter_AttestRejectsOversizedBody(t *testing.T) {
 			Challenges: &cs,
 			CertTTL:    time.Hour,
 		},
-		AllowlistHandler: allowlist.Handler{Store: &store, WriteAuthorizer: func(*http.Request, []byte) error { return nil }},
+		AllowlistHandler: allowlist.Handler{
+			Allowlist:       store.Local(),
+			WriteAuthorizer: func(*http.Request, []byte) error { return nil },
+		},
 		ReadyFn:          func() bool { return true },
 		MeshCA:           mesh,
 		RateLimiter:      newTestRateLimiter(t),

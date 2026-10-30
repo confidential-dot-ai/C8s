@@ -186,6 +186,34 @@ func VerifyStored(keys []*ecdsa.PublicKey, token, method, path string, body []by
 	return err
 }
 
+// UnverifiedTimes returns the iat and exp claims of token without checking
+// its signature or comparing them with a clock. It refuses the windows the
+// Verifier refuses.
+func UnverifiedTimes(token string) (iat, exp time.Time, err error) {
+	claims := jwt.MapClaims{}
+	if _, _, err := jwt.NewParser().ParseUnverified(token, claims); err != nil {
+		return time.Time{}, time.Time{}, err
+	}
+	return tokenWindow(claims)
+}
+
+// tokenWindow returns the iat and exp claims, both required, with exp−iat
+// within (0, MaxTokenValidity]: the Signer's TTL is client-side only.
+func tokenWindow(claims jwt.MapClaims) (iat, exp time.Time, err error) {
+	i, err := claims.GetIssuedAt()
+	if err != nil || i == nil {
+		return time.Time{}, time.Time{}, fmt.Errorf("operator token missing iat claim")
+	}
+	e, err := claims.GetExpirationTime()
+	if err != nil || e == nil {
+		return time.Time{}, time.Time{}, fmt.Errorf("operator token missing exp claim")
+	}
+	if validity := e.Sub(i.Time); validity <= 0 || validity > MaxTokenValidity {
+		return time.Time{}, time.Time{}, fmt.Errorf("operator token validity %s outside (0, %s]", validity, MaxTokenValidity)
+	}
+	return i.Time, e.Time, nil
+}
+
 // verifyToken returns the iat claim of a token it verified.
 func verifyToken(keys []*ecdsa.PublicKey, tokenStr, method, path string, body []byte, opts ...jwt.ParserOption) (time.Time, error) {
 	if len(keys) == 0 {
@@ -220,19 +248,9 @@ func verifyToken(keys []*ecdsa.PublicKey, tokenStr, method, path string, body []
 		}
 
 		// Signature verified under this key; claim failures are authoritative.
-		// The Signer's TTL is client-side only, so the replay bound is enforced
-		// here: iat is required and exp−iat must fit MaxTokenValidity, whatever
-		// tooling minted the token.
-		iat, err := claims.GetIssuedAt()
-		if err != nil || iat == nil {
-			return time.Time{}, fmt.Errorf("operator token missing iat claim")
-		}
-		exp, err := claims.GetExpirationTime()
-		if err != nil || exp == nil {
-			return time.Time{}, fmt.Errorf("operator token missing exp claim")
-		}
-		if validity := exp.Sub(iat.Time); validity <= 0 || validity > MaxTokenValidity {
-			return time.Time{}, fmt.Errorf("operator token validity %s outside (0, %s]", validity, MaxTokenValidity)
+		iat, _, err := tokenWindow(claims)
+		if err != nil {
+			return time.Time{}, err
 		}
 		if htm, _ := claims[claimHTTPMethod].(string); htm != method {
 			return time.Time{}, fmt.Errorf("operator token %s %q does not match request method %q", claimHTTPMethod, htm, method)
@@ -253,7 +271,7 @@ func verifyToken(keys []*ecdsa.PublicKey, tokenStr, method, path string, body []
 		if subtle.ConstantTimeCompare([]byte(pbh), []byte(want)) != 1 {
 			return time.Time{}, fmt.Errorf("operator token %s does not match request body", claimPayloadBodyHash)
 		}
-		return iat.Time, nil
+		return iat, nil
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("token not signed by any pinned operator key")

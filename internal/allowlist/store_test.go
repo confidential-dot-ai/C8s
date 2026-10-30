@@ -21,8 +21,25 @@ func oneContainerWorkload(digest types.Digest) pkgallowlist.Workload {
 	}
 }
 
+// openInMemoryStore opens an empty in-memory allowlist and its write handle.
+func openInMemoryStore(t *testing.T) (*Store, *Handle) {
+	t.Helper()
+	store, err := OpenInMemory()
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+	return store, store.Local()
+}
+
+func openInMemory(t *testing.T) *Handle {
+	t.Helper()
+	_, allowlist := openInMemoryStore(t)
+	return allowlist
+}
+
 // replaceAll writes workloads as the whole allowlist, the store's one write.
-func replaceAll(t *testing.T, store *Store, workloads map[string]pkgallowlist.Workload) {
+func replaceAll(t *testing.T, store *Handle, workloads map[string]pkgallowlist.Workload) {
 	t.Helper()
 	if err := store.ReplaceAll(&pkgallowlist.Allowlist{Schema: pkgallowlist.Schema, Workloads: workloads}, OperatorWrite{}); err != nil {
 		t.Fatalf("replace: %v", err)
@@ -31,7 +48,7 @@ func replaceAll(t *testing.T, store *Store, workloads map[string]pkgallowlist.Wo
 
 // putEntry writes one entry into the allowlist the store serves, keeping
 // every other entry.
-func putEntry(t *testing.T, store *Store, name string, w pkgallowlist.Workload) {
+func putEntry(t *testing.T, store *Handle, name string, w pkgallowlist.Workload) {
 	t.Helper()
 	doc, _, err := store.LoadAll()
 	if err != nil {
@@ -42,7 +59,7 @@ func putEntry(t *testing.T, store *Store, name string, w pkgallowlist.Workload) 
 }
 
 // deleteEntry takes one entry out of the allowlist the store serves.
-func deleteEntry(t *testing.T, store *Store, name string) {
+func deleteEntry(t *testing.T, store *Handle, name string) {
 	t.Helper()
 	doc, _, err := store.LoadAll()
 	if err != nil {
@@ -62,19 +79,17 @@ func mustParseDigest(t *testing.T, s string) types.Digest {
 }
 
 func TestReplaceAllBumpsVersionByOne(t *testing.T) {
-	store, err := OpenInMemory()
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer store.Close()
+	store := openInMemory(t)
 
-	putEntry(t, &store, "a", oneContainerWorkload(mustParseDigest(t, digestA)))
+	putEntry(t, store, "a", oneContainerWorkload(mustParseDigest(t, digestA)))
 	_, beforeVersion, err := store.LoadAll()
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
 
-	replaceAll(t, &store, map[string]pkgallowlist.Workload{"b": oneContainerWorkload(mustParseDigest(t, digestB))})
+	replaceAll(t, store, map[string]pkgallowlist.Workload{
+		"b": oneContainerWorkload(mustParseDigest(t, digestB)),
+	})
 
 	doc, version, err := store.LoadAll()
 	if err != nil {
@@ -101,14 +116,10 @@ func TestReplaceAllBumpsVersionByOne(t *testing.T) {
 }
 
 func TestReplaceAllEmptyClears(t *testing.T) {
-	store, err := OpenInMemory()
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer store.Close()
+	store := openInMemory(t)
 
-	putEntry(t, &store, "a", oneContainerWorkload(mustParseDigest(t, digestA)))
-	replaceAll(t, &store, nil)
+	putEntry(t, store, "a", oneContainerWorkload(mustParseDigest(t, digestA)))
+	replaceAll(t, store, nil)
 	doc, _, err := store.LoadAll()
 	if err != nil {
 		t.Fatalf("load: %v", err)
@@ -122,11 +133,7 @@ func TestReplaceAllEmptyClears(t *testing.T) {
 // ETag (W/"1"), so the initial value is part of the API contract, not an
 // implementation detail.
 func TestInitialVersionIsOne(t *testing.T) {
-	store, err := OpenInMemory()
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer store.Close()
+	store := openInMemory(t)
 
 	doc, version, err := store.LoadAll()
 	if err != nil {
@@ -141,11 +148,7 @@ func TestInitialVersionIsOne(t *testing.T) {
 }
 
 func TestVersionMatchesLoadAllWithoutLoadingRows(t *testing.T) {
-	store, err := OpenInMemory()
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer store.Close()
+	store, allowlist := openInMemoryStore(t)
 
 	version, err := store.Version()
 	if err != nil {
@@ -157,7 +160,7 @@ func TestVersionMatchesLoadAllWithoutLoadingRows(t *testing.T) {
 
 	// Version is the ETag the worker pull carries, so it must move in lockstep
 	// with the counter LoadAll reports after a write.
-	putEntry(t, &store, "a", oneContainerWorkload(mustParseDigest(t, digestA)))
+	putEntry(t, allowlist, "a", oneContainerWorkload(mustParseDigest(t, digestA)))
 	_, loadVersion, err := store.LoadAll()
 	if err != nil {
 		t.Fatalf("load: %v", err)
@@ -179,14 +182,10 @@ func TestVersionMatchesLoadAllWithoutLoadingRows(t *testing.T) {
 }
 
 func TestAddAndRemoveOneEntryRoundtrip(t *testing.T) {
-	store, err := OpenInMemory()
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer store.Close()
+	store := openInMemory(t)
 
 	dA := mustParseDigest(t, digestA)
-	putEntry(t, &store, "web", oneContainerWorkload(dA))
+	putEntry(t, store, "web", oneContainerWorkload(dA))
 
 	doc, version, err := store.LoadAll()
 	if err != nil {
@@ -204,18 +203,14 @@ func TestAddAndRemoveOneEntryRoundtrip(t *testing.T) {
 		t.Fatalf("Contains(workload digest) = %t, %v; want true, nil", ok, err)
 	}
 
-	deleteEntry(t, &store, "web")
+	deleteEntry(t, store, "web")
 	if ok, err := store.Contains(dA); err != nil || ok {
 		t.Fatalf("Contains after the entry was removed = %t, %v; want false, nil", ok, err)
 	}
 }
 
 func TestSeedWorkloadsIsAdditiveAndIdempotent(t *testing.T) {
-	store, err := OpenInMemory()
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer store.Close()
+	store := openInMemory(t)
 
 	seed := map[string]pkgallowlist.Workload{
 		"web": oneContainerWorkload(mustParseDigest(t, digestA)),
@@ -262,11 +257,7 @@ func TestSeedWorkloadsIsAdditiveAndIdempotent(t *testing.T) {
 // retires that entry when the seed generates a pinned shape for the image;
 // exact stale shapes and other entries stay.
 func TestSeedWorkloadsRetiresReplacedOpenComponentEntries(t *testing.T) {
-	store, err := OpenInMemory()
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer store.Close()
+	store := openInMemory(t)
 
 	digest := mustParseDigest(t, digestA)
 	hex := digest.Hex()[:12]
@@ -326,14 +317,12 @@ func TestSeedWorkloadsRetiresReplacedOpenComponentEntries(t *testing.T) {
 }
 
 func TestReplaceAllSwapsWorkloads(t *testing.T) {
-	store, err := OpenInMemory()
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer store.Close()
+	store := openInMemory(t)
 
-	putEntry(t, &store, "old-wl", oneContainerWorkload(mustParseDigest(t, digestB)))
-	replaceAll(t, &store, map[string]pkgallowlist.Workload{"new-wl": oneContainerWorkload(mustParseDigest(t, digestA))})
+	putEntry(t, store, "old-wl", oneContainerWorkload(mustParseDigest(t, digestB)))
+	replaceAll(t, store, map[string]pkgallowlist.Workload{
+		"new-wl": oneContainerWorkload(mustParseDigest(t, digestA)),
+	})
 
 	doc, _, err := store.LoadAll()
 	if err != nil {
@@ -354,15 +343,11 @@ func TestReplaceAllSwapsWorkloads(t *testing.T) {
 // ReplaceAll must store and index every workload in the document, not just the
 // first one the map iteration happens to visit.
 func TestReplaceAllIndexesEveryWorkload(t *testing.T) {
-	store, err := OpenInMemory()
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer store.Close()
+	store := openInMemory(t)
 
 	dA := mustParseDigest(t, digestA)
 	dB := mustParseDigest(t, digestB)
-	replaceAll(t, &store, map[string]pkgallowlist.Workload{
+	replaceAll(t, store, map[string]pkgallowlist.Workload{
 		"web": oneContainerWorkload(dA),
 		"db":  oneContainerWorkload(dB),
 	})
@@ -386,11 +371,7 @@ func TestReplaceAllIndexesEveryWorkload(t *testing.T) {
 
 // Every container digest of an entry is indexed, init and main.
 func TestReplaceAllIndexesInitAndMainContainers(t *testing.T) {
-	store, err := OpenInMemory()
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer store.Close()
+	store := openInMemory(t)
 
 	dInit := mustParseDigest(t, digestA)
 	dMain := mustParseDigest(t, digestB)
@@ -398,7 +379,7 @@ func TestReplaceAllIndexesInitAndMainContainers(t *testing.T) {
 		InitContainers: []pkgallowlist.Container{{Digest: dInit}},
 		Containers:     []pkgallowlist.Container{{Digest: dMain}},
 	}
-	replaceAll(t, &store, map[string]pkgallowlist.Workload{"web": w})
+	replaceAll(t, store, map[string]pkgallowlist.Workload{"web": w})
 
 	for _, d := range []types.Digest{dInit, dMain} {
 		if ok, err := store.Contains(d); err != nil || !ok {
@@ -408,15 +389,11 @@ func TestReplaceAllIndexesInitAndMainContainers(t *testing.T) {
 }
 
 func TestContains(t *testing.T) {
-	store, err := OpenInMemory()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
+	store := openInMemory(t)
 
 	present := mustParseDigest(t, digestA)
 	absent := mustParseDigest(t, digestB)
-	putEntry(t, &store, "a", oneContainerWorkload(present))
+	putEntry(t, store, "a", oneContainerWorkload(present))
 
 	if ok, err := store.Contains(present); err != nil || !ok {
 		t.Fatalf("Contains(present) = %t, %v; want true, nil", ok, err)
@@ -434,9 +411,9 @@ func TestOpenStoreCreatesAndReopens(t *testing.T) {
 		t.Fatalf("open new store: %v", err)
 	}
 	dA := mustParseDigest(t, digestA)
-	putEntry(t, &store, "nginx", oneContainerWorkload(dA))
+	putEntry(t, store.Local(), "nginx", oneContainerWorkload(dA))
 	dB := mustParseDigest(t, digestB)
-	putEntry(t, &store, "web", oneContainerWorkload(dB))
+	putEntry(t, store.Local(), "web", oneContainerWorkload(dB))
 	if err := store.Close(); err != nil {
 		t.Fatalf("close: %v", err)
 	}
@@ -466,11 +443,7 @@ func TestOpenStoreCreatesAndReopens(t *testing.T) {
 // Generation is the snapshot-cache invalidation signal: it moves on every
 // committed mutation and never on a read.
 func TestGenerationMovesOnEveryMutation(t *testing.T) {
-	store, err := OpenInMemory()
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer store.Close()
+	store := openInMemory(t)
 
 	gen := store.Generation()
 	step := func(name string, mutate func() error) {
@@ -521,7 +494,7 @@ func TestEnvironmentValuesPersist(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.ReplaceAll(al, OperatorWrite{}); err != nil {
+	if err := store.Local().ReplaceAll(al, OperatorWrite{}); err != nil {
 		t.Fatal(err)
 	}
 	store.Close()
@@ -534,18 +507,14 @@ func TestEnvironmentValuesPersist(t *testing.T) {
 	if err != nil || got.Schema != pkgallowlist.Schema || got.Workloads["w"].Containers[0].Env.Values["MODE"] != "production" {
 		t.Fatalf("schema lost: %v %v", got, err)
 	}
-	putEntry(t, &store, "w", al.Workloads["w"])
+	putEntry(t, store.Local(), "w", al.Workloads["w"])
 }
 
 // An operator override named <image>-<12 hex> replaces every generated shape
 // of that digest, exact ones included, so narrowing a component through an
 // override stops admitting what the generated shapes allowed.
 func TestSeedWorkloadsOverrideRetiresGeneratedShapes(t *testing.T) {
-	store, err := OpenInMemory()
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer store.Close()
+	store := openInMemory(t)
 
 	digest := mustParseDigest(t, digestA)
 	hex := digest.Hex()[:12]
@@ -587,11 +556,7 @@ func TestSeedWorkloadsOverrideRetiresGeneratedShapes(t *testing.T) {
 // A store from before per-shape names holds an open-args <image>-<12 hex>
 // entry under the name an override takes; the override replaces it.
 func TestSeedWorkloadsOverrideReplacesPreShapeEntry(t *testing.T) {
-	store, err := OpenInMemory()
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer store.Close()
+	store := openInMemory(t)
 
 	digest := mustParseDigest(t, digestA)
 	name := "cds-" + digest.Hex()[:12]
@@ -619,5 +584,47 @@ func TestSeedWorkloadsOverrideReplacesPreShapeEntry(t *testing.T) {
 	}
 	if added, retired, err := store.SeedWorkloads(override); err != nil || added != 0 || retired != 0 {
 		t.Fatalf("reseed: added=%d retired=%d err=%v; want 0, 0, nil", added, retired, err)
+	}
+}
+
+// RaiseVersion takes the floor, or the next version when that is already
+// above it, and leaves the document and its history alone.
+func TestRaiseVersion(t *testing.T) {
+	store, allowlist := openInMemoryStore(t)
+	if err := allowlist.StartJournal(); err != nil {
+		t.Fatal(err)
+	}
+	putEntry(t, allowlist, "web", oneContainerWorkload(mustParseDigest(t, digestA)))
+	before, err := store.History()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	raised, err := store.RaiseVersion(1_800_000_000_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if raised != "1800000000000" {
+		t.Fatalf("raised to %s, want the floor", raised)
+	}
+	if version, _ := store.Version(); version != raised {
+		t.Fatalf("serving version %s, want %s", version, raised)
+	}
+	next, err := store.RaiseVersion(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next != "1800000000001" {
+		t.Fatalf("raised to %s, want the next version", next)
+	}
+	doc, _, err := store.LoadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Workloads) != 1 {
+		t.Fatalf("raising the version changed the document: %v", doc.Workloads)
+	}
+	if after, _ := store.History(); len(after) != len(before) {
+		t.Fatalf("raising the version journaled %d entries", len(after)-len(before))
 	}
 }

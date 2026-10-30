@@ -18,7 +18,7 @@ import (
 // a store that does not persist forgets them. authorize returns the verified
 // token's iat and accepts one up to clockSkew in the future, so the cutoff is
 // started plus clockSkew.
-func singleUse(authorize func(*http.Request, []byte) (time.Time, error), store *allowlist.Store, started time.Time, clockSkew time.Duration) allowlist.WriteAuthorizer {
+func singleUse(authorize func(*http.Request, []byte) (time.Time, error), store *allowlist.Handle, started time.Time, clockSkew time.Duration) allowlist.WriteAuthorizer {
 	var notBefore time.Time
 	if !started.IsZero() {
 		notBefore = started.Add(clockSkew)

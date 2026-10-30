@@ -81,6 +81,7 @@ func run(cfg config) error {
 		return fmt.Errorf("open allowlist database: %w", err)
 	}
 	defer allowlistStore.Close()
+	allowlistWrites := allowlistStore.Local()
 
 	// CDS generates its mesh CA in process at startup; the private key never
 	// touches a Kubernetes Secret.
@@ -124,7 +125,7 @@ func run(cfg config) error {
 	// allowlist (attestation-api, system images) rather than an empty set; an
 	// unseeded store would deny every worker pull until an operator populated
 	// it. Fail closed on any seed error.
-	if err := seedWorkloads(&allowlistStore, cfg.measured.Workloads); err != nil {
+	if err := seedWorkloads(allowlistWrites, cfg.measured.Workloads); err != nil {
 		return fmt.Errorf("seed measured workloads: %w", err)
 	}
 
@@ -135,14 +136,19 @@ func run(cfg config) error {
 		return err
 	}
 
-	if err := allowlistStore.StartJournal(); err != nil {
+	if err := allowlistWrites.StartJournal(); err != nil {
 		return fmt.Errorf("start allowlist history: %w", err)
 	}
 	var started time.Time
 	if !cfg.allowlistPersistent {
 		started = time.Now()
 	}
-	operatorAuthorizer := singleUse(verifier.AuthorizeIssuedAt, &allowlistStore, started, time.Duration(cfg.jwtClockSkew)*time.Second)
+	operatorAuthorizer := singleUse(
+		verifier.AuthorizeIssuedAt,
+		allowlistWrites,
+		started,
+		time.Duration(cfg.jwtClockSkew)*time.Second,
+	)
 
 	if !cfg.allowlistPersistent {
 		slog.Warn("allowlist store is not persistent: a restart resets the served allowlist to the configured workloads and regenerates the mesh CA. Operator-added digests, the allowlist history, spent operator tokens and the route manifest do not survive")
@@ -179,7 +185,7 @@ func run(cfg config) error {
 		// One store behind both handlers: an operator write and a workload read
 		// are two doors onto the same paths.
 		store := newSecretsStore(cfg)
-		policy := secrets.NewCachedPolicy(&allowlistStore)
+		policy := secrets.NewCachedPolicy(allowlistStore)
 		secretsHandler = &secrets.Handler{
 			Store:          store,
 			Challenges:     &secretsChallenges,
@@ -221,19 +227,19 @@ func run(cfg config) error {
 			Images:            pinned.Images,
 			SANValidation:     cfg.sanValidation,
 			Policy:            policy,
-			AllowlistStore:    &allowlistStore,
+			AllowlistStore:    allowlistStore,
 			PolicySnapshots:   &policySnapshotCache{},
 			SandboxDigests:    sandboxDigests,
 			InventoryHosts:    inventoryHosts,
 			SandboxBindings:   sandboxBindings,
 		},
 		AllowlistHandler: allowlist.Handler{
-			Store:             &allowlistStore,
+			Allowlist:         allowlistWrites,
 			WriteAuthorizer:   operatorAuthorizer,
 			MaxWriteBodyBytes: allowlistWriteBodyCap,
 		},
 		Routes: routeHandler{
-			Store:     &allowlistStore,
+			Allowlist: allowlistWrites,
 			Authorize: operatorAuthorizer,
 			MeshCA:    mesh.Current().CA.Cert,
 		},
@@ -445,6 +451,9 @@ func validateConfig(cfg config) error {
 	}
 	if cfg.maxHeaderBytes < 0 {
 		return fmt.Errorf("--max-header-bytes must be non-negative")
+	}
+	if skew := time.Duration(cfg.jwtClockSkew) * time.Second; 2*skew >= allowlist.SpentTokenMargin {
+		return fmt.Errorf("--jwt-clock-skew must stay under half of %v, so an operator token the verifier accepts is never refused as a replay", allowlist.SpentTokenMargin)
 	}
 	// Not "0 disables": this is the stale-identity bound for a named leaf, and
 	// 0 is the disable idiom elsewhere in the chart, so a zero here would read

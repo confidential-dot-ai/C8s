@@ -16,7 +16,7 @@ import (
 // routeHandler serves GET and PUT /routes, the signed route manifest (route
 // policy §8).
 type routeHandler struct {
-	Store *allowlist.Store
+	Allowlist *allowlist.Handle
 	// Authorize is the allowlist write authorizer: same keys, same checks (W1).
 	Authorize allowlist.WriteAuthorizer
 	// MeshCA is this CDS's mesh CA, which no address backend may anchor on (C3).
@@ -25,7 +25,7 @@ type routeHandler struct {
 
 // handleGet serves the stored signed manifest in the C1 envelope, or 404.
 func (h routeHandler) handleGet(w http.ResponseWriter, _ *http.Request) {
-	env, err := h.Store.LoadRoutes()
+	env, err := h.Allowlist.LoadRoutes()
 	if errors.Is(err, allowlist.ErrNoRoutes) {
 		w.WriteHeader(http.StatusNotFound)
 		return
@@ -69,7 +69,13 @@ func (h routeHandler) handlePut(w http.ResponseWriter, r *http.Request) {
 	}
 	// Authorize accepted exactly this header, so the token is well formed.
 	token, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-	err = h.Store.ReplaceRoutes(routes.Envelope{Manifest: body, Token: token}, r.Header.Get("If-Match"))
+	err = h.Allowlist.ReplaceRoutes(
+		routes.Envelope{
+			Manifest: body,
+			Token:    token,
+		},
+		r.Header.Get("If-Match"),
+	)
 	if errors.Is(err, allowlist.ErrRevisionNotGreater) {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
@@ -79,8 +85,7 @@ func (h routeHandler) handlePut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		slog.Error("store route manifest", "err", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		allowlist.WriteFailed(w, err)
 		return
 	}
 	digest := routes.Digest(body)

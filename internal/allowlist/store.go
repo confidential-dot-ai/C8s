@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 	"sync"
+	"time"
 
 	_ "modernc.org/sqlite"
 
@@ -27,6 +29,8 @@ import (
 type Store struct {
 	mu sync.Mutex
 	db *sql.DB
+	// uri names the database for Restore, which opens its own connection.
+	uri string
 	// gen counts committed mutations in this process. It is the invalidation
 	// signal for a reader that memoizes a whole-document snapshot
 	// (internal/cmds/cds).
@@ -65,38 +69,51 @@ CREATE TABLE IF NOT EXISTS route_manifest (
 `
 
 // OpenStore opens (or creates) a SQLite-backed allowlist store at the given path.
-func OpenStore(path string) (Store, error) {
-	_, err := os.Stat(path)
-	isNew := os.IsNotExist(err)
-
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		return Store{}, fmt.Errorf("open allowlist db: %w", err)
-	}
-
-	if isNew {
+func OpenStore(path string) (*Store, error) {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
 		slog.Warn("allowlist db did not exist, creating", "path", path)
 	}
-
-	if _, err := db.Exec(initSQL + journalSQL); err != nil {
-		db.Close()
-		return Store{}, fmt.Errorf("init allowlist schema: %w", err)
-	}
-
-	return Store{db: db}, nil
+	return open(path)
 }
 
 // OpenInMemory opens an in-memory allowlist store, useful for testing.
-func OpenInMemory() (Store, error) {
-	db, err := sql.Open("sqlite", ":memory:")
+func OpenInMemory() (*Store, error) {
+	return open(memdbURI("store"))
+}
+
+// open opens the database uri names and creates the tables it lacks.
+func open(uri string) (*Store, error) {
+	db, err := sql.Open("sqlite", uri)
 	if err != nil {
-		return Store{}, err
+		return nil, fmt.Errorf("open allowlist db: %w", err)
+	}
+	if err := requireSpentTokenWindow(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("open allowlist db: %w", err)
 	}
 	if _, err := db.Exec(initSQL + journalSQL); err != nil {
 		db.Close()
-		return Store{}, err
+		return nil, fmt.Errorf("init allowlist schema: %w", err)
 	}
-	return Store{db: db}, nil
+	return &Store{
+		db:  db,
+		uri: uri,
+	}, nil
+}
+
+// requireSpentTokenWindow refuses a database whose used_token table predates
+// the validity window every spent token records.
+func requireSpentTokenWindow(db *sql.DB) error {
+	var columns, window int
+	if err := db.QueryRow(`
+		SELECT COUNT(*), COUNT(CASE WHEN name IN ('exp_unix', 'iat_unix') THEN 1 END)
+		FROM pragma_table_info('used_token')`).Scan(&columns, &window); err != nil {
+		return err
+	}
+	if columns > 0 && window != 2 {
+		return errors.New("spent operator tokens have no validity window: delete the store and apply the allowlist again")
+	}
+	return nil
 }
 
 // Close closes the underlying database connection.
@@ -194,12 +211,12 @@ func (s *Store) Version() (string, error) {
 	return version, nil
 }
 
-// commitTx journals the document tx leaves (see publishTx), stores sig as that
-// document's operator signature, commits, and records the mutation for
-// snapshot-cache invalidation. Every write path goes through it. Callers must
-// hold s.mu.
-func (s *Store) commitTx(tx *sql.Tx, sig documentSignature) error {
-	journaled, err := publishTx(tx)
+// commitTx journals the document tx leaves at the command's time (see
+// publishTx), stores sig as that document's operator signature, commits, and
+// records the mutation for snapshot-cache invalidation. Every write path goes
+// through it. Callers must hold s.mu.
+func (s *Store) commitTx(tx *sql.Tx, sig documentSignature, at time.Time) error {
+	journaled, err := publishTx(tx, at)
 	if err != nil {
 		return fmt.Errorf("journal allowlist: %w", err)
 	}
@@ -231,17 +248,44 @@ func bumpVersionTx(tx *sql.Tx) error {
 	return err
 }
 
-// SeedWorkloads adds every workload entry whose name is not already present
+// RaiseVersion sets the version to the larger of the next version and floor,
+// and returns it: a cluster passing its start time in Unix ms stays above
+// every version an earlier life of it served. Nothing is journaled.
+func (s *Store) RaiseVersion(floor int64) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+
+	var served int64
+	if err := tx.QueryRow("SELECT CAST(version AS INTEGER) FROM allowlist_version").Scan(&served); err != nil {
+		return "", fmt.Errorf("raise allowlist version: %w", err)
+	}
+	raised := strconv.FormatInt(max(served+1, floor), 10)
+	if _, err := tx.Exec("UPDATE allowlist_version SET version = ?", raised); err != nil {
+		return "", fmt.Errorf("raise allowlist version: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return "", err
+	}
+	s.gen++
+	return raised, nil
+}
+
+// seedWorkloads adds every workload entry whose name is not already present
 // and retires each stored entry the seed replaces (retiredBySeed), in a single
 // transaction, and returns the numbers added and retired. Additive for
 // everything else and idempotent: an existing entry is left untouched and the
 // version is bumped at most once, only when the set changed, so a re-seed that
 // changes nothing does not force every worker to re-pull.
-func (s *Store) SeedWorkloads(workloads map[string]pkgallowlist.Workload) (added, retired int, err error) {
+func (s *Store) seedWorkloads(workloads map[string]pkgallowlist.Workload, at time.Time) (added, retired int, err error) {
 	if len(workloads) == 0 {
 		return 0, 0, nil
 	}
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -262,7 +306,7 @@ func (s *Store) SeedWorkloads(workloads map[string]pkgallowlist.Workload) (added
 			return 0, 0, err
 		}
 	}
-	return added, retired, s.commitTx(tx, documentSignature{})
+	return added, retired, s.commitTx(tx, documentSignature{}, at)
 }
 
 // retireReplacedTx deletes every stored entry seed replaces and returns how
@@ -356,18 +400,18 @@ var ErrVersionMismatch = errors.New("the allowlist changed since it was read (If
 type OperatorWrite struct {
 	// Version, when set, is the write's precondition: the document is
 	// replaced only while the store is at that version.
-	Version string
+	Version string `json:"version,omitempty"`
 	// Signature, when set, is the write token whose body hash binds the
 	// document's canonical bytes, stored as that document's signature.
-	Signature string
+	Signature string `json:"signature,omitempty"`
 }
 
-// ReplaceAll atomically swaps the entire allowlist for the given document and
+// replaceAll atomically swaps the entire allowlist for the given document and
 // bumps the version. An empty document clears everything. A write whose
 // Version the store is no longer at returns ErrVersionMismatch and changes
 // nothing; a write with a Signature stores it with the document, so a signed
 // write never serves its document unsigned.
-func (s *Store) ReplaceAll(al *pkgallowlist.Allowlist, write OperatorWrite) error {
+func (s *Store) replaceAll(al *pkgallowlist.Allowlist, write OperatorWrite, at time.Time) error {
 	if al == nil {
 		return fmt.Errorf("allowlist is required")
 	}
@@ -394,7 +438,14 @@ func (s *Store) ReplaceAll(al *pkgallowlist.Allowlist, write OperatorWrite) erro
 	if err := bumpVersionTx(tx); err != nil {
 		return err
 	}
-	return s.commitTx(tx, documentSignature{token: write.Signature, document: signed})
+	return s.commitTx(
+		tx,
+		documentSignature{
+			token:    write.Signature,
+			document: signed,
+		},
+		at,
+	)
 }
 
 // requireVersionTx returns ErrVersionMismatch unless the store is at version,

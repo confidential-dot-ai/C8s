@@ -18,7 +18,8 @@ import (
 // served: journal_object holds each document's canonical bytes under its
 // digest, journal_event the order they were served in, journal_signature the
 // operator write token that wrote a document, and used_token the tokens
-// already spent (docs/allowlist-and-capabilities.md, "Allowlist history").
+// already spent, each with its iat and exp in Unix seconds
+// (docs/allowlist-and-capabilities.md, "Allowlist history").
 const journalSQL = `
 CREATE TABLE IF NOT EXISTS journal_object (
 	digest TEXT PRIMARY KEY,
@@ -36,8 +37,12 @@ CREATE TABLE IF NOT EXISTS journal_signature (
 	token  TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS used_token (
-	digest TEXT PRIMARY KEY
+	digest   TEXT PRIMARY KEY,
+	exp_unix INTEGER NOT NULL,
+	iat_unix INTEGER NOT NULL
 );
+CREATE INDEX IF NOT EXISTS used_token_exp ON used_token (exp_unix);
+CREATE INDEX IF NOT EXISTS used_token_iat ON used_token (iat_unix);
 `
 
 // HistoryEntry is one document in the allowlist history, as GET
@@ -59,12 +64,12 @@ func objectDigest(b []byte) string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
-// StartJournal checks that every journaled document still hashes to its
+// startJournal checks that every journaled document still hashes to its
 // digest, then journals the document the store serves now if it is not
 // already the head, so a fresh database starts its history with it. CDS calls
 // it before serving; an error means the store is corrupt and CDS must not
 // start.
-func (s *Store) StartJournal() error {
+func (s *Store) startJournal(at time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -97,16 +102,16 @@ func (s *Store) StartJournal() error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	if _, err := publishTx(tx); err != nil {
+	if _, err := publishTx(tx, at); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
-// publishTx appends a history entry for the document tx leaves in the store
-// when its digest differs from the head's, and returns that document's
-// canonical bytes.
-func publishTx(tx *sql.Tx) ([]byte, error) {
+// publishTx appends a history entry, timed at, for the document tx leaves in
+// the store when its digest differs from the head's, and returns that
+// document's canonical bytes.
+func publishTx(tx *sql.Tx, at time.Time) ([]byte, error) {
 	workloads, err := loadWorkloads(tx)
 	if err != nil {
 		return nil, err
@@ -134,7 +139,7 @@ func publishTx(tx *sql.Tx) ([]byte, error) {
 		return nil, err
 	}
 	if _, err := tx.Exec("INSERT INTO journal_event (position, version, digest, published_at_ms) VALUES (?, ?, ?, ?)",
-		position+1, version, digest, time.Now().UnixMilli()); err != nil {
+		position+1, version, digest, at.UnixMilli()); err != nil {
 		return nil, err
 	}
 	return body, nil
@@ -166,7 +171,7 @@ func (s *Store) History() ([]HistoryEntry, error) {
 
 // Object returns the canonical bytes of the document digest ("sha256:<hex>")
 // in the history, or false when there is none. Bytes that no longer hash to
-// digest are an error: StartJournal checked them only at startup.
+// digest are an error: the history was checked only at startup.
 func (s *Store) Object(digest string) ([]byte, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -220,29 +225,184 @@ func (s *Store) Signature(digest string) (string, bool, error) {
 	return token, err == nil, err
 }
 
-// ConsumeToken records that the JWT token authorized a request, or returns
-// operatorauth.ErrTokenReused if it or another encoding of it already did. Stored
-// signatures make write tokens public, so each must authorize one request only.
-// Records are never pruned: expiry is judged on a clock the host can turn
-// back, and a pruned record would let a published token write again.
-func (s *Store) ConsumeToken(token string) error {
-	// Key on the signed header.payload: the signature segment has several
-	// encodings that all verify (non-strict base64 padding bits, ECDSA (r, n-s)).
+// SpentTokenMargin is how long after the newest spent token's iat the record
+// of an expired one is kept. It exceeds twice the operator JWT clock skew
+// plus the clock difference between replicas, so no token the Verifier
+// accepts is refused as one whose record may be gone.
+const SpentTokenMargin = time.Hour
+
+// consumeToken records that the JWT token authorized a request, or returns
+// operatorauth.ErrTokenReused if it or another encoding of it already did:
+// stored signatures make write tokens public.
+//
+// It drops the records of tokens that expired a margin before the highest iat
+// spent, and refuses a token that old itself, so a pruned token stays spent.
+// Claims are judged against claims, never a clock: every replica prunes the
+// same rows, and a host that turns a clock back replays nothing.
+func (s *Store) consumeToken(token string) error {
+	iat, exp, err := operatorauth.UnverifiedTimes(token)
+	if err != nil {
+		return fmt.Errorf("spend operator token: %w", err)
+	}
+	digest := objectDigest([]byte(signedPart(token)))
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	watermark, err := spentWatermark(tx)
+	if err != nil {
+		return err
+	}
+	if exp.Unix() < prunedBefore(watermark) {
+		return fmt.Errorf("%w: it expired over %s before the newest spent token was issued", operatorauth.ErrTokenReused, SpentTokenMargin)
+	}
+	res, err := tx.Exec(`
+		INSERT OR IGNORE INTO used_token (digest, exp_unix, iat_unix)
+		VALUES (?, ?, ?)`, digest, exp.Unix(), iat.Unix())
+	if err != nil {
+		return err
+	}
+	spends, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if spends == 0 {
+		return operatorauth.ErrTokenReused
+	}
+	if _, err := tx.Exec(`
+		DELETE FROM used_token
+		WHERE exp_unix < ?`, prunedBefore(max(watermark, iat.Unix()))); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// signedPart is the token without its signature segment, which has several
+// encodings that all verify (non-strict base64 padding bits, ECDSA (r, n-s)).
+func signedPart(token string) string {
 	if i := strings.LastIndexByte(token, '.'); i >= 0 {
-		token = token[:i]
+		return token[:i]
+	}
+	return token
+}
+
+func spentWatermark(tx *sql.Tx) (int64, error) {
+	var watermark int64
+	err := tx.QueryRow("SELECT COALESCE(MAX(iat_unix), 0) FROM used_token").Scan(&watermark)
+	return watermark, err
+}
+
+// prunedBefore is the exp (Unix seconds) below which a spent token's record
+// may already be gone.
+func prunedBefore(newestIAT int64) int64 {
+	return newestIAT - int64(SpentTokenMargin/time.Second)
+}
+
+func (s *Store) HistoryLen() (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var n int
+	err := s.db.QueryRow("SELECT COUNT(*) FROM journal_event").Scan(&n)
+	return n, err
+}
+
+// pruneHistory keeps the newest keep entries of the history and drops the
+// documents and signatures no remaining entry names. It depends only on the
+// store's contents, so every replica prunes the same entries.
+func (s *Store) pruneHistory(keep int) error {
+	if keep < 1 {
+		return errors.New("allowlist: a history must keep at least one entry")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	res, err := s.db.Exec("INSERT OR IGNORE INTO used_token (digest) VALUES (?)", objectDigest([]byte(token)))
+
+	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
-	n, err := res.RowsAffected()
-	if err != nil {
+	defer tx.Rollback()
+
+	var have int
+	if err := tx.QueryRow("SELECT COUNT(*) FROM journal_event").Scan(&have); err != nil {
 		return err
 	}
-	if n == 0 {
-		return operatorauth.ErrTokenReused
+	if have <= keep {
+		return nil
 	}
+	if _, err := tx.Exec(`
+		DELETE FROM journal_event
+		WHERE position NOT IN (
+			SELECT position FROM journal_event ORDER BY position DESC LIMIT ?
+		)`, keep); err != nil {
+		return err
+	}
+	for _, statement := range []string{
+		`DELETE FROM journal_object
+			WHERE digest NOT IN (SELECT digest FROM journal_event)`,
+		`DELETE FROM journal_signature
+			WHERE digest NOT IN (SELECT digest FROM journal_event)`,
+	} {
+		if _, err := tx.Exec(statement); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.gen++
 	return nil
+}
+
+// LiveBytes is the store's pages less the free ones: what a replacement
+// replica would copy, which the volume's used space overstates.
+func (s *Store) LiveBytes() (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var n int64
+	err := s.db.QueryRow(`
+		SELECT (page_count - freelist_count) * page_size
+		FROM pragma_page_count, pragma_freelist_count, pragma_page_size`).Scan(&n)
+	return n, err
+}
+
+// HistoryKeepForBytes is how many of the newest history entries fit in budget
+// bytes. Entries serving the same document cost those bytes once, and the
+// newest entry is kept whatever its size.
+func (s *Store) HistoryKeepForBytes(budget int64) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rows, err := s.db.Query(`
+		SELECT e.digest, LENGTH(o.body)
+		FROM journal_event e
+		JOIN journal_object o ON o.digest = e.digest
+		ORDER BY e.position DESC`)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	held := map[string]bool{}
+	var bytes int64
+	keep := 0
+	for rows.Next() {
+		var digest string
+		var size int64
+		if err := rows.Scan(&digest, &size); err != nil {
+			return 0, err
+		}
+		if !held[digest] {
+			if keep > 0 && bytes+size > budget {
+				break
+			}
+			held[digest] = true
+			bytes += size
+		}
+		keep++
+	}
+	return keep, rows.Err()
 }
