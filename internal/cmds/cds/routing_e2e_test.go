@@ -39,7 +39,7 @@ type e2eCDS struct {
 	client *http.Client // verifies the CDS like the router does
 }
 
-func startE2ECDS(t *testing.T, stub *mockapi.Stub, pin []byte, mesh *issuer.MeshCA, key, published *ecdsa.PublicKey) *e2eCDS {
+func startE2ECDS(t *testing.T, stub *mockapi.Stub, pin []byte, mesh ownCA, key, published *ecdsa.PublicKey) *e2eCDS {
 	t.Helper()
 	der, err := x509.MarshalPKIXPublicKey(published)
 	if err != nil {
@@ -49,7 +49,6 @@ func startE2ECDS(t *testing.T, stub *mockapi.Stub, pin []byte, mesh *issuer.Mesh
 		Routes: routeHandler{
 			Allowlist: inMemoryStore(t),
 			Authorize: operatorauth.Verifier{Keys: []*ecdsa.PublicKey{key}, ClockSkew: 30 * time.Second}.Authorize,
-			MeshCA:    mesh.Current().CA.Cert,
 		},
 		OperatorKeysPEM:  pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}),
 		ReadyFn:          func() bool { return true },
@@ -215,7 +214,8 @@ func TestRoutesEndToEnd(t *testing.T) {
 	stub := mockapi.New(t)
 	stub.SetVerdict(mockapi.PassingVerdict(hex.EncodeToString(measurement)))
 	mesh := testMeshCA(t)
-	meshCA := mesh.Current().CA
+	issuing, _ := mesh.Current()
+	meshCA := issuing.CA
 	signer, key := operatorSigner(t)
 
 	web := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

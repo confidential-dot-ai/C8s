@@ -19,6 +19,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
 	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
+	"github.com/confidential-dot-ai/c8s/internal/cdsha"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsconn"
 	"github.com/confidential-dot-ai/c8s/internal/localverify"
 	"github.com/confidential-dot-ai/c8s/internal/testutil"
@@ -100,8 +101,8 @@ func (c operatorCluster) verifier() cdsconn.PinVerifier {
 	})
 }
 
-// replicaServing answers one replica's routes over armTLS, and is the replica
-// a decree command reads.
+// replicaServing answers one replica's routes over armTLS: it reports what
+// routes names, and holds every decree posted to it.
 func (c operatorCluster) replicaServing(t *testing.T, routes map[string]any) replica {
 	t.Helper()
 	handler := http.NewServeMux()
@@ -110,11 +111,25 @@ func (c operatorCluster) replicaServing(t *testing.T, routes map[string]any) rep
 		if err != nil {
 			t.Fatal(err)
 		}
-		handler.HandleFunc(path, func(w http.ResponseWriter, _ *http.Request) {
+		handler.HandleFunc("GET "+path, func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write(body)
 		})
 	}
+	handler.HandleFunc("POST "+decreesPath, func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(io.LimitReader(r.Body, maxReplicaAnswer))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		signed, err := cdsdecree.Parse(body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(cdsha.Delivered{Intent: signed.Decree.IntentID, Held: true})
+	})
 	server := testutil.NewARMTLSServer(t, handler)
 	return replica{
 		address:  strings.TrimPrefix(server.URL, "https://"),

@@ -38,7 +38,7 @@ import (
 type AttestHandler struct {
 	Challenges        attestation.Challenges
 	AttestationClient remote.Client
-	MeshCA            *issuer.MeshCA
+	MeshCA            meshCA
 	CertTTL           time.Duration
 
 	// RequestTimeout caps how long /attest may spend on attestation
@@ -259,7 +259,12 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 		ttl = issuer.CapTTL(ttl, namedTTL)
 	}
 	// One read: the certificate that signs the leaf is the chain returned with it.
-	signing := h.MeshCA.Current()
+	signing, issuing := h.MeshCA.Current()
+	if !issuing {
+		// A replica that stopped serving between the gate and the signature.
+		attestation.WriteError(w, http.StatusServiceUnavailable, types.ErrorCodeInternal, "this CDS holds no mesh CA to sign with")
+		return
+	}
 	certPEM, leafCN, serial, err := signing.CA.SignCSR(issuer.SignCSRParams{
 		CSR:             csr,
 		TTL:             ttl,

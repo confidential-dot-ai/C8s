@@ -2,6 +2,7 @@ package cds
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -20,13 +21,14 @@ type dependencies struct {
 	AllowlistHandler  allowlist.Handler
 	Routes            routeHandler
 	ReadyFn           attestation.ReadinessFunc
-	MeshCA            *issuer.MeshCA        // the one current CA: served at /ca and signs every leaf
-	OperatorKeysPEM   []byte                // pinned operator public keys; empty = /operator-keys 404s
-	MeasurementsDoc   []byte                // reference values being enforced, as served at /measurements
-	RateLimiter       *issuer.IPRateLimiter // per-source-IP limiter for attestation endpoints
-	ChallengeLimiter  *issuer.IPRateLimiter // /authenticate's own, so it cannot spend the map above
-	MaxRequestSize    int64                 // applied to write endpoints; must be > 0
-	SecretsHandler    *secrets.Handler      // nil leaves /secrets unrouted (--secrets off)
+	MeshCA            meshCA                      // the CA served at /ca, which signs every leaf
+	ClusterRoutes     map[string]http.HandlerFunc // a replica's cluster routes, by method and path
+	OperatorKeysPEM   []byte                      // pinned operator public keys; empty = /operator-keys 404s
+	MeasurementsDoc   []byte                      // reference values being enforced, as served at /measurements
+	RateLimiter       *issuer.IPRateLimiter       // per-source-IP limiter for attestation endpoints
+	ChallengeLimiter  *issuer.IPRateLimiter       // /authenticate's own, so it cannot spend the map above
+	MaxRequestSize    int64                       // applied to write endpoints; must be > 0
+	SecretsHandler    *secrets.Handler            // nil leaves /secrets unrouted (--secrets off)
 	SecretsChallenges attestation.Challenges
 	SecretsOperator   *secrets.OperatorHandler // operator-supplied values; routed with SecretsHandler
 	SecretsExplain    *secrets.ExplainHandler  // release diagnostic; routed with SecretsHandler
@@ -49,8 +51,9 @@ func newRouter(deps dependencies) http.Handler {
 		panic("cds: dependencies.MeshCA must be set")
 	}
 	// One CA for the whole router: the handler signs with the certificate
-	// /ca publishes.
+	// /ca publishes, and the route policy excludes that same certificate.
 	deps.AttestHandler.MeshCA = deps.MeshCA
+	deps.Routes.MeshCA = deps.MeshCA
 	r := chi.NewRouter()
 	r.Use(server.RequestLogger)
 
@@ -88,6 +91,11 @@ func newRouter(deps dependencies) http.Handler {
 		r.Method(http.MethodPost, secrets.Route, deps.perSandbox(deps.SecretsHandler))
 		r.Method(http.MethodPut, secrets.Route, deps.allowlistWrite(deps.SecretsOperator))
 		r.Method(http.MethodGet, secrets.ExplainRoute, deps.allowlistWrite(deps.SecretsExplain))
+	}
+
+	for route, handler := range deps.ClusterRoutes {
+		method, path, _ := strings.Cut(route, " ")
+		r.Method(method, path, handler)
 	}
 
 	r.Get("/ca", handleCA(deps.MeshCA))
@@ -139,10 +147,15 @@ func capBody(max int64, next http.Handler) http.Handler {
 }
 
 // handleCA serves the one current mesh CA certificate; a renewal replaces it.
-func handleCA(mesh *issuer.MeshCA) http.HandlerFunc {
+func handleCA(mesh meshCA) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
+		current, issuing := mesh.Current()
+		if !issuing {
+			http.Error(w, "this CDS holds no mesh CA to publish", http.StatusServiceUnavailable)
+			return
+		}
 		w.Header().Set("Content-Type", "application/x-pem-file")
-		w.Write(mesh.Current().CertPEM)
+		w.Write(current.CertPEM)
 	}
 }
 

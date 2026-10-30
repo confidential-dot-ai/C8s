@@ -99,8 +99,15 @@ func measuredConfig(t *testing.T, c cluster) *cdsconfig.Config {
 // rather than one an argument claimed.
 func TestMeasuredConfigDecidesEverySetting(t *testing.T) {
 	operatorPEM := operatorKeysPEM(t)
-	measured := measuredConfig(t, cluster{operatorPEM: operatorPEM, workloads: map[string]string{"attestation-api": digestA}})
-	cfg := withMeasuredConfig(config{}, measured, teetypes.FamilySNP)
+	launched := cluster{
+		operatorPEM: operatorPEM,
+		workloads:   map[string]string{"attestation-api": digestA},
+	}
+	cfg, err := withMeasuredConfig(config{}, measuredDocument(t, launched), teetypes.FamilySNP)
+	if err != nil {
+		t.Fatal(err)
+	}
+	measured := cfg.measured
 
 	if cfg.armtlsPlatform != teetypes.FamilySNP {
 		t.Errorf("armTLS platform = %q, want %q", cfg.armtlsPlatform, teetypes.FamilySNP)
@@ -167,33 +174,22 @@ func TestRunMeasuredConfigRequiresALoopbackAttester(t *testing.T) {
 	}
 }
 
-// Replicas arrive later in this stack: a document asking for them is refused,
-// rather than served as a singleton with its ha block ignored.
-func TestRunMeasuredConfigRefusesAReplicaSet(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "cds-config.yaml")
-	if err := os.WriteFile(path, replicatedDocument(t), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg := config{
-		configPath:        path,
-		attestationApiURL: mockapi.New(t).URL(),
-	}
-	err := runMeasuredConfig(context.Background(), cfg)
-	if err == nil || !strings.Contains(err.Error(), "replica set") {
-		t.Fatalf("runMeasuredConfig = %v, want the ha block refused", err)
-	}
-}
-
-// replicatedDocument is the measured document with an ha block.
-func replicatedDocument(t *testing.T) []byte {
+// replicatedDocument is the measured document of a cluster whose CDS runs as
+// a replica set, with the operator keys a test signs decrees with.
+func replicatedDocument(t *testing.T, operatorPEM []byte) []byte {
 	t.Helper()
 	var document map[string]any
-	measured := measuredDocument(t, cluster{operatorPEM: operatorKeysPEM(t), workloads: map[string]string{"attestation-api": digestA}})
+	measured := measuredDocument(t, cluster{
+		operatorPEM: operatorPEM,
+		workloads:   map[string]string{"attestation-api": digestA},
+	})
 	if err := yaml.Unmarshal(measured, &document); err != nil {
 		t.Fatal(err)
 	}
 	document["ha"] = map[string]any{
-		"replicas": []string{"cds.example.com"},
+		// A loopback address no replica answers at: the replica under test
+		// reaches none of its cluster and joins nothing.
+		"replicas": []string{"127.0.0.9"},
 		"voters":   1,
 	}
 	data, err := yaml.Marshal(document)
@@ -219,7 +215,14 @@ func writeMeasuredDocument(t *testing.T) string {
 func TestRunServesTheMeasuredConfiguration(t *testing.T) {
 	cfg := validRunConfig(t, mockapi.New(t).URL())
 	cfg.port = freePort(t)
-	cfg = withMeasuredConfig(cfg, measuredConfig(t, cluster{operatorPEM: operatorKeysPEM(t), workloads: map[string]string{"attestation-api": digestA}}), teetypes.FamilySNP)
+	launched := cluster{
+		operatorPEM: operatorKeysPEM(t),
+		workloads:   map[string]string{"attestation-api": digestA},
+	}
+	cfg, err := withMeasuredConfig(cfg, measuredDocument(t, launched), teetypes.FamilySNP)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	base := fmt.Sprintf("https://127.0.0.1:%d", cfg.port)
 	client := armTLSClient(nil)
