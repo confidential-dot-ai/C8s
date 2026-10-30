@@ -25,7 +25,7 @@ func TestWriteDecodeErrorShapes(t *testing.T) {
 		path    string
 		handler http.HandlerFunc
 	}{
-		{"/attest", attestHandler(nil)},
+		{"/attest", attestHandler(nil, nil)},
 		{"/verify", handleVerify},
 	} {
 		for _, tc := range []struct {
@@ -172,6 +172,44 @@ func TestParseHostDataRefusesIllFormedValues(t *testing.T) {
 	}
 }
 
+// reportedMeasurement is the launch identity the reports under test carry.
+func reportedMeasurement(t *testing.T) []byte {
+	t.Helper()
+	measurement, err := parseMeasurement(strings.Repeat("cd", measurementSize))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return measurement
+}
+
+// A pin names the guest image by its launch measurement, so the report
+// carries the one the environment configured.
+func TestReportCarriesTheConfiguredMeasurement(t *testing.T) {
+	result := verify(t, attest(t, nil, bytes.Repeat([]byte{0x11}, reportDataSize)))
+
+	measurement, err := result.Claims.LaunchMeasurement()
+	if err != nil {
+		t.Fatalf("launch measurement: %v", err)
+	}
+	if !bytes.Equal(measurement, reportedMeasurement(t)) {
+		t.Errorf("launch measurement = %x, want %x", measurement, reportedMeasurement(t))
+	}
+}
+
+// A measurement that is not a 48-byte hex digest is refused at startup: a pin
+// naming a truncated or padded value names no guest.
+func TestParseMeasurementRefusesIllFormedValues(t *testing.T) {
+	for _, value := range []string{"zz", "abcd", strings.Repeat("ab", 47), strings.Repeat("ab", 49)} {
+		if _, err := parseMeasurement(value); err == nil {
+			t.Errorf("accepted MEASUREMENT %q", value)
+		}
+	}
+	got, err := parseMeasurement("")
+	if err != nil || !bytes.Equal(got, make([]byte, measurementSize)) {
+		t.Errorf("parseMeasurement(\"\") = %x, %v; want the all-zero measurement", got, err)
+	}
+}
+
 // attest asks /attest for a report binding hostData and reportData, and
 // returns the evidence envelope it answers with.
 func attest(t *testing.T, hostData []byte, reportData []byte) json.RawMessage {
@@ -184,7 +222,8 @@ func attest(t *testing.T, hostData []byte, reportData []byte) json.RawMessage {
 		t.Fatal(err)
 	}
 	rec := httptest.NewRecorder()
-	attestHandler(hostData)(rec, httptest.NewRequest(http.MethodPost, "/attest", bytes.NewReader(body)))
+	request := httptest.NewRequest(http.MethodPost, "/attest", bytes.NewReader(body))
+	attestHandler(reportedMeasurement(t), hostData)(rec, request)
 	var resp remote.AttestResponse
 	if err := json.NewDecoder(rec.Result().Body).Decode(&resp); err != nil {
 		t.Fatalf("decode /attest: %v", err)
