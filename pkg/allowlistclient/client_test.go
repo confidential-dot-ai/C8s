@@ -176,58 +176,44 @@ func TestVersionFromETag(t *testing.T) {
 	}
 }
 
-func TestPutWorkloadBindsBody(t *testing.T) {
-	var gotPath, gotMethod string
+func TestReplaceAllBindsBody(t *testing.T) {
+	var gotPath, gotMethod, gotContentType string
 	var gotBody []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath, gotMethod = r.URL.Path, r.Method
+		gotContentType = r.Header.Get("Content-Type")
 		gotBody, _ = io.ReadAll(r.Body)
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer srv.Close()
 
-	wl := allowlist.Workload{Containers: []allowlist.Container{{
-		Digest:  mustDigest(t, testDigest),
-		Command: allowlist.ArgvPolicy{Policy: allowlist.PolicyAny},
-		Args:    allowlist.ArgvPolicy{Policy: allowlist.PolicyAny},
-	}}}
-	if err := NewClient(srv.URL).PutWorkload(context.Background(), "my-app", wl, stubAuth{}); err != nil {
+	al := &allowlist.Allowlist{
+		Schema: allowlist.Schema,
+		Workloads: map[string]allowlist.Workload{"my-app": {Containers: []allowlist.Container{{
+			Digest:  mustDigest(t, testDigest),
+			Command: allowlist.ArgvPolicy{Policy: allowlist.PolicyAny},
+			Args:    allowlist.ArgvPolicy{Policy: allowlist.PolicyAny},
+		}}}},
+	}
+	if err := NewClient(srv.URL).ReplaceAll(context.Background(), al, "", stubAuth{}); err != nil {
 		t.Fatal(err)
 	}
 	if gotMethod != http.MethodPut {
 		t.Fatalf("method = %q", gotMethod)
 	}
-	if gotPath != "/allowlist/workloads/my-app" {
+	if gotPath != "/allowlist" {
 		t.Fatalf("path = %q", gotPath)
+	}
+	if gotContentType != "application/json" {
+		t.Fatalf("Content-Type = %q", gotContentType)
 	}
 	if !strings.Contains(string(gotBody), testDigest) {
 		t.Fatalf("body missing digest: %s", gotBody)
 	}
 }
 
-func TestDeleteWorkloadOmitsContentType(t *testing.T) {
-	var gotContentType string
-	var seen bool
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		seen = true
-		gotContentType = r.Header.Get("Content-Type")
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	defer srv.Close()
-
-	if err := NewClient(srv.URL).DeleteWorkload(context.Background(), "my-app", stubAuth{}); err != nil {
-		t.Fatal(err)
-	}
-	if !seen {
-		t.Fatal("request never sent")
-	}
-	if gotContentType != "" {
-		t.Fatalf("bodyless request should not set Content-Type, got %q", gotContentType)
-	}
-}
-
 func TestMutateRejectsNilAuthorizer(t *testing.T) {
-	err := NewClient("http://x").DeleteWorkload(context.Background(), "my-app", nil)
+	err := NewClient("http://x").ReplaceAll(context.Background(), &allowlist.Allowlist{Schema: allowlist.Schema}, "", nil)
 	if err == nil || !strings.Contains(err.Error(), "nil Authorizer") {
 		t.Fatalf("expected nil-authorizer error, got %v", err)
 	}

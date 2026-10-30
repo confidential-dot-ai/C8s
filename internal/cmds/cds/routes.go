@@ -71,8 +71,6 @@ func newRouter(deps dependencies) http.Handler {
 	r.Get("/allowlist/objects/sha256/{hex}", deps.AllowlistHandler.HandleObject)
 	r.Get("/allowlist/objects/sha256/{hex}/signature", deps.AllowlistHandler.HandleSignature)
 	r.Method(http.MethodPut, "/allowlist", deps.allowlistWrite(http.HandlerFunc(deps.AllowlistHandler.HandleReplaceAll)))
-	r.Method(http.MethodPut, "/allowlist/workloads/{name}", deps.allowlistWrite(http.HandlerFunc(deps.AllowlistHandler.HandlePutWorkload)))
-	r.Method(http.MethodDelete, "/allowlist/workloads/{name}", deps.allowlistWrite(http.HandlerFunc(deps.AllowlistHandler.HandleDeleteWorkload)))
 
 	// The route manifest is written like the allowlist (W1) and read like it.
 	r.Get(routes.Path, deps.Routes.handleGet)

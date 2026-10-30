@@ -116,8 +116,12 @@ func TestSeedWorkloads_PreservesExistingEntries(t *testing.T) {
 	defer store.Close()
 
 	runtime := pkgallowlist.Workload{Containers: []pkgallowlist.Container{{Digest: digest(t, digestB)}}}
-	if err := store.PutWorkload("runtime", runtime); err != nil {
-		t.Fatalf("pre-put: %v", err)
+	written := &pkgallowlist.Allowlist{
+		Schema:    pkgallowlist.Schema,
+		Workloads: map[string]pkgallowlist.Workload{"runtime": runtime},
+	}
+	if err := store.ReplaceAll(written, allowlist.OperatorWrite{}); err != nil {
+		t.Fatalf("the operator's write: %v", err)
 	}
 
 	if err := seedWorkloads(&store, parseSeed(t, map[string]string{"cds": digestA, "runtime": digestA})); err != nil {
