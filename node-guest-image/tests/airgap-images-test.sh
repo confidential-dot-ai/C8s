@@ -108,6 +108,26 @@ chmod -R u+w "$cached"
 echo '{"imageLayoutVersion":"9"}' > "$cached/oci-layout"
 bash "$script" "$work/images.txt" "$work/cache" "$work/layout"
 cmp "$work/first/c8s-0.tar" "$work/layout/c8s-0.tar"
+# A node-local name (node-image render's local-names.txt) imports the same
+# digest under a second name; the blobs are unchanged.
+ref=$(head -1 "$work/images.txt")
+printf '%s %s\n' "$ref" "${ref%%@*}:c8s-node" > "$work/local-names.txt"
+bash "$script" "$work/images.txt" "$work/cache" "$work/named" "" ghcr.io/confidential-dot-ai "$work/local-names.txt"
+tar -xOf "$work/named/c8s-0.tar" index.json > "$work/named-index.json"
+[[ $(jq '.manifests | length' "$work/named-index.json") == 2 ]]
+[[ $(jq -r '[.manifests[].digest] | unique | length' "$work/named-index.json") == 1 ]]
+for name in "$ref" "${ref%%@*}:c8s-node"; do
+    jq -e --arg name "$name" 'any(.manifests[]; .annotations["io.containerd.image.name"] == $name)' "$work/named-index.json" >/dev/null
+done
+[[ "$(tar -tf "$work/named/c8s-0.tar" | grep '^blobs/' | sort)" == "$(tar -tf "$work/first/c8s-0.tar" | grep '^blobs/' | sort)" ]]
+echo bad > "$work/bad-names.txt"
+if bash "$script" "$work/images.txt" "$work/cache" "$work/bad" "" ghcr.io/confidential-dot-ai "$work/bad-names.txt" 2>/dev/null; then
+    echo "accepted a malformed local name" >&2; exit 1
+fi
+printf 'registry.example.com/absent@sha256:%s %s\n' "$(printf 'a%.0s' {1..64})" registry.example.com/absent:c8s-node > "$work/unlisted-names.txt"
+if bash "$script" "$work/images.txt" "$work/cache" "$work/unlisted" "" ghcr.io/confidential-dot-ai "$work/unlisted-names.txt" 2>/dev/null; then
+    echo "accepted a local name for an image no rendered workload pins" >&2; exit 1
+fi
 # Layouts for digests no longer listed are pruned from the persisted cache.
 mkdir -p "$work/cache/oci-stale/blobs"
 bash "$script" "$work/images.txt" "$work/cache" "$work/pruned"
