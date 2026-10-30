@@ -1,0 +1,429 @@
+package cdsha
+
+import (
+	"crypto/tls"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net"
+	"slices"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/hashicorp/raft"
+	"k8s.io/apimachinery/pkg/util/cache"
+)
+
+// One attested TLS port carries two protocols, told apart by the first byte
+// after the handshake: Raft's own RPCs, and the replica control channel
+// (join, forwarded writes, status).
+const (
+	muxRaft    byte = 'R'
+	muxControl byte = 'C'
+
+	handshakeTimeout      = 10 * time.Second
+	maxControlBytes       = 8 << 20
+	maxInboundConnections = 64
+)
+
+// peerTLSConfig is used for both directions. It checks no chain:
+// connections use peerVerifier.tlsConfig, which checks the peer's evidence
+// during the handshake.
+func peerTLSConfig(cert func() *tls.Certificate) *tls.Config {
+	return &tls.Config{
+		MinVersion:           tls.VersionTLS13,
+		ClientAuth:           tls.RequireAnyClientCert,
+		InsecureSkipVerify:   true, //nolint:gosec // attestation, not PKI, authenticates the peer (peerVerifier.tlsConfig)
+		GetCertificate:       func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return cert(), nil },
+		GetClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) { return cert(), nil },
+	}
+}
+
+// controlHandler answers one control request from an attested peer.
+type controlHandler func(peer Claims, req controlRequest) controlResponse
+
+// mux accepts attested connections and routes them: Raft connections to the
+// stream layer, control connections to the handler.
+type mux struct {
+	ln       net.Listener
+	tls      *tls.Config
+	verifier peerVerifier
+	advert   raftAddr
+	raftConn chan net.Conn
+	control  controlHandler
+	blocked  func(addr string) bool
+	done     chan struct{}
+	once     sync.Once
+
+	inbound map[*inboundConn]struct{}
+	connMu  sync.Mutex
+	conns   map[*peerConn]struct{}
+	refused *cache.LRUExpireCache // remote host + stage
+}
+
+// inboundConn owns an accepted socket from admission through protocol close.
+// Closing the raw socket avoids blocking shutdown on TLS close_notify.
+type inboundConn struct {
+	net.Conn
+	m    *mux
+	once sync.Once
+}
+
+func (c *inboundConn) Close() error {
+	c.once.Do(func() {
+		c.m.connMu.Lock()
+		delete(c.m.inbound, c)
+		c.m.connMu.Unlock()
+	})
+	return c.Conn.Close()
+}
+
+func (m *mux) admit(raw net.Conn) *inboundConn {
+	m.connMu.Lock()
+	defer m.connMu.Unlock()
+	select {
+	case <-m.done:
+		raw.Close()
+		return nil
+	default:
+	}
+	if len(m.inbound) >= maxInboundConnections {
+		raw.Close()
+		return nil
+	}
+	if m.inbound == nil {
+		m.inbound = make(map[*inboundConn]struct{})
+	}
+	c := &inboundConn{Conn: raw, m: m}
+	m.inbound[c] = struct{}{}
+	return c
+}
+
+// peerConn is a live attested connection and what its peer attested. TLS
+// checks a peer once, at the handshake; Raft keeps connections open, so
+// recheck closes any whose peer the current pin set no longer admits.
+type peerConn struct {
+	*tls.Conn
+	m      *mux
+	claims Claims
+	once   sync.Once
+}
+
+func (c *peerConn) Close() error {
+	c.once.Do(func() {
+		c.m.connMu.Lock()
+		delete(c.m.conns, c)
+		c.m.connMu.Unlock()
+	})
+	return c.Conn.Close()
+}
+
+// raftAddr is a member's Raft address: where it listens, and which member it
+// is. A Raft RPC names only its sender, so without the member ID a process
+// restarted on the same address would take messages meant for its earlier
+// incarnation, and could vote again under that identity with its votes
+// forgotten.
+type raftAddr struct {
+	tcp *net.TCPAddr
+	id  string
+}
+
+func (a raftAddr) Network() string { return "tcp" }
+func (a raftAddr) String() string  { return a.tcp.String() + "#" + a.id }
+
+// splitRaftAddr splits "ip:port#member-id".
+func splitRaftAddr(s string) (hostport, id string) {
+	hostport, id, _ = strings.Cut(s, "#")
+	return hostport, id
+}
+
+func newMux(bind string, advertise, id string, cfg *tls.Config, v peerVerifier, control controlHandler, blocked func(string) bool) (*mux, error) {
+	ln, err := net.Listen("tcp", bind)
+	if err != nil {
+		return nil, err
+	}
+	tcp, err := net.ResolveTCPAddr("tcp", advertise)
+	if err != nil {
+		ln.Close()
+		return nil, fmt.Errorf("advertise address %q: %w", advertise, err)
+	}
+	adv := raftAddr{tcp: tcp, id: id}
+	m := &mux{ln: ln, tls: cfg, verifier: v, advert: adv, control: control, blocked: blocked,
+		raftConn: make(chan net.Conn), done: make(chan struct{}), conns: map[*peerConn]struct{}{}, refused: newLogOnce()}
+	go m.serve()
+	return m, nil
+}
+
+// track registers a verified connection, so recheck can cut it later.
+func (m *mux) track(c *tls.Conn, claims Claims) (*peerConn, error) {
+	pc := &peerConn{Conn: c, m: m, claims: claims}
+	m.connMu.Lock()
+	defer m.connMu.Unlock()
+	select {
+	case <-m.done:
+		return nil, errors.New("cds-ha transport closed")
+	default:
+	}
+	// Serialize this final pin snapshot and registration with recheck.
+	// Verification may have completed before the latest epoch's sweep.
+	pins := m.verifier.pins()
+	if (pins != nil && !slices.Contains(pins, claims.Measurement)) || (m.blocked != nil && m.blocked(c.RemoteAddr().String())) {
+		return nil, errors.New("peer no longer admitted")
+	}
+	m.conns[pc] = struct{}{}
+	return pc, nil
+}
+
+// recheck closes every connection whose peer is no longer admitted: its
+// measurement left the pin set, or (in tests) it is partitioned away.
+func (m *mux) recheck() {
+	m.connMu.Lock()
+	pins := m.verifier.pins()
+	var drop []*peerConn
+	for c := range m.conns {
+		if (pins != nil && !slices.Contains(pins, c.claims.Measurement)) || (m.blocked != nil && m.blocked(c.RemoteAddr().String())) {
+			drop = append(drop, c)
+		}
+	}
+	m.connMu.Unlock()
+	for _, c := range drop {
+		_ = c.Close()
+	}
+}
+
+// logOnce reports whether key was not logged in the last minute: a peer
+// refused for good (a new image not yet pinned, a foreign cluster) must show
+// in the logs, but not on every retry. The cache is bounded, because a
+// handshake failure's key is the remote host, which anyone can vary.
+func logOnce(seen *cache.LRUExpireCache, key string) bool {
+	if _, ok := seen.Get(key); ok {
+		return false
+	}
+	seen.Add(key, nil, time.Minute)
+	return true
+}
+
+func newLogOnce() *cache.LRUExpireCache { return cache.NewLRUExpireCache(1024) }
+
+// refuse logs why a peer connection was closed, which would otherwise show
+// only as resets on the other side.
+func (m *mux) refuse(remote net.Addr, stage string, err error) {
+	host, _, _ := net.SplitHostPort(remote.String())
+	if logOnce(m.refused, host+" "+stage) {
+		slog.Info("cds-ha: peer connection refused", "component", "cds-ha", "remote", host, "stage", stage, "err", err)
+	}
+}
+
+func (m *mux) serve() {
+	for {
+		c, err := m.ln.Accept()
+		if err != nil {
+			select {
+			case <-m.done:
+				return
+			default:
+			}
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		if owned := m.admit(c); owned != nil {
+			go m.route(owned)
+		}
+	}
+}
+
+func (m *mux) route(raw net.Conn) {
+	if _, ok := raw.(*inboundConn); !ok {
+		owned := m.admit(raw)
+		if owned == nil {
+			return
+		}
+		raw = owned
+	}
+	if m.blocked != nil && m.blocked(raw.RemoteAddr().String()) {
+		raw.Close()
+		return
+	}
+	cfg, verified := m.verifier.tlsConfig(m.tls)
+	c := tls.Server(raw, cfg)
+	_ = c.SetDeadline(time.Now().Add(handshakeTimeout))
+	if err := c.Handshake(); err != nil {
+		stage := "handshake"
+		if errors.Is(err, errPeerIdentity) {
+			stage = "peer identity"
+		}
+		m.refuse(raw.RemoteAddr(), stage, err)
+		c.Close()
+		return
+	}
+	claims := *verified
+	var kind [1]byte
+	if _, err := io.ReadFull(c, kind[:]); err != nil {
+		c.Close()
+		return
+	}
+	pc, err := m.track(c, claims)
+	if err != nil {
+		m.refuse(raw.RemoteAddr(), "peer admission", err)
+		c.Close()
+		return
+	}
+	switch kind[0] {
+	case muxRaft:
+		// The member this connection is for; anything else is refused.
+		var n [1]byte
+		if _, err := io.ReadFull(pc, n[:]); err != nil {
+			pc.Close()
+			return
+		}
+		target := make([]byte, n[0])
+		if _, err := io.ReadFull(pc, target); err != nil || string(target) != m.advert.id {
+			m.refuse(raw.RemoteAddr(), "raft target", fmt.Errorf("for member %q, this is %q (%v)", target, m.advert.id, err))
+			pc.Close()
+			return
+		}
+		_ = c.SetDeadline(time.Time{})
+		select {
+		case m.raftConn <- pc:
+		case <-m.done:
+			pc.Close()
+		}
+	case muxControl:
+		defer pc.Close()
+		if m.control == nil {
+			return
+		}
+		_ = c.SetDeadline(time.Now().Add(30 * time.Second))
+		var req controlRequest
+		if err := json.NewDecoder(io.LimitReader(c, maxControlBytes)).Decode(&req); err != nil {
+			return
+		}
+		_ = json.NewEncoder(c).Encode(m.control(claims, req))
+	default:
+		pc.Close()
+	}
+}
+
+// Accept, Close and Addr make the mux the Raft stream layer's listener.
+func (m *mux) Accept() (net.Conn, error) {
+	select {
+	case c := <-m.raftConn:
+		return c, nil
+	case <-m.done:
+		return nil, errors.New("cds-ha transport closed")
+	}
+}
+
+func (m *mux) Close() error {
+	m.once.Do(func() {
+		m.connMu.Lock()
+		close(m.done)
+		raw := make([]*inboundConn, 0, len(m.inbound))
+		for c := range m.inbound {
+			raw = append(raw, c)
+		}
+		peers := make([]*peerConn, 0, len(m.conns))
+		for c := range m.conns {
+			peers = append(peers, c)
+		}
+		m.connMu.Unlock()
+		for _, c := range raw {
+			_ = c.Close()
+		}
+		for _, c := range peers {
+			_ = c.Close()
+		}
+	})
+	return m.ln.Close()
+}
+
+func (m *mux) Addr() net.Addr { return m.advert }
+
+// Dial opens an attested Raft connection.
+func (m *mux) Dial(address raft.ServerAddress, timeout time.Duration) (net.Conn, error) {
+	hostport, id := splitRaftAddr(string(address))
+	if m.blocked != nil && m.blocked(hostport) {
+		return nil, errors.New("partitioned")
+	}
+	if id == "" || len(id) > 255 {
+		return nil, fmt.Errorf("raft address %q names no member", address)
+	}
+	c, claims, err := dialKind(hostport, timeout, m.tls, m.verifier, muxRaft, m.advert.tcp)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := c.Write(append([]byte{byte(len(id))}, id...)); err != nil {
+		c.Close()
+		return nil, err
+	}
+	pc, err := m.track(c, claims)
+	if err != nil {
+		c.Close()
+		return nil, err
+	}
+	return pc, nil
+}
+
+// dialKind opens an attested connection of one kind and verifies the peer
+// before it sends anything. Connections leave from the advertised address,
+// so peers see the address they know us by.
+func dialKind(addr string, timeout time.Duration, cfg *tls.Config, v peerVerifier, kind byte, local net.Addr) (*tls.Conn, Claims, error) {
+	d := &net.Dialer{Timeout: timeout}
+	if a, ok := local.(*net.TCPAddr); ok && a != nil {
+		d.LocalAddr = &net.TCPAddr{IP: a.IP}
+	}
+	connCfg, verified := v.tlsConfig(cfg)
+	c, err := tls.DialWithDialer(d, "tcp", addr, connCfg)
+	if err != nil {
+		return nil, Claims{}, err
+	}
+	if _, err := c.Write([]byte{kind}); err != nil {
+		c.Close()
+		return nil, Claims{}, err
+	}
+	return c, *verified, nil
+}
+
+// Control requests.
+const (
+	ctlJoin   = "join"
+	ctlApply  = "apply"
+	ctlStatus = "status"
+)
+
+type controlRequest struct {
+	Op      string          `json:"op"`
+	ID      string          `json:"id,omitempty"`
+	Address string          `json:"address,omitempty"`
+	Entry   json.RawMessage `json:"entry,omitempty"`
+	Reads   uint32          `json:"reads,omitempty"` // join: newest format the joiner reads
+}
+
+type controlResponse struct {
+	Err      string          `json:"err,omitempty"`
+	Leader   string          `json:"leader,omitempty"` // set when the receiver is not the leader
+	Member   bool            `json:"member,omitempty"` // the receiver belongs to a Raft group
+	Index    uint64          `json:"index,omitempty"`
+	Response json.RawMessage `json:"response,omitempty"`
+	Status   *Status         `json:"status,omitempty"`
+}
+
+func callControl(addr string, cfg *tls.Config, v peerVerifier, timeout time.Duration, req controlRequest, local net.Addr) (controlResponse, error) {
+	c, _, err := dialKind(addr, timeout, cfg, v, muxControl, local)
+	if err != nil {
+		return controlResponse{}, err
+	}
+	defer c.Close()
+	_ = c.SetDeadline(time.Now().Add(timeout))
+	if err := json.NewEncoder(c).Encode(req); err != nil { // one Write
+		return controlResponse{}, err
+	}
+	var resp controlResponse
+	if err := json.NewDecoder(io.LimitReader(c, maxControlBytes)).Decode(&resp); err != nil {
+		return controlResponse{}, fmt.Errorf("control %s to %s: %w", req.Op, addr, err)
+	}
+	return resp, nil
+}
