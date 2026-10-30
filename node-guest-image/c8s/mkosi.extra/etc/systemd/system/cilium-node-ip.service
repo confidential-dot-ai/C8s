@@ -1,0 +1,19 @@
+[Unit]
+Description=Restart the Cilium agent when it announces a stale node address
+# Cilium takes its node IP from the Node object once, at agent start. After a
+# reboot with a new address it can read the previous one before the kubelet
+# updates the Node, and then keeps it (node-guest-image/README.md).
+Requires=rke2-role.service nri-node-ip.service
+After=rke2-role.service nri-node-ip.service
+ConditionPathExists=|/run/confos/role-server
+ConditionPathExists=|/run/confos/role-agent
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/c8s node-services cilium-node-ip
+Restart=always
+RestartSec=5
+# Reads every process's /proc entry and signals the agent in its pod cgroup.
+
+[Install]
+WantedBy=multi-user.target
