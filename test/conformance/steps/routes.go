@@ -68,7 +68,8 @@ func registerRoutes(sc *godog.ScenarioContext) {
 	sc.Step(`^the router has applied a route manifest routing path "([^"]*)" on host "([^"]*)" to the CDS under trust anchors that did not issue its certificate$`, routerAppliedUnrelatedCA)
 	sc.Step(`^a client requests path "([^"]*)" on host "([^"]*)" through the router$`, func(ctx context.Context, path, host string) error {
 		w := getWorld(ctx)
-		return w.routerGet(path, "Host: "+w.routeHost(host))
+		w.router.lastHost = w.routeHost(host)
+		return w.routerGet(path, "Host: "+w.router.lastHost)
 	})
 	sc.Step(`^a client reads the allowlist through the built-in allowlist route on host "([^"]*)"$`, func(ctx context.Context, host string) error {
 		w := getWorld(ctx)
@@ -78,8 +79,48 @@ func registerRoutes(sc *godog.ScenarioContext) {
 		return getWorld(ctx).routerAnswered(http.StatusNotFound, "no route")
 	})
 	sc.Step(`^the router answers that the backend is unavailable$`, func(ctx context.Context) error {
-		return getWorld(ctx).routerAnswered(http.StatusBadGateway, "backend unavailable")
+		return getWorld(ctx).routerRefusedTheBackend()
 	})
+}
+
+// routerRefusedTheBackend asserts the router refused the relay with a 502, and
+// — where its log is reachable — that the refusal was the one the scenario
+// means (a workload-name mismatch, or a backend certificate the route's trust
+// anchors did not issue), not a router that could not verify the leaf at all. A
+// mesh-verification failure is the same "backend unavailable" on the wire
+// (routing/proxy.go, backendFailure's default), so a router stranded on a stale
+// mesh CA would pass a body-only check; this fails it. The two intended
+// refusals log their own reasons and pass.
+func (w *world) routerRefusedTheBackend() error {
+	if err := w.routerAnswered(http.StatusBadGateway, "backend unavailable"); err != nil {
+		return err
+	}
+	out, err := w.be.call("router_logs")
+	if errors.Is(err, godog.ErrSkip) {
+		return nil // the backend keeps no router log to read
+	}
+	if err != nil {
+		return err
+	}
+	if w.router.lastHost == "" {
+		return errors.New("no routed request was recorded to match the router log against")
+	}
+	// The last backend-request failure the router logged for this host, whose
+	// DNS name carries the scenario namespace, so no other scenario's line
+	// matches. The router writes host=<app host> on the relay attempt.
+	var line string
+	for _, l := range strings.Split(out, "\n") {
+		if strings.Contains(l, "backend request failed") && strings.Contains(l, "host="+w.router.lastHost) {
+			line = l
+		}
+	}
+	if line == "" {
+		return fmt.Errorf("the router logged no backend-request failure for host %q", w.router.lastHost)
+	}
+	if strings.Contains(line, "mesh peer chain") {
+		return fmt.Errorf("the router refused the relay for a mesh-verification failure, not the scenario's reason:\n%s", line)
+	}
+	return nil
 }
 
 // routeHost is the DNS name a logical host stands for, under the scenario's

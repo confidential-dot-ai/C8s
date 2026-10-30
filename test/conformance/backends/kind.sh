@@ -102,16 +102,29 @@ cds_restart_with() {
     cds_wait
 }
 
-# The mock attestation-api is the local attestation service of every
-# component here, the CDS's readiness check included.
+# The CDS reads its attestation-api over loopback in CDS_ATTESTATION_CONTAINER's
+# network namespace (lib.sh, cds_serve: --network container, --attestation-api-url
+# http://127.0.0.1:8400); the cluster's kube-system mock serves the node-baked
+# api that the node's mesh members and the host plugin use, not the CDS. So the
+# scenario that takes the CDS's own attestation away pauses that container: the
+# process stops answering while the namespace and the CDS's network stay up, so
+# the CDS stays reachable and its background readiness probe (bounded per
+# interval) flips /readyz to 503. docker rm/stop would instead drop the shared
+# namespace and the CDS with it.
 attestation_service_stop() {
-    kubectl -n "$MOCK_ATTESTATION_NS" scale "deploy/$MOCK_ATTESTATION_NAME" --replicas=0 >/dev/null
-    kubectl -n "$MOCK_ATTESTATION_NS" wait --for=delete pod -l "app=$MOCK_ATTESTATION_NAME" --timeout=120s >/dev/null 2>&1 || true
+    docker pause "$CDS_ATTESTATION_CONTAINER" >/dev/null
 }
 
+# Unpause, then wait for the CDS to report ready again before returning, so the
+# next scenario does not inherit a 503. /readyz, not /healthz: readiness is what
+# the probe drives and what the scenario read.
 attestation_service_start() {
-    kubectl -n "$MOCK_ATTESTATION_NS" scale "deploy/$MOCK_ATTESTATION_NAME" --replicas=1 >/dev/null
-    kubectl -n "$MOCK_ATTESTATION_NS" rollout status "deploy/$MOCK_ATTESTATION_NAME" --timeout=180s >/dev/null
+    docker unpause "$CDS_ATTESTATION_CONTAINER" >/dev/null
+    local deadline=$(($(date +%s) + 60))
+    until [ "$(curl -sk -o /dev/null -w '%{http_code}' "$(cds_url)/readyz")" = 200 ]; do
+        [ "$(date +%s)" -lt "$deadline" ] || { echo "backend: the CDS did not report ready 60s after its attestation returned" >&2; return 1; }
+        sleep 1
+    done
 }
 
 # PEM private keys outside CDS process memory: in the Secrets and ConfigMaps

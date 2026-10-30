@@ -477,12 +477,14 @@ func cdsServing(ctx context.Context) error {
 
 func attestationServiceStops(ctx context.Context) error {
 	w := getWorld(ctx)
+	if _, err := w.be.call("attestation_service_stop"); err != nil {
+		return err
+	}
 	w.onUndo(func() error {
 		_, err := w.be.call("attestation_service_start")
 		return err
 	})
-	_, err := w.be.call("attestation_service_stop")
-	return err
+	return nil
 }
 
 func readinessRead(ctx context.Context) error {

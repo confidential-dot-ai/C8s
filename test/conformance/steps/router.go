@@ -54,9 +54,10 @@ const (
 // configuration, the last answer a client got and the certificate the
 // router presented.
 type routerState struct {
-	conf    *nginxConf
-	answer  *answer
-	serving []byte // DER
+	conf     *nginxConf
+	answer   *answer
+	lastHost string // the resolved Host of the last request, for log matching
+	serving  []byte // DER
 }
 
 // nginxConf is the router's rendered nginx configuration, as locations.
