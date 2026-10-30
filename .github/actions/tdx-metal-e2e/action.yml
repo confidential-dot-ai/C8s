@@ -20,6 +20,9 @@ inputs:
   suite_run:
     description: 'Command that runs the extra suite; empty skips it.'
     default: ''
+  node_cidr:
+    description: 'The launcher host''s pod network: the one range the CDS admits a node address in, and the range the guests boot on. A property of the host this lane runs on (tdx-gh-runner''s outer cluster is renumbered to 172.20/172.21), not of c8s, so the caller sets it for its host.'
+    default: '172.20.0.0/16'
 runs:
   using: composite
   steps:
@@ -302,10 +305,12 @@ runs:
     # image alone, and takes this one from the same commit too.
     env:
       CDS_IMAGE_REPO: ghcr.io/confidential-dot-ai/cds-guest-base
-      # The launcher's pod network, which both guests boot on: the one range
-      # the CDS may dial a node's admission inventory in. The boot below
-      # refuses a guest address outside it.
-      LAUNCHER_POD_CIDR: 10.42.0.0/16
+      # The launcher host's pod network, which both guests boot on: the one
+      # range the CDS may dial a node's admission inventory in, and the range
+      # the boot below refuses a guest address outside. A host property (see the
+      # node_cidr input), not 10.42/16 as SNP's host happens to use: this host's
+      # outer cluster is renumbered to 172.20/172.21.
+      LAUNCHER_POD_CIDR: ${{ inputs.node_cidr }}
     shell: bash
     run: |
       set -euo pipefail
@@ -704,8 +709,16 @@ runs:
       [ -n "$IP" ] || { echo "::error::no guest IP"; exit 1; }
       # Both reduced to the two octets of the /16 the launch file lets the CDS
       # dial a node's admission inventory in.
-      [ "${IP%.*.*}" = "${NODE_CIDR%.*.*/*}" ] \
-        || { echo "::error::the guest came up at $IP, outside NODE_CIDR $NODE_CIDR: the CDS admits no node address there"; exit 1; }
+      if [ "${IP%.*.*}" != "${NODE_CIDR%.*.*/*}" ]; then
+        # The guest took an address the CDS will not admit. Dump what the
+        # launcher assigned (both namespaced, so readable without node rights)
+        # so the next reader sees whether node_cidr is stale or the launcher
+        # placed the VM off its expected network.
+        echo "launcher pod IPs: $(kubectl -n "$NS" get pod -l kubevirt.io/domain="$VM" -o jsonpath='{.items[*].status.podIP}' 2>/dev/null)"
+        kubectl -n "$NS" get vmi "$VM" -o jsonpath='{.status.interfaces}' 2>/dev/null; echo
+        echo "::error::the guest came up at $IP, outside NODE_CIDR $NODE_CIDR: the CDS admits no node address there. If the host's pod network moved, set the node_cidr input to match."
+        exit 1
+      fi
       echo "GUEST_IP=$IP" >> "$GITHUB_ENV"
       echo "VMI Running at $IP"
 
