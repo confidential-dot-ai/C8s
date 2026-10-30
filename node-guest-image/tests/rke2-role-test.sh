@@ -70,6 +70,31 @@ for scenario in missing-disk missing-config missing-signature invalid-signature 
     ok "preparation did not complete" test ! -e "$C8S_ROLE_FIXTURE/prepared"
 done
 
+# Only the verification step is retried, with bounded, growing waits.
+CASE=transient-stage-failure
+reset_launch_fixture
+launch_media server
+echo 1 > "$C8S_ROLE_FIXTURE/stage-fails-times"
+run_script
+ok "boot succeeds after one failed verification" test "$RC" -eq 0
+ok "verification ran twice" test "$(stage_calls)" -eq 2
+ok "server role authorized" test -f /run/confos/role-server
+ok "prepare ran" test -f "$C8S_ROLE_FIXTURE/prepared"
+ok "the failed attempt is logged" grep -q 'launch verification (c8s launch-config stage) failed (attempt 1/5' "$OUT"
+
+CASE=persistent-stage-failure
+reset_launch_fixture
+launch_media server
+echo 99 > "$C8S_ROLE_FIXTURE/stage-fails-times"
+run_script
+ok "failure propagates" test "$RC" -ne 0
+ok "verification is attempted exactly 5 times" test "$(stage_calls)" -eq 5
+ok "waits double from 5s" test "$(tr '\n' ' ' < "$C8S_ROLE_FIXTURE/sleeps")" = "5 10 20 40 "
+ok "neither role remains authorized" no_launch_markers
+ok "preparation did not run" test ! -e "$C8S_ROLE_FIXTURE/prepared"
+ok "the exit status carries the failed verification" test "$RC" -eq 1
+ok "giving up is logged" grep -q 'failed 5 times (last exit 1); giving up' "$OUT"
+
 CASE=invalid-baked-platform
 reset_launch_fixture
 launch_media server

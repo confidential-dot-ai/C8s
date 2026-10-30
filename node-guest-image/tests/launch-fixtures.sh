@@ -57,6 +57,13 @@ case "$1 $2" in
     [[ $4 == --config=/run/confos/launch-disk.*/launch.yaml ]]
     [[ $5 == --signature=/run/confos/launch-disk.*/launch.yaml.sig ]]
     printf '%s\n' "$@" > "$C8S_ROLE_FIXTURE/stage-args"
+    calls=$(( $(cat "$C8S_ROLE_FIXTURE/stage-calls" 2>/dev/null || echo 0) + 1 ))
+    echo "$calls" > "$C8S_ROLE_FIXTURE/stage-calls"
+    # A self-attestation that fails the first N times (stage-fails-times).
+    if (( calls <= $(cat "$C8S_ROLE_FIXTURE/stage-fails-times" 2>/dev/null || echo 0) )); then
+        echo "c8s stub: verify this boot's identity: attest self: quote failed" >&2
+        exit 1
+    fi
     config=${4#--config=}
     signature=${5#--signature=}
     [[ -f "$config" && -f "$signature" ]]
@@ -77,7 +84,14 @@ case "$1 $2" in
 *) exit 32 ;;
 esac
 STUB
-    chmod +x "$bindir"/{udevadm,blkid,mount,umount,timeout,c8s}
+    # Backoff waits return at once; the requested delays are recorded.
+    cat > "$bindir/sleep" <<'STUB'
+#!/bin/bash
+set -euo pipefail
+[[ $# == 1 && $1 =~ ^[0-9]+$ ]]
+printf '%s\n' "$1" >> "$C8S_ROLE_FIXTURE/sleeps"
+STUB
+    chmod +x "$bindir"/{udevadm,blkid,mount,umount,timeout,c8s,sleep}
 }
 
 reset_launch_fixture() {
@@ -92,3 +106,5 @@ launch_media() {
 }
 
 no_launch_markers() { [[ ! -e /run/confos/role-server && ! -e /run/confos/role-agent ]]; }
+
+stage_calls() { cat "$C8S_ROLE_FIXTURE/stage-calls" 2>/dev/null || echo 0; }

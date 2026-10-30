@@ -122,3 +122,9 @@ field instead, which is why this flow is for a measured node image on
 Missing, unsigned, or inconsistent input leaves RKE2 and the role's services
 down. A role change, a new image, or any other edit means relaunching with
 newly signed bytes.
+
+A failed verification (for example the boot's first quote, or SEV-SNP
+collateral that cannot be fetched) is retried with growing waits. If every
+attempt fails, the node logs which step failed and powers off instead of
+staying up with no services; KubeVirt (runStrategy Always or RerunOnFailure)
+then relaunches the VM.
