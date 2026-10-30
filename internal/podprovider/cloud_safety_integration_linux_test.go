@@ -21,8 +21,8 @@ import (
 
 func cloudOwnershipFixture(t *testing.T) (*cloudRun, *cloudOwned, cloudReceipt) {
 	t.Helper()
-	r := &cloudRun{dir: t.TempDir(), cfg: cloudRunConfig{Image: "c8s-pod@2026.10.27-1", CDSImage: "c8s-pod-cds@2026.10.27-1", Size: "s1.2x", Location: "us-west-1", DiskDigest: "sha256:" + strings.Repeat("a", 64), ManifestDigest: "sha256:" + strings.Repeat("b", 64)}}
-	r.ledger = cloudLedger{Version: 1, Run: "pcvm-" + strings.Repeat("1", 24), Before: map[string]cloudReceipt{}, Owned: map[string]*cloudOwned{}}
+	r := &cloudRun{dir: t.TempDir(), cfg: cloudRunConfig{Image: "c8s-pod@2026.10.27-1", CDSImage: "c8s-cds@2026.10.27-1", Size: "s1.2x", Location: "us-west-1", DiskDigest: "sha256:" + strings.Repeat("a", 64), ManifestDigest: "sha256:" + strings.Repeat("b", 64), CDSDiskDigest: "sha256:" + strings.Repeat("c", 64), CDSManifestDigest: "sha256:" + strings.Repeat("d", 64)}}
+	r.ledger = cloudLedger{Version: 2, Run: "pcvm-" + strings.Repeat("1", 24), Before: map[string]cloudReceipt{}, Owned: map[string]*cloudOwned{}}
 	o := &cloudOwned{Key: "podcvm-owned", UID: "assigned-uid", Image: r.cfg.Image, LaunchKey: "public-key-only", Labels: map[string]string{"podcvm-provider": r.ledger.Run, "podcvm-uid": "owned"}, IntentAt: time.Now().UTC(), Attempted: true}
 	in := cloudReceipt{ID: "i-owned", Name: o.Key, CreatedAt: o.IntentAt, Tee: "tdx", Size: r.cfg.Size, Location: r.cfg.Location, Labels: o.Labels}
 	in.Image.Family = "c8s-pod"
@@ -388,7 +388,17 @@ func TestCloudAcceptanceDelayedRunCannotCrossLocalCleanupFence(t *testing.T) {
 	if err = os.WriteFile(binary, []byte("offline binary"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	input := cloudRunConfig{Source: strings.Repeat("1", 40), CloudURL: "https://api.cloud.confidential.ai", TokenFile: cfg.CloudTokenFile, Image: "c8s-pod@2026.10.27-1", CDSImage: "c8s-pod-cds@2026.10.27-1", ManifestFile: manifestPath, ManifestDigest: "sha256:" + cloudHash(raw), DiskDigest: "sha256:" + disk, CLIFile: binary, CLISHA256: cloudHash([]byte("offline binary")), ProbeFile: binary, ProbeSHA256: cloudHash([]byte("offline binary")), MeshImage: "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:" + strings.Repeat("b", 64), Size: "s1.2x", Location: "us-west-1", VCPUs: 2, MemoryMiB: 8192}
+	cdsDisk := strings.Repeat("c", 64)
+	manifest["outputs"] = map[string]any{"disk_image": map[string]string{"sha256": cdsDisk}}
+	cdsManifestPath := filepath.Join(dir, "cds-manifest.json")
+	if err = cloudWrite(cdsManifestPath, manifest); err != nil {
+		t.Fatal(err)
+	}
+	cdsRaw, err := os.ReadFile(cdsManifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := cloudRunConfig{Source: strings.Repeat("1", 40), CloudURL: "https://api.cloud.confidential.ai", TokenFile: cfg.CloudTokenFile, Image: "c8s-pod@2026.10.27-1", CDSImage: "c8s-cds@2026.10.27-1", CDSManifestFile: cdsManifestPath, CDSManifestDigest: "sha256:" + cloudHash(cdsRaw), CDSDiskDigest: "sha256:" + cdsDisk, ManifestFile: manifestPath, ManifestDigest: "sha256:" + cloudHash(raw), DiskDigest: "sha256:" + disk, CLIFile: binary, CLISHA256: cloudHash([]byte("offline binary")), ProbeFile: binary, ProbeSHA256: cloudHash([]byte("offline binary")), MeshImage: "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:" + strings.Repeat("b", 64), Size: "s1.2x", Location: "us-west-1", VCPUs: 2, MemoryMiB: 8192}
 	path := filepath.Join(dir, "input.json")
 	if err = cloudWrite(path, input); err != nil {
 		t.Fatal(err)

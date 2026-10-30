@@ -12,22 +12,22 @@ import unittest
 
 RUNNER = Path(__file__).with_name("run.sh")
 ASSERTIONS = [
-    "attestedReadiness", "cleanup", "exactDigests", "meshDNSInternet",
+    "attestedReadiness", "cdsAccessControl", "cleanup", "exactDigests", "meshDNSInternet",
     "negativeProbes", "normalScheduler", "providerDeletion", "readinessCycle",
     "restartRecovery", "timedRenewal",
 ]
 TIMEOUT_ASSERTIONS = [
-    "attestedReadiness", "cleanup", "exactDigests", "lateVerifiedResultRejected",
+    "attestedReadiness", "cdsAccessControl", "cleanup", "exactDigests", "lateVerifiedResultRejected",
     "normalScheduler", "persistedVerificationDeadline", "providerDeletion",
     "readinessWithdrawn", "restartRecovery", "timeoutTermination",
 ]
 WARM_ASSERTIONS = [
-    "assignmentBeforePOST", "attestedReadiness", "certificateIdentity", "cleanup",
+    "assignmentBeforePOST", "attestedReadiness", "cdsAccessControl", "certificateIdentity", "cleanup",
     "conflictingAssignmentRejected", "exactDigests", "genericIdle", "normalScheduler",
     "poolDrain", "providerDeletion", "restartRecovery", "uidFencedClaim",
 ]
 CDS_ASSERTIONS = [
-    "attestedReadiness", "authenticatedPolicyUpdate", "cdsIngressRestored",
+    "attestedReadiness", "authenticatedPolicyUpdate", "cdsAccessControl", "cdsIngressRestored",
     "certificateIdentity", "cleanup", "exactDigests", "guestObservedOutage",
     "normalScheduler", "providerDeletion", "revocationEnforced", "servedPolicyRetained",
 ]
@@ -136,12 +136,12 @@ elif tool == "docker":
                     sys.exit(10)
                 time.sleep(0.01)
         cfg = json.loads((state / "config.json").read_text())
-        save(state / "ledger.json", {"complete": True, "run": "owned-invocation"})
+        save(state / "ledger.json", {"complete": True, "run": "owned-invocation", "owned": {"cds": {"launchFileSHA256": "e" * 64}}})
         if scenario != "missing":
-            result = {k: cfg[k] for k in ["source", "image", "cdsImage", "cliSHA256", "manifestDigest", "meshImage"]}
+            result = {k: cfg[k] for k in ["source", "image", "cdsImage", "cliSHA256", "manifestDigest", "diskDigest", "cdsManifestDigest", "cdsDiskDigest", "meshImage"]}
             requested = cfg.get("scenario") or "connected"
             assertions = json.loads(os.environ["PODCLOUD_ASSERTIONS"])[requested]
-            result.update(passed=True, run="owned-invocation", scenario=requested,
+            result.update(version=2, podLaunchFormat="c8s-launch/v2", cdsLaunchFormat="c8s-cds/v1", cdsConfigSHA256="e" * 64, passed=True, run="owned-invocation", scenario=requested,
                           providerBinarySHA256=hashlib.sha256((state / "provider.test").read_bytes()).hexdigest(),
                           assertions={k: True for k in assertions})
             other = "verification-timeout" if requested == "connected" else "connected"
@@ -174,6 +174,9 @@ elif tool == "docker":
                 result["assertions"] = {"cleanup": True}
             if scenario == "wrong-source":
                 result["source"] = "f" * 40
+            if scenario in ("wrong-cds-manifest", "wrong-cds-disk", "wrong-cds-config", "wrong-launch-format"):
+                field = {"wrong-cds-manifest": "cdsManifestDigest", "wrong-cds-disk": "cdsDiskDigest", "wrong-cds-config": "cdsConfigSHA256", "wrong-launch-format": "cdsLaunchFormat"}[scenario]
+                result[field] = "different"
             save(state / "result.json", result)
     else:
         raise SystemExit("unexpected Docker command: " + args[0])
@@ -188,9 +191,8 @@ class RunnerTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory(prefix="podcloud-runner-")
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name).resolve()
-        # Exercise the actual driver against an isolated historical v1 source
-        # fixture. This preserves all existing run/ownership tests after main
-        # adopts v2, without a runtime override of the compatibility guard.
+        # Exercise the actual v2 driver against isolated source and process
+        # doubles without an override of the production compatibility guard.
         self.repo = self.root / "source"
         for relative in ("test/integration/pod-cloud/run.sh",
                          "test/integration/pod-cloud/lock.py",
@@ -202,7 +204,7 @@ class RunnerTests(unittest.TestCase):
         self.runner = self.repo / "test/integration/pod-cloud/run.sh"
         self.schema = self.repo / "internal/cmds/launchconfig/config.go"
         self.schema.parent.mkdir(parents=True)
-        self.schema.write_text('package launchconfig\nconst (\nSchemaVersion = "c8s-launch/v1"\n)\n')
+        self.schema.write_text('package launchconfig\nconst (\nSchemaVersion = "c8s-launch/v2"\n)\n')
         self.bin = self.root / "bin"
         self.bin.mkdir()
         for tool in ("docker", "kind", "go", "git", "timeout"):
@@ -213,11 +215,14 @@ class RunnerTests(unittest.TestCase):
         self.normal_kubeconfig.write_text("user context must stay unchanged")
         self.config = {
             "source": "a" * 40, "image": "c8s-pod@2026.10.27-1",
-            "cdsImage": "c8s-pod-cds@2026.10.27-1", "cliSHA256": "b" * 64,
+            "cdsImage": "c8s-cds@2026.10.27-1", "cliSHA256": "b" * 64,
             "manifestDigest": "sha256:" + "c" * 64,
+            "diskDigest": "sha256:" + "1" * 64,
+            "cdsManifestDigest": "sha256:" + "2" * 64,
+            "cdsDiskDigest": "sha256:" + "3" * 64,
             "meshImage": "example.invalid/mesh@sha256:" + "d" * 64,
         }
-        for key in ("tokenFile", "manifestFile", "cliFile", "probeFile"):
+        for key in ("tokenFile", "manifestFile", "cdsManifestFile", "cliFile", "probeFile"):
             path = self.root / key
             path.write_text("offline fixture")
             self.config[key] = str(path)
@@ -241,7 +246,7 @@ class RunnerTests(unittest.TestCase):
         return [json.loads(line) for line in (self.root / "calls.jsonl").read_text().splitlines()]
 
     def test_unsupported_source_stops_before_state_credentials_or_tools(self):
-        for source in ('SchemaVersion = "c8s-launch/v2"\n',
+        for source in ('SchemaVersion = "c8s-launch/v1"\n',
                        'SchemaVersion = "c8s-launch/v99"\n',
                        'SchemaVersion = "c8s-launch/v1"\nSchemaVersion = "c8s-launch/v2"\n',
                        '// SchemaVersion = "c8s-launch/v1"\n', ''):
@@ -249,7 +254,7 @@ class RunnerTests(unittest.TestCase):
                 self.schema.write_text(source)
                 result = self.run_driver()
                 self.assertNotEqual(result.returncode, 0)
-                self.assertIn("New v2 runs await Cloud API/operator support", result.stderr)
+                self.assertIn("requires c8s-launch/v2 and a dedicated", result.stderr)
                 self.assertFalse(self.state.exists())
                 self.assertFalse((self.root / "calls.jsonl").exists())
                 self.assertEqual(list(self.root.glob(".podcloud-lock-*")), [])
@@ -260,8 +265,15 @@ class RunnerTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         original = (self.state / "provider.test").read_bytes()
         before = len(self.calls())
-        self.schema.write_text('SchemaVersion = "c8s-launch/v2"\n')
-        result = self.run_driver("cleanup")
+        # A historical ledger does not have v2 artifact fields. Cleanup must
+        # not rebuild or reinterpret it through the current source schema.
+        old_config = json.loads((self.state / "config.json").read_text())
+        for key in ("cdsManifestFile", "cdsManifestDigest", "cdsDiskDigest"):
+            old_config.pop(key)
+        old_config["cdsImage"] = "c8s-pod-cds@2026.10.27-1"
+        (self.state / "config.json").write_text(json.dumps(old_config))
+        self.schema.write_text('SchemaVersion = "c8s-launch/v99"\n')
+        result = self.run_driver("cleanup", scenario="missing")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((self.state / "provider.test").read_bytes(), original)
         self.assertFalse((self.root / "node.json").exists())
@@ -317,7 +329,8 @@ class RunnerTests(unittest.TestCase):
             self.input.write_text(json.dumps(self.config))
             for scenario in ("wrong-scenario", "missing-scenario", "wrong-assertions", "missing-proof",
                              "false-proof", "extra-proof", "wrong-binary", "missing-binary",
-                             "changed-binary", "wrong-build"):
+                             "changed-binary", "wrong-build", "wrong-cds-manifest", "wrong-cds-disk",
+                             "wrong-cds-config", "wrong-launch-format"):
                 with self.subTest(requested=requested, scenario=scenario):
                     self.state = self.root / (requested + "-" + scenario)
                     result = self.run_driver(scenario=scenario)

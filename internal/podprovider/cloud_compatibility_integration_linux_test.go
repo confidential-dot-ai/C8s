@@ -17,7 +17,7 @@ func TestCloudAcceptanceLaunchCompatibility(t *testing.T) {
 	for _, schema := range []string{"c8s-launch/v1", "c8s-launch/v2", "c8s-launch/v99", ""} {
 		for _, mode := range []string{"run", "cleanup", "unknown"} {
 			t.Run(mode+"/"+schema, func(t *testing.T) {
-				want := mode == "cleanup" || (mode == "run" && schema == "c8s-launch/v1")
+				want := mode == "cleanup" || (mode == "run" && schema == "c8s-launch/v2")
 				if err := cloudLaunchCompatibility(mode, schema); (err == nil) != want {
 					t.Fatalf("compatibility mismatch: %v", err)
 				}
@@ -26,7 +26,7 @@ func TestCloudAcceptanceLaunchCompatibility(t *testing.T) {
 	}
 }
 
-func TestCloudAcceptanceLegacyCleanupUsesReceiptsWithoutLocalLaunchProof(t *testing.T) {
+func TestCloudAcceptanceCleanupUsesReceiptsWithoutLocalLaunchProof(t *testing.T) {
 	r, owned, receipt := cloudOwnershipFixture(t)
 	if err := os.Chmod(r.dir, 0700); err != nil {
 		t.Fatal(err)
@@ -88,6 +88,6 @@ func TestCloudAcceptanceLegacyCleanupUsesReceiptsWithoutLocalLaunchProof(t *test
 		t.Fatal(err)
 	}
 	if reads.Load() != 2 || mutations.Load() != 0 || !opened.ledger.Complete || !opened.ledger.Owned["a"].Terminated {
-		t.Fatal("legacy cleanup did not confirm the exact owned Cloud receipt")
+		t.Fatal("receipt cleanup did not confirm the exact owned Cloud receipt")
 	}
 }

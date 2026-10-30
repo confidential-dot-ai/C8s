@@ -34,7 +34,7 @@ func TestCloudAcceptanceCDSServedOnlyWorkload(t *testing.T) {
 	r, _, _ := cloudOwnershipFixture(t)
 	r.cfg.Scenario = "cds-outage"
 	r.cfg.MeshImage = "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:" + strings.Repeat("b", 64)
-	pod, wire, err := r.cdsWorkload(endpoint{Name: "cds", Host: "203.0.113.5", Port: 30808})
+	pod, wire, err := r.cdsWorkload(endpoint{Name: "cds", Host: "203.0.113.5", Port: 8443})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +74,7 @@ func TestCloudAcceptanceCDSServedOnlyWorkload(t *testing.T) {
 	if _, _, err = r.cdsPolicies(cfg); err == nil {
 		t.Fatal("immutable app admission invalidated the retention proof")
 	}
-	if _, _, err = r.cdsWorkload(endpoint{Name: "cds", Host: "127.0.0.1", Port: 30808}); err == nil {
+	if _, _, err = r.cdsWorkload(endpoint{Name: "cds", Host: "127.0.0.1", Port: 8443}); err == nil {
 		t.Fatal("guest probe accepted a non-owned local target")
 	}
 }
@@ -132,8 +132,8 @@ func TestCloudAcceptanceCDSSeededBaseline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// nodeservices.mergedSeed combines both normalized inputs before CDS
-	// seedStore parses them and seeds the production SQLite store.
+	// The measured CDS configuration can contain component and tenant rules;
+	// both seed the production SQLite store before any authenticated update.
 	seed.Workloads["pod-mesh-membership"] = authored.Workloads["pod-mesh-membership"]
 	if err = seed.Normalize(); err != nil {
 		t.Fatal(err)
@@ -299,11 +299,11 @@ func TestCloudAcceptanceCDSRestartAndRevocationEvidence(t *testing.T) {
 }
 
 func TestCloudAcceptanceCDSIngressAndTransportProof(t *testing.T) {
-	before := &instance{ID: "i-owned", Status: "running", Network: instanceNetwork{Ingress: []ingress{{Name: "cds", Port: 30808}, {Name: "pod-status", Port: 8443}}}, Endpoints: []endpoint{{Name: "cds", Host: "203.0.113.5", Port: 30808}, {Name: "pod-status", Host: "203.0.113.5", Port: 8443}}}
+	before := &instance{ID: "i-owned", Status: "running", Network: instanceNetwork{Ingress: []ingress{{Name: "cds", Port: 8443}}}, Endpoints: []endpoint{{Name: "cds", Host: "203.0.113.5", Port: 8443}}}
 	before.Boot.Count = 1
 	closed := *before
-	closed.Network.Ingress = []ingress{{Name: "pod-status", Port: 8443}}
-	closed.Endpoints = []endpoint{before.Endpoints[1]}
+	closed.Network.Ingress = nil
+	closed.Endpoints = nil
 	if matched, err := cloudCDSIngressState(&closed, before, false); err != nil || !matched {
 		t.Fatalf("exact owned closure refused: %v", err)
 	}
@@ -335,8 +335,12 @@ func TestCloudAcceptanceCDSIngressAndTransportProof(t *testing.T) {
 func TestCloudAcceptanceCDSIngressChecksOwnershipBeforeMutation(t *testing.T) {
 	r, owned, receipt := cloudOwnershipFixture(t)
 	owned.Image = r.cfg.CDSImage
-	receipt.Image.Family = "c8s-pod-cds"
-	receipt.Image.Launch = "c8s-node/1"
+	receipt.Image.Family = "c8s-cds"
+	receipt.Image.Launch = "c8s-cds/1"
+	owned.LaunchKey, owned.LaunchFileSHA256 = "", cloudHash([]byte("measured config"))
+	receipt.Image.Digest = r.cfg.CDSDiskDigest
+	receipt.Attestation.ReferenceManifest.Digest = r.cfg.CDSManifestDigest
+	receipt.Attestation.LaunchBinding.SHA256 = owned.LaunchFileSHA256
 	owned.Receipt = &receipt
 	r.ledger.Owned = map[string]*cloudOwned{"cds": owned}
 	var writes atomic.Int32
@@ -468,11 +472,15 @@ func TestCloudAcceptanceCDSRevocationMeshWithdrawal(t *testing.T) {
 func TestCloudAcceptanceCDSIngressPersistsIntentAndRestoresUncertainClose(t *testing.T) {
 	r, owned, receipt := cloudOwnershipFixture(t)
 	owned.Image = r.cfg.CDSImage
-	receipt.Image.Family = "c8s-pod-cds"
-	receipt.Image.Launch = "c8s-node/1"
+	receipt.Image.Family = "c8s-cds"
+	receipt.Image.Launch = "c8s-cds/1"
+	owned.LaunchKey, owned.LaunchFileSHA256 = "", cloudHash([]byte("measured config"))
+	receipt.Image.Digest = r.cfg.CDSDiskDigest
+	receipt.Attestation.ReferenceManifest.Digest = r.cfg.CDSManifestDigest
+	receipt.Attestation.LaunchBinding.SHA256 = owned.LaunchFileSHA256
 	owned.Receipt = &receipt
 	r.ledger.Owned = map[string]*cloudOwned{"cds": owned}
-	before := &instance{ID: receipt.ID, Status: "running", Network: instanceNetwork{Ingress: []ingress{{Name: "cds", Port: 30808}, {Name: "pod-status", Port: 8443}}}, Endpoints: []endpoint{{Name: "cds", Host: "203.0.113.5", Port: 30808}, {Name: "pod-status", Host: "203.0.113.5", Port: 8443}}}
+	before := &instance{ID: receipt.ID, Status: "running", Network: instanceNetwork{Ingress: []ingress{{Name: "cds", Port: 8443}}}, Endpoints: []endpoint{{Name: "cds", Host: "203.0.113.5", Port: 8443}}}
 	before.Boot.Count = 1
 	var closed atomic.Bool
 	var writes atomic.Int32
@@ -499,7 +507,7 @@ func TestCloudAcceptanceCDSIngressPersistsIntentAndRestoresUncertainClose(t *tes
 				return
 			}
 			var rule ingress
-			if json.NewDecoder(req.Body).Decode(&rule) != nil || rule != (ingress{Name: "cds", Port: 30808}) {
+			if json.NewDecoder(req.Body).Decode(&rule) != nil || rule != (ingress{Name: "cds", Port: 8443}) {
 				t.Error("restoration changed the owned port")
 			}
 			closed.Store(false)

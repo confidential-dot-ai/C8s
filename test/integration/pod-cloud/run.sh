@@ -117,14 +117,14 @@ if [[ "$mode" == run ]]; then
         echo 'scenario must be connected, verification-timeout, warm-assignment or cds-outage' >&2; exit 1;
     }
     command -v go >/dev/null || { echo 'go is required to build the live harness' >&2; exit 1; }
-    for entry in tokenFile manifestFile cliFile probeFile; do
+    for entry in tokenFile manifestFile cdsManifestFile cliFile probeFile; do
         source_file="$(jq -er --arg key "$entry" '.[$key] | select(type == "string" and startswith("/"))' "$input")"
         [[ -f "$source_file" && ! -L "$source_file" ]] || { echo 'regular local input files required' >&2; exit 1; }
         cp "$source_file" "$state/$entry"
         chmod 600 "$state/$entry"
     done
     chmod 700 "$state/cliFile" "$state/probeFile"
-    jq --arg scenario "$scenario" '.scenario=$scenario | .tokenFile="/podcloud/tokenFile" | .manifestFile="/podcloud/manifestFile" | .cliFile="/podcloud/cliFile" | .probeFile="/podcloud/probeFile"' "$input" > "$state/config.json"
+    jq --arg scenario "$scenario" '.scenario=$scenario | .tokenFile="/podcloud/tokenFile" | .manifestFile="/podcloud/manifestFile" | .cdsManifestFile="/podcloud/cdsManifestFile" | .cliFile="/podcloud/cliFile" | .probeFile="/podcloud/probeFile"' "$input" > "$state/config.json"
     C8S_IT_NODE_IMAGE="${C8S_PODCLOUD_NODE_IMAGE:-}"
     C8S_IT_CLUSTER=""
     source ./test/integration/cluster/lib.sh
@@ -285,17 +285,20 @@ PY
       --slurpfile cfg "$state/config.json" --slurpfile ledger "$state/ledger.json" '
       .scenario == $scenario and .scenario == $cfg[0].scenario and
       .providerBinarySHA256 == $binary and $binary == $observed and $build[0].providerBinarySHA256 == $binary and
+      .version == 2 and .podLaunchFormat == "c8s-launch/v2" and .cdsLaunchFormat == "c8s-cds/v1" and
+      .cdsConfigSHA256 == $ledger[0].owned.cds.launchFileSHA256 and (.cdsConfigSHA256 | test("^[a-f0-9]{64}$")) and
       .passed == true and .run == $ledger[0].run and .source == $cfg[0].source and
       .image == $cfg[0].image and .cdsImage == $cfg[0].cdsImage and
-      .cliSHA256 == $cfg[0].cliSHA256 and .manifestDigest == $cfg[0].manifestDigest and .meshImage == $cfg[0].meshImage and
+      .cliSHA256 == $cfg[0].cliSHA256 and .manifestDigest == $cfg[0].manifestDigest and .diskDigest == $cfg[0].diskDigest and
+      .cdsManifestDigest == $cfg[0].cdsManifestDigest and .cdsDiskDigest == $cfg[0].cdsDiskDigest and .meshImage == $cfg[0].meshImage and
       (.assertions | keys == (if $scenario == "verification-timeout" then
-        ["attestedReadiness","cleanup","exactDigests","lateVerifiedResultRejected","normalScheduler","persistedVerificationDeadline","providerDeletion","readinessWithdrawn","restartRecovery","timeoutTermination"]
+        ["attestedReadiness","cdsAccessControl","cleanup","exactDigests","lateVerifiedResultRejected","normalScheduler","persistedVerificationDeadline","providerDeletion","readinessWithdrawn","restartRecovery","timeoutTermination"]
       elif $scenario == "cds-outage" then
-        ["attestedReadiness","authenticatedPolicyUpdate","cdsIngressRestored","certificateIdentity","cleanup","exactDigests","guestObservedOutage","normalScheduler","providerDeletion","revocationEnforced","servedPolicyRetained"]
+        ["attestedReadiness","authenticatedPolicyUpdate","cdsAccessControl","cdsIngressRestored","certificateIdentity","cleanup","exactDigests","guestObservedOutage","normalScheduler","providerDeletion","revocationEnforced","servedPolicyRetained"]
       elif $scenario == "warm-assignment" then
-        ["assignmentBeforePOST","attestedReadiness","certificateIdentity","cleanup","conflictingAssignmentRejected","exactDigests","genericIdle","normalScheduler","poolDrain","providerDeletion","restartRecovery","uidFencedClaim"]
+        ["assignmentBeforePOST","attestedReadiness","cdsAccessControl","certificateIdentity","cleanup","conflictingAssignmentRejected","exactDigests","genericIdle","normalScheduler","poolDrain","providerDeletion","restartRecovery","uidFencedClaim"]
       else
-        ["attestedReadiness","cleanup","exactDigests","meshDNSInternet","negativeProbes","normalScheduler","providerDeletion","readinessCycle","restartRecovery","timedRenewal"]
+        ["attestedReadiness","cdsAccessControl","cleanup","exactDigests","meshDNSInternet","negativeProbes","normalScheduler","providerDeletion","readinessCycle","restartRecovery","timedRenewal"]
       end)) and
       all(.assertions[]; . == true)
       ' "$state/result.json" >/dev/null || { echo 'Missing matching complete acceptance receipt; cleanup success alone is not acceptance.' >&2; exit 1; }

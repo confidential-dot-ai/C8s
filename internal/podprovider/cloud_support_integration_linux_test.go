@@ -32,24 +32,27 @@ import (
 // The live lane deliberately accepts only a trusted local input file. Credentials
 // never enter argv, evidence, test logs, Kubernetes tenant objects or CI artifacts.
 type cloudRunConfig struct {
-	Scenario       string `json:"scenario,omitempty"`
-	Source         string `json:"source"`
-	CloudURL       string `json:"cloudURL"`
-	TokenFile      string `json:"tokenFile"`
-	Image          string `json:"image"`
-	CDSImage       string `json:"cdsImage"`
-	ManifestFile   string `json:"manifestFile"`
-	ManifestDigest string `json:"manifestDigest"`
-	DiskDigest     string `json:"diskDigest"`
-	CLIFile        string `json:"cliFile"`
-	CLISHA256      string `json:"cliSHA256"`
-	ProbeFile      string `json:"probeFile"`
-	ProbeSHA256    string `json:"probeSHA256"`
-	MeshImage      string `json:"meshImage"`
-	Size           string `json:"size"`
-	Location       string `json:"location"`
-	VCPUs          int64  `json:"vCPUs"`
-	MemoryMiB      int64  `json:"memoryMiB"`
+	Scenario          string `json:"scenario,omitempty"`
+	Source            string `json:"source"`
+	CloudURL          string `json:"cloudURL"`
+	TokenFile         string `json:"tokenFile"`
+	Image             string `json:"image"`
+	CDSImage          string `json:"cdsImage"`
+	CDSManifestFile   string `json:"cdsManifestFile"`
+	CDSManifestDigest string `json:"cdsManifestDigest"`
+	CDSDiskDigest     string `json:"cdsDiskDigest"`
+	ManifestFile      string `json:"manifestFile"`
+	ManifestDigest    string `json:"manifestDigest"`
+	DiskDigest        string `json:"diskDigest"`
+	CLIFile           string `json:"cliFile"`
+	CLISHA256         string `json:"cliSHA256"`
+	ProbeFile         string `json:"probeFile"`
+	ProbeSHA256       string `json:"probeSHA256"`
+	MeshImage         string `json:"meshImage"`
+	Size              string `json:"size"`
+	Location          string `json:"location"`
+	VCPUs             int64  `json:"vCPUs"`
+	MemoryMiB         int64  `json:"memoryMiB"`
 }
 
 type cloudReceipt struct {
@@ -78,18 +81,19 @@ type cloudPodIntent struct {
 }
 
 type cloudOwned struct {
-	Key         string            `json:"key"`
-	UID         string            `json:"uid,omitempty"`
-	Image       string            `json:"image"`
-	LaunchKey   string            `json:"launchKey"`
-	Labels      map[string]string `json:"labels"`
-	IntentAt    time.Time         `json:"intentAt"`
-	Attempted   bool              `json:"attempted"`
-	Receipt     *cloudReceipt     `json:"receipt,omitempty"`
-	Terminated  bool              `json:"terminated,omitempty"`
-	SlotName    string            `json:"slotName,omitempty"`
-	SlotUID     string            `json:"slotUID,omitempty"`
-	RequestHash string            `json:"requestHash,omitempty"`
+	Key              string            `json:"key"`
+	UID              string            `json:"uid,omitempty"`
+	Image            string            `json:"image"`
+	LaunchKey        string            `json:"launchKey,omitempty"`
+	LaunchFileSHA256 string            `json:"launchFileSHA256,omitempty"`
+	Labels           map[string]string `json:"labels"`
+	IntentAt         time.Time         `json:"intentAt"`
+	Attempted        bool              `json:"attempted"`
+	Receipt          *cloudReceipt     `json:"receipt,omitempty"`
+	Terminated       bool              `json:"terminated,omitempty"`
+	SlotName         string            `json:"slotName,omitempty"`
+	SlotUID          string            `json:"slotUID,omitempty"`
+	RequestHash      string            `json:"requestHash,omitempty"`
 }
 
 type cloudLedger struct {
@@ -126,8 +130,8 @@ func cloudLaunchCompatibility(mode, schema string) error {
 	if mode != "run" {
 		return errors.New("run|cleanup mode required")
 	}
-	if schema != "c8s-launch/v1" {
-		return errors.New("Cloud acceptance requires c8s-launch/v1; v2 needs Cloud API/operator support and separately admitted Pod/CDS images; retained v1 cleanup remains available")
+	if schema != "c8s-launch/v2" {
+		return errors.New("Cloud acceptance requires c8s-launch/v2 and dedicated measured CDS; retained runs must use their original cleanup binary")
 	}
 	return nil
 }
@@ -242,7 +246,7 @@ func openCloudRun(config, dir, mode string) (*cloudRun, error) {
 		if err == nil {
 			err = decode(raw, &r.ledger)
 		}
-		if err == nil && (r.ledger.Version != 1 || r.ledger.Config != r.cfg || r.ledger.CredentialHash != credentialHash(string(token)) || r.ledger.Before == nil || r.ledger.Owned == nil || !regexp.MustCompile(`^pcvm-[0-9a-f]{24}$`).MatchString(r.ledger.Run)) {
+		if err == nil && (r.ledger.Version != 2 || r.ledger.Config != r.cfg || r.ledger.CredentialHash != credentialHash(string(token)) || r.ledger.Before == nil || r.ledger.Owned == nil || !regexp.MustCompile(`^pcvm-[0-9a-f]{24}$`).MatchString(r.ledger.Run)) {
 			err = errors.New("cleanup ledger/config/credential binding differs")
 		}
 	} else {
@@ -251,7 +255,7 @@ func openCloudRun(config, dir, mode string) (*cloudRun, error) {
 		} else {
 			var nonce [12]byte
 			_, err = rand.Read(nonce[:])
-			r.ledger = cloudLedger{Version: 1, Run: "pcvm-" + hex.EncodeToString(nonce[:]), Config: r.cfg, CredentialHash: credentialHash(string(token)), Before: map[string]cloudReceipt{}, Owned: map[string]*cloudOwned{}}
+			r.ledger = cloudLedger{Version: 2, Run: "pcvm-" + hex.EncodeToString(nonce[:]), Config: r.cfg, CredentialHash: credentialHash(string(token)), Before: map[string]cloudReceipt{}, Owned: map[string]*cloudOwned{}}
 		}
 	}
 	if err != nil {
@@ -287,11 +291,16 @@ func (c cloudRunConfig) validate(artifacts bool) error {
 	if c.scenario() != "connected" && c.scenario() != "verification-timeout" && c.scenario() != "warm-assignment" && c.scenario() != "cds-outage" {
 		return errors.New("unknown live Cloud acceptance scenario")
 	}
-	if c.CloudURL != "https://api.cloud.confidential.ai" || !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(c.Source) || !cloudVersion.MatchString(c.Image) || c.CDSImage != strings.Replace(c.Image, "c8s-pod@", "c8s-pod-cds@", 1) {
+	if c.CloudURL != "https://api.cloud.confidential.ai" || !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(c.Source) || !cloudVersion.MatchString(c.Image) || c.CDSImage != strings.Replace(c.Image, "c8s-pod@", "c8s-cds@", 1) {
 		return errors.New("exact source and paired production catalog versions required")
 	}
-	if !cloudHex.MatchString(strings.TrimPrefix(c.ManifestDigest, "sha256:")) || !strings.HasPrefix(c.ManifestDigest, "sha256:") || !cloudHex.MatchString(strings.TrimPrefix(c.DiskDigest, "sha256:")) || !strings.HasPrefix(c.DiskDigest, "sha256:") || !regexp.MustCompile(`^ghcr\.io/confidential-dot-ai/armtls-mesh@sha256:[0-9a-f]{64}$`).MatchString(c.MeshImage) {
-		return errors.New("exact production image digests required")
+	for _, digest := range []string{c.ManifestDigest, c.DiskDigest, c.CDSManifestDigest, c.CDSDiskDigest} {
+		if !strings.HasPrefix(digest, "sha256:") || !cloudHex.MatchString(strings.TrimPrefix(digest, "sha256:")) {
+			return errors.New("independently pinned production image digests required")
+		}
+	}
+	if c.ManifestDigest == c.CDSManifestDigest || c.DiskDigest == c.CDSDiskDigest || !regexp.MustCompile(`^ghcr\.io/confidential-dot-ai/armtls-mesh@sha256:[0-9a-f]{64}$`).MatchString(c.MeshImage) {
+		return errors.New("distinct Pod/CDS artifacts and exact mesh image required")
 	}
 	if c.VCPUs < 2 || c.VCPUs > 16 || c.MemoryMiB < 8192 || c.MemoryMiB > 65536 || c.Size == "" || c.Location == "" {
 		return errors.New("bounded explicit Cloud shape required")
@@ -307,7 +316,7 @@ func (c cloudRunConfig) validate(artifacts bool) error {
 	for _, pin := range []struct {
 		path, hash string
 		limit      int64
-	}{{c.ManifestFile, strings.TrimPrefix(c.ManifestDigest, "sha256:"), 1 << 20}, {c.CLIFile, c.CLISHA256, 512 << 20}, {c.ProbeFile, c.ProbeSHA256, 128 << 20}} {
+	}{{c.ManifestFile, strings.TrimPrefix(c.ManifestDigest, "sha256:"), 1 << 20}, {c.CDSManifestFile, strings.TrimPrefix(c.CDSManifestDigest, "sha256:"), 1 << 20}, {c.CLIFile, c.CLISHA256, 512 << 20}, {c.ProbeFile, c.ProbeSHA256, 128 << 20}} {
 		if !filepath.IsAbs(pin.path) || !cloudHex.MatchString(pin.hash) {
 			return errors.New("absolute pinned executable/manifest required")
 		}
@@ -319,23 +328,25 @@ func (c cloudRunConfig) validate(artifacts bool) error {
 			return errors.New("local artifact does not match its trusted digest")
 		}
 	}
-	image, err := launchconfig.ImageFromManifest(c.ManifestFile, 0)
-	if err != nil || image.Platform != "tdx" {
-		return errors.New("valid TDX production manifest required")
-	}
-	var manifest struct {
-		Outputs struct {
-			Disk struct {
-				SHA256 string `json:"sha256"`
-			} `json:"disk_image"`
-		} `json:"outputs"`
-	}
-	raw, err := os.ReadFile(c.ManifestFile)
-	if err != nil {
-		return err
-	}
-	if json.Unmarshal(raw, &manifest) != nil || "sha256:"+manifest.Outputs.Disk.SHA256 != c.DiskDigest {
-		return errors.New("manifest disk digest differs from catalog input")
+	for _, pin := range []struct{ path, disk string }{{c.ManifestFile, c.DiskDigest}, {c.CDSManifestFile, c.CDSDiskDigest}} {
+		image, err := launchconfig.ImageFromManifest(pin.path, 0)
+		if err != nil || image.Platform != "tdx" {
+			return errors.New("valid TDX production manifests required")
+		}
+		var manifest struct {
+			Outputs struct {
+				Disk struct {
+					SHA256 string `json:"sha256"`
+				} `json:"disk_image"`
+			} `json:"outputs"`
+		}
+		raw, err := os.ReadFile(pin.path)
+		if err != nil {
+			return err
+		}
+		if json.Unmarshal(raw, &manifest) != nil || "sha256:"+manifest.Outputs.Disk.SHA256 != pin.disk {
+			return errors.New("manifest disk digest differs from its role's catalog input")
+		}
 	}
 	return nil
 }
@@ -413,11 +424,7 @@ func (r *cloudRun) items(ctx context.Context, resource string) ([]json.RawMessag
 	return nil, errors.New("Cloud inventory exceeds bounded pagination")
 }
 
-func (r *cloudRun) preflight(ctx context.Context) error {
-	images, err := r.items(ctx, "images")
-	if err != nil {
-		return err
-	}
+func (r *cloudRun) checkCatalog(images []json.RawMessage) error {
 	for _, want := range []string{r.cfg.Image, r.cfg.CDSImage} {
 		matches := 0
 		for _, raw := range images {
@@ -449,14 +456,21 @@ func (r *cloudRun) preflight(ctx context.Context) error {
 			}
 			matches++
 			l := item.Launch
-			if item.Status != "active" || l.Access != "launchKey" || !slices.Equal(l.InitDataFormats, []string{"c8s-launch/v1"}) || l.UserData || l.Containers || l.AttestationPublic || l.AttestationPort != 8443 || l.MinMemoryGiB != 8 || len(l.Readiness.TCPPorts) != 0 {
+			cds := want == r.cfg.CDSImage
+			access, format, minimum := "launchKey", "c8s-launch/v2", 8
+			disk, manifest := r.cfg.DiskDigest, r.cfg.ManifestDigest
+			if cds {
+				access, format, minimum = "launchFile", "c8s-cds/v1", 4
+				disk, manifest = r.cfg.CDSDiskDigest, r.cfg.CDSManifestDigest
+			}
+			if item.Status != "active" || l.Access != access || !slices.Equal(l.InitDataFormats, []string{format}) || l.UserData || l.Containers || l.AttestationPublic || l.AttestationPort != 8443 || l.MinMemoryGiB != minimum || len(l.Readiness.TCPPorts) != 0 {
 				return errors.New("catalog launch contract differs")
 			}
 			artifacts := 0
 			for _, a := range item.Artifacts {
 				if a.Tee == "tdx" {
 					artifacts++
-					if a.Digest != r.cfg.DiskDigest || a.ReferenceManifest.Digest != r.cfg.ManifestDigest || !slices.Contains(a.Sizes, r.cfg.Size) {
+					if a.Digest != disk || a.ReferenceManifest.Digest != manifest || !slices.Contains(a.Sizes, r.cfg.Size) {
 						return errors.New("catalog does not admit the exact paired artifact and size")
 					}
 				}
@@ -464,21 +478,28 @@ func (r *cloudRun) preflight(ctx context.Context) error {
 			if artifacts != 1 {
 				return errors.New("catalog TDX artifact is ambiguous")
 			}
-			cds := want == r.cfg.CDSImage
-			if len(l.Disks) != 2 || l.Disks[0].Name != "data" || l.Disks[0].Type != "scratch" || l.Disks[0].Encryption != "guest" || l.Disks[0].Required != cds || l.Disks[1].Name != "containerd" || l.Disks[1].Required {
-				return errors.New("catalog scratch contract differs")
-			}
-			minimum := 1
 			if cds {
-				minimum = 64
-			}
-			if l.Disks[0].MinSizeGiB != minimum {
-				return errors.New("catalog scratch size differs")
+				if len(l.Disks) != 0 {
+					return errors.New("dedicated CDS must have no extra disks")
+				}
+			} else if len(l.Disks) != 2 || l.Disks[0].Name != "data" || l.Disks[0].Type != "scratch" || l.Disks[0].Encryption != "guest" || l.Disks[0].Required || l.Disks[0].MinSizeGiB != 1 || l.Disks[1].Name != "containerd" || l.Disks[1].Type != "scratch" || l.Disks[1].Encryption != "guest" || l.Disks[1].Required || l.Disks[1].MinSizeGiB != 20 {
+				return errors.New("Pod scratch contract differs")
 			}
 		}
 		if matches != 1 {
 			return errors.New("paired Cloud catalog version is not admitted")
 		}
+	}
+	return nil
+}
+
+func (r *cloudRun) preflight(ctx context.Context) error {
+	images, err := r.items(ctx, "images")
+	if err != nil {
+		return err
+	}
+	if err = r.checkCatalog(images); err != nil {
+		return err
 	}
 	var limits struct {
 		Caller struct {
@@ -608,11 +629,22 @@ func (r *cloudRun) checkOwned(o *cloudOwned, in cloudReceipt) error {
 	if exists {
 		return errors.New("refusing a pre-existing Cloud instance")
 	}
-	launch := "c8s-pod/1"
-	if o.Image == r.cfg.CDSImage {
-		launch = "c8s-node/1"
+	launch, disk, manifest := "c8s-pod/1", r.cfg.DiskDigest, r.cfg.ManifestDigest
+	binding := cloudHash([]byte(o.LaunchKey))
+	switch o.Image {
+	case r.cfg.Image:
+		if o.LaunchKey == "" || o.LaunchFileSHA256 != "" {
+			return errors.New("Pod ownership requires only its launch key")
+		}
+	case r.cfg.CDSImage:
+		if o.LaunchKey != "" || !cloudHex.MatchString(o.LaunchFileSHA256) {
+			return errors.New("CDS ownership requires only its measured file hash")
+		}
+		launch, disk, manifest, binding = "c8s-cds/1", r.cfg.CDSDiskDigest, r.cfg.CDSManifestDigest, o.LaunchFileSHA256
+	default:
+		return errors.New("unknown owned image role")
 	}
-	if !regexp.MustCompile(`^i-[a-z0-9]+$`).MatchString(in.ID) || in.Name != o.Key || in.Tee != "tdx" || in.Size != r.cfg.Size || in.Location != r.cfg.Location || !maps.Equal(in.Labels, o.Labels) || in.Image.Family+"@"+in.Image.Version != o.Image || in.Image.Launch != launch || in.Image.Digest != r.cfg.DiskDigest || in.Attestation.ReferenceManifest.Digest != r.cfg.ManifestDigest || in.Attestation.LaunchBinding.SHA256 != cloudHash([]byte(o.LaunchKey)) || in.CreatedAt.Before(o.IntentAt.Add(-2*time.Minute)) || in.CreatedAt.After(o.IntentAt.Add(150*time.Minute)) {
+	if !regexp.MustCompile(`^i-[a-z0-9]+$`).MatchString(in.ID) || in.Name != o.Key || in.Tee != "tdx" || in.Size != r.cfg.Size || in.Location != r.cfg.Location || !maps.Equal(in.Labels, o.Labels) || in.Image.Family+"@"+in.Image.Version != o.Image || in.Image.Launch != launch || in.Image.Digest != disk || in.Attestation.ReferenceManifest.Digest != manifest || in.Attestation.LaunchBinding.SHA256 != binding || in.CreatedAt.Before(o.IntentAt.Add(-2*time.Minute)) || in.CreatedAt.After(o.IntentAt.Add(150*time.Minute)) {
 		return errors.New("Cloud instance does not match durable owned intent")
 	}
 	if o.Receipt != nil {

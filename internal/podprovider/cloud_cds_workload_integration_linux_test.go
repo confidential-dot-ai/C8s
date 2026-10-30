@@ -52,7 +52,7 @@ def observe_cds():
     failed_since = None
     while time.monotonic() < deadline:
         try:
-            with socket.create_connection((sys.argv[1], 30808), timeout=2):
+            with socket.create_connection((sys.argv[1], 8443), timeout=2):
                 pass
         except OSError as error:
             if not isinstance(error, TimeoutError) and error.errno not in (errno.ECONNREFUSED, errno.ECONNRESET, errno.ETIMEDOUT):
@@ -95,7 +95,7 @@ HTTPServer(("0.0.0.0", 8080), Handler).serve_forever()
 // Finalize the exact workload only after the owned CDS endpoint is known.
 func (r *cloudRun) cdsWorkload(cds endpoint) (*corev1.Pod, map[string]any, error) {
 	address, parseErr := netip.ParseAddr(cds.Host)
-	if parseErr != nil || !address.Is4() || !address.IsGlobalUnicast() || address.IsPrivate() || cds.Name != "cds" || cds.Port != 30808 {
+	if parseErr != nil || !address.Is4() || !address.IsGlobalUnicast() || address.IsPrivate() || cds.Name != "cds" || cds.Port != 8443 {
 		return nil, nil, errors.New("CDS workload requires its owned dedicated endpoint")
 	}
 	pod, policy, err := r.workload("a", nil)
@@ -257,7 +257,7 @@ func (r *cloudRun) cdsPolicyUpdate(ctx context.Context, cfg *Config, cds endpoin
 		return err
 	}
 	args = append(args, r.cdsOptions(cds)...)
-	args = append(args, "--operator-key", filepath.Join(r.dir, "server/server.key"))
+	args = append(args, "--operator-key", filepath.Join(r.dir, "cds-operator.key"))
 	if _, err = r.cli(ctx, args...); err != nil {
 		return err
 	}

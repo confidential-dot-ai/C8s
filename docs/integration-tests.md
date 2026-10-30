@@ -171,13 +171,12 @@ directory. CI retains those artifacts for seven days.
 
 ## Pod Cloud acceptance
 
-The current provider uses `c8s-launch/v2` and an external measured CDS guest.
-New Cloud runs are blocked before creating local or Cloud resources until the
-Cloud API, operator and catalog support that contract and a matching Pod/CDS
-image pair is available. See the [compatibility gate](../test/integration/pod-cloud/README.md).
-The scenarios and input below describe the historical `c8s-launch/v1` harness;
-`2026.10.30-1` results do not validate the current v2 provider. Cleanup of retained
-runs remains available with their original provider binary and ownership records.
+The Cloud lane uses signed `c8s-launch/v2` Pod launches and a dedicated measured
+CDS guest. It requires deployed Cloud API/operator support for `launchFile` and
+separately admitted `c8s-pod` and `c8s-cds` artifacts; catalog changes alone are
+insufficient. [Launch and cleanup requirements](../test/integration/pod-cloud/README.md)
+include the exact wire contract. Historical `2026.10.30-1` results validate their
+recorded v1 source and images, not this v2 lane. A new hardware run is required.
 
 The live lane needs Go, Docker, kind, jq, Python 3 and GNU timeout, an authorized Cloud
 credential, and an admitted matching production Pod/CDS image pair. Supply an
@@ -189,10 +188,13 @@ absolute JSON input path with these fields:
   "cloudURL": "https://api.cloud.confidential.ai",
   "tokenFile": "/private/path/cloud-token",
   "image": "c8s-pod@<version>",
-  "cdsImage": "c8s-pod-cds@<same-version>",
+  "cdsImage": "c8s-cds@<same-version>",
   "manifestFile": "/private/path/manifest.json",
   "manifestDigest": "sha256:<manifest digest>",
-  "diskDigest": "sha256:<raw disk digest>",
+  "diskDigest": "sha256:<Pod raw disk digest>",
+  "cdsManifestFile": "/private/path/cds-manifest.json",
+  "cdsManifestDigest": "sha256:<CDS manifest digest>",
+  "cdsDiskDigest": "sha256:<CDS raw disk digest>",
   "cliFile": "/private/path/matching-linux-c8s",
   "cliSHA256": "<64-character digest>",
   "probeFile": "/private/path/linux-pod-mesh-probe",
@@ -207,9 +209,19 @@ absolute JSON input path with these fields:
 
 Build the CLI from the production image's source and the probe from
 `.github/scripts/pod-mesh-probe`, both for the Docker daemon's Linux architecture.
-The manifest, raw disk, mesh image and source must come from the same paired
-production publication. The runner checks file digests and catalog identity;
-the caller supplies the publication provenance.
+The two manifests and raw disks are independently pinned artifacts from the same
+production source; they must not share hashes. The mesh image and matching CLI
+also come from that source. The runner checks file digests and catalog identity;
+the caller supplies publication provenance. Source/build evidence must cover both
+ordinary images, with development and recovery-overlay modes disabled.
+
+Bootstrap creates a raw measured `c8s-cds/v1` configuration with `c8s cds config new`
+and authenticates its CA on port 8443 using the generated image/configuration pin.
+The provider receives explicit CDS address and pin inputs. Every scenario requires
+unsigned writes and writes signed by the Pod and unused server authorities to be
+refused by the authenticated CDS, while its complete initial policy stays unchanged.
+The CDS policy-write key is separate from both authorities. Private `cds-access.json`
+records those refusals; connection failures and unrelated HTTP errors cannot pass.
 
 The new state directory must be under a host path shared with the Docker
 daemon. For Colima or another Docker VM, use a path configured in that VM's
@@ -233,7 +245,7 @@ readiness withdrawal and recovery, peer mesh traffic, HTTPS and DNS egress,
 certificate renewal over at least 65 minutes, rejected unauthenticated traffic,
 and deletion through the production provider. It reuses the connected native
 lane's acceptance predicates. The run requires at least six Cloud vCPUs and
-24 GiB of memory plus a CDS scratch disk; provisioning and cleanup add time to
+24 GiB of memory with the example shape; provisioning and cleanup add time to
 the observation window.
 
 Set `"scenario": "verification-timeout"` in the input to test bounded verification
@@ -276,19 +288,20 @@ lost assignment replies, stale writes, forced deletion and replacement generatio
 
 Set `"scenario": "cds-outage"` to test retention of an authenticated CDS policy
 update through a network outage and one application restart. It needs one CDS
-guest and one Pod guest (four Cloud vCPUs and 16 GiB with the example shape),
-plus the CDS scratch disk. For the `2026.10.30-1` publication, use
-`c8s-pod@2026.10.30-1`, `c8s-pod-cds@2026.10.30-1` and source
-`05211a8b106415a0aefd5f47bc40b266b0c1dacd`, with that publication's matching pins
-and CLI. Use the same input, run and cleanup commands above and below.
+guest and one Pod guest (four Cloud vCPUs and 16 GiB with the example shape).
+Use the same input, run and cleanup commands above and below. The dedicated CDS
+requires no extra disks.
 
-The immutable tenant launch policy admits only the mesh. CDS also includes
-baked component entries: before adding the app rule, the driver freezes its
-complete authenticated export and verifies the exact mesh rule and absence of
-any app admission. Adding or removing the app must preserve every other entry.
+The immutable Pod launch policy and initial measured CDS configuration admit only
+the mesh. Before adding the app rule, the driver verifies the complete authenticated
+export against that measured policy, then freezes the baseline and verifies the
+absence of any app admission. Adding or removing the app must preserve every
+other entry.
 The signed app update precedes normal Kubernetes scheduling. The driver removes
-only the run-owned CDS ingress on port 30808, waits for the change to apply, and
-preserves status access. The app first proves CDS reachability, then requires
+only the run-owned CDS ingress on port 8443 and waits for the change to apply.
+There is no separate CDS status endpoint; the driver retains Cloud ownership and
+boot checks plus authenticated Pod observations during the outage. The app first
+proves CDS reachability, then requires
 120 seconds of continuous connection failures before its one controlled exit.
 Acceptance requires fresh admission during the outage, unchanged guest boot and mesh
 identity, and exact measured digests. The driver restores the original ingress
@@ -300,17 +313,17 @@ identity, must remain unchanged despite credential withdrawal.
 
 Private evidence includes `cds-outage.json`, numbered `cds-observation-*.json`,
 and policy/ingress intents and receipts. Authenticated observations are retained
-before phase validation, including samples that fail. All 11 scenario assertions,
+before phase validation, including samples that fail. All 12 scenario assertions,
 provider deletion and owned cleanup must pass. This tests CDS network outage and
 served policy retention; guest service restart, CDS process restart and long-outage
 certificate renewal require separate acceptance.
 
-In a retained v1-compatible checkout, these scenarios compile that checkout's
-provider. Its commit, dirty status and executable hash are recorded in
+These scenarios compile the current checkout's provider. Its commit, dirty status
+and executable hash are recorded in
 `provider-build.json`; the result's hash must match the executable that ran.
 The input `source` identifies the paired guest/CLI publication. Provider-only
 changes can be tested against an existing image only while their launch contracts
-remain compatible. The current v2 checkout rejects these new runs at preflight.
+remain compatible. Preflight refuses a legacy shared Pod/node-CDS image pair.
 The `warm-assignment` scenario requires those guest features in its pinned image;
 a successful static or timeout run does not establish warm-assignment acceptance.
 
@@ -337,7 +350,10 @@ make cleanup-integration-pod-cloud
 Cleanup uses the recorded identities and never starts another Cloud run. A
 successful acceptance requires `result.json` with `passed: true` and a ledger
 with `complete: true`, matching scenario, exact scenario assertions, and matching
-provider executable identity; cleanup success alone does not prove acceptance.
+provider executable identity, both image/manifest pins and the measured CDS
+configuration hash; cleanup success alone does not prove acceptance. New runs use
+ledger version 2. Retained v1 runs keep their original `provider.test`, state and
+cleanup runner; their authority is never migrated to the new image contract.
 
 ## Connected Pod acceptance on TDX
 

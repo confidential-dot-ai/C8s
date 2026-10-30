@@ -19,7 +19,6 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
-	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	podfixture "github.com/confidential-dot-ai/c8s/test/tdxpod/fixtures/pod-connected"
 )
@@ -130,31 +129,6 @@ func (r *cloudRun) bootstrap(ctx context.Context) (*Config, *corev1.Pod, endpoin
 	if _, err = r.cli(ctx, "keys", "new", "--out", providerKey, "--pub-out", providerPub); err != nil {
 		return nil, nil, cds, err
 	}
-	pub, err := os.ReadFile(providerPub)
-	if err != nil {
-		return nil, nil, cds, err
-	}
-	derived, err := r.cli(ctx, "measurements", "derive", r.cfg.ManifestFile, "--tee", "tdx")
-	if err != nil {
-		return nil, nil, cds, err
-	}
-	var imagePolicy map[string]any
-	if json.Unmarshal(derived, &imagePolicy) != nil {
-		return nil, nil, cds, errors.New("invalid derived image policy")
-	}
-	entries, ok := imagePolicy["measurements"].([]any)
-	if !ok || len(entries) != 1 {
-		return nil, nil, cds, errors.New("single TDX image measurement required")
-	}
-	tuple, ok := entries[0].(map[string]any)
-	if !ok {
-		return nil, nil, cds, errors.New("invalid TDX policy")
-	}
-	tuple["name"] = r.ledger.Run
-	tuple["approver_key"] = string(pub)
-	if err = cloudWrite(filepath.Join(r.dir, "pod-policy.json"), imagePolicy); err != nil {
-		return nil, nil, cds, err
-	}
 	mesh := map[string]any{"containers": []any{map[string]any{"digest": strings.Split(r.cfg.MeshImage, "@")[1], "image": r.cfg.MeshImage, "command": map[string]any{"policy": "exact", "argv": []string{"/app/c8s", "armtls-mesh"}}, "args": map[string]any{"policy": "exact", "argv": []string{"--cert-path=/etc/c8s/certs/tls.crt", "--key-path=/etc/c8s/certs/tls.key", "--ca-path=/etc/c8s/certs/ca.crt"}}, "mounts": map[string]any{"policy": "any"}}}}
 	if r.cfg.scenario() == "cds-outage" {
 		delete(workloads["workloads"].(map[string]any), "cloud-a")
@@ -164,37 +138,14 @@ func (r *cloudRun) bootstrap(ctx context.Context) (*Config, *corev1.Pod, endpoin
 	if err = cloudWrite(workloadPath, workloads); err != nil {
 		return nil, nil, cds, err
 	}
-	bundle := filepath.Join(r.dir, "server")
-	if _, err = r.cli(ctx, "node", "launch-config", "new", "--out", bundle, "--cluster-id", r.ledger.Run, "--server-name", r.ledger.Run+"-cds", "--image-manifest", r.cfg.ManifestFile, "--workloads", workloadPath, "--pod-image-policy-file", filepath.Join(r.dir, "pod-policy.json")); err != nil {
-		return nil, nil, cds, err
-	}
-	serverPub, err := os.ReadFile(filepath.Join(bundle, "server/pubkey"))
+	document, err := r.cdsBundle(ctx, workloadPath, providerPub)
 	if err != nil {
 		return nil, nil, cds, err
-	}
-	if bytes.Equal(bytes.TrimSpace(pub), bytes.TrimSpace(serverPub)) {
-		return nil, nil, cds, errors.New("CDS and Pod launch authorities must be distinct")
-	}
-	document, err := os.ReadFile(filepath.Join(bundle, "server/launch.yaml"))
-	if err != nil {
-		return nil, nil, cds, err
-	}
-	signature, err := os.ReadFile(filepath.Join(bundle, "server/launch.yaml.sig"))
-	if err != nil {
-		return nil, nil, cds, err
-	}
-	parsed, err := launchconfig.Parse(document)
-	if err != nil || parsed.Role != launchconfig.Server || parsed.ClusterID != r.ledger.Run || len(document) > 64<<10 || len(signature) > 1024 {
-		return nil, nil, cds, errors.New("invalid paired CDS launch document")
 	}
 	key := r.ledger.Run + "-cds"
 	labels := map[string]string{"acceptance-run": r.ledger.Run, "acceptance-side": "cds"}
-	req := struct {
-		createRequest
-		Disks     []map[string]any `json:"disks"`
-		ExpiresAt time.Time        `json:"expiresAt"`
-	}{createRequest: createRequest{Image: r.cfg.CDSImage, Size: r.cfg.Size, Location: r.cfg.Location, Tee: "tdx", Name: key, Count: 1, Labels: labels, Network: networkSpec{PublicIP: "dedicated", Ingress: []ingress{{Name: "cds", Port: 30808}, {Name: "pod-status", Port: 8443}}}, Readiness: readinessSpec{TCPPorts: []int{}}, Trust: trustSpec{LaunchKey: string(serverPub), InitData: initData{Format: "c8s-launch/v1", Document: document, Signature: signature}}}, Disks: []map[string]any{{"name": "data", "type": "scratch", "sizeGiB": 80}}, ExpiresAt: time.Now().Add(150 * time.Minute).UTC()}
-	r.ledger.Owned["cds"] = &cloudOwned{Key: key, Image: r.cfg.CDSImage, LaunchKey: string(serverPub), Labels: labels, IntentAt: time.Now().UTC(), Attempted: true}
+	req := r.cdsRequest(key, labels, document)
+	r.ledger.Owned["cds"] = &cloudOwned{Key: key, Image: r.cfg.CDSImage, LaunchFileSHA256: cloudHash(document), Labels: labels, IntentAt: time.Now().UTC(), Attempted: true}
 	if err = cloudWrite(filepath.Join(r.dir, "cds-request.json"), req); err != nil {
 		return nil, nil, cds, err
 	}
@@ -225,7 +176,7 @@ func (r *cloudRun) bootstrap(ctx context.Context) (*Config, *corev1.Pod, endpoin
 		}
 		if in != nil {
 			cds, err = cloudEndpoint(in, "cds")
-			if err == nil && cds.Port == 30808 {
+			if err == nil && cds.Port == 8443 {
 				_, err = r.ca(until, cds)
 				if err == nil {
 					break
@@ -240,7 +191,10 @@ func (r *cloudRun) bootstrap(ctx context.Context) (*Config, *corev1.Pod, endpoin
 	if err = cloudPause(ctx, 61*time.Second); err != nil {
 		return nil, nil, cds, err
 	}
-	cfg := &Config{ProviderID: r.ledger.Run, NodeName: r.ledger.Run, Namespace: "podcloud-system", CloudURL: r.cfg.CloudURL, CloudTokenFile: r.cfg.TokenFile, Image: r.cfg.Image, ImageManifestFile: r.cfg.ManifestFile, LaunchKeyFile: providerKey, ServerAddress: cds.Host, ServerPublicKeyFile: filepath.Join(bundle, "server/pubkey"), WorkloadsFile: workloadPath, ClusterID: r.ledger.Run, Size: r.cfg.Size, Location: r.cfg.Location, VCPUs: r.cfg.VCPUs, MemoryMiB: r.cfg.MemoryMiB, ReservedMemoryMiB: 1024, MaxPods: 2, PublicIP: "shared"}
+	if err = r.cdsInitialPolicy(ctx, cds, workloadPath); err != nil {
+		return nil, nil, cds, err
+	}
+	cfg := &Config{ProviderID: r.ledger.Run, NodeName: r.ledger.Run, Namespace: "podcloud-system", CloudURL: r.cfg.CloudURL, CloudTokenFile: r.cfg.TokenFile, Image: r.cfg.Image, ImageManifestFile: r.cfg.ManifestFile, LaunchKeyFile: providerKey, ServerAddress: cds.Host, ServerPublicKeyFile: filepath.Join(r.dir, "server.pub"), CDSAddress: net.JoinHostPort(cds.Host, strconv.Itoa(cds.Port)), CDSImagePolicyFile: filepath.Join(r.dir, "cds/cds-pin.json"), WorkloadsFile: workloadPath, ClusterID: r.ledger.Run, Size: r.cfg.Size, Location: r.cfg.Location, VCPUs: r.cfg.VCPUs, MemoryMiB: r.cfg.MemoryMiB, ReservedMemoryMiB: 1024, MaxPods: 2, PublicIP: "shared"}
 	if r.cfg.scenario() == "warm-assignment" {
 		cfg.WarmTarget = 1
 	}
@@ -262,7 +216,7 @@ func (r *cloudRun) bootstrap(ctx context.Context) (*Config, *corev1.Pod, endpoin
 }
 
 func (r *cloudRun) cdsOptions(cds endpoint) []string {
-	return []string{"--url", "https://" + net.JoinHostPort(cds.Host, strconv.Itoa(cds.Port)), "--image-policy-file", filepath.Join(r.dir, "server/server.json")}
+	return []string{"--url", "https://" + net.JoinHostPort(cds.Host, strconv.Itoa(cds.Port)), "--image-policy-file", filepath.Join(r.dir, "cds/cds-pin.json")}
 }
 func (r *cloudRun) ca(ctx context.Context, cds endpoint) ([]byte, error) {
 	path := filepath.Join(r.dir, "mesh-ca.pem")
@@ -331,7 +285,7 @@ func (r *cloudRun) addB(ctx context.Context, cds endpoint, peer endpoint, cfg *C
 		return nil, nil, nil, err
 	}
 	args := append([]string{"allowlist", "apply", path}, r.cdsOptions(cds)...)
-	args = append(args, "--operator-key", filepath.Join(r.dir, "server/server.key"))
+	args = append(args, "--operator-key", filepath.Join(r.dir, "cds-operator.key"))
 	if _, err = r.cli(ctx, args...); err != nil {
 		return nil, nil, nil, err
 	}

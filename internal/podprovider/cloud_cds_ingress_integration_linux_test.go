@@ -28,7 +28,7 @@ func cloudCDSIngressState(in, before *instance, open bool) (bool, error) {
 		}
 		wantRules[rule.Name] = rule.Port
 	}
-	if len(wantRules) != 2 || wantRules["cds"] != 30808 || wantRules["pod-status"] != 8443 {
+	if len(wantRules) != 1 || wantRules["cds"] != 8443 {
 		return false, errors.New("CDS fault requires exactly its known ingress rules")
 	}
 	for _, rule := range in.Network.Ingress {
@@ -51,12 +51,11 @@ func cloudCDSIngressState(in, before *instance, open bool) (bool, error) {
 		gotEndpoints[ep.Name] = ep
 	}
 	cds, err := cloudEndpoint(before, "cds")
-	if err != nil || cds.Port != 30808 {
+	if err != nil || cds.Port != 8443 {
 		return false, errors.New("CDS fault requires its original dedicated endpoint")
 	}
-	status, err := cloudEndpoint(before, "pod-status")
-	if err != nil || status.Host != cds.Host || status.Port != 8443 {
-		return false, errors.New("CDS fault requires preserved dedicated status ingress")
+	if len(wantEndpoints) != 1 {
+		return false, errors.New("dedicated CDS must expose only its authenticated endpoint")
 	}
 	// Check unaffected network state even while the selected rule converges.
 	delete(wantRules, "cds")
@@ -65,7 +64,7 @@ func cloudCDSIngressState(in, before *instance, open bool) (bool, error) {
 	cdsEndpoint, hasEndpoint := gotEndpoints["cds"]
 	delete(gotRules, "cds")
 	delete(gotEndpoints, "cds")
-	if !reflect.DeepEqual(wantRules, gotRules) || !reflect.DeepEqual(wantEndpoints, gotEndpoints) || (hasRule && cdsRule != 30808) || (hasEndpoint && cdsEndpoint != cds) {
+	if !reflect.DeepEqual(wantRules, gotRules) || !reflect.DeepEqual(wantEndpoints, gotEndpoints) || (hasRule && cdsRule != 8443) || (hasEndpoint && cdsEndpoint != cds) {
 		return false, errors.New("CDS fault altered another rule, port or endpoint")
 	}
 	return !in.Network.IngressUpdating && hasRule == open && hasEndpoint == open, nil
@@ -115,7 +114,7 @@ func (r *cloudRun) cdsIngress(ctx context.Context, before *instance, open bool) 
 		return err
 	}
 	if open {
-		_, err = r.api.AddIngress(ctx, in.ID, key, ingress{Name: "cds", Port: 30808})
+		_, err = r.api.AddIngress(ctx, in.ID, key, ingress{Name: "cds", Port: 8443})
 	} else {
 		err = r.api.do(ctx, http.MethodDelete, "/v1/instances/"+url.PathEscape(in.ID)+"/ingress/cds", key, nil, nil)
 	}
