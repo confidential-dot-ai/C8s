@@ -49,8 +49,6 @@ func run(cfg config) error {
 	if err := validateConfig(cfg); err != nil {
 		return err
 	}
-	pinned := cfg.measured.Nodes
-	slog.Info("node identities loaded", "tee", pinned.Family, "images", len(pinned.Images))
 
 	challengeLimiter, err := issuer.NewIPRateLimiter(rate.Limit(cfg.rateLimit), cfg.rateBurst, cfg.rateLimiterMax)
 	if err != nil {
@@ -100,20 +98,9 @@ func run(cfg config) error {
 		"not_after", issuing.CA.Cert.NotAfter.Format(time.RFC3339),
 	)
 
-	slog.Info("node image pinning enabled for /attest", "count", len(pinned.Images))
-	if pinned.Family == teetypes.FamilyTDX {
-		if firmwareOnly := imagesWithoutRegisters(pinned.Images); len(firmwareOnly) > 0 {
-			slog.Warn("these TDX node images pin no RTMR: the pin covers TDVF firmware only (MRTD), and the guest kernel and rootfs are not pinned", "images", firmwareOnly)
-		}
-	}
+	nodeImages := back.NodeImages()
+	logNodeImages(nodeImages.Current())
 
-	// Served at /measurements so a verifier holding the operator's own file can
-	// detect a swapped config. Built from the enforced values, never re-read
-	// from disk: re-reading would attest the file rather than the policy.
-	measurementsDoc, err := refvalues.Render(pinned)
-	if err != nil {
-		return fmt.Errorf("render /measurements document: %w", err)
-	}
 	cnPattern, err := compilePattern("--allowed-cn-pattern", cfg.allowedCNPattern)
 	if err != nil {
 		return err
@@ -155,8 +142,7 @@ func run(cfg config) error {
 	// identity"). Pins the same node identities as /attest, so the inventory
 	// answering is held to the standard its armTLS certificate already met.
 	inventoryHosts := cfg.measured.NodeCIDRs
-	nodePins := armtls.Pins{Images: pinned.Images}
-	sandboxDigests, err := workloadclaims.NewDigestsClient(ctx, digestsClientConfig(cfg, nodePins))
+	sandboxDigests, err := workloadclaims.NewDigestsClient(ctx, digestsClientConfig(cfg, nodeImages))
 	if err != nil {
 		return err
 	}
@@ -167,7 +153,7 @@ func run(cfg config) error {
 		secretsOperator *secrets.OperatorHandler
 		secretsExplain  *secrets.ExplainHandler
 	)
-	if enabled, why := secretsEnabled(pinned.Images, inventoryHosts); enabled {
+	if enabled, why := secretsEnabled(nodeImages.Current().Images, inventoryHosts); enabled {
 		// One store behind both handlers: an operator write and a workload read
 		// are two doors onto the same paths.
 		store := back.Secrets()
@@ -210,7 +196,6 @@ func run(cfg config) error {
 			CertTTL:           cfg.certTTL,
 			NamedCertTTL:      cfg.namedCertTTL,
 			RequestTimeout:    cfg.requestTimeout,
-			Images:            pinned.Images,
 			SANValidation:     cfg.sanValidation,
 			Policy:            policy,
 			AllowlistStore:    allowlistWrites,
@@ -232,7 +217,7 @@ func run(cfg config) error {
 		MeshCA:            mesh,
 		ClusterRoutes:     back.ClusterRoutes(),
 		OperatorKeysPEM:   operatorKeys.PEM(),
-		MeasurementsDoc:   measurementsDoc,
+		NodeImages:        nodeImages,
 		RateLimiter:       rateLimiter,
 		ChallengeLimiter:  challengeLimiter,
 		MaxRequestSize:    cfg.maxRequestSize,
@@ -338,13 +323,14 @@ func servingConfig(cfg config, meshCA *x509.Certificate) *armtls.ServerConfig {
 }
 
 // digestsClientConfig is the client CDS calls node inventories back with for
-// a sandbox's container digests.
-func digestsClientConfig(cfg config, pins armtls.Pins) workloadclaims.DigestsClientConfig {
+// a sandbox's container digests. It holds an inventory to the node images CDS
+// certifies, so the two follow one set.
+func digestsClientConfig(cfg config, nodeImages armtls.PinSource) workloadclaims.DigestsClientConfig {
 	return workloadclaims.DigestsClientConfig{
 		Platform:             cfg.armtlsPlatform.String(),
 		AttestFunc:           armtlsAttestFunc(cfg),
 		AttestationAPIURL:    cfg.attestationApiURL,
-		Pins:                 pins,
+		NodeImages:           nodeImages,
 		Timeout:              cfg.requestTimeout,
 		MeasuredPoliciesFile: "",
 	}
@@ -406,6 +392,16 @@ func secretsEnabled(nodeImages []remote.ImagePin, inventoryHosts workloadclaims.
 		return false, "the configuration pins no node identity, so any TEE could answer as a sandbox's inventory"
 	}
 	return true, ""
+}
+
+func logNodeImages(images refvalues.ReferenceValues) {
+	slog.Info("node image pinning enabled for /attest", "tee", images.Family, "count", len(images.Images))
+	if images.Family != teetypes.FamilyTDX {
+		return
+	}
+	if firmwareOnly := imagesWithoutRegisters(images.Images); len(firmwareOnly) > 0 {
+		slog.Warn("these TDX node images pin no RTMR: the pin covers TDVF firmware only (MRTD), and the guest kernel and rootfs are not pinned", "images", firmwareOnly)
+	}
 }
 
 // imagesWithoutRegisters names the node images pinned by their launch

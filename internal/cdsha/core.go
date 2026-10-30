@@ -34,7 +34,9 @@ type ClusterState struct {
 	// cluster may run, which peers, nodes and clients all pin it by.
 	PinsDecree *cdsdecree.Signed     `json:"pins_decree,omitempty"`
 	NodeImages *cdsdecree.NodeImages `json:"node_images,omitempty"`
-	Voters     int                   `json:"voters,omitempty"`
+	// NodeImagesVersion is the version of the decree that last replaced the set.
+	NodeImagesVersion uint64 `json:"node_images_version"`
+	Voters            int    `json:"voters,omitempty"`
 	// AppliedDecrees are the intents the cluster has accounted for, so none
 	// of them applies or raises a doubt twice.
 	AppliedDecrees []string `json:"applied_decrees,omitempty"`
@@ -163,9 +165,10 @@ func nextCore(launch Launch, cur ClusterState, de DecreeEntry) (ClusterState, *i
 		}
 	}
 	d := de.Decree.Decree
+	version := next.countDecree(d)
 	switch d.Kind {
 	case cdsdecree.Genesis:
-		if err := startCluster(launch, &next, de); err != nil {
+		if err := startCluster(launch, &next, de, version); err != nil {
 			return ClusterState{}, nil, err
 		}
 	case cdsdecree.Recover:
@@ -173,6 +176,8 @@ func nextCore(launch Launch, cur ClusterState, de DecreeEntry) (ClusterState, *i
 		next.Doubts = withoutDoubt(next.Doubts, d.IntentID)
 	case cdsdecree.UpdateMeasurements:
 		next.PinsDecree = &de.Decree
+	case cdsdecree.SetNodeImages:
+		next.certifyNodeImages(d.NodePins, version)
 	case cdsdecree.SetVoters:
 		next.Voters = d.Voters
 	case cdsdecree.DismissRecover:
@@ -181,14 +186,13 @@ func nextCore(launch Launch, cur ClusterState, de DecreeEntry) (ClusterState, *i
 		// doubted again.
 		next.AppliedDecrees = append(next.AppliedDecrees, d.RecoverIntent)
 	}
-	next.countDecree(d)
 	return next, ca, nil
 }
 
 // startCluster is the state a Genesis starts a cluster in: the policy and
 // launch file of the replica applying it, the image sets the operator signed,
 // and the voter seats its configuration names.
-func startCluster(launch Launch, next *ClusterState, de DecreeEntry) error {
+func startCluster(launch Launch, next *ClusterState, de DecreeEntry, version uint64) error {
 	d := de.Decree.Decree
 	// INVARIANT: the mesh CA is the one the operator signed for. Whoever
 	// logged the entry chose its bytes.
@@ -198,7 +202,7 @@ func startCluster(launch Launch, next *ClusterState, de DecreeEntry) error {
 	next.Policy = de.Policy
 	next.ConfigSHA256 = launch.ConfigSHA256
 	next.PinsDecree = &de.Decree
-	next.NodeImages = d.NodePins
+	next.certifyNodeImages(d.NodePins, version)
 	next.Voters = launch.Voters
 	// A cluster starts at the oldest format its release reads, whatever the
 	// replica that started it could write.
@@ -207,7 +211,14 @@ func startCluster(launch Launch, next *ClusterState, de DecreeEntry) error {
 	return nil
 }
 
-func (c *ClusterState) countDecree(d cdsdecree.Decree) {
+// The whole set a decree carries, at the version that decree reached.
+func (c *ClusterState) certifyNodeImages(images *cdsdecree.NodeImages, version uint64) {
+	c.NodeImages = images
+	c.NodeImagesVersion = version
+}
+
+// Answers the version the decree produced.
+func (c *ClusterState) countDecree(d cdsdecree.Decree) uint64 {
 	if d.ResumeVersion > c.Version {
 		// Genesis and Recover resume above the highest version the operator
 		// knows this cluster id reached.
@@ -215,6 +226,7 @@ func (c *ClusterState) countDecree(d cdsdecree.Decree) {
 	}
 	c.Version++
 	c.AppliedDecrees = append(c.AppliedDecrees, d.IntentID)
+	return c.Version
 }
 
 // startMS is the later of the operator's signature and the leader's stamp, so

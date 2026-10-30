@@ -28,6 +28,9 @@ type backend interface {
 	Bindings() *sandboxledger.Handle
 	// MeshCA signs every leaf this CDS issues and is published at /ca.
 	MeshCA() meshCA
+	// NodeImages are the node images this CDS certifies: the set its measured
+	// configuration names, or the set its cluster's log carries.
+	NodeImages() armtls.PinSource
 	Challenges() (issuance, secrets attestation.Challenges)
 	// TokenFloor refuses operator tokens issued before it; the zero time refuses none.
 	TokenFloor() time.Time
@@ -133,7 +136,8 @@ func (p challengePools) Challenges() (attestation.Challenges, attestation.Challe
 type singleton struct {
 	handles
 	challengePools
-	mesh *issuer.MeshCA
+	mesh  *issuer.MeshCA
+	nodes armtls.PinSource
 	// started is the floor an operator token must be issued after: a store that
 	// does not persist forgets the tokens the last process spent.
 	started time.Time
@@ -155,7 +159,8 @@ func newSingleton(cfg config, st stores) (backend, error) {
 			issuance: attestation.NewLocalChallenges(cfg.challengeTTL),
 			secrets:  attestation.NewLocalChallenges(cfg.challengeTTL),
 		},
-		mesh: mesh,
+		mesh:  mesh,
+		nodes: armtls.FixedPins(cfg.measured.Nodes),
 	}
 	if !cfg.allowlistPersistent {
 		only.started = time.Now()
@@ -166,6 +171,11 @@ func newSingleton(cfg config, st stores) (backend, error) {
 
 func (s *singleton) MeshCA() meshCA {
 	return ownCA{s.mesh}
+}
+
+// NodeImages are the node images the configuration this CDS boots names.
+func (s *singleton) NodeImages() armtls.PinSource {
+	return s.nodes
 }
 
 func (s *singleton) TokenFloor() time.Time {

@@ -94,8 +94,17 @@ func newTestAttestHandler(t *testing.T, stubURL string, pinned []remote.ImagePin
 		AttestationClient: remote.NewClient(stubURL),
 		MeshCA:            ownCA{mesh},
 		CertTTL:           time.Hour,
-		Images:            pinned,
+		NodeImages:        certifying(pinned...),
 	}
+}
+
+// The set a CDS whose configuration names it certifies, which no command
+// replaces.
+func certifying(images ...remote.ImagePin) armtls.PinSource {
+	return armtls.FixedPins(refvalues.ReferenceValues{
+		Family: teetypes.FamilySNP,
+		Images: images,
+	})
 }
 
 // imagePin pins one node image by its launch digest, the whole pin on a
@@ -274,7 +283,7 @@ func TestAttest_UnpinnedLaunchDigestDenied(t *testing.T) {
 func TestAttest_NoPinnedNodeImageDenied(t *testing.T) {
 	stub := newStubAttestationApi(t, testLaunchDigest)
 	h := newTestAttestHandler(t, stub.URL(), nil)
-	h.Images = nil
+	h.NodeImages = certifying()
 	challenge := issueChallenge(t, h)
 	csrPEM, _ := generateCSR(t)
 

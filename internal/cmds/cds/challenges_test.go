@@ -55,6 +55,7 @@ func challengeDeps(t *testing.T, issuance, secretsPool attestation.Challenges) d
 		AttestHandler:     AttestHandler{Challenges: issuance},
 		ReadyFn:           func() bool { return true },
 		MeshCA:            testMeshCA(t),
+		NodeImages:        certifying(),
 		RateLimiter:       limiter,
 		ChallengeLimiter:  newTestRateLimiter(t),
 		MaxRequestSize:    65536,

@@ -127,6 +127,7 @@ func everyKind() []Kind {
 	return []Kind{
 		Genesis,
 		UpdateMeasurements,
+		SetNodeImages,
 		RotateKey,
 		SetVoters,
 		Recover,

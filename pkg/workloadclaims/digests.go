@@ -239,12 +239,10 @@ type DigestsClientConfig struct {
 	Platform          string
 	AttestFunc        func(ctx context.Context, customData string) (string, error)
 	AttestationAPIURL string
-	// Pins hold the launch digests (and any TDX RTMR pins) an inventory may
-	// present — the same allowlist CDS pins for the inventory's armTLS
-	// certificate, so a sandbox token and the callback that follows it are
-	// held to one standard. Pins that name no guest are refused
+	// NodeImages are the node images an inventory may run — the set CDS
+	// certifies its nodes by. A set that names no guest is refused
 	// ([armtls.ErrUnpinned]).
-	Pins armtls.Pins
+	NodeImages armtls.PinSource
 	// Timeout bounds one callback. Zero or negative means 10s.
 	Timeout time.Duration
 	// MeasuredPoliciesFile is the node's measured-policy journal its TDX client
@@ -254,7 +252,7 @@ type DigestsClientConfig struct {
 
 func (c DigestsClientConfig) tlsConfig() *armtls.ClientConfig {
 	return &armtls.ClientConfig{
-		Policy:               c.Pins.VerifyPolicy(c.AttestationAPIURL),
+		Policy:               armtls.Pins(c.NodeImages.Current().Policy()).VerifyPolicy(c.AttestationAPIURL),
 		Platform:             c.Platform,
 		AttestFunc:           c.AttestFunc,
 		MeasuredPoliciesFile: c.MeasuredPoliciesFile,
@@ -271,10 +269,15 @@ func NewDigestsClient(ctx context.Context, cfg DigestsClientConfig) (*DigestsCli
 	if err := requireAttestationApi(cfg.AttestationAPIURL); err != nil {
 		return nil, err
 	}
+	if cfg.NodeImages == nil {
+		return nil, fmt.Errorf("workloadclaims: the sandbox-digests client holds an inventory to the node images CDS certifies, and was given no source for them")
+	}
 	tlsCfg, certMgr, err := armtls.NewClientTLSConfig(cfg.tlsConfig())
 	if err != nil {
 		return nil, fmt.Errorf("workloadclaims: build sandbox-digests client: %w", err)
 	}
+	// An inventory relaunched on a newly certified image needs no restart.
+	armtls.FollowServerPins(tlsCfg, cfg.NodeImages, cfg.AttestationAPIURL)
 	warmupCtx, cancel := context.WithTimeout(ctx, warmUpBudget)
 	defer cancel()
 	if err := warmUpCert(warmupCtx, certMgr); err != nil {

@@ -68,6 +68,7 @@ func TestOperatorChangePolicyWorkflow(t *testing.T) {
 		},
 		ReadyFn:          func() bool { return true },
 		MeshCA:           ownCA{mesh},
+		NodeImages:       certifying(),
 		RateLimiter:      newTestRateLimiter(t),
 		ChallengeLimiter: newTestRateLimiter(t),
 		MaxRequestSize:   65536,

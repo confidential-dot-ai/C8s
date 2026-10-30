@@ -139,6 +139,25 @@ func TestTheGateRefusesWhatAReplicaMayNotServe(t *testing.T) {
 	}
 }
 
+func TestAReplicaCertifiesTheNodeImagesOfItsCluster(t *testing.T) {
+	cfg, state := replicatedRunConfig(t, attestingAPI(t))
+	if len(cfg.measured.Nodes.Images) == 0 {
+		t.Fatal("the configuration under test names no node image")
+	}
+	node, err := newMember(cfg, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	certified := clusterNodeImages{node: node}
+	if images := certified.Current().Images; len(images) != 0 {
+		t.Errorf("a replica that holds no cluster certifies %+v", images)
+	}
+	if certified.Generation() != 0 {
+		t.Errorf("a replica that holds no cluster names node image version %d", certified.Generation())
+	}
+}
+
 // startReplica joins on a goroutine of its own and answers with why it stopped.
 func startReplica(t *testing.T, ctx context.Context, cfg config, state stores) <-chan error {
 	t.Helper()

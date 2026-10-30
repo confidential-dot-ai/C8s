@@ -1,17 +1,20 @@
 package cds
 
 import (
+	"log/slog"
 	"net/http"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/attestation"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	"github.com/confidential-dot-ai/c8s/internal/server"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/routes"
 )
 
@@ -24,7 +27,7 @@ type dependencies struct {
 	MeshCA            meshCA                      // the CA served at /ca, which signs every leaf
 	ClusterRoutes     map[string]http.HandlerFunc // a replica's cluster routes, by method and path
 	OperatorKeysPEM   []byte                      // pinned operator public keys; empty = /operator-keys 404s
-	MeasurementsDoc   []byte                      // reference values being enforced, as served at /measurements
+	NodeImages        armtls.PinSource            // the node images /attest admits by and /measurements publishes
 	RateLimiter       *issuer.IPRateLimiter       // per-source-IP limiter for attestation endpoints
 	ChallengeLimiter  *issuer.IPRateLimiter       // /authenticate's own, so it cannot spend the map above
 	MaxRequestSize    int64                       // applied to write endpoints; must be > 0
@@ -50,10 +53,16 @@ func newRouter(deps dependencies) http.Handler {
 	if deps.MeshCA == nil {
 		panic("cds: dependencies.MeshCA must be set")
 	}
+	if deps.NodeImages == nil {
+		panic("cds: dependencies.NodeImages must be set")
+	}
 	// One CA for the whole router: the handler signs with the certificate
 	// /ca publishes, and the route policy excludes that same certificate.
 	deps.AttestHandler.MeshCA = deps.MeshCA
 	deps.Routes.MeshCA = deps.MeshCA
+	// One node image set for the whole router: /attest admits a caller by the
+	// set /measurements publishes.
+	deps.AttestHandler.NodeImages = deps.NodeImages
 	r := chi.NewRouter()
 	r.Use(server.RequestLogger)
 
@@ -100,7 +109,7 @@ func newRouter(deps dependencies) http.Handler {
 
 	r.Get("/ca", handleCA(deps.MeshCA))
 	r.Get("/operator-keys", handleOperatorKeys(deps.OperatorKeysPEM))
-	r.Get("/measurements", handleMeasurements(deps.MeasurementsDoc))
+	r.Get("/measurements", handleMeasurements(deps.NodeImages))
 
 	return r
 }
@@ -159,23 +168,26 @@ func handleCA(mesh meshCA) http.HandlerFunc {
 	}
 }
 
-// handleOperatorKeys serves the pinned operator public-key bundle (public
-// material, like /ca) so `c8s verify` can report which keys may mutate the
-// allowlist. 404 when allowlist writes are disabled (no pinned keys).
-// handleMeasurements serves the reference values this CDS is enforcing. An
+// handleMeasurements renders the node images this CDS admits a caller
+// against, so a verifier can compare the operator's own file with them. An
 // empty set is served, not 404'd: "admitting any measurement" is the state a
 // verifier most needs to be told about.
-func handleMeasurements(doc []byte) http.HandlerFunc {
+func handleMeasurements(nodeImages armtls.PinSource) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
-		if len(doc) == 0 {
+		document, err := refvalues.Render(nodeImages.Current())
+		if err != nil {
+			slog.Error("render the node images this CDS certifies", "error", err)
 			http.Error(w, "measurements unavailable", http.StatusInternalServerError)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(doc)
+		w.Write(document)
 	}
 }
 
+// handleOperatorKeys serves the pinned operator public-key bundle (public
+// material, like /ca) so `c8s verify` can report which keys may mutate the
+// allowlist. 404 when allowlist writes are disabled (no pinned keys).
 func handleOperatorKeys(operatorKeysPEM []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		if len(operatorKeysPEM) == 0 {

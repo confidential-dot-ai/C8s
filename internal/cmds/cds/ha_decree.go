@@ -53,6 +53,7 @@ func newDecreeCmd() *cobra.Command {
 	cmd.AddCommand(
 		newGenesisCmd(),
 		newPinsCmd(),
+		newNodeImagesCmd(),
 		newRotateKeyCmd(),
 		newRecoverCmd(),
 		newDismissRecoverCmd(),
@@ -337,7 +338,13 @@ func (o genesisOptions) nodePins(c decreeConfig) (*cdsdecree.NodeImages, error) 
 		}
 		return cdsdecree.NewNodeImages(measurements)
 	}
-	measurements, err := os.ReadFile(o.nodes)
+	return readNodeImages(o.nodes)
+}
+
+// The whole set the cluster is to certify, as `c8s cds config new --nodes`
+// writes one.
+func readNodeImages(path string) (*cdsdecree.NodeImages, error) {
+	measurements, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("--nodes: %w", err)
 	}
@@ -346,6 +353,42 @@ func (o genesisOptions) nodePins(c decreeConfig) (*cdsdecree.NodeImages, error) 
 		return nil, fmt.Errorf("--nodes: %w", err)
 	}
 	return images, nil
+}
+
+type nodeImagesOptions struct {
+	decreeOptions
+	nodes string
+	to    replica
+}
+
+func newNodeImagesCmd() *cobra.Command {
+	var o nodeImagesOptions
+	cmd := decreeCmd("node-images", "Sign the decree that replaces the node images the cluster certifies",
+		"The cluster issues a leaf to a node of one of these images and to no other. The decree carries\n"+
+			"the whole set: an upgrade signs the image being replaced and the one replacing it together,\n"+
+			"and a second decree then names the new image alone.",
+		&o.decreeOptions, func(cmd *cobra.Command) error { return o.run(cmd) })
+	bindBaseVersionFlag(cmd, &o.decreeOptions)
+	bindDeliveryFlags(cmd, &o.to)
+	cmd.Flags().StringVar(&o.nodes, "nodes", "", "measurements document pinning the node images the cluster certifies (REQUIRED)")
+	requireFlags(cmd, "nodes")
+	return cmd
+}
+
+func (o nodeImagesOptions) run(cmd *cobra.Command) error {
+	c, err := readDecreeConfig(o.config)
+	if err != nil {
+		return err
+	}
+	nodePins, err := readNodeImages(o.nodes)
+	if err != nil {
+		return err
+	}
+	return o.deliver(cmd, c, o.to, cdsdecree.Decree{
+		Kind:        cdsdecree.SetNodeImages,
+		BaseVersion: o.baseVersion,
+		NodePins:    nodePins,
+	})
 }
 
 // checkGenesisTarget requires a replica of this cluster that holds none, and

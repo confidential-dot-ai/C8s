@@ -18,6 +18,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/attestation"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
@@ -56,6 +57,7 @@ func newStubRouter(t *testing.T) http.Handler {
 		Routes:           routeHandler{Allowlist: store.Local()},
 		ReadyFn:          func() bool { return true },
 		MeshCA:           ownCA{mesh},
+		NodeImages:       certifying(),
 		RateLimiter:      newTestRateLimiter(t),
 		ChallengeLimiter: newTestRateLimiter(t),
 		MaxRequestSize:   65536,
@@ -84,6 +86,7 @@ func TestRouter_RateLimitsAttestationEndpoints(t *testing.T) {
 		},
 		ReadyFn:          func() bool { return true },
 		MeshCA:           ownCA{mesh},
+		NodeImages:       certifying(),
 		RateLimiter:      rl,
 		ChallengeLimiter: newTestRateLimiter(t),
 		MaxRequestSize:   65536,
@@ -123,6 +126,7 @@ func TestRouter_RateLimitsAllowlistWrites(t *testing.T) {
 		},
 		ReadyFn:          func() bool { return true },
 		MeshCA:           ownCA{mesh},
+		NodeImages:       certifying(),
 		RateLimiter:      rl,
 		ChallengeLimiter: newTestRateLimiter(t),
 		MaxRequestSize:   65536,
@@ -177,6 +181,7 @@ func TestRouter_RateLimitsAuthenticate(t *testing.T) {
 		},
 		ReadyFn:          func() bool { return true },
 		MeshCA:           ownCA{mesh},
+		NodeImages:       certifying(),
 		RateLimiter:      rl,
 		ChallengeLimiter: challengeRL,
 		MaxRequestSize:   65536,
@@ -293,6 +298,7 @@ func TestRouter_AttestRejectsOversizedBody(t *testing.T) {
 		},
 		ReadyFn:          func() bool { return true },
 		MeshCA:           ownCA{mesh},
+		NodeImages:       certifying(),
 		RateLimiter:      newTestRateLimiter(t),
 		ChallengeLimiter: newTestRateLimiter(t),
 		MaxRequestSize:   16,
@@ -591,13 +597,9 @@ func TestHandleMeasurements(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	doc, err := refvalues.Render(set)
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	w := httptest.NewRecorder()
-	handleMeasurements(doc)(w, httptest.NewRequest(http.MethodGet, "/measurements", nil))
+	handleMeasurements(armtls.FixedPins(set))(w, httptest.NewRequest(http.MethodGet, "/measurements", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}
@@ -609,11 +611,8 @@ func TestHandleMeasurements(t *testing.T) {
 		t.Errorf("served set = %+v, want the one pinned image", served)
 	}
 
-	empty, err := refvalues.Render(refvalues.ReferenceValues{Family: teetypes.FamilySNP})
-	if err != nil {
-		t.Fatal(err)
-	}
 	w = httptest.NewRecorder()
+	empty := armtls.FixedPins(refvalues.ReferenceValues{Family: teetypes.FamilySNP})
 	handleMeasurements(empty)(w, httptest.NewRequest(http.MethodGet, "/measurements", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("empty set status = %d, want 200 (not a 404)", w.Code)

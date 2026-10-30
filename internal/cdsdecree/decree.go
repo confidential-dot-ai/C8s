@@ -50,6 +50,10 @@ const (
 	// UpdateMeasurements replaces the set of images a CDS of this cluster may
 	// run, which is also the set its clients and nodes pin it by.
 	UpdateMeasurements Kind = "UpdateMeasurements"
+	// SetNodeImages replaces the set of node images the cluster certifies: a
+	// node of one of them is issued a leaf, and no other is. It carries the
+	// whole set, never a delta.
+	SetNodeImages Kind = "SetNodeImages"
 	// RotateKey mints a mesh CA key and forks the mesh: every leaf must be
 	// issued again under the new key.
 	RotateKey Kind = "RotateKey"
@@ -284,6 +288,7 @@ var kinds = map[Kind]carried{
 		may:  []string{"resume_version", "alone"},
 	},
 	UpdateMeasurements: {must: []string{"base_version", "cds_pins"}},
+	SetNodeImages:      {must: []string{"base_version", "node_pins"}},
 	RotateKey:          {must: []string{"base_version"}},
 	SetVoters:          {must: []string{"base_version", "voters"}},
 	Recover:            {must: []string{"base_version", "target_member", "target_address", "issued_at_ms", "resume_version"}},

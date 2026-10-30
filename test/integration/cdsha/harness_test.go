@@ -38,6 +38,7 @@ import (
 	"gopkg.in/yaml.v3"
 	_ "modernc.org/sqlite"
 
+	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/internal/cdsconfig"
@@ -71,10 +72,41 @@ const (
 // nextCDSImage is the CDS image an image roll adds beside the one the replicas run.
 const nextCDSImage = "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
 
-// nodeImagesDocument is the node image set the cluster certifies: the
-// configuration seeds it and the Genesis decree carries it.
-const nodeImagesDocument = `{"schema_version":"1","tee":"tdx","measurements":[{"name":"node","mrtd":"` +
-	"abababababababababababababababababababababababababababababababababababababababababababababababab" + `"}]}`
+type nodeImage struct {
+	name string
+	mrtd string
+}
+
+// The node images of an upgrade: the one the cluster starts out certifying,
+// and the one the nodes are relaunched on.
+var (
+	seededNodeImage = nodeImage{
+		name: "node",
+		mrtd: strings.Repeat("ab", 48),
+	}
+	nextNodeImage = nodeImage{
+		name: "node-next",
+		mrtd: strings.Repeat("bc", 48),
+	}
+)
+
+// The node image sets of that upgrade: the one the configuration seeds and
+// the Genesis decree carries, the one accepting both images, and the one
+// retiring the old image.
+var (
+	nodeImagesDocument  = nodeImagesCertifying(seededNodeImage)
+	upgradingNodeImages = nodeImagesCertifying(seededNodeImage, nextNodeImage)
+	nextNodeImages      = nodeImagesCertifying(nextNodeImage)
+)
+
+// A node pin document, as `ha decree node-images --nodes` reads one.
+func nodeImagesCertifying(images ...nodeImage) string {
+	entries := make([]string, 0, len(images))
+	for _, image := range images {
+		entries = append(entries, fmt.Sprintf(`{"name":%q,"mrtd":%q}`, image.name, image.mrtd))
+	}
+	return `{"schema_version":"1","tee":"tdx","measurements":[` + strings.Join(entries, ",") + `]}`
+}
 
 const seededWorkload = "attestation-api"
 
@@ -467,12 +499,19 @@ func (c *cluster) attestedClient(measurement string, alsoAccepted ...string) *ht
 // mesh CA over the attested channel and posted the decree back on it does.
 func (c *cluster) genesis(r *replica) {
 	c.t.Helper()
+	c.genesisCertifying(r, nodeImagesDocument, 0)
+}
+
+// The decree carries the node image set, so a cluster started again certifies
+// what the operator names now.
+func (c *cluster) genesisCertifying(r *replica, nodeImages string, resumeVersion uint64) {
+	c.t.Helper()
 	reported := c.awaitStatus(r)
 	pins, err := cdsdecree.NewPinDocument([]byte(testutil.CDSPinDocument(testutil.TestMeasurement, string(c.config))))
 	if err != nil {
 		c.t.Fatal(err)
 	}
-	nodes, err := cdsdecree.NewNodeImages([]byte(nodeImagesDocument))
+	nodes, err := cdsdecree.NewNodeImages([]byte(nodeImages))
 	if err != nil {
 		c.t.Fatal(err)
 	}
@@ -487,6 +526,7 @@ func (c *cluster) genesis(r *replica) {
 		TargetAddress: fmt.Sprintf("%s:%d", r.host, clientPort),
 		IssuedAtMS:    time.Now().UnixMilli(),
 		GenesisCA:     reported.GenesisCA,
+		ResumeVersion: resumeVersion,
 	}
 	c.decree(r, genesis)
 	c.genesisIntent = genesis.IntentID
@@ -543,6 +583,71 @@ func (c *cluster) decreeAdmit(to *replica, measurements ...string) cdsha.Deliver
 		CDSPins:      c.pinDocument(measurements...),
 		TargetMember: c.awaitStatus(to).ID,
 	})
+}
+
+// Carries the whole set of node images the cluster is to certify.
+func (c *cluster) decreeNodeImages(to *replica, version uint64, document string) (string, cdsha.Delivered) {
+	c.t.Helper()
+	nodes, err := cdsdecree.NewNodeImages([]byte(document))
+	if err != nil {
+		c.t.Fatal(err)
+	}
+	decree := cdsdecree.Decree{
+		ClusterID:   clusterID,
+		IntentID:    cdsdecree.NewIntentID(),
+		Kind:        cdsdecree.SetNodeImages,
+		ExpiresAt:   time.Now().Add(time.Hour),
+		BaseVersion: version,
+		NodePins:    nodes,
+	}
+	return decree.IntentID, c.decree(to, decree)
+}
+
+// By name, and none from a replica that does not serve its cluster yet.
+func (c *cluster) certifiedNodeImages(r *replica) []string {
+	code, body := c.get(r, "/measurements")
+	switch code {
+	case http.StatusOK:
+	case http.StatusServiceUnavailable, noAnswer:
+		return nil
+	default:
+		c.t.Fatalf("replica %d serves /measurements = %d %s", r.index, code, body)
+	}
+	published, err := refvalues.ParseRendered(body)
+	if err != nil {
+		c.t.Fatalf("replica %d publishes measurements that do not parse: %v: %s", r.index, err, body)
+	}
+	names := make([]string, 0, len(published.Images))
+	for _, image := range published.Images {
+		names = append(names, image.Name)
+	}
+	return slices.Sorted(slices.Values(names))
+}
+
+// Every replica publishes these node images and no others.
+func (c *cluster) allPublish(images ...nodeImage) bool {
+	want := make([]string, 0, len(images))
+	for _, image := range images {
+		want = append(want, image.name)
+	}
+	slices.Sort(want)
+	for _, r := range c.replicas {
+		if !slices.Equal(c.certifiedNodeImages(r), want) {
+			return false
+		}
+	}
+	return true
+}
+
+// Every replica names version as the command that last replaced the set.
+func (c *cluster) allAtNodeImagesVersion(version uint64) bool {
+	for _, r := range c.replicas {
+		reported, answered := c.status(r)
+		if !answered || reported.NodeImagesVersion != version {
+			return false
+		}
+	}
+	return true
 }
 
 // decreeRotateKey posts a RotateKey decree to a replica.
