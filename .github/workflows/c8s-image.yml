@@ -1099,18 +1099,27 @@ jobs:
         working-directory: confidential-os-builder
         env:
           HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
           C8S_REF_INPUT: ${{ inputs.c8s_ref }}
         run: |
           set -eux
           SHORT_SHA="${C8S_REF_INPUT:-${HEAD_SHA::7}}"
+          CDI_TAGS="${VARIANT}-cdi-${SHORT_SHA}"
+          ORAS_TAGS="${VARIANT}-${SHORT_SHA}"
+          # Only automatic main publication advances the shared CDS aliases.
+          # Manual and beta builds retain their exact commit-scoped tags.
+          if [ "$GITHUB_EVENT_NAME" = workflow_run ] && [ "$HEAD_BRANCH" = main ] && [ -z "$C8S_REF_INPUT" ]; then
+            CDI_TAGS="${VARIANT}-cdi,$CDI_TAGS"
+            ORAS_TAGS="${VARIANT},$ORAS_TAGS"
+          fi
           # CDI first, oras artifact last, as the node image publishes: a
           # partial failure re-publishes everything on the next run.
           bin/confos push "output/${VARIANT}" --cdi \
             --registry "$IMAGE" \
-            --tag "${VARIANT}-cdi,${VARIANT}-cdi-${SHORT_SHA}"
+            --tag "$CDI_TAGS"
           bin/confos push "output/${VARIANT}" \
             --registry "$IMAGE" \
-            --tag "${VARIANT},${VARIANT}-${SHORT_SHA}"
+            --tag "$ORAS_TAGS"
 
       - name: Summary
         env:

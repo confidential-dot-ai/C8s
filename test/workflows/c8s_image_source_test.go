@@ -3,6 +3,7 @@ package workflows
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -80,6 +81,68 @@ func TestC8sManualImageSources(t *testing.T) {
 			}
 			if !tc.accept && tc.profile == source && !strings.Contains(string(output), "--ref <source-branch-or-tag>") {
 				t.Fatalf("rejection must explain how to select matching sources: %s", output)
+			}
+		})
+	}
+}
+
+// Execute the real publication step against a recording publisher: no manual
+// or beta build may move the shared production CDS aliases.
+func TestCDSImagePublicationTags(t *testing.T) {
+	var publish workflowStep
+	for _, step := range readWorkflow(t, "c8s-image.yml").Jobs["cds-image"].Steps {
+		if step.Name == "Push to GHCR" {
+			publish = step
+		}
+	}
+	if publish.Run == "" || publish.Env["HEAD_BRANCH"] != "${{ github.event.workflow_run.head_branch }}" ||
+		publish.Env["HEAD_SHA"] != "${{ github.event.workflow_run.head_sha || github.sha }}" ||
+		publish.Env["C8S_REF_INPUT"] != "${{ inputs.c8s_ref }}" {
+		t.Fatal("CDS publication must use the exact invoking source and branch")
+	}
+	const source = "d5de9bbd5e8dfd0e88909f64d061d43c0e74918d"
+	for _, tc := range []struct {
+		name, event, branch, ref string
+		floating                 bool
+	}{
+		{"manual exact ref", "workflow_dispatch", "", source[:7], false},
+		{"manual default ref", "workflow_dispatch", "", "", false},
+		{"manual main", "workflow_dispatch", "main", "", false},
+		{"automatic main", "workflow_run", "main", "", true},
+		{"automatic beta", "workflow_run", "beta", "", false},
+		{"explicit ref", "workflow_run", "main", source[:7], false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.Mkdir(filepath.Join(dir, "bin"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "bin/confos"), []byte(`#!/bin/sh
+printf '%s\n' "$*" >> "$LOGFILE"
+`), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			logfile := filepath.Join(dir, "calls")
+			cmd := exec.CommandContext(t.Context(), "bash", "-c", publish.Run)
+			cmd.Dir = dir
+			cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HEAD_SHA=" + source,
+				"HEAD_BRANCH=" + tc.branch, "C8S_REF_INPUT=" + tc.ref, "GITHUB_EVENT_NAME=" + tc.event,
+				"VARIANT=cds", "IMAGE=example.invalid/cds", "LOGFILE=" + logfile}
+			if output, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("publication step: %v: %s", err, output)
+			}
+			data, err := os.ReadFile(logfile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cdi, artifact := "cds-cdi-"+source[:7], "cds-"+source[:7]
+			if tc.floating {
+				cdi, artifact = "cds-cdi,"+cdi, "cds,"+artifact
+			}
+			want := "push output/cds --cdi --registry example.invalid/cds --tag " + cdi + "\n" +
+				"push output/cds --registry example.invalid/cds --tag " + artifact + "\n"
+			if string(data) != want {
+				t.Fatalf("published calls = %q, want %q", data, want)
 			}
 		})
 	}
