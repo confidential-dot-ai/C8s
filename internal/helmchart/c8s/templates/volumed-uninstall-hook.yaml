@@ -14,6 +14,8 @@ nodeSelector:
   {{- end }}
 tolerations:
   {{- toYaml .Values.volumed.tolerations | nindent 2 }}
+affinity:
+  {{- include "c8s.hostDaemonAffinity" dict | nindent 2 }}
 initContainers:
   - name: teardown
     image: {{ include "volumed.image" . }}
