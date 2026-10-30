@@ -478,3 +478,33 @@ func TestAStuckLeaderHandsTheClusterOverBeforeItLeaves(t *testing.T) {
 		return c.allServing(c.others(leading), "written-after-the-cluster-changed-hands")
 	})
 }
+
+func TestAReplicaWhoseStoreChangedUnderItIsStoppedByTheMajority(t *testing.T) {
+	c := newCluster(t, threeReplicas)
+	leading := c.waitLeader(30 * time.Second)
+	c.replaceAllowlist(leading, "written-before-the-store-changed")
+	c.waitFor("every replica to serve the written allowlist", 30*time.Second, func() bool {
+		return c.allServe("written-before-the-store-changed")
+	})
+	changed := c.others(leading)[0]
+	c.waitVoter(changed, 30*time.Second)
+
+	c.pause(changed)
+	c.changeAllowlistUnderIt(changed)
+	c.resume(changed)
+	c.replaceAllowlist(leading, "written-after-the-store-changed")
+
+	c.waitFor("the replica whose store changed to stop serving", time.Minute, func() bool {
+		return !slices.Contains(c.serving(), changed)
+	})
+	c.waitExit(changed, time.Minute)
+	c.waitFor("the replicas that hold the cluster's state to serve it", time.Minute, func() bool {
+		return c.allServing(c.others(changed), "written-after-the-store-changed")
+	})
+
+	c.restart(changed)
+
+	c.waitFor("the replica that replaced it to serve the cluster's state", 2*time.Minute, func() bool {
+		return c.allServe("written-after-the-store-changed")
+	})
+}

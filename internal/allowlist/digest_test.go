@@ -228,7 +228,7 @@ func TestTheDigestIsTheContentAndNotTheHistory(t *testing.T) {
 		"memory": memory,
 		"file":   file,
 	} {
-		if err := fresh.Restore(image); err != nil {
+		if err := fresh.Restore(image, written.Digest()); err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
 	}

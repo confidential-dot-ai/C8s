@@ -145,16 +145,7 @@ func peerAddress(cfg config) (netip.AddrPort, error) {
 // replica's state comes from the log alone, and rows under it would leave the
 // version, ETag and history it serves no other replica's.
 func emptyAllowlist(store *allowlist.Store) error {
-	fresh, err := allowlist.OpenInMemory()
-	if err != nil {
-		return err
-	}
-	defer fresh.Close()
-	empty, err := fresh.Dump()
-	if err != nil {
-		return err
-	}
-	if err := store.Restore(empty); err != nil {
+	if err := store.Empty(); err != nil {
 		return fmt.Errorf("empty the allowlist database for a replica: %w", err)
 	}
 	return nil

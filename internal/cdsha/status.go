@@ -34,6 +34,11 @@ type Status struct {
 	GenesisCA string `json:"genesis_ca,omitempty"`
 	// Stuck is why this replica stopped applying the log.
 	Stuck string `json:"stuck,omitempty"`
+	// Checkpoint is the newest state digest this replica recorded, and
+	// Divergence what this leader made of its members' reports
+	// (divergence.go).
+	Checkpoint Point  `json:"checkpoint,omitzero"`
+	Divergence string `json:"divergence,omitempty"`
 }
 
 // Status reports this replica, with no place in Raft until it starts.
@@ -65,6 +70,10 @@ func (n *Node) inRaft(status Status) Status {
 	status.Serving = n.Serving()
 	if safe, leading := n.RollSafe(); leading {
 		status.RollSafe = &safe
+	}
+	status.Checkpoint = n.fsm.dig.lastCheckpoint()
+	if n.leading() {
+		status.Divergence = n.div.status()
 	}
 	status.State = n.raft.State().String()
 	followed := n.following()

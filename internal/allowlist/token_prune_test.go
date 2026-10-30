@@ -185,7 +185,7 @@ func TestSpentTokensSurviveASnapshot(t *testing.T) {
 	}
 
 	fresh, restored := openJournaledStore(t)
-	if err := fresh.Restore(image); err != nil {
+	if err := fresh.Restore(image, store.Digest()); err != nil {
 		t.Fatal(err)
 	}
 	if got := spent(t, fresh); !reflect.DeepEqual(got, want) {

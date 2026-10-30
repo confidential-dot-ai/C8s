@@ -57,6 +57,12 @@ func (s *stops) StuckLocal() bool {
 	return p != nil && p.kind == localFault
 }
 
+// Not stopped, or only slow on the command it is applying.
+func (s *stops) appliedEveryEntry() bool {
+	p := s.reason.Load()
+	return p == nil || p.kind == stalled
+}
+
 func (s *stops) stuckFor() time.Duration {
 	if p := s.reason.Load(); p != nil {
 		return time.Since(p.at)

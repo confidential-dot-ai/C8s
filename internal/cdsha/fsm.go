@@ -42,6 +42,8 @@ const (
 	// KindRenewCA carries the cluster's mesh CA certificate, signed again.
 	KindRenewCA EntryKind = "renew_ca"
 	KindFormat  EntryKind = "format"
+	// KindCheckpoint asks every replica to record the digest of its state.
+	KindCheckpoint EntryKind = "checkpoint"
 )
 
 // Entry is one log entry. Exactly one payload is set, the one its kind names.
@@ -88,6 +90,9 @@ type FSM struct {
 	allowlist *allowlist.Store
 	secrets   *secrets.MemoryStore
 	ledger    *sandboxledger.Ledger
+
+	// dig is what this replica has applied, as it reports it (digest.go).
+	dig digestLog
 
 	applied atomic.Uint64
 	// decrees is the record of applied decrees, newest last.
@@ -136,7 +141,10 @@ func (f *FSM) AppliedIndex() uint64 {
 // Apply applies the log entry at index. Entries apply one at a time, in log
 // order.
 func (f *FSM) Apply(index uint64, entry []byte) Result {
-	defer f.applied.Store(index)
+	// A checkpoint also carries the digest of the state this replica
+	// reached, which the body fills in.
+	var atCheckpoint digest
+	defer func() { f.applyingDone(index, entry, atCheckpoint) }()
 	// Deferred in this order, so the command's return is recorded (LIFO)
 	// before endStall reads it.
 	defer f.endStall()
@@ -149,6 +157,15 @@ func (f *FSM) Apply(index uint64, entry []byte) Result {
 	if format := cmp.Or(e.Format, baseFormat); format > f.readable {
 		return Result{Stop: f.stop(fmt.Errorf("%w: entry %d needs format %d, and this replica reads up to %d", ErrNewerFormat, index, format, f.readable))}
 	}
+	if e.Kind == KindCheckpoint {
+		// INVARIANT: only a state that applied every entry up to here votes
+		// at the checkpoint, as replicas stopped at one entry hold the same
+		// wrong state (divergence.go).
+		if f.appliedEveryEntry() {
+			atCheckpoint = f.digestAtCheckpoint()
+		}
+		return Result{}
+	}
 	res := f.applyRecovering(index, e)
 	// The entry is committed, and the replicas whose stores took it hold it.
 	// One that could not write it here must not serve on as if it had.
@@ -156,6 +173,13 @@ func (f *FSM) Apply(index uint64, entry []byte) Result {
 		res.Stop = f.stopLocal(fmt.Errorf("log entry %d: this replica's allowlist store: %s", index, res.Allowlist.Message))
 	}
 	return res
+}
+
+// The chain covers the entry before the applied index names it, so a leader's
+// own chain answers for every index it reports as applied (divergence.go).
+func (f *FSM) applyingDone(index uint64, entry []byte, atCheckpoint digest) {
+	f.dig.took(index, entry, atCheckpoint)
+	f.applied.Store(index)
 }
 
 // applyRecovering applies e, turning a panic into a deterministic stop: the

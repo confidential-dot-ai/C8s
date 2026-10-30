@@ -20,6 +20,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
+	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
 	"github.com/confidential-dot-ai/c8s/internal/sandboxledger"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
@@ -33,11 +34,12 @@ import (
 
 // testTiming runs the replicas fast enough for a test to watch an election.
 var testTiming = Timing{
-	Heartbeat: 150 * time.Millisecond,
-	Election:  150 * time.Millisecond,
-	Lease:     time.Second,
-	Apply:     3 * time.Second,
-	Tick:      50 * time.Millisecond,
+	Heartbeat:  150 * time.Millisecond,
+	Election:   150 * time.Millisecond,
+	Lease:      time.Second,
+	Apply:      3 * time.Second,
+	Tick:       50 * time.Millisecond,
+	Checkpoint: 200 * time.Millisecond,
 }
 
 // The store limits every replica of the test cluster holds, which its policy
@@ -487,6 +489,31 @@ func (c *liveCluster) leader() *liveReplica {
 	return nil
 }
 
+func newLeaderBesides(t *testing.T, c *liveCluster, deposed *liveReplica) *liveReplica {
+	t.Helper()
+	var elected *liveReplica
+	eventually(t, 15*time.Second, "another replica elected", func() bool {
+		for _, r := range c.replicas {
+			if r != deposed && r.node.raft.State() == raft.Leader {
+				elected = r
+				return true
+			}
+		}
+		return false
+	})
+	return elected
+}
+
+func (c *liveCluster) others(besides *liveReplica) []*liveReplica {
+	var rest []*liveReplica
+	for _, r := range c.replicas {
+		if r != besides {
+			rest = append(rest, r)
+		}
+	}
+	return rest
+}
+
 // follower is any replica the cluster did not elect.
 func (c *liveCluster) follower() *liveReplica {
 	for _, r := range c.replicas {
@@ -633,6 +660,25 @@ func eventually(t *testing.T, within time.Duration, what string, done func() boo
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+// Replaces the document r serves with one holding the named workload.
+func write(r *liveReplica, name string, workload pkgallowlist.Workload) error {
+	document := &pkgallowlist.Allowlist{
+		Schema:    pkgallowlist.Schema,
+		Workloads: map[string]pkgallowlist.Workload{name: workload},
+	}
+	return r.node.Allowlist().ReplaceAll(document, allowlist.OperatorWrite{})
+}
+
+func holds(t *testing.T, r *liveReplica, name string) bool {
+	t.Helper()
+	document, _, err := r.node.Allowlist().LoadAll()
+	if err != nil {
+		t.Fatalf("the document replica %s serves: %v", r.node.member, err)
+	}
+	_, held := document.Workloads[name]
+	return held
 }
 
 // testWorkload is a one-container workload; digest tells one from the next.

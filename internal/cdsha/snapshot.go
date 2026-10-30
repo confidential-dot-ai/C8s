@@ -49,6 +49,10 @@ type snapshot struct {
 	ImageSHA256 string                  `json:"image_sha256"`
 	// Image is the allowlist database image, which follows the header line.
 	Image []byte `json:"-"`
+	// Chain is where the chain of the replica that captured the state stood
+	// at Index (digest.go).
+	Chain   Point   `json:"chain"`
+	Digests Digests `json:"digests"`
 }
 
 // Snapshot is the replicated state captured at one log index. Capturing it
@@ -74,16 +78,55 @@ func (f *FSM) Snapshot() (*Snapshot, error) {
 	if err != nil {
 		return nil, err
 	}
+	sn.Chain = f.dig.latest()
 	image, err := f.allowlist.Dump()
 	if err != nil {
 		return nil, err
 	}
+	sn.Image = image
+	sn.ImageSHA256 = imageDigest(image)
+	if sn.Digests, err = f.capturedDigests(sn); err != nil {
+		return nil, err
+	}
+	// Every part of the capture is read above, so one check covers them all.
 	if err := f.stillAt(sn.Index); err != nil {
 		return nil, err
 	}
-	sn.Image = image
-	sn.ImageSHA256 = imageDigest(image)
 	return &Snapshot{sn: sn}, nil
+}
+
+type storeContent struct {
+	allowlist digest
+	secrets   digest
+	bindings  digest
+}
+
+// Read from the content the capture carries. Stores that hold other content
+// than they applied stop this replica, so state that changed under it reaches
+// no replica that joins.
+func (f *FSM) capturedDigests(sn snapshot) (Digests, error) {
+	scanned, kept, err := f.allowlist.ScanDigest()
+	if err != nil {
+		return Digests{}, err
+	}
+	captured := storeContent{
+		allowlist: digest(scanned),
+		secrets:   digest(secrets.DigestOf(sn.Secrets)),
+		bindings:  digest(sandboxledger.DigestOf(sn.Bindings)),
+	}
+	applied := storeContent{
+		allowlist: digest(kept),
+		secrets:   digest(f.secrets.Digest()),
+		bindings:  digest(f.ledger.Digest()),
+	}
+	if captured != applied {
+		return Digests{}, f.stopLocal(fmt.Errorf("the stores of this replica hold other content at log index %d than they applied: they hold %+v, and they applied %+v", sn.Index, captured, applied))
+	}
+	core, err := coreDigest(sn.ClusterState, sn.MeshCAKey, sn.Decrees)
+	if err != nil {
+		return Digests{}, err
+	}
+	return digestsOf(core, captured.allowlist, captured.secrets, captured.bindings), nil
 }
 
 // stillAt refuses a capture the log moved under: the header is read before
@@ -210,7 +253,7 @@ func (f *FSM) install(sn snapshot) error {
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if err := f.allowlist.Restore(sn.Image); err != nil {
+	if err := f.allowlist.Restore(sn.Image, [32]byte(sn.Digests.Allowlist)); err != nil {
 		return fmt.Errorf("install the allowlist database image: %w", err)
 	}
 	f.secrets.Restore(sn.Secrets)
@@ -219,6 +262,8 @@ func (f *FSM) install(sn snapshot) error {
 	f.ca = ca
 	f.decrees = sn.Decrees
 	f.applied.Store(sn.Index)
+	// This replica reports the chain of the replica that captured the state.
+	f.dig.installed(sn.Chain)
 	return nil
 }
 
@@ -238,7 +283,41 @@ func (f *FSM) checkSnapshot(sn snapshot) error {
 	case sn.ClusterState.ConfigSHA256 != f.launch.ConfigSHA256:
 		return fmt.Errorf("the snapshot is of launch file %s, and this replica boots %s", sn.ClusterState.ConfigSHA256, f.launch.ConfigSHA256)
 	}
+	if err := checkSnapshotDigests(sn); err != nil {
+		return err
+	}
 	return withinPolicy(sn, sn.ClusterState.Policy)
+}
+
+// Refuses a snapshot whose secrets, bindings or state digest are not what its
+// header names, before any store takes it. The database image is checked as
+// it is installed, where its rows are read anyway.
+func checkSnapshotDigests(sn snapshot) error {
+	switch {
+	case sn.Chain.Chain == (digest{}):
+		return fmt.Errorf("%w: it names no chain of the entries it holds", ErrSnapshotDigest)
+	case sn.Chain.Index != sn.Index:
+		return fmt.Errorf("%w: its chain stands at log index %d, and the state it carries at %d", ErrSnapshotDigest, sn.Chain.Index, sn.Index)
+	}
+	core, err := coreDigest(sn.ClusterState, sn.MeshCAKey, sn.Decrees)
+	if err != nil {
+		return err
+	}
+	held := digestsOf(
+		core,
+		sn.Digests.Allowlist,
+		digest(secrets.DigestOf(sn.Secrets)),
+		digest(sandboxledger.DigestOf(sn.Bindings)),
+	)
+	switch {
+	case held.Secrets != sn.Digests.Secrets:
+		return fmt.Errorf("%w: its secrets are %s, and its header names %s", ErrSnapshotDigest, held.Secrets, sn.Digests.Secrets)
+	case held.Bindings != sn.Digests.Bindings:
+		return fmt.Errorf("%w: its sandbox bindings are %s, and its header names %s", ErrSnapshotDigest, held.Bindings, sn.Digests.Bindings)
+	case held.State != sn.Digests.State:
+		return fmt.Errorf("%w: the state it carries is %s, and its header names %s", ErrSnapshotDigest, held.State, sn.Digests.State)
+	}
+	return nil
 }
 
 // withinPolicy refuses a snapshot carrying more than the cluster's limits

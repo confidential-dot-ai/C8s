@@ -193,7 +193,7 @@ func clientWrite(entry Entry) bool {
 
 // leadersOwn is an entry only the cluster's leader writes.
 func leadersOwn(entry Entry) bool {
-	return entry.Format != 0 || entry.SetFormat != 0 || entry.Decree != nil || entry.Doubt != nil || entry.RenewCA != nil
+	return entry.Kind == KindCheckpoint || entry.Format != 0 || entry.SetFormat != 0 || entry.Decree != nil || entry.Doubt != nil || entry.RenewCA != nil
 }
 
 // underLeaderClock stamps the entry with the cluster's one clock: a binding's
