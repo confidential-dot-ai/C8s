@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
@@ -278,24 +279,59 @@ func services(ctx context.Context) (map[string]fixture.Process, fixture.Process,
 	return result, found[0], nil
 }
 
-// The private kubelet listener is pinned to its root-owned local certificate,
-// exactly as the production status adapter does; no unauthenticated pod route.
-func pod(ctx context.Context, uid string) (*corev1.Pod, error) {
-	client := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{
-		MinVersion:         tls.VersionTLS12,
-		InsecureSkipVerify: true, //nolint:gosec // Explicit local certificate pin below.
+// Trust only the bounded root-owned kubelet leaf. Its SAN may name the node
+// instead of loopback, so verify that trusted identity while dialing 127.0.0.1.
+func kubeletTLSConfig(raw []byte) (*tls.Config, error) {
+	if len(raw) > 64<<10 {
+		return nil, errors.New("kubelet certificate exceeds limit")
+	}
+	block, _ := pem.Decode(raw)
+	if block == nil || block.Type != "CERTIFICATE" {
+		return nil, errors.New("kubelet certificate unavailable")
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil, err
+	}
+	names := append([]string{"127.0.0.1"}, cert.DNSNames...)
+	for _, ip := range cert.IPAddresses {
+		names = append(names, ip.String())
+	}
+	serverName := ""
+	for _, name := range names {
+		if name != "" && !strings.Contains(name, "*") && cert.VerifyHostname(name) == nil {
+			serverName = name
+			break
+		}
+	}
+	if serverName == "" {
+		return nil, errors.New("kubelet certificate has no usable identity")
+	}
+	roots := x509.NewCertPool()
+	roots.AddCert(cert)
+	return &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		RootCAs:    roots,
+		ServerName: serverName,
 		VerifyConnection: func(cs tls.ConnectionState) error {
-			raw, err := read(podstatus.KubeletCertPath, 64<<10)
-			if err != nil {
-				return err
-			}
-			cert, _ := pem.Decode(raw)
-			if cert == nil || cert.Type != "CERTIFICATE" || len(cs.PeerCertificates) == 0 || !bytes.Equal(cs.PeerCertificates[0].Raw, cert.Bytes) {
+			if len(cs.PeerCertificates) == 0 || !bytes.Equal(cs.PeerCertificates[0].Raw, cert.Raw) {
 				return errors.New("kubelet certificate differs")
 			}
 			return nil
 		},
-	}}}
+	}, nil
+}
+
+func pod(ctx context.Context, uid string) (*corev1.Pod, error) {
+	raw, err := read(podstatus.KubeletCertPath, 64<<10)
+	if err != nil {
+		return nil, err
+	}
+	config, err := kubeletTLSConfig(raw)
+	if err != nil {
+		return nil, err
+	}
+	client := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{TLSClientConfig: config}}
 	defer client.CloseIdleConnections()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://127.0.0.1:10250/pods", nil)
 	if err != nil {
@@ -309,7 +345,7 @@ func pod(ctx context.Context, uid string) (*corev1.Pod, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, errors.New("kubelet unavailable")
 	}
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	raw, err = io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return nil, err
 	}

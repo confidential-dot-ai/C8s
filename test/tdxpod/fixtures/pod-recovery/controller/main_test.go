@@ -1,11 +1,24 @@
 package main
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
+	"io"
+	"log"
+	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
+
+	kubecert "k8s.io/client-go/util/cert"
 
 	fixture "github.com/confidential-dot-ai/c8s/test/tdxpod/fixtures/pod-recovery"
 )
@@ -59,5 +72,88 @@ func TestRetainedPolicyChangesCannotHideBehindRevision(t *testing.T) {
 		if a == got {
 			t.Fatal("lost policy or history was hidden")
 		}
+	}
+}
+
+func TestKubeletTLSUsesLocalLeafIdentityAndStandardVerification(t *testing.T) {
+	type material struct {
+		pem  []byte
+		pair tls.Certificate
+	}
+	parse := func(cert, key []byte) material {
+		t.Helper()
+		pair, err := tls.X509KeyPair(cert, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return material{cert, pair}
+	}
+	selfSigned := func(expired, loopback bool) material {
+		t.Helper()
+		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		end := time.Now().Add(time.Hour)
+		if expired {
+			end = time.Now().Add(-time.Minute)
+		}
+		template := &x509.Certificate{SerialNumber: big.NewInt(1), DNSNames: []string{"kubelet.test"},
+			NotBefore: time.Now().Add(-time.Hour), NotAfter: end, KeyUsage: x509.KeyUsageDigitalSignature,
+			ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
+		if loopback {
+			template.IPAddresses = []net.IP{net.ParseIP("127.0.0.1")}
+		}
+		der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		keyDER, err := x509.MarshalECPrivateKey(key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return parse(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}))
+	}
+	valid, wrong, expired, loopback := selfSigned(false, false), selfSigned(false, false), selfSigned(true, false), selfSigned(false, true)
+	certPEM, keyPEM, err := kubecert.GenerateSelfSignedCertKey("kubelet.test", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kubelet := parse(certPEM, keyPEM)
+	for _, tc := range []struct {
+		name          string
+		trusted, peer material
+		serverName    string
+		accept        bool
+	}{
+		{"self-signed DNS leaf over loopback", valid, valid, "kubelet.test", true},
+		{"actual kubelet leaf and private CA", kubelet, kubelet, "kubelet.test", true},
+		{"prefer valid loopback SAN", loopback, loopback, "127.0.0.1", true},
+		{"wrong certificate with same SAN", valid, wrong, "kubelet.test", false},
+		{"expired pinned certificate", expired, expired, "kubelet.test", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config, err := kubeletTLSConfig(tc.trusted.pem)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if config.ServerName != tc.serverName || config.InsecureSkipVerify {
+				t.Fatal("standard local identity verification disabled")
+			}
+			server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+			server.Config.ErrorLog = log.New(io.Discard, "", 0)
+			server.TLS = &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{tc.peer.pair}}
+			server.StartTLS()
+			defer server.Close()
+			client := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{TLSClientConfig: config}}
+			defer client.CloseIdleConnections()
+			response, err := client.Get(server.URL)
+			if response != nil {
+				response.Body.Close()
+			}
+			if (err == nil) != tc.accept {
+				t.Fatalf("accept=%v, handshake error=%v", tc.accept, err)
+			}
+		})
 	}
 }
