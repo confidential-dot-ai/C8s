@@ -21,7 +21,7 @@ func (p *plugin) prepareCDSAddress() error {
 	if !p.cfg.injectsCredentialClients() {
 		return nil
 	}
-	if p.cfg.cdsAddress == "" {
+	if !p.cfg.namesCDS() {
 		return fmt.Errorf("nothing names the CDS this node reaches: a measured config names it in allowlist.pull.url, and an install in allowlist.pull.cds_address_file")
 	}
 	path, err := renderNodeDocument(renderedCDSAddressName, cmdsutil.FormatCDSAddress(p.cfg.cdsAddress))
@@ -32,58 +32,60 @@ func (p *plugin) prepareCDSAddress() error {
 	return nil
 }
 
-// loadCDSAddress is the <host>:<port> this node's CDS serves on: the address
-// file an install mounts beside this config, else the URL a measured config
-// carries, which launch staging wrote from the signed document
-// (internal/cmds/nodeservices). "" names no CDS.
-func loadCDSAddress(c pullConfig) (string, error) {
-	if c.URL != "" {
-		address, err := cmdsutil.CDSURLAddress(c.URL)
+// loadCDSAddress is where this node's CDS serves, from the one source this
+// config names (cdsSource): the URL a measured config carries, which launch
+// staging wrote from the signed document (internal/cmds/nodeservices), or the
+// address file an install mounts beside this config. The zero address names
+// no CDS.
+func loadCDSAddress(c pullConfig) (cmdsutil.CDSAddress, error) {
+	source, err := c.cdsSource()
+	if err != nil {
+		return cmdsutil.CDSAddress{}, err
+	}
+	switch {
+	case source.URL != "":
+		address, err := cmdsutil.CDSURLAddress(source.URL)
 		if err != nil {
-			return "", fmt.Errorf("allowlist.pull.url %w", err)
+			return cmdsutil.CDSAddress{}, fmt.Errorf("allowlist.pull.url %w", err)
 		}
 		return address, nil
+	case source.AddressFile == "":
+		return cmdsutil.CDSAddress{}, nil
 	}
-	if c.CDSAddressFile == "" {
-		return "", nil
-	}
-	address, mounted, err := cmdsutil.ResolveCDSAddress(c.CDSAddressFile, "")
+	address, mounted, err := cmdsutil.ResolveCDSAddress(source.AddressFile, "")
 	if err != nil {
-		return "", err
+		return cmdsutil.CDSAddress{}, err
 	}
 	if !mounted {
-		return "", fmt.Errorf("allowlist.pull.cds_address_file %s: no such file", c.CDSAddressFile)
+		return cmdsutil.CDSAddress{}, fmt.Errorf("allowlist.pull.cds_address_file %s: no such file", source.AddressFile)
 	}
 	return address, nil
 }
 
-// bindCredentialRole completes an install's mesh policy with the port this
-// node's CDS serves on, so the pod ruleset admits that port outside the
-// cluster and nothing else, and validates the policy it completed. A measured
-// policy arrives bound, because a baked node's CDS is staged into it at launch
-// (internal/cmds/nodeservices), and that binding stands.
+// bindCredentialRole completes an install's mesh policy with the port address
+// serves on, so the pod ruleset admits that port outside the cluster and
+// nothing else, and validates the policy it completed. A measured policy
+// arrives bound, because a baked node's CDS is staged into it at launch
+// (internal/cmds/nodeservices), and that binding stands. A node that names a
+// CDS and injects clients into its pods must end up with one bound either
+// way: without it their sockets reach no port at all.
 //
 // The mesh gate copies the policy, so this belongs to loading the config.
-func bindCredentialRole(cfg *config) error {
-	if _, bound := cfg.credentialRole(); bound {
+func bindCredentialRole(cfg *config, address cmdsutil.CDSAddress, installed bool) error {
+	switch _, bound := cfg.credentialRole(); {
+	case bound:
 		return nil
+	case installed:
+		cfg.Mesh.Roles = append(cfg.Mesh.Roles, roleBinding{
+			Name: CredentialRole,
+			UID:  workloadclaims.CredentialsUID,
+			Port: address.Port,
+		})
+		return cfg.Mesh.validate()
+	case cfg.injectsCredentialClients() && cfg.namesCDS():
+		return fmt.Errorf("mesh.roles binds no reserved uid to the %s role, so the clients this node injects would reach no port of %s", CredentialRole, address)
 	}
-	if cfg.Allowlist.Pull.CDSAddressFile == "" {
-		// Nothing an install mounted names the CDS this node reaches. A node
-		// that injects credential clients refuses to start without a bound
-		// role; one that injects none needs no binding (prepareCDSAddress).
-		return nil
-	}
-	_, port, err := cmdsutil.SplitCDSAddress(cfg.cdsAddress)
-	if err != nil {
-		return err
-	}
-	cfg.Mesh.Roles = append(cfg.Mesh.Roles, roleBinding{
-		Name: CredentialRole,
-		UID:  workloadclaims.CredentialsUID,
-		Port: port,
-	})
-	return cfg.Mesh.validate()
+	return nil
 }
 
 // credentialRole is this node's binding of the credential role.

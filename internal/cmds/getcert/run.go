@@ -251,7 +251,7 @@ func run(cfg config) error {
 		return err
 	}
 	if fromNode {
-		cfg.CDSURL = cmdsutil.CDSURL(address)
+		cfg.CDSURL = address.URL()
 	}
 	if cfg.CDSURL == "" {
 		return errors.New("--cds-url is required: no node hands this client a CDS endpoint")

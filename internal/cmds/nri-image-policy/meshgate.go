@@ -461,11 +461,12 @@ func (g *meshGate) bindEntry(pod *api.PodSandbox, decision exitDecision) error {
 	return nil
 }
 
-// requireOffLimits refuses an exit into this cluster, onto this node or onto
-// a port a platform role dials: a connection to a member leaves the pod
-// through the mesh or not at all, and the node's own services and this
-// cluster's CDS are reached under their own rules, by the identity those
-// rules name, or not at all.
+// requireOffLimits refuses an exit into this cluster, onto this node's own
+// address or the resolver's, or onto a port a platform role dials: a
+// connection to a member leaves the pod through the mesh or not at all, and
+// the node's own services and this cluster's CDS are reached by the identity
+// their own rules name, or not at all. An exit is every socket of the pod,
+// so it may not stand in for one of those rules.
 func (g *meshGate) requireOffLimits(exits []exit) error {
 	if err := g.policy.requireOutsideCluster(exits); err != nil {
 		return err
@@ -478,7 +479,7 @@ func (g *meshGate) requireOffLimits(exits []exit) error {
 	for _, e := range exits {
 		for _, addr := range offLimits {
 			if addr.IsValid() && e.Range.Contains(addr) {
-				return fmt.Errorf("exit %s port %d reaches %s, an address of this node or of a service a platform role is bound to", e.Range, e.Port, addr)
+				return fmt.Errorf("exit %s port %d reaches %s, this node's own address or its resolver's", e.Range, e.Port, addr)
 			}
 		}
 		for _, role := range g.policy.Roles {

@@ -158,7 +158,7 @@ func TestServerRoleAddsOnlyItsOwnRules(t *testing.T) {
 		"skuid 1341 meta nfproto ipv4 ip daddr 10.43.0.2 meta l4proto tcp th dport 8400 return # server-service-10.43.0.2-8400",
 		"skuid 1341 meta nfproto ipv4 ip daddr 10.52.0.0 & 255.255.0.0 meta l4proto tcp return # server-upstream-in-cluster-10.52.0.0/16",
 		"skuid 1341 meta nfproto ipv4 ip daddr 10.53.0.0 & 255.255.0.0 meta l4proto tcp return # server-upstream-in-cluster-10.53.0.0/16",
-		"skuid 1341 meta l4proto tcp th dport 8443 return # server-upstream-outside-8443",
+		"skuid 1341 meta nfproto ipv4 meta l4proto tcp th dport 8443 return # role-1341-outside-8443",
 		"skuid 1340 meta nfproto ipv4 ip daddr 10.52.0.0 & 255.255.0.0 meta l4proto tcp th dport 443 redirect to :15001 # server-egress-443-in-cluster-10.52.0.0/16",
 		"skuid 1340 meta nfproto ipv4 ip daddr 10.53.0.0 & 255.255.0.0 meta l4proto tcp th dport 443 redirect to :15001 # server-egress-443-in-cluster-10.53.0.0/16",
 		"skuid 1340 meta l4proto tcp th dport 443 return # server-egress-443",
@@ -167,7 +167,7 @@ func TestServerRoleAddsOnlyItsOwnRules(t *testing.T) {
 		"skuid 1341 meta nfproto ipv4 ip daddr 10.43.0.2 meta l4proto tcp th dport 8400 accept # server-service-10.43.0.2-8400",
 		"skuid 1341 meta nfproto ipv4 ip daddr 10.52.0.0 & 255.255.0.0 meta l4proto tcp accept # server-upstream-in-cluster-10.52.0.0/16",
 		"skuid 1341 meta nfproto ipv4 ip daddr 10.53.0.0 & 255.255.0.0 meta l4proto tcp accept # server-upstream-in-cluster-10.53.0.0/16",
-		"skuid 1341 meta l4proto tcp th dport 8443 accept # server-upstream-outside-8443",
+		"skuid 1341 meta nfproto ipv4 meta l4proto tcp th dport 8443 accept # role-1341-outside-8443",
 		"skuid 1340 meta nfproto ipv4 ip daddr 10.52.0.0 & 255.255.0.0 meta l4proto tcp th dport 443 drop # server-egress-443-in-cluster-10.52.0.0/16",
 		"skuid 1340 meta nfproto ipv4 ip daddr 10.53.0.0 & 255.255.0.0 meta l4proto tcp th dport 443 drop # server-egress-443-in-cluster-10.53.0.0/16",
 		"skuid 1340 meta l4proto tcp th dport 443 accept # server-egress-443",
@@ -195,7 +195,7 @@ func TestServerRoutingIdentityReachesItsServiceAndTheCluster(t *testing.T) {
 	service := policy.Server.Services[0]
 	match := fmt.Sprintf("skuid %d meta nfproto ipv4 ip daddr %s meta l4proto tcp th dport %d",
 		policy.Server.Upstream, service.Addr, service.Port)
-	outside := fmt.Sprintf("skuid %d meta l4proto tcp th dport %d", policy.Server.Upstream, policy.Server.OutsidePort)
+	outside := fmt.Sprintf("skuid %d meta nfproto ipv4 meta l4proto tcp th dport %d", policy.Server.Upstream, policy.Server.OutsidePort)
 	var inCluster []string
 	for _, in := range policy.ClusterRanges {
 		inCluster = append(inCluster, fmt.Sprintf("skuid %d meta nfproto ipv4 ip daddr %s & 255.255.0.0 meta l4proto tcp",
@@ -247,7 +247,7 @@ func TestARolePortStopsAtTheClusterRanges(t *testing.T) {
 	policy := testPolicy()
 	role := policy.Roles[0]
 	output := renderedRules(filterOutput(policy).rules)
-	accept := fmt.Sprintf("skuid %d meta l4proto tcp th dport %d accept", role.UID, role.OutsidePort)
+	accept := fmt.Sprintf("skuid %d meta nfproto ipv4 meta l4proto tcp th dport %d accept", role.UID, role.OutsidePort)
 	at := slices.Index(output, accept)
 	if at < 0 {
 		t.Fatalf("the role never reaches its port:\n%s", strings.Join(output, "\n"))

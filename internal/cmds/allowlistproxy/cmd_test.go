@@ -245,7 +245,7 @@ func nodeCDSFiles(t *testing.T) (address, pins, verifier string) {
 	t.Helper()
 	dir := t.TempDir()
 	address = filepath.Join(dir, "cds-address")
-	if err := os.WriteFile(address, cmdsutil.FormatCDSAddress("cds.example.org:30808"), 0o600); err != nil {
+	if err := os.WriteFile(address, cmdsutil.FormatCDSAddress(cmdsutil.CDSAddress{Host: "cds.example.org", Port: 30808}), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	pins = filepath.Join(dir, "cds-pins.json")

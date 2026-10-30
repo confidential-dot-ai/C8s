@@ -194,7 +194,7 @@ func (cfg config) resolveCDS() (cds, error) {
 	}
 	if endpointFromNode {
 		return cds{
-			url:  cmdsutil.CDSURL(address),
+			url:  address.URL(),
 			pins: pins,
 		}, nil
 	}

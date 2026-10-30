@@ -75,7 +75,7 @@ func (c *Config) ResolveCDSEndpoint() error {
 		return err
 	}
 	if fromNode {
-		c.CDSURL = cmdsutil.CDSURL(address)
+		c.CDSURL = address.URL()
 	}
 	slog.Info("CDS endpoint resolved", "cds_url", c.CDSURL, "from_node", fromNode)
 	return nil
