@@ -102,6 +102,9 @@ type pullConfig struct {
 	Timeout               time.Duration `yaml:"timeout"`                 // per-request timeout; > 0 required when a CDS is named
 	AttestationApiURL     string        `yaml:"attestation_api_url"`     // required for https pull
 	CDSMeasurementsConfig string        `yaml:"cds_measurements_config"` // the CDS pin document, every entry bound to the launch file CDS runs on
+	// CDSPinFloor is the lowest cluster version this node takes a CDS pin
+	// decree at, from the launch document it booted.
+	CDSPinFloor uint64 `yaml:"cds_pin_floor"`
 	// MeasurePolicies extends RTMR[3] (TDX) with each pulled policy before
 	// applying it. Off by default: verifiers on attestation-go predating
 	// runtime extensions, and flat RTMR[3] pins, still require the bare

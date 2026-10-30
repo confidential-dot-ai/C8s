@@ -183,8 +183,8 @@ func setupLogging(verbose bool) {
 
 // newCDSClient builds the attest and allowlist clients over one armTLS-pinned
 // HTTP client, so the policy watch trusts CDS exactly as issuance does.
-func newCDSClient(cfg config) (attestclient.Client, allowlistclient.Client, error) {
-	httpClient, err := cdsHTTPClient(cfg)
+func newCDSClient(ctx context.Context, cfg config) (attestclient.Client, allowlistclient.Client, error) {
+	httpClient, err := cdsHTTPClient(ctx, cfg)
 	if err != nil {
 		return attestclient.Client{}, allowlistclient.Client{}, err
 	}
@@ -193,7 +193,7 @@ func newCDSClient(cfg config) (attestclient.Client, allowlistclient.Client, erro
 	return client, allowlistclient.NewClientWithHTTP(cfg.CDSURL, httpClient), nil
 }
 
-func cdsHTTPClient(cfg config) (*http.Client, error) {
+func cdsHTTPClient(ctx context.Context, cfg config) (*http.Client, error) {
 	parsed, err := url.Parse(cfg.CDSURL)
 	if err != nil {
 		return nil, fmt.Errorf("--cds-url: %w", err)
@@ -207,28 +207,28 @@ func cdsHTTPClient(cfg config) (*http.Client, error) {
 		return nil, fmt.Errorf("--cds-url must use https (armTLS); got scheme %q", parsed.Scheme)
 	}
 
-	pins, err := cdsPins(cfg)
+	pins, err := cdsPins(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
-	client, err := armtls.NewVerifyingHTTPClient(pins, cfg.AttestationApiURL)
+	client, err := armtls.NewRefreshingHTTPClient(pins, cfg.AttestationApiURL)
 	if err != nil {
 		return nil, fmt.Errorf("cds armTLS client: %w", err)
 	}
 	return client, nil
 }
 
-func cdsPins(cfg config) (armtls.Pins, error) {
-	policy, fromNode, err := cmdsutil.ResolveCDSPins(workloadclaims.CDSPinsPath,
+func cdsPins(ctx context.Context, cfg config) (armtls.PinSource, error) {
+	pins, fromNode, err := cmdsutil.ResolveCDSPins(ctx, workloadclaims.CDSPinsPath,
 		cmdsutil.ImagePolicySource{
 			File: cfg.MeasurementsConfig,
 			JSON: cfg.MeasurementsConfigJSON,
 		})
 	if err != nil {
-		return armtls.Pins{}, err
+		return nil, err
 	}
 	slog.Info("CDS pins resolved", "from_node", fromNode)
-	return armtls.Pins(policy), nil
+	return pins, nil
 }
 
 // obtainCertFn is a var so renewal-loop tests can observe attempts.
@@ -283,14 +283,14 @@ func run(cfg config) error {
 	}
 	slog.Debug("credential volume validated")
 
-	client, policyClient, err := newCDSClient(cfg)
-	if err != nil {
-		return err
-	}
-
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 	ctx = cmdsutil.WatchNodeIP(ctx, rawAttestationURL, attestationURL)
+
+	client, policyClient, err := newCDSClient(ctx, cfg)
+	if err != nil {
+		return err
+	}
 
 	creds, err := resumeCredentials(ctx, cfg, volume)
 	if err != nil {

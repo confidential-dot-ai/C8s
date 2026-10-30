@@ -93,6 +93,7 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 	}
 	pull["url"] = cmdsutil.CDSURL(d.CDS.Address)
 	pull["cds_measurements_config"] = PublicDir + "/cds.json"
+	pull["cds_pin_floor"] = d.CDS.PinFloor
 	mesh, declared := floor["mesh"]
 	if !declared {
 		return fmt.Errorf("baked NRI policy missing mesh")

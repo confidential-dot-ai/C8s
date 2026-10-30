@@ -27,6 +27,7 @@ import (
 	ctrdresolver "github.com/confidential-dot-ai/c8s/internal/containerd"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
@@ -491,11 +492,16 @@ func holdNRISocket(t *testing.T) {
 
 func TestAllowlistPullHTTPClient_ValidPin(t *testing.T) {
 	timeout := 7 * time.Second
-	client, err := allowlistPullHTTPClient(pullConfig{
+	pulled := pullConfig{
 		CDSMeasurementsConfig: testCDSPinFile(t),
 		AttestationApiURL:     "http://127.0.0.1:30840",
 		Timeout:               timeout,
-	})
+	}
+	set, err := pulled.policySet()
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := allowlistPullHTTPClient(pulled, armtls.FixedPins(set))
 	if err != nil {
 		t.Fatalf("allowlistPullHTTPClient: %v", err)
 	}
@@ -505,12 +511,12 @@ func TestAllowlistPullHTTPClient_ValidPin(t *testing.T) {
 }
 
 // The plugin pulls its allowlist from a pinned CDS: with no pin document the
-// client is refused rather than built against any attested peer.
-func TestAllowlistPullHTTPClient_RefusesWithoutPins(t *testing.T) {
-	_, err := allowlistPullHTTPClient(pullConfig{
+// node has no pin source, so no client is built against any attested peer.
+func TestTheNodePinSourceRefusesWithoutPins(t *testing.T) {
+	_, _, err := pullConfig{
 		AttestationApiURL: "http://127.0.0.1:30840",
 		Timeout:           time.Second,
-	})
+	}.cdsPinSource(discardLogger())
 	if !errors.Is(err, cmdsutil.ErrCDSPinUnbound) {
 		t.Fatalf("err = %v, want errors.Is cmdsutil.ErrCDSPinUnbound", err)
 	}
@@ -791,12 +797,12 @@ func TestStartHealthServer_InvalidAddr(t *testing.T) {
 	}
 }
 
-func TestAllowlistPullHTTPClient_InvalidPin(t *testing.T) {
-	_, err := allowlistPullHTTPClient(pullConfig{
+func TestTheNodePinSourceRefusesAnInvalidPin(t *testing.T) {
+	_, _, err := pullConfig{
 		CDSMeasurementsConfig: cdsPinFile(t, `{"schema_version":"1","tee":"sev-snp"}`),
 		AttestationApiURL:     "http://localhost:30840",
 		Timeout:               time.Second,
-	})
+	}.cdsPinSource(discardLogger())
 	if err == nil {
 		t.Fatal("expected error for an unparseable CDS pin")
 	}

@@ -4,15 +4,21 @@ package cdsha_test
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
+	"github.com/confidential-dot-ai/attestation-go/refvalues"
+	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
+	"github.com/confidential-dot-ai/c8s/internal/cdspins"
 	"github.com/confidential-dot-ai/c8s/internal/testutil"
 )
 
@@ -626,3 +632,69 @@ func TestTheClusterRollsOntoANewCDSImageAndRefusesTheRetiredOne(t *testing.T) {
 // Longer than a replica of a pinned image needs to join, over the discovery
 // passes a c8s_dev build makes.
 const longerThanAJoinTakes = 20 * time.Second
+
+// A node-side client starts from the CDS pins its launch document carries,
+// reads the operator's decree from a replica it already pins, and ends up
+// holding CDS to the images the cluster accepts.
+func TestANodeSideClientFollowsAnImageRoll(t *testing.T) {
+	c := newCluster(t, threeReplicas)
+	leading := c.waitLeader(30 * time.Second)
+	started, _ := c.status(leading)
+	node := c.nodeClient(leading)
+
+	if got := len(node.Current().Images); got != 1 {
+		t.Fatalf("the node pins %d images, want the one its launch document carries", got)
+	}
+	intent, _ := c.decreePins(leading, started.Version, testutil.TestMeasurement, nextCDSImage)
+	c.waitFor("every replica to hold the pin decree", time.Minute, func() bool {
+		return c.allApplied(intent, started.Version+1)
+	})
+
+	if err := node.Refresh(); err != nil {
+		t.Fatalf("the node looked for the decree: %v", err)
+	}
+	pinned := node.Current()
+	if len(pinned.Images) != 2 {
+		t.Fatalf("the node pins %+v, want the image being replaced and the one replacing it", pinned.Images)
+	}
+	for _, image := range pinned.Images {
+		if !bytes.Equal(image.LaunchFile, c.config) {
+			t.Fatalf("the node pins %s against another launch file than the one it holds", image.Name)
+		}
+	}
+	// The decree names the version it applies on, which is the one the
+	// cluster held when the operator signed it.
+	applying, held := node.Version()
+	if !held || applying != started.Version {
+		t.Fatalf("the node holds decree version %d (held %v), want the decree applying on %d", applying, held, started.Version)
+	}
+}
+
+// nodeClient is a node's CDS pin source over one replica's armTLS.
+func (c *cluster) nodeClient(r *replica) *cdspins.Source {
+	c.t.Helper()
+	digest, err := hex.DecodeString(testutil.TestMeasurement)
+	if err != nil {
+		c.t.Fatal(err)
+	}
+	bootstrap := refvalues.ReferenceValues{
+		Family: teetypes.FamilySNP,
+		Images: []remote.ImagePin{{
+			Name:       "cds",
+			Digest:     digest,
+			LaunchFile: c.config,
+		}},
+	}
+	api := c.attestationAPI("the node", testutil.TestMeasurement)
+	source, err := cdspins.New(cdspins.Config{
+		Bootstrap:   bootstrap,
+		Attested:    cdspins.AttestedHTTPFetch(r.base, api),
+		Fetch:       cdspins.HTTPFetch(r.base),
+		StateFile:   filepath.Join(c.dir, "node-cds-decree.json"),
+		MinInterval: time.Nanosecond,
+	})
+	if err != nil {
+		c.t.Fatalf("the node's CDS pin source: %v", err)
+	}
+	return source
+}

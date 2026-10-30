@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -675,7 +676,7 @@ func TestW6OperatorKeySource(t *testing.T) {
 func TestRoutingRefusesAnUnpinnedCDS(t *testing.T) {
 	cfg := routedRunConfig(t, freePort(t))
 	cfg.routing.imagePolicyFile = ""
-	if _, err := newRoutingEngine(cfg, NewBindings(), slog.New(slog.DiscardHandler)); !errors.Is(err, cmdsutil.ErrCDSPinUnbound) {
+	if _, err := newRoutingEngine(t.Context(), cfg, NewBindings(), slog.New(slog.DiscardHandler)); !errors.Is(err, cmdsutil.ErrCDSPinUnbound) {
 		t.Fatalf("newRoutingEngine() = %v, want errors.Is cmdsutil.ErrCDSPinUnbound", err)
 	}
 }
@@ -810,5 +811,32 @@ func TestCheckVerifierEndpoint(t *testing.T) {
 	// plaintext endpoint beyond this pod is refused whatever it names.
 	if err := checkVerifierEndpoint("http://"+node+":8400", filepath.Join(t.TempDir(), "absent")); err == nil {
 		t.Fatal("a plaintext verifier was admitted with no published node address")
+	}
+}
+
+// The router is held to the CDS pins its node follows, so a CDS image roll
+// does not cost it the route manifest. Where the node mounts none, its own
+// --image-policy-file stands.
+func TestTheRouteSourceFollowsTheNodePins(t *testing.T) {
+	mounted := filepath.Join(t.TempDir(), "router-cds-pins.json")
+	if err := os.WriteFile(mounted, []byte(testutil.CDSPinDocument(testutil.NextCDSImage, testutil.CDSLaunchFile)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	flags := routingConfig{imagePolicyFile: testutil.CDSPinFile(t)}
+
+	flagged, err := routeSourcePins(t.Context(), flags, filepath.Join(t.TempDir(), "absent.json"))
+	if err != nil {
+		t.Fatalf("routeSourcePins: %v", err)
+	}
+	if got := hex.EncodeToString(flagged.Current().Images[0].Digest); got != testutil.TestMeasurement {
+		t.Fatalf("pins name %s, want --image-policy-file's image", got)
+	}
+
+	followed, err := routeSourcePins(t.Context(), flags, mounted)
+	if err != nil {
+		t.Fatalf("routeSourcePins: %v", err)
+	}
+	if got := hex.EncodeToString(followed.Current().Images[0].Digest); got != testutil.NextCDSImage {
+		t.Fatalf("pins name %s, want the image the node follows", got)
 	}
 }
