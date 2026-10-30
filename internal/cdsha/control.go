@@ -47,6 +47,9 @@ type controlRequest struct {
 	Entry json.RawMessage `json:"entry,omitempty"`
 	// Decree is the signed decree the leader is to apply (opDecree).
 	Decree json.RawMessage `json:"decree,omitempty"`
+	// Digests are where the member asking stands; the leader compares them
+	// with its own (opRead).
+	Digests *DigestReport `json:"digests,omitempty"`
 }
 
 // controlAnswer: Member and Joined answer every request; the rest belongs to
@@ -75,6 +78,9 @@ type controlAnswer struct {
 	// Term and Stuck answer opStanding.
 	Term  uint64 `json:"term,omitempty"`
 	Stuck string `json:"stuck,omitempty"`
+	// Diverged is why the member asking holds another state than the
+	// majority of the voters (opRead, divergence.go).
+	Diverged string `json:"diverged,omitempty"`
 	// Result is what the state machine made of a forwarded write.
 	Result json.RawMessage `json:"result,omitempty"`
 	// Delivered is what the cluster made of a decree another replica took.
@@ -97,7 +103,7 @@ func (n *Node) answerControl(from peer, request controlRequest) controlAnswer {
 	case opDecree:
 		return n.answerDecree(request.Decree, answer)
 	case opRead:
-		return n.answerRead(answer)
+		return n.answerRead(from, request, answer)
 	case opStanding:
 		return n.answerStanding(answer)
 	}

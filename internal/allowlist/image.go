@@ -3,6 +3,7 @@ package allowlist
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"sync/atomic"
 
@@ -65,9 +66,14 @@ func (s *Store) vacuumInto(uri string) error {
 	return nil
 }
 
-// Restore replaces the whole database with an image from Dump. An image
-// SQLite cannot read leaves the store as it was.
-func (s *Store) Restore(image []byte) error {
+var ErrImageContent = errors.New("allowlist: the database image holds other content than the digest it was restored under")
+
+// Restore replaces the whole database with an image from Dump, whose rows
+// must hold the content the digest names. The image is read on a scratch
+// connection first, then copied in with the SQLite backup API in one step,
+// so an image SQLite cannot read, or that holds other content, leaves the
+// store as it was.
+func (s *Store) Restore(image []byte, content [32]byte) error {
 	ctx := context.Background()
 	scratch, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
@@ -82,11 +88,32 @@ func (s *Store) Restore(image []byte) error {
 	if err := readImage(ctx, conn, image); err != nil {
 		return err
 	}
+	return s.replaceIfItHolds(ctx, conn, content)
+}
+
+// For a store whose content comes from the log alone.
+func (s *Store) Empty() error {
+	fresh, err := OpenInMemory()
+	if err != nil {
+		return err
+	}
+	defer fresh.Close()
+	image, err := fresh.Dump()
+	if err != nil {
+		return err
+	}
+	return s.Restore(image, fresh.Digest())
+}
+
+func (s *Store) replaceIfItHolds(ctx context.Context, conn *sql.Conn, content [32]byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	acc, err := scanDigest(ctx, conn)
 	if err != nil {
 		return fmt.Errorf("restore allowlist: content digest: %w", err)
+	}
+	if acc.Sum() != content {
+		return fmt.Errorf("%w: it holds %x, and the digest names %x", ErrImageContent, acc.Sum(), content)
 	}
 	if err := copyDatabase(conn, s.uri); err != nil {
 		return fmt.Errorf("restore allowlist: %w", err)

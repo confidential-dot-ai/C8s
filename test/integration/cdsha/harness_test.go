@@ -198,6 +198,26 @@ func (c *cluster) freeAllowlist(r *replica) {
 	c.logf("gave the allowlist database of replica %d back", r.index)
 }
 
+// The digest hooks of the replica's store never see the change, as they would
+// not see memory or a disk corrupting its state.
+func (c *cluster) changeAllowlistUnderIt(r *replica) {
+	c.t.Helper()
+	outside, err := sql.Open("sqlite", "file:"+r.db+"?_pragma=busy_timeout(10000)")
+	if err != nil {
+		c.t.Fatal(err)
+	}
+	defer outside.Close()
+	changed, err := outside.Exec(`UPDATE workload_entry SET name = 'changed-under-replica-' || name`)
+	if err != nil {
+		c.t.Fatalf("change the allowlist database of replica %d under it: %v", r.index, err)
+	}
+	rows, err := changed.RowsAffected()
+	if err != nil || rows == 0 {
+		c.t.Fatalf("the harness changed %d rows of the allowlist database of replica %d: %v", rows, r.index, err)
+	}
+	c.logf("changed %d rows of the allowlist database of replica %d under it", rows, r.index)
+}
+
 // An exit is what the replica's unit restarts.
 func (c *cluster) waitExit(r *replica, within time.Duration) {
 	c.t.Helper()

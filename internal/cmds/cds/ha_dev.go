@@ -16,9 +16,10 @@ const servesReplicas = true
 // lease lapse and a seat change. Every timer it leaves unset is the release's
 // own.
 var haTiming = cdsha.Timing{
-	Heartbeat: 200 * time.Millisecond,
-	Election:  200 * time.Millisecond,
-	Lease:     time.Second,
-	Tick:      100 * time.Millisecond,
-	DeadAfter: 5 * time.Second,
+	Heartbeat:  200 * time.Millisecond,
+	Election:   200 * time.Millisecond,
+	Lease:      time.Second,
+	Tick:       100 * time.Millisecond,
+	DeadAfter:  5 * time.Second,
+	Checkpoint: time.Second,
 }

@@ -38,26 +38,31 @@ type Timing struct {
 	// DeadAfter is how long an answer counts as live. Within it, an address
 	// several members answer at belongs to none of them.
 	DeadAfter time.Duration
+	// Checkpoint is how often the leader asks every replica to record the
+	// digest of its state (divergence.go).
+	Checkpoint time.Duration
 }
 
 // releaseTiming is the timer of every field a caller leaves unset.
 var releaseTiming = Timing{
-	Heartbeat: time.Second,
-	Election:  time.Second,
-	Lease:     5 * time.Second,
-	Apply:     10 * time.Second,
-	Tick:      time.Second,
-	DeadAfter: 20 * time.Second,
+	Heartbeat:  time.Second,
+	Election:   time.Second,
+	Lease:      5 * time.Second,
+	Apply:      10 * time.Second,
+	Tick:       time.Second,
+	DeadAfter:  20 * time.Second,
+	Checkpoint: 10 * time.Second,
 }
 
 func (t Timing) orRelease() Timing {
 	return Timing{
-		Heartbeat: cmp.Or(t.Heartbeat, releaseTiming.Heartbeat),
-		Election:  cmp.Or(t.Election, releaseTiming.Election),
-		Lease:     cmp.Or(t.Lease, releaseTiming.Lease),
-		Apply:     cmp.Or(t.Apply, releaseTiming.Apply),
-		Tick:      cmp.Or(t.Tick, releaseTiming.Tick),
-		DeadAfter: cmp.Or(t.DeadAfter, releaseTiming.DeadAfter),
+		Heartbeat:  cmp.Or(t.Heartbeat, releaseTiming.Heartbeat),
+		Election:   cmp.Or(t.Election, releaseTiming.Election),
+		Lease:      cmp.Or(t.Lease, releaseTiming.Lease),
+		Apply:      cmp.Or(t.Apply, releaseTiming.Apply),
+		Tick:       cmp.Or(t.Tick, releaseTiming.Tick),
+		DeadAfter:  cmp.Or(t.DeadAfter, releaseTiming.DeadAfter),
+		Checkpoint: cmp.Or(t.Checkpoint, releaseTiming.Checkpoint),
 	}
 }
 
@@ -185,6 +190,9 @@ type Node struct {
 	// (serving.go, seats.go).
 	servingSince servingState
 	seatbook     *seatBook
+	// div is what this replica, while it leads, makes of its members' digest
+	// reports (divergence.go).
+	div divergence
 
 	allowlist *allowlist.Handle
 	secrets   *secrets.Handle
@@ -194,6 +202,9 @@ type Node struct {
 	raft      *raft.Raft
 	mux       *mux
 	transport *termSafeHeartbeats
+	// divergenceLog keeps one finding about its members' state to one log
+	// line (divergence.go).
+	divergenceLog changedReason
 }
 
 // attestationTimeout bounds one call to the attestation-api on this VM.
@@ -446,6 +457,7 @@ func (n *Node) Run(ctx context.Context) error {
 		n.watchHeartbeats,
 		n.watchHandover,
 		n.watchStalls,
+		n.watchDivergence,
 	)
 	defer stopWorkers()
 	stopReads := n.serveReads(ctx)

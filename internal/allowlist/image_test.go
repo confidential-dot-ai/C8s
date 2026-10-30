@@ -40,7 +40,7 @@ func TestSnapshotRoundTrip(t *testing.T) {
 		"file":   file,
 	} {
 		generation := fresh.Generation()
-		if err := fresh.Restore(image); err != nil {
+		if err := fresh.Restore(image, store.Digest()); err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
 		if got, want := contents(t, fresh), contents(t, store); !reflect.DeepEqual(got, want) {
@@ -58,7 +58,7 @@ func TestSnapshotRoundTrip(t *testing.T) {
 			"truncated": image[:len(image)/2],
 			"bad page":  badPage(image),
 		} {
-			if err := fresh.Restore(image); err == nil {
+			if err := fresh.Restore(image, store.Digest()); err == nil {
 				t.Errorf("%s: a %s image was restored", name, what)
 			}
 		}
@@ -83,7 +83,7 @@ func TestRestoredStoreServesTheImagesDocument(t *testing.T) {
 
 	empty, fresh := openInMemoryStore(t)
 	putEntry(t, fresh, "other", oneContainerWorkload(mustParseDigest(t, digestB)))
-	if err := empty.Restore(image); err != nil {
+	if err := empty.Restore(image, store.Digest()); err != nil {
 		t.Fatal(err)
 	}
 	got, version, err := fresh.LoadAll()

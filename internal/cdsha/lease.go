@@ -234,9 +234,18 @@ func (n *Node) askLeaderToConfirm(leader leadership) (uint64, error) {
 	if !reached {
 		return 0, fmt.Errorf("cds-ha: this replica has not reached the leader, member %s", leader.member)
 	}
-	answer, err := held.control.exchange(controlRequest{Op: opRead}, n.readTimeout())
+	answer, err := held.control.exchange(
+		controlRequest{
+			Op:      opRead,
+			Digests: n.fsm.dig.report(),
+		},
+		n.readTimeout(),
+	)
 	if err != nil {
 		return 0, err
+	}
+	if answer.Diverged != "" {
+		return 0, n.stopOnVerdict(answer, leader)
 	}
 	if answer.Err != "" {
 		return 0, errors.New("cds-ha: the leader confirmed no read: " + answer.Err)
@@ -248,8 +257,11 @@ func (n *Node) askLeaderToConfirm(leader leadership) (uint64, error) {
 	return answer.Index, nil
 }
 
-// answerRead confirms a read for the peer that asked, one barrier at a time.
-func (n *Node) answerRead(answer controlAnswer) controlAnswer {
+// answerRead confirms a read for the peer that asked, which only the leader
+// can do, and which it does one barrier at a time. The barrier applies
+// everything the cluster committed, so the peer's digests are compared with a
+// state that holds every entry up to the watermark.
+func (n *Node) answerRead(from peer, request controlRequest, answer controlAnswer) controlAnswer {
 	if !n.leading() {
 		return n.redirectToLeader(answer)
 	}
@@ -258,8 +270,21 @@ func (n *Node) answerRead(answer controlAnswer) controlAnswer {
 		answer.Err = err.Error()
 		return answer
 	}
+	answer.Term = n.following().term
+	if diverged := n.takeReport(raft.ServerID(from.member), request.Digests, confirmed); diverged != "" {
+		answer.Diverged = diverged
+		return answer
+	}
 	answer.Index = confirmed
 	return answer
+}
+
+// The verdict counts only from the leadership this replica follows.
+func (n *Node) stopOnVerdict(answer controlAnswer, led leadership) error {
+	if answer.Term != led.term {
+		return fmt.Errorf("cds-ha: the leader answered in term %d, and this replica follows term %d", answer.Term, led.term)
+	}
+	return n.fsm.stopLocal(fmt.Errorf("%w: %s", ErrDiverged, answer.Diverged))
 }
 
 // serveReads keeps this replica's lease fresh until ctx ends. Stopping drops
