@@ -32,7 +32,12 @@ func newHACmd() *cobra.Command {
 		Use:   "ha",
 		Short: "Operate a highly available CDS",
 	}
-	cmd.AddCommand(newDecreeCmd())
+	cmd.AddCommand(
+		newDecreeCmd(),
+		newStatusCmd(),
+		newDecreesCmd(),
+		newPinPolicyCmd(),
+	)
 	return cmd
 }
 
@@ -299,7 +304,7 @@ func (o genesisOptions) run(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	target, address, err := o.target.readAtAddress(cmd.Context())
+	target, address, err := o.target.statusAtAddress(cmd.Context())
 	if err != nil {
 		return err
 	}
@@ -345,7 +350,7 @@ func (o genesisOptions) nodePins(c decreeConfig) (*cdsdecree.NodeImages, error) 
 
 // checkGenesisTarget requires a replica of this cluster that holds none, and
 // that reports the mesh CA it would install.
-func checkGenesisTarget(target replicaStatus, clusterID string) error {
+func checkGenesisTarget(target cdsha.Status, clusterID string) error {
 	if err := checkTargetCluster(target, clusterID); err != nil {
 		return err
 	}
@@ -358,7 +363,7 @@ func checkGenesisTarget(target replicaStatus, clusterID string) error {
 	return nil
 }
 
-func checkTargetCluster(target replicaStatus, clusterID string) error {
+func checkTargetCluster(target cdsha.Status, clusterID string) error {
 	if target.ClusterID != clusterID {
 		return fmt.Errorf("the target replica serves cluster %q, not %q", target.ClusterID, clusterID)
 	}
@@ -469,7 +474,7 @@ func (o recoverOptions) run(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	target, address, err := o.target.readAtAddress(cmd.Context())
+	target, address, err := o.target.statusAtAddress(cmd.Context())
 	if err != nil {
 		return err
 	}
@@ -488,14 +493,14 @@ func (o recoverOptions) run(cmd *cobra.Command) error {
 
 // checkRecoverTarget requires a surviving voter: a member without a vote may
 // be missing writes the cluster committed.
-func checkRecoverTarget(target replicaStatus, clusterID string) error {
+func checkRecoverTarget(target cdsha.Status, clusterID string) error {
 	if err := checkTargetCluster(target, clusterID); err != nil {
 		return err
 	}
 	switch {
 	case !target.Joined:
 		return errors.New("the target replica holds no cluster: a Recover carries on a survivor's state")
-	case !target.isVoter():
+	case !holdsAVote(target):
 		return errors.New("the target replica holds no vote: name a surviving voter, whose state is the cluster's")
 	}
 	return nil
@@ -558,7 +563,7 @@ func (o admitOptions) run(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	target, err := o.target.read(cmd.Context())
+	target, err := o.target.status(cmd.Context())
 	if err != nil {
 		return err
 	}
@@ -576,28 +581,15 @@ func (o admitOptions) run(cmd *cobra.Command) error {
 // as the decree the cluster applied. An Admit names only those, so it cannot
 // widen what the cluster already runs.
 func (o admitOptions) appliedPins(ctx context.Context, c decreeConfig) (*cdsdecree.PinDocument, error) {
-	client, address, err := o.servingReplica().dial(ctx)
+	object, _, err := o.servingReplica().answer(ctx, pinDecreePath, maxReplicaReport)
 	if err != nil {
 		return nil, err
 	}
-	object, err := replicaAnswer(ctx, client, address, pinDecreePath)
+	applied, err := checkedPinDecree(object, c)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("the pin decree %s serves: %w", o.joined, err)
 	}
-	applied, err := cdsdecree.Parse(object)
-	if err != nil {
-		return nil, fmt.Errorf("the decree %s serves: %w", o.joined, err)
-	}
-	if err := cdsdecree.Verify(applied, c.parsed.OperatorKeys.Keys(), c.parsed.ClusterID); err != nil {
-		return nil, fmt.Errorf("the decree %s serves: %w", o.joined, err)
-	}
-	if applied.Decree.CDSPins == nil {
-		return nil, fmt.Errorf("the decree %s serves pins no CDS image", o.joined)
-	}
-	if _, err := applied.Decree.CDSPins.WithLaunchFile(c.launchFile); err != nil {
-		return nil, fmt.Errorf("the pin decree %s serves binds another launch file: %w", o.joined, err)
-	}
-	return applied.Decree.CDSPins, nil
+	return applied.decree.Decree.CDSPins, nil
 }
 
 // servingReplica is the joined replica an Admit reads the cluster's applied
@@ -613,7 +605,7 @@ func (o admitOptions) servingReplica() replica {
 
 // checkAdmitTarget requires a replica of this cluster that holds none: a
 // joined replica admits by the cluster's own image set.
-func checkAdmitTarget(target replicaStatus, clusterID string) error {
+func checkAdmitTarget(target cdsha.Status, clusterID string) error {
 	if err := checkTargetCluster(target, clusterID); err != nil {
 		return err
 	}

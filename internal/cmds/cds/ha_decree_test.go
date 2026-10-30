@@ -117,7 +117,7 @@ func (c operatorCluster) replicaServing(t *testing.T, routes map[string]any) rep
 		})
 	}
 	handler.HandleFunc("POST "+decreesPath, func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(io.LimitReader(r.Body, maxReplicaAnswer))
+		body, err := io.ReadAll(io.LimitReader(r.Body, maxReplicaReport))
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -194,8 +194,12 @@ func (c operatorCluster) signed(t *testing.T, out string) cdsdecree.Signed {
 }
 
 // unjoined is what a replica of this cluster holding no cluster reports.
-func (c operatorCluster) unjoined() replicaStatus {
-	return replicaStatus{ClusterID: c.clusterID, ID: targetMember, GenesisCA: targetGenesis}
+func (c operatorCluster) unjoined() cdsha.Status {
+	return cdsha.Status{
+		ClusterID: c.clusterID,
+		ID:        targetMember,
+		GenesisCA: targetGenesis,
+	}
 }
 
 func snpManifest(t *testing.T, digests ...string) string {
@@ -361,17 +365,40 @@ func TestGenesisDecreeBindsTheTargetProcess(t *testing.T) {
 // a voter's state, so each refuses a target in the other's state.
 func TestOneShotDecreesRefuseTheWrongTarget(t *testing.T) {
 	c := newOperatorCluster(t)
-	joined := replicaStatus{ClusterID: c.clusterID, ID: targetMember, Joined: true, Voters: []string{targetMember}}
+	joined := cdsha.Status{ClusterID: c.clusterID, ID: targetMember, Joined: true, Voters: []string{targetMember}}
 	for _, tc := range []struct {
 		name   string
-		status replicaStatus
-		check  func(replicaStatus, string) error
+		status cdsha.Status
+		check  func(cdsha.Status, string) error
 	}{
 		{"a Genesis on a replica holding a cluster", joined, checkGenesisTarget},
-		{"a Genesis on a replica of another cluster", replicaStatus{ClusterID: "other", ID: targetMember, GenesisCA: targetGenesis}, checkGenesisTarget},
-		{"a Genesis on a replica reporting no mesh CA", replicaStatus{ClusterID: c.clusterID, ID: targetMember}, checkGenesisTarget},
+		{
+			"a Genesis on a replica of another cluster",
+			cdsha.Status{
+				ClusterID: "other",
+				ID:        targetMember,
+				GenesisCA: targetGenesis,
+			},
+			checkGenesisTarget,
+		},
+		{
+			"a Genesis on a replica reporting no mesh CA",
+			cdsha.Status{
+				ClusterID: c.clusterID,
+				ID:        targetMember,
+			},
+			checkGenesisTarget,
+		},
 		{"a Recover on a replica holding no cluster", c.unjoined(), checkRecoverTarget},
-		{"a Recover on a replica holding no vote", replicaStatus{ClusterID: c.clusterID, ID: targetMember, Joined: true}, checkRecoverTarget},
+		{
+			"a Recover on a replica holding no vote",
+			cdsha.Status{
+				ClusterID: c.clusterID,
+				ID:        targetMember,
+				Joined:    true,
+			},
+			checkRecoverTarget,
+		},
 		{"an Admit on a replica holding a cluster", joined, checkAdmitTarget},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

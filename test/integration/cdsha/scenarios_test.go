@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/c8s/internal/cdsdecree"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 )
 
 // threeReplicas is the cluster most scenarios run on: three replicas, and
@@ -356,7 +357,7 @@ func TestAPinDecreeOfTheOperatorAppliesAtEveryReplica(t *testing.T) {
 	leading := c.waitLeader(30 * time.Second)
 	started, _ := c.status(leading)
 
-	intent, delivered := c.decreePins(c.others(leading)[0], started.Version)
+	intent, delivered := c.decreePins(c.others(leading)[0], started.Version, testutil.TestMeasurement, nextCDSImage)
 
 	if delivered.Version != started.Version+1 || delivered.Refused != "" {
 		t.Errorf("the cluster answered %+v for the decree, want it applied at version %d", delivered, started.Version+1)
@@ -508,3 +509,62 @@ func TestAReplicaWhoseStoreChangedUnderItIsStoppedByTheMajority(t *testing.T) {
 		return c.allServe("written-after-the-store-changed")
 	})
 }
+
+func TestTheClusterRollsOntoANewCDSImageAndRefusesTheRetiredOne(t *testing.T) {
+	notShort(t)
+	c := newCluster(t, threeReplicas)
+	leading := c.waitLeader(30 * time.Second)
+	started, _ := c.status(leading)
+	// The operator reads a rolling cluster by the pin document naming both
+	// images, as `ha pin-policy --out` writes it.
+	c.client = c.attestedClient(testutil.TestMeasurement, nextCDSImage)
+
+	accepted, _ := c.decreePins(leading, started.Version, testutil.TestMeasurement, nextCDSImage)
+	c.waitFor("every replica to accept both CDS images", time.Minute, func() bool {
+		return c.allApplied(accepted, started.Version+1)
+	})
+
+	for _, r := range c.replicas {
+		c.waitVoter(r, time.Minute)
+		c.rollImage(r, nextCDSImage)
+		c.decreeAdmit(r, testutil.TestMeasurement, nextCDSImage)
+		c.waitFor(fmt.Sprintf("the new VM of replica %d to serve the cluster", r.index), 2*time.Minute, func() bool {
+			return slices.Contains(c.serving(), r)
+		})
+		c.waitRollSafe(2 * time.Minute)
+	}
+
+	rolling := c.waitLeader(time.Minute)
+	rolled, _ := c.status(rolling)
+	retired, _ := c.decreePins(rolling, rolled.Version, nextCDSImage)
+	c.waitFor("every replica to pin the new image alone", time.Minute, func() bool {
+		return c.allApplied(retired, rolled.Version+1)
+	})
+	c.waitRollSafe(2 * time.Minute)
+
+	// The cluster admits no image its pin decree leaves out, whatever an
+	// Admit names.
+	back := c.others(c.waitLeader(time.Minute))[0]
+	c.waitVoter(back, time.Minute)
+	c.rollImage(back, testutil.TestMeasurement)
+	c.decreeAdmit(back, testutil.TestMeasurement, nextCDSImage)
+	time.Sleep(longerThanAJoinTakes)
+	if reported, _ := c.status(back); reported.Joined {
+		t.Errorf("a replica of the retired image holds the cluster: %+v", reported)
+	}
+	if serving := c.serving(); !slices.Equal(serving, c.others(back)) {
+		t.Errorf("%d replicas serve the cluster, want exactly the ones running an image it pins", len(serving))
+	}
+
+	// The same VM on the pinned image joins inside that time, so the refusal
+	// above is the image set and not a cluster that takes no member.
+	c.rollImage(back, nextCDSImage)
+	c.decreeAdmit(back, nextCDSImage)
+	c.waitFor("the VM back on the pinned image to serve the cluster", longerThanAJoinTakes, func() bool {
+		return slices.Contains(c.serving(), back)
+	})
+}
+
+// Longer than a replica of a pinned image needs to join, over the discovery
+// passes a c8s_dev build makes.
+const longerThanAJoinTakes = 20 * time.Second

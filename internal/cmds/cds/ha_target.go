@@ -21,8 +21,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsconn"
 )
 
-// A replica serves its clients and the operator on one port, and the decree
-// commands read two of its routes and post to a third.
+// A replica serves its clients and the operator on one port.
 const (
 	replicaPort   = 8443
 	statusPath    = "/ha/status"
@@ -33,9 +32,12 @@ const (
 // replicaTimeout bounds each read of a replica.
 const replicaTimeout = 15 * time.Second
 
-// maxReplicaAnswer bounds a replica's answer, the largest of which is a pin
-// decree listing the images of an image roll.
-const maxReplicaAnswer = 1 << 20
+// Bounds on what a replica may answer with: one report or decree, and the
+// whole record of at most 256 applied decrees.
+const (
+	maxReplicaReport = 1 << 20
+	maxDecreeRecord  = 16 << 20
+)
 
 // replica is one CDS the operator reads over armTLS: it is verified against
 // the pin document naming this cluster's CDS, and a decree records the member
@@ -69,44 +71,38 @@ func bindDeliveryFlags(cmd *cobra.Command, to *replica) {
 	requireFlags(cmd, "to", "cds-pin")
 }
 
-// replicaStatus is the part of a replica's /ha/status a decree binds to: the
-// member id its process minted, whether it holds a cluster, the voters it
-// knows, and the mesh CA it installs if a Genesis names it.
-type replicaStatus struct {
-	ClusterID string   `json:"cluster_id"`
-	ID        string   `json:"id"`
-	Joined    bool     `json:"joined"`
-	Voters    []string `json:"voters"`
-	GenesisCA string   `json:"genesis_ca"`
+func (r replica) status(ctx context.Context) (cdsha.Status, error) {
+	reported, _, err := r.statusAtAddress(ctx)
+	return reported, err
 }
 
-// isVoter reports whether the replica holds a vote in the cluster it carries.
-func (s replicaStatus) isVoter() bool {
-	return slices.Contains(s.Voters, s.ID)
+// The address a decree binding one process records.
+func (r replica) statusAtAddress(ctx context.Context) (cdsha.Status, netip.AddrPort, error) {
+	body, address, err := r.answer(ctx, statusPath, maxReplicaReport)
+	if err != nil {
+		return cdsha.Status{}, netip.AddrPort{}, err
+	}
+	var reported cdsha.Status
+	if err := json.Unmarshal(body, &reported); err != nil {
+		return cdsha.Status{}, netip.AddrPort{}, fmt.Errorf("GET %s: %w", statusPath, err)
+	}
+	return reported, address, nil
 }
 
-// read reports a replica's own view of itself.
-func (r replica) read(ctx context.Context) (replicaStatus, error) {
-	answer, _, err := r.readAtAddress(ctx)
-	return answer, err
+func holdsAVote(reported cdsha.Status) bool {
+	return slices.Contains(reported.Voters, reported.ID)
 }
 
-// readAtAddress also reports the address the replica answered at, which a
-// decree binding one process records.
-func (r replica) readAtAddress(ctx context.Context) (replicaStatus, netip.AddrPort, error) {
+func (r replica) answer(ctx context.Context, path string, limit int64) ([]byte, netip.AddrPort, error) {
 	client, address, err := r.dial(ctx)
 	if err != nil {
-		return replicaStatus{}, netip.AddrPort{}, err
+		return nil, netip.AddrPort{}, err
 	}
-	body, err := replicaAnswer(ctx, client, address, statusPath)
+	body, err := replicaAnswer(ctx, client, address, path, limit)
 	if err != nil {
-		return replicaStatus{}, netip.AddrPort{}, err
+		return nil, netip.AddrPort{}, err
 	}
-	var answer replicaStatus
-	if err := json.Unmarshal(body, &answer); err != nil {
-		return replicaStatus{}, netip.AddrPort{}, fmt.Errorf("GET %s: %w", statusPath, err)
-	}
-	return answer, address, nil
+	return body, address, nil
 }
 
 // dial resolves a replica to the one address it answers at and builds a client
@@ -134,23 +130,36 @@ func (r replica) dial(ctx context.Context) (*http.Client, netip.AddrPort, error)
 // process it reached, so a name standing for several replicas names none of
 // them.
 func resolveReplica(ctx context.Context, address string) (netip.AddrPort, error) {
-	host, port, err := splitReplicaAddress(address)
+	resolved, err := resolveReplicas(ctx, address)
 	if err != nil {
 		return netip.AddrPort{}, err
 	}
+	if len(resolved) != 1 {
+		return netip.AddrPort{}, fmt.Errorf("%s resolves to %d addresses: name one replica", address, len(resolved))
+	}
+	return resolved[0], nil
+}
+
+// A cluster's replica entry may stand for several replicas.
+func resolveReplicas(ctx context.Context, entry string) ([]netip.AddrPort, error) {
+	host, port, err := splitReplicaAddress(entry)
+	if err != nil {
+		return nil, err
+	}
 	resolved, err := net.DefaultResolver.LookupNetIP(ctx, "ip4", host)
 	if err != nil {
-		return netip.AddrPort{}, fmt.Errorf("resolve %s: %w", host, err)
+		return nil, fmt.Errorf("resolve %s: %w", host, err)
 	}
-	if len(resolved) != 1 {
-		return netip.AddrPort{}, fmt.Errorf("%s resolves to %d addresses: name one replica", host, len(resolved))
+	addresses := make([]netip.AddrPort, 0, len(resolved))
+	for _, answered := range resolved {
+		// A resolver may answer an IPv4 lookup in 4-in-6 form.
+		address := answered.Unmap()
+		if !address.Is4() {
+			return nil, fmt.Errorf("%s resolves to %s, and a replica answers at an IPv4 address", host, address)
+		}
+		addresses = append(addresses, netip.AddrPortFrom(address, port))
 	}
-	// A resolver may answer an IPv4 lookup in 4-in-6 form.
-	resolvedIP := resolved[0].Unmap()
-	if !resolvedIP.Is4() {
-		return netip.AddrPort{}, fmt.Errorf("%s resolves to %s, and a replica answers at an IPv4 address", host, resolvedIP)
-	}
-	return netip.AddrPortFrom(resolvedIP, port), nil
+	return addresses, nil
 }
 
 // splitReplicaAddress reads <host>[:port], where the port every CDS serves the
@@ -204,7 +213,7 @@ func postedDecree(ctx context.Context, client *http.Client, address netip.AddrPo
 		return cdsha.Delivered{}, err
 	}
 	defer response.Body.Close()
-	answer, err := io.ReadAll(io.LimitReader(response.Body, maxReplicaAnswer))
+	answer, err := io.ReadAll(io.LimitReader(response.Body, maxReplicaReport))
 	if err != nil {
 		return cdsha.Delivered{}, fmt.Errorf("POST %s: %w", decreesPath, err)
 	}
@@ -218,8 +227,7 @@ func postedDecree(ctx context.Context, client *http.Client, address netip.AddrPo
 	return delivered, nil
 }
 
-// replicaAnswer is a replica's answer to one GET, at most maxReplicaAnswer bytes.
-func replicaAnswer(ctx context.Context, client *http.Client, address netip.AddrPort, path string) ([]byte, error) {
+func replicaAnswer(ctx context.Context, client *http.Client, address netip.AddrPort, path string, limit int64) ([]byte, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+address.String()+path, nil)
 	if err != nil {
 		return nil, err
@@ -232,7 +240,7 @@ func replicaAnswer(ctx context.Context, client *http.Client, address netip.AddrP
 	if response.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("GET %s: %s", path, response.Status)
 	}
-	body, err := io.ReadAll(io.LimitReader(response.Body, maxReplicaAnswer))
+	body, err := io.ReadAll(io.LimitReader(response.Body, limit))
 	if err != nil {
 		return nil, fmt.Errorf("GET %s: %w", path, err)
 	}
