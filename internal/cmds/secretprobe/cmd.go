@@ -178,7 +178,7 @@ file, or a token the inventory did not redeem, with the reason on stderr.`,
 }
 
 // prepare validates the shared flags and binds a probe to the leaf.
-func prepare(o options, args []string, wantArgs int, errOut io.Writer) (*probe, bool) {
+func prepare(ctx context.Context, o options, args []string, wantArgs int, errOut io.Writer) (*probe, bool) {
 	if len(args) != wantArgs {
 		fmt.Fprintf(errOut, "secret-probe: got %d positional arguments, want %d\n", len(args), wantArgs)
 		return nil, false
@@ -187,7 +187,7 @@ func prepare(o options, args []string, wantArgs int, errOut io.Writer) (*probe, 
 		fmt.Fprintln(errOut, "secret-probe:", err)
 		return nil, false
 	}
-	p, err := newProbe(o)
+	p, err := newProbe(ctx, o)
 	if err != nil {
 		fmt.Fprintln(errOut, "secret-probe:", err)
 		return nil, false
@@ -196,7 +196,7 @@ func prepare(o options, args []string, wantArgs int, errOut io.Writer) (*probe, 
 }
 
 func runChallenge(ctx context.Context, o options, args []string, out, errOut io.Writer) int {
-	p, ok := prepare(o, args, 0, errOut)
+	p, ok := prepare(ctx, o, args, 0, errOut)
 	if !ok {
 		return exitUsage
 	}
@@ -210,7 +210,7 @@ func runChallenge(ctx context.Context, o options, args []string, out, errOut io.
 }
 
 func runToken(ctx context.Context, o options, challengeB64 string, args []string, out, errOut io.Writer) int {
-	p, ok := prepare(o, args, 0, errOut)
+	p, ok := prepare(ctx, o, args, 0, errOut)
 	if !ok {
 		return exitUsage
 	}
@@ -250,7 +250,7 @@ func runRequest(ctx context.Context, o options, ro requestOptions, args []string
 		fmt.Fprintln(errOut, "secret-probe: --token and --no-token exclude each other")
 		return exitUsage
 	}
-	p, ok := prepare(o, args, 2, errOut)
+	p, ok := prepare(ctx, o, args, 2, errOut)
 	if !ok {
 		return exitUsage
 	}

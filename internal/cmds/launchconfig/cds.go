@@ -24,6 +24,10 @@ type CDS struct {
 	// and `c8s cds config new` write it: every entry binds the CDS image to
 	// its launch file.
 	Measurements string `yaml:"measurements" json:"measurements"`
+	// PinFloor is the lowest cluster version this node takes a CDS pin decree
+	// at, so a node launched today never follows a decree the operator signed
+	// before the set this document carries.
+	PinFloor uint64 `yaml:"pinFloor,omitempty" json:"pin_floor,omitempty"`
 }
 
 // CDSPort is the port this cluster's CDS serves on, which is what a pod

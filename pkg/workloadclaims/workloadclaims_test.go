@@ -731,8 +731,11 @@ func TestListenUnixNoChgrpWhenGIDNonPositive(t *testing.T) {
 
 // testPins name the guest a callback peer must be running, which armTLS
 // requires of every evidence-path policy.
-func testPins() armtls.Pins {
-	return armtls.Pins{Measurements: [][]byte{bytes.Repeat([]byte{0x11}, armtls.SNPMeasurementSize)}}
+func testPins() armtls.PinSource {
+	return armtls.FixedPins(refvalues.ReferenceValues{Images: []remote.ImagePin{{
+		Name:   "cds",
+		Digest: bytes.Repeat([]byte{0x11}, refvalues.DigestSize),
+	}}})
 }
 
 // The node image the inventory CDS calls back must be running.
@@ -764,7 +767,7 @@ func TestDigestsCallbackRequiresAttestationApi(t *testing.T) {
 // on the network, so the endpoint refuses to come up.
 func TestDigestsCallbackRefusesEmptyMeasurements(t *testing.T) {
 	attest := func(context.Context, string) (string, error) { return "", nil }
-	_, _, err := DigestsServerTLSConfig("sev-snp", attest, "http://127.0.0.1:8400", armtls.Pins{}, 0, "")
+	_, _, err := DigestsServerTLSConfig("sev-snp", attest, "http://127.0.0.1:8400", armtls.FixedPins(refvalues.ReferenceValues{}), 0, "")
 	if !errors.Is(err, armtls.ErrUnpinned) {
 		t.Fatalf("err = %v, want errors.Is armtls.ErrUnpinned", err)
 	}

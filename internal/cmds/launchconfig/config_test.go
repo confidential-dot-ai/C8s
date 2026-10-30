@@ -49,7 +49,11 @@ func testDocument(t *testing.T, platform string, role Role) (Document, *ecdsa.Pr
 		RKE2:                    RKE2{AgentToken: strings.Repeat("a", 64)},
 		Server:                  ServerConfig{Address: "10.0.0.1", OperatorPublicKey: serverPub},
 		AgentOperatorPublicKeys: []string{agentPub},
-		CDS:                     CDS{Address: "cds.example.org:8443", Measurements: testCDSPin(t, teetypes.FamilySNP, 2)},
+		CDS: CDS{
+			Address:      "cds.example.org:8443",
+			Measurements: testCDSPin(t, teetypes.FamilySNP, 2),
+			PinFloor:     9,
+		},
 	}
 	if platform == "tdx" {
 		doc.Image.RTMRs = map[int]string{1: strings.Repeat("22", 48), 2: strings.Repeat("33", 48)}

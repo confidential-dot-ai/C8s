@@ -7,6 +7,7 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 // renderedCDSPinsName is the policy document the plugin hands its injected
@@ -38,17 +39,13 @@ func renderNodeDocument(name string, document []byte) (string, error) {
 // form the node's config names its CDS identities in, they reach every client
 // as one rendered document, and a set no client could load fails here instead
 // of in every pod.
-func (p *plugin) prepareCDSPins() error {
+func (p *plugin) prepareCDSPins(cdsPins armtls.PinSource) error {
 	if !p.cfg.injectsCredentialClients() {
 		// No inventory directory, so no pod of this node is injected and
 		// nothing would read a policy.
 		return nil
 	}
-	set, err := p.cfg.Allowlist.Pull.policySet()
-	if err != nil {
-		return err
-	}
-	document, err := refvalues.Format(set)
+	document, err := refvalues.Format(cdsPins.Current())
 	if err != nil {
 		return fmt.Errorf("render the node's CDS pins: %w", err)
 	}

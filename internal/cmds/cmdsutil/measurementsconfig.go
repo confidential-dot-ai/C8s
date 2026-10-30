@@ -2,6 +2,7 @@ package cmdsutil
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -11,7 +12,7 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
-	"github.com/confidential-dot-ai/attestation-go/remote"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 // ImagePolicySource selects one complete refvalues JSON document. File and JSON
@@ -104,33 +105,37 @@ func CDSLaunchFile(values refvalues.ReferenceValues) ([]byte, error) {
 }
 
 // ResolveCDSPins returns the pins a client holds its CDS to, and whether the
-// node's own policy decided them. resolveNodePolicy states the rule.
-func ResolveCDSPins(nodePolicy string, source ImagePolicySource) (remote.Policy, bool, error) {
-	values, fromNode, err := resolveNodePolicy(nodePolicy, suppliedPolicyFlags(source), refvalues.Parse)
+// node's own policy decided them. While the node mounts a policy it is the
+// only source and a supplied one is refused. That policy follows the
+// cluster's pin decrees while ctx runs; a supplied one never moves.
+func ResolveCDSPins(ctx context.Context, nodePolicy string, source ImagePolicySource) (armtls.PinSource, bool, error) {
+	node, err := FollowNodePins(ctx, nodePolicy)
 	if err != nil {
-		return remote.Policy{}, fromNode, err
+		return nil, false, err
 	}
-	if !fromNode {
-		if values, err = source.Values(); err != nil {
-			return remote.Policy{}, false, err
+	if node != nil {
+		if supplied := suppliedPolicyFlags(source); len(supplied) > 0 {
+			return nil, false, fmt.Errorf("this node provides %s; remove %s", nodePolicy, strings.Join(supplied, " and "))
 		}
+		return node, true, nil
+	}
+	values, err := source.Values()
+	if err != nil {
+		return nil, false, err
 	}
 	if _, err := CDSLaunchFile(values); err != nil {
-		return remote.Policy{}, fromNode, fmt.Errorf("%s %w", cdsPinSource(nodePolicy, fromNode, source), err)
+		return nil, false, fmt.Errorf("%s %w", suppliedPinSource(source), err)
 	}
-	return values.Policy(), fromNode, nil
+	return armtls.FixedPins(values), false, nil
 }
 
-// cdsPinSource names where the refused pins came from, so a client is told
-// which input to fix.
-func cdsPinSource(nodePolicy string, fromNode bool, source ImagePolicySource) string {
-	switch {
-	case fromNode:
-		return "node policy " + nodePolicy
-	case source.IsSet():
+// suppliedPinSource names where the refused pins came from, so a client is
+// told which input to fix.
+func suppliedPinSource(source ImagePolicySource) string {
+	if source.IsSet() {
 		return strings.Join(suppliedPolicyFlags(source), " and ")
 	}
-	return "--image-policy-file"
+	return "the CDS pin set"
 }
 
 // NodeProvidesCDSPins reports whether the enforcer mounts this node's CDS pins
