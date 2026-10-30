@@ -72,9 +72,11 @@ env:
   CDS_VM: c8s-snp-cds-${{ github.run_id }}-${{ github.run_attempt }}
   IMAGE_REPO: ghcr.io/confidential-dot-ai/node-guest-base
   CDS_IMAGE_REPO: ghcr.io/confidential-dot-ai/cds-guest-base
-  # The launcher's pod network, which both guests boot on: the one range the
-  # CDS may dial a node's admission inventory in. The boot below refuses a
-  # guest address outside it.
+  # The launcher host's pod network, which both guests boot on: the one range
+  # the CDS may dial a node's admission inventory in. The boot below refuses a
+  # guest address outside it. This is a property of the SNP host (snp-gh-runner,
+  # on rke2's default 10.42/16); if that host's outer cluster is ever renumbered
+  # the way tdx-gh-runner was (to 172.20/172.21), this value must move with it.
   NODE_CIDR: 10.42.0.0/16
   # The vCPU count selects the measured IGVM variant; the launch digest
   # differs per count.
