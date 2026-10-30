@@ -1,7 +1,7 @@
 github.com/cenkalti/backoff/v5 v5.0.3 h1:ZN+IMa753KfX5hd8vVaMixjnqRZ3y8CuJKRKj1xcsSM=
 github.com/cenkalti/backoff/v5 v5.0.3/go.mod h1:rkhZdG3JZukswDf7f0cwqPNk4K0sa+F97BxZthm/crw=
-github.com/confidential-dot-ai/attestation-go v0.8.2-0.20261028102134-fcdaf48f0eca h1:UVerZzOW1aEVol/RHcilH5PXUZsbBKhmPMNdrr1jOQQ=
-github.com/confidential-dot-ai/attestation-go v0.8.2-0.20261028102134-fcdaf48f0eca/go.mod h1:kOYIqCounvl1Ca9SM5AMiop5ePI1V6VEfLR14bWf9hk=
+github.com/confidential-dot-ai/attestation-go v0.8.2-0.20261030152238-ab5b8da922c5 h1:WJKNaz1EEVqNoPC1P8No8TXbVt0KDEXmJIsfJzv+WOI=
+github.com/confidential-dot-ai/attestation-go v0.8.2-0.20261030152238-ab5b8da922c5/go.mod h1:kOYIqCounvl1Ca9SM5AMiop5ePI1V6VEfLR14bWf9hk=
 github.com/confidential-dot-ai/c8s v0.74.0 h1:SnN8XPGW94YCNxNchp38VeW00fRKAPyk/73p37j1PQ0=
 github.com/confidential-dot-ai/c8s v0.74.0/go.mod h1:hCXwhQcNm24JT0S0PTXzytceElt0iZhFaE2ei7qm9m4=
 github.com/creack/pty v1.1.9/go.mod h1:oKZEueFk5CKHvIhNR5MUki03XCEU+Q6VDXinZuGJ33E=
